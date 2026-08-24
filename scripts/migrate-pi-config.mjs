@@ -38,6 +38,62 @@ function stripPiPackages(value) {
 	return settings;
 }
 
+function isRecord(value) {
+	return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function withoutObsoleteUpdateState(value) {
+	if (!isRecord(value)) return value;
+	const { lastUpdateNotificationVersion: _obsoleteUpdateState, ...settings } = value;
+	return settings;
+}
+
+function valueShape(value) {
+	if (value === null) return "null";
+	if (Array.isArray(value)) return "array";
+	return typeof value === "object" ? "object" : typeof value;
+}
+
+function sameCredentialStructure(source, target) {
+	if (valueShape(source) !== valueShape(target)) return false;
+	if (Array.isArray(source)) {
+		return source.every((sourceValue, index) => index < target.length && sameCredentialStructure(sourceValue, target[index]));
+	}
+	if (isRecord(source)) {
+		return hasSourceRecordEntries(source, target, sameCredentialStructure);
+	}
+	return true;
+}
+
+function hasSourceRecordEntries(source, target, compareValues) {
+	if (!isRecord(source) || !isRecord(target)) return false;
+	return Object.entries(source).every(([key, sourceValue]) =>
+		Object.hasOwn(target, key) && compareValues(sourceValue, target[key]),
+	);
+}
+
+function isCheckEquivalent(entry) {
+	if (!entry.target) return false;
+	switch (entry.targetName) {
+		case "settings.json":
+			return isRecord(entry.target.value) && !Object.hasOwn(entry.target.value, "packages") && isDeepStrictEqual(
+				withoutObsoleteUpdateState(entry.value),
+				withoutObsoleteUpdateState(entry.target.value),
+			);
+		case "auth.json":
+			// Provider tokens can refresh independently after migration. Verify that
+			// every migrated credential slot still exists with the same container
+			// shape without comparing or printing credential values.
+			return sameCredentialStructure(entry.value, entry.target.value);
+		case "trust.json":
+			// Super Pi accumulates its own trusted projects. Existing Pi trust
+			// decisions must remain intact, while additional target entries are valid.
+			return hasSourceRecordEntries(entry.value, entry.target.value, isDeepStrictEqual);
+		default:
+			return isDeepStrictEqual(entry.value, entry.target.value);
+	}
+}
+
 async function readJsonIfPresent(path) {
 	const raw = await readTextIfPresent(path);
 	if (raw === undefined) return undefined;
@@ -95,7 +151,9 @@ if (contextSource !== undefined) {
 
 if (entries.length === 0) throw new Error(`No supported Pi configuration files found in ${sourceDir}`);
 
-const conflicts = entries.filter((entry) => entry.target && !isDeepStrictEqual(entry.value, entry.target.value));
+const conflicts = entries.filter((entry) =>
+	entry.target && !(checkOnly ? isCheckEquivalent(entry) : isDeepStrictEqual(entry.value, entry.target.value)),
+);
 if (conflicts.length > 0) {
 	for (const entry of conflicts) console.error(`conflict ${entry.targetName}`);
 	throw new Error("Existing Super Pi configuration differs; refusing to overwrite it.");
