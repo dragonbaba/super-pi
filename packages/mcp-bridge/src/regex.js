@@ -1,0 +1,15 @@
+export const SUPPORTED_SP_VERSION_PATTERN = /^0\.84\.\d+(?:[-+].*)?$/u;
+export const SERVER_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$/u;
+export const ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/u;
+export const SINGLE_LINE_CONTROL_PATTERN = /[\x00\r\n]/u;
+export const HTTP_HEADER_NAME_PATTERN = /^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,128}$/u;
+export const ENV_HEADER_REFERENCE_PATTERN = /^\$\{ENV:([A-Za-z_][A-Za-z0-9_]*)\}$/u;
+export const ANSI_OSC_PATTERN = /(?:\x1B\]|\x9D)[\s\S]*?(?:\x07|\x1B\\|\x9C|$)/gu;
+export const ANSI_STRING_PATTERN = /\x1B[PX^_][\s\S]*?(?:\x1B\\|\x9C|$)/gu;
+export const ANSI_CSI_PATTERN = /\x1B\[[0-?]*[ -/]*[@-~]/gu;
+export const ANSI_ESCAPE_PATTERN = /\x1B[@-_]/gu;
+export const CONTROL_PATTERN = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]/gu;
+export const TRAILING_REPLACEMENT_CHARACTER_PATTERN = /\uFFFD$/u;
+export const UNSAFE_TOOL_NAME_PATTERN = /[^a-z0-9_-]+/gu;
+export const EDGE_UNDERSCORE_PATTERN = /^_+|_+$/gu;
+export const BASE64_PATTERN = /^[A-Za-z0-9+/]*={0,2}$/u;

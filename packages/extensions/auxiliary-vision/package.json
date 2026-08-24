@@ -1,0 +1,28 @@
+{
+  "name": "@super-pi/auxiliary-vision",
+  "version": "0.3.0-pi.84.1",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "peerDependencies": {
+    "@super-pi/ai": "0.84.x",
+    "@super-pi/coding-agent": "0.84.x",
+    "typebox": "*"
+  },
+  "peerDependenciesMeta": {
+    "@super-pi/ai": {
+      "optional": true
+    },
+    "@super-pi/coding-agent": {
+      "optional": true
+    },
+    "typebox": {
+      "optional": true
+    }
+  },
+  "scripts": {
+    "check": "tsc --noEmit -p tsconfig.json"
+  }
+}

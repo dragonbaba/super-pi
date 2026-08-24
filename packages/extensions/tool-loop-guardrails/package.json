@@ -1,0 +1,17 @@
+{
+  "name": "@super-pi/tool-loop-guardrails",
+  "version": "0.6.0-pi.84.2",
+  "private": true,
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "type": "module",
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@super-pi/coding-agent": ">=0.84.0 <0.85.0"
+  }
+}

@@ -1,0 +1,14 @@
+export const SUPPORTED_SP_VERSION_PATTERN = /^0\.84\.\d+(?:[-+].*)?$/u;
+export const ENV_NAME_PATTERN = /^[A-Z_][A-Z0-9_]{0,127}$/u;
+export const TRAILING_SLASH_PATTERN = /\/+$/u;
+export const ENV_FILE_REFERENCE_PATTERN = /\.env(?:\.[\w.-]+)?/giu;
+export const UNSAFE_FILE_NAME_PATTERN = /[^\w.-]+/g;
+export const GENERIC_RUNTIME_PATTERN = /^(node|bun)(\.exe)?$/;
+export const SHELL_EXECUTABLE_SUFFIX_PATTERN = /\.(?:cmd|exe)$/u;
+export const TRUNCATED_SUFFIX_PATTERN = /\n\[truncated\]$/u;
+export const CREDENTIAL_FILE_EXTENSION_PATTERN = /\.(?:pem|key|p12|pfx)$/iu;
+export const GLOB_META_PATTERN = /[*?\[\]{}]/u;
+export const ENV_DUMP_COMMAND_PATTERN = /(^|[;&|]\s*)(?:env|printenv|set)(?:\s|$)/iu;
+export const OUTSIDE_WRITE_COMMAND_PATTERN = /(?:>|>>|tee\s+|rm\s+(?:-[^\s]+\s+)*|mv\s+|cp\s+)\s*(?:["']?)(?:\.\.[/\\]|~[/\\]|[/\\](?![/\\]))/iu;
+export const OUTSIDE_CD_COMMAND_PATTERN = /(^|[;&|]\s*)cd\s+(?:\.\.(?:[/\\]|\s|$)|~|[/\\])/iu;
+export const PREVIOUS_PLACEHOLDER_PATTERN = /\{previous\}/g;

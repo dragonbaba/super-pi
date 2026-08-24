@@ -1,0 +1,29 @@
+{
+  "name": "@super-pi/project-context",
+  "version": "0.2.6",
+  "description": "Lightweight, deterministic project identity and navigation index for Super Pi.",
+  "type": "module",
+  "private": true,
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "project-context"
+  ],
+  "pi": {
+    "extensions": [
+      "./src/index.js"
+    ]
+  },
+  "peerDependencies": {
+    "@super-pi/coding-agent": ">=0.84.0 <0.85.0"
+  },
+  "peerDependenciesMeta": {
+    "@super-pi/coding-agent": {
+      "optional": true
+    }
+  },
+  "scripts": {},
+  "engines": {
+    "node": ">=22.19.0"
+  }
+}

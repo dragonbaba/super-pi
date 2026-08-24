@@ -1,0 +1,17 @@
+{
+  "name": "@super-pi/false-success-guard",
+  "version": "0.3.4-pi.84.2",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@super-pi/coding-agent": ">=0.84.0 <0.85.0"
+  }
+}

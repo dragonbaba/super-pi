@@ -1,0 +1,51 @@
+{
+  "name": "@super-pi/statusline",
+  "version": "0.41.0-pi.9",
+  "description": "Super Pi statusline with IME-safe idle rendering and generation throughput.",
+  "type": "module",
+  "license": "MIT",
+  "private": false,
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "pi",
+    "statusline",
+    "footer"
+  ],
+  "files": [
+    "src",
+    "dist",
+    "README.md",
+    "COMPATIBILITY.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": [
+      "./dist/index.js"
+    ]
+  },
+  "scripts": {
+    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc --outDir dist --rootDir src --noEmit false --declaration false --sourceMap false --target ES2023 --module NodeNext --moduleResolution NodeNext --strict --skipLibCheck --types node src/index.ts",
+    "typecheck": "tsc --noEmit && npm run build"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dragonbaba/super-pi.git",
+    "directory": "packages/statusline"
+  },
+  "upstream": {
+    "name": "@narumitw/pi-statusline",
+    "version": "0.41.0",
+    "repository": "https://github.com/narumiruna/pi-extensions/tree/main/extensions/pi-statusline"
+  },
+  "peerDependencies": {
+    "@super-pi/coding-agent": ">=0.84.0 <0.85.0",
+    "@super-pi/tui": ">=0.84.0 <0.85.0"
+  },
+  "devDependencies": {
+    "@super-pi/coding-agent": "^0.84.1",
+    "@super-pi/tui": "^0.84.1",
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
+  }
+}

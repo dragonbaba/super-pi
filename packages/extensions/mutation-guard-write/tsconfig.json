@@ -1,0 +1,20 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "skipLibCheck": true,
+    "baseUrl": ".",
+    "typeRoots": ["../../../node_modules/@types"],
+    "paths": {
+      "@super-pi/coding-agent": ["../../coding-agent/dist/index.d.ts"],
+      "@super-pi/ai": ["../../ai/dist/index.d.ts"],
+      "typebox": ["../../../node_modules/typebox/build/index.d.mts"],
+      "typebox/value": ["../../../node_modules/typebox/build/value/index.d.mts"]
+    }
+  },
+  "include": ["*.ts"]
+}

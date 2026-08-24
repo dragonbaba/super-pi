@@ -1,0 +1,21 @@
+{
+  "name": "@super-pi/tool-input-repair-telemetry",
+  "version": "0.3.6-pi.84.2",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "peerDependencies": {
+    "@super-pi/coding-agent": "0.84.x"
+  },
+  "peerDependenciesMeta": {
+    "@super-pi/coding-agent": {
+      "optional": true
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "check": "npm run typecheck"
+  }
+}

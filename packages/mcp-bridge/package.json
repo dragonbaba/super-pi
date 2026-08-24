@@ -1,0 +1,35 @@
+{
+  "name": "@super-pi/mcp-bridge",
+  "version": "0.2.3-pi.84.2",
+  "description": "Security-conscious generic MCP client bridge for Super Pi",
+  "type": "module",
+  "private": true,
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "mcp"
+  ],
+  "pi": {
+    "extensions": [
+      "./src/index.js"
+    ]
+  },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.30.0"
+  },
+  "peerDependencies": {
+    "@super-pi/coding-agent": ">=0.84.0 <0.85.0"
+  },
+  "peerDependenciesMeta": {
+    "@super-pi/coding-agent": {
+      "optional": true
+    }
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  }
+}

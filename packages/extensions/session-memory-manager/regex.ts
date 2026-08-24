@@ -1,0 +1,9 @@
+export const SUPPORTED_SP_VERSION_PATTERN = /^0\.84\.\d+(?:[-+].*)?$/u;
+export const LEASE_INSTANCE_ID_PATTERN = /^[a-f0-9-]{36}$/u;
+export const SESSION_ID_PATTERN = /^[a-zA-Z0-9-]{1,128}$/u;
+export const ANSI_OSC_PATTERN = /(?:\x1B\]|\x9D)[\s\S]*?(?:\x07|\x1B\\|\x9C|$)/gu;
+export const ANSI_STRING_PATTERN = /\x1B[PX^_][\s\S]*?(?:\x1B\\|\x9C|$)/gu;
+export const ANSI_CSI_PATTERN = /\x1B\[[0-?]*[ -/]*[@-~]/gu;
+export const ANSI_ESCAPE_PATTERN = /\x1B[@-_]/gu;
+export const CONTROL_PATTERN = /[\x00-\x1F\x7F-\x9F]/gu;
+export const WHITESPACE_PATTERN = /\s+/gu;

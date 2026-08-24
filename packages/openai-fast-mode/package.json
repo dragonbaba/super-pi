@@ -1,0 +1,38 @@
+{
+  "name": "@super-pi/openai-fast-mode",
+  "version": "0.1.2-pi.84.1",
+  "private": true,
+  "type": "module",
+  "description": "OpenAI Codex priority service-tier toggle for Super Pi.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "files": [
+    "src",
+    "test",
+    "README.md",
+    "CHANGELOG.md"
+  ],
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@super-pi/coding-agent": ">=0.84.0 <0.85.0"
+  },
+  "peerDependenciesMeta": {
+    "@super-pi/coding-agent": {
+      "optional": true
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@super-pi/coding-agent": "^0.84.1",
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
+  }
+}

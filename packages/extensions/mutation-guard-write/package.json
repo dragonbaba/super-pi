@@ -1,0 +1,17 @@
+{
+  "name": "@super-pi/mutation-guard-write",
+  "version": "0.16.3-pi.84.2",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@super-pi/coding-agent": ">=0.84.0 <0.85.0"
+  }
+}

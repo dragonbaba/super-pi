@@ -1,0 +1,22 @@
+{
+  "name": "@super-pi/extensions",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "pi": {
+    "extensions": [
+      "./auxiliary-vision/index.ts",
+      "./browser-use/index.ts",
+      "./false-success-guard/index.ts",
+      "./mutation-guard-write/index.ts",
+      "./resource-lifecycle-guard/index.ts",
+      "./session-memory-manager/index.ts",
+      "./session-tool-errors/index.ts",
+      "./structured-readonly-command/index.ts",
+      "./subagent/index.ts",
+      "./tool-input-repair-telemetry/index.ts",
+      "./tool-loop-guardrails/index.ts"
+    ]
+  },
+  "scripts": {}
+}

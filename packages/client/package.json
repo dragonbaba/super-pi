@@ -1,0 +1,52 @@
+{
+	"name": "@super-pi/client",
+	"version": "0.84.1",
+	"description": "Transport-neutral client for remote Super Pi sessions over framed CBOR bytes",
+	"type": "module",
+	"main": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js"
+		},
+		"./unix": {
+			"types": "./dist/unix.d.ts",
+			"import": "./dist/unix.js"
+		},
+		"./package.json": "./package.json"
+	},
+	"sideEffects": false,
+	"files": [
+		"dist",
+		"README.md",
+		"CHANGELOG.md"
+	],
+	"scripts": {
+		"clean": "shx rm -rf dist",
+		"build": "tsgo -p tsconfig.build.json"
+	},
+	"keywords": [
+		"pi",
+		"client",
+		"protocol",
+		"cbor",
+		"binary"
+	],
+	"author": "Earendil Works",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/dragonbaba/super-pi.git",
+		"directory": "packages/client"
+	},
+	"engines": {
+		"node": ">=22.19.0"
+	},
+	"dependencies": {
+		"@super-pi/protocol": "^0.84.1"
+	},
+	"devDependencies": {
+		"shx": "0.4.0"
+	}
+}

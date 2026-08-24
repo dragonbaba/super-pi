@@ -1,0 +1,37 @@
+{
+	"extends": "./tsconfig.base.json",
+	"compilerOptions": {
+		"noEmit": true,
+		"erasableSyntaxOnly": false,
+		"lib": ["ES2022", "DOM", "DOM.Iterable"],
+		"module": "NodeNext",
+		"moduleResolution": "NodeNext",
+		"paths": {
+			"*": ["./*"],
+			"@super-pi/telemetry": ["./packages/telemetry/src/index.ts"],
+			"@super-pi/telemetry/testing": ["./packages/telemetry/src/testing/index.ts"],
+			"@super-pi/ai": ["./packages/ai/src/index.ts"],
+			"@super-pi/ai/oauth": ["./packages/ai/src/oauth.ts"],
+			"@super-pi/ai/*": ["./packages/ai/src/*.ts", "./packages/ai/src/providers/*.ts"],
+			"@super-pi/ai/dist/*": ["./packages/ai/src/*"],
+			"@super-pi/agent-core": ["./packages/agent/src/index.ts"],
+			"@super-pi/agent-core/node": ["./packages/agent/src/node.ts"],
+			"@super-pi/agent-core/*": ["./packages/agent/src/*"],
+			"@super-pi/session-backend-sqlite-node": ["./packages/session-backends/sqlite-node/src/index.ts"],
+			"@super-pi/coding-agent": ["./packages/coding-agent/src/index.ts"],
+			"@super-pi/coding-agent/hooks": ["./packages/coding-agent/src/core/hooks/index.ts"],
+			"@super-pi/coding-agent/*": ["./packages/coding-agent/src/*"],
+			"@super-pi/protocol": ["./packages/protocol/src/index.ts"],
+			"@super-pi/protocol/*": ["./packages/protocol/src/*"],
+			"@super-pi/client": ["./packages/client/src/index.ts"],
+			"@super-pi/client/*": ["./packages/client/src/*"],
+			"@super-pi/server": ["./packages/server/src/index.ts"],
+			"@super-pi/server/*": ["./packages/server/src/*"],
+			"typebox": ["./node_modules/typebox"],
+			"@super-pi/tui": ["./packages/tui/src/index.ts"],
+			"@super-pi/tui/*": ["./packages/tui/src/*"]
+		}
+	},
+	"include": ["packages/*/src/**/*", "packages/session-backends/*/src/**/*"],
+	"exclude": ["**/dist/**"]
+}
