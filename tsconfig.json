@@ -28,7 +28,8 @@
 			"@super-pi/server/*": ["./packages/server/src/*"],
 			"typebox": ["./node_modules/typebox"],
 			"@super-pi/tui": ["./packages/tui/src/index.ts"],
-			"@super-pi/tui/*": ["./packages/tui/src/*"]
+			"@super-pi/tui/*": ["./packages/tui/src/*"],
+			"@super-pi/tui-kit": ["./packages/tui-kit/src/index.ts"]
 		}
 	},
 	"include": ["packages/*/src/**/*", "packages/session-backends/*/src/**/*"],

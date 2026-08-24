@@ -25,6 +25,7 @@
     ]
   },
   "scripts": {
+    "clean": "shx rm -rf dist",
     "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc --outDir dist --rootDir src --noEmit false --declaration false --sourceMap false --target ES2023 --module NodeNext --moduleResolution NodeNext --strict --skipLibCheck --types node src/index.ts",
     "typecheck": "tsc --noEmit && npm run build"
   },

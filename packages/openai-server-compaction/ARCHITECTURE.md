@@ -166,8 +166,8 @@ Responsibilities:
 
 Loads and normalizes configuration from:
 
-- `~/.super-pi/agent/openai-server-compaction.json`
-- trusted `${ctx.cwd}/.super-pi/openai-server-compaction.json`
+- `~/.sp/agent/config/openai-server-compaction.json`
+- trusted `${ctx.cwd}/.sp/config/openai-server-compaction.json`
 - environment variables
 
 ### `src/state.ts`

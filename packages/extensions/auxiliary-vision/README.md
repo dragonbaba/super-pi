@@ -16,7 +16,7 @@ Cold startup reclaims only dead-owner aged manifests after exact path, regular-f
 
 ## Configuration
 
-Edit `~/.super-pi/agent/auxiliary-vision.json`:
+Edit `~/.sp/agent/config/auxiliary-vision.json`:
 
 ```json
 {

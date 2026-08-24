@@ -31,7 +31,7 @@ subagent/
 
 ## Installation
 
-Copy this extension directory into `~/.super-pi/agent/extensions/subagent`. Copy any agent definitions you want to use into `~/.super-pi/agent/agents` and workflow prompts into `~/.super-pi/agent/prompts`.
+Copy this extension directory into `~/.sp/agent/extensions/subagent`. Copy any agent definitions you want to use into `~/.sp/agent/agents` and workflow prompts into `~/.sp/agent/prompts`.
 
 Do not symlink agent definitions from repositories or other untrusted locations. Discovery canonicalizes each definition and rejects links outside the configured agent directory.
 
@@ -39,9 +39,9 @@ Do not symlink agent definitions from repositories or other untrusted locations.
 
 This tool executes a separate `pi` subprocess with a delegated role prompt/tool policy and a separately resolved provider/model route.
 
-**Project-local agents** (`.super-pi/agents/*.md`) are repo-controlled prompts that can instruct the model to read files, run bash commands, etc.
+**Project-local agents** (`.sp/agents/*.md`) are repo-controlled prompts that can instruct the model to read files, run bash commands, etc.
 
-**Default behavior:** Only loads **user-level agents** from `~/.super-pi/agent/agents`.
+**Default behavior:** Only loads **user-level agents** from `~/.sp/agent/agents`.
 
 To enable project-local agents, pass `agentScope: "both"` (or `"project"`). Only do this for repositories you trust.
 
@@ -138,8 +138,8 @@ System prompt for the agent goes here.
 ```
 
 **Locations:**
-- `~/.super-pi/agent/agents/*.md` - User-level (always loaded)
-- `.super-pi/agents/*.md` - Project-level (only with `agentScope: "project"` or `"both"`)
+- `~/.sp/agent/agents/*.md` - User-level (always loaded)
+- `.sp/agents/*.md` - Project-level (only with `agentScope: "project"` or `"both"`)
 
 Project agents override user agents with the same name when `agentScope: "both"`. Project-agent prompts remain bound to the trusted primary project and cannot be delegated to an additional or `full-access-exact` workspace; user-level agents can use those explicitly granted roots.
 
@@ -147,7 +147,7 @@ Definitions are fail-closed: files/prompts are capped at 128 KiB; `name` is 1–
 
 ## Provider/model assignments
 
-Role definitions and execution routes are deliberately separate. Use `/subagent-model` to inspect or change the persistent routes stored in `~/.super-pi/agent/subagent-models.json`:
+Role definitions and execution routes are deliberately separate. Use `/subagent-model` to inspect or change the persistent routes stored in `~/.sp/agent/config/subagent-models.json`:
 
 ```text
 /subagent-model

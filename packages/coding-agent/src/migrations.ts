@@ -5,7 +5,7 @@
 import chalk from "chalk";
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
-import { CONFIG_DIR_NAME, getAgentDir, getBinDir } from "./config.ts";
+import { CONFIG_DIR_NAME, getAgentDir, getAuthPath, getBinDir, getConfigDir, getSettingsPath } from "./config.ts";
 import { migrateKeybindingsConfig } from "./core/keybindings.ts";
 
 const MIGRATION_GUIDE_URL =
@@ -20,9 +20,9 @@ const EXTENSIONS_DOC_URL =
  */
 export function migrateAuthToAuthJson(): string[] {
 	const agentDir = getAgentDir();
-	const authPath = join(agentDir, "auth.json");
+	const authPath = getAuthPath();
 	const oauthPath = join(agentDir, "oauth.json");
-	const settingsPath = join(agentDir, "settings.json");
+	const settingsPath = existsSync(getSettingsPath()) ? getSettingsPath() : join(agentDir, "settings.json");
 
 	// Skip if auth.json already exists
 	if (existsSync(authPath)) return [];
@@ -73,10 +73,10 @@ export function migrateAuthToAuthJson(): string[] {
 }
 
 /**
- * Migrate sessions from ~/.super-pi/agent/*.jsonl to proper session directories.
+ * Migrate sessions from ~/.sp/agent/*.jsonl to proper session directories.
  *
- * Bug in v0.30.0: Sessions were saved to ~/.super-pi/agent/ instead of
- * ~/.super-pi/agent/sessions/<encoded-cwd>/. This migration moves them
+ * Bug in v0.30.0: Sessions were saved to ~/.sp/agent/ instead of
+ * ~/.sp/agent/sessions/<encoded-cwd>/. This migration moves them
  * to the correct location based on the cwd in their session header.
  *
  * See: https://github.com/earendil-works/pi-mono/issues/320
@@ -155,7 +155,7 @@ function migrateCommandsToPrompts(baseDir: string, label: string): boolean {
 }
 
 function migrateKeybindingsConfigFile(): void {
-	const configPath = join(getAgentDir(), "keybindings.json");
+	const configPath = join(getConfigDir(), "keybindings.json");
 	if (!existsSync(configPath)) return;
 
 	try {

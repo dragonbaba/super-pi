@@ -2393,7 +2393,7 @@ export class DefaultPackageManager implements PackageManager {
 		};
 
 		if (projectTrusted) {
-			// Project extensions from .super-pi/
+			// Project extensions from .sp/
 			addResources(
 				"extensions",
 				collectAutoExtensionEntries(projectDirs.extensions),
@@ -2402,7 +2402,7 @@ export class DefaultPackageManager implements PackageManager {
 				projectBaseDir,
 			);
 
-			// Project skills from .super-pi/
+			// Project skills from .sp/
 			addResources(
 				"skills",
 				collectAutoSkillEntries(projectDirs.skills, "pi"),
@@ -2445,7 +2445,7 @@ export class DefaultPackageManager implements PackageManager {
 			);
 		}
 
-		// User extensions from ~/.super-pi/agent/
+		// User extensions from ~/.sp/agent/
 		addResources(
 			"extensions",
 			collectAutoExtensionEntries(userDirs.extensions),
@@ -2454,7 +2454,7 @@ export class DefaultPackageManager implements PackageManager {
 			globalBaseDir,
 		);
 
-		// User skills from ~/.super-pi/agent/
+		// User skills from ~/.sp/agent/
 		addResources(
 			"skills",
 			collectAutoSkillEntries(userDirs.skills, "pi"),

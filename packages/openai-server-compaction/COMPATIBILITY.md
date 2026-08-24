@@ -1,7 +1,7 @@
 # Pi 0.84 compatibility overlay
 
 This local package is based on `algal/pi-openai-server-compaction` commit
-`8a3de2f` and is loaded globally from `~/.super-pi/agent/settings.json`.
+`8a3de2f` and is loaded globally from the repository-owned `.sp/config/settings.json`.
 
 Compatibility validation performed against Pi `0.84.0` and `0.84.1`:
 

@@ -1,6 +1,6 @@
 # Super Pi coding agent
 
-This package contains the local `sp` CLI and interactive coding-agent runtime
+This package contains the local `superpi` CLI and interactive coding-agent runtime
 for [Super Pi](https://github.com/dragonbaba/super-pi).
 
 It is maintained as source inside the Super Pi monorepo. The initial project

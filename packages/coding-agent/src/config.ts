@@ -486,14 +486,28 @@ try {
 
 const piConfigName: string | undefined = pkg.piConfig?.name;
 export const PACKAGE_NAME: string = pkg.name || "@super-pi/coding-agent";
-export const APP_NAME: string = piConfigName || "sp";
+export const APP_NAME: string = piConfigName || "superpi";
 export const APP_TITLE: string = piConfigName ? "Super Pi" : APP_NAME;
-export const CONFIG_DIR_NAME: string = pkg.piConfig?.configDir || ".super-pi";
+export const CONFIG_DIR_NAME: string = pkg.piConfig?.configDir || ".sp";
 export const VERSION: string = pkg.version || "0.0.0";
 
-// e.g., SP_CODING_AGENT_DIR
-export const ENV_AGENT_DIR = `${APP_NAME.toUpperCase()}_CODING_AGENT_DIR`;
-export const ENV_SESSION_DIR = `${APP_NAME.toUpperCase()}_CODING_AGENT_SESSION_DIR`;
+// Keep the public environment contract aligned with the absorbed Super Pi
+// packages. APP_NAME is a display/package identity and must not silently
+// change the configuration namespace.
+export const ENV_AGENT_DIR = "SP_CODING_AGENT_DIR";
+export const ENV_SESSION_DIR = "SP_CODING_AGENT_SESSION_DIR";
+
+const TRANSITIONAL_ENV_AGENT_DIR = "SUPERPI_CODING_AGENT_DIR";
+const TRANSITIONAL_ENV_SESSION_DIR = "SUPERPI_CODING_AGENT_SESSION_DIR";
+
+function adoptTransitionalEnvironmentVariable(canonicalName: string, transitionalName: string): void {
+	if (process.env[canonicalName] === undefined && process.env[transitionalName] !== undefined) {
+		process.env[canonicalName] = process.env[transitionalName];
+	}
+}
+
+adoptTransitionalEnvironmentVariable(ENV_AGENT_DIR, TRANSITIONAL_ENV_AGENT_DIR);
+adoptTransitionalEnvironmentVariable(ENV_SESSION_DIR, TRANSITIONAL_ENV_SESSION_DIR);
 
 export function expandTildePath(path: string): string {
 	return normalizePath(path);
@@ -508,16 +522,21 @@ export function getShareViewerUrl(gistId: string): string {
 }
 
 // =============================================================================
-// User Config Paths (~/.super-pi/agent/*)
+// User Config Paths (~/.sp/agent/config/*)
 // =============================================================================
 
-/** Get the agent config directory (e.g., ~/.super-pi/agent/) */
+/** Get the agent config directory (e.g., ~/.sp/agent/) */
 export function getAgentDir(): string {
 	const envDir = process.env[ENV_AGENT_DIR];
 	if (envDir) {
 		return expandTildePath(envDir);
 	}
 	return join(homedir(), CONFIG_DIR_NAME, "agent");
+}
+
+/** Get the directory containing user-editable Super Pi configuration files. */
+export function getConfigDir(agentDir: string = getAgentDir()): string {
+	return join(agentDir, "config");
 }
 
 /** Get path to user's custom themes directory */
@@ -527,17 +546,17 @@ export function getCustomThemesDir(): string {
 
 /** Get path to models.json */
 export function getModelsPath(): string {
-	return join(getAgentDir(), "models.json");
+	return join(getConfigDir(), "models.json");
 }
 
 /** Get path to auth.json */
 export function getAuthPath(): string {
-	return join(getAgentDir(), "auth.json");
+	return join(getConfigDir(), "auth.json");
 }
 
 /** Get path to settings.json */
 export function getSettingsPath(): string {
-	return join(getAgentDir(), "settings.json");
+	return join(getConfigDir(), "settings.json");
 }
 
 /** Get path to tools directory */

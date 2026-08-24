@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import type { ThinkingLevel } from "@super-pi/agent-core";
 import type { Model } from "@super-pi/ai";
-import { getAgentDir } from "../config.ts";
+import { getAgentDir, getConfigDir } from "../config.ts";
 import { resolvePath } from "../utils/paths.ts";
 import type { SessionStartEvent, ToolDefinition } from "./extensions/index.ts";
 import { ModelRuntime } from "./model-runtime.ts";
@@ -140,8 +140,9 @@ export async function createAgentSessionServices(
 	const modelRuntime =
 		options.modelRuntime ??
 		(await ModelRuntime.create({
-			authPath: join(agentDir, "auth.json"),
-			modelsPath: join(agentDir, "models.json"),
+			authPath: join(getConfigDir(agentDir), "auth.json"),
+			modelsPath: join(getConfigDir(agentDir), "models.json"),
+			modelsStorePath: join(agentDir, "models-store.json"),
 			signal: options.modelRuntimeSignal,
 		}));
 	const settingsManager = options.settingsManager ?? SettingsManager.create(cwd, agentDir);

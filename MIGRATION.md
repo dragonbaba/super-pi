@@ -8,7 +8,7 @@ the independent **Super Pi** source repository.
 - Repository: `dragonbaba/super-pi`
 - Product name: **Super Pi**
 - Internal package scope: `@super-pi/*`
-- CLI command: `sp`; no `pi` alias
+- CLI command: `superpi`; no `pi` alias
 - Initial distribution: source and local CLI only; no npm publication
 - Source baseline: `earendil-works/pi` tag `v0.84.1`, imported once without
   upstream Git metadata or an upstream migration workflow
@@ -16,7 +16,7 @@ the independent **Super Pi** source repository.
   format, install into, or otherwise write under its installation directory.
 - The original runtime archive is retained permanently.
 - Verification stays proportional: affected checks, TypeScript checks, and one
-  local `sp` smoke test. Do not build a broad provider/platform test matrix.
+  local `superpi` smoke test. Do not build a broad provider/platform test matrix.
 
 ## Safety baseline
 
@@ -58,9 +58,9 @@ the independent **Super Pi** source repository.
 - [x] Import the Pi `v0.84.1` TypeScript monorepo source baseline. Imported
   commit `53fa77ccd8a279eb87e92294ef3687b03ff80112`; all 1353 compared tracked
   files matched before branding changes.
-- [x] Apply Super Pi branding, `@super-pi/*` package names, and the `sp` CLI.
-  All 16 upstream workspaces use the new scope, the local bin is `sp`, and
-  configuration is isolated under `.super-pi` / `~/.super-pi`.
+- [x] Apply Super Pi branding, `@super-pi/*` package names, and the `superpi` CLI.
+  All 16 upstream workspaces use the new scope, the local bin is `superpi`, and
+  configuration is isolated under `.sp` / `~/.sp`.
 - [x] Integrate only the active local packages and extensions. Eleven packages,
   eleven extensions, agents, and prompts were copied without dependencies,
   nested Git metadata, or old build output. A local offline RPC smoke loaded
@@ -77,7 +77,7 @@ the independent **Super Pi** source repository.
   the final source scan contains no test-like paths, nested Git metadata,
   machine paths, `.env` files, or known secret prefixes. Workspace-local
   `node_modules` directories remain ignored install artifacts only.
-- [x] Run minimal affected checks and one local `sp` smoke test. Evidence:
+- [x] Run minimal affected checks and one local `superpi` smoke test. Evidence:
   `npm run build:offline`, `npm run check`, CLI help/command checks, and an
   isolated offline RPC `get_state` request all succeed. The RPC run loaded the
   configured local extension set and returned `success: true`.
@@ -98,3 +98,79 @@ Continue with the first unfinished item. Before a destructive operation,
 resolve and verify every exact target. After each item, record concise evidence
 here. Historical material is consulted from the permanent archive and is not
 copied back unless it is required by the product.
+
+## Independent configuration closure — 2026-08-25
+
+- [x] Separate configuration from runtime data. User JSON configuration now
+  lives under `~/.sp/agent/config/`; trusted project overrides live under
+  `.sp/config/`. Sessions, memory stores, caches, managed binaries, and
+  `models-store.json` remain runtime data under dedicated agent directories.
+- [x] Add a non-overwriting `npm run migrate:pi-config` migration and matching
+  `npm run check:pi-config` verifier. The migration accepts only 14 known JSON
+  files, removes global Pi package paths from migrated `settings.json`, and
+  maps Plan and Chrome settings to their `sp-*` names. The `.sp` installation
+  migration also carries the global `AGENTS.md` context needed outside the
+  source repository.
+- [x] Migrate and parse all 14 local configuration files. Every target passed
+  semantic verification; credentials stayed outside the repository.
+- [x] Hash all 14 global Pi source files before and after migration. Every
+  SHA-256 and byte length remained identical.
+- [x] Compare global extension and compatibility-package production trees.
+  All 11 extension directories and all active package capabilities have local
+  source counterparts. Omitted files are test runners, package lockfiles,
+  publish workflows, historical plans, or documentation assets rather than
+  runtime entry points.
+- [x] Close the remaining core-fix gaps found by the source audit: path-aware
+  write serialization, rejection of incomplete streamed tool arguments,
+  ordered cancellation results for unexecuted calls, and final Proxy tool-call
+  metadata propagation are now implemented in source rather than maintained as
+  global-runtime patches.
+
+## Independent runtime closure — 2026-08-25
+
+- [x] Absorb `pi-tui-kit` 0.49.3 as `@super-pi/tui-kit`; npm no longer
+  installs any `@earendil-works/pi-*` package.
+- [x] Add the source-mode `superpi` launcher so bundled packages and resources load
+  from any working directory without relocating user state into the repository.
+- [x] Link the local `superpi` command; the existing global `pi` command and
+  PowerShell's built-in `sp` alias remain untouched.
+- [x] Move bundled agents and prompts into `.sp` and verify all four
+  agents are discoverable outside this repository.
+- [x] Absorb and load Plan Mode 0.49.3.
+- [x] Absorb and load Chrome DevTools 0.49.3; lifecycle cleanup now imports its
+  local browser manager instead of the old global npm-relative path.
+- [x] Run an external-directory offline RPC smoke: `get_state` and
+  `get_commands` succeeded with 40 commands, including Goal, Plan, Chrome
+  DevTools, bundled prompts, and the provider skill.
+- [x] Remove all generated `dist` directories and rebuild from source. The
+  offline build and root type check pass; removed testing APIs no longer leave
+  stale build artifacts.
+
+## Local `.sp` installation closure — 2026-08-25
+
+- [x] Standardize project metadata on `.sp/` and user state on
+  `~/.sp/agent/`; no active source or documentation reference to
+  `.super-pi` remains.
+- [x] Create `~/.sp/agent`, migrate 14 validated JSON configurations and the
+  global `AGENTS.md`, and copy Pi's managed `fd.exe` with a matching SHA-256 so
+  offline file discovery does not depend on a first-run download. The old
+  `~/.super-pi` tree remains an untouched rollback copy.
+- [x] Remove only verified-empty repository directories: the old
+  `.super-pi` shell, top-level `agents/` and `prompts/`, and
+  `packages/tool-classification/scripts/`. Dependencies and build output stay
+  available for immediate local use.
+- [x] Replace the colliding `sp` command with npm-linked `superpi`, expose it
+  through the user-level `~/.local/bin`, replace the stale user PATH entry for
+  removed Node 25 with Node 26, and remove the temporary PowerShell `sp` alias.
+- [x] Compare local commands from outside the repository. `superpi` 0.84.1 and Pi
+  0.84.2+local.1 both return successful version/help/RPC results; their 34
+  non-skill commands match. Pi's additional 20 commands are mutable Hermes
+  maintenance skills, while Super Pi exposes five bundled short prompts and
+  `add-llm-provider` instead.
+- [x] Start the real Super Pi TUI from `C:\Windows\Temp`, load the `.sp`
+  context/configuration and all bundled resources, execute
+  `! echo SP_LOCAL_OK`, observe the expected output, and exit cleanly with
+  Ctrl+D.
+- [x] Deduplicate identical prompt files reached through both project auto
+  discovery and the source launcher. The project TUI reports no prompt
+  conflicts, while an external-directory RPC still exposes all eight prompts.

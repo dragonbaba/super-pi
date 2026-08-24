@@ -28,7 +28,7 @@ Exact replay is defined at Pi's normal Session→LLM conversion boundary. An ext
 
 ## Project data boundary
 
-Cross-provider summarization is denied by default. A trusted project must explicitly opt in with `.super-pi/provider-aware-compaction.json`:
+Cross-provider summarization is denied by default. A trusted project must explicitly opt in with `.sp/config/provider-aware-compaction.json`:
 
 ```json
 {
@@ -40,7 +40,7 @@ Missing, invalid, false, or untrusted project configuration cancels Claude compa
 
 ## DeepSeek effort metadata
 
-`~/.super-pi/agent/models.json` supplies the official V4 effort mapping via `modelOverrides`:
+`~/.sp/agent/config/models.json` supplies the official V4 effort mapping via `modelOverrides`:
 
 - Flash: `low→low`, `high→high`, `xhigh→high`, `max→max`
 - Pro: `low/high→high`, `xhigh/max→max`
@@ -70,7 +70,7 @@ Retained 50K-token product-defaults pilots, 15 held-out questions:
 - Kimi self-preservation with 32K reserve, independent seed 302: 15/15.
 - Grok 4.5 native Pi compaction: 14/15; intentionally untouched.
 
-These pilots establish feasibility and guardrails; they are not broad statistical claims. Reproducible artifacts are under `~/.super-pi/agent/experiments/cross-provider-compaction-baseline/`.
+These pilots establish feasibility and guardrails; they are not broad statistical claims. Reproducible artifacts are under `~/.sp/agent/experiments/cross-provider-compaction-baseline/`.
 
 ## Bounded fallback telemetry
 

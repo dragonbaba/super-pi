@@ -8,6 +8,7 @@ import {
 	CONFIG_DIR_NAME,
 	detectInstallMethod,
 	getAgentDir,
+	getConfigDir,
 	getPackageDir,
 	getSelfUpdateCommand,
 	getSelfUpdateUnavailableInstruction,
@@ -96,11 +97,11 @@ function printConfigCommandHelp(): void {
   ${CONFIG_COMMAND_USAGE}
 
 Open the resource configuration TUI to enable or disable package resources.
-Without -l, starts in global settings (~/${CONFIG_DIR_NAME}/agent/settings.json).
+Without -l, starts in global settings (~/${CONFIG_DIR_NAME}/agent/config/settings.json).
 Press Tab in the TUI to switch between global and project-local modes.
 
 Options:
-  -l, --local       Edit project overrides (${CONFIG_DIR_NAME}/settings.json)
+  -l, --local       Edit project overrides (${CONFIG_DIR_NAME}/config/settings.json)
   -a, --approve     Trust project-local files for this command with -l
   -na, --no-approve Ignore project-local files for this command with -l
 `);
@@ -115,7 +116,7 @@ function printPackageCommandHelp(command: PackageCommand): void {
 Install a package and add it to settings.
 
 Options:
-  -l, --local       Install project-locally (${CONFIG_DIR_NAME}/settings.json)
+  -l, --local       Install project-locally (${CONFIG_DIR_NAME}/config/settings.json)
   -a, --approve     Trust project-local files for this command
   -na, --no-approve Ignore project-local files for this command
 
@@ -137,7 +138,7 @@ Remove a package and its source from settings.
 Alias: ${APP_NAME} uninstall <source> [-l]
 
 Options:
-  -l, --local       Remove from project settings (${CONFIG_DIR_NAME}/settings.json)
+  -l, --local       Remove from project settings (${CONFIG_DIR_NAME}/config/settings.json)
   -a, --approve     Trust project-local files for this command
   -na, --no-approve Ignore project-local files for this command
 
@@ -398,8 +399,8 @@ async function refreshModelCatalogs(agentDir: string): Promise<void> {
 	const timeout = setTimeout(() => controller.abort(), 15_000);
 	try {
 		const modelRuntime = await ModelRuntime.create({
-			authPath: join(agentDir, "auth.json"),
-			modelsPath: join(agentDir, "models.json"),
+			authPath: join(getConfigDir(agentDir), "auth.json"),
+			modelsPath: join(getConfigDir(agentDir), "models.json"),
 			allowModelNetwork: false,
 			refreshOnCreate: false,
 			signal: controller.signal,

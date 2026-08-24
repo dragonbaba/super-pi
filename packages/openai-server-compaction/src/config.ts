@@ -5,9 +5,8 @@
  * a normalized, fully-populated runtime config object.
  */
 import { existsSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
-import { CONFIG_DIR_NAME } from "@super-pi/coding-agent";
+import { CONFIG_DIR_NAME, getConfigDir } from "@super-pi/coding-agent";
 
 export type JsonRecord = Record<string, unknown>;
 
@@ -72,10 +71,10 @@ export function loadConfig(
   cwd?: string,
   projectTrusted = false,
 ): Required<ExtensionConfig> {
-  const globalPath = join(homedir(), ".super-pi", "agent", "openai-server-compaction.json");
+  const globalPath = join(getConfigDir(), "openai-server-compaction.json");
   const globalCfg = readJsonFile(globalPath) ?? {};
   const projectCfg = cwd && projectTrusted
-    ? readJsonFile(join(cwd, CONFIG_DIR_NAME, "openai-server-compaction.json")) ?? {}
+    ? readJsonFile(join(cwd, CONFIG_DIR_NAME, "config", "openai-server-compaction.json")) ?? {}
     : {};
   const merged = { ...globalCfg, ...projectCfg };
 

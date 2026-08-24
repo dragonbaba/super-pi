@@ -41,8 +41,8 @@ pi install npm:@super-pi/memory
 
 If you’re upgrading from older versions, run `/memory-sync-markdown` once to migrate and reconcile extension data safely:
 
-- legacy extension root: `~/.super-pi/agent/memory` → `~/.super-pi/agent/@super-pi/memory`
-- legacy flat skills: `~/.super-pi/agent/@super-pi/memory/skills/*.md` → `~/.super-pi/agent/@super-pi/memory/skills/<slug>/SKILL.md`
+- legacy extension root: `~/.sp/agent/memory` → `~/.sp/agent/@super-pi/memory`
+- legacy flat skills: `~/.sp/agent/@super-pi/memory/skills/*.md` → `~/.sp/agent/@super-pi/memory/skills/<slug>/SKILL.md`
 
 This resolves Pi skill index conflicts like:
 
@@ -118,7 +118,7 @@ pi install git:github:chandra447/@super-pi/memory
 Or test locally without installing:
 
 ```bash
-pi -e /path/to/@super-pi/memory/src/index.ts
+superpi -e ./packages/memory/src/index.ts
 ```
 
 ### Homebrew / Node ABI mismatches
@@ -132,7 +132,7 @@ was compiled against a different Node.js version using NODE_MODULE_VERSION ...
 The extension attempts one automatic `npm rebuild better-sqlite3` against the Node that is running Pi. If that still fails:
 
 ```bash
-cd ~/.super-pi/agent/npm/node_modules/better-sqlite3
+cd ~/.sp/agent/npm/node_modules/better-sqlite3
 npm rebuild better-sqlite3
 ```
 
@@ -144,8 +144,8 @@ The extension stores memory at two levels:
 
 | Tier | Location | What goes here | Available when |
 |---|---|---|---|
-| **Global** | `~/.super-pi/agent/@super-pi/memory/` | Facts that apply everywhere — your name, preferences, OS, tools | Searchable via `memory_search` |
-| **Project** | `~/.super-pi/agent/projects-memory/<project>/` | Facts scoped to one codebase — architecture decisions, API quirks, team norms | Searchable when cwd matches the project |
+| **Global** | `~/.sp/agent/@super-pi/memory/` | Facts that apply everywhere — your name, preferences, OS, tools | Searchable via `memory_search` |
+| **Project** | `~/.sp/agent/projects-memory/<project>/` | Facts scoped to one codebase — architecture decisions, API quirks, team norms | Searchable when cwd matches the project |
 
 By default, full Markdown memories are **not** injected into the system prompt. The system prompt gets a full-detail `<memory-policy>` that tells the agent when to call `memory_search` and how to treat memory results. This keeps first-turn token usage low while preserving access to user, project, failure, correction, insight, preference, convention, and tool-quirk memories.
 
@@ -226,8 +226,8 @@ The agent also gets a `skill_manage` tool for saving reusable procedures. The ex
 
 Skills are stored in Pi-native locations:
 
-- Global skills: `~/.super-pi/agent/@super-pi/memory/skills/<slug>/SKILL.md`
-- Project skills: `~/.super-pi/agent/projects-memory/<project>/skills/<slug>/SKILL.md`
+- Global skills: `~/.sp/agent/@super-pi/memory/skills/<slug>/SKILL.md`
+- Project skills: `~/.sp/agent/projects-memory/<project>/skills/<slug>/SKILL.md`
 
 New skills must choose scope explicitly:
 
@@ -283,7 +283,7 @@ Project-scoped skills are loaded via Pi's `resources_discover` hook.
 
 On discovery, the extension returns the active project's skills directory as a skill path:
 
-- `~/.super-pi/agent/projects-memory/<project>/skills/`
+- `~/.sp/agent/projects-memory/<project>/skills/`
 
 This lets Pi discover project skills as native skills without copying them into the global skills folder.
 
@@ -293,7 +293,7 @@ This lets Pi discover project skills as native skills without copying them into 
 |---|---|---|---|
 | **memory** | `MEMORY.md` | Tagged cross-project notes only; active-project facts go to project memory | 5,000 chars |
 | **user** | `USER.md` | User profile — name, preferences, communication style, habits | 5,000 chars |
-| **skills** | `~/.super-pi/agent/@super-pi/memory/skills/<slug>/SKILL.md` or `projects-memory/<project>/skills/<slug>/SKILL.md` | Procedures — *how* to debug, deploy, test, or fix something | Unlimited |
+| **skills** | `~/.sp/agent/@super-pi/memory/skills/<slug>/SKILL.md` or `projects-memory/<project>/skills/<slug>/SKILL.md` | Procedures — *how* to debug, deploy, test, or fix something | Unlimited |
 | **extended** | `sessions.db` | Searchable memories beyond the core limit | Unlimited |
 | **sessions** | `sessions.db` | Past conversation history (searchable via FTS5) | Unlimited |
 
@@ -396,7 +396,7 @@ Move behavior:
 
 ## Configuration
 
-Create `~/.super-pi/agent/hermes-memory-config.json`:
+Create `~/.sp/agent/config/hermes-memory-config.json`:
 
 ```json
 {
@@ -405,7 +405,7 @@ Create `~/.super-pi/agent/hermes-memory-config.json`:
   "memoryCharLimit": 5000,
   "userCharLimit": 5000,
   "projectCharLimit": 5000,
-  "memoryDir": "~/.super-pi/agent/@super-pi/memory",
+  "memoryDir": "~/.sp/agent/@super-pi/memory",
   "projectsMemoryDir": "projects-memory",
   "sessionSearch": { "variant": "legacy" },
   "reviewRecentMessages": 0,
@@ -425,9 +425,9 @@ Create `~/.super-pi/agent/hermes-memory-config.json`:
 | `memoryCharLimit` | `5000` | Max characters in MEMORY.md |
 | `userCharLimit` | `5000` | Max characters in USER.md |
 | `projectCharLimit` | `5000` | Max characters in project-scoped MEMORY.md |
-| `memoryDir` | `~/.super-pi/agent/@super-pi/memory` | Custom directory for extension storage files |
-| `projectsMemoryDir` | `projects-memory` | Subdirectory under `~/.super-pi/agent/` for project-scoped memory |
-| `sessionSearch` | `{ "variant": "legacy" }` | Session search implementation: `legacy` keeps the existing SQLite/FTS snippet search; `anchors` uses the opt-in Markdown request surface and returns compact JSONL line-range anchors from `~/.super-pi/agent/sessions/` |
+| `memoryDir` | `~/.sp/agent/@super-pi/memory` | Custom directory for extension storage files |
+| `projectsMemoryDir` | `projects-memory` | Subdirectory under `~/.sp/agent/` for project-scoped memory |
+| `sessionSearch` | `{ "variant": "legacy" }` | Session search implementation: `legacy` keeps the existing SQLite/FTS snippet search; `anchors` uses the opt-in Markdown request surface and returns compact JSONL line-range anchors from `~/.sp/agent/sessions/` |
 | `reviewRecentMessages` | `0` | Recent conversation messages offered to explicit `/memory-review` before the hard 80,000-character tail bound (`0` = all eligible messages) |
 | `memoryOverflowStrategy` | `reject` | `reject` returns a capacity error; `fifo-evict` rotates oldest entries. Legacy `auto-consolidate` is accepted but no automatic consolidator is registered, so it also rejects until `/memory-review` is run |
 | `consolidationTimeoutMs` | `180000` | Legacy field name retained as the timeout for one explicit current-model `/memory-review` proposal |
@@ -440,7 +440,9 @@ Legacy auto-review, correction, child-transport, model-override, and flush field
 ## Where Data Lives
 
 ```
-~/.super-pi/agent/
+~/.sp/agent/
+├── config/
+│   └── hermes-memory-config.json
 ├── @super-pi/memory/      ← Global extension storage root
 │   ├── MEMORY.md          ← Agent's personal notes (env facts, patterns, lessons)
 │   ├── USER.md            ← User profile (name, preferences, habits)
@@ -459,13 +461,12 @@ Legacy auto-review, correction, child-transport, model-override, and flush field
 │   │           └── SKILL.md
 │   └── another-project/
 │       └── MEMORY.md
-├── hermes-memory-config.json
 └── ...
 ```
 
 These are plain markdown files. You can read and edit them directly if you want to curate what the agent remembers. Memory entries are separated by `§` (section sign). Skills use Pi-compatible `SKILL.md` files with frontmatter.
 
-If you are upgrading from a version that stored project memory directly at `~/.super-pi/agent/<project>/MEMORY.md`, run `/memory-sync-markdown`. It copies or merges those entries into `~/.super-pi/agent/projects-memory/<project>/MEMORY.md`; the old folders remain as a backup.
+If you are upgrading from a version that stored project memory directly at `~/.sp/agent/<project>/MEMORY.md`, run `/memory-sync-markdown`. It copies or merges those entries into `~/.sp/agent/projects-memory/<project>/MEMORY.md`; the old folders remain as a backup.
 
 The `sessions.db` SQLite database stores session history and extended memory entries. It's searchable via FTS5 full-text search.
 
@@ -478,7 +479,7 @@ The `sessions.db` SQLite database stores session history and extended memory ent
 - **Core memory limits still apply**: SQLite search mirroring does not bypass the 5,000-char core Markdown limit. A full-memory write fails; run `/memory-review` to approve a smaller merged result instead of relying on automatic consolidation.
 - **Project skill visibility depends on Pi discovery cycles**: project skills are exposed through `resources_discover` using the active project's `skills/` path. If a moved or newly created project skill doesn't show up immediately in a running session, trigger a reload/new session so Pi refreshes discovered resources.
 - **Project move requires active project context**: in `/memory-skills`, the `p` hotkey is disabled when Pi is not currently in a detected project directory.
-- **Skills still need curation**: Skills are saved by the agent through the `skill_manage` tool when it decides a reusable procedure is worth keeping. They may still need review. You can move, delete, or edit them directly in `~/.super-pi/agent/@super-pi/memory/skills/` or the active project's `skills/` folder.
+- **Skills still need curation**: Skills are saved by the agent through the `skill_manage` tool when it decides a reusable procedure is worth keeping. They may still need review. You can move, delete, or edit them directly in `~/.sp/agent/@super-pi/memory/skills/` or the active project's `skills/` folder.
 
 ## Architecture
 

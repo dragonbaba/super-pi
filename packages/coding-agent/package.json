@@ -4,11 +4,11 @@
 	"description": "Super Pi coding agent CLI with tools and session management",
 	"type": "module",
 	"piConfig": {
-		"name": "sp",
-		"configDir": ".super-pi"
+		"name": "superpi",
+		"configDir": ".sp"
 	},
 	"bin": {
-		"sp": "dist/cli.js"
+		"superpi": "dist/cli.js"
 	},
 	"main": "./dist/index.js",
 	"types": "./dist/index.d.ts",

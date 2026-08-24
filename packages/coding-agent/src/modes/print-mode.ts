@@ -2,8 +2,8 @@
  * Print mode (single-shot): Send prompts, output result, exit.
  *
  * Used for:
- * - `sp -p "prompt"` - text output
- * - `sp --mode json "prompt"` - JSON event stream
+ * - `superpi -p "prompt"` - text output
+ * - `superpi --mode json "prompt"` - JSON event stream
  */
 
 import type { AssistantMessage, ImageContent } from "@super-pi/ai";

@@ -48,7 +48,7 @@ export interface RunDirectMemoryCompletionOptions {
 }
 
 /** Shared transport gate: review/flush/consolidation/correction all default to
- * the in-process direct completion path and fall back to an `sp -p` subprocess
+ * the in-process direct completion path and fall back to a `superpi -p` subprocess
  * only on failure, unless the user forces `reviewTransport: "subprocess"`. */
 export function usesDirectTransport(config: Pick<MemoryConfig, "reviewTransport">): boolean {
   return (config.reviewTransport ?? "direct") === "direct";

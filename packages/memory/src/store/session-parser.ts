@@ -174,7 +174,7 @@ export function parseSessionFile(filePath: string): ParsedSession | null {
 /**
  * Get all session JSONL files for a project (or all projects).
  *
- * @param sessionsDir — Path to ~/.super-pi/agent/sessions/
+ * @param sessionsDir — Path to ~/.sp/agent/sessions/
  * @param projectDir — Optional: specific project directory name (e.g., "--Users-...--")
  * @returns Array of file paths
  */

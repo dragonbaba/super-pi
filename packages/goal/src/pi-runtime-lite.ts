@@ -1,7 +1,7 @@
 import * as os from "node:os";
 import * as path from "node:path";
 
-const CONFIG_DIR_NAME = ".super-pi";
+const CONFIG_DIR_NAME = ".sp";
 const AGENT_DIR_ENV = "SP_CODING_AGENT_DIR";
 
 function expandHome(input: string): string {
@@ -18,4 +18,8 @@ export function getAgentDir(): string {
   return configured
     ? path.resolve(expandHome(configured))
     : path.join(os.homedir(), CONFIG_DIR_NAME, "agent");
+}
+
+export function getConfigDir(): string {
+  return path.join(getAgentDir(), "config");
 }

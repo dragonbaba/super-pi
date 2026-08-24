@@ -5,7 +5,7 @@ import {
 	compactOpenAICodexRequest,
 } from "@super-pi/ai/api/openai-codex-responses";
 import { clampThinkingLevel, type Message, type Model, streamSimple } from "@super-pi/ai/compat";
-import { getAgentDir } from "../config.ts";
+import { getAgentDir, getConfigDir } from "../config.ts";
 import { resolvePath } from "../utils/paths.ts";
 import { AgentSession } from "./agent-session.ts";
 import { formatNoModelsAvailableMessage } from "./auth-guidance.ts";
@@ -42,10 +42,10 @@ setDefaultStreamFn(streamSimple);
 export interface CreateAgentSessionOptions {
 	/** Working directory for project-local discovery. Default: process.cwd() */
 	cwd?: string;
-	/** Global config directory. Default: ~/.super-pi/agent */
+	/** Global config directory. Default: ~/.sp/agent */
 	agentDir?: string;
 
-	/** Canonical model/auth runtime. Defaults to a runtime using agentDir/auth.json and models.json. */
+	/** Canonical model/auth runtime. Defaults to agentDir/config/auth.json and agentDir/config/models.json. */
 	modelRuntime?: ModelRuntime;
 
 	/** Model to use. Default: from settings, else first available */
@@ -175,9 +175,10 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	const agentDir = options.agentDir ? resolvePath(options.agentDir) : getDefaultAgentDir();
 	let resourceLoader = options.resourceLoader;
 
-	const authPath = options.agentDir ? join(agentDir, "auth.json") : undefined;
-	const modelsPath = options.agentDir ? join(agentDir, "models.json") : undefined;
-	const modelRuntime = options.modelRuntime ?? (await ModelRuntime.create({ authPath, modelsPath }));
+	const authPath = options.agentDir ? join(getConfigDir(agentDir), "auth.json") : undefined;
+	const modelsPath = options.agentDir ? join(getConfigDir(agentDir), "models.json") : undefined;
+	const modelsStorePath = options.agentDir ? join(agentDir, "models-store.json") : undefined;
+	const modelRuntime = options.modelRuntime ?? (await ModelRuntime.create({ authPath, modelsPath, modelsStorePath }));
 
 	const settingsManager = options.settingsManager ?? SettingsManager.create(cwd, agentDir);
 	const sessionManager = options.sessionManager ?? SessionManager.create(cwd, getDefaultSessionDir(cwd, agentDir));

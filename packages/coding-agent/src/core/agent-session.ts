@@ -2824,9 +2824,7 @@ export class AgentSession {
 		);
 		for (const tool of wrappedBuiltInTools) {
 			const executionPath = getBuiltinExecutionPath(tool.name, this._cwd);
-			if (executionPath) {
-				(tool as AgentTool & { executionPath?: typeof executionPath }).executionPath = executionPath;
-			}
+			if (executionPath) tool.executionPath = executionPath;
 		}
 
 		const toolRegistry = new Map(wrappedBuiltInTools.map((tool) => [tool.name, tool]));

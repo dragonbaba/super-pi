@@ -8,7 +8,7 @@ import {
 } from "@super-pi/tui";
 import { existsSync, readFileSync } from "fs";
 import { join } from "path";
-import { getAgentDir } from "../config.ts";
+import { getAgentDir, getConfigDir } from "../config.ts";
 
 export interface AppKeybindings {
 	"app.interrupt": true;
@@ -346,7 +346,7 @@ export class KeybindingsManager extends TuiKeybindingsManager {
 	}
 
 	static create(agentDir: string = getAgentDir()): KeybindingsManager {
-		const configPath = join(agentDir, "keybindings.json");
+		const configPath = join(getConfigDir(agentDir), "keybindings.json");
 		const userBindings = KeybindingsManager.loadFromFile(configPath);
 		return new KeybindingsManager(userBindings, configPath);
 	}

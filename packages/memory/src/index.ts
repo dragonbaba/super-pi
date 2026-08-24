@@ -44,7 +44,7 @@ export function resolveProjectSkillDiscovery(
   const detected = detectProjectSkills(projectsMemoryDir, cwd);
   skillStore.setProjectContext(detected.name, detected.skillsDir);
 
-  // Pi auto-discovers its own `~/.super-pi/agent/skills/`, but this extension keeps
+  // Pi auto-discovers its own `~/.sp/agent/skills/`, but this extension keeps
   // its generated skills in a directory of its own so users can audit, wipe, or
   // ignore them without touching skills they installed themselves (#126). Both
   // of ours must therefore be contributed here.
@@ -117,7 +117,7 @@ export default function (pi: ExtensionAPI) {
   // Legacy project-memory migration is explicit through /memory-sync-markdown;
   // extension load performs no agent-root directory scan.
   // Detect project from cwd using shared helper
-  // Project-scoped store: ~/.super-pi/agent/<projectsMemoryDir>/<project_name>/
+  // Project-scoped store: ~/.sp/agent/<projectsMemoryDir>/<project_name>/
   const projectConfig = project.memoryDir
     ? { ...config, memoryCharLimit: config.projectCharLimit, memoryDir: project.memoryDir }
     : { ...config, memoryDir: undefined };

@@ -13,7 +13,7 @@ const SAFE_ENV = ["SystemRoot", "WINDIR", "ComSpec", "PATHEXT", "TEMP", "TMP", "
 const TRANSPORTS = new Set(["stdio", "http", "sse"]);
 
 export function agentDir() {
-  return process.env.SP_CODING_AGENT_DIR || path.join(os.homedir(), ".super-pi", "agent");
+  return process.env.SP_CODING_AGENT_DIR || path.join(os.homedir(), ".sp", "agent");
 }
 
 function ownObject(value) {
@@ -119,12 +119,12 @@ function normalizeServer(id, raw, workspace, source) {
 
 export function loadMcpConfig(workspace, projectTrusted) {
   const root = agentDir();
-  const globalPath = path.join(root, "mcp.json");
+  const globalPath = path.join(root, "config", "mcp.json");
   const globalConfig = readConfigFile(globalPath) ?? { version: 1, allowProjectConfig: false, servers: {} };
   const merged = new Map();
   for (const [id, server] of Object.entries(globalConfig.servers)) merged.set(id, normalizeServer(id, server, workspace, "global"));
 
-  const projectPath = path.join(workspace, ".super-pi", "mcp.json");
+  const projectPath = path.join(workspace, ".sp", "config", "mcp.json");
   if (projectTrusted && globalConfig.allowProjectConfig === true && fs.existsSync(projectPath)) {
     const projectConfig = readConfigFile(projectPath, true);
     for (const [id, server] of Object.entries(projectConfig.servers)) {

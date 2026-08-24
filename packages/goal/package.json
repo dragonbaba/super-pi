@@ -41,7 +41,7 @@
 		"typescript": "7.0.2"
 	},
 	"dependencies": {
-		"@narumitw/pi-tui-kit": "0.49.3"
+		"@super-pi/tui-kit": "0.49.3-super-pi.1"
 	},
 	"upstream": {
 		"name": "@narumitw/pi-goal",

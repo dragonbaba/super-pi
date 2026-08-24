@@ -1,7 +1,7 @@
 import { realpath } from "node:fs/promises";
 import { dirname, isAbsolute, parse, relative, resolve } from "node:path";
 
-const WORKSPACE_METADATA_ROOTS = [".git", ".super-pi"] as const;
+const WORKSPACE_METADATA_ROOTS = [".git", ".sp"] as const;
 
 function isInside(root: string, candidate: string): boolean {
   const path = relative(root, candidate);

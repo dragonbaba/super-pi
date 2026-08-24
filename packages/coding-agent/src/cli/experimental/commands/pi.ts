@@ -11,7 +11,7 @@ import {
 import type { TransportAddress } from "../transport-address.ts";
 
 export interface PiCommand {
-	readonly command: "sp";
+	readonly command: "superpi";
 	readonly auth?: AuthInput;
 	readonly options: Args;
 	readonly listen?: readonly TransportAddress[];
@@ -23,7 +23,7 @@ export interface PiCommandContext {
 
 const listenOption = transportOption("--listen");
 
-export const piCommand = new Command<PiCommand, PiCommandContext>("sp")
+export const piCommand = new Command<PiCommand, PiCommandContext>("superpi")
 	.option(listenOption)
 	.option(authTokenOption)
 	.option(authTokenFileOption)
@@ -37,7 +37,7 @@ export const piCommand = new Command<PiCommand, PiCommandContext>("sp")
 		return {
 			ok: true,
 			command: {
-				command: "sp",
+				command: "superpi",
 				options,
 				...(auth === undefined ? {} : { auth }),
 				...(listen.length === 0 ? {} : { listen }),

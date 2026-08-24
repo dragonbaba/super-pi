@@ -3,7 +3,7 @@ import { dirname, isAbsolute, parse, relative, resolve } from "node:path";
 import type { HighRiskMutationScan } from "./core.ts";
 import { LEADING_PATH_SEPARATOR_PATTERN } from "./regex.ts";
 
-const WORKSPACE_METADATA_ROOTS = [".git", ".super-pi"] as const;
+const WORKSPACE_METADATA_ROOTS = [".git", ".sp"] as const;
 
 export async function protectedRootViolations(
   scan: HighRiskMutationScan,

@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import type { ExtensionCommandContext } from "@super-pi/coding-agent";
-import { getAgentDir } from "./pi-runtime-lite.js";
+import { getConfigDir } from "./pi-runtime-lite.js";
 import { checkpointGoalActiveTime } from "./accounting.js";
 import { abortCurrentTurn, type GoalRuntime, STATUS_KEY } from "./runtime.js";
 import {
@@ -28,7 +28,7 @@ export async function showGoalSettings(
 	ctx: ExtensionCommandContext,
 	options: GoalSettingsUiOptions = {},
 ) {
-	const settingsPath = options.settingsPath ?? join(getAgentDir(), GOAL_SETTINGS_FILE);
+	const settingsPath = options.settingsPath ?? join(getConfigDir(), GOAL_SETTINGS_FILE);
 	if (ctx.mode !== "tui") {
 		ctx.ui.notify(`Edit pi-goal settings manually: ${safeTerminalText(settingsPath)}`, "info");
 		return;
@@ -36,7 +36,7 @@ export async function showGoalSettings(
 	const generation = runtime.menuGeneration;
 	const isMenuCurrent = () =>
 		generation === runtime.menuGeneration && !runtime.menuController.signal.aborted;
-	const { defineMenu, runMenu } = await import("@narumitw/pi-tui-kit");
+	const { defineMenu, runMenu } = await import("@super-pi/tui-kit");
 	if (!isMenuCurrent()) return;
 	const invalid = runtime.settingsLoadIssue?.kind === "invalid";
 	const previewGoalIds = new Map<LimitField, string | null>();

@@ -1,6 +1,6 @@
 import { lstatSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { getAgentDir } from "./pi-runtime-lite.js";
+import { getAgentDir, getConfigDir } from "./pi-runtime-lite.js";
 import { segmentPaletteForPreset } from "./presets/index.js";
 import { HEX_COLOR_PATTERN, LINE_SEPARATOR_PATTERN } from "./regex.js";
 import { sanitizeTerminalText, unknownTerminalText } from "./terminal-text.js";
@@ -99,7 +99,7 @@ export interface LoadedStatuslineSettings {
 let pendingSettingsNotice: string | undefined;
 
 export function settingsFilePath(agentDir = getAgentDir()): string {
-	return join(agentDir, SETTINGS_FILE_NAME);
+	return join(getConfigDir(agentDir), SETTINGS_FILE_NAME);
 }
 
 export function createDefaultConfig(): StatuslineConfig {
@@ -299,7 +299,7 @@ export function loadStatuslineSettings(settingsPath: string): LoadedStatuslineSe
 export function loadStatuslineSettingsForAgent(agentDir = getAgentDir()): LoadedStatuslineSettings {
 	pendingSettingsNotice = undefined;
 	const canonicalPath = settingsFilePath(agentDir);
-	const legacyPath = join(agentDir, LEGACY_SETTINGS_FILE_NAME);
+	const legacyPath = join(getConfigDir(agentDir), LEGACY_SETTINGS_FILE_NAME);
 	const canonical = loadStatuslineSettings(canonicalPath);
 	if (!isMissingStatuslineSettings(canonical)) {
 		if (!isMissingStatuslineSettings(loadStatuslineSettings(legacyPath))) {

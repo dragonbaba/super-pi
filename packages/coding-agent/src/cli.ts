@@ -11,7 +11,7 @@ import { main } from "./main.ts";
 
 process.title = APP_NAME;
 process.env.SP_CODING_AGENT = "true";
-process.env.AI_AGENT = "sp";
+process.env.AI_AGENT = "superpi";
 process.emitWarning = (() => {}) as typeof process.emitWarning;
 
 // Configure undici's global dispatcher before provider SDKs issue requests.

@@ -1,0 +1,18 @@
+{
+  "packages": [
+    "../../packages/memory",
+    "../../packages/project-context",
+    "../../packages/mcp-bridge",
+    "../../packages/goal",
+    "../../packages/openai-server-compaction",
+    "../../packages/provider-aware-compaction",
+    "../../packages/openai-fast-mode",
+    "../../packages/lsp",
+    "../../packages/statusline",
+    "../../packages/plan-mode",
+    "../../packages/dynamic-instructions",
+    "../../packages/chrome-devtools",
+    "../../packages/tool-classification",
+    "../../packages/extensions"
+  ]
+}

@@ -13,7 +13,7 @@ Keeps Pi session files and Hermes Memory's SQLite session index consistent.
 
 Deletion moves the JSONL file to:
 
-`~/.super-pi/agent/@super-pi/memory/session-trash/`
+`~/.sp/agent/@super-pi/memory/session-trash/`
 
 It then removes only the corresponding rows from SQLite tables `sessions`, `messages`, and `session_files`.
 
@@ -27,7 +27,7 @@ It intentionally does **not** modify:
 - skills
 - SQLite `memories` entries
 
-An active Session cannot be deleted. Each Pi process publishes a PID-backed lease for its current canonical Session path under `~/.super-pi/agent/@super-pi/memory/session-leases/`; leases follow reloads and session replacement flows, refresh every two seconds, and are removed on graceful shutdown. Dead-process leases are reclaimed during deletion checks. The manager checks both the current process path and all live cross-process leases before opening the transaction, then repeats both checks immediately before moving the file.
+An active Session cannot be deleted. Each Pi process publishes a PID-backed lease for its current canonical Session path under `~/.sp/agent/@super-pi/memory/session-leases/`; leases follow reloads and session replacement flows, refresh every two seconds, and are removed on graceful shutdown. Dead-process leases are reclaimed during deletion checks. The manager checks both the current process path and all live cross-process leases before opening the transaction, then repeats both checks immediately before moving the file.
 
 There is no modification-age gate: a newly written but unoccupied Session is deletable immediately. Busy/inaccessible files and operational filesystem/database errors still fail safely without deleting the index. Deletion validates the Hermes schema/version first and coordinates the database transaction with the file move; failures roll both back when possible. The confirmed `session_id + old path` mapping is revalidated under the transaction lock, and cleanup never uses an `OR path` delete.
 

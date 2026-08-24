@@ -72,7 +72,7 @@ One-shot, non-persistent:
 ```bash
 git clone https://github.com/algal/pi-openai-server-compaction.git
 cd pi-openai-server-compaction && npm install
-pi -e ./src/index.ts --model openai/gpt-5.6-luna
+superpi -e ./packages/openai-server-compaction/src/index.ts --model openai/gpt-5.6-luna
 ```
 
 ## Requirements
@@ -137,8 +137,8 @@ Users should be aware:
 
 Config is read from:
 
-- `~/.super-pi/agent/openai-server-compaction.json` (global)
-- `.super-pi/openai-server-compaction.json` (project-local, takes precedence only when `ctx.isProjectTrusted()` is true)
+- `~/.sp/agent/config/openai-server-compaction.json` (global)
+- `.sp/config/openai-server-compaction.json` (project-local, takes precedence only when `ctx.isProjectTrusted()` is true)
 
 Project config is resolved from the active session's `ctx.cwd`, not the process working directory. Because Pi's provider registration API has no session context at extension-load time, the OpenAI provider wrapper is registered once but delegates unchanged to Pi's built-in HTTP stream whenever the trusted per-session configuration has `enabled: false`. This avoids project-config leakage and preserves normal provider behavior when disabled.
 
@@ -213,7 +213,7 @@ Override the test model:
 SP_OPENAI_SERVER_COMPACTION_TEST_MODEL=openai-codex/gpt-5.6-sol npm run test:live
 ```
 
-The focused cache-rewarm matrix is intentionally kept outside this installed package and every Pi auto-load path. Run it explicitly from `~/.super-pi/agent/experiments/codex-cache-tail/` when live evidence is needed; see that folder's README. It consumes quota and can wait in real time for idle-window cells. Normal Pi never discovers or imports the observer.
+The focused cache-rewarm matrix is intentionally kept outside this installed package and every Pi auto-load path. Run it explicitly from `~/.sp/agent/experiments/codex-cache-tail/` when live evidence is needed; see that folder's README. It consumes quota and can wait in real time for idle-window cells. Normal Pi never discovers or imports the observer.
 
 ## Limitations
 

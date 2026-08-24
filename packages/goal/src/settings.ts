@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { getAgentDir } from "./pi-runtime-lite.js";
+import { getConfigDir } from "./pi-runtime-lite.js";
 
 export const GOAL_SETTINGS_FILE = "pi-goal.json";
 export const GOAL_TOOL_VISIBILITIES = ["always", "after-first-goal"] as const;
@@ -125,7 +125,7 @@ function normalizeContinuationLimit(
 
 export function saveGoalSettings(
 	settings: GoalSettings,
-	settingsPath = join(getAgentDir(), GOAL_SETTINGS_FILE),
+	settingsPath = join(getConfigDir(), GOAL_SETTINGS_FILE),
 	overrides: Partial<GoalSettingsSaveFileSystem> = {},
 ) {
 	const normalized = normalizeGoalSettings(settings);
@@ -182,7 +182,7 @@ export function saveGoalSettings(
 }
 
 export function readGoalSettings(
-	settingsPath = join(getAgentDir(), GOAL_SETTINGS_FILE),
+	settingsPath = join(getConfigDir(), GOAL_SETTINGS_FILE),
 ): GoalSettingsLoadResult {
 	let contents: string;
 	try {

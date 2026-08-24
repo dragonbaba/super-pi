@@ -1,0 +1,31 @@
+{
+	"name": "@super-pi/chrome-devtools",
+	"version": "0.49.3-super-pi.1",
+	"description": "Super Pi Chrome DevTools Protocol tools.",
+	"type": "module",
+	"license": "MIT",
+	"private": true,
+	"files": ["src", "README.md", "LICENSE"],
+	"pi": {
+		"extensions": ["./src/index.ts"]
+	},
+	"exports": {
+		".": "./src/index.ts",
+		"./browser-manager": "./src/browser-manager.ts"
+	},
+	"scripts": {
+		"typecheck": "tsc --noEmit -p tsconfig.json"
+	},
+	"dependencies": {
+		"@super-pi/tui-kit": "0.49.3-super-pi.1"
+	},
+	"peerDependencies": {
+		"@super-pi/coding-agent": ">=0.84.0 <0.85.0",
+		"typebox": "*"
+	},
+	"upstream": {
+		"name": "@narumitw/pi-chrome-devtools",
+		"version": "0.49.3",
+		"repository": "https://github.com/narumiruna/pi-extensions/tree/v0.49.3/extensions/pi-chrome-devtools"
+	}
+}

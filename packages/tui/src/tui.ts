@@ -363,7 +363,7 @@ export abstract class TuiBase extends Container implements TUI {
 	constructor(terminal: Terminal, showHardwareCursor?: boolean, logDirectory?: string) {
 		super();
 		this.terminal = terminal;
-		this.logDirectory = logDirectory ?? process.env.SP_CODING_AGENT_DIR ?? path.join(os.homedir(), ".super-pi", "agent");
+		this.logDirectory = logDirectory ?? process.env.SP_CODING_AGENT_DIR ?? path.join(os.homedir(), ".sp", "agent");
 		if (showHardwareCursor !== undefined) {
 			this.showHardwareCursor = showHardwareCursor;
 		}

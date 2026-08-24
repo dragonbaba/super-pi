@@ -96,10 +96,13 @@ export function findNearestProjectAgentsDir(cwd: string, trustedWorkspace: strin
 
 export function discoverAgents(cwd: string, scope: AgentScope): AgentDiscoveryResult {
 	const userDir = path.join(getAgentDir(), "agents");
+	const bundledDir = process.env.SP_BUNDLED_AGENTS_DIR;
 	const projectAgentsDir = findNearestProjectAgentsDir(cwd, cwd);
+	const bundledAgents = scope === "project" || !bundledDir ? [] : loadAgentsFromDir(bundledDir, "user");
 	const userAgents = scope === "project" ? [] : loadAgentsFromDir(userDir, "user");
 	const projectAgents = scope === "user" || !projectAgentsDir ? [] : loadAgentsFromDir(projectAgentsDir, "project");
 	const agentMap = new Map<string, AgentConfig>();
+	for (const agent of bundledAgents) agentMap.set(agent.name, agent);
 	for (const agent of userAgents) agentMap.set(agent.name, agent);
 	if (scope !== "user") for (const agent of projectAgents) agentMap.set(agent.name, agent);
 	return { agents: [...agentMap.values()], projectAgentsDir };

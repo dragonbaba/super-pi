@@ -11,14 +11,14 @@ export const DEFAULT_FAST_MODE_CONFIG: FastModeConfig = { enabled: false };
 
 export function resolveAgentDir(): string {
   const configured = process.env.SP_CODING_AGENT_DIR;
-  if (!configured) return join(homedir(), ".super-pi", "agent");
+  if (!configured) return join(homedir(), ".sp", "agent");
   if (configured === "~") return homedir();
   if (configured.startsWith("~/") || configured.startsWith("~\\")) return join(homedir(), configured.slice(2));
   return configured;
 }
 
 export function fastModeConfigPath(agentDir = resolveAgentDir()): string {
-  return join(agentDir, "pi-openai-fast.json");
+  return join(agentDir, "config", "pi-openai-fast.json");
 }
 
 export function parseFastModeConfig(value: unknown): FastModeConfig {

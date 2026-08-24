@@ -613,8 +613,8 @@ async function migrateDatabaseGeneration(
 }
 
 /**
- * Move legacy extension assets from ~/.super-pi/agent/memory into
- * ~/.super-pi/agent/@super-pi/memory. Existing destination files win.
+ * Move legacy extension assets from ~/.sp/agent/memory into
+ * ~/.sp/agent/@super-pi/memory. Existing destination files win.
  */
 export async function migrateExtensionRoot(
   legacyRoot: string,

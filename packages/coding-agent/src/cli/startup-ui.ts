@@ -24,8 +24,8 @@ import {
 } from "../modes/interactive/theme/theme.ts";
 
 const OFFICIAL_PACKAGE_NAME = "@super-pi/coding-agent";
-const OFFICIAL_APP_NAME = "sp";
-const OFFICIAL_CONFIG_DIR_NAME = ".super-pi";
+const OFFICIAL_APP_NAME = "superpi";
+const OFFICIAL_CONFIG_DIR_NAME = ".sp";
 
 interface DistributionMetadata {
 	packageName: string;

@@ -38,6 +38,6 @@ The store retains at most 90 days, 4,096 buckets, 16,384 truncated SHA-256 event
 /tool-repairs --json
 ```
 
-Markdown and JSON expose the same bounded buckets plus derived false-success intervention-frequency and compaction success/fallback summaries, without the deduplication ledger. TUI reports up to 100,000 characters are copied to the clipboard; otherwise output is atomically written to `<current-project>/.super-pi/tool-repairs-report.md` or `.json`.
+Markdown and JSON expose the same bounded buckets plus derived false-success intervention-frequency and compaction success/fallback summaries, without the deduplication ledger. TUI reports up to 100,000 characters are copied to the clipboard; otherwise output is atomically written to `<current-project>/.sp/tool-repairs-report.md` or `.json`.
 
 `/tool-errors` remains the unchanged detailed current-Session/current-branch diagnostic command. The prior process-local `status|reset` command contract is retired; there is no second repair command or alias.

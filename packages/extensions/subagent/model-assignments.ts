@@ -1,9 +1,9 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { getAgentDir } from "@super-pi/coding-agent";
+import { getConfigDir } from "@super-pi/coding-agent";
 import { isSafeIdentifier } from "./syntax.ts";
 
-export const SUBAGENT_MODEL_CONFIG_PATH = path.join(getAgentDir(), "subagent-models.json");
+export const SUBAGENT_MODEL_CONFIG_PATH = path.join(getConfigDir(), "subagent-models.json");
 export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 export type SubagentThinkingLevel = (typeof THINKING_LEVELS)[number];
 

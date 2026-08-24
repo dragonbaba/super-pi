@@ -36,8 +36,8 @@ Navigation output is normalized to project-relative `path:line:column` locations
 
 Configuration remains compatible with upstream and is resolved in this order:
 
-1. `<workspace>/.super-pi/pi-lsp.json` for a trusted project
-2. `~/.super-pi/agent/pi-lsp.json`
+1. `<workspace>/.sp/config/pi-lsp.json` for a trusted project
+2. `~/.sp/agent/config/pi-lsp.json`
 3. upstream built-in server defaults
 
 A server entry contains `command`, `extensions`, and optional `env`, `initialization`, `skipDirectories`, and diagnostics grace settings. Global `timeout` defaults to 20 seconds.

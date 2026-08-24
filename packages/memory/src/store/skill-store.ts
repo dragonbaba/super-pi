@@ -1,8 +1,8 @@
 /**
  * SkillStore — procedural memory stored as Pi-native skills.
  *
- * Global skills live in ~/.super-pi/agent/@super-pi/memory/skills/<slug>/SKILL.md.
- * Project skills live in ~/.super-pi/agent/<projectsMemoryDir>/<project>/skills/<slug>/SKILL.md.
+ * Global skills live in ~/.sp/agent/@super-pi/memory/skills/<slug>/SKILL.md.
+ * Project skills live in ~/.sp/agent/<projectsMemoryDir>/<project>/skills/<slug>/SKILL.md.
  */
 
 import * as fs from "node:fs/promises";
@@ -323,7 +323,7 @@ export class SkillStore {
   /**
    * Is `slug` already claimed by a skill in Pi's own global root?
    *
-   * Pi keys skills by name, first-loaded wins, and `~/.super-pi/agent/skills/` is
+   * Pi keys skills by name, first-loaded wins, and `~/.sp/agent/skills/` is
    * auto-discovered at higher precedence than anything an extension contributes
    * via `resources_discover`. A global skill we write under a name that also
    * exists there is never the copy Pi loads, so the write succeeds on disk and

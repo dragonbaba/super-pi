@@ -16,8 +16,9 @@
       "./dist/index.js"
     ]
   },
-  "scripts": {
-    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc --declaration false --sourceMap false",
+	"scripts": {
+		"clean": "shx rm -rf dist",
+		"build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc --declaration false --sourceMap false",
     "check": "node scripts/ensure-dev.mjs check && tsc --noEmit && npm run build"
   },
   "keywords": [

@@ -20,7 +20,7 @@ export function discoverPiRuntimeFromEntry(entryPath = process.argv[1]) {
       if (manifest?.name === SP_PACKAGE_NAME) {
         return {
           version: typeof manifest.version === "string" ? manifest.version : undefined,
-          configDirName: ".super-pi",
+          configDirName: ".sp",
         };
       }
     } catch (error) {
@@ -35,7 +35,7 @@ export function discoverPiRuntimeFromEntry(entryPath = process.argv[1]) {
 // Local packages cannot always resolve Pi as a peer from their own directory.
 // Prefer Pi's export when available, then securely identify the active CLI by
 // walking from process.argv[1] to a package manifest with Pi's exact name.
-let configDirName = ".super-pi";
+let configDirName = ".sp";
 let runtimeVersion;
 try {
   const pi = await import("@super-pi/coding-agent");

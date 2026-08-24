@@ -515,7 +515,7 @@ export function buildSessionContext(
 
 /**
  * Compute the default session directory for a cwd.
- * Encodes cwd into a safe directory name under ~/.super-pi/agent/sessions/.
+ * Encodes cwd into a safe directory name under ~/.sp/agent/sessions/.
  */
 function getDefaultSessionDirPath(cwd: string, agentDir: string = getDefaultAgentDir()): string {
 	const resolvedCwd = resolvePath(cwd);
@@ -1546,7 +1546,7 @@ export class SessionManager {
 	/**
 	 * Create a new session.
 	 * @param cwd Working directory (stored in session header)
-	 * @param sessionDir Optional session directory. If omitted, uses default (~/.super-pi/agent/sessions/<encoded-cwd>/).
+	 * @param sessionDir Optional session directory. If omitted, uses default (~/.sp/agent/sessions/<encoded-cwd>/).
 	 */
 	static create(cwd: string, sessionDir?: string, options?: NewSessionOptions): SessionManager {
 		const dir = sessionDir ? normalizePath(sessionDir) : getDefaultSessionDir(cwd);
@@ -1584,7 +1584,7 @@ export class SessionManager {
 	/**
 	 * Continue the most recent session, or create new if none.
 	 * @param cwd Working directory
-	 * @param sessionDir Optional session directory. If omitted, uses default (~/.super-pi/agent/sessions/<encoded-cwd>/).
+	 * @param sessionDir Optional session directory. If omitted, uses default (~/.sp/agent/sessions/<encoded-cwd>/).
 	 */
 	static continueRecent(cwd: string, sessionDir?: string): SessionManager {
 		const dir = sessionDir ? normalizePath(sessionDir) : getDefaultSessionDir(cwd);
@@ -1664,7 +1664,7 @@ export class SessionManager {
 	/**
 	 * List all sessions for a directory.
 	 * @param cwd Working directory (used to compute default session directory)
-	 * @param sessionDir Optional session directory. If omitted, uses default (~/.super-pi/agent/sessions/<encoded-cwd>/).
+	 * @param sessionDir Optional session directory. If omitted, uses default (~/.sp/agent/sessions/<encoded-cwd>/).
 	 * @param onProgress Optional callback for progress updates (loaded, total)
 	 */
 	static async list(cwd: string, sessionDir?: string, onProgress?: SessionListProgress): Promise<SessionInfo[]> {

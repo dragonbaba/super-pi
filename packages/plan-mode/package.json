@@ -1,0 +1,27 @@
+{
+	"name": "@super-pi/plan-mode",
+	"version": "0.49.3-super-pi.1",
+	"description": "Super Pi read-only planning and implementation handoff mode.",
+	"type": "module",
+	"license": "MIT",
+	"private": true,
+	"files": ["src", "README.md", "LICENSE"],
+	"pi": {
+		"extensions": ["./src/index.ts"]
+	},
+	"scripts": {
+		"typecheck": "tsc --noEmit -p tsconfig.json"
+	},
+	"dependencies": {
+		"@super-pi/tui-kit": "0.49.3-super-pi.1"
+	},
+	"peerDependencies": {
+		"@super-pi/coding-agent": ">=0.84.0 <0.85.0",
+		"@super-pi/tui": ">=0.84.0 <0.85.0"
+	},
+	"upstream": {
+		"name": "@narumitw/pi-plan-mode",
+		"version": "0.49.3",
+		"repository": "https://github.com/narumiruna/pi-extensions/tree/v0.49.3/extensions/pi-plan-mode"
+	}
+}

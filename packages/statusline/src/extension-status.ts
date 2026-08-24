@@ -245,9 +245,9 @@ function extensionSettingsFiles(
 	options: PackageDiscoveryOptions,
 	fileSystem: PackageDiscoveryFileSystem,
 ): string[] {
-	const candidates = [join(options.agentDir ?? getAgentDir(), "settings.json")];
+	const candidates = [join(options.agentDir ?? getAgentDir(), "config", "settings.json")];
 	if (options.projectTrusted) {
-		candidates.push(join(cwd, options.configDirName ?? CONFIG_DIR_NAME, "settings.json"));
+		candidates.push(join(cwd, options.configDirName ?? CONFIG_DIR_NAME, "config", "settings.json"));
 	}
 	return candidates.filter((file) => fileSystem.existsSync(file));
 }

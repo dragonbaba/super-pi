@@ -701,6 +701,12 @@ export function killProcessTree(pid: number | undefined): ReturnType<typeof setT
 
 export function getPiInvocation(args: string[]): { command: string; args: string[] } {
 	const executable = fs.realpathSync.native(process.execPath);
+	const sourceLauncher = process.env.SP_SOURCE_LAUNCHER;
+	if (sourceLauncher && path.isAbsolute(sourceLauncher)) {
+		let trustedLauncher: string | undefined;
+		try { trustedLauncher = fs.realpathSync.native(sourceLauncher); } catch { /* Fall through. */ }
+		if (trustedLauncher) return { command: executable, args: [trustedLauncher, ...args] };
+	}
 	const currentScript = process.argv[1];
 	const isBunVirtualScript = currentScript?.startsWith("/$bunfs/root/");
 	if (currentScript && !isBunVirtualScript && path.isAbsolute(currentScript)) {

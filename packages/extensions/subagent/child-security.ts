@@ -245,9 +245,12 @@ export function sensitivePathReason(candidate: string, cwd: string): string | un
 		return "path cannot be safely resolved";
 	}
 	const home = canonicalNormalizedPath(os.homedir(), cwd);
-	const configuredAgentDir = canonicalNormalizedPath(process.env.SP_CODING_AGENT_DIR || path.join(home, ".super-pi", "agent"), cwd);
+	const configuredAgentDir = canonicalNormalizedPath(process.env.SP_CODING_AGENT_DIR || path.join(home, ".sp", "agent"), cwd);
 	if (isEnvironmentFile(candidate)) return "environment files are hidden from subagents";
-	if (normalized === `${configuredAgentDir}/auth.json` || normalized.endsWith("/.super-pi/agent/auth.json")) {
+	if (
+		normalized === `${configuredAgentDir}/config/auth.json` ||
+		normalized.endsWith("/.sp/agent/config/auth.json")
+	) {
 		return "Pi authentication storage is hidden from subagents";
 	}
 	if (CREDENTIAL_FILE_EXTENSION_PATTERN.test(normalized)) return "private key material is hidden from subagents";

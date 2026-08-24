@@ -2,13 +2,13 @@ import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, resolve } from "node:path";
 import type { ExtensionAPI } from "@super-pi/coding-agent";
+import { shutdownManagedBrowser } from "@super-pi/chrome-devtools/browser-manager";
 import { inspectBashResourceLifecycle } from "./core.ts";
 import { SessionPermissionController } from "./permission-controller.ts";
 
 const CHROME_TOOL_PREFIX = "chrome_devtools_";
-const DEFAULT_SCREENSHOT_PREFIX = "pi-chrome-devtools-screenshot-";
+const DEFAULT_SCREENSHOT_PREFIX = "sp-chrome-devtools-screenshot-";
 const DEFAULT_SCREENSHOT_SUFFIX = ".png";
-const CHROME_MANAGER_MODULE = "../../npm/node_modules/@narumitw/pi-chrome-devtools/src/browser-manager.ts";
 
 function isOwnedDefaultScreenshotPath(value: unknown): value is string {
   if (typeof value !== "string") return false;
@@ -56,10 +56,9 @@ class OwnedResourceCleaner {
         failures.push(`temporary screenshot ${path}: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
-    if (this.#chromeUsed) {
-      try {
-        const manager = await import(CHROME_MANAGER_MODULE);
-        await manager.shutdownManagedBrowser();
+		if (this.#chromeUsed) {
+			try {
+				await shutdownManagedBrowser();
         this.#chromeUsed = false;
       } catch (error) {
         failures.push(`managed Chrome: ${error instanceof Error ? error.message : String(error)}`);

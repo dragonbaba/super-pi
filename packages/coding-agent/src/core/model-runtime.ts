@@ -1,4 +1,4 @@
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import {
 	type Api,
 	type ApiStreamOptions,
@@ -37,7 +37,7 @@ import {
 	type StreamOptions,
 } from "@super-pi/ai";
 import * as builtinProviderCatalog from "@super-pi/ai/providers/all";
-import { getAgentDir } from "../config.ts";
+import { getAgentDir, getModelsPath } from "../config.ts";
 import { operationSignal, raceWithAbortSignal } from "../utils/abort.ts";
 import { AuthStorage as DefaultAuthStorage } from "./auth-storage.ts";
 import { ModelConfig } from "./model-config.ts";
@@ -172,12 +172,12 @@ export class ModelRuntime implements Models {
 	static async create(options: CreateModelRuntimeOptions = {}): Promise<ModelRuntime> {
 		const credentials = new RuntimeCredentials(options.credentials ?? DefaultAuthStorage.create(options.authPath));
 		const modelsPath =
-			options.modelsPath === null ? undefined : (options.modelsPath ?? join(getAgentDir(), "models.json"));
+			options.modelsPath === null ? undefined : (options.modelsPath ?? getModelsPath());
 		const config = await ModelConfig.load(modelsPath);
 		const modelsStore =
 			options.modelsStore ??
 			(modelsPath
-				? new FileModelsStore(options.modelsStorePath ?? join(dirname(modelsPath), "models-store.json"))
+				? new FileModelsStore(options.modelsStorePath ?? join(getAgentDir(), "models-store.json"))
 				: new InMemoryCodingAgentModelsStore());
 		const builtinModelDataGeneratedAt = builtinProviderCatalog.getBuiltinModelDataGeneratedAt();
 		const providers = builtinProviderCatalog

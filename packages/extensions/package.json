@@ -2,8 +2,11 @@
   "name": "@super-pi/extensions",
   "version": "0.1.0",
   "private": true,
-  "type": "module",
-  "pi": {
+	"type": "module",
+	"dependencies": {
+		"@super-pi/chrome-devtools": "0.49.3-super-pi.1"
+	},
+	"pi": {
     "extensions": [
       "./auxiliary-vision/index.ts",
       "./browser-use/index.ts",

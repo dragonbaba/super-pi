@@ -26,31 +26,57 @@ intentionally out of scope.
 ```powershell
 npm install
 npm run build:offline
-node .\packages\coding-agent\dist\cli.js --help
+npm run superpi -- --help
 ```
 
-The executable name is `sp`. Super Pi does not install or provide a `pi`
-command alias.
+The executable name is `superpi`. During source development, `npm run superpi --` loads
+the bundled Super Pi packages from this repository while keeping user state in
+`~/.sp/agent/`. Super Pi does not install or provide a `pi` command alias.
+
+To expose the local source checkout as a command:
+
+```powershell
+npm link
+superpi --help
+```
+
+The npm link only creates `superpi` and does not replace an existing `pi`
+command or PowerShell's built-in `sp` alias.
 
 ## Isolation from Pi
 
 - Package scope: `@super-pi/*`
-- User configuration: `~/.super-pi/agent/`
-- Project configuration: `.super-pi/`
+- User configuration: `~/.sp/agent/config/`
+- Project configuration: `.sp/config/`
+- Runtime data: dedicated directories under `~/.sp/agent/`
 - CLI environment marker: `SP_CODING_AGENT=true`
 
 The existing global Pi installation is used only as a read-only migration
 reference. Super Pi development and tests must never patch or deploy into it.
 
+To copy supported JSON configuration and the global `AGENTS.md` context from
+the existing global Pi without changing it or importing old package paths:
+
+```powershell
+npm run migrate:pi-config
+npm run check:pi-config
+```
+
+Migration creates missing files only and refuses to overwrite a differing
+Super Pi configuration. Credentials and other personal configuration remain
+outside this repository.
+
 ## Repository layout
 
 - `packages/ai` — model and provider APIs
 - `packages/agent` — agent loop and harness
-- `packages/coding-agent` — the `sp` CLI and interactive application
+- `packages/coding-agent` — the `superpi` CLI and interactive application
 - `packages/tui` — terminal UI
 - `packages/protocol`, `packages/client`, `packages/server` — session protocol
 - `packages/extensions` — bundled Super Pi extensions
 - `packages/memory`, `packages/goal`, `packages/lsp` — local agent capabilities
+- `packages/tui-kit`, `packages/plan-mode`, `packages/chrome-devtools` — absorbed local UI and workflow capabilities
+- `.sp/config`, `.sp/agents`, `.sp/prompts`, `.sp/skills` — bundled source-mode configuration and resources
 - `MIGRATION.md` — ordered migration ledger and safety baseline
 
 ## Attribution

@@ -12,7 +12,7 @@ Remote tools are registered as `mcp__<server>__<tool>` (bounded and collision-ch
 
 ## Global configuration
 
-Create `~/.super-pi/agent/mcp.json`:
+Create `~/.sp/agent/config/mcp.json`:
 
 ```json
 {
@@ -58,12 +58,12 @@ Use `"transport": "sse"` for a legacy SSE endpoint. Remote URLs require HTTPS; l
 
 ## Project configuration
 
-A trusted project may define `.super-pi/mcp.json` only when the global file sets `"allowProjectConfig": true`. Project server IDs may not override global IDs. Keep this disabled unless repositories containing MCP configuration are fully trusted: a stdio MCP server is executable code with the user's permissions.
+A trusted project may define `.sp/config/mcp.json` only when the global file sets `"allowProjectConfig": true`. Project server IDs may not override global IDs. Keep this disabled unless repositories containing MCP configuration are fully trusted: a stdio MCP server is executable code with the user's permissions.
 
 ## Safety boundaries
 
 - Pi runtime gate: only `0.84.x`.
-- Validated schema metadata is cached under `~/.super-pi/agent/cache/mcp-schemas-v1.json` (2 MiB total, 16 entries, 30-day age bound). Commands, URLs, environment values, and headers participate only in an in-memory SHA-256 fingerprint and are never written to the cache.
+- Validated schema metadata is cached under `~/.sp/agent/cache/mcp-schemas-v1.json` (2 MiB total, 16 entries, 30-day age bound). Commands, URLs, environment values, and headers participate only in an in-memory SHA-256 fingerprint and are never written to the cache.
 - A cache hit registers deferred tools without starting the MCP server; the first actual remote call connects and refreshes the cache. A cache miss connects once at startup to discover schemas.
 - At most 16 configured servers, 128 tools per server, and 64 KiB per tool schema.
 - Tool descriptions, errors, and text/resource output are stripped of ANSI/OSC/control sequences.
@@ -76,4 +76,4 @@ A trusted project may define `.super-pi/mcp.json` only when the global file sets
 
 ## Activation
 
-The package is loaded from `~/.super-pi/agent/settings.json`. After changing the extension itself, fully restart Pi. After changing only `mcp.json`, use `/mcp-reload`; treat reload as terminal for that command.
+The package is loaded by the repository-owned `.sp/config/settings.json`. After changing the extension itself, fully restart Super Pi. After changing only `mcp.json`, use `/mcp-reload`; treat reload as terminal for that command.

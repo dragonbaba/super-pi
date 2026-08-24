@@ -1,4 +1,3 @@
-// @ts-nocheck -- migrated from the proven local 0.84.1 runtime; public types remain explicit.
 import type * as NodeOs from "node:os";
 import type * as NodeZlib from "node:zlib";
 import type {
@@ -79,6 +78,31 @@ export interface OpenAICodexRequestBody {
 	[key: string]: unknown;
 }
 
+type RequestBody = OpenAICodexRequestBody;
+type CodexResponseStatus = "completed" | "incomplete" | "failed" | "cancelled" | "queued" | "in_progress";
+type SuccessfulAssistantMessage = AssistantMessage & { stopReason: "stop" | "length" | "toolUse" | "deferred" };
+
+interface CodexErrorRecord extends Record<string, unknown> {
+	code?: string;
+	message?: string;
+}
+
+interface CodexResponseRecord extends Record<string, unknown> {
+	error?: CodexErrorRecord;
+	id?: string;
+	status?: unknown;
+	usage?: unknown;
+}
+
+interface CodexEvent extends Record<string, unknown> {
+	code?: string;
+	error?: CodexErrorRecord;
+	item?: unknown;
+	message?: string;
+	response?: CodexResponseRecord;
+	type?: string;
+}
+
 export type OpenAICodexDispatchTransport = "sse" | "websocket-full" | "websocket-delta";
 
 export interface OpenAICodexCompactionDiagnostics {
@@ -93,7 +117,26 @@ export interface OpenAICodexCompactionDiagnostics {
 	promptCacheKey: boolean;
 	serviceTier: boolean;
 	headers: boolean;
-	hashes: Record<string, string | undefined>;
+	hashes: {
+		regularActualBody: string;
+		compactionActualBody?: string;
+		regularInstructions: string;
+		compactionInstructions?: string;
+		regularInputPrefix: string;
+		compactionInputPrefix?: string;
+		regularResponseItems: string;
+		compactionResponseItems?: string;
+		regularTools: string;
+		compactionTools?: string;
+		regularBodyWithoutInput: string;
+		compactionBodyWithoutInput?: string;
+		regularPromptCacheKey: string;
+		compactionPromptCacheKey?: string;
+		regularServiceTier: string;
+		compactionServiceTier?: string;
+		regularHeaders: string;
+		compactionHeaders?: string;
+	};
 }
 
 export interface OpenAICodexCompactionResult {
@@ -150,8 +193,12 @@ const CODEX_TOOL_CALL_PROVIDERS = new Set(["openai", "openai-codex", "opencode"]
 const WEBSOCKET_MESSAGE_TOO_BIG_CLOSE_CODE = 1009;
 const WEBSOCKET_CONNECTION_LIMIT_REACHED_CODE = "websocket_connection_limit_reached";
 const PREVIOUS_RESPONSE_NOT_FOUND_CODE = "previous_response_not_found";
-export function setOpenAICodexRemoteCompactionCapability(sessionId, enabled) {
-    const state = globalThis;
+type RemoteCompactionCapabilityState = typeof globalThis & {
+    [REMOTE_COMPACTION_CAPABILITY_KEY]?: Set<string>;
+};
+
+export function setOpenAICodexRemoteCompactionCapability(sessionId: string, enabled: boolean): void {
+    const state = globalThis as RemoteCompactionCapabilityState;
     let sessions = state[REMOTE_COMPACTION_CAPABILITY_KEY];
     if (!(sessions instanceof Set)) {
         if (!enabled)
@@ -164,11 +211,11 @@ export function setOpenAICodexRemoteCompactionCapability(sessionId, enabled) {
     else
         sessions.delete(sessionId);
 }
-function isOpenAICodexRemoteCompactionCapabilityEnabled(sessionId) {
-    const sessions = globalThis[REMOTE_COMPACTION_CAPABILITY_KEY];
+function isOpenAICodexRemoteCompactionCapabilityEnabled(sessionId: string | undefined): boolean {
+    const sessions = (globalThis as RemoteCompactionCapabilityState)[REMOTE_COMPACTION_CAPABILITY_KEY];
     return sessions instanceof Set && (sessions.has("*") || (sessionId !== undefined && sessions.has(sessionId)));
 }
-const CODEX_RESPONSE_STATUSES = new Set([
+const CODEX_RESPONSE_STATUSES = new Set<CodexResponseStatus>([
     "completed",
     "incomplete",
     "failed",
@@ -176,7 +223,7 @@ const CODEX_RESPONSE_STATUSES = new Set([
     "queued",
     "in_progress",
 ]);
-function assertSuccessfulOutput(output) {
+function assertSuccessfulOutput(output: AssistantMessage): asserts output is SuccessfulAssistantMessage {
     if (output.stopReason === "pending") {
         throw new Error("Codex stream ended without a stop reason");
     }
@@ -187,10 +234,10 @@ function assertSuccessfulOutput(output) {
 // ============================================================================
 // Retry Helpers
 // ============================================================================
-function isTerminalRateLimitError(errorText) {
+function isTerminalRateLimitError(errorText: string) {
     return TERMINAL_RATE_LIMIT_PATTERN.test(errorText);
 }
-function isRetryableError(status, errorText) {
+function isRetryableError(status: number, errorText: string) {
     if (status === 429 && isTerminalRateLimitError(errorText)) {
         return false;
     }
@@ -199,7 +246,7 @@ function isRetryableError(status, errorText) {
     }
     return RETRYABLE_ERROR_PATTERN.test(errorText);
 }
-function getRetryAfterDelayMs(headers) {
+function getRetryAfterDelayMs(headers: Headers) {
     const retryAfterMs = headers.get("retry-after-ms");
     if (retryAfterMs !== null) {
         const millis = Number(retryAfterMs);
@@ -223,14 +270,14 @@ function getRetryAfterDelayMs(headers) {
 }
 class RetryDelayExceededError extends Error {
 }
-function validateRetryDelayMs(delayMs, options) {
+function validateRetryDelayMs(delayMs: number, options: StreamOptions) {
     const maxRetryDelayMs = options?.maxRetryDelayMs ?? DEFAULT_MAX_RETRY_DELAY_MS;
     if (maxRetryDelayMs > 0 && delayMs > maxRetryDelayMs) {
         throw new RetryDelayExceededError(`Server requested ${Math.ceil(delayMs / 1000)}s retry delay (max: ${Math.ceil(maxRetryDelayMs / 1000)}s)`);
     }
     return delayMs;
 }
-function sleep(ms, signal) {
+function sleep(ms: number, signal?: AbortSignal) {
     return new Promise((resolve, reject) => {
         if (signal?.aborted) {
             reject(new Error("Request was aborted"));
@@ -243,7 +290,7 @@ function sleep(ms, signal) {
         });
     });
 }
-function normalizeTimeoutMs(value) {
+function normalizeTimeoutMs(value: number | undefined) {
     if (value === undefined)
         return undefined;
     if (!Number.isFinite(value) || value < 0) {
@@ -262,13 +309,13 @@ function loadNodeCrypto() {
         return null;
     return (process.getBuiltinModule?.("node:crypto") ?? null);
 }
-function sha256Json(value) {
+function sha256Json(value: unknown): string | undefined {
     const crypto = loadNodeCrypto();
     if (!crypto)
         return undefined;
     return crypto.createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
-function requiredSha256Json(value) {
+function requiredSha256Json(value: unknown): string {
     const hash = sha256Json(value);
     if (!hash)
         throw new Error("Codex compaction stopped: SHA-256 request diagnostics are unavailable.");
@@ -277,7 +324,7 @@ function requiredSha256Json(value) {
 // Returns the zstd-compressed body bytes, or null when compression is
 // unavailable (browser/Vite builds). Callers fall back to sending the
 // uncompressed JSON when this returns null.
-function compressRequestBodyZstd(bodyJson) {
+function compressRequestBodyZstd(bodyJson: string) {
     const zlib = loadNodeZlib();
     if (!zlib || typeof zlib.zstdCompressSync !== "function") {
         return null;
@@ -295,10 +342,10 @@ function compressRequestBodyZstd(bodyJson) {
 // ============================================================================
 // Main Stream Function
 // ============================================================================
-export const stream = (model, context, options) => {
+export const stream: StreamFunction<"openai-codex-responses", OpenAICodexResponsesOptions> = (model, context, options) => {
     const stream = new AssistantMessageEventStream();
     (async () => {
-        const output = {
+        const output: AssistantMessage = {
             role: "assistant",
             content: [],
             api: "openai-codex-responses",
@@ -327,7 +374,7 @@ export const stream = (model, context, options) => {
             let body = buildOpenAICodexRequestBody(model, context, options, codexSessionId, grammarToolInputProperties);
             const nextBody = await options?.onPayload?.(body, model);
             if (nextBody !== undefined) {
-                body = nextBody;
+                body = nextBody as OpenAICodexRequestBody;
             }
             const requestServiceTier = body.service_tier;
             const websocketRequestId = codexSessionId || uuidv7();
@@ -501,8 +548,8 @@ export const stream = (model, context, options) => {
         catch (error) {
             for (const block of output.content) {
                 // Streaming scratch buffers are only used during parsing; never persist them.
-                delete block.partialJson;
-                delete block.customInput;
+                delete (block as typeof block & { partialJson?: unknown }).partialJson;
+                delete (block as typeof block & { customInput?: unknown }).customInput;
             }
             output.stopReason = options?.signal?.aborted ? "aborted" : "error";
             output.errorMessage = formatProviderError(normalizeProviderError(error));
@@ -512,7 +559,7 @@ export const stream = (model, context, options) => {
     })();
     return stream;
 };
-export const streamSimple = (model, context, options) => {
+export const streamSimple: StreamFunction<"openai-codex-responses", SimpleStreamOptions> = (model, context, options) => {
     const apiKey = options?.apiKey;
     if (!apiKey) {
         throw new Error(`No API key for provider: ${model.provider}`);
@@ -528,7 +575,13 @@ export const streamSimple = (model, context, options) => {
 // ============================================================================
 // Request Building
 // ============================================================================
-export function buildOpenAICodexRequestBody(model, context, options, cacheSessionId, grammarToolInputProperties = createGrammarToolInputProperties(context.tools, model.compat?.supportsOpenAIGrammarTools ?? false)) {
+export function buildOpenAICodexRequestBody(
+    model: Model<"openai-codex-responses">,
+    context: Context,
+    options: OpenAICodexResponsesOptions | undefined,
+    cacheSessionId: string | undefined,
+    grammarToolInputProperties: ReadonlyMap<string, string> = createGrammarToolInputProperties(context.tools, model.compat?.supportsOpenAIGrammarTools ?? false),
+): OpenAICodexRequestBody {
     const supportsStrictMode = model.compat?.supportsStrictMode ?? true;
     const supportsOpenAIGrammarTools = model.compat?.supportsOpenAIGrammarTools ?? false;
     const toolPlacement = splitDeferredTools(context, model.compat?.supportsToolSearch ?? false);
@@ -542,7 +595,7 @@ export function buildOpenAICodexRequestBody(model, context, options, cacheSessio
             supportsOpenAIGrammarTools,
         },
     });
-    const body = {
+    const body: OpenAICodexRequestBody = {
         model: model.id,
         store: false,
         stream: true,
@@ -580,7 +633,7 @@ export function buildOpenAICodexRequestBody(model, context, options, cacheSessio
     }
     return body;
 }
-function getServiceTierCostMultiplier(model, serviceTier) {
+function getServiceTierCostMultiplier(model: Pick<Model<"openai-codex-responses">, "id">, serviceTier: ResponseCreateParamsStreaming["service_tier"] | undefined): number {
     switch (serviceTier) {
         case "flex":
             return 0.5;
@@ -590,7 +643,7 @@ function getServiceTierCostMultiplier(model, serviceTier) {
             return 1;
     }
 }
-function applyServiceTierPricing(usage, serviceTier, model) {
+function applyServiceTierPricing(usage: Usage, serviceTier: ResponseCreateParamsStreaming["service_tier"] | undefined, model: Pick<Model<"openai-codex-responses">, "id">): void {
     const multiplier = getServiceTierCostMultiplier(model, serviceTier);
     if (multiplier === 1)
         return;
@@ -600,13 +653,13 @@ function applyServiceTierPricing(usage, serviceTier, model) {
     usage.cost.cacheWrite *= multiplier;
     usage.cost.total = usage.cost.input + usage.cost.output + usage.cost.cacheRead + usage.cost.cacheWrite;
 }
-function resolveCodexServiceTier(responseServiceTier, requestServiceTier) {
+function resolveCodexServiceTier(responseServiceTier: ResponseCreateParamsStreaming["service_tier"] | undefined, requestServiceTier: ResponseCreateParamsStreaming["service_tier"] | undefined): ResponseCreateParamsStreaming["service_tier"] | undefined {
     return responseServiceTier ?? requestServiceTier;
 }
-function buildCodexRoutingHint(model, serviceTier) {
+function buildCodexRoutingHint(model: string, serviceTier: ResponseCreateParamsStreaming["service_tier"] | undefined): string {
     return serviceTier === undefined ? `model=${model}` : `model=${model};tier=${serviceTier}`;
 }
-function resolveCodexUrl(baseUrl) {
+function resolveCodexUrl(baseUrl: string): string {
     const raw = baseUrl && baseUrl.trim().length > 0 ? baseUrl : DEFAULT_CODEX_BASE_URL;
     const normalized = raw.replace(TRAILING_SLASHES_PATTERN, "");
     if (normalized.endsWith("/codex/responses"))
@@ -615,7 +668,7 @@ function resolveCodexUrl(baseUrl) {
         return `${normalized}/responses`;
     return `${normalized}/codex/responses`;
 }
-function resolveCodexWebSocketUrl(baseUrl) {
+function resolveCodexWebSocketUrl(baseUrl: string): string {
     const url = new URL(resolveCodexUrl(baseUrl));
     if (url.protocol === "https:")
         url.protocol = "wss:";
@@ -626,7 +679,15 @@ function resolveCodexWebSocketUrl(baseUrl) {
 // ============================================================================
 // Response Processing
 // ============================================================================
-async function processStream(response, output, stream, model, grammarToolInputProperties, requestServiceTier, options) {
+async function processStream(
+    response: Response,
+    output: AssistantMessage,
+    stream: AssistantMessageEventStream,
+    model: Model<"openai-codex-responses">,
+    grammarToolInputProperties: ReadonlyMap<string, string>,
+    requestServiceTier: ResponseCreateParamsStreaming["service_tier"] | undefined,
+    options: OpenAICodexResponsesOptions | undefined,
+): Promise<void> {
     await processResponsesStream(mapCodexEvents(parseSSE(response, options?.signal)), output, stream, model, {
         serviceTier: requestServiceTier,
         grammarToolInputProperties,
@@ -635,9 +696,9 @@ async function processStream(response, output, stream, model, grammarToolInputPr
     });
 }
 class CodexApiError extends Error {
-    code;
-    payload;
-    constructor(message, options) {
+    readonly code?: string;
+    readonly payload?: unknown;
+    constructor(message: string, options?: { cause?: unknown; code?: string; payload?: unknown }) {
         super(message);
         this.name = "CodexApiError";
         this.code = options?.code;
@@ -646,8 +707,8 @@ class CodexApiError extends Error {
     }
 }
 class CodexProtocolError extends Error {
-    payload;
-    constructor(message, options) {
+    readonly payload?: unknown;
+    constructor(message: string, options?: { cause?: unknown; payload?: unknown }) {
         super(message);
         this.name = "CodexProtocolError";
         this.payload = options?.payload;
@@ -666,16 +727,16 @@ class InvalidContinuationPayloadError extends CodexProtocolError {
         this.name = "InvalidContinuationPayloadError";
     }
 }
-function isCodexNonTransportError(error) {
+function isCodexNonTransportError(error: unknown): boolean {
     return error instanceof CodexApiError || error instanceof CodexProtocolError;
 }
-function isWebSocketConnectionLimitReachedError(error) {
+function isWebSocketConnectionLimitReachedError(error: unknown): boolean {
     return error instanceof CodexApiError && error.code === WEBSOCKET_CONNECTION_LIMIT_REACHED_CODE;
 }
-function isPreviousResponseNotFoundError(error) {
+function isPreviousResponseNotFoundError(error: unknown): boolean {
     return error instanceof CodexApiError && error.code === PREVIOUS_RESPONSE_NOT_FOUND_CODE;
 }
-function extractCodexEventError(event) {
+function extractCodexEventError(event: CodexEvent): CodexErrorRecord {
     const nested = event.error && typeof event.error === "object" ? event.error : undefined;
     return {
         code: typeof event.code === "string" ? event.code : typeof nested?.code === "string" ? nested.code : undefined,
@@ -686,7 +747,7 @@ function extractCodexEventError(event) {
                 : undefined,
     };
 }
-async function* mapCodexEvents(events) {
+async function* mapCodexEvents(events: AsyncIterable<CodexEvent>): AsyncGenerator<ResponseStreamEvent> {
     for await (const event of events) {
         const type = typeof event.type === "string" ? event.type : undefined;
         if (!type)
@@ -709,21 +770,21 @@ async function* mapCodexEvents(events) {
             const normalizedResponse = response
                 ? { ...response, status: normalizeCodexStatus(response.status) }
                 : response;
-            yield { ...event, type: "response.completed", response: normalizedResponse };
+            yield { ...event, type: "response.completed", response: normalizedResponse } as unknown as ResponseStreamEvent;
             return;
         }
-        yield event;
+        yield event as unknown as ResponseStreamEvent;
     }
 }
-function normalizeCodexStatus(status) {
+function normalizeCodexStatus(status: unknown): CodexResponseStatus | undefined {
     if (typeof status !== "string")
         return undefined;
-    return CODEX_RESPONSE_STATUSES.has(status) ? status : undefined;
+    return CODEX_RESPONSE_STATUSES.has(status as CodexResponseStatus) ? status as CodexResponseStatus : undefined;
 }
 // ============================================================================
 // SSE Parsing
 // ============================================================================
-async function* parseSSE(response, signal) {
+async function* parseSSE(response: Response, signal?: AbortSignal): AsyncGenerator<CodexEvent> {
     if (!response.body)
         return;
     const reader = response.body.getReader();
@@ -757,7 +818,7 @@ async function* parseSSE(response, signal) {
                     const data = dataLines.join("\n").trim();
                     if (data && data !== "[DONE]") {
                         try {
-                            yield JSON.parse(data);
+                            yield JSON.parse(data) as CodexEvent;
                         }
                         catch (cause) {
                             throw new CodexProtocolError(`Invalid Codex SSE JSON: ${formatThrownValue(cause)}`, {
@@ -792,7 +853,7 @@ const MIN_SESSION_WEBSOCKET_CACHE_TTL_MS = 60 * 1000;
 const MAX_SESSION_WEBSOCKET_CACHE_TTL_MS = 30 * 60 * 1000;
 const DEFAULT_MAX_CACHED_WEBSOCKET_ENTRIES = 4;
 const MAX_CACHED_WEBSOCKET_ENTRIES_LIMIT = 16;
-function boundedEnvironmentInteger(name, fallback, minimum, maximum) {
+function boundedEnvironmentInteger(name: string, fallback: number, minimum: number, maximum: number): number {
     const raw = typeof process === "undefined" ? undefined : process.env?.[name];
     if (raw === undefined || raw === "")
         return fallback;
@@ -802,13 +863,70 @@ function boundedEnvironmentInteger(name, fallback, minimum, maximum) {
 const SESSION_WEBSOCKET_CACHE_TTL_MS = boundedEnvironmentInteger("SP_CODEX_WEBSOCKET_IDLE_TTL_MS", DEFAULT_SESSION_WEBSOCKET_CACHE_TTL_MS, MIN_SESSION_WEBSOCKET_CACHE_TTL_MS, MAX_SESSION_WEBSOCKET_CACHE_TTL_MS);
 const SESSION_WEBSOCKET_MAX_AGE_MS = 55 * 60 * 1000;
 const MAX_CACHED_WEBSOCKET_ENTRIES = boundedEnvironmentInteger("SP_CODEX_WEBSOCKET_MAX_CACHED_ENTRIES", DEFAULT_MAX_CACHED_WEBSOCKET_ENTRIES, 1, MAX_CACHED_WEBSOCKET_ENTRIES_LIMIT);
-const websocketSessionCache = new Map();
-const websocketDebugStats = new Map();
-const websocketSseFallbackSessions = new Set();
-const successfulDispatchCommitments = new Map();
-const consumedDispatchCommitments = new Set();
+
+type WebSocketEventType = "open" | "message" | "error" | "close";
+type WebSocketListener = (event: unknown) => void;
+
+interface WebSocketLike {
+    readonly readyState?: number;
+    close(code?: number, reason?: string): void;
+    send(data: string): void;
+    addEventListener(type: WebSocketEventType, listener: WebSocketListener): void;
+    removeEventListener(type: WebSocketEventType, listener: WebSocketListener): void;
+}
+
+type WebSocketConstructor = new (
+    url: string,
+    protocols?: string | string[] | { headers?: Record<string, string> },
+) => WebSocketLike;
+
+interface CachedWebSocketContinuationState {
+    lastRequestBody: RequestBody;
+    lastResponseId: string;
+    lastResponseItems: ResponseInput;
+    compactionBoundary?: boolean;
+}
+
+interface CachedWebSocketConnection {
+    socket: WebSocketLike;
+    connectionHeadersKey: string;
+    busy: boolean;
+    createdAt: number;
+    lastUsedAt: number;
+    idleTimer?: ReturnType<typeof setTimeout>;
+    continuation?: CachedWebSocketContinuationState;
+}
+
+interface SuccessfulDispatchCommitment {
+    transport: OpenAICodexDispatchTransport;
+    instructionsHash: string;
+    inputHash: string;
+    inputItems: number;
+    responseItemsHash: string;
+    responseItems: number;
+    toolsHash: string;
+    bodyWithoutInputHash: string;
+    promptCacheKeyHash: string;
+    serviceTierHash: string;
+    headersHash: string;
+    actualBodyHash: string;
+    responseId?: string;
+}
+
+interface WebSocketLease {
+    socket: WebSocketLike;
+    entry?: CachedWebSocketConnection;
+    reused: boolean;
+    release(options?: { keep?: boolean }): void;
+}
+
+const websocketSessionCache = new Map<string, Map<string, CachedWebSocketConnection>>();
+const websocketDebugStats = new Map<string, OpenAICodexWebSocketDebugStats>();
+const websocketSseFallbackSessions = new Set<string>();
+const successfulDispatchCommitments = new Map<string, SuccessfulDispatchCommitment>();
+const consumedDispatchCommitments = new Set<string>();
 const MAX_SUCCESSFUL_DISPATCH_COMMITMENTS = 16;
-function getOrCreateWebSocketDebugStats(sessionId) {
+function getOrCreateWebSocketDebugStats(sessionId: string): OpenAICodexWebSocketDebugStats {
     let stats = websocketDebugStats.get(sessionId);
     if (!stats) {
         stats = {
@@ -827,11 +945,11 @@ function getOrCreateWebSocketDebugStats(sessionId) {
     }
     return stats;
 }
-export function getOpenAICodexWebSocketDebugStats(sessionId) {
+export function getOpenAICodexWebSocketDebugStats(sessionId: string): OpenAICodexWebSocketDebugStats | undefined {
     const stats = websocketDebugStats.get(sessionId);
     return stats ? { ...stats } : undefined;
 }
-export function resetOpenAICodexWebSocketDebugStats(sessionId) {
+export function resetOpenAICodexWebSocketDebugStats(sessionId?: string): void {
     if (sessionId) {
         websocketDebugStats.delete(sessionId);
         websocketSseFallbackSessions.delete(sessionId);
@@ -840,8 +958,8 @@ export function resetOpenAICodexWebSocketDebugStats(sessionId) {
     websocketDebugStats.clear();
     websocketSseFallbackSessions.clear();
 }
-export function closeOpenAICodexWebSocketSessions(sessionId) {
-    const closeEntry = (entry) => {
+export function closeOpenAICodexWebSocketSessions(sessionId?: string): void {
+    const closeEntry = (entry: CachedWebSocketConnection) => {
         if (entry.idleTimer)
             clearTimeout(entry.idleTimer);
         closeWebSocketSilently(entry.socket, 1000, "debug_close");
@@ -862,22 +980,22 @@ export function closeOpenAICodexWebSocketSessions(sessionId) {
     successfulDispatchCommitments.clear();
     consumedDispatchCommitments.clear();
 }
-function cleanupOpenAICodexSessionResources(sessionId) {
+function cleanupOpenAICodexSessionResources(sessionId?: string): void {
     closeOpenAICodexWebSocketSessions(sessionId);
     resetOpenAICodexWebSocketDebugStats(sessionId);
 }
 registerSessionResourceCleanup(cleanupOpenAICodexSessionResources);
-function isWebSocketSseFallbackActive(sessionId) {
+function isWebSocketSseFallbackActive(sessionId: string | undefined): boolean {
     return sessionId ? websocketSseFallbackSessions.has(sessionId) : false;
 }
-function recordWebSocketSseFallback(sessionId) {
+function recordWebSocketSseFallback(sessionId: string | undefined): void {
     if (!sessionId)
         return;
     const stats = getOrCreateWebSocketDebugStats(sessionId);
     stats.sseFallbacks++;
     stats.websocketFallbackActive = isWebSocketSseFallbackActive(sessionId);
 }
-function recordWebSocketFailure(sessionId, error) {
+function recordWebSocketFailure(sessionId: string | undefined, error: unknown): void {
     if (!sessionId)
         return;
     websocketSseFallbackSessions.add(sessionId);
@@ -886,16 +1004,16 @@ function recordWebSocketFailure(sessionId, error) {
     stats.lastWebSocketError = formatThrownValue(error);
     stats.websocketFallbackActive = true;
 }
-let _cachedWebsocket = null;
-async function getWebSocketConstructor(env) {
+let _cachedWebsocket: WebSocketConstructor | null = null;
+async function getWebSocketConstructor(env?: ProviderEnv): Promise<WebSocketConstructor | null> {
     if (!env && _cachedWebsocket)
         return _cachedWebsocket;
     // bun doesn't respect http proxy envs, ref: https://github.com/oven-sh/bun/issues/15489
     // TODO: remove this when bun supports proxy envs in websocket.
     if (typeof process !== "undefined" && process.versions?.bun) {
         const WebSocketWithProxy = class extends WebSocket {
-            constructor(url, options) {
-                let _opts = {};
+            constructor(url: string | URL, options?: string | string[] | Record<string, unknown>) {
+                let _opts: Record<string, unknown> = {};
                 if (Array.isArray(options) || typeof options === "string") {
                     _opts = { protocols: options };
                 }
@@ -903,7 +1021,7 @@ async function getWebSocketConstructor(env) {
                     _opts = { ...options };
                 }
                 const proxyUrl = resolveHttpProxyUrlForTarget(url.toString().replace(WSS_PROTOCOL_PATTERN, "https:").replace(WS_PROTOCOL_PATTERN, "http:"), env);
-                super(url, { ..._opts, ...(proxyUrl ? { proxy: proxyUrl.toString() } : {}) });
+                super(url, { ..._opts, ...(proxyUrl ? { proxy: proxyUrl.toString() } : {}) } as never);
             }
         };
         if (!env) {
@@ -911,16 +1029,16 @@ async function getWebSocketConstructor(env) {
         }
         return WebSocketWithProxy;
     }
-    const ctor = globalThis.WebSocket;
+    const ctor = (globalThis as { WebSocket?: unknown }).WebSocket;
     if (typeof ctor !== "function")
         return null;
-    return ctor;
+    return ctor as WebSocketConstructor;
 }
 class WebSocketCloseError extends Error {
-    code;
-    reason;
-    wasClean;
-    constructor(message, options) {
+    readonly code?: number;
+    readonly reason?: string;
+    readonly wasClean?: boolean;
+    constructor(message: string, options?: { code?: number; reason?: string; wasClean?: boolean }) {
         super(message);
         this.name = "WebSocketCloseError";
         this.code = options?.code;
@@ -928,25 +1046,25 @@ class WebSocketCloseError extends Error {
         this.wasClean = options?.wasClean;
     }
 }
-function getWebSocketReadyState(socket) {
+function getWebSocketReadyState(socket: WebSocketLike): number | undefined {
     const readyState = socket.readyState;
     return typeof readyState === "number" ? readyState : undefined;
 }
-function isWebSocketReusable(socket) {
+function isWebSocketReusable(socket: WebSocketLike): boolean {
     const readyState = getWebSocketReadyState(socket);
     // If readyState is unavailable, assume the runtime keeps it open/reusable.
     return readyState === undefined || readyState === 1;
 }
-function isWebSocketSessionExpired(entry) {
+function isWebSocketSessionExpired(entry: CachedWebSocketConnection): boolean {
     return Date.now() - entry.createdAt >= SESSION_WEBSOCKET_MAX_AGE_MS;
 }
-function closeWebSocketSilently(socket, code = 1000, reason = "done") {
+function closeWebSocketSilently(socket: WebSocketLike, code = 1000, reason = "done"): void {
     try {
         socket.close(code, reason);
     }
     catch { }
 }
-function removeCachedWebSocketSession(sessionId, accountId, entry, reason) {
+function removeCachedWebSocketSession(sessionId: string, accountId: string, entry: CachedWebSocketConnection, reason: string): void {
     if (entry.idleTimer)
         clearTimeout(entry.idleTimer);
     closeWebSocketSilently(entry.socket, 1000, reason);
@@ -956,7 +1074,7 @@ function removeCachedWebSocketSession(sessionId, accountId, entry, reason) {
     if (accountEntries?.size === 0)
         websocketSessionCache.delete(sessionId);
 }
-function pruneWebSocketSessionCache() {
+function pruneWebSocketSessionCache(): void {
     for (const [sessionId, accountEntries] of websocketSessionCache) {
         for (const [accountId, entry] of accountEntries) {
             if (!entry.busy && (isWebSocketSessionExpired(entry) || !isWebSocketReusable(entry.socket)))
@@ -964,7 +1082,7 @@ function pruneWebSocketSessionCache() {
         }
     }
 }
-function reserveWebSocketSessionCacheSlot() {
+function reserveWebSocketSessionCacheSlot(): boolean {
     pruneWebSocketSessionCache();
     let cachedEntryCount = 0;
     let oldestSessionId;
@@ -984,31 +1102,31 @@ function reserveWebSocketSessionCacheSlot() {
         return true;
     if (!oldestEntry)
         return false;
-    removeCachedWebSocketSession(oldestSessionId, oldestAccountId, oldestEntry, "cache_lru_eviction");
+    removeCachedWebSocketSession(oldestSessionId!, oldestAccountId!, oldestEntry, "cache_lru_eviction");
     return true;
 }
-function expireSessionWebSocket(sessionId, accountId, entry) {
+function expireSessionWebSocket(sessionId: string, accountId: string, entry: CachedWebSocketConnection): void {
     if (entry.busy)
         return;
     removeCachedWebSocketSession(sessionId, accountId, entry, "idle_timeout");
 }
-function scheduleSessionWebSocketExpiry(sessionId, accountId, entry) {
+function scheduleSessionWebSocketExpiry(sessionId: string, accountId: string, entry: CachedWebSocketConnection) {
     if (entry.idleTimer) {
         clearTimeout(entry.idleTimer);
     }
     entry.lastUsedAt = Date.now();
     entry.idleTimer = setTimeout(expireSessionWebSocket, SESSION_WEBSOCKET_CACHE_TTL_MS, sessionId, accountId, entry);
 }
-async function connectWebSocket(url, headers, signal, connectTimeoutMs = DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS, env) {
+async function connectWebSocket(url: string, headers: Headers, signal?: AbortSignal, connectTimeoutMs: number | undefined = DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS, env?: ProviderEnv): Promise<WebSocketLike> {
     const WebSocketCtor = await getWebSocketConstructor(env);
     if (!WebSocketCtor) {
         throw new Error("WebSocket transport is not available in this runtime");
     }
     const wsHeaders = headersToRecord(headers);
-    return new Promise((resolve, reject) => {
+    return new Promise<WebSocketLike>((resolve, reject) => {
         let settled = false;
-        let timeout;
-        let socket;
+        let timeout: ReturnType<typeof setTimeout> | undefined;
+        let socket: WebSocketLike;
         try {
             socket = new WebSocketCtor(url, { headers: wsHeaders });
         }
@@ -1026,7 +1144,7 @@ async function connectWebSocket(url, headers, signal, connectTimeoutMs = DEFAULT
             socket.removeEventListener("close", onClose);
             signal?.removeEventListener("abort", onAbort);
         };
-        const fail = (error, closeReason) => {
+        const fail = (error: Error, closeReason?: string) => {
             if (settled)
                 return;
             settled = true;
@@ -1043,10 +1161,10 @@ async function connectWebSocket(url, headers, signal, connectTimeoutMs = DEFAULT
             cleanup();
             resolve(socket);
         };
-        const onError = (event) => {
+        const onError = (event: unknown) => {
             fail(extractWebSocketError(event));
         };
-        const onClose = (event) => {
+        const onClose = (event: unknown) => {
             fail(extractWebSocketCloseError(event));
         };
         const onAbort = () => {
@@ -1066,7 +1184,15 @@ async function connectWebSocket(url, headers, signal, connectTimeoutMs = DEFAULT
         }
     });
 }
-async function acquireWebSocket(url, headers, sessionId, accountId, signal, connectTimeoutMs, env) {
+async function acquireWebSocket(
+    url: string,
+    headers: Headers,
+    sessionId: string | undefined,
+    accountId: string,
+    signal: AbortSignal | undefined,
+    connectTimeoutMs: number | undefined,
+    env: ProviderEnv | undefined,
+): Promise<WebSocketLease> {
     if (!sessionId) {
         const socket = await connectWebSocket(url, headers, signal, connectTimeoutMs, env);
         return {
@@ -1145,7 +1271,7 @@ async function acquireWebSocket(url, headers, sessionId, accountId, signal, conn
         };
     }
     const now = Date.now();
-    const entry = {
+    const entry: CachedWebSocketConnection = {
         socket,
         connectionHeadersKey,
         busy: true,
@@ -1172,7 +1298,7 @@ async function acquireWebSocket(url, headers, sessionId, accountId, signal, conn
         },
     };
 }
-function extractWebSocketError(event) {
+function extractWebSocketError(event: unknown): Error {
     if (event && typeof event === "object") {
         const message = "message" in event ? event.message : undefined;
         if (typeof message === "string" && message.length > 0) {
@@ -1191,7 +1317,7 @@ function extractWebSocketError(event) {
     }
     return new Error("WebSocket error");
 }
-function extractWebSocketCloseError(event) {
+function extractWebSocketCloseError(event: unknown): Error {
     if (event && typeof event === "object") {
         const code = "code" in event ? event.code : undefined;
         const reason = "reason" in event ? event.reason : undefined;
@@ -1209,7 +1335,7 @@ function extractWebSocketCloseError(event) {
     }
     return new Error("WebSocket closed");
 }
-async function decodeWebSocketData(data) {
+async function decodeWebSocketData(data: unknown): Promise<string | null> {
     if (typeof data === "string")
         return data;
     if (data instanceof ArrayBuffer) {
@@ -1220,17 +1346,21 @@ async function decodeWebSocketData(data) {
         return new TextDecoder().decode(new Uint8Array(view.buffer, view.byteOffset, view.byteLength));
     }
     if (data && typeof data === "object" && "arrayBuffer" in data) {
-        const blobLike = data;
+        const blobLike = data as { arrayBuffer(): Promise<ArrayBuffer> };
         const arrayBuffer = await blobLike.arrayBuffer();
         return new TextDecoder().decode(new Uint8Array(arrayBuffer));
     }
     return null;
 }
-async function* parseWebSocket(socket, signal, idleTimeoutMs) {
-    const queue = [];
-    let pending = null;
+async function* parseWebSocket(
+    socket: WebSocketLike,
+    signal: AbortSignal | undefined,
+    idleTimeoutMs: number | undefined,
+): AsyncGenerator<CodexEvent> {
+    const queue: CodexEvent[] = [];
+    let pending: (() => void) | null = null;
     let done = false;
-    let failed = null;
+    let failed: Error | null = null;
     let sawCompletion = false;
     const wake = () => {
         if (!pending)
@@ -1239,7 +1369,7 @@ async function* parseWebSocket(socket, signal, idleTimeoutMs) {
         pending = null;
         resolve();
     };
-    const onMessage = (event) => {
+    const onMessage = (event: unknown) => {
         void (async () => {
             let text = null;
             try {
@@ -1248,7 +1378,7 @@ async function* parseWebSocket(socket, signal, idleTimeoutMs) {
                 text = await decodeWebSocketData(event.data);
                 if (!text)
                     return;
-                const parsed = JSON.parse(text);
+                const parsed = JSON.parse(text) as CodexEvent;
                 const type = typeof parsed.type === "string" ? parsed.type : "";
                 if (type === "response.completed" || type === "response.done" || type === "response.incomplete") {
                     sawCompletion = true;
@@ -1267,12 +1397,12 @@ async function* parseWebSocket(socket, signal, idleTimeoutMs) {
             }
         })();
     };
-    const onError = (event) => {
+    const onError = (event: unknown) => {
         failed = extractWebSocketError(event);
         done = true;
         wake();
     };
-    const onClose = (event) => {
+    const onClose = (event: unknown) => {
         if (sawCompletion) {
             done = true;
             wake();
@@ -1299,13 +1429,13 @@ async function* parseWebSocket(socket, signal, idleTimeoutMs) {
                 throw new Error("Request was aborted");
             }
             if (queue.length > 0) {
-                yield queue.shift();
+                yield queue.shift()!;
                 continue;
             }
             if (done)
                 break;
-            let timeout;
-            await new Promise((resolve, reject) => {
+            let timeout: ReturnType<typeof setTimeout> | undefined;
+            await new Promise<void>((resolve, reject) => {
                 pending = resolve;
                 if (idleTimeoutMs !== undefined && idleTimeoutMs > 0) {
                     timeout = setTimeout(() => {
@@ -1337,11 +1467,11 @@ async function* parseWebSocket(socket, signal, idleTimeoutMs) {
         signal?.removeEventListener("abort", onAbort);
     }
 }
-function requestBodyWithoutInput(body) {
+function requestBodyWithoutInput(body: RequestBody): RequestBody {
     const { input: _input, previous_response_id: _previousResponseId, ...rest } = body;
     return rest;
 }
-function isJsonCompatiblePlainData(value, ancestors = new WeakSet()) {
+function isJsonCompatiblePlainData(value: unknown, ancestors = new WeakSet<object>()): boolean {
     if (value === null || value === undefined || typeof value === "string" || typeof value === "boolean")
         return true;
     if (typeof value === "number")
@@ -1393,7 +1523,7 @@ function isJsonCompatiblePlainData(value, ancestors = new WeakSet()) {
         ancestors.delete(value);
     }
 }
-function jsonValuesEqual(a, b) {
+function jsonValuesEqual(a: unknown, b: unknown): boolean {
     if (a === b)
         return true;
     if (Array.isArray(a) || Array.isArray(b)) {
@@ -1409,24 +1539,24 @@ function jsonValuesEqual(a, b) {
     }
     if (a === null || b === null || typeof a !== "object" || typeof b !== "object")
         return false;
-    const leftKeys = Object.keys(a).filter((key) => a[key] !== undefined);
-    const rightKeys = Object.keys(b).filter((key) => b[key] !== undefined);
+    const leftKeys = Object.keys(a).filter((key) => (a as Record<string, unknown>)[key] !== undefined);
+    const rightKeys = Object.keys(b).filter((key) => (b as Record<string, unknown>)[key] !== undefined);
     if (leftKeys.length !== rightKeys.length)
         return false;
     for (const key of leftKeys) {
-        if (!Object.prototype.hasOwnProperty.call(b, key) || b[key] === undefined || !jsonValuesEqual(a[key], b[key]))
+        if (!Object.prototype.hasOwnProperty.call(b, key) || (b as Record<string, unknown>)[key] === undefined || !jsonValuesEqual((a as Record<string, unknown>)[key], (b as Record<string, unknown>)[key]))
             return false;
     }
     return true;
 }
-function responseInputsEqual(a, b) {
+function responseInputsEqual(a: ResponseInput | undefined, b: ResponseInput | undefined): boolean {
     return jsonValuesEqual(a ?? [], b ?? []);
 }
-function requestBodiesMatchExceptInput(a, b) {
+function requestBodiesMatchExceptInput(a: RequestBody, b: RequestBody): boolean {
     return jsonValuesEqual(requestBodyWithoutInput(a), requestBodyWithoutInput(b));
 }
-function normalizedHeadersForCommitment(headers) {
-    const values = [];
+function normalizedHeadersForCommitment(headers: Headers): Array<[string, string]> {
+    const values: Array<[string, string]> = [];
     for (const [rawName, rawValue] of headers.entries()) {
         const name = rawName.toLowerCase();
         values.push([name, name === "authorization" ? "<redacted>" : rawValue]);
@@ -1434,7 +1564,14 @@ function normalizedHeadersForCommitment(headers) {
     values.sort();
     return values;
 }
-function createSuccessfulDispatchCommitment(fullBody, actualBody, headers, transport, responseItems, responseId) {
+function createSuccessfulDispatchCommitment(
+    fullBody: RequestBody,
+    actualBody: RequestBody,
+    headers: Headers,
+    transport: OpenAICodexDispatchTransport,
+    responseItems: ResponseInput,
+    responseId?: string,
+): SuccessfulDispatchCommitment | undefined {
     const instructionsHash = sha256Json(fullBody.instructions ?? null);
     const inputHash = sha256Json(fullBody.input ?? []);
     const responseItemsHash = sha256Json(responseItems);
@@ -1471,7 +1608,15 @@ function createSuccessfulDispatchCommitment(fullBody, actualBody, headers, trans
         ...(responseId ? { responseId } : {}),
     };
 }
-function recordSuccessfulDispatch(sessionId, fullBody, actualBody, headers, transport, responseItems, responseId) {
+function recordSuccessfulDispatch(
+    sessionId: string | undefined,
+    fullBody: RequestBody,
+    actualBody: RequestBody,
+    headers: Headers,
+    transport: OpenAICodexDispatchTransport,
+    responseItems: ResponseInput,
+    responseId?: string,
+): void {
     if (!sessionId)
         return;
     const commitment = createSuccessfulDispatchCommitment(fullBody, actualBody, headers, transport, responseItems, responseId);
@@ -1487,7 +1632,7 @@ function recordSuccessfulDispatch(sessionId, fullBody, actualBody, headers, tran
     }
     successfulDispatchCommitments.set(sessionId, commitment);
 }
-function markDispatchCommitmentConsumed(sessionId) {
+function markDispatchCommitmentConsumed(sessionId: string): void {
     consumedDispatchCommitments.delete(sessionId);
     while (consumedDispatchCommitments.size >= MAX_SUCCESSFUL_DISPATCH_COMMITMENTS) {
         const oldest = consumedDispatchCommitments.values().next().value;
@@ -1497,12 +1642,16 @@ function markDispatchCommitmentConsumed(sessionId) {
     }
     consumedDispatchCommitments.add(sessionId);
 }
-function convertAssistantResponseItems(model, output, grammarToolInputProperties) {
+function convertAssistantResponseItems(
+    model: Model<"openai-codex-responses">,
+    output: AssistantMessage,
+    grammarToolInputProperties: ReadonlyMap<string, string>,
+): ResponseInput {
     const converted = convertResponsesMessages(model, { messages: [output] }, CODEX_TOOL_CALL_PROVIDERS, {
         includeSystemPrompt: false,
         grammarToolInputProperties,
     });
-    const responseItems = [];
+    const responseItems: ResponseInput = [];
     for (const item of converted) {
         if (item.type === "function_call_output" || item.type === "custom_tool_call_output")
             continue;
@@ -1510,7 +1659,7 @@ function convertAssistantResponseItems(model, output, grammarToolInputProperties
     }
     return responseItems;
 }
-function getCachedWebSocketInputDelta(body, continuation) {
+function getCachedWebSocketInputDelta(body: RequestBody, continuation: CachedWebSocketContinuationState): ResponseInput | undefined {
     if (!requestBodiesMatchExceptInput(body, continuation.lastRequestBody)) {
         return undefined;
     }
@@ -1540,14 +1689,14 @@ function getCachedWebSocketInputDelta(body, continuation) {
 }
 const NO_RESPONSE_CONTINUATION_MATCH = -1;
 const AMBIGUOUS_RESPONSE_CONTINUATION_MATCH = -2;
-function responseItemContinuationIdentity(item, includeItemId) {
+function responseItemContinuationIdentity(item: unknown, includeItemId: boolean): string | undefined {
     if (!item || typeof item !== "object")
         return undefined;
-    const candidate = item;
+    const candidate = item as Record<string, unknown>;
     const type = typeof candidate.type === "string" ? candidate.type : undefined;
     if (!type)
         return undefined;
-    const identity = { type };
+    const identity: Record<string, string> = { type };
     // A live WebSocket continuation cannot survive a process restart. Within the
     // owning process, Pi preserves provider item ids in response signatures.
     if (includeItemId && typeof candidate.id === "string")
@@ -1559,7 +1708,7 @@ function responseItemContinuationIdentity(item, includeItemId) {
     }
     return JSON.stringify(identity);
 }
-function findUniqueResponseContinuationBoundary(currentInput, responseItems, includeItemId) {
+function findUniqueResponseContinuationBoundary(currentInput: ResponseInput, responseItems: ResponseInput, includeItemId: boolean): number {
     if (responseItems.length === 0 || currentInput.length < responseItems.length)
         return NO_RESPONSE_CONTINUATION_MATCH;
     const expectedIdentities = new Array(responseItems.length);
@@ -1587,7 +1736,11 @@ function findUniqueResponseContinuationBoundary(currentInput, responseItems, inc
     }
     return matchedBoundary ?? NO_RESPONSE_CONTINUATION_MATCH;
 }
-function getCompactionWebSocketInputDelta(body, continuation, commitment) {
+function getCompactionWebSocketInputDelta(
+    body: RequestBody,
+    continuation: CachedWebSocketContinuationState,
+    commitment: SuccessfulDispatchCommitment,
+): ResponseInput | undefined {
     if (!isJsonCompatiblePlainData(body) ||
         !isJsonCompatiblePlainData(continuation.lastRequestBody) ||
         !isJsonCompatiblePlainData(continuation.lastResponseItems)) {
@@ -1612,7 +1765,7 @@ function getCompactionWebSocketInputDelta(body, continuation, commitment) {
         return undefined;
     return currentInput.slice(boundary);
 }
-function buildCachedWebSocketRequestBody(entry, body) {
+function buildCachedWebSocketRequestBody(entry: CachedWebSocketConnection, body: RequestBody): RequestBody {
     const continuation = entry.continuation;
     if (!continuation) {
         return body;
@@ -1636,7 +1789,7 @@ function buildCachedWebSocketRequestBody(entry, body) {
         input: delta,
     };
 }
-async function* startWebSocketOutputOnFirstEvent(events, onStart) {
+async function* startWebSocketOutputOnFirstEvent(events: AsyncIterable<ResponseStreamEvent>, onStart: () => void) {
     let started = false;
     for await (const event of events) {
         if (!started) {
@@ -1646,7 +1799,22 @@ async function* startWebSocketOutputOnFirstEvent(events, onStart) {
         yield event;
     }
 }
-async function processWebSocketStream(url, body, headers, output, stream, model, onStart, idleTimeoutMs, websocketConnectTimeoutMs, cacheSessionId, accountId, grammarToolInputProperties, requestServiceTier, options) {
+async function processWebSocketStream(
+    url: string,
+    body: RequestBody,
+    headers: Headers,
+    output: AssistantMessage,
+    stream: AssistantMessageEventStream,
+    model: Model<"openai-codex-responses">,
+    onStart: () => void,
+    idleTimeoutMs: number | undefined,
+    websocketConnectTimeoutMs: number | undefined,
+    cacheSessionId: string | undefined,
+    accountId: string,
+    grammarToolInputProperties: ReadonlyMap<string, string>,
+    requestServiceTier: ResponseCreateParamsStreaming["service_tier"] | undefined,
+    options: OpenAICodexResponsesOptions | undefined,
+): Promise<void> {
     const { socket, entry, reused, release } = await acquireWebSocket(url, headers, cacheSessionId, accountId, options?.signal, websocketConnectTimeoutMs, options?.env);
     let keepConnection = true;
     const useCachedContext = options?.transport === "websocket-cached" || options?.transport === "auto";
@@ -1712,20 +1880,25 @@ async function processWebSocketStream(url, body, headers, output, stream, model,
         release({ keep: keepConnection });
     }
 }
-function asOpenAICodexRequestBody(payload) {
+function asOpenAICodexRequestBody(payload: Record<string, unknown>): RequestBody {
     if (typeof payload.model !== "string" || !Array.isArray(payload.input)) {
         throw new Error("Codex compaction requires a canonical Responses payload with model and input.");
     }
-    return payload;
+    return payload as RequestBody;
 }
-function buildCompactionRequestBody(regularPayload) {
+function buildCompactionRequestBody(regularPayload: Record<string, unknown>): RequestBody {
     const regularBody = asOpenAICodexRequestBody(regularPayload);
     return {
         ...regularBody,
-        input: [...(regularBody.input ?? []), { type: "compaction_trigger" }],
+        input: [...(regularBody.input ?? []), { type: "compaction_trigger" } as unknown as ResponseInput[number]],
     };
 }
-function compareCompactionToSuccessfulDispatch(commitment, body, headers, compactionTransport) {
+function compareCompactionToSuccessfulDispatch(
+    commitment: SuccessfulDispatchCommitment,
+    body: RequestBody,
+    headers: Headers,
+    compactionTransport: "sse" | "websocket-delta",
+): OpenAICodexCompactionDiagnostics {
     const input = body.input ?? [];
     const priorInput = input.slice(0, commitment.inputItems);
     const responseEnd = commitment.inputItems + commitment.responseItems;
@@ -1782,7 +1955,7 @@ function compareCompactionToSuccessfulDispatch(commitment, body, headers, compac
         },
     };
 }
-function assertCompactionParity(diagnostics) {
+function assertCompactionParity(diagnostics: OpenAICodexCompactionDiagnostics): void {
     if (!diagnostics.instructions)
         throw new Error("Codex compaction stopped: instructions differ from the last successful request.");
     if (!diagnostics.inputPrefix && diagnostics.compactionTransport === "sse")
@@ -1801,7 +1974,7 @@ function assertCompactionParity(diagnostics) {
         throw new Error("Codex compaction stopped: cache-relevant headers differ from the last successful request.");
     }
 }
-function discardCompactionWebSocket(sessionId, accountId, entry, reason) {
+function discardCompactionWebSocket(sessionId: string, accountId: string, entry: CachedWebSocketConnection, reason: string): void {
     closeWebSocketSilently(entry.socket, 1000, reason);
     if (entry.idleTimer)
         clearTimeout(entry.idleTimer);
@@ -1811,7 +1984,10 @@ function discardCompactionWebSocket(sessionId, accountId, entry, reason) {
     if (accountEntries?.size === 0)
         websocketSessionCache.delete(sessionId);
 }
-function acquireExistingCompactionWebSocket(sessionId, accountId, headers) {
+function acquireExistingCompactionWebSocket(sessionId: string, accountId: string, headers: Headers): {
+    entry: CachedWebSocketConnection;
+    release(keep: boolean): void;
+} {
     const accountEntries = websocketSessionCache.get(sessionId);
     const entry = accountEntries?.get(accountId);
     if (!entry)
@@ -1837,7 +2013,7 @@ function acquireExistingCompactionWebSocket(sessionId, accountId, headers) {
     entry.busy = true;
     return {
         entry,
-        release: (keep) => {
+        release: (keep: boolean) => {
             if (!keep || !isWebSocketReusable(entry.socket)) {
                 closeWebSocketSilently(entry.socket);
                 if (accountEntries?.get(accountId) === entry)
@@ -1851,12 +2027,16 @@ function acquireExistingCompactionWebSocket(sessionId, accountId, headers) {
         },
     };
 }
-async function collectRemoteCompactionEvents(events) {
+interface RemoteCompactionEventResult extends OpenAICodexCompactionResult {
+    responseId?: string;
+}
+
+async function collectRemoteCompactionEvents(events: AsyncIterable<CodexEvent>): Promise<RemoteCompactionEventResult> {
     let completed = false;
-    let compactionItem;
+    let compactionItem: Record<string, unknown> | undefined;
     let compactionItems = 0;
-    let usage;
-    let responseId;
+    let usage: unknown;
+    let responseId: string | undefined;
     for await (const event of events) {
         const type = typeof event.type === "string" ? event.type : "";
         if (type === "error") {
@@ -1880,9 +2060,9 @@ async function collectRemoteCompactionEvents(events) {
             if (item &&
                 typeof item === "object" &&
                 !Array.isArray(item) &&
-                item.type === "compaction") {
+                (item as Record<string, unknown>).type === "compaction") {
                 compactionItems++;
-                compactionItem = item;
+                compactionItem = item as Record<string, unknown>;
             }
             continue;
         }
@@ -1903,7 +2083,13 @@ async function collectRemoteCompactionEvents(events) {
     }
     return { compactionItem, usage, ...(responseId ? { responseId } : {}) };
 }
-async function performCodexSseCompaction(model, body, headers, options, onDispatch) {
+async function performCodexSseCompaction(
+    model: Model<"openai-codex-responses">,
+    body: string | Uint8Array,
+    headers: Headers,
+    options: OpenAICodexCompactionOptions,
+    onDispatch: () => void,
+): Promise<OpenAICodexCompactionResult> {
     const timeoutMs = normalizeTimeoutMs(options.timeoutMs);
     const timeoutSignal = timeoutMs !== undefined && timeoutMs > 0 ? AbortSignal.timeout(timeoutMs) : undefined;
     const combinedSignal = combineAbortSignals([options.signal, timeoutSignal]);
@@ -1912,7 +2098,7 @@ async function performCodexSseCompaction(model, body, headers, options, onDispat
         const response = await (options.fetch ?? globalThis.fetch)(resolveCodexUrl(model.baseUrl), {
             method: "POST",
             headers,
-            body,
+            body: body as never,
             signal: combinedSignal.signal,
         });
         await options.onResponse?.({ status: response.status, headers: headersToRecord(response.headers) }, model);
@@ -1927,7 +2113,18 @@ async function performCodexSseCompaction(model, body, headers, options, onDispat
         combinedSignal.cleanup();
     }
 }
-async function performCodexWebSocketCompaction(params) {
+interface CodexWebSocketCompactionParams {
+    sessionId: string;
+    accountId: string;
+    headers: Headers;
+    commitment: SuccessfulDispatchCommitment;
+    body: RequestBody;
+    diagnostics: OpenAICodexCompactionDiagnostics;
+    options: OpenAICodexCompactionOptions;
+    onDispatch(): void;
+}
+
+async function performCodexWebSocketCompaction(params: CodexWebSocketCompactionParams): Promise<OpenAICodexCompactionResult> {
     const acquired = acquireExistingCompactionWebSocket(params.sessionId, params.accountId, params.headers);
     let keepConnection = false;
     try {
@@ -1954,7 +2151,7 @@ async function performCodexWebSocketCompaction(params) {
             acquired.entry.continuation = {
                 lastRequestBody: params.body,
                 lastResponseId: result.responseId,
-                lastResponseItems: [result.compactionItem],
+                lastResponseItems: [result.compactionItem as unknown as ResponseInput[number]],
                 compactionBoundary: true,
             };
             keepConnection = true;
@@ -1977,7 +2174,11 @@ async function performCodexWebSocketCompaction(params) {
         acquired.release(keepConnection);
     }
 }
-export async function compactOpenAICodexRequest(model, regularPayload, options) {
+export async function compactOpenAICodexRequest(
+    model: Model<"openai-codex-responses">,
+    regularPayload: Record<string, unknown>,
+    options: OpenAICodexCompactionOptions,
+): Promise<OpenAICodexCompactionResult> {
     const sessionId = clampOpenAIPromptCacheKey(options.sessionId);
     if (!sessionId)
         throw new Error("Codex compaction stopped: a stable session id is required.");
@@ -2034,7 +2235,7 @@ export async function compactOpenAICodexRequest(model, regularPayload, options) 
 // ============================================================================
 // Error Handling
 // ============================================================================
-async function parseErrorResponse(response) {
+async function parseErrorResponse(response: Response) {
     const raw = await response.text();
     let message = raw || response.statusText || "Request failed";
     let friendlyMessage;
@@ -2060,7 +2261,7 @@ async function parseErrorResponse(response) {
 // ============================================================================
 // Auth & Headers
 // ============================================================================
-function extractAccountId(token) {
+function extractAccountId(token: string) {
     try {
         const parts = token.split(".");
         if (parts.length !== 3)
@@ -2075,7 +2276,7 @@ function extractAccountId(token) {
         throw new Error("Failed to extract accountId from token");
     }
 }
-function buildBaseCodexHeaders(initHeaders, additionalHeaders, accountId, token) {
+function buildBaseCodexHeaders(initHeaders: Record<string, string> | undefined, additionalHeaders: ProviderHeaders | undefined, accountId: string, token: string) {
     const headers = new Headers(initHeaders);
     for (const [key, value] of Object.entries(additionalHeaders || {})) {
         if (value === null) {
@@ -2092,7 +2293,7 @@ function buildBaseCodexHeaders(initHeaders, additionalHeaders, accountId, token)
     headers.set("User-Agent", userAgent);
     return headers;
 }
-function addRemoteCompactionFeature(headers) {
+function addRemoteCompactionFeature(headers: Headers): void {
     const configured = headers.get(X_CODEX_BETA_FEATURES_HEADER);
     if (!configured) {
         headers.set(X_CODEX_BETA_FEATURES_HEADER, REMOTE_COMPACTION_V2_FEATURE);
@@ -2105,7 +2306,15 @@ function addRemoteCompactionFeature(headers) {
     }
     headers.set(X_CODEX_BETA_FEATURES_HEADER, `${configured},${REMOTE_COMPACTION_V2_FEATURE}`);
 }
-function buildSSEHeaders(initHeaders, additionalHeaders, accountId, token, routingHint, sessionId, remoteCompactionEnabled = false) {
+function buildSSEHeaders(
+    initHeaders: Record<string, string> | undefined,
+    additionalHeaders: ProviderHeaders | undefined,
+    accountId: string,
+    token: string,
+    routingHint: string,
+    sessionId: string | undefined,
+    remoteCompactionEnabled = false,
+): Headers {
     const headers = buildBaseCodexHeaders(initHeaders, additionalHeaders, accountId, token);
     if (remoteCompactionEnabled) {
         addRemoteCompactionFeature(headers);
@@ -2120,7 +2329,15 @@ function buildSSEHeaders(initHeaders, additionalHeaders, accountId, token, routi
     }
     return headers;
 }
-function buildWebSocketHeaders(initHeaders, additionalHeaders, accountId, token, routingHint, requestId, remoteCompactionEnabled = false) {
+function buildWebSocketHeaders(
+    initHeaders: Record<string, string> | undefined,
+    additionalHeaders: ProviderHeaders | undefined,
+    accountId: string,
+    token: string,
+    routingHint: string,
+    requestId: string,
+    remoteCompactionEnabled = false,
+): Headers {
     const headers = buildBaseCodexHeaders(initHeaders, additionalHeaders, accountId, token);
     if (remoteCompactionEnabled) {
         addRemoteCompactionFeature(headers);

@@ -66,6 +66,7 @@ const DEFAULT_CONFIG: MemoryConfig = {
 
 export const DEFAULT_CONFIG_PATH = path.join(
   AGENT_ROOT,
+  "config",
   "hermes-memory-config.json",
 );
 

@@ -7,9 +7,11 @@ import {
 	type AssistantMessage,
 	type Context,
 	EventStream,
+	hasIncompleteToolArguments,
 	type ToolResultMessage,
 	validateToolArguments,
 } from "@super-pi/ai";
+import { resolve as resolvePath, sep } from "node:path";
 import { getDefaultStreamFn } from "./stream-fn.ts";
 import type {
 	AgentContext,
@@ -422,7 +424,128 @@ async function executeToolCalls(
 	if (config.toolExecution === "sequential" || hasSequentialToolCall) {
 		return executeToolCallsSequential(currentContext, assistantMessage, toolCalls, config, signal, emit);
 	}
-	return executeToolCallsParallel(currentContext, assistantMessage, toolCalls, config, signal, emit);
+	const batches = planToolCallBatches(currentContext.tools, toolCalls);
+	if (batches.length === 1) {
+		return executeToolCallsParallel(currentContext, assistantMessage, batches[0], config, signal, emit);
+	}
+
+	const messages: ToolResultMessage[] = [];
+	let terminate = true;
+	for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
+		const result = await executeToolCallsParallel(
+			currentContext,
+			assistantMessage,
+			batches[batchIndex],
+			config,
+			signal,
+			emit,
+		);
+		messages.push(...result.messages);
+		terminate = terminate && result.terminate;
+		if (signal?.aborted) {
+			const remaining = batches.slice(batchIndex + 1).flat();
+			const canceled = await finalizeUnexecutedToolCalls(remaining, 0, emit);
+			await emitFinalizedToolResults(canceled, emit, messages);
+			return { messages, terminate: false };
+		}
+	}
+	return { messages, terminate };
+}
+
+const CASE_INSENSITIVE_PATHS = process.platform === "win32" || process.platform === "darwin";
+
+type ToolExecutionScope = { path: string; access: "read" | "write" };
+
+function getToolExecutionScope(tool: AgentTool<any> | undefined, args: unknown): ToolExecutionScope | undefined {
+	const metadata = tool?.executionPath;
+	if (!metadata || !args || typeof args !== "object") return undefined;
+	const rawPath = (args as Record<string, unknown>)[metadata.argument];
+	const selectedPath = typeof rawPath === "string" && rawPath.length > 0 ? rawPath : metadata.defaultPath;
+	if (typeof selectedPath !== "string") return undefined;
+	let path = resolvePath(metadata.cwd, selectedPath);
+	if (CASE_INSENSITIVE_PATHS) path = path.toLowerCase();
+	return { path, access: metadata.access };
+}
+
+function pathsOverlap(left: string, right: string): boolean {
+	return left === right || left.startsWith(right + sep) || right.startsWith(left + sep);
+}
+
+function scopesConflict(left: ToolExecutionScope, right: ToolExecutionScope): boolean {
+	return pathsOverlap(left.path, right.path) && (left.access === "write" || right.access === "write");
+}
+
+function planToolCallBatches(tools: AgentTool<any>[] | undefined, toolCalls: AgentToolCall[]): AgentToolCall[][] {
+	const planned = toolCalls.map((toolCall) => ({
+		toolCall,
+		scope: getToolExecutionScope(tools?.find((tool) => tool.name === toolCall.name), toolCall.arguments),
+	}));
+	if (!planned.some((entry) => entry.scope)) return [toolCalls];
+
+	const batches: AgentToolCall[][] = [];
+	let batch: AgentToolCall[] = [];
+	let batchScopes: ToolExecutionScope[] = [];
+	for (const entry of planned) {
+		if (!entry.scope) {
+			if (batch.length > 0) batches.push(batch);
+			batches.push([entry.toolCall]);
+			batch = [];
+			batchScopes = [];
+			continue;
+		}
+		if (batchScopes.some((scope) => scopesConflict(scope, entry.scope!))) {
+			batches.push(batch);
+			batch = [];
+			batchScopes = [];
+		}
+		batch.push(entry.toolCall);
+		batchScopes.push(entry.scope);
+	}
+	if (batch.length > 0) batches.push(batch);
+	return batches;
+}
+
+async function finalizeUnexecutedToolCalls(
+	toolCalls: AgentToolCall[],
+	startIndex: number,
+	emit: AgentEventSink,
+): Promise<FinalizedToolCallOutcome[]> {
+	const finalizedCalls: FinalizedToolCallOutcome[] = [];
+	for (let index = startIndex; index < toolCalls.length; index++) {
+		const toolCall = toolCalls[index];
+		await emit({
+			type: "tool_execution_start",
+			toolCallId: toolCall.id,
+			toolName: toolCall.name,
+			args: toolCall.arguments,
+		});
+		const finalized: FinalizedToolCallOutcome = {
+			toolCall,
+			result: createErrorToolResult("Operation aborted before tool execution"),
+			isError: true,
+		};
+		await emitToolExecutionEnd(finalized, emit);
+		finalizedCalls.push(finalized);
+	}
+	return finalizedCalls;
+}
+
+async function emitFinalizedToolResult(
+	finalized: FinalizedToolCallOutcome,
+	emit: AgentEventSink,
+	messages: ToolResultMessage[],
+): Promise<void> {
+	const toolResultMessage = createToolResultMessage(finalized);
+	await emitToolResultMessage(toolResultMessage, emit);
+	messages.push(toolResultMessage);
+}
+
+async function emitFinalizedToolResults(
+	finalizedCalls: FinalizedToolCallOutcome[],
+	emit: AgentEventSink,
+	messages: ToolResultMessage[],
+): Promise<void> {
+	for (const finalized of finalizedCalls) await emitFinalizedToolResult(finalized, emit, messages);
 }
 
 type ExecutedToolCallBatch = {
@@ -441,7 +564,8 @@ async function executeToolCallsSequential(
 	const finalizedCalls: FinalizedToolCallOutcome[] = [];
 	const messages: ToolResultMessage[] = [];
 
-	for (const toolCall of toolCalls) {
+	for (let index = 0; index < toolCalls.length; index++) {
+		const toolCall = toolCalls[index];
 		await emit({
 			type: "tool_execution_start",
 			toolCallId: toolCall.id,
@@ -470,12 +594,13 @@ async function executeToolCallsSequential(
 		}
 
 		await emitToolExecutionEnd(finalized, emit);
-		const toolResultMessage = createToolResultMessage(finalized);
-		await emitToolResultMessage(toolResultMessage, emit);
 		finalizedCalls.push(finalized);
-		messages.push(toolResultMessage);
+		await emitFinalizedToolResult(finalized, emit, messages);
 
 		if (signal?.aborted) {
+			const canceled = await finalizeUnexecutedToolCalls(toolCalls, index + 1, emit);
+			finalizedCalls.push(...canceled);
+			await emitFinalizedToolResults(canceled, emit, messages);
 			break;
 		}
 	}
@@ -496,7 +621,9 @@ async function executeToolCallsParallel(
 ): Promise<ExecutedToolCallBatch> {
 	const finalizedCalls: FinalizedToolCallEntry[] = [];
 
-	for (const toolCall of toolCalls) {
+	let nextIndex = 0;
+	for (; nextIndex < toolCalls.length; nextIndex++) {
+		const toolCall = toolCalls[nextIndex];
 		await emit({
 			type: "tool_execution_start",
 			toolCallId: toolCall.id,
@@ -514,6 +641,7 @@ async function executeToolCallsParallel(
 			await emitToolExecutionEnd(finalized, emit);
 			finalizedCalls.push(finalized);
 			if (signal?.aborted) {
+				nextIndex++;
 				break;
 			}
 			continue;
@@ -533,19 +661,19 @@ async function executeToolCallsParallel(
 			return finalized;
 		});
 		if (signal?.aborted) {
+			nextIndex++;
 			break;
 		}
 	}
 
-	const orderedFinalizedCalls = await Promise.all(
-		finalizedCalls.map((entry) => (typeof entry === "function" ? entry() : Promise.resolve(entry))),
-	);
+	const pendingFinalizedCalls: Array<Promise<FinalizedToolCallOutcome>> = [];
+	for (const entry of finalizedCalls)
+		pendingFinalizedCalls.push(typeof entry === "function" ? entry() : Promise.resolve(entry));
+	const canceled = await finalizeUnexecutedToolCalls(toolCalls, nextIndex, emit);
+	const orderedFinalizedCalls = await Promise.all(pendingFinalizedCalls);
+	orderedFinalizedCalls.push(...canceled);
 	const messages: ToolResultMessage[] = [];
-	for (const finalized of orderedFinalizedCalls) {
-		const toolResultMessage = createToolResultMessage(finalized);
-		await emitToolResultMessage(toolResultMessage, emit);
-		messages.push(toolResultMessage);
-	}
+	await emitFinalizedToolResults(orderedFinalizedCalls, emit, messages);
 
 	return {
 		messages,
@@ -609,6 +737,15 @@ async function prepareToolCall(
 		return {
 			kind: "immediate",
 			result: createErrorToolResult(`Tool ${toolCall.name} not found`),
+			isError: true,
+		};
+	}
+	if (hasIncompleteToolArguments(toolCall.arguments)) {
+		return {
+			kind: "immediate",
+			result: createErrorToolResult(
+				"Tool arguments were incomplete at the end of the provider response; re-issue the tool call with complete JSON arguments",
+			),
 			isError: true,
 		};
 	}

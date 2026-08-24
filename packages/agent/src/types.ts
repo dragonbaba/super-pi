@@ -41,6 +41,14 @@ export type StreamFn = (
  */
 export type ToolExecutionMode = "sequential" | "parallel";
 
+/** Authenticated filesystem scope used to schedule potentially conflicting tools safely. */
+export interface ToolExecutionPath {
+	access: "read" | "write";
+	cwd: string;
+	argument: string;
+	defaultPath?: string;
+}
+
 /**
  * Controls how many queued user messages are injected when the agent loop reaches a queue drain point.
  *
@@ -406,6 +414,8 @@ export interface AgentTool<TParameters extends TSchema = TSchema, TDetails = any
 	 * If omitted, the default execution mode applies.
 	 */
 	executionMode?: ToolExecutionMode;
+	/** Filesystem path metadata used to serialize overlapping reads and writes. */
+	executionPath?: ToolExecutionPath;
 }
 
 /** Context snapshot passed into the low-level agent loop. */

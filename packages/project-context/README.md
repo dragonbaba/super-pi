@@ -5,8 +5,8 @@ A small Pi extension that keeps project rules, generated repository facts, and d
 ## Commands
 
 - `/project-status` — read-only check of project identity, lightweight-index freshness, Hermes scope, and CodeGraph index health.
-- `/project-init` — explicitly creates `.super-pi/project-context.json`, creates `AGENTS.md` only when absent, creates/preserves the scoped Hermes `MEMORY.md`, then builds the lightweight index.
-- `/project-refresh` — deterministically refreshes `.super-pi/project-context.md` and `.super-pi/project-index.jsonl`.
+- `/project-init` — explicitly creates `.sp/project-context.json`, creates `AGENTS.md` only when absent, creates/preserves the scoped Hermes `MEMORY.md`, then builds the lightweight index.
+- `/project-refresh` — deterministically refreshes `.sp/project-context.md` and `.sp/project-index.jsonl`.
 - `/codegraph-status` — shows CodeGraph version, initialization, index state, last update, counts, and pending changes.
 - `/codegraph-init` — after confirmation, creates the first full graph index for the trusted project.
 - `/codegraph-sync` — incrementally indexes changed files.

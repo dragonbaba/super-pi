@@ -46,15 +46,15 @@ export interface MemoryConfig {
   flushMinTurns: number;
   /** Recent conversation messages included in session flush. 0 = all. Default: 0 */
   flushRecentMessages?: number;
-  /** Override extension storage directory. Default: ~/.super-pi/agent/@super-pi/memory */
+  /** Override extension storage directory. Default: ~/.sp/agent/@super-pi/memory */
   memoryDir?: string;
-  /** Directory for project-scoped memory (relative to ~/.super-pi/agent). Default: "projects-memory" */
+  /** Directory for project-scoped memory (relative to ~/.sp/agent). Default: "projects-memory" */
   projectsMemoryDir?: string;
   /** Session search configuration. Default: { variant: "legacy" } */
   sessionSearch?: SessionSearchConfig;
-  /** Override model used for child sp -p subprocess LLM calls. Default: unset */
+  /** Override model used for child superpi -p subprocess LLM calls. Default: unset */
   llmModelOverride?: string;
-  /** Override thinking level used for child sp -p subprocess LLM calls. Default: unset */
+  /** Override thinking level used for child superpi -p subprocess LLM calls. Default: unset */
   llmThinkingOverride?: ThinkingLevel;
   /** Extra extension entry paths required by child Pi processes, such as provider auth adapters. */
   childExtensionPaths?: string[];

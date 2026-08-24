@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { complete } from "@super-pi/ai/compat";
 import type { Api, ImageContent, Model } from "@super-pi/ai";
 import {
-	getAgentDir,
+	getConfigDir,
 	type ExtensionAPI,
 	type ExtensionContext,
 } from "@super-pi/coding-agent";
@@ -26,7 +26,7 @@ import {
 import { ClipboardConsumptionController } from "./clipboard-consumer.ts";
 import { LEADING_AT_PATTERN } from "./regex.ts";
 
-const CONFIG_PATH = resolve(getAgentDir(), "auxiliary-vision.json");
+const CONFIG_PATH = resolve(getConfigDir(), "auxiliary-vision.json");
 const TOOL_NAME = "inspect_image";
 const SYSTEM_TEMP_DIR = tmpdir();
 const CLIPBOARD_PATH_MARKER = "pi-clipboard-";

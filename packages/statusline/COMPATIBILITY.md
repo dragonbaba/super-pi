@@ -7,7 +7,7 @@ Based on `@narumitw/pi-statusline@0.41.0`, locally adapted for Super Pi's Pi 0.8
 - The package declares `@super-pi/coding-agent` and `@super-pi/tui` as Super Pi-provided peer dependencies.
 - Startup is gated to `0.84.x`. Unsupported versions register only a warning and leave Pi's native footer intact.
 - If Super Pi does not expose `VERSION`, the version is treated as unknown and the extension disables itself rather than guessing or loading the implementation. This is the safe-degradation policy.
-- This build resolves the standard `.super-pi` config root with a lightweight helper equivalent to Super Pi's `getAgentDir()` for default, absolute, and `~`-relative `SP_CODING_AGENT_DIR` values. This avoids loading a second local coding-agent runtime solely for path constants.
+- This build resolves the standard `.sp` config root with a lightweight helper equivalent to Super Pi's `getAgentDir()` for default, absolute, and `~`-relative `SP_CODING_AGENT_DIR` values. This avoids loading a second local coding-agent runtime solely for path constants.
 - Project settings and package metadata reached from project-local package entries are inspected only when `ctx.isProjectTrusted()` is true.
 - Package metadata, Git values, extension statuses, model/tool/path values, and configured display strings are stripped of ANSI/OSC/control sequences and bounded before terminal rendering.
 

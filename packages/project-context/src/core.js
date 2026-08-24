@@ -487,9 +487,9 @@ function buildProfile(manifest, records, stats, verification, codeGraphRecommend
   lines.push("## Main Areas", "");
   appendCountLines(lines, stats.modules, MAX_PROFILE_MAIN_AREAS, "- None", "areas", true);
   lines.push("## Manifests", "");
-  appendPathLines(lines, stats.manifests, stats.manifestCount, "- None detected", "query `.super-pi/project-index.jsonl` for category `manifest`.");
+  appendPathLines(lines, stats.manifests, stats.manifestCount, "- None detected", "query `.sp/project-index.jsonl` for category `manifest`.");
   lines.push("## Likely Entrypoints", "");
-  appendPathLines(lines, stats.entrypoints, stats.entrypointCount, "- None detected", "query `.super-pi/project-index.jsonl` by filename.");
+  appendPathLines(lines, stats.entrypoints, stats.entrypointCount, "- None detected", "query `.sp/project-index.jsonl` by filename.");
   lines.push("## Verification Candidates", "");
   if (verification.length === 0) lines.push("- No standard verification command detected; confirm project-specific checks in `AGENTS.md`.");
   else for (const command of verification) lines.push(`- ${markdownCode(command)}`);
@@ -676,7 +676,7 @@ function findSharedGitRoot(cwd) {
 
 function configuredProjectsDir(agentDir) {
   try {
-    const config = JSON.parse(fs.readFileSync(path.join(agentDir, "hermes-memory-config.json"), "utf8"));
+    const config = JSON.parse(fs.readFileSync(path.join(agentDir, "config", "hermes-memory-config.json"), "utf8"));
     const candidate = typeof config?.projectsMemoryDir === "string" ? config.projectsMemoryDir.trim() : "";
     if (candidate && !path.isAbsolute(candidate) && !candidate.includes("/") && !candidate.includes("\\") && candidate !== "." && candidate !== "..") return candidate;
   } catch {}

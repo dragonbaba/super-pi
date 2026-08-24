@@ -1,0 +1,29 @@
+{
+	"name": "@super-pi/tui-kit",
+	"version": "0.49.3-super-pi.1",
+	"description": "Super Pi declarative TUI menu helpers.",
+	"type": "module",
+	"license": "MIT",
+	"private": true,
+	"sideEffects": false,
+	"main": "./src/index.ts",
+	"types": "./src/index.ts",
+	"exports": {
+		".": "./src/index.ts"
+	},
+	"scripts": {
+		"typecheck": "tsc --noEmit -p tsconfig.json"
+	},
+	"dependencies": {
+		"highlight.js": "11.11.1"
+	},
+	"peerDependencies": {
+		"@super-pi/coding-agent": ">=0.84.0 <0.85.0",
+		"@super-pi/tui": ">=0.84.0 <0.85.0"
+	},
+	"upstream": {
+		"name": "@narumitw/pi-tui-kit",
+		"version": "0.49.3",
+		"repository": "https://github.com/narumiruna/pi-extensions/tree/v0.49.3/packages/pi-tui-kit"
+	}
+}

@@ -44,7 +44,7 @@ disabled rather than guessed.
 
 ## 🚀 Quick start
 
-Install the extension and start Pi. The footer is enabled automatically. Optional customization is read from `~/.super-pi/agent/pi-statusline.json` (or the active `SP_CODING_AGENT_DIR`). This local compatibility build intentionally registers no `/statusline` command.
+Install the extension and start Super Pi. The footer is enabled automatically. Optional customization is read from `~/.sp/agent/config/pi-statusline.json` (or the `config` directory under the active `SP_CODING_AGENT_DIR`). This local compatibility build intentionally registers no `/statusline` command.
 
 The default segments are `model thinking cwd branch tools context time`. Edit the `segments` array directly for a smaller or more detailed layout. `tools` takes no space while idle, and `cache` takes no space when Pi has reported no cache reads or writes.
 
@@ -103,13 +103,13 @@ ANSI-safely truncated.
 The extension uses one user-level file:
 
 ```text
-<getAgentDir()>/pi-statusline.json
+<getAgentDir()>/config/pi-statusline.json
 ```
 
 There are no project or environment overrides. Package duplicate detection may inspect Super Pi's user
-`settings.json`; project `CONFIG_DIR_NAME/settings.json` and package metadata referenced by it are
+`config/settings.json`; project `CONFIG_DIR_NAME/config/settings.json` and package metadata referenced by it are
 read only while `ctx.isProjectTrusted()` is true. Runtime paths use Super Pi's `getAgentDir()` and
-`CONFIG_DIR_NAME` exports rather than `HOME` or a hardcoded `.super-pi`. When the file is absent, pi-statusline uses its built-in defaults without creating the file or parent directory. The extension never writes this file. Malformed or unreadable settings are never overwritten. Settings reload on startup, `/reload`, and session replacement.
+`CONFIG_DIR_NAME` exports rather than `HOME` or a hardcoded `.sp`. When the file is absent, pi-statusline uses its built-in defaults without creating the file or parent directory. The extension never writes this file. Malformed or unreadable settings are never overwritten. Settings reload on startup, `/reload`, and session replacement.
 
 A valid legacy `pi-statusline-settings.json` remains readable with a warning and is never modified
 automatically; rename it to `pi-statusline.json`. If both files exist, `pi-statusline.json` wins.

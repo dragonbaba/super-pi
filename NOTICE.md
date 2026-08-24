@@ -12,6 +12,7 @@ or update channel.
 
 Bundled extension work also incorporates MIT-licensed code derived from the
 upstreams identified in the corresponding package metadata and license files,
-including `@narumitw/pi-goal`, `@narumitw/pi-lsp`,
+including `@narumitw/pi-goal`, `@narumitw/pi-tui-kit`,
+`@narumitw/pi-plan-mode`, `@narumitw/pi-chrome-devtools`, `@narumitw/pi-lsp`,
 `@narumitw/pi-statusline`, `pi-openai-server-compaction`, and the local memory
 runtime lineage. Those provenance records are retained alongside the source.

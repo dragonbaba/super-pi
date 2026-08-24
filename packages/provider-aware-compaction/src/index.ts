@@ -17,7 +17,7 @@ import { completeSimple, type Context, type Tool } from "@super-pi/ai/compat";
 const SUPPORTED_SP_VERSION = /^0\.84\./;
 const DEFAULT_FALLBACK_MODEL = "deepseek/deepseek-v4-flash";
 const KIMI_RESERVE_TOKENS = 32_768;
-const PROJECT_CONFIG_PATH = join(".super-pi", "provider-aware-compaction.json");
+const PROJECT_CONFIG_PATH = join(".sp", "config", "provider-aware-compaction.json");
 const COMPACTION_TELEMETRY_TYPE = "compaction-telemetry-v1";
 const PRODUCER_VERSION = "@super-pi/provider-aware-compaction@0.3.1-pi.84.1";
 const PRESERVATION_FOCUS =

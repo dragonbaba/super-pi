@@ -44,7 +44,7 @@ export function defaultStoreDirectory(): string {
   if (process.env.SP_TOOL_REPAIRS_DIR) return resolve(process.env.SP_TOOL_REPAIRS_DIR);
   const agentDirectory = process.env.SP_AGENT_DIR
     ? resolve(process.env.SP_AGENT_DIR)
-    : join(homedir(), ".super-pi", "agent");
+    : join(homedir(), ".sp", "agent");
   return join(agentDirectory, "state", "tool-repairs");
 }
 

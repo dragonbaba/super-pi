@@ -248,26 +248,26 @@ function loadConfiguredConfig(cwd: string, projectTrusted: boolean): LspConfig |
 	pendingConfigNotice = undefined;
 
 	if (projectTrusted) {
-		const projectConfig = path.join(cwd, CONFIG_DIR_NAME, "pi-lsp.json");
-		const legacyProjectConfig = path.join(cwd, CONFIG_DIR_NAME, "lsp.json");
+		const projectConfig = path.join(cwd, CONFIG_DIR_NAME, "config", "pi-lsp.json");
+		const legacyProjectConfig = path.join(cwd, CONFIG_DIR_NAME, "config", "lsp.json");
 		const canonical = parseConfigFileIfPresent(projectConfig);
 		if (canonical) {
 			if (existsSync(legacyProjectConfig)) {
-				pendingConfigNotice = `${CONFIG_DIR_NAME}/lsp.json ignored because ${CONFIG_DIR_NAME}/pi-lsp.json takes precedence.`;
+				pendingConfigNotice = `${CONFIG_DIR_NAME}/config/lsp.json ignored because ${CONFIG_DIR_NAME}/config/pi-lsp.json takes precedence.`;
 			}
 			return canonical;
 		}
 		const legacy = parseLegacyConfigWithCanonicalRecheck(projectConfig, legacyProjectConfig);
 		if (legacy) {
 			pendingConfigNotice = legacy.canonicalCreated
-				? `${CONFIG_DIR_NAME}/lsp.json ignored because ${CONFIG_DIR_NAME}/pi-lsp.json was created concurrently.`
-				: `Using legacy ${CONFIG_DIR_NAME}/lsp.json. Rename it to ${CONFIG_DIR_NAME}/pi-lsp.json; the repository file was not modified automatically.`;
+				? `${CONFIG_DIR_NAME}/config/lsp.json ignored because ${CONFIG_DIR_NAME}/config/pi-lsp.json was created concurrently.`
+				: `Using legacy ${CONFIG_DIR_NAME}/config/lsp.json. Rename it to ${CONFIG_DIR_NAME}/config/pi-lsp.json; the repository file was not modified automatically.`;
 			return legacy.config;
 		}
 	}
 
-	const userConfig = path.join(getAgentDir(), "pi-lsp.json");
-	const legacyUserConfig = path.join(getAgentDir(), "lsp.json");
+	const userConfig = path.join(getAgentDir(), "config", "pi-lsp.json");
+	const legacyUserConfig = path.join(getAgentDir(), "config", "lsp.json");
 	const canonical = parseConfigFileIfPresent(userConfig);
 	if (canonical) {
 		if (existsSync(legacyUserConfig)) {

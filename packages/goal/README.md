@@ -56,24 +56,24 @@ Goal mode uses Codex-like persistence instructions and sends guarded continuatio
 Requires Pi `0.80.6` or newer for the `agent_settled` lifecycle event.
 
 ```bash
-pi install npm:@narumitw/pi-goal
+superpi install ./packages/goal
 ```
 
 Try without installing permanently:
 
 ```bash
-pi -e npm:@narumitw/pi-goal
+superpi -e ./packages/goal
 ```
 
 Try this package locally from the repository root:
 
 ```bash
-pi -e ./extensions/pi-goal
+superpi -e ./packages/goal
 ```
 
 ## ⚙️ Configuration
 
-Settings are optional. When `~/.super-pi/agent/pi-goal.json` is absent, pi-goal uses these
+Settings are optional. When `~/.sp/agent/config/pi-goal.json` is absent, pi-goal uses these
 built-in defaults without creating the file:
 
 ```json
@@ -188,7 +188,7 @@ Ordered queues use the same canonical `goal-state` session entry as single goals
 
 If a session still contains multiple goals or a pending queue transition when `experimental.goals` is disabled, pi-goal freezes that queue. It does not inject Goal prompts or continue work, reports `queue off`, preserves every item, and accepts only `/goal` for inspection or `/goal clear` for removal. Re-enabling the setting in the TUI resumes retained work after any aborted Goal-owned run settles; editing the file directly still requires `/reload`. A migrated legacy array containing only one goal becomes an ordinary single goal without requiring the experiment.
 
-Older versions wrote unfinished goals to `~/.super-pi/agent/pi-goal-state.json` keyed by working directory. This version no longer reads that global file, and `/goal clear` removes any legacy entry for the current working directory.
+Older versions wrote unfinished goals to `~/.sp/agent/pi-goal-state.json` keyed by working directory. This version no longer reads that global file, and `/goal clear` removes any legacy entry for the current working directory.
 
 ## 📊 Statusline states
 
