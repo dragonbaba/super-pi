@@ -132,8 +132,9 @@ copied back unless it is required by the product.
   installs any `@earendil-works/pi-*` package.
 - [x] Add the source-mode `superpi` launcher so bundled packages and resources load
   from any working directory without relocating user state into the repository.
-- [x] Link the local `superpi` command; the existing global `pi` command and
-  PowerShell's built-in `sp` alias remain untouched.
+- [x] Link the local `superpi` command; at this intermediate stage the existing
+  global `pi` command and PowerShell's built-in `sp` alias remained untouched.
+  The later audited default-entrypoint switch is recorded below.
 - [x] Move bundled agents and prompts into `.sp` and verify all four
   agents are discoverable outside this repository.
 - [x] Absorb and load Plan Mode 0.49.3.
@@ -174,3 +175,34 @@ copied back unless it is required by the product.
 - [x] Deduplicate identical prompt files reached through both project auto
   discovery and the source launcher. The project TUI reports no prompt
   conflicts, while an external-directory RPC still exposes all eight prompts.
+
+## Historical data and default-entrypoint closure — 2026-08-25
+
+- [x] Add a dry-run-first, non-overwriting historical migration with a receipt
+  verifier. It copied 13 session JSONL files, 128 project-memory files, and 70
+  extension-memory files from `~/.pi/agent` into `~/.sp/agent`; all 211 source
+  hashes and target copies verify. Seven generated lock, SQLite sidecar, and
+  migration-sentinel artifacts were deliberately excluded.
+- [x] Preserve the old Hermes SQLite store through an immutable file snapshot,
+  then explicitly index every migrated session under its new path with Bun.
+  The target passes `quick_check` and foreign-key checks with 13 sessions,
+  1,165 messages, 150 extended memories, and 17 session-file metadata rows.
+- [x] Merge rather than overwrite tool-repair telemetry. The 16,384 old event
+  hashes and one disjoint Super Pi event produced 894 aggregate buckets; the
+  pre-merge Super Pi store is retained under
+  `~/.sp/agent/backups/pi-data-migration-v1/`.
+- [x] Include all 67 TypeScript files from the 11 extension packages in the
+  root type check. Verify that all 11 old extension production trees have
+  local counterparts; omitted files are tests, benchmarks, smoke runners, and
+  test loaders rather than runtime entry points. All four agents and all three
+  old bundled prompts match the repository resources byte for byte.
+- [x] Review and allow the exact install scripts needed by the locked native
+  and generated dependencies. Node 26 opens the migrated database through
+  `better-sqlite3`; Canvas renders a PNG; esbuild transforms TypeScript;
+  protobuf encodes/decodes; and the Google GenAI module loads.
+- [x] Back up the three old global `pi` shims, retain
+  `@earendil-works/pi-coding-agent@0.84.1`, and switch the default `pi` bin to
+  Super Pi. `pi-stable` launches the retained comparison runtime. From
+  `C:\Windows\Temp`, `pi` and `superpi` report 0.84.1, `pi-stable` reports
+  0.84.2+local.1, and the real global `pi --mode rpc` exposes 60 commands with
+  Memory, Plan, Goal, and Chrome DevTools loaded.
