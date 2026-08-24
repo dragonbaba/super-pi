@@ -85,8 +85,12 @@ the independent **Super Pi** source repository.
   file count remains 801, the documented final byte-tree hash is recorded
   above, and every global package timestamp predates this goal. No command in
   this migration used the global path as a write target.
-- [~] Initialize Git, inspect the complete diff, create
-  `dragonbaba/super-pi`, and push the public source repository.
+- [x] Initialize Git, inspect the complete diff, create
+  `dragonbaba/super-pi`, and push the public source repository. GitHub reports
+  `PUBLIC` visibility with `main` as the default branch. The initial source and
+  test-support cleanup commits were pushed successfully, and local `main`
+  matched `origin/main` at `e4f7839c9f02f30a4c529e426cfee2c5b7ac7783`
+  before this final ledger update.
 
 ## Execution rule
 
