@@ -9,7 +9,6 @@
 		"paths": {
 			"*": ["./*"],
 			"@super-pi/telemetry": ["./packages/telemetry/src/index.ts"],
-			"@super-pi/telemetry/testing": ["./packages/telemetry/src/testing/index.ts"],
 			"@super-pi/ai": ["./packages/ai/src/index.ts"],
 			"@super-pi/ai/oauth": ["./packages/ai/src/oauth.ts"],
 			"@super-pi/ai/*": ["./packages/ai/src/*.ts", "./packages/ai/src/providers/*.ts"],

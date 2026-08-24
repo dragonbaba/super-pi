@@ -175,39 +175,6 @@ console.log(telemetry.getSpans());
 
 The adapter is safe to use as an ordinary `TelemetryContext`, but storage is unbounded and process-local. Create a fresh instance to isolate tests or recording scopes, and do not capture sensitive attributes unless the caller's data policy allows them.
 
-## Adapter Conformance
-
-`@super-pi/telemetry/testing` exports a runner-independent conformance suite modeled as grouped cases. A fixture supplies a fresh context and converts its backend's finished spans into normalized `RecordedTelemetrySpan` snapshots:
-
-```typescript
-import {
-  createTelemetryAdapterConformance,
-  type TelemetryAdapterFixture,
-} from '@super-pi/telemetry/testing';
-import { describe, it } from 'vitest';
-
-const conformance = createTelemetryAdapterConformance(async () => {
-  const adapter = createMyTelemetryAdapter();
-  return {
-    context: adapter.context,
-    getSpans: async () => adapter.normalizedSpans(),
-    async [Symbol.asyncDispose]() {
-      await adapter.close();
-    },
-  } satisfies TelemetryAdapterFixture;
-});
-
-for (const group of new Set(conformance.map((testCase) => testCase.group))) {
-  describe(group, () => {
-    for (const testCase of conformance.filter((candidate) => candidate.group === group)) {
-      it(testCase.name, () => testCase.run());
-    }
-  });
-}
-```
-
-The suite checks synchronous single admission, result and rejection identity, automatic and explicit status, attribute merging, event ordering, inert post-settlement calls, nested and concurrent parentage, and suppression of unreadable telemetry payload failures. `getSpans()` may flush an asynchronous exporter before returning. The testing subpath uses Node's assertion APIs; the root telemetry package remains runtime-neutral.
-
 ## Typed Schemas
 
 The low-level span API intentionally accepts open names and attribute bags so adapters remain generic. Domain packages can define closed, serializable schemas and infer exact TypeScript types from them.
