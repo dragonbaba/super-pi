@@ -1,20 +1,20 @@
 # Super Pi
 
-Super Pi is an independent, source-first coding agent derived from
-[Pi](https://github.com/earendil-works/pi) `v0.84.1`. It keeps Pi's compact
-terminal-agent foundation while absorbing the local runtime, safety, memory,
-compaction, provider, and extension work that previously lived around a global
-Pi installation.
+Super Pi is an independent, source-first coding agent originally derived from
+[Pi](https://github.com/earendil-works/pi) `v0.84.1`. It now owns its complete
+runtime, safety, memory, compaction, provider, extension, and terminal-agent
+implementation in this repository.
 
-Super Pi is not an official Pi distribution. It uses its own package scope,
-command, and configuration directories so an existing Pi installation can
-remain untouched.
+Super Pi is not an official upstream distribution. It uses the `@super-pi/*`
+package scope, provides both `pi` and `superpi`, and keeps all user state under
+its dedicated `.sp` directories.
 
 ## Current status
 
-The initial source migration is complete. This repository provides source code
-plus a local CLI; npm publication and an upstream migration workflow are
-intentionally out of scope.
+The standalone runtime and cleanup are complete. This repository provides the
+full source implementation and locally linked CLI without any fallback runtime
+or external legacy package dependency. npm publication is currently out of
+scope.
 
 ## Requirements
 
@@ -45,7 +45,7 @@ superpi --help
 The npm link creates both `pi` and `superpi`. It does not replace PowerShell's
 built-in `sp` alias.
 
-## Isolation from Pi
+## Standalone runtime
 
 - Package scope: `@super-pi/*`
 - User configuration: `~/.sp/agent/config/`
@@ -61,14 +61,14 @@ under `~/.sp/agent/config/`.
 
 - `packages/ai` — model and provider APIs
 - `packages/agent` — agent loop and harness
-- `packages/coding-agent` — the `superpi` CLI and interactive application
+- `packages/coding-agent` — the `pi`/`superpi` CLI and interactive application
 - `packages/tui` — terminal UI
 - `packages/protocol`, `packages/client`, `packages/server` — session protocol
 - `packages/extensions` — bundled Super Pi extensions
 - `packages/memory`, `packages/goal`, `packages/lsp` — local agent capabilities
 - `packages/tui-kit`, `packages/plan-mode`, `packages/chrome-devtools` — absorbed local UI and workflow capabilities
 - `.sp/config`, `.sp/agents`, `.sp/prompts`, `.sp/skills` — bundled source-mode configuration and resources
-- `MIGRATION.md` — accepted standalone-runtime and cleanup state
+- `MIGRATION.md` — accepted independence and cleanup state
 
 ## Attribution
 
