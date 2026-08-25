@@ -7,7 +7,6 @@
 	"repository": "https://github.com/dragonbaba/super-pi",
 	"bin": {
 		"pi": "./scripts/superpi.mjs",
-		"pi-stable": "./scripts/pi-stable.mjs",
 		"superpi": "./scripts/superpi.mjs"
 	},
 	"workspaces": [
@@ -17,11 +16,6 @@
 	],
 	"scripts": {
 		"superpi": "node ./scripts/superpi.mjs",
-		"migrate:pi-config": "node ./scripts/migrate-pi-config.mjs",
-		"check:pi-config": "node ./scripts/migrate-pi-config.mjs --check",
-		"migrate:pi-data": "node ./scripts/migrate-pi-data.mjs",
-		"migrate:pi-data:apply": "node ./scripts/migrate-pi-data.mjs --apply",
-		"check:pi-data": "node ./scripts/migrate-pi-data.mjs --check",
 		"clean": "npm run clean --workspaces --if-present",
 		"build": "cd packages/tui && npm run build && cd ../telemetry && npm run build && cd ../ai && npm run build && cd ../agent && npm run build && cd ../session-backends/sqlite-node && npm run build && cd ../../protocol && npm run build && cd ../client && npm run build && cd ../server && npm run build && cd ../coding-agent && npm run build && cd ../memory && npm run build && cd ../statusline && npm run build",
 		"build:offline": "cd packages/tui && npm run build && cd ../telemetry && npm run build && cd ../ai && npm run build:offline && cd ../agent && npm run build && cd ../session-backends/sqlite-node && npm run build && cd ../../protocol && npm run build && cd ../client && npm run build && cd ../server && npm run build && cd ../coding-agent && npm run build && cd ../memory && npm run build && cd ../statusline && npm run build",

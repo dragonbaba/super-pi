@@ -29,19 +29,21 @@ npm run build:offline
 npm run superpi -- --help
 ```
 
-The executable name is `superpi`. During source development, `npm run superpi --` loads
-the bundled Super Pi packages from this repository while keeping user state in
-`~/.sp/agent/`. Super Pi does not install or provide a `pi` command alias.
+The executable names are `pi` and `superpi`; both launch the same standalone
+Super Pi runtime. During source development, `npm run superpi --` loads the
+bundled packages from this repository while keeping user state in
+`~/.sp/agent/`.
 
 To expose the local source checkout as a command:
 
 ```powershell
 npm link
+pi --help
 superpi --help
 ```
 
-The npm link only creates `superpi` and does not replace an existing `pi`
-command or PowerShell's built-in `sp` alias.
+The npm link creates both `pi` and `superpi`. It does not replace PowerShell's
+built-in `sp` alias.
 
 ## Isolation from Pi
 
@@ -51,20 +53,9 @@ command or PowerShell's built-in `sp` alias.
 - Runtime data: dedicated directories under `~/.sp/agent/`
 - CLI environment marker: `SP_CODING_AGENT=true`
 
-The existing global Pi installation is used only as a read-only migration
-reference. Super Pi development and tests must never patch or deploy into it.
-
-To copy supported JSON configuration and the global `AGENTS.md` context from
-the existing global Pi without changing it or importing old package paths:
-
-```powershell
-npm run migrate:pi-config
-npm run check:pi-config
-```
-
-Migration creates missing files only and refuses to overwrite a differing
-Super Pi configuration. Credentials and other personal configuration remain
-outside this repository.
+Super Pi is self-contained and has no external legacy runtime dependency.
+Credentials and other personal configuration remain outside this repository
+under `~/.sp/agent/config/`.
 
 ## Repository layout
 
@@ -77,7 +68,7 @@ outside this repository.
 - `packages/memory`, `packages/goal`, `packages/lsp` — local agent capabilities
 - `packages/tui-kit`, `packages/plan-mode`, `packages/chrome-devtools` — absorbed local UI and workflow capabilities
 - `.sp/config`, `.sp/agents`, `.sp/prompts`, `.sp/skills` — bundled source-mode configuration and resources
-- `MIGRATION.md` — ordered migration ledger and safety baseline
+- `MIGRATION.md` — accepted standalone-runtime and cleanup state
 
 ## Attribution
 
