@@ -6,7 +6,6 @@
 	"license": "MIT",
 	"repository": "https://github.com/dragonbaba/super-pi",
 	"bin": {
-		"pi": "./scripts/superpi.mjs",
 		"superpi": "./scripts/superpi.mjs"
 	},
 	"workspaces": [

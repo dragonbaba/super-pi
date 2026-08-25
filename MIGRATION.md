@@ -9,7 +9,7 @@ details are intentionally not retained.
 - Repository: `dragonbaba/super-pi`
 - Product name: **Super Pi**
 - Internal package scope: `@super-pi/*`
-- CLI commands: `pi` and `superpi`; both launch this repository's runtime
+- CLI command: `superpi`
 - Distribution: source checkout linked through npm; no npm publication
 - User state root: `~/.sp/agent/`
 - Project metadata root: `.sp/`
@@ -50,7 +50,7 @@ details are intentionally not retained.
 
 ## Verification
 
-- `pi --version` and `superpi --version` report the same Super Pi version.
+- `superpi --version` reports the expected Super Pi version.
 - `npm run build:offline` passes.
 - `npm run check` passes.
 - `npm ls --all` passes.

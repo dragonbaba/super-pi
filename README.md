@@ -6,7 +6,7 @@ runtime, safety, memory, compaction, provider, extension, and terminal-agent
 implementation in this repository.
 
 Super Pi is not an official upstream distribution. It uses the `@super-pi/*`
-package scope, provides both `pi` and `superpi`, and keeps all user state under
+package scope, provides the `superpi` command, and keeps all user state under
 its dedicated `.sp` directories.
 
 ## Current status
@@ -29,21 +29,19 @@ npm run build:offline
 npm run superpi -- --help
 ```
 
-The executable names are `pi` and `superpi`; both launch the same standalone
-Super Pi runtime. During source development, `npm run superpi --` loads the
-bundled packages from this repository while keeping user state in
-`~/.sp/agent/`.
+The executable name is `superpi`. During source development,
+`npm run superpi --` loads the bundled packages from this repository while
+keeping user state in `~/.sp/agent/`.
 
 To expose the local source checkout as a command:
 
 ```powershell
 npm link
-pi --help
 superpi --help
 ```
 
-The npm link creates both `pi` and `superpi`. It does not replace PowerShell's
-built-in `sp` alias.
+The npm link creates `superpi`. It does not install a `pi` command or replace
+PowerShell's built-in `sp` alias.
 
 ## Standalone runtime
 
@@ -61,7 +59,7 @@ under `~/.sp/agent/config/`.
 
 - `packages/ai` — model and provider APIs
 - `packages/agent` — agent loop and harness
-- `packages/coding-agent` — the `pi`/`superpi` CLI and interactive application
+- `packages/coding-agent` — the `superpi` CLI and interactive application
 - `packages/tui` — terminal UI
 - `packages/protocol`, `packages/client`, `packages/server` — session protocol
 - `packages/extensions` — bundled Super Pi extensions
