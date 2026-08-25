@@ -2,6 +2,12 @@ import { execSync } from "node:child_process";
 import { homedir } from "node:os";
 import { isAbsolute } from "node:path";
 import { pathToFileURL } from "node:url";
+import {
+	KITTY_IMAGE_CONTROLS_PATTERN,
+	KITTY_IMAGE_CROP_CONTROL_PATTERN,
+	KITTY_IMAGE_ID_CONTROL_PATTERN,
+	KITTY_IMAGE_MORE_CHUNKS_PATTERN,
+} from "./regex.ts";
 
 export type ImageProtocol = "kitty" | "iterm2" | null;
 
@@ -306,9 +312,9 @@ export function registerKittyImageMetadata(metadata: KittyImageMetadata): void {
 }
 
 function getRegisteredKittyImageMetadata(line: string): RegisteredKittyImageMetadata | undefined {
-	const controls = /\x1b_G([^;]*);/.exec(line)?.[1];
+	const controls = KITTY_IMAGE_CONTROLS_PATTERN.exec(line)?.[1];
 	if (!controls) return undefined;
-	const imageId = /(?:^|,)i=(\d+)(?:,|$)/.exec(controls)?.[1];
+	const imageId = KITTY_IMAGE_ID_CONTROL_PATTERN.exec(controls)?.[1];
 	return imageId === undefined ? undefined : kittyImageMetadata.get(Number.parseInt(imageId, 10));
 }
 
@@ -346,7 +352,7 @@ const KITTY_PLACEMENT_CONTROL_KEYS = new Set([
 
 /** Build a placement-only command for an image line emitted by {@link renderImage}. */
 export function getKittyImagePlacement(line: string): KittyImagePlacement | undefined {
-	const match = /\x1b_G([^;]*);/.exec(line);
+	const match = KITTY_IMAGE_CONTROLS_PATTERN.exec(line);
 	const metadata = getRegisteredKittyImageMetadata(line);
 	if (!match || !metadata) return undefined;
 
@@ -357,7 +363,7 @@ export function getKittyImagePlacement(line: string): KittyImagePlacement | unde
 		const terminator = line.indexOf("\x1b\\", commandStart + KITTY_PREFIX.length);
 		if (terminator === -1) return undefined;
 		transmissionEnd = terminator + 2;
-		if (!/(?:^|,)m=1(?:,|$)/.test(commandControls)) break;
+		if (!KITTY_IMAGE_MORE_CHUNKS_PATTERN.test(commandControls)) break;
 		commandStart = transmissionEnd;
 		if (!line.startsWith(KITTY_PREFIX, commandStart)) return undefined;
 		const controlsEnd = line.indexOf(";", commandStart + KITTY_PREFIX.length);
@@ -381,16 +387,32 @@ export function getKittyImagePlacement(line: string): KittyImagePlacement | unde
 
 export function cropKittyImageLine(line: string, hiddenRows: number, visibleRows: number): string {
 	const metadata = getKittyImageMetadata(line);
-	const match = /\x1b_G([^;]*);/.exec(line);
+	const match = KITTY_IMAGE_CONTROLS_PATTERN.exec(line);
 	if (!metadata || !match || hiddenRows < 0 || hiddenRows >= metadata.rows || visibleRows <= 0) return line;
 	const croppedRows = Math.min(visibleRows, metadata.rows - hiddenRows);
 	if (hiddenRows === 0 && croppedRows === metadata.rows) return line;
 	const sourceY = Math.floor((metadata.heightPx * hiddenRows) / metadata.rows);
 	const sourceEnd = Math.ceil((metadata.heightPx * (hiddenRows + croppedRows)) / metadata.rows);
 	const sourceHeight = Math.max(1, Math.min(metadata.heightPx, sourceEnd) - sourceY);
-	const controls = match[1].split(",").filter((control) => !/^[yhr]=/.test(control));
-	controls.push(`y=${sourceY}`, `h=${sourceHeight}`, `r=${croppedRows}`);
-	return `${line.slice(0, match.index)}\x1b_G${controls.join(",")};${line.slice(match.index + match[0].length)}`;
+	const originalControls = match[1];
+	let controls = "";
+	let retainedControls = 0;
+	let controlStart = 0;
+	while (controlStart <= originalControls.length) {
+		const separator = originalControls.indexOf(",", controlStart);
+		const controlEnd = separator < 0 ? originalControls.length : separator;
+		const control = originalControls.slice(controlStart, controlEnd);
+		if (!KITTY_IMAGE_CROP_CONTROL_PATTERN.test(control)) {
+			if (retainedControls > 0) controls += ",";
+			controls += control;
+			retainedControls++;
+		}
+		if (separator < 0) break;
+		controlStart = separator + 1;
+	}
+	if (retainedControls > 0) controls += ",";
+	controls += `y=${sourceY},h=${sourceHeight},r=${croppedRows}`;
+	return `${line.slice(0, match.index)}\x1b_G${controls};${line.slice(match.index + match[0].length)}`;
 }
 
 export function calculateImageCellSize(

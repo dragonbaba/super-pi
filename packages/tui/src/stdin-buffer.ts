@@ -18,6 +18,7 @@
  */
 
 import { EventEmitter } from "events";
+import { SGR_MOUSE_PAYLOAD_PATTERN, UNMODIFIED_KITTY_PRINTABLE_PATTERN } from "./regex.ts";
 
 const ESC = "\x1b";
 const DEFAULT_SEQUENCE_TIMEOUT_MS = 50;
@@ -104,21 +105,7 @@ function isCompleteCsiSequence(data: string): "complete" | "incomplete" {
 		// Special handling for SGR mouse sequences
 		// Format: ESC[<B;X;Ym or ESC[<B;X;YM
 		if (payload.startsWith("<")) {
-			// Must have format: <digits;digits;digits[Mm]
-			const mouseMatch = /^<\d+;\d+;\d+[Mm]$/.test(payload);
-			if (mouseMatch) {
-				return "complete";
-			}
-			// If it ends with M or m but doesn't match the pattern, still incomplete
-			if (lastChar === "M" || lastChar === "m") {
-				// Check if we have the right structure
-				const parts = payload.slice(1, -1).split(";");
-				if (parts.length === 3 && parts.every((p) => /^\d+$/.test(p))) {
-					return "complete";
-				}
-			}
-
-			return "incomplete";
+			return SGR_MOUSE_PAYLOAD_PATTERN.test(payload) ? "complete" : "incomplete";
 		}
 
 		return "complete";
@@ -184,7 +171,7 @@ function isCompleteApcSequence(data: string): "complete" | "incomplete" {
  * Split accumulated buffer into complete sequences
  */
 function parseUnmodifiedKittyPrintableCodepoint(sequence: string): number | undefined {
-	const match = sequence.match(/^\x1b\[(\d+)(?::\d*)?(?::\d+)?u$/);
+	const match = sequence.match(UNMODIFIED_KITTY_PRINTABLE_PATTERN);
 	if (!match) return undefined;
 
 	const codepoint = parseInt(match[1]!, 10);

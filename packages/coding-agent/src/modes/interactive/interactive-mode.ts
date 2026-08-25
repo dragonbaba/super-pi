@@ -162,6 +162,19 @@ import { TrustSelectorComponent } from "./components/trust-selector.ts";
 import { UserMessageComponent } from "./components/user-message.ts";
 import { UserMessageSelectorComponent } from "./components/user-message-selector.ts";
 import { editInExternalEditor } from "./external-editor.ts";
+import {
+	CHANGELOG_VERSION_HEADING_PATTERN,
+	GIT_PACKAGE_PATH_PATTERN,
+	JAVASCRIPT_INDEX_SUFFIX_PATTERN,
+	NAME_COMMAND_PREFIX_PATTERN,
+	NPM_PACKAGE_PATH_PATTERN,
+	NPM_PACKAGE_ROOT_PATTERN,
+	PATH_BACKSLASH_PATTERN,
+	SHELL_ARGUMENT_APOSTROPHE_PATTERN,
+	SHELL_ARGUMENT_UNSAFE_CHARACTER_PATTERN,
+	TYPESCRIPT_INDEX_SUFFIX_PATTERN,
+	WHITESPACE_CHARACTER_PATTERN,
+} from "./interactive-mode-regex.ts";
 import { getModelSearchText } from "./model-search.ts";
 import {
 	getAvailableThemes,
@@ -252,10 +265,10 @@ function isUnknownModel(model: Model<any> | undefined): boolean {
 }
 
 function quoteIfNeeded(value: string): string {
-	if (value.length > 0 && !/[^a-zA-Z0-9_\-./~:@]/.test(value)) {
+	if (value.length > 0 && !SHELL_ARGUMENT_UNSAFE_CHARACTER_PATTERN.test(value)) {
 		return value;
 	}
-	return `'${value.replace(/'/g, `'\\''`)}'`;
+	return `'${value.replace(SHELL_ARGUMENT_APOSTROPHE_PATTERN, `'\\''`)}'`;
 }
 
 export function formatResumeCommand(sessionManager: SessionManager): string | undefined {
@@ -800,7 +813,7 @@ export class InteractiveMode {
 		}
 		this.chatContainer.addChild(new DynamicBorder());
 		if (this.settingsManager.getCollapseChangelog()) {
-			const versionMatch = this.changelogMarkdown.match(/##\s+\[?(\d+\.\d+\.\d+)\]?/);
+			const versionMatch = CHANGELOG_VERSION_HEADING_PATTERN.exec(this.changelogMarkdown);
 			const latestVersion = versionMatch ? versionMatch[1] : this.version;
 			const condensedText = `Updated to v${latestVersion}. Use ${theme.bold("/changelog")} to view full changelog.`;
 			this.chatContainer.addChild(new Text(condensedText, 1, 0));
@@ -1286,7 +1299,7 @@ export class InteractiveMode {
 
 	private formatExtensionDisplayPath(path: string): string {
 		let result = this.formatDisplayPath(path);
-		result = result.replace(/\/index\.ts$/, "").replace(/\/index\.js$/, "");
+		result = result.replace(TYPESCRIPT_INDEX_SUFFIX_PATTERN, "").replace(JAVASCRIPT_INDEX_SUFFIX_PATTERN, "");
 		return result;
 	}
 
@@ -1309,11 +1322,11 @@ export class InteractiveMode {
 	 * Get a short path relative to the package root for display.
 	 */
 	private getShortPath(fullPath: string, sourceInfo?: SourceInfo): string {
-		const normalizedFullPath = fullPath.replace(/\\/g, "/");
+		const normalizedFullPath = fullPath.replace(PATH_BACKSLASH_PATTERN, "/");
 		const baseDir = sourceInfo?.baseDir;
 		if (baseDir && this.isPackageSource(sourceInfo)) {
-			const normalizedBaseDir = baseDir.replace(/\\/g, "/");
-			const npmRootMatch = normalizedBaseDir.match(/^(.*\/node_modules)\/(@?[^/]+(?:\/[^/]+)?)$/);
+			const normalizedBaseDir = baseDir.replace(PATH_BACKSLASH_PATTERN, "/");
+			const npmRootMatch = NPM_PACKAGE_ROOT_PATTERN.exec(normalizedBaseDir);
 			// If fullPath is under the same node_modules root as baseDir, preserve that relative topology.
 			if (npmRootMatch?.[1] && normalizedFullPath.startsWith(`${npmRootMatch[1]}/`)) {
 				return path.posix.relative(normalizedBaseDir, normalizedFullPath);
@@ -1327,17 +1340,17 @@ export class InteractiveMode {
 				!relativePath.startsWith(`..${path.sep}`) &&
 				!path.isAbsolute(relativePath)
 			) {
-				return relativePath.replace(/\\/g, "/");
+				return relativePath.replace(PATH_BACKSLASH_PATTERN, "/");
 			}
 		}
 
 		const source = sourceInfo?.source ?? "";
-		const npmMatch = normalizedFullPath.match(/node_modules\/(@?[^/]+(?:\/[^/]+)?)\/(.*)/);
+		const npmMatch = NPM_PACKAGE_PATH_PATTERN.exec(normalizedFullPath);
 		if (npmMatch && source.startsWith("npm:")) {
 			return npmMatch[2];
 		}
 
-		const gitMatch = normalizedFullPath.match(/git\/[^/]+\/[^/]+\/(.*)/);
+		const gitMatch = GIT_PACKAGE_PATH_PATTERN.exec(normalizedFullPath);
 		if (gitMatch && source.startsWith("git:")) {
 			return gitMatch[1];
 		}
@@ -1347,7 +1360,7 @@ export class InteractiveMode {
 
 	private getCompactPathLabel(resourcePath: string, sourceInfo?: SourceInfo): string {
 		const shortPath = this.getShortPath(resourcePath, sourceInfo);
-		const normalizedPath = shortPath.replace(/\\/g, "/");
+		const normalizedPath = shortPath.replace(PATH_BACKSLASH_PATTERN, "/");
 		const segments = normalizedPath.split("/").filter((segment) => segment.length > 0 && segment !== "~");
 		if (segments.length > 0) {
 			return segments[segments.length - 1]!;
@@ -1379,7 +1392,7 @@ export class InteractiveMode {
 			return this.getCompactPathLabel(resourcePath, sourceInfo);
 		}
 
-		const shortPath = this.getShortPath(resourcePath, sourceInfo).replace(/\\/g, "/");
+		const shortPath = this.getShortPath(resourcePath, sourceInfo).replace(PATH_BACKSLASH_PATTERN, "/");
 		const packagePath = shortPath.startsWith("extensions/") ? shortPath.slice("extensions/".length) : shortPath;
 		const parsedPath = path.posix.parse(packagePath);
 
@@ -1392,7 +1405,7 @@ export class InteractiveMode {
 
 	private getCompactDisplayPathSegments(resourcePath: string): string[] {
 		return this.formatDisplayPath(resourcePath)
-			.replace(/\\/g, "/")
+			.replace(PATH_BACKSLASH_PATTERN, "/")
 			.split("/")
 			.filter((segment) => segment.length > 0 && segment !== "~");
 	}
@@ -6010,7 +6023,7 @@ export class InteractiveMode {
 			return argsString.slice(1, closingQuoteIndex);
 		}
 
-		const firstWhitespaceIndex = argsString.search(/\s/);
+		const firstWhitespaceIndex = argsString.search(WHITESPACE_CHARACTER_PATTERN);
 		if (firstWhitespaceIndex < 0) {
 			return argsString;
 		}
@@ -6175,7 +6188,7 @@ export class InteractiveMode {
 	}
 
 	private handleNameCommand(text: string): void {
-		const name = text.replace(/^\/name\s*/, "").trim();
+		const name = text.replace(NAME_COMMAND_PREFIX_PATTERN, "").trim();
 		if (!name) {
 			const currentName = this.sessionManager.getSessionName();
 			if (currentName) {

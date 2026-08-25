@@ -1,4 +1,4 @@
-import { getWordSegmenter, isWhitespaceChar, PUNCTUATION_REGEX } from "./utils.ts";
+import { getWordSegmenter, isPunctuationChar, isWhitespaceChar } from "./utils.ts";
 
 const wordSegmenter = getWordSegmenter();
 
@@ -47,12 +47,17 @@ export function findWordBackward(text: string, cursor: number, options?: WordNav
 	} else if (last.isWordLike) {
 		// Skip inside one word-like segment, preserving ASCII punctuation boundaries.
 		const segment = last.segment;
-		const matches = [...segment.matchAll(new RegExp(PUNCTUATION_REGEX, "g"))];
-		if (matches.length <= 0) {
+		let punctuationEnd = 0;
+		for (let index = segment.length - 1; index >= 0; index--) {
+			if (isPunctuationChar(segment[index]!)) {
+				punctuationEnd = index + 1;
+				break;
+			}
+		}
+		if (punctuationEnd === 0) {
 			newCursor -= segment.length;
 		} else {
-			const lastMatch = matches[matches.length - 1]!;
-			newCursor -= segment.length - (lastMatch.index + lastMatch[0].length);
+			newCursor -= segment.length - punctuationEnd;
 		}
 	} else {
 		// Skip non-word non-whitespace run (punctuation)
@@ -99,7 +104,15 @@ export function findWordForward(text: string, cursor: number, options?: WordNavi
 		newCursor += next.value.segment.length;
 	} else if (next.value.isWordLike) {
 		// Skip inside one word-like segment, preserving ASCII punctuation boundaries.
-		newCursor += PUNCTUATION_REGEX.exec(next.value.segment)?.index ?? next.value.segment.length;
+		const segment = next.value.segment;
+		let punctuationIndex = segment.length;
+		for (let index = 0; index < segment.length; index++) {
+			if (isPunctuationChar(segment[index]!)) {
+				punctuationIndex = index;
+				break;
+			}
+		}
+		newCursor += punctuationIndex;
 	} else {
 		// Skip non-word non-whitespace run (punctuation)
 		while (

@@ -22,6 +22,7 @@ import { basename, dirname, join, resolve } from "path";
 import { createInterface } from "readline";
 import { StringDecoder } from "string_decoder";
 import { getAgentDir as getDefaultAgentDir, getSessionsDir } from "../config.ts";
+import { ObjectPool } from "../utils/object-pool.ts";
 import { normalizePath, resolvePath } from "../utils/paths.ts";
 import {
 	type BashExecutionMessage,
@@ -32,6 +33,19 @@ import {
 } from "./messages.ts";
 
 export const CURRENT_SESSION_VERSION = 3;
+
+const SESSION_TREE_NODE_MAP_POOL = new ObjectPool(
+	() => new Map<string, SessionTreeNode>(),
+	(nodes) => nodes.clear(),
+	2,
+	(nodes) => nodes.size <= 4096,
+);
+const SESSION_TREE_TIMESTAMP_MAP_POOL = new ObjectPool(
+	() => new Map<string, number>(),
+	(timestamps) => timestamps.clear(),
+	2,
+	(timestamps) => timestamps.size <= 4096,
+);
 
 function syncSessionDirectory(directory: string): void {
 	let fd: number | undefined;
@@ -227,7 +241,6 @@ export interface SessionInfo {
 	modified: Date;
 	messageCount: number;
 	firstMessage: string;
-	allMessagesText: string;
 }
 
 export type ReadonlySessionManager = Pick<
@@ -734,7 +747,6 @@ async function buildSessionInfo(filePath: string): Promise<SessionInfo | null> {
 		let header: SessionHeader | null = null;
 		let messageCount = 0;
 		let firstMessage = "";
-		const allMessages: string[] = [];
 		let name: string | undefined;
 		let lastActivityTime: number | undefined;
 
@@ -770,12 +782,9 @@ async function buildSessionInfo(filePath: string): Promise<SessionInfo | null> {
 			if (!isMessageWithContent(message)) continue;
 			if (message.role !== "user" && message.role !== "assistant") continue;
 
-			const textContent = extractTextContent(message);
-			if (!textContent) continue;
-
-			allMessages.push(textContent);
 			if (!firstMessage && message.role === "user") {
-				firstMessage = textContent;
+				const textContent = extractTextContent(message);
+				if (textContent) firstMessage = textContent.slice(0, 8192);
 			}
 		}
 
@@ -801,7 +810,6 @@ async function buildSessionInfo(filePath: string): Promise<SessionInfo | null> {
 			modified,
 			messageCount,
 			firstMessage: firstMessage || "(no messages)",
-			allMessagesText: allMessages.join(" "),
 		};
 	} catch {
 		return null;
@@ -1341,42 +1349,50 @@ export class SessionManager {
 	 */
 	getTree(): SessionTreeNode[] {
 		const entries = this.getEntries();
-		const nodeMap = new Map<string, SessionTreeNode>();
+		const nodeMap = SESSION_TREE_NODE_MAP_POOL.acquire();
+		const entryTimestampById = SESSION_TREE_TIMESTAMP_MAP_POOL.acquire();
 		const roots: SessionTreeNode[] = [];
+		try {
+			// Create nodes with resolved labels
+			for (const entry of entries) {
+				const label = this.labelsById.get(entry.id);
+				const labelTimestamp = this.labelTimestampsById.get(entry.id);
+				nodeMap.set(entry.id, { entry, children: [], label, labelTimestamp });
+				entryTimestampById.set(entry.id, Date.parse(entry.timestamp));
+			}
 
-		// Create nodes with resolved labels
-		for (const entry of entries) {
-			const label = this.labelsById.get(entry.id);
-			const labelTimestamp = this.labelTimestampsById.get(entry.id);
-			nodeMap.set(entry.id, { entry, children: [], label, labelTimestamp });
-		}
-
-		// Build tree
-		for (const entry of entries) {
-			const node = nodeMap.get(entry.id)!;
-			if (entry.parentId === null || entry.parentId === entry.id) {
-				roots.push(node);
-			} else {
-				const parent = nodeMap.get(entry.parentId);
-				if (parent) {
-					parent.children.push(node);
-				} else {
-					// Orphan - treat as root
+			// Build tree
+			for (const entry of entries) {
+				const node = nodeMap.get(entry.id)!;
+				if (entry.parentId === null || entry.parentId === entry.id) {
 					roots.push(node);
+				} else {
+					const parent = nodeMap.get(entry.parentId);
+					if (parent) {
+						parent.children.push(node);
+					} else {
+						// Orphan - treat as root
+						roots.push(node);
+					}
 				}
 			}
-		}
 
-		// Sort children by timestamp (oldest first, newest at bottom)
-		// Use iterative approach to avoid stack overflow on deep trees
-		const stack: SessionTreeNode[] = [...roots];
-		while (stack.length > 0) {
-			const node = stack.pop()!;
-			node.children.sort((a, b) => new Date(a.entry.timestamp).getTime() - new Date(b.entry.timestamp).getTime());
-			stack.push(...node.children);
-		}
+			// Sort children by timestamp (oldest first, newest at bottom).
+			// Reuse one comparator for the complete traversal instead of allocating one per node.
+			const compareByTimestamp = (a: SessionTreeNode, b: SessionTreeNode): number =>
+				(entryTimestampById.get(a.entry.id) ?? 0) - (entryTimestampById.get(b.entry.id) ?? 0);
+			const stack: SessionTreeNode[] = [...roots];
+			while (stack.length > 0) {
+				const node = stack.pop()!;
+				node.children.sort(compareByTimestamp);
+				stack.push(...node.children);
+			}
 
-		return roots;
+			return roots;
+		} finally {
+			SESSION_TREE_NODE_MAP_POOL.release(nodeMap);
+			SESSION_TREE_TIMESTAMP_MAP_POOL.release(entryTimestampById);
+		}
 	}
 
 	// =========================================================================

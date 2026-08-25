@@ -1,6 +1,7 @@
 import { type Component, Container, getKeybindings, Spacer, Text, truncateToWidth } from "@super-pi/tui";
 import { theme } from "../theme/theme.ts";
 import { DynamicBorder } from "./dynamic-border.ts";
+import { USER_MESSAGE_LINE_FEED_PATTERN } from "./user-message-selector-regex.ts";
 
 interface UserMessageItem {
 	id: string; // Entry ID in the session
@@ -51,7 +52,7 @@ class UserMessageList implements Component {
 			const isSelected = i === this.selectedIndex;
 
 			// Normalize message to single line
-			const normalizedMessage = message.text.replace(/\n/g, " ").trim();
+			const normalizedMessage = message.text.replace(USER_MESSAGE_LINE_FEED_PATTERN, " ").trim();
 
 			// First line: cursor + message
 			const cursor = isSelected ? theme.fg("accent", "› ") : "  ";

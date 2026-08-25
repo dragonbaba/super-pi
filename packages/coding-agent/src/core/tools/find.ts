@@ -320,7 +320,7 @@ export function createFindToolDefinition(
 
 							const relativized: string[] = [];
 							for (const rawLine of lines) {
-								const line = rawLine.replace(/\r$/, "").trim();
+								const line = (rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine).trim();
 								if (!line) continue;
 								relativized.push(relativizeFindResultPath(line, searchPath));
 							}

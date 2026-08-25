@@ -27,6 +27,7 @@ import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { headersToRecord, providerHeadersToRecord } from "../utils/headers.ts";
 import { parseStreamingJson } from "../utils/json-parse.ts";
 import { getProviderEnvValue } from "../utils/provider-env.ts";
+import { CRLF_PATTERN, TRAILING_SLASHES_PATTERN } from "./pi-messages-regex.ts";
 
 export interface PiMessagesOptions extends StreamOptions {
 	reasoning?: ThinkingLevel;
@@ -189,20 +190,16 @@ function createEventConverter(model: Model<"pi-messages">) {
 	return (event: PiMessagesEvent): AssistantMessageEvent => {
 		switch (event.type) {
 			case "done":
-				Object.assign(partial, {
-					stopReason: event.reason,
-					usage: event.usage,
-					responseId: event.responseId,
-				});
+				partial.stopReason = event.reason;
+				partial.usage = event.usage;
+				partial.responseId = event.responseId;
 				appendRewriteDiagnostic(partial, event.rewrite);
 				return { type: "done", reason: event.reason, message: partial };
 			case "error":
-				Object.assign(partial, {
-					stopReason: event.reason,
-					usage: event.usage,
-					errorMessage: event.errorMessage,
-					responseId: event.responseId,
-				});
+				partial.stopReason = event.reason;
+				partial.usage = event.usage;
+				partial.errorMessage = event.errorMessage;
+				partial.responseId = event.responseId;
 				appendRewriteDiagnostic(partial, event.rewrite);
 				return { type: "error", reason: event.reason, error: partial };
 			case "start":
@@ -213,31 +210,37 @@ function createEventConverter(model: Model<"pi-messages">) {
 			case "text_delta":
 				(partial.content[event.contentIndex] as { text: string }).text += event.delta;
 				break;
-			case "text_end":
-				Object.assign(partial.content[event.contentIndex]!, {
-					text: event.content,
-					textSignature: event.contentSignature,
-				});
+			case "text_end": {
+				const content = partial.content[event.contentIndex] as { text: string; textSignature?: string };
+				content.text = event.content;
+				content.textSignature = event.contentSignature;
 				break;
+			}
 			case "thinking_start":
 				partial.content[event.contentIndex] = { type: "thinking", thinking: "" };
 				break;
 			case "thinking_delta":
 				(partial.content[event.contentIndex] as { thinking: string }).thinking += event.delta;
 				break;
-			case "thinking_end":
-				Object.assign(partial.content[event.contentIndex]!, {
-					thinking: event.content,
-					thinkingSignature: event.contentSignature,
-					redacted: event.redacted,
-				});
+			case "thinking_end": {
+				const content = partial.content[event.contentIndex] as {
+					thinking: string;
+					thinkingSignature?: string;
+					redacted?: boolean;
+				};
+				content.thinking = event.content;
+				content.thinkingSignature = event.contentSignature;
+				content.redacted = event.redacted;
 				break;
+			}
 			case "toolcall_start":
 				partial.content[event.contentIndex] = {
 					type: "toolCall",
 					id: event.id,
 					name: event.toolName,
 					arguments: {},
+					thoughtSignature: undefined,
+					namespace: undefined,
 				};
 				toolJson.set(event.contentIndex, "");
 				break;
@@ -248,15 +251,21 @@ function createEventConverter(model: Model<"pi-messages">) {
 					parseStreamingJson<ToolCall["arguments"]>(json);
 				break;
 			}
-			case "toolcall_end":
-				Object.assign(partial.content[event.contentIndex]!, event.toolCall);
+			case "toolcall_end": {
+				const content = partial.content[event.contentIndex] as ToolCall;
+				content.id = event.toolCall.id;
+				content.name = event.toolCall.name;
+				content.arguments = event.toolCall.arguments;
+				content.thoughtSignature = event.toolCall.thoughtSignature;
+				content.namespace = event.toolCall.namespace;
 				toolJson.delete(event.contentIndex);
 				return {
 					type: "toolcall_end",
 					contentIndex: event.contentIndex,
-					toolCall: partial.content[event.contentIndex] as ToolCall,
+					toolCall: content,
 					partial,
 				};
+			}
 		}
 
 		return { ...event, partial } as AssistantMessageEvent;
@@ -272,7 +281,7 @@ async function* readPiMessagesEvents(stream: ReadableStream<Uint8Array>): AsyncG
 		while (true) {
 			const { done, value } = await reader.read();
 			buffer += done ? decoder.decode() : decoder.decode(value, { stream: true });
-			buffer = buffer.replace(/\r\n/g, "\n");
+			buffer = buffer.replace(CRLF_PATTERN, "\n");
 
 			let split = buffer.indexOf("\n\n");
 			while (split !== -1) {
@@ -357,7 +366,7 @@ export const stream: StreamFunction<"pi-messages", PiMessagesOptions> = (
 				throw new Error(`No API key provided for provider "${model.provider}"`);
 			}
 
-			const url = new URL(`${model.baseUrl.replace(/\/+$/u, "")}/messages`);
+			const url = new URL(`${model.baseUrl.replace(TRAILING_SLASHES_PATTERN, "")}/messages`);
 			if (options?.debug) {
 				url.searchParams.set("debug", "1");
 			}

@@ -277,17 +277,26 @@ function validateRetryDelayMs(delayMs: number, options: StreamOptions) {
     }
     return delayMs;
 }
-function sleep(ms: number, signal?: AbortSignal) {
-    return new Promise((resolve, reject) => {
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
         if (signal?.aborted) {
             reject(new Error("Request was aborted"));
             return;
         }
-        const timeout = setTimeout(resolve, ms);
-        signal?.addEventListener("abort", () => {
+
+        let timeout: ReturnType<typeof setTimeout>;
+        const onAbort = () => {
             clearTimeout(timeout);
+            signal?.removeEventListener("abort", onAbort);
             reject(new Error("Request was aborted"));
-        });
+        };
+        const onTimeout = () => {
+            signal?.removeEventListener("abort", onAbort);
+            resolve();
+        };
+
+        timeout = setTimeout(onTimeout, ms);
+        signal?.addEventListener("abort", onAbort, { once: true });
     });
 }
 function normalizeTimeoutMs(value: number | undefined) {

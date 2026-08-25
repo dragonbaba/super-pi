@@ -6,6 +6,7 @@ import type { Theme } from "../../modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../../utils/ansi.ts";
 import { resolvePath } from "../../utils/paths.ts";
 import { sanitizeBinaryOutput } from "../../utils/shell.ts";
+import { CARRIAGE_RETURN_PATTERN, TAB_PATTERN } from "../../utils/shell-regex.ts";
 
 export function shortenPath(path: unknown): string {
 	if (typeof path !== "string") return "";
@@ -29,11 +30,11 @@ export function str(value: unknown): string | null {
 }
 
 export function replaceTabs(text: string): string {
-	return text.replace(/\t/g, "   ");
+	return text.replace(TAB_PATTERN, "   ");
 }
 
 export function normalizeDisplayText(text: string): string {
-	return text.replace(/\r/g, "");
+	return text.replace(CARRIAGE_RETURN_PATTERN, "");
 }
 
 export function getTextOutput(
@@ -42,22 +43,25 @@ export function getTextOutput(
 ): string {
 	if (!result) return "";
 
-	const textBlocks = result.content.filter((c) => c.type === "text");
-	const imageBlocks = result.content.filter((c) => c.type === "image");
-
-	let output = textBlocks.map((c) => sanitizeBinaryOutput(stripAnsi(c.text || "")).replace(/\r/g, "")).join("\n");
+	let output = "";
+	let textBlockCount = 0;
+	for (const block of result.content) {
+		if (block.type !== "text") continue;
+		if (textBlockCount > 0) output += "\n";
+		output += sanitizeBinaryOutput(stripAnsi(block.text || "")).replace(CARRIAGE_RETURN_PATTERN, "");
+		textBlockCount++;
+	}
 
 	const caps = getCapabilities();
-	if (imageBlocks.length > 0 && (!caps.images || !showImages)) {
-		const imageIndicators = imageBlocks
-			.map((img) => {
-				const mimeType = img.mimeType ?? "image/unknown";
-				const dims =
-					img.data && img.mimeType ? (getImageDimensions(img.data, img.mimeType) ?? undefined) : undefined;
-				return imageFallback(mimeType, dims);
-			})
-			.join("\n");
-		output = output ? `${output}\n${imageIndicators}` : imageIndicators;
+	if (!caps.images || !showImages) {
+		for (const block of result.content) {
+			if (block.type !== "image") continue;
+			const mimeType = block.mimeType ?? "image/unknown";
+			const dimensions =
+				block.data && block.mimeType ? (getImageDimensions(block.data, block.mimeType) ?? undefined) : undefined;
+			if (output) output += "\n";
+			output += imageFallback(mimeType, dimensions);
+		}
 	}
 
 	return output;

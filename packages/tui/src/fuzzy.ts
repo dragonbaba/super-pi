@@ -4,6 +4,19 @@
  * Lower score = better match.
  */
 
+import {
+	FUZZY_ALPHA_NUMERIC_PATTERN,
+	FUZZY_NUMERIC_ALPHA_PATTERN,
+	FUZZY_TOKEN_SEPARATOR_PATTERN,
+} from "./regex.ts";
+import { isWhitespaceChar } from "./utils.ts";
+
+const WORD_BOUNDARY_PUNCTUATION = "-_./:";
+
+function isWordBoundaryCharacter(character: string): boolean {
+	return isWhitespaceChar(character) || WORD_BOUNDARY_PUNCTUATION.includes(character);
+}
+
 export interface FuzzyMatch {
 	matches: boolean;
 	score: number;
@@ -29,7 +42,7 @@ export function fuzzyMatch(query: string, text: string): FuzzyMatch {
 
 		for (let i = 0; i < textLower.length && queryIndex < normalizedQuery.length; i++) {
 			if (textLower[i] === normalizedQuery[queryIndex]) {
-				const isWordBoundary = i === 0 || /[\s\-_./:]/.test(textLower[i - 1]!);
+				const isWordBoundary = i === 0 || isWordBoundaryCharacter(textLower[i - 1]!);
 
 				// Reward consecutive matches
 				if (lastMatchIndex === i - 1) {
@@ -72,8 +85,8 @@ export function fuzzyMatch(query: string, text: string): FuzzyMatch {
 		return primaryMatch;
 	}
 
-	const alphaNumericMatch = queryLower.match(/^(?<letters>[a-z]+)(?<digits>[0-9]+)$/);
-	const numericAlphaMatch = queryLower.match(/^(?<digits>[0-9]+)(?<letters>[a-z]+)$/);
+	const alphaNumericMatch = queryLower.match(FUZZY_ALPHA_NUMERIC_PATTERN);
+	const numericAlphaMatch = queryLower.match(FUZZY_NUMERIC_ALPHA_PATTERN);
 	const swappedQuery = alphaNumericMatch
 		? `${alphaNumericMatch.groups?.digits ?? ""}${alphaNumericMatch.groups?.letters ?? ""}`
 		: numericAlphaMatch
@@ -103,7 +116,7 @@ export function fuzzyFilter<T>(items: T[], query: string, getText: (item: T) => 
 
 	const tokens = query
 		.trim()
-		.split(/[\s/]+/)
+		.split(FUZZY_TOKEN_SEPARATOR_PATTERN)
 		.filter((t) => t.length > 0);
 
 	if (tokens.length === 0) {

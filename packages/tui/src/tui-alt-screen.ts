@@ -10,6 +10,11 @@ import {
 	renderLayoutFrame,
 	type ScrollbarGeometry,
 } from "./layout.ts";
+import {
+	OSC133_PROMPT_START_PATTERN,
+	OSC133_ZONE_PREFIX_PATTERN,
+	SGR_MOUSE_PATTERN,
+} from "./regex.ts";
 import type { Terminal } from "./terminal.ts";
 import {
 	deleteAllKittyImages,
@@ -52,8 +57,6 @@ const FOCUS_IN = "\x1b[I";
 const FOCUS_OUT = "\x1b[O";
 const BEGIN_SYNCHRONIZED_OUTPUT = "\x1b[?2026h";
 const END_SYNCHRONIZED_OUTPUT = "\x1b[?2026l";
-const OSC133_ZONE_PREFIX = /^(?:\x1b\]133;[ABC](?:\x07|\x1b\\))+/;
-const OSC133_PROMPT_START = /^\x1b\]133;A(?:\x07|\x1b\\)/;
 const PAGE_SCROLL_OVERLAP = 4;
 const DEFAULT_FULLSCREEN_WHEEL_SCROLL_LINES = 3;
 const MAX_FULLSCREEN_WHEEL_SCROLL_LINES = 12;
@@ -286,10 +289,19 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			this.terminal.write(`${BEGIN_SYNCHRONIZED_OUTPUT}${EXIT_ALT_SCREEN}\x1b[?25h${END_SYNCHRONIZED_OUTPUT}`);
 		} else {
 			const width = Math.max(1, this.terminal.columns);
-			const documentLines = this.render(width).map((line) => line.replace(OSC133_ZONE_PREFIX, ""));
-			this.lastDocument = this.applyLineResets(documentLines.map((line) => line.replaceAll(CURSOR_MARKER, ""))).map(
-				(line) => (isImageLine(line) || visibleWidth(line) <= width ? line : sliceByColumn(line, 0, width, true)),
-			);
+			const documentLines = this.render(width);
+			for (let index = 0; index < documentLines.length; index++) {
+				documentLines[index] = documentLines[index]
+					.replace(OSC133_ZONE_PREFIX_PATTERN, "")
+					.replaceAll(CURSOR_MARKER, "");
+			}
+			this.lastDocument = this.applyLineResets(documentLines);
+			for (let index = 0; index < this.lastDocument.length; index++) {
+				const line = this.lastDocument[index];
+				if (!isImageLine(line) && visibleWidth(line) > width) {
+					this.lastDocument[index] = sliceByColumn(line, 0, width, true);
+				}
+			}
 			let buffer = `${BEGIN_SYNCHRONIZED_OUTPUT}${EXIT_ALT_SCREEN}${DISABLE_AUTOWRAP}`;
 			for (let row = 0; row < this.lastDocument.length; row++) {
 				if (row > 0) buffer += "\r\n";
@@ -388,7 +400,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		if (!lines) return;
 
 		for (let row = scrollView.scrollTop + direction; row >= 0 && row < lines.length; row += direction) {
-			if (!OSC133_PROMPT_START.test(lines[row] ?? "")) continue;
+			if (!OSC133_PROMPT_START_PATTERN.test(lines[row] ?? "")) continue;
 			scrollView.scrollTo(row);
 			this.requestRender();
 			return;
@@ -487,7 +499,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	}
 
 	private parseWheelEvent(data: string): WheelEvent | undefined {
-		const sgr = /^\x1b\[<(\d+);(\d+);(\d+)[Mm]$/.exec(data);
+		const sgr = SGR_MOUSE_PATTERN.exec(data);
 		if (sgr) {
 			const button = Number.parseInt(sgr[1], 10);
 			if ((button & 64) === 0) return undefined;
@@ -528,7 +540,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	}
 
 	private parseSgrMouseEvent(data: string): SgrMouseEvent | undefined {
-		const match = /^\x1b\[<(\d+);(\d+);(\d+)([Mm])$/.exec(data);
+		const match = SGR_MOUSE_PATTERN.exec(data);
 		if (!match) return undefined;
 		return {
 			button: Number.parseInt(match[1], 10),
@@ -1017,7 +1029,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	}
 
 	private isMouseSequence(data: string): boolean {
-		return /^\x1b\[<\d+;\d+;\d+[Mm]$/.test(data) || (data.length === 6 && data.startsWith("\x1b[M"));
+		return SGR_MOUSE_PATTERN.test(data) || (data.length === 6 && data.startsWith("\x1b[M"));
 	}
 
 	private compositeFlashes(screen: string[], width: number, height: number): string[] {
@@ -1043,7 +1055,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		let screen = nextLayout.lines.slice();
 		for (let row = 0; row < screen.length; row++) {
 			const line = screen[row];
-			if (line.startsWith("\x1b]133;")) screen[row] = line.replace(OSC133_ZONE_PREFIX, "");
+			if (line.startsWith("\x1b]133;")) screen[row] = line.replace(OSC133_ZONE_PREFIX_PATTERN, "");
 		}
 		screen = this.compositeOverlays(screen, width, height);
 		if (screen.length > height) screen = screen.slice(screen.length - height);

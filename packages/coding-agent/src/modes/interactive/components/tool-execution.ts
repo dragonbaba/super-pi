@@ -3,13 +3,20 @@ import type { ToolDefinition, ToolRenderContext } from "../../../core/extensions
 import { createAllToolDefinitions, type ToolName } from "../../../core/tools/index.ts";
 import { getTextOutput as getRenderedTextOutput } from "../../../core/tools/render-utils.ts";
 import { convertToPng } from "../../../utils/image-convert.ts";
+import { ObjectPool } from "../../../utils/object-pool.ts";
 import { theme } from "../theme/theme.ts";
 import { keyHint } from "./keybinding-hints.ts";
+import { READ_GROUP_BACKSLASH_PATTERN, READ_GROUP_IMAGE_EXTENSION_PATTERN } from "./tool-execution-regex.ts";
 
-const READ_GROUP_IMAGE_EXTENSION_RE = /\.(?:jpe?g|png|gif|webp|bmp)$/i;
 const READ_GROUP_SPECIAL_BASENAMES = new Set(["skill.md", "agents.md", "agents.override.md", "claude.md"]);
 const READ_GROUP_MAX_PREVIEW_CHARS = 4000;
 const READ_GROUP_MAX_PREVIEW_LINES = 50;
+const READ_GROUP_SELECTOR_SET_POOL = new ObjectPool(
+	() => new Set<string>(),
+	(selectors) => selectors.clear(),
+	4,
+	(selectors) => selectors.size <= 128,
+);
 
 type ToolResultLike = {
 	content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
@@ -24,6 +31,15 @@ type ReadGroupRow = {
 	result?: ToolResultLike;
 	isPartial: boolean;
 };
+type ReadGroupEntry = { toolCallId: string; row: ReadGroupRow };
+type ReadGroupDisplayRow = { entries: ReadGroupEntry[] };
+
+const READ_GROUP_PATH_MAP_POOL = new ObjectPool(
+	() => new Map<string, ReadGroupDisplayRow>(),
+	(groups) => groups.clear(),
+	4,
+	(groups) => groups.size <= 128,
+);
 
 function getReadGroupPath(args: any): string | undefined {
 	if (!args || typeof args !== "object") return undefined;
@@ -32,7 +48,7 @@ function getReadGroupPath(args: any): string | undefined {
 }
 
 function getReadGroupBasename(filePath: string): string {
-	const normalized = filePath.replace(/\\/g, "/");
+	const normalized = filePath.replace(READ_GROUP_BACKSLASH_PATTERN, "/");
 	return normalized.slice(normalized.lastIndexOf("/") + 1).toLowerCase();
 }
 
@@ -44,7 +60,7 @@ function getReadGroupSelector(args: any): string {
 }
 
 function normalizeReadGroupPath(filePath: string): string {
-	let normalized = filePath.replace(/\\/g, "/");
+	let normalized = filePath.replace(READ_GROUP_BACKSLASH_PATTERN, "/");
 	while (normalized.startsWith("./")) normalized = normalized.slice(2);
 	return normalized;
 }
@@ -64,7 +80,7 @@ export function isGroupableReadCall(args: any): boolean {
 	const filePath = getReadGroupPath(args);
 	if (!filePath) return false;
 	const basename = getReadGroupBasename(filePath);
-	return !READ_GROUP_SPECIAL_BASENAMES.has(basename) && !READ_GROUP_IMAGE_EXTENSION_RE.test(basename);
+	return !READ_GROUP_SPECIAL_BASENAMES.has(basename) && !READ_GROUP_IMAGE_EXTENSION_PATTERN.test(basename);
 }
 
 export function getReadGroupingDisposition(content: any, executedEarly = false): "boundary" | "ignore" | "group-read" {
@@ -109,21 +125,29 @@ export class ReadToolGroupComponent extends Container {
 	setExpanded(expanded: boolean): void { if (this.expanded !== expanded) { this.expanded = expanded; this.rebuild(); } }
 	override invalidate(): void { super.invalidate(); this.rebuild(); }
 
-	private getDisplayRows(): Array<{ entries: Array<{ toolCallId: string; row: ReadGroupRow }> }> {
-		const rows = [...this.rows.entries()].map(([toolCallId, row]) => ({ toolCallId, row }));
-		if (!this.finalized) return rows.map((entry) => ({ entries: [entry] }));
-		const byPath = new Map<string, { entries: Array<{ toolCallId: string; row: ReadGroupRow }> }>();
-		const displayRows: Array<{ entries: Array<{ toolCallId: string; row: ReadGroupRow }> }> = [];
-		for (const entry of rows) {
-			const filePath = getReadGroupPath(entry.row.args);
-			const mergeable = filePath && entry.row.argsComplete && entry.row.result && !entry.row.isPartial && !entry.row.result.isError;
-			if (!mergeable) { displayRows.push({ entries: [entry] }); continue; }
-			const key = normalizeReadGroupPath(filePath);
-			const existing = byPath.get(key);
-			if (existing) existing.entries.push(entry);
-			else { const group = { entries: [entry] }; byPath.set(key, group); displayRows.push(group); }
+	private getDisplayRows(): ReadGroupDisplayRow[] {
+		const displayRows: ReadGroupDisplayRow[] = [];
+		if (!this.finalized) {
+			for (const [toolCallId, row] of this.rows) displayRows.push({ entries: [{ toolCallId, row }] });
+			return displayRows;
 		}
-		return displayRows;
+
+		const byPath = READ_GROUP_PATH_MAP_POOL.acquire();
+		try {
+			for (const [toolCallId, row] of this.rows) {
+				const entry = { toolCallId, row };
+				const filePath = getReadGroupPath(entry.row.args);
+				const mergeable = filePath && entry.row.argsComplete && entry.row.result && !entry.row.isPartial && !entry.row.result.isError;
+				if (!mergeable) { displayRows.push({ entries: [entry] }); continue; }
+				const key = normalizeReadGroupPath(filePath);
+				const existing = byPath.get(key);
+				if (existing) existing.entries.push(entry);
+				else { const group = { entries: [entry] }; byPath.set(key, group); displayRows.push(group); }
+			}
+			return displayRows;
+		} finally {
+			READ_GROUP_PATH_MAP_POOL.release(byPath);
+		}
 	}
 
 	private rebuild(): void {
@@ -137,10 +161,23 @@ export class ReadToolGroupComponent extends Container {
 			const group = displayRows[index];
 			const first = group.entries[0].row;
 			const filePath = getReadGroupPath(first.args) ?? "";
-			const selectors = group.entries.map((entry) => getReadGroupSelector(entry.row.args)).filter(Boolean);
-			const selectorText = selectors.length ? [...new Set(selectors)].join(",") : "";
-			const isError = group.entries.some((entry) => entry.row.result?.isError);
-			const isPending = group.entries.some((entry) => !entry.row.result || entry.row.isPartial);
+			const selectors = READ_GROUP_SELECTOR_SET_POOL.acquire();
+			let selectorText = "";
+			let isError = false;
+			let isPending = false;
+			try {
+				for (const entry of group.entries) {
+					const selector = getReadGroupSelector(entry.row.args);
+					if (selector && !selectors.has(selector)) {
+						selectors.add(selector);
+						selectorText += selectorText ? `,${selector}` : selector;
+					}
+					if (entry.row.result?.isError) isError = true;
+					if (!entry.row.result || entry.row.isPartial) isPending = true;
+				}
+			} finally {
+				READ_GROUP_SELECTOR_SET_POOL.release(selectors);
+			}
 			const icon = isError ? theme.fg("error", "✗") : isPending ? theme.fg("muted", "○") : theme.fg("muted", "•");
 			const branch = callCount > 1 ? (index === displayRows.length - 1 ? "└─ " : "├─ ") : "";
 			const label = branch + icon + " " + (callCount === 1 ? theme.fg("toolTitle", theme.bold("Read")) + " " : "") + theme.fg("accent", filePath) + theme.fg("warning", selectorText);

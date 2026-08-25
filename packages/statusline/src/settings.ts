@@ -21,6 +21,23 @@ import {
 
 export const SETTINGS_FILE_NAME = "pi-statusline.json";
 const LEGACY_SETTINGS_FILE_NAME = "pi-statusline-settings.json";
+const SEGMENT_TEXT_FIELDS = new Set(["prefix", "suffix"]);
+const MODEL_SEGMENT_TEXT_FIELDS = new Set([
+	"prefix",
+	"suffix",
+	"truncationLength",
+	"truncationSymbol",
+	"truncationDirection",
+]);
+const ROOT_FIELDS = new Set([
+	"palettePreset",
+	"palette",
+	"density",
+	"separator",
+	"segments",
+	"segmentText",
+	"extensionStatusIcons",
+]);
 
 export const DEFAULT_EXTENSION_STATUS_ICONS: Record<string, string> = {
 	accounts: "👤",
@@ -118,17 +135,8 @@ export function normalizeStatuslineConfig(value: unknown): {
 			diagnostics: [invalidDiagnostic("", "Settings must contain a JSON object", "error")],
 		};
 	}
-	const knownRoot = new Set([
-		"palettePreset",
-		"palette",
-		"density",
-		"separator",
-		"segments",
-		"segmentText",
-		"extensionStatusIcons",
-	]);
 	for (const key of Object.keys(value)) {
-		if (!knownRoot.has(key)) diagnostics.push(unknownDiagnostic(key));
+		if (!ROOT_FIELDS.has(key)) diagnostics.push(unknownDiagnostic(key));
 	}
 
 	normalizePalette(value.palette, config, diagnostics);
@@ -144,7 +152,6 @@ export function normalizeStatuslineConfig(value: unknown): {
 			diagnostics.push(invalidDiagnostic("segments", "Expected an array of segment names"));
 		} else {
 			const segments: ConfigSegmentName[] = [];
-			const seen = new Set<SegmentName>();
 			for (const [index, item] of value.segments.entries()) {
 				const path = `segments[${index}]`;
 				if (typeof item !== "string" || !isConfigSegmentName(item)) {
@@ -161,11 +168,10 @@ export function normalizeStatuslineConfig(value: unknown): {
 					segments.push(item);
 					continue;
 				}
-				if (seen.has(item)) {
+				if (segments.includes(item)) {
 					diagnostics.push(invalidDiagnostic(path, `Duplicate segment ${JSON.stringify(item)}`));
 					continue;
 				}
-				seen.add(item);
 				segments.push(item);
 			}
 			config.segments = segments;
@@ -186,13 +192,7 @@ export function normalizeStatuslineConfig(value: unknown): {
 					diagnostics.push(invalidDiagnostic(path, "Expected an object"));
 					continue;
 				}
-				const knownFields = new Set([
-					"prefix",
-					"suffix",
-					...(name === "model"
-						? ["truncationLength", "truncationSymbol", "truncationDirection"]
-						: []),
-				]);
+				const knownFields = name === "model" ? MODEL_SEGMENT_TEXT_FIELDS : SEGMENT_TEXT_FIELDS;
 				for (const key of Object.keys(presentation)) {
 					if (!knownFields.has(key)) diagnostics.push(unknownDiagnostic(`${path}.${key}`));
 				}

@@ -1,5 +1,9 @@
 import type { Theme, ThemeColor } from "@super-pi/coding-agent";
 import hljs from "highlight.js";
+import {
+	HIGHLIGHT_CLASS_ATTRIBUTE_PATTERN,
+	HIGHLIGHT_CLASS_SEPARATOR_PATTERN,
+} from "./syntax-highlighting-regex.ts";
 
 export type SyntaxTheme = Pick<Theme, "fg" | "bold"> & Partial<Pick<Theme, "italic" | "underline">>;
 
@@ -171,9 +175,10 @@ function renderHighlightedHtml(
 }
 
 function scopeFromTag(tag: string): string | undefined {
-	const classValue = /\sclass\s*=\s*(?:"([^"]*)"|'([^']*)')/u.exec(tag)?.slice(1).find(Boolean);
+	const classMatch = HIGHLIGHT_CLASS_ATTRIBUTE_PATTERN.exec(tag);
+	const classValue = classMatch?.[1] || classMatch?.[2];
 	return classValue
-		?.split(/\s+/u)
+		?.split(HIGHLIGHT_CLASS_SEPARATOR_PATTERN)
 		.find((className) => className.startsWith("hljs-"))
 		?.slice("hljs-".length);
 }
@@ -187,7 +192,10 @@ function activeFormatter(
 		if (!scope) continue;
 		const exact = formatters[scope];
 		if (exact) return exact;
-		const prefix = scope.split(/[.-]/u)[0];
+		const dotIndex = scope.indexOf(".");
+		const dashIndex = scope.indexOf("-");
+		const separatorIndex = dotIndex < 0 ? dashIndex : dashIndex < 0 ? dotIndex : Math.min(dotIndex, dashIndex);
+		const prefix = separatorIndex < 0 ? scope : scope.slice(0, separatorIndex);
 		if (prefix && formatters[prefix]) return formatters[prefix];
 	}
 	return undefined;

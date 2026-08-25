@@ -1,0 +1,4 @@
+export const WHITESPACE_RUN_PATTERN = /\s+/g;
+export const WHITESPACE_SEPARATOR_PATTERN = /\s+/;
+export const WHITESPACE_CHARACTER_PATTERN = /\s/;
+export const SESSION_DISPLAY_CONTROL_CHARACTER_PATTERN = /[\x00-\x1f\x7f]/g;

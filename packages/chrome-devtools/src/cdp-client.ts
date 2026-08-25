@@ -180,20 +180,34 @@ class CdpClient {
 	static connect(url: string) {
 		return new Promise<CdpClient>((resolve, reject) => {
 			const socket = new WebSocket(url);
+			let settled = false;
+			const cleanup = (): void => {
+				clearTimeout(timeout);
+				socket.removeEventListener("open", onOpen);
+				socket.removeEventListener("error", onError);
+			};
+			const onOpen = (): void => {
+				if (settled) return;
+				settled = true;
+				cleanup();
+				resolve(new CdpClient(socket));
+			};
+			const onError = (): void => {
+				if (settled) return;
+				settled = true;
+				cleanup();
+				reject(new Error(`Failed to connect to Chrome DevTools WebSocket: ${url}`));
+			};
 			const timeout = setTimeout(() => {
+				if (settled) return;
+				settled = true;
+				cleanup();
 				socket.close();
 				reject(new Error(`Timed out connecting to Chrome DevTools WebSocket: ${url}`));
 			}, DEFAULT_TIMEOUT_MS);
 
-			socket.addEventListener("open", () => {
-				clearTimeout(timeout);
-				resolve(new CdpClient(socket));
-			});
-
-			socket.addEventListener("error", () => {
-				clearTimeout(timeout);
-				reject(new Error(`Failed to connect to Chrome DevTools WebSocket: ${url}`));
-			});
+			socket.addEventListener("open", onOpen);
+			socket.addEventListener("error", onError);
 		});
 	}
 

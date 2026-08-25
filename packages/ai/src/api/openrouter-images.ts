@@ -20,6 +20,7 @@ import { formatProviderError, normalizeProviderError } from "../utils/error-body
 import { headersToRecord, providerHeadersToRecord } from "../utils/headers.ts";
 import { retryProviderRequest } from "../utils/provider-retry.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
+import { DATA_IMAGE_URL_PATTERN } from "./openrouter-images-regex.ts";
 
 interface OpenRouterGeneratedImage {
 	image_url?: string | { url?: string };
@@ -96,7 +97,7 @@ export const generateImages: ImagesFunction<"openrouter-images", ImagesOptions> 
 			for (const image of choice.message.images ?? []) {
 				const imageUrl = typeof image.image_url === "string" ? image.image_url : image.image_url?.url;
 				if (!imageUrl?.startsWith("data:")) continue;
-				const matches = imageUrl.match(/^data:([^;]+);base64,(.+)$/);
+				const matches = DATA_IMAGE_URL_PATTERN.exec(imageUrl);
 				if (!matches) continue;
 				output.output.push({
 					type: "image",

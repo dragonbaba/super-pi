@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { getEventListeners } from "node:events";
 import test from "node:test";
 import type { Tool, ToolCall } from "../packages/ai/src/types.ts";
 import {
@@ -12,7 +13,10 @@ import {
 	AuthStorage,
 	InMemoryAuthStorageBackend,
 } from "../packages/coding-agent/src/core/auth-storage.ts";
+import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
+import { getTextOutput } from "../packages/coding-agent/src/core/tools/render-utils.ts";
 import { renderHighlightedHtml } from "../packages/coding-agent/src/utils/syntax-highlight.ts";
+import { sleep } from "../packages/coding-agent/src/utils/sleep.ts";
 
 function defineProtoProperty<T extends object, TValue>(record: T, value: TValue): T & { __proto__: TValue } {
 	Object.defineProperty(record, "__proto__", {
@@ -118,6 +122,51 @@ test("object pool resets released values and rejects oversized retention", () =>
 	pool.release(large);
 	assert.notEqual(pool.acquire(), large);
 	assert.equal(creations, 2);
+});
+
+test("abortable sleep removes its listener after normal completion", async () => {
+	const controller = new AbortController();
+	await sleep(1, controller.signal);
+	assert.equal(getEventListeners(controller.signal, "abort").length, 0);
+});
+
+test("tool text rendering preserves empty-block separators without intermediate block arrays", () => {
+	assert.equal(
+		getTextOutput(
+			{
+				content: [
+					{ type: "text", text: "" },
+					{ type: "text", text: "value\r" },
+				],
+			},
+			true,
+		),
+		"\nvalue",
+	);
+});
+
+test("session tree scratch maps are cleared between traversals and managers", () => {
+	const firstManager = SessionManager.inMemory("D:/workspace");
+	const rootId = firstManager.appendCustomEntry("root");
+	const firstChildId = firstManager.appendCustomEntry("first-child");
+	firstManager.branch(rootId);
+	const secondChildId = firstManager.appendCustomEntry("second-child");
+
+	const firstTree = firstManager.getTree();
+	assert.equal(firstTree.length, 1);
+	assert.equal(firstTree[0]?.entry.id, rootId);
+	assert.deepEqual(
+		firstTree[0]?.children.map((child) => child.entry.id),
+		[firstChildId, secondChildId],
+	);
+	assert.equal(firstManager.getTree()[0]?.children.length, 2);
+
+	const secondManager = SessionManager.inMemory("D:/other");
+	const isolatedRootId = secondManager.appendCustomEntry("isolated-root");
+	const secondTree = secondManager.getTree();
+	assert.equal(secondTree.length, 1);
+	assert.equal(secondTree[0]?.entry.id, isolatedRootId);
+	assert.equal(secondTree[0]?.children.length, 0);
 });
 
 test("auth storage treats __proto__ provider ids as own data", async () => {

@@ -100,22 +100,29 @@ function distribute(
 ): void {
 	let remaining = amount;
 	while (remaining > 0) {
-		const candidates = entries
-			.map((entry, index) => ({ entry, index }))
-			.filter(({ entry, index }) => {
-				if (mode === "grow") {
-					return (entry.grow ?? 0) > 0 && sizes[index]! < (entry.maxSize ?? Number.MAX_SAFE_INTEGER);
-				}
-				return (entry.shrink ?? 1) > 0 && sizes[index]! > (entry.minSize ?? 0);
-			});
-		if (candidates.length === 0) return;
+		let candidateCount = 0;
+		let totalWeight = 0;
+		for (let index = 0; index < entries.length; index++) {
+			const entry = entries[index]!;
+			const eligible =
+				mode === "grow"
+					? (entry.grow ?? 0) > 0 && sizes[index]! < (entry.maxSize ?? Number.MAX_SAFE_INTEGER)
+					: (entry.shrink ?? 1) > 0 && sizes[index]! > (entry.minSize ?? 0);
+			if (!eligible) continue;
+			candidateCount++;
+			totalWeight += mode === "grow" ? (entry.grow ?? 0) : (entry.shrink ?? 1) * Math.max(1, sizes[index]!);
+		}
+		if (candidateCount === 0) return;
 
-		const totalWeight = candidates.reduce((sum, { entry, index }) => {
-			return sum + (mode === "grow" ? (entry.grow ?? 0) : (entry.shrink ?? 1) * Math.max(1, sizes[index]!));
-		}, 0);
 		let distributed = 0;
-		for (const { entry, index } of candidates) {
+		for (let index = 0; index < entries.length; index++) {
 			if (remaining <= 0) break;
+			const entry = entries[index]!;
+			const eligible =
+				mode === "grow"
+					? (entry.grow ?? 0) > 0 && sizes[index]! < (entry.maxSize ?? Number.MAX_SAFE_INTEGER)
+					: (entry.shrink ?? 1) > 0 && sizes[index]! > (entry.minSize ?? 0);
+			if (!eligible) continue;
 			const weight = mode === "grow" ? (entry.grow ?? 0) : (entry.shrink ?? 1) * Math.max(1, sizes[index]!);
 			const proposed = Math.max(1, Math.floor((remaining * weight) / totalWeight));
 			const capacity =

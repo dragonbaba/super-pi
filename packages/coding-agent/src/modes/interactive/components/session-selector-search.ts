@@ -1,16 +1,17 @@
 import { fuzzyMatch } from "@super-pi/tui";
 import type { SessionInfo } from "../../../core/session-manager.ts";
+import {
+	WHITESPACE_CHARACTER_PATTERN,
+	WHITESPACE_RUN_PATTERN,
+	WHITESPACE_SEPARATOR_PATTERN,
+} from "./session-selector-search-regex.ts";
 
 export type SortMode = "threaded" | "recent" | "relevance";
 
 export type NameFilter = "all" | "named";
 
 export interface ParsedSearchQuery {
-	mode: "tokens" | "regex";
 	tokens: { kind: "fuzzy" | "phrase"; value: string }[];
-	regex: RegExp | null;
-	/** If set, parsing failed and we should treat query as non-matching. */
-	error?: string;
 }
 
 export interface MatchResult {
@@ -19,12 +20,27 @@ export interface MatchResult {
 	score: number;
 }
 
+const SESSION_SEARCH_TEXT_CACHE = new WeakMap<SessionInfo, string>();
+
 function normalizeWhitespaceLower(text: string): string {
-	return text.toLowerCase().replace(/\s+/g, " ").trim();
+	return text.toLowerCase().replace(WHITESPACE_RUN_PATTERN, " ").trim();
 }
 
 function getSessionSearchText(session: SessionInfo): string {
-	return `${session.id} ${session.name ?? ""} ${session.allMessagesText} ${session.cwd}`;
+	const cached = SESSION_SEARCH_TEXT_CACHE.get(session);
+	if (cached !== undefined) return cached;
+	const text = `${session.id} ${session.name ?? ""} ${session.firstMessage} ${session.cwd}`;
+	SESSION_SEARCH_TEXT_CACHE.set(session, text);
+	return text;
+}
+
+function appendSearchToken(
+	tokens: { kind: "fuzzy" | "phrase"; value: string }[],
+	kind: "fuzzy" | "phrase",
+	value: string,
+): void {
+	const normalized = value.trim();
+	if (normalized) tokens.push({ kind, value: normalized });
 }
 
 export function hasSessionName(session: SessionInfo): boolean {
@@ -39,21 +55,7 @@ function matchesNameFilter(session: SessionInfo, filter: NameFilter): boolean {
 export function parseSearchQuery(query: string): ParsedSearchQuery {
 	const trimmed = query.trim();
 	if (!trimmed) {
-		return { mode: "tokens", tokens: [], regex: null };
-	}
-
-	// Regex mode: re:<pattern>
-	if (trimmed.startsWith("re:")) {
-		const pattern = trimmed.slice(3).trim();
-		if (!pattern) {
-			return { mode: "regex", tokens: [], regex: null, error: "Empty regex" };
-		}
-		try {
-			return { mode: "regex", tokens: [], regex: new RegExp(pattern, "i") };
-		} catch (err) {
-			const msg = err instanceof Error ? err.message : String(err);
-			return { mode: "regex", tokens: [], regex: null, error: msg };
-		}
+		return { tokens: [] };
 	}
 
 	// Token mode with quote support.
@@ -63,28 +65,24 @@ export function parseSearchQuery(query: string): ParsedSearchQuery {
 	let inQuote = false;
 	let hadUnclosedQuote = false;
 
-	const flush = (kind: "fuzzy" | "phrase"): void => {
-		const v = buf.trim();
-		buf = "";
-		if (!v) return;
-		tokens.push({ kind, value: v });
-	};
-
 	for (let i = 0; i < trimmed.length; i++) {
 		const ch = trimmed[i]!;
 		if (ch === '"') {
 			if (inQuote) {
-				flush("phrase");
+				appendSearchToken(tokens, "phrase", buf);
+				buf = "";
 				inQuote = false;
 			} else {
-				flush("fuzzy");
+				appendSearchToken(tokens, "fuzzy", buf);
+				buf = "";
 				inQuote = true;
 			}
 			continue;
 		}
 
-		if (!inQuote && /\s/.test(ch)) {
-			flush("fuzzy");
+		if (!inQuote && WHITESPACE_CHARACTER_PATTERN.test(ch)) {
+			appendSearchToken(tokens, "fuzzy", buf);
+			buf = "";
 			continue;
 		}
 
@@ -97,33 +95,21 @@ export function parseSearchQuery(query: string): ParsedSearchQuery {
 
 	// If quotes were unbalanced, fall back to plain whitespace tokenization.
 	if (hadUnclosedQuote) {
-		return {
-			mode: "tokens",
-			tokens: trimmed
-				.split(/\s+/)
-				.map((t) => t.trim())
-				.filter((t) => t.length > 0)
-				.map((t) => ({ kind: "fuzzy" as const, value: t })),
-			regex: null,
-		};
+		const fallbackTokens: { kind: "fuzzy"; value: string }[] = [];
+		for (const value of trimmed.split(WHITESPACE_SEPARATOR_PATTERN)) {
+			const normalized = value.trim();
+			if (normalized) fallbackTokens.push({ kind: "fuzzy", value: normalized });
+		}
+		return { tokens: fallbackTokens };
 	}
 
-	flush(inQuote ? "phrase" : "fuzzy");
+	appendSearchToken(tokens, inQuote ? "phrase" : "fuzzy", buf);
 
-	return { mode: "tokens", tokens, regex: null };
+	return { tokens };
 }
 
 export function matchSession(session: SessionInfo, parsed: ParsedSearchQuery): MatchResult {
 	const text = getSessionSearchText(session);
-
-	if (parsed.mode === "regex") {
-		if (!parsed.regex) {
-			return { matches: false, score: 0 };
-		}
-		const idx = text.search(parsed.regex);
-		if (idx < 0) return { matches: false, score: 0 };
-		return { matches: true, score: idx * 0.1 };
-	}
 
 	if (parsed.tokens.length === 0) {
 		return { matches: true, score: 0 };
@@ -159,13 +145,17 @@ export function filterAndSortSessions(
 	sortMode: SortMode,
 	nameFilter: NameFilter = "all",
 ): SessionInfo[] {
-	const nameFiltered =
-		nameFilter === "all" ? sessions : sessions.filter((session) => matchesNameFilter(session, nameFilter));
+	let nameFiltered = sessions;
+	if (nameFilter !== "all") {
+		nameFiltered = [];
+		for (const session of sessions) {
+			if (matchesNameFilter(session, nameFilter)) nameFiltered.push(session);
+		}
+	}
 	const trimmed = query.trim();
 	if (!trimmed) return nameFiltered;
 
 	const parsed = parseSearchQuery(query);
-	if (parsed.error) return [];
 
 	// Recent mode: filter only, keep incoming order.
 	if (sortMode === "recent") {
@@ -190,5 +180,7 @@ export function filterAndSortSessions(
 		return b.session.modified.getTime() - a.session.modified.getTime();
 	});
 
-	return scored.map((r) => r.session);
+	const sortedSessions = new Array<SessionInfo>(scored.length);
+	for (let index = 0; index < scored.length; index++) sortedSessions[index] = scored[index]!.session;
+	return sortedSessions;
 }

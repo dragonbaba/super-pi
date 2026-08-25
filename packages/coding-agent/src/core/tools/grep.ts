@@ -9,6 +9,13 @@ import { keyHint } from "../../modes/interactive/components/keybinding-hints.ts"
 import type { Theme } from "../../modes/interactive/theme/theme.ts";
 import { ensureTool } from "../../utils/tools-manager.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
+import {
+	GREP_BACKSLASH_PATTERN,
+	GREP_CARRIAGE_RETURN_PATTERN,
+	GREP_CONTROL_CHARACTER_PATTERN,
+	GREP_CRLF_PATTERN,
+	GREP_TRAILING_LINE_FEED_PATTERN,
+} from "./grep-regex.ts";
 import { resolveToCwd } from "./path-utils.ts";
 import { getTextOutput, invalidArgText, shortenPath, str } from "./render-utils.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
@@ -106,7 +113,7 @@ interface GrepSummary {
 }
 
 function sanitizeGrepTreePart(value: string): string {
-	return value.replace(/[\u0000-\u001f\u007f]/g, "�");
+	return value.replace(GREP_CONTROL_CHARACTER_PATTERN, "�");
 }
 
 function buildGrepFileTree(files: string[], maxLines = GREP_TREE_MAX_LINES): string[] {
@@ -310,7 +317,7 @@ export function createGrepToolDefinition(
 							if (isDirectory) {
 								const relative = path.relative(searchPath, filePath);
 								if (relative && !relative.startsWith("..")) {
-									return relative.replace(/\\/g, "/");
+									return relative.replace(GREP_BACKSLASH_PATTERN, "/");
 								}
 							}
 							return path.basename(filePath);
@@ -322,7 +329,7 @@ export function createGrepToolDefinition(
 							if (!lines) {
 								try {
 									const content = await ops.readFile(filePath);
-									lines = content.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
+									lines = content.replace(GREP_CRLF_PATTERN, "\n").replace(GREP_CARRIAGE_RETURN_PATTERN, "\n").split("\n");
 								} catch {
 									lines = [];
 								}
@@ -375,7 +382,7 @@ export function createGrepToolDefinition(
 							const end = contextValue > 0 ? Math.min(lines.length, lineNumber + contextValue) : lineNumber;
 							for (let current = start; current <= end; current++) {
 								const lineText = lines[current - 1] ?? "";
-								const sanitized = lineText.replace(/\r/g, "");
+								const sanitized = lineText.replace(GREP_CARRIAGE_RETURN_PATTERN, "");
 								const isMatchLine = current === lineNumber;
 								// Truncate long lines so grep output stays compact.
 								const { text: truncatedText, wasTruncated } = truncateLine(sanitized);
@@ -443,9 +450,9 @@ export function createGrepToolDefinition(
 								if (contextValue === 0 && match.lineText !== undefined) {
 									const relativePath = match.displayPath;
 									const sanitized = match.lineText
-										.replace(/\r\n/g, "\n")
-										.replace(/\r/g, "")
-										.replace(/\n$/, "");
+										.replace(GREP_CRLF_PATTERN, "\n")
+										.replace(GREP_CARRIAGE_RETURN_PATTERN, "")
+										.replace(GREP_TRAILING_LINE_FEED_PATTERN, "");
 									const { text: truncatedText, wasTruncated } = truncateLine(sanitized);
 									if (wasTruncated) linesTruncated = true;
 									outputLines.push(`${relativePath}:${match.lineNumber}: ${truncatedText}`);

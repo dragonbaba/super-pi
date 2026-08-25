@@ -1,14 +1,32 @@
 import { Marked, type Token, Tokenizer, type TokenizerExtension, type Tokens } from "marked";
 import { renderLatex } from "../latex.ts";
+import {
+	ANSI_RESET_PATTERN,
+	MARKDOWN_BLOCK_START_PATTERN,
+	MARKDOWN_BRACKET_BLOCK_PATTERN,
+	MARKDOWN_DOLLAR_BLOCK_PATTERN,
+	MARKDOWN_DOLLAR_WHITESPACE_PATTERN,
+	MARKDOWN_ENVIRONMENT_NAME_PATTERN,
+	MARKDOWN_FENCE_START_PATTERN,
+	MARKDOWN_IDENTIFIER_PATTERN,
+	MARKDOWN_LEADING_DIGIT_PATTERN,
+	MARKDOWN_ORDERED_LIST_MARKER_PATTERN,
+	MARKDOWN_PENDING_BRACKET_BLOCK_PATTERN,
+	MARKDOWN_PENDING_DOLLAR_BLOCK_PATTERN,
+	MARKDOWN_PENDING_MATH_PATTERN,
+	MARKDOWN_STRICT_STRIKETHROUGH_PATTERN,
+	MARKDOWN_TRAILING_WHITESPACE_PATTERN,
+	MARKDOWN_UNORDERED_LIST_MARKER_PATTERN,
+	TAB_PATTERN,
+	TRAILING_LINE_FEED_PATTERN,
+} from "../regex.ts";
 import { getCapabilities, hyperlink, isImageLine } from "../terminal-image.ts";
 import type { Component } from "../tui.ts";
-import { applyBackgroundToLine, visibleWidth, wrapTextWithAnsi } from "../utils.ts";
-
-const STRICT_STRIKETHROUGH_REGEX = /^(~~)(?=[^\s~])((?:\\.|[^\\])*?(?:\\.|[^\s~\\]))\1(?=[^~]|$)/;
+import { applyBackgroundToLine, isWhitespaceChar, visibleWidth, wrapTextWithAnsi } from "../utils.ts";
 
 class StrictStrikethroughTokenizer extends Tokenizer {
 	override del(src: string): Tokens.Del | undefined {
-		const match = STRICT_STRIKETHROUGH_REGEX.exec(src);
+		const match = MARKDOWN_STRICT_STRIKETHROUGH_PATTERN.exec(src);
 		if (!match) {
 			return undefined;
 		}
@@ -46,7 +64,7 @@ function findClosingDelimiter(source: string, closing: string, start: number): n
 }
 
 function looksLikePendingDollarMath(source: string): boolean {
-	return /\\[A-Za-z]+|[_^=+*/<>()[\]|±≤≥≠≈∈→⇒∞∫∑√-]/.test(source);
+	return MARKDOWN_PENDING_MATH_PATTERN.test(source);
 }
 
 function tokenizeInlineLatex(source: string): LatexToken | undefined {
@@ -61,7 +79,7 @@ function tokenizeInlineLatex(source: string): LatexToken | undefined {
 	} else if (source.startsWith("\\[")) {
 		opening = "\\[";
 		closing = "\\]";
-	} else if (source.startsWith("$") && !/^\$\s/.test(source)) {
+	} else if (source.startsWith("$") && !MARKDOWN_DOLLAR_WHITESPACE_PATTERN.test(source)) {
 		opening = "$";
 		closing = "$";
 	} else {
@@ -72,10 +90,10 @@ function tokenizeInlineLatex(source: string): LatexToken | undefined {
 	if (
 		closingIndex >= 0 &&
 		opening === "$" &&
-		(/\s$/.test(source.slice(opening.length, closingIndex)) ||
-			/^\d/.test(source.slice(closingIndex + 1)) ||
-			(/^[A-Z_][A-Z0-9_]*(?:[^A-Za-z0-9_\s])?$/.test(source.slice(opening.length, closingIndex)) &&
-				/^[A-Za-z_][A-Za-z0-9_]*/.test(source.slice(closingIndex + 1))) ||
+		(MARKDOWN_TRAILING_WHITESPACE_PATTERN.test(source.slice(opening.length, closingIndex)) ||
+			MARKDOWN_LEADING_DIGIT_PATTERN.test(source.slice(closingIndex + 1)) ||
+			(MARKDOWN_ENVIRONMENT_NAME_PATTERN.test(source.slice(opening.length, closingIndex)) &&
+				MARKDOWN_IDENTIFIER_PATTERN.test(source.slice(closingIndex + 1))) ||
 			source.slice(opening.length, closingIndex).includes("`"))
 	) {
 		return undefined;
@@ -99,21 +117,21 @@ function tokenizeInlineLatex(source: string): LatexToken | undefined {
 }
 
 function tokenizeBlockLatex(source: string): LatexToken | undefined {
-	const dollarMatch = /^ {0,3}\$\$[ \t]*(?:\n)?([\s\S]*?)\$\$[ \t]*(?:\n|$)/.exec(source);
+	const dollarMatch = MARKDOWN_DOLLAR_BLOCK_PATTERN.exec(source);
 	if (dollarMatch?.[1]) {
 		return { type: "latexBlock", raw: dollarMatch[0], text: dollarMatch[1].trim() };
 	}
 
-	const bracketMatch = /^ {0,3}\\\[[ \t]*(?:\n)?([\s\S]*?)\\\][ \t]*(?:\n|$)/.exec(source);
+	const bracketMatch = MARKDOWN_BRACKET_BLOCK_PATTERN.exec(source);
 	if (bracketMatch?.[1]) {
 		return { type: "latexBlock", raw: bracketMatch[0], text: bracketMatch[1].trim() };
 	}
 
-	const pendingBracket = /^ {0,3}\\\[[ \t]*(?:\n)?([\s\S]*)$/.exec(source);
+	const pendingBracket = MARKDOWN_PENDING_BRACKET_BLOCK_PATTERN.exec(source);
 	if (pendingBracket) {
 		return { type: "latexBlock", raw: pendingBracket[0], text: pendingBracket[1], pending: true };
 	}
-	const pendingDollar = /^ {0,3}\$\$[ \t]*(?:\n)?([\s\S]*)$/.exec(source);
+	const pendingDollar = MARKDOWN_PENDING_DOLLAR_BLOCK_PATTERN.exec(source);
 	if (pendingDollar?.[1] && looksLikePendingDollarMath(pendingDollar[1])) {
 		return { type: "latexBlock", raw: pendingDollar[0], text: pendingDollar[1], pending: true };
 	}
@@ -125,7 +143,7 @@ const LATEX_MARKDOWN_EXTENSIONS: readonly TokenizerExtension[] = [
 		name: "latexBlock",
 		level: "block",
 		start(source) {
-			const match = /(?:^|\n) {0,3}(?:\$\$|\\\[)/.exec(source);
+			const match = MARKDOWN_BLOCK_START_PATTERN.exec(source);
 			return match ? match.index + (match[0].startsWith("\n") ? 1 : 0) : undefined;
 		},
 		tokenizer: tokenizeBlockLatex,
@@ -134,10 +152,12 @@ const LATEX_MARKDOWN_EXTENSIONS: readonly TokenizerExtension[] = [
 		name: "latex",
 		level: "inline",
 		start(source) {
-			const indices = [source.indexOf("$"), source.indexOf("\\("), source.indexOf("\\[")].filter(
-				(index) => index >= 0,
-			);
-			return indices.length > 0 ? Math.min(...indices) : undefined;
+			let firstIndex = source.indexOf("$");
+			const parenthesisIndex = source.indexOf("\\(");
+			if (parenthesisIndex >= 0 && (firstIndex < 0 || parenthesisIndex < firstIndex)) firstIndex = parenthesisIndex;
+			const bracketIndex = source.indexOf("\\[");
+			if (bracketIndex >= 0 && (firstIndex < 0 || bracketIndex < firstIndex)) firstIndex = bracketIndex;
+			return firstIndex >= 0 ? firstIndex : undefined;
 		},
 		tokenizer: tokenizeInlineLatex,
 	},
@@ -159,13 +179,13 @@ function trimPartialClosingFences(tokens: readonly Token[]): void {
 
 	// Trim streamed partial closing fences so code blocks do not shrink/flicker
 	// when the final fence character arrives. See https://github.com/earendil-works/pi/issues/5825.
-	const marker = /^(`{3,}|~{3,})/.exec(token.raw)?.[1];
+	const marker = MARKDOWN_FENCE_START_PATTERN.exec(token.raw)?.[1];
 	const lastLine = token.raw.split("\n").pop();
 	if (!marker || !lastLine || lastLine.length >= marker.length || lastLine !== marker[0]?.repeat(lastLine.length)) {
 		return;
 	}
 
-	token.text = token.text.slice(0, -lastLine.length).replace(/\n$/, "");
+	token.text = token.text.slice(0, -lastLine.length).replace(TRAILING_LINE_FEED_PATTERN, "");
 }
 
 const markdownParser = new Marked();
@@ -246,6 +266,15 @@ interface InlineStyleContext {
 	stylePrefix: string;
 }
 
+function buildTableBorder(columnWidths: readonly number[], left: string, separator: string, right: string): string {
+	let border = left;
+	for (let index = 0; index < columnWidths.length; index++) {
+		if (index > 0) border += separator;
+		border += "─".repeat(columnWidths[index] + 2);
+	}
+	return border + right;
+}
+
 export class Markdown implements Component {
 	private text: string;
 	private paddingX: number; // Left/right padding
@@ -322,7 +351,7 @@ export class Markdown implements Component {
 		}
 
 		// Replace tabs with 3 spaces for consistent rendering
-		const normalizedText = text.replace(/\t/g, "   ");
+		const normalizedText = text.replace(TAB_PATTERN, "   ");
 
 		// Parse markdown to HTML-like tokens
 		const tokens = markdownParser.lexer(normalizedText);
@@ -615,7 +644,7 @@ export class Markdown implements Component {
 					if (!quoteStylePrefix) {
 						return quoteStyle(line);
 					}
-					const lineWithReappliedStyle = line.replace(/\x1b\[0m/g, `\x1b[0m${quoteStylePrefix}`);
+					const lineWithReappliedStyle = line.replace(ANSI_RESET_PATTERN, `\x1b[0m${quoteStylePrefix}`);
 					return quoteStyle(lineWithReappliedStyle);
 				};
 
@@ -796,12 +825,12 @@ export class Markdown implements Component {
 	}
 
 	private getOrderedListMarker(item: Tokens.ListItem): string | undefined {
-		const match = /^(?: {0,3})(\d{1,9}[.)])[ \t]+/.exec(item.raw);
+		const match = MARKDOWN_ORDERED_LIST_MARKER_PATTERN.exec(item.raw);
 		return match ? `${match[1]} ` : undefined;
 	}
 
 	private getUnorderedListMarker(item: Tokens.ListItem): string | undefined {
-		const match = /^(?: {0,3})([-+*])(?:[ \t]+|(?=\r?\n|$))/.exec(item.raw);
+		const match = MARKDOWN_UNORDERED_LIST_MARKER_PATTERN.exec(item.raw);
 		return match ? `${match[1]} ` : undefined;
 	}
 
@@ -864,10 +893,18 @@ export class Markdown implements Component {
 	 * Get the visible width of the longest word in a string.
 	 */
 	private getLongestWordWidth(text: string, maxWidth?: number): number {
-		const words = text.split(/\s+/).filter((word) => word.length > 0);
 		let longest = 0;
-		for (const word of words) {
-			longest = Math.max(longest, visibleWidth(word));
+		let wordStart = -1;
+		for (let index = 0; index <= text.length; index++) {
+			if (index < text.length && !isWhitespaceChar(text[index])) {
+				if (wordStart < 0) wordStart = index;
+				continue;
+			}
+			if (wordStart >= 0) {
+				const width = visibleWidth(text.slice(wordStart, index));
+				if (width > longest) longest = width;
+				wordStart = -1;
+			}
 		}
 		if (maxWidth === undefined) {
 			return longest;
@@ -937,24 +974,23 @@ export class Markdown implements Component {
 		}
 
 		let minColumnWidths = minWordWidths;
-		let minCellsWidth = minColumnWidths.reduce((a, b) => a + b, 0);
+		let minCellsWidth = 0;
+		for (let index = 0; index < numCols; index++) minCellsWidth += minColumnWidths[index];
 
 		if (minCellsWidth > availableForCells) {
 			minColumnWidths = new Array(numCols).fill(1);
 			const remaining = availableForCells - numCols;
 
 			if (remaining > 0) {
-				const totalWeight = minWordWidths.reduce((total, width) => total + Math.max(0, width - 1), 0);
-				const growth = minWordWidths.map((width) => {
-					const weight = Math.max(0, width - 1);
-					return totalWeight > 0 ? Math.floor((weight / totalWeight) * remaining) : 0;
-				});
-
-				for (let i = 0; i < numCols; i++) {
-					minColumnWidths[i] += growth[i] ?? 0;
+				let totalWeight = 0;
+				for (let index = 0; index < numCols; index++) totalWeight += Math.max(0, minWordWidths[index] - 1);
+				let allocated = 0;
+				for (let index = 0; index < numCols; index++) {
+					const weight = Math.max(0, minWordWidths[index] - 1);
+					const growth = totalWeight > 0 ? Math.floor((weight / totalWeight) * remaining) : 0;
+					minColumnWidths[index] += growth;
+					allocated += growth;
 				}
-
-				const allocated = growth.reduce((total, width) => total + width, 0);
 				let leftover = remaining - allocated;
 				for (let i = 0; leftover > 0 && i < numCols; i++) {
 					minColumnWidths[i]++;
@@ -962,34 +998,43 @@ export class Markdown implements Component {
 				}
 			}
 
-			minCellsWidth = minColumnWidths.reduce((a, b) => a + b, 0);
+			minCellsWidth = 0;
+			for (let index = 0; index < numCols; index++) minCellsWidth += minColumnWidths[index];
 		}
 
 		// Calculate column widths that fit within available width
-		const totalNaturalWidth = naturalWidths.reduce((a, b) => a + b, 0) + borderOverhead;
+		let totalNaturalWidth = borderOverhead;
+		for (let index = 0; index < numCols; index++) totalNaturalWidth += naturalWidths[index];
 		let columnWidths: number[];
 
 		if (totalNaturalWidth <= availableWidth) {
 			// Everything fits naturally
-			columnWidths = naturalWidths.map((width, index) => Math.max(width, minColumnWidths[index]));
+			columnWidths = new Array<number>(numCols);
+			for (let index = 0; index < numCols; index++) {
+				columnWidths[index] = Math.max(naturalWidths[index], minColumnWidths[index]);
+			}
 		} else {
 			// Need to shrink columns to fit
-			const totalGrowPotential = naturalWidths.reduce((total, width, index) => {
-				return total + Math.max(0, width - minColumnWidths[index]);
-			}, 0);
+			let totalGrowPotential = 0;
+			for (let index = 0; index < numCols; index++) {
+				totalGrowPotential += Math.max(0, naturalWidths[index] - minColumnWidths[index]);
+			}
 			const extraWidth = Math.max(0, availableForCells - minCellsWidth);
-			columnWidths = minColumnWidths.map((minWidth, index) => {
+			columnWidths = new Array<number>(numCols);
+			let allocated = 0;
+			for (let index = 0; index < numCols; index++) {
+				const minWidth = minColumnWidths[index];
 				const naturalWidth = naturalWidths[index];
 				const minWidthDelta = Math.max(0, naturalWidth - minWidth);
 				let grow = 0;
 				if (totalGrowPotential > 0) {
 					grow = Math.floor((minWidthDelta / totalGrowPotential) * extraWidth);
 				}
-				return minWidth + grow;
-			});
+				columnWidths[index] = minWidth + grow;
+				allocated += columnWidths[index];
+			}
 
 			// Adjust for rounding errors - distribute remaining space
-			const allocated = columnWidths.reduce((a, b) => a + b, 0);
 			let remaining = availableForCells - allocated;
 			while (remaining > 0) {
 				let grew = false;
@@ -1007,45 +1052,55 @@ export class Markdown implements Component {
 		}
 
 		// Render top border
-		const topBorderCells = columnWidths.map((w) => "─".repeat(w));
-		lines.push(`┌─${topBorderCells.join("─┬─")}─┐`);
+		lines.push(buildTableBorder(columnWidths, "┌", "┬", "┐"));
 
 		// Render header with wrapping
-		const headerCellLines: string[][] = token.header.map((cell, i) => {
-			const text = this.renderInlineTokens(cell.tokens || [], styleContext);
-			return this.wrapCellText(text, columnWidths[i]);
-		});
-		const headerLineCount = Math.max(...headerCellLines.map((c) => c.length));
+		const headerCellLines = new Array<string[]>(numCols);
+		let headerLineCount = 0;
+		for (let index = 0; index < numCols; index++) {
+			const text = this.renderInlineTokens(token.header[index].tokens || [], styleContext);
+			const cellLines = this.wrapCellText(text, columnWidths[index]);
+			headerCellLines[index] = cellLines;
+			if (cellLines.length > headerLineCount) headerLineCount = cellLines.length;
+		}
 
 		for (let lineIdx = 0; lineIdx < headerLineCount; lineIdx++) {
-			const rowParts = headerCellLines.map((cellLines, colIdx) => {
+			let rowLine = "│ ";
+			for (let colIdx = 0; colIdx < numCols; colIdx++) {
+				if (colIdx > 0) rowLine += " │ ";
+				const cellLines = headerCellLines[colIdx];
 				const text = cellLines[lineIdx] || "";
 				const padded = text + " ".repeat(Math.max(0, columnWidths[colIdx] - visibleWidth(text)));
-				return this.theme.bold(padded);
-			});
-			lines.push(`│ ${rowParts.join(" │ ")} │`);
+				rowLine += this.theme.bold(padded);
+			}
+			lines.push(rowLine + " │");
 		}
 
 		// Render separator
-		const separatorCells = columnWidths.map((w) => "─".repeat(w));
-		const separatorLine = `├─${separatorCells.join("─┼─")}─┤`;
+		const separatorLine = buildTableBorder(columnWidths, "├", "┼", "┤");
 		lines.push(separatorLine);
 
 		// Render rows with wrapping
 		for (let rowIndex = 0; rowIndex < token.rows.length; rowIndex++) {
 			const row = token.rows[rowIndex];
-			const rowCellLines: string[][] = row.map((cell, i) => {
-				const text = this.renderInlineTokens(cell.tokens || [], styleContext);
-				return this.wrapCellText(text, columnWidths[i]);
-			});
-			const rowLineCount = Math.max(...rowCellLines.map((c) => c.length));
+			const rowCellLines = new Array<string[]>(numCols);
+			let rowLineCount = 0;
+			for (let index = 0; index < numCols; index++) {
+				const text = this.renderInlineTokens(row[index]?.tokens || [], styleContext);
+				const cellLines = this.wrapCellText(text, columnWidths[index]);
+				rowCellLines[index] = cellLines;
+				if (cellLines.length > rowLineCount) rowLineCount = cellLines.length;
+			}
 
 			for (let lineIdx = 0; lineIdx < rowLineCount; lineIdx++) {
-				const rowParts = rowCellLines.map((cellLines, colIdx) => {
+				let rowLine = "│ ";
+				for (let colIdx = 0; colIdx < numCols; colIdx++) {
+					if (colIdx > 0) rowLine += " │ ";
+					const cellLines = rowCellLines[colIdx];
 					const text = cellLines[lineIdx] || "";
-					return text + " ".repeat(Math.max(0, columnWidths[colIdx] - visibleWidth(text)));
-				});
-				lines.push(`│ ${rowParts.join(" │ ")} │`);
+					rowLine += text + " ".repeat(Math.max(0, columnWidths[colIdx] - visibleWidth(text)));
+				}
+				lines.push(rowLine + " │");
 			}
 
 			if (rowIndex < token.rows.length - 1) {
@@ -1054,8 +1109,7 @@ export class Markdown implements Component {
 		}
 
 		// Render bottom border
-		const bottomBorderCells = columnWidths.map((w) => "─".repeat(w));
-		lines.push(`└─${bottomBorderCells.join("─┴─")}─┘`);
+		lines.push(buildTableBorder(columnWidths, "└", "┴", "┘"));
 
 		if (nextTokenType && nextTokenType !== "space") {
 			lines.push(""); // Add spacing after table

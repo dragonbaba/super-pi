@@ -18,6 +18,14 @@
  * - isKittyProtocolActive() - Query global Kitty protocol state
  */
 
+import {
+	KITTY_ARROW_KEY_PATTERN,
+	KITTY_CSI_U_PATTERN,
+	KITTY_FUNCTION_KEY_PATTERN,
+	KITTY_HOME_END_PATTERN,
+	MODIFY_OTHER_KEYS_PATTERN,
+} from "./regex.ts";
+
 // =============================================================================
 // Global Kitty Protocol State
 // =============================================================================
@@ -595,7 +603,7 @@ function parseKittySequence(data: string): ParsedKittySequence | null {
 	//
 	// With flag 2, event type is appended after modifier colon: 1=press, 2=repeat, 3=release
 	// With flag 4, alternate keys are appended after codepoint with colons
-	const csiUMatch = data.match(/^\x1b\[(\d+)(?::(\d*))?(?::(\d+))?(?:;(\d+))?(?::(\d+))?u$/);
+	const csiUMatch = data.match(KITTY_CSI_U_PATTERN);
 	if (csiUMatch) {
 		const codepoint = parseInt(csiUMatch[1]!, 10);
 		const shiftedKey = csiUMatch[2] && csiUMatch[2].length > 0 ? parseInt(csiUMatch[2], 10) : undefined;
@@ -607,7 +615,7 @@ function parseKittySequence(data: string): ParsedKittySequence | null {
 	}
 
 	// Arrow keys with modifier: \x1b[1;<mod>A/B/C/D or \x1b[1;<mod>:<event>A/B/C/D
-	const arrowMatch = data.match(/^\x1b\[1;(\d+)(?::(\d+))?([ABCD])$/);
+	const arrowMatch = data.match(KITTY_ARROW_KEY_PATTERN);
 	if (arrowMatch) {
 		const modValue = parseInt(arrowMatch[1]!, 10);
 		const eventType = parseEventType(arrowMatch[2]);
@@ -617,7 +625,7 @@ function parseKittySequence(data: string): ParsedKittySequence | null {
 	}
 
 	// Functional keys: \x1b[<num>~ or \x1b[<num>;<mod>~ or \x1b[<num>;<mod>:<event>~
-	const funcMatch = data.match(/^\x1b\[(\d+)(?:;(\d+))?(?::(\d+))?~$/);
+	const funcMatch = data.match(KITTY_FUNCTION_KEY_PATTERN);
 	if (funcMatch) {
 		const keyNum = parseInt(funcMatch[1]!, 10);
 		const modValue = funcMatch[2] ? parseInt(funcMatch[2], 10) : 1;
@@ -638,7 +646,7 @@ function parseKittySequence(data: string): ParsedKittySequence | null {
 	}
 
 	// Home/End with modifier: \x1b[1;<mod>H/F or \x1b[1;<mod>:<event>H/F
-	const homeEndMatch = data.match(/^\x1b\[1;(\d+)(?::(\d+))?([HF])$/);
+	const homeEndMatch = data.match(KITTY_HOME_END_PATTERN);
 	if (homeEndMatch) {
 		const modValue = parseInt(homeEndMatch[1]!, 10);
 		const eventType = parseEventType(homeEndMatch[2]);
@@ -694,7 +702,7 @@ function matchesKittySequence(data: string, expectedCodepoint: number, expectedM
 }
 
 function parseModifyOtherKeysSequence(data: string): ParsedModifyOtherKeysSequence | null {
-	const match = data.match(/^\x1b\[27;(\d+);(\d+)~$/);
+	const match = data.match(MODIFY_OTHER_KEYS_PATTERN);
 	if (!match) return null;
 	const modValue = parseInt(match[1]!, 10);
 	const codepoint = parseInt(match[2]!, 10);
@@ -1330,7 +1338,6 @@ export function parseKey(data: string): string | undefined {
 // Kitty CSI-u Printable Decoding
 // =============================================================================
 
-const KITTY_CSI_U_REGEX = /^\x1b\[(\d+)(?::(\d*))?(?::(\d+))?(?:;(\d+))?(?::(\d+))?u$/;
 const KITTY_PRINTABLE_ALLOWED_MODIFIERS = MODIFIERS.shift | LOCK_MASK;
 
 /**
@@ -1348,7 +1355,7 @@ const KITTY_PRINTABLE_ALLOWED_MODIFIERS = MODIFIERS.shift | LOCK_MASK;
  * @returns The printable character, or undefined if not a printable CSI-u sequence
  */
 export function decodeKittyPrintable(data: string): string | undefined {
-	const match = data.match(KITTY_CSI_U_REGEX);
+	const match = data.match(KITTY_CSI_U_PATTERN);
 	if (!match) return undefined;
 
 	// CSI-u groups: <codepoint>[:<shifted>[:<base>]];<mod>[:<event>]u

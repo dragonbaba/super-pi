@@ -1,5 +1,6 @@
 import * as Diff from "diff";
 import { theme } from "../theme/theme.ts";
+import { DIFF_LINE_PATTERN, DIFF_TAB_PATTERN, DIFF_WHITESPACE_CHARACTER_PATTERN } from "./diff-regex.ts";
 
 const MAX_INTRA_LINE_DIFF_CODE_UNITS = 2048;
 const MAX_INTRA_LINE_DIFF_EDIT_LENGTH = 256;
@@ -20,7 +21,7 @@ export function getDiffRenderThemeSignature(): string {
  */
 function parseDiffLine(line: string): { prefix: string; lineNum: string; content: string } | null {
 	const normalizedLine = line.endsWith("\r") ? line.slice(0, -1) : line;
-	const match = normalizedLine.match(/^([+-\s])(\s*\d*)\s(.*)$/);
+	const match = DIFF_LINE_PATTERN.exec(normalizedLine);
 	if (!match) return null;
 	return { prefix: match[1], lineNum: match[2], content: match[3] };
 }
@@ -29,7 +30,13 @@ function parseDiffLine(line: string): { prefix: string; lineNum: string; content
  * Replace tabs with spaces for consistent rendering.
  */
 function replaceTabs(text: string): string {
-	return text.replace(/\t/g, "   ");
+	return text.replace(DIFF_TAB_PATTERN, "   ");
+}
+
+function leadingWhitespaceLength(value: string): number {
+	let length = 0;
+	while (length < value.length && DIFF_WHITESPACE_CHARACTER_PATTERN.test(value[length])) length++;
+	return length;
 }
 
 /**
@@ -51,9 +58,9 @@ function renderIntraLineDiff(oldContent: string, newContent: string): { removedL
 			let value = part.value;
 			// Strip leading whitespace from the first removed part
 			if (isFirstRemoved) {
-				const leadingWs = value.match(/^(\s*)/)?.[1] || "";
-				value = value.slice(leadingWs.length);
-				removedLine += leadingWs;
+				const leadingLength = leadingWhitespaceLength(value);
+				removedLine += value.slice(0, leadingLength);
+				value = value.slice(leadingLength);
 				isFirstRemoved = false;
 			}
 			if (value) {
@@ -63,9 +70,9 @@ function renderIntraLineDiff(oldContent: string, newContent: string): { removedL
 			let value = part.value;
 			// Strip leading whitespace from the first added part
 			if (isFirstAdded) {
-				const leadingWs = value.match(/^(\s*)/)?.[1] || "";
-				value = value.slice(leadingWs.length);
-				addedLine += leadingWs;
+				const leadingLength = leadingWhitespaceLength(value);
+				addedLine += value.slice(0, leadingLength);
+				value = value.slice(leadingLength);
 				isFirstAdded = false;
 			}
 			if (value) {
@@ -86,8 +93,9 @@ function renderWholeLineChange(
 	content: string,
 	color: "toolDiffRemoved" | "toolDiffAdded",
 ): string {
-	const leadingWs = content.match(/^(\s*)/)?.[1] || "";
-	const value = content.slice(leadingWs.length);
+	const leadingLength = leadingWhitespaceLength(content);
+	const leadingWs = content.slice(0, leadingLength);
+	const value = content.slice(leadingLength);
 	const body = value ? leadingWs + theme.inverse(value) : leadingWs;
 	return theme.fg(color, `${prefix}${lineNum} ${body}`);
 }

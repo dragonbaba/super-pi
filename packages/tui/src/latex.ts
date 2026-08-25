@@ -1,4 +1,34 @@
-import { visibleWidth } from "./utils.ts";
+import {
+	ASCII_LETTERS_PATTERN,
+	HORIZONTAL_WHITESPACE_RUN_PATTERN,
+	LATEX_CONDITION_PREFIX_PATTERN,
+	LATEX_ENVIRONMENT_ROW_PATTERN,
+	LATEX_LEADING_ARRAY_SPEC_PATTERN,
+	LATEX_LIMIT_MODIFIER_PATTERN,
+	LATEX_SCRIPT_OPERATOR_SPACING_PATTERN,
+	LATEX_SIMPLE_DENOMINATOR_PATTERN,
+	LATEX_SIMPLE_VALUE_PATTERN,
+	LATEX_TRAILING_COMMA_PATTERN,
+	LAYOUT_MARKER_PATTERN,
+	NAMED_OPERATOR_LEFT_SPACING_PATTERN,
+	NAMED_OPERATOR_RIGHT_SPACING_PATTERN,
+	TRAILING_LAYOUT_MARKER_PATTERN,
+} from "./regex.ts";
+import { isWhitespaceChar, visibleWidth } from "./utils.ts";
+
+function isAsciiLetter(character: string): boolean {
+	const code = character.charCodeAt(0);
+	return (code >= 65 && code <= 90) || (code >= 97 && code <= 122);
+}
+
+function isHorizontalWhitespace(character: string): boolean {
+	return character === " " || character === "\t";
+}
+
+function isSingleCodePoint(value: string): boolean {
+	const codePoint = value.codePointAt(0);
+	return codePoint !== undefined && value.length === (codePoint > 0xffff ? 2 : 1);
+}
 
 const SYMBOLS: Readonly<Record<string, string>> = {
 	alpha: "α",
@@ -599,13 +629,13 @@ function replaceCharacters(value: string, replacements: Readonly<Record<string, 
 function formatScript(value: string, kind: "sub" | "sup"): string {
 	value = value.trim();
 	const replacements = kind === "sub" ? SUBSCRIPTS : SUPERSCRIPTS;
-	const unicode = replaceCharacters(value.replace(/\s*([=+-])\s*/g, "$1"), replacements);
+	const unicode = replaceCharacters(value.replace(LATEX_SCRIPT_OPERATOR_SPACING_PATTERN, "$1"), replacements);
 	if (unicode !== undefined) {
 		return unicode;
 	}
 
 	const prefix = kind === "sub" ? "_" : "^";
-	if (Array.from(value).length === 1 || (kind === "sub" && /^[A-Za-z]+$/.test(value))) {
+	if (isSingleCodePoint(value) || (kind === "sub" && ASCII_LETTERS_PATTERN.test(value))) {
 		return `${prefix}${value}`;
 	}
 	return `${prefix}(${value})`;
@@ -614,32 +644,43 @@ function formatScript(value: string, kind: "sub" | "sup"): string {
 function formatFraction(numerator: string, denominator: string): string {
 	numerator = numerator.trim();
 	denominator = denominator.trim();
-	const simpleNumerator = /^[\p{L}\p{N}.]+$/u.test(numerator);
-	const simpleDenominator = /^[\p{N}.]+$/u.test(denominator) || Array.from(denominator).length === 1;
+	const simpleNumerator = LATEX_SIMPLE_VALUE_PATTERN.test(numerator);
+	const simpleDenominator = LATEX_SIMPLE_DENOMINATOR_PATTERN.test(denominator) || isSingleCodePoint(denominator);
 	return `${simpleNumerator ? numerator : `(${numerator})`}/${simpleDenominator ? denominator : `(${denominator})`}`;
 }
 
 function formatRoot(value: string, symbol = "√"): string {
 	value = value.trim();
-	return /^[\p{L}\p{N}.]+$/u.test(value) ? `${symbol}${value}` : `${symbol}(${value})`;
+	return LATEX_SIMPLE_VALUE_PATTERN.test(value) ? `${symbol}${value}` : `${symbol}(${value})`;
 }
 
 const NAMED_OPERATOR_START = "\u{f0004}";
 const NAMED_OPERATOR_END = "\u{f0005}";
-const NAMED_OPERATOR_LEFT_SPACING_PATTERN = /(?<=[\p{L}\p{N})\]}\u{f0001}])\u{f0004}/gu;
-const NAMED_OPERATOR_RIGHT_SPACING_PATTERN = /\u{f0005}(?=[\p{L}\p{N}√\u{f0000}])/gu;
-
 function normalizeOutput(value: string): string {
-	return value
+	const source = value
 		.replace(NAMED_OPERATOR_LEFT_SPACING_PATTERN, " ")
 		.replaceAll(NAMED_OPERATOR_START, "")
 		.replace(NAMED_OPERATOR_RIGHT_SPACING_PATTERN, " ")
-		.replaceAll(NAMED_OPERATOR_END, "")
-		.split("\n")
-		.map((line) => line.replace(/[ \t]+/g, " ").trim())
-		.filter((line, index, lines) => line.length > 0 || (index > 0 && index < lines.length - 1))
-		.join("\n")
-		.trim();
+		.replaceAll(NAMED_OPERATOR_END, "");
+	let normalized = "";
+	let retainedLines = 0;
+	let lineStart = 0;
+	let lineIndex = 0;
+	while (lineStart <= source.length) {
+		const lineEnd = source.indexOf("\n", lineStart);
+		const hasFollowingLine = lineEnd >= 0;
+		const end = hasFollowingLine ? lineEnd : source.length;
+		const line = source.slice(lineStart, end).replace(HORIZONTAL_WHITESPACE_RUN_PATTERN, " ").trim();
+		if (line.length > 0 || (lineIndex > 0 && hasFollowingLine)) {
+			if (retainedLines > 0) normalized += "\n";
+			normalized += line;
+			retainedLines++;
+		}
+		if (!hasFollowingLine) break;
+		lineStart = end + 1;
+		lineIndex++;
+	}
+	return normalized.trim();
 }
 
 interface FractionNode {
@@ -671,8 +712,6 @@ interface Layout {
 
 const LAYOUT_MARKER_START = "\u{f0000}";
 const LAYOUT_MARKER_END = "\u{f0001}";
-const LAYOUT_MARKER_PATTERN = /\u{f0000}(\d+)\u{f0001}/gu;
-const TRAILING_LAYOUT_MARKER_PATTERN = /\u{f0000}(\d+)\u{f0001}$/u;
 const PROTECTED_SPACE = "\u{f0002}";
 
 function padLayoutLine(line: string, width: number, centered = false): string {
@@ -722,8 +761,8 @@ function renderLayout(source: string, nodes: readonly LayoutNode[]): Layout {
 			if (index > position) {
 				const sliced = sourceLine.slice(position, index);
 				const trimmed = (previousNode ? sliced.trimStart() : sliced).trimEnd();
-				const preserveLeadingSpace = previousNode?.type === "matrix" && /^\s/.test(sliced);
-				const preserveTrailingSpace = node.type === "matrix" && /\s$/.test(sliced);
+				const preserveLeadingSpace = previousNode?.type === "matrix" && isWhitespaceChar(sliced[0] ?? "");
+				const preserveTrailingSpace = node.type === "matrix" && isWhitespaceChar(sliced[sliced.length - 1] ?? "");
 				const text = trimmed
 					? `${preserveLeadingSpace ? " " : ""}${trimmed}${preserveTrailingSpace ? " " : ""}`
 					: preserveLeadingSpace || preserveTrailingSpace
@@ -778,7 +817,7 @@ function renderLayout(source: string, nodes: readonly LayoutNode[]): Layout {
 		if (position < sourceLine.length) {
 			const sliced = sourceLine.slice(position);
 			const trimmed = previousNode ? sliced.trimStart() : sliced;
-			const text = previousNode?.type === "matrix" && /^\s/.test(sliced) ? ` ${trimmed}` : trimmed;
+			const text = previousNode?.type === "matrix" && isWhitespaceChar(sliced[0] ?? "") ? ` ${trimmed}` : trimmed;
 			layouts.push({ lines: [text], width: visibleWidth(text), baseline: 0 });
 		}
 		const lineLayout = joinLayouts(layouts);
@@ -861,7 +900,7 @@ class LatexParser {
 				continue;
 			}
 
-			if (/\s/.test(character)) {
+			if (isWhitespaceChar(character)) {
 				result += this.parseWhitespace();
 				continue;
 			}
@@ -905,7 +944,7 @@ class LatexParser {
 	}
 
 	private parseWhitespace(): string {
-		while (this.position < this.source.length && /\s/.test(this.source[this.position] ?? "")) {
+		while (this.position < this.source.length && isWhitespaceChar(this.source[this.position] ?? "")) {
 			this.position++;
 		}
 		return " ";
@@ -920,9 +959,9 @@ class LatexParser {
 
 		let command = "";
 		const first = this.source[this.position] ?? "";
-		if (/[A-Za-z]/.test(first)) {
+		if (isAsciiLetter(first)) {
 			const start = this.position;
-			while (this.position < this.source.length && /[A-Za-z]/.test(this.source[this.position] ?? "")) {
+			while (this.position < this.source.length && isAsciiLetter(this.source[this.position] ?? "")) {
 				this.position++;
 			}
 			command = this.source.slice(start, this.position);
@@ -1086,10 +1125,10 @@ class LatexParser {
 	): string {
 		let useDisplayLimits = displayLimits;
 		let modifierPosition = this.position;
-		while (modifierPosition < this.source.length && /[ \t]/.test(this.source[modifierPosition] ?? "")) {
+		while (modifierPosition < this.source.length && isHorizontalWhitespace(this.source[modifierPosition] ?? "")) {
 			modifierPosition++;
 		}
-		const modifier = /^\\(limits|nolimits)(?![A-Za-z])/.exec(this.source.slice(modifierPosition));
+		const modifier = LATEX_LIMIT_MODIFIER_PATTERN.exec(this.source.slice(modifierPosition));
 		if (modifier) {
 			useDisplayLimits = modifier[1] === "limits";
 			this.position = modifierPosition + modifier[0].length;
@@ -1099,7 +1138,7 @@ class LatexParser {
 		let upper: string | undefined;
 		while (true) {
 			let scriptPosition = this.position;
-			while (scriptPosition < this.source.length && /[ \t]/.test(this.source[scriptPosition] ?? "")) {
+			while (scriptPosition < this.source.length && isHorizontalWhitespace(this.source[scriptPosition] ?? "")) {
 				scriptPosition++;
 			}
 			const kind = this.source[scriptPosition];
@@ -1145,7 +1184,7 @@ class LatexParser {
 	}
 
 	private parseRequiredArgumentValue(): string {
-		while (this.position < this.source.length && /[ \t]/.test(this.source[this.position] ?? "")) {
+		while (this.position < this.source.length && isHorizontalWhitespace(this.source[this.position] ?? "")) {
 			this.position++;
 		}
 		if (this.position >= this.source.length) {
@@ -1165,7 +1204,7 @@ class LatexParser {
 	}
 
 	private parseOptionalArgument(): string | undefined {
-		while (this.position < this.source.length && /[ \t]/.test(this.source[this.position] ?? "")) {
+		while (this.position < this.source.length && isHorizontalWhitespace(this.source[this.position] ?? "")) {
 			this.position++;
 		}
 		if (this.source[this.position] !== "[") {
@@ -1182,7 +1221,7 @@ class LatexParser {
 	}
 
 	private readRawGroup(): string | undefined {
-		while (this.position < this.source.length && /[ \t]/.test(this.source[this.position] ?? "")) {
+		while (this.position < this.source.length && isHorizontalWhitespace(this.source[this.position] ?? "")) {
 			this.position++;
 		}
 		if (this.source[this.position] !== "{") {
@@ -1212,7 +1251,7 @@ class LatexParser {
 	}
 
 	private splitEnvironmentRows(body: string): string[] {
-		return body.split(/\\\\(?:\[[^\]\n]*\])?/);
+		return body.split(LATEX_ENVIRONMENT_ROW_PATTERN);
 	}
 
 	private parseEnvironment(): string {
@@ -1247,7 +1286,7 @@ class LatexParser {
 			environment === "split"
 		) {
 			const alignedAt = ["alignedat", "alignat", "alignat*"].includes(environment);
-			const alignedBody = alignedAt ? body.replace(/^\s*\{[^}]*\}/, "") : body;
+			const alignedBody = alignedAt ? body.replace(LATEX_LEADING_ARRAY_SPEC_PATTERN, "") : body;
 			return this.splitEnvironmentRows(alignedBody)
 				.map((row) => {
 					const cells = row.split("&");
@@ -1268,10 +1307,10 @@ class LatexParser {
 				.filter((row) => row.some(Boolean));
 			return rows
 				.map((row, index) => {
-					const value = (row[0] ?? "").replace(/,\s*$/, "");
+					const value = (row[0] ?? "").replace(LATEX_TRAILING_COMMA_PATTERN, "");
 					const condition = row[1] ?? "";
 					const delimiter = index === 0 ? "⎧" : index === rows.length - 1 ? "⎩" : "⎨";
-					const conditionPrefix = /^(?:if|when|for|otherwise)\b/i.test(condition) ? " " : " if ";
+					const conditionPrefix = LATEX_CONDITION_PREFIX_PATTERN.test(condition) ? " " : " if ";
 					return `${delimiter} ${value}${condition ? `${conditionPrefix}${condition}` : ""}`;
 				})
 				.join("\n");
@@ -1280,7 +1319,7 @@ class LatexParser {
 		if (
 			["array", "matrix", "smallmatrix", "pmatrix", "bmatrix", "Bmatrix", "vmatrix", "Vmatrix"].includes(environment)
 		) {
-			const matrixBody = environment === "array" ? body.replace(/^\s*\{[^}]*\}/, "") : body;
+			const matrixBody = environment === "array" ? body.replace(LATEX_LEADING_ARRAY_SPEC_PATTERN, "") : body;
 			return this.renderMatrix(environment, matrixBody);
 		}
 

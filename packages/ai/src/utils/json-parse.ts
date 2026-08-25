@@ -1,4 +1,5 @@
 import { parse as partialParse } from "partial-json";
+import { JSON_UNICODE_ESCAPE_DIGITS_PATTERN } from "./json-parse-regex.ts";
 
 const VALID_JSON_ESCAPES = new Set(['"', "\\", "/", "b", "f", "n", "r", "t", "u"]);
 const MAX_TOOL_ARGUMENT_CACHE_HEAP_BYTES = 32 * 1024 * 1024;
@@ -154,7 +155,7 @@ export function repairJson(json: string): string {
 
 			if (nextChar === "u") {
 				const unicodeDigits = json.slice(index + 2, index + 6);
-				if (/^[0-9a-fA-F]{4}$/.test(unicodeDigits)) {
+				if (JSON_UNICODE_ESCAPE_DIGITS_PATTERN.test(unicodeDigits)) {
 					repaired += `\\u${unicodeDigits}`;
 					index += 5;
 					continue;

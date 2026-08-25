@@ -4,6 +4,7 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { setKittyProtocolActive } from "./keys.ts";
 import { isNativeModifierPressed } from "./native-modifiers.ts";
+import { DEVICE_ATTRIBUTES_PATTERN, DEVICE_ATTRIBUTES_PREFIX_PATTERN, KITTY_FLAGS_PATTERN } from "./regex.ts";
 import { StdinBuffer } from "./stdin-buffer.ts";
 
 const cjsRequire = createRequire(import.meta.url);
@@ -23,18 +24,18 @@ export type KeyboardProtocolNegotiationSequence =
 export function parseKeyboardProtocolNegotiationSequence(
 	sequence: string,
 ): KeyboardProtocolNegotiationSequence | undefined {
-	const kittyFlags = sequence.match(/^\x1b\[\?(\d+)u$/);
+	const kittyFlags = sequence.match(KITTY_FLAGS_PATTERN);
 	if (kittyFlags) {
 		return { type: "kitty-flags", flags: Number.parseInt(kittyFlags[1]!, 10) };
 	}
-	if (/^\x1b\[\?[\d;]*c$/.test(sequence)) {
+	if (DEVICE_ATTRIBUTES_PATTERN.test(sequence)) {
 		return { type: "device-attributes" };
 	}
 	return undefined;
 }
 
 function isKeyboardProtocolNegotiationSequencePrefix(sequence: string): boolean {
-	return sequence === "\x1b[" || /^\x1b\[\?[\d;]*$/.test(sequence);
+	return sequence === "\x1b[" || DEVICE_ATTRIBUTES_PREFIX_PATTERN.test(sequence);
 }
 
 export function isAppleTerminalSession(): boolean {

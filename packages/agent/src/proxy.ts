@@ -315,6 +315,8 @@ function processProxyEvent(
 				id: proxyEvent.id,
 				name: proxyEvent.toolName,
 				arguments: {},
+				thoughtSignature: undefined,
+				namespace: undefined,
 				partialJson: "",
 			} satisfies ToolCall & { partialJson: string } as ToolCall;
 			return { type: "toolcall_start", contentIndex: proxyEvent.contentIndex, partial };
@@ -338,7 +340,11 @@ function processProxyEvent(
 		case "toolcall_end": {
 			const content = partial.content[proxyEvent.contentIndex];
 			if (content?.type === "toolCall") {
-				Object.assign(content, proxyEvent.toolCall);
+				content.id = proxyEvent.toolCall.id;
+				content.name = proxyEvent.toolCall.name;
+				content.arguments = proxyEvent.toolCall.arguments;
+				content.thoughtSignature = proxyEvent.toolCall.thoughtSignature;
+				content.namespace = proxyEvent.toolCall.namespace;
 				(content as { partialJson?: string }).partialJson = undefined;
 				return {
 					type: "toolcall_end",

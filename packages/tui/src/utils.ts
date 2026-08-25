@@ -1,4 +1,19 @@
 import { eastAsianWidth } from "get-east-asian-width";
+import {
+	ANSI_SEQUENCE_FINAL_PATTERN,
+	CJK_BREAK_PATTERN,
+	LEADING_NON_PRINTING_PATTERN,
+	LINE_BREAK_PATTERN,
+	MARK_CHARACTER_PATTERN,
+	NON_PRINTING_CHARACTER_PATTERN,
+	OSC8_HYPERLINK_PATTERN,
+	RGI_EMOJI_PATTERN,
+	SGR_PARAMETERS_PATTERN,
+	TAB_PATTERN,
+	TERMINAL_SPACING_MARK_PATTERN,
+	THAI_LAO_AM_PATTERN,
+	ZERO_WIDTH_PATTERN,
+} from "./regex.ts";
 
 // segmenters (shared instance)
 const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
@@ -36,23 +51,11 @@ function couldBeEmoji(segment: string): boolean {
 	);
 }
 
-// Regexes for character classification (same as string-width library)
-const zeroWidthRegex = /^(?:\p{Default_Ignorable_Code_Point}|\p{Control}|\p{Mark}|\p{Surrogate})+$/v;
-const leadingNonPrintingRegex = /^[\p{Default_Ignorable_Code_Point}\p{Control}\p{Format}\p{Mark}\p{Surrogate}]+/v;
-const nonPrintingCharRegex = /^(?:\p{Default_Ignorable_Code_Point}|\p{Control}|\p{Format}|\p{Mark}|\p{Surrogate})$/v;
-const markCharRegex = /^\p{Mark}$/v;
-// Marks that terminals allocate cells for when attached to a base character.
-// This includes Unicode spacing marks and non-spacing exceptions in legacy wcwidth tables.
-const terminalSpacingMarkRegex =
-	/^(?:[\p{Spacing_Mark}--[\u1734\u302E\u302F]]|[\u065F\u0F7F\u102B\u102C\u1031\u1033-\u1035\u1038\u103A-\u103E])+$/v;
-const rgiEmojiRegex = /^\p{RGI_Emoji}$/v;
-
 // Cache for non-ASCII strings
 const WIDTH_CACHE_SIZE = 512;
 const widthCache = new Map<string, number>();
 
-export const cjkBreakRegex =
-	/[\p{Script_Extensions=Han}\p{Script_Extensions=Hiragana}\p{Script_Extensions=Katakana}\p{Script_Extensions=Hangul}\p{Script_Extensions=Bopomofo}]/u;
+export const cjkBreakRegex = CJK_BREAK_PATTERN;
 
 function isPrintableAscii(str: string): boolean {
 	for (let i = 0; i < str.length; i++) {
@@ -177,22 +180,24 @@ function graphemeWidth(segment: string): number {
 	}
 
 	// Some marks occupy cells even without a base character.
-	if (terminalSpacingMarkRegex.test(segment)) {
-		return [...segment].length;
+	if (TERMINAL_SPACING_MARK_PATTERN.test(segment)) {
+		let length = 0;
+		for (const _character of segment) length++;
+		return length;
 	}
 
 	// Zero-width clusters
-	if (zeroWidthRegex.test(segment)) {
+	if (ZERO_WIDTH_PATTERN.test(segment)) {
 		return 0;
 	}
 
 	// Emoji check with pre-filter
-	if (couldBeEmoji(segment) && rgiEmojiRegex.test(segment)) {
+	if (couldBeEmoji(segment) && RGI_EMOJI_PATTERN.test(segment)) {
 		return 2;
 	}
 
 	// Get base visible codepoint
-	const base = segment.replace(leadingNonPrintingRegex, "");
+	const base = segment.replace(LEADING_NON_PRINTING_PATTERN, "");
 	const cp = base.codePointAt(0);
 	if (cp === undefined) {
 		return 0;
@@ -212,14 +217,18 @@ function graphemeWidth(segment: string): number {
 	// cells for: Indic consonants after marks, halfwidth/fullwidth forms, and
 	// Thai/Lao AM vowels.
 	let followsMark = false;
-	const chars = [...base];
-	for (const char of chars.slice(1)) {
-		if (terminalSpacingMarkRegex.test(char)) {
+	let first = true;
+	for (const char of base) {
+		if (first) {
+			first = false;
+			continue;
+		}
+		if (TERMINAL_SPACING_MARK_PATTERN.test(char)) {
 			width += 1;
 			followsMark = false;
-		} else if (markCharRegex.test(char)) {
+		} else if (MARK_CHARACTER_PATTERN.test(char)) {
 			followsMark = true;
-		} else if (!nonPrintingCharRegex.test(char)) {
+		} else if (!NON_PRINTING_CHARACTER_PATTERN.test(char)) {
 			const c = char.codePointAt(0)!;
 			if (followsMark || (c >= 0xff00 && c <= 0xffef)) {
 				// halfwidth + fullwidth forms
@@ -256,7 +265,7 @@ export function visibleWidth(str: string): number {
 	// Normalize: tabs to 3 spaces, strip ANSI escape codes
 	let clean = str;
 	if (str.includes("\t")) {
-		clean = clean.replace(/\t/g, "   ");
+		clean = clean.replace(TAB_PATTERN, "   ");
 	}
 	if (clean.includes("\x1b")) {
 		// Strip supported ANSI/OSC/APC escape sequences in one pass.
@@ -348,7 +357,7 @@ export function getOsc8LinkAtColumn(line: string, column: number): string | unde
 	while (i < line.length) {
 		const ansi = extractAnsiCode(line, i);
 		if (ansi) {
-			const hyperlink = /^\x1b\]8;[^;]*;([^\x07\x1b]*)(?:\x07|\x1b\\)$/.exec(ansi.code);
+			const hyperlink = OSC8_HYPERLINK_PATTERN.exec(ansi.code);
 			if (hyperlink) activeUrl = hyperlink[1] || undefined;
 			i += ansi.length;
 			continue;
@@ -373,15 +382,19 @@ export function getOsc8LinkAtColumn(line: string, column: number): string | unde
  * expanded to the fixed width used by layout so terminal tab stops cannot wrap
  * a logical line, while tabs inside terminal string sequences stay untouched.
  */
-const THAI_LAO_AM_REGEX = /[\u0e33\u0eb3]/;
-const THAI_LAO_AM_GLOBAL_REGEX = /[\u0e33\u0eb3]/g;
-
 export function normalizeTerminalOutput(str: string): string {
 	let normalized = str;
-	if (THAI_LAO_AM_REGEX.test(normalized)) {
-		normalized = normalized.replace(THAI_LAO_AM_GLOBAL_REGEX, (char) =>
-			char === "\u0e33" ? "\u0e4d\u0e32" : "\u0ecd\u0eb2",
-		);
+	if (THAI_LAO_AM_PATTERN.test(normalized)) {
+		let decomposed = "";
+		let segmentStart = 0;
+		for (let index = 0; index < normalized.length; index++) {
+			const character = normalized[index];
+			if (character !== "\u0e33" && character !== "\u0eb3") continue;
+			decomposed += normalized.slice(segmentStart, index);
+			decomposed += character === "\u0e33" ? "\u0e4d\u0e32" : "\u0ecd\u0eb2";
+			segmentStart = index + 1;
+		}
+		normalized = decomposed + normalized.slice(segmentStart);
 	}
 	if (!normalized.includes("\t")) return normalized;
 
@@ -411,7 +424,7 @@ export function extractAnsiCode(str: string, pos: number): { code: string; lengt
 	// CSI sequence: ESC [ ... m/G/K/H/J
 	if (next === "[") {
 		let j = pos + 2;
-		while (j < str.length && !/[mGKHJ]/.test(str[j]!)) j++;
+		while (j < str.length && !ANSI_SEQUENCE_FINAL_PATTERN.test(str[j]!)) j++;
 		if (j < str.length) return { code: str.substring(pos, j + 1), length: j + 1 - pos };
 		return null;
 	}
@@ -534,7 +547,7 @@ class AnsiCodeTracker {
 		}
 
 		// Extract the parameters between \x1b[ and m
-		const match = ansiCode.match(/\x1b\[([\d;]*)m/);
+		const match = ansiCode.match(SGR_PARAMETERS_PATTERN);
 		if (!match) return;
 
 		const params = match[1];
@@ -836,7 +849,7 @@ export function wrapTextWithAnsi(text: string, width: number): string[] {
 
 	// Handle newlines by processing each line separately
 	// Track ANSI state across lines so styles carry over after literal newlines
-	const inputLines = text.split(/\r\n|\r|\n/);
+	const inputLines = text.split(LINE_BREAK_PATTERN);
 	const result: string[] = [];
 	const tracker = new AnsiCodeTracker();
 
@@ -935,20 +948,38 @@ function wrapSingleLine(line: string, width: number): string[] {
 	return wrapped.length > 0 ? wrapped.map((line) => line.trimEnd()) : [""];
 }
 
-export const PUNCTUATION_REGEX = /[(){}[\]<>.,;:'"!?+\-=*/\\|&%^$#@~`]/;
+const PUNCTUATION_CHARACTERS = "(){}[]<>.,;:'\"!?+-=*/\\|&%^$#@~`";
 
 /**
  * Check if a character is whitespace.
  */
 export function isWhitespaceChar(char: string): boolean {
-	return /\s/.test(char);
+	for (let index = 0; index < char.length; index++) {
+		const code = char.charCodeAt(index);
+		if (
+			(code >= 0x09 && code <= 0x0d) ||
+			code === 0x20 ||
+			code === 0xa0 ||
+			code === 0x1680 ||
+			(code >= 0x2000 && code <= 0x200a) ||
+			code === 0x2028 ||
+			code === 0x2029 ||
+			code === 0x202f ||
+			code === 0x205f ||
+			code === 0x3000 ||
+			code === 0xfeff
+		) {
+			return true;
+		}
+	}
+	return false;
 }
 
 /**
  * Check if a character is punctuation.
  */
 export function isPunctuationChar(char: string): boolean {
-	return PUNCTUATION_REGEX.test(char);
+	return char.length === 1 && PUNCTUATION_CHARACTERS.includes(char);
 }
 
 function breakLongWord(word: string, width: number, tracker: AnsiCodeTracker): string[] {
