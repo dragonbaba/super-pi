@@ -708,7 +708,7 @@ export async function processResponsesStream<TApi extends Api>(
 				if ("namespace" in item && typeof item.namespace === "string") slot.block.namespace = item.namespace;
 				// Finalize in-place and strip the scratch buffer so replay only
 				// carries parsed arguments.
-				delete slot.block.partialJson;
+				slot.block.partialJson = undefined;
 				stream.push({
 					type: "toolcall_end",
 					contentIndex: slot.contentIndex,
@@ -722,7 +722,7 @@ export async function processResponsesStream<TApi extends Api>(
 					appendCustomToolCallInput(slot.block, item.input ?? getCustomToolCallInput(slot.block), true),
 				);
 				if ("namespace" in item && typeof item.namespace === "string") slot.block.namespace = item.namespace;
-				delete slot.block.customInput;
+				slot.block.customInput = undefined;
 				stream.push({
 					type: "toolcall_end",
 					contentIndex: slot.contentIndex,

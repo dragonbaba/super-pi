@@ -65,7 +65,7 @@ const MAX_PREVIOUS_CHARS = 50 * 1024;
 const DEFAULT_TASK_TIMEOUT_MS = 30 * 60 * 1000;
 const MAX_TASK_TIMEOUT_MS = 2 * 60 * 60 * 1000;
 const DEFAULT_AGENT_TOOLS = Object.freeze(["read", "grep", "find", "ls"] as const);
-const BUILTIN_AGENT_TOOLS = new Set(["read", "write", "edit", "grep", "find", "ls", "bash"]);
+const BUILTIN_AGENT_TOOLS = new Set(["read", "write", "edit", "grep", "find", "ls", "bash", "powershell"]);
 const CHILD_GUARD_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "child-guard.ts");
 
 function formatTokens(count: number): string {
@@ -426,8 +426,9 @@ export function effectiveTools(agent: AgentConfig, allowMutation: boolean): { to
 	const tools: string[] = [];
 	for (const tool of requested) {
 		if (!BUILTIN_AGENT_TOOLS.has(tool)) continue;
-		if (!allowMutation && (tool === "write" || tool === "edit" || tool === "bash")) continue;
+		if (!allowMutation && (tool === "write" || tool === "edit" || tool === "bash" || tool === "powershell")) continue;
 		if (tool === "bash" && !allowBash) continue;
+		if (tool === "powershell") continue;
 		if (tools.includes(tool)) continue;
 		tools.push(tool);
 	}

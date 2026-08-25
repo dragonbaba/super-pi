@@ -23,14 +23,28 @@ export function mergeEnvironment(
 	overrides: Record<string, string> | undefined,
 	platform: NodeJS.Platform = process.platform,
 ) {
-	const environment: NodeJS.ProcessEnv = { ...process.env };
-	for (const [key, value] of Object.entries(overrides ?? {})) {
-		if (platform === "win32") {
-			for (const existingKey of Object.keys(environment)) {
-				if (existingKey.toLowerCase() === key.toLowerCase()) delete environment[existingKey];
+	if (platform !== "win32") {
+		return { ...process.env, ...overrides };
+	}
+
+	const environment: NodeJS.ProcessEnv = {};
+	const overrideKeys = overrides ? Object.keys(overrides) : undefined;
+	const environmentKeys = Object.keys(process.env);
+	for (let environmentIndex = 0; environmentIndex < environmentKeys.length; environmentIndex++) {
+		const existingKey = environmentKeys[environmentIndex]!;
+		let overridden = false;
+		for (let overrideIndex = 0; overrideIndex < (overrideKeys?.length ?? 0); overrideIndex++) {
+			const overrideKey = overrideKeys![overrideIndex]!;
+			if (existingKey.toLowerCase() === overrideKey.toLowerCase()) {
+				overridden = true;
+				break;
 			}
 		}
-		environment[key] = value;
+		if (!overridden) environment[existingKey] = process.env[existingKey];
+	}
+	for (let index = 0; index < (overrideKeys?.length ?? 0); index++) {
+		const key = overrideKeys![index]!;
+		environment[key] = overrides![key];
 	}
 	return environment;
 }

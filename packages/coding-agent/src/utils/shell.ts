@@ -1,11 +1,12 @@
-import { existsSync } from "node:fs";
-import { delimiter } from "node:path";
+import { existsSync, statSync } from "node:fs";
+import { delimiter, isAbsolute, join, resolve, sep } from "node:path";
 import { spawn, spawnSync } from "child_process";
 import { getBinDir } from "../config.ts";
+import { FORWARD_SLASH_PATTERN, LEGACY_WSL_BASH_PATH_PATTERN } from "./shell-regex.ts";
 
 export interface ShellConfig {
 	shell: string;
-	args: string[];
+	args: readonly string[];
 	commandTransport?: "argv" | "stdin";
 }
 
@@ -13,40 +14,77 @@ export interface ShellConfig {
  * Find bash executable on PATH (cross-platform)
  */
 function isLegacyWslBashPath(path: string): boolean {
-	const normalized = path.replace(/\//g, "\\").toLowerCase();
-	return /^[a-z]:\\windows\\(?:system32|sysnative)\\bash\.exe$/.test(normalized);
+	const normalized = path.replace(FORWARD_SLASH_PATTERN, "\\").toLowerCase();
+	return LEGACY_WSL_BASH_PATH_PATTERN.test(normalized);
 }
 
 function getBashShellConfig(shell: string): ShellConfig {
 	return isLegacyWslBashPath(shell) ? { shell, args: ["-s"], commandTransport: "stdin" } : { shell, args: ["-c"] };
 }
 
-function findBashOnPath(): string | null {
-	if (process.platform === "win32") {
-		// Windows: Use 'where' and verify file exists (where can return non-existent paths)
-		try {
-			const result = spawnSync("where", ["bash.exe"], {
-				encoding: "utf-8",
-				timeout: 5000,
-				windowsHide: true,
-			});
-			if (result.status === 0 && result.stdout) {
-				const firstMatch = result.stdout.trim().split(/\r?\n/)[0];
-				if (firstMatch && existsSync(firstMatch)) {
-					return firstMatch;
-				}
-			}
-		} catch {
-			// Ignore errors
+function getFirstOutputLine(output: string): string | undefined {
+	const trimmed = output.trim();
+	if (!trimmed) return undefined;
+	const carriageReturn = trimmed.indexOf("\r");
+	const lineFeed = trimmed.indexOf("\n");
+	if (carriageReturn < 0) return lineFeed < 0 ? trimmed : trimmed.slice(0, lineFeed);
+	if (lineFeed < 0) return trimmed.slice(0, carriageReturn);
+	return trimmed.slice(0, Math.min(carriageReturn, lineFeed));
+}
+
+function getPathEnvironmentValue(): string {
+	const environmentKeys = Object.keys(process.env);
+	for (let index = 0; index < environmentKeys.length; index++) {
+		const key = environmentKeys[index]!;
+		if (key.toLowerCase() === "path") return process.env[key] ?? "";
+	}
+	return "";
+}
+
+function isInsideCurrentWorkingDirectory(path: string): boolean {
+	const normalizedPath = resolve(path).toLowerCase();
+	const normalizedCwd = resolve(process.cwd()).toLowerCase();
+	return normalizedPath === normalizedCwd || normalizedPath.startsWith(`${normalizedCwd}${sep}`);
+}
+
+function findExecutableOnWindowsPath(executable: string): string | null {
+	const pathValue = getPathEnvironmentValue();
+	let entryStart = 0;
+	while (entryStart <= pathValue.length) {
+		const separator = pathValue.indexOf(delimiter, entryStart);
+		const entryEnd = separator < 0 ? pathValue.length : separator;
+		let entry = pathValue.slice(entryStart, entryEnd).trim();
+		if (entry.length >= 2 && entry.charCodeAt(0) === 0x22 && entry.charCodeAt(entry.length - 1) === 0x22) {
+			entry = entry.slice(1, -1).trim();
 		}
-		return null;
+		if (entry && isAbsolute(entry)) {
+			const candidate = resolve(join(entry, executable));
+			// Windows executable discovery normally includes cwd. Never let an
+			// untrusted project become a globally persisted shell installation.
+			if (!isInsideCurrentWorkingDirectory(candidate) && isRegularFile(candidate)) return candidate;
+		}
+		if (separator < 0) break;
+		entryStart = separator + delimiter.length;
+	}
+	return null;
+}
+
+function trustedSystemCandidate(path: string | undefined): string | undefined {
+	if (!path || !isAbsolute(path)) return undefined;
+	const candidate = resolve(path);
+	return isInsideCurrentWorkingDirectory(candidate) ? undefined : candidate;
+}
+
+function findExecutableOnPath(executable: string): string | null {
+	if (process.platform === "win32") {
+		return findExecutableOnWindowsPath(executable);
 	}
 
 	// Unix: Use 'which' and trust its output (handles Termux and special filesystems)
 	try {
-		const result = spawnSync("which", ["bash"], { encoding: "utf-8", timeout: 5000 });
+		const result = spawnSync("which", [executable], { encoding: "utf-8", timeout: 5000 });
 		if (result.status === 0 && result.stdout) {
-			const firstMatch = result.stdout.trim().split(/\r?\n/)[0];
+			const firstMatch = getFirstOutputLine(result.stdout);
 			if (firstMatch) {
 				return firstMatch;
 			}
@@ -92,17 +130,19 @@ export function getShellConfig(customShellPath?: string): ShellConfig {
 		}
 
 		// 3. Fallback: search bash.exe on PATH (Cygwin, MSYS2, WSL, etc.)
-		const bashOnPath = findBashOnPath();
+		const bashOnPath = findExecutableOnPath("bash.exe");
 		if (bashOnPath) {
 			return getBashShellConfig(bashOnPath);
 		}
 
+		let searchedPaths = "";
+		for (let index = 0; index < paths.length; index++) searchedPaths += `\n  ${paths[index]!}`;
 		throw new Error(
 			`No bash shell found. Options:\n` +
 				`  1. Install Git for Windows: https://git-scm.com/download/win\n` +
 				`  2. Add your bash to PATH (Cygwin, MSYS2, etc.)\n` +
 				"  3. Set shellPath in settings.json\n\n" +
-				`Searched Git Bash in:\n${paths.map((p) => `  ${p}`).join("\n")}`,
+				`Searched Git Bash in:${searchedPaths}`,
 		);
 	}
 
@@ -111,7 +151,7 @@ export function getShellConfig(customShellPath?: string): ShellConfig {
 		return getBashShellConfig("/bin/bash");
 	}
 
-	const bashOnPath = findBashOnPath();
+	const bashOnPath = findExecutableOnPath("bash");
 	if (bashOnPath) {
 		return getBashShellConfig(bashOnPath);
 	}
@@ -119,13 +159,157 @@ export function getShellConfig(customShellPath?: string): ShellConfig {
 	return { shell: "sh", args: ["-c"] };
 }
 
+export const POWERSHELL_ARGS = ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command"] as const;
+
+export interface PowerShellConfig extends ShellConfig {
+	source: "configured" | "path-pwsh" | "standard-pwsh" | "path-windows-powershell" | "system-windows-powershell";
+	version?: string;
+	edition?: string;
+}
+
+const POWERSHELL_SOURCE_LABELS: Record<PowerShellConfig["source"], string> = {
+	configured: "configured path",
+	"path-pwsh": "PowerShell 7 on PATH",
+	"standard-pwsh": "standard PowerShell 7 install",
+	"path-windows-powershell": "Windows PowerShell on PATH",
+	"system-windows-powershell": "system Windows PowerShell",
+};
+
+export function formatPowerShellConfig(config: PowerShellConfig): string {
+	let identity = "PowerShell";
+	if (config.version) identity += ` ${config.version}`;
+	if (config.edition) identity += ` ${config.edition}`;
+	return `${identity} (${config.shell}; ${POWERSHELL_SOURCE_LABELS[config.source]})`;
+}
+
+export function isLegacyWindowsPowerShell(config: PowerShellConfig): boolean {
+	return config.edition === "Desktop" || config.source.includes("windows-powershell");
+}
+
+function probePowerShell(shell: string): (Pick<PowerShellConfig, "version" | "edition"> & { available: true }) | { available: false } {
+	try {
+		const result = spawnSync(
+			shell,
+			[
+				"-NoProfile",
+				"-NonInteractive",
+				"-Command",
+				"$v=$PSVersionTable.PSVersion.ToString();$e=$PSVersionTable.PSEdition;Write-Output ($v+'|'+$e)",
+			],
+			{ encoding: "utf-8", timeout: 5000, windowsHide: true },
+		);
+		if (result.status === 0 && result.stdout) {
+			const identity = result.stdout.trim();
+			const separator = identity.indexOf("|");
+			if (separator > 0 && separator < identity.length - 1) {
+				return {
+					available: true,
+					version: identity.slice(0, separator),
+					edition: identity.slice(separator + 1),
+				};
+			}
+		}
+	} catch {
+		// The caller either tries the next discovered candidate or reports the configured path.
+	}
+	return { available: false };
+}
+
+function isRegularFile(path: string): boolean {
+	try {
+		return statSync(path).isFile();
+	} catch {
+		return false;
+	}
+}
+
+function usablePowerShellConfig(shell: string | null | undefined, source: PowerShellConfig["source"]): PowerShellConfig | undefined {
+	if (!shell || !isRegularFile(shell)) return undefined;
+	const probe = probePowerShell(shell);
+	if (!probe.available) return undefined;
+	return { shell, args: POWERSHELL_ARGS, source, version: probe.version, edition: probe.edition };
+}
+
+function* powerShellCandidates(): Generator<readonly [string | null | undefined, PowerShellConfig["source"]]> {
+	const programFiles = process.env.ProgramFiles;
+	const systemRoot = process.env.SystemRoot;
+	yield [
+		trustedSystemCandidate(programFiles ? `${programFiles}\\PowerShell\\7\\pwsh.exe` : undefined),
+		"standard-pwsh",
+	];
+	yield [findExecutableOnPath("pwsh.exe"), "path-pwsh"];
+	yield [
+		trustedSystemCandidate(
+			systemRoot ? `${systemRoot}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe` : undefined,
+		),
+		"system-windows-powershell",
+	];
+	yield [findExecutableOnPath("powershell.exe"), "path-windows-powershell"];
+}
+
+/** Resolve the preferred executable without starting it. The first real command confirms it. */
+export function getPowerShellCandidateConfig(customPowerShellPath?: string): PowerShellConfig {
+	if (process.platform !== "win32") {
+		throw new Error("The powershell tool is only available on Windows.");
+	}
+	if (customPowerShellPath && !isRegularFile(customPowerShellPath)) {
+		throw new Error(`Configured PowerShell path not found: ${customPowerShellPath}`);
+	}
+	if (customPowerShellPath) {
+		return { shell: customPowerShellPath, args: POWERSHELL_ARGS, source: "configured" };
+	}
+	for (const [shell, source] of powerShellCandidates()) {
+		if (shell && isRegularFile(shell)) return { shell, args: POWERSHELL_ARGS, source };
+	}
+	throw new Error("No PowerShell executable found. Install PowerShell 7 or configure powershellPath.");
+}
+
+/** Resolve PowerShell on Windows, preferring PowerShell 7 and honoring an explicit trusted path. */
+export function getPowerShellConfig(customPowerShellPath?: string): PowerShellConfig {
+	if (process.platform !== "win32") {
+		throw new Error("The powershell tool is only available on Windows.");
+	}
+
+	if (customPowerShellPath) {
+		if (!isRegularFile(customPowerShellPath)) {
+			throw new Error(`Configured PowerShell path not found: ${customPowerShellPath}`);
+		}
+		const configured = usablePowerShellConfig(customPowerShellPath, "configured");
+		if (!configured) throw new Error(`Configured PowerShell executable could not be started: ${customPowerShellPath}`);
+		return configured;
+	}
+
+	for (const [shell, source] of powerShellCandidates()) {
+		const config = usablePowerShellConfig(shell, source);
+		if (config) return config;
+	}
+	throw new Error("No usable PowerShell executable found. Install PowerShell 7 or configure powershellPath.");
+}
+
 export function getShellEnv(): NodeJS.ProcessEnv {
 	const binDir = getBinDir();
-	const pathKey = Object.keys(process.env).find((key) => key.toLowerCase() === "path") ?? "PATH";
+	let pathKey = "PATH";
+	const environmentKeys = Object.keys(process.env);
+	for (let index = 0; index < environmentKeys.length; index++) {
+		const key = environmentKeys[index]!;
+		if (key.toLowerCase() !== "path") continue;
+		pathKey = key;
+		break;
+	}
 	const currentPath = process.env[pathKey] ?? "";
-	const pathEntries = currentPath.split(delimiter).filter(Boolean);
-	const hasBinDir = pathEntries.includes(binDir);
-	const updatedPath = hasBinDir ? currentPath : [binDir, currentPath].filter(Boolean).join(delimiter);
+	let hasBinDir = false;
+	let entryStart = 0;
+	while (entryStart <= currentPath.length) {
+		const separator = currentPath.indexOf(delimiter, entryStart);
+		const entryEnd = separator < 0 ? currentPath.length : separator;
+		if (currentPath.slice(entryStart, entryEnd) === binDir) {
+			hasBinDir = true;
+			break;
+		}
+		if (separator < 0) break;
+		entryStart = separator + delimiter.length;
+	}
+	const updatedPath = hasBinDir ? currentPath : currentPath ? `${binDir}${delimiter}${currentPath}` : binDir;
 
 	return {
 		...process.env,
@@ -142,35 +326,24 @@ export function getShellEnv(): NodeJS.ProcessEnv {
  * - Characters with undefined code points
  */
 export function sanitizeBinaryOutput(str: string): string {
-	// Use Array.from to properly iterate over code points (not code units)
-	// This handles surrogate pairs correctly and catches edge cases where
-	// codePointAt() might return undefined
-	return Array.from(str)
-		.filter((char) => {
-			// Filter out characters that cause string-width to crash
-			// This includes:
-			// - Unicode format characters
-			// - Lone surrogates (already filtered by Array.from)
-			// - Control chars except \t \n \r
-			// - Characters with undefined code points
-
-			const code = char.codePointAt(0);
-
-			// Skip if code point is undefined (edge case with invalid strings)
-			if (code === undefined) return false;
-
-			// Allow tab, newline, carriage return
-			if (code === 0x09 || code === 0x0a || code === 0x0d) return true;
-
-			// Filter out control characters (0x00-0x1F, except 0x09, 0x0a, 0x0x0d)
-			if (code <= 0x1f) return false;
-
-			// Filter out Unicode format characters
-			if (code >= 0xfff9 && code <= 0xfffb) return false;
-
-			return true;
-		})
-		.join("");
+	let result = "";
+	let cleanStart = 0;
+	for (let index = 0; index < str.length; ) {
+		const code = str.codePointAt(index)!;
+		const codeUnitLength = code > 0xffff ? 2 : 1;
+		const allowedControl = code === 0x09 || code === 0x0a || code === 0x0d;
+		const disallowed =
+			(!allowedControl && code <= 0x1f) ||
+			(code >= 0xd800 && code <= 0xdfff) ||
+			(code >= 0xfff9 && code <= 0xfffb);
+		if (disallowed) {
+			if (cleanStart < index) result += str.slice(cleanStart, index);
+			cleanStart = index + codeUnitLength;
+		}
+		index += codeUnitLength;
+	}
+	if (cleanStart === 0) return str;
+	return cleanStart < str.length ? result + str.slice(cleanStart) : result;
 }
 
 /**

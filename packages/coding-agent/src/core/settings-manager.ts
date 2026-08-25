@@ -2,11 +2,15 @@ import type { ThinkingLevel } from "@super-pi/agent-core";
 import type { Transport } from "@super-pi/ai";
 import type { TuiMode as RendererTuiMode, ScrollViewScrollbar } from "@super-pi/tui";
 import { randomUUID } from "crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync } from "fs";
 import { dirname, join } from "path";
 import lockfile from "proper-lockfile";
 import { CONFIG_DIR_NAME, getAgentDir, getConfigDir } from "../config.ts";
+import { writeTextFileAtomically } from "../utils/atomic-file.ts";
 import { normalizePath, resolvePath } from "../utils/paths.ts";
+import { setOwnProperty } from "../utils/record.ts";
+import { waitSynchronously } from "../utils/sync-wait.ts";
+import { stripBom } from "../utils/text.ts";
 import { DEFAULT_HTTP_IDLE_TIMEOUT_MS, parseHttpIdleTimeoutMs } from "./http-dispatcher.ts";
 
 export interface CompactionSettings {
@@ -34,6 +38,7 @@ export interface RetrySettings {
 }
 
 export type TuiMode = RendererTuiMode;
+export type FullscreenExitOutput = "transcript" | "resume-hint";
 
 export interface TerminalSettings {
 	showImages?: boolean; // default: true (only relevant if terminal supports images)
@@ -69,6 +74,22 @@ export type DefaultProjectTrust = "ask" | "always" | "never";
 
 export type TransportSetting = Transport;
 
+export interface PowerShellStatusSettings {
+	/** Discovery policy version that established this persisted path. */
+	trustVersion?: 1;
+	/** Last executable selected or confirmed by discovery. */
+	path?: string;
+	/** Whether PowerShell should be offered without an explicit re-enable. */
+	available: boolean;
+	/** Whether the executable was confirmed by a successful command or probe. */
+	verified: boolean;
+	/** Explicit powershellPath value in effect when this status was recorded. */
+	configuredPath?: string;
+	source?: "configured" | "path-pwsh" | "standard-pwsh" | "path-windows-powershell" | "system-windows-powershell";
+	version?: string;
+	edition?: string;
+}
+
 /**
  * Package source for npm/git packages.
  * - String form: load all resources from the package
@@ -92,6 +113,7 @@ export interface Settings {
 	defaultProvider?: string;
 	defaultModel?: string;
 	defaultThinkingLevel?: ThinkingLevel;
+	modelThinkingLevels?: Record<string, ThinkingLevel>; // Per-model defaults keyed by provider/modelId
 	transport?: TransportSetting; // default: "auto"
 	steeringMode?: "all" | "one-at-a-time";
 	followUpMode?: "all" | "one-at-a-time";
@@ -103,6 +125,8 @@ export interface Settings {
 	showCacheMissNotices?: boolean; // default: false - show transcript notices for significant prompt-cache misses
 	externalEditor?: string; // Command for Ctrl+G external editor; takes precedence over VISUAL/EDITOR
 	shellPath?: string; // Custom shell path (e.g., for Cygwin users on Windows); supports leading ~ expansion
+	powershellPath?: string; // Trusted global PowerShell executable path; project settings cannot override it
+	powershellStatus?: PowerShellStatusSettings; // Global persisted discovery/availability state
 	quietStartup?: boolean;
 	defaultProjectTrust?: DefaultProjectTrust; // default: "ask"; global setting only
 	shellCommandPrefix?: string; // Prefix prepended to every bash command (e.g., "shopt -s expand_aliases" for alias support)
@@ -120,6 +144,7 @@ export interface Settings {
 	terminal?: TerminalSettings;
 	images?: ImageSettings;
 	enabledModels?: string[]; // Model patterns for cycling (same format as --models CLI flag)
+	defaultTools?: string[]; // Initial built-in tool selection
 	doubleEscapeAction?: "fork" | "tree" | "none"; // Action for double-escape with empty editor (default: "tree")
 	treeFilterMode?: "default" | "no-tools" | "user-only" | "labeled-only" | "all"; // Default filter when opening /tree
 	thinkingBudgets?: ThinkingBudgetsSettings; // Custom token budgets for thinking levels
@@ -134,6 +159,7 @@ export interface Settings {
 	httpIdleTimeoutMs?: number; // HTTP header/body idle timeout in milliseconds; 0 disables it
 	websocketConnectTimeoutMs?: number; // WebSocket connect/open handshake timeout in milliseconds; 0 disables it
 	tuiMode?: TuiMode; // default: "regular"
+	fullscreenExitOutput?: FullscreenExitOutput; // default: transcript; fullscreen mode only
 	fullscreenScrollbar?: ScrollViewScrollbar; // default: "auto"; no effect in regular TUI mode
 }
 
@@ -151,10 +177,13 @@ function deepMergeObjects(base: Record<string, unknown>, overrides: Record<strin
 		}
 
 		const baseValue = base[key];
-		result[key] =
+		setOwnProperty(
+			result,
+			key,
 			isMergeableObject(baseValue) && isMergeableObject(overrideValue)
 				? deepMergeObjects(baseValue, overrideValue)
-				: overrideValue;
+				: overrideValue,
+		);
 	}
 
 	return result;
@@ -188,7 +217,19 @@ export interface SettingsStorage {
 
 export interface SettingsError {
 	scope: SettingsScope;
+	path?: string;
 	error: Error;
+}
+
+type SettingsPaths = Partial<Record<SettingsScope, string>>;
+const SETTINGS_FILE_WRITE_OPTIONS = { mode: 0o600, preserveExistingMode: true } as const;
+
+function toSettingsError(scope: SettingsScope, error: unknown, path?: string): SettingsError {
+	return {
+		scope,
+		...(path ? { path } : {}),
+		error: error instanceof Error ? error : new Error(String(error)),
+	};
 }
 
 export class FileSettingsStorage implements SettingsStorage {
@@ -219,10 +260,7 @@ export class FileSettingsStorage implements SettingsStorage {
 					throw error;
 				}
 				lastError = error;
-				const start = Date.now();
-				while (Date.now() - start < delayMs) {
-					// Sleep synchronously to avoid changing callers to async.
-				}
+				waitSynchronously(delayMs);
 			}
 		}
 
@@ -250,7 +288,7 @@ export class FileSettingsStorage implements SettingsStorage {
 				if (!release) {
 					release = this.acquireLockSyncWithRetry(path);
 				}
-				writeFileSync(path, next, "utf-8");
+				writeTextFileAtomically(path, next, SETTINGS_FILE_WRITE_OPTIONS);
 			}
 		} finally {
 			if (release) {
@@ -291,6 +329,7 @@ export class SettingsManager {
 	private projectSettingsLoadError: Error | null = null; // Track if project settings file had parse errors
 	private writeQueue: Promise<void> = Promise.resolve();
 	private errors: SettingsError[];
+	private settingsPaths: SettingsPaths;
 
 	private constructor(
 		storage: SettingsStorage,
@@ -300,6 +339,7 @@ export class SettingsManager {
 		projectLoadError: Error | null = null,
 		initialErrors: SettingsError[] = [],
 		projectTrusted = true,
+		settingsPaths: SettingsPaths = {},
 	) {
 		this.storage = storage;
 		this.globalSettings = initialGlobal;
@@ -308,6 +348,7 @@ export class SettingsManager {
 		this.globalSettingsLoadError = globalLoadError;
 		this.projectSettingsLoadError = projectLoadError;
 		this.errors = [...initialErrors];
+		this.settingsPaths = settingsPaths;
 		this.settings = deepMergeSettings(this.globalSettings, this.projectSettings);
 	}
 
@@ -317,21 +358,35 @@ export class SettingsManager {
 		agentDir: string = getAgentDir(),
 		options: SettingsManagerCreateOptions = {},
 	): SettingsManager {
-		const storage = new FileSettingsStorage(cwd, agentDir);
-		return SettingsManager.fromStorage(storage, options);
+		const resolvedCwd = resolvePath(cwd);
+		const resolvedAgentDir = resolvePath(agentDir);
+		const storage = new FileSettingsStorage(resolvedCwd, resolvedAgentDir);
+		return SettingsManager.fromStorageWithPaths(storage, options, {
+			global: join(getConfigDir(resolvedAgentDir), "settings.json"),
+			project: join(resolvedCwd, CONFIG_DIR_NAME, "config", "settings.json"),
+		});
 	}
 
 	/** Create a SettingsManager from an arbitrary storage backend */
 	static fromStorage(storage: SettingsStorage, options: SettingsManagerCreateOptions = {}): SettingsManager {
+		return SettingsManager.fromStorageWithPaths(storage, options);
+	}
+
+	/** Create a manager while retaining optional file paths for reported storage errors. */
+	private static fromStorageWithPaths(
+		storage: SettingsStorage,
+		options: SettingsManagerCreateOptions,
+		settingsPaths: SettingsPaths = {},
+	): SettingsManager {
 		const projectTrusted = options.projectTrusted ?? true;
 		const globalLoad = SettingsManager.tryLoadFromStorage(storage, "global");
 		const projectLoad = SettingsManager.tryLoadFromStorage(storage, "project", projectTrusted);
 		const initialErrors: SettingsError[] = [];
 		if (globalLoad.error) {
-			initialErrors.push({ scope: "global", error: globalLoad.error });
+			initialErrors.push(toSettingsError("global", globalLoad.error, settingsPaths.global));
 		}
 		if (projectLoad.error) {
-			initialErrors.push({ scope: "project", error: projectLoad.error });
+			initialErrors.push(toSettingsError("project", projectLoad.error, settingsPaths.project));
 		}
 
 		return new SettingsManager(
@@ -342,6 +397,7 @@ export class SettingsManager {
 			projectLoad.error,
 			initialErrors,
 			projectTrusted,
+			settingsPaths,
 		);
 	}
 
@@ -367,7 +423,7 @@ export class SettingsManager {
 		if (!content) {
 			return {};
 		}
-		const settings = JSON.parse(content);
+		const settings = JSON.parse(stripBom(content));
 		return SettingsManager.migrateSettings(settings);
 	}
 
@@ -388,13 +444,13 @@ export class SettingsManager {
 		// Migrate queueMode -> steeringMode
 		if ("queueMode" in settings && !("steeringMode" in settings)) {
 			settings.steeringMode = settings.queueMode;
-			delete settings.queueMode;
+			settings.queueMode = undefined;
 		}
 
 		// Migrate legacy websockets boolean -> transport enum
 		if (!("transport" in settings) && typeof settings.websockets === "boolean") {
 			settings.transport = settings.websockets ? "websocket" : "sse";
-			delete settings.websockets;
+			settings.websockets = undefined;
 		}
 
 		// Migrate old skills object format to new array format
@@ -414,7 +470,7 @@ export class SettingsManager {
 			if (Array.isArray(skillsSettings.customDirectories) && skillsSettings.customDirectories.length > 0) {
 				settings.skills = skillsSettings.customDirectories;
 			} else {
-				delete settings.skills;
+				settings.skills = undefined;
 			}
 		}
 
@@ -439,7 +495,7 @@ export class SettingsManager {
 					maxRetryDelayMs: retrySettings.maxDelayMs,
 				};
 			}
-			delete retrySettings.maxDelayMs;
+			retrySettings.maxDelayMs = undefined;
 		}
 
 		return settings as Settings;
@@ -543,9 +599,10 @@ export class SettingsManager {
 		}
 	}
 
-	private recordError(scope: SettingsScope, error: unknown): void {
-		const normalizedError = error instanceof Error ? error : new Error(String(error));
-		this.errors.push({ scope, error: normalizedError });
+	private recordError(scope: SettingsScope, error: unknown): SettingsError {
+		const settingsError = toSettingsError(scope, error, this.settingsPaths[scope]);
+		this.errors.push(settingsError);
+		return settingsError;
 	}
 
 	private clearModifiedScope(scope: SettingsScope): void {
@@ -559,18 +616,21 @@ export class SettingsManager {
 		this.modifiedProjectNestedFields.clear();
 	}
 
-	private enqueueWrite(scope: SettingsScope, task: () => void): void {
-		this.writeQueue = this.writeQueue
-			.then(() => {
+	private enqueueWrite(scope: SettingsScope, task: () => void): Promise<SettingsError | undefined> {
+		const completion = this.writeQueue.then(() => {
+			try {
 				if (scope === "project") {
 					this.assertProjectTrustedForWrite();
 				}
 				task();
 				this.clearModifiedScope(scope);
-			})
-			.catch((error) => {
-				this.recordError(scope, error);
-			});
+				return undefined;
+			} catch (error) {
+				return this.recordError(scope, error);
+			}
+		});
+		this.writeQueue = completion.then(() => undefined);
+		return completion;
 	}
 
 	private cloneModifiedNestedFields(source: Map<keyof Settings, Set<string>>): Map<keyof Settings, Set<string>> {
@@ -589,20 +649,34 @@ export class SettingsManager {
 	): void {
 		this.storage.withLock(scope, (current) => {
 			const currentFileSettings = current
-				? SettingsManager.migrateSettings(JSON.parse(current) as Record<string, unknown>)
+				? SettingsManager.migrateSettings(JSON.parse(stripBom(current)) as Record<string, unknown>)
 				: {};
 			const mergedSettings: Settings = { ...currentFileSettings };
 			for (const field of modifiedFields) {
 				const value = snapshotSettings[field];
-				if (modifiedNestedFields.has(field) && typeof value === "object" && value !== null) {
+				if (modifiedNestedFields.has(field)) {
 					const nestedModified = modifiedNestedFields.get(field)!;
-					const baseNested = (currentFileSettings[field] as Record<string, unknown>) ?? {};
-					const inMemoryNested = value as Record<string, unknown>;
-					const mergedNested = { ...baseNested };
-					for (const nestedKey of nestedModified) {
-						mergedNested[nestedKey] = inMemoryNested[nestedKey];
+					const currentNested = currentFileSettings[field];
+					const baseNested: Record<string, unknown> = isMergeableObject(currentNested) ? currentNested : {};
+					const inMemoryNested =
+						typeof value === "object" && value !== null ? (value as Record<string, unknown>) : undefined;
+					const mergedNested: Record<string, unknown> = {};
+					let hasNestedValue = false;
+					const baseNestedKeys = Object.keys(baseNested);
+					for (let index = 0; index < baseNestedKeys.length; index++) {
+						const nestedKey = baseNestedKeys[index]!;
+						if (nestedModified.has(nestedKey)) continue;
+						setOwnProperty(mergedNested, nestedKey, baseNested[nestedKey]);
+						hasNestedValue = true;
 					}
-					(mergedSettings as Record<string, unknown>)[field] = mergedNested;
+					for (const nestedKey of nestedModified) {
+						if (inMemoryNested && Object.hasOwn(inMemoryNested, nestedKey)) {
+							setOwnProperty(mergedNested, nestedKey, inMemoryNested[nestedKey]);
+							hasNestedValue = true;
+						}
+					}
+					if (hasNestedValue) (mergedSettings as Record<string, unknown>)[field] = mergedNested;
+					else (mergedSettings as Record<string, unknown>)[field] = undefined;
 				} else {
 					(mergedSettings as Record<string, unknown>)[field] = value;
 				}
@@ -612,18 +686,18 @@ export class SettingsManager {
 		});
 	}
 
-	private save(): void {
+	private save(): Promise<SettingsError | undefined> {
 		this.settings = deepMergeSettings(this.globalSettings, this.projectSettings);
 
 		if (this.globalSettingsLoadError) {
-			return;
+			return Promise.resolve(toSettingsError("global", this.globalSettingsLoadError, this.settingsPaths.global));
 		}
 
 		const snapshotGlobalSettings = structuredClone(this.globalSettings);
 		const modifiedFields = new Set(this.modifiedFields);
 		const modifiedNestedFields = this.cloneModifiedNestedFields(this.modifiedNestedFields);
 
-		this.enqueueWrite("global", () => {
+		return this.enqueueWrite("global", () => {
 			this.persistScopedSettings("global", snapshotGlobalSettings, modifiedFields, modifiedNestedFields);
 		});
 	}
@@ -764,6 +838,40 @@ export class SettingsManager {
 		this.save();
 	}
 
+	getModelThinkingLevel(provider: string, modelId: string): ThinkingLevel | undefined {
+		return this.settings.modelThinkingLevels?.[`${provider}/${modelId}`];
+	}
+
+	getAllModelThinkingLevels(): Record<string, ThinkingLevel> {
+		return { ...(this.settings.modelThinkingLevels ?? {}) };
+	}
+
+	setModelThinkingLevel(provider: string, modelId: string, level: ThinkingLevel): void {
+		const key = `${provider}/${modelId}`;
+		this.globalSettings.modelThinkingLevels ??= {};
+		this.globalSettings.modelThinkingLevels[key] = level;
+		this.markModified("modelThinkingLevels", key);
+		this.save();
+	}
+
+	removeModelThinkingLevel(provider: string, modelId: string): void {
+		const current = this.globalSettings.modelThinkingLevels;
+		if (!current) return;
+		const key = `${provider}/${modelId}`;
+		const remaining: Record<string, ThinkingLevel> = {};
+		let hasOverrides = false;
+		const currentKeys = Object.keys(current);
+		for (let index = 0; index < currentKeys.length; index++) {
+			const currentKey = currentKeys[index]!;
+			if (currentKey === key) continue;
+			remaining[currentKey] = current[currentKey]!;
+			hasOverrides = true;
+		}
+		this.globalSettings.modelThinkingLevels = hasOverrides ? remaining : undefined;
+		this.markModified("modelThinkingLevels", key);
+		this.save();
+	}
+
 	getTransport(): TransportSetting {
 		return this.settings.transport ?? "auto";
 	}
@@ -901,6 +1009,42 @@ export class SettingsManager {
 		this.globalSettings.shellPath = path;
 		this.markModified("shellPath");
 		this.save();
+	}
+
+	/** PowerShell executable override. Global-only so project configuration cannot redirect executable loading. */
+	getPowerShellPath(): string | undefined {
+		const powershellPath = this.globalSettings.powershellPath;
+		return powershellPath ? normalizePath(powershellPath) : powershellPath;
+	}
+
+	setPowerShellPath(path: string | undefined): void {
+		this.globalSettings.powershellPath = path;
+		this.markModified("powershellPath");
+		this.save();
+	}
+
+	/** Persisted PowerShell availability. Global-only so projects cannot enable or redirect an executable. */
+	getPowerShellStatus(): PowerShellStatusSettings | undefined {
+		const status = this.globalSettings.powershellStatus;
+		if (!status) return undefined;
+		return {
+			...status,
+			path: status.path ? normalizePath(status.path) : undefined,
+			configuredPath: status.configuredPath ? normalizePath(status.configuredPath) : undefined,
+		};
+	}
+
+	setPowerShellStatus(status: PowerShellStatusSettings): void {
+		this.globalSettings.powershellStatus = { ...status };
+		this.markModified("powershellStatus");
+		this.save();
+	}
+
+	async setPowerShellStatusDurably(status: PowerShellStatusSettings): Promise<void> {
+		this.globalSettings.powershellStatus = { ...status };
+		this.markModified("powershellStatus");
+		const writeError = await this.save();
+		if (writeError) throw writeError.error;
 	}
 
 	getQuietStartup(): boolean {
@@ -1152,6 +1296,16 @@ export class SettingsManager {
 		return mode === "always" || mode === "hidden" ? mode : "auto";
 	}
 
+	getFullscreenExitOutput(): FullscreenExitOutput {
+		return this.settings.fullscreenExitOutput === "resume-hint" ? "resume-hint" : "transcript";
+	}
+
+	setFullscreenExitOutput(output: FullscreenExitOutput): void {
+		this.globalSettings.fullscreenExitOutput = output;
+		this.markModified("fullscreenExitOutput");
+		this.save();
+	}
+
 	setFullscreenScrollbar(mode: ScrollViewScrollbar): void {
 		this.globalSettings.fullscreenScrollbar = mode;
 		this.markModified("fullscreenScrollbar");
@@ -1186,6 +1340,11 @@ export class SettingsManager {
 
 	getEnabledModels(): string[] | undefined {
 		return this.settings.enabledModels;
+	}
+
+	getDefaultTools(): string[] | undefined {
+		const tools = this.settings.defaultTools;
+		return tools ? [...tools] : undefined;
 	}
 
 	setEnabledModels(patterns: string[] | undefined): void {

@@ -13,6 +13,7 @@ const IMAGE_PATH_RES = [
 const PNG_SIGNATURE = Buffer.from("89504e470d0a1a0a", "hex");
 const MAX_SCREENSHOT_BYTES = 8 * 1024 * 1024;
 const SCREENSHOT_READ_CHUNK_BYTES = 64 * 1024;
+const SCREENSHOT_PATH_SCRATCH = new Set<string>();
 const ENV_EXACT = new Set([
   "APPDATA", "COMSPEC", "HOME", "LOCALAPPDATA", "PATH", "PATHEXT", "PROGRAMDATA",
   "SYSTEMDRIVE", "SYSTEMROOT", "TEMP", "TMP", "USERPROFILE", "WINDIR",
@@ -204,24 +205,29 @@ export function buildBrowserUseEnvironment(source: NodeJS.ProcessEnv, workspace:
     env.BU_NAME = session;
     if (source.BROWSER_USE_API_KEY) env.BROWSER_USE_API_KEY = source.BROWSER_USE_API_KEY;
   } else {
-    delete env.BU_NAME;
+    env.BU_NAME = undefined;
   }
   return env;
 }
 
 export function extractScreenshotCandidates(output: string): string[] {
   const paths: string[] = [];
-  const seen = new Set<string>();
-  for (const pattern of IMAGE_PATH_RES) {
-    for (const match of output.matchAll(pattern)) {
-      const path = match[1]!;
-      if (!seen.has(path)) {
-        seen.add(path);
-        paths.push(path);
+  const seen = SCREENSHOT_PATH_SCRATCH;
+  seen.clear();
+  try {
+    for (const pattern of IMAGE_PATH_RES) {
+      for (const match of output.matchAll(pattern)) {
+        const path = match[1]!;
+        if (!seen.has(path)) {
+          seen.add(path);
+          paths.push(path);
+        }
       }
     }
+    return paths;
+  } finally {
+    seen.clear();
   }
-  return paths;
 }
 
 function imageMime(data: Buffer): LoadedScreenshot["mimeType"] | undefined {

@@ -2,6 +2,7 @@ import { Compile } from "typebox/compile";
 import type { TLocalizedValidationError } from "typebox/error";
 import { Value } from "typebox/value";
 import type { Tool, ToolCall } from "../types.ts";
+import { setOwnProperty } from "./record.ts";
 
 const validatorCache = new WeakMap<object, ReturnType<typeof Compile>>();
 const TYPEBOX_KIND = Symbol.for("TypeBox.Kind");
@@ -150,23 +151,22 @@ function coercePrimitiveByType(value: unknown, type: string): unknown {
 
 function applySchemaObjectCoercion(value: Record<string, unknown>, schema: JsonSchemaObject): void {
 	const properties = schema.properties;
-	const definedKeys = new Set<string>(properties ? Object.keys(properties) : []);
 
 	if (properties) {
 		for (const [key, propertySchema] of Object.entries(properties)) {
-			if (!(key in value)) {
+			if (!Object.hasOwn(value, key)) {
 				continue;
 			}
-			value[key] = coerceWithJsonSchema(value[key], propertySchema);
+			setOwnProperty(value, key, coerceWithJsonSchema(value[key], propertySchema));
 		}
 	}
 
 	if (schema.additionalProperties && typeof schema.additionalProperties === "object") {
 		for (const [key, propertyValue] of Object.entries(value)) {
-			if (definedKeys.has(key)) {
+			if (properties && Object.hasOwn(properties, key)) {
 				continue;
 			}
-			value[key] = coerceWithJsonSchema(propertyValue, schema.additionalProperties);
+			setOwnProperty(value, key, coerceWithJsonSchema(propertyValue, schema.additionalProperties));
 		}
 	}
 }
@@ -306,7 +306,11 @@ function schemaAtPath(schema: JsonSchemaObject, path: string[]): JsonSchemaObjec
 	let current: JsonSchemaObject | undefined = schema;
 	for (const part of path) {
 		if (!current || typeof current !== "object") return undefined;
-		if (current.properties && typeof current.properties === "object" && part in current.properties) {
+		if (
+			current.properties &&
+			typeof current.properties === "object" &&
+			Object.hasOwn(current.properties, part)
+		) {
 			current = current.properties[part];
 			continue;
 		}
@@ -328,7 +332,7 @@ function schemaAtPath(schema: JsonSchemaObject, path: string[]): JsonSchemaObjec
 function valueAtPath(root: unknown, path: string[]): { found: boolean; value?: unknown } {
 	let value = root;
 	for (const part of path) {
-		if (value === null || typeof value !== "object" || !(part in value)) return { found: false };
+		if (value === null || typeof value !== "object" || !Object.hasOwn(value, part)) return { found: false };
 		value = (value as Record<string, unknown>)[part];
 	}
 	return { found: true, value };
@@ -338,24 +342,42 @@ function setValueAtPath(root: unknown, path: string[], value: unknown): unknown 
 	if (path.length === 0) return value;
 	const parentLocation = valueAtPath(root, path.slice(0, -1));
 	if (!parentLocation.found || parentLocation.value === null || typeof parentLocation.value !== "object") return root;
-	(parentLocation.value as Record<string, unknown>)[path[path.length - 1]] = value;
+	setOwnProperty(parentLocation.value as Record<string, unknown>, path[path.length - 1]!, value);
 	return root;
 }
 
-function deleteOptionalNull(root: unknown, schema: JsonSchemaObject, path: string[]): boolean {
-	if (path.length === 0) return false;
+function omitOptionalNull(root: unknown, schema: JsonSchemaObject, path: string[]): unknown | undefined {
+	if (path.length === 0) return undefined;
 	const location = valueAtPath(root, path);
-	if (!location.found || location.value !== null) return false;
+	if (!location.found || location.value !== null) return undefined;
 	const parentPath = path.slice(0, -1);
 	const parentSchema = schemaAtPath(schema, parentPath);
 	const key = path[path.length - 1];
-	if (!parentSchema?.properties || !(key in parentSchema.properties) || parentSchema.required?.includes(key)) {
-		return false;
+	if (
+		!parentSchema?.properties ||
+		!Object.hasOwn(parentSchema.properties, key) ||
+		parentSchema.required?.includes(key)
+	) {
+		return undefined;
 	}
 	const parentLocation = valueAtPath(root, parentPath);
-	if (!parentLocation.found || parentLocation.value === null || typeof parentLocation.value !== "object") return false;
-	delete (parentLocation.value as Record<string, unknown>)[key];
-	return true;
+	if (!parentLocation.found || parentLocation.value === null || typeof parentLocation.value !== "object") {
+		return undefined;
+	}
+	const parent = parentLocation.value as Record<string, unknown>;
+	const replacement: Record<string, unknown> = {};
+	const siblingKeys = Object.keys(parent);
+	for (let index = 0; index < siblingKeys.length; index++) {
+		const siblingKey = siblingKeys[index]!;
+		if (siblingKey === key) continue;
+		Object.defineProperty(replacement, siblingKey, {
+			configurable: true,
+			enumerable: true,
+			writable: true,
+			value: parent[siblingKey],
+		});
+	}
+	return parentPath.length === 0 ? replacement : setValueAtPath(root, parentPath, replacement);
 }
 
 type RepairResult =
@@ -419,9 +441,12 @@ function repairArrayValue(value: unknown, schema: JsonSchemaObject): RepairResul
 	return { changed: false };
 }
 
-function repairIssue(root: unknown, schema: JsonSchemaObject, error: TLocalizedValidationError): string | undefined {
+type IssueRepair = { kind: string; root: unknown };
+
+function repairIssue(root: unknown, schema: JsonSchemaObject, error: TLocalizedValidationError): IssueRepair | undefined {
 	const path = decodeJsonPointer(error.instancePath);
-	if (deleteOptionalNull(root, schema, path)) return "optional_null_omitted";
+	const omittedRoot = omitOptionalNull(root, schema, path);
+	if (omittedRoot !== undefined) return { kind: "optional_null_omitted", root: omittedRoot };
 	const location = valueAtPath(root, path);
 	const targetSchema = schemaAtPath(schema, path);
 	if (!location.found || !targetSchema) return undefined;
@@ -430,7 +455,7 @@ function repairIssue(root: unknown, schema: JsonSchemaObject, error: TLocalizedV
 	if (!repair.changed) repair = convertedPrimitive(location.value, targetSchema);
 	if (!repair.changed) return undefined;
 	setValueAtPath(root, path, repair.value);
-	return repair.kind;
+	return { kind: repair.kind, root };
 }
 
 function unwrapDegenerateMarkdownPath(value: string): string {
@@ -462,7 +487,7 @@ function validRepairResult(tool: Tool, args: unknown, repairs: string[]): { vali
 	repairBuiltInPath(tool, args, repairs);
 	if (repairs.length > 0 && args && typeof args === "object") {
 		Object.defineProperty(args, TOOL_INPUT_REPAIRS, {
-			value: Object.freeze([...new Set(repairs)]),
+			value: Object.freeze([...repairs]),
 			enumerable: false,
 		});
 	}
@@ -474,16 +499,17 @@ function validateAndRepairToolArguments(
 	originalArgs: unknown,
 	validator: ReturnType<typeof Compile>,
 ): { valid: boolean; args: unknown } {
-	const args = structuredClone(originalArgs);
+	let args = structuredClone(originalArgs);
 	const repairs: string[] = [];
 	if (validator.Check(args)) return validRepairResult(tool, args, repairs);
 	for (let pass = 0; pass < MAX_TOOL_INPUT_REPAIR_PASSES; pass++) {
 		const errors = [...validator.Errors(args)];
 		let changed = false;
 		for (const error of errors) {
-			const kind = repairIssue(args, tool.parameters as JsonSchemaObject, error);
-			if (kind) {
-				repairs.push(kind);
+			const repair = repairIssue(args, tool.parameters as JsonSchemaObject, error);
+			if (repair) {
+				args = repair.root;
+				if (!repairs.includes(repair.kind)) repairs.push(repair.kind);
 				changed = true;
 			}
 		}

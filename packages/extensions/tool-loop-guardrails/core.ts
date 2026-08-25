@@ -143,7 +143,9 @@ function visitCanonical(item: unknown, depth: number, state: CanonicalizeState):
   const keyLimit = Math.max(0, MAX_HASH_NODES - state.nodes);
   let scanned = 0;
   let boundedKeys = false;
-  for (const key in object) {
+  const objectKeys = Object.keys(object);
+  for (let index = 0; index < objectKeys.length; index++) {
+    const key = objectKeys[index]!;
     scanned++;
     if (scanned > MAX_HASH_NODES || keys.length >= keyLimit) {
       boundedKeys = true;

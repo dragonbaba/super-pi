@@ -5,6 +5,7 @@ import {
 	type Api,
 	type AssistantMessage,
 	getSupportedThinkingLevels,
+	setOwnProperty,
 	type Model,
 	type ModelThinkingLevel,
 	type ToolCall,
@@ -94,6 +95,7 @@ type _AiAssistantMessageFieldsAccountedFor = Assert<
 		| "deferred"
 		| "errorMessage"
 		| "rawStopReason"
+		| "endTurn"
 		| "timestamp"
 	>
 >;
@@ -152,9 +154,19 @@ export function toProtocolJsonValue(value: unknown, seen = new Set<object>()): J
 	}
 	seen.add(value);
 	try {
-		if (Array.isArray(value)) return Array.from(value, (entry) => toProtocolJsonValue(entry, seen));
+		if (Array.isArray(value)) {
+			const result = new Array<JsonValue>(value.length);
+			for (let index = 0; index < value.length; index++) {
+				result[index] = toProtocolJsonValue(value[index], seen);
+			}
+			return result;
+		}
 		const result: Record<string, JsonValue> = {};
-		for (const [key, entry] of Object.entries(value)) result[key] = toProtocolJsonValue(entry, seen);
+		const keys = Object.keys(value);
+		for (let index = 0; index < keys.length; index++) {
+			const key = keys[index]!;
+			setOwnProperty(result, key, toProtocolJsonValue((value as Record<string, unknown>)[key], seen));
+		}
 		return result;
 	} finally {
 		seen.delete(value);
@@ -172,11 +184,19 @@ export function sanitizeProtocolDetails(value: unknown, seen = new Set<object>()
 	if (seen.has(value)) return "[Circular]";
 	seen.add(value);
 	try {
-		if (Array.isArray(value)) return Array.from(value, (entry) => sanitizeProtocolDetails(entry, seen) ?? null);
+		if (Array.isArray(value)) {
+			const result = new Array<JsonValue>(value.length);
+			for (let index = 0; index < value.length; index++) {
+				result[index] = sanitizeProtocolDetails(value[index], seen) ?? null;
+			}
+			return result;
+		}
 		const result: Record<string, JsonValue> = {};
-		for (const [key, entry] of Object.entries(value)) {
-			const normalized = sanitizeProtocolDetails(entry, seen);
-			if (normalized !== undefined) result[key] = normalized;
+		const keys = Object.keys(value);
+		for (let index = 0; index < keys.length; index++) {
+			const key = keys[index]!;
+			const normalized = sanitizeProtocolDetails((value as Record<string, unknown>)[key], seen);
+			if (normalized !== undefined) setOwnProperty(result, key, normalized);
 		}
 		return result;
 	} finally {

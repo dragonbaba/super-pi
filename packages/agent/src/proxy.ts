@@ -339,7 +339,7 @@ function processProxyEvent(
 			const content = partial.content[proxyEvent.contentIndex];
 			if (content?.type === "toolCall") {
 				Object.assign(content, proxyEvent.toolCall);
-				delete (content as any).partialJson;
+				(content as { partialJson?: string }).partialJson = undefined;
 				return {
 					type: "toolcall_end",
 					contentIndex: proxyEvent.contentIndex,

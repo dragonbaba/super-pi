@@ -7,6 +7,12 @@ const PERMISSION_PATH_APPROVAL = Symbol.for("pi.session-permission.path-approval
 const SUBAGENT_WORKSPACE_DELEGATION = Symbol.for("pi.session-permission.subagent-workspace-delegation.v1");
 const STRUCTURED_READONLY_WORKSPACE_DELEGATION = Symbol.for("pi.session-permission.structured-readonly-workspace-delegation.v1");
 const BROWSER_EXEC_AUTHORIZATION = Symbol.for("pi.session-permission.browser-exec-authorization.v1");
+const CONSUMED_ATTACHMENT_DESCRIPTOR: PropertyDescriptor = Object.freeze({
+  configurable: true,
+  enumerable: false,
+  writable: false,
+  value: undefined,
+});
 
 export type SessionPermissionMode = "read-only" | "workspace-write" | "full-access";
 export type SessionApprovalPolicy = "ask" | "never-ask";
@@ -153,7 +159,7 @@ export function consumePermissionPathApproval(
   if (!input || typeof input !== "object") return undefined;
   const carrying = input as PermissionCarryingInput;
   const approval = carrying[PERMISSION_PATH_APPROVAL];
-  if (approval) delete carrying[PERMISSION_PATH_APPROVAL];
+  if (approval) Object.defineProperty(carrying, PERMISSION_PATH_APPROVAL, CONSUMED_ATTACHMENT_DESCRIPTOR);
   if (!approval) return undefined;
   if (approval.toolCallId !== toolCallId
     || approval.operation !== operation
@@ -179,7 +185,7 @@ export function consumeSubagentWorkspaceDelegation(input: unknown): SubagentWork
   if (!input || typeof input !== "object") return undefined;
   const carrying = input as PermissionCarryingInput;
   const delegation = carrying[SUBAGENT_WORKSPACE_DELEGATION];
-  if (delegation) delete carrying[SUBAGENT_WORKSPACE_DELEGATION];
+  if (delegation) Object.defineProperty(carrying, SUBAGENT_WORKSPACE_DELEGATION, CONSUMED_ATTACHMENT_DESCRIPTOR);
   return delegation;
 }
 
@@ -232,7 +238,7 @@ export function consumeBrowserExecAuthorization(input: unknown, toolCallId: stri
   if (!input || typeof input !== "object") throw new Error("[POLICY_BLOCKED] Browser execution authorization is missing.");
   const carrying = input as PermissionCarryingInput;
   const authorization = carrying[BROWSER_EXEC_AUTHORIZATION];
-  if (authorization) delete carrying[BROWSER_EXEC_AUTHORIZATION];
+  if (authorization) Object.defineProperty(carrying, BROWSER_EXEC_AUTHORIZATION, CONSUMED_ATTACHMENT_DESCRIPTOR);
   if (!authorization
     || authorization.toolCallId !== toolCallId
     || authorization.requestHash !== browserExecRequestHash(input)) {
@@ -263,6 +269,8 @@ export function consumeStructuredReadonlyWorkspaceDelegation(
   if (!input || typeof input !== "object") return undefined;
   const carrying = input as PermissionCarryingInput;
   const delegation = carrying[STRUCTURED_READONLY_WORKSPACE_DELEGATION];
-  if (delegation) delete carrying[STRUCTURED_READONLY_WORKSPACE_DELEGATION];
+  if (delegation) {
+    Object.defineProperty(carrying, STRUCTURED_READONLY_WORKSPACE_DELEGATION, CONSUMED_ATTACHMENT_DESCRIPTOR);
+  }
   return delegation;
 }

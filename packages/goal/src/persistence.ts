@@ -252,9 +252,14 @@ function normalizeSafetyPauseCause(value: unknown): SafetyPauseCause | undefined
 export function clearLegacyPersistedGoal(cwd: string) {
 	if (!existsSync(STATE_FILE)) return;
 	const goals = readState();
-	delete goals[cwd];
+	const remainingGoals: Record<string, unknown> = {};
+	const goalCwds = Object.keys(goals);
+	for (let index = 0; index < goalCwds.length; index++) {
+		const goalCwd = goalCwds[index]!;
+		if (goalCwd !== cwd) remainingGoals[goalCwd] = goals[goalCwd];
+	}
 	mkdirSync(dirname(STATE_FILE), { recursive: true });
-	writeFileSync(STATE_FILE, `${JSON.stringify(goals, null, 2)}\n`);
+	writeFileSync(STATE_FILE, `${JSON.stringify(remainingGoals, null, 2)}\n`);
 }
 
 function readState(): Record<string, unknown> {

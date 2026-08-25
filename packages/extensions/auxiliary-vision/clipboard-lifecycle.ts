@@ -528,5 +528,5 @@ export function installClipboardArtifactLifecycle(options: LifecycleOptions = {}
 export function uninstallClipboardArtifactLifecycle(lifecycle: ClipboardArtifactLifecycle): void {
 	const root = globalThis as GlobalLifecycleState;
 	lifecycle.shutdown();
-	if (root[CLIPBOARD_LIFECYCLE_SYMBOL] === lifecycle.api) delete root[CLIPBOARD_LIFECYCLE_SYMBOL];
+	if (root[CLIPBOARD_LIFECYCLE_SYMBOL] === lifecycle.api) root[CLIPBOARD_LIFECYCLE_SYMBOL] = undefined;
 }

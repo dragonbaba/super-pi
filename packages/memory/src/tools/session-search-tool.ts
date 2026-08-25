@@ -100,7 +100,7 @@ exclude:
         return { content: [{ type: 'text' as const, text: result.message! }], details: result };
       }
 
-      const searchResult = searchSessionAnchors(markdown, { sessionsDir });
+      const searchResult = await searchSessionAnchors(markdown, { sessionsDir });
       if (!searchResult.success) {
         const result: SearchResult = { success: false, message: searchResult.message ?? 'Anchor session search failed.' };
         return { content: [{ type: 'text' as const, text: result.message! }], details: result };
@@ -199,7 +199,7 @@ function registerLegacySessionSearchTool(pi: ExtensionAPI, dbManager: DatabaseMa
       let truncatedCount = 0;
 
       for (const r of results) {
-        const date = SESSION_DATE_FORMATTER.format(new Date(r.timestamp));
+        const date = SESSION_DATE_FORMATTER.format(Date.parse(r.timestamp));
 
         const snippet = truncateLegacySnippet(r.snippet, snippetChars);
         if (snippet.truncated) truncatedCount += 1;

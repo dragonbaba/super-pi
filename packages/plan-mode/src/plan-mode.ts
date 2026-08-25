@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
-import type {
+import {
 	ExtensionAPI,
 	ExtensionCommandContext,
 	ExtensionContext,
+	findUnsafePowerShellSegment,
 } from "@super-pi/coding-agent";
 import { completePlanArguments } from "./command.js";
 import {
@@ -435,13 +436,16 @@ export default function planMode(pi: ExtensionAPI, dependencies: PlanModeDepende
 			};
 		}
 		// Built-in-compatible overrides retain the canonical name but replace its source metadata.
-		if (event.toolName !== "bash") return;
+		if (event.toolName !== "bash" && event.toolName !== "powershell") return;
 
-		const blocked = findBlockedCommandSegment(readCommand(event.input), settings.safeSubcommands);
+		const command = readCommand(event.input);
+		const blocked = event.toolName === "powershell"
+			? findUnsafePowerShellSegment(command)
+			: findBlockedCommandSegment(command, settings.safeSubcommands);
 		if (blocked !== undefined) {
 			return {
 				block: true,
-				reason: `Plan mode blocks bash commands outside its reviewed inspection policy or containing explicitly unsafe arguments.\nBlocked command: ${blocked}`,
+				reason: `Plan mode blocks ${event.toolName} commands outside its reviewed inspection policy or containing explicitly unsafe arguments.\nBlocked command: ${blocked}`,
 			};
 		}
 	});

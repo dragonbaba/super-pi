@@ -48,6 +48,8 @@ import {
 } from "@super-pi/ai/compat";
 import { getThemeByName, theme } from "../modes/interactive/theme/theme.ts";
 import { stripFrontmatter } from "../utils/frontmatter.ts";
+import { ObjectPool } from "../utils/object-pool.ts";
+import { setOwnProperty } from "../utils/record.ts";
 import { resolvePath } from "../utils/paths.ts";
 import { sleep } from "../utils/sleep.ts";
 import { normalizeToolResultImages } from "../utils/tool-result-images.ts";
@@ -65,7 +67,7 @@ import {
 	prepareToolResultPruneCheckpoint,
 	shouldCompact,
 } from "./compaction/index.ts";
-import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
+import { DEFAULT_THINKING_LEVEL, THINKING_LEVEL_OPTIONS } from "./defaults.ts";
 import { exportSessionToHtml, type ToolHtmlRenderer } from "./export-html/index.ts";
 import { createToolHtmlRenderer } from "./export-html/tool-renderer.ts";
 import {
@@ -83,8 +85,10 @@ import {
 	type ProviderRequestCompactionResult,
 	type ProviderRequestPayloadInput,
 	type ReplacedSessionContext,
+	type RegisteredTool,
 	type SessionBeforeCompactResult,
 	type SessionBeforeTreeResult,
+	type SessionCompactFailedEvent,
 	type SessionStartEvent,
 	type ShutdownHandler,
 	type ToolDefinition,
@@ -101,6 +105,13 @@ import { emitSessionShutdownEvent } from "./extensions/runner.ts";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import { ModelRegistry } from "./model-registry.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
+import {
+	hydratePowerShellToolState,
+	initializePowerShellPersistence,
+	persistPowerShellConfirmed,
+	persistPowerShellPending,
+	persistPowerShellUnavailable,
+} from "./powershell-persistence.ts";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.ts";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.ts";
 import type { BranchSummaryEntry, CompactionEntry, SessionEntry, SessionManager } from "./session-manager.ts";
@@ -110,7 +121,8 @@ import type { SlashCommandInfo } from "./slash-commands.ts";
 import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.ts";
 import { type BuildSystemPromptOptions, buildSystemPrompt } from "./system-prompt.ts";
 import { type BashOperations, createLocalBashOperations } from "./tools/bash.ts";
-import { createAllToolDefinitions } from "./tools/index.ts";
+import { createAllToolDefinitions, getDefaultToolNames } from "./tools/index.ts";
+import { createPowerShellToolState } from "./tools/powershell.ts";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.ts";
 import { addUsageToTotals, createUsageTotals, getUnboundCompactionLedgerUsages } from "./usage-totals.ts";
 
@@ -201,24 +213,35 @@ export type AgentSessionEvent =
 /** Listener function for agent session events */
 export type AgentSessionEventListener = (event: AgentSessionEvent) => void;
 
+const STRING_SET_POOL = new ObjectPool<Set<string>>(
+	() => new Set<string>(),
+	(value) => value.clear(),
+	4,
+	(value) => value.size <= 4096,
+);
+
 // ============================================================================
 // Types
 // ============================================================================
 
 function stabilizeCompletedToolArguments(messages: AgentMessage[]): void {
-	const completedToolCallIds = new Set<string>();
-	for (let messageIndex = messages.length - 1; messageIndex >= 0; messageIndex--) {
-		const message = messages[messageIndex];
-		if (message.role === "toolResult") {
-			completedToolCallIds.add(message.toolCallId);
-			continue;
-		}
-		if (message.role !== "assistant" || completedToolCallIds.size === 0) continue;
-		for (const content of message.content) {
-			if (content.type === "toolCall" && completedToolCallIds.delete(content.id)) {
-				stabilizeToolArguments(content.arguments);
+	const completedToolCallIds = STRING_SET_POOL.acquire();
+	try {
+		for (let messageIndex = messages.length - 1; messageIndex >= 0; messageIndex--) {
+			const message = messages[messageIndex];
+			if (message.role === "toolResult") {
+				completedToolCallIds.add(message.toolCallId);
+				continue;
+			}
+			if (message.role !== "assistant" || completedToolCallIds.size === 0) continue;
+			for (const content of message.content) {
+				if (content.type === "toolCall" && completedToolCallIds.delete(content.id)) {
+					stabilizeToolArguments(content.arguments);
+				}
 			}
 		}
+	} finally {
+		STRING_SET_POOL.release(completedToolCallIds);
 	}
 }
 
@@ -283,6 +306,11 @@ export interface AgentSessionConfig {
 	extensionRunnerRef?: { current?: ExtensionRunner };
 	/** Session start event metadata emitted when extensions bind to this runtime. */
 	sessionStartEvent?: SessionStartEvent;
+}
+
+export interface ModelMutationOptions {
+	/** Persist this choice as a global startup default. Ordinary session changes remain session-scoped. */
+	persist?: boolean;
 }
 
 export interface ExtensionBindings {
@@ -389,7 +417,7 @@ function getPersistedMaterializedBaseline(latestCompaction: CompactionEntry): nu
 			role: "compactionSummary",
 			summary: latestCompaction.summary,
 			tokensBefore: latestCompaction.tokensBefore,
-			timestamp: new Date(latestCompaction.timestamp).getTime(),
+			timestamp: Date.parse(latestCompaction.timestamp),
 		},
 		...latestCompaction.retainedTail,
 	]);
@@ -479,9 +507,6 @@ function withContextAccounting(
 // Constants
 // ============================================================================
 
-/** Standard thinking levels */
-const THINKING_LEVELS: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high"];
-
 // ============================================================================
 // AgentSession Class
 // ============================================================================
@@ -554,6 +579,8 @@ export class AgentSession {
 	private _toolDefinitions: Map<string, ToolDefinitionEntry> = new Map();
 	private _toolPromptSnippets: Map<string, string> = new Map();
 	private _toolPromptGuidelines: Map<string, string[]> = new Map();
+	private readonly _powerShellToolState = createPowerShellToolState();
+	private _toolRuntimeInitialized = false;
 
 	// Base system prompt (without extension appends) - used to apply fresh appends each turn
 	private _baseSystemPrompt = "";
@@ -578,6 +605,7 @@ export class AgentSession {
 		this._excludedToolNames = config.excludedToolNames ? new Set(config.excludedToolNames) : undefined;
 		this._baseToolsOverride = config.baseToolsOverride;
 		this._sessionStartEvent = config.sessionStartEvent ?? { type: "session_start", reason: "startup" };
+		hydratePowerShellToolState(this.settingsManager, this._powerShellToolState);
 
 		// Always subscribe to agent events for internal handling
 		// (session persistence, extensions, auto-compaction, retry logic)
@@ -589,6 +617,7 @@ export class AgentSession {
 			activeToolNames: this._initialActiveToolNames,
 			includeAllExtensionTools: true,
 		});
+		this._toolRuntimeInitialized = true;
 	}
 
 	get modelRuntime(): ModelRuntime {
@@ -815,6 +844,12 @@ export class AgentSession {
 		}
 	}
 
+	private async _emitSessionCompactFailed(event: Omit<SessionCompactFailedEvent, "type">): Promise<void> {
+		if (this._extensionRunner.hasHandlers("session_compact_failed")) {
+			await this._extensionRunner.emit({ type: "session_compact_failed", ...event });
+		}
+	}
+
 	// Track last assistant message for auto-compaction check
 	private _lastAssistantMessage: AssistantMessage | undefined = undefined;
 
@@ -928,8 +963,9 @@ export class AgentSession {
 		}
 
 		const targetRecord = target as unknown as Record<string, unknown>;
-		for (const key of Object.keys(targetRecord)) {
-			delete targetRecord[key];
+		const targetKeys = Object.keys(targetRecord);
+		for (let index = 0; index < targetKeys.length; index++) {
+			targetRecord[targetKeys[index]!] = undefined;
 		}
 		Object.assign(targetRecord, replacement);
 	}
@@ -1184,9 +1220,25 @@ export class AgentSession {
 	 * Changes take effect on the next agent turn.
 	 */
 	setActiveToolsByName(toolNames: string[]): void {
+		let powerShellWasActive = false;
+		for (const tool of this.agent.state.tools) {
+			if (tool.name !== "powershell") continue;
+			powerShellWasActive = true;
+			break;
+		}
+		if (
+			process.platform === "win32" &&
+			this._toolRuntimeInitialized &&
+			!powerShellWasActive &&
+			toolNames.includes("powershell")
+		) {
+			persistPowerShellPending(this.settingsManager);
+			this._powerShellToolState.enable();
+		}
 		const tools: AgentTool[] = [];
 		const validToolNames: string[] = [];
 		for (const name of toolNames) {
+			if (name === "powershell" && process.platform !== "win32") continue;
 			const tool = this._toolRegistry.get(name);
 			if (tool) {
 				tools.push(tool);
@@ -1268,14 +1320,12 @@ export class AgentSession {
 			return [];
 		}
 
-		const unique = new Set<string>();
+		const unique: string[] = [];
 		for (const guideline of guidelines) {
 			const normalized = guideline.trim();
-			if (normalized.length > 0) {
-				unique.add(normalized);
-			}
+			if (normalized.length > 0 && !unique.includes(normalized)) unique.push(normalized);
 		}
-		return Array.from(unique);
+		return unique;
 	}
 
 	private _rebuildSystemPrompt(toolNames: string[]): string {
@@ -1285,7 +1335,7 @@ export class AgentSession {
 		for (const name of validToolNames) {
 			const snippet = this._toolPromptSnippets.get(name);
 			if (snippet) {
-				toolSnippets[name] = snippet;
+				setOwnProperty(toolSnippets, name, snippet);
 			}
 
 			const toolGuidelines = this._toolPromptGuidelines.get(name);
@@ -1838,19 +1888,20 @@ export class AgentSession {
 
 	/**
 	 * Set model directly.
-	 * Validates that auth is configured, saves to session and settings.
+	 * Validates that auth is configured and saves to the session transcript.
+	 * Persists to global defaults only when options.persist is true.
 	 * @throws Error if no auth is configured for the model
 	 */
-	async setModel(model: Model<any>): Promise<void> {
+	async setModel(model: Model<any>, options: ModelMutationOptions = {}): Promise<void> {
 		if (!(await this._modelRuntime.checkAuth(model.provider))) {
 			throw new Error(`No API key for ${model.provider}/${model.id}`);
 		}
 
 		const previousModel = this.model;
-		const thinkingLevel = this._getThinkingLevelForModelSwitch();
+		const thinkingLevel = this._getThinkingLevelForModelSwitch(model);
 		this.agent.state.model = model;
 		this.sessionManager.appendModelChange(model.provider, model.id);
-		this.settingsManager.setDefaultModelAndProvider(model.provider, model.id);
+		if (options.persist) this.settingsManager.setDefaultModelAndProvider(model.provider, model.id);
 
 		// Re-clamp thinking level for new model's capabilities
 		this.setThinkingLevel(thinkingLevel);
@@ -1864,35 +1915,52 @@ export class AgentSession {
 	 * @param direction - "forward" (default) or "backward"
 	 * @returns The new model info, or undefined if only one model available
 	 */
-	async cycleModel(direction: "forward" | "backward" = "forward"): Promise<ModelCycleResult | undefined> {
+	async cycleModel(
+		direction: "forward" | "backward" = "forward",
+		options: ModelMutationOptions = {},
+	): Promise<ModelCycleResult | undefined> {
 		if (this._scopedModels.length > 0) {
-			return this._cycleScopedModel(direction);
+			return this._cycleScopedModel(direction, options);
 		}
-		return this._cycleAvailableModel(direction);
+		return this._cycleAvailableModel(direction, options);
 	}
 
-	private async _cycleScopedModel(direction: "forward" | "backward"): Promise<ModelCycleResult | undefined> {
-		const availableIds = new Set(
-			this._modelRuntime.getAvailableSnapshot().map((model) => `${model.provider}\0${model.id}`),
-		);
-		const scopedModels = this._scopedModels.filter((scoped) =>
-			availableIds.has(`${scoped.model.provider}\0${scoped.model.id}`),
-		);
+	private async _cycleScopedModel(
+		direction: "forward" | "backward",
+		options: ModelMutationOptions,
+	): Promise<ModelCycleResult | undefined> {
+		const scopedModels: Array<{ model: Model<any>; thinkingLevel?: ThinkingLevel }> = [];
+		const availableIds = STRING_SET_POOL.acquire();
+		try {
+			for (const model of this._modelRuntime.getAvailableSnapshot()) {
+				availableIds.add(`${model.provider}\0${model.id}`);
+			}
+			for (const scoped of this._scopedModels) {
+				if (availableIds.has(`${scoped.model.provider}\0${scoped.model.id}`)) scopedModels.push(scoped);
+			}
+		} finally {
+			STRING_SET_POOL.release(availableIds);
+		}
 		if (scopedModels.length <= 1) return undefined;
 
 		const currentModel = this.model;
-		let currentIndex = scopedModels.findIndex((sm) => modelsAreEqual(sm.model, currentModel));
+		let currentIndex = -1;
+		for (let index = 0; index < scopedModels.length; index++) {
+			if (!modelsAreEqual(scopedModels[index]!.model, currentModel)) continue;
+			currentIndex = index;
+			break;
+		}
 
 		if (currentIndex === -1) currentIndex = 0;
 		const len = scopedModels.length;
 		const nextIndex = direction === "forward" ? (currentIndex + 1) % len : (currentIndex - 1 + len) % len;
 		const next = scopedModels[nextIndex];
-		const thinkingLevel = this._getThinkingLevelForModelSwitch(next.thinkingLevel);
+		const thinkingLevel = this._getThinkingLevelForModelSwitch(next.model, next.thinkingLevel);
 
 		// Apply model
 		this.agent.state.model = next.model;
 		this.sessionManager.appendModelChange(next.model.provider, next.model.id);
-		this.settingsManager.setDefaultModelAndProvider(next.model.provider, next.model.id);
+		if (options.persist) this.settingsManager.setDefaultModelAndProvider(next.model.provider, next.model.id);
 
 		// Apply thinking level.
 		// - Explicit scoped model thinking level overrides current session level
@@ -1905,22 +1973,30 @@ export class AgentSession {
 		return { model: next.model, thinkingLevel: this.thinkingLevel, isScoped: true };
 	}
 
-	private async _cycleAvailableModel(direction: "forward" | "backward"): Promise<ModelCycleResult | undefined> {
+	private async _cycleAvailableModel(
+		direction: "forward" | "backward",
+		options: ModelMutationOptions,
+	): Promise<ModelCycleResult | undefined> {
 		const availableModels = this._modelRuntime.getAvailableSnapshot();
 		if (availableModels.length <= 1) return undefined;
 
 		const currentModel = this.model;
-		let currentIndex = availableModels.findIndex((m) => modelsAreEqual(m, currentModel));
+		let currentIndex = -1;
+		for (let index = 0; index < availableModels.length; index++) {
+			if (!modelsAreEqual(availableModels[index], currentModel)) continue;
+			currentIndex = index;
+			break;
+		}
 
 		if (currentIndex === -1) currentIndex = 0;
 		const len = availableModels.length;
 		const nextIndex = direction === "forward" ? (currentIndex + 1) % len : (currentIndex - 1 + len) % len;
 		const nextModel = availableModels[nextIndex];
 
-		const thinkingLevel = this._getThinkingLevelForModelSwitch();
+		const thinkingLevel = this._getThinkingLevelForModelSwitch(nextModel);
 		this.agent.state.model = nextModel;
 		this.sessionManager.appendModelChange(nextModel.provider, nextModel.id);
-		this.settingsManager.setDefaultModelAndProvider(nextModel.provider, nextModel.id);
+		if (options.persist) this.settingsManager.setDefaultModelAndProvider(nextModel.provider, nextModel.id);
 
 		// Re-clamp thinking level for new model's capabilities
 		this.setThinkingLevel(thinkingLevel);
@@ -1937,9 +2013,10 @@ export class AgentSession {
 	/**
 	 * Set thinking level.
 	 * Clamps to model capabilities based on available thinking levels.
-	 * Saves to session and settings only if the level actually changes.
+	 * Saves to the session transcript only if the level actually changes.
+	 * Persists the requested level globally only when options.persist is true.
 	 */
-	setThinkingLevel(level: ThinkingLevel): void {
+	setThinkingLevel(level: ThinkingLevel, options: ModelMutationOptions = {}): void {
 		const availableLevels = this.getAvailableThinkingLevels();
 		const effectiveLevel = availableLevels.includes(level) ? level : this._clampThinkingLevel(level, availableLevels);
 
@@ -1948,12 +2025,10 @@ export class AgentSession {
 		const isChanging = effectiveLevel !== previousLevel;
 
 		this.agent.state.thinkingLevel = effectiveLevel;
+		if (options.persist) this.settingsManager.setDefaultThinkingLevel(level);
 
 		if (isChanging) {
 			this.sessionManager.appendThinkingLevelChange(effectiveLevel);
-			if (this.supportsThinking() || effectiveLevel !== "off") {
-				this.settingsManager.setDefaultThinkingLevel(effectiveLevel);
-			}
 			this._emit({ type: "thinking_level_changed", level: effectiveLevel });
 			void this._extensionRunner.emit({
 				type: "thinking_level_select",
@@ -1967,7 +2042,7 @@ export class AgentSession {
 	 * Cycle to next thinking level.
 	 * @returns New level, or undefined if model doesn't support thinking
 	 */
-	cycleThinkingLevel(): ThinkingLevel | undefined {
+	cycleThinkingLevel(options: ModelMutationOptions = {}): ThinkingLevel | undefined {
 		if (!this.supportsThinking()) return undefined;
 
 		const levels = this.getAvailableThinkingLevels();
@@ -1975,7 +2050,7 @@ export class AgentSession {
 		const nextIndex = (currentIndex + 1) % levels.length;
 		const nextLevel = levels[nextIndex];
 
-		this.setThinkingLevel(nextLevel);
+		this.setThinkingLevel(nextLevel, options);
 		return nextLevel;
 	}
 
@@ -1984,7 +2059,7 @@ export class AgentSession {
 	 * The provider will clamp to what the specific model supports internally.
 	 */
 	getAvailableThinkingLevels(): ThinkingLevel[] {
-		if (!this.model) return THINKING_LEVELS;
+		if (!this.model) return [...THINKING_LEVEL_OPTIONS];
 		return getSupportedThinkingLevels(this.model) as ThinkingLevel[];
 	}
 
@@ -1995,14 +2070,15 @@ export class AgentSession {
 		return !!this.model?.reasoning;
 	}
 
-	private _getThinkingLevelForModelSwitch(explicitLevel?: ThinkingLevel): ThinkingLevel {
+	private _getThinkingLevelForModelSwitch(targetModel?: Model<any>, explicitLevel?: ThinkingLevel): ThinkingLevel {
 		if (explicitLevel !== undefined) {
 			return explicitLevel;
 		}
-		if (!this.supportsThinking()) {
-			return this.settingsManager.getDefaultThinkingLevel() ?? DEFAULT_THINKING_LEVEL;
+		if (targetModel) {
+			const perModel = this.settingsManager.getModelThinkingLevel(targetModel.provider, targetModel.id);
+			if (perModel !== undefined) return perModel;
 		}
-		return this.thinkingLevel;
+		return this.settingsManager.getDefaultThinkingLevel() ?? this.thinkingLevel ?? DEFAULT_THINKING_LEVEL;
 	}
 
 	private _clampThinkingLevel(level: ThinkingLevel, _availableLevels: ThinkingLevel[]): ThinkingLevel {
@@ -2049,6 +2125,7 @@ export class AgentSession {
 		await this.abort();
 		this._compactionAbortController = new AbortController();
 		this._emit({ type: "compaction_start", reason: "manual" });
+		let fromExtension = false;
 
 		try {
 			if (!this.model) {
@@ -2080,7 +2157,6 @@ export class AgentSession {
 			).tokens;
 
 			let extensionCompaction: CompactionResult | undefined;
-			let fromExtension = false;
 
 			if (this._extensionRunner.hasHandlers("session_before_compact")) {
 				const result = (await this._extensionRunner.emit({
@@ -2133,6 +2209,7 @@ export class AgentSession {
 					env,
 					this.settingsManager.getRetrySettings(),
 					this._summarizationRetryCallbacks({ source: "compaction", reason: "manual" }),
+					this.sessionId,
 				);
 				summary = result.summary;
 				firstKeptEntryId = result.firstKeptEntryId;
@@ -2195,6 +2272,7 @@ export class AgentSession {
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			const aborted = message === "Compaction cancelled" || (error instanceof Error && error.name === "AbortError");
+			const errorMessage = aborted ? undefined : `Compaction failed: ${message}`;
 			this._compactionAbortController = undefined;
 			this._emit({
 				type: "compaction_end",
@@ -2202,7 +2280,14 @@ export class AgentSession {
 				result: undefined,
 				aborted,
 				willRetry: false,
-				errorMessage: aborted ? undefined : `Compaction failed: ${message}`,
+				errorMessage,
+			});
+			await this._emitSessionCompactFailed({
+				reason: "manual",
+				errorMessage,
+				aborted,
+				willRetry: false,
+				fromExtension,
 			});
 			throw error;
 		} finally {
@@ -2258,7 +2343,7 @@ export class AgentSession {
 		// from retriggering compaction on the first prompt after compaction.
 		const compactionEntry = getLatestCompactionEntry(this.sessionManager.getBranch());
 		const assistantIsFromBeforeCompaction =
-			compactionEntry !== null && assistantMessage.timestamp <= new Date(compactionEntry.timestamp).getTime();
+			compactionEntry !== null && assistantMessage.timestamp <= Date.parse(compactionEntry.timestamp);
 		if (assistantIsFromBeforeCompaction) {
 			return false;
 		}
@@ -2277,14 +2362,22 @@ export class AgentSession {
 			}
 
 			if (this._overflowRecoveryAttempted) {
+				const errorMessage =
+					"Context overflow recovery failed after one compact-and-retry attempt. Try reducing context or switching to a larger-context model.";
 				this._emit({
 					type: "compaction_end",
 					reason: "overflow",
 					result: undefined,
 					aborted: false,
 					willRetry: false,
-					errorMessage:
-						"Context overflow recovery failed after one compact-and-retry attempt. Try reducing context or switching to a larger-context model.",
+					errorMessage,
+				});
+				await this._emitSessionCompactFailed({
+					reason: "overflow",
+					errorMessage,
+					aborted: false,
+					willRetry: false,
+					fromExtension: false,
 				});
 				return false;
 			}
@@ -2326,6 +2419,7 @@ export class AgentSession {
 		const settings = this.settingsManager.getCompactionSettings();
 		let started = false;
 		let stage: "authentication" | "compaction" = "authentication";
+		let fromExtension = false;
 
 		try {
 			const model = this.model;
@@ -2355,7 +2449,6 @@ export class AgentSession {
 			stage = "compaction";
 
 			let extensionCompaction: CompactionResult | undefined;
-			let fromExtension = false;
 
 			if (this._extensionRunner.hasHandlers("session_before_compact")) {
 				const extensionResult = (await this._extensionRunner.emit({
@@ -2376,6 +2469,12 @@ export class AgentSession {
 						result: undefined,
 						aborted: true,
 						willRetry: false,
+					});
+					await this._emitSessionCompactFailed({
+						reason,
+						aborted: true,
+						willRetry: false,
+						fromExtension: false,
 					});
 					return false;
 				}
@@ -2419,6 +2518,7 @@ export class AgentSession {
 					env,
 					this.settingsManager.getRetrySettings(),
 					this._summarizationRetryCallbacks({ source: "compaction", reason }),
+					this.sessionId,
 				);
 				summary = compactResult.summary;
 				firstKeptEntryId = compactResult.firstKeptEntryId;
@@ -2435,6 +2535,12 @@ export class AgentSession {
 					result: undefined,
 					aborted: true,
 					willRetry: false,
+				});
+				await this._emitSessionCompactFailed({
+					reason,
+					aborted: true,
+					willRetry: false,
+					fromExtension,
 				});
 				return false;
 			}
@@ -2506,13 +2612,21 @@ export class AgentSession {
 						: stage === "authentication"
 							? "Auto-compaction authentication failed"
 							: "Auto-compaction failed";
+				const errorMessage = aborted ? undefined : boundedAutoCompactionError(prefix, error);
 				this._emit({
 					type: "compaction_end",
 					reason,
 					result: undefined,
 					aborted,
 					willRetry: false,
-					...(aborted ? {} : { errorMessage: boundedAutoCompactionError(prefix, error) }),
+					errorMessage,
+				});
+				await this._emitSessionCompactFailed({
+					reason,
+					errorMessage,
+					aborted,
+					willRetry: false,
+					fromExtension,
 				});
 			}
 			return false;
@@ -2762,7 +2876,7 @@ export class AgentSession {
 	}
 
 	private _refreshToolRegistry(options?: { activeToolNames?: string[]; includeAllExtensionTools?: boolean }): void {
-		const previousRegistryNames = new Set(this._toolRegistry.keys());
+		const previousToolRegistry = this._toolRegistry;
 		const previousActiveToolNames = this.getActiveToolNames();
 		const allowedToolNames = this._allowedToolNames;
 		const excludedToolNames = this._excludedToolNames;
@@ -2770,24 +2884,25 @@ export class AgentSession {
 			(!allowedToolNames || allowedToolNames.has(name)) && !excludedToolNames?.has(name);
 
 		const registeredTools = this._extensionRunner.getAllRegisteredTools();
-		const allCustomTools = [
-			...registeredTools,
-			...this._customTools.map((definition) => ({
+		const allCustomTools: RegisteredTool[] = [];
+		for (const tool of registeredTools) {
+			if (isAllowedTool(tool.definition.name)) allCustomTools.push(tool);
+		}
+		for (const definition of this._customTools) {
+			if (!isAllowedTool(definition.name)) continue;
+			allCustomTools.push({
 				definition,
 				sourceInfo: createSyntheticSourceInfo(`<sdk:${definition.name}>`, { source: "sdk" }),
-			})),
-		].filter((tool) => isAllowedTool(tool.definition.name));
-		const definitionRegistry = new Map<string, ToolDefinitionEntry>(
-			Array.from(this._baseToolDefinitions.entries())
-				.filter(([name]) => isAllowedTool(name))
-				.map(([name, definition]) => [
-					name,
-					{
-						definition,
-						sourceInfo: createSyntheticSourceInfo(`<builtin:${name}>`, { source: "builtin" }),
-					},
-				]),
-		);
+			});
+		}
+		const definitionRegistry = new Map<string, ToolDefinitionEntry>();
+		for (const [name, definition] of this._baseToolDefinitions) {
+			if (!isAllowedTool(name)) continue;
+			definitionRegistry.set(name, {
+				definition,
+				sourceInfo: createSyntheticSourceInfo(`<builtin:${name}>`, { source: "builtin" }),
+			});
+		}
 		for (const tool of allCustomTools) {
 			definitionRegistry.set(tool.definition.name, {
 				definition: tool.definition,
@@ -2795,47 +2910,44 @@ export class AgentSession {
 			});
 		}
 		this._toolDefinitions = definitionRegistry;
-		this._toolPromptSnippets = new Map(
-			Array.from(definitionRegistry.values())
-				.map(({ definition }) => {
-					const snippet = this._normalizePromptSnippet(definition.promptSnippet);
-					return snippet ? ([definition.name, snippet] as const) : undefined;
-				})
-				.filter((entry): entry is readonly [string, string] => entry !== undefined),
-		);
-		this._toolPromptGuidelines = new Map(
-			Array.from(definitionRegistry.values())
-				.map(({ definition }) => {
-					const guidelines = this._normalizePromptGuidelines(definition.promptGuidelines);
-					return guidelines.length > 0 ? ([definition.name, guidelines] as const) : undefined;
-				})
-				.filter((entry): entry is readonly [string, string[]] => entry !== undefined),
-		);
+		const toolPromptSnippets = new Map<string, string>();
+		const toolPromptGuidelines = new Map<string, string[]>();
+		for (const { definition } of definitionRegistry.values()) {
+			const snippet = this._normalizePromptSnippet(definition.promptSnippet);
+			if (snippet) toolPromptSnippets.set(definition.name, snippet);
+			const guidelines = this._normalizePromptGuidelines(definition.promptGuidelines);
+			if (guidelines.length > 0) toolPromptGuidelines.set(definition.name, guidelines);
+		}
+		this._toolPromptSnippets = toolPromptSnippets;
+		this._toolPromptGuidelines = toolPromptGuidelines;
 		const runner = this._extensionRunner;
 		const wrappedExtensionTools = wrapRegisteredTools(allCustomTools, runner);
-		const wrappedBuiltInTools = wrapRegisteredTools(
-			Array.from(this._baseToolDefinitions.values())
-				.filter((definition) => isAllowedTool(definition.name))
-				.map((definition) => ({
-					definition,
-					sourceInfo: createSyntheticSourceInfo(`<builtin:${definition.name}>`, { source: "builtin" }),
-				})),
-			runner,
-		);
+		const registeredBuiltInTools: RegisteredTool[] = [];
+		for (const definition of this._baseToolDefinitions.values()) {
+			if (!isAllowedTool(definition.name)) continue;
+			registeredBuiltInTools.push({
+				definition,
+				sourceInfo: createSyntheticSourceInfo(`<builtin:${definition.name}>`, { source: "builtin" }),
+			});
+		}
+		const wrappedBuiltInTools = wrapRegisteredTools(registeredBuiltInTools, runner);
 		for (const tool of wrappedBuiltInTools) {
 			const executionPath = getBuiltinExecutionPath(tool.name, this._cwd);
 			if (executionPath) tool.executionPath = executionPath;
 		}
 
-		const toolRegistry = new Map(wrappedBuiltInTools.map((tool) => [tool.name, tool]));
+		const toolRegistry = new Map<string, AgentTool>();
+		for (const tool of wrappedBuiltInTools) toolRegistry.set(tool.name, tool);
 		for (const tool of wrappedExtensionTools as AgentTool[]) {
 			toolRegistry.set(tool.name, tool);
 		}
 		this._toolRegistry = toolRegistry;
 
-		const nextActiveToolNames = (
-			options?.activeToolNames ? [...options.activeToolNames] : [...previousActiveToolNames]
-		).filter((name) => isAllowedTool(name));
+		const nextActiveToolNames: string[] = [];
+		const requestedActiveToolNames = options?.activeToolNames ?? previousActiveToolNames;
+		for (const name of requestedActiveToolNames) {
+			if (isAllowedTool(name)) nextActiveToolNames.push(name);
+		}
 
 		if (allowedToolNames) {
 			for (const toolName of this._toolRegistry.keys()) {
@@ -2849,13 +2961,24 @@ export class AgentSession {
 			}
 		} else if (!options?.activeToolNames) {
 			for (const toolName of this._toolRegistry.keys()) {
-				if (!previousRegistryNames.has(toolName)) {
+				if (!previousToolRegistry.has(toolName)) {
 					nextActiveToolNames.push(toolName);
 				}
 			}
 		}
 
-		this.setActiveToolsByName([...new Set(nextActiveToolNames)]);
+		const uniqueActiveToolNames: string[] = [];
+		const seenActiveToolNames = STRING_SET_POOL.acquire();
+		try {
+			for (const name of nextActiveToolNames) {
+				if (seenActiveToolNames.has(name)) continue;
+				seenActiveToolNames.add(name);
+				uniqueActiveToolNames.push(name);
+			}
+		} finally {
+			STRING_SET_POOL.release(seenActiveToolNames);
+		}
+		this.setActiveToolsByName(uniqueActiveToolNames);
 	}
 
 	private _buildRuntime(options: {
@@ -2866,21 +2989,51 @@ export class AgentSession {
 		const autoResizeImages = this.settingsManager.getImageAutoResize();
 		const shellCommandPrefix = this.settingsManager.getShellCommandPrefix();
 		const shellPath = this.settingsManager.getShellPath();
-		const baseToolDefinitions = this._baseToolsOverride
-			? Object.fromEntries(
-					Object.entries(this._baseToolsOverride).map(([name, tool]) => [
-						name,
-						createToolDefinitionFromAgentTool(tool),
-					]),
-				)
-			: createAllToolDefinitions(this._cwd, {
+		const powershellPath = this.settingsManager.getPowerShellPath();
+		let baseToolDefinitions: Record<string, ToolDefinition>;
+		if (this._baseToolsOverride) {
+			baseToolDefinitions = {};
+			const overrideNames = Object.keys(this._baseToolsOverride);
+			for (let index = 0; index < overrideNames.length; index++) {
+				const name = overrideNames[index]!;
+				setOwnProperty(
+					baseToolDefinitions,
+					name,
+					createToolDefinitionFromAgentTool(this._baseToolsOverride[name]!),
+				);
+			}
+		} else {
+			baseToolDefinitions = createAllToolDefinitions(this._cwd, {
 					read: { autoResizeImages },
 					bash: { commandPrefix: shellCommandPrefix, shellPath },
+					powershell: {
+						powershellPath,
+					state: this._powerShellToolState,
+					onConfirmed: async (config) => {
+						await persistPowerShellConfirmed(this.settingsManager, config);
+					},
+					onUnavailable: async (_error, config) => {
+						await persistPowerShellUnavailable(this.settingsManager, config);
+							const active = this.getActiveToolNames();
+							if (active.includes("powershell")) {
+								const remaining: string[] = [];
+								for (const name of active) {
+									if (name !== "powershell") remaining.push(name);
+								}
+								this.setActiveToolsByName(remaining);
+							}
+						},
+					},
 				});
+		}
 
-		this._baseToolDefinitions = new Map(
-			Object.entries(baseToolDefinitions).map(([name, tool]) => [name, tool as ToolDefinition]),
-		);
+		const baseToolDefinitionMap = new Map<string, ToolDefinition>();
+		const baseToolNames = Object.keys(baseToolDefinitions);
+		for (let index = 0; index < baseToolNames.length; index++) {
+			const name = baseToolNames[index]!;
+			baseToolDefinitionMap.set(name, baseToolDefinitions[name]!);
+		}
+		this._baseToolDefinitions = baseToolDefinitionMap;
 
 		const extensionsResult = this._resourceLoader.getExtensions();
 		if (options.flagValues) {
@@ -2904,8 +3057,14 @@ export class AgentSession {
 
 		const defaultActiveToolNames = this._baseToolsOverride
 			? Object.keys(this._baseToolsOverride)
-			: ["read", "bash", "edit", "write"];
-		const baseActiveToolNames = options.activeToolNames ?? defaultActiveToolNames;
+			: getDefaultToolNames();
+		const requestedActiveToolNames = options.activeToolNames ?? defaultActiveToolNames;
+		const powerShellAvailable =
+			process.platform === "win32" && this.settingsManager.getPowerShellStatus()?.available !== false;
+		const baseActiveToolNames: string[] = [];
+		for (const name of requestedActiveToolNames) {
+			if (name !== "powershell" || powerShellAvailable) baseActiveToolNames.push(name);
+		}
 		this._refreshToolRegistry({
 			activeToolNames: baseActiveToolNames,
 			includeAllExtensionTools: options.includeAllExtensionTools,
@@ -2918,6 +3077,8 @@ export class AgentSession {
 		await emitSessionShutdownEvent(oldRunner, { type: "session_shutdown", reason: "reload" });
 		oldRunner.invalidate();
 		await this.settingsManager.reload();
+		await initializePowerShellPersistence(this.settingsManager);
+		hydratePowerShellToolState(this.settingsManager, this._powerShellToolState);
 		this.syncQueueModesFromSettings();
 		resetApiProviders();
 		await this._resourceLoader.reload();

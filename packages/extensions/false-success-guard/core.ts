@@ -269,7 +269,7 @@ function verificationScope(
   if (toolName === "run_tests") return genericVerificationScope("test", input, base);
   if (toolName === "run_build") return genericVerificationScope("build", input, base);
   if (toolName === "run_linter") return genericVerificationScope("lint", input, base);
-  if (toolName !== "bash") return undefined;
+  if (toolName !== "bash" && toolName !== "powershell") return undefined;
 
   const command = typeof input.command === "string" ? input.command : "";
   return authoritativeShellVerificationScope(command, base);

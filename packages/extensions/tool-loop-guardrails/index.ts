@@ -174,7 +174,9 @@ export default function toolLoopGuardrails(pi: ExtensionAPI): void {
       }
       return { block: true, reason: duplicate };
     }
-    const effectiveCwd = event.toolName === "bash" ? resolveBashCallCwd(event.input, ctx.cwd) : ctx.cwd;
+    const effectiveCwd = event.toolName === "bash" || event.toolName === "powershell"
+      ? resolveBashCallCwd(event.input, ctx.cwd)
+      : ctx.cwd;
     const preparation = await prepareDeterministicCall(event.toolName, event.input, effectiveCwd);
     if (preparation.blockReason) return { block: true, reason: preparation.blockReason };
     if (preparation.repairNote) rememberRepairNote(event.toolCallId, preparation.repairNote);

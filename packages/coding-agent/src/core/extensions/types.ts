@@ -78,6 +78,8 @@ import type {
 	GrepToolInput,
 	LsToolDetails,
 	LsToolInput,
+	PowerShellToolDetails,
+	PowerShellToolInput,
 	ReadToolDetails,
 	ReadToolInput,
 	WriteToolInput,
@@ -609,7 +611,7 @@ export interface SessionBeforeCompactEvent {
 	signal: AbortSignal;
 }
 
-/** Fired after context compaction */
+/** Fired after context compaction succeeds */
 export interface SessionCompactEvent {
 	type: "session_compact";
 	compactionEntry: CompactionEntry;
@@ -618,6 +620,21 @@ export interface SessionCompactEvent {
 	reason: "manual" | "threshold" | "overflow";
 	/** True when the aborted turn is retried after this compaction (overflow recovery) */
 	willRetry: boolean;
+}
+
+/** Fired after context compaction fails or is aborted. */
+export interface SessionCompactFailedEvent {
+	type: "session_compact_failed";
+	/** What triggered the compaction: manual /compact, the context threshold, or context overflow recovery. */
+	reason: "manual" | "threshold" | "overflow";
+	/** Error text when compaction failed for a non-abort reason. */
+	errorMessage?: string;
+	/** True when compaction was cancelled or aborted. */
+	aborted: boolean;
+	/** True when the aborted turn would have been retried after this compaction. */
+	willRetry: boolean;
+	/** True when the failing compaction content came from a session_before_compact handler. */
+	fromExtension: boolean;
 }
 
 /** Fired before an extension runtime is torn down due to quit, reload, or session replacement. */
@@ -666,6 +683,7 @@ export type SessionEvent =
 	| SessionBeforeForkEvent
 	| SessionBeforeCompactEvent
 	| SessionCompactEvent
+	| SessionCompactFailedEvent
 	| SessionShutdownEvent
 	| SessionBeforeTreeEvent
 	| SessionTreeEvent;
@@ -872,6 +890,11 @@ export interface BashToolCallEvent extends ToolCallEventBase {
 	input: BashToolInput;
 }
 
+export interface PowerShellToolCallEvent extends ToolCallEventBase {
+	toolName: "powershell";
+	input: PowerShellToolInput;
+}
+
 export interface ReadToolCallEvent extends ToolCallEventBase {
 	toolName: "read";
 	input: ReadToolInput;
@@ -915,6 +938,7 @@ export interface CustomToolCallEvent extends ToolCallEventBase {
  */
 export type ToolCallEvent =
 	| BashToolCallEvent
+	| PowerShellToolCallEvent
 	| ReadToolCallEvent
 	| EditToolCallEvent
 	| WriteToolCallEvent
@@ -936,6 +960,11 @@ interface ToolResultEventBase {
 export interface BashToolResultEvent extends ToolResultEventBase {
 	toolName: "bash";
 	details: BashToolDetails | undefined;
+}
+
+export interface PowerShellToolResultEvent extends ToolResultEventBase {
+	toolName: "powershell";
+	details: PowerShellToolDetails | undefined;
 }
 
 export interface ReadToolResultEvent extends ToolResultEventBase {
@@ -976,6 +1005,7 @@ export interface CustomToolResultEvent extends ToolResultEventBase {
 /** Fired after a tool executes. Can modify result. */
 export type ToolResultEvent =
 	| BashToolResultEvent
+	| PowerShellToolResultEvent
 	| ReadToolResultEvent
 	| EditToolResultEvent
 	| WriteToolResultEvent
@@ -987,6 +1017,9 @@ export type ToolResultEvent =
 // Type guards for ToolResultEvent
 export function isBashToolResult(e: ToolResultEvent): e is BashToolResultEvent {
 	return e.toolName === "bash";
+}
+export function isPowerShellToolResult(e: ToolResultEvent): e is PowerShellToolResultEvent {
+	return e.toolName === "powershell";
 }
 export function isReadToolResult(e: ToolResultEvent): e is ReadToolResultEvent {
 	return e.toolName === "read";
@@ -1028,6 +1061,7 @@ export function isLsToolResult(e: ToolResultEvent): e is LsToolResultEvent {
  * CustomToolCallEvent.toolName is `string` which overlaps with all literals.
  */
 export function isToolCallEventType(toolName: "bash", event: ToolCallEvent): event is BashToolCallEvent;
+export function isToolCallEventType(toolName: "powershell", event: ToolCallEvent): event is PowerShellToolCallEvent;
 export function isToolCallEventType(toolName: "read", event: ToolCallEvent): event is ReadToolCallEvent;
 export function isToolCallEventType(toolName: "edit", event: ToolCallEvent): event is EditToolCallEvent;
 export function isToolCallEventType(toolName: "write", event: ToolCallEvent): event is WriteToolCallEvent;
@@ -1226,6 +1260,7 @@ export interface ExtensionAPI {
 		handler: ExtensionHandler<SessionBeforeCompactEvent, SessionBeforeCompactResult>,
 	): void;
 	on(event: "session_compact", handler: ExtensionHandler<SessionCompactEvent>): void;
+	on(event: "session_compact_failed", handler: ExtensionHandler<SessionCompactFailedEvent>): void;
 	on(event: "session_shutdown", handler: ExtensionHandler<SessionShutdownEvent>): void;
 	on(event: "session_before_tree", handler: ExtensionHandler<SessionBeforeTreeEvent, SessionBeforeTreeResult>): void;
 	on(event: "session_tree", handler: ExtensionHandler<SessionTreeEvent>): void;

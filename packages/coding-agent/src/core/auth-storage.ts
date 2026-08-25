@@ -4,13 +4,17 @@
  */
 
 import type { AuthOperationOptions, Credential, CredentialInfo, CredentialStore } from "@super-pi/ai";
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync } from "fs";
 import { dirname } from "path";
 import lockfile from "proper-lockfile";
 import { setTimeout as sleep } from "timers/promises";
 import { getAuthPath } from "../config.ts";
 import { raceWithAbortSignal } from "../utils/abort.ts";
+import { writeTextFileAtomically } from "../utils/atomic-file.ts";
 import { getFileRevision, normalizePath } from "../utils/paths.ts";
+import { getOwnProperty, setOwnProperty } from "../utils/record.ts";
+import { waitSynchronously } from "../utils/sync-wait.ts";
+import { stripBom } from "../utils/text.ts";
 import { isCommandConfigValue, resolveConfigValue } from "./resolve-config-value.ts";
 
 type AuthStorageData = Record<string, Credential>;
@@ -20,7 +24,8 @@ type LockResult<T> = {
 	next?: string;
 };
 
-const AUTH_FILE_WRITE_OPTIONS = { encoding: "utf-8", mode: 0o600 } as const;
+const AUTH_FILE_WRITE_OPTIONS = { mode: 0o600, enforceMode: true } as const;
+const AUTH_FILE_CREATE_OPTIONS = { mode: 0o600, enforceMode: true, replaceExisting: false } as const;
 
 type AuthFileReload = {
 	controller: AbortController;
@@ -35,6 +40,16 @@ type AuthFileReadState = {
 };
 
 let sharedAuthFileReadState: { authPath: string; readState: AuthFileReadState } | undefined;
+
+function isStringRecord(value: unknown): value is Record<string, string> {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+	const record = value as Record<string, unknown>;
+	const keys = Object.keys(record);
+	for (let index = 0; index < keys.length; index++) {
+		if (typeof record[keys[index]!] !== "string") return false;
+	}
+	return true;
+}
 
 export interface AuthStorageBackend {
 	withLock<T>(fn: (current: string | undefined) => LockResult<T>): T;
@@ -60,8 +75,7 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 
 	private ensureFileExists(): void {
 		if (!existsSync(this.authPath)) {
-			writeFileSync(this.authPath, "{}", AUTH_FILE_WRITE_OPTIONS);
-			chmodSync(this.authPath, 0o600);
+			writeTextFileAtomically(this.authPath, "{}", AUTH_FILE_CREATE_OPTIONS);
 		}
 	}
 
@@ -82,10 +96,7 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 					throw error;
 				}
 				lastError = error;
-				const start = Date.now();
-				while (Date.now() - start < delayMs) {
-					// Sleep synchronously to avoid changing callers to async.
-				}
+				waitSynchronously(delayMs);
 			}
 		}
 
@@ -102,8 +113,7 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 			const current = existsSync(this.authPath) ? readFileSync(this.authPath, "utf-8") : undefined;
 			const { result, next } = fn(current);
 			if (next !== undefined) {
-				writeFileSync(this.authPath, next, AUTH_FILE_WRITE_OPTIONS);
-				chmodSync(this.authPath, 0o600);
+				writeTextFileAtomically(this.authPath, next, AUTH_FILE_WRITE_OPTIONS);
 			}
 			return result;
 		} finally {
@@ -184,8 +194,7 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 			throwIfCompromised();
 			options?.signal?.throwIfAborted();
 			if (next !== undefined) {
-				writeFileSync(this.authPath, next, AUTH_FILE_WRITE_OPTIONS);
-				chmodSync(this.authPath, 0o600);
+				writeTextFileAtomically(this.authPath, next, AUTH_FILE_WRITE_OPTIONS);
 			}
 			throwIfCompromised();
 			return result;
@@ -214,7 +223,7 @@ export class ReadOnlyAuthStorage implements CredentialStore {
 
 		let parsed: unknown;
 		try {
-			parsed = JSON.parse(readFileSync(this.authPath, "utf-8"));
+			parsed = JSON.parse(stripBom(readFileSync(this.authPath, "utf-8")));
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code === "ENOENT") {
 				this.data = {};
@@ -226,19 +235,18 @@ export class ReadOnlyAuthStorage implements CredentialStore {
 		if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
 			throw new Error("Invalid auth.json: expected an object");
 		}
-		for (const [providerId, credential] of Object.entries(parsed)) {
+		const parsedCredentials = parsed as Record<string, unknown>;
+		const providerIds = Object.keys(parsedCredentials);
+		for (let providerIndex = 0; providerIndex < providerIds.length; providerIndex++) {
+			const providerId = providerIds[providerIndex]!;
+			const credential = parsedCredentials[providerId];
 			if (typeof credential !== "object" || credential === null || Array.isArray(credential)) {
 				throw new Error(`Invalid auth.json credential for provider "${providerId}"`);
 			}
 			const value = credential as Record<string, unknown>;
 			if (value.type === "api_key") {
 				const validKey = value.key === undefined || typeof value.key === "string";
-				const validEnv =
-					value.env === undefined ||
-					(typeof value.env === "object" &&
-						value.env !== null &&
-						!Array.isArray(value.env) &&
-						Object.values(value.env).every((entry) => typeof entry === "string"));
+				const validEnv = value.env === undefined || isStringRecord(value.env);
 				if (validKey && validEnv) continue;
 			} else if (
 				value.type === "oauth" &&
@@ -258,7 +266,7 @@ export class ReadOnlyAuthStorage implements CredentialStore {
 
 	async read(providerId: string, options?: AuthOperationOptions): Promise<Credential | undefined> {
 		options?.signal?.throwIfAborted();
-		const credential = this.load()[providerId];
+		const credential = getOwnProperty(this.load(), providerId);
 		options?.signal?.throwIfAborted();
 		if (!credential) return undefined;
 		if (credential.type !== "api_key" || !credential.key || isCommandConfigValue(credential.key)) {
@@ -269,10 +277,13 @@ export class ReadOnlyAuthStorage implements CredentialStore {
 
 	async list(options?: AuthOperationOptions): Promise<readonly CredentialInfo[]> {
 		options?.signal?.throwIfAborted();
-		const credentials = Object.entries(this.load()).map(([providerId, credential]) => ({
-			providerId,
-			type: credential.type,
-		}));
+		const data = this.load();
+		const providerIds = Object.keys(data);
+		const credentials = new Array<CredentialInfo>(providerIds.length);
+		for (let index = 0; index < providerIds.length; index++) {
+			const providerId = providerIds[index]!;
+			credentials[index] = { providerId, type: data[providerId]!.type };
+		}
 		options?.signal?.throwIfAborted();
 		return credentials;
 	}
@@ -364,7 +375,11 @@ export class AuthStorage implements CredentialStore {
 		if (!content) {
 			return {};
 		}
-		return JSON.parse(content) as AuthStorageData;
+		const parsed: unknown = JSON.parse(stripBom(content));
+		if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+			throw new Error("Invalid auth.json: expected an object");
+		}
+		return parsed as AuthStorageData;
 	}
 
 	private updateReadState(data: AuthStorageData, revision?: string): void {
@@ -440,7 +455,7 @@ export class AuthStorage implements CredentialStore {
 	}
 
 	async read(provider: string, options?: AuthOperationOptions): Promise<Credential | undefined> {
-		const credential = (await this.readLatestData(options))[provider];
+		const credential = getOwnProperty(await this.readLatestData(options), provider);
 		options?.signal?.throwIfAborted();
 		if (credential?.type !== "api_key") return credential;
 		if (credential.key === undefined) return credential;
@@ -456,11 +471,12 @@ export class AuthStorage implements CredentialStore {
 		let revision: string | undefined;
 		const result = await this.storage.withLockAsync(async (content) => {
 			const currentData = this.parseStorageData(content);
-			const next = await fn(currentData[provider]);
+			const currentCredential = getOwnProperty(currentData, provider);
+			const next = await fn(currentCredential);
 			if (next === undefined) {
 				latestData = currentData;
 				revision = this.authPath ? getFileRevision(this.authPath) : undefined;
-				return { result: currentData[provider] };
+				return { result: currentCredential };
 			}
 
 			const merged: AuthStorageData = { ...currentData, [provider]: next };
@@ -475,18 +491,29 @@ export class AuthStorage implements CredentialStore {
 		let latestData = this.readState.data;
 		await this.storage.withLockAsync(async (content) => {
 			const currentData = this.parseStorageData(content);
-			delete currentData[provider];
-			latestData = currentData;
-			return { result: undefined, next: JSON.stringify(currentData, null, 2) };
+			const remainingData: AuthStorageData = {};
+			const providerIds = Object.keys(currentData);
+			for (let index = 0; index < providerIds.length; index++) {
+				const providerId = providerIds[index]!;
+				if (providerId !== provider) setOwnProperty(remainingData, providerId, currentData[providerId]!);
+			}
+			latestData = remainingData;
+			return { result: undefined, next: JSON.stringify(remainingData, null, 2) };
 		}, options);
 		this.updateReadState(latestData);
 	}
 
 	/** List credential metadata without resolving configured key values. */
 	async list(options?: AuthOperationOptions): Promise<readonly CredentialInfo[]> {
-		const entries = Object.entries(await this.readLatestData(options));
+		const data = await this.readLatestData(options);
 		options?.signal?.throwIfAborted();
-		return entries.map(([providerId, credential]) => ({ providerId, type: credential.type }));
+		const providerIds = Object.keys(data);
+		const credentials = new Array<CredentialInfo>(providerIds.length);
+		for (let index = 0; index < providerIds.length; index++) {
+			const providerId = providerIds[index]!;
+			credentials[index] = { providerId, type: data[providerId]!.type };
+		}
+		return credentials;
 	}
 }
 
@@ -499,7 +526,7 @@ export function readStoredCredential(
 	authPath: string = getAuthPath(),
 ): Credential | undefined {
 	try {
-		const data = JSON.parse(readFileSync(normalizePath(authPath), "utf-8")) as AuthStorageData;
+		const data = JSON.parse(stripBom(readFileSync(normalizePath(authPath), "utf-8"))) as AuthStorageData;
 		return data[providerId];
 	} catch {
 		return undefined;

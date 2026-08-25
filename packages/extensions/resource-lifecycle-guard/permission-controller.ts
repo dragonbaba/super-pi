@@ -4,6 +4,7 @@ import { dirname, isAbsolute, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@super-pi/coding-agent";
 import { inspectHighRiskBashMutation, type HighRiskMutationScan } from "./core.ts";
 import { inspectBashPermissionScope } from "./permission-bash.ts";
+import { inspectPowerShellPermissionScope } from "./permission-powershell.ts";
 import {
   attachBrowserExecAuthorization,
   browserExecRequestHash,
@@ -120,7 +121,7 @@ function subagentTaskRequests(input: unknown, defaultCwd: string): SubagentTaskR
 }
 
 interface OperationRequest {
-  operation: "edit" | "write" | "lsp_fix" | "bash" | "browser_exec";
+  operation: "edit" | "write" | "lsp_fix" | "bash" | "powershell" | "browser_exec";
   purpose?: string;
   summary: string;
   exactTargets: string[];
@@ -131,7 +132,7 @@ interface OperationRequest {
   opaqueScript: boolean;
   primitives: string[];
   fingerprintMaterial: string;
-  bashCommand?: string;
+  shellCommand?: string;
 }
 
 interface RejectionRecord {
@@ -330,9 +331,9 @@ export class SessionPermissionController {
     }
 
     const scopeAllowed = this.#scopeAllows(request);
-    if (request.bashCommand && this.#ruleScopeAllows(request)) {
+    if (request.shellCommand && this.#ruleScopeAllows(request)) {
       for (const rule of this.#state.allowRules) {
-        if (!sessionAllowRuleMatches(rule, request.bashCommand)) continue;
+        if (!sessionAllowRuleMatches(rule, request.shellCommand)) continue;
         this.#appendAudit(request, "approved", "session_rule_match", this.#state.mode, this.#state.mode, false);
         return undefined;
       }
@@ -389,8 +390,8 @@ export class SessionPermissionController {
 
     const modeBefore = this.#state.mode;
     const choices = [ALLOW_ONCE];
-    const commandPrefix = request.bashCommand ? simpleCommandPrefix(request.bashCommand) : undefined;
-    if (this.#state.approvalPolicy === "ask" && request.bashCommand) {
+    const commandPrefix = request.shellCommand ? simpleCommandPrefix(request.shellCommand) : undefined;
+    if (this.#state.approvalPolicy === "ask" && request.shellCommand) {
       choices.push(ALLOW_SESSION_EXACT);
       if (commandPrefix) choices.push(`${ALLOW_SESSION_PREFIX}：${commandPrefix} *`);
     }
@@ -400,7 +401,7 @@ export class SessionPermissionController {
       if (modeBefore !== "full-access") choices.push(SWITCH_FULL);
     }
     choices.push(REJECT_REASON, REJECT);
-    const commandDetail = request.operation === "bash" || request.operation === "browser_exec"
+    const commandDetail = request.operation === "bash" || request.operation === "powershell" || request.operation === "browser_exec"
       ? `\n\n脚本/命令：\n${request.summary}`
       : `\n\n操作：${request.summary}`;
     const requestKind = request.highRisk ? "高危操作" : request.opaqueScript ? "不透明脚本" : "越权文件操作";
@@ -410,10 +411,10 @@ export class SessionPermissionController {
     const chosePrefix = prefixChoice !== undefined && choice === prefixChoice;
     if (choice === ALLOW_ONCE || choice === ALLOW_SESSION_EXACT || chosePrefix || choice === SWITCH_WORKSPACE || choice === SWITCH_FULL) {
       let policyReason = "user_approved_once";
-      if ((choice === ALLOW_SESSION_EXACT || chosePrefix) && request.bashCommand) {
+      if ((choice === ALLOW_SESSION_EXACT || chosePrefix) && request.shellCommand) {
         try {
           const kind: SessionAllowRuleKind = choice === ALLOW_SESSION_EXACT ? "exact" : "prefix";
-          const value = kind === "exact" ? request.bashCommand : commandPrefix!;
+          const value = kind === "exact" ? request.shellCommand : commandPrefix!;
           if (this.#state.addAllowRule(createSessionAllowRule(kind, value))) {
             this.#persist(ctx);
             policyReason = "session_rule_added";
@@ -750,16 +751,19 @@ export class SessionPermissionController {
         fingerprintMaterial: `${path}\u0000${protectedAssessment.canonicalTarget ?? ""}`,
       };
     }
-    if (event.toolName !== "bash") return undefined;
-    const bashInput = event.input as { command: string; cwd?: unknown };
-    const hasExplicitCwd = typeof bashInput.cwd === "string" && bashInput.cwd.length > 0;
-    const effectiveCwd = hasExplicitCwd ? resolve(ctx.cwd, bashInput.cwd as string) : ctx.cwd;
+    if (event.toolName !== "bash" && event.toolName !== "powershell") return undefined;
+    const shellOperation = event.toolName;
+    const shellInput = event.input as { command: string; cwd?: unknown };
+    const hasExplicitCwd = typeof shellInput.cwd === "string" && shellInput.cwd.length > 0;
+    const effectiveCwd = hasExplicitCwd ? resolve(ctx.cwd, shellInput.cwd as string) : ctx.cwd;
     const high = inspectHighRiskBashMutation(event.input, effectiveCwd);
-    const scope = inspectBashPermissionScope(event.input, effectiveCwd);
+    const scope = shellOperation === "powershell"
+      ? inspectPowerShellPermissionScope(event.input, effectiveCwd)
+      : inspectBashPermissionScope(event.input, effectiveCwd);
     if (!scope) return undefined;
     if (high?.unverifiableScope) {
       const roots = await protectedRootViolations(high, effectiveCwd);
-      return this.#dynamicHighRequest(event, purpose, high, roots, scope.classes, effectiveCwd, hasExplicitCwd);
+      return this.#dynamicHighRequest(event, purpose, high, roots, scope.classes, shellOperation, effectiveCwd, hasExplicitCwd);
     }
     const targets: string[] = [];
     let targetOverflow = false;
@@ -779,9 +783,9 @@ export class SessionPermissionController {
       for (const violation of protectedAssessment.violations) appendUniqueBounded(primitives, violation);
     }
     if (targetOverflow) targetAssessments.push({ unverifiableReason: "unverifiable_target" });
-    const command = bashInput.command;
+    const command = shellInput.command;
     return {
-      operation: "bash",
+      operation: shellOperation,
       purpose,
       summary: boundedText(hasExplicitCwd ? `[cwd=${effectiveCwd}] ${command}` : command, MAX_COMMAND_DISPLAY_CHARS),
       exactTargets: canonicalTargets(targetAssessments),
@@ -791,7 +795,7 @@ export class SessionPermissionController {
       opaqueScript: scope.kind === "opaque-script",
       primitives,
       fingerprintMaterial: `${effectiveCwd}\u0000${command}`,
-      bashCommand: hasExplicitCwd ? undefined : command,
+      shellCommand: hasExplicitCwd ? undefined : command,
     };
   }
 
@@ -801,6 +805,7 @@ export class SessionPermissionController {
     high: HighRiskMutationScan,
     roots: string[],
     classes: readonly string[],
+    operation: "bash" | "powershell",
     effectiveCwd = "",
     hasExplicitCwd = false,
   ): OperationRequest {
@@ -809,7 +814,7 @@ export class SessionPermissionController {
     for (const primitive of high.primitives) appendUniqueBounded(primitives, primitive);
     for (const root of roots) appendUniqueBounded(primitives, root);
     return {
-      operation: "bash",
+      operation,
       purpose,
       summary: boundedText(hasExplicitCwd ? `[cwd=${effectiveCwd}] ${command}` : command, MAX_COMMAND_DISPLAY_CHARS),
       exactTargets: high.targets,
@@ -819,7 +824,7 @@ export class SessionPermissionController {
       opaqueScript: true,
       primitives,
       fingerprintMaterial: `${effectiveCwd}\u0000${command}`,
-      bashCommand: hasExplicitCwd ? undefined : command,
+      shellCommand: hasExplicitCwd ? undefined : command,
     };
   }
 
@@ -833,7 +838,7 @@ export class SessionPermissionController {
       });
       return;
     }
-    if (!request.pathApproval || request.operation === "bash") return;
+    if (!request.pathApproval || request.operation === "bash" || request.operation === "powershell") return;
     attachPermissionPathApproval(event.input, {
       schemaVersion: 1,
       sequence: this.#state.sequence,
@@ -845,7 +850,7 @@ export class SessionPermissionController {
   }
 
   #scopeAllows(request: OperationRequest): boolean {
-    if (request.operation === "bash" && !request.highRisk && !request.opaqueScript && request.primitives.length === 0) return true;
+    if ((request.operation === "bash" || request.operation === "powershell") && !request.highRisk && !request.opaqueScript && request.primitives.length === 0) return true;
     if (this.#state.mode === "read-only") return false;
     if (this.#state.mode === "full-access") return true;
     if (request.opaqueScript) return false;
@@ -1114,11 +1119,11 @@ export class SessionPermissionController {
         rejectionReasonProvided,
         sequence: ++this.#auditSequence,
       });
-      if (request.operation === "bash" && request.highRisk) {
+      if ((request.operation === "bash" || request.operation === "powershell") && request.highRisk) {
         this.#pi.appendEntry("resource-mutation-policy-v1", {
           schemaVersion: 1,
           guardVersion: "0.8.3-pi.84.1",
-          operation: "bash",
+          operation: request.operation,
           risk: "HIGH",
           outcome,
           policyReason,

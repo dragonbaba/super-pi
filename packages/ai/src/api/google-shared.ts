@@ -5,6 +5,7 @@
 import { type Content, FinishReason, FunctionCallingConfigMode, type Part } from "@google/genai";
 import type { Context, ImageContent, Model, StopReason, StreamOptions, TextContent, Tool } from "../types.ts";
 import { retryProviderRequest } from "../utils/provider-retry.ts";
+import { setOwnProperty } from "../utils/record.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
 import { getJsonSchemaToolParameters, resolveJsonSchemaStrictSampling } from "./constrained-sampling.ts";
 import { transformMessages } from "./transform-messages.ts";
@@ -269,7 +270,7 @@ function sanitizeForOpenApi(schema: unknown): unknown {
 	const result: Record<string, unknown> = {};
 	for (const [key, value] of Object.entries(schema)) {
 		if (JSON_SCHEMA_META_DECLARATIONS.has(key)) continue;
-		result[key] = sanitizeForOpenApi(value);
+		setOwnProperty(result, key, sanitizeForOpenApi(value));
 	}
 	return result;
 }

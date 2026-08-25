@@ -33,6 +33,7 @@ import type {
 	Usage,
 } from "./types.ts";
 import { operationSignal, raceWithAbortSignal } from "./utils/abort.ts";
+import { mergeProviderHeaders } from "./utils/headers.ts";
 
 export { ModelsError, type ModelsErrorCode } from "./auth/resolve.ts";
 
@@ -233,22 +234,6 @@ export interface CreateModelsOptions {
 	credentials?: CredentialStore;
 	modelsStore?: ModelsStore;
 	authContext?: AuthContext;
-}
-
-function mergeHeaders(
-	base: ProviderHeaders | undefined,
-	override: ProviderHeaders | undefined,
-): ProviderHeaders | undefined {
-	if (!base && !override) return undefined;
-	const merged = { ...base };
-	for (const [name, value] of Object.entries(override ?? {})) {
-		const lowerName = name.toLowerCase();
-		for (const existingName of Object.keys(merged)) {
-			if (existingName.toLowerCase() === lowerName) delete merged[existingName];
-		}
-		merged[name] = value;
-	}
-	return merged;
 }
 
 class ModelsImpl implements MutableModels {
@@ -557,7 +542,7 @@ class ModelsImpl implements MutableModels {
 			...result,
 			auth: {
 				...result.auth,
-				headers: mergeHeaders(result.auth.headers, providerOrModel.headers),
+				headers: mergeProviderHeaders(result.auth.headers, providerOrModel.headers),
 			},
 		};
 	}
@@ -653,7 +638,7 @@ class ModelsImpl implements MutableModels {
 
 		// Explicit request options win per-field; the Models-only transform runs last.
 		const apiKey = options?.apiKey ?? auth.apiKey;
-		let headers = mergeHeaders(auth.headers, options?.headers);
+		let headers = mergeProviderHeaders(auth.headers, options?.headers);
 		if (options?.transformHeaders) headers = await options.transformHeaders(headers ?? {});
 		const env = resolution.env || options?.env ? { ...(resolution.env ?? {}), ...(options?.env ?? {}) } : undefined;
 		const requestModel = auth.baseUrl ? { ...model, baseUrl: auth.baseUrl } : model;

@@ -14,6 +14,7 @@ import type { ExtensionRunner, LoadExtensionsResult, SessionStartEvent, ToolDefi
 import { convertToLlm } from "./messages.ts";
 import { findInitialModel } from "./model-resolver.ts";
 import { ModelRuntime } from "./model-runtime.ts";
+import { initializePowerShellPersistence } from "./powershell-persistence.ts";
 import { mergeProviderAttributionHeaders } from "./provider-attribution.ts";
 import type { ResourceLoader } from "./resource-loader.ts";
 import { DefaultResourceLoader } from "./resource-loader.ts";
@@ -27,9 +28,11 @@ import {
 	createFindTool,
 	createGrepTool,
 	createLsTool,
+	createPowerShellTool,
 	createReadOnlyTools,
 	createReadTool,
 	createWriteTool,
+	getDefaultToolNames,
 	type ToolName,
 	withFileMutationQueue,
 } from "./tools/index.ts";
@@ -59,16 +62,17 @@ export interface CreateAgentSessionOptions {
 	 * Optional default tool suppression mode when no explicit allowlist is provided.
 	 *
 	 * - "all": start with no tools enabled
-	 * - "builtin": disable the default built-in tools (read, bash, edit, write)
+	 * - "builtin": disable the default built-in tools (read, bash, PowerShell on Windows, edit, write)
 	 *   but keep extension/custom tools enabled
 	 */
 	noTools?: "all" | "builtin";
 	/**
 	 * Optional allowlist of tool names.
 	 *
-	 * When omitted, pi enables the default built-in tools (read, bash, edit, write)
-	 * and leaves extension/custom tools enabled unless `noTools` changes that default.
-	 * When provided, only the listed tool names are enabled.
+	 * When omitted, Super Pi uses `defaultTools` for the initial built-in selection
+	 * when configured. Otherwise it enables read, bash, PowerShell on Windows,
+	 * edit, and write. Extension/custom tools remain enabled unless `noTools`
+	 * changes that default. When provided, only the listed tool names are enabled.
 	 */
 	tools?: string[];
 	/** Optional denylist of tool names to disable. Applies after `tools` when both are provided. */
@@ -127,12 +131,54 @@ export {
 	createGrepTool,
 	createFindTool,
 	createLsTool,
+	createPowerShellTool,
 };
 
 // Helper Functions
 
 function getDefaultAgentDir(): string {
 	return getAgentDir();
+}
+
+const BLOCKED_IMAGE_MESSAGE = "Image reading is disabled.";
+
+function isBlockedImagePlaceholder(content: { type: string; text?: string }): boolean {
+	return content.type === "text" && content.text === BLOCKED_IMAGE_MESSAGE;
+}
+
+function replaceBlockedImages(message: Message): Message {
+	if (message.role !== "user" && message.role !== "toolResult") return message;
+	const content = message.content;
+	if (!Array.isArray(content)) return message;
+	let firstImageIndex = -1;
+	for (let index = 0; index < content.length; index++) {
+		if (content[index]?.type !== "image") continue;
+		firstImageIndex = index;
+		break;
+	}
+	if (firstImageIndex < 0) return message;
+
+	const filteredContent: typeof content = [];
+	for (let index = 0; index < content.length; index++) {
+		const block = content[index]!;
+		const next = block.type === "image" ? ({ type: "text", text: BLOCKED_IMAGE_MESSAGE } as const) : block;
+		const previous = filteredContent[filteredContent.length - 1];
+		if (isBlockedImagePlaceholder(next) && previous && isBlockedImagePlaceholder(previous)) continue;
+		filteredContent.push(next);
+	}
+	return { ...message, content: filteredContent };
+}
+
+function replaceBlockedImagesInMessages(messages: Message[]): Message[] {
+	let result = messages;
+	for (let index = 0; index < messages.length; index++) {
+		const message = messages[index]!;
+		const next = replaceBlockedImages(message);
+		if (next === message) continue;
+		if (result === messages) result = messages.slice();
+		result[index] = next;
+	}
+	return result;
 }
 
 /**
@@ -216,6 +262,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			defaultProvider: settingsManager.getDefaultProvider(),
 			defaultModelId: settingsManager.getDefaultModel(),
 			defaultThinkingLevel: settingsManager.getDefaultThinkingLevel(),
+			modelThinkingLevels: settingsManager.getAllModelThinkingLevels(),
 			modelRuntime,
 		});
 		model = result.model;
@@ -235,7 +282,10 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			: (settingsManager.getDefaultThinkingLevel() ?? DEFAULT_THINKING_LEVEL);
 	}
 
-	// Fall back to settings default
+	// Fall back to the selected model's override, then the global default.
+	if (thinkingLevel === undefined && model) {
+		thinkingLevel = settingsManager.getModelThinkingLevel(model.provider, model.id);
+	}
 	if (thinkingLevel === undefined) {
 		thinkingLevel = settingsManager.getDefaultThinkingLevel() ?? DEFAULT_THINKING_LEVEL;
 	}
@@ -247,13 +297,27 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		thinkingLevel = clampThinkingLevel(model, thinkingLevel) as ThinkingLevel;
 	}
 
-	const defaultActiveToolNames: ToolName[] = ["read", "bash", "edit", "write"];
+	const defaultActiveToolNames: ToolName[] = getDefaultToolNames();
+	const configuredDefaultToolNames = settingsManager.getDefaultTools();
 	const allowedToolNames = options.tools ?? (options.noTools === "all" ? [] : undefined);
 	const excludedToolNames = options.excludeTools;
 	const excludedToolNameSet = excludedToolNames ? new Set(excludedToolNames) : undefined;
-	const initialActiveToolNames: string[] = (
-		options.tools ? [...options.tools] : options.noTools ? [] : defaultActiveToolNames
-	).filter((name) => !excludedToolNameSet?.has(name));
+	const requestedActiveToolNames = options.tools ?? (options.noTools ? [] : (configuredDefaultToolNames ?? defaultActiveToolNames));
+	const powerShellRequested =
+		requestedActiveToolNames.includes("powershell") && !excludedToolNameSet?.has("powershell");
+	const powerShellExplicitlyEnabled = powerShellRequested && options.tools?.includes("powershell") === true;
+	let powerShellAvailable = process.platform === "win32";
+	if (powerShellRequested && process.platform === "win32") {
+		powerShellAvailable = await initializePowerShellPersistence(settingsManager, {
+			forceEnable: powerShellExplicitlyEnabled,
+		});
+	}
+	const initialActiveToolNames: string[] = [];
+	for (const name of requestedActiveToolNames) {
+		if (excludedToolNameSet?.has(name)) continue;
+		if (name === "powershell" && !powerShellAvailable) continue;
+		initialActiveToolNames.push(name);
+	}
 
 	let agent: Agent;
 
@@ -261,37 +325,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	const convertToLlmWithBlockImages = (messages: AgentMessage[]): Message[] => {
 		const converted = convertToLlm(messages);
 		// Check setting dynamically so mid-session changes take effect
-		if (!settingsManager.getBlockImages()) {
-			return converted;
-		}
-		// Filter out ImageContent from all messages, replacing with text placeholder
-		return converted.map((msg) => {
-			if (msg.role === "user" || msg.role === "toolResult") {
-				const content = msg.content;
-				if (Array.isArray(content)) {
-					const hasImages = content.some((c) => c.type === "image");
-					if (hasImages) {
-						const filteredContent = content
-							.map((c) =>
-								c.type === "image" ? { type: "text" as const, text: "Image reading is disabled." } : c,
-							)
-							.filter(
-								(c, i, arr) =>
-									// Dedupe consecutive "Image reading is disabled." texts
-									!(
-										c.type === "text" &&
-										c.text === "Image reading is disabled." &&
-										i > 0 &&
-										arr[i - 1].type === "text" &&
-										(arr[i - 1] as { type: "text"; text: string }).text === "Image reading is disabled."
-									),
-							);
-						return { ...msg, content: filteredContent };
-					}
-				}
-			}
-			return msg;
-		});
+		return settingsManager.getBlockImages() ? replaceBlockedImagesInMessages(converted) : converted;
 	};
 
 	const extensionRunnerRef: { current?: ExtensionRunner } = {};

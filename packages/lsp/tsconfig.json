@@ -6,7 +6,6 @@
     "strict": true,
     "noEmit": true,
     "skipLibCheck": true,
-    "baseUrl": ".",
     "paths": {
       "typebox": ["../../node_modules/typebox/build/index.d.mts"],
       "@super-pi/coding-agent": ["../coding-agent/dist/index.d.ts"]

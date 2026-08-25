@@ -9,6 +9,8 @@ import {
 import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 import { getAgentDir, getConfigDir } from "../config.ts";
+import { setOwnProperty } from "../utils/record.ts";
+import { stripBom } from "../utils/text.ts";
 
 export interface AppKeybindings {
 	"app.interrupt": true;
@@ -269,18 +271,18 @@ const KEYBINDING_NAME_MIGRATIONS = {
 } as const satisfies Record<string, Keybinding>;
 
 function isLegacyKeybindingName(key: string): key is keyof typeof KEYBINDING_NAME_MIGRATIONS {
-	return key in KEYBINDING_NAME_MIGRATIONS;
+	return Object.hasOwn(KEYBINDING_NAME_MIGRATIONS, key);
 }
 
 function toKeybindingsConfig(value: Record<string, unknown>): KeybindingsConfig {
 	const config: KeybindingsConfig = {};
 	for (const [key, binding] of Object.entries(value)) {
 		if (typeof binding === "string") {
-			config[key] = binding as KeyId;
+			setOwnProperty(config, key, binding as KeyId);
 			continue;
 		}
 		if (Array.isArray(binding) && binding.every((entry) => typeof entry === "string")) {
-			config[key] = binding as KeyId[];
+			setOwnProperty(config, key, binding as KeyId[]);
 		}
 	}
 	return config;
@@ -302,7 +304,7 @@ export function migrateKeybindingsConfig(rawConfig: Record<string, unknown>): {
 			migrated = true;
 			continue;
 		}
-		config[nextKey] = value;
+		setOwnProperty(config, nextKey, value);
 	}
 
 	return { config: orderKeybindingsConfig(config), migrated };
@@ -312,7 +314,7 @@ function orderKeybindingsConfig(config: Record<string, unknown>): Record<string,
 	const ordered: Record<string, unknown> = {};
 	for (const keybinding of Object.keys(KEYBINDINGS)) {
 		if (Object.hasOwn(config, keybinding)) {
-			ordered[keybinding] = config[keybinding];
+			setOwnProperty(ordered, keybinding, config[keybinding]);
 		}
 	}
 
@@ -320,7 +322,7 @@ function orderKeybindingsConfig(config: Record<string, unknown>): Record<string,
 		.filter((key) => !Object.hasOwn(ordered, key))
 		.sort();
 	for (const key of extras) {
-		ordered[key] = config[key];
+		setOwnProperty(ordered, key, config[key]);
 	}
 
 	return ordered;
@@ -329,8 +331,8 @@ function orderKeybindingsConfig(config: Record<string, unknown>): Record<string,
 function loadRawConfig(path: string): Record<string, unknown> | undefined {
 	if (!existsSync(path)) return undefined;
 	try {
-		const parsed = JSON.parse(readFileSync(path, "utf-8")) as unknown;
-		if (typeof parsed !== "object" || parsed === null) return undefined;
+		const parsed = JSON.parse(stripBom(readFileSync(path, "utf-8"))) as unknown;
+		if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return undefined;
 		return parsed as Record<string, unknown>;
 	} catch {
 		return undefined;

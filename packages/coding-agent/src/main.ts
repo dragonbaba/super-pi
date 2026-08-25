@@ -96,10 +96,18 @@ function collectSettingsDiagnostics(
 	settingsManager: SettingsManager,
 	context: string,
 ): AgentSessionRuntimeDiagnostic[] {
-	return settingsManager.drainErrors().map(({ scope, error }) => ({
-		type: "warning",
-		message: `(${context}, ${scope} settings) ${error.message}`,
-	}));
+	const errors = settingsManager.drainErrors();
+	const diagnostics = new Array<AgentSessionRuntimeDiagnostic>(errors.length);
+	for (let index = 0; index < errors.length; index++) {
+		const { scope, path, error } = errors[index]!;
+		diagnostics[index] = {
+			type: "warning",
+			message: path
+				? `(${context}) Invalid settings file ${path}: ${error.message}`
+				: `(${context}) Invalid ${scope} settings: ${error.message}`,
+		};
+	}
+	return diagnostics;
 }
 
 function reportDiagnostics(diagnostics: readonly AgentSessionRuntimeDiagnostic[]): void {

@@ -39,6 +39,7 @@ import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { shortHash } from "../utils/hash.ts";
 import { headersToRecord } from "../utils/headers.ts";
 import { parseStreamingJson, stringifyToolArguments } from "../utils/json-parse.ts";
+import { getPiUserAgent } from "../utils/pi-user-agent.ts";
 import { getProviderEnvValue } from "../utils/provider-env.ts";
 import { retryProviderRequest } from "../utils/provider-retry.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
@@ -337,9 +338,9 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 					}
 					// Finalize in-place and strip the scratch buffers so replay only
 					// carries parsed arguments.
-					delete block.partialArgs;
-					delete block.customInput;
-					delete block.streamIndex;
+					block.partialArgs = undefined;
+					block.customInput = undefined;
+					block.streamIndex = undefined;
 					stream.push({
 						type: "toolcall_end",
 						contentIndex,
@@ -432,7 +433,7 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 						property: customInputProperty,
 						jsonBuffer: { input: "", started: false, closed: false },
 					};
-					delete block.partialArgs;
+					block.partialArgs = undefined;
 				}
 				applyPendingReasoningDetail(block);
 				return block;
@@ -590,11 +591,11 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 			stream.end();
 		} catch (error) {
 			for (const block of output.content) {
-				delete (block as { index?: number }).index;
+				if ("index" in block) (block as { index?: number }).index = undefined;
 				// Streaming scratch buffers are only used during parsing; never persist them.
-				delete (block as { partialArgs?: string }).partialArgs;
-				delete (block as { customInput?: unknown }).customInput;
-				delete (block as { streamIndex?: number }).streamIndex;
+				if ("partialArgs" in block) (block as { partialArgs?: string }).partialArgs = undefined;
+				if ("customInput" in block) (block as { customInput?: unknown }).customInput = undefined;
+				if ("streamIndex" in block) (block as { streamIndex?: number }).streamIndex = undefined;
 			}
 			output.stopReason = options?.signal?.aborted ? "aborted" : "error";
 			output.errorMessage = formatProviderError(normalizeProviderError(error));
@@ -621,15 +622,16 @@ export const streamSimple: StreamFunction<"openai-completions", SimpleStreamOpti
 ): AssistantMessageEventStream => {
 	getClientApiKey(model.provider, options?.apiKey, options?.headers);
 
-	const base = buildBaseOptions(model, context, options, options?.apiKey);
+	const base: OpenAICompletionsOptions = {
+		...buildBaseOptions(model, context, options, options?.apiKey),
+		toolChoice: options?.toolChoice,
+	};
 	const clampedReasoning = options?.reasoning ? clampThinkingLevel(model, options.reasoning) : undefined;
 	const reasoningEffort = clampedReasoning === "off" ? undefined : clampedReasoning;
-	const toolChoice = (options as OpenAICompletionsOptions | undefined)?.toolChoice;
 
 	return stream(model, context, {
 		...base,
 		reasoningEffort,
-		toolChoice,
 		thinkingBudgets: options?.thinkingBudgets,
 	} satisfies OpenAICompletionsOptions);
 };
@@ -643,7 +645,7 @@ function createClient(
 	sessionId?: string,
 	compat: ResolvedOpenAICompletionsCompat = getCompat(model),
 ) {
-	const headers: ProviderHeaders = { ...model.headers };
+	const headers: ProviderHeaders = { "User-Agent": getPiUserAgent(), ...model.headers };
 	if (model.provider === "github-copilot") {
 		const hasImages = hasCopilotVisionInput(context.messages);
 		const copilotHeaders = buildCopilotDynamicHeaders({

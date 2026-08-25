@@ -142,7 +142,7 @@ function clearBetterSqlite3RequireCache(requireImpl: NodeRequire, packageRoot: s
       continue;
     }
     if (packageRoot && !key.startsWith(packageRoot)) continue;
-    delete requireImpl.cache[key];
+    requireImpl.cache[key] = undefined;
   }
 }
 

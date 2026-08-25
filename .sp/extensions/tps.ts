@@ -1,6 +1,8 @@
 import type { AssistantMessage } from "@super-pi/ai";
 import type { ExtensionAPI } from "@super-pi/coding-agent";
 
+const INTEGER_FORMATTER = new Intl.NumberFormat();
+
 function isAssistantMessage(message: unknown): message is AssistantMessage {
 	if (!message || typeof message !== "object") return false;
 	const role = (message as { role?: unknown }).role;
@@ -41,7 +43,7 @@ export default function (pi: ExtensionAPI) {
 
 		const elapsedSeconds = elapsedMs / 1000;
 		const tokensPerSecond = output / elapsedSeconds;
-		const message = `TPS ${tokensPerSecond.toFixed(1)} tok/s. out ${output.toLocaleString()}, in ${input.toLocaleString()}, cache r/w ${cacheRead.toLocaleString()}/${cacheWrite.toLocaleString()}, total ${totalTokens.toLocaleString()}, ${elapsedSeconds.toFixed(1)}s`;
+		const message = `TPS ${tokensPerSecond.toFixed(1)} tok/s. out ${INTEGER_FORMATTER.format(output)}, in ${INTEGER_FORMATTER.format(input)}, cache r/w ${INTEGER_FORMATTER.format(cacheRead)}/${INTEGER_FORMATTER.format(cacheWrite)}, total ${INTEGER_FORMATTER.format(totalTokens)}, ${elapsedSeconds.toFixed(1)}s`;
 		ctx.ui.notify(message, "info");
 	});
 }

@@ -548,8 +548,10 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
         catch (error) {
             for (const block of output.content) {
                 // Streaming scratch buffers are only used during parsing; never persist them.
-                delete (block as typeof block & { partialJson?: unknown }).partialJson;
-                delete (block as typeof block & { customInput?: unknown }).customInput;
+                if ("partialJson" in block)
+                    (block as typeof block & { partialJson?: unknown }).partialJson = undefined;
+                if ("customInput" in block)
+                    (block as typeof block & { customInput?: unknown }).customInput = undefined;
             }
             output.stopReason = options?.signal?.aborted ? "aborted" : "error";
             output.errorMessage = formatProviderError(normalizeProviderError(error));
@@ -564,7 +566,10 @@ export const streamSimple: StreamFunction<"openai-codex-responses", SimpleStream
     if (!apiKey) {
         throw new Error(`No API key for provider: ${model.provider}`);
     }
-    const base = buildBaseOptions(model, context, options, apiKey);
+    const base: OpenAICodexResponsesOptions = {
+        ...buildBaseOptions(model, context, options, apiKey),
+        toolChoice: options?.toolChoice,
+    };
     const clampedReasoning = options?.reasoning ? clampThinkingLevel(model, options.reasoning) : undefined;
     const reasoningEffort = clampedReasoning === "off" ? undefined : clampedReasoning;
     return stream(model, context, {
@@ -688,7 +693,7 @@ async function processStream(
     requestServiceTier: ResponseCreateParamsStreaming["service_tier"] | undefined,
     options: OpenAICodexResponsesOptions | undefined,
 ): Promise<void> {
-    await processResponsesStream(mapCodexEvents(parseSSE(response, options?.signal)), output, stream, model, {
+    await processResponsesStream(mapCodexEvents(parseSSE(response, options?.signal), output), output, stream, model, {
         serviceTier: requestServiceTier,
         grammarToolInputProperties,
         resolveServiceTier: resolveCodexServiceTier,
@@ -747,7 +752,10 @@ function extractCodexEventError(event: CodexEvent): CodexErrorRecord {
                 : undefined,
     };
 }
-async function* mapCodexEvents(events: AsyncIterable<CodexEvent>): AsyncGenerator<ResponseStreamEvent> {
+async function* mapCodexEvents(
+    events: AsyncIterable<CodexEvent>,
+    output: AssistantMessage,
+): AsyncGenerator<ResponseStreamEvent> {
     for await (const event of events) {
         const type = typeof event.type === "string" ? event.type : undefined;
         if (!type)
@@ -766,7 +774,10 @@ async function* mapCodexEvents(events: AsyncIterable<CodexEvent>): AsyncGenerato
             throw new CodexApiError(message || "Codex response failed", { code, payload: event });
         }
         if (type === "response.done" || type === "response.completed" || type === "response.incomplete") {
-            const response = event.response;
+            const response = event.response as (typeof event.response & { end_turn?: unknown }) | undefined;
+            if (typeof response?.end_turn === "boolean") {
+                output.endTurn = response.end_turn;
+            }
             const normalizedResponse = response
                 ? { ...response, status: normalizeCodexStatus(response.status) }
                 : response;
@@ -1847,7 +1858,7 @@ async function processWebSocketStream(
             }
         }
         socket.send(JSON.stringify({ type: "response.create", ...requestBody }));
-        await processResponsesStream(startWebSocketOutputOnFirstEvent(mapCodexEvents(parseWebSocket(socket, options?.signal, idleTimeoutMs)), onStart), output, stream, model, {
+        await processResponsesStream(startWebSocketOutputOnFirstEvent(mapCodexEvents(parseWebSocket(socket, options?.signal, idleTimeoutMs), output), onStart), output, stream, model, {
             serviceTier: requestServiceTier,
             grammarToolInputProperties,
             resolveServiceTier: resolveCodexServiceTier,

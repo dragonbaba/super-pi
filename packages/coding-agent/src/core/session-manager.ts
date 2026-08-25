@@ -293,7 +293,7 @@ function migrateV1ToV2(entries: FileEntry[]): void {
 				if (targetEntry && targetEntry.type !== "session") {
 					comp.firstKeptEntryId = targetEntry.id;
 				}
-				delete comp.firstKeptEntryIndex;
+				comp.firstKeptEntryIndex = undefined;
 			}
 		}
 	}

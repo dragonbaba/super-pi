@@ -7,7 +7,7 @@ import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { AgentMessage } from "@super-pi/agent-core";
+import type { AgentMessage, ThinkingLevel } from "@super-pi/agent-core";
 import type { AuthEvent, AuthPrompt } from "@super-pi/ai";
 import type { AssistantMessage, ImageContent, Message, Model } from "@super-pi/ai/compat";
 import type {
@@ -58,6 +58,7 @@ import {
 } from "../../config.ts";
 import { type AgentSession, type AgentSessionEvent, parseSkillBlock } from "../../core/agent-session.ts";
 import { type AgentSessionRuntime, SessionImportFileNotFoundError } from "../../core/agent-session-runtime.ts";
+import { DEFAULT_THINKING_LEVEL } from "../../core/defaults.ts";
 import {
 	CACHE_TTL_MS,
 	type CacheMiss,
@@ -92,7 +93,7 @@ import { DefaultPackageManager } from "../../core/package-manager.ts";
 import type { ResourceDiagnostic } from "../../core/resource-loader.ts";
 import { formatMissingSessionCwdPrompt, MissingSessionCwdError } from "../../core/session-cwd.ts";
 import { type SessionEntry, SessionManager, sessionEntryToContextMessages } from "../../core/session-manager.ts";
-import type { TuiMode } from "../../core/settings-manager.ts";
+import type { FullscreenExitOutput, TuiMode } from "../../core/settings-manager.ts";
 import { BUILTIN_SLASH_COMMANDS } from "../../core/slash-commands.ts";
 import type { SourceInfo } from "../../core/source-info.ts";
 import { isInstallTelemetryEnabled } from "../../core/telemetry.ts";
@@ -104,10 +105,12 @@ import { copyToClipboard, readClipboardText } from "../../utils/clipboard.ts";
 import { extensionForImageMimeType, readClipboardImage } from "../../utils/clipboard-image.ts";
 import { refreshModelCatalogs } from "../../utils/abort.ts";
 import { parseGitUrl } from "../../utils/git.ts";
+import { formatLocaleInteger } from "../../utils/number-format.ts";
 import { openBrowser } from "../../utils/open-browser.ts";
 import { getCwdRelativePath } from "../../utils/paths.ts";
 import { getPiUserAgent } from "../../utils/pi-user-agent.ts";
 import { killTrackedDetachedChildren } from "../../utils/shell.ts";
+import { loadAllHighlightLanguages } from "../../utils/syntax-highlight.ts";
 import { ensureTool } from "../../utils/tools-manager.ts";
 import { ArminComponent } from "./components/armin.ts";
 import { AssistantMessageComponent } from "./components/assistant-message.ts";
@@ -138,6 +141,7 @@ import { ScopedModelsSelectorComponent } from "./components/scoped-models-select
 import { SessionSelectorComponent } from "./components/session-selector.ts";
 import { SettingsSelectorComponent } from "./components/settings-selector.ts";
 import { SkillInvocationMessageComponent } from "./components/skill-invocation-message.ts";
+import { ThinkingSelectorComponent } from "./components/thinking-selector.ts";
 import {
 	BranchSummaryStatusIndicator,
 	CompactionStatusIndicator,
@@ -696,6 +700,22 @@ export class InteractiveMode {
 			};
 		}
 
+		let thinkingCommand: (typeof slashCommands)[number] | undefined;
+		for (const command of slashCommands) {
+			if (command.name !== "thinking") continue;
+			thinkingCommand = command;
+			break;
+		}
+		if (thinkingCommand) {
+			thinkingCommand.getArgumentCompletions = (prefix: string): AutocompleteItem[] | null =>
+				createFuzzyAutocompleteItems(
+					this.session.getAvailableThinkingLevels(),
+					prefix,
+					(level) => level,
+					(level) => ({ value: level, label: level }),
+				);
+		}
+
 		const loginCommand = slashCommands.find((command) => command.name === "login");
 		if (loginCommand) {
 			loginCommand.getArgumentCompletions = (prefix: string): AutocompleteItem[] | null => {
@@ -803,13 +823,13 @@ export class InteractiveMode {
 		}
 	}
 
-	private stopInteractiveTui(): void {
-		if (this.renderer.mode === "fullscreen") {
+	private stopInteractiveTui(fullscreenExitOutput: FullscreenExitOutput): void {
+		if (this.renderer.mode === "fullscreen" && fullscreenExitOutput === "transcript") {
 			while (this.renderer.hasOverlayEntries) this.renderer.hideOverlay();
 			this.switchTuiMode("regular", false, false);
 			this.renderer.renderNow();
 		}
-		this.ui.stop();
+		this.ui.stop({ preserveScreen: this.renderer.mode === "fullscreen" });
 	}
 
 	private switchTuiMode(mode: TuiMode, restoreProgress = true, startRenderer = true): boolean {
@@ -1014,6 +1034,14 @@ export class InteractiveMode {
 
 		// Initialize available provider count for footer display
 		await this.updateAvailableProviderCount();
+
+		// Flush completed startup state before loading uncommon syntax grammars.
+		this.ui.renderNow();
+		void loadAllHighlightLanguages().then(() => {
+			if (!this.isInitialized) return;
+			this.ui.invalidate();
+			this.ui.requestRender();
+		});
 	}
 
 	/**
@@ -1969,7 +1997,7 @@ export class InteractiveMode {
 		const message = error instanceof Error ? error.message : String(error);
 		this.showError(`${prefix}: ${message}`);
 		stopThemeWatcher();
-		this.stop();
+		this.stop("transcript");
 		process.exit(1);
 	}
 
@@ -2917,6 +2945,12 @@ export class InteractiveMode {
 				const searchTerm = text.startsWith("/model ") ? text.slice(7).trim() : undefined;
 				this.editor.setText("");
 				await this.handleModelCommand(searchTerm);
+				return;
+			}
+			if (text === "/thinking" || text.startsWith("/thinking ")) {
+				const searchTerm = text.startsWith("/thinking ") ? text.slice(10).trim() : undefined;
+				this.editor.setText("");
+				this.handleThinkingCommand(searchTerm);
 				return;
 			}
 			if (text === "/export" || text.startsWith("/export ")) {
@@ -4274,16 +4308,12 @@ export class InteractiveMode {
 	 * Combines session queue and compaction queue.
 	 */
 	private getAllQueuedMessages(): { steering: string[]; followUp: string[] } {
-		return {
-			steering: [
-				...this.session.getSteeringMessages(),
-				...this.compactionQueuedMessages.filter((msg) => msg.mode === "steer").map((msg) => msg.text),
-			],
-			followUp: [
-				...this.session.getFollowUpMessages(),
-				...this.compactionQueuedMessages.filter((msg) => msg.mode === "followUp").map((msg) => msg.text),
-			],
-		};
+		const steering = [...this.session.getSteeringMessages()];
+		const followUp = [...this.session.getFollowUpMessages()];
+		for (const message of this.compactionQueuedMessages) {
+			(message.mode === "steer" ? steering : followUp).push(message.text);
+		}
+		return { steering, followUp };
 	}
 
 	/**
@@ -4292,17 +4322,11 @@ export class InteractiveMode {
 	 */
 	private clearAllQueues(): { steering: string[]; followUp: string[] } {
 		const { steering, followUp } = this.session.clearQueue();
-		const compactionSteering = this.compactionQueuedMessages
-			.filter((msg) => msg.mode === "steer")
-			.map((msg) => msg.text);
-		const compactionFollowUp = this.compactionQueuedMessages
-			.filter((msg) => msg.mode === "followUp")
-			.map((msg) => msg.text);
+		for (const message of this.compactionQueuedMessages) {
+			(message.mode === "steer" ? steering : followUp).push(message.text);
+		}
 		this.compactionQueuedMessages = [];
-		return {
-			steering: [...steering, ...compactionSteering],
-			followUp: [...followUp, ...compactionFollowUp],
-		};
+		return { steering, followUp };
 	}
 
 	private updatePendingMessagesDisplay(): void {
@@ -4494,9 +4518,15 @@ export class InteractiveMode {
 	private showSettingsSelector(): void {
 		this.showSelector((done) => {
 			let selector: SettingsSelectorComponent | undefined;
+			const defaultProvider = this.settingsManager.getDefaultProvider();
+			const defaultModelId = this.settingsManager.getDefaultModel();
+			const defaultModel = defaultProvider && defaultModelId ? `${defaultProvider}/${defaultModelId}` : "not set";
 			selector = new SettingsSelectorComponent(
 				{
 					autoCompact: this.session.autoCompactionEnabled,
+					defaultModel,
+					currentModel: this.session.model,
+					availableDefaultModels: this.session.modelRuntime.getAvailableSnapshot(),
 					showImages: this.settingsManager.getShowImages(),
 					imageWidthCells: this.settingsManager.getImageWidthCells(),
 					autoResizeImages: this.settingsManager.getImageAutoResize(),
@@ -4507,7 +4537,7 @@ export class InteractiveMode {
 					transport: this.settingsManager.getTransport(),
 					httpIdleTimeoutMs: this.settingsManager.getHttpIdleTimeoutMs(),
 					thinkingLevel: this.session.thinkingLevel,
-					availableThinkingLevels: this.session.getAvailableThinkingLevels(),
+					modelThinkingLevels: this.settingsManager.getAllModelThinkingLevels(),
 					currentTheme: this.settingsManager.getThemeSetting() || "dark",
 					terminalTheme: this.themeController.getTerminalTheme(),
 					availableThemes: getAvailableThemes(),
@@ -4527,6 +4557,7 @@ export class InteractiveMode {
 					clearOnShrink: this.settingsManager.getClearOnShrink(),
 					showTerminalProgress: this.settingsManager.getShowTerminalProgress(),
 					tuiMode: this.ui.mode,
+					fullscreenExitOutput: this.settingsManager.getFullscreenExitOutput(),
 					fullscreenScrollbar: this.settingsManager.getFullscreenScrollbar(),
 					warnings: this.settingsManager.getWarnings(),
 				},
@@ -4576,10 +4607,11 @@ export class InteractiveMode {
 						configureHttpDispatcher(timeoutMs);
 						this.showStatus(`HTTP idle timeout: ${formatHttpIdleTimeoutMs(timeoutMs)}`);
 					},
-					onThinkingLevelChange: (level) => {
-						this.session.setThinkingLevel(level);
-						this.footer.invalidate();
-						this.updateEditorBorderColor();
+					onModelThinkingLevelChange: (provider, modelId, level) => {
+						this.settingsManager.setModelThinkingLevel(provider, modelId, level);
+					},
+					onModelThinkingLevelRemove: (provider, modelId) => {
+						this.settingsManager.removeModelThinkingLevel(provider, modelId);
 					},
 					onThemeChange: (themeSetting) => {
 						this.settingsManager.setTheme(themeSetting);
@@ -4687,6 +4719,9 @@ export class InteractiveMode {
 						this.settingsManager.setFullscreenScrollbar(mode);
 						this.applyFullscreenScrollbarSetting();
 					},
+					onFullscreenExitOutputChange: (output) => {
+						this.settingsManager.setFullscreenExitOutput(output);
+					},
 					onWarningsChange: (warnings) => {
 						this.settingsManager.setWarnings(warnings);
 					},
@@ -4700,6 +4735,59 @@ export class InteractiveMode {
 		});
 	}
 
+	private handleThinkingCommand(searchTerm?: string): void {
+		const availableLevels = this.session.getAvailableThinkingLevels();
+		if (!searchTerm) {
+			this.showThinkingSelector();
+			return;
+		}
+
+		const normalized = searchTerm.trim().toLowerCase();
+		let level: ThinkingLevel | undefined;
+		for (const candidate of availableLevels) {
+			if (candidate.toLowerCase() !== normalized) continue;
+			level = candidate;
+			break;
+		}
+		if (!level) {
+			this.showError(`Unknown thinking level "${searchTerm}". Available levels: ${availableLevels.join(", ")}.`);
+			return;
+		}
+		this.selectThinkingLevel(level, false);
+	}
+
+	private selectThinkingLevel(level: ThinkingLevel, persist: boolean): void {
+		try {
+			this.session.setThinkingLevel(level, { persist });
+			this.footer.invalidate();
+			this.updateEditorBorderColor();
+			this.showStatus(persist ? `Default thinking level: ${level}` : `Thinking level: ${level}`);
+		} catch (error) {
+			this.showError(error instanceof Error ? error.message : String(error));
+		}
+	}
+
+	private showThinkingSelector(): void {
+		this.showSelector((done) => {
+			const selectLevel = (level: ThinkingLevel, persist: boolean) => {
+				this.selectThinkingLevel(level, persist);
+				done();
+			};
+			const selector = new ThinkingSelectorComponent(
+				this.session.thinkingLevel ?? DEFAULT_THINKING_LEVEL,
+				this.session.getAvailableThinkingLevels(),
+				(level) => selectLevel(level, false),
+				() => {
+					done();
+					this.ui.requestRender();
+				},
+				(level) => selectLevel(level, true),
+				this.settingsManager.getDefaultThinkingLevel() ?? DEFAULT_THINKING_LEVEL,
+			);
+			return { component: selector, focus: selector };
+		});
+	}
+
 	private async handleModelCommand(searchTerm?: string): Promise<void> {
 		if (!searchTerm) {
 			this.showModelSelector();
@@ -4709,7 +4797,7 @@ export class InteractiveMode {
 		const model = await this.findExactModelMatch(searchTerm);
 		if (model) {
 			try {
-				await this.session.setModel(model);
+				await this.session.setModel(model, { persist: false });
 				this.footer.invalidate();
 				this.updateEditorBorderColor();
 				this.showStatus(`Model: ${model.id}`);
@@ -4851,31 +4939,35 @@ export class InteractiveMode {
 
 	private showModelSelector(initialSearchInput?: string): void {
 		this.showSelector((done) => {
+			const selectModel = async (model: Model<any>, persist: boolean) => {
+				try {
+					await this.session.setModel(model, { persist });
+					this.footer.invalidate();
+					this.updateEditorBorderColor();
+					done();
+					this.showStatus(persist ? `Default model: ${model.provider}/${model.id}` : `Model: ${model.id}`);
+					void this.maybeWarnAboutAnthropicSubscriptionAuth(model);
+					this.checkDaxnutsEasterEgg(model);
+				} catch (error) {
+					done();
+					this.showError(error instanceof Error ? error.message : String(error));
+				}
+			};
+			const defaultProvider = this.settingsManager.getDefaultProvider();
+			const defaultModel = this.settingsManager.getDefaultModel();
 			const selector = new ModelSelectorComponent(
 				this.ui,
 				this.session.model,
-				this.settingsManager,
 				this.session.modelRuntime,
 				this.session.scopedModels,
-				async (model) => {
-					try {
-						await this.session.setModel(model);
-						this.footer.invalidate();
-						this.updateEditorBorderColor();
-						done();
-						this.showStatus(`Model: ${model.id}`);
-						void this.maybeWarnAboutAnthropicSubscriptionAuth(model);
-						this.checkDaxnutsEasterEgg(model);
-					} catch (error) {
-						done();
-						this.showError(error instanceof Error ? error.message : String(error));
-					}
-				},
+				(model) => selectModel(model, false),
 				() => {
 					done();
 					this.ui.requestRender();
 				},
 				initialSearchInput,
+				(model) => selectModel(model, true),
+				defaultProvider && defaultModel ? { provider: defaultProvider, id: defaultModel } : undefined,
 			);
 			return { component: selector, focus: selector, dispose: () => selector.dispose() };
 		});
@@ -6135,16 +6227,16 @@ export class InteractiveMode {
 		// of the uncached portion.
 		const { input, cacheRead, cacheWrite } = stats.tokens;
 		const promptTokens = input + cacheRead + cacheWrite;
-		info += `${theme.fg("dim", "Input:")} ${promptTokens.toLocaleString()}\n`;
+		info += `${theme.fg("dim", "Input:")} ${formatLocaleInteger(promptTokens)}\n`;
 		if (promptTokens > 0 && (cacheRead > 0 || cacheWrite > 0)) {
 			const hitRate = theme.fg("dim", `(${((cacheRead / promptTokens) * 100).toFixed(1)}%)`);
-			info += `  ${theme.fg("dim", "Cached:")} ${cacheRead.toLocaleString()} ${hitRate}\n`;
+			info += `  ${theme.fg("dim", "Cached:")} ${formatLocaleInteger(cacheRead)} ${hitRate}\n`;
 			const written =
-				cacheWrite > 0 ? ` ${theme.fg("dim", `(${cacheWrite.toLocaleString()} written to cache)`)}` : "";
-			info += `  ${theme.fg("dim", "Uncached:")} ${(input + cacheWrite).toLocaleString()}${written}\n`;
+				cacheWrite > 0 ? ` ${theme.fg("dim", `(${formatLocaleInteger(cacheWrite)} written to cache)`)}` : "";
+			info += `  ${theme.fg("dim", "Uncached:")} ${formatLocaleInteger(input + cacheWrite)}${written}\n`;
 		}
-		info += `${theme.fg("dim", "Output:")} ${stats.tokens.output.toLocaleString()}\n`;
-		info += `${theme.fg("dim", "Total:")} ${stats.tokens.total.toLocaleString()}\n`;
+		info += `${theme.fg("dim", "Output:")} ${formatLocaleInteger(stats.tokens.output)}\n`;
+		info += `${theme.fg("dim", "Total:")} ${formatLocaleInteger(stats.tokens.total)}\n`;
 
 		if (stats.cost > 0 || cacheWaste.missedTokens > 0) {
 			info += `\n${theme.bold("Cost")}\n`;
@@ -6156,7 +6248,7 @@ export class InteractiveMode {
 			}
 			if (cacheWaste.missedTokens > 0) {
 				const missLabel = cacheWaste.missCount === 1 ? "1 miss" : `${cacheWaste.missCount} misses`;
-				const detail = `${cacheWaste.missedTokens.toLocaleString()} tokens, ${missLabel}`;
+				const detail = `${formatLocaleInteger(cacheWaste.missedTokens)} tokens, ${missLabel}`;
 				info +=
 					cacheWaste.missedCost >= 0.0001
 						? `\n${theme.fg("dim", "Cache Re-billed:")} $${cacheWaste.missedCost.toFixed(3)} ${theme.fg("dim", `(${detail})`)}`
@@ -6490,7 +6582,7 @@ export class InteractiveMode {
 		}
 	}
 
-	stop(): void {
+	stop(fullscreenExitOutput = this.settingsManager.getFullscreenExitOutput()): void {
 		this.disposeActiveSelector();
 		if (this.settingsManager.getShowTerminalProgress()) {
 			this.ui.terminal.setProgress(false);
@@ -6504,7 +6596,7 @@ export class InteractiveMode {
 			this.unsubscribe();
 		}
 		if (this.isInitialized) {
-			this.stopInteractiveTui();
+			this.stopInteractiveTui(fullscreenExitOutput);
 			this.isInitialized = false;
 		}
 		this.unregisterSignalHandlers();

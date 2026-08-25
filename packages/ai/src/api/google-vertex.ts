@@ -27,6 +27,7 @@ import type {
 import { formatProviderError, normalizeProviderError } from "../utils/error-body.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { providerHeadersToRecord } from "../utils/headers.ts";
+import { getPiUserAgent } from "../utils/pi-user-agent.ts";
 import { getProviderEnvValue } from "../utils/provider-env.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
 import type { GoogleThinkingLevel } from "./google-shared.ts";
@@ -297,7 +298,7 @@ export const stream: StreamFunction<"google-vertex", GoogleVertexOptions> = (
 			// Remove internal index property used during streaming
 			for (const block of output.content) {
 				if ("index" in block) {
-					delete (block as { index?: number }).index;
+					(block as { index?: number }).index = undefined;
 				}
 			}
 			output.stopReason = options?.signal?.aborted ? "aborted" : "error";
@@ -315,7 +316,10 @@ export const streamSimple: StreamFunction<"google-vertex", SimpleStreamOptions> 
 	context: Context,
 	options?: SimpleStreamOptions,
 ): AssistantMessageEventStream => {
-	const base = buildBaseOptions(model, context, options, undefined);
+	const base: GoogleVertexOptions = {
+		...buildBaseOptions(model, context, options, undefined),
+		toolChoice: options?.toolChoice,
+	};
 	if (!options?.reasoning) {
 		return stream(model, context, {
 			...base,
@@ -388,7 +392,7 @@ function buildHttpOptions(model: Model<"google-vertex">, optionsHeaders?: Provid
 		}
 	}
 
-	const headers = providerHeadersToRecord({ ...model.headers, ...optionsHeaders });
+	const headers = providerHeadersToRecord({ "User-Agent": getPiUserAgent(), ...model.headers, ...optionsHeaders });
 	if (headers) {
 		httpOptions.headers = headers;
 	}

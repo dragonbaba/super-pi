@@ -3,6 +3,8 @@ import type { ModelsStore, ModelsStoreEntry, ModelsStoreOperationOptions } from 
 import { getAgentDir } from "../config.ts";
 import { raceWithAbortSignal } from "../utils/abort.ts";
 import { getFileRevision, normalizePath } from "../utils/paths.ts";
+import { getOwnProperty, setOwnProperty } from "../utils/record.ts";
+import { stripBom } from "../utils/text.ts";
 import { type AuthStorageBackend, FileAuthStorageBackend } from "./auth-storage.ts";
 
 type StoredModels = Record<string, ModelsStoreEntry>;
@@ -59,7 +61,12 @@ export class FileModelsStore implements ModelsStore {
 	}
 
 	private parse(content: string | undefined): StoredModels {
-		return content ? (JSON.parse(content) as StoredModels) : {};
+		if (!content) return {};
+		const parsed: unknown = JSON.parse(stripBom(content));
+		if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+			throw new Error("Invalid models-store.json: expected an object");
+		}
+		return parsed as StoredModels;
 	}
 
 	private updateReadState(readState: ModelsFileReadState, data: StoredModels, revision?: string): void {
@@ -117,7 +124,7 @@ export class FileModelsStore implements ModelsStore {
 	}
 
 	async read(providerId: string, options?: ModelsStoreOperationOptions): Promise<ModelsStoreEntry | undefined> {
-		const entry = (await this.readLatest(this.readState, options))[providerId];
+		const entry = getOwnProperty(await this.readLatest(this.readState, options), providerId);
 		options?.signal?.throwIfAborted();
 		return entry ? structuredClone(entry) : undefined;
 	}
@@ -126,7 +133,7 @@ export class FileModelsStore implements ModelsStore {
 		let latest: StoredModels | undefined;
 		await this.storage.withLockAsync(async (content) => {
 			const current = this.parse(content);
-			current[providerId] = structuredClone(entry);
+			setOwnProperty(current, providerId, structuredClone(entry));
 			latest = current;
 			return { result: undefined, next: JSON.stringify(current, null, 2) };
 		}, options);
@@ -137,9 +144,16 @@ export class FileModelsStore implements ModelsStore {
 		let latest: StoredModels | undefined;
 		await this.storage.withLockAsync(async (content) => {
 			const current = this.parse(content);
-			delete current[providerId];
-			latest = current;
-			return { result: undefined, next: JSON.stringify(current, null, 2) };
+			const remaining: StoredModels = {};
+			const providerIds = Object.keys(current);
+			for (let index = 0; index < providerIds.length; index++) {
+				const currentProviderId = providerIds[index]!;
+				if (currentProviderId !== providerId) {
+					setOwnProperty(remaining, currentProviderId, current[currentProviderId]!);
+				}
+			}
+			latest = remaining;
+			return { result: undefined, next: JSON.stringify(remaining, null, 2) };
 		}, options);
 		if (latest) this.updateReadState(this.readState, latest);
 	}

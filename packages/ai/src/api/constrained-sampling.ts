@@ -1,4 +1,5 @@
 import type { Tool } from "../types.ts";
+import { setOwnProperty } from "../utils/record.ts";
 
 interface JsonSchemaObject {
 	type?: unknown;
@@ -91,7 +92,7 @@ function makeJsonSchemaNodeStrict(schema: unknown): void {
 	for (const [key, property] of Object.entries(properties)) {
 		makeJsonSchemaNodeStrict(property);
 		if (!required.has(key) && !schemaAllowsNull(property)) {
-			properties[key] = { anyOf: [property, { type: "null" }] };
+			setOwnProperty(properties, key, { anyOf: [property, { type: "null" }] });
 		}
 	}
 	schema.required = propertyNames;

@@ -17,6 +17,7 @@ import {
 } from "@super-pi/coding-agent";
 import {
   calculateCost,
+  setOwnProperty,
   type Context,
   type Message,
   type Model,
@@ -28,7 +29,13 @@ import { getEncoding } from "js-tiktoken";
 import { isRecord } from "./config.ts";
 import { isFastRuntimeEnabled } from "./fast-runtime-state.ts";
 import { buildCompactionShapeDiagnostics, type CompactionShapeDiagnostics } from "./shape-diagnostics.ts";
-import { TRAILING_SLASH_PATTERN } from "./regex.ts";
+import {
+  CARRIAGE_RETURN_PATTERN,
+  CRLF_PATTERN,
+  REMOTE_COMPACTION_UNSUPPORTED_FEATURE_PATTERN,
+  REMOTE_COMPACTION_UNSUPPORTED_REASON_PATTERN,
+  TRAILING_SLASH_PATTERN,
+} from "./regex.ts";
 import { unknownText } from "./text.ts";
 import {
   isDirectOpenAIResponsesModel,
@@ -89,6 +96,10 @@ export type RemoteCompactionUsageSnapshot = Usage;
 const IMAGE_CONTENT_OMITTED_PLACEHOLDER = "image content omitted because you do not support image input";
 const RETAINED_IMAGE_OMITTED_PLACEHOLDER = "[image omitted from retained tail after compaction]";
 const REMOTE_COMPACTION_V2_FEATURE = "remote_compaction_v2";
+const REMOTE_COMPACTION_FEATURE_SET_POOL: Set<string>[] = [];
+const REMOTE_COMPACTION_HEADER_MAP_POOL: Map<string, string>[] = [];
+const MAX_REMOTE_COMPACTION_POOLED_COLLECTIONS = 4;
+const MAX_REMOTE_COMPACTION_POOLED_ENTRIES = 256;
 const RETAINED_MESSAGE_TOKEN_BUDGET = 20_000;
 const RETAINED_MESSAGE_ENCODING = getEncoding("o200k_base");
 // js-tiktoken's BPE merge cost grows steeply on long repeated non-Latin text.
@@ -100,9 +111,29 @@ const REMOTE_COMPACTION_EVENT_BYTES = 4 * 1024 * 1024;
 const REMOTE_COMPACTION_STREAM_BYTES = 16 * 1024 * 1024;
 const REMOTE_COMPACTION_IDLE_MS = 60_000;
 const REMOTE_COMPACTION_OVERALL_MS = 5 * 60_000;
-const REMOTE_COMPACTION_UNSUPPORTED_FEATURE_PATTERN = /(?:compaction[_ -]?trigger|remote[_ -]?compaction[_ -]?v2)/iu;
-const REMOTE_COMPACTION_UNSUPPORTED_REASON_PATTERN = /(?:not supported|unsupported|unknown|unrecognized|not enabled|disabled|invalid (?:input )?(?:item )?(?:type|value))/iu;
 export const PORTABLE_SUMMARY_MAX_TOKENS = 4096;
+
+function acquireRemoteCompactionFeatureSet(): Set<string> {
+  return REMOTE_COMPACTION_FEATURE_SET_POOL.pop() ?? new Set<string>();
+}
+
+function releaseRemoteCompactionFeatureSet(value: Set<string>): void {
+  const retain = value.size <= MAX_REMOTE_COMPACTION_POOLED_ENTRIES
+    && REMOTE_COMPACTION_FEATURE_SET_POOL.length < MAX_REMOTE_COMPACTION_POOLED_COLLECTIONS;
+  value.clear();
+  if (retain) REMOTE_COMPACTION_FEATURE_SET_POOL.push(value);
+}
+
+function acquireRemoteCompactionHeaderMap(): Map<string, string> {
+  return REMOTE_COMPACTION_HEADER_MAP_POOL.pop() ?? new Map<string, string>();
+}
+
+function releaseRemoteCompactionHeaderMap(value: Map<string, string>): void {
+  const retain = value.size <= MAX_REMOTE_COMPACTION_POOLED_ENTRIES
+    && REMOTE_COMPACTION_HEADER_MAP_POOL.length < MAX_REMOTE_COMPACTION_POOLED_COLLECTIONS;
+  value.clear();
+  if (retain) REMOTE_COMPACTION_HEADER_MAP_POOL.push(value);
+}
 
 export type RemoteCompactionDetails = {
   version: 1 | 2;
@@ -216,34 +247,60 @@ function configureRemoteCompactionV2Feature(
   enabled: boolean,
 ): Record<string, string> {
   const result: Record<string, string> = {};
-  const features = new Set<string>();
-  for (const name in headers) {
-    if (name.toLowerCase() !== "x-codex-beta-features") {
-      result[name] = headers[name];
-      continue;
+  const features = acquireRemoteCompactionFeatureSet();
+  try {
+    const headerNames = Object.keys(headers);
+    for (let index = 0; index < headerNames.length; index++) {
+      const name = headerNames[index]!;
+      if (name.toLowerCase() !== "x-codex-beta-features") {
+        setOwnProperty(result, name, headers[name]);
+        continue;
+      }
+      const configured = headers[name].split(",");
+      for (const value of configured) {
+        const feature = value.trim();
+        if (feature && feature !== REMOTE_COMPACTION_V2_FEATURE) features.add(feature);
+      }
     }
-    const configured = headers[name].split(",");
-    for (const value of configured) {
-      const feature = value.trim();
-      if (feature && feature !== REMOTE_COMPACTION_V2_FEATURE) features.add(feature);
+    if (enabled) features.add(REMOTE_COMPACTION_V2_FEATURE);
+    if (features.size > 0) {
+      let featureHeader = "";
+      for (const feature of features) featureHeader += featureHeader ? `,${feature}` : feature;
+      result["x-codex-beta-features"] = featureHeader;
     }
+    return result;
+  } finally {
+    releaseRemoteCompactionFeatureSet(features);
   }
-  if (enabled) features.add(REMOTE_COMPACTION_V2_FEATURE);
-  if (features.size > 0) result["x-codex-beta-features"] = [...features].join(",");
-  return result;
 }
 
 function applyProviderHeaders(
   base: Record<string, string>,
   overrides: ProviderHeaders | undefined,
 ): Record<string, string> {
-  const merged = { ...base };
-  for (const [name, value] of Object.entries(overrides ?? {})) {
-    const existingName = Object.keys(merged).find((candidate) => candidate.toLowerCase() === name.toLowerCase());
-    if (existingName) delete merged[existingName];
-    if (value !== null) merged[name] = value;
+  const merged: Record<string, string> = {};
+  const overrideNames = overrides ? Object.keys(overrides) : undefined;
+  const canonicalOverrides = acquireRemoteCompactionHeaderMap();
+  try {
+    for (let index = 0; index < (overrideNames?.length ?? 0); index++) {
+      const name = overrideNames![index]!;
+      canonicalOverrides.set(name.toLowerCase(), name);
+    }
+    const baseNames = Object.keys(base);
+    for (let index = 0; index < baseNames.length; index++) {
+      const name = baseNames[index]!;
+      if (!canonicalOverrides.has(name.toLowerCase())) setOwnProperty(merged, name, base[name]);
+    }
+    for (let index = 0; index < (overrideNames?.length ?? 0); index++) {
+      const name = overrideNames![index]!;
+      if (canonicalOverrides.get(name.toLowerCase()) !== name) continue;
+      const value = overrides![name];
+      if (value !== null) setOwnProperty(merged, name, value);
+    }
+    return merged;
+  } finally {
+    releaseRemoteCompactionHeaderMap(canonicalOverrides);
   }
-  return merged;
 }
 
 export function buildRemoteCompactionHeaders(params: {
@@ -900,7 +957,10 @@ export async function generatePortableSummary(params: {
 
 function hasHeaderDeletionMarker(headers?: ProviderHeaders): boolean {
   if (!headers) return false;
-  for (const name in headers) if (headers[name] === null) return true;
+  const names = Object.keys(headers);
+  for (let index = 0; index < names.length; index++) {
+    if (headers[names[index]!] === null) return true;
+  }
   return false;
 }
 
@@ -1134,7 +1194,7 @@ class RemoteCompactionSseParser {
       chunk = chunk.slice(0, -1);
       this.trailingCarriageReturn = true;
     }
-    if (chunk) this.text += chunk.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+    if (chunk) this.text += chunk.replace(CRLF_PATTERN, "\n").replace(CARRIAGE_RETURN_PATTERN, "\n");
     let boundary = this.text.indexOf("\n\n", this.cursor);
     while (boundary >= 0) {
       this.dispatch(this.text.slice(this.cursor, boundary));

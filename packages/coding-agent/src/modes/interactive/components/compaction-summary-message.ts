@@ -1,5 +1,6 @@
 import { Box, Markdown, type MarkdownTheme, Spacer, Text } from "@super-pi/tui";
 import type { CompactionSummaryMessage } from "../../../core/messages.ts";
+import { formatLocaleInteger } from "../../../utils/number-format.ts";
 import { getMarkdownTheme, theme } from "../theme/theme.ts";
 import { keyText } from "./keybinding-hints.ts";
 
@@ -32,7 +33,7 @@ export class CompactionSummaryMessageComponent extends Box {
 	private updateDisplay(): void {
 		this.clear();
 
-		const tokenStr = this.message.tokensBefore.toLocaleString();
+		const tokenStr = formatLocaleInteger(this.message.tokensBefore);
 		const label = theme.fg("customMessageLabel", `\x1b[1m[compaction]\x1b[22m`);
 		this.addChild(new Text(label, 0, 0));
 		this.addChild(new Spacer(1));

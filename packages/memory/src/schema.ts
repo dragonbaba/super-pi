@@ -41,7 +41,9 @@ export const Type = {
   },
   Object(properties: Record<string, LocalSchema>, options: SchemaOptions = {}): any {
     const required: string[] = [];
-    for (const name in properties) {
+    const propertyNames = Object.keys(properties);
+    for (let index = 0; index < propertyNames.length; index++) {
+      const name = propertyNames[index]!;
       if (properties[name]["~optional"] !== true) required.push(name);
     }
     return tagged("Object", {

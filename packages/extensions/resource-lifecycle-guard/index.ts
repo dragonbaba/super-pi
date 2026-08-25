@@ -87,7 +87,7 @@ export default function resourceLifecycleGuard(pi: ExtensionAPI): void {
     if (event.toolName.startsWith(CHROME_TOOL_PREFIX)) resources.markChromeUsed();
     const permissionBlock = await permissions.authorizeToolCall(event, ctx);
     if (permissionBlock) return permissionBlock;
-    if (event.toolName !== "bash") return undefined;
+    if (event.toolName !== "bash" && event.toolName !== "powershell") return undefined;
     const reason = inspectBashResourceLifecycle(event.input);
     return reason ? { block: true, reason } : undefined;
   });

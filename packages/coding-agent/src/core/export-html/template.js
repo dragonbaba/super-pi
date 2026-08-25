@@ -806,7 +806,23 @@
       function formatTimestamp(ts) {
         if (!ts) return '';
         const date = new Date(ts);
-        return date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        if (!Number.isFinite(date.getTime())) return '';
+        return formatTime(date);
+      }
+
+      function twoDigits(value) {
+        return value < 10 ? `0${value}` : `${value}`;
+      }
+
+      function formatTime(date) {
+        return `${twoDigits(date.getHours())}:${twoDigits(date.getMinutes())}:${twoDigits(date.getSeconds())}`;
+      }
+
+      function formatDateTime(ts) {
+        if (!ts) return 'unknown';
+        const date = new Date(ts);
+        if (!Number.isFinite(date.getTime())) return 'unknown';
+        return `${date.getFullYear()}-${twoDigits(date.getMonth() + 1)}-${twoDigits(date.getDate())} ${formatTime(date)}`;
       }
 
       function replaceTabs(text) {
@@ -1294,8 +1310,8 @@
         if (entry.type === 'compaction') {
           return `<div class="compaction" id="${entryDomId}" onclick="if(window.getSelection().toString())return;this.classList.toggle('expanded')">
             <div class="compaction-label">[compaction]</div>
-            <div class="compaction-collapsed">Compacted from ${entry.tokensBefore.toLocaleString()} tokens</div>
-            <div class="compaction-content"><strong>Compacted from ${entry.tokensBefore.toLocaleString()} tokens</strong>\n\n${escapeHtml(entry.summary)}</div>
+            <div class="compaction-collapsed">Compacted from ${entry.tokensBefore} tokens</div>
+            <div class="compaction-content"><strong>Compacted from ${entry.tokensBefore} tokens</strong>\n\n${escapeHtml(entry.summary)}</div>
           </div>`;
         }
 
@@ -1392,7 +1408,7 @@
               </div>
             </div>
             <div class="header-info">
-              <div class="info-item"><span class="info-label">Date:</span><span class="info-value">${header?.timestamp ? new Date(header.timestamp).toLocaleString() : 'unknown'}</span></div>
+              <div class="info-item"><span class="info-label">Date:</span><span class="info-value">${formatDateTime(header?.timestamp)}</span></div>
               <div class="info-item"><span class="info-label">Models:</span><span class="info-value">${escapeHtml(globalStats.models.join(', ') || 'unknown')}</span></div>
               <div class="info-item"><span class="info-label">Messages:</span><span class="info-value">${msgParts.join(', ') || '0'}</span></div>
               <div class="info-item"><span class="info-label">Tool Calls:</span><span class="info-value">${globalStats.toolCalls}</span></div>

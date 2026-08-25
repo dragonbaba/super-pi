@@ -19,8 +19,11 @@
 	"scripts": {
 		"clean": "shx rm -rf dist",
 		"build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc --declaration false --sourceMap false",
-    "check": "node scripts/ensure-dev.mjs check && tsc --noEmit && npm run build"
-  },
+		"check": "node scripts/ensure-dev.mjs check && tsc --noEmit && npm run build",
+		"test": "node scripts/ensure-dev.mjs test && npm run build --silent && node --test tests/session-anchor-search.test.mjs",
+		"benchmark:lifecycle": "npm run build --silent && node tests/lifecycle-benchmark.mjs",
+		"smoke:rpc": "npm --prefix ../.. run build:offline --silent && node tests/rpc-smoke.mjs"
+	},
   "keywords": [
     "pi-package",
     "pi-extension",

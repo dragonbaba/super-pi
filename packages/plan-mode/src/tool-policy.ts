@@ -33,10 +33,11 @@ export interface SafeSubcommands {
 	gh?: SafeGhSubcommandPath[];
 }
 
-export const SAFE_BUILTIN_PLAN_TOOLS = new Set(["read", "bash", "grep", "find", "ls"]);
+export const SAFE_BUILTIN_PLAN_TOOLS = new Set(["read", "bash", "powershell", "grep", "find", "ls"]);
 export type PlanModeToolPolicy = "read-only" | "limited" | "user-opt-in" | "blocked";
 
 const BLOCKED_BUILTIN_TOOLS = new Set(["edit", "write"]);
+const FORBIDDEN_READ_ONLY_ARGUMENTS = new Set(["-i", "--in-place", "--fix", "--write", "-delete", "--delete"]);
 const MUTATING_COMMANDS = new Set([
 	"rm",
 	"rmdir",
@@ -108,7 +109,7 @@ export function isBuiltinTool(tool: ToolInfo) {
 export function classifyPlanModeTool(tool: ToolInfo): PlanModeToolPolicy {
 	if (!isBuiltinTool(tool)) return "user-opt-in";
 	if (BLOCKED_BUILTIN_TOOLS.has(tool.name)) return "blocked";
-	if (tool.name === "bash") return "limited";
+	if (tool.name === "bash" || tool.name === "powershell") return "limited";
 	return SAFE_BUILTIN_PLAN_TOOLS.has(tool.name) ? "read-only" : "blocked";
 }
 
@@ -259,8 +260,7 @@ function shellWords(segment: string): string[] | undefined {
 }
 
 function hasSafeArguments(command: string, args: string[]) {
-	const forbidden = new Set(["-i", "--in-place", "--fix", "--write", "-delete", "--delete"]);
-	if (args.some((argument) => forbidden.has(argument))) return false;
+	if (args.some((argument) => FORBIDDEN_READ_ONLY_ARGUMENTS.has(argument))) return false;
 	if (
 		command === "sed" &&
 		args.some(

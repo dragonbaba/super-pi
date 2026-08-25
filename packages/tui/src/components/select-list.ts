@@ -5,8 +5,38 @@ import { truncateToWidth, visibleWidth } from "../utils.ts";
 const DEFAULT_PRIMARY_COLUMN_WIDTH = 32;
 const PRIMARY_COLUMN_GAP = 2;
 const MIN_DESCRIPTION_WIDTH = 10;
+const EMPTY_SELECT_LIST_LAYOUT: SelectListLayoutOptions = Object.freeze({});
 
-const normalizeToSingleLine = (text: string): string => text.replace(/[\r\n]+/g, " ").trim();
+function normalizeToSingleLine(text: string): string {
+	const trimmed = text.trim();
+	let lineBreak = -1;
+	for (let index = 0; index < trimmed.length; index++) {
+		const code = trimmed.charCodeAt(index);
+		if (code !== 10 && code !== 13) continue;
+		lineBreak = index;
+		break;
+	}
+	if (lineBreak < 0) return trimmed;
+
+	let result = trimmed.slice(0, lineBreak);
+	let index = lineBreak;
+	while (index < trimmed.length) {
+		while (index < trimmed.length) {
+			const code = trimmed.charCodeAt(index);
+			if (code !== 10 && code !== 13) break;
+			index++;
+		}
+		result += " ";
+		const nextBreak = index;
+		while (index < trimmed.length) {
+			const code = trimmed.charCodeAt(index);
+			if (code === 10 || code === 13) break;
+			index++;
+		}
+		result += trimmed.slice(nextBreak, index);
+	}
+	return result;
+}
 const clamp = (value: number, min: number, max: number): number => Math.max(min, Math.min(value, max));
 
 export interface SelectItem {
@@ -43,24 +73,55 @@ export class SelectList implements Component {
 	private selectedIndex: number = 0;
 	private maxVisible: number = 5;
 	private theme: SelectListTheme;
-	private layout: SelectListLayoutOptions;
+	private readonly layout: SelectListLayoutOptions;
+	private readonly minPrimaryColumnWidth: number;
+	private readonly maxPrimaryColumnWidth: number;
 
 	public onSelect?: (item: SelectItem) => void;
 	public onCancel?: () => void;
 	public onSelectionChange?: (item: SelectItem) => void;
 
-	constructor(items: SelectItem[], maxVisible: number, theme: SelectListTheme, layout: SelectListLayoutOptions = {}) {
+	constructor(
+		items: SelectItem[],
+		maxVisible: number,
+		theme: SelectListTheme,
+		layout: SelectListLayoutOptions = EMPTY_SELECT_LIST_LAYOUT,
+	) {
 		this.items = items;
 		this.filteredItems = items;
 		this.maxVisible = maxVisible;
 		this.theme = theme;
 		this.layout = layout;
+		const rawMin = layout.minPrimaryColumnWidth ?? layout.maxPrimaryColumnWidth ?? DEFAULT_PRIMARY_COLUMN_WIDTH;
+		const rawMax = layout.maxPrimaryColumnWidth ?? layout.minPrimaryColumnWidth ?? DEFAULT_PRIMARY_COLUMN_WIDTH;
+		this.minPrimaryColumnWidth = Math.max(1, Math.min(rawMin, rawMax));
+		this.maxPrimaryColumnWidth = Math.max(1, Math.max(rawMin, rawMax));
 	}
 
 	setFilter(filter: string): void {
-		this.filteredItems = this.items.filter((item) => item.value.toLowerCase().startsWith(filter.toLowerCase()));
+		const normalizedFilter = filter.toLowerCase();
+		const filteredItems: SelectItem[] = [];
+		for (const item of this.items) {
+			if (item.value.toLowerCase().startsWith(normalizedFilter)) filteredItems.push(item);
+		}
+		this.filteredItems = filteredItems;
 		// Reset selection when filter changes
 		this.selectedIndex = 0;
+	}
+
+	/** Replace the visible items without rebuilding the component or its callbacks. */
+	setItems(items: SelectItem[], selectedValue?: string): void {
+		this.items = items;
+		this.filteredItems = items;
+		let nextIndex = Math.max(0, Math.min(this.selectedIndex, Math.max(0, items.length - 1)));
+		if (selectedValue !== undefined) {
+			for (let index = 0; index < items.length; index++) {
+				if (items[index]?.value !== selectedValue) continue;
+				nextIndex = index;
+				break;
+			}
+		}
+		this.selectedIndex = nextIndex;
 	}
 
 	setSelectedIndex(index: number): void {
@@ -113,11 +174,13 @@ export class SelectList implements Component {
 		const kb = getKeybindings();
 		// Up arrow - wrap to bottom when at top
 		if (kb.matches(keyData, "tui.select.up")) {
+			if (this.filteredItems.length === 0) return;
 			this.selectedIndex = this.selectedIndex === 0 ? this.filteredItems.length - 1 : this.selectedIndex - 1;
 			this.notifySelectionChange();
 		}
 		// Down arrow - wrap to top when at bottom
 		else if (kb.matches(keyData, "tui.select.down")) {
+			if (this.filteredItems.length === 0) return;
 			this.selectedIndex = this.selectedIndex === this.filteredItems.length - 1 ? 0 : this.selectedIndex + 1;
 			this.notifySelectionChange();
 		}
@@ -176,24 +239,11 @@ export class SelectList implements Component {
 	}
 
 	private getPrimaryColumnWidth(): number {
-		const { min, max } = this.getPrimaryColumnBounds();
-		const widestPrimary = this.filteredItems.reduce((widest, item) => {
-			return Math.max(widest, visibleWidth(this.getDisplayValue(item)) + PRIMARY_COLUMN_GAP);
-		}, 0);
-
-		return clamp(widestPrimary, min, max);
-	}
-
-	private getPrimaryColumnBounds(): { min: number; max: number } {
-		const rawMin =
-			this.layout.minPrimaryColumnWidth ?? this.layout.maxPrimaryColumnWidth ?? DEFAULT_PRIMARY_COLUMN_WIDTH;
-		const rawMax =
-			this.layout.maxPrimaryColumnWidth ?? this.layout.minPrimaryColumnWidth ?? DEFAULT_PRIMARY_COLUMN_WIDTH;
-
-		return {
-			min: Math.max(1, Math.min(rawMin, rawMax)),
-			max: Math.max(1, Math.max(rawMin, rawMax)),
-		};
+		let widestPrimary = 0;
+		for (const item of this.filteredItems) {
+			widestPrimary = Math.max(widestPrimary, visibleWidth(this.getDisplayValue(item)) + PRIMARY_COLUMN_GAP);
+		}
+		return clamp(widestPrimary, this.minPrimaryColumnWidth, this.maxPrimaryColumnWidth);
 	}
 
 	private truncatePrimary(item: SelectItem, isSelected: boolean, maxWidth: number, columnWidth: number): string {

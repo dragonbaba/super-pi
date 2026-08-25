@@ -46,6 +46,8 @@ export interface Keybindings {
 	"tui.altScreen.pageDown": true;
 	"tui.altScreen.halfPageUp": true;
 	"tui.altScreen.halfPageDown": true;
+	"tui.altScreen.lineUp": true;
+	"tui.altScreen.lineDown": true;
 	"tui.altScreen.previousPrompt": true;
 	"tui.altScreen.nextPrompt": true;
 	"tui.altScreen.top": true;
@@ -167,6 +169,8 @@ export const TUI_KEYBINDINGS = {
 		defaultKeys: [],
 		description: "Scroll viewport down half a page",
 	},
+	"tui.altScreen.lineUp": { defaultKeys: [], description: "Scroll viewport up one line" },
+	"tui.altScreen.lineDown": { defaultKeys: [], description: "Scroll viewport down one line" },
 	"tui.altScreen.previousPrompt": {
 		defaultKeys: "ctrl+shift+up",
 		description: "Jump to previous semantic prompt",
@@ -187,13 +191,9 @@ export interface KeybindingConflict {
 function normalizeKeys(keys: KeyId | KeyId[] | undefined): KeyId[] {
 	if (keys === undefined) return [];
 	const keyList = Array.isArray(keys) ? keys : [keys];
-	const seen = new Set<KeyId>();
 	const result: KeyId[] = [];
 	for (const key of keyList) {
-		if (!seen.has(key)) {
-			seen.add(key);
-			result.push(key);
-		}
+		if (!result.includes(key)) result.push(key);
 	}
 	return result;
 }
@@ -214,18 +214,18 @@ export class KeybindingsManager {
 		this.keysById.clear();
 		this.conflicts = [];
 
-		const userClaims = new Map<KeyId, Set<Keybinding>>();
+		const userClaims = new Map<KeyId, Keybinding[]>();
 		for (const [keybinding, keys] of Object.entries(this.userBindings)) {
 			if (!(keybinding in this.definitions)) continue;
 			for (const key of normalizeKeys(keys)) {
-				const claimants = userClaims.get(key) ?? new Set<Keybinding>();
-				claimants.add(keybinding as Keybinding);
+				const claimants = userClaims.get(key) ?? [];
+				if (!claimants.includes(keybinding as Keybinding)) claimants.push(keybinding as Keybinding);
 				userClaims.set(key, claimants);
 			}
 		}
 
 		for (const [key, keybindings] of userClaims) {
-			if (keybindings.size > 1) {
+			if (keybindings.length > 1) {
 				this.conflicts.push({ key, keybindings: [...keybindings] });
 			}
 		}

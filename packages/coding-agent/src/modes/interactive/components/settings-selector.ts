@@ -1,13 +1,11 @@
 import type { ThinkingLevel } from "@super-pi/agent-core";
-import type { Transport } from "@super-pi/ai";
+import { getSupportedThinkingLevels, type Model, type Transport } from "@super-pi/ai";
 import {
 	type Component,
 	Container,
 	getCapabilities,
 	type ScrollViewScrollbar,
 	type SelectItem,
-	SelectList,
-	type SelectListLayoutOptions,
 	type SettingItem,
 	SettingsList,
 	Spacer,
@@ -16,24 +14,18 @@ import {
 import { formatHttpIdleTimeoutMs, HTTP_IDLE_TIMEOUT_CHOICES } from "../../../core/http-dispatcher.ts";
 import type {
 	DefaultProjectTrust,
+	FullscreenExitOutput,
 	MermaidRenderingMode,
 	TuiMode,
 	WarningSettings,
 } from "../../../core/settings-manager.ts";
-import {
-	getSelectListTheme,
-	getSettingsListTheme,
-	parseAutoThemeSetting,
-	type TerminalTheme,
-	theme,
-} from "../theme/theme.ts";
+import { getSettingsListTheme, parseAutoThemeSetting, type TerminalTheme, theme } from "../theme/theme.ts";
 import { DynamicBorder } from "./dynamic-border.ts";
 import { keyDisplayText } from "./keybinding-hints.ts";
+import { SelectSubmenu, SteppedSubmenu, type SteppedSubmenuStep } from "./settings-submenu.ts";
 
-const SETTINGS_SUBMENU_SELECT_LIST_LAYOUT: SelectListLayoutOptions = {
-	minPrimaryColumnWidth: 12,
-	maxPrimaryColumnWidth: 32,
-};
+const MODEL_PICKER_LAYOUT = { minPrimaryColumnWidth: 12, maxPrimaryColumnWidth: 46 };
+const CLEAR_OVERRIDE_VALUE = "__clear__";
 
 const THINKING_DESCRIPTIONS: Record<ThinkingLevel, string> = {
 	off: "No reasoning",
@@ -51,12 +43,40 @@ const DEFAULT_PROJECT_TRUST_LABELS: Record<DefaultProjectTrust, string> = {
 	never: "Never trust",
 };
 
-const DEFAULT_PROJECT_TRUST_BY_LABEL = new Map(
-	Object.entries(DEFAULT_PROJECT_TRUST_LABELS).map(([value, label]) => [label, value as DefaultProjectTrust]),
-);
+const DEFAULT_PROJECT_TRUST_VALUES = ["Ask", "Always trust", "Never trust"];
+const DEFAULT_PROJECT_TRUST_BY_LABEL = new Map<string, DefaultProjectTrust>([
+	["Ask", "ask"],
+	["Always trust", "always"],
+	["Never trust", "never"],
+]);
+const HTTP_IDLE_TIMEOUT_LABELS = HTTP_IDLE_TIMEOUT_CHOICES.map((choice) => choice.label);
+
+function modelSettingKey(model: Model<any>): string {
+	return `${model.provider}/${model.id}`;
+}
+
+function modelDisplayLabel(model: Model<any>): string {
+	return `${model.id} [${model.provider}]`;
+}
+
+function modelThinkingOverridesSummary(overrides: Record<string, ThinkingLevel>): string {
+	const count = Object.keys(overrides).length;
+	return count === 0 ? "none" : `${count} configured`;
+}
+
+function modelItemLabel(model: Model<any>): string {
+	return `${model.id} ${theme.fg("muted", `[${model.provider}]`)}`;
+}
+
+function modelsHaveSameIdentity(left: Model<any> | undefined, right: Model<any> | undefined): boolean {
+	return left?.provider === right?.provider && left?.id === right?.id;
+}
 
 export interface SettingsConfig {
 	autoCompact: boolean;
+	defaultModel: string;
+	currentModel?: Model<any>;
+	availableDefaultModels: readonly Model<any>[];
 	showImages: boolean;
 	imageWidthCells: number;
 	autoResizeImages: boolean;
@@ -67,7 +87,7 @@ export interface SettingsConfig {
 	transport: Transport;
 	httpIdleTimeoutMs: number;
 	thinkingLevel: ThinkingLevel;
-	availableThinkingLevels: ThinkingLevel[];
+	modelThinkingLevels: Record<string, ThinkingLevel>;
 	currentTheme: string;
 	terminalTheme: TerminalTheme;
 	availableThemes: string[];
@@ -87,6 +107,7 @@ export interface SettingsConfig {
 	clearOnShrink: boolean;
 	showTerminalProgress: boolean;
 	tuiMode: TuiMode;
+	fullscreenExitOutput: FullscreenExitOutput;
 	fullscreenScrollbar: ScrollViewScrollbar;
 	warnings: WarningSettings;
 }
@@ -102,7 +123,8 @@ export interface SettingsCallbacks {
 	onFollowUpModeChange: (mode: "all" | "one-at-a-time") => void;
 	onTransportChange: (transport: Transport) => void;
 	onHttpIdleTimeoutMsChange: (timeoutMs: number) => void;
-	onThinkingLevelChange: (level: ThinkingLevel) => void;
+	onModelThinkingLevelChange: (provider: string, modelId: string, level: ThinkingLevel) => void;
+	onModelThinkingLevelRemove: (provider: string, modelId: string) => void;
 	onThemeChange: (theme: string) => void;
 	onThemePreview?: (theme: string) => void;
 	onHideThinkingBlockChange: (hidden: boolean) => void;
@@ -121,6 +143,7 @@ export interface SettingsCallbacks {
 	onClearOnShrinkChange: (enabled: boolean) => void;
 	onShowTerminalProgressChange: (enabled: boolean) => void;
 	onTuiModeChange: (mode: TuiMode) => void;
+	onFullscreenExitOutputChange: (output: FullscreenExitOutput) => void;
 	onFullscreenScrollbarChange: (mode: ScrollViewScrollbar) => void;
 	onWarningsChange: (warnings: WarningSettings) => void;
 	onCancel: () => void;
@@ -168,70 +191,6 @@ class WarningSettingsSubmenu extends Container {
 
 	handleInput(data: string): void {
 		this.settingsList.handleInput(data);
-	}
-}
-
-class SelectSubmenu extends Container {
-	private selectList: SelectList;
-
-	constructor(
-		title: string,
-		description: string,
-		options: SelectItem[],
-		currentValue: string,
-		onSelect: (value: string) => void,
-		onCancel: () => void,
-		onSelectionChange?: (value: string) => void,
-	) {
-		super();
-
-		// Title
-		this.addChild(new Text(theme.bold(theme.fg("accent", title)), 0, 0));
-
-		// Description
-		if (description) {
-			this.addChild(new Spacer(1));
-			this.addChild(new Text(theme.fg("muted", description), 0, 0));
-		}
-
-		// Spacer
-		this.addChild(new Spacer(1));
-
-		// Select list
-		this.selectList = new SelectList(
-			options,
-			Math.min(options.length, 10),
-			getSelectListTheme(),
-			SETTINGS_SUBMENU_SELECT_LIST_LAYOUT,
-		);
-
-		// Pre-select current value
-		const currentIndex = options.findIndex((o) => o.value === currentValue);
-		if (currentIndex !== -1) {
-			this.selectList.setSelectedIndex(currentIndex);
-		}
-
-		this.selectList.onSelect = (item) => {
-			onSelect(item.value);
-		};
-
-		this.selectList.onCancel = onCancel;
-
-		if (onSelectionChange) {
-			this.selectList.onSelectionChange = (item) => {
-				onSelectionChange(item.value);
-			};
-		}
-
-		this.addChild(this.selectList);
-
-		// Hint
-		this.addChild(new Spacer(1));
-		this.addChild(new Text(theme.fg("dim", "  Enter to select · Esc to go back"), 0, 0));
-	}
-
-	handleInput(data: string): void {
-		this.selectList.handleInput(data);
 	}
 }
 
@@ -489,7 +448,16 @@ export class SettingsSelectorComponent extends Container {
 
 		const supportsImages = getCapabilities().images;
 		const followUpKey = keyDisplayText("app.message.followUp");
+		const cycleThinkingKey = keyDisplayText("app.thinking.cycle");
 		let currentWarnings = { ...config.warnings };
+		let currentModelThinkingLevels = { ...config.modelThinkingLevels };
+		const defaultModelByValue = new Map<string, Model<any>>();
+		for (const model of config.availableDefaultModels) defaultModelByValue.set(modelSettingKey(model), model);
+		const currentDefaultModelKey = defaultModelByValue.has(config.defaultModel) ? config.defaultModel : undefined;
+		const currentModelKey = config.currentModel ? modelSettingKey(config.currentModel) : undefined;
+		const configuredDefaultModel = currentDefaultModelKey
+			? defaultModelByValue.get(currentDefaultModelKey)
+			: undefined;
 
 		const items: SettingItem[] = [
 			{
@@ -527,7 +495,7 @@ export class SettingsSelectorComponent extends Container {
 				description:
 					"Maximum idle gap while waiting for HTTP headers or body chunks. Disable for local models that pause longer than five minutes.",
 				currentValue: formatHttpIdleTimeoutMs(config.httpIdleTimeoutMs),
-				values: HTTP_IDLE_TIMEOUT_CHOICES.map((choice) => choice.label),
+				values: HTTP_IDLE_TIMEOUT_LABELS,
 			},
 			{
 				id: "hide-thinking",
@@ -576,7 +544,7 @@ export class SettingsSelectorComponent extends Container {
 				label: "Default project trust",
 				description: "Fallback behavior when no extension or saved trust decision decides project trust",
 				currentValue: DEFAULT_PROJECT_TRUST_LABELS[config.defaultProjectTrust],
-				values: Object.values(DEFAULT_PROJECT_TRUST_LABELS),
+				values: DEFAULT_PROJECT_TRUST_VALUES,
 			},
 			{
 				id: "double-escape-action",
@@ -608,26 +576,110 @@ export class SettingsSelectorComponent extends Container {
 					),
 			},
 			{
-				id: "thinking",
-				label: "Thinking level",
-				description: "Reasoning depth for thinking-capable models",
-				currentValue: config.thinkingLevel,
-				submenu: (currentValue, done) =>
-					new SelectSubmenu(
-						"Thinking Level",
-						"Select reasoning depth for thinking-capable models",
-						config.availableThinkingLevels.map((level) => ({
-							value: level,
-							label: level,
-							description: THINKING_DESCRIPTIONS[level],
-						})),
-						currentValue,
-						(value) => {
-							callbacks.onThinkingLevelChange(value as ThinkingLevel);
-							done(value);
+				id: "model-thinking",
+				label: "Default thinking level per model",
+				description: `Override the default thinking level for specific models. ${cycleThinkingKey} cycles in-session.`,
+				currentValue: modelThinkingOverridesSummary(currentModelThinkingLevels),
+				submenu: (_currentValue, done) => {
+					const steps: SteppedSubmenuStep[] = [
+						{
+							key: "model",
+							title: "Per-Model Thinking Level",
+							description: "Select a model to configure",
+							options: () => {
+								const sorted = [...config.availableDefaultModels];
+								sorted.sort((left, right) => {
+									const leftCurrent = modelsHaveSameIdentity(left, config.currentModel);
+									const rightCurrent = modelsHaveSameIdentity(right, config.currentModel);
+									if (leftCurrent !== rightCurrent) return leftCurrent ? -1 : 1;
+									const leftDefault = modelsHaveSameIdentity(left, configuredDefaultModel);
+									const rightDefault = modelsHaveSameIdentity(right, configuredDefaultModel);
+									if (leftDefault !== rightDefault) return leftDefault ? -1 : 1;
+									return left.provider.localeCompare(right.provider);
+								});
+								const modelItems = new Array<SelectItem>(sorted.length);
+								for (let index = 0; index < sorted.length; index++) {
+									const model = sorted[index]!;
+									const key = modelSettingKey(model);
+									modelItems[index] = {
+										value: key,
+										label: modelItemLabel(model),
+										description: currentModelThinkingLevels[key],
+									};
+								}
+								if (modelItems.length === 0) {
+									modelItems.push({
+										value: "__none__",
+										label: "No models available",
+										description: "Log in to a provider or configure an API key first",
+									});
+								}
+								return modelItems;
+							},
+							preselect: () => currentModelKey ?? currentDefaultModelKey,
+							searchable: true,
+							layout: MODEL_PICKER_LAYOUT,
 						},
-						() => done(),
-					),
+						{
+							key: "level",
+							title: (context) => {
+								const model = defaultModelByValue.get(context.model);
+								return `Thinking Level for ${model ? modelDisplayLabel(model) : context.model}`;
+							},
+							description: "Select default thinking level for this model",
+							options: (context) => {
+								const model = defaultModelByValue.get(context.model);
+								if (!model) return [];
+								const levels = (model.reasoning ? getSupportedThinkingLevels(model) : ["off"]) as ThinkingLevel[];
+								const levelItems = new Array<SelectItem>(
+									levels.length + (currentModelThinkingLevels[context.model] === undefined ? 0 : 1),
+								);
+								for (let index = 0; index < levels.length; index++) {
+									const level = levels[index]!;
+									levelItems[index] = {
+										value: level,
+										label: level,
+										description: THINKING_DESCRIPTIONS[level],
+									};
+								}
+								if (levelItems.length > levels.length) {
+									levelItems[levels.length] = {
+										value: CLEAR_OVERRIDE_VALUE,
+										label: "(clear override)",
+										description: `Revert to global default (${config.thinkingLevel})`,
+									};
+								}
+								return levelItems;
+							},
+							preselect: (context) => currentModelThinkingLevels[context.model],
+						},
+					];
+					const summary = () => modelThinkingOverridesSummary(currentModelThinkingLevels);
+					return new SteppedSubmenu(
+						steps,
+						(selections) => {
+							const model = defaultModelByValue.get(selections.model);
+							if (!model) return;
+							if (selections.level === CLEAR_OVERRIDE_VALUE) {
+								callbacks.onModelThinkingLevelRemove(model.provider, model.id);
+								const remaining: Record<string, ThinkingLevel> = {};
+								const overrideKeys = Object.keys(currentModelThinkingLevels);
+								for (let index = 0; index < overrideKeys.length; index++) {
+									const key = overrideKeys[index]!;
+									if (key === selections.model) continue;
+									remaining[key] = currentModelThinkingLevels[key]!;
+								}
+								currentModelThinkingLevels = remaining;
+							} else {
+								const level = selections.level as ThinkingLevel;
+								callbacks.onModelThinkingLevelChange(model.provider, model.id, level);
+								currentModelThinkingLevels[selections.model] = level;
+							}
+						},
+						() => done(summary()),
+						{ loop: true },
+					);
+				},
 			},
 			{
 				id: "tui-mode",
@@ -642,6 +694,13 @@ export class SettingsSelectorComponent extends Container {
 				description: "Scrollbar behavior in fullscreen mode; has no effect in regular mode",
 				currentValue: config.fullscreenScrollbar,
 				values: ["auto", "always", "hidden"],
+			},
+			{
+				id: "fullscreen-exit-output",
+				label: "Fullscreen exit output",
+				description: "Print the transcript or only a session resume hint when exiting fullscreen mode",
+				currentValue: config.fullscreenExitOutput,
+				values: ["transcript", "resume-hint"],
 			},
 			{
 				id: "theme",
@@ -860,6 +919,9 @@ export class SettingsSelectorComponent extends Container {
 						break;
 					case "fullscreen-scrollbar":
 						callbacks.onFullscreenScrollbarChange(newValue as ScrollViewScrollbar);
+						break;
+					case "fullscreen-exit-output":
+						callbacks.onFullscreenExitOutputChange(newValue as FullscreenExitOutput);
 						break;
 					case "theme":
 						callbacks.onThemeChange(newValue);

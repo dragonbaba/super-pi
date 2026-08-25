@@ -4,6 +4,7 @@
  */
 
 import { execSync, spawnSync } from "child_process";
+import { setOwnProperty } from "../utils/record.ts";
 import { getShellConfig } from "../utils/shell.ts";
 
 const COMMAND_RESULT_CACHE_MAX_ENTRIES = 32;
@@ -269,7 +270,7 @@ export function resolveHeaders(
 	for (const [key, value] of Object.entries(headers)) {
 		const resolvedValue = resolveConfigValue(value, env);
 		if (resolvedValue) {
-			resolved[key] = resolvedValue;
+			setOwnProperty(resolved, key, resolvedValue);
 		}
 	}
 	return Object.keys(resolved).length > 0 ? resolved : undefined;
@@ -283,7 +284,7 @@ export function resolveHeadersOrThrow(
 	if (!headers) return undefined;
 	const resolved: Record<string, string> = {};
 	for (const [key, value] of Object.entries(headers)) {
-		resolved[key] = resolveConfigValueOrThrow(value, `${description} header "${key}"`, env);
+		setOwnProperty(resolved, key, resolveConfigValueOrThrow(value, `${description} header "${key}"`, env));
 	}
 	return Object.keys(resolved).length > 0 ? resolved : undefined;
 }

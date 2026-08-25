@@ -29,6 +29,7 @@ import {
 	type ModelsRequestTransforms,
 	type ModelsSimpleStreamOptions,
 	type ModelsStore,
+	mergeProviderHeaders,
 	type MutableModels,
 	type Provider,
 	type ProviderHeaders,
@@ -108,22 +109,6 @@ export class CredentialSynchronizationError extends Error {
 		this.operation = operation;
 		this.credential = credential;
 	}
-}
-
-function mergeHeaders(
-	base: ProviderHeaders | undefined,
-	override: ProviderHeaders | undefined,
-): ProviderHeaders | undefined {
-	if (!base && !override) return undefined;
-	const merged = { ...base };
-	for (const [name, value] of Object.entries(override ?? {})) {
-		const lowerName = name.toLowerCase();
-		for (const existingName of Object.keys(merged)) {
-			if (existingName.toLowerCase() === lowerName) delete merged[existingName];
-		}
-		merged[name] = value;
-	}
-	return merged;
 }
 
 /** Configured pi-ai Models collection used by coding-agent and SDK consumers. */
@@ -486,7 +471,7 @@ export class ModelRuntime implements Models {
 			...resolution,
 			auth: {
 				...resolution.auth,
-				headers: mergeHeaders(resolution.auth.headers, configuredHeaders),
+				headers: mergeProviderHeaders(resolution.auth.headers, configuredHeaders),
 			},
 		};
 	}
@@ -589,7 +574,7 @@ export class ModelRuntime implements Models {
 
 		const { transformHeaders, ...rawProviderOptions } = options ?? {};
 		const providerOptions = rawProviderOptions as Omit<TOptions, "transformHeaders"> & ProviderRequestOptions;
-		let headers = mergeHeaders(resolution.auth.headers, providerOptions.headers);
+		let headers = mergeProviderHeaders(resolution.auth.headers, providerOptions.headers);
 		if (transformHeaders) headers = await transformHeaders(headers ?? {});
 		const env =
 			resolution.env || providerOptions.env

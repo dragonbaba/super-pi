@@ -32,6 +32,6 @@
 			"@super-pi/tui-kit": ["./packages/tui-kit/src/index.ts"]
 		}
 	},
-	"include": ["packages/*/src/**/*", "packages/extensions/*/**/*.ts", "packages/session-backends/*/src/**/*"],
+	"include": ["packages/*/src/**/*", "packages/extensions/*/**/*.ts", "packages/session-backends/*/src/**/*", "tests/**/*.ts"],
 	"exclude": ["**/dist/**"]
 }

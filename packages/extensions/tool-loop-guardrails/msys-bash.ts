@@ -21,9 +21,12 @@ export function withMsysStdinBridge(
   if (commandBytes > MAX_MSYS_STDIN_COMMAND_BYTES) {
     throw new Error(`MSYS_STDIN_COMMAND_TOO_LARGE: paired-backslash Bash command is ${commandBytes} UTF-8 bytes; maximum bridge size is ${MAX_MSYS_STDIN_COMMAND_BYTES}. Use a bounded script file or structured argv instead.`);
   }
-  const env = { ...context.env };
-  for (const key of Object.keys(env)) {
-    if (key.toUpperCase() === MSYS_STDIN_COMMAND_ENV) delete env[key];
+  const env: NodeJS.ProcessEnv = {};
+  const sourceEnv = context.env;
+  const contextEnvKeys = sourceEnv ? Object.keys(sourceEnv) : undefined;
+  for (let index = 0; index < (contextEnvKeys?.length ?? 0); index++) {
+    const key = contextEnvKeys![index]!;
+    if (key.toUpperCase() !== MSYS_STDIN_COMMAND_ENV) env[key] = sourceEnv![key];
   }
   env[MSYS_STDIN_COMMAND_ENV] = Buffer.from(context.command, "utf8").toString("base64");
   let environmentCharacters = 1;

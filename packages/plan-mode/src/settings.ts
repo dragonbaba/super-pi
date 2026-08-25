@@ -10,6 +10,7 @@ import {
 	type SafeGitSubcommand,
 	type SafeSubcommands,
 } from "./tool-policy.js";
+import { PLAN_EXPORT_VISIBLE_CHARACTER_PATTERN } from "./settings-regex.js";
 
 export const PLAN_MODE_SETTINGS_FILE = "sp-plan-mode.json";
 const LEGACY_PLAN_MODE_SETTINGS_FILE = "plan-mode.json";
@@ -66,6 +67,19 @@ type SettingsSnapshot = {
 };
 
 const mutationQueues = new Map<string, Promise<void>>();
+const TOOL_NAME_SET_POOL: Set<string>[] = [];
+const MAX_POOLED_TOOL_NAME_SETS = 4;
+const MAX_POOLED_TOOL_NAMES = 512;
+
+function acquireToolNameSet(): Set<string> {
+	return TOOL_NAME_SET_POOL.pop() ?? new Set<string>();
+}
+
+function releaseToolNameSet(value: Set<string>): void {
+	const retain = value.size <= MAX_POOLED_TOOL_NAMES && TOOL_NAME_SET_POOL.length < MAX_POOLED_TOOL_NAME_SETS;
+	value.clear();
+	if (retain) TOOL_NAME_SET_POOL.push(value);
+}
 
 export function planModeSettingsPath() {
 	return join(getConfigDir(), PLAN_MODE_SETTINGS_FILE);
@@ -119,13 +133,21 @@ export function normalizePlanModeSettings(value: unknown): PlanModeSettings | un
 }
 
 function normalizeToolNames(value: unknown) {
-	if (
-		!Array.isArray(value) ||
-		!value.every((item): item is string => typeof item === "string" && item.trim().length > 0)
-	) {
-		return undefined;
+	if (!Array.isArray(value)) return undefined;
+	const seen = acquireToolNameSet();
+	const normalized: string[] = [];
+	try {
+		for (let index = 0; index < value.length; index++) {
+			const item: unknown = value[index];
+			if (typeof item !== "string" || item.trim().length === 0) return undefined;
+			if (seen.has(item)) continue;
+			seen.add(item);
+			normalized.push(item);
+		}
+		return normalized;
+	} finally {
+		releaseToolNameSet(seen);
 	}
-	return Array.from(new Set(value));
 }
 
 function normalizePlanExportPath(value: unknown) {
@@ -134,20 +156,25 @@ function normalizePlanExportPath(value: unknown) {
 	if (
 		!normalized ||
 		normalized.length > MAX_PLAN_EXPORT_PATH_LENGTH ||
-		!/[^@\s]/u.test(normalized) ||
-		[...normalized].some((character) => {
-			const codePoint = character.codePointAt(0) ?? 0;
-			return codePoint <= 0x1f || (codePoint >= 0x7f && codePoint <= 0x9f);
-		})
+		!PLAN_EXPORT_VISIBLE_CHARACTER_PATTERN.test(normalized)
 	) {
 		return undefined;
+	}
+	for (let index = 0; index < normalized.length; ) {
+		const codePoint = normalized.codePointAt(index)!;
+		if (codePoint <= 0x1f || (codePoint >= 0x7f && codePoint <= 0x9f)) return undefined;
+		index += codePoint > 0xffff ? 2 : 1;
 	}
 	return normalized;
 }
 
 function normalizeSafeSubcommands(value: unknown): SafeSubcommands | undefined {
 	if (!isSettingsDocument(value)) return undefined;
-	if (Object.keys(value).some((key) => key !== "git" && key !== "gh")) return undefined;
+	const keys = Object.keys(value);
+	for (let index = 0; index < keys.length; index++) {
+		const key = keys[index]!;
+		if (key !== "git" && key !== "gh") return undefined;
+	}
 
 	const safeSubcommands: SafeSubcommands = {};
 	if (Object.hasOwn(value, "git")) {
@@ -164,13 +191,26 @@ function normalizeSafeSubcommands(value: unknown): SafeSubcommands | undefined {
 }
 
 function normalizeKnownValues(value: unknown, supported: readonly string[]) {
-	if (
-		!Array.isArray(value) ||
-		!value.every((item): item is string => typeof item === "string" && supported.includes(item))
-	) {
-		return undefined;
+	if (!Array.isArray(value)) return undefined;
+	const normalized: string[] = [];
+	for (let index = 0; index < value.length; index++) {
+		const item: unknown = value[index];
+		if (typeof item !== "string" || !supported.includes(item)) return undefined;
+		if (!normalized.includes(item)) normalized.push(item);
 	}
-	return Array.from(new Set(value));
+	return normalized;
+}
+
+function copySettingsDocumentForPatch(current: SettingsDocument, patch: PlanModeSettingsPatch): SettingsDocument {
+	const updated: SettingsDocument = {};
+	const keys = Object.keys(current);
+	for (let index = 0; index < keys.length; index++) {
+		const key = keys[index]!;
+		if (patch.defaultPlanTools === null && key === "defaultPlanTools") continue;
+		if (patch.defaultPlanExportPath === null && key === "defaultPlanExportPath") continue;
+		updated[key] = current[key];
+	}
+	return updated;
 }
 
 export async function readPlanModeSettings(
@@ -214,17 +254,15 @@ export function updatePlanModeSettings(
 	return enqueueMutation(settingsPath, async () => {
 		options.signal?.throwIfAborted();
 		const current = await readSettingsDocumentForUpdate(settingsPath, legacySettingsPath);
-		const updated: SettingsDocument = { ...current };
+		const updated = copySettingsDocumentForPatch(current, patch);
 		if (patch.thinkingLevel !== undefined) updated.thinkingLevel = patch.thinkingLevel;
-		if (patch.defaultPlanTools === null) delete updated.defaultPlanTools;
-		else if (patch.defaultPlanTools !== undefined) {
+		if (patch.defaultPlanTools !== null && patch.defaultPlanTools !== undefined) {
 			updated.defaultPlanTools = [...patch.defaultPlanTools];
 		}
 		if (patch.implementationPlanRetention !== undefined) {
 			updated.implementationPlanRetention = patch.implementationPlanRetention;
 		}
-		if (patch.defaultPlanExportPath === null) delete updated.defaultPlanExportPath;
-		else if (patch.defaultPlanExportPath !== undefined) {
+		if (patch.defaultPlanExportPath !== null && patch.defaultPlanExportPath !== undefined) {
 			updated.defaultPlanExportPath = patch.defaultPlanExportPath;
 		}
 		const settings = normalizePlanModeSettings(updated);

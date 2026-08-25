@@ -13,7 +13,7 @@ const RECURSIVE_FILE_TOOLS = new Set(["grep", "find", "ls"]);
 
 export default function childGuard(pi: ExtensionAPI): void {
 	pi.on("before_agent_start", (event) => ({
-		systemPrompt: `${event.systemPrompt}\n\n<subagent-security>\nDo not inspect credentials, secret environment values, Pi auth storage, browser profiles, or private key files. Access files only inside the assigned canonical workspace. Bash is not a sandbox and is available only when explicitly permitted.\n</subagent-security>`,
+		systemPrompt: `${event.systemPrompt}\n\n<subagent-security>\nDo not inspect credentials, secret environment values, Pi auth storage, browser profiles, or private key files. Access files only inside the assigned canonical workspace. Shells are not sandboxes; Bash is available only when explicitly permitted, and PowerShell is disabled.\n</subagent-security>`,
 	}));
 
 	pi.on("tool_call", (event, ctx) => {
@@ -50,6 +50,9 @@ export default function childGuard(pi: ExtensionAPI): void {
 			if (OUTSIDE_CD_COMMAND_PATTERN.test(input.command)) {
 				return { block: true, reason: "Subagent guard: Bash may not change outside the assigned workspace" };
 			}
+		}
+		if (event.toolName === "powershell") {
+			return { block: true, reason: "Subagent guard: PowerShell is disabled for this agent" };
 		}
 	});
 }

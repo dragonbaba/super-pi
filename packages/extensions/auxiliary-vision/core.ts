@@ -29,6 +29,7 @@ const HARD_MAX_IMAGES = 16;
 const HARD_MAX_TOTAL_INPUT_BYTES = 100 * 1024 * 1024;
 const HARD_MAX_TIMEOUT_MS = 15 * 60 * 1000;
 const HARD_MAX_TOKENS = 16_384;
+const CLIPBOARD_PATH_SCRATCH = new Set<string>();
 
 function finiteInteger(value: unknown, fallback: number, minimum: number, maximum: number): number {
 	return typeof value === "number" && Number.isFinite(value) && value >= minimum
@@ -125,19 +126,24 @@ export function isPathInsideRoot(candidate: string, root: string): boolean {
 export function extractPiClipboardImagePaths(text: string, tempDirectory: string): string[] {
 	const canonicalTemp = resolve(tempDirectory).toLowerCase();
 	const paths: string[] = [];
-	const seen = new Set<string>();
+	const seen = CLIPBOARD_PATH_SCRATCH;
+	seen.clear();
 	SP_CLIPBOARD_IMAGE_PATH_PATTERN.lastIndex = 0;
-	for (const match of text.matchAll(SP_CLIPBOARD_IMAGE_PATH_PATTERN)) {
-		const candidate = resolve(match[0]);
-		if (dirname(candidate).toLowerCase() !== canonicalTemp) continue;
-		if (!basename(candidate).toLowerCase().startsWith("pi-clipboard-")) continue;
-		const key = candidate.toLowerCase();
-		if (!seen.has(key)) {
-			seen.add(key);
-			paths.push(candidate);
+	try {
+		for (const match of text.matchAll(SP_CLIPBOARD_IMAGE_PATH_PATTERN)) {
+			const candidate = resolve(match[0]);
+			if (dirname(candidate).toLowerCase() !== canonicalTemp) continue;
+			if (!basename(candidate).toLowerCase().startsWith("pi-clipboard-")) continue;
+			const key = candidate.toLowerCase();
+			if (!seen.has(key)) {
+				seen.add(key);
+				paths.push(candidate);
+			}
 		}
+		return paths;
+	} finally {
+		seen.clear();
 	}
-	return paths;
 }
 
 export function replaceClipboardImagePaths(text: string, paths: readonly string[]): string {

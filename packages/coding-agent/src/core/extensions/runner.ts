@@ -12,6 +12,7 @@ import type { ModelRegistry } from "../model-registry.ts";
 import type { ScopedModel } from "../model-resolver.ts";
 import type { SessionManager } from "../session-manager.ts";
 import type { BuildSystemPromptOptions } from "../system-prompt.ts";
+import { setOwnProperty } from "../../utils/record.ts";
 import type {
 	BeforeAgentStartEvent,
 	BeforeAgentStartEventResult,
@@ -103,10 +104,10 @@ const buildBuiltinKeybindings = (resolvedKeybindings: KeybindingsConfig): BuiltI
 			// remain blocked by reserved shortcuts regardless of iteration order.
 			const existing = builtinKeybindings[normalizedKey];
 			if (existing?.restrictOverride && !restrictOverride) continue;
-			builtinKeybindings[normalizedKey] = {
+			setOwnProperty(builtinKeybindings, normalizedKey, {
 				keybinding,
 				restrictOverride,
-			};
+			});
 		}
 	}
 	return builtinKeybindings;

@@ -113,6 +113,7 @@ export type {
 	MessageRenderOptions,
 	MessageStartEvent,
 	MessageUpdateEvent,
+	PowerShellToolCallEvent,
 	ProjectTrustContext,
 	ProjectTrustEvent,
 	ProjectTrustEventDecision,
@@ -132,6 +133,7 @@ export type {
 	SessionBeforeSwitchEvent,
 	SessionBeforeTreeEvent,
 	SessionCompactEvent,
+	SessionCompactFailedEvent,
 	SessionInfoChangedEvent,
 	SessionShutdownEvent,
 	SessionStartEvent,
@@ -168,6 +170,7 @@ export {
 	isFindToolResult,
 	isGrepToolResult,
 	isLsToolResult,
+	isPowerShellToolResult,
 	isReadToolResult,
 	isToolCallEventType,
 	isWriteToolResult,
@@ -227,6 +230,7 @@ export {
 	createFindTool,
 	createGrepTool,
 	createLsTool,
+	createPowerShellTool,
 	createReadOnlyTools,
 	createReadTool,
 	createWriteTool,
@@ -261,8 +265,10 @@ export {
 export {
 	type CompactionSettings,
 	type DefaultProjectTrust,
+	type FullscreenExitOutput,
 	type ImageSettings,
 	type PackageSource,
+	type PowerShellStatusSettings,
 	type RetrySettings,
 	SettingsManager,
 	type SettingsManagerCreateOptions,
@@ -293,7 +299,10 @@ export {
 	createFindToolDefinition,
 	createGrepToolDefinition,
 	createLocalBashOperations,
+	createLocalPowerShellOperations,
+	createPowerShellToolState,
 	createLsToolDefinition,
+	createPowerShellToolDefinition,
 	createReadToolDefinition,
 	createWriteToolDefinition,
 	DEFAULT_MAX_BYTES,
@@ -307,6 +316,7 @@ export {
 	type FindToolInput,
 	type FindToolOptions,
 	formatSize,
+	getDefaultToolNames,
 	type GrepOperations,
 	type GrepToolDetails,
 	type GrepToolInput,
@@ -315,6 +325,14 @@ export {
 	type LsToolDetails,
 	type LsToolInput,
 	type LsToolOptions,
+	type PowerShellOperations,
+	type LocalPowerShellOperationsOptions,
+	type PowerShellSpawnContext,
+	type PowerShellSpawnHook,
+	type PowerShellToolDetails,
+	type PowerShellToolInput,
+	type PowerShellToolOptions,
+	type PowerShellToolState,
 	type ReadOperations,
 	type ReadToolDetails,
 	type ReadToolInput,
@@ -413,4 +431,5 @@ export { parseFrontmatter, stripFrontmatter } from "./utils/frontmatter.ts";
 export { convertToPng } from "./utils/image-convert.ts";
 export { formatDimensionNote, type ResizedImage, resizeImage } from "./utils/image-resize.ts";
 // Shell utilities
-export { getShellConfig } from "./utils/shell.ts";
+export { getPowerShellCandidateConfig, getPowerShellConfig, getShellConfig } from "./utils/shell.ts";
+export { findUnsafePowerShellSegment } from "./utils/powershell-policy.ts";

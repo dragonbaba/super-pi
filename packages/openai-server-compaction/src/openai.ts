@@ -5,6 +5,7 @@
  * and model-key logic out of the higher-level extension wiring.
  */
 import type { ExtensionConfig, JsonRecord } from "./config.ts";
+import { setOwnProperty } from "@super-pi/ai";
 import type {
   RemoteCompactionServiceTier,
   ResponsesReasoningConfig,
@@ -161,12 +162,19 @@ export function applyRemoteHistoryPayloadPatch(params: {
   payload: JsonRecord;
   explicitHistory: unknown[];
 }): JsonRecord {
-  const nextPayload: JsonRecord = {
-    ...params.payload,
-    input: params.explicitHistory,
-  };
-  delete nextPayload.messages;
-  delete nextPayload.previous_response_id;
+  const nextPayload: JsonRecord = {};
+  const payloadKeys = Object.keys(params.payload);
+  for (let index = 0; index < payloadKeys.length; index++) {
+    const key = payloadKeys[index]!;
+    if (
+      key !== "input"
+      && key !== "messages"
+      && key !== "previous_response_id"
+    ) {
+      setOwnProperty(nextPayload, key, params.payload[key]);
+    }
+  }
+  nextPayload.input = params.explicitHistory;
   return nextPayload;
 }
 

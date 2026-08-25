@@ -69,8 +69,9 @@ interface PackageCommandOptions {
 
 function reportSettingsErrors(settingsManager: SettingsManager, context: string): void {
 	const errors = settingsManager.drainErrors();
-	for (const { scope, error } of errors) {
-		console.error(chalk.yellow(`Warning (${context}, ${scope} settings): ${error.message}`));
+	for (const { scope, path, error } of errors) {
+		const location = path ?? `${scope} settings`;
+		console.error(chalk.yellow(`Warning (${context}, ${location}): ${error.message}`));
 		if (error.stack) {
 			console.error(chalk.dim(error.stack));
 		}

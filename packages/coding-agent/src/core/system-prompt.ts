@@ -5,6 +5,10 @@
 import { getReadmePath } from "../config.ts";
 import { formatSkillsForPrompt, type Skill } from "./skills.ts";
 
+function addUniqueGuideline(guidelines: string[], guideline: string): void {
+	if (!guidelines.includes(guideline)) guidelines.push(guideline);
+}
+
 export interface BuildSystemPromptOptions {
 	/** Custom system prompt (replaces default). */
 	customPrompt?: string;
@@ -83,36 +87,35 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 
 	// Build guidelines based on which tools are actually available
 	const guidelinesList: string[] = [];
-	const guidelinesSet = new Set<string>();
-	const addGuideline = (guideline: string): void => {
-		if (guidelinesSet.has(guideline)) {
-			return;
-		}
-		guidelinesSet.add(guideline);
-		guidelinesList.push(guideline);
-	};
 
 	const hasBash = tools.includes("bash");
+	const hasPowerShell = tools.includes("powershell");
 	const hasGrep = tools.includes("grep");
 	const hasFind = tools.includes("find");
 	const hasLs = tools.includes("ls");
 	const hasRead = tools.includes("read");
 
 	// File exploration guidelines
-	if (hasBash && !hasGrep && !hasFind && !hasLs) {
-		addGuideline("Use bash for file operations like ls, rg, find");
+	if ((hasBash || hasPowerShell) && !hasGrep && !hasFind && !hasLs) {
+		if (hasBash && hasPowerShell) {
+			addUniqueGuideline(guidelinesList, "Use bash or PowerShell for file operations like listing, searching, and finding files");
+		} else if (hasPowerShell) {
+			addUniqueGuideline(guidelinesList, "Use PowerShell for file operations like listing, searching, and finding files");
+		} else {
+			addUniqueGuideline(guidelinesList, "Use bash for file operations like ls, rg, find");
+		}
 	}
 
 	for (const guideline of promptGuidelines ?? []) {
 		const normalized = guideline.trim();
 		if (normalized.length > 0) {
-			addGuideline(normalized);
+			addUniqueGuideline(guidelinesList, normalized);
 		}
 	}
 
 	// Always include these
-	addGuideline("Be concise in your responses");
-	addGuideline("Show file paths clearly when working with files");
+	addUniqueGuideline(guidelinesList, "Be concise in your responses");
+	addUniqueGuideline(guidelinesList, "Show file paths clearly when working with files");
 
 	const guidelines = guidelinesList.map((g) => `- ${g}`).join("\n");
 

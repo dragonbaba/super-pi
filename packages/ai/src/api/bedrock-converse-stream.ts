@@ -309,9 +309,13 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 			stream.end();
 		} catch (error) {
 			for (const block of output.content) {
-				delete (block as Block).index;
+				if ("index" in block) {
+					(block as Block).index = undefined;
+				}
 				// partialJson is only a streaming scratch buffer; never persist it.
-				delete (block as Block).partialJson;
+				if ("partialJson" in block) {
+					(block as Block).partialJson = undefined;
+				}
 			}
 			output.stopReason = options.signal?.aborted ? "aborted" : "error";
 			output.errorMessage = formatBedrockError(error);
@@ -462,7 +466,10 @@ export const streamSimple: StreamFunction<"bedrock-converse-stream", SimpleStrea
 	context: Context,
 	options?: SimpleStreamOptions,
 ): AssistantMessageEventStream => {
-	const base = buildBaseOptions(model, context, options, undefined);
+	const base: BedrockOptions = {
+		...buildBaseOptions(model, context, options, undefined),
+		toolChoice: options?.toolChoice,
+	};
 	if (!options?.reasoning) {
 		return stream(model, context, { ...base, reasoning: undefined } satisfies BedrockOptions);
 	}
@@ -610,7 +617,7 @@ function handleContentBlockStop(
 	const index = blocks.findIndex((b) => b.index === event.contentBlockIndex);
 	const block = blocks[index];
 	if (!block) return;
-	delete (block as Block).index;
+	(block as Block).index = undefined;
 
 	switch (block.type) {
 		case "text":
@@ -623,7 +630,7 @@ function handleContentBlockStop(
 			block.arguments = parseStreamingJson(block.partialJson);
 			// Finalize in-place and strip the scratch buffer so replay only
 			// carries parsed arguments.
-			delete (block as Block).partialJson;
+			(block as Block).partialJson = undefined;
 			stream.push({ type: "toolcall_end", contentIndex: index, toolCall: block, partial: output });
 			break;
 	}

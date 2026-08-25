@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { setOwnProperty } from "@super-pi/ai";
 
 const IDENTITY_ROUTING_HEADERS = new Set([
   "chatgpt-account-id",
@@ -38,17 +39,17 @@ function digest(value: unknown): string {
 function withoutInput(payload: Record<string, unknown>): Record<string, unknown> {
   const result: Record<string, unknown> = {};
   for (const key of Object.keys(payload)) {
-    if (key !== "input") result[key] = payload[key];
+		if (key !== "input") setOwnProperty(result, key, payload[key]);
   }
   return result;
 }
 
 function identityRoutingHeaders(headers: Record<string, string>): Record<string, string> {
   const result: Record<string, string> = {};
-  const names = Object.keys(headers).sort((left, right) => left.localeCompare(right));
+	const names = Object.keys(headers).sort();
   for (const name of names) {
     const normalized = name.toLowerCase();
-    if (IDENTITY_ROUTING_HEADERS.has(normalized)) result[normalized] = headers[name];
+		if (IDENTITY_ROUTING_HEADERS.has(normalized)) setOwnProperty(result, normalized, headers[name]);
   }
   return result;
 }

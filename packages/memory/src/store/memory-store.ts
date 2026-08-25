@@ -45,6 +45,43 @@ const CONFLICT_MAX_COUNT = 32;
 const CONFLICT_MAX_BYTES = 64 * 1024 * 1024;
 const GENERATED_ARTIFACT_SUFFIX_PATTERN = /^\d+-[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ENTRY_METADATA_PATTERN = /^(.*?)\s*<!--\s*created=([^,]+),\s*last=([^,>]+)(?:,\s*project64=([A-Za-z0-9_-]+))?\s*-->\s*$/;
+const ENTRY_DEDUPLICATION_SCRATCH = new Set<string>();
+const MATCHED_ENTRY_SCRATCH = new Set<string>();
+const VISIBLE_FAILURE_TEXT_SCRATCH = new Set<string>();
+const FAILURE_SCOPE_SCRATCH = new Set<string | null>();
+
+function deduplicateEntries(entries: readonly string[]): string[] {
+  const seen = ENTRY_DEDUPLICATION_SCRATCH;
+  const result: string[] = [];
+  seen.clear();
+  try {
+    for (let index = 0; index < entries.length; index++) {
+      const entry = entries[index]!;
+      if (!seen.has(entry)) {
+        seen.add(entry);
+        result.push(entry);
+      }
+    }
+    return result;
+  } finally {
+    seen.clear();
+  }
+}
+
+function hasDuplicateEntries(entries: readonly string[]): boolean {
+  const seen = ENTRY_DEDUPLICATION_SCRATCH;
+  seen.clear();
+  try {
+    for (let index = 0; index < entries.length; index++) {
+      const entry = entries[index]!;
+      if (seen.has(entry)) return true;
+      seen.add(entry);
+    }
+    return false;
+  } finally {
+    seen.clear();
+  }
+}
 
 function isGeneratedArtifactName(name: string, prefix: string): boolean {
   return name.startsWith(prefix) && GENERATED_ARTIFACT_SUFFIX_PATTERN.test(name.slice(prefix.length));
@@ -56,7 +93,7 @@ export class MemoryStore {
   private memoryEntries: string[] = [];
   private userEntries: string[] = [];
   private failureEntries: string[] = [];
-  private fileFingerprints: Record<string, string> = {};
+  private fileFingerprints: Record<string, string | undefined> = {};
   private storagePaths: Partial<Record<"memory" | "user" | "failure", string>> = {};
   private snapshot: MemorySnapshot = { memory: "", user: "" };
   private consolidator: ((target: "memory" | "user" | "failure", signal?: AbortSignal) => Promise<ConsolidationResult>) | null = null;
@@ -136,7 +173,7 @@ export class MemoryStore {
     for (const target of ["memory", "user", "failure"] as const) {
       const filePath = await this.resolveStoragePath(target);
       const state = await this.readFileState(filePath);
-      this.setEntries(target, [...new Set(state.entries)]);
+      this.setEntries(target, deduplicateEntries(state.entries));
       this.fileFingerprints[filePath] = state.fingerprint;
     }
 
@@ -377,7 +414,7 @@ export class MemoryStore {
     | { success: true; chars: number; limit: number }
     | { success: false; error: string; chars?: number; limit?: number } {
     const normalized = nextEntries.map((entry) => entry.trim()).filter(Boolean);
-    if (new Set(normalized).size !== normalized.length) {
+    if (hasDuplicateEntries(normalized)) {
       return { success: false, error: "Organization proposal contains duplicate entries." };
     }
     for (const entry of normalized) {
@@ -447,8 +484,19 @@ export class MemoryStore {
       };
     }
 
-    const matchedEntries = new Set(matches);
-    this.setEntries(target, entries.filter((entry) => !matchedEntries.has(entry)));
+    const matchedEntries = MATCHED_ENTRY_SCRATCH;
+    const remainingEntries: string[] = [];
+    matchedEntries.clear();
+    try {
+      for (let index = 0; index < matches.length; index++) matchedEntries.add(matches[index]!);
+      for (let index = 0; index < entries.length; index++) {
+        const entry = entries[index]!;
+        if (!matchedEntries.has(entry)) remainingEntries.push(entry);
+      }
+    } finally {
+      matchedEntries.clear();
+    }
+    this.setEntries(target, remainingEntries);
     await this.saveToDisk(target);
 
     return this.successResponse(target, "Entry removed.");
@@ -550,9 +598,21 @@ export class MemoryStore {
     entries: string[],
   ): boolean {
     if (target !== "failure") return false;
-    const visibleTexts = new Set(entries.map((entry) => this.stripMetadata(entry)));
-    const scopes = new Set(entries.map((entry) => this.decodeEntry(entry).project));
-    return visibleTexts.size === 1 && scopes.size === entries.length;
+    const visibleTexts = VISIBLE_FAILURE_TEXT_SCRATCH;
+    const scopes = FAILURE_SCOPE_SCRATCH;
+    visibleTexts.clear();
+    scopes.clear();
+    try {
+      for (let index = 0; index < entries.length; index++) {
+        const entry = entries[index]!;
+        visibleTexts.add(this.stripMetadata(entry));
+        scopes.add(this.decodeEntry(entry).project);
+      }
+      return visibleTexts.size === 1 && scopes.size === entries.length;
+    } finally {
+      visibleTexts.clear();
+      scopes.clear();
+    }
   }
 
   private buildFailureMemoryText(content: string, options: {
@@ -665,7 +725,7 @@ export class MemoryStore {
     const state = await this.readFileState(filePath);
     if (this.fileFingerprints[filePath] === state.fingerprint) return;
 
-    this.setEntries(target, [...new Set(state.entries)]);
+    this.setEntries(target, deduplicateEntries(state.entries));
     this.fileFingerprints[filePath] = state.fingerprint;
   }
 
@@ -680,7 +740,7 @@ export class MemoryStore {
     result: MemoryResult,
   ): Promise<MemoryResult> {
     const state = await this.readFileState(storagePath);
-    this.setEntries(target, [...new Set(state.entries)]);
+    this.setEntries(target, deduplicateEntries(state.entries));
     this.fileFingerprints[storagePath] = state.fingerprint;
 
     let finalized = result;
@@ -726,7 +786,7 @@ export class MemoryStore {
             if (expectedFingerprint !== undefined) {
               const state = await this.readFileState(storagePath);
               if (state.fingerprint !== expectedFingerprint) {
-                this.setEntries(target, [...new Set(state.entries)]);
+                this.setEntries(target, deduplicateEntries(state.entries));
                 this.fileFingerprints[storagePath] = state.fingerprint;
                 throw new ExternalMemoryWriteConflict();
               }
@@ -734,9 +794,9 @@ export class MemoryStore {
           }
           return await this.finalizeTargetMutation(target, storagePath, result);
         } catch (error) {
-          delete this.fileFingerprints[storagePath];
+          this.fileFingerprints[storagePath] = undefined;
           const state = await this.readFileState(storagePath);
-          this.setEntries(target, [...new Set(state.entries)]);
+          this.setEntries(target, deduplicateEntries(state.entries));
           this.fileFingerprints[storagePath] = state.fingerprint;
           if (!(error instanceof ExternalMemoryWriteConflict)) throw error;
           if (attempt >= MAX_EXTERNAL_WRITE_RETRIES) {
@@ -845,7 +905,7 @@ export class MemoryStore {
       this.fileFingerprints[filePath] = publishedFingerprint;
       const publishedState = await this.readFileState(filePath);
       if (publishedState.fingerprint !== publishedFingerprint) {
-        this.setEntries(target, [...new Set(publishedState.entries)]);
+        this.setEntries(target, deduplicateEntries(publishedState.entries));
         this.fileFingerprints[filePath] = publishedState.fingerprint;
         throw new ExternalMemoryWriteConflict();
       }

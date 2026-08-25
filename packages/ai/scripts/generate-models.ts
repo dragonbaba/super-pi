@@ -714,7 +714,7 @@ function applyOpenAICompletionsCompatMetadata(model: Model<Api>): void {
 	const detected = openAICompletionsCompatDelta(detectOpenAICompletionsCompat(model as Model<"openai-completions">));
 	model.compat = { ...detected, ...(model.compat as OpenAICompletionsCompat | undefined) };
 	if (Object.keys(model.compat).length === 0) {
-		delete model.compat;
+		model.compat = undefined;
 	}
 }
 

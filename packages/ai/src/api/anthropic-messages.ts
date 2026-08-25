@@ -33,6 +33,7 @@ import { splitDeferredTools } from "../utils/deferred-tools.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { headersToRecord } from "../utils/headers.ts";
 import { parseJsonWithRepair, parseStreamingJson } from "../utils/json-parse.ts";
+import { getPiUserAgent } from "../utils/pi-user-agent.ts";
 import { getProviderEnvValue } from "../utils/provider-env.ts";
 import { retryProviderRequest } from "../utils/provider-retry.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
@@ -269,6 +270,10 @@ function mergeHeaders(...headerSources: (ProviderHeaders | undefined)[]): Provid
 		}
 	}
 	return merged;
+}
+
+function mergeClientHeaders(...headerSources: (ProviderHeaders | undefined)[]): ProviderHeaders {
+	return mergeHeaders({ "User-Agent": getPiUserAgent() }, ...headerSources);
 }
 
 function hasHeader(headers: ProviderHeaders | undefined, name: string): boolean {
@@ -676,7 +681,7 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 					const index = blocks.findIndex((b) => b.index === event.index);
 					const block = blocks[index];
 					if (block) {
-						delete (block as any).index;
+						(block as { index?: number }).index = undefined;
 						if (block.type === "text") {
 							stream.push({
 								type: "text_end",
@@ -695,7 +700,7 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 							block.arguments = parseStreamingJson(block.partialJson);
 							// Finalize in-place and strip the scratch buffer so replay only
 							// carries parsed arguments.
-							delete (block as { partialJson?: string }).partialJson;
+							(block as { partialJson?: string }).partialJson = undefined;
 							stream.push({
 								type: "toolcall_end",
 								contentIndex: index,
@@ -759,9 +764,13 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 			stream.end();
 		} catch (error) {
 			for (const block of output.content) {
-				delete (block as { index?: number }).index;
+				if ("index" in block) {
+					(block as { index?: number }).index = undefined;
+				}
 				// partialJson is only a streaming scratch buffer; never persist it.
-				delete (block as { partialJson?: string }).partialJson;
+				if ("partialJson" in block) {
+					(block as { partialJson?: string }).partialJson = undefined;
+				}
 			}
 			output.stopReason = options?.signal?.aborted ? "aborted" : "error";
 			output.errorMessage = error instanceof Error ? error.message : JSON.stringify(error);
@@ -805,7 +814,10 @@ export const streamSimple: StreamFunction<"anthropic-messages", SimpleStreamOpti
 ): AssistantMessageEventStream => {
 	assertRequestAuth(model.provider, options?.apiKey, options?.headers);
 
-	const base = buildBaseOptions(model, context, options, options?.apiKey);
+	const base: AnthropicOptions = {
+		...buildBaseOptions(model, context, options, options?.apiKey),
+		toolChoice: options?.toolChoice,
+	};
 	if (!options?.reasoning) {
 		return stream(model, context, { ...base, thinkingEnabled: false } satisfies AnthropicOptions);
 	}
@@ -872,7 +884,7 @@ function createClient(
 			baseURL: model.baseUrl,
 			dangerouslyAllowBrowser: true,
 			fetch,
-			defaultHeaders: mergeHeaders(
+			defaultHeaders: mergeClientHeaders(
 				{
 					accept: "application/json",
 					"anthropic-dangerous-direct-browser-access": "true",
@@ -895,7 +907,7 @@ function createClient(
 			baseURL: model.baseUrl,
 			dangerouslyAllowBrowser: true,
 			fetch,
-			defaultHeaders: mergeHeaders(
+			defaultHeaders: mergeClientHeaders(
 				{
 					accept: "application/json",
 					"anthropic-dangerous-direct-browser-access": "true",
@@ -914,7 +926,7 @@ function createClient(
 	// API key or header-owned auth.
 	const sessionAffinityHeaders: ProviderHeaders =
 		sessionId && getAnthropicCompat(model).sendSessionAffinityHeaders ? { "x-session-affinity": sessionId } : {};
-	const defaultHeaders = mergeHeaders(
+	const defaultHeaders = mergeClientHeaders(
 		{
 			accept: "application/json",
 			"anthropic-dangerous-direct-browser-access": "true",

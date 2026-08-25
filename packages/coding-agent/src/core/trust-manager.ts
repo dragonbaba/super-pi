@@ -4,6 +4,9 @@ import { dirname, join } from "node:path";
 import lockfile from "proper-lockfile";
 import { CONFIG_DIR_NAME, getConfigDir } from "../config.ts";
 import { canonicalizePath, resolvePath } from "../utils/paths.ts";
+import { setOwnProperty } from "../utils/record.ts";
+import { waitSynchronously } from "../utils/sync-wait.ts";
+import { stripBom } from "../utils/text.ts";
 
 export type ProjectTrustDecision = boolean | null;
 
@@ -101,7 +104,7 @@ function readTrustFile(path: string): TrustFile {
 
 	let parsed: unknown;
 	try {
-		parsed = JSON.parse(readFileSync(path, "utf-8"));
+		parsed = JSON.parse(stripBom(readFileSync(path, "utf-8")));
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		throw new Error(`Failed to read trust store ${path}: ${message}`);
@@ -116,7 +119,7 @@ function readTrustFile(path: string): TrustFile {
 		if (value !== true && value !== false && value !== null) {
 			throw new Error(`Invalid trust store ${path}: value for ${JSON.stringify(key)} must be true, false, or null`);
 		}
-		data[key] = value;
+		setOwnProperty(data, key, value);
 	}
 	return data;
 }
@@ -126,7 +129,7 @@ function writeTrustFile(path: string, data: TrustFile): void {
 	for (const key of Object.keys(data).sort()) {
 		const value = data[key];
 		if (value === true || value === false || value === null) {
-			sorted[key] = value;
+			setOwnProperty(sorted, key, value);
 		}
 	}
 	mkdirSync(dirname(path), { recursive: true });
@@ -152,10 +155,7 @@ function acquireTrustLockSync(path: string): () => void {
 				throw error;
 			}
 			lastError = error;
-			const start = Date.now();
-			while (Date.now() - start < delayMs) {
-				// Sleep synchronously to avoid changing trust store callers to async.
-			}
+			waitSynchronously(delayMs);
 		}
 	}
 
@@ -233,9 +233,9 @@ export class ProjectTrustStore {
 			for (const { path, decision } of decisions) {
 				const key = normalizeCwd(path);
 				if (decision === null) {
-					delete data[key];
+					setOwnProperty(data, key, undefined);
 				} else {
-					data[key] = decision;
+					setOwnProperty(data, key, decision);
 				}
 			}
 			writeTrustFile(this.trustPath, data);

@@ -60,10 +60,25 @@ export function extractFileOpsFromMessage(message: AgentMessage, fileOps: FileOp
  * Returns readFiles (files only read, not modified) and modifiedFiles.
  */
 export function computeFileLists(fileOps: FileOperations): { readFiles: string[]; modifiedFiles: string[] } {
-	const modified = new Set([...fileOps.edited, ...fileOps.written]);
-	const readOnly = [...fileOps.read].filter((f) => !modified.has(f)).sort();
-	const modifiedFiles = [...modified].sort();
+	const modifiedFiles: string[] = [];
+	for (const file of fileOps.edited) modifiedFiles.push(file);
+	for (const file of fileOps.written) {
+		if (!fileOps.edited.has(file)) modifiedFiles.push(file);
+	}
+	const readOnly: string[] = [];
+	for (const file of fileOps.read) {
+		if (!fileOps.edited.has(file) && !fileOps.written.has(file)) readOnly.push(file);
+	}
+	readOnly.sort();
+	modifiedFiles.sort();
 	return { readFiles: readOnly, modifiedFiles };
+}
+
+export function hasToolCall(content: ReadonlyArray<{ type: string }>): boolean {
+	for (const block of content) {
+		if (block.type === "toolCall") return true;
+	}
+	return false;
 }
 
 /**
@@ -116,23 +131,29 @@ export function serializeConversation(messages: Message[]): string {
 		} else if (msg.role === "assistant") {
 			const thinkingParts: string[] = [];
 			const toolCalls: string[] = [];
+			let hasText = false;
 
 			for (const block of msg.content) {
-				if (block.type === "thinking") {
+				if (block.type === "text") {
+					hasText = true;
+				} else if (block.type === "thinking") {
 					thinkingParts.push(block.thinking);
 				} else if (block.type === "toolCall") {
 					const args = block.arguments as Record<string, unknown>;
-					const argsStr = Object.entries(args)
-						.map(([k, v]) => `${k}=${JSON.stringify(v)}`)
-						.join(", ");
-					toolCalls.push(`${block.name}(${argsStr})`);
+					const formattedArgs: string[] = [];
+					const argumentKeys = Object.keys(args);
+					for (let index = 0; index < argumentKeys.length; index++) {
+						const key = argumentKeys[index]!;
+						formattedArgs.push(`${key}=${JSON.stringify(args[key])}`);
+					}
+					toolCalls.push(`${block.name}(${formattedArgs.join(", ")})`);
 				}
 			}
 
 			if (thinkingParts.length > 0) {
 				parts.push(`[Assistant thinking]: ${thinkingParts.join("\n")}`);
 			}
-			if (msg.content.some((block) => block.type === "text")) {
+			if (hasText) {
 				parts.push(`[Assistant]: ${contentText(msg.content)}`);
 			}
 			if (toolCalls.length > 0) {

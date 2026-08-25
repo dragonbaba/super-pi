@@ -9,6 +9,7 @@ import { randomUUID } from "node:crypto";
 import {
   calculateCost,
   createAssistantMessageEventStream,
+  setOwnProperty,
   type AssistantMessage,
   type AssistantMessageEvent,
   type AssistantMessageEventStream,
@@ -769,14 +770,22 @@ export async function prepareHttpFallbackPayload(params: {
   const patched = (await params.originalOnPayload?.(params.payload, params.payloadModel)) ?? params.payload;
   if (!patched || typeof patched !== "object") return patched;
 
-  const payloadObj = { ...(patched as Record<string, unknown>) };
+  let payloadObj = { ...(patched as Record<string, unknown>) };
   const currentModelKey = modelKey(params.model);
   if (params.remoteCompactionState?.modelKey === currentModelKey) {
-    payloadObj.input = normalizeResponseItemsForPrompt(
+    const remotePayload: Record<string, unknown> = {};
+    const payloadKeys = Object.keys(payloadObj);
+    for (let index = 0; index < payloadKeys.length; index++) {
+      const key = payloadKeys[index]!;
+      if (key !== "input" && key !== "previous_response_id") {
+        setOwnProperty(remotePayload, key, payloadObj[key]);
+      }
+    }
+    remotePayload.input = normalizeResponseItemsForPrompt(
       params.remoteCompactionState.explicitHistory,
       params.model,
     ) as unknown[];
-    delete payloadObj.previous_response_id;
+    payloadObj = remotePayload;
   } else if (
     typeof payloadObj.previous_response_id === "string" &&
     params.continuationState?.modelKey === currentModelKey &&

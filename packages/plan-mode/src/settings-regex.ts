@@ -1,0 +1,1 @@
+export const PLAN_EXPORT_VISIBLE_CHARACTER_PATTERN = /[^@\s]/u;

@@ -47,9 +47,9 @@ if (mode === "check") {
     );
   }
 } else if (mode === "test") {
-  if (!existsSync(join(root, "tests", "run-all.sh"))) {
-    fail(
-      "`npm test` requires the tests/ directory. The published npm package intentionally omits it.",
+	if (!existsSync(join(root, "tests", "session-anchor-search.test.mjs"))) {
+		fail(
+			"`npm test` requires the tests/ directory. The published npm package intentionally omits it.",
     );
   }
 } else {
