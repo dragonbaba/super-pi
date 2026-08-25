@@ -76,6 +76,7 @@ import {
 	type ExtensionErrorListener,
 	type ExtensionMode,
 	ExtensionRunner,
+	type ExtensionRunnerOptions,
 	type ExtensionUIContext,
 	type InputSource,
 	type MessageEndEvent,
@@ -256,6 +257,12 @@ function boundedAutoCompactionError(prefix: string, error: unknown): string {
 	return `${prefix}: ${detail || "compaction failed"}`.slice(0, 512);
 }
 
+type CoalescibleAgentEvent = Extract<AgentEvent, { type: "message_update" | "tool_execution_update" }>;
+
+function isCoalescibleAgentEvent(event: AgentEvent): event is CoalescibleAgentEvent {
+	return event.type === "message_update" || event.type === "tool_execution_update";
+}
+
 export interface AgentSessionConfig {
 	agent: Agent;
 	sessionManager: SessionManager;
@@ -304,6 +311,8 @@ export interface AgentSessionConfig {
 	baseToolsOverride?: Record<string, AgentTool>;
 	/** Mutable ref used by Agent to access the current ExtensionRunner */
 	extensionRunnerRef?: { current?: ExtensionRunner };
+	/** Optional host policy for extension observer diagnostics and hook timeouts. */
+	extensionRunnerOptions?: ExtensionRunnerOptions;
 	/** Session start event metadata emitted when extensions bind to this runtime. */
 	sessionStartEvent?: SessionStartEvent;
 }
@@ -520,6 +529,7 @@ export class AgentSession {
 
 	// Event subscription state
 	private _unsubscribeAgent?: () => void;
+	private _unsubscribeAgentObserver?: () => void;
 	private _eventListeners: AgentSessionEventListener[] = [];
 	private _isAgentRunActive = false;
 	private _idleWaitPromise: Promise<void> | undefined;
@@ -557,6 +567,7 @@ export class AgentSession {
 	private _baseToolDefinitions: Map<string, ToolDefinition> = new Map();
 	private _cwd: string;
 	private _extensionRunnerRef?: { current?: ExtensionRunner };
+	private _extensionRunnerOptions?: ExtensionRunnerOptions;
 	private _initialActiveToolNames?: string[];
 	private _allowedToolNames?: Set<string>;
 	private _excludedToolNames?: Set<string>;
@@ -600,6 +611,7 @@ export class AgentSession {
 		this._providerRequestPayloadBuilder = config.providerRequestPayloadBuilder;
 		this._providerRequestCompactor = config.providerRequestCompactor;
 		this._extensionRunnerRef = config.extensionRunnerRef;
+		this._extensionRunnerOptions = config.extensionRunnerOptions;
 		this._initialActiveToolNames = config.initialActiveToolNames;
 		this._allowedToolNames = config.allowedToolNames ? new Set(config.allowedToolNames) : undefined;
 		this._excludedToolNames = config.excludedToolNames ? new Set(config.excludedToolNames) : undefined;
@@ -609,7 +621,12 @@ export class AgentSession {
 
 		// Always subscribe to agent events for internal handling
 		// (session persistence, extensions, auto-compaction, retry logic)
-		this._unsubscribeAgent = this.agent.subscribe(this._handleAgentEvent);
+		this._unsubscribeAgent = this.agent.subscribe(this._handleAgentEvent, {
+			filter: (event) => !isCoalescibleAgentEvent(event) || this._extensionRunner.hasHandlers(event.type),
+		});
+		this._unsubscribeAgentObserver = this.agent.subscribeObserver(this._handleAgentObserverEvent, {
+			filter: isCoalescibleAgentEvent,
+		});
 		this._installAgentToolHooks();
 		this._installAgentNextTurnRefresh();
 
@@ -855,6 +872,11 @@ export class AgentSession {
 
 	/** Internal handler for agent events - shared by subscribe and reconnect */
 	private _handleAgentEvent = async (event: AgentEvent): Promise<void> => {
+		if (isCoalescibleAgentEvent(event)) {
+			if (this._extensionRunner.hasHandlers(event.type)) await this._emitExtensionEvent(event);
+			return;
+		}
+
 		// When a user message starts, check if it's from either queue and remove it BEFORE emitting
 		// This ensures the UI sees the updated queue state
 		if (event.type === "message_start" && event.message.role === "user") {
@@ -924,6 +946,13 @@ export class AgentSession {
 				}
 			}
 		}
+	};
+
+	/** Coalesced display-only path for the built-in UI and explicit extension observers. */
+	private _handleAgentObserverEvent = async (event: AgentEvent): Promise<void> => {
+		if (!isCoalescibleAgentEvent(event)) return;
+		if (this._extensionRunner.hasObservers(event.type)) await this._emitExtensionObserverEvent(event);
+		this._emit(event);
 	};
 
 	private _willRetryAfterAgentEnd(event: Extract<AgentEvent, { type: "agent_end" }>): boolean {
@@ -1054,6 +1083,24 @@ export class AgentSession {
 		}
 	}
 
+	private async _emitExtensionObserverEvent(event: CoalescibleAgentEvent): Promise<void> {
+		if (event.type === "message_update") {
+			await this._extensionRunner.emitObservers({
+				type: "message_update",
+				message: event.message,
+				assistantMessageEvent: event.assistantMessageEvent,
+			});
+			return;
+		}
+		await this._extensionRunner.emitObservers({
+			type: "tool_execution_update",
+			toolCallId: event.toolCallId,
+			toolName: event.toolName,
+			args: event.args,
+			partialResult: event.partialResult,
+		});
+	}
+
 	/**
 	 * Subscribe to agent events.
 	 * Session persistence is handled internally (saves messages on message_end).
@@ -1076,6 +1123,10 @@ export class AgentSession {
 		if (this._unsubscribeAgent) {
 			this._unsubscribeAgent();
 			this._unsubscribeAgent = undefined;
+		}
+		if (this._unsubscribeAgentObserver) {
+			this._unsubscribeAgentObserver();
+			this._unsubscribeAgentObserver = undefined;
 		}
 	}
 
@@ -3048,6 +3099,7 @@ export class AgentSession {
 			this._cwd,
 			this.sessionManager,
 			new ModelRegistry(this._modelRuntime),
+			this._extensionRunnerOptions,
 		);
 		if (this._extensionRunnerRef) {
 			this._extensionRunnerRef.current = this._extensionRunner;

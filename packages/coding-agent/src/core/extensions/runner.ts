@@ -33,6 +33,7 @@ import type {
 	ExtensionEvent,
 	ExtensionFlag,
 	ExtensionMode,
+	HandlerFn,
 	ExtensionRuntime,
 	ExtensionShortcut,
 	ExtensionUIContext,
@@ -43,6 +44,7 @@ import type {
 	MarkdownTransformer,
 	MessageEndEvent,
 	MessageEndEventResult,
+	MessageUpdateEvent,
 	MessageRenderer,
 	ProjectTrustContext,
 	ProjectTrustEvent,
@@ -50,6 +52,7 @@ import type {
 	ProviderConfig,
 	RegisteredCommand,
 	RegisteredTool,
+	RegisteredExtensionObserver,
 	ReplacedSessionContext,
 	ResolvedCommand,
 	ResourcesDiscoverEvent,
@@ -63,6 +66,7 @@ import type {
 	ToolCallEventResult,
 	ToolResultEvent,
 	ToolResultEventResult,
+	ToolExecutionUpdateEvent,
 	UserBashEvent,
 	UserBashEventResult,
 } from "./types.ts";
@@ -158,6 +162,87 @@ type RunnerEmitResult<TEvent extends RunnerEmitEvent> = TEvent extends { type: "
 			: TEvent extends { type: "session_before_tree" }
 				? SessionBeforeTreeResult | undefined
 				: undefined;
+
+export interface ExtensionRunnerScheduler {
+	now(): number;
+	schedule(callback: () => void, delayMs: number): unknown;
+	cancel(handle: unknown): void;
+}
+
+export type ExtensionHookTimeoutPolicy = "fail-open" | "fail-closed";
+
+export interface ExtensionRunnerOptions {
+	scheduler?: ExtensionRunnerScheduler;
+	hookTimeouts?: {
+		/** Safety and veto hooks always fail closed when a timeout is configured. */
+		safety?: { timeoutMs: number };
+		/** Transform hooks require an explicit timeout policy. */
+		transform?: { timeoutMs: number; onTimeout: ExtensionHookTimeoutPolicy };
+		/** Interactive hooks are unbounded unless the host explicitly configures them. */
+		interaction?: { timeoutMs: number; onTimeout: ExtensionHookTimeoutPolicy };
+		/** Legacy lifecycle handlers are unbounded unless explicitly configured. */
+		lifecycle?: { timeoutMs: number; onTimeout: ExtensionHookTimeoutPolicy };
+	};
+}
+
+export type ExtensionObserverDiagnostic =
+	| { type: "observer-error"; extensionPath: string; event: string; error: unknown }
+	| { type: "observer-slow"; extensionPath: string; event: string; durationMs: number }
+	| { type: "observer-disabled"; extensionPath: string; event: string };
+
+export interface ExtensionObserverDeliveryStats {
+	received: number;
+	delivered: number;
+	errors: number;
+	slow: number;
+	disabled: number;
+	durationP95Ms: number;
+}
+
+export interface ExtensionHookDeliveryStats {
+	timeouts: number;
+}
+
+export class ExtensionHookTimeoutError extends Error {
+	readonly extensionPath: string;
+	readonly event: string;
+	readonly timeoutMs: number;
+
+	constructor(extensionPath: string, event: string, timeoutMs: number) {
+		super(`Extension hook "${event}" from "${extensionPath}" timed out after ${timeoutMs}ms`);
+		this.name = "ExtensionHookTimeoutError";
+		this.extensionPath = extensionPath;
+		this.event = event;
+		this.timeoutMs = timeoutMs;
+	}
+}
+
+type HookCategory = "safety" | "transform" | "interaction" | "lifecycle";
+type ObserverEvent = MessageUpdateEvent | ToolExecutionUpdateEvent;
+
+const DEFAULT_EXTENSION_RUNNER_SCHEDULER: ExtensionRunnerScheduler = {
+	now: () => performance.now(),
+	schedule: (callback, delayMs) => setTimeout(callback, delayMs),
+	cancel: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+};
+
+const OBSERVER_DURATION_BUCKETS_MS = [1, 5, 10, 25, 50, 100, 250, 1_000, 5_000, 30_000] as const;
+const SAFETY_HOOK_EVENTS = new Set([
+	"tool_call",
+	"session_before_switch",
+	"session_before_fork",
+	"session_before_compact",
+	"session_before_tree",
+]);
+const TRANSFORM_HOOK_EVENTS = new Set([
+	"context",
+	"before_provider_request",
+	"before_provider_headers",
+	"before_agent_start",
+	"message_end",
+	"tool_result",
+]);
+const INTERACTION_HOOK_EVENTS = new Set(["input", "user_bash"]);
 
 export type ExtensionErrorListener = (error: ExtensionError) => void;
 
@@ -269,6 +354,7 @@ const noOpUIContext: ExtensionUIContext = {
 export class ExtensionRunner {
 	private extensions: Extension[];
 	private handlerEventTypes: Set<string>;
+	private observerEventTypes: Set<string>;
 	private runtime: ExtensionRuntime;
 	private uiContext: ExtensionUIContext;
 	private mode: ExtensionMode = "print";
@@ -276,6 +362,16 @@ export class ExtensionRunner {
 	private sessionManager: SessionManager;
 	private modelRegistry: ModelRegistry;
 	private errorListeners: Set<ExtensionErrorListener> = new Set();
+	private observerDiagnosticListeners = new Set<(diagnostic: ExtensionObserverDiagnostic) => void>();
+	private readonly scheduler: ExtensionRunnerScheduler;
+	private readonly options: ExtensionRunnerOptions;
+	private readonly observerDurationBuckets = new Uint32Array(OBSERVER_DURATION_BUCKETS_MS.length);
+	private observerReceived = 0;
+	private observerDelivered = 0;
+	private observerErrors = 0;
+	private observerSlow = 0;
+	private observerDisabled = 0;
+	private hookTimeouts = 0;
 	private getModel: () => Model<any> | undefined = () => undefined;
 	private getScopedModels: () => readonly ScopedModel[] = () => [];
 	private isIdleFn: () => boolean = () => true;
@@ -304,14 +400,21 @@ export class ExtensionRunner {
 		cwd: string,
 		sessionManager: SessionManager,
 		modelRegistry: ModelRegistry,
+		options: ExtensionRunnerOptions = {},
 	) {
 		this.extensions = extensions;
 		this.handlerEventTypes = new Set();
+		this.observerEventTypes = new Set();
 		for (const extension of extensions) {
 			for (const [eventType, handlers] of extension.handlers) {
 				if (handlers.length > 0) this.handlerEventTypes.add(eventType);
 			}
+			for (const [eventType, observers] of extension.observers) {
+				if (observers.length > 0) this.observerEventTypes.add(eventType);
+			}
 		}
+		this.options = options;
+		this.scheduler = options.scheduler ?? DEFAULT_EXTENSION_RUNNER_SCHEDULER;
 		this.runtime = runtime;
 		this.uiContext = noOpUIContext;
 		this.cwd = cwd;
@@ -580,6 +683,30 @@ export class ExtensionRunner {
 		return this.handlerEventTypes.has(eventType);
 	}
 
+	hasObservers(eventType: string): boolean {
+		return this.observerEventTypes.has(eventType);
+	}
+
+	onObserverDiagnostic(listener: (diagnostic: ExtensionObserverDiagnostic) => void): () => void {
+		this.observerDiagnosticListeners.add(listener);
+		return () => this.observerDiagnosticListeners.delete(listener);
+	}
+
+	get observerDeliveryStats(): ExtensionObserverDeliveryStats {
+		return {
+			received: this.observerReceived,
+			delivered: this.observerDelivered,
+			errors: this.observerErrors,
+			slow: this.observerSlow,
+			disabled: this.observerDisabled,
+			durationP95Ms: this.observerDurationPercentile(0.95),
+		};
+	}
+
+	get hookDeliveryStats(): ExtensionHookDeliveryStats {
+		return { timeouts: this.hookTimeouts };
+	}
+
 	getMessageRenderer(customType: string): MessageRenderer | undefined {
 		for (const ext of this.extensions) {
 			const renderer = ext.messageRenderers.get(customType);
@@ -802,6 +929,134 @@ export class ExtensionRunner {
 		);
 	}
 
+	private hookCategory(eventType: string): HookCategory {
+		if (SAFETY_HOOK_EVENTS.has(eventType)) return "safety";
+		if (TRANSFORM_HOOK_EVENTS.has(eventType)) return "transform";
+		if (INTERACTION_HOOK_EVENTS.has(eventType)) return "interaction";
+		return "lifecycle";
+	}
+
+	private async invokeHook(
+		handler: HandlerFn,
+		event: unknown,
+		ctx: ExtensionContext,
+		extensionPath: string,
+		eventType: string,
+	): Promise<unknown> {
+		const category = this.hookCategory(eventType);
+		const configured = this.options.hookTimeouts?.[category];
+		const timeoutMs = configured ? Math.max(0, configured.timeoutMs) : 0;
+		const result = handler(event, ctx);
+		if (timeoutMs === 0 || !result || typeof (result as PromiseLike<unknown>).then !== "function") {
+			return await result;
+		}
+
+		const timeoutError = new ExtensionHookTimeoutError(extensionPath, eventType, timeoutMs);
+		let handle: unknown;
+		const timeout = new Promise<never>((_resolve, reject) => {
+			handle = this.scheduler.schedule(() => reject(timeoutError), timeoutMs);
+		});
+		try {
+			return await Promise.race([result, timeout]);
+		} catch (error) {
+			if (error !== timeoutError) throw error;
+			this.hookTimeouts++;
+			this.emitError({
+				extensionPath,
+				event: eventType,
+				error: timeoutError.message,
+				stack: timeoutError.stack,
+			});
+			const policy = category === "safety" ? "fail-closed" : configured && "onTimeout" in configured ? configured.onTimeout : "fail-closed";
+			if (policy === "fail-closed") throw timeoutError;
+			return undefined;
+		} finally {
+			if (handle !== undefined) this.scheduler.cancel(handle);
+		}
+	}
+
+	private emitObserverDiagnostic(diagnostic: ExtensionObserverDiagnostic): void {
+		for (const listener of this.observerDiagnosticListeners) {
+			try {
+				listener(diagnostic);
+			} catch {
+				// Diagnostics must not turn a display-only observer failure into an agent failure.
+			}
+		}
+	}
+
+	private recordObserverDuration(durationMs: number): void {
+		for (let index = 0; index < OBSERVER_DURATION_BUCKETS_MS.length; index++) {
+			if (durationMs <= OBSERVER_DURATION_BUCKETS_MS[index]!) {
+				this.observerDurationBuckets[index]++;
+				return;
+			}
+		}
+		this.observerDurationBuckets[this.observerDurationBuckets.length - 1]++;
+	}
+
+	private observerDurationPercentile(percentile: number): number {
+		let count = 0;
+		for (const value of this.observerDurationBuckets) count += value;
+		if (count === 0) return 0;
+		const target = Math.max(1, Math.ceil(count * percentile));
+		let cumulative = 0;
+		for (let index = 0; index < this.observerDurationBuckets.length; index++) {
+			cumulative += this.observerDurationBuckets[index]!;
+			if (cumulative >= target) return OBSERVER_DURATION_BUCKETS_MS[index]!;
+		}
+		return 0;
+	}
+
+	async emitObservers(event: ObserverEvent): Promise<void> {
+		const ctx = this.createContext();
+		for (const extension of this.extensions) {
+			const observers = extension.observers.get(event.type);
+			if (!observers || observers.length === 0) continue;
+			for (const observer of observers) {
+				this.observerReceived++;
+				if (observer.disabled) continue;
+				await this.deliverExtensionObserver(extension.path, event, ctx, observer);
+			}
+		}
+	}
+
+	private async deliverExtensionObserver(
+		extensionPath: string,
+		event: ObserverEvent,
+		ctx: ExtensionContext,
+		observer: RegisteredExtensionObserver,
+	): Promise<void> {
+		const startedAt = this.scheduler.now();
+		try {
+			await observer.handler(event, ctx);
+			observer.consecutiveErrors = 0;
+			this.observerDelivered++;
+		} catch (error) {
+			this.observerErrors++;
+			observer.consecutiveErrors++;
+			const message = error instanceof Error ? error.message : String(error);
+			const stack = error instanceof Error ? error.stack : undefined;
+			try {
+				this.emitError({ extensionPath, event: event.type, error: message, stack });
+			} catch {
+				// Error reporters are observers too; isolate them from the agent run.
+			}
+			this.emitObserverDiagnostic({ type: "observer-error", extensionPath, event: event.type, error });
+			if (observer.consecutiveErrors >= observer.disableAfterErrors) {
+				observer.disabled = true;
+				this.observerDisabled++;
+				this.emitObserverDiagnostic({ type: "observer-disabled", extensionPath, event: event.type });
+			}
+		}
+		const durationMs = this.scheduler.now() - startedAt;
+		this.recordObserverDuration(durationMs);
+		if (durationMs >= observer.slowThresholdMs) {
+			this.observerSlow++;
+			this.emitObserverDiagnostic({ type: "observer-slow", extensionPath, event: event.type, durationMs });
+		}
+	}
+
 	async emit<TEvent extends RunnerEmitEvent>(event: TEvent): Promise<RunnerEmitResult<TEvent>> {
 		const ctx = this.createContext();
 		let result: SessionBeforeEventResult | undefined;
@@ -812,7 +1067,7 @@ export class ExtensionRunner {
 
 			for (const handler of handlers) {
 				try {
-					const handlerResult = await handler(event, ctx);
+					const handlerResult = await this.invokeHook(handler, event, ctx, ext.path, event.type);
 
 					if (this.isSessionBeforeEvent(event) && handlerResult) {
 						result = handlerResult as SessionBeforeEventResult;
@@ -824,6 +1079,7 @@ export class ExtensionRunner {
 						}
 					}
 				} catch (err) {
+					if (err instanceof ExtensionHookTimeoutError) throw err;
 					const message = err instanceof Error ? err.message : String(err);
 					const stack = err instanceof Error ? err.stack : undefined;
 					this.emitError({
@@ -851,7 +1107,13 @@ export class ExtensionRunner {
 			for (const handler of handlers) {
 				try {
 					const currentEvent: MessageEndEvent = { ...event, message: currentMessage };
-					const handlerResult = (await handler(currentEvent, ctx)) as MessageEndEventResult | undefined;
+					const handlerResult = (await this.invokeHook(
+						handler,
+						currentEvent,
+						ctx,
+						ext.path,
+						"message_end",
+					)) as MessageEndEventResult | undefined;
 					if (!handlerResult?.message) continue;
 
 					if (handlerResult.message.role !== currentMessage.role) {
@@ -866,6 +1128,7 @@ export class ExtensionRunner {
 					currentMessage = handlerResult.message;
 					modified = true;
 				} catch (err) {
+					if (err instanceof ExtensionHookTimeoutError) throw err;
 					const message = err instanceof Error ? err.message : String(err);
 					const stack = err instanceof Error ? err.stack : undefined;
 					this.emitError({
@@ -892,7 +1155,13 @@ export class ExtensionRunner {
 
 			for (const handler of handlers) {
 				try {
-					const handlerResult = (await handler(currentEvent, ctx)) as ToolResultEventResult | undefined;
+					const handlerResult = (await this.invokeHook(
+						handler,
+						currentEvent,
+						ctx,
+						ext.path,
+						"tool_result",
+					)) as ToolResultEventResult | undefined;
 					if (!handlerResult) continue;
 
 					if (handlerResult.content !== undefined) {
@@ -912,6 +1181,7 @@ export class ExtensionRunner {
 						modified = true;
 					}
 				} catch (err) {
+					if (err instanceof ExtensionHookTimeoutError) throw err;
 					const message = err instanceof Error ? err.message : String(err);
 					const stack = err instanceof Error ? err.stack : undefined;
 					this.emitError({
@@ -945,7 +1215,7 @@ export class ExtensionRunner {
 			if (!handlers || handlers.length === 0) continue;
 
 			for (const handler of handlers) {
-				const handlerResult = await handler(event, ctx);
+				const handlerResult = await this.invokeHook(handler, event, ctx, ext.path, "tool_call");
 
 				if (handlerResult) {
 					result = handlerResult as ToolCallEventResult;
@@ -968,11 +1238,12 @@ export class ExtensionRunner {
 
 			for (const handler of handlers) {
 				try {
-					const handlerResult = await handler(event, ctx);
+					const handlerResult = await this.invokeHook(handler, event, ctx, ext.path, "user_bash");
 					if (handlerResult) {
 						return handlerResult as UserBashEventResult;
 					}
 				} catch (err) {
+					if (err instanceof ExtensionHookTimeoutError) throw err;
 					const message = err instanceof Error ? err.message : String(err);
 					const stack = err instanceof Error ? err.stack : undefined;
 					this.emitError({
@@ -1000,12 +1271,13 @@ export class ExtensionRunner {
 			for (const handler of handlers) {
 				try {
 					const event: ContextEvent = { type: "context", messages: currentMessages, dryRun };
-					const handlerResult = await handler(event, ctx);
+					const handlerResult = await this.invokeHook(handler, event, ctx, ext.path, "context");
 
 					if (handlerResult && (handlerResult as ContextEventResult).messages) {
 						currentMessages = (handlerResult as ContextEventResult).messages!;
 					}
 				} catch (err) {
+					if (err instanceof ExtensionHookTimeoutError) throw err;
 					const message = err instanceof Error ? err.message : String(err);
 					const stack = err instanceof Error ? err.stack : undefined;
 					this.emitError({
@@ -1036,11 +1308,18 @@ export class ExtensionRunner {
 						payload: currentPayload,
 						dryRun,
 					};
-					const handlerResult = await handler(event, ctx);
+					const handlerResult = await this.invokeHook(
+						handler,
+						event,
+						ctx,
+						ext.path,
+						"before_provider_request",
+					);
 					if (handlerResult !== undefined) {
 						currentPayload = handlerResult;
 					}
 				} catch (err) {
+					if (err instanceof ExtensionHookTimeoutError) throw err;
 					const message = err instanceof Error ? err.message : String(err);
 					const stack = err instanceof Error ? err.stack : undefined;
 					this.emitError({
@@ -1070,8 +1349,9 @@ export class ExtensionRunner {
 						type: "before_provider_headers",
 						headers,
 					};
-					await handler(event, ctx);
+					await this.invokeHook(handler, event, ctx, ext.path, "before_provider_headers");
 				} catch (err) {
+					if (err instanceof ExtensionHookTimeoutError) throw err;
 					const message = err instanceof Error ? err.message : String(err);
 					const stack = err instanceof Error ? err.stack : undefined;
 					this.emitError({
@@ -1118,7 +1398,7 @@ export class ExtensionRunner {
 						systemPrompt: currentSystemPrompt,
 						systemPromptOptions,
 					};
-					const handlerResult = await handler(event, ctx);
+					const handlerResult = await this.invokeHook(handler, event, ctx, ext.path, "before_agent_start");
 
 					if (handlerResult) {
 						const result = handlerResult as BeforeAgentStartEventResult;
@@ -1131,6 +1411,7 @@ export class ExtensionRunner {
 						}
 					}
 				} catch (err) {
+					if (err instanceof ExtensionHookTimeoutError) throw err;
 					const message = err instanceof Error ? err.message : String(err);
 					const stack = err instanceof Error ? err.stack : undefined;
 					this.emitError({
@@ -1173,7 +1454,7 @@ export class ExtensionRunner {
 			for (const handler of handlers) {
 				try {
 					const event: ResourcesDiscoverEvent = { type: "resources_discover", cwd, reason };
-					const handlerResult = await handler(event, ctx);
+					const handlerResult = await this.invokeHook(handler, event, ctx, ext.path, "resources_discover");
 					const result = handlerResult as ResourcesDiscoverResult | undefined;
 
 					if (result?.skillPaths?.length) {
@@ -1186,6 +1467,7 @@ export class ExtensionRunner {
 						themePaths.push(...result.themePaths.map((path) => ({ path, extensionPath: ext.path })));
 					}
 				} catch (err) {
+					if (err instanceof ExtensionHookTimeoutError) throw err;
 					const message = err instanceof Error ? err.message : String(err);
 					const stack = err instanceof Error ? err.stack : undefined;
 					this.emitError({
@@ -1222,13 +1504,16 @@ export class ExtensionRunner {
 						source,
 						streamingBehavior,
 					};
-					const result = (await handler(event, ctx)) as InputEventResult | undefined;
+					const result = (await this.invokeHook(handler, event, ctx, ext.path, "input")) as
+						| InputEventResult
+						| undefined;
 					if (result?.action === "handled") return result;
 					if (result?.action === "transform") {
 						currentText = result.text;
 						currentImages = result.images ?? currentImages;
 					}
 				} catch (err) {
+					if (err instanceof ExtensionHookTimeoutError) throw err;
 					this.emitError({
 						extensionPath: ext.path,
 						event: "input",

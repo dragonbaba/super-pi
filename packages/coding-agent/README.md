@@ -37,3 +37,21 @@ The optional `defaultTools` array controls only the initial built-in tool select
   "defaultTools": ["read", "bash", "powershell", "edit", "write"]
 }
 ```
+
+## Streaming extension observers
+
+Existing `pi.on("message_update", handler)` and `pi.on("tool_execution_update", handler)` registrations remain serial and awaited for compatibility. They receive every update and can therefore apply backpressure to a provider or tool that emits updates rapidly.
+
+Display-only extensions should use `pi.observe()` for these two events. Observer updates are latest-value coalesced by the agent, the final update is flushed before the corresponding end event, return values are ignored, and failures do not fail the agent run. Slow observers are recorded, and an observer is disabled after three consecutive failures by default. Both thresholds are configurable per registration:
+
+```ts
+export default function extension(pi: ExtensionAPI) {
+	pi.observe(
+		"message_update",
+		(event) => updateDisplay(event.message),
+		{ slowThresholdMs: 100, disableAfterErrors: 3 },
+	);
+}
+```
+
+Intercepting and transforming hooks continue to use `pi.on()`. Hosts may configure category-specific hook timeouts through `extensionRunnerOptions`; safety/veto hooks always fail closed, interactive hooks have no timeout by default, and transform hooks require an explicit fail-open or fail-closed policy.

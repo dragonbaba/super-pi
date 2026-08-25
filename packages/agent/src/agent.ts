@@ -1,4 +1,6 @@
 import type {
+	AssistantMessage,
+	AssistantMessageEvent,
 	ImageContent,
 	Message,
 	Model,
@@ -7,6 +9,12 @@ import type {
 	ThinkingBudgets,
 	Transport,
 } from "@super-pi/ai";
+import {
+	EventDeliveryDispatcher,
+	type EventDeliveryDiagnostic,
+	type EventDeliveryStats,
+	type EventSubscriptionOptions,
+} from "./event-delivery.ts";
 import { runAgentLoop, runAgentLoopContinue } from "./agent-loop.ts";
 import { getDefaultStreamFn } from "./stream-fn.ts";
 import type {
@@ -14,6 +22,7 @@ import type {
 	AfterToolCallResult,
 	AgentContext,
 	AgentEvent,
+	AgentEventInstrumentation,
 	AgentLoopConfig,
 	AgentLoopTurnUpdate,
 	AgentMessage,
@@ -120,6 +129,10 @@ export interface AgentOptions {
 	transport?: Transport;
 	maxRetryDelayMs?: number;
 	toolExecution?: ToolExecutionMode;
+	/** Optional structural counters for tests and benchmarks. */
+	eventInstrumentation?: AgentEventInstrumentation;
+	/** Receives isolated observer errors and slow-observer diagnostics. */
+	onEventDeliveryDiagnostic?: (diagnostic: EventDeliveryDiagnostic) => void;
 }
 
 class PendingMessageQueue {
@@ -172,7 +185,8 @@ type ActiveRun = {
  */
 export class Agent {
 	private _state: MutableAgentState;
-	private readonly listeners = new Set<(event: AgentEvent, signal: AbortSignal) => Promise<void> | void>();
+	private readonly eventDelivery: EventDeliveryDispatcher<AgentEvent, string>;
+	private readonly eventInstrumentation?: AgentEventInstrumentation;
 	private readonly steeringQueue: PendingMessageQueue;
 	private readonly followUpQueue: PendingMessageQueue;
 
@@ -235,6 +249,12 @@ export class Agent {
 		this.transport = runtimeOptions.transport ?? "auto";
 		this.maxRetryDelayMs = runtimeOptions.maxRetryDelayMs;
 		this.toolExecution = runtimeOptions.toolExecution ?? "parallel";
+		this.eventInstrumentation = runtimeOptions.eventInstrumentation;
+		this.eventDelivery = new EventDeliveryDispatcher({
+			defaultMinIntervalMs: 16,
+			snapshotLatest: (event) => this.snapshotLatestEvent(event),
+			onDiagnostic: runtimeOptions.onEventDeliveryDiagnostic,
+		});
 	}
 
 	/**
@@ -247,9 +267,29 @@ export class Agent {
 	 * `agent_end` is the final emitted event for a run, but the agent does not
 	 * become idle until all awaited listeners for that event have settled.
 	 */
-	subscribe(listener: (event: AgentEvent, signal: AbortSignal) => Promise<void> | void): () => void {
-		this.listeners.add(listener);
-		return () => this.listeners.delete(listener);
+	subscribe(
+		listener: (event: AgentEvent, signal: AbortSignal) => Promise<void> | void,
+		options: Omit<EventSubscriptionOptions<AgentEvent>, "delivery"> = {},
+	): () => void {
+		return this.eventDelivery.subscribe((event) => listener(event, this.requireActiveSignal()), {
+			...options,
+			delivery: "critical",
+		});
+	}
+
+	/** Subscribe a display-only observer to coalesced latest updates. */
+	subscribeObserver(
+		listener: (event: AgentEvent, signal: AbortSignal) => Promise<void> | void,
+		options: Omit<EventSubscriptionOptions<AgentEvent>, "delivery"> = {},
+	): () => void {
+		return this.eventDelivery.subscribe((event) => listener(event, this.requireActiveSignal()), {
+			...options,
+			delivery: "latest",
+		});
+	}
+
+	get eventDeliveryStats(): EventDeliveryStats {
+		return this.eventDelivery.stats;
 	}
 
 	/**
@@ -455,6 +495,7 @@ export class Agent {
 			thinkingBudgets: this.thinkingBudgets,
 			maxRetryDelayMs: this.maxRetryDelayMs,
 			toolExecution: this.toolExecution,
+			eventInstrumentation: this.eventInstrumentation,
 			beforeToolCall: this.beforeToolCall,
 			afterToolCall: this.afterToolCall,
 			shouldStopAfterTurn: shouldStopAfterTurn
@@ -581,12 +622,37 @@ export class Agent {
 				break;
 		}
 
+		const latestKey = this.getLatestEventKey(event);
+		if (latestKey !== undefined) {
+			if (this.eventDelivery.hasAwaitedListeners(event)) {
+				await this.eventDelivery.publishAwaited(this.snapshotLatestEvent(event));
+			}
+			this.eventDelivery.publishLatest(latestKey, event);
+			return;
+		}
+		await this.eventDelivery.publishCritical(event);
+	}
+
+	private requireActiveSignal(): AbortSignal {
 		const signal = this.activeRun?.abortController.signal;
-		if (!signal) {
-			throw new Error("Agent listener invoked outside active run");
-		}
-		for (const listener of this.listeners) {
-			await listener(event, signal);
-		}
+		if (!signal) throw new Error("Agent listener invoked outside active run");
+		return signal;
+	}
+
+	private getLatestEventKey(event: AgentEvent): string | undefined {
+		if (event.type === "message_update") return "message";
+		if (event.type === "tool_execution_update") return `tool:${event.toolCallId}`;
+		return undefined;
+	}
+
+	private snapshotLatestEvent(event: AgentEvent): AgentEvent {
+		if (event.type !== "message_update") return event;
+		this.eventInstrumentation?.onAssistantSnapshot?.();
+		const message = { ...event.message };
+		const assistantMessageEvent = {
+			...event.assistantMessageEvent,
+			partial: message as AssistantMessage,
+		} as AssistantMessageEvent;
+		return { ...event, message, assistantMessageEvent };
 	}
 }

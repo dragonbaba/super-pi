@@ -10,7 +10,13 @@ import { resolvePath } from "../utils/paths.ts";
 import { AgentSession } from "./agent-session.ts";
 import { formatNoModelsAvailableMessage } from "./auth-guidance.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
-import type { ExtensionRunner, LoadExtensionsResult, SessionStartEvent, ToolDefinition } from "./extensions/index.ts";
+import type {
+	ExtensionRunner,
+	ExtensionRunnerOptions,
+	LoadExtensionsResult,
+	SessionStartEvent,
+	ToolDefinition,
+} from "./extensions/index.ts";
 import { convertToLlm } from "./messages.ts";
 import { findInitialModel } from "./model-resolver.ts";
 import { ModelRuntime } from "./model-runtime.ts";
@@ -90,6 +96,8 @@ export interface CreateAgentSessionOptions {
 	settingsManager?: SettingsManager;
 	/** Session start event metadata for extension runtime startup. */
 	sessionStartEvent?: SessionStartEvent;
+	/** Optional host policy for extension observer diagnostics and hook timeouts. */
+	extensionRunnerOptions?: ExtensionRunnerOptions;
 }
 
 /** Result from createAgentSession */
@@ -110,6 +118,7 @@ export type {
 	ExtensionCommandContext,
 	ExtensionContext,
 	ExtensionFactory,
+	ExtensionRunnerOptions,
 	InlineExtension,
 	SlashCommandInfo,
 	SlashCommandSource,
@@ -464,6 +473,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		allowedToolNames,
 		excludedToolNames,
 		extensionRunnerRef,
+		extensionRunnerOptions: options.extensionRunnerOptions,
 		sessionStartEvent: options.sessionStartEvent,
 	});
 	const extensionsResult = resourceLoader.getExtensions();

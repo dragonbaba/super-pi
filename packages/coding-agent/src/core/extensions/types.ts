@@ -1238,6 +1238,14 @@ export interface ResolvedCommand extends RegisteredCommand {
 // biome-ignore lint/suspicious/noConfusingVoidType: void allows bare return statements
 export type ExtensionHandler<E, R = undefined> = (event: E, ctx: ExtensionContext) => Promise<R | void> | R | void;
 
+/** Options for display-only, coalescible extension observers. */
+export interface ExtensionObserverOptions {
+	/** Duration that records a slow-observer diagnostic. Default: 100ms. */
+	slowThresholdMs?: number;
+	/** Consecutive failures before this observer is disabled. Default: 3. */
+	disableAfterErrors?: number;
+}
+
 /**
  * ExtensionAPI passed to extension factory functions.
  */
@@ -1289,6 +1297,17 @@ export interface ExtensionAPI {
 	on(event: "tool_result", handler: ExtensionHandler<ToolResultEvent, ToolResultEventResult>): void;
 	on(event: "user_bash", handler: ExtensionHandler<UserBashEvent, UserBashEventResult>): void;
 	on(event: "input", handler: ExtensionHandler<InputEvent, InputEventResult>): void;
+
+	/**
+	 * Observe coalesced display updates without intercepting or transforming them.
+	 * Observer failures are isolated and return values are ignored.
+	 */
+	observe(event: "message_update", handler: ExtensionHandler<MessageUpdateEvent>, options?: ExtensionObserverOptions): void;
+	observe(
+		event: "tool_execution_update",
+		handler: ExtensionHandler<ToolExecutionUpdateEvent>,
+		options?: ExtensionObserverOptions,
+	): void;
 
 	// =========================================================================
 	// Tool Registration
@@ -1604,7 +1623,15 @@ export interface ExtensionShortcut {
 	extensionPath: string;
 }
 
-type HandlerFn = (...args: unknown[]) => Promise<unknown>;
+export type HandlerFn = (...args: unknown[]) => Promise<unknown> | unknown;
+
+export interface RegisteredExtensionObserver {
+	handler: HandlerFn;
+	slowThresholdMs: number;
+	disableAfterErrors: number;
+	consecutiveErrors: number;
+	disabled: boolean;
+}
 
 export type SendMessageHandler = <T = unknown>(
 	message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">,
@@ -1786,6 +1813,7 @@ export interface Extension {
 	hidden?: boolean;
 	sourceInfo: SourceInfo;
 	handlers: Map<string, HandlerFn[]>;
+	observers: Map<string, RegisteredExtensionObserver[]>;
 	tools: Map<string, RegisteredTool>;
 	messageRenderers: Map<string, MessageRenderer>;
 	markdownTransformer?: MarkdownTransformer;

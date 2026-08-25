@@ -11,14 +11,20 @@ export {
 	loadExtensions,
 } from "./loader.ts";
 export type {
+	ExtensionHookDeliveryStats,
+	ExtensionHookTimeoutPolicy,
+	ExtensionObserverDeliveryStats,
+	ExtensionObserverDiagnostic,
 	ExtensionErrorListener,
+	ExtensionRunnerOptions,
+	ExtensionRunnerScheduler,
 	ForkHandler,
 	NavigateTreeHandler,
 	NewSessionHandler,
 	ShutdownHandler,
 	SwitchSessionHandler,
 } from "./runner.ts";
-export { ExtensionRunner } from "./runner.ts";
+export { ExtensionHookTimeoutError, ExtensionRunner } from "./runner.ts";
 export type {
 	AfterProviderResponseEvent,
 	AgentEndEvent,
@@ -74,6 +80,7 @@ export type {
 	ExtensionFlag,
 	ExtensionHandler,
 	ExtensionMode,
+	ExtensionObserverOptions,
 	// Runtime
 	ExtensionRuntime,
 	ExtensionShortcut,

@@ -41,6 +41,7 @@ export {
 	NOOP_TELEMETRY_CONTEXT,
 } from "@super-pi/telemetry";
 export * from "./agent.ts";
+export * from "./event-delivery.ts";
 // Loop functions
 export * from "./agent-loop.ts";
 export * from "./harness/agent-harness.ts";

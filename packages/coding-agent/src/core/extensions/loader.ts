@@ -36,6 +36,7 @@ import type {
 	Extension,
 	ExtensionAPI,
 	ExtensionFactory,
+	ExtensionObserverOptions,
 	ExtensionRuntime,
 	LoadExtensionsResult,
 	MarkdownTransformer,
@@ -148,7 +149,7 @@ function getAliases(): Record<string, string> {
 	return _aliases;
 }
 
-type HandlerFn = (...args: unknown[]) => Promise<unknown>;
+type HandlerFn = (...args: unknown[]) => Promise<unknown> | unknown;
 
 type PendingRuntimeChange =
 	| { type: "registerProvider"; name: string; config: ProviderConfig }
@@ -304,6 +305,19 @@ function createExtensionAPI(
 			const list = extension.handlers.get(event) ?? [];
 			list.push(handler);
 			extension.handlers.set(event, list);
+		},
+
+		observe(event: string, handler: HandlerFn, options: ExtensionObserverOptions = {}): void {
+			assertActive();
+			const list = extension.observers.get(event) ?? [];
+			list.push({
+				handler,
+				slowThresholdMs: Math.max(0, options.slowThresholdMs ?? 100),
+				disableAfterErrors: Math.max(1, Math.floor(options.disableAfterErrors ?? 3)),
+				consecutiveErrors: 0,
+				disabled: false,
+			});
+			extension.observers.set(event, list);
 		},
 
 		registerTool(tool: ToolDefinition): void {
@@ -593,6 +607,7 @@ function createExtension(extensionPath: string, resolvedPath: string): Extension
 		resolvedPath,
 		sourceInfo: createSyntheticSourceInfo(extensionPath, { source, baseDir }),
 		handlers: new Map(),
+		observers: new Map(),
 		tools: new Map(),
 		messageRenderers: new Map(),
 		entryRenderers: new Map(),

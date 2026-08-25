@@ -154,8 +154,15 @@ export interface AgentLoopTurnUpdate {
 
 export interface PrepareNextTurnContext extends ShouldStopAfterTurnContext {}
 
+/** Optional low-cost counters used by structural hot-path tests and benchmarks. */
+export interface AgentEventInstrumentation {
+	onAssistantSnapshot?: () => void;
+	onToolProgressPending?: (toolCallId: string, pending: 0 | 1) => void;
+}
+
 export interface AgentLoopConfig extends SimpleStreamOptions {
 	model: Model<any>;
+	eventInstrumentation?: AgentEventInstrumentation;
 
 	/**
 	 * Converts AgentMessage[] to LLM-compatible Message[] before each LLM call.

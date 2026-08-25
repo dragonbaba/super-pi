@@ -16,6 +16,7 @@ import { getDefaultStreamFn } from "./stream-fn.ts";
 import type {
 	AgentContext,
 	AgentEvent,
+	AgentEventInstrumentation,
 	AgentLoopConfig,
 	AgentMessage,
 	AgentTool,
@@ -340,7 +341,7 @@ async function streamAssistantResponse(
 					await emit({
 						type: "message_update",
 						assistantMessageEvent: event,
-						message: { ...partialMessage },
+						message: partialMessage,
 					});
 				}
 				break;
@@ -582,7 +583,7 @@ async function executeToolCallsSequential(
 				isError: preparation.isError,
 			};
 		} else {
-			const executed = await executePreparedToolCall(preparation, signal, emit);
+			const executed = await executePreparedToolCall(preparation, signal, emit, config.eventInstrumentation);
 			finalized = await finalizeExecutedToolCall(
 				currentContext,
 				assistantMessage,
@@ -648,7 +649,7 @@ async function executeToolCallsParallel(
 		}
 
 		finalizedCalls.push(async () => {
-			const executed = await executePreparedToolCall(preparation, signal, emit);
+			const executed = await executePreparedToolCall(preparation, signal, emit, config.eventInstrumentation);
 			const finalized = await finalizeExecutedToolCall(
 				currentContext,
 				assistantMessage,
@@ -808,8 +809,9 @@ async function executePreparedToolCall(
 	prepared: PreparedToolCall,
 	signal: AbortSignal | undefined,
 	emit: AgentEventSink,
+	instrumentation?: AgentEventInstrumentation,
 ): Promise<ExecutedToolCallOutcome> {
-	const updateEvents: Promise<void>[] = [];
+	const progress = new ToolProgressDelivery(prepared, emit, instrumentation);
 	let acceptingUpdates = true;
 
 	try {
@@ -819,31 +821,87 @@ async function executePreparedToolCall(
 			signal,
 			(partialResult) => {
 				if (!acceptingUpdates) return;
-				updateEvents.push(
-					Promise.resolve(
-						emit({
-							type: "tool_execution_update",
-							toolCallId: prepared.toolCall.id,
-							toolName: prepared.toolCall.name,
-							args: prepared.toolCall.arguments,
-							partialResult,
-						}),
-					),
-				);
+				progress.publish(partialResult);
 			},
 		);
 		acceptingUpdates = false;
-		await Promise.all(updateEvents);
+		await progress.flush();
 		return { result, isError: false };
 	} catch (error) {
 		acceptingUpdates = false;
-		await Promise.all(updateEvents);
+		await progress.flush();
 		return {
 			result: createErrorToolResult(error instanceof Error ? error.message : String(error)),
 			isError: true,
 		};
 	} finally {
 		acceptingUpdates = false;
+	}
+}
+
+class ToolProgressDelivery {
+	private readonly prepared: PreparedToolCall;
+	private readonly emit: AgentEventSink;
+	private readonly instrumentation?: AgentEventInstrumentation;
+	private pending: AgentToolResult<any> | undefined;
+	private drainPromise: Promise<void> | undefined;
+	private occupied = false;
+
+	constructor(prepared: PreparedToolCall, emit: AgentEventSink, instrumentation?: AgentEventInstrumentation) {
+		this.prepared = prepared;
+		this.emit = emit;
+		this.instrumentation = instrumentation;
+	}
+
+	publish(partialResult: AgentToolResult<any>): void {
+		this.pending = partialResult;
+		if (!this.occupied) {
+			this.occupied = true;
+			this.instrumentation?.onToolProgressPending?.(this.prepared.toolCall.id, 1);
+		}
+		if (!this.drainPromise) this.startDrain();
+	}
+
+	async flush(): Promise<void> {
+		while (this.drainPromise) await this.drainPromise;
+		if (this.pending) {
+			this.startDrain();
+			while (this.drainPromise) await this.drainPromise;
+		}
+	}
+
+	private startDrain(): void {
+		const drain = this.drain();
+		this.drainPromise = drain;
+		void drain.then(
+			() => this.finishDrain(drain),
+			() => this.finishDrain(drain),
+		);
+	}
+
+	private async drain(): Promise<void> {
+		try {
+			while (this.pending) {
+				const partialResult = this.pending;
+				this.pending = undefined;
+				await this.emit({
+					type: "tool_execution_update",
+					toolCallId: this.prepared.toolCall.id,
+					toolName: this.prepared.toolCall.name,
+					args: this.prepared.toolCall.arguments,
+					partialResult,
+				});
+			}
+		} finally {
+			if (this.occupied) {
+				this.occupied = false;
+				this.instrumentation?.onToolProgressPending?.(this.prepared.toolCall.id, 0);
+			}
+		}
+	}
+
+	private finishDrain(drain: Promise<void>): void {
+		if (this.drainPromise === drain) this.drainPromise = undefined;
 	}
 }
 
