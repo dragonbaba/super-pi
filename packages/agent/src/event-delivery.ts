@@ -84,7 +84,9 @@ export class EventDeliveryDispatcher<E, K> {
 	private slowObservers = 0;
 	private readonly scheduledFlush = (): void => {
 		this.scheduledHandle = undefined;
-		void this.flushAvailable(false);
+		void this.flushAvailable(false).catch((error) => {
+			this.reportDiagnostic({ type: "observer-error", error });
+		});
 	};
 
 	constructor(options: EventDeliveryDispatcherOptions<E> = {}) {
@@ -120,7 +122,7 @@ export class EventDeliveryDispatcher<E, K> {
 
 	hasAwaitedListeners(event: E): boolean {
 		for (const registration of this.criticalListeners) {
-			if (!registration.filter || registration.filter(event)) return true;
+			if (this.matchesFilter(registration, event)) return true;
 		}
 		return false;
 	}
@@ -128,7 +130,7 @@ export class EventDeliveryDispatcher<E, K> {
 	async publishAwaited(event: E): Promise<void> {
 		if (this.disposed) return;
 		for (const registration of this.criticalListeners) {
-			if (registration.filter && !registration.filter(event)) continue;
+			if (!this.matchesFilter(registration, event)) continue;
 			await registration.listener(event);
 			this.delivered++;
 		}
@@ -155,7 +157,7 @@ export class EventDeliveryDispatcher<E, K> {
 		await this.flushAllLatest();
 		await this.publishAwaited(event);
 		for (const observer of this.observers) {
-			if (observer.filter && !observer.filter(event)) continue;
+			if (!this.matchesFilter(observer, event)) continue;
 			await this.deliverObserver(observer, event);
 			observer.lastDeliveredAt = this.scheduler.now();
 		}
@@ -209,7 +211,11 @@ export class EventDeliveryDispatcher<E, K> {
 			}
 		}
 		if (!Number.isFinite(delayMs)) return;
-		this.scheduledHandle = this.scheduler.schedule(this.scheduledFlush, delayMs);
+		try {
+			this.scheduledHandle = this.scheduler.schedule(this.scheduledFlush, delayMs);
+		} catch (error) {
+			this.reportDiagnostic({ type: "observer-error", error });
+		}
 	}
 
 	private cancelScheduledFlush(): void {
@@ -253,8 +259,18 @@ export class EventDeliveryDispatcher<E, K> {
 				if (onlyKey !== undefined && key !== onlyKey) continue;
 				if ((observer.seenVersions.get(key) ?? 0) >= pending.version) continue;
 				const deliveredVersion = pending.version;
-				const event = pending.snapshot ?? (pending.snapshot = this.snapshotLatest(pending.event));
-				if (!observer.filter || observer.filter(event)) await this.deliverObserver(observer, event);
+				let event: E;
+				try {
+					event = pending.snapshot ?? (pending.snapshot = this.snapshotLatest(pending.event));
+				} catch (error) {
+					this.reportDiagnostic({ type: "observer-error", error });
+					for (const registeredObserver of this.observers) {
+						registeredObserver.seenVersions.set(key, deliveredVersion);
+					}
+					deliveredAny = true;
+					continue;
+				}
+				if (this.matchesFilter(observer, event)) await this.deliverObserver(observer, event);
 				observer.seenVersions.set(key, deliveredVersion);
 				deliveredAny = true;
 			}
@@ -286,12 +302,31 @@ export class EventDeliveryDispatcher<E, K> {
 			this.delivered++;
 		} catch (error) {
 			this.observerErrors++;
-			this.onDiagnostic?.({ type: "observer-error", error });
+			this.reportDiagnostic({ type: "observer-error", error });
 		}
 		const durationMs = this.scheduler.now() - startedAt;
 		if (durationMs >= this.slowObserverMs) {
 			this.slowObservers++;
-			this.onDiagnostic?.({ type: "observer-slow", durationMs });
+			this.reportDiagnostic({ type: "observer-slow", durationMs });
+		}
+	}
+
+	private matchesFilter(registration: CriticalListener<E>, event: E): boolean {
+		if (!registration.filter) return true;
+		try {
+			return registration.filter(event);
+		} catch (error) {
+			this.observerErrors++;
+			this.reportDiagnostic({ type: "observer-error", error });
+			return false;
+		}
+	}
+
+	private reportDiagnostic(diagnostic: EventDeliveryDiagnostic): void {
+		try {
+			this.onDiagnostic?.(diagnostic);
+		} catch {
+			// Diagnostics are observational and must never affect event delivery.
 		}
 	}
 }

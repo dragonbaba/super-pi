@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { setImmediate as nextTask } from "node:timers/promises";
 import {
 	EventDeliveryDispatcher,
 	type EventDeliveryDiagnostic,
@@ -134,4 +135,65 @@ test("repeated missing-key flushes do not recurse through unrelated pending valu
 	assert.equal(scheduler.pendingTasks, 1);
 	await dispatcher.flushLatest("present");
 	assert.equal(dispatcher.stats.pendingKeys, 0);
+});
+
+test("throwing observer filters are diagnosed without affecting healthy observers", async () => {
+	const diagnostics: EventDeliveryDiagnostic[] = [];
+	const { dispatcher } = createDispatcher(diagnostics);
+	let healthyDeliveries = 0;
+	dispatcher.subscribe(() => {}, {
+		delivery: "latest",
+		filter: () => { throw new Error("filter failed"); },
+	});
+	dispatcher.subscribe(() => { healthyDeliveries++; }, { delivery: "latest" });
+
+	dispatcher.publishLatest("message", { type: "update", sequence: 1 });
+	await dispatcher.flushAllLatest();
+
+	assert.equal(healthyDeliveries, 1);
+	assert.equal(dispatcher.stats.pendingKeys, 0);
+	assert.equal(diagnostics.filter((diagnostic) => diagnostic.type === "observer-error").length, 1);
+});
+
+test("throwing diagnostics cannot escape observer error isolation", async () => {
+	const scheduler = new FakeScheduler();
+	const dispatcher = new EventDeliveryDispatcher<FixtureEvent, string>({
+		scheduler,
+		onDiagnostic: () => { throw new Error("diagnostic failed"); },
+	});
+	let healthyDeliveries = 0;
+	dispatcher.subscribe(() => { throw new Error("observer failed"); }, { delivery: "latest" });
+	dispatcher.subscribe(() => { healthyDeliveries++; }, { delivery: "latest" });
+
+	dispatcher.publishLatest("message", { type: "update", sequence: 1 });
+	await dispatcher.flushAllLatest();
+
+	assert.equal(healthyDeliveries, 1);
+	assert.equal(dispatcher.stats.observerErrors, 1);
+});
+
+test("scheduled flush isolates failures without unhandled rejections", async () => {
+	const diagnostics: EventDeliveryDiagnostic[] = [];
+	const { dispatcher, scheduler } = createDispatcher(diagnostics);
+	const unhandled: unknown[] = [];
+	const onUnhandled = (reason: unknown) => { unhandled.push(reason); };
+	process.on("unhandledRejection", onUnhandled);
+	let healthyDeliveries = 0;
+	try {
+		dispatcher.subscribe(() => {}, {
+			delivery: "latest",
+			filter: () => { throw new Error("scheduled filter failed"); },
+		});
+		dispatcher.subscribe(() => { healthyDeliveries++; }, { delivery: "latest" });
+		dispatcher.publishLatest("message", { type: "update", sequence: 1 });
+
+		scheduler.advanceBy(16);
+		await nextTask();
+
+		assert.equal(healthyDeliveries, 1);
+		assert.equal(unhandled.length, 0);
+		assert.equal(diagnostics.filter((diagnostic) => diagnostic.type === "observer-error").length, 1);
+	} finally {
+		process.off("unhandledRejection", onUnhandled);
+	}
 });
