@@ -14,6 +14,7 @@ import type {
 	ProviderAuth,
 } from "./auth/types.ts";
 import { InMemoryModelsStore, type ModelsStore, type ModelsStoreEntry } from "./models-store.ts";
+import { withModelProfile } from "./model-capabilities.ts";
 import type {
 	Api,
 	ApiStreamOptions,
@@ -731,11 +732,58 @@ export interface CreateProviderOptions<TApi extends Api = Api> {
 	auth: ProviderAuth;
 	/** Static baseline model list (empty for purely dynamic providers). */
 	models: readonly Model<TApi>[];
+	/** Provenance for static models. Built-in factories default to "built-in". */
+	modelProfileSource?: Model<TApi>["profileSource"];
 	/** Fetch a dynamic model overlay. createProvider restores and publishes it transactionally. */
 	fetchModels?: (context: RefreshModelsContext) => Promise<readonly Model<TApi>[]>;
 	filterModels?: (models: readonly Model<TApi>[], credential: Credential | undefined) => readonly Model<TApi>[];
 	/** Single implementation, or map keyed by `model.api` for mixed-API providers. */
 	api: ProviderStreams | Partial<Record<TApi, ProviderStreams>>;
+}
+
+interface ProfiledModelListCacheEntry {
+	key: string;
+	originals: readonly Model<Api>[];
+	profiled: readonly Model<Api>[];
+}
+
+const PROFILED_MODEL_LISTS = new WeakMap<Model<Api>, ProfiledModelListCacheEntry[]>();
+
+function sameModelObjects(left: readonly Model<Api>[], right: readonly Model<Api>[]): boolean {
+	if (left.length !== right.length) return false;
+	for (let index = 0; index < left.length; index++) {
+		if (left[index] !== right[index]) return false;
+	}
+	return true;
+}
+
+function profileStaticModels<TApi extends Api>(input: CreateProviderOptions<TApi>): readonly Model<TApi>[] {
+	const source = input.modelProfileSource ?? "built-in";
+	const key = `${input.id}\0${source}`;
+	const first = input.models[0] as Model<Api> | undefined;
+	const candidates = first ? PROFILED_MODEL_LISTS.get(first) : undefined;
+	for (const candidate of candidates ?? []) {
+		if (candidate.key === key && sameModelObjects(candidate.originals, input.models)) {
+			return candidate.profiled as readonly Model<TApi>[];
+		}
+	}
+	const profiled = input.models.map((model) =>
+		withModelProfile(model, model.profileSource ?? source, {
+			costKnown: model.costKnown ?? true,
+			diagnostics: model.profileDiagnostics,
+			capabilities: model.capabilities,
+		}),
+	);
+	const entry: ProfiledModelListCacheEntry = {
+		key,
+		originals: [...input.models] as Model<Api>[],
+		profiled: profiled as Model<Api>[],
+	};
+	if (first) {
+		if (candidates) candidates.push(entry);
+		else PROFILED_MODEL_LISTS.set(first, [entry]);
+	}
+	return profiled;
 }
 
 /**
@@ -745,17 +793,20 @@ export interface CreateProviderOptions<TApi extends Api = Api> {
  * produces a stream error.
  */
 export function createProvider<TApi extends Api = Api>(input: CreateProviderOptions<TApi>): Provider<TApi> {
-	const baselineModels = input.models;
+	const baselineModels = profileStaticModels(input);
 	let dynamicModels: readonly Model<TApi>[] = [];
+	let mergedModels: readonly Model<TApi>[] | undefined;
 	const fetchModels = input.fetchModels;
 	const currentModels = (): readonly Model<TApi>[] => {
+		if (mergedModels) return mergedModels;
 		const merged = [...baselineModels];
 		for (const model of dynamicModels) {
 			const index = merged.findIndex((entry) => entry.id === model.id);
 			if (index >= 0) merged[index] = model;
 			else merged.push(model);
 		}
-		return merged;
+		mergedModels = merged;
+		return mergedModels;
 	};
 	const single =
 		typeof (input.api as ProviderStreams).stream === "function" ? (input.api as ProviderStreams) : undefined;
@@ -791,21 +842,29 @@ export function createProvider<TApi extends Api = Api>(input: CreateProviderOpti
 							.map((model) => model as Model<TApi>);
 						if (
 							!(await context.publish({
-								update: () => {
-									dynamicModels = restored;
-								},
+							update: () => {
+								dynamicModels = restored;
+								mergedModels = undefined;
+							},
 							}))
 						) {
 							return;
 						}
 					}
 					if (!context.allowNetwork || context.signal.aborted) return;
-					const refreshed = await fetchModels(context);
+					const refreshed = (await fetchModels(context)).map((model) =>
+						withModelProfile(model, "provider-catalog", {
+							costKnown: model.costKnown ?? true,
+							diagnostics: model.profileDiagnostics,
+							capabilities: model.capabilities,
+						}),
+					);
 					if (context.signal.aborted) return;
 					await context.publish({
 						persist: { models: refreshed, checkedAt: Date.now() },
 						update: () => {
 							dynamicModels = refreshed;
+							mergedModels = undefined;
 						},
 					});
 				}

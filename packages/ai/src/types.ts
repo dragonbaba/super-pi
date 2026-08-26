@@ -83,6 +83,52 @@ export type ToolChoice = "auto" | "none";
 export type ThinkingLevel = "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 export type ModelThinkingLevel = "off" | ThinkingLevel;
 export type ThinkingLevelMap = Partial<Record<ModelThinkingLevel, string | null>>;
+
+/** Provenance of the metadata used to construct a runtime model profile. */
+export type ModelProfileSource =
+	| "built-in"
+	| "provider-catalog"
+	| "explicit-custom"
+	| "conservative-fallback";
+
+export type ModelReasoningCapability =
+	| { mode: "none" }
+	| { mode: "levels"; levels: readonly ModelThinkingLevel[] }
+	| { mode: "budget"; levels: readonly ModelThinkingLevel[] }
+	| { mode: "adaptive"; levels: readonly ModelThinkingLevel[] };
+
+export type ModelPromptCacheCapability =
+	| { mode: "none" }
+	| { mode: "implicit"; retention: boolean }
+	| { mode: "explicit"; retention: boolean };
+
+/**
+ * Provider-neutral, versioned capabilities used to gate optional wire fields.
+ * This is metadata only and never contains model prompts, credentials, or payloads.
+ */
+export interface ModelCapabilitiesV1 {
+	version: 1;
+	inputModalities: Readonly<{ text: boolean; image: boolean; audio: boolean }>;
+	toolCalling: boolean;
+	parallelTools: boolean;
+	strictToolSchema: boolean;
+	streamedToolArguments: boolean;
+	reasoning: ModelReasoningCapability;
+	thoughtSignatureRoundTrip: boolean;
+	promptCache: ModelPromptCacheCapability;
+	previousResponseId: boolean;
+	websocketContinuation: boolean;
+	deferredTools: boolean;
+	remoteCompaction: boolean;
+	contextWindow: number;
+	maxOutputTokens: number;
+}
+
+export interface ModelProfileDiagnostic {
+	code: "PROFILE_FIELD_DEFAULTED" | "CONSERVATIVE_FALLBACK";
+	field?: "api" | "baseUrl" | "capabilities" | "contextWindow" | "cost" | "maxTokens";
+	message: string;
+}
 export type ChatTemplateKwargValue =
 	| string
 	| number
@@ -836,6 +882,14 @@ export interface Model<TApi extends Api> {
 	cost: ModelCost;
 	contextWindow: number;
 	maxTokens: number;
+	/** Runtime profile provenance. ModelRuntime guarantees this is present. */
+	profileSource?: ModelProfileSource;
+	/** Provider-neutral capability manifest. ModelRuntime guarantees this is present. */
+	capabilities?: Readonly<ModelCapabilitiesV1>;
+	/** False means zero-valued rates are placeholders and must be displayed as unknown. */
+	costKnown?: boolean;
+	/** Metadata-only profile diagnostics, such as explicitly omitted custom fields. */
+	profileDiagnostics?: readonly ModelProfileDiagnostic[];
 	/** Default sampling parameters for this model. See {@link StreamOptions.samplingParams}; per-request keys override these. */
 	samplingParams?: Record<string, unknown>;
 	headers?: Record<string, string>;
