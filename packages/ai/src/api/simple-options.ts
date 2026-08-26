@@ -41,6 +41,7 @@ export function buildBaseOptions(
 		sessionId: options?.sessionId,
 		headers: options?.headers,
 		onPayload: options?.onPayload,
+		onEffectiveDispatch: options?.onEffectiveDispatch,
 		onResponse: options?.onResponse,
 		timeoutMs: options?.timeoutMs,
 		websocketConnectTimeoutMs: options?.websocketConnectTimeoutMs,

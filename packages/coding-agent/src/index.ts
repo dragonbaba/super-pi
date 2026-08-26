@@ -220,16 +220,20 @@ export {
 	canonicalizeLogicalPath,
 	compareCanonicalIdentifiers,
 	comparePrefixManifests,
+	createScopedContextIdentifier,
+	createScopedExtensionIdentifier,
 	PrefixManifestRecorder,
 	serializePrefixManifest,
 	sha256Canonical,
 	type PrefixDriftDiagnostic,
 	type PrefixDriftReasonCode,
+	type EffectivePrefixDispatchObservation,
 	type PrefixManifestBuildInput,
 	type PrefixManifestContextInput,
 	type PrefixManifestSegment,
 	type PrefixManifestToolInput,
 	type PrefixManifestV1,
+	type PrefixObservationState,
 } from "./core/prefix-manifest.ts";
 // SDK for programmatic usage
 export {

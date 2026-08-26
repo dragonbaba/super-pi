@@ -24,6 +24,7 @@ import type {
 } from "../types.ts";
 import { appendAssistantMessageDiagnostic, createAssistantMessageDiagnostic } from "../utils/diagnostics.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
+import { observeEffectiveSseDispatch } from "../utils/effective-dispatch.ts";
 import { headersToRecord, providerHeadersToRecord } from "../utils/headers.ts";
 import { parseStreamingJson } from "../utils/json-parse.ts";
 import { getProviderEnvValue } from "../utils/provider-env.ts";
@@ -387,6 +388,7 @@ export const stream: StreamFunction<"pi-messages", PiMessagesOptions> = (
 			if (nextPayload !== undefined) {
 				payload = nextPayload;
 			}
+			observeEffectiveSseDispatch(options, model, payload);
 
 			const response = await (options?.fetch ?? globalThis.fetch)(url, {
 				method: "POST",

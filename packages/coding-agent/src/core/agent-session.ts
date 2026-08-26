@@ -1226,9 +1226,14 @@ export class AgentSession {
 		return this.agent.state.systemPrompt;
 	}
 
-	/** Metadata-only manifest captured immediately before the latest provider request. */
+	/** Metadata-only manifest captured from the latest effective provider dispatch. */
 	get prefixManifest(): PrefixManifestV1 | undefined {
 		return this._prefixManifestRecorder?.current;
+	}
+
+	/** Metadata-only pre-dispatch intent, kept separate from the effective provider request. */
+	get prefixIntentManifest(): PrefixManifestV1 | undefined {
+		return this._prefixManifestRecorder?.intent;
 	}
 
 	/** First changed prefix segment relative to the preceding provider request. */

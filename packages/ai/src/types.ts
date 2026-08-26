@@ -106,6 +106,20 @@ export type CacheRetention = "none" | "short" | "long";
 
 export type Transport = "sse" | "websocket" | "websocket-cached" | "auto";
 
+/** Metadata-only description of the provider request that was actually dispatched. */
+export interface EffectiveDispatchObservation {
+	transport: "sse" | "websocket";
+	previousResponseMode: "none" | "response-id" | "websocket";
+	instructionsHash: string;
+	instructionsBytes: number;
+	toolOrderHash: string;
+	toolsHash: string;
+	toolCount: number;
+	cacheKeyHash?: string;
+	prefixHash: string;
+	requestTransformOutputHash: string;
+}
+
 /** Provider-scoped environment overrides. Values take precedence over process.env. */
 export type ProviderEnv = Record<string, string>;
 export type ProviderHeaders = Record<string, string | null>;
@@ -140,6 +154,11 @@ export interface ProviderRequestOptions<TModel = Model<Api>> {
 	 * Return undefined to keep the payload unchanged.
 	 */
 	onPayload?: (payload: unknown, model: TModel) => unknown | undefined | Promise<unknown | undefined>;
+	/**
+	 * Observes bounded hashes from the request selected for dispatch. Provider implementations
+	 * isolate callback failures and never expose the original payload through this hook.
+	 */
+	onEffectiveDispatch?: (observation: Readonly<EffectiveDispatchObservation>, model: TModel) => void;
 	/**
 	 * Optional callback invoked after an HTTP response is received.
 	 */

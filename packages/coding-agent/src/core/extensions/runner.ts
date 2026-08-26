@@ -2,7 +2,6 @@
  * Extension runner - executes extensions and manages their lifecycle.
  */
 
-import { relative } from "node:path";
 import type { AgentMessage } from "@super-pi/agent-core";
 import type { ImageContent, Model, Provider, ProviderHeaders } from "@super-pi/ai";
 import type { KeyId } from "@super-pi/tui";
@@ -11,6 +10,7 @@ import type { ResourceDiagnostic } from "../diagnostics.ts";
 import type { KeybindingsConfig } from "../keybindings.ts";
 import type { ModelRegistry } from "../model-registry.ts";
 import type { ScopedModel } from "../model-resolver.ts";
+import { createScopedExtensionIdentifier } from "../prefix-manifest.ts";
 import type { SessionManager } from "../session-manager.ts";
 import type { BuildSystemPromptOptions } from "../system-prompt.ts";
 import { setOwnProperty } from "../../utils/record.ts";
@@ -748,9 +748,7 @@ export class ExtensionRunner {
 			for (const extension of this.extensions) {
 				const handlers = extension.handlers.get(eventType);
 				if (!handlers) continue;
-				const extensionIdentifier = extension.path.startsWith("<")
-					? extension.path
-					: relative(this.cwd, extension.resolvedPath);
+				const extensionIdentifier = createScopedExtensionIdentifier(extension, this.cwd);
 				for (let index = 0; index < handlers.length; index++) {
 					identifiers.push(`${eventType}:${extensionIdentifier}#${index}`);
 				}

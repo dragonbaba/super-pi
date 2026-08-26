@@ -26,6 +26,7 @@ import type {
 	Api,
 	AssistantMessage,
 	Context,
+	EffectiveDispatchObservation,
 	Model,
 	ProviderEnv,
 	ProviderHeaders,
@@ -550,7 +551,7 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
             }
             assertSuccessfulOutput(output);
             const responseItems = convertAssistantResponseItems(model, output, grammarToolInputProperties);
-            recordSuccessfulDispatch(cacheSessionId, body, body, sseHeaders, "sse", responseItems, output.responseId);
+            recordSuccessfulDispatch(cacheSessionId, body, body, sseHeaders, "sse", responseItems, model, options, output.responseId);
             stream.push({ type: "done", reason: output.stopReason, message: output });
             stream.end();
         }
@@ -930,6 +931,9 @@ interface SuccessfulDispatchCommitment {
     serviceTierHash: string;
     headersHash: string;
     actualBodyHash: string;
+    instructionsBytes: number;
+    toolOrderHash: string;
+    toolCount: number;
     responseId?: string;
 }
 
@@ -1601,6 +1605,10 @@ function createSuccessfulDispatchCommitment(
     const serviceTierHash = sha256Json(fullBody.service_tier ?? null);
     const headersHash = sha256Json(normalizedHeadersForCommitment(headers));
     const actualBodyHash = sha256Json(actualBody);
+    const toolOrderHash = sha256Json((fullBody.tools ?? []).map((tool) => {
+        const record = tool as unknown as Record<string, unknown>;
+        return typeof record.name === "string" ? record.name : (typeof record.type === "string" ? record.type : "unknown");
+    }));
     if (!instructionsHash ||
         !inputHash ||
         !responseItemsHash ||
@@ -1609,7 +1617,8 @@ function createSuccessfulDispatchCommitment(
         !promptCacheKeyHash ||
         !serviceTierHash ||
         !headersHash ||
-        !actualBodyHash) {
+        !actualBodyHash ||
+        !toolOrderHash) {
         return undefined;
     }
     return {
@@ -1625,6 +1634,9 @@ function createSuccessfulDispatchCommitment(
         serviceTierHash,
         headersHash,
         actualBodyHash,
+        instructionsBytes: new TextEncoder().encode(typeof fullBody.instructions === "string" ? fullBody.instructions : JSON.stringify(fullBody.instructions ?? null)).byteLength,
+        toolOrderHash,
+        toolCount: fullBody.tools?.length ?? 0,
         ...(responseId ? { responseId } : {}),
     };
 }
@@ -1635,12 +1647,32 @@ function recordSuccessfulDispatch(
     headers: Headers,
     transport: OpenAICodexDispatchTransport,
     responseItems: ResponseInput,
+    model: Model<"openai-codex-responses">,
+    options: OpenAICodexResponsesOptions | undefined,
     responseId?: string,
 ): void {
-    if (!sessionId)
-        return;
     const commitment = createSuccessfulDispatchCommitment(fullBody, actualBody, headers, transport, responseItems, responseId);
     if (!commitment)
+        return;
+    const observation: EffectiveDispatchObservation = {
+        transport: transport === "sse" ? "sse" : "websocket",
+        previousResponseMode: transport === "websocket-delta" ? "response-id" : (transport === "sse" ? "none" : "websocket"),
+        instructionsHash: commitment.instructionsHash,
+        instructionsBytes: commitment.instructionsBytes,
+        toolOrderHash: commitment.toolOrderHash,
+        toolsHash: commitment.toolsHash,
+        toolCount: commitment.toolCount,
+        cacheKeyHash: commitment.promptCacheKeyHash,
+        prefixHash: commitment.bodyWithoutInputHash,
+        requestTransformOutputHash: commitment.actualBodyHash,
+    };
+    try {
+        options?.onEffectiveDispatch?.(Object.freeze(observation), model);
+    }
+    catch {
+        // Effective dispatch diagnostics are observational and cannot fail a provider request.
+    }
+    if (!sessionId)
         return;
     successfulDispatchCommitments.delete(sessionId);
     consumedDispatchCommitments.delete(sessionId);
@@ -1878,7 +1910,7 @@ async function processWebSocketStream(
         }
         else {
             const responseItems = convertAssistantResponseItems(model, output, grammarToolInputProperties);
-            recordSuccessfulDispatch(cacheSessionId, fullBody, requestBody, headers, requestBody.previous_response_id ? "websocket-delta" : "websocket-full", responseItems, output.responseId);
+            recordSuccessfulDispatch(cacheSessionId, fullBody, requestBody, headers, requestBody.previous_response_id ? "websocket-delta" : "websocket-full", responseItems, model, options, output.responseId);
             if (useCachedContext && entry && output.responseId) {
                 entry.continuation = {
                     lastRequestBody: fullBody,

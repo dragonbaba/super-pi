@@ -1,6 +1,8 @@
 import { createHash, type Hash } from "node:crypto";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 
 export type PreviousResponseMode = "none" | "response-id" | "websocket";
+export type PrefixObservationState = "observed" | "unavailable";
 
 export interface PrefixManifestV1 {
 	schemaVersion: 1;
@@ -15,10 +17,14 @@ export interface PrefixManifestV1 {
 	toolSchemaHash: string;
 	toolCount: number;
 	persistentContextHash: string;
-	dynamicInstructionGeneration: number;
-	dynamicInstructionHash: string;
+	dynamicInstructionObservationState: PrefixObservationState;
+	dynamicInstructionGeneration?: number;
+	dynamicInstructionHash?: string;
 	requestTransformChainHash: string;
-	compactionGeneration: number;
+	requestTransformOutputHash: string;
+	effectivePrefixHash: string;
+	compactionObservationState: PrefixObservationState;
+	compactionGeneration?: number;
 	compactionArtifactHash?: string;
 	cacheKeyHash?: string;
 	previousResponseMode: PreviousResponseMode;
@@ -34,6 +40,19 @@ export interface PrefixManifestContextInput {
 	content: string;
 	/** Entries with the same precedence are unordered siblings and are canonically sorted. */
 	precedence: number;
+}
+
+export interface EffectivePrefixDispatchObservation {
+	transport: string;
+	previousResponseMode: PreviousResponseMode;
+	instructionsHash: string;
+	instructionsBytes: number;
+	toolOrderHash: string;
+	toolsHash: string;
+	toolCount: number;
+	cacheKeyHash?: string;
+	prefixHash: string;
+	requestTransformOutputHash: string;
 }
 
 export interface PrefixManifestBuildInput {
@@ -55,11 +74,14 @@ export interface PrefixManifestBuildInput {
 	compactionArtifact?: unknown;
 	cacheKey?: string;
 	previousResponseMode: PreviousResponseMode;
+	/** Provider-owned metadata captured from the request that was actually dispatched. */
+	effectiveDispatch?: EffectivePrefixDispatchObservation;
 }
 
 export type PrefixManifestSegment =
 	| "model"
 	| "transport"
+	| "cache-retention"
 	| "system-prompt"
 	| "tool-order"
 	| "tool-schema"
@@ -67,7 +89,8 @@ export type PrefixManifestSegment =
 	| "dynamic-instructions"
 	| "request-transform-chain"
 	| "compaction"
-	| "cache-key";
+	| "cache-key"
+	| "previous-response";
 
 export type PrefixDriftReasonCode =
 	| "MODEL_CHANGED"
@@ -77,13 +100,15 @@ export type PrefixDriftReasonCode =
 	| "DYNAMIC_INSTRUCTION_CHANGED"
 	| "COMPACTION_BOUNDARY"
 	| "TRANSPORT_CHANGED"
+	| "CACHE_RETENTION_CHANGED"
 	| "CACHE_KEY_CHANGED"
+	| "PREVIOUS_RESPONSE_MODE_CHANGED"
 	| "UNKNOWN_PREFIX_DRIFT";
 
 export interface PrefixDriftDiagnostic {
 	firstDivergentSegment: PrefixManifestSegment;
-	oldGeneration: number;
-	newGeneration: number;
+	oldGeneration?: number;
+	newGeneration?: number;
 	expectedMiss: boolean;
 	reasonCode: PrefixDriftReasonCode;
 	changedIdentifiers: string[];
@@ -103,7 +128,8 @@ function compareCodeUnits(left: string, right: string): number {
 }
 
 export function compareCanonicalIdentifiers(left: string, right: string): number {
-	return compareCodeUnits(left.normalize("NFC"), right.normalize("NFC"));
+	const canonical = compareCodeUnits(left.normalize("NFC"), right.normalize("NFC"));
+	return canonical || compareCodeUnits(left, right);
 }
 
 export function canonicalizeLogicalPath(
@@ -136,6 +162,65 @@ export function canonicalizeLogicalPath(
 	return caseInsensitive ? canonical.toLowerCase() : canonical;
 }
 
+function hashIdentifier(value: string): string {
+	return createHash("sha256").update(canonicalizeLogicalPath(value)).digest("hex");
+}
+
+function pathIsWithin(root: string, value: string): boolean {
+	const relation = relative(resolve(root), resolve(value));
+	return relation === "" || (!relation.startsWith(`..${sep}`) && relation !== ".." && !isAbsolute(relation));
+}
+
+export function createScopedContextIdentifier(
+	value: string,
+	options: { workspaceRoot: string; globalRoot?: string },
+): string {
+	const resolved = resolve(value);
+	if (pathIsWithin(options.workspaceRoot, resolved)) {
+		return `workspace:${canonicalizeLogicalPath(resolved, { root: resolve(options.workspaceRoot) })}`;
+	}
+	if (options.globalRoot && pathIsWithin(options.globalRoot, resolved)) {
+		return `global-context:${canonicalizeLogicalPath(resolved, { root: resolve(options.globalRoot) })}`;
+	}
+	if (pathIsWithin(dirname(resolved), options.workspaceRoot)) {
+		return `ancestor-context:${hashIdentifier(resolved)}`;
+	}
+	return `external-context:${hashIdentifier(resolved)}`;
+}
+
+export function createScopedExtensionIdentifier(
+	extension: {
+		path: string;
+		resolvedPath: string;
+		sourceInfo: { source: string; scope: string; origin: string; baseDir?: string };
+	},
+	workspaceRoot: string,
+): string {
+	if (extension.path.startsWith("<")) {
+		return `synthetic-extension:${hashIdentifier(extension.path)}`;
+	}
+	if (extension.sourceInfo.origin === "package") {
+		return `package-extension:${extension.sourceInfo.scope}:${sha256Canonical({
+			source: extension.sourceInfo.source,
+			entry: extension.sourceInfo.baseDir
+				? canonicalizeLogicalPath(extension.resolvedPath, { root: extension.sourceInfo.baseDir })
+				: hashIdentifier(extension.resolvedPath),
+		})}`;
+	}
+	if (pathIsWithin(workspaceRoot, extension.resolvedPath)) {
+		return `workspace-extension:${canonicalizeLogicalPath(extension.resolvedPath, { root: workspaceRoot })}`;
+	}
+	if (extension.sourceInfo.scope === "user") {
+		return `global-extension:${sha256Canonical({
+			source: extension.sourceInfo.source,
+			entry: extension.sourceInfo.baseDir
+				? canonicalizeLogicalPath(extension.resolvedPath, { root: extension.sourceInfo.baseDir })
+				: hashIdentifier(extension.resolvedPath),
+		})}`;
+	}
+	return `external-extension:${hashIdentifier(extension.resolvedPath)}`;
+}
+
 function normalizeText(value: string): string {
 	return value.replace(/\r\n?/g, "\n");
 }
@@ -155,14 +240,14 @@ function updateCanonicalHash(hash: Hash, value: unknown, seen: Set<object>): voi
 			hash.update(JSON.stringify(value));
 			return;
 		case "number":
-			hash.update(Number.isFinite(value) ? JSON.stringify(value) : "null");
+			if (!Number.isFinite(value)) throw new TypeError("Unsupported canonical number: expected a finite value");
+			hash.update(JSON.stringify(value));
 			return;
 		case "boolean":
 			hash.update(value ? "true" : "false");
 			return;
 		case "undefined":
-			hash.update("null");
-			return;
+			throw new TypeError("Unsupported canonical value type: undefined");
 		case "bigint":
 		case "function":
 		case "symbol":
@@ -172,25 +257,48 @@ function updateCanonicalHash(hash: Hash, value: unknown, seen: Set<object>): voi
 	seen.add(value);
 	try {
 		if (Array.isArray(value)) {
+			if (Object.getPrototypeOf(value) !== Array.prototype) {
+				throw new TypeError("Unsupported canonical object: arrays must use Array.prototype");
+			}
+			const enumerableKeys = Object.keys(value);
+			if (
+				enumerableKeys.length !== value.length ||
+				enumerableKeys.some((key, index) => key !== String(index))
+			) {
+				throw new TypeError("Unsupported canonical object: arrays must contain only dense indexed data");
+			}
 			hash.update("[");
 			for (let index = 0; index < value.length; index++) {
+				const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+				if (!descriptor || !("value" in descriptor)) {
+					throw new TypeError("Unsupported canonical object: array accessors are not plain data");
+				}
 				if (index > 0) hash.update(",");
-				updateCanonicalHash(hash, value[index], seen);
+				updateCanonicalHash(hash, descriptor.value, seen);
 			}
 			hash.update("]");
 			return;
 		}
+		const prototype = Object.getPrototypeOf(value);
+		if (prototype !== Object.prototype && prototype !== null) {
+			throw new TypeError("Unsupported canonical object: expected JSON-like plain data");
+		}
+		if (Object.getOwnPropertySymbols(value).length > 0) {
+			throw new TypeError("Unsupported canonical object: symbol keys are not JSON-like plain data");
+		}
 		const object = value as Record<string, unknown>;
-		const keys = Object.keys(object)
-			.filter((key) => object[key] !== undefined)
-			.sort(compareCanonicalIdentifiers);
+		const keys = Object.keys(object).sort(compareCanonicalIdentifiers);
 		hash.update("{");
 		for (let index = 0; index < keys.length; index++) {
 			const key = keys[index]!;
+			const descriptor = Object.getOwnPropertyDescriptor(object, key);
+			if (!descriptor || !("value" in descriptor)) {
+				throw new TypeError("Unsupported canonical object: accessors are not plain data");
+			}
 			if (index > 0) hash.update(",");
 			hash.update(JSON.stringify(key));
 			hash.update(":");
-			updateCanonicalHash(hash, object[key], seen);
+			updateCanonicalHash(hash, descriptor.value, seen);
 		}
 		hash.update("}");
 	} finally {
@@ -222,6 +330,18 @@ function changedMapKeys(previous: Map<string, string> | undefined, current: Map<
 	return [...keys].filter((key) => previous.get(key) !== current.get(key)).sort(compareCanonicalIdentifiers);
 }
 
+const SCOPED_IDENTIFIER_PATTERN = /^(?:workspace|global-context|ancestor-context|external-context|workspace-extension|global-extension|package-extension|external-extension|synthetic-extension):/;
+const ABSOLUTE_LOGICAL_PATH_PATTERN = /^(?:[A-Za-z]:\/|\/)/;
+
+function sanitizeManifestIdentifier(value: string, kind: "context" | "transform"): string {
+	const canonical = canonicalizeLogicalPath(value);
+	if (SCOPED_IDENTIFIER_PATTERN.test(canonical)) return canonical;
+	if (ABSOLUTE_LOGICAL_PATH_PATTERN.test(canonical) || canonical === ".." || canonical.startsWith("../")) {
+		return `external-${kind}:${hashIdentifier(canonical)}`;
+	}
+	return canonical;
+}
+
 export function buildPrefixManifest(input: PrefixManifestBuildInput): PrefixManifestV1 {
 	const normalizedPrompt = normalizeText(input.systemPrompt);
 	const toolOrder = input.tools.map((tool) => tool.name.normalize("NFC"));
@@ -229,7 +349,7 @@ export function buildPrefixManifest(input: PrefixManifestBuildInput): PrefixMani
 	for (const tool of input.tools) toolSchemas.set(tool.name, sha256Canonical(tool.schema));
 	const contextEntries = [...(input.persistentContext ?? [])]
 		.map((entry) => ({
-			identifier: canonicalizeLogicalPath(entry.identifier),
+			identifier: sanitizeManifestIdentifier(entry.identifier, "context"),
 			content: normalizeText(entry.content),
 			precedence: assertGeneration("persistentContext.precedence", entry.precedence),
 		}))
@@ -237,36 +357,73 @@ export function buildPrefixManifest(input: PrefixManifestBuildInput): PrefixMani
 	const persistentContext = new Map<string, string>();
 	for (const entry of contextEntries) persistentContext.set(entry.identifier, hashText(entry.content));
 	const requestTransforms = (input.requestTransformChain ?? []).map((identifier) =>
-		canonicalizeLogicalPath(identifier),
+		sanitizeManifestIdentifier(identifier, "transform"),
 	);
-	const dynamicInstructionGeneration = assertGeneration(
-		"dynamicInstructionGeneration",
-		input.dynamicInstructionGeneration ?? 0,
-	);
-	const compactionGeneration = assertGeneration("compactionGeneration", input.compactionGeneration ?? 0);
+	const dynamicInstructionObserved =
+		input.dynamicInstructionGeneration !== undefined || input.dynamicInstructions !== undefined;
+	if (dynamicInstructionObserved && (input.dynamicInstructionGeneration === undefined || input.dynamicInstructions === undefined)) {
+		throw new TypeError("dynamic instruction observation requires both generation and instructions");
+	}
+	const compactionObserved = input.compactionGeneration !== undefined || input.compactionArtifact !== undefined;
+	if (compactionObserved && input.compactionGeneration === undefined) {
+		throw new TypeError("compaction observation requires a generation");
+	}
+	const effective = input.effectiveDispatch;
+	const systemPromptHash = effective?.instructionsHash ?? hashText(normalizedPrompt);
+	const systemPromptBytes = effective?.instructionsBytes ?? Buffer.byteLength(normalizedPrompt);
+	const toolOrderHash = effective?.toolOrderHash ?? sha256Canonical(toolOrder);
+	const toolSchemaHash = effective?.toolsHash ?? sha256Canonical(input.tools.map((tool) => ({ name: tool.name, schema: tool.schema })));
+	const toolCount = effective?.toolCount ?? input.tools.length;
+	const cacheKeyHash = effective?.cacheKeyHash ?? (input.cacheKey === undefined ? undefined : hashText(input.cacheKey));
+	const requestTransformOutputHash = effective?.requestTransformOutputHash ?? sha256Canonical({
+		systemPromptHash,
+		toolOrderHash,
+		toolSchemaHash,
+		cacheKeyHash: cacheKeyHash ?? null,
+	});
+	const effectivePrefixHash = effective?.prefixHash ?? sha256Canonical({
+		systemPromptHash,
+		toolOrderHash,
+		toolSchemaHash,
+		persistentContextHash: sha256Canonical(contextEntries),
+		cacheKeyHash: cacheKeyHash ?? null,
+	});
 
 	const manifest: PrefixManifestV1 = {
 		schemaVersion: 1,
 		provider: input.provider,
 		model: input.model,
 		api: input.api,
-		transport: input.transport,
+		transport: effective?.transport ?? input.transport,
 		...(input.cacheRetention === undefined ? {} : { cacheRetention: input.cacheRetention }),
-		systemPromptHash: hashText(normalizedPrompt),
-		systemPromptBytes: Buffer.byteLength(normalizedPrompt),
-		toolOrderHash: sha256Canonical(toolOrder),
-		toolSchemaHash: sha256Canonical(input.tools.map((tool) => ({ name: tool.name, schema: tool.schema }))),
-		toolCount: input.tools.length,
+		systemPromptHash,
+		systemPromptBytes,
+		toolOrderHash,
+		toolSchemaHash,
+		toolCount,
 		persistentContextHash: sha256Canonical(contextEntries),
-		dynamicInstructionGeneration,
-		dynamicInstructionHash: hashText(input.dynamicInstructions ?? ""),
+		dynamicInstructionObservationState: dynamicInstructionObserved ? "observed" : "unavailable",
+		...(dynamicInstructionObserved
+			? {
+				dynamicInstructionGeneration: assertGeneration(
+					"dynamicInstructionGeneration",
+					input.dynamicInstructionGeneration!,
+				),
+				dynamicInstructionHash: hashText(input.dynamicInstructions!),
+			}
+			: {}),
 		requestTransformChainHash: sha256Canonical(requestTransforms),
-		compactionGeneration,
+		requestTransformOutputHash,
+		effectivePrefixHash,
+		compactionObservationState: compactionObserved ? "observed" : "unavailable",
+		...(compactionObserved
+			? { compactionGeneration: assertGeneration("compactionGeneration", input.compactionGeneration!) }
+			: {}),
 		...(input.compactionArtifact === undefined
 			? {}
 			: { compactionArtifactHash: sha256Canonical(input.compactionArtifact) }),
-		...(input.cacheKey === undefined ? {} : { cacheKeyHash: hashText(input.cacheKey) }),
-		previousResponseMode: input.previousResponseMode,
+		...(cacheKeyHash === undefined ? {} : { cacheKeyHash }),
+		previousResponseMode: effective?.previousResponseMode ?? input.previousResponseMode,
 	};
 	SEGMENT_METADATA.set(manifest, { toolOrder, toolSchemas, persistentContext, requestTransforms });
 	return Object.freeze(manifest);
@@ -285,15 +442,20 @@ function diagnostic(
 	expectedMiss: boolean,
 	changedIdentifiers: string[] = [],
 ): PrefixDriftDiagnostic {
-	const useDynamicGeneration = segment === "dynamic-instructions";
-	return {
+	const result: PrefixDriftDiagnostic = {
 		firstDivergentSegment: segment,
-		oldGeneration: useDynamicGeneration ? previous.dynamicInstructionGeneration : previous.compactionGeneration,
-		newGeneration: useDynamicGeneration ? current.dynamicInstructionGeneration : current.compactionGeneration,
 		expectedMiss,
 		reasonCode,
 		changedIdentifiers,
 	};
+	if (segment === "dynamic-instructions") {
+		if (previous.dynamicInstructionGeneration !== undefined) result.oldGeneration = previous.dynamicInstructionGeneration;
+		if (current.dynamicInstructionGeneration !== undefined) result.newGeneration = current.dynamicInstructionGeneration;
+	} else if (segment === "compaction") {
+		if (previous.compactionGeneration !== undefined) result.oldGeneration = previous.compactionGeneration;
+		if (current.compactionGeneration !== undefined) result.newGeneration = current.compactionGeneration;
+	}
+	return result;
 }
 
 export function comparePrefixManifests(
@@ -302,53 +464,91 @@ export function comparePrefixManifests(
 ): PrefixDriftDiagnostic | undefined {
 	const previousMetadata = SEGMENT_METADATA.get(previous);
 	const currentMetadata = SEGMENT_METADATA.get(current);
+	const toolOrderChanged = previous.toolOrderHash !== current.toolOrderHash || previous.toolCount !== current.toolCount;
+	const changedTools = toolOrderChanged
+		? symmetricDifference(previousMetadata?.toolOrder ?? [], currentMetadata?.toolOrder ?? [])
+		: [];
+	const toolSchemaChanged = previous.toolSchemaHash !== current.toolSchemaHash;
+	const changedToolSchemas = toolSchemaChanged
+		? changedMapKeys(previousMetadata?.toolSchemas, currentMetadata?.toolSchemas)
+		: [];
+	const contextChanged = previous.persistentContextHash !== current.persistentContextHash;
+	const changedContext = contextChanged
+		? changedMapKeys(previousMetadata?.persistentContext, currentMetadata?.persistentContext)
+		: [];
+	const dynamicChanged =
+		previous.dynamicInstructionObservationState !== current.dynamicInstructionObservationState ||
+		previous.dynamicInstructionGeneration !== current.dynamicInstructionGeneration ||
+		previous.dynamicInstructionHash !== current.dynamicInstructionHash;
+	const systemPromptChanged =
+		previous.systemPromptHash !== current.systemPromptHash ||
+		previous.systemPromptBytes !== current.systemPromptBytes;
+	const effectivePrefixChanged = previous.effectivePrefixHash !== current.effectivePrefixHash;
 	if (previous.provider !== current.provider || previous.model !== current.model || previous.api !== current.api) {
 		return diagnostic(previous, current, "model", "MODEL_CHANGED", true);
 	}
-	if (previous.transport !== current.transport || previous.cacheRetention !== current.cacheRetention) {
+	if (previous.transport !== current.transport) {
 		return diagnostic(previous, current, "transport", "TRANSPORT_CHANGED", true);
 	}
-	if (previous.systemPromptHash !== current.systemPromptHash || previous.systemPromptBytes !== current.systemPromptBytes) {
+	if (previous.cacheRetention !== current.cacheRetention) {
+		return diagnostic(previous, current, "cache-retention", "CACHE_RETENTION_CHANGED", true);
+	}
+	if (systemPromptChanged) {
+		if (changedTools.length > 0) {
+			return diagnostic(previous, current, "system-prompt", "TOOL_ACTIVATED", true, changedTools);
+		}
+		if (toolSchemaChanged) {
+			return diagnostic(previous, current, "system-prompt", "TOOL_SCHEMA_CHANGED", true, changedToolSchemas);
+		}
+		if (contextChanged) {
+			return diagnostic(previous, current, "system-prompt", "PROJECT_CONTEXT_CHANGED", true, changedContext);
+		}
+		if (dynamicChanged) {
+			return diagnostic(previous, current, "system-prompt", "DYNAMIC_INSTRUCTION_CHANGED", true);
+		}
 		return diagnostic(previous, current, "system-prompt", "UNKNOWN_PREFIX_DRIFT", false);
 	}
-	if (previous.toolOrderHash !== current.toolOrderHash || previous.toolCount !== current.toolCount) {
-		const changedIdentifiers = symmetricDifference(
-			previousMetadata?.toolOrder ?? [],
-			currentMetadata?.toolOrder ?? [],
-		);
+	if (
+		effectivePrefixChanged &&
+		!toolOrderChanged &&
+		!toolSchemaChanged &&
+		!contextChanged &&
+		!dynamicChanged &&
+		previous.cacheKeyHash === current.cacheKeyHash
+	) {
+		return diagnostic(previous, current, "system-prompt", "UNKNOWN_PREFIX_DRIFT", false);
+	}
+	if (toolOrderChanged) {
 		return diagnostic(
 			previous,
 			current,
 			"tool-order",
-			changedIdentifiers.length > 0 ? "TOOL_ACTIVATED" : "UNKNOWN_PREFIX_DRIFT",
-			changedIdentifiers.length > 0,
-			changedIdentifiers,
+			changedTools.length > 0 ? "TOOL_ACTIVATED" : "UNKNOWN_PREFIX_DRIFT",
+			changedTools.length > 0,
+			changedTools,
 		);
 	}
-	if (previous.toolSchemaHash !== current.toolSchemaHash) {
+	if (toolSchemaChanged) {
 		return diagnostic(
 			previous,
 			current,
 			"tool-schema",
 			"TOOL_SCHEMA_CHANGED",
 			true,
-			changedMapKeys(previousMetadata?.toolSchemas, currentMetadata?.toolSchemas),
+			changedToolSchemas,
 		);
 	}
-	if (previous.persistentContextHash !== current.persistentContextHash) {
+	if (contextChanged) {
 		return diagnostic(
 			previous,
 			current,
 			"persistent-context",
 			"PROJECT_CONTEXT_CHANGED",
 			true,
-			changedMapKeys(previousMetadata?.persistentContext, currentMetadata?.persistentContext),
+			changedContext,
 		);
 	}
-	if (
-		previous.dynamicInstructionGeneration !== current.dynamicInstructionGeneration ||
-		previous.dynamicInstructionHash !== current.dynamicInstructionHash
-	) {
+	if (dynamicChanged) {
 		return diagnostic(previous, current, "dynamic-instructions", "DYNAMIC_INSTRUCTION_CHANGED", true);
 	}
 	if (previous.requestTransformChainHash !== current.requestTransformChainHash) {
@@ -362,20 +562,29 @@ export function comparePrefixManifests(
 		);
 	}
 	if (
+		previous.compactionObservationState !== current.compactionObservationState ||
 		previous.compactionGeneration !== current.compactionGeneration ||
 		previous.compactionArtifactHash !== current.compactionArtifactHash
 	) {
 		return diagnostic(previous, current, "compaction", "COMPACTION_BOUNDARY", true);
 	}
-	if (previous.cacheKeyHash !== current.cacheKeyHash || previous.previousResponseMode !== current.previousResponseMode) {
+	if (previous.cacheKeyHash !== current.cacheKeyHash) {
 		return diagnostic(previous, current, "cache-key", "CACHE_KEY_CHANGED", true);
+	}
+	if (previous.previousResponseMode !== current.previousResponseMode) {
+		return diagnostic(previous, current, "previous-response", "PREVIOUS_RESPONSE_MODE_CHANGED", true);
 	}
 	return undefined;
 }
 
 export class PrefixManifestRecorder {
 	private previous: PrefixManifestV1 | undefined;
+	private latestIntent: PrefixManifestV1 | undefined;
 	private latestDiagnostic: PrefixDriftDiagnostic | undefined;
+
+	recordIntent(manifest: PrefixManifestV1): void {
+		this.latestIntent = manifest;
+	}
 
 	record(manifest: PrefixManifestV1): PrefixDriftDiagnostic | undefined {
 		this.latestDiagnostic = this.previous ? comparePrefixManifests(this.previous, manifest) : undefined;
@@ -385,6 +594,10 @@ export class PrefixManifestRecorder {
 
 	get current(): PrefixManifestV1 | undefined {
 		return this.previous;
+	}
+
+	get intent(): PrefixManifestV1 | undefined {
+		return this.latestIntent;
 	}
 
 	get diagnostic(): PrefixDriftDiagnostic | undefined {

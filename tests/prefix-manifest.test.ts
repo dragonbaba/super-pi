@@ -102,8 +102,6 @@ test("first divergent segment reports deterministic expected-miss diagnostics", 
 	const schemaDiagnostic = comparePrefixManifests(baseline, buildPrefixManifest(schemaChangedInput));
 	assert.deepEqual(schemaDiagnostic, {
 		firstDivergentSegment: "tool-schema",
-		oldGeneration: 1,
-		newGeneration: 1,
 		expectedMiss: true,
 		reasonCode: "TOOL_SCHEMA_CHANGED",
 		changedIdentifiers: ["read"],
@@ -113,8 +111,6 @@ test("first divergent segment reports deterministic expected-miss diagnostics", 
 	activatedInput.tools = [...activatedInput.tools, { name: "grep", schema: { type: "object" } }];
 	assert.deepEqual(comparePrefixManifests(baseline, buildPrefixManifest(activatedInput)), {
 		firstDivergentSegment: "tool-order",
-		oldGeneration: 1,
-		newGeneration: 1,
 		expectedMiss: true,
 		reasonCode: "TOOL_ACTIVATED",
 		changedIdentifiers: ["grep"],
@@ -137,8 +133,6 @@ test("transport and semantic tool reordering are diagnosed without claiming acti
 	reordered.tools = [reordered.tools[1]!, reordered.tools[0]!];
 	assert.deepEqual(comparePrefixManifests(baseline, buildPrefixManifest(reordered)), {
 		firstDivergentSegment: "tool-order",
-		oldGeneration: 1,
-		newGeneration: 1,
 		expectedMiss: false,
 		reasonCode: "UNKNOWN_PREFIX_DRIFT",
 		changedIdentifiers: [],
