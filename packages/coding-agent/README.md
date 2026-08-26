@@ -59,3 +59,9 @@ export default function extension(pi: ExtensionAPI) {
 ```
 
 Intercepting and transforming hooks continue to use `pi.on()`. Hosts may configure category-specific hook timeouts through `extensionRunnerOptions`; the standard CLI applies a 30-second timeout to safety/veto hooks, including bootstrap `project_trust`, and always fails them closed. Interactive hooks have no timeout by default, and transform hooks require an explicit fail-open or fail-closed policy. A timeout stops awaiting the handler but cannot forcibly cancel already-running JavaScript. Its eventual fulfillment or rejection is observed and ignored; returned transforms or trust decisions are never applied after the timeout.
+
+## Prefix manifest diagnostics
+
+Each provider request records a versioned, metadata-only `PrefixManifestV1`. `session.prefixManifest` exposes the latest manifest, and `session.prefixDriftDiagnostic` identifies the first changed segment relative to the previous request. Object keys and unordered discovered sibling resources are canonicalized; semantic tool, context-precedence, message, and request-transform order is preserved. Manifest serialization contains hashes, byte counts, generations, counts, and enums only—never the complete system prompt, tool schema, cache key, headers, credentials, or project content.
+
+OpenAI-compatible prompt cache keys up to 64 Unicode code points remain unchanged. Longer keys use a readable prefix plus the first 24 hex characters of `SHA-256(full-key)`, avoiding collisions between long session IDs that share the same leading 64 characters.
