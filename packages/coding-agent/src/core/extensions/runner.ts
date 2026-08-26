@@ -2,6 +2,7 @@
  * Extension runner - executes extensions and manages their lifecycle.
  */
 
+import { relative } from "node:path";
 import type { AgentMessage } from "@super-pi/agent-core";
 import type { ImageContent, Model, Provider, ProviderHeaders } from "@super-pi/ai";
 import type { KeyId } from "@super-pi/tui";
@@ -738,6 +739,24 @@ export class ExtensionRunner {
 
 	hasHandlers(eventType: string): boolean {
 		return this.handlerEventTypes.has(eventType);
+	}
+
+	/** Stable live identifiers for request-transform handlers in actual invocation order. */
+	getHandlerChainIdentifiers(eventTypes: readonly string[]): string[] {
+		const identifiers: string[] = [];
+		for (const eventType of eventTypes) {
+			for (const extension of this.extensions) {
+				const handlers = extension.handlers.get(eventType);
+				if (!handlers) continue;
+				const extensionIdentifier = extension.path.startsWith("<")
+					? extension.path
+					: relative(this.cwd, extension.resolvedPath);
+				for (let index = 0; index < handlers.length; index++) {
+					identifiers.push(`${eventType}:${extensionIdentifier}#${index}`);
+				}
+			}
+		}
+		return identifiers;
 	}
 
 	hasObservers(eventType: string): boolean {

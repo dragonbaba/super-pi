@@ -115,6 +115,11 @@ import {
 	persistPowerShellUnavailable,
 } from "./powershell-persistence.ts";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.ts";
+import type {
+	PrefixDriftDiagnostic,
+	PrefixManifestRecorder,
+	PrefixManifestV1,
+} from "./prefix-manifest.ts";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.ts";
 import type { BranchSummaryEntry, CompactionEntry, SessionEntry, SessionManager } from "./session-manager.ts";
 import { CURRENT_SESSION_VERSION, getLatestCompactionEntry, type SessionHeader } from "./session-manager.ts";
@@ -323,6 +328,8 @@ export interface AgentSessionConfig {
 	extensionRunnerRef?: { current?: ExtensionRunner };
 	/** Optional host policy for extension observer diagnostics and hook timeouts. */
 	extensionRunnerOptions?: ExtensionRunnerOptions;
+	/** Session-local prefix manifest recorder populated immediately before provider requests. */
+	prefixManifestRecorder?: PrefixManifestRecorder;
 	/** Session start event metadata emitted when extensions bind to this runtime. */
 	sessionStartEvent?: SessionStartEvent;
 }
@@ -596,6 +603,7 @@ export class AgentSession {
 	private _modelRuntime: ModelRuntime;
 	private _providerRequestPayloadBuilder: AgentSessionConfig["providerRequestPayloadBuilder"];
 	private _providerRequestCompactor: AgentSessionConfig["providerRequestCompactor"];
+	private _prefixManifestRecorder?: PrefixManifestRecorder;
 
 	// Tool registry for extension getTools/setTools
 	private _toolRegistry: Map<string, AgentTool> = new Map();
@@ -622,6 +630,7 @@ export class AgentSession {
 		this._modelRuntime = config.modelRuntime;
 		this._providerRequestPayloadBuilder = config.providerRequestPayloadBuilder;
 		this._providerRequestCompactor = config.providerRequestCompactor;
+		this._prefixManifestRecorder = config.prefixManifestRecorder;
 		this._extensionRunnerRef = config.extensionRunnerRef;
 		this._extensionRunnerOptions = config.extensionRunnerOptions;
 		this._initialActiveToolNames = config.initialActiveToolNames;
@@ -1215,6 +1224,16 @@ export class AgentSession {
 	/** Current effective system prompt (includes any per-turn extension modifications) */
 	get systemPrompt(): string {
 		return this.agent.state.systemPrompt;
+	}
+
+	/** Metadata-only manifest captured immediately before the latest provider request. */
+	get prefixManifest(): PrefixManifestV1 | undefined {
+		return this._prefixManifestRecorder?.current;
+	}
+
+	/** First changed prefix segment relative to the preceding provider request. */
+	get prefixDriftDiagnostic(): PrefixDriftDiagnostic | undefined {
+		return this._prefixManifestRecorder?.diagnostic;
 	}
 
 	/** Current retry attempt (0 if not retrying) */

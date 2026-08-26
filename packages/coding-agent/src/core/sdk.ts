@@ -21,6 +21,11 @@ import { convertToLlm } from "./messages.ts";
 import { findInitialModel } from "./model-resolver.ts";
 import { ModelRuntime } from "./model-runtime.ts";
 import { initializePowerShellPersistence } from "./powershell-persistence.ts";
+import {
+	buildPrefixManifest,
+	canonicalizeLogicalPath,
+	PrefixManifestRecorder,
+} from "./prefix-manifest.ts";
 import { mergeProviderAttributionHeaders } from "./provider-attribution.ts";
 import type { ResourceLoader } from "./resource-loader.ts";
 import { DefaultResourceLoader } from "./resource-loader.ts";
@@ -98,6 +103,8 @@ export interface CreateAgentSessionOptions {
 	sessionStartEvent?: SessionStartEvent;
 	/** Optional host policy for extension observer diagnostics and hook timeouts. */
 	extensionRunnerOptions?: ExtensionRunnerOptions;
+	/** Optional manifest recorder. Defaults to a session-local recorder. */
+	prefixManifestRecorder?: PrefixManifestRecorder;
 }
 
 /** Result from createAgentSession */
@@ -338,6 +345,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	};
 
 	const extensionRunnerRef: { current?: ExtensionRunner } = {};
+	const prefixManifestRecorder = options.prefixManifestRecorder ?? new PrefixManifestRecorder();
 
 	agent = new Agent({
 		initialState: {
@@ -357,6 +365,32 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			const websocketConnectTimeoutMs =
 				options?.websocketConnectTimeoutMs ?? settingsManager.getWebSocketConnectTimeoutMs();
 			const headerRunner = extensionRunnerRef.current;
+			try {
+				const transport = options?.transport ?? settingsManager.getTransport();
+				prefixManifestRecorder.record(buildPrefixManifest({
+					provider: model.provider,
+					model: model.id,
+					api: model.api,
+					transport,
+					cacheRetention: options?.cacheRetention,
+					systemPrompt: context.systemPrompt ?? "",
+					tools: (context.tools ?? []).map((tool) => ({ name: tool.name, schema: tool.parameters })),
+					persistentContext: resourceLoader.getAgentsFiles().agentsFiles.map((file, index) => ({
+						identifier: canonicalizeLogicalPath(file.path, { root: cwd }),
+						content: file.content,
+						precedence: index,
+					})),
+					requestTransformChain: headerRunner?.getHandlerChainIdentifiers([
+						"context",
+						"before_provider_headers",
+						"before_provider_request",
+					]) ?? [],
+					cacheKey: options?.sessionId,
+					previousResponseMode: transport.startsWith("websocket") ? "websocket" : "none",
+				}));
+			} catch {
+				// Prefix diagnostics are observational and must never block a provider request.
+			}
 			return modelRuntime.streamSimple(model, context, {
 				...options,
 				timeoutMs,
@@ -430,6 +464,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		resourceLoader,
 		customTools: options.customTools,
 		modelRuntime,
+		prefixManifestRecorder,
 		providerRequestPayloadBuilder: ({ model, systemPrompt, messages, tools, thinkingLevel, sessionId }) => {
 			if (model.api !== "openai-codex-responses") return undefined;
 			return buildOpenAICodexRequestBody(
