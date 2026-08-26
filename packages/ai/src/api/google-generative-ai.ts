@@ -22,7 +22,7 @@ import type {
 } from "../types.ts";
 import { formatProviderError, normalizeProviderError } from "../utils/error-body.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
-import { observeEffectiveSseDispatch } from "../utils/effective-dispatch.ts";
+import { observeEffectiveDispatch } from "../utils/effective-dispatch.ts";
 import { providerHeadersToRecord } from "../utils/headers.ts";
 import { getPiUserAgent } from "../utils/pi-user-agent.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
@@ -91,7 +91,7 @@ export const stream: StreamFunction<"google-generative-ai", GoogleOptions> = (
 			if (nextParams !== undefined) {
 				params = nextParams as GenerateContentParameters;
 			}
-			observeEffectiveSseDispatch(options, model, params);
+			observeGoogleGenerativeAIEffectiveDispatch(options, model, params);
 			const googleStream = await retryGoogleRequest(() => client.models.generateContentStream(params), options);
 
 			stream.push({ type: "start", partial: output });
@@ -355,6 +355,24 @@ function createClient(
 	return new GoogleGenAI({
 		apiKey,
 		httpOptions: Object.keys(httpOptions).length > 0 ? httpOptions : undefined,
+	});
+}
+
+export function observeGoogleGenerativeAIEffectiveDispatch(
+	options: GoogleOptions | undefined,
+	model: Model<"google-generative-ai">,
+	params: GenerateContentParameters,
+): void {
+	const declarations = (params.config?.tools ?? []).flatMap((tool) =>
+		"functionDeclarations" in tool && Array.isArray(tool.functionDeclarations) ? tool.functionDeclarations : [],
+	);
+	observeEffectiveDispatch(options, model, {
+		transport: "sse",
+		previousResponseMode: "none",
+		instructionPrefix: params.config?.systemInstruction ?? null,
+		orderedToolDefinitions: declarations,
+		orderedToolIdentifiers: declarations.map((declaration) => declaration.name ?? "unknown"),
+		transformedPayload: params,
 	});
 }
 

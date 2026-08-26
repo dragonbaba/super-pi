@@ -113,6 +113,7 @@ export interface EffectiveDispatchObservation {
 	instructionsHash: string;
 	instructionsBytes: number;
 	toolOrderHash: string;
+	toolIdentifierSetHash: string;
 	toolsHash: string;
 	toolCount: number;
 	cacheKeyHash?: string;
@@ -156,9 +157,13 @@ export interface ProviderRequestOptions<TModel = Model<Api>> {
 	onPayload?: (payload: unknown, model: TModel) => unknown | undefined | Promise<unknown | undefined>;
 	/**
 	 * Observes bounded hashes from the request selected for dispatch. Provider implementations
-	 * isolate callback failures and never expose the original payload through this hook.
+	 * never expose the original payload through this hook. Delivery is observational: providers
+	 * do not await returned promises, and isolate both synchronous throws and asynchronous rejection.
 	 */
-	onEffectiveDispatch?: (observation: Readonly<EffectiveDispatchObservation>, model: TModel) => void;
+	onEffectiveDispatch?: (
+		observation: Readonly<EffectiveDispatchObservation>,
+		model: TModel,
+	) => void | Promise<void>;
 	/**
 	 * Optional callback invoked after an HTTP response is received.
 	 */

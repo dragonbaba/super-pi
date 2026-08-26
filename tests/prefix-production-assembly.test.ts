@@ -51,6 +51,7 @@ function createModelRuntime(): ModelRuntime {
 					instructionsHash,
 					instructionsBytes: Buffer.byteLength(context.systemPrompt ?? ""),
 					toolOrderHash: sha256Canonical(toolOrder),
+					toolIdentifierSetHash: sha256Canonical([...toolOrder].sort()),
 					toolsHash,
 					toolCount: toolOrder.length,
 					cacheKeyHash: sha256Canonical(options?.sessionId ?? null),

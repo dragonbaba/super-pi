@@ -1,5 +1,10 @@
 import type * as NodeCrypto from "node:crypto";
-import type { Api, Model, ProviderRequestOptions } from "../types.ts";
+import type {
+	Api,
+	EffectiveDispatchObservation,
+	Model,
+	ProviderRequestOptions,
+} from "../types.ts";
 
 type ProcessWithCryptoBuiltinModule = typeof process & {
 	getBuiltinModule?: (id: "node:crypto") => typeof NodeCrypto;
@@ -14,77 +19,82 @@ function sha256Json(value: unknown): string | undefined {
 	return crypto.createHash("sha256").update(serialized).digest("hex");
 }
 
-function payloadField(payload: unknown, names: readonly string[]): unknown {
-	if (!payload || typeof payload !== "object") return undefined;
-	const record = payload as Record<string, unknown>;
-	for (const name of names) {
-		if (record[name] !== undefined) return record[name];
-	}
-	return undefined;
+function serializedBytes(value: unknown): number | undefined {
+	const serialized = typeof value === "string" ? value : JSON.stringify(value);
+	return serialized === undefined ? undefined : new TextEncoder().encode(serialized).byteLength;
 }
 
-function toolIdentifiers(tools: unknown): string[] {
-	const entries = Array.isArray(tools) ? tools : tools === undefined ? [] : [tools];
-	return entries.map((tool) => {
-		if (!tool || typeof tool !== "object") return typeof tool;
-		const record = tool as Record<string, unknown>;
-		for (const key of ["name", "type"]) {
-			if (typeof record[key] === "string") return record[key];
-		}
-		const functionDefinition = record.function;
-		if (functionDefinition && typeof functionDefinition === "object") {
-			const name = (functionDefinition as Record<string, unknown>).name;
-			if (typeof name === "string") return name;
-		}
-		return "unknown";
-	});
+export interface EffectiveDispatchHashInput {
+	transport: "sse" | "websocket";
+	previousResponseMode: EffectiveDispatchObservation["previousResponseMode"];
+	instructionPrefix: unknown;
+	orderedToolDefinitions: readonly unknown[];
+	orderedToolIdentifiers: readonly string[];
+	cacheKey?: unknown;
+	transformedPayload: unknown;
 }
 
-/** Observe a transformed JSON provider payload immediately before its SSE dispatch. */
-export function observeEffectiveSseDispatch<TApi extends Api>(
+/** Deliver metadata without allowing either synchronous throws or asynchronous rejections to escape. */
+export function deliverEffectiveDispatchObservation<TApi extends Api>(
 	options: ProviderRequestOptions<Model<TApi>> | undefined,
 	model: Model<TApi>,
-	payload: unknown,
+	observation: EffectiveDispatchObservation,
+): void {
+	try {
+		const result = options?.onEffectiveDispatch?.(Object.freeze(observation), model);
+		if (result && typeof result.then === "function") {
+			void Promise.resolve(result).catch(() => undefined);
+		}
+	} catch {
+		// Effective dispatch instrumentation is observational and cannot fail provider dispatch.
+	}
+}
+
+/** Hash adapter-selected components from the exact transformed request selected for dispatch. */
+export function observeEffectiveDispatch<TApi extends Api>(
+	options: ProviderRequestOptions<Model<TApi>> | undefined,
+	model: Model<TApi>,
+	input: EffectiveDispatchHashInput,
 ): void {
 	if (!options?.onEffectiveDispatch) return;
 	try {
-		const instructions = payloadField(payload, [
-			"instructions",
-			"system",
-			"systemInstruction",
-			"system_instruction",
-			"systemPrompt",
-			"system_prompt",
-		]) ?? null;
-		const tools = payloadField(payload, ["tools", "toolConfig", "tool_config"]);
-		const cacheKey = payloadField(payload, ["prompt_cache_key", "cache_key", "sessionId"]);
-		const previousResponse = payloadField(payload, ["previous_response_id"]);
-		const instructionsHash = sha256Json(instructions);
-		const toolsHash = sha256Json(tools ?? []);
-		const toolOrderHash = sha256Json(toolIdentifiers(tools));
-		const requestTransformOutputHash = sha256Json(payload);
-		if (!instructionsHash || !toolsHash || !toolOrderHash || !requestTransformOutputHash) return;
-		const cacheKeyHash = cacheKey === undefined ? undefined : sha256Json(cacheKey);
+		const instructionsHash = sha256Json(input.instructionPrefix);
+		const instructionsBytes = serializedBytes(input.instructionPrefix);
+		const toolsHash = sha256Json(input.orderedToolDefinitions);
+		const toolOrderHash = sha256Json(input.orderedToolIdentifiers);
+		const toolIdentifierSetHash = sha256Json([...input.orderedToolIdentifiers].sort());
+		const requestTransformOutputHash = sha256Json(input.transformedPayload);
+		if (
+			!instructionsHash ||
+			instructionsBytes === undefined ||
+			!toolsHash ||
+			!toolOrderHash ||
+			!toolIdentifierSetHash ||
+			!requestTransformOutputHash
+		) return;
+		const cacheKeyHash = input.cacheKey === undefined ? undefined : sha256Json(input.cacheKey);
 		const prefixHash = sha256Json({
 			instructionsHash,
+			toolOrderHash,
+			toolIdentifierSetHash,
 			toolsHash,
 			cacheKeyHash: cacheKeyHash ?? null,
 		});
 		if (!prefixHash) return;
-		const serializedInstructions = typeof instructions === "string" ? instructions : JSON.stringify(instructions);
-		options.onEffectiveDispatch(Object.freeze({
-			transport: "sse",
-			previousResponseMode: previousResponse === undefined ? "none" : "response-id",
+		deliverEffectiveDispatchObservation(options, model, {
+			transport: input.transport,
+			previousResponseMode: input.previousResponseMode,
 			instructionsHash,
-			instructionsBytes: new TextEncoder().encode(serializedInstructions).byteLength,
+			instructionsBytes,
 			toolOrderHash,
+			toolIdentifierSetHash,
 			toolsHash,
-			toolCount: Array.isArray(tools) ? tools.length : tools === undefined ? 0 : 1,
+			toolCount: input.orderedToolDefinitions.length,
 			...(cacheKeyHash === undefined ? {} : { cacheKeyHash }),
 			prefixHash,
 			requestTransformOutputHash,
-		}), model);
+		});
 	} catch {
-		// Effective dispatch instrumentation is observational and cannot fail provider dispatch.
+		// Invalid transformed payloads cannot turn observational hashing into provider failure.
 	}
 }

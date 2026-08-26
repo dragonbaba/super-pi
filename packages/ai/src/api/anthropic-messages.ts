@@ -31,7 +31,7 @@ import type {
 } from "../types.ts";
 import { splitDeferredTools } from "../utils/deferred-tools.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
-import { observeEffectiveSseDispatch } from "../utils/effective-dispatch.ts";
+import { observeEffectiveDispatch } from "../utils/effective-dispatch.ts";
 import { headersToRecord } from "../utils/headers.ts";
 import { parseJsonWithRepair, parseStreamingJson } from "../utils/json-parse.ts";
 import { getPiUserAgent } from "../utils/pi-user-agent.ts";
@@ -557,7 +557,7 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 			if (nextParams !== undefined) {
 				params = nextParams as MessageCreateParamsStreaming;
 			}
-			observeEffectiveSseDispatch(options, model, params);
+			observeAnthropicEffectiveDispatch(options, model, params);
 			const requestOptions = {
 				...(options?.signal ? { signal: options.signal } : {}),
 				...(options?.timeoutMs !== undefined ? { timeout: options.timeoutMs } : {}),
@@ -817,6 +817,22 @@ function mapThinkingLevelToEffort(
 		default:
 			return "high";
 	}
+}
+
+export function observeAnthropicEffectiveDispatch(
+	options: AnthropicOptions | undefined,
+	model: Model<"anthropic-messages">,
+	params: MessageCreateParamsStreaming,
+): void {
+	const tools = params.tools ?? [];
+	observeEffectiveDispatch(options, model, {
+		transport: "sse",
+		previousResponseMode: "none",
+		instructionPrefix: params.system ?? null,
+		orderedToolDefinitions: tools,
+		orderedToolIdentifiers: tools.map((tool) => tool.name),
+		transformedPayload: params,
+	});
 }
 
 export const streamSimple: StreamFunction<"anthropic-messages", SimpleStreamOptions> = (

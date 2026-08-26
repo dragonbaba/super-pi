@@ -29,6 +29,7 @@ const terminalResponse = {
 
 class FakeCodexWebSocket {
 	static mode: "success" | "fail" = "success";
+	static sentBodies: Array<Record<string, unknown>> = [];
 	readonly listeners = new Map<string, Set<(event: unknown) => void>>();
 	readyState = 0;
 
@@ -56,7 +57,8 @@ class FakeCodexWebSocket {
 		this.listeners.get(type)?.delete(listener);
 	}
 
-	send(_data: string): void {
+	send(data: string): void {
+		FakeCodexWebSocket.sentBodies.push(JSON.parse(data) as Record<string, unknown>);
 		queueMicrotask(() => this.emit("message", { data: JSON.stringify(terminalResponse) }));
 	}
 
@@ -124,11 +126,11 @@ test("auto transport records the successful effective WebSocket dispatch", async
 			apiKey: token(),
 			transport: "auto",
 			sessionId: "effective-ws",
-			onEffectiveDispatch: (observation) => observations.push(observation),
+			onEffectiveDispatch: (observation) => { observations.push(observation); },
 		}).result();
 		assert.equal(observations.length, 1);
 		assert.equal(observations[0]?.transport, "websocket");
-		assert.equal(observations[0]?.previousResponseMode, "websocket");
+		assert.equal(observations[0]?.previousResponseMode, "none");
 		assert.equal(typeof observations[0]?.requestTransformOutputHash, "string");
 	} finally {
 		closeOpenAICodexWebSocketSessions("effective-ws");
@@ -148,7 +150,7 @@ test("auto transport records SSE only after WebSocket fallback wins dispatch", a
 			sessionId: "effective-sse",
 			fetch: async () => sseResponse(),
 			onPayload: (payload) => ({ ...(payload as object), instructions: "transformed instructions" }),
-			onEffectiveDispatch: (observation) => observations.push(observation),
+			onEffectiveDispatch: (observation) => { observations.push(observation); },
 		}).result();
 		assert.equal(observations.length, 1);
 		assert.equal(observations[0]?.transport, "sse");
@@ -158,6 +160,54 @@ test("auto transport records SSE only after WebSocket fallback wins dispatch", a
 		assert.equal(JSON.stringify(observations[0]).includes("transformed instructions"), false);
 	} finally {
 		closeOpenAICodexWebSocketSessions("effective-sse");
+		globalThis.WebSocket = originalWebSocket;
+	}
+});
+
+test("Codex previousResponseMode follows previous_response_id on the actual dispatched body", async () => {
+	const originalWebSocket = globalThis.WebSocket;
+	FakeCodexWebSocket.mode = "success";
+	FakeCodexWebSocket.sentBodies = [];
+	globalThis.WebSocket = FakeCodexWebSocket as unknown as typeof WebSocket;
+	const observations: EffectiveDispatchObservation[] = [];
+	try {
+		for (let index = 0; index < 2; index++) {
+			await stream(model(), context(), {
+				apiKey: token(),
+				transport: "auto",
+				sessionId: "effective-ws-delta",
+				onEffectiveDispatch: (observation) => { observations.push(observation); },
+			}).result();
+		}
+		assert.equal(FakeCodexWebSocket.sentBodies[0]?.previous_response_id, undefined);
+		assert.equal(FakeCodexWebSocket.sentBodies[1]?.previous_response_id, "response-test");
+		assert.deepEqual(observations.map((observation) => observation.previousResponseMode), ["none", "response-id"]);
+	} finally {
+		closeOpenAICodexWebSocketSessions("effective-ws-delta");
+		globalThis.WebSocket = originalWebSocket;
+	}
+});
+
+test("async effective dispatch observer rejection cannot fail or become unhandled by provider delivery", async () => {
+	const originalWebSocket = globalThis.WebSocket;
+	FakeCodexWebSocket.mode = "fail";
+	globalThis.WebSocket = FakeCodexWebSocket as unknown as typeof WebSocket;
+	const unhandled: unknown[] = [];
+	const listener = (reason: unknown) => { unhandled.push(reason); };
+	process.on("unhandledRejection", listener);
+	try {
+		await stream(model(), context(), {
+			apiKey: token(),
+			transport: "auto",
+			sessionId: "effective-async-isolation",
+			fetch: async () => sseResponse(),
+			onEffectiveDispatch: async () => { throw new Error("observer rejected"); },
+		}).result();
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		assert.deepEqual(unhandled, []);
+	} finally {
+		closeOpenAICodexWebSocketSessions("effective-async-isolation");
+		process.off("unhandledRejection", listener);
 		globalThis.WebSocket = originalWebSocket;
 	}
 });

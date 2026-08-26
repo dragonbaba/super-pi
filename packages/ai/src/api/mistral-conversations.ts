@@ -14,7 +14,7 @@ import type {
 	ToolCall,
 } from "../types.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
-import { observeEffectiveSseDispatch } from "../utils/effective-dispatch.ts";
+import { observeEffectiveDispatch } from "../utils/effective-dispatch.ts";
 import { shortHash } from "../utils/hash.ts";
 import { headersToRecord } from "../utils/headers.ts";
 import { parseStreamingJson } from "../utils/json-parse.ts";
@@ -172,8 +172,9 @@ export const stream: StreamFunction<"mistral-conversations", MistralOptions> = (
 			if (nextPayload !== undefined) {
 				payload = nextPayload as MistralChatPayload;
 			}
-			observeEffectiveSseDispatch(options, model, payload);
-			const mistralStream = await requestMistralStream(model, payload, apiKey, options);
+			const wirePayload = toMistralWirePayload(payload);
+			observeMistralEffectiveDispatch(options, model, wirePayload);
+			const mistralStream = await requestMistralStream(model, wirePayload, apiKey, options);
 			stream.push({ type: "start", partial: output });
 			await consumeChatStream(model, output, stream, mistralStream);
 
@@ -336,7 +337,7 @@ function safeJsonStringify(value: unknown): string {
 
 async function requestMistralStream(
 	model: Model<"mistral-conversations">,
-	payload: MistralChatPayload,
+	payload: Record<string, unknown>,
 	apiKey: string,
 	options?: MistralOptions,
 ): Promise<AsyncIterable<MistralCompletionEvent>> {
@@ -351,7 +352,7 @@ async function requestMistralStream(
 	const response = await (options?.fetch ?? globalThis.fetch)(url, {
 		method: "POST",
 		headers,
-		body: JSON.stringify(toMistralWirePayload(payload)),
+		body: JSON.stringify(payload),
 		signal,
 	});
 
@@ -366,6 +367,35 @@ async function requestMistralStream(
 	}
 
 	return readMistralEvents(response.body, signal);
+}
+
+export function observeMistralEffectiveDispatch(
+	options: MistralOptions | undefined,
+	model: Model<"mistral-conversations">,
+	payload: Record<string, unknown>,
+): void {
+	const messages = Array.isArray(payload.messages) ? payload.messages : [];
+	const instructionPrefix = messages.filter(
+		(message): message is Record<string, unknown> =>
+			typeof message === "object" && message !== null && (message as Record<string, unknown>).role === "system",
+	);
+	const tools = Array.isArray(payload.tools) ? payload.tools : [];
+	const toolIdentifiers = tools.map((tool) => {
+		if (!tool || typeof tool !== "object") return "unknown";
+		const definition = (tool as Record<string, unknown>).function;
+		if (!definition || typeof definition !== "object") return "unknown";
+		const name = (definition as Record<string, unknown>).name;
+		return typeof name === "string" ? name : "unknown";
+	});
+	observeEffectiveDispatch(options, model, {
+		transport: "sse",
+		previousResponseMode: "none",
+		instructionPrefix,
+		orderedToolDefinitions: tools,
+		orderedToolIdentifiers: toolIdentifiers,
+		cacheKey: payload.prompt_cache_key,
+		transformedPayload: payload,
+	});
 }
 
 async function readBoundedMistralErrorBody(response: Response): Promise<string> {

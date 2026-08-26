@@ -14,6 +14,7 @@ export interface PrefixManifestV1 {
 	systemPromptHash: string;
 	systemPromptBytes: number;
 	toolOrderHash: string;
+	toolIdentifierSetHash: string;
 	toolSchemaHash: string;
 	toolCount: number;
 	persistentContextHash: string;
@@ -48,6 +49,7 @@ export interface EffectivePrefixDispatchObservation {
 	instructionsHash: string;
 	instructionsBytes: number;
 	toolOrderHash: string;
+	toolIdentifierSetHash: string;
 	toolsHash: string;
 	toolCount: number;
 	cacheKeyHash?: string;
@@ -115,6 +117,7 @@ export interface PrefixDriftDiagnostic {
 }
 
 interface SegmentMetadata {
+	observationKind: "intent" | "effective";
 	toolOrder: string[];
 	toolSchemas: Map<string, string>;
 	persistentContext: Map<string, string>;
@@ -166,9 +169,17 @@ function hashIdentifier(value: string): string {
 	return createHash("sha256").update(canonicalizeLogicalPath(value)).digest("hex");
 }
 
-function pathIsWithin(root: string, value: string): boolean {
+function scopedRelativeSuffix(root: string, value: string): string | undefined {
 	const relation = relative(resolve(root), resolve(value));
-	return relation === "" || (!relation.startsWith(`..${sep}`) && relation !== ".." && !isAbsolute(relation));
+	if (relation === "") return ".";
+	if (isAbsolute(relation) || relation === ".." || relation.startsWith(`..${sep}`)) return undefined;
+	const suffix = canonicalizeLogicalPath(relation);
+	if (
+		ABSOLUTE_LOGICAL_PATH_PATTERN.test(suffix) ||
+		suffix === ".." ||
+		suffix.startsWith("../")
+	) return undefined;
+	return suffix;
 }
 
 export function createScopedContextIdentifier(
@@ -176,13 +187,17 @@ export function createScopedContextIdentifier(
 	options: { workspaceRoot: string; globalRoot?: string },
 ): string {
 	const resolved = resolve(value);
-	if (pathIsWithin(options.workspaceRoot, resolved)) {
-		return `workspace:${canonicalizeLogicalPath(resolved, { root: resolve(options.workspaceRoot) })}`;
+	const workspaceSuffix = scopedRelativeSuffix(options.workspaceRoot, resolved);
+	if (workspaceSuffix !== undefined) {
+		return `workspace:${workspaceSuffix}`;
 	}
-	if (options.globalRoot && pathIsWithin(options.globalRoot, resolved)) {
-		return `global-context:${canonicalizeLogicalPath(resolved, { root: resolve(options.globalRoot) })}`;
+	const globalSuffix = options.globalRoot === undefined
+		? undefined
+		: scopedRelativeSuffix(options.globalRoot, resolved);
+	if (globalSuffix !== undefined) {
+		return `global-context:${globalSuffix}`;
 	}
-	if (pathIsWithin(dirname(resolved), options.workspaceRoot)) {
+	if (scopedRelativeSuffix(dirname(resolved), options.workspaceRoot) !== undefined) {
 		return `ancestor-context:${hashIdentifier(resolved)}`;
 	}
 	return `external-context:${hashIdentifier(resolved)}`;
@@ -200,22 +215,25 @@ export function createScopedExtensionIdentifier(
 		return `synthetic-extension:${hashIdentifier(extension.path)}`;
 	}
 	if (extension.sourceInfo.origin === "package") {
+		const packageEntry = extension.sourceInfo.baseDir
+			? scopedRelativeSuffix(extension.sourceInfo.baseDir, extension.resolvedPath)
+			: undefined;
 		return `package-extension:${extension.sourceInfo.scope}:${sha256Canonical({
 			source: extension.sourceInfo.source,
-			entry: extension.sourceInfo.baseDir
-				? canonicalizeLogicalPath(extension.resolvedPath, { root: extension.sourceInfo.baseDir })
-				: hashIdentifier(extension.resolvedPath),
+			entry: packageEntry ?? hashIdentifier(extension.resolvedPath),
 		})}`;
 	}
-	if (pathIsWithin(workspaceRoot, extension.resolvedPath)) {
-		return `workspace-extension:${canonicalizeLogicalPath(extension.resolvedPath, { root: workspaceRoot })}`;
+	const workspaceSuffix = scopedRelativeSuffix(workspaceRoot, extension.resolvedPath);
+	if (workspaceSuffix !== undefined) {
+		return `workspace-extension:${workspaceSuffix}`;
 	}
 	if (extension.sourceInfo.scope === "user") {
+		const globalEntry = extension.sourceInfo.baseDir
+			? scopedRelativeSuffix(extension.sourceInfo.baseDir, extension.resolvedPath)
+			: undefined;
 		return `global-extension:${sha256Canonical({
 			source: extension.sourceInfo.source,
-			entry: extension.sourceInfo.baseDir
-				? canonicalizeLogicalPath(extension.resolvedPath, { root: extension.sourceInfo.baseDir })
-				: hashIdentifier(extension.resolvedPath),
+			entry: globalEntry ?? hashIdentifier(extension.resolvedPath),
 		})}`;
 	}
 	return `external-extension:${hashIdentifier(extension.resolvedPath)}`;
@@ -332,9 +350,17 @@ function changedMapKeys(previous: Map<string, string> | undefined, current: Map<
 
 const SCOPED_IDENTIFIER_PATTERN = /^(?:workspace|global-context|ancestor-context|external-context|workspace-extension|global-extension|package-extension|external-extension|synthetic-extension):/;
 const ABSOLUTE_LOGICAL_PATH_PATTERN = /^(?:[A-Za-z]:\/|\/)/;
+const EMBEDDED_ABSOLUTE_LOGICAL_PATH_PATTERN = /(?:^|:)(?:[A-Za-z]:\/|\/)/;
+const EMBEDDED_PARENT_ESCAPE_PATTERN = /(?:^|:)\.\.(?:\/|$)/;
 
 function sanitizeManifestIdentifier(value: string, kind: "context" | "transform"): string {
 	const canonical = canonicalizeLogicalPath(value);
+	if (
+		EMBEDDED_ABSOLUTE_LOGICAL_PATH_PATTERN.test(canonical) ||
+		EMBEDDED_PARENT_ESCAPE_PATTERN.test(canonical)
+	) {
+		return `external-${kind}:${hashIdentifier(canonical)}`;
+	}
 	if (SCOPED_IDENTIFIER_PATTERN.test(canonical)) return canonical;
 	if (ABSOLUTE_LOGICAL_PATH_PATTERN.test(canonical) || canonical === ".." || canonical.startsWith("../")) {
 		return `external-${kind}:${hashIdentifier(canonical)}`;
@@ -372,12 +398,14 @@ export function buildPrefixManifest(input: PrefixManifestBuildInput): PrefixMani
 	const systemPromptHash = effective?.instructionsHash ?? hashText(normalizedPrompt);
 	const systemPromptBytes = effective?.instructionsBytes ?? Buffer.byteLength(normalizedPrompt);
 	const toolOrderHash = effective?.toolOrderHash ?? sha256Canonical(toolOrder);
+	const toolIdentifierSetHash = effective?.toolIdentifierSetHash ?? sha256Canonical([...toolOrder].sort(compareCanonicalIdentifiers));
 	const toolSchemaHash = effective?.toolsHash ?? sha256Canonical(input.tools.map((tool) => ({ name: tool.name, schema: tool.schema })));
 	const toolCount = effective?.toolCount ?? input.tools.length;
 	const cacheKeyHash = effective?.cacheKeyHash ?? (input.cacheKey === undefined ? undefined : hashText(input.cacheKey));
 	const requestTransformOutputHash = effective?.requestTransformOutputHash ?? sha256Canonical({
 		systemPromptHash,
 		toolOrderHash,
+		toolIdentifierSetHash,
 		toolSchemaHash,
 		cacheKeyHash: cacheKeyHash ?? null,
 	});
@@ -399,6 +427,7 @@ export function buildPrefixManifest(input: PrefixManifestBuildInput): PrefixMani
 		systemPromptHash,
 		systemPromptBytes,
 		toolOrderHash,
+		toolIdentifierSetHash,
 		toolSchemaHash,
 		toolCount,
 		persistentContextHash: sha256Canonical(contextEntries),
@@ -425,7 +454,13 @@ export function buildPrefixManifest(input: PrefixManifestBuildInput): PrefixMani
 		...(cacheKeyHash === undefined ? {} : { cacheKeyHash }),
 		previousResponseMode: effective?.previousResponseMode ?? input.previousResponseMode,
 	};
-	SEGMENT_METADATA.set(manifest, { toolOrder, toolSchemas, persistentContext, requestTransforms });
+	SEGMENT_METADATA.set(manifest, {
+		observationKind: effective ? "effective" : "intent",
+		toolOrder,
+		toolSchemas,
+		persistentContext,
+		requestTransforms,
+	});
 	return Object.freeze(manifest);
 }
 
@@ -464,7 +499,11 @@ export function comparePrefixManifests(
 ): PrefixDriftDiagnostic | undefined {
 	const previousMetadata = SEGMENT_METADATA.get(previous);
 	const currentMetadata = SEGMENT_METADATA.get(current);
+	const comparingEffective =
+		previousMetadata?.observationKind === "effective" && currentMetadata?.observationKind === "effective";
 	const toolOrderChanged = previous.toolOrderHash !== current.toolOrderHash || previous.toolCount !== current.toolCount;
+	const toolSetChanged =
+		previous.toolIdentifierSetHash !== current.toolIdentifierSetHash || previous.toolCount !== current.toolCount;
 	const changedTools = toolOrderChanged
 		? symmetricDifference(previousMetadata?.toolOrder ?? [], currentMetadata?.toolOrder ?? [])
 		: [];
@@ -490,11 +529,24 @@ export function comparePrefixManifests(
 	if (previous.transport !== current.transport) {
 		return diagnostic(previous, current, "transport", "TRANSPORT_CHANGED", true);
 	}
+	if (
+		comparingEffective &&
+		!systemPromptChanged &&
+		!toolOrderChanged &&
+		!toolSchemaChanged &&
+		!effectivePrefixChanged &&
+		previous.cacheKeyHash === current.cacheKeyHash &&
+		previous.previousResponseMode === current.previousResponseMode
+	) {
+		// Intent metadata is explanatory only. A transform may hold the provider prefix
+		// constant even while configured context, tools, or dynamic instructions change.
+		return undefined;
+	}
 	if (previous.cacheRetention !== current.cacheRetention) {
 		return diagnostic(previous, current, "cache-retention", "CACHE_RETENTION_CHANGED", true);
 	}
 	if (systemPromptChanged) {
-		if (changedTools.length > 0) {
+		if (toolSetChanged) {
 			return diagnostic(previous, current, "system-prompt", "TOOL_ACTIVATED", true, changedTools);
 		}
 		if (toolSchemaChanged) {
@@ -523,8 +575,8 @@ export function comparePrefixManifests(
 			previous,
 			current,
 			"tool-order",
-			changedTools.length > 0 ? "TOOL_ACTIVATED" : "UNKNOWN_PREFIX_DRIFT",
-			changedTools.length > 0,
+			toolSetChanged ? "TOOL_ACTIVATED" : "UNKNOWN_PREFIX_DRIFT",
+			toolSetChanged,
 			changedTools,
 		);
 	}
@@ -538,7 +590,19 @@ export function comparePrefixManifests(
 			changedToolSchemas,
 		);
 	}
-	if (contextChanged) {
+	if (comparingEffective && previous.cacheKeyHash !== current.cacheKeyHash) {
+		return diagnostic(previous, current, "cache-key", "CACHE_KEY_CHANGED", true);
+	}
+	if (comparingEffective && effectivePrefixChanged) {
+		if (contextChanged) {
+			return diagnostic(previous, current, "system-prompt", "PROJECT_CONTEXT_CHANGED", true, changedContext);
+		}
+		if (dynamicChanged) {
+			return diagnostic(previous, current, "system-prompt", "DYNAMIC_INSTRUCTION_CHANGED", true);
+		}
+		return diagnostic(previous, current, "system-prompt", "UNKNOWN_PREFIX_DRIFT", false);
+	}
+	if (!comparingEffective && contextChanged) {
 		return diagnostic(
 			previous,
 			current,
@@ -548,10 +612,10 @@ export function comparePrefixManifests(
 			changedContext,
 		);
 	}
-	if (dynamicChanged) {
+	if (!comparingEffective && dynamicChanged) {
 		return diagnostic(previous, current, "dynamic-instructions", "DYNAMIC_INSTRUCTION_CHANGED", true);
 	}
-	if (previous.requestTransformChainHash !== current.requestTransformChainHash) {
+	if (!comparingEffective && previous.requestTransformChainHash !== current.requestTransformChainHash) {
 		return diagnostic(
 			previous,
 			current,
@@ -561,11 +625,11 @@ export function comparePrefixManifests(
 			symmetricDifference(previousMetadata?.requestTransforms ?? [], currentMetadata?.requestTransforms ?? []),
 		);
 	}
-	if (
+	const compactionChanged =
 		previous.compactionObservationState !== current.compactionObservationState ||
 		previous.compactionGeneration !== current.compactionGeneration ||
-		previous.compactionArtifactHash !== current.compactionArtifactHash
-	) {
+		previous.compactionArtifactHash !== current.compactionArtifactHash;
+	if (!comparingEffective && compactionChanged) {
 		return diagnostic(previous, current, "compaction", "COMPACTION_BOUNDARY", true);
 	}
 	if (previous.cacheKeyHash !== current.cacheKeyHash) {

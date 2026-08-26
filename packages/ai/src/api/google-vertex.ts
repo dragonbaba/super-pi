@@ -26,7 +26,7 @@ import type {
 } from "../types.ts";
 import { formatProviderError, normalizeProviderError } from "../utils/error-body.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
-import { observeEffectiveSseDispatch } from "../utils/effective-dispatch.ts";
+import { observeEffectiveDispatch } from "../utils/effective-dispatch.ts";
 import { providerHeadersToRecord } from "../utils/headers.ts";
 import { getPiUserAgent } from "../utils/pi-user-agent.ts";
 import { getProviderEnvValue } from "../utils/provider-env.ts";
@@ -109,7 +109,7 @@ export const stream: StreamFunction<"google-vertex", GoogleVertexOptions> = (
 			if (nextParams !== undefined) {
 				params = nextParams as GenerateContentParameters;
 			}
-			observeEffectiveSseDispatch(options, model, params);
+			observeGoogleVertexEffectiveDispatch(options, model, params);
 			const googleStream = await retryGoogleRequest(() => client.models.generateContentStream(params), options);
 
 			stream.push({ type: "start", partial: output });
@@ -367,6 +367,24 @@ function createClient(
 		apiVersion: API_VERSION,
 		...(googleAuthOptions ? { googleAuthOptions } : {}),
 		httpOptions: buildHttpOptions(model, optionsHeaders),
+	});
+}
+
+export function observeGoogleVertexEffectiveDispatch(
+	options: GoogleVertexOptions | undefined,
+	model: Model<"google-vertex">,
+	params: GenerateContentParameters,
+): void {
+	const declarations = (params.config?.tools ?? []).flatMap((tool) =>
+		"functionDeclarations" in tool && Array.isArray(tool.functionDeclarations) ? tool.functionDeclarations : [],
+	);
+	observeEffectiveDispatch(options, model, {
+		transport: "sse",
+		previousResponseMode: "none",
+		instructionPrefix: params.config?.systemInstruction ?? null,
+		orderedToolDefinitions: declarations,
+		orderedToolIdentifiers: declarations.map((declaration) => declaration.name ?? "unknown"),
+		transformedPayload: params,
 	});
 }
 

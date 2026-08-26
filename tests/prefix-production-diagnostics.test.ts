@@ -96,6 +96,31 @@ test("external context identifiers cannot escape through drift diagnostics", () 
 	assert.equal(diagnostic?.changedIdentifiers.every((identifier) => identifier.startsWith("external-context:")), true);
 });
 
+test("event-scoped absolute paths are hashed before entering manifest diagnostics", () => {
+	const baselineInput = productionLikeInput();
+	baselineInput.persistentContext = [{
+		identifier: "before_provider_request:workspace:D:/Users/private-owner/AGENTS.md",
+		content: "one",
+		precedence: 0,
+	}];
+	const changedInput = {
+		...baselineInput,
+		persistentContext: [{ ...baselineInput.persistentContext[0]!, content: "two" }],
+	};
+	const diagnostic = comparePrefixManifests(buildPrefixManifest(baselineInput), buildPrefixManifest(changedInput));
+	assert.equal(diagnostic?.changedIdentifiers.some((identifier) => identifier.includes("private-owner")), false);
+	assert.match(diagnostic?.changedIdentifiers[0] ?? "", /^external-context:[a-f0-9]{64}$/);
+});
+
+test("Windows scoped identities use native relative casing without exposing the root", {
+	skip: process.platform !== "win32",
+}, () => {
+	const workspaceRoot = "C:\\Repo\\Project";
+	const identifier = createScopedContextIdentifier("c:\\repo\\project\\nested\\AGENTS.md", { workspaceRoot });
+	assert.equal(identifier, "workspace:nested/AGENTS.md");
+	assert.equal(identifier.toLowerCase().includes("c:/repo"), false);
+});
+
 test("global and external paths use stable non-reversible scope identities", () => {
 	const workspaceRoot = "D:/workspace/project";
 	const globalRoot = "D:/Users/private-owner/.pi/agent";
@@ -156,6 +181,7 @@ test("non-prefix request body changes do not create false prefix drift", () => {
 		instructionsHash: "instructions-hash",
 		instructionsBytes: 17,
 		toolOrderHash: "tool-order-hash",
+		toolIdentifierSetHash: "tool-set-hash",
 		toolsHash: "tools-hash",
 		toolCount: 1,
 		cacheKeyHash: "cache-key-hash",
@@ -169,6 +195,99 @@ test("non-prefix request body changes do not create false prefix drift", () => {
 	});
 
 	assert.equal(comparePrefixManifests(first, second), undefined);
+});
+
+test("effective manifests ignore intent-only context changes until an effective component drifts", () => {
+	const baselineInput = productionLikeInput();
+	const intentChangedInput = {
+		...baselineInput,
+		persistentContext: [{ identifier: "workspace:AGENTS.md", content: "changed", precedence: 0 }],
+		systemPrompt: "configured prompt changed before onPayload",
+	};
+	assert.equal(
+		comparePrefixManifests(buildPrefixManifest(baselineInput), buildPrefixManifest(intentChangedInput))?.reasonCode,
+		"PROJECT_CONTEXT_CHANGED",
+	);
+	const effective = {
+		transport: "sse",
+		previousResponseMode: "none" as const,
+		instructionsHash: "fixed-instructions",
+		instructionsBytes: 18,
+		toolOrderHash: "fixed-tool-order",
+		toolIdentifierSetHash: "fixed-tool-set",
+		toolsHash: "fixed-tools",
+		toolCount: 1,
+		prefixHash: "fixed-prefix",
+		requestTransformOutputHash: "request-one",
+	};
+	const baseline = buildPrefixManifest({ ...baselineInput, effectiveDispatch: effective });
+	const changedContext = buildPrefixManifest({
+		...intentChangedInput,
+		effectiveDispatch: { ...effective, requestTransformOutputHash: "request-two" },
+	});
+	assert.equal(comparePrefixManifests(baseline, changedContext), undefined);
+});
+
+test("effective tool-set changes are activation drift even when intent tools stay fixed", () => {
+	const input = productionLikeInput();
+	const base = {
+		transport: "sse",
+		previousResponseMode: "none" as const,
+		instructionsHash: "fixed-instructions",
+		instructionsBytes: 18,
+		toolOrderHash: "read-order",
+		toolIdentifierSetHash: "read-set",
+		toolsHash: "read-tools",
+		toolCount: 1,
+		prefixHash: "read-prefix",
+		requestTransformOutputHash: "read-request",
+	};
+	const added = {
+		...base,
+		toolOrderHash: "read-write-order",
+		toolIdentifierSetHash: "read-write-set",
+		toolsHash: "read-write-tools",
+		toolCount: 2,
+		prefixHash: "read-write-prefix",
+		requestTransformOutputHash: "read-write-request",
+	};
+	const diagnostic = comparePrefixManifests(
+		buildPrefixManifest({ ...input, effectiveDispatch: base }),
+		buildPrefixManifest({ ...input, effectiveDispatch: added }),
+	);
+	assert.equal(diagnostic?.reasonCode, "TOOL_ACTIVATED");
+	assert.equal(diagnostic?.expectedMiss, true);
+});
+
+test("effective cache-key drift keeps its dedicated reason ahead of aggregate prefix hash", () => {
+	const input = productionLikeInput();
+	const effective = {
+		transport: "sse",
+		previousResponseMode: "none" as const,
+		instructionsHash: "fixed-instructions",
+		instructionsBytes: 18,
+		toolOrderHash: "fixed-order",
+		toolIdentifierSetHash: "fixed-set",
+		toolsHash: "fixed-tools",
+		toolCount: 1,
+		cacheKeyHash: "cache-a",
+		prefixHash: "prefix-a",
+		requestTransformOutputHash: "request-a",
+	};
+	const diagnostic = comparePrefixManifests(
+		buildPrefixManifest({ ...input, effectiveDispatch: effective }),
+		buildPrefixManifest({
+			...input,
+			effectiveDispatch: {
+				...effective,
+				cacheKeyHash: "cache-b",
+				prefixHash: "prefix-b",
+				requestTransformOutputHash: "request-b",
+			},
+		}),
+	);
+	assert.equal(diagnostic?.reasonCode, "CACHE_KEY_CHANGED");
+	assert.equal(diagnostic?.firstDivergentSegment, "cache-key");
 });
 
 test("canonical hashing rejects non-JSON container types instead of aliasing plain objects", () => {

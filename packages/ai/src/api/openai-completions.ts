@@ -36,7 +36,7 @@ import type {
 } from "../types.ts";
 import { formatProviderError, normalizeProviderError } from "../utils/error-body.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
-import { observeEffectiveSseDispatch } from "../utils/effective-dispatch.ts";
+import { observeEffectiveDispatch } from "../utils/effective-dispatch.ts";
 import { shortHash } from "../utils/hash.ts";
 import { headersToRecord } from "../utils/headers.ts";
 import { parseStreamingJson, stringifyToolArguments } from "../utils/json-parse.ts";
@@ -241,7 +241,7 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 			if (nextParams !== undefined) {
 				params = nextParams as OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming;
 			}
-			observeEffectiveSseDispatch(options, model, params);
+			observeOpenAIChatEffectiveDispatch(options, model, params);
 			const requestOptions = {
 				...(options?.signal ? { signal: options.signal } : {}),
 				...(options?.timeoutMs !== undefined ? { timeout: options.timeoutMs } : {}),
@@ -680,6 +680,28 @@ function createClient(
 		dangerouslyAllowBrowser: true,
 		fetch,
 		defaultHeaders: headers,
+	});
+}
+
+export function observeOpenAIChatEffectiveDispatch(
+	options: OpenAICompletionsOptions | undefined,
+	model: Model<"openai-completions">,
+	params: OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming,
+): void {
+	const instructionPrefix = params.messages.filter(
+		(message) => message.role === "system" || message.role === "developer",
+	);
+	const tools = params.tools ?? [];
+	observeEffectiveDispatch(options, model, {
+		transport: "sse",
+		previousResponseMode: "none",
+		instructionPrefix,
+		orderedToolDefinitions: tools,
+		orderedToolIdentifiers: tools.map((tool) =>
+			tool.type === "function" ? tool.function.name : tool.custom.name,
+		),
+		cacheKey: params.prompt_cache_key,
+		transformedPayload: params,
 	});
 }
 

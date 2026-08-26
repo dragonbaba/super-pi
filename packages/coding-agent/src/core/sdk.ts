@@ -408,7 +408,10 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 					// Effective dispatch diagnostics are observational and must never block a provider request.
 				}
 				try {
-					options?.onEffectiveDispatch?.(observation, observedModel);
+					const result = options?.onEffectiveDispatch?.(observation, observedModel);
+					if (result && typeof result.then === "function") {
+						void Promise.resolve(result).catch(() => undefined);
+					}
 				} catch {
 					// A nested observer cannot escape the provider-owned instrumentation lane.
 				}

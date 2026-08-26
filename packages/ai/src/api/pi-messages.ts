@@ -24,7 +24,7 @@ import type {
 } from "../types.ts";
 import { appendAssistantMessageDiagnostic, createAssistantMessageDiagnostic } from "../utils/diagnostics.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
-import { observeEffectiveSseDispatch } from "../utils/effective-dispatch.ts";
+import { observeEffectiveDispatch } from "../utils/effective-dispatch.ts";
 import { headersToRecord, providerHeadersToRecord } from "../utils/headers.ts";
 import { parseStreamingJson } from "../utils/json-parse.ts";
 import { getProviderEnvValue } from "../utils/provider-env.ts";
@@ -388,7 +388,7 @@ export const stream: StreamFunction<"pi-messages", PiMessagesOptions> = (
 			if (nextPayload !== undefined) {
 				payload = nextPayload;
 			}
-			observeEffectiveSseDispatch(options, model, payload);
+			observePiMessagesEffectiveDispatch(options, model, payload);
 
 			const response = await (options?.fetch ?? globalThis.fetch)(url, {
 				method: "POST",
@@ -428,6 +428,32 @@ export const stream: StreamFunction<"pi-messages", PiMessagesOptions> = (
 
 	return eventStream;
 };
+
+export function observePiMessagesEffectiveDispatch(
+	options: PiMessagesOptions | undefined,
+	model: Model<"pi-messages">,
+	payload: unknown,
+): void {
+	const wire = payload && typeof payload === "object" ? payload as {
+		context?: { systemPrompt?: unknown; tools?: unknown[] };
+		options?: { sessionId?: unknown };
+	} : {};
+	const tools = Array.isArray(wire.context?.tools) ? wire.context.tools : [];
+	const toolIdentifiers = tools.map((tool) => {
+		if (!tool || typeof tool !== "object") return "unknown";
+		const name = (tool as Record<string, unknown>).name;
+		return typeof name === "string" ? name : "unknown";
+	});
+	observeEffectiveDispatch(options, model, {
+		transport: "sse",
+		previousResponseMode: "none",
+		instructionPrefix: wire.context?.systemPrompt ?? null,
+		orderedToolDefinitions: tools,
+		orderedToolIdentifiers: toolIdentifiers,
+		cacheKey: wire.options?.sessionId,
+		transformedPayload: payload,
+	});
+}
 
 export const streamSimple: StreamFunction<"pi-messages", SimpleStreamOptions> = (
 	model: Model<"pi-messages">,

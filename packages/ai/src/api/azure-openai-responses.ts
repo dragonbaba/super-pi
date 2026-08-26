@@ -12,7 +12,7 @@ import type {
 } from "../types.ts";
 import { formatProviderError, normalizeProviderError } from "../utils/error-body.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
-import { observeEffectiveSseDispatch } from "../utils/effective-dispatch.ts";
+import { observeEffectiveDispatch } from "../utils/effective-dispatch.ts";
 import { headersToRecord } from "../utils/headers.ts";
 import { getPiUserAgent } from "../utils/pi-user-agent.ts";
 import { getProviderEnvValue } from "../utils/provider-env.ts";
@@ -113,7 +113,7 @@ export const stream: StreamFunction<"azure-openai-responses", AzureOpenAIRespons
 			if (nextParams !== undefined) {
 				params = nextParams as ResponseCreateParamsStreaming;
 			}
-			observeEffectiveSseDispatch(options, model, params);
+			observeAzureOpenAIResponsesEffectiveDispatch(options, model, params);
 			const requestOptions = {
 				...(options?.signal ? { signal: options.signal } : {}),
 				...(options?.timeoutMs !== undefined ? { timeout: options.timeoutMs } : {}),
@@ -167,6 +167,26 @@ export const stream: StreamFunction<"azure-openai-responses", AzureOpenAIRespons
 
 	return stream;
 };
+
+export function observeAzureOpenAIResponsesEffectiveDispatch(
+	options: AzureOpenAIResponsesOptions | undefined,
+	model: Model<"azure-openai-responses">,
+	params: ResponseCreateParamsStreaming,
+): void {
+	const instructionPrefix = params.instructions ?? (Array.isArray(params.input)
+		? params.input.filter((item) => "role" in item && (item.role === "system" || item.role === "developer"))
+		: []);
+	const tools = params.tools ?? [];
+	observeEffectiveDispatch(options, model, {
+		transport: "sse",
+		previousResponseMode: params.previous_response_id ? "response-id" : "none",
+		instructionPrefix,
+		orderedToolDefinitions: tools,
+		orderedToolIdentifiers: tools.map((tool) => "name" in tool && typeof tool.name === "string" ? tool.name : tool.type),
+		cacheKey: params.prompt_cache_key,
+		transformedPayload: params,
+	});
+}
 
 export const streamSimple: StreamFunction<"azure-openai-responses", SimpleStreamOptions> = (
 	model: Model<"azure-openai-responses">,

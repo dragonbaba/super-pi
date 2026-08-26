@@ -18,7 +18,7 @@ import type {
 import { splitDeferredTools } from "../utils/deferred-tools.ts";
 import { formatProviderError, normalizeProviderError } from "../utils/error-body.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
-import { observeEffectiveSseDispatch } from "../utils/effective-dispatch.ts";
+import { observeEffectiveDispatch } from "../utils/effective-dispatch.ts";
 import { headersToRecord } from "../utils/headers.ts";
 import { getPiUserAgent } from "../utils/pi-user-agent.ts";
 import { getProviderEnvValue } from "../utils/provider-env.ts";
@@ -143,7 +143,7 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 			if (nextParams !== undefined) {
 				params = nextParams as ResponseCreateParamsStreaming;
 			}
-			observeEffectiveSseDispatch(options, model, params);
+			observeOpenAIResponsesEffectiveDispatch(options, model, params);
 			const requestOptions = {
 				...(options?.signal ? { signal: options.signal } : {}),
 				...(options?.timeoutMs !== undefined ? { timeout: options.timeoutMs } : {}),
@@ -257,6 +257,26 @@ function createClient(
 		dangerouslyAllowBrowser: true,
 		fetch,
 		defaultHeaders: headers,
+	});
+}
+
+export function observeOpenAIResponsesEffectiveDispatch(
+	options: OpenAIResponsesOptions | undefined,
+	model: Model<"openai-responses">,
+	params: ResponseCreateParamsStreaming,
+): void {
+	const instructionPrefix = params.instructions ?? (Array.isArray(params.input)
+		? params.input.filter((item) => "role" in item && (item.role === "system" || item.role === "developer"))
+		: []);
+	const tools = params.tools ?? [];
+	observeEffectiveDispatch(options, model, {
+		transport: "sse",
+		previousResponseMode: params.previous_response_id ? "response-id" : "none",
+		instructionPrefix,
+		orderedToolDefinitions: tools,
+		orderedToolIdentifiers: tools.map((tool) => "name" in tool && typeof tool.name === "string" ? tool.name : tool.type),
+		cacheKey: params.prompt_cache_key,
+		transformedPayload: params,
 	});
 }
 

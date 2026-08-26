@@ -44,6 +44,7 @@ import {
 } from "../utils/diagnostics.ts";
 import { formatProviderError, normalizeProviderError } from "../utils/error-body.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
+import { deliverEffectiveDispatchObservation } from "../utils/effective-dispatch.ts";
 import { headersToRecord } from "../utils/headers.ts";
 import { resolveHttpProxyUrlForTarget } from "../utils/node-http-proxy.ts";
 import { uuidv7 } from "../utils/uuid.ts";
@@ -933,7 +934,9 @@ interface SuccessfulDispatchCommitment {
     actualBodyHash: string;
     instructionsBytes: number;
     toolOrderHash: string;
+    toolIdentifierSetHash: string;
     toolCount: number;
+    previousResponseMode: "none" | "response-id";
     responseId?: string;
 }
 
@@ -1596,19 +1599,23 @@ function createSuccessfulDispatchCommitment(
     responseItems: ResponseInput,
     responseId?: string,
 ): SuccessfulDispatchCommitment | undefined {
-    const instructionsHash = sha256Json(fullBody.instructions ?? null);
+    const instructionsHash = sha256Json(actualBody.instructions ?? null);
     const inputHash = sha256Json(fullBody.input ?? []);
     const responseItemsHash = sha256Json(responseItems);
-    const toolsHash = sha256Json(fullBody.tools ?? []);
-    const bodyWithoutInputHash = sha256Json(requestBodyWithoutInput(fullBody));
-    const promptCacheKeyHash = sha256Json(fullBody.prompt_cache_key ?? null);
-    const serviceTierHash = sha256Json(fullBody.service_tier ?? null);
+    const toolsHash = sha256Json(actualBody.tools ?? []);
+    const bodyWithoutInputHash = sha256Json(requestBodyWithoutInput(actualBody));
+    const promptCacheKeyHash = sha256Json(actualBody.prompt_cache_key ?? null);
+    const serviceTierHash = sha256Json(actualBody.service_tier ?? null);
     const headersHash = sha256Json(normalizedHeadersForCommitment(headers));
     const actualBodyHash = sha256Json(actualBody);
-    const toolOrderHash = sha256Json((fullBody.tools ?? []).map((tool) => {
+    const toolOrderHash = sha256Json((actualBody.tools ?? []).map((tool) => {
         const record = tool as unknown as Record<string, unknown>;
         return typeof record.name === "string" ? record.name : (typeof record.type === "string" ? record.type : "unknown");
     }));
+    const toolIdentifierSetHash = sha256Json((actualBody.tools ?? []).map((tool) => {
+        const record = tool as unknown as Record<string, unknown>;
+        return typeof record.name === "string" ? record.name : (typeof record.type === "string" ? record.type : "unknown");
+    }).sort());
     if (!instructionsHash ||
         !inputHash ||
         !responseItemsHash ||
@@ -1618,7 +1625,8 @@ function createSuccessfulDispatchCommitment(
         !serviceTierHash ||
         !headersHash ||
         !actualBodyHash ||
-        !toolOrderHash) {
+        !toolOrderHash ||
+        !toolIdentifierSetHash) {
         return undefined;
     }
     return {
@@ -1634,9 +1642,11 @@ function createSuccessfulDispatchCommitment(
         serviceTierHash,
         headersHash,
         actualBodyHash,
-        instructionsBytes: new TextEncoder().encode(typeof fullBody.instructions === "string" ? fullBody.instructions : JSON.stringify(fullBody.instructions ?? null)).byteLength,
+        instructionsBytes: new TextEncoder().encode(typeof actualBody.instructions === "string" ? actualBody.instructions : JSON.stringify(actualBody.instructions ?? null)).byteLength,
         toolOrderHash,
-        toolCount: fullBody.tools?.length ?? 0,
+        toolIdentifierSetHash,
+        toolCount: actualBody.tools?.length ?? 0,
+        previousResponseMode: actualBody.previous_response_id ? "response-id" : "none",
         ...(responseId ? { responseId } : {}),
     };
 }
@@ -1656,22 +1666,18 @@ function recordSuccessfulDispatch(
         return;
     const observation: EffectiveDispatchObservation = {
         transport: transport === "sse" ? "sse" : "websocket",
-        previousResponseMode: transport === "websocket-delta" ? "response-id" : (transport === "sse" ? "none" : "websocket"),
+        previousResponseMode: commitment.previousResponseMode,
         instructionsHash: commitment.instructionsHash,
         instructionsBytes: commitment.instructionsBytes,
         toolOrderHash: commitment.toolOrderHash,
+        toolIdentifierSetHash: commitment.toolIdentifierSetHash,
         toolsHash: commitment.toolsHash,
         toolCount: commitment.toolCount,
         cacheKeyHash: commitment.promptCacheKeyHash,
         prefixHash: commitment.bodyWithoutInputHash,
         requestTransformOutputHash: commitment.actualBodyHash,
     };
-    try {
-        options?.onEffectiveDispatch?.(Object.freeze(observation), model);
-    }
-    catch {
-        // Effective dispatch diagnostics are observational and cannot fail a provider request.
-    }
+    deliverEffectiveDispatchObservation(options, model, observation);
     if (!sessionId)
         return;
     successfulDispatchCommitments.delete(sessionId);

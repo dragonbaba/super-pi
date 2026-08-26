@@ -50,7 +50,7 @@ import type {
 import { appendAssistantMessageDiagnostic } from "../utils/diagnostics.ts";
 import { normalizeProviderError } from "../utils/error-body.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
-import { observeEffectiveSseDispatch } from "../utils/effective-dispatch.ts";
+import { observeEffectiveDispatch } from "../utils/effective-dispatch.ts";
 import { providerHeadersToRecord } from "../utils/headers.ts";
 import { parseStreamingJson } from "../utils/json-parse.ts";
 import { resolveHttpProxyUrlForTarget } from "../utils/node-http-proxy.ts";
@@ -249,7 +249,7 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 			if (nextCommandInput !== undefined) {
 				commandInput = nextCommandInput as typeof commandInput;
 			}
-			observeEffectiveSseDispatch(options, model, commandInput);
+			observeBedrockEffectiveDispatch(options, model, commandInput);
 			const command = new ConverseStreamCommand(commandInput);
 
 			const response = await client.send(command, { abortSignal: options.signal });
@@ -377,6 +377,26 @@ function formatBedrockError(error: unknown): string {
 		return `${prefix}: ${core}${dataRetentionHint}`;
 	}
 	return `${core}${dataRetentionHint}`;
+}
+
+export function observeBedrockEffectiveDispatch(
+	options: BedrockOptions | undefined,
+	model: Model<"bedrock-converse-stream">,
+	commandInput: {
+		system?: unknown;
+		toolConfig?: ToolConfiguration;
+		[key: string]: unknown;
+	},
+): void {
+	const tools = commandInput.toolConfig?.tools ?? [];
+	observeEffectiveDispatch(options, model, {
+		transport: "sse",
+		previousResponseMode: "none",
+		instructionPrefix: commandInput.system ?? null,
+		orderedToolDefinitions: tools,
+		orderedToolIdentifiers: tools.map((tool) => "toolSpec" in tool ? (tool.toolSpec?.name ?? "unknown") : "unknown"),
+		transformedPayload: commandInput,
+	});
 }
 
 type SdkErrorMetadata = { $metadata?: { httpStatusCode?: unknown; requestId?: unknown } };
