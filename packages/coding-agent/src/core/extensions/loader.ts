@@ -275,6 +275,24 @@ function createExtensionAPI(
 	cwd: string,
 	eventBus: EventBus,
 ): { api: ExtensionAPI; commit: () => void; discard: () => void } {
+	const finiteNonNegative = (name: string, value: number): number => {
+		if (!Number.isFinite(value) || value < 0) {
+			throw new RangeError(`${name} must be a finite non-negative number`);
+		}
+		return value;
+	};
+	const finitePositive = (name: string, value: number): number => {
+		if (!Number.isFinite(value) || value <= 0) {
+			throw new RangeError(`${name} must be a finite positive number`);
+		}
+		return value;
+	};
+	const finitePositiveInteger = (name: string, value: number): number => {
+		if (!Number.isSafeInteger(value) || value <= 0) {
+			throw new RangeError(`${name} must be a finite positive integer`);
+		}
+		return value;
+	};
 	const pendingFlagValues = new Map<string, boolean | string>();
 	const pendingRuntimeChanges: PendingRuntimeChange[] = [];
 	const loadingUnsubscribers: Array<() => void> = [];
@@ -312,9 +330,9 @@ function createExtensionAPI(
 			const list = extension.observers.get(event) ?? [];
 			list.push({
 				handler,
-				slowThresholdMs: Math.max(0, options.slowThresholdMs ?? 100),
-				timeoutMs: Math.max(1, options.timeoutMs ?? 1_000),
-				disableAfterErrors: Math.max(1, Math.floor(options.disableAfterErrors ?? 3)),
+				slowThresholdMs: finiteNonNegative("slowThresholdMs", options.slowThresholdMs ?? 100),
+				timeoutMs: finitePositive("timeoutMs", options.timeoutMs ?? 1_000),
+				disableAfterErrors: finitePositiveInteger("disableAfterErrors", options.disableAfterErrors ?? 3),
 				consecutiveErrors: 0,
 				disabled: false,
 			});

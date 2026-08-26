@@ -1,5 +1,5 @@
 import { CONFIG_DIR_NAME } from "../config.ts";
-import { emitProjectTrustEvent } from "./extensions/runner.ts";
+import { emitProjectTrustEvent, type ExtensionRunnerOptions } from "./extensions/runner.ts";
 import type { LoadExtensionsResult, ProjectTrustContext } from "./extensions/types.ts";
 import type { DefaultProjectTrust } from "./settings-manager.ts";
 import {
@@ -19,6 +19,8 @@ export interface ResolveProjectTrustedOptions {
 	extensionsResult?: LoadExtensionsResult;
 	projectTrustContext: ProjectTrustContext;
 	onExtensionError?: (message: string) => void;
+	/** Applies the same fail-closed safety timeout policy to project_trust bootstrap hooks. */
+	extensionRunnerOptions?: ExtensionRunnerOptions;
 }
 
 function formatProjectTrustPrompt(cwd: string): string {
@@ -56,6 +58,7 @@ export async function resolveProjectTrusted(options: ResolveProjectTrustedOption
 			options.extensionsResult,
 			{ type: "project_trust", cwd: options.cwd },
 			options.projectTrustContext,
+			options.extensionRunnerOptions,
 		);
 		for (const error of errors) {
 			options.onExtensionError?.(`Extension "${error.extensionPath}" project_trust error: ${error.error}`);

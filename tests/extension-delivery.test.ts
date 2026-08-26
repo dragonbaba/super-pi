@@ -131,3 +131,28 @@ test("a permanently pending observer times out once, opens its circuit, and cann
 	assert.equal(runner.observerDeliveryStats.errors, 1);
 	assert.equal(runner.observerDeliveryStats.disabled, 1);
 });
+
+test("observer thresholds reject non-finite and non-positive values", async () => {
+	const cases = [
+		{ slowThresholdMs: Number.NaN },
+		{ slowThresholdMs: Number.POSITIVE_INFINITY },
+		{ timeoutMs: Number.NaN },
+		{ timeoutMs: Number.POSITIVE_INFINITY },
+		{ timeoutMs: 0 },
+		{ disableAfterErrors: Number.NaN },
+		{ disableAfterErrors: Number.POSITIVE_INFINITY },
+		{ disableAfterErrors: 0 },
+		{ disableAfterErrors: 1.5 },
+	];
+	for (const options of cases) {
+		await assert.rejects(
+			loadExtensionFromFactory(
+				(pi) => pi.observe("message_update", () => {}, options),
+				cwd,
+				createEventBus(),
+				createExtensionRuntime(),
+			),
+			RangeError,
+		);
+	}
+});

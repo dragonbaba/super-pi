@@ -185,6 +185,19 @@ export interface ExtensionRunnerOptions {
 	};
 }
 
+function validateTimeoutMs(name: string, timeoutMs: number): void {
+	if (!Number.isFinite(timeoutMs) || timeoutMs < 0) {
+		throw new RangeError(`${name} must be a finite non-negative number`);
+	}
+}
+
+function validateHookTimeouts(options: ExtensionRunnerOptions): void {
+	for (const category of ["safety", "transform", "interaction", "lifecycle"] as const) {
+		const configured = options.hookTimeouts?.[category];
+		if (configured) validateTimeoutMs(`hookTimeouts.${category}.timeoutMs`, configured.timeoutMs);
+	}
+}
+
 export type ExtensionObserverDiagnostic =
 	| { type: "observer-error"; extensionPath: string; event: string; error: unknown }
 	| { type: "observer-slow"; extensionPath: string; event: string; durationMs: number }
@@ -239,6 +252,7 @@ const DEFAULT_EXTENSION_RUNNER_SCHEDULER: ExtensionRunnerScheduler = {
 
 const OBSERVER_DURATION_BUCKETS_MS = [1, 5, 10, 25, 50, 100, 250, 1_000, 5_000, 30_000] as const;
 const SAFETY_HOOK_EVENTS = new Set([
+	"project_trust",
 	"tool_call",
 	"session_before_switch",
 	"session_before_fork",
@@ -301,7 +315,11 @@ export async function emitProjectTrustEvent(
 	extensionsResult: LoadExtensionsResult,
 	event: ProjectTrustEvent,
 	ctx: ProjectTrustContext,
+	options: ExtensionRunnerOptions = {},
 ): Promise<{ result?: ProjectTrustEventResult; errors: ExtensionError[] }> {
+	validateHookTimeouts(options);
+	const scheduler = options.scheduler ?? DEFAULT_EXTENSION_RUNNER_SCHEDULER;
+	const timeoutMs = options.hookTimeouts?.safety?.timeoutMs ?? 0;
 	const errors: ExtensionError[] = [];
 	for (const ext of extensionsResult.extensions) {
 		// A single extension may register multiple handlers for the same event.
@@ -311,7 +329,33 @@ export async function emitProjectTrustEvent(
 
 		for (const handler of handlers) {
 			try {
-				const handlerResult = (await handler(event, ctx)) as ProjectTrustEventResult;
+				const handlerPromise = handler(event, ctx);
+				let handlerResult: ProjectTrustEventResult;
+				if (timeoutMs > 0 && handlerPromise && typeof (handlerPromise as PromiseLike<unknown>).then === "function") {
+					const timeoutError = new ExtensionHookTimeoutError(ext.path, event.type, timeoutMs);
+					let handle: unknown;
+					const timeout = new Promise<never>((_resolve, reject) => {
+						handle = scheduler.schedule(() => reject(timeoutError), timeoutMs);
+					});
+					try {
+						handlerResult = (await Promise.race([handlerPromise, timeout])) as ProjectTrustEventResult;
+					} catch (error) {
+						if (error !== timeoutError) throw error;
+						errors.push({
+							extensionPath: ext.path,
+							event: event.type,
+							error: timeoutError.message,
+							stack: timeoutError.stack,
+						});
+						// project_trust is a safety decision: timeout is always fail-closed.
+						// JavaScript promises cannot be forcibly cancelled; any late result is ignored.
+						return { result: { trusted: "no" }, errors };
+					} finally {
+						if (handle !== undefined) scheduler.cancel(handle);
+					}
+				} else {
+					handlerResult = (await handlerPromise) as ProjectTrustEventResult;
+				}
 				if (handlerResult.trusted === "undecided") {
 					continue;
 				}
@@ -414,6 +458,7 @@ export class ExtensionRunner {
 		modelRegistry: ModelRegistry,
 		options: ExtensionRunnerOptions = {},
 	) {
+		validateHookTimeouts(options);
 		this.extensions = extensions;
 		this.handlerEventTypes = new Set();
 		this.observerEventTypes = new Set();
@@ -958,7 +1003,7 @@ export class ExtensionRunner {
 	): Promise<unknown> {
 		const category = this.hookCategory(eventType);
 		const configured = this.options.hookTimeouts?.[category];
-		const timeoutMs = configured ? Math.max(0, configured.timeoutMs) : 0;
+		const timeoutMs = configured?.timeoutMs ?? 0;
 		const result = handler(event, ctx);
 		if (timeoutMs === 0 || !result || typeof (result as PromiseLike<unknown>).then !== "function") {
 			return await result;

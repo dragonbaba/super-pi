@@ -59,6 +59,13 @@ const DEFAULT_SCHEDULER: EventDeliveryScheduler = {
 	cancel: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
 };
 
+function finiteNonNegative(name: string, value: number): number {
+	if (!Number.isFinite(value) || value < 0) {
+		throw new RangeError(`${name} must be a finite non-negative number`);
+	}
+	return value;
+}
+
 /**
  * Delivers compatibility listeners synchronously while keeping display-only
  * observers on a bounded latest-value lane.
@@ -91,8 +98,8 @@ export class EventDeliveryDispatcher<E, K> {
 
 	constructor(options: EventDeliveryDispatcherOptions<E> = {}) {
 		this.scheduler = options.scheduler ?? DEFAULT_SCHEDULER;
-		this.defaultMinIntervalMs = Math.max(0, options.defaultMinIntervalMs ?? 16);
-		this.slowObserverMs = Math.max(0, options.slowObserverMs ?? 100);
+		this.defaultMinIntervalMs = finiteNonNegative("defaultMinIntervalMs", options.defaultMinIntervalMs ?? 16);
+		this.slowObserverMs = finiteNonNegative("slowObserverMs", options.slowObserverMs ?? 100);
 		this.snapshotLatest = options.snapshotLatest ?? ((event) => event);
 		this.onDiagnostic = options.onDiagnostic;
 	}
@@ -103,7 +110,7 @@ export class EventDeliveryDispatcher<E, K> {
 			const observer: ObserverListener<E, K> = {
 				listener,
 				filter: options.filter,
-				minIntervalMs: Math.max(0, options.minIntervalMs ?? this.defaultMinIntervalMs),
+				minIntervalMs: finiteNonNegative("minIntervalMs", options.minIntervalMs ?? this.defaultMinIntervalMs),
 				lastDeliveredAt: this.scheduler.now(),
 				seenVersions: new Map(),
 			};

@@ -8,6 +8,7 @@ import {
 	ExtensionRunner,
 	loadExtensionFromFactory,
 } from "../packages/coding-agent/src/core/extensions/index.ts";
+import { emitProjectTrustEvent } from "../packages/coding-agent/src/core/extensions/runner.ts";
 import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
 import { FakeScheduler } from "./helpers/runtime-instrumentation.ts";
 
@@ -110,6 +111,79 @@ test("configured safety hook timeout is fail-closed", async () => {
 	scheduler.advanceBy(100);
 	await assert.rejects(resultPromise, ExtensionHookTimeoutError);
 	assert.equal(runner.hookDeliveryStats.timeouts, 1);
+});
+
+test("project_trust uses the safety timeout, fails closed, and ignores a late allow result", async () => {
+	const scheduler = new FakeScheduler();
+	let releaseLate = () => {};
+	const late = new Promise<void>((resolve) => { releaseLate = resolve; });
+	let fallbackCalls = 0;
+	const runtime = createExtensionRuntime();
+	const extension = await loadExtensionFromFactory((pi) => {
+		pi.on("project_trust", async () => {
+			await late;
+			return { trusted: "yes" };
+		});
+		pi.on("project_trust", () => {
+			fallbackCalls++;
+			return { trusted: "yes" };
+		});
+	}, cwd, createEventBus(), runtime);
+	const resultPromise = emitProjectTrustEvent(
+		{ extensions: [extension], errors: [], runtime },
+		{ type: "project_trust", cwd },
+		{ cwd, mode: "print", hasUI: false, ui: {} } as never,
+		{ scheduler, hookTimeouts: { safety: { timeoutMs: 100 } } },
+	);
+
+	scheduler.advanceBy(100);
+	const outcome = await resultPromise;
+	assert.equal(outcome.result?.trusted, "no");
+	assert.equal(outcome.errors.length, 1);
+	assert.match(outcome.errors[0]?.error ?? "", /timed out after 100ms/);
+	assert.equal(fallbackCalls, 0);
+	releaseLate();
+	await Promise.resolve();
+	await Promise.resolve();
+	assert.equal(outcome.result?.trusted, "no");
+});
+
+test("a late transform result is ignored after a fail-open timeout", async () => {
+	const scheduler = new FakeScheduler();
+	let releaseLate = () => {};
+	const late = new Promise<void>((resolve) => { releaseLate = resolve; });
+	const runner = await createRunner(
+		(pi) => {
+			pi.on("message_end", async (event) => {
+				await late;
+				return { message: { ...event.message, content: [{ type: "text", text: "late" }] } };
+			});
+			pi.on("message_end", (event) => ({
+				message: { ...event.message, content: [{ type: "text", text: "accepted" }] },
+			}));
+		},
+		{ scheduler, hookTimeouts: { transform: { timeoutMs: 100, onTimeout: "fail-open" } } },
+	);
+	const resultPromise = runner.emitMessageEnd({
+		type: "message_end",
+		message: { role: "assistant", content: [] },
+	} as never);
+	scheduler.advanceBy(100);
+	const result = await resultPromise as { content: Array<{ type: string; text: string }> };
+	assert.equal(result.content[0]?.text, "accepted");
+	releaseLate();
+	await Promise.resolve();
+	await Promise.resolve();
+	assert.equal(result.content[0]?.text, "accepted");
+});
+
+test("hook timeout configuration rejects non-finite and negative durations", async () => {
+	for (const timeoutMs of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, -1]) {
+		await assert.rejects(
+			createRunner(() => {}, { hookTimeouts: { safety: { timeoutMs } } }),
+			RangeError,
+		);
+	}
 });
 
 test("AgentSession routes high-frequency display events through subscribeObserver", async () => {

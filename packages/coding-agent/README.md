@@ -56,4 +56,4 @@ export default function extension(pi: ExtensionAPI) {
 }
 ```
 
-Intercepting and transforming hooks continue to use `pi.on()`. Hosts may configure category-specific hook timeouts through `extensionRunnerOptions`; safety/veto hooks always fail closed, interactive hooks have no timeout by default, and transform hooks require an explicit fail-open or fail-closed policy.
+Intercepting and transforming hooks continue to use `pi.on()`. Hosts may configure category-specific hook timeouts through `extensionRunnerOptions`; safety/veto hooks, including bootstrap `project_trust`, always fail closed, interactive hooks have no timeout by default, and transform hooks require an explicit fail-open or fail-closed policy. A timeout stops awaiting the handler but cannot forcibly cancel already-running JavaScript. Its eventual fulfillment or rejection is observed and ignored; returned transforms or trust decisions are never applied after the timeout.

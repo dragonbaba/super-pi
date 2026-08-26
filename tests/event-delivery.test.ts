@@ -23,6 +23,20 @@ function createDispatcher(diagnostics: EventDeliveryDiagnostic[] = []) {
 	return { dispatcher, scheduler };
 }
 
+test("delivery timing options reject non-finite and negative values", () => {
+	for (const value of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, -1]) {
+		assert.throws(() => new EventDeliveryDispatcher({ defaultMinIntervalMs: value }), RangeError);
+		assert.throws(() => new EventDeliveryDispatcher({ slowObserverMs: value }), RangeError);
+	}
+	const dispatcher = new EventDeliveryDispatcher<FixtureEvent, string>();
+	for (const value of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, -1]) {
+		assert.throws(
+			() => dispatcher.subscribe(() => {}, { delivery: "latest", minIntervalMs: value }),
+			RangeError,
+		);
+	}
+});
+
 test("latest delivery stays bounded by active keys and flushes the final value", async () => {
 	const { dispatcher, scheduler } = createDispatcher();
 	const observed: FixtureEvent[] = [];
