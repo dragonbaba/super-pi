@@ -36,7 +36,7 @@ import type {
 } from "../types.ts";
 import { formatProviderError, normalizeProviderError } from "../utils/error-body.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
-import { observeEffectiveDispatch } from "../utils/effective-dispatch.ts";
+import { observeEffectiveDispatch, summarizeCacheMarkerPolicies } from "../utils/effective-dispatch.ts";
 import { shortHash } from "../utils/hash.ts";
 import { headersToRecord } from "../utils/headers.ts";
 import { parseStreamingJson, stringifyToolArguments } from "../utils/json-parse.ts";
@@ -696,6 +696,7 @@ export function observeOpenAIChatEffectiveDispatch(
 		prompt_cache_options?: unknown;
 		prompt_cache_retention?: unknown;
 	};
+	const cache = extractOpenAIChatCacheMetadata(params.messages, tools);
 	observeEffectiveDispatch(options, model, {
 		transport: "sse",
 		previousResponseMode: "none",
@@ -706,32 +707,67 @@ export function observeOpenAIChatEffectiveDispatch(
 		),
 		cacheKey: params.prompt_cache_key,
 		cachePolicy: {
+			enabled:
+				cacheParams.prompt_cache_retention !== undefined ||
+				cacheParams.prompt_cache_options !== undefined ||
+				cache.markerCount > 0,
 			promptCacheRetention: cacheParams.prompt_cache_retention ?? null,
 			promptCacheOptions: cacheParams.prompt_cache_options ?? null,
-			markers: extractOpenAIChatCacheMarkers(params.messages, tools),
+			markers: cache.markerPolicies,
 		},
+		cacheBoundary: cache.boundary,
 	});
 }
 
-function extractOpenAIChatCacheMarkers(
+function extractOpenAIChatCacheMetadata(
 	messages: readonly OpenAI.Chat.Completions.ChatCompletionMessageParam[],
 	tools: readonly OpenAI.Chat.Completions.ChatCompletionTool[],
-): unknown {
-	const messageMarkers: unknown[] = [];
-	for (let messageIndex = 0; messageIndex < messages.length; messageIndex++) {
-		const content = messages[messageIndex]?.content;
-		if (!Array.isArray(content)) continue;
-		for (let partIndex = 0; partIndex < content.length; partIndex++) {
-			const marker = readOpenAIChatCacheControl(content[partIndex]);
-			if (marker !== undefined) messageMarkers.push({ messageIndex, partIndex, marker });
+): { markerCount: number; markerPolicies: unknown; boundary: unknown } {
+	const markers: unknown[] = [];
+	const anchors: string[] = [];
+	let lastConversationMessage = -1;
+	for (let index = messages.length - 1; index >= 0; index--) {
+		const role = messages[index]?.role;
+		if (role === "user" || role === "assistant" || role === "tool") {
+			lastConversationMessage = index;
+			break;
 		}
 	}
-	const toolMarkers: unknown[] = [];
+	for (let messageIndex = 0; messageIndex < messages.length; messageIndex++) {
+		const message = messages[messageIndex];
+		const content = message?.content;
+		if (!Array.isArray(content)) continue;
+		let lastCacheablePart = -1;
+		for (let index = content.length - 1; index >= 0; index--) {
+			if (content[index]?.type === "text") {
+				lastCacheablePart = index;
+				break;
+			}
+		}
+		for (let partIndex = 0; partIndex < content.length; partIndex++) {
+			const marker = readOpenAIChatCacheControl(content[partIndex]);
+			if (marker === undefined) continue;
+			markers.push(marker);
+			const role = message?.role ?? "unknown";
+			if (role === "system" || role === "developer") anchors.push("system");
+			else if (messageIndex === lastConversationMessage && partIndex === lastCacheablePart) {
+				anchors.push(`last-${role}:last-cacheable-block`);
+			} else {
+				anchors.push(`message:${messages.length - 1 - messageIndex}:${content.length - 1 - partIndex}:${role}`);
+			}
+		}
+	}
 	for (let index = 0; index < tools.length; index++) {
 		const marker = readOpenAIChatCacheControl(tools[index]);
-		if (marker !== undefined) toolMarkers.push({ index, marker });
+		if (marker === undefined) continue;
+		markers.push(marker);
+		anchors.push(index === tools.length - 1 ? "last-tool" : `tool:${tools.length - 1 - index}`);
 	}
-	return { messages: messageMarkers, tools: toolMarkers };
+	return {
+		markerCount: markers.length,
+		markerPolicies: summarizeCacheMarkerPolicies(markers),
+		boundary: [...new Set(anchors)].sort(),
+	};
 }
 
 function readOpenAIChatCacheControl(value: unknown): unknown {

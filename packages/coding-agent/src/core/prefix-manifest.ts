@@ -12,6 +12,7 @@ export interface PrefixManifestV1 {
 	transport: string;
 	cacheRetention?: string;
 	cachePolicyHash: string;
+	cacheBoundaryHash: string;
 	systemPromptHash: string;
 	systemPromptBytes: number;
 	toolOrderHash: string;
@@ -55,6 +56,7 @@ export interface EffectivePrefixDispatchObservation {
 	toolCount: number;
 	cacheKeyHash?: string;
 	cachePolicyHash: string;
+	cacheBoundaryHash: string;
 	prefixHash: string;
 	requestTransformOutputHash: string;
 }
@@ -85,7 +87,9 @@ export interface PrefixManifestBuildInput {
 export type PrefixManifestSegment =
 	| "model"
 	| "transport"
+	| "cache-policy"
 	| "cache-retention"
+	| "cache-boundary"
 	| "system-prompt"
 	| "tool-order"
 	| "tool-schema"
@@ -105,7 +109,9 @@ export type PrefixDriftReasonCode =
 	| "DYNAMIC_INSTRUCTION_CHANGED"
 	| "COMPACTION_BOUNDARY"
 	| "TRANSPORT_CHANGED"
+	| "CACHE_POLICY_CHANGED"
 	| "CACHE_RETENTION_CHANGED"
+	| "CACHE_BOUNDARY_CHANGED"
 	| "CACHE_KEY_CHANGED"
 	| "PREVIOUS_RESPONSE_MODE_CHANGED"
 	| "UNKNOWN_PREFIX_DRIFT";
@@ -408,6 +414,7 @@ export function buildPrefixManifest(input: PrefixManifestBuildInput): PrefixMani
 	const cachePolicyHash = effective?.cachePolicyHash ?? sha256Canonical({
 		configuredRetention: input.cacheRetention ?? null,
 	});
+	const cacheBoundaryHash = effective?.cacheBoundaryHash ?? sha256Canonical(null);
 	const requestTransformOutputHash = effective?.requestTransformOutputHash ?? sha256Canonical({
 		systemPromptHash,
 		toolOrderHash,
@@ -415,6 +422,7 @@ export function buildPrefixManifest(input: PrefixManifestBuildInput): PrefixMani
 		toolSchemaHash,
 		cacheKeyHash: cacheKeyHash ?? null,
 		cachePolicyHash,
+		cacheBoundaryHash,
 	});
 	const effectivePrefixHash = effective?.prefixHash ?? sha256Canonical({
 		systemPromptHash,
@@ -423,6 +431,7 @@ export function buildPrefixManifest(input: PrefixManifestBuildInput): PrefixMani
 		persistentContextHash: sha256Canonical(contextEntries),
 		cacheKeyHash: cacheKeyHash ?? null,
 		cachePolicyHash,
+		cacheBoundaryHash,
 	});
 
 	const manifest: PrefixManifestV1 = {
@@ -433,6 +442,7 @@ export function buildPrefixManifest(input: PrefixManifestBuildInput): PrefixMani
 		transport: effective?.transport ?? input.transport,
 		...(input.cacheRetention === undefined ? {} : { cacheRetention: input.cacheRetention }),
 		cachePolicyHash,
+		cacheBoundaryHash,
 		systemPromptHash,
 		systemPromptBytes,
 		toolOrderHash,
@@ -533,6 +543,7 @@ export function comparePrefixManifests(
 		previous.systemPromptBytes !== current.systemPromptBytes;
 	const effectivePrefixChanged = previous.effectivePrefixHash !== current.effectivePrefixHash;
 	const cachePolicyChanged = previous.cachePolicyHash !== current.cachePolicyHash;
+	const cacheBoundaryChanged = previous.cacheBoundaryHash !== current.cacheBoundaryHash;
 	if (previous.provider !== current.provider || previous.model !== current.model || previous.api !== current.api) {
 		return diagnostic(previous, current, "model", "MODEL_CHANGED", true);
 	}
@@ -547,17 +558,12 @@ export function comparePrefixManifests(
 		!effectivePrefixChanged &&
 		previous.cacheKeyHash === current.cacheKeyHash &&
 		!cachePolicyChanged &&
+		!cacheBoundaryChanged &&
 		previous.previousResponseMode === current.previousResponseMode
 	) {
 		// Intent metadata is explanatory only. A transform may hold the provider prefix
 		// constant even while configured context, tools, or dynamic instructions change.
 		return undefined;
-	}
-	if (
-		(comparingEffective && cachePolicyChanged) ||
-		(!comparingEffective && previous.cacheRetention !== current.cacheRetention)
-	) {
-		return diagnostic(previous, current, "cache-retention", "CACHE_RETENTION_CHANGED", true);
 	}
 	if (systemPromptChanged) {
 		if (toolSetChanged) {
@@ -583,7 +589,9 @@ export function comparePrefixManifests(
 		!toolSchemaChanged &&
 		!contextChanged &&
 		!dynamicChanged &&
-		previous.cacheKeyHash === current.cacheKeyHash
+		previous.cacheKeyHash === current.cacheKeyHash &&
+		!cachePolicyChanged &&
+		!cacheBoundaryChanged
 	) {
 		return diagnostic(previous, current, "system-prompt", "UNKNOWN_PREFIX_DRIFT", false);
 	}
@@ -607,8 +615,23 @@ export function comparePrefixManifests(
 			changedToolSchemas,
 		);
 	}
+	if (
+		(comparingEffective && cachePolicyChanged) ||
+		(!comparingEffective && previous.cacheRetention !== current.cacheRetention)
+	) {
+		if (
+			comparingEffective &&
+			(previous.cacheKeyHash === undefined) !== (current.cacheKeyHash === undefined)
+		) {
+			return diagnostic(previous, current, "cache-policy", "CACHE_POLICY_CHANGED", true);
+		}
+		return diagnostic(previous, current, "cache-retention", "CACHE_RETENTION_CHANGED", true);
+	}
 	if (comparingEffective && previous.cacheKeyHash !== current.cacheKeyHash) {
 		return diagnostic(previous, current, "cache-key", "CACHE_KEY_CHANGED", true);
+	}
+	if (comparingEffective && cacheBoundaryChanged) {
+		return diagnostic(previous, current, "cache-boundary", "CACHE_BOUNDARY_CHANGED", true);
 	}
 	if (comparingEffective && effectivePrefixChanged) {
 		if (contextChanged) {

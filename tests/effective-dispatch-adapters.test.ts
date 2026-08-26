@@ -3,6 +3,7 @@ import test from "node:test";
 import { observeAnthropicEffectiveDispatch } from "../packages/ai/src/api/anthropic-messages.ts";
 import { observeBedrockEffectiveDispatch } from "../packages/ai/src/api/bedrock-converse-stream.ts";
 import { observeGoogleGenerativeAIEffectiveDispatch } from "../packages/ai/src/api/google-generative-ai.ts";
+import { observeGoogleVertexEffectiveDispatch } from "../packages/ai/src/api/google-vertex.ts";
 import {
 	observeMistralEffectiveDispatch,
 	stream as streamMistral,
@@ -50,6 +51,31 @@ function capture<TApi extends Api>(): {
 function assertMetadataOnly(observations: readonly EffectiveDispatchObservation[], secrets: readonly string[]): void {
 	const serialized = JSON.stringify(observations);
 	for (const secret of secrets) assert.equal(serialized.includes(secret), false, `leaked ${secret}`);
+}
+
+function manifestForObservation(
+	observation: EffectiveDispatchObservation,
+	tools: readonly string[] = [],
+) {
+	return buildPrefixManifest({
+		provider: "fixture",
+		model: "fixture-model",
+		api: "fixture-api",
+		transport: "sse",
+		systemPrompt: "fixed system prompt",
+		tools: tools.map((name) => ({ name, schema: {} })),
+		previousResponseMode: "none",
+		effectiveDispatch: observation,
+	});
+}
+
+function observeOne<TApi extends Api>(
+	observe: (options: ProviderRequestOptions<Model<TApi>>, model: Model<TApi>) => void,
+	api: TApi,
+): EffectiveDispatchObservation {
+	const captured = capture<TApi>();
+	observe(captured.options, model(api));
+	return captured.observations[0]!;
 }
 
 function openAIChatResponse(): Response {
@@ -323,6 +349,167 @@ test("provider-resolved cache policy hashes follow actual wire markers and reten
 		assert.equal(typeof short.cachePolicyHash, "string");
 		assert.notEqual(short.cachePolicyHash, long.cachePolicyHash);
 		assert.notEqual(short.prefixHash, long.prefixHash);
+	}
+});
+
+test("Anthropic history growth keeps cache policy and semantic boundary stable", () => {
+	const marker = { type: "ephemeral", ttl: "1h" };
+	const observe = (messages: unknown[]) => observeOne((options, anthropicModel) => {
+		observeAnthropicEffectiveDispatch(options as never, anthropicModel, {
+			model: anthropicModel.id,
+			stream: true,
+			max_tokens: 64,
+			system: [{ type: "text", text: "system", cache_control: marker }],
+			messages,
+		} as never);
+	}, "anthropic-messages");
+	const first = observe([{ role: "user", content: [{ type: "text", text: "first", cache_control: marker }] }]);
+	const grown = observe([
+		{ role: "user", content: [{ type: "text", text: "first" }] },
+		{ role: "assistant", content: [{ type: "text", text: "answer" }] },
+		{ role: "user", content: [{ type: "text", text: "second", cache_control: marker }] },
+	]);
+	assert.equal(first.cachePolicyHash, grown.cachePolicyHash);
+	assert.equal(first.cacheBoundaryHash, grown.cacheBoundaryHash);
+	assert.equal(comparePrefixManifests(manifestForObservation(first), manifestForObservation(grown)), undefined);
+});
+
+test("OpenAI Chat history growth keeps cache policy and semantic boundary stable", () => {
+	const marker = { type: "ephemeral", ttl: "1h" };
+	const observe = (messages: unknown[]) => observeOne((options, chatModel) => {
+		observeOpenAIChatEffectiveDispatch(options as never, chatModel, {
+			model: chatModel.id,
+			stream: true,
+			messages,
+		} as never);
+	}, "openai-completions");
+	const first = observe([{ role: "user", content: [{ type: "text", text: "first", cache_control: marker }] }]);
+	const grown = observe([
+		{ role: "user", content: [{ type: "text", text: "first" }] },
+		{ role: "assistant", content: [{ type: "text", text: "answer" }] },
+		{ role: "user", content: [{ type: "text", text: "second", cache_control: marker }] },
+	]);
+	assert.equal(first.cachePolicyHash, grown.cachePolicyHash);
+	assert.equal(first.cacheBoundaryHash, grown.cacheBoundaryHash);
+	assert.equal(comparePrefixManifests(manifestForObservation(first), manifestForObservation(grown)), undefined);
+});
+
+test("Bedrock history growth keeps cache policy and semantic boundary stable", () => {
+	const marker = { type: "default", ttl: "1h" };
+	const observe = (messages: unknown[]) => observeOne((options, bedrockModel) => {
+		observeBedrockEffectiveDispatch(options as never, bedrockModel, {
+			modelId: bedrockModel.id,
+			system: [{ text: "system" }, { cachePoint: marker }],
+			messages,
+		} as never);
+	}, "bedrock-converse-stream");
+	const first = observe([{ role: "user", content: [{ text: "first" }, { cachePoint: marker }] }]);
+	const grown = observe([
+		{ role: "user", content: [{ text: "first" }] },
+		{ role: "assistant", content: [{ text: "answer" }] },
+		{ role: "user", content: [{ text: "second" }, { cachePoint: marker }] },
+	]);
+	assert.equal(first.cachePolicyHash, grown.cachePolicyHash);
+	assert.equal(first.cacheBoundaryHash, grown.cacheBoundaryHash);
+	assert.equal(comparePrefixManifests(manifestForObservation(first), manifestForObservation(grown)), undefined);
+});
+
+test("tool activation outranks movement of the built-in last-tool cache marker", () => {
+	const marker = { type: "ephemeral", ttl: "1h" };
+	const observe = (toolNames: string[]) => observeOne((options, anthropicModel) => {
+		observeAnthropicEffectiveDispatch(options as never, anthropicModel, {
+			model: anthropicModel.id,
+			stream: true,
+			max_tokens: 64,
+			messages: [],
+			tools: toolNames.map((name, index) => ({
+				name,
+				description: name,
+				input_schema: { type: "object" },
+				...(index === toolNames.length - 1 ? { cache_control: marker } : {}),
+			})),
+		} as never);
+	}, "anthropic-messages");
+	const diagnostic = comparePrefixManifests(
+		manifestForObservation(observe(["read"]), ["read"]),
+		manifestForObservation(observe(["read", "write"]), ["read", "write"]),
+	);
+	assert.equal(diagnostic?.reasonCode, "TOOL_ACTIVATED");
+});
+
+test("cache TTL and genuine custom boundary changes have distinct diagnostics", () => {
+	const observe = (ttl: string, markedMessage: number) => observeOne((options, anthropicModel) => {
+		observeAnthropicEffectiveDispatch(options as never, anthropicModel, {
+			model: anthropicModel.id,
+			stream: true,
+			max_tokens: 64,
+			messages: [0, 1].map((index) => ({
+				role: "user",
+				content: [{
+					type: "text",
+					text: `message-${index}`,
+					...(index === markedMessage ? { cache_control: { type: "ephemeral", ttl } } : {}),
+				}],
+			})),
+		} as never);
+	}, "anthropic-messages");
+	const short = observe("5m", 1);
+	const long = observe("1h", 1);
+	assert.equal(
+		comparePrefixManifests(manifestForObservation(short), manifestForObservation(long))?.reasonCode,
+		"CACHE_RETENTION_CHANGED",
+	);
+	const moved = observe("5m", 0);
+	assert.equal(
+		comparePrefixManifests(manifestForObservation(short), manifestForObservation(moved))?.reasonCode,
+		"CACHE_BOUNDARY_CHANGED",
+	);
+});
+
+test("Google Generative AI and Vertex observe cachedContent without exposing resource names", () => {
+	const adapters = [
+		{
+			api: "google-generative-ai" as const,
+			observe: observeGoogleGenerativeAIEffectiveDispatch,
+		},
+		{
+			api: "google-vertex" as const,
+			observe: observeGoogleVertexEffectiveDispatch,
+		},
+	];
+	for (const adapter of adapters) {
+		const observe = (cachedContent?: string) => observeOne((options, googleModel) => {
+			adapter.observe(options as never, googleModel as never, {
+				model: googleModel.id,
+				contents: [],
+				config: { systemInstruction: "system", ...(cachedContent ? { cachedContent } : {}) },
+			} as never);
+		}, adapter.api);
+		const implicit = observe();
+		const explicitA = observe("projects/private/locations/us/cachedContents/cache-A-secret");
+		const explicitB = observe("projects/private/locations/us/cachedContents/cache-B-secret");
+		const implicitManifest = manifestForObservation(implicit);
+		const explicitAManifest = manifestForObservation(explicitA);
+		const explicitBManifest = manifestForObservation(explicitB);
+		assert.notEqual(implicit.cachePolicyHash, explicitA.cachePolicyHash);
+		assert.equal(
+			comparePrefixManifests(implicitManifest, explicitAManifest)?.reasonCode,
+			"CACHE_POLICY_CHANGED",
+		);
+		const keyDiagnostic = comparePrefixManifests(explicitAManifest, explicitBManifest);
+		assert.equal(
+			keyDiagnostic?.reasonCode,
+			"CACHE_KEY_CHANGED",
+		);
+		assertMetadataOnly([implicit, explicitA, explicitB], ["cache-A-secret", "cache-B-secret", "cachedContents"]);
+		const publicMetadata = JSON.stringify({
+			observations: [implicit, explicitA, explicitB],
+			manifests: [implicitManifest, explicitAManifest, explicitBManifest],
+			diagnostic: keyDiagnostic,
+		});
+		for (const secret of ["cache-A-secret", "cache-B-secret", "cachedContents"]) {
+			assert.equal(publicMetadata.includes(secret), false, `leaked ${secret}`);
+		}
 	}
 });
 

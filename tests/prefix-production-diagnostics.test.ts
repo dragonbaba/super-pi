@@ -186,6 +186,7 @@ test("non-prefix request body changes do not create false prefix drift", () => {
 		toolCount: 1,
 		cacheKeyHash: "cache-key-hash",
 		cachePolicyHash: "cache-policy-hash",
+		cacheBoundaryHash: "cache-boundary-hash",
 		prefixHash: "prefix-hash",
 		requestTransformOutputHash: "request-one",
 	};
@@ -219,6 +220,7 @@ test("effective manifests ignore intent-only context changes until an effective 
 		toolsHash: "fixed-tools",
 		toolCount: 1,
 		cachePolicyHash: "fixed-cache-policy",
+		cacheBoundaryHash: "fixed-cache-boundary",
 		prefixHash: "fixed-prefix",
 		requestTransformOutputHash: "request-one",
 	};
@@ -242,6 +244,7 @@ test("effective tool-set changes are activation drift even when intent tools sta
 		toolsHash: "read-tools",
 		toolCount: 1,
 		cachePolicyHash: "fixed-cache-policy",
+		cacheBoundaryHash: "fixed-cache-boundary",
 		prefixHash: "read-prefix",
 		requestTransformOutputHash: "read-request",
 	};
@@ -275,6 +278,7 @@ test("effective cache-key drift keeps its dedicated reason ahead of aggregate pr
 		toolCount: 1,
 		cacheKeyHash: "cache-a",
 		cachePolicyHash: "fixed-cache-policy",
+		cacheBoundaryHash: "fixed-cache-boundary",
 		prefixHash: "prefix-a",
 		requestTransformOutputHash: "request-a",
 	};
@@ -306,6 +310,7 @@ test("effective short-to-long cache policy drift survives no-op filtering", () =
 		toolsHash: "fixed-tools",
 		toolCount: 1,
 		cachePolicyHash: "resolved-short-policy",
+		cacheBoundaryHash: "fixed-cache-boundary",
 		prefixHash: "short-prefix",
 		requestTransformOutputHash: "short-transform-prefix",
 	};
@@ -334,6 +339,7 @@ test("configured cache retention changes do not drift when effective policy is u
 		toolsHash: "fixed-tools",
 		toolCount: 1,
 		cachePolicyHash: "same-provider-policy",
+		cacheBoundaryHash: "fixed-cache-boundary",
 		prefixHash: "same-prefix",
 		requestTransformOutputHash: "same-transform-prefix",
 	};

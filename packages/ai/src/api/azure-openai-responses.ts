@@ -191,6 +191,7 @@ export function observeAzureOpenAIResponsesEffectiveDispatch(
 			promptCacheRetention: params.prompt_cache_retention ?? null,
 			promptCacheOptions: cacheParams.prompt_cache_options ?? null,
 		},
+		cacheBoundary: null,
 	});
 }
 

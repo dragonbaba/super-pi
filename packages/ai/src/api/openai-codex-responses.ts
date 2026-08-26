@@ -930,6 +930,7 @@ interface SuccessfulDispatchCommitment {
     bodyWithoutInputHash: string;
     promptCacheKeyHash: string;
     cachePolicyHash: string;
+    cacheBoundaryHash: string;
     serviceTierHash: string;
     headersHash: string;
     actualBodyHash: string;
@@ -1611,6 +1612,7 @@ function createSuccessfulDispatchCommitment(
         promptCacheRetention: actualBody.prompt_cache_retention ?? null,
         promptCacheOptions: actualBody.prompt_cache_options ?? null,
     });
+    const cacheBoundaryHash = sha256Json(null);
     const serviceTierHash = sha256Json(actualBody.service_tier ?? null);
     const headersHash = sha256Json(normalizedHeadersForCommitment(headers));
     const actualBodyHash = sha256Json(actualBody);
@@ -1629,6 +1631,7 @@ function createSuccessfulDispatchCommitment(
         !bodyWithoutInputHash ||
         !promptCacheKeyHash ||
         !cachePolicyHash ||
+        !cacheBoundaryHash ||
         !serviceTierHash ||
         !headersHash ||
         !actualBodyHash ||
@@ -1647,6 +1650,7 @@ function createSuccessfulDispatchCommitment(
         bodyWithoutInputHash,
         promptCacheKeyHash,
         cachePolicyHash,
+        cacheBoundaryHash,
         serviceTierHash,
         headersHash,
         actualBodyHash,
@@ -1683,6 +1687,7 @@ function recordSuccessfulDispatch(
         toolCount: commitment.toolCount,
         cacheKeyHash: commitment.promptCacheKeyHash,
         cachePolicyHash: commitment.cachePolicyHash,
+        cacheBoundaryHash: commitment.cacheBoundaryHash,
         prefixHash: commitment.bodyWithoutInputHash,
         requestTransformOutputHash: commitment.actualBodyHash,
     };

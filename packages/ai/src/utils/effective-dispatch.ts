@@ -35,6 +35,33 @@ export interface EffectiveDispatchHashInput {
 	cacheKey?: unknown;
 	/** Provider-owned cache policy selected from the actual transformed wire request. */
 	cachePolicy: unknown;
+	/** Semantic cache breakpoint anchors selected from the actual transformed wire request. */
+	cacheBoundary: unknown;
+}
+
+function normalizeJsonLike(value: unknown): unknown {
+	if (Array.isArray(value)) return value.map(normalizeJsonLike);
+	if (!value || typeof value !== "object") return value;
+	const normalized: Record<string, unknown> = {};
+	for (const key of Object.keys(value as Record<string, unknown>).sort()) {
+		normalized[key] = normalizeJsonLike((value as Record<string, unknown>)[key]);
+	}
+	return normalized;
+}
+
+/** Collapse marker instances into a stable set of policy values without retaining positions. */
+export function summarizeCacheMarkerPolicies(markers: readonly unknown[]): unknown {
+	const unique = new Map<string, unknown>();
+	for (const marker of markers) {
+		const normalized = normalizeJsonLike(marker);
+		const serialized = JSON.stringify(normalized);
+		if (serialized !== undefined) unique.set(serialized, normalized);
+	}
+	return {
+		enabled: unique.size > 0,
+		markers: [...unique.entries()].sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
+			.map(([, marker]) => marker),
+	};
 }
 
 /** Deliver metadata without allowing either synchronous throws or asynchronous rejections to escape. */
@@ -67,13 +94,15 @@ export function observeEffectiveDispatch<TApi extends Api>(
 		const toolOrderHash = sha256Json(input.orderedToolIdentifiers);
 		const toolIdentifierSetHash = sha256Json([...input.orderedToolIdentifiers].sort());
 		const cachePolicyHash = sha256Json(input.cachePolicy);
+		const cacheBoundaryHash = sha256Json(input.cacheBoundary);
 		if (
 			!instructionsHash ||
 			instructionsBytes === undefined ||
 			!toolsHash ||
 			!toolOrderHash ||
 			!toolIdentifierSetHash ||
-			!cachePolicyHash
+			!cachePolicyHash ||
+			!cacheBoundaryHash
 		) return;
 		const cacheKeyHash = input.cacheKey === undefined ? undefined : sha256Json(input.cacheKey);
 		const prefixTransformOutput = {
@@ -83,6 +112,7 @@ export function observeEffectiveDispatch<TApi extends Api>(
 			toolsHash,
 			cacheKeyHash: cacheKeyHash ?? null,
 			cachePolicyHash,
+			cacheBoundaryHash,
 		};
 		const requestTransformOutputHash = sha256Json(prefixTransformOutput);
 		if (!requestTransformOutputHash) return;
@@ -98,6 +128,7 @@ export function observeEffectiveDispatch<TApi extends Api>(
 			toolCount: input.orderedToolDefinitions.length,
 			...(cacheKeyHash === undefined ? {} : { cacheKeyHash }),
 			cachePolicyHash,
+			cacheBoundaryHash,
 			prefixHash,
 			requestTransformOutputHash,
 		});

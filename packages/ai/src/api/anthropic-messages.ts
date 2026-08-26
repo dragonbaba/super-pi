@@ -31,7 +31,7 @@ import type {
 } from "../types.ts";
 import { splitDeferredTools } from "../utils/deferred-tools.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
-import { observeEffectiveDispatch } from "../utils/effective-dispatch.ts";
+import { observeEffectiveDispatch, summarizeCacheMarkerPolicies } from "../utils/effective-dispatch.ts";
 import { headersToRecord } from "../utils/headers.ts";
 import { parseJsonWithRepair, parseStreamingJson } from "../utils/json-parse.ts";
 import { getPiUserAgent } from "../utils/pi-user-agent.ts";
@@ -825,39 +825,55 @@ export function observeAnthropicEffectiveDispatch(
 	params: MessageCreateParamsStreaming,
 ): void {
 	const tools = params.tools ?? [];
+	const cache = extractAnthropicCacheMetadata(params);
 	observeEffectiveDispatch(options, model, {
 		transport: "sse",
 		previousResponseMode: "none",
 		instructionPrefix: params.system ?? null,
 		orderedToolDefinitions: tools,
 		orderedToolIdentifiers: tools.map((tool) => tool.name),
-		cachePolicy: extractAnthropicCachePolicy(params),
+		cachePolicy: cache.policy,
+		cacheBoundary: cache.boundary,
 	});
 }
 
-function extractAnthropicCachePolicy(params: MessageCreateParamsStreaming): unknown {
-	const system: unknown[] = [];
+function extractAnthropicCacheMetadata(params: MessageCreateParamsStreaming): { policy: unknown; boundary: unknown } {
+	const markers: unknown[] = [];
+	const anchors: string[] = [];
 	if (Array.isArray(params.system)) {
-		for (let index = 0; index < params.system.length; index++) {
-			const marker = cacheControlMarker(params.system[index]);
-			if (marker !== undefined) system.push({ index, marker });
+		for (const block of params.system) {
+			const marker = cacheControlMarker(block);
+			if (marker !== undefined) {
+				markers.push(marker);
+				anchors.push("system");
+			}
 		}
 	}
-	const messages: unknown[] = [];
 	for (let messageIndex = 0; messageIndex < params.messages.length; messageIndex++) {
-		const content = params.messages[messageIndex]?.content;
+		const message = params.messages[messageIndex];
+		const content = message?.content;
 		if (!Array.isArray(content)) continue;
 		for (let blockIndex = 0; blockIndex < content.length; blockIndex++) {
 			const marker = cacheControlMarker(content[blockIndex]);
-			if (marker !== undefined) messages.push({ messageIndex, blockIndex, marker });
+			if (marker === undefined) continue;
+			markers.push(marker);
+			anchors.push(
+				messageIndex === params.messages.length - 1 && message?.role === "user" && blockIndex === content.length - 1
+					? "last-user:last-cacheable-block"
+					: `message:${params.messages.length - 1 - messageIndex}:${content.length - 1 - blockIndex}:${message?.role ?? "unknown"}`,
+			);
 		}
 	}
-	const toolMarkers: unknown[] = [];
 	for (let index = 0; index < (params.tools?.length ?? 0); index++) {
 		const marker = cacheControlMarker(params.tools?.[index]);
-		if (marker !== undefined) toolMarkers.push({ index, marker });
+		if (marker === undefined) continue;
+		markers.push(marker);
+		anchors.push(index === (params.tools?.length ?? 0) - 1 ? "last-tool" : `tool:${(params.tools?.length ?? 0) - 1 - index}`);
 	}
-	return { system, messages, tools: toolMarkers };
+	return {
+		policy: summarizeCacheMarkerPolicies(markers),
+		boundary: [...new Set(anchors)].sort(),
+	};
 }
 
 function cacheControlMarker(value: unknown): unknown {

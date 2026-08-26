@@ -117,8 +117,10 @@ export interface EffectiveDispatchObservation {
 	toolsHash: string;
 	toolCount: number;
 	cacheKeyHash?: string;
-	/** Hash of provider-resolved cache retention/options/markers in the dispatched request. */
+	/** Hash of provider-resolved cache enablement, mode, retention, TTL, and options. */
 	cachePolicyHash: string;
+	/** Hash of semantic cache breakpoint anchors, kept separate from cache policy. */
+	cacheBoundaryHash: string;
 	prefixHash: string;
 	/** Hash of transformed prefix metadata only; generic adapters never serialize the full request body. */
 	requestTransformOutputHash: string;

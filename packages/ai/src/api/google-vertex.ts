@@ -376,13 +376,16 @@ export function observeGoogleVertexEffectiveDispatch(
 	params: GenerateContentParameters,
 ): void {
 	const effectiveTools = extractGoogleEffectiveTools(params.config?.tools ?? []);
+	const cachedContent = params.config?.cachedContent;
 	observeEffectiveDispatch(options, model, {
 		transport: "sse",
 		previousResponseMode: "none",
 		instructionPrefix: params.config?.systemInstruction ?? null,
 		orderedToolDefinitions: effectiveTools.definitions,
 		orderedToolIdentifiers: effectiveTools.identifiers,
-		cachePolicy: null,
+		cacheKey: cachedContent,
+		cachePolicy: { enabled: Boolean(cachedContent), mode: cachedContent ? "explicit" : "implicit" },
+		cacheBoundary: null,
 	});
 }
 

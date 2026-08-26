@@ -50,7 +50,7 @@ import type {
 import { appendAssistantMessageDiagnostic } from "../utils/diagnostics.ts";
 import { normalizeProviderError } from "../utils/error-body.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
-import { observeEffectiveDispatch } from "../utils/effective-dispatch.ts";
+import { observeEffectiveDispatch, summarizeCacheMarkerPolicies } from "../utils/effective-dispatch.ts";
 import { providerHeadersToRecord } from "../utils/headers.ts";
 import { parseStreamingJson } from "../utils/json-parse.ts";
 import { resolveHttpProxyUrlForTarget } from "../utils/node-http-proxy.ts";
@@ -390,29 +390,49 @@ export function observeBedrockEffectiveDispatch(
 	},
 ): void {
 	const tools = commandInput.toolConfig?.tools ?? [];
+	const cache = extractBedrockCacheMetadata(commandInput.system, commandInput.messages, tools);
 	observeEffectiveDispatch(options, model, {
 		transport: "sse",
 		previousResponseMode: "none",
 		instructionPrefix: commandInput.system ?? null,
 		orderedToolDefinitions: tools,
 		orderedToolIdentifiers: tools.map((tool) => "toolSpec" in tool ? (tool.toolSpec?.name ?? "unknown") : "unknown"),
-		cachePolicy: extractBedrockCachePolicy(commandInput.system, commandInput.messages, tools),
+		cachePolicy: cache.policy,
+		cacheBoundary: cache.boundary,
 	});
 }
 
-function extractBedrockCachePolicy(
+function extractBedrockCacheMetadata(
 	system: unknown,
 	messages: readonly Message[] | undefined,
 	tools: readonly BedrockTool[],
-): unknown {
-	const systemPoints = extractBedrockCachePoints(Array.isArray(system) ? system : []);
-	const messagePoints: unknown[] = [];
-	for (let messageIndex = 0; messageIndex < (messages?.length ?? 0); messageIndex++) {
-		const points = extractBedrockCachePoints(messages?.[messageIndex]?.content ?? []);
-		for (const point of points) messagePoints.push({ messageIndex, ...point });
+): { policy: unknown; boundary: unknown } {
+	const markers: unknown[] = [];
+	const anchors: string[] = [];
+	for (const point of extractBedrockCachePoints(Array.isArray(system) ? system : [])) {
+		markers.push(point.cachePoint);
+		anchors.push("system");
 	}
-	const toolPoints = extractBedrockCachePoints(tools);
-	return { system: systemPoints, messages: messagePoints, tools: toolPoints };
+	for (let messageIndex = 0; messageIndex < (messages?.length ?? 0); messageIndex++) {
+		const message = messages?.[messageIndex];
+		const content = message?.content ?? [];
+		for (const point of extractBedrockCachePoints(content)) {
+			markers.push(point.cachePoint);
+			anchors.push(
+				messageIndex === (messages?.length ?? 0) - 1 && message?.role === "user" && point.index === content.length - 1
+					? "last-user:last-cacheable-block"
+					: `message:${(messages?.length ?? 0) - 1 - messageIndex}:${content.length - 1 - point.index}:${message?.role ?? "unknown"}`,
+			);
+		}
+	}
+	for (const point of extractBedrockCachePoints(tools)) {
+		markers.push(point.cachePoint);
+		anchors.push(point.index === tools.length - 1 ? "last-tool" : `tool:${tools.length - 1 - point.index}`);
+	}
+	return {
+		policy: summarizeCacheMarkerPolicies(markers),
+		boundary: [...new Set(anchors)].sort(),
+	};
 }
 
 function extractBedrockCachePoints(values: readonly unknown[]): Array<{ index: number; cachePoint: unknown }> {
