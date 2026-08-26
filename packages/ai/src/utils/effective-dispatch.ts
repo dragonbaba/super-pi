@@ -1,24 +1,17 @@
-import type * as NodeCrypto from "node:crypto";
 import type {
 	Api,
 	EffectiveDispatchObservation,
 	Model,
 	ProviderRequestOptions,
 } from "../types.ts";
-
-type ProcessWithCryptoBuiltinModule = typeof process & {
-	getBuiltinModule?: (id: "node:crypto") => typeof NodeCrypto;
-};
+import { sha256Utf8 } from "./sha256.ts";
 
 const UTF8_ENCODER = new TextEncoder();
 
 function sha256Json(value: unknown): string | undefined {
-	if (typeof process === "undefined" || !(process.versions?.node || process.versions?.bun)) return undefined;
-	const crypto = (process as ProcessWithCryptoBuiltinModule).getBuiltinModule?.("node:crypto");
-	if (!crypto) return undefined;
 	const serialized = JSON.stringify(value);
 	if (serialized === undefined) return undefined;
-	return crypto.createHash("sha256").update(serialized).digest("hex");
+	return sha256Utf8(serialized);
 }
 
 function serializedBytes(value: unknown): number | undefined {
