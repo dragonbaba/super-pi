@@ -62,8 +62,8 @@ test("benchmark comparison rejects machine, runtime, terminal, and run-option mi
 	const baseline = sampleResult();
 	const mutations: Array<[string, BenchmarkResult]> = [
 		["Node version", { ...sampleResult(), node: "v99.0.0" }],
-		["Platform", { ...sampleResult(), platform: "linux" }],
-		["Architecture", { ...sampleResult(), arch: "arm64" }],
+		["Platform", { ...sampleResult(), platform: process.platform === "linux" ? "win32" : "linux" }],
+		["Architecture", { ...sampleResult(), arch: process.arch === "arm64" ? "x64" : "arm64" }],
 		["Measured run count", { ...sampleResult(), measuredRuns: 21 }],
 		["Environment cpu", { ...sampleResult(), environment: { ...sampleResult().environment, cpu: "other" } }],
 		["Environment terminalColumns", {
