@@ -67,6 +67,24 @@ const DEFAULT_MODEL = {
 	maxTokens: 0,
 } satisfies Model<any>;
 
+function deepFreezeSnapshot(value: unknown, seen = new WeakSet<object>()): void {
+	if ((typeof value !== "object" && typeof value !== "function") || value === null || seen.has(value)) return;
+	seen.add(value);
+	if (value instanceof Map) {
+		for (const [key, entry] of value) {
+			deepFreezeSnapshot(key, seen);
+			deepFreezeSnapshot(entry, seen);
+		}
+	} else if (value instanceof Set) {
+		for (const entry of value) deepFreezeSnapshot(entry, seen);
+	} else {
+		for (const key of Reflect.ownKeys(value)) deepFreezeSnapshot(Reflect.get(value, key), seen);
+	}
+	// Freezing non-empty typed-array views throws. structuredClone has already
+	// detached them from the producer, which is the required isolation boundary.
+	if (!ArrayBuffer.isView(value)) Object.freeze(value);
+}
+
 type MutableAgentState = Omit<AgentState, "isStreaming" | "streamingMessage" | "pendingToolCalls" | "errorMessage"> & {
 	isStreaming: boolean;
 	streamingMessage?: AgentMessage;
@@ -252,7 +270,7 @@ export class Agent {
 		this.eventInstrumentation = runtimeOptions.eventInstrumentation;
 		this.eventDelivery = new EventDeliveryDispatcher({
 			defaultMinIntervalMs: 16,
-			snapshotLatest: (event) => this.snapshotLatestEvent(event),
+			snapshotLatest: (event) => this.snapshotObserverEvent(event),
 			onDiagnostic: runtimeOptions.onEventDeliveryDiagnostic,
 		});
 	}
@@ -625,7 +643,7 @@ export class Agent {
 		const latestKey = this.getLatestEventKey(event);
 		if (latestKey !== undefined) {
 			if (this.eventDelivery.hasAwaitedListeners(event)) {
-				await this.eventDelivery.publishAwaited(this.snapshotLatestEvent(event));
+				await this.eventDelivery.publishAwaited(this.snapshotAwaitedEvent(event));
 			}
 			this.eventDelivery.publishLatest(latestKey, event);
 			return;
@@ -645,14 +663,20 @@ export class Agent {
 		return undefined;
 	}
 
-	private snapshotLatestEvent(event: AgentEvent): AgentEvent {
+	private snapshotAwaitedEvent(event: AgentEvent): AgentEvent {
 		if (event.type !== "message_update") return event;
-		this.eventInstrumentation?.onAssistantSnapshot?.();
 		const message = { ...event.message };
 		const assistantMessageEvent = {
 			...event.assistantMessageEvent,
 			partial: message as AssistantMessage,
 		} as AssistantMessageEvent;
 		return { ...event, message, assistantMessageEvent };
+	}
+
+	private snapshotObserverEvent(event: AgentEvent): AgentEvent {
+		if (event.type === "message_update") this.eventInstrumentation?.onAssistantSnapshot?.();
+		const snapshot = structuredClone(event);
+		deepFreezeSnapshot(snapshot);
+		return snapshot;
 	}
 }

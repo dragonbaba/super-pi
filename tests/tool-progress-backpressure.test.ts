@@ -4,7 +4,7 @@ import test from "node:test";
 import { setImmediate as nextTask } from "node:timers/promises";
 import type { AssistantMessage, AssistantMessageEvent } from "../packages/ai/src/types.ts";
 import { Agent } from "../packages/agent/src/agent.ts";
-import type { AgentToolUpdateCallback } from "../packages/agent/src/types.ts";
+import type { AgentEvent, AgentToolUpdateCallback } from "../packages/agent/src/types.ts";
 
 const EMPTY_USAGE = {
 	input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
@@ -13,11 +13,15 @@ const EMPTY_USAGE = {
 
 class ToolFixtureStream implements AsyncIterable<AssistantMessageEvent> {
 	private readonly withTool: boolean;
+	private readonly toolArguments: object;
 	private finalMessage: AssistantMessage | undefined;
-	constructor(withTool: boolean) { this.withTool = withTool; }
+	constructor(withTool: boolean, toolArguments: object = {}) {
+		this.withTool = withTool;
+		this.toolArguments = toolArguments;
+	}
 	async *[Symbol.asyncIterator](): AsyncIterator<AssistantMessageEvent> {
 		const content = this.withTool
-			? [{ type: "toolCall" as const, id: "tool-1", name: "progress", arguments: {} }]
+			? [{ type: "toolCall" as const, id: "tool-1", name: "progress", arguments: this.toolArguments }]
 			: [{ type: "text" as const, text: "done" }];
 		const message = {
 			role: "assistant" as const, content, api: "benchmark", provider: "benchmark", model: "benchmark",
@@ -182,6 +186,57 @@ test("awaited tool progress applies backpressure and preserves every legacy upda
 
 	assert.deepEqual(sequences, Array.from({ length: 100 }, (_, index) => index));
 	assert.equal(agent.eventDeliveryStats.pendingKeys, 0);
+});
+
+test("tool observers receive frozen args and partial-result snapshots isolated from later mutation", async () => {
+	let streamCalls = 0;
+	const toolArguments = { nested: { value: "before" } };
+	const partialResult = {
+		content: [{ type: "text" as const, text: "before" }],
+		details: { nested: { value: "before" } },
+	};
+	let markObserved = () => {};
+	const observed = new Promise<void>((resolve) => { markObserved = resolve; });
+	let captured: Extract<AgentEvent, { type: "tool_execution_update" }> | undefined;
+	const tool = {
+		name: "progress", label: "Progress", description: "snapshot fixture",
+		parameters: {
+			type: "object",
+			properties: { nested: { type: "object", properties: { value: { type: "string" } } } },
+			required: ["nested"],
+		},
+		execute: async (_id: string, _params: unknown, _signal?: AbortSignal, onUpdate?: AgentToolUpdateCallback) => {
+			onUpdate?.(partialResult);
+			await observed;
+			toolArguments.nested.value = "after";
+			partialResult.content[0].text = "after";
+			partialResult.details.nested.value = "after";
+			return { content: [{ type: "text", text: "done" }], details: {} };
+		},
+	};
+	const agent = new Agent({
+		initialState: { tools: [tool as never] },
+		streamFn: () => new ToolFixtureStream(streamCalls++ === 0, toolArguments) as never,
+	});
+	agent.subscribeObserver((event) => {
+		if (event.type !== "tool_execution_update" || captured) return;
+		captured = event;
+		markObserved();
+	}, { minIntervalMs: 0 });
+
+	await agent.prompt("snapshot fixture");
+	assert.ok(captured);
+	const snapshot = captured;
+	assert.equal(snapshot.args.nested.value, "before");
+	assert.equal(snapshot.partialResult.content[0].text, "before");
+	assert.equal(snapshot.partialResult.details.nested.value, "before");
+	assert.equal(Object.isFrozen(snapshot), true);
+	assert.equal(Object.isFrozen(snapshot.args), true);
+	assert.equal(Object.isFrozen(snapshot.args.nested), true);
+	assert.equal(Object.isFrozen(snapshot.partialResult), true);
+	assert.equal(Object.isFrozen(snapshot.partialResult.content), true);
+	assert.equal(Object.isFrozen(snapshot.partialResult.details.nested), true);
+	assert.throws(() => { snapshot.partialResult.details.nested.value = "observer mutation"; }, TypeError);
 });
 
 test("publish in the settled-before-cleanup microtask window restarts the drain", async () => {

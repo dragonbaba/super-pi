@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { AssistantMessage, AssistantMessageEvent } from "../packages/ai/src/types.ts";
 import { Agent } from "../packages/agent/src/agent.ts";
+import type { AgentEvent } from "../packages/agent/src/types.ts";
 
 const EMPTY_USAGE = {
 	input: 0,
@@ -87,6 +88,45 @@ class AbortFixtureStream implements AsyncIterable<AssistantMessageEvent> {
 	}
 }
 
+class MutableAssistantFixtureStream implements AsyncIterable<AssistantMessageEvent> {
+	private readonly providerGate: Promise<void>;
+	private readonly onWaiting: () => void;
+	private finalMessage: AssistantMessage | undefined;
+
+	constructor(providerGate: Promise<void>, onWaiting: () => void) {
+		this.providerGate = providerGate;
+		this.onWaiting = onWaiting;
+	}
+
+	async *[Symbol.asyncIterator](): AsyncIterator<AssistantMessageEvent> {
+		const text = { type: "text" as const, text: "before" };
+		const message = {
+			role: "assistant" as const,
+			content: [text],
+			api: "benchmark",
+			provider: "benchmark",
+			model: "benchmark",
+			usage: EMPTY_USAGE,
+			stopReason: "stop" as const,
+			timestamp: 0,
+		} as AssistantMessage;
+		yield { type: "start", partial: message };
+		yield { type: "text_start", contentIndex: 0, partial: message };
+		yield { type: "text_delta", contentIndex: 0, delta: "before", partial: message };
+		this.onWaiting();
+		await this.providerGate;
+		text.text = "after";
+		yield { type: "text_delta", contentIndex: 0, delta: "after", partial: message };
+		this.finalMessage = message;
+		yield { type: "done", reason: "stop", message };
+	}
+
+	async result(): Promise<AssistantMessage> {
+		if (!this.finalMessage) throw new Error("stream not complete");
+		return this.finalMessage;
+	}
+}
+
 test("observer delivery coalesces 100,000 assistant updates and preserves the final boundary", async () => {
 	let snapshots = 0;
 	const order: string[] = [];
@@ -116,6 +156,43 @@ test("legacy subscribe remains awaited and receives every assistant update", asy
 	agent.subscribe(async (event) => { if (event.type === "message_update") updates++; });
 	await agent.prompt("benchmark");
 	assert.equal(updates, 22);
+});
+
+test("assistant observers receive a deeply frozen flush-time snapshot isolated from provider mutation", async () => {
+	let releaseProvider = () => {};
+	const providerGate = new Promise<void>((resolve) => { releaseProvider = resolve; });
+	let markProviderWaiting = () => {};
+	const providerWaiting = new Promise<void>((resolve) => { markProviderWaiting = resolve; });
+	let markObserved = () => {};
+	const observed = new Promise<void>((resolve) => { markObserved = resolve; });
+	let captured: Extract<AgentEvent, { type: "message_update" }> | undefined;
+	const agent = new Agent({
+		streamFn: () => new MutableAssistantFixtureStream(providerGate, markProviderWaiting) as never,
+	});
+	agent.subscribeObserver((event) => {
+		if (event.type !== "message_update" || captured) return;
+		captured = event;
+		markObserved();
+	}, { minIntervalMs: 0 });
+
+	const prompt = agent.prompt("snapshot fixture");
+	await providerWaiting;
+	await observed;
+	assert.ok(captured);
+	const capturedContent = (captured.message as AssistantMessage).content[0];
+	assert.equal(capturedContent?.type === "text" ? capturedContent.text : undefined, "before");
+	assert.equal(Object.isFrozen(captured), true);
+	assert.equal(Object.isFrozen(captured.message), true);
+	assert.equal(Object.isFrozen((captured.message as AssistantMessage).content), true);
+	assert.equal(Object.isFrozen(capturedContent), true);
+	assert.equal(Object.isFrozen(captured.assistantMessageEvent), true);
+	assert.throws(() => {
+		if (capturedContent?.type === "text") capturedContent.text = "observer mutation";
+	}, TypeError);
+
+	releaseProvider();
+	await prompt;
+	assert.equal(capturedContent?.type === "text" ? capturedContent.text : undefined, "before");
 });
 
 test("a slow observer does not stop provider consumption but final settlement awaits it", async () => {
