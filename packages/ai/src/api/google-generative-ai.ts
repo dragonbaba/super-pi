@@ -5,6 +5,7 @@ import {
 	type ThinkingConfig,
 } from "@google/genai";
 import { calculateCost, clampThinkingLevel } from "../models.ts";
+import { getModelCapabilities } from "../model-capabilities.ts";
 import type {
 	Api,
 	AssistantMessage,
@@ -410,6 +411,7 @@ function buildParams(
 	options: GoogleOptions = {},
 ): GenerateContentParameters {
 	const contents = convertMessages(model, context);
+	const capabilities = getModelCapabilities(model);
 
 	const generationConfig: GenerateContentConfig = {};
 	if (options.temperature !== undefined) {
@@ -419,13 +421,14 @@ function buildParams(
 		generationConfig.maxOutputTokens = options.maxTokens;
 	}
 
-	const functionCallingMode = context.tools?.length
+	const functionCallingMode = capabilities.toolCalling && context.tools?.length
 		? resolveGoogleFunctionCallingMode(context.tools, options.toolChoice, supportsGoogleStrictToolSampling(model.id))
 		: undefined;
 	const config: GenerateContentConfig = {
 		...(Object.keys(generationConfig).length > 0 && generationConfig),
 		...(context.systemPrompt && { systemInstruction: sanitizeSurrogates(context.systemPrompt) }),
-		...(context.tools &&
+		...(capabilities.toolCalling &&
+			context.tools &&
 			context.tools.length > 0 && {
 				tools: convertTools(context.tools, false, supportsGoogleStrictToolSampling(model.id)),
 			}),

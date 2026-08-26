@@ -1,6 +1,7 @@
 import OpenAI from "openai";
 import type { ResponseCreateParamsStreaming } from "openai/resources/responses/responses.js";
 import { clampThinkingLevel } from "../models.ts";
+import { getModelCapabilities, modelSupportsPromptCache } from "../model-capabilities.ts";
 import type {
 	Api,
 	AssistantMessage,
@@ -130,7 +131,9 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 		try {
 			// Create OpenAI client
 			const apiKey = getClientApiKey(model.provider, options?.apiKey, options?.headers);
-			const cacheRetention = resolveCacheRetention(options?.cacheRetention, options?.env);
+			const cacheRetention = modelSupportsPromptCache(model)
+				? resolveCacheRetention(options?.cacheRetention, options?.env)
+				: "none";
 			const cacheSessionId = cacheRetention === "none" ? undefined : options?.sessionId;
 			const compat = getCompat(model);
 			const grammarToolInputProperties = createGrammarToolInputProperties(
@@ -297,17 +300,22 @@ function buildParams(
 		compat.supportsOpenAIGrammarTools,
 	),
 ) {
-	const toolPlacement = splitDeferredTools(context, compat.supportsToolSearch);
-	const messages = convertResponsesMessages(model, context, OPENAI_TOOL_CALL_PROVIDERS, {
+	const capabilities = getModelCapabilities(model);
+	const supportsStrictMode = compat.supportsStrictMode && capabilities.strictToolSchema;
+	const wireContext = capabilities.toolCalling ? context : { ...context, tools: undefined };
+	const toolPlacement = splitDeferredTools(wireContext, compat.supportsToolSearch && capabilities.deferredTools);
+	const messages = convertResponsesMessages(model, wireContext, OPENAI_TOOL_CALL_PROVIDERS, {
 		grammarToolInputProperties,
 		deferredTools: toolPlacement.deferred,
 		toolOptions: {
-			supportsStrictMode: compat.supportsStrictMode,
+			supportsStrictMode,
 			supportsOpenAIGrammarTools: compat.supportsOpenAIGrammarTools,
 		},
 	});
 
-	const cacheRetention = resolveCacheRetention(options?.cacheRetention, options?.env);
+	const cacheRetention = modelSupportsPromptCache(model)
+		? resolveCacheRetention(options?.cacheRetention, options?.env)
+		: "none";
 	const disableImplicitPromptCache = cacheRetention === "none" && compat.supportsExplicitPromptCacheMode;
 	const params: ResponseCreateParamsStreaming & { prompt_cache_options?: { mode: "explicit" } } = {
 		model: model.id,
@@ -333,12 +341,12 @@ function buildParams(
 
 	if (toolPlacement.immediate.length > 0) {
 		params.tools = convertResponsesTools(toolPlacement.immediate, {
-			supportsStrictMode: compat.supportsStrictMode,
+			supportsStrictMode,
 			supportsOpenAIGrammarTools: compat.supportsOpenAIGrammarTools,
 		});
 	}
 
-	if (options?.toolChoice !== undefined) {
+	if (capabilities.toolCalling && options?.toolChoice !== undefined) {
 		params.tool_choice = options.toolChoice;
 	}
 

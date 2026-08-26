@@ -12,6 +12,7 @@ import type {
 	ChatCompletionToolMessageParam,
 } from "openai/resources/chat/completions.js";
 import { calculateCost, clampThinkingLevel } from "../models.ts";
+import { getModelCapabilities, modelSupportsPromptCache } from "../model-capabilities.ts";
 import type {
 	AssistantMessage,
 	CacheRetention,
@@ -233,7 +234,9 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 				context.tools,
 				compat.supportsOpenAIGrammarTools,
 			);
-			const cacheRetention = resolveCacheRetention(options?.cacheRetention, options?.env);
+			const cacheRetention = modelSupportsPromptCache(model)
+				? resolveCacheRetention(options?.cacheRetention, options?.env)
+				: "none";
 			const cacheSessionId = cacheRetention === "none" ? undefined : options?.sessionId;
 			const client = createClient(model, context, apiKey, options?.headers, options?.fetch, cacheSessionId, compat);
 			let params = buildParams(model, context, options, compat, cacheRetention, grammarToolInputProperties);
@@ -688,10 +691,21 @@ export function observeOpenAIChatEffectiveDispatch(
 	model: Model<"openai-completions">,
 	params: OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming,
 ): void {
-	const instructionPrefix = params.messages.filter(
-		(message) => message.role === "system" || message.role === "developer",
-	).map(cacheNeutralOpenAIChatMessage);
-	const tools = params.tools ?? [];
+	const instructionPrefix: unknown[] = [];
+	const embeddedTools: OpenAI.Chat.Completions.ChatCompletionTool[] = [];
+	for (const message of params.messages) {
+		if (message.role !== "system" && message.role !== "developer") continue;
+		const record = message as unknown as Record<string, unknown>;
+		const messageTools = Array.isArray(record.tools)
+			? (record.tools as OpenAI.Chat.Completions.ChatCompletionTool[])
+			: undefined;
+		if (messageTools) embeddedTools.push(...messageTools);
+		const neutral = cacheNeutralOpenAIChatMessage(message) as Record<string, unknown>;
+		const { tools: _deferredTools, ...instruction } = neutral;
+		// Kimi's deferred-tool carrier is a system message with no instruction content.
+		if (Object.keys(instruction).some((key) => key !== "role")) instructionPrefix.push(instruction);
+	}
+	const tools = [...(params.tools ?? []), ...embeddedTools];
 	const neutralTools = tools.map(removeOpenAIChatCacheControl);
 	const cacheParams = params as typeof params & {
 		prompt_cache_options?: unknown;
@@ -806,7 +820,15 @@ function buildParams(
 		compat.supportsOpenAIGrammarTools,
 	),
 ) {
-	const messages = convertMessages(model, context, compat, { grammarToolInputProperties });
+	const capabilities = getModelCapabilities(model);
+	compat = {
+		...compat,
+		supportsStrictMode: compat.supportsStrictMode && capabilities.strictToolSchema,
+		deferredToolsMode: capabilities.deferredTools ? compat.deferredToolsMode : undefined,
+	};
+	if (!modelSupportsPromptCache(model)) cacheRetention = "none";
+	const wireContext = capabilities.toolCalling ? context : { ...context, tools: undefined };
+	const messages = convertMessages(model, wireContext, compat, { grammarToolInputProperties });
 	const cacheControl = getCompatCacheControl(compat, cacheRetention);
 
 	const params: OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming = {
@@ -842,8 +864,8 @@ function buildParams(
 	}
 
 	const deferredToolNames =
-		compat.deferredToolsMode === "kimi" ? getDeferredToolNames(context.messages) : new Set<string>();
-	const activeTools = context.tools?.filter((tool) => !deferredToolNames.has(tool.name));
+		compat.deferredToolsMode === "kimi" ? getDeferredToolNames(wireContext.messages) : new Set<string>();
+	const activeTools = wireContext.tools?.filter((tool) => !deferredToolNames.has(tool.name));
 	if (activeTools && activeTools.length > 0) {
 		params.tools = convertTools(activeTools, compat);
 		if (compat.zaiToolStream) {

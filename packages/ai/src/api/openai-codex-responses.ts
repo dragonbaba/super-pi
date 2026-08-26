@@ -21,6 +21,7 @@ function loadNodeOs(): typeof NodeOs | null {
 const _os: typeof NodeOs | null = loadNodeOs();
 
 import { clampThinkingLevel } from "../models.ts";
+import { getModelCapabilities, modelSupportsPromptCache } from "../model-capabilities.ts";
 import { registerSessionResourceCleanup } from "../session-resources.ts";
 import type {
 	Api,
@@ -380,7 +381,8 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
             }
             const accountId = extractAccountId(apiKey);
             const grammarToolInputProperties = createGrammarToolInputProperties(context.tools, model.compat?.supportsOpenAIGrammarTools ?? false);
-            const cacheSessionId = options?.cacheRetention === "none" ? undefined : options?.sessionId;
+			const cacheSessionId =
+				options?.cacheRetention === "none" || !modelSupportsPromptCache(model) ? undefined : options?.sessionId;
             const codexSessionId = clampOpenAIPromptCacheKey(cacheSessionId);
             let body = buildOpenAICodexRequestBody(model, context, options, codexSessionId, grammarToolInputProperties);
             const nextBody = await options?.onPayload?.(body, model);
@@ -388,16 +390,18 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
                 body = nextBody as OpenAICodexRequestBody;
             }
             const requestServiceTier = body.service_tier;
+			const capabilities = getModelCapabilities(model);
             const websocketRequestId = codexSessionId || uuidv7();
             const routingHint = buildCodexRoutingHint(body.model, requestServiceTier);
-            const remoteCompactionEnabled = isOpenAICodexRemoteCompactionCapabilityEnabled(codexSessionId);
+			const remoteCompactionEnabled =
+				capabilities.remoteCompaction && isOpenAICodexRemoteCompactionCapabilityEnabled(codexSessionId);
             const sseHeaders = buildSSEHeaders(model.headers, options?.headers, accountId, apiKey, routingHint, codexSessionId, remoteCompactionEnabled);
             const websocketHeaders = buildWebSocketHeaders(model.headers, options?.headers, accountId, apiKey, routingHint, websocketRequestId, remoteCompactionEnabled);
             let bodyJson;
             const getBodyJson = () => (bodyJson ??= JSON.stringify(body));
             const httpTimeoutMs = normalizeTimeoutMs(options?.timeoutMs);
             const websocketConnectTimeoutMs = normalizeTimeoutMs(options?.websocketConnectTimeoutMs);
-            const transport = options?.transport || "auto";
+			const transport = capabilities.websocketContinuation ? options?.transport || "auto" : "sse";
             let startEmitted = false;
             const websocketDisabledForSession = transport !== "sse" && isWebSocketSseFallbackActive(cacheSessionId);
             if (websocketDisabledForSession) {
@@ -598,10 +602,15 @@ export function buildOpenAICodexRequestBody(
     cacheSessionId: string | undefined,
     grammarToolInputProperties: ReadonlyMap<string, string> = createGrammarToolInputProperties(context.tools, model.compat?.supportsOpenAIGrammarTools ?? false),
 ): OpenAICodexRequestBody {
-    const supportsStrictMode = model.compat?.supportsStrictMode ?? true;
+	const capabilities = getModelCapabilities(model);
+    const supportsStrictMode = (model.compat?.supportsStrictMode ?? true) && capabilities.strictToolSchema;
     const supportsOpenAIGrammarTools = model.compat?.supportsOpenAIGrammarTools ?? false;
-    const toolPlacement = splitDeferredTools(context, model.compat?.supportsToolSearch ?? false);
-    const messages = convertResponsesMessages(model, context, CODEX_TOOL_CALL_PROVIDERS, {
+	const wireContext = capabilities.toolCalling ? context : { ...context, tools: undefined };
+	const toolPlacement = splitDeferredTools(
+		wireContext,
+		(model.compat?.supportsToolSearch ?? false) && capabilities.deferredTools,
+	);
+    const messages = convertResponsesMessages(model, wireContext, CODEX_TOOL_CALL_PROVIDERS, {
         includeSystemPrompt: false,
         grammarToolInputProperties,
         deferredTools: toolPlacement.deferred,
@@ -618,10 +627,10 @@ export function buildOpenAICodexRequestBody(
         instructions: context.systemPrompt || "You are a helpful assistant.",
         input: messages,
         text: { verbosity: options?.textVerbosity || "low" },
-        include: ["reasoning.encrypted_content"],
-        prompt_cache_key: cacheSessionId,
-        tool_choice: options?.toolChoice ?? "auto",
-        parallel_tool_calls: true,
+		...(model.reasoning ? { include: ["reasoning.encrypted_content"] } : {}),
+		prompt_cache_key: modelSupportsPromptCache(model) ? cacheSessionId : undefined,
+		...(capabilities.toolCalling ? { tool_choice: options?.toolChoice ?? "auto" } : {}),
+		parallel_tool_calls: capabilities.parallelTools,
     };
     if (options?.temperature !== undefined) {
         body.temperature = options.temperature;
@@ -636,7 +645,7 @@ export function buildOpenAICodexRequestBody(
             supportsOpenAIGrammarTools,
         });
     }
-    if (options?.reasoningEffort !== undefined) {
+	if (model.reasoning && options?.reasoningEffort !== undefined) {
         const effort = options.reasoningEffort === "none"
             ? (model.thinkingLevelMap?.off ?? "none")
             : (model.thinkingLevelMap?.[options.reasoningEffort] ?? options.reasoningEffort);

@@ -8,6 +8,7 @@ import type {
 	RefusalStopDetails,
 } from "@anthropic-ai/sdk/resources/messages.js";
 import { calculateCost } from "../models.ts";
+import { getModelCapabilities, modelSupportsPromptCache } from "../model-capabilities.ts";
 import type {
 	AnthropicMessagesCompat,
 	Api,
@@ -63,7 +64,7 @@ function getCacheControl(
 	cacheRetention?: CacheRetention,
 	env?: ProviderEnv,
 ): { retention: CacheRetention; cacheControl?: CacheControlEphemeral } {
-	const retention = resolveCacheRetention(cacheRetention, env);
+	const retention = modelSupportsPromptCache(model) ? resolveCacheRetention(cacheRetention, env) : "none";
 	if (retention === "none") {
 		return { retention };
 	}
@@ -536,7 +537,9 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 					});
 				}
 
-				const cacheRetention = resolveCacheRetention(options?.cacheRetention, options?.env);
+				const cacheRetention = modelSupportsPromptCache(model)
+					? resolveCacheRetention(options?.cacheRetention, options?.env)
+					: "none";
 				const cacheSessionId = cacheRetention === "none" ? undefined : options?.sessionId;
 
 				const created = createClient(
@@ -1046,11 +1049,13 @@ function buildParams(
 ): MessageCreateParamsStreaming {
 	const { cacheControl } = getCacheControl(model, options?.cacheRetention, options?.env);
 	const compat = getAnthropicCompat(model);
+	const capabilities = getModelCapabilities(model);
 	const transformedMessages = transformMessages(context.messages, model, normalizeToolCallId);
+	const wireContext = capabilities.toolCalling ? context : { ...context, tools: undefined };
 	const normalizeToolName = isOAuthToken ? toClaudeCodeName : (name: string) => name;
 	const toolPlacement = splitDeferredTools(
-		{ ...context, messages: transformedMessages },
-		compat.supportsToolReferences,
+		{ ...wireContext, messages: transformedMessages },
+		compat.supportsToolReferences && capabilities.deferredTools,
 		normalizeToolName,
 	);
 	let immediateTools = toolPlacement.immediate;
@@ -1112,14 +1117,14 @@ function buildParams(
 				immediateTools,
 				isOAuthToken,
 				compat.supportsEagerToolInputStreaming,
-				compat.supportsStrictTools,
+				compat.supportsStrictTools && capabilities.strictToolSchema,
 				compat.supportsCacheControlOnTools ? cacheControl : undefined,
 			),
 			...convertTools(
 				deferredTools,
 				isOAuthToken,
 				compat.supportsEagerToolInputStreaming,
-				compat.supportsStrictTools,
+				compat.supportsStrictTools && capabilities.strictToolSchema,
 				undefined,
 				true,
 			),

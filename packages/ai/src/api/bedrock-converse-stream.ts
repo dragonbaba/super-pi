@@ -27,6 +27,7 @@ import type { BuildMiddleware, DocumentType, MetadataBearer } from "@smithy/type
 import { HttpProxyAgent } from "http-proxy-agent";
 import { HttpsProxyAgent } from "https-proxy-agent";
 import { calculateCost } from "../models.ts";
+import { getModelCapabilities, modelSupportsPromptCache } from "../model-capabilities.ts";
 import type {
 	Api,
 	AssistantMessage,
@@ -231,8 +232,11 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 			if (customHeaders) {
 				addCustomHeadersMiddleware(client, customHeaders);
 			}
-			const cacheRetention = resolveCacheRetention(options.cacheRetention, options.env);
+			const cacheRetention = modelSupportsPromptCache(model)
+				? resolveCacheRetention(options.cacheRetention, options.env)
+				: "none";
 			const inferenceMaxTokens = options.maxTokens ?? (isAnthropicClaudeModel(model) ? model.maxTokens : undefined);
+			const capabilities = getModelCapabilities(model);
 			let commandInput = {
 				modelId: model.id,
 				messages: convertMessages(context, model, cacheRetention, options.env),
@@ -241,7 +245,11 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 					...(inferenceMaxTokens !== undefined && { maxTokens: inferenceMaxTokens }),
 					...(options.temperature !== undefined && { temperature: options.temperature }),
 				},
-				toolConfig: convertToolConfig(context.tools, options.toolChoice, model.compat?.supportsStrictMode ?? false),
+				toolConfig: convertToolConfig(
+					capabilities.toolCalling ? context.tools : undefined,
+					options.toolChoice,
+					(model.compat?.supportsStrictMode ?? false) && capabilities.strictToolSchema,
+				),
 				additionalModelRequestFields: buildAdditionalModelRequestFields(model, options),
 				...(options.requestMetadata !== undefined && { requestMetadata: options.requestMetadata }),
 			};
@@ -837,6 +845,7 @@ function isAnthropicClaudeModel(model: Model<"bedrock-converse-stream">): boolea
  * Amazon Nova models have automatic caching and don't need explicit cache points.
  */
 function supportsPromptCaching(model: Model<"bedrock-converse-stream">, env?: ProviderEnv): boolean {
+	if (!modelSupportsPromptCache(model)) return false;
 	const candidates = getModelMatchCandidates(model.id, model.name);
 
 	const hasClaudeRef = candidates.some((s) => s.includes("claude"));

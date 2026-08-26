@@ -1,6 +1,7 @@
 import { AzureOpenAI } from "openai";
 import type { ResponseCreateParamsStreaming } from "openai/resources/responses/responses.js";
 import { clampThinkingLevel } from "../models.ts";
+import { getModelCapabilities, modelSupportsPromptCache } from "../model-capabilities.ts";
 import type {
 	Api,
 	AssistantMessage,
@@ -317,7 +318,9 @@ function buildParams(
 		model.compat?.supportsOpenAIGrammarTools ?? false,
 	),
 ) {
-	const messages = convertResponsesMessages(model, context, AZURE_TOOL_CALL_PROVIDERS, {
+	const capabilities = getModelCapabilities(model);
+	const wireContext = capabilities.toolCalling ? context : { ...context, tools: undefined };
+	const messages = convertResponsesMessages(model, wireContext, AZURE_TOOL_CALL_PROVIDERS, {
 		grammarToolInputProperties,
 	});
 
@@ -325,7 +328,7 @@ function buildParams(
 		model: deploymentName,
 		input: messages,
 		stream: true,
-		prompt_cache_key: clampOpenAIPromptCacheKey(options?.sessionId),
+		prompt_cache_key: modelSupportsPromptCache(model) ? clampOpenAIPromptCacheKey(options?.sessionId) : undefined,
 		store: false,
 	};
 
@@ -337,13 +340,14 @@ function buildParams(
 		params.temperature = options?.temperature;
 	}
 
-	if (context.tools && context.tools.length > 0) {
-		params.tools = convertResponsesTools(context.tools, {
-			supportsStrictMode: model.compat?.supportsStrictMode ?? true,
+	if (wireContext.tools && wireContext.tools.length > 0) {
+		params.tools = convertResponsesTools(wireContext.tools, {
+			supportsStrictMode:
+				(model.compat?.supportsStrictMode ?? true) && capabilities.strictToolSchema,
 			supportsOpenAIGrammarTools: model.compat?.supportsOpenAIGrammarTools ?? false,
 		});
 	}
-	if (options?.toolChoice !== undefined) {
+	if (capabilities.toolCalling && options?.toolChoice !== undefined) {
 		params.tool_choice = options.toolChoice;
 	}
 

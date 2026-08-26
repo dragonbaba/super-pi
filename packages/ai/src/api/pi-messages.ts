@@ -22,6 +22,7 @@ import type {
 	ThinkingLevel,
 	ToolCall,
 } from "../types.ts";
+import { getModelCapabilities, modelSupportsPromptCache } from "../model-capabilities.ts";
 import { appendAssistantMessageDiagnostic, createAssistantMessageDiagnostic } from "../utils/diagnostics.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { observeEffectiveDispatch } from "../utils/effective-dispatch.ts";
@@ -372,16 +373,20 @@ export const stream: StreamFunction<"pi-messages", PiMessagesOptions> = (
 				url.searchParams.set("debug", "1");
 			}
 
+			const capabilities = getModelCapabilities(model);
+			const wireContext = capabilities.toolCalling ? context : { ...context, tools: undefined };
 			let payload: unknown = {
 				model: model.id,
-				context,
+				context: wireContext,
 				options: {
 					temperature: options?.temperature,
 					maxTokens: options?.maxTokens,
-					reasoning: options?.reasoning,
-					cacheRetention: resolveCacheRetention(options?.cacheRetention, options?.env),
+					reasoning: model.reasoning ? options?.reasoning : undefined,
+					cacheRetention: modelSupportsPromptCache(model)
+						? resolveCacheRetention(options?.cacheRetention, options?.env)
+						: "none",
 					sessionId: options?.sessionId,
-					toolChoice: options?.toolChoice,
+					toolChoice: capabilities.toolCalling ? options?.toolChoice : undefined,
 				},
 			};
 			const nextPayload = await options?.onPayload?.(payload, model);

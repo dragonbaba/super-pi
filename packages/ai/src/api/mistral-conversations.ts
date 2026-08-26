@@ -1,4 +1,5 @@
 import { calculateCost, clampThinkingLevel } from "../models.ts";
+import { getModelCapabilities, modelSupportsPromptCache } from "../model-capabilities.ts";
 import type {
 	AssistantMessage,
 	Context,
@@ -463,7 +464,7 @@ function buildMistralHeaders(model: Model<"mistral-conversations">, apiKey: stri
 
 	const hasExplicitAffinity =
 		hasMistralHeaderOverride(model.headers, "x-affinity") || hasMistralHeaderOverride(options?.headers, "x-affinity");
-	if (shouldUsePromptCaching(options) && !hasExplicitAffinity) {
+	if (shouldUsePromptCaching(model, options) && !hasExplicitAffinity) {
 		headers.set("x-affinity", options.sessionId);
 	}
 
@@ -692,19 +693,20 @@ function buildChatPayload(
 	messages: Message[],
 	options?: MistralOptions,
 ): MistralChatPayload {
+	const capabilities = getModelCapabilities(model);
 	const payload: MistralChatPayload = {
 		model: model.id,
 		stream: true,
 		messages: toChatMessages(messages, model.input.includes("image")),
 	};
 
-	if (context.tools?.length) payload.tools = toFunctionTools(context.tools);
+	if (capabilities.toolCalling && context.tools?.length) payload.tools = toFunctionTools(context.tools);
 	if (options?.temperature !== undefined) payload.temperature = options.temperature;
 	if (options?.maxTokens !== undefined) payload.maxTokens = options.maxTokens;
-	if (options?.toolChoice) payload.toolChoice = mapToolChoice(options.toolChoice);
+	if (capabilities.toolCalling && options?.toolChoice) payload.toolChoice = mapToolChoice(options.toolChoice);
 	if (options?.promptMode) payload.promptMode = options.promptMode;
-	if (options?.reasoningEffort) payload.reasoningEffort = options.reasoningEffort;
-	if (shouldUsePromptCaching(options)) payload.promptCacheKey = options.sessionId;
+	if (model.reasoning && options?.reasoningEffort) payload.reasoningEffort = options.reasoningEffort;
+	if (shouldUsePromptCaching(model, options)) payload.promptCacheKey = options.sessionId;
 
 	if (context.systemPrompt) {
 		payload.messages.unshift({
@@ -716,8 +718,11 @@ function buildChatPayload(
 	return payload;
 }
 
-function shouldUsePromptCaching(options?: MistralOptions): options is MistralOptions & { sessionId: string } {
-	return options?.cacheRetention !== "none" && !!options?.sessionId;
+function shouldUsePromptCaching(
+	model: Model<"mistral-conversations">,
+	options?: MistralOptions,
+): options is MistralOptions & { sessionId: string } {
+	return modelSupportsPromptCache(model) && options?.cacheRetention !== "none" && !!options?.sessionId;
 }
 
 function getMistralCachedPromptTokens(usage: unknown, promptTokens: number): number {
