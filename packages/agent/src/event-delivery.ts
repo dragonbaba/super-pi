@@ -219,11 +219,11 @@ export class EventDeliveryDispatcher<E, K> {
 	}
 
 	private async flushAvailable(force: boolean, onlyKey?: K): Promise<void> {
+		if (this.disposed || !this.hasPending(onlyKey)) return;
 		this.cancelScheduledFlush();
-		if (this.disposed || this.pendingLatest.size === 0) return;
 		if (this.flushPromise) {
 			await this.flushPromise;
-			if (!this.disposed && this.pendingLatest.size > 0) await this.flushAvailable(force, onlyKey);
+			if (!this.disposed && this.hasPending(onlyKey)) await this.flushAvailable(force, onlyKey);
 			return;
 		}
 
@@ -234,10 +234,14 @@ export class EventDeliveryDispatcher<E, K> {
 		} finally {
 			if (this.flushPromise === flush) this.flushPromise = undefined;
 		}
-		if (!this.disposed && this.pendingLatest.size > 0) {
-			if (force) await this.flushAvailable(true, onlyKey);
-			else this.scheduleFlush();
+		if (!this.disposed) {
+			if (force && this.hasPending(onlyKey)) await this.flushAvailable(true, onlyKey);
+			if (this.pendingLatest.size > 0) this.scheduleFlush();
 		}
+	}
+
+	private hasPending(onlyKey?: K): boolean {
+		return onlyKey === undefined ? this.pendingLatest.size > 0 : this.pendingLatest.has(onlyKey);
 	}
 
 	private async runFlush(force: boolean, onlyKey?: K): Promise<void> {

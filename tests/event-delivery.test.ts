@@ -87,3 +87,51 @@ test("reentrant observers retain the newer latest value without deadlock", async
 	assert.deepEqual(observed, [1, 2]);
 	assert.equal(dispatcher.stats.pendingKeys, 0);
 });
+
+test("flushLatest only drains its requested key and reschedules other pending keys", async () => {
+	const { dispatcher, scheduler } = createDispatcher();
+	const observed: number[] = [];
+	dispatcher.subscribe((event) => { observed.push(event.sequence); }, { delivery: "latest" });
+	dispatcher.publishLatest("first", { type: "update", sequence: 1 });
+	dispatcher.publishLatest("second", { type: "update", sequence: 2 });
+
+	await dispatcher.flushLatest("first");
+	assert.deepEqual(observed, [1]);
+	assert.equal(dispatcher.stats.pendingKeys, 1);
+	assert.equal(scheduler.pendingTasks, 1);
+
+	scheduler.advanceBy(16);
+	await Promise.resolve();
+	await Promise.resolve();
+	assert.deepEqual(observed, [1, 2]);
+	assert.equal(dispatcher.stats.pendingKeys, 0);
+});
+
+test("flushLatest returns for a missing key without cancelling unrelated scheduled work", async () => {
+	const { dispatcher, scheduler } = createDispatcher();
+	const observed: number[] = [];
+	dispatcher.subscribe((event) => { observed.push(event.sequence); }, { delivery: "latest" });
+	dispatcher.publishLatest("present", { type: "update", sequence: 7 });
+
+	await dispatcher.flushLatest("missing");
+	assert.equal(dispatcher.stats.pendingKeys, 1);
+	assert.equal(scheduler.pendingTasks, 1);
+
+	scheduler.advanceBy(16);
+	await Promise.resolve();
+	await Promise.resolve();
+	assert.deepEqual(observed, [7]);
+});
+
+test("repeated missing-key flushes do not recurse through unrelated pending values", async () => {
+	const { dispatcher, scheduler } = createDispatcher();
+	dispatcher.subscribe(() => {}, { delivery: "latest" });
+	dispatcher.publishLatest("present", { type: "update", sequence: 1 });
+
+	for (let index = 0; index < 1_000; index++) await dispatcher.flushLatest("missing");
+
+	assert.equal(dispatcher.stats.pendingKeys, 1);
+	assert.equal(scheduler.pendingTasks, 1);
+	await dispatcher.flushLatest("present");
+	assert.equal(dispatcher.stats.pendingKeys, 0);
+});
