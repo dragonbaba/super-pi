@@ -52,6 +52,33 @@ const THINKING_LEVELS: readonly ModelThinkingLevel[] = ["off", "minimal", "low",
 const THINKING_LEVEL_SET = new Set<ModelThinkingLevel>(THINKING_LEVELS);
 const PROFILE_CACHE = new WeakMap<object, Map<string, Model<Api>>>();
 const NORMALIZED_CAPABILITIES = new WeakSet<object>();
+const MODEL_CAPABILITY_ENRICHMENT = Symbol("super-pi.model-capability-enrichment-v1");
+
+export interface ModelCapabilityEnrichmentV1 {
+	strictToolSchema?: boolean;
+	reasoningMode?: Exclude<ModelCapabilitiesV1["reasoning"]["mode"], "none">;
+}
+
+type CapabilityEnrichedModel = Model<Api> & {
+	[MODEL_CAPABILITY_ENRICHMENT]?: Readonly<ModelCapabilityEnrichmentV1>;
+};
+
+/** Attach provider/model-owned capability facts without serializing internal profile metadata. */
+export function enrichModelCapabilities<TApi extends Api>(
+	model: Model<TApi>,
+	enrichment: ModelCapabilityEnrichmentV1,
+): Model<TApi> {
+	const enriched = { ...model } as Model<TApi> & CapabilityEnrichedModel;
+	Object.defineProperty(enriched, MODEL_CAPABILITY_ENRICHMENT, {
+		value: Object.freeze({ ...enrichment }),
+		enumerable: true,
+	});
+	return enriched;
+}
+
+function modelCapabilityEnrichment(model: Model<Api>): Readonly<ModelCapabilityEnrichmentV1> | undefined {
+	return (model as CapabilityEnrichedModel)[MODEL_CAPABILITY_ENRICHMENT];
+}
 
 const CAPABILITY_KEYS = [
 	"version",
@@ -304,6 +331,12 @@ function promptCacheCapability(model: Model<Api>): ModelCapabilitiesV1["promptCa
 /** Derive a manifest from trusted catalog/custom fields without mutating the model. */
 export function deriveModelCapabilities(model: Model<Api>): Readonly<ModelCapabilitiesV1> {
 	const api = model.api;
+	const enrichment = modelCapabilityEnrichment(model);
+	const derivedReasoning = reasoningCapability(model);
+	const reasoning =
+		enrichment?.reasoningMode && derivedReasoning.mode !== "none"
+			? { ...derivedReasoning, mode: enrichment.reasoningMode }
+			: derivedReasoning;
 	const manifest: ModelCapabilitiesV1 = {
 		version: 1,
 		inputModalities: Object.freeze({
@@ -313,9 +346,9 @@ export function deriveModelCapabilities(model: Model<Api>): Readonly<ModelCapabi
 		}),
 		toolCalling: TOOL_APIS.has(api),
 		parallelTools: PARALLEL_TOOL_APIS.has(api),
-		strictToolSchema: supportsStrictToolSchema(model),
+		strictToolSchema: enrichment?.strictToolSchema ?? supportsStrictToolSchema(model),
 		streamedToolArguments: STREAMED_TOOL_ARGUMENT_APIS.has(api),
-		reasoning: Object.freeze(reasoningCapability(model)),
+		reasoning: Object.freeze(reasoning),
 		thoughtSignatureRoundTrip:
 			api === "anthropic-messages" || api === "google-generative-ai" || api === "google-vertex",
 		promptCache: Object.freeze(promptCacheCapability(model)),
@@ -555,6 +588,37 @@ const CACHE_RETENTION_REQUEST_KEYS = [
 	"cachePoint",
 	"cacheRetention",
 ];
+const STRUCTURAL_REQUEST_KEYS = new Set([
+	"model",
+	"stream",
+	"store",
+	"messages",
+	"input",
+	"instructions",
+	"system",
+	"systemInstruction",
+	...TOOL_REQUEST_KEYS,
+	"tool_calls",
+	"tool_call_id",
+	"previous_response_id",
+	"previousResponseId",
+	...REASONING_REQUEST_KEYS,
+	...CACHE_REQUEST_KEYS,
+	"strict",
+]);
+
+/** Merge only non-structural generation/sampling parameters into a provider request. */
+export function mergeSamplingParams<TPayload extends Record<string, unknown>>(
+	payload: TPayload,
+	samplingParams: Readonly<Record<string, unknown>> | undefined,
+): TPayload {
+	if (!samplingParams) return payload;
+	const mutable = payload as Record<string, unknown>;
+	for (const [key, value] of Object.entries(samplingParams)) {
+		if (!STRUCTURAL_REQUEST_KEYS.has(key)) mutable[key] = value;
+	}
+	return payload;
+}
 
 /** Remove capability-controlled top-level fields after custom sampling parameters are merged. */
 export function sanitizeCapabilityRequest<TApi extends Api, TPayload extends Record<string, unknown>>(
@@ -564,6 +628,14 @@ export function sanitizeCapabilityRequest<TApi extends Api, TPayload extends Rec
 	const capabilities = getModelCapabilities(model);
 	const mutable = payload as Record<string, unknown>;
 	if (!capabilities.toolCalling) for (const key of TOOL_REQUEST_KEYS) mutable[key] = undefined;
+	if (!capabilities.parallelTools) {
+		mutable.parallel_tool_calls = undefined;
+		mutable.parallelToolCalls = undefined;
+	}
+	if (!capabilities.previousResponseId) {
+		mutable.previous_response_id = undefined;
+		mutable.previousResponseId = undefined;
+	}
 	if (capabilities.reasoning.mode === "none") {
 		for (const key of REASONING_REQUEST_KEYS) mutable[key] = undefined;
 	}

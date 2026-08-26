@@ -16,6 +16,7 @@ import {
 	capabilityCacheRetention,
 	contextForModelCapabilities,
 	getModelCapabilities,
+	mergeSamplingParams,
 	sanitizeCapabilityRequest,
 } from "../model-capabilities.ts";
 import type {
@@ -638,7 +639,7 @@ export const streamSimple: StreamFunction<"openai-completions", SimpleStreamOpti
 		...buildBaseOptions(model, context, options, options?.apiKey),
 		toolChoice: options?.toolChoice,
 	};
-	const clampedReasoning = options?.reasoning ? clampThinkingLevel(model, options.reasoning) : undefined;
+	const clampedReasoning = clampThinkingLevel(model, options?.reasoning ?? "off");
 	const reasoningEffort = clampedReasoning === "off" ? undefined : clampedReasoning;
 
 	return stream(model, context, {
@@ -1028,10 +1029,8 @@ function buildParams(
 		}
 	}
 
-	// Last so custom keys override the named request fields.
-	if (options?.samplingParams) {
-		Object.assign(params, options.samplingParams);
-	}
+	// Merge generation-only custom keys; structural protocol fields remain capability-owned.
+	mergeSamplingParams(params as unknown as Record<string, unknown>, options?.samplingParams);
 	sanitizeCapabilityRequest(model, params as unknown as Record<string, unknown>);
 
 	return params;

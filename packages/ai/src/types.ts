@@ -112,6 +112,7 @@ export interface ModelCapabilitiesV1 {
 	toolCalling: boolean;
 	parallelTools: boolean;
 	strictToolSchema: boolean;
+	/** Observational response-stream capability; this does not enable a request field. */
 	streamedToolArguments: boolean;
 	reasoning: ModelReasoningCapability;
 	thoughtSignatureRoundTrip: boolean;
@@ -258,11 +259,11 @@ export interface StreamOptions extends ProviderRequestOptions<Model<Api>> {
 	onResponse?: (response: ProviderResponse, model: Model<Api>) => void | Promise<void>;
 	temperature?: number;
 	/**
-	 * Arbitrary sampling parameters merged into the request body as-is, after the named request
-	 * fields, so keys here override them. Lets custom OpenAI-compatible servers (llama.cpp, vLLM,
-	 * SGLang, ...) receive parameters pi does not model, e.g. `top_p`, `top_k`, `min_p`,
-	 * `repetition_penalty`. Merged over `Model.samplingParams` per key. Only applied by
-	 * OpenAI-compatible adapters (completions, responses, Azure responses); other APIs ignore it.
+	 * Additional generation/sampling parameters for OpenAI-compatible servers (llama.cpp, vLLM,
+	 * SGLang, ...), e.g. `top_p`, `top_k`, `min_p`, or `repetition_penalty`. Structural protocol
+	 * fields (messages, tools, reasoning, continuation, and cache controls) are ignored here so they
+	 * cannot bypass model capability gates. Use `onPayload` for an explicit final-wire override.
+	 * Merged over `Model.samplingParams` per key. Other provider APIs ignore this option.
 	 */
 	samplingParams?: Record<string, unknown>;
 	maxTokens?: number;
@@ -878,6 +879,8 @@ export interface Model<TApi extends Api> {
 	 * Missing keys use provider defaults. null marks a level as unsupported.
 	 */
 	thinkingLevelMap?: ThinkingLevelMap;
+	/** Provider-owned default token budgets for budget-mode reasoning. */
+	thinkingBudgetMap?: Partial<Record<Exclude<ModelThinkingLevel, "off">, number>>;
 	input: ("text" | "image")[];
 	cost: ModelCost;
 	contextWindow: number;
@@ -890,7 +893,7 @@ export interface Model<TApi extends Api> {
 	costKnown?: boolean;
 	/** Metadata-only profile diagnostics, such as explicitly omitted custom fields. */
 	profileDiagnostics?: readonly ModelProfileDiagnostic[];
-	/** Default sampling parameters for this model. See {@link StreamOptions.samplingParams}; per-request keys override these. */
+	/** Default generation parameters. Structural protocol keys are ignored; see {@link StreamOptions.samplingParams}. */
 	samplingParams?: Record<string, unknown>;
 	headers?: Record<string, string>;
 	/** Compatibility overrides for OpenAI-compatible APIs. If not set, auto-detected from baseUrl. */
