@@ -118,12 +118,41 @@ test("AgentSession preserves active tools while a no-tool model is selected and 
 
 	assert.deepEqual(session.getActiveToolNames(), ["read"]);
 	assert.equal(session.systemPrompt.includes("Available tools:"), false);
+	let compactionCalls = 0;
+	(session as unknown as { _providerRequestCompactor: (input: unknown) => Promise<unknown> })._providerRequestCompactor = async () => {
+		compactionCalls++;
+		return { compactionItem: { type: "compaction" } };
+	};
+	const signal = new AbortController().signal;
+	const disabledCompaction = await session.compactProviderRequestPayload({
+		regularPayload: {},
+		signal,
+		auth: { model: noToolModel, apiKey: "fixture-key" },
+	});
+	assert.equal(disabledCompaction, undefined);
+	assert.equal(compactionCalls, 0);
 	await session.setModel(toolModel);
 	assert.deepEqual(session.getActiveToolNames(), ["read"]);
 	assert.equal(session.systemPrompt.includes("Available tools:"), true);
 	await session.setModel(noToolModel);
 	assert.deepEqual(session.getActiveToolNames(), ["read"]);
 	assert.equal(session.systemPrompt.includes("Available tools:"), false);
+	const remoteModel: Model<"openai-codex-responses"> = {
+		...noToolModel,
+		id: "remote-compaction",
+		name: "Remote Compaction",
+		api: "openai-codex-responses",
+		capabilities: undefined,
+		profileSource: undefined,
+	};
+	await session.setModel(remoteModel);
+	const enabledCompaction = await session.compactProviderRequestPayload({
+		regularPayload: {},
+		signal,
+		auth: { model: remoteModel, apiKey: "fixture-key" },
+	});
+	assert.deepEqual(enabledCompaction, { compactionItem: { type: "compaction" } });
+	assert.equal(compactionCalls, 1);
 });
 
 test("toolCalling=false converts prior tool protocol to ordinary messages", async () => {
@@ -143,7 +172,7 @@ test("toolCalling=false converts prior tool protocol to ordinary messages", asyn
 	assert.equal(messages.some((message) => "tool_calls" in message || "tool_call_id" in message), false);
 });
 
-test("capability sanitizer runs after samplingParams and before onPayload", async () => {
+test("capability sanitizer blocks samplingParams while onPayload remains the final wire override", async () => {
 	let sanitized: Record<string, unknown> | undefined;
 	let finalWire: Record<string, unknown> | undefined;
 	const injectedTool = { type: "function", function: { name: "injected", parameters: {}, strict: true } };
@@ -166,27 +195,36 @@ test("capability sanitizer runs after samplingParams and before onPayload", asyn
 		},
 		onPayload: (payload) => {
 			sanitized = structuredClone(payload as Record<string, unknown>);
-			return { ...(payload as Record<string, unknown>), temperature: 0.25 };
+			return {
+				...(payload as Record<string, unknown>),
+				temperature: 0.25,
+				tools: [injectedTool],
+				tool_choice: "required",
+				parallel_tool_calls: true,
+				previous_response_id: "explicit-on-payload-response",
+			};
 		},
 		fetch: async (_input, init) => {
 			finalWire = JSON.parse(String(init?.body)) as Record<string, unknown>;
 			return response();
 		},
 	}).result();
-	for (const payload of [sanitized, finalWire]) {
-		assert.ok(payload);
-		assert.equal(payload.tools, undefined);
-		assert.equal(payload.tool_choice, undefined);
-		assert.equal(payload.parallel_tool_calls, undefined);
-		assert.equal(payload.reasoning_effort, undefined);
-		assert.equal(payload.reasoning, undefined);
-		assert.equal(payload.prompt_cache_key, undefined);
-		assert.equal(payload.prompt_cache_retention, undefined);
-		assert.equal(payload.prompt_cache_options, undefined);
-		assert.equal(payload.cache_control, undefined);
-		assert.equal(payload.strict, undefined);
-	}
+	assert.ok(sanitized);
+	assert.equal(sanitized.tools, undefined);
+	assert.equal(sanitized.tool_choice, undefined);
+	assert.equal(sanitized.parallel_tool_calls, undefined);
+	assert.equal(sanitized.reasoning_effort, undefined);
+	assert.equal(sanitized.reasoning, undefined);
+	assert.equal(sanitized.prompt_cache_key, undefined);
+	assert.equal(sanitized.prompt_cache_retention, undefined);
+	assert.equal(sanitized.prompt_cache_options, undefined);
+	assert.equal(sanitized.cache_control, undefined);
+	assert.equal(sanitized.strict, undefined);
 	assert.equal(injectedTool.function.strict, true);
 	assert.equal(injectedReasoning.effort, "high");
 	assert.equal(finalWire?.temperature, 0.25);
+	assert.deepEqual(finalWire?.tools, [injectedTool]);
+	assert.equal(finalWire?.tool_choice, "required");
+	assert.equal(finalWire?.parallel_tool_calls, true);
+	assert.equal(finalWire?.previous_response_id, "explicit-on-payload-response");
 });

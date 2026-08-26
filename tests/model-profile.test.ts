@@ -7,8 +7,10 @@ import { InMemoryModelsStore } from "../packages/ai/src/models-store.ts";
 import { createModels, createProvider, getSupportedThinkingLevels } from "../packages/ai/src/models.ts";
 import { conservativeModelCapabilities, withModelProfile } from "../packages/ai/src/model-capabilities.ts";
 import type { Model, ModelCapabilitiesV1 } from "../packages/ai/src/types.ts";
+import { ModelConfig } from "../packages/coding-agent/src/core/model-config.ts";
 import { ModelRuntime } from "../packages/coding-agent/src/core/model-runtime.ts";
 import { resolveCliModel } from "../packages/coding-agent/src/core/model-resolver.ts";
+import { composeModelProvider } from "../packages/coding-agent/src/core/provider-composer.ts";
 
 function fixtureModel(overrides: Partial<Model<"openai-completions">> = {}): Model<"openai-completions"> {
 	return {
@@ -318,4 +320,47 @@ test("explicit capabilities are validated, cloned, deeply frozen, and drive supp
 	assert.throws(() => withModelProfile(fixtureModel(), "explicit-custom", {
 		capabilities: { ...capabilities, version: 2 } as unknown as ModelCapabilitiesV1,
 	}), /version/u);
+});
+
+test("OAuth modifyModels in-place capability input mutation rederives without mutating the base catalog", async () => {
+	const baseModel = fixtureModel({ compat: { supportsStrictMode: true } });
+	const baseProvider = createProvider({
+		id: "fixture",
+		auth: { apiKey: { name: "fixture", resolve: async () => ({ auth: { apiKey: "fixture" } }) } },
+		models: [baseModel],
+		api: {} as never,
+	});
+	const provider = composeModelProvider("fixture", baseProvider, await ModelConfig.load(undefined), {
+		oauth: {
+			name: "fixture oauth",
+			login: async () => ({ refresh: "refresh", access: "access", expires: 1 }),
+			refreshToken: async (credential) => credential,
+			getApiKey: (credential) => credential.access,
+			modifyModels: (models) => {
+				const model = models[0]!;
+				model.reasoning = false;
+				model.input.push("image");
+				(model.compat as { supportsStrictMode?: boolean }).supportsStrictMode = false;
+				return models;
+			},
+		},
+	});
+	await provider.refreshModels?.({
+		credential: { type: "oauth", refresh: "refresh", access: "access", expires: 1 },
+		allowNetwork: false,
+		signal: new AbortController().signal,
+		publish: async (publication) => {
+			publication.update?.();
+			return true;
+		},
+	});
+	const updated = provider.getModels()[0]!;
+	assert.equal(updated.reasoning, false);
+	assert.deepEqual(updated.input, ["text", "image"]);
+	assert.equal(updated.capabilities?.reasoning.mode, "none");
+	assert.deepEqual(updated.capabilities?.inputModalities, { text: true, image: true, audio: false });
+	assert.equal(updated.capabilities?.strictToolSchema, false);
+	assert.equal(baseProvider.getModels()[0]?.reasoning, true);
+	assert.deepEqual(baseProvider.getModels()[0]?.input, ["text"]);
+	assert.equal((baseProvider.getModels()[0]?.compat as { supportsStrictMode?: boolean }).supportsStrictMode, true);
 });
