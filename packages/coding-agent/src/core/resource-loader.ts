@@ -21,6 +21,7 @@ import { findGitPaths } from "./footer-data-provider.ts";
 import { DefaultPackageManager, type PathMetadata, type ResolvedResource } from "./package-manager.ts";
 import type { PromptTemplate } from "./prompt-templates.ts";
 import { loadPromptTemplates } from "./prompt-templates.ts";
+import { compareCanonicalIdentifiers } from "./prefix-manifest.ts";
 import { SettingsManager } from "./settings-manager.ts";
 import type { Skill } from "./skills.ts";
 import { loadSkills } from "./skills.ts";
@@ -910,7 +911,9 @@ export class DefaultResourceLoader implements ResourceLoader {
 		}
 
 		try {
-			const entries = readdirSync(dir, { withFileTypes: true });
+			const entries = readdirSync(dir, { withFileTypes: true }).sort((left, right) =>
+				compareCanonicalIdentifiers(left.name, right.name),
+			);
 			for (const entry of entries) {
 				let isFile = entry.isFile();
 				if (entry.isSymbolicLink()) {

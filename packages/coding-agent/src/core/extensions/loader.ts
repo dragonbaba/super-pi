@@ -29,6 +29,7 @@ import { createEventBus, type EventBus } from "../event-bus.ts";
 import type { ExecOptions } from "../exec.ts";
 import { execCommand } from "../exec.ts";
 import { readPiManifest } from "../pi-manifest.ts";
+import { compareCanonicalIdentifiers } from "../prefix-manifest.ts";
 import { createSyntheticSourceInfo } from "../source-info.ts";
 import { time } from "../timings.ts";
 import type {
@@ -820,7 +821,9 @@ function discoverExtensionsInDir(dir: string): string[] {
 	const discovered: string[] = [];
 
 	try {
-		const entries = fs.readdirSync(dir, { withFileTypes: true });
+		const entries = fs.readdirSync(dir, { withFileTypes: true }).sort((left, right) =>
+			compareCanonicalIdentifiers(left.name, right.name),
+		);
 
 		for (const entry of entries) {
 			const entryPath = path.join(dir, entry.name);

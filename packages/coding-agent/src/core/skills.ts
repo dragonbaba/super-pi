@@ -5,6 +5,7 @@ import { CONFIG_DIR_NAME, getAgentDir } from "../config.ts";
 import { parseFrontmatter } from "../utils/frontmatter.ts";
 import { canonicalizePath, resolvePath } from "../utils/paths.ts";
 import type { ResourceDiagnostic } from "./diagnostics.ts";
+import { compareCanonicalIdentifiers } from "./prefix-manifest.ts";
 import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.ts";
 
 /** Max name length per spec */
@@ -189,7 +190,9 @@ function loadSkillsFromDirInternal(
 	addIgnoreRules(ig, dir, root);
 
 	try {
-		const entries = readdirSync(dir, { withFileTypes: true });
+		const entries = readdirSync(dir, { withFileTypes: true }).sort((left, right) =>
+			compareCanonicalIdentifiers(left.name, right.name),
+		);
 
 		for (const entry of entries) {
 			if (entry.name !== "SKILL.md") {
