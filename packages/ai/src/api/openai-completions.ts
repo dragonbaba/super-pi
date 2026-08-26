@@ -692,6 +692,10 @@ export function observeOpenAIChatEffectiveDispatch(
 		(message) => message.role === "system" || message.role === "developer",
 	);
 	const tools = params.tools ?? [];
+	const cacheParams = params as typeof params & {
+		prompt_cache_options?: unknown;
+		prompt_cache_retention?: unknown;
+	};
 	observeEffectiveDispatch(options, model, {
 		transport: "sse",
 		previousResponseMode: "none",
@@ -701,8 +705,38 @@ export function observeOpenAIChatEffectiveDispatch(
 			tool.type === "function" ? tool.function.name : tool.custom.name,
 		),
 		cacheKey: params.prompt_cache_key,
-		transformedPayload: params,
+		cachePolicy: {
+			promptCacheRetention: cacheParams.prompt_cache_retention ?? null,
+			promptCacheOptions: cacheParams.prompt_cache_options ?? null,
+			markers: extractOpenAIChatCacheMarkers(params.messages, tools),
+		},
 	});
+}
+
+function extractOpenAIChatCacheMarkers(
+	messages: readonly OpenAI.Chat.Completions.ChatCompletionMessageParam[],
+	tools: readonly OpenAI.Chat.Completions.ChatCompletionTool[],
+): unknown {
+	const messageMarkers: unknown[] = [];
+	for (let messageIndex = 0; messageIndex < messages.length; messageIndex++) {
+		const content = messages[messageIndex]?.content;
+		if (!Array.isArray(content)) continue;
+		for (let partIndex = 0; partIndex < content.length; partIndex++) {
+			const marker = readOpenAIChatCacheControl(content[partIndex]);
+			if (marker !== undefined) messageMarkers.push({ messageIndex, partIndex, marker });
+		}
+	}
+	const toolMarkers: unknown[] = [];
+	for (let index = 0; index < tools.length; index++) {
+		const marker = readOpenAIChatCacheControl(tools[index]);
+		if (marker !== undefined) toolMarkers.push({ index, marker });
+	}
+	return { messages: messageMarkers, tools: toolMarkers };
+}
+
+function readOpenAIChatCacheControl(value: unknown): unknown {
+	if (!value || typeof value !== "object") return undefined;
+	return (value as Record<string, unknown>).cache_control;
 }
 
 function buildParams(

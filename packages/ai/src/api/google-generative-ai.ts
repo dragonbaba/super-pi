@@ -363,17 +363,41 @@ export function observeGoogleGenerativeAIEffectiveDispatch(
 	model: Model<"google-generative-ai">,
 	params: GenerateContentParameters,
 ): void {
-	const declarations = (params.config?.tools ?? []).flatMap((tool) =>
-		"functionDeclarations" in tool && Array.isArray(tool.functionDeclarations) ? tool.functionDeclarations : [],
-	);
+	const effectiveTools = extractGoogleEffectiveTools(params.config?.tools ?? []);
 	observeEffectiveDispatch(options, model, {
 		transport: "sse",
 		previousResponseMode: "none",
 		instructionPrefix: params.config?.systemInstruction ?? null,
-		orderedToolDefinitions: declarations,
-		orderedToolIdentifiers: declarations.map((declaration) => declaration.name ?? "unknown"),
-		transformedPayload: params,
+		orderedToolDefinitions: effectiveTools.definitions,
+		orderedToolIdentifiers: effectiveTools.identifiers,
+		cachePolicy: null,
 	});
+}
+
+function extractGoogleEffectiveTools(tools: readonly unknown[]): { definitions: unknown[]; identifiers: string[] } {
+	const definitions: unknown[] = [];
+	const identifiers: string[] = [];
+	for (const value of tools) {
+		if (!value || typeof value !== "object") {
+			definitions.push(value);
+			identifiers.push(`native:${typeof value}`);
+			continue;
+		}
+		const tool = value as Record<string, unknown>;
+		const declarations = Array.isArray(tool.functionDeclarations) ? tool.functionDeclarations : [];
+		for (const declaration of declarations) {
+			definitions.push(declaration);
+			const name = declaration && typeof declaration === "object"
+				? (declaration as Record<string, unknown>).name
+				: undefined;
+			identifiers.push(`function:${typeof name === "string" ? name : "unknown"}`);
+		}
+		for (const kind of Object.keys(tool).filter((key) => key !== "functionDeclarations" && tool[key] !== undefined).sort()) {
+			definitions.push({ kind, configuration: tool[kind] });
+			identifiers.push(`native:${kind}`);
+		}
+	}
+	return { definitions, identifiers };
 }
 
 function buildParams(

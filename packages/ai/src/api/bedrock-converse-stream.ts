@@ -384,6 +384,7 @@ export function observeBedrockEffectiveDispatch(
 	model: Model<"bedrock-converse-stream">,
 	commandInput: {
 		system?: unknown;
+		messages?: Message[];
 		toolConfig?: ToolConfiguration;
 		[key: string]: unknown;
 	},
@@ -395,8 +396,34 @@ export function observeBedrockEffectiveDispatch(
 		instructionPrefix: commandInput.system ?? null,
 		orderedToolDefinitions: tools,
 		orderedToolIdentifiers: tools.map((tool) => "toolSpec" in tool ? (tool.toolSpec?.name ?? "unknown") : "unknown"),
-		transformedPayload: commandInput,
+		cachePolicy: extractBedrockCachePolicy(commandInput.system, commandInput.messages, tools),
 	});
+}
+
+function extractBedrockCachePolicy(
+	system: unknown,
+	messages: readonly Message[] | undefined,
+	tools: readonly BedrockTool[],
+): unknown {
+	const systemPoints = extractBedrockCachePoints(Array.isArray(system) ? system : []);
+	const messagePoints: unknown[] = [];
+	for (let messageIndex = 0; messageIndex < (messages?.length ?? 0); messageIndex++) {
+		const points = extractBedrockCachePoints(messages?.[messageIndex]?.content ?? []);
+		for (const point of points) messagePoints.push({ messageIndex, ...point });
+	}
+	const toolPoints = extractBedrockCachePoints(tools);
+	return { system: systemPoints, messages: messagePoints, tools: toolPoints };
+}
+
+function extractBedrockCachePoints(values: readonly unknown[]): Array<{ index: number; cachePoint: unknown }> {
+	const points: Array<{ index: number; cachePoint: unknown }> = [];
+	for (let index = 0; index < values.length; index++) {
+		const value = values[index];
+		if (!value || typeof value !== "object") continue;
+		const cachePoint = (value as Record<string, unknown>).cachePoint;
+		if (cachePoint !== undefined) points.push({ index, cachePoint });
+	}
+	return points;
 }
 
 type SdkErrorMetadata = { $metadata?: { httpStatusCode?: unknown; requestId?: unknown } };

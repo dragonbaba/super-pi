@@ -25,6 +25,7 @@
 		"bench:tui-transcript": "node --experimental-strip-types ./scripts/bench/tui-transcript.ts",
 		"bench:tui-frame-queue": "node --experimental-strip-types ./scripts/bench/tui-frame-queue.ts",
 		"bench:prefix": "node --experimental-strip-types ./scripts/bench/prefix-build.ts",
+		"bench:effective-dispatch": "node --experimental-strip-types ./scripts/bench/effective-dispatch.ts",
 		"bench:tool-output": "node --experimental-strip-types ./scripts/bench/tool-output.ts",
 		"bench:compare": "node --experimental-strip-types ./scripts/bench/compare.ts",
 		"clean": "npm run clean --workspaces --if-present",

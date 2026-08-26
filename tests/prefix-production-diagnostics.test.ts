@@ -185,6 +185,7 @@ test("non-prefix request body changes do not create false prefix drift", () => {
 		toolsHash: "tools-hash",
 		toolCount: 1,
 		cacheKeyHash: "cache-key-hash",
+		cachePolicyHash: "cache-policy-hash",
 		prefixHash: "prefix-hash",
 		requestTransformOutputHash: "request-one",
 	};
@@ -217,6 +218,7 @@ test("effective manifests ignore intent-only context changes until an effective 
 		toolIdentifierSetHash: "fixed-tool-set",
 		toolsHash: "fixed-tools",
 		toolCount: 1,
+		cachePolicyHash: "fixed-cache-policy",
 		prefixHash: "fixed-prefix",
 		requestTransformOutputHash: "request-one",
 	};
@@ -239,6 +241,7 @@ test("effective tool-set changes are activation drift even when intent tools sta
 		toolIdentifierSetHash: "read-set",
 		toolsHash: "read-tools",
 		toolCount: 1,
+		cachePolicyHash: "fixed-cache-policy",
 		prefixHash: "read-prefix",
 		requestTransformOutputHash: "read-request",
 	};
@@ -271,6 +274,7 @@ test("effective cache-key drift keeps its dedicated reason ahead of aggregate pr
 		toolsHash: "fixed-tools",
 		toolCount: 1,
 		cacheKeyHash: "cache-a",
+		cachePolicyHash: "fixed-cache-policy",
 		prefixHash: "prefix-a",
 		requestTransformOutputHash: "request-a",
 	};
@@ -288,6 +292,55 @@ test("effective cache-key drift keeps its dedicated reason ahead of aggregate pr
 	);
 	assert.equal(diagnostic?.reasonCode, "CACHE_KEY_CHANGED");
 	assert.equal(diagnostic?.firstDivergentSegment, "cache-key");
+});
+
+test("effective short-to-long cache policy drift survives no-op filtering", () => {
+	const input = productionLikeInput();
+	const shortPolicy = {
+		transport: "sse",
+		previousResponseMode: "none" as const,
+		instructionsHash: "fixed-instructions",
+		instructionsBytes: 18,
+		toolOrderHash: "fixed-order",
+		toolIdentifierSetHash: "fixed-set",
+		toolsHash: "fixed-tools",
+		toolCount: 1,
+		cachePolicyHash: "resolved-short-policy",
+		prefixHash: "short-prefix",
+		requestTransformOutputHash: "short-transform-prefix",
+	};
+	const longPolicy = {
+		...shortPolicy,
+		cachePolicyHash: "resolved-long-policy",
+	};
+	const diagnostic = comparePrefixManifests(
+		buildPrefixManifest({ ...input, cacheRetention: "short", effectiveDispatch: shortPolicy }),
+		buildPrefixManifest({ ...input, cacheRetention: "long", effectiveDispatch: longPolicy }),
+	);
+	assert.equal(diagnostic?.firstDivergentSegment, "cache-retention");
+	assert.equal(diagnostic?.reasonCode, "CACHE_RETENTION_CHANGED");
+	assert.equal(diagnostic?.expectedMiss, true);
+});
+
+test("configured cache retention changes do not drift when effective policy is unchanged", () => {
+	const input = productionLikeInput();
+	const resolvedPolicy = {
+		transport: "sse",
+		previousResponseMode: "none" as const,
+		instructionsHash: "fixed-instructions",
+		instructionsBytes: 18,
+		toolOrderHash: "fixed-order",
+		toolIdentifierSetHash: "fixed-set",
+		toolsHash: "fixed-tools",
+		toolCount: 1,
+		cachePolicyHash: "same-provider-policy",
+		prefixHash: "same-prefix",
+		requestTransformOutputHash: "same-transform-prefix",
+	};
+	assert.equal(comparePrefixManifests(
+		buildPrefixManifest({ ...input, cacheRetention: "short", effectiveDispatch: resolvedPolicy }),
+		buildPrefixManifest({ ...input, cacheRetention: "long", effectiveDispatch: resolvedPolicy }),
+	), undefined);
 });
 
 test("canonical hashing rejects non-JSON container types instead of aliasing plain objects", () => {

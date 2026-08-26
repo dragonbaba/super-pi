@@ -55,6 +55,7 @@ function createModelRuntime(): ModelRuntime {
 					toolsHash,
 					toolCount: toolOrder.length,
 					cacheKeyHash: sha256Canonical(options?.sessionId ?? null),
+					cachePolicyHash: sha256Canonical({ cacheRetention: options?.cacheRetention ?? null }),
 					prefixHash: sha256Canonical({ instructionsHash, toolOrder, toolsHash }),
 					requestTransformOutputHash: sha256Canonical({ instructionsHash, toolsHash }),
 				}), model);

@@ -14,6 +14,7 @@ import {
 import { observeOpenAIResponsesEffectiveDispatch } from "../packages/ai/src/api/openai-responses.ts";
 import { observePiMessagesEffectiveDispatch } from "../packages/ai/src/api/pi-messages.ts";
 import type { Api, EffectiveDispatchObservation, Model, ProviderRequestOptions } from "../packages/ai/src/types.ts";
+import { createEffectiveDispatchBenchmarkScenario } from "../scripts/bench/effective-dispatch.ts";
 import {
 	buildPrefixManifest,
 	comparePrefixManifests,
@@ -209,6 +210,27 @@ test("Google preserves flattened function declaration order across tool groups",
 	assertMetadataOnly([...forward.observations, ...reverse.observations], ["google-system-secret", "read-secret", "write-secret"]);
 });
 
+test("Google provider-native tool groups participate in effective identity", () => {
+	const withoutNative = capture<"google-generative-ai">();
+	const withNative = capture<"google-generative-ai">();
+	const googleModel = model("google-generative-ai");
+	const params = (tools: unknown[]) => ({
+		model: googleModel.id,
+		contents: [],
+		config: { systemInstruction: "system", tools },
+	});
+	observeGoogleGenerativeAIEffectiveDispatch(withoutNative.options as never, googleModel, params([]) as never);
+	observeGoogleGenerativeAIEffectiveDispatch(withNative.options as never, googleModel, params([
+		{ googleSearch: { timeRangeFilter: { startTime: "2026-01-01T00:00:00Z" } } },
+	]) as never);
+
+	assert.equal(withoutNative.observations[0]?.toolCount, 0);
+	assert.equal(withNative.observations[0]?.toolCount, 1);
+	assert.notEqual(withoutNative.observations[0]?.toolOrderHash, withNative.observations[0]?.toolOrderHash);
+	assert.notEqual(withoutNative.observations[0]?.toolIdentifierSetHash, withNative.observations[0]?.toolIdentifierSetHash);
+	assert.notEqual(withoutNative.observations[0]?.prefixHash, withNative.observations[0]?.prefixHash);
+});
+
 test("Anthropic, OpenAI Responses, and Pi Messages use their actual top-level wire families", () => {
 	const anthropic = capture<"anthropic-messages">();
 	const responses = capture<"openai-responses">();
@@ -245,6 +267,63 @@ test("Anthropic, OpenAI Responses, and Pi Messages use their actual top-level wi
 		"anthropic-secret", "anthropic-tool-secret", "responses-secret", "responses-tool-secret",
 		"pi-secret", "pi-tool-secret", "pi-session-secret",
 	]);
+});
+
+test("provider-resolved cache policy hashes follow actual wire markers and retention fields", () => {
+	const observePair = <TApi extends Api>(
+		observe: (captured: ReturnType<typeof capture<TApi>>, long: boolean) => void,
+	): [EffectiveDispatchObservation, EffectiveDispatchObservation] => {
+		const short = capture<TApi>();
+		const long = capture<TApi>();
+		observe(short, false);
+		observe(long, true);
+		return [short.observations[0]!, long.observations[0]!];
+	};
+	const pairs = [
+		observePair<"openai-responses">((captured, long) => {
+			observeOpenAIResponsesEffectiveDispatch(captured.options as never, model("openai-responses"), {
+				model: "gpt-test", stream: true, input: [],
+				prompt_cache_retention: long ? "24h" : undefined,
+				prompt_cache_options: long ? undefined : { mode: "explicit" },
+			} as never);
+		}),
+		observePair<"anthropic-messages">((captured, long) => {
+			observeAnthropicEffectiveDispatch(captured.options as never, model("anthropic-messages"), {
+				model: "claude-test", stream: true, max_tokens: 64, messages: [],
+				system: [{ type: "text", text: "system", cache_control: {
+					type: "ephemeral", ...(long ? { ttl: "1h" } : {}),
+				} }],
+			} as never);
+		}),
+		observePair<"pi-messages">((captured, long) => {
+			observePiMessagesEffectiveDispatch(captured.options as never, model("pi-messages"), {
+				model: "pi-test", context: { systemPrompt: "system", messages: [], tools: [] },
+				options: { cacheRetention: long ? "long" : "short" },
+			});
+		}),
+		observePair<"bedrock-converse-stream">((captured, long) => {
+			observeBedrockEffectiveDispatch(captured.options as never, model("bedrock-converse-stream"), {
+				modelId: "bedrock-test", messages: [],
+				system: [{ cachePoint: { type: "default", ...(long ? { ttl: "1h" } : {}) } }],
+			});
+		}),
+		observePair<"openai-completions">((captured, long) => {
+			observeOpenAIChatEffectiveDispatch(captured.options as never, model("openai-completions"), {
+				model: "chat-test", stream: true,
+				messages: [{ role: "system", content: [{
+					type: "text", text: "system", cache_control: {
+						type: "ephemeral", ...(long ? { ttl: "1h" } : {}),
+					},
+				}] }],
+			} as never);
+		}),
+	];
+
+	for (const [short, long] of pairs) {
+		assert.equal(typeof short.cachePolicyHash, "string");
+		assert.notEqual(short.cachePolicyHash, long.cachePolicyHash);
+		assert.notEqual(short.prefixHash, long.prefixHash);
+	}
 });
 
 test("effective dispatch observers isolate sync throws, async rejection, and unhandledRejection", async () => {
@@ -305,4 +384,15 @@ test("onPayload-fixed instructions suppress intent-only context drift while adde
 	const diagnostic = comparePrefixManifests(second, addedTool);
 	assert.equal(diagnostic?.reasonCode, "TOOL_ACTIVATED");
 	assert.equal(diagnostic?.firstDivergentSegment, "tool-order");
+});
+
+test("generic effective observation never serializes 1 MiB or 10 MiB full provider payloads", () => {
+	for (const mebibytes of [1, 10]) {
+		for (const observerEnabled of [false, true]) {
+			const metrics = createEffectiveDispatchBenchmarkScenario(mebibytes, observerEnabled).run();
+			assert.equal(metrics.payloadBytes, mebibytes * 1024 * 1024);
+			assert.equal(metrics.fullPayloadSerializations, 0);
+			assert.equal(metrics.observerCallbacks, observerEnabled ? 1 : 0);
+		}
+	}
 });

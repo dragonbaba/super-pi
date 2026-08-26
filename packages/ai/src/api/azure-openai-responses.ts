@@ -173,6 +173,9 @@ export function observeAzureOpenAIResponsesEffectiveDispatch(
 	model: Model<"azure-openai-responses">,
 	params: ResponseCreateParamsStreaming,
 ): void {
+	const cacheParams = params as ResponseCreateParamsStreaming & {
+		prompt_cache_options?: unknown;
+	};
 	const instructionPrefix = params.instructions ?? (Array.isArray(params.input)
 		? params.input.filter((item) => "role" in item && (item.role === "system" || item.role === "developer"))
 		: []);
@@ -184,7 +187,10 @@ export function observeAzureOpenAIResponsesEffectiveDispatch(
 		orderedToolDefinitions: tools,
 		orderedToolIdentifiers: tools.map((tool) => "name" in tool && typeof tool.name === "string" ? tool.name : tool.type),
 		cacheKey: params.prompt_cache_key,
-		transformedPayload: params,
+		cachePolicy: {
+			promptCacheRetention: params.prompt_cache_retention ?? null,
+			promptCacheOptions: cacheParams.prompt_cache_options ?? null,
+		},
 	});
 }
 

@@ -133,8 +133,8 @@ test("transport and semantic tool reordering are diagnosed without claiming acti
 	reordered.tools = [reordered.tools[1]!, reordered.tools[0]!];
 	assert.deepEqual(comparePrefixManifests(baseline, buildPrefixManifest(reordered)), {
 		firstDivergentSegment: "tool-order",
-		expectedMiss: false,
-		reasonCode: "UNKNOWN_PREFIX_DRIFT",
+		expectedMiss: true,
+		reasonCode: "TOOL_ORDER_CHANGED",
 		changedIdentifiers: [],
 	});
 });

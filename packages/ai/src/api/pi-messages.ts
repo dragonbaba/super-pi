@@ -436,7 +436,7 @@ export function observePiMessagesEffectiveDispatch(
 ): void {
 	const wire = payload && typeof payload === "object" ? payload as {
 		context?: { systemPrompt?: unknown; tools?: unknown[] };
-		options?: { sessionId?: unknown };
+		options?: { sessionId?: unknown; cacheRetention?: unknown };
 	} : {};
 	const tools = Array.isArray(wire.context?.tools) ? wire.context.tools : [];
 	const toolIdentifiers = tools.map((tool) => {
@@ -451,7 +451,7 @@ export function observePiMessagesEffectiveDispatch(
 		orderedToolDefinitions: tools,
 		orderedToolIdentifiers: toolIdentifiers,
 		cacheKey: wire.options?.sessionId,
-		transformedPayload: payload,
+		cachePolicy: { cacheRetention: wire.options?.cacheRetention ?? null },
 	});
 }
 

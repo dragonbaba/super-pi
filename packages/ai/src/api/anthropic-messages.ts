@@ -831,8 +831,38 @@ export function observeAnthropicEffectiveDispatch(
 		instructionPrefix: params.system ?? null,
 		orderedToolDefinitions: tools,
 		orderedToolIdentifiers: tools.map((tool) => tool.name),
-		transformedPayload: params,
+		cachePolicy: extractAnthropicCachePolicy(params),
 	});
+}
+
+function extractAnthropicCachePolicy(params: MessageCreateParamsStreaming): unknown {
+	const system: unknown[] = [];
+	if (Array.isArray(params.system)) {
+		for (let index = 0; index < params.system.length; index++) {
+			const marker = cacheControlMarker(params.system[index]);
+			if (marker !== undefined) system.push({ index, marker });
+		}
+	}
+	const messages: unknown[] = [];
+	for (let messageIndex = 0; messageIndex < params.messages.length; messageIndex++) {
+		const content = params.messages[messageIndex]?.content;
+		if (!Array.isArray(content)) continue;
+		for (let blockIndex = 0; blockIndex < content.length; blockIndex++) {
+			const marker = cacheControlMarker(content[blockIndex]);
+			if (marker !== undefined) messages.push({ messageIndex, blockIndex, marker });
+		}
+	}
+	const toolMarkers: unknown[] = [];
+	for (let index = 0; index < (params.tools?.length ?? 0); index++) {
+		const marker = cacheControlMarker(params.tools?.[index]);
+		if (marker !== undefined) toolMarkers.push({ index, marker });
+	}
+	return { system, messages, tools: toolMarkers };
+}
+
+function cacheControlMarker(value: unknown): unknown {
+	if (!value || typeof value !== "object") return undefined;
+	return (value as Record<string, unknown>).cache_control;
 }
 
 export const streamSimple: StreamFunction<"anthropic-messages", SimpleStreamOptions> = (

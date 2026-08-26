@@ -11,6 +11,7 @@ export interface PrefixManifestV1 {
 	api: string;
 	transport: string;
 	cacheRetention?: string;
+	cachePolicyHash: string;
 	systemPromptHash: string;
 	systemPromptBytes: number;
 	toolOrderHash: string;
@@ -53,6 +54,7 @@ export interface EffectivePrefixDispatchObservation {
 	toolsHash: string;
 	toolCount: number;
 	cacheKeyHash?: string;
+	cachePolicyHash: string;
 	prefixHash: string;
 	requestTransformOutputHash: string;
 }
@@ -98,6 +100,7 @@ export type PrefixDriftReasonCode =
 	| "MODEL_CHANGED"
 	| "TOOL_ACTIVATED"
 	| "TOOL_SCHEMA_CHANGED"
+	| "TOOL_ORDER_CHANGED"
 	| "PROJECT_CONTEXT_CHANGED"
 	| "DYNAMIC_INSTRUCTION_CHANGED"
 	| "COMPACTION_BOUNDARY"
@@ -402,12 +405,16 @@ export function buildPrefixManifest(input: PrefixManifestBuildInput): PrefixMani
 	const toolSchemaHash = effective?.toolsHash ?? sha256Canonical(input.tools.map((tool) => ({ name: tool.name, schema: tool.schema })));
 	const toolCount = effective?.toolCount ?? input.tools.length;
 	const cacheKeyHash = effective?.cacheKeyHash ?? (input.cacheKey === undefined ? undefined : hashText(input.cacheKey));
+	const cachePolicyHash = effective?.cachePolicyHash ?? sha256Canonical({
+		configuredRetention: input.cacheRetention ?? null,
+	});
 	const requestTransformOutputHash = effective?.requestTransformOutputHash ?? sha256Canonical({
 		systemPromptHash,
 		toolOrderHash,
 		toolIdentifierSetHash,
 		toolSchemaHash,
 		cacheKeyHash: cacheKeyHash ?? null,
+		cachePolicyHash,
 	});
 	const effectivePrefixHash = effective?.prefixHash ?? sha256Canonical({
 		systemPromptHash,
@@ -415,6 +422,7 @@ export function buildPrefixManifest(input: PrefixManifestBuildInput): PrefixMani
 		toolSchemaHash,
 		persistentContextHash: sha256Canonical(contextEntries),
 		cacheKeyHash: cacheKeyHash ?? null,
+		cachePolicyHash,
 	});
 
 	const manifest: PrefixManifestV1 = {
@@ -424,6 +432,7 @@ export function buildPrefixManifest(input: PrefixManifestBuildInput): PrefixMani
 		api: input.api,
 		transport: effective?.transport ?? input.transport,
 		...(input.cacheRetention === undefined ? {} : { cacheRetention: input.cacheRetention }),
+		cachePolicyHash,
 		systemPromptHash,
 		systemPromptBytes,
 		toolOrderHash,
@@ -523,6 +532,7 @@ export function comparePrefixManifests(
 		previous.systemPromptHash !== current.systemPromptHash ||
 		previous.systemPromptBytes !== current.systemPromptBytes;
 	const effectivePrefixChanged = previous.effectivePrefixHash !== current.effectivePrefixHash;
+	const cachePolicyChanged = previous.cachePolicyHash !== current.cachePolicyHash;
 	if (previous.provider !== current.provider || previous.model !== current.model || previous.api !== current.api) {
 		return diagnostic(previous, current, "model", "MODEL_CHANGED", true);
 	}
@@ -536,18 +546,25 @@ export function comparePrefixManifests(
 		!toolSchemaChanged &&
 		!effectivePrefixChanged &&
 		previous.cacheKeyHash === current.cacheKeyHash &&
+		!cachePolicyChanged &&
 		previous.previousResponseMode === current.previousResponseMode
 	) {
 		// Intent metadata is explanatory only. A transform may hold the provider prefix
 		// constant even while configured context, tools, or dynamic instructions change.
 		return undefined;
 	}
-	if (previous.cacheRetention !== current.cacheRetention) {
+	if (
+		(comparingEffective && cachePolicyChanged) ||
+		(!comparingEffective && previous.cacheRetention !== current.cacheRetention)
+	) {
 		return diagnostic(previous, current, "cache-retention", "CACHE_RETENTION_CHANGED", true);
 	}
 	if (systemPromptChanged) {
 		if (toolSetChanged) {
 			return diagnostic(previous, current, "system-prompt", "TOOL_ACTIVATED", true, changedTools);
+		}
+		if (toolOrderChanged) {
+			return diagnostic(previous, current, "system-prompt", "TOOL_ORDER_CHANGED", true);
 		}
 		if (toolSchemaChanged) {
 			return diagnostic(previous, current, "system-prompt", "TOOL_SCHEMA_CHANGED", true, changedToolSchemas);
@@ -575,8 +592,8 @@ export function comparePrefixManifests(
 			previous,
 			current,
 			"tool-order",
-			toolSetChanged ? "TOOL_ACTIVATED" : "UNKNOWN_PREFIX_DRIFT",
-			toolSetChanged,
+			toolSetChanged ? "TOOL_ACTIVATED" : "TOOL_ORDER_CHANGED",
+			true,
 			changedTools,
 		);
 	}
