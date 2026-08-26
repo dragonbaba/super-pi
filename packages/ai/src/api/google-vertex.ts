@@ -384,6 +384,7 @@ export function observeGoogleVertexEffectiveDispatch(
 		orderedToolDefinitions: effectiveTools.definitions,
 		orderedToolIdentifiers: effectiveTools.identifiers,
 		cacheKey: cachedContent,
+		cacheRetention: null,
 		cachePolicy: { enabled: Boolean(cachedContent), mode: cachedContent ? "explicit" : "implicit" },
 		cacheBoundary: null,
 	});

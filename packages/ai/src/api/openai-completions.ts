@@ -36,7 +36,7 @@ import type {
 } from "../types.ts";
 import { formatProviderError, normalizeProviderError } from "../utils/error-body.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
-import { observeEffectiveDispatch, summarizeCacheMarkerPolicies } from "../utils/effective-dispatch.ts";
+import { observeEffectiveDispatch, summarizeCacheMarkerMetadata } from "../utils/effective-dispatch.ts";
 import { shortHash } from "../utils/hash.ts";
 import { headersToRecord } from "../utils/headers.ts";
 import { parseStreamingJson, stringifyToolArguments } from "../utils/json-parse.ts";
@@ -690,8 +690,9 @@ export function observeOpenAIChatEffectiveDispatch(
 ): void {
 	const instructionPrefix = params.messages.filter(
 		(message) => message.role === "system" || message.role === "developer",
-	);
+	).map(cacheNeutralOpenAIChatMessage);
 	const tools = params.tools ?? [];
+	const neutralTools = tools.map(removeOpenAIChatCacheControl);
 	const cacheParams = params as typeof params & {
 		prompt_cache_options?: unknown;
 		prompt_cache_retention?: unknown;
@@ -701,28 +702,45 @@ export function observeOpenAIChatEffectiveDispatch(
 		transport: "sse",
 		previousResponseMode: "none",
 		instructionPrefix,
-		orderedToolDefinitions: tools,
+		orderedToolDefinitions: neutralTools,
 		orderedToolIdentifiers: tools.map((tool) =>
 			tool.type === "function" ? tool.function.name : tool.custom.name,
 		),
 		cacheKey: params.prompt_cache_key,
+		cacheRetention: {
+			promptCacheRetention: cacheParams.prompt_cache_retention ?? null,
+			markers: cache.markerRetention,
+		},
 		cachePolicy: {
 			enabled:
-				cacheParams.prompt_cache_retention !== undefined ||
 				cacheParams.prompt_cache_options !== undefined ||
 				cache.markerCount > 0,
-			promptCacheRetention: cacheParams.prompt_cache_retention ?? null,
 			promptCacheOptions: cacheParams.prompt_cache_options ?? null,
-			markers: cache.markerPolicies,
+			markers: cache.markerPolicy,
 		},
 		cacheBoundary: cache.boundary,
 	});
 }
 
+function removeOpenAIChatCacheControl(value: unknown): unknown {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+	const { cache_control: _cacheControl, ...neutral } = value as Record<string, unknown>;
+	return neutral;
+}
+
+function cacheNeutralOpenAIChatMessage(
+	message: OpenAI.Chat.Completions.ChatCompletionMessageParam,
+): unknown {
+	const neutral = removeOpenAIChatCacheControl(message) as Record<string, unknown>;
+	return Array.isArray(message.content)
+		? { ...neutral, content: message.content.map(removeOpenAIChatCacheControl) }
+		: neutral;
+}
+
 function extractOpenAIChatCacheMetadata(
 	messages: readonly OpenAI.Chat.Completions.ChatCompletionMessageParam[],
 	tools: readonly OpenAI.Chat.Completions.ChatCompletionTool[],
-): { markerCount: number; markerPolicies: unknown; boundary: unknown } {
+): { markerCount: number; markerRetention: unknown; markerPolicy: unknown; boundary: unknown } {
 	const markers: unknown[] = [];
 	const anchors: string[] = [];
 	let lastConversationMessage = -1;
@@ -753,7 +771,7 @@ function extractOpenAIChatCacheMetadata(
 			else if (messageIndex === lastConversationMessage && partIndex === lastCacheablePart) {
 				anchors.push(`last-${role}:last-cacheable-block`);
 			} else {
-				anchors.push(`message:${messages.length - 1 - messageIndex}:${content.length - 1 - partIndex}:${role}`);
+				anchors.push(`message:${messageIndex}:${partIndex}:${role}`);
 			}
 		}
 	}
@@ -761,12 +779,14 @@ function extractOpenAIChatCacheMetadata(
 		const marker = readOpenAIChatCacheControl(tools[index]);
 		if (marker === undefined) continue;
 		markers.push(marker);
-		anchors.push(index === tools.length - 1 ? "last-tool" : `tool:${tools.length - 1 - index}`);
+		anchors.push(index === tools.length - 1 ? "last-tool" : `tool:${index}`);
 	}
+	const summary = summarizeCacheMarkerMetadata(markers);
 	return {
 		markerCount: markers.length,
-		markerPolicies: summarizeCacheMarkerPolicies(markers),
-		boundary: [...new Set(anchors)].sort(),
+		markerRetention: summary.retention,
+		markerPolicy: summary.policy,
+		boundary: anchors,
 	};
 }
 

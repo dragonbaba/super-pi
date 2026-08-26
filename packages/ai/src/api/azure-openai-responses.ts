@@ -187,8 +187,8 @@ export function observeAzureOpenAIResponsesEffectiveDispatch(
 		orderedToolDefinitions: tools,
 		orderedToolIdentifiers: tools.map((tool) => "name" in tool && typeof tool.name === "string" ? tool.name : tool.type),
 		cacheKey: params.prompt_cache_key,
+		cacheRetention: { promptCacheRetention: params.prompt_cache_retention ?? null },
 		cachePolicy: {
-			promptCacheRetention: params.prompt_cache_retention ?? null,
 			promptCacheOptions: cacheParams.prompt_cache_options ?? null,
 		},
 		cacheBoundary: null,

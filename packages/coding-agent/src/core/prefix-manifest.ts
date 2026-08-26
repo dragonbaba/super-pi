@@ -11,6 +11,7 @@ export interface PrefixManifestV1 {
 	api: string;
 	transport: string;
 	cacheRetention?: string;
+	cacheRetentionHash: string;
 	cachePolicyHash: string;
 	cacheBoundaryHash: string;
 	systemPromptHash: string;
@@ -55,6 +56,7 @@ export interface EffectivePrefixDispatchObservation {
 	toolsHash: string;
 	toolCount: number;
 	cacheKeyHash?: string;
+	cacheRetentionHash: string;
 	cachePolicyHash: string;
 	cacheBoundaryHash: string;
 	prefixHash: string;
@@ -411,9 +413,10 @@ export function buildPrefixManifest(input: PrefixManifestBuildInput): PrefixMani
 	const toolSchemaHash = effective?.toolsHash ?? sha256Canonical(input.tools.map((tool) => ({ name: tool.name, schema: tool.schema })));
 	const toolCount = effective?.toolCount ?? input.tools.length;
 	const cacheKeyHash = effective?.cacheKeyHash ?? (input.cacheKey === undefined ? undefined : hashText(input.cacheKey));
-	const cachePolicyHash = effective?.cachePolicyHash ?? sha256Canonical({
+	const cacheRetentionHash = effective?.cacheRetentionHash ?? sha256Canonical({
 		configuredRetention: input.cacheRetention ?? null,
 	});
+	const cachePolicyHash = effective?.cachePolicyHash ?? sha256Canonical(null);
 	const cacheBoundaryHash = effective?.cacheBoundaryHash ?? sha256Canonical(null);
 	const requestTransformOutputHash = effective?.requestTransformOutputHash ?? sha256Canonical({
 		systemPromptHash,
@@ -421,6 +424,7 @@ export function buildPrefixManifest(input: PrefixManifestBuildInput): PrefixMani
 		toolIdentifierSetHash,
 		toolSchemaHash,
 		cacheKeyHash: cacheKeyHash ?? null,
+		cacheRetentionHash,
 		cachePolicyHash,
 		cacheBoundaryHash,
 	});
@@ -430,6 +434,7 @@ export function buildPrefixManifest(input: PrefixManifestBuildInput): PrefixMani
 		toolSchemaHash,
 		persistentContextHash: sha256Canonical(contextEntries),
 		cacheKeyHash: cacheKeyHash ?? null,
+		cacheRetentionHash,
 		cachePolicyHash,
 		cacheBoundaryHash,
 	});
@@ -441,6 +446,7 @@ export function buildPrefixManifest(input: PrefixManifestBuildInput): PrefixMani
 		api: input.api,
 		transport: effective?.transport ?? input.transport,
 		...(input.cacheRetention === undefined ? {} : { cacheRetention: input.cacheRetention }),
+		cacheRetentionHash,
 		cachePolicyHash,
 		cacheBoundaryHash,
 		systemPromptHash,
@@ -542,6 +548,7 @@ export function comparePrefixManifests(
 		previous.systemPromptHash !== current.systemPromptHash ||
 		previous.systemPromptBytes !== current.systemPromptBytes;
 	const effectivePrefixChanged = previous.effectivePrefixHash !== current.effectivePrefixHash;
+	const cacheRetentionChanged = previous.cacheRetentionHash !== current.cacheRetentionHash;
 	const cachePolicyChanged = previous.cachePolicyHash !== current.cachePolicyHash;
 	const cacheBoundaryChanged = previous.cacheBoundaryHash !== current.cacheBoundaryHash;
 	if (previous.provider !== current.provider || previous.model !== current.model || previous.api !== current.api) {
@@ -557,6 +564,7 @@ export function comparePrefixManifests(
 		!toolSchemaChanged &&
 		!effectivePrefixChanged &&
 		previous.cacheKeyHash === current.cacheKeyHash &&
+		!cacheRetentionChanged &&
 		!cachePolicyChanged &&
 		!cacheBoundaryChanged &&
 		previous.previousResponseMode === current.previousResponseMode
@@ -590,6 +598,7 @@ export function comparePrefixManifests(
 		!contextChanged &&
 		!dynamicChanged &&
 		previous.cacheKeyHash === current.cacheKeyHash &&
+		!cacheRetentionChanged &&
 		!cachePolicyChanged &&
 		!cacheBoundaryChanged
 	) {
@@ -616,16 +625,13 @@ export function comparePrefixManifests(
 		);
 	}
 	if (
-		(comparingEffective && cachePolicyChanged) ||
+		(comparingEffective && cacheRetentionChanged) ||
 		(!comparingEffective && previous.cacheRetention !== current.cacheRetention)
 	) {
-		if (
-			comparingEffective &&
-			(previous.cacheKeyHash === undefined) !== (current.cacheKeyHash === undefined)
-		) {
-			return diagnostic(previous, current, "cache-policy", "CACHE_POLICY_CHANGED", true);
-		}
 		return diagnostic(previous, current, "cache-retention", "CACHE_RETENTION_CHANGED", true);
+	}
+	if (comparingEffective && cachePolicyChanged) {
+		return diagnostic(previous, current, "cache-policy", "CACHE_POLICY_CHANGED", true);
 	}
 	if (comparingEffective && previous.cacheKeyHash !== current.cacheKeyHash) {
 		return diagnostic(previous, current, "cache-key", "CACHE_KEY_CHANGED", true);

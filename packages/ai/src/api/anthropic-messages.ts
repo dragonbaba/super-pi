@@ -31,7 +31,7 @@ import type {
 } from "../types.ts";
 import { splitDeferredTools } from "../utils/deferred-tools.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
-import { observeEffectiveDispatch, summarizeCacheMarkerPolicies } from "../utils/effective-dispatch.ts";
+import { observeEffectiveDispatch, summarizeCacheMarkerMetadata } from "../utils/effective-dispatch.ts";
 import { headersToRecord } from "../utils/headers.ts";
 import { parseJsonWithRepair, parseStreamingJson } from "../utils/json-parse.ts";
 import { getPiUserAgent } from "../utils/pi-user-agent.ts";
@@ -826,18 +826,32 @@ export function observeAnthropicEffectiveDispatch(
 ): void {
 	const tools = params.tools ?? [];
 	const cache = extractAnthropicCacheMetadata(params);
+	const neutralTools = tools.map(removeAnthropicCacheControl);
 	observeEffectiveDispatch(options, model, {
 		transport: "sse",
 		previousResponseMode: "none",
-		instructionPrefix: params.system ?? null,
-		orderedToolDefinitions: tools,
+		instructionPrefix: Array.isArray(params.system)
+			? params.system.map(removeAnthropicCacheControl)
+			: (params.system ?? null),
+		orderedToolDefinitions: neutralTools,
 		orderedToolIdentifiers: tools.map((tool) => tool.name),
+		cacheRetention: cache.retention,
 		cachePolicy: cache.policy,
 		cacheBoundary: cache.boundary,
 	});
 }
 
-function extractAnthropicCacheMetadata(params: MessageCreateParamsStreaming): { policy: unknown; boundary: unknown } {
+function removeAnthropicCacheControl(value: unknown): unknown {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+	const { cache_control: _cacheControl, ...neutral } = value as Record<string, unknown>;
+	return neutral;
+}
+
+function extractAnthropicCacheMetadata(params: MessageCreateParamsStreaming): {
+	retention: unknown;
+	policy: unknown;
+	boundary: unknown;
+} {
 	const markers: unknown[] = [];
 	const anchors: string[] = [];
 	if (Array.isArray(params.system)) {
@@ -860,7 +874,7 @@ function extractAnthropicCacheMetadata(params: MessageCreateParamsStreaming): { 
 			anchors.push(
 				messageIndex === params.messages.length - 1 && message?.role === "user" && blockIndex === content.length - 1
 					? "last-user:last-cacheable-block"
-					: `message:${params.messages.length - 1 - messageIndex}:${content.length - 1 - blockIndex}:${message?.role ?? "unknown"}`,
+					: `message:${messageIndex}:${blockIndex}:${message?.role ?? "unknown"}`,
 			);
 		}
 	}
@@ -868,11 +882,13 @@ function extractAnthropicCacheMetadata(params: MessageCreateParamsStreaming): { 
 		const marker = cacheControlMarker(params.tools?.[index]);
 		if (marker === undefined) continue;
 		markers.push(marker);
-		anchors.push(index === (params.tools?.length ?? 0) - 1 ? "last-tool" : `tool:${(params.tools?.length ?? 0) - 1 - index}`);
+		anchors.push(index === (params.tools?.length ?? 0) - 1 ? "last-tool" : `tool:${index}`);
 	}
+	const summary = summarizeCacheMarkerMetadata(markers);
 	return {
-		policy: summarizeCacheMarkerPolicies(markers),
-		boundary: [...new Set(anchors)].sort(),
+		retention: summary.retention,
+		policy: summary.policy,
+		boundary: anchors,
 	};
 }
 

@@ -185,6 +185,7 @@ test("non-prefix request body changes do not create false prefix drift", () => {
 		toolsHash: "tools-hash",
 		toolCount: 1,
 		cacheKeyHash: "cache-key-hash",
+		cacheRetentionHash: "cache-retention-hash",
 		cachePolicyHash: "cache-policy-hash",
 		cacheBoundaryHash: "cache-boundary-hash",
 		prefixHash: "prefix-hash",
@@ -219,6 +220,7 @@ test("effective manifests ignore intent-only context changes until an effective 
 		toolIdentifierSetHash: "fixed-tool-set",
 		toolsHash: "fixed-tools",
 		toolCount: 1,
+		cacheRetentionHash: "fixed-cache-retention",
 		cachePolicyHash: "fixed-cache-policy",
 		cacheBoundaryHash: "fixed-cache-boundary",
 		prefixHash: "fixed-prefix",
@@ -243,6 +245,7 @@ test("effective tool-set changes are activation drift even when intent tools sta
 		toolIdentifierSetHash: "read-set",
 		toolsHash: "read-tools",
 		toolCount: 1,
+		cacheRetentionHash: "fixed-cache-retention",
 		cachePolicyHash: "fixed-cache-policy",
 		cacheBoundaryHash: "fixed-cache-boundary",
 		prefixHash: "read-prefix",
@@ -277,6 +280,7 @@ test("effective cache-key drift keeps its dedicated reason ahead of aggregate pr
 		toolsHash: "fixed-tools",
 		toolCount: 1,
 		cacheKeyHash: "cache-a",
+		cacheRetentionHash: "fixed-cache-retention",
 		cachePolicyHash: "fixed-cache-policy",
 		cacheBoundaryHash: "fixed-cache-boundary",
 		prefixHash: "prefix-a",
@@ -298,7 +302,38 @@ test("effective cache-key drift keeps its dedicated reason ahead of aggregate pr
 	assert.equal(diagnostic?.firstDivergentSegment, "cache-key");
 });
 
-test("effective short-to-long cache policy drift survives no-op filtering", () => {
+test("effective policy classification does not infer from cache-key presence", () => {
+	const input = productionLikeInput();
+	const effective = {
+		transport: "sse",
+		previousResponseMode: "none" as const,
+		instructionsHash: "fixed-instructions",
+		instructionsBytes: 18,
+		toolOrderHash: "fixed-order",
+		toolIdentifierSetHash: "fixed-set",
+		toolsHash: "fixed-tools",
+		toolCount: 1,
+		cacheRetentionHash: "fixed-cache-retention",
+		cachePolicyHash: "fixed-cache-policy",
+		cacheBoundaryHash: "fixed-cache-boundary",
+		prefixHash: "fixed-prefix",
+		requestTransformOutputHash: "fixed-request",
+	};
+	const withoutKey = buildPrefixManifest({ ...input, effectiveDispatch: effective });
+	const withKey = buildPrefixManifest({
+		...input,
+		effectiveDispatch: { ...effective, cacheKeyHash: "new-key", prefixHash: "key-prefix" },
+	});
+	assert.equal(comparePrefixManifests(withoutKey, withKey)?.reasonCode, "CACHE_KEY_CHANGED");
+
+	const changedPolicy = buildPrefixManifest({
+		...input,
+		effectiveDispatch: { ...effective, cachePolicyHash: "changed-policy", prefixHash: "policy-prefix" },
+	});
+	assert.equal(comparePrefixManifests(withoutKey, changedPolicy)?.reasonCode, "CACHE_POLICY_CHANGED");
+});
+
+test("effective short-to-long cache retention drift survives no-op filtering", () => {
 	const input = productionLikeInput();
 	const shortPolicy = {
 		transport: "sse",
@@ -309,6 +344,7 @@ test("effective short-to-long cache policy drift survives no-op filtering", () =
 		toolIdentifierSetHash: "fixed-set",
 		toolsHash: "fixed-tools",
 		toolCount: 1,
+		cacheRetentionHash: "resolved-short-retention",
 		cachePolicyHash: "resolved-short-policy",
 		cacheBoundaryHash: "fixed-cache-boundary",
 		prefixHash: "short-prefix",
@@ -316,7 +352,7 @@ test("effective short-to-long cache policy drift survives no-op filtering", () =
 	};
 	const longPolicy = {
 		...shortPolicy,
-		cachePolicyHash: "resolved-long-policy",
+		cacheRetentionHash: "resolved-long-retention",
 	};
 	const diagnostic = comparePrefixManifests(
 		buildPrefixManifest({ ...input, cacheRetention: "short", effectiveDispatch: shortPolicy }),
@@ -338,6 +374,7 @@ test("configured cache retention changes do not drift when effective policy is u
 		toolIdentifierSetHash: "fixed-set",
 		toolsHash: "fixed-tools",
 		toolCount: 1,
+		cacheRetentionHash: "same-provider-retention",
 		cachePolicyHash: "same-provider-policy",
 		cacheBoundaryHash: "fixed-cache-boundary",
 		prefixHash: "same-prefix",

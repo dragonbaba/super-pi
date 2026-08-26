@@ -33,6 +33,8 @@ export interface EffectiveDispatchHashInput {
 	orderedToolDefinitions: readonly unknown[];
 	orderedToolIdentifiers: readonly string[];
 	cacheKey?: unknown;
+	/** Provider-owned retention/TTL selected from the actual transformed wire request. */
+	cacheRetention: unknown;
 	/** Provider-owned cache policy selected from the actual transformed wire request. */
 	cachePolicy: unknown;
 	/** Semantic cache breakpoint anchors selected from the actual transformed wire request. */
@@ -49,18 +51,44 @@ function normalizeJsonLike(value: unknown): unknown {
 	return normalized;
 }
 
-/** Collapse marker instances into a stable set of policy values without retaining positions. */
-export function summarizeCacheMarkerPolicies(markers: readonly unknown[]): unknown {
+function uniqueNormalizedValues(values: readonly unknown[]): unknown[] {
 	const unique = new Map<string, unknown>();
-	for (const marker of markers) {
-		const normalized = normalizeJsonLike(marker);
+	for (const value of values) {
+		const normalized = normalizeJsonLike(value);
 		const serialized = JSON.stringify(normalized);
 		if (serialized !== undefined) unique.set(serialized, normalized);
 	}
+	return [...unique.entries()].sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
+		.map(([, value]) => value);
+}
+
+/** Split marker values into retention/TTL and all other policy fields without retaining positions. */
+export function summarizeCacheMarkerMetadata(markers: readonly unknown[]): {
+	retention: unknown;
+	policy: unknown;
+} {
+	const retentionValues: unknown[] = [];
+	const policyValues: unknown[] = [];
+	for (const marker of markers) {
+		if (!marker || typeof marker !== "object" || Array.isArray(marker)) {
+			retentionValues.push(null);
+			policyValues.push(marker);
+			continue;
+		}
+		const record = marker as Record<string, unknown>;
+		retentionValues.push({
+			retention: record.retention ?? null,
+			ttl: record.ttl ?? null,
+		});
+		const policy: Record<string, unknown> = {};
+		for (const key of Object.keys(record).sort()) {
+			if (key !== "retention" && key !== "ttl") policy[key] = record[key];
+		}
+		policyValues.push(policy);
+	}
 	return {
-		enabled: unique.size > 0,
-		markers: [...unique.entries()].sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
-			.map(([, marker]) => marker),
+		retention: { enabled: markers.length > 0, values: uniqueNormalizedValues(retentionValues) },
+		policy: { enabled: markers.length > 0, values: uniqueNormalizedValues(policyValues) },
 	};
 }
 
@@ -93,6 +121,7 @@ export function observeEffectiveDispatch<TApi extends Api>(
 		const toolsHash = sha256Json(input.orderedToolDefinitions);
 		const toolOrderHash = sha256Json(input.orderedToolIdentifiers);
 		const toolIdentifierSetHash = sha256Json([...input.orderedToolIdentifiers].sort());
+		const cacheRetentionHash = sha256Json(input.cacheRetention);
 		const cachePolicyHash = sha256Json(input.cachePolicy);
 		const cacheBoundaryHash = sha256Json(input.cacheBoundary);
 		if (
@@ -101,6 +130,7 @@ export function observeEffectiveDispatch<TApi extends Api>(
 			!toolsHash ||
 			!toolOrderHash ||
 			!toolIdentifierSetHash ||
+			!cacheRetentionHash ||
 			!cachePolicyHash ||
 			!cacheBoundaryHash
 		) return;
@@ -111,6 +141,7 @@ export function observeEffectiveDispatch<TApi extends Api>(
 			toolIdentifierSetHash,
 			toolsHash,
 			cacheKeyHash: cacheKeyHash ?? null,
+			cacheRetentionHash,
 			cachePolicyHash,
 			cacheBoundaryHash,
 		};
@@ -127,6 +158,7 @@ export function observeEffectiveDispatch<TApi extends Api>(
 			toolsHash,
 			toolCount: input.orderedToolDefinitions.length,
 			...(cacheKeyHash === undefined ? {} : { cacheKeyHash }),
+			cacheRetentionHash,
 			cachePolicyHash,
 			cacheBoundaryHash,
 			prefixHash,

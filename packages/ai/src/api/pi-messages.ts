@@ -451,7 +451,8 @@ export function observePiMessagesEffectiveDispatch(
 		orderedToolDefinitions: tools,
 		orderedToolIdentifiers: toolIdentifiers,
 		cacheKey: wire.options?.sessionId,
-		cachePolicy: { cacheRetention: wire.options?.cacheRetention ?? null },
+		cacheRetention: { cacheRetention: wire.options?.cacheRetention ?? null },
+		cachePolicy: null,
 		cacheBoundary: null,
 	});
 }

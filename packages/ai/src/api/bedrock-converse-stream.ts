@@ -50,7 +50,7 @@ import type {
 import { appendAssistantMessageDiagnostic } from "../utils/diagnostics.ts";
 import { normalizeProviderError } from "../utils/error-body.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
-import { observeEffectiveDispatch, summarizeCacheMarkerPolicies } from "../utils/effective-dispatch.ts";
+import { observeEffectiveDispatch, summarizeCacheMarkerMetadata } from "../utils/effective-dispatch.ts";
 import { providerHeadersToRecord } from "../utils/headers.ts";
 import { parseStreamingJson } from "../utils/json-parse.ts";
 import { resolveHttpProxyUrlForTarget } from "../utils/node-http-proxy.ts";
@@ -391,22 +391,47 @@ export function observeBedrockEffectiveDispatch(
 ): void {
 	const tools = commandInput.toolConfig?.tools ?? [];
 	const cache = extractBedrockCacheMetadata(commandInput.system, commandInput.messages, tools);
+	const neutralTools = cacheNeutralBedrockValues(tools);
 	observeEffectiveDispatch(options, model, {
 		transport: "sse",
 		previousResponseMode: "none",
-		instructionPrefix: commandInput.system ?? null,
-		orderedToolDefinitions: tools,
-		orderedToolIdentifiers: tools.map((tool) => "toolSpec" in tool ? (tool.toolSpec?.name ?? "unknown") : "unknown"),
+		instructionPrefix: Array.isArray(commandInput.system)
+			? cacheNeutralBedrockValues(commandInput.system)
+			: (commandInput.system ?? null),
+		orderedToolDefinitions: neutralTools,
+		orderedToolIdentifiers: neutralTools.map(bedrockToolIdentifier),
+		cacheRetention: cache.retention,
 		cachePolicy: cache.policy,
 		cacheBoundary: cache.boundary,
 	});
+}
+
+function cacheNeutralBedrockValues(values: readonly unknown[]): unknown[] {
+	const neutral: unknown[] = [];
+	for (const value of values) {
+		if (!value || typeof value !== "object" || Array.isArray(value)) {
+			neutral.push(value);
+			continue;
+		}
+		const { cachePoint: _cachePoint, ...component } = value as Record<string, unknown>;
+		if (Object.keys(component).length > 0) neutral.push(component);
+	}
+	return neutral;
+}
+
+function bedrockToolIdentifier(value: unknown): string {
+	if (!value || typeof value !== "object") return "unknown";
+	const toolSpec = (value as Record<string, unknown>).toolSpec;
+	if (!toolSpec || typeof toolSpec !== "object") return "unknown";
+	const name = (toolSpec as Record<string, unknown>).name;
+	return typeof name === "string" ? name : "unknown";
 }
 
 function extractBedrockCacheMetadata(
 	system: unknown,
 	messages: readonly Message[] | undefined,
 	tools: readonly BedrockTool[],
-): { policy: unknown; boundary: unknown } {
+): { retention: unknown; policy: unknown; boundary: unknown } {
 	const markers: unknown[] = [];
 	const anchors: string[] = [];
 	for (const point of extractBedrockCachePoints(Array.isArray(system) ? system : [])) {
@@ -421,17 +446,19 @@ function extractBedrockCacheMetadata(
 			anchors.push(
 				messageIndex === (messages?.length ?? 0) - 1 && message?.role === "user" && point.index === content.length - 1
 					? "last-user:last-cacheable-block"
-					: `message:${(messages?.length ?? 0) - 1 - messageIndex}:${content.length - 1 - point.index}:${message?.role ?? "unknown"}`,
+					: `message:${messageIndex}:${point.index}:${message?.role ?? "unknown"}`,
 			);
 		}
 	}
 	for (const point of extractBedrockCachePoints(tools)) {
 		markers.push(point.cachePoint);
-		anchors.push(point.index === tools.length - 1 ? "last-tool" : `tool:${tools.length - 1 - point.index}`);
+		anchors.push(point.index === tools.length - 1 ? "last-tool" : `tool:${point.index}`);
 	}
+	const summary = summarizeCacheMarkerMetadata(markers);
 	return {
-		policy: summarizeCacheMarkerPolicies(markers),
-		boundary: [...new Set(anchors)].sort(),
+		retention: summary.retention,
+		policy: summary.policy,
+		boundary: anchors,
 	};
 }
 

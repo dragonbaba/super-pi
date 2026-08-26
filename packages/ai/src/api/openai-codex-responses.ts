@@ -929,6 +929,7 @@ interface SuccessfulDispatchCommitment {
     toolsHash: string;
     bodyWithoutInputHash: string;
     promptCacheKeyHash: string;
+    cacheRetentionHash: string;
     cachePolicyHash: string;
     cacheBoundaryHash: string;
     serviceTierHash: string;
@@ -1607,9 +1608,10 @@ function createSuccessfulDispatchCommitment(
     const toolsHash = sha256Json(actualBody.tools ?? []);
     const bodyWithoutInputHash = sha256Json(requestBodyWithoutInput(actualBody));
     const promptCacheKeyHash = sha256Json(actualBody.prompt_cache_key ?? null);
-    const cachePolicyHash = sha256Json({
-        promptCacheEnabled: actualBody.prompt_cache_key !== undefined,
+    const cacheRetentionHash = sha256Json({
         promptCacheRetention: actualBody.prompt_cache_retention ?? null,
+    });
+    const cachePolicyHash = sha256Json({
         promptCacheOptions: actualBody.prompt_cache_options ?? null,
     });
     const cacheBoundaryHash = sha256Json(null);
@@ -1630,6 +1632,7 @@ function createSuccessfulDispatchCommitment(
         !toolsHash ||
         !bodyWithoutInputHash ||
         !promptCacheKeyHash ||
+        !cacheRetentionHash ||
         !cachePolicyHash ||
         !cacheBoundaryHash ||
         !serviceTierHash ||
@@ -1649,6 +1652,7 @@ function createSuccessfulDispatchCommitment(
         toolsHash,
         bodyWithoutInputHash,
         promptCacheKeyHash,
+        cacheRetentionHash,
         cachePolicyHash,
         cacheBoundaryHash,
         serviceTierHash,
@@ -1686,6 +1690,7 @@ function recordSuccessfulDispatch(
         toolsHash: commitment.toolsHash,
         toolCount: commitment.toolCount,
         cacheKeyHash: commitment.promptCacheKeyHash,
+        cacheRetentionHash: commitment.cacheRetentionHash,
         cachePolicyHash: commitment.cachePolicyHash,
         cacheBoundaryHash: commitment.cacheBoundaryHash,
         prefixHash: commitment.bodyWithoutInputHash,

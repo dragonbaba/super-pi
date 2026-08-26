@@ -394,6 +394,7 @@ export function observeMistralEffectiveDispatch(
 		orderedToolDefinitions: tools,
 		orderedToolIdentifiers: toolIdentifiers,
 		cacheKey: payload.prompt_cache_key,
+		cacheRetention: null,
 		cachePolicy: { promptCacheEnabled: payload.prompt_cache_key !== undefined },
 		cacheBoundary: null,
 	});

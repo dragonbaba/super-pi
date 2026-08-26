@@ -295,7 +295,7 @@ test("Anthropic, OpenAI Responses, and Pi Messages use their actual top-level wi
 	]);
 });
 
-test("provider-resolved cache policy hashes follow actual wire markers and retention fields", () => {
+test("provider-resolved retention hashes change without contaminating policy hashes", () => {
 	const observePair = <TApi extends Api>(
 		observe: (captured: ReturnType<typeof capture<TApi>>, long: boolean) => void,
 	): [EffectiveDispatchObservation, EffectiveDispatchObservation] => {
@@ -310,7 +310,7 @@ test("provider-resolved cache policy hashes follow actual wire markers and reten
 			observeOpenAIResponsesEffectiveDispatch(captured.options as never, model("openai-responses"), {
 				model: "gpt-test", stream: true, input: [],
 				prompt_cache_retention: long ? "24h" : undefined,
-				prompt_cache_options: long ? undefined : { mode: "explicit" },
+				prompt_cache_options: { mode: "explicit" },
 			} as never);
 		}),
 		observePair<"anthropic-messages">((captured, long) => {
@@ -346,8 +346,10 @@ test("provider-resolved cache policy hashes follow actual wire markers and reten
 	];
 
 	for (const [short, long] of pairs) {
+		assert.equal(typeof short.cacheRetentionHash, "string");
+		assert.notEqual(short.cacheRetentionHash, long.cacheRetentionHash);
 		assert.equal(typeof short.cachePolicyHash, "string");
-		assert.notEqual(short.cachePolicyHash, long.cachePolicyHash);
+		assert.equal(short.cachePolicyHash, long.cachePolicyHash);
 		assert.notEqual(short.prefixHash, long.prefixHash);
 	}
 });
@@ -369,6 +371,7 @@ test("Anthropic history growth keeps cache policy and semantic boundary stable",
 		{ role: "assistant", content: [{ type: "text", text: "answer" }] },
 		{ role: "user", content: [{ type: "text", text: "second", cache_control: marker }] },
 	]);
+	assert.equal(first.cacheRetentionHash, grown.cacheRetentionHash);
 	assert.equal(first.cachePolicyHash, grown.cachePolicyHash);
 	assert.equal(first.cacheBoundaryHash, grown.cacheBoundaryHash);
 	assert.equal(comparePrefixManifests(manifestForObservation(first), manifestForObservation(grown)), undefined);
@@ -389,6 +392,7 @@ test("OpenAI Chat history growth keeps cache policy and semantic boundary stable
 		{ role: "assistant", content: [{ type: "text", text: "answer" }] },
 		{ role: "user", content: [{ type: "text", text: "second", cache_control: marker }] },
 	]);
+	assert.equal(first.cacheRetentionHash, grown.cacheRetentionHash);
 	assert.equal(first.cachePolicyHash, grown.cachePolicyHash);
 	assert.equal(first.cacheBoundaryHash, grown.cacheBoundaryHash);
 	assert.equal(comparePrefixManifests(manifestForObservation(first), manifestForObservation(grown)), undefined);
@@ -409,6 +413,7 @@ test("Bedrock history growth keeps cache policy and semantic boundary stable", (
 		{ role: "assistant", content: [{ text: "answer" }] },
 		{ role: "user", content: [{ text: "second" }, { cachePoint: marker }] },
 	]);
+	assert.equal(first.cacheRetentionHash, grown.cacheRetentionHash);
 	assert.equal(first.cachePolicyHash, grown.cachePolicyHash);
 	assert.equal(first.cacheBoundaryHash, grown.cacheBoundaryHash);
 	assert.equal(comparePrefixManifests(manifestForObservation(first), manifestForObservation(grown)), undefined);
@@ -464,6 +469,120 @@ test("cache TTL and genuine custom boundary changes have distinct diagnostics", 
 		comparePrefixManifests(manifestForObservation(short), manifestForObservation(moved))?.reasonCode,
 		"CACHE_BOUNDARY_CHANGED",
 	);
+});
+
+test("Anthropic cache metadata is neutral to system and tool component fingerprints", () => {
+	const observe = (ttl?: "1h") => observeOne((options, anthropicModel) => {
+		const cacheControl = { type: "ephemeral", ...(ttl ? { ttl } : {}) };
+		observeAnthropicEffectiveDispatch(options as never, anthropicModel, {
+			model: anthropicModel.id,
+			stream: true,
+			max_tokens: 64,
+			messages: [],
+			system: [{ type: "text", text: "system", cache_control: cacheControl }],
+			tools: [{
+				name: "read",
+				description: "read",
+				input_schema: { type: "object" },
+				cache_control: cacheControl,
+			}],
+		} as never);
+	}, "anthropic-messages");
+	const short = observe();
+	const long = observe("1h");
+	const diagnostic = comparePrefixManifests(
+		manifestForObservation(short, ["read"]),
+		manifestForObservation(long, ["read"]),
+	);
+	assert.equal(short.instructionsHash, long.instructionsHash);
+	assert.equal(short.toolsHash, long.toolsHash);
+	assert.equal(diagnostic?.reasonCode, "CACHE_RETENTION_CHANGED");
+});
+
+test("OpenAI Chat compatible cache metadata is neutral to system and tool component fingerprints", () => {
+	const observe = (ttl?: "1h") => observeOne((options, chatModel) => {
+		const cacheControl = { type: "ephemeral", ...(ttl ? { ttl } : {}) };
+		observeOpenAIChatEffectiveDispatch(options as never, chatModel, {
+			model: chatModel.id,
+			stream: true,
+			messages: [{
+				role: "system",
+				content: [{ type: "text", text: "system", cache_control: cacheControl }],
+			}],
+			tools: [{
+				type: "function",
+				function: { name: "read", description: "read", parameters: {} },
+				cache_control: cacheControl,
+			}],
+		} as never);
+	}, "openai-completions");
+	const short = observe();
+	const long = observe("1h");
+	const diagnostic = comparePrefixManifests(
+		manifestForObservation(short, ["read"]),
+		manifestForObservation(long, ["read"]),
+	);
+	assert.equal(short.instructionsHash, long.instructionsHash);
+	assert.equal(short.toolsHash, long.toolsHash);
+	assert.equal(diagnostic?.reasonCode, "CACHE_RETENTION_CHANGED");
+});
+
+test("Bedrock cache points are neutral to system component fingerprints", () => {
+	const observe = (ttl?: "1h") => observeOne((options, bedrockModel) => {
+		observeBedrockEffectiveDispatch(options as never, bedrockModel, {
+			modelId: bedrockModel.id,
+			messages: [],
+			system: [
+				{ text: "system" },
+				{ cachePoint: { type: "default", ...(ttl ? { ttl } : {}) } },
+			],
+		} as never);
+	}, "bedrock-converse-stream");
+	const short = observe();
+	const long = observe("1h");
+	const diagnostic = comparePrefixManifests(manifestForObservation(short), manifestForObservation(long));
+	assert.equal(short.instructionsHash, long.instructionsHash);
+	assert.equal(diagnostic?.reasonCode, "CACHE_RETENTION_CHANGED");
+});
+
+test("fixed custom cache boundary remains stable when messages are appended", () => {
+	const marker = { type: "ephemeral" };
+	const observe = (suffix: unknown[]) => observeOne((options, anthropicModel) => {
+		observeAnthropicEffectiveDispatch(options as never, anthropicModel, {
+			model: anthropicModel.id,
+			stream: true,
+			max_tokens: 64,
+			messages: [
+				{ role: "user", content: [{ type: "text", text: "fixed", cache_control: marker }] },
+				{ role: "assistant", content: [{ type: "text", text: "existing suffix" }] },
+				...suffix,
+			],
+		} as never);
+	}, "anthropic-messages");
+	const first = observe([]);
+	const appended = observe([
+		{ role: "user", content: [{ type: "text", text: "appended" }] },
+		{ role: "assistant", content: [{ type: "text", text: "appended answer" }] },
+	]);
+	assert.equal(first.cacheBoundaryHash, appended.cacheBoundaryHash);
+	assert.equal(comparePrefixManifests(manifestForObservation(first), manifestForObservation(appended)), undefined);
+});
+
+test("cache boundary fingerprints preserve breakpoint multiplicity", () => {
+	const observe = (markers: number) => observeOne((options, anthropicModel) => {
+		observeAnthropicEffectiveDispatch(options as never, anthropicModel, {
+			model: anthropicModel.id,
+			stream: true,
+			max_tokens: 64,
+			messages: [],
+			system: Array.from({ length: markers }, () => ({
+				type: "text",
+				text: "same system block",
+				cache_control: { type: "ephemeral" },
+			})),
+		} as never);
+	}, "anthropic-messages");
+	assert.notEqual(observe(1).cacheBoundaryHash, observe(2).cacheBoundaryHash);
 });
 
 test("Google Generative AI and Vertex observe cachedContent without exposing resource names", () => {

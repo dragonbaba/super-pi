@@ -117,7 +117,9 @@ export interface EffectiveDispatchObservation {
 	toolsHash: string;
 	toolCount: number;
 	cacheKeyHash?: string;
-	/** Hash of provider-resolved cache enablement, mode, retention, TTL, and options. */
+	/** Hash of provider-resolved cache retention and TTL values. */
+	cacheRetentionHash: string;
+	/** Hash of provider-resolved cache enablement, mode, type, and non-retention options. */
 	cachePolicyHash: string;
 	/** Hash of semantic cache breakpoint anchors, kept separate from cache policy. */
 	cacheBoundaryHash: string;
