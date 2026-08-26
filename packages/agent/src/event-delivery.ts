@@ -119,6 +119,8 @@ export class EventDeliveryDispatcher<E, K> {
 				this.observers.delete(observer);
 				observer.seenVersions.clear();
 				this.removeFullyDelivered();
+				this.cancelScheduledFlush();
+				this.scheduleFlush();
 			};
 		}
 

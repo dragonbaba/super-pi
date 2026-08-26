@@ -151,6 +151,61 @@ test("repeated missing-key flushes do not recurse through unrelated pending valu
 	assert.equal(dispatcher.stats.pendingKeys, 0);
 });
 
+test("unsubscribing the final latest observer cancels its scheduled flush", () => {
+	const scheduler = new FakeScheduler();
+	const dispatcher = new EventDeliveryDispatcher<FixtureEvent, string>({ scheduler });
+	const unsubscribe = dispatcher.subscribe(() => {}, {
+		delivery: "latest",
+		minIntervalMs: 60_000,
+	});
+	dispatcher.publishLatest("message", { type: "update", sequence: 1 });
+	assert.equal(dispatcher.stats.pendingKeys, 1);
+	assert.equal(scheduler.pendingTasks, 1);
+
+	unsubscribe();
+
+	assert.equal(dispatcher.stats.pendingKeys, 0);
+	assert.equal(scheduler.pendingTasks, 0);
+});
+
+test("unsubscribing a latest observer recalculates the next remaining due time", async () => {
+	const scheduler = new FakeScheduler();
+	const scheduledDelays: number[] = [];
+	const dispatcher = new EventDeliveryDispatcher<FixtureEvent, string>({
+		scheduler: {
+			now: () => scheduler.now(),
+			schedule: (callback, delayMs) => {
+				scheduledDelays.push(delayMs);
+				return scheduler.schedule(callback, delayMs);
+			},
+			cancel: (handle) => scheduler.cancel(handle as number),
+		},
+	});
+	const observed: number[] = [];
+	const unsubscribeSooner = dispatcher.subscribe(() => {}, {
+		delivery: "latest",
+		minIntervalMs: 60_000,
+	});
+	dispatcher.subscribe((event) => { observed.push(event.sequence); }, {
+		delivery: "latest",
+		minIntervalMs: 120_000,
+	});
+	dispatcher.publishLatest("message", { type: "update", sequence: 1 });
+
+	unsubscribeSooner();
+	assert.deepEqual(scheduledDelays, [60_000, 120_000]);
+	scheduler.advanceBy(60_000);
+	await Promise.resolve();
+	assert.deepEqual(observed, []);
+	assert.equal(scheduler.pendingTasks, 1);
+
+	scheduler.advanceBy(60_000);
+	await Promise.resolve();
+	await Promise.resolve();
+	assert.deepEqual(observed, [1]);
+	assert.equal(dispatcher.stats.pendingKeys, 0);
+});
+
 test("throwing observer filters are diagnosed without affecting healthy observers", async () => {
 	const diagnostics: EventDeliveryDiagnostic[] = [];
 	const { dispatcher } = createDispatcher(diagnostics);

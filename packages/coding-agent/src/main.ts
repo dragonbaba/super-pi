@@ -42,12 +42,18 @@ import {
 import { formatNoModelsAvailableMessage } from "./core/auth-guidance.ts";
 import { AuthStorage, ReadOnlyAuthStorage } from "./core/auth-storage.ts";
 import { exportFromFile } from "./core/export-html/index.ts";
-import type { InlineExtension } from "./core/extensions/types.ts";
+import { CLI_EXTENSION_HOST_POLICY } from "./core/extension-host-policy.ts";
+import type { ExtensionRunnerOptions } from "./core/extensions/runner.ts";
+import type { InlineExtension, LoadExtensionsResult } from "./core/extensions/types.ts";
 import { applyHttpProxySettings, configureHttpDispatcher } from "./core/http-dispatcher.ts";
 import { resolveCliModel, resolveModelScope, type ScopedModel } from "./core/model-resolver.ts";
 import { ModelRuntime } from "./core/model-runtime.ts";
 import { restoreStdout, takeOverStdout } from "./core/output-guard.ts";
-import { type AppMode, resolveProjectTrusted } from "./core/project-trust.ts";
+import {
+	type AppMode,
+	type ResolveProjectTrustedOptions,
+	resolveProjectTrusted,
+} from "./core/project-trust.ts";
 import type { CreateAgentSessionOptions } from "./core/sdk.ts";
 import {
 	formatMissingSessionCwdPrompt,
@@ -574,6 +580,24 @@ export interface MainOptions {
 	extensionFactories?: InlineExtension[];
 }
 
+export type MainProjectTrustResolverOptions = Omit<ResolveProjectTrustedOptions, "extensionsResult"> & {
+	extensionRunnerOptions: ExtensionRunnerOptions;
+	onResolved?: (trusted: boolean) => void;
+};
+
+/** Build the project-trust callback used by CLI runtime resource loading. */
+export function createMainProjectTrustResolver(options: MainProjectTrustResolverOptions) {
+	const { onResolved, ...resolveOptions } = options;
+	return async ({ extensionsResult }: { extensionsResult: LoadExtensionsResult }): Promise<boolean> => {
+		const trusted = await resolveProjectTrusted({
+			...resolveOptions,
+			extensionsResult,
+		});
+		onResolved?.(trusted);
+		return trusted;
+	};
+}
+
 export async function main(args: string[], options?: MainOptions) {
 	resetTimings();
 	const extensionFactories = [...builtInExtensions, ...(options?.extensionFactories ?? [])];
@@ -720,6 +744,7 @@ export async function main(args: string[], options?: MainOptions) {
 	const resolvedSkillPaths = resolveCliPaths(cwd, parsed.skills);
 	const resolvedPromptTemplatePaths = resolveCliPaths(cwd, parsed.promptTemplates);
 	const resolvedThemePaths = resolveCliPaths(cwd, parsed.themes);
+	const extensionRunnerOptions = CLI_EXTENSION_HOST_POLICY;
 	const createRuntime: CreateAgentSessionRuntimeFactory = async ({
 		cwd,
 		agentDir,
@@ -745,15 +770,14 @@ export async function main(args: string[], options?: MainOptions) {
 			settingsManager: runtimeSettingsManager,
 			modelRuntimeSignal: AbortSignal.timeout(15_000),
 			extensionFlagValues: parsed.unknownFlags,
+			extensionRunnerOptions,
 			resourceLoaderReloadOptions: shouldResolveProjectTrust
 				? {
-						resolveProjectTrust: async ({ extensionsResult }) => {
-							const trusted = await resolveProjectTrusted({
+						resolveProjectTrust: createMainProjectTrustResolver({
 								cwd,
 								trustStore,
 								trustOverride: parsed.projectTrustOverride,
 								defaultProjectTrust: startupSettingsManager.getDefaultProjectTrust(),
-								extensionsResult,
 								projectTrustContext:
 									projectTrustContext ??
 									createProjectTrustContext({
@@ -763,10 +787,9 @@ export async function main(args: string[], options?: MainOptions) {
 										hasUI: isInitialRuntime && trustPromptMode === "interactive",
 									}),
 								onExtensionError: (message) => projectTrustDiagnostics.push({ type: "warning", message }),
-							});
-							projectTrustByCwd.set(cwd, trusted);
-							return trusted;
-						},
+								extensionRunnerOptions,
+								onResolved: (trusted) => projectTrustByCwd.set(cwd, trusted),
+							}),
 					}
 				: undefined,
 			resourceLoaderOptions: {

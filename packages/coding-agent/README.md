@@ -46,6 +46,8 @@ Tool producers now choose one of two bounded progress contracts. Calling `onUpda
 
 Display-only extensions should use `pi.observe()` for these two events. Observer updates run on a latest-value lane separate from the built-in UI, the final update is flushed before the corresponding end event, return values are ignored, and failures do not fail the agent run. Slow observers are recorded. An observer is disabled after three consecutive ordinary failures by default; a timeout disables it immediately so it cannot delay the next run. Slow, timeout, and failure thresholds are configurable per registration:
 
+Observer payload snapshots recursively clone and freeze ordinary objects and arrays. `Map`, `Set`, `Date`, and typed-array values are cloned so they do not share mutable storage with provider or tool state, but their internal contents are not guaranteed to be deeply immutable; observers should treat every payload as read-only.
+
 ```ts
 export default function extension(pi: ExtensionAPI) {
 	pi.observe(
@@ -56,4 +58,4 @@ export default function extension(pi: ExtensionAPI) {
 }
 ```
 
-Intercepting and transforming hooks continue to use `pi.on()`. Hosts may configure category-specific hook timeouts through `extensionRunnerOptions`; safety/veto hooks, including bootstrap `project_trust`, always fail closed, interactive hooks have no timeout by default, and transform hooks require an explicit fail-open or fail-closed policy. A timeout stops awaiting the handler but cannot forcibly cancel already-running JavaScript. Its eventual fulfillment or rejection is observed and ignored; returned transforms or trust decisions are never applied after the timeout.
+Intercepting and transforming hooks continue to use `pi.on()`. Hosts may configure category-specific hook timeouts through `extensionRunnerOptions`; the standard CLI applies a 30-second timeout to safety/veto hooks, including bootstrap `project_trust`, and always fails them closed. Interactive hooks have no timeout by default, and transform hooks require an explicit fail-open or fail-closed policy. A timeout stops awaiting the handler but cannot forcibly cancel already-running JavaScript. Its eventual fulfillment or rejection is observed and ignored; returned transforms or trust decisions are never applied after the timeout.

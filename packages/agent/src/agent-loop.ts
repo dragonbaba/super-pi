@@ -835,7 +835,12 @@ async function executePreparedToolCall(
 		return { result, isError: false };
 	} catch (error) {
 		acceptingUpdates = false;
-		await progress.flush();
+		try {
+			await progress.flush();
+		} catch {
+			// Preserve the error that entered this path. A progress drain error is
+			// already that error when flush() detected it after tool completion.
+		}
 		return {
 			result: createErrorToolResult(error instanceof Error ? error.message : String(error)),
 			isError: true,
@@ -851,6 +856,8 @@ class ToolProgressDelivery {
 	private readonly instrumentation?: AgentEventInstrumentation;
 	private pending: AgentToolResult<any> | undefined;
 	private drainPromise: Promise<void> | undefined;
+	private firstDrainError: unknown;
+	private hasDrainError = false;
 	private occupied = false;
 
 	constructor(prepared: PreparedToolCall, emit: AgentEventSink, instrumentation?: AgentEventInstrumentation) {
@@ -860,6 +867,7 @@ class ToolProgressDelivery {
 	}
 
 	publish(partialResult: AgentToolResult<any>): Promise<void> {
+		if (this.hasDrainError) return this.rejectedFirstError();
 		this.pending = partialResult;
 		if (!this.occupied) {
 			this.occupied = true;
@@ -870,12 +878,26 @@ class ToolProgressDelivery {
 	}
 
 	async flush(): Promise<void> {
-		while (this.drainPromise) await this.drainPromise;
+		while (this.drainPromise) {
+			try {
+				await this.drainPromise;
+			} catch (error) {
+				this.recordDrainError(error);
+			}
+		}
+		this.throwFirstDrainError();
 		if (this.pending) {
 			this.markOccupied();
 			this.startDrain();
-			while (this.drainPromise) await this.drainPromise;
+			while (this.drainPromise) {
+				try {
+					await this.drainPromise;
+				} catch (error) {
+					this.recordDrainError(error);
+				}
+			}
 		}
+		this.throwFirstDrainError();
 	}
 
 	private startDrain(): void {
@@ -883,7 +905,7 @@ class ToolProgressDelivery {
 		this.drainPromise = drain;
 		void drain.then(
 			() => this.finishDrain(drain, false),
-			() => this.finishDrain(drain, true),
+			(error) => this.finishDrain(drain, true, error),
 		);
 	}
 
@@ -901,8 +923,12 @@ class ToolProgressDelivery {
 		}
 	}
 
-	private finishDrain(drain: Promise<void>, failed: boolean): void {
+	private finishDrain(drain: Promise<void>, failed: boolean, error?: unknown): void {
 		if (this.drainPromise !== drain) return;
+		if (failed) {
+			this.recordDrainError(error);
+			this.pending = undefined;
+		}
 		try {
 			this.instrumentation?.onToolProgressDrainSettled?.(this.prepared.toolCall.id);
 		} catch {
@@ -914,6 +940,22 @@ class ToolProgressDelivery {
 			return;
 		}
 		this.markUnoccupied();
+	}
+
+	private recordDrainError(error: unknown): void {
+		if (this.hasDrainError) return;
+		this.hasDrainError = true;
+		this.firstDrainError = error;
+	}
+
+	private throwFirstDrainError(): void {
+		if (this.hasDrainError) throw this.firstDrainError;
+	}
+
+	private rejectedFirstError(): Promise<void> {
+		const rejection = Promise.reject(this.firstDrainError);
+		void rejection.catch(() => {});
+		return rejection;
 	}
 
 	private markOccupied(): void {

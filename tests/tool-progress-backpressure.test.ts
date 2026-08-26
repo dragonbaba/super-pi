@@ -283,6 +283,59 @@ test("publish in the settled-before-cleanup microtask window restarts the drain"
 	await prompt;
 });
 
+async function runCriticalProgressFailure(delayedCompletion: boolean) {
+	let streamCalls = 0;
+	let releaseTool = () => {};
+	const toolGate = new Promise<void>((resolve) => { releaseTool = resolve; });
+	let markUpdateAttempted = () => {};
+	const updateAttempted = new Promise<void>((resolve) => { markUpdateAttempted = resolve; });
+	let endEvent: Extract<AgentEvent, { type: "tool_execution_end" }> | undefined;
+	const tool = {
+		name: "progress", label: "Progress", description: "critical failure fixture",
+		parameters: { type: "object", properties: {}, additionalProperties: false },
+		execute: async (_id: string, _params: unknown, _signal?: AbortSignal, onUpdate?: AgentToolUpdateCallback) => {
+			onUpdate?.({ content: [{ type: "text", text: "update" }], details: { sequence: 1 } });
+			if (delayedCompletion) await toolGate;
+			return { content: [{ type: "text", text: "done" }], details: {} };
+		},
+	};
+	const agent = new Agent({
+		initialState: { tools: [tool as never] },
+		streamFn: () => new ToolFixtureStream(streamCalls++ === 0) as never,
+	});
+	agent.subscribe((event) => {
+		if (event.type === "tool_execution_update") {
+			markUpdateAttempted();
+			throw new Error("critical progress listener failed");
+		}
+		if (event.type === "tool_execution_end") endEvent = event;
+	});
+
+	const prompt = agent.prompt("critical failure fixture");
+	await updateAttempted;
+	if (delayedCompletion) {
+		await nextTask();
+		releaseTool();
+	}
+	await prompt;
+	assert.ok(endEvent);
+	return {
+		isError: endEvent.isError,
+		text: endEvent.result.content[0]?.text,
+	};
+}
+
+test("raw progress listener failure is identical for immediate and delayed tool completion", async () => {
+	const immediate = await runCriticalProgressFailure(false);
+	const delayed = await runCriticalProgressFailure(true);
+
+	assert.deepEqual(immediate, {
+		isError: true,
+		text: "critical progress listener failed",
+	});
+	assert.deepEqual(delayed, immediate);
+});
+
 test("tool progress hot path no longer retains an update Promise array", () => {
 	const source = readFileSync("packages/agent/src/agent-loop.ts", "utf8");
 	assert.doesNotMatch(source, /updateEvents\s*:\s*Promise<void>\[\]/);

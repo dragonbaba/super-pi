@@ -31,6 +31,12 @@ npm run --silent -- bench:stream -- --legacy-delivery
 npm run --silent -- bench:tool-progress -- --legacy-delivery
 ```
 
+Delivery mode is part of each stream/tool-progress fixture identity, so latest and legacy results cannot be compared accidentally. To measure assistant snapshot cost under a provider-like 16 ms cadence, run the paced stream fixture (30 updates by default):
+
+```text
+npm run --silent -- bench:stream -- --paced-16ms
+```
+
 Save baseline and candidate JSON outside the source tree (or under ignored `.artifacts/`) and compare them with:
 
 ```text

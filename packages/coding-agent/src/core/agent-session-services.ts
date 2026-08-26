@@ -4,6 +4,7 @@ import type { Model } from "@super-pi/ai";
 import { getAgentDir, getConfigDir } from "../config.ts";
 import { resolvePath } from "../utils/paths.ts";
 import type { SessionStartEvent, ToolDefinition } from "./extensions/index.ts";
+import type { ExtensionRunnerOptions } from "./extensions/runner.ts";
 import { ModelRuntime } from "./model-runtime.ts";
 import {
 	DefaultResourceLoader,
@@ -43,6 +44,7 @@ export interface CreateAgentSessionServicesOptions {
 	extensionFlagValues?: Map<string, boolean | string>;
 	resourceLoaderOptions?: Omit<DefaultResourceLoaderOptions, "cwd" | "agentDir" | "settingsManager">;
 	resourceLoaderReloadOptions?: ResourceLoaderReloadOptions;
+	extensionRunnerOptions?: ExtensionRunnerOptions;
 }
 
 /**
@@ -76,6 +78,7 @@ export interface AgentSessionServices {
 	modelRuntime: ModelRuntime;
 	settingsManager: SettingsManager;
 	resourceLoader: ResourceLoader;
+	extensionRunnerOptions?: ExtensionRunnerOptions;
 	diagnostics: AgentSessionRuntimeDiagnostic[];
 }
 
@@ -189,6 +192,7 @@ export async function createAgentSessionServices(
 		modelRuntime,
 		settingsManager,
 		resourceLoader,
+		extensionRunnerOptions: options.extensionRunnerOptions,
 		diagnostics,
 	};
 }
@@ -209,6 +213,7 @@ export async function createAgentSessionFromServices(
 		modelRuntime: options.services.modelRuntime,
 		settingsManager: options.services.settingsManager,
 		resourceLoader: options.services.resourceLoader,
+		extensionRunnerOptions: options.services.extensionRunnerOptions,
 		sessionManager: options.sessionManager,
 		model: options.model,
 		thinkingLevel: options.thinkingLevel,

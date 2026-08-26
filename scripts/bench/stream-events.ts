@@ -1,12 +1,14 @@
-import { setImmediate as yieldToEventLoop } from "node:timers/promises";
+import { setImmediate as yieldToEventLoop, setTimeout as wait } from "node:timers/promises";
 import { Agent } from "../../packages/agent/src/agent.ts";
 import type { AgentEvent } from "../../packages/agent/src/types.ts";
 import { AssistantMessageEventStream } from "../../packages/ai/src/utils/event-stream.ts";
 import { runBenchmarkMain, readIntegerOption } from "./benchmark.ts";
 import { BENCHMARK_FIXTURE_VERSION, createAssistantDeltas } from "./fixtures.ts";
 
-const deltaCount = readIntegerOption("--updates", 100_000);
+const paced16ms = process.argv.includes("--paced-16ms");
+const deltaCount = readIntegerOption("--updates", paced16ms ? 30 : 100_000);
 const legacyDelivery = process.argv.includes("--legacy-delivery");
+const deliveryMode = legacyDelivery ? "legacy" : "latest";
 const deltas = createAssistantDeltas(deltaCount);
 
 function createStream(): AssistantMessageEventStream {
@@ -29,7 +31,8 @@ function createStream(): AssistantMessageEventStream {
 			const delta = deltas[index]!;
 			text.text += delta;
 			stream.push({ type: "text_delta", contentIndex: 0, delta, partial: message as never });
-			if ((index & 511) === 511) await yieldToEventLoop();
+			if (paced16ms) await wait(16);
+			else if ((index & 511) === 511) await yieldToEventLoop();
 		}
 		stream.push({ type: "text_end", contentIndex: 0, content: text.text, partial: message as never });
 		stream.push({ type: "done", reason: "stop", message: message as never });
@@ -39,7 +42,7 @@ function createStream(): AssistantMessageEventStream {
 
 await runBenchmarkMain({
 	name: "stream-events",
-	fixture: `${BENCHMARK_FIXTURE_VERSION}:assistant-deltas:${deltaCount}`,
+	fixture: `${BENCHMARK_FIXTURE_VERSION}:assistant-deltas:${deltaCount}:delivery-${deliveryMode}:${paced16ms ? "paced-16ms" : "burst"}`,
 	run: async () => {
 		let deliveredUpdates = 0;
 		let snapshots = 0;
@@ -51,7 +54,7 @@ await runBenchmarkMain({
 			if (event.type === "message_update") deliveredUpdates++;
 		};
 		if (legacyDelivery) agent.subscribe(countUpdate);
-		else agent.subscribeObserver(countUpdate, { minIntervalMs: 60_000 });
+		else agent.subscribeObserver(countUpdate, { minIntervalMs: paced16ms ? 16 : 60_000 });
 		await agent.prompt("benchmark");
 		return {
 			updates: deltaCount,
@@ -60,6 +63,7 @@ await runBenchmarkMain({
 			coalesced: agent.eventDeliveryStats.coalesced,
 			maxPendingKeys: agent.eventDeliveryStats.maxPendingKeys,
 			legacyDelivery: legacyDelivery ? 1 : 0,
+			producerPaceMs: paced16ms ? 16 : 0,
 		};
 	},
 });

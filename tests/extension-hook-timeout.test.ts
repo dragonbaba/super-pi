@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
+import { CLI_EXTENSION_HOST_POLICY } from "../packages/coding-agent/src/core/extension-host-policy.ts";
 import type { ModelRegistry } from "../packages/coding-agent/src/core/model-registry.ts";
 import { createEventBus } from "../packages/coding-agent/src/core/event-bus.ts";
 import {
@@ -10,6 +14,8 @@ import {
 } from "../packages/coding-agent/src/core/extensions/index.ts";
 import { emitProjectTrustEvent } from "../packages/coding-agent/src/core/extensions/runner.ts";
 import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
+import { ProjectTrustStore } from "../packages/coding-agent/src/core/trust-manager.ts";
+import { createMainProjectTrustResolver } from "../packages/coding-agent/src/main.ts";
 import { FakeScheduler } from "./helpers/runtime-instrumentation.ts";
 
 const cwd = "D:/workspace";
@@ -146,6 +152,44 @@ test("project_trust uses the safety timeout, fails closed, and ignores a late al
 	await Promise.resolve();
 	await Promise.resolve();
 	assert.equal(outcome.result?.trusted, "no");
+});
+
+test("main runtime project trust callback applies the shared CLI safety timeout", async () => {
+	const root = mkdtempSync(join(tmpdir(), "super-pi-main-trust-timeout-"));
+	try {
+		const projectCwd = join(root, "project");
+		const agentDir = join(root, "agent");
+		mkdirSync(join(projectCwd, ".sp", "extensions"), { recursive: true });
+		const scheduler = new FakeScheduler();
+		const runtime = createExtensionRuntime();
+		const extension = await loadExtensionFromFactory((pi) => {
+			pi.on("project_trust", async () => await new Promise(() => {}));
+		}, projectCwd, createEventBus(), runtime);
+		const diagnostics: string[] = [];
+		let resolved: boolean | undefined;
+		const extensionRunnerOptions = { ...CLI_EXTENSION_HOST_POLICY, scheduler };
+		const resolveProjectTrust = createMainProjectTrustResolver({
+			cwd: projectCwd,
+			trustStore: new ProjectTrustStore(agentDir),
+			defaultProjectTrust: "ask",
+			projectTrustContext: { cwd: projectCwd, mode: "print", hasUI: false, ui: {} } as never,
+			extensionRunnerOptions,
+			onExtensionError: (message) => diagnostics.push(message),
+			onResolved: (trusted) => { resolved = trusted; },
+		});
+
+		const resultPromise = resolveProjectTrust({ extensionsResult: { extensions: [extension], errors: [], runtime } });
+		scheduler.advanceBy(CLI_EXTENSION_HOST_POLICY.hookTimeouts.safety.timeoutMs);
+		const trusted = await resultPromise;
+
+		assert.equal(trusted, false);
+		assert.equal(resolved, false);
+		assert.equal(scheduler.pendingTasks, 0);
+		assert.equal(diagnostics.length, 1);
+		assert.match(diagnostics[0] ?? "", /project_trust error:.*timed out after 30000ms/);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
 });
 
 test("a late transform result is ignored after a fail-open timeout", async () => {

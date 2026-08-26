@@ -6,6 +6,7 @@ import { BENCHMARK_FIXTURE_VERSION, createToolProgress } from "./fixtures.ts";
 
 const updateCount = readIntegerOption("--updates", 100_000);
 const legacyDelivery = process.argv.includes("--legacy-delivery");
+const deliveryMode = legacyDelivery ? "legacy" : "latest";
 const updates = createToolProgress(updateCount, 1);
 
 function createAssistantStream(withToolCall: boolean): AssistantMessageEventStream {
@@ -40,7 +41,7 @@ function createAssistantStream(withToolCall: boolean): AssistantMessageEventStre
 
 await runBenchmarkMain({
 	name: "tool-progress",
-	fixture: `${BENCHMARK_FIXTURE_VERSION}:tool-progress:${updateCount}`,
+	fixture: `${BENCHMARK_FIXTURE_VERSION}:tool-progress:${updateCount}:delivery-${deliveryMode}`,
 	run: async () => {
 		let streamCalls = 0;
 		let deliveredUpdates = 0;
