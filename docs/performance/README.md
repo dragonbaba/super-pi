@@ -11,6 +11,7 @@ npm run --silent -- bench:tui-transcript
 npm run --silent -- bench:tui-frame-queue
 npm run --silent -- bench:prefix
 npm run --silent -- bench:tool-output
+npm run --silent -- bench:model-runtime
 ```
 
 Every result uses `BenchmarkResult` schema version 1 and records the commit, Node version, OS/architecture, CPU, memory, terminal dimensions, fixture version, warm-up/measurement counts, p50/p95/p99, min/max, coefficient of variation, heap observations, and benchmark-specific string/boolean observations such as content hashes. Defaults are 5 warm-up and 20 measured runs; local smoke checks may use `--warmup 1 --runs 3`. Shared CI checks schema and deterministic structural counters rather than machine-specific millisecond thresholds.
@@ -37,6 +38,8 @@ Delivery mode is part of each stream/tool-progress fixture identity, so latest a
 ```text
 npm run --silent -- bench:stream -- --paced-16ms
 ```
+
+The model-runtime benchmark constructs the production offline runtime without credential refresh, verifies that every published model has a V1 capability manifest, and records provider/model counts. Use matching Phase 2 and Phase 3 worktrees on the same machine to enforce the Phase 3 startup p95 regression budget of at most 5%.
 
 Save baseline and candidate JSON outside the source tree (or under ignored `.artifacts/`) and compare them with:
 
