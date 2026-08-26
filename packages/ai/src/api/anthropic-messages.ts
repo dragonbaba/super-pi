@@ -912,14 +912,15 @@ export const streamSimple: StreamFunction<"anthropic-messages", SimpleStreamOpti
 		...buildBaseOptions(model, context, options, options?.apiKey),
 		toolChoice: options?.toolChoice,
 	};
-	const reasoning = options?.reasoning ? clampThinkingLevel(model, options.reasoning) : "off";
+	const capabilities = getModelCapabilities(model);
+	const reasoning = clampThinkingLevel(model, options?.reasoning ?? "off");
 	if (reasoning === "off") {
 		return stream(model, context, { ...base, thinkingEnabled: false } satisfies AnthropicOptions);
 	}
 
 	// For models with adaptive thinking: use an effort level.
 	// For older models: use budget-based thinking.
-	if (model.compat?.forceAdaptiveThinking === true) {
+	if (capabilities.reasoning.mode === "adaptive") {
 		const effort = mapThinkingLevelToEffort(model, reasoning);
 		return stream(model, context, {
 			...base,
@@ -962,7 +963,7 @@ function createClient(
 	sessionId?: string,
 ): { client: Anthropic; isOAuthToken: boolean } {
 	// Adaptive thinking models have interleaved thinking built in, so skip the beta header.
-	const needsInterleavedBeta = interleavedThinking && model.compat?.forceAdaptiveThinking !== true;
+	const needsInterleavedBeta = interleavedThinking && getModelCapabilities(model).reasoning.mode !== "adaptive";
 	const betaFeatures: string[] = [];
 	if (useFineGrainedToolStreamingBeta) {
 		betaFeatures.push(FINE_GRAINED_TOOL_STREAMING_BETA);
@@ -1139,7 +1140,7 @@ function buildParams(
 			// Default to "summarized" so Opus 4.7 and Mythos Preview behave like
 			// older Claude 4 models (whose API default is also "summarized").
 			const display: AnthropicThinkingDisplay = options.thinkingDisplay ?? "summarized";
-			if (model.compat?.forceAdaptiveThinking === true) {
+			if (capabilities.reasoning.mode === "adaptive") {
 				// Adaptive thinking: Claude decides when and how much to think.
 				params.thinking = { type: "adaptive", display };
 				if (options.effort) {
@@ -1159,7 +1160,7 @@ function buildParams(
 					display,
 				};
 			}
-		} else if (options?.thinkingEnabled === false && model.thinkingLevelMap?.off !== null) {
+		} else if (options?.thinkingEnabled === false && capabilities.reasoning.levels.includes("off")) {
 			params.thinking = { type: "disabled" };
 		}
 	}

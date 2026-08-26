@@ -576,13 +576,13 @@ export const streamSimple: StreamFunction<"bedrock-converse-stream", SimpleStrea
 		...buildBaseOptions(model, context, options, undefined),
 		toolChoice: options?.toolChoice,
 	};
-	const reasoning = options?.reasoning ? clampThinkingLevel(model, options.reasoning) : "off";
+	const reasoning = clampThinkingLevel(model, options?.reasoning ?? "off");
 	if (reasoning === "off") {
 		return stream(model, context, { ...base, reasoning: undefined } satisfies BedrockOptions);
 	}
 
 	if (isAnthropicClaudeModel(model)) {
-		if (supportsAdaptiveThinking(model.id, model.name)) {
+		if (getModelCapabilities(model).reasoning.mode === "adaptive") {
 			return stream(model, context, {
 				...base,
 				reasoning,
@@ -754,20 +754,6 @@ function getModelMatchCandidates(modelId: string, modelName?: string): string[] 
 		const lower = value.toLowerCase();
 		return [lower, lower.replace(/[\s_.:]+/g, "-")];
 	});
-}
-
-function supportsAdaptiveThinking(modelId: string, modelName?: string): boolean {
-	const candidates = getModelMatchCandidates(modelId, modelName);
-	return candidates.some(
-		(s) =>
-			s.includes("opus-4-6") ||
-			s.includes("opus-4-7") ||
-			s.includes("opus-4-8") ||
-			s.includes("opus-5") ||
-			s.includes("sonnet-4-6") ||
-			s.includes("sonnet-5") ||
-			s.includes("fable-5"),
-	);
 }
 
 function supportsNativeXhighEffort(model: Model<"bedrock-converse-stream">): boolean {
@@ -1236,7 +1222,8 @@ function buildAdditionalModelRequestFields(
 		// GovCloud Bedrock currently rejects the Claude thinking.display field.
 		// Omit it there until the GovCloud Converse schema catches up.
 		const display = isGovCloudBedrockTarget(model, options) ? undefined : (options.thinkingDisplay ?? "summarized");
-		const result: Record<string, any> = supportsAdaptiveThinking(model.id, model.name)
+		const adaptive = getModelCapabilities(model).reasoning.mode === "adaptive";
+		const result: Record<string, any> = adaptive
 			? {
 					thinking: { type: "adaptive", ...(display !== undefined ? { display } : {}) },
 					output_config: { effort: mapThinkingLevelToEffort(model, options.reasoning) },
@@ -1264,7 +1251,7 @@ function buildAdditionalModelRequestFields(
 					};
 				})();
 
-		if (!supportsAdaptiveThinking(model.id, model.name) && (options.interleavedThinking ?? true)) {
+		if (!adaptive && (options.interleavedThinking ?? true)) {
 			result.anthropic_beta = ["interleaved-thinking-2025-05-14"];
 		}
 

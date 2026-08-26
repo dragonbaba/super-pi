@@ -470,7 +470,7 @@ export const streamSimple: StreamFunction<"pi-messages", SimpleStreamOptions> = 
 	options?: SimpleStreamOptions,
 ): AssistantMessageEventStream => {
 	const extra = options as PiMessagesOptions | undefined;
-	const clampedReasoning = options?.reasoning ? clampThinkingLevel(model, options.reasoning) : "off";
+	const clampedReasoning = clampThinkingLevel(model, options?.reasoning ?? "off");
 	return stream(model, context, {
 		...options,
 		reasoning: clampedReasoning === "off" ? undefined : clampedReasoning,

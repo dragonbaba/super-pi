@@ -588,7 +588,7 @@ export const streamSimple: StreamFunction<"openai-codex-responses", SimpleStream
         ...buildBaseOptions(model, context, options, apiKey),
         toolChoice: options?.toolChoice,
     };
-    const clampedReasoning = options?.reasoning ? clampThinkingLevel(model, options.reasoning) : undefined;
+    const clampedReasoning = clampThinkingLevel(model, options?.reasoning ?? "off");
     const reasoningEffort = clampedReasoning === "off" ? undefined : clampedReasoning;
     return stream(model, context, {
         ...base,
@@ -1907,7 +1907,11 @@ async function processWebSocketStream(
 ): Promise<void> {
     const { socket, entry, reused, release } = await acquireWebSocket(url, headers, cacheSessionId, accountId, options?.signal, websocketConnectTimeoutMs, options?.env);
     let keepConnection = true;
-    const useCachedContext = options?.transport === "websocket-cached" || options?.transport === "auto";
+	const capabilities = getModelCapabilities(model);
+	const useCachedContext =
+		capabilities.previousResponseId &&
+		capabilities.websocketContinuation &&
+		(options?.transport === "websocket-cached" || options?.transport === "auto");
     // ChatGPT Codex Responses rejects `store: true` ("Store must be set to false").
     // WebSocket continuation still works via connection-scoped previous_response_id state.
     const fullBody = body;
