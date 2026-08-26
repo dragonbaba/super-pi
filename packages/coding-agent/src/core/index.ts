@@ -29,6 +29,26 @@ export { type BashExecutorOptions, type BashResult, executeBashWithOperations } 
 export type { CompactionResult } from "./compaction/index.ts";
 export { createEventBus, type EventBus, type EventBusController } from "./event-bus.ts";
 export { areExperimentalFeaturesEnabled } from "./experimental.ts";
+export {
+	buildPrefixManifest,
+	canonicalizeLogicalPath,
+	compareCanonicalIdentifiers,
+	comparePrefixManifests,
+	createScopedContextIdentifier,
+	createScopedExtensionIdentifier,
+	PrefixManifestRecorder,
+	serializePrefixManifest,
+	sha256Canonical,
+	type PrefixDriftDiagnostic,
+	type PrefixDriftReasonCode,
+	type EffectivePrefixDispatchObservation,
+	type PrefixManifestBuildInput,
+	type PrefixManifestContextInput,
+	type PrefixManifestSegment,
+	type PrefixManifestToolInput,
+	type PrefixManifestV1,
+	type PrefixObservationState,
+} from "./prefix-manifest.ts";
 // Extensions system
 export {
 	type AgentEndEvent,

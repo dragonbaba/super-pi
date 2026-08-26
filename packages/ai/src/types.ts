@@ -106,6 +106,28 @@ export type CacheRetention = "none" | "short" | "long";
 
 export type Transport = "sse" | "websocket" | "websocket-cached" | "auto";
 
+/** Metadata-only description of the provider request that was actually dispatched. */
+export interface EffectiveDispatchObservation {
+	transport: "sse" | "websocket";
+	previousResponseMode: "none" | "response-id" | "websocket";
+	instructionsHash: string;
+	instructionsBytes: number;
+	toolOrderHash: string;
+	toolIdentifierSetHash: string;
+	toolsHash: string;
+	toolCount: number;
+	cacheKeyHash?: string;
+	/** Hash of provider-resolved cache retention and TTL values. */
+	cacheRetentionHash: string;
+	/** Hash of provider-resolved cache enablement, mode, type, and non-retention options. */
+	cachePolicyHash: string;
+	/** Hash of semantic cache breakpoint anchors, kept separate from cache policy. */
+	cacheBoundaryHash: string;
+	prefixHash: string;
+	/** Hash of transformed prefix metadata only; generic adapters never serialize the full request body. */
+	requestTransformOutputHash: string;
+}
+
 /** Provider-scoped environment overrides. Values take precedence over process.env. */
 export type ProviderEnv = Record<string, string>;
 export type ProviderHeaders = Record<string, string | null>;
@@ -140,6 +162,15 @@ export interface ProviderRequestOptions<TModel = Model<Api>> {
 	 * Return undefined to keep the payload unchanged.
 	 */
 	onPayload?: (payload: unknown, model: TModel) => unknown | undefined | Promise<unknown | undefined>;
+	/**
+	 * Observes bounded hashes from the request selected for dispatch. Provider implementations
+	 * never expose the original payload through this hook. Delivery is observational: providers
+	 * do not await returned promises, and isolate both synchronous throws and asynchronous rejection.
+	 */
+	onEffectiveDispatch?: (
+		observation: Readonly<EffectiveDispatchObservation>,
+		model: TModel,
+	) => void | Promise<void>;
 	/**
 	 * Optional callback invoked after an HTTP response is received.
 	 */

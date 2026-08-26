@@ -989,6 +989,8 @@ const response = await models.complete(model, context, {
 });
 ```
 
+Hosts that need bounded request identity rather than payload access can use `onEffectiveDispatch`. It receives hashes, byte/count metadata, effective transport, and previous-response mode after `onPayload` transforms. The callback never receives the original request payload, and provider dispatch isolates callback failures.
+
 The callback is supported by `stream`, `complete`, `streamSimple`, and `completeSimple`.
 
 ## Custom Providers

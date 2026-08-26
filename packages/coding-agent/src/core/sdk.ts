@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import { Agent, type AgentMessage, setDefaultStreamFn, type ThinkingLevel } from "@super-pi/agent-core";
+import type { EffectiveDispatchObservation } from "@super-pi/ai";
 import {
 	buildOpenAICodexRequestBody,
 	compactOpenAICodexRequest,
@@ -21,6 +22,11 @@ import { convertToLlm } from "./messages.ts";
 import { findInitialModel } from "./model-resolver.ts";
 import { ModelRuntime } from "./model-runtime.ts";
 import { initializePowerShellPersistence } from "./powershell-persistence.ts";
+import {
+	buildPrefixManifest,
+	createScopedContextIdentifier,
+	PrefixManifestRecorder,
+} from "./prefix-manifest.ts";
 import { mergeProviderAttributionHeaders } from "./provider-attribution.ts";
 import type { ResourceLoader } from "./resource-loader.ts";
 import { DefaultResourceLoader } from "./resource-loader.ts";
@@ -98,6 +104,8 @@ export interface CreateAgentSessionOptions {
 	sessionStartEvent?: SessionStartEvent;
 	/** Optional host policy for extension observer diagnostics and hook timeouts. */
 	extensionRunnerOptions?: ExtensionRunnerOptions;
+	/** Optional manifest recorder. Defaults to a session-local recorder. */
+	prefixManifestRecorder?: PrefixManifestRecorder;
 }
 
 /** Result from createAgentSession */
@@ -338,6 +346,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	};
 
 	const extensionRunnerRef: { current?: ExtensionRunner } = {};
+	const prefixManifestRecorder = options.prefixManifestRecorder ?? new PrefixManifestRecorder();
 
 	agent = new Agent({
 		initialState: {
@@ -357,12 +366,63 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			const websocketConnectTimeoutMs =
 				options?.websocketConnectTimeoutMs ?? settingsManager.getWebSocketConnectTimeoutMs();
 			const headerRunner = extensionRunnerRef.current;
+			const configuredTransport = options?.transport ?? settingsManager.getTransport();
+			const requestTransformChain = headerRunner?.getHandlerChainIdentifiers([
+				"context",
+				"before_provider_headers",
+				"before_provider_request",
+			]) ?? [];
+			const persistentContext = resourceLoader.getAgentsFiles().agentsFiles.map((file, index) => ({
+				identifier: createScopedContextIdentifier(file.path, { workspaceRoot: cwd, globalRoot: agentDir }),
+				content: file.content,
+				precedence: index,
+			}));
+			const manifestInput = {
+				provider: model.provider,
+				model: model.id,
+				api: model.api,
+				transport: configuredTransport,
+				cacheRetention: options?.cacheRetention,
+				systemPrompt: context.systemPrompt ?? "",
+				tools: (context.tools ?? []).map((tool) => ({ name: tool.name, schema: tool.parameters })),
+				persistentContext,
+				requestTransformChain,
+				cacheKey: options?.sessionId,
+				previousResponseMode: configuredTransport.startsWith("websocket") ? "websocket" as const : "none" as const,
+			};
+			try {
+				prefixManifestRecorder.recordIntent(buildPrefixManifest(manifestInput));
+			} catch {
+				// Prefix intent diagnostics are observational and must never block a provider request.
+			}
+			const recordEffectiveDispatch = (observation: Readonly<EffectiveDispatchObservation>, observedModel: Model<any>) => {
+				try {
+					prefixManifestRecorder.record(buildPrefixManifest({
+						...manifestInput,
+						provider: observedModel.provider,
+						model: observedModel.id,
+						api: observedModel.api,
+						effectiveDispatch: observation,
+					}));
+				} catch {
+					// Effective dispatch diagnostics are observational and must never block a provider request.
+				}
+				try {
+					const result = options?.onEffectiveDispatch?.(observation, observedModel);
+					if (result && typeof result.then === "function") {
+						void Promise.resolve(result).catch(() => undefined);
+					}
+				} catch {
+					// A nested observer cannot escape the provider-owned instrumentation lane.
+				}
+			};
 			return modelRuntime.streamSimple(model, context, {
 				...options,
 				timeoutMs,
 				websocketConnectTimeoutMs,
 				maxRetries: options?.maxRetries ?? providerRetrySettings.maxRetries,
 				maxRetryDelayMs: options?.maxRetryDelayMs ?? providerRetrySettings.maxRetryDelayMs,
+				onEffectiveDispatch: recordEffectiveDispatch,
 				transformHeaders: async (requestHeaders) => {
 					const headers = mergeProviderAttributionHeaders(
 						model,
@@ -430,6 +490,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		resourceLoader,
 		customTools: options.customTools,
 		modelRuntime,
+		prefixManifestRecorder,
 		providerRequestPayloadBuilder: ({ model, systemPrompt, messages, tools, thinkingLevel, sessionId }) => {
 			if (model.api !== "openai-codex-responses") return undefined;
 			return buildOpenAICodexRequestBody(

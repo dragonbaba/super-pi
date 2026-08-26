@@ -26,6 +26,7 @@ import type {
 	Api,
 	AssistantMessage,
 	Context,
+	EffectiveDispatchObservation,
 	Model,
 	ProviderEnv,
 	ProviderHeaders,
@@ -43,6 +44,7 @@ import {
 } from "../utils/diagnostics.ts";
 import { formatProviderError, normalizeProviderError } from "../utils/error-body.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
+import { deliverEffectiveDispatchObservation } from "../utils/effective-dispatch.ts";
 import { headersToRecord } from "../utils/headers.ts";
 import { resolveHttpProxyUrlForTarget } from "../utils/node-http-proxy.ts";
 import { uuidv7 } from "../utils/uuid.ts";
@@ -550,7 +552,7 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
             }
             assertSuccessfulOutput(output);
             const responseItems = convertAssistantResponseItems(model, output, grammarToolInputProperties);
-            recordSuccessfulDispatch(cacheSessionId, body, body, sseHeaders, "sse", responseItems, output.responseId);
+            recordSuccessfulDispatch(cacheSessionId, body, body, sseHeaders, "sse", responseItems, model, options, output.responseId);
             stream.push({ type: "done", reason: output.stopReason, message: output });
             stream.end();
         }
@@ -927,9 +929,17 @@ interface SuccessfulDispatchCommitment {
     toolsHash: string;
     bodyWithoutInputHash: string;
     promptCacheKeyHash: string;
+    cacheRetentionHash: string;
+    cachePolicyHash: string;
+    cacheBoundaryHash: string;
     serviceTierHash: string;
     headersHash: string;
     actualBodyHash: string;
+    instructionsBytes: number;
+    toolOrderHash: string;
+    toolIdentifierSetHash: string;
+    toolCount: number;
+    previousResponseMode: "none" | "response-id";
     responseId?: string;
 }
 
@@ -1592,24 +1602,44 @@ function createSuccessfulDispatchCommitment(
     responseItems: ResponseInput,
     responseId?: string,
 ): SuccessfulDispatchCommitment | undefined {
-    const instructionsHash = sha256Json(fullBody.instructions ?? null);
+    const instructionsHash = sha256Json(actualBody.instructions ?? null);
     const inputHash = sha256Json(fullBody.input ?? []);
     const responseItemsHash = sha256Json(responseItems);
-    const toolsHash = sha256Json(fullBody.tools ?? []);
-    const bodyWithoutInputHash = sha256Json(requestBodyWithoutInput(fullBody));
-    const promptCacheKeyHash = sha256Json(fullBody.prompt_cache_key ?? null);
-    const serviceTierHash = sha256Json(fullBody.service_tier ?? null);
+    const toolsHash = sha256Json(actualBody.tools ?? []);
+    const bodyWithoutInputHash = sha256Json(requestBodyWithoutInput(actualBody));
+    const promptCacheKeyHash = sha256Json(actualBody.prompt_cache_key ?? null);
+    const cacheRetentionHash = sha256Json({
+        promptCacheRetention: actualBody.prompt_cache_retention ?? null,
+    });
+    const cachePolicyHash = sha256Json({
+        promptCacheOptions: actualBody.prompt_cache_options ?? null,
+    });
+    const cacheBoundaryHash = sha256Json(null);
+    const serviceTierHash = sha256Json(actualBody.service_tier ?? null);
     const headersHash = sha256Json(normalizedHeadersForCommitment(headers));
     const actualBodyHash = sha256Json(actualBody);
+    const toolOrderHash = sha256Json((actualBody.tools ?? []).map((tool) => {
+        const record = tool as unknown as Record<string, unknown>;
+        return typeof record.name === "string" ? record.name : (typeof record.type === "string" ? record.type : "unknown");
+    }));
+    const toolIdentifierSetHash = sha256Json((actualBody.tools ?? []).map((tool) => {
+        const record = tool as unknown as Record<string, unknown>;
+        return typeof record.name === "string" ? record.name : (typeof record.type === "string" ? record.type : "unknown");
+    }).sort());
     if (!instructionsHash ||
         !inputHash ||
         !responseItemsHash ||
         !toolsHash ||
         !bodyWithoutInputHash ||
         !promptCacheKeyHash ||
+        !cacheRetentionHash ||
+        !cachePolicyHash ||
+        !cacheBoundaryHash ||
         !serviceTierHash ||
         !headersHash ||
-        !actualBodyHash) {
+        !actualBodyHash ||
+        !toolOrderHash ||
+        !toolIdentifierSetHash) {
         return undefined;
     }
     return {
@@ -1622,9 +1652,17 @@ function createSuccessfulDispatchCommitment(
         toolsHash,
         bodyWithoutInputHash,
         promptCacheKeyHash,
+        cacheRetentionHash,
+        cachePolicyHash,
+        cacheBoundaryHash,
         serviceTierHash,
         headersHash,
         actualBodyHash,
+        instructionsBytes: new TextEncoder().encode(typeof actualBody.instructions === "string" ? actualBody.instructions : JSON.stringify(actualBody.instructions ?? null)).byteLength,
+        toolOrderHash,
+        toolIdentifierSetHash,
+        toolCount: actualBody.tools?.length ?? 0,
+        previousResponseMode: actualBody.previous_response_id ? "response-id" : "none",
         ...(responseId ? { responseId } : {}),
     };
 }
@@ -1635,12 +1673,31 @@ function recordSuccessfulDispatch(
     headers: Headers,
     transport: OpenAICodexDispatchTransport,
     responseItems: ResponseInput,
+    model: Model<"openai-codex-responses">,
+    options: OpenAICodexResponsesOptions | undefined,
     responseId?: string,
 ): void {
-    if (!sessionId)
-        return;
     const commitment = createSuccessfulDispatchCommitment(fullBody, actualBody, headers, transport, responseItems, responseId);
     if (!commitment)
+        return;
+    const observation: EffectiveDispatchObservation = {
+        transport: transport === "sse" ? "sse" : "websocket",
+        previousResponseMode: commitment.previousResponseMode,
+        instructionsHash: commitment.instructionsHash,
+        instructionsBytes: commitment.instructionsBytes,
+        toolOrderHash: commitment.toolOrderHash,
+        toolIdentifierSetHash: commitment.toolIdentifierSetHash,
+        toolsHash: commitment.toolsHash,
+        toolCount: commitment.toolCount,
+        cacheKeyHash: commitment.promptCacheKeyHash,
+        cacheRetentionHash: commitment.cacheRetentionHash,
+        cachePolicyHash: commitment.cachePolicyHash,
+        cacheBoundaryHash: commitment.cacheBoundaryHash,
+        prefixHash: commitment.bodyWithoutInputHash,
+        requestTransformOutputHash: commitment.actualBodyHash,
+    };
+    deliverEffectiveDispatchObservation(options, model, observation);
+    if (!sessionId)
         return;
     successfulDispatchCommitments.delete(sessionId);
     consumedDispatchCommitments.delete(sessionId);
@@ -1878,7 +1935,7 @@ async function processWebSocketStream(
         }
         else {
             const responseItems = convertAssistantResponseItems(model, output, grammarToolInputProperties);
-            recordSuccessfulDispatch(cacheSessionId, fullBody, requestBody, headers, requestBody.previous_response_id ? "websocket-delta" : "websocket-full", responseItems, output.responseId);
+            recordSuccessfulDispatch(cacheSessionId, fullBody, requestBody, headers, requestBody.previous_response_id ? "websocket-delta" : "websocket-full", responseItems, model, options, output.responseId);
             if (useCachedContext && entry && output.responseId) {
                 entry.continuation = {
                     lastRequestBody: fullBody,

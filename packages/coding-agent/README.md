@@ -59,3 +59,11 @@ export default function extension(pi: ExtensionAPI) {
 ```
 
 Intercepting and transforming hooks continue to use `pi.on()`. Hosts may configure category-specific hook timeouts through `extensionRunnerOptions`; the standard CLI applies a 30-second timeout to safety/veto hooks, including bootstrap `project_trust`, and always fails them closed. Interactive hooks have no timeout by default, and transform hooks require an explicit fail-open or fail-closed policy. A timeout stops awaiting the handler but cannot forcibly cancel already-running JavaScript. Its eventual fulfillment or rejection is observed and ignored; returned transforms or trust decisions are never applied after the timeout.
+
+## Prefix manifest diagnostics
+
+Each provider request keeps pre-dispatch intent separate from the request that actually won provider dispatch. `session.prefixIntentManifest` exposes configured intent, while `session.prefixManifest` contains metadata-only hashes reported after payload transforms and effective transport selection; `session.prefixDriftDiagnostic` compares effective dispatches. OpenAI Codex reuses its bounded successful-dispatch commitment for these hashes, including automatic WebSocket-to-SSE fallback, without retaining or reserializing the complete request. Other built-in SSE providers observe their transformed payload immediately before dispatch.
+
+Object keys and unordered discovered sibling resources are canonicalized; semantic tool, context-precedence, message, and request-transform order is preserved. Manifest serialization contains hashes, observation-state enums, byte counts, generations, and counts only—never the complete system prompt, tool schema, cache key, headers, credentials, project content, or external absolute paths. Dynamic-instruction and compaction fields remain `unavailable` until their production state is wired; they are not represented by synthetic generation zero values.
+
+OpenAI-compatible prompt cache keys up to 64 Unicode code points remain unchanged. Longer keys use a readable prefix plus the first 24 hex characters of `SHA-256(full-key)`, avoiding collisions between long session IDs that share the same leading 64 characters.

@@ -10,6 +10,7 @@ import type { ResourceDiagnostic } from "../diagnostics.ts";
 import type { KeybindingsConfig } from "../keybindings.ts";
 import type { ModelRegistry } from "../model-registry.ts";
 import type { ScopedModel } from "../model-resolver.ts";
+import { createScopedExtensionIdentifier } from "../prefix-manifest.ts";
 import type { SessionManager } from "../session-manager.ts";
 import type { BuildSystemPromptOptions } from "../system-prompt.ts";
 import { setOwnProperty } from "../../utils/record.ts";
@@ -738,6 +739,22 @@ export class ExtensionRunner {
 
 	hasHandlers(eventType: string): boolean {
 		return this.handlerEventTypes.has(eventType);
+	}
+
+	/** Stable live identifiers for request-transform handlers in actual invocation order. */
+	getHandlerChainIdentifiers(eventTypes: readonly string[]): string[] {
+		const identifiers: string[] = [];
+		for (const eventType of eventTypes) {
+			for (const extension of this.extensions) {
+				const handlers = extension.handlers.get(eventType);
+				if (!handlers) continue;
+				const extensionIdentifier = createScopedExtensionIdentifier(extension, this.cwd);
+				for (let index = 0; index < handlers.length; index++) {
+					identifiers.push(`${eventType}:${extensionIdentifier}#${index}`);
+				}
+			}
+		}
+		return identifiers;
 	}
 
 	hasObservers(eventType: string): boolean {

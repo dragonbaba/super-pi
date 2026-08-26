@@ -36,6 +36,7 @@ import type {
 } from "../types.ts";
 import { formatProviderError, normalizeProviderError } from "../utils/error-body.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
+import { observeEffectiveDispatch, summarizeCacheMarkerMetadata } from "../utils/effective-dispatch.ts";
 import { shortHash } from "../utils/hash.ts";
 import { headersToRecord } from "../utils/headers.ts";
 import { parseStreamingJson, stringifyToolArguments } from "../utils/json-parse.ts";
@@ -240,6 +241,7 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 			if (nextParams !== undefined) {
 				params = nextParams as OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming;
 			}
+			observeOpenAIChatEffectiveDispatch(options, model, params);
 			const requestOptions = {
 				...(options?.signal ? { signal: options.signal } : {}),
 				...(options?.timeoutMs !== undefined ? { timeout: options.timeoutMs } : {}),
@@ -679,6 +681,118 @@ function createClient(
 		fetch,
 		defaultHeaders: headers,
 	});
+}
+
+export function observeOpenAIChatEffectiveDispatch(
+	options: OpenAICompletionsOptions | undefined,
+	model: Model<"openai-completions">,
+	params: OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming,
+): void {
+	const instructionPrefix = params.messages.filter(
+		(message) => message.role === "system" || message.role === "developer",
+	).map(cacheNeutralOpenAIChatMessage);
+	const tools = params.tools ?? [];
+	const neutralTools = tools.map(removeOpenAIChatCacheControl);
+	const cacheParams = params as typeof params & {
+		prompt_cache_options?: unknown;
+		prompt_cache_retention?: unknown;
+	};
+	const cache = extractOpenAIChatCacheMetadata(params.messages, tools);
+	observeEffectiveDispatch(options, model, {
+		transport: "sse",
+		previousResponseMode: "none",
+		instructionPrefix,
+		orderedToolDefinitions: neutralTools,
+		orderedToolIdentifiers: tools.map((tool) =>
+			tool.type === "function" ? tool.function.name : tool.custom.name,
+		),
+		cacheKey: params.prompt_cache_key,
+		cacheRetention: {
+			promptCacheRetention: cacheParams.prompt_cache_retention ?? null,
+			markers: cache.markerRetention,
+		},
+		cachePolicy: {
+			enabled:
+				cacheParams.prompt_cache_options !== undefined ||
+				cache.markerCount > 0,
+			promptCacheOptions: cacheParams.prompt_cache_options ?? null,
+			markers: cache.markerPolicy,
+		},
+		cacheBoundary: cache.boundary,
+	});
+}
+
+function removeOpenAIChatCacheControl(value: unknown): unknown {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+	const { cache_control: _cacheControl, ...neutral } = value as Record<string, unknown>;
+	return neutral;
+}
+
+function cacheNeutralOpenAIChatMessage(
+	message: OpenAI.Chat.Completions.ChatCompletionMessageParam,
+): unknown {
+	const neutral = removeOpenAIChatCacheControl(message) as Record<string, unknown>;
+	return Array.isArray(message.content)
+		? { ...neutral, content: message.content.map(removeOpenAIChatCacheControl) }
+		: neutral;
+}
+
+function extractOpenAIChatCacheMetadata(
+	messages: readonly OpenAI.Chat.Completions.ChatCompletionMessageParam[],
+	tools: readonly OpenAI.Chat.Completions.ChatCompletionTool[],
+): { markerCount: number; markerRetention: unknown; markerPolicy: unknown; boundary: unknown } {
+	const markers: unknown[] = [];
+	const anchors: string[] = [];
+	let lastConversationMessage = -1;
+	for (let index = messages.length - 1; index >= 0; index--) {
+		const role = messages[index]?.role;
+		if (role === "user" || role === "assistant" || role === "tool") {
+			lastConversationMessage = index;
+			break;
+		}
+	}
+	for (let messageIndex = 0; messageIndex < messages.length; messageIndex++) {
+		const message = messages[messageIndex];
+		const content = message?.content;
+		if (!Array.isArray(content)) continue;
+		let lastCacheablePart = -1;
+		for (let index = content.length - 1; index >= 0; index--) {
+			if (content[index]?.type === "text") {
+				lastCacheablePart = index;
+				break;
+			}
+		}
+		for (let partIndex = 0; partIndex < content.length; partIndex++) {
+			const marker = readOpenAIChatCacheControl(content[partIndex]);
+			if (marker === undefined) continue;
+			markers.push(marker);
+			const role = message?.role ?? "unknown";
+			if (role === "system" || role === "developer") anchors.push("system");
+			else if (messageIndex === lastConversationMessage && partIndex === lastCacheablePart) {
+				anchors.push(`last-${role}:last-cacheable-block`);
+			} else {
+				anchors.push(`message:${messageIndex}:${partIndex}:${role}`);
+			}
+		}
+	}
+	for (let index = 0; index < tools.length; index++) {
+		const marker = readOpenAIChatCacheControl(tools[index]);
+		if (marker === undefined) continue;
+		markers.push(marker);
+		anchors.push(index === tools.length - 1 ? "last-tool" : `tool:${index}`);
+	}
+	const summary = summarizeCacheMarkerMetadata(markers);
+	return {
+		markerCount: markers.length,
+		markerRetention: summary.retention,
+		markerPolicy: summary.policy,
+		boundary: anchors,
+	};
+}
+
+function readOpenAIChatCacheControl(value: unknown): unknown {
+	if (!value || typeof value !== "object") return undefined;
+	return (value as Record<string, unknown>).cache_control;
 }
 
 function buildParams(

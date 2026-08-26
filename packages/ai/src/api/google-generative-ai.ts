@@ -22,6 +22,7 @@ import type {
 } from "../types.ts";
 import { formatProviderError, normalizeProviderError } from "../utils/error-body.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
+import { observeEffectiveDispatch } from "../utils/effective-dispatch.ts";
 import { providerHeadersToRecord } from "../utils/headers.ts";
 import { getPiUserAgent } from "../utils/pi-user-agent.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
@@ -90,6 +91,7 @@ export const stream: StreamFunction<"google-generative-ai", GoogleOptions> = (
 			if (nextParams !== undefined) {
 				params = nextParams as GenerateContentParameters;
 			}
+			observeGoogleGenerativeAIEffectiveDispatch(options, model, params);
 			const googleStream = await retryGoogleRequest(() => client.models.generateContentStream(params), options);
 
 			stream.push({ type: "start", partial: output });
@@ -354,6 +356,52 @@ function createClient(
 		apiKey,
 		httpOptions: Object.keys(httpOptions).length > 0 ? httpOptions : undefined,
 	});
+}
+
+export function observeGoogleGenerativeAIEffectiveDispatch(
+	options: GoogleOptions | undefined,
+	model: Model<"google-generative-ai">,
+	params: GenerateContentParameters,
+): void {
+	const effectiveTools = extractGoogleEffectiveTools(params.config?.tools ?? []);
+	const cachedContent = params.config?.cachedContent;
+	observeEffectiveDispatch(options, model, {
+		transport: "sse",
+		previousResponseMode: "none",
+		instructionPrefix: params.config?.systemInstruction ?? null,
+		orderedToolDefinitions: effectiveTools.definitions,
+		orderedToolIdentifiers: effectiveTools.identifiers,
+		cacheKey: cachedContent,
+		cacheRetention: null,
+		cachePolicy: { enabled: Boolean(cachedContent), mode: cachedContent ? "explicit" : "implicit" },
+		cacheBoundary: null,
+	});
+}
+
+function extractGoogleEffectiveTools(tools: readonly unknown[]): { definitions: unknown[]; identifiers: string[] } {
+	const definitions: unknown[] = [];
+	const identifiers: string[] = [];
+	for (const value of tools) {
+		if (!value || typeof value !== "object") {
+			definitions.push(value);
+			identifiers.push(`native:${typeof value}`);
+			continue;
+		}
+		const tool = value as Record<string, unknown>;
+		const declarations = Array.isArray(tool.functionDeclarations) ? tool.functionDeclarations : [];
+		for (const declaration of declarations) {
+			definitions.push(declaration);
+			const name = declaration && typeof declaration === "object"
+				? (declaration as Record<string, unknown>).name
+				: undefined;
+			identifiers.push(`function:${typeof name === "string" ? name : "unknown"}`);
+		}
+		for (const kind of Object.keys(tool).filter((key) => key !== "functionDeclarations" && tool[key] !== undefined).sort()) {
+			definitions.push({ kind, configuration: tool[kind] });
+			identifiers.push(`native:${kind}`);
+		}
+	}
+	return { definitions, identifiers };
 }
 
 function buildParams(

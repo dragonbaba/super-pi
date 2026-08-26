@@ -20,9 +20,10 @@ Larger variants are generated in memory instead of committed as blobs:
 ```text
 npm run --silent -- bench:tui-transcript -- --items 50000 --width 200 --height 60
 npm run --silent -- bench:tool-output -- --mebibytes 10
+npm run --silent -- bench:prefix -- --context-kib 1024
 ```
 
-The TUI transcript benchmark constructs the production `UserMessageComponent` and `AssistantMessageComponent` tree, primes it through `TuiMainScreen`, and applies deterministic synchronous terminal backpressure to every measured update. The default slow sink rate is 16 KiB/s; change it explicitly with `--terminal-bytes-per-second`. The prefix benchmark builds every resource ordering per sample and records the canonical prefix SHA-256, hash-set SHA-256, unique hash count, and drift count.
+The TUI transcript benchmark constructs the production `UserMessageComponent` and `AssistantMessageComponent` tree, primes it through `TuiMainScreen`, and applies deterministic synchronous terminal backpressure to every measured update. The default slow sink rate is 16 KiB/s; change it explicitly with `--terminal-bytes-per-second`. The prefix benchmark builds every resource ordering per sample and records the canonical manifest SHA-256, hash-set SHA-256, unique hash count, and drift count. Its fixture identity includes the context size and `prefix-manifest-v1`, preventing comparisons against the older raw-prefix drift harness.
 
 The stream and tool-progress benchmarks use the coalesced observer lane by default. Add `--legacy-delivery` to measure the compatibility `subscribe()` lane, which intentionally awaits and delivers every requested update:
 

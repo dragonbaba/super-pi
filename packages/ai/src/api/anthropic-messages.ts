@@ -31,6 +31,7 @@ import type {
 } from "../types.ts";
 import { splitDeferredTools } from "../utils/deferred-tools.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
+import { observeEffectiveDispatch, summarizeCacheMarkerMetadata } from "../utils/effective-dispatch.ts";
 import { headersToRecord } from "../utils/headers.ts";
 import { parseJsonWithRepair, parseStreamingJson } from "../utils/json-parse.ts";
 import { getPiUserAgent } from "../utils/pi-user-agent.ts";
@@ -556,6 +557,7 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 			if (nextParams !== undefined) {
 				params = nextParams as MessageCreateParamsStreaming;
 			}
+			observeAnthropicEffectiveDispatch(options, model, params);
 			const requestOptions = {
 				...(options?.signal ? { signal: options.signal } : {}),
 				...(options?.timeoutMs !== undefined ? { timeout: options.timeoutMs } : {}),
@@ -815,6 +817,84 @@ function mapThinkingLevelToEffort(
 		default:
 			return "high";
 	}
+}
+
+export function observeAnthropicEffectiveDispatch(
+	options: AnthropicOptions | undefined,
+	model: Model<"anthropic-messages">,
+	params: MessageCreateParamsStreaming,
+): void {
+	const tools = params.tools ?? [];
+	const cache = extractAnthropicCacheMetadata(params);
+	const neutralTools = tools.map(removeAnthropicCacheControl);
+	observeEffectiveDispatch(options, model, {
+		transport: "sse",
+		previousResponseMode: "none",
+		instructionPrefix: Array.isArray(params.system)
+			? params.system.map(removeAnthropicCacheControl)
+			: (params.system ?? null),
+		orderedToolDefinitions: neutralTools,
+		orderedToolIdentifiers: tools.map((tool) => tool.name),
+		cacheRetention: cache.retention,
+		cachePolicy: cache.policy,
+		cacheBoundary: cache.boundary,
+	});
+}
+
+function removeAnthropicCacheControl(value: unknown): unknown {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+	const { cache_control: _cacheControl, ...neutral } = value as Record<string, unknown>;
+	return neutral;
+}
+
+function extractAnthropicCacheMetadata(params: MessageCreateParamsStreaming): {
+	retention: unknown;
+	policy: unknown;
+	boundary: unknown;
+} {
+	const markers: unknown[] = [];
+	const anchors: string[] = [];
+	if (Array.isArray(params.system)) {
+		for (const block of params.system) {
+			const marker = cacheControlMarker(block);
+			if (marker !== undefined) {
+				markers.push(marker);
+				anchors.push("system");
+			}
+		}
+	}
+	for (let messageIndex = 0; messageIndex < params.messages.length; messageIndex++) {
+		const message = params.messages[messageIndex];
+		const content = message?.content;
+		if (!Array.isArray(content)) continue;
+		for (let blockIndex = 0; blockIndex < content.length; blockIndex++) {
+			const marker = cacheControlMarker(content[blockIndex]);
+			if (marker === undefined) continue;
+			markers.push(marker);
+			anchors.push(
+				messageIndex === params.messages.length - 1 && message?.role === "user" && blockIndex === content.length - 1
+					? "last-user:last-cacheable-block"
+					: `message:${messageIndex}:${blockIndex}:${message?.role ?? "unknown"}`,
+			);
+		}
+	}
+	for (let index = 0; index < (params.tools?.length ?? 0); index++) {
+		const marker = cacheControlMarker(params.tools?.[index]);
+		if (marker === undefined) continue;
+		markers.push(marker);
+		anchors.push(index === (params.tools?.length ?? 0) - 1 ? "last-tool" : `tool:${index}`);
+	}
+	const summary = summarizeCacheMarkerMetadata(markers);
+	return {
+		retention: summary.retention,
+		policy: summary.policy,
+		boundary: anchors,
+	};
+}
+
+function cacheControlMarker(value: unknown): unknown {
+	if (!value || typeof value !== "object") return undefined;
+	return (value as Record<string, unknown>).cache_control;
 }
 
 export const streamSimple: StreamFunction<"anthropic-messages", SimpleStreamOptions> = (

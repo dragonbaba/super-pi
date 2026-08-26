@@ -50,6 +50,7 @@ import type {
 import { appendAssistantMessageDiagnostic } from "../utils/diagnostics.ts";
 import { normalizeProviderError } from "../utils/error-body.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
+import { observeEffectiveDispatch, summarizeCacheMarkerMetadata } from "../utils/effective-dispatch.ts";
 import { providerHeadersToRecord } from "../utils/headers.ts";
 import { parseStreamingJson } from "../utils/json-parse.ts";
 import { resolveHttpProxyUrlForTarget } from "../utils/node-http-proxy.ts";
@@ -248,6 +249,7 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 			if (nextCommandInput !== undefined) {
 				commandInput = nextCommandInput as typeof commandInput;
 			}
+			observeBedrockEffectiveDispatch(options, model, commandInput);
 			const command = new ConverseStreamCommand(commandInput);
 
 			const response = await client.send(command, { abortSignal: options.signal });
@@ -375,6 +377,100 @@ function formatBedrockError(error: unknown): string {
 		return `${prefix}: ${core}${dataRetentionHint}`;
 	}
 	return `${core}${dataRetentionHint}`;
+}
+
+export function observeBedrockEffectiveDispatch(
+	options: BedrockOptions | undefined,
+	model: Model<"bedrock-converse-stream">,
+	commandInput: {
+		system?: unknown;
+		messages?: Message[];
+		toolConfig?: ToolConfiguration;
+		[key: string]: unknown;
+	},
+): void {
+	const tools = commandInput.toolConfig?.tools ?? [];
+	const cache = extractBedrockCacheMetadata(commandInput.system, commandInput.messages, tools);
+	const neutralTools = cacheNeutralBedrockValues(tools);
+	observeEffectiveDispatch(options, model, {
+		transport: "sse",
+		previousResponseMode: "none",
+		instructionPrefix: Array.isArray(commandInput.system)
+			? cacheNeutralBedrockValues(commandInput.system)
+			: (commandInput.system ?? null),
+		orderedToolDefinitions: neutralTools,
+		orderedToolIdentifiers: neutralTools.map(bedrockToolIdentifier),
+		cacheRetention: cache.retention,
+		cachePolicy: cache.policy,
+		cacheBoundary: cache.boundary,
+	});
+}
+
+function cacheNeutralBedrockValues(values: readonly unknown[]): unknown[] {
+	const neutral: unknown[] = [];
+	for (const value of values) {
+		if (!value || typeof value !== "object" || Array.isArray(value)) {
+			neutral.push(value);
+			continue;
+		}
+		const { cachePoint: _cachePoint, ...component } = value as Record<string, unknown>;
+		if (Object.keys(component).length > 0) neutral.push(component);
+	}
+	return neutral;
+}
+
+function bedrockToolIdentifier(value: unknown): string {
+	if (!value || typeof value !== "object") return "unknown";
+	const toolSpec = (value as Record<string, unknown>).toolSpec;
+	if (!toolSpec || typeof toolSpec !== "object") return "unknown";
+	const name = (toolSpec as Record<string, unknown>).name;
+	return typeof name === "string" ? name : "unknown";
+}
+
+function extractBedrockCacheMetadata(
+	system: unknown,
+	messages: readonly Message[] | undefined,
+	tools: readonly BedrockTool[],
+): { retention: unknown; policy: unknown; boundary: unknown } {
+	const markers: unknown[] = [];
+	const anchors: string[] = [];
+	for (const point of extractBedrockCachePoints(Array.isArray(system) ? system : [])) {
+		markers.push(point.cachePoint);
+		anchors.push("system");
+	}
+	for (let messageIndex = 0; messageIndex < (messages?.length ?? 0); messageIndex++) {
+		const message = messages?.[messageIndex];
+		const content = message?.content ?? [];
+		for (const point of extractBedrockCachePoints(content)) {
+			markers.push(point.cachePoint);
+			anchors.push(
+				messageIndex === (messages?.length ?? 0) - 1 && message?.role === "user" && point.index === content.length - 1
+					? "last-user:last-cacheable-block"
+					: `message:${messageIndex}:${point.index}:${message?.role ?? "unknown"}`,
+			);
+		}
+	}
+	for (const point of extractBedrockCachePoints(tools)) {
+		markers.push(point.cachePoint);
+		anchors.push(point.index === tools.length - 1 ? "last-tool" : `tool:${point.index}`);
+	}
+	const summary = summarizeCacheMarkerMetadata(markers);
+	return {
+		retention: summary.retention,
+		policy: summary.policy,
+		boundary: anchors,
+	};
+}
+
+function extractBedrockCachePoints(values: readonly unknown[]): Array<{ index: number; cachePoint: unknown }> {
+	const points: Array<{ index: number; cachePoint: unknown }> = [];
+	for (let index = 0; index < values.length; index++) {
+		const value = values[index];
+		if (!value || typeof value !== "object") continue;
+		const cachePoint = (value as Record<string, unknown>).cachePoint;
+		if (cachePoint !== undefined) points.push({ index, cachePoint });
+	}
+	return points;
 }
 
 type SdkErrorMetadata = { $metadata?: { httpStatusCode?: unknown; requestId?: unknown } };

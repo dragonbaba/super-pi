@@ -13,6 +13,7 @@ import chalk from "chalk";
 import { type Static, Type } from "typebox";
 import { Compile } from "typebox/compile";
 import { getCustomThemesDir, getThemesDir } from "../../../config.ts";
+import { compareCanonicalIdentifiers } from "../../../core/prefix-manifest.ts";
 import type { SourceInfo } from "../../../core/source-info.ts";
 import { closeWatcher, watchWithErrorHandler } from "../../../utils/fs-watch.ts";
 import { highlight, supportsLanguage } from "../../../utils/syntax-highlight.ts";
@@ -510,7 +511,7 @@ function getCustomThemeInfos(): ThemeInfo[] {
 		return result;
 	}
 
-	for (const file of fs.readdirSync(customThemesDir)) {
+	for (const file of fs.readdirSync(customThemesDir).sort(compareCanonicalIdentifiers)) {
 		if (!file.endsWith(".json")) {
 			continue;
 		}

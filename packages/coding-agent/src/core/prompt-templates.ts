@@ -3,6 +3,7 @@ import { basename, dirname, join, resolve, sep } from "path";
 import { CONFIG_DIR_NAME } from "../config.ts";
 import { parseFrontmatter } from "../utils/frontmatter.ts";
 import { resolvePath } from "../utils/paths.ts";
+import { compareCanonicalIdentifiers } from "./prefix-manifest.ts";
 import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.ts";
 
 /**
@@ -143,7 +144,9 @@ function loadTemplatesFromDir(dir: string, getSourceInfo: (filePath: string) => 
 	}
 
 	try {
-		const entries = readdirSync(dir, { withFileTypes: true });
+		const entries = readdirSync(dir, { withFileTypes: true }).sort((left, right) =>
+			compareCanonicalIdentifiers(left.name, right.name),
+		);
 
 		for (const entry of entries) {
 			const fullPath = join(dir, entry.name);
