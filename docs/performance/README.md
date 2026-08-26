@@ -13,7 +13,7 @@ npm run --silent -- bench:prefix
 npm run --silent -- bench:tool-output
 ```
 
-Every result uses `BenchmarkResult` schema version 1 and records the commit, Node version, OS/architecture, CPU, memory, terminal dimensions, fixture version, warm-up/measurement counts, p50/p95/p99, min/max, coefficient of variation, and heap observations. Defaults are 5 warm-up and 20 measured runs; local smoke checks may use `--warmup 1 --runs 3`. Shared CI checks schema and deterministic structural counters rather than machine-specific millisecond thresholds.
+Every result uses `BenchmarkResult` schema version 1 and records the commit, Node version, OS/architecture, CPU, memory, terminal dimensions, fixture version, warm-up/measurement counts, p50/p95/p99, min/max, coefficient of variation, heap observations, and benchmark-specific string/boolean observations such as content hashes. Defaults are 5 warm-up and 20 measured runs; local smoke checks may use `--warmup 1 --runs 3`. Shared CI checks schema and deterministic structural counters rather than machine-specific millisecond thresholds.
 
 Larger variants are generated in memory instead of committed as blobs:
 
@@ -21,6 +21,8 @@ Larger variants are generated in memory instead of committed as blobs:
 npm run --silent -- bench:tui-transcript -- --items 50000 --width 200 --height 60
 npm run --silent -- bench:tool-output -- --mebibytes 10
 ```
+
+The TUI transcript benchmark constructs the production `UserMessageComponent` and `AssistantMessageComponent` tree, primes it through `TuiMainScreen`, and applies deterministic synchronous terminal backpressure to every measured update. The default slow sink rate is 16 KiB/s; change it explicitly with `--terminal-bytes-per-second`. The prefix benchmark builds every resource ordering per sample and records the canonical prefix SHA-256, hash-set SHA-256, unique hash count, and drift count.
 
 The stream and tool-progress benchmarks use the coalesced observer lane by default. Add `--legacy-delivery` to measure the compatibility `subscribe()` lane, which intentionally awaits and delivers every requested update:
 
@@ -34,6 +36,8 @@ Save baseline and candidate JSON outside the source tree (or under ignored `.art
 ```text
 npm run --silent -- bench:compare -- baseline.json candidate.json
 ```
+
+Comparison is rejected unless benchmark/fixture, Node version, platform, architecture, warm-up and measured run counts, CPU identity/core count, total memory, terminal dimensions/type, Kitty mode, and exposed-GC mode match. Commit and measurement timestamp are expected to differ and are not comparability keys.
 
 The committed `phase0-v1` fixture identities are locked by `tests/benchmark-fixtures.test.ts`:
 

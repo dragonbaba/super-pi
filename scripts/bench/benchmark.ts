@@ -27,6 +27,7 @@ export interface BenchmarkResult {
 	warmupRuns: number;
 	measuredRuns: number;
 	metrics: Record<string, number>;
+	observations?: Record<string, string | number | boolean>;
 	environment: BenchmarkEnvironment;
 }
 
@@ -34,6 +35,7 @@ export interface BenchmarkOptions {
 	name: string;
 	fixture: string;
 	run: () => void | Record<string, number> | Promise<void | Record<string, number>>;
+	observations?: () => Record<string, string | number | boolean>;
 }
 
 function requireRecord(value: unknown, label: string): Record<string, unknown> {
@@ -56,7 +58,29 @@ export function parseBenchmarkResult(json: string): BenchmarkResult {
 	for (const [key, value] of Object.entries(metrics)) {
 		if (typeof value !== "number" || !Number.isFinite(value)) throw new Error(`metrics.${key} must be a finite number`);
 	}
-	requireRecord(result.environment, "environment");
+	if (result.observations !== undefined) {
+		const observations = requireRecord(result.observations, "observations");
+		for (const [key, value] of Object.entries(observations)) {
+			if (typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean") {
+				throw new Error(`observations.${key} must be a string, number, or boolean`);
+			}
+			if (typeof value === "number" && !Number.isFinite(value)) {
+				throw new Error(`observations.${key} must be finite`);
+			}
+		}
+	}
+	const benchmarkEnvironment = requireRecord(result.environment, "environment");
+	for (const key of ["cpu", "term", "measuredAt"] as const) {
+		if (typeof benchmarkEnvironment[key] !== "string") throw new Error(`environment.${key} must be a string`);
+	}
+	for (const key of ["cpuCores", "totalMemoryBytes", "terminalColumns", "terminalRows"] as const) {
+		if (typeof benchmarkEnvironment[key] !== "number" || !Number.isFinite(benchmarkEnvironment[key])) {
+			throw new Error(`environment.${key} must be a finite number`);
+		}
+	}
+	for (const key of ["kittyImages", "exposeGc"] as const) {
+		if (typeof benchmarkEnvironment[key] !== "boolean") throw new Error(`environment.${key} must be a boolean`);
+	}
 	return result as unknown as BenchmarkResult;
 }
 
@@ -135,6 +159,7 @@ export async function runBenchmark(options: BenchmarkOptions): Promise<Benchmark
 		warmupRuns,
 		measuredRuns,
 		metrics,
+		...(options.observations ? { observations: options.observations() } : {}),
 		environment: environment(),
 	};
 }
