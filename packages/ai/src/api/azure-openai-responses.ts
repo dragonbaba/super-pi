@@ -1,7 +1,7 @@
 import { AzureOpenAI } from "openai";
 import type { ResponseCreateParamsStreaming } from "openai/resources/responses/responses.js";
 import { clampThinkingLevel } from "../models.ts";
-import { getModelCapabilities, modelSupportsPromptCache } from "../model-capabilities.ts";
+import { capabilityCacheRetention, contextForModelCapabilities, getModelCapabilities, sanitizeCapabilityRequest } from "../model-capabilities.ts";
 import type {
 	Api,
 	AssistantMessage,
@@ -105,8 +105,9 @@ export const stream: StreamFunction<"azure-openai-responses", AzureOpenAIRespons
 				throw new Error(`No API key for provider: ${model.provider}`);
 			}
 			const client = createClient(model, apiKey, options);
+			const capabilityContext = contextForModelCapabilities(model, context);
 			const grammarToolInputProperties = createGrammarToolInputProperties(
-				context.tools,
+				capabilityContext.tools,
 				model.compat?.supportsOpenAIGrammarTools ?? false,
 			);
 			let params = buildParams(model, context, options, deploymentName, grammarToolInputProperties);
@@ -319,7 +320,7 @@ function buildParams(
 	),
 ) {
 	const capabilities = getModelCapabilities(model);
-	const wireContext = capabilities.toolCalling ? context : { ...context, tools: undefined };
+	const wireContext = contextForModelCapabilities(model, context);
 	const messages = convertResponsesMessages(model, wireContext, AZURE_TOOL_CALL_PROVIDERS, {
 		grammarToolInputProperties,
 	});
@@ -328,7 +329,10 @@ function buildParams(
 		model: deploymentName,
 		input: messages,
 		stream: true,
-		prompt_cache_key: modelSupportsPromptCache(model) ? clampOpenAIPromptCacheKey(options?.sessionId) : undefined,
+		prompt_cache_key:
+			capabilityCacheRetention(model, options?.cacheRetention ?? "short") !== "none"
+				? clampOpenAIPromptCacheKey(options?.sessionId)
+				: undefined,
 		store: false,
 	};
 
@@ -351,7 +355,7 @@ function buildParams(
 		params.tool_choice = options.toolChoice;
 	}
 
-	if (model.reasoning) {
+	if (capabilities.reasoning.mode !== "none") {
 		if (options?.reasoningEffort || options?.reasoningSummary) {
 			const effort = options?.reasoningEffort
 				? (model.thinkingLevelMap?.[options.reasoningEffort] ?? options.reasoningEffort)
@@ -372,6 +376,7 @@ function buildParams(
 	if (options?.samplingParams) {
 		Object.assign(params, options.samplingParams);
 	}
+	sanitizeCapabilityRequest(model, params as unknown as Record<string, unknown>);
 
 	return params;
 }

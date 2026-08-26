@@ -1,7 +1,7 @@
 import OpenAI from "openai";
 import type { ResponseCreateParamsStreaming } from "openai/resources/responses/responses.js";
 import { clampThinkingLevel } from "../models.ts";
-import { getModelCapabilities, modelSupportsPromptCache } from "../model-capabilities.ts";
+import { capabilityCacheRetention, contextForModelCapabilities, getModelCapabilities, sanitizeCapabilityRequest } from "../model-capabilities.ts";
 import type {
 	Api,
 	AssistantMessage,
@@ -131,13 +131,15 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 		try {
 			// Create OpenAI client
 			const apiKey = getClientApiKey(model.provider, options?.apiKey, options?.headers);
-			const cacheRetention = modelSupportsPromptCache(model)
-				? resolveCacheRetention(options?.cacheRetention, options?.env)
-				: "none";
+			const cacheRetention = capabilityCacheRetention(
+				model,
+				resolveCacheRetention(options?.cacheRetention, options?.env),
+			);
 			const cacheSessionId = cacheRetention === "none" ? undefined : options?.sessionId;
 			const compat = getCompat(model);
+			const capabilityContext = contextForModelCapabilities(model, context);
 			const grammarToolInputProperties = createGrammarToolInputProperties(
-				context.tools,
+				capabilityContext.tools,
 				compat.supportsOpenAIGrammarTools,
 			);
 			const client = createClient(model, context, apiKey, options?.headers, options?.fetch, cacheSessionId);
@@ -302,7 +304,7 @@ function buildParams(
 ) {
 	const capabilities = getModelCapabilities(model);
 	const supportsStrictMode = compat.supportsStrictMode && capabilities.strictToolSchema;
-	const wireContext = capabilities.toolCalling ? context : { ...context, tools: undefined };
+	const wireContext = contextForModelCapabilities(model, context);
 	const toolPlacement = splitDeferredTools(wireContext, compat.supportsToolSearch && capabilities.deferredTools);
 	const messages = convertResponsesMessages(model, wireContext, OPENAI_TOOL_CALL_PROVIDERS, {
 		grammarToolInputProperties,
@@ -313,9 +315,7 @@ function buildParams(
 		},
 	});
 
-	const cacheRetention = modelSupportsPromptCache(model)
-		? resolveCacheRetention(options?.cacheRetention, options?.env)
-		: "none";
+	const cacheRetention = capabilityCacheRetention(model, resolveCacheRetention(options?.cacheRetention, options?.env));
 	const disableImplicitPromptCache = cacheRetention === "none" && compat.supportsExplicitPromptCacheMode;
 	const params: ResponseCreateParamsStreaming & { prompt_cache_options?: { mode: "explicit" } } = {
 		model: model.id,
@@ -350,7 +350,7 @@ function buildParams(
 		params.tool_choice = options.toolChoice;
 	}
 
-	if (model.reasoning) {
+	if (capabilities.reasoning.mode !== "none") {
 		if (options?.reasoningEffort || options?.reasoningSummary) {
 			const effort = options?.reasoningEffort
 				? (model.thinkingLevelMap?.[options.reasoningEffort] ?? options.reasoningEffort)
@@ -372,6 +372,7 @@ function buildParams(
 	if (options?.samplingParams) {
 		Object.assign(params, options.samplingParams);
 	}
+	sanitizeCapabilityRequest(model, params as unknown as Record<string, unknown>);
 
 	return params;
 }

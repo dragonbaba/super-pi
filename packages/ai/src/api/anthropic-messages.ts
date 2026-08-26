@@ -7,8 +7,8 @@ import type {
 	RawMessageStreamEvent,
 	RefusalStopDetails,
 } from "@anthropic-ai/sdk/resources/messages.js";
-import { calculateCost } from "../models.ts";
-import { getModelCapabilities, modelSupportsPromptCache } from "../model-capabilities.ts";
+import { calculateCost, clampThinkingLevel } from "../models.ts";
+import { capabilityCacheRetention, contextForModelCapabilities, getModelCapabilities } from "../model-capabilities.ts";
 import type {
 	AnthropicMessagesCompat,
 	Api,
@@ -64,7 +64,7 @@ function getCacheControl(
 	cacheRetention?: CacheRetention,
 	env?: ProviderEnv,
 ): { retention: CacheRetention; cacheControl?: CacheControlEphemeral } {
-	const retention = modelSupportsPromptCache(model) ? resolveCacheRetention(cacheRetention, env) : "none";
+	const retention = capabilityCacheRetention(model, resolveCacheRetention(cacheRetention, env));
 	if (retention === "none") {
 		return { retention };
 	}
@@ -537,9 +537,10 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 					});
 				}
 
-				const cacheRetention = modelSupportsPromptCache(model)
-					? resolveCacheRetention(options?.cacheRetention, options?.env)
-					: "none";
+				const cacheRetention = capabilityCacheRetention(
+					model,
+					resolveCacheRetention(options?.cacheRetention, options?.env),
+				);
 				const cacheSessionId = cacheRetention === "none" ? undefined : options?.sessionId;
 
 				const created = createClient(
@@ -911,14 +912,15 @@ export const streamSimple: StreamFunction<"anthropic-messages", SimpleStreamOpti
 		...buildBaseOptions(model, context, options, options?.apiKey),
 		toolChoice: options?.toolChoice,
 	};
-	if (!options?.reasoning) {
+	const reasoning = options?.reasoning ? clampThinkingLevel(model, options.reasoning) : "off";
+	if (reasoning === "off") {
 		return stream(model, context, { ...base, thinkingEnabled: false } satisfies AnthropicOptions);
 	}
 
 	// For models with adaptive thinking: use an effort level.
 	// For older models: use budget-based thinking.
 	if (model.compat?.forceAdaptiveThinking === true) {
-		const effort = mapThinkingLevelToEffort(model, options.reasoning);
+		const effort = mapThinkingLevelToEffort(model, reasoning);
 		return stream(model, context, {
 			...base,
 			thinkingEnabled: true,
@@ -931,8 +933,8 @@ export const streamSimple: StreamFunction<"anthropic-messages", SimpleStreamOpti
 	const adjusted = adjustMaxTokensForThinking(
 		base.maxTokens,
 		model.maxTokens,
-		options.reasoning,
-		options.thinkingBudgets,
+		reasoning,
+		options?.thinkingBudgets,
 	);
 
 	const maxTokens = clampMaxTokensToContext(model, context, adjusted.maxTokens);
@@ -1050,8 +1052,8 @@ function buildParams(
 	const { cacheControl } = getCacheControl(model, options?.cacheRetention, options?.env);
 	const compat = getAnthropicCompat(model);
 	const capabilities = getModelCapabilities(model);
-	const transformedMessages = transformMessages(context.messages, model, normalizeToolCallId);
-	const wireContext = capabilities.toolCalling ? context : { ...context, tools: undefined };
+	const wireContext = contextForModelCapabilities(model, context);
+	const transformedMessages = transformMessages(wireContext.messages, model, normalizeToolCallId);
 	const normalizeToolName = isOAuthToken ? toClaudeCodeName : (name: string) => name;
 	const toolPlacement = splitDeferredTools(
 		{ ...wireContext, messages: transformedMessages },
@@ -1088,19 +1090,19 @@ function buildParams(
 				...(cacheControl ? { cache_control: cacheControl } : {}),
 			},
 		];
-		if (context.systemPrompt) {
+		if (wireContext.systemPrompt) {
 			params.system.push({
 				type: "text",
-				text: sanitizeSurrogates(context.systemPrompt),
+				text: sanitizeSurrogates(wireContext.systemPrompt),
 				...(cacheControl ? { cache_control: cacheControl } : {}),
 			});
 		}
-	} else if (context.systemPrompt) {
+	} else if (wireContext.systemPrompt) {
 		// Add cache control to system prompt for non-OAuth tokens
 		params.system = [
 			{
 				type: "text",
-				text: sanitizeSurrogates(context.systemPrompt),
+				text: sanitizeSurrogates(wireContext.systemPrompt),
 				...(cacheControl ? { cache_control: cacheControl } : {}),
 			},
 		];
@@ -1132,7 +1134,7 @@ function buildParams(
 	}
 
 	// Configure thinking mode: adaptive, budget-based, or explicitly disabled.
-	if (model.reasoning) {
+	if (capabilities.reasoning.mode !== "none") {
 		if (options?.thinkingEnabled) {
 			// Default to "summarized" so Opus 4.7 and Mythos Preview behave like
 			// older Claude 4 models (whose API default is also "summarized").
@@ -1169,7 +1171,7 @@ function buildParams(
 		}
 	}
 
-	if (options?.toolChoice) {
+	if (capabilities.toolCalling && options?.toolChoice) {
 		if (typeof options.toolChoice === "string") {
 			params.tool_choice = { type: options.toolChoice };
 		} else {

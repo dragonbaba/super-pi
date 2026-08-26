@@ -17,7 +17,11 @@ Every model published by `ModelRuntime` carries metadata describing where its pr
 
 `ModelCapabilitiesV1` records input modalities, serial/parallel tool behavior, strict schemas, streamed arguments, reasoning style, signature round-trip, prompt-cache mode, previous-response continuation, WebSocket continuation, deferred tools, remote compaction, and token limits.
 
-The manifest is the gate for optional provider fields. Legacy model fields and `compat` settings are used to derive manifests for existing catalogs. An explicit custom model may provide the complete `capabilities` object in `models.json` or extension registration. Provider adapters still allow `onPayload` to replace the assembled request; that callback is an explicit effective-wire override.
+Every manifest crosses `normalizeModelCapabilitiesV1()`: the complete V1 shape and cross-field invariants are validated, cloned, and deeply frozen. Input modalities, reasoning availability, context limits, and output limits must agree with the final legacy model fields. Invalid explicit custom manifests are rejected. Invalid provider-catalog cache manifests are discarded, safely rederived from catalog fields, and diagnosed.
+
+The manifest is the gate for optional provider fields. Legacy model fields and `compat` settings are used to derive manifests for existing catalogs. An explicit custom model may provide the complete `capabilities` object in `models.json` or extension registration. Capability-affecting overlays without an explicit manifest rederive one from the final overlaid model, and provider/config/extension overlays carry `explicit-custom` provenance.
+
+OpenAI-compatible request assembly applies defaults, merges `samplingParams`, runs the capability sanitizer, then invokes `onPayload`. `onPayload` is the only explicit final wire override. This prevents model or request sampling parameters from restoring unsupported tools, strict schemas, reasoning, parallel-tool, or prompt-cache fields.
 
 ## Unknown models
 
@@ -30,9 +34,11 @@ Unknown IDs no longer copy an arbitrary sibling model. A fallback is created onl
 
 If a provider has multiple possible APIs, declare the model explicitly instead of relying on fallback inference. Requested thinking levels are warned and clamped when the selected profile does not support them.
 
+When `toolCalling=false`, the coding-agent keeps the user's active-tool selection in session state but builds a tool-neutral default prompt and sends no effective tool definitions. Prior tool calls/results are converted to ordinary text messages without tool roles, call IDs, signatures, or synthetic tool-result protocol. Switching back to a tool-capable model reuses the preserved active-tool selection.
+
 ## Reasoning levels
 
-The user-facing levels remain `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max` for compatibility. The manifest classifies the adapter mechanism as `none`, `levels`, `budget`, or `adaptive`; `thinkingLevelMap` performs the final provider-specific value mapping. A `null` map entry marks a level unsupported.
+The user-facing levels remain `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max` for compatibility. The manifest classifies the adapter mechanism as `none`, `levels`, `budget`, or `adaptive`, and its `reasoning.levels` array is the single source of truth for CLI, AgentSession, and adapter clamping. `thinkingLevelMap` only maps an already-supported level to a provider wire value.
 
 ## Conformance backlog
 

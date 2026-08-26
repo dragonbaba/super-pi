@@ -5,7 +5,7 @@ import {
 	type ThinkingConfig,
 } from "@google/genai";
 import { calculateCost, clampThinkingLevel } from "../models.ts";
-import { getModelCapabilities } from "../model-capabilities.ts";
+import { contextForModelCapabilities, getModelCapabilities } from "../model-capabilities.ts";
 import type {
 	Api,
 	AssistantMessage,
@@ -311,12 +311,12 @@ export const streamSimple: StreamFunction<"google-generative-ai", SimpleStreamOp
 		...buildBaseOptions(model, context, options, apiKey),
 		toolChoice: options?.toolChoice,
 	};
-	if (!options?.reasoning) {
+	const clampedReasoning = options?.reasoning ? clampThinkingLevel(model, options.reasoning) : "off";
+	if (clampedReasoning === "off") {
 		return stream(model, context, { ...base, thinking: { enabled: false } } satisfies GoogleOptions);
 	}
 
-	const clampedReasoning = clampThinkingLevel(model, options.reasoning);
-	const effort = (clampedReasoning === "off" ? "high" : clampedReasoning) as ClampedThinkingLevel;
+	const effort = clampedReasoning as ClampedThinkingLevel;
 	const googleModel = model as Model<"google-generative-ai">;
 
 	if (isGemini3ProModel(googleModel) || isGemini3FlashModel(googleModel) || isGemma4Model(googleModel)) {
@@ -410,8 +410,10 @@ function buildParams(
 	context: Context,
 	options: GoogleOptions = {},
 ): GenerateContentParameters {
-	const contents = convertMessages(model, context);
 	const capabilities = getModelCapabilities(model);
+	const wireContext = contextForModelCapabilities(model, context);
+	const contents = convertMessages(model, wireContext);
+	const supportsStrictMode = capabilities.strictToolSchema && supportsGoogleStrictToolSampling(model.id);
 
 	const generationConfig: GenerateContentConfig = {};
 	if (options.temperature !== undefined) {
@@ -421,23 +423,22 @@ function buildParams(
 		generationConfig.maxOutputTokens = options.maxTokens;
 	}
 
-	const functionCallingMode = capabilities.toolCalling && context.tools?.length
-		? resolveGoogleFunctionCallingMode(context.tools, options.toolChoice, supportsGoogleStrictToolSampling(model.id))
+	const functionCallingMode = wireContext.tools?.length
+		? resolveGoogleFunctionCallingMode(wireContext.tools, options.toolChoice, supportsStrictMode)
 		: undefined;
 	const config: GenerateContentConfig = {
 		...(Object.keys(generationConfig).length > 0 && generationConfig),
-		...(context.systemPrompt && { systemInstruction: sanitizeSurrogates(context.systemPrompt) }),
-		...(capabilities.toolCalling &&
-			context.tools &&
-			context.tools.length > 0 && {
-				tools: convertTools(context.tools, false, supportsGoogleStrictToolSampling(model.id)),
+		...(wireContext.systemPrompt && { systemInstruction: sanitizeSurrogates(wireContext.systemPrompt) }),
+		...(wireContext.tools &&
+			wireContext.tools.length > 0 && {
+				tools: convertTools(wireContext.tools, false, supportsStrictMode),
 			}),
 		...(functionCallingMode !== undefined && {
 			toolConfig: { functionCallingConfig: { mode: functionCallingMode } },
 		}),
 	};
 
-	if (options.thinking?.enabled && model.reasoning) {
+	if (options.thinking?.enabled && capabilities.reasoning.mode !== "none") {
 		const thinkingConfig: ThinkingConfig = { includeThoughts: true };
 		if (options.thinking.level !== undefined) {
 			// Cast to any since our GoogleThinkingLevel mirrors Google's ThinkingLevel enum values
@@ -446,7 +447,7 @@ function buildParams(
 			thinkingConfig.thinkingBudget = options.thinking.budgetTokens;
 		}
 		config.thinkingConfig = thinkingConfig;
-	} else if (model.reasoning && options.thinking && !options.thinking.enabled) {
+	} else if (capabilities.reasoning.mode !== "none" && options.thinking && !options.thinking.enabled) {
 		config.thinkingConfig = getDisabledThinkingConfig(model);
 	}
 

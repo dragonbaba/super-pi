@@ -21,7 +21,7 @@ function loadNodeOs(): typeof NodeOs | null {
 const _os: typeof NodeOs | null = loadNodeOs();
 
 import { clampThinkingLevel } from "../models.ts";
-import { getModelCapabilities, modelSupportsPromptCache } from "../model-capabilities.ts";
+import { capabilityCacheRetention, contextForModelCapabilities, getModelCapabilities } from "../model-capabilities.ts";
 import { registerSessionResourceCleanup } from "../session-resources.ts";
 import type {
 	Api,
@@ -380,9 +380,12 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
                 throw new Error(`No API key for provider: ${model.provider}`);
             }
             const accountId = extractAccountId(apiKey);
-            const grammarToolInputProperties = createGrammarToolInputProperties(context.tools, model.compat?.supportsOpenAIGrammarTools ?? false);
+			const capabilityContext = contextForModelCapabilities(model, context);
+            const grammarToolInputProperties = createGrammarToolInputProperties(capabilityContext.tools, model.compat?.supportsOpenAIGrammarTools ?? false);
 			const cacheSessionId =
-				options?.cacheRetention === "none" || !modelSupportsPromptCache(model) ? undefined : options?.sessionId;
+				capabilityCacheRetention(model, options?.cacheRetention ?? "short") === "none"
+					? undefined
+					: options?.sessionId;
             const codexSessionId = clampOpenAIPromptCacheKey(cacheSessionId);
             let body = buildOpenAICodexRequestBody(model, context, options, codexSessionId, grammarToolInputProperties);
             const nextBody = await options?.onPayload?.(body, model);
@@ -605,7 +608,7 @@ export function buildOpenAICodexRequestBody(
 	const capabilities = getModelCapabilities(model);
     const supportsStrictMode = (model.compat?.supportsStrictMode ?? true) && capabilities.strictToolSchema;
     const supportsOpenAIGrammarTools = model.compat?.supportsOpenAIGrammarTools ?? false;
-	const wireContext = capabilities.toolCalling ? context : { ...context, tools: undefined };
+	const wireContext = contextForModelCapabilities(model, context);
 	const toolPlacement = splitDeferredTools(
 		wireContext,
 		(model.compat?.supportsToolSearch ?? false) && capabilities.deferredTools,
@@ -624,13 +627,14 @@ export function buildOpenAICodexRequestBody(
         model: model.id,
         store: false,
         stream: true,
-        instructions: context.systemPrompt || "You are a helpful assistant.",
+		instructions: wireContext.systemPrompt || "You are a helpful assistant.",
         input: messages,
         text: { verbosity: options?.textVerbosity || "low" },
-		...(model.reasoning ? { include: ["reasoning.encrypted_content"] } : {}),
-		prompt_cache_key: modelSupportsPromptCache(model) ? cacheSessionId : undefined,
+		...(capabilities.reasoning.mode !== "none" ? { include: ["reasoning.encrypted_content"] } : {}),
+		prompt_cache_key:
+			capabilityCacheRetention(model, options?.cacheRetention ?? "short") !== "none" ? cacheSessionId : undefined,
 		...(capabilities.toolCalling ? { tool_choice: options?.toolChoice ?? "auto" } : {}),
-		parallel_tool_calls: capabilities.parallelTools,
+		...(capabilities.toolCalling ? { parallel_tool_calls: capabilities.parallelTools } : {}),
     };
     if (options?.temperature !== undefined) {
         body.temperature = options.temperature;
@@ -645,7 +649,7 @@ export function buildOpenAICodexRequestBody(
             supportsOpenAIGrammarTools,
         });
     }
-	if (model.reasoning && options?.reasoningEffort !== undefined) {
+	if (capabilities.reasoning.mode !== "none" && options?.reasoningEffort !== undefined) {
         const effort = options.reasoningEffort === "none"
             ? (model.thinkingLevelMap?.off ?? "none")
             : (model.thinkingLevelMap?.[options.reasoningEffort] ?? options.reasoningEffort);

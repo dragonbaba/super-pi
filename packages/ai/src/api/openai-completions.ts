@@ -12,7 +12,12 @@ import type {
 	ChatCompletionToolMessageParam,
 } from "openai/resources/chat/completions.js";
 import { calculateCost, clampThinkingLevel } from "../models.ts";
-import { getModelCapabilities, modelSupportsPromptCache } from "../model-capabilities.ts";
+import {
+	capabilityCacheRetention,
+	contextForModelCapabilities,
+	getModelCapabilities,
+	sanitizeCapabilityRequest,
+} from "../model-capabilities.ts";
 import type {
 	AssistantMessage,
 	CacheRetention,
@@ -230,13 +235,15 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 		try {
 			const apiKey = getClientApiKey(model.provider, options?.apiKey, options?.headers);
 			const compat = getCompat(model);
+			const capabilityContext = contextForModelCapabilities(model, context);
 			const grammarToolInputProperties = createGrammarToolInputProperties(
-				context.tools,
+				capabilityContext.tools,
 				compat.supportsOpenAIGrammarTools,
 			);
-			const cacheRetention = modelSupportsPromptCache(model)
-				? resolveCacheRetention(options?.cacheRetention, options?.env)
-				: "none";
+			const cacheRetention = capabilityCacheRetention(
+				model,
+				resolveCacheRetention(options?.cacheRetention, options?.env),
+			);
 			const cacheSessionId = cacheRetention === "none" ? undefined : options?.sessionId;
 			const client = createClient(model, context, apiKey, options?.headers, options?.fetch, cacheSessionId, compat);
 			let params = buildParams(model, context, options, compat, cacheRetention, grammarToolInputProperties);
@@ -821,13 +828,14 @@ function buildParams(
 	),
 ) {
 	const capabilities = getModelCapabilities(model);
+	const reasoningEnabled = capabilities.reasoning.mode !== "none";
 	compat = {
 		...compat,
 		supportsStrictMode: compat.supportsStrictMode && capabilities.strictToolSchema,
 		deferredToolsMode: capabilities.deferredTools ? compat.deferredToolsMode : undefined,
 	};
-	if (!modelSupportsPromptCache(model)) cacheRetention = "none";
-	const wireContext = capabilities.toolCalling ? context : { ...context, tools: undefined };
+	cacheRetention = capabilityCacheRetention(model, cacheRetention);
+	const wireContext = contextForModelCapabilities(model, context);
 	const messages = convertMessages(model, wireContext, compat, { grammarToolInputProperties });
 	const cacheControl = getCompatCacheControl(compat, cacheRetention);
 
@@ -871,7 +879,7 @@ function buildParams(
 		if (compat.zaiToolStream) {
 			(params as any).tool_stream = true;
 		}
-	} else if (hasToolHistory(context.messages)) {
+	} else if (capabilities.toolCalling && hasToolHistory(wireContext.messages)) {
 		// Anthropic (via LiteLLM/proxy) requires tools param when conversation has tool_calls/tool_results
 		params.tools = [];
 	}
@@ -884,7 +892,7 @@ function buildParams(
 		params.tool_choice = options.toolChoice;
 	}
 
-	if (compat.thinkingFormat === "zai" && model.reasoning) {
+	if (compat.thinkingFormat === "zai" && reasoningEnabled) {
 		const zaiParams = params as Omit<typeof params, "reasoning_effort"> & {
 			thinking?: { type: "enabled" | "disabled"; clear_thinking?: boolean };
 			reasoning_effort?: string;
@@ -897,7 +905,7 @@ function buildParams(
 				zaiParams.reasoning_effort = effort;
 			}
 		}
-	} else if (compat.thinkingFormat === "qwen" && model.reasoning) {
+	} else if (compat.thinkingFormat === "qwen" && reasoningEnabled) {
 		(params as any).enable_thinking = !!options?.reasoningEffort;
 		if (options?.reasoningEffort && compat.supportsReasoningEffort) {
 			const effort = model.thinkingLevelMap?.[options.reasoningEffort] ?? options.reasoningEffort;
@@ -905,17 +913,17 @@ function buildParams(
 				(params as any).reasoning_effort = effort;
 			}
 		}
-	} else if (compat.thinkingFormat === "qwen-chat-template" && model.reasoning) {
+	} else if (compat.thinkingFormat === "qwen-chat-template" && reasoningEnabled) {
 		(params as any).chat_template_kwargs = {
 			enable_thinking: !!options?.reasoningEffort,
 			preserve_thinking: true,
 		};
-	} else if (compat.thinkingFormat === "chat-template" && model.reasoning) {
+	} else if (compat.thinkingFormat === "chat-template" && reasoningEnabled) {
 		const chatTemplateKwargs = buildChatTemplateValues(model, options, compat.chatTemplateKwargs);
 		if (chatTemplateKwargs) {
 			(params as any).chat_template_kwargs = chatTemplateKwargs;
 		}
-	} else if (compat.thinkingFormat === "baseten" && model.reasoning) {
+	} else if (compat.thinkingFormat === "baseten" && reasoningEnabled) {
 		const basetenParams = params as Omit<typeof params, "reasoning_effort"> & {
 			chat_template_args?: Record<string, ResolvedChatTemplateKwargValue>;
 			reasoning_effort?: string;
@@ -932,7 +940,7 @@ function buildParams(
 				basetenParams.reasoning_effort = effort;
 			}
 		}
-	} else if (compat.thinkingFormat === "deepseek" && model.reasoning) {
+	} else if (compat.thinkingFormat === "deepseek" && reasoningEnabled) {
 		if (options?.reasoningEffort) {
 			(params as any).thinking = { type: "enabled" };
 		} else if (model.thinkingLevelMap?.off !== null) {
@@ -942,7 +950,7 @@ function buildParams(
 			(params as any).reasoning_effort =
 				model.thinkingLevelMap?.[options.reasoningEffort] ?? options.reasoningEffort;
 		}
-	} else if (compat.thinkingFormat === "openrouter" && model.reasoning) {
+	} else if (compat.thinkingFormat === "openrouter" && reasoningEnabled) {
 		// OpenRouter normalizes reasoning across providers via a nested reasoning object.
 		const openRouterParams = params as typeof params & { reasoning?: { effort?: string } };
 		if (options?.reasoningEffort) {
@@ -952,12 +960,12 @@ function buildParams(
 		} else if (model.thinkingLevelMap?.off !== null) {
 			openRouterParams.reasoning = { effort: model.thinkingLevelMap?.off ?? "none" };
 		}
-	} else if (compat.thinkingFormat === "ant-ling" && model.reasoning && options?.reasoningEffort) {
+	} else if (compat.thinkingFormat === "ant-ling" && reasoningEnabled && options?.reasoningEffort) {
 		const effort = model.thinkingLevelMap?.[options.reasoningEffort];
 		if (typeof effort === "string") {
 			(params as typeof params & { reasoning?: { effort: string } }).reasoning = { effort };
 		}
-	} else if (compat.thinkingFormat === "together" && model.reasoning) {
+	} else if (compat.thinkingFormat === "together" && reasoningEnabled) {
 		const togetherParams = params as Omit<typeof params, "reasoning_effort"> & {
 			reasoning?: { enabled: boolean };
 			reasoning_effort?: string;
@@ -966,17 +974,17 @@ function buildParams(
 		if (options?.reasoningEffort && compat.supportsReasoningEffort) {
 			togetherParams.reasoning_effort = model.thinkingLevelMap?.[options.reasoningEffort] ?? options.reasoningEffort;
 		}
-	} else if (compat.thinkingFormat === "string-thinking" && model.reasoning) {
+	} else if (compat.thinkingFormat === "string-thinking" && reasoningEnabled) {
 		const stringThinkingParams = params as typeof params & { thinking?: string };
 		if (options?.reasoningEffort) {
 			stringThinkingParams.thinking = model.thinkingLevelMap?.[options.reasoningEffort] ?? options.reasoningEffort;
 		} else if (model.thinkingLevelMap?.off !== null) {
 			stringThinkingParams.thinking = model.thinkingLevelMap?.off ?? "none";
 		}
-	} else if (options?.reasoningEffort && model.reasoning && compat.supportsReasoningEffort) {
+	} else if (options?.reasoningEffort && reasoningEnabled && compat.supportsReasoningEffort) {
 		// OpenAI-style reasoning_effort
 		(params as any).reasoning_effort = model.thinkingLevelMap?.[options.reasoningEffort] ?? options.reasoningEffort;
-	} else if (!options?.reasoningEffort && model.reasoning && compat.supportsReasoningEffort) {
+	} else if (!options?.reasoningEffort && reasoningEnabled && compat.supportsReasoningEffort) {
 		const offValue = model.thinkingLevelMap?.off;
 		if (typeof offValue === "string") {
 			(params as any).reasoning_effort = offValue;
@@ -987,7 +995,7 @@ function buildParams(
 	// thinkingFormat: the same server can serve zai, qwen or chat-template models.
 	// Reasoning and the answer share max_tokens here, so an uncapped reasoning
 	// phase can consume the whole response and leave no answer and no tool call.
-	if (compat.supportsThinkingTokenBudget && options?.reasoningEffort && model.reasoning) {
+	if (compat.supportsThinkingTokenBudget && options?.reasoningEffort && reasoningEnabled) {
 		const level = clampReasoning(options.reasoningEffort)!;
 		const budgets: ThinkingBudgets = {
 			minimal: 1024,
@@ -1024,6 +1032,7 @@ function buildParams(
 	if (options?.samplingParams) {
 		Object.assign(params, options.samplingParams);
 	}
+	sanitizeCapabilityRequest(model, params as unknown as Record<string, unknown>);
 
 	return params;
 }
@@ -1219,7 +1228,7 @@ export function convertMessages(
 	const transformedMessages = transformMessages(context.messages, model, (id) => normalizeToolCallId(id));
 
 	if (context.systemPrompt) {
-		const useDeveloperRole = model.reasoning && compat.supportsDeveloperRole;
+		const useDeveloperRole = getModelCapabilities(model).reasoning.mode !== "none" && compat.supportsDeveloperRole;
 		const role = useDeveloperRole ? "developer" : "system";
 		params.push({ role: role, content: sanitizeSurrogates(context.systemPrompt) });
 	}
@@ -1365,7 +1374,7 @@ export function convertMessages(
 			}
 			if (
 				compat.requiresReasoningContentOnAssistantMessages &&
-				model.reasoning &&
+				getModelCapabilities(model).reasoning.mode !== "none" &&
 				toolCalls.length > 0 &&
 				(assistantMsg as { reasoning_content?: string }).reasoning_content === undefined
 			) {

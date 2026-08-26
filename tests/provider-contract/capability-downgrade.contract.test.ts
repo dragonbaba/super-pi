@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { buildOpenAICodexRequestBody } from "../../packages/ai/src/api/openai-codex-responses.ts";
 import { stream as streamOpenAIChat } from "../../packages/ai/src/api/openai-completions.ts";
+import { stream as streamGoogle } from "../../packages/ai/src/api/google-generative-ai.ts";
 import { stream as streamMistral } from "../../packages/ai/src/api/mistral-conversations.ts";
 import { stream as streamPiMessages } from "../../packages/ai/src/api/pi-messages.ts";
 import { conservativeModelCapabilities, withModelProfile } from "../../packages/ai/src/model-capabilities.ts";
@@ -28,6 +29,23 @@ function conservativeModel<TApi extends Api>(api: TApi): Model<TApi> {
 			supportsLongCacheRetention: true,
 			supportsToolSearch: true,
 		} as Model<TApi>["compat"],
+	};
+}
+
+function modelWithCapabilities<TApi extends Api>(
+	api: TApi,
+	capabilityOverrides: Partial<ReturnType<typeof conservativeModelCapabilities>>,
+): Model<TApi> {
+	const base = conservativeModel(api);
+	return {
+		...base,
+		id: api === "google-generative-ai" ? "gemini-3-pro-preview" : base.id,
+		profileSource: "explicit-custom",
+		costKnown: true,
+		capabilities: {
+			...conservativeModelCapabilities(base.contextWindow, base.maxTokens),
+			...capabilityOverrides,
+		},
 	};
 }
 
@@ -101,7 +119,7 @@ test("Codex conservative fallback forces SSE-safe body capabilities", () => {
 		reasoningEffort: "high",
 	}, "private-session");
 	assert.equal(body.prompt_cache_key, undefined);
-	assert.equal(body.parallel_tool_calls, false);
+	assert.equal(body.parallel_tool_calls, undefined);
 	assert.equal(body.reasoning, undefined);
 	assert.equal(body.include, undefined);
 	assert.equal(body.tools, undefined);
@@ -195,4 +213,71 @@ test("Kimi deferred-tool system carriers contribute tool identity without instru
 	assert.equal(after.toolCount, 2);
 	assert.notEqual(before.toolIdentifierSetHash, after.toolIdentifierSetHash);
 	assert.equal(JSON.stringify(after).includes("write"), false);
+});
+
+test("promptCache retention=false clamps long retention to short wire policy", async () => {
+	const cacheModel = modelWithCapabilities("openai-completions", {
+		promptCache: { mode: "implicit", retention: false },
+	});
+	let wire: Record<string, unknown> | undefined;
+	await streamOpenAIChat(cacheModel, context(), {
+		apiKey: "fixture-key",
+		cacheRetention: "long",
+		sessionId: "private-session",
+		fetch: async (_input, init) => {
+			wire = JSON.parse(String(init?.body)) as Record<string, unknown>;
+			return openAIChatResponse();
+		},
+	}).result();
+	assert.ok(wire);
+	assert.equal(wire.prompt_cache_retention, undefined);
+});
+
+test("Google and Mistral strict tool conversion is gated by strictToolSchema", async () => {
+	const strictTool = {
+		name: "lookup",
+		description: "lookup",
+		parameters: { type: "object", properties: { query: { type: "string" } } },
+		constrainedSampling: { type: "json_schema", strict: "prefer" },
+	} as Tool;
+	const strictDisabled = {
+		toolCalling: true,
+		parallelTools: true,
+		strictToolSchema: false,
+		streamedToolArguments: true,
+	};
+	let googlePayload: Record<string, unknown> | undefined;
+	await streamGoogle(modelWithCapabilities("google-generative-ai", strictDisabled), {
+		systemPrompt: "system",
+		messages: [{ role: "user", content: "hello", timestamp: 1 }],
+		tools: [strictTool],
+	}, {
+		apiKey: "fixture-key",
+		onPayload: (payload) => {
+			googlePayload = payload as Record<string, unknown>;
+			throw new Error("captured google payload");
+		},
+	}).result();
+	assert.ok(googlePayload);
+	const googleConfig = googlePayload.config as Record<string, unknown>;
+	const googleTools = googleConfig.tools as Array<{ functionDeclarations: Array<Record<string, unknown>> }>;
+	const googleSchema = googleTools[0]!.functionDeclarations[0]!.parametersJsonSchema as Record<string, unknown>;
+	assert.equal(googleSchema.required, undefined);
+	assert.equal(googleSchema.additionalProperties, undefined);
+
+	let mistralPayload: Record<string, unknown> | undefined;
+	await streamMistral(modelWithCapabilities("mistral-conversations", strictDisabled), {
+		systemPrompt: "system",
+		messages: [{ role: "user", content: "hello", timestamp: 1 }],
+		tools: [strictTool],
+	}, {
+		apiKey: "fixture-key",
+		onPayload: (payload) => {
+			mistralPayload = payload as Record<string, unknown>;
+			throw new Error("captured mistral payload");
+		},
+	}).result();
+	assert.ok(mistralPayload);
+	const mistralTools = mistralPayload.tools as Array<{ function: Record<string, unknown> }>;
+	assert.equal(mistralTools[0]!.function.strict, false);
 });

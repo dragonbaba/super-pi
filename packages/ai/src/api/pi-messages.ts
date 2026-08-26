@@ -22,7 +22,8 @@ import type {
 	ThinkingLevel,
 	ToolCall,
 } from "../types.ts";
-import { getModelCapabilities, modelSupportsPromptCache } from "../model-capabilities.ts";
+import { capabilityCacheRetention, contextForModelCapabilities, getModelCapabilities } from "../model-capabilities.ts";
+import { clampThinkingLevel } from "../models.ts";
 import { appendAssistantMessageDiagnostic, createAssistantMessageDiagnostic } from "../utils/diagnostics.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { observeEffectiveDispatch } from "../utils/effective-dispatch.ts";
@@ -374,17 +375,18 @@ export const stream: StreamFunction<"pi-messages", PiMessagesOptions> = (
 			}
 
 			const capabilities = getModelCapabilities(model);
-			const wireContext = capabilities.toolCalling ? context : { ...context, tools: undefined };
+			const wireContext = contextForModelCapabilities(model, context);
 			let payload: unknown = {
 				model: model.id,
 				context: wireContext,
 				options: {
 					temperature: options?.temperature,
 					maxTokens: options?.maxTokens,
-					reasoning: model.reasoning ? options?.reasoning : undefined,
-					cacheRetention: modelSupportsPromptCache(model)
-						? resolveCacheRetention(options?.cacheRetention, options?.env)
-						: "none",
+					reasoning: capabilities.reasoning.mode !== "none" ? options?.reasoning : undefined,
+					cacheRetention: capabilityCacheRetention(
+						model,
+						resolveCacheRetention(options?.cacheRetention, options?.env) ?? "short",
+					),
 					sessionId: options?.sessionId,
 					toolChoice: capabilities.toolCalling ? options?.toolChoice : undefined,
 				},
@@ -468,9 +470,10 @@ export const streamSimple: StreamFunction<"pi-messages", SimpleStreamOptions> = 
 	options?: SimpleStreamOptions,
 ): AssistantMessageEventStream => {
 	const extra = options as PiMessagesOptions | undefined;
+	const clampedReasoning = options?.reasoning ? clampThinkingLevel(model, options.reasoning) : "off";
 	return stream(model, context, {
 		...options,
-		reasoning: options?.reasoning,
+		reasoning: clampedReasoning === "off" ? undefined : clampedReasoning,
 		toolChoice: options?.toolChoice,
 		debug: extra?.debug,
 	});
