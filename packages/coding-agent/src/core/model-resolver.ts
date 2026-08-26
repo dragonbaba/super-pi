@@ -8,6 +8,7 @@ import {
 	type AuthOperationOptions,
 	type KnownProvider,
 	type Model,
+	getSupportedThinkingLevels,
 	modelsAreEqual,
 } from "@super-pi/ai";
 import chalk from "chalk";
@@ -169,22 +170,6 @@ export interface ParsedModelResult {
 	/** Thinking level if explicitly specified in pattern, undefined otherwise */
 	thinkingLevel?: ThinkingLevel;
 	warning: string | undefined;
-}
-
-function buildFallbackModel(provider: string, modelId: string, availableModels: Model<Api>[]): Model<Api> | undefined {
-	const providerModels = availableModels.filter((m) => m.provider === provider);
-	if (providerModels.length === 0) return undefined;
-
-	const defaultId = defaultModelPerProvider[provider as KnownProvider];
-	const baseModel = defaultId
-		? (providerModels.find((m) => m.id === defaultId) ?? providerModels[0])
-		: providerModels[0];
-
-	return {
-		...baseModel,
-		id: modelId,
-		name: modelId,
-	};
 }
 
 /**
@@ -424,6 +409,25 @@ export function resolveCliModel(options: {
 			error: "No models available. Check your installation or add models to models.json.",
 		};
 	}
+	const knownModelResult = (
+		model: Model<Api>,
+		thinkingLevel?: ThinkingLevel,
+		currentWarning?: string,
+	): ResolveCliModelResult => {
+		const profileWarning = model.profileDiagnostics?.map((diagnostic) => diagnostic.message).join(" ");
+		const mergedWarning = [currentWarning, profileWarning].filter(Boolean).join(" ") || undefined;
+		const requested = cliThinking ?? thinkingLevel;
+		if (!requested || getSupportedThinkingLevels(model).includes(requested)) {
+			return { model, thinkingLevel, warning: mergedWarning, error: undefined };
+		}
+		const unsupported = `Thinking level "${requested}" is unsupported by ${model.provider}/${model.id}; it will be clamped to an adapter-supported level.`;
+		return {
+			model,
+			thinkingLevel: undefined,
+			warning: mergedWarning ? `${mergedWarning} ${unsupported}` : unsupported,
+			error: undefined,
+		};
+	};
 
 	// Build canonical provider lookup (case-insensitive)
 	const providerMap = new Map<string, string>();
@@ -472,17 +476,12 @@ export function resolveCliModel(options: {
 			(m) => m.id.toLowerCase() === lower || `${m.provider}/${m.id}`.toLowerCase() === lower,
 		);
 		if (exactMatches.length === 1) {
-			return { model: exactMatches[0], warning: undefined, thinkingLevel: undefined, error: undefined };
+			return knownModelResult(exactMatches[0]);
 		}
 		if (exactMatches.length > 1) {
 			const authenticatedExactMatches = exactMatches.filter((m) => modelRuntime.hasConfiguredAuth(m.provider));
 			if (authenticatedExactMatches.length === 1) {
-				return {
-					model: authenticatedExactMatches[0],
-					warning: undefined,
-					thinkingLevel: undefined,
-					error: undefined,
-				};
+				return knownModelResult(authenticatedExactMatches[0]);
 			}
 
 			const matches = exactMatches
@@ -579,16 +578,11 @@ export function resolveCliModel(options: {
 			if (rawExactMatches.length > 0 && !modelRuntime.hasConfiguredAuth(model.provider)) {
 				const authenticatedRawMatches = rawExactMatches.filter((m) => modelRuntime.hasConfiguredAuth(m.provider));
 				if (authenticatedRawMatches.length === 1) {
-					return {
-						model: authenticatedRawMatches[0],
-						thinkingLevel: undefined,
-						warning: undefined,
-						error: undefined,
-					};
+					return knownModelResult(authenticatedRawMatches[0]);
 				}
 			}
 		}
-		return { model, thinkingLevel, warning, error: undefined };
+		return knownModelResult(model, thinkingLevel, warning);
 	}
 
 	// If we inferred a provider from the slash but found no match within that provider,
@@ -601,19 +595,14 @@ export function resolveCliModel(options: {
 			(m) => m.id.toLowerCase() === lower || `${m.provider}/${m.id}`.toLowerCase() === lower,
 		);
 		if (exact) {
-			return { model: exact, warning: undefined, thinkingLevel: undefined, error: undefined };
+			return knownModelResult(exact);
 		}
 		// Also try parseModelPattern on the full input against all models
 		const fallback = parseModelPattern(cliModel, availableModels, {
 			allowInvalidThinkingLevelFallback: false,
 		});
 		if (fallback.model) {
-			return {
-				model: fallback.model,
-				thinkingLevel: fallback.thinkingLevel,
-				warning: fallback.warning,
-				error: undefined,
-			};
+			return knownModelResult(fallback.model, fallback.thinkingLevel, fallback.warning);
 		}
 	}
 
@@ -634,15 +623,17 @@ export function resolveCliModel(options: {
 			}
 		}
 
-		const fallbackModel = buildFallbackModel(provider, fallbackPattern, availableModels);
+		const fallbackModel = modelRuntime.createConservativeFallbackModel(provider, fallbackPattern);
 		if (fallbackModel) {
 			const requestedThinking = cliThinking ?? fallbackThinking;
-			const model =
-				requestedThinking && requestedThinking !== "off" ? { ...fallbackModel, reasoning: true } : fallbackModel;
+			const thinkingWarning =
+				requestedThinking && requestedThinking !== "off"
+					? " Requested thinking is not enabled for an unknown model; reasoning remains off until capabilities are configured."
+					: "";
 			const fallbackWarning = warning
-				? `${warning} Model "${fallbackPattern}" not found for provider "${provider}". Using custom model id.`
-				: `Model "${fallbackPattern}" not found for provider "${provider}". Using custom model id.`;
-			return { model, thinkingLevel: fallbackThinking, warning: fallbackWarning, error: undefined };
+				? `${warning} Model "${fallbackPattern}" not found for provider "${provider}". Using custom model id with a conservative capability profile.${thinkingWarning}`
+				: `Model "${fallbackPattern}" not found for provider "${provider}". Using custom model id with a conservative capability profile.${thinkingWarning}`;
+			return { model: fallbackModel, thinkingLevel: undefined, warning: fallbackWarning, error: undefined };
 		}
 	}
 

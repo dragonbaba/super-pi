@@ -1,4 +1,4 @@
-import type { Api, Model, ModelsStoreEntry, Provider } from "@super-pi/ai";
+import { type Api, type Model, type ModelsStoreEntry, type Provider, withModelProfile } from "@super-pi/ai";
 import { VERSION } from "../config.ts";
 import { fetchWithRetry } from "../utils/management-http.ts";
 import { getPiUserAgent } from "../utils/pi-user-agent.ts";
@@ -31,7 +31,13 @@ function parseCatalog(providerId: string, value: unknown): Model<Api>[] {
 	if (!entries) throw new Error(`Invalid model catalog for provider "${providerId}"`);
 	return entries
 		.filter((entry): entry is Model<Api> => typeof entry === "object" && entry !== null && "id" in entry)
-		.map((model) => ({ ...model, provider: providerId }));
+		.map((model) =>
+			withModelProfile({ ...model, provider: providerId }, "provider-catalog", {
+				costKnown: model.costKnown ?? true,
+				capabilities: model.capabilities,
+				diagnostics: model.profileDiagnostics,
+			}),
+		);
 }
 
 function remoteModels(
@@ -52,17 +58,27 @@ export function withRemoteCatalog(
 	localGeneratedAt?: number,
 ): Provider {
 	let dynamicModels: readonly Model<Api>[] = [];
+	let mergedModels: readonly Model<Api>[] | undefined;
 
 	return {
 		...provider,
-		getModels: () => mergeModels(provider.getModels(), dynamicModels),
+		getModels: () => (mergedModels ??= mergeModels(provider.getModels(), dynamicModels)),
 		refreshModels: async (context) => {
 			const stored = context.stored;
-			const restored = remoteModels(stored, localGeneratedAt).filter((model) => model.provider === provider.id);
+			const restored = remoteModels(stored, localGeneratedAt)
+				.filter((model) => model.provider === provider.id)
+				.map((model) =>
+					withModelProfile(model, "provider-catalog", {
+						costKnown: model.costKnown ?? true,
+						capabilities: model.capabilities,
+						diagnostics: model.profileDiagnostics,
+					}),
+				);
 			if (
 				!(await context.publish({
 					update: () => {
 						dynamicModels = restored;
+						mergedModels = undefined;
 					},
 				}))
 			) {
@@ -136,6 +152,7 @@ export function withRemoteCatalog(
 				persist: entry,
 				update: () => {
 					dynamicModels = published;
+					mergedModels = undefined;
 				},
 			});
 		},

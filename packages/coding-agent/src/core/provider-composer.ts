@@ -9,6 +9,7 @@ import {
 	type Credential,
 	lazyStream,
 	type Model,
+	type ModelProfileDiagnostic,
 	type ModelAuth,
 	type OAuthAuth,
 	type OAuthCredentials,
@@ -18,6 +19,7 @@ import {
 	type RefreshModelsContext,
 	type SimpleStreamOptions,
 	type StreamOptions,
+	withModelProfile,
 } from "@super-pi/ai";
 import { getApiProvider } from "@super-pi/ai/compat";
 import type { ModelConfig, ModelsJsonModel, ModelsJsonModelOverride, ModelsJsonProvider } from "./model-config.ts";
@@ -63,6 +65,7 @@ export interface ProviderConfigInput {
 		cost: Model<Api>["cost"];
 		contextWindow: number;
 		maxTokens: number;
+		capabilities?: Model<Api>["capabilities"];
 		samplingParams?: Record<string, unknown>;
 		headers?: Record<string, string>;
 		compat?: Model<Api>["compat"];
@@ -100,8 +103,18 @@ function mergeCompat(
 	return merged;
 }
 
+function validateCapabilityLimits(model: Model<Api>, label: string): void {
+	if (
+		model.capabilities &&
+		(model.capabilities.contextWindow !== model.contextWindow ||
+			model.capabilities.maxOutputTokens !== model.maxTokens)
+	) {
+		throw new Error(`${label}: capability token limits must match contextWindow and maxTokens.`);
+	}
+}
+
 function applyModelOverride(model: Model<Api>, override: ModelsJsonModelOverride): Model<Api> {
-	return {
+	const overridden: Model<Api> = {
 		...model,
 		name: override.name ?? model.name,
 		reasoning: override.reasoning ?? model.reasoning,
@@ -120,11 +133,17 @@ function applyModelOverride(model: Model<Api>, override: ModelsJsonModelOverride
 			: model.cost,
 		contextWindow: override.contextWindow ?? model.contextWindow,
 		maxTokens: override.maxTokens ?? model.maxTokens,
+		capabilities: override.capabilities ?? model.capabilities,
 		samplingParams: override.samplingParams
 			? { ...model.samplingParams, ...override.samplingParams }
 			: model.samplingParams,
 		compat: mergeCompat(model.compat, override.compat),
 	};
+	validateCapabilityLimits(overridden, `Model ${model.provider}/${model.id}`);
+	return withModelProfile(overridden, "explicit-custom", {
+		costKnown: model.costKnown ?? true,
+		diagnostics: model.profileDiagnostics,
+	});
 }
 
 function modelFromJson(
@@ -147,7 +166,50 @@ function modelFromJson(
 	if (definition.maxTokens !== undefined && definition.maxTokens <= 0) {
 		throw new Error(`Provider ${providerId}, model ${definition.id}: invalid maxTokens`);
 	}
-	return {
+	const diagnostics: ModelProfileDiagnostic[] = [];
+	if (definition.api === undefined && providerConfig.api === undefined) {
+		diagnostics.push({
+			code: "PROFILE_FIELD_DEFAULTED",
+			field: "api",
+			message: `Model ${providerId}/${definition.id} omitted api; using the provider catalog adapter.`,
+		});
+	}
+	if (definition.baseUrl === undefined && providerConfig.baseUrl === undefined) {
+		diagnostics.push({
+			code: "PROFILE_FIELD_DEFAULTED",
+			field: "baseUrl",
+			message: `Model ${providerId}/${definition.id} omitted baseUrl; using the provider catalog endpoint.`,
+		});
+	}
+	if (definition.capabilities === undefined) {
+		diagnostics.push({
+			code: "PROFILE_FIELD_DEFAULTED",
+			field: "capabilities",
+			message: `Model ${providerId}/${definition.id} omitted capabilities; deriving a compatibility manifest from legacy fields.`,
+		});
+	}
+	if (definition.contextWindow === undefined) {
+		diagnostics.push({
+			code: "PROFILE_FIELD_DEFAULTED",
+			field: "contextWindow",
+			message: `Model ${providerId}/${definition.id} omitted contextWindow; using conservative custom default 128000.`,
+		});
+	}
+	if (definition.cost === undefined) {
+		diagnostics.push({
+			code: "PROFILE_FIELD_DEFAULTED",
+			field: "cost",
+			message: `Model ${providerId}/${definition.id} omitted cost; pricing is unknown.`,
+		});
+	}
+	if (definition.maxTokens === undefined) {
+		diagnostics.push({
+			code: "PROFILE_FIELD_DEFAULTED",
+			field: "maxTokens",
+			message: `Model ${providerId}/${definition.id} omitted maxTokens; using conservative custom default 16384.`,
+		});
+	}
+	const model: Model<Api> = {
 		id: definition.id,
 		name: definition.name ?? definition.id,
 		api: api as Api,
@@ -159,10 +221,17 @@ function modelFromJson(
 		cost: definition.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		contextWindow: definition.contextWindow ?? 128000,
 		maxTokens: definition.maxTokens ?? 16384,
+		capabilities: definition.capabilities,
 		samplingParams: definition.samplingParams,
 		headers: undefined,
 		compat: mergeCompat(providerConfig.compat, definition.compat),
 	};
+	validateCapabilityLimits(model, `Provider ${providerId}, model ${definition.id}`);
+	return withModelProfile(model, "explicit-custom", {
+		costKnown: definition.cost !== undefined,
+		diagnostics,
+		capabilities: definition.capabilities,
+	});
 }
 
 function applyModelsJson(
@@ -224,13 +293,19 @@ function applyExtension(
 		}
 		const baseUrl = definition.baseUrl ?? config.baseUrl ?? defaults?.baseUrl;
 		if (!baseUrl) throw new Error(`Provider ${providerId}: "baseUrl" is required when defining custom models.`);
-		return {
+		const model: Model<Api> = {
 			...definition,
 			api,
 			provider: providerId,
 			baseUrl,
 			headers: undefined,
 		};
+		validateCapabilityLimits(model, `Provider ${providerId}, model ${definition.id}`);
+		return withModelProfile(model, "explicit-custom", {
+			costKnown: true,
+			diagnostics: model.profileDiagnostics,
+			capabilities: model.capabilities,
+		});
 	});
 }
 
@@ -437,7 +512,13 @@ export function composeModelProvider(
 			currentExtension(),
 		);
 		if (extensionOAuthCredential && extension?.oauth?.modifyModels) {
-			models = extension.oauth.modifyModels(models, extensionOAuthCredential);
+			models = extension.oauth.modifyModels(models, extensionOAuthCredential).map((model) =>
+				withModelProfile(model, "explicit-custom", {
+					costKnown: model.costKnown ?? true,
+					diagnostics: model.profileDiagnostics,
+					capabilities: model.capabilities,
+				}),
+			);
 		}
 		return models.map((model) => {
 			const override = config?.modelOverrides?.[model.id];

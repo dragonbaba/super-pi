@@ -154,6 +154,44 @@ const ModelCostSchema = Type.Object({
 	tiers: Type.Optional(Type.Array(ModelCostTierSchema)),
 });
 
+const ModelThinkingLevelSchema = Type.Union([
+	Type.Literal("off"),
+	Type.Literal("minimal"),
+	Type.Literal("low"),
+	Type.Literal("medium"),
+	Type.Literal("high"),
+	Type.Literal("xhigh"),
+	Type.Literal("max"),
+]);
+const ModelReasoningCapabilitySchema = Type.Union([
+	Type.Object({ mode: Type.Literal("none") }),
+	Type.Object({ mode: Type.Literal("levels"), levels: Type.Array(ModelThinkingLevelSchema) }),
+	Type.Object({ mode: Type.Literal("budget"), levels: Type.Array(ModelThinkingLevelSchema) }),
+	Type.Object({ mode: Type.Literal("adaptive"), levels: Type.Array(ModelThinkingLevelSchema) }),
+]);
+const ModelPromptCacheCapabilitySchema = Type.Union([
+	Type.Object({ mode: Type.Literal("none") }),
+	Type.Object({ mode: Type.Literal("implicit"), retention: Type.Boolean() }),
+	Type.Object({ mode: Type.Literal("explicit"), retention: Type.Boolean() }),
+]);
+const ModelCapabilitiesSchema = Type.Object({
+	version: Type.Literal(1),
+	inputModalities: Type.Object({ text: Type.Boolean(), image: Type.Boolean(), audio: Type.Boolean() }),
+	toolCalling: Type.Boolean(),
+	parallelTools: Type.Boolean(),
+	strictToolSchema: Type.Boolean(),
+	streamedToolArguments: Type.Boolean(),
+	reasoning: ModelReasoningCapabilitySchema,
+	thoughtSignatureRoundTrip: Type.Boolean(),
+	promptCache: ModelPromptCacheCapabilitySchema,
+	previousResponseId: Type.Boolean(),
+	websocketContinuation: Type.Boolean(),
+	deferredTools: Type.Boolean(),
+	remoteCompaction: Type.Boolean(),
+	contextWindow: Type.Number({ minimum: 1 }),
+	maxOutputTokens: Type.Number({ minimum: 1 }),
+});
+
 const ModelDefinitionSchema = Type.Object({
 	id: Type.String({ minLength: 1 }),
 	name: Type.Optional(Type.String({ minLength: 1 })),
@@ -165,6 +203,7 @@ const ModelDefinitionSchema = Type.Object({
 	cost: Type.Optional(ModelCostSchema),
 	contextWindow: Type.Optional(Type.Number()),
 	maxTokens: Type.Optional(Type.Number()),
+	capabilities: Type.Optional(ModelCapabilitiesSchema),
 	samplingParams: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
 	headers: Type.Optional(Type.Record(Type.String(), Type.String())),
 	compat: Type.Optional(ProviderCompatSchema),
@@ -186,6 +225,7 @@ const ModelOverrideSchema = Type.Object({
 	),
 	contextWindow: Type.Optional(Type.Number()),
 	maxTokens: Type.Optional(Type.Number()),
+	capabilities: Type.Optional(ModelCapabilitiesSchema),
 	samplingParams: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
 	headers: Type.Optional(Type.Record(Type.String(), Type.String())),
 	compat: Type.Optional(ProviderCompatSchema),

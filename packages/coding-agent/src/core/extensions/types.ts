@@ -1582,6 +1582,8 @@ export interface ProviderModelConfig {
 	contextWindow: number;
 	/** Maximum output tokens. */
 	maxTokens: number;
+	/** Explicit provider-neutral capabilities. Omit to derive them from legacy model fields. */
+	capabilities?: Model<Api>["capabilities"];
 	/** Custom headers for this model. */
 	headers?: Record<string, string>;
 	/** OpenAI compatibility settings. */

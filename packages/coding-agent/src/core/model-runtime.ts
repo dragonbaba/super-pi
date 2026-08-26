@@ -36,6 +36,8 @@ import {
 	type ProviderRequestOptions,
 	type SimpleStreamOptions,
 	type StreamOptions,
+	conservativeModelCapabilities,
+	withModelProfile,
 } from "@super-pi/ai";
 import * as builtinProviderCatalog from "@super-pi/ai/providers/all";
 import { getAgentDir, getModelsPath } from "../config.ts";
@@ -227,6 +229,27 @@ export class ModelRuntime implements Models {
 		]);
 	}
 
+	private withProfiledModels(provider: Provider, defaultSource: NonNullable<Model<Api>["profileSource"]>): Provider {
+		let previousModels: readonly Model<Api>[] | undefined;
+		let profiledModels: readonly Model<Api>[] | undefined;
+		return {
+			...provider,
+			getModels: () => {
+				const models = provider.getModels();
+				if (models === previousModels && profiledModels) return profiledModels;
+				previousModels = models;
+				profiledModels = models.map((model) =>
+					withModelProfile(model, model.profileSource ?? defaultSource, {
+						costKnown: model.costKnown ?? model.profileSource !== "conservative-fallback",
+						diagnostics: model.profileDiagnostics,
+						capabilities: model.capabilities,
+					}),
+				);
+				return profiledModels;
+			},
+		};
+	}
+
 	private recomposeProvider(providerId: string): void {
 		const base = this.nativeExtensionProviders.get(providerId) ?? this.builtins.get(providerId);
 		const extension = this.extensionProviders.get(providerId);
@@ -236,17 +259,27 @@ export class ModelRuntime implements Models {
 			return;
 		}
 		if (base && !this.config.getProvider(providerId) && !extension) {
-			// No overlays: use the builtin untouched so its auth/login/stream behavior is exact.
-			this.models.setProvider(base);
+			// Built-in factories and remote-catalog wrappers already publish profiled models.
+			// Native extension providers still need the explicit-custom runtime boundary.
+			this.models.setProvider(
+				this.nativeExtensionProviders.has(providerId)
+					? this.withProfiledModels(base, "explicit-custom")
+					: base,
+			);
 			this.compositionErrors.delete(providerId);
 			return;
 		}
 		try {
-			this.models.setProvider(composeModelProvider(providerId, base, this.config, extension));
+			this.models.setProvider(
+				this.withProfiledModels(composeModelProvider(providerId, base, this.config, extension), "built-in"),
+			);
 			this.compositionErrors.delete(providerId);
 		} catch (error) {
 			this.compositionErrors.set(providerId, error instanceof Error ? error.message : String(error));
-			if (base) this.models.setProvider(base);
+			if (base) {
+				const source = this.nativeExtensionProviders.has(providerId) ? "explicit-custom" : "built-in";
+				this.models.setProvider(this.withProfiledModels(base, source));
+			}
 			else this.models.deleteProvider(providerId);
 		}
 	}
@@ -380,6 +413,49 @@ export class ModelRuntime implements Models {
 
 	getModel(providerId: string, modelId: string): Model<Api> | undefined {
 		return this.models.getModel(providerId, modelId);
+	}
+
+	/**
+	 * Build an unknown-model profile from provider transport identity only.
+	 * Catalog siblings may identify an unambiguous API adapter, but none of their
+	 * limits, pricing, modalities, reasoning, cache, or compatibility fields are copied.
+	 */
+	createConservativeFallbackModel(providerId: string, modelId: string): Model<Api> | undefined {
+		const provider = this.models.getProvider(providerId);
+		if (!provider) return undefined;
+		const configured = this.config.getProvider(providerId);
+		const extension = this.extensionProviders.get(providerId);
+		const catalogApis = new Set(provider.getModels().map((model) => model.api));
+		const api = extension?.api ?? configured?.api ?? (catalogApis.size === 1 ? [...catalogApis][0] : undefined);
+		if (!api) return undefined;
+
+		const contextWindow = 32_768;
+		const maxTokens = 4_096;
+		return withModelProfile(
+			{
+				id: modelId,
+				name: modelId,
+				api,
+				provider: providerId,
+				baseUrl: extension?.baseUrl ?? configured?.baseUrl ?? provider.baseUrl ?? "",
+				reasoning: false,
+				input: ["text"],
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow,
+				maxTokens,
+			},
+			"conservative-fallback",
+			{
+				costKnown: false,
+				capabilities: conservativeModelCapabilities(contextWindow, maxTokens),
+				diagnostics: [
+					{
+						code: "CONSERVATIVE_FALLBACK",
+						message: `Unknown model ${providerId}/${modelId} uses conservative capabilities; pricing is unknown.`,
+					},
+				],
+			},
+		);
 	}
 
 	async checkAuth(providerId: string, options?: AuthOperationOptions): Promise<AuthCheck | undefined> {
