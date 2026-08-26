@@ -3,9 +3,29 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { createModels, createProvider } from "../packages/ai/src/models.ts";
+import { InMemoryModelsStore } from "../packages/ai/src/models-store.ts";
+import { createModels, createProvider, getSupportedThinkingLevels } from "../packages/ai/src/models.ts";
+import { conservativeModelCapabilities, withModelProfile } from "../packages/ai/src/model-capabilities.ts";
+import type { Model, ModelCapabilitiesV1 } from "../packages/ai/src/types.ts";
 import { ModelRuntime } from "../packages/coding-agent/src/core/model-runtime.ts";
 import { resolveCliModel } from "../packages/coding-agent/src/core/model-resolver.ts";
+
+function fixtureModel(overrides: Partial<Model<"openai-completions">> = {}): Model<"openai-completions"> {
+	return {
+		id: "fixture-model",
+		name: "Fixture Model",
+		api: "openai-completions",
+		provider: "fixture",
+		baseUrl: "https://fixture.invalid/v1",
+		reasoning: true,
+		thinkingLevelMap: { off: "none", low: "low", high: "high" },
+		input: ["text"],
+		cost: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 65_536,
+		maxTokens: 8_192,
+		...overrides,
+	};
+}
 
 test("unknown model uses a conservative profile instead of cloning a provider sibling", async () => {
 	const runtime = await ModelRuntime.create({ modelsPath: null, refreshOnCreate: false });
@@ -184,4 +204,118 @@ test("dynamic provider models are marked as provider-catalog profiles", async ()
 	assert.equal(updated?.contextWindow, 65_537);
 	assert.equal(updated?.capabilities?.contextWindow, 65_537);
 	assert.equal(updated?.profileSource, "provider-catalog");
+});
+
+test("modelOverrides rederive capabilities after limits and legacy capability inputs change", async (t) => {
+	const directory = await mkdtemp(join(tmpdir(), "super-pi-model-overlay-"));
+	t.after(async () => rm(directory, { recursive: true, force: true }));
+	const modelsPath = join(directory, "models.json");
+	await writeFile(modelsPath, JSON.stringify({
+		providers: {
+			openai: {
+				modelOverrides: {
+					"gpt-4o": {
+						contextWindow: 77_777,
+						maxTokens: 7_777,
+						reasoning: true,
+						thinkingLevelMap: { off: "none", minimal: null, low: "low", medium: null, high: null },
+						input: ["text"],
+						compat: { supportsStrictMode: false },
+					},
+				},
+			},
+		},
+	}), "utf8");
+
+	const runtime = await ModelRuntime.create({ modelsPath, refreshOnCreate: false });
+	const model = runtime.getModel("openai", "gpt-4o");
+	assert.ok(model);
+	assert.equal(model.contextWindow, 77_777);
+	assert.equal(model.capabilities?.contextWindow, 77_777);
+	assert.equal(model.capabilities?.maxOutputTokens, 7_777);
+	assert.deepEqual(model.capabilities?.inputModalities, { text: true, image: false, audio: false });
+	assert.deepEqual(model.capabilities?.reasoning, { mode: "levels", levels: ["off", "low"] });
+	assert.equal(model.capabilities?.strictToolSchema, false);
+	assert.equal(model.profileSource, "explicit-custom");
+});
+
+test("provider-level config overlays mark inherited models explicit-custom", async (t) => {
+	const directory = await mkdtemp(join(tmpdir(), "super-pi-provider-overlay-"));
+	t.after(async () => rm(directory, { recursive: true, force: true }));
+	const modelsPath = join(directory, "models.json");
+	await writeFile(modelsPath, JSON.stringify({
+		providers: { openai: { baseUrl: "https://custom-openai.invalid/v1" } },
+	}), "utf8");
+
+	const runtime = await ModelRuntime.create({ modelsPath, refreshOnCreate: false });
+	const model = runtime.getModel("openai", "gpt-4o");
+	assert.equal(model?.baseUrl, "https://custom-openai.invalid/v1");
+	assert.equal(model?.profileSource, "explicit-custom");
+});
+
+test("extension provider overlays mark inherited models explicit-custom", async () => {
+	const runtime = await ModelRuntime.create({ modelsPath: null, refreshOnCreate: false });
+	runtime.registerProvider("openai", { baseUrl: "https://extension-openai.invalid/v1" });
+	const model = runtime.getModel("openai", "gpt-4o");
+	assert.equal(model?.baseUrl, "https://extension-openai.invalid/v1");
+	assert.equal(model?.profileSource, "explicit-custom");
+});
+
+test("restored provider catalog entries are profiled and invalid cached manifests are safely rebuilt", async () => {
+	const store = new InMemoryModelsStore();
+	const invalidCapabilities = { ...conservativeModelCapabilities(), contextWindow: 1 } as ModelCapabilitiesV1;
+	await store.write("catalog-fixture", {
+		checkedAt: 1,
+		models: [fixtureModel({
+			provider: "catalog-fixture",
+			profileSource: undefined,
+			capabilities: invalidCapabilities,
+		})],
+	});
+	const provider = createProvider({
+		id: "catalog-fixture",
+		auth: { apiKey: { name: "fixture", resolve: async () => ({ auth: {} }) } },
+		models: [],
+		fetchModels: async () => [],
+		api: {} as never,
+	});
+	const models = createModels({ modelsStore: store });
+	models.setProvider(provider);
+	await models.refresh({ allowNetwork: false });
+	const restored = models.getModel("catalog-fixture", "fixture-model");
+	assert.equal(restored?.profileSource, "provider-catalog");
+	assert.equal(restored?.capabilities?.contextWindow, restored?.contextWindow);
+	assert.equal(restored?.capabilities?.reasoning.mode, "levels");
+	assert.ok(restored?.profileDiagnostics?.some((diagnostic) => diagnostic.code === "INVALID_CAPABILITIES_REBUILT"));
+});
+
+test("explicit capabilities are validated, cloned, deeply frozen, and drive supported reasoning levels", () => {
+	const levels = ["off", "low"] as const;
+	const capabilities: ModelCapabilitiesV1 = {
+		...conservativeModelCapabilities(65_536, 8_192),
+		toolCalling: true,
+		reasoning: { mode: "levels", levels: [...levels] },
+		contextWindow: 65_536,
+		maxOutputTokens: 8_192,
+	};
+	const profiled = withModelProfile(fixtureModel(), "explicit-custom", { capabilities });
+	(capabilities.reasoning as { mode: "levels"; levels: string[] }).levels.push("high");
+	assert.deepEqual(profiled.capabilities?.reasoning, { mode: "levels", levels: ["off", "low"] });
+	assert.equal(Object.isFrozen(profiled.capabilities), true);
+	assert.equal(Object.isFrozen(profiled.capabilities?.reasoning), true);
+	assert.equal(Object.isFrozen((profiled.capabilities?.reasoning as { levels?: unknown }).levels), true);
+	assert.deepEqual(getSupportedThinkingLevels(profiled), ["off", "low"]);
+
+	assert.throws(() => withModelProfile(fixtureModel(), "explicit-custom", {
+		capabilities: { ...capabilities, contextWindow: 1 },
+	}), /contextWindow/u);
+	assert.throws(() => withModelProfile(fixtureModel(), "explicit-custom", {
+		capabilities: { ...capabilities, inputModalities: { text: true, image: true, audio: false } },
+	}), /inputModalities/u);
+	assert.throws(() => withModelProfile(fixtureModel(), "explicit-custom", {
+		capabilities: { ...capabilities, reasoning: { mode: "none" } },
+	}), /reasoning/u);
+	assert.throws(() => withModelProfile(fixtureModel(), "explicit-custom", {
+		capabilities: { ...capabilities, version: 2 } as unknown as ModelCapabilitiesV1,
+	}), /version/u);
 });

@@ -114,6 +114,14 @@ function validateCapabilityLimits(model: Model<Api>, label: string): void {
 }
 
 function applyModelOverride(model: Model<Api>, override: ModelsJsonModelOverride): Model<Api> {
+	const rederiveCapabilities =
+		override.capabilities === undefined &&
+		(override.reasoning !== undefined ||
+			override.thinkingLevelMap !== undefined ||
+			override.input !== undefined ||
+			override.contextWindow !== undefined ||
+			override.maxTokens !== undefined ||
+			override.compat !== undefined);
 	const overridden: Model<Api> = {
 		...model,
 		name: override.name ?? model.name,
@@ -133,13 +141,12 @@ function applyModelOverride(model: Model<Api>, override: ModelsJsonModelOverride
 			: model.cost,
 		contextWindow: override.contextWindow ?? model.contextWindow,
 		maxTokens: override.maxTokens ?? model.maxTokens,
-		capabilities: override.capabilities ?? model.capabilities,
+		capabilities: rederiveCapabilities ? undefined : (override.capabilities ?? model.capabilities),
 		samplingParams: override.samplingParams
 			? { ...model.samplingParams, ...override.samplingParams }
 			: model.samplingParams,
 		compat: mergeCompat(model.compat, override.compat),
 	};
-	validateCapabilityLimits(overridden, `Model ${model.provider}/${model.id}`);
 	return withModelProfile(overridden, "explicit-custom", {
 		costKnown: model.costKnown ?? true,
 		diagnostics: model.profileDiagnostics,
@@ -259,11 +266,19 @@ function applyModelsJson(
 		);
 	}
 
-	const models: Model<Api>[] = baseModels.map((model) => ({
-		...model,
-		baseUrl: config.oauth === "radius" ? model.baseUrl : (config.baseUrl ?? model.baseUrl),
-		compat: mergeCompat(model.compat, config.compat),
-	}));
+	const models: Model<Api>[] = baseModels.map((model) => {
+		const overlaid: Model<Api> = {
+			...model,
+			baseUrl: config.oauth === "radius" ? model.baseUrl : (config.baseUrl ?? model.baseUrl),
+			compat: mergeCompat(model.compat, config.compat),
+			capabilities: config.compat ? undefined : model.capabilities,
+		};
+		return withModelProfile(overlaid, "explicit-custom", {
+			costKnown: model.costKnown ?? true,
+			diagnostics: model.profileDiagnostics,
+			capabilities: overlaid.capabilities,
+		});
+	});
 	for (const definition of config.models ?? []) {
 		const existingIndex = models.findIndex((model) => model.id === definition.id);
 		const defaults = existingIndex >= 0 ? models[existingIndex] : models[0];
@@ -281,7 +296,15 @@ function applyExtension(
 ): Model<Api>[] {
 	if (!config) return [...models];
 	if (!config.models) {
-		return config.baseUrl ? models.map((model) => ({ ...model, baseUrl: config.baseUrl! })) : [...models];
+		return models.map((model) => withModelProfile(
+			{ ...model, baseUrl: config.baseUrl ?? model.baseUrl },
+			"explicit-custom",
+			{
+				costKnown: model.costKnown ?? true,
+				diagnostics: model.profileDiagnostics,
+				capabilities: model.capabilities,
+			},
+		));
 	}
 	return config.models.map((definition) => {
 		const defaults = models.find((model) => model.id === definition.id) ?? models[0];
@@ -512,13 +535,27 @@ export function composeModelProvider(
 			currentExtension(),
 		);
 		if (extensionOAuthCredential && extension?.oauth?.modifyModels) {
-			models = extension.oauth.modifyModels(models, extensionOAuthCredential).map((model) =>
-				withModelProfile(model, "explicit-custom", {
+			const originals = new Map(models.map((model) => [model.id, model]));
+			models = extension.oauth.modifyModels(models, extensionOAuthCredential).map((model) => {
+				const original = originals.get(model.id);
+				const inheritedCapabilities = original?.capabilities === model.capabilities;
+				const capabilityInputsChanged = original !== undefined && (
+					original.reasoning !== model.reasoning ||
+					original.input !== model.input ||
+					original.thinkingLevelMap !== model.thinkingLevelMap ||
+					original.compat !== model.compat ||
+					original.contextWindow !== model.contextWindow ||
+					original.maxTokens !== model.maxTokens
+				);
+				const profiledInput = inheritedCapabilities && capabilityInputsChanged
+					? { ...model, capabilities: undefined }
+					: model;
+				return withModelProfile(profiledInput, "explicit-custom", {
 					costKnown: model.costKnown ?? true,
 					diagnostics: model.profileDiagnostics,
-					capabilities: model.capabilities,
-				}),
-			);
+					capabilities: profiledInput.capabilities,
+				});
+			});
 		}
 		return models.map((model) => {
 			const override = config?.modelOverrides?.[model.id];

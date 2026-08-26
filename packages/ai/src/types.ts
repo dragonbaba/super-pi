@@ -125,7 +125,7 @@ export interface ModelCapabilitiesV1 {
 }
 
 export interface ModelProfileDiagnostic {
-	code: "PROFILE_FIELD_DEFAULTED" | "CONSERVATIVE_FALLBACK";
+	code: "PROFILE_FIELD_DEFAULTED" | "CONSERVATIVE_FALLBACK" | "INVALID_CAPABILITIES_REBUILT";
 	field?: "api" | "baseUrl" | "capabilities" | "contextWindow" | "cost" | "maxTokens";
 	message: string;
 }

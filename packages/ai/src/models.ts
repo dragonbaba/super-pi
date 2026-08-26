@@ -14,7 +14,7 @@ import type {
 	ProviderAuth,
 } from "./auth/types.ts";
 import { InMemoryModelsStore, type ModelsStore, type ModelsStoreEntry } from "./models-store.ts";
-import { withModelProfile } from "./model-capabilities.ts";
+import { getModelCapabilities, withModelProfile } from "./model-capabilities.ts";
 import type {
 	Api,
 	ApiStreamOptions,
@@ -839,7 +839,11 @@ export function createProvider<TApi extends Api = Api>(input: CreateProviderOpti
 					if (context.stored) {
 						const restored = context.stored.models
 							.filter((model) => model.provider === input.id)
-							.map((model) => model as Model<TApi>);
+							.map((model) => withModelProfile(model as Model<TApi>, "provider-catalog", {
+								costKnown: model.costKnown ?? true,
+								diagnostics: model.profileDiagnostics,
+								capabilities: model.capabilities,
+							}));
 						if (
 							!(await context.publish({
 							update: () => {
@@ -944,14 +948,8 @@ export function calculateCost<TApi extends Api>(model: Model<TApi>, usage: Usage
 const EXTENDED_THINKING_LEVELS: ModelThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 export function getSupportedThinkingLevels<TApi extends Api>(model: Model<TApi>): ModelThinkingLevel[] {
-	if (!model.reasoning) return ["off"];
-
-	return EXTENDED_THINKING_LEVELS.filter((level) => {
-		const mapped = model.thinkingLevelMap?.[level];
-		if (mapped === null) return false;
-		if (level === "xhigh" || level === "max") return mapped !== undefined;
-		return true;
-	});
+	const reasoning = getModelCapabilities(model).reasoning;
+	return reasoning.mode === "none" ? ["off"] : [...reasoning.levels];
 }
 
 export function clampThinkingLevel<TApi extends Api>(
