@@ -158,6 +158,8 @@ export interface PrepareNextTurnContext extends ShouldStopAfterTurnContext {}
 export interface AgentEventInstrumentation {
 	onAssistantSnapshot?: () => void;
 	onToolProgressPending?: (toolCallId: string, pending: 0 | 1) => void;
+	/** Test hook invoked after a progress drain settles but before its bookkeeping is cleared. */
+	onToolProgressDrainSettled?: (toolCallId: string) => void;
 }
 
 export interface AgentLoopConfig extends SimpleStreamOptions {

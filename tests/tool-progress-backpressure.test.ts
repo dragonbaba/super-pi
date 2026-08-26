@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { setImmediate as nextTask } from "node:timers/promises";
 import type { AssistantMessage, AssistantMessageEvent } from "../packages/ai/src/types.ts";
 import { Agent } from "../packages/agent/src/agent.ts";
 import type { AgentToolUpdateCallback } from "../packages/agent/src/types.ts";
@@ -181,6 +182,50 @@ test("awaited tool progress applies backpressure and preserves every legacy upda
 
 	assert.deepEqual(sequences, Array.from({ length: 100 }, (_, index) => index));
 	assert.equal(agent.eventDeliveryStats.pendingKeys, 0);
+});
+
+test("publish in the settled-before-cleanup microtask window restarts the drain", async () => {
+	let streamCalls = 0;
+	let releaseTool = () => {};
+	const toolGate = new Promise<void>((resolve) => { releaseTool = resolve; });
+	let updateCallback: AgentToolUpdateCallback | undefined;
+	let injectSecond = true;
+	const updates: number[] = [];
+	let markFirstDelivered = () => {};
+	const firstDelivered = new Promise<void>((resolve) => { markFirstDelivered = resolve; });
+	const tool = {
+		name: "progress", label: "Progress", description: "microtask fixture",
+		parameters: { type: "object", properties: {}, additionalProperties: false },
+		execute: async (_id: string, _params: unknown, _signal?: AbortSignal, onUpdate?: AgentToolUpdateCallback) => {
+			updateCallback = onUpdate;
+			onUpdate?.({ content: [{ type: "text", text: "1" }], details: { sequence: 1 } });
+			await toolGate;
+			return { content: [{ type: "text", text: "done" }], details: {} };
+		},
+	};
+	const agent = new Agent({
+		initialState: { tools: [tool as never] },
+		streamFn: () => new ToolFixtureStream(streamCalls++ === 0) as never,
+		eventInstrumentation: {
+			onToolProgressDrainSettled: () => {
+				if (!injectSecond) return;
+				injectSecond = false;
+				updateCallback?.({ content: [{ type: "text", text: "2" }], details: { sequence: 2 } });
+			},
+		},
+	});
+	agent.subscribe((event) => {
+		if (event.type !== "tool_execution_update") return;
+		updates.push(event.partialResult.details.sequence);
+		if (updates.length === 1) markFirstDelivered();
+	});
+
+	const prompt = agent.prompt("microtask fixture");
+	await firstDelivered;
+	await nextTask();
+	assert.deepEqual(updates, [1, 2]);
+	releaseTool();
+	await prompt;
 });
 
 test("tool progress hot path no longer retains an update Promise array", () => {

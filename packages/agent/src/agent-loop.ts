@@ -872,6 +872,7 @@ class ToolProgressDelivery {
 	async flush(): Promise<void> {
 		while (this.drainPromise) await this.drainPromise;
 		if (this.pending) {
+			this.markOccupied();
 			this.startDrain();
 			while (this.drainPromise) await this.drainPromise;
 		}
@@ -881,34 +882,50 @@ class ToolProgressDelivery {
 		const drain = this.drain();
 		this.drainPromise = drain;
 		void drain.then(
-			() => this.finishDrain(drain),
-			() => this.finishDrain(drain),
+			() => this.finishDrain(drain, false),
+			() => this.finishDrain(drain, true),
 		);
 	}
 
 	private async drain(): Promise<void> {
-		try {
-			while (this.pending) {
-				const partialResult = this.pending;
-				this.pending = undefined;
-				await this.emit({
-					type: "tool_execution_update",
-					toolCallId: this.prepared.toolCall.id,
-					toolName: this.prepared.toolCall.name,
-					args: this.prepared.toolCall.arguments,
-					partialResult,
-				});
-			}
-		} finally {
-			if (this.occupied) {
-				this.occupied = false;
-				this.instrumentation?.onToolProgressPending?.(this.prepared.toolCall.id, 0);
-			}
+		while (this.pending) {
+			const partialResult = this.pending;
+			this.pending = undefined;
+			await this.emit({
+				type: "tool_execution_update",
+				toolCallId: this.prepared.toolCall.id,
+				toolName: this.prepared.toolCall.name,
+				args: this.prepared.toolCall.arguments,
+				partialResult,
+			});
 		}
 	}
 
-	private finishDrain(drain: Promise<void>): void {
-		if (this.drainPromise === drain) this.drainPromise = undefined;
+	private finishDrain(drain: Promise<void>, failed: boolean): void {
+		if (this.drainPromise !== drain) return;
+		try {
+			this.instrumentation?.onToolProgressDrainSettled?.(this.prepared.toolCall.id);
+		} catch {
+			// Instrumentation is observational and must not alter progress delivery.
+		}
+		this.drainPromise = undefined;
+		if (!failed && this.pending) {
+			this.startDrain();
+			return;
+		}
+		this.markUnoccupied();
+	}
+
+	private markOccupied(): void {
+		if (this.occupied) return;
+		this.occupied = true;
+		this.instrumentation?.onToolProgressPending?.(this.prepared.toolCall.id, 1);
+	}
+
+	private markUnoccupied(): void {
+		if (!this.occupied) return;
+		this.occupied = false;
+		this.instrumentation?.onToolProgressPending?.(this.prepared.toolCall.id, 0);
 	}
 }
 
