@@ -40,7 +40,9 @@ The optional `defaultTools` array controls only the initial built-in tool select
 
 ## Streaming extension observers
 
-Existing `pi.on("message_update", handler)` and `pi.on("tool_execution_update", handler)` registrations remain serial and awaited for compatibility. They receive every update and can therefore apply backpressure to a provider or tool that emits updates rapidly.
+Existing `pi.on("message_update", handler)` and `pi.on("tool_execution_update", handler)` registrations remain serial and awaited for every event published by the Agent dispatcher. Assistant updates continue to publish every provider update on this compatibility path.
+
+Tool producers now choose one of two bounded progress contracts. Calling `onUpdate(partialResult)` uses latest-value delivery and may coalesce rapid updates before they reach `pi.on()` or `Agent.subscribe()`. A producer that requires lossless compatibility delivery must use `await onUpdate.awaited(partialResult)` and await each update before publishing the next one. This replaces the previous unbounded Promise accumulation; lossless delivery without producer backpressure is intentionally unsupported because it cannot have bounded memory.
 
 Display-only extensions should use `pi.observe()` for these two events. Observer updates are latest-value coalesced by the agent, the final update is flushed before the corresponding end event, return values are ignored, and failures do not fail the agent run. Slow observers are recorded, and an observer is disabled after three consecutive failures by default. Both thresholds are configurable per registration:
 

@@ -394,8 +394,18 @@ export interface AgentToolResult<T> {
  *
  * The callback is scoped to the current `execute()` invocation. Calls made after
  * the tool promise settles are ignored.
+ *
+ * Calling the callback directly publishes on a bounded latest-value lane. Rapid
+ * calls may be coalesced before they reach Agent subscribers.
+ *
+ * Use `await onUpdate.awaited(partialResult)` for lossless, serial delivery with
+ * backpressure. A tool must await each call before publishing the next update to
+ * receive the lossless guarantee.
  */
-export type AgentToolUpdateCallback<T = any> = (partialResult: AgentToolResult<T>) => void;
+export interface AgentToolUpdateCallback<T = any> {
+	(partialResult: AgentToolResult<T>): void;
+	awaited(partialResult: AgentToolResult<T>): Promise<void>;
+}
 
 /** Tool definition used by the agent runtime. */
 export interface AgentTool<TParameters extends TSchema = TSchema, TDetails = any> extends Tool<TParameters> {

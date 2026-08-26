@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import type { AssistantMessage, AssistantMessageEvent } from "../packages/ai/src/types.ts";
 import { Agent } from "../packages/agent/src/agent.ts";
+import type { AgentToolUpdateCallback } from "../packages/agent/src/types.ts";
 
 const EMPTY_USAGE = {
 	input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
@@ -77,11 +78,12 @@ class ParallelToolFixtureStream implements AsyncIterable<AssistantMessageEvent> 
 test("100,000 tool progress updates retain one pending value and flush before end", async () => {
 	let streamCalls = 0;
 	let maxPending = 0;
+	let legacyUpdates = 0;
 	const order: string[] = [];
 	const tool = {
 		name: "progress", label: "Progress", description: "fixture",
 		parameters: { type: "object", properties: {}, additionalProperties: false },
-		execute: async (_id: string, _params: unknown, _signal?: AbortSignal, onUpdate?: (result: unknown) => void) => {
+		execute: async (_id: string, _params: unknown, _signal?: AbortSignal, onUpdate?: AgentToolUpdateCallback) => {
 			for (let sequence = 0; sequence < 100_000; sequence++) {
 				onUpdate?.({ content: [{ type: "text", text: String(sequence) }], details: { sequence } });
 			}
@@ -95,6 +97,7 @@ test("100,000 tool progress updates retain one pending value and flush before en
 			onToolProgressPending: (_toolCallId, pending) => { maxPending = Math.max(maxPending, pending); },
 		},
 	});
+	agent.subscribe((event) => { if (event.type === "tool_execution_update") legacyUpdates++; });
 	agent.subscribeObserver((event) => {
 		if (event.type === "tool_execution_update") order.push(`update:${event.partialResult.details.sequence}`);
 		if (event.type === "tool_execution_end") order.push("end");
@@ -102,6 +105,7 @@ test("100,000 tool progress updates retain one pending value and flush before en
 
 	await agent.prompt("benchmark");
 	assert.equal(maxPending, 1);
+	assert.equal(legacyUpdates, 2);
 	assert.deepEqual(order.slice(-2), ["update:99999", "end"]);
 	assert.equal(agent.eventDeliveryStats.maxPendingKeys, 1);
 });
@@ -114,7 +118,7 @@ test("100,000 updates across four parallel tools retain at most four latest keys
 	const tool = {
 		name: "parallel-progress", label: "Parallel progress", description: "fixture",
 		parameters: { type: "object", properties: { tool: { type: "number" } }, required: ["tool"] },
-		execute: async (toolCallId: string, _params: unknown, _signal?: AbortSignal, onUpdate?: (result: unknown) => void) => {
+		execute: async (toolCallId: string, _params: unknown, _signal?: AbortSignal, onUpdate?: AgentToolUpdateCallback) => {
 			for (let sequence = 0; sequence < 25_000; sequence++) {
 				onUpdate?.({ content: [{ type: "text", text: String(sequence) }], details: { sequence } });
 			}
@@ -147,6 +151,36 @@ test("100,000 updates across four parallel tools retain at most four latest keys
 	for (let index = 0; index < 4; index++) {
 		assert.deepEqual(order.get(`tool-${index}`)?.slice(-2), ["update:24999", "end"]);
 	}
+});
+
+test("awaited tool progress applies backpressure and preserves every legacy update", async () => {
+	let streamCalls = 0;
+	const sequences: number[] = [];
+	const tool = {
+		name: "progress", label: "Progress", description: "awaited fixture",
+		parameters: { type: "object", properties: {}, additionalProperties: false },
+		execute: async (_id: string, _params: unknown, _signal?: AbortSignal, onUpdate?: AgentToolUpdateCallback) => {
+			for (let sequence = 0; sequence < 100; sequence++) {
+				await onUpdate?.awaited({
+					content: [{ type: "text", text: String(sequence) }],
+					details: { sequence },
+				});
+			}
+			return { content: [{ type: "text", text: "done" }], details: {} };
+		},
+	};
+	const agent = new Agent({
+		initialState: { tools: [tool as never] },
+		streamFn: () => new ToolFixtureStream(streamCalls++ === 0) as never,
+	});
+	agent.subscribe((event) => {
+		if (event.type === "tool_execution_update") sequences.push(event.partialResult.details.sequence);
+	});
+
+	await agent.prompt("benchmark");
+
+	assert.deepEqual(sequences, Array.from({ length: 100 }, (_, index) => index));
+	assert.equal(agent.eventDeliveryStats.pendingKeys, 0);
 });
 
 test("tool progress hot path no longer retains an update Promise array", () => {

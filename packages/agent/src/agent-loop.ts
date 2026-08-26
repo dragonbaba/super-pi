@@ -22,10 +22,13 @@ import type {
 	AgentTool,
 	AgentToolCall,
 	AgentToolResult,
+	AgentToolUpdateCallback,
 	StreamFn,
 } from "./types.ts";
 
 export type AgentEventSink = (event: AgentEvent) => Promise<void> | void;
+
+const RESOLVED_VOID_PROMISE = Promise.resolve();
 
 /**
  * Start an agent loop with a new prompt message.
@@ -815,14 +818,17 @@ async function executePreparedToolCall(
 	let acceptingUpdates = true;
 
 	try {
+		const onUpdate = ((partialResult: AgentToolResult<any>) => {
+			if (!acceptingUpdates) return;
+			void progress.publish(partialResult);
+		}) as AgentToolUpdateCallback<any>;
+		onUpdate.awaited = (partialResult) =>
+			acceptingUpdates ? progress.publish(partialResult) : RESOLVED_VOID_PROMISE;
 		const result = await prepared.tool.execute(
 			prepared.toolCall.id,
 			prepared.args as never,
 			signal,
-			(partialResult) => {
-				if (!acceptingUpdates) return;
-				progress.publish(partialResult);
-			},
+			onUpdate,
 		);
 		acceptingUpdates = false;
 		await progress.flush();
@@ -853,13 +859,14 @@ class ToolProgressDelivery {
 		this.instrumentation = instrumentation;
 	}
 
-	publish(partialResult: AgentToolResult<any>): void {
+	publish(partialResult: AgentToolResult<any>): Promise<void> {
 		this.pending = partialResult;
 		if (!this.occupied) {
 			this.occupied = true;
 			this.instrumentation?.onToolProgressPending?.(this.prepared.toolCall.id, 1);
 		}
 		if (!this.drainPromise) this.startDrain();
+		return this.drainPromise ?? RESOLVED_VOID_PROMISE;
 	}
 
 	async flush(): Promise<void> {
