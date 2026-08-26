@@ -15,14 +15,15 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname } from "node:path";
-import type {
+import {
 	Agent,
-	AgentEvent,
-	AgentMessage,
-	AgentState,
-	AgentTool,
-	PrepareNextTurnContext,
-	ThinkingLevel,
+	EventDeliveryDispatcher,
+	type AgentEvent,
+	type AgentMessage,
+	type AgentState,
+	type AgentTool,
+	type PrepareNextTurnContext,
+	type ThinkingLevel,
 } from "@super-pi/agent-core";
 import { contentText, stabilizeToolArguments } from "@super-pi/ai";
 import type {
@@ -261,6 +262,15 @@ type CoalescibleAgentEvent = Extract<AgentEvent, { type: "message_update" | "too
 
 function isCoalescibleAgentEvent(event: AgentEvent): event is CoalescibleAgentEvent {
 	return event.type === "message_update" || event.type === "tool_execution_update";
+}
+
+function isExtensionObserverFlushBoundary(event: AgentEvent): boolean {
+	return (
+		event.type === "message_end" ||
+		event.type === "tool_execution_end" ||
+		event.type === "turn_end" ||
+		event.type === "agent_end"
+	);
 }
 
 export interface AgentSessionConfig {
@@ -530,6 +540,8 @@ export class AgentSession {
 	// Event subscription state
 	private _unsubscribeAgent?: () => void;
 	private _unsubscribeAgentObserver?: () => void;
+	private _unsubscribeExtensionObserver?: () => void;
+	private readonly _extensionObserverDelivery: EventDeliveryDispatcher<CoalescibleAgentEvent, string>;
 	private _eventListeners: AgentSessionEventListener[] = [];
 	private _isAgentRunActive = false;
 	private _idleWaitPromise: Promise<void> | undefined;
@@ -618,6 +630,11 @@ export class AgentSession {
 		this._baseToolsOverride = config.baseToolsOverride;
 		this._sessionStartEvent = config.sessionStartEvent ?? { type: "session_start", reason: "startup" };
 		hydratePowerShellToolState(this.settingsManager, this._powerShellToolState);
+		this._extensionObserverDelivery = new EventDeliveryDispatcher({ defaultMinIntervalMs: 0 });
+		this._unsubscribeExtensionObserver = this._extensionObserverDelivery.subscribe(
+			this._handleExtensionObserverEvent,
+			{ delivery: "latest", minIntervalMs: 0 },
+		);
 
 		// Always subscribe to agent events for internal handling
 		// (session persistence, extensions, auto-compaction, retry logic)
@@ -876,6 +893,7 @@ export class AgentSession {
 			if (this._extensionRunner.hasHandlers(event.type)) await this._emitExtensionEvent(event);
 			return;
 		}
+		if (isExtensionObserverFlushBoundary(event)) await this._extensionObserverDelivery.flushAllLatest();
 
 		// When a user message starts, check if it's from either queue and remove it BEFORE emitting
 		// This ensures the UI sees the updated queue state
@@ -951,8 +969,13 @@ export class AgentSession {
 	/** Coalesced display-only path for the built-in UI and explicit extension observers. */
 	private _handleAgentObserverEvent = async (event: AgentEvent): Promise<void> => {
 		if (!isCoalescibleAgentEvent(event)) return;
-		if (this._extensionRunner.hasObservers(event.type)) await this._emitExtensionObserverEvent(event);
 		this._emit(event);
+		const key = event.type === "message_update" ? "message" : `tool:${event.toolCallId}`;
+		this._extensionObserverDelivery.publishLatest(key, event);
+	};
+
+	private _handleExtensionObserverEvent = async (event: CoalescibleAgentEvent): Promise<void> => {
+		if (this._extensionRunner.hasObservers(event.type)) await this._emitExtensionObserverEvent(event);
 	};
 
 	private _willRetryAfterAgentEnd(event: Extract<AgentEvent, { type: "agent_end" }>): boolean {
@@ -1128,6 +1151,13 @@ export class AgentSession {
 			this._unsubscribeAgentObserver();
 			this._unsubscribeAgentObserver = undefined;
 		}
+		if (this._unsubscribeExtensionObserver) {
+			this._unsubscribeExtensionObserver();
+			this._unsubscribeExtensionObserver = undefined;
+		}
+		void this._extensionObserverDelivery.dispose().catch(() => {
+			// Disposal is best-effort and must not make AgentSession.dispose() throw asynchronously.
+		});
 	}
 
 	/**

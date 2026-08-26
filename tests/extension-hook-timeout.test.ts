@@ -117,6 +117,9 @@ test("AgentSession routes high-frequency display events through subscribeObserve
 		fs.readFile(new URL("../packages/coding-agent/src/core/agent-session.ts", import.meta.url), "utf8"),
 	);
 	assert.match(source, /agent\.subscribeObserver\(this\._handleAgentObserverEvent/);
+	assert.match(source, /_extensionObserverDelivery\.publishLatest\(key, event\)/);
+	assert.match(source, /_extensionObserverDelivery\.flushAllLatest\(\)/);
+	assert.match(source, /this\._emit\(event\);[\s\S]*_extensionObserverDelivery\.publishLatest/);
 	assert.match(source, /hasObservers\(event\.type\)/);
 	assert.doesNotMatch(source, /agent\.subscribe\(this\._handleAgentEvent\);/);
 });

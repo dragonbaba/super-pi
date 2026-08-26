@@ -313,6 +313,7 @@ function createExtensionAPI(
 			list.push({
 				handler,
 				slowThresholdMs: Math.max(0, options.slowThresholdMs ?? 100),
+				timeoutMs: Math.max(1, options.timeoutMs ?? 1_000),
 				disableAfterErrors: Math.max(1, Math.floor(options.disableAfterErrors ?? 3)),
 				consecutiveErrors: 0,
 				disabled: false,

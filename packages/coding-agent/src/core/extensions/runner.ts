@@ -196,6 +196,7 @@ export interface ExtensionObserverDeliveryStats {
 	errors: number;
 	slow: number;
 	disabled: number;
+	timeouts: number;
 	durationP95Ms: number;
 }
 
@@ -219,6 +220,16 @@ export class ExtensionHookTimeoutError extends Error {
 
 type HookCategory = "safety" | "transform" | "interaction" | "lifecycle";
 type ObserverEvent = MessageUpdateEvent | ToolExecutionUpdateEvent;
+
+class ExtensionObserverTimeoutError extends Error {
+	readonly timeoutMs: number;
+
+	constructor(timeoutMs: number) {
+		super(`Extension observer timed out after ${timeoutMs}ms`);
+		this.name = "ExtensionObserverTimeoutError";
+		this.timeoutMs = timeoutMs;
+	}
+}
 
 const DEFAULT_EXTENSION_RUNNER_SCHEDULER: ExtensionRunnerScheduler = {
 	now: () => performance.now(),
@@ -371,6 +382,7 @@ export class ExtensionRunner {
 	private observerErrors = 0;
 	private observerSlow = 0;
 	private observerDisabled = 0;
+	private observerTimeouts = 0;
 	private hookTimeouts = 0;
 	private getModel: () => Model<any> | undefined = () => undefined;
 	private getScopedModels: () => readonly ScopedModel[] = () => [];
@@ -699,6 +711,7 @@ export class ExtensionRunner {
 			errors: this.observerErrors,
 			slow: this.observerSlow,
 			disabled: this.observerDisabled,
+			timeouts: this.observerTimeouts,
 			durationP95Ms: this.observerDurationPercentile(0.95),
 		};
 	}
@@ -1029,12 +1042,14 @@ export class ExtensionRunner {
 	): Promise<void> {
 		const startedAt = this.scheduler.now();
 		try {
-			await observer.handler(event, ctx);
+			await this.invokeObserver(observer, event, ctx);
 			observer.consecutiveErrors = 0;
 			this.observerDelivered++;
 		} catch (error) {
 			this.observerErrors++;
 			observer.consecutiveErrors++;
+			const timedOut = error instanceof ExtensionObserverTimeoutError;
+			if (timedOut) this.observerTimeouts++;
 			const message = error instanceof Error ? error.message : String(error);
 			const stack = error instanceof Error ? error.stack : undefined;
 			try {
@@ -1043,7 +1058,7 @@ export class ExtensionRunner {
 				// Error reporters are observers too; isolate them from the agent run.
 			}
 			this.emitObserverDiagnostic({ type: "observer-error", extensionPath, event: event.type, error });
-			if (observer.consecutiveErrors >= observer.disableAfterErrors) {
+			if (timedOut || observer.consecutiveErrors >= observer.disableAfterErrors) {
 				observer.disabled = true;
 				this.observerDisabled++;
 				this.emitObserverDiagnostic({ type: "observer-disabled", extensionPath, event: event.type });
@@ -1054,6 +1069,25 @@ export class ExtensionRunner {
 		if (durationMs >= observer.slowThresholdMs) {
 			this.observerSlow++;
 			this.emitObserverDiagnostic({ type: "observer-slow", extensionPath, event: event.type, durationMs });
+		}
+	}
+
+	private async invokeObserver(
+		observer: RegisteredExtensionObserver,
+		event: ObserverEvent,
+		ctx: ExtensionContext,
+	): Promise<void> {
+		const result = observer.handler(event, ctx);
+		if (!result || typeof (result as PromiseLike<unknown>).then !== "function") return;
+		const timeoutError = new ExtensionObserverTimeoutError(observer.timeoutMs);
+		let handle: unknown;
+		const timeout = new Promise<never>((_resolve, reject) => {
+			handle = this.scheduler.schedule(() => reject(timeoutError), observer.timeoutMs);
+		});
+		try {
+			await Promise.race([result, timeout]);
+		} finally {
+			if (handle !== undefined) this.scheduler.cancel(handle);
 		}
 	}
 

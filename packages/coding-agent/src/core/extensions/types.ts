@@ -1242,6 +1242,8 @@ export type ExtensionHandler<E, R = undefined> = (event: E, ctx: ExtensionContex
 export interface ExtensionObserverOptions {
 	/** Duration that records a slow-observer diagnostic. Default: 100ms. */
 	slowThresholdMs?: number;
+	/** Maximum delivery duration before the observer is timed out and disabled. Default: 1000ms. */
+	timeoutMs?: number;
 	/** Consecutive failures before this observer is disabled. Default: 3. */
 	disableAfterErrors?: number;
 }
@@ -1628,6 +1630,7 @@ export type HandlerFn = (...args: unknown[]) => Promise<unknown> | unknown;
 export interface RegisteredExtensionObserver {
 	handler: HandlerFn;
 	slowThresholdMs: number;
+	timeoutMs: number;
 	disableAfterErrors: number;
 	consecutiveErrors: number;
 	disabled: boolean;

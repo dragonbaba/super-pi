@@ -99,6 +99,35 @@ test("observer failures are isolated and open a per-observer circuit", async () 
 		errors: 2,
 		slow: 3,
 		disabled: 1,
+		timeouts: 0,
 		durationP95Ms: 50,
 	});
+});
+
+test("a permanently pending observer times out once, opens its circuit, and cannot block later delivery", async () => {
+	const scheduler = new FakeScheduler();
+	let pendingCalls = 0;
+	let healthyCalls = 0;
+	const { runner } = await createRunner(
+		(pi) => {
+			pi.observe("message_update", async () => {
+				pendingCalls++;
+				await new Promise(() => {});
+			}, { timeoutMs: 100 });
+			pi.observe("message_update", () => { healthyCalls++; });
+		},
+		{ scheduler },
+	);
+
+	const firstDelivery = runner.emitObservers(messageUpdate);
+	scheduler.advanceBy(100);
+	await firstDelivery;
+	await runner.emitObservers(messageUpdate);
+
+	assert.equal(pendingCalls, 1);
+	assert.equal(healthyCalls, 2);
+	assert.equal(scheduler.pendingTasks, 0);
+	assert.equal(runner.observerDeliveryStats.timeouts, 1);
+	assert.equal(runner.observerDeliveryStats.errors, 1);
+	assert.equal(runner.observerDeliveryStats.disabled, 1);
 });
