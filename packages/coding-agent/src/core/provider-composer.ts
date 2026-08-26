@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import {
 	type Api,
 	type ApiKeyAuth,
@@ -31,6 +32,38 @@ import {
 	resolveConfigValueOrThrow,
 	resolveHeadersOrThrow,
 } from "./resolve-config-value.ts";
+
+interface CapabilityInputSnapshot {
+	reasoning: boolean;
+	input: readonly ("text" | "image")[];
+	thinkingLevelMap: Model<Api>["thinkingLevelMap"];
+	thinkingBudgetMap: Model<Api>["thinkingBudgetMap"];
+	compat: Model<Api>["compat"];
+	contextWindow: number;
+	maxTokens: number;
+}
+
+function snapshotCapabilityInputs(model: Model<Api>): CapabilityInputSnapshot {
+	return structuredClone({
+		reasoning: model.reasoning,
+		input: model.input,
+		thinkingLevelMap: model.thinkingLevelMap,
+		thinkingBudgetMap: model.thinkingBudgetMap,
+		compat: model.compat,
+		contextWindow: model.contextWindow,
+		maxTokens: model.maxTokens,
+	});
+}
+
+function cloneModelForExtension(model: Model<Api>): Model<Api> {
+	return {
+		...model,
+		input: [...model.input],
+		thinkingLevelMap: model.thinkingLevelMap ? { ...model.thinkingLevelMap } : undefined,
+		thinkingBudgetMap: model.thinkingBudgetMap ? { ...model.thinkingBudgetMap } : undefined,
+		compat: model.compat ? structuredClone(model.compat) : undefined,
+	};
+}
 
 export interface ExtensionOAuthConfig {
 	name: string;
@@ -535,18 +568,17 @@ export function composeModelProvider(
 			currentExtension(),
 		);
 		if (extensionOAuthCredential && extension?.oauth?.modifyModels) {
-			const originals = new Map(models.map((model) => [model.id, model]));
-			models = extension.oauth.modifyModels(models, extensionOAuthCredential).map((model) => {
+			const originals = new Map(models.map((model) => [model.id, {
+				model,
+				capabilityInputs: snapshotCapabilityInputs(model),
+			}]));
+			const extensionModels = models.map(cloneModelForExtension);
+			models = extension.oauth.modifyModels(extensionModels, extensionOAuthCredential).map((model) => {
 				const original = originals.get(model.id);
-				const inheritedCapabilities = original?.capabilities === model.capabilities;
-				const capabilityInputsChanged = original !== undefined && (
-					original.reasoning !== model.reasoning ||
-					original.input !== model.input ||
-					original.thinkingLevelMap !== model.thinkingLevelMap ||
-					original.compat !== model.compat ||
-					original.contextWindow !== model.contextWindow ||
-					original.maxTokens !== model.maxTokens
-				);
+				const inheritedCapabilities = original?.model.capabilities === model.capabilities;
+				const capabilityInputsChanged =
+					original !== undefined &&
+					!isDeepStrictEqual(original.capabilityInputs, snapshotCapabilityInputs(model));
 				const profiledInput = inheritedCapabilities && capabilityInputsChanged
 					? { ...model, capabilities: undefined }
 					: model;

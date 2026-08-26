@@ -1300,6 +1300,7 @@ export class AgentSession {
 		const model = this.model;
 		const compactor = this._providerRequestCompactor;
 		if (!model || !compactor) return undefined;
+		if (!getModelCapabilities(model).remoteCompaction) return undefined;
 		const auth = input.auth ?? (await this._getRequiredRequestAuth(model));
 		if (auth.model.provider !== model.provider || auth.model.id !== model.id) {
 			throw new Error("Provider-native compaction auth snapshot does not match the active model.");
