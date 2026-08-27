@@ -13,7 +13,20 @@ import type {
 	CredentialStore,
 	ProviderAuth,
 } from "./auth/types.ts";
-import { InMemoryModelsStore, type ModelsStore, type ModelsStoreEntry } from "./models-store.ts";
+import {
+	InMemoryModelsStore,
+	MODELS_STORE_PROFILE_REVISION,
+	rawModelsStoreEntry,
+	type ModelsStore,
+	type ModelsStoreEntry,
+} from "./models-store.ts";
+import {
+	getModelCapabilities,
+	legacyRuntimeProfileDiagnostics,
+	stripModelProfileMetadata,
+	stripModelRuntimeProfile,
+	withModelProfile,
+} from "./model-capabilities.ts";
 import type {
 	Api,
 	ApiStreamOptions,
@@ -40,6 +53,8 @@ export { ModelsError, type ModelsErrorCode } from "./auth/resolve.ts";
 export interface ModelsPublication {
 	/** Provider-selected persisted catalog. Omit to leave storage unchanged; null deletes it. */
 	persist?: ModelsStoreEntry | null;
+	/** Strip host-derived capability metadata while migrating a pre-revision stored catalog. */
+	migrateLegacyProfile?: boolean;
 	/** Optional synchronous update of provider-private in-memory catalog state. */
 	update?: () => void;
 }
@@ -110,6 +125,8 @@ export interface Provider<TApi extends Api = Api> {
 	 * `Models.getAuth()` returns undefined when the provider is unconfigured.
 	 */
 	readonly auth: ProviderAuth;
+	/** Provider-owned capability enrichment applied at every model ingress. */
+	profileModel?(model: Model<TApi>): Model<TApi>;
 
 	/**
 	 * Current known models, sync. Static providers return their catalog;
@@ -334,7 +351,11 @@ class ModelsImpl implements MutableModels {
 			if (publication.persist === null) {
 				await this.modelsStore.delete(providerId, { signal });
 			} else if (publication.persist !== undefined) {
-				await this.modelsStore.write(providerId, structuredClone(publication.persist), { signal });
+				await this.modelsStore.write(
+					providerId,
+					rawModelsStoreEntry(publication.persist, publication.migrateLegacyProfile === true),
+					{ signal },
+				);
 			}
 
 			if (signal.aborted || this.refreshGenerations.get(providerId) !== generation) return false;
@@ -731,11 +752,84 @@ export interface CreateProviderOptions<TApi extends Api = Api> {
 	auth: ProviderAuth;
 	/** Static baseline model list (empty for purely dynamic providers). */
 	models: readonly Model<TApi>[];
+	/** Provenance for static models. Built-in factories default to "built-in". */
+	modelProfileSource?: Model<TApi>["profileSource"];
+	/** Provider-owned enrichment applied to static, fetched, and restored catalog models. */
+	profileModel?: (model: Model<TApi>) => Model<TApi>;
 	/** Fetch a dynamic model overlay. createProvider restores and publishes it transactionally. */
 	fetchModels?: (context: RefreshModelsContext) => Promise<readonly Model<TApi>[]>;
 	filterModels?: (models: readonly Model<TApi>[], credential: Credential | undefined) => readonly Model<TApi>[];
 	/** Single implementation, or map keyed by `model.api` for mixed-API providers. */
 	api: ProviderStreams | Partial<Record<TApi, ProviderStreams>>;
+}
+
+interface ProfiledModelListCacheEntry {
+	key: string;
+	profileModel?: (model: Model<Api>) => Model<Api>;
+	originals: readonly Model<Api>[];
+	profiled: readonly Model<Api>[];
+}
+
+const PROFILED_MODEL_LISTS = new WeakMap<Model<Api>, ProfiledModelListCacheEntry[]>();
+
+function sameModelObjects(left: readonly Model<Api>[], right: readonly Model<Api>[]): boolean {
+	if (left.length !== right.length) return false;
+	for (let index = 0; index < left.length; index++) {
+		if (left[index] !== right[index]) return false;
+	}
+	return true;
+}
+
+function profileIngressModel<TApi extends Api>(
+	model: Model<TApi>,
+	source: NonNullable<Model<TApi>["profileSource"]>,
+	profileModel: CreateProviderOptions<TApi>["profileModel"],
+	legacyRuntimeProfile = false,
+): Model<TApi> {
+	const legacyDiagnostics = legacyRuntimeProfile ? legacyRuntimeProfileDiagnostics(model) : undefined;
+	const raw = legacyRuntimeProfile
+		? stripModelRuntimeProfile(model)
+		: stripModelProfileMetadata(model);
+	const enriched = profileModel?.(raw) ?? raw;
+	return withModelProfile(enriched, source, {
+		costKnown: enriched.costKnown ?? true,
+		diagnostics: legacyRuntimeProfile
+			? legacyDiagnostics
+			: profileModel === undefined
+				? model.profileDiagnostics
+				: enriched.profileDiagnostics,
+		capabilities: enriched.capabilities,
+	});
+}
+
+function profileStaticModels<TApi extends Api>(input: CreateProviderOptions<TApi>): readonly Model<TApi>[] {
+	const source = input.modelProfileSource ?? "built-in";
+	const key = `${input.id}\0${source}`;
+	const first = input.models[0] as Model<Api> | undefined;
+	const candidates = first ? PROFILED_MODEL_LISTS.get(first) : undefined;
+	for (const candidate of candidates ?? []) {
+		if (
+			candidate.key === key &&
+			candidate.profileModel === (input.profileModel as ((model: Model<Api>) => Model<Api>) | undefined) &&
+			sameModelObjects(candidate.originals, input.models)
+		) {
+			return candidate.profiled as readonly Model<TApi>[];
+		}
+	}
+	const profiled = input.models.map((model) =>
+		profileIngressModel(model, model.profileSource ?? source, input.profileModel),
+	);
+	const entry: ProfiledModelListCacheEntry = {
+		key,
+		profileModel: input.profileModel as ((model: Model<Api>) => Model<Api>) | undefined,
+		originals: [...input.models] as Model<Api>[],
+		profiled: profiled as Model<Api>[],
+	};
+	if (first) {
+		if (candidates) candidates.push(entry);
+		else PROFILED_MODEL_LISTS.set(first, [entry]);
+	}
+	return profiled;
 }
 
 /**
@@ -745,17 +839,20 @@ export interface CreateProviderOptions<TApi extends Api = Api> {
  * produces a stream error.
  */
 export function createProvider<TApi extends Api = Api>(input: CreateProviderOptions<TApi>): Provider<TApi> {
-	const baselineModels = input.models;
+	const baselineModels = profileStaticModels(input);
 	let dynamicModels: readonly Model<TApi>[] = [];
+	let mergedModels: readonly Model<TApi>[] | undefined;
 	const fetchModels = input.fetchModels;
 	const currentModels = (): readonly Model<TApi>[] => {
+		if (mergedModels) return mergedModels;
 		const merged = [...baselineModels];
 		for (const model of dynamicModels) {
 			const index = merged.findIndex((entry) => entry.id === model.id);
 			if (index >= 0) merged[index] = model;
 			else merged.push(model);
 		}
-		return merged;
+		mergedModels = merged;
+		return mergedModels;
 	};
 	const single =
 		typeof (input.api as ProviderStreams).stream === "function" ? (input.api as ProviderStreams) : undefined;
@@ -782,30 +879,45 @@ export function createProvider<TApi extends Api = Api>(input: CreateProviderOpti
 		baseUrl: input.baseUrl,
 		headers: input.headers,
 		auth: input.auth,
+		profileModel: input.profileModel,
 		getModels: currentModels,
 		refreshModels: fetchModels
 			? async (context) => {
 					if (context.stored) {
+						const legacyRuntimeProfile = context.stored.profileRevision !== MODELS_STORE_PROFILE_REVISION;
 						const restored = context.stored.models
 							.filter((model) => model.provider === input.id)
-							.map((model) => model as Model<TApi>);
+							.map((model) => profileIngressModel(
+								model as Model<TApi>,
+								"provider-catalog",
+								input.profileModel,
+								legacyRuntimeProfile,
+							));
 						if (
 							!(await context.publish({
-								update: () => {
-									dynamicModels = restored;
-								},
+							persist:
+								legacyRuntimeProfile ? context.stored : undefined,
+							migrateLegacyProfile: legacyRuntimeProfile,
+							update: () => {
+								dynamicModels = restored;
+								mergedModels = undefined;
+							},
 							}))
 						) {
 							return;
 						}
 					}
 					if (!context.allowNetwork || context.signal.aborted) return;
-					const refreshed = await fetchModels(context);
+					const rawRefreshed = await fetchModels(context);
+					const refreshed = rawRefreshed.map((model) =>
+						profileIngressModel(model, "provider-catalog", input.profileModel),
+					);
 					if (context.signal.aborted) return;
 					await context.publish({
-						persist: { models: refreshed, checkedAt: Date.now() },
+						persist: { models: rawRefreshed, checkedAt: Date.now() },
 						update: () => {
 							dynamicModels = refreshed;
+							mergedModels = undefined;
 						},
 					});
 				}
@@ -861,6 +973,14 @@ export function hasApi<TApi extends Api>(model: Model<Api>, api: TApi): model is
 }
 
 export function calculateCost<TApi extends Api>(model: Model<TApi>, usage: Usage): Usage["cost"] {
+	if (model.costKnown === false) {
+		usage.cost.input = 0;
+		usage.cost.output = 0;
+		usage.cost.cacheRead = 0;
+		usage.cost.cacheWrite = 0;
+		usage.cost.total = 0;
+		return usage.cost;
+	}
 	const inputTokens = usage.input + usage.cacheRead + usage.cacheWrite;
 	let rates: ModelCostRates = model.cost;
 	let matchedThreshold = -1;
@@ -885,14 +1005,8 @@ export function calculateCost<TApi extends Api>(model: Model<TApi>, usage: Usage
 const EXTENDED_THINKING_LEVELS: ModelThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 export function getSupportedThinkingLevels<TApi extends Api>(model: Model<TApi>): ModelThinkingLevel[] {
-	if (!model.reasoning) return ["off"];
-
-	return EXTENDED_THINKING_LEVELS.filter((level) => {
-		const mapped = model.thinkingLevelMap?.[level];
-		if (mapped === null) return false;
-		if (level === "xhigh" || level === "max") return mapped !== undefined;
-		return true;
-	});
+	const reasoning = getModelCapabilities(model).reasoning;
+	return reasoning.mode === "none" ? ["off"] : [...reasoning.levels];
 }
 
 export function clampThinkingLevel<TApi extends Api>(

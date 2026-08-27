@@ -1,6 +1,7 @@
 import { AzureOpenAI } from "openai";
 import type { ResponseCreateParamsStreaming } from "openai/resources/responses/responses.js";
 import { clampThinkingLevel } from "../models.ts";
+import { capabilityCacheRetention, contextForModelCapabilities, getModelCapabilities, mergeSamplingParams, sanitizeCapabilityRequest } from "../model-capabilities.ts";
 import type {
 	Api,
 	AssistantMessage,
@@ -19,6 +20,7 @@ import { getProviderEnvValue } from "../utils/provider-env.ts";
 import { retryProviderRequest } from "../utils/provider-retry.ts";
 import { createGrammarToolInputProperties } from "./constrained-sampling.ts";
 import { clampOpenAIPromptCacheKey } from "./openai-prompt-cache.ts";
+import { OPENAI_RESPONSES_SAMPLING_RESERVED_KEYS } from "./openai-sampling-reserved.ts";
 import { convertResponsesMessages, convertResponsesTools, processResponsesStream } from "./openai-responses-shared.ts";
 import { buildBaseOptions } from "./simple-options.ts";
 
@@ -104,8 +106,9 @@ export const stream: StreamFunction<"azure-openai-responses", AzureOpenAIRespons
 				throw new Error(`No API key for provider: ${model.provider}`);
 			}
 			const client = createClient(model, apiKey, options);
+			const capabilityContext = contextForModelCapabilities(model, context);
 			const grammarToolInputProperties = createGrammarToolInputProperties(
-				context.tools,
+				capabilityContext.tools,
 				model.compat?.supportsOpenAIGrammarTools ?? false,
 			);
 			let params = buildParams(model, context, options, deploymentName, grammarToolInputProperties);
@@ -209,7 +212,7 @@ export const streamSimple: StreamFunction<"azure-openai-responses", SimpleStream
 		...buildBaseOptions(model, context, options, apiKey),
 		toolChoice: options?.toolChoice,
 	};
-	const clampedReasoning = options?.reasoning ? clampThinkingLevel(model, options.reasoning) : undefined;
+	const clampedReasoning = clampThinkingLevel(model, options?.reasoning ?? "off");
 	const reasoningEffort = clampedReasoning === "off" ? undefined : clampedReasoning;
 
 	return stream(model, context, {
@@ -317,7 +320,9 @@ function buildParams(
 		model.compat?.supportsOpenAIGrammarTools ?? false,
 	),
 ) {
-	const messages = convertResponsesMessages(model, context, AZURE_TOOL_CALL_PROVIDERS, {
+	const capabilities = getModelCapabilities(model);
+	const wireContext = contextForModelCapabilities(model, context);
+	const messages = convertResponsesMessages(model, wireContext, AZURE_TOOL_CALL_PROVIDERS, {
 		grammarToolInputProperties,
 	});
 
@@ -325,7 +330,10 @@ function buildParams(
 		model: deploymentName,
 		input: messages,
 		stream: true,
-		prompt_cache_key: clampOpenAIPromptCacheKey(options?.sessionId),
+		prompt_cache_key:
+			capabilityCacheRetention(model, options?.cacheRetention ?? "short") !== "none"
+				? clampOpenAIPromptCacheKey(options?.sessionId)
+				: undefined,
 		store: false,
 	};
 
@@ -337,17 +345,18 @@ function buildParams(
 		params.temperature = options?.temperature;
 	}
 
-	if (context.tools && context.tools.length > 0) {
-		params.tools = convertResponsesTools(context.tools, {
-			supportsStrictMode: model.compat?.supportsStrictMode ?? true,
+	if (wireContext.tools && wireContext.tools.length > 0) {
+		params.tools = convertResponsesTools(wireContext.tools, {
+			supportsStrictMode:
+				(model.compat?.supportsStrictMode ?? true) && capabilities.strictToolSchema,
 			supportsOpenAIGrammarTools: model.compat?.supportsOpenAIGrammarTools ?? false,
 		});
 	}
-	if (options?.toolChoice !== undefined) {
+	if (capabilities.toolCalling && options?.toolChoice !== undefined) {
 		params.tool_choice = options.toolChoice;
 	}
 
-	if (model.reasoning) {
+	if (capabilities.reasoning.mode !== "none") {
 		if (options?.reasoningEffort || options?.reasoningSummary) {
 			const effort = options?.reasoningEffort
 				? (model.thinkingLevelMap?.[options.reasoningEffort] ?? options.reasoningEffort)
@@ -364,10 +373,13 @@ function buildParams(
 		}
 	}
 
-	// Last so custom keys override the named request fields.
-	if (options?.samplingParams) {
-		Object.assign(params, options.samplingParams);
-	}
+	// Merge generation-only custom keys; structural protocol fields remain capability-owned.
+	mergeSamplingParams(
+		params as unknown as Record<string, unknown>,
+		options?.samplingParams,
+		OPENAI_RESPONSES_SAMPLING_RESERVED_KEYS,
+	);
+	sanitizeCapabilityRequest(model, params as unknown as Record<string, unknown>);
 
 	return params;
 }

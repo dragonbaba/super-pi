@@ -7,7 +7,8 @@ import type {
 	RawMessageStreamEvent,
 	RefusalStopDetails,
 } from "@anthropic-ai/sdk/resources/messages.js";
-import { calculateCost } from "../models.ts";
+import { calculateCost, clampThinkingLevel } from "../models.ts";
+import { capabilityCacheRetention, contextForModelCapabilities, getModelCapabilities } from "../model-capabilities.ts";
 import type {
 	AnthropicMessagesCompat,
 	Api,
@@ -63,7 +64,7 @@ function getCacheControl(
 	cacheRetention?: CacheRetention,
 	env?: ProviderEnv,
 ): { retention: CacheRetention; cacheControl?: CacheControlEphemeral } {
-	const retention = resolveCacheRetention(cacheRetention, env);
+	const retention = capabilityCacheRetention(model, resolveCacheRetention(cacheRetention, env));
 	if (retention === "none") {
 		return { retention };
 	}
@@ -536,7 +537,10 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 					});
 				}
 
-				const cacheRetention = resolveCacheRetention(options?.cacheRetention, options?.env);
+				const cacheRetention = capabilityCacheRetention(
+					model,
+					resolveCacheRetention(options?.cacheRetention, options?.env),
+				);
 				const cacheSessionId = cacheRetention === "none" ? undefined : options?.sessionId;
 
 				const created = createClient(
@@ -908,14 +912,16 @@ export const streamSimple: StreamFunction<"anthropic-messages", SimpleStreamOpti
 		...buildBaseOptions(model, context, options, options?.apiKey),
 		toolChoice: options?.toolChoice,
 	};
-	if (!options?.reasoning) {
+	const capabilities = getModelCapabilities(model);
+	const reasoning = clampThinkingLevel(model, options?.reasoning ?? "off");
+	if (reasoning === "off") {
 		return stream(model, context, { ...base, thinkingEnabled: false } satisfies AnthropicOptions);
 	}
 
 	// For models with adaptive thinking: use an effort level.
 	// For older models: use budget-based thinking.
-	if (model.compat?.forceAdaptiveThinking === true) {
-		const effort = mapThinkingLevelToEffort(model, options.reasoning);
+	if (capabilities.reasoning.mode === "adaptive") {
+		const effort = mapThinkingLevelToEffort(model, reasoning);
 		return stream(model, context, {
 			...base,
 			thinkingEnabled: true,
@@ -928,8 +934,8 @@ export const streamSimple: StreamFunction<"anthropic-messages", SimpleStreamOpti
 	const adjusted = adjustMaxTokensForThinking(
 		base.maxTokens,
 		model.maxTokens,
-		options.reasoning,
-		options.thinkingBudgets,
+		reasoning,
+		options?.thinkingBudgets,
 	);
 
 	const maxTokens = clampMaxTokensToContext(model, context, adjusted.maxTokens);
@@ -957,7 +963,7 @@ function createClient(
 	sessionId?: string,
 ): { client: Anthropic; isOAuthToken: boolean } {
 	// Adaptive thinking models have interleaved thinking built in, so skip the beta header.
-	const needsInterleavedBeta = interleavedThinking && model.compat?.forceAdaptiveThinking !== true;
+	const needsInterleavedBeta = interleavedThinking && getModelCapabilities(model).reasoning.mode !== "adaptive";
 	const betaFeatures: string[] = [];
 	if (useFineGrainedToolStreamingBeta) {
 		betaFeatures.push(FINE_GRAINED_TOOL_STREAMING_BETA);
@@ -1046,11 +1052,13 @@ function buildParams(
 ): MessageCreateParamsStreaming {
 	const { cacheControl } = getCacheControl(model, options?.cacheRetention, options?.env);
 	const compat = getAnthropicCompat(model);
-	const transformedMessages = transformMessages(context.messages, model, normalizeToolCallId);
+	const capabilities = getModelCapabilities(model);
+	const wireContext = contextForModelCapabilities(model, context);
+	const transformedMessages = transformMessages(wireContext.messages, model, normalizeToolCallId);
 	const normalizeToolName = isOAuthToken ? toClaudeCodeName : (name: string) => name;
 	const toolPlacement = splitDeferredTools(
-		{ ...context, messages: transformedMessages },
-		compat.supportsToolReferences,
+		{ ...wireContext, messages: transformedMessages },
+		compat.supportsToolReferences && capabilities.deferredTools,
 		normalizeToolName,
 	);
 	let immediateTools = toolPlacement.immediate;
@@ -1083,19 +1091,19 @@ function buildParams(
 				...(cacheControl ? { cache_control: cacheControl } : {}),
 			},
 		];
-		if (context.systemPrompt) {
+		if (wireContext.systemPrompt) {
 			params.system.push({
 				type: "text",
-				text: sanitizeSurrogates(context.systemPrompt),
+				text: sanitizeSurrogates(wireContext.systemPrompt),
 				...(cacheControl ? { cache_control: cacheControl } : {}),
 			});
 		}
-	} else if (context.systemPrompt) {
+	} else if (wireContext.systemPrompt) {
 		// Add cache control to system prompt for non-OAuth tokens
 		params.system = [
 			{
 				type: "text",
-				text: sanitizeSurrogates(context.systemPrompt),
+				text: sanitizeSurrogates(wireContext.systemPrompt),
 				...(cacheControl ? { cache_control: cacheControl } : {}),
 			},
 		];
@@ -1112,14 +1120,14 @@ function buildParams(
 				immediateTools,
 				isOAuthToken,
 				compat.supportsEagerToolInputStreaming,
-				compat.supportsStrictTools,
+				compat.supportsStrictTools && capabilities.strictToolSchema,
 				compat.supportsCacheControlOnTools ? cacheControl : undefined,
 			),
 			...convertTools(
 				deferredTools,
 				isOAuthToken,
 				compat.supportsEagerToolInputStreaming,
-				compat.supportsStrictTools,
+				compat.supportsStrictTools && capabilities.strictToolSchema,
 				undefined,
 				true,
 			),
@@ -1127,12 +1135,12 @@ function buildParams(
 	}
 
 	// Configure thinking mode: adaptive, budget-based, or explicitly disabled.
-	if (model.reasoning) {
+	if (capabilities.reasoning.mode !== "none") {
 		if (options?.thinkingEnabled) {
 			// Default to "summarized" so Opus 4.7 and Mythos Preview behave like
 			// older Claude 4 models (whose API default is also "summarized").
 			const display: AnthropicThinkingDisplay = options.thinkingDisplay ?? "summarized";
-			if (model.compat?.forceAdaptiveThinking === true) {
+			if (capabilities.reasoning.mode === "adaptive") {
 				// Adaptive thinking: Claude decides when and how much to think.
 				params.thinking = { type: "adaptive", display };
 				if (options.effort) {
@@ -1152,7 +1160,7 @@ function buildParams(
 					display,
 				};
 			}
-		} else if (options?.thinkingEnabled === false && model.thinkingLevelMap?.off !== null) {
+		} else if (options?.thinkingEnabled === false && capabilities.reasoning.levels.includes("off")) {
 			params.thinking = { type: "disabled" };
 		}
 	}
@@ -1164,7 +1172,7 @@ function buildParams(
 		}
 	}
 
-	if (options?.toolChoice) {
+	if (capabilities.toolCalling && options?.toolChoice) {
 		if (typeof options.toolChoice === "string") {
 			params.tool_choice = { type: options.toolChoice };
 		} else {

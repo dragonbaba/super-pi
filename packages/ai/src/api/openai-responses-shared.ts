@@ -28,6 +28,7 @@ import type {
 	ToolCall,
 	Usage,
 } from "../types.ts";
+import { getModelCapabilities } from "../model-capabilities.ts";
 import type { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { shortHash } from "../utils/hash.ts";
 import { parseStreamingJson, stringifyToolArguments } from "../utils/json-parse.ts";
@@ -173,7 +174,9 @@ export function convertResponsesMessages<TApi extends Api>(
 	const includeSystemPrompt = options?.includeSystemPrompt ?? true;
 	if (includeSystemPrompt && context.systemPrompt) {
 		const compat = model.compat as { supportsDeveloperRole?: boolean } | undefined;
-		const role = model.reasoning && compat?.supportsDeveloperRole !== false ? "developer" : "system";
+		const role = getModelCapabilities(model).reasoning.mode !== "none" && compat?.supportsDeveloperRole !== false
+			? "developer"
+			: "system";
 		messages.push({
 			role,
 			content: sanitizeSurrogates(context.systemPrompt),

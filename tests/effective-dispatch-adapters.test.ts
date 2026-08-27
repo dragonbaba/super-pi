@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 import { observeAnthropicEffectiveDispatch } from "../packages/ai/src/api/anthropic-messages.ts";
 import { observeBedrockEffectiveDispatch } from "../packages/ai/src/api/bedrock-converse-stream.ts";
@@ -51,6 +52,10 @@ function capture<TApi extends Api>(): {
 function assertMetadataOnly(observations: readonly EffectiveDispatchObservation[], secrets: readonly string[]): void {
 	const serialized = JSON.stringify(observations);
 	for (const secret of secrets) assert.equal(serialized.includes(secret), false, `leaked ${secret}`);
+}
+
+function jsonHash(value: unknown): string {
+	return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
 
 function manifestForObservation(
@@ -176,6 +181,40 @@ test("OpenAI Chat observes system/developer messages and function tool identity 
 	assertMetadataOnly([...first.observations, ...second.observations, ...third.observations], [
 		"system-A-secret", "system-B-secret", "developer-secret", "read-secret", "write-secret",
 	]);
+});
+
+test("OpenAI Chat effective dispatch observation works when the browser has no process global", () => {
+	const processDescriptor = Object.getOwnPropertyDescriptor(globalThis, "process");
+	const captured = capture<"openai-completions">();
+	const chatModel = model("openai-completions");
+	try {
+		Object.defineProperty(globalThis, "process", {
+			configurable: true,
+			value: undefined,
+			writable: true,
+		});
+		observeOpenAIChatEffectiveDispatch(captured.options as never, chatModel, {
+			model: chatModel.id,
+			stream: true,
+			messages: [{ role: "system", content: "browser-system-secret" }],
+			tools: [{
+				type: "function",
+				function: { name: "browser-tool", description: "browser-tool-secret", parameters: {} },
+			}],
+		} as never);
+	} finally {
+		if (processDescriptor) Object.defineProperty(globalThis, "process", processDescriptor);
+		else Reflect.deleteProperty(globalThis, "process");
+	}
+
+	assert.equal(captured.observations.length, 1);
+	assert.equal(captured.observations[0]?.toolCount, 1);
+	assert.equal(
+		captured.observations[0]?.instructionsHash,
+		jsonHash([{ role: "system", content: "browser-system-secret" }]),
+	);
+	assert.match(captured.observations[0]?.prefixHash ?? "", /^[a-f0-9]{64}$/);
+	assertMetadataOnly(captured.observations, ["browser-system-secret", "browser-tool-secret", "browser-tool"]);
 });
 
 test("Mistral observes system messages and tools[].function.name from wire shape", () => {

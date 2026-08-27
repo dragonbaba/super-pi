@@ -81,6 +81,7 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 	// Build tools list based on selected tools.
 	// A tool appears in Available tools only when the caller provides a one-line snippet.
 	const tools = selectedTools || ["read", "bash", "edit", "write"];
+	const toolsEnabled = tools.length > 0;
 	const visibleTools = tools.filter((name) => !!toolSnippets?.[name]);
 	const toolsList =
 		visibleTools.length > 0 ? visibleTools.map((name) => `- ${name}: ${toolSnippets![name]}`).join("\n") : "(none)";
@@ -119,12 +120,14 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 
 	const guidelines = guidelinesList.map((g) => `- ${g}`).join("\n");
 
-	let prompt = `You are an expert coding assistant operating inside Super Pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.
+	const introduction = toolsEnabled
+		? "You are an expert coding assistant operating inside Super Pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files."
+		: "You are an expert coding assistant operating inside Super Pi. Provide accurate guidance using the conversation and project context available to you.";
+	const toolSection = toolsEnabled
+		? `\n\nAvailable tools:\n${toolsList}\n\nIn addition to the tools above, you may have access to other custom tools depending on the project.`
+		: "";
 
-Available tools:
-${toolsList}
-
-In addition to the tools above, you may have access to other custom tools depending on the project.
+	let prompt = `${introduction}${toolSection}
 
 Guidelines:
 ${guidelines}

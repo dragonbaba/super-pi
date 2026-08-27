@@ -21,6 +21,7 @@ function loadNodeOs(): typeof NodeOs | null {
 const _os: typeof NodeOs | null = loadNodeOs();
 
 import { clampThinkingLevel } from "../models.ts";
+import { capabilityCacheRetention, contextForModelCapabilities, getModelCapabilities } from "../model-capabilities.ts";
 import { registerSessionResourceCleanup } from "../session-resources.ts";
 import type {
 	Api,
@@ -379,8 +380,12 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
                 throw new Error(`No API key for provider: ${model.provider}`);
             }
             const accountId = extractAccountId(apiKey);
-            const grammarToolInputProperties = createGrammarToolInputProperties(context.tools, model.compat?.supportsOpenAIGrammarTools ?? false);
-            const cacheSessionId = options?.cacheRetention === "none" ? undefined : options?.sessionId;
+			const capabilityContext = contextForModelCapabilities(model, context);
+            const grammarToolInputProperties = createGrammarToolInputProperties(capabilityContext.tools, model.compat?.supportsOpenAIGrammarTools ?? false);
+			const cacheSessionId =
+				capabilityCacheRetention(model, options?.cacheRetention ?? "short") === "none"
+					? undefined
+					: options?.sessionId;
             const codexSessionId = clampOpenAIPromptCacheKey(cacheSessionId);
             let body = buildOpenAICodexRequestBody(model, context, options, codexSessionId, grammarToolInputProperties);
             const nextBody = await options?.onPayload?.(body, model);
@@ -388,16 +393,18 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
                 body = nextBody as OpenAICodexRequestBody;
             }
             const requestServiceTier = body.service_tier;
+			const capabilities = getModelCapabilities(model);
             const websocketRequestId = codexSessionId || uuidv7();
             const routingHint = buildCodexRoutingHint(body.model, requestServiceTier);
-            const remoteCompactionEnabled = isOpenAICodexRemoteCompactionCapabilityEnabled(codexSessionId);
+			const remoteCompactionEnabled =
+				capabilities.remoteCompaction && isOpenAICodexRemoteCompactionCapabilityEnabled(codexSessionId);
             const sseHeaders = buildSSEHeaders(model.headers, options?.headers, accountId, apiKey, routingHint, codexSessionId, remoteCompactionEnabled);
             const websocketHeaders = buildWebSocketHeaders(model.headers, options?.headers, accountId, apiKey, routingHint, websocketRequestId, remoteCompactionEnabled);
             let bodyJson;
             const getBodyJson = () => (bodyJson ??= JSON.stringify(body));
             const httpTimeoutMs = normalizeTimeoutMs(options?.timeoutMs);
             const websocketConnectTimeoutMs = normalizeTimeoutMs(options?.websocketConnectTimeoutMs);
-            const transport = options?.transport || "auto";
+			const transport = capabilities.websocketContinuation ? options?.transport || "auto" : "sse";
             let startEmitted = false;
             const websocketDisabledForSession = transport !== "sse" && isWebSocketSseFallbackActive(cacheSessionId);
             if (websocketDisabledForSession) {
@@ -581,7 +588,7 @@ export const streamSimple: StreamFunction<"openai-codex-responses", SimpleStream
         ...buildBaseOptions(model, context, options, apiKey),
         toolChoice: options?.toolChoice,
     };
-    const clampedReasoning = options?.reasoning ? clampThinkingLevel(model, options.reasoning) : undefined;
+    const clampedReasoning = clampThinkingLevel(model, options?.reasoning ?? "off");
     const reasoningEffort = clampedReasoning === "off" ? undefined : clampedReasoning;
     return stream(model, context, {
         ...base,
@@ -598,10 +605,15 @@ export function buildOpenAICodexRequestBody(
     cacheSessionId: string | undefined,
     grammarToolInputProperties: ReadonlyMap<string, string> = createGrammarToolInputProperties(context.tools, model.compat?.supportsOpenAIGrammarTools ?? false),
 ): OpenAICodexRequestBody {
-    const supportsStrictMode = model.compat?.supportsStrictMode ?? true;
+	const capabilities = getModelCapabilities(model);
+    const supportsStrictMode = (model.compat?.supportsStrictMode ?? true) && capabilities.strictToolSchema;
     const supportsOpenAIGrammarTools = model.compat?.supportsOpenAIGrammarTools ?? false;
-    const toolPlacement = splitDeferredTools(context, model.compat?.supportsToolSearch ?? false);
-    const messages = convertResponsesMessages(model, context, CODEX_TOOL_CALL_PROVIDERS, {
+	const wireContext = contextForModelCapabilities(model, context);
+	const toolPlacement = splitDeferredTools(
+		wireContext,
+		(model.compat?.supportsToolSearch ?? false) && capabilities.deferredTools,
+	);
+    const messages = convertResponsesMessages(model, wireContext, CODEX_TOOL_CALL_PROVIDERS, {
         includeSystemPrompt: false,
         grammarToolInputProperties,
         deferredTools: toolPlacement.deferred,
@@ -615,13 +627,14 @@ export function buildOpenAICodexRequestBody(
         model: model.id,
         store: false,
         stream: true,
-        instructions: context.systemPrompt || "You are a helpful assistant.",
+		instructions: wireContext.systemPrompt || "You are a helpful assistant.",
         input: messages,
         text: { verbosity: options?.textVerbosity || "low" },
-        include: ["reasoning.encrypted_content"],
-        prompt_cache_key: cacheSessionId,
-        tool_choice: options?.toolChoice ?? "auto",
-        parallel_tool_calls: true,
+		...(capabilities.reasoning.mode !== "none" ? { include: ["reasoning.encrypted_content"] } : {}),
+		prompt_cache_key:
+			capabilityCacheRetention(model, options?.cacheRetention ?? "short") !== "none" ? cacheSessionId : undefined,
+		...(capabilities.toolCalling ? { tool_choice: options?.toolChoice ?? "auto" } : {}),
+		...(capabilities.toolCalling ? { parallel_tool_calls: capabilities.parallelTools } : {}),
     };
     if (options?.temperature !== undefined) {
         body.temperature = options.temperature;
@@ -636,7 +649,7 @@ export function buildOpenAICodexRequestBody(
             supportsOpenAIGrammarTools,
         });
     }
-    if (options?.reasoningEffort !== undefined) {
+	if (capabilities.reasoning.mode !== "none" && options?.reasoningEffort !== undefined) {
         const effort = options.reasoningEffort === "none"
             ? (model.thinkingLevelMap?.off ?? "none")
             : (model.thinkingLevelMap?.[options.reasoningEffort] ?? options.reasoningEffort);
@@ -1894,7 +1907,11 @@ async function processWebSocketStream(
 ): Promise<void> {
     const { socket, entry, reused, release } = await acquireWebSocket(url, headers, cacheSessionId, accountId, options?.signal, websocketConnectTimeoutMs, options?.env);
     let keepConnection = true;
-    const useCachedContext = options?.transport === "websocket-cached" || options?.transport === "auto";
+	const capabilities = getModelCapabilities(model);
+	const useCachedContext =
+		capabilities.previousResponseId &&
+		capabilities.websocketContinuation &&
+		(options?.transport === "websocket-cached" || options?.transport === "auto");
     // ChatGPT Codex Responses rejects `store: true` ("Store must be set to false").
     // WebSocket continuation still works via connection-scoped previous_response_id state.
     const fullBody = body;

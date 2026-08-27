@@ -26,7 +26,8 @@ import { NodeHttpHandler } from "@smithy/node-http-handler";
 import type { BuildMiddleware, DocumentType, MetadataBearer } from "@smithy/types";
 import { HttpProxyAgent } from "http-proxy-agent";
 import { HttpsProxyAgent } from "https-proxy-agent";
-import { calculateCost } from "../models.ts";
+import { calculateCost, clampThinkingLevel } from "../models.ts";
+import { capabilityCacheRetention, contextForModelCapabilities, getModelCapabilities } from "../model-capabilities.ts";
 import type {
 	Api,
 	AssistantMessage,
@@ -231,17 +232,26 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 			if (customHeaders) {
 				addCustomHeadersMiddleware(client, customHeaders);
 			}
-			const cacheRetention = resolveCacheRetention(options.cacheRetention, options.env);
+			const cacheRetention = capabilityCacheRetention(
+				model,
+				resolveCacheRetention(options.cacheRetention, options.env),
+			);
 			const inferenceMaxTokens = options.maxTokens ?? (isAnthropicClaudeModel(model) ? model.maxTokens : undefined);
+			const capabilities = getModelCapabilities(model);
+			const wireContext = contextForModelCapabilities(model, context);
 			let commandInput = {
 				modelId: model.id,
-				messages: convertMessages(context, model, cacheRetention, options.env),
-				system: buildSystemPrompt(context.systemPrompt, model, cacheRetention, options.env),
+				messages: convertMessages(wireContext, model, cacheRetention, options.env),
+				system: buildSystemPrompt(wireContext.systemPrompt, model, cacheRetention, options.env),
 				inferenceConfig: {
 					...(inferenceMaxTokens !== undefined && { maxTokens: inferenceMaxTokens }),
 					...(options.temperature !== undefined && { temperature: options.temperature }),
 				},
-				toolConfig: convertToolConfig(context.tools, options.toolChoice, model.compat?.supportsStrictMode ?? false),
+				toolConfig: convertToolConfig(
+					wireContext.tools,
+					options.toolChoice,
+					(model.compat?.supportsStrictMode ?? false) && capabilities.strictToolSchema,
+				),
 				additionalModelRequestFields: buildAdditionalModelRequestFields(model, options),
 				...(options.requestMetadata !== undefined && { requestMetadata: options.requestMetadata }),
 			};
@@ -566,16 +576,17 @@ export const streamSimple: StreamFunction<"bedrock-converse-stream", SimpleStrea
 		...buildBaseOptions(model, context, options, undefined),
 		toolChoice: options?.toolChoice,
 	};
-	if (!options?.reasoning) {
+	const reasoning = clampThinkingLevel(model, options?.reasoning ?? "off");
+	if (reasoning === "off") {
 		return stream(model, context, { ...base, reasoning: undefined } satisfies BedrockOptions);
 	}
 
 	if (isAnthropicClaudeModel(model)) {
-		if (supportsAdaptiveThinking(model.id, model.name)) {
+		if (getModelCapabilities(model).reasoning.mode === "adaptive") {
 			return stream(model, context, {
 				...base,
-				reasoning: options.reasoning,
-				thinkingBudgets: options.thinkingBudgets,
+				reasoning,
+				thinkingBudgets: options?.thinkingBudgets,
 			} satisfies BedrockOptions);
 		}
 
@@ -584,8 +595,8 @@ export const streamSimple: StreamFunction<"bedrock-converse-stream", SimpleStrea
 		const adjusted = adjustMaxTokensForThinking(
 			base.maxTokens,
 			model.maxTokens,
-			options.reasoning,
-			options.thinkingBudgets,
+			reasoning,
+			options?.thinkingBudgets,
 		);
 
 		const maxTokens = clampMaxTokensToContext(model, context, adjusted.maxTokens);
@@ -593,18 +604,18 @@ export const streamSimple: StreamFunction<"bedrock-converse-stream", SimpleStrea
 		return stream(model, context, {
 			...base,
 			maxTokens,
-			reasoning: options.reasoning,
+			reasoning,
 			thinkingBudgets: {
-				...(options.thinkingBudgets || {}),
-				[clampReasoning(options.reasoning)!]: Math.min(adjusted.thinkingBudget, Math.max(0, maxTokens - 1024)),
+				...(options?.thinkingBudgets || {}),
+				[clampReasoning(reasoning)!]: Math.min(adjusted.thinkingBudget, Math.max(0, maxTokens - 1024)),
 			},
 		} satisfies BedrockOptions);
 	}
 
 	return stream(model, context, {
 		...base,
-		reasoning: options.reasoning,
-		thinkingBudgets: options.thinkingBudgets,
+		reasoning,
+		thinkingBudgets: options?.thinkingBudgets,
 	} satisfies BedrockOptions);
 };
 
@@ -745,20 +756,6 @@ function getModelMatchCandidates(modelId: string, modelName?: string): string[] 
 	});
 }
 
-function supportsAdaptiveThinking(modelId: string, modelName?: string): boolean {
-	const candidates = getModelMatchCandidates(modelId, modelName);
-	return candidates.some(
-		(s) =>
-			s.includes("opus-4-6") ||
-			s.includes("opus-4-7") ||
-			s.includes("opus-4-8") ||
-			s.includes("opus-5") ||
-			s.includes("sonnet-4-6") ||
-			s.includes("sonnet-5") ||
-			s.includes("fable-5"),
-	);
-}
-
 function supportsNativeXhighEffort(model: Model<"bedrock-converse-stream">): boolean {
 	const candidates = getModelMatchCandidates(model.id, model.name);
 	return candidates.some(
@@ -837,6 +834,7 @@ function isAnthropicClaudeModel(model: Model<"bedrock-converse-stream">): boolea
  * Amazon Nova models have automatic caching and don't need explicit cache points.
  */
 function supportsPromptCaching(model: Model<"bedrock-converse-stream">, env?: ProviderEnv): boolean {
+	if (getModelCapabilities(model).promptCache.mode === "none") return false;
 	const candidates = getModelMatchCandidates(model.id, model.name);
 
 	const hasClaudeRef = candidates.some((s) => s.includes("claude"));
@@ -1216,7 +1214,7 @@ function buildAdditionalModelRequestFields(
 	model: Model<"bedrock-converse-stream">,
 	options: BedrockOptions,
 ): Record<string, any> | undefined {
-	if (!options.reasoning || !model.reasoning) {
+	if (!options.reasoning || getModelCapabilities(model).reasoning.mode === "none") {
 		return undefined;
 	}
 
@@ -1224,7 +1222,8 @@ function buildAdditionalModelRequestFields(
 		// GovCloud Bedrock currently rejects the Claude thinking.display field.
 		// Omit it there until the GovCloud Converse schema catches up.
 		const display = isGovCloudBedrockTarget(model, options) ? undefined : (options.thinkingDisplay ?? "summarized");
-		const result: Record<string, any> = supportsAdaptiveThinking(model.id, model.name)
+		const adaptive = getModelCapabilities(model).reasoning.mode === "adaptive";
+		const result: Record<string, any> = adaptive
 			? {
 					thinking: { type: "adaptive", ...(display !== undefined ? { display } : {}) },
 					output_config: { effort: mapThinkingLevelToEffort(model, options.reasoning) },
@@ -1252,7 +1251,7 @@ function buildAdditionalModelRequestFields(
 					};
 				})();
 
-		if (!supportsAdaptiveThinking(model.id, model.name) && (options.interleavedThinking ?? true)) {
+		if (!adaptive && (options.interleavedThinking ?? true)) {
 			result.anthropic_beta = ["interleaved-thinking-2025-05-14"];
 		}
 

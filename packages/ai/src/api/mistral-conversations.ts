@@ -1,4 +1,5 @@
 import { calculateCost, clampThinkingLevel } from "../models.ts";
+import { capabilityCacheRetention, contextForModelCapabilities, getModelCapabilities } from "../model-capabilities.ts";
 import type {
 	AssistantMessage,
 	Context,
@@ -164,10 +165,11 @@ export const stream: StreamFunction<"mistral-conversations", MistralOptions> = (
 				throw new Error(`No API key for provider: ${model.provider}`);
 			}
 
+			const wireContext = contextForModelCapabilities(model, context);
 			const normalizeMistralToolCallId = createMistralToolCallIdNormalizer();
-			const transformedMessages = transformMessages(context.messages, model, (id) => normalizeMistralToolCallId(id));
+			const transformedMessages = transformMessages(wireContext.messages, model, (id) => normalizeMistralToolCallId(id));
 
-			let payload = buildChatPayload(model, context, transformedMessages, options);
+			let payload = buildChatPayload(model, wireContext, transformedMessages, options);
 			const nextPayload = await options?.onPayload?.(payload, model);
 			if (nextPayload !== undefined) {
 				payload = nextPayload as MistralChatPayload;
@@ -225,9 +227,9 @@ export const streamSimple: StreamFunction<"mistral-conversations", SimpleStreamO
 		...buildBaseOptions(model, context, options, apiKey),
 		toolChoice: options?.toolChoice,
 	} satisfies MistralOptions;
-	const clampedReasoning = options?.reasoning ? clampThinkingLevel(model, options.reasoning) : undefined;
+	const clampedReasoning = clampThinkingLevel(model, options?.reasoning ?? "off");
 	const reasoning = clampedReasoning === "off" ? undefined : clampedReasoning;
-	const shouldUseReasoning = model.reasoning && reasoning !== undefined;
+	const shouldUseReasoning = getModelCapabilities(model).reasoning.mode !== "none" && reasoning !== undefined;
 
 	return stream(model, context, {
 		...base,
@@ -463,7 +465,7 @@ function buildMistralHeaders(model: Model<"mistral-conversations">, apiKey: stri
 
 	const hasExplicitAffinity =
 		hasMistralHeaderOverride(model.headers, "x-affinity") || hasMistralHeaderOverride(options?.headers, "x-affinity");
-	if (shouldUsePromptCaching(options) && !hasExplicitAffinity) {
+	if (shouldUsePromptCaching(model, options) && !hasExplicitAffinity) {
 		headers.set("x-affinity", options.sessionId);
 	}
 
@@ -692,19 +694,20 @@ function buildChatPayload(
 	messages: Message[],
 	options?: MistralOptions,
 ): MistralChatPayload {
+	const capabilities = getModelCapabilities(model);
 	const payload: MistralChatPayload = {
 		model: model.id,
 		stream: true,
 		messages: toChatMessages(messages, model.input.includes("image")),
 	};
 
-	if (context.tools?.length) payload.tools = toFunctionTools(context.tools);
+	if (context.tools?.length) payload.tools = toFunctionTools(context.tools, capabilities.strictToolSchema);
 	if (options?.temperature !== undefined) payload.temperature = options.temperature;
 	if (options?.maxTokens !== undefined) payload.maxTokens = options.maxTokens;
-	if (options?.toolChoice) payload.toolChoice = mapToolChoice(options.toolChoice);
+	if (capabilities.toolCalling && options?.toolChoice) payload.toolChoice = mapToolChoice(options.toolChoice);
 	if (options?.promptMode) payload.promptMode = options.promptMode;
-	if (options?.reasoningEffort) payload.reasoningEffort = options.reasoningEffort;
-	if (shouldUsePromptCaching(options)) payload.promptCacheKey = options.sessionId;
+	if (capabilities.reasoning.mode !== "none" && options?.reasoningEffort) payload.reasoningEffort = options.reasoningEffort;
+	if (shouldUsePromptCaching(model, options)) payload.promptCacheKey = options.sessionId;
 
 	if (context.systemPrompt) {
 		payload.messages.unshift({
@@ -716,8 +719,11 @@ function buildChatPayload(
 	return payload;
 }
 
-function shouldUsePromptCaching(options?: MistralOptions): options is MistralOptions & { sessionId: string } {
-	return options?.cacheRetention !== "none" && !!options?.sessionId;
+function shouldUsePromptCaching(
+	model: Model<"mistral-conversations">,
+	options?: MistralOptions,
+): options is MistralOptions & { sessionId: string } {
+	return capabilityCacheRetention(model, options?.cacheRetention ?? "short") !== "none" && !!options?.sessionId;
 }
 
 function getMistralCachedPromptTokens(usage: unknown, promptTokens: number): number {
@@ -942,11 +948,11 @@ async function consumeChatStream(
 	}
 }
 
-function toFunctionTools(tools: Tool[]): MistralFunctionTool[] {
+function toFunctionTools(tools: Tool[], supportsStrictMode: boolean): MistralFunctionTool[] {
 	const result = new Array<MistralFunctionTool>(tools.length);
 	for (let index = 0; index < tools.length; index++) {
 		const tool = tools[index]!;
-		const strict = resolveJsonSchemaStrictSampling(tool, true);
+		const strict = resolveJsonSchemaStrictSampling(tool, supportsStrictMode);
 		result[index] = {
 			type: "function",
 			function: {
@@ -1084,7 +1090,7 @@ function usesReasoningEffort(model: Model<"mistral-conversations">): boolean {
 }
 
 function usesPromptModeReasoning(model: Model<"mistral-conversations">): boolean {
-	return model.reasoning && !usesReasoningEffort(model);
+	return getModelCapabilities(model).reasoning.mode !== "none" && !usesReasoningEffort(model);
 }
 
 function mapReasoningEffort(

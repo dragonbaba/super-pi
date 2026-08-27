@@ -83,6 +83,53 @@ export type ToolChoice = "auto" | "none";
 export type ThinkingLevel = "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 export type ModelThinkingLevel = "off" | ThinkingLevel;
 export type ThinkingLevelMap = Partial<Record<ModelThinkingLevel, string | null>>;
+
+/** Provenance of the metadata used to construct a runtime model profile. */
+export type ModelProfileSource =
+	| "built-in"
+	| "provider-catalog"
+	| "explicit-custom"
+	| "conservative-fallback";
+
+export type ModelReasoningCapability =
+	| { mode: "none" }
+	| { mode: "levels"; levels: readonly ModelThinkingLevel[] }
+	| { mode: "budget"; levels: readonly ModelThinkingLevel[] }
+	| { mode: "adaptive"; levels: readonly ModelThinkingLevel[] };
+
+export type ModelPromptCacheCapability =
+	| { mode: "none" }
+	| { mode: "implicit"; retention: boolean }
+	| { mode: "explicit"; retention: boolean };
+
+/**
+ * Provider-neutral, versioned capabilities used to gate optional wire fields.
+ * This is metadata only and never contains model prompts, credentials, or payloads.
+ */
+export interface ModelCapabilitiesV1 {
+	version: 1;
+	inputModalities: Readonly<{ text: boolean; image: boolean; audio: boolean }>;
+	toolCalling: boolean;
+	parallelTools: boolean;
+	strictToolSchema: boolean;
+	/** Observational response-stream capability; this does not enable a request field. */
+	streamedToolArguments: boolean;
+	reasoning: ModelReasoningCapability;
+	thoughtSignatureRoundTrip: boolean;
+	promptCache: ModelPromptCacheCapability;
+	previousResponseId: boolean;
+	websocketContinuation: boolean;
+	deferredTools: boolean;
+	remoteCompaction: boolean;
+	contextWindow: number;
+	maxOutputTokens: number;
+}
+
+export interface ModelProfileDiagnostic {
+	code: "PROFILE_FIELD_DEFAULTED" | "CONSERVATIVE_FALLBACK" | "INVALID_CAPABILITIES_REBUILT";
+	field?: "api" | "baseUrl" | "capabilities" | "contextWindow" | "cost" | "maxTokens";
+	message: string;
+}
 export type ChatTemplateKwargValue =
 	| string
 	| number
@@ -212,11 +259,11 @@ export interface StreamOptions extends ProviderRequestOptions<Model<Api>> {
 	onResponse?: (response: ProviderResponse, model: Model<Api>) => void | Promise<void>;
 	temperature?: number;
 	/**
-	 * Arbitrary sampling parameters merged into the request body as-is, after the named request
-	 * fields, so keys here override them. Lets custom OpenAI-compatible servers (llama.cpp, vLLM,
-	 * SGLang, ...) receive parameters pi does not model, e.g. `top_p`, `top_k`, `min_p`,
-	 * `repetition_penalty`. Merged over `Model.samplingParams` per key. Only applied by
-	 * OpenAI-compatible adapters (completions, responses, Azure responses); other APIs ignore it.
+	 * Additional generation/sampling parameters for OpenAI-compatible servers (llama.cpp, vLLM,
+	 * SGLang, ...), e.g. `top_p`, `top_k`, `min_p`, or `repetition_penalty`. Structural protocol
+	 * fields (messages, tools, reasoning, continuation, and cache controls) are ignored here so they
+	 * cannot bypass model capability gates. Use `onPayload` for an explicit final-wire override.
+	 * Merged over `Model.samplingParams` per key. Other provider APIs ignore this option.
 	 */
 	samplingParams?: Record<string, unknown>;
 	maxTokens?: number;
@@ -832,11 +879,21 @@ export interface Model<TApi extends Api> {
 	 * Missing keys use provider defaults. null marks a level as unsupported.
 	 */
 	thinkingLevelMap?: ThinkingLevelMap;
+	/** Provider-owned default token budgets for budget-mode reasoning. */
+	thinkingBudgetMap?: Partial<Record<Exclude<ModelThinkingLevel, "off">, number>>;
 	input: ("text" | "image")[];
 	cost: ModelCost;
 	contextWindow: number;
 	maxTokens: number;
-	/** Default sampling parameters for this model. See {@link StreamOptions.samplingParams}; per-request keys override these. */
+	/** Runtime profile provenance. ModelRuntime guarantees this is present. */
+	profileSource?: ModelProfileSource;
+	/** Provider-neutral capability manifest. ModelRuntime guarantees this is present. */
+	capabilities?: Readonly<ModelCapabilitiesV1>;
+	/** False means zero-valued rates are placeholders and must be displayed as unknown. */
+	costKnown?: boolean;
+	/** Metadata-only profile diagnostics, such as explicitly omitted custom fields. */
+	profileDiagnostics?: readonly ModelProfileDiagnostic[];
+	/** Default generation parameters. Structural protocol keys are ignored; see {@link StreamOptions.samplingParams}. */
 	samplingParams?: Record<string, unknown>;
 	headers?: Record<string, string>;
 	/** Compatibility overrides for OpenAI-compatible APIs. If not set, auto-detected from baseUrl. */

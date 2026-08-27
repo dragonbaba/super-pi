@@ -307,11 +307,6 @@ export function convertTools(
 }
 
 /** Gemini 3+ enforces required function parameters in validated tool-calling modes. */
-export function supportsGoogleStrictToolSampling(modelId: string): boolean {
-	const majorVersion = getGeminiMajorVersion(modelId);
-	return majorVersion !== undefined && majorVersion >= 3;
-}
-
 /** Map tool choice string to Gemini FunctionCallingConfigMode. */
 export function mapToolChoice(choice: string): FunctionCallingConfigMode {
 	switch (choice) {

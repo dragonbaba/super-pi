@@ -22,6 +22,8 @@ import type {
 	ThinkingLevel,
 	ToolCall,
 } from "../types.ts";
+import { capabilityCacheRetention, contextForModelCapabilities, getModelCapabilities } from "../model-capabilities.ts";
+import { clampThinkingLevel } from "../models.ts";
 import { appendAssistantMessageDiagnostic, createAssistantMessageDiagnostic } from "../utils/diagnostics.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { observeEffectiveDispatch } from "../utils/effective-dispatch.ts";
@@ -372,16 +374,21 @@ export const stream: StreamFunction<"pi-messages", PiMessagesOptions> = (
 				url.searchParams.set("debug", "1");
 			}
 
+			const capabilities = getModelCapabilities(model);
+			const wireContext = contextForModelCapabilities(model, context);
 			let payload: unknown = {
 				model: model.id,
-				context,
+				context: wireContext,
 				options: {
 					temperature: options?.temperature,
 					maxTokens: options?.maxTokens,
-					reasoning: options?.reasoning,
-					cacheRetention: resolveCacheRetention(options?.cacheRetention, options?.env),
+					reasoning: capabilities.reasoning.mode !== "none" ? options?.reasoning : undefined,
+					cacheRetention: capabilityCacheRetention(
+						model,
+						resolveCacheRetention(options?.cacheRetention, options?.env) ?? "short",
+					),
 					sessionId: options?.sessionId,
-					toolChoice: options?.toolChoice,
+					toolChoice: capabilities.toolCalling ? options?.toolChoice : undefined,
 				},
 			};
 			const nextPayload = await options?.onPayload?.(payload, model);
@@ -463,9 +470,10 @@ export const streamSimple: StreamFunction<"pi-messages", SimpleStreamOptions> = 
 	options?: SimpleStreamOptions,
 ): AssistantMessageEventStream => {
 	const extra = options as PiMessagesOptions | undefined;
+	const clampedReasoning = clampThinkingLevel(model, options?.reasoning ?? "off");
 	return stream(model, context, {
 		...options,
-		reasoning: options?.reasoning,
+		reasoning: clampedReasoning === "off" ? undefined : clampedReasoning,
 		toolChoice: options?.toolChoice,
 		debug: extra?.debug,
 	});

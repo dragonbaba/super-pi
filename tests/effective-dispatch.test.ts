@@ -5,6 +5,7 @@ import {
 	closeOpenAICodexWebSocketSessions,
 	stream,
 } from "../packages/ai/src/api/openai-codex-responses.ts";
+import { deriveModelCapabilities } from "../packages/ai/src/model-capabilities.ts";
 import type {
 	Context,
 	EffectiveDispatchObservation,
@@ -83,6 +84,19 @@ function model(): Model<"openai-codex-responses"> {
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		contextWindow: 128_000,
 		maxTokens: 4_096,
+	};
+}
+
+function modelWithoutPreviousResponse(): Model<"openai-codex-responses"> {
+	const base = model();
+	return {
+		...base,
+		capabilities: {
+			...deriveModelCapabilities(base),
+			previousResponseId: false,
+			websocketContinuation: false,
+			remoteCompaction: false,
+		},
 	};
 }
 
@@ -184,6 +198,42 @@ test("Codex previousResponseMode follows previous_response_id on the actual disp
 		assert.deepEqual(observations.map((observation) => observation.previousResponseMode), ["none", "response-id"]);
 	} finally {
 		closeOpenAICodexWebSocketSessions("effective-ws-delta");
+		globalThis.WebSocket = originalWebSocket;
+	}
+});
+
+test("Codex previousResponseId=false disables cached continuation", async () => {
+	const originalWebSocket = globalThis.WebSocket;
+	FakeCodexWebSocket.mode = "success";
+	FakeCodexWebSocket.sentBodies = [];
+	globalThis.WebSocket = FakeCodexWebSocket as unknown as typeof WebSocket;
+	const dispatchedPayloads: Array<Record<string, unknown>> = [];
+	let sseRequests = 0;
+	const observations: EffectiveDispatchObservation[] = [];
+	try {
+		for (let index = 0; index < 2; index++) {
+			await stream(modelWithoutPreviousResponse(), context(), {
+				apiKey: token(),
+				transport: "auto",
+				sessionId: "effective-ws-no-continuation",
+				fetch: async () => {
+					sseRequests++;
+					return sseResponse();
+				},
+				onPayload: (payload) => {
+					dispatchedPayloads.push(structuredClone(payload as Record<string, unknown>));
+					return payload;
+				},
+				onEffectiveDispatch: (observation) => { observations.push(observation); },
+			}).result();
+		}
+		assert.deepEqual(FakeCodexWebSocket.sentBodies, []);
+		assert.equal(sseRequests, 2);
+		assert.deepEqual(dispatchedPayloads.map((body) => body.previous_response_id), [undefined, undefined]);
+		assert.deepEqual(observations.map((observation) => observation.transport), ["sse", "sse"]);
+		assert.deepEqual(observations.map((observation) => observation.previousResponseMode), ["none", "none"]);
+	} finally {
+		closeOpenAICodexWebSocketSessions("effective-ws-no-continuation");
 		globalThis.WebSocket = originalWebSocket;
 	}
 });

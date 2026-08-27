@@ -2668,6 +2668,7 @@ async function generateModels() {
 				cacheRead:0,
 				cacheWrite:0,
 			},
+			costKnown: false,
 			contextWindow: 2000000,
 			maxTokens: 30000,
 		});
@@ -2694,6 +2695,7 @@ async function generateModels() {
 				cacheRead: 0,
 				cacheWrite: 0,
 			},
+			costKnown: false,
 			contextWindow: 1000000,
 			maxTokens: 30000,
 		});

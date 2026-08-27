@@ -1,0 +1,287 @@
+import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test from "node:test";
+import { stream as streamOpenAIChat } from "../packages/ai/src/api/openai-completions.ts";
+import { conservativeModelCapabilities } from "../packages/ai/src/model-capabilities.ts";
+import type { Context, EffectiveDispatchObservation, Model } from "../packages/ai/src/types.ts";
+import type { ModelRuntime } from "../packages/coding-agent/src/core/model-runtime.ts";
+import { DefaultResourceLoader } from "../packages/coding-agent/src/core/resource-loader.ts";
+import { createAgentSession } from "../packages/coding-agent/src/core/sdk.ts";
+import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
+import { SettingsManager } from "../packages/coding-agent/src/core/settings-manager.ts";
+import { buildSystemPrompt } from "../packages/coding-agent/src/core/system-prompt.ts";
+
+function model(): Model<"openai-completions"> {
+	return {
+		id: "no-tools",
+		name: "No Tools",
+		api: "openai-completions",
+		provider: "fixture",
+		baseUrl: "https://fixture.invalid/v1",
+		reasoning: false,
+		input: ["text"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 32_768,
+		maxTokens: 4_096,
+		profileSource: "conservative-fallback",
+		costKnown: false,
+		capabilities: conservativeModelCapabilities(),
+		compat: { supportsStrictMode: true, supportsLongCacheRetention: true },
+	};
+}
+
+function contextWithToolHistory(): Context {
+	return {
+		systemPrompt: "system",
+		tools: [{ name: "read", description: "read", parameters: { type: "object", properties: {} } }],
+		messages: [
+			{ role: "user", content: "inspect", timestamp: 1 },
+			{
+				role: "assistant",
+				content: [{ type: "toolCall", id: "call-secret", name: "read", arguments: { path: "secret.txt" } }],
+				api: "openai-completions",
+				provider: "fixture",
+				model: "previous",
+				usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+				stopReason: "toolUse",
+				timestamp: 2,
+			},
+			{
+				role: "toolResult",
+				toolCallId: "call-secret",
+				toolName: "read",
+				content: [{ type: "text", text: "file contents" }],
+				isError: false,
+				timestamp: 3,
+			},
+		],
+	};
+}
+
+function response(): Response {
+	return new Response('data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n', {
+		status: 200,
+		headers: { "content-type": "text/event-stream" },
+	});
+}
+
+test("toolCalling=false default prompt does not advertise tools", () => {
+	const prompt = buildSystemPrompt({ cwd: "C:/workspace", selectedTools: [], toolSnippets: {} });
+	assert.equal(prompt.includes("Available tools:"), false);
+	assert.equal(prompt.includes("other custom tools"), false);
+	assert.equal(prompt.includes("executing commands"), false);
+});
+
+test("AgentSession preserves active tools while a no-tool model is selected and restores them on switch", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "super-pi-no-tool-switch-"));
+	t.after(async () => rm(root, { recursive: true, force: true }));
+	const agentDir = join(root, "agent");
+	const settingsManager = SettingsManager.create(root, agentDir);
+	const resourceLoader = new DefaultResourceLoader({
+		cwd: root,
+		agentDir,
+		settingsManager,
+		noContextFiles: true,
+		noExtensions: true,
+		noPromptTemplates: true,
+		noSkills: true,
+		noThemes: true,
+	});
+	await resourceLoader.reload();
+	const runtime = {
+		checkAuth: async () => ({ type: "api_key" as const }),
+		streamSimple: () => {
+			throw new Error("streaming is not expected in this test");
+		},
+	} as unknown as ModelRuntime;
+	const noToolModel = model();
+	const toolModel: Model<"openai-completions"> = {
+		...noToolModel,
+		id: "with-tools",
+		name: "With Tools",
+		capabilities: undefined,
+		profileSource: undefined,
+	};
+	const { session } = await createAgentSession({
+		cwd: root,
+		agentDir,
+		model: noToolModel,
+		modelRuntime: runtime,
+		settingsManager,
+		sessionManager: SessionManager.inMemory(root),
+		resourceLoader,
+		tools: ["read"],
+	});
+	t.after(() => session.dispose());
+
+	assert.deepEqual(session.getActiveToolNames(), ["read"]);
+	assert.equal(session.systemPrompt.includes("Available tools:"), false);
+	let compactionCalls = 0;
+	(session as unknown as { _providerRequestCompactor: (input: unknown) => Promise<unknown> })._providerRequestCompactor = async () => {
+		compactionCalls++;
+		return { compactionItem: { type: "compaction" } };
+	};
+	const signal = new AbortController().signal;
+	const disabledCompaction = await session.compactProviderRequestPayload({
+		regularPayload: {},
+		signal,
+		auth: { model: noToolModel, apiKey: "fixture-key" },
+	});
+	assert.equal(disabledCompaction, undefined);
+	assert.equal(compactionCalls, 0);
+	await session.setModel(toolModel);
+	assert.deepEqual(session.getActiveToolNames(), ["read"]);
+	assert.equal(session.systemPrompt.includes("Available tools:"), true);
+	await session.setModel(noToolModel);
+	assert.deepEqual(session.getActiveToolNames(), ["read"]);
+	assert.equal(session.systemPrompt.includes("Available tools:"), false);
+	const remoteModel: Model<"openai-codex-responses"> = {
+		...noToolModel,
+		id: "remote-compaction",
+		name: "Remote Compaction",
+		api: "openai-codex-responses",
+		capabilities: undefined,
+		profileSource: undefined,
+	};
+	await session.setModel(remoteModel);
+	const enabledCompaction = await session.compactProviderRequestPayload({
+		regularPayload: {},
+		signal,
+		auth: { model: remoteModel, apiKey: "fixture-key" },
+	});
+	assert.deepEqual(enabledCompaction, { compactionItem: { type: "compaction" } });
+	assert.equal(compactionCalls, 1);
+});
+
+test("toolCalling=false converts prior tool protocol to ordinary messages", async () => {
+	let wire: Record<string, unknown> | undefined;
+	await streamOpenAIChat(model(), contextWithToolHistory(), {
+		apiKey: "fixture-key",
+		fetch: async (_input, init) => {
+			wire = JSON.parse(String(init?.body)) as Record<string, unknown>;
+			return response();
+		},
+	}).result();
+	assert.ok(wire);
+	assert.equal(wire.tools, undefined);
+	assert.equal(wire.tool_choice, undefined);
+	const messages = wire.messages as Array<Record<string, unknown>>;
+	assert.equal(messages.some((message) => message.role === "tool"), false);
+	assert.equal(messages.some((message) => "tool_calls" in message || "tool_call_id" in message), false);
+});
+
+test("capability sanitizer blocks samplingParams while onPayload remains the final wire override", async () => {
+	let sanitized: Record<string, unknown> | undefined;
+	let finalWire: Record<string, unknown> | undefined;
+	let observation: EffectiveDispatchObservation | undefined;
+	const injectedTool = { type: "function", function: { name: "injected", parameters: {}, strict: true } };
+	const legacyFunction = { name: "legacy-injected", parameters: {} };
+	const webSearchOptions = { search_context_size: "high" };
+	const injectedReasoning = { effort: "high", summary: "auto" };
+	await streamOpenAIChat(model(), contextWithToolHistory(), {
+		apiKey: "fixture-key",
+		cacheRetention: "long",
+		reasoningEffort: "high",
+			samplingParams: {
+			max_tool_calls: 99,
+			maxToolCalls: 99,
+			functions: [legacyFunction],
+			function_call: { name: "legacy-injected" },
+			functionCall: { name: "legacy-injected" },
+			web_search_options: webSearchOptions,
+			webSearchOptions,
+			tools: [injectedTool],
+			tool_choice: "required",
+			toolChoice: "required",
+			parallel_tool_calls: true,
+			parallelToolCalls: true,
+			previousResponseId: "injected-response",
+			reasoning_effort: "high",
+			reasoningEffort: "high",
+			reasoning: injectedReasoning,
+			thinkingConfig: { thinkingBudget: 99_999 },
+			thinking_token_budget: 99_999,
+			prompt_cache_key: "secret-cache-key",
+			promptCacheKey: "secret-cache-key",
+			prompt_cache_retention: "24h",
+			promptCacheRetention: "24h",
+			prompt_cache_options: { mode: "explicit" },
+			promptCacheOptions: { mode: "explicit" },
+			cache_control: { type: "ephemeral", ttl: "1h" },
+			cacheControl: { type: "ephemeral", ttl: "1h" },
+			cacheRetention: "long",
+			toolConfig: { functionCallingConfig: { mode: "ANY" } },
+			system: "injected system",
+			systemInstruction: "injected system instruction",
+			strict: true,
+		},
+		onPayload: (payload) => {
+			sanitized = structuredClone(payload as Record<string, unknown>);
+			return {
+				...(payload as Record<string, unknown>),
+				temperature: 0.25,
+				tools: [injectedTool],
+				tool_choice: "required",
+				parallel_tool_calls: true,
+				previous_response_id: "explicit-on-payload-response",
+				functions: [legacyFunction],
+				function_call: { name: "legacy-injected" },
+				functionCall: { name: "legacy-injected" },
+				web_search_options: webSearchOptions,
+				webSearchOptions,
+			};
+		},
+		onEffectiveDispatch: (value) => { observation = value; },
+		fetch: async (_input, init) => {
+			finalWire = JSON.parse(String(init?.body)) as Record<string, unknown>;
+			return response();
+		},
+	}).result();
+	assert.ok(sanitized);
+	assert.equal(sanitized.max_tool_calls, undefined);
+	assert.equal(sanitized.maxToolCalls, undefined);
+	assert.equal(sanitized.tools, undefined);
+	assert.equal(sanitized.functions, undefined);
+	assert.equal(sanitized.function_call, undefined);
+	assert.equal(sanitized.functionCall, undefined);
+	assert.equal(sanitized.web_search_options, undefined);
+	assert.equal(sanitized.webSearchOptions, undefined);
+	assert.equal(sanitized.tool_choice, undefined);
+	assert.equal(sanitized.toolChoice, undefined);
+	assert.equal(sanitized.parallel_tool_calls, undefined);
+	assert.equal(sanitized.parallelToolCalls, undefined);
+	assert.equal(sanitized.previousResponseId, undefined);
+	assert.equal(sanitized.reasoning_effort, undefined);
+	assert.equal(sanitized.reasoningEffort, undefined);
+	assert.equal(sanitized.reasoning, undefined);
+	assert.equal(sanitized.thinkingConfig, undefined);
+	assert.equal(sanitized.thinking_token_budget, undefined);
+	assert.equal(sanitized.prompt_cache_key, undefined);
+	assert.equal(sanitized.promptCacheKey, undefined);
+	assert.equal(sanitized.prompt_cache_retention, undefined);
+	assert.equal(sanitized.promptCacheRetention, undefined);
+	assert.equal(sanitized.prompt_cache_options, undefined);
+	assert.equal(sanitized.promptCacheOptions, undefined);
+	assert.equal(sanitized.cache_control, undefined);
+	assert.equal(sanitized.cacheControl, undefined);
+	assert.equal(sanitized.cacheRetention, undefined);
+	assert.equal(sanitized.toolConfig, undefined);
+	assert.equal(sanitized.system, undefined);
+	assert.equal(sanitized.systemInstruction, undefined);
+	assert.equal(sanitized.strict, undefined);
+	assert.equal(injectedTool.function.strict, true);
+	assert.equal(injectedReasoning.effort, "high");
+	assert.equal(finalWire?.temperature, 0.25);
+	assert.deepEqual(finalWire?.tools, [injectedTool]);
+	assert.equal(finalWire?.tool_choice, "required");
+	assert.equal(finalWire?.parallel_tool_calls, true);
+	assert.equal(finalWire?.previous_response_id, "explicit-on-payload-response");
+	assert.deepEqual(finalWire?.functions, [legacyFunction]);
+	assert.deepEqual(finalWire?.function_call, { name: "legacy-injected" });
+	assert.deepEqual(finalWire?.functionCall, { name: "legacy-injected" });
+	assert.deepEqual(finalWire?.web_search_options, webSearchOptions);
+	assert.deepEqual(finalWire?.webSearchOptions, webSearchOptions);
+	assert.equal(observation?.toolCount, 3);
+});

@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import {
 	type Api,
 	type ApiKeyAuth,
@@ -9,6 +10,7 @@ import {
 	type Credential,
 	lazyStream,
 	type Model,
+	type ModelProfileDiagnostic,
 	type ModelAuth,
 	type OAuthAuth,
 	type OAuthCredentials,
@@ -18,6 +20,8 @@ import {
 	type RefreshModelsContext,
 	type SimpleStreamOptions,
 	type StreamOptions,
+	stripModelRuntimeProfile,
+	withModelProfile,
 } from "@super-pi/ai";
 import { getApiProvider } from "@super-pi/ai/compat";
 import type { ModelConfig, ModelsJsonModel, ModelsJsonModelOverride, ModelsJsonProvider } from "./model-config.ts";
@@ -29,6 +33,49 @@ import {
 	resolveConfigValueOrThrow,
 	resolveHeadersOrThrow,
 } from "./resolve-config-value.ts";
+
+interface CapabilityInputSnapshot {
+	id: string;
+	name: string;
+	api: Api;
+	provider: string;
+	reasoning: boolean;
+	input: readonly ("text" | "image")[];
+	thinkingLevelMap: Model<Api>["thinkingLevelMap"];
+	thinkingBudgetMap: Model<Api>["thinkingBudgetMap"];
+	compat: Model<Api>["compat"];
+	contextWindow: number;
+	maxTokens: number;
+}
+
+function snapshotCapabilityInputs(model: Model<Api>): CapabilityInputSnapshot {
+	return structuredClone({
+		id: model.id,
+		name: model.name,
+		api: model.api,
+		provider: model.provider,
+		reasoning: model.reasoning,
+		input: model.input,
+		thinkingLevelMap: model.thinkingLevelMap,
+		thinkingBudgetMap: model.thinkingBudgetMap,
+		compat: model.compat,
+		contextWindow: model.contextWindow,
+		maxTokens: model.maxTokens,
+	});
+}
+
+function cloneModelForExtension(model: Model<Api>): Model<Api> {
+	return {
+		...model,
+		cost: structuredClone(model.cost),
+		headers: model.headers ? { ...model.headers } : undefined,
+		samplingParams: model.samplingParams ? structuredClone(model.samplingParams) : undefined,
+		input: [...model.input],
+		thinkingLevelMap: model.thinkingLevelMap ? { ...model.thinkingLevelMap } : undefined,
+		thinkingBudgetMap: model.thinkingBudgetMap ? { ...model.thinkingBudgetMap } : undefined,
+		compat: model.compat ? structuredClone(model.compat) : undefined,
+	};
+}
 
 export interface ExtensionOAuthConfig {
 	name: string;
@@ -63,6 +110,7 @@ export interface ProviderConfigInput {
 		cost: Model<Api>["cost"];
 		contextWindow: number;
 		maxTokens: number;
+		capabilities?: Model<Api>["capabilities"];
 		samplingParams?: Record<string, unknown>;
 		headers?: Record<string, string>;
 		compat?: Model<Api>["compat"];
@@ -100,8 +148,26 @@ function mergeCompat(
 	return merged;
 }
 
+function validateCapabilityLimits(model: Model<Api>, label: string): void {
+	if (
+		model.capabilities &&
+		(model.capabilities.contextWindow !== model.contextWindow ||
+			model.capabilities.maxOutputTokens !== model.maxTokens)
+	) {
+		throw new Error(`${label}: capability token limits must match contextWindow and maxTokens.`);
+	}
+}
+
 function applyModelOverride(model: Model<Api>, override: ModelsJsonModelOverride): Model<Api> {
-	return {
+	const rederiveCapabilities =
+		override.capabilities === undefined &&
+		(override.reasoning !== undefined ||
+			override.thinkingLevelMap !== undefined ||
+			override.input !== undefined ||
+			override.contextWindow !== undefined ||
+			override.maxTokens !== undefined ||
+			override.compat !== undefined);
+	const overridden: Model<Api> = {
 		...model,
 		name: override.name ?? model.name,
 		reasoning: override.reasoning ?? model.reasoning,
@@ -120,11 +186,16 @@ function applyModelOverride(model: Model<Api>, override: ModelsJsonModelOverride
 			: model.cost,
 		contextWindow: override.contextWindow ?? model.contextWindow,
 		maxTokens: override.maxTokens ?? model.maxTokens,
+		capabilities: rederiveCapabilities ? undefined : (override.capabilities ?? model.capabilities),
 		samplingParams: override.samplingParams
 			? { ...model.samplingParams, ...override.samplingParams }
 			: model.samplingParams,
 		compat: mergeCompat(model.compat, override.compat),
 	};
+	return withModelProfile(overridden, "explicit-custom", {
+		costKnown: model.costKnown ?? true,
+		diagnostics: model.profileDiagnostics,
+	});
 }
 
 function modelFromJson(
@@ -147,7 +218,50 @@ function modelFromJson(
 	if (definition.maxTokens !== undefined && definition.maxTokens <= 0) {
 		throw new Error(`Provider ${providerId}, model ${definition.id}: invalid maxTokens`);
 	}
-	return {
+	const diagnostics: ModelProfileDiagnostic[] = [];
+	if (definition.api === undefined && providerConfig.api === undefined) {
+		diagnostics.push({
+			code: "PROFILE_FIELD_DEFAULTED",
+			field: "api",
+			message: `Model ${providerId}/${definition.id} omitted api; using the provider catalog adapter.`,
+		});
+	}
+	if (definition.baseUrl === undefined && providerConfig.baseUrl === undefined) {
+		diagnostics.push({
+			code: "PROFILE_FIELD_DEFAULTED",
+			field: "baseUrl",
+			message: `Model ${providerId}/${definition.id} omitted baseUrl; using the provider catalog endpoint.`,
+		});
+	}
+	if (definition.capabilities === undefined) {
+		diagnostics.push({
+			code: "PROFILE_FIELD_DEFAULTED",
+			field: "capabilities",
+			message: `Model ${providerId}/${definition.id} omitted capabilities; deriving a compatibility manifest from legacy fields.`,
+		});
+	}
+	if (definition.contextWindow === undefined) {
+		diagnostics.push({
+			code: "PROFILE_FIELD_DEFAULTED",
+			field: "contextWindow",
+			message: `Model ${providerId}/${definition.id} omitted contextWindow; using conservative custom default 128000.`,
+		});
+	}
+	if (definition.cost === undefined) {
+		diagnostics.push({
+			code: "PROFILE_FIELD_DEFAULTED",
+			field: "cost",
+			message: `Model ${providerId}/${definition.id} omitted cost; pricing is unknown.`,
+		});
+	}
+	if (definition.maxTokens === undefined) {
+		diagnostics.push({
+			code: "PROFILE_FIELD_DEFAULTED",
+			field: "maxTokens",
+			message: `Model ${providerId}/${definition.id} omitted maxTokens; using conservative custom default 16384.`,
+		});
+	}
+	const model: Model<Api> = {
 		id: definition.id,
 		name: definition.name ?? definition.id,
 		api: api as Api,
@@ -159,10 +273,17 @@ function modelFromJson(
 		cost: definition.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		contextWindow: definition.contextWindow ?? 128000,
 		maxTokens: definition.maxTokens ?? 16384,
+		capabilities: definition.capabilities,
 		samplingParams: definition.samplingParams,
 		headers: undefined,
 		compat: mergeCompat(providerConfig.compat, definition.compat),
 	};
+	validateCapabilityLimits(model, `Provider ${providerId}, model ${definition.id}`);
+	return withModelProfile(model, "explicit-custom", {
+		costKnown: definition.cost !== undefined,
+		diagnostics,
+		capabilities: definition.capabilities,
+	});
 }
 
 function applyModelsJson(
@@ -190,11 +311,19 @@ function applyModelsJson(
 		);
 	}
 
-	const models: Model<Api>[] = baseModels.map((model) => ({
-		...model,
-		baseUrl: config.oauth === "radius" ? model.baseUrl : (config.baseUrl ?? model.baseUrl),
-		compat: mergeCompat(model.compat, config.compat),
-	}));
+	const models: Model<Api>[] = baseModels.map((model) => {
+		const overlaid: Model<Api> = {
+			...model,
+			baseUrl: config.oauth === "radius" ? model.baseUrl : (config.baseUrl ?? model.baseUrl),
+			compat: mergeCompat(model.compat, config.compat),
+			capabilities: config.compat ? undefined : model.capabilities,
+		};
+		return withModelProfile(overlaid, "explicit-custom", {
+			costKnown: model.costKnown ?? true,
+			diagnostics: model.profileDiagnostics,
+			capabilities: overlaid.capabilities,
+		});
+	});
 	for (const definition of config.models ?? []) {
 		const existingIndex = models.findIndex((model) => model.id === definition.id);
 		const defaults = existingIndex >= 0 ? models[existingIndex] : models[0];
@@ -212,7 +341,15 @@ function applyExtension(
 ): Model<Api>[] {
 	if (!config) return [...models];
 	if (!config.models) {
-		return config.baseUrl ? models.map((model) => ({ ...model, baseUrl: config.baseUrl! })) : [...models];
+		return models.map((model) => withModelProfile(
+			{ ...model, baseUrl: config.baseUrl ?? model.baseUrl },
+			"explicit-custom",
+			{
+				costKnown: model.costKnown ?? true,
+				diagnostics: model.profileDiagnostics,
+				capabilities: model.capabilities,
+			},
+		));
 	}
 	return config.models.map((definition) => {
 		const defaults = models.find((model) => model.id === definition.id) ?? models[0];
@@ -224,13 +361,19 @@ function applyExtension(
 		}
 		const baseUrl = definition.baseUrl ?? config.baseUrl ?? defaults?.baseUrl;
 		if (!baseUrl) throw new Error(`Provider ${providerId}: "baseUrl" is required when defining custom models.`);
-		return {
+		const model: Model<Api> = {
 			...definition,
 			api,
 			provider: providerId,
 			baseUrl,
 			headers: undefined,
 		};
+		validateCapabilityLimits(model, `Provider ${providerId}, model ${definition.id}`);
+		return withModelProfile(model, "explicit-custom", {
+			costKnown: true,
+			diagnostics: model.profileDiagnostics,
+			capabilities: model.capabilities,
+		});
 	});
 }
 
@@ -428,20 +571,66 @@ export function composeModelProvider(
 	let refreshedExtensionModels: ProviderConfigInput["models"];
 	const currentExtension = (): ProviderConfigInput | undefined =>
 		extension && refreshedExtensionModels ? { ...extension, models: refreshedExtensionModels } : extension;
+	const hasDeclaredCapabilities = (modelId: string): boolean =>
+		config?.models?.some((model) => model.id === modelId && model.capabilities !== undefined) === true ||
+		config?.modelOverrides?.[modelId]?.capabilities !== undefined ||
+		currentExtension()?.models?.some((model) => model.id === modelId && model.capabilities !== undefined) === true;
 	// models.json modelOverrides are the topmost user-config layer: they apply once,
 	// after custom-model upserts, extension model replacement, and legacy OAuth projection.
 	const getModels = () => {
+		const oauthCapabilityOverrides = new Set<string>();
 		let models = applyExtension(
 			providerId,
 			applyModelsJson(providerId, base?.getModels() ?? [], config),
 			currentExtension(),
 		);
 		if (extensionOAuthCredential && extension?.oauth?.modifyModels) {
-			models = extension.oauth.modifyModels(models, extensionOAuthCredential);
+			const originals = new Map(models.map((model) => [model.id, {
+				model,
+				capabilityInputs: snapshotCapabilityInputs(model),
+			}]));
+			const cloneOrigins = new WeakMap<object, ReturnType<typeof originals.get>>();
+			const capabilityOrigins = new WeakMap<object, ReturnType<typeof originals.get> | null>();
+			for (const original of originals.values()) {
+				const capabilities = original.model.capabilities;
+				if (!capabilities) continue;
+				capabilityOrigins.set(
+					capabilities,
+					capabilityOrigins.has(capabilities) ? null : original,
+				);
+			}
+			const extensionModels = models.map((model) => {
+				const clone = cloneModelForExtension(model);
+				cloneOrigins.set(clone, originals.get(model.id));
+				return clone;
+			});
+			models = extension.oauth.modifyModels(extensionModels, extensionOAuthCredential).map((model) => {
+				const capabilityOrigin = model.capabilities
+					? capabilityOrigins.get(model.capabilities)
+					: undefined;
+				const original = cloneOrigins.get(model) ?? capabilityOrigin ?? originals.get(model.id);
+				const inheritedCapabilities = original?.model.capabilities === model.capabilities;
+				const capabilityInputsChanged =
+					original !== undefined &&
+					!isDeepStrictEqual(original.capabilityInputs, snapshotCapabilityInputs(model));
+				if (!inheritedCapabilities && model.capabilities !== undefined) oauthCapabilityOverrides.add(model.id);
+				return inheritedCapabilities && capabilityInputsChanged ? { ...model, capabilities: undefined } : model;
+			});
 		}
-		return models.map((model) => {
+		const overlaid = models.map((model) => {
 			const override = config?.modelOverrides?.[model.id];
 			return override ? applyModelOverride(model, override) : model;
+		});
+		if (!config && !extension) return overlaid;
+		return overlaid.map((model) => {
+			const raw = stripModelRuntimeProfile(model);
+			const enriched = base?.profileModel?.(raw) ?? raw;
+			const preserveCapabilities = hasDeclaredCapabilities(model.id) || oauthCapabilityOverrides.has(model.id);
+			return withModelProfile(enriched, "explicit-custom", {
+				costKnown: model.costKnown ?? true,
+				diagnostics: model.profileDiagnostics,
+				capabilities: preserveCapabilities ? model.capabilities : undefined,
+			});
 		});
 	};
 	// Validate eagerly so registration/reload reports structural errors immediately.
@@ -479,6 +668,7 @@ export function composeModelProvider(
 		baseUrl: extension?.baseUrl ?? config?.baseUrl ?? base?.baseUrl,
 		headers: base?.headers,
 		auth: { ...(apiKey ? { apiKey } : {}), ...(oauth ? { oauth } : {}) },
+		profileModel: base?.profileModel,
 		getModels,
 		refreshModels:
 			base?.refreshModels || extension?.refreshModels || extension?.oauth?.modifyModels

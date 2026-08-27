@@ -1,11 +1,13 @@
-import type {
-	ApiKeyCredential,
-	AuthContext,
-	AuthResult,
-	Model,
-	Provider,
-	ProviderStreamOptions,
-	RefreshModelsContext,
+import {
+	MODELS_STORE_PROFILE_REVISION,
+	type Api,
+	type ApiKeyCredential,
+	type AuthContext,
+	type AuthResult,
+	type Model,
+	type Provider,
+	type ProviderStreamOptions,
+	type RefreshModelsContext,
 } from "@super-pi/ai";
 import { stream, streamSimple } from "@super-pi/ai/compat";
 import { LlamaClient, type LlamaModelInfo, llamaInferenceUrl, normalizeLlamaServerUrl } from "./client.ts";
@@ -160,6 +162,12 @@ export function createLlamaProvider(): LlamaProviderController {
 				}
 				if (
 					!(await context.publish({
+						persist:
+							context.stored.profileRevision === MODELS_STORE_PROFILE_REVISION
+								? undefined
+								: context.stored,
+						migrateLegacyProfile:
+							context.stored.profileRevision !== MODELS_STORE_PROFILE_REVISION,
 						update: () => {
 							models = restored;
 						},
@@ -179,7 +187,10 @@ export function createLlamaProvider(): LlamaProviderController {
 			if (context.signal.aborted) return;
 			const refreshed = selectLlamaModels(catalog, serverUrl, routerAutoload);
 			await context.publish({
-				persist: { models: refreshed, checkedAt: Date.now() },
+				persist: {
+					models: refreshed,
+					checkedAt: Date.now(),
+				},
 				update: () => {
 					models = refreshed;
 				},

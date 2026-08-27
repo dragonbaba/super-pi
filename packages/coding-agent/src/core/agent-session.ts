@@ -38,6 +38,7 @@ import type {
 import {
 	clampThinkingLevel,
 	cleanupSessionResources,
+	getModelCapabilities,
 	getSupportedThinkingLevels,
 	isContextOverflow,
 	isRecoverableLength,
@@ -831,7 +832,9 @@ export class AgentSession {
 					...previousContext,
 					messages,
 					systemPrompt: this._systemPromptOverride ?? this._baseSystemPrompt,
-					tools: this.agent.state.tools.slice(),
+					tools: getModelCapabilities(this.agent.state.model).toolCalling
+						? this.agent.state.tools.slice()
+						: [],
 				},
 				model: this.agent.state.model,
 				thinkingLevel: this.agent.state.thinkingLevel,
@@ -1297,6 +1300,7 @@ export class AgentSession {
 		const model = this.model;
 		const compactor = this._providerRequestCompactor;
 		if (!model || !compactor) return undefined;
+		if (!getModelCapabilities(model).remoteCompaction) return undefined;
 		const auth = input.auth ?? (await this._getRequiredRequestAuth(model));
 		if (auth.model.provider !== model.provider || auth.model.id !== model.id) {
 			throw new Error("Provider-native compaction auth snapshot does not match the active model.");
@@ -1434,7 +1438,8 @@ export class AgentSession {
 	}
 
 	private _rebuildSystemPrompt(toolNames: string[]): string {
-		const validToolNames = toolNames.filter((name) => this._toolRegistry.has(name));
+		const toolCalling = this.model ? getModelCapabilities(this.model).toolCalling : true;
+		const validToolNames = toolCalling ? toolNames.filter((name) => this._toolRegistry.has(name)) : [];
 		const toolSnippets: Record<string, string> = {};
 		const promptGuidelines: string[] = [];
 		for (const name of validToolNames) {
@@ -1467,6 +1472,11 @@ export class AgentSession {
 			promptGuidelines,
 		};
 		return buildSystemPrompt(this._baseSystemPromptOptions);
+	}
+
+	private _refreshSystemPromptForCurrentModel(): void {
+		this._baseSystemPrompt = this._rebuildSystemPrompt(this.getActiveToolNames());
+		this.agent.state.systemPrompt = this._systemPromptOverride ?? this._baseSystemPrompt;
 	}
 
 	// =========================================================================
@@ -2005,6 +2015,7 @@ export class AgentSession {
 		const previousModel = this.model;
 		const thinkingLevel = this._getThinkingLevelForModelSwitch(model);
 		this.agent.state.model = model;
+		this._refreshSystemPromptForCurrentModel();
 		this.sessionManager.appendModelChange(model.provider, model.id);
 		if (options.persist) this.settingsManager.setDefaultModelAndProvider(model.provider, model.id);
 
@@ -2064,6 +2075,7 @@ export class AgentSession {
 
 		// Apply model
 		this.agent.state.model = next.model;
+		this._refreshSystemPromptForCurrentModel();
 		this.sessionManager.appendModelChange(next.model.provider, next.model.id);
 		if (options.persist) this.settingsManager.setDefaultModelAndProvider(next.model.provider, next.model.id);
 
@@ -2100,6 +2112,7 @@ export class AgentSession {
 
 		const thinkingLevel = this._getThinkingLevelForModelSwitch(nextModel);
 		this.agent.state.model = nextModel;
+		this._refreshSystemPromptForCurrentModel();
 		this.sessionManager.appendModelChange(nextModel.provider, nextModel.id);
 		if (options.persist) this.settingsManager.setDefaultModelAndProvider(nextModel.provider, nextModel.id);
 
@@ -2172,7 +2185,7 @@ export class AgentSession {
 	 * Check if current model supports thinking/reasoning.
 	 */
 	supportsThinking(): boolean {
-		return !!this.model?.reasoning;
+		return this.model ? getModelCapabilities(this.model).reasoning.mode !== "none" : false;
 	}
 
 	private _getThinkingLevelForModelSwitch(targetModel?: Model<any>, explicitLevel?: ThinkingLevel): ThinkingLevel {
@@ -2852,6 +2865,7 @@ export class AgentSession {
 		}
 
 		this.agent.state.model = refreshedModel;
+		this._refreshSystemPromptForCurrentModel();
 	}
 
 	private _bindExtensionCore(runner: ExtensionRunner): void {

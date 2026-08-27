@@ -1,7 +1,15 @@
 import { piMessagesApi } from "../api/pi-messages.lazy.ts";
 import { envApiKeyAuth, lazyOAuth } from "../auth/helpers.ts";
 import { loadRadiusOAuth } from "../auth/oauth/load.ts";
+import {
+	legacyRuntimeProfileDiagnostics,
+	stripModelProfileMetadata,
+	stripModelRuntimeProfile,
+	withModelProfile,
+} from "../model-capabilities.ts";
+import { MODELS_STORE_PROFILE_REVISION } from "../models-store.ts";
 import type { Provider } from "../models.ts";
+import type { Model } from "../types.ts";
 import {
 	DEFAULT_RADIUS_GATEWAY,
 	getRadiusModels,
@@ -14,6 +22,21 @@ export interface RadiusProviderOptions {
 	id?: string;
 	name?: string;
 	gateway?: string;
+}
+
+function profileRadiusModel(
+	model: Model<"pi-messages">,
+	legacyRuntimeProfile = false,
+): Model<"pi-messages"> {
+	const legacyDiagnostics = legacyRuntimeProfile ? legacyRuntimeProfileDiagnostics(model) : undefined;
+	const raw = legacyRuntimeProfile
+		? stripModelRuntimeProfile(model)
+		: stripModelProfileMetadata(model);
+	return withModelProfile(raw, "provider-catalog", {
+		capabilities: raw.capabilities,
+		costKnown: raw.costKnown ?? true,
+		diagnostics: legacyDiagnostics,
+	});
 }
 
 /** Radius gateway provider with a persisted, dynamically refreshed catalog. */
@@ -31,13 +54,19 @@ export function radiusProvider(options: RadiusProviderOptions = {}): Provider<"p
 			apiKey: envApiKeyAuth("Radius API key", ["RADIUS_API_KEY"]),
 			oauth: lazyOAuth({ name, load: () => loadRadiusOAuth({ name, gateway }) }),
 		},
+		profileModel: profileRadiusModel,
 		getModels: () => models,
 		refreshModels: async (context) => {
 			const stored = context.stored;
 			if (stored) {
-				const restored = stored.models.filter((model) => model.provider === id) as typeof models;
+				const legacyRuntimeProfile = stored.profileRevision !== MODELS_STORE_PROFILE_REVISION;
+				const restored = stored.models
+					.filter((model) => model.provider === id)
+					.map((model) => profileRadiusModel(model as Model<"pi-messages">, legacyRuntimeProfile));
 				if (
 					!(await context.publish({
+						persist: legacyRuntimeProfile ? stored : undefined,
+						migrateLegacyProfile: legacyRuntimeProfile,
 						update: () => {
 							models = restored;
 						},
@@ -51,11 +80,15 @@ export function radiusProvider(options: RadiusProviderOptions = {}): Provider<"p
 			if (!stored && context.credential?.type === "oauth") {
 				const legacy = getRadiusModels(id, context.credential);
 				if (legacy.length > 0) {
+					const profiled = legacy.map((model) => profileRadiusModel(model));
 					if (
 						!(await context.publish({
-							persist: { models: legacy, checkedAt: Date.now() },
+							persist: {
+								models: legacy,
+								checkedAt: Date.now(),
+							},
 							update: () => {
-								models = legacy;
+								models = profiled;
 							},
 						}))
 					) {
@@ -69,10 +102,14 @@ export function radiusProvider(options: RadiusProviderOptions = {}): Provider<"p
 			const config = await loadRadiusGatewayConfig(gateway, apiKey, context.signal);
 			if (context.signal.aborted) return;
 			const refreshed = getRadiusModelsFromConfig(id, config);
+			const profiled = refreshed.map((model) => profileRadiusModel(model));
 			await context.publish({
-				persist: { models: refreshed, checkedAt: Date.now() },
+				persist: {
+					models: refreshed,
+					checkedAt: Date.now(),
+				},
 				update: () => {
-					models = refreshed;
+					models = profiled;
 				},
 			});
 		},

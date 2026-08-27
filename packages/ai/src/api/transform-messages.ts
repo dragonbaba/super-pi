@@ -8,6 +8,7 @@ import type {
 	ToolCall,
 	ToolResultMessage,
 } from "../types.ts";
+import { getModelCapabilities } from "../model-capabilities.ts";
 
 const NON_VISION_USER_IMAGE_PLACEHOLDER = "(image omitted: model does not support images)";
 const NON_VISION_TOOL_IMAGE_PLACEHOLDER = "(tool image omitted: model does not support images)";
@@ -66,6 +67,7 @@ export function transformMessages<TApi extends Api>(
 	model: Model<TApi>,
 	normalizeToolCallId?: (id: string, model: Model<TApi>, source: AssistantMessage) => string,
 ): Message[] {
+	const signatureRoundTrip = getModelCapabilities(model).thoughtSignatureRoundTrip;
 	// Build a map of original tool call IDs to normalized IDs
 	const toolCallIdMap = new Map<string, string>();
 	// Normalize null/undefined content from untyped callers (custom tools, hand-built
@@ -96,20 +98,21 @@ export function transformMessages<TApi extends Api>(
 				assistantMsg.provider === model.provider &&
 				assistantMsg.api === model.api &&
 				assistantMsg.model === model.id;
+			const replaySignatures = isSameModel && signatureRoundTrip;
 
 			const transformedContent = assistantMsg.content.flatMap((block) => {
 				if (block.type === "thinking") {
 					// Redacted thinking is opaque encrypted content, only valid for the same model.
 					// Drop it for cross-model to avoid API errors.
 					if (block.redacted) {
-						return isSameModel ? block : [];
+						return replaySignatures ? block : [];
 					}
 					// For same model: keep thinking blocks with signatures (needed for replay)
 					// even if the thinking text is empty (OpenAI encrypted reasoning)
-					if (isSameModel && block.thinkingSignature) return block;
+					if (replaySignatures && block.thinkingSignature) return block;
 					// Skip empty thinking blocks, convert others to plain text
 					if (!block.thinking || block.thinking.trim() === "") return [];
-					if (isSameModel) return block;
+					if (isSameModel) return { ...block, thinkingSignature: undefined };
 					return {
 						type: "text" as const,
 						text: block.thinking,
@@ -117,7 +120,7 @@ export function transformMessages<TApi extends Api>(
 				}
 
 				if (block.type === "text") {
-					if (isSameModel) return block;
+					if (isSameModel) return replaySignatures ? block : { ...block, textSignature: undefined };
 					return {
 						type: "text" as const,
 						text: block.text,
@@ -128,7 +131,7 @@ export function transformMessages<TApi extends Api>(
 					const toolCall = block as ToolCall;
 					let normalizedToolCall: ToolCall = toolCall;
 
-					if (!isSameModel && toolCall.thoughtSignature) {
+					if (!replaySignatures && toolCall.thoughtSignature) {
 						normalizedToolCall = { ...toolCall, thoughtSignature: undefined };
 					}
 

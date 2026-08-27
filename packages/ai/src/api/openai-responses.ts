@@ -1,6 +1,7 @@
 import OpenAI from "openai";
 import type { ResponseCreateParamsStreaming } from "openai/resources/responses/responses.js";
 import { clampThinkingLevel } from "../models.ts";
+import { capabilityCacheRetention, contextForModelCapabilities, getModelCapabilities, mergeSamplingParams, sanitizeCapabilityRequest } from "../model-capabilities.ts";
 import type {
 	Api,
 	AssistantMessage,
@@ -26,6 +27,7 @@ import { retryProviderRequest } from "../utils/provider-retry.ts";
 import { createGrammarToolInputProperties } from "./constrained-sampling.ts";
 import { buildCopilotDynamicHeaders, hasCopilotVisionInput } from "./github-copilot-headers.ts";
 import { clampOpenAIPromptCacheKey } from "./openai-prompt-cache.ts";
+import { OPENAI_RESPONSES_SAMPLING_RESERVED_KEYS } from "./openai-sampling-reserved.ts";
 import { convertResponsesMessages, convertResponsesTools, processResponsesStream } from "./openai-responses-shared.ts";
 import { buildBaseOptions } from "./simple-options.ts";
 
@@ -130,11 +132,15 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 		try {
 			// Create OpenAI client
 			const apiKey = getClientApiKey(model.provider, options?.apiKey, options?.headers);
-			const cacheRetention = resolveCacheRetention(options?.cacheRetention, options?.env);
+			const cacheRetention = capabilityCacheRetention(
+				model,
+				resolveCacheRetention(options?.cacheRetention, options?.env),
+			);
 			const cacheSessionId = cacheRetention === "none" ? undefined : options?.sessionId;
 			const compat = getCompat(model);
+			const capabilityContext = contextForModelCapabilities(model, context);
 			const grammarToolInputProperties = createGrammarToolInputProperties(
-				context.tools,
+				capabilityContext.tools,
 				compat.supportsOpenAIGrammarTools,
 			);
 			const client = createClient(model, context, apiKey, options?.headers, options?.fetch, cacheSessionId);
@@ -207,7 +213,7 @@ export const streamSimple: StreamFunction<"openai-responses", SimpleStreamOption
 		...buildBaseOptions(model, context, options, options?.apiKey),
 		toolChoice: options?.toolChoice,
 	};
-	const clampedReasoning = options?.reasoning ? clampThinkingLevel(model, options.reasoning) : undefined;
+	const clampedReasoning = clampThinkingLevel(model, options?.reasoning ?? "off");
 	const reasoningEffort = clampedReasoning === "off" ? undefined : clampedReasoning;
 
 	return stream(model, context, {
@@ -297,17 +303,20 @@ function buildParams(
 		compat.supportsOpenAIGrammarTools,
 	),
 ) {
-	const toolPlacement = splitDeferredTools(context, compat.supportsToolSearch);
-	const messages = convertResponsesMessages(model, context, OPENAI_TOOL_CALL_PROVIDERS, {
+	const capabilities = getModelCapabilities(model);
+	const supportsStrictMode = compat.supportsStrictMode && capabilities.strictToolSchema;
+	const wireContext = contextForModelCapabilities(model, context);
+	const toolPlacement = splitDeferredTools(wireContext, compat.supportsToolSearch && capabilities.deferredTools);
+	const messages = convertResponsesMessages(model, wireContext, OPENAI_TOOL_CALL_PROVIDERS, {
 		grammarToolInputProperties,
 		deferredTools: toolPlacement.deferred,
 		toolOptions: {
-			supportsStrictMode: compat.supportsStrictMode,
+			supportsStrictMode,
 			supportsOpenAIGrammarTools: compat.supportsOpenAIGrammarTools,
 		},
 	});
 
-	const cacheRetention = resolveCacheRetention(options?.cacheRetention, options?.env);
+	const cacheRetention = capabilityCacheRetention(model, resolveCacheRetention(options?.cacheRetention, options?.env));
 	const disableImplicitPromptCache = cacheRetention === "none" && compat.supportsExplicitPromptCacheMode;
 	const params: ResponseCreateParamsStreaming & { prompt_cache_options?: { mode: "explicit" } } = {
 		model: model.id,
@@ -333,16 +342,16 @@ function buildParams(
 
 	if (toolPlacement.immediate.length > 0) {
 		params.tools = convertResponsesTools(toolPlacement.immediate, {
-			supportsStrictMode: compat.supportsStrictMode,
+			supportsStrictMode,
 			supportsOpenAIGrammarTools: compat.supportsOpenAIGrammarTools,
 		});
 	}
 
-	if (options?.toolChoice !== undefined) {
+	if (capabilities.toolCalling && options?.toolChoice !== undefined) {
 		params.tool_choice = options.toolChoice;
 	}
 
-	if (model.reasoning) {
+	if (capabilities.reasoning.mode !== "none") {
 		if (options?.reasoningEffort || options?.reasoningSummary) {
 			const effort = options?.reasoningEffort
 				? (model.thinkingLevelMap?.[options.reasoningEffort] ?? options.reasoningEffort)
@@ -360,10 +369,13 @@ function buildParams(
 		if (model.provider === "xai") params.include = ["reasoning.encrypted_content"];
 	}
 
-	// Last so custom keys override the named request fields.
-	if (options?.samplingParams) {
-		Object.assign(params, options.samplingParams);
-	}
+	// Merge generation-only custom keys; structural protocol fields remain capability-owned.
+	mergeSamplingParams(
+		params as unknown as Record<string, unknown>,
+		options?.samplingParams,
+		OPENAI_RESPONSES_SAMPLING_RESERVED_KEYS,
+	);
+	sanitizeCapabilityRequest(model, params as unknown as Record<string, unknown>);
 
 	return params;
 }

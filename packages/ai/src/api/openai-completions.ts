@@ -12,6 +12,13 @@ import type {
 	ChatCompletionToolMessageParam,
 } from "openai/resources/chat/completions.js";
 import { calculateCost, clampThinkingLevel } from "../models.ts";
+import {
+	capabilityCacheRetention,
+	contextForModelCapabilities,
+	getModelCapabilities,
+	mergeSamplingParams,
+	sanitizeCapabilityRequest,
+} from "../model-capabilities.ts";
 import type {
 	AssistantMessage,
 	CacheRetention,
@@ -55,6 +62,7 @@ import {
 } from "./constrained-sampling.ts";
 import { buildCopilotDynamicHeaders, hasCopilotVisionInput } from "./github-copilot-headers.ts";
 import { clampOpenAIPromptCacheKey } from "./openai-prompt-cache.ts";
+import { OPENAI_CHAT_SAMPLING_RESERVED_KEYS } from "./openai-sampling-reserved.ts";
 import { buildBaseOptions, clampReasoning, MIN_ANSWER_TOKENS } from "./simple-options.ts";
 import { transformMessages } from "./transform-messages.ts";
 
@@ -229,11 +237,15 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 		try {
 			const apiKey = getClientApiKey(model.provider, options?.apiKey, options?.headers);
 			const compat = getCompat(model);
+			const capabilityContext = contextForModelCapabilities(model, context);
 			const grammarToolInputProperties = createGrammarToolInputProperties(
-				context.tools,
+				capabilityContext.tools,
 				compat.supportsOpenAIGrammarTools,
 			);
-			const cacheRetention = resolveCacheRetention(options?.cacheRetention, options?.env);
+			const cacheRetention = capabilityCacheRetention(
+				model,
+				resolveCacheRetention(options?.cacheRetention, options?.env),
+			);
 			const cacheSessionId = cacheRetention === "none" ? undefined : options?.sessionId;
 			const client = createClient(model, context, apiKey, options?.headers, options?.fetch, cacheSessionId, compat);
 			let params = buildParams(model, context, options, compat, cacheRetention, grammarToolInputProperties);
@@ -628,7 +640,7 @@ export const streamSimple: StreamFunction<"openai-completions", SimpleStreamOpti
 		...buildBaseOptions(model, context, options, options?.apiKey),
 		toolChoice: options?.toolChoice,
 	};
-	const clampedReasoning = options?.reasoning ? clampThinkingLevel(model, options.reasoning) : undefined;
+	const clampedReasoning = clampThinkingLevel(model, options?.reasoning ?? "off");
 	const reasoningEffort = clampedReasoning === "off" ? undefined : clampedReasoning;
 
 	return stream(model, context, {
@@ -688,11 +700,38 @@ export function observeOpenAIChatEffectiveDispatch(
 	model: Model<"openai-completions">,
 	params: OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming,
 ): void {
-	const instructionPrefix = params.messages.filter(
-		(message) => message.role === "system" || message.role === "developer",
-	).map(cacheNeutralOpenAIChatMessage);
-	const tools = params.tools ?? [];
+	const instructionPrefix: unknown[] = [];
+	const embeddedTools: OpenAI.Chat.Completions.ChatCompletionTool[] = [];
+	for (const message of params.messages) {
+		if (message.role !== "system" && message.role !== "developer") continue;
+		const record = message as unknown as Record<string, unknown>;
+		const messageTools = Array.isArray(record.tools)
+			? (record.tools as OpenAI.Chat.Completions.ChatCompletionTool[])
+			: undefined;
+		if (messageTools) embeddedTools.push(...messageTools);
+		const neutral = cacheNeutralOpenAIChatMessage(message) as Record<string, unknown>;
+		const { tools: _deferredTools, ...instruction } = neutral;
+		// Kimi's deferred-tool carrier is a system message with no instruction content.
+		if (Object.keys(instruction).some((key) => key !== "role")) instructionPrefix.push(instruction);
+	}
+	const tools = [...(params.tools ?? []), ...embeddedTools];
 	const neutralTools = tools.map(removeOpenAIChatCacheControl);
+	const paramsRecord = params as unknown as Record<string, unknown>;
+	const legacyFunctions = Array.isArray(paramsRecord.functions)
+		? paramsRecord.functions.filter((value): value is Record<string, unknown> =>
+			value !== null && typeof value === "object" && !Array.isArray(value))
+		: [];
+	const webSearchOptions = paramsRecord.web_search_options ?? paramsRecord.webSearchOptions;
+	const effectiveToolDefinitions: unknown[] = [
+		...neutralTools,
+		...legacyFunctions.map((fn) => ({ type: "legacy_function", function: removeOpenAIChatCacheControl(fn) })),
+		...(webSearchOptions === undefined ? [] : [{ type: "web_search", options: webSearchOptions }]),
+	];
+	const effectiveToolIdentifiers = [
+		...tools.map((tool) => tool.type === "function" ? tool.function.name : tool.custom.name),
+		...legacyFunctions.map((fn) => `legacy-function:${typeof fn.name === "string" ? fn.name : "unnamed"}`),
+		...(webSearchOptions === undefined ? [] : ["provider:web-search"]),
+	];
 	const cacheParams = params as typeof params & {
 		prompt_cache_options?: unknown;
 		prompt_cache_retention?: unknown;
@@ -702,10 +741,8 @@ export function observeOpenAIChatEffectiveDispatch(
 		transport: "sse",
 		previousResponseMode: "none",
 		instructionPrefix,
-		orderedToolDefinitions: neutralTools,
-		orderedToolIdentifiers: tools.map((tool) =>
-			tool.type === "function" ? tool.function.name : tool.custom.name,
-		),
+		orderedToolDefinitions: effectiveToolDefinitions,
+		orderedToolIdentifiers: effectiveToolIdentifiers,
 		cacheKey: params.prompt_cache_key,
 		cacheRetention: {
 			promptCacheRetention: cacheParams.prompt_cache_retention ?? null,
@@ -806,7 +843,16 @@ function buildParams(
 		compat.supportsOpenAIGrammarTools,
 	),
 ) {
-	const messages = convertMessages(model, context, compat, { grammarToolInputProperties });
+	const capabilities = getModelCapabilities(model);
+	const reasoningEnabled = capabilities.reasoning.mode !== "none";
+	compat = {
+		...compat,
+		supportsStrictMode: compat.supportsStrictMode && capabilities.strictToolSchema,
+		deferredToolsMode: capabilities.deferredTools ? compat.deferredToolsMode : undefined,
+	};
+	cacheRetention = capabilityCacheRetention(model, cacheRetention);
+	const wireContext = contextForModelCapabilities(model, context);
+	const messages = convertMessages(model, wireContext, compat, { grammarToolInputProperties });
 	const cacheControl = getCompatCacheControl(compat, cacheRetention);
 
 	const params: OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming = {
@@ -842,14 +888,14 @@ function buildParams(
 	}
 
 	const deferredToolNames =
-		compat.deferredToolsMode === "kimi" ? getDeferredToolNames(context.messages) : new Set<string>();
-	const activeTools = context.tools?.filter((tool) => !deferredToolNames.has(tool.name));
+		compat.deferredToolsMode === "kimi" ? getDeferredToolNames(wireContext.messages) : new Set<string>();
+	const activeTools = wireContext.tools?.filter((tool) => !deferredToolNames.has(tool.name));
 	if (activeTools && activeTools.length > 0) {
 		params.tools = convertTools(activeTools, compat);
 		if (compat.zaiToolStream) {
 			(params as any).tool_stream = true;
 		}
-	} else if (hasToolHistory(context.messages)) {
+	} else if (capabilities.toolCalling && hasToolHistory(wireContext.messages)) {
 		// Anthropic (via LiteLLM/proxy) requires tools param when conversation has tool_calls/tool_results
 		params.tools = [];
 	}
@@ -862,7 +908,7 @@ function buildParams(
 		params.tool_choice = options.toolChoice;
 	}
 
-	if (compat.thinkingFormat === "zai" && model.reasoning) {
+	if (compat.thinkingFormat === "zai" && reasoningEnabled) {
 		const zaiParams = params as Omit<typeof params, "reasoning_effort"> & {
 			thinking?: { type: "enabled" | "disabled"; clear_thinking?: boolean };
 			reasoning_effort?: string;
@@ -875,7 +921,7 @@ function buildParams(
 				zaiParams.reasoning_effort = effort;
 			}
 		}
-	} else if (compat.thinkingFormat === "qwen" && model.reasoning) {
+	} else if (compat.thinkingFormat === "qwen" && reasoningEnabled) {
 		(params as any).enable_thinking = !!options?.reasoningEffort;
 		if (options?.reasoningEffort && compat.supportsReasoningEffort) {
 			const effort = model.thinkingLevelMap?.[options.reasoningEffort] ?? options.reasoningEffort;
@@ -883,17 +929,17 @@ function buildParams(
 				(params as any).reasoning_effort = effort;
 			}
 		}
-	} else if (compat.thinkingFormat === "qwen-chat-template" && model.reasoning) {
+	} else if (compat.thinkingFormat === "qwen-chat-template" && reasoningEnabled) {
 		(params as any).chat_template_kwargs = {
 			enable_thinking: !!options?.reasoningEffort,
 			preserve_thinking: true,
 		};
-	} else if (compat.thinkingFormat === "chat-template" && model.reasoning) {
+	} else if (compat.thinkingFormat === "chat-template" && reasoningEnabled) {
 		const chatTemplateKwargs = buildChatTemplateValues(model, options, compat.chatTemplateKwargs);
 		if (chatTemplateKwargs) {
 			(params as any).chat_template_kwargs = chatTemplateKwargs;
 		}
-	} else if (compat.thinkingFormat === "baseten" && model.reasoning) {
+	} else if (compat.thinkingFormat === "baseten" && reasoningEnabled) {
 		const basetenParams = params as Omit<typeof params, "reasoning_effort"> & {
 			chat_template_args?: Record<string, ResolvedChatTemplateKwargValue>;
 			reasoning_effort?: string;
@@ -910,7 +956,7 @@ function buildParams(
 				basetenParams.reasoning_effort = effort;
 			}
 		}
-	} else if (compat.thinkingFormat === "deepseek" && model.reasoning) {
+	} else if (compat.thinkingFormat === "deepseek" && reasoningEnabled) {
 		if (options?.reasoningEffort) {
 			(params as any).thinking = { type: "enabled" };
 		} else if (model.thinkingLevelMap?.off !== null) {
@@ -920,7 +966,7 @@ function buildParams(
 			(params as any).reasoning_effort =
 				model.thinkingLevelMap?.[options.reasoningEffort] ?? options.reasoningEffort;
 		}
-	} else if (compat.thinkingFormat === "openrouter" && model.reasoning) {
+	} else if (compat.thinkingFormat === "openrouter" && reasoningEnabled) {
 		// OpenRouter normalizes reasoning across providers via a nested reasoning object.
 		const openRouterParams = params as typeof params & { reasoning?: { effort?: string } };
 		if (options?.reasoningEffort) {
@@ -930,12 +976,12 @@ function buildParams(
 		} else if (model.thinkingLevelMap?.off !== null) {
 			openRouterParams.reasoning = { effort: model.thinkingLevelMap?.off ?? "none" };
 		}
-	} else if (compat.thinkingFormat === "ant-ling" && model.reasoning && options?.reasoningEffort) {
+	} else if (compat.thinkingFormat === "ant-ling" && reasoningEnabled && options?.reasoningEffort) {
 		const effort = model.thinkingLevelMap?.[options.reasoningEffort];
 		if (typeof effort === "string") {
 			(params as typeof params & { reasoning?: { effort: string } }).reasoning = { effort };
 		}
-	} else if (compat.thinkingFormat === "together" && model.reasoning) {
+	} else if (compat.thinkingFormat === "together" && reasoningEnabled) {
 		const togetherParams = params as Omit<typeof params, "reasoning_effort"> & {
 			reasoning?: { enabled: boolean };
 			reasoning_effort?: string;
@@ -944,17 +990,17 @@ function buildParams(
 		if (options?.reasoningEffort && compat.supportsReasoningEffort) {
 			togetherParams.reasoning_effort = model.thinkingLevelMap?.[options.reasoningEffort] ?? options.reasoningEffort;
 		}
-	} else if (compat.thinkingFormat === "string-thinking" && model.reasoning) {
+	} else if (compat.thinkingFormat === "string-thinking" && reasoningEnabled) {
 		const stringThinkingParams = params as typeof params & { thinking?: string };
 		if (options?.reasoningEffort) {
 			stringThinkingParams.thinking = model.thinkingLevelMap?.[options.reasoningEffort] ?? options.reasoningEffort;
 		} else if (model.thinkingLevelMap?.off !== null) {
 			stringThinkingParams.thinking = model.thinkingLevelMap?.off ?? "none";
 		}
-	} else if (options?.reasoningEffort && model.reasoning && compat.supportsReasoningEffort) {
+	} else if (options?.reasoningEffort && reasoningEnabled && compat.supportsReasoningEffort) {
 		// OpenAI-style reasoning_effort
 		(params as any).reasoning_effort = model.thinkingLevelMap?.[options.reasoningEffort] ?? options.reasoningEffort;
-	} else if (!options?.reasoningEffort && model.reasoning && compat.supportsReasoningEffort) {
+	} else if (!options?.reasoningEffort && reasoningEnabled && compat.supportsReasoningEffort) {
 		const offValue = model.thinkingLevelMap?.off;
 		if (typeof offValue === "string") {
 			(params as any).reasoning_effort = offValue;
@@ -965,7 +1011,7 @@ function buildParams(
 	// thinkingFormat: the same server can serve zai, qwen or chat-template models.
 	// Reasoning and the answer share max_tokens here, so an uncapped reasoning
 	// phase can consume the whole response and leave no answer and no tool call.
-	if (compat.supportsThinkingTokenBudget && options?.reasoningEffort && model.reasoning) {
+	if (compat.supportsThinkingTokenBudget && options?.reasoningEffort && reasoningEnabled) {
 		const level = clampReasoning(options.reasoningEffort)!;
 		const budgets: ThinkingBudgets = {
 			minimal: 1024,
@@ -998,10 +1044,13 @@ function buildParams(
 		}
 	}
 
-	// Last so custom keys override the named request fields.
-	if (options?.samplingParams) {
-		Object.assign(params, options.samplingParams);
-	}
+	// Merge generation-only custom keys; structural protocol fields remain capability-owned.
+	mergeSamplingParams(
+		params as unknown as Record<string, unknown>,
+		options?.samplingParams,
+		OPENAI_CHAT_SAMPLING_RESERVED_KEYS,
+	);
+	sanitizeCapabilityRequest(model, params as unknown as Record<string, unknown>);
 
 	return params;
 }
@@ -1197,7 +1246,7 @@ export function convertMessages(
 	const transformedMessages = transformMessages(context.messages, model, (id) => normalizeToolCallId(id));
 
 	if (context.systemPrompt) {
-		const useDeveloperRole = model.reasoning && compat.supportsDeveloperRole;
+		const useDeveloperRole = getModelCapabilities(model).reasoning.mode !== "none" && compat.supportsDeveloperRole;
 		const role = useDeveloperRole ? "developer" : "system";
 		params.push({ role: role, content: sanitizeSurrogates(context.systemPrompt) });
 	}
@@ -1343,7 +1392,7 @@ export function convertMessages(
 			}
 			if (
 				compat.requiresReasoningContentOnAssistantMessages &&
-				model.reasoning &&
+				getModelCapabilities(model).reasoning.mode !== "none" &&
 				toolCalls.length > 0 &&
 				(assistantMsg as { reasoning_content?: string }).reasoning_content === undefined
 			) {
