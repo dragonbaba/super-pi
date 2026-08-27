@@ -1,13 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { setCapabilities, setCellDimensions } from "@super-pi/tui";
 import {
 	ReadToolGroupComponent,
 	ToolExecutionComponent,
 	replaceToolPlaceholder,
 } from "../packages/coding-agent/src/modes/interactive/components/tool-execution.ts";
+import type { ToolDefinition } from "../packages/coding-agent/src/core/extensions/types.ts";
 import { initTheme } from "../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 import { RetainedContainer } from "../packages/tui/src/components/retained-item.ts";
 import { TuiRenderInstrumentation } from "../packages/tui/src/render-instrumentation.ts";
+import { isImageLine } from "../packages/tui/src/terminal-image.ts";
 import { type Component, Container } from "../packages/tui/src/tui.ts";
 import { TuiMainScreen } from "../packages/tui/src/tui-main-screen.ts";
 import { FakeTerminal } from "./helpers/runtime-instrumentation.ts";
@@ -25,9 +28,29 @@ class CountingHistoryItem implements Component {
 	invalidate(): void {}
 }
 
-function createTool(id: string): ToolExecutionComponent {
+function createTool(
+	id: string,
+	toolDefinition?: ToolDefinition<any, any>,
+	onVisualInvalidate?: (component: ToolExecutionComponent) => void,
+): ToolExecutionComponent {
 	const ui = new TuiMainScreen(new FakeTerminal(100, 30), false);
-	return new ToolExecutionComponent("phase4a-progress", id, { step: 0 }, {}, undefined, ui, process.cwd());
+	return new ToolExecutionComponent(
+		"phase4a-progress",
+		id,
+		{ step: 0 },
+		{ onVisualInvalidate },
+		toolDefinition,
+		ui,
+		process.cwd(),
+	);
+}
+
+async function waitFor(predicate: () => boolean, label: string): Promise<void> {
+	for (let attempt = 0; attempt < 200; attempt++) {
+		if (predicate()) return;
+		await new Promise<void>((resolve) => setTimeout(resolve, 5));
+	}
+	throw new Error(`Timed out waiting for ${label}`);
 }
 
 function updateTool(tool: ToolExecutionComponent, step: number, isPartial = true): void {
@@ -132,4 +155,87 @@ test("a finalized read group stays active until every late result is complete", 
 	assert.equal(group.canFreezeRender(), false);
 	group.updateResult("read-1", { content: [{ type: "text", text: "done" }], isError: false }, false);
 	assert.equal(group.canFreezeRender(), true);
+});
+
+test("deferred image conversion invalidates a completed tool cache", async () => {
+	initTheme("dark");
+	setCapabilities({ images: "kitty", trueColor: true, hyperlinks: true });
+	setCellDimensions({ widthPx: 9, heightPx: 18 });
+	try {
+		const transcript = new RetainedContainer();
+		const tool = createTool("late-image", undefined, (component) => transcript.invalidateRetainedChild(component));
+		const item = transcript.addRetainedChild(tool, { id: "late-image", version: 0 });
+		tool.updateResult({
+			content: [{ type: "image", data: "R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==", mimeType: "image/gif" }],
+			isError: false,
+		});
+		item.advanceVersion();
+		item.complete();
+		const primed = transcript.render(100);
+
+		await waitFor(() => tool.render(100).some(isImageLine), "deferred PNG conversion");
+		const reference = tool.render(100);
+		const updated = transcript.render(100);
+		assert.notDeepEqual(updated, primed);
+		assert.deepEqual(updated, reference);
+	} finally {
+		setCellDimensions({ widthPx: 9, heightPx: 18 });
+		setCapabilities({ images: null, trueColor: false, hyperlinks: false });
+	}
+});
+
+test("custom renderer invalidation rerenders only its completed retained tool", () => {
+	initTheme("dark");
+	const instrumentation = new TuiRenderInstrumentation();
+	const transcript = new RetainedContainer({ instrumentation });
+	const history: CountingHistoryItem[] = [];
+	for (let index = 0; index < 5_000; index++) {
+		const component = new CountingHistoryItem(`history-${index}`);
+		history.push(component);
+		transcript.addRetainedChild(component, { id: `history-${index}`, version: 1, completed: true });
+	}
+
+	let visual = "first";
+	let capturedInvalidate: (() => void) | undefined;
+	let resultRendererCalls = 0;
+	const definition = {
+		name: "phase4a-progress",
+		label: "Phase 4A progress",
+		description: "test renderer",
+		parameters: {},
+		execute: async () => ({ content: [], details: undefined }),
+		renderCall: () => new CountingHistoryItem("custom-call"),
+		renderResult: (_result: unknown, _options: unknown, _theme: unknown, context: { invalidate: () => void }) => {
+			resultRendererCalls++;
+			capturedInvalidate = context.invalidate;
+			return new CountingHistoryItem(`custom-${visual}`);
+		},
+	} as unknown as ToolDefinition<any, any>;
+
+	const tool = createTool("late-custom", definition, (component) => transcript.invalidateRetainedChild(component));
+	const item = transcript.addRetainedChild(tool, { id: "late-custom", version: 0 });
+	tool.updateResult({ content: [{ type: "text", text: "done" }], isError: false });
+	item.advanceVersion();
+	item.complete();
+	const primed = transcript.render(100);
+	const callsAfterPrime = resultRendererCalls;
+	assert.ok(capturedInvalidate);
+	const stableInvalidate = capturedInvalidate;
+
+	instrumentation.reset();
+	visual = "second";
+	capturedInvalidate();
+	const updated = transcript.render(100);
+	assert.equal(resultRendererCalls, callsAfterPrime + 1);
+	assert.equal(capturedInvalidate, stableInvalidate);
+	assert.notDeepEqual(updated, primed);
+	assert.ok(updated.some((line) => line.includes("custom-second")));
+	assert.ok(history.every((component) => component.renderCalls === 1));
+	assert.equal(instrumentation.snapshot().completedItemRenders, 1);
+	assert.equal(instrumentation.snapshot().retainedCacheHits, 5_000);
+
+	transcript.render(100);
+	assert.equal(resultRendererCalls, callsAfterPrime + 1);
+	assert.equal(instrumentation.snapshot().completedItemRenders, 1);
+	assert.equal(instrumentation.snapshot().retainedCacheHits, 10_001);
 });

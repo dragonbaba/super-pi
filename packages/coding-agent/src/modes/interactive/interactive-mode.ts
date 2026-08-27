@@ -3581,21 +3581,31 @@ export class InteractiveMode {
 			component.updateArgs(toolCallId, args);
 		} else {
 			if (applyBoundary) this.finalizeReadToolGroup();
-			component = new ToolExecutionComponent(
-				toolName,
-				toolCallId,
-				args,
-				{ showImages: this.settingsManager.getShowImages(), imageWidthCells: this.settingsManager.getImageWidthCells() },
-				this.getRegisteredToolDefinition(toolName),
-				this.ui,
-				this.sessionManager.getCwd(),
-			);
+			component = this.createToolExecutionComponent(toolName, toolCallId, args);
 			component.setExpanded(this.toolOutputExpanded);
 			if (!placeholder) this.retainActiveToolComponent(component, toolCallId);
 		}
 		this.replaceDeferredReadPlaceholder(toolCallId, placeholder, component);
 		this.pendingTools.set(toolCallId, component);
 		return component;
+	}
+
+	private createToolExecutionComponent(toolName: string, toolCallId: string, args: any): ToolExecutionComponent {
+		return new ToolExecutionComponent(
+			toolName,
+			toolCallId,
+			args,
+			{
+				showImages: this.settingsManager.getShowImages(),
+				imageWidthCells: this.settingsManager.getImageWidthCells(),
+				onVisualInvalidate: (component) => {
+					this.chatContainer.invalidateRetainedChild(component);
+				},
+			},
+			this.getRegisteredToolDefinition(toolName),
+			this.ui,
+			this.sessionManager.getCwd(),
+		);
 	}
 
 	private updateTrackedToolArgs(component: ToolExecutionComponent | ReadToolGroupComponent, toolCallId: string, args: any): void {
@@ -3877,11 +3887,7 @@ export class InteractiveMode {
 							component.setArgsComplete(content.id);
 						} else {
 							finalizeRebuildReadGroup();
-							component = new ToolExecutionComponent(
-								content.name, content.id, content.arguments,
-								{ showImages: this.settingsManager.getShowImages(), imageWidthCells: this.settingsManager.getImageWidthCells() },
-								this.getRegisteredToolDefinition(content.name), this.ui, this.sessionManager.getCwd(),
-							);
+							component = this.createToolExecutionComponent(content.name, content.id, content.arguments);
 							component.setExpanded(this.toolOutputExpanded);
 							this.chatContainer.addChild(component);
 						}

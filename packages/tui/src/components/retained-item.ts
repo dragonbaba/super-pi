@@ -26,6 +26,7 @@ export interface RetainedItemOptions {
 interface RetainedCacheKey extends RetainedRenderContext {
 	width: number;
 	version: number;
+	visualGeneration: number;
 }
 
 function cacheKeysEqual(left: RetainedCacheKey | undefined, right: RetainedCacheKey): boolean {
@@ -33,6 +34,7 @@ function cacheKeysEqual(left: RetainedCacheKey | undefined, right: RetainedCache
 		left !== undefined &&
 		left.width === right.width &&
 		left.version === right.version &&
+		left.visualGeneration === right.visualGeneration &&
 		left.themeVersion === right.themeVersion &&
 		left.rendererVersion === right.rendererVersion &&
 		left.expandVersion === right.expandVersion &&
@@ -45,6 +47,7 @@ export class RetainedItem implements Component {
 	readonly id: string;
 	private inner: Component | undefined;
 	private logicalVersion: number;
+	private visualGeneration = 0;
 	private isCompleted: boolean;
 	private frozenVersion: number | undefined;
 	private readonly getContext: () => Readonly<RetainedRenderContext>;
@@ -133,6 +136,7 @@ export class RetainedItem implements Component {
 		const nextKey: RetainedCacheKey = {
 			width,
 			version: this.logicalVersion,
+			visualGeneration: this.visualGeneration,
 			themeVersion: context.themeVersion,
 			rendererVersion: context.rendererVersion,
 			expandVersion: context.expandVersion,
@@ -153,8 +157,15 @@ export class RetainedItem implements Component {
 
 	invalidate(): void {
 		if (this.isReleased) return;
-		this.clearCache();
+		this.invalidateRetainedRender();
 		this.inner?.invalidate();
+	}
+
+	/** Invalidates only retained render state after the component has already updated itself. */
+	invalidateRetainedRender(): void {
+		if (this.isReleased) return;
+		this.visualGeneration++;
+		this.clearCache();
 	}
 
 	release(): void {
@@ -234,6 +245,14 @@ export class RetainedContainer extends Container {
 
 	getRetainedItem(component: Component): RetainedItem | undefined {
 		return this.retainedByComponent.get(component);
+	}
+
+	/** Invalidates one child's sidecar cache without propagating back into the component. */
+	invalidateRetainedChild(component: Component): boolean {
+		const item = this.retainedByComponent.get(component);
+		if (!item) return false;
+		item.invalidateRetainedRender();
+		return true;
 	}
 
 	getRetainedStats(): Readonly<RetainedContainerStats> {
