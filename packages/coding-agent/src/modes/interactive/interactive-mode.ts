@@ -495,6 +495,8 @@ export class InteractiveMode {
 			console.error(error);
 		}
 	};
+	private readonly handleSessionEvent = (event: AgentSessionEvent): void | Promise<void> => this.handleEvent(event);
+	private readonly handleSessionEventRejection = (error: unknown): void => this.handleLifecyclePromiseRejection(error);
 	private readonly handleSuspendAction = (): void => this.observeLifecyclePromise(this.handleCtrlZ());
 	private readonly handleExternalEditorAction = (): void =>
 		this.observeLifecyclePromise(this.handleOpenExternalEditor());
@@ -516,6 +518,7 @@ export class InteractiveMode {
 		args?: any;
 		started?: boolean;
 		result?: any;
+		resultIsError: boolean;
 		isPartial?: boolean;
 		ended?: boolean;
 	}>();
@@ -3205,15 +3208,14 @@ export class InteractiveMode {
 	}
 
 	private subscribeToAgent(): void {
-		this.unsubscribe = this.session.subscribe(async (event) => {
-			await this.handleEvent(event);
-		}, { criticalAgentEnd: true });
+		this.unsubscribe = this.session.subscribe(this.handleSessionEvent, {
+			criticalAgentEnd: true,
+			onError: this.handleSessionEventRejection,
+		});
 	}
 
-	private async handleEvent(event: AgentSessionEvent): Promise<void> {
-		if (!this.isInitialized) {
-			await this.init();
-		}
+	private handleEvent(event: AgentSessionEvent): void | Promise<void> {
+		if (!this.isInitialized) return this.initializeAndHandleEvent(event);
 
 		this.footer.invalidate();
 
@@ -3303,7 +3305,8 @@ export class InteractiveMode {
 					this.streamingComponent.updateContent(this.streamingMessage, true);
 					this.streamingItem?.updateVersion(++this.streamingItemVersion);
 
-					for (const content of this.streamingMessage.content) {
+					for (let contentIndex = 0; contentIndex < this.streamingMessage.content.length; contentIndex++) {
+						const content = this.streamingMessage.content[contentIndex]!;
 						if (content.type !== "toolCall") continue;
 						const component = this.pendingTools.get(content.id);
 						const firstStreamingAppearance = !this.streamedToolIds.has(content.id);
@@ -3381,7 +3384,7 @@ export class InteractiveMode {
 
 			case "tool_execution_start": {
 				if (event.toolName === "read" && !this.pendingTools.has(event.toolCallId)) {
-					this.deferReadExecution(event.toolCallId, { args: event.args, started: true });
+					this.deferReadExecutionStart(event.toolCallId, event.args);
 					break;
 				}
 				let component = this.pendingTools.get(event.toolCallId);
@@ -3395,19 +3398,23 @@ export class InteractiveMode {
 			case "tool_execution_update": {
 				const component = this.pendingTools.get(event.toolCallId);
 				if (component) {
-					this.updateTrackedToolResult(component, event.toolCallId, { ...event.partialResult, isError: false }, true);
+					this.updateTrackedToolResult(component, event.toolCallId, event.partialResult, true, false);
 					this.ui.requestRender();
-				} else if (this.deferredReadExecutions.has(event.toolCallId)) this.deferReadExecution(event.toolCallId, { result: { ...event.partialResult, isError: false }, isPartial: true });
+				} else if (this.deferredReadExecutions.has(event.toolCallId)) {
+					this.deferReadExecutionResult(event.toolCallId, event.partialResult, true, false, false);
+				}
 				break;
 			}
 
 			case "tool_execution_end": {
 				const component = this.pendingTools.get(event.toolCallId);
 				if (component) {
-					this.updateTrackedToolResult(component, event.toolCallId, { ...event.result, isError: event.isError });
+					this.updateTrackedToolResult(component, event.toolCallId, event.result, false, event.isError);
 					this.pendingTools.delete(event.toolCallId);
 					this.ui.requestRender();
-				} else if (this.deferredReadExecutions.has(event.toolCallId)) this.deferReadExecution(event.toolCallId, { result: { ...event.result, isError: event.isError }, isPartial: false, ended: true });
+				} else if (this.deferredReadExecutions.has(event.toolCallId)) {
+					this.deferReadExecutionResult(event.toolCallId, event.result, false, event.isError, true);
+				}
 				break;
 			}
 
@@ -3430,17 +3437,10 @@ export class InteractiveMode {
 				this.pendingTools.clear();
 
 				this.ui.requestRender();
-				try {
-					await this.ui.flushTerminalFrames();
-				} catch {
-					// The TUI owns terminal write failures and stops itself. Do not turn a
-					// display failure into an agent/provider failure at the final boundary.
-				}
-				break;
+				return this.flushAgentEndFrames();
 
 			case "agent_settled":
-				await this.checkShutdownRequested();
-				break;
+				return this.checkShutdownRequested();
 
 			case "compaction_start": {
 				if (this.settingsManager.getShowTerminalProgress()) {
@@ -3549,6 +3549,20 @@ export class InteractiveMode {
 		}
 	}
 
+	private async initializeAndHandleEvent(event: AgentSessionEvent): Promise<void> {
+		await this.init();
+		await this.handleEvent(event);
+	}
+
+	private async flushAgentEndFrames(): Promise<void> {
+		try {
+			await this.ui.flushTerminalFrames();
+		} catch {
+			// The TUI owns terminal write failures and stops itself. Do not turn a
+			// display failure into an agent/provider failure at the final boundary.
+		}
+	}
+
 	private finalizeReadToolGroup(): void {
 		if (!this.lastReadToolGroup) return;
 		this.lastReadToolGroup.finalize();
@@ -3568,9 +3582,33 @@ export class InteractiveMode {
 		this.deferredReadPlaceholders.delete(toolCallId);
 	}
 
-	private deferReadExecution(toolCallId: string, update: Record<string, unknown>): void {
-		const previous = this.deferredReadExecutions.get(toolCallId) ?? {};
-		this.deferredReadExecutions.set(toolCallId, { ...previous, ...update });
+	private deferReadExecutionStart(toolCallId: string, args: any): void {
+		const existing = this.deferredReadExecutions.get(toolCallId);
+		if (existing) {
+			existing.args = args;
+			existing.started = true;
+			return;
+		}
+		this.deferredReadExecutions.set(toolCallId, {
+			args,
+			started: true,
+			resultIsError: false,
+		});
+	}
+
+	private deferReadExecutionResult(
+		toolCallId: string,
+		result: any,
+		isPartial: boolean,
+		isError: boolean,
+		ended: boolean,
+	): void {
+		const deferred = this.deferredReadExecutions.get(toolCallId);
+		if (!deferred) return;
+		deferred.result = result;
+		deferred.resultIsError = isError;
+		deferred.isPartial = isPartial;
+		deferred.ended = ended;
 	}
 
 	private replayDeferredReadExecution(toolCallId: string, component: ToolExecutionComponent | ReadToolGroupComponent): void {
@@ -3580,7 +3618,15 @@ export class InteractiveMode {
 			this.setTrackedToolArgsComplete(component, toolCallId);
 			this.markTrackedToolStarted(component, toolCallId);
 		}
-		if (deferred.result) this.updateTrackedToolResult(component, toolCallId, deferred.result, deferred.isPartial ?? false);
+		if (deferred.result) {
+			this.updateTrackedToolResult(
+				component,
+				toolCallId,
+				deferred.result,
+				deferred.isPartial ?? false,
+				deferred.resultIsError,
+			);
+		}
 		this.deferredReadExecutions.delete(toolCallId);
 	}
 
@@ -3672,9 +3718,15 @@ export class InteractiveMode {
 		this.advanceActiveToolVersion(component);
 	}
 
-	private updateTrackedToolResult(component: ToolExecutionComponent | ReadToolGroupComponent, toolCallId: string, result: any, isPartial = false): void {
-		if (component instanceof ReadToolGroupComponent) component.updateResult(toolCallId, result, isPartial);
-		else component.updateResult(result, isPartial);
+	private updateTrackedToolResult(
+		component: ToolExecutionComponent | ReadToolGroupComponent,
+		toolCallId: string,
+		result: any,
+		isPartial = false,
+		isError = result?.isError === true,
+	): void {
+		if (component instanceof ReadToolGroupComponent) component.updateResult(toolCallId, result, isPartial, isError);
+		else component.updateResult(result, isPartial, isError);
 		this.advanceActiveToolVersion(component);
 		if (!isPartial) this.completeTrackedToolIfReady(component);
 	}
@@ -4285,12 +4337,16 @@ export class InteractiveMode {
 			await this.ui.stop();
 
 			// Send SIGTSTP to process group (pid=0 means all processes in group)
-			process.kill(0, "SIGTSTP");
+			this.suspendProcessGroup();
 		} catch (error) {
 			clearInterval(suspendKeepAlive);
 			process.removeListener("SIGINT", ignoreSigint);
 			throw error;
 		}
+	}
+
+	private suspendProcessGroup(): void {
+		process.kill(0, "SIGTSTP");
 	}
 
 	private async handleFollowUp(): Promise<void> {
@@ -4423,7 +4479,7 @@ export class InteractiveMode {
 		const content = this.editor.getExpandedText?.() ?? this.editor.getText();
 		await this.ui.stop();
 		try {
-			const result = await editInExternalEditor({
+			const result = await this.runExternalEditor({
 				command: editorCmd,
 				content,
 			});
@@ -4434,6 +4490,10 @@ export class InteractiveMode {
 			this.ui.start();
 			this.ui.requestRender(true);
 		}
+	}
+
+	private runExternalEditor(options: Parameters<typeof editInExternalEditor>[0]): ReturnType<typeof editInExternalEditor> {
+		return editInExternalEditor(options);
 	}
 
 	// =========================================================================

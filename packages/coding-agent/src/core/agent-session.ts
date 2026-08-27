@@ -226,11 +226,25 @@ const ignoreOrdinaryEventListenerRejection = (): void => {};
 export interface AgentSessionSubscriptionOptions {
 	/** Wait for this listener at agent_end. Rejection is isolated from the agent/provider run. */
 	criticalAgentEnd?: boolean;
+	/** Stable diagnostic sink for synchronous throws and asynchronous listener rejection. */
+	onError?: (error: unknown) => void;
 }
 
 interface AgentSessionEventRegistration {
 	listener: AgentSessionEventListener;
 	criticalAgentEnd: boolean;
+	observeRejection: (error: unknown) => void;
+}
+
+function createEventListenerRejectionObserver(onError: ((error: unknown) => void) | undefined): (error: unknown) => void {
+	if (!onError) return ignoreOrdinaryEventListenerRejection;
+	return (error: unknown): void => {
+		try {
+			onError(error);
+		} catch {
+			// Listener diagnostics cannot fail the provider or another listener.
+		}
+	};
 }
 
 const DEFAULT_CRITICAL_AGENT_END_TIMEOUT_MS = 30_000;
@@ -863,10 +877,18 @@ export class AgentSession {
 
 	/** Emit an event to all listeners */
 	private _emit(event: AgentSessionEvent): void {
-		for (const registration of this._eventListeners) {
-			const result = registration.listener(event);
+		for (let index = 0; index < this._eventListeners.length; index++) {
+			const registration = this._eventListeners[index]!;
+			const observeRejection = registration.observeRejection ?? ignoreOrdinaryEventListenerRejection;
+			let result: ReturnType<AgentSessionEventListener>;
+			try {
+				result = registration.listener(event);
+			} catch (error) {
+				observeRejection(error);
+				continue;
+			}
 			if (result && typeof result.then === "function") {
-				void result.then(undefined, ignoreOrdinaryEventListenerRejection);
+				void result.then(undefined, observeRejection);
 			}
 		}
 	}
@@ -890,17 +912,16 @@ export class AgentSession {
 		};
 		try {
 			for (const registration of this._eventListeners) {
+				const observeRejection = registration.observeRejection ?? ignoreOrdinaryEventListenerRejection;
 				let result: void | Promise<void>;
 				try {
 					result = registration.listener(event);
-				} catch {
+				} catch (error) {
+					observeRejection(error);
 					continue;
 				}
 				if (!result || typeof result.then !== "function") continue;
-				const observed = result.then(
-					() => {},
-					() => {},
-				);
+				const observed = result.then(undefined, observeRejection);
 				if (!registration.criticalAgentEnd || deadlineReached) {
 					void observed;
 					continue;
@@ -1212,6 +1233,7 @@ export class AgentSession {
 		const registration: AgentSessionEventRegistration = {
 			listener,
 			criticalAgentEnd: options.criticalAgentEnd === true,
+			observeRejection: createEventListenerRejectionObserver(options.onError),
 		};
 		this._eventListeners.push(registration);
 
