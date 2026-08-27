@@ -5,6 +5,7 @@ import ts from "typescript";
 
 const RETAINED_PATH = "packages/tui/src/components/retained-item.ts";
 const INSTRUMENTATION_PATH = "packages/tui/src/render-instrumentation.ts";
+const INTERACTIVE_MODE_PATH = "packages/coding-agent/src/modes/interactive/interactive-mode.ts";
 
 function findMethod(source: ts.SourceFile, className: string, methodName: string): ts.MethodDeclaration {
 	for (const statement of source.statements) {
@@ -52,4 +53,15 @@ test("retained cache and instrumentation stay instance-local and retain no compo
 	assert.doesNotMatch(retainedText, /^const .*new Map</m);
 	assert.doesNotMatch(instrumentationText, /Component|string\[\]|frame(?:s)?\s*:/i);
 	assert.doesNotMatch(instrumentationText, /ObjectPool/);
+});
+
+test("session rebuild retains tools and reuses one visual invalidation callback", () => {
+	const text = readFileSync(INTERACTIVE_MODE_PATH, "utf8");
+	const source = ts.createSourceFile(INTERACTIVE_MODE_PATH, text, ts.ScriptTarget.Latest, true);
+	const rebuild = findMethod(source, "InteractiveMode", "renderSessionItems").getText(source);
+	assert.match(rebuild, /retainActiveToolComponent\(rebuildReadGroup, content\.id\)/);
+	assert.match(rebuild, /retainActiveToolComponent\(component, content\.id\)/);
+	assert.doesNotMatch(rebuild, /chatContainer\.addChild\((?:rebuildReadGroup|component)\)/);
+	assert.match(text, /private readonly invalidateRetainedToolVisual = \(component: ToolExecutionComponent\)/);
+	assert.equal(text.match(/onVisualInvalidate: this\.invalidateRetainedToolVisual/g)?.length, 1);
 });

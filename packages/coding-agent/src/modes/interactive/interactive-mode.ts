@@ -484,6 +484,9 @@ export class InteractiveMode {
 		settingsVersion: 0,
 	};
 	private readonly getTranscriptRenderContext = (): Readonly<RetainedRenderContext> => this.transcriptRenderContext;
+	private readonly invalidateRetainedToolVisual = (component: ToolExecutionComponent): void => {
+		this.chatContainer.invalidateRetainedChild(component);
+	};
 
 	// Grouped Read calls intentionally map multiple ids to one component.
 	private pendingTools = new Map<string, ToolExecutionComponent | ReadToolGroupComponent>();
@@ -3598,9 +3601,7 @@ export class InteractiveMode {
 			{
 				showImages: this.settingsManager.getShowImages(),
 				imageWidthCells: this.settingsManager.getImageWidthCells(),
-				onVisualInvalidate: (component) => {
-					this.chatContainer.invalidateRetainedChild(component);
-				},
+				onVisualInvalidate: this.invalidateRetainedToolVisual,
 			},
 			this.getRegisteredToolDefinition(toolName),
 			this.ui,
@@ -3848,7 +3849,9 @@ export class InteractiveMode {
 		const renderedPendingTools = new Map<string, ToolExecutionComponent | ReadToolGroupComponent>();
 		let rebuildReadGroup: ReadToolGroupComponent | undefined;
 		const finalizeRebuildReadGroup = () => {
-			rebuildReadGroup?.finalize();
+			if (!rebuildReadGroup) return;
+			rebuildReadGroup.finalize();
+			this.completeTrackedToolIfReady(rebuildReadGroup);
 			rebuildReadGroup = undefined;
 		};
 		const cacheMisses = this.settingsManager.getShowCacheMissNotices()
@@ -3880,7 +3883,7 @@ export class InteractiveMode {
 								finalizeRebuildReadGroup();
 								rebuildReadGroup = new ReadToolGroupComponent();
 								rebuildReadGroup.setExpanded(this.toolOutputExpanded);
-								this.chatContainer.addChild(rebuildReadGroup);
+								this.retainActiveToolComponent(rebuildReadGroup, content.id);
 							}
 							component = rebuildReadGroup;
 							component.updateArgs(content.id, content.arguments);
@@ -3889,7 +3892,7 @@ export class InteractiveMode {
 							finalizeRebuildReadGroup();
 							component = this.createToolExecutionComponent(content.name, content.id, content.arguments);
 							component.setExpanded(this.toolOutputExpanded);
-							this.chatContainer.addChild(component);
+							this.retainActiveToolComponent(component, content.id);
 						}
 
 						if (message.stopReason === "aborted" || message.stopReason === "error") {
