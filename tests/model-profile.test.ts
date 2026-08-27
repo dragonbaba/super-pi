@@ -11,6 +11,7 @@ import {
 	withModelProfile,
 } from "../packages/ai/src/model-capabilities.ts";
 import type { Model, ModelCapabilitiesV1 } from "../packages/ai/src/types.ts";
+import { openrouterProvider } from "../packages/ai/src/providers/openrouter.ts";
 import { ModelConfig } from "../packages/coding-agent/src/core/model-config.ts";
 import { ModelRuntime } from "../packages/coding-agent/src/core/model-runtime.ts";
 import { resolveCliModel } from "../packages/coding-agent/src/core/model-resolver.ts";
@@ -73,7 +74,7 @@ test("unknown model does not enable reasoning merely because thinking was reques
 	assert.match(result.warning ?? "", /reasoning remains off/u);
 });
 
-test("every built-in runtime model reports a model profile source and capability manifest", async () => {
+test("every built-in runtime model reports a profile, capability manifest, and explicit cost knowledge", async () => {
 	const runtime = await ModelRuntime.create({ modelsPath: null, refreshOnCreate: false });
 	const models = runtime.getModels();
 	assert.ok(models.length > 0);
@@ -82,8 +83,18 @@ test("every built-in runtime model reports a model profile source and capability
 		assert.equal(model.capabilities?.version, 1, `${model.provider}/${model.id}`);
 		assert.equal(model.capabilities?.contextWindow, model.contextWindow);
 		assert.equal(model.capabilities?.maxOutputTokens, model.maxTokens);
-		assert.equal(model.costKnown, true);
+		assert.equal(typeof model.costKnown, "boolean", `${model.provider}/${model.id}`);
 	}
+});
+
+test("OpenRouter distinguishes unknown router prices from known and genuinely free models", () => {
+	const models = openrouterProvider().getModels();
+	for (const id of ["auto", "openrouter/auto", "openrouter/auto-beta", "openrouter/fusion"]) {
+		assert.equal(models.find((model) => model.id === id)?.costKnown, false, id);
+	}
+	assert.equal(models.find((model) => model.id === "openai/gpt-4o-mini")?.costKnown, true);
+	assert.equal(models.find((model) => model.id === "openrouter/free")?.costKnown, true);
+	assert.equal(models.find((model) => model.id === "cohere/north-mini-code:free")?.costKnown, true);
 });
 
 test("models.json models are explicit custom profiles and preserve declared limits", async (t) => {
