@@ -75,6 +75,18 @@ test("viewport hot paths avoid full-history wrapper copies and global ownership"
 	assert.doesNotMatch(`${retainedText}\n${viewportText}`, /ObjectPool|Proxy\s*\(/);
 });
 
+test("Main bounded frames use explicit mutation attribution and the singleton tail query", () => {
+	const mainPath = "packages/tui/src/tui-main-screen.ts";
+	const text = readFileSync(mainPath, "utf8");
+	const source = ts.createSourceFile(mainPath, text, ts.ScriptTarget.Latest, true);
+	const visibleRender = findMethod(source, "TuiMainScreen", "renderVisibleDocument").getText(source);
+	assert.match(visibleRender, /this\.children\.length === 1[\s\S]*renderViewportTail\(width, height\)/);
+	assert.match(visibleRender, /observeViewportMutations\(width\)/);
+	assert.match(visibleRender, /mutation\.kind === "unsafe"/);
+	assert.match(visibleRender, /mutation\.earliestChangedLine < previousStart/);
+	assert.doesNotMatch(visibleRender, /previousKittyImageIds\s*=\s*new Set/);
+});
+
 test("every production transcript splice notifies the structure index", () => {
 	const text = readFileSync(INTERACTIVE_MODE_PATH, "utf8");
 	const spliceMatches = [...text.matchAll(/chatContainer\.children\.splice/g)];

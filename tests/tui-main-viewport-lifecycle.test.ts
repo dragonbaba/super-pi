@@ -9,7 +9,9 @@ import type { Terminal } from "../packages/tui/src/terminal.ts";
 import { type Component, CURSOR_MARKER } from "../packages/tui/src/tui.ts";
 import { TuiAltScreen } from "../packages/tui/src/tui-alt-screen.ts";
 import { TuiMainScreen, type TuiMainScreenRenderState } from "../packages/tui/src/tui-main-screen.ts";
+import { deleteKittyImage, registerKittyImageMetadata } from "../packages/tui/src/terminal-image.ts";
 import { stripTerminalSequences } from "../packages/tui/src/utils.ts";
+import { FakeTerminal } from "./helpers/runtime-instrumentation.ts";
 
 const require = createRequire(import.meta.url);
 const { Terminal: HeadlessTerminal } = require("@xterm/headless") as {
@@ -260,6 +262,115 @@ test("Main Screen absolute window survives growth, shrink, append, resize, and M
 	await terminal.flush();
 	assert.ok(terminal.logicalLines().some((line) => line.includes("appended")), "regular stop preserves transcript");
 	terminal.dispose();
+});
+
+test("Main Screen bounds only attributed tail and visible-window mutations", async () => {
+	const instrumentation = new TuiRenderInstrumentation();
+	const context = { themeVersion: 0, rendererVersion: 0, expandVersion: 0, settingsVersion: 0 };
+	const transcript = new RetainedContainer({ instrumentation, getContext: () => context });
+	const history: MutableMainItem[] = [];
+	for (let index = 0; index < 120; index++) {
+		const component = new MutableMainItem(`history-${index}`);
+		history.push(component);
+		transcript.addRetainedChild(component, { id: `history-${index}`, version: 1, completed: true });
+	}
+	const activeComponent = new MutableMainItem("active");
+	activeComponent.setCursor(true);
+	const active = transcript.addRetainedChild(activeComponent, { id: "active", version: 0 });
+	const terminal = new HeadlessCaptureTerminal(90, 20);
+	const main = new TuiMainScreen(terminal, true);
+	main.setRenderInstrumentation(instrumentation);
+	main.addChild(transcript);
+
+	const renderAndAssert = async (label: string, expectedFallbacks: number): Promise<void> => {
+		instrumentation.reset();
+		main.renderNow();
+		await assertMainState(label, terminal, main, transcript);
+		assert.equal(instrumentation.snapshot().fullHistoryFallbacks, expectedFallbacks, `${label}: fallback count`);
+	};
+	const reenterBoundedWindow = async (label: string): Promise<void> => {
+		activeComponent.advanceVisual();
+		active.advanceVersion();
+		await renderAndAssert(label, 0);
+	};
+
+	await renderAndAssert("mutation source first replay", 1);
+	await reenterBoundedWindow("mutation source initial visible update");
+
+	history[5].advanceVisual();
+	transcript.getRetainedItem(history[5])?.invalidateRetainedRender();
+	await renderAndAssert("offscreen same-height content mutation", 1);
+	await reenterBoundedWindow("after offscreen content fallback");
+
+	history[6].setLineCount(2);
+	transcript.getRetainedItem(history[6])?.invalidateRetainedRender();
+	await renderAndAssert("offscreen height mutation", 1);
+	await reenterBoundedWindow("after offscreen height fallback");
+
+	const first = transcript.children[8];
+	const second = transcript.children[9];
+	transcript.children.splice(8, 2, second, first);
+	transcript.notifyChildrenChanged();
+	await renderAndAssert("same-total reorder rebuild", 1);
+	await reenterBoundedWindow("after reorder fallback");
+
+	history[10].advanceVisual();
+	context.expandVersion++;
+	transcript.invalidateViewportHeights();
+	await renderAndAssert("offscreen presentation mutation", 1);
+	await reenterBoundedWindow("after presentation fallback");
+
+	const appended = new MutableMainItem("tail-append");
+	activeComponent.setCursor(false);
+	appended.setCursor(true);
+	transcript.addRetainedChild(appended, { id: "tail-append", version: 1, completed: true });
+	await renderAndAssert("attributed tail append", 0);
+
+	activeComponent.advanceVisual();
+	active.advanceVersion();
+	await renderAndAssert("attributed visible active update", 0);
+
+	main.stop({ preserveScreen: true });
+	terminal.dispose();
+});
+
+test("Main Screen preserves offscreen Kitty IDs until a full fallback deletes them", () => {
+	const imageId = 912;
+	registerKittyImageMetadata({ imageId, columns: 4, rows: 4, widthPx: 40, heightPx: 40 });
+	const imageLine = `\x1b_Ga=T,i=${imageId},r=4;payload\x1b\\`;
+	const transcript = new RetainedContainer();
+	transcript.addRetainedChild(
+		{
+			render: () => [imageLine, "", "", ""],
+			invalidate: () => {},
+		},
+		{ id: "offscreen-image", version: 1, completed: true },
+	);
+	for (let index = 0; index < 100; index++) {
+		transcript.addRetainedChild(new MutableMainItem(`text-${index}`), {
+			id: `text-${index}`,
+			version: 1,
+			completed: true,
+		});
+	}
+	const activeComponent = new MutableMainItem("active");
+	const active = transcript.addRetainedChild(activeComponent, { id: "active", version: 0 });
+	const terminal = new FakeTerminal(80, 20);
+	const main = new TuiMainScreen(terminal, false);
+	main.addChild(transcript);
+
+	main.renderNow();
+	assert.deepEqual(main.captureRenderState().previousKittyImageIds, [imageId]);
+	activeComponent.advanceVisual();
+	active.advanceVersion();
+	main.renderNow();
+	assert.deepEqual(main.captureRenderState().previousKittyImageIds, [imageId]);
+
+	const writeStart = terminal.writes.length;
+	terminal.columns = 79;
+	main.renderNow();
+	assert.ok(terminal.writes.slice(writeStart).join("").includes(deleteKittyImage(imageId)));
+	assert.deepEqual(main.captureRenderState().previousKittyImageIds, [imageId]);
 });
 
 test("fullscreen exit writes the complete retained transcript back to main scrollback", async () => {

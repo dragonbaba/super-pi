@@ -5,6 +5,7 @@ import { Text } from "../packages/tui/src/components/text.ts";
 import { TuiRenderInstrumentation } from "../packages/tui/src/render-instrumentation.ts";
 import { type Component, CURSOR_MARKER } from "../packages/tui/src/tui.ts";
 import { TuiMainScreen } from "../packages/tui/src/tui-main-screen.ts";
+import { renderComponentsViewport } from "../packages/tui/src/components/viewport-container.ts";
 import { stripTerminalSequences } from "../packages/tui/src/utils.ts";
 import { FakeTerminal } from "./helpers/runtime-instrumentation.ts";
 import { BashExecutionComponent } from "../packages/coding-agent/src/modes/interactive/components/bash-execution.ts";
@@ -15,6 +16,7 @@ class MutableLines implements Component {
 	readonly id: string;
 	private lineCount: number;
 	private suffix: string;
+	private throwOnRender = false;
 
 	constructor(id: string, lineCount = 1, suffix = "") {
 		this.id = id;
@@ -27,8 +29,13 @@ class MutableLines implements Component {
 		this.suffix = suffix;
 	}
 
+	setThrowOnRender(value: boolean): void {
+		this.throwOnRender = value;
+	}
+
 	render(width: number): string[] {
 		this.renderCalls++;
+		if (this.throwOnRender) throw new Error(`render failed: ${this.id}`);
 		const lines: string[] = [];
 		for (let index = 0; index < this.lineCount; index++) lines.push(`${this.id}:${index}:${width}${this.suffix}`);
 		return lines;
@@ -135,6 +142,77 @@ test("one 100,000-line retained item copies only the requested middle and bottom
 	}
 });
 
+test("one ordinary 100,000-line child returns only the requested middle window", () => {
+	const huge = new StableHugeItem(100_000);
+	const viewport = renderComponentsViewport([huge], 100, 50_000, 40, 100_000);
+	assert.equal(viewport.startLine, 50_000);
+	assert.equal(viewport.totalHeight, 100_000);
+	assert.equal(viewport.lines.length, 40);
+	assert.equal(viewport.lines[0], "huge-50000");
+	assert.equal(viewport.lines.at(-1), "huge-50039");
+});
+
+test("tail lookup skips 50,000 zero-height records by reverse height blocks", () => {
+	const transcript = new RetainedContainer();
+	addCompleted(transcript, new MutableLines("visible", 3), "visible");
+	for (let index = 0; index < 50_000; index++) {
+		addCompleted(transcript, new MutableLines(`zero-${index}`, 0), `zero-${index}`);
+	}
+	assert.equal(transcript.getContentHeight(80), 3);
+
+	const viewport = transcript.renderViewportTail(80, 3);
+	assert.deepEqual(viewport.lines, ["visible:0:80", "visible:1:80", "visible:2:80"]);
+	assert.ok(viewport.targetHeightLookupProbes <= 256, `${viewport.targetHeightLookupProbes} item probes`);
+	assert.ok(
+		viewport.blockLookupProbes <= Math.ceil(50_001 / 256),
+		`${viewport.blockLookupProbes} block probes`,
+	);
+	assert.equal(viewport.visitedItems, 1);
+});
+
+test("prepared viewport lines are query-local across repeated offscreen updates, widths, and errors", () => {
+	const transcript = new RetainedContainer();
+	const activeComponent = new MutableLines("active", 1, ":v0");
+	const active = transcript.addRetainedChild(activeComponent, { id: "active", version: 0 });
+	for (let index = 0; index < 600; index++) addCompleted(transcript, new MutableLines(`tail-${index}`), `tail-${index}`);
+	assert.equal(transcript.getContentHeight(120), 601);
+
+	for (const version of [1, 2, 3]) {
+		activeComponent.setLines(1, `:v${version}`);
+		active.advanceVersion();
+		const tail = transcript.renderViewportTail(120, 20);
+		assert.equal(tail.lines.at(-1), "tail-599:0:120");
+		assert.equal(transcript.getViewportIndexStats().preparedItems, 0);
+		const head = transcript.renderViewport(120, 0, 1);
+		assert.deepEqual(head.lines, [`active:0:120:v${version}`]);
+		assert.equal(transcript.getViewportIndexStats().preparedItems, 0);
+	}
+
+	activeComponent.setLines(1, ":width-change");
+	active.advanceVersion();
+	transcript.renderViewportTail(80, 20);
+	assert.equal(transcript.getViewportIndexStats().preparedItems, 0);
+	assert.deepEqual(transcript.renderViewport(80, 0, 1).lines, ["active:0:80:width-change"]);
+	assert.equal(transcript.getViewportIndexStats().preparedItems, 0);
+
+	assert.deepEqual(transcript.renderViewport(80, 0, 0).lines, []);
+	assert.deepEqual(transcript.renderViewport(80, 50_000, 20).lines, []);
+	assert.equal(transcript.getViewportIndexStats().preparedItems, 0);
+
+	const throwing = new MutableLines("throwing");
+	const throwingState = transcript.addRetainedChild(throwing, { id: "throwing", version: 0 });
+	transcript.getContentHeight(80);
+	activeComponent.setLines(1, ":before-error");
+	active.advanceVersion();
+	throwing.setThrowOnRender(true);
+	throwingState.advanceVersion();
+	assert.throws(() => transcript.renderViewportTail(80, 20), /render failed: throwing/);
+	assert.equal(transcript.getViewportIndexStats().preparedItems, 0);
+	throwing.setThrowOnRender(false);
+	assert.doesNotThrow(() => transcript.renderViewportTail(80, 20));
+	assert.equal(transcript.getViewportIndexStats().preparedItems, 0);
+});
+
 test("50,000 zero-height items and a visible tail stay bounded across 0-N-0", () => {
 	const instrumentation = new TuiRenderInstrumentation();
 	const transcript = new RetainedContainer({ instrumentation });
@@ -202,6 +280,7 @@ test("insert, placeholder replacement, retained move, block boundary mutation, r
 		dirtyItems: 0,
 		totalHeight: 0,
 		width: undefined,
+		preparedItems: 0,
 	});
 });
 

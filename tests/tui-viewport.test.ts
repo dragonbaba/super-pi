@@ -192,6 +192,7 @@ test("clear releases viewport index records and height blocks", () => {
 		dirtyItems: 0,
 		totalHeight: 50_000,
 		width: 120,
+		preparedItems: 0,
 	});
 
 	transcript.clear();
@@ -201,6 +202,7 @@ test("clear releases viewport index records and height blocks", () => {
 		dirtyItems: 0,
 		totalHeight: 0,
 		width: undefined,
+		preparedItems: 0,
 	});
 });
 
