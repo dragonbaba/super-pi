@@ -488,6 +488,25 @@ export class InteractiveMode {
 	private readonly invalidateRetainedToolVisual = (component: ToolExecutionComponent): void => {
 		this.chatContainer.invalidateRetainedChild(component);
 	};
+	private readonly handleLifecyclePromiseRejection = (error: unknown): void => {
+		try {
+			this.showError(error instanceof Error ? error.message : String(error));
+		} catch {
+			console.error(error);
+		}
+	};
+	private readonly handleSuspendAction = (): void => this.observeLifecyclePromise(this.handleCtrlZ());
+	private readonly handleExternalEditorAction = (): void =>
+		this.observeLifecyclePromise(this.handleOpenExternalEditor());
+	private readonly handleCopyMessageAction = (): void =>
+		this.observeLifecyclePromise(this.handleCopyCommand({ flashConfirmation: true }));
+	private readonly handleClipboardPasteAction = (): void =>
+		this.observeLifecyclePromise(this.handleClipboardPaste());
+	private readonly handleShutdownAction = (): void => this.observeLifecyclePromise(this.shutdown());
+
+	private observeLifecyclePromise(promise: Promise<void>): void {
+		void promise.then(undefined, this.handleLifecyclePromiseRejection);
+	}
 
 	// Grouped Read calls intentionally map multiple ids to one component.
 	private pendingTools = new Map<string, ToolExecutionComponent | ReadToolGroupComponent>();
@@ -570,7 +589,7 @@ export class InteractiveMode {
 
 	private options: InteractiveModeOptions;
 	private readonly onRightClickPaste = (): void => {
-		void this.handleRightClickPaste();
+		this.observeLifecyclePromise(this.handleRightClickPaste());
 	};
 	private autoTrustOnReloadCwd: string | undefined;
 	private themeController: InteractiveThemeController;
@@ -869,7 +888,7 @@ export class InteractiveMode {
 			await this.switchTuiMode("regular", false, false);
 			this.renderer.renderNow();
 		}
-		await this.ui.stop({ preserveScreen: this.renderer.mode === "fullscreen" });
+		await this.ui.dispose({ preserveScreen: this.renderer.mode === "fullscreen" });
 	}
 
 	private async switchTuiMode(mode: TuiMode, restoreProgress = true, startRenderer = true): Promise<boolean> {
@@ -923,6 +942,17 @@ export class InteractiveMode {
 			terminal.setProgress(true);
 		}
 		return true;
+	}
+
+	private async applyTuiModeSetting(mode: TuiMode, selector: SettingsSelectorComponent | undefined): Promise<void> {
+		if (!(await this.switchTuiMode(mode))) {
+			selector?.getSettingsList().updateValue("tui-mode", this.ui.mode);
+			this.showStatus("Close active overlays before changing TUI mode");
+			return;
+		}
+		this.settingsManager.setTuiMode(mode);
+		if (!this.activeStatusIndicator) this.statusContainer.clear();
+		this.showStatus(`TUI mode: ${mode}`);
 	}
 
 	async init(): Promise<void> {
@@ -1079,11 +1109,13 @@ export class InteractiveMode {
 
 		// Flush completed startup state before loading uncommon syntax grammars.
 		this.ui.renderNow();
-		void loadAllHighlightLanguages().then(() => {
-			if (!this.isInitialized) return;
-			this.ui.invalidate();
-			this.ui.requestRender();
-		});
+		this.observeLifecyclePromise(
+			loadAllHighlightLanguages().then(() => {
+				if (!this.isInitialized) return;
+				this.ui.invalidate();
+				this.ui.requestRender();
+			}),
+		);
 	}
 
 	/**
@@ -1109,33 +1141,39 @@ export class InteractiveMode {
 		if (!process.env.SP_OFFLINE) {
 			const controller = new AbortController();
 			const timeout = setTimeout(() => controller.abort(), 15_000);
-			void refreshModelCatalogs(this.session.modelRuntime, controller.signal)
-				.then(() => this.updateAvailableProviderCount())
-				.catch(() => {})
-				.finally(() => clearTimeout(timeout));
+			this.observeLifecyclePromise(
+				refreshModelCatalogs(this.session.modelRuntime, controller.signal)
+					.then(() => this.updateAvailableProviderCount())
+					.catch(() => {})
+					.finally(() => clearTimeout(timeout)),
+			);
 		}
 
 		// Start package update check asynchronously
-		this.checkForPackageUpdates()
-			.then((updates) => {
-				if (updates.length > 0) {
-					this.showPackageUpdateNotification(updates);
-				}
-			})
-			.finally(() => {
-				// On Windows, npm can overwrite the shared console title while checking
-				// extension package versions. Restore Super Pi's title after the startup check.
-				if (process.platform === "win32" && this.isInitialized) {
-					this.updateTerminalTitle();
-				}
-			});
+		this.observeLifecyclePromise(
+			this.checkForPackageUpdates()
+				.then((updates) => {
+					if (updates.length > 0) {
+						this.showPackageUpdateNotification(updates);
+					}
+				})
+				.finally(() => {
+					// On Windows, npm can overwrite the shared console title while checking
+					// extension package versions. Restore Super Pi's title after the startup check.
+					if (process.platform === "win32" && this.isInitialized) {
+						this.updateTerminalTitle();
+					}
+				}),
+		);
 
 		// Check tmux keyboard setup asynchronously
-		this.checkTmuxKeyboardSetup().then((warning) => {
-			if (warning) {
-				this.showWarning(warning);
-			}
-		});
+		this.observeLifecyclePromise(
+			this.checkTmuxKeyboardSetup().then((warning) => {
+				if (warning) {
+					this.showWarning(warning);
+				}
+			}),
+		);
 
 		// Show startup warnings
 		const { migratedProviders, modelFallbackMessage, initialMessage, initialImages, initialMessages } = this.options;
@@ -1153,7 +1191,7 @@ export class InteractiveMode {
 			this.showWarning(modelFallbackMessage);
 		}
 
-		void this.maybeWarnAboutAnthropicSubscriptionAuth();
+		this.observeLifecyclePromise(this.maybeWarnAboutAnthropicSubscriptionAuth());
 
 		// Process initial messages
 		if (initialMessage) {
@@ -1950,7 +1988,7 @@ export class InteractiveMode {
 						this.editor.setText(result.editorText);
 					}
 					this.showStatus("Navigated to selected point");
-					void this.flushCompactionQueue({ willRetry: false });
+					await this.flushCompactionQueue({ willRetry: false });
 					return { cancelled: false };
 				},
 				switchSession: async (sessionPath, options) => {
@@ -1963,7 +2001,7 @@ export class InteractiveMode {
 			shutdownHandler: () => {
 				this.shutdownRequested = true;
 				if (this.session.isIdle) {
-					void this.shutdown();
+					this.observeLifecyclePromise(this.shutdown());
 				}
 			},
 			onError: (error) => {
@@ -2889,7 +2927,7 @@ export class InteractiveMode {
 		// Register app action handlers
 		this.defaultEditor.onAction("app.clear", () => this.handleCtrlC());
 		this.defaultEditor.onCtrlD = () => this.handleCtrlD();
-		this.defaultEditor.onAction("app.suspend", () => void this.handleCtrlZ());
+		this.defaultEditor.onAction("app.suspend", this.handleSuspendAction);
 		this.defaultEditor.onAction("app.thinking.cycle", () => this.cycleThinkingLevel());
 		this.defaultEditor.onAction("app.model.cycleForward", () => this.cycleModel("forward"));
 		this.defaultEditor.onAction("app.model.cycleBackward", () => this.cycleModel("backward"));
@@ -2899,8 +2937,8 @@ export class InteractiveMode {
 		this.defaultEditor.onAction("app.model.select", () => this.showModelSelector());
 		this.defaultEditor.onAction("app.tools.expand", () => this.toggleToolOutputExpansion());
 		this.defaultEditor.onAction("app.thinking.toggle", () => this.toggleThinkingBlockVisibility());
-		this.defaultEditor.onAction("app.editor.external", () => void this.handleOpenExternalEditor());
-		this.defaultEditor.onAction("app.message.copy", () => void this.handleCopyCommand({ flashConfirmation: true }));
+		this.defaultEditor.onAction("app.editor.external", this.handleExternalEditorAction);
+		this.defaultEditor.onAction("app.message.copy", this.handleCopyMessageAction);
 		this.defaultEditor.onAction("app.message.followUp", () => this.handleFollowUp());
 		this.defaultEditor.onAction("app.message.dequeue", () => this.handleDequeue());
 		this.defaultEditor.onAction("app.session.new", () => this.handleClearCommand());
@@ -2919,9 +2957,7 @@ export class InteractiveMode {
 
 		// Handle clipboard paste (triggered on Ctrl+V). Images are attached by path;
 		// otherwise, paste plain text from the system clipboard.
-		this.defaultEditor.onPasteImage = () => {
-			void this.handleClipboardPaste();
-		};
+		this.defaultEditor.onPasteImage = this.handleClipboardPasteAction;
 	}
 
 	private async handleRightClickPaste(): Promise<void> {
@@ -3452,7 +3488,7 @@ export class InteractiveMode {
 						this.chatContainer.addChild(new Text(theme.fg("error", event.errorMessage), 1, 0));
 					}
 				}
-				void this.flushCompactionQueue({ willRetry: event.willRetry });
+				this.observeLifecyclePromise(this.flushCompactionQueue({ willRetry: event.willRetry }));
 				this.ui.requestRender();
 				break;
 			}
@@ -4059,7 +4095,7 @@ export class InteractiveMode {
 	private handleCtrlC(): void {
 		const now = Date.now();
 		if (now - this.lastSigintTime < 500) {
-			void this.shutdown();
+			this.handleShutdownAction();
 		} else {
 			this.clearEditor();
 			this.lastSigintTime = now;
@@ -4068,7 +4104,7 @@ export class InteractiveMode {
 
 	private handleCtrlD(): void {
 		// Only called when editor is empty (enforced by CustomEditor)
-		void this.shutdown();
+		this.handleShutdownAction();
 	}
 
 	/**
@@ -4150,11 +4186,19 @@ export class InteractiveMode {
 		try {
 			killTrackedDetachedChildren();
 		} catch {}
-		void this.ui.stop().finally(() => {
+		this.observeLifecyclePromise(this.disposeAfterUncaughtCrash(error));
+	}
+
+	private async disposeAfterUncaughtCrash(error: Error): Promise<void> {
+		try {
+			await this.ui.dispose();
+		} catch {
+			// Fatal cleanup is best-effort; logging and exit must still happen.
+		} finally {
 			console.error("Super Pi exiting due to uncaughtException:");
 			console.error(error);
 			process.exit(1);
-		});
+		}
 	}
 
 	/**
@@ -4180,7 +4224,7 @@ export class InteractiveMode {
 				// surfaces as an EIO on the restore writes, which the stdout/stderr
 				// error handler converts into emergencyTerminalExit (see #4144, #5080).
 				killTrackedDetachedChildren();
-				void this.shutdown({ fromSignal: true });
+				this.observeLifecyclePromise(this.shutdown({ fromSignal: true }));
 			};
 			process.prependListener(signal, handler);
 			this.signalCleanupHandlers.push(() => process.off(signal, handler));
@@ -4323,7 +4367,7 @@ export class InteractiveMode {
 				const thinkingStr =
 					result.model.reasoning && result.thinkingLevel !== "off" ? ` (thinking: ${result.thinkingLevel})` : "";
 				this.showStatus(`Switched to ${result.model.name || result.model.id}${thinkingStr}`);
-				void this.maybeWarnAboutAnthropicSubscriptionAuth(result.model);
+				this.observeLifecyclePromise(this.maybeWarnAboutAnthropicSubscriptionAuth(result.model));
 			}
 		} catch (error) {
 			this.showError(error instanceof Error ? error.message : String(error));
@@ -4747,7 +4791,7 @@ export class InteractiveMode {
 					},
 					onThemeChange: (themeSetting) => {
 						this.settingsManager.setTheme(themeSetting);
-						void this.themeController.applyFromSettings();
+						this.observeLifecyclePromise(this.themeController.applyFromSettings());
 					},
 					onThemePreview: (themeName) => this.themeController.preview(themeName),
 					onHideThinkingBlockChange: (hidden) => {
@@ -4842,16 +4886,7 @@ export class InteractiveMode {
 						this.settingsManager.setShowTerminalProgress(enabled);
 					},
 					onTuiModeChange: (mode) => {
-						void (async () => {
-							if (!(await this.switchTuiMode(mode))) {
-								selector?.getSettingsList().updateValue("tui-mode", this.ui.mode);
-								this.showStatus("Close active overlays before changing TUI mode");
-								return;
-							}
-							this.settingsManager.setTuiMode(mode);
-							if (!this.activeStatusIndicator) this.statusContainer.clear();
-							this.showStatus(`TUI mode: ${mode}`);
-						})();
+						this.observeLifecyclePromise(this.applyTuiModeSetting(mode, selector));
 					},
 					onFullscreenScrollbarChange: (mode) => {
 						this.settingsManager.setFullscreenScrollbar(mode);
@@ -4939,7 +4974,7 @@ export class InteractiveMode {
 				this.footer.invalidate();
 				this.updateEditorBorderColor();
 				this.showStatus(`Model: ${model.id}`);
-				void this.maybeWarnAboutAnthropicSubscriptionAuth(model);
+				this.observeLifecyclePromise(this.maybeWarnAboutAnthropicSubscriptionAuth(model));
 				this.checkDaxnutsEasterEgg(model);
 			} catch (error) {
 				this.showError(error instanceof Error ? error.message : String(error));
@@ -5084,7 +5119,7 @@ export class InteractiveMode {
 					this.updateEditorBorderColor();
 					done();
 					this.showStatus(persist ? `Default model: ${model.provider}/${model.id}` : `Model: ${model.id}`);
-					void this.maybeWarnAboutAnthropicSubscriptionAuth(model);
+					this.observeLifecyclePromise(this.maybeWarnAboutAnthropicSubscriptionAuth(model));
 					this.checkDaxnutsEasterEgg(model);
 				} catch (error) {
 					done();
@@ -5396,7 +5431,7 @@ export class InteractiveMode {
 							this.editor.setText(result.editorText);
 						}
 						this.showStatus("Navigated to selected point");
-						void this.flushCompactionQueue({ willRetry: false });
+						await this.flushCompactionQueue({ willRetry: false });
 					} catch (error) {
 						this.showError(error instanceof Error ? error.message : String(error));
 					} finally {
@@ -5450,9 +5485,7 @@ export class InteractiveMode {
 					done();
 					this.ui.requestRender();
 				},
-				() => {
-					void this.shutdown();
-				},
+				this.handleShutdownAction,
 				() => this.ui.requestRender(),
 				{
 					renameSession: async (sessionFilePath: string, nextName: string | undefined) => {
@@ -5622,7 +5655,7 @@ export class InteractiveMode {
 		if (providerOptions && options.length === 1) {
 			const providerOption = providerOptions[0];
 			if (providerOption) {
-				void this.startProviderLogin(providerOption);
+				this.observeLifecyclePromise(this.startProviderLogin(providerOption));
 			}
 			return;
 		}
@@ -5640,7 +5673,7 @@ export class InteractiveMode {
 					if (providerOptions) {
 						const providerOption = providerOptions.find((provider) => provider.authType === authType);
 						if (providerOption) {
-							void this.startProviderLogin(providerOption);
+							this.observeLifecyclePromise(this.startProviderLogin(providerOption));
 						}
 						return;
 					}
@@ -5797,14 +5830,14 @@ export class InteractiveMode {
 		this.updateEditorBorderColor();
 		if (selectedModel) {
 			this.showStatus(`${actionLabel}. Selected ${selectedModel.id}. Credentials saved to ${getAuthPath()}`);
-			void this.maybeWarnAboutAnthropicSubscriptionAuth(selectedModel);
+			this.observeLifecyclePromise(this.maybeWarnAboutAnthropicSubscriptionAuth(selectedModel));
 			this.checkDaxnutsEasterEgg(selectedModel);
 		} else {
 			this.showStatus(`${actionLabel}. Credentials saved to ${getAuthPath()}`);
 			if (selectionError) {
 				this.showError(selectionError);
 			} else {
-				void this.maybeWarnAboutAnthropicSubscriptionAuth();
+				this.observeLifecyclePromise(this.maybeWarnAboutAnthropicSubscriptionAuth());
 			}
 		}
 

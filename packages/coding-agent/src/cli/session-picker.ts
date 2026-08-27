@@ -7,7 +7,7 @@ import { KeybindingsManager } from "../core/keybindings.ts";
 import type { SessionInfo, SessionListProgress } from "../core/session-manager.ts";
 import type { SettingsManager } from "../core/settings-manager.ts";
 import { SessionSelectorComponent } from "../modes/interactive/components/session-selector.ts";
-import { createStartupTui, startStartupTui } from "./startup-ui.ts";
+import { createStartupTui, observeStartupLifecycle, startStartupTui } from "./startup-ui.ts";
 
 type SessionsLoader = (onProgress?: SessionListProgress) => Promise<SessionInfo[]>;
 
@@ -18,28 +18,29 @@ export async function selectSession(
 	settingsManager: SettingsManager,
 ): Promise<string | null> {
 	const ui = await createStartupTui(settingsManager);
-	return new Promise((resolve) => {
+	return new Promise((resolve, reject) => {
 		const keybindings = KeybindingsManager.create();
 		setKeybindings(keybindings);
 		let resolved = false;
+		const finish = async (path: string | null, exit: boolean): Promise<void> => {
+			if (resolved) return;
+			resolved = true;
+			await ui.dispose();
+			if (exit) process.exit(0);
+			resolve(path);
+		};
 
 		const selector = new SessionSelectorComponent(
 			currentSessionsLoader,
 			allSessionsLoader,
 			(path: string) => {
-				if (!resolved) {
-					resolved = true;
-					void ui.stop().then(() => resolve(path));
-				}
+				observeStartupLifecycle(finish(path, false), reject);
 			},
 			() => {
-				if (!resolved) {
-					resolved = true;
-					void ui.stop().then(() => resolve(null));
-				}
+				observeStartupLifecycle(finish(null, false), reject);
 			},
 			() => {
-				void ui.stop().then(() => process.exit(0));
+				observeStartupLifecycle(finish(null, true), reject);
 			},
 			() => ui.requestRender(),
 			{ showRenameHint: false, keybindings },

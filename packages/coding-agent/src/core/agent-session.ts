@@ -221,6 +221,8 @@ export type AgentSessionEvent =
 /** Listener function for agent session events. Final awaiting requires criticalAgentEnd subscription opt-in. */
 export type AgentSessionEventListener = (event: AgentSessionEvent) => void | Promise<void>;
 
+const ignoreOrdinaryEventListenerRejection = (): void => {};
+
 export interface AgentSessionSubscriptionOptions {
 	/** Wait for this listener at agent_end. Rejection is isolated from the agent/provider run. */
 	criticalAgentEnd?: boolean;
@@ -862,7 +864,10 @@ export class AgentSession {
 	/** Emit an event to all listeners */
 	private _emit(event: AgentSessionEvent): void {
 		for (const registration of this._eventListeners) {
-			registration.listener(event);
+			const result = registration.listener(event);
+			if (result && typeof result.then === "function") {
+				void result.then(undefined, ignoreOrdinaryEventListenerRejection);
+			}
 		}
 	}
 
