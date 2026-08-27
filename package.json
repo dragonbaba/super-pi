@@ -29,6 +29,7 @@
 		"bench:cache-markers": "node --experimental-strip-types ./scripts/bench/cache-marker-extraction.ts",
 		"bench:model-runtime": "node --experimental-strip-types ./scripts/bench/model-runtime-startup.ts --mode cold",
 		"bench:model-runtime:warm": "node --experimental-strip-types ./scripts/bench/model-runtime-startup.ts --mode warm",
+		"bench:model-catalog-restore": "node --experimental-strip-types ./scripts/bench/model-catalog-restore.ts",
 		"bench:tool-output": "node --experimental-strip-types ./scripts/bench/tool-output.ts",
 		"bench:compare": "node --experimental-strip-types ./scripts/bench/compare.ts",
 		"clean": "npm run clean --workspaces --if-present",
