@@ -43,8 +43,7 @@ tui.setFocus(editor);
 // In raw mode Ctrl+C doesn't send SIGINT — intercept it here to allow exit
 tui.addInputListener((data) => {
   if (matchesKey(data, 'ctrl+c')) {
-    tui.stop();
-    process.exit(0);
+    void tui.stop().then(() => process.exit(0));
   }
 });
 
@@ -71,12 +70,15 @@ const tui: TUI = new TuiMainScreen(terminal);
 tui.addChild(component);
 tui.removeChild(component);
 tui.start();
-tui.stop();
+await tui.stop(); // Flush the latest terminal frame before restoring terminal state
 tui.requestRender(); // Request a re-render
+await tui.flushTerminalFrames(); // Explicit critical/final-frame boundary
 
 // Global debug key handler (Shift+Ctrl+D)
 tui.onDebug = () => console.log("Debug triggered");
 ```
+
+`Terminal.write()` is for terminal controls; observe or await any returned Promise. Renderers use the callback-driven frame lane: register one stable `setFrameWriteCompletionListener()`, then call `writeFrame(data, generation)`. Completion requires a successful Writable callback and, after a false return, `drain`. Normal frame writes have no Promise or `AbortController` and no absolute timeout. `TuiBase` combines content and cursor output from one render into one atomic frame; stop/fatal/mode-switch lifecycle flushes have an independent bounded deadline and call `cancelFrameWrite(generation)` to release listeners and references before terminal restoration if output never settles.
 
 ### Alternate-screen viewport layouts
 

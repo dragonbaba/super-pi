@@ -23,6 +23,13 @@
 - Load `pi-project-context-workflow` only for initialization, generated index/context maintenance, or `/project-*` workflows. Load other procedural skills only when their trigger matches.
 - Keep the initial tool set stable. Use `tool_search` only when active tools cannot perform the task.
 
+## Hot-Path Allocation Contract
+
+- Provider deltas, assistant/tool progress, event delivery, interactive updates, rendering/layout, terminal frame generation/writes, large-result processing, and Evidence Ledger lookup are hot paths.
+- Before modifying a hot path, read [docs/performance/hot-path-allocation-contract.md](docs/performance/hot-path-allocation-contract.md) and audit the complete production call chain, not only the new diff.
+- Run the relevant AST/source invariants and allocation benchmark, and provide deterministic counters plus lifecycle/reference-release evidence.
+- Object pools require profiler proof and must satisfy the contract's ownership, safety, capacity, test, and measured-improvement gates.
+
 ## Completion
 
 - Track resources created by the current task and clean them by recorded identity; do not broadly scan or kill guessed processes.
