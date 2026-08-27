@@ -24,8 +24,21 @@ export {
 	type RetainedContainerStats,
 	type RetainedItemOptions,
 	type RetainedRenderContext,
+	type RetainedViewportIndexStats,
+	type RetainedViewportRender,
 } from "./components/retained-item.ts";
 export { ScrollView, type ScrollViewOptions, type ScrollViewScrollbar } from "./components/scroll-view.ts";
+export {
+	isLineViewportComponent,
+	getComponentsContentHeight,
+	LINE_VIEWPORT_COMPONENT,
+	renderComponentsViewport,
+	type LineViewportComponent,
+	type LineViewportMutationKind,
+	type LineViewportMutationObservation,
+	type LineViewportRender,
+	ViewportContainer,
+} from "./components/viewport-container.ts";
 export {
 	type SelectItem,
 	SelectList,

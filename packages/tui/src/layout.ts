@@ -4,6 +4,7 @@ import { getLayoutNode } from "./layout-node.ts";
 import { cropKittyImageLine, getKittyImageMetadata, isImageLine } from "./terminal-image.ts";
 import { type Component, CURSOR_MARKER, compositeTuiLine } from "./tui.ts";
 import { extractAnsiCode, getGraphemeCellRange, sliceByColumn, visibleWidth } from "./utils.ts";
+import { isLineViewportComponent } from "./components/viewport-container.ts";
 
 const OSC133_ZONE_PREFIX = /^(?:\x1b\]133;[ABC](?:\x07|\x1b\\))+/;
 const FULL_WIDTH_LINE_RESET = "\x1b[0m\x1b]8;;\x07";
@@ -25,6 +26,8 @@ export interface LayoutBox {
 	lineOffset?: number;
 	scrollView?: ScrollView;
 	scrollContentLines?: readonly string[];
+	scrollContentStart?: number;
+	scrollLeadingKittyImage?: { line: string; absoluteRow: number };
 	layer: number;
 }
 
@@ -133,6 +136,47 @@ function layoutComponent(
 	if (node.type === "scroll") {
 		const previousScrollTop = node.state.scrollTop;
 		const contentWidth = node.state.getContentWidth(safeWidth);
+		if (isLineViewportComponent(node.component)) {
+			const contentHeight = node.component.getContentHeight(contentWidth);
+			const viewportHeight = height === undefined ? contentHeight : Math.max(0, Math.floor(height));
+			node.state.updateLayout(contentHeight, viewportHeight, context.requestRender);
+			const rendered = node.component.renderViewport(contentWidth, node.state.scrollTop, viewportHeight);
+			const rect = { x, y, width: safeWidth, height: viewportHeight };
+			const childRect = {
+				x,
+				y: y - node.state.scrollTop,
+				width: contentWidth,
+				height: contentHeight,
+			};
+			const childClip = intersect(clip, rect);
+			const childBox: LayoutBox = {
+				component: node.component,
+				rect: childRect,
+				clip: intersect(childClip, childRect),
+				children: [],
+				lines: rendered.lines,
+				lineOffset: -rendered.startLine,
+				layer: 0,
+			};
+			const scrollView = node.state as ScrollView;
+			if (node.state.primary || !context.primaryScrollView) {
+				context.primaryScrollView = scrollView;
+				context.primaryDocumentLineCount = contentHeight;
+			}
+			const box: LayoutBox = {
+				component,
+				rect,
+				clip: childClip,
+				children: [childBox],
+				scrollView,
+				scrollContentLines: rendered.lines,
+				scrollContentStart: rendered.startLine,
+				scrollLeadingKittyImage: rendered.leadingKittyImage,
+				layer: 0,
+			};
+			childBox.parent = box;
+			return box;
+		}
 		const childBox = layoutComponent(
 			context,
 			node.component,
@@ -337,8 +381,22 @@ function paintBox(box: LayoutBox, screen: string[], totalWidth: number): void {
 	for (const child of box.children) paintBox(child, screen, totalWidth);
 
 	if (box.scrollView && box.scrollContentLines && box.scrollView.scrollTop > 0 && box.rect.height > 0) {
+		const leadingKittyImage = box.scrollLeadingKittyImage;
+		if (leadingKittyImage && leadingKittyImage.absoluteRow < box.scrollView.scrollTop) {
+			const metadata = getKittyImageMetadata(leadingKittyImage.line);
+			const hiddenRows = box.scrollView.scrollTop - leadingKittyImage.absoluteRow;
+			if (metadata && hiddenRows < metadata.rows) {
+				const visibleRows = Math.min(box.rect.height, metadata.rows - hiddenRows);
+				const cropped = cropKittyImageLine(leadingKittyImage.line, hiddenRows, visibleRows);
+				if (box.rect.x === 0 && box.rect.width >= totalWidth) screen[box.rect.y] = cropped;
+			}
+			paintScrollbar(box, screen, totalWidth);
+			return;
+		}
 		for (let imageRow = box.scrollView.scrollTop - 1; imageRow >= 0; imageRow--) {
-			const imageLine = box.scrollContentLines[imageRow] ?? "";
+			const relativeImageRow = imageRow - (box.scrollContentStart ?? 0);
+			if (relativeImageRow < 0) break;
+			const imageLine = box.scrollContentLines[relativeImageRow] ?? "";
 			const metadata = getKittyImageMetadata(imageLine);
 			if (metadata) {
 				const hiddenRows = box.scrollView.scrollTop - imageRow;

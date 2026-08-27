@@ -73,21 +73,28 @@ await runBenchmarkMain({
 		let clearedCachedItems = -1;
 		let clearedCachedLines = -1;
 		let clearedEstimatedCachedBytes = -1;
+		let indexedItems = 0;
+		let heightBlocks = 0;
+		let clearedIndexedItems = -1;
+		let clearedHeightBlocks = -1;
 
 		for (let cycle = 0; cycle < cycles; cycle++) {
 			const transcript = createTranscript();
 			beforeRenderHeapBytes = process.memoryUsage().heapUsed;
-			transcript.render(width);
+			transcript.renderViewportTail(width, 40);
 			afterRenderHeapBytes = process.memoryUsage().heapUsed;
-			transcript.render(Math.max(20, width - 24));
+			transcript.renderViewportTail(Math.max(20, width - 24), 40);
 			resizePeakHeapBytes = Math.max(afterRenderHeapBytes, process.memoryUsage().heapUsed);
-			transcript.render(width + 24);
+			transcript.renderViewportTail(width + 24, 40);
 			resizePeakHeapBytes = Math.max(resizePeakHeapBytes, process.memoryUsage().heapUsed);
 			const retained = transcript.getRetainedStats();
+			const viewportIndex = transcript.getViewportIndexStats();
 			retainedItems = retained.retainedItems;
 			cachedItems = retained.cachedItems;
 			cachedLines = retained.cachedLines;
 			estimatedCachedBytes = retained.estimatedCachedBytes;
+			indexedItems = viewportIndex.indexedItems;
+			heightBlocks = viewportIndex.heightBlocks;
 
 			transcript.clear();
 			const cleared = transcript.getRetainedStats();
@@ -95,6 +102,9 @@ await runBenchmarkMain({
 			clearedCachedItems = cleared.cachedItems;
 			clearedCachedLines = cleared.cachedLines;
 			clearedEstimatedCachedBytes = cleared.estimatedCachedBytes;
+			const clearedViewportIndex = transcript.getViewportIndexStats();
+			clearedIndexedItems = clearedViewportIndex.indexedItems;
+			clearedHeightBlocks = clearedViewportIndex.heightBlocks;
 			clearHeaps.push(collectGarbage());
 		}
 
@@ -114,15 +124,19 @@ await runBenchmarkMain({
 			cachedItems,
 			cachedLines,
 			estimatedCachedBytes,
+			indexedItems,
+			heightBlocks,
 			clearedRetainedItems,
 			clearedCachedItems,
 			clearedCachedLines,
 			clearedEstimatedCachedBytes,
+			clearedIndexedItems,
+			clearedHeightBlocks,
 		};
 	},
 	observations: () => ({
 		controlledGc: true,
-		retentionMode: "session-local-sidecar",
+		retentionMode: "session-local-sidecar+block-height-index",
 		resizeWidths: `${width}->${Math.max(20, width - 24)}->${width + 24}`,
 	}),
 });

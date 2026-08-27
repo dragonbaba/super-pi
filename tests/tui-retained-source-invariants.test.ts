@@ -6,6 +6,8 @@ import ts from "typescript";
 const RETAINED_PATH = "packages/tui/src/components/retained-item.ts";
 const INSTRUMENTATION_PATH = "packages/tui/src/render-instrumentation.ts";
 const INTERACTIVE_MODE_PATH = "packages/coding-agent/src/modes/interactive/interactive-mode.ts";
+const MAIN_SCREEN_PATH = "packages/tui/src/tui-main-screen.ts";
+const ALT_SCREEN_PATH = "packages/tui/src/tui-alt-screen.ts";
 
 function findMethod(source: ts.SourceFile, className: string, methodName: string): ts.MethodDeclaration {
 	for (const statement of source.statements) {
@@ -49,10 +51,96 @@ test("RetainedContainer render traverses original children without per-frame his
 test("retained cache and instrumentation stay instance-local and retain no component or frame references", () => {
 	const retainedText = readFileSync(RETAINED_PATH, "utf8");
 	const instrumentationText = readFileSync(INSTRUMENTATION_PATH, "utf8");
-	assert.match(retainedText, /class RetainedContainer extends Container \{\s*private readonly retainedById/);
+	assert.match(
+		retainedText,
+		/class RetainedContainer extends Container implements LineViewportComponent \{[\s\S]*?private readonly retainedById/,
+	);
 	assert.doesNotMatch(retainedText, /^const .*new Map</m);
 	assert.doesNotMatch(instrumentationText, /Component|string\[\]|frame(?:s)?\s*:/i);
 	assert.doesNotMatch(instrumentationText, /ObjectPool/);
+});
+
+test("viewport hot paths avoid full-history wrapper copies and global ownership", () => {
+	const retainedText = readFileSync(RETAINED_PATH, "utf8");
+	const viewportText = readFileSync("packages/tui/src/components/viewport-container.ts", "utf8");
+	const source = ts.createSourceFile(RETAINED_PATH, retainedText, ts.ScriptTarget.Latest, true);
+	for (const methodName of ["renderViewport", "renderViewportTail", "composeViewport"]) {
+		const method = findMethod(source, "RetainedContainer", methodName).getText(source);
+		assert.doesNotMatch(method, /\.map\(|Array\.from\(|\.\.\.|\.slice\(|\.indexOf\(|\.findIndex\(/);
+	}
+	const prepare = findMethod(source, "RetainedContainer", "prepareViewportIndex").getText(source);
+	assert.doesNotMatch(prepare, /new Map|viewportRecords\s*=|viewportRecordByComponent\.(?:clear|set)/);
+	const totalHeight = findMethod(source, "RetainedContainer", "totalViewportHeight").getText(source);
+	assert.doesNotMatch(totalHeight, /for\s*\(|while\s*\(|\.reduce\(/);
+	assert.match(totalHeight, /return this\.viewportTotalHeight/);
+	assert.doesNotMatch(viewportText, /^const .*new (?:Map|Set)/m);
+	assert.doesNotMatch(`${retainedText}\n${viewportText}`, /ObjectPool|Proxy\s*\(/);
+});
+
+test("Main bounded frames use explicit mutation attribution and the singleton tail query", () => {
+	const text = readFileSync(MAIN_SCREEN_PATH, "utf8");
+	const source = ts.createSourceFile(MAIN_SCREEN_PATH, text, ts.ScriptTarget.Latest, true);
+	const visibleRender = findMethod(source, "TuiMainScreen", "renderVisibleDocument").getText(source);
+	assert.match(visibleRender, /this\.children\.length === 1[\s\S]*renderViewportTail\(width, height\)/);
+	assert.match(visibleRender, /observeViewportMutations\(width\)/);
+	assert.match(visibleRender, /mutation\.kind === "unsafe"/);
+	assert.match(visibleRender, /mutation\.earliestChangedLine < previousStart/);
+	assert.doesNotMatch(visibleRender, /previousKittyImageIds\s*=\s*new Set/);
+	assert.match(visibleRender, /sourceOffset === 0[\s\S]*?\? rendered\.lines[\s\S]*?: rendered\.lines\.slice/);
+	assert.doesNotMatch(visibleRender, /expectedLines|previousWindow\.slice\(shiftedRows/);
+});
+
+test("allocation hot paths keep cache hits and mutation writes allocation-free", () => {
+	const retainedText = readFileSync(RETAINED_PATH, "utf8");
+	const retainedSource = ts.createSourceFile(RETAINED_PATH, retainedText, ts.ScriptTarget.Latest, true);
+	const itemRender = findMethod(retainedSource, "RetainedItem", "render").getText(retainedSource);
+	const hitReturn = itemRender.indexOf("return this.cachedLines");
+	const missKeyCreation = itemRender.indexOf("key = {");
+	assert.ok(hitReturn >= 0 && missKeyCreation > hitReturn, "cache key creation must remain after the cache-hit return");
+	assert.doesNotMatch(itemRender.slice(0, hitReturn), /nextKey|RetainedCacheKey\s*=\s*\{/);
+
+	const mutation = findMethod(retainedSource, "RetainedContainer", "recordViewportMutation");
+	for (const parameter of mutation.parameters) {
+		assert.equal(parameter.type?.kind, ts.SyntaxKind.NumberKeyword, `${parameter.name.getText()}: primitive number`);
+	}
+	const mutationText = mutation.getText(retainedSource);
+	assert.doesNotMatch(mutationText, /\.shift\(|\.\.\.|\{\s*\.\.\./);
+	assert.match(retainedText, /viewportMutationEventRecordIndices = new Float64Array/);
+	assert.doesNotMatch(retainedText, /viewportMutationEventRecords = new Array/);
+});
+
+test("Main reuses mutation tokens and Alt avoids duplicate no-op frame copies", () => {
+	const mainText = readFileSync(MAIN_SCREEN_PATH, "utf8");
+	assert.match(mainText, /private readonly viewportMutationTokens: unknown\[\] = \[\]/);
+	assert.doesNotMatch(mainText, /childTokens\s*:/);
+
+	const altText = readFileSync(ALT_SCREEN_PATH, "utf8");
+	assert.match(altText, /let screen = nextLayout\.lines;/);
+	assert.doesNotMatch(altText, /nextLayout\.lines\.slice\(\)/);
+	assert.match(altText, /if \(!this\.flashes\.hasEntries\) return screen/);
+	assert.doesNotMatch(altText, /:\s*\{ lines: screen, evictedImageDeletion: "" \}/);
+});
+
+test("every production transcript splice notifies the structure index", () => {
+	const text = readFileSync(INTERACTIVE_MODE_PATH, "utf8");
+	const spliceMatches = [...text.matchAll(/chatContainer\.children\.splice/g)];
+	assert.equal(spliceMatches.length, 1);
+	for (const match of spliceMatches) {
+		const following = text.slice(match.index, match.index + 240);
+		assert.match(following, /chatContainer\.notifyChildrenChanged\(\)/);
+	}
+	assert.match(text, /replaceToolPlaceholder[\s\S]{0,180}chatContainer\.notifyChildrenChanged\(\)/);
+});
+
+test("production dynamic status and image setting mutations notify viewport heights", () => {
+	const text = readFileSync(INTERACTIVE_MODE_PATH, "utf8");
+	assert.match(text, /lastStatusText\.setText[\s\S]{0,160}invalidateViewportChild\(this\.lastStatusText\)/);
+	for (const callback of ["onShowImagesChange", "onImageWidthCellsChange"]) {
+		const start = text.indexOf(`${callback}:`);
+		assert.notEqual(start, -1);
+		const following = text.slice(start, start + 700);
+		assert.match(following, /chatContainer\.invalidateViewportHeights\(\)/);
+	}
 });
 
 test("session rebuild retains tools and reuses one visual invalidation callback", () => {
@@ -64,4 +152,7 @@ test("session rebuild retains tools and reuses one visual invalidation callback"
 	assert.doesNotMatch(rebuild, /chatContainer\.addChild\((?:rebuildReadGroup|component)\)/);
 	assert.match(text, /private readonly invalidateRetainedToolVisual = \(component: ToolExecutionComponent\)/);
 	assert.equal(text.match(/onVisualInvalidate: this\.invalidateRetainedToolVisual/g)?.length, 1);
+	assert.equal(text.match(/chatContainer\.children\.splice/g)?.length, 1);
+	assert.match(text, /chatContainer\.children\.splice[\s\S]{0,160}chatContainer\.notifyChildrenChanged\(\)/);
+	assert.match(text, /replaceToolPlaceholder[\s\S]{0,160}chatContainer\.notifyChildrenChanged\(\)/);
 });

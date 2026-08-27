@@ -92,11 +92,23 @@ interface InteractiveModeInternals {
 	renderInstrumentation: TuiRenderInstrumentation;
 	pendingTools: Map<string, ToolExecutionComponent | ReadToolGroupComponent>;
 	rebuildChatFromMessages(): void;
+	showStatus(message: string): void;
 	updateTrackedToolArgs(
 		component: ToolExecutionComponent | ReadToolGroupComponent,
 		toolCallId: string,
 		args: unknown,
 	): void;
+}
+
+function assertIndexedTailMatchesFull(internals: InteractiveModeInternals, width = 80, height = 20): void {
+	const viewport = internals.chatContainer.renderViewportTail(width, height);
+	const full: string[] = [];
+	for (const child of internals.chatContainer.children) {
+		for (const line of child.render(width)) full.push(line);
+	}
+	assert.equal(viewport.totalHeight, full.length);
+	assert.equal(internals.chatContainer.getViewportIndexStats().totalHeight, full.length);
+	assert.deepEqual(viewport.lines, full.slice(-height));
 }
 
 interface ModeFixture {
@@ -292,4 +304,22 @@ test("5,000 rebuilt historical tools all own completed retained sidecars", async
 		assert.ok(item);
 		assert.equal(item.completed, true);
 	}
+});
+
+test("production showStatus tracks short, multiline, and short dynamic heights", async (t) => {
+	const fixture = await createModeFixture([]);
+	t.after(fixture.dispose);
+	const { internals } = fixture;
+	internals.showStatus("short");
+	assertIndexedTailMatchesFull(internals);
+
+	internals.renderInstrumentation.reset();
+	internals.showStatus("long one\nlong two 中文 😀\nlong three e\u0301");
+	assertIndexedTailMatchesFull(internals);
+	assert.equal(internals.renderInstrumentation.snapshot().viewportItemVisits < 20, true);
+
+	internals.renderInstrumentation.reset();
+	internals.showStatus("short again");
+	assertIndexedTailMatchesFull(internals);
+	assert.equal(internals.renderInstrumentation.snapshot().viewportItemVisits < 20, true);
 });

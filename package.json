@@ -24,6 +24,7 @@
 		"bench:tool-progress": "node --experimental-strip-types ./scripts/bench/tool-progress.ts",
 		"bench:tui-transcript": "node --experimental-strip-types ./scripts/bench/tui-transcript.ts",
 		"bench:tui-retained-lifecycle": "node --expose-gc --experimental-strip-types ./scripts/bench/tui-retained-lifecycle.ts",
+		"bench:tui-frame-allocations": "node --expose-gc --experimental-strip-types ./scripts/bench/tui-frame-allocations.ts",
 		"bench:tui-frame-queue": "node --experimental-strip-types ./scripts/bench/tui-frame-queue.ts",
 		"bench:prefix": "node --experimental-strip-types ./scripts/bench/prefix-build.ts",
 		"bench:effective-dispatch": "node --experimental-strip-types ./scripts/bench/effective-dispatch.ts",

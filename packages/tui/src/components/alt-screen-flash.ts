@@ -19,6 +19,10 @@ export class AltScreenFlashContainer implements Component {
 		this.requestRender = requestRender;
 	}
 
+	get hasEntries(): boolean {
+		return this.entries.length > 0;
+	}
+
 	flash(message: string, durationMs = DEFAULT_DURATION_MS): void {
 		const id = this.nextId++;
 		const timer = setTimeout(

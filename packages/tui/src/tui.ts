@@ -400,6 +400,10 @@ export abstract class TuiBase extends Container implements TUI {
 		this.renderInstrumentation?.recordTerminalFrame(data, diffLines);
 	}
 
+	protected recordFullHistoryFallback(): void {
+		this.renderInstrumentation?.recordFullHistoryFallback();
+	}
+
 	getShowHardwareCursor(): boolean {
 		return this.showHardwareCursor;
 	}
@@ -1201,7 +1205,9 @@ export abstract class TuiBase extends Container implements TUI {
 	protected extractCursorPosition(lines: string[], height: number): { row: number; col: number } | null {
 		// Only scan the bottom `height` lines (visible viewport)
 		const viewportTop = Math.max(0, lines.length - height);
+		let scannedLines = 0;
 		for (let row = lines.length - 1; row >= viewportTop; row--) {
+			scannedLines++;
 			const line = lines[row];
 			const markerIndex = line.indexOf(CURSOR_MARKER);
 			if (markerIndex !== -1) {
@@ -1211,10 +1217,12 @@ export abstract class TuiBase extends Container implements TUI {
 
 				// Strip marker from the line
 				lines[row] = line.slice(0, markerIndex) + line.slice(markerIndex + CURSOR_MARKER.length);
+				this.renderInstrumentation?.recordCursorScan(scannedLines);
 
 				return { row, col };
 			}
 		}
+		this.renderInstrumentation?.recordCursorScan(scannedLines);
 		return null;
 	}
 
