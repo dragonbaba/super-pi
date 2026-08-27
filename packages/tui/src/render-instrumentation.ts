@@ -11,6 +11,13 @@ export interface TuiRenderMetrics {
 	pendingRenderRequestHighWaterMark: number;
 	retainedCacheHits: number;
 	retainedCacheMisses: number;
+	viewportItemVisits: number;
+	viewportComposedLines: number;
+	viewportCopiedLines: number;
+	viewportTargetHeightLookupProbes: number;
+	viewportBlockLookupProbes: number;
+	fullHistoryFallbacks: number;
+	cursorScannedLines: number;
 }
 
 const EMPTY_METRICS: TuiRenderMetrics = {
@@ -26,6 +33,13 @@ const EMPTY_METRICS: TuiRenderMetrics = {
 	pendingRenderRequestHighWaterMark: 0,
 	retainedCacheHits: 0,
 	retainedCacheMisses: 0,
+	viewportItemVisits: 0,
+	viewportComposedLines: 0,
+	viewportCopiedLines: 0,
+	viewportTargetHeightLookupProbes: 0,
+	viewportBlockLookupProbes: 0,
+	fullHistoryFallbacks: 0,
+	cursorScannedLines: 0,
 };
 
 export function utf8ByteLength(value: string): number {
@@ -75,6 +89,28 @@ export class TuiRenderInstrumentation {
 
 	recordRetainedCacheMiss(): void {
 		this.metrics.retainedCacheMisses++;
+	}
+
+	recordTranscriptViewport(
+		itemVisits: number,
+		composedLines: number,
+		targetHeightLookupProbes = 0,
+		blockLookupProbes = 0,
+		copiedLines = composedLines,
+	): void {
+		this.metrics.viewportItemVisits += itemVisits;
+		this.metrics.viewportComposedLines += composedLines;
+		this.metrics.viewportCopiedLines += copiedLines;
+		this.metrics.viewportTargetHeightLookupProbes += targetHeightLookupProbes;
+		this.metrics.viewportBlockLookupProbes += blockLookupProbes;
+	}
+
+	recordFullHistoryFallback(): void {
+		this.metrics.fullHistoryFallbacks++;
+	}
+
+	recordCursorScan(linesScanned: number): void {
+		this.metrics.cursorScannedLines += linesScanned;
 	}
 
 	recordOverlayRender(): void {

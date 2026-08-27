@@ -1,5 +1,12 @@
 import { AltScreenFlashContainer } from "./components/alt-screen-flash.ts";
 import { ScrollView } from "./components/scroll-view.ts";
+import {
+	getComponentsContentHeight,
+	isLineViewportComponent,
+	LINE_VIEWPORT_COMPONENT,
+	type LineViewportComponent,
+	renderComponentsViewport,
+} from "./components/viewport-container.ts";
 import { getKeybindings } from "./keybindings.ts";
 import { isKeyRelease } from "./keys.ts";
 import {
@@ -152,7 +159,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	private previousScreenHeight = 0;
 	private layoutRoot: Component | undefined;
 	private currentLayout: LayoutFrame | undefined;
-	private readonly implicitDocument: Component;
+	private readonly implicitDocument: LineViewportComponent;
 	private readonly implicitScrollView: ScrollView;
 	private readonly flashes: AltScreenFlashContainer;
 	private altScreenActive = false;
@@ -188,7 +195,21 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	) {
 		super(terminal, showHardwareCursor, logDirectory);
 		this.implicitDocument = {
+			[LINE_VIEWPORT_COMPONENT]: true,
 			render: (width) => super.render(width),
+			getContentHeight: (width) => getComponentsContentHeight(this.children, width),
+			renderViewport: (width, startLine, height) =>
+				renderComponentsViewport(this.children, width, startLine, height),
+			renderViewportTail: (width, height) => {
+				const totalHeight = getComponentsContentHeight(this.children, width);
+				return renderComponentsViewport(
+					this.children,
+					width,
+					Math.max(0, totalHeight - height),
+					height,
+					totalHeight,
+				);
+			},
 			invalidate: () => {
 				for (const child of this.children) child.invalidate();
 			},
@@ -396,11 +417,32 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	private scrollToPrompt(direction: -1 | 1): void {
 		if (!this.currentLayout) return;
 		const scrollView = this.getPrimaryScrollView();
-		const lines = getScrollViewBox(this.currentLayout, scrollView)?.scrollContentLines;
-		if (!lines) return;
+		const box = getScrollViewBox(this.currentLayout, scrollView);
+		if (!box?.scrollContentLines) return;
+		const content = box.children[0]?.component;
+		const contentHeight = box.children[0]?.rect.height ?? box.scrollContentLines.length;
+		if (content && isLineViewportComponent(content)) {
+			const chunkSize = Math.max(64, scrollView.viewportHeight * 4);
+			let cursor = scrollView.scrollTop + direction;
+			while (cursor >= 0 && cursor < contentHeight) {
+				const chunkStart = direction > 0 ? cursor : Math.max(0, cursor - chunkSize + 1);
+				const chunkEnd = direction > 0 ? Math.min(contentHeight, chunkStart + chunkSize) : cursor + 1;
+				const rendered = content.renderViewport(box.children[0]?.rect.width ?? box.rect.width, chunkStart, chunkEnd - chunkStart);
+				for (let row = cursor; row >= chunkStart && row < chunkEnd; row += direction) {
+					const line = rendered.lines[row - rendered.startLine] ?? "";
+					if (!OSC133_PROMPT_START_PATTERN.test(line)) continue;
+					scrollView.scrollTo(row);
+					this.requestRender();
+					return;
+				}
+				cursor = direction > 0 ? chunkEnd : chunkStart - 1;
+			}
+			return;
+		}
 
-		for (let row = scrollView.scrollTop + direction; row >= 0 && row < lines.length; row += direction) {
-			if (!OSC133_PROMPT_START_PATTERN.test(lines[row] ?? "")) continue;
+		const contentStart = box.scrollContentStart ?? 0;
+		for (let row = scrollView.scrollTop + direction; row >= contentStart && row < contentHeight; row += direction) {
+			if (!OSC133_PROMPT_START_PATTERN.test(box.scrollContentLines[row - contentStart] ?? "")) continue;
 			scrollView.scrollTo(row);
 			this.requestRender();
 			return;
@@ -682,7 +724,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		);
 		if (visibleBottom < visibleTop) return undefined;
 		const pointerRow = Math.max(visibleTop, Math.min(visibleBottom, y));
-		const maxContentRow = Math.max(0, (box.scrollContentLines?.length ?? 1) - 1);
+		const maxContentRow = Math.max(0, (box.children[0]?.rect.height ?? box.scrollContentLines?.length ?? 1) - 1);
 		return {
 			row: Math.max(0, Math.min(maxContentRow, scrollView.scrollTop + pointerRow - box.rect.y)),
 			col: Math.max(0, Math.min(box.rect.width - 1, x - box.rect.x)),
@@ -703,8 +745,9 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 
 	private getSelectionSourceLine(point: SelectionPoint): string {
 		if (point.scrollView && this.currentLayout) {
-			const lines = getScrollViewBox(this.currentLayout, point.scrollView)?.scrollContentLines;
-			if (lines) return lines[point.row] ?? "";
+			const box = getScrollViewBox(this.currentLayout, point.scrollView);
+			const lines = box?.scrollContentLines;
+			if (lines) return lines[point.row - (box?.scrollContentStart ?? 0)] ?? "";
 		}
 		return this.previousScreen[point.row] ?? "";
 	}
@@ -944,15 +987,28 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		const selection = this.getSelectionBounds();
 		if (!selection) return;
 		let sourceLines: readonly string[] = this.previousScreen;
+		let sourceStart = 0;
 		if (selection.start.scrollView) {
 			if (!this.currentLayout) return;
 			const box = getScrollViewBox(this.currentLayout, selection.start.scrollView);
 			if (!box?.scrollContentLines) return;
-			sourceLines = box.scrollContentLines;
+			const content = box.children[0]?.component;
+			if (content && isLineViewportComponent(content)) {
+				const rendered = content.renderViewport(
+					box.children[0]?.rect.width ?? box.rect.width,
+					selection.start.row,
+					selection.end.row - selection.start.row + 1,
+				);
+				sourceLines = rendered.lines;
+				sourceStart = rendered.startLine;
+			} else {
+				sourceLines = box.scrollContentLines;
+				sourceStart = box.scrollContentStart ?? 0;
+			}
 		}
 		const lines: string[] = [];
 		for (let row = selection.start.row; row <= selection.end.row; row++) {
-			const line = sourceLines[row] ?? "";
+			const line = sourceLines[row - sourceStart] ?? "";
 			const columns = this.getSelectionColumns(line, row, selection);
 			lines.push(
 				stripTerminalSequences(

@@ -3,6 +3,7 @@ import * as path from "node:path";
 import { deleteKittyImage, isImageLine } from "./terminal-image.ts";
 import { type TUI, TuiBase, type TuiStopOptions } from "./tui.ts";
 import { visibleWidth } from "./utils.ts";
+import { isLineViewportComponent, renderComponentsViewport } from "./components/viewport-container.ts";
 
 const KITTY_SEQUENCE_PREFIX = "\x1b_G";
 
@@ -51,6 +52,8 @@ export interface TuiMainScreenRenderState {
 	hardwareCursorRow: number;
 	maxLinesRendered: number;
 	previousViewportTop: number;
+	viewportWindowStart?: number;
+	viewportDocumentHeight?: number;
 }
 
 /** TUI implementation that renders into the terminal's main screen and scrollback. */
@@ -64,6 +67,8 @@ export class TuiMainScreen extends TuiBase implements TUI {
 	private hardwareCursorRow = 0;
 	private maxLinesRendered = 0;
 	private previousViewportTop = 0;
+	private viewportWindowStart: number | undefined;
+	private viewportDocumentHeight: number | undefined;
 
 	captureRenderState(): TuiMainScreenRenderState {
 		return {
@@ -74,6 +79,8 @@ export class TuiMainScreen extends TuiBase implements TUI {
 			hardwareCursorRow: this.hardwareCursorRow,
 			maxLinesRendered: this.maxLinesRendered,
 			previousViewportTop: this.previousViewportTop,
+			viewportWindowStart: this.viewportWindowStart,
+			viewportDocumentHeight: this.viewportDocumentHeight,
 		};
 	}
 
@@ -86,6 +93,8 @@ export class TuiMainScreen extends TuiBase implements TUI {
 		this.hardwareCursorRow = state.hardwareCursorRow;
 		this.maxLinesRendered = state.maxLinesRendered;
 		this.previousViewportTop = state.previousViewportTop;
+		this.viewportWindowStart = state.viewportWindowStart;
+		this.viewportDocumentHeight = state.viewportDocumentHeight;
 	}
 
 	protected override resetRenderState(): void {
@@ -96,12 +105,14 @@ export class TuiMainScreen extends TuiBase implements TUI {
 		this.hardwareCursorRow = 0;
 		this.maxLinesRendered = 0;
 		this.previousViewportTop = 0;
+		this.viewportWindowStart = undefined;
+		this.viewportDocumentHeight = undefined;
 	}
 
 	protected override beforeTerminalStop(options: TuiStopOptions): void {
 		if (options.preserveScreen || this.previousLines.length === 0) return;
 		this.terminal.write(" ");
-		const targetRow = this.previousLines.length;
+		const targetRow = this.viewportDocumentHeight ?? this.previousLines.length;
 		const lineDiff = targetRow - this.hardwareCursorRow;
 		if (lineDiff > 0) this.terminal.write(`\x1b[${lineDiff}B`);
 		else if (lineDiff < 0) this.terminal.write(`\x1b[${-lineDiff}A`);
@@ -183,6 +194,19 @@ export class TuiMainScreen extends TuiBase implements TUI {
 		const height = this.terminal.rows;
 		const widthChanged = this.previousWidth !== 0 && this.previousWidth !== width;
 		const heightChanged = this.previousHeight !== 0 && this.previousHeight !== height;
+		const hasViewportDocument = this.children.some(isLineViewportComponent);
+		if (
+			!widthChanged &&
+			!heightChanged &&
+			this.previousLines.length > 0 &&
+			hasViewportDocument &&
+			this.renderVisibleDocument(width, height)
+		) {
+			return;
+		}
+		if (hasViewportDocument) this.recordFullHistoryFallback();
+		this.viewportWindowStart = undefined;
+		this.viewportDocumentHeight = undefined;
 		const previousBufferLength = this.previousHeight > 0 ? this.previousViewportTop + this.previousHeight : height;
 		let prevViewportTop = heightChanged ? Math.max(0, previousBufferLength - height) : this.previousViewportTop;
 		let viewportTop = prevViewportTop;
@@ -551,6 +575,84 @@ export class TuiMainScreen extends TuiBase implements TUI {
 		this.previousKittyImageIds = this.collectKittyImageIds(newLines);
 		this.previousWidth = width;
 		this.previousHeight = height;
+	}
+
+	/**
+	 * Diff only the visible line window after the first full main-screen render.
+	 * Returns false for shrink/backward movement or Kitty content so the established
+	 * full renderer can preserve those terminal-specific semantics.
+	 */
+	private renderVisibleDocument(width: number, height: number): boolean {
+		const previousDocumentHeight = this.viewportDocumentHeight ?? this.previousLines.length;
+		const previousStart = this.viewportWindowStart ?? Math.max(0, previousDocumentHeight - height);
+		const previousWindow =
+			this.viewportWindowStart === undefined ? this.previousLines.slice(previousStart) : this.previousLines;
+		const totalHeight = this.children.reduce((sum, child) => {
+			return sum + (isLineViewportComponent(child) ? child.getContentHeight(width) : child.render(width).length);
+		}, 0);
+		const requestedStart = Math.max(0, totalHeight - height);
+		if (requestedStart < previousStart) return false;
+
+		const rendered = renderComponentsViewport(this.children, width, requestedStart, height, totalHeight);
+		const sourceOffset = Math.max(0, requestedStart - rendered.startLine);
+		let nextWindow = rendered.lines.slice(sourceOffset, sourceOffset + height);
+		this.recordRootRender(totalHeight, Math.min(nextWindow.length, height));
+		if (this.hasOverlayEntries) nextWindow = this.compositeOverlays(nextWindow, width, height);
+		const cursorPos = this.extractCursorPosition(nextWindow, height);
+		nextWindow = this.applyLineResets(nextWindow);
+
+		if (
+			rendered.leadingKittyImage ||
+			previousWindow.some(isImageLine) ||
+			nextWindow.some(isImageLine) ||
+			requestedStart - previousStart > height
+		) {
+			return false;
+		}
+
+		const shiftedRows = requestedStart - previousStart;
+		const expectedLines = shiftedRows === 0 ? previousWindow : previousWindow.slice(shiftedRows);
+		let buffer = "\x1b[?2026h";
+		let writeCursorRow = this.hardwareCursorRow;
+		if (shiftedRows > 0) {
+			buffer += `\x1b[${height};1H`;
+			buffer += "\r\n".repeat(shiftedRows);
+			writeCursorRow = Math.max(0, totalHeight - 1);
+		}
+
+		let diffLines = 0;
+		const comparisonLength = Math.max(nextWindow.length, expectedLines.length);
+		for (let row = 0; row < comparisonLength; row++) {
+			const previousLine = expectedLines[row] ?? "";
+			const nextLine = nextWindow[row] ?? "";
+			if (previousLine === nextLine) continue;
+			const targetRow = requestedStart + row;
+			const rowDelta = targetRow - writeCursorRow;
+			if (rowDelta > 0) buffer += `\x1b[${rowDelta}B`;
+			else if (rowDelta < 0) buffer += `\x1b[${-rowDelta}A`;
+			buffer += `\r\x1b[2K${nextLine}`;
+			diffLines++;
+			writeCursorRow = targetRow;
+		}
+		buffer += "\x1b[?2026l";
+		if (shiftedRows > 0 || diffLines > 0) {
+			this.recordTerminalFrame(buffer, diffLines + shiftedRows);
+			this.terminal.write(buffer);
+			this.hardwareCursorRow = writeCursorRow;
+		}
+
+		this.previousLines = nextWindow;
+		this.previousKittyImageIds = new Set();
+		this.previousWidth = width;
+		this.previousHeight = height;
+		this.viewportWindowStart = requestedStart;
+		this.viewportDocumentHeight = totalHeight;
+		this.previousViewportTop = requestedStart;
+		this.cursorRow = Math.max(0, totalHeight - 1);
+		this.maxLinesRendered = Math.max(this.maxLinesRendered, totalHeight);
+		const absoluteCursor = cursorPos ? { row: requestedStart + cursorPos.row, col: cursorPos.col } : null;
+		this.positionHardwareCursor(absoluteCursor, totalHeight);
+		return true;
 	}
 
 	/**
