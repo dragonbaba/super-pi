@@ -6,6 +6,8 @@ import ts from "typescript";
 const RETAINED_PATH = "packages/tui/src/components/retained-item.ts";
 const INSTRUMENTATION_PATH = "packages/tui/src/render-instrumentation.ts";
 const INTERACTIVE_MODE_PATH = "packages/coding-agent/src/modes/interactive/interactive-mode.ts";
+const MAIN_SCREEN_PATH = "packages/tui/src/tui-main-screen.ts";
+const ALT_SCREEN_PATH = "packages/tui/src/tui-alt-screen.ts";
 
 function findMethod(source: ts.SourceFile, className: string, methodName: string): ts.MethodDeclaration {
 	for (const statement of source.statements) {
@@ -76,15 +78,47 @@ test("viewport hot paths avoid full-history wrapper copies and global ownership"
 });
 
 test("Main bounded frames use explicit mutation attribution and the singleton tail query", () => {
-	const mainPath = "packages/tui/src/tui-main-screen.ts";
-	const text = readFileSync(mainPath, "utf8");
-	const source = ts.createSourceFile(mainPath, text, ts.ScriptTarget.Latest, true);
+	const text = readFileSync(MAIN_SCREEN_PATH, "utf8");
+	const source = ts.createSourceFile(MAIN_SCREEN_PATH, text, ts.ScriptTarget.Latest, true);
 	const visibleRender = findMethod(source, "TuiMainScreen", "renderVisibleDocument").getText(source);
 	assert.match(visibleRender, /this\.children\.length === 1[\s\S]*renderViewportTail\(width, height\)/);
 	assert.match(visibleRender, /observeViewportMutations\(width\)/);
 	assert.match(visibleRender, /mutation\.kind === "unsafe"/);
 	assert.match(visibleRender, /mutation\.earliestChangedLine < previousStart/);
 	assert.doesNotMatch(visibleRender, /previousKittyImageIds\s*=\s*new Set/);
+	assert.match(visibleRender, /sourceOffset === 0[\s\S]*?\? rendered\.lines[\s\S]*?: rendered\.lines\.slice/);
+	assert.doesNotMatch(visibleRender, /expectedLines|previousWindow\.slice\(shiftedRows/);
+});
+
+test("allocation hot paths keep cache hits and mutation writes allocation-free", () => {
+	const retainedText = readFileSync(RETAINED_PATH, "utf8");
+	const retainedSource = ts.createSourceFile(RETAINED_PATH, retainedText, ts.ScriptTarget.Latest, true);
+	const itemRender = findMethod(retainedSource, "RetainedItem", "render").getText(retainedSource);
+	const hitReturn = itemRender.indexOf("return this.cachedLines");
+	const missKeyCreation = itemRender.indexOf("key = {");
+	assert.ok(hitReturn >= 0 && missKeyCreation > hitReturn, "cache key creation must remain after the cache-hit return");
+	assert.doesNotMatch(itemRender.slice(0, hitReturn), /nextKey|RetainedCacheKey\s*=\s*\{/);
+
+	const mutation = findMethod(retainedSource, "RetainedContainer", "recordViewportMutation");
+	for (const parameter of mutation.parameters) {
+		assert.equal(parameter.type?.kind, ts.SyntaxKind.NumberKeyword, `${parameter.name.getText()}: primitive number`);
+	}
+	const mutationText = mutation.getText(retainedSource);
+	assert.doesNotMatch(mutationText, /\.shift\(|\.\.\.|\{\s*\.\.\./);
+	assert.match(retainedText, /viewportMutationEventRecordIndices = new Float64Array/);
+	assert.doesNotMatch(retainedText, /viewportMutationEventRecords = new Array/);
+});
+
+test("Main reuses mutation tokens and Alt avoids duplicate no-op frame copies", () => {
+	const mainText = readFileSync(MAIN_SCREEN_PATH, "utf8");
+	assert.match(mainText, /private readonly viewportMutationTokens: unknown\[\] = \[\]/);
+	assert.doesNotMatch(mainText, /childTokens\s*:/);
+
+	const altText = readFileSync(ALT_SCREEN_PATH, "utf8");
+	assert.match(altText, /let screen = nextLayout\.lines;/);
+	assert.doesNotMatch(altText, /nextLayout\.lines\.slice\(\)/);
+	assert.match(altText, /if \(!this\.flashes\.hasEntries\) return screen/);
+	assert.doesNotMatch(altText, /:\s*\{ lines: screen, evictedImageDeletion: "" \}/);
 });
 
 test("every production transcript splice notifies the structure index", () => {

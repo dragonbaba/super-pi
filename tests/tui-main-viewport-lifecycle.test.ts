@@ -6,7 +6,7 @@ import { ScrollView } from "../packages/tui/src/components/scroll-view.ts";
 import { ViewportContainer } from "../packages/tui/src/components/viewport-container.ts";
 import { TuiRenderInstrumentation } from "../packages/tui/src/render-instrumentation.ts";
 import type { Terminal } from "../packages/tui/src/terminal.ts";
-import { type Component, CURSOR_MARKER } from "../packages/tui/src/tui.ts";
+import { type Component, Container, CURSOR_MARKER } from "../packages/tui/src/tui.ts";
 import { TuiAltScreen } from "../packages/tui/src/tui-alt-screen.ts";
 import { TuiMainScreen, type TuiMainScreenRenderState } from "../packages/tui/src/tui-main-screen.ts";
 import { deleteKittyImage, registerKittyImageMetadata } from "../packages/tui/src/terminal-image.ts";
@@ -332,6 +332,59 @@ test("Main Screen bounds only attributed tail and visible-window mutations", asy
 
 	main.stop({ preserveScreen: true });
 	terminal.dispose();
+});
+
+test("production Main composes each plain root leaf at most once per bounded frame", () => {
+	const instrumentation = new TuiRenderInstrumentation();
+	const transcript = new RetainedContainer({ instrumentation });
+	for (let index = 0; index < 500; index++) {
+		transcript.addRetainedChild(new MutableMainItem(`history-${index}`), {
+			id: `history-${index}`,
+			version: 1,
+			completed: true,
+		});
+	}
+	const activeComponent = new MutableMainItem("active");
+	const active = transcript.addRetainedChild(activeComponent, { id: "active", version: 0 });
+	const plainLeaves: MutableMainItem[] = [];
+	const plainRoot = (id: string, lines = 1): Container => {
+		const container = new Container();
+		const leaf = new MutableMainItem(id, lines);
+		plainLeaves.push(leaf);
+		container.addChild(leaf);
+		return container;
+	};
+	const document = new ViewportContainer();
+	document.addChild(plainRoot("header"));
+	document.addChild(plainRoot("loaded-resources"));
+	document.addChild(transcript);
+	const roots: Component[] = [
+		document,
+		plainRoot("pending"),
+		plainRoot("status"),
+		plainRoot("widget-above"),
+		plainRoot("editor", 3),
+		plainRoot("widget-below"),
+		plainRoot("footer"),
+	];
+	const terminal = new FakeTerminal(120, 40);
+	const main = new TuiMainScreen(terminal, false);
+	main.setRenderInstrumentation(instrumentation);
+	for (const root of roots) main.addChild(root);
+	main.renderNow();
+
+	for (const leaf of plainLeaves) leaf.renderCalls = 0;
+	activeComponent.renderCalls = 0;
+	instrumentation.reset();
+	activeComponent.advanceVisual();
+	active.advanceVersion();
+	main.renderNow();
+
+	assert.equal(plainLeaves.length, 8);
+	for (const leaf of plainLeaves) assert.equal(leaf.renderCalls, 1, `${leaf.id}: one render`);
+	assert.equal(activeComponent.renderCalls, 1);
+	assert.equal(instrumentation.snapshot().completedItemRenders, 0);
+	assert.equal(instrumentation.snapshot().fullHistoryFallbacks, 0);
 });
 
 test("Main Screen preserves offscreen Kitty IDs until a full fallback deletes them", () => {
