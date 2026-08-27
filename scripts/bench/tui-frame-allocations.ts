@@ -40,6 +40,7 @@ class NoopTerminal implements Terminal {
 	readonly kittyProtocolActive = false;
 	columns: number;
 	rows: number;
+	private frameWriteCompletion: ((generation: number, error?: Error) => void) | undefined;
 	constructor(columns: number, rows: number) {
 		this.columns = columns;
 		this.rows = rows;
@@ -48,6 +49,11 @@ class NoopTerminal implements Terminal {
 	stop(): void {}
 	async drainInput(): Promise<void> {}
 	write(): void {}
+	setFrameWriteCompletionListener(listener: ((generation: number, error?: Error) => void) | undefined): void {
+		this.frameWriteCompletion = listener;
+	}
+	writeFrame(_data: string, generation: number): void { this.frameWriteCompletion?.(generation); }
+	cancelFrameWrite(): void {}
 	moveBy(): void {}
 	hideCursor(): void {}
 	showCursor(): void {}
@@ -320,6 +326,7 @@ runtime.dispose();
 process.stdout.write(`${JSON.stringify({
 	schemaVersion: 1,
 	benchmark: "tui-frame-allocations",
+	fixtureClass: "render-plus-queue",
 	fixture: fixtureArgument,
 	items: itemCount,
 	width,
@@ -354,6 +361,17 @@ process.stdout.write(`${JSON.stringify({
 		viewportBlockLookupProbesPerFrame: metrics.viewportBlockLookupProbes / measuredFrames,
 		mutationEventWritesPerFrame: metrics.mutationEventWrites / measuredFrames,
 		fullHistoryFallbacksPerFrame: metrics.fullHistoryFallbacks / measuredFrames,
+		frameStringsGenerated: metrics.frameStringsGenerated,
+		frameStringsGeneratedPerFrame: metrics.frameStringsGenerated / measuredFrames,
+		frameStringUtf8BytesGenerated: metrics.frameStringUtf8BytesGenerated,
+		frameStringUtf8BytesGeneratedPerFrame: metrics.frameStringUtf8BytesGenerated / measuredFrames,
+		maximumFrameUtf8Bytes: metrics.maximumFrameUtf8Bytes,
+		activeFrameUtf8Bytes: metrics.activeFrameUtf8Bytes,
+		pendingFrameUtf8Bytes: metrics.pendingFrameUtf8Bytes,
+		fullSizeFrameCopies: metrics.fullSizeFrameCopies,
+		framePromisesCreated: metrics.framePromisesCreated,
+		frameAbortControllersCreated: metrics.frameAbortControllersCreated,
+		frameWrapperObjectsCreated: metrics.frameWrapperObjectsCreated,
 	},
 	topAllocationSites: sampled.top,
 }, null, 2)}\n`);

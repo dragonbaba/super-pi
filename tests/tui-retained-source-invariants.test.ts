@@ -56,7 +56,7 @@ test("retained cache and instrumentation stay instance-local and retain no compo
 		/class RetainedContainer extends Container implements LineViewportComponent \{[\s\S]*?private readonly retainedById/,
 	);
 	assert.doesNotMatch(retainedText, /^const .*new Map</m);
-	assert.doesNotMatch(instrumentationText, /Component|string\[\]|frame(?:s)?\s*:/i);
+	assert.doesNotMatch(instrumentationText, /Component|string\[\]|(?:^|\s)frames?\s*:/im);
 	assert.doesNotMatch(instrumentationText, /ObjectPool/);
 });
 

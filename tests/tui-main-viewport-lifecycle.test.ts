@@ -36,6 +36,7 @@ class HeadlessCaptureTerminal implements Terminal {
 	readonly kittyProtocolActive = false;
 	private readonly emulator: InstanceType<typeof HeadlessTerminal>;
 	private pendingWrites = 0;
+	private frameWriteCompletion: ((generation: number, error?: Error) => void) | undefined;
 
 	constructor(columns: number, rows: number) {
 		this.columns = columns;
@@ -51,6 +52,14 @@ class HeadlessCaptureTerminal implements Terminal {
 		this.pendingWrites++;
 		this.emulator.write(data, () => this.pendingWrites--);
 	}
+	setFrameWriteCompletionListener(listener: ((generation: number, error?: Error) => void) | undefined): void {
+		this.frameWriteCompletion = listener;
+	}
+	writeFrame(data: string, generation: number): void {
+		this.write(data);
+		this.frameWriteCompletion?.(generation);
+	}
+	cancelFrameWrite(): void {}
 	moveBy(): void {}
 	hideCursor(): void {}
 	showCursor(): void {}
