@@ -131,7 +131,7 @@ await runBenchmarkMain({
 			overlayRenders: metrics.overlayRenders,
 			terminalDiffLines: metrics.terminalDiffLines,
 			instrumentedTerminalBytes: metrics.terminalBytes,
-			frameQueueHighWaterMark: metrics.frameQueueHighWaterMark,
+			pendingRenderRequestHighWaterMark: metrics.pendingRenderRequestHighWaterMark,
 			slowTerminalBytesPerSecond: terminalBytesPerSecond,
 			...terminal.sample,
 		};

@@ -778,7 +778,6 @@ export abstract class TuiBase extends Container implements TUI {
 	}
 
 	requestRender(force = false): void {
-		this.renderInstrumentation?.recordFrameQueueDepth(1);
 		if (force) {
 			this.resetRenderState();
 			this.requestImmediateRender();
@@ -786,12 +785,15 @@ export abstract class TuiBase extends Container implements TUI {
 		}
 		if (this.renderRequested) return;
 		this.renderRequested = true;
+		this.renderInstrumentation?.recordPendingRenderRequest();
 		process.nextTick(() => this.scheduleRender());
 	}
 
 	private requestImmediateRender(): void {
 		this.cancelRenderTimer();
+		const wasRequested = this.renderRequested;
 		this.renderRequested = true;
+		if (!wasRequested) this.renderInstrumentation?.recordPendingRenderRequest();
 		if (this.immediateRenderScheduled) return;
 		this.immediateRenderScheduled = true;
 		process.nextTick(() => {

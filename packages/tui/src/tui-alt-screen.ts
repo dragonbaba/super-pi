@@ -1053,7 +1053,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		const root = this.layoutRoot ?? this.implicitScrollView;
 		const nextLayout = renderLayoutFrame(root, width, height, this.layoutRequestRender);
 		let screen = nextLayout.lines.slice();
-		this.recordRootRender(screen.length, Math.min(screen.length, height));
+		this.recordRootRender(nextLayout.generatedLineCount, Math.min(screen.length, height));
 		for (let row = 0; row < screen.length; row++) {
 			const line = screen[row];
 			if (line.startsWith("\x1b]133;")) screen[row] = line.replace(OSC133_ZONE_PREFIX_PATTERN, "");

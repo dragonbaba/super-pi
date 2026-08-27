@@ -8,7 +8,7 @@ export interface TuiRenderMetrics {
 	overlayRenders: number;
 	terminalDiffLines: number;
 	terminalBytes: number;
-	frameQueueHighWaterMark: number;
+	pendingRenderRequestHighWaterMark: number;
 	retainedCacheHits: number;
 	retainedCacheMisses: number;
 }
@@ -23,7 +23,7 @@ const EMPTY_METRICS: TuiRenderMetrics = {
 	overlayRenders: 0,
 	terminalDiffLines: 0,
 	terminalBytes: 0,
-	frameQueueHighWaterMark: 0,
+	pendingRenderRequestHighWaterMark: 0,
 	retainedCacheHits: 0,
 	retainedCacheMisses: 0,
 };
@@ -86,7 +86,7 @@ export class TuiRenderInstrumentation {
 		this.metrics.terminalDiffLines += diffLines;
 	}
 
-	recordFrameQueueDepth(depth: number): void {
-		this.metrics.frameQueueHighWaterMark = Math.max(this.metrics.frameQueueHighWaterMark, depth);
+	recordPendingRenderRequest(): void {
+		this.metrics.pendingRenderRequestHighWaterMark = 1;
 	}
 }

@@ -65,7 +65,7 @@ test("active updates do not rerender 5,000 completed transcript items", () => {
 		overlayRenders: 0,
 		terminalDiffLines: 0,
 		terminalBytes: 0,
-		frameQueueHighWaterMark: 0,
+		pendingRenderRequestHighWaterMark: 0,
 		retainedCacheHits: 5_000,
 		retainedCacheMisses: 0,
 	});
@@ -247,7 +247,7 @@ test("10,000 active updates stay uncached until the final version is frozen", ()
 	assert.equal(instrumentation.snapshot().retainedCacheHits, 1);
 });
 
-test("TUI instrumentation records root, overlay, diff, bytes, and bounded request depth", () => {
+test("TUI instrumentation records root, overlay, diff, bytes, and pending render requests", () => {
 	const instrumentation = new TuiRenderInstrumentation();
 	const transcript = new RetainedContainer({ instrumentation });
 	transcript.addRetainedChild(new MutableLine("history"), { id: "history", version: 1, completed: true });
@@ -267,7 +267,7 @@ test("TUI instrumentation records root, overlay, diff, bytes, and bounded reques
 	assert.equal(metrics.visibleLines, 2);
 	assert.equal(metrics.terminalDiffLines, 20);
 	assert.ok(metrics.terminalBytes > 0);
-	assert.equal(metrics.frameQueueHighWaterMark, 1);
+	assert.equal(metrics.pendingRenderRequestHighWaterMark, 1);
 
 	instrumentation.reset();
 	activeComponent.value = "active-1";
@@ -281,7 +281,7 @@ test("TUI instrumentation records root, overlay, diff, bytes, and bounded reques
 	assert.equal(metrics.rootRenders, 1);
 	assert.equal(metrics.overlayRenders, 1);
 	assert.equal(metrics.terminalDiffLines, 1);
-	assert.equal(metrics.frameQueueHighWaterMark, 1);
+	assert.equal(metrics.pendingRenderRequestHighWaterMark, 1);
 });
 
 test("instrumentation counts UTF-8 bytes, resets cleanly, and stays isolated per TUI", () => {
@@ -309,10 +309,36 @@ test("Alt Screen instrumentation records root, overlay, diff, and UTF-8 frame by
 		const metrics = instrumentation.snapshot();
 		assert.equal(metrics.rootRenders, 1);
 		assert.equal(metrics.overlayRenders, 1);
-		assert.equal(metrics.generatedLines, 10);
+		assert.equal(metrics.generatedLines, 1);
 		assert.equal(metrics.visibleLines, 10);
 		assert.equal(metrics.terminalDiffLines, 10);
 		assert.ok(metrics.terminalBytes > Buffer.byteLength("正文-中😀浮层-😀", "utf8"));
+	} finally {
+		tui.stop();
+	}
+});
+
+test("Alt Screen distinguishes generated transcript lines from its visible viewport", () => {
+	const instrumentation = new TuiRenderInstrumentation();
+	const transcript = new RetainedContainer({ instrumentation });
+	for (let index = 0; index < 50_000; index++) {
+		transcript.addRetainedChild(new MutableLine(`history-${index}`), {
+			id: `history-${index}`,
+			version: 1,
+			completed: true,
+		});
+	}
+	const tui = new TuiAltScreen(new FakeTerminal(120, 40), false, undefined, { mouse: false });
+	tui.setRenderInstrumentation(instrumentation);
+	tui.addChild(transcript);
+	tui.start();
+	try {
+		instrumentation.reset();
+		tui.renderNow();
+		const metrics = instrumentation.snapshot();
+		assert.ok(metrics.generatedLines > metrics.visibleLines);
+		assert.equal(metrics.generatedLines, 50_000);
+		assert.ok(metrics.visibleLines <= 40);
 	} finally {
 		tui.stop();
 	}
