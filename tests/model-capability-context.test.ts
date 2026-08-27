@@ -185,6 +185,8 @@ test("capability sanitizer blocks samplingParams while onPayload remains the fin
 		cacheRetention: "long",
 		reasoningEffort: "high",
 			samplingParams: {
+			max_tool_calls: 99,
+			maxToolCalls: 99,
 			functions: [legacyFunction],
 			function_call: { name: "legacy-injected" },
 			functionCall: { name: "legacy-injected" },
@@ -192,13 +194,27 @@ test("capability sanitizer blocks samplingParams while onPayload remains the fin
 			webSearchOptions,
 			tools: [injectedTool],
 			tool_choice: "required",
+			toolChoice: "required",
 			parallel_tool_calls: true,
+			parallelToolCalls: true,
+			previousResponseId: "injected-response",
 			reasoning_effort: "high",
+			reasoningEffort: "high",
 			reasoning: injectedReasoning,
+			thinkingConfig: { thinkingBudget: 99_999 },
+			thinking_token_budget: 99_999,
 			prompt_cache_key: "secret-cache-key",
+			promptCacheKey: "secret-cache-key",
 			prompt_cache_retention: "24h",
+			promptCacheRetention: "24h",
 			prompt_cache_options: { mode: "explicit" },
+			promptCacheOptions: { mode: "explicit" },
 			cache_control: { type: "ephemeral", ttl: "1h" },
+			cacheControl: { type: "ephemeral", ttl: "1h" },
+			cacheRetention: "long",
+			toolConfig: { functionCallingConfig: { mode: "ANY" } },
+			system: "injected system",
+			systemInstruction: "injected system instruction",
 			strict: true,
 		},
 		onPayload: (payload) => {
@@ -224,6 +240,8 @@ test("capability sanitizer blocks samplingParams while onPayload remains the fin
 		},
 	}).result();
 	assert.ok(sanitized);
+	assert.equal(sanitized.max_tool_calls, undefined);
+	assert.equal(sanitized.maxToolCalls, undefined);
 	assert.equal(sanitized.tools, undefined);
 	assert.equal(sanitized.functions, undefined);
 	assert.equal(sanitized.function_call, undefined);
@@ -231,13 +249,27 @@ test("capability sanitizer blocks samplingParams while onPayload remains the fin
 	assert.equal(sanitized.web_search_options, undefined);
 	assert.equal(sanitized.webSearchOptions, undefined);
 	assert.equal(sanitized.tool_choice, undefined);
+	assert.equal(sanitized.toolChoice, undefined);
 	assert.equal(sanitized.parallel_tool_calls, undefined);
+	assert.equal(sanitized.parallelToolCalls, undefined);
+	assert.equal(sanitized.previousResponseId, undefined);
 	assert.equal(sanitized.reasoning_effort, undefined);
+	assert.equal(sanitized.reasoningEffort, undefined);
 	assert.equal(sanitized.reasoning, undefined);
+	assert.equal(sanitized.thinkingConfig, undefined);
+	assert.equal(sanitized.thinking_token_budget, undefined);
 	assert.equal(sanitized.prompt_cache_key, undefined);
+	assert.equal(sanitized.promptCacheKey, undefined);
 	assert.equal(sanitized.prompt_cache_retention, undefined);
+	assert.equal(sanitized.promptCacheRetention, undefined);
 	assert.equal(sanitized.prompt_cache_options, undefined);
+	assert.equal(sanitized.promptCacheOptions, undefined);
 	assert.equal(sanitized.cache_control, undefined);
+	assert.equal(sanitized.cacheControl, undefined);
+	assert.equal(sanitized.cacheRetention, undefined);
+	assert.equal(sanitized.toolConfig, undefined);
+	assert.equal(sanitized.system, undefined);
+	assert.equal(sanitized.systemInstruction, undefined);
 	assert.equal(sanitized.strict, undefined);
 	assert.equal(injectedTool.function.strict, true);
 	assert.equal(injectedReasoning.effort, "high");
