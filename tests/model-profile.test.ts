@@ -397,14 +397,13 @@ test("OAuth identity mutation clears stale provider enrichment and reruns the pr
 			login: async () => ({ refresh: "refresh", access: "access", expires: 1 }),
 			refreshToken: async (credential) => credential,
 			getApiKey: (credential) => credential.access,
-			modifyModels: (models) => {
-				const model = models[0]!;
-				model.id = "extension-owned";
-				model.name = "Extension-owned";
-				model.api = "mistral-conversations";
-				model.provider = "extension-provider";
-				return models;
-			},
+			modifyModels: (models) => models.map((model) => ({
+				...model,
+				id: "extension-owned",
+				name: "Extension-owned",
+				api: "mistral-conversations",
+				provider: "extension-provider",
+			})),
 		},
 	});
 	await provider.refreshModels?.({

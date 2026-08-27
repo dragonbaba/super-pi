@@ -590,13 +590,25 @@ export function composeModelProvider(
 				capabilityInputs: snapshotCapabilityInputs(model),
 			}]));
 			const cloneOrigins = new WeakMap<object, ReturnType<typeof originals.get>>();
+			const capabilityOrigins = new WeakMap<object, ReturnType<typeof originals.get> | null>();
+			for (const original of originals.values()) {
+				const capabilities = original.model.capabilities;
+				if (!capabilities) continue;
+				capabilityOrigins.set(
+					capabilities,
+					capabilityOrigins.has(capabilities) ? null : original,
+				);
+			}
 			const extensionModels = models.map((model) => {
 				const clone = cloneModelForExtension(model);
 				cloneOrigins.set(clone, originals.get(model.id));
 				return clone;
 			});
 			models = extension.oauth.modifyModels(extensionModels, extensionOAuthCredential).map((model) => {
-				const original = cloneOrigins.get(model) ?? originals.get(model.id);
+				const capabilityOrigin = model.capabilities
+					? capabilityOrigins.get(model.capabilities)
+					: undefined;
+				const original = cloneOrigins.get(model) ?? capabilityOrigin ?? originals.get(model.id);
 				const inheritedCapabilities = original?.model.capabilities === model.capabilities;
 				const capabilityInputsChanged =
 					original !== undefined &&
