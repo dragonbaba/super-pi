@@ -78,7 +78,7 @@ await tui.flushTerminalFrames(); // Explicit critical/final-frame boundary
 tui.onDebug = () => console.log("Debug triggered");
 ```
 
-`Terminal.write()` is for terminal controls; observe or await any returned Promise. Renderers use the callback-driven frame lane: register one stable `setFrameWriteCompletionListener()`, then call `writeFrame(data, generation)`. Completion requires a successful Writable callback and, after a false return, `drain`. Normal frame writes have no Promise or `AbortController` and no absolute timeout. `TuiBase` combines content and cursor output from one render into one atomic frame; stop/fatal/mode-switch lifecycle flushes have an independent bounded deadline and call `cancelFrameWrite(generation)` to release listeners and references before terminal restoration if output never settles.
+`Terminal.write()` is for terminal controls; observe or await any returned Promise. Renderers use the callback-driven frame lane: register one stable `setFrameWriteCompletionListener()`, then call `writeFrame(data, generation)`. Completion requires a successful Writable callback and, after a false return, `drain`. Normal frame writes have no Promise or `AbortController` and no absolute timeout. `TuiBase` combines content and cursor output from one render into one atomic frame. A lifecycle deadline may logically cancel a generation, but an OS write is not cancellable: the orphan keeps exclusive physical writer ownership until its callback and drain settle, and one replacement may wait in fixed terminal slots without consuming stale events. Use `stop()` for a resumable mode switch, suspend, or external-editor boundary; use `dispose()` for final ownership release.
 
 ### Alternate-screen viewport layouts
 

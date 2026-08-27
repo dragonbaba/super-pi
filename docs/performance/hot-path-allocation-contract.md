@@ -146,7 +146,10 @@ The Phase 4C frame lane is callback-driven:
 - a busy cycle owns at most one shared flush deferred;
 - Writable completion requires both successful callback and backpressure completion (`write() === true` or a later `drain`);
 - normal write completion and lifecycle deadline are separate;
-- flush, abort, failure, and disposal clear active, pending, writer, and waiter references;
+- lifecycle abort clears logical queue references but cannot cancel an OS write;
+- a canceled write retains exclusive physical writer ownership until its own callback and drain settle, so stale events cannot satisfy a replacement generation;
+- one replacement may wait in fixed primitive terminal slots; no second physical write starts early;
+- flush, failure, and final disposal clear queue, writer, waiter, and terminal-owned listener references;
 - queue failure does not prevent terminal restoration attempts.
 
 The portable numeric regression gates are:
