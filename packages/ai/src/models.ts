@@ -973,6 +973,14 @@ export function hasApi<TApi extends Api>(model: Model<Api>, api: TApi): model is
 }
 
 export function calculateCost<TApi extends Api>(model: Model<TApi>, usage: Usage): Usage["cost"] {
+	if (model.costKnown === false) {
+		usage.cost.input = 0;
+		usage.cost.output = 0;
+		usage.cost.cacheRead = 0;
+		usage.cost.cacheWrite = 0;
+		usage.cost.total = 0;
+		return usage.cost;
+	}
 	const inputTokens = usage.input + usage.cacheRead + usage.cacheWrite;
 	let rates: ModelCostRates = model.cost;
 	let matchedThreshold = -1;

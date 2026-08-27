@@ -13,7 +13,13 @@ const UNKNOWN_COST_ROUTER_IDS = new Set([
 ]);
 
 function profileOpenRouterModel(model: Model<"openai-completions">): Model<"openai-completions"> {
-	return UNKNOWN_COST_ROUTER_IDS.has(model.id) ? { ...model, costKnown: false } : model;
+	return UNKNOWN_COST_ROUTER_IDS.has(model.id)
+		? {
+				...model,
+				costKnown: false,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			}
+		: model;
 }
 
 export function openrouterProvider(): Provider<"openai-completions"> {
