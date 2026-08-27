@@ -24,6 +24,8 @@ const itemCount = readIntegerOption("--items", 5_000);
 const width = readIntegerOption("--width", 120);
 const height = readIntegerOption("--height", 40);
 const terminalBytesPerSecond = readIntegerOption("--terminal-bytes-per-second", 16 * 1024);
+const fullHistoryMode = process.argv.includes("--full-history");
+const cpuOnly = process.argv.includes("--cpu-only");
 const items = createTranscriptItems(itemCount);
 initTheme("dark");
 
@@ -36,7 +38,7 @@ class SlowTerminal extends FakeTerminal {
 	override write(data: string): void {
 		super.write(data);
 		const bytes = Buffer.byteLength(data);
-		const delayMs = this.backpressureEnabled ? bytes / terminalBytesPerSecond * 1_000 : 0;
+		const delayMs = this.backpressureEnabled && !cpuOnly ? bytes / terminalBytesPerSecond * 1_000 : 0;
 		this.sampleWriteCalls++;
 		this.sampleBytes += bytes;
 		this.sampleDelayMs += delayMs;
@@ -93,7 +95,14 @@ const activeItem = transcript.addRetainedChild(active, { id: "active", version: 
 const terminal = new SlowTerminal(width, height);
 const tui = new TuiMainScreen(terminal, false);
 tui.setRenderInstrumentation(instrumentation);
-tui.addChild(transcript);
+tui.addChild(
+	fullHistoryMode
+		? {
+				render: (renderWidth) => transcript.render(renderWidth),
+				invalidate: () => transcript.invalidate(),
+			}
+		: transcript,
+);
 let generation = 0;
 const transcriptSha256 = createHash("sha256").update(items.join("\n")).digest("hex");
 // Prime the production renderer without an artificial multi-minute first-frame
@@ -104,7 +113,7 @@ terminal.enableBackpressure();
 
 await runBenchmarkMain({
 	name: "tui-transcript",
-	fixture: `${BENCHMARK_FIXTURE_VERSION}:real-transcript:${itemCount}:${width}x${height}:slow-${terminalBytesPerSecond}Bps`,
+	fixture: `${BENCHMARK_FIXTURE_VERSION}:real-transcript:${itemCount}:${width}x${height}:${cpuOnly ? "cpu-only" : `slow-${terminalBytesPerSecond}Bps`}`,
 	run: () => {
 		instrumentation.reset();
 		terminal.beginSample();
@@ -126,8 +135,15 @@ await runBenchmarkMain({
 			cachedLines: retainedStats.cachedLines,
 			estimatedCachedBytes: retainedStats.estimatedCachedBytes,
 			rootRenders: metrics.rootRenders,
-			generatedLines: state.previousLines.length,
+			generatedLines: metrics.generatedLines,
 			visibleLines: Math.min(state.previousLines.length, height),
+			viewportItemVisits: metrics.viewportItemVisits,
+			viewportComposedLines: metrics.viewportComposedLines,
+			viewportCopiedLines: metrics.viewportCopiedLines,
+			viewportTargetHeightLookupProbes: metrics.viewportTargetHeightLookupProbes,
+			viewportBlockLookupProbes: metrics.viewportBlockLookupProbes,
+			fullHistoryFallbacks: metrics.fullHistoryFallbacks,
+			cursorScannedLines: metrics.cursorScannedLines,
 			overlayRenders: metrics.overlayRenders,
 			terminalDiffLines: metrics.terminalDiffLines,
 			instrumentedTerminalBytes: metrics.terminalBytes,
@@ -138,9 +154,12 @@ await runBenchmarkMain({
 	},
 	observations: () => ({
 		transcriptSha256,
-		transcriptRenderer: "TuiMainScreen+RetainedContainerSidecar+UserMessageComponent+AssistantMessageComponent",
-		deliveryMode: "session-local-sidecar",
-		slowTerminal: true,
+		transcriptRenderer: fullHistoryMode
+			? "TuiMainScreen+RetainedFullHistory+UserMessageComponent+AssistantMessageComponent"
+			: "TuiMainScreen+RetainedViewportHeightIndex+UserMessageComponent+AssistantMessageComponent",
+		deliveryMode: fullHistoryMode ? "session-local-sidecar+full-history" : "session-local-sidecar+visible-line-window",
+			slowTerminal: !cpuOnly,
+			cpuOnly,
 		preRenderedTranscript: true,
 	}),
 });

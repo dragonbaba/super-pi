@@ -68,6 +68,13 @@ test("active updates do not rerender 5,000 completed transcript items", () => {
 		pendingRenderRequestHighWaterMark: 0,
 		retainedCacheHits: 5_000,
 		retainedCacheMisses: 0,
+		viewportItemVisits: 0,
+		viewportComposedLines: 0,
+		viewportCopiedLines: 0,
+		viewportTargetHeightLookupProbes: 0,
+		viewportBlockLookupProbes: 0,
+		fullHistoryFallbacks: 0,
+		cursorScannedLines: 0,
 	});
 });
 
@@ -216,9 +223,13 @@ test("invalidate reaches an image component and refreshes Kitty cell-dimension o
 		const transcript = new RetainedContainer();
 		transcript.addRetainedChild(image, { id: "image", version: 1, completed: true });
 		const initial = transcript.render(20);
+		assert.equal(transcript.getContentHeight(20), initial.length);
 		setCellDimensions({ widthPx: 5, heightPx: 20 });
 		transcript.invalidate();
-		const resized = transcript.render(20);
+		const viewport = transcript.renderViewportTail(20, 20);
+		const resized = image.render(20);
+		assert.equal(viewport.totalHeight, resized.length);
+		assert.deepEqual(viewport.lines, resized.slice(-20));
 		assert.notEqual(resized.length, initial.length);
 		assert.match(resized[0] ?? "", /^\u001b_G/);
 	} finally {

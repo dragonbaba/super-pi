@@ -172,12 +172,16 @@ test("deferred image conversion invalidates a completed tool cache", async () =>
 		item.advanceVersion();
 		item.complete();
 		const primed = transcript.render(100);
+		assert.equal(transcript.getContentHeight(100), primed.length);
 
 		await waitFor(() => tool.render(100).some(isImageLine), "deferred PNG conversion");
 		const reference = tool.render(100);
-		const updated = transcript.render(100);
+		const viewport = transcript.renderViewportTail(100, 40);
+		const updated = tool.render(100);
 		assert.notDeepEqual(updated, primed);
 		assert.deepEqual(updated, reference);
+		assert.equal(viewport.totalHeight, reference.length);
+		assert.deepEqual(viewport.lines, reference.slice(-40));
 	} finally {
 		setCellDimensions({ widthPx: 9, heightPx: 18 });
 		setCapabilities({ images: null, trueColor: false, hyperlinks: false });
@@ -225,17 +229,75 @@ test("custom renderer invalidation rerenders only its completed retained tool", 
 	instrumentation.reset();
 	visual = "second";
 	capturedInvalidate();
+	const viewport = transcript.renderViewportTail(100, 40);
+	const metricsAfterViewport = instrumentation.snapshot();
 	const updated = transcript.render(100);
 	assert.equal(resultRendererCalls, callsAfterPrime + 1);
 	assert.equal(capturedInvalidate, stableInvalidate);
 	assert.notDeepEqual(updated, primed);
 	assert.ok(updated.some((line) => line.includes("custom-second")));
+	assert.equal(viewport.totalHeight, updated.length);
+	assert.deepEqual(viewport.lines, updated.slice(-40));
 	assert.ok(history.every((component) => component.renderCalls === 1));
-	assert.equal(instrumentation.snapshot().completedItemRenders, 1);
-	assert.equal(instrumentation.snapshot().retainedCacheHits, 5_000);
+	assert.equal(metricsAfterViewport.completedItemRenders, 1);
+	assert.ok(metricsAfterViewport.retainedCacheHits < 100);
 
 	transcript.render(100);
 	assert.equal(resultRendererCalls, callsAfterPrime + 1);
 	assert.equal(instrumentation.snapshot().completedItemRenders, 1);
-	assert.equal(instrumentation.snapshot().retainedCacheHits, 10_001);
+	assert.ok(instrumentation.snapshot().retainedCacheHits >= 10_001);
+});
+
+test("showImages, image width, and Kitty cell dimensions keep the indexed viewport equal to the tool wire view", async () => {
+	initTheme("dark");
+	setCapabilities({ images: "kitty", trueColor: true, hyperlinks: true });
+	setCellDimensions({ widthPx: 9, heightPx: 18 });
+	const context = { themeVersion: 0, rendererVersion: 0, expandVersion: 0, settingsVersion: 0 };
+	try {
+		const transcript = new RetainedContainer({ getContext: () => context });
+		const tool = createTool("image-settings", undefined, (component) => transcript.invalidateRetainedChild(component));
+		const item = transcript.addRetainedChild(tool, { id: "image-settings", version: 0 });
+		tool.updateResult({
+			content: [{ type: "image", data: "R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==", mimeType: "image/gif" }],
+			isError: false,
+		});
+		item.advanceVersion();
+		item.complete();
+		transcript.renderViewportTail(100, 40);
+		await waitFor(() => tool.render(100).some(isImageLine), "settings image conversion");
+
+		const assertIndexed = (): void => {
+			const viewport = transcript.renderViewportTail(100, 40);
+			const reference = tool.render(100);
+			assert.equal(viewport.totalHeight, reference.length);
+			assert.equal(transcript.getViewportIndexStats().totalHeight, reference.length);
+			assert.deepEqual(viewport.lines, reference.slice(-40));
+		};
+		assertIndexed();
+
+		tool.setShowImages(false);
+		context.settingsVersion++;
+		transcript.invalidateViewportHeights();
+		assertIndexed();
+		tool.setShowImages(true);
+		context.settingsVersion++;
+		transcript.invalidateViewportHeights();
+		assertIndexed();
+
+		tool.setImageWidthCells(20);
+		context.settingsVersion++;
+		transcript.invalidateViewportHeights();
+		assertIndexed();
+		tool.setImageWidthCells(60);
+		context.settingsVersion++;
+		transcript.invalidateViewportHeights();
+		assertIndexed();
+
+		setCellDimensions({ widthPx: 5, heightPx: 20 });
+		transcript.invalidate();
+		assertIndexed();
+	} finally {
+		setCellDimensions({ widthPx: 9, heightPx: 18 });
+		setCapabilities({ images: null, trueColor: false, hyperlinks: false });
+	}
 });
