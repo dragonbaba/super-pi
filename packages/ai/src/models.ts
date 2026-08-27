@@ -20,7 +20,12 @@ import {
 	type ModelsStore,
 	type ModelsStoreEntry,
 } from "./models-store.ts";
-import { getModelCapabilities, stripModelRuntimeProfile, withModelProfile } from "./model-capabilities.ts";
+import {
+	getModelCapabilities,
+	stripModelProfileMetadata,
+	stripModelRuntimeProfile,
+	withModelProfile,
+} from "./model-capabilities.ts";
 import type {
 	Api,
 	ApiStreamOptions,
@@ -47,6 +52,8 @@ export { ModelsError, type ModelsErrorCode } from "./auth/resolve.ts";
 export interface ModelsPublication {
 	/** Provider-selected persisted catalog. Omit to leave storage unchanged; null deletes it. */
 	persist?: ModelsStoreEntry | null;
+	/** Strip host-derived capability metadata while migrating a pre-revision stored catalog. */
+	migrateLegacyProfile?: boolean;
 	/** Optional synchronous update of provider-private in-memory catalog state. */
 	update?: () => void;
 }
@@ -343,7 +350,11 @@ class ModelsImpl implements MutableModels {
 			if (publication.persist === null) {
 				await this.modelsStore.delete(providerId, { signal });
 			} else if (publication.persist !== undefined) {
-				await this.modelsStore.write(providerId, rawModelsStoreEntry(publication.persist), { signal });
+				await this.modelsStore.write(
+					providerId,
+					rawModelsStoreEntry(publication.persist, publication.migrateLegacyProfile === true),
+					{ signal },
+				);
 			}
 
 			if (signal.aborted || this.refreshGenerations.get(providerId) !== generation) return false;
@@ -772,15 +783,16 @@ function profileIngressModel<TApi extends Api>(
 	model: Model<TApi>,
 	source: NonNullable<Model<TApi>["profileSource"]>,
 	profileModel: CreateProviderOptions<TApi>["profileModel"],
-	resetRuntimeProfile: boolean,
+	legacyRuntimeProfile = false,
 ): Model<TApi> {
-	const raw = resetRuntimeProfile ? stripModelRuntimeProfile(model) : model;
+	const raw = legacyRuntimeProfile && profileModel
+		? stripModelRuntimeProfile(model)
+		: stripModelProfileMetadata(model);
 	const enriched = profileModel?.(raw) ?? raw;
-	const cachedCapabilities = resetRuntimeProfile && profileModel === undefined ? model.capabilities : undefined;
 	return withModelProfile(enriched, source, {
 		costKnown: model.costKnown ?? true,
 		diagnostics: profileModel === undefined ? model.profileDiagnostics : enriched.profileDiagnostics,
-		capabilities: cachedCapabilities ?? enriched.capabilities,
+		capabilities: enriched.capabilities,
 	});
 }
 
@@ -799,7 +811,7 @@ function profileStaticModels<TApi extends Api>(input: CreateProviderOptions<TApi
 		}
 	}
 	const profiled = input.models.map((model) =>
-		profileIngressModel(model, model.profileSource ?? source, input.profileModel, input.profileModel !== undefined),
+		profileIngressModel(model, model.profileSource ?? source, input.profileModel),
 	);
 	const entry: ProfiledModelListCacheEntry = {
 		key,
@@ -866,15 +878,20 @@ export function createProvider<TApi extends Api = Api>(input: CreateProviderOpti
 		refreshModels: fetchModels
 			? async (context) => {
 					if (context.stored) {
+						const legacyRuntimeProfile = context.stored.profileRevision !== MODELS_STORE_PROFILE_REVISION;
 						const restored = context.stored.models
 							.filter((model) => model.provider === input.id)
-							.map((model) => profileIngressModel(model as Model<TApi>, "provider-catalog", input.profileModel, true));
+							.map((model) => profileIngressModel(
+								model as Model<TApi>,
+								"provider-catalog",
+								input.profileModel,
+								legacyRuntimeProfile,
+							));
 						if (
 							!(await context.publish({
 							persist:
-								context.stored.profileRevision === MODELS_STORE_PROFILE_REVISION
-									? undefined
-									: rawModelsStoreEntry(context.stored),
+								legacyRuntimeProfile ? context.stored : undefined,
+							migrateLegacyProfile: legacyRuntimeProfile,
 							update: () => {
 								dynamicModels = restored;
 								mergedModels = undefined;
@@ -887,11 +904,11 @@ export function createProvider<TApi extends Api = Api>(input: CreateProviderOpti
 					if (!context.allowNetwork || context.signal.aborted) return;
 					const rawRefreshed = await fetchModels(context);
 					const refreshed = rawRefreshed.map((model) =>
-						profileIngressModel(model, "provider-catalog", input.profileModel, true),
+						profileIngressModel(model, "provider-catalog", input.profileModel),
 					);
 					if (context.signal.aborted) return;
 					await context.publish({
-						persist: rawModelsStoreEntry({ models: rawRefreshed, checkedAt: Date.now() }),
+						persist: { models: rawRefreshed, checkedAt: Date.now() },
 						update: () => {
 							dynamicModels = refreshed;
 							mergedModels = undefined;

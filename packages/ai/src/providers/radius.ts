@@ -1,6 +1,7 @@
 import { piMessagesApi } from "../api/pi-messages.lazy.ts";
 import { envApiKeyAuth, lazyOAuth } from "../auth/helpers.ts";
 import { loadRadiusOAuth } from "../auth/oauth/load.ts";
+import { MODELS_STORE_PROFILE_REVISION } from "../models-store.ts";
 import type { Provider } from "../models.ts";
 import {
 	DEFAULT_RADIUS_GATEWAY,
@@ -38,6 +39,8 @@ export function radiusProvider(options: RadiusProviderOptions = {}): Provider<"p
 				const restored = stored.models.filter((model) => model.provider === id) as typeof models;
 				if (
 					!(await context.publish({
+						persist: stored.profileRevision === MODELS_STORE_PROFILE_REVISION ? undefined : stored,
+						migrateLegacyProfile: stored.profileRevision !== MODELS_STORE_PROFILE_REVISION,
 						update: () => {
 							models = restored;
 						},
@@ -53,7 +56,10 @@ export function radiusProvider(options: RadiusProviderOptions = {}): Provider<"p
 				if (legacy.length > 0) {
 					if (
 						!(await context.publish({
-							persist: { models: legacy, checkedAt: Date.now() },
+							persist: {
+								models: legacy,
+								checkedAt: Date.now(),
+							},
 							update: () => {
 								models = legacy;
 							},
@@ -70,7 +76,10 @@ export function radiusProvider(options: RadiusProviderOptions = {}): Provider<"p
 			if (context.signal.aborted) return;
 			const refreshed = getRadiusModelsFromConfig(id, config);
 			await context.publish({
-				persist: { models: refreshed, checkedAt: Date.now() },
+				persist: {
+					models: refreshed,
+					checkedAt: Date.now(),
+				},
 				update: () => {
 					models = refreshed;
 				},

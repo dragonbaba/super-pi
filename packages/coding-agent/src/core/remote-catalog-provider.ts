@@ -4,7 +4,7 @@ import {
 	type Model,
 	type ModelsStoreEntry,
 	type Provider,
-	rawModelsStoreEntry,
+	stripModelProfileMetadata,
 	stripModelRuntimeProfile,
 	withModelProfile,
 } from "@super-pi/ai";
@@ -40,11 +40,13 @@ function parseCatalog(providerId: string, value: unknown): Model<Api>[] {
 	if (!entries) throw new Error(`Invalid model catalog for provider "${providerId}"`);
 	return entries
 		.filter((entry): entry is Model<Api> => typeof entry === "object" && entry !== null && "id" in entry)
-		.map((model) => stripModelRuntimeProfile({ ...model, provider: providerId }));
+		.map((model) => stripModelProfileMetadata({ ...model, provider: providerId }));
 }
 
-function profileRemoteModel(provider: Provider, model: Model<Api>): Model<Api> {
-	const raw = stripModelRuntimeProfile(model);
+function profileRemoteModel(provider: Provider, model: Model<Api>, legacyRuntimeProfile = false): Model<Api> {
+	const raw = legacyRuntimeProfile && provider.profileModel
+		? stripModelRuntimeProfile(model)
+		: stripModelProfileMetadata(model);
 	const enriched = provider.profileModel?.(raw) ?? raw;
 	return withModelProfile(enriched, "provider-catalog", { costKnown: model.costKnown ?? true });
 }
@@ -74,15 +76,15 @@ export function withRemoteCatalog(
 		getModels: () => (mergedModels ??= mergeModels(provider.getModels(), dynamicModels)),
 		refreshModels: async (context) => {
 			const stored = context.stored;
+			const legacyRuntimeProfile = stored !== undefined && stored.profileRevision !== MODELS_STORE_PROFILE_REVISION;
 			const restored = remoteModels(stored, localGeneratedAt)
 				.filter((model) => model.provider === provider.id)
-				.map((model) => profileRemoteModel(provider, model));
+				.map((model) => profileRemoteModel(provider, model, legacyRuntimeProfile));
 			if (
 				!(await context.publish({
 					persist:
-						stored && stored.profileRevision !== MODELS_STORE_PROFILE_REVISION
-							? rawModelsStoreEntry(stored)
-							: undefined,
+						stored && legacyRuntimeProfile ? stored : undefined,
+					migrateLegacyProfile: legacyRuntimeProfile,
 					update: () => {
 						dynamicModels = restored;
 						mergedModels = undefined;
@@ -142,11 +144,15 @@ export function withRemoteCatalog(
 			if (!response.ok) {
 				// Transient failure: the cached body and its validator stay valid, so keep the
 				// etag and let the next refresh revalidate instead of downloading the catalog.
-				await context.publish({ persist: { ...(stored ?? { models: [] }), checkedAt } });
+				await context.publish({
+					persist: {
+						...(stored ?? { models: [] }),
+						checkedAt,
+					},
+				});
 				throw new Error(`Model catalog request failed for ${provider.id}: ${response.status}`);
 			}
 			const rawRefreshed = parseCatalog(provider.id, await response.json());
-			const refreshed = rawRefreshed.map((model) => profileRemoteModel(provider, model));
 			const lastModified = Date.parse(response.headers.get("last-modified") ?? "");
 			if (context.signal.aborted) return;
 			const entry = {

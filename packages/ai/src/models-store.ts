@@ -1,5 +1,5 @@
 import type { Api, Model } from "./types.ts";
-import { stripModelRuntimeProfile } from "./model-capabilities.ts";
+import { stripModelProfileMetadata, stripModelRuntimeProfile } from "./model-capabilities.ts";
 
 export interface ModelsStoreEntry {
 	models: readonly Model<Api>[];
@@ -18,14 +18,15 @@ export interface ModelsStoreEntry {
 
 export const MODELS_STORE_PROFILE_REVISION = 1;
 
-/** Persist remote catalog facts without freezing locally derived runtime profiles into the cache. */
-export function rawModelsStoreEntry(entry: ModelsStoreEntry): ModelsStoreEntry {
+/** Persist raw provider facts, optionally removing a pre-revision host-derived runtime profile. */
+export function rawModelsStoreEntry(entry: ModelsStoreEntry, migrateLegacyProfile = false): ModelsStoreEntry {
 	return {
 		...entry,
 		profileRevision: MODELS_STORE_PROFILE_REVISION,
 		models: entry.models.map((model) => {
-			const { costKnown: _costKnown, ...raw } = stripModelRuntimeProfile(model);
-			return raw as Model<Api>;
+			if (!migrateLegacyProfile) return stripModelProfileMetadata(model);
+			const { costKnown: _costKnown, ...legacyRaw } = stripModelRuntimeProfile(model);
+			return legacyRaw as Model<Api>;
 		}),
 	};
 }

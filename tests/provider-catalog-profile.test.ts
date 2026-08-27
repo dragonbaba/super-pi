@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import test from "node:test";
 import { InMemoryCredentialStore } from "../packages/ai/src/auth/credential-store.ts";
@@ -29,11 +30,15 @@ async function configuredCredentials(providerId: string): Promise<InMemoryCreden
 	return credentials;
 }
 
-async function withCatalogServer<T>(models: readonly Model<Api>[], run: (baseUrl: string) => Promise<T>): Promise<T> {
+async function withCatalogServer<T>(
+	models: readonly Model<Api>[],
+	run: (baseUrl: string) => Promise<T>,
+	lastModified = Date.now() + 60_000,
+): Promise<T> {
 	const server = createServer((_request, response) => {
 		response.writeHead(200, {
 			"content-type": "application/json",
-			"last-modified": new Date(Date.now() + 60_000).toUTCString(),
+			"last-modified": new Date(lastModified).toUTCString(),
 			etag: '"catalog-fixture"',
 		});
 		response.end(JSON.stringify({ models }));
@@ -106,6 +111,106 @@ test("createProvider fetchModels applies its provider profiler before publishing
 	assert.equal(result.errors.size, 0);
 	assert.equal(models.getModel(provider.id, rawModel.id)?.capabilities?.strictToolSchema, true);
 	assert.equal((await store.read(provider.id))?.models[0]?.capabilities, undefined);
+});
+
+test("createProvider preserves raw capability, pricing-known, and thinking-map facts across store restore", async () => {
+	const source = mistralProvider().getModels().find((model) => model.id === "mistral-large-latest");
+	assert.ok(source?.capabilities);
+	const rawModel = {
+		...rawCatalogModel(source),
+		provider: "raw-facts",
+		capabilities: structuredClone(source.capabilities),
+		costKnown: false,
+		thinkingBudgetMap: { low: 1_024, high: 8_192 },
+	} as Model<Api>;
+	const store = new InMemoryModelsStore();
+	const provider = () => createProvider({
+		id: "raw-facts",
+		auth: { apiKey: { name: "fixture", resolve: async () => ({ auth: { apiKey: "fixture" } }) } },
+		models: [],
+		fetchModels: async () => [rawModel],
+		api: {} as never,
+	});
+	const first = createModels({ modelsStore: store, credentials: await configuredCredentials("raw-facts") });
+	first.setProvider(provider());
+	assert.equal((await first.refresh({ providers: ["raw-facts"], allowNetwork: true })).errors.size, 0);
+	const fetched = first.getModel("raw-facts", rawModel.id);
+	assert.deepEqual(fetched?.capabilities, rawModel.capabilities);
+	assert.equal(fetched?.costKnown, false);
+	assert.deepEqual(fetched?.thinkingBudgetMap, rawModel.thinkingBudgetMap);
+	const persisted = await store.read("raw-facts");
+	assert.deepEqual(persisted?.models[0]?.capabilities, rawModel.capabilities);
+	assert.equal(persisted?.models[0]?.costKnown, false);
+	assert.deepEqual(persisted?.models[0]?.thinkingBudgetMap, rawModel.thinkingBudgetMap);
+
+	const restoredModels = createModels({ modelsStore: store });
+	restoredModels.setProvider(provider());
+	assert.equal((await restoredModels.refresh({ providers: ["raw-facts"], allowNetwork: false })).errors.size, 0);
+	const restored = restoredModels.getModel("raw-facts", rawModel.id);
+	assert.deepEqual(restored?.capabilities, rawModel.capabilities);
+	assert.equal(restored?.costKnown, false);
+	assert.deepEqual(restored?.thinkingBudgetMap, rawModel.thinkingBudgetMap);
+});
+
+function countingCatalogProvider(providerId: string, onProfile: () => void): Provider {
+	return createProvider({
+		id: providerId,
+		auth: { apiKey: { name: "fixture", resolve: async () => ({ auth: { apiKey: "fixture" } }) } },
+		models: [],
+		profileModel: (model) => {
+			onProfile();
+			return model;
+		},
+		api: {} as never,
+	});
+}
+
+test("remote catalog profiles each accepted fetched model exactly once", async () => {
+	let profileCalls = 0;
+	const providerId = "profile-count-fresh";
+	const remoteModels = Array.from({ length: 3 }, (_, index) => ({
+		...rawCatalogModel(mistralProvider().getModels()[0]!),
+		id: `remote-${index}`,
+		provider: providerId,
+	}));
+	await withCatalogServer(remoteModels, async (baseUrl) => {
+		const models = createModels({ credentials: await configuredCredentials(providerId) });
+		models.setProvider(withRemoteCatalog(countingCatalogProvider(providerId, () => profileCalls++), baseUrl, 0));
+		assert.equal((await models.refresh({ providers: [providerId], allowNetwork: true, force: true })).errors.size, 0);
+	});
+	assert.equal(profileCalls, remoteModels.length);
+});
+
+test("stale remote catalog profiles zero models and ignores invalid stale manifests", async () => {
+	let profileCalls = 0;
+	const providerId = "profile-count-stale";
+	const invalid = {
+		...rawCatalogModel(mistralProvider().getModels()[0]!),
+		provider: providerId,
+		capabilities: { version: 999 },
+	} as unknown as Model<Api>;
+	const generatedAt = Date.now() + 120_000;
+	await withCatalogServer([invalid], async (baseUrl) => {
+		const models = createModels({ credentials: await configuredCredentials(providerId) });
+		models.setProvider(withRemoteCatalog(
+			countingCatalogProvider(providerId, () => profileCalls++),
+			baseUrl,
+			generatedAt,
+		));
+		const result = await models.refresh({ providers: [providerId], allowNetwork: true, force: true });
+		assert.equal(result.errors.size, 0);
+	}, generatedAt - 60_000);
+	assert.equal(profileCalls, 0);
+});
+
+test("ModelsImpl is the sole raw catalog normalization owner", async () => {
+	const modelsSource = await readFile(new URL("../packages/ai/src/models.ts", import.meta.url), "utf8");
+	const remoteSource = await readFile(
+		new URL("../packages/coding-agent/src/core/remote-catalog-provider.ts", import.meta.url),
+		"utf8",
+	);
+	assert.equal((modelsSource.match(/rawModelsStoreEntry\(/gu) ?? []).length, 1);
+	assert.equal(remoteSource.includes("rawModelsStoreEntry("), false);
 });
 
 test("Vertex legacy cache restore profiles with networking disabled", async () => {

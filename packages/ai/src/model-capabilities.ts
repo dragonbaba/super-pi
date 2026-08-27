@@ -83,16 +83,24 @@ function modelCapabilityEnrichment(model: Model<Api>): Readonly<ModelCapabilityE
 	return (model as CapabilityEnrichedModel)[MODEL_CAPABILITY_ENRICHMENT];
 }
 
-/** Remove locally derived profile/enrichment metadata before a model re-enters a provider profiler. */
-export function stripModelRuntimeProfile<TApi extends Api>(model: Model<TApi>): Model<TApi> {
+/** Remove host-owned profile metadata while preserving facts supplied by a provider catalog. */
+export function stripModelProfileMetadata<TApi extends Api>(model: Model<TApi>): Model<TApi> {
 	const {
-		capabilities: _capabilities,
 		profileSource: _profileSource,
 		profileDiagnostics: _profileDiagnostics,
-		thinkingBudgetMap: _thinkingBudgetMap,
 		[MODEL_CAPABILITY_ENRICHMENT]: _enrichment,
 		...raw
 	} = model as Model<TApi> & CapabilityEnrichedModel;
+	return raw as Model<TApi>;
+}
+
+/** Remove locally derived profile facts before a legacy model re-enters a provider profiler. */
+export function stripModelRuntimeProfile<TApi extends Api>(model: Model<TApi>): Model<TApi> {
+	const {
+		capabilities: _capabilities,
+		thinkingBudgetMap: _thinkingBudgetMap,
+		...raw
+	} = stripModelProfileMetadata(model);
 	return raw as Model<TApi>;
 }
 
