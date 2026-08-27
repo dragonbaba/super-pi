@@ -25,8 +25,7 @@ export function rawModelsStoreEntry(entry: ModelsStoreEntry, migrateLegacyProfil
 		profileRevision: MODELS_STORE_PROFILE_REVISION,
 		models: entry.models.map((model) => {
 			if (!migrateLegacyProfile) return stripModelProfileMetadata(model);
-			const { costKnown: _costKnown, ...legacyRaw } = stripModelRuntimeProfile(model);
-			return legacyRaw as Model<Api>;
+			return stripModelRuntimeProfile(model);
 		}),
 	};
 }

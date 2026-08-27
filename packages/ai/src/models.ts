@@ -22,6 +22,7 @@ import {
 } from "./models-store.ts";
 import {
 	getModelCapabilities,
+	legacyRuntimeProfileDiagnostics,
 	stripModelProfileMetadata,
 	stripModelRuntimeProfile,
 	withModelProfile,
@@ -785,13 +786,18 @@ function profileIngressModel<TApi extends Api>(
 	profileModel: CreateProviderOptions<TApi>["profileModel"],
 	legacyRuntimeProfile = false,
 ): Model<TApi> {
-	const raw = legacyRuntimeProfile && profileModel
+	const legacyDiagnostics = legacyRuntimeProfile ? legacyRuntimeProfileDiagnostics(model) : undefined;
+	const raw = legacyRuntimeProfile
 		? stripModelRuntimeProfile(model)
 		: stripModelProfileMetadata(model);
 	const enriched = profileModel?.(raw) ?? raw;
 	return withModelProfile(enriched, source, {
-		costKnown: model.costKnown ?? true,
-		diagnostics: profileModel === undefined ? model.profileDiagnostics : enriched.profileDiagnostics,
+		costKnown: enriched.costKnown ?? true,
+		diagnostics: legacyRuntimeProfile
+			? legacyDiagnostics
+			: profileModel === undefined
+				? model.profileDiagnostics
+				: enriched.profileDiagnostics,
 		capabilities: enriched.capabilities,
 	});
 }

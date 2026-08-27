@@ -98,6 +98,7 @@ export function stripModelProfileMetadata<TApi extends Api>(model: Model<TApi>):
 export function stripModelRuntimeProfile<TApi extends Api>(model: Model<TApi>): Model<TApi> {
 	const {
 		capabilities: _capabilities,
+		costKnown: _costKnown,
 		thinkingBudgetMap: _thinkingBudgetMap,
 		...raw
 	} = stripModelProfileMetadata(model);
@@ -280,6 +281,23 @@ export function normalizeModelCapabilitiesV1<TApi extends Api>(
 	});
 	NORMALIZED_CAPABILITIES.add(normalized);
 	return normalized;
+}
+
+/** Preserve a useful diagnostic while discarding a pre-revision cached runtime manifest. */
+export function legacyRuntimeProfileDiagnostics<TApi extends Api>(
+	model: Model<TApi>,
+): readonly ModelProfileDiagnostic[] | undefined {
+	if (model.capabilities === undefined) return undefined;
+	try {
+		normalizeModelCapabilitiesV1(model, model.capabilities);
+		return undefined;
+	} catch {
+		return [{
+			code: "INVALID_CAPABILITIES_REBUILT",
+			field: "capabilities",
+			message: `Model ${model.provider}/${model.id} had an invalid cached capability manifest; rebuilt it from catalog fields.`,
+		}];
+	}
 }
 
 function compatValue(model: Model<Api>, key: string): unknown {

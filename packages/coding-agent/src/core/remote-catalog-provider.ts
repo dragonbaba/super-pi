@@ -4,6 +4,7 @@ import {
 	type Model,
 	type ModelsStoreEntry,
 	type Provider,
+	legacyRuntimeProfileDiagnostics,
 	stripModelProfileMetadata,
 	stripModelRuntimeProfile,
 	withModelProfile,
@@ -44,11 +45,15 @@ function parseCatalog(providerId: string, value: unknown): Model<Api>[] {
 }
 
 function profileRemoteModel(provider: Provider, model: Model<Api>, legacyRuntimeProfile = false): Model<Api> {
-	const raw = legacyRuntimeProfile && provider.profileModel
+	const legacyDiagnostics = legacyRuntimeProfile ? legacyRuntimeProfileDiagnostics(model) : undefined;
+	const raw = legacyRuntimeProfile
 		? stripModelRuntimeProfile(model)
 		: stripModelProfileMetadata(model);
 	const enriched = provider.profileModel?.(raw) ?? raw;
-	return withModelProfile(enriched, "provider-catalog", { costKnown: model.costKnown ?? true });
+	return withModelProfile(enriched, "provider-catalog", {
+		costKnown: enriched.costKnown ?? true,
+		diagnostics: legacyDiagnostics,
+	});
 }
 
 function remoteModels(

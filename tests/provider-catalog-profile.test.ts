@@ -53,6 +53,13 @@ async function withCatalogServer<T>(
 	}
 }
 
+function assertCatalogProfile(model: Model<Api> | undefined): asserts model is Model<Api> {
+	assert.ok(model);
+	assert.equal(model.profileSource, "provider-catalog");
+	assert.equal(model.capabilities?.version, 1);
+	assert.equal(typeof model.costKnown, "boolean");
+}
+
 async function fetchRemoteReplacement(
 	provider: Provider,
 	rawModel: Model<Api>,
@@ -150,6 +157,64 @@ test("createProvider preserves raw capability, pricing-known, and thinking-map f
 	assert.deepEqual(restored?.capabilities, rawModel.capabilities);
 	assert.equal(restored?.costKnown, false);
 	assert.deepEqual(restored?.thinkingBudgetMap, rawModel.thinkingBudgetMap);
+});
+
+function staleValidRuntimeModel(providerId: string): Model<Api> {
+	const source = mistralProvider().getModels().find((model) => model.id === "mistral-large-latest");
+	assert.ok(source?.capabilities);
+	return {
+		...rawCatalogModel(source),
+		provider: providerId,
+		profileSource: "provider-catalog",
+		capabilities: {
+			...structuredClone(source.capabilities),
+			parallelTools: false,
+		},
+	};
+}
+
+async function assertStableLegacyMigration(
+	providerId: string,
+	decorate: (provider: Provider) => Provider,
+): Promise<void> {
+	const store = new InMemoryModelsStore();
+	await store.write(providerId, {
+		models: [staleValidRuntimeModel(providerId)],
+		lastModified: Date.now() + 60_000,
+	});
+	const provider = () => decorate(createProvider({
+		id: providerId,
+		auth: { apiKey: { name: "fixture", resolve: async () => ({ auth: {} }) } },
+		models: [],
+		fetchModels: async () => [],
+		api: {} as never,
+	}));
+
+	const first = createModels({ modelsStore: store });
+	first.setProvider(provider());
+	assert.equal((await first.refresh({ providers: [providerId], allowNetwork: false })).errors.size, 0);
+	const firstModel = first.getModel(providerId, "mistral-large-latest");
+	assertCatalogProfile(firstModel);
+	assert.equal(firstModel.capabilities?.parallelTools, true);
+	const migrated = await store.read(providerId);
+	assert.equal(migrated?.profileRevision, MODELS_STORE_PROFILE_REVISION);
+	assert.equal(migrated?.models[0]?.capabilities, undefined);
+
+	const second = createModels({ modelsStore: store });
+	second.setProvider(provider());
+	assert.equal((await second.refresh({ providers: [providerId], allowNetwork: false })).errors.size, 0);
+	const secondModel = second.getModel(providerId, "mistral-large-latest");
+	assertCatalogProfile(secondModel);
+	assert.deepEqual(secondModel.capabilities, firstModel.capabilities);
+	assert.equal(secondModel.costKnown, firstModel.costKnown);
+}
+
+test("legacy createProvider restore strips a valid stale V1 manifest without a provider profiler", async () => {
+	await assertStableLegacyMigration("legacy-direct-no-profiler", (provider) => provider);
+});
+
+test("legacy remote restore strips a valid stale V1 manifest without a provider profiler", async () => {
+	await assertStableLegacyMigration("legacy-remote-no-profiler", (provider) => withRemoteCatalog(provider));
 });
 
 function countingCatalogProvider(providerId: string, onProfile: () => void): Provider {
