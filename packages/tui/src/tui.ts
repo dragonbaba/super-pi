@@ -8,6 +8,7 @@ import { performance } from "node:perf_hooks";
 import { isKeyRelease, matchesKey } from "./keys.ts";
 import type { TuiRenderInstrumentation } from "./render-instrumentation.ts";
 import type { Terminal } from "./terminal.ts";
+import { TerminalFrameQueue, type TerminalFrameQueueSnapshot } from "./terminal-frame-queue.ts";
 import {
 	isOsc11BackgroundColorResponse,
 	parseOsc11BackgroundColor,
@@ -17,6 +18,13 @@ import {
 } from "./terminal-colors.ts";
 import { getCapabilities, isImageLine, setCellDimensions } from "./terminal-image.ts";
 import { extractSegments, normalizeTerminalOutput, sliceByColumn, sliceWithWidth, visibleWidth } from "./utils.ts";
+
+function asError(error: unknown): Error {
+	return error instanceof Error ? error : new Error(String(error));
+}
+
+/** Default deadline for lifecycle flush/restore boundaries, never for ordinary frame writes. */
+export const DEFAULT_TERMINAL_LIFECYCLE_TIMEOUT_MS = 5_000;
 
 /**
  * Component interface - all components must implement this
@@ -308,9 +316,10 @@ export interface TUI extends Component {
 	hideOverlay(): void;
 	hasOverlay(): boolean;
 	start(): void;
-	stop(options?: TuiStopOptions): void;
+	stop(options?: TuiStopOptions): Promise<void>;
 	renderNow(force?: boolean): void;
 	requestRender(force?: boolean): void;
+	flushTerminalFrames(): Promise<void>;
 	addInputListener(listener: TuiInputListener): () => void;
 	removeInputListener(listener: TuiInputListener): void;
 	onTerminalColorSchemeChange(listener: (scheme: TerminalColorScheme) => void): () => void;
@@ -353,6 +362,45 @@ export abstract class TuiBase extends Container implements TUI {
 	private terminalColorSchemeNotificationsEnabled = false;
 	protected readonly logDirectory: string;
 	private renderInstrumentation: TuiRenderInstrumentation | undefined;
+	private readonly terminalFrameQueue: TerminalFrameQueue;
+	private terminalFrameError: Error | undefined;
+	private stopping = false;
+	private stopPromise: Promise<void> | undefined;
+	private readonly terminalBoundaryTimeoutMs: number;
+	private composingTerminalFrame = false;
+	private composedTerminalFrame = "";
+	private composedTerminalDiffLines = 0;
+	private readonly recordTerminalFrameQueueDepth = (
+		activeWrites: 0 | 1,
+		pendingFrames: 0 | 1,
+		activeFrameUtf8Bytes: number,
+		pendingFrameUtf8Bytes: number,
+	): void =>
+		this.renderInstrumentation?.recordTerminalFrameQueueDepth(
+			activeWrites,
+			pendingFrames,
+			activeFrameUtf8Bytes,
+			pendingFrameUtf8Bytes,
+		);
+	private readonly recordTerminalFrameWrite = (diffLines: number, utf8Bytes: number): void =>
+		this.renderInstrumentation?.recordTerminalFrame(utf8Bytes, diffLines);
+	private readonly recordTerminalFrameReplacement = (): void =>
+		this.renderInstrumentation?.recordTerminalFrameReplaced();
+	private readonly handleTerminalFrameQueueIdle = (): void => this.onTerminalFrameQueueIdle();
+	private readonly handleTerminalFrameQueueError = (error: Error): void => this.onTerminalFrameWriteError(error);
+	private readonly scheduleRequestedRender = (): void => this.scheduleRender();
+	private readonly runImmediateRender = (): void => {
+		this.immediateRenderScheduled = false;
+		if (this.stopped || this.stopping || !this.renderRequested || this.terminalFrameQueue.busy) return;
+		this.cancelRenderTimer();
+		this.performRender();
+	};
+	private readonly runScheduledRender = (): void => {
+		this.renderTimer = undefined;
+		if (this.stopped || this.stopping || this.terminalFrameQueue.busy || !this.renderRequested) return;
+		this.performRender();
+		if (this.renderRequested) this.scheduleRender();
+	};
 
 	// Overlay stack for modal components rendered on top of base content
 	private focusOrderCounter = 0;
@@ -363,9 +411,25 @@ export abstract class TuiBase extends Container implements TUI {
 	}
 	private overlayFocusRestore: OverlayFocusRestoreState = { status: "inactive" };
 
-	constructor(terminal: Terminal, showHardwareCursor?: boolean, logDirectory?: string) {
+	constructor(
+		terminal: Terminal,
+		showHardwareCursor?: boolean,
+		logDirectory?: string,
+		terminalBoundaryTimeoutMs = DEFAULT_TERMINAL_LIFECYCLE_TIMEOUT_MS,
+	) {
 		super();
 		this.terminal = terminal;
+		if (!Number.isFinite(terminalBoundaryTimeoutMs) || terminalBoundaryTimeoutMs <= 0) {
+			throw new RangeError("terminalBoundaryTimeoutMs must be a positive finite number");
+		}
+		this.terminalBoundaryTimeoutMs = terminalBoundaryTimeoutMs;
+		this.terminalFrameQueue = new TerminalFrameQueue(this.terminal, {
+			onDepthChanged: this.recordTerminalFrameQueueDepth,
+			onWriteStarted: this.recordTerminalFrameWrite,
+			onFrameReplaced: this.recordTerminalFrameReplacement,
+			onIdle: this.handleTerminalFrameQueueIdle,
+			onError: this.handleTerminalFrameQueueError,
+		});
 		this.logDirectory = logDirectory ?? process.env.SP_CODING_AGENT_DIR ?? path.join(os.homedir(), ".sp", "agent");
 		if (showHardwareCursor !== undefined) {
 			this.showHardwareCursor = showHardwareCursor;
@@ -380,9 +444,9 @@ export abstract class TuiBase extends Container implements TUI {
 
 	protected afterTerminalStart(): void {}
 
-	protected beforeTerminalStop(_options: TuiStopOptions): void {}
+	protected beforeTerminalStop(_options: TuiStopOptions): void | Promise<void> {}
 
-	protected afterTerminalStop(_options: TuiStopOptions): void {}
+	protected afterTerminalStop(_options: TuiStopOptions): void | Promise<void> {}
 
 	get fullRedraws(): number {
 		return this.fullRedrawCount;
@@ -396,8 +460,26 @@ export abstract class TuiBase extends Container implements TUI {
 		this.renderInstrumentation?.recordRootRender(generatedLines, visibleLines);
 	}
 
-	protected recordTerminalFrame(data: string, diffLines: number): void {
-		this.renderInstrumentation?.recordTerminalFrame(data, diffLines);
+	protected writeTerminalFrame(data: string, diffLines: number): void {
+		if (this.composingTerminalFrame) {
+			this.composedTerminalFrame += data;
+			this.composedTerminalDiffLines += diffLines;
+			return;
+		}
+		const utf8Bytes = this.terminalFrameQueue.submit(data, diffLines);
+		this.renderInstrumentation?.recordTerminalFrameGenerated(utf8Bytes);
+	}
+
+	/** Send a non-frame terminal control and contain asynchronous write failure. */
+	protected writeTerminalControl(data: string): void {
+		try {
+			const write = this.terminal.write(data);
+			if (write && typeof write.then === "function") {
+				void this.awaitTerminalBoundary(write).catch((error) => this.onTerminalFrameWriteError(asError(error)));
+			}
+		} catch (error) {
+			this.onTerminalFrameWriteError(asError(error));
+		}
 	}
 
 	protected recordFullHistoryFallback(): void {
@@ -708,7 +790,10 @@ export abstract class TuiBase extends Container implements TUI {
 	}
 
 	start(): void {
+		if (this.stopping) return;
+		this.terminalFrameQueue.attach();
 		this.stopped = false;
+		this.stopPromise = undefined;
 		this.beforeTerminalStart();
 		this.terminal.start(
 			(data) => this.handleTerminalInput(data),
@@ -717,7 +802,7 @@ export abstract class TuiBase extends Container implements TUI {
 		this.afterTerminalStart();
 		this.terminal.hideCursor();
 		if (this.terminalColorSchemeNotificationsEnabled) {
-			this.terminal.write("\x1b[?2031h");
+			this.writeTerminalControl("\x1b[?2031h");
 		}
 		this.queryCellSize();
 		this.requestRender();
@@ -747,7 +832,7 @@ export abstract class TuiBase extends Container implements TUI {
 		}
 		this.terminalColorSchemeNotificationsEnabled = enabled;
 		if (!this.stopped) {
-			this.terminal.write(enabled ? "\x1b[?2031h" : "\x1b[?2031l");
+			this.writeTerminalControl(enabled ? "\x1b[?2031h" : "\x1b[?2031l");
 		}
 	}
 
@@ -758,39 +843,154 @@ export abstract class TuiBase extends Container implements TUI {
 		}
 		// Query terminal for cell size in pixels: CSI 16 t
 		// Response format: CSI 6 ; height ; width t
-		this.terminal.write("\x1b[16t");
+		this.writeTerminalControl("\x1b[16t");
 	}
 
-	stop(options: TuiStopOptions = {}): void {
-		this.stopped = true;
+	stop(options: TuiStopOptions = {}): Promise<void> {
+		if (this.stopPromise) return this.stopPromise;
+		if (this.stopped) return Promise.resolve();
+		this.stopping = true;
 		this.cancelRenderTimer();
-		if (this.terminalColorSchemeNotificationsEnabled) {
-			this.terminal.write("\x1b[?2031l");
+		if (this.renderRequested) this.terminalFrameQueue.discardPending();
+		if (!this.terminalFrameQueue.busy && this.renderRequested) {
+			try {
+				this.performRender();
+			} catch (error) {
+				this.recordTerminalControlError(error);
+			}
 		}
-		this.beforeTerminalStop(options);
-		this.terminal.showCursor();
-		this.terminal.stop();
-		this.afterTerminalStop(options);
+		this.stopPromise = this.terminalFrameQueue.busy
+			? this.finishStopAfterFrames(options)
+			: this.finishTerminalStop(options);
+		return this.stopPromise;
+	}
+
+	private async finishStopAfterFrames(options: TuiStopOptions): Promise<void> {
+		try {
+			await this.awaitTerminalBoundary(
+				this.drainStopFrames(),
+				(error) => this.terminalFrameQueue.abort(error),
+				"Terminal lifecycle flush",
+			);
+		} catch (error) {
+			this.terminalFrameError ??= error instanceof Error ? error : new Error(String(error));
+		}
+		await this.finishTerminalStop(options);
+	}
+
+	private async drainStopFrames(): Promise<void> {
+		while (!this.terminalFrameError) {
+			await this.terminalFrameQueue.flush();
+			if (!this.renderRequested) break;
+			this.performRender();
+		}
+	}
+
+	private async finishTerminalStop(options: TuiStopOptions): Promise<void> {
+		if (this.terminalColorSchemeNotificationsEnabled) {
+			try {
+				await this.awaitTerminalBoundary(this.terminal.write("\x1b[?2031l"));
+			} catch (error) {
+				this.recordTerminalControlError(error);
+			}
+		}
+		try {
+			await this.awaitTerminalBoundary(this.beforeTerminalStop(options));
+		} catch (error) {
+			this.recordTerminalControlError(error);
+		}
+		try {
+			this.terminal.showCursor();
+		} catch (error) {
+			this.recordTerminalControlError(error);
+		}
+		try {
+			this.terminal.stop();
+		} catch (error) {
+			this.recordTerminalControlError(error);
+		}
+		try {
+			await this.awaitTerminalBoundary(this.afterTerminalStop(options));
+		} catch (error) {
+			this.recordTerminalControlError(error);
+		}
+		this.markTerminalStopped();
+	}
+
+	private async awaitTerminalBoundary(
+		boundary: void | Promise<void>,
+		onTimeout?: (error: Error) => void,
+		label = "Terminal cleanup",
+	): Promise<void> {
+		if (!boundary || typeof boundary.then !== "function") return;
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		try {
+			await Promise.race([
+				boundary,
+				new Promise<never>((_, reject) => {
+					timer = setTimeout(() => {
+						const error = new Error(`${label} timed out after ${this.terminalBoundaryTimeoutMs}ms`);
+						onTimeout?.(error);
+						reject(error);
+					}, this.terminalBoundaryTimeoutMs);
+				}),
+			]);
+		} finally {
+			if (timer) clearTimeout(timer);
+		}
+	}
+
+	private markTerminalStopped(): void {
+		this.terminalFrameQueue.detach();
+		this.stopped = true;
+		this.stopping = false;
+		this.renderRequested = false;
+		this.immediateRenderScheduled = false;
+	}
+
+	async flushTerminalFrames(): Promise<void> {
+		while (true) {
+			await this.terminalFrameQueue.flush();
+			if (this.terminalFrameError) throw this.terminalFrameError;
+			if (this.stopped || this.stopping || !this.renderRequested) return;
+			this.performRender();
+		}
+	}
+
+	/** Numeric/reference-only queue state for lifecycle and benchmark diagnostics. */
+	getTerminalFrameQueueSnapshot(): Readonly<TerminalFrameQueueSnapshot & { pendingRenderIntents: 0 | 1 }> {
+		return Object.freeze({
+			...this.terminalFrameQueue.snapshot(),
+			pendingRenderIntents: this.renderRequested ? 1 : 0,
+		});
 	}
 
 	renderNow(force = false): void {
-		if (force) this.resetRenderState();
-		this.renderRequested = false;
-		this.cancelRenderTimer();
-		this.lastRenderAt = performance.now();
-		this.doRender();
+		if (this.stopped || this.stopping) return;
+		if (force) {
+			this.resetRenderState();
+			this.terminalFrameQueue.discardPending();
+		}
+		if (this.terminalFrameQueue.busy) {
+			if (!this.renderRequested) this.renderInstrumentation?.recordPendingRenderRequest();
+			this.renderRequested = true;
+			return;
+		}
+		this.performRender();
 	}
 
 	requestRender(force = false): void {
+		if (this.stopped || this.stopping) return;
 		if (force) {
 			this.resetRenderState();
+			this.terminalFrameQueue.discardPending();
 			this.requestImmediateRender();
 			return;
 		}
 		if (this.renderRequested) return;
 		this.renderRequested = true;
 		this.renderInstrumentation?.recordPendingRenderRequest();
-		process.nextTick(() => this.scheduleRender());
+		process.nextTick(this.scheduleRequestedRender);
 	}
 
 	private requestImmediateRender(): void {
@@ -800,16 +1000,7 @@ export abstract class TuiBase extends Container implements TUI {
 		if (!wasRequested) this.renderInstrumentation?.recordPendingRenderRequest();
 		if (this.immediateRenderScheduled) return;
 		this.immediateRenderScheduled = true;
-		process.nextTick(() => {
-			this.immediateRenderScheduled = false;
-			if (this.stopped || !this.renderRequested) return;
-			// A previously queued scheduleRender() can create a timer before this
-			// callback runs. User input must preempt that throttled frame.
-			this.cancelRenderTimer();
-			this.renderRequested = false;
-			this.lastRenderAt = performance.now();
-			this.doRender();
-		});
+		process.nextTick(this.runImmediateRender);
 	}
 
 	private cancelRenderTimer(): void {
@@ -819,23 +1010,53 @@ export abstract class TuiBase extends Container implements TUI {
 	}
 
 	private scheduleRender(): void {
-		if (this.stopped || this.renderTimer || !this.renderRequested) {
+		if (this.stopped || this.stopping || this.terminalFrameQueue.busy || this.renderTimer || !this.renderRequested) {
 			return;
 		}
 		const elapsed = performance.now() - this.lastRenderAt;
 		const delay = Math.max(0, TuiBase.MIN_RENDER_INTERVAL_MS - elapsed);
-		this.renderTimer = setTimeout(() => {
-			this.renderTimer = undefined;
-			if (this.stopped || !this.renderRequested) {
-				return;
-			}
-			this.renderRequested = false;
-			this.lastRenderAt = performance.now();
+		this.renderTimer = setTimeout(this.runScheduledRender, delay);
+	}
+
+	private performRender(): void {
+		this.renderRequested = false;
+		this.cancelRenderTimer();
+		this.lastRenderAt = performance.now();
+		this.composingTerminalFrame = true;
+		this.composedTerminalFrame = "";
+		this.composedTerminalDiffLines = 0;
+		try {
 			this.doRender();
-			if (this.renderRequested) {
-				this.scheduleRender();
+			if (this.composedTerminalFrame.length > 0) {
+				const utf8Bytes = this.terminalFrameQueue.submit(
+					this.composedTerminalFrame,
+					this.composedTerminalDiffLines,
+				);
+				this.renderInstrumentation?.recordTerminalFrameGenerated(utf8Bytes);
 			}
-		}, delay);
+		} finally {
+			this.composingTerminalFrame = false;
+			this.composedTerminalFrame = "";
+			this.composedTerminalDiffLines = 0;
+		}
+	}
+
+	private onTerminalFrameQueueIdle(): void {
+		if (this.stopped || this.stopping || !this.renderRequested) return;
+		this.requestImmediateRender();
+	}
+
+	private onTerminalFrameWriteError(error: Error): void {
+		this.terminalFrameError = error;
+		this.renderInstrumentation?.recordTerminalFrameWriteError();
+		this.renderRequested = false;
+		this.cancelRenderTimer();
+		if (!this.stopping && !this.stopped) void this.stop();
+	}
+
+	private recordTerminalControlError(error: unknown): void {
+		this.terminalFrameError ??= error instanceof Error ? error : new Error(String(error));
+		this.renderInstrumentation?.recordTerminalFrameWriteError();
 	}
 
 	private handleTerminalInput(data: string): void {
@@ -1250,7 +1471,7 @@ export abstract class TuiBase extends Container implements TUI {
 			}, timeoutMs);
 			this.pendingOsc11BackgroundQueries.push(query);
 			this.pendingOsc11BackgroundReplies += 1;
-			this.terminal.write("\x1b]11;?\x07");
+			this.writeTerminalControl("\x1b]11;?\x07");
 		});
 	}
 
@@ -1277,7 +1498,7 @@ export abstract class TuiBase extends Container implements TUI {
 
 			unsubscribe = this.onTerminalColorSchemeChange(settle);
 			timer = setTimeout(() => settle(undefined), timeoutMs);
-			this.terminal.write("\x1b[?996n");
+			this.writeTerminalControl("\x1b[?996n");
 		});
 	}
 }

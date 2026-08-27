@@ -87,6 +87,8 @@ export class TuiMainScreen extends TuiBase implements TUI {
 	private readonly boundedFrameLinesA: string[] = [];
 	private readonly boundedFrameLinesB: string[] = [];
 	private readonly rootFrameRender: LineViewportRender = { lines: [], startLine: 0, totalHeight: 0 };
+	private expandedFirstChanged = -1;
+	private expandedLastChanged = -1;
 
 	captureRenderState(): TuiMainScreenRenderState {
 		return {
@@ -134,14 +136,15 @@ export class TuiMainScreen extends TuiBase implements TUI {
 		this.viewportMutationTokens.length = 0;
 	}
 
-	protected override beforeTerminalStop(options: TuiStopOptions): void {
+	protected override beforeTerminalStop(options: TuiStopOptions): void | Promise<void> {
 		if (options.preserveScreen || this.previousLines.length === 0) return;
-		this.terminal.write(" ");
+		let buffer = " ";
 		const targetRow = this.viewportDocumentHeight ?? this.previousLines.length;
 		const lineDiff = targetRow - this.hardwareCursorRow;
-		if (lineDiff > 0) this.terminal.write(`\x1b[${lineDiff}B`);
-		else if (lineDiff < 0) this.terminal.write(`\x1b[${-lineDiff}A`);
-		this.terminal.write("\r\n");
+		if (lineDiff > 0) buffer += `\x1b[${lineDiff}B`;
+		else if (lineDiff < 0) buffer += `\x1b[${-lineDiff}A`;
+		buffer += "\r\n";
+		return this.terminal.write(buffer);
 	}
 
 	private collectKittyImageIds(lines: string[]): Set<number> {
@@ -180,23 +183,22 @@ export class TuiMainScreen extends TuiBase implements TUI {
 		firstChanged: number,
 		lastChanged: number,
 		newLines: string[],
-	): { firstChanged: number; lastChanged: number } {
-		let expandedFirstChanged = firstChanged;
-		let expandedLastChanged = lastChanged;
-		const expandForLines = (lines: string[]): void => {
-			for (let i = 0; i < lines.length; i++) {
-				if (extractKittyImageIds(lines[i]).length === 0) continue;
-				const blockEnd = i + this.getKittyImageReservedRows(lines, i) - 1;
-				if (i >= firstChanged || (i <= lastChanged && blockEnd >= firstChanged)) {
-					expandedFirstChanged = Math.min(expandedFirstChanged, i);
-					expandedLastChanged = Math.max(expandedLastChanged, blockEnd);
-				}
-			}
-		};
+	): void {
+		this.expandedFirstChanged = firstChanged;
+		this.expandedLastChanged = lastChanged;
+		this.expandChangedRangeForKittyLines(this.previousLines, firstChanged, lastChanged);
+		this.expandChangedRangeForKittyLines(newLines, firstChanged, lastChanged);
+	}
 
-		expandForLines(this.previousLines);
-		expandForLines(newLines);
-		return { firstChanged: expandedFirstChanged, lastChanged: expandedLastChanged };
+	private expandChangedRangeForKittyLines(lines: string[], firstChanged: number, lastChanged: number): void {
+		for (let index = 0; index < lines.length; index++) {
+			if (extractKittyImageIds(lines[index]).length === 0) continue;
+			const blockEnd = index + this.getKittyImageReservedRows(lines, index) - 1;
+			if (index >= firstChanged || (index <= lastChanged && blockEnd >= firstChanged)) {
+				this.expandedFirstChanged = Math.min(this.expandedFirstChanged, index);
+				this.expandedLastChanged = Math.max(this.expandedLastChanged, blockEnd);
+			}
+		}
 	}
 
 	private deleteChangedKittyImages(firstChanged: number, lastChanged: number): string {
@@ -211,6 +213,111 @@ export class TuiMainScreen extends TuiBase implements TUI {
 		}
 
 		return this.deleteKittyImages(ids);
+	}
+
+	private computeLineDiff(
+		hardwareCursorRow: number,
+		previousViewportTop: number,
+		targetRow: number,
+		viewportTop: number,
+	): number {
+		const currentScreenRow = hardwareCursorRow - previousViewportTop;
+		const targetScreenRow = targetRow - viewportTop;
+		return targetScreenRow - currentScreenRow;
+	}
+
+	private renderFullFrame(
+		clear: boolean,
+		lines: string[],
+		width: number,
+		height: number,
+		cursorPos: { row: number; col: number } | null,
+		hasViewportDocument: boolean,
+		generatedDocumentHeight: number,
+	): void {
+		this.fullRedrawCount += 1;
+		let buffer = "\x1b[?2026h";
+		if (clear) {
+			buffer += this.deleteKittyImages(this.previousKittyImageIds);
+			buffer += "\x1b[2J\x1b[H\x1b[3J";
+		}
+		for (let index = 0; index < lines.length; index++) {
+			if (index > 0) buffer += "\r\n";
+			const line = lines[index];
+			const image = isImageLine(line);
+			const imageReservedRows = image ? this.getKittyImageReservedRows(lines, index) : 1;
+			if (imageReservedRows > 1 && imageReservedRows <= height) {
+				for (let row = 1; row < imageReservedRows; row++) buffer += "\r\n";
+				buffer += `\x1b[${imageReservedRows - 1}A`;
+				buffer += line;
+				buffer += `\x1b[${imageReservedRows - 1}B`;
+				index += imageReservedRows - 1;
+				continue;
+			}
+			buffer += line;
+		}
+		buffer += "\x1b[?2026l";
+		this.writeTerminalFrame(buffer, lines.length);
+		this.cursorRow = Math.max(0, lines.length - 1);
+		this.hardwareCursorRow = this.cursorRow;
+		if (clear) this.maxLinesRendered = lines.length;
+		else this.maxLinesRendered = Math.max(this.maxLinesRendered, lines.length);
+		const bufferLength = Math.max(height, lines.length);
+		this.previousViewportTop = Math.max(0, bufferLength - height);
+		this.positionHardwareCursor(cursorPos, lines.length);
+		this.previousLines = lines;
+		this.previousKittyImageIds = this.collectKittyImageIds(lines);
+		this.previousWidth = width;
+		this.previousHeight = height;
+		this.captureViewportMutationTokens(width, hasViewportDocument ? generatedDocumentHeight : undefined);
+	}
+
+	private logFullRedraw(reason: string, nextLineCount: number, height: number): void {
+		if (process.env.SP_DEBUG_REDRAW !== "1") return;
+		const logPath = path.join(this.logDirectory, "pi-debug.log");
+		const message = `[${new Date().toISOString()}] fullRender: ${reason} (prev=${this.previousLines.length}, new=${nextLineCount}, height=${height})\n`;
+		fs.mkdirSync(path.dirname(logPath), { recursive: true });
+		fs.appendFileSync(logPath, message);
+	}
+
+	private writeRenderDebugLog(
+		firstChanged: number,
+		viewportTop: number,
+		height: number,
+		lineDiff: number,
+		hardwareCursorRow: number,
+		renderEnd: number,
+		finalCursorRow: number,
+		cursorPos: { row: number; col: number } | null,
+		newLines: string[],
+		buffer: string,
+	): void {
+		const debugDir = "/tmp/tui";
+		fs.mkdirSync(debugDir, { recursive: true });
+		const debugPath = path.join(debugDir, `render-${Date.now()}-${Math.random().toString(36).slice(2)}.log`);
+		const debugData = [
+			`firstChanged: ${firstChanged}`,
+			`viewportTop: ${viewportTop}`,
+			`cursorRow: ${this.cursorRow}`,
+			`height: ${height}`,
+			`lineDiff: ${lineDiff}`,
+			`hardwareCursorRow: ${hardwareCursorRow}`,
+			`renderEnd: ${renderEnd}`,
+			`finalCursorRow: ${finalCursorRow}`,
+			`cursorPos: ${JSON.stringify(cursorPos)}`,
+			`newLines.length: ${newLines.length}`,
+			`previousLines.length: ${this.previousLines.length}`,
+			"",
+			"=== newLines ===",
+			JSON.stringify(newLines, null, 2),
+			"",
+			"=== previousLines ===",
+			JSON.stringify(this.previousLines, null, 2),
+			"",
+			"=== buffer ===",
+			JSON.stringify(buffer),
+		].join("\n");
+		fs.writeFileSync(debugPath, debugData);
 	}
 
 	protected doRender(): void {
@@ -236,12 +343,6 @@ export class TuiMainScreen extends TuiBase implements TUI {
 		let prevViewportTop = heightChanged ? Math.max(0, previousBufferLength - height) : this.previousViewportTop;
 		let viewportTop = prevViewportTop;
 		let hardwareCursorRow = this.hardwareCursorRow;
-		const computeLineDiff = (targetRow: number): number => {
-			const currentScreenRow = hardwareCursorRow - prevViewportTop;
-			const targetScreenRow = targetRow - viewportTop;
-			return targetScreenRow - currentScreenRow;
-		};
-
 		// Render all components to get new lines
 		let newLines = this.render(width);
 		const generatedDocumentHeight = newLines.length;
@@ -257,72 +358,17 @@ export class TuiMainScreen extends TuiBase implements TUI {
 
 		newLines = this.applyLineResets(newLines);
 
-		// Helper to clear scrollback and viewport and render all new lines
-		const fullRender = (clear: boolean): void => {
-			this.fullRedrawCount += 1;
-			let buffer = "\x1b[?2026h"; // Begin synchronized output
-			if (clear) {
-				buffer += this.deleteKittyImages(this.previousKittyImageIds);
-				buffer += "\x1b[2J\x1b[H\x1b[3J"; // Clear screen, home, then clear scrollback
-			}
-			for (let i = 0; i < newLines.length; i++) {
-				if (i > 0) buffer += "\r\n";
-				const line = newLines[i];
-				const isImage = isImageLine(line);
-				const imageReservedRows = isImage ? this.getKittyImageReservedRows(newLines, i) : 1;
-				if (imageReservedRows > 1 && imageReservedRows <= height) {
-					for (let row = 1; row < imageReservedRows; row++) {
-						buffer += "\r\n";
-					}
-					buffer += `\x1b[${imageReservedRows - 1}A`;
-					buffer += line;
-					buffer += `\x1b[${imageReservedRows - 1}B`;
-					i += imageReservedRows - 1;
-					continue;
-				}
-				buffer += line;
-			}
-			buffer += "\x1b[?2026l"; // End synchronized output
-			this.recordTerminalFrame(buffer, newLines.length);
-			this.terminal.write(buffer);
-			this.cursorRow = Math.max(0, newLines.length - 1);
-			this.hardwareCursorRow = this.cursorRow;
-			// Reset max lines when clearing, otherwise track growth
-			if (clear) {
-				this.maxLinesRendered = newLines.length;
-			} else {
-				this.maxLinesRendered = Math.max(this.maxLinesRendered, newLines.length);
-			}
-			const bufferLength = Math.max(height, newLines.length);
-			this.previousViewportTop = Math.max(0, bufferLength - height);
-			this.positionHardwareCursor(cursorPos, newLines.length);
-			this.previousLines = newLines;
-			this.previousKittyImageIds = this.collectKittyImageIds(newLines);
-			this.previousWidth = width;
-			this.previousHeight = height;
-			this.captureViewportMutationTokens(width, hasViewportDocument ? generatedDocumentHeight : undefined);
-		};
-
-		const debugRedraw = process.env.SP_DEBUG_REDRAW === "1";
-		const logRedraw = (reason: string): void => {
-			if (!debugRedraw) return;
-			const logPath = path.join(this.logDirectory, "pi-debug.log");
-			const msg = `[${new Date().toISOString()}] fullRender: ${reason} (prev=${this.previousLines.length}, new=${newLines.length}, height=${height})\n`;
-			fs.mkdirSync(path.dirname(logPath), { recursive: true });
-			fs.appendFileSync(logPath, msg);
-		};
-
 		// First render - just output everything without clearing (assumes clean screen)
 		if (this.previousLines.length === 0 && !widthChanged && !heightChanged) {
-			logRedraw("first render");
-			fullRender(false);
+			this.logFullRedraw("first render", newLines.length, height);
+			this.renderFullFrame(false, newLines, width, height, cursorPos, hasViewportDocument, generatedDocumentHeight);
 			return;
 		}
 
 		// Width changes always need a full re-render because wrapping changes.
 		if (widthChanged) {
-			logRedraw(`terminal width changed (${this.previousWidth} -> ${width})`);
-			fullRender(true);
+			this.logFullRedraw(`terminal width changed (${this.previousWidth} -> ${width})`, newLines.length, height);
+			this.renderFullFrame(true, newLines, width, height, cursorPos, hasViewportDocument, generatedDocumentHeight);
 			return;
 		}
 
@@ -330,8 +376,8 @@ export class TuiMainScreen extends TuiBase implements TUI {
 		// but Termux changes height when the software keyboard shows or hides.
 		// In that environment, a full redraw causes the entire history to replay on every toggle.
 		if (heightChanged && !isTermuxSession()) {
-			logRedraw(`terminal height changed (${this.previousHeight} -> ${height})`);
-			fullRender(true);
+			this.logFullRedraw(`terminal height changed (${this.previousHeight} -> ${height})`, newLines.length, height);
+			this.renderFullFrame(true, newLines, width, height, cursorPos, hasViewportDocument, generatedDocumentHeight);
 			return;
 		}
 
@@ -339,8 +385,8 @@ export class TuiMainScreen extends TuiBase implements TUI {
 		// (overlays need the padding, so only do this when no overlays are active)
 		// Configurable via setClearOnShrink() or SP_CLEAR_ON_SHRINK=0 env var
 		if (this.getClearOnShrink() && newLines.length < this.maxLinesRendered && !this.hasOverlayEntries) {
-			logRedraw(`clearOnShrink (maxLinesRendered=${this.maxLinesRendered})`);
-			fullRender(true);
+			this.logFullRedraw(`clearOnShrink (maxLinesRendered=${this.maxLinesRendered})`, newLines.length, height);
+			this.renderFullFrame(true, newLines, width, height, cursorPos, hasViewportDocument, generatedDocumentHeight);
 			return;
 		}
 
@@ -367,9 +413,9 @@ export class TuiMainScreen extends TuiBase implements TUI {
 			lastChanged = newLines.length - 1;
 		}
 		if (firstChanged !== -1) {
-			const expandedRange = this.expandChangedRangeForKittyImages(firstChanged, lastChanged, newLines);
-			firstChanged = expandedRange.firstChanged;
-			lastChanged = expandedRange.lastChanged;
+			this.expandChangedRangeForKittyImages(firstChanged, lastChanged, newLines);
+			firstChanged = this.expandedFirstChanged;
+			lastChanged = this.expandedLastChanged;
 		}
 		const appendStart = appendedLines && firstChanged === this.previousLines.length && firstChanged > 0;
 
@@ -390,19 +436,19 @@ export class TuiMainScreen extends TuiBase implements TUI {
 				// Move to end of new content (clamp to 0 for empty content)
 				const targetRow = Math.max(0, newLines.length - 1);
 				if (targetRow < prevViewportTop) {
-					logRedraw(`deleted lines moved viewport up (${targetRow} < ${prevViewportTop})`);
-					fullRender(true);
+					this.logFullRedraw(`deleted lines moved viewport up (${targetRow} < ${prevViewportTop})`, newLines.length, height);
+					this.renderFullFrame(true, newLines, width, height, cursorPos, hasViewportDocument, generatedDocumentHeight);
 					return;
 				}
-				const lineDiff = computeLineDiff(targetRow);
+				const lineDiff = this.computeLineDiff(hardwareCursorRow, prevViewportTop, targetRow, viewportTop);
 				if (lineDiff > 0) buffer += `\x1b[${lineDiff}B`;
 				else if (lineDiff < 0) buffer += `\x1b[${-lineDiff}A`;
 				buffer += "\r";
 				// Clear extra lines without scrolling
 				const extraLines = this.previousLines.length - newLines.length;
 				if (extraLines > height) {
-					logRedraw(`extraLines > height (${extraLines} > ${height})`);
-					fullRender(true);
+					this.logFullRedraw(`extraLines > height (${extraLines} > ${height})`, newLines.length, height);
+					this.renderFullFrame(true, newLines, width, height, cursorPos, hasViewportDocument, generatedDocumentHeight);
 					return;
 				}
 				const clearStartOffset = newLines.length === 0 ? 0 : 1;
@@ -418,8 +464,7 @@ export class TuiMainScreen extends TuiBase implements TUI {
 					buffer += `\x1b[${moveBack}A`;
 				}
 				buffer += "\x1b[?2026l";
-				this.recordTerminalFrame(buffer, extraLines);
-				this.terminal.write(buffer);
+				this.writeTerminalFrame(buffer, extraLines);
 				this.cursorRow = targetRow;
 				this.hardwareCursorRow = targetRow;
 			}
@@ -436,8 +481,8 @@ export class TuiMainScreen extends TuiBase implements TUI {
 		// Differential rendering can only touch what was actually visible.
 		// If the first changed line is above the previous viewport, we need a full redraw.
 		if (firstChanged < prevViewportTop) {
-			logRedraw(`firstChanged < viewportTop (${firstChanged} < ${prevViewportTop})`);
-			fullRender(true);
+			this.logFullRedraw(`firstChanged < viewportTop (${firstChanged} < ${prevViewportTop})`, newLines.length, height);
+			this.renderFullFrame(true, newLines, width, height, cursorPos, hasViewportDocument, generatedDocumentHeight);
 			return;
 		}
 
@@ -461,7 +506,7 @@ export class TuiMainScreen extends TuiBase implements TUI {
 		}
 
 		// Move cursor to first changed line (use hardwareCursorRow for actual position)
-		const lineDiff = computeLineDiff(moveTargetRow);
+		const lineDiff = this.computeLineDiff(hardwareCursorRow, prevViewportTop, moveTargetRow, viewportTop);
 		if (lineDiff > 0) {
 			buffer += `\x1b[${lineDiff}B`; // Move down
 		} else if (lineDiff < 0) {
@@ -481,10 +526,12 @@ export class TuiMainScreen extends TuiBase implements TUI {
 			if (imageReservedRows > 1) {
 				const imageStartScreenRow = i - viewportTop;
 				if (imageStartScreenRow < 0 || imageStartScreenRow + imageReservedRows > height) {
-					logRedraw(
+					this.logFullRedraw(
 						`kitty image pre-clear would scroll (${imageStartScreenRow} + ${imageReservedRows} > ${height})`,
+						newLines.length,
+						height,
 					);
-					fullRender(true);
+					this.renderFullFrame(true, newLines, width, height, cursorPos, hasViewportDocument, generatedDocumentHeight);
 					return;
 				}
 
@@ -503,20 +550,17 @@ export class TuiMainScreen extends TuiBase implements TUI {
 			if (!isImage && visibleWidth(line) > width) {
 				// Log all lines to crash file for debugging
 				const crashLogPath = path.join(this.logDirectory, "pi-crash.log");
-				const crashData = [
-					`Crash at ${new Date().toISOString()}`,
-					`Terminal width: ${width}`,
-					`Line ${i} visible width: ${visibleWidth(line)}`,
-					"",
-					"=== All rendered lines ===",
-					...newLines.map((l, idx) => `[${idx}] (w=${visibleWidth(l)}) ${l}`),
-					"",
-				].join("\n");
+				let crashData = `Crash at ${new Date().toISOString()}\nTerminal width: ${width}\n`;
+				crashData += `Line ${i} visible width: ${visibleWidth(line)}\n\n=== All rendered lines ===\n`;
+				for (let lineIndex = 0; lineIndex < newLines.length; lineIndex++) {
+					const renderedLine = newLines[lineIndex];
+					crashData += `[${lineIndex}] (w=${visibleWidth(renderedLine)}) ${renderedLine}\n`;
+				}
 				fs.mkdirSync(path.dirname(crashLogPath), { recursive: true });
 				fs.writeFileSync(crashLogPath, crashData);
 
 				// Clean up terminal state before throwing
-				this.stop();
+				void this.stop();
 
 				const errorMsg = [
 					`Rendered line ${i} exceeds terminal width (${visibleWidth(line)} > ${width}).`,
@@ -553,40 +597,25 @@ export class TuiMainScreen extends TuiBase implements TUI {
 		buffer += "\x1b[?2026l"; // End synchronized output
 
 		if (process.env.SP_TUI_DEBUG === "1") {
-			const debugDir = "/tmp/tui";
-			fs.mkdirSync(debugDir, { recursive: true });
-			const debugPath = path.join(debugDir, `render-${Date.now()}-${Math.random().toString(36).slice(2)}.log`);
-			const debugData = [
-				`firstChanged: ${firstChanged}`,
-				`viewportTop: ${viewportTop}`,
-				`cursorRow: ${this.cursorRow}`,
-				`height: ${height}`,
-				`lineDiff: ${lineDiff}`,
-				`hardwareCursorRow: ${hardwareCursorRow}`,
-				`renderEnd: ${renderEnd}`,
-				`finalCursorRow: ${finalCursorRow}`,
-				`cursorPos: ${JSON.stringify(cursorPos)}`,
-				`newLines.length: ${newLines.length}`,
-				`previousLines.length: ${this.previousLines.length}`,
-				"",
-				"=== newLines ===",
-				JSON.stringify(newLines, null, 2),
-				"",
-				"=== previousLines ===",
-				JSON.stringify(this.previousLines, null, 2),
-				"",
-				"=== buffer ===",
-				JSON.stringify(buffer),
-			].join("\n");
-			fs.writeFileSync(debugPath, debugData);
+			this.writeRenderDebugLog(
+				firstChanged,
+				viewportTop,
+				height,
+				lineDiff,
+				hardwareCursorRow,
+				renderEnd,
+				finalCursorRow,
+				cursorPos,
+				newLines,
+				buffer,
+			);
 		}
 
 		// Write entire buffer at once
-		this.recordTerminalFrame(
+		this.writeTerminalFrame(
 			buffer,
 			renderEnd - firstChanged + 1 + Math.max(0, this.previousLines.length - newLines.length),
 		);
-		this.terminal.write(buffer);
 
 		// Track cursor position for next render
 		// cursorRow tracks end of content (for viewport calculation)
@@ -698,8 +727,7 @@ export class TuiMainScreen extends TuiBase implements TUI {
 		}
 		buffer += "\x1b[?2026l";
 		if (shiftedRows > 0 || diffLines > 0) {
-			this.recordTerminalFrame(buffer, diffLines + shiftedRows);
-			this.terminal.write(buffer);
+			this.writeTerminalFrame(buffer, diffLines + shiftedRows);
 			this.hardwareCursorRow = writeCursorRow;
 		}
 
@@ -858,7 +886,7 @@ export class TuiMainScreen extends TuiBase implements TUI {
 	 */
 	private positionHardwareCursor(cursorPos: { row: number; col: number } | null, totalLines: number): void {
 		if (!cursorPos || totalLines <= 0) {
-			this.terminal.hideCursor();
+			this.writeTerminalFrame("\x1b[?25l", 0);
 			return;
 		}
 
@@ -877,15 +905,12 @@ export class TuiMainScreen extends TuiBase implements TUI {
 		// Move to absolute column (1-indexed)
 		buffer += `\x1b[${targetCol + 1}G`;
 
-		if (buffer) {
-			this.terminal.write(buffer);
-		}
-
 		this.hardwareCursorRow = targetRow;
 		if (this.getShowHardwareCursor()) {
-			this.terminal.showCursor();
+			buffer += "\x1b[?25h";
 		} else {
-			this.terminal.hideCursor();
+			buffer += "\x1b[?25l";
 		}
+		this.writeTerminalFrame(buffer, 0);
 	}
 }

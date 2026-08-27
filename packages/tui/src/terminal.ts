@@ -58,6 +58,8 @@ export function normalizeAppleTerminalInput(data: string, isAppleTerminal: boole
 /**
  * Minimal terminal interface for TUI
  */
+export type TerminalFrameWriteCompletion = (generation: number, error?: Error) => void;
+
 export interface Terminal {
 	// Start the terminal with input and resize handlers
 	start(onInput: (data: string) => void, onResize: () => void): void;
@@ -73,8 +75,23 @@ export interface Terminal {
 	 */
 	drainInput(maxMs?: number, idleMs?: number): Promise<void>;
 
-	// Write output to terminal
-	write(data: string): void;
+	/** Write a terminal control sequence. Every returned Promise must be awaited or observed. */
+	write(data: string): void | Promise<void>;
+
+	/** Register the one stable callback used by the terminal frame lane. */
+	setFrameWriteCompletionListener(listener: TerminalFrameWriteCompletion | undefined): void;
+
+	/**
+	 * Start one atomic rendered frame. The registered completion listener fires
+	 * only after both the Writable callback and any required drain have completed.
+	 */
+	writeFrame(data: string, generation: number): void;
+
+	/**
+	 * Lifecycle-only cancellation. OS output is not cancelled; this only releases
+	 * adapter listeners/references and ignores a late callback for this generation.
+	 */
+	cancelFrameWrite(generation: number): void;
 
 	// Get terminal dimensions
 	get columns(): number;
@@ -106,6 +123,33 @@ export interface Terminal {
  * Real terminal using process.stdin/stdout
  */
 export class ProcessTerminal implements Terminal {
+	private readonly frameOutput: Pick<NodeJS.WriteStream, "write" | "on" | "once" | "removeListener">;
+	private frameOutputFailure: Error | undefined;
+	private frameWriteActive = false;
+	private frameWriteReturned = false;
+	private frameWriteCallbackComplete = false;
+	private frameWriteDrainComplete = false;
+	private frameWriteGeneration = 0;
+	private frameWriteCompletionListener: TerminalFrameWriteCompletion | undefined;
+	private readonly onFrameWriteCallback = (error?: Error | null): void => {
+		if (error) {
+			this.failFrameOutput(error);
+			return;
+		}
+		this.frameWriteCallbackComplete = true;
+		this.tryCompleteFrameWrite();
+	};
+	private readonly onFrameWriteDrain = (): void => {
+		this.frameWriteDrainComplete = true;
+		this.tryCompleteFrameWrite();
+	};
+	private readonly onFrameWriteClose = (): void => {
+		this.failFrameOutput(new Error("Terminal frame output closed before frame completion"));
+	};
+	private readonly onFrameOutputError = (error: Error): void => {
+		const failure = error instanceof Error ? error : new Error(String(error));
+		this.failFrameOutput(failure);
+	};
 	private wasRaw = false;
 	private inputHandler?: (data: string) => void;
 	private resizeHandler?: () => void;
@@ -131,6 +175,14 @@ export class ProcessTerminal implements Terminal {
 		}
 		return env;
 	})();
+
+	constructor(frameOutput: Pick<NodeJS.WriteStream, "write" | "on" | "once" | "removeListener"> = process.stdout) {
+		this.frameOutput = frameOutput;
+		// Writable callback failures may be followed by an error event. Keep one
+		// process-terminal-owned observer so that late stream errors are contained
+		// after the per-write listeners have already been released.
+		this.frameOutput.on("error", this.onFrameOutputError);
+	}
 
 	get kittyProtocolActive(): boolean {
 		return this._kittyProtocolActive;
@@ -461,14 +513,93 @@ export class ProcessTerminal implements Terminal {
 		}
 	}
 
-	write(data: string): void {
-		process.stdout.write(data);
-		if (this.writeLogPath) {
-			try {
-				fs.appendFileSync(this.writeLogPath, data, { encoding: "utf8" });
-			} catch {
-				// Ignore logging errors
+	write(data: string): Promise<void> {
+		const completion = new Promise<void>((resolve, reject) => {
+			process.stdout.write(data, (error) => {
+				if (error) reject(error);
+				else resolve();
+			});
+		});
+		this.logWrite(data);
+		return completion;
+	}
+
+	setFrameWriteCompletionListener(listener: TerminalFrameWriteCompletion | undefined): void {
+		this.frameWriteCompletionListener = listener;
+	}
+
+	writeFrame(data: string, generation: number): void {
+		if (this.writeLogPath) this.logWrite(data);
+		if (this.frameOutputFailure) {
+			this.frameWriteCompletionListener?.(generation, this.frameOutputFailure);
+			return;
+		}
+		if (this.frameWriteActive) {
+			this.frameWriteCompletionListener?.(generation, new Error("Concurrent terminal frame writes are not supported"));
+			return;
+		}
+
+		this.frameWriteActive = true;
+		this.frameWriteReturned = false;
+		this.frameWriteCallbackComplete = false;
+		this.frameWriteDrainComplete = false;
+		this.frameWriteGeneration = generation;
+		this.frameOutput.once("drain", this.onFrameWriteDrain);
+		this.frameOutput.once("close", this.onFrameWriteClose);
+		try {
+			const accepted = this.frameOutput.write(data, this.onFrameWriteCallback);
+			if (!this.frameWriteActive) return;
+			this.frameWriteReturned = true;
+			if (accepted) {
+				this.frameWriteDrainComplete = true;
+				this.frameOutput.removeListener("drain", this.onFrameWriteDrain);
 			}
+			this.tryCompleteFrameWrite();
+		} catch (error) {
+			this.failFrameOutput(error instanceof Error ? error : new Error(String(error)));
+		}
+	}
+
+	cancelFrameWrite(generation: number): void {
+		if (!this.frameWriteActive || generation !== this.frameWriteGeneration) return;
+		this.clearFrameWriteState();
+	}
+
+	private tryCompleteFrameWrite(): void {
+		if (this.frameWriteReturned && this.frameWriteCallbackComplete && this.frameWriteDrainComplete) {
+			this.completeFrameWrite();
+		}
+	}
+
+	private failFrameOutput(error: Error): void {
+		this.frameOutputFailure ??= error;
+		this.completeFrameWrite(error);
+	}
+
+	private completeFrameWrite(error?: Error): void {
+		if (!this.frameWriteActive) return;
+		const generation = this.frameWriteGeneration;
+		const listener = this.frameWriteCompletionListener;
+		this.clearFrameWriteState();
+		listener?.(generation, error);
+	}
+
+	private clearFrameWriteState(): void {
+		this.frameOutput.removeListener("drain", this.onFrameWriteDrain);
+		this.frameOutput.removeListener("close", this.onFrameWriteClose);
+		this.frameWriteActive = false;
+		this.frameWriteReturned = false;
+		this.frameWriteCallbackComplete = false;
+		this.frameWriteDrainComplete = false;
+		this.frameWriteGeneration = 0;
+	}
+
+	private logWrite(data: string): void {
+		if (!this.writeLogPath) return;
+		try {
+			fs.appendFileSync(this.writeLogPath, data, { encoding: "utf8" });
+		} catch {
+			// Ignore logging errors
 		}
 	}
 
