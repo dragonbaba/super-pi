@@ -4,6 +4,8 @@ import { createProvider, type Provider } from "../models.ts";
 import { GOOGLE_VERTEX_MODELS } from "./google-vertex.models.ts";
 import { profileGoogleModel } from "./google-profile.ts";
 
+const GOOGLE_VERTEX_MODEL_CATALOG = Object.values(GOOGLE_VERTEX_MODELS);
+
 const VERTEX_ADC_PATH = "~/.config/gcloud/application_default_credentials.json";
 
 /**
@@ -95,7 +97,7 @@ export function googleVertexProvider(): Provider<"google-vertex"> {
 		id: "google-vertex",
 		name: "Google Vertex AI",
 		auth: { apiKey: vertexAuth },
-		models: Object.values(GOOGLE_VERTEX_MODELS),
+		models: GOOGLE_VERTEX_MODEL_CATALOG,
 		profileModel: profileGoogleModel,
 		api: googleVertexApi(),
 	});

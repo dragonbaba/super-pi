@@ -609,6 +609,7 @@ export function composeModelProvider(
 			const override = config?.modelOverrides?.[model.id];
 			return override ? applyModelOverride(model, override) : model;
 		});
+		if (!config && !extension) return overlaid;
 		return overlaid.map((model) => {
 			const raw = stripModelRuntimeProfile(model);
 			const enriched = base?.profileModel?.(raw) ?? raw;
