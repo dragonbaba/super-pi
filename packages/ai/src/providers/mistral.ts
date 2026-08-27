@@ -1,12 +1,8 @@
 import { mistralConversationsApi } from "../api/mistral-conversations.lazy.ts";
 import { envApiKeyAuth } from "../auth/helpers.ts";
 import { createProvider, type Provider } from "../models.ts";
-import { enrichModelCapabilities } from "../model-capabilities.ts";
 import { MISTRAL_MODELS } from "./mistral.models.ts";
-
-const PROFILED_MISTRAL_MODELS = Object.values(MISTRAL_MODELS).map((model) =>
-	enrichModelCapabilities(model, { strictToolSchema: true }),
-);
+import { profileMistralModel } from "./mistral-profile.ts";
 
 export function mistralProvider(): Provider<"mistral-conversations"> {
 	return createProvider({
@@ -14,7 +10,8 @@ export function mistralProvider(): Provider<"mistral-conversations"> {
 		name: "Mistral",
 		baseUrl: "https://api.mistral.ai",
 		auth: { apiKey: envApiKeyAuth("Mistral API key", ["MISTRAL_API_KEY"]) },
-		models: PROFILED_MISTRAL_MODELS,
+		models: Object.values(MISTRAL_MODELS),
+		profileModel: profileMistralModel,
 		api: mistralConversationsApi(),
 	});
 }

@@ -1,4 +1,13 @@
-import { type Api, type Model, type ModelsStoreEntry, type Provider, withModelProfile } from "@super-pi/ai";
+import {
+	type Api,
+	MODELS_STORE_PROFILE_REVISION,
+	type Model,
+	type ModelsStoreEntry,
+	type Provider,
+	rawModelsStoreEntry,
+	stripModelRuntimeProfile,
+	withModelProfile,
+} from "@super-pi/ai";
 import { VERSION } from "../config.ts";
 import { fetchWithRetry } from "../utils/management-http.ts";
 import { getPiUserAgent } from "../utils/pi-user-agent.ts";
@@ -31,13 +40,13 @@ function parseCatalog(providerId: string, value: unknown): Model<Api>[] {
 	if (!entries) throw new Error(`Invalid model catalog for provider "${providerId}"`);
 	return entries
 		.filter((entry): entry is Model<Api> => typeof entry === "object" && entry !== null && "id" in entry)
-		.map((model) =>
-			withModelProfile({ ...model, provider: providerId }, "provider-catalog", {
-				costKnown: model.costKnown ?? true,
-				capabilities: model.capabilities,
-				diagnostics: model.profileDiagnostics,
-			}),
-		);
+		.map((model) => stripModelRuntimeProfile({ ...model, provider: providerId }));
+}
+
+function profileRemoteModel(provider: Provider, model: Model<Api>): Model<Api> {
+	const raw = stripModelRuntimeProfile(model);
+	const enriched = provider.profileModel?.(raw) ?? raw;
+	return withModelProfile(enriched, "provider-catalog", { costKnown: model.costKnown ?? true });
 }
 
 function remoteModels(
@@ -67,15 +76,13 @@ export function withRemoteCatalog(
 			const stored = context.stored;
 			const restored = remoteModels(stored, localGeneratedAt)
 				.filter((model) => model.provider === provider.id)
-				.map((model) =>
-					withModelProfile(model, "provider-catalog", {
-						costKnown: model.costKnown ?? true,
-						capabilities: model.capabilities,
-						diagnostics: model.profileDiagnostics,
-					}),
-				);
+				.map((model) => profileRemoteModel(provider, model));
 			if (
 				!(await context.publish({
+					persist:
+						stored && stored.profileRevision !== MODELS_STORE_PROFILE_REVISION
+							? rawModelsStoreEntry(stored)
+							: undefined,
 					update: () => {
 						dynamicModels = restored;
 						mergedModels = undefined;
@@ -138,16 +145,17 @@ export function withRemoteCatalog(
 				await context.publish({ persist: { ...(stored ?? { models: [] }), checkedAt } });
 				throw new Error(`Model catalog request failed for ${provider.id}: ${response.status}`);
 			}
-			const refreshed = parseCatalog(provider.id, await response.json());
+			const rawRefreshed = parseCatalog(provider.id, await response.json());
+			const refreshed = rawRefreshed.map((model) => profileRemoteModel(provider, model));
 			const lastModified = Date.parse(response.headers.get("last-modified") ?? "");
 			if (context.signal.aborted) return;
 			const entry = {
-				models: refreshed,
+				models: rawRefreshed,
 				checkedAt,
 				lastModified: Number.isNaN(lastModified) ? 0 : lastModified,
 				etag: response.headers.get("etag") ?? undefined,
 			};
-			const published = remoteModels(entry, localGeneratedAt);
+			const published = remoteModels(entry, localGeneratedAt).map((model) => profileRemoteModel(provider, model));
 			await context.publish({
 				persist: entry,
 				update: () => {

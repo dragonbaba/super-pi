@@ -5,7 +5,11 @@ import { join } from "node:path";
 import test from "node:test";
 import { InMemoryModelsStore } from "../packages/ai/src/models-store.ts";
 import { createModels, createProvider, getSupportedThinkingLevels } from "../packages/ai/src/models.ts";
-import { conservativeModelCapabilities, withModelProfile } from "../packages/ai/src/model-capabilities.ts";
+import {
+	conservativeModelCapabilities,
+	enrichModelCapabilities,
+	withModelProfile,
+} from "../packages/ai/src/model-capabilities.ts";
 import type { Model, ModelCapabilitiesV1 } from "../packages/ai/src/types.ts";
 import { ModelConfig } from "../packages/coding-agent/src/core/model-config.ts";
 import { ModelRuntime } from "../packages/coding-agent/src/core/model-runtime.ts";
@@ -323,7 +327,11 @@ test("explicit capabilities are validated, cloned, deeply frozen, and drive supp
 });
 
 test("OAuth modifyModels in-place capability input mutation rederives without mutating the base catalog", async () => {
-	const baseModel = fixtureModel({ compat: { supportsStrictMode: true } });
+	const baseModel = fixtureModel({
+		compat: { supportsStrictMode: true },
+		headers: { "x-base": "preserved" },
+		samplingParams: { top_p: 0.5 },
+	});
 	const baseProvider = createProvider({
 		id: "fixture",
 		auth: { apiKey: { name: "fixture", resolve: async () => ({ auth: { apiKey: "fixture" } }) } },
@@ -341,6 +349,9 @@ test("OAuth modifyModels in-place capability input mutation rederives without mu
 				model.reasoning = false;
 				model.input.push("image");
 				(model.compat as { supportsStrictMode?: boolean }).supportsStrictMode = false;
+				model.cost.input = 99;
+				model.headers!["x-base"] = "mutated";
+				model.samplingParams!.top_p = 0.99;
 				return models;
 			},
 		},
@@ -363,4 +374,54 @@ test("OAuth modifyModels in-place capability input mutation rederives without mu
 	assert.equal(baseProvider.getModels()[0]?.reasoning, true);
 	assert.deepEqual(baseProvider.getModels()[0]?.input, ["text"]);
 	assert.equal((baseProvider.getModels()[0]?.compat as { supportsStrictMode?: boolean }).supportsStrictMode, true);
+	assert.equal(baseProvider.getModels()[0]?.cost.input, 1);
+	assert.deepEqual(baseProvider.getModels()[0]?.headers, { "x-base": "preserved" });
+	assert.deepEqual(baseProvider.getModels()[0]?.samplingParams, { top_p: 0.5 });
+});
+
+test("OAuth identity mutation clears stale provider enrichment and reruns the profiler", async () => {
+	const baseModel = fixtureModel({ id: "provider-owned", name: "Provider-owned" });
+	const baseProvider = createProvider({
+		id: "fixture",
+		auth: { apiKey: { name: "fixture", resolve: async () => ({ auth: { apiKey: "fixture" } }) } },
+		models: [baseModel],
+		profileModel: (model) => model.id === "provider-owned" && model.name === "Provider-owned"
+			? enrichModelCapabilities(model, { reasoningMode: "adaptive" })
+			: model,
+		api: {} as never,
+	});
+	assert.equal(baseProvider.getModels()[0]?.capabilities?.reasoning.mode, "adaptive");
+	const provider = composeModelProvider("fixture", baseProvider, await ModelConfig.load(undefined), {
+		oauth: {
+			name: "fixture oauth",
+			login: async () => ({ refresh: "refresh", access: "access", expires: 1 }),
+			refreshToken: async (credential) => credential,
+			getApiKey: (credential) => credential.access,
+			modifyModels: (models) => {
+				const model = models[0]!;
+				model.id = "extension-owned";
+				model.name = "Extension-owned";
+				model.api = "mistral-conversations";
+				model.provider = "extension-provider";
+				return models;
+			},
+		},
+	});
+	await provider.refreshModels?.({
+		credential: { type: "oauth", refresh: "refresh", access: "access", expires: 1 },
+		allowNetwork: false,
+		signal: new AbortController().signal,
+		publish: async (publication) => {
+			publication.update?.();
+			return true;
+		},
+	});
+	const updated = provider.getModels()[0]!;
+	assert.equal(updated.id, "extension-owned");
+	assert.equal(updated.name, "Extension-owned");
+	assert.equal(updated.api, "mistral-conversations");
+	assert.equal(updated.provider, "extension-provider");
+	assert.equal(updated.capabilities?.reasoning.mode, "levels");
+	assert.equal(baseProvider.getModels()[0]?.id, "provider-owned");
+	assert.equal(baseProvider.getModels()[0]?.capabilities?.reasoning.mode, "adaptive");
 });

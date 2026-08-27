@@ -52,7 +52,10 @@ const THINKING_LEVELS: readonly ModelThinkingLevel[] = ["off", "minimal", "low",
 const THINKING_LEVEL_SET = new Set<ModelThinkingLevel>(THINKING_LEVELS);
 const PROFILE_CACHE = new WeakMap<object, Map<string, Model<Api>>>();
 const NORMALIZED_CAPABILITIES = new WeakSet<object>();
-const MODEL_CAPABILITY_ENRICHMENT = Symbol("super-pi.model-capability-enrichment-v1");
+// A provider factory and its host can be loaded through separate package copies
+// (for example source tests plus built workspace exports). Use one realm-wide key
+// so the host can consume and clear provider-owned enrichment in either copy.
+const MODEL_CAPABILITY_ENRICHMENT: unique symbol = Symbol.for("super-pi.model-capability-enrichment-v1") as never;
 
 export interface ModelCapabilityEnrichmentV1 {
 	strictToolSchema?: boolean;
@@ -78,6 +81,19 @@ export function enrichModelCapabilities<TApi extends Api>(
 
 function modelCapabilityEnrichment(model: Model<Api>): Readonly<ModelCapabilityEnrichmentV1> | undefined {
 	return (model as CapabilityEnrichedModel)[MODEL_CAPABILITY_ENRICHMENT];
+}
+
+/** Remove locally derived profile/enrichment metadata before a model re-enters a provider profiler. */
+export function stripModelRuntimeProfile<TApi extends Api>(model: Model<TApi>): Model<TApi> {
+	const {
+		capabilities: _capabilities,
+		profileSource: _profileSource,
+		profileDiagnostics: _profileDiagnostics,
+		thinkingBudgetMap: _thinkingBudgetMap,
+		[MODEL_CAPABILITY_ENRICHMENT]: _enrichment,
+		...raw
+	} = model as Model<TApi> & CapabilityEnrichedModel;
+	return raw as Model<TApi>;
 }
 
 const CAPABILITY_KEYS = [

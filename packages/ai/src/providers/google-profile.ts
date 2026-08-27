@@ -27,9 +27,8 @@ function budgetDefaults(modelId: string): Partial<Record<Exclude<ModelThinkingLe
 }
 
 /** Enrich a Google-owned catalog model before the generic profile normalizer runs. */
-export function profileGoogleModel<TApi extends Extract<Api, "google-generative-ai" | "google-vertex">>(
-	model: Model<TApi>,
-): Model<TApi> {
+export function profileGoogleModel<TApi extends Api>(model: Model<TApi>): Model<TApi> {
+	if (model.api !== "google-generative-ai" && model.api !== "google-vertex") return model;
 	const levels = isLevelReasoningModel(model.id);
 	return enrichModelCapabilities(
 		{

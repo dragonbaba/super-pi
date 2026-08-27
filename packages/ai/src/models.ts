@@ -13,8 +13,14 @@ import type {
 	CredentialStore,
 	ProviderAuth,
 } from "./auth/types.ts";
-import { InMemoryModelsStore, type ModelsStore, type ModelsStoreEntry } from "./models-store.ts";
-import { getModelCapabilities, withModelProfile } from "./model-capabilities.ts";
+import {
+	InMemoryModelsStore,
+	MODELS_STORE_PROFILE_REVISION,
+	rawModelsStoreEntry,
+	type ModelsStore,
+	type ModelsStoreEntry,
+} from "./models-store.ts";
+import { getModelCapabilities, stripModelRuntimeProfile, withModelProfile } from "./model-capabilities.ts";
 import type {
 	Api,
 	ApiStreamOptions,
@@ -111,6 +117,8 @@ export interface Provider<TApi extends Api = Api> {
 	 * `Models.getAuth()` returns undefined when the provider is unconfigured.
 	 */
 	readonly auth: ProviderAuth;
+	/** Provider-owned capability enrichment applied at every model ingress. */
+	profileModel?(model: Model<TApi>): Model<TApi>;
 
 	/**
 	 * Current known models, sync. Static providers return their catalog;
@@ -335,7 +343,7 @@ class ModelsImpl implements MutableModels {
 			if (publication.persist === null) {
 				await this.modelsStore.delete(providerId, { signal });
 			} else if (publication.persist !== undefined) {
-				await this.modelsStore.write(providerId, structuredClone(publication.persist), { signal });
+				await this.modelsStore.write(providerId, rawModelsStoreEntry(publication.persist), { signal });
 			}
 
 			if (signal.aborted || this.refreshGenerations.get(providerId) !== generation) return false;
@@ -734,6 +742,8 @@ export interface CreateProviderOptions<TApi extends Api = Api> {
 	models: readonly Model<TApi>[];
 	/** Provenance for static models. Built-in factories default to "built-in". */
 	modelProfileSource?: Model<TApi>["profileSource"];
+	/** Provider-owned enrichment applied to static, fetched, and restored catalog models. */
+	profileModel?: (model: Model<TApi>) => Model<TApi>;
 	/** Fetch a dynamic model overlay. createProvider restores and publishes it transactionally. */
 	fetchModels?: (context: RefreshModelsContext) => Promise<readonly Model<TApi>[]>;
 	filterModels?: (models: readonly Model<TApi>[], credential: Credential | undefined) => readonly Model<TApi>[];
@@ -743,6 +753,7 @@ export interface CreateProviderOptions<TApi extends Api = Api> {
 
 interface ProfiledModelListCacheEntry {
 	key: string;
+	profileModel?: (model: Model<Api>) => Model<Api>;
 	originals: readonly Model<Api>[];
 	profiled: readonly Model<Api>[];
 }
@@ -757,25 +768,42 @@ function sameModelObjects(left: readonly Model<Api>[], right: readonly Model<Api
 	return true;
 }
 
+function profileIngressModel<TApi extends Api>(
+	model: Model<TApi>,
+	source: NonNullable<Model<TApi>["profileSource"]>,
+	profileModel: CreateProviderOptions<TApi>["profileModel"],
+	resetRuntimeProfile: boolean,
+): Model<TApi> {
+	const raw = resetRuntimeProfile ? stripModelRuntimeProfile(model) : model;
+	const enriched = profileModel?.(raw) ?? raw;
+	const cachedCapabilities = resetRuntimeProfile && profileModel === undefined ? model.capabilities : undefined;
+	return withModelProfile(enriched, source, {
+		costKnown: model.costKnown ?? true,
+		diagnostics: profileModel === undefined ? model.profileDiagnostics : enriched.profileDiagnostics,
+		capabilities: cachedCapabilities ?? enriched.capabilities,
+	});
+}
+
 function profileStaticModels<TApi extends Api>(input: CreateProviderOptions<TApi>): readonly Model<TApi>[] {
 	const source = input.modelProfileSource ?? "built-in";
 	const key = `${input.id}\0${source}`;
 	const first = input.models[0] as Model<Api> | undefined;
 	const candidates = first ? PROFILED_MODEL_LISTS.get(first) : undefined;
 	for (const candidate of candidates ?? []) {
-		if (candidate.key === key && sameModelObjects(candidate.originals, input.models)) {
+		if (
+			candidate.key === key &&
+			candidate.profileModel === (input.profileModel as ((model: Model<Api>) => Model<Api>) | undefined) &&
+			sameModelObjects(candidate.originals, input.models)
+		) {
 			return candidate.profiled as readonly Model<TApi>[];
 		}
 	}
 	const profiled = input.models.map((model) =>
-		withModelProfile(model, model.profileSource ?? source, {
-			costKnown: model.costKnown ?? true,
-			diagnostics: model.profileDiagnostics,
-			capabilities: model.capabilities,
-		}),
+		profileIngressModel(model, model.profileSource ?? source, input.profileModel, input.profileModel !== undefined),
 	);
 	const entry: ProfiledModelListCacheEntry = {
 		key,
+		profileModel: input.profileModel as ((model: Model<Api>) => Model<Api>) | undefined,
 		originals: [...input.models] as Model<Api>[],
 		profiled: profiled as Model<Api>[],
 	};
@@ -833,19 +861,20 @@ export function createProvider<TApi extends Api = Api>(input: CreateProviderOpti
 		baseUrl: input.baseUrl,
 		headers: input.headers,
 		auth: input.auth,
+		profileModel: input.profileModel,
 		getModels: currentModels,
 		refreshModels: fetchModels
 			? async (context) => {
 					if (context.stored) {
 						const restored = context.stored.models
 							.filter((model) => model.provider === input.id)
-							.map((model) => withModelProfile(model as Model<TApi>, "provider-catalog", {
-								costKnown: model.costKnown ?? true,
-								diagnostics: model.profileDiagnostics,
-								capabilities: model.capabilities,
-							}));
+							.map((model) => profileIngressModel(model as Model<TApi>, "provider-catalog", input.profileModel, true));
 						if (
 							!(await context.publish({
+							persist:
+								context.stored.profileRevision === MODELS_STORE_PROFILE_REVISION
+									? undefined
+									: rawModelsStoreEntry(context.stored),
 							update: () => {
 								dynamicModels = restored;
 								mergedModels = undefined;
@@ -856,16 +885,13 @@ export function createProvider<TApi extends Api = Api>(input: CreateProviderOpti
 						}
 					}
 					if (!context.allowNetwork || context.signal.aborted) return;
-					const refreshed = (await fetchModels(context)).map((model) =>
-						withModelProfile(model, "provider-catalog", {
-							costKnown: model.costKnown ?? true,
-							diagnostics: model.profileDiagnostics,
-							capabilities: model.capabilities,
-						}),
+					const rawRefreshed = await fetchModels(context);
+					const refreshed = rawRefreshed.map((model) =>
+						profileIngressModel(model, "provider-catalog", input.profileModel, true),
 					);
 					if (context.signal.aborted) return;
 					await context.publish({
-						persist: { models: refreshed, checkedAt: Date.now() },
+						persist: rawModelsStoreEntry({ models: rawRefreshed, checkedAt: Date.now() }),
 						update: () => {
 							dynamicModels = refreshed;
 							mergedModels = undefined;

@@ -20,6 +20,7 @@ import {
 	type RefreshModelsContext,
 	type SimpleStreamOptions,
 	type StreamOptions,
+	stripModelRuntimeProfile,
 	withModelProfile,
 } from "@super-pi/ai";
 import { getApiProvider } from "@super-pi/ai/compat";
@@ -34,6 +35,10 @@ import {
 } from "./resolve-config-value.ts";
 
 interface CapabilityInputSnapshot {
+	id: string;
+	name: string;
+	api: Api;
+	provider: string;
 	reasoning: boolean;
 	input: readonly ("text" | "image")[];
 	thinkingLevelMap: Model<Api>["thinkingLevelMap"];
@@ -45,6 +50,10 @@ interface CapabilityInputSnapshot {
 
 function snapshotCapabilityInputs(model: Model<Api>): CapabilityInputSnapshot {
 	return structuredClone({
+		id: model.id,
+		name: model.name,
+		api: model.api,
+		provider: model.provider,
 		reasoning: model.reasoning,
 		input: model.input,
 		thinkingLevelMap: model.thinkingLevelMap,
@@ -58,6 +67,9 @@ function snapshotCapabilityInputs(model: Model<Api>): CapabilityInputSnapshot {
 function cloneModelForExtension(model: Model<Api>): Model<Api> {
 	return {
 		...model,
+		cost: structuredClone(model.cost),
+		headers: model.headers ? { ...model.headers } : undefined,
+		samplingParams: model.samplingParams ? structuredClone(model.samplingParams) : undefined,
 		input: [...model.input],
 		thinkingLevelMap: model.thinkingLevelMap ? { ...model.thinkingLevelMap } : undefined,
 		thinkingBudgetMap: model.thinkingBudgetMap ? { ...model.thinkingBudgetMap } : undefined,
@@ -559,9 +571,14 @@ export function composeModelProvider(
 	let refreshedExtensionModels: ProviderConfigInput["models"];
 	const currentExtension = (): ProviderConfigInput | undefined =>
 		extension && refreshedExtensionModels ? { ...extension, models: refreshedExtensionModels } : extension;
+	const hasDeclaredCapabilities = (modelId: string): boolean =>
+		config?.models?.some((model) => model.id === modelId && model.capabilities !== undefined) === true ||
+		config?.modelOverrides?.[modelId]?.capabilities !== undefined ||
+		currentExtension()?.models?.some((model) => model.id === modelId && model.capabilities !== undefined) === true;
 	// models.json modelOverrides are the topmost user-config layer: they apply once,
 	// after custom-model upserts, extension model replacement, and legacy OAuth projection.
 	const getModels = () => {
+		const oauthCapabilityOverrides = new Set<string>();
 		let models = applyExtension(
 			providerId,
 			applyModelsJson(providerId, base?.getModels() ?? [], config),
@@ -572,26 +589,35 @@ export function composeModelProvider(
 				model,
 				capabilityInputs: snapshotCapabilityInputs(model),
 			}]));
-			const extensionModels = models.map(cloneModelForExtension);
+			const cloneOrigins = new WeakMap<object, ReturnType<typeof originals.get>>();
+			const extensionModels = models.map((model) => {
+				const clone = cloneModelForExtension(model);
+				cloneOrigins.set(clone, originals.get(model.id));
+				return clone;
+			});
 			models = extension.oauth.modifyModels(extensionModels, extensionOAuthCredential).map((model) => {
-				const original = originals.get(model.id);
+				const original = cloneOrigins.get(model) ?? originals.get(model.id);
 				const inheritedCapabilities = original?.model.capabilities === model.capabilities;
 				const capabilityInputsChanged =
 					original !== undefined &&
 					!isDeepStrictEqual(original.capabilityInputs, snapshotCapabilityInputs(model));
-				const profiledInput = inheritedCapabilities && capabilityInputsChanged
-					? { ...model, capabilities: undefined }
-					: model;
-				return withModelProfile(profiledInput, "explicit-custom", {
-					costKnown: model.costKnown ?? true,
-					diagnostics: model.profileDiagnostics,
-					capabilities: profiledInput.capabilities,
-				});
+				if (!inheritedCapabilities && model.capabilities !== undefined) oauthCapabilityOverrides.add(model.id);
+				return inheritedCapabilities && capabilityInputsChanged ? { ...model, capabilities: undefined } : model;
 			});
 		}
-		return models.map((model) => {
+		const overlaid = models.map((model) => {
 			const override = config?.modelOverrides?.[model.id];
 			return override ? applyModelOverride(model, override) : model;
+		});
+		return overlaid.map((model) => {
+			const raw = stripModelRuntimeProfile(model);
+			const enriched = base?.profileModel?.(raw) ?? raw;
+			const preserveCapabilities = hasDeclaredCapabilities(model.id) || oauthCapabilityOverrides.has(model.id);
+			return withModelProfile(enriched, "explicit-custom", {
+				costKnown: model.costKnown ?? true,
+				diagnostics: model.profileDiagnostics,
+				capabilities: preserveCapabilities ? model.capabilities : undefined,
+			});
 		});
 	};
 	// Validate eagerly so registration/reload reports structural errors immediately.
@@ -629,6 +655,7 @@ export function composeModelProvider(
 		baseUrl: extension?.baseUrl ?? config?.baseUrl ?? base?.baseUrl,
 		headers: base?.headers,
 		auth: { ...(apiKey ? { apiKey } : {}), ...(oauth ? { oauth } : {}) },
+		profileModel: base?.profileModel,
 		getModels,
 		refreshModels:
 			base?.refreshModels || extension?.refreshModels || extension?.oauth?.modifyModels

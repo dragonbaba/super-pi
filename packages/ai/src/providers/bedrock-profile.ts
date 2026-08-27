@@ -1,5 +1,5 @@
 import { enrichModelCapabilities } from "../model-capabilities.ts";
-import type { Model } from "../types.ts";
+import type { Api, Model } from "../types.ts";
 
 function modelMatchCandidates(model: Pick<Model<"bedrock-converse-stream">, "id" | "name">): string[] {
 	return [model.id, model.name].flatMap((value) => {
@@ -23,7 +23,9 @@ export function isBedrockAdaptiveReasoningModel(
 	);
 }
 
-export function profileBedrockModel(model: Model<"bedrock-converse-stream">): Model<"bedrock-converse-stream"> {
+
+export function profileBedrockModel<TApi extends Api>(model: Model<TApi>): Model<TApi> {
+	if (model.api !== "bedrock-converse-stream") return model;
 	return enrichModelCapabilities(model, {
 		reasoningMode: isBedrockAdaptiveReasoningModel(model) ? "adaptive" : "budget",
 	});

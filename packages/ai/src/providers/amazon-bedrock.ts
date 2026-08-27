@@ -4,8 +4,6 @@ import { createProvider, type Provider } from "../models.ts";
 import { AMAZON_BEDROCK_MODELS } from "./amazon-bedrock.models.ts";
 import { profileBedrockModel } from "./bedrock-profile.ts";
 
-const PROFILED_AMAZON_BEDROCK_MODELS = Object.values(AMAZON_BEDROCK_MODELS).map(profileBedrockModel);
-
 /**
  * Bedrock accepts a bearer token or the AWS SDK's default credential chain.
  * The login flow can store a token/profile choice; resolve also detects ambient
@@ -87,7 +85,8 @@ export function amazonBedrockProvider(): Provider<"bedrock-converse-stream"> {
 		id: "amazon-bedrock",
 		name: "Amazon Bedrock",
 		auth: { apiKey: bedrockAuth },
-		models: PROFILED_AMAZON_BEDROCK_MODELS,
+		models: Object.values(AMAZON_BEDROCK_MODELS),
+		profileModel: profileBedrockModel,
 		api: bedrockConverseStreamApi(),
 	});
 }
