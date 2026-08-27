@@ -33,15 +33,17 @@ export async function selectConfig(options: ConfigSelectorOptions): Promise<void
 			() => {
 				if (!resolved) {
 					resolved = true;
-					ui.stop();
-					stopThemeWatcher();
-					resolve();
+					void ui.stop().then(() => {
+						stopThemeWatcher();
+						resolve();
+					});
 				}
 			},
 			() => {
-				ui.stop();
-				stopThemeWatcher();
-				process.exit(0);
+				void ui.stop().then(() => {
+					stopThemeWatcher();
+					process.exit(0);
+				});
 			},
 			() => ui.requestRender(),
 			ui.terminal.rows,

@@ -145,7 +145,7 @@ export async function showStartupSelector<T>(
 			}
 			settled = true;
 			await clearStartupTui(ui);
-			ui.stop();
+			await ui.stop();
 			resolve(result);
 		};
 
@@ -178,7 +178,7 @@ export async function showFirstTimeSetup(settingsManager: SettingsManager): Prom
 				await settingsManager.flush();
 			}
 			await clearStartupTui(ui);
-			ui.stop();
+			await ui.stop();
 			resolve();
 		};
 
@@ -219,7 +219,7 @@ export async function showStartupInput(
 			settled = true;
 			input.dispose();
 			await clearStartupTui(ui);
-			ui.stop();
+			await ui.stop();
 			resolve(result);
 		};
 

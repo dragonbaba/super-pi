@@ -863,16 +863,16 @@ export class InteractiveMode {
 		}
 	}
 
-	private stopInteractiveTui(fullscreenExitOutput: FullscreenExitOutput): void {
+	private async stopInteractiveTui(fullscreenExitOutput: FullscreenExitOutput): Promise<void> {
 		if (this.renderer.mode === "fullscreen" && fullscreenExitOutput === "transcript") {
 			while (this.renderer.hasOverlayEntries) this.renderer.hideOverlay();
-			this.switchTuiMode("regular", false, false);
+			await this.switchTuiMode("regular", false, false);
 			this.renderer.renderNow();
 		}
-		this.ui.stop({ preserveScreen: this.renderer.mode === "fullscreen" });
+		await this.ui.stop({ preserveScreen: this.renderer.mode === "fullscreen" });
 	}
 
-	private switchTuiMode(mode: TuiMode, restoreProgress = true, startRenderer = true): boolean {
+	private async switchTuiMode(mode: TuiMode, restoreProgress = true, startRenderer = true): Promise<boolean> {
 		const previousUi = this.renderer;
 		if (mode === previousUi.mode) return true;
 		if (previousUi.hasOverlayEntries) return false;
@@ -887,7 +887,7 @@ export class InteractiveMode {
 			this.mainScreenRenderState = previousUi.captureRenderState();
 		}
 
-		previousUi.stop({ preserveScreen: true });
+		await previousUi.stop({ preserveScreen: true });
 		previousUi.setFocus(null);
 		previousUi.clear();
 		if (TuiLayouts.isViewportTUI(previousUi)) previousUi.setLayoutRoot(undefined);
@@ -2039,7 +2039,7 @@ export class InteractiveMode {
 		const message = error instanceof Error ? error.message : String(error);
 		this.showError(`${prefix}: ${message}`);
 		stopThemeWatcher();
-		this.stop("transcript");
+		await this.stop("transcript");
 		process.exit(1);
 	}
 
@@ -2889,7 +2889,7 @@ export class InteractiveMode {
 		// Register app action handlers
 		this.defaultEditor.onAction("app.clear", () => this.handleCtrlC());
 		this.defaultEditor.onCtrlD = () => this.handleCtrlD();
-		this.defaultEditor.onAction("app.suspend", () => this.handleCtrlZ());
+		this.defaultEditor.onAction("app.suspend", () => void this.handleCtrlZ());
 		this.defaultEditor.onAction("app.thinking.cycle", () => this.cycleThinkingLevel());
 		this.defaultEditor.onAction("app.model.cycleForward", () => this.cycleModel("forward"));
 		this.defaultEditor.onAction("app.model.cycleBackward", () => this.cycleModel("backward"));
@@ -3171,7 +3171,7 @@ export class InteractiveMode {
 	private subscribeToAgent(): void {
 		this.unsubscribe = this.session.subscribe(async (event) => {
 			await this.handleEvent(event);
-		});
+		}, { criticalAgentEnd: true });
 	}
 
 	private async handleEvent(event: AgentSessionEvent): Promise<void> {
@@ -3394,6 +3394,12 @@ export class InteractiveMode {
 				this.pendingTools.clear();
 
 				this.ui.requestRender();
+				try {
+					await this.ui.flushTerminalFrames();
+				} catch {
+					// The TUI owns terminal write failures and stops itself. Do not turn a
+					// display failure into an agent/provider failure at the final boundary.
+				}
 				break;
 
 			case "agent_settled":
@@ -4090,7 +4096,7 @@ export class InteractiveMode {
 			await this.runtimeHost.dispose();
 			this.themeController.disableAutoSync();
 			await this.ui.terminal.drainInput(1000);
-			this.stop();
+			await this.stop();
 			process.exit(0);
 		}
 
@@ -4102,7 +4108,7 @@ export class InteractiveMode {
 		this.themeController.disableAutoSync();
 		await this.ui.terminal.drainInput(1000);
 
-		this.stop();
+		await this.stop();
 		await this.runtimeHost.dispose();
 
 		const resumeCommand = formatResumeCommand(this.sessionManager);
@@ -4133,7 +4139,7 @@ export class InteractiveMode {
 	 * call ui.stop() to restore cooked mode, the cursor, and disable bracketed
 	 * paste / Kitty / modifyOtherKeys sequences.
 	 */
-	private uncaughtCrash(error: Error): never {
+	private uncaughtCrash(error: Error): void {
 		if (this.isShuttingDown) {
 			process.exit(1);
 		}
@@ -4144,12 +4150,11 @@ export class InteractiveMode {
 		try {
 			killTrackedDetachedChildren();
 		} catch {}
-		try {
-			this.ui.stop();
-		} catch {}
-		console.error("Super Pi exiting due to uncaughtException:");
-		console.error(error);
-		process.exit(1);
+		void this.ui.stop().finally(() => {
+			console.error("Super Pi exiting due to uncaughtException:");
+			console.error(error);
+			process.exit(1);
+		});
 	}
 
 	/**
@@ -4207,7 +4212,7 @@ export class InteractiveMode {
 		this.signalCleanupHandlers = [];
 	}
 
-	private handleCtrlZ(): void {
+	private async handleCtrlZ(): Promise<void> {
 		if (process.platform === "win32") {
 			this.showStatus("Suspend to background is not supported on Windows");
 			return;
@@ -4233,7 +4238,7 @@ export class InteractiveMode {
 
 		try {
 			// Stop the TUI (restore terminal to normal mode)
-			this.ui.stop();
+			await this.ui.stop();
 
 			// Send SIGTSTP to process group (pid=0 means all processes in group)
 			process.kill(0, "SIGTSTP");
@@ -4372,7 +4377,7 @@ export class InteractiveMode {
 	private async handleOpenExternalEditor(): Promise<void> {
 		const editorCmd = this.settingsManager.getExternalEditorCommand();
 		const content = this.editor.getExpandedText?.() ?? this.editor.getText();
-		this.ui.stop();
+		await this.ui.stop();
 		try {
 			const result = await editInExternalEditor({
 				command: editorCmd,
@@ -4837,14 +4842,16 @@ export class InteractiveMode {
 						this.settingsManager.setShowTerminalProgress(enabled);
 					},
 					onTuiModeChange: (mode) => {
-						if (!this.switchTuiMode(mode)) {
-							selector?.getSettingsList().updateValue("tui-mode", this.ui.mode);
-							this.showStatus("Close active overlays before changing TUI mode");
-							return;
-						}
-						this.settingsManager.setTuiMode(mode);
-						if (!this.activeStatusIndicator) this.statusContainer.clear();
-						this.showStatus(`TUI mode: ${mode}`);
+						void (async () => {
+							if (!(await this.switchTuiMode(mode))) {
+								selector?.getSettingsList().updateValue("tui-mode", this.ui.mode);
+								this.showStatus("Close active overlays before changing TUI mode");
+								return;
+							}
+							this.settingsManager.setTuiMode(mode);
+							if (!this.activeStatusIndicator) this.statusContainer.clear();
+							this.showStatus(`TUI mode: ${mode}`);
+						})();
 					},
 					onFullscreenScrollbarChange: (mode) => {
 						this.settingsManager.setFullscreenScrollbar(mode);
@@ -6718,7 +6725,7 @@ export class InteractiveMode {
 		}
 	}
 
-	stop(fullscreenExitOutput = this.settingsManager.getFullscreenExitOutput()): void {
+	async stop(fullscreenExitOutput = this.settingsManager.getFullscreenExitOutput()): Promise<void> {
 		this.disposeActiveSelector();
 		if (this.settingsManager.getShowTerminalProgress()) {
 			this.ui.terminal.setProgress(false);
@@ -6732,7 +6739,7 @@ export class InteractiveMode {
 			this.unsubscribe();
 		}
 		if (this.isInitialized) {
-			this.stopInteractiveTui(fullscreenExitOutput);
+			await this.stopInteractiveTui(fullscreenExitOutput);
 			this.isInitialized = false;
 		}
 		this.unregisterSignalHandlers();

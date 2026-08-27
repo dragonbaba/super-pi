@@ -29,20 +29,17 @@ export async function selectSession(
 			(path: string) => {
 				if (!resolved) {
 					resolved = true;
-					ui.stop();
-					resolve(path);
+					void ui.stop().then(() => resolve(path));
 				}
 			},
 			() => {
 				if (!resolved) {
 					resolved = true;
-					ui.stop();
-					resolve(null);
+					void ui.stop().then(() => resolve(null));
 				}
 			},
 			() => {
-				ui.stop();
-				process.exit(0);
+				void ui.stop().then(() => process.exit(0));
 			},
 			() => ui.requestRender(),
 			{ showRenameHint: false, keybindings },
