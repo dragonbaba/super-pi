@@ -14,6 +14,7 @@ export interface TuiRenderMetrics {
 	terminalPendingFrameHighWaterMark: number;
 	terminalFramesReplaced: number;
 	terminalFrameWriteErrors: number;
+	physicalTerminalFrameWrites: number;
 	frameStringsGenerated: number;
 	frameStringUtf8BytesGenerated: number;
 	fullSizeFrameCopies: number;
@@ -52,6 +53,7 @@ const EMPTY_METRICS: TuiRenderMetrics = {
 	terminalPendingFrameHighWaterMark: 0,
 	terminalFramesReplaced: 0,
 	terminalFrameWriteErrors: 0,
+	physicalTerminalFrameWrites: 0,
 	frameStringsGenerated: 0,
 	frameStringUtf8BytesGenerated: 0,
 	fullSizeFrameCopies: 0,
@@ -155,6 +157,7 @@ export class TuiRenderInstrumentation {
 	}
 
 	recordTerminalFrame(utf8Bytes: number, diffLines: number): void {
+		this.metrics.physicalTerminalFrameWrites++;
 		this.metrics.terminalBytes += utf8Bytes;
 		this.metrics.terminalDiffLines += diffLines;
 	}

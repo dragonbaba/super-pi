@@ -800,6 +800,8 @@ export abstract class TuiBase extends Container implements TUI {
 	start(): void {
 		if (this.disposed) throw new Error("Cannot start a disposed TUI");
 		if (this.stopping) return;
+		const recoveredFailure = this.terminalFrameQueue.restartAfterLifecycleAbort();
+		if (recoveredFailure && this.terminalFrameError === recoveredFailure) this.terminalFrameError = undefined;
 		this.terminalFrameQueue.attach();
 		this.stopped = false;
 		this.stopPromise = undefined;

@@ -24,6 +24,8 @@ export interface TerminalFrameQueueOptions {
 
 export interface TerminalFrameSink {
 	setFrameWriteCompletionListener(listener: ((generation: number, error?: Error) => void) | undefined): void;
+	/** Optional physical-write notification. ProcessTerminal fires this only when Writable.write starts. */
+	setFrameWriteStartedListener?(listener: ((generation: number) => void) | undefined): void;
 	writeFrame(data: string, generation: number): void;
 	cancelFrameWrite(generation: number): void;
 }
@@ -64,9 +66,11 @@ export class TerminalFrameQueue {
 	private pendingMetadata = 0;
 	private activeFrameUtf8Bytes = 0;
 	private pendingFrameUtf8Bytes = 0;
+	private activeMetadata = 0;
 	private highWaterMark = 0;
 	private replacedFrames = 0;
 	private failure: Error | undefined;
+	private recoverableFailure = false;
 	private idlePromise: Promise<void> | undefined;
 	private resolveIdle: (() => void) | undefined;
 	private activeWriteToken = 0;
@@ -74,6 +78,10 @@ export class TerminalFrameQueue {
 	private readonly settleActiveWrite = (generation: number, error?: Error): void => {
 		if (error) this.fail(error, generation);
 		else this.finish(generation);
+	};
+	private readonly observePhysicalWriteStart = (generation: number): void => {
+		if (!this.activeWrite || this.activeWriteToken !== generation) return;
+		this.options.onWriteStarted?.(this.activeMetadata, this.activeFrameUtf8Bytes);
 	};
 	private readonly settleIdleCycle = (): void => this.finishIdleCycle();
 	private readonly captureIdleResolve = (resolve: () => void): void => {
@@ -87,8 +95,23 @@ export class TerminalFrameQueue {
 	}
 
 	/** Attach/detach only at TUI lifecycle boundaries, never per frame. */
-	attach(): void { this.sink.setFrameWriteCompletionListener(this.settleActiveWrite); }
-	detach(): void { this.sink.setFrameWriteCompletionListener(undefined); }
+	attach(): void {
+		this.sink.setFrameWriteCompletionListener(this.settleActiveWrite);
+		this.sink.setFrameWriteStartedListener?.(this.observePhysicalWriteStart);
+	}
+	detach(): void {
+		this.sink.setFrameWriteCompletionListener(undefined);
+		this.sink.setFrameWriteStartedListener?.(undefined);
+	}
+
+	/** Clear only a lifecycle cancellation. Stream failures remain permanent. */
+	restartAfterLifecycleAbort(): Error | undefined {
+		if (!this.failure || !this.recoverableFailure || this.busy) return undefined;
+		const recovered = this.failure;
+		this.failure = undefined;
+		this.recoverableFailure = false;
+		return recovered;
+	}
 
 	get busy(): boolean {
 		return this.activeWrite || this.pendingFrame !== undefined;
@@ -131,7 +154,7 @@ export class TerminalFrameQueue {
 		const failure = asError(error);
 		const token = this.activeWriteToken;
 		this.sink.cancelFrameWrite(token);
-		this.fail(failure, token);
+		this.fail(failure, token, true);
 		return true;
 	}
 
@@ -156,9 +179,10 @@ export class TerminalFrameQueue {
 	private start(data: string, metadata: number, utf8Bytes: number): void {
 		const token = ++this.activeWriteToken;
 		this.activeWrite = true;
+		this.activeMetadata = metadata;
 		this.activeFrameUtf8Bytes = utf8Bytes;
 		this.recordDepth();
-		this.options.onWriteStarted?.(metadata, utf8Bytes);
+		if (!this.sink.setFrameWriteStartedListener) this.options.onWriteStarted?.(metadata, utf8Bytes);
 		try {
 			this.sink.writeFrame(data, token);
 		} catch (error) {
@@ -169,6 +193,7 @@ export class TerminalFrameQueue {
 	private finish(token: number): void {
 		if (!this.activeWrite || this.failure || this.activeWriteToken !== token) return;
 		this.activeWrite = false;
+		this.activeMetadata = 0;
 		this.activeFrameUtf8Bytes = 0;
 		const next = this.pendingFrame;
 		const nextMetadata = this.pendingMetadata;
@@ -184,10 +209,12 @@ export class TerminalFrameQueue {
 		this.scheduleIdleSettlement();
 	}
 
-	private fail(error: unknown, token: number): void {
+	private fail(error: unknown, token: number, recoverable = false): void {
 		if (this.failure || this.activeWriteToken !== token) return;
 		this.failure = asError(error);
+		this.recoverableFailure = recoverable;
 		this.activeWrite = false;
+		this.activeMetadata = 0;
 		this.activeFrameUtf8Bytes = 0;
 		this.pendingFrame = undefined;
 		this.pendingMetadata = 0;

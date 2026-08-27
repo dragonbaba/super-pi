@@ -59,6 +59,7 @@ export function normalizeAppleTerminalInput(data: string, isAppleTerminal: boole
  * Minimal terminal interface for TUI
  */
 export type TerminalFrameWriteCompletion = (generation: number, error?: Error) => void;
+export type TerminalFrameWriteStarted = (generation: number) => void;
 
 export interface Terminal {
 	// Start the terminal with input and resize handlers
@@ -83,6 +84,9 @@ export interface Terminal {
 
 	/** Register the one stable callback used by the terminal frame lane. */
 	setFrameWriteCompletionListener(listener: TerminalFrameWriteCompletion | undefined): void;
+
+	/** Register the stable observer for actual Writable frame-write starts. */
+	setFrameWriteStartedListener?(listener: TerminalFrameWriteStarted | undefined): void;
 
 	/**
 	 * Start one atomic rendered frame. The registered completion listener fires
@@ -139,7 +143,15 @@ export class ProcessTerminal implements Terminal {
 	private pendingFrameData: string | undefined;
 	private pendingFrameGeneration = 0;
 	private frameWriteCompletionListener: TerminalFrameWriteCompletion | undefined;
+	private frameWriteStartedListener: TerminalFrameWriteStarted | undefined;
+	private controlWritesOutstanding = 0;
 	private disposed = false;
+	private disposeFinalizationScheduled = false;
+	private readonly finalizeDisposeAfterEvents = (): void => {
+		this.disposeFinalizationScheduled = false;
+		if (!this.disposed || this.physicalFrameWriteActive || this.controlWritesOutstanding !== 0) return;
+		this.frameOutput.removeListener("error", this.onFrameOutputError);
+	};
 	private readonly onFrameWriteCallback = (error?: Error | null): void => {
 		if (!this.physicalFrameWriteActive) return;
 		if (error) {
@@ -534,18 +546,35 @@ export class ProcessTerminal implements Terminal {
 		if (this.disposed) return;
 		if (this.started) this.stop();
 		this.disposed = true;
-		this.frameOutput.removeListener("error", this.onFrameOutputError);
-		this.clearActiveFrameWriteState();
 		this.clearPendingFrameWrite();
 		this.frameWriteCompletionListener = undefined;
+		this.frameWriteStartedListener = undefined;
+		if (this.physicalFrameWriteActive) this.frameWriteCanceled = true;
+		this.scheduleDisposeFinalization();
 	}
 
 	write(data: string): Promise<void> {
+		if (this.disposed) throw new Error("Cannot write with a disposed ProcessTerminal");
+		this.controlWritesOutstanding++;
 		const completion = new Promise<void>((resolve, reject) => {
-			process.stdout.write(data, (error) => {
-				if (error) reject(error);
-				else resolve();
-			});
+			let callbackPending = true;
+			try {
+				this.frameOutput.write(data, (error) => {
+					if (!callbackPending) return;
+					callbackPending = false;
+					this.controlWritesOutstanding--;
+					this.scheduleDisposeFinalization();
+					if (error) reject(error);
+					else resolve();
+				});
+			} catch (error) {
+				if (callbackPending) {
+					callbackPending = false;
+					this.controlWritesOutstanding--;
+					this.scheduleDisposeFinalization();
+				}
+				reject(error);
+			}
 		});
 		this.logWrite(data);
 		return completion;
@@ -553,6 +582,10 @@ export class ProcessTerminal implements Terminal {
 
 	setFrameWriteCompletionListener(listener: TerminalFrameWriteCompletion | undefined): void {
 		this.frameWriteCompletionListener = listener;
+	}
+
+	setFrameWriteStartedListener(listener: TerminalFrameWriteStarted | undefined): void {
+		this.frameWriteStartedListener = listener;
 	}
 
 	writeFrame(data: string, generation: number): void {
@@ -586,6 +619,7 @@ export class ProcessTerminal implements Terminal {
 		this.frameWriteCanceled = false;
 		this.frameOutput.once("drain", this.onFrameWriteDrain);
 		this.frameOutput.once("close", this.onFrameWriteClose);
+		this.frameWriteStartedListener?.(generation);
 		try {
 			const accepted = this.frameOutput.write(data, this.onFrameWriteCallback);
 			if (!this.physicalFrameWriteActive) return;
@@ -629,6 +663,11 @@ export class ProcessTerminal implements Terminal {
 		const listener = this.frameWriteCompletionListener;
 		this.clearActiveFrameWriteState();
 		if (!canceled) listener?.(generation, error);
+		if (this.disposed) {
+			this.clearPendingFrameWrite();
+			this.scheduleDisposeFinalization();
+			return;
+		}
 		if (error) {
 			if (this.pendingFrameData !== undefined) {
 				const pendingGeneration = this.pendingFrameGeneration;
@@ -662,6 +701,17 @@ export class ProcessTerminal implements Terminal {
 	private clearPendingFrameWrite(): void {
 		this.pendingFrameData = undefined;
 		this.pendingFrameGeneration = 0;
+	}
+
+	private scheduleDisposeFinalization(): void {
+		if (
+			!this.disposed ||
+			this.physicalFrameWriteActive ||
+			this.controlWritesOutstanding !== 0 ||
+			this.disposeFinalizationScheduled
+		) return;
+		this.disposeFinalizationScheduled = true;
+		setImmediate(this.finalizeDisposeAfterEvents);
 	}
 
 	private logWrite(data: string): void {
