@@ -11,6 +11,7 @@ interface MethodTarget {
 
 const HOT_METHODS: readonly MethodTarget[] = [
 	{ path: "packages/tui/src/terminal.ts", className: "ProcessTerminal", methodName: "writeFrame" },
+	{ path: "packages/tui/src/terminal.ts", className: "ProcessTerminal", methodName: "startFrameWrite" },
 	{ path: "packages/tui/src/terminal-frame-queue.ts", className: "TerminalFrameQueue", methodName: "submit" },
 	{ path: "packages/tui/src/terminal-frame-queue.ts", className: "TerminalFrameQueue", methodName: "start" },
 	{ path: "packages/tui/src/terminal-frame-queue.ts", className: "TerminalFrameQueue", methodName: "finish" },
@@ -18,6 +19,7 @@ const HOT_METHODS: readonly MethodTarget[] = [
 	{ path: "packages/tui/src/tui.ts", className: "TuiBase", methodName: "writeTerminalFrame" },
 	{ path: "packages/tui/src/tui.ts", className: "TuiBase", methodName: "requestRender" },
 	{ path: "packages/tui/src/tui.ts", className: "TuiBase", methodName: "scheduleRender" },
+	{ path: "packages/coding-agent/src/core/agent-session.ts", className: "AgentSession", methodName: "_emit" },
 ] as const;
 
 const LOW_FREQUENCY_ALLOCATION_EXEMPTIONS = [
@@ -82,7 +84,10 @@ function collectForbiddenHotNodes(method: ts.MethodDeclaration, source: ts.Sourc
 		}
 		if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
 			const call = node.expression.name.text;
-			if (call === "then" || call === "catch" || call === "finally") {
+			if (
+				(call === "then" || call === "catch" || call === "finally") &&
+				node.arguments.some((argument) => ts.isArrowFunction(argument) || ts.isFunctionExpression(argument))
+			) {
 				violations.push(`inline ${call} chain at ${source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1}`);
 			}
 			const owner = node.expression.expression.getText(source);
