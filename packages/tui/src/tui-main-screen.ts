@@ -3,7 +3,12 @@ import * as path from "node:path";
 import { deleteKittyImage, isImageLine } from "./terminal-image.ts";
 import { type TUI, TuiBase, type TuiStopOptions } from "./tui.ts";
 import { visibleWidth } from "./utils.ts";
-import { isLineViewportComponent, renderComponentsViewport } from "./components/viewport-container.ts";
+import {
+	isLineViewportComponent,
+	type LineViewportMutationKind,
+	type LineViewportRender,
+	renderComponentsViewport,
+} from "./components/viewport-container.ts";
 
 const KITTY_SEQUENCE_PREFIX = "\x1b_G";
 
@@ -54,6 +59,8 @@ export interface TuiMainScreenRenderState {
 	previousViewportTop: number;
 	viewportWindowStart?: number;
 	viewportDocumentHeight?: number;
+	viewportMutationTokens: readonly unknown[];
+	previousKittyImageIds: readonly number[];
 }
 
 /** TUI implementation that renders into the terminal's main screen and scrollback. */
@@ -69,6 +76,7 @@ export class TuiMainScreen extends TuiBase implements TUI {
 	private previousViewportTop = 0;
 	private viewportWindowStart: number | undefined;
 	private viewportDocumentHeight: number | undefined;
+	private viewportMutationTokens: readonly unknown[] = [];
 
 	captureRenderState(): TuiMainScreenRenderState {
 		return {
@@ -81,12 +89,14 @@ export class TuiMainScreen extends TuiBase implements TUI {
 			previousViewportTop: this.previousViewportTop,
 			viewportWindowStart: this.viewportWindowStart,
 			viewportDocumentHeight: this.viewportDocumentHeight,
+			viewportMutationTokens: [...this.viewportMutationTokens],
+			previousKittyImageIds: [...this.previousKittyImageIds],
 		};
 	}
 
 	restoreRenderState(state: TuiMainScreenRenderState): void {
 		this.previousLines = state.previousLines.map((line) => (isImageLine(line) ? "" : line));
-		this.previousKittyImageIds = new Set();
+		this.previousKittyImageIds = new Set(state.previousKittyImageIds);
 		this.previousWidth = state.previousWidth;
 		this.previousHeight = state.previousHeight;
 		this.cursorRow = state.cursorRow;
@@ -95,6 +105,7 @@ export class TuiMainScreen extends TuiBase implements TUI {
 		this.previousViewportTop = state.previousViewportTop;
 		this.viewportWindowStart = state.viewportWindowStart;
 		this.viewportDocumentHeight = state.viewportDocumentHeight;
+		this.viewportMutationTokens = [...state.viewportMutationTokens];
 	}
 
 	protected override resetRenderState(): void {
@@ -107,6 +118,7 @@ export class TuiMainScreen extends TuiBase implements TUI {
 		this.previousViewportTop = 0;
 		this.viewportWindowStart = undefined;
 		this.viewportDocumentHeight = undefined;
+		this.viewportMutationTokens = [];
 	}
 
 	protected override beforeTerminalStop(options: TuiStopOptions): void {
@@ -219,6 +231,7 @@ export class TuiMainScreen extends TuiBase implements TUI {
 
 		// Render all components to get new lines
 		let newLines = this.render(width);
+		const generatedDocumentHeight = newLines.length;
 		this.recordRootRender(newLines.length, Math.min(newLines.length, height));
 
 		// Composite overlays into the rendered lines (before differential compare)
@@ -274,6 +287,7 @@ export class TuiMainScreen extends TuiBase implements TUI {
 			this.previousKittyImageIds = this.collectKittyImageIds(newLines);
 			this.previousWidth = width;
 			this.previousHeight = height;
+			this.captureViewportMutationTokens(width, hasViewportDocument ? generatedDocumentHeight : undefined);
 		};
 
 		const debugRedraw = process.env.SP_DEBUG_REDRAW === "1";
@@ -351,6 +365,7 @@ export class TuiMainScreen extends TuiBase implements TUI {
 			this.positionHardwareCursor(cursorPos, newLines.length);
 			this.previousViewportTop = prevViewportTop;
 			this.previousHeight = height;
+			this.captureViewportMutationTokens(width, hasViewportDocument ? generatedDocumentHeight : undefined);
 			return;
 		}
 
@@ -401,6 +416,7 @@ export class TuiMainScreen extends TuiBase implements TUI {
 			this.previousWidth = width;
 			this.previousHeight = height;
 			this.previousViewportTop = prevViewportTop;
+			this.captureViewportMutationTokens(width, hasViewportDocument ? generatedDocumentHeight : undefined);
 			return;
 		}
 
@@ -575,6 +591,7 @@ export class TuiMainScreen extends TuiBase implements TUI {
 		this.previousKittyImageIds = this.collectKittyImageIds(newLines);
 		this.previousWidth = width;
 		this.previousHeight = height;
+		this.captureViewportMutationTokens(width, hasViewportDocument ? generatedDocumentHeight : undefined);
 	}
 
 	/**
@@ -587,13 +604,45 @@ export class TuiMainScreen extends TuiBase implements TUI {
 		const previousStart = this.viewportWindowStart ?? Math.max(0, previousDocumentHeight - height);
 		const previousWindow =
 			this.viewportWindowStart === undefined ? this.previousLines.slice(previousStart) : this.previousLines;
-		const totalHeight = this.children.reduce((sum, child) => {
-			return sum + (isLineViewportComponent(child) ? child.getContentHeight(width) : child.render(width).length);
-		}, 0);
+		// The production transcript is a single indexed document. Ask it for the
+		// tail directly so dirty active lines are measured and consumed by one query.
+		// Composite roots retain the generic path and its conservative attribution.
+		let rendered: LineViewportRender;
+		let totalHeight: number;
+		if (this.children.length === 1 && isLineViewportComponent(this.children[0])) {
+			rendered = this.children[0].renderViewportTail(width, height);
+			totalHeight = rendered.totalHeight;
+		} else {
+			totalHeight = this.children.reduce((sum, child) => {
+				return sum + (isLineViewportComponent(child) ? child.getContentHeight(width) : child.render(width).length);
+			}, 0);
+			const requestedStart = Math.max(0, totalHeight - height);
+			rendered = renderComponentsViewport(this.children, width, requestedStart, height, totalHeight);
+		}
+		const mutation = this.observeViewportMutations(width);
+		if (mutation.kind === "unsafe") return false;
+		if (
+			totalHeight !== previousDocumentHeight &&
+			mutation.kind !== "tail-append" &&
+			!(mutation.kind === "range" && mutation.heightChanged)
+		) {
+			return false;
+		}
+		if (mutation.kind === "tail-append" && totalHeight < previousDocumentHeight) return false;
+		if (
+			mutation.kind === "range" &&
+			(mutation.earliestChangedLine === undefined ||
+				mutation.latestChangedLine === undefined ||
+					mutation.earliestChangedLine < previousStart ||
+					mutation.earliestChangedLine >= previousStart + previousWindow.length ||
+					(!mutation.heightChanged &&
+						mutation.latestChangedLine > previousStart + previousWindow.length))
+		) {
+			return false;
+		}
 		const requestedStart = Math.max(0, totalHeight - height);
 		if (requestedStart < previousStart) return false;
 
-		const rendered = renderComponentsViewport(this.children, width, requestedStart, height, totalHeight);
 		const sourceOffset = Math.max(0, requestedStart - rendered.startLine);
 		let nextWindow = rendered.lines.slice(sourceOffset, sourceOffset + height);
 		this.recordRootRender(totalHeight, Math.min(nextWindow.length, height));
@@ -642,7 +691,8 @@ export class TuiMainScreen extends TuiBase implements TUI {
 		}
 
 		this.previousLines = nextWindow;
-		this.previousKittyImageIds = new Set();
+		// A successful bounded frame contains only text. Preserve IDs owned by
+		// offscreen history so the next full replay can delete stale placements.
 		this.previousWidth = width;
 		this.previousHeight = height;
 		this.viewportWindowStart = requestedStart;
@@ -650,9 +700,63 @@ export class TuiMainScreen extends TuiBase implements TUI {
 		this.previousViewportTop = requestedStart;
 		this.cursorRow = Math.max(0, totalHeight - 1);
 		this.maxLinesRendered = Math.max(this.maxLinesRendered, totalHeight);
+		this.viewportMutationTokens = mutation.tokens;
 		const absoluteCursor = cursorPos ? { row: requestedStart + cursorPos.row, col: cursorPos.col } : null;
 		this.positionHardwareCursor(absoluteCursor, totalHeight);
 		return true;
+	}
+
+	private observeViewportMutations(width: number): {
+		tokens: readonly unknown[];
+		kind: LineViewportMutationKind;
+		earliestChangedLine?: number;
+		latestChangedLine?: number;
+		heightChanged?: boolean;
+	} {
+		const tokens: unknown[] = [];
+		let kind: LineViewportMutationKind = "none";
+		let earliestChangedLine: number | undefined;
+		let latestChangedLine: number | undefined;
+		let heightChanged = false;
+		let childStart = 0;
+		let changedChildren = 0;
+		for (let index = 0; index < this.children.length; index++) {
+			const child = this.children[index];
+			if (isLineViewportComponent(child)) {
+				const observation = child.observeViewportMutation(width, this.viewportMutationTokens[index]);
+				tokens.push(observation.token);
+				if (observation.kind !== "none") {
+					changedChildren++;
+					if (kind !== "none" || changedChildren > 1 || observation.kind === "unsafe") {
+						kind = "unsafe";
+					} else {
+						kind = observation.kind;
+						if (observation.earliestChangedLine !== undefined) {
+							earliestChangedLine = childStart + observation.earliestChangedLine;
+						}
+						if (observation.latestChangedLine !== undefined) {
+							latestChangedLine = childStart + observation.latestChangedLine;
+						}
+						heightChanged = observation.heightChanged === true;
+					}
+				}
+				childStart += child.getContentHeight(width);
+			} else {
+				tokens.push(undefined);
+				childStart += child.render(width).length;
+			}
+		}
+		return { tokens, kind, earliestChangedLine, latestChangedLine, heightChanged };
+	}
+
+	private captureViewportMutationTokens(width: number, documentHeight: number | undefined): void {
+		const tokens: unknown[] = [];
+		for (const child of this.children) {
+			tokens.push(isLineViewportComponent(child) ? child.observeViewportMutation(width).token : undefined);
+		}
+		this.viewportMutationTokens = tokens;
+		this.viewportWindowStart = undefined;
+		this.viewportDocumentHeight = documentHeight;
 	}
 
 	/**

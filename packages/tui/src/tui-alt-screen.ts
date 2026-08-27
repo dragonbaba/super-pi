@@ -198,6 +198,9 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			[LINE_VIEWPORT_COMPONENT]: true,
 			render: (width) => super.render(width),
 			getContentHeight: (width) => getComponentsContentHeight(this.children, width),
+			// Main Screen is the only consumer of bounded mutation attribution. The
+			// alternate-screen compatibility document stays deliberately conservative.
+			observeViewportMutation: () => ({ token: undefined, kind: "unsafe" }),
 			renderViewport: (width, startLine, height) =>
 				renderComponentsViewport(this.children, width, startLine, height),
 			renderViewportTail: (width, height) => {
