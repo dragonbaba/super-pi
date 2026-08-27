@@ -97,7 +97,7 @@ function percentile(sorted: readonly number[], ratio: number): number {
 	return sorted[index] ?? 0;
 }
 
-function currentCommit(): string {
+export function currentCommit(): string {
 	const result = spawnSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" });
 	return result.status === 0 ? result.stdout.trim() : "unknown";
 }

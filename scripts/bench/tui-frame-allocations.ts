@@ -9,7 +9,7 @@ import type { Terminal } from "../../packages/tui/src/terminal.ts";
 import { type Component, Container, type TUI } from "../../packages/tui/src/tui.ts";
 import { TuiAltScreen } from "../../packages/tui/src/tui-alt-screen.ts";
 import { TuiMainScreen } from "../../packages/tui/src/tui-main-screen.ts";
-import { readIntegerOption } from "./benchmark.ts";
+import { currentCommit, readIntegerOption } from "./benchmark.ts";
 
 type Fixture = "direct-main" | "production-main" | "production-alt";
 
@@ -326,6 +326,7 @@ runtime.dispose();
 process.stdout.write(`${JSON.stringify({
 	schemaVersion: 1,
 	benchmark: "tui-frame-allocations",
+	commit: currentCommit(),
 	fixtureClass: "render-plus-queue",
 	fixture: fixtureArgument,
 	items: itemCount,

@@ -3,7 +3,7 @@ import { Session } from "node:inspector/promises";
 import { constants, performance, PerformanceObserver, type PerformanceEntry } from "node:perf_hooks";
 import { AgentSession } from "../../packages/coding-agent/src/core/agent-session.ts";
 import { InteractiveMode } from "../../packages/coding-agent/src/modes/interactive/interactive-mode.ts";
-import { readIntegerOption } from "./benchmark.ts";
+import { currentCommit, readIntegerOption } from "./benchmark.ts";
 
 interface SamplingNode {
 	callFrame: { functionName: string; url: string; lineNumber: number; columnNumber: number };
@@ -211,7 +211,7 @@ const results = [
 process.stdout.write(`${JSON.stringify({
 	schemaVersion: 1,
 	benchmark: "tui-session-event-allocations",
-	commit: process.env.BENCHMARK_COMMIT ?? "worktree",
+	commit: currentCommit(),
 	node: process.version,
 	platform: process.platform,
 	arch: process.arch,

@@ -1,7 +1,7 @@
 import { Session } from "node:inspector/promises";
 import { constants, performance, PerformanceObserver, type PerformanceEntry } from "node:perf_hooks";
 import { TerminalFrameQueue, type TerminalFrameSink } from "../../packages/tui/src/terminal-frame-queue.ts";
-import { readIntegerOption } from "./benchmark.ts";
+import { currentCommit, readIntegerOption } from "./benchmark.ts";
 
 interface SamplingNode {
 	callFrame: { functionName: string; url: string; lineNumber: number; columnNumber: number };
@@ -130,6 +130,7 @@ const snapshot = queue.snapshot();
 process.stdout.write(`${JSON.stringify({
 	schemaVersion: 1,
 	benchmark: "tui-frame-queue-allocations",
+	commit: currentCommit(),
 	fixture: "queue-only-prebuilt-frame",
 	frameKiB,
 	warmupFrames,
