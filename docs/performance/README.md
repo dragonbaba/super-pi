@@ -8,6 +8,7 @@ Run the default corpus with Node's TypeScript stripping. `--silent` keeps redire
 npm run --silent -- bench:stream
 npm run --silent -- bench:tool-progress
 npm run --silent -- bench:tui-transcript
+npm run --silent -- bench:tui-frame-allocations -- --fixture production-main --items 50000
 npm run --silent -- bench:tui-frame-queue
 npm run --silent -- bench:prefix
 npm run --silent -- bench:tool-output
@@ -35,6 +36,25 @@ On 2026-08-27, Windows x64, Node 26.4.0, i7-14700KF, 120×40, CPU-only closeout 
 The retained lifecycle variant requires `--expose-gc` (included in its npm script). It records numeric cache ownership before clear, verifies every retained/cache count reaches zero after clear, and samples controlled-GC heap after repeated create/render/resize/clear cycles. Heap slope is evidence for trend review, not a pass/fail assertion from one noisy process sample.
 
 Known Phase 4B boundaries are intentional: the first Main Screen replay, width resize, non-Termux height resize, upward content shrink, and Kitty safety boundaries still use the full renderer; arbitrary historical lookup scans forward through 256-item height blocks, while a stable bottom frame performs zero block probes; a 50,000-item width remeasurement can produce a high transient heap peak (328,502,624 bytes in the closeout run above); extension-provided dynamic transcript children must call `invalidateViewportChild()` after any height-changing mutation; and terminal output queueing, latest-frame replacement, and critical final-frame flush remain exclusively Phase 4C work.
+
+The Phase 4B allocation closeout uses `tui-frame-allocations.ts` with inspector heap sampling (1,024-byte interval), GC `PerformanceObserver` entries, and controlled GC before and after each active-only frame run. Its `direct-main` fixture isolates one retained transcript; `production-main` uses the seven-root production shape with header and loaded-resource children inside the document; `production-alt` uses the real `ScrollView` plus nested `VStack` dock layout. All fixtures use a CPU-only no-op terminal. The benchmark reports the top 20 sampled allocation sites, transcript viewport result arrays and copied lines, mutation-ring writes, aggregate and per-child plain render counts, and deterministic viewport work. `viewportLineArraysPerFrame` counts transcript viewport result arrays; outer layout arrays remain visible in the inspector site report rather than being inferred from source. The mutation ring writes once per attributed mutation, not inherently once per terminal frame; this benchmark advances exactly one active item on each measured frame, which is why its fixture reports one mutation write per frame.
+
+On 2026-08-27, Windows x64, Node 26.4.0, i7-14700KF, 120×40, 1,000 warmups and 20,000 measured active-only frames produced the following same-process-shape comparison. Baseline is `7e544e8e4c0abcab8255bb15ddf13aac180dd111`; candidate is the allocation-closeout worktree. GC is minor/major count and total observed duration.
+
+| Fixture | Items | Sampled B/frame baseline | Sampled B/frame candidate | CPU p50/p95 ms candidate | GC candidate | Controlled-GC heap delta | Plain renders/frame | Max per plain child | Active renders | Viewport arrays/copies | Mutation writes |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| direct-main | 5,000 | 8,613.6 | 4,581.2 | 0.0164 / 0.0337 | 9 / 1, 7.35 ms | 5,081,632 | 0 | 0 | 1 | 1 / 40 | 1 |
+| direct-main | 50,000 | 8,910.7 | 4,843.3 | 0.0168 / 0.0240 | 2 / 1, 11.53 ms | 5,337,112 | 0 | 0 | 1 | 1 / 40 | 1 |
+| production-main | 5,000 | 15,656.4 | 7,161.0 | 0.0202 / 0.0344 | 15 / 1, 10.03 ms | 7,638,480 | 8 | 1 | 1 | 1 / 32 | 1 |
+| production-main | 50,000 | 15,893.0 | 7,440.6 | 0.0208 / 0.0300 | 4 / 1, 16.19 ms | 7,920,432 | 8 | 1 | 1 | 1 / 32 | 1 |
+| production-alt | 5,000 | 39,717.6 | 36,543.4 | 0.0783 / 0.1255 | 87 / 2, 67.38 ms | 38,452,792 | 18 | 3 | 2 | 1 / 32 | 1 |
+| production-alt | 50,000 | 39,704.9 | 36,562.6 | 0.0865 / 0.1282 | 23 / 2, 82.87 ms | 38,486,952 | 18 | 3 | 2 | 1 / 32 | 1 |
+
+Direct Main's leading sampled sites changed from transcript composition, image checks, line resets, array slicing, and mutation observation to image checks, bounded Main composition, and the viewport result itself. Production Main removed the repeated `renderComponentsViewport`, `getComponentsContentHeight`, and plain `Container.render` sites from its leaders; every one of its eight plain leaves renders exactly once per bounded frame. Production Alt removed the duplicate layout-line copy, empty flash render/slice, and no-Kitty prepared-result object, but remains dominated by `String.repeat`, Alt diff composition, `paintBox`, and `layoutComponent`. Layout box/rect/Map reuse was deliberately not added: those costs belong to the existing layout implementation, and this closeout does not introduce object pools. All six runs retained zero block probes, one mutation write, one transcript viewport array, and 32 or 40 copied visible lines per frame, so the allocation changes do not hide an item-count-dependent traversal.
+
+Production Alt's approximately 36.5 KB sampled allocation per frame, two active renders per frame, and maximum three renders per plain child are recorded as a non-blocking follow-up boundary. They are not a Phase 4B correctness or scaling regression, and reducing them must not be conflated with Phase 4C terminal frame queue work.
+
+Post-closeout transcript controls (100 warmups, 1,000 CPU-only measurements) measured 5,000-item p50/p95 of 0.0241/0.0371 ms and 50,000-item p50/p95 of 0.0247/0.0523 ms. With the 16 KiB/s sink (5 warmups, 20 measurements), they measured 10.3481/10.4246 ms and 10.3506/10.4204 ms respectively. Both sizes retained 17 visits/probes, 40 copied lines, one active render, zero completed renders, zero fallback, and 167 terminal bytes. Controlled-GC lifecycle controls (3 cycles, 1 warmup, 3 measurements) recorded resize peaks of 65,930,696 and 327,010,400 bytes and final heap slopes of 10,064 and 8,800 bytes/cycle; the 50,000-item run held 50,000 index records and 196 blocks before clear, then reported zero retained items, cached lines, indexed items, and blocks after clear.
 
 The prefix benchmark builds every resource ordering per sample and records the canonical manifest SHA-256, hash-set SHA-256, unique hash count, and drift count. Its fixture identity includes the context size and `prefix-manifest-v1`, preventing comparisons against the older raw-prefix drift harness.
 
