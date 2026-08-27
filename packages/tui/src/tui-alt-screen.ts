@@ -1053,6 +1053,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		const root = this.layoutRoot ?? this.implicitScrollView;
 		const nextLayout = renderLayoutFrame(root, width, height, this.layoutRequestRender);
 		let screen = nextLayout.lines.slice();
+		this.recordRootRender(nextLayout.generatedLineCount, Math.min(screen.length, height));
 		for (let row = 0; row < screen.length; row++) {
 			const line = screen[row];
 			if (line.startsWith("\x1b]133;")) screen[row] = line.replace(OSC133_ZONE_PREFIX_PATTERN, "");
@@ -1113,8 +1114,10 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		}
 		buffer += preparedKittyScreen.evictedImageDeletion;
 
+		let diffLines = 0;
 		for (let row = 0; row < height; row++) {
 			if (!fullRedraw && !imagesNeedRedraw && screen[row] === this.previousScreen[row]) continue;
+			diffLines++;
 			buffer += `\x1b[${row + 1};1H\x1b[2K${preparedKittyScreen.lines[row] ?? ""}`;
 		}
 
@@ -1125,6 +1128,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			buffer += "\x1b[?25l";
 		}
 		buffer += END_SYNCHRONIZED_OUTPUT;
+		this.recordTerminalFrame(buffer, diffLines);
 		this.terminal.write(buffer);
 
 		this.previousScreen = screen;

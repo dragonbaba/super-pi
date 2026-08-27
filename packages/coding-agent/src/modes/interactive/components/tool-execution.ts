@@ -122,6 +122,13 @@ export class ReadToolGroupComponent extends Container {
 	setArgsComplete(toolCallId: string): void { const row = this.rows.get(toolCallId); if (row) { row.argsComplete = true; this.rebuild(); } }
 	updateResult(toolCallId: string, result: ToolResultLike, isPartial = false): void { const row = this.rows.get(toolCallId); if (row) { row.result = result; row.isPartial = isPartial; this.rebuild(); } }
 	finalize(): void { if (!this.finalized) { this.finalized = true; this.rebuild(); } }
+	canFreezeRender(): boolean {
+		if (!this.finalized || this.rows.size === 0) return false;
+		for (const row of this.rows.values()) {
+			if (!row.result || row.isPartial) return false;
+		}
+		return true;
+	}
 	setExpanded(expanded: boolean): void { if (this.expanded !== expanded) { this.expanded = expanded; this.rebuild(); } }
 	override invalidate(): void { super.invalidate(); this.rebuild(); }
 
@@ -205,6 +212,8 @@ function getBuiltInToolDefinition(cwd: string, toolName: ToolName): ToolDefiniti
 export interface ToolExecutionOptions {
 	showImages?: boolean;
 	imageWidthCells?: number;
+	/** Clears this component's retained sidecar after a late visual update. */
+	onVisualInvalidate?: (component: ToolExecutionComponent) => void;
 }
 
 export class ToolExecutionComponent extends Container {
@@ -236,6 +245,11 @@ export class ToolExecutionComponent extends Container {
 	};
 	private convertedImages: Map<number, { data: string; mimeType: string }> = new Map();
 	private hideComponent = false;
+	private readonly onVisualInvalidate: ((component: ToolExecutionComponent) => void) | undefined;
+	private readonly renderContextInvalidate = (): void => {
+		this.invalidate();
+		this.notifyVisualInvalidation();
+	};
 
 	constructor(
 		toolName: string,
@@ -254,6 +268,7 @@ export class ToolExecutionComponent extends Container {
 		this.builtInToolDefinition = getBuiltInToolDefinition(cwd, toolName as ToolName);
 		this.showImages = options.showImages ?? true;
 		this.imageWidthCells = options.imageWidthCells ?? 60;
+		this.onVisualInvalidate = options.onVisualInvalidate;
 		this.ui = ui;
 		this.cwd = cwd;
 
@@ -313,10 +328,7 @@ export class ToolExecutionComponent extends Container {
 		return {
 			args: this.args,
 			toolCallId: this.toolCallId,
-			invalidate: () => {
-				this.invalidate();
-				this.ui.requestRender();
-			},
+			invalidate: this.renderContextInvalidate,
 			lastComponent,
 			state: this.rendererState,
 			cwd: this.cwd,
@@ -399,10 +411,15 @@ export class ToolExecutionComponent extends Container {
 				if (converted) {
 					this.convertedImages.set(index, converted);
 					this.updateDisplay();
-					this.ui.requestRender();
+					this.notifyVisualInvalidation();
 				}
 			});
 		}
+	}
+
+	private notifyVisualInvalidation(): void {
+		this.onVisualInvalidate?.(this);
+		this.ui.requestRender();
 	}
 
 	setExpanded(expanded: boolean): void {

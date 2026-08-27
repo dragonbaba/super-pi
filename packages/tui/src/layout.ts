@@ -32,6 +32,7 @@ export interface LayoutFrame {
 	root: LayoutBox;
 	width: number;
 	height: number;
+	generatedLineCount: number;
 	lines: string[];
 	primaryScrollView?: ScrollView;
 }
@@ -50,6 +51,7 @@ interface LayoutContext {
 	renderCache: Map<Component, Map<number, string[]>>;
 	requestRender: () => void;
 	primaryScrollView: ScrollView | undefined;
+	primaryDocumentLineCount: number | undefined;
 }
 
 function intersect(a: LayoutRect, b: LayoutRect): LayoutRect {
@@ -145,7 +147,10 @@ function layoutComponent(
 		node.state.updateLayout(contentHeight, viewportHeight, context.requestRender);
 		translateBox(childBox, previousScrollTop - node.state.scrollTop);
 		const scrollView = node.state as ScrollView;
-		if (node.state.primary || !context.primaryScrollView) context.primaryScrollView = scrollView;
+		if (node.state.primary || !context.primaryScrollView) {
+			context.primaryScrollView = scrollView;
+			context.primaryDocumentLineCount = contentHeight;
+		}
 		const rect = { x, y, width: safeWidth, height: viewportHeight };
 		const childClip = intersect(clip, rect);
 		const box: LayoutBox = {
@@ -364,6 +369,7 @@ export function renderLayoutFrame(
 		renderCache: new Map(),
 		requestRender,
 		primaryScrollView: undefined,
+		primaryDocumentLineCount: undefined,
 	};
 	const rootBox = layoutComponent(context, root, 0, 0, safeWidth, safeHeight, {
 		x: 0,
@@ -377,6 +383,7 @@ export function renderLayoutFrame(
 		root: rootBox,
 		width: safeWidth,
 		height: safeHeight,
+		generatedLineCount: context.primaryDocumentLineCount ?? rootBox.rect.height,
 		lines,
 		...(context.primaryScrollView === undefined ? {} : { primaryScrollView: context.primaryScrollView }),
 	};
