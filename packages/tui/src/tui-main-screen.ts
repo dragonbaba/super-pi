@@ -6,6 +6,7 @@ import { visibleWidth } from "./utils.ts";
 import {
 	isLineViewportComponent,
 	type LineViewportMutationKind,
+	type LineViewportMutationObservation,
 	type LineViewportRender,
 	renderComponentsViewport,
 } from "./components/viewport-container.ts";
@@ -76,7 +77,16 @@ export class TuiMainScreen extends TuiBase implements TUI {
 	private previousViewportTop = 0;
 	private viewportWindowStart: number | undefined;
 	private viewportDocumentHeight: number | undefined;
-	private viewportMutationTokens: readonly unknown[] = [];
+	private readonly viewportMutationTokens: unknown[] = [];
+	private readonly viewportMutationScratch: LineViewportMutationObservation = { token: 0, kind: "none" };
+	private readonly viewportMutationSummary: LineViewportMutationObservation = { token: 0, kind: "none" };
+	private readonly frameRootHeights: number[] = [];
+	private readonly frameRootLines: Array<readonly string[] | undefined> = [];
+	private readonly frameRootLineStarts: number[] = [];
+	private readonly frameRootLeadingKittyImages: Array<LineViewportRender["leadingKittyImage"]> = [];
+	private readonly boundedFrameLinesA: string[] = [];
+	private readonly boundedFrameLinesB: string[] = [];
+	private readonly rootFrameRender: LineViewportRender = { lines: [], startLine: 0, totalHeight: 0 };
 
 	captureRenderState(): TuiMainScreenRenderState {
 		return {
@@ -105,7 +115,10 @@ export class TuiMainScreen extends TuiBase implements TUI {
 		this.previousViewportTop = state.previousViewportTop;
 		this.viewportWindowStart = state.viewportWindowStart;
 		this.viewportDocumentHeight = state.viewportDocumentHeight;
-		this.viewportMutationTokens = [...state.viewportMutationTokens];
+		this.viewportMutationTokens.length = state.viewportMutationTokens.length;
+		for (let index = 0; index < state.viewportMutationTokens.length; index++) {
+			this.viewportMutationTokens[index] = state.viewportMutationTokens[index];
+		}
 	}
 
 	protected override resetRenderState(): void {
@@ -118,7 +131,7 @@ export class TuiMainScreen extends TuiBase implements TUI {
 		this.previousViewportTop = 0;
 		this.viewportWindowStart = undefined;
 		this.viewportDocumentHeight = undefined;
-		this.viewportMutationTokens = [];
+		this.viewportMutationTokens.length = 0;
 	}
 
 	protected override beforeTerminalStop(options: TuiStopOptions): void {
@@ -608,17 +621,14 @@ export class TuiMainScreen extends TuiBase implements TUI {
 		// tail directly so dirty active lines are measured and consumed by one query.
 		// Composite roots retain the generic path and its conservative attribution.
 		let rendered: LineViewportRender;
-		let totalHeight: number;
 		if (this.children.length === 1 && isLineViewportComponent(this.children[0])) {
 			rendered = this.children[0].renderViewportTail(width, height);
-			totalHeight = rendered.totalHeight;
+			this.frameRootHeights.length = 1;
+			this.frameRootHeights[0] = rendered.totalHeight;
 		} else {
-			totalHeight = this.children.reduce((sum, child) => {
-				return sum + (isLineViewportComponent(child) ? child.getContentHeight(width) : child.render(width).length);
-			}, 0);
-			const requestedStart = Math.max(0, totalHeight - height);
-			rendered = renderComponentsViewport(this.children, width, requestedStart, height, totalHeight);
+			rendered = this.renderRootViewportTail(width, height);
 		}
+		const totalHeight = rendered.totalHeight;
 		const mutation = this.observeViewportMutations(width);
 		if (mutation.kind === "unsafe") return false;
 		if (
@@ -644,7 +654,10 @@ export class TuiMainScreen extends TuiBase implements TUI {
 		if (requestedStart < previousStart) return false;
 
 		const sourceOffset = Math.max(0, requestedStart - rendered.startLine);
-		let nextWindow = rendered.lines.slice(sourceOffset, sourceOffset + height);
+		let nextWindow =
+			sourceOffset === 0 && rendered.lines.length <= height
+				? rendered.lines
+				: rendered.lines.slice(sourceOffset, sourceOffset + height);
 		this.recordRootRender(totalHeight, Math.min(nextWindow.length, height));
 		if (this.hasOverlayEntries) nextWindow = this.compositeOverlays(nextWindow, width, height);
 		const cursorPos = this.extractCursorPosition(nextWindow, height);
@@ -660,7 +673,7 @@ export class TuiMainScreen extends TuiBase implements TUI {
 		}
 
 		const shiftedRows = requestedStart - previousStart;
-		const expectedLines = shiftedRows === 0 ? previousWindow : previousWindow.slice(shiftedRows);
+		const expectedOffset = shiftedRows;
 		let buffer = "\x1b[?2026h";
 		let writeCursorRow = this.hardwareCursorRow;
 		if (shiftedRows > 0) {
@@ -670,9 +683,9 @@ export class TuiMainScreen extends TuiBase implements TUI {
 		}
 
 		let diffLines = 0;
-		const comparisonLength = Math.max(nextWindow.length, expectedLines.length);
+		const comparisonLength = Math.max(nextWindow.length, Math.max(0, previousWindow.length - expectedOffset));
 		for (let row = 0; row < comparisonLength; row++) {
-			const previousLine = expectedLines[row] ?? "";
+			const previousLine = previousWindow[row + expectedOffset] ?? "";
 			const nextLine = nextWindow[row] ?? "";
 			if (previousLine === nextLine) continue;
 			const targetRow = requestedStart + row;
@@ -700,31 +713,28 @@ export class TuiMainScreen extends TuiBase implements TUI {
 		this.previousViewportTop = requestedStart;
 		this.cursorRow = Math.max(0, totalHeight - 1);
 		this.maxLinesRendered = Math.max(this.maxLinesRendered, totalHeight);
-		this.viewportMutationTokens = mutation.tokens;
 		const absoluteCursor = cursorPos ? { row: requestedStart + cursorPos.row, col: cursorPos.col } : null;
 		this.positionHardwareCursor(absoluteCursor, totalHeight);
 		return true;
 	}
 
-	private observeViewportMutations(width: number): {
-		tokens: readonly unknown[];
-		kind: LineViewportMutationKind;
-		earliestChangedLine?: number;
-		latestChangedLine?: number;
-		heightChanged?: boolean;
-	} {
-		const tokens: unknown[] = [];
+	private observeViewportMutations(width: number): LineViewportMutationObservation {
 		let kind: LineViewportMutationKind = "none";
 		let earliestChangedLine: number | undefined;
 		let latestChangedLine: number | undefined;
 		let heightChanged = false;
 		let childStart = 0;
 		let changedChildren = 0;
+		this.viewportMutationTokens.length = this.children.length;
 		for (let index = 0; index < this.children.length; index++) {
 			const child = this.children[index];
 			if (isLineViewportComponent(child)) {
-				const observation = child.observeViewportMutation(width, this.viewportMutationTokens[index]);
-				tokens.push(observation.token);
+				const observation = child.observeViewportMutation(
+					width,
+					this.viewportMutationTokens[index],
+					this.viewportMutationScratch,
+				);
+				this.viewportMutationTokens[index] = observation.token;
 				if (observation.kind !== "none") {
 					changedChildren++;
 					if (kind !== "none" || changedChildren > 1 || observation.kind === "unsafe") {
@@ -740,23 +750,105 @@ export class TuiMainScreen extends TuiBase implements TUI {
 						heightChanged = observation.heightChanged === true;
 					}
 				}
-				childStart += child.getContentHeight(width);
 			} else {
-				tokens.push(undefined);
-				childStart += child.render(width).length;
+				this.viewportMutationTokens[index] = undefined;
 			}
+			childStart += this.frameRootHeights[index] ?? 0;
 		}
-		return { tokens, kind, earliestChangedLine, latestChangedLine, heightChanged };
+		this.viewportMutationSummary.token = 0;
+		this.viewportMutationSummary.kind = kind;
+		this.viewportMutationSummary.earliestChangedLine = earliestChangedLine;
+		this.viewportMutationSummary.latestChangedLine = latestChangedLine;
+		this.viewportMutationSummary.heightChanged = heightChanged;
+		return this.viewportMutationSummary;
 	}
 
 	private captureViewportMutationTokens(width: number, documentHeight: number | undefined): void {
-		const tokens: unknown[] = [];
-		for (const child of this.children) {
-			tokens.push(isLineViewportComponent(child) ? child.observeViewportMutation(width).token : undefined);
+		this.viewportMutationTokens.length = this.children.length;
+		for (let index = 0; index < this.children.length; index++) {
+			const child = this.children[index];
+			this.viewportMutationTokens[index] = isLineViewportComponent(child)
+				? child.observeViewportMutation(width, undefined, this.viewportMutationScratch).token
+				: undefined;
 		}
-		this.viewportMutationTokens = tokens;
 		this.viewportWindowStart = undefined;
 		this.viewportDocumentHeight = documentHeight;
+	}
+
+	private renderRootViewportTail(width: number, height: number): LineViewportRender {
+		const safeHeight = Math.max(0, Math.floor(height));
+		const childCount = this.children.length;
+		this.frameRootHeights.length = childCount;
+		this.frameRootLines.length = childCount;
+		this.frameRootLineStarts.length = childCount;
+		this.frameRootLeadingKittyImages.length = childCount;
+		let totalHeight = 0;
+		let remaining = safeHeight;
+		for (let index = childCount - 1; index >= 0; index--) {
+			const child = this.children[index];
+			let childHeight: number;
+			if (isLineViewportComponent(child)) {
+				if (remaining > 0) {
+					const childRender = child.renderViewportTail(width, remaining);
+					childHeight = childRender.totalHeight;
+					this.frameRootLines[index] = childRender.lines;
+					this.frameRootLineStarts[index] = childRender.startLine;
+					this.frameRootLeadingKittyImages[index] = childRender.leadingKittyImage;
+				} else {
+					childHeight = child.getContentHeight(width);
+					this.frameRootLines[index] = undefined;
+					this.frameRootLineStarts[index] = childHeight;
+					this.frameRootLeadingKittyImages[index] = undefined;
+				}
+			} else {
+				const childLines = child.render(width);
+				childHeight = childLines.length;
+				this.frameRootLines[index] = remaining > 0 ? childLines : undefined;
+				this.frameRootLineStarts[index] = Math.max(0, childHeight - remaining);
+				this.frameRootLeadingKittyImages[index] = undefined;
+			}
+			this.frameRootHeights[index] = childHeight;
+			totalHeight += childHeight;
+			remaining = Math.max(0, remaining - childHeight);
+		}
+
+		const requestedStart = Math.max(0, totalHeight - safeHeight);
+		const lines = this.previousLines === this.boundedFrameLinesA
+			? this.boundedFrameLinesB
+			: this.boundedFrameLinesA;
+		lines.length = 0;
+		let childAbsoluteStart = 0;
+		let leadingKittyImage: LineViewportRender["leadingKittyImage"];
+		try {
+			for (let index = 0; index < childCount; index++) {
+				const childLines = this.frameRootLines[index];
+				if (childLines) {
+					const childLineStart = this.frameRootLineStarts[index];
+					for (let lineIndex = 0; lineIndex < childLines.length; lineIndex++) {
+						const absoluteLine = childAbsoluteStart + childLineStart + lineIndex;
+						if (absoluteLine >= requestedStart && lines.length < safeHeight) lines.push(childLines[lineIndex]);
+					}
+					const childLeading = this.frameRootLeadingKittyImages[index];
+					if (!leadingKittyImage && childLeading) {
+						leadingKittyImage = {
+							line: childLeading.line,
+							absoluteRow: childAbsoluteStart + childLeading.absoluteRow,
+						};
+					}
+				}
+				childAbsoluteStart += this.frameRootHeights[index];
+			}
+		} finally {
+			for (let index = 0; index < childCount; index++) {
+				this.frameRootLines[index] = undefined;
+				this.frameRootLeadingKittyImages[index] = undefined;
+			}
+		}
+		this.rootFrameRender.lines = lines;
+		this.rootFrameRender.startLine = requestedStart;
+		this.rootFrameRender.totalHeight = totalHeight;
+		this.rootFrameRender.leadingKittyImage = leadingKittyImage;
+		return this.rootFrameRender;
 	}
 
 	/**

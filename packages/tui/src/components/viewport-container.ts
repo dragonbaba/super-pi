@@ -46,7 +46,11 @@ export interface LineViewportComponent extends Component {
 	 * reordered, and removed mutations must report `unsafe`; height changes must
 	 * identify their affected range so the host can reject offscreen changes.
 	 */
-	observeViewportMutation(width: number, previousToken?: unknown): LineViewportMutationObservation;
+	observeViewportMutation(
+		width: number,
+		previousToken?: unknown,
+		result?: LineViewportMutationObservation,
+	): LineViewportMutationObservation;
 }
 
 export function isLineViewportComponent(component: Component): component is LineViewportComponent {
@@ -137,39 +141,61 @@ export function renderComponentsViewport(
 export class ViewportContainer extends Container implements LineViewportComponent {
 	readonly [LINE_VIEWPORT_COMPONENT] = true as const;
 	private mutationGeneration = 0;
-	private mutationKind: Exclude<LineViewportMutationKind, "none"> = "unsafe";
+	private readonly childMutationTokens: unknown[] = [];
+	private readonly childMutationScratch: LineViewportMutationObservation = { token: 0, kind: "none" };
+	private readonly childHeights: number[] = [];
+	private childHeightWidth: number | undefined;
+	private readonly tailChildLines: Array<readonly string[] | undefined> = [];
+	private readonly tailChildStarts: number[] = [];
+	private readonly tailChildLeadingKittyImages: Array<LineViewportRender["leadingKittyImage"]> = [];
+
+	private markStructureMutation(): void {
+		this.mutationGeneration++;
+		this.childMutationTokens.length = 0;
+		this.childHeights.length = 0;
+		this.childHeightWidth = undefined;
+	}
 
 	override addChild(component: Component): void {
 		super.addChild(component);
-		this.mutationGeneration++;
-		this.mutationKind = "unsafe";
+		this.markStructureMutation();
 	}
 
 	override removeChild(component: Component): void {
 		const previousLength = this.children.length;
 		super.removeChild(component);
 		if (this.children.length !== previousLength) {
-			this.mutationGeneration++;
-			this.mutationKind = "unsafe";
+			this.markStructureMutation();
 		}
 	}
 
 	override clear(): void {
 		if (this.children.length > 0) {
-			this.mutationGeneration++;
-			this.mutationKind = "unsafe";
+			this.markStructureMutation();
 		}
 		super.clear();
 	}
 
 	override invalidate(): void {
 		this.mutationGeneration++;
-		this.mutationKind = "unsafe";
+		this.childHeightWidth = undefined;
 		super.invalidate();
 	}
 
 	getContentHeight(width: number): number {
-		return getComponentsContentHeight(this.children, width);
+		const safeWidth = Math.max(1, Math.floor(width));
+		this.childHeightWidth = safeWidth;
+		this.childHeights.length = this.children.length;
+		let totalHeight = 0;
+		for (let index = 0; index < this.children.length; index++) {
+			const child = this.children[index];
+			const height = isLineViewportComponent(child)
+				? child.getContentHeight(safeWidth)
+				: child.render(safeWidth).length;
+			this.childHeights[index] = height;
+			totalHeight += height;
+		}
+		return totalHeight;
 	}
 
 	renderViewport(width: number, startLine: number, height: number): LineViewportRender {
@@ -178,27 +204,101 @@ export class ViewportContainer extends Container implements LineViewportComponen
 	}
 
 	renderViewportTail(width: number, height: number): LineViewportRender {
-		const totalHeight = this.getContentHeight(width);
-		return this.renderViewport(width, Math.max(0, totalHeight - Math.max(0, Math.floor(height))), height);
+		const safeWidth = Math.max(1, Math.floor(width));
+		const safeHeight = Math.max(0, Math.floor(height));
+		const childCount = this.children.length;
+		this.childHeightWidth = safeWidth;
+		this.childHeights.length = childCount;
+		this.tailChildLines.length = childCount;
+		this.tailChildStarts.length = childCount;
+		this.tailChildLeadingKittyImages.length = childCount;
+		let remaining = safeHeight;
+		let totalHeight = 0;
+		for (let index = childCount - 1; index >= 0; index--) {
+			const child = this.children[index];
+			let childHeight: number;
+			if (isLineViewportComponent(child)) {
+				if (remaining > 0) {
+					const rendered = child.renderViewportTail(safeWidth, remaining);
+					childHeight = rendered.totalHeight;
+					this.tailChildLines[index] = rendered.lines;
+					this.tailChildStarts[index] = rendered.startLine;
+					this.tailChildLeadingKittyImages[index] = rendered.leadingKittyImage;
+				} else {
+					childHeight = child.getContentHeight(safeWidth);
+					this.tailChildLines[index] = undefined;
+					this.tailChildStarts[index] = childHeight;
+					this.tailChildLeadingKittyImages[index] = undefined;
+				}
+			} else {
+				const childLines = child.render(safeWidth);
+				childHeight = childLines.length;
+				this.tailChildLines[index] = remaining > 0 ? childLines : undefined;
+				this.tailChildStarts[index] = Math.max(0, childHeight - remaining);
+				this.tailChildLeadingKittyImages[index] = undefined;
+			}
+			this.childHeights[index] = childHeight;
+			totalHeight += childHeight;
+			remaining = Math.max(0, remaining - childHeight);
+		}
+
+		const requestedStart = Math.max(0, totalHeight - safeHeight);
+		const lines: string[] = [];
+		let childAbsoluteStart = 0;
+		let leadingKittyImage: LineViewportRender["leadingKittyImage"];
+		try {
+			for (let index = 0; index < childCount; index++) {
+				const childLines = this.tailChildLines[index];
+				if (childLines) {
+					const childLineStart = this.tailChildStarts[index];
+					for (let lineIndex = 0; lineIndex < childLines.length; lineIndex++) {
+						const absoluteLine = childAbsoluteStart + childLineStart + lineIndex;
+						if (absoluteLine >= requestedStart && lines.length < safeHeight) lines.push(childLines[lineIndex]);
+					}
+					const childLeading = this.tailChildLeadingKittyImages[index];
+					if (!leadingKittyImage && childLeading) {
+						leadingKittyImage = {
+							line: childLeading.line,
+							absoluteRow: childAbsoluteStart + childLeading.absoluteRow,
+						};
+					}
+				}
+				childAbsoluteStart += this.childHeights[index];
+			}
+		} finally {
+			for (let index = 0; index < childCount; index++) {
+				this.tailChildLines[index] = undefined;
+				this.tailChildLeadingKittyImages[index] = undefined;
+			}
+		}
+		return { lines, startLine: requestedStart, totalHeight, leadingKittyImage };
 	}
 
-	observeViewportMutation(width: number, previousToken?: unknown): LineViewportMutationObservation {
-		const previous = previousToken as
-			| { ownGeneration: number; childTokens: readonly unknown[] }
-			| undefined;
-		const childTokens: unknown[] = [];
-		let aggregateKind: LineViewportMutationKind =
-			previous && previous.ownGeneration === this.mutationGeneration ? "none" : this.mutationKind;
+	observeViewportMutation(
+		width: number,
+		previousToken?: unknown,
+		result?: LineViewportMutationObservation,
+	): LineViewportMutationObservation {
+		const observationResult = result ?? { token: this.mutationGeneration, kind: "none" };
+		const generationBeforeChildren = this.mutationGeneration;
+		let aggregateKind: LineViewportMutationKind = previousToken === generationBeforeChildren ? "none" : "unsafe";
 		let earliestChangedLine: number | undefined;
 		let latestChangedLine: number | undefined;
 		let heightChanged = false;
 		let childStart = 0;
 		let changedChildren = 0;
+		const hasCachedHeights =
+			this.childHeightWidth === Math.max(1, Math.floor(width)) && this.childHeights.length === this.children.length;
+		this.childMutationTokens.length = this.children.length;
 		for (let index = 0; index < this.children.length; index++) {
 			const child = this.children[index];
 			if (isLineViewportComponent(child)) {
-				const observation = child.observeViewportMutation(width, previous?.childTokens[index]);
-				childTokens.push(observation.token);
+				const observation = child.observeViewportMutation(
+					width,
+					this.childMutationTokens[index],
+					this.childMutationScratch,
+				);
+				this.childMutationTokens[index] = observation.token;
 				if (observation.kind !== "none") {
 					changedChildren++;
 					if (aggregateKind !== "none" || changedChildren > 1 || observation.kind === "unsafe") {
@@ -214,18 +314,21 @@ export class ViewportContainer extends Container implements LineViewportComponen
 						heightChanged = observation.heightChanged === true;
 					}
 				}
-				childStart += child.getContentHeight(width);
 			} else {
-				childTokens.push(undefined);
-				childStart += child.render(width).length;
+				this.childMutationTokens[index] = undefined;
 			}
+			childStart += hasCachedHeights
+				? this.childHeights[index]
+				: isLineViewportComponent(child)
+					? child.getContentHeight(width)
+					: child.render(width).length;
 		}
-		return {
-			token: { ownGeneration: this.mutationGeneration, childTokens },
-			kind: aggregateKind,
-			earliestChangedLine,
-			latestChangedLine,
-			heightChanged,
-		};
+		if (changedChildren > 0) this.mutationGeneration++;
+		observationResult.token = this.mutationGeneration;
+		observationResult.kind = aggregateKind;
+		observationResult.earliestChangedLine = earliestChangedLine;
+		observationResult.latestChangedLine = latestChangedLine;
+		observationResult.heightChanged = heightChanged;
+		return observationResult;
 	}
 }

@@ -1092,8 +1092,8 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	}
 
 	private compositeFlashes(screen: string[], width: number, height: number): string[] {
+		if (!this.flashes.hasEntries) return screen;
 		const flashLines = this.flashes.render(width).slice(-height);
-		if (flashLines.length === 0) return screen;
 		const result = [...screen];
 		while (result.length < height) result.push("");
 		for (let row = 0; row < flashLines.length; row++) {
@@ -1111,7 +1111,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		const height = Math.max(1, this.terminal.rows);
 		const root = this.layoutRoot ?? this.implicitScrollView;
 		const nextLayout = renderLayoutFrame(root, width, height, this.layoutRequestRender);
-		let screen = nextLayout.lines.slice();
+		let screen = nextLayout.lines;
 		this.recordRootRender(nextLayout.generatedLineCount, Math.min(screen.length, height));
 		for (let row = 0; row < screen.length; row++) {
 			const line = screen[row];
@@ -1154,10 +1154,13 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		}
 		const redrawImages = fullRedraw || imagesNeedRedraw;
 		const hadUploadedKittyImages = this.uploadedKittyImages.size > 0;
-		const preparedKittyScreen =
-			redrawImages && this.imageProtocol === "kitty"
-				? this.prepareKittyScreen(screen)
-				: { lines: screen, evictedImageDeletion: "" };
+		let preparedLines = screen;
+		let evictedImageDeletion = "";
+		if (redrawImages && this.imageProtocol === "kitty") {
+			const preparedKittyScreen = this.prepareKittyScreen(screen);
+			preparedLines = preparedKittyScreen.lines;
+			evictedImageDeletion = preparedKittyScreen.evictedImageDeletion;
+		}
 
 		let buffer = BEGIN_SYNCHRONIZED_OUTPUT;
 		if (fullRedraw) {
@@ -1171,13 +1174,13 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			if (this.imageProtocol === "iterm2") buffer += "\x1b[2J";
 			else if (this.imageProtocol === "kitty") buffer += deleteAllKittyPlacements();
 		}
-		buffer += preparedKittyScreen.evictedImageDeletion;
+		buffer += evictedImageDeletion;
 
 		let diffLines = 0;
 		for (let row = 0; row < height; row++) {
 			if (!fullRedraw && !imagesNeedRedraw && screen[row] === this.previousScreen[row]) continue;
 			diffLines++;
-			buffer += `\x1b[${row + 1};1H\x1b[2K${preparedKittyScreen.lines[row] ?? ""}`;
+			buffer += `\x1b[${row + 1};1H\x1b[2K${preparedLines[row] ?? ""}`;
 		}
 
 		if (cursorPos) {

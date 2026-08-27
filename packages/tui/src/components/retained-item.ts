@@ -36,19 +36,6 @@ interface RetainedCacheKey extends RetainedRenderContext {
 	visualGeneration: number;
 }
 
-function cacheKeysEqual(left: RetainedCacheKey | undefined, right: RetainedCacheKey): boolean {
-	return (
-		left !== undefined &&
-		left.width === right.width &&
-		left.version === right.version &&
-		left.visualGeneration === right.visualGeneration &&
-		left.themeVersion === right.themeVersion &&
-		left.rendererVersion === right.rendererVersion &&
-		left.expandVersion === right.expandVersion &&
-		left.settingsVersion === right.settingsVersion
-	);
-}
-
 /** Retains one completed component render and only its latest width/context. */
 export class RetainedItem implements Component {
 	readonly id: string;
@@ -144,22 +131,43 @@ export class RetainedItem implements Component {
 		}
 
 		const context = this.getContext();
-		const nextKey: RetainedCacheKey = {
-			width,
-			version: this.logicalVersion,
-			visualGeneration: this.visualGeneration,
-			themeVersion: context.themeVersion,
-			rendererVersion: context.rendererVersion,
-			expandVersion: context.expandVersion,
-			settingsVersion: context.settingsVersion,
-		};
-		if (cacheKeysEqual(this.cacheKey, nextKey) && this.cachedLines) {
+		let key = this.cacheKey;
+		if (
+			key !== undefined &&
+			this.cachedLines !== undefined &&
+			key.width === width &&
+			key.version === this.logicalVersion &&
+			key.visualGeneration === this.visualGeneration &&
+			key.themeVersion === context.themeVersion &&
+			key.rendererVersion === context.rendererVersion &&
+			key.expandVersion === context.expandVersion &&
+			key.settingsVersion === context.settingsVersion
+		) {
 			this.instrumentation?.recordRetainedCacheHit();
 			return this.cachedLines;
 		}
 
 		const lines = component.render(width);
-		this.cacheKey = nextKey;
+		if (key) {
+			key.width = width;
+			key.version = this.logicalVersion;
+			key.visualGeneration = this.visualGeneration;
+			key.themeVersion = context.themeVersion;
+			key.rendererVersion = context.rendererVersion;
+			key.expandVersion = context.expandVersion;
+			key.settingsVersion = context.settingsVersion;
+		} else {
+			key = {
+				width,
+				version: this.logicalVersion,
+				visualGeneration: this.visualGeneration,
+				themeVersion: context.themeVersion,
+				rendererVersion: context.rendererVersion,
+				expandVersion: context.expandVersion,
+				settingsVersion: context.settingsVersion,
+			};
+			this.cacheKey = key;
+		}
 		this.cachedLines = lines;
 		this.instrumentation?.recordRetainedCacheMiss();
 		this.instrumentation?.recordTranscriptItemRender(true, lines.length);
@@ -247,16 +255,11 @@ interface RetainedViewportRecord {
 	kittySpanLines?: readonly string[];
 }
 
-interface RetainedViewportMutationEvent {
-	generation: number;
-	kind: "record" | "append" | "unsafe";
-	record?: RetainedViewportRecord;
-	previousHeight?: number;
-	appendIndex?: number;
-}
-
 const VIEWPORT_HEIGHT_BLOCK_SIZE = 256;
 const MAX_VIEWPORT_MUTATION_EVENTS = 64;
+const VIEWPORT_MUTATION_RECORD = 1;
+const VIEWPORT_MUTATION_APPEND = 2;
+const VIEWPORT_MUTATION_UNSAFE = 3;
 
 /** Container with session-local ownership and cleanup for retained children. */
 export class RetainedContainer extends Container implements LineViewportComponent {
@@ -274,7 +277,13 @@ export class RetainedContainer extends Container implements LineViewportComponen
 	private viewportStructureDirty = false;
 	private viewportMeasuredItems = 0;
 	private viewportMutationGeneration = 0;
-	private readonly viewportMutationEvents: RetainedViewportMutationEvent[] = [];
+	private readonly viewportMutationEventGenerations = new Float64Array(MAX_VIEWPORT_MUTATION_EVENTS);
+	private readonly viewportMutationEventKinds = new Uint8Array(MAX_VIEWPORT_MUTATION_EVENTS);
+	private readonly viewportMutationEventRecordIndices = new Float64Array(MAX_VIEWPORT_MUTATION_EVENTS);
+	private readonly viewportMutationEventPreviousHeights = new Float64Array(MAX_VIEWPORT_MUTATION_EVENTS);
+	private readonly viewportMutationEventAppendIndices = new Float64Array(MAX_VIEWPORT_MUTATION_EVENTS);
+	private viewportMutationEventStart = 0;
+	private viewportMutationEventCount = 0;
 	private suppressRecordMutation = false;
 	private readonly retainedRenderStateChanged = (item: RetainedItem): void => {
 		const component = item.component;
@@ -414,15 +423,33 @@ export class RetainedContainer extends Container implements LineViewportComponen
 		});
 	}
 
-	observeViewportMutation(width: number, previousToken?: unknown): LineViewportMutationObservation {
+	observeViewportMutation(
+		width: number,
+		previousToken?: unknown,
+		result?: LineViewportMutationObservation,
+	): LineViewportMutationObservation {
 		this.getContentHeight(width);
 		const token = this.viewportMutationGeneration;
-		if (previousToken === token) return { token, kind: "none" };
+		const observation = result ?? { token, kind: "none" };
+		observation.token = token;
+		observation.kind = "none";
+		observation.earliestChangedLine = undefined;
+		observation.latestChangedLine = undefined;
+		observation.heightChanged = undefined;
+		if (previousToken === token) return observation;
 		if (typeof previousToken !== "number" || previousToken < 0 || previousToken > token) {
-			return { token, kind: "unsafe" };
+			observation.kind = "unsafe";
+			return observation;
 		}
-		const firstEvent = this.viewportMutationEvents[0];
-		if (!firstEvent || previousToken < firstEvent.generation - 1) return { token, kind: "unsafe" };
+		if (this.viewportMutationEventCount === 0) {
+			observation.kind = "unsafe";
+			return observation;
+		}
+		const firstGeneration = this.viewportMutationEventGenerations[this.viewportMutationEventStart];
+		if (previousToken < firstGeneration - 1) {
+			observation.kind = "unsafe";
+			return observation;
+		}
 
 		let sawAppend = false;
 		let appendFloorIndex = Number.POSITIVE_INFINITY;
@@ -430,19 +457,26 @@ export class RetainedContainer extends Container implements LineViewportComponen
 		let heightChanged = false;
 		let earliestChangedLine = Number.POSITIVE_INFINITY;
 		let latestChangedLine = 0;
-		for (const event of this.viewportMutationEvents) {
-			if (event.generation <= previousToken) continue;
-			if (event.kind === "unsafe") return { token, kind: "unsafe" };
-			if (event.kind === "append") {
+		for (let eventOffset = 0; eventOffset < this.viewportMutationEventCount; eventOffset++) {
+			const eventIndex = (this.viewportMutationEventStart + eventOffset) % MAX_VIEWPORT_MUTATION_EVENTS;
+			if (this.viewportMutationEventGenerations[eventIndex] <= previousToken) continue;
+			const eventKind = this.viewportMutationEventKinds[eventIndex];
+			if (eventKind === VIEWPORT_MUTATION_UNSAFE) {
+				observation.kind = "unsafe";
+				return observation;
+			}
+			if (eventKind === VIEWPORT_MUTATION_APPEND) {
 				sawAppend = true;
-				appendFloorIndex = Math.min(appendFloorIndex, event.appendIndex ?? Number.POSITIVE_INFINITY);
+				appendFloorIndex = Math.min(appendFloorIndex, this.viewportMutationEventAppendIndices[eventIndex]);
 				continue;
 			}
-			const record = event.record;
-			if (!record || this.viewportRecordByComponent.get(record.component) !== record) {
-				return { token, kind: "unsafe" };
+			const recordIndex = this.viewportMutationEventRecordIndices[eventIndex];
+			const record = this.viewportRecords[recordIndex];
+			if (!record || record.index !== recordIndex || this.viewportRecordByComponent.get(record.component) !== record) {
+				observation.kind = "unsafe";
+				return observation;
 			}
-			const recordHeightChanged = record.height !== event.previousHeight;
+			const recordHeightChanged = record.height !== this.viewportMutationEventPreviousHeights[eventIndex];
 			if (sawAppend && record.index >= appendFloorIndex) continue;
 			sawRange = true;
 			const lineStart = this.getViewportRecordLineStart(record.index);
@@ -453,10 +487,21 @@ export class RetainedContainer extends Container implements LineViewportComponen
 				recordHeightChanged ? this.totalViewportHeight() : lineStart + record.height,
 			);
 		}
-		if (sawAppend && sawRange) return { token, kind: "unsafe" };
-		if (sawAppend) return { token, kind: "tail-append" };
-		if (sawRange) return { token, kind: "range", earliestChangedLine, latestChangedLine, heightChanged };
-		return { token, kind: "none" };
+		if (sawAppend && sawRange) {
+			observation.kind = "unsafe";
+			return observation;
+		}
+		if (sawAppend) {
+			observation.kind = "tail-append";
+			return observation;
+		}
+		if (sawRange) {
+			observation.kind = "range";
+			observation.earliestChangedLine = earliestChangedLine;
+			observation.latestChangedLine = latestChangedLine;
+			observation.heightChanged = heightChanged;
+		}
+		return observation;
 	}
 
 	renderViewport(width: number, startLine: number, height: number): RetainedViewportRender {
@@ -596,7 +641,7 @@ export class RetainedContainer extends Container implements LineViewportComponen
 		this.viewportRecords.push(record);
 		this.viewportRecordByComponent.set(component, record);
 		this.dirtyViewportRecords.add(record);
-		this.recordViewportMutation({ kind: "append", record, appendIndex: record.index });
+		this.recordViewportMutation(VIEWPORT_MUTATION_APPEND, record.index, 0, record.index);
 		const blockIndex = Math.floor((this.viewportRecords.length - 1) / VIEWPORT_HEIGHT_BLOCK_SIZE);
 		this.viewportBlockHeights[blockIndex] ??= 0;
 	}
@@ -604,7 +649,7 @@ export class RetainedContainer extends Container implements LineViewportComponen
 	private markViewportRecordDirty(record: RetainedViewportRecord, recordMutation: boolean): void {
 		this.clearPreparedViewportRecord(record);
 		if (recordMutation) {
-			this.recordViewportMutation({ kind: "record", record, previousHeight: record.height });
+			this.recordViewportMutation(VIEWPORT_MUTATION_RECORD, record.index, record.height, -1);
 		}
 		this.dirtyViewportRecords.add(record);
 	}
@@ -615,15 +660,33 @@ export class RetainedContainer extends Container implements LineViewportComponen
 	}
 
 	private recordUnsafeViewportMutation(): void {
-		this.viewportMutationGeneration++;
-		this.viewportMutationEvents.length = 0;
-		this.viewportMutationEvents.push({ generation: this.viewportMutationGeneration, kind: "unsafe" });
+		this.viewportMutationEventStart = 0;
+		this.viewportMutationEventCount = 0;
+		this.recordViewportMutation(VIEWPORT_MUTATION_UNSAFE, -1, 0, -1);
 	}
 
-	private recordViewportMutation(event: Omit<RetainedViewportMutationEvent, "generation">): void {
+	private recordViewportMutation(
+		kind: number,
+		recordIndex: number,
+		previousHeight: number,
+		appendIndex: number,
+	): void {
+		this.options.instrumentation?.recordMutationEventWrite();
 		this.viewportMutationGeneration++;
-		this.viewportMutationEvents.push({ ...event, generation: this.viewportMutationGeneration });
-		if (this.viewportMutationEvents.length > MAX_VIEWPORT_MUTATION_EVENTS) this.viewportMutationEvents.shift();
+		let eventIndex: number;
+		if (this.viewportMutationEventCount < MAX_VIEWPORT_MUTATION_EVENTS) {
+			eventIndex =
+				(this.viewportMutationEventStart + this.viewportMutationEventCount) % MAX_VIEWPORT_MUTATION_EVENTS;
+			this.viewportMutationEventCount++;
+		} else {
+			eventIndex = this.viewportMutationEventStart;
+			this.viewportMutationEventStart = (this.viewportMutationEventStart + 1) % MAX_VIEWPORT_MUTATION_EVENTS;
+		}
+		this.viewportMutationEventGenerations[eventIndex] = this.viewportMutationGeneration;
+		this.viewportMutationEventKinds[eventIndex] = kind;
+		this.viewportMutationEventRecordIndices[eventIndex] = recordIndex;
+		this.viewportMutationEventPreviousHeights[eventIndex] = previousHeight;
+		this.viewportMutationEventAppendIndices[eventIndex] = appendIndex;
 	}
 
 	private clearPreparedViewportRecord(record: RetainedViewportRecord): void {

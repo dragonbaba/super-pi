@@ -69,10 +69,12 @@ test("active updates do not rerender 5,000 completed transcript items", () => {
 		retainedCacheHits: 5_000,
 		retainedCacheMisses: 0,
 		viewportItemVisits: 0,
+		viewportLineArrays: 0,
 		viewportComposedLines: 0,
 		viewportCopiedLines: 0,
 		viewportTargetHeightLookupProbes: 0,
 		viewportBlockLookupProbes: 0,
+		mutationEventWrites: 1,
 		fullHistoryFallbacks: 0,
 		cursorScannedLines: 0,
 	});

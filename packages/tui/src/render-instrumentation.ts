@@ -12,10 +12,12 @@ export interface TuiRenderMetrics {
 	retainedCacheHits: number;
 	retainedCacheMisses: number;
 	viewportItemVisits: number;
+	viewportLineArrays: number;
 	viewportComposedLines: number;
 	viewportCopiedLines: number;
 	viewportTargetHeightLookupProbes: number;
 	viewportBlockLookupProbes: number;
+	mutationEventWrites: number;
 	fullHistoryFallbacks: number;
 	cursorScannedLines: number;
 }
@@ -34,10 +36,12 @@ const EMPTY_METRICS: TuiRenderMetrics = {
 	retainedCacheHits: 0,
 	retainedCacheMisses: 0,
 	viewportItemVisits: 0,
+	viewportLineArrays: 0,
 	viewportComposedLines: 0,
 	viewportCopiedLines: 0,
 	viewportTargetHeightLookupProbes: 0,
 	viewportBlockLookupProbes: 0,
+	mutationEventWrites: 0,
 	fullHistoryFallbacks: 0,
 	cursorScannedLines: 0,
 };
@@ -98,6 +102,7 @@ export class TuiRenderInstrumentation {
 		blockLookupProbes = 0,
 		copiedLines = composedLines,
 	): void {
+		this.metrics.viewportLineArrays++;
 		this.metrics.viewportItemVisits += itemVisits;
 		this.metrics.viewportComposedLines += composedLines;
 		this.metrics.viewportCopiedLines += copiedLines;
@@ -107,6 +112,10 @@ export class TuiRenderInstrumentation {
 
 	recordFullHistoryFallback(): void {
 		this.metrics.fullHistoryFallbacks++;
+	}
+
+	recordMutationEventWrite(): void {
+		this.metrics.mutationEventWrites++;
 	}
 
 	recordCursorScan(linesScanned: number): void {
