@@ -195,6 +195,7 @@ export class TuiMainScreen extends TuiBase implements TUI {
 
 		// Render all components to get new lines
 		let newLines = this.render(width);
+		this.recordRootRender(newLines.length, Math.min(newLines.length, height));
 
 		// Composite overlays into the rendered lines (before differential compare)
 		if (this.hasOverlayEntries) {
@@ -232,6 +233,7 @@ export class TuiMainScreen extends TuiBase implements TUI {
 				buffer += line;
 			}
 			buffer += "\x1b[?2026l"; // End synchronized output
+			this.recordTerminalFrame(buffer, newLines.length);
 			this.terminal.write(buffer);
 			this.cursorRow = Math.max(0, newLines.length - 1);
 			this.hardwareCursorRow = this.cursorRow;
@@ -364,6 +366,7 @@ export class TuiMainScreen extends TuiBase implements TUI {
 					buffer += `\x1b[${moveBack}A`;
 				}
 				buffer += "\x1b[?2026l";
+				this.recordTerminalFrame(buffer, extraLines);
 				this.terminal.write(buffer);
 				this.cursorRow = targetRow;
 				this.hardwareCursorRow = targetRow;
@@ -526,6 +529,10 @@ export class TuiMainScreen extends TuiBase implements TUI {
 		}
 
 		// Write entire buffer at once
+		this.recordTerminalFrame(
+			buffer,
+			renderEnd - firstChanged + 1 + Math.max(0, this.previousLines.length - newLines.length),
+		);
 		this.terminal.write(buffer);
 
 		// Track cursor position for next render

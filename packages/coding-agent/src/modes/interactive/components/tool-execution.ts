@@ -122,6 +122,13 @@ export class ReadToolGroupComponent extends Container {
 	setArgsComplete(toolCallId: string): void { const row = this.rows.get(toolCallId); if (row) { row.argsComplete = true; this.rebuild(); } }
 	updateResult(toolCallId: string, result: ToolResultLike, isPartial = false): void { const row = this.rows.get(toolCallId); if (row) { row.result = result; row.isPartial = isPartial; this.rebuild(); } }
 	finalize(): void { if (!this.finalized) { this.finalized = true; this.rebuild(); } }
+	canFreezeRender(): boolean {
+		if (!this.finalized || this.rows.size === 0) return false;
+		for (const row of this.rows.values()) {
+			if (!row.result || row.isPartial) return false;
+		}
+		return true;
+	}
 	setExpanded(expanded: boolean): void { if (this.expanded !== expanded) { this.expanded = expanded; this.rebuild(); } }
 	override invalidate(): void { super.invalidate(); this.rebuild(); }
 

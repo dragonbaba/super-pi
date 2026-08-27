@@ -6,6 +6,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { performance } from "node:perf_hooks";
 import { isKeyRelease, matchesKey } from "./keys.ts";
+import type { TuiRenderInstrumentation } from "./render-instrumentation.ts";
 import type { Terminal } from "./terminal.ts";
 import {
 	isOsc11BackgroundColorResponse,
@@ -301,6 +302,7 @@ export interface TUI extends Component {
 	setShowHardwareCursor(enabled: boolean): void;
 	getClearOnShrink(): boolean;
 	setClearOnShrink(enabled: boolean): void;
+	setRenderInstrumentation(instrumentation: TuiRenderInstrumentation | undefined): void;
 	setFocus(component: Component | null): void;
 	showOverlay(component: Component, options?: OverlayOptions): OverlayHandle;
 	hideOverlay(): void;
@@ -350,6 +352,7 @@ export abstract class TuiBase extends Container implements TUI {
 	private terminalColorSchemeListeners = new Set<(scheme: TerminalColorScheme) => void>();
 	private terminalColorSchemeNotificationsEnabled = false;
 	protected readonly logDirectory: string;
+	private renderInstrumentation: TuiRenderInstrumentation | undefined;
 
 	// Overlay stack for modal components rendered on top of base content
 	private focusOrderCounter = 0;
@@ -383,6 +386,18 @@ export abstract class TuiBase extends Container implements TUI {
 
 	get fullRedraws(): number {
 		return this.fullRedrawCount;
+	}
+
+	setRenderInstrumentation(instrumentation: TuiRenderInstrumentation | undefined): void {
+		this.renderInstrumentation = instrumentation;
+	}
+
+	protected recordRootRender(generatedLines: number, visibleLines: number): void {
+		this.renderInstrumentation?.recordRootRender(generatedLines, visibleLines);
+	}
+
+	protected recordTerminalFrame(data: string, diffLines: number): void {
+		this.renderInstrumentation?.recordTerminalFrame(data, diffLines);
 	}
 
 	getShowHardwareCursor(): boolean {
@@ -763,6 +778,7 @@ export abstract class TuiBase extends Container implements TUI {
 	}
 
 	requestRender(force = false): void {
+		this.renderInstrumentation?.recordFrameQueueDepth(1);
 		if (force) {
 			this.resetRenderState();
 			this.requestImmediateRender();
@@ -1108,6 +1124,7 @@ export abstract class TuiBase extends Container implements TUI {
 
 			// Render component at calculated width
 			let overlayLines = component.render(width);
+			this.renderInstrumentation?.recordOverlayRender();
 
 			// Apply maxHeight if specified
 			if (maxHeight !== undefined && overlayLines.length > maxHeight) {

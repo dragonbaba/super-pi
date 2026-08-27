@@ -18,6 +18,13 @@ export { Image, type ImageOptions, type ImageTheme } from "./components/image.ts
 export { Input } from "./components/input.ts";
 export { Loader, type LoaderIndicatorOptions } from "./components/loader.ts";
 export { type DefaultTextStyle, Markdown, type MarkdownOptions, type MarkdownTheme } from "./components/markdown.ts";
+export {
+	RetainedContainer,
+	RetainedItem,
+	type RetainedContainerStats,
+	type RetainedItemOptions,
+	type RetainedRenderContext,
+} from "./components/retained-item.ts";
 export { ScrollView, type ScrollViewOptions, type ScrollViewScrollbar } from "./components/scroll-view.ts";
 export {
 	type SelectItem,
@@ -131,6 +138,7 @@ export {
 } from "./tui.ts";
 export { TuiAltScreen, type TuiAltScreenOptions } from "./tui-alt-screen.ts";
 export { TuiMainScreen, type TuiMainScreenRenderState } from "./tui-main-screen.ts";
+export { type TuiRenderMetrics, TuiRenderInstrumentation, utf8ByteLength } from "./render-instrumentation.ts";
 // Utilities
 export {
 	getOsc8LinkAtColumn,

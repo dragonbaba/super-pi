@@ -34,11 +34,15 @@ import {
 	Markdown,
 	matchesKey,
 	ProcessTerminal,
+	RetainedContainer,
+	type RetainedItem,
+	type RetainedRenderContext,
 	Spacer,
 	setKeybindings,
 	Text,
 	TruncatedText,
 	type TUI,
+	TuiRenderInstrumentation,
 	TuiAltScreen,
 	TuiMainScreen,
 	visibleWidth,
@@ -422,7 +426,7 @@ export class InteractiveMode {
 	private ui: TUI;
 	private mainScreenRenderState: TuiMainScreenRenderState | undefined;
 	private loadedResourcesContainer: Container;
-	private chatContainer: Container;
+	private chatContainer: RetainedContainer;
 	private documentContainer: Container;
 	private transcriptScrollView: TuiLayouts.ScrollView | undefined;
 	private fullscreenLayoutRoot: Component | undefined;
@@ -468,6 +472,18 @@ export class InteractiveMode {
 	// Streaming message tracking
 	private streamingComponent: AssistantMessageComponent | undefined = undefined;
 	private streamingMessage: AssistantMessage | undefined = undefined;
+	private streamingItem: RetainedItem | undefined = undefined;
+	private streamingItemId: string | undefined;
+	private streamingItemVersion = 0;
+	private nextTranscriptItemNumber = 0;
+	private readonly renderInstrumentation = new TuiRenderInstrumentation();
+	private readonly transcriptRenderContext: RetainedRenderContext = {
+		themeVersion: 0,
+		rendererVersion: 1,
+		expandVersion: 0,
+		settingsVersion: 0,
+	};
+	private readonly getTranscriptRenderContext = (): Readonly<RetainedRenderContext> => this.transcriptRenderContext;
 
 	// Grouped Read calls intentionally map multiple ids to one component.
 	private pendingTools = new Map<string, ToolExecutionComponent | ReadToolGroupComponent>();
@@ -587,11 +603,15 @@ export class InteractiveMode {
 			logDirectory: getAgentDir(),
 			onRightClickPaste: this.onRightClickPaste,
 		});
+		this.renderer.setRenderInstrumentation(this.renderInstrumentation);
 		this.ui = createInteractiveTuiReference(() => this.renderer);
 		this.ui.setClearOnShrink(this.settingsManager.getClearOnShrink());
 		this.headerContainer = new Container();
 		this.loadedResourcesContainer = new Container();
-		this.chatContainer = new Container();
+		this.chatContainer = new RetainedContainer({
+			getContext: this.getTranscriptRenderContext,
+			instrumentation: this.renderInstrumentation,
+		});
 		this.documentContainer = new Container();
 		this.documentContainer.addChild(this.headerContainer);
 		this.documentContainer.addChild(this.loadedResourcesContainer);
@@ -627,7 +647,10 @@ export class InteractiveMode {
 			this.ui,
 			this.settingsManager,
 			(message) => this.showError(message),
-			() => this.updateEditorBorderColor(),
+			() => {
+				this.transcriptRenderContext.themeVersion++;
+				this.updateEditorBorderColor();
+			},
 		);
 	}
 
@@ -873,10 +896,12 @@ export class InteractiveMode {
 			onRightClickPaste: this.onRightClickPaste,
 		});
 		nextUi.setClearOnShrink(clearOnShrink);
+		nextUi.setRenderInstrumentation(this.renderInstrumentation);
 		nextUi.onDebug = onDebug;
 		if (nextUi instanceof TuiMainScreen && this.mainScreenRenderState) {
 			nextUi.restoreRenderState(this.mainScreenRenderState);
 		}
+		this.transcriptRenderContext.rendererVersion++;
 		this.renderer = nextUi;
 		this.options.tuiMode = mode;
 		this.mountInteractiveTui(nextUi, components);
@@ -2017,10 +2042,14 @@ export class InteractiveMode {
 	private renderCurrentSessionState(): void {
 		this.loadedResourcesContainer.clear();
 		this.chatContainer.clear();
+		this.nextTranscriptItemNumber = 0;
 		this.pendingMessagesContainer.clear();
 		this.compactionQueuedMessages = [];
 		this.streamingComponent = undefined;
 		this.streamingMessage = undefined;
+		this.streamingItem = undefined;
+		this.streamingItemId = undefined;
+		this.streamingItemVersion = 0;
 		this.pendingTools.clear();
 		this.renderInitialMessages();
 	}
@@ -2157,6 +2186,7 @@ export class InteractiveMode {
 				child.setHiddenThinkingLabel(this.hiddenThinkingLabel);
 			}
 		}
+		this.transcriptRenderContext.settingsVersion++;
 		if (this.streamingComponent) {
 			this.streamingComponent.setHiddenThinkingLabel(this.hiddenThinkingLabel);
 		}
@@ -3218,8 +3248,10 @@ export class InteractiveMode {
 						this.getMarkdownTransformers(),
 					);
 					this.streamingMessage = event.message;
-					this.chatContainer.addChild(this.streamingComponent);
 					this.streamingComponent.updateContent(this.streamingMessage, true);
+					this.streamingItemVersion = 1;
+					this.streamingItemId = this.nextTranscriptItemId("assistant");
+					this.addStreamingTranscriptItem();
 					this.ui.requestRender();
 				}
 				break;
@@ -3228,6 +3260,7 @@ export class InteractiveMode {
 				if (this.streamingComponent && event.message.role === "assistant") {
 					this.streamingMessage = event.message;
 					this.streamingComponent.updateContent(this.streamingMessage, true);
+					this.streamingItem?.updateVersion(++this.streamingItemVersion);
 
 					for (const content of this.streamingMessage.content) {
 						if (content.type !== "toolCall") continue;
@@ -3267,6 +3300,7 @@ export class InteractiveMode {
 						this.streamingMessage.errorMessage = errorMessage;
 					}
 					this.streamingComponent.updateContent(this.streamingMessage, false);
+					this.streamingItem?.updateVersion(++this.streamingItemVersion);
 
 					if (this.streamingMessage.stopReason === "aborted" || this.streamingMessage.stopReason === "error") {
 						if (!errorMessage) {
@@ -3289,6 +3323,10 @@ export class InteractiveMode {
 						}
 						this.maybeShowCacheMissNotice(this.streamingMessage);
 					}
+					this.streamingItem?.complete();
+					this.streamingItem = undefined;
+					this.streamingItemId = undefined;
+					this.streamingItemVersion = 0;
 					this.streamingComponent = undefined;
 					this.streamingMessage = undefined;
 					this.footer.invalidate();
@@ -3342,6 +3380,9 @@ export class InteractiveMode {
 				this.clearStatusIndicator("working");
 				if (this.streamingComponent) {
 					this.chatContainer.removeChild(this.streamingComponent);
+					this.streamingItem = undefined;
+					this.streamingItemId = undefined;
+					this.streamingItemVersion = 0;
 					this.streamingComponent = undefined;
 					this.streamingMessage = undefined;
 				}
@@ -3464,12 +3505,18 @@ export class InteractiveMode {
 	private finalizeReadToolGroup(): void {
 		if (!this.lastReadToolGroup) return;
 		this.lastReadToolGroup.finalize();
+		this.completeTrackedToolIfReady(this.lastReadToolGroup);
 		this.lastReadToolGroup = undefined;
 	}
 
-	private replaceDeferredReadPlaceholder(toolCallId: string, placeholder: Container | undefined, component: Component): void {
+	private replaceDeferredReadPlaceholder(
+		toolCallId: string,
+		placeholder: Container | undefined,
+		component: ToolExecutionComponent | ReadToolGroupComponent,
+	): void {
 		if (!placeholder) return;
 		replaceToolPlaceholder(this.chatContainer.children, placeholder, component);
+		this.retainActiveToolComponent(component, toolCallId);
 		this.deferredReadPlaceholders.delete(toolCallId);
 	}
 
@@ -3528,7 +3575,7 @@ export class InteractiveMode {
 				this.finalizeReadToolGroup();
 				this.lastReadToolGroup = new ReadToolGroupComponent();
 				this.lastReadToolGroup.setExpanded(this.toolOutputExpanded);
-				if (!placeholder) this.chatContainer.addChild(this.lastReadToolGroup);
+				if (!placeholder) this.retainActiveToolComponent(this.lastReadToolGroup, toolCallId);
 			}
 			component = this.lastReadToolGroup;
 			component.updateArgs(toolCallId, args);
@@ -3544,7 +3591,7 @@ export class InteractiveMode {
 				this.sessionManager.getCwd(),
 			);
 			component.setExpanded(this.toolOutputExpanded);
-			if (!placeholder) this.chatContainer.addChild(component);
+			if (!placeholder) this.retainActiveToolComponent(component, toolCallId);
 		}
 		this.replaceDeferredReadPlaceholder(toolCallId, placeholder, component);
 		this.pendingTools.set(toolCallId, component);
@@ -3554,21 +3601,44 @@ export class InteractiveMode {
 	private updateTrackedToolArgs(component: ToolExecutionComponent | ReadToolGroupComponent, toolCallId: string, args: any): void {
 		if (component instanceof ReadToolGroupComponent) component.updateArgs(toolCallId, args);
 		else component.updateArgs(args);
+		this.advanceActiveToolVersion(component);
 	}
 
 	private markTrackedToolStarted(component: ToolExecutionComponent | ReadToolGroupComponent, toolCallId: string): void {
 		if (component instanceof ReadToolGroupComponent) component.markExecutionStarted(toolCallId);
 		else component.markExecutionStarted();
+		this.advanceActiveToolVersion(component);
 	}
 
 	private setTrackedToolArgsComplete(component: ToolExecutionComponent | ReadToolGroupComponent, toolCallId: string): void {
 		if (component instanceof ReadToolGroupComponent) component.setArgsComplete(toolCallId);
 		else component.setArgsComplete();
+		this.advanceActiveToolVersion(component);
 	}
 
 	private updateTrackedToolResult(component: ToolExecutionComponent | ReadToolGroupComponent, toolCallId: string, result: any, isPartial = false): void {
 		if (component instanceof ReadToolGroupComponent) component.updateResult(toolCallId, result, isPartial);
 		else component.updateResult(result, isPartial);
+		this.advanceActiveToolVersion(component);
+		if (!isPartial) this.completeTrackedToolIfReady(component);
+	}
+
+	private retainActiveToolComponent(component: ToolExecutionComponent | ReadToolGroupComponent, toolCallId: string): void {
+		if (this.chatContainer.getRetainedItem(component)) return;
+		const options = { id: this.nextTranscriptItemId(`tool:${toolCallId}`), version: 0, completed: false } as const;
+		if (this.chatContainer.children.includes(component)) this.chatContainer.retainChild(component, options);
+		else this.chatContainer.addRetainedChild(component, options);
+	}
+
+	private advanceActiveToolVersion(component: ToolExecutionComponent | ReadToolGroupComponent): void {
+		const item = this.chatContainer.getRetainedItem(component);
+		if (item && !item.completed) item.advanceVersion();
+	}
+
+	private completeTrackedToolIfReady(component: ToolExecutionComponent | ReadToolGroupComponent): void {
+		if (component instanceof ReadToolGroupComponent && !component.canFreezeRender()) return;
+		const item = this.chatContainer.getRetainedItem(component);
+		if (item && !item.completed) item.complete();
 	}
 
 	/** Extract visible text content from a user message. */
@@ -3697,7 +3767,7 @@ export class InteractiveMode {
 								this.outputPad,
 								this.getMarkdownTransformers(),
 							);
-							this.chatContainer.addChild(userComponent);
+							this.addCompletedTranscriptItem(userComponent, "user");
 						}
 					} else {
 						const userComponent = new UserMessageComponent(
@@ -3706,7 +3776,7 @@ export class InteractiveMode {
 							this.outputPad,
 							this.getMarkdownTransformers(),
 						);
-						this.chatContainer.addChild(userComponent);
+						this.addCompletedTranscriptItem(userComponent, "user");
 					}
 					if (options?.populateHistory) {
 						this.editor.addToHistory?.(textContent);
@@ -3723,7 +3793,7 @@ export class InteractiveMode {
 					this.outputPad,
 					this.getMarkdownTransformers(),
 				);
-				this.chatContainer.addChild(assistantComponent);
+				this.addCompletedTranscriptItem(assistantComponent, "assistant");
 				break;
 			}
 			case "toolResult": {
@@ -3734,6 +3804,28 @@ export class InteractiveMode {
 				const _exhaustive: never = message;
 			}
 		}
+	}
+
+	private nextTranscriptItemId(kind: "user" | "assistant" | `tool:${string}`): string {
+		return `${kind}:${this.nextTranscriptItemNumber++}`;
+	}
+
+	private addCompletedTranscriptItem(component: Component, kind: "user" | "assistant"): RetainedItem {
+		return this.chatContainer.addRetainedChild(component, {
+			id: this.nextTranscriptItemId(kind),
+			version: 1,
+			completed: true,
+		});
+	}
+
+	private addStreamingTranscriptItem(): void {
+		if (!this.streamingComponent) return;
+		this.streamingItemId ??= this.nextTranscriptItemId("assistant");
+		this.streamingItem = this.chatContainer.addRetainedChild(this.streamingComponent, {
+			id: this.streamingItemId,
+			version: this.streamingItemVersion,
+			completed: false,
+		});
 	}
 
 	private renderSessionItems(
@@ -4227,6 +4319,7 @@ export class InteractiveMode {
 		if (expanded === this.toolOutputExpanded) return;
 
 		this.toolOutputExpanded = expanded;
+		this.transcriptRenderContext.expandVersion++;
 		const activeHeader = this.customHeader ?? this.builtInHeader;
 		if (isExpandable(activeHeader)) {
 			activeHeader.setExpanded(expanded);
@@ -4243,6 +4336,7 @@ export class InteractiveMode {
 
 	private toggleThinkingBlockVisibility(): void {
 		this.hideThinkingBlock = !this.hideThinkingBlock;
+		this.transcriptRenderContext.expandVersion++;
 		this.settingsManager.setHideThinkingBlock(this.hideThinkingBlock);
 
 		// Rebuild chat from session messages
@@ -4253,7 +4347,8 @@ export class InteractiveMode {
 		if (this.streamingComponent && this.streamingMessage) {
 			this.streamingComponent.setHideThinkingBlock(this.hideThinkingBlock);
 			this.streamingComponent.updateContent(this.streamingMessage);
-			this.chatContainer.addChild(this.streamingComponent);
+			this.streamingItem = undefined;
+			this.addStreamingTranscriptItem();
 		}
 
 		this.showStatus(`Thinking blocks: ${this.hideThinkingBlock ? "hidden" : "visible"}`);
@@ -4581,6 +4676,7 @@ export class InteractiveMode {
 					},
 					onShowImagesChange: (enabled) => {
 						this.settingsManager.setShowImages(enabled);
+						this.transcriptRenderContext.settingsVersion++;
 						for (const child of this.chatContainer.children) {
 							if (child instanceof ToolExecutionComponent) {
 								child.setShowImages(enabled);
@@ -4589,6 +4685,7 @@ export class InteractiveMode {
 					},
 					onImageWidthCellsChange: (width) => {
 						this.settingsManager.setImageWidthCells(width);
+						this.transcriptRenderContext.settingsVersion++;
 						for (const child of this.chatContainer.children) {
 							if (child instanceof ToolExecutionComponent) {
 								child.setImageWidthCells(width);
@@ -4633,6 +4730,7 @@ export class InteractiveMode {
 					onThemePreview: (themeName) => this.themeController.preview(themeName),
 					onHideThinkingBlockChange: (hidden) => {
 						this.hideThinkingBlock = hidden;
+						this.transcriptRenderContext.expandVersion++;
 						this.settingsManager.setHideThinkingBlock(hidden);
 						for (const child of this.chatContainer.children) {
 							if (child instanceof AssistantMessageComponent) {
@@ -4644,6 +4742,7 @@ export class InteractiveMode {
 					},
 					onMermaidRenderingModeChange: (mode) => {
 						this.settingsManager.setMermaidRenderingMode(mode);
+						this.transcriptRenderContext.settingsVersion++;
 						this.chatContainer.invalidate();
 						this.ui.requestRender();
 					},
@@ -4683,6 +4782,7 @@ export class InteractiveMode {
 					onOutputPadChange: (padding) => {
 						this.settingsManager.setOutputPad(padding);
 						this.outputPad = padding;
+						this.transcriptRenderContext.settingsVersion++;
 						if (this.streamingComponent || this.session.isStreaming) {
 							for (const child of this.chatContainer.children) {
 								if (
