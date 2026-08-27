@@ -217,3 +217,11 @@ test("frame allocation instrumentation exposes numeric zero-allocation gates", (
 		assert.match(source, new RegExp(`\\b${field}: number`), `${field} must be a numeric metric`);
 	}
 });
+
+test("InteractiveMode built-in session delivery is synchronous on message and tool updates", () => {
+	const source = readFileSync("packages/coding-agent/src/modes/interactive/interactive-mode.ts", "utf8");
+	assert.doesNotMatch(source, /session\.subscribe\(async\s*\(/);
+	assert.doesNotMatch(source, /private async handleEvent\(/);
+	assert.doesNotMatch(source, /tool_execution_update[\s\S]{0,700}\{\s*\.\.\.event\.partialResult/);
+	assert.match(source, /case "agent_end"[\s\S]{0,1400}return this\.[A-Za-z]+/);
+});

@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 import { Writable } from "node:stream";
 import test from "node:test";
 import { AgentSession } from "../packages/coding-agent/src/core/agent-session.ts";
+import { InteractiveMode } from "../packages/coding-agent/src/modes/interactive/interactive-mode.ts";
 import { TerminalFrameQueue, type TerminalFrameSink } from "../packages/tui/src/terminal-frame-queue.ts";
 import { TuiRenderInstrumentation } from "../packages/tui/src/render-instrumentation.ts";
 import { ProcessTerminal, type Terminal } from "../packages/tui/src/terminal.ts";
@@ -190,6 +191,15 @@ class ControlledFrameOutput extends EventEmitter {
 	}
 }
 
+class LifecycleProcessTerminal extends ProcessTerminal {
+	lifecycleStarted = false;
+	override start(): void { this.lifecycleStarted = true; }
+	override stop(): void { this.lifecycleStarted = false; }
+	override hideCursor(): void {}
+	override showCursor(): void {}
+	override write(): Promise<void> { return Promise.resolve(); }
+}
+
 class RealBackpressuredWritable extends Writable {
 	private completeWrite: ((error?: Error | null) => void) | undefined;
 
@@ -280,6 +290,7 @@ test("AgentSession awaits only explicit critical listeners and isolates final re
 		_eventListeners: Array<{
 			listener: (event: unknown) => void | Promise<void>;
 			criticalAgentEnd: boolean;
+			observeRejection?: (error: unknown) => void;
 		}>;
 		_emitAgentEnd(event: { type: "agent_end"; messages: []; willRetry: boolean }): Promise<void>;
 	};
@@ -327,6 +338,7 @@ test("AgentSession bounds the complete critical agent_end listener lane", async 
 		_eventListeners: Array<{
 			listener: (event: unknown) => void | Promise<void>;
 			criticalAgentEnd: boolean;
+			observeRejection?: (error: unknown) => void;
 		}>;
 		_criticalAgentEndTimeoutMs: number;
 		_emitAgentEnd(event: { type: "agent_end"; messages: []; willRetry: boolean }): Promise<void>;
@@ -357,6 +369,7 @@ test("AgentSession observes ordinary async listener rejection without awaiting p
 		_eventListeners: Array<{
 			listener: (event: unknown) => void | Promise<void>;
 			criticalAgentEnd: boolean;
+			observeRejection?: (error: unknown) => void;
 		}>;
 		_emit(event: unknown): void;
 	};
@@ -365,6 +378,7 @@ test("AgentSession observes ordinary async listener rejection without awaiting p
 		resolvePending = resolve;
 	});
 	const delivered: string[] = [];
+	const observedErrors: unknown[] = [];
 	const unhandled: unknown[] = [];
 	const onUnhandled = (error: unknown): void => {
 		unhandled.push(error);
@@ -377,6 +391,7 @@ test("AgentSession observes ordinary async listener rejection without awaiting p
 					throw new Error("ordinary listener rejection");
 				},
 				criticalAgentEnd: false,
+				observeRejection: (error: unknown) => observedErrors.push(error),
 			},
 			{
 				listener: () => pending,
@@ -401,6 +416,7 @@ test("AgentSession observes ordinary async listener rejection without awaiting p
 		resolvePending?.();
 		await settle();
 		assert.deepEqual(unhandled, []);
+		assert.equal(observedErrors.length, 4);
 	} finally {
 		process.removeListener("unhandledRejection", onUnhandled);
 	}
@@ -491,25 +507,30 @@ test("ProcessTerminal dispose permanently releases listeners and is idempotent a
 	const lateCallback = output.callbacks[0];
 	first.dispose();
 	first.dispose();
-	assert.equal(output.listenerCount("error"), baselineErrors + 1);
-	assert.equal(output.listenerCount("drain"), 0);
-	assert.equal(output.listenerCount("close"), 0);
+	assert.equal(output.listenerCount("error"), baselineErrors + 2);
+	assert.equal(output.listenerCount("drain"), 1);
+	assert.equal(output.listenerCount("close"), 1);
 	assert.equal((first as unknown as { frameWriteCompletionListener?: unknown }).frameWriteCompletionListener, undefined);
 	lateCallback?.();
-	await settle();
+	output.emit("drain");
+	await new Promise<void>((resolve) => setImmediate(resolve));
 	assert.equal(completions, 0);
 	assert.equal(
 		(first as unknown as { physicalFrameWriteActive: boolean }).physicalFrameWriteActive,
 		false,
 	);
 	assert.equal((first as unknown as { frameWriteCallbackComplete: boolean }).frameWriteCallbackComplete, false);
+	assert.equal(output.listenerCount("error"), baselineErrors + 1);
 
 	second.dispose();
+	await new Promise<void>((resolve) => setImmediate(resolve));
 	assert.equal(output.listenerCount("error"), baselineErrors);
 	const third = new ProcessTerminal(output as never);
 	assert.equal(output.listenerCount("error"), baselineErrors + 1);
 	third.dispose();
+	await new Promise<void>((resolve) => setImmediate(resolve));
 	assert.equal(output.listenerCount("error"), baselineErrors);
+	assert.throws(() => third.write("after-dispose"), /disposed ProcessTerminal/);
 });
 
 test("ProcessTerminal repeated start-stop-dispose returns process listeners to baseline", () => {
@@ -528,6 +549,7 @@ test("ProcessTerminal repeated start-stop-dispose returns process listeners to b
 		}
 		terminal.dispose();
 		terminal.dispose();
+		await new Promise((resolve) => setImmediate(resolve));
 		if (process.stdout.listenerCount("error") !== stdoutError) process.exit(14);
 		try {
 			terminal.start(() => {}, () => {});
@@ -721,6 +743,7 @@ test("discardPending releases stale output and write failure terminates the queu
 	writer.gates[0]!.reject(failure);
 	await assert.rejects(queue.flush(), failure);
 	assert.equal(queue.snapshot().failed, true);
+	assert.equal(queue.restartAfterLifecycleAbort(), undefined);
 	assert.throws(() => queue.submit("after-error"), failure);
 });
 
@@ -849,6 +872,191 @@ test("stop bounds a never-settling frame, clears pending work, and still restore
 	terminal.writer.gates[0]!.resolve();
 	await settle();
 	assert.deepEqual(terminal.writer.writes, ["frame-0"]);
+});
+
+test("same TUI resumes after a lifecycle timeout while the orphan write still owns the physical slot", async () => {
+	const output = new ControlledFrameOutput();
+	const terminal = new LifecycleProcessTerminal(output as never);
+	const instrumentation = new TuiRenderInstrumentation();
+	const tui = new FrameTui(terminal, false, undefined, 20);
+	tui.setRenderInstrumentation(instrumentation);
+	tui.renderNow();
+	const callbackA = output.callbacks[0];
+	assert.ok(callbackA);
+
+	await tui.stop();
+	assert.equal(terminal.lifecycleStarted, false);
+	assert.equal((terminal as unknown as { physicalFrameWriteActive: boolean }).physicalFrameWriteActive, true);
+
+	tui.generation = 1;
+	tui.start();
+	tui.renderNow(true);
+	assert.equal(output.callbacks.length, 1, "B must wait behind orphan A");
+	assert.equal(instrumentation.snapshot().physicalTerminalFrameWrites, 1, "logical B is not yet a physical write");
+
+	callbackA();
+	output.emit("drain");
+	await new Promise<void>((resolve) => setImmediate(resolve));
+	assert.equal(output.callbacks.length, 2);
+	assert.equal(instrumentation.snapshot().physicalTerminalFrameWrites, 2);
+	const callbackB = output.callbacks[1];
+	assert.ok(callbackB);
+	callbackB();
+	output.emit("drain");
+	await tui.flushTerminalFrames();
+	assert.equal(tui.getTerminalFrameQueueSnapshot().activeWrites, 0);
+	assert.equal(tui.getTerminalFrameQueueSnapshot().pendingFrames, 0);
+	await tui.dispose();
+});
+
+test("Main to Alt uses the terminal orphan barrier rather than reusing the physical writer", async () => {
+	const output = new ControlledFrameOutput();
+	const terminal = new LifecycleProcessTerminal(output as never);
+	const main = new TuiMainScreen(terminal, false, undefined, 20);
+	main.addChild({ render: () => ["main-A"], invalidate: () => {} });
+	main.renderNow();
+	const callbackA = output.callbacks[0];
+	assert.ok(callbackA);
+	await main.stop({ preserveScreen: true });
+
+	const alt = new TuiAltScreen(terminal, false, undefined, {
+		mouse: false,
+		terminalBoundaryTimeoutMs: 20,
+	});
+	alt.addChild({ render: () => ["alt-B"], invalidate: () => {} });
+	alt.start();
+	alt.renderNow(true);
+	assert.equal(output.callbacks.length, 1);
+
+	callbackA();
+	output.emit("drain");
+	await settle();
+	assert.equal(output.callbacks.length, 2);
+	const callbackB = output.callbacks[1];
+	assert.ok(callbackB);
+	callbackB();
+	output.emit("drain");
+	await alt.flushTerminalFrames();
+	await alt.dispose({ preserveScreen: true });
+});
+
+test("external-editor production lifecycle restarts the same TUI after a timed-out frame", async () => {
+	const output = new ControlledFrameOutput();
+	const terminal = new LifecycleProcessTerminal(output as never);
+	const tui = new FrameTui(terminal, false, undefined, 20);
+	tui.renderNow();
+	const callbackA = output.callbacks[0];
+	assert.ok(callbackA);
+	let edited = "";
+	const mode = Object.create(InteractiveMode.prototype) as {
+		ui: FrameTui;
+		settingsManager: { getExternalEditorCommand(): undefined };
+		editor: { getText(): string; setText(value: string): void };
+		runExternalEditor(): Promise<{ status: "complete"; content: string }>;
+		handleOpenExternalEditor(): Promise<void>;
+	};
+	Object.defineProperties(mode, {
+		ui: { value: tui, configurable: true },
+		settingsManager: { value: { getExternalEditorCommand: () => undefined }, configurable: true },
+		editor: {
+			value: { getText: () => "before", setText: (value: string) => { edited = value; } },
+			configurable: true,
+		},
+	});
+	mode.runExternalEditor = async () => ({ status: "complete", content: "after" });
+	await mode.handleOpenExternalEditor();
+	assert.equal(edited, "after");
+	assert.equal(terminal.lifecycleStarted, true);
+	assert.equal(output.callbacks.length, 1);
+
+	callbackA();
+	output.emit("drain");
+	await new Promise<void>((resolve) => setImmediate(resolve));
+	assert.equal(output.callbacks.length, 2);
+	output.callbacks[1]?.();
+	output.emit("drain");
+	await tui.flushTerminalFrames();
+	await tui.dispose();
+});
+
+test(
+	"Ctrl-Z production lifecycle restarts the same TUI after a timed-out frame",
+	{ skip: process.platform === "win32" },
+	async () => {
+		const output = new ControlledFrameOutput();
+		const terminal = new LifecycleProcessTerminal(output as never);
+		const tui = new FrameTui(terminal, false, undefined, 20);
+		tui.renderNow();
+		const callbackA = output.callbacks[0];
+		assert.ok(callbackA);
+		const mode = Object.create(InteractiveMode.prototype) as {
+			ui: FrameTui;
+			suspendProcessGroup(): void;
+			handleCtrlZ(): Promise<void>;
+		};
+		Object.defineProperty(mode, "ui", { value: tui, configurable: true });
+		mode.suspendProcessGroup = () => { process.emit("SIGCONT"); };
+		await mode.handleCtrlZ();
+		assert.equal(terminal.lifecycleStarted, true);
+		assert.equal(output.callbacks.length, 1);
+
+		callbackA();
+		output.emit("drain");
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		assert.equal(output.callbacks.length, 2);
+		output.callbacks[1]?.();
+		output.emit("drain");
+		await tui.flushTerminalFrames();
+		await tui.dispose();
+	},
+);
+
+test("final ProcessTerminal dispose retains orphan error ownership until physical settlement", async () => {
+	const output = new ControlledFrameOutput();
+	const baselineErrors = output.listenerCount("error");
+	const terminal = new ProcessTerminal(output as never);
+	terminal.writeFrame("orphan", 1);
+	const callback = output.callbacks[0];
+	assert.ok(callback);
+	terminal.dispose();
+	assert.equal((terminal as unknown as { physicalFrameWriteActive: boolean }).physicalFrameWriteActive, true);
+	assert.equal(output.listenerCount("error"), baselineErrors + 1);
+	const callbackError = new Error("late frame EIO");
+	callback(callbackError);
+	assert.doesNotThrow(() => output.emit("error", new Error("duplicate late frame EIO")));
+	assert.equal((terminal as unknown as { frameOutputFailure?: Error }).frameOutputFailure, callbackError);
+	await new Promise<void>((resolve) => setImmediate(resolve));
+	assert.equal(output.listenerCount("error"), baselineErrors);
+});
+
+test("a never-settling disposed frame retains only explicit physical orphan ownership", () => {
+	const output = new ControlledFrameOutput();
+	const baselineErrors = output.listenerCount("error");
+	const terminal = new ProcessTerminal(output as never);
+	terminal.writeFrame("never-settling", 1);
+	terminal.dispose();
+	assert.equal((terminal as unknown as { physicalFrameWriteActive: boolean }).physicalFrameWriteActive, true);
+	assert.equal((terminal as unknown as { pendingFrameData?: string }).pendingFrameData, undefined);
+	assert.equal((terminal as unknown as { frameWriteCompletionListener?: unknown }).frameWriteCompletionListener, undefined);
+	assert.equal(output.listenerCount("error"), baselineErrors + 1);
+});
+
+test("final ProcessTerminal dispose retains a control-write observer until late callback and error", async () => {
+	const output = new ControlledFrameOutput();
+	const baselineErrors = output.listenerCount("error");
+	const terminal = new ProcessTerminal(output as never);
+	const write = terminal.write("control");
+	const callback = output.callbacks[0];
+	assert.ok(callback);
+	terminal.dispose();
+	assert.equal(output.listenerCount("error"), baselineErrors + 1);
+	assert.equal((terminal as unknown as { controlWritesOutstanding: number }).controlWritesOutstanding, 1);
+	callback(new Error("late control EIO"));
+	assert.doesNotThrow(() => output.emit("error", new Error("late control EIO")));
+	await assert.rejects(write, /late control EIO/);
+	await new Promise<void>((resolve) => setImmediate(resolve));
+	assert.equal((terminal as unknown as { controlWritesOutstanding: number }).controlWritesOutstanding, 0);
+	assert.equal(output.listenerCount("error"), baselineErrors);
 });
 
 test("production Main reports the real active-plus-cursor frame queue depth", async () => {
@@ -1099,6 +1307,38 @@ test("queue-only prebuilt-frame allocation benchmark reports zero frame-owned ob
 	assert.equal(result.metrics.fullSizeFrameCopies, 0);
 });
 
+test("100k built-in message and tool updates create no Promise or tool wrapper lane", () => {
+	const child = spawnSync(
+		process.execPath,
+		[
+			"--expose-gc",
+			"--experimental-strip-types",
+			"scripts/bench/tui-session-event-allocations.ts",
+			"--updates", "100000",
+			"--warmup", "10000",
+		],
+		{ cwd: process.cwd(), encoding: "utf8", timeout: 15_000 },
+	);
+	assert.equal(child.status, 0, child.stderr);
+	const result = JSON.parse(child.stdout) as {
+		results: Array<{ name: string; updates: number; metrics: Record<string, number> }>;
+	};
+	assert.deepEqual(result.results.map((entry) => entry.name), ["message_update", "tool_execution_update"]);
+	for (const entry of result.results) {
+		assert.equal(entry.updates, 100_000);
+		assert.equal(entry.metrics.builtInListenerPromisesPerUpdate, 0);
+		assert.equal(entry.metrics.rejectionObserversPerUpdate, 0);
+		assert.equal(entry.metrics.toolWrapperObjectsPerUpdate, 0);
+		assert.equal(entry.metrics.inlineClosuresPerUpdate, 0);
+		assert.equal(entry.metrics.promiseTailsPerUpdate, 0);
+		assert.equal(entry.metrics.promiseArraysPerUpdate, 0);
+		assert.equal(entry.metrics.arraysPerUpdate, 0);
+		assert.equal(entry.metrics.finalUpdateCorrect, 1);
+		assert.ok(entry.metrics.sampledAllocationBytesPerUpdate >= 0);
+		assert.ok(entry.metrics.cpuP95MsPerUpdate >= entry.metrics.cpuP50MsPerUpdate);
+	}
+});
+
 test("production full replay benchmark exposes frame and lifecycle reference ownership", () => {
 	const child = spawnSync(
 		process.execPath,
@@ -1174,7 +1414,7 @@ test("frame queue source retains one string without Promise tails or pooling", (
 	assert.match(interactiveSource, /await previousUi\.stop\(\{ preserveScreen: true \}\)/);
 	assert.match(interactiveSource, /await this\.stopInteractiveTui\(fullscreenExitOutput\)/);
 	assert.match(interactiveSource, /criticalAgentEnd: true/);
-	assert.match(interactiveSource, /case "agent_end":[\s\S]{0,1200}await this\.ui\.flushTerminalFrames\(\)/);
+	assert.match(interactiveSource, /case "agent_end":[\s\S]{0,1200}return this\.flushAgentEndFrames\(\)/);
 
 	const sessionSource = readFileSync("packages/coding-agent/src/core/agent-session.ts", "utf8");
 	assert.match(sessionSource, /private async _emitAgentEnd/);
@@ -1182,7 +1422,7 @@ test("frame queue source retains one string without Promise tails or pooling", (
 	assert.match(sessionSource, /Promise\.race\(\[observed, getDeadline\(\)\]\)/);
 	assert.match(sessionSource, /if \(event\.type === "agent_end"\) \{\s*await this\._emitAgentEnd/);
 	const highFrequencyEmit = sessionSource.match(/private _emit\(event:[\s\S]*?\n\t\}/)?.[0] ?? "";
-	assert.match(highFrequencyEmit, /void result\.then\(undefined, ignoreOrdinaryEventListenerRejection\)/);
+	assert.match(highFrequencyEmit, /void result\.then\(undefined, observeRejection\)/);
 	assert.doesNotMatch(highFrequencyEmit, /await|Promise\.all|Promise<|\.push\(|\.then\(\s*(?:async\s*)?\(/);
 });
 
@@ -1212,6 +1452,6 @@ test("terminal lifecycle promises use stable observers and one-shot TUIs dispose
 	}
 
 	const terminalSource = readFileSync("packages/tui/src/terminal.ts", "utf8");
-	assert.match(terminalSource, /dispose\(\): void[\s\S]{0,260}removeListener\("error", this\.onFrameOutputError\)/);
+	assert.match(terminalSource, /finalizeDisposeAfterEvents[\s\S]{0,260}removeListener\("error", this\.onFrameOutputError\)/);
 	assert.match(terminalSource, /if \(this\.disposed\) throw new Error\("Cannot start a disposed ProcessTerminal"\)/);
 });

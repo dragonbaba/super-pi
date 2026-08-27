@@ -71,6 +71,7 @@ test("active updates do not rerender 5,000 completed transcript items", () => {
 		terminalPendingFrameHighWaterMark: 0,
 		terminalFramesReplaced: 0,
 		terminalFrameWriteErrors: 0,
+		physicalTerminalFrameWrites: 0,
 		frameStringsGenerated: 0,
 		frameStringUtf8BytesGenerated: 0,
 		fullSizeFrameCopies: 0,
