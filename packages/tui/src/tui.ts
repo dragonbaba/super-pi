@@ -317,6 +317,7 @@ export interface TUI extends Component {
 	hasOverlay(): boolean;
 	start(): void;
 	stop(options?: TuiStopOptions): Promise<void>;
+	dispose(options?: TuiStopOptions): Promise<void>;
 	renderNow(force?: boolean): void;
 	requestRender(force?: boolean): void;
 	flushTerminalFrames(): Promise<void>;
@@ -366,6 +367,8 @@ export abstract class TuiBase extends Container implements TUI {
 	private terminalFrameError: Error | undefined;
 	private stopping = false;
 	private stopPromise: Promise<void> | undefined;
+	private disposePromise: Promise<void> | undefined;
+	private disposed = false;
 	private readonly terminalBoundaryTimeoutMs: number;
 	private composingTerminalFrame = false;
 	private composedTerminalFrame = "";
@@ -388,6 +391,7 @@ export abstract class TuiBase extends Container implements TUI {
 		this.renderInstrumentation?.recordTerminalFrameReplaced();
 	private readonly handleTerminalFrameQueueIdle = (): void => this.onTerminalFrameQueueIdle();
 	private readonly handleTerminalFrameQueueError = (error: Error): void => this.onTerminalFrameWriteError(error);
+	private readonly ignoreTerminalLifecycleRejection = (): void => {};
 	private readonly scheduleRequestedRender = (): void => this.scheduleRender();
 	private readonly runImmediateRender = (): void => {
 		this.immediateRenderScheduled = false;
@@ -437,6 +441,10 @@ export abstract class TuiBase extends Container implements TUI {
 	}
 
 	protected abstract doRender(): void;
+
+	protected observeTerminalLifecycle(promise: Promise<void>): void {
+		void promise.then(undefined, this.ignoreTerminalLifecycleRejection);
+	}
 
 	protected resetRenderState(): void {}
 
@@ -790,6 +798,7 @@ export abstract class TuiBase extends Container implements TUI {
 	}
 
 	start(): void {
+		if (this.disposed) throw new Error("Cannot start a disposed TUI");
 		if (this.stopping) return;
 		this.terminalFrameQueue.attach();
 		this.stopped = false;
@@ -863,6 +872,34 @@ export abstract class TuiBase extends Container implements TUI {
 			? this.finishStopAfterFrames(options)
 			: this.finishTerminalStop(options);
 		return this.stopPromise;
+	}
+
+	dispose(options: TuiStopOptions = {}): Promise<void> {
+		if (!this.disposePromise) this.disposePromise = this.finishDispose(options);
+		return this.disposePromise;
+	}
+
+	private async finishDispose(options: TuiStopOptions): Promise<void> {
+		try {
+			await this.stop(options);
+		} finally {
+			this.disposed = true;
+			this.terminalFrameQueue.detach();
+			this.terminal.setFrameWriteCompletionListener(undefined);
+			this.terminal.dispose?.();
+			this.focusedComponent = null;
+			this.inputListeners.clear();
+			this.terminalColorSchemeListeners.clear();
+			for (const query of this.pendingOsc11BackgroundQueries) {
+				if (query.timer) clearTimeout(query.timer);
+				query.timer = undefined;
+				query.settled = true;
+				query.resolve?.(undefined);
+				query.resolve = undefined;
+			}
+			this.pendingOsc11BackgroundQueries.length = 0;
+			this.pendingOsc11BackgroundReplies = 0;
+		}
 	}
 
 	private async finishStopAfterFrames(options: TuiStopOptions): Promise<void> {
@@ -1051,7 +1088,7 @@ export abstract class TuiBase extends Container implements TUI {
 		this.renderInstrumentation?.recordTerminalFrameWriteError();
 		this.renderRequested = false;
 		this.cancelRenderTimer();
-		if (!this.stopping && !this.stopped) void this.stop();
+		if (!this.stopping && !this.stopped) this.observeTerminalLifecycle(this.stop());
 	}
 
 	private recordTerminalControlError(error: unknown): void {

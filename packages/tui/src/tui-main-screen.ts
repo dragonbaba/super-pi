@@ -560,7 +560,7 @@ export class TuiMainScreen extends TuiBase implements TUI {
 				fs.writeFileSync(crashLogPath, crashData);
 
 				// Clean up terminal state before throwing
-				void this.stop();
+				this.observeTerminalLifecycle(this.stop());
 
 				const errorMsg = [
 					`Rendered line ${i} exceeds terminal width (${visibleWidth(line)} > ${width}).`,

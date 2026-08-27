@@ -67,6 +67,9 @@ export interface Terminal {
 	// Stop the terminal and restore state
 	stop(): void;
 
+	/** Permanently release terminal-owned listeners. Unlike stop(), this instance cannot be resumed. */
+	dispose?(): void;
+
 	/**
 	 * Drain stdin before exiting to prevent Kitty key release events from
 	 * leaking to the parent shell over slow SSH connections.
@@ -88,8 +91,10 @@ export interface Terminal {
 	writeFrame(data: string, generation: number): void;
 
 	/**
-	 * Lifecycle-only cancellation. OS output is not cancelled; this only releases
-	 * adapter listeners/references and ignores a late callback for this generation.
+	 * Lifecycle-only logical cancellation. OS output cannot be cancelled: the
+	 * canceled generation keeps physical writer ownership until callback + drain
+	 * settle. One replacement generation may wait in fixed terminal slots, but it
+	 * cannot start early or consume the orphan's callback, drain, or close event.
 	 */
 	cancelFrameWrite(generation: number): void;
 
@@ -125,13 +130,18 @@ export interface Terminal {
 export class ProcessTerminal implements Terminal {
 	private readonly frameOutput: Pick<NodeJS.WriteStream, "write" | "on" | "once" | "removeListener">;
 	private frameOutputFailure: Error | undefined;
-	private frameWriteActive = false;
+	private physicalFrameWriteActive = false;
 	private frameWriteReturned = false;
 	private frameWriteCallbackComplete = false;
 	private frameWriteDrainComplete = false;
 	private frameWriteGeneration = 0;
+	private frameWriteCanceled = false;
+	private pendingFrameData: string | undefined;
+	private pendingFrameGeneration = 0;
 	private frameWriteCompletionListener: TerminalFrameWriteCompletion | undefined;
+	private disposed = false;
 	private readonly onFrameWriteCallback = (error?: Error | null): void => {
+		if (!this.physicalFrameWriteActive) return;
 		if (error) {
 			this.failFrameOutput(error);
 			return;
@@ -140,16 +150,19 @@ export class ProcessTerminal implements Terminal {
 		this.tryCompleteFrameWrite();
 	};
 	private readonly onFrameWriteDrain = (): void => {
+		if (!this.physicalFrameWriteActive) return;
 		this.frameWriteDrainComplete = true;
 		this.tryCompleteFrameWrite();
 	};
 	private readonly onFrameWriteClose = (): void => {
+		if (!this.physicalFrameWriteActive) return;
 		this.failFrameOutput(new Error("Terminal frame output closed before frame completion"));
 	};
 	private readonly onFrameOutputError = (error: Error): void => {
 		const failure = error instanceof Error ? error : new Error(String(error));
 		this.failFrameOutput(failure);
 	};
+	private started = false;
 	private wasRaw = false;
 	private inputHandler?: (data: string) => void;
 	private resizeHandler?: () => void;
@@ -193,6 +206,8 @@ export class ProcessTerminal implements Terminal {
 	}
 
 	start(onInput: (data: string) => void, onResize: () => void): void {
+		if (this.disposed) throw new Error("Cannot start a disposed ProcessTerminal");
+		this.started = true;
 		this.inputHandler = onInput;
 		this.resizeHandler = onResize;
 
@@ -466,6 +481,8 @@ export class ProcessTerminal implements Terminal {
 	}
 
 	stop(): void {
+		if (!this.started) return;
+		this.started = false;
 		if (this.clearProgressInterval()) {
 			process.stdout.write(TERMINAL_PROGRESS_CLEAR_SEQUENCE);
 		}
@@ -513,6 +530,16 @@ export class ProcessTerminal implements Terminal {
 		}
 	}
 
+	dispose(): void {
+		if (this.disposed) return;
+		if (this.started) this.stop();
+		this.disposed = true;
+		this.frameOutput.removeListener("error", this.onFrameOutputError);
+		this.clearActiveFrameWriteState();
+		this.clearPendingFrameWrite();
+		this.frameWriteCompletionListener = undefined;
+	}
+
 	write(data: string): Promise<void> {
 		const completion = new Promise<void>((resolve, reject) => {
 			process.stdout.write(data, (error) => {
@@ -530,25 +557,38 @@ export class ProcessTerminal implements Terminal {
 
 	writeFrame(data: string, generation: number): void {
 		if (this.writeLogPath) this.logWrite(data);
+		if (this.disposed) {
+			this.frameWriteCompletionListener?.(generation, new Error("ProcessTerminal is disposed"));
+			return;
+		}
 		if (this.frameOutputFailure) {
 			this.frameWriteCompletionListener?.(generation, this.frameOutputFailure);
 			return;
 		}
-		if (this.frameWriteActive) {
+		if (this.physicalFrameWriteActive) {
+			if (this.frameWriteCanceled && this.pendingFrameData === undefined) {
+				this.pendingFrameData = data;
+				this.pendingFrameGeneration = generation;
+				return;
+			}
 			this.frameWriteCompletionListener?.(generation, new Error("Concurrent terminal frame writes are not supported"));
 			return;
 		}
+		this.startFrameWrite(data, generation);
+	}
 
-		this.frameWriteActive = true;
+	private startFrameWrite(data: string, generation: number): void {
+		this.physicalFrameWriteActive = true;
 		this.frameWriteReturned = false;
 		this.frameWriteCallbackComplete = false;
 		this.frameWriteDrainComplete = false;
 		this.frameWriteGeneration = generation;
+		this.frameWriteCanceled = false;
 		this.frameOutput.once("drain", this.onFrameWriteDrain);
 		this.frameOutput.once("close", this.onFrameWriteClose);
 		try {
 			const accepted = this.frameOutput.write(data, this.onFrameWriteCallback);
-			if (!this.frameWriteActive) return;
+			if (!this.physicalFrameWriteActive) return;
 			this.frameWriteReturned = true;
 			if (accepted) {
 				this.frameWriteDrainComplete = true;
@@ -561,8 +601,14 @@ export class ProcessTerminal implements Terminal {
 	}
 
 	cancelFrameWrite(generation: number): void {
-		if (!this.frameWriteActive || generation !== this.frameWriteGeneration) return;
-		this.clearFrameWriteState();
+		if (this.pendingFrameData !== undefined && generation === this.pendingFrameGeneration) {
+			this.clearPendingFrameWrite();
+			return;
+		}
+		if (!this.physicalFrameWriteActive || this.frameWriteCanceled || generation !== this.frameWriteGeneration) return;
+		// The OS write is not cancellable. Keep physical callback/drain ownership
+		// until it settles, but suppress logical completion for this generation.
+		this.frameWriteCanceled = true;
 	}
 
 	private tryCompleteFrameWrite(): void {
@@ -577,21 +623,45 @@ export class ProcessTerminal implements Terminal {
 	}
 
 	private completeFrameWrite(error?: Error): void {
-		if (!this.frameWriteActive) return;
+		if (!this.physicalFrameWriteActive) return;
 		const generation = this.frameWriteGeneration;
+		const canceled = this.frameWriteCanceled;
 		const listener = this.frameWriteCompletionListener;
-		this.clearFrameWriteState();
-		listener?.(generation, error);
+		this.clearActiveFrameWriteState();
+		if (!canceled) listener?.(generation, error);
+		if (error) {
+			if (this.pendingFrameData !== undefined) {
+				const pendingGeneration = this.pendingFrameGeneration;
+				this.clearPendingFrameWrite();
+				this.frameWriteCompletionListener?.(pendingGeneration, error);
+			}
+			return;
+		}
+		this.startPendingFrameWrite();
 	}
 
-	private clearFrameWriteState(): void {
+	private startPendingFrameWrite(): void {
+		const data = this.pendingFrameData;
+		if (data === undefined) return;
+		const generation = this.pendingFrameGeneration;
+		this.clearPendingFrameWrite();
+		this.startFrameWrite(data, generation);
+	}
+
+	private clearActiveFrameWriteState(): void {
 		this.frameOutput.removeListener("drain", this.onFrameWriteDrain);
 		this.frameOutput.removeListener("close", this.onFrameWriteClose);
-		this.frameWriteActive = false;
+		this.physicalFrameWriteActive = false;
 		this.frameWriteReturned = false;
 		this.frameWriteCallbackComplete = false;
 		this.frameWriteDrainComplete = false;
 		this.frameWriteGeneration = 0;
+		this.frameWriteCanceled = false;
+	}
+
+	private clearPendingFrameWrite(): void {
+		this.pendingFrameData = undefined;
+		this.pendingFrameGeneration = 0;
 	}
 
 	private logWrite(data: string): void {
