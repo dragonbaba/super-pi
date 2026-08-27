@@ -46,6 +46,7 @@ import {
 	TuiAltScreen,
 	TuiMainScreen,
 	visibleWidth,
+	ViewportContainer,
 } from "@super-pi/tui";
 import chalk from "chalk";
 import { spawn, spawnSync } from "child_process";
@@ -427,7 +428,7 @@ export class InteractiveMode {
 	private mainScreenRenderState: TuiMainScreenRenderState | undefined;
 	private loadedResourcesContainer: Container;
 	private chatContainer: RetainedContainer;
-	private documentContainer: Container;
+	private documentContainer: ViewportContainer;
 	private transcriptScrollView: TuiLayouts.ScrollView | undefined;
 	private fullscreenLayoutRoot: Component | undefined;
 	private pendingMessagesContainer: Container;
@@ -615,7 +616,7 @@ export class InteractiveMode {
 			getContext: this.getTranscriptRenderContext,
 			instrumentation: this.renderInstrumentation,
 		});
-		this.documentContainer = new Container();
+		this.documentContainer = new ViewportContainer();
 		this.documentContainer.addChild(this.headerContainer);
 		this.documentContainer.addChild(this.loadedResourcesContainer);
 		this.documentContainer.addChild(this.chatContainer);
@@ -2189,6 +2190,7 @@ export class InteractiveMode {
 				child.setHiddenThinkingLabel(this.hiddenThinkingLabel);
 			}
 		}
+		this.chatContainer.invalidateViewportHeights();
 		this.transcriptRenderContext.settingsVersion++;
 		if (this.streamingComponent) {
 			this.streamingComponent.setHiddenThinkingLabel(this.hiddenThinkingLabel);
@@ -3519,6 +3521,7 @@ export class InteractiveMode {
 	): void {
 		if (!placeholder) return;
 		replaceToolPlaceholder(this.chatContainer.children, placeholder, component);
+		this.chatContainer.notifyChildrenChanged();
 		this.retainActiveToolComponent(component, toolCallId);
 		this.deferredReadPlaceholders.delete(toolCallId);
 	}
@@ -3675,6 +3678,7 @@ export class InteractiveMode {
 
 		if (last && secondLast && last === this.lastStatusText && secondLast === this.lastStatusSpacer) {
 			this.lastStatusText.setText(theme.fg("dim", message));
+			this.chatContainer.invalidateViewportChild(this.lastStatusText);
 			this.ui.requestRender();
 			return;
 		}
@@ -3703,6 +3707,7 @@ export class InteractiveMode {
 			const streamingIndex = this.chatContainer.children.indexOf(this.streamingComponent);
 			if (streamingIndex >= 0) {
 				this.chatContainer.children.splice(streamingIndex, 0, component);
+				this.chatContainer.notifyChildrenChanged();
 				return;
 			}
 		}
@@ -4340,6 +4345,7 @@ export class InteractiveMode {
 				}
 			}
 		}
+		this.chatContainer.invalidateViewportHeights();
 		this.showStatus(`Tool output: ${expanded ? "expanded" : "collapsed"}`);
 	}
 
@@ -4691,6 +4697,7 @@ export class InteractiveMode {
 								child.setShowImages(enabled);
 							}
 						}
+						this.chatContainer.invalidateViewportHeights();
 					},
 					onImageWidthCellsChange: (width) => {
 						this.settingsManager.setImageWidthCells(width);
@@ -4700,6 +4707,7 @@ export class InteractiveMode {
 								child.setImageWidthCells(width);
 							}
 						}
+						this.chatContainer.invalidateViewportHeights();
 					},
 					onAutoResizeImagesChange: (enabled) => {
 						this.settingsManager.setImageAutoResize(enabled);
@@ -4805,6 +4813,7 @@ export class InteractiveMode {
 							if (this.streamingComponent) {
 								this.streamingComponent.setOutputPad(padding);
 							}
+							this.chatContainer.invalidateViewportHeights();
 							this.ui.requestRender();
 							return;
 						}
@@ -6634,6 +6643,7 @@ export class InteractiveMode {
 			// Show output and complete
 			if (result.output) {
 				this.bashComponent.appendOutput(result.output);
+				this.chatContainer.invalidateViewportChild(this.bashComponent);
 			}
 			this.bashComponent.setComplete(
 				result.exitCode,
@@ -6641,6 +6651,7 @@ export class InteractiveMode {
 				result.truncated ? ({ truncated: true, content: result.output } as TruncationResult) : undefined,
 				result.fullOutputPath,
 			);
+			this.chatContainer.invalidateViewportChild(this.bashComponent);
 
 			// Record the result in session
 			this.session.recordBashResult(command, result, { excludeFromContext });
@@ -6669,6 +6680,7 @@ export class InteractiveMode {
 				(chunk) => {
 					if (this.bashComponent) {
 						this.bashComponent.appendOutput(chunk);
+						this.chatContainer.invalidateViewportChild(this.bashComponent);
 						this.ui.requestRender();
 					}
 				},
@@ -6682,10 +6694,12 @@ export class InteractiveMode {
 					result.truncated ? ({ truncated: true, content: result.output } as TruncationResult) : undefined,
 					result.fullOutputPath,
 				);
+				this.chatContainer.invalidateViewportChild(this.bashComponent);
 			}
 		} catch (error) {
 			if (this.bashComponent) {
 				this.bashComponent.setComplete(undefined, false);
+				this.chatContainer.invalidateViewportChild(this.bashComponent);
 			}
 			this.showError(`Bash command failed: ${error instanceof Error ? error.message : "Unknown error"}`);
 		}
