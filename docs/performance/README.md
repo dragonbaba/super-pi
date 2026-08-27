@@ -12,6 +12,7 @@ npm run --silent -- bench:tool-progress
 npm run --silent -- bench:tui-transcript
 npm run --silent -- bench:tui-frame-allocations -- --fixture production-main --items 50000
 npm run --silent -- bench:tui-frame-queue-allocations -- --frames 20000 --frame-kib 64
+npm run --silent -- bench:tui-session-event-allocations -- --updates 100000 --warmup 10000
 npm run --silent -- bench:tui-frame-queue
 npm run --silent -- bench:prefix
 npm run --silent -- bench:tool-output

@@ -147,10 +147,16 @@ The Phase 4C frame lane is callback-driven:
 - Writable completion requires both successful callback and backpressure completion (`write() === true` or a later `drain`);
 - normal write completion and lifecycle deadline are separate;
 - lifecycle abort clears logical queue references but cannot cancel an OS write;
+- lifecycle cancellation is recoverable on the next start; stream callback/error/close failures permanently poison the queue;
 - a canceled write retains exclusive physical writer ownership until its own callback and drain settle, so stale events cannot satisfy a replacement generation;
 - one replacement may wait in fixed primitive terminal slots; no second physical write starts early;
-- flush, failure, and final disposal clear queue, writer, waiter, and terminal-owned listener references;
+- logical frame starts and physical Writable starts are distinct instrumentation events;
+- final disposal rejects restart and new writes immediately, but retains the minimum physical state and error observer until an outstanding frame/control write settles;
+- a never-settling OS write deliberately retains that minimum physical ownership because removing the observer would expose a late stream error as uncaught;
+- flush, failure, and settled final disposal clear queue, writer, waiter, and terminal-owned listener references;
 - queue failure does not prevent terminal restoration attempts.
+
+The `AgentSession` to built-in `InteractiveMode` event lane is synchronous for ordinary message and tool updates. The stable built-in listener returns `void`; it must not create a Promise, rejection observer, result wrapper, Promise tail, or Promise array per update. Initialization, `agent_end` final-frame flush, and `agent_settled` shutdown checks are explicit asynchronous boundaries. A third-party listener that actually returns a Promise is observed through the stable rejection observer created once at subscription time.
 
 The portable numeric regression gates are:
 
