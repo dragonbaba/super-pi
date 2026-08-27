@@ -27,6 +27,7 @@ import { retryProviderRequest } from "../utils/provider-retry.ts";
 import { createGrammarToolInputProperties } from "./constrained-sampling.ts";
 import { buildCopilotDynamicHeaders, hasCopilotVisionInput } from "./github-copilot-headers.ts";
 import { clampOpenAIPromptCacheKey } from "./openai-prompt-cache.ts";
+import { OPENAI_RESPONSES_SAMPLING_RESERVED_KEYS } from "./openai-sampling-reserved.ts";
 import { convertResponsesMessages, convertResponsesTools, processResponsesStream } from "./openai-responses-shared.ts";
 import { buildBaseOptions } from "./simple-options.ts";
 
@@ -369,7 +370,11 @@ function buildParams(
 	}
 
 	// Merge generation-only custom keys; structural protocol fields remain capability-owned.
-	mergeSamplingParams(params as unknown as Record<string, unknown>, options?.samplingParams);
+	mergeSamplingParams(
+		params as unknown as Record<string, unknown>,
+		options?.samplingParams,
+		OPENAI_RESPONSES_SAMPLING_RESERVED_KEYS,
+	);
 	sanitizeCapabilityRequest(model, params as unknown as Record<string, unknown>);
 
 	return params;

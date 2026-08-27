@@ -62,6 +62,7 @@ import {
 } from "./constrained-sampling.ts";
 import { buildCopilotDynamicHeaders, hasCopilotVisionInput } from "./github-copilot-headers.ts";
 import { clampOpenAIPromptCacheKey } from "./openai-prompt-cache.ts";
+import { OPENAI_CHAT_SAMPLING_RESERVED_KEYS } from "./openai-sampling-reserved.ts";
 import { buildBaseOptions, clampReasoning, MIN_ANSWER_TOKENS } from "./simple-options.ts";
 import { transformMessages } from "./transform-messages.ts";
 
@@ -715,6 +716,22 @@ export function observeOpenAIChatEffectiveDispatch(
 	}
 	const tools = [...(params.tools ?? []), ...embeddedTools];
 	const neutralTools = tools.map(removeOpenAIChatCacheControl);
+	const paramsRecord = params as unknown as Record<string, unknown>;
+	const legacyFunctions = Array.isArray(paramsRecord.functions)
+		? paramsRecord.functions.filter((value): value is Record<string, unknown> =>
+			value !== null && typeof value === "object" && !Array.isArray(value))
+		: [];
+	const webSearchOptions = paramsRecord.web_search_options ?? paramsRecord.webSearchOptions;
+	const effectiveToolDefinitions: unknown[] = [
+		...neutralTools,
+		...legacyFunctions.map((fn) => ({ type: "legacy_function", function: removeOpenAIChatCacheControl(fn) })),
+		...(webSearchOptions === undefined ? [] : [{ type: "web_search", options: webSearchOptions }]),
+	];
+	const effectiveToolIdentifiers = [
+		...tools.map((tool) => tool.type === "function" ? tool.function.name : tool.custom.name),
+		...legacyFunctions.map((fn) => `legacy-function:${typeof fn.name === "string" ? fn.name : "unnamed"}`),
+		...(webSearchOptions === undefined ? [] : ["provider:web-search"]),
+	];
 	const cacheParams = params as typeof params & {
 		prompt_cache_options?: unknown;
 		prompt_cache_retention?: unknown;
@@ -724,10 +741,8 @@ export function observeOpenAIChatEffectiveDispatch(
 		transport: "sse",
 		previousResponseMode: "none",
 		instructionPrefix,
-		orderedToolDefinitions: neutralTools,
-		orderedToolIdentifiers: tools.map((tool) =>
-			tool.type === "function" ? tool.function.name : tool.custom.name,
-		),
+		orderedToolDefinitions: effectiveToolDefinitions,
+		orderedToolIdentifiers: effectiveToolIdentifiers,
 		cacheKey: params.prompt_cache_key,
 		cacheRetention: {
 			promptCacheRetention: cacheParams.prompt_cache_retention ?? null,
@@ -1030,7 +1045,11 @@ function buildParams(
 	}
 
 	// Merge generation-only custom keys; structural protocol fields remain capability-owned.
-	mergeSamplingParams(params as unknown as Record<string, unknown>, options?.samplingParams);
+	mergeSamplingParams(
+		params as unknown as Record<string, unknown>,
+		options?.samplingParams,
+		OPENAI_CHAT_SAMPLING_RESERVED_KEYS,
+	);
 	sanitizeCapabilityRequest(model, params as unknown as Record<string, unknown>);
 
 	return params;

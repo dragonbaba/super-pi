@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { stream as streamOpenAIChat } from "../packages/ai/src/api/openai-completions.ts";
 import { conservativeModelCapabilities } from "../packages/ai/src/model-capabilities.ts";
-import type { Context, Model } from "../packages/ai/src/types.ts";
+import type { Context, EffectiveDispatchObservation, Model } from "../packages/ai/src/types.ts";
 import type { ModelRuntime } from "../packages/coding-agent/src/core/model-runtime.ts";
 import { DefaultResourceLoader } from "../packages/coding-agent/src/core/resource-loader.ts";
 import { createAgentSession } from "../packages/coding-agent/src/core/sdk.ts";
@@ -175,13 +175,21 @@ test("toolCalling=false converts prior tool protocol to ordinary messages", asyn
 test("capability sanitizer blocks samplingParams while onPayload remains the final wire override", async () => {
 	let sanitized: Record<string, unknown> | undefined;
 	let finalWire: Record<string, unknown> | undefined;
+	let observation: EffectiveDispatchObservation | undefined;
 	const injectedTool = { type: "function", function: { name: "injected", parameters: {}, strict: true } };
+	const legacyFunction = { name: "legacy-injected", parameters: {} };
+	const webSearchOptions = { search_context_size: "high" };
 	const injectedReasoning = { effort: "high", summary: "auto" };
 	await streamOpenAIChat(model(), contextWithToolHistory(), {
 		apiKey: "fixture-key",
 		cacheRetention: "long",
 		reasoningEffort: "high",
-		samplingParams: {
+			samplingParams: {
+			functions: [legacyFunction],
+			function_call: { name: "legacy-injected" },
+			functionCall: { name: "legacy-injected" },
+			web_search_options: webSearchOptions,
+			webSearchOptions,
 			tools: [injectedTool],
 			tool_choice: "required",
 			parallel_tool_calls: true,
@@ -202,8 +210,14 @@ test("capability sanitizer blocks samplingParams while onPayload remains the fin
 				tool_choice: "required",
 				parallel_tool_calls: true,
 				previous_response_id: "explicit-on-payload-response",
+				functions: [legacyFunction],
+				function_call: { name: "legacy-injected" },
+				functionCall: { name: "legacy-injected" },
+				web_search_options: webSearchOptions,
+				webSearchOptions,
 			};
 		},
+		onEffectiveDispatch: (value) => { observation = value; },
 		fetch: async (_input, init) => {
 			finalWire = JSON.parse(String(init?.body)) as Record<string, unknown>;
 			return response();
@@ -211,6 +225,11 @@ test("capability sanitizer blocks samplingParams while onPayload remains the fin
 	}).result();
 	assert.ok(sanitized);
 	assert.equal(sanitized.tools, undefined);
+	assert.equal(sanitized.functions, undefined);
+	assert.equal(sanitized.function_call, undefined);
+	assert.equal(sanitized.functionCall, undefined);
+	assert.equal(sanitized.web_search_options, undefined);
+	assert.equal(sanitized.webSearchOptions, undefined);
 	assert.equal(sanitized.tool_choice, undefined);
 	assert.equal(sanitized.parallel_tool_calls, undefined);
 	assert.equal(sanitized.reasoning_effort, undefined);
@@ -227,4 +246,10 @@ test("capability sanitizer blocks samplingParams while onPayload remains the fin
 	assert.equal(finalWire?.tool_choice, "required");
 	assert.equal(finalWire?.parallel_tool_calls, true);
 	assert.equal(finalWire?.previous_response_id, "explicit-on-payload-response");
+	assert.deepEqual(finalWire?.functions, [legacyFunction]);
+	assert.deepEqual(finalWire?.function_call, { name: "legacy-injected" });
+	assert.deepEqual(finalWire?.functionCall, { name: "legacy-injected" });
+	assert.deepEqual(finalWire?.web_search_options, webSearchOptions);
+	assert.deepEqual(finalWire?.webSearchOptions, webSearchOptions);
+	assert.equal(observation?.toolCount, 3);
 });

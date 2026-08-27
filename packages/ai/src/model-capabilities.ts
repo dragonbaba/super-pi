@@ -574,7 +574,19 @@ function clampCapabilityReasoningLevel(
 	return capabilities.reasoning.levels[0] ?? "off";
 }
 
-const TOOL_REQUEST_KEYS = ["tools", "tool_choice", "toolChoice", "parallel_tool_calls", "parallelToolCalls", "toolConfig"];
+const TOOL_REQUEST_KEYS = [
+	"tools",
+	"tool_choice",
+	"toolChoice",
+	"parallel_tool_calls",
+	"parallelToolCalls",
+	"toolConfig",
+	"functions",
+	"function_call",
+	"functionCall",
+	"web_search_options",
+	"webSearchOptions",
+];
 const REASONING_REQUEST_KEYS = [
 	"reasoning",
 	"reasoning_effort",
@@ -604,34 +616,16 @@ const CACHE_RETENTION_REQUEST_KEYS = [
 	"cachePoint",
 	"cacheRetention",
 ];
-const STRUCTURAL_REQUEST_KEYS = new Set([
-	"model",
-	"stream",
-	"store",
-	"messages",
-	"input",
-	"instructions",
-	"system",
-	"systemInstruction",
-	...TOOL_REQUEST_KEYS,
-	"tool_calls",
-	"tool_call_id",
-	"previous_response_id",
-	"previousResponseId",
-	...REASONING_REQUEST_KEYS,
-	...CACHE_REQUEST_KEYS,
-	"strict",
-]);
-
 /** Merge only non-structural generation/sampling parameters into a provider request. */
 export function mergeSamplingParams<TPayload extends Record<string, unknown>>(
 	payload: TPayload,
 	samplingParams: Readonly<Record<string, unknown>> | undefined,
+	reservedKeys: ReadonlySet<string>,
 ): TPayload {
 	if (!samplingParams) return payload;
 	const mutable = payload as Record<string, unknown>;
 	for (const [key, value] of Object.entries(samplingParams)) {
-		if (!STRUCTURAL_REQUEST_KEYS.has(key)) mutable[key] = value;
+		if (!reservedKeys.has(key)) mutable[key] = value;
 	}
 	return payload;
 }
