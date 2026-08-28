@@ -154,6 +154,7 @@ export {
 	type TuiInputListenerResult,
 	type TuiMode,
 	type TuiStopOptions,
+	VIEWPORT_TUI,
 	type ViewportTUI,
 } from "./tui.ts";
 export { TuiAltScreen, type TuiAltScreenOptions } from "./tui-alt-screen.ts";

@@ -27,6 +27,7 @@
 		"bench:tui-frame-allocations": "node --expose-gc --experimental-strip-types ./scripts/bench/tui-frame-allocations.ts",
 		"bench:tui-frame-queue-allocations": "node --expose-gc --experimental-strip-types ./scripts/bench/tui-frame-queue-allocations.ts",
 		"bench:tui-session-event-allocations": "node --expose-gc --experimental-strip-types ./scripts/bench/tui-session-event-allocations.ts",
+		"bench:tui-input-lifecycle": "node --experimental-strip-types ./scripts/bench/tui-input-lifecycle.ts",
 		"bench:tui-frame-queue": "node --expose-gc --experimental-strip-types ./scripts/bench/tui-frame-queue.ts",
 		"bench:tui-frame-queue-direct": "node --expose-gc --experimental-strip-types ./scripts/bench/tui-frame-queue-direct.ts",
 		"bench:tui-full-replay": "node --expose-gc --experimental-strip-types ./scripts/bench/tui-full-replay-backpressure.ts",

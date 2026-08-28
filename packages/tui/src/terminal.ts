@@ -1,13 +1,9 @@
 import * as fs from "node:fs";
-import { createRequire } from "node:module";
 import * as path from "node:path";
-import { fileURLToPath } from "node:url";
 import { setKittyProtocolActive } from "./keys.ts";
-import { isNativeModifierPressed } from "./native-modifiers.ts";
+import { enableNativeWindowsVirtualTerminalInput, isNativeModifierPressed } from "./native-modifiers.ts";
 import { DEVICE_ATTRIBUTES_PATTERN, DEVICE_ATTRIBUTES_PREFIX_PATTERN, KITTY_FLAGS_PATTERN } from "./regex.ts";
 import { StdinBuffer } from "./stdin-buffer.ts";
-
-const cjsRequire = createRequire(import.meta.url);
 
 const TERMINAL_PROGRESS_KEEPALIVE_MS = 1000;
 const TERMINAL_PROGRESS_ACTIVE_SEQUENCE = "\x1b]9;4;3\x07";
@@ -59,6 +55,30 @@ function asTerminalError(error: unknown): Error {
 	return error instanceof Error ? error : new Error(String(error));
 }
 
+function resolveTerminalWriteLogPath(): string {
+	const env = process.env.SP_TUI_WRITE_LOG || "";
+	if (!env) return "";
+	try {
+		if (fs.statSync(env).isDirectory()) {
+			const now = new Date();
+			const ts = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}_${String(now.getHours()).padStart(2, "0")}-${String(now.getMinutes()).padStart(2, "0")}-${String(now.getSeconds()).padStart(2, "0")}`;
+			return path.join(env, `tui-${ts}-${process.pid}.log`);
+		}
+	} catch {
+		// Not an existing directory - use as-is (file path).
+	}
+	return env;
+}
+
+function readMonotonicTime(): number {
+	return performance.now();
+}
+
+function validateDrainDuration(name: string, value: number): number {
+	if (!Number.isFinite(value) || value < 0) throw new RangeError(`${name} must be a finite non-negative number`);
+	return value;
+}
+
 /**
  * Minimal terminal interface for TUI
  */
@@ -78,7 +98,13 @@ export interface Terminal {
 	/**
 	 * Drain stdin before exiting to prevent Kitty key release events from
 	 * leaking to the parent shell over slow SSH connections.
-	 * @param maxMs - Maximum time to drain (default: 1000ms)
+	 * The first caller starts a cycle and defines both its absolute maximum and
+	 * idle deadline. Concurrent callers share that cycle's Promise and cannot
+	 * extend, shorten, or reschedule it. At most one timer is concurrently active,
+	 * but input near an idle boundary may require a new timer handle for the same
+	 * cycle. Durations must be finite and non-negative;
+	 * zero is valid, and the absolute maximum always wins when idleMs is larger.
+	 * @param maxMs - Absolute maximum time to drain (default: 1000ms)
 	 * @param idleMs - Exit early if no input arrives within this time (default: 50ms)
 	 */
 	drainInput(maxMs?: number, idleMs?: number): Promise<void>;
@@ -235,22 +261,55 @@ export class ProcessTerminal implements Terminal {
 	private keyboardProtocolNegotiationBuffer = "";
 	private keyboardProtocolBufferFlushTimer?: ReturnType<typeof setTimeout>;
 	private stdinBuffer?: StdinBuffer;
-	private stdinDataHandler?: (data: string) => void;
-	private progressInterval?: ReturnType<typeof setInterval>;
-	private writeLogPath = (() => {
-		const env = process.env.SP_TUI_WRITE_LOG || "";
-		if (!env) return "";
-		try {
-			if (fs.statSync(env).isDirectory()) {
-				const now = new Date();
-				const ts = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}_${String(now.getHours()).padStart(2, "0")}-${String(now.getMinutes()).padStart(2, "0")}-${String(now.getSeconds()).padStart(2, "0")}`;
-				return path.join(env, `tui-${ts}-${process.pid}.log`);
-			}
-		} catch {
-			// Not an existing directory - use as-is (file path)
+	private readonly onStdinBufferData = (sequence: string): void => {
+		const negotiationSequence = this.readKeyboardProtocolNegotiationSequence(sequence);
+		if (negotiationSequence === "pending") {
+			this.scheduleKeyboardProtocolNegotiationBufferFlush();
+			return;
 		}
-		return env;
-	})();
+		if (this.handleKeyboardProtocolNegotiationSequence(negotiationSequence)) return;
+		this.forwardInputSequence(sequence);
+	};
+	private readonly onStdinBufferPaste = (content: string): void => {
+		this.inputHandler?.(`\x1b[200~${content}\x1b[201~`);
+	};
+	private readonly onStdinData = (data: string): void => {
+		this.stdinBuffer?.process(data);
+	};
+	private readonly onKeyboardProtocolNegotiationBufferFlush = (): void => {
+		this.keyboardProtocolBufferFlushTimer = undefined;
+		this.flushKeyboardProtocolNegotiationBufferAsInput();
+	};
+	private drainInputActive = false;
+	private drainInputDeadline = 0;
+	private drainInputIdleMs = 0;
+	private drainInputLastDataTime = 0;
+	private drainGeneration = 0;
+	private drainActiveGeneration = 0;
+	private drainInputPromise?: Promise<void>;
+	private drainInputResolve?: () => void;
+	private drainInputReject?: (error: Error) => void;
+	private drainInputTimer?: ReturnType<typeof setTimeout>;
+	private drainInputTimerHandlesCreated = 0;
+	private drainInputTimerReschedules = 0;
+	private drainInputPreviousHandler?: (data: string) => void;
+	private readonly readDrainTime = readMonotonicTime;
+	private drainInputSource: Pick<NodeJS.ReadStream, "on" | "removeListener"> = process.stdin;
+	private readonly captureDrainInputResolve = (resolve: () => void, reject: (error: Error) => void): void => {
+		this.drainInputResolve = resolve;
+		this.drainInputReject = reject;
+	};
+	private readonly onDrainInputData = (): void => {
+		if (!this.drainInputActive) return;
+		this.drainInputLastDataTime = this.readDrainTime();
+	};
+	private readonly onDrainInputTimer = (generation: number): void => {
+		if (!this.drainInputActive || generation !== this.drainActiveGeneration) return;
+		this.drainInputTimer = undefined;
+		this.scheduleDrainInputTimer(generation);
+	};
+	private progressInterval?: ReturnType<typeof setInterval>;
+	private writeLogPath = resolveTerminalWriteLogPath();
 
 	constructor(frameOutput: Pick<NodeJS.WriteStream, "write" | "on" | "once" | "removeListener"> = process.stdout) {
 		this.frameOutput = frameOutput;
@@ -327,30 +386,10 @@ export class ProcessTerminal implements Terminal {
 		this.stdinBuffer = new StdinBuffer();
 
 		// Forward individual sequences to the input handler
-		this.stdinBuffer.on("data", (sequence) => {
-			const negotiationSequence = this.readKeyboardProtocolNegotiationSequence(sequence);
-			if (negotiationSequence === "pending") {
-				this.scheduleKeyboardProtocolNegotiationBufferFlush();
-				return; // Wait briefly for the rest of a split Kitty response.
-			}
-			if (this.handleKeyboardProtocolNegotiationSequence(negotiationSequence)) {
-				return;
-			}
-
-			this.forwardInputSequence(sequence);
-		});
+		this.stdinBuffer.on("data", this.onStdinBufferData);
 
 		// Re-wrap paste content with bracketed paste markers for existing editor handling
-		this.stdinBuffer.on("paste", (content) => {
-			if (this.inputHandler) {
-				this.inputHandler(`\x1b[200~${content}\x1b[201~`);
-			}
-		});
-
-		// Handler that pipes stdin data through the buffer
-		this.stdinDataHandler = (data: string) => {
-			this.stdinBuffer!.process(data);
-		};
+		this.stdinBuffer.on("paste", this.onStdinBufferPaste);
 	}
 
 	/**
@@ -368,7 +407,7 @@ export class ProcessTerminal implements Terminal {
 	 */
 	private queryAndEnableKittyProtocol(): void {
 		this.setupStdinBuffer();
-		process.stdin.on("data", this.stdinDataHandler!);
+		process.stdin.on("data", this.onStdinData);
 		this.keyboardProtocolPushed = true;
 		this.clearKeyboardProtocolNegotiationBuffer();
 		this.writeUnawaitedControl(KITTY_KEYBOARD_PROTOCOL_QUERY);
@@ -443,10 +482,10 @@ export class ProcessTerminal implements Terminal {
 
 	private scheduleKeyboardProtocolNegotiationBufferFlush(): void {
 		if (!this.keyboardProtocolNegotiationBuffer || this.keyboardProtocolBufferFlushTimer) return;
-		this.keyboardProtocolBufferFlushTimer = setTimeout(() => {
-			this.keyboardProtocolBufferFlushTimer = undefined;
-			this.flushKeyboardProtocolNegotiationBufferAsInput();
-		}, KEYBOARD_PROTOCOL_RESPONSE_FRAGMENT_TIMEOUT_MS);
+		this.keyboardProtocolBufferFlushTimer = setTimeout(
+			this.onKeyboardProtocolNegotiationBufferFlush,
+			KEYBOARD_PROTOCOL_RESPONSE_FRAGMENT_TIMEOUT_MS,
+		);
 	}
 
 	private clearKeyboardProtocolNegotiationBufferFlushTimer(): void {
@@ -486,74 +525,89 @@ export class ProcessTerminal implements Terminal {
 	 * discards modifier state and Shift+Tab arrives as plain \t.
 	 */
 	private enableWindowsVTInput(): void {
-		if (process.platform !== "win32") return;
-		try {
-			const arch = process.arch;
-			if (arch !== "x64" && arch !== "arm64") return;
-
-			// Dynamic require so non-Windows and bundled/browser paths never load the
-			// native helper. In the npm package native/ is next to dist/; in compiled
-			// binary archives native/ is copied next to the executable.
-			const moduleDir = path.dirname(fileURLToPath(import.meta.url));
-			const nativePath = path.join("native", "win32", "prebuilds", `win32-${arch}`, "win32-console-mode.node");
-			const candidates = [
-				path.join(moduleDir, "..", nativePath),
-				path.join(moduleDir, nativePath),
-				path.join(path.dirname(process.execPath), nativePath),
-			];
-			for (const modulePath of candidates) {
-				try {
-					const helper = cjsRequire(modulePath) as { enableVirtualTerminalInput?: () => boolean };
-					helper.enableVirtualTerminalInput?.();
-					return;
-				} catch {
-					// Try the next possible packaging location.
-				}
-			}
-		} catch {
-			// Native helper not available — Shift+Tab won't be distinguishable from Tab.
-		}
+		enableNativeWindowsVirtualTerminalInput();
 	}
 
-	async drainInput(maxMs = 1000, idleMs = 50): Promise<void> {
-		const shouldDisableKittyProtocol = this.keyboardProtocolPushed || this._kittyProtocolActive;
-		this.clearKeyboardProtocolNegotiationBuffer();
-		if (shouldDisableKittyProtocol) {
-			// Disable Kitty keyboard protocol first so any late key releases
-			// do not generate new Kitty escape sequences.
-			this.writeUnawaitedControl("\x1b[<u");
-			this.keyboardProtocolPushed = false;
-			this._kittyProtocolActive = false;
-			setKittyProtocolActive(false);
-		}
-		this.disableModifyOtherKeys();
-
-		const previousHandler = this.inputHandler;
+	drainInput(maxMs = 1000, idleMs = 50): Promise<void> {
+		if (this.drainInputPromise) return this.drainInputPromise;
+		const boundedMaxMs = validateDrainDuration("maxMs", maxMs);
+		const boundedIdleMs = validateDrainDuration("idleMs", idleMs);
+		const generation = ++this.drainGeneration;
+		this.drainActiveGeneration = generation;
+		this.drainInputPreviousHandler = this.inputHandler;
 		this.inputHandler = undefined;
-
-		let lastDataTime = Date.now();
-		const onData = () => {
-			lastDataTime = Date.now();
-		};
-
-		process.stdin.on("data", onData);
-		const endTime = Date.now() + maxMs;
-
+		this.drainInputActive = true;
+		this.drainInputIdleMs = boundedIdleMs;
+		this.drainInputLastDataTime = this.readDrainTime();
+		this.drainInputDeadline = this.drainInputLastDataTime + boundedMaxMs;
+		this.drainInputTimerHandlesCreated = 0;
+		this.drainInputTimerReschedules = 0;
+		const result = new Promise<void>(this.captureDrainInputResolve);
+		this.drainInputPromise = result;
 		try {
-			while (true) {
-				const now = Date.now();
-				const timeLeft = endTime - now;
-				if (timeLeft <= 0) break;
-				if (now - lastDataTime >= idleMs) break;
-				await new Promise((resolve) => setTimeout(resolve, Math.min(idleMs, timeLeft)));
+			const shouldDisableKittyProtocol = this.keyboardProtocolPushed || this._kittyProtocolActive;
+			this.clearKeyboardProtocolNegotiationBuffer();
+			if (shouldDisableKittyProtocol) {
+				// Disable Kitty keyboard protocol first so any late key releases
+				// do not generate new Kitty escape sequences.
+				this.writeUnawaitedControl("\x1b[<u");
+				this.keyboardProtocolPushed = false;
+				this._kittyProtocolActive = false;
+				setKittyProtocolActive(false);
 			}
-		} finally {
-			process.stdin.removeListener("data", onData);
-			this.inputHandler = previousHandler;
+			this.disableModifyOtherKeys();
+			this.drainInputSource.on("data", this.onDrainInputData);
+			this.scheduleDrainInputTimer(generation);
+		} catch (error) {
+			this.finishDrainInput(generation, asTerminalError(error));
 		}
+		return result;
+	}
+
+	private scheduleDrainInputTimer(generation: number): void {
+		if (!this.drainInputActive || generation !== this.drainActiveGeneration) return;
+		if (this.drainInputTimer) return;
+		const now = this.readDrainTime();
+		const deadlineRemaining = this.drainInputDeadline - now;
+		const idleRemaining = this.drainInputIdleMs - (now - this.drainInputLastDataTime);
+		const delay = Math.min(Math.max(0, deadlineRemaining), Math.max(0, idleRemaining));
+		if (delay <= 0) {
+			this.drainInputTimer = undefined;
+			this.finishDrainInput(generation);
+			return;
+		}
+		if (this.drainInputTimerHandlesCreated > 0) this.drainInputTimerReschedules++;
+		this.drainInputTimerHandlesCreated++;
+		this.drainInputTimer = setTimeout(this.onDrainInputTimer, delay, generation);
+	}
+
+	private finishDrainInput(generation: number, error?: Error): void {
+		if (!this.drainInputActive || generation !== this.drainActiveGeneration) return;
+		this.drainInputActive = false;
+		if (this.drainInputTimer) clearTimeout(this.drainInputTimer);
+		this.drainInputTimer = undefined;
+		this.drainInputSource.removeListener("data", this.onDrainInputData);
+		this.inputHandler = this.drainInputPreviousHandler;
+		this.drainInputPreviousHandler = undefined;
+		this.drainActiveGeneration = 0;
+		this.drainInputDeadline = 0;
+		this.drainInputIdleMs = 0;
+		this.drainInputLastDataTime = 0;
+		const resolve = this.drainInputResolve;
+		const reject = this.drainInputReject;
+		this.drainInputResolve = undefined;
+		this.drainInputReject = undefined;
+		this.drainInputPromise = undefined;
+		if (error) reject?.(error);
+		else resolve?.();
+	}
+
+	private cancelDrainInput(): void {
+		if (this.drainInputActive) this.finishDrainInput(this.drainActiveGeneration);
 	}
 
 	stop(): void {
+		this.cancelDrainInput();
 		if (!this.started) return;
 		this.started = false;
 		let failure: Error | undefined;
@@ -598,10 +652,7 @@ export class ProcessTerminal implements Terminal {
 		}
 
 		// Remove event handlers
-		if (this.stdinDataHandler) {
-			process.stdin.removeListener("data", this.stdinDataHandler);
-			this.stdinDataHandler = undefined;
-		}
+		process.stdin.removeListener("data", this.onStdinData);
 		this.inputHandler = undefined;
 		if (this.resizeHandler) {
 			process.stdout.removeListener("resize", this.resizeHandler);
@@ -630,6 +681,7 @@ export class ProcessTerminal implements Terminal {
 
 	dispose(): void {
 		if (this.disposed) return;
+		this.cancelDrainInput();
 		let failure: Error | undefined;
 		if (this.started) {
 			try {

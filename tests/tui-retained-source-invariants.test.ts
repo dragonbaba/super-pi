@@ -9,6 +9,8 @@ const INSTRUMENTATION_PATH = "packages/tui/src/render-instrumentation.ts";
 const INTERACTIVE_MODE_PATH = "packages/coding-agent/src/modes/interactive/interactive-mode.ts";
 const MAIN_SCREEN_PATH = "packages/tui/src/tui-main-screen.ts";
 const ALT_SCREEN_PATH = "packages/tui/src/tui-alt-screen.ts";
+const TUI_PATH = "packages/tui/src/tui.ts";
+const TERMINAL_IMAGE_PATH = "packages/tui/src/terminal-image.ts";
 
 function findMethod(source: ts.SourceFile, className: string, methodName: string): ts.MethodDeclaration {
 	for (const statement of source.statements) {
@@ -18,6 +20,13 @@ function findMethod(source: ts.SourceFile, className: string, methodName: string
 		}
 	}
 	throw new Error(`Missing ${className}.${methodName}`);
+}
+
+function findFunction(source: ts.SourceFile, functionName: string): ts.FunctionDeclaration {
+	for (const statement of source.statements) {
+		if (ts.isFunctionDeclaration(statement) && statement.name?.text === functionName) return statement;
+	}
+	throw new Error(`Missing ${functionName}`);
 }
 
 test("RetainedContainer render traverses original children without per-frame history wrapper arrays", () => {
@@ -48,6 +57,53 @@ test("RetainedContainer render traverses original children without per-frame his
 	assert.equal(callbackCount, 0);
 	assert.equal(regexCount, 0);
 	assert.doesNotMatch(text, /ObjectPool/);
+});
+
+test("base Container flattens nested base renders without sharing caller-owned output arrays", () => {
+	const text = readFileSync(TUI_PATH, "utf8");
+	const source = ts.createSourceFile(TUI_PATH, text, ts.ScriptTarget.Latest, true);
+	const render = findMethod(source, "Container", "render");
+	const renderInto = findFunction(source, "renderContainerInto");
+	let renderArrayLiterals = 0;
+	let nestedArrayLiterals = 0;
+	let nestedForOf = 0;
+	let nestedCallbacks = 0;
+	let nestedSpreads = 0;
+	const inspectRender = (node: ts.Node): void => {
+		if (ts.isArrayLiteralExpression(node)) renderArrayLiterals++;
+		ts.forEachChild(node, inspectRender);
+	};
+	const inspectNested = (node: ts.Node): void => {
+		if (ts.isArrayLiteralExpression(node)) nestedArrayLiterals++;
+		if (ts.isForOfStatement(node)) nestedForOf++;
+		if (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) nestedCallbacks++;
+		if (ts.isSpreadElement(node) || ts.isSpreadAssignment(node)) nestedSpreads++;
+		ts.forEachChild(node, inspectNested);
+	};
+	inspectRender(render);
+	inspectNested(renderInto);
+	assert.equal(renderArrayLiterals, 1, "render owns exactly one final result array");
+	assert.equal(nestedArrayLiterals, 0);
+	assert.equal(nestedForOf, 0);
+	assert.equal(nestedCallbacks, 0);
+	assert.equal(nestedSpreads, 0);
+	assert.match(render.getText(source), /renderContainerInto\(this, width, lines\)/);
+	assert.match(renderInto.getText(source), /child\.render === Container\.prototype\.render/);
+	assert.match(renderInto.getText(source), /renderContainerInto\(child, width, target\)/);
+	assert.doesNotMatch(`${render.getText(source)}\n${renderInto.getText(source)}`, /\.renderInto\(/);
+	assert.match(text, /Ownership is defined[\s\S]*ordinary callers must treat the array as read-only/);
+	assert.match(text, /Return a fresh caller-owned outer array[\s\S]*never mutates a child/);
+});
+
+test("TUI core owns its input lifecycle benchmark command and documentation", () => {
+	const packageJson = JSON.parse(readFileSync("package.json", "utf8")) as { scripts?: Record<string, string> };
+	assert.equal(
+		packageJson.scripts?.["bench:tui-input-lifecycle"],
+		"node --experimental-strip-types ./scripts/bench/tui-input-lifecycle.ts",
+	);
+	const performanceReadme = readFileSync("docs/performance/README.md", "utf8");
+	assert.match(performanceReadme, /### Phase 4D-A0 TUI core allocation coverage/);
+	assert.match(performanceReadme, /npm run bench:tui-input-lifecycle/);
 });
 test("retained cache and instrumentation stay instance-local and retain no component or frame references", () => {
 	const retainedText = readFileSync(RETAINED_PATH, "utf8");
@@ -153,19 +209,218 @@ test("overlay composition consumes the frame array without callback or wrapper-a
 	assert.doesNotMatch(body, /const result = \[\.\.\.lines\]/);
 });
 
-test("cell dimensions keep stable isolated primitive-backed identity", () => {
-	const original = { ...getCellDimensions() };
-	const external = { widthPx: 11, heightPx: 22 };
+test("cell dimensions keep one stable object across primitive updates", () => {
 	const identity = getCellDimensions();
+	const originalWidth = identity.widthPx;
+	const originalHeight = identity.heightPx;
 	try {
-		setCellDimensions(external);
-		external.widthPx = 99;
+		const input = { widthPx: 11, heightPx: 22 };
+		setCellDimensions(input);
 		assert.equal(getCellDimensions(), identity);
 		assert.deepEqual(getCellDimensions(), { widthPx: 11, heightPx: 22 });
-		assert.equal(Object.isFrozen(getCellDimensions()), true);
+		input.widthPx = 91;
+		input.heightPx = 92;
+		assert.deepEqual(getCellDimensions(), { widthPx: 11, heightPx: 22 });
+
+		setCellDimensions({ widthPx: 33, heightPx: 44 });
+		assert.equal(getCellDimensions(), identity);
+		assert.deepEqual(getCellDimensions(), { widthPx: 33, heightPx: 44 });
 	} finally {
-		setCellDimensions(original);
+		setCellDimensions({ widthPx: originalWidth, heightPx: originalHeight });
 	}
+});
+
+test("cell dimension source uses const state and exactly two primitive assignments", () => {
+	const text = readFileSync(TERMINAL_IMAGE_PATH, "utf8");
+	const source = ts.createSourceFile(TERMINAL_IMAGE_PATH, text, ts.ScriptTarget.Latest, true);
+	let declaration: ts.VariableDeclaration | undefined;
+	let declarationList: ts.VariableDeclarationList | undefined;
+	let setter: ts.FunctionDeclaration | undefined;
+	for (const statement of source.statements) {
+		if (ts.isVariableStatement(statement)) {
+			for (const candidate of statement.declarationList.declarations) {
+				if (ts.isIdentifier(candidate.name) && candidate.name.text === "cellDimensions") {
+					declaration = candidate;
+					declarationList = statement.declarationList;
+				}
+			}
+		}
+		if (ts.isFunctionDeclaration(statement) && statement.name?.text === "setCellDimensions") setter = statement;
+	}
+	assert.ok(declaration);
+	assert.ok(declarationList);
+	assert.notEqual(declarationList.flags & ts.NodeFlags.Const, 0);
+	assert.ok(ts.isObjectLiteralExpression(declaration.initializer!));
+	assert.ok(setter?.body);
+	assert.deepEqual(setter.parameters.map((parameter) => parameter.name.getText(source)), ["dims"]);
+	const setterBody: ts.Block = setter.body;
+	assert.equal(setterBody.statements.length, 2);
+	const expectedAssignments = [
+		["cellDimensions.widthPx", "dims.widthPx"],
+		["cellDimensions.heightPx", "dims.heightPx"],
+	] as const;
+	for (let index = 0; index < expectedAssignments.length; index++) {
+		const assignmentStatement: ts.Statement = setterBody.statements[index]!;
+		assert.ok(ts.isExpressionStatement(assignmentStatement));
+		const assignmentExpression: ts.Expression = assignmentStatement.expression;
+		assert.ok(ts.isBinaryExpression(assignmentExpression));
+		assert.equal(assignmentExpression.operatorToken.kind, ts.SyntaxKind.EqualsToken);
+		assert.equal(assignmentExpression.left.getText(source), expectedAssignments[index]![0]);
+		assert.equal(assignmentExpression.right.getText(source), expectedAssignments[index]![1]);
+	}
+	let forbiddenNodes = 0;
+	const visit = (node: ts.Node): void => {
+		if (
+			ts.isObjectLiteralExpression(node)
+			|| ts.isSpreadElement(node)
+			|| ts.isSpreadAssignment(node)
+			|| ts.isNewExpression(node)
+		) forbiddenNodes++;
+		if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
+			const call = node.expression.getText(source);
+			if (call === "Object.assign" || call === "Object.freeze") forbiddenNodes++;
+		}
+		ts.forEachChild(node, visit);
+	};
+	visit(setter);
+	assert.equal(forbiddenNodes, 0);
+	assert.doesNotMatch(text, /\bcellWidthPx\b|\bcellHeightPx\b/);
+	assert.doesNotMatch(setter.getText(source), /\bcellDimensions\s*=/);
+});
+
+test("OSC 11 query uses stable Promise and timeout callbacks", () => {
+	const text = readFileSync(TUI_PATH, "utf8");
+	const source = ts.createSourceFile(TUI_PATH, text, ts.ScriptTarget.Latest, true);
+	const query = findMethod(source, "TuiBase", "queryTerminalBackgroundColor");
+	let closures = 0;
+	const visit = (node: ts.Node): void => {
+		if (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) closures++;
+		ts.forEachChild(node, visit);
+	};
+	visit(query);
+	assert.equal(closures, 0);
+	const body = query.getText(source);
+	assert.match(body, /new Promise<RgbColor \| undefined>\(this\.captureOsc11BackgroundResolve\)/);
+	assert.match(body, /setTimeout\(this\.handleOsc11BackgroundTimeout, timeoutMs, this\.osc11BackgroundActiveGeneration\)/);
+	assert.match(body, /if \(this\.osc11BackgroundQueryPromise\) return this\.osc11BackgroundQueryPromise/);
+	assert.match(body, /this\.osc11BackgroundActiveGeneration = \+\+this\.osc11BackgroundWaveGeneration/);
+	const timeout = source.statements
+		.filter(ts.isClassDeclaration)
+		.flatMap((statement) => statement.members)
+		.find(
+			(member): member is ts.PropertyDeclaration =>
+				ts.isPropertyDeclaration(member)
+				&& ts.isIdentifier(member.name)
+				&& member.name.text === "handleOsc11BackgroundTimeout",
+		);
+	assert.ok(timeout?.initializer && ts.isArrowFunction(timeout.initializer));
+	assert.match(timeout.initializer.getText(source), /^\(generation: number\).*if \(generation !== this\.osc11BackgroundActiveGeneration\) return;/s);
+	assert.match(text, /share the first caller's[\s\S]*deadline/);
+	assert.doesNotMatch(text, /pendingOsc11BackgroundQueries|pendingOsc11BackgroundReplies|query\.settled/);
+	assert.doesNotMatch(text, /osc11BackgroundTombstoneGeneration/);
+});
+
+test("overlay focus lookup paths avoid per-call find and some callbacks", () => {
+	const text = readFileSync(TUI_PATH, "utf8");
+	const source = ts.createSourceFile(TUI_PATH, text, ts.ScriptTarget.Latest, true);
+	for (const methodName of [
+		"setFocusInternal",
+		"handleTerminalInput",
+		"hasOverlay",
+		"isOverlayFocusAncestor",
+		"isComponentMounted",
+		"containsComponent",
+	]) {
+		assert.doesNotMatch(findMethod(source, "TuiBase", methodName).getText(source), /\.(?:find|some)\(/, methodName);
+	}
+	const input = findMethod(source, "TuiBase", "handleTerminalInput");
+	let closures = 0;
+	const visit = (node: ts.Node): void => {
+		if (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) closures++;
+		ts.forEachChild(node, visit);
+	};
+	visit(input);
+	assert.equal(closures, 0);
+	const ancestor = findMethod(source, "TuiBase", "isOverlayFocusAncestor");
+	assert.doesNotMatch(ancestor.getText(source), /new Set|\.find\(/);
+});
+
+test("overlay focus state uses direct parameters and one fixed mutable record", () => {
+	const text = readFileSync(TUI_PATH, "utf8");
+	const source = ts.createSourceFile(TUI_PATH, text, ts.ScriptTarget.Latest, true);
+	const focus = findMethod(source, "TuiBase", "setFocusInternal");
+	assert.deepEqual(focus.parameters.map((parameter) => parameter.name.getText(source)), [
+		"component",
+		"overlayFocusRestore",
+	]);
+	let forbiddenNodes = 0;
+	const visit = (node: ts.Node): void => {
+		if (
+			ts.isObjectLiteralExpression(node)
+			|| ts.isSpreadElement(node)
+			|| ts.isSpreadAssignment(node)
+			|| ts.isNewExpression(node)
+			|| ts.isArrowFunction(node)
+			|| ts.isFunctionExpression(node)
+		) forbiddenNodes++;
+		ts.forEachChild(node, visit);
+	};
+	visit(focus);
+	assert.equal(forbiddenNodes, 0);
+	assert.doesNotMatch(text, /setFocusInternal\s*\(\s*\{/);
+	assert.match(text, /private readonly overlayFocusRestore: OverlayFocusRestoreState = \{/);
+	assert.doesNotMatch(text, /this\.overlayFocusRestore\s*=/);
+	for (const methodName of [
+		"clearOverlayFocusRestore",
+		"setEligibleOverlayFocusRestore",
+		"setBlockedOverlayFocusRestore",
+	]) {
+		const method = findMethod(source, "TuiBase", methodName);
+		let assignments = 0;
+		const inspect = (node: ts.Node): void => {
+			if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken) assignments++;
+			if (
+				ts.isObjectLiteralExpression(node)
+				|| ts.isSpreadElement(node)
+				|| ts.isSpreadAssignment(node)
+				|| ts.isNewExpression(node)
+			) forbiddenNodes++;
+			ts.forEachChild(node, inspect);
+		};
+		inspect(method);
+		assert.equal(assignments, 5, methodName);
+	}
+	assert.equal(forbiddenNodes, 0);
+});
+
+test("overlay stack entries use one stable-shape record without conditional spread", () => {
+	const text = readFileSync(TUI_PATH, "utf8");
+	const source = ts.createSourceFile(TUI_PATH, text, ts.ScriptTarget.Latest, true);
+	const showOverlay = findMethod(source, "TuiBase", "showOverlay");
+	let entryLiteral: ts.ObjectLiteralExpression | undefined;
+	let spreadCount = 0;
+	const visit = (node: ts.Node): void => {
+		if (
+			ts.isVariableDeclaration(node)
+			&& node.name.getText(source) === "entry"
+			&& node.initializer
+			&& ts.isObjectLiteralExpression(node.initializer)
+		) {
+			entryLiteral = node.initializer;
+		}
+		if (ts.isSpreadAssignment(node) || ts.isSpreadElement(node)) spreadCount++;
+		ts.forEachChild(node, visit);
+	};
+	visit(showOverlay);
+	assert.ok(entryLiteral);
+	assert.equal(spreadCount, 0);
+	assert.deepEqual(entryLiteral.properties.map((property) => property.name?.getText(source)), [
+		"component",
+		"options",
+		"preFocus",
+		"hidden",
+		"focusOrder",
+	]);
 });
 
 test("every production transcript splice notifies the structure index", () => {
