@@ -42,10 +42,9 @@ export interface Component {
 	/**
 	 * Render the component to lines for the given viewport width
 	 * @param width - Current viewport width
-	 * @returns A caller-owned array of strings, each representing a line. Callers
-	 * may retain or mutate the returned array, so a component must not expose one
-	 * mutable output array across render calls unless its narrower API explicitly
-	 * documents borrowed frame-local ownership.
+	 * @returns An array of strings, each representing a line. Ownership is defined
+	 * by the concrete component; ordinary callers must treat the array as read-only
+	 * unless a narrower API explicitly grants mutation rights.
 	 */
 	render(width: number): string[];
 
@@ -272,24 +271,28 @@ export class Container implements Component {
 		}
 	}
 
-	private renderInto(width: number, target: string[]): void {
-		for (let childIndex = 0; childIndex < this.children.length; childIndex++) {
-			const child = this.children[childIndex]!;
-			if (child instanceof Container && child.render === Container.prototype.render) {
-				child.renderInto(width, target);
-				continue;
-			}
-			const childLines = child.render(width);
-			for (let lineIndex = 0; lineIndex < childLines.length; lineIndex++) {
-				target.push(childLines[lineIndex]!);
-			}
-		}
-	}
-
+	/**
+	 * Return a fresh caller-owned outer array. Mutating it never mutates a child
+	 * component's cached render array.
+	 */
 	render(width: number): string[] {
 		const lines: string[] = [];
-		this.renderInto(width, lines);
+		renderContainerInto(this, width, lines);
 		return lines;
+	}
+}
+
+function renderContainerInto(container: Container, width: number, target: string[]): void {
+	for (let childIndex = 0; childIndex < container.children.length; childIndex++) {
+		const child = container.children[childIndex]!;
+		if (child instanceof Container && child.render === Container.prototype.render) {
+			renderContainerInto(child, width, target);
+			continue;
+		}
+		const childLines = child.render(width);
+		for (let lineIndex = 0; lineIndex < childLines.length; lineIndex++) {
+			target.push(childLines[lineIndex]!);
+		}
 	}
 }
 
@@ -406,7 +409,6 @@ export abstract class TuiBase extends Container implements TUI {
 	private osc11BackgroundUnsupported = false;
 	private osc11BackgroundWaveGeneration = 0;
 	private osc11BackgroundActiveGeneration = 0;
-	private osc11BackgroundTombstoneGeneration = 0;
 	private capturedOsc11BackgroundResolve: ((rgb: RgbColor | undefined) => void) | undefined;
 	private terminalColorSchemeListeners = new Set<(scheme: TerminalColorScheme) => void>();
 	private terminalColorSchemeNotificationsEnabled = false;
@@ -469,7 +471,8 @@ export abstract class TuiBase extends Container implements TUI {
 	private readonly captureOsc11BackgroundResolve = (resolve: (rgb: RgbColor | undefined) => void): void => {
 		this.capturedOsc11BackgroundResolve = resolve;
 	};
-	private readonly handleOsc11BackgroundTimeout = (): void => {
+	private readonly handleOsc11BackgroundTimeout = (generation: number): void => {
+		if (generation !== this.osc11BackgroundActiveGeneration) return;
 		this.osc11BackgroundQueryTimer = undefined;
 		const resolve = this.osc11BackgroundQueryResolve;
 		if (!resolve) return;
@@ -478,12 +481,10 @@ export abstract class TuiBase extends Container implements TUI {
 		if (this.osc11BackgroundPhysicalOutstanding) {
 			this.osc11BackgroundPhysicalOutstanding = false;
 			this.osc11BackgroundTombstone = true;
-			this.osc11BackgroundTombstoneGeneration = this.osc11BackgroundActiveGeneration;
 		} else if (this.osc11BackgroundTombstone) {
 			// One follower wave already waited for the unidentifiable stale reply.
 			// Cache unsupported until a late OSC 11 response proves otherwise.
 			this.osc11BackgroundTombstone = false;
-			this.osc11BackgroundTombstoneGeneration = 0;
 			this.osc11BackgroundUnsupported = true;
 		}
 		this.osc11BackgroundActiveGeneration = 0;
@@ -1036,7 +1037,6 @@ export abstract class TuiBase extends Container implements TUI {
 			this.osc11BackgroundTombstone = false;
 			this.osc11BackgroundUnsupported = false;
 			this.osc11BackgroundActiveGeneration = 0;
-			this.osc11BackgroundTombstoneGeneration = 0;
 			resolve?.(undefined);
 		}
 	}
@@ -1371,7 +1371,6 @@ export abstract class TuiBase extends Container implements TUI {
 		}
 		if (this.osc11BackgroundTombstone) {
 			this.osc11BackgroundTombstone = false;
-			this.osc11BackgroundTombstoneGeneration = 0;
 			if (this.osc11BackgroundQueryResolve) this.startOsc11BackgroundPhysicalQuery();
 			return true;
 		}
@@ -1703,7 +1702,7 @@ export abstract class TuiBase extends Container implements TUI {
 		this.osc11BackgroundQueryPromise = result;
 		this.osc11BackgroundQueryResolve = this.capturedOsc11BackgroundResolve;
 		this.capturedOsc11BackgroundResolve = undefined;
-		this.osc11BackgroundQueryTimer = setTimeout(this.handleOsc11BackgroundTimeout, timeoutMs);
+		this.osc11BackgroundQueryTimer = setTimeout(this.handleOsc11BackgroundTimeout, timeoutMs, this.osc11BackgroundActiveGeneration);
 		this.startOsc11BackgroundPhysicalQuery();
 		return result;
 	}
