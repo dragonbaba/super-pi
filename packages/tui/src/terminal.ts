@@ -55,6 +55,10 @@ export function normalizeAppleTerminalInput(data: string, isAppleTerminal: boole
 	return normalizeNativeShiftEnterInput(data, isAppleTerminal, isShiftPressed);
 }
 
+function asTerminalError(error: unknown): Error {
+	return error instanceof Error ? error : new Error(String(error));
+}
+
 /**
  * Minimal terminal interface for TUI
  */
@@ -87,12 +91,16 @@ export interface Terminal {
 
 	/** Register the stable observer for actual Writable frame-write starts. */
 	setFrameWriteStartedListener?(listener: TerminalFrameWriteStarted | undefined): void;
+	/** Register the stable notification used when an orphan physical write releases the writer. */
+	setFrameWriteReadyListener?(listener: ((error?: Error) => void) | undefined): void;
+	/** True when a rendered frame can enter Writable immediately. */
+	isFrameWriteAvailable?(): boolean;
 
 	/**
 	 * Start one atomic rendered frame. The registered completion listener fires
 	 * only after both the Writable callback and any required drain have completed.
 	 */
-	writeFrame(data: string, generation: number): void;
+	writeFrame(data: string, generation: number): void | boolean;
 
 	/**
 	 * Lifecycle-only logical cancellation. OS output cannot be cancelled: the
@@ -140,11 +148,14 @@ export class ProcessTerminal implements Terminal {
 	private frameWriteDrainComplete = false;
 	private frameWriteGeneration = 0;
 	private frameWriteCanceled = false;
-	private pendingFrameData: string | undefined;
-	private pendingFrameGeneration = 0;
 	private frameWriteCompletionListener: TerminalFrameWriteCompletion | undefined;
 	private frameWriteStartedListener: TerminalFrameWriteStarted | undefined;
+	private frameWriteReadyListener: ((error?: Error) => void) | undefined;
 	private controlWritesOutstanding = 0;
+	private progressDesiredActive = false;
+	private progressWriteActive = false;
+	private progressWriteIsActive = false;
+	private progressClearPending = false;
 	private disposed = false;
 	private disposeFinalizationScheduled = false;
 	private readonly onUnawaitedControlWriteCallback = (error?: Error | null): void => {
@@ -153,9 +164,37 @@ export class ProcessTerminal implements Terminal {
 		this.scheduleDisposeFinalization();
 	};
 	private readonly writeProgressKeepalive = (): void => {
+		if (!this.progressDesiredActive || this.progressWriteActive) return;
 		try {
-			this.writeUnawaitedControl(TERMINAL_PROGRESS_ACTIVE_SEQUENCE);
+			this.startProgressWrite(true);
 		} catch {
+			this.clearProgressInterval();
+		}
+	};
+	private readonly onProgressWriteCallback = (error?: Error | null): void => {
+		if (!this.progressWriteActive) return;
+		const completedActive = this.progressWriteIsActive;
+		this.progressWriteActive = false;
+		this.progressWriteIsActive = false;
+		this.controlWritesOutstanding--;
+		if (error) {
+			this.progressDesiredActive = false;
+			this.progressClearPending = false;
+			this.clearProgressInterval();
+			this.failFrameOutput(error);
+			this.scheduleDisposeFinalization();
+			return;
+		}
+		this.scheduleDisposeFinalization();
+		if (this.disposed || this.progressDesiredActive === completedActive) {
+			this.progressClearPending = false;
+			return;
+		}
+		this.progressClearPending = !this.progressDesiredActive;
+		try {
+			this.startProgressWrite(this.progressDesiredActive);
+		} catch {
+			this.progressClearPending = false;
 			this.clearProgressInterval();
 		}
 	};
@@ -231,39 +270,49 @@ export class ProcessTerminal implements Terminal {
 
 	start(onInput: (data: string) => void, onResize: () => void): void {
 		if (this.disposed) throw new Error("Cannot start a disposed ProcessTerminal");
+		if (this.started) return;
 		this.started = true;
 		this.inputHandler = onInput;
 		this.resizeHandler = onResize;
+		try {
+			// Save previous state and enable raw mode
+			this.wasRaw = process.stdin.isRaw || false;
+			if (process.stdin.setRawMode) {
+				process.stdin.setRawMode(true);
+			}
+			process.stdin.setEncoding("utf8");
+			process.stdin.resume();
 
-		// Save previous state and enable raw mode
-		this.wasRaw = process.stdin.isRaw || false;
-		if (process.stdin.setRawMode) {
-			process.stdin.setRawMode(true);
+			// Enable bracketed paste mode - terminal will wrap pastes in \x1b[200~ ... \x1b[201~
+			this.writeUnawaitedControl("\x1b[?2004h");
+
+			// Set up resize handler immediately
+			process.stdout.on("resize", this.resizeHandler);
+
+			// Refresh terminal dimensions - they may be stale after suspend/resume
+			// (SIGWINCH is lost while process is stopped). Unix only.
+			if (process.platform !== "win32") {
+				process.kill(process.pid, "SIGWINCH");
+			}
+
+			// On Windows, enable ENABLE_VIRTUAL_TERMINAL_INPUT so the console sends
+			// VT escape sequences (e.g. \x1b[Z for Shift+Tab) instead of raw console
+			// events that lose modifier information. Must run AFTER setRawMode(true)
+			// since that resets console mode flags.
+			this.enableWindowsVTInput();
+
+			// Query Kitty keyboard protocol and fall back to modifyOtherKeys when DA confirms no Kitty response.
+			// See: https://sw.kovidgoyal.net/kitty/keyboard-protocol/
+			this.queryAndEnableKittyProtocol();
+		} catch (error) {
+			const failure = asTerminalError(error);
+			try {
+				this.stop();
+			} catch {
+				// Startup reports its first failure after transactional cleanup.
+			}
+			throw failure;
 		}
-		process.stdin.setEncoding("utf8");
-		process.stdin.resume();
-
-		// Enable bracketed paste mode - terminal will wrap pastes in \x1b[200~ ... \x1b[201~
-		this.writeUnawaitedControl("\x1b[?2004h");
-
-		// Set up resize handler immediately
-		process.stdout.on("resize", this.resizeHandler);
-
-		// Refresh terminal dimensions - they may be stale after suspend/resume
-		// (SIGWINCH is lost while process is stopped). Unix only.
-		if (process.platform !== "win32") {
-			process.kill(process.pid, "SIGWINCH");
-		}
-
-		// On Windows, enable ENABLE_VIRTUAL_TERMINAL_INPUT so the console sends
-		// VT escape sequences (e.g. \x1b[Z for Shift+Tab) instead of raw console
-		// events that lose modifier information. Must run AFTER setRawMode(true)
-		// since that resets console mode flags.
-		this.enableWindowsVTInput();
-
-		// Query Kitty keyboard protocol and fall back to modifyOtherKeys when DA confirms no Kitty response.
-		// See: https://sw.kovidgoyal.net/kitty/keyboard-protocol/
-		this.queryAndEnableKittyProtocol();
 	}
 
 	/**
@@ -507,28 +556,44 @@ export class ProcessTerminal implements Terminal {
 	stop(): void {
 		if (!this.started) return;
 		this.started = false;
+		let failure: Error | undefined;
 		if (this.clearProgressInterval()) {
-			this.writeUnawaitedControl(TERMINAL_PROGRESS_CLEAR_SEQUENCE);
+			this.progressDesiredActive = false;
+			if (this.progressWriteActive) this.progressClearPending = this.progressWriteIsActive;
+			else {
+				try {
+					this.startProgressWrite(false);
+				} catch (error) {
+					failure = asTerminalError(error);
+				}
+			}
 		}
 
 		// Disable bracketed paste mode
-		this.writeUnawaitedControl("\x1b[?2004l");
+		failure = this.writeLifecycleControl("\x1b[?2004l", failure);
 
 		const shouldDisableKittyProtocol = this.keyboardProtocolPushed || this._kittyProtocolActive;
 		this.clearKeyboardProtocolNegotiationBuffer();
 
 		// Disable Kitty keyboard protocol if not already done by drainInput()
 		if (shouldDisableKittyProtocol) {
-			this.writeUnawaitedControl("\x1b[<u");
+			failure = this.writeLifecycleControl("\x1b[<u", failure);
 			this.keyboardProtocolPushed = false;
 			this._kittyProtocolActive = false;
 			setKittyProtocolActive(false);
 		}
-		this.disableModifyOtherKeys();
+		if (this._modifyOtherKeysActive) {
+			failure = this.writeLifecycleControl("\x1b[>4;0m", failure);
+			this._modifyOtherKeysActive = false;
+		}
 
 		// Clean up StdinBuffer
 		if (this.stdinBuffer) {
-			this.stdinBuffer.destroy();
+			try {
+				this.stdinBuffer.destroy();
+			} catch (error) {
+				failure ??= asTerminalError(error);
+			}
 			this.stdinBuffer = undefined;
 		}
 
@@ -546,23 +611,52 @@ export class ProcessTerminal implements Terminal {
 		// Pause stdin to prevent any buffered input (e.g., Ctrl+D) from being
 		// re-interpreted after raw mode is disabled. This fixes a race condition
 		// where Ctrl+D could close the parent shell over SSH.
-		process.stdin.pause();
+		try {
+			process.stdin.pause();
+		} catch (error) {
+			failure ??= asTerminalError(error);
+		}
 
 		// Restore raw mode state
 		if (process.stdin.setRawMode) {
-			process.stdin.setRawMode(this.wasRaw);
+			try {
+				process.stdin.setRawMode(this.wasRaw);
+			} catch (error) {
+				failure ??= asTerminalError(error);
+			}
 		}
+		if (failure) throw failure;
 	}
 
 	dispose(): void {
 		if (this.disposed) return;
-		if (this.started) this.stop();
+		let failure: Error | undefined;
+		if (this.started) {
+			try {
+				this.stop();
+			} catch (error) {
+				failure = asTerminalError(error);
+			}
+		}
 		this.disposed = true;
-		this.clearPendingFrameWrite();
+		this.clearProgressInterval();
+		this.progressDesiredActive = false;
+		this.progressClearPending = false;
 		this.frameWriteCompletionListener = undefined;
 		this.frameWriteStartedListener = undefined;
+		this.frameWriteReadyListener = undefined;
 		if (this.physicalFrameWriteActive) this.frameWriteCanceled = true;
 		this.scheduleDisposeFinalization();
+		if (failure) throw failure;
+	}
+
+	private writeLifecycleControl(data: string, failure: Error | undefined): Error | undefined {
+		try {
+			this.writeUnawaitedControl(data);
+		} catch (error) {
+			return failure ?? asTerminalError(error);
+		}
+		return failure;
 	}
 
 	write(data: string): Promise<void> {
@@ -618,26 +712,29 @@ export class ProcessTerminal implements Terminal {
 		this.frameWriteStartedListener = listener;
 	}
 
-	writeFrame(data: string, generation: number): void {
+	setFrameWriteReadyListener(listener: ((error?: Error) => void) | undefined): void {
+		this.frameWriteReadyListener = listener;
+	}
+
+	isFrameWriteAvailable(): boolean {
+		return !this.physicalFrameWriteActive;
+	}
+
+	writeFrame(data: string, generation: number): boolean {
 		if (this.writeLogPath) this.logWrite(data);
 		if (this.disposed) {
 			this.frameWriteCompletionListener?.(generation, new Error("ProcessTerminal is disposed"));
-			return;
+			return true;
 		}
 		if (this.frameOutputFailure) {
 			this.frameWriteCompletionListener?.(generation, this.frameOutputFailure);
-			return;
+			return true;
 		}
 		if (this.physicalFrameWriteActive) {
-			if (this.frameWriteCanceled && this.pendingFrameData === undefined) {
-				this.pendingFrameData = data;
-				this.pendingFrameGeneration = generation;
-				return;
-			}
-			this.frameWriteCompletionListener?.(generation, new Error("Concurrent terminal frame writes are not supported"));
-			return;
+			return false;
 		}
 		this.startFrameWrite(data, generation);
+		return true;
 	}
 
 	private startFrameWrite(data: string, generation: number): void {
@@ -665,10 +762,6 @@ export class ProcessTerminal implements Terminal {
 	}
 
 	cancelFrameWrite(generation: number): void {
-		if (this.pendingFrameData !== undefined && generation === this.pendingFrameGeneration) {
-			this.clearPendingFrameWrite();
-			return;
-		}
 		if (!this.physicalFrameWriteActive || this.frameWriteCanceled || generation !== this.frameWriteGeneration) return;
 		// The OS write is not cancellable. Keep physical callback/drain ownership
 		// until it settles, but suppress logical completion for this generation.
@@ -694,27 +787,10 @@ export class ProcessTerminal implements Terminal {
 		this.clearActiveFrameWriteState();
 		if (!canceled) listener?.(generation, error);
 		if (this.disposed) {
-			this.clearPendingFrameWrite();
 			this.scheduleDisposeFinalization();
 			return;
 		}
-		if (error) {
-			if (this.pendingFrameData !== undefined) {
-				const pendingGeneration = this.pendingFrameGeneration;
-				this.clearPendingFrameWrite();
-				this.frameWriteCompletionListener?.(pendingGeneration, error);
-			}
-			return;
-		}
-		this.startPendingFrameWrite();
-	}
-
-	private startPendingFrameWrite(): void {
-		const data = this.pendingFrameData;
-		if (data === undefined) return;
-		const generation = this.pendingFrameGeneration;
-		this.clearPendingFrameWrite();
-		this.startFrameWrite(data, generation);
+		if (canceled) this.frameWriteReadyListener?.(error);
 	}
 
 	private clearActiveFrameWriteState(): void {
@@ -726,11 +802,6 @@ export class ProcessTerminal implements Terminal {
 		this.frameWriteDrainComplete = false;
 		this.frameWriteGeneration = 0;
 		this.frameWriteCanceled = false;
-	}
-
-	private clearPendingFrameWrite(): void {
-		this.pendingFrameData = undefined;
-		this.pendingFrameGeneration = 0;
 	}
 
 	private scheduleDisposeFinalization(): void {
@@ -798,17 +869,45 @@ export class ProcessTerminal implements Terminal {
 	}
 
 	setProgress(active: boolean): void {
+		this.progressDesiredActive = active;
 		if (active) {
 			// OSC 9;4;3 - indeterminate progress
-			this.writeUnawaitedControl(TERMINAL_PROGRESS_ACTIVE_SEQUENCE);
+			this.progressClearPending = false;
+			if (!this.progressWriteActive) this.startProgressWrite(true);
+			if (!this.progressDesiredActive) return;
 			if (!this.progressInterval) {
 				this.progressInterval = setInterval(this.writeProgressKeepalive, TERMINAL_PROGRESS_KEEPALIVE_MS);
 			}
 		} else {
 			this.clearProgressInterval();
 			// OSC 9;4;0 - clear progress
-			this.writeUnawaitedControl(TERMINAL_PROGRESS_CLEAR_SEQUENCE);
+			if (this.progressWriteActive) {
+				this.progressClearPending = this.progressWriteIsActive;
+			} else {
+				this.startProgressWrite(false);
+			}
 		}
+	}
+
+	private startProgressWrite(active: boolean): void {
+		if (this.disposed) throw new Error("Cannot write with a disposed ProcessTerminal");
+		if (this.progressWriteActive) return;
+		this.progressWriteActive = true;
+		this.progressWriteIsActive = active;
+		this.progressClearPending = false;
+		this.controlWritesOutstanding++;
+		const data = active ? TERMINAL_PROGRESS_ACTIVE_SEQUENCE : TERMINAL_PROGRESS_CLEAR_SEQUENCE;
+		try {
+			this.frameOutput.write(data, this.onProgressWriteCallback);
+		} catch (error) {
+			this.progressWriteActive = false;
+			this.progressWriteIsActive = false;
+			this.controlWritesOutstanding--;
+			this.failFrameOutput(error instanceof Error ? error : new Error(String(error)));
+			this.scheduleDisposeFinalization();
+			throw error;
+		}
+		this.logWrite(data);
 	}
 
 	private clearProgressInterval(): boolean {

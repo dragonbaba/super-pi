@@ -26,7 +26,12 @@ export interface TerminalFrameSink {
 	setFrameWriteCompletionListener(listener: ((generation: number, error?: Error) => void) | undefined): void;
 	/** Optional physical-write notification. ProcessTerminal fires this only when Writable.write starts. */
 	setFrameWriteStartedListener?(listener: ((generation: number) => void) | undefined): void;
-	writeFrame(data: string, generation: number): void;
+	/** Stable notification that an orphaned physical writer has become available again. */
+	setFrameWriteReadyListener?(listener: ((error?: Error) => void) | undefined): void;
+	/** Whether a frame submitted now can enter Writable rather than waiting in the queue. */
+	isFrameWriteAvailable?(): boolean;
+	/** Returns false only when the physical writer cannot accept this frame yet. */
+	writeFrame(data: string, generation: number): void | boolean;
 	cancelFrameWrite(generation: number): void;
 }
 
@@ -75,6 +80,7 @@ export class TerminalFrameQueue {
 	private resolveIdle: (() => void) | undefined;
 	private activeWriteToken = 0;
 	private idleSettlementScheduled = false;
+	private sinkAvailable = true;
 	private readonly settleActiveWrite = (generation: number, error?: Error): void => {
 		if (error) this.fail(error, generation);
 		else this.finish(generation);
@@ -87,6 +93,29 @@ export class TerminalFrameQueue {
 	private readonly captureIdleResolve = (resolve: () => void): void => {
 		this.resolveIdle = resolve;
 	};
+	private readonly observeSinkReady = (error?: Error): void => {
+		if (error) {
+			this.failure = error;
+			this.recoverableFailure = false;
+			this.sinkAvailable = false;
+			this.clearPendingFrame();
+			this.recordDepth();
+			this.idleSettlementScheduled = false;
+			this.finishIdleCycle();
+			this.notifyError();
+			return;
+		}
+		this.sinkAvailable = true;
+		if (!this.activeWrite && this.pendingFrame !== undefined) {
+			const next = this.pendingFrame;
+			const metadata = this.pendingMetadata;
+			const utf8Bytes = this.pendingFrameUtf8Bytes;
+			this.clearPendingFrame();
+			this.start(next, metadata, utf8Bytes);
+			return;
+		}
+		this.scheduleIdleSettlement();
+	};
 
 	constructor(sink: TerminalFrameSink, options: TerminalFrameQueueOptions = {}) {
 		this.sink = sink;
@@ -96,10 +125,13 @@ export class TerminalFrameQueue {
 
 	/** Attach/detach only at TUI lifecycle boundaries, never per frame. */
 	attach(): void {
+		this.sink.setFrameWriteReadyListener?.(this.observeSinkReady);
 		this.sink.setFrameWriteCompletionListener(this.settleActiveWrite);
 		this.sink.setFrameWriteStartedListener?.(this.observePhysicalWriteStart);
+		this.sinkAvailable = this.sink.isFrameWriteAvailable?.() ?? true;
 	}
 	detach(): void {
+		this.sink.setFrameWriteReadyListener?.(undefined);
 		this.sink.setFrameWriteCompletionListener(undefined);
 		this.sink.setFrameWriteStartedListener?.(undefined);
 	}
@@ -117,10 +149,15 @@ export class TerminalFrameQueue {
 		return this.activeWrite || this.pendingFrame !== undefined;
 	}
 
+	/** False while an orphan OS write owns the physical writer. */
+	get canSubmitImmediately(): boolean {
+		return this.sinkAvailable && !this.activeWrite;
+	}
+
 	submit(data: string, metadata = 0): number {
 		if (this.failure) throw this.failure;
 		const utf8Bytes = utf8ByteLength(data);
-		if (!this.activeWrite) {
+		if (!this.activeWrite && this.sinkAvailable) {
 			this.start(data, metadata, utf8Bytes);
 			return utf8Bytes;
 		}
@@ -137,9 +174,7 @@ export class TerminalFrameQueue {
 
 	discardPending(): boolean {
 		if (this.pendingFrame === undefined) return false;
-		this.pendingFrame = undefined;
-		this.pendingMetadata = 0;
-		this.pendingFrameUtf8Bytes = 0;
+		this.clearPendingFrame();
 		this.recordDepth();
 		return true;
 	}
@@ -150,8 +185,17 @@ export class TerminalFrameQueue {
 	 * only after their independent lifecycle boundary expires.
 	 */
 	abort(error: unknown): boolean {
-		if (this.failure || !this.activeWrite) return false;
+		if (this.failure || (!this.activeWrite && this.pendingFrame === undefined)) return false;
 		const failure = asError(error);
+		if (!this.activeWrite) {
+			this.failure = failure;
+			this.recoverableFailure = true;
+			this.clearPendingFrame();
+			this.recordDepth();
+			this.finishIdleCycle();
+			this.notifyError();
+			return true;
+		}
 		const token = this.activeWriteToken;
 		this.sink.cancelFrameWrite(token);
 		this.fail(failure, token, true);
@@ -159,7 +203,10 @@ export class TerminalFrameQueue {
 	}
 
 	async flush(): Promise<void> {
-		while (this.busy || this.idleSettlementScheduled) await this.getIdlePromise();
+		while (this.busy || !this.sinkAvailable || this.idleSettlementScheduled) {
+			if (this.failure) throw this.failure;
+			await this.getIdlePromise();
+		}
 		if (this.failure) throw this.failure;
 	}
 
@@ -184,7 +231,17 @@ export class TerminalFrameQueue {
 		this.recordDepth();
 		if (!this.sink.setFrameWriteStartedListener) this.options.onWriteStarted?.(metadata, utf8Bytes);
 		try {
-			this.sink.writeFrame(data, token);
+			const accepted = this.sink.writeFrame(data, token);
+			if (accepted === false && this.activeWrite && this.activeWriteToken === token) {
+				this.activeWrite = false;
+				this.activeMetadata = 0;
+				this.activeFrameUtf8Bytes = 0;
+				this.sinkAvailable = false;
+				this.pendingFrame = data;
+				this.pendingMetadata = metadata;
+				this.pendingFrameUtf8Bytes = utf8Bytes;
+				this.recordDepth();
+			}
 		} catch (error) {
 			this.fail(error, token);
 		}
@@ -198,9 +255,7 @@ export class TerminalFrameQueue {
 		const next = this.pendingFrame;
 		const nextMetadata = this.pendingMetadata;
 		const nextUtf8Bytes = this.pendingFrameUtf8Bytes;
-		this.pendingFrame = undefined;
-		this.pendingMetadata = 0;
-		this.pendingFrameUtf8Bytes = 0;
+		this.clearPendingFrame();
 		this.recordDepth();
 		if (next !== undefined) {
 			this.start(next, nextMetadata, nextUtf8Bytes);
@@ -216,17 +271,11 @@ export class TerminalFrameQueue {
 		this.activeWrite = false;
 		this.activeMetadata = 0;
 		this.activeFrameUtf8Bytes = 0;
-		this.pendingFrame = undefined;
-		this.pendingMetadata = 0;
-		this.pendingFrameUtf8Bytes = 0;
+		this.clearPendingFrame();
 		this.recordDepth();
 		this.idleSettlementScheduled = false;
 		this.finishIdleCycle();
-		try {
-			this.options.onError?.(this.failure);
-		} catch {
-			// Queue ownership and waiter cleanup must survive diagnostic failures.
-		}
+		this.notifyError();
 	}
 
 	private getIdlePromise(): Promise<void> {
@@ -245,7 +294,7 @@ export class TerminalFrameQueue {
 	private finishIdleCycle(): void {
 		if (!this.idleSettlementScheduled && !this.failure) return;
 		this.idleSettlementScheduled = false;
-		if (this.activeWrite || this.pendingFrame !== undefined) return;
+		if (this.activeWrite || this.pendingFrame !== undefined || (!this.sinkAvailable && !this.failure)) return;
 		const resolve = this.resolveIdle;
 		this.resolveIdle = undefined;
 		this.idlePromise = undefined;
@@ -263,5 +312,19 @@ export class TerminalFrameQueue {
 			this.activeFrameUtf8Bytes,
 			this.pendingFrameUtf8Bytes,
 		);
+	}
+
+	private clearPendingFrame(): void {
+		this.pendingFrame = undefined;
+		this.pendingMetadata = 0;
+		this.pendingFrameUtf8Bytes = 0;
+	}
+
+	private notifyError(): void {
+		try {
+			this.options.onError?.(this.failure!);
+		} catch {
+			// Queue ownership and waiter cleanup must survive diagnostic failures.
+		}
 	}
 }
