@@ -88,8 +88,14 @@ export type ThinkingLevelMap = Partial<Record<ModelThinkingLevel, string | null>
  * Ownership contract for arguments on streamed tool-call blocks.
  *
  * `mutation-with-generation` adapters mutate one arguments object and expose a
- * transient partial-json generation string on every update. `replacement-object`
- * adapters replace the arguments object whenever its semantic value changes.
+ * transient partial-json generation string on every delta. Their final
+ * `toolcall_end` event is a finalization boundary: the host must repaint once
+ * even when the adapter has already removed its transient generation field.
+ * `replacement-object` adapters replace the arguments object whenever its
+ * semantic value changes.
+ *
+ * This is host-only dispatch metadata. It is not part of provider wire
+ * payloads, request-prefix/cache identity, or persisted model profiles.
  */
 export type StreamedToolArgumentOwnership = "replacement-object" | "mutation-with-generation";
 
@@ -354,7 +360,8 @@ export type ApiStreamOptions<TApi extends Api> = TApi extends keyof ApiOptionsMa
  * `Provider.stream()` via `ApiStreamOptions`.
  */
 export interface ProviderStreams {
-	readonly streamedToolArgumentOwnership: StreamedToolArgumentOwnership;
+	/** Omitted by legacy/custom implementations that predate the host-only ownership contract. */
+	readonly streamedToolArgumentOwnership?: StreamedToolArgumentOwnership;
 	stream(model: Model<Api>, context: Context, options?: StreamOptions): AssistantMessageEventStream;
 	streamSimple(model: Model<Api>, context: Context, options?: SimpleStreamOptions): AssistantMessageEventStream;
 	fetchDeferred?(
@@ -364,6 +371,11 @@ export interface ProviderStreams {
 	): AssistantMessageEventStream;
 	cancelDeferred?(model: Model<Api>, handle: DeferredHandle, options?: DeferredCancelOptions): Promise<void>;
 }
+
+/** Narrow host type used by built-in adapters, which must declare ownership metadata. */
+export type OwnedProviderStreams = ProviderStreams & {
+	readonly streamedToolArgumentOwnership: StreamedToolArgumentOwnership;
+};
 
 /**
  * The uniform contract of an image-generation API implementation module:

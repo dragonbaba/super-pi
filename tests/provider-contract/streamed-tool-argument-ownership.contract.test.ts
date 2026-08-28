@@ -19,7 +19,7 @@ import type { KnownApi, ProviderStreams, StreamedToolArgumentOwnership } from "@
 type ContractEntry = readonly [
 	api: KnownApi,
 	ownership: StreamedToolArgumentOwnership,
-	factory: () => ProviderStreams,
+	factory: () => ProviderStreams & { readonly streamedToolArgumentOwnership: StreamedToolArgumentOwnership },
 	modulePath: string,
 ];
 
@@ -78,7 +78,7 @@ test("streamed tool-argument ownership remains host-only metadata", () => {
 	assert.doesNotMatch(lazySource, /(?:context|options|payload|params)\s*\.\s*streamedToolArgumentOwnership/);
 });
 
-test("legacy and custom adapters may omit ownership and enter the diagnosed compatibility boundary", () => {
+test("legacy and custom adapters may omit ownership and enter the counted compatibility boundary", () => {
 	const compatSource = readFileSync("packages/ai/src/compat.ts", "utf8");
 	assert.match(
 		compatSource,
@@ -94,11 +94,9 @@ test("legacy and custom adapters may omit ownership and enter the diagnosed comp
 		"packages/coding-agent/src/modes/interactive/components/tool-execution.ts",
 		"utf8",
 	);
-	assert.match(
-		toolSource,
-		/else \{\s*if \(this\.args === args && Object\.is\(this\.argsGeneration, generation\)\) return;[\s\S]*?toolArgsMissingGenerationDiagnostics\+\+;[\s\S]*?toolArgsSemanticFallbackComparisons\+\+;/,
-		"missing host metadata must remain compatible and observable",
-	);
+	assert.match(toolSource, /toolArgsMissingGenerationUpdates\+\+;/);
+	assert.match(toolSource, /if \(this\.args === args\) \{[\s\S]*?this\.updateDisplay\(\);[\s\S]*?return;/);
+	assert.doesNotMatch(toolSource, /toolArgsMissingGenerationDiagnostics/);
 });
 
 test("mutation adapters expose transient generations and replacement adapters replace arguments", () => {

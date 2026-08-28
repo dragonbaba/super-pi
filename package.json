@@ -29,6 +29,8 @@
 		"bench:tui-session-event-allocations": "node --expose-gc --experimental-strip-types ./scripts/bench/tui-session-event-allocations.ts",
 		"bench:tui-input-lifecycle": "node --experimental-strip-types ./scripts/bench/tui-input-lifecycle.ts",
 		"bench:tui-interactive-reference-allocations": "node --expose-gc --experimental-strip-types ./scripts/bench/tui-interactive-reference-allocations.ts",
+		"bench:tui-tool-leaf-allocations": "node --expose-gc --experimental-strip-types ./scripts/bench/tui-tool-leaf-allocations.ts",
+		"bench:tui-paced-tool-leaf": "node --expose-gc --experimental-strip-types ./scripts/bench/tui-tool-leaf-allocations.ts --paced",
 		"bench:tui-real-leaf-allocations": "node --expose-gc --experimental-strip-types ./scripts/bench/tui-real-leaf-allocations.ts",
 		"bench:tui-real-leaf-multiprocess": "node --experimental-strip-types ./scripts/bench/tui-real-leaf-multiprocess.ts",
 		"bench:tui-paced-real-leaf": "node --expose-gc --experimental-strip-types ./scripts/bench/tui-paced-real-leaf.ts",

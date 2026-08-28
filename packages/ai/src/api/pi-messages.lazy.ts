@@ -1,5 +1,5 @@
-import type { ProviderStreams } from "../types.ts";
+import type { OwnedProviderStreams } from "../types.ts";
 import { lazyApi } from "./lazy.ts";
 
-export const piMessagesApi = (): ProviderStreams =>
+export const piMessagesApi = (): OwnedProviderStreams =>
 	lazyApi(() => import("./pi-messages.ts"), "replacement-object");

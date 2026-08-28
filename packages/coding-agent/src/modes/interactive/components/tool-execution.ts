@@ -244,7 +244,8 @@ export interface ToolExecutionAllocationMetrics {
 	toolArgsGenerationUpdates: number;
 	toolArgsReplacementUpdates: number;
 	toolArgsSemanticFallbackComparisons: number;
-	toolArgsMissingGenerationDiagnostics: number;
+	/** Compatibility-boundary deliveries missing adapter ownership/generation metadata. */
+	toolArgsMissingGenerationUpdates: number;
 }
 
 export class ToolExecutionComponent extends Container {
@@ -360,6 +361,11 @@ export class ToolExecutionComponent extends Container {
 		return this.toolDefinition.renderResult ?? this.builtInToolDefinition.renderResult;
 	}
 
+	private isCallRendererArgsOnly(): boolean {
+		if (!this.toolDefinition?.renderCall) return true;
+		return this.toolDefinition.renderCallStability === "args-only";
+	}
+
 	private hasRendererDefinition(): boolean {
 		return this.builtInToolDefinition !== undefined || this.toolDefinition !== undefined;
 	}
@@ -426,10 +432,20 @@ export class ToolExecutionComponent extends Container {
 		args: any,
 		generation?: ToolArgsGeneration,
 		ownership?: StreamedToolArgumentOwnership,
+		finalized = false,
 	): void {
 		if (ownership === "mutation-with-generation") {
+			if (finalized) {
+				this.args = args;
+				this.argsGeneration = undefined;
+				this.argsSemanticJson = undefined;
+				this.callRendererDirty = true;
+				this.argsDisplayDirty = true;
+				this.updateDisplay();
+				return;
+			}
 			if (generation === undefined) {
-				if (this.allocationMetrics) this.allocationMetrics.toolArgsMissingGenerationDiagnostics++;
+				if (this.allocationMetrics) this.allocationMetrics.toolArgsMissingGenerationUpdates++;
 				this.args = args;
 				this.argsGeneration = undefined;
 				this.argsSemanticJson = undefined;
@@ -455,11 +471,7 @@ export class ToolExecutionComponent extends Container {
 			if (this.args === args) return;
 			if (this.allocationMetrics) this.allocationMetrics.toolArgsReplacementUpdates++;
 		} else {
-			if (this.args === args && Object.is(this.argsGeneration, generation)) return;
-			if (this.allocationMetrics) {
-				this.allocationMetrics.toolArgsMissingGenerationDiagnostics++;
-				this.allocationMetrics.toolArgsSemanticFallbackComparisons++;
-			}
+			if (this.allocationMetrics) this.allocationMetrics.toolArgsMissingGenerationUpdates++;
 			if (generation !== undefined && Object.is(this.argsGeneration, generation)) {
 				this.args = args;
 				return;
@@ -473,6 +485,15 @@ export class ToolExecutionComponent extends Container {
 				this.updateDisplay();
 				return;
 			}
+			if (this.args === args) {
+				this.argsGeneration = undefined;
+				this.argsSemanticJson = undefined;
+				this.callRendererDirty = true;
+				this.argsDisplayDirty = true;
+				this.updateDisplay();
+				return;
+			}
+			if (this.allocationMetrics) this.allocationMetrics.toolArgsSemanticFallbackComparisons++;
 		}
 		if (this.args !== args) {
 			const previousJson = this.argsSemanticJson ?? this.serializeArgs(this.args);
@@ -609,6 +630,7 @@ export class ToolExecutionComponent extends Container {
 
 	override invalidate(): void {
 		super.invalidate();
+		this.callRendererDirty = true;
 		this.updateDisplay();
 	}
 
@@ -658,7 +680,7 @@ export class ToolExecutionComponent extends Container {
 			renderContainer.children.length = 0;
 
 			const callRenderer = this.getCallRenderer();
-			if (this.callRendererDirty || !this.callRendererComponent) {
+			if (!this.isCallRendererArgsOnly() || this.callRendererDirty || !this.callRendererComponent) {
 				if (!callRenderer) {
 					this.callRendererComponent = this.createCallFallback();
 				} else {
@@ -770,6 +792,9 @@ export class ToolExecutionComponent extends Container {
 		}
 		if (imageCount !== this.imageSourceData.length) changed = true;
 		if (!changed) return;
+		for (const index of this.convertedImages.keys()) {
+			if (index >= imageCount) this.convertedImages.delete(index);
+		}
 
 		for (let index = 0; index < this.imageComponents.length; index++) this.removeChild(this.imageComponents[index]);
 		for (let index = 0; index < this.imageSpacers.length; index++) this.removeChild(this.imageSpacers[index]);
