@@ -22,6 +22,13 @@ function findMethod(source: ts.SourceFile, className: string, methodName: string
 	throw new Error(`Missing ${className}.${methodName}`);
 }
 
+function findFunction(source: ts.SourceFile, functionName: string): ts.FunctionDeclaration {
+	for (const statement of source.statements) {
+		if (ts.isFunctionDeclaration(statement) && statement.name?.text === functionName) return statement;
+	}
+	throw new Error(`Missing ${functionName}`);
+}
+
 test("RetainedContainer render traverses original children without per-frame history wrapper arrays", () => {
 	const text = readFileSync(RETAINED_PATH, "utf8");
 	const source = ts.createSourceFile(RETAINED_PATH, text, ts.ScriptTarget.Latest, true);
@@ -56,7 +63,7 @@ test("base Container flattens nested base renders without sharing caller-owned o
 	const text = readFileSync(TUI_PATH, "utf8");
 	const source = ts.createSourceFile(TUI_PATH, text, ts.ScriptTarget.Latest, true);
 	const render = findMethod(source, "Container", "render");
-	const renderInto = findMethod(source, "Container", "renderInto");
+	const renderInto = findFunction(source, "renderContainerInto");
 	let renderArrayLiterals = 0;
 	let nestedArrayLiterals = 0;
 	let nestedForOf = 0;
@@ -80,8 +87,23 @@ test("base Container flattens nested base renders without sharing caller-owned o
 	assert.equal(nestedForOf, 0);
 	assert.equal(nestedCallbacks, 0);
 	assert.equal(nestedSpreads, 0);
-	assert.match(render.getText(source), /this\.renderInto\(width, lines\)/);
+	assert.match(render.getText(source), /renderContainerInto\(this, width, lines\)/);
 	assert.match(renderInto.getText(source), /child\.render === Container\.prototype\.render/);
+	assert.match(renderInto.getText(source), /renderContainerInto\(child, width, target\)/);
+	assert.doesNotMatch(`${render.getText(source)}\n${renderInto.getText(source)}`, /\.renderInto\(/);
+	assert.match(text, /Ownership is defined[\s\S]*ordinary callers must treat the array as read-only/);
+	assert.match(text, /Return a fresh caller-owned outer array[\s\S]*never mutates a child/);
+});
+
+test("TUI core owns its input lifecycle benchmark command and documentation", () => {
+	const packageJson = JSON.parse(readFileSync("package.json", "utf8")) as { scripts?: Record<string, string> };
+	assert.equal(
+		packageJson.scripts?.["bench:tui-input-lifecycle"],
+		"node --experimental-strip-types ./scripts/bench/tui-input-lifecycle.ts",
+	);
+	const performanceReadme = readFileSync("docs/performance/README.md", "utf8");
+	assert.match(performanceReadme, /### Phase 4D-A0 TUI core allocation coverage/);
+	assert.match(performanceReadme, /npm run bench:tui-input-lifecycle/);
 });
 test("retained cache and instrumentation stay instance-local and retain no component or frame references", () => {
 	const retainedText = readFileSync(RETAINED_PATH, "utf8");
@@ -279,17 +301,38 @@ test("OSC 11 query uses stable Promise and timeout callbacks", () => {
 	assert.equal(closures, 0);
 	const body = query.getText(source);
 	assert.match(body, /new Promise<RgbColor \| undefined>\(this\.captureOsc11BackgroundResolve\)/);
-	assert.match(body, /setTimeout\(this\.handleOsc11BackgroundTimeout, timeoutMs\)/);
+	assert.match(body, /setTimeout\(this\.handleOsc11BackgroundTimeout, timeoutMs, this\.osc11BackgroundActiveGeneration\)/);
 	assert.match(body, /if \(this\.osc11BackgroundQueryPromise\) return this\.osc11BackgroundQueryPromise/);
 	assert.match(body, /this\.osc11BackgroundActiveGeneration = \+\+this\.osc11BackgroundWaveGeneration/);
+	const timeout = source.statements
+		.filter(ts.isClassDeclaration)
+		.flatMap((statement) => statement.members)
+		.find(
+			(member): member is ts.PropertyDeclaration =>
+				ts.isPropertyDeclaration(member)
+				&& ts.isIdentifier(member.name)
+				&& member.name.text === "handleOsc11BackgroundTimeout",
+		);
+	assert.ok(timeout?.initializer && ts.isArrowFunction(timeout.initializer));
+	assert.match(timeout.initializer.getText(source), /^\(generation: number\).*if \(generation !== this\.osc11BackgroundActiveGeneration\) return;/s);
 	assert.match(text, /share the first caller's[\s\S]*deadline/);
 	assert.doesNotMatch(text, /pendingOsc11BackgroundQueries|pendingOsc11BackgroundReplies|query\.settled/);
+	assert.doesNotMatch(text, /osc11BackgroundTombstoneGeneration/);
 });
 
 test("overlay focus lookup paths avoid per-call find and some callbacks", () => {
 	const text = readFileSync(TUI_PATH, "utf8");
-	assert.doesNotMatch(text, /\.(?:find|some)\(/);
 	const source = ts.createSourceFile(TUI_PATH, text, ts.ScriptTarget.Latest, true);
+	for (const methodName of [
+		"setFocusInternal",
+		"handleTerminalInput",
+		"hasOverlay",
+		"isOverlayFocusAncestor",
+		"isComponentMounted",
+		"containsComponent",
+	]) {
+		assert.doesNotMatch(findMethod(source, "TuiBase", methodName).getText(source), /\.(?:find|some)\(/, methodName);
+	}
 	const input = findMethod(source, "TuiBase", "handleTerminalInput");
 	let closures = 0;
 	const visit = (node: ts.Node): void => {

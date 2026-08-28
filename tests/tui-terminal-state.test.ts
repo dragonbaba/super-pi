@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
+import { runInNewContext } from "node:vm";
+import { Input } from "../packages/tui/src/components/input.ts";
+import { RetainedItem } from "../packages/tui/src/components/retained-item.ts";
 import type { Terminal } from "../packages/tui/src/terminal.ts";
-import { TuiBase, type Component } from "../packages/tui/src/tui.ts";
+import { Container, TuiBase, type Component } from "../packages/tui/src/tui.ts";
 
 class QueryTerminal implements Terminal {
 	columns = 80;
@@ -66,6 +70,112 @@ class FocusComponent implements Component {
 	invalidate(): void {}
 }
 
+class InheritedContainer extends Container {}
+
+class OverriddenContainer extends Container {
+	override render(width: number): string[] {
+		return [`overridden:${width}`];
+	}
+}
+
+class CachedLinesComponent implements Component {
+	readonly lines = ["cached"];
+
+	render(): string[] {
+		return this.lines;
+	}
+
+	invalidate(): void {}
+}
+
+class ThrowingComponent implements Component {
+	private readonly error: Error;
+
+	constructor(error: Error) {
+		this.error = error;
+	}
+
+	render(): string[] {
+		throw this.error;
+	}
+
+	invalidate(): void {}
+}
+
+test("Container returns fresh caller-owned outer arrays without mutating child caches", () => {
+	const cached = new CachedLinesComponent();
+	const container = new Container();
+	container.addChild(cached);
+	const first = container.render(80);
+	const second = container.render(80);
+	assert.notEqual(first, second);
+	assert.deepEqual(first, ["cached"]);
+	assert.deepEqual(second, ["cached"]);
+	first[0] = "mutated";
+	first.push("outer-only");
+	assert.deepEqual(cached.lines, ["cached"]);
+	assert.deepEqual(container.render(80), ["cached"]);
+});
+
+test("Container flattening preserves inherited and overridden renders without JS name collisions", () => {
+	const root = new Container();
+	const nested = new InheritedContainer();
+	nested.addChild({ render: (width) => [`nested:${width}`], invalidate(): void {} });
+	let collidingCalls = 0;
+	(nested as unknown as { renderInto: (width: number, target: string[]) => void }).renderInto = () => {
+		collidingCalls++;
+	};
+	root.addChild(nested);
+	root.addChild(new OverriddenContainer());
+	assert.deepEqual(root.render(42), ["nested:42", "overridden:42"]);
+	assert.equal(collidingCalls, 0);
+});
+
+test("Container naturally falls back to foreign components and propagates render errors", () => {
+	const foreign = runInNewContext(`({ render(width) { return ["foreign:" + width]; } })`) as Component;
+	const root = new Container();
+	root.addChild(foreign);
+	assert.deepEqual(root.render(33), ["foreign:33"]);
+	const expected = new Error("render failed");
+	root.addChild(new ThrowingComponent(expected));
+	assert.throws(() => root.render(33), (error) => error === expected);
+});
+
+test("default retained items share one module-level context callback", () => {
+	const component = new CachedLinesComponent();
+	const callbacks = new Set<unknown>();
+	let context: unknown;
+	for (let index = 0; index < 100_000; index++) {
+		const item = new RetainedItem(component, { id: `item-${index}`, version: 0 });
+		const callback = (item as unknown as { getContext: () => unknown }).getContext;
+		callbacks.add(callback);
+		const nextContext = callback();
+		context ??= nextContext;
+		assert.equal(nextContext, context);
+	}
+	assert.equal(callbacks.size, 1);
+});
+
+test("Input grapheme hot paths avoid callback arrays and preserve Unicode clusters", () => {
+	const source = readFileSync("packages/tui/src/components/input.ts", "utf8");
+	assert.doesNotMatch(source, /\[\.\.\.data\]\.some\(/);
+	assert.doesNotMatch(source, /\[\.\.\.segmenter\.segment\((?:beforeCursor|afterCursor)\)\]/);
+
+	const input = new Input();
+	input.handleInput("A");
+	input.handleInput("中");
+	input.handleInput("👨‍👩‍👧‍👦");
+	input.handleInput("e\u0301");
+	assert.equal(input.getValue(), "A中👨‍👩‍👧‍👦e\u0301");
+	input.handleInput("\u001b[D");
+	input.handleInput("\u007f");
+	assert.equal(input.getValue(), "A中e\u0301");
+	input.handleInput("\u001b[H");
+	input.handleInput("\u001b[C");
+	input.handleInput("\u001b[3~");
+	assert.equal(input.getValue(), "Ae\u0301");
+});
+
 test("TuiBase reuses terminal input and resize callbacks across lifecycle restarts", async () => {
 	const terminal = new QueryTerminal();
 	const tui = new QueryTui(terminal);
@@ -118,6 +228,53 @@ test("OSC 11 query wave shares the first caller deadline", async () => {
 		assert.equal(state.osc11BackgroundQueryTimer._idleTimeout, 50);
 		assert.equal(state.osc11BackgroundActiveGeneration, firstGeneration);
 		assert.equal(await first, undefined);
+	} finally {
+		await tui.dispose();
+	}
+});
+
+test("OSC 11 stale timeout generation cannot settle a replacement wave", async () => {
+	const terminal = new QueryTerminal();
+	const tui = new QueryTui(terminal);
+	tui.start();
+	const state = tui as unknown as {
+		handleOsc11BackgroundTimeout(generation: number): void;
+		osc11BackgroundQueryPromise: Promise<unknown> | undefined;
+		osc11BackgroundQueryResolve: ((value: unknown) => void) | undefined;
+		osc11BackgroundQueryTimer: NodeJS.Timeout | undefined;
+		osc11BackgroundPhysicalOutstanding: boolean;
+		osc11BackgroundTombstone: boolean;
+		osc11BackgroundUnsupported: boolean;
+		osc11BackgroundActiveGeneration: number;
+	};
+	try {
+		const first = tui.queryTerminalBackgroundColor({ timeoutMs: 60_000 });
+		const firstGeneration = state.osc11BackgroundActiveGeneration;
+		assert.ok(firstGeneration > 0);
+		if (state.osc11BackgroundQueryTimer) clearTimeout(state.osc11BackgroundQueryTimer);
+		state.handleOsc11BackgroundTimeout(firstGeneration);
+		assert.equal(await first, undefined);
+
+		const second = tui.queryTerminalBackgroundColor({ timeoutMs: 60_000 });
+		const secondGeneration = state.osc11BackgroundActiveGeneration;
+		const secondTimer = state.osc11BackgroundQueryTimer;
+		const secondResolve = state.osc11BackgroundQueryResolve;
+		assert.ok(secondGeneration > firstGeneration);
+		assert.ok(secondTimer);
+		assert.equal(state.osc11BackgroundQueryPromise, second);
+
+		state.handleOsc11BackgroundTimeout(firstGeneration);
+		assert.equal(state.osc11BackgroundActiveGeneration, secondGeneration);
+		assert.equal(state.osc11BackgroundQueryPromise, second);
+		assert.equal(state.osc11BackgroundQueryResolve, secondResolve);
+		assert.equal(state.osc11BackgroundQueryTimer, secondTimer);
+		assert.equal(state.osc11BackgroundPhysicalOutstanding, false);
+		assert.equal(state.osc11BackgroundTombstone, true);
+		assert.equal(state.osc11BackgroundUnsupported, false);
+
+		clearTimeout(secondTimer);
+		state.handleOsc11BackgroundTimeout(secondGeneration);
+		assert.equal(await second, undefined);
 	} finally {
 		await tui.dispose();
 	}
@@ -211,7 +368,7 @@ test("OSC 11 caches unsupported after one follower deadline and bounds 10,000 no
 	const tui = new QueryTui(terminal);
 	tui.start();
 	const state = tui as unknown as {
-		handleOsc11BackgroundTimeout(): void;
+		handleOsc11BackgroundTimeout(generation: number): void;
 		osc11BackgroundQueryPromise: Promise<unknown> | undefined;
 		osc11BackgroundQueryTimer: NodeJS.Timeout | undefined;
 		osc11BackgroundQueryResolve: ((value: unknown) => void) | undefined;
@@ -220,7 +377,6 @@ test("OSC 11 caches unsupported after one follower deadline and bounds 10,000 no
 		osc11BackgroundUnsupported: boolean;
 		osc11BackgroundWaveGeneration: number;
 		osc11BackgroundActiveGeneration: number;
-		osc11BackgroundTombstoneGeneration: number;
 	};
 	let maximumRecords = 0;
 	let maximumTombstones = 0;
@@ -236,7 +392,7 @@ test("OSC 11 caches unsupported after one follower deadline and bounds 10,000 no
 			maximumResolvers = Math.max(maximumResolvers, state.osc11BackgroundQueryResolve ? 1 : 0);
 			if (state.osc11BackgroundQueryTimer) {
 				clearTimeout(state.osc11BackgroundQueryTimer);
-				state.handleOsc11BackgroundTimeout();
+				state.handleOsc11BackgroundTimeout(state.osc11BackgroundActiveGeneration);
 			} else if (index >= 2) {
 				unsupportedResult ??= wave;
 				assert.equal(wave, unsupportedResult);
@@ -251,7 +407,6 @@ test("OSC 11 caches unsupported after one follower deadline and bounds 10,000 no
 		assert.equal(terminal.writes.filter((write) => write === "\x1b]11;?\x07").length, 1);
 		assert.equal(state.osc11BackgroundPhysicalOutstanding, false);
 		assert.equal(state.osc11BackgroundTombstone, false);
-		assert.equal(state.osc11BackgroundTombstoneGeneration, 0);
 		assert.equal(state.osc11BackgroundUnsupported, true);
 		assert.equal(maximumRecords, 1);
 		assert.equal(maximumTombstones, 1);
@@ -261,7 +416,6 @@ test("OSC 11 caches unsupported after one follower deadline and bounds 10,000 no
 		await tui.dispose();
 	}
 	assert.equal(state.osc11BackgroundTombstone, false);
-	assert.equal(state.osc11BackgroundTombstoneGeneration, 0);
 	assert.equal(state.osc11BackgroundUnsupported, false);
 });
 
@@ -270,18 +424,19 @@ test("a late OSC 11 reply clears unsupported cache and permits a fresh successfu
 	const tui = new QueryTui(terminal);
 	tui.start();
 	const state = tui as unknown as {
-		handleOsc11BackgroundTimeout(): void;
+		handleOsc11BackgroundTimeout(generation: number): void;
 		osc11BackgroundQueryTimer: NodeJS.Timeout | undefined;
 		osc11BackgroundUnsupported: boolean;
+		osc11BackgroundActiveGeneration: number;
 	};
 	try {
 		const physical = tui.queryTerminalBackgroundColor({ timeoutMs: 60_000 });
 		if (state.osc11BackgroundQueryTimer) clearTimeout(state.osc11BackgroundQueryTimer);
-		state.handleOsc11BackgroundTimeout();
+		state.handleOsc11BackgroundTimeout(state.osc11BackgroundActiveGeneration);
 		assert.equal(await physical, undefined);
 		const follower = tui.queryTerminalBackgroundColor({ timeoutMs: 60_000 });
 		if (state.osc11BackgroundQueryTimer) clearTimeout(state.osc11BackgroundQueryTimer);
-		state.handleOsc11BackgroundTimeout();
+		state.handleOsc11BackgroundTimeout(state.osc11BackgroundActiveGeneration);
 		assert.equal(await follower, undefined);
 		assert.equal(state.osc11BackgroundUnsupported, true);
 		const unsupported = tui.queryTerminalBackgroundColor({ timeoutMs: 60_000 });
@@ -305,14 +460,14 @@ test("OSC 11 new wave succeeds after the timed-out physical reply is consumed", 
 	const tui = new QueryTui(terminal);
 	tui.start();
 	const state = tui as unknown as {
-		handleOsc11BackgroundTimeout(): void;
+		handleOsc11BackgroundTimeout(generation: number): void;
 		osc11BackgroundQueryTimer: NodeJS.Timeout | undefined;
 		osc11BackgroundActiveGeneration: number;
 	};
 	try {
 		const timedOut = tui.queryTerminalBackgroundColor({ timeoutMs: 60_000 });
 		if (state.osc11BackgroundQueryTimer) clearTimeout(state.osc11BackgroundQueryTimer);
-		state.handleOsc11BackgroundTimeout();
+		state.handleOsc11BackgroundTimeout(state.osc11BackgroundActiveGeneration);
 		assert.equal(await timedOut, undefined);
 		const current = tui.queryTerminalBackgroundColor({ timeoutMs: 60_000 });
 		const currentGeneration = state.osc11BackgroundActiveGeneration;
