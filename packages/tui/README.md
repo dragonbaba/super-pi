@@ -82,6 +82,8 @@ tui.onDebug = () => console.log("Debug triggered");
 
 Final `ProcessTerminal.dispose()` immediately rejects restart and new writes and releases logical queue callbacks. If a frame or control write still belongs to the OS, the terminal retains only its physical write state and stream error observer until the callback/drain/error/close boundary settles. A write that never settles therefore deliberately retains that minimal observer; this is required to contain a possible late stream `error` event rather than falsely reporting physical completion.
 
+Terminal-input admission closes synchronously when `stop()` begins, including while terminal-frame backpressure keeps physical teardown pending. OSC 11 background-color and terminal color-scheme protocol replies are still consumed so their bounded query state can settle, but ordinary input listeners, cell-size/debug actions, overlay/focus routing, and focused components are not invoked. If an input handler starts `stop()` during its own dispatch, the remainder of that dispatch is also quiesced and no follow-up render intent is scheduled. A successful restart of the same TUI reopens ordinary input admission. This is a stop-pending input guard, not a general lifecycle Promise mutex.
+
 ### Alternate-screen viewport layouts
 
 `TuiAltScreen` can render an explicit terminal-height layout. `VStack` and `HStack` allocate constrained regions, while `ScrollView` owns scrolling for one region. These semantics are intentionally unavailable on `TuiMainScreen`, where the terminal owns scrollback.
