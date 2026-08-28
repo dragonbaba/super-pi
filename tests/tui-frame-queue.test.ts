@@ -2138,29 +2138,32 @@ test("100k Agent observer and session delivery preserve synchronous UI lanes", (
 	const result = JSON.parse(child.stdout) as {
 		fixtures: Array<{
 			name: string;
-			results: Array<{ name: string; updates: number; metrics: Record<string, number> }>;
+			results: Array<{
+				name: string;
+				updates: number;
+				metrics: Record<string, number>;
+				sourceInvariant: Record<string, number>;
+			}>;
 		}>;
 	};
-	assert.deepEqual(result.fixtures.map((fixture) => fixture.name), [
-		"agent-session-to-interactive",
-		"agent-observer-to-interactive",
-	]);
-	const direct = result.fixtures[0]!.results;
+	assert.deepEqual(result.fixtures.map((fixture) => fixture.name), ["agent-session-to-interactive-stub"]);
+	const direct = result.fixtures[0]!.results.slice(0, 2);
 	assert.deepEqual(direct.map((entry) => entry.name), ["message_update", "tool_execution_update"]);
 	for (const entry of direct) {
 		assert.equal(entry.updates, 100_000);
 		assert.equal(entry.metrics.builtInListenerPromisesPerUpdate, 0);
 		assert.equal(entry.metrics.rejectionObserversPerUpdate, 0);
-		assert.equal(entry.metrics.sourceInvariantToolWrapperObjectsPerUpdate, 0);
-		assert.equal(entry.metrics.sourceInvariantInlineClosuresPerUpdate, 0);
-		assert.equal(entry.metrics.sourceInvariantPromiseTailsPerUpdate, 0);
-		assert.equal(entry.metrics.sourceInvariantPromiseArraysPerUpdate, 0);
-		assert.equal(entry.metrics.sourceInvariantArraysPerUpdate, 0);
+		assert.equal(entry.sourceInvariant.toolWrapperObjectsPerUpdate, 0);
+		assert.equal(entry.sourceInvariant.inlineClosuresPerUpdate, 0);
+		assert.equal(entry.sourceInvariant.promiseTailsPerUpdate, 0);
+		assert.equal(entry.sourceInvariant.promiseArraysPerUpdate, 0);
+		assert.equal(entry.sourceInvariant.arraysPerUpdate, 0);
 		assert.equal(entry.metrics.finalUpdateCorrect, 1);
 		assert.ok(entry.metrics.sampledAllocationBytesPerUpdate >= 0);
 		assert.ok(entry.metrics.cpuP95MsPerUpdate >= entry.metrics.cpuP50MsPerUpdate);
 	}
-	const fullChain = result.fixtures[1]!.results[0]!;
+	const fullChain = result.fixtures[0]!.results[2]!;
+	assert.equal(fullChain.name, "observer-coalesced-message_update");
 	assert.equal(fullChain.updates, 100_000);
 	assert.equal(fullChain.metrics.rawUpdates, 100_000);
 	assert.equal(fullChain.metrics.coalescedUpdates, 99_999);
@@ -2172,11 +2175,127 @@ test("100k Agent observer and session delivery preserve synchronous UI lanes", (
 	assert.equal(fullChain.metrics.observerBridgePromisesPerDelivery, 0);
 	assert.equal(fullChain.metrics.builtInInteractivePromisesPerDelivery, 0);
 	assert.equal(fullChain.metrics.rejectionObserversPerDelivery, 0);
-	assert.equal(fullChain.metrics.sourceInvariantToolWrapperObjectsPerUpdate, 0);
+	assert.equal(fullChain.sourceInvariant.toolWrapperObjectsPerUpdate, 0);
 	assert.equal(fullChain.metrics.finalUpdateCorrect, 1);
 	assert.ok(fullChain.metrics.sampledAllocationBytesPerRawUpdate >= 0);
 	assert.ok(fullChain.metrics.sampledAllocationBytesPerDelivery >= 0);
 	assert.ok(fullChain.metrics.cpuP95MsPerRawUpdate >= fullChain.metrics.cpuP50MsPerRawUpdate);
+});
+
+test("interactive reference allocation fixture preserves stable forwarding identity", () => {
+	const child = spawnSync(
+		process.execPath,
+		[
+			"--expose-gc",
+			"--experimental-strip-types",
+			"scripts/bench/tui-interactive-reference-allocations.ts",
+			"--iterations", "10000",
+		],
+		{ cwd: process.cwd(), encoding: "utf8", timeout: 15_000 },
+	);
+	assert.equal(child.status, 0, child.stderr);
+	const result = JSON.parse(child.stdout) as {
+		fixture: string;
+		rendererSwitchCorrect: boolean;
+		results: Array<{ metrics: Record<string, number> }>;
+	};
+	assert.equal(result.fixture, "interactive-reference-bridge");
+	assert.equal(result.rendererSwitchCorrect, true);
+	for (const entry of result.results) {
+		assert.equal(entry.metrics.uniqueRequestRenderFunctions, 1);
+		assert.equal(entry.metrics.wrapperAllocationsAfterInitialization, 0);
+	}
+});
+
+test("paced real-leaf fixture delivers every twentieth update through viewport and frame queue", () => {
+	const child = spawnSync(
+		process.execPath,
+		[
+			"--expose-gc",
+			"--experimental-strip-types",
+			"scripts/bench/tui-paced-real-leaf.ts",
+			"--deliveries", "20",
+			"--warmup-deliveries", "2",
+			"--history-items", "500",
+			"--sampling-interval", "32768",
+		],
+		{ cwd: process.cwd(), encoding: "utf8", timeout: 20_000 },
+	);
+	assert.equal(child.status, 0, child.stderr);
+	const result = JSON.parse(child.stdout) as {
+		rawPerDelivery: number;
+		fixtures: Array<{
+			name: string;
+			rawUpdates: number;
+			actualDeliveries: number;
+			metrics: Record<string, number>;
+		}>;
+	};
+	assert.equal(result.rawPerDelivery, 20);
+	assert.deepEqual(result.fixtures.map((fixture) => fixture.name), [
+		"generic-tool-progress-history-500",
+		"generic-tool-progress",
+		"built-in-tool-progress",
+		"custom-tool-progress",
+		"assistant-plain-text",
+		"assistant-thinking",
+	]);
+	for (const fixture of result.fixtures) {
+		assert.equal(fixture.rawUpdates, 400, fixture.name);
+		assert.equal(fixture.actualDeliveries, 20, fixture.name);
+		assert.equal(fixture.metrics.coalescedUpdates, 380, fixture.name);
+		assert.equal(fixture.metrics.deliveries, 20, fixture.name);
+		assert.equal(fixture.metrics.snapshotCount, 20, fixture.name);
+		assert.equal(fixture.metrics.requestRenderCalls, 20, fixture.name);
+		assert.equal(fixture.metrics.doRenderCalls, 20, fixture.name);
+		assert.equal(fixture.metrics.frameWrites, 20, fixture.name);
+		assert.equal(fixture.metrics.completedItemRenders, 0, fixture.name);
+		assert.equal(fixture.metrics.builtInListenerPromises, 0, fixture.name);
+		assert.equal(fixture.metrics.finalSentinelCorrect, 1, fixture.name);
+		assert.equal(fixture.metrics.schedulerPendingTasks, 0, fixture.name);
+		assert.ok(fixture.metrics.sampledAllocationBytesPerRawUpdate >= 0, fixture.name);
+		assert.ok(fixture.metrics.sampledAllocationBytesPerDelivery >= 0, fixture.name);
+		assert.ok(fixture.metrics.cpuP95MsPerDelivery >= fixture.metrics.cpuP50MsPerDelivery, fixture.name);
+	}
+});
+
+test("real leaf allocation fixtures execute production tool and Markdown components", () => {
+	const child = spawnSync(
+		process.execPath,
+		[
+			"--expose-gc",
+			"--experimental-strip-types",
+			"scripts/bench/tui-real-leaf-allocations.ts",
+			"--updates", "100",
+			"--warmup", "20",
+			"--structural-updates", "1000",
+		],
+		{ cwd: process.cwd(), encoding: "utf8", timeout: 30_000 },
+	);
+	assert.equal(child.status, 0, child.stderr);
+	const result = JSON.parse(child.stdout) as {
+		structuralGate: Record<string, number>;
+		fixtures: Array<{
+			name: string;
+			coverage: Record<string, boolean>;
+			results: Array<{ metrics: Record<string, number> }>;
+		}>;
+	};
+	assert.deepEqual(result.fixtures.map((fixture) => fixture.name), [
+		"production-tool-progress",
+		"production-assistant-markdown-stream",
+	]);
+	assert.equal(result.fixtures[0]!.coverage.realToolComponent, true);
+	assert.equal(result.fixtures[1]!.coverage.realMarkdown, true);
+	assert.equal(result.fixtures[1]!.coverage.realFrameQueue, true);
+	assert.equal(result.structuralGate.updates, 1000);
+	assert.equal(result.structuralGate.assistantNewMaps, 0);
+	assert.equal(result.structuralGate.assistantSlotRecordObjects, 0);
+	assert.equal(result.structuralGate.assistantMarkdownInstances, 0);
+	assert.equal(result.structuralGate.toolWrapperObjectsPerUpdate, 0);
+	assert.equal(result.structuralGate.toolCallRendererCalls, 0);
+	assert.equal(result.structuralGate.toolArgsSerializations, 0);
+	assert.equal(result.structuralGate.toolRequestRenderCalls, 1000);
 });
 
 test("AgentSession observer bridge source is synchronous before extension coalescing", () => {
