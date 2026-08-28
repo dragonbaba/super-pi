@@ -1,4 +1,11 @@
-import type { Api, AssistantMessage, AssistantMessageEvent, Model, ProviderStreams } from "../types.ts";
+import type {
+	Api,
+	AssistantMessage,
+	AssistantMessageEvent,
+	Model,
+	ProviderStreams,
+	StreamedToolArgumentOwnership,
+} from "../types.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 
 function createSetupErrorMessage(model: Model<Api>, error: unknown): AssistantMessage {
@@ -70,8 +77,13 @@ export interface LazyApiCapabilities {
 	cancelDeferred?: boolean;
 }
 
-export function lazyApi(load: () => Promise<ProviderStreams>, capabilities?: LazyApiCapabilities): ProviderStreams {
+export function lazyApi(
+	load: () => Promise<ProviderStreams>,
+	streamedToolArgumentOwnership: StreamedToolArgumentOwnership,
+	capabilities?: LazyApiCapabilities,
+): ProviderStreams {
 	const api: ProviderStreams = {
+		streamedToolArgumentOwnership,
 		stream: (model, context, options) =>
 			lazyStream(model, async () => (await load()).stream(model, context, options)),
 		streamSimple: (model, context, options) =>

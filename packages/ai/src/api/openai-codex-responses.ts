@@ -36,6 +36,8 @@ import type {
 	StreamOptions,
 	Usage,
 } from "../types.ts";
+
+export const streamedToolArgumentOwnership = "mutation-with-generation" as const;
 import { combineAbortSignals } from "../utils/abort-signals.ts";
 import { splitDeferredTools } from "../utils/deferred-tools.ts";
 import {

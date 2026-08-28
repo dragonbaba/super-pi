@@ -48,6 +48,8 @@ import type {
 	ToolCall,
 	ToolResultMessage,
 } from "../types.ts";
+
+export const streamedToolArgumentOwnership = "mutation-with-generation" as const;
 import { appendAssistantMessageDiagnostic } from "../utils/diagnostics.ts";
 import { normalizeProviderError } from "../utils/error-body.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";

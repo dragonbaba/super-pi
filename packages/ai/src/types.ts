@@ -84,6 +84,15 @@ export type ThinkingLevel = "minimal" | "low" | "medium" | "high" | "xhigh" | "m
 export type ModelThinkingLevel = "off" | ThinkingLevel;
 export type ThinkingLevelMap = Partial<Record<ModelThinkingLevel, string | null>>;
 
+/**
+ * Ownership contract for arguments on streamed tool-call blocks.
+ *
+ * `mutation-with-generation` adapters mutate one arguments object and expose a
+ * transient partial-json generation string on every update. `replacement-object`
+ * adapters replace the arguments object whenever its semantic value changes.
+ */
+export type StreamedToolArgumentOwnership = "replacement-object" | "mutation-with-generation";
+
 /** Provenance of the metadata used to construct a runtime model profile. */
 export type ModelProfileSource =
 	| "built-in"
@@ -345,6 +354,7 @@ export type ApiStreamOptions<TApi extends Api> = TApi extends keyof ApiOptionsMa
  * `Provider.stream()` via `ApiStreamOptions`.
  */
 export interface ProviderStreams {
+	readonly streamedToolArgumentOwnership: StreamedToolArgumentOwnership;
 	stream(model: Model<Api>, context: Context, options?: StreamOptions): AssistantMessageEventStream;
 	streamSimple(model: Model<Api>, context: Context, options?: SimpleStreamOptions): AssistantMessageEventStream;
 	fetchDeferred?(

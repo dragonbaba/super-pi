@@ -14,6 +14,8 @@ import type {
 	Tool,
 	ToolCall,
 } from "../types.ts";
+
+export const streamedToolArgumentOwnership = "mutation-with-generation" as const;
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { observeEffectiveDispatch } from "../utils/effective-dispatch.ts";
 import { shortHash } from "../utils/hash.ts";

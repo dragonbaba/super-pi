@@ -22,6 +22,8 @@ import type {
 	ThinkingLevel,
 	ToolCall,
 } from "../types.ts";
+
+export const streamedToolArgumentOwnership = "replacement-object" as const;
 import { capabilityCacheRetention, contextForModelCapabilities, getModelCapabilities } from "../model-capabilities.ts";
 import { clampThinkingLevel } from "../models.ts";
 import { appendAssistantMessageDiagnostic, createAssistantMessageDiagnostic } from "../utils/diagnostics.ts";

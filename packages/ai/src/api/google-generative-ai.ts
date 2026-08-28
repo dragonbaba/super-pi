@@ -21,6 +21,8 @@ import type {
 	ThinkingLevel,
 	ToolCall,
 } from "../types.ts";
+
+export const streamedToolArgumentOwnership = "replacement-object" as const;
 import { formatProviderError, normalizeProviderError } from "../utils/error-body.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { observeEffectiveDispatch } from "../utils/effective-dispatch.ts";

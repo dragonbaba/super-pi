@@ -55,6 +55,7 @@ import type {
 	ProviderStreamOptions,
 	ProviderStreams,
 	SimpleStreamOptions,
+	StreamedToolArgumentOwnership,
 	StreamFunction,
 	StreamOptions,
 } from "./types.ts";
@@ -82,12 +83,15 @@ export type ApiStreamSimpleFunction = (
 
 export interface ApiProvider<TApi extends Api = Api, TOptions extends StreamOptions = StreamOptions> {
 	api: TApi;
+	/** Omitted only by legacy/custom providers that have not adopted the ownership contract. */
+	streamedToolArgumentOwnership?: StreamedToolArgumentOwnership;
 	stream: StreamFunction<TApi, TOptions>;
 	streamSimple: StreamFunction<TApi, SimpleStreamOptions>;
 }
 
 interface ApiProviderInternal {
 	api: Api;
+	streamedToolArgumentOwnership?: StreamedToolArgumentOwnership;
 	stream: ApiStreamFunction;
 	streamSimple: ApiStreamSimpleFunction;
 }
@@ -130,6 +134,7 @@ export function registerApiProvider<TApi extends Api, TOptions extends StreamOpt
 	apiProviderRegistry.set(provider.api, {
 		provider: {
 			api: provider.api,
+			streamedToolArgumentOwnership: provider.streamedToolArgumentOwnership,
 			stream: wrapStream(provider.api, provider.stream),
 			streamSimple: wrapStreamSimple(provider.api, provider.streamSimple),
 		},
@@ -139,6 +144,11 @@ export function registerApiProvider<TApi extends Api, TOptions extends StreamOpt
 
 export function getApiProvider(api: Api): ApiProviderInternal | undefined {
 	return apiProviderRegistry.get(api)?.provider;
+}
+
+/** Returns the adapter-owned streamed tool-argument contract, if declared. */
+export function getStreamedToolArgumentOwnership(api: Api): StreamedToolArgumentOwnership | undefined {
+	return apiProviderRegistry.get(api)?.provider.streamedToolArgumentOwnership;
 }
 
 export function getApiProviders(): ApiProviderInternal[] {
@@ -198,7 +208,12 @@ const builtinApiProviderInstances = new Map<Api, ReturnType<typeof getApiProvide
 export function registerBuiltInApiProviders(): void {
 	for (const [api, streams] of BUILTIN_APIS) {
 		if (!getApiProvider(api)) {
-			registerApiProvider({ api, stream: streams.stream, streamSimple: streams.streamSimple });
+			registerApiProvider({
+				api,
+				streamedToolArgumentOwnership: streams.streamedToolArgumentOwnership,
+				stream: streams.stream,
+				streamSimple: streams.streamSimple,
+			});
 		}
 		builtinApiProviderInstances.set(api, getApiProvider(api));
 	}

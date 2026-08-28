@@ -1,4 +1,5 @@
 import { Box, type Component, Container, getCapabilities, Image, Spacer, Text, type TUI } from "@super-pi/tui";
+import type { StreamedToolArgumentOwnership } from "@super-pi/ai";
 import type { ToolDefinition, ToolRenderContext } from "../../../core/extensions/types.ts";
 import { createAllToolDefinitions, type ToolName } from "../../../core/tools/index.ts";
 import { getTextOutput as getRenderedTextOutput } from "../../../core/tools/render-utils.ts";
@@ -11,6 +12,11 @@ import { READ_GROUP_BACKSLASH_PATTERN, READ_GROUP_IMAGE_EXTENSION_PATTERN } from
 const READ_GROUP_SPECIAL_BASENAMES = new Set(["skill.md", "agents.md", "agents.override.md", "claude.md"]);
 const READ_GROUP_MAX_PREVIEW_CHARS = 4000;
 const READ_GROUP_MAX_PREVIEW_LINES = 50;
+const toolPendingBackground = (text: string): string => theme.bg("toolPendingBg", text);
+const toolErrorBackground = (text: string): string => theme.bg("toolErrorBg", text);
+const toolSuccessBackground = (text: string): string => theme.bg("toolSuccessBg", text);
+const toolImageFallbackColor = (text: string): string => theme.fg("toolOutput", text);
+type ToolArgsGeneration = string | number | undefined;
 const READ_GROUP_SELECTOR_SET_POOL = new ObjectPool(
 	() => new Set<string>(),
 	(selectors) => selectors.clear(),
@@ -68,7 +74,14 @@ function normalizeReadGroupPath(filePath: string): string {
 
 function getReadGroupResultText(result: ToolResultLike | undefined): string {
 	if (!Array.isArray(result?.content)) return "";
-	return result.content.filter((block) => block?.type === "text" && typeof block.text === "string").map((block) => block.text).join("\n");
+	let text = "";
+	for (let index = 0; index < result.content.length; index++) {
+		const block = result.content[index];
+		if (block?.type !== "text" || typeof block.text !== "string") continue;
+		if (text) text += "\n";
+		text += block.text;
+	}
+	return text;
 }
 
 function boundReadGroupPreview(text: string, maxLines: number): string {
@@ -215,6 +228,23 @@ export interface ToolExecutionOptions {
 	imageWidthCells?: number;
 	/** Clears this component's retained sidecar after a late visual update. */
 	onVisualInvalidate?: (component: ToolExecutionComponent) => void;
+	/** Optional benchmark counters. The component only mutates primitive fields. */
+	allocationMetrics?: ToolExecutionAllocationMetrics;
+}
+
+export interface ToolExecutionAllocationMetrics {
+	updateDisplayCalls: number;
+	callRendererCalls: number;
+	resultRendererCalls: number;
+	componentCreations: number;
+	renderContextObjects: number;
+	internalWrapperObjects: number;
+	imageScans: number;
+	argsSerializations: number;
+	toolArgsGenerationUpdates: number;
+	toolArgsReplacementUpdates: number;
+	toolArgsSemanticFallbackComparisons: number;
+	toolArgsMissingGenerationDiagnostics: number;
 }
 
 export class ToolExecutionComponent extends Container {
@@ -224,11 +254,17 @@ export class ToolExecutionComponent extends Container {
 	private callRendererComponent?: Component;
 	private resultRendererComponent?: Component;
 	private rendererState: any = {};
-	private imageComponents: Image[] = [];
-	private imageSpacers: Spacer[] = [];
+	private readonly imageComponents: Image[] = [];
+	private readonly imageSpacers: Spacer[] = [];
+	private readonly imageSourceData: string[] = [];
+	private readonly imageSourceMimeTypes: string[] = [];
+	private readonly pendingImageSourceData: Array<string | undefined> = [];
+	private readonly pendingImageSourceMimeTypes: Array<string | undefined> = [];
 	private toolName: string;
 	private toolCallId: string;
 	private args: any;
+	private argsGeneration: ToolArgsGeneration;
+	private argsSemanticJson: string | undefined;
 	private expanded = false;
 	private showImages: boolean;
 	private imageWidthCells: number;
@@ -246,7 +282,16 @@ export class ToolExecutionComponent extends Container {
 	};
 	private resultIsError = false;
 	private convertedImages: Map<number, { data: string; mimeType: string }> = new Map();
+	private callRendererDirty = true;
+	private argsDisplayDirty = true;
+	private argsDisplayJson = "";
+	private imageTreeShowImages = false;
+	private imageTreeWidthCells = 0;
+	private imageTreeProtocol: ReturnType<typeof getCapabilities>["images"] = null;
+	private imageConversionGeneration = 0;
+	private imageTreeConversionGeneration = -1;
 	private hideComponent = false;
+	private readonly allocationMetrics: ToolExecutionAllocationMetrics | undefined;
 	private readonly onVisualInvalidate: ((component: ToolExecutionComponent) => void) | undefined;
 	private readonly renderContextInvalidate = (): void => {
 		this.invalidate();
@@ -266,11 +311,14 @@ export class ToolExecutionComponent extends Container {
 		this.toolName = toolName;
 		this.toolCallId = toolCallId;
 		this.args = args;
+		this.argsGeneration = undefined;
+		this.argsSemanticJson = undefined;
 		this.toolDefinition = toolDefinition;
 		this.builtInToolDefinition = getBuiltInToolDefinition(cwd, toolName as ToolName);
 		this.showImages = options.showImages ?? true;
 		this.imageWidthCells = options.imageWidthCells ?? 60;
 		this.onVisualInvalidate = options.onVisualInvalidate;
+		this.allocationMetrics = options.allocationMetrics;
 		this.ui = ui;
 		this.cwd = cwd;
 
@@ -279,8 +327,8 @@ export class ToolExecutionComponent extends Container {
 		// Always create all shell variants. contentBox is used for default renderer-based composition.
 		// selfRenderContainer is used when the tool renders its own framing.
 		// contentText is reserved for generic fallback rendering when no tool definition exists.
-		this.contentBox = new Box(1, 1, (text: string) => theme.bg("toolPendingBg", text));
-		this.contentText = new Text("", 1, 1, (text: string) => theme.bg("toolPendingBg", text));
+		this.contentBox = new Box(1, 1, toolPendingBackground);
+		this.contentText = new Text("", 1, 1, toolPendingBackground);
 		this.selfRenderContainer = new Container();
 
 		if (this.hasRendererDefinition()) {
@@ -327,6 +375,7 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	private getRenderContext(lastComponent: Component | undefined): ToolRenderContext {
+		if (this.allocationMetrics) this.allocationMetrics.renderContextObjects++;
 		return {
 			args: this.args,
 			toolCallId: this.toolCallId,
@@ -344,6 +393,7 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	private createCallFallback(): Component {
+		if (this.allocationMetrics) this.allocationMetrics.componentCreations++;
 		return new Text(theme.fg("toolTitle", theme.bold(this.toolName)), 0, 0);
 	}
 
@@ -352,6 +402,7 @@ export class ToolExecutionComponent extends Container {
 		if (!output) {
 			return undefined;
 		}
+		if (this.allocationMetrics) this.allocationMetrics.componentCreations++;
 		if (this.expanded) return new Text(theme.fg("toolOutput", output), 0, 0);
 		let previewEnd = -1;
 		for (let line = 0; line < 10; line++) {
@@ -365,19 +416,111 @@ export class ToolExecutionComponent extends Container {
 		return new Text(preview + suffix, 0, 0);
 	}
 
-	updateArgs(args: any): void {
-		this.args = args;
+	/**
+	 * `generation` is the provider's transient partial-JSON buffer identity.
+	 * It makes same-object streaming mutations observable without serializing
+	 * unchanged arguments. New object identities are compared semantically so a
+	 * replacement with identical JSON does not rebuild the call renderer.
+	 */
+	updateArgs(
+		args: any,
+		generation?: ToolArgsGeneration,
+		ownership?: StreamedToolArgumentOwnership,
+	): void {
+		if (ownership === "mutation-with-generation") {
+			if (generation === undefined) {
+				if (this.allocationMetrics) this.allocationMetrics.toolArgsMissingGenerationDiagnostics++;
+				this.args = args;
+				this.argsGeneration = undefined;
+				this.argsSemanticJson = undefined;
+				this.callRendererDirty = true;
+				this.argsDisplayDirty = true;
+				this.updateDisplay();
+				return;
+			}
+			if (Object.is(this.argsGeneration, generation)) {
+				this.args = args;
+				return;
+			}
+			if (this.allocationMetrics) this.allocationMetrics.toolArgsGenerationUpdates++;
+			this.args = args;
+			this.argsGeneration = generation;
+			this.argsSemanticJson = undefined;
+			this.callRendererDirty = true;
+			this.argsDisplayDirty = true;
+			this.updateDisplay();
+			return;
+		}
+		if (ownership === "replacement-object") {
+			if (this.args === args) return;
+			if (this.allocationMetrics) this.allocationMetrics.toolArgsReplacementUpdates++;
+		} else {
+			if (this.args === args && Object.is(this.argsGeneration, generation)) return;
+			if (this.allocationMetrics) {
+				this.allocationMetrics.toolArgsMissingGenerationDiagnostics++;
+				this.allocationMetrics.toolArgsSemanticFallbackComparisons++;
+			}
+			if (generation !== undefined && Object.is(this.argsGeneration, generation)) {
+				this.args = args;
+				return;
+			}
+			if (generation !== undefined) {
+				this.args = args;
+				this.argsGeneration = generation;
+				this.argsSemanticJson = undefined;
+				this.callRendererDirty = true;
+				this.argsDisplayDirty = true;
+				this.updateDisplay();
+				return;
+			}
+		}
+		if (this.args !== args) {
+			const previousJson = this.argsSemanticJson ?? this.serializeArgs(this.args);
+			const nextJson = this.serializeArgs(args);
+			this.args = args;
+			this.argsGeneration = generation;
+			this.argsSemanticJson = nextJson;
+			if (previousJson !== undefined && previousJson === nextJson) {
+				this.argsDisplayJson = nextJson;
+				this.argsDisplayDirty = false;
+				return;
+			}
+			if (nextJson !== undefined) {
+				this.argsDisplayJson = nextJson;
+				this.argsDisplayDirty = false;
+			} else {
+				this.argsDisplayDirty = true;
+			}
+		} else {
+			this.argsGeneration = generation;
+			this.argsSemanticJson = undefined;
+			this.argsDisplayDirty = true;
+		}
+		this.callRendererDirty = true;
 		this.updateDisplay();
 	}
 
+	private serializeArgs(args: any): string | undefined {
+		try {
+			if (this.allocationMetrics) this.allocationMetrics.argsSerializations++;
+			return JSON.stringify(args, null, 2) ?? "";
+		} catch {
+			return undefined;
+		}
+	}
+
 	markExecutionStarted(): void {
+		if (this.executionStarted) return;
 		this.executionStarted = true;
+		this.callRendererDirty = true;
 		this.updateDisplay();
 		this.ui.requestRender();
 	}
 
 	setArgsComplete(): void {
+		if (this.argsComplete) return;
 		this.argsComplete = true;
+		this.callRendererDirty = true;
 		this.updateDisplay();
 		this.ui.requestRender();
 	}
@@ -403,17 +546,34 @@ export class ToolExecutionComponent extends Container {
 		if (caps.images !== "kitty") return;
 		if (!this.result) return;
 
-		const imageBlocks = this.result.content.filter((c) => c.type === "image");
-		for (let i = 0; i < imageBlocks.length; i++) {
-			const img = imageBlocks[i];
+		let imageIndex = 0;
+		for (let blockIndex = 0; blockIndex < this.result.content.length; blockIndex++) {
+			const img = this.result.content[blockIndex];
+			if (img.type !== "image") continue;
 			if (!img.data || !img.mimeType) continue;
+			const index = imageIndex++;
 			if (img.mimeType === "image/png") continue;
-			if (this.convertedImages.has(i)) continue;
+			if (this.convertedImages.has(index)) continue;
+			if (
+				this.pendingImageSourceData[index] === img.data &&
+				this.pendingImageSourceMimeTypes[index] === img.mimeType
+			) continue;
 
-			const index = i;
-			convertToPng(img.data, img.mimeType).then((converted) => {
+			const sourceData = img.data;
+			const sourceMimeType = img.mimeType;
+			this.pendingImageSourceData[index] = sourceData;
+			this.pendingImageSourceMimeTypes[index] = sourceMimeType;
+			convertToPng(sourceData, sourceMimeType).then((converted) => {
+				if (
+					this.pendingImageSourceData[index] !== sourceData ||
+					this.pendingImageSourceMimeTypes[index] !== sourceMimeType
+				) return;
+				this.pendingImageSourceData[index] = undefined;
+				this.pendingImageSourceMimeTypes[index] = undefined;
+				if (this.imageSourceData[index] !== sourceData || this.imageSourceMimeTypes[index] !== sourceMimeType) return;
 				if (converted) {
 					this.convertedImages.set(index, converted);
+					this.imageConversionGeneration++;
 					this.updateDisplay();
 					this.notifyVisualInvalidation();
 				}
@@ -427,17 +587,23 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	setExpanded(expanded: boolean): void {
+		if (this.expanded === expanded) return;
 		this.expanded = expanded;
+		this.callRendererDirty = true;
 		this.updateDisplay();
 	}
 
 	setShowImages(show: boolean): void {
+		if (this.showImages === show) return;
 		this.showImages = show;
+		this.callRendererDirty = true;
 		this.updateDisplay();
 	}
 
 	setImageWidthCells(width: number): void {
-		this.imageWidthCells = Math.max(1, Math.floor(width));
+		const nextWidth = Math.max(1, Math.floor(width));
+		if (this.imageWidthCells === nextWidth) return;
+		this.imageWidthCells = nextWidth;
 		this.updateDisplay();
 	}
 
@@ -479,11 +645,8 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	private updateDisplay(): void {
-		const bgFn = this.isPartial
-			? (text: string) => theme.bg("toolPendingBg", text)
-			: this.resultIsError
-				? (text: string) => theme.bg("toolErrorBg", text)
-				: (text: string) => theme.bg("toolSuccessBg", text);
+		if (this.allocationMetrics) this.allocationMetrics.updateDisplayCalls++;
+		const bgFn = this.isPartial ? toolPendingBackground : this.resultIsError ? toolErrorBackground : toolSuccessBackground;
 
 		let hasContent = false;
 		this.hideComponent = false;
@@ -492,23 +655,29 @@ export class ToolExecutionComponent extends Container {
 			if (renderContainer instanceof Box) {
 				renderContainer.setBgFn(bgFn);
 			}
-			renderContainer.clear();
+			renderContainer.children.length = 0;
 
 			const callRenderer = this.getCallRenderer();
-			if (!callRenderer) {
-				renderContainer.addChild(this.createCallFallback());
-				hasContent = true;
-			} else {
-				try {
-					const component = callRenderer(this.args, theme, this.getRenderContext(this.callRendererComponent));
-					this.callRendererComponent = component;
-					renderContainer.addChild(component);
-					hasContent = true;
-				} catch {
-					this.callRendererComponent = undefined;
-					renderContainer.addChild(this.createCallFallback());
-					hasContent = true;
+			if (this.callRendererDirty || !this.callRendererComponent) {
+				if (!callRenderer) {
+					this.callRendererComponent = this.createCallFallback();
+				} else {
+					try {
+						if (this.allocationMetrics) this.allocationMetrics.callRendererCalls++;
+						this.callRendererComponent = callRenderer(
+							this.args,
+							theme,
+							this.getRenderContext(this.callRendererComponent),
+						);
+					} catch {
+						this.callRendererComponent = this.createCallFallback();
+					}
 				}
+				this.callRendererDirty = false;
+			}
+			if (this.callRendererComponent) {
+				renderContainer.addChild(this.callRendererComponent);
+				hasContent = true;
 			}
 
 			if (this.result) {
@@ -521,6 +690,10 @@ export class ToolExecutionComponent extends Container {
 					}
 				} else {
 					try {
+						if (this.allocationMetrics) {
+							this.allocationMetrics.resultRendererCalls++;
+							this.allocationMetrics.internalWrapperObjects += 2;
+						}
 						const component = resultRenderer(
 							{ content: this.result.content as any, details: this.result.details },
 							{ expanded: this.expanded, isPartial: this.isPartial },
@@ -545,41 +718,7 @@ export class ToolExecutionComponent extends Container {
 			this.contentText.setText(this.formatToolExecution());
 			hasContent = true;
 		}
-
-		for (const img of this.imageComponents) {
-			this.removeChild(img);
-		}
-		this.imageComponents = [];
-		for (const spacer of this.imageSpacers) {
-			this.removeChild(spacer);
-		}
-		this.imageSpacers = [];
-
-		if (this.result) {
-			const imageBlocks = this.result.content.filter((c) => c.type === "image");
-			const caps = getCapabilities();
-			for (let i = 0; i < imageBlocks.length; i++) {
-				const img = imageBlocks[i];
-				if (caps.images && this.showImages && img.data && img.mimeType) {
-					const converted = this.convertedImages.get(i);
-					const imageData = converted?.data ?? img.data;
-					const imageMimeType = converted?.mimeType ?? img.mimeType;
-					if (caps.images === "kitty" && imageMimeType !== "image/png") continue;
-
-					const spacer = new Spacer(1);
-					this.addChild(spacer);
-					this.imageSpacers.push(spacer);
-					const imageComponent = new Image(
-						imageData,
-						imageMimeType,
-						{ fallbackColor: (s: string) => theme.fg("toolOutput", s) },
-						{ maxWidthCells: this.imageWidthCells },
-					);
-					this.imageComponents.push(imageComponent);
-					this.addChild(imageComponent);
-				}
-			}
-		}
+		this.refreshImageTree();
 
 		if (this.hasRendererDefinition() && !hasContent && this.imageComponents.length === 0) {
 			this.hideComponent = true;
@@ -592,7 +731,12 @@ export class ToolExecutionComponent extends Container {
 
 	private formatToolExecution(): string {
 		let text = theme.fg("toolTitle", theme.bold(this.toolName));
-		const content = JSON.stringify(this.args, null, 2);
+		if (this.argsDisplayDirty) {
+			this.argsDisplayJson = this.serializeArgs(this.args) ?? "";
+			this.argsSemanticJson = this.argsDisplayJson;
+			this.argsDisplayDirty = false;
+		}
+		const content = this.argsDisplayJson;
 		if (content) {
 			text += `\n\n${content}`;
 		}
@@ -601,5 +745,72 @@ export class ToolExecutionComponent extends Container {
 			text += `\n${output}`;
 		}
 		return text;
+	}
+
+	private refreshImageTree(): void {
+		const result = this.result;
+		const capabilities = getCapabilities();
+		let imageCount = 0;
+		let changed =
+			this.imageTreeShowImages !== this.showImages ||
+			this.imageTreeWidthCells !== this.imageWidthCells ||
+			this.imageTreeProtocol !== capabilities.images ||
+			this.imageTreeConversionGeneration !== this.imageConversionGeneration;
+		if (result) {
+			if (this.allocationMetrics) this.allocationMetrics.imageScans++;
+			for (let index = 0; index < result.content.length; index++) {
+				const block = result.content[index];
+				if (block.type !== "image" || !block.data || !block.mimeType) continue;
+				if (this.imageSourceData[imageCount] !== block.data || this.imageSourceMimeTypes[imageCount] !== block.mimeType) {
+					changed = true;
+					this.convertedImages.delete(imageCount);
+				}
+				imageCount++;
+			}
+		}
+		if (imageCount !== this.imageSourceData.length) changed = true;
+		if (!changed) return;
+
+		for (let index = 0; index < this.imageComponents.length; index++) this.removeChild(this.imageComponents[index]);
+		for (let index = 0; index < this.imageSpacers.length; index++) this.removeChild(this.imageSpacers[index]);
+		this.imageComponents.length = 0;
+		this.imageSpacers.length = 0;
+		this.imageSourceData.length = 0;
+		this.imageSourceMimeTypes.length = 0;
+		this.pendingImageSourceData.length = imageCount;
+		this.pendingImageSourceMimeTypes.length = imageCount;
+		this.imageTreeShowImages = this.showImages;
+		this.imageTreeWidthCells = this.imageWidthCells;
+		this.imageTreeProtocol = capabilities.images;
+		this.imageTreeConversionGeneration = this.imageConversionGeneration;
+		if (!result) return;
+
+		let imageIndex = 0;
+		for (let index = 0; index < result.content.length; index++) {
+			const block = result.content[index];
+			if (block.type !== "image" || !block.data || !block.mimeType) continue;
+			this.imageSourceData.push(block.data);
+			this.imageSourceMimeTypes.push(block.mimeType);
+			if (capabilities.images && this.showImages) {
+				const converted = this.convertedImages.get(imageIndex);
+				const imageData = converted?.data ?? block.data;
+				const imageMimeType = converted?.mimeType ?? block.mimeType;
+				if (capabilities.images !== "kitty" || imageMimeType === "image/png") {
+					const spacer = new Spacer(1);
+					const imageComponent = new Image(
+						imageData,
+						imageMimeType,
+						{ fallbackColor: toolImageFallbackColor },
+						{ maxWidthCells: this.imageWidthCells },
+					);
+					if (this.allocationMetrics) this.allocationMetrics.componentCreations += 2;
+					this.imageSpacers.push(spacer);
+					this.imageComponents.push(imageComponent);
+					this.addChild(spacer);
+					this.addChild(imageComponent);
+				}
+			}
+			imageIndex++;
+		}
 	}
 }
