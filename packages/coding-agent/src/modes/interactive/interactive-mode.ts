@@ -3405,6 +3405,7 @@ export class InteractiveMode {
 								content.arguments,
 								getStreamedToolArgsGeneration(content),
 								toolArgumentOwnership,
+								event.assistantMessageEvent.type === "toolcall_end",
 							);
 						}
 					}
@@ -3788,9 +3789,10 @@ export class InteractiveMode {
 		args: any,
 		generation?: string,
 		ownership?: StreamedToolArgumentOwnership,
+		finalized = false,
 	): void {
 		if (component instanceof ReadToolGroupComponent) component.updateArgs(toolCallId, args);
-		else component.updateArgs(args, generation, ownership);
+		else component.updateArgs(args, generation, ownership, finalized);
 		this.advanceActiveToolVersion(component);
 	}
 
