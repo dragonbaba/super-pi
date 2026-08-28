@@ -249,6 +249,7 @@ async function profileFixture(kind: ToolFixtureKind, paced: boolean): Promise<Re
 	fixture.terminal.frameWrites = 0;
 	builtInPromises = 0;
 	snapshotCount = 0;
+	const deliveryStatsBefore = delivery?.stats;
 	globalThis.gc!();
 	globalThis.gc!();
 	let minorGcCount = 0;
@@ -283,6 +284,7 @@ async function profileFixture(kind: ToolFixtureKind, paced: boolean): Promise<Re
 	const sampled = allocationSites(stopped.profile.head as SamplingNode);
 	const sorted = durations.slice().sort((left, right) => left - right);
 	const render = fixture.instrumentation.snapshot();
+	const deliveryStatsAfter = delivery?.stats;
 	let finalText = "";
 	const finalContent = (fixture.component as unknown as { result?: { content?: Array<{ text?: string }> } }).result?.content;
 	if (finalContent) for (const block of finalContent) if (block.text) finalText = block.text;
@@ -293,7 +295,9 @@ async function profileFixture(kind: ToolFixtureKind, paced: boolean): Promise<Re
 		name: `${paced ? "paced" : "direct"}-${kind}-tool-leaf`,
 		coverage: { realAgentDelivery: paced, productionSnapshot: paced, realAgentSession: true, realInteractiveMode: true, stableFacade: true, realToolComponent: true, realToolRenderer: true, retainedViewport: true, frameQueue: paced },
 		rawUpdates: paced ? measuredCycles * RAW_PER_DELIVERY : measuredCycles,
+		coalescedUpdates: deliveryStatsAfter && deliveryStatsBefore ? deliveryStatsAfter.coalesced - deliveryStatsBefore.coalesced : 0,
 		actualDeliveries: measuredCycles,
+		dispatcherDeliveries: deliveryStatsAfter && deliveryStatsBefore ? deliveryStatsAfter.delivered - deliveryStatsBefore.delivered : measuredCycles,
 		metrics: {
 			cpuP50MsPerDelivery: percentile(sorted, 0.5),
 			cpuP95MsPerDelivery: percentile(sorted, 0.95),
