@@ -4,12 +4,13 @@ import { EventEmitter } from "node:events";
 import { readFileSync } from "node:fs";
 import { Writable } from "node:stream";
 import test from "node:test";
+import { TuiMainScreen as InteractiveTuiMainScreen, type TuiMainScreenRenderState } from "@super-pi/tui";
 import { AgentSession } from "../packages/coding-agent/src/core/agent-session.ts";
 import { InteractiveMode } from "../packages/coding-agent/src/modes/interactive/interactive-mode.ts";
 import { TerminalFrameQueue, type TerminalFrameSink } from "../packages/tui/src/terminal-frame-queue.ts";
 import { TuiRenderInstrumentation } from "../packages/tui/src/render-instrumentation.ts";
 import { ProcessTerminal, type Terminal } from "../packages/tui/src/terminal.ts";
-import { TuiBase } from "../packages/tui/src/tui.ts";
+import { type Component, TuiBase } from "../packages/tui/src/tui.ts";
 import { TuiAltScreen } from "../packages/tui/src/tui-alt-screen.ts";
 import { TuiMainScreen } from "../packages/tui/src/tui-main-screen.ts";
 
@@ -74,16 +75,24 @@ class GatedTerminal implements Terminal {
 	kittyProtocolActive = false;
 	started = false;
 	disposeCalls = 0;
-	start(): void {
+	inputHandler: ((data: string) => void) | undefined;
+	resizeHandler: (() => void) | undefined;
+	frameListenerInstallations = 0;
+	drainInputPromise: Promise<void> | undefined;
+	start(onInput?: (data: string) => void, onResize?: () => void): void {
 		this.started = true;
+		this.inputHandler = onInput;
+		this.resizeHandler = onResize;
 	}
 	stop(): void {
 		this.started = false;
+		this.inputHandler = undefined;
+		this.resizeHandler = undefined;
 	}
 	dispose(): void {
 		this.disposeCalls++;
 	}
-	async drainInput(): Promise<void> {}
+	drainInput(): Promise<void> { return this.drainInputPromise ?? Promise.resolve(); }
 	write(data: string): void | Promise<void> {
 		if (!this.backpressure) {
 			this.writer.writes.push(data);
@@ -92,6 +101,7 @@ class GatedTerminal implements Terminal {
 		return this.writer.write(data);
 	}
 	setFrameWriteCompletionListener(listener: ((generation: number, error?: Error) => void) | undefined): void {
+		if (listener) this.frameListenerInstallations++;
 		this.writer.setFrameWriteCompletionListener(listener);
 	}
 	writeFrame(data: string, generation: number): void { this.writer.writeFrame(data, generation); }
@@ -104,6 +114,14 @@ class GatedTerminal implements Terminal {
 	clearScreen(): void {}
 	setTitle(): void {}
 	setProgress(): void {}
+	emitInput(data: string): void { this.inputHandler?.(data); }
+}
+
+class ImmediateInputTerminal extends GatedTerminal {
+	override writeFrame(data: string, generation: number): void {
+		super.writeFrame(data, generation);
+		this.writer.gates[this.writer.gates.length - 1]!.resolve();
+	}
 }
 
 class FrameTui extends TuiBase {
@@ -113,6 +131,38 @@ class FrameTui extends TuiBase {
 	protected doRender(): void {
 		this.renderCount++;
 		this.writeTerminalFrame(`frame-${this.generation}`, 1);
+	}
+}
+
+const EMPTY_COMPONENT_LINES = Object.freeze([]) as unknown as string[];
+
+class InputProbe implements Component {
+	inputCalls = 0;
+	readonly inputs: string[] = [];
+	onInput?: (data: string) => void;
+
+	render(): string[] { return EMPTY_COMPONENT_LINES; }
+	invalidate(): void {}
+	handleInput(data: string): void {
+		this.inputCalls++;
+		this.inputs.push(data);
+		this.onInput?.(data);
+	}
+}
+
+class CountingComponentArray extends Array<Component> {
+	iterationCount = 0;
+	override [Symbol.iterator](): ArrayIterator<Component> {
+		this.iterationCount++;
+		return super[Symbol.iterator]();
+	}
+}
+
+class InstrumentedMainTui extends InteractiveTuiMainScreen {
+	captureRenderStateCalls = 0;
+	override captureRenderState(): TuiMainScreenRenderState {
+		this.captureRenderStateCalls++;
+		return super.captureRenderState();
 	}
 }
 
@@ -871,7 +921,10 @@ test("cancelled physical write settles before a reused generation can start", as
 	}
 
 	const interactiveSource = readFileSync("packages/coding-agent/src/modes/interactive/interactive-mode.ts", "utf8");
-	assert.match(interactiveSource, /await previousUi\.stop\(\{ preserveScreen: true \}\)[\s\S]{0,600}terminal,/);
+	assert.match(
+		interactiveSource,
+		/await previousUi\.stop\(\{ preserveScreen: true \}\)[\s\S]{0,240}this\.renderer !== previousUi[\s\S]{0,240}const terminal = previousUi\.terminal/,
+	);
 	const suspendSource = interactiveSource.match(/private async handleCtrlZ[\s\S]*?\n\tprivate async handleFollowUp/)?.[0] ?? "";
 	assert.match(suspendSource, /await this\.ui\.stop\(\)/);
 	assert.match(suspendSource, /this\.ui\.start\(\)/);
@@ -1247,6 +1300,313 @@ test("stop waits for one final deferred render before terminal cleanup", async (
 	terminal.writer.gates[1]!.resolve();
 	await stopped;
 	assert.equal(terminal.started, false);
+});
+
+test("stop-pending input admission blocks listeners focus debug and render work", async () => {
+	const terminal = new GatedTerminal();
+	const instrumentation = new TuiRenderInstrumentation();
+	const tui = new FrameTui(terminal);
+	const focused = new InputProbe();
+	let inputListenerCalls = 0;
+	let debugCalls = 0;
+	tui.setRenderInstrumentation(instrumentation);
+	tui.addChild(focused);
+	tui.setFocus(focused);
+	tui.addInputListener(() => {
+		inputListenerCalls++;
+		return undefined;
+	});
+	tui.onDebug = () => { debugCalls++; };
+	tui.start();
+	tui.renderNow();
+	const renderCountBeforeInput = tui.renderCount;
+	const metricsBeforeInput = instrumentation.snapshot();
+	const queueBeforeInput = tui.getTerminalFrameQueueSnapshot();
+
+	const stopping = tui.stop();
+	assert.equal(terminal.started, true, "physical terminal remains attached while the active frame is gated");
+	terminal.emitInput("ordinary-input");
+	terminal.emitInput("\x1b[100;6u");
+
+	assert.equal(inputListenerCalls, 0);
+	assert.equal(focused.inputCalls, 0);
+	assert.equal(debugCalls, 0);
+	assert.equal(tui.renderCount, renderCountBeforeInput);
+	assert.equal(instrumentation.snapshot().frameStringsGenerated, metricsBeforeInput.frameStringsGenerated);
+	assert.equal(tui.getTerminalFrameQueueSnapshot().pendingFrames, queueBeforeInput.pendingFrames);
+
+	terminal.writer.gates[0]!.resolve();
+	await stopping;
+});
+
+test("a second input from the same synchronous batch is quiesced after the first starts stop", async () => {
+	const terminal = new GatedTerminal();
+	const tui = new FrameTui(terminal);
+	const focused = new InputProbe();
+	let stopping: Promise<void> | undefined;
+	focused.onInput = () => {
+		if (focused.inputCalls === 1) stopping = tui.stop();
+	};
+	tui.addChild(focused);
+	tui.setFocus(focused);
+	tui.start();
+	tui.renderNow();
+
+	terminal.emitInput("first");
+	terminal.emitInput("second");
+	assert.equal(focused.inputCalls, 1);
+	assert.deepEqual(focused.inputs, ["first"]);
+
+	terminal.writer.gates[0]!.resolve();
+	await stopping;
+});
+
+test("an input listener that starts stop quiesces later listeners and the rest of the same dispatch", async () => {
+	const terminal = new GatedTerminal();
+	const instrumentation = new TuiRenderInstrumentation();
+	const tui = new FrameTui(terminal);
+	const focused = new InputProbe();
+	let firstListenerCalls = 0;
+	let secondListenerCalls = 0;
+	let stopping: Promise<void> | undefined;
+	tui.setRenderInstrumentation(instrumentation);
+	tui.addChild(focused);
+	tui.setFocus(focused);
+	tui.addInputListener(() => {
+		firstListenerCalls++;
+		stopping = tui.stop();
+		return undefined;
+	});
+	tui.addInputListener(() => {
+		secondListenerCalls++;
+		return undefined;
+	});
+	tui.start();
+	tui.renderNow();
+	const renderCountBeforeInput = tui.renderCount;
+	const metricsBeforeInput = instrumentation.snapshot();
+	const queueBeforeInput = tui.getTerminalFrameQueueSnapshot();
+
+	terminal.emitInput("stop-now");
+	terminal.emitInput("subsequent-input");
+	assert.equal(firstListenerCalls, 1);
+	assert.equal(secondListenerCalls, 0);
+	assert.equal(focused.inputCalls, 0);
+	assert.equal(tui.renderCount, renderCountBeforeInput);
+	assert.equal(instrumentation.snapshot().frameStringsGenerated, metricsBeforeInput.frameStringsGenerated);
+	assert.equal(tui.getTerminalFrameQueueSnapshot().pendingFrames, queueBeforeInput.pendingFrames);
+
+	terminal.writer.gates[0]!.resolve();
+	await stopping;
+});
+
+test("stop-pending protocol replies settle before ordinary input admission", async () => {
+	const terminal = new GatedTerminal();
+	terminal.backpressure = false;
+	const tui = new FrameTui(terminal);
+	const focused = new InputProbe();
+	let inputListenerCalls = 0;
+	tui.addChild(focused);
+	tui.setFocus(focused);
+	tui.addInputListener(() => {
+		inputListenerCalls++;
+		return undefined;
+	});
+	tui.start();
+	const background = tui.queryTerminalBackgroundColor({ timeoutMs: 5_000 });
+	const colorScheme = tui.queryTerminalColorScheme({ timeoutMs: 5_000 });
+	tui.renderNow();
+	const stopping = tui.stop();
+
+	terminal.emitInput("\x1b]11;rgb:ffff/0000/8080\x07");
+	terminal.emitInput("\x1b[?997;1n");
+	assert.deepEqual(await background, { r: 255, g: 0, b: 128 });
+	assert.equal(await colorScheme, "dark");
+	assert.equal(inputListenerCalls, 0);
+	assert.equal(focused.inputCalls, 0);
+	const state = tui as unknown as {
+		pendingOsc11BackgroundQueries: Array<{ timer: NodeJS.Timeout | undefined; resolve: unknown }>;
+		pendingOsc11BackgroundReplies: number;
+		terminalColorSchemeListeners: Set<unknown>;
+	};
+	assert.equal(state.pendingOsc11BackgroundQueries.length, 0);
+	assert.equal(state.pendingOsc11BackgroundReplies, 0);
+	assert.equal(state.terminalColorSchemeListeners.size, 0);
+
+	terminal.writer.gates[0]!.resolve();
+	await stopping;
+});
+
+test("ordinary input admission resumes after the same TUI restarts", async () => {
+	const terminal = new ImmediateInputTerminal();
+	const tui = new FrameTui(terminal);
+	const focused = new InputProbe();
+	let inputListenerCalls = 0;
+	tui.addChild(focused);
+	tui.setFocus(focused);
+	tui.addInputListener(() => {
+		inputListenerCalls++;
+		return undefined;
+	});
+	tui.start();
+	await tui.stop();
+	tui.start();
+	terminal.emitInput("restored");
+	assert.equal(inputListenerCalls, 1);
+	assert.equal(focused.inputCalls, 1);
+	assert.deepEqual(focused.inputs, ["restored"]);
+	await tui.dispose();
+});
+
+function createModeSwitchHarness(previousUi: FrameTui | InstrumentedMainTui): Record<string, any> {
+	const mode = Object.create(InteractiveMode.prototype) as Record<string, any>;
+	const settingsManager = {
+		getShowTerminalProgress(): boolean { return false; },
+		getFullscreenExitOutput(): "resume-hint" { return "resume-hint"; },
+	};
+	const session = { isStreaming: false, isCompacting: false, settingsManager };
+	Object.assign(mode, {
+		runtimeHost: { session },
+		renderer: previousUi,
+		ui: previousUi,
+		tuiLifecycleGeneration: 0,
+		mainScreenRenderState: undefined,
+		fullscreenLayoutRoot: new InputProbe(),
+		transcriptRenderContext: { rendererVersion: 0 },
+		options: { tuiMode: "regular" },
+		onRightClickPaste: undefined,
+		renderInstrumentation: undefined,
+		themeController: { rebindTui(): void {}, disableAutoSync(): void {} },
+		disposeActiveSelector(): void {},
+		clearStatusIndicator(): void {},
+		clearExtensionTerminalInputListeners(): void {},
+		footer: { dispose(): void {} },
+		footerDataProvider: { dispose(): void {} },
+		unsubscribe: undefined,
+		isInitialized: true,
+		unregisterSignalHandlers(): void {},
+	});
+	return mode;
+}
+
+test("concurrent mode switches create one replacement after sharing the previous stop", async () => {
+	const terminal = new GatedTerminal();
+	const previousUi = new InstrumentedMainTui(terminal);
+	const countedChildren = new CountingComponentArray();
+	countedChildren.push(new InputProbe());
+	previousUi.children = countedChildren;
+	const mode = createModeSwitchHarness(previousUi);
+	previousUi.start();
+	previousUi.renderNow();
+	const listenerInstallationsBefore = terminal.frameListenerInstallations;
+	const childrenIterationsBefore = countedChildren.iterationCount;
+	const switchTuiMode = mode.switchTuiMode as (
+		mode: "regular" | "fullscreen",
+		restoreProgress?: boolean,
+		startRenderer?: boolean,
+	) => Promise<boolean>;
+
+	const first = switchTuiMode.call(mode, "fullscreen", false, false);
+	const second = switchTuiMode.call(mode, "fullscreen", false, false);
+	terminal.writer.gates[0]!.resolve();
+	const results = await Promise.all([first, second]);
+	assert.deepEqual(results, [true, false]);
+	assert.equal(mode.renderer.mode, "fullscreen");
+	assert.equal(countedChildren.iterationCount - childrenIterationsBefore, 1);
+	assert.equal(previousUi.captureRenderStateCalls, 1);
+	assert.equal(terminal.frameListenerInstallations, listenerInstallationsBefore + 1);
+	assert.equal(terminal.inputHandler, undefined);
+	await mode.renderer.dispose();
+});
+
+test("mode switch snapshots the final root focus and Main render state after stop", async () => {
+	const terminal = new GatedTerminal();
+	const previousUi = new InstrumentedMainTui(terminal);
+	const countedChildren = new CountingComponentArray();
+	const initialChild = new InputProbe();
+	const latestChild = new InputProbe();
+	countedChildren.push(initialChild);
+	previousUi.children = countedChildren;
+	previousUi.setFocus(initialChild);
+	const latestRenderState = previousUi.captureRenderState();
+	latestRenderState.previousWidth = 77;
+	latestRenderState.viewportWindowStart = 23;
+	previousUi.captureRenderStateCalls = 0;
+	const mode = createModeSwitchHarness(previousUi);
+	previousUi.start();
+	previousUi.renderNow();
+	const childrenIterationsBefore = countedChildren.iterationCount;
+	const switchTuiMode = mode.switchTuiMode as (
+		mode: "regular" | "fullscreen",
+		restoreProgress?: boolean,
+		startRenderer?: boolean,
+	) => Promise<boolean>;
+
+	const switching = switchTuiMode.call(mode, "fullscreen", false, false);
+	previousUi.addChild(latestChild);
+	previousUi.setFocus(latestChild);
+	previousUi.restoreRenderState(latestRenderState);
+	terminal.writer.gates[0]!.resolve();
+
+	assert.equal(await switching, true);
+	assert.deepEqual(mode.renderer.children, [initialChild, latestChild]);
+	assert.equal(mode.renderer.getFocusedComponent(), latestChild);
+	assert.equal(mode.mainScreenRenderState.previousWidth, 77);
+	assert.equal(mode.mainScreenRenderState.viewportWindowStart, 23);
+	assert.equal(countedChildren.iterationCount - childrenIterationsBefore, 1);
+	assert.equal(previousUi.captureRenderStateCalls, 1);
+	await mode.renderer.dispose();
+});
+
+test("programmatic stop invalidates a mode switch waiting on the same renderer", async () => {
+	const terminal = new GatedTerminal();
+	const previousUi = new FrameTui(terminal);
+	const mode = createModeSwitchHarness(previousUi);
+	previousUi.start();
+	previousUi.renderNow();
+	const listenerInstallationsBefore = terminal.frameListenerInstallations;
+	const switchTuiMode = mode.switchTuiMode as (
+		mode: "regular" | "fullscreen",
+		restoreProgress?: boolean,
+		startRenderer?: boolean,
+	) => Promise<boolean>;
+
+	const switching = switchTuiMode.call(mode, "fullscreen", false, false);
+	const stopping = mode.stop("resume-hint");
+	terminal.writer.gates[0]!.resolve();
+	assert.equal(await switching, false);
+	await stopping;
+	assert.equal(mode.renderer, previousUi);
+	assert.equal(terminal.frameListenerInstallations, listenerInstallationsBefore);
+	assert.equal(mode.isInitialized, false);
+});
+
+test("shutdown admission invalidates a mode switch while terminal input is draining", async () => {
+	const terminal = new GatedTerminal();
+	const previousUi = new FrameTui(terminal);
+	const mode = createModeSwitchHarness(previousUi);
+	previousUi.start();
+	previousUi.renderNow();
+	const drainFailure = new Error("controlled drain boundary");
+	let rejectDrain: ((error: Error) => void) | undefined;
+	terminal.drainInputPromise = new Promise<void>((_resolve, reject) => {
+		rejectDrain = reject;
+	});
+	const switchTuiMode = mode.switchTuiMode as (
+		mode: "regular" | "fullscreen",
+		restoreProgress?: boolean,
+		startRenderer?: boolean,
+	) => Promise<boolean>;
+	const shutdown = mode.shutdown as () => Promise<void>;
+
+	const switching = switchTuiMode.call(mode, "fullscreen", false, false);
+	const shuttingDown = shutdown.call(mode);
+	terminal.writer.gates[0]!.resolve();
+	assert.equal(await switching, false);
+	rejectDrain?.(drainFailure);
+	await assert.rejects(shuttingDown, drainFailure);
+	assert.equal(mode.renderer, previousUi);
+	await previousUi.dispose();
 });
 
 test("stop bounds a never-settling frame, clears pending work, and still restores terminal state", async () => {

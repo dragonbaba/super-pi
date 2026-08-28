@@ -425,6 +425,7 @@ export class InteractiveMode {
 	private runtimeHost: AgentSessionRuntime;
 	private renderer: TuiMainScreen | TuiAltScreen;
 	private ui: TUI;
+	private tuiLifecycleGeneration = 0;
 	private mainScreenRenderState: TuiMainScreenRenderState | undefined;
 	private loadedResourcesContainer: Container;
 	private chatContainer: RetainedContainer;
@@ -896,8 +897,14 @@ export class InteractiveMode {
 
 	private async switchTuiMode(mode: TuiMode, restoreProgress = true, startRenderer = true): Promise<boolean> {
 		const previousUi = this.renderer;
+		const lifecycleGeneration = this.tuiLifecycleGeneration;
 		if (mode === previousUi.mode) return true;
 		if (previousUi.hasOverlayEntries) return false;
+
+		await previousUi.stop({ preserveScreen: true });
+		if (this.renderer !== previousUi || this.tuiLifecycleGeneration !== lifecycleGeneration) {
+			return false;
+		}
 
 		const components = [...previousUi.children];
 		const focus = previousUi.getFocusedComponent();
@@ -908,8 +915,6 @@ export class InteractiveMode {
 		if (previousUi instanceof TuiMainScreen) {
 			this.mainScreenRenderState = previousUi.captureRenderState();
 		}
-
-		await previousUi.stop({ preserveScreen: true });
 		previousUi.setFocus(null);
 		previousUi.clear();
 		if (TuiLayouts.isViewportTUI(previousUi)) previousUi.setLayoutRoot(undefined);
@@ -4169,6 +4174,7 @@ export class InteractiveMode {
 	private async shutdown(options?: { fromSignal?: boolean }): Promise<void> {
 		if (this.isShuttingDown) return;
 		this.isShuttingDown = true;
+		this.tuiLifecycleGeneration++;
 		// Keep signal handlers registered until terminal cleanup has completed.
 		// `signal-exit` checks the listener list during the same SIGTERM/SIGHUP
 		// dispatch and re-sends the signal if only its own listeners remain.
@@ -6819,6 +6825,7 @@ export class InteractiveMode {
 	}
 
 	async stop(fullscreenExitOutput = this.settingsManager.getFullscreenExitOutput()): Promise<void> {
+		this.tuiLifecycleGeneration++;
 		this.disposeActiveSelector();
 		if (this.settingsManager.getShowTerminalProgress()) {
 			this.ui.terminal.setProgress(false);
