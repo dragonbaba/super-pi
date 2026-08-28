@@ -1,5 +1,5 @@
-import type { ProviderStreams } from "../types.ts";
+import type { OwnedProviderStreams } from "../types.ts";
 import { lazyApi } from "./lazy.ts";
 
-export const openAICompletionsApi = (): ProviderStreams =>
+export const openAICompletionsApi = (): OwnedProviderStreams =>
 	lazyApi(() => import("./openai-completions.ts"), "mutation-with-generation");

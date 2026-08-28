@@ -77,11 +77,21 @@ export interface LazyApiCapabilities {
 	cancelDeferred?: boolean;
 }
 
+export function lazyApi(load: () => Promise<ProviderStreams>, capabilities?: LazyApiCapabilities): ProviderStreams;
 export function lazyApi(
 	load: () => Promise<ProviderStreams>,
 	streamedToolArgumentOwnership: StreamedToolArgumentOwnership,
 	capabilities?: LazyApiCapabilities,
+): ProviderStreams & { readonly streamedToolArgumentOwnership: StreamedToolArgumentOwnership };
+export function lazyApi(
+	load: () => Promise<ProviderStreams>,
+	ownershipOrCapabilities?: StreamedToolArgumentOwnership | LazyApiCapabilities,
+	declaredCapabilities?: LazyApiCapabilities,
 ): ProviderStreams {
+	const streamedToolArgumentOwnership =
+		typeof ownershipOrCapabilities === "string" ? ownershipOrCapabilities : undefined;
+	const capabilities =
+		typeof ownershipOrCapabilities === "string" ? declaredCapabilities : ownershipOrCapabilities;
 	const api: ProviderStreams = {
 		streamedToolArgumentOwnership,
 		stream: (model, context, options) =>

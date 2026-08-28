@@ -1,4 +1,4 @@
-import type { ProviderStreams } from "../types.ts";
+import type { OwnedProviderStreams, ProviderStreams } from "../types.ts";
 import { lazyApi } from "./lazy.ts";
 
 /**
@@ -23,7 +23,7 @@ export function setBedrockProviderModule(module: ProviderStreams): void {
 	bedrockModuleOverride = module;
 }
 
-export const bedrockConverseStreamApi = (): ProviderStreams =>
+export const bedrockConverseStreamApi = (): OwnedProviderStreams =>
 	lazyApi(
 		async () =>
 			bedrockModuleOverride ?? ((await importNodeOnlyApi("./bedrock-converse-stream.ts")) as ProviderStreams),
