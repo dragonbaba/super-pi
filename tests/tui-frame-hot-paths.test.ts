@@ -156,6 +156,101 @@ test("terminal frame hot methods contain no per-frame closures, Promise executor
 	]);
 });
 
+test("stop-pending terminal input admission is an ordered primitive-only branch", () => {
+	const source = parse("packages/tui/src/tui.ts");
+	const method = methodNamed(source, "TuiBase", "handleTerminalInput");
+	const statements = method.body?.statements;
+	assert.ok(statements);
+	assert.match(statements[0]!.getText(source), /^if \(this\.consumeOsc11BackgroundResponse\(data\)\)/);
+	assert.match(statements[1]!.getText(source), /^if \(this\.consumeTerminalColorSchemeReport\(data\)\)/);
+	const admissionGuard = statements[2]!;
+	assert.equal(admissionGuard.getText(source), "if (this.stopping || this.stopped) {\n\t\t\treturn;\n\t\t}");
+
+	const forbidden: string[] = [];
+	function visit(node: ts.Node): void {
+		if (
+			ts.isArrowFunction(node) ||
+			ts.isFunctionExpression(node) ||
+			ts.isNewExpression(node) ||
+			ts.isObjectLiteralExpression(node) ||
+			ts.isArrayLiteralExpression(node) ||
+			ts.isRegularExpressionLiteral(node) ||
+			ts.isTemplateExpression(node)
+		) {
+			forbidden.push(ts.SyntaxKind[node.kind]);
+		}
+		ts.forEachChild(node, visit);
+	}
+	visit(admissionGuard);
+	assert.deepEqual(forbidden, []);
+
+	const body = method.getText(source);
+	assert.match(body, /data = current;\s*}\s*if \(this\.stopping \|\| this\.stopped\) \{\s*return;\s*}/);
+	assert.match(
+		body,
+		/focusedComponent\.handleInput\(data\);\s*if \(this\.stopping \|\| this\.stopped\) \{\s*return;\s*}\s*\/\/ Keyboard input/,
+	);
+});
+
+test("mode switch validates renderer identity and lifecycle generation after stop", () => {
+	const source = parse("packages/coding-agent/src/modes/interactive/interactive-mode.ts");
+	const switchMethod = methodNamed(source, "InteractiveMode", "switchTuiMode");
+	const switchBody = switchMethod.getText(source);
+	const stopBoundary = switchBody.indexOf("await previousUi.stop({ preserveScreen: true });");
+	const identityGuard = switchBody.indexOf(
+		"if (this.renderer !== previousUi || this.tuiLifecycleGeneration !== lifecycleGeneration)",
+	);
+	const firstCleanup = switchBody.indexOf("previousUi.setFocus(null);");
+	const childrenSnapshot = switchBody.indexOf("const components = [...previousUi.children];");
+	const focusSnapshot = switchBody.indexOf("const focus = previousUi.getFocusedComponent();");
+	const terminalSnapshot = switchBody.indexOf("const terminal = previousUi.terminal;");
+	const renderStateSnapshot = switchBody.indexOf("previousUi.captureRenderState();");
+	assert.ok(stopBoundary >= 0);
+	assert.ok(identityGuard > stopBoundary);
+	assert.ok(childrenSnapshot > identityGuard);
+	assert.ok(focusSnapshot > identityGuard);
+	assert.ok(terminalSnapshot > identityGuard);
+	assert.ok(renderStateSnapshot > identityGuard);
+	assert.ok(firstCleanup > identityGuard);
+	assert.match(switchBody, /const lifecycleGeneration = this\.tuiLifecycleGeneration;/);
+	assert.doesNotMatch(
+		switchBody.slice(0, identityGuard),
+		/\.\.\.previousUi\.children|getFocusedComponent|getShowHardwareCursor|getClearOnShrink|captureRenderState/,
+	);
+
+	const stopMethod = methodNamed(source, "InteractiveMode", "stop");
+	assert.equal(stopMethod.body?.statements[0]?.getText(source), "this.tuiLifecycleGeneration++;");
+	const shutdownMethod = methodNamed(source, "InteractiveMode", "shutdown");
+	assert.match(
+		shutdownMethod.getText(source),
+		/this\.isShuttingDown = true;\s*this\.tuiLifecycleGeneration\+\+;/,
+	);
+});
+
+test("terminal lifecycle entry points have primitive admission or post-stop ownership checks", () => {
+	const source = parse("packages/coding-agent/src/modes/interactive/interactive-mode.ts");
+	const sourceText = source.getText();
+	const ctrlZ = methodNamed(source, "InteractiveMode", "handleCtrlZ").getText(source);
+	const externalEditor = methodNamed(source, "InteractiveMode", "handleOpenExternalEditor").getText(source);
+	const stopInteractive = methodNamed(source, "InteractiveMode", "stopInteractiveTui").getText(source);
+	const stop = methodNamed(source, "InteractiveMode", "stop").getText(source);
+	const shutdown = methodNamed(source, "InteractiveMode", "shutdown").getText(source);
+
+	const ctrlZStop = ctrlZ.indexOf("await this.ui.stop();");
+	const externalEditorStop = externalEditor.indexOf("await this.ui.stop();");
+	assert.ok(ctrlZStop > 0);
+	assert.ok(externalEditorStop > 0);
+	assert.doesNotMatch(ctrlZ.slice(0, ctrlZStop), /\bawait\b/);
+	assert.doesNotMatch(externalEditor.slice(0, externalEditorStop), /\bawait\b/);
+	assert.equal(sourceText.match(/this\.handleCtrlZ\(\)/g)?.length, 1);
+	assert.equal(sourceText.match(/this\.handleOpenExternalEditor\(\)/g)?.length, 1);
+	assert.match(sourceText, /defaultEditor\.onAction\("app\.suspend", this\.handleSuspendAction\)/);
+	assert.match(sourceText, /defaultEditor\.onAction\("app\.editor\.external", this\.handleExternalEditorAction\)/);
+	assert.match(stopInteractive, /await this\.switchTuiMode\("regular", false, false\)/);
+	assert.match(stop, /this\.tuiLifecycleGeneration\+\+;[\s\S]*await this\.stopInteractiveTui/);
+	assert.match(shutdown, /this\.tuiLifecycleGeneration\+\+;[\s\S]*await this\.ui\.terminal\.drainInput/);
+});
+
 test("frame submit calls use primitive arguments and do not copy full frame strings", () => {
 	const paths = [
 		"packages/tui/src/tui-main-screen.ts",
