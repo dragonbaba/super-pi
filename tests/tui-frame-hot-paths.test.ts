@@ -19,6 +19,9 @@ const HOT_METHODS: readonly MethodTarget[] = [
 	{ path: "packages/tui/src/tui.ts", className: "TuiBase", methodName: "writeTerminalFrame" },
 	{ path: "packages/tui/src/tui.ts", className: "TuiBase", methodName: "requestRender" },
 	{ path: "packages/tui/src/tui.ts", className: "TuiBase", methodName: "scheduleRender" },
+	{ path: "packages/tui/src/tui.ts", className: "TuiBase", methodName: "compositeOverlays" },
+	{ path: "packages/tui/src/terminal.ts", className: "ProcessTerminal", methodName: "setProgress" },
+	{ path: "packages/tui/src/terminal.ts", className: "ProcessTerminal", methodName: "startProgressWrite" },
 	{ path: "packages/coding-agent/src/core/agent-session.ts", className: "AgentSession", methodName: "_emit" },
 ] as const;
 
