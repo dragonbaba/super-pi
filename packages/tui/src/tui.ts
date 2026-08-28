@@ -1170,6 +1170,9 @@ export abstract class TuiBase extends Container implements TUI {
 		if (this.consumeTerminalColorSchemeReport(data)) {
 			return;
 		}
+		if (this.stopping || this.stopped) {
+			return;
+		}
 
 		if (this.inputListeners.size > 0) {
 			let current = data;
@@ -1186,6 +1189,9 @@ export abstract class TuiBase extends Container implements TUI {
 				return;
 			}
 			data = current;
+		}
+		if (this.stopping || this.stopped) {
+			return;
 		}
 
 		// Consume terminal cell size responses without blocking unrelated input.
@@ -1235,6 +1241,9 @@ export abstract class TuiBase extends Container implements TUI {
 				return;
 			}
 			this.focusedComponent.handleInput(data);
+			if (this.stopping || this.stopped) {
+				return;
+			}
 			// Keyboard input is latency-sensitive. Avoid the throttled timer path,
 			// where even setTimeout(0) can take a full 16 ms tick on Windows.
 			this.requestImmediateRender();
