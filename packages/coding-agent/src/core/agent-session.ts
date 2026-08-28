@@ -680,6 +680,7 @@ export class AgentSession {
 		this._unsubscribeAgent = this.agent.subscribe(this._handleAgentEvent, {
 			filter: (event) => !isCoalescibleAgentEvent(event) || this._extensionRunner.hasHandlers(event.type),
 		});
+		this._handleAgentObserverEvent = this._handleAgentObserverEvent.bind(this);
 		this._unsubscribeAgentObserver = this.agent.subscribeObserver(this._handleAgentObserverEvent, {
 			filter: isCoalescibleAgentEvent,
 		});
@@ -1064,12 +1065,12 @@ export class AgentSession {
 	};
 
 	/** Coalesced display-only path for the built-in UI and explicit extension observers. */
-	private _handleAgentObserverEvent = async (event: AgentEvent): Promise<void> => {
+	private _handleAgentObserverEvent(event: AgentEvent): void {
 		if (!isCoalescibleAgentEvent(event)) return;
 		this._emit(event);
 		const key = event.type === "message_update" ? "message" : `tool:${event.toolCallId}`;
 		this._extensionObserverDelivery.publishLatest(key, event);
-	};
+	}
 
 	private _handleExtensionObserverEvent = async (event: CoalescibleAgentEvent): Promise<void> => {
 		if (this._extensionRunner.hasObservers(event.type)) await this._emitExtensionObserverEvent(event);
