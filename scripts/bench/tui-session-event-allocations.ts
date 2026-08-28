@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { Session } from "node:inspector/promises";
 import { constants, performance, PerformanceObserver, type PerformanceEntry } from "node:perf_hooks";
+import { Agent } from "../../packages/agent/src/agent.ts";
 import { AgentSession } from "../../packages/coding-agent/src/core/agent-session.ts";
 import { InteractiveMode } from "../../packages/coding-agent/src/modes/interactive/interactive-mode.ts";
 import { currentCommit, readIntegerOption } from "./benchmark.ts";
@@ -26,11 +27,26 @@ interface SessionEventHarness {
 		observeRejection: (error: unknown) => void;
 	}>;
 	_emit(event: BenchEvent): void;
+	_handleAgentObserverEvent(event: BenchEvent): void | Promise<void>;
+	_extensionObserverDelivery: { publishLatest(key: string, event: BenchEvent): void };
+}
+
+interface AgentDeliveryHarness {
+	activeRun: { abortController: AbortController };
+	eventDelivery: {
+		publishLatest(key: string, event: BenchEvent): unknown;
+		flushLatest(key: string): Promise<void>;
+		stats: { received: number; coalesced: number; delivered: number };
+	};
 }
 
 let activeMode: InteractiveEventHarness;
 let builtInListenerPromises = 0;
 let rejectionObservers = 0;
+let activeObserverSession: SessionEventHarness;
+let observerBridgePromises = 0;
+let observerDeliveries = 0;
+let extensionObserverPublishes = 0;
 
 function deliverBuiltInEvent(event: BenchEvent): void | Promise<void> {
 	const result = activeMode.handleEvent(event);
@@ -39,6 +55,21 @@ function deliverBuiltInEvent(event: BenchEvent): void | Promise<void> {
 }
 
 function observeListenerRejection(): void { rejectionObservers++; }
+
+function deliverAgentObserverEvent(event: BenchEvent): void | Promise<void> {
+	observerDeliveries++;
+	const result = activeObserverSession._handleAgentObserverEvent(event);
+	if (result && typeof result.then === "function") observerBridgePromises++;
+	return result;
+}
+
+function publishExtensionObserver(_key: string, _event: BenchEvent): void {
+	extensionObserverPublishes++;
+}
+
+function throwUnusedStream(): never {
+	throw new Error("stream function is not used by the event allocation benchmark");
+}
 
 function percentile(sorted: readonly number[], ratio: number): number {
 	return sorted[Math.min(sorted.length - 1, Math.max(0, Math.ceil(sorted.length * ratio) - 1))] ?? 0;
@@ -94,6 +125,7 @@ function createSession(): SessionEventHarness {
 		criticalAgentEnd: false,
 		observeRejection: observeListenerRejection,
 	}];
+	session._extensionObserverDelivery = { publishLatest: publishExtensionObserver };
 	return session;
 }
 
@@ -175,12 +207,137 @@ async function measure(name: string, event: BenchEvent, updates: number, warmup:
 			controlledGcHeapDeltaBytes: controlledGcAfter - heapBefore,
 			builtInListenerPromisesPerUpdate: builtInListenerPromises / updates,
 			rejectionObserversPerUpdate: rejectionObservers / updates,
-			toolWrapperObjectsPerUpdate: 0,
-			inlineClosuresPerUpdate: 0,
-			promiseTailsPerUpdate: 0,
-			promiseArraysPerUpdate: 0,
-			arraysPerUpdate: 0,
+			sourceInvariantToolWrapperObjectsPerUpdate: 0,
+			sourceInvariantInlineClosuresPerUpdate: 0,
+			sourceInvariantPromiseTailsPerUpdate: 0,
+			sourceInvariantPromiseArraysPerUpdate: 0,
+			sourceInvariantArraysPerUpdate: 0,
 			finalUpdateCorrect: finalUpdateCorrect ? 1 : 0,
+		},
+		topAllocationSites: sampled.top,
+	};
+}
+
+async function measureFullObserverChain(event: BenchEvent, updates: number, warmup: number): Promise<unknown> {
+	activeMode = createMode();
+	activeObserverSession = createSession();
+	observerBridgePromises = 0;
+	observerDeliveries = 0;
+	extensionObserverPublishes = 0;
+	builtInListenerPromises = 0;
+	rejectionObservers = 0;
+	let snapshotCount = 0;
+	const agent = new Agent({
+		streamFn: throwUnusedStream as never,
+		eventInstrumentation: { onAssistantSnapshot: () => { snapshotCount++; } },
+	});
+	const agentHarness = agent as unknown as AgentDeliveryHarness;
+	agentHarness.activeRun = { abortController: new AbortController() };
+	const unsubscribe = agent.subscribeObserver(deliverAgentObserverEvent as never, {
+		filter: () => true,
+		minIntervalMs: 60_000,
+	});
+	const delivery = agentHarness.eventDelivery;
+	for (let index = 0; index < warmup; index++) delivery.publishLatest("message", event);
+	await delivery.flushLatest("message");
+	const statsBefore = delivery.stats;
+	const deliveredVersionBefore = (activeMode as InteractiveEventHarness & Record<string, any>).streamingItemVersion as number;
+	observerBridgePromises = 0;
+	observerDeliveries = 0;
+	extensionObserverPublishes = 0;
+	builtInListenerPromises = 0;
+	rejectionObservers = 0;
+	snapshotCount = 0;
+	globalThis.gc!();
+	globalThis.gc!();
+	const heapBefore = process.memoryUsage().heapUsed;
+
+	let minorGcCount = 0;
+	let majorGcCount = 0;
+	let totalGcDurationMs = 0;
+	const gcObserver = new PerformanceObserver((list) => {
+		for (const rawEntry of list.getEntries()) {
+			const entry = rawEntry as GcPerformanceEntry;
+			totalGcDurationMs += entry.duration;
+			if (entry.detail?.kind === constants.NODE_PERFORMANCE_GC_MINOR) minorGcCount++;
+			else if (entry.detail?.kind === constants.NODE_PERFORMANCE_GC_MAJOR) majorGcCount++;
+		}
+	});
+	gcObserver.observe({ entryTypes: ["gc"] });
+	const inspector = new Session();
+	inspector.connect();
+	await inspector.post("HeapProfiler.enable");
+	await inspector.post("HeapProfiler.startSampling", {
+		samplingInterval: 1024,
+		includeObjectsCollectedByMajorGC: true,
+		includeObjectsCollectedByMinorGC: true,
+	});
+
+	let rawUpdatePromises = 0;
+	const batchSize = 500;
+	const batches = Math.ceil(updates / batchSize);
+	const durations = new Array<number>(batches);
+	let published = 0;
+	for (let batch = 0; batch < batches; batch++) {
+		const count = Math.min(batchSize, updates - published);
+		const started = performance.now();
+		for (let index = 0; index < count; index++) {
+			const result = delivery.publishLatest("message", event);
+			if (result && typeof (result as PromiseLike<void>).then === "function") rawUpdatePromises++;
+		}
+		durations[batch] = (performance.now() - started) / count;
+		published += count;
+	}
+	await delivery.flushLatest("message");
+
+	const stopped = await inspector.post("HeapProfiler.stopSampling");
+	await inspector.post("HeapProfiler.disable");
+	inspector.disconnect();
+	await new Promise<void>((resolve) => setTimeout(resolve, 50));
+	gcObserver.disconnect();
+	const heapAfter = process.memoryUsage().heapUsed;
+	globalThis.gc!();
+	globalThis.gc!();
+	const controlledGcAfter = process.memoryUsage().heapUsed;
+	const sampled = allocationSites(stopped.profile.head as SamplingNode);
+	const sorted = durations.slice().sort((a, b) => a - b);
+	const stats = delivery.stats;
+	const modeState = activeMode as InteractiveEventHarness & Record<string, any>;
+	unsubscribe();
+	return {
+		name: "message_update",
+		updates,
+		warmup,
+		metrics: {
+			rawUpdates: updates,
+			coalescedUpdates: stats.coalesced - statsBefore.coalesced,
+			coalescedDeliveries: observerDeliveries,
+			snapshotCount,
+			extensionObserverPublishes,
+			promisesPerRawUpdate: rawUpdatePromises / updates,
+			promisesPerDelivery:
+				(observerBridgePromises + builtInListenerPromises) / Math.max(1, observerDeliveries),
+			observerBridgePromisesPerDelivery: observerBridgePromises / Math.max(1, observerDeliveries),
+			builtInInteractivePromisesPerDelivery: builtInListenerPromises / Math.max(1, observerDeliveries),
+			rejectionObserversPerDelivery: rejectionObservers / Math.max(1, observerDeliveries),
+			sampledAllocationBytes: sampled.sampledBytes,
+			sampledAllocationBytesPerRawUpdate: sampled.sampledBytes / updates,
+			sampledAllocationBytesPerDelivery: sampled.sampledBytes / Math.max(1, observerDeliveries),
+			cpuP50MsPerRawUpdate: percentile(sorted, 0.5),
+			cpuP95MsPerRawUpdate: percentile(sorted, 0.95),
+			minorGcCount,
+			majorGcCount,
+			totalGcDurationMs,
+			heapBefore,
+			heapAfter,
+			controlledGcAfter,
+			controlledGcHeapDeltaBytes: controlledGcAfter - heapBefore,
+			sourceInvariantToolWrapperObjectsPerUpdate: 0,
+			sourceInvariantInlineClosuresPerUpdate: 0,
+			sourceInvariantPromiseTailsPerUpdate: 0,
+			sourceInvariantPromiseArraysPerUpdate: 0,
+			finalUpdateCorrect:
+				modeState.streamingMessage !== undefined && modeState.streamingItemVersion === deliveredVersionBefore + 1 ? 1 : 0,
 		},
 		topAllocationSites: sampled.top,
 	};
@@ -204,10 +361,11 @@ const toolEvent: BenchEvent = {
 	toolName: "read",
 	partialResult: { content: [{ type: "text", text: "progress" }] },
 };
-const results = [
+const directResults = [
 	await measure("message_update", messageEvent, updates, warmup),
 	await measure("tool_execution_update", toolEvent, updates, warmup),
 ];
+const fullChainResults = [await measureFullObserverChain(messageEvent, updates, warmup)];
 process.stdout.write(`${JSON.stringify({
 	schemaVersion: 1,
 	benchmark: "tui-session-event-allocations",
@@ -215,5 +373,8 @@ process.stdout.write(`${JSON.stringify({
 	node: process.version,
 	platform: process.platform,
 	arch: process.arch,
-	results,
+	fixtures: [
+		{ name: "agent-session-to-interactive", results: directResults },
+		{ name: "agent-observer-to-interactive", results: fullChainResults },
+	],
 }, null, 2)}\n`);
