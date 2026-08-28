@@ -148,6 +148,11 @@ await runBenchmarkMain({
 			terminalDiffLines: metrics.terminalDiffLines,
 			instrumentedTerminalBytes: metrics.terminalBytes,
 			pendingRenderRequestHighWaterMark: metrics.pendingRenderRequestHighWaterMark,
+			terminalFrameQueueHighWaterMark: metrics.terminalFrameQueueHighWaterMark,
+			terminalActiveWriteHighWaterMark: metrics.terminalActiveWriteHighWaterMark,
+			terminalPendingFrameHighWaterMark: metrics.terminalPendingFrameHighWaterMark,
+			terminalFramesReplaced: metrics.terminalFramesReplaced,
+			terminalFrameWriteErrors: metrics.terminalFrameWriteErrors,
 			slowTerminalBytesPerSecond: terminalBytesPerSecond,
 			...terminal.sample,
 		};

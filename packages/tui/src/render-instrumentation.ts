@@ -9,6 +9,21 @@ export interface TuiRenderMetrics {
 	terminalDiffLines: number;
 	terminalBytes: number;
 	pendingRenderRequestHighWaterMark: number;
+	terminalFrameQueueHighWaterMark: number;
+	terminalActiveWriteHighWaterMark: number;
+	terminalPendingFrameHighWaterMark: number;
+	terminalFramesReplaced: number;
+	terminalFrameWriteErrors: number;
+	physicalTerminalFrameWrites: number;
+	frameStringsGenerated: number;
+	frameStringUtf8BytesGenerated: number;
+	fullSizeFrameCopies: number;
+	maximumFrameUtf8Bytes: number;
+	activeFrameUtf8Bytes: number;
+	pendingFrameUtf8Bytes: number;
+	framePromisesCreated: number;
+	frameAbortControllersCreated: number;
+	frameWrapperObjectsCreated: number;
 	retainedCacheHits: number;
 	retainedCacheMisses: number;
 	viewportItemVisits: number;
@@ -33,6 +48,21 @@ const EMPTY_METRICS: TuiRenderMetrics = {
 	terminalDiffLines: 0,
 	terminalBytes: 0,
 	pendingRenderRequestHighWaterMark: 0,
+	terminalFrameQueueHighWaterMark: 0,
+	terminalActiveWriteHighWaterMark: 0,
+	terminalPendingFrameHighWaterMark: 0,
+	terminalFramesReplaced: 0,
+	terminalFrameWriteErrors: 0,
+	physicalTerminalFrameWrites: 0,
+	frameStringsGenerated: 0,
+	frameStringUtf8BytesGenerated: 0,
+	fullSizeFrameCopies: 0,
+	maximumFrameUtf8Bytes: 0,
+	activeFrameUtf8Bytes: 0,
+	pendingFrameUtf8Bytes: 0,
+	framePromisesCreated: 0,
+	frameAbortControllersCreated: 0,
+	frameWrapperObjectsCreated: 0,
 	retainedCacheHits: 0,
 	retainedCacheMisses: 0,
 	viewportItemVisits: 0,
@@ -126,12 +156,49 @@ export class TuiRenderInstrumentation {
 		this.metrics.overlayRenders++;
 	}
 
-	recordTerminalFrame(data: string, diffLines: number): void {
-		this.metrics.terminalBytes += utf8ByteLength(data);
+	recordTerminalFrame(utf8Bytes: number, diffLines: number): void {
+		this.metrics.physicalTerminalFrameWrites++;
+		this.metrics.terminalBytes += utf8Bytes;
 		this.metrics.terminalDiffLines += diffLines;
+	}
+
+	recordTerminalFrameGenerated(utf8Bytes: number): void {
+		this.metrics.frameStringsGenerated++;
+		this.metrics.frameStringUtf8BytesGenerated += utf8Bytes;
+		this.metrics.maximumFrameUtf8Bytes = Math.max(this.metrics.maximumFrameUtf8Bytes, utf8Bytes);
 	}
 
 	recordPendingRenderRequest(): void {
 		this.metrics.pendingRenderRequestHighWaterMark = 1;
+	}
+
+	recordTerminalFrameQueueDepth(
+		activeWrites: 0 | 1,
+		pendingFrames: 0 | 1,
+		activeFrameUtf8Bytes = 0,
+		pendingFrameUtf8Bytes = 0,
+	): void {
+		this.metrics.activeFrameUtf8Bytes = activeFrameUtf8Bytes;
+		this.metrics.pendingFrameUtf8Bytes = pendingFrameUtf8Bytes;
+		this.metrics.terminalActiveWriteHighWaterMark = Math.max(
+			this.metrics.terminalActiveWriteHighWaterMark,
+			activeWrites,
+		);
+		this.metrics.terminalPendingFrameHighWaterMark = Math.max(
+			this.metrics.terminalPendingFrameHighWaterMark,
+			pendingFrames,
+		);
+		this.metrics.terminalFrameQueueHighWaterMark = Math.max(
+			this.metrics.terminalFrameQueueHighWaterMark,
+			activeWrites + pendingFrames,
+		);
+	}
+
+	recordTerminalFrameReplaced(): void {
+		this.metrics.terminalFramesReplaced++;
+	}
+
+	recordTerminalFrameWriteError(): void {
+		this.metrics.terminalFrameWriteErrors++;
 	}
 }

@@ -92,7 +92,14 @@ export { type RenderLatexOptions, renderLatex } from "./latex.ts";
 // Input buffering for batch splitting
 export { StdinBuffer, type StdinBufferEventMap, type StdinBufferOptions } from "./stdin-buffer.ts";
 // Terminal interface and implementations
-export { ProcessTerminal, type Terminal } from "./terminal.ts";
+export { ProcessTerminal, type Terminal, type TerminalFrameWriteCompletion } from "./terminal.ts";
+export {
+	TerminalFrameQueue,
+	type TerminalFrameQueueOptions,
+	type TerminalFrameQueueSnapshot,
+	type TerminalFrameSink,
+} from "./terminal-frame-queue.ts";
+export { DEFAULT_TERMINAL_LIFECYCLE_TIMEOUT_MS } from "./tui.ts";
 // Terminal colors
 export {
 	parseOsc11BackgroundColor,

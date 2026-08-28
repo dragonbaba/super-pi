@@ -145,6 +145,8 @@ export interface TuiAltScreenOptions {
 	openUrl?: (url: string) => void;
 	/** Handle an unmodified secondary-button press for clipboard paste. Currently enabled on Windows only. */
 	onRightClickPaste?: () => void;
+	/** Bounded frame and terminal-cleanup wait used by stop/error lifecycle tests and hosts. */
+	terminalBoundaryTimeoutMs?: number;
 }
 
 /** Alternate-screen TUI with a scrollable, application-owned viewport. */
@@ -193,7 +195,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		logDirectory?: string,
 		options: TuiAltScreenOptions = {},
 	) {
-		super(terminal, showHardwareCursor, logDirectory);
+		super(terminal, showHardwareCursor, logDirectory, options.terminalBoundaryTimeoutMs);
 		this.implicitDocument = {
 			[LINE_VIEWPORT_COMPONENT]: true,
 			render: (width) => super.render(width),
@@ -288,29 +290,31 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			term.startsWith("screen")
 				? ENABLE_BUTTON_MOTION_MOUSE
 				: ENABLE_ALL_MOTION_MOUSE;
-		this.terminal.write(
+		this.writeTerminalControl(
 			`${ENTER_ALT_SCREEN}${DISABLE_AUTOWRAP}${this.mouseEnabled ? mouseSequence : ""}\x1b[2J\x1b[H\x1b[?25l`,
 		);
 	}
 
-	protected override beforeTerminalStop(_options: TuiStopOptions): void {
+	protected override beforeTerminalStop(_options: TuiStopOptions): void | Promise<void> {
 		this.stopSelectionAutoScroll();
 		this.selectionPressActive = false;
 		this.stopScrollbarHover();
 		this.stopScrollbarDrag();
 		this.flashes.dispose();
 		if (!this.altScreenActive) return;
-		this.terminal.write(
+		const write = this.terminal.write(
 			`${BEGIN_SYNCHRONIZED_OUTPUT}${this.deleteKittyImages()}${this.mouseEnabled ? DISABLE_MOUSE : ""}${ENABLE_AUTOWRAP}${END_SYNCHRONIZED_OUTPUT}`,
 		);
 		this.uploadedKittyImages.clear();
+		return write;
 	}
 
-	protected override afterTerminalStop(options: TuiStopOptions): void {
+	protected override afterTerminalStop(options: TuiStopOptions): void | Promise<void> {
 		if (!this.altScreenActive) return;
 		this.altScreenActive = false;
+		let write: void | Promise<void>;
 		if (options.preserveScreen) {
-			this.terminal.write(`${BEGIN_SYNCHRONIZED_OUTPUT}${EXIT_ALT_SCREEN}\x1b[?25h${END_SYNCHRONIZED_OUTPUT}`);
+			write = this.terminal.write(`${BEGIN_SYNCHRONIZED_OUTPUT}${EXIT_ALT_SCREEN}\x1b[?25h${END_SYNCHRONIZED_OUTPUT}`);
 		} else {
 			const width = Math.max(1, this.terminal.columns);
 			const documentLines = this.render(width);
@@ -332,12 +336,13 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 				buffer += `\r\x1b[2K${this.lastDocument[row] ?? ""}`;
 			}
 			buffer += `\x1b[0m${ENABLE_AUTOWRAP}\r\n\x1b[?25h${END_SYNCHRONIZED_OUTPUT}`;
-			this.terminal.write(buffer);
+			write = this.terminal.write(buffer);
 		}
 		if (this.savedCapabilities) {
 			setCapabilities(this.savedCapabilities);
 			this.savedCapabilities = undefined;
 		}
+		return write;
 	}
 
 	private deleteKittyImages(): string {
@@ -1021,7 +1026,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		}
 		const text = lines.join("\n");
 		if (text.length === 0) return;
-		this.terminal.write(`\x1b]52;c;${Buffer.from(text).toString("base64")}\x07`);
+		this.writeTerminalControl(`\x1b]52;c;${Buffer.from(text).toString("base64")}\x07`);
 		this.flash("Copied!");
 	}
 
@@ -1190,8 +1195,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			buffer += "\x1b[?25l";
 		}
 		buffer += END_SYNCHRONIZED_OUTPUT;
-		this.recordTerminalFrame(buffer, diffLines);
-		this.terminal.write(buffer);
+		this.writeTerminalFrame(buffer, diffLines);
 
 		this.previousScreen = screen;
 		this.previousRawScreen = rawScreen;

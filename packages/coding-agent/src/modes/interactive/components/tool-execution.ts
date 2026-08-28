@@ -20,7 +20,7 @@ const READ_GROUP_SELECTOR_SET_POOL = new ObjectPool(
 
 type ToolResultLike = {
 	content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
-	isError: boolean;
+	isError?: boolean;
 	details?: any;
 };
 
@@ -29,6 +29,7 @@ type ReadGroupRow = {
 	started: boolean;
 	argsComplete: boolean;
 	result?: ToolResultLike;
+	resultIsError: boolean;
 	isPartial: boolean;
 };
 type ReadGroupEntry = { toolCallId: string; row: ReadGroupRow };
@@ -112,7 +113,7 @@ export class ReadToolGroupComponent extends Container {
 		let row = this.rows.get(toolCallId);
 		if (!row) {
 			if (this.finalized) return false;
-			row = { args, started: false, argsComplete: false, result: undefined, isPartial: true };
+			row = { args, started: false, argsComplete: false, result: undefined, resultIsError: false, isPartial: true };
 			this.rows.set(toolCallId, row);
 		} else row.args = args;
 		this.rebuild();
@@ -120,7 +121,7 @@ export class ReadToolGroupComponent extends Container {
 	}
 	markExecutionStarted(toolCallId: string): void { const row = this.rows.get(toolCallId); if (row) { row.started = true; this.rebuild(); } }
 	setArgsComplete(toolCallId: string): void { const row = this.rows.get(toolCallId); if (row) { row.argsComplete = true; this.rebuild(); } }
-	updateResult(toolCallId: string, result: ToolResultLike, isPartial = false): void { const row = this.rows.get(toolCallId); if (row) { row.result = result; row.isPartial = isPartial; this.rebuild(); } }
+	updateResult(toolCallId: string, result: ToolResultLike, isPartial = false, isError = result.isError === true): void { const row = this.rows.get(toolCallId); if (row) { row.result = result; row.resultIsError = isError; row.isPartial = isPartial; this.rebuild(); } }
 	finalize(): void { if (!this.finalized) { this.finalized = true; this.rebuild(); } }
 	canFreezeRender(): boolean {
 		if (!this.finalized || this.rows.size === 0) return false;
@@ -144,7 +145,7 @@ export class ReadToolGroupComponent extends Container {
 			for (const [toolCallId, row] of this.rows) {
 				const entry = { toolCallId, row };
 				const filePath = getReadGroupPath(entry.row.args);
-				const mergeable = filePath && entry.row.argsComplete && entry.row.result && !entry.row.isPartial && !entry.row.result.isError;
+				const mergeable = filePath && entry.row.argsComplete && entry.row.result && !entry.row.isPartial && !entry.row.resultIsError;
 				if (!mergeable) { displayRows.push({ entries: [entry] }); continue; }
 				const key = normalizeReadGroupPath(filePath);
 				const existing = byPath.get(key);
@@ -179,7 +180,7 @@ export class ReadToolGroupComponent extends Container {
 						selectors.add(selector);
 						selectorText += selectorText ? `,${selector}` : selector;
 					}
-					if (entry.row.result?.isError) isError = true;
+					if (entry.row.resultIsError) isError = true;
 					if (!entry.row.result || entry.row.isPartial) isPending = true;
 				}
 			} finally {
@@ -191,9 +192,9 @@ export class ReadToolGroupComponent extends Container {
 			this.addChild(new Text(label, callCount > 1 ? 2 : 1, 0));
 			for (const entry of group.entries) {
 				const output = getReadGroupResultText(entry.row.result);
-				if (!output || (!this.expanded && !entry.row.result?.isError)) continue;
+				if (!output || (!this.expanded && !entry.row.resultIsError)) continue;
 				const preview = boundReadGroupPreview(output, this.expanded ? READ_GROUP_MAX_PREVIEW_LINES : 10);
-				this.addChild(new Text(theme.fg(entry.row.result?.isError ? "error" : "toolOutput", preview), callCount > 1 ? 4 : 2, 0));
+				this.addChild(new Text(theme.fg(entry.row.resultIsError ? "error" : "toolOutput", preview), callCount > 1 ? 4 : 2, 0));
 			}
 		}
 	}
@@ -240,9 +241,10 @@ export class ToolExecutionComponent extends Container {
 	private argsComplete = false;
 	private result?: {
 		content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
-		isError: boolean;
+		isError?: boolean;
 		details?: any;
 	};
+	private resultIsError = false;
 	private convertedImages: Map<number, { data: string; mimeType: string }> = new Map();
 	private hideComponent = false;
 	private readonly onVisualInvalidate: ((component: ToolExecutionComponent) => void) | undefined;
@@ -337,7 +339,7 @@ export class ToolExecutionComponent extends Container {
 			isPartial: this.isPartial,
 			expanded: this.expanded,
 			showImages: this.showImages,
-			isError: this.result?.isError ?? false,
+			isError: this.resultIsError,
 		};
 	}
 
@@ -384,11 +386,13 @@ export class ToolExecutionComponent extends Container {
 		result: {
 			content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
 			details?: any;
-			isError: boolean;
+			isError?: boolean;
 		},
 		isPartial = false,
+		isError = result.isError === true,
 	): void {
 		this.result = result;
+		this.resultIsError = isError;
 		this.isPartial = isPartial;
 		this.updateDisplay();
 		this.maybeConvertImagesForKitty();
@@ -477,7 +481,7 @@ export class ToolExecutionComponent extends Container {
 	private updateDisplay(): void {
 		const bgFn = this.isPartial
 			? (text: string) => theme.bg("toolPendingBg", text)
-			: this.result?.isError
+			: this.resultIsError
 				? (text: string) => theme.bg("toolErrorBg", text)
 				: (text: string) => theme.bg("toolSuccessBg", text);
 

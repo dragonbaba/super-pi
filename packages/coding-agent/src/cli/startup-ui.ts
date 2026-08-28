@@ -27,6 +27,15 @@ const OFFICIAL_PACKAGE_NAME = "@super-pi/coding-agent";
 const OFFICIAL_APP_NAME = "superpi";
 const OFFICIAL_CONFIG_DIR_NAME = ".sp";
 
+const ignoreStartupLifecycleRejection = (): void => {};
+
+export function observeStartupLifecycle(
+	promise: Promise<void>,
+	onRejected: (reason: unknown) => void = ignoreStartupLifecycleRejection,
+): void {
+	void promise.then(undefined, onRejected);
+}
+
 interface DistributionMetadata {
 	packageName: string;
 	appName: string;
@@ -86,7 +95,7 @@ export async function createStartupTui(settingsManager: SettingsManager): Promis
 
 export function startStartupTui(ui: TUI, settingsManager: SettingsManager): void {
 	ui.start();
-	void applyDetectedStartupTheme(ui, settingsManager);
+	observeStartupLifecycle(applyDetectedStartupTheme(ui, settingsManager));
 }
 
 async function applyDetectedStartupTheme(ui: TUI, settingsManager: SettingsManager): Promise<void> {
@@ -137,7 +146,7 @@ export async function showStartupSelector<T>(
 	options: Array<{ label: string; value: T }>,
 ): Promise<T | undefined> {
 	const ui = await createStartupTui(settingsManager);
-	return new Promise((resolve) => {
+	return new Promise((resolve, reject) => {
 		let settled = false;
 		const finish = async (result: T | undefined) => {
 			if (settled) {
@@ -145,15 +154,15 @@ export async function showStartupSelector<T>(
 			}
 			settled = true;
 			await clearStartupTui(ui);
-			ui.stop();
+			await ui.dispose();
 			resolve(result);
 		};
 
 		const selector = new ExtensionSelectorComponent(
 			title,
 			options.map((option) => option.label),
-			(option) => void finish(options.find((entry) => entry.label === option)?.value),
-			() => void finish(undefined),
+			(option) => observeStartupLifecycle(finish(options.find((entry) => entry.label === option)?.value), reject),
+			() => observeStartupLifecycle(finish(undefined), reject),
 			{ tui: ui },
 		);
 		ui.addChild(selector);
@@ -165,7 +174,7 @@ export async function showStartupSelector<T>(
 /** Show the first-time setup dialog and persist the result */
 export async function showFirstTimeSetup(settingsManager: SettingsManager): Promise<void> {
 	const ui = await createStartupTui(settingsManager);
-	return new Promise((resolve) => {
+	return new Promise((resolve, reject) => {
 		let settled = false;
 		const finish = async (result: FirstTimeSetupResult | undefined) => {
 			if (settled) {
@@ -178,7 +187,7 @@ export async function showFirstTimeSetup(settingsManager: SettingsManager): Prom
 				await settingsManager.flush();
 			}
 			await clearStartupTui(ui);
-			ui.stop();
+			await ui.dispose();
 			resolve();
 		};
 
@@ -192,15 +201,15 @@ export async function showFirstTimeSetup(settingsManager: SettingsManager): Prom
 					setTheme(themeName);
 					ui.requestRender();
 				},
-				onSubmit: (result) => void finish(result),
-				onCancel: () => void finish(undefined),
+				onSubmit: (result) => observeStartupLifecycle(finish(result), reject),
+				onCancel: () => observeStartupLifecycle(finish(undefined), reject),
 			});
 			ui.addChild(component);
 			ui.setFocus(component);
 			ui.requestRender();
 		};
 
-		void showSetup();
+		observeStartupLifecycle(showSetup(), reject);
 	});
 }
 
@@ -210,7 +219,7 @@ export async function showStartupInput(
 	placeholder?: string,
 ): Promise<string | undefined> {
 	const ui = await createStartupTui(settingsManager);
-	return new Promise((resolve) => {
+	return new Promise((resolve, reject) => {
 		let settled = false;
 		const finish = async (result: string | undefined) => {
 			if (settled) {
@@ -219,15 +228,15 @@ export async function showStartupInput(
 			settled = true;
 			input.dispose();
 			await clearStartupTui(ui);
-			ui.stop();
+			await ui.dispose();
 			resolve(result);
 		};
 
 		const input = new ExtensionInputComponent(
 			title,
 			placeholder,
-			(value) => void finish(value),
-			() => void finish(undefined),
+			(value) => observeStartupLifecycle(finish(value), reject),
+			() => observeStartupLifecycle(finish(undefined), reject),
 			{
 				tui: ui,
 			},

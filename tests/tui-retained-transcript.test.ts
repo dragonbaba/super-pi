@@ -66,6 +66,21 @@ test("active updates do not rerender 5,000 completed transcript items", () => {
 		terminalDiffLines: 0,
 		terminalBytes: 0,
 		pendingRenderRequestHighWaterMark: 0,
+		terminalFrameQueueHighWaterMark: 0,
+		terminalActiveWriteHighWaterMark: 0,
+		terminalPendingFrameHighWaterMark: 0,
+		terminalFramesReplaced: 0,
+		terminalFrameWriteErrors: 0,
+		physicalTerminalFrameWrites: 0,
+		frameStringsGenerated: 0,
+		frameStringUtf8BytesGenerated: 0,
+		fullSizeFrameCopies: 0,
+		maximumFrameUtf8Bytes: 0,
+		activeFrameUtf8Bytes: 0,
+		pendingFrameUtf8Bytes: 0,
+		framePromisesCreated: 0,
+		frameAbortControllersCreated: 0,
+		frameWrapperObjectsCreated: 0,
 		retainedCacheHits: 5_000,
 		retainedCacheMisses: 0,
 		viewportItemVisits: 0,
@@ -300,12 +315,22 @@ test("TUI instrumentation records root, overlay, diff, bytes, and pending render
 test("instrumentation counts UTF-8 bytes, resets cleanly, and stays isolated per TUI", () => {
 	const first = new TuiRenderInstrumentation();
 	const second = new TuiRenderInstrumentation();
-	first.recordTerminalFrame("中😀", 1);
+	const utf8Bytes = Buffer.byteLength("中😀", "utf8");
+	first.recordTerminalFrameGenerated(utf8Bytes);
+	first.recordTerminalFrame(utf8Bytes, 1);
 	assert.equal(first.snapshot().terminalBytes, Buffer.byteLength("中😀", "utf8"));
 	assert.equal(first.snapshot().terminalDiffLines, 1);
+	assert.equal(first.snapshot().frameStringsGenerated, 1);
+	assert.equal(first.snapshot().frameStringUtf8BytesGenerated, utf8Bytes);
+	assert.equal(first.snapshot().maximumFrameUtf8Bytes, utf8Bytes);
+	assert.equal(first.snapshot().fullSizeFrameCopies, 0);
+	assert.equal(first.snapshot().framePromisesCreated, 0);
+	assert.equal(first.snapshot().frameAbortControllersCreated, 0);
+	assert.equal(first.snapshot().frameWrapperObjectsCreated, 0);
 	assert.equal(second.snapshot().terminalBytes, 0);
 	first.reset();
 	assert.equal(first.snapshot().terminalBytes, 0);
+	assert.equal(first.snapshot().frameStringsGenerated, 0);
 	assert.equal(second.snapshot().terminalBytes, 0);
 });
 

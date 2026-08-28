@@ -218,8 +218,36 @@ export type AgentSessionEvent =
 	| { type: "auto_retry_end"; success: boolean; attempt: number; finalError?: string }
 	| { type: "bash_execution_update"; id?: string; delta: string };
 
-/** Listener function for agent session events */
-export type AgentSessionEventListener = (event: AgentSessionEvent) => void;
+/** Listener function for agent session events. Final awaiting requires criticalAgentEnd subscription opt-in. */
+export type AgentSessionEventListener = (event: AgentSessionEvent) => void | Promise<void>;
+
+const ignoreOrdinaryEventListenerRejection = (): void => {};
+
+export interface AgentSessionSubscriptionOptions {
+	/** Wait for this listener at agent_end. Rejection is isolated from the agent/provider run. */
+	criticalAgentEnd?: boolean;
+	/** Stable diagnostic sink for synchronous throws and asynchronous listener rejection. */
+	onError?: (error: unknown) => void;
+}
+
+interface AgentSessionEventRegistration {
+	listener: AgentSessionEventListener;
+	criticalAgentEnd: boolean;
+	observeRejection: (error: unknown) => void;
+}
+
+function createEventListenerRejectionObserver(onError: ((error: unknown) => void) | undefined): (error: unknown) => void {
+	if (!onError) return ignoreOrdinaryEventListenerRejection;
+	return (error: unknown): void => {
+		try {
+			onError(error);
+		} catch {
+			// Listener diagnostics cannot fail the provider or another listener.
+		}
+	};
+}
+
+const DEFAULT_CRITICAL_AGENT_END_TIMEOUT_MS = 30_000;
 
 const STRING_SET_POOL = new ObjectPool<Set<string>>(
 	() => new Set<string>(),
@@ -550,7 +578,8 @@ export class AgentSession {
 	private _unsubscribeAgentObserver?: () => void;
 	private _unsubscribeExtensionObserver?: () => void;
 	private readonly _extensionObserverDelivery: EventDeliveryDispatcher<CoalescibleAgentEvent, string>;
-	private _eventListeners: AgentSessionEventListener[] = [];
+	private _eventListeners: AgentSessionEventRegistration[] = [];
+	private _criticalAgentEndTimeoutMs = DEFAULT_CRITICAL_AGENT_END_TIMEOUT_MS;
 	private _isAgentRunActive = false;
 	private _idleWaitPromise: Promise<void> | undefined;
 	private _resolveIdleWait: (() => void) | undefined;
@@ -651,6 +680,7 @@ export class AgentSession {
 		this._unsubscribeAgent = this.agent.subscribe(this._handleAgentEvent, {
 			filter: (event) => !isCoalescibleAgentEvent(event) || this._extensionRunner.hasHandlers(event.type),
 		});
+		this._handleAgentObserverEvent = this._handleAgentObserverEvent.bind(this);
 		this._unsubscribeAgentObserver = this.agent.subscribeObserver(this._handleAgentObserverEvent, {
 			filter: isCoalescibleAgentEvent,
 		});
@@ -848,8 +878,59 @@ export class AgentSession {
 
 	/** Emit an event to all listeners */
 	private _emit(event: AgentSessionEvent): void {
-		for (const l of this._eventListeners) {
-			l(event);
+		for (let index = 0; index < this._eventListeners.length; index++) {
+			const registration = this._eventListeners[index]!;
+			const observeRejection = registration.observeRejection ?? ignoreOrdinaryEventListenerRejection;
+			let result: ReturnType<AgentSessionEventListener>;
+			try {
+				result = registration.listener(event);
+			} catch (error) {
+				observeRejection(error);
+				continue;
+			}
+			if (result && typeof result.then === "function") {
+				void result.then(undefined, observeRejection);
+			}
+		}
+	}
+
+	/** Emit the final run boundary and wait for critical listener work such as terminal frame flushes. */
+	private async _emitAgentEnd(event: Extract<AgentSessionEvent, { type: "agent_end" }>): Promise<void> {
+		const timeoutMs = this._criticalAgentEndTimeoutMs ?? DEFAULT_CRITICAL_AGENT_END_TIMEOUT_MS;
+		let deadlineReached = false;
+		let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+		let deadline: Promise<void> | undefined;
+		const getDeadline = (): Promise<void> => {
+			if (!deadline) {
+				deadline = new Promise<void>((resolve) => {
+					deadlineTimer = setTimeout(() => {
+						deadlineReached = true;
+						resolve();
+					}, timeoutMs);
+				});
+			}
+			return deadline;
+		};
+		try {
+			for (const registration of this._eventListeners) {
+				const observeRejection = registration.observeRejection ?? ignoreOrdinaryEventListenerRejection;
+				let result: void | Promise<void>;
+				try {
+					result = registration.listener(event);
+				} catch (error) {
+					observeRejection(error);
+					continue;
+				}
+				if (!result || typeof result.then !== "function") continue;
+				const observed = result.then(undefined, observeRejection);
+				if (!registration.criticalAgentEnd || deadlineReached) {
+					void observed;
+					continue;
+				}
+				await Promise.race([observed, getDeadline()]);
+			}
+		} finally {
+			if (deadlineTimer) clearTimeout(deadlineTimer);
 		}
 	}
 
@@ -931,8 +1012,13 @@ export class AgentSession {
 
 		if (this._extensionRunner.hasHandlers(event.type)) await this._emitExtensionEvent(event);
 
-		// Notify all listeners
-		this._emit(event.type === "agent_end" ? { ...event, willRetry: this._willRetryAfterAgentEnd(event) } : event);
+		// Notify all listeners. The final boundary is awaited so prompt/abort/idle
+		// cannot overtake critical UI output; high-frequency events stay unchanged.
+		if (event.type === "agent_end") {
+			await this._emitAgentEnd({ ...event, willRetry: this._willRetryAfterAgentEnd(event) });
+		} else {
+			this._emit(event);
+		}
 
 		// Handle session persistence
 		if (event.type === "message_end") {
@@ -979,12 +1065,12 @@ export class AgentSession {
 	};
 
 	/** Coalesced display-only path for the built-in UI and explicit extension observers. */
-	private _handleAgentObserverEvent = async (event: AgentEvent): Promise<void> => {
+	private _handleAgentObserverEvent(event: AgentEvent): void {
 		if (!isCoalescibleAgentEvent(event)) return;
 		this._emit(event);
 		const key = event.type === "message_update" ? "message" : `tool:${event.toolCallId}`;
 		this._extensionObserverDelivery.publishLatest(key, event);
-	};
+	}
 
 	private _handleExtensionObserverEvent = async (event: CoalescibleAgentEvent): Promise<void> => {
 		if (this._extensionRunner.hasObservers(event.type)) await this._emitExtensionObserverEvent(event);
@@ -1139,14 +1225,22 @@ export class AgentSession {
 	/**
 	 * Subscribe to agent events.
 	 * Session persistence is handled internally (saves messages on message_end).
+	 * Promise-returning listeners marked criticalAgentEnd are awaited at agent_end so critical final
+	 * output can settle before prompt(), abort(), and waitForIdle() complete.
+	 * Other events retain their existing synchronous notification behavior.
 	 * Multiple listeners can be added. Returns unsubscribe function for this listener.
 	 */
-	subscribe(listener: AgentSessionEventListener): () => void {
-		this._eventListeners.push(listener);
+	subscribe(listener: AgentSessionEventListener, options: AgentSessionSubscriptionOptions = {}): () => void {
+		const registration: AgentSessionEventRegistration = {
+			listener,
+			criticalAgentEnd: options.criticalAgentEnd === true,
+			observeRejection: createEventListenerRejectionObserver(options.onError),
+		};
+		this._eventListeners.push(registration);
 
 		// Return unsubscribe function for this specific listener
 		return () => {
-			const index = this._eventListeners.indexOf(listener);
+			const index = this._eventListeners.indexOf(registration);
 			if (index !== -1) {
 				this._eventListeners.splice(index, 1);
 			}

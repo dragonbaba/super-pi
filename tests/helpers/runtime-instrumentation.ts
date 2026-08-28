@@ -116,6 +116,7 @@ export class FakeTerminal implements Terminal {
 	rows: number;
 	kittyProtocolActive = false;
 	started = false;
+	private frameWriteCompletion: ((generation: number, error?: Error) => void) | undefined;
 
 	constructor(columns = 120, rows = 40) {
 		this.columns = columns;
@@ -126,6 +127,14 @@ export class FakeTerminal implements Terminal {
 	stop(): void { this.started = false; }
 	async drainInput(): Promise<void> {}
 	write(data: string): void { this.writes.push(data); }
+	setFrameWriteCompletionListener(listener: ((generation: number, error?: Error) => void) | undefined): void {
+		this.frameWriteCompletion = listener;
+	}
+	writeFrame(data: string, generation: number): void {
+		this.write(data);
+		this.frameWriteCompletion?.(generation);
+	}
+	cancelFrameWrite(): void {}
 	moveBy(): void {}
 	hideCursor(): void {}
 	showCursor(): void {}

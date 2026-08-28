@@ -43,8 +43,7 @@ tui.setFocus(editor);
 // In raw mode Ctrl+C doesn't send SIGINT — intercept it here to allow exit
 tui.addInputListener((data) => {
   if (matchesKey(data, 'ctrl+c')) {
-    tui.stop();
-    process.exit(0);
+    void tui.stop().then(() => process.exit(0));
   }
 });
 
@@ -71,12 +70,17 @@ const tui: TUI = new TuiMainScreen(terminal);
 tui.addChild(component);
 tui.removeChild(component);
 tui.start();
-tui.stop();
+await tui.stop(); // Flush the latest terminal frame before restoring terminal state
 tui.requestRender(); // Request a re-render
+await tui.flushTerminalFrames(); // Explicit critical/final-frame boundary
 
 // Global debug key handler (Shift+Ctrl+D)
 tui.onDebug = () => console.log("Debug triggered");
 ```
+
+`Terminal.write()` is for awaited terminal controls; observe or await any returned Promise. `ProcessTerminal` routes its own fire-and-forget cursor, keyboard, paste, clear, title, and progress controls through the same instance output, so final disposal owns every terminal write. Progress uses one in-flight primitive lane and one pending-clear bit; keepalive ticks never form an unbounded callback queue. Renderers use the callback-driven frame lane: register stable completion/start/ready listeners, then call `writeFrame(data, generation)`. Completion requires a successful Writable callback and, after a false return, `drain`; physical-start instrumentation is recorded only after `Writable.write()` returns without throwing. Normal frame writes have no Promise or `AbortController` and no absolute timeout. `TuiBase` combines content and cursor output from one render into one atomic frame. A frame or control lifecycle deadline does not permanently poison a resumable TUI: the next `start()` clears only that exact recoverable timeout. An OS write is not cancellable, so the orphan keeps exclusive physical writer ownership until its own callback and drain settle. `ProcessTerminal` retains no pending frame string: a resumed TUI coalesces numeric render intent until readiness, while a direct queue client retains at most one replaceable latest string. Real stream callback/error/close failures remain permanent. `start()` rolls back partial setup on synchronous control failure; `stop()` performs every listener/input/raw-mode restore before reporting its first error. Use `stop()` for a resumable mode switch, suspend, or external-editor boundary; use `dispose()` for final ownership release.
+
+Final `ProcessTerminal.dispose()` immediately rejects restart and new writes and releases logical queue callbacks. If a frame or control write still belongs to the OS, the terminal retains only its physical write state and stream error observer until the callback/drain/error/close boundary settles. A write that never settles therefore deliberately retains that minimal observer; this is required to contain a possible late stream `error` event rather than falsely reporting physical completion.
 
 ### Alternate-screen viewport layouts
 

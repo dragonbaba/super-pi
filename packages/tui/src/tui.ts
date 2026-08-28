@@ -8,6 +8,7 @@ import { performance } from "node:perf_hooks";
 import { isKeyRelease, matchesKey } from "./keys.ts";
 import type { TuiRenderInstrumentation } from "./render-instrumentation.ts";
 import type { Terminal } from "./terminal.ts";
+import { TerminalFrameQueue, type TerminalFrameQueueSnapshot } from "./terminal-frame-queue.ts";
 import {
 	isOsc11BackgroundColorResponse,
 	parseOsc11BackgroundColor,
@@ -17,6 +18,20 @@ import {
 } from "./terminal-colors.ts";
 import { getCapabilities, isImageLine, setCellDimensions } from "./terminal-image.ts";
 import { extractSegments, normalizeTerminalOutput, sliceByColumn, sliceWithWidth, visibleWidth } from "./utils.ts";
+
+function asError(error: unknown): Error {
+	return error instanceof Error ? error : new Error(String(error));
+}
+
+/** Default deadline for lifecycle flush/restore boundaries, never for ordinary frame writes. */
+export const DEFAULT_TERMINAL_LIFECYCLE_TIMEOUT_MS = 5_000;
+
+class RecoverableTerminalLifecycleTimeoutError extends Error {
+	constructor(label: string, timeoutMs: number) {
+		super(`${label} timed out after ${timeoutMs}ms`);
+		this.name = "RecoverableTerminalLifecycleTimeoutError";
+	}
+}
 
 /**
  * Component interface - all components must implement this
@@ -112,12 +127,37 @@ export type SizeValue = number | `${number}%`;
 function parseSizeValue(value: SizeValue | undefined, referenceSize: number): number | undefined {
 	if (value === undefined) return undefined;
 	if (typeof value === "number") return value;
-	// Parse percentage string like "50%"
-	const match = value.match(/^(\d+(?:\.\d+)?)%$/);
-	if (match) {
-		return Math.floor((referenceSize * parseFloat(match[1])) / 100);
+	const percentage = parsePercentage(value);
+	return percentage === undefined ? undefined : Math.floor((referenceSize * percentage) / 100);
+}
+
+/** Parse a non-negative percentage without regex match arrays or substring copies. */
+function parsePercentage(value: string): number | undefined {
+	if (value.length < 2 || value.charCodeAt(value.length - 1) !== 37) return undefined;
+	let whole = 0;
+	let fraction = 0;
+	let fractionScale = 1;
+	let wholeDigits = 0;
+	let fractionDigits = 0;
+	let afterDecimal = false;
+	for (let index = 0; index < value.length - 1; index++) {
+		const code = value.charCodeAt(index);
+		if (code === 46 && !afterDecimal && wholeDigits > 0) {
+			afterDecimal = true;
+			continue;
+		}
+		if (code < 48 || code > 57) return undefined;
+		if (afterDecimal) {
+			fraction = fraction * 10 + code - 48;
+			fractionScale *= 10;
+			fractionDigits++;
+		} else {
+			whole = whole * 10 + code - 48;
+			wholeDigits++;
+		}
 	}
-	return undefined;
+	if (wholeDigits === 0 || (afterDecimal && fractionDigits === 0)) return undefined;
+	return whole + fraction / fractionScale;
 }
 
 /**
@@ -308,9 +348,11 @@ export interface TUI extends Component {
 	hideOverlay(): void;
 	hasOverlay(): boolean;
 	start(): void;
-	stop(options?: TuiStopOptions): void;
+	stop(options?: TuiStopOptions): Promise<void>;
+	dispose(options?: TuiStopOptions): Promise<void>;
 	renderNow(force?: boolean): void;
 	requestRender(force?: boolean): void;
+	flushTerminalFrames(): Promise<void>;
 	addInputListener(listener: TuiInputListener): () => void;
 	removeInputListener(listener: TuiInputListener): void;
 	onTerminalColorSchemeChange(listener: (scheme: TerminalColorScheme) => void): () => void;
@@ -353,6 +395,58 @@ export abstract class TuiBase extends Container implements TUI {
 	private terminalColorSchemeNotificationsEnabled = false;
 	protected readonly logDirectory: string;
 	private renderInstrumentation: TuiRenderInstrumentation | undefined;
+	private readonly terminalFrameQueue: TerminalFrameQueue;
+	private terminalFrameError: Error | undefined;
+	private recoverableTerminalControlError: RecoverableTerminalLifecycleTimeoutError | undefined;
+	private stopping = false;
+	private stopPromise: Promise<void> | undefined;
+	private disposePromise: Promise<void> | undefined;
+	private disposed = false;
+	private readonly terminalBoundaryTimeoutMs: number;
+	private composingTerminalFrame = false;
+	private composedTerminalFrame = "";
+	private composedTerminalDiffLines = 0;
+	private readonly overlayLinesScratch: string[][] = [];
+	private readonly overlayRowsScratch: number[] = [];
+	private readonly overlayColsScratch: number[] = [];
+	private readonly overlayWidthsScratch: number[] = [];
+	private readonly overlayLineCountsScratch: number[] = [];
+	private resolvedOverlayWidth = 0;
+	private resolvedOverlayRow = 0;
+	private resolvedOverlayCol = 0;
+	private resolvedOverlayMaxHeight: number | undefined;
+	private readonly recordTerminalFrameQueueDepth = (
+		activeWrites: 0 | 1,
+		pendingFrames: 0 | 1,
+		activeFrameUtf8Bytes: number,
+		pendingFrameUtf8Bytes: number,
+	): void =>
+		this.renderInstrumentation?.recordTerminalFrameQueueDepth(
+			activeWrites,
+			pendingFrames,
+			activeFrameUtf8Bytes,
+			pendingFrameUtf8Bytes,
+		);
+	private readonly recordTerminalFrameWrite = (diffLines: number, utf8Bytes: number): void =>
+		this.renderInstrumentation?.recordTerminalFrame(utf8Bytes, diffLines);
+	private readonly recordTerminalFrameReplacement = (): void =>
+		this.renderInstrumentation?.recordTerminalFrameReplaced();
+	private readonly handleTerminalFrameQueueIdle = (): void => this.onTerminalFrameQueueIdle();
+	private readonly handleTerminalFrameQueueError = (error: Error): void => this.onTerminalFrameWriteError(error);
+	private readonly ignoreTerminalLifecycleRejection = (): void => {};
+	private readonly scheduleRequestedRender = (): void => this.scheduleRender();
+	private readonly runImmediateRender = (): void => {
+		this.immediateRenderScheduled = false;
+		if (this.stopped || this.stopping || !this.renderRequested || !this.terminalFrameQueue.canSubmitImmediately) return;
+		this.cancelRenderTimer();
+		this.performRender();
+	};
+	private readonly runScheduledRender = (): void => {
+		this.renderTimer = undefined;
+		if (this.stopped || this.stopping || !this.terminalFrameQueue.canSubmitImmediately || !this.renderRequested) return;
+		this.performRender();
+		if (this.renderRequested) this.scheduleRender();
+	};
 
 	// Overlay stack for modal components rendered on top of base content
 	private focusOrderCounter = 0;
@@ -363,9 +457,25 @@ export abstract class TuiBase extends Container implements TUI {
 	}
 	private overlayFocusRestore: OverlayFocusRestoreState = { status: "inactive" };
 
-	constructor(terminal: Terminal, showHardwareCursor?: boolean, logDirectory?: string) {
+	constructor(
+		terminal: Terminal,
+		showHardwareCursor?: boolean,
+		logDirectory?: string,
+		terminalBoundaryTimeoutMs = DEFAULT_TERMINAL_LIFECYCLE_TIMEOUT_MS,
+	) {
 		super();
 		this.terminal = terminal;
+		if (!Number.isFinite(terminalBoundaryTimeoutMs) || terminalBoundaryTimeoutMs <= 0) {
+			throw new RangeError("terminalBoundaryTimeoutMs must be a positive finite number");
+		}
+		this.terminalBoundaryTimeoutMs = terminalBoundaryTimeoutMs;
+		this.terminalFrameQueue = new TerminalFrameQueue(this.terminal, {
+			onDepthChanged: this.recordTerminalFrameQueueDepth,
+			onWriteStarted: this.recordTerminalFrameWrite,
+			onFrameReplaced: this.recordTerminalFrameReplacement,
+			onIdle: this.handleTerminalFrameQueueIdle,
+			onError: this.handleTerminalFrameQueueError,
+		});
 		this.logDirectory = logDirectory ?? process.env.SP_CODING_AGENT_DIR ?? path.join(os.homedir(), ".sp", "agent");
 		if (showHardwareCursor !== undefined) {
 			this.showHardwareCursor = showHardwareCursor;
@@ -374,15 +484,19 @@ export abstract class TuiBase extends Container implements TUI {
 
 	protected abstract doRender(): void;
 
+	protected observeTerminalLifecycle(promise: Promise<void>): void {
+		void promise.then(undefined, this.ignoreTerminalLifecycleRejection);
+	}
+
 	protected resetRenderState(): void {}
 
 	protected beforeTerminalStart(): void {}
 
 	protected afterTerminalStart(): void {}
 
-	protected beforeTerminalStop(_options: TuiStopOptions): void {}
+	protected beforeTerminalStop(_options: TuiStopOptions): void | Promise<void> {}
 
-	protected afterTerminalStop(_options: TuiStopOptions): void {}
+	protected afterTerminalStop(_options: TuiStopOptions): void | Promise<void> {}
 
 	get fullRedraws(): number {
 		return this.fullRedrawCount;
@@ -396,8 +510,26 @@ export abstract class TuiBase extends Container implements TUI {
 		this.renderInstrumentation?.recordRootRender(generatedLines, visibleLines);
 	}
 
-	protected recordTerminalFrame(data: string, diffLines: number): void {
-		this.renderInstrumentation?.recordTerminalFrame(data, diffLines);
+	protected writeTerminalFrame(data: string, diffLines: number): void {
+		if (this.composingTerminalFrame) {
+			this.composedTerminalFrame += data;
+			this.composedTerminalDiffLines += diffLines;
+			return;
+		}
+		const utf8Bytes = this.terminalFrameQueue.submit(data, diffLines);
+		this.renderInstrumentation?.recordTerminalFrameGenerated(utf8Bytes);
+	}
+
+	/** Send a non-frame terminal control and contain asynchronous write failure. */
+	protected writeTerminalControl(data: string): void {
+		try {
+			const write = this.terminal.write(data);
+			if (write && typeof write.then === "function") {
+				void this.awaitTerminalBoundary(write).catch((error) => this.onTerminalFrameWriteError(asError(error)));
+			}
+		} catch (error) {
+			this.onTerminalFrameWriteError(asError(error));
+		}
 	}
 
 	protected recordFullHistoryFallback(): void {
@@ -708,7 +840,18 @@ export abstract class TuiBase extends Container implements TUI {
 	}
 
 	start(): void {
+		if (this.disposed) throw new Error("Cannot start a disposed TUI");
+		if (this.stopping) return;
+		const recoveredFailure = this.terminalFrameQueue.restartAfterLifecycleAbort();
+		if (recoveredFailure && this.terminalFrameError === recoveredFailure) this.terminalFrameError = undefined;
+		const recoveredControlFailure = this.recoverableTerminalControlError;
+		if (recoveredControlFailure && this.terminalFrameError === recoveredControlFailure) {
+			this.terminalFrameError = undefined;
+		}
+		this.recoverableTerminalControlError = undefined;
+		this.terminalFrameQueue.attach();
 		this.stopped = false;
+		this.stopPromise = undefined;
 		this.beforeTerminalStart();
 		this.terminal.start(
 			(data) => this.handleTerminalInput(data),
@@ -717,7 +860,7 @@ export abstract class TuiBase extends Container implements TUI {
 		this.afterTerminalStart();
 		this.terminal.hideCursor();
 		if (this.terminalColorSchemeNotificationsEnabled) {
-			this.terminal.write("\x1b[?2031h");
+			this.writeTerminalControl("\x1b[?2031h");
 		}
 		this.queryCellSize();
 		this.requestRender();
@@ -747,7 +890,7 @@ export abstract class TuiBase extends Container implements TUI {
 		}
 		this.terminalColorSchemeNotificationsEnabled = enabled;
 		if (!this.stopped) {
-			this.terminal.write(enabled ? "\x1b[?2031h" : "\x1b[?2031l");
+			this.writeTerminalControl(enabled ? "\x1b[?2031h" : "\x1b[?2031l");
 		}
 	}
 
@@ -758,39 +901,182 @@ export abstract class TuiBase extends Container implements TUI {
 		}
 		// Query terminal for cell size in pixels: CSI 16 t
 		// Response format: CSI 6 ; height ; width t
-		this.terminal.write("\x1b[16t");
+		this.writeTerminalControl("\x1b[16t");
 	}
 
-	stop(options: TuiStopOptions = {}): void {
-		this.stopped = true;
+	stop(options: TuiStopOptions = {}): Promise<void> {
+		if (this.stopPromise) return this.stopPromise;
+		if (this.stopped) return Promise.resolve();
+		this.stopping = true;
 		this.cancelRenderTimer();
-		if (this.terminalColorSchemeNotificationsEnabled) {
-			this.terminal.write("\x1b[?2031l");
+		if (this.renderRequested) this.terminalFrameQueue.discardPending();
+		if (this.terminalFrameQueue.canSubmitImmediately && this.renderRequested) {
+			try {
+				this.performRender();
+			} catch (error) {
+				this.recordTerminalControlError(error);
+			}
 		}
-		this.beforeTerminalStop(options);
-		this.terminal.showCursor();
-		this.terminal.stop();
-		this.afterTerminalStop(options);
+		this.stopPromise = this.terminalFrameQueue.busy || (this.renderRequested && !this.terminalFrameQueue.canSubmitImmediately)
+			? this.finishStopAfterFrames(options)
+			: this.finishTerminalStop(options);
+		return this.stopPromise;
+	}
+
+	dispose(options: TuiStopOptions = {}): Promise<void> {
+		if (!this.disposePromise) this.disposePromise = this.finishDispose(options);
+		return this.disposePromise;
+	}
+
+	private async finishDispose(options: TuiStopOptions): Promise<void> {
+		try {
+			await this.stop(options);
+		} finally {
+			this.disposed = true;
+			this.terminalFrameQueue.detach();
+			this.terminal.setFrameWriteCompletionListener(undefined);
+			this.terminal.dispose?.();
+			this.focusedComponent = null;
+			this.inputListeners.clear();
+			this.terminalColorSchemeListeners.clear();
+			for (const query of this.pendingOsc11BackgroundQueries) {
+				if (query.timer) clearTimeout(query.timer);
+				query.timer = undefined;
+				query.settled = true;
+				query.resolve?.(undefined);
+				query.resolve = undefined;
+			}
+			this.pendingOsc11BackgroundQueries.length = 0;
+			this.pendingOsc11BackgroundReplies = 0;
+		}
+	}
+
+	private async finishStopAfterFrames(options: TuiStopOptions): Promise<void> {
+		try {
+			await this.awaitTerminalBoundary(
+				this.drainStopFrames(),
+				(error) => this.terminalFrameQueue.abort(error),
+				"Terminal lifecycle flush",
+			);
+		} catch (error) {
+			this.terminalFrameError ??= error instanceof Error ? error : new Error(String(error));
+		}
+		await this.finishTerminalStop(options);
+	}
+
+	private async drainStopFrames(): Promise<void> {
+		while (!this.terminalFrameError) {
+			await this.terminalFrameQueue.flush();
+			if (!this.renderRequested) break;
+			this.performRender();
+		}
+	}
+
+	private async finishTerminalStop(options: TuiStopOptions): Promise<void> {
+		if (this.terminalColorSchemeNotificationsEnabled) {
+			try {
+				await this.awaitTerminalBoundary(this.terminal.write("\x1b[?2031l"));
+			} catch (error) {
+				this.recordTerminalControlError(error);
+			}
+		}
+		try {
+			await this.awaitTerminalBoundary(this.beforeTerminalStop(options));
+		} catch (error) {
+			this.recordTerminalControlError(error);
+		}
+		try {
+			this.terminal.showCursor();
+		} catch (error) {
+			this.recordTerminalControlError(error);
+		}
+		try {
+			this.terminal.stop();
+		} catch (error) {
+			this.recordTerminalControlError(error);
+		}
+		try {
+			await this.awaitTerminalBoundary(this.afterTerminalStop(options));
+		} catch (error) {
+			this.recordTerminalControlError(error);
+		}
+		this.markTerminalStopped();
+	}
+
+	private async awaitTerminalBoundary(
+		boundary: void | Promise<void>,
+		onTimeout?: (error: Error) => void,
+		label = "Terminal cleanup",
+	): Promise<void> {
+		if (!boundary || typeof boundary.then !== "function") return;
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		try {
+			await Promise.race([
+				boundary,
+				new Promise<never>((_, reject) => {
+					timer = setTimeout(() => {
+						const error = new RecoverableTerminalLifecycleTimeoutError(label, this.terminalBoundaryTimeoutMs);
+						onTimeout?.(error);
+						reject(error);
+					}, this.terminalBoundaryTimeoutMs);
+				}),
+			]);
+		} finally {
+			if (timer) clearTimeout(timer);
+		}
+	}
+
+	private markTerminalStopped(): void {
+		this.terminalFrameQueue.detach();
+		this.stopped = true;
+		this.stopping = false;
+		this.renderRequested = false;
+		this.immediateRenderScheduled = false;
+	}
+
+	async flushTerminalFrames(): Promise<void> {
+		while (true) {
+			await this.terminalFrameQueue.flush();
+			if (this.terminalFrameError) throw this.terminalFrameError;
+			if (this.stopped || this.stopping || !this.renderRequested) return;
+			this.performRender();
+		}
+	}
+
+	/** Numeric/reference-only queue state for lifecycle and benchmark diagnostics. */
+	getTerminalFrameQueueSnapshot(): Readonly<TerminalFrameQueueSnapshot & { pendingRenderIntents: 0 | 1 }> {
+		return Object.freeze({
+			...this.terminalFrameQueue.snapshot(),
+			pendingRenderIntents: this.renderRequested ? 1 : 0,
+		});
 	}
 
 	renderNow(force = false): void {
-		if (force) this.resetRenderState();
-		this.renderRequested = false;
-		this.cancelRenderTimer();
-		this.lastRenderAt = performance.now();
-		this.doRender();
+		if (this.stopped || this.stopping) return;
+		if (force) {
+			this.resetRenderState();
+			this.terminalFrameQueue.discardPending();
+		}
+		if (!this.terminalFrameQueue.canSubmitImmediately) {
+			if (!this.renderRequested) this.renderInstrumentation?.recordPendingRenderRequest();
+			this.renderRequested = true;
+			return;
+		}
+		this.performRender();
 	}
 
 	requestRender(force = false): void {
+		if (this.stopped || this.stopping) return;
 		if (force) {
 			this.resetRenderState();
+			this.terminalFrameQueue.discardPending();
 			this.requestImmediateRender();
 			return;
 		}
 		if (this.renderRequested) return;
 		this.renderRequested = true;
 		this.renderInstrumentation?.recordPendingRenderRequest();
-		process.nextTick(() => this.scheduleRender());
+		process.nextTick(this.scheduleRequestedRender);
 	}
 
 	private requestImmediateRender(): void {
@@ -800,16 +1086,7 @@ export abstract class TuiBase extends Container implements TUI {
 		if (!wasRequested) this.renderInstrumentation?.recordPendingRenderRequest();
 		if (this.immediateRenderScheduled) return;
 		this.immediateRenderScheduled = true;
-		process.nextTick(() => {
-			this.immediateRenderScheduled = false;
-			if (this.stopped || !this.renderRequested) return;
-			// A previously queued scheduleRender() can create a timer before this
-			// callback runs. User input must preempt that throttled frame.
-			this.cancelRenderTimer();
-			this.renderRequested = false;
-			this.lastRenderAt = performance.now();
-			this.doRender();
-		});
+		process.nextTick(this.runImmediateRender);
 	}
 
 	private cancelRenderTimer(): void {
@@ -819,23 +1096,71 @@ export abstract class TuiBase extends Container implements TUI {
 	}
 
 	private scheduleRender(): void {
-		if (this.stopped || this.renderTimer || !this.renderRequested) {
+		if (
+			this.stopped ||
+			this.stopping ||
+			!this.terminalFrameQueue.canSubmitImmediately ||
+			this.renderTimer ||
+			!this.renderRequested
+		) {
 			return;
 		}
 		const elapsed = performance.now() - this.lastRenderAt;
 		const delay = Math.max(0, TuiBase.MIN_RENDER_INTERVAL_MS - elapsed);
-		this.renderTimer = setTimeout(() => {
-			this.renderTimer = undefined;
-			if (this.stopped || !this.renderRequested) {
-				return;
-			}
-			this.renderRequested = false;
-			this.lastRenderAt = performance.now();
+		this.renderTimer = setTimeout(this.runScheduledRender, delay);
+	}
+
+	private performRender(): void {
+		this.renderRequested = false;
+		this.cancelRenderTimer();
+		this.lastRenderAt = performance.now();
+		this.composingTerminalFrame = true;
+		this.composedTerminalFrame = "";
+		this.composedTerminalDiffLines = 0;
+		try {
 			this.doRender();
-			if (this.renderRequested) {
-				this.scheduleRender();
+			if (this.composedTerminalFrame.length > 0) {
+				const utf8Bytes = this.terminalFrameQueue.submit(
+					this.composedTerminalFrame,
+					this.composedTerminalDiffLines,
+				);
+				this.renderInstrumentation?.recordTerminalFrameGenerated(utf8Bytes);
 			}
-		}, delay);
+		} finally {
+			this.composingTerminalFrame = false;
+			this.composedTerminalFrame = "";
+			this.composedTerminalDiffLines = 0;
+		}
+	}
+
+	private onTerminalFrameQueueIdle(): void {
+		if (this.stopped || this.stopping || !this.renderRequested) return;
+		this.requestImmediateRender();
+	}
+
+	private onTerminalFrameWriteError(error: Error): void {
+		this.terminalFrameError = error;
+		this.recoverableTerminalControlError = undefined;
+		this.renderInstrumentation?.recordTerminalFrameWriteError();
+		this.renderRequested = false;
+		this.cancelRenderTimer();
+		if (!this.stopping && !this.stopped) this.observeTerminalLifecycle(this.stop());
+	}
+
+	private recordTerminalControlError(error: unknown): void {
+		const failure = error instanceof Error ? error : new Error(String(error));
+		if (failure instanceof RecoverableTerminalLifecycleTimeoutError) {
+			if (!this.terminalFrameError) {
+				this.terminalFrameError = failure;
+				this.recoverableTerminalControlError = failure;
+			}
+		} else {
+			if (!this.terminalFrameError || this.terminalFrameError === this.recoverableTerminalControlError) {
+				this.terminalFrameError = failure;
+			}
+			this.recoverableTerminalControlError = undefined;
+		}
+		this.renderInstrumentation?.recordTerminalFrameWriteError();
 	}
 
 	private handleTerminalInput(data: string): void {
@@ -973,42 +1298,38 @@ export abstract class TuiBase extends Container implements TUI {
 	}
 
 	/**
-	 * Resolve overlay layout from options.
-	 * Returns { width, row, col, maxHeight } for rendering.
+	 * Resolve overlay layout into fixed instance slots used only by the current
+	 * synchronous compositeOverlays call.
 	 */
 	private resolveOverlayLayout(
 		options: OverlayOptions | undefined,
 		overlayHeight: number,
 		termWidth: number,
 		termHeight: number,
-	): { width: number; row: number; col: number; maxHeight: number | undefined } {
-		const opt = options ?? {};
+	): void {
 
 		// Parse margin (clamp to non-negative)
-		const margin =
-			typeof opt.margin === "number"
-				? { top: opt.margin, right: opt.margin, bottom: opt.margin, left: opt.margin }
-				: (opt.margin ?? {});
-		const marginTop = Math.max(0, margin.top ?? 0);
-		const marginRight = Math.max(0, margin.right ?? 0);
-		const marginBottom = Math.max(0, margin.bottom ?? 0);
-		const marginLeft = Math.max(0, margin.left ?? 0);
+		const margin = options?.margin;
+		const marginTop = Math.max(0, typeof margin === "number" ? margin : (margin?.top ?? 0));
+		const marginRight = Math.max(0, typeof margin === "number" ? margin : (margin?.right ?? 0));
+		const marginBottom = Math.max(0, typeof margin === "number" ? margin : (margin?.bottom ?? 0));
+		const marginLeft = Math.max(0, typeof margin === "number" ? margin : (margin?.left ?? 0));
 
 		// Available space after margins
 		const availWidth = Math.max(1, termWidth - marginLeft - marginRight);
 		const availHeight = Math.max(1, termHeight - marginTop - marginBottom);
 
 		// === Resolve width ===
-		let width = parseSizeValue(opt.width, termWidth) ?? Math.min(80, availWidth);
+		let width = parseSizeValue(options?.width, termWidth) ?? Math.min(80, availWidth);
 		// Apply minWidth
-		if (opt.minWidth !== undefined) {
-			width = Math.max(width, opt.minWidth);
+		if (options?.minWidth !== undefined) {
+			width = Math.max(width, options.minWidth);
 		}
 		// Clamp to available space
 		width = Math.max(1, Math.min(width, availWidth));
 
 		// === Resolve maxHeight ===
-		let maxHeight = parseSizeValue(opt.maxHeight, termHeight);
+		let maxHeight = parseSizeValue(options?.maxHeight, termHeight);
 		// Clamp to available space
 		if (maxHeight !== undefined) {
 			maxHeight = Math.max(1, Math.min(maxHeight, availHeight));
@@ -1021,59 +1342,60 @@ export abstract class TuiBase extends Container implements TUI {
 		let row: number;
 		let col: number;
 
-		if (opt.row !== undefined) {
-			if (typeof opt.row === "string") {
+		if (options?.row !== undefined) {
+			if (typeof options.row === "string") {
 				// Percentage: 0% = top, 100% = bottom (overlay stays within bounds)
-				const match = opt.row.match(/^(\d+(?:\.\d+)?)%$/);
-				if (match) {
+				const percentage = parsePercentage(options.row);
+				if (percentage !== undefined) {
 					const maxRow = Math.max(0, availHeight - effectiveHeight);
-					const percent = parseFloat(match[1]) / 100;
-					row = marginTop + Math.floor(maxRow * percent);
+					row = marginTop + Math.floor((maxRow * percentage) / 100);
 				} else {
 					// Invalid format, fall back to center
 					row = this.resolveAnchorRow("center", effectiveHeight, availHeight, marginTop);
 				}
 			} else {
 				// Absolute row position
-				row = opt.row;
+				row = options.row;
 			}
 		} else {
 			// Anchor-based (default: center)
-			const anchor = opt.anchor ?? "center";
+			const anchor = options?.anchor ?? "center";
 			row = this.resolveAnchorRow(anchor, effectiveHeight, availHeight, marginTop);
 		}
 
-		if (opt.col !== undefined) {
-			if (typeof opt.col === "string") {
+		if (options?.col !== undefined) {
+			if (typeof options.col === "string") {
 				// Percentage: 0% = left, 100% = right (overlay stays within bounds)
-				const match = opt.col.match(/^(\d+(?:\.\d+)?)%$/);
-				if (match) {
+				const percentage = parsePercentage(options.col);
+				if (percentage !== undefined) {
 					const maxCol = Math.max(0, availWidth - width);
-					const percent = parseFloat(match[1]) / 100;
-					col = marginLeft + Math.floor(maxCol * percent);
+					col = marginLeft + Math.floor((maxCol * percentage) / 100);
 				} else {
 					// Invalid format, fall back to center
 					col = this.resolveAnchorCol("center", width, availWidth, marginLeft);
 				}
 			} else {
 				// Absolute column position
-				col = opt.col;
+				col = options.col;
 			}
 		} else {
 			// Anchor-based (default: center)
-			const anchor = opt.anchor ?? "center";
+			const anchor = options?.anchor ?? "center";
 			col = this.resolveAnchorCol(anchor, width, availWidth, marginLeft);
 		}
 
 		// Apply offsets
-		if (opt.offsetY !== undefined) row += opt.offsetY;
-		if (opt.offsetX !== undefined) col += opt.offsetX;
+		if (options?.offsetY !== undefined) row += options.offsetY;
+		if (options?.offsetX !== undefined) col += options.offsetX;
 
 		// Clamp to terminal bounds (respecting margins)
 		row = Math.max(marginTop, Math.min(row, termHeight - marginBottom - effectiveHeight));
 		col = Math.max(marginLeft, Math.min(col, termWidth - marginRight - width));
 
-		return { width, row, col, maxHeight };
+		this.resolvedOverlayWidth = width;
+		this.resolvedOverlayRow = row;
+		this.resolvedOverlayCol = col;
+		this.resolvedOverlayMaxHeight = maxHeight;
 	}
 
 	private resolveAnchorRow(anchor: OverlayAnchor, height: number, availHeight: number, marginTop: number): number {
@@ -1110,67 +1432,77 @@ export abstract class TuiBase extends Container implements TUI {
 		}
 	}
 
-	/** Composite all overlays into content lines (sorted by focusOrder, higher = on top). */
+
+	/**
+	 * Composite overlays into the caller-owned frame array. The input is consumed
+	 * in place; per-instance scratch retains no line references after this call.
+	 */
 	protected compositeOverlays(lines: string[], termWidth: number, termHeight: number): string[] {
 		if (this.overlayStack.length === 0) return lines;
-		const result = [...lines];
+		let renderedCount = 0;
+		let previousFocusOrder = -1;
+		let minLinesNeeded = lines.length;
+		try {
+			while (true) {
+				let entry: OverlayStackEntry | undefined;
+				let nextFocusOrder = Number.POSITIVE_INFINITY;
+				for (let index = 0; index < this.overlayStack.length; index++) {
+					const candidate = this.overlayStack[index]!;
+					if (
+						candidate.focusOrder > previousFocusOrder &&
+						candidate.focusOrder < nextFocusOrder &&
+						this.isOverlayVisible(candidate)
+					) {
+						entry = candidate;
+						nextFocusOrder = candidate.focusOrder;
+					}
+				}
+				if (!entry) break;
+				previousFocusOrder = nextFocusOrder;
 
-		// Pre-render all visible overlays and calculate positions
-		const rendered: { overlayLines: string[]; row: number; col: number; w: number }[] = [];
-		let minLinesNeeded = result.length;
+				this.resolveOverlayLayout(entry.options, 0, termWidth, termHeight);
+				const width = this.resolvedOverlayWidth;
+				const maxHeight = this.resolvedOverlayMaxHeight;
+				const overlayLines = entry.component.render(width);
+				this.renderInstrumentation?.recordOverlayRender();
+				const lineCount = maxHeight === undefined ? overlayLines.length : Math.min(overlayLines.length, maxHeight);
+				this.resolveOverlayLayout(entry.options, lineCount, termWidth, termHeight);
 
-		const visibleEntries = this.overlayStack.filter((e) => this.isOverlayVisible(e));
-		visibleEntries.sort((a, b) => a.focusOrder - b.focusOrder);
-		for (const entry of visibleEntries) {
-			const { component, options } = entry;
-
-			// Get layout with height=0 first to determine width and maxHeight
-			// (width and maxHeight don't depend on overlay height)
-			const { width, maxHeight } = this.resolveOverlayLayout(options, 0, termWidth, termHeight);
-
-			// Render component at calculated width
-			let overlayLines = component.render(width);
-			this.renderInstrumentation?.recordOverlayRender();
-
-			// Apply maxHeight if specified
-			if (maxHeight !== undefined && overlayLines.length > maxHeight) {
-				overlayLines = overlayLines.slice(0, maxHeight);
+				this.overlayLinesScratch[renderedCount] = overlayLines;
+				this.overlayRowsScratch[renderedCount] = this.resolvedOverlayRow;
+				this.overlayColsScratch[renderedCount] = this.resolvedOverlayCol;
+				this.overlayWidthsScratch[renderedCount] = width;
+				this.overlayLineCountsScratch[renderedCount] = lineCount;
+				minLinesNeeded = Math.max(minLinesNeeded, this.resolvedOverlayRow + lineCount);
+				renderedCount++;
 			}
 
-			// Get final row/col with actual overlay height
-			const { row, col } = this.resolveOverlayLayout(options, overlayLines.length, termWidth, termHeight);
-
-			rendered.push({ overlayLines, row, col, w: width });
-			minLinesNeeded = Math.max(minLinesNeeded, row + overlayLines.length);
-		}
-
-		// Pad to at least terminal height so overlays have screen-relative positions.
-		// Excludes maxLinesRendered: the historical high-water mark caused self-reinforcing
-		// inflation that pushed content into scrollback on terminal widen.
-		const workingHeight = Math.max(result.length, termHeight, minLinesNeeded);
-
-		// Extend result with empty lines if content is too short for overlay placement or working area
-		while (result.length < workingHeight) {
-			result.push("");
-		}
-
-		const viewportStart = Math.max(0, workingHeight - termHeight);
-
-		// Composite each overlay
-		for (const { overlayLines, row, col, w } of rendered) {
-			for (let i = 0; i < overlayLines.length; i++) {
-				const idx = viewportStart + row + i;
-				if (idx >= 0 && idx < result.length) {
-					// Defensive: truncate overlay line to declared width before compositing
-					// (components should already respect width, but this ensures it)
-					const truncatedOverlayLine =
-						visibleWidth(overlayLines[i]) > w ? sliceByColumn(overlayLines[i], 0, w, true) : overlayLines[i];
-					result[idx] = this.compositeLineAt(result[idx], truncatedOverlayLine, col, w, termWidth);
+			const workingHeight = Math.max(lines.length, termHeight, minLinesNeeded);
+			while (lines.length < workingHeight) lines.push("");
+			const viewportStart = Math.max(0, workingHeight - termHeight);
+			for (let overlayIndex = 0; overlayIndex < renderedCount; overlayIndex++) {
+				const overlayLines = this.overlayLinesScratch[overlayIndex]!;
+				const row = this.overlayRowsScratch[overlayIndex]!;
+				const col = this.overlayColsScratch[overlayIndex]!;
+				const width = this.overlayWidthsScratch[overlayIndex]!;
+				const lineCount = this.overlayLineCountsScratch[overlayIndex]!;
+				for (let lineIndex = 0; lineIndex < lineCount; lineIndex++) {
+					const targetIndex = viewportStart + row + lineIndex;
+					if (targetIndex < 0 || targetIndex >= lines.length) continue;
+					const overlayLine = overlayLines[lineIndex]!;
+					const clippedLine =
+						visibleWidth(overlayLine) > width ? sliceByColumn(overlayLine, 0, width, true) : overlayLine;
+					lines[targetIndex] = this.compositeLineAt(lines[targetIndex]!, clippedLine, col, width, termWidth);
 				}
 			}
+			return lines;
+		} finally {
+			this.overlayLinesScratch.length = 0;
+			this.overlayRowsScratch.length = 0;
+			this.overlayColsScratch.length = 0;
+			this.overlayWidthsScratch.length = 0;
+			this.overlayLineCountsScratch.length = 0;
 		}
-
-		return result;
 	}
 
 	protected applyLineResets(lines: string[]): string[] {
@@ -1250,7 +1582,7 @@ export abstract class TuiBase extends Container implements TUI {
 			}, timeoutMs);
 			this.pendingOsc11BackgroundQueries.push(query);
 			this.pendingOsc11BackgroundReplies += 1;
-			this.terminal.write("\x1b]11;?\x07");
+			this.writeTerminalControl("\x1b]11;?\x07");
 		});
 	}
 
@@ -1277,7 +1609,7 @@ export abstract class TuiBase extends Container implements TUI {
 
 			unsubscribe = this.onTerminalColorSchemeChange(settle);
 			timer = setTimeout(() => settle(undefined), timeoutMs);
-			this.terminal.write("\x1b[?996n");
+			this.writeTerminalControl("\x1b[?996n");
 		});
 	}
 }

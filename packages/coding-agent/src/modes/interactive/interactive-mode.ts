@@ -488,6 +488,27 @@ export class InteractiveMode {
 	private readonly invalidateRetainedToolVisual = (component: ToolExecutionComponent): void => {
 		this.chatContainer.invalidateRetainedChild(component);
 	};
+	private readonly handleLifecyclePromiseRejection = (error: unknown): void => {
+		try {
+			this.showError(error instanceof Error ? error.message : String(error));
+		} catch {
+			console.error(error);
+		}
+	};
+	private readonly handleSessionEvent = (event: AgentSessionEvent): void | Promise<void> => this.handleEvent(event);
+	private readonly handleSessionEventRejection = (error: unknown): void => this.handleLifecyclePromiseRejection(error);
+	private readonly handleSuspendAction = (): void => this.observeLifecyclePromise(this.handleCtrlZ());
+	private readonly handleExternalEditorAction = (): void =>
+		this.observeLifecyclePromise(this.handleOpenExternalEditor());
+	private readonly handleCopyMessageAction = (): void =>
+		this.observeLifecyclePromise(this.handleCopyCommand({ flashConfirmation: true }));
+	private readonly handleClipboardPasteAction = (): void =>
+		this.observeLifecyclePromise(this.handleClipboardPaste());
+	private readonly handleShutdownAction = (): void => this.observeLifecyclePromise(this.shutdown());
+
+	private observeLifecyclePromise(promise: Promise<void>): void {
+		void promise.then(undefined, this.handleLifecyclePromiseRejection);
+	}
 
 	// Grouped Read calls intentionally map multiple ids to one component.
 	private pendingTools = new Map<string, ToolExecutionComponent | ReadToolGroupComponent>();
@@ -497,6 +518,7 @@ export class InteractiveMode {
 		args?: any;
 		started?: boolean;
 		result?: any;
+		resultIsError: boolean;
 		isPartial?: boolean;
 		ended?: boolean;
 	}>();
@@ -570,7 +592,7 @@ export class InteractiveMode {
 
 	private options: InteractiveModeOptions;
 	private readonly onRightClickPaste = (): void => {
-		void this.handleRightClickPaste();
+		this.observeLifecyclePromise(this.handleRightClickPaste());
 	};
 	private autoTrustOnReloadCwd: string | undefined;
 	private themeController: InteractiveThemeController;
@@ -863,16 +885,16 @@ export class InteractiveMode {
 		}
 	}
 
-	private stopInteractiveTui(fullscreenExitOutput: FullscreenExitOutput): void {
+	private async stopInteractiveTui(fullscreenExitOutput: FullscreenExitOutput): Promise<void> {
 		if (this.renderer.mode === "fullscreen" && fullscreenExitOutput === "transcript") {
 			while (this.renderer.hasOverlayEntries) this.renderer.hideOverlay();
-			this.switchTuiMode("regular", false, false);
+			await this.switchTuiMode("regular", false, false);
 			this.renderer.renderNow();
 		}
-		this.ui.stop({ preserveScreen: this.renderer.mode === "fullscreen" });
+		await this.ui.dispose({ preserveScreen: this.renderer.mode === "fullscreen" });
 	}
 
-	private switchTuiMode(mode: TuiMode, restoreProgress = true, startRenderer = true): boolean {
+	private async switchTuiMode(mode: TuiMode, restoreProgress = true, startRenderer = true): Promise<boolean> {
 		const previousUi = this.renderer;
 		if (mode === previousUi.mode) return true;
 		if (previousUi.hasOverlayEntries) return false;
@@ -887,7 +909,7 @@ export class InteractiveMode {
 			this.mainScreenRenderState = previousUi.captureRenderState();
 		}
 
-		previousUi.stop({ preserveScreen: true });
+		await previousUi.stop({ preserveScreen: true });
 		previousUi.setFocus(null);
 		previousUi.clear();
 		if (TuiLayouts.isViewportTUI(previousUi)) previousUi.setLayoutRoot(undefined);
@@ -923,6 +945,17 @@ export class InteractiveMode {
 			terminal.setProgress(true);
 		}
 		return true;
+	}
+
+	private async applyTuiModeSetting(mode: TuiMode, selector: SettingsSelectorComponent | undefined): Promise<void> {
+		if (!(await this.switchTuiMode(mode))) {
+			selector?.getSettingsList().updateValue("tui-mode", this.ui.mode);
+			this.showStatus("Close active overlays before changing TUI mode");
+			return;
+		}
+		this.settingsManager.setTuiMode(mode);
+		if (!this.activeStatusIndicator) this.statusContainer.clear();
+		this.showStatus(`TUI mode: ${mode}`);
 	}
 
 	async init(): Promise<void> {
@@ -1079,11 +1112,13 @@ export class InteractiveMode {
 
 		// Flush completed startup state before loading uncommon syntax grammars.
 		this.ui.renderNow();
-		void loadAllHighlightLanguages().then(() => {
-			if (!this.isInitialized) return;
-			this.ui.invalidate();
-			this.ui.requestRender();
-		});
+		this.observeLifecyclePromise(
+			loadAllHighlightLanguages().then(() => {
+				if (!this.isInitialized) return;
+				this.ui.invalidate();
+				this.ui.requestRender();
+			}),
+		);
 	}
 
 	/**
@@ -1109,33 +1144,39 @@ export class InteractiveMode {
 		if (!process.env.SP_OFFLINE) {
 			const controller = new AbortController();
 			const timeout = setTimeout(() => controller.abort(), 15_000);
-			void refreshModelCatalogs(this.session.modelRuntime, controller.signal)
-				.then(() => this.updateAvailableProviderCount())
-				.catch(() => {})
-				.finally(() => clearTimeout(timeout));
+			this.observeLifecyclePromise(
+				refreshModelCatalogs(this.session.modelRuntime, controller.signal)
+					.then(() => this.updateAvailableProviderCount())
+					.catch(() => {})
+					.finally(() => clearTimeout(timeout)),
+			);
 		}
 
 		// Start package update check asynchronously
-		this.checkForPackageUpdates()
-			.then((updates) => {
-				if (updates.length > 0) {
-					this.showPackageUpdateNotification(updates);
-				}
-			})
-			.finally(() => {
-				// On Windows, npm can overwrite the shared console title while checking
-				// extension package versions. Restore Super Pi's title after the startup check.
-				if (process.platform === "win32" && this.isInitialized) {
-					this.updateTerminalTitle();
-				}
-			});
+		this.observeLifecyclePromise(
+			this.checkForPackageUpdates()
+				.then((updates) => {
+					if (updates.length > 0) {
+						this.showPackageUpdateNotification(updates);
+					}
+				})
+				.finally(() => {
+					// On Windows, npm can overwrite the shared console title while checking
+					// extension package versions. Restore Super Pi's title after the startup check.
+					if (process.platform === "win32" && this.isInitialized) {
+						this.updateTerminalTitle();
+					}
+				}),
+		);
 
 		// Check tmux keyboard setup asynchronously
-		this.checkTmuxKeyboardSetup().then((warning) => {
-			if (warning) {
-				this.showWarning(warning);
-			}
-		});
+		this.observeLifecyclePromise(
+			this.checkTmuxKeyboardSetup().then((warning) => {
+				if (warning) {
+					this.showWarning(warning);
+				}
+			}),
+		);
 
 		// Show startup warnings
 		const { migratedProviders, modelFallbackMessage, initialMessage, initialImages, initialMessages } = this.options;
@@ -1153,7 +1194,7 @@ export class InteractiveMode {
 			this.showWarning(modelFallbackMessage);
 		}
 
-		void this.maybeWarnAboutAnthropicSubscriptionAuth();
+		this.observeLifecyclePromise(this.maybeWarnAboutAnthropicSubscriptionAuth());
 
 		// Process initial messages
 		if (initialMessage) {
@@ -1950,7 +1991,7 @@ export class InteractiveMode {
 						this.editor.setText(result.editorText);
 					}
 					this.showStatus("Navigated to selected point");
-					void this.flushCompactionQueue({ willRetry: false });
+					await this.flushCompactionQueue({ willRetry: false });
 					return { cancelled: false };
 				},
 				switchSession: async (sessionPath, options) => {
@@ -1963,7 +2004,7 @@ export class InteractiveMode {
 			shutdownHandler: () => {
 				this.shutdownRequested = true;
 				if (this.session.isIdle) {
-					void this.shutdown();
+					this.observeLifecyclePromise(this.shutdown());
 				}
 			},
 			onError: (error) => {
@@ -2039,7 +2080,7 @@ export class InteractiveMode {
 		const message = error instanceof Error ? error.message : String(error);
 		this.showError(`${prefix}: ${message}`);
 		stopThemeWatcher();
-		this.stop("transcript");
+		await this.stop("transcript");
 		process.exit(1);
 	}
 
@@ -2889,7 +2930,7 @@ export class InteractiveMode {
 		// Register app action handlers
 		this.defaultEditor.onAction("app.clear", () => this.handleCtrlC());
 		this.defaultEditor.onCtrlD = () => this.handleCtrlD();
-		this.defaultEditor.onAction("app.suspend", () => this.handleCtrlZ());
+		this.defaultEditor.onAction("app.suspend", this.handleSuspendAction);
 		this.defaultEditor.onAction("app.thinking.cycle", () => this.cycleThinkingLevel());
 		this.defaultEditor.onAction("app.model.cycleForward", () => this.cycleModel("forward"));
 		this.defaultEditor.onAction("app.model.cycleBackward", () => this.cycleModel("backward"));
@@ -2899,8 +2940,8 @@ export class InteractiveMode {
 		this.defaultEditor.onAction("app.model.select", () => this.showModelSelector());
 		this.defaultEditor.onAction("app.tools.expand", () => this.toggleToolOutputExpansion());
 		this.defaultEditor.onAction("app.thinking.toggle", () => this.toggleThinkingBlockVisibility());
-		this.defaultEditor.onAction("app.editor.external", () => void this.handleOpenExternalEditor());
-		this.defaultEditor.onAction("app.message.copy", () => void this.handleCopyCommand({ flashConfirmation: true }));
+		this.defaultEditor.onAction("app.editor.external", this.handleExternalEditorAction);
+		this.defaultEditor.onAction("app.message.copy", this.handleCopyMessageAction);
 		this.defaultEditor.onAction("app.message.followUp", () => this.handleFollowUp());
 		this.defaultEditor.onAction("app.message.dequeue", () => this.handleDequeue());
 		this.defaultEditor.onAction("app.session.new", () => this.handleClearCommand());
@@ -2919,9 +2960,7 @@ export class InteractiveMode {
 
 		// Handle clipboard paste (triggered on Ctrl+V). Images are attached by path;
 		// otherwise, paste plain text from the system clipboard.
-		this.defaultEditor.onPasteImage = () => {
-			void this.handleClipboardPaste();
-		};
+		this.defaultEditor.onPasteImage = this.handleClipboardPasteAction;
 	}
 
 	private async handleRightClickPaste(): Promise<void> {
@@ -3169,15 +3208,14 @@ export class InteractiveMode {
 	}
 
 	private subscribeToAgent(): void {
-		this.unsubscribe = this.session.subscribe(async (event) => {
-			await this.handleEvent(event);
+		this.unsubscribe = this.session.subscribe(this.handleSessionEvent, {
+			criticalAgentEnd: true,
+			onError: this.handleSessionEventRejection,
 		});
 	}
 
-	private async handleEvent(event: AgentSessionEvent): Promise<void> {
-		if (!this.isInitialized) {
-			await this.init();
-		}
+	private handleEvent(event: AgentSessionEvent): void | Promise<void> {
+		if (!this.isInitialized) return this.initializeAndHandleEvent(event);
 
 		this.footer.invalidate();
 
@@ -3267,7 +3305,8 @@ export class InteractiveMode {
 					this.streamingComponent.updateContent(this.streamingMessage, true);
 					this.streamingItem?.updateVersion(++this.streamingItemVersion);
 
-					for (const content of this.streamingMessage.content) {
+					for (let contentIndex = 0; contentIndex < this.streamingMessage.content.length; contentIndex++) {
+						const content = this.streamingMessage.content[contentIndex]!;
 						if (content.type !== "toolCall") continue;
 						const component = this.pendingTools.get(content.id);
 						const firstStreamingAppearance = !this.streamedToolIds.has(content.id);
@@ -3345,7 +3384,7 @@ export class InteractiveMode {
 
 			case "tool_execution_start": {
 				if (event.toolName === "read" && !this.pendingTools.has(event.toolCallId)) {
-					this.deferReadExecution(event.toolCallId, { args: event.args, started: true });
+					this.deferReadExecutionStart(event.toolCallId, event.args);
 					break;
 				}
 				let component = this.pendingTools.get(event.toolCallId);
@@ -3359,19 +3398,23 @@ export class InteractiveMode {
 			case "tool_execution_update": {
 				const component = this.pendingTools.get(event.toolCallId);
 				if (component) {
-					this.updateTrackedToolResult(component, event.toolCallId, { ...event.partialResult, isError: false }, true);
+					this.updateTrackedToolResult(component, event.toolCallId, event.partialResult, true, false);
 					this.ui.requestRender();
-				} else if (this.deferredReadExecutions.has(event.toolCallId)) this.deferReadExecution(event.toolCallId, { result: { ...event.partialResult, isError: false }, isPartial: true });
+				} else if (this.deferredReadExecutions.has(event.toolCallId)) {
+					this.deferReadExecutionResult(event.toolCallId, event.partialResult, true, false, false);
+				}
 				break;
 			}
 
 			case "tool_execution_end": {
 				const component = this.pendingTools.get(event.toolCallId);
 				if (component) {
-					this.updateTrackedToolResult(component, event.toolCallId, { ...event.result, isError: event.isError });
+					this.updateTrackedToolResult(component, event.toolCallId, event.result, false, event.isError);
 					this.pendingTools.delete(event.toolCallId);
 					this.ui.requestRender();
-				} else if (this.deferredReadExecutions.has(event.toolCallId)) this.deferReadExecution(event.toolCallId, { result: { ...event.result, isError: event.isError }, isPartial: false, ended: true });
+				} else if (this.deferredReadExecutions.has(event.toolCallId)) {
+					this.deferReadExecutionResult(event.toolCallId, event.result, false, event.isError, true);
+				}
 				break;
 			}
 
@@ -3394,11 +3437,10 @@ export class InteractiveMode {
 				this.pendingTools.clear();
 
 				this.ui.requestRender();
-				break;
+				return this.flushAgentEndFrames();
 
 			case "agent_settled":
-				await this.checkShutdownRequested();
-				break;
+				return this.checkShutdownRequested();
 
 			case "compaction_start": {
 				if (this.settingsManager.getShowTerminalProgress()) {
@@ -3446,7 +3488,7 @@ export class InteractiveMode {
 						this.chatContainer.addChild(new Text(theme.fg("error", event.errorMessage), 1, 0));
 					}
 				}
-				void this.flushCompactionQueue({ willRetry: event.willRetry });
+				this.observeLifecyclePromise(this.flushCompactionQueue({ willRetry: event.willRetry }));
 				this.ui.requestRender();
 				break;
 			}
@@ -3507,6 +3549,20 @@ export class InteractiveMode {
 		}
 	}
 
+	private async initializeAndHandleEvent(event: AgentSessionEvent): Promise<void> {
+		await this.init();
+		await this.handleEvent(event);
+	}
+
+	private async flushAgentEndFrames(): Promise<void> {
+		try {
+			await this.ui.flushTerminalFrames();
+		} catch {
+			// The TUI owns terminal write failures and stops itself. Do not turn a
+			// display failure into an agent/provider failure at the final boundary.
+		}
+	}
+
 	private finalizeReadToolGroup(): void {
 		if (!this.lastReadToolGroup) return;
 		this.lastReadToolGroup.finalize();
@@ -3526,9 +3582,33 @@ export class InteractiveMode {
 		this.deferredReadPlaceholders.delete(toolCallId);
 	}
 
-	private deferReadExecution(toolCallId: string, update: Record<string, unknown>): void {
-		const previous = this.deferredReadExecutions.get(toolCallId) ?? {};
-		this.deferredReadExecutions.set(toolCallId, { ...previous, ...update });
+	private deferReadExecutionStart(toolCallId: string, args: any): void {
+		const existing = this.deferredReadExecutions.get(toolCallId);
+		if (existing) {
+			existing.args = args;
+			existing.started = true;
+			return;
+		}
+		this.deferredReadExecutions.set(toolCallId, {
+			args,
+			started: true,
+			resultIsError: false,
+		});
+	}
+
+	private deferReadExecutionResult(
+		toolCallId: string,
+		result: any,
+		isPartial: boolean,
+		isError: boolean,
+		ended: boolean,
+	): void {
+		const deferred = this.deferredReadExecutions.get(toolCallId);
+		if (!deferred) return;
+		deferred.result = result;
+		deferred.resultIsError = isError;
+		deferred.isPartial = isPartial;
+		deferred.ended = ended;
 	}
 
 	private replayDeferredReadExecution(toolCallId: string, component: ToolExecutionComponent | ReadToolGroupComponent): void {
@@ -3538,7 +3618,15 @@ export class InteractiveMode {
 			this.setTrackedToolArgsComplete(component, toolCallId);
 			this.markTrackedToolStarted(component, toolCallId);
 		}
-		if (deferred.result) this.updateTrackedToolResult(component, toolCallId, deferred.result, deferred.isPartial ?? false);
+		if (deferred.result) {
+			this.updateTrackedToolResult(
+				component,
+				toolCallId,
+				deferred.result,
+				deferred.isPartial ?? false,
+				deferred.resultIsError,
+			);
+		}
 		this.deferredReadExecutions.delete(toolCallId);
 	}
 
@@ -3630,9 +3718,15 @@ export class InteractiveMode {
 		this.advanceActiveToolVersion(component);
 	}
 
-	private updateTrackedToolResult(component: ToolExecutionComponent | ReadToolGroupComponent, toolCallId: string, result: any, isPartial = false): void {
-		if (component instanceof ReadToolGroupComponent) component.updateResult(toolCallId, result, isPartial);
-		else component.updateResult(result, isPartial);
+	private updateTrackedToolResult(
+		component: ToolExecutionComponent | ReadToolGroupComponent,
+		toolCallId: string,
+		result: any,
+		isPartial = false,
+		isError = result?.isError === true,
+	): void {
+		if (component instanceof ReadToolGroupComponent) component.updateResult(toolCallId, result, isPartial, isError);
+		else component.updateResult(result, isPartial, isError);
 		this.advanceActiveToolVersion(component);
 		if (!isPartial) this.completeTrackedToolIfReady(component);
 	}
@@ -4053,7 +4147,7 @@ export class InteractiveMode {
 	private handleCtrlC(): void {
 		const now = Date.now();
 		if (now - this.lastSigintTime < 500) {
-			void this.shutdown();
+			this.handleShutdownAction();
 		} else {
 			this.clearEditor();
 			this.lastSigintTime = now;
@@ -4062,7 +4156,7 @@ export class InteractiveMode {
 
 	private handleCtrlD(): void {
 		// Only called when editor is empty (enforced by CustomEditor)
-		void this.shutdown();
+		this.handleShutdownAction();
 	}
 
 	/**
@@ -4090,7 +4184,7 @@ export class InteractiveMode {
 			await this.runtimeHost.dispose();
 			this.themeController.disableAutoSync();
 			await this.ui.terminal.drainInput(1000);
-			this.stop();
+			await this.stop();
 			process.exit(0);
 		}
 
@@ -4102,7 +4196,7 @@ export class InteractiveMode {
 		this.themeController.disableAutoSync();
 		await this.ui.terminal.drainInput(1000);
 
-		this.stop();
+		await this.stop();
 		await this.runtimeHost.dispose();
 
 		const resumeCommand = formatResumeCommand(this.sessionManager);
@@ -4133,7 +4227,7 @@ export class InteractiveMode {
 	 * call ui.stop() to restore cooked mode, the cursor, and disable bracketed
 	 * paste / Kitty / modifyOtherKeys sequences.
 	 */
-	private uncaughtCrash(error: Error): never {
+	private uncaughtCrash(error: Error): void {
 		if (this.isShuttingDown) {
 			process.exit(1);
 		}
@@ -4144,12 +4238,19 @@ export class InteractiveMode {
 		try {
 			killTrackedDetachedChildren();
 		} catch {}
+		this.observeLifecyclePromise(this.disposeAfterUncaughtCrash(error));
+	}
+
+	private async disposeAfterUncaughtCrash(error: Error): Promise<void> {
 		try {
-			this.ui.stop();
-		} catch {}
-		console.error("Super Pi exiting due to uncaughtException:");
-		console.error(error);
-		process.exit(1);
+			await this.ui.dispose();
+		} catch {
+			// Fatal cleanup is best-effort; logging and exit must still happen.
+		} finally {
+			console.error("Super Pi exiting due to uncaughtException:");
+			console.error(error);
+			process.exit(1);
+		}
 	}
 
 	/**
@@ -4175,7 +4276,7 @@ export class InteractiveMode {
 				// surfaces as an EIO on the restore writes, which the stdout/stderr
 				// error handler converts into emergencyTerminalExit (see #4144, #5080).
 				killTrackedDetachedChildren();
-				void this.shutdown({ fromSignal: true });
+				this.observeLifecyclePromise(this.shutdown({ fromSignal: true }));
 			};
 			process.prependListener(signal, handler);
 			this.signalCleanupHandlers.push(() => process.off(signal, handler));
@@ -4207,7 +4308,7 @@ export class InteractiveMode {
 		this.signalCleanupHandlers = [];
 	}
 
-	private handleCtrlZ(): void {
+	private async handleCtrlZ(): Promise<void> {
 		if (process.platform === "win32") {
 			this.showStatus("Suspend to background is not supported on Windows");
 			return;
@@ -4233,15 +4334,19 @@ export class InteractiveMode {
 
 		try {
 			// Stop the TUI (restore terminal to normal mode)
-			this.ui.stop();
+			await this.ui.stop();
 
 			// Send SIGTSTP to process group (pid=0 means all processes in group)
-			process.kill(0, "SIGTSTP");
+			this.suspendProcessGroup();
 		} catch (error) {
 			clearInterval(suspendKeepAlive);
 			process.removeListener("SIGINT", ignoreSigint);
 			throw error;
 		}
+	}
+
+	private suspendProcessGroup(): void {
+		process.kill(0, "SIGTSTP");
 	}
 
 	private async handleFollowUp(): Promise<void> {
@@ -4318,7 +4423,7 @@ export class InteractiveMode {
 				const thinkingStr =
 					result.model.reasoning && result.thinkingLevel !== "off" ? ` (thinking: ${result.thinkingLevel})` : "";
 				this.showStatus(`Switched to ${result.model.name || result.model.id}${thinkingStr}`);
-				void this.maybeWarnAboutAnthropicSubscriptionAuth(result.model);
+				this.observeLifecyclePromise(this.maybeWarnAboutAnthropicSubscriptionAuth(result.model));
 			}
 		} catch (error) {
 			this.showError(error instanceof Error ? error.message : String(error));
@@ -4372,9 +4477,9 @@ export class InteractiveMode {
 	private async handleOpenExternalEditor(): Promise<void> {
 		const editorCmd = this.settingsManager.getExternalEditorCommand();
 		const content = this.editor.getExpandedText?.() ?? this.editor.getText();
-		this.ui.stop();
+		await this.ui.stop();
 		try {
-			const result = await editInExternalEditor({
+			const result = await this.runExternalEditor({
 				command: editorCmd,
 				content,
 			});
@@ -4385,6 +4490,10 @@ export class InteractiveMode {
 			this.ui.start();
 			this.ui.requestRender(true);
 		}
+	}
+
+	private runExternalEditor(options: Parameters<typeof editInExternalEditor>[0]): ReturnType<typeof editInExternalEditor> {
+		return editInExternalEditor(options);
 	}
 
 	// =========================================================================
@@ -4742,7 +4851,7 @@ export class InteractiveMode {
 					},
 					onThemeChange: (themeSetting) => {
 						this.settingsManager.setTheme(themeSetting);
-						void this.themeController.applyFromSettings();
+						this.observeLifecyclePromise(this.themeController.applyFromSettings());
 					},
 					onThemePreview: (themeName) => this.themeController.preview(themeName),
 					onHideThinkingBlockChange: (hidden) => {
@@ -4837,14 +4946,7 @@ export class InteractiveMode {
 						this.settingsManager.setShowTerminalProgress(enabled);
 					},
 					onTuiModeChange: (mode) => {
-						if (!this.switchTuiMode(mode)) {
-							selector?.getSettingsList().updateValue("tui-mode", this.ui.mode);
-							this.showStatus("Close active overlays before changing TUI mode");
-							return;
-						}
-						this.settingsManager.setTuiMode(mode);
-						if (!this.activeStatusIndicator) this.statusContainer.clear();
-						this.showStatus(`TUI mode: ${mode}`);
+						this.observeLifecyclePromise(this.applyTuiModeSetting(mode, selector));
 					},
 					onFullscreenScrollbarChange: (mode) => {
 						this.settingsManager.setFullscreenScrollbar(mode);
@@ -4932,7 +5034,7 @@ export class InteractiveMode {
 				this.footer.invalidate();
 				this.updateEditorBorderColor();
 				this.showStatus(`Model: ${model.id}`);
-				void this.maybeWarnAboutAnthropicSubscriptionAuth(model);
+				this.observeLifecyclePromise(this.maybeWarnAboutAnthropicSubscriptionAuth(model));
 				this.checkDaxnutsEasterEgg(model);
 			} catch (error) {
 				this.showError(error instanceof Error ? error.message : String(error));
@@ -5077,7 +5179,7 @@ export class InteractiveMode {
 					this.updateEditorBorderColor();
 					done();
 					this.showStatus(persist ? `Default model: ${model.provider}/${model.id}` : `Model: ${model.id}`);
-					void this.maybeWarnAboutAnthropicSubscriptionAuth(model);
+					this.observeLifecyclePromise(this.maybeWarnAboutAnthropicSubscriptionAuth(model));
 					this.checkDaxnutsEasterEgg(model);
 				} catch (error) {
 					done();
@@ -5389,7 +5491,7 @@ export class InteractiveMode {
 							this.editor.setText(result.editorText);
 						}
 						this.showStatus("Navigated to selected point");
-						void this.flushCompactionQueue({ willRetry: false });
+						await this.flushCompactionQueue({ willRetry: false });
 					} catch (error) {
 						this.showError(error instanceof Error ? error.message : String(error));
 					} finally {
@@ -5443,9 +5545,7 @@ export class InteractiveMode {
 					done();
 					this.ui.requestRender();
 				},
-				() => {
-					void this.shutdown();
-				},
+				this.handleShutdownAction,
 				() => this.ui.requestRender(),
 				{
 					renameSession: async (sessionFilePath: string, nextName: string | undefined) => {
@@ -5615,7 +5715,7 @@ export class InteractiveMode {
 		if (providerOptions && options.length === 1) {
 			const providerOption = providerOptions[0];
 			if (providerOption) {
-				void this.startProviderLogin(providerOption);
+				this.observeLifecyclePromise(this.startProviderLogin(providerOption));
 			}
 			return;
 		}
@@ -5633,7 +5733,7 @@ export class InteractiveMode {
 					if (providerOptions) {
 						const providerOption = providerOptions.find((provider) => provider.authType === authType);
 						if (providerOption) {
-							void this.startProviderLogin(providerOption);
+							this.observeLifecyclePromise(this.startProviderLogin(providerOption));
 						}
 						return;
 					}
@@ -5790,14 +5890,14 @@ export class InteractiveMode {
 		this.updateEditorBorderColor();
 		if (selectedModel) {
 			this.showStatus(`${actionLabel}. Selected ${selectedModel.id}. Credentials saved to ${getAuthPath()}`);
-			void this.maybeWarnAboutAnthropicSubscriptionAuth(selectedModel);
+			this.observeLifecyclePromise(this.maybeWarnAboutAnthropicSubscriptionAuth(selectedModel));
 			this.checkDaxnutsEasterEgg(selectedModel);
 		} else {
 			this.showStatus(`${actionLabel}. Credentials saved to ${getAuthPath()}`);
 			if (selectionError) {
 				this.showError(selectionError);
 			} else {
-				void this.maybeWarnAboutAnthropicSubscriptionAuth();
+				this.observeLifecyclePromise(this.maybeWarnAboutAnthropicSubscriptionAuth());
 			}
 		}
 
@@ -6718,7 +6818,7 @@ export class InteractiveMode {
 		}
 	}
 
-	stop(fullscreenExitOutput = this.settingsManager.getFullscreenExitOutput()): void {
+	async stop(fullscreenExitOutput = this.settingsManager.getFullscreenExitOutput()): Promise<void> {
 		this.disposeActiveSelector();
 		if (this.settingsManager.getShowTerminalProgress()) {
 			this.ui.terminal.setProgress(false);
@@ -6732,7 +6832,7 @@ export class InteractiveMode {
 			this.unsubscribe();
 		}
 		if (this.isInitialized) {
-			this.stopInteractiveTui(fullscreenExitOutput);
+			await this.stopInteractiveTui(fullscreenExitOutput);
 			this.isInitialized = false;
 		}
 		this.unregisterSignalHandlers();

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import ts from "typescript";
+import { getCellDimensions, setCellDimensions } from "../packages/tui/src/terminal-image.ts";
 
 const RETAINED_PATH = "packages/tui/src/components/retained-item.ts";
 const INSTRUMENTATION_PATH = "packages/tui/src/render-instrumentation.ts";
@@ -56,7 +57,7 @@ test("retained cache and instrumentation stay instance-local and retain no compo
 		/class RetainedContainer extends Container implements LineViewportComponent \{[\s\S]*?private readonly retainedById/,
 	);
 	assert.doesNotMatch(retainedText, /^const .*new Map</m);
-	assert.doesNotMatch(instrumentationText, /Component|string\[\]|frame(?:s)?\s*:/i);
+	assert.doesNotMatch(instrumentationText, /Component|string\[\]|(?:^|\s)frames?\s*:/im);
 	assert.doesNotMatch(instrumentationText, /ObjectPool/);
 });
 
@@ -119,6 +120,52 @@ test("Main reuses mutation tokens and Alt avoids duplicate no-op frame copies", 
 	assert.doesNotMatch(altText, /nextLayout\.lines\.slice\(\)/);
 	assert.match(altText, /if \(!this\.flashes\.hasEntries\) return screen/);
 	assert.doesNotMatch(altText, /:\s*\{ lines: screen, evictedImageDeletion: "" \}/);
+});
+
+test("overlay composition consumes the frame array without callback or wrapper-array allocations", () => {
+	const path = "packages/tui/src/tui.ts";
+	const text = readFileSync(path, "utf8");
+	const source = ts.createSourceFile(path, text, ts.ScriptTarget.Latest, true);
+	const composite = findMethod(source, "TuiBase", "compositeOverlays");
+	let closures = 0;
+	let objectLiterals = 0;
+	let spreads = 0;
+	const forbiddenCalls: string[] = [];
+	const visit = (node: ts.Node): void => {
+		if (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) closures++;
+		if (ts.isObjectLiteralExpression(node)) objectLiterals++;
+		if (ts.isSpreadElement(node) || ts.isSpreadAssignment(node)) spreads++;
+		if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
+			if (["filter", "sort", "slice", "map", "flatMap"].includes(node.expression.name.text)) {
+				forbiddenCalls.push(node.expression.name.text);
+			}
+		}
+		ts.forEachChild(node, visit);
+	};
+	visit(composite);
+	assert.equal(closures, 0);
+	assert.equal(objectLiterals, 0);
+	assert.equal(spreads, 0);
+	assert.deepEqual(forbiddenCalls, []);
+	const body = composite.getText(source);
+	assert.match(body, /return lines/);
+	assert.match(body, /finally[\s\S]*overlayLinesScratch\.length = 0/);
+	assert.doesNotMatch(body, /const result = \[\.\.\.lines\]/);
+});
+
+test("cell dimensions keep stable isolated primitive-backed identity", () => {
+	const original = { ...getCellDimensions() };
+	const external = { widthPx: 11, heightPx: 22 };
+	const identity = getCellDimensions();
+	try {
+		setCellDimensions(external);
+		external.widthPx = 99;
+		assert.equal(getCellDimensions(), identity);
+		assert.deepEqual(getCellDimensions(), { widthPx: 11, heightPx: 22 });
+		assert.equal(Object.isFrozen(getCellDimensions()), true);
+	} finally {
+		setCellDimensions(original);
+	}
 });
 
 test("every production transcript splice notifies the structure index", () => {
