@@ -1425,12 +1425,20 @@ test("stop-pending protocol replies settle before ordinary input admission", asy
 	assert.equal(inputListenerCalls, 0);
 	assert.equal(focused.inputCalls, 0);
 	const state = tui as unknown as {
-		pendingOsc11BackgroundQueries: Array<{ timer: NodeJS.Timeout | undefined; resolve: unknown }>;
-		pendingOsc11BackgroundReplies: number;
+		osc11BackgroundQueryPromise: Promise<unknown> | undefined;
+		osc11BackgroundQueryResolve: ((value: unknown) => void) | undefined;
+		osc11BackgroundQueryTimer: NodeJS.Timeout | undefined;
+		osc11BackgroundPhysicalOutstanding: boolean;
+		osc11BackgroundTombstone: boolean;
+		osc11BackgroundActiveGeneration: number;
 		terminalColorSchemeListeners: Set<unknown>;
 	};
-	assert.equal(state.pendingOsc11BackgroundQueries.length, 0);
-	assert.equal(state.pendingOsc11BackgroundReplies, 0);
+	assert.equal(state.osc11BackgroundQueryPromise, undefined);
+	assert.equal(state.osc11BackgroundQueryResolve, undefined);
+	assert.equal(state.osc11BackgroundQueryTimer, undefined);
+	assert.equal(state.osc11BackgroundPhysicalOutstanding, false);
+	assert.equal(state.osc11BackgroundTombstone, false);
+	assert.equal(state.osc11BackgroundActiveGeneration, 0);
 	assert.equal(state.terminalColorSchemeListeners.size, 0);
 
 	terminal.writer.gates[0]!.resolve();
