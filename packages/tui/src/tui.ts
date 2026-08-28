@@ -1178,6 +1178,9 @@ export abstract class TuiBase extends Container implements TUI {
 			let current = data;
 			for (const listener of this.inputListeners) {
 				const result = listener(current);
+				if (this.stopping || this.stopped) {
+					return;
+				}
 				if (result?.consume) {
 					return;
 				}

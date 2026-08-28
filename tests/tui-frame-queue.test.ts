@@ -1013,25 +1013,40 @@ test("a second input from the same synchronous batch is quiesced after the first
 	await stopping;
 });
 
-test("an input listener that starts stop quiesces the rest of the same dispatch", async () => {
+test("an input listener that starts stop quiesces later listeners and the rest of the same dispatch", async () => {
 	const terminal = new GatedTerminal();
+	const instrumentation = new TuiRenderInstrumentation();
 	const tui = new FrameTui(terminal);
 	const focused = new InputProbe();
-	let inputListenerCalls = 0;
+	let firstListenerCalls = 0;
+	let secondListenerCalls = 0;
 	let stopping: Promise<void> | undefined;
+	tui.setRenderInstrumentation(instrumentation);
 	tui.addChild(focused);
 	tui.setFocus(focused);
 	tui.addInputListener(() => {
-		inputListenerCalls++;
+		firstListenerCalls++;
 		stopping = tui.stop();
+		return undefined;
+	});
+	tui.addInputListener(() => {
+		secondListenerCalls++;
 		return undefined;
 	});
 	tui.start();
 	tui.renderNow();
+	const renderCountBeforeInput = tui.renderCount;
+	const metricsBeforeInput = instrumentation.snapshot();
+	const queueBeforeInput = tui.getTerminalFrameQueueSnapshot();
 
 	terminal.emitInput("stop-now");
-	assert.equal(inputListenerCalls, 1);
+	terminal.emitInput("subsequent-input");
+	assert.equal(firstListenerCalls, 1);
+	assert.equal(secondListenerCalls, 0);
 	assert.equal(focused.inputCalls, 0);
+	assert.equal(tui.renderCount, renderCountBeforeInput);
+	assert.equal(instrumentation.snapshot().frameStringsGenerated, metricsBeforeInput.frameStringsGenerated);
+	assert.equal(tui.getTerminalFrameQueueSnapshot().pendingFrames, queueBeforeInput.pendingFrames);
 
 	terminal.writer.gates[0]!.resolve();
 	await stopping;

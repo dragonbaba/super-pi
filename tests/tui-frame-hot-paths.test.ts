@@ -183,6 +183,29 @@ test("stop-pending terminal input admission is an ordered primitive-only branch"
 	}
 	visit(admissionGuard);
 	assert.deepEqual(forbidden, []);
+	let listenerLoop: ts.ForOfStatement | undefined;
+	function findListenerLoop(node: ts.Node): void {
+		if (ts.isForOfStatement(node) && node.expression.getText(source) === "this.inputListeners") {
+			listenerLoop = node;
+			return;
+		}
+		ts.forEachChild(node, findListenerLoop);
+	}
+	findListenerLoop(method);
+	assert.ok(listenerLoop);
+	assert.ok(ts.isBlock(listenerLoop.statement));
+	const listenerStatements = listenerLoop.statement.statements;
+	assert.equal(listenerStatements[0]?.getText(source), "const result = listener(current);");
+	const listenerAdmissionGuard = listenerStatements[1]!;
+	assert.equal(
+		listenerAdmissionGuard.getText(source),
+		"if (this.stopping || this.stopped) {\n\t\t\t\t\treturn;\n\t\t\t\t}",
+	);
+	assert.match(listenerStatements[2]?.getText(source) ?? "", /^if \(result\?\.consume\)/);
+	assert.match(listenerStatements[3]?.getText(source) ?? "", /^if \(result\?\.data !== undefined\)/);
+	forbidden.length = 0;
+	visit(listenerAdmissionGuard);
+	assert.deepEqual(forbidden, []);
 
 	const body = method.getText(source);
 	assert.match(body, /data = current;\s*}\s*if \(this\.stopping \|\| this\.stopped\) \{\s*return;\s*}/);
