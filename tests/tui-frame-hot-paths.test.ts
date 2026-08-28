@@ -39,6 +39,111 @@ const RENDER_SUBMIT_METHODS: readonly MethodTarget[] = [
 	{ path: "packages/tui/src/tui-alt-screen.ts", className: "TuiAltScreen", methodName: "doRender" },
 ] as const;
 
+test("ProcessTerminal drainInput uses stable cycle callbacks without polling closures", () => {
+	const path = "packages/tui/src/terminal.ts";
+	const source = parse(path);
+	const drainInput = methodNamed(source, "ProcessTerminal", "drainInput");
+	const scheduleTimer = methodNamed(source, "ProcessTerminal", "scheduleDrainInputTimer");
+	let inlineClosures = 0;
+	let whileLoops = 0;
+	let promiseExecutors = 0;
+	let stablePromiseExecutors = 0;
+	let inlineTimerCallbacks = 0;
+	let stableTimerCallbacks = 0;
+	let generationTimerArguments = 0;
+	const inspect = (node: ts.Node): void => {
+		if (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) inlineClosures++;
+		if (ts.isWhileStatement(node) || ts.isDoStatement(node)) whileLoops++;
+		if (ts.isNewExpression(node) && node.expression.getText(source) === "Promise") {
+			promiseExecutors++;
+			if (node.arguments?.[0]?.getText(source) === "this.captureDrainInputResolve") stablePromiseExecutors++;
+		}
+		if (ts.isCallExpression(node) && node.expression.getText(source) === "setTimeout") {
+			const callback = node.arguments[0];
+			if (callback && (ts.isArrowFunction(callback) || ts.isFunctionExpression(callback))) inlineTimerCallbacks++;
+			if (callback?.getText(source) === "this.onDrainInputTimer") stableTimerCallbacks++;
+			if (node.arguments[2]?.getText(source) === "generation") generationTimerArguments++;
+		}
+		ts.forEachChild(node, inspect);
+	};
+	inspect(drainInput);
+	inspect(scheduleTimer);
+	assert.equal(inlineClosures, 0);
+	assert.equal(whileLoops, 0);
+	assert.equal(promiseExecutors, 1);
+	assert.equal(stablePromiseExecutors, 1);
+	assert.equal(inlineTimerCallbacks, 0);
+	assert.equal(stableTimerCallbacks, 1);
+	assert.equal(generationTimerArguments, 1);
+	assert.doesNotMatch(drainInput.getText(source), /async\s+drainInput/);
+	assert.doesNotMatch(drainInput.getText(source), /await\s+/);
+	assert.match(drainInput.getText(source), /validateDrainDuration\("maxMs", maxMs\)/);
+	assert.match(drainInput.getText(source), /validateDrainDuration\("idleMs", idleMs\)/);
+	assert.match(drainInput.getText(source), /generation = \+\+this\.drainGeneration/);
+	assert.doesNotMatch(`${drainInput.getText(source)}\n${scheduleTimer.getText(source)}`, /Date\.now\(\)/);
+});
+
+test("ProcessTerminal input setup and keyboard fragment scheduling use stable callbacks", () => {
+	const path = "packages/tui/src/terminal.ts";
+	const text = readFileSync(path, "utf8");
+	const source = parse(path);
+	const setup = methodNamed(source, "ProcessTerminal", "setupStdinBuffer");
+	const schedule = methodNamed(source, "ProcessTerminal", "scheduleKeyboardProtocolNegotiationBufferFlush");
+	let inlineClosures = 0;
+	let inlineTimerCallbacks = 0;
+	let stableTimerCallbacks = 0;
+	const inspect = (node: ts.Node): void => {
+		if (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) inlineClosures++;
+		if (ts.isCallExpression(node) && node.expression.getText(source) === "setTimeout") {
+			const callback = node.arguments[0];
+			if (callback && (ts.isArrowFunction(callback) || ts.isFunctionExpression(callback))) inlineTimerCallbacks++;
+			if (callback?.getText(source) === "this.onKeyboardProtocolNegotiationBufferFlush") stableTimerCallbacks++;
+		}
+		ts.forEachChild(node, inspect);
+	};
+	inspect(setup);
+	inspect(schedule);
+	assert.equal(inlineClosures, 0);
+	assert.equal(inlineTimerCallbacks, 0);
+	assert.equal(stableTimerCallbacks, 1);
+	assert.match(setup.getText(source), /this\.stdinBuffer\.on\("data", this\.onStdinBufferData\)/);
+	assert.match(setup.getText(source), /this\.stdinBuffer\.on\("paste", this\.onStdinBufferPaste\)/);
+	assert.doesNotMatch(text, /private writeLogPath\s*=\s*\(\(\)\s*=>/);
+	assert.match(text, /private writeLogPath\s*=\s*resolveTerminalWriteLogPath\(\)/);
+});
+
+test("terminal lifecycle installs stable input and resize forwarding callbacks", () => {
+	const terminalPath = "packages/tui/src/terminal.ts";
+	const terminalSource = parse(terminalPath);
+	const processStart = methodNamed(terminalSource, "ProcessTerminal", "start");
+	const tuiPath = "packages/tui/src/tui.ts";
+	const tuiSource = parse(tuiPath);
+	const tuiStart = methodNamed(tuiSource, "TuiBase", "start");
+	let inlineClosures = 0;
+	const inspect = (node: ts.Node): void => {
+		if (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) inlineClosures++;
+		ts.forEachChild(node, inspect);
+	};
+	inspect(processStart);
+	inspect(tuiStart);
+	assert.equal(inlineClosures, 0);
+	assert.match(tuiStart.getText(tuiSource), /this\.terminal\.start\(this\.onTerminalInput, this\.onTerminalResize\)/);
+	assert.doesNotMatch(tuiStart.getText(tuiSource), /this\.terminal\.start\(\s*\(/);
+});
+
+test("Windows VT restart reuses one lazily resolved native helper", () => {
+	const terminalPath = "packages/tui/src/terminal.ts";
+	const terminalText = readFileSync(terminalPath, "utf8");
+	const terminalSource = parse(terminalPath);
+	const enableWindows = methodNamed(terminalSource, "ProcessTerminal", "enableWindowsVTInput");
+	const nativeText = readFileSync("packages/tui/src/native-modifiers.ts", "utf8");
+	assert.equal(enableWindows.getText(terminalSource).match(/enableNativeWindowsVirtualTerminalInput\(\)/g)?.length, 1);
+	assert.doesNotMatch(enableWindows.getText(terminalSource), /fileURLToPath|path\.join|candidates|createRequire|\[\s*path\./);
+	assert.doesNotMatch(terminalText, /const candidates\s*=\s*\[/);
+	assert.match(nativeText, /if \(nativeModifiersHelper !== undefined\) return nativeModifiersHelper \?\? undefined/);
+	assert.doesNotMatch(nativeText, /const candidates\s*=\s*\[/);
+});
+
 function parse(path: string): ts.SourceFile {
 	return ts.createSourceFile(path, readFileSync(path, "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
 }

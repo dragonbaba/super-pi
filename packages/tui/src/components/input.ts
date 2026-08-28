@@ -150,8 +150,8 @@ export class Input implements Component, Focusable {
 			this.lastAction = null;
 			if (this.cursor > 0) {
 				const beforeCursor = this.value.slice(0, this.cursor);
-				const graphemes = [...segmenter.segment(beforeCursor)];
-				const lastGrapheme = graphemes[graphemes.length - 1];
+				let lastGrapheme: Intl.SegmentData | undefined;
+				for (const grapheme of segmenter.segment(beforeCursor)) lastGrapheme = grapheme;
 				this.cursor -= lastGrapheme ? lastGrapheme.segment.length : 1;
 			}
 			return;
@@ -161,8 +161,7 @@ export class Input implements Component, Focusable {
 			this.lastAction = null;
 			if (this.cursor < this.value.length) {
 				const afterCursor = this.value.slice(this.cursor);
-				const graphemes = [...segmenter.segment(afterCursor)];
-				const firstGrapheme = graphemes[0];
+				const firstGrapheme = segmenter.segment(afterCursor)[Symbol.iterator]().next().value;
 				this.cursor += firstGrapheme ? firstGrapheme.segment.length : 1;
 			}
 			return;
@@ -202,10 +201,14 @@ export class Input implements Component, Focusable {
 
 		// Regular character input - accept printable characters including Unicode,
 		// but reject control characters (C0: 0x00-0x1F, DEL: 0x7F, C1: 0x80-0x9F)
-		const hasControlChars = [...data].some((ch) => {
+		let hasControlChars = false;
+		for (const ch of data) {
 			const code = ch.charCodeAt(0);
-			return code < 32 || code === 0x7f || (code >= 0x80 && code <= 0x9f);
-		});
+			if (code < 32 || code === 0x7f || (code >= 0x80 && code <= 0x9f)) {
+				hasControlChars = true;
+				break;
+			}
+		}
 		if (!hasControlChars) {
 			this.insertCharacter(data);
 		}
@@ -227,8 +230,8 @@ export class Input implements Component, Focusable {
 		if (this.cursor > 0) {
 			this.pushUndo();
 			const beforeCursor = this.value.slice(0, this.cursor);
-			const graphemes = [...segmenter.segment(beforeCursor)];
-			const lastGrapheme = graphemes[graphemes.length - 1];
+			let lastGrapheme: Intl.SegmentData | undefined;
+			for (const grapheme of segmenter.segment(beforeCursor)) lastGrapheme = grapheme;
 			const graphemeLength = lastGrapheme ? lastGrapheme.segment.length : 1;
 			this.value = this.value.slice(0, this.cursor - graphemeLength) + this.value.slice(this.cursor);
 			this.cursor -= graphemeLength;
@@ -240,8 +243,7 @@ export class Input implements Component, Focusable {
 		if (this.cursor < this.value.length) {
 			this.pushUndo();
 			const afterCursor = this.value.slice(this.cursor);
-			const graphemes = [...segmenter.segment(afterCursor)];
-			const firstGrapheme = graphemes[0];
+			const firstGrapheme = segmenter.segment(afterCursor)[Symbol.iterator]().next().value;
 			const graphemeLength = firstGrapheme ? firstGrapheme.segment.length : 1;
 			this.value = this.value.slice(0, this.cursor) + this.value.slice(this.cursor + graphemeLength);
 		}

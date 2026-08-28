@@ -8,6 +8,7 @@ export type ModifierKey = "shift" | "command" | "control" | "option";
 
 type NativeModifiersHelper = {
 	isModifierPressed: (name: ModifierKey) => boolean;
+	enableVirtualTerminalInput?: () => boolean;
 };
 
 let nativeModifiersHelper: NativeModifiersHelper | null | undefined;
@@ -16,6 +17,15 @@ function isNativeModifiersHelper(value: unknown): value is NativeModifiersHelper
 	if (typeof value !== "object" || value === null) return false;
 	const candidate = (value as { isModifierPressed?: unknown }).isModifierPressed;
 	return typeof candidate === "function";
+}
+
+function tryLoadNativeModifiersHelper(modulePath: string): NativeModifiersHelper | undefined {
+	try {
+		const helper = cjsRequire(modulePath) as unknown;
+		return isNativeModifiersHelper(helper) ? helper : undefined;
+	} catch {
+		return undefined;
+	}
 }
 
 function loadNativeModifiersHelper(): NativeModifiersHelper | undefined {
@@ -34,25 +44,35 @@ function loadNativeModifiersHelper(): NativeModifiersHelper | undefined {
 	}
 
 	const moduleDir = path.dirname(fileURLToPath(import.meta.url));
-	const candidates = [
-		path.join(moduleDir, "..", nativePath),
-		path.join(moduleDir, nativePath),
-		path.join(path.dirname(process.execPath), nativePath),
-	];
-
-	for (const modulePath of candidates) {
-		try {
-			const helper = cjsRequire(modulePath) as unknown;
-			if (isNativeModifiersHelper(helper)) {
-				nativeModifiersHelper = helper;
-				return helper;
-			}
-		} catch {
-			// Try the next possible packaging location.
-		}
+	const packageHelper = tryLoadNativeModifiersHelper(path.join(moduleDir, "..", nativePath));
+	if (packageHelper) {
+		nativeModifiersHelper = packageHelper;
+		return packageHelper;
+	}
+	const sourceHelper = tryLoadNativeModifiersHelper(path.join(moduleDir, nativePath));
+	if (sourceHelper) {
+		nativeModifiersHelper = sourceHelper;
+		return sourceHelper;
+	}
+	const executableHelper = tryLoadNativeModifiersHelper(path.join(path.dirname(process.execPath), nativePath));
+	if (executableHelper) {
+		nativeModifiersHelper = executableHelper;
+		return executableHelper;
 	}
 
 	return undefined;
+}
+
+/** Re-apply Windows VT input after raw-mode setup resets console flags. */
+export function enableNativeWindowsVirtualTerminalInput(): void {
+	if (process.platform !== "win32") return;
+	const helper = loadNativeModifiersHelper();
+	if (!helper?.enableVirtualTerminalInput) return;
+	try {
+		helper.enableVirtualTerminalInput();
+	} catch {
+		// Native input enhancement is optional; ordinary terminal input remains usable.
+	}
 }
 
 export function isNativeModifierPressed(key: ModifierKey): boolean {

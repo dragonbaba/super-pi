@@ -23,6 +23,8 @@ function asError(error: unknown): Error {
 	return error instanceof Error ? error : new Error(String(error));
 }
 
+const OSC11_BACKGROUND_UNSUPPORTED = Promise.resolve<RgbColor | undefined>(undefined);
+
 /** Default deadline for lifecycle flush/restore boundaries, never for ordinary frame writes. */
 export const DEFAULT_TERMINAL_LIFECYCLE_TIMEOUT_MS = 5_000;
 
@@ -40,7 +42,10 @@ export interface Component {
 	/**
 	 * Render the component to lines for the given viewport width
 	 * @param width - Current viewport width
-	 * @returns Array of strings, each representing a line
+	 * @returns A caller-owned array of strings, each representing a line. Callers
+	 * may retain or mutate the returned array, so a component must not expose one
+	 * mutable output array across render calls unless its narrower API explicitly
+	 * documents borrowed frame-local ownership.
 	 */
 	render(width: number): string[];
 
@@ -64,11 +69,6 @@ export interface Component {
 
 export type TuiInputListenerResult = { consume?: boolean; data?: string } | undefined;
 export type TuiInputListener = (data: string) => TuiInputListenerResult;
-type PendingOsc11BackgroundQuery = {
-	settled: boolean;
-	resolve: ((rgb: RgbColor | undefined) => void) | undefined;
-	timer: NodeJS.Timeout | undefined;
-};
 
 /**
  * Interface for components that can receive focus and display a hardware cursor.
@@ -234,16 +234,15 @@ type OverlayStackEntry = {
 	focusOrder: number;
 };
 
-type OverlayBlockedFocusResume = { status: "restore-overlay" } | { status: "focus-target"; target: Component | null };
-type EligibleOverlayFocusRestoreState = { status: "eligible"; overlay: OverlayStackEntry };
-type BlockedOverlayFocusRestoreState = {
-	status: "blocked";
-	overlay: OverlayStackEntry;
-	blockedBy: Component;
-	resume: OverlayBlockedFocusResume;
+type OverlayFocusRestoreStatus = "inactive" | "eligible" | "blocked";
+type OverlayFocusResumeStatus = "restore-overlay" | "focus-target";
+type OverlayFocusRestoreState = {
+	status: OverlayFocusRestoreStatus;
+	overlay: OverlayStackEntry | undefined;
+	blockedBy: Component | null;
+	resumeStatus: OverlayFocusResumeStatus;
+	resumeTarget: Component | null;
 };
-type ActiveOverlayFocusRestoreState = EligibleOverlayFocusRestoreState | BlockedOverlayFocusRestoreState;
-type OverlayFocusRestoreState = { status: "inactive" } | ActiveOverlayFocusRestoreState;
 type OverlayFocusRestorePolicy = "clear" | "preserve";
 
 /**
@@ -273,14 +272,23 @@ export class Container implements Component {
 		}
 	}
 
-	render(width: number): string[] {
-		const lines: string[] = [];
-		for (const child of this.children) {
+	private renderInto(width: number, target: string[]): void {
+		for (let childIndex = 0; childIndex < this.children.length; childIndex++) {
+			const child = this.children[childIndex]!;
+			if (child instanceof Container && child.render === Container.prototype.render) {
+				child.renderInto(width, target);
+				continue;
+			}
 			const childLines = child.render(width);
-			for (const line of childLines) {
-				lines.push(line);
+			for (let lineIndex = 0; lineIndex < childLines.length; lineIndex++) {
+				target.push(childLines[lineIndex]!);
 			}
 		}
+	}
+
+	render(width: number): string[] {
+		const lines: string[] = [];
+		this.renderInto(width, lines);
 		return lines;
 	}
 }
@@ -389,8 +397,17 @@ export abstract class TuiBase extends Container implements TUI {
 	private clearOnShrink = process.env.SP_CLEAR_ON_SHRINK === "1";
 	protected fullRedrawCount = 0;
 	protected stopped = false;
-	private pendingOsc11BackgroundReplies = 0;
-	private pendingOsc11BackgroundQueries: PendingOsc11BackgroundQuery[] = [];
+	/** Concurrent callers share one query; one tombstone owns a timed-out physical reply. */
+	private osc11BackgroundQueryPromise: Promise<RgbColor | undefined> | undefined;
+	private osc11BackgroundQueryResolve: ((rgb: RgbColor | undefined) => void) | undefined;
+	private osc11BackgroundQueryTimer: NodeJS.Timeout | undefined;
+	private osc11BackgroundPhysicalOutstanding = false;
+	private osc11BackgroundTombstone = false;
+	private osc11BackgroundUnsupported = false;
+	private osc11BackgroundWaveGeneration = 0;
+	private osc11BackgroundActiveGeneration = 0;
+	private osc11BackgroundTombstoneGeneration = 0;
+	private capturedOsc11BackgroundResolve: ((rgb: RgbColor | undefined) => void) | undefined;
 	private terminalColorSchemeListeners = new Set<(scheme: TerminalColorScheme) => void>();
 	private terminalColorSchemeNotificationsEnabled = false;
 	protected readonly logDirectory: string;
@@ -434,6 +451,8 @@ export abstract class TuiBase extends Container implements TUI {
 	private readonly handleTerminalFrameQueueIdle = (): void => this.onTerminalFrameQueueIdle();
 	private readonly handleTerminalFrameQueueError = (error: Error): void => this.onTerminalFrameWriteError(error);
 	private readonly ignoreTerminalLifecycleRejection = (): void => {};
+	private readonly onTerminalInput = (data: string): void => this.handleTerminalInput(data);
+	private readonly onTerminalResize = (): void => this.requestRender();
 	private readonly scheduleRequestedRender = (): void => this.scheduleRender();
 	private readonly runImmediateRender = (): void => {
 		this.immediateRenderScheduled = false;
@@ -447,6 +466,34 @@ export abstract class TuiBase extends Container implements TUI {
 		this.performRender();
 		if (this.renderRequested) this.scheduleRender();
 	};
+	private readonly captureOsc11BackgroundResolve = (resolve: (rgb: RgbColor | undefined) => void): void => {
+		this.capturedOsc11BackgroundResolve = resolve;
+	};
+	private readonly handleOsc11BackgroundTimeout = (): void => {
+		this.osc11BackgroundQueryTimer = undefined;
+		const resolve = this.osc11BackgroundQueryResolve;
+		if (!resolve) return;
+		this.osc11BackgroundQueryResolve = undefined;
+		this.osc11BackgroundQueryPromise = undefined;
+		if (this.osc11BackgroundPhysicalOutstanding) {
+			this.osc11BackgroundPhysicalOutstanding = false;
+			this.osc11BackgroundTombstone = true;
+			this.osc11BackgroundTombstoneGeneration = this.osc11BackgroundActiveGeneration;
+		} else if (this.osc11BackgroundTombstone) {
+			// One follower wave already waited for the unidentifiable stale reply.
+			// Cache unsupported until a late OSC 11 response proves otherwise.
+			this.osc11BackgroundTombstone = false;
+			this.osc11BackgroundTombstoneGeneration = 0;
+			this.osc11BackgroundUnsupported = true;
+		}
+		this.osc11BackgroundActiveGeneration = 0;
+		resolve(undefined);
+	};
+	private startOsc11BackgroundPhysicalQuery(): void {
+		if (this.osc11BackgroundPhysicalOutstanding || this.osc11BackgroundTombstone) return;
+		this.osc11BackgroundPhysicalOutstanding = true;
+		this.writeTerminalControl("\x1b]11;?\x07");
+	}
 
 	// Overlay stack for modal components rendered on top of base content
 	private focusOrderCounter = 0;
@@ -455,7 +502,13 @@ export abstract class TuiBase extends Container implements TUI {
 	get hasOverlayEntries(): boolean {
 		return this.overlayStack.length > 0;
 	}
-	private overlayFocusRestore: OverlayFocusRestoreState = { status: "inactive" };
+	private readonly overlayFocusRestore: OverlayFocusRestoreState = {
+		status: "inactive",
+		overlay: undefined,
+		blockedBy: null,
+		resumeStatus: "restore-overlay",
+		resumeTarget: null,
+	};
 
 	constructor(
 		terminal: Terminal,
@@ -567,51 +620,44 @@ export abstract class TuiBase extends Container implements TUI {
 	}
 
 	setFocus(component: Component | null): void {
-		this.setFocusInternal({ component, overlayFocusRestore: "clear" });
+		this.setFocusInternal(component, "clear");
 	}
 
-	private setFocusInternal({
-		component,
-		overlayFocusRestore,
-	}: {
-		component: Component | null;
-		overlayFocusRestore: OverlayFocusRestorePolicy;
-	}): void {
+	private setFocusInternal(component: Component | null, overlayFocusRestore: OverlayFocusRestorePolicy): void {
 		const previousFocus = this.focusedComponent;
 		let nextFocus = component;
-		const previousFocusedOverlay = previousFocus
-			? this.overlayStack.find((entry) => entry.component === previousFocus && this.isOverlayVisible(entry))
-			: undefined;
-		const nextFocusIsOverlay = nextFocus ? this.overlayStack.some((entry) => entry.component === nextFocus) : false;
+		let previousFocusedOverlay: OverlayStackEntry | undefined;
+		let nextFocusIsOverlay = false;
+		for (let index = 0; index < this.overlayStack.length; index++) {
+			const entry = this.overlayStack[index]!;
+			if (!previousFocusedOverlay && previousFocus && entry.component === previousFocus && this.isOverlayVisible(entry)) {
+				previousFocusedOverlay = entry;
+			}
+			if (nextFocus && entry.component === nextFocus) nextFocusIsOverlay = true;
+		}
 		const restoreState = this.getVisibleOverlayFocusRestore();
 		if (nextFocus && !nextFocusIsOverlay) {
-			if (restoreState.status === "blocked" && restoreState.blockedBy === previousFocus) {
-				if (restoreState.resume.status === "focus-target" || !this.isComponentMounted(restoreState.blockedBy)) {
-					nextFocus = this.resolveBlockedOverlayFocusResume(restoreState);
+			if (restoreState?.status === "blocked" && restoreState.blockedBy === previousFocus) {
+				if (
+					restoreState.resumeStatus === "focus-target"
+					|| !restoreState.blockedBy
+					|| !this.isComponentMounted(restoreState.blockedBy)
+				) {
+					nextFocus = this.resolveBlockedOverlayFocusResume();
 				} else {
-					this.overlayFocusRestore = {
-						status: "blocked",
-						overlay: restoreState.overlay,
-						blockedBy: nextFocus,
-						resume: restoreState.resume,
-					};
+					restoreState.blockedBy = nextFocus;
 				}
 			} else if (
 				previousFocusedOverlay &&
-				restoreState.status !== "inactive" &&
+				restoreState &&
 				restoreState.overlay === previousFocusedOverlay &&
 				!this.isOverlayFocusAncestor(previousFocusedOverlay, nextFocus)
 			) {
-				this.overlayFocusRestore = {
-					status: "blocked",
-					overlay: previousFocusedOverlay,
-					blockedBy: nextFocus,
-					resume: { status: "restore-overlay" },
-				};
+				this.setBlockedOverlayFocusRestore(previousFocusedOverlay, nextFocus, "restore-overlay", null);
 			}
 		} else if (nextFocus === null) {
-			if (restoreState.status === "blocked" && restoreState.blockedBy === previousFocus) {
-				nextFocus = this.resolveBlockedOverlayFocusResume(restoreState);
+			if (restoreState?.status === "blocked" && restoreState.blockedBy === previousFocus) {
+				nextFocus = this.resolveBlockedOverlayFocusResume();
 			} else if (overlayFocusRestore === "clear") {
 				this.clearOverlayFocusRestore();
 			}
@@ -627,16 +673,48 @@ export abstract class TuiBase extends Container implements TUI {
 			nextFocus.focused = true;
 		}
 
-		const focusedOverlay = nextFocus
-			? this.overlayStack.find((entry) => entry.component === nextFocus && this.isOverlayVisible(entry))
-			: undefined;
+		let focusedOverlay: OverlayStackEntry | undefined;
+		if (nextFocus) {
+			for (let index = 0; index < this.overlayStack.length; index++) {
+				const entry = this.overlayStack[index]!;
+				if (entry.component === nextFocus && this.isOverlayVisible(entry)) {
+					focusedOverlay = entry;
+					break;
+				}
+			}
+		}
 		if (focusedOverlay) {
-			this.overlayFocusRestore = { status: "eligible", overlay: focusedOverlay };
+			this.setEligibleOverlayFocusRestore(focusedOverlay);
 		}
 	}
 
 	private clearOverlayFocusRestore(): void {
-		this.overlayFocusRestore = { status: "inactive" };
+		this.overlayFocusRestore.status = "inactive";
+		this.overlayFocusRestore.overlay = undefined;
+		this.overlayFocusRestore.blockedBy = null;
+		this.overlayFocusRestore.resumeStatus = "restore-overlay";
+		this.overlayFocusRestore.resumeTarget = null;
+	}
+
+	private setEligibleOverlayFocusRestore(overlay: OverlayStackEntry): void {
+		this.overlayFocusRestore.status = "eligible";
+		this.overlayFocusRestore.overlay = overlay;
+		this.overlayFocusRestore.blockedBy = null;
+		this.overlayFocusRestore.resumeStatus = "restore-overlay";
+		this.overlayFocusRestore.resumeTarget = null;
+	}
+
+	private setBlockedOverlayFocusRestore(
+		overlay: OverlayStackEntry,
+		blockedBy: Component,
+		resumeStatus: OverlayFocusResumeStatus,
+		resumeTarget: Component | null,
+	): void {
+		this.overlayFocusRestore.status = "blocked";
+		this.overlayFocusRestore.overlay = overlay;
+		this.overlayFocusRestore.blockedBy = blockedBy;
+		this.overlayFocusRestore.resumeStatus = resumeStatus;
+		this.overlayFocusRestore.resumeTarget = resumeTarget;
 	}
 
 	private clearOverlayFocusRestoreFor(overlay: OverlayStackEntry): void {
@@ -645,28 +723,36 @@ export abstract class TuiBase extends Container implements TUI {
 		}
 	}
 
-	private resolveBlockedOverlayFocusResume(restoreState: BlockedOverlayFocusRestoreState): Component | null {
-		if (restoreState.resume.status === "restore-overlay") return restoreState.overlay.component;
+	private resolveBlockedOverlayFocusResume(): Component | null {
+		const restoreState = this.overlayFocusRestore;
+		if (restoreState.resumeStatus === "restore-overlay") return restoreState.overlay?.component ?? null;
+		const target = restoreState.resumeTarget;
 		this.clearOverlayFocusRestore();
-		return restoreState.resume.target;
+		return target;
 	}
 
-	private getVisibleOverlayFocusRestore(): OverlayFocusRestoreState {
+	private getVisibleOverlayFocusRestore(): OverlayFocusRestoreState | undefined {
 		const restoreState = this.overlayFocusRestore;
-		if (restoreState.status === "inactive") return restoreState;
-		if (!this.overlayStack.includes(restoreState.overlay) || !this.isOverlayVisible(restoreState.overlay)) {
-			return { status: "inactive" };
-		}
+		if (restoreState.status === "inactive" || !restoreState.overlay) return undefined;
+		if (!this.overlayStack.includes(restoreState.overlay) || !this.isOverlayVisible(restoreState.overlay)) return undefined;
 		return restoreState;
 	}
 
 	private isOverlayFocusAncestor(entry: OverlayStackEntry, component: Component): boolean {
-		const visited = new Set<Component>();
 		let current = entry.preFocus;
-		while (current && !visited.has(current)) {
-			visited.add(current);
+		let remaining = this.overlayStack.length + 1;
+		while (current && remaining > 0) {
 			if (current === component) return true;
-			current = this.overlayStack.find((overlay) => overlay.component === current)?.preFocus ?? null;
+			let parent: Component | null = null;
+			for (let index = 0; index < this.overlayStack.length; index++) {
+				const overlay = this.overlayStack[index]!;
+				if (overlay.component === current) {
+					parent = overlay.preFocus;
+					break;
+				}
+			}
+			current = parent;
+			remaining--;
 		}
 		return false;
 	}
@@ -684,13 +770,20 @@ export abstract class TuiBase extends Container implements TUI {
 	}
 
 	private isComponentMounted(component: Component): boolean {
-		return this.getMountedRoots().some((child) => this.containsComponent(child, component));
+		const roots = this.getMountedRoots();
+		for (let index = 0; index < roots.length; index++) {
+			if (this.containsComponent(roots[index]!, component)) return true;
+		}
+		return false;
 	}
 
 	private containsComponent(root: Component, target: Component): boolean {
 		if (root === target) return true;
 		if (!(root instanceof Container)) return false;
-		return root.children.some((child) => this.containsComponent(child, target));
+		for (let index = 0; index < root.children.length; index++) {
+			if (this.containsComponent(root.children[index]!, target)) return true;
+		}
+		return false;
 	}
 
 	/**
@@ -700,7 +793,7 @@ export abstract class TuiBase extends Container implements TUI {
 	showOverlay(component: Component, options?: OverlayOptions): OverlayHandle {
 		const entry: OverlayStackEntry = {
 			component,
-			...(options === undefined ? {} : { options }),
+			options,
 			preFocus: this.focusedComponent,
 			hidden: false,
 			focusOrder: ++this.focusOrderCounter,
@@ -767,13 +860,8 @@ export abstract class TuiBase extends Container implements TUI {
 					restoreState.overlay === entry &&
 					this.focusedComponent === restoreState.blockedBy
 				) {
-					if (unfocusOptions) {
-						this.overlayFocusRestore = {
-							status: "blocked",
-							overlay: entry,
-							blockedBy: restoreState.blockedBy,
-							resume: { status: "focus-target", target: unfocusOptions.target },
-						};
+					if (unfocusOptions && restoreState.blockedBy) {
+						this.setBlockedOverlayFocusRestore(entry, restoreState.blockedBy, "focus-target", unfocusOptions.target);
 					} else {
 						this.clearOverlayFocusRestore();
 					}
@@ -810,7 +898,10 @@ export abstract class TuiBase extends Container implements TUI {
 
 	/** Check if there are any visible overlays */
 	hasOverlay(): boolean {
-		return this.overlayStack.some((o) => this.isOverlayVisible(o));
+		for (let index = 0; index < this.overlayStack.length; index++) {
+			if (this.isOverlayVisible(this.overlayStack[index]!)) return true;
+		}
+		return false;
 	}
 
 	/** Check if an overlay entry is currently visible */
@@ -853,10 +944,7 @@ export abstract class TuiBase extends Container implements TUI {
 		this.stopped = false;
 		this.stopPromise = undefined;
 		this.beforeTerminalStart();
-		this.terminal.start(
-			(data) => this.handleTerminalInput(data),
-			() => this.requestRender(),
-		);
+		this.terminal.start(this.onTerminalInput, this.onTerminalResize);
 		this.afterTerminalStart();
 		this.terminal.hideCursor();
 		if (this.terminalColorSchemeNotificationsEnabled) {
@@ -939,15 +1027,17 @@ export abstract class TuiBase extends Container implements TUI {
 			this.focusedComponent = null;
 			this.inputListeners.clear();
 			this.terminalColorSchemeListeners.clear();
-			for (const query of this.pendingOsc11BackgroundQueries) {
-				if (query.timer) clearTimeout(query.timer);
-				query.timer = undefined;
-				query.settled = true;
-				query.resolve?.(undefined);
-				query.resolve = undefined;
-			}
-			this.pendingOsc11BackgroundQueries.length = 0;
-			this.pendingOsc11BackgroundReplies = 0;
+			if (this.osc11BackgroundQueryTimer) clearTimeout(this.osc11BackgroundQueryTimer);
+			this.osc11BackgroundQueryTimer = undefined;
+			const resolve = this.osc11BackgroundQueryResolve;
+			this.osc11BackgroundQueryResolve = undefined;
+			this.osc11BackgroundQueryPromise = undefined;
+			this.osc11BackgroundPhysicalOutstanding = false;
+			this.osc11BackgroundTombstone = false;
+			this.osc11BackgroundUnsupported = false;
+			this.osc11BackgroundActiveGeneration = 0;
+			this.osc11BackgroundTombstoneGeneration = 0;
+			resolve?.(undefined);
 		}
 	}
 
@@ -1201,28 +1291,42 @@ export abstract class TuiBase extends Container implements TUI {
 
 		// If focused component is an overlay, verify it's still visible
 		// (visibility can change due to terminal resize or visible() callback)
-		const focusedOverlay = this.overlayStack.find((o) => o.component === this.focusedComponent);
+		let focusedOverlay: OverlayStackEntry | undefined;
+		for (let index = 0; index < this.overlayStack.length; index++) {
+			const entry = this.overlayStack[index]!;
+			if (entry.component === this.focusedComponent) {
+				focusedOverlay = entry;
+				break;
+			}
+		}
 		if (focusedOverlay && !this.isOverlayVisible(focusedOverlay)) {
 			// Focused overlay is no longer visible, redirect to topmost visible overlay
 			const topVisible = this.getTopmostVisibleOverlay();
 			if (topVisible) {
 				this.setFocus(topVisible.component);
 			} else {
-				this.setFocusInternal({ component: focusedOverlay.preFocus, overlayFocusRestore: "preserve" });
+				this.setFocusInternal(focusedOverlay.preFocus, "preserve");
 			}
 		}
 
-		const focusIsOverlay = this.overlayStack.some((o) => o.component === this.focusedComponent);
+		let focusIsOverlay = false;
+		for (let index = 0; index < this.overlayStack.length; index++) {
+			if (this.overlayStack[index]!.component === this.focusedComponent) {
+				focusIsOverlay = true;
+				break;
+			}
+		}
 		if (!focusIsOverlay) {
 			const restoreState = this.getVisibleOverlayFocusRestore();
-			if (restoreState.status === "eligible") {
+			if (restoreState?.status === "eligible" && restoreState.overlay) {
 				this.setFocus(restoreState.overlay.component);
-			} else if (restoreState.status === "blocked" && restoreState.blockedBy !== this.focusedComponent) {
-				if (restoreState.resume.status === "restore-overlay") {
+			} else if (restoreState?.status === "blocked" && restoreState.blockedBy !== this.focusedComponent) {
+				if (restoreState.resumeStatus === "restore-overlay" && restoreState.overlay) {
 					this.setFocus(restoreState.overlay.component);
 				} else {
+					const target = restoreState.resumeTarget;
 					this.clearOverlayFocusRestore();
-					this.setFocus(restoreState.resume.target);
+					this.setFocus(target);
 				}
 			}
 		}
@@ -1242,26 +1346,32 @@ export abstract class TuiBase extends Container implements TUI {
 	}
 
 	private consumeOsc11BackgroundResponse(data: string): boolean {
-		if (this.pendingOsc11BackgroundReplies <= 0) {
-			return false;
-		}
-
 		if (!isOsc11BackgroundColorResponse(data)) {
 			return false;
 		}
 
 		const rgb = parseOsc11BackgroundColor(data);
-		this.pendingOsc11BackgroundReplies -= 1;
-		const query = this.pendingOsc11BackgroundQueries.shift();
-		if (query && !query.settled) {
-			query.settled = true;
-			if (query.timer) {
-				clearTimeout(query.timer);
-				query.timer = undefined;
-			}
-			query.resolve?.(rgb);
-			query.resolve = undefined;
+		if (this.osc11BackgroundUnsupported) {
+			// A reply after the unsupported cache can only belong to the last timed-out
+			// physical request. Consume it and permit a future fresh query.
+			this.osc11BackgroundUnsupported = false;
+			return true;
 		}
+		if (this.osc11BackgroundTombstone) {
+			this.osc11BackgroundTombstone = false;
+			this.osc11BackgroundTombstoneGeneration = 0;
+			if (this.osc11BackgroundQueryResolve) this.startOsc11BackgroundPhysicalQuery();
+			return true;
+		}
+		if (!this.osc11BackgroundPhysicalOutstanding) return false;
+		this.osc11BackgroundPhysicalOutstanding = false;
+		if (this.osc11BackgroundQueryTimer) clearTimeout(this.osc11BackgroundQueryTimer);
+		this.osc11BackgroundQueryTimer = undefined;
+		const resolve = this.osc11BackgroundQueryResolve;
+		this.osc11BackgroundQueryResolve = undefined;
+		this.osc11BackgroundQueryPromise = undefined;
+		this.osc11BackgroundActiveGeneration = 0;
+		resolve?.(rgb);
 		return true;
 	}
 
@@ -1560,30 +1670,30 @@ export abstract class TuiBase extends Container implements TUI {
 
 	/**
 	 * Query the terminal's default background color with OSC 11 (`ESC ] 11 ; ? BEL`).
-	 * @param timeoutMs Query timeout in milliseconds.
+	 * Concurrent callers join one logical query wave and share the first caller's
+	 * deadline. A later caller's timeout does not extend that wave. OSC 11 has no
+	 * request identifier, so a timed-out physical request retains one tombstone;
+	 * a later logical wave waits for that stale reply before sending its own
+	 * physical query. If that follower also reaches its deadline, this TUI caches
+	 * OSC 11 as unsupported and later calls reuse one resolved result without a
+	 * timer or physical write. A late valid reply is still consumed and clears the
+	 * unsupported cache, allowing a future wave to retry safely. This prevents a
+	 * late reply from completing the wrong wave without causing permanent waits.
+	 * @param timeoutMs First-caller deadline for a newly created query wave.
 	 * @returns Promise containing the parsed RGB color, or undefined if it times out or fails to parse.
 	 */
 	queryTerminalBackgroundColor({ timeoutMs }: { timeoutMs: number }): Promise<RgbColor | undefined> {
-		return new Promise((resolve) => {
-			const query: PendingOsc11BackgroundQuery = {
-				settled: false,
-				resolve,
-				timer: undefined,
-			};
-
-			query.timer = setTimeout(() => {
-				if (query.settled) {
-					return;
-				}
-				query.settled = true;
-				query.timer = undefined;
-				query.resolve?.(undefined);
-				query.resolve = undefined;
-			}, timeoutMs);
-			this.pendingOsc11BackgroundQueries.push(query);
-			this.pendingOsc11BackgroundReplies += 1;
-			this.writeTerminalControl("\x1b]11;?\x07");
-		});
+		if (this.osc11BackgroundQueryPromise) return this.osc11BackgroundQueryPromise;
+		if (this.osc11BackgroundUnsupported) return OSC11_BACKGROUND_UNSUPPORTED;
+		this.osc11BackgroundActiveGeneration = ++this.osc11BackgroundWaveGeneration;
+		this.capturedOsc11BackgroundResolve = undefined;
+		const result = new Promise<RgbColor | undefined>(this.captureOsc11BackgroundResolve);
+		this.osc11BackgroundQueryPromise = result;
+		this.osc11BackgroundQueryResolve = this.capturedOsc11BackgroundResolve;
+		this.capturedOsc11BackgroundResolve = undefined;
+		this.osc11BackgroundQueryTimer = setTimeout(this.handleOsc11BackgroundTimeout, timeoutMs);
+		this.startOsc11BackgroundPhysicalQuery();
+		return result;
 	}
 
 	/**

@@ -253,6 +253,354 @@ class RealBackpressuredWritable extends Writable {
 	}
 }
 
+test("ProcessTerminal drainInput shares one cycle and keeps data events allocation-bounded", async () => {
+	const output = new ControlledFrameOutput();
+	output.returnValue = true;
+	const terminal = new ProcessTerminal(output as never);
+	const state = terminal as unknown as {
+		drainInputActive: boolean;
+		drainInputPromise: Promise<void> | undefined;
+		drainInputResolve: (() => void) | undefined;
+		drainInputReject: ((error: Error) => void) | undefined;
+		drainInputTimer: ReturnType<typeof setTimeout> | undefined;
+		drainInputPreviousHandler: ((data: string) => void) | undefined;
+		drainInputLastDataTime: number;
+		drainInputDeadline: number;
+		drainInputIdleMs: number;
+		drainActiveGeneration: number;
+		inputHandler: ((data: string) => void) | undefined;
+		readDrainTime: () => number;
+		onDrainInputData: () => void;
+		onDrainInputTimer: (generation: number) => void;
+		captureDrainInputResolve: (resolve: () => void, reject: (error: Error) => void) => void;
+	};
+	let now = 1_000;
+	state.readDrainTime = () => now;
+	const baselineDataListeners = process.stdin.listenerCount("data");
+	const dataCallback = state.onDrainInputData;
+	const timerCallback = state.onDrainInputTimer;
+	const promiseExecutor = state.captureDrainInputResolve;
+	const first = terminal.drainInput(60_000, 60_000);
+	const generation = state.drainActiveGeneration;
+	const concurrent = terminal.drainInput(5_000, 5_000);
+	assert.equal(concurrent, first);
+	assert.equal(state.drainInputDeadline, 61_000);
+	assert.equal(state.drainInputIdleMs, 60_000);
+	assert.equal(process.stdin.listenerCount("data"), baselineDataListeners + 1);
+	const timer = state.drainInputTimer;
+	assert.ok(timer);
+	for (let update = 0; update < 100_000; update++) state.onDrainInputData();
+	assert.equal(state.drainInputTimer, timer, "data events update one primitive timestamp without replacing the timer");
+	assert.equal(state.onDrainInputData, dataCallback);
+	assert.equal(state.onDrainInputTimer, timerCallback);
+	assert.equal(state.captureDrainInputResolve, promiseExecutor);
+	clearTimeout(timer);
+	now = 61_000;
+	state.onDrainInputTimer(generation);
+	await first;
+	assert.equal(process.stdin.listenerCount("data"), baselineDataListeners);
+	assert.equal(state.drainInputActive, false);
+	assert.equal(state.drainInputPromise, undefined);
+	assert.equal(state.drainInputResolve, undefined);
+	assert.equal(state.drainInputReject, undefined);
+	assert.equal(state.drainInputTimer, undefined);
+	assert.equal(state.drainInputPreviousHandler, undefined);
+	assert.equal(state.drainInputLastDataTime, 0);
+
+	now = 70_000;
+	const second = terminal.drainInput(1_000, 1_000);
+	const disposedGeneration = state.drainActiveGeneration;
+	assert.notEqual(second, first);
+	terminal.dispose();
+	await second;
+	state.onDrainInputTimer(disposedGeneration);
+	state.onDrainInputData();
+	assert.equal(process.stdin.listenerCount("data"), baselineDataListeners);
+	assert.equal(state.drainInputActive, false);
+	assert.equal(state.drainActiveGeneration, 0);
+	assert.equal(state.drainInputPromise, undefined);
+	assert.equal(state.drainInputResolve, undefined);
+	assert.equal(state.drainInputReject, undefined);
+	assert.equal(state.drainInputTimer, undefined);
+	assert.equal(state.drainInputPreviousHandler, undefined);
+	assert.equal(state.inputHandler, undefined);
+});
+
+test("drainInput timer generation isolates successful, stopped, and replacement cycles", async () => {
+	const terminal = new ProcessTerminal(new SynchronousCallbackFrameOutput() as never);
+	const state = terminal as unknown as {
+		drainGeneration: number;
+		drainActiveGeneration: number;
+		drainInputActive: boolean;
+		drainInputPromise: Promise<void> | undefined;
+		drainInputTimer: ReturnType<typeof setTimeout> | undefined;
+		readDrainTime: () => number;
+		onDrainInputTimer: (generation: number) => void;
+	};
+	let now = 0;
+	state.readDrainTime = () => now;
+
+	const first = terminal.drainInput(100, 100);
+	const firstGeneration = state.drainActiveGeneration;
+	const firstTimer = state.drainInputTimer;
+	assert.ok(firstTimer);
+	clearTimeout(firstTimer);
+	now = 100;
+	state.onDrainInputTimer(firstGeneration);
+	await first;
+
+	now = 200;
+	const second = terminal.drainInput(100, 100);
+	const secondGeneration = state.drainActiveGeneration;
+	assert.notEqual(secondGeneration, firstGeneration);
+	state.onDrainInputTimer(firstGeneration);
+	assert.equal(state.drainInputActive, true);
+	assert.equal(state.drainInputPromise, second);
+
+	terminal.stop();
+	await second;
+	now = 300;
+	const third = terminal.drainInput(100, 100);
+	const thirdGeneration = state.drainActiveGeneration;
+	state.onDrainInputTimer(secondGeneration);
+	assert.equal(state.drainInputPromise, third);
+	const thirdTimer = state.drainInputTimer;
+	assert.ok(thirdTimer);
+	clearTimeout(thirdTimer);
+	now = 400;
+	state.onDrainInputTimer(thirdGeneration);
+	await third;
+	terminal.dispose();
+});
+
+test("drainInput first caller owns concurrent parameters in both orderings", async () => {
+	const terminal = new ProcessTerminal(new SynchronousCallbackFrameOutput() as never);
+	const state = terminal as unknown as {
+		drainInputDeadline: number;
+		drainInputIdleMs: number;
+		drainInputTimer: ReturnType<typeof setTimeout> | undefined;
+		drainActiveGeneration: number;
+		readDrainTime: () => number;
+		onDrainInputTimer: (generation: number) => void;
+	};
+	let now = 10;
+	state.readDrainTime = () => now;
+	const shortFirst = terminal.drainInput(50, 20);
+	const longSecond = terminal.drainInput(5_000, 4_000);
+	assert.equal(longSecond, shortFirst);
+	assert.equal(state.drainInputDeadline, 60);
+	assert.equal(state.drainInputIdleMs, 20);
+	let timer = state.drainInputTimer;
+	assert.ok(timer);
+	clearTimeout(timer);
+	now = 60;
+	state.onDrainInputTimer(state.drainActiveGeneration);
+	await shortFirst;
+
+	now = 100;
+	const longFirst = terminal.drainInput(5_000, 4_000);
+	const shortSecond = terminal.drainInput(50, 20);
+	assert.equal(shortSecond, longFirst);
+	assert.equal(state.drainInputDeadline, 5_100);
+	assert.equal(state.drainInputIdleMs, 4_000);
+	timer = state.drainInputTimer;
+	assert.ok(timer);
+	clearTimeout(timer);
+	now = 5_100;
+	state.onDrainInputTimer(state.drainActiveGeneration);
+	await longFirst;
+	terminal.dispose();
+});
+
+test("drainInput validates durations and resolves exact idle and absolute boundaries monotonically", async () => {
+	const terminal = new ProcessTerminal(new SynchronousCallbackFrameOutput() as never);
+	const state = terminal as unknown as {
+		drainInputActive: boolean;
+		drainInputTimer: ReturnType<typeof setTimeout> | undefined;
+		drainActiveGeneration: number;
+		readDrainTime: () => number;
+		onDrainInputData: () => void;
+		onDrainInputTimer: (generation: number) => void;
+	};
+	for (const invalid of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, -1]) {
+		assert.throws(() => terminal.drainInput(invalid, 1), RangeError);
+		assert.throws(() => terminal.drainInput(1, invalid), RangeError);
+		assert.equal(state.drainInputActive, false);
+	}
+	let now = 1_000;
+	state.readDrainTime = () => now;
+	await terminal.drainInput(0, 10);
+	await terminal.drainInput(10, 0);
+
+	const idleLongerThanMax = terminal.drainInput(10, 100);
+	let generation = state.drainActiveGeneration;
+	let timer = state.drainInputTimer;
+	assert.ok(timer);
+	clearTimeout(timer);
+	now = 1_010;
+	state.onDrainInputTimer(generation);
+	await idleLongerThanMax;
+
+	now = 2_000;
+	const exactIdle = terminal.drainInput(1_000, 100);
+	generation = state.drainActiveGeneration;
+	timer = state.drainInputTimer;
+	assert.ok(timer);
+	clearTimeout(timer);
+	now = 2_100;
+	state.onDrainInputTimer(generation);
+	await exactIdle;
+
+	now = 3_000;
+	const continuous = terminal.drainInput(100, 10);
+	generation = state.drainActiveGeneration;
+	for (let elapsed = 9; elapsed < 100; elapsed += 9) {
+		now = 3_000 + elapsed;
+		state.onDrainInputData();
+		timer = state.drainInputTimer;
+		if (timer) clearTimeout(timer);
+		state.onDrainInputTimer(generation);
+		assert.equal(state.drainInputActive, true);
+	}
+	timer = state.drainInputTimer;
+	if (timer) clearTimeout(timer);
+	now = 3_100;
+	state.onDrainInputTimer(generation);
+	await continuous;
+	terminal.dispose();
+});
+
+test("real EventEmitter drain input keeps one Promise, timer, listener, and resolver across 100k events", async () => {
+	const terminal = new ProcessTerminal(new SynchronousCallbackFrameOutput() as never);
+	const input = new EventEmitter();
+	const state = terminal as unknown as {
+		drainInputSource: EventEmitter;
+		drainInputPromise: Promise<void> | undefined;
+		drainInputResolve: (() => void) | undefined;
+		drainInputReject: ((error: Error) => void) | undefined;
+		drainInputTimer: ReturnType<typeof setTimeout> | undefined;
+		drainActiveGeneration: number;
+		readDrainTime: () => number;
+		onDrainInputData: () => void;
+		onDrainInputTimer: (generation: number) => void;
+	};
+	let now = 0;
+	state.readDrainTime = () => now;
+	state.drainInputSource = input;
+	const promise = terminal.drainInput(60_000, 60_000);
+	const timer = state.drainInputTimer;
+	const resolve = state.drainInputResolve;
+	const reject = state.drainInputReject;
+	assert.ok(timer);
+	assert.equal(input.listenerCount("data"), 1);
+	assert.equal(input.listeners("data")[0], state.onDrainInputData);
+	let promiseIdentityChanges = 0;
+	let timerIdentityChanges = 0;
+	let maximumPromises = 0;
+	let maximumTimers = 0;
+	let maximumResolvers = 0;
+	let maximumRejectors = 0;
+	for (let event = 0; event < 100_000; event++) {
+		now = event / 10;
+		input.emit("data", "x");
+		if (state.drainInputPromise !== promise) promiseIdentityChanges++;
+		if (state.drainInputTimer !== timer) timerIdentityChanges++;
+		maximumPromises = Math.max(maximumPromises, state.drainInputPromise ? 1 : 0);
+		maximumTimers = Math.max(maximumTimers, state.drainInputTimer ? 1 : 0);
+		maximumResolvers = Math.max(maximumResolvers, state.drainInputResolve ? 1 : 0);
+		maximumRejectors = Math.max(maximumRejectors, state.drainInputReject ? 1 : 0);
+	}
+	assert.equal(promiseIdentityChanges, 0);
+	assert.equal(timerIdentityChanges, 0);
+	assert.equal(maximumPromises, 1);
+	assert.equal(maximumTimers, 1);
+	assert.equal(maximumResolvers, 1);
+	assert.equal(maximumRejectors, 1);
+	assert.equal(state.drainInputResolve, resolve);
+	assert.equal(state.drainInputReject, reject);
+	clearTimeout(timer);
+	now = 60_000;
+	state.onDrainInputTimer(state.drainActiveGeneration);
+	await promise;
+	assert.equal(input.listenerCount("data"), 0);
+	assert.equal(state.drainInputPromise, undefined);
+	assert.equal(state.drainInputTimer, undefined);
+	assert.equal(state.drainInputResolve, undefined);
+	assert.equal(state.drainInputReject, undefined);
+	terminal.dispose();
+});
+
+test("same ProcessTerminal stop and restart cannot restore a stale drain handler", async () => {
+	const terminal = new ProcessTerminal(new SynchronousCallbackFrameOutput() as never);
+	const inputA: string[] = [];
+	const inputB: string[] = [];
+	const state = terminal as unknown as {
+		drainActiveGeneration: number;
+		drainInputTimer: ReturnType<typeof setTimeout> | undefined;
+		readDrainTime: () => number;
+		onDrainInputData: () => void;
+		onDrainInputTimer: (generation: number) => void;
+		onStdinBufferData: (data: string) => void;
+	};
+	let now = 0;
+	state.readDrainTime = () => now;
+	terminal.start((data) => inputA.push(data), () => {});
+	const draining = terminal.drainInput(60_000, 60_000);
+	const staleGeneration = state.drainActiveGeneration;
+	terminal.stop();
+	await draining;
+	terminal.start((data) => inputB.push(data), () => {});
+	state.onDrainInputTimer(staleGeneration);
+	state.onDrainInputData();
+	state.onStdinBufferData("b");
+	assert.deepEqual(inputA, []);
+	assert.deepEqual(inputB, ["b"]);
+	terminal.dispose();
+	assert.equal(state.drainInputTimer, undefined);
+	state.onDrainInputTimer(staleGeneration);
+	state.onDrainInputData();
+	assert.deepEqual(inputB, ["b"]);
+});
+
+test("ProcessTerminal drainInput reports synchronous control failure through its shared Promise", async () => {
+	const output = new ThrowingFrameOutput();
+	const terminal = new ProcessTerminal(output as never);
+	const state = terminal as unknown as {
+		keyboardProtocolPushed: boolean;
+		drainInputPromise: Promise<void> | undefined;
+		drainInputResolve: (() => void) | undefined;
+		drainInputReject: ((error: Error) => void) | undefined;
+		drainInputTimer: ReturnType<typeof setTimeout> | undefined;
+		drainGeneration: number;
+		drainActiveGeneration: number;
+		readDrainTime: () => number;
+		onDrainInputTimer: (generation: number) => void;
+	};
+	let now = 0;
+	state.readDrainTime = () => now;
+	state.keyboardProtocolPushed = true;
+	const result = terminal.drainInput(100, 10);
+	const failedGeneration = state.drainGeneration;
+	await assert.rejects(result, /synchronous frame EIO/);
+	assert.equal(state.drainInputPromise, undefined);
+	assert.equal(state.drainInputResolve, undefined);
+	assert.equal(state.drainInputReject, undefined);
+	assert.equal(state.drainInputTimer, undefined);
+	assert.equal(state.drainActiveGeneration, 0);
+	state.keyboardProtocolPushed = false;
+	const replacement = terminal.drainInput(100, 100);
+	const replacementGeneration = state.drainActiveGeneration;
+	state.onDrainInputTimer(failedGeneration);
+	assert.equal(state.drainInputPromise, replacement);
+	const replacementTimer = state.drainInputTimer;
+	assert.ok(replacementTimer);
+	clearTimeout(replacementTimer);
+	now = 100;
+	state.onDrainInputTimer(replacementGeneration);
+	await replacement;
+	terminal.dispose();
+});
+
 test("latest terminal frame replaces stale pending output with bounded depth", async () => {
 	const writer = new GatedWriter();
 	const startedMetadata: number[] = [];

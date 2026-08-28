@@ -39,25 +39,16 @@ export interface ImageRenderOptions {
 
 let cachedCapabilities: TerminalCapabilities | null = null;
 
-// Stable read-only view: setters copy primitives instead of retaining a caller-owned object.
-let cellWidthPx = 9;
-let cellHeightPx = 18;
-const cellDimensions: CellDimensions = Object.freeze({
-	get widthPx(): number {
-		return cellWidthPx;
-	},
-	get heightPx(): number {
-		return cellHeightPx;
-	},
-});
+// Default cell dimensions - updated by TUI when terminal responds to query.
+const cellDimensions: CellDimensions = { widthPx: 9, heightPx: 18 };
 
 export function getCellDimensions(): CellDimensions {
 	return cellDimensions;
 }
 
 export function setCellDimensions(dims: CellDimensions): void {
-	cellWidthPx = dims.widthPx;
-	cellHeightPx = dims.heightPx;
+	cellDimensions.widthPx = dims.widthPx;
+	cellDimensions.heightPx = dims.heightPx;
 }
 
 /**

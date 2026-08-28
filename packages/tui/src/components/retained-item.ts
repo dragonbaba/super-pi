@@ -21,6 +21,10 @@ const DEFAULT_CONTEXT: Readonly<RetainedRenderContext> = Object.freeze({
 	settingsVersion: 0,
 });
 
+function getDefaultRetainedContext(): Readonly<RetainedRenderContext> {
+	return DEFAULT_CONTEXT;
+}
+
 export interface RetainedItemOptions {
 	id: string;
 	version: number;
@@ -61,7 +65,7 @@ export class RetainedItem implements Component {
 		this.logicalVersion = options.version;
 		this.isCompleted = options.completed ?? false;
 		this.frozenVersion = this.isCompleted ? options.version : undefined;
-		this.getContext = options.getContext ?? (() => DEFAULT_CONTEXT);
+		this.getContext = options.getContext ?? getDefaultRetainedContext;
 		this.instrumentation = options.instrumentation;
 		this.onRenderStateChanged = options.onRenderStateChanged;
 	}
