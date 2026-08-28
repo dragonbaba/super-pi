@@ -147,6 +147,18 @@ export class ProcessTerminal implements Terminal {
 	private controlWritesOutstanding = 0;
 	private disposed = false;
 	private disposeFinalizationScheduled = false;
+	private readonly onUnawaitedControlWriteCallback = (error?: Error | null): void => {
+		this.controlWritesOutstanding--;
+		if (error) this.failFrameOutput(error);
+		this.scheduleDisposeFinalization();
+	};
+	private readonly writeProgressKeepalive = (): void => {
+		try {
+			this.writeUnawaitedControl(TERMINAL_PROGRESS_ACTIVE_SEQUENCE);
+		} catch {
+			this.clearProgressInterval();
+		}
+	};
 	private readonly finalizeDisposeAfterEvents = (): void => {
 		this.disposeFinalizationScheduled = false;
 		if (!this.disposed || this.physicalFrameWriteActive || this.controlWritesOutstanding !== 0) return;
@@ -232,7 +244,7 @@ export class ProcessTerminal implements Terminal {
 		process.stdin.resume();
 
 		// Enable bracketed paste mode - terminal will wrap pastes in \x1b[200~ ... \x1b[201~
-		process.stdout.write("\x1b[?2004h");
+		this.writeUnawaitedControl("\x1b[?2004h");
 
 		// Set up resize handler immediately
 		process.stdout.on("resize", this.resizeHandler);
@@ -310,7 +322,7 @@ export class ProcessTerminal implements Terminal {
 		process.stdin.on("data", this.stdinDataHandler!);
 		this.keyboardProtocolPushed = true;
 		this.clearKeyboardProtocolNegotiationBuffer();
-		process.stdout.write(KITTY_KEYBOARD_PROTOCOL_QUERY);
+		this.writeUnawaitedControl(KITTY_KEYBOARD_PROTOCOL_QUERY);
 	}
 
 	private handleKeyboardProtocolNegotiationSequence(
@@ -408,13 +420,13 @@ export class ProcessTerminal implements Terminal {
 
 	private enableModifyOtherKeys(): void {
 		if (this._kittyProtocolActive || this._modifyOtherKeysActive) return;
-		process.stdout.write("\x1b[>4;2m");
+		this.writeUnawaitedControl("\x1b[>4;2m");
 		this._modifyOtherKeysActive = true;
 	}
 
 	private disableModifyOtherKeys(): void {
 		if (!this._modifyOtherKeysActive) return;
-		process.stdout.write("\x1b[>4;0m");
+		this.writeUnawaitedControl("\x1b[>4;0m");
 		this._modifyOtherKeysActive = false;
 	}
 
@@ -460,7 +472,7 @@ export class ProcessTerminal implements Terminal {
 		if (shouldDisableKittyProtocol) {
 			// Disable Kitty keyboard protocol first so any late key releases
 			// do not generate new Kitty escape sequences.
-			process.stdout.write("\x1b[<u");
+			this.writeUnawaitedControl("\x1b[<u");
 			this.keyboardProtocolPushed = false;
 			this._kittyProtocolActive = false;
 			setKittyProtocolActive(false);
@@ -496,18 +508,18 @@ export class ProcessTerminal implements Terminal {
 		if (!this.started) return;
 		this.started = false;
 		if (this.clearProgressInterval()) {
-			process.stdout.write(TERMINAL_PROGRESS_CLEAR_SEQUENCE);
+			this.writeUnawaitedControl(TERMINAL_PROGRESS_CLEAR_SEQUENCE);
 		}
 
 		// Disable bracketed paste mode
-		process.stdout.write("\x1b[?2004l");
+		this.writeUnawaitedControl("\x1b[?2004l");
 
 		const shouldDisableKittyProtocol = this.keyboardProtocolPushed || this._kittyProtocolActive;
 		this.clearKeyboardProtocolNegotiationBuffer();
 
 		// Disable Kitty keyboard protocol if not already done by drainInput()
 		if (shouldDisableKittyProtocol) {
-			process.stdout.write("\x1b[<u");
+			this.writeUnawaitedControl("\x1b[<u");
 			this.keyboardProtocolPushed = false;
 			this._kittyProtocolActive = false;
 			setKittyProtocolActive(false);
@@ -564,7 +576,10 @@ export class ProcessTerminal implements Terminal {
 					callbackPending = false;
 					this.controlWritesOutstanding--;
 					this.scheduleDisposeFinalization();
-					if (error) reject(error);
+					if (error) {
+						this.failFrameOutput(error);
+						reject(error);
+					}
 					else resolve();
 				});
 			} catch (error) {
@@ -573,11 +588,26 @@ export class ProcessTerminal implements Terminal {
 					this.controlWritesOutstanding--;
 					this.scheduleDisposeFinalization();
 				}
+				this.failFrameOutput(error instanceof Error ? error : new Error(String(error)));
 				reject(error);
 			}
 		});
 		this.logWrite(data);
 		return completion;
+	}
+
+	private writeUnawaitedControl(data: string): void {
+		if (this.disposed) throw new Error("Cannot write with a disposed ProcessTerminal");
+		this.controlWritesOutstanding++;
+		try {
+			this.frameOutput.write(data, this.onUnawaitedControlWriteCallback);
+		} catch (error) {
+			this.controlWritesOutstanding--;
+			this.failFrameOutput(error instanceof Error ? error : new Error(String(error)));
+			this.scheduleDisposeFinalization();
+			throw error;
+		}
+		this.logWrite(data);
 	}
 
 	setFrameWriteCompletionListener(listener: TerminalFrameWriteCompletion | undefined): void {
@@ -619,9 +649,9 @@ export class ProcessTerminal implements Terminal {
 		this.frameWriteCanceled = false;
 		this.frameOutput.once("drain", this.onFrameWriteDrain);
 		this.frameOutput.once("close", this.onFrameWriteClose);
-		this.frameWriteStartedListener?.(generation);
 		try {
 			const accepted = this.frameOutput.write(data, this.onFrameWriteCallback);
+			this.frameWriteStartedListener?.(generation);
 			if (!this.physicalFrameWriteActive) return;
 			this.frameWriteReturned = true;
 			if (accepted) {
@@ -734,52 +764,50 @@ export class ProcessTerminal implements Terminal {
 	moveBy(lines: number): void {
 		if (lines > 0) {
 			// Move down
-			process.stdout.write(`\x1b[${lines}B`);
+			this.writeUnawaitedControl(`\x1b[${lines}B`);
 		} else if (lines < 0) {
 			// Move up
-			process.stdout.write(`\x1b[${-lines}A`);
+			this.writeUnawaitedControl(`\x1b[${-lines}A`);
 		}
 		// lines === 0: no movement
 	}
 
 	hideCursor(): void {
-		process.stdout.write("\x1b[?25l");
+		this.writeUnawaitedControl("\x1b[?25l");
 	}
 
 	showCursor(): void {
-		process.stdout.write("\x1b[?25h");
+		this.writeUnawaitedControl("\x1b[?25h");
 	}
 
 	clearLine(): void {
-		process.stdout.write("\x1b[K");
+		this.writeUnawaitedControl("\x1b[K");
 	}
 
 	clearFromCursor(): void {
-		process.stdout.write("\x1b[J");
+		this.writeUnawaitedControl("\x1b[J");
 	}
 
 	clearScreen(): void {
-		process.stdout.write("\x1b[2J\x1b[H"); // Clear screen and move to home (1,1)
+		this.writeUnawaitedControl("\x1b[2J\x1b[H"); // Clear screen and move to home (1,1)
 	}
 
 	setTitle(title: string): void {
 		// OSC 0;title BEL - set terminal window title
-		process.stdout.write(`\x1b]0;${title}\x07`);
+		this.writeUnawaitedControl(`\x1b]0;${title}\x07`);
 	}
 
 	setProgress(active: boolean): void {
 		if (active) {
 			// OSC 9;4;3 - indeterminate progress
-			process.stdout.write(TERMINAL_PROGRESS_ACTIVE_SEQUENCE);
+			this.writeUnawaitedControl(TERMINAL_PROGRESS_ACTIVE_SEQUENCE);
 			if (!this.progressInterval) {
-				this.progressInterval = setInterval(() => {
-					process.stdout.write(TERMINAL_PROGRESS_ACTIVE_SEQUENCE);
-				}, TERMINAL_PROGRESS_KEEPALIVE_MS);
+				this.progressInterval = setInterval(this.writeProgressKeepalive, TERMINAL_PROGRESS_KEEPALIVE_MS);
 			}
 		} else {
 			this.clearProgressInterval();
 			// OSC 9;4;0 - clear progress
-			process.stdout.write(TERMINAL_PROGRESS_CLEAR_SEQUENCE);
+			this.writeUnawaitedControl(TERMINAL_PROGRESS_CLEAR_SEQUENCE);
 		}
 	}
 

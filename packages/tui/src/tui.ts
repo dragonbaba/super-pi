@@ -26,6 +26,13 @@ function asError(error: unknown): Error {
 /** Default deadline for lifecycle flush/restore boundaries, never for ordinary frame writes. */
 export const DEFAULT_TERMINAL_LIFECYCLE_TIMEOUT_MS = 5_000;
 
+class RecoverableTerminalLifecycleTimeoutError extends Error {
+	constructor(label: string, timeoutMs: number) {
+		super(`${label} timed out after ${timeoutMs}ms`);
+		this.name = "RecoverableTerminalLifecycleTimeoutError";
+	}
+}
+
 /**
  * Component interface - all components must implement this
  */
@@ -365,6 +372,7 @@ export abstract class TuiBase extends Container implements TUI {
 	private renderInstrumentation: TuiRenderInstrumentation | undefined;
 	private readonly terminalFrameQueue: TerminalFrameQueue;
 	private terminalFrameError: Error | undefined;
+	private recoverableTerminalControlError: RecoverableTerminalLifecycleTimeoutError | undefined;
 	private stopping = false;
 	private stopPromise: Promise<void> | undefined;
 	private disposePromise: Promise<void> | undefined;
@@ -802,6 +810,11 @@ export abstract class TuiBase extends Container implements TUI {
 		if (this.stopping) return;
 		const recoveredFailure = this.terminalFrameQueue.restartAfterLifecycleAbort();
 		if (recoveredFailure && this.terminalFrameError === recoveredFailure) this.terminalFrameError = undefined;
+		const recoveredControlFailure = this.recoverableTerminalControlError;
+		if (recoveredControlFailure && this.terminalFrameError === recoveredControlFailure) {
+			this.terminalFrameError = undefined;
+		}
+		this.recoverableTerminalControlError = undefined;
 		this.terminalFrameQueue.attach();
 		this.stopped = false;
 		this.stopPromise = undefined;
@@ -968,7 +981,7 @@ export abstract class TuiBase extends Container implements TUI {
 				boundary,
 				new Promise<never>((_, reject) => {
 					timer = setTimeout(() => {
-						const error = new Error(`${label} timed out after ${this.terminalBoundaryTimeoutMs}ms`);
+						const error = new RecoverableTerminalLifecycleTimeoutError(label, this.terminalBoundaryTimeoutMs);
 						onTimeout?.(error);
 						reject(error);
 					}, this.terminalBoundaryTimeoutMs);
@@ -1087,6 +1100,7 @@ export abstract class TuiBase extends Container implements TUI {
 
 	private onTerminalFrameWriteError(error: Error): void {
 		this.terminalFrameError = error;
+		this.recoverableTerminalControlError = undefined;
 		this.renderInstrumentation?.recordTerminalFrameWriteError();
 		this.renderRequested = false;
 		this.cancelRenderTimer();
@@ -1094,7 +1108,18 @@ export abstract class TuiBase extends Container implements TUI {
 	}
 
 	private recordTerminalControlError(error: unknown): void {
-		this.terminalFrameError ??= error instanceof Error ? error : new Error(String(error));
+		const failure = error instanceof Error ? error : new Error(String(error));
+		if (failure instanceof RecoverableTerminalLifecycleTimeoutError) {
+			if (!this.terminalFrameError) {
+				this.terminalFrameError = failure;
+				this.recoverableTerminalControlError = failure;
+			}
+		} else {
+			if (!this.terminalFrameError || this.terminalFrameError === this.recoverableTerminalControlError) {
+				this.terminalFrameError = failure;
+			}
+			this.recoverableTerminalControlError = undefined;
+		}
 		this.renderInstrumentation?.recordTerminalFrameWriteError();
 	}
 
