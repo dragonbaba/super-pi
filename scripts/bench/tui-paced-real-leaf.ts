@@ -74,23 +74,52 @@ let activeMode: { handleEvent(event: BenchEvent): void | Promise<void> };
 
 class SingleTaskScheduler implements EventDeliveryScheduler {
 	private currentTime = 0;
-	private callback: (() => void) | undefined;
+	private callback: ((context: unknown, generation: number) => void) | undefined;
+	private context: unknown;
+	private generation = 0;
+	private firstCallback: ((context: unknown, generation: number) => void) | undefined;
 	private handle = 0;
+	legacyScheduleCalls = 0;
+	callbackIdentities = 0;
 
 	now(): number { return this.currentTime; }
-	schedule(callback: () => void): number {
+	schedule(_callback: () => void): never {
+		this.legacyScheduleCalls++;
+		throw new Error("paced scheduler must use scheduleWithContext");
+	}
+	scheduleWithContext(
+		callback: (context: unknown, generation: number) => void,
+		_delayMs: number,
+		context: unknown,
+		generation: number,
+	): number {
 		if (this.callback) throw new Error("paced scheduler only permits one pending task");
 		this.callback = callback;
+		this.context = context;
+		this.generation = generation;
+		if (!this.firstCallback) {
+			this.firstCallback = callback;
+			this.callbackIdentities = 1;
+		} else if (this.firstCallback !== callback) {
+			this.callbackIdentities++;
+		}
 		return ++this.handle;
 	}
 	cancel(handle: unknown): void {
-		if (handle === this.handle) this.callback = undefined;
+		if (handle !== this.handle) return;
+		this.callback = undefined;
+		this.context = undefined;
+		this.generation = 0;
 	}
 	advanceBy(durationMs: number): void {
 		this.currentTime += durationMs;
 		const callback = this.callback;
+		const context = this.context;
+		const generation = this.generation;
 		this.callback = undefined;
-		callback?.();
+		this.context = undefined;
+		this.generation = 0;
+		if (callback) callback(context, generation);
 	}
 	get pendingTasks(): number { return this.callback ? 1 : 0; }
 }
@@ -140,11 +169,12 @@ function createAssistantMetrics(): AssistantMessageAllocationMetrics {
 	return {
 		updateContentCalls: 0,
 		contentScans: 0,
-		streamingMapAllocations: 0,
 		slotRecordObjects: 0,
 		markdownInstances: 0,
 		spacerInstances: 0,
 		textInstances: 0,
+		currentSpacers: 0,
+		spacerHwm: 0,
 	};
 }
 
@@ -391,9 +421,16 @@ async function measureAssistant(
 			builtInListenerPromises: builtInListenerPromises - promisesBefore,
 			finalSentinelCorrect: rendered.includes(finalSentinel) ? 1 : 0,
 			finalHash: createHash("sha256").update(rendered).digest("hex"),
+			legacyScheduleCalls: scheduler.legacyScheduleCalls,
+			schedulerCallbackIdentities: scheduler.callbackIdentities,
 			schedulerPendingTasks: scheduler.pendingTasks,
 		};
 	});
+	if (scheduler.legacyScheduleCalls !== 0) throw new Error(`${name}: legacy scheduler path was used`);
+	if (scheduler.callbackIdentities !== 1) {
+		throw new Error(`${name}: expected one context-aware scheduler callback identity`);
+	}
+	if (scheduler.pendingTasks !== 0) throw new Error(`${name}: scheduler retained a pending task after flush`);
 	await renderer.flushTerminalFrames();
 	await delivery.dispose();
 	await renderer.dispose({ preserveScreen: true });

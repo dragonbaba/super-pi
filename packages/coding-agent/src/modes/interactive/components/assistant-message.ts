@@ -20,11 +20,12 @@ const EMPTY_STREAMING_MARKDOWN_SLOTS: ReadonlyMap<number, StreamingMarkdownSlot>
 export interface AssistantMessageAllocationMetrics {
 	updateContentCalls: number;
 	contentScans: number;
-	streamingMapAllocations: number;
 	slotRecordObjects: number;
 	markdownInstances: number;
 	spacerInstances: number;
 	textInstances: number;
+	currentSpacers: number;
+	spacerHwm: number;
 }
 
 /**
@@ -322,6 +323,8 @@ export class AssistantMessageComponent extends Container {
 				this.contentContainer.addChild(new Text(theme.fg("error", `Error: ${errorMsg}`), this.outputPad, 0));
 			}
 		}
+		this.streamingSpacers.length = this.nextStreamingSpacer;
+		if (this.allocationMetrics) this.allocationMetrics.currentSpacers = this.nextStreamingSpacer;
 	}
 
 	private acquireStreamingSpacer(): Spacer {
@@ -331,6 +334,9 @@ export class AssistantMessageComponent extends Container {
 			spacer = new Spacer(1);
 			this.streamingSpacers[index] = spacer;
 			if (this.allocationMetrics) this.allocationMetrics.spacerInstances++;
+		}
+		if (this.allocationMetrics && this.nextStreamingSpacer > this.allocationMetrics.spacerHwm) {
+			this.allocationMetrics.spacerHwm = this.nextStreamingSpacer;
 		}
 		return spacer;
 	}

@@ -225,22 +225,36 @@ function createAssistantMetrics(): AssistantMessageAllocationMetrics {
 	return {
 		updateContentCalls: 0,
 		contentScans: 0,
-		streamingMapAllocations: 0,
 		slotRecordObjects: 0,
 		markdownInstances: 0,
 		spacerInstances: 0,
 		textInstances: 0,
+		currentSpacers: 0,
+		spacerHwm: 0,
 	};
 }
 
 function resetAssistantMetrics(metrics: AssistantMessageAllocationMetrics): void {
 	metrics.updateContentCalls = 0;
 	metrics.contentScans = 0;
-	metrics.streamingMapAllocations = 0;
 	metrics.slotRecordObjects = 0;
 	metrics.markdownInstances = 0;
 	metrics.spacerInstances = 0;
 	metrics.textInstances = 0;
+	metrics.currentSpacers = 0;
+	metrics.spacerHwm = 0;
+}
+
+function createSpacerLifecycleMessage(count: number, stopReason: AssistantMessage["stopReason"] = "pending"): AssistantMessage {
+	const content: AssistantMessage["content"] = [];
+	if (count > 0) {
+		for (let index = 1; index < count; index++) {
+			content.push({ type: "thinking", thinking: `thinking-${index}` });
+			content.push({ type: "text", text: `text-${index}` });
+		}
+		if (count === 1) content.push({ type: "text", text: "single" });
+	}
+	return { role: "assistant", content, stopReason, timestamp: 0 } as AssistantMessage;
 }
 
 function createRenderer(): { renderer: InstrumentedMainScreen; reference: TUI; transcript: RetainedContainer } {
@@ -321,11 +335,12 @@ async function measureAssistantFixture(
 	const result = await profileUpdates(name, updates, 0, update, () => ({
 		updateContentCalls: metrics.updateContentCalls,
 		contentScans: metrics.contentScans,
-		newMaps: metrics.streamingMapAllocations,
 		slotRecordObjects: metrics.slotRecordObjects,
 		markdownInstancesCreated: metrics.markdownInstances,
 		spacerInstancesCreated: metrics.spacerInstances,
 		textInstancesCreated: metrics.textInstances,
+		currentSpacers: metrics.currentSpacers,
+		spacerHwm: metrics.spacerHwm,
 		requestRenderCalls: renderer.requestRenderCalls,
 		allocationMetricsAvailable,
 		...getMarkdownStats(component),
@@ -358,7 +373,7 @@ async function measureAssistantFixture(
 			productionAgentSessionBridge: true,
 			productionInteractiveModeHandler: true,
 		},
-		sourceInvariant: { inlineClosuresPerUpdate: 0, perUpdateMapAllocations: 0 },
+		sourceInvariant: { inlineClosuresPerUpdate: 0, updateContentMapConstructorCalls: 0 },
 	};
 }
 
@@ -430,10 +445,45 @@ const structuralMessage = {
 	timestamp: 0,
 } as AssistantMessage;
 structuralAssistant.updateContent(structuralMessage, true);
+const structuralState = structuralAssistant as unknown as {
+	contentContainer: { children: unknown[] };
+	streamingMarkdownSlots: Map<number, unknown>;
+	nextStreamingMarkdownSlots: Map<number, unknown>;
+};
+const structuralChildren = structuralState.contentContainer.children;
+const firstStreamingMap = structuralState.streamingMarkdownSlots;
+const secondStreamingMap = structuralState.nextStreamingMarkdownSlots;
+let childrenIdentityStable = true;
+let mapIdentitiesStable = true;
 resetAssistantMetrics(structuralAssistantMetrics);
 const structuralStarted = performance.now();
-for (let index = 0; index < structuralUpdates; index++) structuralAssistant.updateContent(structuralMessage, true);
+for (let index = 0; index < structuralUpdates; index++) {
+	structuralAssistant.updateContent(structuralMessage, true);
+	if (structuralState.contentContainer.children !== structuralChildren) childrenIdentityStable = false;
+	if (
+		(structuralState.streamingMarkdownSlots !== firstStreamingMap && structuralState.streamingMarkdownSlots !== secondStreamingMap) ||
+		(structuralState.nextStreamingMarkdownSlots !== firstStreamingMap && structuralState.nextStreamingMarkdownSlots !== secondStreamingMap)
+	) {
+		mapIdentitiesStable = false;
+	}
+}
 const structuralElapsedMs = performance.now() - structuralStarted;
+
+const spacerLifecycleMetrics = createAssistantMetrics();
+const spacerLifecycleAssistant = new AssistantMessageComponent(
+	undefined,
+	false,
+	getMarkdownTheme(),
+	"Thinking...",
+	1,
+	[],
+	spacerLifecycleMetrics,
+);
+spacerLifecycleAssistant.updateContent(createSpacerLifecycleMessage(1), true);
+spacerLifecycleAssistant.updateContent(createSpacerLifecycleMessage(1_000), true);
+spacerLifecycleAssistant.updateContent(createSpacerLifecycleMessage(2), true);
+const spacersAfterShrink = spacerLifecycleMetrics.currentSpacers;
+spacerLifecycleAssistant.updateContent(createSpacerLifecycleMessage(0, "stop"), false);
 
 const output = `${JSON.stringify({
 	schemaVersion: 1,
@@ -445,6 +495,23 @@ const output = `${JSON.stringify({
 	samplingInterval,
 	structuralGate: {
 		updates: structuralUpdates,
+		updateContentCalls: structuralAssistantMetrics.updateContentCalls,
+		slotRecordObjects: structuralAssistantMetrics.slotRecordObjects,
+		markdownInstancesCreated: structuralAssistantMetrics.markdownInstances,
+		spacerInstancesCreated: structuralAssistantMetrics.spacerInstances,
+		textInstancesCreated: structuralAssistantMetrics.textInstances,
+		elapsedMs: structuralElapsedMs,
+		mapIdentityCount: mapIdentitiesStable ? 2 : -1,
+		childrenIdentityStable,
+		sourceInvariant: {
+			updateContentMapConstructorCalls: 0,
+		},
+	},
+	spacerLifecycle: {
+		currentSpacers: spacerLifecycleMetrics.currentSpacers,
+		spacerHwm: spacerLifecycleMetrics.spacerHwm,
+		spacersAfterShrink,
+		spacersAfterFinal: spacerLifecycleMetrics.currentSpacers,
 	},
 	fixtures: [		{
 			name: "production-assistant-markdown-stream",
