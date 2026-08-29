@@ -27,7 +27,12 @@ type Scenario =
 	| "interleaved-mutation"
 	| "openai-custom"
 	| "interleaved-openai-custom"
-	| "replacement-object";
+	| "replacement-object"
+	| "cardinality-1"
+	| "cardinality-2"
+	| "cardinality-4"
+	| "cardinality-8"
+	| "cardinality-16";
 type SamplingNode = {
 	callFrame: { functionName: string; url: string; lineNumber: number; columnNumber: number };
 	selfSize: number;
@@ -51,23 +56,46 @@ type AgentHarness = {
 	processEvents(event: BenchEvent): Promise<void>;
 };
 
-const RAW_PER_DELIVERY = 20;
+const RAW_UPDATES_PER_FLUSH_CYCLE = 20;
 let activeMode: { handleEvent(event: BenchEvent): void | Promise<void> };
 let activeSession: SessionHarness;
 let activeAgent: AgentHarness;
 let builtInPromises = 0;
 let snapshotCount = 0;
+let agentSessionDeliveries = 0;
+let interactiveModeDeliveries = 0;
+let streamingComponentUpdates = 0;
+let streamingItemUpdates = 0;
+let extensionObserverPublishes = 0;
+let pendingToolMetadata = 0;
+let pendingToolMetadataHwm = 0;
 
 function deliverSessionEvent(event: BenchEvent): void | Promise<void> {
+	agentSessionDeliveries++;
+	interactiveModeDeliveries++;
 	const result = activeMode.handleEvent(event);
 	if (result && typeof result.then === "function") builtInPromises++;
 	return result;
 }
 function deliverObserverEvent(event: BenchEvent): void { activeSession._handleAgentObserverEvent(event); }
 function snapshotEvent(event: BenchEvent): BenchEvent { snapshotCount++; return activeAgent.snapshotObserverEvent(event); }
-function publishNoopObserver(): void {}
+function publishNoopObserver(): void { extensionObserverPublishes++; }
+function updateStreamingComponent(): void { streamingComponentUpdates++; }
+function updateStreamingItem(): void { streamingItemUpdates++; }
+function recordPendingToolMetadata(pending: number): void {
+	pendingToolMetadata = pending;
+	if (pending > pendingToolMetadataHwm) pendingToolMetadataHwm = pending;
+}
 function failOnRejection(error: unknown): never { throw error; }
 function throwUnusedStream(): never { throw new Error("provider stream is not used by this benchmark"); }
+
+const STREAMING_COMPONENT = { updateContent: updateStreamingComponent };
+const STREAMING_ITEM = { updateVersion: updateStreamingItem };
+
+function cardinalityToolCount(scenario: Scenario): number | undefined {
+	if (!scenario.startsWith("cardinality-")) return undefined;
+	return Number(scenario.slice("cardinality-".length));
+}
 
 class NoopTerminal implements Terminal {
 	readonly kittyProtocolActive = false;
@@ -203,15 +231,21 @@ async function profileScenario(scenario: Scenario): Promise<Record<string, unkno
 	renderer.setRenderInstrumentation(instrumentation);
 	renderer.addChild(transcript);
 	const reference = createInteractiveTuiReference(() => renderer);
-	const toolCount = scenario === "interleaved-mutation" || scenario === "interleaved-openai-custom" ? 2 : 1;
+	const cardinality = cardinalityToolCount(scenario);
+	const toolCount = cardinality ?? (
+		scenario === "interleaved-mutation" || scenario === "interleaved-openai-custom" ? 2 : 1
+	);
+	const contentOffset = cardinality === undefined ? 0 : 1;
+	const rawUpdatesPerFlushCycle = cardinality ?? RAW_UPDATES_PER_FLUSH_CYCLE;
 	const metrics = new Array<ToolExecutionAllocationMetrics>(toolCount);
 	const args = new Array<Record<string, unknown>>(toolCount);
-	const content = new Array<Record<string, unknown>>(toolCount);
+	const content = new Array<Record<string, unknown>>();
+	if (cardinality !== undefined) content.push({ type: "text", text: "m".repeat(64 * 1024) });
 	const pendingTools = new Map<string, ToolExecutionComponent>();
 	for (let index = 0; index < toolCount; index++) {
 		metrics[index] = createMetrics();
-		args[index] = { value: 0 };
-		content[index] = { type: "toolCall", id: `tool-${index}`, name: `tool-${index}`, arguments: args[index], partialArgs: "0" };
+		args[index] = { value: cardinality === undefined ? 0 : `${index}:`.padEnd(4 * 1024, "a") };
+		content.push({ type: "toolCall", id: `tool-${index}`, name: `tool-${index}`, arguments: args[index], partialArgs: "0" });
 		const component = new ToolExecutionComponent(`tool-${index}`, `tool-${index}`, args[index], { allocationMetrics: metrics[index] }, undefined, reference, process.cwd());
 		pendingTools.set(`tool-${index}`, component);
 		transcript.addRetainedChild(component, { id: `tool-${index}`, version: 0 });
@@ -219,9 +253,9 @@ async function profileScenario(scenario: Scenario): Promise<Record<string, unkno
 	activeMode = Object.assign(Object.create(InteractiveMode.prototype), {
 		isInitialized: true,
 		footer: { invalidate(): void {} },
-		streamingComponent: { updateContent(): void {} },
+		streamingComponent: STREAMING_COMPONENT,
 		streamingMessage: undefined,
-		streamingItem: { updateVersion(): void {} },
+		streamingItem: STREAMING_ITEM,
 		streamingItemVersion: 0,
 		pendingTools,
 		streamedToolIds: new Set(pendingTools.keys()),
@@ -234,7 +268,10 @@ async function profileScenario(scenario: Scenario): Promise<Record<string, unkno
 	session._eventListeners = [{ listener: deliverSessionEvent, criticalAgentEnd: false, observeRejection: failOnRejection }];
 	session._extensionObserverDelivery = { publishLatest: publishNoopObserver };
 	activeSession = session;
-	const agent = new Agent({ streamFn: throwUnusedStream as never });
+	const agent = new Agent({
+		streamFn: throwUnusedStream as never,
+		eventInstrumentation: { onPendingToolMetadata: recordPendingToolMetadata },
+	});
 	activeAgent = agent as unknown as AgentHarness;
 	activeAgent.activeRun = { abortController: new AbortController() };
 	const scheduler = new SingleTaskScheduler();
@@ -244,25 +281,26 @@ async function profileScenario(scenario: Scenario): Promise<Record<string, unkno
 	let updateIndex = 0;
 	const sentinels = new Array<string>(toolCount).fill("");
 	const deliverCycle = async (): Promise<void> => {
-		for (let offset = 0; offset < RAW_PER_DELIVERY; offset++) {
-			const toolIndex = toolCount === 2 ? updateIndex & 1 : 0;
+		for (let offset = 0; offset < rawUpdatesPerFlushCycle; offset++) {
+			const toolIndex = cardinality !== undefined ? offset : (toolCount === 2 ? updateIndex & 1 : 0);
 			const sentinel = `${scenario}:${updateIndex++}`;
+			const argumentValue = cardinality === undefined ? sentinel : sentinel.padEnd(4 * 1024, "s");
 			sentinels[toolIndex] = sentinel;
 			let generation: number | undefined;
 			if (scenario === "replacement-object" || scenario === "openai-custom" || scenario === "interleaved-openai-custom") {
-				args[toolIndex] = { value: sentinel };
-				content[toolIndex]!.arguments = args[toolIndex];
+				args[toolIndex] = { value: argumentValue };
+				content[toolIndex + contentOffset]!.arguments = args[toolIndex];
 				if (scenario === "openai-custom" || scenario === "interleaved-openai-custom") {
 					generation = Math.floor((updateIndex - 1) / toolCount) + 1;
 				}
 			} else {
-				args[toolIndex]!.value = sentinel;
-				content[toolIndex]!.partialArgs = String(updateIndex);
+				args[toolIndex]!.value = argumentValue;
+				content[toolIndex + contentOffset]!.partialArgs = String(updateIndex);
 			}
 			await activeAgent.processEvents(messageEvent(
 				scenario === "replacement-object" ? "pi-messages" : "openai-completions",
 				content,
-				toolIndex,
+				toolIndex + contentOffset,
 				"toolcall_delta",
 				sentinel,
 				generation,
@@ -272,7 +310,7 @@ async function profileScenario(scenario: Scenario): Promise<Record<string, unkno
 		await delivery.flushAllLatest();
 		renderer.renderNow();
 	};
-	for (let index = 0; index < Math.ceil(warmup / RAW_PER_DELIVERY); index++) await deliverCycle();
+	for (let index = 0; index < Math.ceil(warmup / rawUpdatesPerFlushCycle); index++) await deliverCycle();
 	for (const item of metrics) resetMetrics(item);
 	instrumentation.reset();
 	renderer.requestRenderCalls = 0;
@@ -280,6 +318,13 @@ async function profileScenario(scenario: Scenario): Promise<Record<string, unkno
 	terminal.frameWrites = 0;
 	builtInPromises = 0;
 	snapshotCount = 0;
+	agentSessionDeliveries = 0;
+	interactiveModeDeliveries = 0;
+	streamingComponentUpdates = 0;
+	streamingItemUpdates = 0;
+	extensionObserverPublishes = 0;
+	pendingToolMetadata = 0;
+	pendingToolMetadataHwm = 0;
 	const statsBefore = delivery.stats;
 	globalThis.gc!();
 	globalThis.gc!();
@@ -299,7 +344,7 @@ async function profileScenario(scenario: Scenario): Promise<Record<string, unkno
 	inspector.connect();
 	await inspector.post("HeapProfiler.enable");
 	await inspector.post("HeapProfiler.startSampling", { samplingInterval, includeObjectsCollectedByMajorGC: true, includeObjectsCollectedByMinorGC: true });
-	const measuredCycles = Math.ceil(rawUpdates / RAW_PER_DELIVERY);
+	const measuredCycles = Math.ceil(rawUpdates / rawUpdatesPerFlushCycle);
 	const durations = new Array<number>(measuredCycles);
 	for (let index = 0; index < measuredCycles; index++) {
 		const started = performance.now();
@@ -308,6 +353,13 @@ async function profileScenario(scenario: Scenario): Promise<Record<string, unkno
 	}
 	const measuredStats = delivery.stats;
 	const measuredSnapshotCount = snapshotCount;
+	const measuredAgentSessionDeliveries = agentSessionDeliveries;
+	const measuredInteractiveModeDeliveries = interactiveModeDeliveries;
+	const measuredStreamingComponentUpdates = streamingComponentUpdates;
+	const measuredStreamingItemUpdates = streamingItemUpdates;
+	const measuredExtensionObserverPublishes = extensionObserverPublishes;
+	const measuredRequestRenderCalls = renderer.requestRenderCalls;
+	const measuredToolUpdateArgsCalls = sumMetric(metrics, "updateDisplayCalls");
 	const stopped = await inspector.post("HeapProfiler.stopSampling");
 	await inspector.post("HeapProfiler.disable");
 	inspector.disconnect();
@@ -318,7 +370,7 @@ async function profileScenario(scenario: Scenario): Promise<Record<string, unkno
 		await activeAgent.processEvents(messageEvent(
 			scenario === "replacement-object" ? "pi-messages" : "openai-completions",
 			content,
-			toolIndex,
+			toolIndex + contentOffset,
 			"toolcall_end",
 			"",
 		));
@@ -354,8 +406,25 @@ async function profileScenario(scenario: Scenario): Promise<Record<string, unkno
 	}
 	const actualDeliveries = measuredStats.delivered - statsBefore.delivered;
 	const actualDeliveriesPerFlushCycle = actualDeliveries / measuredCycles;
-	if (actualDeliveriesPerFlushCycle !== toolCount) {
-		throw new Error(`${scenario}: expected ${toolCount} deliveries per flush cycle, received ${actualDeliveriesPerFlushCycle}`);
+	if (actualDeliveriesPerFlushCycle !== 1) {
+		throw new Error(`${scenario}: expected one message delivery per flush cycle, received ${actualDeliveriesPerFlushCycle}`);
+	}
+	if (measuredSnapshotCount !== measuredCycles) {
+		throw new Error(`${scenario}: expected one full message snapshot per flush cycle`);
+	}
+	if (
+		measuredAgentSessionDeliveries !== measuredCycles ||
+		measuredInteractiveModeDeliveries !== measuredCycles ||
+		measuredStreamingComponentUpdates !== measuredCycles ||
+		measuredRequestRenderCalls !== measuredCycles
+	) {
+		throw new Error(`${scenario}: message delivery cardinality exceeded one per flush cycle`);
+	}
+	if (measuredToolUpdateArgsCalls !== measuredCycles * toolCount) {
+		throw new Error(`${scenario}: expected ${toolCount} tool updates per flush cycle`);
+	}
+	if (pendingToolMetadataHwm > toolCount || pendingToolMetadata !== 0) {
+		throw new Error(`${scenario}: pending tool metadata exceeded its bounded tool cardinality`);
 	}
 	if (scheduler.pendingTasks !== 0 || statsAfter.pendingKeys !== 0) {
 		throw new Error(`${scenario}: delivery state was not released`);
@@ -377,7 +446,8 @@ async function profileScenario(scenario: Scenario): Promise<Record<string, unkno
 			retainedViewport: true,
 			mainFrameQueue: true,
 		},
-		rawUpdates: measuredCycles * RAW_PER_DELIVERY,
+		rawUpdates: measuredCycles * rawUpdatesPerFlushCycle,
+		rawUpdatesPerFlushCycle,
 		coalescedUpdates: measuredStats.coalesced - statsBefore.coalesced,
 		actualDeliveries,
 		actualDeliveriesPerFlushCycle,
@@ -387,7 +457,7 @@ async function profileScenario(scenario: Scenario): Promise<Record<string, unkno
 		metrics: {
 			cpuP50MsPerFlushCycle: percentile(sorted, 0.5),
 			cpuP95MsPerFlushCycle: percentile(sorted, 0.95),
-			sampledAllocationBytesPerRawUpdate: sampled.sampledBytes / (measuredCycles * RAW_PER_DELIVERY),
+			sampledAllocationBytesPerRawUpdate: sampled.sampledBytes / (measuredCycles * rawUpdatesPerFlushCycle),
 			sampledAllocationBytesPerFlushCycle: sampled.sampledBytes / measuredCycles,
 			sampledAllocationBytesPerActualDelivery: sampled.sampledBytes / Math.max(1, actualDeliveries),
 			minorGcCount,
@@ -402,6 +472,16 @@ async function profileScenario(scenario: Scenario): Promise<Record<string, unkno
 			callRendererCalls: sumMetric(metrics, "callRendererCalls"),
 			argsSerializations: sumMetric(metrics, "argsSerializations"),
 			requestRenderCalls: renderer.requestRenderCalls,
+			fullMessageSnapshotsPerFlush: measuredSnapshotCount / measuredCycles,
+			agentSessionDeliveriesPerFlush: measuredAgentSessionDeliveries / measuredCycles,
+			interactiveModeDeliveriesPerFlush: measuredInteractiveModeDeliveries / measuredCycles,
+			streamingComponentUpdatesPerFlush: measuredStreamingComponentUpdates / measuredCycles,
+			streamingItemUpdatesPerFlush: measuredStreamingItemUpdates / measuredCycles,
+			requestRenderPerFlush: measuredRequestRenderCalls / measuredCycles,
+			toolUpdateArgsCallsPerFlush: measuredToolUpdateArgsCalls / measuredCycles,
+			extensionObserverPublishesPerFlush: measuredExtensionObserverPublishes / measuredCycles,
+			pendingToolMetadataHwm,
+			pendingToolMetadataAfterFlush: pendingToolMetadata,
 			doRenderCalls: renderer.doRenderCalls,
 			frameWrites: terminal.frameWrites,
 			builtInPromises,
@@ -411,6 +491,10 @@ async function profileScenario(scenario: Scenario): Promise<Record<string, unkno
 			schedulerPendingTasks: scheduler.pendingTasks,
 			perTool,
 		},
+		measurementWindow: {
+			cpuAndAllocation: "paced raw updates through completed flush cycles",
+			finalization: "after sampling; structural evidence only",
+		},
 		sourceInvariant: { inlineClosuresPerUpdate: 0, promiseTailsPerUpdate: 0, promiseArraysPerUpdate: 0 },
 		topAllocationSites: sampled.top,
 	};
@@ -419,7 +503,18 @@ async function profileScenario(scenario: Scenario): Promise<Record<string, unkno
 if (typeof globalThis.gc !== "function") throw new Error("tui-paced-streamed-tool-args requires --expose-gc");
 initTheme("dark");
 const results = [];
-for (const scenario of ["single-mutation", "interleaved-mutation", "openai-custom", "interleaved-openai-custom", "replacement-object"] as const) {
+for (const scenario of [
+	"single-mutation",
+	"interleaved-mutation",
+	"openai-custom",
+	"interleaved-openai-custom",
+	"replacement-object",
+	"cardinality-1",
+	"cardinality-2",
+	"cardinality-4",
+	"cardinality-8",
+	"cardinality-16",
+] as const) {
 	results.push(await profileScenario(scenario));
 }
 process.stdout.write(`${JSON.stringify({
@@ -429,6 +524,6 @@ process.stdout.write(`${JSON.stringify({
 	node: process.version,
 	platform: process.platform,
 	arch: process.arch,
-	rawPerDelivery: RAW_PER_DELIVERY,
+	rawUpdatesPerFlushCycle: RAW_UPDATES_PER_FLUSH_CYCLE,
 	results,
 }, null, 2)}\n`);

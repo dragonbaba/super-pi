@@ -130,19 +130,33 @@ test("custom OpenAI generations stay on host events and are removed before persi
 	assert.match(types, /Host-only custom\/grammar argument generation; never persisted or sent on wire/);
 });
 
-test("tool finalization uses per-tool latest identity and one component boundary", () => {
+test("tool finalization uses one message lane with bounded per-tool metadata", () => {
 	const agent = readFileSync("packages/agent/src/agent.ts", "utf8");
-	assert.match(agent, /toolMessageLatestKeys\.get\(content\.id\)/);
-	assert.match(agent, /message:tool:\$\{content\.id\}/);
-	assert.match(agent, /toolMessageLatestKeys\.delete\(content\.id\)/);
+	assert.match(agent, /pendingChangedToolUpdates\.get\(content\.id\)/);
+	assert.match(agent, /if \(event\.type === "message_update"\) return "message"/);
+	assert.match(agent, /if \(record\.finalized\) return pending/);
+	assert.match(agent, /pendingChangedToolUpdates\.clear\(\)/);
 	const interactive = readFileSync("packages/coding-agent/src/modes/interactive/interactive-mode.ts", "utf8");
 	const messageUpdate = interactive.slice(interactive.indexOf('case "message_update"'), interactive.indexOf('case "message_end"'));
-	assert.match(messageUpdate, /this\.streamingMessage\.content\[assistantUpdate\.contentIndex\]/);
-	assert.match(messageUpdate, /assistantUpdate\.type === "toolcall_end"/);
+	assert.match(messageUpdate, /for \(const update of changedToolUpdates\)/);
+	assert.match(messageUpdate, /update\.contentIndex, update\.generation, update\.finalized/);
 	assert.doesNotMatch(messageUpdate, /for \(let contentIndex/);
 	assert.match(interactive, /if \(changed\) this\.advanceActiveToolVersion\(component\)/);
 	const tool = readFileSync("packages/coding-agent/src/modes/interactive/components/tool-execution.ts", "utf8");
 	assert.match(tool, /private argsStreamFinalized = false/);
 	assert.match(tool, /toolArgsFinalizations\+\+/);
 	assert.match(tool, /\): boolean \{/);
+});
+
+test("paced streamed-args benchmark reports flush-cycle cardinality without legacy delivery fields", () => {
+	const source = readFileSync("scripts/bench/tui-paced-streamed-tool-args.ts", "utf8");
+	assert.doesNotMatch(source, /RAW_PER_DELIVERY|rawPerDelivery/);
+	assert.match(source, /RAW_UPDATES_PER_FLUSH_CYCLE/);
+	assert.match(source, /rawUpdatesPerFlushCycle/);
+	for (const toolCount of [1, 2, 4, 8, 16]) assert.match(source, new RegExp(`cardinality-${toolCount}`));
+	assert.match(source, /fullMessageSnapshotsPerFlush/);
+	assert.match(source, /agentSessionDeliveriesPerFlush/);
+	assert.match(source, /interactiveModeDeliveriesPerFlush/);
+	assert.match(source, /toolUpdateArgsCallsPerFlush/);
+	assert.match(source, /finalization: "after sampling; structural evidence only"/);
 });
