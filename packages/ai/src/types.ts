@@ -92,6 +92,8 @@ export type ThinkingLevelMap = Partial<Record<ModelThinkingLevel, string | null>
  * it while advancing a host-only numeric generation. Their final
  * `toolcall_end` event is a finalization boundary: the host must repaint once
  * even when the adapter has already removed its transient generation field.
+ * A generation and finalization apply only to the tool block identified by
+ * the event's `contentIndex`; generations are independent between tools.
  * `replacement-object` adapters replace the arguments object whenever its
  * semantic value changes.
  *
