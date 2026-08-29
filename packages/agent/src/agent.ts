@@ -258,8 +258,14 @@ class AgentEventDeliveryDispatcher extends EventDeliveryDispatcher<AgentEvent, s
 		this.owner.releaseObserverEvent(key, event);
 	}
 
-	protected override onDeliveryDiagnostic(diagnostic: EventDeliveryDiagnostic): void {
-		this.diagnosticListener?.(diagnostic);
+	protected override onObserverError(error: unknown): void {
+		const listener = this.diagnosticListener;
+		if (listener) listener({ type: "observer-error", error });
+	}
+
+	protected override onSlowObserver(durationMs: number): void {
+		const listener = this.diagnosticListener;
+		if (listener) listener({ type: "observer-slow", durationMs });
 	}
 }
 
