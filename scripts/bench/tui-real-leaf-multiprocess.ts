@@ -149,7 +149,7 @@ for (const fixture of fixtureNames) {
 
 const output = `${JSON.stringify({
 	schemaVersion: 1,
-	benchmark: "tui-real-leaf-multiprocess",
+	benchmark: "tui-assistant-leaf-multiprocess",
 	commit: currentCommit(),
 	worktreeDirty: spawnSync("git", ["status", "--porcelain"], { encoding: "utf8" }).stdout.trim().length > 0,
 	node: process.version,

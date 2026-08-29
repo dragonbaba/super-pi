@@ -329,12 +329,6 @@ process.stdout.write(`${JSON.stringify({
 	commit: currentCommit(),
 	fixtureClass: "render-plus-queue",
 	fixture: fixtureArgument,
-	benchmarkLayer:
-		fixtureArgument === "production-main"
-			? "production-main-framework"
-			: fixtureArgument === "production-alt"
-				? "production-alt-framework"
-				: "direct-main",
 	items: itemCount,
 	width,
 	height,

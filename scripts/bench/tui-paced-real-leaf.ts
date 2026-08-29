@@ -8,15 +8,10 @@ import {
 	type EventDeliveryScheduler,
 } from "../../packages/agent/src/event-delivery.ts";
 import { AgentSession } from "../../packages/coding-agent/src/core/agent-session.ts";
-import type { ToolDefinition } from "../../packages/coding-agent/src/core/extensions/types.ts";
 import {
 	AssistantMessageComponent,
 	type AssistantMessageAllocationMetrics,
 } from "../../packages/coding-agent/src/modes/interactive/components/assistant-message.ts";
-import {
-	ToolExecutionComponent,
-	type ToolExecutionAllocationMetrics,
-} from "../../packages/coding-agent/src/modes/interactive/components/tool-execution.ts";
 import {
 	createInteractiveTuiReference,
 	InteractiveMode,
@@ -26,7 +21,7 @@ import { RetainedContainer } from "../../packages/tui/src/components/retained-it
 import { TuiRenderInstrumentation } from "../../packages/tui/src/render-instrumentation.ts";
 import type { Terminal } from "../../packages/tui/src/terminal.ts";
 import { Text } from "../../packages/tui/src/components/text.ts";
-import type { Component, TUI } from "../../packages/tui/src/tui.ts";
+import type { TUI } from "../../packages/tui/src/tui.ts";
 import { TuiMainScreen } from "../../packages/tui/src/tui-main-screen.ts";
 import { currentCommit, readIntegerOption } from "./benchmark.ts";
 
@@ -141,23 +136,6 @@ class InstrumentedMainScreen extends TuiMainScreen {
 	}
 }
 
-function createToolMetrics(): ToolExecutionAllocationMetrics {
-	return {
-		updateDisplayCalls: 0,
-		callRendererCalls: 0,
-		resultRendererCalls: 0,
-		componentCreations: 0,
-		renderContextObjects: 0,
-		internalWrapperObjects: 0,
-		imageScans: 0,
-		argsSerializations: 0,
-		toolArgsGenerationUpdates: 0,
-		toolArgsReplacementUpdates: 0,
-		toolArgsSemanticFallbackComparisons: 0,
-		toolArgsMissingGenerationDiagnostics: 0,
-	};
-}
-
 function createAssistantMetrics(): AssistantMessageAllocationMetrics {
 	return {
 		updateContentCalls: 0,
@@ -170,7 +148,7 @@ function createAssistantMetrics(): AssistantMessageAllocationMetrics {
 	};
 }
 
-function resetMetrics(metrics: ToolExecutionAllocationMetrics | AssistantMessageAllocationMetrics): void {
+function resetMetrics(metrics: AssistantMessageAllocationMetrics): void {
 	for (const key of Object.keys(metrics) as Array<keyof typeof metrics>) metrics[key] = 0;
 }
 
@@ -326,102 +304,6 @@ async function profilePaced(
 	};
 }
 
-async function measureTool(
-	name: string,
-	toolName: string,
-	definition: ToolDefinition<any, any> | undefined,
-	historyItems: number,
-	deliveries: number,
-	warmupDeliveries: number,
-): Promise<Record<string, unknown>> {
-	const { renderer, reference, transcript, instrumentation, terminal } = createRenderer(historyItems);
-	const metrics = createToolMetrics();
-	const component = new ToolExecutionComponent(
-		toolName,
-		"paced-tool",
-		{ value: 1 },
-		{ allocationMetrics: metrics },
-		definition,
-		reference,
-		process.cwd(),
-	);
-	transcript.addRetainedChild(component, { id: "paced-tool", version: 0 });
-	const mode = Object.create(InteractiveMode.prototype) as { handleEvent(event: BenchEvent): void } & Record<string, unknown>;
-	Object.assign(mode, {
-		isInitialized: true,
-		footer: { invalidate(): void {} },
-		pendingTools: new Map([["paced-tool", component]]),
-		deferredReadExecutions: new Map(),
-		chatContainer: transcript,
-		ui: reference,
-	});
-	const session = createSession(mode);
-	const scheduler = new SingleTaskScheduler();
-	const delivery = createDelivery(session, scheduler);
-	renderer.renderNow();
-	resetMetrics(metrics);
-	instrumentation.reset();
-	renderer.requestRenderCalls = 0;
-	renderer.doRenderCalls = 0;
-	terminal.frameWrites = 0;
-	let statsBefore = delivery.stats;
-	let snapshotsBefore = snapshotCount;
-	let promisesBefore = builtInListenerPromises;
-	let finalSentinel = "";
-	const runDelivery = async (firstRawIndex: number): Promise<void> => {
-		for (let offset = 0; offset < RAW_PER_DELIVERY; offset++) {
-			const index = firstRawIndex + offset;
-			finalSentinel = `tool-${index}`;
-			delivery.publishLatest("tool:paced-tool", {
-				type: "tool_execution_update",
-				toolCallId: "paced-tool",
-				toolName,
-				partialResult: { content: [{ type: "text", text: finalSentinel }] },
-			});
-		}
-		scheduler.advanceBy(16);
-		await delivery.flushLatest("tool:paced-tool");
-		renderer.renderNow();
-	};
-	const result = await profilePaced(name, deliveries, warmupDeliveries, runDelivery, () => {
-		resetMetrics(metrics);
-		instrumentation.reset();
-		renderer.requestRenderCalls = 0;
-		renderer.doRenderCalls = 0;
-		terminal.frameWrites = 0;
-		statsBefore = delivery.stats;
-		snapshotsBefore = snapshotCount;
-		promisesBefore = builtInListenerPromises;
-	}, () => {
-		const stats = delivery.stats;
-		const render = instrumentation.snapshot();
-		const finalText = (component as unknown as { result?: { content?: Array<{ text?: string }> } })
-			.result?.content?.[0]?.text ?? "";
-		return {
-			historyItems,
-			coalescedUpdates: stats.coalesced - statsBefore.coalesced,
-			deliveries: stats.delivered - statsBefore.delivered,
-			snapshotCount: snapshotCount - snapshotsBefore,
-			updateDisplayCalls: metrics.updateDisplayCalls,
-			requestRenderCalls: renderer.requestRenderCalls,
-			doRenderCalls: renderer.doRenderCalls,
-			frameWrites: terminal.frameWrites,
-			activeItemRenders: render.activeItemRenders,
-			completedItemRenders: render.completedItemRenders,
-			viewportItemVisits: render.viewportItemVisits,
-			builtInListenerPromises: builtInListenerPromises - promisesBefore,
-			extensionVisibleRenderObjects: metrics.internalWrapperObjects,
-			finalSentinelCorrect: finalText === finalSentinel ? 1 : 0,
-			finalHash: createHash("sha256").update(finalText).digest("hex"),
-			schedulerPendingTasks: scheduler.pendingTasks,
-		};
-	});
-	await renderer.flushTerminalFrames();
-	await delivery.dispose();
-	await renderer.dispose({ preserveScreen: true });
-	return result;
-}
-
 async function measureAssistant(
 	name: string,
 	thinking: boolean,
@@ -471,7 +353,11 @@ async function measureAssistant(
 					: [{ type: "text", text: finalSentinel }],
 				timestamp: index,
 			} as AssistantMessage;
-			delivery.publishLatest("message", { type: "message_update", message });
+			delivery.publishLatest("message", {
+				type: "message_update",
+				message,
+				assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "", partial: message },
+			});
 		}
 		scheduler.advanceBy(16);
 		await delivery.flushLatest("message");
@@ -520,30 +406,14 @@ const samplingInterval = readIntegerOption("--sampling-interval", 8_192);
 const deliveries = readIntegerOption("--deliveries", 1_000);
 const warmupDeliveries = readIntegerOption("--warmup-deliveries", 100);
 const historyItems = readIntegerOption("--history-items", 5_000);
-const customCounters = { calls: 0 };
-const customDefinition = {
-	name: "paced-custom",
-	label: "Paced custom",
-	description: "Paced benchmark renderer",
-	parameters: { type: "object", properties: {} },
-	renderResult(result): Component {
-		customCounters.calls++;
-		return new Text(result.content[0]?.text ?? "", 0, 0);
-	},
-} as ToolDefinition<any, any>;
-
 const fixtures = [
-	await measureTool("generic-tool-progress-history-500", "paced-generic", undefined, 500, deliveries, warmupDeliveries),
-	await measureTool("generic-tool-progress", "paced-generic", undefined, historyItems, deliveries, warmupDeliveries),
-	await measureTool("built-in-tool-progress", "read", undefined, historyItems, deliveries, warmupDeliveries),
-	await measureTool("custom-tool-progress", "paced-custom", customDefinition, historyItems, deliveries, warmupDeliveries),
 	await measureAssistant("assistant-plain-text", false, historyItems, deliveries, warmupDeliveries),
 	await measureAssistant("assistant-thinking", true, historyItems, deliveries, warmupDeliveries),
 ];
 
 process.stdout.write(`${JSON.stringify({
 	schemaVersion: 1,
-	benchmark: "tui-paced-real-leaf",
+	benchmark: "tui-paced-assistant-leaf",
 	commit: currentCommit(),
 	node: process.version,
 	platform: process.platform,
@@ -554,7 +424,6 @@ process.stdout.write(`${JSON.stringify({
 	fixtures,
 	sourceInvariant: {
 		builtInOrdinaryDeliveryPromises: 0,
-		toolWrapperObjects: 0,
 		inlineClosures: 0,
 		promiseTails: 0,
 		promiseArrays: 0,

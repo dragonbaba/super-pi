@@ -17,9 +17,9 @@ npm run --silent -- bench:tui-input-lifecycle
 npm run --silent -- bench:tui-interactive-reference-allocations
 npm run --silent -- bench:tui-tool-leaf-allocations
 npm run --silent -- bench:tui-paced-tool-leaf
-npm run --silent -- bench:tui-real-leaf-allocations -- --updates 20000 --warmup 5000 --structural-updates 100000
-npm run --silent -- bench:tui-real-leaf-multiprocess -- --processes 5 --updates 20000 --warmup 5000
-npm run --silent -- bench:tui-paced-real-leaf
+npm run --silent -- bench:tui-assistant-leaf-allocations -- --updates 20000 --warmup 5000 --structural-updates 100000
+npm run --silent -- bench:tui-assistant-leaf-multiprocess -- --processes 5 --updates 20000 --warmup 5000
+npm run --silent -- bench:tui-paced-assistant-leaf
 npm run --silent -- bench:tui-frame-queue
 npm run --silent -- bench:prefix
 npm run --silent -- bench:tool-output

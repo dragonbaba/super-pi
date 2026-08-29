@@ -12,17 +12,11 @@ import {
 	AssistantMessageComponent,
 	type AssistantMessageAllocationMetrics,
 } from "../../packages/coding-agent/src/modes/interactive/components/assistant-message.ts";
-import {
-	ToolExecutionComponent,
-	type ToolExecutionAllocationMetrics,
-} from "../../packages/coding-agent/src/modes/interactive/components/tool-execution.ts";
+import { ToolExecutionComponent } from "../../packages/coding-agent/src/modes/interactive/components/tool-execution.ts";
 import { getMarkdownTheme, initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
-import type { ToolDefinition } from "../../packages/coding-agent/src/core/extensions/types.ts";
 import { RetainedContainer } from "../../packages/tui/src/components/retained-item.ts";
-import { getCapabilities, setCapabilities } from "../../packages/tui/src/terminal-image.ts";
 import type { Terminal } from "../../packages/tui/src/terminal.ts";
-import { Text } from "../../packages/tui/src/components/text.ts";
-import type { Component, TUI } from "../../packages/tui/src/tui.ts";
+import type { TUI } from "../../packages/tui/src/tui.ts";
 import { TuiMainScreen } from "../../packages/tui/src/tui-main-screen.ts";
 import { currentCommit, readIntegerOption } from "./benchmark.ts";
 
@@ -227,38 +221,6 @@ async function profileUpdates(
 	};
 }
 
-function createToolMetrics(): ToolExecutionAllocationMetrics {
-	return {
-		updateDisplayCalls: 0,
-		callRendererCalls: 0,
-		resultRendererCalls: 0,
-		componentCreations: 0,
-		renderContextObjects: 0,
-		internalWrapperObjects: 0,
-		imageScans: 0,
-		argsSerializations: 0,
-		toolArgsGenerationUpdates: 0,
-		toolArgsReplacementUpdates: 0,
-		toolArgsSemanticFallbackComparisons: 0,
-		toolArgsMissingGenerationDiagnostics: 0,
-	};
-}
-
-function resetToolMetrics(metrics: ToolExecutionAllocationMetrics): void {
-	metrics.updateDisplayCalls = 0;
-	metrics.callRendererCalls = 0;
-	metrics.resultRendererCalls = 0;
-	metrics.componentCreations = 0;
-	metrics.renderContextObjects = 0;
-	metrics.internalWrapperObjects = 0;
-	metrics.imageScans = 0;
-	metrics.argsSerializations = 0;
-	metrics.toolArgsGenerationUpdates = 0;
-	metrics.toolArgsReplacementUpdates = 0;
-	metrics.toolArgsSemanticFallbackComparisons = 0;
-	metrics.toolArgsMissingGenerationDiagnostics = 0;
-}
-
 function createAssistantMetrics(): AssistantMessageAllocationMetrics {
 	return {
 		updateContentCalls: 0,
@@ -287,169 +249,6 @@ function createRenderer(): { renderer: InstrumentedMainScreen; reference: TUI; t
 	renderer.addChild(transcript);
 	const reference = createInteractiveTuiReference(() => renderer);
 	return { renderer, reference, transcript };
-}
-
-function createToolDefinition(counters: { call: number; result: number; components: number }): ToolDefinition<any, any> {
-	return {
-		name: "allocation-custom",
-		label: "Allocation custom",
-		description: "Allocation benchmark renderer",
-		parameters: { type: "object", properties: {} },
-		renderCall(args): Component {
-			counters.call++;
-			counters.components++;
-			return new Text(`call:${args.value ?? ""}`, 0, 0);
-		},
-		renderResult(result): Component {
-			counters.result++;
-			counters.components++;
-			return new Text(result.content[0]?.text ?? "", 0, 0);
-		},
-	} as ToolDefinition<any, any>;
-}
-
-async function measureToolFixture(
-	name: string,
-	toolName: string,
-	definition: ToolDefinition<any, any> | undefined,
-	updates: number,
-	warmup: number,
-	mode: "constant" | "growing" | "image",
-): Promise<unknown> {
-	const { renderer, reference, transcript } = createRenderer();
-	const metrics = createToolMetrics();
-	const rendererCounters = { call: 0, result: 0, components: 0 };
-	const selectedDefinition = definition ?? (name === "custom-extension-renderer" ? createToolDefinition(rendererCounters) : undefined);
-	const component = new ToolExecutionComponent(
-		toolName,
-		"tool-1",
-		{ value: 1 },
-		{ allocationMetrics: instrumentComponents ? metrics : undefined, showImages: mode === "image" },
-		selectedDefinition,
-		reference,
-		process.cwd(),
-	);
-	transcript.addRetainedChild(component, { id: "tool", version: 0 });
-	const pendingTools = new Map<string, ToolExecutionComponent>([["tool-1", component]]);
-	const interactive = Object.create(InteractiveMode.prototype) as ModeHarness & Record<string, unknown>;
-	Object.assign(interactive, {
-		isInitialized: true,
-		footer: { invalidate(): void {} },
-		pendingTools,
-		deferredReadExecutions: new Map(),
-		chatContainer: transcript,
-		ui: reference,
-	});
-	const session = createSession(interactive);
-	const observerAgent = createObserverAgent(session);
-	let growingText = "";
-	const update = (index: number): void => {
-		let content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
-		if (mode === "image") {
-			content = [{ type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" }];
-		} else if (mode === "growing") {
-			growingText = growingText.length >= 4096 ? "x" : `${growingText}x`;
-			content = [{ type: "text", text: growingText }];
-		} else {
-			content = [{ type: "text", text: `progress-${index & 3}` }];
-		}
-		session._emit({
-			type: "tool_execution_update",
-			toolCallId: "tool-1",
-			toolName,
-			partialResult: { content },
-		});
-	};
-	for (let index = 0; index < warmup; index++) update(index);
-	const allocationMetricsAvailable = metrics.updateDisplayCalls > 0;
-	resetToolMetrics(metrics);
-	rendererCounters.call = 0;
-	rendererCounters.result = 0;
-	rendererCounters.components = 0;
-	renderer.requestRenderCalls = 0;
-	const result = await profileUpdates(name, updates, 0, update, () => ({
-		updateDisplayCalls: metrics.updateDisplayCalls,
-		callRendererCalls: metrics.callRendererCalls,
-		resultRendererCalls: metrics.resultRendererCalls,
-		internalComponentCreations: metrics.componentCreations,
-		externalRendererComponentCreations: rendererCounters.components,
-		renderContextObjects: metrics.renderContextObjects,
-		internalWrapperObjects: metrics.internalWrapperObjects,
-		imageScans: metrics.imageScans,
-		argsSerializations: metrics.argsSerializations,
-		toolArgsGenerationUpdates: metrics.toolArgsGenerationUpdates,
-		toolArgsReplacementUpdates: metrics.toolArgsReplacementUpdates,
-		toolArgsSemanticFallbackComparisons: metrics.toolArgsSemanticFallbackComparisons,
-		toolArgsMissingGenerationDiagnostics: metrics.toolArgsMissingGenerationDiagnostics,
-		requestRenderCalls: renderer.requestRenderCalls,
-		allocationMetricsAvailable,
-	}));
-	const observerStatsBefore = observerAgent.delivery.stats;
-	for (let index = 0; index < updates; index++) {
-		const content = mode === "image"
-			? [{ type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" }]
-			: [{ type: "text", text: `observer-progress-${index & 3}` }];
-		observerAgent.delivery.publishLatest("tool:tool-1", {
-			type: "tool_execution_update",
-			toolCallId: "tool-1",
-			toolName,
-			partialResult: { content },
-		});
-	}
-	await observerAgent.delivery.flushLatest("tool:tool-1");
-	const observerStatsAfter = observerAgent.delivery.stats;
-	observerAgent.unsubscribe();
-	component.setExpanded(true);
-	const expanded = (component as unknown as { expanded: boolean }).expanded;
-	component.setExpanded(false);
-	const collapsed = !(component as unknown as { expanded: boolean }).expanded;
-	session._emit({
-		type: "tool_execution_end",
-		toolCallId: "tool-1",
-		toolName,
-		result: { content: [{ type: "text", text: "final" }] },
-		isError: false,
-	});
-	const finalResult =
-		(component as unknown as { isPartial: boolean; resultIsError: boolean }).isPartial === false &&
-		(component as unknown as { resultIsError: boolean }).resultIsError === false &&
-		!pendingTools.has("tool-1");
-	const errorComponent = new ToolExecutionComponent(
-		toolName,
-		"tool-error",
-		{ value: 1 },
-		{ showImages: mode === "image" },
-		selectedDefinition,
-		reference,
-		process.cwd(),
-	);
-	pendingTools.set("tool-error", errorComponent);
-	session._emit({
-		type: "tool_execution_end",
-		toolCallId: "tool-error",
-		toolName,
-		result: { content: [{ type: "text", text: "error" }] },
-		isError: true,
-	});
-	const errorResult =
-		(errorComponent as unknown as { isPartial: boolean; resultIsError: boolean }).isPartial === false &&
-		(errorComponent as unknown as { resultIsError: boolean }).resultIsError === true &&
-		!pendingTools.has("tool-error");
-	await renderer.dispose({ preserveScreen: true });
-	return {
-		...(result as Record<string, unknown>),
-		warmup,
-		stateCoverage: { expanded, collapsed, finalResult, errorResult },
-		fullObserverChain: {
-			rawUpdates: observerStatsAfter.received - observerStatsBefore.received,
-			coalescedUpdates: observerStatsAfter.coalesced - observerStatsBefore.coalesced,
-			deliveries: observerStatsAfter.delivered - observerStatsBefore.delivered,
-			productionSnapshot: true,
-			productionAgentSessionBridge: true,
-			productionInteractiveModeHandler: true,
-		},
-		sourceInvariant: { inlineClosuresPerUpdate: 0, callbackArraysPerUpdate: 0 },
-	};
 }
 
 function getMarkdownStats(component: AssistantMessageComponent): { parserTokenCount: number; incrementalReuseCount: number } {
@@ -508,7 +307,11 @@ async function measureAssistantFixture(
 			content: contentForUpdate(index),
 			timestamp: index,
 		} as AssistantMessage;
-		session._emit({ type: "message_update", message });
+		session._emit({
+			type: "message_update",
+			message,
+			assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "", partial: message },
+		});
 		renderer.renderNow();
 	};
 	for (let index = 0; index < warmup; index++) update(index);
@@ -529,13 +332,15 @@ async function measureAssistantFixture(
 	}));
 	const observerStatsBefore = observerAgent.delivery.stats;
 	for (let index = 0; index < updates; index++) {
+		const message = {
+			role: "assistant",
+			content: contentForUpdate(index + updates + warmup),
+			timestamp: index,
+		} as AssistantMessage;
 		observerAgent.delivery.publishLatest("message", {
 			type: "message_update",
-			message: {
-				role: "assistant",
-				content: contentForUpdate(index + updates + warmup),
-				timestamp: index,
-			},
+			message,
+			assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "", partial: message },
 		});
 	}
 	await observerAgent.delivery.flushLatest("message");
@@ -563,8 +368,6 @@ const updates = readIntegerOption("--updates", 20_000);
 const warmup = readIntegerOption("--warmup", 5_000);
 const structuralUpdates = readIntegerOption("--structural-updates", 100_000);
 const selectedAssistantFixture = readStringOption("--assistant-fixture");
-const toolOnly = process.argv.includes("--tool-only");
-if (toolOnly && selectedAssistantFixture) throw new Error("--tool-only and --assistant-fixture are mutually exclusive");
 const validAssistantFixtures = new Set([
 	"plain-streaming-text",
 	"append-growing-markdown",
@@ -576,87 +379,40 @@ const validAssistantFixtures = new Set([
 if (selectedAssistantFixture && !validAssistantFixtures.has(selectedAssistantFixture)) {
 	throw new Error(`Unknown --assistant-fixture: ${selectedAssistantFixture}`);
 }
-const previousCapabilities = getCapabilities();
-const toolResults: unknown[] = [];
-if (!selectedAssistantFixture) {
-	toolResults.push(await measureToolFixture("generic-fallback-constant", "allocation-generic", undefined, updates, warmup, "constant"));
-	toolResults.push(await measureToolFixture("generic-fallback-growing", "allocation-generic", undefined, updates, warmup, "growing"));
-	toolResults.push(await measureToolFixture("built-in-renderer", "read", undefined, updates, warmup, "constant"));
-	toolResults.push(await measureToolFixture("custom-extension-renderer", "allocation-custom", undefined, updates, warmup, "constant"));
-	setCapabilities({ ...previousCapabilities, images: "iterm2" });
-	toolResults.push(await measureToolFixture("image-result-low-frequency", "allocation-image", undefined, Math.min(updates, 2_000), warmup, "image"));
-	setCapabilities(previousCapabilities);
-}
-
 let growingMarkdown = "";
 const assistantResults: unknown[] = [];
-if (!toolOnly && (!selectedAssistantFixture || selectedAssistantFixture === "plain-streaming-text")) {
+if (!selectedAssistantFixture || selectedAssistantFixture === "plain-streaming-text") {
 	assistantResults.push(await measureAssistantFixture("plain-streaming-text", updates, warmup, (index) => [
 		{ type: "text", text: `plain-${index & 7}` },
 	]));
 }
-if (!toolOnly && (!selectedAssistantFixture || selectedAssistantFixture === "append-growing-markdown")) {
+if (!selectedAssistantFixture || selectedAssistantFixture === "append-growing-markdown") {
 	assistantResults.push(await measureAssistantFixture("append-growing-markdown", updates, warmup, () => {
 		growingMarkdown = growingMarkdown.length >= 4096 ? "# x" : `${growingMarkdown}x`;
 		return [{ type: "text", text: growingMarkdown }];
 	}));
 }
-if (!toolOnly && (!selectedAssistantFixture || selectedAssistantFixture === "code-block-json")) {
+if (!selectedAssistantFixture || selectedAssistantFixture === "code-block-json") {
 	assistantResults.push(await measureAssistantFixture("code-block-json", updates, warmup, (index) => [
 		{ type: "text", text: `\`\`\`json\n{\"value\":${index & 15}}\n\`\`\`` },
 	]));
 }
-if (!toolOnly && (!selectedAssistantFixture || selectedAssistantFixture === "cjk-emoji")) {
+if (!selectedAssistantFixture || selectedAssistantFixture === "cjk-emoji") {
 	assistantResults.push(await measureAssistantFixture("cjk-emoji", updates, warmup, (index) => [
 		{ type: "text", text: `中文🙂e\u0301-${index & 7}` },
 	]));
 }
-if (!toolOnly && (!selectedAssistantFixture || selectedAssistantFixture === "thinking-block")) {
+if (!selectedAssistantFixture || selectedAssistantFixture === "thinking-block") {
 	assistantResults.push(await measureAssistantFixture("thinking-block", updates, warmup, (index) => [
 		{ type: "thinking", thinking: `thinking-${index & 7}` },
 	]));
 }
-if (!toolOnly && (!selectedAssistantFixture || selectedAssistantFixture === "text-toolcall-mixed")) {
+if (!selectedAssistantFixture || selectedAssistantFixture === "text-toolcall-mixed") {
 	assistantResults.push(await measureAssistantFixture("text-toolcall-mixed", updates, warmup, (index) => [
 		{ type: "text", text: `text-${index & 7}` },
 		{ type: "toolCall", id: "mixed-tool", name: "allocation-tool", arguments: { value: index & 7 } },
 	]));
 }
-
-const structuralToolRenderer = createRenderer();
-const structuralToolMetrics = createToolMetrics();
-const structuralToolComponent = new ToolExecutionComponent(
-	"allocation-generic",
-	"structural-tool",
-	{ value: 1 },
-	{ allocationMetrics: structuralToolMetrics },
-	undefined,
-	structuralToolRenderer.reference,
-	process.cwd(),
-);
-structuralToolRenderer.transcript.addRetainedChild(structuralToolComponent, { id: "structural-tool", version: 0 });
-const structuralToolMode = Object.create(InteractiveMode.prototype) as ModeHarness & Record<string, unknown>;
-Object.assign(structuralToolMode, {
-	isInitialized: true,
-	footer: { invalidate(): void {} },
-	pendingTools: new Map([["structural-tool", structuralToolComponent]]),
-	deferredReadExecutions: new Map(),
-	chatContainer: structuralToolRenderer.transcript,
-	ui: structuralToolRenderer.reference,
-});
-const structuralToolSession = createSession(structuralToolMode);
-const structuralToolEvent = {
-	type: "tool_execution_update",
-	toolCallId: "structural-tool",
-	toolName: "allocation-generic",
-	partialResult: { content: [{ type: "text", text: "constant" }] },
-};
-structuralToolSession._emit(structuralToolEvent);
-resetToolMetrics(structuralToolMetrics);
-structuralToolRenderer.renderer.requestRenderCalls = 0;
-const structuralToolStarted = performance.now();
-for (let index = 0; index < structuralUpdates; index++) structuralToolSession._emit(structuralToolEvent);
-const structuralToolElapsedMs = performance.now() - structuralToolStarted;
 
 const structuralAssistantMetrics = createAssistantMetrics();
 const structuralAssistant = new AssistantMessageComponent(
@@ -678,11 +434,10 @@ resetAssistantMetrics(structuralAssistantMetrics);
 const structuralStarted = performance.now();
 for (let index = 0; index < structuralUpdates; index++) structuralAssistant.updateContent(structuralMessage, true);
 const structuralElapsedMs = performance.now() - structuralStarted;
-await structuralToolRenderer.renderer.dispose({ preserveScreen: true });
 
 const output = `${JSON.stringify({
 	schemaVersion: 1,
-	benchmark: "tui-real-leaf-allocations",
+	benchmark: "tui-assistant-leaf-allocations",
 	commit: currentCommit(),
 	node: process.version,
 	platform: process.platform,
@@ -690,38 +445,8 @@ const output = `${JSON.stringify({
 	samplingInterval,
 	structuralGate: {
 		updates: structuralUpdates,
-		toolAllocationMetricsAvailable: structuralToolMetrics.updateDisplayCalls > 0,
-		assistantAllocationMetricsAvailable: structuralAssistantMetrics.updateContentCalls > 0,
-		assistantCpuMsPerUpdate: structuralElapsedMs / structuralUpdates,
-		toolCpuMsPerUpdate: structuralToolElapsedMs / structuralUpdates,
-		assistantNewMaps: structuralAssistantMetrics.streamingMapAllocations,
-		assistantSlotRecordObjects: structuralAssistantMetrics.slotRecordObjects,
-		assistantMarkdownInstances: structuralAssistantMetrics.markdownInstances,
-		toolWrapperObjectsPerUpdate: structuralToolMetrics.internalWrapperObjects / structuralUpdates,
-		toolCallRendererCalls: structuralToolMetrics.callRendererCalls,
-		toolArgsSerializations: structuralToolMetrics.argsSerializations,
-		toolArgsGenerationUpdates: structuralToolMetrics.toolArgsGenerationUpdates,
-		toolArgsReplacementUpdates: structuralToolMetrics.toolArgsReplacementUpdates,
-		toolArgsSemanticFallbackComparisons: structuralToolMetrics.toolArgsSemanticFallbackComparisons,
-		toolArgsMissingGenerationDiagnostics: structuralToolMetrics.toolArgsMissingGenerationDiagnostics,
-		toolRequestRenderCalls: structuralToolRenderer.renderer.requestRenderCalls,
 	},
-	fixtures: [
-		{
-			name: "production-tool-progress",
-			coverage: {
-				productionAgentSessionEmit: true,
-				productionInteractiveModeHandler: true,
-				fullRuntimeConstruction: false,
-				realStableReference: true,
-				realToolComponent: true,
-				realToolRenderer: true,
-				markdown: false,
-				frameQueue: false,
-			},
-			results: toolResults,
-		},
-		{
+	fixtures: [		{
 			name: "production-assistant-markdown-stream",
 			coverage: {
 				productionAgentSessionEmit: true,
