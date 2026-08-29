@@ -136,6 +136,10 @@ export class EventDeliveryDispatcher<E, K> {
 		return false;
 	}
 
+	get hasLatestListeners(): boolean {
+		return this.observers.size > 0;
+	}
+
 	async publishAwaited(event: E): Promise<void> {
 		if (this.disposed) return;
 		for (const registration of this.criticalListeners) {
