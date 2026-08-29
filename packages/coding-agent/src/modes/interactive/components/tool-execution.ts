@@ -246,6 +246,8 @@ export interface ToolExecutionAllocationMetrics {
 	toolArgsSemanticFallbackComparisons: number;
 	/** Compatibility-boundary deliveries missing adapter ownership/generation metadata. */
 	toolArgsMissingGenerationUpdates: number;
+	/** Per-tool stream finalization boundaries accepted by this component. */
+	toolArgsFinalizations: number;
 }
 
 export class ToolExecutionComponent extends Container {
@@ -266,6 +268,7 @@ export class ToolExecutionComponent extends Container {
 	private args: any;
 	private argsGeneration: ToolArgsGeneration;
 	private argsSemanticJson: string | undefined;
+	private argsStreamFinalized = false;
 	private expanded = false;
 	private showImages: boolean;
 	private imageWidthCells: number;
@@ -434,16 +437,19 @@ export class ToolExecutionComponent extends Container {
 		ownership?: StreamedToolArgumentOwnership,
 		finalized = false,
 	): void {
+		if (this.argsStreamFinalized) return;
+		if (finalized) {
+			this.argsStreamFinalized = true;
+			if (this.allocationMetrics) this.allocationMetrics.toolArgsFinalizations++;
+			this.args = args;
+			this.argsGeneration = undefined;
+			this.argsSemanticJson = undefined;
+			this.callRendererDirty = true;
+			this.argsDisplayDirty = true;
+			this.updateDisplay();
+			return;
+		}
 		if (ownership === "mutation-with-generation") {
-			if (finalized) {
-				this.args = args;
-				this.argsGeneration = undefined;
-				this.argsSemanticJson = undefined;
-				this.callRendererDirty = true;
-				this.argsDisplayDirty = true;
-				this.updateDisplay();
-				return;
-			}
 			if (generation === undefined) {
 				if (this.allocationMetrics) this.allocationMetrics.toolArgsMissingGenerationUpdates++;
 				this.args = args;

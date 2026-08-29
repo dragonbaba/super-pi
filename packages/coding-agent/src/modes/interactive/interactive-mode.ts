@@ -481,8 +481,14 @@ export function createInteractiveTuiReference(getTui: () => TUI): TUI {
 	return new InteractiveTuiReference(getTui);
 }
 
-function getStreamedToolArgsGeneration(content: object): string | undefined {
-	const transient = content as { partialJson?: unknown; partialArgs?: unknown };
+function getStreamedToolArgsGeneration(
+	content: object,
+	event: object,
+): string | number | undefined {
+	const eventGeneration = (event as { toolArgsGeneration?: unknown }).toolArgsGeneration;
+	if (typeof eventGeneration === "number") return eventGeneration;
+	const transient = content as { toolArgsGeneration?: unknown; partialJson?: unknown; partialArgs?: unknown };
+	if (typeof transient.toolArgsGeneration === "number") return transient.toolArgsGeneration;
 	if (typeof transient.partialJson === "string") return transient.partialJson;
 	return typeof transient.partialArgs === "string" ? transient.partialArgs : undefined;
 }
@@ -3403,9 +3409,10 @@ export class InteractiveMode {
 								component,
 								content.id,
 								content.arguments,
-								getStreamedToolArgsGeneration(content),
+								getStreamedToolArgsGeneration(content, event.assistantMessageEvent),
 								toolArgumentOwnership,
-								event.assistantMessageEvent.type === "toolcall_end",
+								event.assistantMessageEvent.type === "toolcall_end" &&
+									event.assistantMessageEvent.contentIndex === contentIndex,
 							);
 						}
 					}
@@ -3787,7 +3794,7 @@ export class InteractiveMode {
 		component: ToolExecutionComponent | ReadToolGroupComponent,
 		toolCallId: string,
 		args: any,
-		generation?: string,
+		generation?: string | number,
 		ownership?: StreamedToolArgumentOwnership,
 		finalized = false,
 	): void {

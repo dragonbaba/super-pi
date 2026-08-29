@@ -87,8 +87,9 @@ export type ThinkingLevelMap = Partial<Record<ModelThinkingLevel, string | null>
 /**
  * Ownership contract for arguments on streamed tool-call blocks.
  *
- * `mutation-with-generation` adapters mutate one arguments object and expose a
- * transient partial-json generation string on every delta. Their final
+ * `mutation-with-generation` adapters expose a transient generation on every
+ * delta. Most mutate one arguments object; custom/grammar paths may replace
+ * it while advancing a host-only numeric generation. Their final
  * `toolcall_end` event is a finalization boundary: the host must repaint once
  * even when the adapter has already removed its transient generation field.
  * `replacement-object` adapters replace the arguments object whenever its
@@ -629,7 +630,14 @@ export type AssistantMessageEvent =
 	| { type: "thinking_delta"; contentIndex: number; delta: string; partial: AssistantMessage }
 	| { type: "thinking_end"; contentIndex: number; content: string; partial: AssistantMessage }
 	| { type: "toolcall_start"; contentIndex: number; partial: AssistantMessage }
-	| { type: "toolcall_delta"; contentIndex: number; delta: string; partial: AssistantMessage }
+	| {
+			type: "toolcall_delta";
+			contentIndex: number;
+			delta: string;
+			partial: AssistantMessage;
+			/** Host-only custom/grammar argument generation; never persisted or sent on wire. */
+			toolArgsGeneration?: number;
+	  }
 	| { type: "toolcall_end"; contentIndex: number; toolCall: ToolCall; partial: AssistantMessage }
 	| {
 			type: "done";

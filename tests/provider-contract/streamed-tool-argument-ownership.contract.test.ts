@@ -71,6 +71,7 @@ test("streamed tool-argument ownership remains host-only metadata", () => {
 	for (const filePath of identityAndDispatchPaths) {
 		const source = readFileSync(filePath, "utf8");
 		assert.doesNotMatch(source, /streamedToolArgumentOwnership/, filePath);
+		assert.doesNotMatch(source, /toolArgsGeneration/, filePath);
 	}
 
 	const lazySource = readFileSync("packages/ai/src/api/lazy.ts", "utf8");
@@ -116,4 +117,27 @@ test("mutation adapters expose transient generations and replacement adapters re
 		const source = readFileSync(`packages/ai/src/api/${modulePath}`, "utf8");
 		assert.match(source, /\.arguments\s*=|arguments:\s*\(/, modulePath);
 	}
+});
+
+test("custom OpenAI generations stay on host events and are removed before persistence", () => {
+	for (const modulePath of ["openai-completions.ts", "openai-responses-shared.ts"]) {
+		const source = readFileSync(`packages/ai/src/api/${modulePath}`, "utf8");
+		assert.match(source, /toolArgsGeneration = \([^\n]+ \?\? 0\) \+ 1/, modulePath);
+		assert.match(source, /toolArgsGeneration: (?:block|slot\.block)\.toolArgsGeneration/, modulePath);
+		assert.match(source, /toolArgsGeneration = undefined/, modulePath);
+	}
+	const types = readFileSync("packages/ai/src/types.ts", "utf8");
+	assert.match(types, /Host-only custom\/grammar argument generation; never persisted or sent on wire/);
+});
+
+test("tool finalization uses per-tool latest identity and one component boundary", () => {
+	const agent = readFileSync("packages/agent/src/agent.ts", "utf8");
+	assert.match(agent, /toolMessageLatestKeys\.get\(content\.id\)/);
+	assert.match(agent, /message:tool:\$\{content\.id\}/);
+	assert.match(agent, /toolMessageLatestKeys\.delete\(content\.id\)/);
+	const interactive = readFileSync("packages/coding-agent/src/modes/interactive/interactive-mode.ts", "utf8");
+	assert.match(interactive, /assistantMessageEvent\.contentIndex === contentIndex/);
+	const tool = readFileSync("packages/coding-agent/src/modes/interactive/components/tool-execution.ts", "utf8");
+	assert.match(tool, /private argsStreamFinalized = false/);
+	assert.match(tool, /toolArgsFinalizations\+\+/);
 });

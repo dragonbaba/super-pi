@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { getStreamedToolArgumentOwnership, type KnownApi } from "@super-pi/ai/compat";
+import { Agent } from "../packages/agent/src/agent.ts";
 import { setCapabilities, Text, type Component, type TUI } from "@super-pi/tui";
 import { stream as streamAnthropic } from "../packages/ai/src/api/anthropic-messages.ts";
 import type { ToolDefinition } from "../packages/coding-agent/src/core/extensions/types.ts";
@@ -26,6 +27,7 @@ function createMetrics(): ToolExecutionAllocationMetrics {
 		toolArgsReplacementUpdates: 0,
 		toolArgsSemanticFallbackComparisons: 0,
 		toolArgsMissingGenerationUpdates: 0,
+		toolArgsFinalizations: 0,
 	};
 }
 
@@ -326,6 +328,166 @@ test("mutation adapter start delta delta end sequence repaints finalization with
 	assert.equal(metrics.toolArgsGenerationUpdates, 3);
 	assert.equal(metrics.toolArgsMissingGenerationUpdates, 0);
 	assert.match(tool.render(80).join("\n"), /"value": 3/);
+});
+
+test("tool finalization is scoped to its content index and does not repaint sibling tools", () => {
+	initTheme("dark");
+	const metricsA = createMetrics();
+	const metricsB = createMetrics();
+	const tui = createTui();
+	const argsA = { value: "a" };
+	const argsB = { value: "b" };
+	const toolA = new ToolExecutionComponent("a", "tool-a", argsA, { allocationMetrics: metricsA }, undefined, tui, process.cwd());
+	const toolB = new ToolExecutionComponent("b", "tool-b", argsB, { allocationMetrics: metricsB }, undefined, tui, process.cwd());
+	const mode = Object.create(InteractiveMode.prototype) as InteractiveMode & Record<string, unknown>;
+	Object.assign(mode, {
+		isInitialized: true,
+		footer: { invalidate(): void {} },
+		streamingComponent: { updateContent(): void {} },
+		streamingMessage: undefined,
+		streamingItem: { updateVersion(): void {} },
+		streamingItemVersion: 0,
+		pendingTools: new Map([["tool-a", toolA], ["tool-b", toolB]]),
+		streamedToolIds: new Set(["tool-a", "tool-b"]),
+		deferredReadPlaceholders: new Map(),
+		deferredReadExecutions: new Map(),
+		chatContainer: new RetainedContainer(),
+		ui: tui,
+	});
+	const content = [
+		{ type: "toolCall", id: "tool-a", name: "a", arguments: argsA },
+		{ type: "toolCall", id: "tool-b", name: "b", arguments: argsB, partialArgs: "b:1" },
+	];
+	const message = {
+		role: "assistant",
+		api: "openai-completions",
+		provider: "openai",
+		model: "test",
+		content,
+		timestamp: 0,
+	};
+	(mode as unknown as { handleEvent(event: unknown): void }).handleEvent({
+		type: "message_update",
+		message,
+		assistantMessageEvent: { type: "toolcall_end", contentIndex: 0, toolCall: content[0], partial: message },
+	});
+	assert.equal(metricsA.updateDisplayCalls, 2);
+	assert.equal(metricsB.updateDisplayCalls, 2, "B receives its generation but must not be finalized");
+	assert.equal(metricsA.toolArgsFinalizations, 1);
+	assert.equal(metricsB.toolArgsFinalizations, 0);
+
+	for (let update = 2; update <= 20; update++) {
+		argsB.value = `b:${update}`;
+		content[1]!.partialArgs = `b:${update}`;
+		(mode as unknown as { handleEvent(event: unknown): void }).handleEvent({
+			type: "message_update",
+			message,
+			assistantMessageEvent: { type: "toolcall_delta", contentIndex: 1, delta: String(update), partial: message },
+		});
+	}
+	assert.equal(metricsA.updateDisplayCalls, 2, "finished A must not rebuild for B deltas");
+	assert.equal(metricsA.toolArgsMissingGenerationUpdates, 0);
+	assert.equal(metricsB.updateDisplayCalls, 21);
+	delete content[1]!.partialArgs;
+	(mode as unknown as { handleEvent(event: unknown): void }).handleEvent({
+		type: "message_update",
+		message,
+		assistantMessageEvent: { type: "toolcall_end", contentIndex: 1, toolCall: content[1], partial: message },
+	});
+	assert.equal(metricsA.toolArgsFinalizations, 1);
+	assert.equal(metricsB.toolArgsFinalizations, 1);
+	assert.equal(metricsB.toolArgsMissingGenerationUpdates, 0);
+	assert.match(toolB.render(80).join("\n"), /b:20/);
+});
+
+test("Agent keeps interleaved tool updates on bounded per-tool latest lanes", async () => {
+	initTheme("dark");
+	const events: string[] = [];
+	const metricsA = createMetrics();
+	const metricsB = createMetrics();
+	const tui = createTui();
+	const toolA = new ToolExecutionComponent("a", "tool-a", {}, { allocationMetrics: metricsA }, undefined, tui, process.cwd());
+	const toolB = new ToolExecutionComponent("b", "tool-b", {}, { allocationMetrics: metricsB }, undefined, tui, process.cwd());
+	const mode = Object.create(InteractiveMode.prototype) as InteractiveMode & Record<string, unknown>;
+	Object.assign(mode, {
+		isInitialized: true,
+		footer: { invalidate(): void {} },
+		streamingComponent: { updateContent(): void {} },
+		streamingMessage: undefined,
+		streamingItem: { updateVersion(): void {} },
+		streamingItemVersion: 0,
+		pendingTools: new Map([["tool-a", toolA], ["tool-b", toolB]]),
+		streamedToolIds: new Set(["tool-a", "tool-b"]),
+		deferredReadPlaceholders: new Map(),
+		deferredReadExecutions: new Map(),
+		chatContainer: new RetainedContainer(),
+		ui: tui,
+	});
+	const agent = new Agent({ streamFn: (() => { throw new Error("unused"); }) as never });
+	(agent as unknown as { activeRun: unknown }).activeRun = {
+		promise: Promise.resolve(),
+		resolve(): void {},
+		abortController: new AbortController(),
+	};
+	agent.subscribeObserver((event) => {
+		if (event.type === "message_update") {
+			events.push(event.assistantMessageEvent.type);
+			(mode as unknown as { handleEvent(event: unknown): void }).handleEvent(event);
+		}
+	}, { minIntervalMs: 60_000 });
+	const processEvent = (event: unknown): Promise<void> =>
+		(agent as unknown as { processEvents(event: unknown): Promise<void> }).processEvents(event);
+	const message = {
+		role: "assistant",
+		api: "openai-completions",
+		provider: "openai",
+		model: "test",
+		content: [
+			{ type: "toolCall", id: "tool-a", name: "a", arguments: {} },
+			{ type: "toolCall", id: "tool-b", name: "b", arguments: { value: "b:1" }, partialArgs: "b:1" },
+		],
+		timestamp: 0,
+	};
+	await processEvent({
+		type: "message_update",
+		message,
+		assistantMessageEvent: { type: "toolcall_end", contentIndex: 0, toolCall: message.content[0], partial: message },
+	});
+	message.content[1]!.partialArgs = "b:2";
+	message.content[1]!.arguments.value = "b:2";
+	await processEvent({
+		type: "message_update",
+		message,
+		assistantMessageEvent: { type: "toolcall_delta", contentIndex: 1, delta: "2", partial: message },
+	});
+	message.content[1]!.partialArgs = "b:3";
+	message.content[1]!.arguments.value = "b:3";
+	await processEvent({
+		type: "message_update",
+		message,
+		assistantMessageEvent: { type: "toolcall_delta", contentIndex: 1, delta: "3", partial: message },
+	});
+	await (agent as unknown as { eventDelivery: { flushAllLatest(): Promise<void> } }).eventDelivery.flushAllLatest();
+	assert.deepEqual(events, ["toolcall_end", "toolcall_delta"]);
+	assert.equal(agent.eventDeliveryStats.pendingKeys, 0);
+	assert.equal(agent.eventDeliveryStats.maxPendingKeys, 2);
+	assert.equal(agent.eventDeliveryStats.coalesced, 1);
+	assert.equal(metricsA.toolArgsFinalizations, 1);
+	assert.equal(metricsA.toolArgsMissingGenerationUpdates, 0);
+	assert.equal(metricsB.toolArgsFinalizations, 0);
+	assert.equal(metricsB.toolArgsMissingGenerationUpdates, 0);
+	assert.match(toolB.render(80).join("\n"), /b:3/);
+	delete message.content[1]!.partialArgs;
+	await processEvent({
+		type: "message_update",
+		message,
+		assistantMessageEvent: { type: "toolcall_end", contentIndex: 1, toolCall: message.content[1], partial: message },
+	});
+	await (agent as unknown as { eventDelivery: { flushAllLatest(): Promise<void> } }).eventDelivery.flushAllLatest();
+	assert.equal(metricsA.toolArgsFinalizations, 1);
+	assert.equal(metricsB.toolArgsFinalizations, 1);
+	assert.equal(agent.eventDeliveryStats.pendingKeys, 0);
+	assert.equal((agent as unknown as { toolMessageLatestKeys: Map<string, string> }).toolMessageLatestKeys.size, 0);
 });
 
 test("Anthropic wire start delta delta end sequence satisfies the mutation ownership contract", async () => {
