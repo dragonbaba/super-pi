@@ -278,7 +278,7 @@ export class EventDeliveryDispatcher<E, K> {
 			this.activeScheduledGeneration = 0;
 			this.scheduledHandle = undefined;
 			this.scheduledDueAt = Number.POSITIVE_INFINITY;
-			this.reportDiagnostic({ type: "observer-error", error });
+			this.reportObserverError(error);
 		}
 	}
 
@@ -315,7 +315,7 @@ export class EventDeliveryDispatcher<E, K> {
 			}
 		} catch (error) {
 			if (!isolateErrors) throw error;
-			this.reportDiagnostic({ type: "observer-error", error });
+			this.reportObserverError(error);
 		}
 	}
 
@@ -336,7 +336,7 @@ export class EventDeliveryDispatcher<E, K> {
 				try {
 					event = pending.snapshot ?? (pending.snapshot = this.createLatestSnapshot(pending.event));
 				} catch (error) {
-					this.reportDiagnostic({ type: "observer-error", error });
+					this.reportObserverError(error);
 					for (const registeredObserver of this.observers) {
 						registeredObserver.seenVersions.set(key, deliveredVersion);
 					}
@@ -374,7 +374,7 @@ export class EventDeliveryDispatcher<E, K> {
 		try {
 			this.onLatestReleased(key, pending.event);
 		} catch (error) {
-			this.reportDiagnostic({ type: "observer-error", error });
+			this.reportObserverError(error);
 		}
 	}
 
@@ -384,7 +384,9 @@ export class EventDeliveryDispatcher<E, K> {
 
 	protected onLatestReleased(_key: K, _event: E): void {}
 
-	protected onDeliveryDiagnostic(_diagnostic: EventDeliveryDiagnostic): void {}
+	protected onObserverError(_error: unknown): void {}
+
+	protected onSlowObserver(_durationMs: number): void {}
 
 	private async deliverObserver(observer: ObserverListener<E, K>, event: E): Promise<void> {
 		const startedAt = this.scheduler.now();
@@ -393,12 +395,12 @@ export class EventDeliveryDispatcher<E, K> {
 			this.delivered++;
 		} catch (error) {
 			this.observerErrors++;
-			this.reportDiagnostic({ type: "observer-error", error });
+			this.reportObserverError(error);
 		}
 		const durationMs = this.scheduler.now() - startedAt;
 		if (durationMs >= this.slowObserverMs) {
 			this.slowObservers++;
-			this.reportDiagnostic({ type: "observer-slow", durationMs });
+			this.reportSlowObserver(durationMs);
 		}
 	}
 
@@ -408,19 +410,38 @@ export class EventDeliveryDispatcher<E, K> {
 			return registration.filter(event);
 		} catch (error) {
 			this.observerErrors++;
-			this.reportDiagnostic({ type: "observer-error", error });
+			this.reportObserverError(error);
 			return false;
 		}
 	}
 
-	private reportDiagnostic(diagnostic: EventDeliveryDiagnostic): void {
-		try {
-			this.onDiagnostic?.(diagnostic);
-		} catch {
-			// Diagnostics are observational and must never affect event delivery.
+	private reportObserverError(error: unknown): void {
+		const listener = this.onDiagnostic;
+		if (listener) {
+			try {
+				listener({ type: "observer-error", error });
+			} catch {
+				// Diagnostics are observational and must never affect event delivery.
+			}
 		}
 		try {
-			this.onDeliveryDiagnostic(diagnostic);
+			this.onObserverError(error);
+		} catch {
+			// Subclass diagnostics are observational and must never affect event delivery.
+		}
+	}
+
+	private reportSlowObserver(durationMs: number): void {
+		const listener = this.onDiagnostic;
+		if (listener) {
+			try {
+				listener({ type: "observer-slow", durationMs });
+			} catch {
+				// Diagnostics are observational and must never affect event delivery.
+			}
+		}
+		try {
+			this.onSlowObserver(durationMs);
 		} catch {
 			// Subclass diagnostics are observational and must never affect event delivery.
 		}
