@@ -17,6 +17,9 @@ npm run --silent -- bench:tui-input-lifecycle
 npm run --silent -- bench:tui-interactive-reference-allocations
 npm run --silent -- bench:tui-tool-leaf-allocations
 npm run --silent -- bench:tui-paced-tool-leaf
+npm run --silent -- bench:tui-assistant-leaf-allocations -- --updates 20000 --warmup 5000 --structural-updates 100000
+npm run --silent -- bench:tui-assistant-leaf-multiprocess -- --processes 5 --updates 20000 --warmup 5000
+npm run --silent -- bench:tui-paced-assistant-leaf
 npm run --silent -- bench:tui-paced-streamed-tool-args
 npm run --silent -- bench:tui-frame-queue
 npm run --silent -- bench:prefix
@@ -74,6 +77,36 @@ Input cursor-right and backspace paths iterate grapheme segmentation without mat
 
 The TUI-core fixture is `npm run bench:tui-input-lifecycle`. Its `commit` field must match the tested HEAD. `maximumTimers` means the maximum number of concurrently active handles, while `timerHandlesCreatedPerCycle` and `timerReschedulesPerCycle` report total cycle activity separately. Known boundaries remain explicit: `Terminal.write()` is a low-frequency Promise boundary, OSC 11 has one unavoidable wave Promise, Container still allocates its final outer result, and no object pool or shared mutable render-output array is introduced.
 
+### Phase 4D-A0 Assistant/Markdown leaf allocation coverage
+
+The Assistant/Markdown child stack measures the production `AgentSession._emit` → `InteractiveMode.handleEvent` → real `AssistantMessageComponent`/Markdown → retained viewport → Main frame queue path with a reduced constructor/runtime harness and a no-op terminal sink. Static AST results remain under `sourceInvariant`; component counters wired into the fixture are reported separately as dynamic observations.
+
+| Assistant fixture | Sampled B/update, old → candidate | CPU p50/p95 ms, old → candidate | GC minor/major and duration, old → candidate |
+| --- | ---: | ---: | ---: |
+| plain streaming text | 9,082.0 → 8,424.1 | 0.00965/0.01339 → 0.00909/0.01381 | 5/1, 9.05 ms → 4/1, 8.13 ms |
+| append-growing Markdown | 891,113.3 → 891,191.1 | 0.82825/1.67834 → 0.89301/1.77304 | 536/2, 360.16 ms → 536/2, 384.37 ms |
+| code-block JSON | 13,494.5 → 13,214.7 | 0.01581/0.02611 → 0.01590/0.02119 | 7/1, 10.17 ms → 7/1, 9.30 ms |
+| CJK/emoji/combining | 8,938.7 → 8,286.2 | 0.00879/0.01353 → 0.00837/0.01350 | 5/1, 10.37 ms → 4/1, 9.08 ms |
+| thinking block | 9,834.6 → 8,821.1 | 0.00995/0.01463 → 0.00954/0.01764 | 5/1, 8.42 ms → 4/1, 8.10 ms |
+| text + toolCall | 9,027.4 → 8,013.3 | 0.00960/0.01426 → 0.00821/0.01224 | 5/1, 8.85 ms → 4/1, 8.05 ms |
+
+The separate 100,000-update structural gate reports the production counters `updateContentCalls`, `slotRecordObjects`, `markdownInstancesCreated`, `spacerInstancesCreated`, and `textInstancesCreated`, its elapsed time, exactly two observed streaming-Map identities, and stable private-children identity. Map allocation is not presented as a runtime counter: a method-scoped source invariant verifies that `updateContent()` contains no Map construction, while the two field Maps are created only during instance initialization. The Spacer lifecycle fixture reports `currentSpacers`, `spacerHwm`, `spacersAfterShrink`, and `spacersAfterFinal`; each update truncates the private Spacer array to the current message requirement, so a 1→1000→2→final sequence releases the historical tail instead of retaining its high-water objects. Necessary remaining allocations are the provider event/content objects, parser tokens, rendered Markdown lines, viewport-sized line arrays, terminal diff/frame strings, and extension-visible result/context objects. The append-growing paragraph intentionally remains dominated by full text wrapping; it is not misreported as an incremental-token win.
+
+The final CPU closeout reran the plain-text control, append-growing Markdown, and thinking fixtures in five independent processes each, with 5,000 warmups and 20,000 measured updates per process. Component allocation counters were disabled during timed/profiled runs for both revisions; those counters remain in the separate 100,000-update structural gate. This corrects the earlier asymmetric comparison where only the candidate paid dynamic instrumentation overhead. Median p50/p95 and CV are computed across process-level percentiles:
+
+| Assistant fixture | Median p50/p95 ms, old → candidate | Candidate CV p50/p95 | Median sampled B/update, old → candidate | Candidate GC minor/major, total duration |
+| --- | ---: | ---: | ---: | ---: |
+| plain streaming text | 0.009416/0.012966 → 0.007735/0.010656 | 0.0135/0.0589 | 9,298.6 → 7,995.9 | 20/5, 47.47 ms |
+| append-growing Markdown | 0.879835/1.556674 → 0.851569/1.594472 | 0.0112/0.0362 | 943,451.9 → 942,331.0 | 2,833/10, 1,808.30 ms |
+| thinking block | 0.011573/0.016485 → 0.009951/0.014340 | 0.0161/0.0313 | 10,850.5 → 9,214.1 | 20/5, 51.27 ms |
+
+The candidate p95 changes are -17.82%, +2.43%, and -13.01% respectively, so the earlier apparent thinking +20% and append +5.6% regressions do not reproduce. Append-growing remains dominated by `breakLongWord`, `splitIntoTokensWithAnsi`, `wrapSingleLine`, and `visibleWidth`; those sites were flat within sampling noise and incremental wrapping remains Phase 4D-A. Plain/thinking leading sites are Markdown render/parser tokens, terminal line composition, `AssistantMessageComponent.updateContent`, and viewport composition. The stable two-Map slot design removed the old per-update Markdown inline-render site without moving cost into retained heap.
+
+Assistant transition golden tests compare one reused component against a freshly constructed reference across text/thinking/tool-call, 1→4→1 slots, padding, theme, transformer, hidden thinking, aborted, error, and final states. The two Map identities and private children array stay fixed, slot count is capped at four, and evicted records are absent from both Maps.
+
+The paced Assistant fixture uses the production `EventDeliveryScheduler.scheduleWithContext` path. Its legacy two-argument `schedule` implementation fails if invoked, and the benchmark requires `legacyScheduleCalls=0`, one scheduler callback identity, and zero pending tasks after each fixture. Therefore the static `inlineClosures=0` result describes the exercised context-aware production path rather than the legacy compatibility wrapper.
+
+Phase 4D-A owns incremental Markdown wrapping and any further real assistant/tool leaf work; the full-wrap algorithm is intentionally unchanged here. Phase 4D-B owns Alt/layout/input-adjacent allocation work: verify the real production Alt component profile before changing `layoutComponent`/`paintBox`; retain the measured approximately 36.5 KB/frame, two active renders, and maximum three plain-child renders as the current non-blocking baseline; audit Editor whole-render, HStack/VStack, mouse hit testing, selection auto-scroll, Kitty full fallback, overlay handles, low-frequency terminal color-scheme queries, and any explicit frame-local container output API. It must also apply the object-pool admission contract to the historical `READ_GROUP_SELECTOR_SET_POOL` and `READ_GROUP_PATH_MAP_POOL`. No Alt layout rewrite or new object pool belongs to Phase 4D-A0.
 ### Phase 4D-A0 tool leaf allocation coverage
 
 `InteractiveTuiReference` is a typed forwarding facade: each method is allocated once, a captured method resolves the current Main/Alt renderer at invocation time, and repeated property reads return the same function identity. `bench:tui-interactive-reference-allocations` measures 100,000 method reads and calls separately and reports wrapper allocations after initialization, sampled bytes per access/call, GC, and renderer-switch correctness. The facade deliberately does not preserve renderer `instanceof` identity; extensions inspect `tui.mode` instead. No production path depends on `Proxy`, dynamic prototype impersonation, or renderer `instanceof` checks through the facade.

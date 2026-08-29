@@ -266,6 +266,18 @@ interface InlineStyleContext {
 	stylePrefix: string;
 }
 
+function applyTextPreservingNewlines(text: string, applyText: (text: string) => string): string {
+	let start = 0;
+	let result = "";
+	while (start <= text.length) {
+		const newline = text.indexOf("\n", start);
+		if (newline === -1) return result + applyText(text.slice(start));
+		result += applyText(text.slice(start, newline)) + "\n";
+		start = newline + 1;
+	}
+	return result;
+}
+
 function buildTableBorder(columnWidths: readonly number[], left: string, separator: string, right: string): string {
 	let border = left;
 	for (let index = 0; index < columnWidths.length; index++) {
@@ -294,6 +306,12 @@ export class Markdown implements Component {
 	private incrementalTokenSignatures?: Array<string | undefined>;
 	private incrementalTokenContentLines?: string[][];
 	private lastIncrementalReuseCount = 0;
+	private lastParserTokenCount = 0;
+	private readonly applyDefaultInlineText = (text: string): string => this.applyDefaultStyle(text);
+	private readonly defaultInlineStyleContext: InlineStyleContext = {
+		applyText: this.applyDefaultInlineText,
+		stylePrefix: "",
+	};
 
 	constructor(
 		text: string,
@@ -316,6 +334,14 @@ export class Markdown implements Component {
 		this.cachedText = undefined;
 		this.cachedWidth = undefined;
 		this.cachedLines = undefined;
+	}
+
+	getLastIncrementalReuseCount(): number {
+		return this.lastIncrementalReuseCount;
+	}
+
+	getLastParserTokenCount(): number {
+		return this.lastParserTokenCount;
 	}
 
 	invalidate(): void {
@@ -355,6 +381,7 @@ export class Markdown implements Component {
 
 		// Parse markdown to HTML-like tokens
 		const tokens = markdownParser.lexer(normalizedText);
+		this.lastParserTokenCount = tokens.length;
 		trimPartialClosingFences(tokens);
 
 		const incrementalEligible = this.options.incrementalRenderCache === true &&
@@ -529,10 +556,8 @@ export class Markdown implements Component {
 	}
 
 	private getDefaultInlineStyleContext(): InlineStyleContext {
-		return {
-			applyText: (text: string) => this.applyDefaultStyle(text),
-			stylePrefix: this.getDefaultStylePrefix(),
-		};
+		this.defaultInlineStyleContext.stylePrefix = this.getDefaultStylePrefix();
+		return this.defaultInlineStyleContext;
 	}
 
 	private renderToken(
@@ -719,11 +744,6 @@ export class Markdown implements Component {
 		let result = "";
 		const resolvedStyleContext = styleContext ?? this.getDefaultInlineStyleContext();
 		const { applyText, stylePrefix } = resolvedStyleContext;
-		const applyTextWithNewlines = (text: string): string => {
-			const segments: string[] = text.split("\n");
-			return segments.map((segment: string) => applyText(segment)).join("\n");
-		};
-
 		for (const token of tokens) {
 			switch (token.type) {
 				case "latex": {
@@ -732,12 +752,15 @@ export class Markdown implements Component {
 						!latexToken.pending && this.options.renderLatex !== false
 							? (renderLatex(latexToken.text) ?? latexToken.raw)
 							: latexToken.raw;
-					result += applyTextWithNewlines(rendered);
+					result += applyTextPreservingNewlines(rendered, applyText);
 					break;
 				}
 
 				case "escape":
-					result += applyTextWithNewlines(this.options.preserveBackslashEscapes ? token.raw : token.text);
+					result += applyTextPreservingNewlines(
+						this.options.preserveBackslashEscapes ? token.raw : token.text,
+						applyText,
+					);
 					break;
 
 				case "text":
@@ -745,7 +768,7 @@ export class Markdown implements Component {
 					if (token.tokens && token.tokens.length > 0) {
 						result += this.renderInlineTokens(token.tokens, resolvedStyleContext);
 					} else {
-						result += applyTextWithNewlines(token.text);
+						result += applyTextPreservingNewlines(token.text, applyText);
 					}
 					break;
 
@@ -805,14 +828,14 @@ export class Markdown implements Component {
 				case "html":
 					// Render inline HTML as plain text
 					if ("raw" in token && typeof token.raw === "string") {
-						result += applyTextWithNewlines(token.raw);
+						result += applyTextPreservingNewlines(token.raw, applyText);
 					}
 					break;
 
 				default:
 					// Handle any other inline token types as plain text
 					if ("text" in token && typeof token.text === "string") {
-						result += applyTextWithNewlines(token.text);
+						result += applyTextPreservingNewlines(token.text, applyText);
 					}
 			}
 		}
