@@ -20,6 +20,7 @@ export function resolveCloudflareModel<TApi extends Api>(
  */
 export function cloudflareStreams(streams: ProviderStreams): ProviderStreams {
 	return {
+		streamedToolArgumentOwnership: streams.streamedToolArgumentOwnership,
 		stream: (model, context, options) =>
 			streams.stream(resolveCloudflareModel(model, options?.env), context, options),
 		streamSimple: (model, context, options) =>

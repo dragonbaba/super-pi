@@ -79,12 +79,24 @@ export class FakeScheduler {
 		this.clock = clock;
 	}
 
-	schedule(callback: () => void, delayMs = 0): number {
+	schedule(
+		callback: () => void,
+		delayMs = 0,
+	): number {
+		return this.scheduleWithContext(callback, delayMs, undefined, 0);
+	}
+
+	scheduleWithContext(
+		callback: (context: unknown, generation: number) => void,
+		delayMs = 0,
+		context?: unknown,
+		generation = 0,
+	): number {
 		let handle = 0;
 		handle = this.clock.setTimeout(() => {
 			this.scheduled.delete(handle);
 			this.highWaterMark.set(this.scheduled.size);
-			callback();
+			callback(context, generation);
 		}, delayMs);
 		this.scheduled.add(handle);
 		this.highWaterMark.set(this.scheduled.size);

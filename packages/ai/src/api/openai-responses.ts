@@ -16,6 +16,8 @@ import type {
 	StreamOptions,
 	Usage,
 } from "../types.ts";
+
+export const streamedToolArgumentOwnership = "mutation-with-generation" as const;
 import { splitDeferredTools } from "../utils/deferred-tools.ts";
 import { formatProviderError, normalizeProviderError } from "../utils/error-body.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
@@ -190,6 +192,7 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 				if ("index" in block) (block as { index?: number }).index = undefined;
 				// Streaming scratch buffers are only used during parsing; never persist them.
 				if ("partialJson" in block) (block as { partialJson?: string }).partialJson = undefined;
+				if ("toolArgsGeneration" in block) (block as { toolArgsGeneration?: number }).toolArgsGeneration = undefined;
 				if ("customInput" in block) (block as { customInput?: unknown }).customInput = undefined;
 			}
 			output.stopReason = options?.signal?.aborted ? "aborted" : "error";

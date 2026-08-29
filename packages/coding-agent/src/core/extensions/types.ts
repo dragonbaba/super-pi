@@ -495,6 +495,12 @@ export interface ToolDefinition<TParams extends TSchema = TSchema, TDetails = un
 
 	/** Custom rendering for tool call display */
 	renderCall?: (args: Static<TParams>, theme: Theme, context: ToolRenderContext<TState, Static<TParams>>) => Component;
+	/**
+	 * Opt in to caching `renderCall` by semantic argument value. Custom renderers
+	 * are dynamic by default because they may depend on execution/result state,
+	 * presentation settings, theme state, or shared `ToolRenderContext.state`.
+	 */
+	renderCallStability?: "args-only";
 
 	/** Custom rendering for tool result display */
 	renderResult?: (

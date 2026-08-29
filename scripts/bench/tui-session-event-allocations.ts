@@ -3,7 +3,11 @@ import { Session } from "node:inspector/promises";
 import { constants, performance, PerformanceObserver, type PerformanceEntry } from "node:perf_hooks";
 import { Agent } from "../../packages/agent/src/agent.ts";
 import { AgentSession } from "../../packages/coding-agent/src/core/agent-session.ts";
-import { InteractiveMode } from "../../packages/coding-agent/src/modes/interactive/interactive-mode.ts";
+import {
+	createInteractiveTuiReference,
+	InteractiveMode,
+} from "../../packages/coding-agent/src/modes/interactive/interactive-mode.ts";
+import type { TUI } from "../../packages/tui/src/tui.ts";
 import { currentCommit, readIntegerOption } from "./benchmark.ts";
 
 interface SamplingNode {
@@ -102,6 +106,7 @@ function allocationSites(head: SamplingNode): { sampledBytes: number; top: Alloc
 
 function createMode(): InteractiveEventHarness {
 	const mode = Object.create(InteractiveMode.prototype) as InteractiveEventHarness & Record<string, unknown>;
+	const renderer = { requestRender(): void {} } as TUI;
 	Object.assign(mode, {
 		isInitialized: true,
 		footer: { invalidate(): void {} },
@@ -113,7 +118,7 @@ function createMode(): InteractiveEventHarness {
 		deferredReadExecutions: new Map([
 			["tool-1", { args: {}, started: true, resultIsError: false }],
 		]),
-		ui: { requestRender(): void {} },
+		ui: createInteractiveTuiReference(() => renderer),
 	});
 	return mode;
 }
@@ -207,12 +212,14 @@ async function measure(name: string, event: BenchEvent, updates: number, warmup:
 			controlledGcHeapDeltaBytes: controlledGcAfter - heapBefore,
 			builtInListenerPromisesPerUpdate: builtInListenerPromises / updates,
 			rejectionObserversPerUpdate: rejectionObservers / updates,
-			sourceInvariantToolWrapperObjectsPerUpdate: 0,
-			sourceInvariantInlineClosuresPerUpdate: 0,
-			sourceInvariantPromiseTailsPerUpdate: 0,
-			sourceInvariantPromiseArraysPerUpdate: 0,
-			sourceInvariantArraysPerUpdate: 0,
 			finalUpdateCorrect: finalUpdateCorrect ? 1 : 0,
+		},
+		sourceInvariant: {
+			toolWrapperObjectsPerUpdate: 0,
+			inlineClosuresPerUpdate: 0,
+			promiseTailsPerUpdate: 0,
+			promiseArraysPerUpdate: 0,
+			arraysPerUpdate: 0,
 		},
 		topAllocationSites: sampled.top,
 	};
@@ -305,7 +312,7 @@ async function measureFullObserverChain(event: BenchEvent, updates: number, warm
 	const modeState = activeMode as InteractiveEventHarness & Record<string, any>;
 	unsubscribe();
 	return {
-		name: "message_update",
+		name: "observer-coalesced-message_update",
 		updates,
 		warmup,
 		metrics: {
@@ -332,12 +339,14 @@ async function measureFullObserverChain(event: BenchEvent, updates: number, warm
 			heapAfter,
 			controlledGcAfter,
 			controlledGcHeapDeltaBytes: controlledGcAfter - heapBefore,
-			sourceInvariantToolWrapperObjectsPerUpdate: 0,
-			sourceInvariantInlineClosuresPerUpdate: 0,
-			sourceInvariantPromiseTailsPerUpdate: 0,
-			sourceInvariantPromiseArraysPerUpdate: 0,
 			finalUpdateCorrect:
 				modeState.streamingMessage !== undefined && modeState.streamingItemVersion === deliveredVersionBefore + 1 ? 1 : 0,
+		},
+		sourceInvariant: {
+			toolWrapperObjectsPerUpdate: 0,
+			inlineClosuresPerUpdate: 0,
+			promiseTailsPerUpdate: 0,
+			promiseArraysPerUpdate: 0,
 		},
 		topAllocationSites: sampled.top,
 	};
@@ -353,7 +362,13 @@ const warmup = readIntegerOption("--warmup", 10_000);
 const timestamp = 0;
 const messageEvent: BenchEvent = {
 	type: "message_update",
-	message: { role: "assistant", content: [], timestamp },
+	message: { role: "assistant", content: [{ type: "text", text: "progress" }], timestamp },
+	assistantMessageEvent: {
+		type: "text_delta",
+		contentIndex: 0,
+		delta: "progress",
+		partial: { role: "assistant", content: [{ type: "text", text: "progress" }], timestamp },
+	},
 };
 const toolEvent: BenchEvent = {
 	type: "tool_execution_update",
@@ -373,8 +388,16 @@ process.stdout.write(`${JSON.stringify({
 	node: process.version,
 	platform: process.platform,
 	arch: process.arch,
-	fixtures: [
-		{ name: "agent-session-to-interactive", results: directResults },
-		{ name: "agent-observer-to-interactive", results: fullChainResults },
-	],
+	fixtures: [{
+		name: "agent-session-to-interactive-stub",
+		coverage: {
+			realAgentObserverDelivery: true,
+			realStableReference: true,
+			realAssistantComponent: false,
+			realToolComponent: false,
+			markdown: false,
+			frameQueue: false,
+		},
+		results: [...directResults, ...fullChainResults],
+	}],
 }, null, 2)}\n`);

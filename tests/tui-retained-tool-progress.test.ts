@@ -166,7 +166,14 @@ test("deferred image conversion invalidates a completed tool cache", async () =>
 		const tool = createTool("late-image", undefined, (component) => transcript.invalidateRetainedChild(component));
 		const item = transcript.addRetainedChild(tool, { id: "late-image", version: 0 });
 		tool.updateResult({
-			content: [{ type: "image", data: "R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==", mimeType: "image/gif" }],
+			content: [
+				{
+					type: "image",
+					data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+					mimeType: "image/png",
+				},
+				{ type: "image", data: "R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==", mimeType: "image/gif" },
+			],
 			isError: false,
 		});
 		item.advanceVersion();
@@ -174,7 +181,7 @@ test("deferred image conversion invalidates a completed tool cache", async () =>
 		const primed = transcript.render(100);
 		assert.equal(transcript.getContentHeight(100), primed.length);
 
-		await waitFor(() => tool.render(100).some(isImageLine), "deferred PNG conversion");
+		await waitFor(() => tool.render(100).filter(isImageLine).length === 2, "deferred second-image PNG conversion");
 		const reference = tool.render(100);
 		const viewport = transcript.renderViewportTail(100, 40);
 		const updated = tool.render(100);

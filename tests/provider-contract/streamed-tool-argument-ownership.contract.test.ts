@@ -1,0 +1,192 @@
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import test from "node:test";
+import {
+	anthropicMessagesApi,
+	azureOpenAIResponsesApi,
+	bedrockConverseStreamApi,
+	getStreamedToolArgumentOwnership,
+	googleGenerativeAIApi,
+	googleVertexApi,
+	mistralConversationsApi,
+	openAICodexResponsesApi,
+	openAICompletionsApi,
+	openAIResponsesApi,
+	piMessagesApi,
+} from "@super-pi/ai/compat";
+import type { KnownApi, ProviderStreams, StreamedToolArgumentOwnership } from "@super-pi/ai";
+
+type ContractEntry = readonly [
+	api: KnownApi,
+	ownership: StreamedToolArgumentOwnership,
+	factory: () => ProviderStreams & { readonly streamedToolArgumentOwnership: StreamedToolArgumentOwnership },
+	modulePath: string,
+];
+
+const CONTRACT_MATRIX: readonly ContractEntry[] = [
+	["anthropic-messages", "mutation-with-generation", anthropicMessagesApi, "anthropic-messages.ts"],
+	["bedrock-converse-stream", "mutation-with-generation", bedrockConverseStreamApi, "bedrock-converse-stream.ts"],
+	["openai-responses", "mutation-with-generation", openAIResponsesApi, "openai-responses.ts"],
+	["azure-openai-responses", "mutation-with-generation", azureOpenAIResponsesApi, "azure-openai-responses.ts"],
+	["openai-codex-responses", "mutation-with-generation", openAICodexResponsesApi, "openai-codex-responses.ts"],
+	["openai-completions", "mutation-with-generation", openAICompletionsApi, "openai-completions.ts"],
+	["mistral-conversations", "mutation-with-generation", mistralConversationsApi, "mistral-conversations.ts"],
+	["pi-messages", "replacement-object", piMessagesApi, "pi-messages.ts"],
+	["google-generative-ai", "replacement-object", googleGenerativeAIApi, "google-generative-ai.ts"],
+	["google-vertex", "replacement-object", googleVertexApi, "google-vertex.ts"],
+];
+
+test("every built-in adapter declares one streamed tool-argument ownership contract", () => {
+	for (const [api, expected, factory] of CONTRACT_MATRIX) {
+		assert.equal(factory().streamedToolArgumentOwnership, expected, `${api} lazy provider`);
+		assert.equal(getStreamedToolArgumentOwnership(api), expected, `${api} registry`);
+	}
+});
+
+test("adapter implementation modules own the contract instead of a central API exception table", () => {
+	for (const [api, expected, , modulePath] of CONTRACT_MATRIX) {
+		const source = readFileSync(`packages/ai/src/api/${modulePath}`, "utf8");
+		assert.match(
+			source,
+			new RegExp(`export const streamedToolArgumentOwnership = ["']${expected}["'] as const`),
+			api,
+		);
+		assert.equal(
+			source.match(/\bstreamedToolArgumentOwnership\b/g)?.length,
+			1,
+			`${api} wire implementation must only declare host metadata once`,
+		);
+	}
+});
+
+test("streamed tool-argument ownership remains host-only metadata", () => {
+	const identityAndDispatchPaths = [
+		"packages/ai/src/model-capabilities.ts",
+		"packages/ai/src/models-store.ts",
+		"packages/ai/src/models.ts",
+		"packages/ai/src/utils/effective-dispatch.ts",
+		"packages/coding-agent/src/core/models-store.ts",
+		"packages/coding-agent/src/core/prefix-manifest.ts",
+	];
+	for (const filePath of identityAndDispatchPaths) {
+		const source = readFileSync(filePath, "utf8");
+		assert.doesNotMatch(source, /streamedToolArgumentOwnership/, filePath);
+		assert.doesNotMatch(source, /toolArgsGeneration/, filePath);
+	}
+
+	const lazySource = readFileSync("packages/ai/src/api/lazy.ts", "utf8");
+	assert.match(lazySource, /const api: ProviderStreams = \{\s*streamedToolArgumentOwnership,/);
+	assert.doesNotMatch(lazySource, /(?:context|options|payload|params)\s*\.\s*streamedToolArgumentOwnership/);
+});
+
+test("legacy and custom adapters may omit ownership and enter the counted compatibility boundary", () => {
+	const compatSource = readFileSync("packages/ai/src/compat.ts", "utf8");
+	assert.match(
+		compatSource,
+		/streamedToolArgumentOwnership\?: StreamedToolArgumentOwnership;/,
+		"custom providers keep the metadata optional",
+	);
+	assert.match(
+		compatSource,
+		/getStreamedToolArgumentOwnership\(api: Api\): StreamedToolArgumentOwnership \| undefined/,
+	);
+
+	const toolSource = readFileSync(
+		"packages/coding-agent/src/modes/interactive/components/tool-execution.ts",
+		"utf8",
+	);
+	assert.match(toolSource, /toolArgsMissingGenerationUpdates\+\+;/);
+	assert.match(toolSource, /if \(this\.args === args\) \{[\s\S]*?this\.updateDisplay\(\);[\s\S]*?return;/);
+	assert.doesNotMatch(toolSource, /toolArgsMissingGenerationDiagnostics/);
+});
+
+test("mutation adapters expose transient generations and replacement adapters replace arguments", () => {
+	const mutationSources = [
+		"anthropic-messages.ts",
+		"bedrock-converse-stream.ts",
+		"openai-responses-shared.ts",
+		"openai-completions.ts",
+		"mistral-conversations.ts",
+	];
+	for (const modulePath of mutationSources) {
+		const source = readFileSync(`packages/ai/src/api/${modulePath}`, "utf8");
+		assert.match(source, /partialJson|partialArgs/, modulePath);
+	}
+
+	for (const modulePath of ["pi-messages.ts", "google-generative-ai.ts", "google-vertex.ts"]) {
+		const source = readFileSync(`packages/ai/src/api/${modulePath}`, "utf8");
+		assert.match(source, /\.arguments\s*=|arguments:\s*\(/, modulePath);
+	}
+});
+
+test("custom OpenAI generations stay on host events and are removed before persistence", () => {
+	for (const modulePath of ["openai-completions.ts", "openai-responses-shared.ts"]) {
+		const source = readFileSync(`packages/ai/src/api/${modulePath}`, "utf8");
+		assert.match(source, /toolArgsGeneration = \([^\n]+ \?\? 0\) \+ 1/, modulePath);
+		assert.match(source, /toolArgsGeneration: (?:block|slot\.block)\.toolArgsGeneration/, modulePath);
+		assert.match(source, /toolArgsGeneration = undefined/, modulePath);
+	}
+	const types = readFileSync("packages/ai/src/types.ts", "utf8");
+	assert.match(types, /Host-only custom\/grammar argument generation; never persisted or sent on wire/);
+});
+
+test("tool finalization uses one message lane with bounded per-tool metadata", () => {
+	const agent = readFileSync("packages/agent/src/agent.ts", "utf8");
+	const delivery = readFileSync("packages/agent/src/event-delivery.ts", "utf8");
+	assert.match(agent, /pendingChangedToolUpdates\.get\(content\.id\)/);
+	assert.match(agent, /if \(event\.type === "message_update"\) return "message"/);
+	assert.match(agent, /if \(record\.finalized\) return pending/);
+	assert.match(agent, /pendingChangedToolUpdates\.clear\(\)/);
+	const snapshotObserver = agent.slice(
+		agent.indexOf("snapshotObserverEvent(event:"),
+		agent.indexOf("releaseObserverEvent(key:"),
+	);
+	assert.doesNotMatch(snapshotObserver, /clearPendingMessageUpdate/);
+	const agentDispatcher = agent.slice(
+		agent.indexOf("class AgentEventDeliveryDispatcher"),
+		agent.indexOf("export class Agent"),
+	);
+	assert.doesNotMatch(agentDispatcher, /readonly\s+\w+\s*=\s*\(|super\(\{/);
+	assert.match(agentDispatcher, /super\(\)/);
+	const releaseLatest = delivery.slice(
+		delivery.indexOf("private releaseLatest("),
+		delivery.indexOf("private async deliverObserver("),
+	);
+	assert.match(releaseLatest, /pendingLatest\.delete\(key\)[\s\S]*onLatestReleased\(key, pending\.event\)/);
+	assert.doesNotMatch(releaseLatest, /=>|\.map\(|\.filter\(|Array\.from|\.\.\.|new (?:Array|Map|Set)\b/);
+	assert.doesNotMatch(delivery, /scheduledFlush\s*=\s*\(|flushAvailable\(false\)\.catch\(/);
+	assert.match(
+		delivery,
+		/scheduler\.scheduleWithContext\([\s\S]*EventDeliveryDispatcher\.dispatchScheduledFlush,[\s\S]*delayMs,[\s\S]*this,[\s\S]*generation,/,
+	);
+	assert.match(delivery, /setTimeout\(callback, delayMs, context, generation\)/);
+	assert.match(delivery, /schedule\(callback: \(\) => void, delayMs: number\): unknown/);
+	assert.match(delivery, /scheduleWithContext\?\(/);
+	assert.match(delivery, /if \(generation !== this\.activeScheduledGeneration\) return;/);
+	assert.doesNotMatch(delivery, /reportDiagnostic\(\s*\{/);
+	assert.match(delivery, /reportObserverError\(error\)/);
+	assert.match(delivery, /reportSlowObserver\(durationMs\)/);
+	const interactive = readFileSync("packages/coding-agent/src/modes/interactive/interactive-mode.ts", "utf8");
+	const messageUpdate = interactive.slice(interactive.indexOf('case "message_update"'), interactive.indexOf('case "message_end"'));
+	assert.match(messageUpdate, /for \(const update of changedToolUpdates\)/);
+	assert.match(messageUpdate, /update\.contentIndex, update\.generation, update\.finalized/);
+	assert.doesNotMatch(messageUpdate, /for \(let contentIndex/);
+	assert.match(interactive, /if \(changed\) this\.advanceActiveToolVersion\(component\)/);
+	const tool = readFileSync("packages/coding-agent/src/modes/interactive/components/tool-execution.ts", "utf8");
+	assert.match(tool, /private argsStreamFinalized = false/);
+	assert.match(tool, /toolArgsFinalizations\+\+/);
+	assert.match(tool, /\): boolean \{/);
+});
+
+test("paced streamed-args benchmark reports flush-cycle cardinality without legacy delivery fields", () => {
+	const source = readFileSync("scripts/bench/tui-paced-streamed-tool-args.ts", "utf8");
+	assert.doesNotMatch(source, /RAW_PER_DELIVERY|rawPerDelivery/);
+	assert.match(source, /RAW_UPDATES_PER_FLUSH_CYCLE/);
+	assert.match(source, /rawUpdatesPerFlushCycle/);
+	for (const toolCount of [1, 2, 4, 8, 16]) assert.match(source, new RegExp(`cardinality-${toolCount}`));
+	assert.match(source, /fullMessageSnapshotsPerFlush/);
+	assert.match(source, /agentSessionDeliveriesPerFlush/);
+	assert.match(source, /interactiveModeDeliveriesPerFlush/);
+	assert.match(source, /toolUpdateArgsCallsPerFlush/);
+	assert.match(source, /finalization: "after sampling; structural evidence only"/);
+});

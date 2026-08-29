@@ -2506,29 +2506,32 @@ test("100k Agent observer and session delivery preserve synchronous UI lanes", (
 	const result = JSON.parse(child.stdout) as {
 		fixtures: Array<{
 			name: string;
-			results: Array<{ name: string; updates: number; metrics: Record<string, number> }>;
+			results: Array<{
+				name: string;
+				updates: number;
+				metrics: Record<string, number>;
+				sourceInvariant: Record<string, number>;
+			}>;
 		}>;
 	};
-	assert.deepEqual(result.fixtures.map((fixture) => fixture.name), [
-		"agent-session-to-interactive",
-		"agent-observer-to-interactive",
-	]);
-	const direct = result.fixtures[0]!.results;
+	assert.deepEqual(result.fixtures.map((fixture) => fixture.name), ["agent-session-to-interactive-stub"]);
+	const direct = result.fixtures[0]!.results.slice(0, 2);
 	assert.deepEqual(direct.map((entry) => entry.name), ["message_update", "tool_execution_update"]);
 	for (const entry of direct) {
 		assert.equal(entry.updates, 100_000);
 		assert.equal(entry.metrics.builtInListenerPromisesPerUpdate, 0);
 		assert.equal(entry.metrics.rejectionObserversPerUpdate, 0);
-		assert.equal(entry.metrics.sourceInvariantToolWrapperObjectsPerUpdate, 0);
-		assert.equal(entry.metrics.sourceInvariantInlineClosuresPerUpdate, 0);
-		assert.equal(entry.metrics.sourceInvariantPromiseTailsPerUpdate, 0);
-		assert.equal(entry.metrics.sourceInvariantPromiseArraysPerUpdate, 0);
-		assert.equal(entry.metrics.sourceInvariantArraysPerUpdate, 0);
+		assert.equal(entry.sourceInvariant.toolWrapperObjectsPerUpdate, 0);
+		assert.equal(entry.sourceInvariant.inlineClosuresPerUpdate, 0);
+		assert.equal(entry.sourceInvariant.promiseTailsPerUpdate, 0);
+		assert.equal(entry.sourceInvariant.promiseArraysPerUpdate, 0);
+		assert.equal(entry.sourceInvariant.arraysPerUpdate, 0);
 		assert.equal(entry.metrics.finalUpdateCorrect, 1);
 		assert.ok(entry.metrics.sampledAllocationBytesPerUpdate >= 0);
 		assert.ok(entry.metrics.cpuP95MsPerUpdate >= entry.metrics.cpuP50MsPerUpdate);
 	}
-	const fullChain = result.fixtures[1]!.results[0]!;
+	const fullChain = result.fixtures[0]!.results[2]!;
+	assert.equal(fullChain.name, "observer-coalesced-message_update");
 	assert.equal(fullChain.updates, 100_000);
 	assert.equal(fullChain.metrics.rawUpdates, 100_000);
 	assert.equal(fullChain.metrics.coalescedUpdates, 99_999);
@@ -2540,7 +2543,7 @@ test("100k Agent observer and session delivery preserve synchronous UI lanes", (
 	assert.equal(fullChain.metrics.observerBridgePromisesPerDelivery, 0);
 	assert.equal(fullChain.metrics.builtInInteractivePromisesPerDelivery, 0);
 	assert.equal(fullChain.metrics.rejectionObserversPerDelivery, 0);
-	assert.equal(fullChain.metrics.sourceInvariantToolWrapperObjectsPerUpdate, 0);
+	assert.equal(fullChain.sourceInvariant.toolWrapperObjectsPerUpdate, 0);
 	assert.equal(fullChain.metrics.finalUpdateCorrect, 1);
 	assert.ok(fullChain.metrics.sampledAllocationBytesPerRawUpdate >= 0);
 	assert.ok(fullChain.metrics.sampledAllocationBytesPerDelivery >= 0);

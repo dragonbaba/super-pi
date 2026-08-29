@@ -11,6 +11,8 @@ import type {
 	StreamFunction,
 	StreamOptions,
 } from "../types.ts";
+
+export const streamedToolArgumentOwnership = "mutation-with-generation" as const;
 import { formatProviderError, normalizeProviderError } from "../utils/error-body.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { observeEffectiveDispatch } from "../utils/effective-dispatch.ts";
@@ -156,6 +158,9 @@ export const stream: StreamFunction<"azure-openai-responses", AzureOpenAIRespons
 				// Streaming scratch buffers are only used during parsing; never persist them.
 				if ("partialJson" in block) {
 					(block as { partialJson?: string }).partialJson = undefined;
+				}
+				if ("toolArgsGeneration" in block) {
+					(block as { toolArgsGeneration?: number }).toolArgsGeneration = undefined;
 				}
 				if ("customInput" in block) {
 					(block as { customInput?: unknown }).customInput = undefined;

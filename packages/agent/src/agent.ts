@@ -21,6 +21,7 @@ import type {
 	AfterToolCallContext,
 	AfterToolCallResult,
 	AgentContext,
+	AgentChangedToolUpdate,
 	AgentEvent,
 	AgentEventInstrumentation,
 	AgentLoopConfig,
@@ -195,6 +196,79 @@ type ActiveRun = {
 	abortController: AbortController;
 };
 
+type MessageUpdateEvent = Extract<AgentEvent, { type: "message_update" }>;
+type ToolUpdatePhase = AgentChangedToolUpdate["phase"];
+type ToolCallAssistantEvent = Extract<
+	AssistantMessageEvent,
+	{ type: "toolcall_start" | "toolcall_delta" | "toolcall_end" }
+>;
+
+interface PendingChangedToolUpdate {
+	toolCallId: string;
+	contentIndex: number;
+	phase: ToolUpdatePhase;
+	generation: string | number | undefined;
+	finalized: boolean;
+}
+
+type PendingMessageUpdateEvent = MessageUpdateEvent & {
+	changedToolUpdates: PendingChangedToolUpdate[];
+};
+
+function getToolUpdatePhase(event: ToolCallAssistantEvent): ToolUpdatePhase {
+	if (event.type === "toolcall_start") return "start";
+	if (event.type === "toolcall_delta") return "delta";
+	return "end";
+}
+
+function getToolUpdateGeneration(
+	content: unknown,
+	event: ToolCallAssistantEvent,
+): string | number | undefined {
+	const eventGeneration = (event as AssistantMessageEvent & { toolArgsGeneration?: string | number })
+		.toolArgsGeneration;
+	if (eventGeneration !== undefined) return eventGeneration;
+	if (typeof content !== "object" || content === null) return undefined;
+	const block = content as {
+		toolArgsGeneration?: string | number;
+		partialJson?: string;
+		partialArgs?: string;
+	};
+	return block.toolArgsGeneration ?? block.partialJson ?? block.partialArgs;
+}
+
+class AgentEventDeliveryDispatcher extends EventDeliveryDispatcher<AgentEvent, string> {
+	private readonly owner: Agent;
+	private readonly diagnosticListener: ((diagnostic: EventDeliveryDiagnostic) => void) | undefined;
+
+	constructor(
+		owner: Agent,
+		onDiagnostic: ((diagnostic: EventDeliveryDiagnostic) => void) | undefined,
+	) {
+		super();
+		this.owner = owner;
+		this.diagnosticListener = onDiagnostic;
+	}
+
+	protected override createLatestSnapshot(event: AgentEvent): AgentEvent {
+		return this.owner.snapshotObserverEvent(event);
+	}
+
+	protected override onLatestReleased(key: string, event: AgentEvent): void {
+		this.owner.releaseObserverEvent(key, event);
+	}
+
+	protected override onObserverError(error: unknown): void {
+		const listener = this.diagnosticListener;
+		if (listener) listener({ type: "observer-error", error });
+	}
+
+	protected override onSlowObserver(durationMs: number): void {
+		const listener = this.diagnosticListener;
+		if (listener) listener({ type: "observer-slow", durationMs });
+	}
+}
+
 /**
  * Stateful wrapper around the low-level agent loop.
  *
@@ -204,6 +278,8 @@ type ActiveRun = {
 export class Agent {
 	private _state: MutableAgentState;
 	private readonly eventDelivery: EventDeliveryDispatcher<AgentEvent, string>;
+	private readonly pendingChangedToolUpdates = new Map<string, PendingChangedToolUpdate>();
+	private pendingMessageUpdateEvent: PendingMessageUpdateEvent | undefined;
 	private readonly eventInstrumentation?: AgentEventInstrumentation;
 	private readonly steeringQueue: PendingMessageQueue;
 	private readonly followUpQueue: PendingMessageQueue;
@@ -268,11 +344,7 @@ export class Agent {
 		this.maxRetryDelayMs = runtimeOptions.maxRetryDelayMs;
 		this.toolExecution = runtimeOptions.toolExecution ?? "parallel";
 		this.eventInstrumentation = runtimeOptions.eventInstrumentation;
-		this.eventDelivery = new EventDeliveryDispatcher({
-			defaultMinIntervalMs: 16,
-			snapshotLatest: (event) => this.snapshotObserverEvent(event),
-			onDiagnostic: runtimeOptions.onEventDeliveryDiagnostic,
-		});
+		this.eventDelivery = new AgentEventDeliveryDispatcher(this, runtimeOptions.onEventDeliveryDiagnostic);
 	}
 
 	/**
@@ -589,6 +661,7 @@ export class Agent {
 		this._state.isStreaming = false;
 		this._state.streamingMessage = undefined;
 		this._state.pendingToolCalls = new Set<string>();
+		this.clearPendingMessageUpdate();
 		this.activeRun?.resolve();
 		this.activeRun = undefined;
 	}
@@ -645,7 +718,15 @@ export class Agent {
 			if (this.eventDelivery.hasAwaitedListeners(event)) {
 				await this.eventDelivery.publishAwaited(this.snapshotAwaitedEvent(event));
 			}
-			this.eventDelivery.publishLatest(latestKey, event);
+			if (event.type === "message_update") {
+				if (this.eventDelivery.hasLatestListeners) {
+					this.eventDelivery.publishLatest(latestKey, this.prepareMessageUpdate(event));
+				} else {
+					this.clearPendingMessageUpdate();
+				}
+			} else {
+				this.eventDelivery.publishLatest(latestKey, event);
+			}
 			return;
 		}
 		await this.eventDelivery.publishCritical(event);
@@ -663,6 +744,62 @@ export class Agent {
 		return undefined;
 	}
 
+	private prepareMessageUpdate(event: MessageUpdateEvent): PendingMessageUpdateEvent {
+		let pending = this.pendingMessageUpdateEvent;
+		if (pending === undefined) {
+			pending = {
+				type: "message_update",
+				message: event.message,
+				assistantMessageEvent: event.assistantMessageEvent,
+				changedToolUpdates: [],
+			};
+			this.pendingMessageUpdateEvent = pending;
+		} else {
+			pending.message = event.message;
+			pending.assistantMessageEvent = event.assistantMessageEvent;
+		}
+
+		const assistantUpdate = event.assistantMessageEvent;
+		if (
+			assistantUpdate.type !== "toolcall_start" &&
+			assistantUpdate.type !== "toolcall_delta" &&
+			assistantUpdate.type !== "toolcall_end"
+		) return pending;
+		const phase = getToolUpdatePhase(assistantUpdate);
+		const contentIndex = assistantUpdate.contentIndex;
+		const content = assistantUpdate.partial.content[contentIndex];
+		if (content?.type !== "toolCall") return pending;
+		const generation = getToolUpdateGeneration(content, assistantUpdate);
+		let record = this.pendingChangedToolUpdates.get(content.id);
+		if (record === undefined) {
+			record = {
+				toolCallId: content.id,
+				contentIndex,
+				phase,
+				generation,
+				finalized: phase === "end",
+			};
+			this.pendingChangedToolUpdates.set(content.id, record);
+			pending.changedToolUpdates.push(record);
+			this.eventInstrumentation?.onPendingToolMetadata?.(this.pendingChangedToolUpdates.size);
+			return pending;
+		}
+
+		record.contentIndex = contentIndex;
+		if (record.finalized) return pending;
+		record.phase = phase;
+		if (generation !== undefined) record.generation = generation;
+		if (phase === "end") record.finalized = true;
+		return pending;
+	}
+
+	private clearPendingMessageUpdate(): void {
+		if (this.pendingMessageUpdateEvent === undefined && this.pendingChangedToolUpdates.size === 0) return;
+		this.pendingMessageUpdateEvent = undefined;
+		this.pendingChangedToolUpdates.clear();
+		this.eventInstrumentation?.onPendingToolMetadata?.(0);
+	}
+
 	private snapshotAwaitedEvent(event: AgentEvent): AgentEvent {
 		if (event.type !== "message_update") return event;
 		const message = { ...event.message };
@@ -673,10 +810,16 @@ export class Agent {
 		return { ...event, message, assistantMessageEvent };
 	}
 
-	private snapshotObserverEvent(event: AgentEvent): AgentEvent {
+	/** @internal EventDeliveryDispatcher ownership hook. */
+	snapshotObserverEvent(event: AgentEvent): AgentEvent {
 		if (event.type === "message_update") this.eventInstrumentation?.onAssistantSnapshot?.();
 		const snapshot = structuredClone(event);
 		deepFreezeSnapshot(snapshot);
 		return snapshot;
+	}
+
+	/** @internal EventDeliveryDispatcher ownership hook. */
+	releaseObserverEvent(key: string, event: AgentEvent): void {
+		if (key === "message" && event === this.pendingMessageUpdateEvent) this.clearPendingMessageUpdate();
 	}
 }

@@ -3,6 +3,12 @@ export type EventDelivery = "critical" | "latest";
 export interface EventDeliveryScheduler {
 	now(): number;
 	schedule(callback: () => void, delayMs: number): unknown;
+	scheduleWithContext?(
+		callback: (context: unknown, generation: number) => void,
+		delayMs: number,
+		context: unknown,
+		generation: number,
+	): unknown;
 	cancel(handle: unknown): void;
 }
 
@@ -53,10 +59,39 @@ interface PendingLatest<E> {
 	snapshot: E | undefined;
 }
 
+function defaultSchedulerNow(): number {
+	return performance.now();
+}
+
+function defaultSchedulerSchedule(
+	callback: () => void,
+	delayMs: number,
+): unknown {
+	return setTimeout(callback, delayMs);
+}
+
+function defaultSchedulerScheduleWithContext(
+	callback: (context: unknown, generation: number) => void,
+	delayMs: number,
+	context: unknown,
+	generation: number,
+): unknown {
+	return setTimeout(callback, delayMs, context, generation);
+}
+
+function defaultSchedulerCancel(handle: unknown): void {
+	clearTimeout(handle as ReturnType<typeof setTimeout>);
+}
+
+function identitySnapshot<T>(event: T): T {
+	return event;
+}
+
 const DEFAULT_SCHEDULER: EventDeliveryScheduler = {
-	now: () => performance.now(),
-	schedule: (callback, delayMs) => setTimeout(callback, delayMs),
-	cancel: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+	now: defaultSchedulerNow,
+	schedule: defaultSchedulerSchedule,
+	scheduleWithContext: defaultSchedulerScheduleWithContext,
+	cancel: defaultSchedulerCancel,
 };
 
 function finiteNonNegative(name: string, value: number): number {
@@ -80,6 +115,9 @@ export class EventDeliveryDispatcher<E, K> {
 	private readonly snapshotLatest: (event: E) => E;
 	private readonly onDiagnostic?: (diagnostic: EventDeliveryDiagnostic) => void;
 	private scheduledHandle: unknown;
+	private scheduledDueAt = Number.POSITIVE_INFINITY;
+	private scheduledGeneration = 0;
+	private activeScheduledGeneration = 0;
 	private flushPromise: Promise<void> | undefined;
 	private nextVersion = 1;
 	private disposed = false;
@@ -89,18 +127,28 @@ export class EventDeliveryDispatcher<E, K> {
 	private maxPendingKeys = 0;
 	private observerErrors = 0;
 	private slowObservers = 0;
-	private readonly scheduledFlush = (): void => {
+	private static dispatchScheduledFlush(context: unknown, generation: number): void {
+		(context as EventDeliveryDispatcher<unknown, unknown>).handleScheduledFlush(generation);
+	}
+	private static createLegacyScheduledFlush(context: unknown, generation: number): () => void {
+		return function legacyScheduledFlush(): void {
+			EventDeliveryDispatcher.dispatchScheduledFlush(context, generation);
+		};
+	}
+
+	private handleScheduledFlush(generation: number): void {
+		if (generation !== this.activeScheduledGeneration) return;
+		this.activeScheduledGeneration = 0;
 		this.scheduledHandle = undefined;
-		void this.flushAvailable(false).catch((error) => {
-			this.reportDiagnostic({ type: "observer-error", error });
-		});
-	};
+		this.scheduledDueAt = Number.POSITIVE_INFINITY;
+		void this.flushAvailable(false, undefined, true);
+	}
 
 	constructor(options: EventDeliveryDispatcherOptions<E> = {}) {
 		this.scheduler = options.scheduler ?? DEFAULT_SCHEDULER;
 		this.defaultMinIntervalMs = finiteNonNegative("defaultMinIntervalMs", options.defaultMinIntervalMs ?? 16);
 		this.slowObserverMs = finiteNonNegative("slowObserverMs", options.slowObserverMs ?? 100);
-		this.snapshotLatest = options.snapshotLatest ?? ((event) => event);
+		this.snapshotLatest = options.snapshotLatest ?? identitySnapshot;
 		this.onDiagnostic = options.onDiagnostic;
 	}
 
@@ -134,6 +182,10 @@ export class EventDeliveryDispatcher<E, K> {
 			if (this.matchesFilter(registration, event)) return true;
 		}
 		return false;
+	}
+
+	get hasLatestListeners(): boolean {
+		return this.observers.size > 0;
 	}
 
 	async publishAwaited(event: E): Promise<void> {
@@ -184,7 +236,7 @@ export class EventDeliveryDispatcher<E, K> {
 		if (this.disposed) return;
 		this.disposed = true;
 		this.cancelScheduledFlush();
-		this.pendingLatest.clear();
+		for (const [key, pending] of this.pendingLatest) this.releaseLatest(key, pending);
 		await this.flushPromise;
 		this.criticalListeners.clear();
 		for (const observer of this.observers) observer.seenVersions.clear();
@@ -204,7 +256,7 @@ export class EventDeliveryDispatcher<E, K> {
 	}
 
 	private scheduleFlush(): void {
-		if (this.scheduledHandle !== undefined || this.flushPromise || this.pendingLatest.size === 0) return;
+		if (this.flushPromise || this.pendingLatest.size === 0) return;
 		let delayMs = Number.POSITIVE_INFINITY;
 		const now = this.scheduler.now();
 		for (const observer of this.observers) {
@@ -220,38 +272,66 @@ export class EventDeliveryDispatcher<E, K> {
 			}
 		}
 		if (!Number.isFinite(delayMs)) return;
+		const dueAt = now + delayMs;
+		if (this.scheduledHandle !== undefined) {
+			if (this.scheduledDueAt <= dueAt) return;
+			this.cancelScheduledFlush();
+		}
 		try {
-			this.scheduledHandle = this.scheduler.schedule(this.scheduledFlush, delayMs);
+			const generation = ++this.scheduledGeneration;
+			this.activeScheduledGeneration = generation;
+			this.scheduledDueAt = dueAt;
+			const handle = this.scheduler.scheduleWithContext
+				? this.scheduler.scheduleWithContext(
+					EventDeliveryDispatcher.dispatchScheduledFlush,
+					delayMs,
+					this,
+					generation,
+				)
+				: this.scheduler.schedule(EventDeliveryDispatcher.createLegacyScheduledFlush(this, generation), delayMs);
+			if (this.activeScheduledGeneration === generation) this.scheduledHandle = handle;
 		} catch (error) {
-			this.reportDiagnostic({ type: "observer-error", error });
+			this.activeScheduledGeneration = 0;
+			this.scheduledHandle = undefined;
+			this.scheduledDueAt = Number.POSITIVE_INFINITY;
+			this.reportObserverError(error);
 		}
 	}
 
 	private cancelScheduledFlush(): void {
-		if (this.scheduledHandle === undefined) return;
-		this.scheduler.cancel(this.scheduledHandle);
+		const handle = this.scheduledHandle;
+		this.activeScheduledGeneration = 0;
 		this.scheduledHandle = undefined;
+		this.scheduledDueAt = Number.POSITIVE_INFINITY;
+		if (handle !== undefined) this.scheduler.cancel(handle);
 	}
 
-	private async flushAvailable(force: boolean, onlyKey?: K): Promise<void> {
-		if (this.disposed || !this.hasPending(onlyKey)) return;
-		this.cancelScheduledFlush();
-		if (this.flushPromise) {
-			await this.flushPromise;
-			if (!this.disposed && this.hasPending(onlyKey)) await this.flushAvailable(force, onlyKey);
-			return;
-		}
-
-		const flush = this.runFlush(force, onlyKey);
-		this.flushPromise = flush;
+	private async flushAvailable(force: boolean, onlyKey?: K, isolateErrors = false): Promise<void> {
 		try {
-			await flush;
-		} finally {
-			if (this.flushPromise === flush) this.flushPromise = undefined;
-		}
-		if (!this.disposed) {
-			if (force && this.hasPending(onlyKey)) await this.flushAvailable(true, onlyKey);
-			if (this.pendingLatest.size > 0) this.scheduleFlush();
+			if (this.disposed || !this.hasPending(onlyKey)) return;
+			this.cancelScheduledFlush();
+			if (this.flushPromise) {
+				await this.flushPromise;
+				if (!this.disposed && this.hasPending(onlyKey)) {
+					await this.flushAvailable(force, onlyKey, isolateErrors);
+				}
+				return;
+			}
+
+			const flush = this.runFlush(force, onlyKey);
+			this.flushPromise = flush;
+			try {
+				await flush;
+			} finally {
+				if (this.flushPromise === flush) this.flushPromise = undefined;
+			}
+			if (!this.disposed) {
+				if (force && this.hasPending(onlyKey)) await this.flushAvailable(true, onlyKey, isolateErrors);
+				if (this.pendingLatest.size > 0) this.scheduleFlush();
+			}
+		} catch (error) {
+			if (!isolateErrors) throw error;
+			this.reportObserverError(error);
 		}
 	}
 
@@ -270,9 +350,9 @@ export class EventDeliveryDispatcher<E, K> {
 				const deliveredVersion = pending.version;
 				let event: E;
 				try {
-					event = pending.snapshot ?? (pending.snapshot = this.snapshotLatest(pending.event));
+					event = pending.snapshot ?? (pending.snapshot = this.createLatestSnapshot(pending.event));
 				} catch (error) {
-					this.reportDiagnostic({ type: "observer-error", error });
+					this.reportObserverError(error);
 					for (const registeredObserver of this.observers) {
 						registeredObserver.seenVersions.set(key, deliveredVersion);
 					}
@@ -299,10 +379,30 @@ export class EventDeliveryDispatcher<E, K> {
 				}
 			}
 			if (!deliveredToAll) continue;
-			this.pendingLatest.delete(key);
-			for (const observer of this.observers) observer.seenVersions.delete(key);
+			this.releaseLatest(key, pending);
 		}
 	}
+
+	private releaseLatest(key: K, pending: PendingLatest<E>): void {
+		if (this.pendingLatest.get(key) !== pending) return;
+		this.pendingLatest.delete(key);
+		for (const observer of this.observers) observer.seenVersions.delete(key);
+		try {
+			this.onLatestReleased(key, pending.event);
+		} catch (error) {
+			this.reportObserverError(error);
+		}
+	}
+
+	protected createLatestSnapshot(event: E): E {
+		return this.snapshotLatest(event);
+	}
+
+	protected onLatestReleased(_key: K, _event: E): void {}
+
+	protected onObserverError(_error: unknown): void {}
+
+	protected onSlowObserver(_durationMs: number): void {}
 
 	private async deliverObserver(observer: ObserverListener<E, K>, event: E): Promise<void> {
 		const startedAt = this.scheduler.now();
@@ -311,12 +411,12 @@ export class EventDeliveryDispatcher<E, K> {
 			this.delivered++;
 		} catch (error) {
 			this.observerErrors++;
-			this.reportDiagnostic({ type: "observer-error", error });
+			this.reportObserverError(error);
 		}
 		const durationMs = this.scheduler.now() - startedAt;
 		if (durationMs >= this.slowObserverMs) {
 			this.slowObservers++;
-			this.reportDiagnostic({ type: "observer-slow", durationMs });
+			this.reportSlowObserver(durationMs);
 		}
 	}
 
@@ -326,16 +426,40 @@ export class EventDeliveryDispatcher<E, K> {
 			return registration.filter(event);
 		} catch (error) {
 			this.observerErrors++;
-			this.reportDiagnostic({ type: "observer-error", error });
+			this.reportObserverError(error);
 			return false;
 		}
 	}
 
-	private reportDiagnostic(diagnostic: EventDeliveryDiagnostic): void {
+	private reportObserverError(error: unknown): void {
+		const listener = this.onDiagnostic;
+		if (listener) {
+			try {
+				listener({ type: "observer-error", error });
+			} catch {
+				// Diagnostics are observational and must never affect event delivery.
+			}
+		}
 		try {
-			this.onDiagnostic?.(diagnostic);
+			this.onObserverError(error);
 		} catch {
-			// Diagnostics are observational and must never affect event delivery.
+			// Subclass diagnostics are observational and must never affect event delivery.
+		}
+	}
+
+	private reportSlowObserver(durationMs: number): void {
+		const listener = this.onDiagnostic;
+		if (listener) {
+			try {
+				listener({ type: "observer-slow", durationMs });
+			} catch {
+				// Diagnostics are observational and must never affect event delivery.
+			}
+		}
+		try {
+			this.onSlowObserver(durationMs);
+		} catch {
+			// Subclass diagnostics are observational and must never affect event delivery.
 		}
 	}
 }

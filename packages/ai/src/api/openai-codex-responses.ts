@@ -36,6 +36,8 @@ import type {
 	StreamOptions,
 	Usage,
 } from "../types.ts";
+
+export const streamedToolArgumentOwnership = "mutation-with-generation" as const;
 import { combineAbortSignals } from "../utils/abort-signals.ts";
 import { splitDeferredTools } from "../utils/deferred-tools.ts";
 import {
@@ -568,6 +570,8 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
                 // Streaming scratch buffers are only used during parsing; never persist them.
                 if ("partialJson" in block)
                     (block as typeof block & { partialJson?: unknown }).partialJson = undefined;
+                if ("toolArgsGeneration" in block)
+                    (block as typeof block & { toolArgsGeneration?: unknown }).toolArgsGeneration = undefined;
                 if ("customInput" in block)
                     (block as typeof block & { customInput?: unknown }).customInput = undefined;
             }

@@ -9,7 +9,14 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentMessage, ThinkingLevel } from "@super-pi/agent-core";
 import type { AuthEvent, AuthPrompt } from "@super-pi/ai";
-import type { AssistantMessage, ImageContent, Message, Model } from "@super-pi/ai/compat";
+import {
+	getStreamedToolArgumentOwnership,
+	type AssistantMessage,
+	type ImageContent,
+	type Message,
+	type Model,
+	type StreamedToolArgumentOwnership,
+} from "@super-pi/ai/compat";
 import type {
 	AutocompleteItem,
 	AutocompleteProvider,
@@ -390,35 +397,100 @@ export function createInteractiveTui(options: InteractiveTuiOptions): TuiMainScr
 	return new TuiMainScreen(terminal, options.showHardwareCursor, options.logDirectory);
 }
 
-/** Stable reference for components while InteractiveMode replaces the active renderer. */
+/**
+ * Stable forwarding surface for components that outlive a Main/Alt renderer.
+ * Every callable is allocated once with the facade and resolves the renderer at
+ * invocation time, so capturing a method never captures an obsolete renderer.
+ */
+export class InteractiveTuiReference implements TUI {
+	private readonly getCurrentTui: () => TUI;
+
+	constructor(getTui: () => TUI) {
+		this.getCurrentTui = getTui;
+	}
+
+	get mode(): TUI["mode"] { return this.getCurrentTui().mode; }
+	get children(): TUI["children"] { return this.getCurrentTui().children; }
+	set children(children: TUI["children"]) { this.getCurrentTui().children = children; }
+	get terminal(): TUI["terminal"] { return this.getCurrentTui().terminal; }
+	set terminal(terminal: TUI["terminal"]) { this.getCurrentTui().terminal = terminal; }
+	get onDebug(): TUI["onDebug"] { return this.getCurrentTui().onDebug; }
+	set onDebug(onDebug: TUI["onDebug"]) { this.getCurrentTui().onDebug = onDebug; }
+	get fullRedraws(): number { return this.getCurrentTui().fullRedraws; }
+	get [TuiLayouts.VIEWPORT_TUI](): true | undefined {
+		return TuiLayouts.isViewportTUI(this.getCurrentTui()) ? true : undefined;
+	}
+
+	readonly addChild = (component: Parameters<TUI["addChild"]>[0]): void => this.getCurrentTui().addChild(component);
+	readonly removeChild = (component: Parameters<TUI["removeChild"]>[0]): void =>
+		this.getCurrentTui().removeChild(component);
+	readonly clear = (): void => this.getCurrentTui().clear();
+	readonly invalidate = (): void => this.getCurrentTui().invalidate();
+	readonly render = (width: Parameters<TUI["render"]>[0]): ReturnType<TUI["render"]> =>
+		this.getCurrentTui().render(width);
+	readonly getShowHardwareCursor = (): boolean => this.getCurrentTui().getShowHardwareCursor();
+	readonly setShowHardwareCursor = (enabled: Parameters<TUI["setShowHardwareCursor"]>[0]): void =>
+		this.getCurrentTui().setShowHardwareCursor(enabled);
+	readonly getClearOnShrink = (): boolean => this.getCurrentTui().getClearOnShrink();
+	readonly setClearOnShrink = (enabled: Parameters<TUI["setClearOnShrink"]>[0]): void =>
+		this.getCurrentTui().setClearOnShrink(enabled);
+	readonly setRenderInstrumentation = (instrumentation: Parameters<TUI["setRenderInstrumentation"]>[0]): void =>
+		this.getCurrentTui().setRenderInstrumentation(instrumentation);
+	readonly setFocus = (component: Parameters<TUI["setFocus"]>[0]): void => this.getCurrentTui().setFocus(component);
+	readonly showOverlay = (
+		component: Parameters<TUI["showOverlay"]>[0],
+		options?: Parameters<TUI["showOverlay"]>[1],
+	): ReturnType<TUI["showOverlay"]> => this.getCurrentTui().showOverlay(component, options);
+	readonly hideOverlay = (): void => this.getCurrentTui().hideOverlay();
+	readonly hasOverlay = (): boolean => this.getCurrentTui().hasOverlay();
+	readonly start = (): void => this.getCurrentTui().start();
+	readonly stop = (options?: Parameters<TUI["stop"]>[0]): ReturnType<TUI["stop"]> =>
+		this.getCurrentTui().stop(options);
+	readonly dispose = (options?: Parameters<TUI["dispose"]>[0]): ReturnType<TUI["dispose"]> =>
+		this.getCurrentTui().dispose(options);
+	readonly renderNow = (force?: Parameters<TUI["renderNow"]>[0]): void => this.getCurrentTui().renderNow(force);
+	readonly requestRender = (force?: Parameters<TUI["requestRender"]>[0]): void =>
+		this.getCurrentTui().requestRender(force);
+	readonly flushTerminalFrames = (): ReturnType<TUI["flushTerminalFrames"]> =>
+		this.getCurrentTui().flushTerminalFrames();
+	readonly addInputListener = (
+		listener: Parameters<TUI["addInputListener"]>[0],
+	): ReturnType<TUI["addInputListener"]> => this.getCurrentTui().addInputListener(listener);
+	readonly removeInputListener = (listener: Parameters<TUI["removeInputListener"]>[0]): void =>
+		this.getCurrentTui().removeInputListener(listener);
+	readonly onTerminalColorSchemeChange = (
+		listener: Parameters<TUI["onTerminalColorSchemeChange"]>[0],
+	): ReturnType<TUI["onTerminalColorSchemeChange"]> => this.getCurrentTui().onTerminalColorSchemeChange(listener);
+	readonly setTerminalColorSchemeNotifications = (
+		enabled: Parameters<TUI["setTerminalColorSchemeNotifications"]>[0],
+	): void => this.getCurrentTui().setTerminalColorSchemeNotifications(enabled);
+	readonly queryTerminalBackgroundColor = (
+		options: Parameters<TUI["queryTerminalBackgroundColor"]>[0],
+	): ReturnType<TUI["queryTerminalBackgroundColor"]> => this.getCurrentTui().queryTerminalBackgroundColor(options);
+	readonly queryTerminalColorScheme = (
+		options: Parameters<TUI["queryTerminalColorScheme"]>[0],
+	): ReturnType<TUI["queryTerminalColorScheme"]> => this.getCurrentTui().queryTerminalColorScheme(options);
+	readonly setLayoutRoot = (component: Component | undefined): void => {
+		const tui = this.getCurrentTui();
+		if (!TuiLayouts.isViewportTUI(tui)) throw new Error("Current TUI does not support a layout root");
+		tui.setLayoutRoot(component);
+	};
+}
+
 export function createInteractiveTuiReference(getTui: () => TUI): TUI {
-	return new Proxy({} as TUI, {
-		get: (_target, property) => {
-			const tui = getTui();
-			const value = Reflect.get(tui, property, tui);
-			if (typeof value !== "function") return value;
-			let methodTui = tui;
-			let method = value;
-			return (...args: unknown[]) => {
-				const currentTui = getTui();
-				if (currentTui !== methodTui) {
-					const currentMethod = Reflect.get(currentTui, property, currentTui);
-					if (typeof currentMethod !== "function") {
-						throw new TypeError(`TUI property ${String(property)} is not callable`);
-					}
-					methodTui = currentTui;
-					method = currentMethod;
-				}
-				return Reflect.apply(method, methodTui, args);
-			};
-		},
-		set: (_target, property, value) => {
-			const tui = getTui();
-			return Reflect.set(tui, property, value, tui);
-		},
-		has: (_target, property) => Reflect.has(getTui(), property),
-		getPrototypeOf: () => Reflect.getPrototypeOf(getTui()),
-	});
+	return new InteractiveTuiReference(getTui);
+}
+
+function getStreamedToolArgsGeneration(
+	content: object,
+	event: object,
+): string | number | undefined {
+	const eventGeneration = (event as { toolArgsGeneration?: unknown }).toolArgsGeneration;
+	if (typeof eventGeneration === "number") return eventGeneration;
+	const transient = content as { toolArgsGeneration?: unknown; partialJson?: unknown; partialArgs?: unknown };
+	if (typeof transient.toolArgsGeneration === "number") return transient.toolArgsGeneration;
+	if (typeof transient.partialJson === "string") return transient.partialJson;
+	return typeof transient.partialArgs === "string" ? transient.partialArgs : undefined;
 }
 
 export class InteractiveMode {
@@ -3309,27 +3381,25 @@ export class InteractiveMode {
 					this.streamingMessage = event.message;
 					this.streamingComponent.updateContent(this.streamingMessage, true);
 					this.streamingItem?.updateVersion(++this.streamingItemVersion);
-
-					for (let contentIndex = 0; contentIndex < this.streamingMessage.content.length; contentIndex++) {
-						const content = this.streamingMessage.content[contentIndex]!;
-						if (content.type !== "toolCall") continue;
-						const component = this.pendingTools.get(content.id);
-						const firstStreamingAppearance = !this.streamedToolIds.has(content.id);
-						this.streamedToolIds.add(content.id);
-						if (component && firstStreamingAppearance && content.name !== "read") {
-							const placeholder = new Container();
-							this.chatContainer.addChild(placeholder);
-							this.replaceDeferredReadPlaceholder(content.id, placeholder, component);
+					const changedToolUpdates = event.changedToolUpdates;
+					if (changedToolUpdates !== undefined) {
+						for (const update of changedToolUpdates) {
+							this.updateStreamingToolArgs(update.contentIndex, update.generation, update.finalized);
 						}
-						if (!component) {
-							if (content.name === "read") {
-								if (!this.deferredReadPlaceholders.has(content.id)) {
-									const placeholder = new Container();
-									this.deferredReadPlaceholders.set(content.id, placeholder);
-									this.chatContainer.addChild(placeholder);
-								}
-							} else this.createTrackedToolComponent(content.name, content.id, content.arguments, undefined, false, false);
-						} else this.updateTrackedToolArgs(component, content.id, content.arguments);
+					} else {
+						const assistantUpdate = event.assistantMessageEvent;
+						if (
+							assistantUpdate.type === "toolcall_start" ||
+							assistantUpdate.type === "toolcall_delta" ||
+							assistantUpdate.type === "toolcall_end"
+						) {
+							const content = this.streamingMessage.content[assistantUpdate.contentIndex];
+							this.updateStreamingToolArgs(
+								assistantUpdate.contentIndex,
+								content?.type === "toolCall" ? getStreamedToolArgsGeneration(content, assistantUpdate) : undefined,
+								assistantUpdate.type === "toolcall_end",
+							);
+						}
 					}
 					this.ui.requestRender();
 				}
@@ -3705,10 +3775,59 @@ export class InteractiveMode {
 		);
 	}
 
-	private updateTrackedToolArgs(component: ToolExecutionComponent | ReadToolGroupComponent, toolCallId: string, args: any): void {
-		if (component instanceof ReadToolGroupComponent) component.updateArgs(toolCallId, args);
-		else component.updateArgs(args);
-		this.advanceActiveToolVersion(component);
+	private updateTrackedToolArgs(
+		component: ToolExecutionComponent | ReadToolGroupComponent,
+		toolCallId: string,
+		args: any,
+		generation?: string | number,
+		ownership?: StreamedToolArgumentOwnership,
+		finalized = false,
+	): boolean {
+		const changed = component instanceof ReadToolGroupComponent
+			? component.updateArgs(toolCallId, args)
+			: component.updateArgs(args, generation, ownership, finalized);
+		if (changed) this.advanceActiveToolVersion(component);
+		return changed;
+	}
+
+	private updateStreamingToolArgs(
+		contentIndex: number,
+		generation: string | number | undefined,
+		finalized: boolean,
+	): void {
+		const content = this.streamingMessage?.content[contentIndex];
+		if (content?.type !== "toolCall") return;
+		let component = this.pendingTools.get(content.id);
+		const firstStreamingAppearance = !this.streamedToolIds.has(content.id);
+		this.streamedToolIds.add(content.id);
+		if (component && firstStreamingAppearance && content.name !== "read") {
+			const placeholder = new Container();
+			this.chatContainer.addChild(placeholder);
+			this.replaceDeferredReadPlaceholder(content.id, placeholder, component);
+		}
+		if (!component) {
+			if (content.name === "read") {
+				if (!this.deferredReadPlaceholders.has(content.id)) {
+					const placeholder = new Container();
+					this.deferredReadPlaceholders.set(content.id, placeholder);
+					this.chatContainer.addChild(placeholder);
+				}
+			} else {
+				component = this.createTrackedToolComponent(content.name, content.id, content.arguments, undefined, false, false);
+			}
+		}
+		if (!component) return;
+		const toolArgumentOwnership = typeof this.streamingMessage?.api === "string"
+			? getStreamedToolArgumentOwnership(this.streamingMessage.api)
+			: undefined;
+		this.updateTrackedToolArgs(
+			component,
+			content.id,
+			content.arguments,
+			generation,
+			toolArgumentOwnership,
+			finalized,
+		);
 	}
 
 	private markTrackedToolStarted(component: ToolExecutionComponent | ReadToolGroupComponent, toolCallId: string): void {
@@ -6401,8 +6520,8 @@ export class InteractiveMode {
 
 		try {
 			await copyToClipboard(text);
-			if (options.flashConfirmation && this.ui instanceof TuiAltScreen) {
-				this.ui.flash("Copied!");
+			if (options.flashConfirmation && this.renderer instanceof TuiAltScreen) {
+				this.renderer.flash("Copied!");
 			} else {
 				this.showStatus("Copied last agent message to clipboard");
 			}

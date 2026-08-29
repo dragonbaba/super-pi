@@ -84,6 +84,24 @@ export type ThinkingLevel = "minimal" | "low" | "medium" | "high" | "xhigh" | "m
 export type ModelThinkingLevel = "off" | ThinkingLevel;
 export type ThinkingLevelMap = Partial<Record<ModelThinkingLevel, string | null>>;
 
+/**
+ * Ownership contract for arguments on streamed tool-call blocks.
+ *
+ * `mutation-with-generation` adapters expose a transient generation on every
+ * delta. Most mutate one arguments object; custom/grammar paths may replace
+ * it while advancing a host-only numeric generation. Their final
+ * `toolcall_end` event is a finalization boundary: the host must repaint once
+ * even when the adapter has already removed its transient generation field.
+ * A generation and finalization apply only to the tool block identified by
+ * the event's `contentIndex`; generations are independent between tools.
+ * `replacement-object` adapters replace the arguments object whenever its
+ * semantic value changes.
+ *
+ * This is host-only dispatch metadata. It is not part of provider wire
+ * payloads, request-prefix/cache identity, or persisted model profiles.
+ */
+export type StreamedToolArgumentOwnership = "replacement-object" | "mutation-with-generation";
+
 /** Provenance of the metadata used to construct a runtime model profile. */
 export type ModelProfileSource =
 	| "built-in"
@@ -345,6 +363,8 @@ export type ApiStreamOptions<TApi extends Api> = TApi extends keyof ApiOptionsMa
  * `Provider.stream()` via `ApiStreamOptions`.
  */
 export interface ProviderStreams {
+	/** Omitted by legacy/custom implementations that predate the host-only ownership contract. */
+	readonly streamedToolArgumentOwnership?: StreamedToolArgumentOwnership;
 	stream(model: Model<Api>, context: Context, options?: StreamOptions): AssistantMessageEventStream;
 	streamSimple(model: Model<Api>, context: Context, options?: SimpleStreamOptions): AssistantMessageEventStream;
 	fetchDeferred?(
@@ -354,6 +374,11 @@ export interface ProviderStreams {
 	): AssistantMessageEventStream;
 	cancelDeferred?(model: Model<Api>, handle: DeferredHandle, options?: DeferredCancelOptions): Promise<void>;
 }
+
+/** Narrow host type used by built-in adapters, which must declare ownership metadata. */
+export type OwnedProviderStreams = ProviderStreams & {
+	readonly streamedToolArgumentOwnership: StreamedToolArgumentOwnership;
+};
 
 /**
  * The uniform contract of an image-generation API implementation module:
@@ -607,7 +632,14 @@ export type AssistantMessageEvent =
 	| { type: "thinking_delta"; contentIndex: number; delta: string; partial: AssistantMessage }
 	| { type: "thinking_end"; contentIndex: number; content: string; partial: AssistantMessage }
 	| { type: "toolcall_start"; contentIndex: number; partial: AssistantMessage }
-	| { type: "toolcall_delta"; contentIndex: number; delta: string; partial: AssistantMessage }
+	| {
+			type: "toolcall_delta";
+			contentIndex: number;
+			delta: string;
+			partial: AssistantMessage;
+			/** Host-only custom/grammar argument generation; never persisted or sent on wire. */
+			toolArgsGeneration?: number;
+	  }
 	| { type: "toolcall_end"; contentIndex: number; toolCall: ToolCall; partial: AssistantMessage }
 	| {
 			type: "done";

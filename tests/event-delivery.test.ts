@@ -4,12 +4,27 @@ import { setImmediate as nextTask } from "node:timers/promises";
 import {
 	EventDeliveryDispatcher,
 	type EventDeliveryDiagnostic,
+	type EventDeliveryScheduler,
 } from "../packages/agent/src/event-delivery.ts";
 import { FakeScheduler } from "./helpers/runtime-instrumentation.ts";
 
 interface FixtureEvent {
 	type: "update" | "end";
 	sequence: number;
+}
+
+function unexpectedLegacySchedule(): never {
+	throw new Error("context-aware scheduler unexpectedly used the legacy path");
+}
+
+class ReleaseTrackingDispatcher extends EventDeliveryDispatcher<FixtureEvent, string> {
+	readonly releasedKeys: string[] = [];
+	readonly releasedSequences: number[] = [];
+
+	protected override onLatestReleased(key: string, event: FixtureEvent): void {
+		this.releasedKeys.push(key);
+		this.releasedSequences.push(event.sequence);
+	}
 }
 
 function createDispatcher(diagnostics: EventDeliveryDiagnostic[] = []) {
@@ -54,6 +69,229 @@ test("latest delivery stays bounded by active keys and flushes the final value",
 	assert.deepEqual(observed, [{ type: "update", sequence: 99_999 }]);
 	assert.equal(dispatcher.stats.pendingKeys, 0);
 	assert.equal(dispatcher.stats.coalesced, 99_999);
+});
+
+test("latest ownership releases only after every observer has consumed the pending version", async () => {
+	const scheduler = new FakeScheduler();
+	let snapshots = 0;
+	let slowDeliveries = 0;
+	const dispatcher = new ReleaseTrackingDispatcher({
+		scheduler,
+		snapshotLatest: (event) => {
+			snapshots++;
+			return { ...event };
+		},
+	});
+	dispatcher.subscribe(() => {}, {
+		delivery: "latest",
+		minIntervalMs: 0,
+		filter: () => false,
+	});
+	dispatcher.subscribe(() => { slowDeliveries++; }, { delivery: "latest", minIntervalMs: 16 });
+
+	dispatcher.publishLatest("message", { type: "update", sequence: 1 });
+	scheduler.advanceBy(0);
+	await nextTask();
+	assert.equal(snapshots, 1);
+	assert.equal(slowDeliveries, 0);
+	assert.deepEqual(dispatcher.releasedKeys, []);
+	assert.deepEqual(dispatcher.releasedSequences, []);
+	assert.equal(dispatcher.stats.pendingKeys, 1);
+
+	dispatcher.publishLatest("message", { type: "update", sequence: 2 });
+	scheduler.advanceBy(0);
+	await nextTask();
+	assert.equal(snapshots, 2);
+	assert.equal(slowDeliveries, 0);
+	assert.deepEqual(dispatcher.releasedSequences, []);
+
+	scheduler.advanceBy(16);
+	await nextTask();
+	assert.equal(slowDeliveries, 1);
+	assert.deepEqual(dispatcher.releasedKeys, ["message"]);
+	assert.deepEqual(dispatcher.releasedSequences, [2]);
+	assert.equal(dispatcher.stats.pendingKeys, 0);
+});
+
+test("latest ownership releases on snapshot errors, final unsubscribe, and disposal", async () => {
+	const snapshotErrorDispatcher = new ReleaseTrackingDispatcher({
+		snapshotLatest: () => { throw new Error("snapshot failed"); },
+	});
+	snapshotErrorDispatcher.subscribe(() => {}, { delivery: "latest" });
+	snapshotErrorDispatcher.publishLatest("message", { type: "update", sequence: 1 });
+	await snapshotErrorDispatcher.flushAllLatest();
+	assert.deepEqual(snapshotErrorDispatcher.releasedSequences, [1]);
+
+	const unsubscribeDispatcher = new ReleaseTrackingDispatcher();
+	const unsubscribe = unsubscribeDispatcher.subscribe(() => {}, { delivery: "latest", minIntervalMs: 60_000 });
+	unsubscribeDispatcher.publishLatest("message", { type: "update", sequence: 2 });
+	unsubscribe();
+	assert.deepEqual(unsubscribeDispatcher.releasedSequences, [2]);
+
+	const disposeDispatcher = new ReleaseTrackingDispatcher();
+	disposeDispatcher.subscribe(() => {}, { delivery: "latest", minIntervalMs: 60_000 });
+	disposeDispatcher.publishLatest("message", { type: "update", sequence: 3 });
+	await disposeDispatcher.dispose();
+	assert.deepEqual(disposeDispatcher.releasedSequences, [3]);
+});
+
+test("scheduled latest flushes reuse one callback across dispatcher instances", () => {
+	const callbacks: Array<(context: unknown, generation: number) => void> = [];
+	const contexts: unknown[] = [];
+	const generations: number[] = [];
+	let legacyScheduleCalls = 0;
+	const scheduler = {
+		now(): number { return 0; },
+		schedule(): never {
+			legacyScheduleCalls++;
+			throw new Error("context-aware scheduler unexpectedly used the legacy path");
+		},
+		scheduleWithContext(callback, _delayMs, context, generation): number {
+			callbacks.push(callback);
+			contexts.push(context);
+			generations.push(generation);
+			return callbacks.length;
+		},
+		cancel(): void {},
+	} satisfies EventDeliveryScheduler;
+	const first = new EventDeliveryDispatcher<FixtureEvent, string>({ scheduler });
+	const second = new EventDeliveryDispatcher<FixtureEvent, string>({ scheduler });
+	const unsubscribeFirst = first.subscribe(() => {}, { delivery: "latest", minIntervalMs: 16 });
+	const unsubscribeSecond = second.subscribe(() => {}, { delivery: "latest", minIntervalMs: 16 });
+	first.publishLatest("message", { type: "update", sequence: 1 });
+	second.publishLatest("message", { type: "update", sequence: 2 });
+	unsubscribeFirst();
+	unsubscribeSecond();
+
+	assert.equal(callbacks.length, 2);
+	assert.equal(callbacks[0], callbacks[1]);
+	assert.equal(contexts[0], first);
+	assert.equal(contexts[1], second);
+	assert.equal(generations[0], 1);
+	assert.equal(generations[1], 1);
+	assert.equal(legacyScheduleCalls, 0);
+});
+
+test("legacy two-argument schedulers deliver zero-argument callbacks and cancel on dispose", async () => {
+	const callbacks: Array<() => void> = [];
+	const cancelled: unknown[] = [];
+	const scheduler: EventDeliveryScheduler = {
+		now(): number { return 0; },
+		schedule(callback: () => void, _delayMs: number): unknown {
+			callbacks.push(callback);
+			return callbacks.length;
+		},
+		cancel(handle: unknown): void { cancelled.push(handle); },
+	};
+	const dispatcher = new EventDeliveryDispatcher<FixtureEvent, string>({ scheduler });
+	let delivered = 0;
+	dispatcher.subscribe(() => { delivered++; }, { delivery: "latest", minIntervalMs: 16 });
+	dispatcher.publishLatest("message", { type: "update", sequence: 1 });
+	assert.equal(callbacks.length, 1);
+
+	callbacks[0]?.();
+	await dispatcher.flushAllLatest();
+	assert.equal(delivered, 1);
+
+	const scheduledBeforeSecondPublish = callbacks.length;
+	dispatcher.publishLatest("message", { type: "update", sequence: 2 });
+	assert.equal(callbacks.length, scheduledBeforeSecondPublish + 1);
+	const pendingHandle = callbacks.length;
+	await dispatcher.dispose();
+	assert.equal(cancelled.at(-1), pendingHandle);
+});
+
+test("a stale legacy scheduler callback cannot clear its replacement generation", async () => {
+	let now = 0;
+	const callbacks: Array<() => void> = [];
+	const scheduler: EventDeliveryScheduler = {
+		now(): number { return now; },
+		schedule(callback: () => void): unknown {
+			callbacks.push(callback);
+			return callbacks.length;
+		},
+		cancel(): void {},
+	};
+	const dispatcher = new EventDeliveryDispatcher<FixtureEvent, string>({ scheduler });
+	const unsubscribeFirst = dispatcher.subscribe(() => {}, { delivery: "latest", minIntervalMs: 100 });
+	dispatcher.publishLatest("message", { type: "update", sequence: 1 });
+	unsubscribeFirst();
+	let delivered = 0;
+	dispatcher.subscribe(() => { delivered++; }, { delivery: "latest", minIntervalMs: 100 });
+	dispatcher.publishLatest("message", { type: "update", sequence: 2 });
+
+	callbacks[0]?.();
+	await Promise.resolve();
+	assert.equal(delivered, 0);
+	assert.equal(dispatcher.stats.pendingKeys, 1);
+
+	now = 100;
+	callbacks[1]?.();
+	await dispatcher.flushAllLatest();
+	assert.equal(delivered, 1);
+	assert.equal(dispatcher.stats.pendingKeys, 0);
+});
+
+test("synchronous scheduler completion cannot restore an already-fired handle", async () => {
+	let cancelCalls = 0;
+	let deliveries = 0;
+	const scheduler = {
+		now(): number { return 0; },
+		schedule: unexpectedLegacySchedule,
+		scheduleWithContext(callback, _delayMs, context, generation): number {
+			callback(context, generation);
+			return generation;
+		},
+		cancel(): void { cancelCalls++; },
+	} satisfies EventDeliveryScheduler;
+	const dispatcher = new EventDeliveryDispatcher<FixtureEvent, string>({ scheduler });
+	dispatcher.subscribe(() => { deliveries++; }, { delivery: "latest", minIntervalMs: 0 });
+
+	dispatcher.publishLatest("message", { type: "update", sequence: 1 });
+	await dispatcher.flushAllLatest();
+	dispatcher.publishLatest("message", { type: "update", sequence: 2 });
+	await dispatcher.flushAllLatest();
+
+	assert.equal(deliveries, 2);
+	assert.equal(cancelCalls, 0);
+});
+
+test("a cancelled scheduler generation cannot clear or flush its replacement", async () => {
+	let now = 0;
+	const callbacks: Array<(context: unknown, generation: number) => void> = [];
+	const contexts: unknown[] = [];
+	const generations: number[] = [];
+	let scheduleCalls = 0;
+	const scheduler = {
+		now(): number { return now; },
+		schedule: unexpectedLegacySchedule,
+		scheduleWithContext(callback, _delayMs, context, generation): number {
+			callbacks.push(callback);
+			contexts.push(context);
+			generations.push(generation);
+			return ++scheduleCalls;
+		},
+		cancel(): void {},
+	} satisfies EventDeliveryScheduler;
+	const dispatcher = new EventDeliveryDispatcher<FixtureEvent, string>({ scheduler });
+	const firstUnsubscribe = dispatcher.subscribe(() => {}, { delivery: "latest", minIntervalMs: 100 });
+	dispatcher.publishLatest("message", { type: "update", sequence: 1 });
+	firstUnsubscribe();
+	let delivered = 0;
+	dispatcher.subscribe(() => { delivered++; }, { delivery: "latest", minIntervalMs: 100 });
+	dispatcher.publishLatest("message", { type: "update", sequence: 2 });
+
+	callbacks[0]?.(contexts[0], generations[0] ?? 0);
+	await Promise.resolve();
+	assert.equal(delivered, 0);
+	assert.equal(scheduleCalls, 2);
+	assert.equal(dispatcher.stats.pendingKeys, 1);
+
+	now = 100;
+	callbacks[1]?.(contexts[1], generations[1] ?? 0);
+	await dispatcher.flushAllLatest();
+	assert.equal(delivered, 1);
+	assert.equal(dispatcher.stats.pendingKeys, 0);
 });
 
 test("critical delivery flushes latest values first and awaits legacy listeners in order", async () => {
@@ -174,9 +412,10 @@ test("unsubscribing a latest observer recalculates the next remaining due time",
 	const dispatcher = new EventDeliveryDispatcher<FixtureEvent, string>({
 		scheduler: {
 			now: () => scheduler.now(),
-			schedule: (callback, delayMs) => {
+			schedule: (callback, delayMs) => scheduler.schedule(callback, delayMs),
+			scheduleWithContext: (callback, delayMs, context, generation) => {
 				scheduledDelays.push(delayMs);
-				return scheduler.schedule(callback, delayMs);
+				return scheduler.scheduleWithContext(callback, delayMs, context, generation);
 			},
 			cancel: (handle) => scheduler.cancel(handle as number),
 		},
