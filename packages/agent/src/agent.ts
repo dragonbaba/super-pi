@@ -204,6 +204,7 @@ type ActiveRun = {
 export class Agent {
 	private _state: MutableAgentState;
 	private readonly eventDelivery: EventDeliveryDispatcher<AgentEvent, string>;
+	private readonly toolMessageLatestKeys = new Map<string, string>();
 	private readonly eventInstrumentation?: AgentEventInstrumentation;
 	private readonly steeringQueue: PendingMessageQueue;
 	private readonly followUpQueue: PendingMessageQueue;
@@ -589,6 +590,7 @@ export class Agent {
 		this._state.isStreaming = false;
 		this._state.streamingMessage = undefined;
 		this._state.pendingToolCalls = new Set<string>();
+		this.toolMessageLatestKeys.clear();
 		this.activeRun?.resolve();
 		this.activeRun = undefined;
 	}
@@ -646,6 +648,10 @@ export class Agent {
 				await this.eventDelivery.publishAwaited(this.snapshotAwaitedEvent(event));
 			}
 			this.eventDelivery.publishLatest(latestKey, event);
+			if (event.type === "message_update" && event.assistantMessageEvent.type === "toolcall_end") {
+				const content = event.assistantMessageEvent.partial.content[event.assistantMessageEvent.contentIndex];
+				if (content?.type === "toolCall") this.toolMessageLatestKeys.delete(content.id);
+			}
 			return;
 		}
 		await this.eventDelivery.publishCritical(event);
@@ -658,7 +664,21 @@ export class Agent {
 	}
 
 	private getLatestEventKey(event: AgentEvent): string | undefined {
-		if (event.type === "message_update") return "message";
+		if (event.type === "message_update") {
+			const update = event.assistantMessageEvent;
+			if (update.type === "toolcall_start" || update.type === "toolcall_delta" || update.type === "toolcall_end") {
+				const content = update.partial.content[update.contentIndex];
+				if (content?.type === "toolCall") {
+					let key = this.toolMessageLatestKeys.get(content.id);
+					if (key === undefined) {
+						key = `message:tool:${content.id}`;
+						this.toolMessageLatestKeys.set(content.id, key);
+					}
+					return key;
+				}
+			}
+			return "message";
+		}
 		if (event.type === "tool_execution_update") return `tool:${event.toolCallId}`;
 		return undefined;
 	}

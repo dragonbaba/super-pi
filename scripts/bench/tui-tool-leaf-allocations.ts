@@ -120,6 +120,7 @@ function createMetrics(): ToolExecutionAllocationMetrics {
 		toolArgsReplacementUpdates: 0,
 		toolArgsSemanticFallbackComparisons: 0,
 		toolArgsMissingGenerationUpdates: 0,
+		toolArgsFinalizations: 0,
 	};
 }
 
@@ -312,6 +313,11 @@ async function profileFixture(kind: ToolFixtureKind, paced: boolean): Promise<Re
 			internalWrapperObjects: fixture.metrics.internalWrapperObjects,
 			imageScans: fixture.metrics.imageScans,
 			argsSerializations: fixture.metrics.argsSerializations,
+			toolArgsGenerationUpdates: fixture.metrics.toolArgsGenerationUpdates,
+			toolArgsReplacementUpdates: fixture.metrics.toolArgsReplacementUpdates,
+			toolArgsSemanticFallbackComparisons: fixture.metrics.toolArgsSemanticFallbackComparisons,
+			toolArgsMissingGenerationUpdates: fixture.metrics.toolArgsMissingGenerationUpdates,
+			toolArgsFinalizations: fixture.metrics.toolArgsFinalizations,
 			requestRenderCalls: fixture.renderer.requestRenderCalls,
 			doRenderCalls: fixture.renderer.doRenderCalls,
 			frameWrites: fixture.terminal.frameWrites,
