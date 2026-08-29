@@ -237,6 +237,32 @@ function getToolUpdateGeneration(
 	return block.toolArgsGeneration ?? block.partialJson ?? block.partialArgs;
 }
 
+class AgentEventDeliveryDispatcher extends EventDeliveryDispatcher<AgentEvent, string> {
+	private readonly owner: Agent;
+	private readonly diagnosticListener: ((diagnostic: EventDeliveryDiagnostic) => void) | undefined;
+
+	constructor(
+		owner: Agent,
+		onDiagnostic: ((diagnostic: EventDeliveryDiagnostic) => void) | undefined,
+	) {
+		super();
+		this.owner = owner;
+		this.diagnosticListener = onDiagnostic;
+	}
+
+	protected override createLatestSnapshot(event: AgentEvent): AgentEvent {
+		return this.owner.snapshotObserverEvent(event);
+	}
+
+	protected override onLatestReleased(key: string, event: AgentEvent): void {
+		this.owner.releaseObserverEvent(key, event);
+	}
+
+	protected override onDeliveryDiagnostic(diagnostic: EventDeliveryDiagnostic): void {
+		this.diagnosticListener?.(diagnostic);
+	}
+}
+
 /**
  * Stateful wrapper around the low-level agent loop.
  *
@@ -312,11 +338,7 @@ export class Agent {
 		this.maxRetryDelayMs = runtimeOptions.maxRetryDelayMs;
 		this.toolExecution = runtimeOptions.toolExecution ?? "parallel";
 		this.eventInstrumentation = runtimeOptions.eventInstrumentation;
-		this.eventDelivery = new EventDeliveryDispatcher({
-			defaultMinIntervalMs: 16,
-			snapshotLatest: (event) => this.snapshotObserverEvent(event),
-			onDiagnostic: runtimeOptions.onEventDeliveryDiagnostic,
-		});
+		this.eventDelivery = new AgentEventDeliveryDispatcher(this, runtimeOptions.onEventDeliveryDiagnostic);
 	}
 
 	/**
@@ -782,15 +804,16 @@ export class Agent {
 		return { ...event, message, assistantMessageEvent };
 	}
 
-	private snapshotObserverEvent(event: AgentEvent): AgentEvent {
-		const clearsPendingMessage = event === this.pendingMessageUpdateEvent;
-		try {
-			if (event.type === "message_update") this.eventInstrumentation?.onAssistantSnapshot?.();
-			const snapshot = structuredClone(event);
-			deepFreezeSnapshot(snapshot);
-			return snapshot;
-		} finally {
-			if (clearsPendingMessage) this.clearPendingMessageUpdate();
-		}
+	/** @internal EventDeliveryDispatcher ownership hook. */
+	snapshotObserverEvent(event: AgentEvent): AgentEvent {
+		if (event.type === "message_update") this.eventInstrumentation?.onAssistantSnapshot?.();
+		const snapshot = structuredClone(event);
+		deepFreezeSnapshot(snapshot);
+		return snapshot;
+	}
+
+	/** @internal EventDeliveryDispatcher ownership hook. */
+	releaseObserverEvent(key: string, event: AgentEvent): void {
+		if (key === "message" && event === this.pendingMessageUpdateEvent) this.clearPendingMessageUpdate();
 	}
 }

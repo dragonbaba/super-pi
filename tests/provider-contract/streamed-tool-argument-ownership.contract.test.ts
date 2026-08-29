@@ -132,10 +132,28 @@ test("custom OpenAI generations stay on host events and are removed before persi
 
 test("tool finalization uses one message lane with bounded per-tool metadata", () => {
 	const agent = readFileSync("packages/agent/src/agent.ts", "utf8");
+	const delivery = readFileSync("packages/agent/src/event-delivery.ts", "utf8");
 	assert.match(agent, /pendingChangedToolUpdates\.get\(content\.id\)/);
 	assert.match(agent, /if \(event\.type === "message_update"\) return "message"/);
 	assert.match(agent, /if \(record\.finalized\) return pending/);
 	assert.match(agent, /pendingChangedToolUpdates\.clear\(\)/);
+	const snapshotObserver = agent.slice(
+		agent.indexOf("snapshotObserverEvent(event:"),
+		agent.indexOf("releaseObserverEvent(key:"),
+	);
+	assert.doesNotMatch(snapshotObserver, /clearPendingMessageUpdate/);
+	const agentDispatcher = agent.slice(
+		agent.indexOf("class AgentEventDeliveryDispatcher"),
+		agent.indexOf("export class Agent"),
+	);
+	assert.doesNotMatch(agentDispatcher, /readonly\s+\w+\s*=\s*\(|super\(\{/);
+	assert.match(agentDispatcher, /super\(\)/);
+	const releaseLatest = delivery.slice(
+		delivery.indexOf("private releaseLatest("),
+		delivery.indexOf("private async deliverObserver("),
+	);
+	assert.match(releaseLatest, /pendingLatest\.delete\(key\)[\s\S]*onLatestReleased\(key, pending\.event\)/);
+	assert.doesNotMatch(releaseLatest, /=>|\.map\(|\.filter\(|Array\.from|\.\.\.|new (?:Array|Map|Set)\b/);
 	const interactive = readFileSync("packages/coding-agent/src/modes/interactive/interactive-mode.ts", "utf8");
 	const messageUpdate = interactive.slice(interactive.indexOf('case "message_update"'), interactive.indexOf('case "message_end"'));
 	assert.match(messageUpdate, /for \(const update of changedToolUpdates\)/);

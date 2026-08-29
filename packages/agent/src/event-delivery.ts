@@ -80,6 +80,7 @@ export class EventDeliveryDispatcher<E, K> {
 	private readonly snapshotLatest: (event: E) => E;
 	private readonly onDiagnostic?: (diagnostic: EventDeliveryDiagnostic) => void;
 	private scheduledHandle: unknown;
+	private scheduledDueAt = Number.POSITIVE_INFINITY;
 	private flushPromise: Promise<void> | undefined;
 	private nextVersion = 1;
 	private disposed = false;
@@ -91,6 +92,7 @@ export class EventDeliveryDispatcher<E, K> {
 	private slowObservers = 0;
 	private readonly scheduledFlush = (): void => {
 		this.scheduledHandle = undefined;
+		this.scheduledDueAt = Number.POSITIVE_INFINITY;
 		void this.flushAvailable(false).catch((error) => {
 			this.reportDiagnostic({ type: "observer-error", error });
 		});
@@ -188,7 +190,7 @@ export class EventDeliveryDispatcher<E, K> {
 		if (this.disposed) return;
 		this.disposed = true;
 		this.cancelScheduledFlush();
-		this.pendingLatest.clear();
+		for (const [key, pending] of this.pendingLatest) this.releaseLatest(key, pending);
 		await this.flushPromise;
 		this.criticalListeners.clear();
 		for (const observer of this.observers) observer.seenVersions.clear();
@@ -208,7 +210,7 @@ export class EventDeliveryDispatcher<E, K> {
 	}
 
 	private scheduleFlush(): void {
-		if (this.scheduledHandle !== undefined || this.flushPromise || this.pendingLatest.size === 0) return;
+		if (this.flushPromise || this.pendingLatest.size === 0) return;
 		let delayMs = Number.POSITIVE_INFINITY;
 		const now = this.scheduler.now();
 		for (const observer of this.observers) {
@@ -224,9 +226,16 @@ export class EventDeliveryDispatcher<E, K> {
 			}
 		}
 		if (!Number.isFinite(delayMs)) return;
+		const dueAt = now + delayMs;
+		if (this.scheduledHandle !== undefined) {
+			if (this.scheduledDueAt <= dueAt) return;
+			this.cancelScheduledFlush();
+		}
 		try {
+			this.scheduledDueAt = dueAt;
 			this.scheduledHandle = this.scheduler.schedule(this.scheduledFlush, delayMs);
 		} catch (error) {
+			this.scheduledDueAt = Number.POSITIVE_INFINITY;
 			this.reportDiagnostic({ type: "observer-error", error });
 		}
 	}
@@ -235,6 +244,7 @@ export class EventDeliveryDispatcher<E, K> {
 		if (this.scheduledHandle === undefined) return;
 		this.scheduler.cancel(this.scheduledHandle);
 		this.scheduledHandle = undefined;
+		this.scheduledDueAt = Number.POSITIVE_INFINITY;
 	}
 
 	private async flushAvailable(force: boolean, onlyKey?: K): Promise<void> {
@@ -274,7 +284,7 @@ export class EventDeliveryDispatcher<E, K> {
 				const deliveredVersion = pending.version;
 				let event: E;
 				try {
-					event = pending.snapshot ?? (pending.snapshot = this.snapshotLatest(pending.event));
+					event = pending.snapshot ?? (pending.snapshot = this.createLatestSnapshot(pending.event));
 				} catch (error) {
 					this.reportDiagnostic({ type: "observer-error", error });
 					for (const registeredObserver of this.observers) {
@@ -303,10 +313,28 @@ export class EventDeliveryDispatcher<E, K> {
 				}
 			}
 			if (!deliveredToAll) continue;
-			this.pendingLatest.delete(key);
-			for (const observer of this.observers) observer.seenVersions.delete(key);
+			this.releaseLatest(key, pending);
 		}
 	}
+
+	private releaseLatest(key: K, pending: PendingLatest<E>): void {
+		if (this.pendingLatest.get(key) !== pending) return;
+		this.pendingLatest.delete(key);
+		for (const observer of this.observers) observer.seenVersions.delete(key);
+		try {
+			this.onLatestReleased(key, pending.event);
+		} catch (error) {
+			this.reportDiagnostic({ type: "observer-error", error });
+		}
+	}
+
+	protected createLatestSnapshot(event: E): E {
+		return this.snapshotLatest(event);
+	}
+
+	protected onLatestReleased(_key: K, _event: E): void {}
+
+	protected onDeliveryDiagnostic(_diagnostic: EventDeliveryDiagnostic): void {}
 
 	private async deliverObserver(observer: ObserverListener<E, K>, event: E): Promise<void> {
 		const startedAt = this.scheduler.now();
@@ -340,6 +368,11 @@ export class EventDeliveryDispatcher<E, K> {
 			this.onDiagnostic?.(diagnostic);
 		} catch {
 			// Diagnostics are observational and must never affect event delivery.
+		}
+		try {
+			this.onDeliveryDiagnostic(diagnostic);
+		} catch {
+			// Subclass diagnostics are observational and must never affect event delivery.
 		}
 	}
 }

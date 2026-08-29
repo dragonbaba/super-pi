@@ -12,6 +12,16 @@ interface FixtureEvent {
 	sequence: number;
 }
 
+class ReleaseTrackingDispatcher extends EventDeliveryDispatcher<FixtureEvent, string> {
+	readonly releasedKeys: string[] = [];
+	readonly releasedSequences: number[] = [];
+
+	protected override onLatestReleased(key: string, event: FixtureEvent): void {
+		this.releasedKeys.push(key);
+		this.releasedSequences.push(event.sequence);
+	}
+}
+
 function createDispatcher(diagnostics: EventDeliveryDiagnostic[] = []) {
 	const scheduler = new FakeScheduler();
 	const dispatcher = new EventDeliveryDispatcher<FixtureEvent, string>({
@@ -54,6 +64,70 @@ test("latest delivery stays bounded by active keys and flushes the final value",
 	assert.deepEqual(observed, [{ type: "update", sequence: 99_999 }]);
 	assert.equal(dispatcher.stats.pendingKeys, 0);
 	assert.equal(dispatcher.stats.coalesced, 99_999);
+});
+
+test("latest ownership releases only after every observer has consumed the pending version", async () => {
+	const scheduler = new FakeScheduler();
+	let snapshots = 0;
+	let slowDeliveries = 0;
+	const dispatcher = new ReleaseTrackingDispatcher({
+		scheduler,
+		snapshotLatest: (event) => {
+			snapshots++;
+			return { ...event };
+		},
+	});
+	dispatcher.subscribe(() => {}, {
+		delivery: "latest",
+		minIntervalMs: 0,
+		filter: () => false,
+	});
+	dispatcher.subscribe(() => { slowDeliveries++; }, { delivery: "latest", minIntervalMs: 16 });
+
+	dispatcher.publishLatest("message", { type: "update", sequence: 1 });
+	scheduler.advanceBy(0);
+	await nextTask();
+	assert.equal(snapshots, 1);
+	assert.equal(slowDeliveries, 0);
+	assert.deepEqual(dispatcher.releasedKeys, []);
+	assert.deepEqual(dispatcher.releasedSequences, []);
+	assert.equal(dispatcher.stats.pendingKeys, 1);
+
+	dispatcher.publishLatest("message", { type: "update", sequence: 2 });
+	scheduler.advanceBy(0);
+	await nextTask();
+	assert.equal(snapshots, 2);
+	assert.equal(slowDeliveries, 0);
+	assert.deepEqual(dispatcher.releasedSequences, []);
+
+	scheduler.advanceBy(16);
+	await nextTask();
+	assert.equal(slowDeliveries, 1);
+	assert.deepEqual(dispatcher.releasedKeys, ["message"]);
+	assert.deepEqual(dispatcher.releasedSequences, [2]);
+	assert.equal(dispatcher.stats.pendingKeys, 0);
+});
+
+test("latest ownership releases on snapshot errors, final unsubscribe, and disposal", async () => {
+	const snapshotErrorDispatcher = new ReleaseTrackingDispatcher({
+		snapshotLatest: () => { throw new Error("snapshot failed"); },
+	});
+	snapshotErrorDispatcher.subscribe(() => {}, { delivery: "latest" });
+	snapshotErrorDispatcher.publishLatest("message", { type: "update", sequence: 1 });
+	await snapshotErrorDispatcher.flushAllLatest();
+	assert.deepEqual(snapshotErrorDispatcher.releasedSequences, [1]);
+
+	const unsubscribeDispatcher = new ReleaseTrackingDispatcher();
+	const unsubscribe = unsubscribeDispatcher.subscribe(() => {}, { delivery: "latest", minIntervalMs: 60_000 });
+	unsubscribeDispatcher.publishLatest("message", { type: "update", sequence: 2 });
+	unsubscribe();
+	assert.deepEqual(unsubscribeDispatcher.releasedSequences, [2]);
+
+	const disposeDispatcher = new ReleaseTrackingDispatcher();
+	disposeDispatcher.subscribe(() => {}, { delivery: "latest", minIntervalMs: 60_000 });
+	disposeDispatcher.publishLatest("message", { type: "update", sequence: 3 });
+	await disposeDispatcher.dispose();
+	assert.deepEqual(disposeDispatcher.releasedSequences, [3]);
 });
 
 test("critical delivery flushes latest values first and awaits legacy listeners in order", async () => {

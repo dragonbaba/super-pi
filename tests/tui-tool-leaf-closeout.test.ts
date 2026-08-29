@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { getStreamedToolArgumentOwnership, type KnownApi } from "@super-pi/ai/compat";
 import { Agent } from "../packages/agent/src/agent.ts";
+import { EventDeliveryDispatcher } from "../packages/agent/src/event-delivery.ts";
 import { setCapabilities, Text, type Component, type TUI } from "@super-pi/tui";
 import { stream as streamAnthropic } from "../packages/ai/src/api/anthropic-messages.ts";
 import type { ToolDefinition } from "../packages/coding-agent/src/core/extensions/types.ts";
@@ -13,6 +14,7 @@ import {
 import { InteractiveMode } from "../packages/coding-agent/src/modes/interactive/interactive-mode.ts";
 import { initTheme } from "../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 import { RetainedContainer } from "../packages/tui/src/components/retained-item.ts";
+import { FakeScheduler } from "./helpers/runtime-instrumentation.ts";
 
 function createMetrics(): ToolExecutionAllocationMetrics {
 	return {
@@ -34,6 +36,32 @@ function createMetrics(): ToolExecutionAllocationMetrics {
 
 function createTui(): TUI {
 	return { requestRender(): void {} } as TUI;
+}
+
+class AgentTestDeliveryDispatcher extends EventDeliveryDispatcher<unknown, string> {
+	private readonly owner: {
+		snapshotObserverEvent(value: unknown): unknown;
+		releaseObserverEvent(key: string, value: unknown): void;
+	};
+
+	constructor(
+		owner: {
+			snapshotObserverEvent(value: unknown): unknown;
+			releaseObserverEvent(key: string, value: unknown): void;
+		},
+		scheduler: FakeScheduler,
+	) {
+		super({ scheduler, defaultMinIntervalMs: 16 });
+		this.owner = owner;
+	}
+
+	protected override createLatestSnapshot(event: unknown): unknown {
+		return this.owner.snapshotObserverEvent(event);
+	}
+
+	protected override onLatestReleased(key: string, event: unknown): void {
+		this.owner.releaseObserverEvent(key, event);
+	}
 }
 
 function createDefinition(
@@ -681,6 +709,132 @@ test("Agent keeps interleaved tool metadata on one bounded message latest lane",
 	assert.equal(metricsB.toolArgsFinalizations, 1);
 	assert.equal(agent.eventDeliveryStats.pendingKeys, 0);
 	assert.equal((agent as unknown as { pendingChangedToolUpdates: Map<string, unknown> }).pendingChangedToolUpdates.size, 0);
+});
+
+test("slow observers retain every changed tool after faster message snapshots", async () => {
+	initTheme("dark");
+	const scheduler = new FakeScheduler();
+	const metricsA = createMetrics();
+	const metricsB = createMetrics();
+	let snapshots = 0;
+	let pendingMetadataHwm = 0;
+	const tui = createTui();
+	const toolA = new ToolExecutionComponent("a", "tool-a", {}, { allocationMetrics: metricsA }, undefined, tui, process.cwd());
+	const toolB = new ToolExecutionComponent("b", "tool-b", {}, { allocationMetrics: metricsB }, undefined, tui, process.cwd());
+	const mode = Object.create(InteractiveMode.prototype) as InteractiveMode & Record<string, unknown>;
+	Object.assign(mode, {
+		isInitialized: true,
+		footer: { invalidate(): void {} },
+		streamingComponent: { updateContent(): void {} },
+		streamingMessage: undefined,
+		streamingItem: { updateVersion(): void {} },
+		streamingItemVersion: 0,
+		pendingTools: new Map([["tool-a", toolA], ["tool-b", toolB]]),
+		streamedToolIds: new Set(["tool-a", "tool-b"]),
+		deferredReadPlaceholders: new Map(),
+		deferredReadExecutions: new Map(),
+		chatContainer: new RetainedContainer(),
+		ui: tui,
+	});
+	const agent = new Agent({
+		streamFn: (() => { throw new Error("unused"); }) as never,
+		eventInstrumentation: {
+			onAssistantSnapshot(): void { snapshots++; },
+			onPendingToolMetadata(pending): void {
+				if (pending > pendingMetadataHwm) pendingMetadataHwm = pending;
+			},
+		},
+	});
+	(agent as unknown as { activeRun: unknown }).activeRun = {
+		promise: Promise.resolve(),
+		resolve(): void {},
+		abortController: new AbortController(),
+	};
+	const dispatcher = new AgentTestDeliveryDispatcher(agent as unknown as {
+		snapshotObserverEvent(value: unknown): unknown;
+		releaseObserverEvent(key: string, value: unknown): void;
+	}, scheduler);
+	(agent as unknown as { eventDelivery: EventDeliveryDispatcher<unknown, string> }).eventDelivery = dispatcher;
+	const advance = async (durationMs: number): Promise<void> => {
+		scheduler.advanceBy(durationMs);
+		const flush = (dispatcher as unknown as { flushPromise?: Promise<void> }).flushPromise;
+		if (flush) await flush;
+	};
+	let fastDeliveries = 0;
+	let slowDeliveries = 0;
+	dispatcher.subscribe(() => { fastDeliveries++; }, { delivery: "latest", minIntervalMs: 0 });
+	dispatcher.subscribe((event) => {
+		slowDeliveries++;
+		(mode as unknown as { handleEvent(value: unknown): void }).handleEvent(event);
+	}, { delivery: "latest", minIntervalMs: 16 });
+	const message = {
+		role: "assistant",
+		api: "openai-completions",
+		provider: "fixture",
+		model: "fixture",
+		content: [
+			{ type: "toolCall", id: "tool-a", name: "a", arguments: { value: "a:1" }, partialArgs: "a:1" },
+			{ type: "toolCall", id: "tool-b", name: "b", arguments: { value: "b:1" }, partialArgs: "b:1" },
+		],
+		timestamp: 0,
+	};
+	const processEvent = (
+		contentIndex: number,
+		type: "toolcall_delta" | "toolcall_end",
+		generation?: number,
+	): Promise<void> => (
+		agent as unknown as { processEvents(event: unknown): Promise<void> }
+	).processEvents({
+		type: "message_update",
+		message,
+		assistantMessageEvent: {
+			type,
+			contentIndex,
+			delta: contentIndex === 0 ? "a:1" : "b:1",
+			toolCall: type === "toolcall_end" ? message.content[contentIndex] : undefined,
+			partial: message,
+			toolArgsGeneration: generation,
+		},
+	});
+
+	await processEvent(0, "toolcall_delta", 1);
+	await advance(0);
+	await processEvent(1, "toolcall_delta", 1);
+	await advance(0);
+	await advance(16);
+	await dispatcher.flushAllLatest();
+
+	assert.equal(fastDeliveries, 2);
+	assert.equal(slowDeliveries, 1);
+	assert.equal(metricsA.toolArgsGenerationUpdates, 1);
+	assert.equal(metricsB.toolArgsGenerationUpdates, 1);
+	assert.equal(snapshots, 2, "fast and slow observers share one snapshot for each pending version");
+	assert.equal(pendingMetadataHwm, 2);
+	assert.match(toolA.render(80).join("\n"), /a:1/);
+	assert.match(toolB.render(80).join("\n"), /b:1/);
+	assert.equal((agent as unknown as { pendingChangedToolUpdates: Map<string, unknown> }).pendingChangedToolUpdates.size, 0);
+	assert.equal(dispatcher.stats.pendingKeys, 0);
+	assert.equal(scheduler.pendingTasks, 0);
+
+	await processEvent(0, "toolcall_end");
+	await advance(0);
+	message.content[1]!.arguments.value = "b:2";
+	message.content[1]!.partialArgs = "b:2";
+	await processEvent(1, "toolcall_delta", 2);
+	await advance(0);
+	await advance(16);
+	await dispatcher.flushAllLatest();
+
+	assert.equal(fastDeliveries, 4);
+	assert.equal(slowDeliveries, 2);
+	assert.equal(metricsA.toolArgsFinalizations, 1);
+	assert.equal(metricsB.toolArgsGenerationUpdates, 2);
+	assert.equal(snapshots, 4, "sticky finalization and the sibling delta each create one shared version snapshot");
+	assert.equal(metricsA.toolArgsMissingGenerationUpdates, 0);
+	assert.equal(metricsB.toolArgsMissingGenerationUpdates, 0);
+	assert.match(toolB.render(80).join("\n"), /b:2/);
+	assert.equal((agent as unknown as { pendingChangedToolUpdates: Map<string, unknown> }).pendingChangedToolUpdates.size, 0);
+	assert.equal(scheduler.pendingTasks, 0);
 });
 
 test("one AgentSession delivery updates every changed tool from one large message snapshot", async () => {

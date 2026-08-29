@@ -367,6 +367,82 @@ test("tool ends remain sticky when a text update is the final event in the flush
 	await (agent as unknown as { eventDelivery: { dispose(): Promise<void> } }).eventDelivery.dispose();
 });
 
+test("Agent releases pending message metadata on final observer unsubscribe and snapshot failure", async () => {
+	const agent = new Agent({ streamFn: (() => { throw new Error("unused"); }) as never });
+	(agent as unknown as { activeRun: unknown }).activeRun = {
+		promise: Promise.resolve(),
+		resolve(): void {},
+		abortController: new AbortController(),
+	};
+	const unsubscribe = agent.subscribeObserver(() => {}, { minIntervalMs: 60_000 });
+	const message = {
+		role: "assistant",
+		api: "openai-completions",
+		provider: "fixture",
+		model: "fixture",
+		content: [{ type: "toolCall", id: "tool-a", name: "a", arguments: {}, partialArgs: "a" }],
+		timestamp: 0,
+	};
+	const processEvent = (value: unknown): Promise<void> => (
+		agent as unknown as { processEvents(event: unknown): Promise<void> }
+	).processEvents(value);
+	await processEvent({
+		type: "message_update",
+		message,
+		assistantMessageEvent: {
+			type: "toolcall_delta",
+			contentIndex: 0,
+			delta: "a",
+			partial: message,
+			toolArgsGeneration: 1,
+		},
+	});
+	assert.equal((agent as unknown as { pendingChangedToolUpdates: Map<string, unknown> }).pendingChangedToolUpdates.size, 1);
+	unsubscribe();
+	assert.equal((agent as unknown as { pendingChangedToolUpdates: Map<string, unknown> }).pendingChangedToolUpdates.size, 0);
+
+	const diagnostics: unknown[] = [];
+	const snapshotFailureAgent = new Agent({
+		streamFn: (() => { throw new Error("unused"); }) as never,
+		onEventDeliveryDiagnostic: (diagnostic) => { diagnostics.push(diagnostic); },
+	});
+	(snapshotFailureAgent as unknown as { activeRun: unknown }).activeRun = {
+		promise: Promise.resolve(),
+		resolve(): void {},
+		abortController: new AbortController(),
+	};
+	snapshotFailureAgent.subscribeObserver(() => {}, { minIntervalMs: 60_000 });
+	const uncloneableMessage = {
+		...message,
+		content: [{
+			type: "toolCall",
+			id: "tool-b",
+			name: "b",
+			arguments: { uncloneable(): void {} },
+			partialArgs: "b",
+		}],
+	};
+	await (snapshotFailureAgent as unknown as { processEvents(event: unknown): Promise<void> }).processEvents({
+		type: "message_update",
+		message: uncloneableMessage,
+		assistantMessageEvent: {
+			type: "toolcall_delta",
+			contentIndex: 0,
+			delta: "b",
+			partial: uncloneableMessage,
+			toolArgsGeneration: 1,
+		},
+	});
+	await (snapshotFailureAgent as unknown as { eventDelivery: { flushAllLatest(): Promise<void> } })
+		.eventDelivery.flushAllLatest();
+	assert.equal(diagnostics.length, 1);
+	assert.equal(
+		(snapshotFailureAgent as unknown as { pendingChangedToolUpdates: Map<string, unknown> })
+			.pendingChangedToolUpdates.size,
+		0,
+	);
+});
+
 test("abort flushes the final latest update and leaves no stale pending delivery", async () => {
 	let markWaiting = () => {};
 	const waiting = new Promise<void>((resolve) => { markWaiting = resolve; });
