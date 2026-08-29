@@ -22,7 +22,12 @@ import type { TUI } from "../../packages/tui/src/tui.ts";
 import { currentCommit, readIntegerOption } from "./benchmark.ts";
 
 type BenchEvent = { type: string; [key: string]: unknown };
-type Scenario = "single-mutation" | "interleaved-mutation" | "openai-custom" | "replacement-object";
+type Scenario =
+	| "single-mutation"
+	| "interleaved-mutation"
+	| "openai-custom"
+	| "interleaved-openai-custom"
+	| "replacement-object";
 type SamplingNode = {
 	callFrame: { functionName: string; url: string; lineNumber: number; columnNumber: number };
 	selfSize: number;
@@ -136,6 +141,12 @@ function resetMetrics(metrics: ToolExecutionAllocationMetrics): void {
 	for (const key of Object.keys(metrics) as Array<keyof ToolExecutionAllocationMetrics>) metrics[key] = 0;
 }
 
+function sumMetric(metrics: readonly ToolExecutionAllocationMetrics[], key: keyof ToolExecutionAllocationMetrics): number {
+	let total = 0;
+	for (const item of metrics) total += item[key];
+	return total;
+}
+
 function percentile(sorted: readonly number[], ratio: number): number {
 	return sorted[Math.min(sorted.length - 1, Math.max(0, Math.ceil(sorted.length * ratio) - 1))] ?? 0;
 }
@@ -192,15 +203,16 @@ async function profileScenario(scenario: Scenario): Promise<Record<string, unkno
 	renderer.setRenderInstrumentation(instrumentation);
 	renderer.addChild(transcript);
 	const reference = createInteractiveTuiReference(() => renderer);
-	const metrics = createMetrics();
-	const toolCount = scenario === "interleaved-mutation" ? 2 : 1;
+	const toolCount = scenario === "interleaved-mutation" || scenario === "interleaved-openai-custom" ? 2 : 1;
+	const metrics = new Array<ToolExecutionAllocationMetrics>(toolCount);
 	const args = new Array<Record<string, unknown>>(toolCount);
 	const content = new Array<Record<string, unknown>>(toolCount);
 	const pendingTools = new Map<string, ToolExecutionComponent>();
 	for (let index = 0; index < toolCount; index++) {
+		metrics[index] = createMetrics();
 		args[index] = { value: 0 };
 		content[index] = { type: "toolCall", id: `tool-${index}`, name: `tool-${index}`, arguments: args[index], partialArgs: "0" };
-		const component = new ToolExecutionComponent(`tool-${index}`, `tool-${index}`, args[index], { allocationMetrics: metrics }, undefined, reference, process.cwd());
+		const component = new ToolExecutionComponent(`tool-${index}`, `tool-${index}`, args[index], { allocationMetrics: metrics[index] }, undefined, reference, process.cwd());
 		pendingTools.set(`tool-${index}`, component);
 		transcript.addRetainedChild(component, { id: `tool-${index}`, version: 0 });
 	}
@@ -230,16 +242,19 @@ async function profileScenario(scenario: Scenario): Promise<Record<string, unkno
 	activeAgent.eventDelivery = delivery;
 	delivery.subscribe(deliverObserverEvent, { delivery: "latest", minIntervalMs: 16 });
 	let updateIndex = 0;
-	let sentinel = "";
+	const sentinels = new Array<string>(toolCount).fill("");
 	const deliverCycle = async (): Promise<void> => {
 		for (let offset = 0; offset < RAW_PER_DELIVERY; offset++) {
-			const toolIndex = scenario === "interleaved-mutation" ? updateIndex & 1 : 0;
-			sentinel = `${scenario}:${updateIndex++}`;
+			const toolIndex = toolCount === 2 ? updateIndex & 1 : 0;
+			const sentinel = `${scenario}:${updateIndex++}`;
+			sentinels[toolIndex] = sentinel;
 			let generation: number | undefined;
-			if (scenario === "replacement-object" || scenario === "openai-custom") {
+			if (scenario === "replacement-object" || scenario === "openai-custom" || scenario === "interleaved-openai-custom") {
 				args[toolIndex] = { value: sentinel };
 				content[toolIndex]!.arguments = args[toolIndex];
-				if (scenario === "openai-custom") generation = updateIndex;
+				if (scenario === "openai-custom" || scenario === "interleaved-openai-custom") {
+					generation = Math.floor((updateIndex - 1) / toolCount) + 1;
+				}
 			} else {
 				args[toolIndex]!.value = sentinel;
 				content[toolIndex]!.partialArgs = String(updateIndex);
@@ -258,7 +273,7 @@ async function profileScenario(scenario: Scenario): Promise<Record<string, unkno
 		renderer.renderNow();
 	};
 	for (let index = 0; index < Math.ceil(warmup / RAW_PER_DELIVERY); index++) await deliverCycle();
-	resetMetrics(metrics);
+	for (const item of metrics) resetMetrics(item);
 	instrumentation.reset();
 	renderer.requestRenderCalls = 0;
 	renderer.doRenderCalls = 0;
@@ -293,6 +308,12 @@ async function profileScenario(scenario: Scenario): Promise<Record<string, unkno
 	}
 	const measuredStats = delivery.stats;
 	const measuredSnapshotCount = snapshotCount;
+	const stopped = await inspector.post("HeapProfiler.stopSampling");
+	await inspector.post("HeapProfiler.disable");
+	inspector.disconnect();
+	await new Promise<void>((resolve) => setTimeout(resolve, 50));
+	gcObserver.disconnect();
+	const sampled = allocationSites(stopped.profile.head as SamplingNode);
 	for (let toolIndex = 0; toolIndex < toolCount; toolIndex++) {
 		await activeAgent.processEvents(messageEvent(
 			scenario === "replacement-object" ? "pi-messages" : "openai-completions",
@@ -305,63 +326,90 @@ async function profileScenario(scenario: Scenario): Promise<Record<string, unkno
 	scheduler.advance();
 	await delivery.flushAllLatest();
 	renderer.renderNow();
-	const stopped = await inspector.post("HeapProfiler.stopSampling");
-	await inspector.post("HeapProfiler.disable");
-	inspector.disconnect();
-	await new Promise<void>((resolve) => setTimeout(resolve, 50));
-	gcObserver.disconnect();
-	const sampled = allocationSites(stopped.profile.head as SamplingNode);
 	const sorted = durations.slice().sort((left, right) => left - right);
 	const statsAfter = delivery.stats;
 	const render = instrumentation.snapshot();
-	let finalText = "";
-	for (const component of pendingTools.values()) finalText += component.render(120).join("\n");
+	const perTool = new Array<Record<string, unknown>>(toolCount);
+	for (let toolIndex = 0; toolIndex < toolCount; toolIndex++) {
+		const component = pendingTools.get(`tool-${toolIndex}`)!;
+		const finalText = component.render(120).join("\n");
+		const item = metrics[toolIndex]!;
+		if (item.toolArgsFinalizations !== 1) throw new Error(`${scenario}: tool-${toolIndex} finalization count is ${item.toolArgsFinalizations}`);
+		if (item.toolArgsMissingGenerationUpdates !== 0) throw new Error(`${scenario}: tool-${toolIndex} missing generation count is ${item.toolArgsMissingGenerationUpdates}`);
+		if (item.toolArgsSemanticFallbackComparisons !== 0) throw new Error(`${scenario}: tool-${toolIndex} used semantic fallback`);
+		if (!finalText.includes(sentinels[toolIndex]!)) throw new Error(`${scenario}: tool-${toolIndex} final sentinel is stale`);
+		perTool[toolIndex] = {
+			toolId: `tool-${toolIndex}`,
+			toolArgsGenerationUpdates: item.toolArgsGenerationUpdates,
+			toolArgsReplacementUpdates: item.toolArgsReplacementUpdates,
+			toolArgsSemanticFallbackComparisons: item.toolArgsSemanticFallbackComparisons,
+			toolArgsMissingGenerationUpdates: item.toolArgsMissingGenerationUpdates,
+			toolArgsFinalizations: item.toolArgsFinalizations,
+			updateDisplayCalls: item.updateDisplayCalls,
+			callRendererCalls: item.callRendererCalls,
+			argsSerializations: item.argsSerializations,
+			finalSentinelCorrect: finalText.includes(sentinels[toolIndex]!) ? 1 : 0,
+			finalHash: createHash("sha256").update(finalText).digest("hex"),
+		};
+	}
+	const actualDeliveries = measuredStats.delivered - statsBefore.delivered;
+	const actualDeliveriesPerFlushCycle = actualDeliveries / measuredCycles;
+	if (actualDeliveriesPerFlushCycle !== toolCount) {
+		throw new Error(`${scenario}: expected ${toolCount} deliveries per flush cycle, received ${actualDeliveriesPerFlushCycle}`);
+	}
+	if (scheduler.pendingTasks !== 0 || statsAfter.pendingKeys !== 0) {
+		throw new Error(`${scenario}: delivery state was not released`);
+	}
 	await delivery.dispose();
 	await renderer.dispose({ preserveScreen: true });
 	return {
 		name: scenario,
 		coverage: {
-			providerEventStream: true,
-			realAgentDelivery: true,
+			providerStyleEventFixture: true,
+			actualProviderParser: false,
+			agentProcessEvents: true,
+			realEventDeliveryDispatcher: true,
 			productionSnapshot: true,
-			realAgentSession: true,
-			realInteractiveMode: true,
-			stableFacade: true,
-			realToolComponent: true,
+			agentSessionPrototypeBridge: true,
+			interactiveModePrototypeHarness: true,
+			stableInteractiveTuiReference: true,
+			realToolExecutionComponent: true,
 			retainedViewport: true,
 			mainFrameQueue: true,
 		},
 		rawUpdates: measuredCycles * RAW_PER_DELIVERY,
 		coalescedUpdates: measuredStats.coalesced - statsBefore.coalesced,
-		actualDeliveries: measuredStats.delivered - statsBefore.delivered,
+		actualDeliveries,
+		actualDeliveriesPerFlushCycle,
 		finalizationDeliveries: statsAfter.delivered - measuredStats.delivered,
 		snapshotCount: measuredSnapshotCount,
 		totalSnapshotCount: snapshotCount,
 		metrics: {
-			cpuP50MsPerDelivery: percentile(sorted, 0.5),
-			cpuP95MsPerDelivery: percentile(sorted, 0.95),
+			cpuP50MsPerFlushCycle: percentile(sorted, 0.5),
+			cpuP95MsPerFlushCycle: percentile(sorted, 0.95),
 			sampledAllocationBytesPerRawUpdate: sampled.sampledBytes / (measuredCycles * RAW_PER_DELIVERY),
-			sampledAllocationBytesPerDelivery: sampled.sampledBytes / measuredCycles,
+			sampledAllocationBytesPerFlushCycle: sampled.sampledBytes / measuredCycles,
+			sampledAllocationBytesPerActualDelivery: sampled.sampledBytes / Math.max(1, actualDeliveries),
 			minorGcCount,
 			majorGcCount,
 			totalGcDurationMs,
-			toolArgsGenerationUpdates: metrics.toolArgsGenerationUpdates,
-			toolArgsReplacementUpdates: metrics.toolArgsReplacementUpdates,
-			toolArgsSemanticFallbackComparisons: metrics.toolArgsSemanticFallbackComparisons,
-			toolArgsMissingGenerationUpdates: metrics.toolArgsMissingGenerationUpdates,
-			toolArgsFinalizations: metrics.toolArgsFinalizations,
-			updateDisplayCalls: metrics.updateDisplayCalls,
-			callRendererCalls: metrics.callRendererCalls,
-			argsSerializations: metrics.argsSerializations,
+			toolArgsGenerationUpdates: sumMetric(metrics, "toolArgsGenerationUpdates"),
+			toolArgsReplacementUpdates: sumMetric(metrics, "toolArgsReplacementUpdates"),
+			toolArgsSemanticFallbackComparisons: sumMetric(metrics, "toolArgsSemanticFallbackComparisons"),
+			toolArgsMissingGenerationUpdates: sumMetric(metrics, "toolArgsMissingGenerationUpdates"),
+			toolArgsFinalizations: sumMetric(metrics, "toolArgsFinalizations"),
+			updateDisplayCalls: sumMetric(metrics, "updateDisplayCalls"),
+			callRendererCalls: sumMetric(metrics, "callRendererCalls"),
+			argsSerializations: sumMetric(metrics, "argsSerializations"),
 			requestRenderCalls: renderer.requestRenderCalls,
 			doRenderCalls: renderer.doRenderCalls,
 			frameWrites: terminal.frameWrites,
 			builtInPromises,
 			completedItemRenders: render.completedItemRenders,
 			activeItemRenders: render.activeItemRenders,
-			finalSentinelCorrect: finalText.includes(sentinel) ? 1 : 0,
-			finalHash: createHash("sha256").update(finalText).digest("hex"),
+			pendingKeys: statsAfter.pendingKeys,
 			schedulerPendingTasks: scheduler.pendingTasks,
+			perTool,
 		},
 		sourceInvariant: { inlineClosuresPerUpdate: 0, promiseTailsPerUpdate: 0, promiseArraysPerUpdate: 0 },
 		topAllocationSites: sampled.top,
@@ -371,7 +419,7 @@ async function profileScenario(scenario: Scenario): Promise<Record<string, unkno
 if (typeof globalThis.gc !== "function") throw new Error("tui-paced-streamed-tool-args requires --expose-gc");
 initTheme("dark");
 const results = [];
-for (const scenario of ["single-mutation", "interleaved-mutation", "openai-custom", "replacement-object"] as const) {
+for (const scenario of ["single-mutation", "interleaved-mutation", "openai-custom", "interleaved-openai-custom", "replacement-object"] as const) {
 	results.push(await profileScenario(scenario));
 }
 process.stdout.write(`${JSON.stringify({
