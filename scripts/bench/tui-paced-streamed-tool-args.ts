@@ -53,6 +53,7 @@ type AgentHarness = {
 	activeRun: { abortController: AbortController };
 	eventDelivery: EventDeliveryDispatcher<BenchEvent, string>;
 	snapshotObserverEvent(event: BenchEvent): BenchEvent;
+	releaseObserverEvent(key: string, event: BenchEvent): void;
 	processEvents(event: BenchEvent): Promise<void>;
 };
 
@@ -78,7 +79,6 @@ function deliverSessionEvent(event: BenchEvent): void | Promise<void> {
 	return result;
 }
 function deliverObserverEvent(event: BenchEvent): void { activeSession._handleAgentObserverEvent(event); }
-function snapshotEvent(event: BenchEvent): BenchEvent { snapshotCount++; return activeAgent.snapshotObserverEvent(event); }
 function publishNoopObserver(): void { extensionObserverPublishes++; }
 function updateStreamingComponent(): void { streamingComponentUpdates++; }
 function updateStreamingItem(): void { streamingItemUpdates++; }
@@ -145,6 +145,24 @@ class SingleTaskScheduler implements EventDeliveryScheduler {
 		callback?.();
 	}
 	get pendingTasks(): number { return this.callback ? 1 : 0; }
+}
+
+class BenchEventDeliveryDispatcher extends EventDeliveryDispatcher<BenchEvent, string> {
+	private readonly owner: AgentHarness;
+
+	constructor(owner: AgentHarness, scheduler: EventDeliveryScheduler) {
+		super({ scheduler, defaultMinIntervalMs: 16 });
+		this.owner = owner;
+	}
+
+	protected override createLatestSnapshot(event: BenchEvent): BenchEvent {
+		snapshotCount++;
+		return this.owner.snapshotObserverEvent(event);
+	}
+
+	protected override onLatestReleased(key: string, event: BenchEvent): void {
+		this.owner.releaseObserverEvent(key, event);
+	}
 }
 
 function createMetrics(): ToolExecutionAllocationMetrics {
@@ -275,7 +293,7 @@ async function profileScenario(scenario: Scenario): Promise<Record<string, unkno
 	activeAgent = agent as unknown as AgentHarness;
 	activeAgent.activeRun = { abortController: new AbortController() };
 	const scheduler = new SingleTaskScheduler();
-	const delivery = new EventDeliveryDispatcher<BenchEvent, string>({ scheduler, defaultMinIntervalMs: 16, snapshotLatest: snapshotEvent });
+	const delivery = new BenchEventDeliveryDispatcher(activeAgent, scheduler);
 	activeAgent.eventDelivery = delivery;
 	delivery.subscribe(deliverObserverEvent, { delivery: "latest", minIntervalMs: 16 });
 	let updateIndex = 0;

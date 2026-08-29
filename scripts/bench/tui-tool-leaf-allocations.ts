@@ -45,6 +45,7 @@ type AgentHarness = {
 	activeRun: { abortController: AbortController };
 	eventDelivery: EventDeliveryDispatcher<BenchEvent, string>;
 	snapshotObserverEvent(event: BenchEvent): BenchEvent;
+	releaseObserverEvent(key: string, event: BenchEvent): void;
 };
 
 const RAW_UPDATES_PER_FLUSH_CYCLE = 20;
@@ -60,7 +61,6 @@ function deliverSessionEvent(event: BenchEvent): void | Promise<void> {
 	return result;
 }
 function deliverObserverEvent(event: BenchEvent): void { activeSession._handleAgentObserverEvent(event); }
-function snapshotEvent(event: BenchEvent): BenchEvent { snapshotCount++; return activeAgent.snapshotObserverEvent(event); }
 function publishNoopObserver(): void {}
 function failOnRejection(error: unknown): never { throw error; }
 function throwUnusedStream(): never { throw new Error("provider stream is not used by this benchmark"); }
@@ -104,6 +104,24 @@ class SingleTaskScheduler implements EventDeliveryScheduler {
 	cancel(handle: unknown): void { if (handle === this.handle) this.callback = undefined; }
 	advance(): void { this.clock += 16; const callback = this.callback; this.callback = undefined; callback?.(); }
 	get pendingTasks(): number { return this.callback ? 1 : 0; }
+}
+
+class BenchEventDeliveryDispatcher extends EventDeliveryDispatcher<BenchEvent, string> {
+	private readonly owner: AgentHarness;
+
+	constructor(owner: AgentHarness, scheduler: EventDeliveryScheduler) {
+		super({ scheduler, defaultMinIntervalMs: 16 });
+		this.owner = owner;
+	}
+
+	protected override createLatestSnapshot(event: BenchEvent): BenchEvent {
+		snapshotCount++;
+		return this.owner.snapshotObserverEvent(event);
+	}
+
+	protected override onLatestReleased(key: string, event: BenchEvent): void {
+		this.owner.releaseObserverEvent(key, event);
+	}
 }
 
 function createMetrics(): ToolExecutionAllocationMetrics {
@@ -215,7 +233,7 @@ async function profileFixture(kind: ToolFixtureKind, paced: boolean): Promise<Re
 		const agent = new Agent({ streamFn: throwUnusedStream as never });
 		activeAgent = agent as unknown as AgentHarness;
 		activeAgent.activeRun = { abortController: new AbortController() };
-		delivery = new EventDeliveryDispatcher<BenchEvent, string>({ scheduler, defaultMinIntervalMs: 16, snapshotLatest: snapshotEvent });
+		delivery = new BenchEventDeliveryDispatcher(activeAgent, scheduler);
 		activeAgent.eventDelivery = delivery;
 		delivery.subscribe(deliverObserverEvent, { delivery: "latest", minIntervalMs: 16 });
 	}
