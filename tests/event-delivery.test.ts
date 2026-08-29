@@ -13,6 +13,10 @@ interface FixtureEvent {
 	sequence: number;
 }
 
+function unexpectedLegacySchedule(): never {
+	throw new Error("context-aware scheduler unexpectedly used the legacy path");
+}
+
 class ReleaseTrackingDispatcher extends EventDeliveryDispatcher<FixtureEvent, string> {
 	readonly releasedKeys: string[] = [];
 	readonly releasedSequences: number[] = [];
@@ -135,9 +139,14 @@ test("scheduled latest flushes reuse one callback across dispatcher instances", 
 	const callbacks: Array<(context: unknown, generation: number) => void> = [];
 	const contexts: unknown[] = [];
 	const generations: number[] = [];
+	let legacyScheduleCalls = 0;
 	const scheduler = {
 		now(): number { return 0; },
-		schedule(callback, _delayMs, context, generation): number {
+		schedule(): never {
+			legacyScheduleCalls++;
+			throw new Error("context-aware scheduler unexpectedly used the legacy path");
+		},
+		scheduleWithContext(callback, _delayMs, context, generation): number {
 			callbacks.push(callback);
 			contexts.push(context);
 			generations.push(generation);
@@ -160,6 +169,67 @@ test("scheduled latest flushes reuse one callback across dispatcher instances", 
 	assert.equal(contexts[1], second);
 	assert.equal(generations[0], 1);
 	assert.equal(generations[1], 1);
+	assert.equal(legacyScheduleCalls, 0);
+});
+
+test("legacy two-argument schedulers deliver zero-argument callbacks and cancel on dispose", async () => {
+	const callbacks: Array<() => void> = [];
+	const cancelled: unknown[] = [];
+	const scheduler: EventDeliveryScheduler = {
+		now(): number { return 0; },
+		schedule(callback: () => void, _delayMs: number): unknown {
+			callbacks.push(callback);
+			return callbacks.length;
+		},
+		cancel(handle: unknown): void { cancelled.push(handle); },
+	};
+	const dispatcher = new EventDeliveryDispatcher<FixtureEvent, string>({ scheduler });
+	let delivered = 0;
+	dispatcher.subscribe(() => { delivered++; }, { delivery: "latest", minIntervalMs: 16 });
+	dispatcher.publishLatest("message", { type: "update", sequence: 1 });
+	assert.equal(callbacks.length, 1);
+
+	callbacks[0]?.();
+	await dispatcher.flushAllLatest();
+	assert.equal(delivered, 1);
+
+	const scheduledBeforeSecondPublish = callbacks.length;
+	dispatcher.publishLatest("message", { type: "update", sequence: 2 });
+	assert.equal(callbacks.length, scheduledBeforeSecondPublish + 1);
+	const pendingHandle = callbacks.length;
+	await dispatcher.dispose();
+	assert.equal(cancelled.at(-1), pendingHandle);
+});
+
+test("a stale legacy scheduler callback cannot clear its replacement generation", async () => {
+	let now = 0;
+	const callbacks: Array<() => void> = [];
+	const scheduler: EventDeliveryScheduler = {
+		now(): number { return now; },
+		schedule(callback: () => void): unknown {
+			callbacks.push(callback);
+			return callbacks.length;
+		},
+		cancel(): void {},
+	};
+	const dispatcher = new EventDeliveryDispatcher<FixtureEvent, string>({ scheduler });
+	const unsubscribeFirst = dispatcher.subscribe(() => {}, { delivery: "latest", minIntervalMs: 100 });
+	dispatcher.publishLatest("message", { type: "update", sequence: 1 });
+	unsubscribeFirst();
+	let delivered = 0;
+	dispatcher.subscribe(() => { delivered++; }, { delivery: "latest", minIntervalMs: 100 });
+	dispatcher.publishLatest("message", { type: "update", sequence: 2 });
+
+	callbacks[0]?.();
+	await Promise.resolve();
+	assert.equal(delivered, 0);
+	assert.equal(dispatcher.stats.pendingKeys, 1);
+
+	now = 100;
+	callbacks[1]?.();
+	await dispatcher.flushAllLatest();
+	assert.equal(delivered, 1);
+	assert.equal(dispatcher.stats.pendingKeys, 0);
 });
 
 test("synchronous scheduler completion cannot restore an already-fired handle", async () => {
@@ -167,7 +237,8 @@ test("synchronous scheduler completion cannot restore an already-fired handle", 
 	let deliveries = 0;
 	const scheduler = {
 		now(): number { return 0; },
-		schedule(callback, _delayMs, context, generation): number {
+		schedule: unexpectedLegacySchedule,
+		scheduleWithContext(callback, _delayMs, context, generation): number {
 			callback(context, generation);
 			return generation;
 		},
@@ -193,7 +264,8 @@ test("a cancelled scheduler generation cannot clear or flush its replacement", a
 	let scheduleCalls = 0;
 	const scheduler = {
 		now(): number { return now; },
-		schedule(callback, _delayMs, context, generation): number {
+		schedule: unexpectedLegacySchedule,
+		scheduleWithContext(callback, _delayMs, context, generation): number {
 			callbacks.push(callback);
 			contexts.push(context);
 			generations.push(generation);
@@ -340,9 +412,10 @@ test("unsubscribing a latest observer recalculates the next remaining due time",
 	const dispatcher = new EventDeliveryDispatcher<FixtureEvent, string>({
 		scheduler: {
 			now: () => scheduler.now(),
-			schedule: (callback, delayMs, context, generation) => {
+			schedule: (callback, delayMs) => scheduler.schedule(callback, delayMs),
+			scheduleWithContext: (callback, delayMs, context, generation) => {
 				scheduledDelays.push(delayMs);
-				return scheduler.schedule(callback, delayMs, context, generation);
+				return scheduler.scheduleWithContext(callback, delayMs, context, generation);
 			},
 			cancel: (handle) => scheduler.cancel(handle as number),
 		},
