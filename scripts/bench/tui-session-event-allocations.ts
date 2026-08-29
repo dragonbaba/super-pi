@@ -362,7 +362,13 @@ const warmup = readIntegerOption("--warmup", 10_000);
 const timestamp = 0;
 const messageEvent: BenchEvent = {
 	type: "message_update",
-	message: { role: "assistant", content: [], timestamp },
+	message: { role: "assistant", content: [{ type: "text", text: "progress" }], timestamp },
+	assistantMessageEvent: {
+		type: "text_delta",
+		contentIndex: 0,
+		delta: "progress",
+		partial: { role: "assistant", content: [{ type: "text", text: "progress" }], timestamp },
+	},
 };
 const toolEvent: BenchEvent = {
 	type: "tool_execution_update",
