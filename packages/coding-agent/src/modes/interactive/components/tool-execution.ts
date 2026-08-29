@@ -436,8 +436,8 @@ export class ToolExecutionComponent extends Container {
 		generation?: ToolArgsGeneration,
 		ownership?: StreamedToolArgumentOwnership,
 		finalized = false,
-	): void {
-		if (this.argsStreamFinalized) return;
+	): boolean {
+		if (this.argsStreamFinalized) return false;
 		if (finalized) {
 			this.argsStreamFinalized = true;
 			if (this.allocationMetrics) this.allocationMetrics.toolArgsFinalizations++;
@@ -447,7 +447,7 @@ export class ToolExecutionComponent extends Container {
 			this.callRendererDirty = true;
 			this.argsDisplayDirty = true;
 			this.updateDisplay();
-			return;
+			return true;
 		}
 		if (ownership === "mutation-with-generation") {
 			if (generation === undefined) {
@@ -458,11 +458,11 @@ export class ToolExecutionComponent extends Container {
 				this.callRendererDirty = true;
 				this.argsDisplayDirty = true;
 				this.updateDisplay();
-				return;
+				return true;
 			}
 			if (Object.is(this.argsGeneration, generation)) {
 				this.args = args;
-				return;
+				return false;
 			}
 			if (this.allocationMetrics) this.allocationMetrics.toolArgsGenerationUpdates++;
 			this.args = args;
@@ -471,16 +471,16 @@ export class ToolExecutionComponent extends Container {
 			this.callRendererDirty = true;
 			this.argsDisplayDirty = true;
 			this.updateDisplay();
-			return;
+			return true;
 		}
 		if (ownership === "replacement-object") {
-			if (this.args === args) return;
+			if (this.args === args) return false;
 			if (this.allocationMetrics) this.allocationMetrics.toolArgsReplacementUpdates++;
 		} else {
 			if (this.allocationMetrics) this.allocationMetrics.toolArgsMissingGenerationUpdates++;
 			if (generation !== undefined && Object.is(this.argsGeneration, generation)) {
 				this.args = args;
-				return;
+				return false;
 			}
 			if (generation !== undefined) {
 				this.args = args;
@@ -489,7 +489,7 @@ export class ToolExecutionComponent extends Container {
 				this.callRendererDirty = true;
 				this.argsDisplayDirty = true;
 				this.updateDisplay();
-				return;
+				return true;
 			}
 			if (this.args === args) {
 				this.argsGeneration = undefined;
@@ -497,7 +497,7 @@ export class ToolExecutionComponent extends Container {
 				this.callRendererDirty = true;
 				this.argsDisplayDirty = true;
 				this.updateDisplay();
-				return;
+				return true;
 			}
 			if (this.allocationMetrics) this.allocationMetrics.toolArgsSemanticFallbackComparisons++;
 		}
@@ -510,7 +510,7 @@ export class ToolExecutionComponent extends Container {
 			if (previousJson !== undefined && previousJson === nextJson) {
 				this.argsDisplayJson = nextJson;
 				this.argsDisplayDirty = false;
-				return;
+				return false;
 			}
 			if (nextJson !== undefined) {
 				this.argsDisplayJson = nextJson;
@@ -525,6 +525,7 @@ export class ToolExecutionComponent extends Container {
 		}
 		this.callRendererDirty = true;
 		this.updateDisplay();
+		return true;
 	}
 
 	private serializeArgs(args: any): string | undefined {

@@ -3381,39 +3381,46 @@ export class InteractiveMode {
 					this.streamingMessage = event.message;
 					this.streamingComponent.updateContent(this.streamingMessage, true);
 					this.streamingItem?.updateVersion(++this.streamingItemVersion);
-					const toolArgumentOwnership = typeof this.streamingMessage.api === "string"
-						? getStreamedToolArgumentOwnership(this.streamingMessage.api)
-						: undefined;
-
-					for (let contentIndex = 0; contentIndex < this.streamingMessage.content.length; contentIndex++) {
-						const content = this.streamingMessage.content[contentIndex]!;
-						if (content.type !== "toolCall") continue;
-						const component = this.pendingTools.get(content.id);
-						const firstStreamingAppearance = !this.streamedToolIds.has(content.id);
-						this.streamedToolIds.add(content.id);
-						if (component && firstStreamingAppearance && content.name !== "read") {
-							const placeholder = new Container();
-							this.chatContainer.addChild(placeholder);
-							this.replaceDeferredReadPlaceholder(content.id, placeholder, component);
-						}
-						if (!component) {
-							if (content.name === "read") {
-								if (!this.deferredReadPlaceholders.has(content.id)) {
-									const placeholder = new Container();
-									this.deferredReadPlaceholders.set(content.id, placeholder);
-									this.chatContainer.addChild(placeholder);
+					const assistantUpdate = event.assistantMessageEvent;
+					if (
+						assistantUpdate.type === "toolcall_start" ||
+						assistantUpdate.type === "toolcall_delta" ||
+						assistantUpdate.type === "toolcall_end"
+					) {
+						const content = this.streamingMessage.content[assistantUpdate.contentIndex];
+						if (content?.type === "toolCall") {
+							let component = this.pendingTools.get(content.id);
+							const firstStreamingAppearance = !this.streamedToolIds.has(content.id);
+							this.streamedToolIds.add(content.id);
+							if (component && firstStreamingAppearance && content.name !== "read") {
+								const placeholder = new Container();
+								this.chatContainer.addChild(placeholder);
+								this.replaceDeferredReadPlaceholder(content.id, placeholder, component);
+							}
+							if (!component) {
+								if (content.name === "read") {
+									if (!this.deferredReadPlaceholders.has(content.id)) {
+										const placeholder = new Container();
+										this.deferredReadPlaceholders.set(content.id, placeholder);
+										this.chatContainer.addChild(placeholder);
+									}
+								} else {
+									component = this.createTrackedToolComponent(content.name, content.id, content.arguments, undefined, false, false);
 								}
-							} else this.createTrackedToolComponent(content.name, content.id, content.arguments, undefined, false, false);
-						} else {
-							this.updateTrackedToolArgs(
-								component,
-								content.id,
-								content.arguments,
-								getStreamedToolArgsGeneration(content, event.assistantMessageEvent),
-								toolArgumentOwnership,
-								event.assistantMessageEvent.type === "toolcall_end" &&
-									event.assistantMessageEvent.contentIndex === contentIndex,
-							);
+							}
+							if (component) {
+								const toolArgumentOwnership = typeof this.streamingMessage.api === "string"
+									? getStreamedToolArgumentOwnership(this.streamingMessage.api)
+									: undefined;
+								this.updateTrackedToolArgs(
+									component,
+									content.id,
+									content.arguments,
+									getStreamedToolArgsGeneration(content, assistantUpdate),
+									toolArgumentOwnership,
+									assistantUpdate.type === "toolcall_end",
+								);
+							}
 						}
 					}
 					this.ui.requestRender();
@@ -3797,10 +3804,12 @@ export class InteractiveMode {
 		generation?: string | number,
 		ownership?: StreamedToolArgumentOwnership,
 		finalized = false,
-	): void {
-		if (component instanceof ReadToolGroupComponent) component.updateArgs(toolCallId, args);
-		else component.updateArgs(args, generation, ownership, finalized);
-		this.advanceActiveToolVersion(component);
+	): boolean {
+		const changed = component instanceof ReadToolGroupComponent
+			? component.updateArgs(toolCallId, args)
+			: component.updateArgs(args, generation, ownership, finalized);
+		if (changed) this.advanceActiveToolVersion(component);
+		return changed;
 	}
 
 	private markTrackedToolStarted(component: ToolExecutionComponent | ReadToolGroupComponent, toolCallId: string): void {

@@ -136,8 +136,13 @@ test("tool finalization uses per-tool latest identity and one component boundary
 	assert.match(agent, /message:tool:\$\{content\.id\}/);
 	assert.match(agent, /toolMessageLatestKeys\.delete\(content\.id\)/);
 	const interactive = readFileSync("packages/coding-agent/src/modes/interactive/interactive-mode.ts", "utf8");
-	assert.match(interactive, /assistantMessageEvent\.contentIndex === contentIndex/);
+	const messageUpdate = interactive.slice(interactive.indexOf('case "message_update"'), interactive.indexOf('case "message_end"'));
+	assert.match(messageUpdate, /this\.streamingMessage\.content\[assistantUpdate\.contentIndex\]/);
+	assert.match(messageUpdate, /assistantUpdate\.type === "toolcall_end"/);
+	assert.doesNotMatch(messageUpdate, /for \(let contentIndex/);
+	assert.match(interactive, /if \(changed\) this\.advanceActiveToolVersion\(component\)/);
 	const tool = readFileSync("packages/coding-agent/src/modes/interactive/components/tool-execution.ts", "utf8");
 	assert.match(tool, /private argsStreamFinalized = false/);
 	assert.match(tool, /toolArgsFinalizations\+\+/);
+	assert.match(tool, /\): boolean \{/);
 });

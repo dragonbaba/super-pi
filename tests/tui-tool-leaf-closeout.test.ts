@@ -339,6 +339,7 @@ test("tool finalization is scoped to its content index and does not repaint sibl
 	const argsB = { value: "b" };
 	const toolA = new ToolExecutionComponent("a", "tool-a", argsA, { allocationMetrics: metricsA }, undefined, tui, process.cwd());
 	const toolB = new ToolExecutionComponent("b", "tool-b", argsB, { allocationMetrics: metricsB }, undefined, tui, process.cwd());
+	const versionAdvances = new Map<Component, number>();
 	const mode = Object.create(InteractiveMode.prototype) as InteractiveMode & Record<string, unknown>;
 	Object.assign(mode, {
 		isInitialized: true,
@@ -353,6 +354,9 @@ test("tool finalization is scoped to its content index and does not repaint sibl
 		deferredReadExecutions: new Map(),
 		chatContainer: new RetainedContainer(),
 		ui: tui,
+		advanceActiveToolVersion(component: Component): void {
+			versionAdvances.set(component, (versionAdvances.get(component) ?? 0) + 1);
+		},
 	});
 	const content = [
 		{ type: "toolCall", id: "tool-a", name: "a", arguments: argsA },
@@ -372,9 +376,11 @@ test("tool finalization is scoped to its content index and does not repaint sibl
 		assistantMessageEvent: { type: "toolcall_end", contentIndex: 0, toolCall: content[0], partial: message },
 	});
 	assert.equal(metricsA.updateDisplayCalls, 2);
-	assert.equal(metricsB.updateDisplayCalls, 2, "B receives its generation but must not be finalized");
+	assert.equal(metricsB.updateDisplayCalls, 1, "B must not receive A's event generation");
 	assert.equal(metricsA.toolArgsFinalizations, 1);
 	assert.equal(metricsB.toolArgsFinalizations, 0);
+	assert.equal(versionAdvances.get(toolA), 1);
+	assert.equal(versionAdvances.get(toolB), undefined);
 
 	for (let update = 2; update <= 20; update++) {
 		argsB.value = `b:${update}`;
@@ -386,8 +392,9 @@ test("tool finalization is scoped to its content index and does not repaint sibl
 		});
 	}
 	assert.equal(metricsA.updateDisplayCalls, 2, "finished A must not rebuild for B deltas");
+	assert.equal(versionAdvances.get(toolA), 1, "finished A retained version must not advance for B deltas");
 	assert.equal(metricsA.toolArgsMissingGenerationUpdates, 0);
-	assert.equal(metricsB.updateDisplayCalls, 21);
+	assert.equal(metricsB.updateDisplayCalls, 20);
 	delete content[1]!.partialArgs;
 	(mode as unknown as { handleEvent(event: unknown): void }).handleEvent({
 		type: "message_update",
@@ -398,6 +405,191 @@ test("tool finalization is scoped to its content index and does not repaint sibl
 	assert.equal(metricsB.toolArgsFinalizations, 1);
 	assert.equal(metricsB.toolArgsMissingGenerationUpdates, 0);
 	assert.match(toolB.render(80).join("\n"), /b:20/);
+});
+
+test("custom tool generations are scoped independently by content index", () => {
+	initTheme("dark");
+	const metricsA = createMetrics();
+	const metricsB = createMetrics();
+	const tui = createTui();
+	const argsA = { nested: { value: "a:0" } };
+	const argsB = { nested: { value: "b:0" } };
+	const toolA = new ToolExecutionComponent("a", "tool-a", argsA, { allocationMetrics: metricsA }, undefined, tui, process.cwd());
+	const toolB = new ToolExecutionComponent("b", "tool-b", argsB, { allocationMetrics: metricsB }, undefined, tui, process.cwd());
+	const versionAdvances = new Map<Component, number>();
+	const mode = Object.create(InteractiveMode.prototype) as InteractiveMode & Record<string, unknown>;
+	Object.assign(mode, {
+		isInitialized: true,
+		footer: { invalidate(): void {} },
+		streamingComponent: { updateContent(): void {} },
+		streamingMessage: undefined,
+		streamingItem: { updateVersion(): void {} },
+		streamingItemVersion: 0,
+		pendingTools: new Map([["tool-a", toolA], ["tool-b", toolB]]),
+		streamedToolIds: new Set(["tool-a", "tool-b"]),
+		deferredReadPlaceholders: new Map(),
+		deferredReadExecutions: new Map(),
+		chatContainer: new RetainedContainer(),
+		ui: tui,
+		advanceActiveToolVersion(component: Component): void {
+			versionAdvances.set(component, (versionAdvances.get(component) ?? 0) + 1);
+		},
+	});
+	const content = [
+		{ type: "toolCall", id: "tool-a", name: "a", arguments: argsA },
+		{ type: "toolCall", id: "tool-b", name: "b", arguments: argsB },
+	];
+	const message = {
+		role: "assistant",
+		api: "openai-completions",
+		provider: "openai",
+		model: "test",
+		content,
+		timestamp: 0,
+	};
+	const deliver = (contentIndex: number, generation: number, value: string): void => {
+		const args = contentIndex === 0 ? argsA : argsB;
+		args.nested.value = value;
+		(mode as unknown as { handleEvent(event: unknown): void }).handleEvent({
+			type: "message_update",
+			message,
+			assistantMessageEvent: {
+				type: "toolcall_delta",
+				contentIndex,
+				delta: value,
+				partial: message,
+				toolArgsGeneration: generation,
+			},
+		});
+	};
+
+	deliver(0, 1, "a:1");
+	assert.equal(metricsA.toolArgsGenerationUpdates, 1);
+	assert.equal(metricsB.toolArgsGenerationUpdates, 0);
+	deliver(1, 1, "b:1");
+	assert.equal(metricsA.toolArgsGenerationUpdates, 1);
+	assert.equal(metricsB.toolArgsGenerationUpdates, 1, "B generation 1 is independent from A generation 1");
+	deliver(0, 2, "a:2");
+	deliver(1, 1, "b:1");
+	deliver(0, 3, "a:3");
+	deliver(1, 2, "b:2");
+
+	assert.equal(metricsA.toolArgsGenerationUpdates, 3);
+	assert.equal(metricsB.toolArgsGenerationUpdates, 2);
+	assert.equal(metricsA.toolArgsMissingGenerationUpdates + metricsB.toolArgsMissingGenerationUpdates, 0);
+	assert.equal(metricsA.toolArgsSemanticFallbackComparisons + metricsB.toolArgsSemanticFallbackComparisons, 0);
+	assert.equal(versionAdvances.get(toolA), 3);
+	assert.equal(versionAdvances.get(toolB), 2, "same generation does not advance retained version");
+	assert.match(toolA.render(80).join("\n"), /a:3/);
+	assert.match(toolB.render(80).join("\n"), /b:2/);
+});
+
+test("latest delivery can create and finalize a tool when its first observed event is toolcall_end", async () => {
+	initTheme("dark");
+	const tui = createTui();
+	const metricsA = createMetrics();
+	const versionAdvances = new Map<Component, number>();
+	const mode = Object.create(InteractiveMode.prototype) as InteractiveMode & Record<string, unknown>;
+	const originalAdvance = (InteractiveMode.prototype as unknown as {
+		advanceActiveToolVersion(component: Component): void;
+	}).advanceActiveToolVersion;
+	Object.assign(mode, {
+		isInitialized: true,
+		footer: { invalidate(): void {} },
+		streamingComponent: { updateContent(): void {} },
+		streamingMessage: undefined,
+		streamingItem: { updateVersion(): void {} },
+		streamingItemVersion: 0,
+		nextTranscriptItemNumber: 0,
+		pendingTools: new Map(),
+		streamedToolIds: new Set(),
+		deferredReadPlaceholders: new Map(),
+		deferredReadExecutions: new Map(),
+		chatContainer: new RetainedContainer(),
+		runtimeHost: {
+			session: {
+				getToolDefinition: () => undefined,
+				settingsManager: { getShowImages: () => true, getImageWidthCells: () => undefined },
+				sessionManager: { getCwd: () => process.cwd() },
+			},
+		},
+		createToolExecutionComponent(toolName: string, toolCallId: string, args: unknown): ToolExecutionComponent {
+			return new ToolExecutionComponent(toolName, toolCallId, args, { allocationMetrics: metricsA }, undefined, tui, process.cwd());
+		},
+		ui: tui,
+		advanceActiveToolVersion(component: Component): void {
+			versionAdvances.set(component, (versionAdvances.get(component) ?? 0) + 1);
+			originalAdvance.call(mode, component);
+		},
+	});
+	const agent = new Agent({ streamFn: (() => { throw new Error("unused"); }) as never });
+	(agent as unknown as { activeRun: unknown }).activeRun = {
+		promise: Promise.resolve(),
+		resolve(): void {},
+		abortController: new AbortController(),
+	};
+	const observed: string[] = [];
+	agent.subscribeObserver((event) => {
+		if (event.type !== "message_update") return;
+		observed.push(event.assistantMessageEvent.type);
+		(mode as unknown as { handleEvent(event: unknown): void }).handleEvent(event);
+	}, { minIntervalMs: 60_000 });
+	const processEvent = (event: unknown): Promise<void> =>
+		(agent as unknown as { processEvents(event: unknown): Promise<void> }).processEvents(event);
+	const argsA = { value: "a:0" };
+	const message = {
+		role: "assistant",
+		api: "openai-completions",
+		provider: "openai",
+		model: "test",
+		content: [{ type: "toolCall", id: "tool-a", name: "a", arguments: argsA }],
+		timestamp: 0,
+	};
+	await processEvent({
+		type: "message_update",
+		message,
+		assistantMessageEvent: { type: "toolcall_start", contentIndex: 0, partial: message },
+	});
+	argsA.value = "a:1";
+	await processEvent({
+		type: "message_update",
+		message,
+		assistantMessageEvent: { type: "toolcall_delta", contentIndex: 0, delta: "a:1", partial: message, toolArgsGeneration: 1 },
+	});
+	argsA.value = "a:final";
+	await processEvent({
+		type: "message_update",
+		message,
+		assistantMessageEvent: { type: "toolcall_end", contentIndex: 0, toolCall: message.content[0], partial: message },
+	});
+	await (agent as unknown as { eventDelivery: { flushAllLatest(): Promise<void> } }).eventDelivery.flushAllLatest();
+	assert.deepEqual(observed, ["toolcall_end"]);
+	const pendingTools = (mode as unknown as { pendingTools: Map<string, ToolExecutionComponent> }).pendingTools;
+	const toolA = pendingTools.get("tool-a");
+	assert.ok(toolA);
+	assert.equal(metricsA.toolArgsFinalizations, 1);
+	assert.equal(metricsA.toolArgsMissingGenerationUpdates, 0);
+	assert.match(toolA.render(80).join("\n"), /a:final/);
+	assert.equal(versionAdvances.get(toolA), 1, "first end finalizes and advances exactly once");
+
+	const textMessage = { ...message, content: [{ type: "text", text: "after" }] };
+	await processEvent({
+		type: "message_update",
+		message: textMessage,
+		assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "after", partial: textMessage },
+	});
+	const argsB = { value: "b:1" };
+	const siblingMessage = { ...message, content: [message.content[0], { type: "toolCall", id: "tool-b", name: "b", arguments: argsB }] };
+	await processEvent({
+		type: "message_update",
+		message: siblingMessage,
+		assistantMessageEvent: { type: "toolcall_delta", contentIndex: 1, delta: "b:1", partial: siblingMessage, toolArgsGeneration: 1 },
+	});
+	await (agent as unknown as { eventDelivery: { flushAllLatest(): Promise<void> } }).eventDelivery.flushAllLatest();
+	assert.equal(versionAdvances.get(toolA), 1, "text and sibling deliveries do not advance a finalized tool");
+	assert.equal(metricsA.toolArgsFinalizations, 1);
+	assert.equal(agent.eventDeliveryStats.pendingKeys, 0);
+	await (agent as unknown as { eventDelivery: { dispose(): Promise<void> } }).eventDelivery.dispose();
 });
 
 test("Agent keeps interleaved tool updates on bounded per-tool latest lanes", async () => {
