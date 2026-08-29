@@ -4,6 +4,7 @@ import { setImmediate as nextTask } from "node:timers/promises";
 import {
 	EventDeliveryDispatcher,
 	type EventDeliveryDiagnostic,
+	type EventDeliveryScheduler,
 } from "../packages/agent/src/event-delivery.ts";
 import { FakeScheduler } from "./helpers/runtime-instrumentation.ts";
 
@@ -130,11 +131,10 @@ test("latest ownership releases on snapshot errors, final unsubscribe, and dispo
 	assert.deepEqual(disposeDispatcher.releasedSequences, [3]);
 });
 
-test("scheduled latest flushes reuse one class callback with explicit dispatcher context", () => {
+test("scheduled latest flushes reuse one callback across dispatcher instances", () => {
 	const callbacks: Array<(context: unknown) => void> = [];
 	const contexts: unknown[] = [];
-	const dispatcher = new EventDeliveryDispatcher<FixtureEvent, string>({
-		scheduler: {
+	const scheduler = {
 			now(): number { return 0; },
 			schedule(callback, _delayMs, context): number {
 				callbacks.push(callback);
@@ -142,19 +142,20 @@ test("scheduled latest flushes reuse one class callback with explicit dispatcher
 				return callbacks.length;
 			},
 			cancel(): void {},
-		},
-	});
-	let unsubscribe = dispatcher.subscribe(() => {}, { delivery: "latest", minIntervalMs: 16 });
-	dispatcher.publishLatest("message", { type: "update", sequence: 1 });
-	unsubscribe();
-	unsubscribe = dispatcher.subscribe(() => {}, { delivery: "latest", minIntervalMs: 16 });
-	dispatcher.publishLatest("message", { type: "update", sequence: 2 });
-	unsubscribe();
+		} satisfies EventDeliveryScheduler;
+	const first = new EventDeliveryDispatcher<FixtureEvent, string>({ scheduler });
+	const second = new EventDeliveryDispatcher<FixtureEvent, string>({ scheduler });
+	const unsubscribeFirst = first.subscribe(() => {}, { delivery: "latest", minIntervalMs: 16 });
+	const unsubscribeSecond = second.subscribe(() => {}, { delivery: "latest", minIntervalMs: 16 });
+	first.publishLatest("message", { type: "update", sequence: 1 });
+	second.publishLatest("message", { type: "update", sequence: 2 });
+	unsubscribeFirst();
+	unsubscribeSecond();
 
 	assert.equal(callbacks.length, 2);
 	assert.equal(callbacks[0], callbacks[1]);
-	assert.equal(contexts[0], dispatcher);
-	assert.equal(contexts[1], dispatcher);
+	assert.equal(contexts[0], first);
+	assert.equal(contexts[1], second);
 });
 
 test("critical delivery flushes latest values first and awaits legacy listeners in order", async () => {
