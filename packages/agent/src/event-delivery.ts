@@ -2,7 +2,7 @@ export type EventDelivery = "critical" | "latest";
 
 export interface EventDeliveryScheduler {
 	now(): number;
-	schedule(callback: () => void, delayMs: number): unknown;
+	schedule(callback: (context: unknown) => void, delayMs: number, context: unknown): unknown;
 	cancel(handle: unknown): void;
 }
 
@@ -53,10 +53,26 @@ interface PendingLatest<E> {
 	snapshot: E | undefined;
 }
 
+function defaultSchedulerNow(): number {
+	return performance.now();
+}
+
+function defaultSchedulerSchedule(callback: (context: unknown) => void, delayMs: number, context: unknown): unknown {
+	return setTimeout(callback, delayMs, context);
+}
+
+function defaultSchedulerCancel(handle: unknown): void {
+	clearTimeout(handle as ReturnType<typeof setTimeout>);
+}
+
+function identitySnapshot<T>(event: T): T {
+	return event;
+}
+
 const DEFAULT_SCHEDULER: EventDeliveryScheduler = {
-	now: () => performance.now(),
-	schedule: (callback, delayMs) => setTimeout(callback, delayMs),
-	cancel: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+	now: defaultSchedulerNow,
+	schedule: defaultSchedulerSchedule,
+	cancel: defaultSchedulerCancel,
 };
 
 function finiteNonNegative(name: string, value: number): number {
@@ -90,19 +106,21 @@ export class EventDeliveryDispatcher<E, K> {
 	private maxPendingKeys = 0;
 	private observerErrors = 0;
 	private slowObservers = 0;
-	private readonly scheduledFlush = (): void => {
+	private static dispatchScheduledFlush(context: unknown): void {
+		(context as EventDeliveryDispatcher<unknown, unknown>).handleScheduledFlush();
+	}
+
+	private handleScheduledFlush(): void {
 		this.scheduledHandle = undefined;
 		this.scheduledDueAt = Number.POSITIVE_INFINITY;
-		void this.flushAvailable(false).catch((error) => {
-			this.reportDiagnostic({ type: "observer-error", error });
-		});
-	};
+		void this.flushAvailable(false, undefined, true);
+	}
 
 	constructor(options: EventDeliveryDispatcherOptions<E> = {}) {
 		this.scheduler = options.scheduler ?? DEFAULT_SCHEDULER;
 		this.defaultMinIntervalMs = finiteNonNegative("defaultMinIntervalMs", options.defaultMinIntervalMs ?? 16);
 		this.slowObserverMs = finiteNonNegative("slowObserverMs", options.slowObserverMs ?? 100);
-		this.snapshotLatest = options.snapshotLatest ?? ((event) => event);
+		this.snapshotLatest = options.snapshotLatest ?? identitySnapshot;
 		this.onDiagnostic = options.onDiagnostic;
 	}
 
@@ -233,7 +251,11 @@ export class EventDeliveryDispatcher<E, K> {
 		}
 		try {
 			this.scheduledDueAt = dueAt;
-			this.scheduledHandle = this.scheduler.schedule(this.scheduledFlush, delayMs);
+			this.scheduledHandle = this.scheduler.schedule(
+				EventDeliveryDispatcher.dispatchScheduledFlush,
+				delayMs,
+				this,
+			);
 		} catch (error) {
 			this.scheduledDueAt = Number.POSITIVE_INFINITY;
 			this.reportDiagnostic({ type: "observer-error", error });
@@ -247,25 +269,32 @@ export class EventDeliveryDispatcher<E, K> {
 		this.scheduledDueAt = Number.POSITIVE_INFINITY;
 	}
 
-	private async flushAvailable(force: boolean, onlyKey?: K): Promise<void> {
-		if (this.disposed || !this.hasPending(onlyKey)) return;
-		this.cancelScheduledFlush();
-		if (this.flushPromise) {
-			await this.flushPromise;
-			if (!this.disposed && this.hasPending(onlyKey)) await this.flushAvailable(force, onlyKey);
-			return;
-		}
-
-		const flush = this.runFlush(force, onlyKey);
-		this.flushPromise = flush;
+	private async flushAvailable(force: boolean, onlyKey?: K, isolateErrors = false): Promise<void> {
 		try {
-			await flush;
-		} finally {
-			if (this.flushPromise === flush) this.flushPromise = undefined;
-		}
-		if (!this.disposed) {
-			if (force && this.hasPending(onlyKey)) await this.flushAvailable(true, onlyKey);
-			if (this.pendingLatest.size > 0) this.scheduleFlush();
+			if (this.disposed || !this.hasPending(onlyKey)) return;
+			this.cancelScheduledFlush();
+			if (this.flushPromise) {
+				await this.flushPromise;
+				if (!this.disposed && this.hasPending(onlyKey)) {
+					await this.flushAvailable(force, onlyKey, isolateErrors);
+				}
+				return;
+			}
+
+			const flush = this.runFlush(force, onlyKey);
+			this.flushPromise = flush;
+			try {
+				await flush;
+			} finally {
+				if (this.flushPromise === flush) this.flushPromise = undefined;
+			}
+			if (!this.disposed) {
+				if (force && this.hasPending(onlyKey)) await this.flushAvailable(true, onlyKey, isolateErrors);
+				if (this.pendingLatest.size > 0) this.scheduleFlush();
+			}
+		} catch (error) {
+			if (!isolateErrors) throw error;
+			this.reportDiagnostic({ type: "observer-error", error });
 		}
 	}
 

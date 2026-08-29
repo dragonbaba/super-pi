@@ -130,6 +130,33 @@ test("latest ownership releases on snapshot errors, final unsubscribe, and dispo
 	assert.deepEqual(disposeDispatcher.releasedSequences, [3]);
 });
 
+test("scheduled latest flushes reuse one class callback with explicit dispatcher context", () => {
+	const callbacks: Array<(context: unknown) => void> = [];
+	const contexts: unknown[] = [];
+	const dispatcher = new EventDeliveryDispatcher<FixtureEvent, string>({
+		scheduler: {
+			now(): number { return 0; },
+			schedule(callback, _delayMs, context): number {
+				callbacks.push(callback);
+				contexts.push(context);
+				return callbacks.length;
+			},
+			cancel(): void {},
+		},
+	});
+	let unsubscribe = dispatcher.subscribe(() => {}, { delivery: "latest", minIntervalMs: 16 });
+	dispatcher.publishLatest("message", { type: "update", sequence: 1 });
+	unsubscribe();
+	unsubscribe = dispatcher.subscribe(() => {}, { delivery: "latest", minIntervalMs: 16 });
+	dispatcher.publishLatest("message", { type: "update", sequence: 2 });
+	unsubscribe();
+
+	assert.equal(callbacks.length, 2);
+	assert.equal(callbacks[0], callbacks[1]);
+	assert.equal(contexts[0], dispatcher);
+	assert.equal(contexts[1], dispatcher);
+});
+
 test("critical delivery flushes latest values first and awaits legacy listeners in order", async () => {
 	const { dispatcher } = createDispatcher();
 	const order: string[] = [];
@@ -248,9 +275,9 @@ test("unsubscribing a latest observer recalculates the next remaining due time",
 	const dispatcher = new EventDeliveryDispatcher<FixtureEvent, string>({
 		scheduler: {
 			now: () => scheduler.now(),
-			schedule: (callback, delayMs) => {
+			schedule: (callback, delayMs, context) => {
 				scheduledDelays.push(delayMs);
-				return scheduler.schedule(callback, delayMs);
+				return scheduler.schedule(callback, delayMs, context);
 			},
 			cancel: (handle) => scheduler.cancel(handle as number),
 		},
