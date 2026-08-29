@@ -80,6 +80,13 @@ export class FakeScheduler {
 	}
 
 	schedule(
+		callback: () => void,
+		delayMs = 0,
+	): number {
+		return this.scheduleWithContext(callback, delayMs, undefined, 0);
+	}
+
+	scheduleWithContext(
 		callback: (context: unknown, generation: number) => void,
 		delayMs = 0,
 		context?: unknown,

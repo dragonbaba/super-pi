@@ -2,7 +2,8 @@ export type EventDelivery = "critical" | "latest";
 
 export interface EventDeliveryScheduler {
 	now(): number;
-	schedule(
+	schedule(callback: () => void, delayMs: number): unknown;
+	scheduleWithContext?(
 		callback: (context: unknown, generation: number) => void,
 		delayMs: number,
 		context: unknown,
@@ -63,6 +64,13 @@ function defaultSchedulerNow(): number {
 }
 
 function defaultSchedulerSchedule(
+	callback: () => void,
+	delayMs: number,
+): unknown {
+	return setTimeout(callback, delayMs);
+}
+
+function defaultSchedulerScheduleWithContext(
 	callback: (context: unknown, generation: number) => void,
 	delayMs: number,
 	context: unknown,
@@ -82,6 +90,7 @@ function identitySnapshot<T>(event: T): T {
 const DEFAULT_SCHEDULER: EventDeliveryScheduler = {
 	now: defaultSchedulerNow,
 	schedule: defaultSchedulerSchedule,
+	scheduleWithContext: defaultSchedulerScheduleWithContext,
 	cancel: defaultSchedulerCancel,
 };
 
@@ -120,6 +129,11 @@ export class EventDeliveryDispatcher<E, K> {
 	private slowObservers = 0;
 	private static dispatchScheduledFlush(context: unknown, generation: number): void {
 		(context as EventDeliveryDispatcher<unknown, unknown>).handleScheduledFlush(generation);
+	}
+	private static createLegacyScheduledFlush(context: unknown, generation: number): () => void {
+		return function legacyScheduledFlush(): void {
+			EventDeliveryDispatcher.dispatchScheduledFlush(context, generation);
+		};
 	}
 
 	private handleScheduledFlush(generation: number): void {
@@ -267,12 +281,14 @@ export class EventDeliveryDispatcher<E, K> {
 			const generation = ++this.scheduledGeneration;
 			this.activeScheduledGeneration = generation;
 			this.scheduledDueAt = dueAt;
-			const handle = this.scheduler.schedule(
-				EventDeliveryDispatcher.dispatchScheduledFlush,
-				delayMs,
-				this,
-				generation,
-			);
+			const handle = this.scheduler.scheduleWithContext
+				? this.scheduler.scheduleWithContext(
+					EventDeliveryDispatcher.dispatchScheduledFlush,
+					delayMs,
+					this,
+					generation,
+				)
+				: this.scheduler.schedule(EventDeliveryDispatcher.createLegacyScheduledFlush(this, generation), delayMs);
 			if (this.activeScheduledGeneration === generation) this.scheduledHandle = handle;
 		} catch (error) {
 			this.activeScheduledGeneration = 0;

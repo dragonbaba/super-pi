@@ -157,9 +157,11 @@ test("tool finalization uses one message lane with bounded per-tool metadata", (
 	assert.doesNotMatch(delivery, /scheduledFlush\s*=\s*\(|flushAvailable\(false\)\.catch\(/);
 	assert.match(
 		delivery,
-		/scheduler\.schedule\([\s\S]*EventDeliveryDispatcher\.dispatchScheduledFlush,[\s\S]*delayMs,[\s\S]*this,[\s\S]*generation,/,
+		/scheduler\.scheduleWithContext\([\s\S]*EventDeliveryDispatcher\.dispatchScheduledFlush,[\s\S]*delayMs,[\s\S]*this,[\s\S]*generation,/,
 	);
 	assert.match(delivery, /setTimeout\(callback, delayMs, context, generation\)/);
+	assert.match(delivery, /schedule\(callback: \(\) => void, delayMs: number\): unknown/);
+	assert.match(delivery, /scheduleWithContext\?\(/);
 	assert.match(delivery, /if \(generation !== this\.activeScheduledGeneration\) return;/);
 	assert.doesNotMatch(delivery, /reportDiagnostic\(\s*\{/);
 	assert.match(delivery, /reportObserverError\(error\)/);
