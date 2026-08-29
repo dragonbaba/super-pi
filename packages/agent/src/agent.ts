@@ -21,6 +21,7 @@ import type {
 	AfterToolCallContext,
 	AfterToolCallResult,
 	AgentContext,
+	AgentChangedToolUpdate,
 	AgentEvent,
 	AgentEventInstrumentation,
 	AgentLoopConfig,
@@ -195,6 +196,47 @@ type ActiveRun = {
 	abortController: AbortController;
 };
 
+type MessageUpdateEvent = Extract<AgentEvent, { type: "message_update" }>;
+type ToolUpdatePhase = AgentChangedToolUpdate["phase"];
+type ToolCallAssistantEvent = Extract<
+	AssistantMessageEvent,
+	{ type: "toolcall_start" | "toolcall_delta" | "toolcall_end" }
+>;
+
+interface PendingChangedToolUpdate {
+	toolCallId: string;
+	contentIndex: number;
+	phase: ToolUpdatePhase;
+	generation: string | number | undefined;
+	finalized: boolean;
+}
+
+type PendingMessageUpdateEvent = MessageUpdateEvent & {
+	changedToolUpdates: PendingChangedToolUpdate[];
+};
+
+function getToolUpdatePhase(event: ToolCallAssistantEvent): ToolUpdatePhase {
+	if (event.type === "toolcall_start") return "start";
+	if (event.type === "toolcall_delta") return "delta";
+	return "end";
+}
+
+function getToolUpdateGeneration(
+	content: unknown,
+	event: ToolCallAssistantEvent,
+): string | number | undefined {
+	const eventGeneration = (event as AssistantMessageEvent & { toolArgsGeneration?: string | number })
+		.toolArgsGeneration;
+	if (eventGeneration !== undefined) return eventGeneration;
+	if (typeof content !== "object" || content === null) return undefined;
+	const block = content as {
+		toolArgsGeneration?: string | number;
+		partialJson?: string;
+		partialArgs?: string;
+	};
+	return block.toolArgsGeneration ?? block.partialJson ?? block.partialArgs;
+}
+
 /**
  * Stateful wrapper around the low-level agent loop.
  *
@@ -204,7 +246,8 @@ type ActiveRun = {
 export class Agent {
 	private _state: MutableAgentState;
 	private readonly eventDelivery: EventDeliveryDispatcher<AgentEvent, string>;
-	private readonly toolMessageLatestKeys = new Map<string, string>();
+	private readonly pendingChangedToolUpdates = new Map<string, PendingChangedToolUpdate>();
+	private pendingMessageUpdateEvent: PendingMessageUpdateEvent | undefined;
 	private readonly eventInstrumentation?: AgentEventInstrumentation;
 	private readonly steeringQueue: PendingMessageQueue;
 	private readonly followUpQueue: PendingMessageQueue;
@@ -590,7 +633,7 @@ export class Agent {
 		this._state.isStreaming = false;
 		this._state.streamingMessage = undefined;
 		this._state.pendingToolCalls = new Set<string>();
-		this.toolMessageLatestKeys.clear();
+		this.clearPendingMessageUpdate();
 		this.activeRun?.resolve();
 		this.activeRun = undefined;
 	}
@@ -647,10 +690,14 @@ export class Agent {
 			if (this.eventDelivery.hasAwaitedListeners(event)) {
 				await this.eventDelivery.publishAwaited(this.snapshotAwaitedEvent(event));
 			}
-			this.eventDelivery.publishLatest(latestKey, event);
-			if (event.type === "message_update" && event.assistantMessageEvent.type === "toolcall_end") {
-				const content = event.assistantMessageEvent.partial.content[event.assistantMessageEvent.contentIndex];
-				if (content?.type === "toolCall") this.toolMessageLatestKeys.delete(content.id);
+			if (event.type === "message_update") {
+				if (this.eventDelivery.hasLatestListeners) {
+					this.eventDelivery.publishLatest(latestKey, this.prepareMessageUpdate(event));
+				} else {
+					this.clearPendingMessageUpdate();
+				}
+			} else {
+				this.eventDelivery.publishLatest(latestKey, event);
 			}
 			return;
 		}
@@ -664,23 +711,65 @@ export class Agent {
 	}
 
 	private getLatestEventKey(event: AgentEvent): string | undefined {
-		if (event.type === "message_update") {
-			const update = event.assistantMessageEvent;
-			if (update.type === "toolcall_start" || update.type === "toolcall_delta" || update.type === "toolcall_end") {
-				const content = update.partial.content[update.contentIndex];
-				if (content?.type === "toolCall") {
-					let key = this.toolMessageLatestKeys.get(content.id);
-					if (key === undefined) {
-						key = `message:tool:${content.id}`;
-						this.toolMessageLatestKeys.set(content.id, key);
-					}
-					return key;
-				}
-			}
-			return "message";
-		}
+		if (event.type === "message_update") return "message";
 		if (event.type === "tool_execution_update") return `tool:${event.toolCallId}`;
 		return undefined;
+	}
+
+	private prepareMessageUpdate(event: MessageUpdateEvent): PendingMessageUpdateEvent {
+		let pending = this.pendingMessageUpdateEvent;
+		if (pending === undefined) {
+			pending = {
+				type: "message_update",
+				message: event.message,
+				assistantMessageEvent: event.assistantMessageEvent,
+				changedToolUpdates: [],
+			};
+			this.pendingMessageUpdateEvent = pending;
+		} else {
+			pending.message = event.message;
+			pending.assistantMessageEvent = event.assistantMessageEvent;
+		}
+
+		const assistantUpdate = event.assistantMessageEvent;
+		if (
+			assistantUpdate.type !== "toolcall_start" &&
+			assistantUpdate.type !== "toolcall_delta" &&
+			assistantUpdate.type !== "toolcall_end"
+		) return pending;
+		const phase = getToolUpdatePhase(assistantUpdate);
+		const contentIndex = assistantUpdate.contentIndex;
+		const content = assistantUpdate.partial.content[contentIndex];
+		if (content?.type !== "toolCall") return pending;
+		const generation = getToolUpdateGeneration(content, assistantUpdate);
+		let record = this.pendingChangedToolUpdates.get(content.id);
+		if (record === undefined) {
+			record = {
+				toolCallId: content.id,
+				contentIndex,
+				phase,
+				generation,
+				finalized: phase === "end",
+			};
+			this.pendingChangedToolUpdates.set(content.id, record);
+			pending.changedToolUpdates.push(record);
+			this.eventInstrumentation?.onPendingToolMetadata?.(this.pendingChangedToolUpdates.size);
+			return pending;
+		}
+
+		record.contentIndex = contentIndex;
+		if (record.finalized) return pending;
+		record.phase = phase;
+		if (generation !== undefined) record.generation = generation;
+		if (phase === "end") record.finalized = true;
+		return pending;
+	}
+
+	private clearPendingMessageUpdate(): void {
+		if (this.pendingMessageUpdateEvent === undefined && this.pendingChangedToolUpdates.size === 0) return;
+		this.pendingMessageUpdateEvent = undefined;
+		this.pendingChangedToolUpdates.clear();
+		this.eventInstrumentation?.onPendingToolMetadata?.(0);
 	}
 
 	private snapshotAwaitedEvent(event: AgentEvent): AgentEvent {
@@ -694,9 +783,14 @@ export class Agent {
 	}
 
 	private snapshotObserverEvent(event: AgentEvent): AgentEvent {
-		if (event.type === "message_update") this.eventInstrumentation?.onAssistantSnapshot?.();
-		const snapshot = structuredClone(event);
-		deepFreezeSnapshot(snapshot);
-		return snapshot;
+		const clearsPendingMessage = event === this.pendingMessageUpdateEvent;
+		try {
+			if (event.type === "message_update") this.eventInstrumentation?.onAssistantSnapshot?.();
+			const snapshot = structuredClone(event);
+			deepFreezeSnapshot(snapshot);
+			return snapshot;
+		} finally {
+			if (clearsPendingMessage) this.clearPendingMessageUpdate();
+		}
 	}
 }

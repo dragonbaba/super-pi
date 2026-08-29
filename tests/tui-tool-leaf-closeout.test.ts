@@ -5,6 +5,7 @@ import { Agent } from "../packages/agent/src/agent.ts";
 import { setCapabilities, Text, type Component, type TUI } from "@super-pi/tui";
 import { stream as streamAnthropic } from "../packages/ai/src/api/anthropic-messages.ts";
 import type { ToolDefinition } from "../packages/coding-agent/src/core/extensions/types.ts";
+import { AgentSession } from "../packages/coding-agent/src/core/agent-session.ts";
 import {
 	ToolExecutionComponent,
 	type ToolExecutionAllocationMetrics,
@@ -592,7 +593,7 @@ test("latest delivery can create and finalize a tool when its first observed eve
 	await (agent as unknown as { eventDelivery: { dispose(): Promise<void> } }).eventDelivery.dispose();
 });
 
-test("Agent keeps interleaved tool updates on bounded per-tool latest lanes", async () => {
+test("Agent keeps interleaved tool metadata on one bounded message latest lane", async () => {
 	initTheme("dark");
 	const events: string[] = [];
 	const metricsA = createMetrics();
@@ -660,10 +661,10 @@ test("Agent keeps interleaved tool updates on bounded per-tool latest lanes", as
 		assistantMessageEvent: { type: "toolcall_delta", contentIndex: 1, delta: "3", partial: message },
 	});
 	await (agent as unknown as { eventDelivery: { flushAllLatest(): Promise<void> } }).eventDelivery.flushAllLatest();
-	assert.deepEqual(events, ["toolcall_end", "toolcall_delta"]);
+	assert.deepEqual(events, ["toolcall_delta"]);
 	assert.equal(agent.eventDeliveryStats.pendingKeys, 0);
-	assert.equal(agent.eventDeliveryStats.maxPendingKeys, 2);
-	assert.equal(agent.eventDeliveryStats.coalesced, 1);
+	assert.equal(agent.eventDeliveryStats.maxPendingKeys, 1);
+	assert.equal(agent.eventDeliveryStats.coalesced, 2);
 	assert.equal(metricsA.toolArgsFinalizations, 1);
 	assert.equal(metricsA.toolArgsMissingGenerationUpdates, 0);
 	assert.equal(metricsB.toolArgsFinalizations, 0);
@@ -679,7 +680,134 @@ test("Agent keeps interleaved tool updates on bounded per-tool latest lanes", as
 	assert.equal(metricsA.toolArgsFinalizations, 1);
 	assert.equal(metricsB.toolArgsFinalizations, 1);
 	assert.equal(agent.eventDeliveryStats.pendingKeys, 0);
-	assert.equal((agent as unknown as { toolMessageLatestKeys: Map<string, string> }).toolMessageLatestKeys.size, 0);
+	assert.equal((agent as unknown as { pendingChangedToolUpdates: Map<string, unknown> }).pendingChangedToolUpdates.size, 0);
+});
+
+test("one AgentSession delivery updates every changed tool from one large message snapshot", async () => {
+	initTheme("dark");
+	for (const toolCount of [1, 2, 4, 8, 16]) {
+		let snapshots = 0;
+		let pendingMetadataHwm = 0;
+		let pendingMetadataAfterFlush = -1;
+		let agentSessionDeliveries = 0;
+		let interactiveDeliveries = 0;
+		let streamingUpdates = 0;
+		let streamingVersions = 0;
+		let requestRenders = 0;
+		let extensionPublishes = 0;
+		const metrics = Array.from({ length: toolCount }, () => createMetrics());
+		const pendingTools = new Map<string, ToolExecutionComponent>();
+		const content: Array<Record<string, unknown>> = [{ type: "text", text: "m".repeat(64 * 1024) }];
+		const tui = { requestRender(): void { requestRenders++; } } as TUI;
+		for (let index = 0; index < toolCount; index++) {
+			const args = { value: `${index}:`.padEnd(4 * 1024, "a") };
+			content.push({
+				type: "toolCall",
+				id: `tool-${index}`,
+				name: `tool-${index}`,
+				arguments: args,
+				partialArgs: `generation-${index}`,
+			});
+			pendingTools.set(
+				`tool-${index}`,
+				new ToolExecutionComponent(
+					`tool-${index}`,
+					`tool-${index}`,
+					args,
+					{ allocationMetrics: metrics[index] },
+					undefined,
+					tui,
+					process.cwd(),
+				),
+			);
+			metrics[index]!.updateDisplayCalls = 0;
+		}
+		const message = {
+			role: "assistant",
+			api: "openai-completions",
+			provider: "fixture",
+			model: "fixture",
+			content,
+			timestamp: 0,
+		};
+		const mode = Object.create(InteractiveMode.prototype) as InteractiveMode & Record<string, unknown>;
+		Object.assign(mode, {
+			isInitialized: true,
+			footer: { invalidate(): void {} },
+			streamingComponent: { updateContent(): void { streamingUpdates++; } },
+			streamingMessage: message,
+			streamingItem: { updateVersion(): void { streamingVersions++; } },
+			streamingItemVersion: 0,
+			pendingTools,
+			streamedToolIds: new Set(pendingTools.keys()),
+			deferredReadPlaceholders: new Map(),
+			deferredReadExecutions: new Map(),
+			chatContainer: new RetainedContainer(),
+			ui: tui,
+			advanceActiveToolVersion(): void {},
+		});
+		const session = Object.create(AgentSession.prototype) as AgentSession & Record<string, unknown>;
+		Object.assign(session, {
+			_eventListeners: [{
+				listener(event: unknown): void {
+					agentSessionDeliveries++;
+					interactiveDeliveries++;
+					(mode as unknown as { handleEvent(event: unknown): void }).handleEvent(event);
+				},
+				criticalAgentEnd: false,
+				observeRejection(error: unknown): void { throw error; },
+			}],
+			_extensionObserverDelivery: {
+				publishLatest(): void { extensionPublishes++; },
+			},
+		});
+		const agent = new Agent({
+			streamFn: (() => { throw new Error("unused"); }) as never,
+			eventInstrumentation: {
+				onAssistantSnapshot(): void { snapshots++; },
+				onPendingToolMetadata(pending): void {
+					if (pending > pendingMetadataHwm) pendingMetadataHwm = pending;
+					pendingMetadataAfterFlush = pending;
+				},
+			},
+		});
+		(agent as unknown as { activeRun: unknown }).activeRun = {
+			promise: Promise.resolve(),
+			resolve(): void {},
+			abortController: new AbortController(),
+		};
+		agent.subscribeObserver((event) => {
+			(session as unknown as { _handleAgentObserverEvent(event: unknown): void })._handleAgentObserverEvent(event);
+		}, { minIntervalMs: 60_000 });
+		const processEvent = (event: unknown): Promise<void> =>
+			(agent as unknown as { processEvents(event: unknown): Promise<void> }).processEvents(event);
+		for (let index = 0; index < toolCount; index++) {
+			await processEvent({
+				type: "message_update",
+				message,
+				assistantMessageEvent: {
+					type: "toolcall_delta",
+					contentIndex: index + 1,
+					delta: `generation-${index}`,
+					partial: message,
+				},
+			});
+		}
+		await (agent as unknown as { eventDelivery: { flushAllLatest(): Promise<void> } }).eventDelivery.flushAllLatest();
+
+		assert.equal(snapshots, 1, `${toolCount}: full message snapshots`);
+		assert.equal(agentSessionDeliveries, 1, `${toolCount}: AgentSession deliveries`);
+		assert.equal(interactiveDeliveries, 1, `${toolCount}: InteractiveMode deliveries`);
+		assert.equal(streamingUpdates, 1, `${toolCount}: streaming component updates`);
+		assert.equal(streamingVersions, 1, `${toolCount}: streaming retained versions`);
+		assert.equal(requestRenders, 1, `${toolCount}: requestRender calls`);
+		assert.equal(extensionPublishes, 1, `${toolCount}: extension latest publishes`);
+		assert.equal(metrics.reduce((total, item) => total + item.updateDisplayCalls, 0), toolCount);
+		assert.equal(pendingMetadataHwm <= toolCount, true);
+		assert.equal(pendingMetadataAfterFlush, 0);
+		assert.equal(agent.eventDeliveryStats.pendingKeys, 0);
+		await (agent as unknown as { eventDelivery: { dispose(): Promise<void> } }).eventDelivery.dispose();
+	}
 });
 
 test("Anthropic wire start delta delta end sequence satisfies the mutation ownership contract", async () => {

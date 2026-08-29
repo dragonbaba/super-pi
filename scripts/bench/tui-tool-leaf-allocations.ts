@@ -47,7 +47,7 @@ type AgentHarness = {
 	snapshotObserverEvent(event: BenchEvent): BenchEvent;
 };
 
-const RAW_PER_DELIVERY = 20;
+const RAW_UPDATES_PER_FLUSH_CYCLE = 20;
 let activeMode: { handleEvent(event: BenchEvent): void | Promise<void> };
 let activeSession: SessionHarness;
 let activeAgent: AgentHarness;
@@ -229,7 +229,7 @@ async function profileFixture(kind: ToolFixtureKind, paced: boolean): Promise<Re
 		fixture.session._emit({ type: "tool_execution_update", toolCallId: "tool-1", toolName: kind, partialResult: { content } });
 	};
 	const deliverPaced = async (): Promise<void> => {
-		for (let offset = 0; offset < RAW_PER_DELIVERY; offset++) {
+		for (let offset = 0; offset < RAW_UPDATES_PER_FLUSH_CYCLE; offset++) {
 			sentinel = `${kind}-${rawIndex++}`;
 			const content = kind === "image"
 				? [{ type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" }, { type: "text", text: sentinel }]
@@ -240,7 +240,7 @@ async function profileFixture(kind: ToolFixtureKind, paced: boolean): Promise<Re
 		await delivery!.flushLatest("tool:tool-1");
 		fixture.renderer.renderNow();
 	};
-	const warmupCycles = paced ? Math.ceil(warmup / RAW_PER_DELIVERY) : warmup;
+	const warmupCycles = paced ? Math.ceil(warmup / RAW_UPDATES_PER_FLUSH_CYCLE) : warmup;
 	if (paced) for (let index = 0; index < warmupCycles; index++) await deliverPaced();
 	else for (let index = 0; index < warmupCycles; index++) deliverDirect();
 	resetMetrics(fixture.metrics);
@@ -269,7 +269,7 @@ async function profileFixture(kind: ToolFixtureKind, paced: boolean): Promise<Re
 	inspector.connect();
 	await inspector.post("HeapProfiler.enable");
 	await inspector.post("HeapProfiler.startSampling", { samplingInterval, includeObjectsCollectedByMajorGC: true, includeObjectsCollectedByMinorGC: true });
-	const measuredCycles = paced ? Math.ceil(updates / RAW_PER_DELIVERY) : updates;
+	const measuredCycles = paced ? Math.ceil(updates / RAW_UPDATES_PER_FLUSH_CYCLE) : updates;
 	const durations = new Array<number>(measuredCycles);
 	for (let index = 0; index < measuredCycles; index++) {
 		const started = performance.now();
@@ -295,14 +295,14 @@ async function profileFixture(kind: ToolFixtureKind, paced: boolean): Promise<Re
 	return {
 		name: `${paced ? "paced" : "direct"}-${kind}-tool-leaf`,
 		coverage: { realAgentDelivery: paced, productionSnapshot: paced, realAgentSession: true, realInteractiveMode: true, stableFacade: true, realToolComponent: true, realToolRenderer: true, retainedViewport: true, frameQueue: paced },
-		rawUpdates: paced ? measuredCycles * RAW_PER_DELIVERY : measuredCycles,
+		rawUpdates: paced ? measuredCycles * RAW_UPDATES_PER_FLUSH_CYCLE : measuredCycles,
 		coalescedUpdates: deliveryStatsAfter && deliveryStatsBefore ? deliveryStatsAfter.coalesced - deliveryStatsBefore.coalesced : 0,
 		actualDeliveries: measuredCycles,
 		dispatcherDeliveries: deliveryStatsAfter && deliveryStatsBefore ? deliveryStatsAfter.delivered - deliveryStatsBefore.delivered : measuredCycles,
 		metrics: {
 			cpuP50MsPerDelivery: percentile(sorted, 0.5),
 			cpuP95MsPerDelivery: percentile(sorted, 0.95),
-			sampledAllocationBytesPerRawUpdate: sampled.sampledBytes / (paced ? measuredCycles * RAW_PER_DELIVERY : measuredCycles),
+			sampledAllocationBytesPerRawUpdate: sampled.sampledBytes / (paced ? measuredCycles * RAW_UPDATES_PER_FLUSH_CYCLE : measuredCycles),
 			sampledAllocationBytesPerDelivery: sampled.sampledBytes / measuredCycles,
 			minorGcCount, majorGcCount, totalGcDurationMs,
 			updateDisplayCalls: fixture.metrics.updateDisplayCalls,
@@ -347,6 +347,6 @@ process.stdout.write(`${JSON.stringify({
 	node: process.version,
 	platform: process.platform,
 	arch: process.arch,
-	rawPerDelivery: paced ? RAW_PER_DELIVERY : 1,
+	rawUpdatesPerFlushCycle: paced ? RAW_UPDATES_PER_FLUSH_CYCLE : 1,
 	results,
 }, null, 2)}\n`);

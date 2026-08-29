@@ -157,9 +157,19 @@ export interface PrepareNextTurnContext extends ShouldStopAfterTurnContext {}
 /** Optional low-cost counters used by structural hot-path tests and benchmarks. */
 export interface AgentEventInstrumentation {
 	onAssistantSnapshot?: () => void;
+	onPendingToolMetadata?: (pending: number) => void;
 	onToolProgressPending?: (toolCallId: string, pending: 0 | 1) => void;
 	/** Test hook invoked after a progress drain settles but before its bookkeeping is cleared. */
 	onToolProgressDrainSettled?: (toolCallId: string) => void;
+}
+
+/** Immutable host metadata describing tool-argument changes represented by one coalesced message snapshot. */
+export interface AgentChangedToolUpdate {
+	readonly toolCallId: string;
+	readonly contentIndex: number;
+	readonly phase: "start" | "delta" | "end";
+	readonly generation: string | number | undefined;
+	readonly finalized: boolean;
 }
 
 export interface AgentLoopConfig extends SimpleStreamOptions {
@@ -464,7 +474,13 @@ export type AgentEvent =
 	// Message lifecycle - emitted for user, assistant, and toolResult messages
 	| { type: "message_start"; message: AgentMessage }
 	// Only emitted for assistant messages during streaming
-	| { type: "message_update"; message: AgentMessage; assistantMessageEvent: AssistantMessageEvent }
+	| {
+			type: "message_update";
+			message: AgentMessage;
+			assistantMessageEvent: AssistantMessageEvent;
+			/** Host-only, flush-scoped metadata; records are cloned and frozen before observer delivery. */
+			changedToolUpdates?: readonly AgentChangedToolUpdate[];
+	  }
 	| { type: "message_end"; message: AgentMessage }
 	// Tool execution lifecycle
 	| { type: "tool_execution_start"; toolCallId: string; toolName: string; args: any }

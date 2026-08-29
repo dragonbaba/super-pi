@@ -235,6 +235,138 @@ test("latest state does not leak across agent runs", async () => {
 	assert.equal(agent.eventDeliveryStats.pendingKeys, 0);
 });
 
+test("one large message snapshot carries bounded metadata for every changed tool", async () => {
+	const toolCounts = [16, 8, 4, 2, 1];
+	for (const toolCount of toolCounts) {
+		let snapshots = 0;
+		let deliveries = 0;
+		let pendingMetadataHwm = 0;
+		let pendingMetadata = -1;
+		let captured: AgentEvent | undefined;
+		const agent = new Agent({
+			streamFn: (() => { throw new Error("unused"); }) as never,
+			eventInstrumentation: {
+				onAssistantSnapshot: () => { snapshots++; },
+				onPendingToolMetadata(pending): void {
+					pendingMetadata = pending;
+					if (pending > pendingMetadataHwm) pendingMetadataHwm = pending;
+				},
+			},
+		});
+		(agent as unknown as { activeRun: unknown }).activeRun = {
+			promise: Promise.resolve(),
+			resolve(): void {},
+			abortController: new AbortController(),
+		};
+		agent.subscribeObserver((event) => {
+			if (event.type !== "message_update") return;
+			deliveries++;
+			captured = event;
+		}, { minIntervalMs: 60_000 });
+
+		const content: Array<Record<string, unknown>> = [{ type: "text", text: "x".repeat(64 * 1024) }];
+		for (let index = 0; index < toolCount; index++) {
+			content.push({
+				type: "toolCall",
+				id: `tool-${index}`,
+				name: "fixture",
+				arguments: { value: `${index}:`.padEnd(4 * 1024, "x") },
+				partialArgs: `generation-${index}`,
+			});
+		}
+		const message = {
+			role: "assistant",
+			api: "openai-completions",
+			provider: "fixture",
+			model: "fixture",
+			content,
+			timestamp: 0,
+		};
+		const processEvent = (event: unknown): Promise<void> =>
+			(agent as unknown as { processEvents(event: unknown): Promise<void> }).processEvents(event);
+		for (let index = 0; index < toolCount; index++) {
+			await processEvent({
+				type: "message_update",
+				message,
+				assistantMessageEvent: {
+					type: "toolcall_delta",
+					contentIndex: index + 1,
+					delta: `generation-${index}`,
+					partial: message,
+				},
+			});
+		}
+		await (agent as unknown as { eventDelivery: { flushAllLatest(): Promise<void> } }).eventDelivery.flushAllLatest();
+
+		const changedTools = (captured as AgentEvent & {
+			changedToolUpdates?: ReadonlyArray<{ toolCallId: string; contentIndex: number }>;
+		} | undefined)?.changedToolUpdates;
+		assert.equal(snapshots, 1, `${toolCount} tools cloned the full message more than once`);
+		assert.equal(deliveries, 1, `${toolCount} tools produced more than one observer delivery`);
+		assert.equal(changedTools?.length, toolCount);
+		assert.deepEqual(changedTools?.map((entry) => entry.toolCallId),
+			Array.from({ length: toolCount }, (_, index) => `tool-${index}`));
+		assert.equal(Object.isFrozen(changedTools), true);
+		assert.equal(Object.isFrozen(changedTools?.[0]), true);
+		assert.equal(pendingMetadataHwm, toolCount);
+		assert.equal(pendingMetadata, 0);
+		assert.equal(agent.eventDeliveryStats.maxPendingKeys, 1);
+		assert.equal(agent.eventDeliveryStats.pendingKeys, 0);
+		await (agent as unknown as { eventDelivery: { dispose(): Promise<void> } }).eventDelivery.dispose();
+	}
+});
+
+test("tool ends remain sticky when a text update is the final event in the flush", async () => {
+	let captured: Extract<AgentEvent, { type: "message_update" }> | undefined;
+	const agent = new Agent({ streamFn: (() => { throw new Error("unused"); }) as never });
+	(agent as unknown as { activeRun: unknown }).activeRun = {
+		promise: Promise.resolve(),
+		resolve(): void {},
+		abortController: new AbortController(),
+	};
+	agent.subscribeObserver((event) => {
+		if (event.type === "message_update") captured = event;
+	}, { minIntervalMs: 60_000 });
+	const message = {
+		role: "assistant",
+		api: "openai-completions",
+		provider: "fixture",
+		model: "fixture",
+		content: [
+			{ type: "text", text: "done" },
+			{ type: "toolCall", id: "tool-a", name: "a", arguments: {} },
+			{ type: "toolCall", id: "tool-b", name: "b", arguments: {} },
+		],
+		timestamp: 0,
+	};
+	const processEvent = (assistantMessageEvent: unknown): Promise<void> =>
+		(agent as unknown as { processEvents(event: unknown): Promise<void> }).processEvents({
+			type: "message_update",
+			message,
+			assistantMessageEvent,
+		});
+	await processEvent({ type: "toolcall_start", contentIndex: 1, partial: message });
+	await processEvent({ type: "toolcall_delta", contentIndex: 1, delta: "a", partial: message, toolArgsGeneration: 1 });
+	await processEvent({ type: "toolcall_end", contentIndex: 1, toolCall: message.content[1], partial: message });
+	await processEvent({ type: "toolcall_end", contentIndex: 2, toolCall: message.content[2], partial: message });
+	await processEvent({ type: "text_delta", contentIndex: 0, delta: "done", partial: message });
+	await (agent as unknown as { eventDelivery: { flushAllLatest(): Promise<void> } }).eventDelivery.flushAllLatest();
+
+	assert.equal(captured?.assistantMessageEvent.type, "text_delta");
+	assert.deepEqual(captured?.changedToolUpdates?.map((update) => ({
+		id: update.toolCallId,
+		phase: update.phase,
+		finalized: update.finalized,
+	})), [
+		{ id: "tool-a", phase: "end", finalized: true },
+		{ id: "tool-b", phase: "end", finalized: true },
+	]);
+	assert.equal(agent.eventDeliveryStats.received, 5);
+	assert.equal(agent.eventDeliveryStats.coalesced, 4);
+	assert.equal(agent.eventDeliveryStats.delivered, 1);
+	await (agent as unknown as { eventDelivery: { dispose(): Promise<void> } }).eventDelivery.dispose();
+});
+
 test("abort flushes the final latest update and leaves no stale pending delivery", async () => {
 	let markWaiting = () => {};
 	const waiting = new Promise<void>((resolve) => { markWaiting = resolve; });
@@ -257,6 +389,8 @@ test("abort flushes the final latest update and leaves no stale pending delivery
 
 	assert.deepEqual(order.slice(-2), ["update", "end"]);
 	assert.equal(agent.eventDeliveryStats.pendingKeys, 0);
+	assert.equal((agent as unknown as { pendingMessageUpdateEvent?: unknown }).pendingMessageUpdateEvent, undefined);
+	assert.equal((agent as unknown as { pendingChangedToolUpdates: Map<string, unknown> }).pendingChangedToolUpdates.size, 0);
 	const delivered = order.length;
 	await Promise.resolve();
 	assert.equal(order.length, delivered);
