@@ -2,7 +2,12 @@ export type EventDelivery = "critical" | "latest";
 
 export interface EventDeliveryScheduler {
 	now(): number;
-	schedule(callback: (context: unknown) => void, delayMs: number, context: unknown): unknown;
+	schedule(
+		callback: (context: unknown, generation: number) => void,
+		delayMs: number,
+		context: unknown,
+		generation: number,
+	): unknown;
 	cancel(handle: unknown): void;
 }
 
@@ -57,8 +62,13 @@ function defaultSchedulerNow(): number {
 	return performance.now();
 }
 
-function defaultSchedulerSchedule(callback: (context: unknown) => void, delayMs: number, context: unknown): unknown {
-	return setTimeout(callback, delayMs, context);
+function defaultSchedulerSchedule(
+	callback: (context: unknown, generation: number) => void,
+	delayMs: number,
+	context: unknown,
+	generation: number,
+): unknown {
+	return setTimeout(callback, delayMs, context, generation);
 }
 
 function defaultSchedulerCancel(handle: unknown): void {
@@ -97,6 +107,8 @@ export class EventDeliveryDispatcher<E, K> {
 	private readonly onDiagnostic?: (diagnostic: EventDeliveryDiagnostic) => void;
 	private scheduledHandle: unknown;
 	private scheduledDueAt = Number.POSITIVE_INFINITY;
+	private scheduledGeneration = 0;
+	private activeScheduledGeneration = 0;
 	private flushPromise: Promise<void> | undefined;
 	private nextVersion = 1;
 	private disposed = false;
@@ -106,11 +118,13 @@ export class EventDeliveryDispatcher<E, K> {
 	private maxPendingKeys = 0;
 	private observerErrors = 0;
 	private slowObservers = 0;
-	private static dispatchScheduledFlush(context: unknown): void {
-		(context as EventDeliveryDispatcher<unknown, unknown>).handleScheduledFlush();
+	private static dispatchScheduledFlush(context: unknown, generation: number): void {
+		(context as EventDeliveryDispatcher<unknown, unknown>).handleScheduledFlush(generation);
 	}
 
-	private handleScheduledFlush(): void {
+	private handleScheduledFlush(generation: number): void {
+		if (generation !== this.activeScheduledGeneration) return;
+		this.activeScheduledGeneration = 0;
 		this.scheduledHandle = undefined;
 		this.scheduledDueAt = Number.POSITIVE_INFINITY;
 		void this.flushAvailable(false, undefined, true);
@@ -250,23 +264,30 @@ export class EventDeliveryDispatcher<E, K> {
 			this.cancelScheduledFlush();
 		}
 		try {
+			const generation = ++this.scheduledGeneration;
+			this.activeScheduledGeneration = generation;
 			this.scheduledDueAt = dueAt;
-			this.scheduledHandle = this.scheduler.schedule(
+			const handle = this.scheduler.schedule(
 				EventDeliveryDispatcher.dispatchScheduledFlush,
 				delayMs,
 				this,
+				generation,
 			);
+			if (this.activeScheduledGeneration === generation) this.scheduledHandle = handle;
 		} catch (error) {
+			this.activeScheduledGeneration = 0;
+			this.scheduledHandle = undefined;
 			this.scheduledDueAt = Number.POSITIVE_INFINITY;
 			this.reportDiagnostic({ type: "observer-error", error });
 		}
 	}
 
 	private cancelScheduledFlush(): void {
-		if (this.scheduledHandle === undefined) return;
-		this.scheduler.cancel(this.scheduledHandle);
+		const handle = this.scheduledHandle;
+		this.activeScheduledGeneration = 0;
 		this.scheduledHandle = undefined;
 		this.scheduledDueAt = Number.POSITIVE_INFINITY;
+		if (handle !== undefined) this.scheduler.cancel(handle);
 	}
 
 	private async flushAvailable(force: boolean, onlyKey?: K, isolateErrors = false): Promise<void> {

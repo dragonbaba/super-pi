@@ -132,17 +132,19 @@ test("latest ownership releases on snapshot errors, final unsubscribe, and dispo
 });
 
 test("scheduled latest flushes reuse one callback across dispatcher instances", () => {
-	const callbacks: Array<(context: unknown) => void> = [];
+	const callbacks: Array<(context: unknown, generation: number) => void> = [];
 	const contexts: unknown[] = [];
+	const generations: number[] = [];
 	const scheduler = {
-			now(): number { return 0; },
-			schedule(callback, _delayMs, context): number {
-				callbacks.push(callback);
-				contexts.push(context);
-				return callbacks.length;
-			},
-			cancel(): void {},
-		} satisfies EventDeliveryScheduler;
+		now(): number { return 0; },
+		schedule(callback, _delayMs, context, generation): number {
+			callbacks.push(callback);
+			contexts.push(context);
+			generations.push(generation);
+			return callbacks.length;
+		},
+		cancel(): void {},
+	} satisfies EventDeliveryScheduler;
 	const first = new EventDeliveryDispatcher<FixtureEvent, string>({ scheduler });
 	const second = new EventDeliveryDispatcher<FixtureEvent, string>({ scheduler });
 	const unsubscribeFirst = first.subscribe(() => {}, { delivery: "latest", minIntervalMs: 16 });
@@ -156,6 +158,68 @@ test("scheduled latest flushes reuse one callback across dispatcher instances", 
 	assert.equal(callbacks[0], callbacks[1]);
 	assert.equal(contexts[0], first);
 	assert.equal(contexts[1], second);
+	assert.equal(generations[0], 1);
+	assert.equal(generations[1], 1);
+});
+
+test("synchronous scheduler completion cannot restore an already-fired handle", async () => {
+	let cancelCalls = 0;
+	let deliveries = 0;
+	const scheduler = {
+		now(): number { return 0; },
+		schedule(callback, _delayMs, context, generation): number {
+			callback(context, generation);
+			return generation;
+		},
+		cancel(): void { cancelCalls++; },
+	} satisfies EventDeliveryScheduler;
+	const dispatcher = new EventDeliveryDispatcher<FixtureEvent, string>({ scheduler });
+	dispatcher.subscribe(() => { deliveries++; }, { delivery: "latest", minIntervalMs: 0 });
+
+	dispatcher.publishLatest("message", { type: "update", sequence: 1 });
+	await dispatcher.flushAllLatest();
+	dispatcher.publishLatest("message", { type: "update", sequence: 2 });
+	await dispatcher.flushAllLatest();
+
+	assert.equal(deliveries, 2);
+	assert.equal(cancelCalls, 0);
+});
+
+test("a cancelled scheduler generation cannot clear or flush its replacement", async () => {
+	let now = 0;
+	const callbacks: Array<(context: unknown, generation: number) => void> = [];
+	const contexts: unknown[] = [];
+	const generations: number[] = [];
+	let scheduleCalls = 0;
+	const scheduler = {
+		now(): number { return now; },
+		schedule(callback, _delayMs, context, generation): number {
+			callbacks.push(callback);
+			contexts.push(context);
+			generations.push(generation);
+			return ++scheduleCalls;
+		},
+		cancel(): void {},
+	} satisfies EventDeliveryScheduler;
+	const dispatcher = new EventDeliveryDispatcher<FixtureEvent, string>({ scheduler });
+	const firstUnsubscribe = dispatcher.subscribe(() => {}, { delivery: "latest", minIntervalMs: 100 });
+	dispatcher.publishLatest("message", { type: "update", sequence: 1 });
+	firstUnsubscribe();
+	let delivered = 0;
+	dispatcher.subscribe(() => { delivered++; }, { delivery: "latest", minIntervalMs: 100 });
+	dispatcher.publishLatest("message", { type: "update", sequence: 2 });
+
+	callbacks[0]?.(contexts[0], generations[0] ?? 0);
+	await Promise.resolve();
+	assert.equal(delivered, 0);
+	assert.equal(scheduleCalls, 2);
+	assert.equal(dispatcher.stats.pendingKeys, 1);
+
+	now = 100;
+	callbacks[1]?.(contexts[1], generations[1] ?? 0);
+	await dispatcher.flushAllLatest();
+	assert.equal(delivered, 1);
+	assert.equal(dispatcher.stats.pendingKeys, 0);
 });
 
 test("critical delivery flushes latest values first and awaits legacy listeners in order", async () => {
@@ -276,9 +340,9 @@ test("unsubscribing a latest observer recalculates the next remaining due time",
 	const dispatcher = new EventDeliveryDispatcher<FixtureEvent, string>({
 		scheduler: {
 			now: () => scheduler.now(),
-			schedule: (callback, delayMs, context) => {
+			schedule: (callback, delayMs, context, generation) => {
 				scheduledDelays.push(delayMs);
-				return scheduler.schedule(callback, delayMs, context);
+				return scheduler.schedule(callback, delayMs, context, generation);
 			},
 			cancel: (handle) => scheduler.cancel(handle as number),
 		},

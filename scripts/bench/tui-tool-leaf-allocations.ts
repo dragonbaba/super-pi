@@ -97,28 +97,38 @@ class InstrumentedMainScreen extends TuiMainScreen {
 
 class SingleTaskScheduler implements EventDeliveryScheduler {
 	private clock = 0;
-	private callback: ((context: unknown) => void) | undefined;
+	private callback: ((context: unknown, generation: number) => void) | undefined;
 	private context: unknown;
+	private generation = 0;
 	private handle = 0;
 	now(): number { return this.clock; }
-	schedule(callback: (context: unknown) => void, _delayMs: number, context: unknown): number {
+	schedule(
+		callback: (context: unknown, generation: number) => void,
+		_delayMs: number,
+		context: unknown,
+		generation: number,
+	): number {
 		if (this.callback) throw new Error("one scheduler task expected");
 		this.callback = callback;
 		this.context = context;
+		this.generation = generation;
 		return ++this.handle;
 	}
 	cancel(handle: unknown): void {
 		if (handle !== this.handle) return;
 		this.callback = undefined;
 		this.context = undefined;
+		this.generation = 0;
 	}
 	advance(): void {
 		this.clock += 16;
 		const callback = this.callback;
 		const context = this.context;
+		const generation = this.generation;
 		this.callback = undefined;
 		this.context = undefined;
-		callback?.(context);
+		this.generation = 0;
+		callback?.(context, generation);
 	}
 	get pendingTasks(): number { return this.callback ? 1 : 0; }
 }
