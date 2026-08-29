@@ -154,6 +154,9 @@ test("tool finalization uses one message lane with bounded per-tool metadata", (
 	);
 	assert.match(releaseLatest, /pendingLatest\.delete\(key\)[\s\S]*onLatestReleased\(key, pending\.event\)/);
 	assert.doesNotMatch(releaseLatest, /=>|\.map\(|\.filter\(|Array\.from|\.\.\.|new (?:Array|Map|Set)\b/);
+	assert.doesNotMatch(delivery, /scheduledFlush\s*=\s*\(|flushAvailable\(false\)\.catch\(/);
+	assert.match(delivery, /scheduler\.schedule\([\s\S]*EventDeliveryDispatcher\.dispatchScheduledFlush,[\s\S]*delayMs,[\s\S]*this,/);
+	assert.match(delivery, /setTimeout\(callback, delayMs, context\)/);
 	const interactive = readFileSync("packages/coding-agent/src/modes/interactive/interactive-mode.ts", "utf8");
 	const messageUpdate = interactive.slice(interactive.indexOf('case "message_update"'), interactive.indexOf('case "message_end"'));
 	assert.match(messageUpdate, /for \(const update of changedToolUpdates\)/);
