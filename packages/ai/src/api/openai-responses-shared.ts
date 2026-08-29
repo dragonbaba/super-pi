@@ -396,6 +396,8 @@ export function convertResponsesTools(tools: readonly Tool[], options?: ConvertR
 
 type StreamingToolCall = ToolCall & {
 	partialJson?: string;
+	/** Host-only generation for custom/grammar argument replacement. */
+	toolArgsGeneration?: number;
 	customInput?: {
 		property: string;
 		jsonBuffer: GrammarToolInputJsonBuffer;
@@ -414,6 +416,7 @@ function appendCustomToolCallInput(block: StreamingToolCall, nextInput: string, 
 	if (!customInput) return undefined;
 	const delta = appendGrammarToolInputJsonDelta(customInput.jsonBuffer, customInput.property, nextInput, close);
 	block.arguments = { [customInput.property]: nextInput };
+	if (delta !== undefined) block.toolArgsGeneration = (block.toolArgsGeneration ?? 0) + 1;
 	return delta;
 }
 
@@ -453,6 +456,7 @@ export async function processResponsesStream<TApi extends Api>(
 			contentIndex: slot.contentIndex,
 			delta,
 			partial: output,
+			toolArgsGeneration: slot.block.toolArgsGeneration,
 		});
 	};
 	const createSlot = (outputIndex: number, item: ResponseOutputItem): ResponsesOutputSlot | undefined => {
@@ -506,6 +510,7 @@ export async function processResponsesStream<TApi extends Api>(
 				id: `${item.call_id}|${item.id}`,
 				name: item.name,
 				arguments: { [inputProperty]: input },
+				toolArgsGeneration: 0,
 				...(namespace !== undefined ? { namespace } : {}),
 				customInput: {
 					property: inputProperty,
@@ -726,6 +731,7 @@ export async function processResponsesStream<TApi extends Api>(
 				);
 				if ("namespace" in item && typeof item.namespace === "string") slot.block.namespace = item.namespace;
 				slot.block.customInput = undefined;
+				slot.block.toolArgsGeneration = undefined;
 				stream.push({
 					type: "toolcall_end",
 					contentIndex: slot.contentIndex,

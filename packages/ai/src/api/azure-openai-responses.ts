@@ -159,6 +159,9 @@ export const stream: StreamFunction<"azure-openai-responses", AzureOpenAIRespons
 				if ("partialJson" in block) {
 					(block as { partialJson?: string }).partialJson = undefined;
 				}
+				if ("toolArgsGeneration" in block) {
+					(block as { toolArgsGeneration?: number }).toolArgsGeneration = undefined;
+				}
 				if ("customInput" in block) {
 					(block as { customInput?: unknown }).customInput = undefined;
 				}

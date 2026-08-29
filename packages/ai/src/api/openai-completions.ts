@@ -274,6 +274,8 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 
 			interface StreamingToolCallBlock extends ToolCall {
 				partialArgs?: string;
+				/** Host-only generation for custom/grammar argument replacement. */
+				toolArgsGeneration?: number;
 				customInput?: {
 					property: string;
 					jsonBuffer: GrammarToolInputJsonBuffer;
@@ -317,6 +319,7 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 					close,
 				);
 				block.arguments = { [customInput.property]: nextInput };
+				if (delta !== undefined) block.toolArgsGeneration = (block.toolArgsGeneration ?? 0) + 1;
 				return delta;
 			};
 			const finishBlock = (block: StreamingBlock) => {
@@ -347,6 +350,7 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 								contentIndex,
 								delta,
 								partial: output,
+								toolArgsGeneration: block.toolArgsGeneration,
 							});
 						}
 					} else {
@@ -355,6 +359,7 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 					// Finalize in-place and strip the scratch buffers so replay only
 					// carries parsed arguments.
 					block.partialArgs = undefined;
+					block.toolArgsGeneration = undefined;
 					block.customInput = undefined;
 					block.streamIndex = undefined;
 					stream.push({
@@ -414,6 +419,7 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 						name,
 						arguments: hasCustomInput ? { [customInputProperty]: "" } : {},
 						partialArgs: hasCustomInput ? undefined : "",
+						toolArgsGeneration: hasCustomInput ? 0 : undefined,
 						customInput: hasCustomInput
 							? { property: customInputProperty, jsonBuffer: { input: "", started: false, closed: false } }
 							: undefined,
@@ -450,6 +456,7 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 						jsonBuffer: { input: "", started: false, closed: false },
 					};
 					block.partialArgs = undefined;
+					block.toolArgsGeneration = 0;
 				}
 				applyPendingReasoningDetail(block);
 				return block;
@@ -562,6 +569,7 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 								contentIndex: getContentIndex(block),
 								delta,
 								partial: output,
+								toolArgsGeneration: block.toolArgsGeneration,
 							});
 						}
 					}
@@ -610,6 +618,7 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 				if ("index" in block) (block as { index?: number }).index = undefined;
 				// Streaming scratch buffers are only used during parsing; never persist them.
 				if ("partialArgs" in block) (block as { partialArgs?: string }).partialArgs = undefined;
+				if ("toolArgsGeneration" in block) (block as { toolArgsGeneration?: number }).toolArgsGeneration = undefined;
 				if ("customInput" in block) (block as { customInput?: unknown }).customInput = undefined;
 				if ("streamIndex" in block) (block as { streamIndex?: number }).streamIndex = undefined;
 			}
