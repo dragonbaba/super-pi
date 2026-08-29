@@ -86,71 +86,40 @@ function deepFreezeSnapshot(value: unknown, seen = new WeakSet<object>()): void 
 	if (!ArrayBuffer.isView(value)) Object.freeze(value);
 }
 
-const MUTABLE_AGENT_STATE_TOOLS = Symbol("mutable-agent-state-tools");
-const MUTABLE_AGENT_STATE_MESSAGES = Symbol("mutable-agent-state-messages");
-
 type MutableAgentState = Omit<AgentState, "isStreaming" | "streamingMessage" | "pendingToolCalls" | "errorMessage"> & {
 	isStreaming: boolean;
 	streamingMessage?: AgentMessage;
 	pendingToolCalls: Set<string>;
 	errorMessage?: string;
-	[MUTABLE_AGENT_STATE_TOOLS]: AgentTool<any>[];
-	[MUTABLE_AGENT_STATE_MESSAGES]: AgentMessage[];
 };
-
-function getMutableAgentStateTools(this: MutableAgentState): AgentTool<any>[] {
-	return this[MUTABLE_AGENT_STATE_TOOLS];
-}
-
-function setMutableAgentStateTools(this: MutableAgentState, tools: AgentTool<any>[]): void {
-	this[MUTABLE_AGENT_STATE_TOOLS] = tools.slice();
-}
-
-function getMutableAgentStateMessages(this: MutableAgentState): AgentMessage[] {
-	return this[MUTABLE_AGENT_STATE_MESSAGES];
-}
-
-function setMutableAgentStateMessages(this: MutableAgentState, messages: AgentMessage[]): void {
-	this[MUTABLE_AGENT_STATE_MESSAGES] = messages.slice();
-}
-
-const MUTABLE_AGENT_STATE_ACCESSORS: PropertyDescriptorMap = {
-	tools: {
-		configurable: true,
-		enumerable: true,
-		get: getMutableAgentStateTools,
-		set: setMutableAgentStateTools,
-	},
-	messages: {
-		configurable: true,
-		enumerable: true,
-		get: getMutableAgentStateMessages,
-		set: setMutableAgentStateMessages,
-	},
-};
-
-const NON_ENUMERABLE_AGENT_STATE_STORAGE: PropertyDescriptor = { enumerable: false };
 
 function createMutableAgentState(
 	initialState?: Partial<Omit<AgentState, "pendingToolCalls" | "isStreaming" | "streamingMessage" | "errorMessage">>,
 ): MutableAgentState {
-	const state = {
+	let tools = initialState?.tools?.slice() ?? [];
+	let messages = initialState?.messages?.slice() ?? [];
+
+	return {
 		systemPrompt: initialState?.systemPrompt ?? "",
 		model: initialState?.model ?? DEFAULT_MODEL,
 		thinkingLevel: initialState?.thinkingLevel ?? "off",
-		tools: undefined,
-		messages: undefined,
+		get tools() {
+			return tools;
+		},
+		set tools(nextTools: AgentTool<any>[]) {
+			tools = nextTools.slice();
+		},
+		get messages() {
+			return messages;
+		},
+		set messages(nextMessages: AgentMessage[]) {
+			messages = nextMessages.slice();
+		},
 		isStreaming: false,
 		streamingMessage: undefined,
 		pendingToolCalls: new Set<string>(),
 		errorMessage: undefined,
-		[MUTABLE_AGENT_STATE_TOOLS]: initialState?.tools?.slice() ?? [],
-		[MUTABLE_AGENT_STATE_MESSAGES]: initialState?.messages?.slice() ?? [],
-	} as unknown as MutableAgentState;
-	Object.defineProperties(state, MUTABLE_AGENT_STATE_ACCESSORS);
-	Object.defineProperty(state, MUTABLE_AGENT_STATE_TOOLS, NON_ENUMERABLE_AGENT_STATE_STORAGE);
-	Object.defineProperty(state, MUTABLE_AGENT_STATE_MESSAGES, NON_ENUMERABLE_AGENT_STATE_STORAGE);
-	return state;
+	};
 }
 
 /** Options for constructing an {@link Agent}. */
