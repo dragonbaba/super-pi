@@ -28,6 +28,25 @@ export {
 	parseSkillBlock,
 	type SessionStats,
 } from "./core/agent-session.ts";
+export {
+	createToolOutputEstimatorCounters,
+	createToolOutputShadowObserver,
+	estimateToolOutputTokens,
+	TOOL_OUTPUT_EXACT_ESTIMATOR_ID,
+	TOOL_OUTPUT_ESTIMATOR_VERSION,
+	TOOL_OUTPUT_FALLBACK_ESTIMATOR_ID,
+	TOOL_OUTPUT_SHADOW_BUDGETS,
+	type ToolOutputCategory,
+	type ToolOutputEstimatorCounters,
+	type ToolOutputExactEstimatorInput,
+	type ToolOutputExactEstimatorResolver,
+	type ToolOutputExactTokenEstimator,
+	type ToolOutputModelIdentity,
+	type ToolOutputShadowOptions,
+	type ToolOutputShadowTelemetry,
+	type ToolOutputShadowTelemetrySink,
+	type ToolOutputTokenEstimate,
+} from "./core/tool-output-budget.ts";
 export { readStoredCredential } from "./core/auth-storage.ts";
 // Compaction
 export {
