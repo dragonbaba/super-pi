@@ -188,16 +188,16 @@ function addAsciiRunTokens(state: ScanState): void {
 		case AsciiRunKind.Alpha:
 			if (state.runAdjacentChanges === 0) {
 				state.estimatedTokens += Math.max(1, Math.ceil(length / 8));
-			} else if (length < 12) {
+			} else if (length < 8) {
 				state.estimatedTokens += Math.ceil(length / 6);
-			} else if (length <= 16) {
-				state.estimatedTokens += Math.ceil(
-					length / 6 + (length * Math.min(state.runDistinctLetters, 12)) / 24,
-				);
 			} else {
+				const longRunEstimate = length / 4 + (length * state.runDistinctLetters) / 64;
+				const shortRunEstimate = length / 2 + state.runDistinctLetters / 12;
+				const shortRunWeight = Math.min(1, Math.max(0, (32 - length) / 14));
 				state.estimatedTokens += Math.ceil(
-					length / 4 +
-						(length * state.runDistinctLetters) / 64 +
+					longRunEstimate +
+						(shortRunEstimate - longRunEstimate) * shortRunWeight +
+						(state.runHasUpper && !state.runHasLower ? shortRunWeight : 0) +
 						(state.runHasLower && state.runHasUpper ? state.runTransitions / 3 : 0),
 				);
 			}
