@@ -345,5 +345,7 @@ test("Alt allocation benchmark uses the production fixture and reports dynamic l
 	assert.match(benchmark, /layoutFullViewportArrayCopiesPerFrame/);
 	assert.match(benchmark, /completedItemRendersPerFrame/);
 	assert.match(benchmark, /terminalFrameQueueHighWaterMark/);
+	assert.match(benchmark, /lifecycleHeapSlopeBytesPerCycle/);
+	assert.match(benchmark, /lifecycleMaximumRetainedReferencesAfterDispose/);
 	assert.match(benchmark, /retainedReferencesAfterDispose/);
 });

@@ -1,5 +1,6 @@
 import { Session } from "node:inspector/promises";
 import { constants, performance, PerformanceObserver, type PerformanceEntry } from "node:perf_hooks";
+import { setImmediate as waitImmediate } from "node:timers/promises";
 import { RetainedContainer } from "../../packages/tui/src/components/retained-item.ts";
 import { ScrollView } from "../../packages/tui/src/components/scroll-view.ts";
 import { VStack } from "../../packages/tui/src/components/v-stack.ts";
@@ -254,6 +255,31 @@ function percentile(sorted: readonly number[], ratio: number): number {
 	return sorted[Math.min(sorted.length - 1, Math.max(0, Math.ceil(sorted.length * ratio) - 1))] ?? 0;
 }
 
+function linearSlope(values: readonly number[]): number {
+	if (values.length < 2) return 0;
+	const xMean = (values.length - 1) / 2;
+	let ySum = 0;
+	for (let index = 0; index < values.length; index++) ySum += values[index]!;
+	const yMean = ySum / values.length;
+	let numerator = 0;
+	let denominator = 0;
+	for (let index = 0; index < values.length; index++) {
+		const xDelta = index - xMean;
+		numerator += xDelta * (values[index]! - yMean);
+		denominator += xDelta * xDelta;
+	}
+	return denominator === 0 ? 0 : numerator / denominator;
+}
+
+async function runAltLifecycleCycle(itemCount: number, width: number, height: number): Promise<number> {
+	const cycle = createFixture("production-alt", itemCount, width, height, "stable");
+	cycle.advanceActive();
+	cycle.tui.renderNow();
+	await cycle.tui.dispose({ preserveScreen: true });
+	const references = cycle.getAltLayoutRetainedReferenceCounts();
+	return references.components + references.lines + references.sources + references.cachedRows;
+}
+
 function allocationSites(head: SamplingNode): { sampledBytes: number; top: AllocationSite[] } {
 	const sites = new Map<string, AllocationSite>();
 	let sampledBytes = 0;
@@ -288,6 +314,7 @@ if (!fixtureArgument || !new Set<Fixture>(["direct-main", "production-main", "pr
 const itemCount = readIntegerOption("--items", 5_000);
 const measuredFrames = readIntegerOption("--frames", 20_000);
 const warmupFrames = readIntegerOption("--warmup", 1_000);
+const lifecycleCycles = readIntegerOption("--lifecycle-cycles", 0);
 const width = readIntegerOption("--width", 120);
 const height = readIntegerOption("--height", 40);
 const altControlIndex = process.argv.indexOf("--alt-control");
@@ -369,6 +396,19 @@ globalThis.gc();
 globalThis.gc();
 const controlledGcAfterDisposeHeapBytes = process.memoryUsage().heapUsed;
 const retainedReferencesAfterDispose = runtime.getAltLayoutRetainedReferenceCounts();
+const lifecycleHeapSamples: number[] = [];
+let lifecycleMaximumRetainedReferencesAfterDispose = 0;
+for (let cycle = 0; cycle < lifecycleCycles; cycle++) {
+	const retainedReferences = await runAltLifecycleCycle(itemCount, width, height);
+	await waitImmediate();
+	lifecycleMaximumRetainedReferencesAfterDispose = Math.max(
+		lifecycleMaximumRetainedReferencesAfterDispose,
+		retainedReferences,
+	);
+	globalThis.gc();
+	globalThis.gc();
+	lifecycleHeapSamples.push(process.memoryUsage().heapUsed);
+}
 
 process.stdout.write(`${JSON.stringify({
 	schemaVersion: 1,
@@ -403,6 +443,10 @@ process.stdout.write(`${JSON.stringify({
 		controlledGcAfterDisposeHeapDeltaBytes: controlledGcAfterDisposeHeapBytes - controlledGcBeforeHeapBytes,
 		retainedReferencesBeforeDispose,
 		retainedReferencesAfterDispose,
+		lifecycleCycles,
+		lifecycleHeapSamples,
+		lifecycleHeapSlopeBytesPerCycle: linearSlope(lifecycleHeapSamples),
+		lifecycleMaximumRetainedReferencesAfterDispose,
 		plainChildRenderCallsPerFrame: plainRenderCalls / measuredFrames,
 		maxPlainChildRenderCallsPerFrame: maxPlainRenderCalls / measuredFrames,
 		activeRenderCallsPerFrame: runtime.active.renderCalls / measuredFrames,
