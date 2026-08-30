@@ -99,6 +99,7 @@ test("active updates do not rerender 5,000 completed transcript items", () => {
 		altLayoutRenderCacheLookupProbes: 0,
 		altLayoutRenderCacheRecordCount: 0,
 		altLayoutRenderCacheIndexActivations: 0,
+		altLayoutRenderCacheWidthVariantBypasses: 0,
 		altLayoutScreenArraysCreated: 0,
 		altLayoutFullViewportArrayCopies: 0,
 		altLayoutStringRepeatCalls: 0,
