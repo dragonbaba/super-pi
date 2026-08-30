@@ -147,9 +147,14 @@ test("plain checkpoints fall back before list hr URL and email token transitions
 		["1", "1) item"],
 		["--", "---"],
 		["https", "https://example.com"],
+		["ftp", "ftp://example.com"],
+		["FTP", "FTP://example.com"],
 		["www", "www.example.com"],
 		["user", "user@example.com"],
 		["# https", "# https://example.com"],
+		[" 1", " 1. item"],
+		[" -", " - item"],
+		[" --", " ---"],
 	];
 	for (let index = 0; index < matrices.length; index++) {
 		const [initial, transitioned] = matrices[index]!;
@@ -174,7 +179,8 @@ test("plain checkpoints fall back before list hr URL and email token transitions
 		);
 		assert.equal(metrics.incrementalUpdates, incrementalBefore);
 		assert.equal(metrics.fullFallbacks, fallbacksBefore + 1);
-		assert.equal(metrics.lastFallbackReason, "syntax-transition");
+		const expectedReason = initial === " -" ? "unsupported-block" : "syntax-transition";
+		assert.equal(metrics.lastFallbackReason, expectedReason, `fallback reason ${initial} -> ${transitioned}`);
 		const state = candidate as unknown as { incrementalPlainContentLines?: string[] };
 		assert.equal(state.incrementalPlainContentLines, undefined);
 		const incrementalBeforeTail = metrics.incrementalUpdates;
@@ -195,6 +201,68 @@ test("plain checkpoints fall back before list hr URL and email token transitions
 		const state = candidate as unknown as { incrementalPlainContentLines?: string[] };
 		assert.equal(state.incrementalPlainContentLines, undefined);
 	}
+});
+
+test("long pending email words cannot outgrow lexical transition proof", () => {
+	for (const prefix of ["", "# ", "## "]) {
+		const initial = `${prefix}user@abcdefgh`;
+		const transitioned = `${initial}.com`;
+		const metrics = createMetrics();
+		const candidate = new Markdown(
+			initial,
+			0,
+			0,
+			SYNTAX_TRANSITION_THEME,
+			undefined,
+			{ incrementalRenderCache: true },
+			metrics,
+		);
+		candidate.render(40);
+		const incrementalBefore = metrics.incrementalUpdates;
+		const fallbacksBefore = metrics.fullFallbacks;
+		candidate.setText(transitioned);
+		assert.deepEqual(
+			candidate.render(40),
+			new Markdown(transitioned, 0, 0, SYNTAX_TRANSITION_THEME).render(40),
+			`pending email transition ${initial} -> ${transitioned}`,
+		);
+		assert.equal(metrics.incrementalUpdates, incrementalBefore);
+		assert.equal(metrics.fullFallbacks, fallbacksBefore + 1);
+		assert.equal(metrics.lastFallbackReason, "syntax-transition");
+	}
+	const metrics = createMetrics();
+	const candidate = new Markdown(
+		"user@abcdefgh",
+		0,
+		0,
+		SYNTAX_TRANSITION_THEME,
+		undefined,
+		{ incrementalRenderCache: true },
+		metrics,
+	);
+	candidate.render(40);
+	const state = candidate as unknown as {
+		incrementalPlainPendingEmail: boolean;
+		incrementalPlainContentLines?: string[];
+	};
+	assert.equal(state.incrementalPlainPendingEmail, true);
+	for (const source of ["user@abcdefghx", "user@abcdefghxy", "user@abcdefghxyz"]) {
+		candidate.setText(source);
+		assert.deepEqual(candidate.render(40), new Markdown(source, 0, 0, SYNTAX_TRANSITION_THEME).render(40));
+		assert.equal(state.incrementalPlainPendingEmail, true);
+	}
+	const endedWord = "user@abcdefghxyz ordinary";
+	candidate.setText(endedWord);
+	assert.deepEqual(candidate.render(40), new Markdown(endedWord, 0, 0, SYNTAX_TRANSITION_THEME).render(40));
+	assert.equal(state.incrementalPlainPendingEmail, false);
+	assert.notEqual(state.incrementalPlainContentLines, undefined);
+	const incrementalBefore = metrics.incrementalUpdates;
+	candidate.setText(`${endedWord} prose`);
+	assert.deepEqual(
+		candidate.render(40),
+		new Markdown(`${endedWord} prose`, 0, 0, SYNTAX_TRANSITION_THEME).render(40),
+	);
+	assert.equal(metrics.incrementalUpdates, incrementalBefore + 1);
 });
 
 test("benign punctuation retains or reestablishes a plain checkpoint", () => {
@@ -423,6 +491,7 @@ test("incremental Markdown and wrapping hot functions do not add closures maps s
 		"hasIncrementalPlainSyntaxTransition",
 		"hasIncrementalDocumentPrefixTransition",
 		"hasIncrementalAutolinkTransition",
+		"hasPotentialEmailInTrailingWord",
 		"incrementalAsciiPrefixEquals",
 		"renderIncrementalPlainAppend",
 		"setText",

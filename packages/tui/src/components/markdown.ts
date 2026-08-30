@@ -353,6 +353,7 @@ export class Markdown implements Component {
 	private incrementalPlainContentOffset = 0;
 	private incrementalPlainTailSourceOffset = 0;
 	private incrementalPlainLexicalTailSourceOffset = 0;
+	private incrementalPlainPendingEmail = false;
 	private incrementalPlainStableLineCount = 0;
 	private incrementalPlainStylePrefix = "";
 	private incrementalPlainStyleSuffix = "";
@@ -422,6 +423,7 @@ export class Markdown implements Component {
 		this.incrementalPlainContentOffset = 0;
 		this.incrementalPlainTailSourceOffset = 0;
 		this.incrementalPlainLexicalTailSourceOffset = 0;
+		this.incrementalPlainPendingEmail = false;
 		this.incrementalPlainStableLineCount = 0;
 		this.incrementalPlainStylePrefix = "";
 		this.incrementalPlainStyleSuffix = "";
@@ -591,6 +593,7 @@ export class Markdown implements Component {
 			this.incrementalTokenContentLines = tokenContentLines;
 			this.incrementalPlainContentLines = undefined;
 			this.incrementalPlainLexicalTailSourceOffset = 0;
+			this.incrementalPlainPendingEmail = false;
 		} else {
 			this.clearIncrementalCache();
 		}
@@ -824,6 +827,7 @@ export class Markdown implements Component {
 	private hasIncrementalPlainSyntaxTransition(source: string, previousLength: number): boolean {
 		const contentOffset = this.incrementalPlainContentOffset;
 		if (contentOffset === 0 && this.hasIncrementalDocumentPrefixTransition(source)) return true;
+		if (this.incrementalPlainPendingEmail) return true;
 		const lexicalStart = contentOffset + this.incrementalPlainLexicalTailSourceOffset;
 		if (
 			lexicalStart < contentOffset ||
@@ -854,11 +858,18 @@ export class Markdown implements Component {
 	private hasIncrementalDocumentPrefixTransition(source: string): boolean {
 		const length = source.length;
 		if (length === 0) return false;
-		const first = source.charCodeAt(0);
-		if ((first === 0x2d || first === 0x2b) && length > 1 && source.charCodeAt(1) === 0x20) return true;
+		let prefixStart = 0;
+		while (prefixStart < length && prefixStart < 3 && source.charCodeAt(prefixStart) === 0x20) prefixStart++;
+		if (prefixStart >= length) return false;
+		const first = source.charCodeAt(prefixStart);
+		if (
+			(first === 0x2d || first === 0x2b) &&
+			prefixStart + 1 < length &&
+			source.charCodeAt(prefixStart + 1) === 0x20
+		) return true;
 		if (first === 0x2d) {
 			let hyphens = 0;
-			let index = 0;
+			let index = prefixStart;
 			while (index < length) {
 				const code = source.charCodeAt(index++);
 				if (code === 0x2d) {
@@ -869,14 +880,15 @@ export class Markdown implements Component {
 			}
 		}
 		let digitCount = 0;
-		while (digitCount < length && digitCount < 9) {
-			const code = source.charCodeAt(digitCount);
+		while (prefixStart + digitCount < length && digitCount < 9) {
+			const code = source.charCodeAt(prefixStart + digitCount);
 			if (code < 0x30 || code > 0x39) break;
 			digitCount++;
 		}
-		if (digitCount === 0 || digitCount >= length) return false;
-		const marker = source.charCodeAt(digitCount);
-		return (marker === 0x2e || marker === 0x29) && source.charCodeAt(digitCount + 1) === 0x20;
+		const markerIndex = prefixStart + digitCount;
+		if (digitCount === 0 || markerIndex >= length) return false;
+		const marker = source.charCodeAt(markerIndex);
+		return (marker === 0x2e || marker === 0x29) && source.charCodeAt(markerIndex + 1) === 0x20;
 	}
 
 	private hasIncrementalAutolinkTransition(source: string, start: number, end: number): boolean {
@@ -885,6 +897,7 @@ export class Markdown implements Component {
 			if (
 				this.incrementalAsciiPrefixEquals(source, candidateStart, end, "http://") ||
 				this.incrementalAsciiPrefixEquals(source, candidateStart, end, "https://") ||
+				this.incrementalAsciiPrefixEquals(source, candidateStart, end, "ftp://") ||
 				this.incrementalAsciiPrefixEquals(source, candidateStart, end, "www.")
 			) {
 				return true;
@@ -917,6 +930,23 @@ export class Markdown implements Component {
 		const contentOffset = kind === 1 ? 0 : kind;
 		const content = source.slice(contentOffset);
 		this.scanIncrementalPlainTail(content, contentWidth);
+		let pendingEmail = false;
+		const previousSource = this.incrementalNormalizedText;
+		if (
+			this.incrementalPlainPendingEmail &&
+			previousSource !== undefined &&
+			source.length > previousSource.length &&
+			source.startsWith(previousSource)
+		) {
+			pendingEmail = true;
+			for (let index = previousSource.length; index < source.length; index++) {
+				if (source.charCodeAt(index) === 0x20) {
+					pendingEmail = false;
+					break;
+				}
+			}
+		}
+		if (!pendingEmail) pendingEmail = this.hasPotentialEmailInTrailingWord(content);
 		const lexicalTailSourceOffset = Math.max(0, content.length - MAX_INCREMENTAL_LEXICAL_PREFIX_CODE_UNITS);
 		if (content.length - this.plainScanLineStart > MAX_INCREMENTAL_PLAIN_TAIL_CODE_UNITS) {
 			if (this.incrementalMetrics) this.incrementalMetrics.lastFallbackReason = "tail-capacity";
@@ -959,6 +989,7 @@ export class Markdown implements Component {
 		this.incrementalPlainContentOffset = contentOffset;
 		this.incrementalPlainTailSourceOffset = this.plainScanLineStart;
 		this.incrementalPlainLexicalTailSourceOffset = lexicalTailSourceOffset;
+		this.incrementalPlainPendingEmail = pendingEmail;
 		this.incrementalPlainStableLineCount = this.plainScanStableLines;
 		this.incrementalPlainStylePrefix = this.plainStylePrefix;
 		this.incrementalPlainStyleSuffix = this.plainStyleSuffix;
@@ -966,6 +997,15 @@ export class Markdown implements Component {
 		this.incrementalLinksSignature = undefined;
 		this.incrementalTokenSignatures = undefined;
 		this.incrementalTokenContentLines = undefined;
+	}
+
+	private hasPotentialEmailInTrailingWord(source: string): boolean {
+		for (let index = source.length; index > 0;) {
+			const code = source.charCodeAt(--index);
+			if (code === 0x20) return false;
+			if (code === 0x40) return true;
+		}
+		return false;
 	}
 
 	private prepareIncrementalPlainStyle(kind: number): boolean {
@@ -1075,6 +1115,7 @@ export class Markdown implements Component {
 		this.incrementalPlainContentOffset = 0;
 		this.incrementalPlainTailSourceOffset = 0;
 		this.incrementalPlainLexicalTailSourceOffset = 0;
+		this.incrementalPlainPendingEmail = false;
 		this.incrementalPlainStableLineCount = 0;
 		this.incrementalPlainStylePrefix = "";
 		this.incrementalPlainStyleSuffix = "";
