@@ -212,6 +212,7 @@ export type MarkdownIncrementalFallbackReason =
 	| "unsupported-block"
 	| "styled-content"
 	| "style-state"
+	| "syntax-transition"
 	| "tail-capacity"
 	| "rendered-capacity"
 	| "checkpoint-mismatch";
@@ -350,6 +351,7 @@ export class Markdown implements Component {
 	private incrementalPlainKind = 0;
 	private incrementalPlainContentOffset = 0;
 	private incrementalPlainTailSourceOffset = 0;
+	private incrementalPlainLexicalTailSourceOffset = 0;
 	private incrementalPlainStableLineCount = 0;
 	private incrementalPlainStylePrefix = "";
 	private incrementalPlainStyleSuffix = "";
@@ -359,7 +361,9 @@ export class Markdown implements Component {
 	private plainScanLineWidth = 0;
 	private plainScanLineStart = 0;
 	private plainScanStableLines = 0;
+	private plainLexicalNextTailSourceOffset = 0;
 	private incrementalAppendCandidate = false;
+	private incrementalSyntaxTransitionFallback = false;
 	private lastIncrementalReuseCount = 0;
 	private lastParserTokenCount = 0;
 	private readonly incrementalMetrics: MarkdownIncrementalMetrics | undefined;
@@ -416,6 +420,7 @@ export class Markdown implements Component {
 		this.incrementalPlainKind = 0;
 		this.incrementalPlainContentOffset = 0;
 		this.incrementalPlainTailSourceOffset = 0;
+		this.incrementalPlainLexicalTailSourceOffset = 0;
 		this.incrementalPlainStableLineCount = 0;
 		this.incrementalPlainStylePrefix = "";
 		this.incrementalPlainStyleSuffix = "";
@@ -424,6 +429,7 @@ export class Markdown implements Component {
 		this.plainStyleSuffix = "";
 		this.lastIncrementalReuseCount = 0;
 		this.incrementalAppendCandidate = false;
+		this.incrementalSyntaxTransitionFallback = false;
 		this.updateIncrementalCacheMetrics();
 	}
 
@@ -436,15 +442,19 @@ export class Markdown implements Component {
 		// Calculate available width for content (subtract horizontal padding)
 		const contentWidth = Math.max(1, width - this.paddingX * 2);
 		const text = this.options.transform?.(this.text, contentWidth) ?? this.text;
+		let syntaxTransitionFallback = false;
 		if (
 			this.options.incrementalRenderCache === true &&
 			(this.incrementalPlainContentLines !== undefined || this.incrementalAppendCandidate)
 		) {
+			this.incrementalSyntaxTransitionFallback = false;
 			const incrementalResult = this.renderIncrementalPlainAppend(text, width, contentWidth);
 			if (incrementalResult) {
 				this.incrementalAppendCandidate = false;
 				return incrementalResult;
 			}
+			syntaxTransitionFallback = this.incrementalSyntaxTransitionFallback;
+			this.incrementalSyntaxTransitionFallback = false;
 		}
 
 		// Don't render anything if there's no actual text
@@ -579,6 +589,7 @@ export class Markdown implements Component {
 			this.incrementalTokenSignatures = tokenSignatures;
 			this.incrementalTokenContentLines = tokenContentLines;
 			this.incrementalPlainContentLines = undefined;
+			this.incrementalPlainLexicalTailSourceOffset = 0;
 		} else {
 			this.clearIncrementalCache();
 		}
@@ -600,6 +611,9 @@ export class Markdown implements Component {
 		this.cachedWidth = width;
 		this.cachedLines = result;
 		this.incrementalAppendCandidate = false;
+		if (syntaxTransitionFallback && this.incrementalMetrics) {
+			this.incrementalMetrics.lastFallbackReason = "syntax-transition";
+		}
 
 		return result.length > 0 ? result : [""];
 	}
@@ -642,6 +656,11 @@ export class Markdown implements Component {
 		if (sourceTail.length > MAX_INCREMENTAL_PLAIN_TAIL_CODE_UNITS) {
 			if (metrics) metrics.lastFallbackReason = "tail-capacity";
 			this.clearIncrementalCache();
+			return undefined;
+		}
+		if (this.hasIncrementalPlainSyntaxTransition(text, previousText.length)) {
+			this.incrementalSyntaxTransitionFallback = true;
+			if (metrics) metrics.lastFallbackReason = "syntax-transition";
 			return undefined;
 		}
 		this.scanIncrementalPlainTail(sourceTail, contentWidth);
@@ -714,6 +733,7 @@ export class Markdown implements Component {
 		this.incrementalNormalizedText = text;
 		this.incrementalPlainContentLines = contentLines;
 		this.incrementalPlainTailSourceOffset += this.plainScanLineStart;
+		this.incrementalPlainLexicalTailSourceOffset = this.plainLexicalNextTailSourceOffset;
 		this.incrementalPlainStableLineCount += this.plainScanStableLines;
 		this.incrementalPlainTailStylePrefix = nextTailStylePrefix;
 		this.incrementalLinksSignature = undefined;
@@ -800,6 +820,88 @@ export class Markdown implements Component {
 		return true;
 	}
 
+	private hasIncrementalPlainSyntaxTransition(source: string, previousLength: number): boolean {
+		const contentOffset = this.incrementalPlainContentOffset;
+		if (contentOffset === 0 && this.hasIncrementalDocumentPrefixTransition(source)) return true;
+		const lexicalStart = contentOffset + this.incrementalPlainLexicalTailSourceOffset;
+		if (
+			lexicalStart < contentOffset ||
+			lexicalStart > previousLength ||
+			source.length - lexicalStart > MAX_INCREMENTAL_PLAIN_TAIL_CODE_UNITS
+		) {
+			return true;
+		}
+		let wordStart = lexicalStart;
+		for (let index = lexicalStart; index <= source.length; index++) {
+			if (index < source.length && source.charCodeAt(index) !== 0x20) continue;
+			if (
+				index > previousLength &&
+				this.hasIncrementalAutolinkTransition(source, wordStart, index)
+			) {
+				return true;
+			}
+			if (index === source.length) break;
+			wordStart = index + 1;
+		}
+		this.plainLexicalNextTailSourceOffset = wordStart - contentOffset;
+		return false;
+	}
+
+	private hasIncrementalDocumentPrefixTransition(source: string): boolean {
+		const length = source.length;
+		if (length === 0) return false;
+		const first = source.charCodeAt(0);
+		if ((first === 0x2d || first === 0x2b) && length > 1 && source.charCodeAt(1) === 0x20) return true;
+		if (first === 0x2d) {
+			let hyphens = 0;
+			let index = 0;
+			while (index < length) {
+				const code = source.charCodeAt(index++);
+				if (code === 0x2d) {
+					hyphens++;
+					if (hyphens >= 3) return true;
+				}
+				else if (code !== 0x20) break;
+			}
+		}
+		let digitCount = 0;
+		while (digitCount < length && digitCount < 9) {
+			const code = source.charCodeAt(digitCount);
+			if (code < 0x30 || code > 0x39) break;
+			digitCount++;
+		}
+		if (digitCount === 0 || digitCount >= length) return false;
+		const marker = source.charCodeAt(digitCount);
+		return (marker === 0x2e || marker === 0x29) && source.charCodeAt(digitCount + 1) === 0x20;
+	}
+
+	private hasIncrementalAutolinkTransition(source: string, start: number, end: number): boolean {
+		if (end <= start) return false;
+		for (let candidateStart = start; candidateStart < end; candidateStart++) {
+			if (
+				this.incrementalAsciiPrefixEquals(source, candidateStart, end, "http://") ||
+				this.incrementalAsciiPrefixEquals(source, candidateStart, end, "https://") ||
+				this.incrementalAsciiPrefixEquals(source, candidateStart, end, "www.")
+			) {
+				return true;
+			}
+		}
+		for (let index = start + 1; index + 1 < end; index++) {
+			if (source.charCodeAt(index) === 0x40) return true;
+		}
+		return false;
+	}
+
+	private incrementalAsciiPrefixEquals(source: string, start: number, end: number, expected: string): boolean {
+		if (end - start < expected.length) return false;
+		for (let index = 0; index < expected.length; index++) {
+			let code = source.charCodeAt(start + index);
+			if (code >= 0x41 && code <= 0x5a) code += 0x20;
+			if (code !== expected.charCodeAt(index)) return false;
+		}
+		return true;
+	}
+
 	private establishIncrementalPlainCheckpoint(
 		source: string,
 		width: number,
@@ -811,6 +913,15 @@ export class Markdown implements Component {
 		const contentOffset = kind === 1 ? 0 : kind;
 		const content = source.slice(contentOffset);
 		this.scanIncrementalPlainTail(content, contentWidth);
+		let lexicalTailSourceOffset = content.length;
+		while (lexicalTailSourceOffset > 0 && content.charCodeAt(lexicalTailSourceOffset - 1) !== 0x20) {
+			lexicalTailSourceOffset--;
+		}
+		if (content.length - lexicalTailSourceOffset > MAX_INCREMENTAL_PLAIN_TAIL_CODE_UNITS) {
+			if (this.incrementalMetrics) this.incrementalMetrics.lastFallbackReason = "tail-capacity";
+			this.clearIncrementalCache();
+			return;
+		}
 		if (content.length - this.plainScanLineStart > MAX_INCREMENTAL_PLAIN_TAIL_CODE_UNITS) {
 			if (this.incrementalMetrics) this.incrementalMetrics.lastFallbackReason = "tail-capacity";
 			this.clearIncrementalCache();
@@ -851,6 +962,7 @@ export class Markdown implements Component {
 		this.incrementalPlainKind = kind;
 		this.incrementalPlainContentOffset = contentOffset;
 		this.incrementalPlainTailSourceOffset = this.plainScanLineStart;
+		this.incrementalPlainLexicalTailSourceOffset = lexicalTailSourceOffset;
 		this.incrementalPlainStableLineCount = this.plainScanStableLines;
 		this.incrementalPlainStylePrefix = this.plainStylePrefix;
 		this.incrementalPlainStyleSuffix = this.plainStyleSuffix;
@@ -966,6 +1078,7 @@ export class Markdown implements Component {
 		this.incrementalPlainKind = 0;
 		this.incrementalPlainContentOffset = 0;
 		this.incrementalPlainTailSourceOffset = 0;
+		this.incrementalPlainLexicalTailSourceOffset = 0;
 		this.incrementalPlainStableLineCount = 0;
 		this.incrementalPlainStylePrefix = "";
 		this.incrementalPlainStyleSuffix = "";
