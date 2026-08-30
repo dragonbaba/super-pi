@@ -228,7 +228,6 @@ function beginOrExtendAsciiRun(state: ScanState, code: number): void {
 	const lower = code >= 0x61 && code <= 0x7a;
 	const upper = code >= 0x41 && code <= 0x5a;
 	const digit = code >= 0x30 && code <= 0x39;
-	const normalizedLetter = lower ? code - 0x61 : upper ? code - 0x41 : -1;
 	const wordClass = lower ? 1 : upper ? 2 : digit ? 3 : 0;
 	if (code === 0x20 || code === 0x09 || code === 0x0a || code === 0x0d) {
 		kind = AsciiRunKind.Whitespace;
@@ -264,20 +263,21 @@ function beginOrExtendAsciiRun(state: ScanState, code: number): void {
 	state.runHasDigit = state.runHasDigit || digit;
 	state.runAllHex = state.runAllHex && isAsciiHex(code);
 	if (wordClass !== 0) state.runLastWordClass = wordClass;
-	state.runLastCode = code;
-	if (normalizedLetter >= 0) {
+	if ((lower || upper) && state.runLastCode !== code) {
+		const normalizedLetter = lower ? code - 0x61 : code - 0x41;
 		const letterBit = 1 << normalizedLetter;
 		if ((state.runLetterMask & letterBit) === 0) {
 			state.runLetterMask |= letterBit;
 			state.runDistinctLetters++;
 		}
-	} else if (!nextIsWord && kind === AsciiRunKind.Symbols) {
+	} else if (!nextIsWord && kind === AsciiRunKind.Symbols && state.runLastCode !== code) {
 		const symbolBit = 1 << (code & 31);
 		if ((state.runSymbolMask & symbolBit) === 0) {
 			state.runSymbolMask |= symbolBit;
 			state.runDistinctSymbols++;
 		}
 	}
+	state.runLastCode = code;
 	if (nextIsWord) {
 		if (state.runHasDigit && (state.runHasLower || state.runHasUpper)) {
 			state.runKind = state.runAllHex ? AsciiRunKind.Hex : AsciiRunKind.MixedAlphaNumeric;
