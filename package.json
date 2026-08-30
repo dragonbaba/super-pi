@@ -34,6 +34,7 @@
 		"bench:tui-assistant-leaf-allocations": "node --expose-gc --experimental-strip-types ./scripts/bench/tui-real-leaf-allocations.ts",
 		"bench:tui-assistant-leaf-multiprocess": "node --experimental-strip-types ./scripts/bench/tui-real-leaf-multiprocess.ts",
 		"bench:tui-paced-assistant-leaf": "node --expose-gc --experimental-strip-types ./scripts/bench/tui-paced-real-leaf.ts",
+		"bench:tui-markdown-incremental-wrap": "node --expose-gc --experimental-strip-types ./scripts/bench/tui-markdown-incremental-wrap.ts",
 		"bench:tui-paced-streamed-tool-args": "node --expose-gc --experimental-strip-types ./scripts/bench/tui-paced-streamed-tool-args.ts",
 		"bench:tui-frame-queue": "node --expose-gc --experimental-strip-types ./scripts/bench/tui-frame-queue.ts",
 		"bench:tui-frame-queue-direct": "node --expose-gc --experimental-strip-types ./scripts/bench/tui-frame-queue-direct.ts",
