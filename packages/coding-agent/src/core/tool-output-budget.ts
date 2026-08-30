@@ -662,7 +662,10 @@ export class ToolOutputShadowObserver {
 				: undefined;
 		if (this.resolveExactEstimator) this.counters.activeRetainedReferences++;
 		if (this.telemetry) this.counters.activeRetainedReferences++;
-		this.counters.activeRetainedReferencesHighWaterMark = this.counters.activeRetainedReferences;
+		this.counters.activeRetainedReferencesHighWaterMark = Math.max(
+			this.counters.activeRetainedReferencesHighWaterMark,
+			this.counters.activeRetainedReferences,
+		);
 	}
 
 	observe(message: ToolResultMessageLike, model?: ToolOutputModelIdentity): void {

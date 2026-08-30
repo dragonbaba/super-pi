@@ -336,6 +336,41 @@ test("dispose releases estimator and telemetry references without retaining outp
 	assert.equal(counters.activeObservations, 0);
 });
 
+test("retained reference high-water mark remains monotonic across shared observer counters", () => {
+	const counters = createToolOutputEstimatorCounters();
+	const first = createToolOutputShadowObserver({
+		enabled: true,
+		counters,
+		resolveExactEstimator: () => undefined,
+		telemetry: { recordToolOutputShadow: () => {} },
+	})!;
+	assert.equal(counters.activeRetainedReferences, 2);
+	assert.equal(counters.activeRetainedReferencesHighWaterMark, 2);
+	first.dispose();
+	assert.equal(counters.activeRetainedReferences, 0);
+
+	const second = createToolOutputShadowObserver({
+		enabled: true,
+		counters,
+		telemetry: { recordToolOutputShadow: () => {} },
+	})!;
+	assert.equal(counters.activeRetainedReferences, 1);
+	assert.equal(counters.activeRetainedReferencesHighWaterMark, 2);
+
+	const concurrent = createToolOutputShadowObserver({
+		enabled: true,
+		counters,
+		resolveExactEstimator: () => undefined,
+		telemetry: { recordToolOutputShadow: () => {} },
+	})!;
+	assert.equal(counters.activeRetainedReferences, 3);
+	assert.equal(counters.activeRetainedReferencesHighWaterMark, 3);
+	second.dispose();
+	concurrent.dispose();
+	assert.equal(counters.activeRetainedReferences, 0);
+	assert.equal(counters.activeRetainedReferencesHighWaterMark, 3);
+});
+
 test("disabled shadow constructs no observer and production insertion follows final extension transformation", () => {
 	const counters = createToolOutputEstimatorCounters();
 	assert.equal(createToolOutputShadowObserver({ enabled: false, counters }), undefined);
