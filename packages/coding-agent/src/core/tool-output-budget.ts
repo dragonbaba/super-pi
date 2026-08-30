@@ -180,25 +180,25 @@ function addAsciiRunTokens(state: ScanState): void {
 					: Math.ceil(length / 3);
 			break;
 		case AsciiRunKind.Symbols:
-			state.estimatedTokens +=
-				length >= 12 && state.runDistinctSymbols >= 12
-					? Math.ceil((length * 2) / 3)
-					: Math.ceil(length / 2);
+			state.estimatedTokens += Math.ceil(
+				length / 2 + (length * Math.min(state.runDistinctSymbols, 16)) / 96,
+			);
 			break;
 		case AsciiRunKind.LowerAlpha:
 		case AsciiRunKind.Alpha:
-			if (
-				length >= 12 &&
-				(length <= 16
-					? state.runDistinctLetters >= length - 1
-					: state.runDistinctLetters * 4 >= 26 * 3) &&
-				(!state.runHasLower || !state.runHasUpper || state.runTransitions * 3 >= length)
-			) {
-				state.estimatedTokens += Math.ceil((length * 2) / 3);
+			if (state.runAdjacentChanges === 0) {
+				state.estimatedTokens += Math.max(1, Math.ceil(length / 8));
+			} else if (length < 12) {
+				state.estimatedTokens += Math.ceil(length / 6);
+			} else if (length <= 16) {
+				state.estimatedTokens += Math.ceil(
+					length / 6 + (length * Math.min(state.runDistinctLetters, 12)) / 24,
+				);
 			} else {
-				state.estimatedTokens += Math.max(
-					1,
-					Math.ceil(length / (length > 16 ? (state.runAdjacentChanges === 0 ? 8 : 4) : 6)),
+				state.estimatedTokens += Math.ceil(
+					length / 4 +
+						(length * state.runDistinctLetters) / 64 +
+						(state.runHasLower && state.runHasUpper ? state.runTransitions / 3 : 0),
 				);
 			}
 			break;
@@ -221,6 +221,16 @@ function addAsciiRunTokens(state: ScanState): void {
 
 function isAsciiHex(code: number): boolean {
 	return (code >= 0x30 && code <= 0x39) || (code >= 0x41 && code <= 0x46) || (code >= 0x61 && code <= 0x66);
+}
+
+function printableAsciiSymbolBit(code: number): number {
+	let index: number;
+	if (code >= 0x21 && code <= 0x2f) index = code - 0x21;
+	else if (code >= 0x3a && code <= 0x40) index = 15 + code - 0x3a;
+	else if (code >= 0x5b && code <= 0x60) index = 22 + code - 0x5b;
+	else if (code >= 0x7b && code <= 0x7e) index = 28 + code - 0x7b;
+	else return 0;
+	return 1 << index;
 }
 
 function beginOrExtendAsciiRun(state: ScanState, code: number): void {
@@ -252,7 +262,6 @@ function beginOrExtendAsciiRun(state: ScanState, code: number): void {
 		state.runKind = kind;
 		state.runAllHex = true;
 		state.runLastWordClass = wordClass;
-		state.runLastCode = code;
 	} else if (wordClass !== 0 && state.runLastWordClass !== 0 && wordClass !== state.runLastWordClass) {
 		state.runTransitions++;
 	}
@@ -271,8 +280,8 @@ function beginOrExtendAsciiRun(state: ScanState, code: number): void {
 			state.runDistinctLetters++;
 		}
 	} else if (!nextIsWord && kind === AsciiRunKind.Symbols && state.runLastCode !== code) {
-		const symbolBit = 1 << (code & 31);
-		if ((state.runSymbolMask & symbolBit) === 0) {
+		const symbolBit = printableAsciiSymbolBit(code);
+		if (symbolBit !== 0 && (state.runSymbolMask & symbolBit) === 0) {
 			state.runSymbolMask |= symbolBit;
 			state.runDistinctSymbols++;
 		}
@@ -396,6 +405,23 @@ function createScanState(): ScanState {
 		lowSurrogateJoins: 0,
 		hasVisibleText: false,
 		endsWithLineBreak: false,
+	};
+}
+
+/** @internal Direct structural probe for fixed-state estimator tests only. */
+export function inspectToolOutputAsciiRunForTests(text: string): {
+	letterMask: number;
+	distinctLetters: number;
+	symbolMask: number;
+	distinctSymbols: number;
+} {
+	const state = createScanState();
+	for (let index = 0; index < text.length; index++) beginOrExtendAsciiRun(state, text.charCodeAt(index));
+	return {
+		letterMask: state.runLetterMask,
+		distinctLetters: state.runDistinctLetters,
+		symbolMask: state.runSymbolMask,
+		distinctSymbols: state.runDistinctSymbols,
 	};
 }
 

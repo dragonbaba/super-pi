@@ -4,6 +4,7 @@ import { getEncoding } from "js-tiktoken";
 import {
 	createToolOutputEstimatorCounters,
 	estimateToolOutputTokens,
+	inspectToolOutputAsciiRunForTests,
 	TOOL_OUTPUT_EXACT_ESTIMATOR_ID,
 	TOOL_OUTPUT_FALLBACK_ESTIMATOR_ID,
 } from "../packages/coding-agent/src/core/tool-output-budget.ts";
@@ -90,10 +91,22 @@ test("10 MiB single line uses one bounded scan and no line array or full copy", 
 	assert.equal(counters.estimateObjectsCreated, 1);
 });
 
+test("letter and printable-symbol masks include the first character without collisions", () => {
+	const letters = inspectToolOutputAsciiRunForTests("aBbCc");
+	assert.equal(letters.distinctLetters, 3);
+	assert.equal(letters.letterMask, 0b111);
+
+	const symbols = inspectToolOutputAsciiRunForTests(";[{<\\|=]}>^~?_@`");
+	assert.equal(symbols.distinctSymbols, 16);
+	assert.equal(symbols.symbolMask >>> 0, 0xffff_0000);
+});
+
 test("fixed reference corpus meets conservative accuracy gates", { timeout: 120_000 }, () => {
 	const encoding = getEncoding("cl100k_base");
 	try {
 		const fixtures = createToolTokenEstimatorCorpus();
+		assert.equal(fixtures.length, 130);
+		assert.equal(fixtures.slice(0, 42).length, 42, "the original phase5a-v2 fixtures remain present");
 		const under: number[] = [];
 		const over: number[] = [];
 		const categoryUnder = new Map<string, { total: number; count: number }>();
