@@ -502,6 +502,8 @@ process.stdout.write(`${JSON.stringify({
 		layoutRenderCacheLookupProbesPerFrame: metrics.altLayoutRenderCacheLookupProbes / measuredFrames,
 		layoutRenderCacheRecordCountPerFrame: metrics.altLayoutRenderCacheRecordCount / measuredFrames,
 		layoutRenderCacheIndexActivationsPerFrame: metrics.altLayoutRenderCacheIndexActivations / measuredFrames,
+		layoutRenderCacheWidthVariantBypassesPerFrame:
+			metrics.altLayoutRenderCacheWidthVariantBypasses / measuredFrames,
 		layoutScreenArraysCreatedPerFrame: metrics.altLayoutScreenArraysCreated / measuredFrames,
 		layoutFullViewportArrayCopiesPerFrame: metrics.altLayoutFullViewportArrayCopies / measuredFrames,
 		layoutStringRepeatCallsPerFrame: metrics.altLayoutStringRepeatCalls / measuredFrames,

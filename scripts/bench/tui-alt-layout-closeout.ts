@@ -60,6 +60,7 @@ function measureLargeLayout(leafCount: number): Record<string, number> {
 		renderCacheLookupProbes: frame.renderCacheLookupProbes ?? 0,
 		renderCacheRecordCount: frame.renderCacheRecordCount ?? 0,
 		renderCacheIndexActivations: frame.renderCacheIndexActivations ?? 0,
+		renderCacheWidthVariantBypasses: frame.renderCacheWidthVariantBypasses ?? 0,
 		indexedComponentsAfterFrame: retainedBeforeClear.indexedComponents,
 		indexedComponentsAfterClear: scratch.getRetainedReferenceCounts().indexedComponents,
 	};
@@ -76,6 +77,54 @@ function measureRepeatedComponentWidths(): Record<string, unknown> {
 		renderCacheLookupProbes: frame.renderCacheLookupProbes,
 		renderCacheRecordCount: frame.renderCacheRecordCount,
 		renderCacheIndexActivations: frame.renderCacheIndexActivations,
+		renderCacheWidthVariantBypasses: frame.renderCacheWidthVariantBypasses,
+	};
+}
+
+function createWidthOrder(widthCount: number, order: "increasing" | "decreasing" | "interleaved"): number[] {
+	const widths: number[] = [];
+	if (order === "increasing") {
+		for (let width = 1; width <= widthCount; width++) widths.push(width);
+	} else if (order === "decreasing") {
+		for (let width = widthCount; width >= 1; width--) widths.push(width);
+	} else {
+		let low = 1;
+		let high = widthCount;
+		while (low <= high) {
+			widths.push(low++);
+			if (low <= high) widths.push(high--);
+		}
+	}
+	const firstPassLength = widths.length;
+	for (let index = 0; index < firstPassLength; index++) widths.push(widths[index]!);
+	widths.push(widths[0]!);
+	return widths;
+}
+
+function measureSameComponentWidths(
+	widthCount: number,
+	order: "increasing" | "decreasing" | "interleaved",
+): Record<string, number | string> {
+	const component = new StaticLine("shared");
+	const widths = createWidthOrder(widthCount, order);
+	const rows: Component[] = [];
+	for (let index = 0; index < widths.length; index++) {
+		rows.push(new HStack([{ component, basis: widths[index]! }]));
+	}
+	const scratch = new LayoutFrameScratch();
+	const frame = renderLayoutFrame(new VStack(rows), widthCount + 1, rows.length, NOOP, scratch);
+	const retainedAfterFrame = scratch.getRetainedReferenceCounts();
+	scratch.clear();
+	return {
+		widthCount,
+		order,
+		renderCacheLookupProbes: frame.renderCacheLookupProbes ?? 0,
+		renderCacheRecordCount: frame.renderCacheRecordCount ?? 0,
+		renderCacheIndexActivations: frame.renderCacheIndexActivations ?? 0,
+		renderCacheWidthVariantBypasses: frame.renderCacheWidthVariantBypasses ?? 0,
+		childRenderCalls: frame.childRenderCalls ?? 0,
+		indexedComponentsAfterFrame: retainedAfterFrame.indexedComponents,
+		indexedComponentsAfterClear: scratch.getRetainedReferenceCounts().indexedComponents,
 	};
 }
 
@@ -111,6 +160,12 @@ function NUMERIC_ASCENDING(left: number, right: number): number {
 
 const scaling: Record<string, number>[] = [];
 for (const leafCount of [16, 64, 256, 1024]) scaling.push(measureLargeLayout(leafCount));
+const sameComponentWidths: Record<string, number | string>[] = [];
+for (const widthCount of [8, 16, 32, 64, 256]) {
+	for (const order of ["increasing", "decreasing", "interleaved"] as const) {
+		sameComponentWidths.push(measureSameComponentWidths(widthCount, order));
+	}
+}
 
 process.stdout.write(
 	`${JSON.stringify(
@@ -118,6 +173,7 @@ process.stdout.write(
 			commit: currentCommit(),
 			scaling,
 			repeatedComponentWidths: measureRepeatedComponentWidths(),
+			sameComponentWidths,
 			rowCapacity: measureRowCapacity(),
 		},
 		null,
