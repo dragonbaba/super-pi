@@ -39,8 +39,11 @@ The extension contract is deliberately one-way:
 
 1. `message_end` extensions see the legacy message with no presentation field.
 2. The final extension replacement becomes the source for both views.
-3. AgentSession listeners receive the presentation sidecar.
-4. AgentSession itself retains no presentation or UI-array reference after synchronous listener delivery. A listener that keeps the sidecar becomes its owner.
+3. AgentSession constructs one fixed-field session event that shares the final message reference but is distinct from both the original Agent event and the extension event.
+4. All AgentSession listeners in that dispatch receive the same session event and presentation sidecar.
+5. AgentSession stores neither the session event nor the sidecar after the dispatch method returns. A listener that keeps the sidecar becomes its owner.
+
+The owner is captured in a stable local before presentation creation. A listener may synchronously dispose the session; the dispatch `finally` still pairs exactly one release against that local owner, while persistence runs once afterward. The dispatch-scope counters do not claim that listener-retained objects are unreachable.
 
 Session persistence remains in the existing schema and stores only `message.content`, which is the complete model view in 5B-A. This avoids serializing a duplicate large result. Existing sessions therefore require no migration. A missing, malformed, or unknown presentation version conservatively falls back to legacy `message.content`. Because 5B-A performs no truncation, a restored session still has the complete result available to both existing UI and provider consumers.
 
@@ -53,13 +56,13 @@ Enabled creation allocates exactly one required presentation object and one new 
 Dynamic counters record:
 
 - presentation objects created;
-- outer arrays created and owned;
+- UI outer arrays created, reused model outer arrays, and presentation-held outer-array references;
 - reused model arrays, content blocks, text strings, and image-data strings;
-- maximum content blocks and input characters;
-- active presentation handoffs and their high-water mark;
-- explicit releases, unmatched releases, and owner disposal.
+- maximum content blocks, text code units, and image-data code units as separate metrics;
+- active dispatch presentation scopes and their high-water mark;
+- completed dispatch scopes, unmatched scope releases, and owner disposal.
 
-`activePresentations` measures in-flight AgentSession handoffs, not references retained by third-party listeners. Release occurs in `finally` after listener notification; disposal never assigns a synthetic zero. Disabled and absent production paths do not construct an owner and perform zero presentation, array, or content-reference work.
+`activeDispatchPresentationScopes` measures in-flight AgentSession dispatch scopes, not GC reachability or references retained by third-party listeners. Release occurs in `finally` after listener notification; disposal never assigns a synthetic zero. WeakRef benchmark gates separately prove release of the presentation and both outer arrays. Disabled and absent production paths do not construct an owner and perform zero presentation, array, or content-reference work.
 
 Source invariants independently prohibit production arrow/function-expression closures, Promise or AbortController construction, Map/Set/WeakMap/WeakSet, object spreads, `split`, array transforms, full-size `slice`, `Buffer.from`, `JSON.stringify`, string coercion, Promise arrays, and object pools. Full-string copies, full-result serializations, and line arrays are source invariants rather than pseudo-runtime counters.
 
