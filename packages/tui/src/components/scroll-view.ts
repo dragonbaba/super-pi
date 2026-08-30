@@ -15,6 +15,7 @@ export interface ScrollViewOptions {
 
 export class ScrollView extends Container {
 	private readonly child: Component;
+	private readonly layoutNode: ScrollLayoutNode;
 	private readonly followEnd: boolean;
 	readonly primary: boolean;
 	readonly overscroll: "chain" | "contain";
@@ -36,6 +37,7 @@ export class ScrollView extends Container {
 			throw new Error(`Unsupported ScrollView axis: ${options.axis}`);
 		}
 		this.child = component;
+		this.layoutNode = { type: "scroll", component, state: this };
 		this.children.push(component);
 		this.followEnd = (options.follow ?? "none") === "end";
 		this.followingEnd = this.followEnd;
@@ -190,6 +192,6 @@ export class ScrollView extends Container {
 	}
 
 	[LAYOUT_NODE](): ScrollLayoutNode {
-		return { type: "scroll", component: this.child, state: this };
+		return this.layoutNode;
 	}
 }

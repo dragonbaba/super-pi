@@ -92,6 +92,19 @@ test("active updates do not rerender 5,000 completed transcript items", () => {
 		mutationEventWrites: 1,
 		fullHistoryFallbacks: 0,
 		cursorScannedLines: 0,
+		altLayoutNodesVisited: 0,
+		altLayoutBoxObjects: 0,
+		altLayoutRectObjects: 0,
+		altLayoutClipObjects: 0,
+		altLayoutRenderCacheMapsCreated: 0,
+		altLayoutNestedRenderCacheMapsCreated: 0,
+		altLayoutScreenArraysCreated: 0,
+		altLayoutFullViewportArrayCopies: 0,
+		altLayoutStringRepeatCalls: 0,
+		altLayoutStringRepeatBytes: 0,
+		altLayoutPaintBoxCalls: 0,
+		altLayoutChildRenderCalls: 0,
+		altLayoutFullWidthRowCacheHits: 0,
 	});
 });
 

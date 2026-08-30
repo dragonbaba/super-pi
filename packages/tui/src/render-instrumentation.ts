@@ -35,6 +35,19 @@ export interface TuiRenderMetrics {
 	mutationEventWrites: number;
 	fullHistoryFallbacks: number;
 	cursorScannedLines: number;
+	altLayoutNodesVisited: number;
+	altLayoutBoxObjects: number;
+	altLayoutRectObjects: number;
+	altLayoutClipObjects: number;
+	altLayoutRenderCacheMapsCreated: number;
+	altLayoutNestedRenderCacheMapsCreated: number;
+	altLayoutScreenArraysCreated: number;
+	altLayoutFullViewportArrayCopies: number;
+	altLayoutStringRepeatCalls: number;
+	altLayoutStringRepeatBytes: number;
+	altLayoutPaintBoxCalls: number;
+	altLayoutChildRenderCalls: number;
+	altLayoutFullWidthRowCacheHits: number;
 }
 
 const EMPTY_METRICS: TuiRenderMetrics = {
@@ -74,6 +87,19 @@ const EMPTY_METRICS: TuiRenderMetrics = {
 	mutationEventWrites: 0,
 	fullHistoryFallbacks: 0,
 	cursorScannedLines: 0,
+	altLayoutNodesVisited: 0,
+	altLayoutBoxObjects: 0,
+	altLayoutRectObjects: 0,
+	altLayoutClipObjects: 0,
+	altLayoutRenderCacheMapsCreated: 0,
+	altLayoutNestedRenderCacheMapsCreated: 0,
+	altLayoutScreenArraysCreated: 0,
+	altLayoutFullViewportArrayCopies: 0,
+	altLayoutStringRepeatCalls: 0,
+	altLayoutStringRepeatBytes: 0,
+	altLayoutPaintBoxCalls: 0,
+	altLayoutChildRenderCalls: 0,
+	altLayoutFullWidthRowCacheHits: 0,
 };
 
 export function utf8ByteLength(value: string): number {
@@ -150,6 +176,36 @@ export class TuiRenderInstrumentation {
 
 	recordCursorScan(linesScanned: number): void {
 		this.metrics.cursorScannedLines += linesScanned;
+	}
+
+	recordAltLayoutFrame(
+		nodesVisited: number,
+		boxObjects: number,
+		rectObjects: number,
+		clipObjects: number,
+		renderCacheMapsCreated: number,
+		nestedRenderCacheMapsCreated: number,
+		screenArraysCreated: number,
+		fullViewportArrayCopies: number,
+		stringRepeatCalls: number,
+		stringRepeatBytes: number,
+		paintBoxCalls: number,
+		childRenderCalls: number,
+		fullWidthRowCacheHits: number,
+	): void {
+		this.metrics.altLayoutNodesVisited += nodesVisited;
+		this.metrics.altLayoutBoxObjects += boxObjects;
+		this.metrics.altLayoutRectObjects += rectObjects;
+		this.metrics.altLayoutClipObjects += clipObjects;
+		this.metrics.altLayoutRenderCacheMapsCreated += renderCacheMapsCreated;
+		this.metrics.altLayoutNestedRenderCacheMapsCreated += nestedRenderCacheMapsCreated;
+		this.metrics.altLayoutScreenArraysCreated += screenArraysCreated;
+		this.metrics.altLayoutFullViewportArrayCopies += fullViewportArrayCopies;
+		this.metrics.altLayoutStringRepeatCalls += stringRepeatCalls;
+		this.metrics.altLayoutStringRepeatBytes += stringRepeatBytes;
+		this.metrics.altLayoutPaintBoxCalls += paintBoxCalls;
+		this.metrics.altLayoutChildRenderCalls += childRenderCalls;
+		this.metrics.altLayoutFullWidthRowCacheHits += fullWidthRowCacheHits;
 	}
 
 	recordOverlayRender(): void {

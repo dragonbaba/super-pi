@@ -1,6 +1,6 @@
 import type { ScrollView } from "./components/scroll-view.ts";
-import { allocateStackSizes, visibleStackEntries } from "./components/stack.ts";
-import { getLayoutNode } from "./layout-node.ts";
+import { allocateStackSizesInto } from "./components/stack.ts";
+import { getLayoutNode, type LayoutViewport, type StackLayoutEntry } from "./layout-node.ts";
 import { cropKittyImageLine, getKittyImageMetadata, isImageLine } from "./terminal-image.ts";
 import { type Component, CURSOR_MARKER, compositeTuiLine } from "./tui.ts";
 import { extractAnsiCode, getGraphemeCellRange, sliceByColumn, visibleWidth } from "./utils.ts";
@@ -8,6 +8,8 @@ import { isLineViewportComponent } from "./components/viewport-container.ts";
 
 const OSC133_ZONE_PREFIX = /^(?:\x1b\]133;[ABC](?:\x07|\x1b\\))+/;
 const FULL_WIDTH_LINE_RESET = "\x1b[0m\x1b]8;;\x07";
+const MAX_RETAINED_LAYOUT_ROWS = 4096;
+const MAX_RETAINED_LAYOUT_RECORDS = 4096;
 
 export interface LayoutRect {
 	x: number;
@@ -38,6 +40,19 @@ export interface LayoutFrame {
 	generatedLineCount: number;
 	lines: string[];
 	primaryScrollView?: ScrollView;
+	layoutNodesVisited?: number;
+	layoutBoxObjects?: number;
+	layoutRectObjects?: number;
+	clipObjects?: number;
+	renderCacheMapsCreated?: number;
+	nestedRenderCacheMapsCreated?: number;
+	screenArraysCreated?: number;
+	fullViewportArrayCopies?: number;
+	stringRepeatCalls?: number;
+	stringRepeatBytes?: number;
+	paintBoxCalls?: number;
+	childRenderCalls?: number;
+	fullWidthRowCacheHits?: number;
 }
 
 export interface ScrollbarGeometry {
@@ -49,34 +64,297 @@ export interface ScrollbarGeometry {
 	maxScrollTop: number;
 }
 
-interface LayoutContext {
-	viewport: { width: number; height: number };
-	renderCache: Map<Component, Map<number, string[]>>;
+export interface LayoutContext {
+	viewport: LayoutViewport;
+	renderComponents: Component[];
+	renderWidths: number[];
+	renderLines: string[][];
+	renderCount: number;
+	visibleEntries: StackLayoutEntry[];
+	visibleEntryCount: number;
+	numbers: number[];
+	numberCount: number;
 	requestRender: () => void;
 	primaryScrollView: ScrollView | undefined;
 	primaryDocumentLineCount: number | undefined;
+	screen: string[];
+	previousFullWidthSources: Array<string | undefined>;
+	previousFullWidthLines: Array<string | undefined>;
+	previousFullWidthModes: Uint8Array;
+	currentFullWidthSources: Array<string | undefined>;
+	currentFullWidthLines: Array<string | undefined>;
+	currentFullWidthModes: Uint8Array;
+	rowCacheEnabled: boolean;
+	layoutNodesVisited: number;
+	layoutBoxObjects: number;
+	layoutRectObjects: number;
+	clipObjects: number;
+	renderCacheMapsCreated: number;
+	nestedRenderCacheMapsCreated: number;
+	screenArraysCreated: number;
+	fullViewportArrayCopies: number;
+	stringRepeatCalls: number;
+	stringRepeatBytes: number;
+	paintBoxCalls: number;
+	childRenderCalls: number;
+	fullWidthRowCacheHits: number;
 }
 
-function intersect(a: LayoutRect, b: LayoutRect): LayoutRect {
+/**
+ * Per-TUI synchronous Alt layout scratch. It owns only viewport-sized internal
+ * arrays, never crosses an await, and never exposes mutable scratch to a child.
+ */
+export class LayoutFrameScratch {
+	private readonly context: LayoutContext = {
+		viewport: { width: 1, height: 1 },
+		renderComponents: [],
+		renderWidths: [],
+		renderLines: [],
+		renderCount: 0,
+		visibleEntries: [],
+		visibleEntryCount: 0,
+		numbers: [],
+		numberCount: 0,
+		requestRender: NOOP_LAYOUT_REQUEST_RENDER,
+		primaryScrollView: undefined,
+		primaryDocumentLineCount: undefined,
+		screen: [],
+		previousFullWidthSources: [],
+		previousFullWidthLines: [],
+		previousFullWidthModes: new Uint8Array(0),
+		currentFullWidthSources: [],
+		currentFullWidthLines: [],
+		currentFullWidthModes: new Uint8Array(0),
+		rowCacheEnabled: false,
+		layoutNodesVisited: 0,
+		layoutBoxObjects: 0,
+		layoutRectObjects: 0,
+		clipObjects: 0,
+		renderCacheMapsCreated: 0,
+		nestedRenderCacheMapsCreated: 0,
+		screenArraysCreated: 0,
+		fullViewportArrayCopies: 0,
+		stringRepeatCalls: 0,
+		stringRepeatBytes: 0,
+		paintBoxCalls: 0,
+		childRenderCalls: 0,
+		fullWidthRowCacheHits: 0,
+	};
+	private screenA: string[] = [];
+	private screenB: string[] = [];
+	private sourceA: Array<string | undefined> = [];
+	private sourceB: Array<string | undefined> = [];
+	private cachedLineA: Array<string | undefined> = [];
+	private cachedLineB: Array<string | undefined> = [];
+	private modeA = new Uint8Array(0);
+	private modeB = new Uint8Array(0);
+	private nextBufferA = true;
+	private previousWidth = 0;
+	private previousHeight = 0;
+	private inUse = false;
+
+	begin(width: number, height: number, requestRender: () => void): LayoutContext | undefined {
+		if (this.inUse) return undefined;
+		this.inUse = true;
+		const context = this.context;
+		context.viewport.width = width;
+		context.viewport.height = height;
+		context.requestRender = requestRender;
+		context.primaryScrollView = undefined;
+		context.primaryDocumentLineCount = undefined;
+		context.renderCount = 0;
+		context.visibleEntryCount = 0;
+		context.numberCount = 0;
+		context.layoutNodesVisited = 0;
+		context.layoutBoxObjects = 0;
+		context.layoutRectObjects = 0;
+		context.clipObjects = 0;
+		context.renderCacheMapsCreated = 0;
+		context.nestedRenderCacheMapsCreated = 0;
+		context.screenArraysCreated = 0;
+		context.fullViewportArrayCopies = 0;
+		context.stringRepeatCalls = 0;
+		context.stringRepeatBytes = 0;
+		context.paintBoxCalls = 0;
+		context.childRenderCalls = 0;
+		context.fullWidthRowCacheHits = 0;
+
+		if (height > MAX_RETAINED_LAYOUT_ROWS) {
+			context.screen = new Array<string>(height);
+			context.screenArraysCreated = 1;
+			context.previousFullWidthSources = EMPTY_OPTIONAL_LINES;
+			context.previousFullWidthLines = EMPTY_OPTIONAL_LINES;
+			context.previousFullWidthModes = EMPTY_ROW_MODES;
+			context.currentFullWidthSources = EMPTY_OPTIONAL_LINES;
+			context.currentFullWidthLines = EMPTY_OPTIONAL_LINES;
+			context.currentFullWidthModes = EMPTY_ROW_MODES;
+			context.rowCacheEnabled = false;
+		} else {
+			this.ensureRowCapacity(height);
+			context.screen = this.nextBufferA ? this.screenA : this.screenB;
+			context.currentFullWidthSources = this.nextBufferA ? this.sourceA : this.sourceB;
+			context.currentFullWidthLines = this.nextBufferA ? this.cachedLineA : this.cachedLineB;
+			context.currentFullWidthModes = this.nextBufferA ? this.modeA : this.modeB;
+			context.previousFullWidthSources = this.nextBufferA ? this.sourceB : this.sourceA;
+			context.previousFullWidthLines = this.nextBufferA ? this.cachedLineB : this.cachedLineA;
+			context.previousFullWidthModes = this.nextBufferA ? this.modeB : this.modeA;
+			context.rowCacheEnabled = this.previousWidth === width && this.previousHeight === height;
+			this.clearCurrentRows(context, height);
+		}
+		for (let row = 0; row < height; row++) context.screen[row] = "";
+		context.screen.length = height;
+		return context;
+	}
+
+	complete(width: number, height: number): void {
+		const retained = height <= MAX_RETAINED_LAYOUT_ROWS;
+		this.releaseTransientReferences();
+		if (retained) {
+			this.previousWidth = width;
+			this.previousHeight = height;
+			this.nextBufferA = !this.nextBufferA;
+		} else {
+			this.previousWidth = 0;
+			this.previousHeight = 0;
+		}
+		this.inUse = false;
+	}
+
+	abort(): void {
+		const context = this.context;
+		for (let row = 0; row < context.currentFullWidthSources.length; row++) {
+			context.currentFullWidthSources[row] = undefined;
+			context.currentFullWidthLines[row] = undefined;
+		}
+		context.currentFullWidthModes.fill(0);
+		this.releaseTransientReferences();
+		this.inUse = false;
+	}
+
+	clear(): void {
+		if (this.inUse) throw new Error("Cannot clear layout scratch during render");
+		this.releaseTransientReferences();
+		this.screenA = [];
+		this.screenB = [];
+		this.sourceA = [];
+		this.sourceB = [];
+		this.cachedLineA = [];
+		this.cachedLineB = [];
+		this.modeA = new Uint8Array(0);
+		this.modeB = new Uint8Array(0);
+		this.previousWidth = 0;
+		this.previousHeight = 0;
+		this.nextBufferA = true;
+		this.context.screen = [];
+		this.context.previousFullWidthSources = EMPTY_OPTIONAL_LINES;
+		this.context.previousFullWidthLines = EMPTY_OPTIONAL_LINES;
+		this.context.previousFullWidthModes = EMPTY_ROW_MODES;
+		this.context.currentFullWidthSources = EMPTY_OPTIONAL_LINES;
+		this.context.currentFullWidthLines = EMPTY_OPTIONAL_LINES;
+		this.context.currentFullWidthModes = EMPTY_ROW_MODES;
+		this.context.rowCacheEnabled = false;
+	}
+
+	getRetainedReferenceCounts(): { components: number; lines: number; sources: number; cachedRows: number } {
+		let components = 0;
+		let lines = 0;
+		let sources = 0;
+		let cachedRows = 0;
+		for (let index = 0; index < this.context.renderComponents.length; index++) {
+			if (this.context.renderComponents[index] !== undefined) components++;
+			if (this.context.renderLines[index] !== undefined) lines++;
+		}
+		for (let index = 0; index < this.sourceA.length; index++) {
+			if (this.sourceA[index] !== undefined) sources++;
+			if (this.sourceB[index] !== undefined) sources++;
+			if (this.cachedLineA[index] !== undefined) cachedRows++;
+			if (this.cachedLineB[index] !== undefined) cachedRows++;
+		}
+		return { components, lines, sources, cachedRows };
+	}
+
+	private ensureRowCapacity(height: number): void {
+		if (this.modeA.length >= height) return;
+		this.modeA = new Uint8Array(height);
+		this.modeB = new Uint8Array(height);
+	}
+
+	private clearCurrentRows(context: LayoutContext, height: number): void {
+		const oldLength = context.currentFullWidthSources.length;
+		for (let row = 0; row < oldLength; row++) {
+			context.currentFullWidthSources[row] = undefined;
+			context.currentFullWidthLines[row] = undefined;
+		}
+		context.currentFullWidthSources.length = height;
+		context.currentFullWidthLines.length = height;
+		context.currentFullWidthModes.fill(0, 0, height);
+	}
+
+	private releaseTransientReferences(): void {
+		const context = this.context;
+		const renderCapacity = context.renderComponents.length;
+		const entryCapacity = context.visibleEntries.length;
+		const numberCapacity = context.numbers.length;
+		for (let index = 0; index < context.renderComponents.length; index++) {
+			context.renderComponents[index] = undefined as unknown as Component;
+			context.renderLines[index] = undefined as unknown as string[];
+		}
+		for (let index = 0; index < context.visibleEntries.length; index++) {
+			context.visibleEntries[index] = undefined as unknown as StackLayoutEntry;
+		}
+		if (renderCapacity > MAX_RETAINED_LAYOUT_RECORDS) {
+			context.renderComponents = [];
+			context.renderWidths = [];
+			context.renderLines = [];
+		} else {
+			context.renderComponents.length = 0;
+			context.renderWidths.length = 0;
+			context.renderLines.length = 0;
+		}
+		if (entryCapacity > MAX_RETAINED_LAYOUT_RECORDS) context.visibleEntries = [];
+		else context.visibleEntries.length = 0;
+		if (numberCapacity > MAX_RETAINED_LAYOUT_RECORDS * 3) context.numbers = [];
+		else context.numbers.length = 0;
+		context.renderCount = 0;
+		context.visibleEntryCount = 0;
+		context.numberCount = 0;
+		context.requestRender = NOOP_LAYOUT_REQUEST_RENDER;
+		context.primaryScrollView = undefined;
+	}
+}
+
+const EMPTY_OPTIONAL_LINES: Array<string | undefined> = [];
+const EMPTY_ROW_MODES = new Uint8Array(0);
+function NOOP_LAYOUT_REQUEST_RENDER(): void {}
+
+function createRect(context: LayoutContext, x: number, y: number, width: number, height: number): LayoutRect {
+	context.layoutRectObjects++;
+	return { x, y, width, height };
+}
+
+function intersect(context: LayoutContext, a: LayoutRect, b: LayoutRect): LayoutRect {
 	const x = Math.max(a.x, b.x);
 	const y = Math.max(a.y, b.y);
 	const right = Math.min(a.x + a.width, b.x + b.width);
 	const bottom = Math.min(a.y + a.height, b.y + b.height);
+	context.layoutRectObjects++;
+	context.clipObjects++;
 	return { x, y, width: Math.max(0, right - x), height: Math.max(0, bottom - y) };
 }
 
 function renderCached(context: LayoutContext, component: Component, width: number): string[] {
 	const safeWidth = Math.max(1, Math.floor(width));
-	let widths = context.renderCache.get(component);
-	if (!widths) {
-		widths = new Map<number, string[]>();
-		context.renderCache.set(component, widths);
+	for (let index = 0; index < context.renderCount; index++) {
+		if (context.renderComponents[index] === component && context.renderWidths[index] === safeWidth) {
+			return context.renderLines[index]!;
+		}
 	}
-	let lines = widths.get(safeWidth);
-	if (!lines) {
-		lines = component.render(safeWidth);
-		widths.set(safeWidth, lines);
-	}
+	const lines = component.render(safeWidth);
+	const index = context.renderCount++;
+	context.renderComponents[index] = component;
+	context.renderWidths[index] = safeWidth;
+	context.renderLines[index] = lines;
+	context.childRenderCalls++;
 	return lines;
 }
 
@@ -85,22 +363,71 @@ function measureHeight(context: LayoutContext, component: Component, width: numb
 }
 
 function measureWidth(context: LayoutContext, component: Component, width: number): number {
-	return renderCached(context, component, width).reduce((max, line) => Math.max(max, visibleWidth(line)), 0);
+	const lines = renderCached(context, component, width);
+	let max = 0;
+	for (let index = 0; index < lines.length; index++) max = Math.max(max, visibleWidth(lines[index]!));
+	return max;
 }
 
-function withParent(box: LayoutBox, parent: LayoutBox): LayoutBox {
-	box.parent = parent;
-	return box;
+function measureNaturalHeight(context: LayoutContext, component: Component, width: number): number {
+	const safeWidth = Math.max(1, Math.floor(width));
+	const node = getLayoutNode(component);
+	if (node === undefined) return measureHeight(context, component, safeWidth);
+	if (node.type === "scroll") {
+		const contentWidth = node.state.getContentWidth(safeWidth);
+		if (isLineViewportComponent(node.component)) return node.component.getContentHeight(contentWidth);
+		return measureNaturalHeight(context, node.component, contentWidth);
+	}
+	if (node.type === "hstack") return measureHeight(context, component, safeWidth);
+
+	const entryStart = context.visibleEntryCount;
+	const numberStart = context.numberCount;
+	for (let index = 0; index < node.entries.length; index++) {
+		const entry = node.entries[index]!;
+		if (entry.visible !== undefined && !entry.visible(context.viewport)) continue;
+		context.visibleEntries[context.visibleEntryCount++] = entry;
+	}
+	const entryCount = context.visibleEntryCount - entryStart;
+	try {
+		const intrinsicStart = context.numberCount;
+		context.numberCount += entryCount;
+		const sizeStart = context.numberCount;
+		context.numberCount += entryCount;
+		for (let index = 0; index < entryCount; index++) {
+			const entry = context.visibleEntries[entryStart + index]!;
+			context.numbers[intrinsicStart + index] =
+				typeof entry.basis === "number"
+					? entry.basis
+					: measureNaturalHeight(context, entry.component, safeWidth);
+		}
+		allocateStackSizesInto(
+			context.visibleEntries,
+			entryStart,
+			context.numbers,
+			intrinsicStart,
+			entryCount,
+			undefined,
+			node.gap,
+			context.numbers,
+			sizeStart,
+		);
+		let height = Math.max(0, entryCount - 1) * node.gap;
+		for (let index = 0; index < entryCount; index++) height += context.numbers[sizeStart + index]!;
+		return height;
+	} finally {
+		context.visibleEntryCount = entryStart;
+		context.numberCount = numberStart;
+	}
 }
 
 function translateBox(box: LayoutBox, deltaY: number): void {
 	box.rect.y += deltaY;
-	for (const child of box.children) translateBox(child, deltaY);
+	for (let index = 0; index < box.children.length; index++) translateBox(box.children[index]!, deltaY);
 }
 
-function updateClips(box: LayoutBox, parentClip: LayoutRect): void {
-	box.clip = intersect(parentClip, box.rect);
-	for (const child of box.children) updateClips(child, box.clip);
+function updateClips(context: LayoutContext, box: LayoutBox, parentClip: LayoutRect): void {
+	box.clip = intersect(context, parentClip, box.rect);
+	for (let index = 0; index < box.children.length; index++) updateClips(context, box.children[index]!, box.clip);
 }
 
 function layoutComponent(
@@ -112,6 +439,7 @@ function layoutComponent(
 	height: number | undefined,
 	clip: LayoutRect,
 ): LayoutBox {
+	context.layoutNodesVisited++;
 	const safeWidth = Math.max(1, Math.floor(width));
 	const node = getLayoutNode(component);
 	if (!node) {
@@ -119,13 +447,20 @@ function layoutComponent(
 		const allocatedHeight = height === undefined ? lines.length : Math.max(0, Math.floor(height));
 		let lineOffset = 0;
 		if (lines.length > allocatedHeight && allocatedHeight > 0) {
-			const cursorLine = lines.findIndex((line) => line.includes(CURSOR_MARKER));
+			let cursorLine = -1;
+			for (let index = 0; index < lines.length; index++) {
+				if (!lines[index]!.includes(CURSOR_MARKER)) continue;
+				cursorLine = index;
+				break;
+			}
 			if (cursorLine >= allocatedHeight) lineOffset = cursorLine - allocatedHeight + 1;
 		}
+		const rect = createRect(context, x, y, safeWidth, allocatedHeight);
+		context.layoutBoxObjects++;
 		return {
 			component,
-			rect: { x, y, width: safeWidth, height: allocatedHeight },
-			clip: intersect(clip, { x, y, width: safeWidth, height: allocatedHeight }),
+			rect,
+			clip: intersect(context, clip, rect),
 			children: [],
 			lines,
 			lineOffset,
@@ -141,18 +476,14 @@ function layoutComponent(
 			const viewportHeight = height === undefined ? contentHeight : Math.max(0, Math.floor(height));
 			node.state.updateLayout(contentHeight, viewportHeight, context.requestRender);
 			const rendered = node.component.renderViewport(contentWidth, node.state.scrollTop, viewportHeight);
-			const rect = { x, y, width: safeWidth, height: viewportHeight };
-			const childRect = {
-				x,
-				y: y - node.state.scrollTop,
-				width: contentWidth,
-				height: contentHeight,
-			};
-			const childClip = intersect(clip, rect);
+			const rect = createRect(context, x, y, safeWidth, viewportHeight);
+			const childRect = createRect(context, x, y - node.state.scrollTop, contentWidth, contentHeight);
+			const childClip = intersect(context, clip, rect);
+			context.layoutBoxObjects++;
 			const childBox: LayoutBox = {
 				component: node.component,
 				rect: childRect,
-				clip: intersect(childClip, childRect),
+				clip: intersect(context, childClip, childRect),
 				children: [],
 				lines: rendered.lines,
 				lineOffset: -rendered.startLine,
@@ -163,6 +494,7 @@ function layoutComponent(
 				context.primaryScrollView = scrollView;
 				context.primaryDocumentLineCount = contentHeight;
 			}
+			context.layoutBoxObjects++;
 			const box: LayoutBox = {
 				component,
 				rect,
@@ -195,8 +527,9 @@ function layoutComponent(
 			context.primaryScrollView = scrollView;
 			context.primaryDocumentLineCount = contentHeight;
 		}
-		const rect = { x, y, width: safeWidth, height: viewportHeight };
-		const childClip = intersect(clip, rect);
+		const rect = createRect(context, x, y, safeWidth, viewportHeight);
+		const childClip = intersect(context, clip, rect);
+		context.layoutBoxObjects++;
 		const box: LayoutBox = {
 			component,
 			rect,
@@ -207,90 +540,169 @@ function layoutComponent(
 			layer: 0,
 		};
 		childBox.parent = box;
-		updateClips(childBox, childClip);
+		updateClips(context, childBox, childClip);
 		return box;
 	}
 
-	const entries = visibleStackEntries(node.entries, context.viewport);
-	const gapTotal = Math.max(0, entries.length - 1) * node.gap;
-	if (node.type === "vstack") {
-		const intrinsicHeights = entries.map((entry) =>
-			typeof entry.basis === "number" ? entry.basis : measureHeight(context, entry.component, safeWidth),
+	const entryStart = context.visibleEntryCount;
+	const numberStart = context.numberCount;
+	for (let index = 0; index < node.entries.length; index++) {
+		const entry = node.entries[index]!;
+		if (entry.visible !== undefined && !entry.visible(context.viewport)) continue;
+		context.visibleEntries[context.visibleEntryCount++] = entry;
+	}
+	const entryCount = context.visibleEntryCount - entryStart;
+	const gapTotal = Math.max(0, entryCount - 1) * node.gap;
+	try {
+		if (node.type === "vstack") {
+			const intrinsicStart = context.numberCount;
+			context.numberCount += entryCount;
+			const sizeStart = context.numberCount;
+			context.numberCount += entryCount;
+			for (let index = 0; index < entryCount; index++) {
+				const entry = context.visibleEntries[entryStart + index]!;
+				context.numbers[intrinsicStart + index] =
+					typeof entry.basis === "number"
+						? entry.basis
+						: measureNaturalHeight(context, entry.component, safeWidth);
+			}
+			allocateStackSizesInto(
+				context.visibleEntries,
+				entryStart,
+				context.numbers,
+				intrinsicStart,
+				entryCount,
+				height,
+				node.gap,
+				context.numbers,
+				sizeStart,
+			);
+			let naturalHeight = gapTotal;
+			for (let index = 0; index < entryCount; index++) naturalHeight += context.numbers[sizeStart + index]!;
+			const allocatedHeight = height === undefined ? naturalHeight : Math.max(0, Math.floor(height));
+			const rect = createRect(context, x, y, safeWidth, allocatedHeight);
+			context.layoutBoxObjects++;
+			const box: LayoutBox = {
+				component,
+				rect,
+				clip: intersect(context, clip, rect),
+				children: [],
+				layer: 0,
+			};
+			let childY = y;
+			for (let index = 0; index < entryCount; index++) {
+				const entry = context.visibleEntries[entryStart + index]!;
+				const childHeight = context.numbers[sizeStart + index]!;
+				const child = layoutComponent(context, entry.component, x, childY, safeWidth, childHeight, box.clip);
+				child.parent = box;
+				box.children.push(child);
+				childY += childHeight + node.gap;
+			}
+			return box;
+		}
+
+		const intrinsicWidthStart = context.numberCount;
+		context.numberCount += entryCount;
+		const widthStart = context.numberCount;
+		context.numberCount += entryCount;
+		const intrinsicHeightStart = context.numberCount;
+		context.numberCount += entryCount;
+		for (let index = 0; index < entryCount; index++) {
+			const entry = context.visibleEntries[entryStart + index]!;
+			context.numbers[intrinsicWidthStart + index] =
+				typeof entry.basis === "number" ? entry.basis : measureWidth(context, entry.component, safeWidth);
+		}
+		allocateStackSizesInto(
+			context.visibleEntries,
+			entryStart,
+			context.numbers,
+			intrinsicWidthStart,
+			entryCount,
+			safeWidth,
+			node.gap,
+			context.numbers,
+			widthStart,
 		);
-		const sizes = allocateStackSizes(entries, intrinsicHeights, height, node.gap);
-		const naturalHeight = sizes.reduce((sum, size) => sum + size, 0) + gapTotal;
-		const allocatedHeight = height === undefined ? naturalHeight : Math.max(0, Math.floor(height));
-		const rect = { x, y, width: safeWidth, height: allocatedHeight };
+		let naturalHeight = 0;
+		for (let index = 0; index < entryCount; index++) {
+			const entry = context.visibleEntries[entryStart + index]!;
+			const intrinsicHeight = measureNaturalHeight(
+				context,
+				entry.component,
+				Math.max(1, context.numbers[widthStart + index]!),
+			);
+			context.numbers[intrinsicHeightStart + index] = intrinsicHeight;
+			naturalHeight = Math.max(naturalHeight, intrinsicHeight);
+		}
+		const allocatedHeight = height === undefined ? naturalHeight : Math.max(0, height);
+		const rect = createRect(context, x, y, safeWidth, allocatedHeight);
+		context.layoutBoxObjects++;
 		const box: LayoutBox = {
 			component,
 			rect,
-			clip: intersect(clip, rect),
+			clip: intersect(context, clip, rect),
 			children: [],
 			layer: 0,
 		};
-		let childY = y;
-		for (let index = 0; index < entries.length; index++) {
-			box.children.push(
-				withParent(
-					layoutComponent(context, entries[index]!.component, x, childY, safeWidth, sizes[index]!, box.clip),
-					box,
-				),
-			);
-			childY += sizes[index]! + node.gap;
+		let childX = x;
+		for (let index = 0; index < entryCount; index++) {
+			const entry = context.visibleEntries[entryStart + index]!;
+			const naturalChildHeight = context.numbers[intrinsicHeightStart + index]!;
+			const childHeight =
+				node.align === "stretch" ? allocatedHeight : Math.min(allocatedHeight, naturalChildHeight);
+			let childY = y;
+			if (node.align === "center") childY += Math.floor((allocatedHeight - childHeight) / 2);
+			else if (node.align === "end") childY += allocatedHeight - childHeight;
+			const childWidth = context.numbers[widthStart + index]!;
+			if (childWidth === 0) {
+				const childRect = createRect(context, childX, childY, 0, childHeight);
+				const childClip = createRect(context, childX, childY, 0, 0);
+				context.clipObjects++;
+				context.layoutBoxObjects++;
+				box.children.push({
+					component: entry.component,
+					rect: childRect,
+					clip: childClip,
+					children: [],
+					parent: box,
+					layer: 0,
+				});
+			} else {
+				const child = layoutComponent(
+					context,
+					entry.component,
+					childX,
+					childY,
+					childWidth,
+					childHeight,
+					box.clip,
+				);
+				child.parent = box;
+				box.children.push(child);
+			}
+			childX += childWidth + node.gap;
 		}
 		return box;
+	} finally {
+		context.visibleEntryCount = entryStart;
+		context.numberCount = numberStart;
 	}
-
-	const intrinsicWidths = entries.map((entry) =>
-		typeof entry.basis === "number" ? entry.basis : measureWidth(context, entry.component, safeWidth),
-	);
-	const widths = allocateStackSizes(entries, intrinsicWidths, safeWidth, node.gap);
-	const intrinsicHeights = entries.map((entry, index) =>
-		measureHeight(context, entry.component, Math.max(1, widths[index]!)),
-	);
-	const allocatedHeight =
-		height === undefined
-			? intrinsicHeights.reduce((max, childHeight) => Math.max(max, childHeight), 0)
-			: Math.max(0, height);
-	const rect = { x, y, width: safeWidth, height: allocatedHeight };
-	const box: LayoutBox = {
-		component,
-		rect,
-		clip: intersect(clip, rect),
-		children: [],
-		layer: 0,
-	};
-	let childX = x;
-	for (let index = 0; index < entries.length; index++) {
-		const naturalChildHeight = intrinsicHeights[index]!;
-		const childHeight = node.align === "stretch" ? allocatedHeight : Math.min(allocatedHeight, naturalChildHeight);
-		let childY = y;
-		if (node.align === "center") childY += Math.floor((allocatedHeight - childHeight) / 2);
-		else if (node.align === "end") childY += allocatedHeight - childHeight;
-		const childWidth = widths[index]!;
-		if (childWidth === 0) {
-			box.children.push({
-				component: entries[index]!.component,
-				rect: { x: childX, y: childY, width: 0, height: childHeight },
-				clip: { x: childX, y: childY, width: 0, height: 0 },
-				children: [],
-				parent: box,
-				layer: 0,
-			});
-		} else {
-			box.children.push(
-				withParent(
-					layoutComponent(context, entries[index]!.component, childX, childY, childWidth, childHeight, box.clip),
-					box,
-				),
-			);
-		}
-		childX += childWidth + node.gap;
-	}
-	return box;
 }
 
-function styleScrollbarCell(line: string, column: number, totalWidth: number, style: (text: string) => string): string {
+function repeatSpaces(context: LayoutContext, count: number): string {
+	if (count <= 0) return "";
+	context.stringRepeatCalls++;
+	context.stringRepeatBytes += count;
+	return " ".repeat(count);
+}
+
+function styleScrollbarCell(
+	context: LayoutContext,
+	line: string,
+	column: number,
+	totalWidth: number,
+	style: (text: string) => string,
+): string {
 	if (isImageLine(line)) return line;
 
 	const graphemeRange = getGraphemeCellRange(line, column);
@@ -308,8 +720,8 @@ function styleScrollbarCell(line: string, column: number, totalWidth: number, st
 		targetPrefix += ansi.code;
 		targetIndex += ansi.length;
 	}
-	const targetText = target.slice(targetIndex) || " ".repeat(end - start);
-	const beforePadding = " ".repeat(Math.max(0, start - visibleWidth(before)));
+	const targetText = target.slice(targetIndex) || repeatSpaces(context, end - start);
+	const beforePadding = repeatSpaces(context, Math.max(0, start - visibleWidth(before)));
 	return `${before}${beforePadding}${targetPrefix}${style(targetText)}${after}`;
 }
 
@@ -340,18 +752,37 @@ export function getScrollbarGeometry(box: LayoutBox): ScrollbarGeometry | undefi
 	};
 }
 
-function paintScrollbar(box: LayoutBox, screen: string[], totalWidth: number): void {
+function markRowUncacheable(context: LayoutContext, row: number): void {
+	if (row < 0 || row >= context.currentFullWidthModes.length) return;
+	context.currentFullWidthModes[row] = 2;
+	context.currentFullWidthSources[row] = undefined;
+	context.currentFullWidthLines[row] = undefined;
+}
+
+function paintScrollbar(context: LayoutContext, box: LayoutBox): void {
 	const geometry = getScrollbarGeometry(box);
 	if (!geometry || !box.scrollView) return;
+	const screen = context.screen;
+	const totalWidth = context.viewport.width;
 
 	for (let offset = 0; offset < geometry.thumbHeight; offset++) {
 		const row = geometry.thumbTop + offset;
 		if (row < box.clip.y || row >= box.clip.y + box.clip.height || row < 0 || row >= screen.length) continue;
-		screen[row] = styleScrollbarCell(screen[row] ?? "", geometry.column, totalWidth, box.scrollView.scrollbarStyle);
+		markRowUncacheable(context, row);
+		screen[row] = styleScrollbarCell(
+			context,
+			screen[row] ?? "",
+			geometry.column,
+			totalWidth,
+			box.scrollView.scrollbarStyle,
+		);
 	}
 }
 
-function paintBox(box: LayoutBox, screen: string[], totalWidth: number): void {
+function paintBox(context: LayoutContext, box: LayoutBox): void {
+	context.paintBoxCalls++;
+	const screen = context.screen;
+	const totalWidth = context.viewport.width;
 	if (box.lines) {
 		const offset = box.lineOffset ?? 0;
 		const firstRow = Math.max(box.rect.y, box.clip.y, 0);
@@ -367,18 +798,45 @@ function paintBox(box: LayoutBox, screen: string[], totalWidth: number): void {
 				if (visibleRows < imageMetadata.rows) line = cropKittyImageLine(line, 0, visibleRows);
 			}
 			if (isImageLine(line) && box.rect.x === 0 && box.rect.width >= totalWidth) {
+				markRowUncacheable(context, row);
 				screen[row] = line;
 			} else if (screen[row] === "" && box.rect.x === 0 && box.rect.width === totalWidth && !line.includes("\t")) {
+				const reusable =
+					context.rowCacheEnabled &&
+					context.previousFullWidthModes[row] === 1 &&
+					context.previousFullWidthSources[row] === line;
+				if (reusable) {
+					const cached = context.previousFullWidthLines[row];
+					if (cached !== undefined) {
+						screen[row] = cached;
+						context.fullWidthRowCacheHits++;
+						context.currentFullWidthModes[row] = 1;
+						context.currentFullWidthSources[row] = line;
+						context.currentFullWidthLines[row] = cached;
+						continue;
+					}
+				}
 				const lineWidth = visibleWidth(line);
-				screen[row] = lineWidth <= totalWidth
-					? FULL_WIDTH_LINE_RESET + line + " ".repeat(totalWidth - lineWidth) + FULL_WIDTH_LINE_RESET
-					: compositeTuiLine("", line, 0, totalWidth, totalWidth);
+				if (lineWidth <= totalWidth) {
+					const painted =
+						FULL_WIDTH_LINE_RESET + line + repeatSpaces(context, totalWidth - lineWidth) + FULL_WIDTH_LINE_RESET;
+					screen[row] = painted;
+					if (row < context.currentFullWidthModes.length) {
+						context.currentFullWidthModes[row] = 1;
+						context.currentFullWidthSources[row] = line;
+						context.currentFullWidthLines[row] = painted;
+					}
+				} else {
+					markRowUncacheable(context, row);
+					screen[row] = compositeTuiLine("", line, 0, totalWidth, totalWidth);
+				}
 			} else {
+				markRowUncacheable(context, row);
 				screen[row] = compositeTuiLine(screen[row] ?? "", line, box.rect.x, box.rect.width, totalWidth);
 			}
 		}
 	}
-	for (const child of box.children) paintBox(child, screen, totalWidth);
+	for (let index = 0; index < box.children.length; index++) paintBox(context, box.children[index]!);
 
 	if (box.scrollView && box.scrollContentLines && box.scrollView.scrollTop > 0 && box.rect.height > 0) {
 		const leadingKittyImage = box.scrollLeadingKittyImage;
@@ -388,9 +846,12 @@ function paintBox(box: LayoutBox, screen: string[], totalWidth: number): void {
 			if (metadata && hiddenRows < metadata.rows) {
 				const visibleRows = Math.min(box.rect.height, metadata.rows - hiddenRows);
 				const cropped = cropKittyImageLine(leadingKittyImage.line, hiddenRows, visibleRows);
-				if (box.rect.x === 0 && box.rect.width >= totalWidth) screen[box.rect.y] = cropped;
+				if (box.rect.x === 0 && box.rect.width >= totalWidth) {
+					markRowUncacheable(context, box.rect.y);
+					screen[box.rect.y] = cropped;
+				}
 			}
-			paintScrollbar(box, screen, totalWidth);
+			paintScrollbar(context, box);
 			return;
 		}
 		for (let imageRow = box.scrollView.scrollTop - 1; imageRow >= 0; imageRow--) {
@@ -403,7 +864,10 @@ function paintBox(box: LayoutBox, screen: string[], totalWidth: number): void {
 				if (hiddenRows < metadata.rows) {
 					const visibleRows = Math.min(box.rect.height, metadata.rows - hiddenRows);
 					const cropped = cropKittyImageLine(imageLine, hiddenRows, visibleRows);
-					if (box.rect.x === 0 && box.rect.width >= totalWidth) screen[box.rect.y] = cropped;
+					if (box.rect.x === 0 && box.rect.width >= totalWidth) {
+						markRowUncacheable(context, box.rect.y);
+						screen[box.rect.y] = cropped;
+					}
 				}
 				break;
 			}
@@ -411,7 +875,7 @@ function paintBox(box: LayoutBox, screen: string[], totalWidth: number): void {
 		}
 	}
 
-	paintScrollbar(box, screen, totalWidth);
+	paintScrollbar(context, box);
 }
 
 export function renderLayoutFrame(
@@ -419,32 +883,48 @@ export function renderLayoutFrame(
 	width: number,
 	height: number,
 	requestRender: () => void,
+	scratch?: LayoutFrameScratch,
 ): LayoutFrame {
 	const safeWidth = Math.max(1, Math.floor(width));
 	const safeHeight = Math.max(1, Math.floor(height));
-	const context: LayoutContext = {
-		viewport: { width: safeWidth, height: safeHeight },
-		renderCache: new Map(),
-		requestRender,
-		primaryScrollView: undefined,
-		primaryDocumentLineCount: undefined,
-	};
-	const rootBox = layoutComponent(context, root, 0, 0, safeWidth, safeHeight, {
-		x: 0,
-		y: 0,
-		width: safeWidth,
-		height: safeHeight,
-	});
-	const lines = Array.from({ length: safeHeight }, () => "");
-	paintBox(rootBox, lines, safeWidth);
-	return {
-		root: rootBox,
-		width: safeWidth,
-		height: safeHeight,
-		generatedLineCount: context.primaryDocumentLineCount ?? rootBox.rect.height,
-		lines,
-		...(context.primaryScrollView === undefined ? {} : { primaryScrollView: context.primaryScrollView }),
-	};
+	let activeScratch = scratch;
+	let context = activeScratch?.begin(safeWidth, safeHeight, requestRender);
+	if (context === undefined) {
+		activeScratch = new LayoutFrameScratch();
+		context = activeScratch.begin(safeWidth, safeHeight, requestRender)!;
+	}
+	let completed = false;
+	try {
+		const rootClip = createRect(context, 0, 0, safeWidth, safeHeight);
+		const rootBox = layoutComponent(context, root, 0, 0, safeWidth, safeHeight, rootClip);
+		paintBox(context, rootBox);
+		const frame: LayoutFrame = {
+			root: rootBox,
+			width: safeWidth,
+			height: safeHeight,
+			generatedLineCount: context.primaryDocumentLineCount ?? rootBox.rect.height,
+			lines: context.screen,
+			layoutNodesVisited: context.layoutNodesVisited,
+			layoutBoxObjects: context.layoutBoxObjects,
+			layoutRectObjects: context.layoutRectObjects,
+			clipObjects: context.clipObjects,
+			renderCacheMapsCreated: context.renderCacheMapsCreated,
+			nestedRenderCacheMapsCreated: context.nestedRenderCacheMapsCreated,
+			screenArraysCreated: context.screenArraysCreated,
+			fullViewportArrayCopies: context.fullViewportArrayCopies,
+			stringRepeatCalls: context.stringRepeatCalls,
+			stringRepeatBytes: context.stringRepeatBytes,
+			paintBoxCalls: context.paintBoxCalls,
+			childRenderCalls: context.childRenderCalls,
+			fullWidthRowCacheHits: context.fullWidthRowCacheHits,
+		};
+		if (context.primaryScrollView !== undefined) frame.primaryScrollView = context.primaryScrollView;
+		activeScratch!.complete(safeWidth, safeHeight);
+		completed = true;
+		return frame;
+	} finally {
+		if (!completed) activeScratch!.abort();
+	}
 }
 
 function containsPoint(rect: LayoutRect, x: number, y: number): boolean {
