@@ -22,7 +22,14 @@ import {
 } from "../regex.ts";
 import { getCapabilities, hyperlink, isImageLine } from "../terminal-image.ts";
 import type { Component } from "../tui.ts";
-import { applyBackgroundToLine, isWhitespaceChar, visibleWidth, wrapTextWithAnsi } from "../utils.ts";
+import {
+	applyBackgroundToLine,
+	cjkBreakRegex,
+	getGraphemeSegmenter,
+	isWhitespaceChar,
+	visibleWidth,
+	wrapTextWithAnsi,
+} from "../utils.ts";
 
 class StrictStrikethroughTokenizer extends Tokenizer {
 	override del(src: string): Tokens.Del | undefined {
@@ -192,6 +199,40 @@ const markdownParser = new Marked();
 const MAX_INCREMENTAL_MARKDOWN_TEXT_LENGTH = 256 * 1024;
 const MAX_INCREMENTAL_MARKDOWN_TOKENS = 8192;
 const MAX_INCREMENTAL_MARKDOWN_RENDERED_CHARACTERS = 4 * 1024 * 1024;
+const MAX_INCREMENTAL_PLAIN_TAIL_CODE_UNITS = 4 * 1024;
+const MAX_INCREMENTAL_LEXICAL_PREFIX_CODE_UNITS = 7;
+const MIN_INCREMENTAL_PLAIN_CONTENT_WIDTH = 2;
+
+export type MarkdownIncrementalFallbackReason =
+	| "none"
+	| "cache-empty"
+	| "not-append"
+	| "width-changed"
+	| "text-capacity"
+	| "unsafe-source"
+	| "unsupported-block"
+	| "styled-content"
+	| "style-state"
+	| "syntax-transition"
+	| "tail-capacity"
+	| "rendered-capacity"
+	| "checkpoint-mismatch";
+
+export interface MarkdownIncrementalMetrics {
+	incrementalEligibleUpdates: number;
+	incrementalUpdates: number;
+	fullFallbacks: number;
+	sourceCharactersReparsed: number;
+	sourceCharactersRewrapped: number;
+	parserTokensReused: number;
+	parserTokensRebuilt: number;
+	renderedPrefixLinesReused: number;
+	tailLinesRebuilt: number;
+	cachedTokenCount: number;
+	cachedRenderedLines: number;
+	cachedSourceCharacters: number;
+	lastFallbackReason: MarkdownIncrementalFallbackReason;
+}
 
 function getTokenSignature(token: unknown): string | undefined {
 	try {
@@ -305,8 +346,29 @@ export class Markdown implements Component {
 	private incrementalLinksSignature?: string;
 	private incrementalTokenSignatures?: Array<string | undefined>;
 	private incrementalTokenContentLines?: string[][];
+	// A plain checkpoint owns only the current source, rendered lines, and the mutable final visual line.
+	// Heading ANSI enters only after its style proves to be a stable prefix/suffix wrapper.
+	private incrementalPlainContentLines?: string[];
+	private incrementalPlainKind = 0;
+	private incrementalPlainContentOffset = 0;
+	private incrementalPlainTailSourceOffset = 0;
+	private incrementalPlainLexicalTailSourceOffset = 0;
+	private incrementalPlainPendingEmail = false;
+	private incrementalPlainStableLineCount = 0;
+	private incrementalPlainStylePrefix = "";
+	private incrementalPlainStyleSuffix = "";
+	private incrementalPlainTailStylePrefix = "";
+	private plainStylePrefix = "";
+	private plainStyleSuffix = "";
+	private plainScanLineWidth = 0;
+	private plainScanLineStart = 0;
+	private plainScanStableLines = 0;
+	private plainLexicalNextTailSourceOffset = 0;
+	private incrementalAppendCandidate = false;
+	private incrementalSyntaxTransitionFallback = false;
 	private lastIncrementalReuseCount = 0;
 	private lastParserTokenCount = 0;
+	private readonly incrementalMetrics: MarkdownIncrementalMetrics | undefined;
 	private readonly applyDefaultInlineText = (text: string): string => this.applyDefaultStyle(text);
 	private readonly defaultInlineStyleContext: InlineStyleContext = {
 		applyText: this.applyDefaultInlineText,
@@ -320,6 +382,7 @@ export class Markdown implements Component {
 		theme: MarkdownTheme,
 		defaultTextStyle?: DefaultTextStyle,
 		options?: MarkdownOptions,
+		incrementalMetrics?: MarkdownIncrementalMetrics,
 	) {
 		this.text = text;
 		this.paddingX = paddingX;
@@ -327,9 +390,11 @@ export class Markdown implements Component {
 		this.theme = theme;
 		this.defaultTextStyle = defaultTextStyle;
 		this.options = options ? { ...options } : {};
+		this.incrementalMetrics = incrementalMetrics;
 	}
 
 	setText(text: string): void {
+		this.incrementalAppendCandidate = text.length > this.text.length;
 		this.text = text;
 		this.cachedText = undefined;
 		this.cachedWidth = undefined;
@@ -353,7 +418,22 @@ export class Markdown implements Component {
 		this.incrementalLinksSignature = undefined;
 		this.incrementalTokenSignatures = undefined;
 		this.incrementalTokenContentLines = undefined;
+		this.incrementalPlainContentLines = undefined;
+		this.incrementalPlainKind = 0;
+		this.incrementalPlainContentOffset = 0;
+		this.incrementalPlainTailSourceOffset = 0;
+		this.incrementalPlainLexicalTailSourceOffset = 0;
+		this.incrementalPlainPendingEmail = false;
+		this.incrementalPlainStableLineCount = 0;
+		this.incrementalPlainStylePrefix = "";
+		this.incrementalPlainStyleSuffix = "";
+		this.incrementalPlainTailStylePrefix = "";
+		this.plainStylePrefix = "";
+		this.plainStyleSuffix = "";
 		this.lastIncrementalReuseCount = 0;
+		this.incrementalAppendCandidate = false;
+		this.incrementalSyntaxTransitionFallback = false;
+		this.updateIncrementalCacheMetrics();
 	}
 
 	render(width: number): string[] {
@@ -365,19 +445,40 @@ export class Markdown implements Component {
 		// Calculate available width for content (subtract horizontal padding)
 		const contentWidth = Math.max(1, width - this.paddingX * 2);
 		const text = this.options.transform?.(this.text, contentWidth) ?? this.text;
+		let syntaxTransitionFallback = false;
+		if (
+			this.options.incrementalRenderCache === true &&
+			(this.incrementalPlainContentLines !== undefined || this.incrementalAppendCandidate)
+		) {
+			this.incrementalSyntaxTransitionFallback = false;
+			const incrementalResult = this.renderIncrementalPlainAppend(text, width, contentWidth);
+			if (incrementalResult) {
+				this.incrementalAppendCandidate = false;
+				return incrementalResult;
+			}
+			syntaxTransitionFallback = this.incrementalSyntaxTransitionFallback;
+			this.incrementalSyntaxTransitionFallback = false;
+		}
 
 		// Don't render anything if there's no actual text
 		if (!text || text.trim() === "") {
 			const result: string[] = [];
+			this.clearIncrementalCache();
 			// Update cache
 			this.cachedText = this.text;
 			this.cachedWidth = width;
 			this.cachedLines = result;
+			this.incrementalAppendCandidate = false;
 			return result;
 		}
 
 		// Replace tabs with 3 spaces for consistent rendering
 		const normalizedText = text.replace(TAB_PATTERN, "   ");
+		if (this.incrementalMetrics) {
+			this.incrementalMetrics.fullFallbacks++;
+			this.incrementalMetrics.sourceCharactersReparsed += normalizedText.length;
+			this.incrementalMetrics.sourceCharactersRewrapped += normalizedText.length;
+		}
 
 		// Parse markdown to HTML-like tokens
 		const tokens = markdownParser.lexer(normalizedText);
@@ -387,9 +488,32 @@ export class Markdown implements Component {
 		const incrementalEligible = this.options.incrementalRenderCache === true &&
 			normalizedText.length <= MAX_INCREMENTAL_MARKDOWN_TEXT_LENGTH &&
 			tokens.length <= MAX_INCREMENTAL_MARKDOWN_TOKENS;
-		const linksSignature = incrementalEligible ? getTokenSignature(tokens.links ?? {}) : undefined;
-		const tokenSignatures = incrementalEligible ? new Array<string | undefined>(tokens.length) : undefined;
-		let signaturesValid = incrementalEligible && linksSignature !== undefined;
+		let plainKind = 0;
+		if (incrementalEligible && contentWidth >= MIN_INCREMENTAL_PLAIN_CONTENT_WIDTH) {
+			if (this.defaultTextStyle !== undefined) {
+				if (this.incrementalMetrics) this.incrementalMetrics.lastFallbackReason = "styled-content";
+			} else {
+				plainKind = this.getIncrementalPlainKind(normalizedText, tokens);
+			}
+			if (this.defaultTextStyle === undefined && plainKind === 0) {
+				if (this.incrementalMetrics) this.incrementalMetrics.lastFallbackReason = "unsupported-block";
+			} else if (plainKind !== 0 && !this.isIncrementalPlainRangeSafe(normalizedText, plainKind === 1 ? 0 : plainKind)) {
+				if (this.incrementalMetrics) this.incrementalMetrics.lastFallbackReason = "unsafe-source";
+				plainKind = 0;
+			}
+		}
+		if (
+			plainKind !== 0 &&
+			this.incrementalNormalizedText !== undefined &&
+			!this.incrementalAppendCandidate &&
+			this.incrementalWidth === width
+		) {
+			plainKind = 0;
+		}
+		const signatureEligible = incrementalEligible && plainKind === 0;
+		const linksSignature = signatureEligible ? getTokenSignature(tokens.links ?? {}) : undefined;
+		const tokenSignatures = signatureEligible ? new Array<string | undefined>(tokens.length) : undefined;
+		let signaturesValid = signatureEligible && linksSignature !== undefined;
 		if (tokenSignatures) {
 			for (let i = 0; i < tokens.length; i++) {
 				const signature = getTokenSignature(tokens[i]);
@@ -412,11 +536,16 @@ export class Markdown implements Component {
 			reuseCount = Math.max(0, reuseCount - 1);
 		}
 		this.lastIncrementalReuseCount = reuseCount;
+		if (this.incrementalMetrics) {
+			this.incrementalMetrics.parserTokensReused += reuseCount;
+			this.incrementalMetrics.parserTokensRebuilt += tokens.length - reuseCount;
+		}
 		const leftMargin = " ".repeat(this.paddingX);
 		const rightMargin = " ".repeat(this.paddingX);
 		const bgFn = this.defaultTextStyle?.bgColor;
-		const tokenContentLines = incrementalEligible ? new Array<string[]>(tokens.length) : undefined;
+		const tokenContentLines = signatureEligible ? new Array<string[]>(tokens.length) : undefined;
 		const contentLines: string[] = [];
+		let plainWrappedLines: string[] | undefined;
 		let renderedCharacterCount = 0;
 		for (let i = 0; i < tokens.length; i++) {
 			let lines: string[];
@@ -429,6 +558,7 @@ export class Markdown implements Component {
 					if (isImageLine(line)) wrappedLines.push(line);
 					else wrappedLines.push(...wrapTextWithAnsi(line, contentWidth));
 				}
+				if (plainKind !== 0 && i === 0) plainWrappedLines = wrappedLines;
 				lines = [];
 				for (const line of wrappedLines) {
 					if (isImageLine(line)) { lines.push(line); continue; }
@@ -446,19 +576,28 @@ export class Markdown implements Component {
 				renderedCharacterCount += line.length;
 			}
 		}
-		if (signaturesValid && renderedCharacterCount <= MAX_INCREMENTAL_MARKDOWN_RENDERED_CHARACTERS) {
+		if (plainKind !== 0 && plainWrappedLines && renderedCharacterCount <= MAX_INCREMENTAL_MARKDOWN_RENDERED_CHARACTERS) {
+			this.establishIncrementalPlainCheckpoint(
+				normalizedText,
+				width,
+				contentWidth,
+				plainKind,
+				contentLines,
+				plainWrappedLines,
+			);
+		} else if (signaturesValid && renderedCharacterCount <= MAX_INCREMENTAL_MARKDOWN_RENDERED_CHARACTERS) {
 			this.incrementalNormalizedText = normalizedText;
 			this.incrementalWidth = width;
 			this.incrementalLinksSignature = linksSignature;
 			this.incrementalTokenSignatures = tokenSignatures;
 			this.incrementalTokenContentLines = tokenContentLines;
+			this.incrementalPlainContentLines = undefined;
+			this.incrementalPlainLexicalTailSourceOffset = 0;
+			this.incrementalPlainPendingEmail = false;
 		} else {
-			this.incrementalNormalizedText = undefined;
-			this.incrementalWidth = undefined;
-			this.incrementalLinksSignature = undefined;
-			this.incrementalTokenSignatures = undefined;
-			this.incrementalTokenContentLines = undefined;
+			this.clearIncrementalCache();
 		}
+		this.updateIncrementalCacheMetrics();
 
 		// Add top/bottom padding (empty lines)
 		const emptyLine = " ".repeat(width);
@@ -475,8 +614,534 @@ export class Markdown implements Component {
 		this.cachedText = this.text;
 		this.cachedWidth = width;
 		this.cachedLines = result;
+		this.incrementalAppendCandidate = false;
+		if (syntaxTransitionFallback && this.incrementalMetrics) {
+			this.incrementalMetrics.lastFallbackReason = "syntax-transition";
+		}
 
 		return result.length > 0 ? result : [""];
+	}
+
+	private renderIncrementalPlainAppend(text: string, width: number, contentWidth: number): string[] | undefined {
+		const metrics = this.incrementalMetrics;
+		if (text.length > MAX_INCREMENTAL_MARKDOWN_TEXT_LENGTH) {
+			if (metrics) metrics.lastFallbackReason = "text-capacity";
+			return undefined;
+		}
+		const previousText = this.incrementalNormalizedText;
+		const previousLines = this.incrementalPlainContentLines;
+		if (previousText === undefined) {
+			if (metrics) metrics.lastFallbackReason = "cache-empty";
+			return undefined;
+		}
+		if (this.incrementalWidth !== width || contentWidth < MIN_INCREMENTAL_PLAIN_CONTENT_WIDTH) {
+			if (metrics) metrics.lastFallbackReason = "width-changed";
+			return undefined;
+		}
+		if (text.length <= previousText.length || !text.startsWith(previousText)) {
+			this.incrementalAppendCandidate = false;
+			if (metrics) metrics.lastFallbackReason = "not-append";
+			return undefined;
+		}
+		if (previousLines === undefined) {
+			if (metrics) metrics.lastFallbackReason = "cache-empty";
+			return undefined;
+		}
+		if (!this.isIncrementalPlainRangeSafe(text, previousText.length)) {
+			if (metrics) metrics.lastFallbackReason = "unsafe-source";
+			return undefined;
+		}
+		if (metrics) metrics.incrementalEligibleUpdates++;
+
+		// The retained source tail is the pending word/grapheme and final visual line state. Re-scanning it
+		// is bounded by the wrap width, while earlier source/tokens/rendered strings remain reusable.
+		const sourceTailStart = this.incrementalPlainContentOffset + this.incrementalPlainTailSourceOffset;
+		const sourceTail = text.slice(sourceTailStart);
+		if (sourceTail.length > MAX_INCREMENTAL_PLAIN_TAIL_CODE_UNITS) {
+			if (metrics) metrics.lastFallbackReason = "tail-capacity";
+			this.clearIncrementalCache();
+			return undefined;
+		}
+		if (this.hasIncrementalPlainSyntaxTransition(text, previousText.length)) {
+			this.incrementalSyntaxTransitionFallback = true;
+			if (metrics) metrics.lastFallbackReason = "syntax-transition";
+			return undefined;
+		}
+		this.scanIncrementalPlainTail(sourceTail, contentWidth);
+		let styledTail = sourceTail;
+		if (this.incrementalPlainKind !== 1) {
+			const styledSourceTail = this.applyIncrementalPlainStyle(sourceTail, this.incrementalPlainKind);
+			const sourceOffset = this.incrementalPlainStylePrefix.length;
+			if (
+				styledSourceTail.length !== sourceOffset + sourceTail.length + this.incrementalPlainStyleSuffix.length ||
+				!styledSourceTail.startsWith(this.incrementalPlainStylePrefix) ||
+				!styledSourceTail.startsWith(sourceTail, sourceOffset) ||
+				!styledSourceTail.startsWith(this.incrementalPlainStyleSuffix, sourceOffset + sourceTail.length)
+			) {
+				if (metrics) metrics.lastFallbackReason = "style-state";
+				return undefined;
+			}
+			styledTail = this.incrementalPlainTailStylePrefix === this.incrementalPlainStylePrefix
+				? styledSourceTail
+				: this.incrementalPlainTailStylePrefix + sourceTail + this.incrementalPlainStyleSuffix;
+		}
+		const wrappedTail = wrapTextWithAnsi(styledTail, contentWidth);
+		const hasMutableTailLine = this.plainScanLineWidth > 0;
+		const expectedTailLines = this.plainScanStableLines + (hasMutableTailLine ? 1 : 0);
+		if (wrappedTail.length !== expectedTailLines) {
+			if (metrics) metrics.lastFallbackReason = "checkpoint-mismatch";
+			return undefined;
+		}
+		let nextTailStylePrefix = "";
+		if (this.incrementalPlainKind !== 1) {
+			const rawMutableTail = sourceTail.slice(this.plainScanLineStart);
+			const finalWrappedLine = wrappedTail[this.plainScanStableLines]!;
+			const rawTailOffset = finalWrappedLine.indexOf(rawMutableTail);
+			if (
+				rawTailOffset < 0 ||
+				finalWrappedLine.slice(rawTailOffset + rawMutableTail.length) !== this.incrementalPlainStyleSuffix
+			) {
+				if (metrics) metrics.lastFallbackReason = "style-state";
+				return undefined;
+			}
+			nextTailStylePrefix = finalWrappedLine.slice(0, rawTailOffset);
+		}
+
+		const leftMargin = " ".repeat(this.paddingX);
+		const rightMargin = " ".repeat(this.paddingX);
+		const bgFn = this.defaultTextStyle?.bgColor;
+		const contentLines: string[] = [];
+		let renderedCharacterCount = 0;
+		for (let index = 0; index < this.incrementalPlainStableLineCount; index++) {
+			const line = previousLines[index]!;
+			contentLines.push(line);
+			renderedCharacterCount += line.length;
+		}
+		for (let index = 0; index < wrappedTail.length; index++) {
+			const wrappedLine = wrappedTail[index]!;
+			const lineWithMargins = leftMargin + wrappedLine + rightMargin;
+			let line: string;
+			if (bgFn) line = applyBackgroundToLine(lineWithMargins, width, bgFn);
+			else {
+				const visibleLength = visibleWidth(lineWithMargins);
+				line = lineWithMargins + " ".repeat(Math.max(0, width - visibleLength));
+			}
+			contentLines.push(line);
+			renderedCharacterCount += line.length;
+		}
+		if (renderedCharacterCount > MAX_INCREMENTAL_MARKDOWN_RENDERED_CHARACTERS) {
+			if (metrics) metrics.lastFallbackReason = "rendered-capacity";
+			return undefined;
+		}
+
+		this.incrementalNormalizedText = text;
+		this.incrementalPlainContentLines = contentLines;
+		this.incrementalPlainTailSourceOffset += this.plainScanLineStart;
+		this.incrementalPlainLexicalTailSourceOffset = this.plainLexicalNextTailSourceOffset;
+		this.incrementalPlainStableLineCount += this.plainScanStableLines;
+		this.incrementalPlainTailStylePrefix = nextTailStylePrefix;
+		this.incrementalLinksSignature = undefined;
+		this.incrementalTokenSignatures = undefined;
+		this.incrementalTokenContentLines = undefined;
+		this.lastIncrementalReuseCount = 1;
+		this.lastParserTokenCount = 1;
+
+		let result = contentLines;
+		if (this.paddingY > 0) {
+			const emptyLine = " ".repeat(width);
+			const paddedLine = bgFn ? applyBackgroundToLine(emptyLine, width, bgFn) : emptyLine;
+			result = [];
+			for (let index = 0; index < this.paddingY; index++) result.push(paddedLine);
+			for (let index = 0; index < contentLines.length; index++) result.push(contentLines[index]!);
+			for (let index = 0; index < this.paddingY; index++) result.push(paddedLine);
+		}
+		this.cachedText = this.text;
+		this.cachedWidth = width;
+		this.cachedLines = result;
+		if (metrics) {
+			metrics.incrementalUpdates++;
+			metrics.sourceCharactersReparsed += text.length - previousText.length;
+			metrics.sourceCharactersRewrapped += sourceTail.length;
+			metrics.parserTokensReused++;
+			metrics.renderedPrefixLinesReused += this.incrementalPlainStableLineCount - this.plainScanStableLines;
+			metrics.tailLinesRebuilt += wrappedTail.length;
+			metrics.lastFallbackReason = "none";
+		}
+		this.updateIncrementalCacheMetrics();
+		return result.length > 0 ? result : [""];
+	}
+
+	private getIncrementalPlainKind(source: string, tokens: readonly Token[]): number {
+		if (tokens.length !== 1) return 0;
+		const token = tokens[0]!;
+		if (token.type === "paragraph") return this.hasOnlyPlainInlineText(token.tokens) ? 1 : 0;
+		if (token.type !== "heading" || token.depth > 2 || !this.hasOnlyPlainInlineText(token.tokens)) return 0;
+		const contentOffset = token.depth + 1;
+		if (source.length < contentOffset || source.charCodeAt(token.depth) !== 0x20) return 0;
+		for (let index = 0; index < token.depth; index++) {
+			if (source.charCodeAt(index) !== 0x23) return 0;
+		}
+		return contentOffset;
+	}
+
+	private hasOnlyPlainInlineText(tokens: readonly Token[] | undefined): boolean {
+		return tokens?.length === 1 && tokens[0]?.type === "text";
+	}
+
+	private isIncrementalPlainRangeSafe(source: string, start: number): boolean {
+		let previousWasSpace = start > 0 && source.charCodeAt(start - 1) === 0x20;
+		for (let index = start; index < source.length; index++) {
+			const code = source.charCodeAt(index);
+			if (code === 0x20) {
+				if (previousWasSpace) return false;
+				previousWasSpace = true;
+				continue;
+			}
+			previousWasSpace = false;
+			if (
+				code < 0x20 ||
+				code === 0x7f ||
+				code === 0x2028 ||
+				code === 0x2029 ||
+				code === 0x21 ||
+				code === 0x23 ||
+				code === 0x24 ||
+				code === 0x26 ||
+				code === 0x2a ||
+				code === 0x3c ||
+				code === 0x3e ||
+				code === 0x5b ||
+				code === 0x5c ||
+				code === 0x5d ||
+				code === 0x5f ||
+				code === 0x60 ||
+				code === 0x7c ||
+				code === 0x7e
+			) {
+				return false;
+			}
+		}
+		return true;
+	}
+
+	private hasIncrementalPlainSyntaxTransition(source: string, previousLength: number): boolean {
+		const contentOffset = this.incrementalPlainContentOffset;
+		if (contentOffset === 0 && this.hasIncrementalDocumentPrefixTransition(source)) return true;
+		if (this.incrementalPlainPendingEmail) return true;
+		const lexicalStart = contentOffset + this.incrementalPlainLexicalTailSourceOffset;
+		if (
+			lexicalStart < contentOffset ||
+			lexicalStart > previousLength ||
+			source.length - lexicalStart > MAX_INCREMENTAL_PLAIN_TAIL_CODE_UNITS
+		) {
+			return true;
+		}
+		let wordStart = lexicalStart;
+		for (let index = lexicalStart; index <= source.length; index++) {
+			if (index < source.length && source.charCodeAt(index) !== 0x20) continue;
+			if (
+				index > previousLength &&
+				this.hasIncrementalAutolinkTransition(source, wordStart, index)
+			) {
+				return true;
+			}
+			if (index === source.length) break;
+			wordStart = index + 1;
+		}
+		this.plainLexicalNextTailSourceOffset = Math.max(
+			0,
+			source.length - contentOffset - MAX_INCREMENTAL_LEXICAL_PREFIX_CODE_UNITS,
+		);
+		return false;
+	}
+
+	private hasIncrementalDocumentPrefixTransition(source: string): boolean {
+		const length = source.length;
+		if (length === 0) return false;
+		let prefixStart = 0;
+		while (prefixStart < length && prefixStart < 3 && source.charCodeAt(prefixStart) === 0x20) prefixStart++;
+		if (prefixStart >= length) return false;
+		const first = source.charCodeAt(prefixStart);
+		if (
+			(first === 0x2d || first === 0x2b) &&
+			prefixStart + 1 < length &&
+			source.charCodeAt(prefixStart + 1) === 0x20
+		) return true;
+		if (first === 0x2d) {
+			let hyphens = 0;
+			let index = prefixStart;
+			while (index < length) {
+				const code = source.charCodeAt(index++);
+				if (code === 0x2d) {
+					hyphens++;
+					if (hyphens >= 3) return true;
+				}
+				else if (code !== 0x20) break;
+			}
+		}
+		let digitCount = 0;
+		while (prefixStart + digitCount < length && digitCount < 9) {
+			const code = source.charCodeAt(prefixStart + digitCount);
+			if (code < 0x30 || code > 0x39) break;
+			digitCount++;
+		}
+		const markerIndex = prefixStart + digitCount;
+		if (digitCount === 0 || markerIndex >= length) return false;
+		const marker = source.charCodeAt(markerIndex);
+		return (marker === 0x2e || marker === 0x29) && source.charCodeAt(markerIndex + 1) === 0x20;
+	}
+
+	private hasIncrementalAutolinkTransition(source: string, start: number, end: number): boolean {
+		if (end <= start) return false;
+		for (let candidateStart = start; candidateStart < end; candidateStart++) {
+			if (
+				this.incrementalAsciiPrefixEquals(source, candidateStart, end, "http://") ||
+				this.incrementalAsciiPrefixEquals(source, candidateStart, end, "https://") ||
+				this.incrementalAsciiPrefixEquals(source, candidateStart, end, "ftp://") ||
+				this.incrementalAsciiPrefixEquals(source, candidateStart, end, "www.")
+			) {
+				return true;
+			}
+		}
+		for (let index = start + 1; index + 1 < end; index++) {
+			if (source.charCodeAt(index) === 0x40) return true;
+		}
+		return false;
+	}
+
+	private incrementalAsciiPrefixEquals(source: string, start: number, end: number, expected: string): boolean {
+		if (end - start < expected.length) return false;
+		for (let index = 0; index < expected.length; index++) {
+			let code = source.charCodeAt(start + index);
+			if (code >= 0x41 && code <= 0x5a) code += 0x20;
+			if (code !== expected.charCodeAt(index)) return false;
+		}
+		return true;
+	}
+
+	private establishIncrementalPlainCheckpoint(
+		source: string,
+		width: number,
+		contentWidth: number,
+		kind: number,
+		contentLines: string[],
+		wrappedLines: string[],
+	): void {
+		const contentOffset = kind === 1 ? 0 : kind;
+		const content = source.slice(contentOffset);
+		this.scanIncrementalPlainTail(content, contentWidth);
+		let pendingEmail = false;
+		const previousSource = this.incrementalNormalizedText;
+		if (
+			this.incrementalPlainPendingEmail &&
+			previousSource !== undefined &&
+			source.length > previousSource.length &&
+			source.startsWith(previousSource)
+		) {
+			pendingEmail = true;
+			for (let index = previousSource.length; index < source.length; index++) {
+				if (source.charCodeAt(index) === 0x20) {
+					pendingEmail = false;
+					break;
+				}
+			}
+		}
+		if (!pendingEmail) pendingEmail = this.hasPotentialEmailInTrailingWord(content);
+		const lexicalTailSourceOffset = Math.max(0, content.length - MAX_INCREMENTAL_LEXICAL_PREFIX_CODE_UNITS);
+		if (content.length - this.plainScanLineStart > MAX_INCREMENTAL_PLAIN_TAIL_CODE_UNITS) {
+			if (this.incrementalMetrics) this.incrementalMetrics.lastFallbackReason = "tail-capacity";
+			this.clearIncrementalCache();
+			return;
+		}
+		const expectedLines = this.plainScanStableLines + (this.plainScanLineWidth > 0 ? 1 : 0);
+		if (expectedLines !== contentLines.length || expectedLines !== wrappedLines.length) {
+			if (this.incrementalMetrics) this.incrementalMetrics.lastFallbackReason = "checkpoint-mismatch";
+			this.clearIncrementalCache();
+			return;
+		}
+		let tailStylePrefix = "";
+		if (kind !== 1) {
+			if (!this.prepareIncrementalPlainStyle(kind)) {
+				if (this.incrementalMetrics) this.incrementalMetrics.lastFallbackReason = "style-state";
+				this.clearIncrementalCache();
+				return;
+			}
+			const rawMutableTail = content.slice(this.plainScanLineStart);
+			const finalWrappedLine = wrappedLines[this.plainScanStableLines]!;
+			const rawTailOffset = finalWrappedLine.indexOf(rawMutableTail);
+			if (
+				rawTailOffset < 0 ||
+				finalWrappedLine.slice(rawTailOffset + rawMutableTail.length) !== this.plainStyleSuffix
+			) {
+				if (this.incrementalMetrics) this.incrementalMetrics.lastFallbackReason = "style-state";
+				this.clearIncrementalCache();
+				return;
+			}
+			tailStylePrefix = finalWrappedLine.slice(0, rawTailOffset);
+		} else {
+			this.plainStylePrefix = "";
+			this.plainStyleSuffix = "";
+		}
+		this.incrementalNormalizedText = source;
+		this.incrementalWidth = width;
+		this.incrementalPlainContentLines = contentLines;
+		this.incrementalPlainKind = kind;
+		this.incrementalPlainContentOffset = contentOffset;
+		this.incrementalPlainTailSourceOffset = this.plainScanLineStart;
+		this.incrementalPlainLexicalTailSourceOffset = lexicalTailSourceOffset;
+		this.incrementalPlainPendingEmail = pendingEmail;
+		this.incrementalPlainStableLineCount = this.plainScanStableLines;
+		this.incrementalPlainStylePrefix = this.plainStylePrefix;
+		this.incrementalPlainStyleSuffix = this.plainStyleSuffix;
+		this.incrementalPlainTailStylePrefix = tailStylePrefix;
+		this.incrementalLinksSignature = undefined;
+		this.incrementalTokenSignatures = undefined;
+		this.incrementalTokenContentLines = undefined;
+	}
+
+	private hasPotentialEmailInTrailingWord(source: string): boolean {
+		for (let index = source.length; index > 0;) {
+			const code = source.charCodeAt(--index);
+			if (code === 0x20) return false;
+			if (code === 0x40) return true;
+		}
+		return false;
+	}
+
+	private prepareIncrementalPlainStyle(kind: number): boolean {
+		const one = "\ue000";
+		const two = "\ue000\ue001";
+		const styledOne = this.applyIncrementalPlainStyle(one, kind);
+		const markerOffset = styledOne.indexOf(one);
+		if (markerOffset < 0) return false;
+		const prefix = styledOne.slice(0, markerOffset);
+		const suffix = styledOne.slice(markerOffset + one.length);
+		if (this.applyIncrementalPlainStyle(two, kind) !== prefix + two + suffix) return false;
+		this.plainStylePrefix = prefix;
+		this.plainStyleSuffix = suffix;
+		return true;
+	}
+
+	private applyIncrementalPlainStyle(source: string, kind: number): string {
+		if (kind === 2) return this.theme.heading(this.theme.bold(this.theme.underline(source)));
+		return this.theme.heading(this.theme.bold(source));
+	}
+
+	private scanIncrementalPlainTail(source: string, width: number): void {
+		this.plainScanLineWidth = 0;
+		this.plainScanLineStart = 0;
+		this.plainScanStableLines = 0;
+		let tokenStart = 0;
+		let tokenEnd = 0;
+		let tokenWidth = 0;
+		let tokenKind = 0;
+		for (const part of getGraphemeSegmenter().segment(source)) {
+			const segment = part.segment;
+			const segmentStart = part.index;
+			const segmentEnd = segmentStart + segment.length;
+			const isSpace = segment === " ";
+			const isCjk = !isSpace && cjkBreakRegex.test(segment);
+			const nextKind = isSpace ? 1 : 2;
+			if (isCjk || (tokenKind !== 0 && tokenKind !== nextKind)) {
+				this.consumeIncrementalPlainToken(source, tokenStart, tokenEnd, tokenWidth, tokenKind === 1, width);
+				tokenKind = 0;
+				tokenWidth = 0;
+			}
+			if (isCjk) {
+				this.consumeIncrementalPlainToken(source, segmentStart, segmentEnd, visibleWidth(segment), false, width);
+				continue;
+			}
+			if (tokenKind === 0) {
+				tokenStart = segmentStart;
+				tokenKind = nextKind;
+			}
+			tokenEnd = segmentEnd;
+			tokenWidth += visibleWidth(segment);
+		}
+		if (tokenKind !== 0) {
+			this.consumeIncrementalPlainToken(source, tokenStart, tokenEnd, tokenWidth, tokenKind === 1, width);
+		}
+	}
+
+	private consumeIncrementalPlainToken(
+		source: string,
+		start: number,
+		end: number,
+		tokenWidth: number,
+		isSpace: boolean,
+		width: number,
+	): void {
+		if (tokenWidth > width && !isSpace) {
+			if (this.plainScanLineWidth > 0) {
+				this.plainScanStableLines++;
+				this.plainScanLineStart = start;
+				this.plainScanLineWidth = 0;
+			}
+			const token = source.slice(start, end);
+			for (const part of getGraphemeSegmenter().segment(token)) {
+				const graphemeWidth = visibleWidth(part.segment);
+				if (this.plainScanLineWidth + graphemeWidth > width) {
+					this.plainScanStableLines++;
+					this.plainScanLineStart = start + part.index;
+					this.plainScanLineWidth = 0;
+				}
+				this.plainScanLineWidth += graphemeWidth;
+			}
+			return;
+		}
+
+		if (this.plainScanLineWidth + tokenWidth > width && this.plainScanLineWidth > 0) {
+			this.plainScanStableLines++;
+			if (isSpace) {
+				this.plainScanLineStart = end;
+				this.plainScanLineWidth = 0;
+			} else {
+				this.plainScanLineStart = start;
+				this.plainScanLineWidth = tokenWidth;
+			}
+			return;
+		}
+		this.plainScanLineWidth += tokenWidth;
+	}
+
+	private clearIncrementalCache(): void {
+		this.incrementalNormalizedText = undefined;
+		this.incrementalWidth = undefined;
+		this.incrementalLinksSignature = undefined;
+		this.incrementalTokenSignatures = undefined;
+		this.incrementalTokenContentLines = undefined;
+		this.incrementalPlainContentLines = undefined;
+		this.incrementalPlainKind = 0;
+		this.incrementalPlainContentOffset = 0;
+		this.incrementalPlainTailSourceOffset = 0;
+		this.incrementalPlainLexicalTailSourceOffset = 0;
+		this.incrementalPlainPendingEmail = false;
+		this.incrementalPlainStableLineCount = 0;
+		this.incrementalPlainStylePrefix = "";
+		this.incrementalPlainStyleSuffix = "";
+		this.incrementalPlainTailStylePrefix = "";
+		this.plainStylePrefix = "";
+		this.plainStyleSuffix = "";
+		this.lastIncrementalReuseCount = 0;
+		this.updateIncrementalCacheMetrics();
+	}
+
+	private updateIncrementalCacheMetrics(): void {
+		const metrics = this.incrementalMetrics;
+		if (!metrics) return;
+		metrics.cachedTokenCount = this.incrementalPlainContentLines === undefined
+			? (this.incrementalTokenSignatures?.length ?? 0)
+			: 1;
+		if (this.incrementalPlainContentLines) metrics.cachedRenderedLines = this.incrementalPlainContentLines.length;
+		else {
+			let cachedRenderedLines = 0;
+			const tokenLines = this.incrementalTokenContentLines;
+			if (tokenLines) {
+				for (let index = 0; index < tokenLines.length; index++) cachedRenderedLines += tokenLines[index]?.length ?? 0;
+			}
+			metrics.cachedRenderedLines = cachedRenderedLines;
+		}
+		metrics.cachedSourceCharacters = this.incrementalNormalizedText?.length ?? 0;
 	}
 
 	/**
