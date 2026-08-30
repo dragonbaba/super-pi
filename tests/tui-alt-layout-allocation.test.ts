@@ -343,5 +343,7 @@ test("Alt allocation benchmark uses the production fixture and reports dynamic l
 	assert.match(benchmark, /new TuiAltScreen/);
 	assert.match(benchmark, /layoutNodesVisitedPerFrame/);
 	assert.match(benchmark, /layoutFullViewportArrayCopiesPerFrame/);
+	assert.match(benchmark, /completedItemRendersPerFrame/);
+	assert.match(benchmark, /terminalFrameQueueHighWaterMark/);
 	assert.match(benchmark, /retainedReferencesAfterDispose/);
 });
