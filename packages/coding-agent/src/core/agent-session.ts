@@ -137,6 +137,12 @@ import {
 	type ToolOutputShadowObserver,
 	type ToolOutputShadowOptions,
 } from "./tool-output-budget.ts";
+import {
+	createToolResultPresentationOwner,
+	type ToolResultPresentationOptions,
+	type ToolResultPresentationOwner,
+	type ToolResultPresentationV1,
+} from "./tool-result-presentation.ts";
 import { addUsageToTotals, createUsageTotals, getUnboundCompactionLedgerUsages } from "./usage-totals.ts";
 
 function getBuiltinExecutionPath(name: string, cwd: string) {
@@ -180,7 +186,11 @@ export function parseSkillBlock(text: string): ParsedSkillBlock | null {
 
 /** Session-specific events that extend the core AgentEvent */
 export type AgentSessionEvent =
-	| Exclude<AgentEvent, { type: "agent_end" }>
+	| Exclude<AgentEvent, { type: "agent_end" | "message_end" }>
+	| (Extract<AgentEvent, { type: "message_end" }> & {
+			/** Present only for enabled Phase 5B-A final tool results. Extensions never receive this sidecar. */
+			toolResultPresentation?: ToolResultPresentationV1;
+	  })
 	| {
 			type: "agent_end";
 			messages: AgentMessage[];
@@ -368,6 +378,8 @@ export interface AgentSessionConfig {
 	sessionStartEvent?: SessionStartEvent;
 	/** Optional Phase 5A metadata-only observation. Disabled unless explicitly enabled. */
 	toolOutputShadow?: ToolOutputShadowOptions;
+	/** Optional Phase 5B-A final tool-result dual-view ownership. Disabled unless explicitly enabled. */
+	toolResultPresentation?: ToolResultPresentationOptions;
 }
 
 export interface ModelMutationOptions {
@@ -642,6 +654,7 @@ export class AgentSession {
 	private _providerRequestCompactor: AgentSessionConfig["providerRequestCompactor"];
 	private _prefixManifestRecorder?: PrefixManifestRecorder;
 	private _toolOutputShadow: ToolOutputShadowObserver | undefined;
+	private _toolResultPresentation: ToolResultPresentationOwner | undefined;
 
 	// Tool registry for extension getTools/setTools
 	private _toolRegistry: Map<string, AgentTool> = new Map();
@@ -670,6 +683,7 @@ export class AgentSession {
 		this._providerRequestCompactor = config.providerRequestCompactor;
 		this._prefixManifestRecorder = config.prefixManifestRecorder;
 		this._toolOutputShadow = createToolOutputShadowObserver(config.toolOutputShadow);
+		this._toolResultPresentation = createToolResultPresentationOwner(config.toolResultPresentation);
 		this._extensionRunnerRef = config.extensionRunnerRef;
 		this._extensionRunnerOptions = config.extensionRunnerOptions;
 		this._initialActiveToolNames = config.initialActiveToolNames;
@@ -1020,6 +1034,25 @@ export class AgentSession {
 		}
 
 		if (this._extensionRunner.hasHandlers(event.type)) await this._emitExtensionEvent(event);
+		if (event.type === "message_end" && event.message.role === "toolResult" && this._toolResultPresentation) {
+			const presentation = this._toolResultPresentation.create(event.message.content);
+			if (presentation) {
+				try {
+					(event as Extract<AgentSessionEvent, { type: "message_end" }>).toolResultPresentation = presentation;
+					const model = this.model;
+					this._toolOutputShadow?.observe(
+						event.message,
+						model ? { api: model.api, provider: model.provider, model: model.id } : undefined,
+					);
+					this._emit(event);
+				} finally {
+					this._toolResultPresentation.release();
+				}
+				// This is the complete post-listener message_end tail for tool results.
+				this.sessionManager.appendMessage(event.message);
+				return;
+			}
+		}
 		if (event.type === "message_end" && event.message.role === "toolResult") {
 			const model = this.model;
 			this._toolOutputShadow?.observe(
@@ -1303,6 +1336,8 @@ export class AgentSession {
 		this._disconnectFromAgent();
 		this._toolOutputShadow?.dispose();
 		this._toolOutputShadow = undefined;
+		this._toolResultPresentation?.dispose();
+		this._toolResultPresentation = undefined;
 		this._eventListeners = [];
 		cleanupSessionResources(this.sessionId);
 	}

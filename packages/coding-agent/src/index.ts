@@ -47,6 +47,19 @@ export {
 	type ToolOutputShadowTelemetrySink,
 	type ToolOutputTokenEstimate,
 } from "./core/tool-output-budget.ts";
+export {
+	createToolResultPresentationCounters,
+	createToolResultPresentationOwner,
+	getToolResultModelContent,
+	getToolResultUiContent,
+	TOOL_RESULT_PRESENTATION_VERSION,
+	ToolResultPresentationOwner,
+	type ToolResultPresentation,
+	type ToolResultPresentationContent,
+	type ToolResultPresentationCounters,
+	type ToolResultPresentationOptions,
+	type ToolResultPresentationV1,
+} from "./core/tool-result-presentation.ts";
 export { readStoredCredential } from "./core/auth-storage.ts";
 // Compaction
 export {
