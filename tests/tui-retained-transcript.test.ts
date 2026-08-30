@@ -96,8 +96,9 @@ test("active updates do not rerender 5,000 completed transcript items", () => {
 		altLayoutBoxObjects: 0,
 		altLayoutRectObjects: 0,
 		altLayoutClipObjects: 0,
-		altLayoutRenderCacheMapsCreated: 0,
-		altLayoutNestedRenderCacheMapsCreated: 0,
+		altLayoutRenderCacheLookupProbes: 0,
+		altLayoutRenderCacheRecordCount: 0,
+		altLayoutRenderCacheIndexActivations: 0,
 		altLayoutScreenArraysCreated: 0,
 		altLayoutFullViewportArrayCopies: 0,
 		altLayoutStringRepeatCalls: 0,
@@ -105,6 +106,10 @@ test("active updates do not rerender 5,000 completed transcript items", () => {
 		altLayoutPaintBoxCalls: 0,
 		altLayoutChildRenderCalls: 0,
 		altLayoutFullWidthRowCacheHits: 0,
+		altLayoutCachedSourceCodeUnits: 0,
+		altLayoutCachedPaintedCodeUnits: 0,
+		altLayoutMaximumCachedRowCodeUnits: 0,
+		altLayoutRowCacheRejectedBySize: 0,
 	});
 });
 
