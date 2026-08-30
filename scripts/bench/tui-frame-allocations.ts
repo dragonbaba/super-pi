@@ -121,7 +121,18 @@ interface FixtureRuntime {
 	active: ActiveLines;
 	advanceActive(): void;
 	plainChildren: readonly StaticLines[];
-	getAltLayoutRetainedReferenceCounts(): { components: number; lines: number; sources: number; cachedRows: number };
+	getAltLayoutRetainedReferenceCounts(): {
+		components: number;
+		lines: number;
+		sources: number;
+		cachedRows: number;
+		sourceCodeUnits: number;
+		paintedCodeUnits: number;
+		maximumRowCodeUnits: number;
+		indexedComponents: number;
+		screenRows: number;
+		screenCodeUnits: number;
+	};
 	dispose(): Promise<void>;
 }
 
@@ -244,7 +255,18 @@ function createFixture(
 		getAltLayoutRetainedReferenceCounts: () =>
 			tui instanceof TuiAltScreen
 				? tui.getAltLayoutRetainedReferenceCounts()
-				: { components: 0, lines: 0, sources: 0, cachedRows: 0 },
+				: {
+					components: 0,
+					lines: 0,
+					sources: 0,
+					cachedRows: 0,
+					sourceCodeUnits: 0,
+					paintedCodeUnits: 0,
+					maximumRowCodeUnits: 0,
+					indexedComponents: 0,
+					screenRows: 0,
+					screenCodeUnits: 0,
+				},
 		dispose: async () => {
 			await tui.stop({ preserveScreen: true });
 		},
@@ -477,8 +499,9 @@ process.stdout.write(`${JSON.stringify({
 		layoutBoxObjectsPerFrame: metrics.altLayoutBoxObjects / measuredFrames,
 		layoutRectObjectsPerFrame: metrics.altLayoutRectObjects / measuredFrames,
 		layoutClipObjectsPerFrame: metrics.altLayoutClipObjects / measuredFrames,
-		layoutRenderCacheMapsCreatedPerFrame: metrics.altLayoutRenderCacheMapsCreated / measuredFrames,
-		layoutNestedRenderCacheMapsCreatedPerFrame: metrics.altLayoutNestedRenderCacheMapsCreated / measuredFrames,
+		layoutRenderCacheLookupProbesPerFrame: metrics.altLayoutRenderCacheLookupProbes / measuredFrames,
+		layoutRenderCacheRecordCountPerFrame: metrics.altLayoutRenderCacheRecordCount / measuredFrames,
+		layoutRenderCacheIndexActivationsPerFrame: metrics.altLayoutRenderCacheIndexActivations / measuredFrames,
 		layoutScreenArraysCreatedPerFrame: metrics.altLayoutScreenArraysCreated / measuredFrames,
 		layoutFullViewportArrayCopiesPerFrame: metrics.altLayoutFullViewportArrayCopies / measuredFrames,
 		layoutStringRepeatCallsPerFrame: metrics.altLayoutStringRepeatCalls / measuredFrames,
@@ -486,6 +509,12 @@ process.stdout.write(`${JSON.stringify({
 		layoutPaintBoxCallsPerFrame: metrics.altLayoutPaintBoxCalls / measuredFrames,
 		layoutChildRenderCallsPerFrame: metrics.altLayoutChildRenderCalls / measuredFrames,
 		layoutFullWidthRowCacheHitsPerFrame: metrics.altLayoutFullWidthRowCacheHits / measuredFrames,
+		layoutCachedSourceCodeUnitsPerFrame: metrics.altLayoutCachedSourceCodeUnits / measuredFrames,
+		layoutCachedPaintedCodeUnitsPerFrame: metrics.altLayoutCachedPaintedCodeUnits / measuredFrames,
+		layoutMaximumCachedRowCodeUnits: metrics.altLayoutMaximumCachedRowCodeUnits,
+		layoutRowCacheRejectedBySizePerFrame: metrics.altLayoutRowCacheRejectedBySize / measuredFrames,
+		sourceInvariantNestedRenderCacheMapsPerFrame: 0,
+		sourceInvariantRenderCacheLookupWrapperObjectsPerFrame: 0,
 	},
 	topAllocationSites: sampled.top,
 }, null, 2)}\n`);
