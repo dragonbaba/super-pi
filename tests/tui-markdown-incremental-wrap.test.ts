@@ -35,6 +35,15 @@ const ANSI_THEME: MarkdownTheme = {
 	underline: (text: string): string => `\x1b[4m${text}\x1b[24m`,
 };
 
+const SYNTAX_TRANSITION_THEME: MarkdownTheme = {
+	...PLAIN_THEME,
+	link: (text: string): string => `<link>${text}</link>`,
+	linkUrl: (text: string): string => `<url>${text}</url>`,
+	underline: (text: string): string => `<underline>${text}</underline>`,
+	listBullet: (text: string): string => `<bullet>${text}</bullet>`,
+	hr: (text: string): string => `<rule>${text}</rule>`,
+};
+
 function createMetrics(): MarkdownIncrementalMetrics {
 	return {
 		incrementalEligibleUpdates: 0,
@@ -130,6 +139,92 @@ test("non-wrapper heading themes remain on the full-render fallback", () => {
 	assert.deepEqual(candidate.render(30), new Markdown("# heading grows", 0, 0, dynamicTheme).render(30));
 	assert.equal(metrics.incrementalUpdates, 0);
 	assert.equal(metrics.lastFallbackReason, "style-state");
+});
+
+test("plain checkpoints fall back before list hr URL and email token transitions", () => {
+	const matrices: readonly (readonly [string, string])[] = [
+		["1", "1. item"],
+		["1", "1) item"],
+		["--", "---"],
+		["https", "https://example.com"],
+		["www", "www.example.com"],
+		["user", "user@example.com"],
+		["# https", "# https://example.com"],
+	];
+	for (let index = 0; index < matrices.length; index++) {
+		const [initial, transitioned] = matrices[index]!;
+		const metrics = createMetrics();
+		const candidate = new Markdown(
+			initial,
+			0,
+			0,
+			SYNTAX_TRANSITION_THEME,
+			undefined,
+			{ incrementalRenderCache: true },
+			metrics,
+		);
+		candidate.render(40);
+		const incrementalBefore = metrics.incrementalUpdates;
+		const fallbacksBefore = metrics.fullFallbacks;
+		candidate.setText(transitioned);
+		assert.deepEqual(
+			candidate.render(40),
+			new Markdown(transitioned, 0, 0, SYNTAX_TRANSITION_THEME).render(40),
+			`syntax transition ${initial} -> ${transitioned}`,
+		);
+		assert.equal(metrics.incrementalUpdates, incrementalBefore);
+		assert.equal(metrics.fullFallbacks, fallbacksBefore + 1);
+		assert.equal(metrics.lastFallbackReason, "syntax-transition");
+		const state = candidate as unknown as { incrementalPlainContentLines?: string[] };
+		assert.equal(state.incrementalPlainContentLines, undefined);
+		const incrementalBeforeTail = metrics.incrementalUpdates;
+		const fallbacksBeforeTail = metrics.fullFallbacks;
+		candidate.setText(`${transitioned} tail`);
+		assert.deepEqual(
+			candidate.render(40),
+			new Markdown(`${transitioned} tail`, 0, 0, SYNTAX_TRANSITION_THEME).render(40),
+		);
+		assert.equal(metrics.incrementalUpdates, incrementalBeforeTail);
+		assert.equal(metrics.fullFallbacks, fallbacksBeforeTail + 1);
+	}
+	for (const marker of ["-", "+"]) {
+		const candidate = new Markdown(marker, 0, 0, SYNTAX_TRANSITION_THEME, undefined, {
+			incrementalRenderCache: true,
+		});
+		candidate.render(40);
+		const state = candidate as unknown as { incrementalPlainContentLines?: string[] };
+		assert.equal(state.incrementalPlainContentLines, undefined);
+	}
+});
+
+test("benign punctuation retains or reestablishes a plain checkpoint", () => {
+	const steps = [
+		"ordinary",
+		"ordinary,",
+		"ordinary, prose",
+		"ordinary, prose.",
+		"ordinary, prose. (safe",
+		"ordinary, prose. (safe)",
+		"ordinary, prose. (safe): sentence",
+	];
+	const metrics = createMetrics();
+	const candidate = new Markdown(
+		steps[0]!,
+		0,
+		0,
+		SYNTAX_TRANSITION_THEME,
+		undefined,
+		{ incrementalRenderCache: true },
+		metrics,
+	);
+	for (let index = 0; index < steps.length; index++) {
+		const source = steps[index]!;
+		candidate.setText(source);
+		assert.deepEqual(candidate.render(40), new Markdown(source, 0, 0, SYNTAX_TRANSITION_THEME).render(40));
+	}
+	assert.equal(metrics.incrementalUpdates, steps.length - 1);
+	assert.equal(metrics.fullFallbacks, 1);
+	assert.equal(metrics.lastFallbackReason, "none");
 });
 
 test("unsafe Markdown structures use full fallback and remain golden", () => {
@@ -277,11 +372,22 @@ test("safe append checkpoints remain golden across deterministic randomized stre
 		seed = (Math.imul(seed, 1_664_525) + 1_013_904_223) >>> 0;
 		return seed;
 	};
-	const chunks = ["a", "b", "Z", "0", " ", ".", ",", "(", ")", "中", "文", "🙂", "e\u0301", "👨‍👩‍👧‍👦"];
+	const seeds = ["x", "1", "--", "www", "https", "user", "ordinary"];
+	const chunks = [
+		"a", "b", "Z", "0", " ", ".", ",", "(", ")", ":", "/", "@", "-", "+",
+		"中", "文", "🙂", "e\u0301", "👨‍👩‍👧‍👦",
+	];
 	for (let stream = 0; stream < 100; stream++) {
-		let source = "x";
+		let source = seeds[stream % seeds.length]!;
 		const width = 4 + (nextRandom() % 40);
-		const candidate = new Markdown(source, 1, 0, PLAIN_THEME, undefined, { incrementalRenderCache: true });
+		const candidate = new Markdown(
+			source,
+			1,
+			0,
+			SYNTAX_TRANSITION_THEME,
+			undefined,
+			{ incrementalRenderCache: true },
+		);
 		for (let update = 0; update < 200; update++) {
 			const chunk = chunks[nextRandom() % chunks.length]!;
 			if (chunk === " " && source.endsWith(" ")) continue;
@@ -289,17 +395,35 @@ test("safe append checkpoints remain golden across deterministic randomized stre
 			candidate.setText(source);
 			assert.deepEqual(
 				candidate.render(width),
-				new Markdown(source, 1, 0, PLAIN_THEME).render(width),
+				new Markdown(source, 1, 0, SYNTAX_TRANSITION_THEME).render(width),
 				`stream ${stream}, update ${update}, width ${width}`,
 			);
 		}
 	}
 });
 
-test("incremental Markdown hot methods do not add closures, maps, sets, or array transforms", () => {
-	const path = resolve("packages/tui/src/components/markdown.ts");
-	const source = ts.createSourceFile(path, readFileSync(path, "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+test("incremental Markdown and wrapping hot functions do not add closures maps sets or array transforms", () => {
+	const markdownPath = resolve("packages/tui/src/components/markdown.ts");
+	const markdownSource = ts.createSourceFile(
+		markdownPath,
+		readFileSync(markdownPath, "utf8"),
+		ts.ScriptTarget.Latest,
+		true,
+		ts.ScriptKind.TS,
+	);
+	const utilsPath = resolve("packages/tui/src/utils.ts");
+	const utilsSource = ts.createSourceFile(
+		utilsPath,
+		readFileSync(utilsPath, "utf8"),
+		ts.ScriptTarget.Latest,
+		true,
+		ts.ScriptKind.TS,
+	);
 	const methodNames = new Set([
+		"hasIncrementalPlainSyntaxTransition",
+		"hasIncrementalDocumentPrefixTransition",
+		"hasIncrementalAutolinkTransition",
+		"incrementalAsciiPrefixEquals",
 		"renderIncrementalPlainAppend",
 		"setText",
 		"prepareIncrementalPlainStyle",
@@ -308,7 +432,9 @@ test("incremental Markdown hot methods do not add closures, maps, sets, or array
 		"scanIncrementalPlainTail",
 		"consumeIncrementalPlainToken",
 	]);
+	const functionNames = new Set(["splitIntoTokensWithAnsi", "wrapSingleLine"]);
 	let methodsChecked = 0;
+	let functionsChecked = 0;
 	let closures = 0;
 	let mapsOrSets = 0;
 	let arrayTransforms = 0;
@@ -328,12 +454,28 @@ test("incremental Markdown hot methods do not add closures, maps, sets, or array
 			if (node.body) ts.forEachChild(node.body, visitMethod);
 			return;
 		}
+		if (ts.isFunctionDeclaration(node) && node.name && functionNames.has(node.name.text)) {
+			functionsChecked++;
+			if (node.body) ts.forEachChild(node.body, visitMethod);
+			return;
+		}
 		ts.forEachChild(node, visit);
 	};
-	visit(source);
+	visit(markdownSource);
+	visit(utilsSource);
 	assert.equal(methodsChecked, methodNames.size);
+	assert.equal(functionsChecked, functionNames.size);
 	assert.equal(closures, 0);
 	assert.equal(mapsOrSets, 0);
 	assert.equal(arrayTransforms, 0);
 	assert.equal(objectLiterals, 0);
+});
+
+test("incremental Markdown benchmark labels CPU percentiles as 100-update batch means", () => {
+	const source = readFileSync(resolve("scripts/bench/tui-markdown-incremental-wrap.ts"), "utf8");
+	assert.match(source, /batchSize:\s*100/);
+	assert.match(source, /cpuP50MsPerBatchMeanUpdate/);
+	assert.match(source, /cpuP95MsPerBatchMeanUpdate/);
+	assert.doesNotMatch(source, /cpuP50MsPerUpdate/);
+	assert.doesNotMatch(source, /cpuP95MsPerUpdate/);
 });

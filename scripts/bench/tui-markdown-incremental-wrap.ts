@@ -35,8 +35,9 @@ interface ChildResult {
 	width: number;
 	rows: number;
 	mode: "full" | "incremental";
-	cpuP50MsPerUpdate: number;
-	cpuP95MsPerUpdate: number;
+	batchSize: number;
+	cpuP50MsPerBatchMeanUpdate: number;
+	cpuP95MsPerBatchMeanUpdate: number;
 	sampledAllocationBytesPerUpdate: number;
 	minorGcCount: number;
 	majorGcCount: number;
@@ -90,10 +91,25 @@ const THEME: MarkdownTheme = {
 	underline: identityStyle,
 };
 
-const FIXTURES = ["plain", "append", "cjk", "ansi", "code", "list", "table", "latex"] as const;
+const FIXTURES = [
+	"plain",
+	"append",
+	"cjk",
+	"ansi",
+	"code",
+	"list",
+	"table",
+	"latex",
+	"plain-to-list",
+	"plain-to-hr",
+	"plain-to-url",
+	"plain-to-email",
+	"punctuation-rich-plain",
+] as const;
 type Fixture = (typeof FIXTURES)[number];
 const WIDTHS = [120, 200] as const;
 const ROWS = [40, 60] as const;
+const PUNCTUATION_APPEND_CHUNKS = [",", " prose", ".", " (safe", ")", ": sentence", " / path", " - plus +"] as const;
 
 function readStringOption(name: string): string | undefined {
 	const index = process.argv.indexOf(name);
@@ -265,6 +281,13 @@ function nextFixtureSource(fixture: Fixture, index: number, growing: string): st
 		case "list": return `- item ${index & 7}\n  - nested ${index & 3}`;
 		case "table": return `| key | value |\n| --- | --- |\n| row | ${index & 15} |`;
 		case "latex": return `$x_${index & 7}^2 + y_${index & 3}^2$`;
+		case "plain-to-list": return (index & 1) === 0 ? "1. item" : "1";
+		case "plain-to-hr": return (index & 1) === 0 ? "---" : "--";
+		case "plain-to-url": return (index & 1) === 0 ? "https://example.com" : "https";
+		case "plain-to-email": return (index & 1) === 0 ? "user@example.com" : "user";
+		case "punctuation-rich-plain": return growing.length >= 4_096
+			? "ordinary"
+			: growing + PUNCTUATION_APPEND_CHUNKS[index % PUNCTUATION_APPEND_CHUNKS.length]!;
 	}
 }
 
@@ -287,6 +310,50 @@ async function runChild(): Promise<void> {
 	let lines = markdown.render(width);
 	let updateIndex = 0;
 	const update = (): void => {
+		if (fixture === "plain-to-list") {
+			markdown.invalidate();
+			source = "1";
+			markdown.setText(source);
+			markdown.render(width);
+			source = "1. item";
+			markdown.setText(source);
+			lines = markdown.render(width);
+			updateIndex++;
+			return;
+		}
+		if (fixture === "plain-to-hr") {
+			markdown.invalidate();
+			source = "--";
+			markdown.setText(source);
+			markdown.render(width);
+			source = "---";
+			markdown.setText(source);
+			lines = markdown.render(width);
+			updateIndex++;
+			return;
+		}
+		if (fixture === "plain-to-url") {
+			markdown.invalidate();
+			source = "https";
+			markdown.setText(source);
+			markdown.render(width);
+			source = "https://example.com";
+			markdown.setText(source);
+			lines = markdown.render(width);
+			updateIndex++;
+			return;
+		}
+		if (fixture === "plain-to-email") {
+			markdown.invalidate();
+			source = "user";
+			markdown.setText(source);
+			markdown.render(width);
+			source = "user@example.com";
+			markdown.setText(source);
+			lines = markdown.render(width);
+			updateIndex++;
+			return;
+		}
 		source = nextFixtureSource(fixture, updateIndex++, source);
 		markdown.setText(source);
 		lines = markdown.render(width);
@@ -363,8 +430,9 @@ async function runChild(): Promise<void> {
 		width,
 		rows,
 		mode,
-		cpuP50MsPerUpdate: percentile(sortedDurations, 0.5),
-		cpuP95MsPerUpdate: percentile(sortedDurations, 0.95),
+		batchSize,
+		cpuP50MsPerBatchMeanUpdate: percentile(sortedDurations, 0.5),
+		cpuP95MsPerBatchMeanUpdate: percentile(sortedDurations, 0.95),
 		sampledAllocationBytesPerUpdate: sampled.sampledBytes / updates,
 		minorGcCount,
 		majorGcCount,
@@ -448,8 +516,8 @@ async function runParent(): Promise<void> {
 				incrementalRuns.push(runOneChild(fixture, width, rows, "incremental", updates, warmup, samplingInterval));
 			}
 			const summarize = (runs: readonly ChildResult[]): unknown => {
-				const p50 = runs.map((run) => run.cpuP50MsPerUpdate);
-				const p95 = runs.map((run) => run.cpuP95MsPerUpdate);
+				const p50 = runs.map((run) => run.cpuP50MsPerBatchMeanUpdate);
+				const p95 = runs.map((run) => run.cpuP95MsPerBatchMeanUpdate);
 				const allocation = runs.map((run) => run.sampledAllocationBytesPerUpdate);
 				let minorGcCount = 0;
 				let majorGcCount = 0;
@@ -462,16 +530,17 @@ async function runParent(): Promise<void> {
 				return {
 					runs: runs.map((run, processIndex) => ({
 						processIndex,
-						cpuP50MsPerUpdate: run.cpuP50MsPerUpdate,
-						cpuP95MsPerUpdate: run.cpuP95MsPerUpdate,
+						batchSize: run.batchSize,
+						cpuP50MsPerBatchMeanUpdate: run.cpuP50MsPerBatchMeanUpdate,
+						cpuP95MsPerBatchMeanUpdate: run.cpuP95MsPerBatchMeanUpdate,
 						sampledAllocationBytesPerUpdate: run.sampledAllocationBytesPerUpdate,
 						minorGcCount: run.minorGcCount,
 						majorGcCount: run.majorGcCount,
 						totalGcDurationMs: run.totalGcDurationMs,
 					})),
 					aggregate: {
-						medianCpuP50MsPerUpdate: median(p50),
-						medianCpuP95MsPerUpdate: median(p95),
+						medianCpuP50MsPerBatchMeanUpdate: median(p50),
+						medianCpuP95MsPerBatchMeanUpdate: median(p95),
 						cpuP50Cv: coefficientOfVariation(p50),
 						cpuP95Cv: coefficientOfVariation(p95),
 						medianSampledAllocationBytesPerUpdate: median(allocation),
@@ -503,9 +572,10 @@ async function runParent(): Promise<void> {
 		processes,
 		updatesPerProcess: updates,
 		warmupPerProcess: warmup,
+		batchSize: 100,
 		samplingInterval,
 		lifecycle,
-		measurementWindow: "Heap sampling, GC observation, and batched CPU timing all cover measured updates only",
+		measurementWindow: "Heap sampling and GC cover measured updates only; CPU p50/p95 are percentiles of 100-update batch means, not raw per-update latency percentiles",
 		reports,
 	}, null, 2)}\n`;
 	const outputPath = readStringOption("--output");
