@@ -762,15 +762,6 @@ function splitIntoTokensWithAnsi(text: string): string[] {
 	let currentKind: "space" | "word" | null = null;
 	let i = 0;
 
-	const flushCurrent = (): void => {
-		if (!current) {
-			return;
-		}
-		tokens.push(current);
-		current = "";
-		currentKind = null;
-	};
-
 	while (i < text.length) {
 		const ansiResult = extractAnsiCode(text, i);
 		if (ansiResult) {
@@ -788,7 +779,11 @@ function splitIntoTokensWithAnsi(text: string): string[] {
 		for (const { segment } of graphemeSegmenter.segment(text.slice(i, end))) {
 			const segmentIsSpace = segment === " ";
 			if (!segmentIsSpace && cjkBreakRegex.test(segment)) {
-				flushCurrent();
+				if (current) {
+					tokens.push(current);
+					current = "";
+					currentKind = null;
+				}
 				const token = pendingAnsi + segment;
 				pendingAnsi = "";
 				tokens.push(token);
@@ -797,7 +792,9 @@ function splitIntoTokensWithAnsi(text: string): string[] {
 
 			const segmentKind = segmentIsSpace ? "space" : "word";
 			if (current && currentKind !== segmentKind) {
-				flushCurrent();
+				tokens.push(current);
+				current = "";
+				currentKind = null;
 			}
 
 			// Attach any pending ANSI codes to this visible character
@@ -945,7 +942,9 @@ function wrapSingleLine(line: string, width: number): string[] {
 	}
 
 	// Trailing whitespace can cause lines to exceed the requested width
-	return wrapped.length > 0 ? wrapped.map((line) => line.trimEnd()) : [""];
+	if (wrapped.length === 0) return [""];
+	for (let index = 0; index < wrapped.length; index++) wrapped[index] = wrapped[index]!.trimEnd();
+	return wrapped;
 }
 
 const PUNCTUATION_CHARACTERS = "(){}[]<>.,;:'\"!?+-=*/\\|&%^$#@~`";
