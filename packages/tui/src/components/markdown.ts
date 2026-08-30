@@ -200,6 +200,7 @@ const MAX_INCREMENTAL_MARKDOWN_TEXT_LENGTH = 256 * 1024;
 const MAX_INCREMENTAL_MARKDOWN_TOKENS = 8192;
 const MAX_INCREMENTAL_MARKDOWN_RENDERED_CHARACTERS = 4 * 1024 * 1024;
 const MAX_INCREMENTAL_PLAIN_TAIL_CODE_UNITS = 4 * 1024;
+const MAX_INCREMENTAL_LEXICAL_PREFIX_CODE_UNITS = 7;
 const MIN_INCREMENTAL_PLAIN_CONTENT_WIDTH = 2;
 
 export type MarkdownIncrementalFallbackReason =
@@ -843,7 +844,10 @@ export class Markdown implements Component {
 			if (index === source.length) break;
 			wordStart = index + 1;
 		}
-		this.plainLexicalNextTailSourceOffset = wordStart - contentOffset;
+		this.plainLexicalNextTailSourceOffset = Math.max(
+			0,
+			source.length - contentOffset - MAX_INCREMENTAL_LEXICAL_PREFIX_CODE_UNITS,
+		);
 		return false;
 	}
 
@@ -913,15 +917,7 @@ export class Markdown implements Component {
 		const contentOffset = kind === 1 ? 0 : kind;
 		const content = source.slice(contentOffset);
 		this.scanIncrementalPlainTail(content, contentWidth);
-		let lexicalTailSourceOffset = content.length;
-		while (lexicalTailSourceOffset > 0 && content.charCodeAt(lexicalTailSourceOffset - 1) !== 0x20) {
-			lexicalTailSourceOffset--;
-		}
-		if (content.length - lexicalTailSourceOffset > MAX_INCREMENTAL_PLAIN_TAIL_CODE_UNITS) {
-			if (this.incrementalMetrics) this.incrementalMetrics.lastFallbackReason = "tail-capacity";
-			this.clearIncrementalCache();
-			return;
-		}
+		const lexicalTailSourceOffset = Math.max(0, content.length - MAX_INCREMENTAL_LEXICAL_PREFIX_CODE_UNITS);
 		if (content.length - this.plainScanLineStart > MAX_INCREMENTAL_PLAIN_TAIL_CODE_UNITS) {
 			if (this.incrementalMetrics) this.incrementalMetrics.lastFallbackReason = "tail-capacity";
 			this.clearIncrementalCache();
