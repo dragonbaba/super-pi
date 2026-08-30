@@ -54,7 +54,7 @@ Shadow telemetry has only fixed low-cardinality metadata:
 - proposed model-view tokens and would-truncate decisions at 1k, 2k, 4k, 8k, and 16k;
 - a fixed proposed reason, fixed tool category, estimator id/version, and exact/fallback confidence.
 
-It contains no output text or snippet, prompt, args, path, cwd, headers, keys, session content, hash, secret, or image/base64 body. The generic `wouldTruncate` value is nullable unless an explicit `candidateBudgetTokens` is supplied; there is no implicit 1k candidate. Synchronous sink throws and asynchronous sink rejections are isolated without awaiting the sink. `telemetrySinkDrops` counts absent, thrown, rejected, or observation-failed records; `telemetrySinkRejections` counts throws/rejections specifically. `dispose()` decrements each actively tracked resolver/sink reference as it is cleared; it does not assign a synthetic zero.
+It contains no output text or snippet, prompt, args, path, cwd, headers, keys, session content, hash, secret, or image/base64 body. The generic `wouldTruncate` value is nullable unless an explicit `candidateBudgetTokens` is supplied; there is no implicit 1k candidate. Synchronous sink throws and asynchronous sink rejections are isolated without awaiting the sink. `telemetrySinkDrops` counts absent, thrown, rejected, or observation-failed records; `telemetrySinkRejections` counts both synchronous throws and asynchronous rejections. `dispose()` decrements each actively tracked resolver/sink reference as it is cleared; it does not assign a synthetic zero. Shared counter sets retain a monotonic reference high-water mark across sequential and concurrent observer lifecycles.
 
 ## Merge Gate closeout
 
@@ -70,6 +70,33 @@ The fixed `phase5a-v2` corpus has 42 `cl100k_base` fixtures. A second independen
 The fallback therefore remains `conservative-fallback`; Phase 5B enforcement is still outside this change. The scanner correction retains the original one-pass `ScanState` structure and adds only primitive letter/symbol masks, transition/unique counters, CJK subtype counters, and a malformed-surrogate join counter.
 
 Async rejection tests cover both the telemetry sink and a JavaScript/`any` exact-estimator thenable. After a microtask turn they observe zero `unhandledRejection` events. The real AgentSession test proves extension replacement occurs before shadow, listeners and persistence still receive the replacement, and absent/disabled/enabled production results are structurally equal.
+
+### Entropy-threshold closeout
+
+The fixed `phase5a-v3` corpus retains all 42 `phase5a-v2` fixtures and appends 88 deterministic threshold fixtures. Four independent seeds cover lowercase lengths/cardinalities 12/(8,10,12), 16/(12,14,16), 64/(16,19,20,26), and 256/(16,19,20,26); uppercase and normalized mixed-case cardinalities 16/19/20; and 64/256-character printable-symbol alphabets whose characters collide under the former `code & 31` mask.
+
+Before the formula change, both tokenizers failed 61 fixtures. `cl100k_base` maximum/p99 underestimation was 71.43%, including 2 estimated tokens for 7 actual tokens at lowercase 12/10; `o200k_base` maximum/p99 was 66.67%. The former symbol mask represented only 6 of the 16 collision-alphabet characters. Direct state tests also proved the first character was omitted from the letter and symbol masks.
+
+The corrected classifier maps all 32 printable ASCII symbols collision-free into one 32-bit primitive mask and uses a continuous distinct-character contribution instead of the 16/20-letter cliffs. It retains one pass, one fixed `ScanState`, and no maps, sets, per-character objects, lookup tables, second scan, or per-result closures.
+
+| Reference | Fixtures | p99 under | Max under | Average over |
+| --- | ---: | ---: | ---: | ---: |
+| `cl100k_base` | 130 | 8.57% | 8.57% | 24.66% |
+| `o200k_base` | 128 | 5.88% | 8.51% | 28.20% |
+
+Every fixture remains at or below 10% underestimation and both overall average-overestimation gates remain below 35%.
+
+The initial correctness implementation showed a stable performance regression, so a primitive-only fast path now initializes a new ASCII run directly and advances identical characters by length only. Formal clean-worktree results at production commit `24ca90ed078dce4539e9ddfc71e9a3ca1bc5c33a`, compared with the frozen `c68543a` baseline, were:
+
+| Fixture | Closeout p50/p95 | Baseline p50/p95 | Change p50/p95 |
+| --- | ---: | ---: | ---: |
+| 64 KiB English | 0.8837/0.9093 ms | 0.8906/0.9023 ms | -0.78%/+0.78% |
+| 1 MiB logs | 14.5583/16.1513 ms | 14.8522/15.3896 ms | -1.98%/+4.95% |
+| 10 MiB single-line | 60.6701/62.2925 ms | 101.0506/104.0889 ms | -39.96%/-40.16% |
+
+Aggregate throughput was 141.04 MiB/s, compared with the frozen 94.11 MiB/s baseline. HeapProfiler sampled 206,072 bytes, with no per-character allocation site. Dynamic counters remained exactly one scan-state and one estimate object per call; controlled-GC slope remained 27.2 bytes/cycle. Full copies, serializations, line arrays, and object pools remained source-invariant zero.
+
+The corresponding production shadow benchmark measured observer enabled at 0.8486/0.9806 ms p50/p95 and real AgentSession absent/disabled/enabled at 0.0222/0.0475, 0.0169/0.0345, and 0.8723/0.9311 ms. Disabled mode recorded zero estimator, scan-state, estimate, payload, and sink work. Clear/dispose reduced heap by 86,456 bytes, left zero active retained references, and produced a 25.6-byte/cycle controlled-GC slope.
 
 ## Initial Candidate Gate corpus (historical, superseded by phase5a-v2)
 
