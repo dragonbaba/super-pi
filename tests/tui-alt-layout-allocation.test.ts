@@ -58,6 +58,46 @@ class WidthAwareLines implements Component {
 	invalidate(): void {}
 }
 
+function createWidthOrder(widthCount: number, order: "increasing" | "decreasing" | "interleaved"): number[] {
+	const widths: number[] = [];
+	if (order === "increasing") {
+		for (let width = 1; width <= widthCount; width++) widths.push(width);
+	} else if (order === "decreasing") {
+		for (let width = widthCount; width >= 1; width--) widths.push(width);
+	} else {
+		let low = 1;
+		let high = widthCount;
+		while (low <= high) {
+			widths.push(low++);
+			if (low <= high) widths.push(high--);
+		}
+	}
+	const firstPassLength = widths.length;
+	for (let index = 0; index < firstPassLength; index++) widths.push(widths[index]!);
+	widths.push(widths[0]!);
+	return widths;
+}
+
+function renderSameComponentWidths(
+	widthCount: number,
+	order: "increasing" | "decreasing" | "interleaved",
+	scratch: LayoutFrameScratch,
+): ReturnType<typeof renderLayoutFrame> {
+	const component = new WidthAwareLines();
+	const widths = createWidthOrder(widthCount, order);
+	const rows: Component[] = [];
+	for (let index = 0; index < widths.length; index++) {
+		rows.push(new HStack([{ component, basis: widths[index]! }]));
+	}
+	return renderLayoutFrame(
+		new VStack(rows),
+		widthCount + 1,
+		rows.length,
+		() => {},
+		scratch,
+	);
+}
+
 function createLayout(itemCount = 100): {
 	root: Component;
 	active: MutableLines;
@@ -229,6 +269,28 @@ test("Alt layout render cache lookup probes scale linearly for large layouts", (
 	);
 	assert.equal(multiWidthFrame.renderCacheRecordCount, 2);
 	assert.deepEqual(multiWidth.widths, [20, 40]);
+});
+
+test("Alt layout bounds lookup work for many widths of the same component", () => {
+	const nonlinear: string[] = [];
+	for (const widthCount of [8, 16, 32, 64, 256]) {
+		for (const order of ["increasing", "decreasing", "interleaved"] as const) {
+			const scratch = new LayoutFrameScratch();
+			const frame = renderSameComponentWidths(widthCount, order, scratch);
+			if ((frame.renderCacheLookupProbes ?? Number.POSITIVE_INFINITY) > widthCount * 32 + 2048) {
+				nonlinear.push(`${widthCount}:${order}:${frame.renderCacheLookupProbes}`);
+			}
+			if (widthCount > 8) assert.ok((frame.renderCacheWidthVariantBypasses ?? 0) > 0);
+			assert.ok((frame.renderCacheRecordCount ?? Number.POSITIVE_INFINITY) <= createWidthOrder(widthCount, order).length + 8);
+			assert.ok((frame.childRenderCalls ?? Number.POSITIVE_INFINITY) <= widthCount * 8 + 32);
+			const retained = scratch.getRetainedReferenceCounts();
+			assert.equal(retained.components, 0);
+			assert.equal(retained.lines, 0);
+			assert.equal(retained.indexedComponents, 0);
+			scratch.clear();
+		}
+	}
+	assert.deepEqual(nonlinear, []);
 });
 
 test("Alt layout does not retain oversized full-width row strings", () => {
@@ -591,14 +653,18 @@ test("stable Alt layout hot path has no collection transforms or inline allocati
 	assert.deepEqual(violations, []);
 	assert.match(findMethod(alt, "TuiAltScreen", "doRender").getText(alt), /this\.layoutScratch/);
 	const layoutText = layout.getFullText();
+	const altText = alt.getFullText();
 	assert.match(layoutText, /renderComponents: Array<Component \| undefined>/);
 	assert.match(layoutText, /renderLines: Array<string\[\] \| undefined>/);
 	assert.match(layoutText, /visibleEntries: Array<StackLayoutEntry \| undefined>/);
 	assert.doesNotMatch(layoutText, /undefined as unknown as/);
+	assert.doesNotMatch(altText, /undefined as unknown as/);
 	assert.match(layoutText, /Math\.max\(this\.sourceA\.length, this\.sourceB\.length\)/);
 	assert.doesNotMatch(layoutText, /renderCacheMapsCreated|nestedRenderCacheMapsCreated/);
 	const renderCachedText = findFunction(layout, "renderCached").getText(layout);
 	assert.doesNotMatch(renderCachedText, /new Map|\{\s*component[,}]/);
+	assert.match(layoutText, /MAX_RENDER_CACHE_WIDTH_VARIANTS = 8/);
+	assert.match(renderCachedText, /RENDER_CACHE_WIDTH_VARIANTS_UNCACHEABLE/);
 	const activateIndexText = findFunction(layout, "activateRenderCacheIndex").getText(layout);
 	assert.equal(activateIndexText.match(/new Map</g)?.length, 1);
 	assert.match(findMethod(layout, "LayoutFrameScratch", "releaseTransientReferences").getText(layout), /renderCacheIndex\?\.clear\(\)/);
