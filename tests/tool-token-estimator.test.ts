@@ -10,6 +10,17 @@ import {
 } from "../packages/coding-agent/src/core/tool-output-budget.ts";
 import { createToolTokenEstimatorCorpus } from "./fixtures/tool-token-estimator-corpus.ts";
 
+const PHASE5A_V2_FIXTURE_IDS = [
+	"empty", "tiny", "english-prose-short", "english-prose-repeated", "english-log", "chinese", "mixed",
+	"json-pretty", "json-minified", "typescript", "javascript", "python", "shell", "stack-trace",
+	"repeated-errors", "ansi", "emoji", "family-emoji", "combining", "urls", "uuid-hash", "base64-like",
+	"long-word-lower", "long-word-mixed", "random-lowercase-12", "random-lowercase-64",
+	"random-lowercase-256", "random-uppercase-64", "random-mixed-case-128", "camel-case-identifiers",
+	"alphabetic-api-key-like", "random-punctuation-256", "rare-han", "cjk-extension", "hiragana-katakana",
+	"hangul", "mixed-cjk-ascii-identifiers", "malformed-high", "malformed-low", "malformed-boundary",
+	"one-mib-output", "ten-mib-single-line",
+] as const;
+
 function percentile(sorted: readonly number[], ratio: number): number {
 	return sorted[Math.min(sorted.length - 1, Math.max(0, Math.ceil(sorted.length * ratio) - 1))] ?? 0;
 }
@@ -101,12 +112,51 @@ test("letter and printable-symbol masks include the first character without coll
 	assert.equal(symbols.symbolMask >>> 0, 0xffff_0000);
 });
 
+test("threshold corpus retains v2 and locks every seed/cardinality boundary", () => {
+	const fixtures = createToolTokenEstimatorCorpus();
+	const byId = new Map(fixtures.map((fixture) => [fixture.id, fixture]));
+	assert.equal(fixtures.length, 130);
+	assert.equal(PHASE5A_V2_FIXTURE_IDS.length, 42);
+	for (const id of PHASE5A_V2_FIXTURE_IDS) assert.ok(byId.has(id), `missing retained fixture ${id}`);
+
+	for (const [length, cardinalities] of [
+		[12, [8, 10, 12]],
+		[16, [12, 14, 16]],
+		[64, [16, 19, 20, 26]],
+		[256, [16, 19, 20, 26]],
+	] as const) {
+		for (const cardinality of cardinalities) {
+			for (let seed = 1; seed <= 4; seed++) {
+				const fixture = byId.get(`threshold-lower-l${length}-c${cardinality}-s${seed}`)!;
+				assert.equal(fixture.text.length, length);
+				assert.equal(new Set(fixture.text).size, cardinality);
+			}
+		}
+	}
+	for (const cardinality of [16, 19, 20] as const) {
+		for (let seed = 1; seed <= 4; seed++) {
+			const upper = byId.get(`threshold-upper-l64-c${cardinality}-s${seed}`)!;
+			const mixed = byId.get(`threshold-mixed-l64-c${cardinality}-s${seed}`)!;
+			assert.equal(new Set(upper.text).size, cardinality);
+			assert.equal(new Set(mixed.text.toLowerCase()).size, cardinality);
+			assert.match(mixed.text, /[a-z]/);
+			assert.match(mixed.text, /[A-Z]/);
+		}
+	}
+	for (const length of [64, 256] as const) {
+		for (let seed = 1; seed <= 4; seed++) {
+			const symbols = byId.get(`threshold-symbol-collision-l${length}-s${seed}`)!;
+			assert.equal(symbols.text.length, length);
+			assert.equal(new Set(symbols.text).size, 16);
+		}
+	}
+});
+
 test("fixed reference corpus meets conservative accuracy gates", { timeout: 120_000 }, () => {
 	const encoding = getEncoding("cl100k_base");
 	try {
 		const fixtures = createToolTokenEstimatorCorpus();
 		assert.equal(fixtures.length, 130);
-		assert.equal(fixtures.slice(0, 42).length, 42, "the original phase5a-v2 fixtures remain present");
 		const under: number[] = [];
 		const over: number[] = [];
 		const categoryUnder = new Map<string, { total: number; count: number }>();
