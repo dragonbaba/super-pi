@@ -11,6 +11,8 @@ const FULL_WIDTH_LINE_RESET = "\x1b[0m\x1b]8;;\x07";
 const MAX_RETAINED_LAYOUT_ROWS = 4096;
 const MAX_RETAINED_LAYOUT_RECORDS = 4096;
 const RENDER_CACHE_LINEAR_LIMIT = 24;
+const MAX_RENDER_CACHE_WIDTH_VARIANTS = 8;
+const RENDER_CACHE_WIDTH_VARIANTS_UNCACHEABLE = -2;
 const MAX_RETAINED_ROW_CODE_UNITS = 64 * 1024;
 const MAX_RETAINED_ROW_CACHE_CODE_UNITS = 512 * 1024;
 
@@ -62,6 +64,7 @@ export interface LayoutFrame {
 	renderCacheLookupProbes?: number;
 	renderCacheRecordCount?: number;
 	renderCacheIndexActivations?: number;
+	renderCacheWidthVariantBypasses?: number;
 	cachedSourceCodeUnits?: number;
 	cachedPaintedCodeUnits?: number;
 	maximumCachedRowCodeUnits?: number;
@@ -123,6 +126,7 @@ export interface LayoutContext {
 	renderCacheLookupProbes: number;
 	renderCacheRecordCount: number;
 	renderCacheIndexActivations: number;
+	renderCacheWidthVariantBypasses: number;
 	maximumCachedRowCodeUnits: number;
 	rowCacheRejectedBySize: number;
 }
@@ -178,6 +182,7 @@ export class LayoutFrameScratch {
 		renderCacheLookupProbes: 0,
 		renderCacheRecordCount: 0,
 		renderCacheIndexActivations: 0,
+		renderCacheWidthVariantBypasses: 0,
 		maximumCachedRowCodeUnits: 0,
 		rowCacheRejectedBySize: 0,
 	};
@@ -226,6 +231,7 @@ export class LayoutFrameScratch {
 		context.renderCacheLookupProbes = 0;
 		context.renderCacheRecordCount = 0;
 		context.renderCacheIndexActivations = 0;
+		context.renderCacheWidthVariantBypasses = 0;
 		context.maximumCachedRowCodeUnits = 0;
 		context.rowCacheRejectedBySize = 0;
 
@@ -533,27 +539,53 @@ function activateRenderCacheIndex(context: LayoutContext): void {
 function renderCached(context: LayoutContext, component: Component, width: number): string[] {
 	const safeWidth = Math.max(1, Math.floor(width));
 	let lookupProbes = 0;
+	let widthVariants = 0;
 	if (!context.renderCacheIndexActive && context.renderCount >= RENDER_CACHE_LINEAR_LIMIT) {
 		activateRenderCacheIndex(context);
 	}
 	if (context.renderCacheIndexActive) {
 		lookupProbes++;
 		let index = context.renderCacheIndex!.get(component);
+		if (index === RENDER_CACHE_WIDTH_VARIANTS_UNCACHEABLE) {
+			context.renderCacheLookupProbes += lookupProbes;
+			context.renderCacheWidthVariantBypasses++;
+			context.childRenderCalls++;
+			return component.render(safeWidth);
+		}
 		while (index !== undefined) {
 			lookupProbes++;
 			if (context.renderWidths[index] === safeWidth) {
 				context.renderCacheLookupProbes += lookupProbes;
 				return context.renderLines[index]!;
 			}
+			widthVariants++;
+			if (widthVariants >= MAX_RENDER_CACHE_WIDTH_VARIANTS) {
+				context.renderCacheIndex!.set(component, RENDER_CACHE_WIDTH_VARIANTS_UNCACHEABLE);
+				context.renderCacheLookupProbes += lookupProbes;
+				context.renderCacheWidthVariantBypasses++;
+				context.childRenderCalls++;
+				return component.render(safeWidth);
+			}
 			const previous = context.renderPreviousIndexes[index]!;
 			index = previous < 0 ? undefined : previous;
 		}
 	} else for (let index = 0; index < context.renderCount; index++) {
 		lookupProbes++;
-		if (context.renderComponents[index] === component && context.renderWidths[index] === safeWidth) {
-			context.renderCacheLookupProbes += lookupProbes;
-			return context.renderLines[index]!;
+		if (context.renderComponents[index] === component) {
+			if (context.renderWidths[index] === safeWidth) {
+				context.renderCacheLookupProbes += lookupProbes;
+				return context.renderLines[index]!;
+			}
+			widthVariants++;
 		}
+	}
+	if (widthVariants >= MAX_RENDER_CACHE_WIDTH_VARIANTS) {
+		if (!context.renderCacheIndexActive) activateRenderCacheIndex(context);
+		context.renderCacheIndex!.set(component, RENDER_CACHE_WIDTH_VARIANTS_UNCACHEABLE);
+		context.renderCacheLookupProbes += lookupProbes;
+		context.renderCacheWidthVariantBypasses++;
+		context.childRenderCalls++;
+		return component.render(safeWidth);
 	}
 	context.renderCacheLookupProbes += lookupProbes;
 	const lines = component.render(safeWidth);
@@ -1163,6 +1195,7 @@ export function renderLayoutFrame(
 			renderCacheLookupProbes: context.renderCacheLookupProbes,
 			renderCacheRecordCount: context.renderCacheRecordCount,
 			renderCacheIndexActivations: context.renderCacheIndexActivations,
+			renderCacheWidthVariantBypasses: context.renderCacheWidthVariantBypasses,
 			cachedSourceCodeUnits:
 				context.previousCachedSourceCodeUnits + context.currentCachedSourceCodeUnits,
 			cachedPaintedCodeUnits:

@@ -1147,6 +1147,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			nextLayout.renderCacheLookupProbes ?? 0,
 			nextLayout.renderCacheRecordCount ?? 0,
 			nextLayout.renderCacheIndexActivations ?? 0,
+			nextLayout.renderCacheWidthVariantBypasses ?? 0,
 			nextLayout.screenArraysCreated ?? 0,
 			nextLayout.fullViewportArrayCopies ?? 0,
 			nextLayout.stringRepeatCalls ?? 0,
@@ -1176,8 +1177,6 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		const cursorPos = this.extractCursorPosition(screen, height);
 		const rawScreen = screen;
 		const nextScreen = this.nextScreen;
-		const oldNextLength = nextScreen.length;
-		for (let row = screen.length; row < oldNextLength; row++) nextScreen[row] = undefined as unknown as string;
 		nextScreen.length = screen.length;
 		const fullRedraw =
 			this.previousScreen.length === 0 || this.previousScreenWidth !== width || this.previousScreenHeight !== height;

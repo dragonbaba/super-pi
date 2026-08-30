@@ -42,6 +42,7 @@ export interface TuiRenderMetrics {
 	altLayoutRenderCacheLookupProbes: number;
 	altLayoutRenderCacheRecordCount: number;
 	altLayoutRenderCacheIndexActivations: number;
+	altLayoutRenderCacheWidthVariantBypasses: number;
 	altLayoutScreenArraysCreated: number;
 	altLayoutFullViewportArrayCopies: number;
 	altLayoutStringRepeatCalls: number;
@@ -99,6 +100,7 @@ const EMPTY_METRICS: TuiRenderMetrics = {
 	altLayoutRenderCacheLookupProbes: 0,
 	altLayoutRenderCacheRecordCount: 0,
 	altLayoutRenderCacheIndexActivations: 0,
+	altLayoutRenderCacheWidthVariantBypasses: 0,
 	altLayoutScreenArraysCreated: 0,
 	altLayoutFullViewportArrayCopies: 0,
 	altLayoutStringRepeatCalls: 0,
@@ -196,6 +198,7 @@ export class TuiRenderInstrumentation {
 		renderCacheLookupProbes: number,
 		renderCacheRecordCount: number,
 		renderCacheIndexActivations: number,
+		renderCacheWidthVariantBypasses: number,
 		screenArraysCreated: number,
 		fullViewportArrayCopies: number,
 		stringRepeatCalls: number,
@@ -215,6 +218,7 @@ export class TuiRenderInstrumentation {
 		this.metrics.altLayoutRenderCacheLookupProbes += renderCacheLookupProbes;
 		this.metrics.altLayoutRenderCacheRecordCount += renderCacheRecordCount;
 		this.metrics.altLayoutRenderCacheIndexActivations += renderCacheIndexActivations;
+		this.metrics.altLayoutRenderCacheWidthVariantBypasses += renderCacheWidthVariantBypasses;
 		this.metrics.altLayoutScreenArraysCreated += screenArraysCreated;
 		this.metrics.altLayoutFullViewportArrayCopies += fullViewportArrayCopies;
 		this.metrics.altLayoutStringRepeatCalls += stringRepeatCalls;
