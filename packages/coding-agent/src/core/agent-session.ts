@@ -1034,23 +1034,30 @@ export class AgentSession {
 		}
 
 		if (this._extensionRunner.hasHandlers(event.type)) await this._emitExtensionEvent(event);
-		if (event.type === "message_end" && event.message.role === "toolResult" && this._toolResultPresentation) {
-			const presentation = this._toolResultPresentation.create(event.message.content);
-			if (presentation) {
-				try {
-					(event as Extract<AgentSessionEvent, { type: "message_end" }>).toolResultPresentation = presentation;
-					const model = this.model;
-					this._toolOutputShadow?.observe(
-						event.message,
-						model ? { api: model.api, provider: model.provider, model: model.id } : undefined,
-					);
-					this._emit(event);
-				} finally {
-					this._toolResultPresentation.release();
+		if (event.type === "message_end" && event.message.role === "toolResult") {
+			const presentationOwner = this._toolResultPresentation;
+			if (presentationOwner) {
+				const presentation = presentationOwner.create(event.message.content);
+				if (presentation) {
+					const sessionEvent: Extract<AgentSessionEvent, { type: "message_end" }> = {
+						type: "message_end",
+						message: event.message,
+						toolResultPresentation: presentation,
+					};
+					try {
+						const model = this.model;
+						this._toolOutputShadow?.observe(
+							event.message,
+							model ? { api: model.api, provider: model.provider, model: model.id } : undefined,
+						);
+						this._emit(sessionEvent);
+					} finally {
+						presentationOwner.release();
+					}
+					// This is the complete post-listener message_end tail for tool results.
+					this.sessionManager.appendMessage(event.message);
+					return;
 				}
-				// This is the complete post-listener message_end tail for tool results.
-				this.sessionManager.appendMessage(event.message);
-				return;
 			}
 		}
 		if (event.type === "message_end" && event.message.role === "toolResult") {

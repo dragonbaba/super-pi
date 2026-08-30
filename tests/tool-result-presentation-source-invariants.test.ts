@@ -4,6 +4,7 @@ import test from "node:test";
 import ts from "typescript";
 
 const SOURCE_PATH = "packages/coding-agent/src/core/tool-result-presentation.ts";
+const AGENT_SESSION_SOURCE_PATH = "packages/coding-agent/src/core/agent-session.ts";
 
 test("presentation core forbids large-result hot-path allocation regressions", () => {
 	const source = readFileSync(SOURCE_PATH, "utf8");
@@ -52,4 +53,17 @@ test("presentation core forbids large-result hot-path allocation regressions", (
 	assert.equal(source.includes("ObjectPool"), false);
 	assert.equal(source.includes("Promise.all"), false);
 	assert.equal(source.includes("...modelContent"), false);
+});
+
+test("AgentSession isolates the session event and pairs release with a stable owner", () => {
+	const source = readFileSync(AGENT_SESSION_SOURCE_PATH, "utf8");
+	assert.equal(source.includes("const presentationOwner = this._toolResultPresentation;"), true);
+	assert.equal(source.includes("const sessionEvent: Extract<AgentSessionEvent, { type: \"message_end\" }>"), true);
+	assert.equal(source.includes("message: event.message"), true);
+	assert.equal(source.includes("this._emit(sessionEvent);"), true);
+	assert.equal(source.includes("presentationOwner.release();"), true);
+	assert.equal(source.includes("this._toolResultPresentation.release()"), false);
+	assert.equal(source.includes("Object.assign(event"), false);
+	assert.equal(source.includes("Object.defineProperty(event"), false);
+	assert.equal(source.includes("event.toolResultPresentation ="), false);
 });

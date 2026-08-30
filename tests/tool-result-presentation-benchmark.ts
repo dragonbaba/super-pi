@@ -270,14 +270,14 @@ function counterDelta(
 function perResult(delta: ToolResultPresentationCounters): Record<string, number> {
 	return {
 		presentationObjectsCreated: delta.presentationObjectsCreated / MEASURED_RUNS,
-		outerArraysCreated: delta.outerArraysCreated / MEASURED_RUNS,
-		outerArraysOwned: delta.outerArraysOwned / MEASURED_RUNS,
+		uiOuterArraysCreated: delta.uiOuterArraysCreated / MEASURED_RUNS,
 		modelOuterArraysReused: delta.modelOuterArraysReused / MEASURED_RUNS,
+		presentationOuterArrayReferences: delta.presentationOuterArrayReferences / MEASURED_RUNS,
 		contentBlockReferencesReused: delta.contentBlockReferencesReused / MEASURED_RUNS,
 		textStringReferencesReused: delta.textStringReferencesReused / MEASURED_RUNS,
 		imageDataReferencesReused: delta.imageDataReferencesReused / MEASURED_RUNS,
-		presentationsReleased: delta.presentationsReleased / MEASURED_RUNS,
-		releaseWithoutActivePresentation: delta.releaseWithoutActivePresentation / MEASURED_RUNS,
+		completedDispatchPresentationScopes: delta.completedDispatchPresentationScopes / MEASURED_RUNS,
+		releaseWithoutActiveScope: delta.releaseWithoutActiveScope / MEASURED_RUNS,
 	};
 }
 
@@ -327,8 +327,10 @@ try {
 			presentationCallsPerResult: (fixture.presentationCalls - presentationsBefore) / MEASURED_RUNS,
 			persistedMessagesPerResult:
 				(fixture.sessionManager.getBranch().length - persistedBefore) / MEASURED_RUNS,
-			activePresentationsAfterMeasurement: fixture.counters.activePresentations,
-			activePresentationsHighWaterMark: fixture.counters.activePresentationsHighWaterMark,
+			activeDispatchPresentationScopesAfterMeasurement:
+				fixture.counters.activeDispatchPresentationScopes,
+			dispatchPresentationScopesHighWaterMark:
+				fixture.counters.dispatchPresentationScopesHighWaterMark,
 		});
 	}
 
@@ -376,8 +378,10 @@ try {
 		directEnabled: {
 			...directTiming,
 			countersPerResult: perResult(directMeasured),
-			activePresentationsAfterMeasurement: directCounters.activePresentations,
-			activePresentationsHighWaterMark: directCounters.activePresentationsHighWaterMark,
+			activeDispatchPresentationScopesAfterMeasurement:
+				directCounters.activeDispatchPresentationScopes,
+			dispatchPresentationScopesHighWaterMark:
+				directCounters.dispatchPresentationScopesHighWaterMark,
 		},
 		productionResults,
 		lifecycle: {

@@ -2,7 +2,7 @@ import type { ImageContent, TextContent } from "@super-pi/ai/compat";
 
 export const TOOL_RESULT_PRESENTATION_VERSION = 1 as const;
 
-export type ToolResultPresentationContent = TextContent | ImageContent;
+export type ToolResultPresentationContent = Readonly<TextContent> | Readonly<ImageContent>;
 
 /**
  * Phase 5B-A final-result ownership boundary.
@@ -28,18 +28,19 @@ export type ToolResultPresentation = ToolResultPresentationV1;
 
 export interface ToolResultPresentationCounters {
 	presentationObjectsCreated: number;
-	outerArraysCreated: number;
-	outerArraysOwned: number;
+	uiOuterArraysCreated: number;
 	modelOuterArraysReused: number;
+	presentationOuterArrayReferences: number;
 	contentBlockReferencesReused: number;
 	textStringReferencesReused: number;
 	imageDataReferencesReused: number;
-	presentationsReleased: number;
-	releaseWithoutActivePresentation: number;
-	activePresentations: number;
-	activePresentationsHighWaterMark: number;
+	completedDispatchPresentationScopes: number;
+	releaseWithoutActiveScope: number;
+	activeDispatchPresentationScopes: number;
+	dispatchPresentationScopesHighWaterMark: number;
 	maximumContentBlocks: number;
-	maximumInputCharacters: number;
+	maximumTextCodeUnits: number;
+	maximumImageDataCodeUnits: number;
 	ownerDisposeCalls: number;
 }
 
@@ -51,18 +52,19 @@ export interface ToolResultPresentationOptions {
 export function createToolResultPresentationCounters(): ToolResultPresentationCounters {
 	return {
 		presentationObjectsCreated: 0,
-		outerArraysCreated: 0,
-		outerArraysOwned: 0,
+		uiOuterArraysCreated: 0,
 		modelOuterArraysReused: 0,
+		presentationOuterArrayReferences: 0,
 		contentBlockReferencesReused: 0,
 		textStringReferencesReused: 0,
 		imageDataReferencesReused: 0,
-		presentationsReleased: 0,
-		releaseWithoutActivePresentation: 0,
-		activePresentations: 0,
-		activePresentationsHighWaterMark: 0,
+		completedDispatchPresentationScopes: 0,
+		releaseWithoutActiveScope: 0,
+		activeDispatchPresentationScopes: 0,
+		dispatchPresentationScopesHighWaterMark: 0,
 		maximumContentBlocks: 0,
-		maximumInputCharacters: 0,
+		maximumTextCodeUnits: 0,
+		maximumImageDataCodeUnits: 0,
 		ownerDisposeCalls: 0,
 	};
 }
@@ -115,16 +117,17 @@ export class ToolResultPresentationOwner {
 	create(modelContent: readonly ToolResultPresentationContent[]): ToolResultPresentationV1 | undefined {
 		if (!this.accepting) return undefined;
 		const uiContent = new Array<ToolResultPresentationContent>(modelContent.length);
-		let inputCharacters = 0;
+		let textCodeUnits = 0;
+		let imageDataCodeUnits = 0;
 		for (let index = 0; index < modelContent.length; index++) {
 			const block = modelContent[index]!;
 			uiContent[index] = block;
 			if (block.type === "text") {
 				this.counters.textStringReferencesReused++;
-				inputCharacters += block.text.length;
+				textCodeUnits += block.text.length;
 			} else {
 				this.counters.imageDataReferencesReused++;
-				inputCharacters += block.data.length;
+				imageDataCodeUnits += block.data.length;
 			}
 		}
 		const presentation: ToolResultPresentationV1 = {
@@ -133,27 +136,31 @@ export class ToolResultPresentationOwner {
 			uiContent,
 		};
 		this.counters.presentationObjectsCreated++;
-		this.counters.outerArraysCreated++;
-		this.counters.outerArraysOwned += 2;
+		this.counters.uiOuterArraysCreated++;
 		this.counters.modelOuterArraysReused++;
+		this.counters.presentationOuterArrayReferences += 2;
 		this.counters.contentBlockReferencesReused += modelContent.length;
 		this.counters.maximumContentBlocks = Math.max(this.counters.maximumContentBlocks, modelContent.length);
-		this.counters.maximumInputCharacters = Math.max(this.counters.maximumInputCharacters, inputCharacters);
-		this.counters.activePresentations++;
-		this.counters.activePresentationsHighWaterMark = Math.max(
-			this.counters.activePresentationsHighWaterMark,
-			this.counters.activePresentations,
+		this.counters.maximumTextCodeUnits = Math.max(this.counters.maximumTextCodeUnits, textCodeUnits);
+		this.counters.maximumImageDataCodeUnits = Math.max(
+			this.counters.maximumImageDataCodeUnits,
+			imageDataCodeUnits,
+		);
+		this.counters.activeDispatchPresentationScopes++;
+		this.counters.dispatchPresentationScopesHighWaterMark = Math.max(
+			this.counters.dispatchPresentationScopesHighWaterMark,
+			this.counters.activeDispatchPresentationScopes,
 		);
 		return presentation;
 	}
 
 	release(): void {
-		if (this.counters.activePresentations === 0) {
-			this.counters.releaseWithoutActivePresentation++;
+		if (this.counters.activeDispatchPresentationScopes === 0) {
+			this.counters.releaseWithoutActiveScope++;
 			return;
 		}
-		this.counters.activePresentations--;
-		this.counters.presentationsReleased++;
+		this.counters.activeDispatchPresentationScopes--;
+		this.counters.completedDispatchPresentationScopes++;
 	}
 
 	dispose(): void {
