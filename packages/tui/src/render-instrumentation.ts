@@ -39,8 +39,9 @@ export interface TuiRenderMetrics {
 	altLayoutBoxObjects: number;
 	altLayoutRectObjects: number;
 	altLayoutClipObjects: number;
-	altLayoutRenderCacheMapsCreated: number;
-	altLayoutNestedRenderCacheMapsCreated: number;
+	altLayoutRenderCacheLookupProbes: number;
+	altLayoutRenderCacheRecordCount: number;
+	altLayoutRenderCacheIndexActivations: number;
 	altLayoutScreenArraysCreated: number;
 	altLayoutFullViewportArrayCopies: number;
 	altLayoutStringRepeatCalls: number;
@@ -48,6 +49,10 @@ export interface TuiRenderMetrics {
 	altLayoutPaintBoxCalls: number;
 	altLayoutChildRenderCalls: number;
 	altLayoutFullWidthRowCacheHits: number;
+	altLayoutCachedSourceCodeUnits: number;
+	altLayoutCachedPaintedCodeUnits: number;
+	altLayoutMaximumCachedRowCodeUnits: number;
+	altLayoutRowCacheRejectedBySize: number;
 }
 
 const EMPTY_METRICS: TuiRenderMetrics = {
@@ -91,8 +96,9 @@ const EMPTY_METRICS: TuiRenderMetrics = {
 	altLayoutBoxObjects: 0,
 	altLayoutRectObjects: 0,
 	altLayoutClipObjects: 0,
-	altLayoutRenderCacheMapsCreated: 0,
-	altLayoutNestedRenderCacheMapsCreated: 0,
+	altLayoutRenderCacheLookupProbes: 0,
+	altLayoutRenderCacheRecordCount: 0,
+	altLayoutRenderCacheIndexActivations: 0,
 	altLayoutScreenArraysCreated: 0,
 	altLayoutFullViewportArrayCopies: 0,
 	altLayoutStringRepeatCalls: 0,
@@ -100,6 +106,10 @@ const EMPTY_METRICS: TuiRenderMetrics = {
 	altLayoutPaintBoxCalls: 0,
 	altLayoutChildRenderCalls: 0,
 	altLayoutFullWidthRowCacheHits: 0,
+	altLayoutCachedSourceCodeUnits: 0,
+	altLayoutCachedPaintedCodeUnits: 0,
+	altLayoutMaximumCachedRowCodeUnits: 0,
+	altLayoutRowCacheRejectedBySize: 0,
 };
 
 export function utf8ByteLength(value: string): number {
@@ -183,8 +193,9 @@ export class TuiRenderInstrumentation {
 		boxObjects: number,
 		rectObjects: number,
 		clipObjects: number,
-		renderCacheMapsCreated: number,
-		nestedRenderCacheMapsCreated: number,
+		renderCacheLookupProbes: number,
+		renderCacheRecordCount: number,
+		renderCacheIndexActivations: number,
 		screenArraysCreated: number,
 		fullViewportArrayCopies: number,
 		stringRepeatCalls: number,
@@ -192,13 +203,18 @@ export class TuiRenderInstrumentation {
 		paintBoxCalls: number,
 		childRenderCalls: number,
 		fullWidthRowCacheHits: number,
+		cachedSourceCodeUnits: number,
+		cachedPaintedCodeUnits: number,
+		maximumCachedRowCodeUnits: number,
+		rowCacheRejectedBySize: number,
 	): void {
 		this.metrics.altLayoutNodesVisited += nodesVisited;
 		this.metrics.altLayoutBoxObjects += boxObjects;
 		this.metrics.altLayoutRectObjects += rectObjects;
 		this.metrics.altLayoutClipObjects += clipObjects;
-		this.metrics.altLayoutRenderCacheMapsCreated += renderCacheMapsCreated;
-		this.metrics.altLayoutNestedRenderCacheMapsCreated += nestedRenderCacheMapsCreated;
+		this.metrics.altLayoutRenderCacheLookupProbes += renderCacheLookupProbes;
+		this.metrics.altLayoutRenderCacheRecordCount += renderCacheRecordCount;
+		this.metrics.altLayoutRenderCacheIndexActivations += renderCacheIndexActivations;
 		this.metrics.altLayoutScreenArraysCreated += screenArraysCreated;
 		this.metrics.altLayoutFullViewportArrayCopies += fullViewportArrayCopies;
 		this.metrics.altLayoutStringRepeatCalls += stringRepeatCalls;
@@ -206,6 +222,13 @@ export class TuiRenderInstrumentation {
 		this.metrics.altLayoutPaintBoxCalls += paintBoxCalls;
 		this.metrics.altLayoutChildRenderCalls += childRenderCalls;
 		this.metrics.altLayoutFullWidthRowCacheHits += fullWidthRowCacheHits;
+		this.metrics.altLayoutCachedSourceCodeUnits += cachedSourceCodeUnits;
+		this.metrics.altLayoutCachedPaintedCodeUnits += cachedPaintedCodeUnits;
+		this.metrics.altLayoutMaximumCachedRowCodeUnits = Math.max(
+			this.metrics.altLayoutMaximumCachedRowCodeUnits,
+			maximumCachedRowCodeUnits,
+		);
+		this.metrics.altLayoutRowCacheRejectedBySize += rowCacheRejectedBySize;
 	}
 
 	recordOverlayRender(): void {

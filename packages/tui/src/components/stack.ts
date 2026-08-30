@@ -110,7 +110,7 @@ export function allocateStackSizes(
 
 /** Caller-owned range variant used by the synchronous Alt layout scratch. */
 export function allocateStackSizesInto(
-	entries: readonly StackLayoutEntry[],
+	entries: readonly (StackLayoutEntry | undefined)[],
 	entryOffset: number,
 	intrinsicSizes: readonly number[],
 	intrinsicOffset: number,
@@ -144,7 +144,7 @@ export function allocateStackSizesInto(
 function distributeRange(
 	sizes: number[],
 	sizeOffset: number,
-	entries: readonly StackLayoutEntry[],
+	entries: readonly (StackLayoutEntry | undefined)[],
 	entryOffset: number,
 	count: number,
 	amount: number,

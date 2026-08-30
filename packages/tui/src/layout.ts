@@ -10,6 +10,9 @@ const OSC133_ZONE_PREFIX = /^(?:\x1b\]133;[ABC](?:\x07|\x1b\\))+/;
 const FULL_WIDTH_LINE_RESET = "\x1b[0m\x1b]8;;\x07";
 const MAX_RETAINED_LAYOUT_ROWS = 4096;
 const MAX_RETAINED_LAYOUT_RECORDS = 4096;
+const RENDER_CACHE_LINEAR_LIMIT = 24;
+const MAX_RETAINED_ROW_CODE_UNITS = 64 * 1024;
+const MAX_RETAINED_ROW_CACHE_CODE_UNITS = 512 * 1024;
 
 export interface LayoutRect {
 	x: number;
@@ -38,14 +41,17 @@ export interface LayoutFrame {
 	width: number;
 	height: number;
 	generatedLineCount: number;
+	/**
+	 * Scratch-owned frame lines. When a LayoutFrameScratch is supplied, callers
+	 * may compose this borrowed array in place for the current frame, but must
+	 * consume it before rendering again; a later frame may overwrite its rows.
+	 */
 	lines: string[];
 	primaryScrollView?: ScrollView;
 	layoutNodesVisited?: number;
 	layoutBoxObjects?: number;
 	layoutRectObjects?: number;
 	clipObjects?: number;
-	renderCacheMapsCreated?: number;
-	nestedRenderCacheMapsCreated?: number;
 	screenArraysCreated?: number;
 	fullViewportArrayCopies?: number;
 	stringRepeatCalls?: number;
@@ -53,6 +59,13 @@ export interface LayoutFrame {
 	paintBoxCalls?: number;
 	childRenderCalls?: number;
 	fullWidthRowCacheHits?: number;
+	renderCacheLookupProbes?: number;
+	renderCacheRecordCount?: number;
+	renderCacheIndexActivations?: number;
+	cachedSourceCodeUnits?: number;
+	cachedPaintedCodeUnits?: number;
+	maximumCachedRowCodeUnits?: number;
+	rowCacheRejectedBySize?: number;
 }
 
 export interface ScrollbarGeometry {
@@ -65,12 +78,17 @@ export interface ScrollbarGeometry {
 }
 
 export interface LayoutContext {
-	viewport: LayoutViewport;
-	renderComponents: Component[];
+	viewportWidth: number;
+	viewportHeight: number;
+	visibleViewport: LayoutViewport | undefined;
+	renderComponents: Array<Component | undefined>;
 	renderWidths: number[];
-	renderLines: string[][];
+	renderLines: Array<string[] | undefined>;
+	renderPreviousIndexes: number[];
+	renderCacheIndex: Map<Component, number> | undefined;
+	renderCacheIndexActive: boolean;
 	renderCount: number;
-	visibleEntries: StackLayoutEntry[];
+	visibleEntries: Array<StackLayoutEntry | undefined>;
 	visibleEntryCount: number;
 	numbers: number[];
 	numberCount: number;
@@ -84,13 +102,15 @@ export interface LayoutContext {
 	currentFullWidthSources: Array<string | undefined>;
 	currentFullWidthLines: Array<string | undefined>;
 	currentFullWidthModes: Uint8Array;
+	previousCachedSourceCodeUnits: number;
+	previousCachedPaintedCodeUnits: number;
+	currentCachedSourceCodeUnits: number;
+	currentCachedPaintedCodeUnits: number;
 	rowCacheEnabled: boolean;
 	layoutNodesVisited: number;
 	layoutBoxObjects: number;
 	layoutRectObjects: number;
 	clipObjects: number;
-	renderCacheMapsCreated: number;
-	nestedRenderCacheMapsCreated: number;
 	screenArraysCreated: number;
 	fullViewportArrayCopies: number;
 	stringRepeatCalls: number;
@@ -98,6 +118,11 @@ export interface LayoutContext {
 	paintBoxCalls: number;
 	childRenderCalls: number;
 	fullWidthRowCacheHits: number;
+	renderCacheLookupProbes: number;
+	renderCacheRecordCount: number;
+	renderCacheIndexActivations: number;
+	maximumCachedRowCodeUnits: number;
+	rowCacheRejectedBySize: number;
 }
 
 /**
@@ -106,10 +131,15 @@ export interface LayoutContext {
  */
 export class LayoutFrameScratch {
 	private readonly context: LayoutContext = {
-		viewport: { width: 1, height: 1 },
+		viewportWidth: 1,
+		viewportHeight: 1,
+		visibleViewport: undefined,
 		renderComponents: [],
 		renderWidths: [],
 		renderLines: [],
+		renderPreviousIndexes: [],
+		renderCacheIndex: undefined,
+		renderCacheIndexActive: false,
 		renderCount: 0,
 		visibleEntries: [],
 		visibleEntryCount: 0,
@@ -125,13 +155,15 @@ export class LayoutFrameScratch {
 		currentFullWidthSources: [],
 		currentFullWidthLines: [],
 		currentFullWidthModes: new Uint8Array(0),
+		previousCachedSourceCodeUnits: 0,
+		previousCachedPaintedCodeUnits: 0,
+		currentCachedSourceCodeUnits: 0,
+		currentCachedPaintedCodeUnits: 0,
 		rowCacheEnabled: false,
 		layoutNodesVisited: 0,
 		layoutBoxObjects: 0,
 		layoutRectObjects: 0,
 		clipObjects: 0,
-		renderCacheMapsCreated: 0,
-		nestedRenderCacheMapsCreated: 0,
 		screenArraysCreated: 0,
 		fullViewportArrayCopies: 0,
 		stringRepeatCalls: 0,
@@ -139,6 +171,11 @@ export class LayoutFrameScratch {
 		paintBoxCalls: 0,
 		childRenderCalls: 0,
 		fullWidthRowCacheHits: 0,
+		renderCacheLookupProbes: 0,
+		renderCacheRecordCount: 0,
+		renderCacheIndexActivations: 0,
+		maximumCachedRowCodeUnits: 0,
+		rowCacheRejectedBySize: 0,
 	};
 	private screenA: string[] = [];
 	private screenB: string[] = [];
@@ -148,6 +185,10 @@ export class LayoutFrameScratch {
 	private cachedLineB: Array<string | undefined> = [];
 	private modeA = new Uint8Array(0);
 	private modeB = new Uint8Array(0);
+	private sourceCodeUnitsA = 0;
+	private sourceCodeUnitsB = 0;
+	private paintedCodeUnitsA = 0;
+	private paintedCodeUnitsB = 0;
 	private nextBufferA = true;
 	private previousWidth = 0;
 	private previousHeight = 0;
@@ -157,20 +198,20 @@ export class LayoutFrameScratch {
 		if (this.inUse) return undefined;
 		this.inUse = true;
 		const context = this.context;
-		context.viewport.width = width;
-		context.viewport.height = height;
+		context.viewportWidth = width;
+		context.viewportHeight = height;
+		context.visibleViewport = undefined;
 		context.requestRender = requestRender;
 		context.primaryScrollView = undefined;
 		context.primaryDocumentLineCount = undefined;
 		context.renderCount = 0;
+		context.renderCacheIndexActive = false;
 		context.visibleEntryCount = 0;
 		context.numberCount = 0;
 		context.layoutNodesVisited = 0;
 		context.layoutBoxObjects = 0;
 		context.layoutRectObjects = 0;
 		context.clipObjects = 0;
-		context.renderCacheMapsCreated = 0;
-		context.nestedRenderCacheMapsCreated = 0;
 		context.screenArraysCreated = 0;
 		context.fullViewportArrayCopies = 0;
 		context.stringRepeatCalls = 0;
@@ -178,6 +219,11 @@ export class LayoutFrameScratch {
 		context.paintBoxCalls = 0;
 		context.childRenderCalls = 0;
 		context.fullWidthRowCacheHits = 0;
+		context.renderCacheLookupProbes = 0;
+		context.renderCacheRecordCount = 0;
+		context.renderCacheIndexActivations = 0;
+		context.maximumCachedRowCodeUnits = 0;
+		context.rowCacheRejectedBySize = 0;
 
 		if (height > MAX_RETAINED_LAYOUT_ROWS) {
 			context.screen = new Array<string>(height);
@@ -188,6 +234,10 @@ export class LayoutFrameScratch {
 			context.currentFullWidthSources = EMPTY_OPTIONAL_LINES;
 			context.currentFullWidthLines = EMPTY_OPTIONAL_LINES;
 			context.currentFullWidthModes = EMPTY_ROW_MODES;
+			context.previousCachedSourceCodeUnits = 0;
+			context.previousCachedPaintedCodeUnits = 0;
+			context.currentCachedSourceCodeUnits = 0;
+			context.currentCachedPaintedCodeUnits = 0;
 			context.rowCacheEnabled = false;
 		} else {
 			this.ensureRowCapacity(height);
@@ -198,6 +248,19 @@ export class LayoutFrameScratch {
 			context.previousFullWidthSources = this.nextBufferA ? this.sourceB : this.sourceA;
 			context.previousFullWidthLines = this.nextBufferA ? this.cachedLineB : this.cachedLineA;
 			context.previousFullWidthModes = this.nextBufferA ? this.modeB : this.modeA;
+			context.previousCachedSourceCodeUnits = this.nextBufferA ? this.sourceCodeUnitsB : this.sourceCodeUnitsA;
+			context.previousCachedPaintedCodeUnits = this.nextBufferA
+				? this.paintedCodeUnitsB
+				: this.paintedCodeUnitsA;
+			context.currentCachedSourceCodeUnits = 0;
+			context.currentCachedPaintedCodeUnits = 0;
+			if (this.nextBufferA) {
+				this.sourceCodeUnitsA = 0;
+				this.paintedCodeUnitsA = 0;
+			} else {
+				this.sourceCodeUnitsB = 0;
+				this.paintedCodeUnitsB = 0;
+			}
 			context.rowCacheEnabled = this.previousWidth === width && this.previousHeight === height;
 			this.clearCurrentRows(context, height);
 		}
@@ -208,6 +271,15 @@ export class LayoutFrameScratch {
 
 	complete(width: number, height: number): void {
 		const retained = height <= MAX_RETAINED_LAYOUT_ROWS;
+		if (retained) {
+			if (this.nextBufferA) {
+				this.sourceCodeUnitsA = this.context.currentCachedSourceCodeUnits;
+				this.paintedCodeUnitsA = this.context.currentCachedPaintedCodeUnits;
+			} else {
+				this.sourceCodeUnitsB = this.context.currentCachedSourceCodeUnits;
+				this.paintedCodeUnitsB = this.context.currentCachedPaintedCodeUnits;
+			}
+		}
 		this.releaseTransientReferences();
 		if (retained) {
 			this.previousWidth = width;
@@ -222,11 +294,22 @@ export class LayoutFrameScratch {
 
 	abort(): void {
 		const context = this.context;
-		for (let row = 0; row < context.currentFullWidthSources.length; row++) {
-			context.currentFullWidthSources[row] = undefined;
-			context.currentFullWidthLines[row] = undefined;
-		}
-		context.currentFullWidthModes.fill(0);
+		this.screenA.length = 0;
+		this.screenB.length = 0;
+		this.sourceA.length = 0;
+		this.sourceB.length = 0;
+		this.cachedLineA.length = 0;
+		this.cachedLineB.length = 0;
+		this.modeA.fill(0);
+		this.modeB.fill(0);
+		context.currentCachedSourceCodeUnits = 0;
+		context.currentCachedPaintedCodeUnits = 0;
+		this.sourceCodeUnitsA = 0;
+		this.sourceCodeUnitsB = 0;
+		this.paintedCodeUnitsA = 0;
+		this.paintedCodeUnitsB = 0;
+		this.previousWidth = 0;
+		this.previousHeight = 0;
 		this.releaseTransientReferences();
 		this.inUse = false;
 	}
@@ -242,6 +325,10 @@ export class LayoutFrameScratch {
 		this.cachedLineB = [];
 		this.modeA = new Uint8Array(0);
 		this.modeB = new Uint8Array(0);
+		this.sourceCodeUnitsA = 0;
+		this.sourceCodeUnitsB = 0;
+		this.paintedCodeUnitsA = 0;
+		this.paintedCodeUnitsB = 0;
 		this.previousWidth = 0;
 		this.previousHeight = 0;
 		this.nextBufferA = true;
@@ -252,25 +339,90 @@ export class LayoutFrameScratch {
 		this.context.currentFullWidthSources = EMPTY_OPTIONAL_LINES;
 		this.context.currentFullWidthLines = EMPTY_OPTIONAL_LINES;
 		this.context.currentFullWidthModes = EMPTY_ROW_MODES;
+		this.context.previousCachedSourceCodeUnits = 0;
+		this.context.previousCachedPaintedCodeUnits = 0;
+		this.context.currentCachedSourceCodeUnits = 0;
+		this.context.currentCachedPaintedCodeUnits = 0;
 		this.context.rowCacheEnabled = false;
 	}
 
-	getRetainedReferenceCounts(): { components: number; lines: number; sources: number; cachedRows: number } {
+	getRetainedReferenceCounts(): {
+		components: number;
+		lines: number;
+		sources: number;
+		cachedRows: number;
+		sourceCodeUnits: number;
+		paintedCodeUnits: number;
+		maximumRowCodeUnits: number;
+		indexedComponents: number;
+		screenRows: number;
+		screenCodeUnits: number;
+	} {
 		let components = 0;
 		let lines = 0;
 		let sources = 0;
 		let cachedRows = 0;
+		let sourceCodeUnits = 0;
+		let paintedCodeUnits = 0;
+		let maximumRowCodeUnits = 0;
+		let screenRows = 0;
+		let screenCodeUnits = 0;
 		for (let index = 0; index < this.context.renderComponents.length; index++) {
 			if (this.context.renderComponents[index] !== undefined) components++;
 			if (this.context.renderLines[index] !== undefined) lines++;
 		}
-		for (let index = 0; index < this.sourceA.length; index++) {
-			if (this.sourceA[index] !== undefined) sources++;
-			if (this.sourceB[index] !== undefined) sources++;
-			if (this.cachedLineA[index] !== undefined) cachedRows++;
-			if (this.cachedLineB[index] !== undefined) cachedRows++;
+		const rowCount = Math.max(this.sourceA.length, this.sourceB.length);
+		for (let index = 0; index < rowCount; index++) {
+			const sourceA = this.sourceA[index];
+			const sourceB = this.sourceB[index];
+			const lineA = this.cachedLineA[index];
+			const lineB = this.cachedLineB[index];
+			if (sourceA !== undefined) {
+				sources++;
+				sourceCodeUnits += sourceA.length;
+			}
+			if (sourceB !== undefined) {
+				sources++;
+				sourceCodeUnits += sourceB.length;
+			}
+			if (lineA !== undefined) {
+				cachedRows++;
+				paintedCodeUnits += lineA.length;
+			}
+			if (lineB !== undefined) {
+				cachedRows++;
+				paintedCodeUnits += lineB.length;
+			}
+			const rowA = (sourceA?.length ?? 0) + (lineA?.length ?? 0);
+			const rowB = (sourceB?.length ?? 0) + (lineB?.length ?? 0);
+			if (rowA > maximumRowCodeUnits) maximumRowCodeUnits = rowA;
+			if (rowB > maximumRowCodeUnits) maximumRowCodeUnits = rowB;
 		}
-		return { components, lines, sources, cachedRows };
+		const screenCount = Math.max(this.screenA.length, this.screenB.length);
+		for (let index = 0; index < screenCount; index++) {
+			const lineA = this.screenA[index];
+			const lineB = this.screenB[index];
+			if (lineA !== undefined) {
+				screenRows++;
+				screenCodeUnits += lineA.length;
+			}
+			if (lineB !== undefined) {
+				screenRows++;
+				screenCodeUnits += lineB.length;
+			}
+		}
+		return {
+			components,
+			lines,
+			sources,
+			cachedRows,
+			sourceCodeUnits,
+			paintedCodeUnits,
+			maximumRowCodeUnits,
+			indexedComponents: this.context.renderCacheIndex?.size ?? 0,
+			screenRows,
+			screenCodeUnits,
+		};
 	}
 
 	private ensureRowCapacity(height: number): void {
@@ -295,21 +447,19 @@ export class LayoutFrameScratch {
 		const renderCapacity = context.renderComponents.length;
 		const entryCapacity = context.visibleEntries.length;
 		const numberCapacity = context.numbers.length;
-		for (let index = 0; index < context.renderComponents.length; index++) {
-			context.renderComponents[index] = undefined as unknown as Component;
-			context.renderLines[index] = undefined as unknown as string[];
-		}
-		for (let index = 0; index < context.visibleEntries.length; index++) {
-			context.visibleEntries[index] = undefined as unknown as StackLayoutEntry;
-		}
+		context.renderCacheIndex?.clear();
+		context.renderCacheIndexActive = false;
 		if (renderCapacity > MAX_RETAINED_LAYOUT_RECORDS) {
 			context.renderComponents = [];
 			context.renderWidths = [];
 			context.renderLines = [];
+			context.renderPreviousIndexes = [];
+			context.renderCacheIndex = undefined;
 		} else {
 			context.renderComponents.length = 0;
 			context.renderWidths.length = 0;
 			context.renderLines.length = 0;
+			context.renderPreviousIndexes.length = 0;
 		}
 		if (entryCapacity > MAX_RETAINED_LAYOUT_RECORDS) context.visibleEntries = [];
 		else context.visibleEntries.length = 0;
@@ -320,6 +470,7 @@ export class LayoutFrameScratch {
 		context.numberCount = 0;
 		context.requestRender = NOOP_LAYOUT_REQUEST_RENDER;
 		context.primaryScrollView = undefined;
+		context.visibleViewport = undefined;
 	}
 }
 
@@ -342,19 +493,69 @@ function intersect(context: LayoutContext, a: LayoutRect, b: LayoutRect): Layout
 	return { x, y, width: Math.max(0, right - x), height: Math.max(0, bottom - y) };
 }
 
+function getVisibleViewport(context: LayoutContext): LayoutViewport {
+	let viewport = context.visibleViewport;
+	if (viewport === undefined) {
+		viewport = { width: context.viewportWidth, height: context.viewportHeight };
+		context.visibleViewport = viewport;
+	}
+	return viewport;
+}
+
+function activateRenderCacheIndex(context: LayoutContext): void {
+	let cacheIndex = context.renderCacheIndex;
+	if (cacheIndex === undefined) {
+		cacheIndex = new Map<Component, number>();
+		context.renderCacheIndex = cacheIndex;
+	}
+	context.renderCacheIndexActive = true;
+	context.renderCacheIndexActivations++;
+	for (let index = 0; index < context.renderCount; index++) {
+		const component = context.renderComponents[index]!;
+		const previous = cacheIndex.get(component);
+		context.renderPreviousIndexes[index] = previous ?? -1;
+		cacheIndex.set(component, index);
+	}
+}
+
 function renderCached(context: LayoutContext, component: Component, width: number): string[] {
 	const safeWidth = Math.max(1, Math.floor(width));
-	for (let index = 0; index < context.renderCount; index++) {
+	let lookupProbes = 0;
+	if (!context.renderCacheIndexActive && context.renderCount >= RENDER_CACHE_LINEAR_LIMIT) {
+		activateRenderCacheIndex(context);
+	}
+	if (context.renderCacheIndexActive) {
+		lookupProbes++;
+		let index = context.renderCacheIndex!.get(component);
+		while (index !== undefined) {
+			lookupProbes++;
+			if (context.renderWidths[index] === safeWidth) {
+				context.renderCacheLookupProbes += lookupProbes;
+				return context.renderLines[index]!;
+			}
+			const previous = context.renderPreviousIndexes[index]!;
+			index = previous < 0 ? undefined : previous;
+		}
+	} else for (let index = 0; index < context.renderCount; index++) {
+		lookupProbes++;
 		if (context.renderComponents[index] === component && context.renderWidths[index] === safeWidth) {
+			context.renderCacheLookupProbes += lookupProbes;
 			return context.renderLines[index]!;
 		}
 	}
+	context.renderCacheLookupProbes += lookupProbes;
 	const lines = component.render(safeWidth);
 	const index = context.renderCount++;
 	context.renderComponents[index] = component;
 	context.renderWidths[index] = safeWidth;
 	context.renderLines[index] = lines;
+	if (context.renderCacheIndexActive) {
+		const previous = context.renderCacheIndex!.get(component);
+		context.renderPreviousIndexes[index] = previous ?? -1;
+		context.renderCacheIndex!.set(component, index);
+	}
 	context.childRenderCalls++;
+	context.renderCacheRecordCount = context.renderCount;
 	return lines;
 }
 
@@ -384,7 +585,7 @@ function measureNaturalHeight(context: LayoutContext, component: Component, widt
 	const numberStart = context.numberCount;
 	for (let index = 0; index < node.entries.length; index++) {
 		const entry = node.entries[index]!;
-		if (entry.visible !== undefined && !entry.visible(context.viewport)) continue;
+		if (entry.visible !== undefined && !entry.visible(getVisibleViewport(context))) continue;
 		context.visibleEntries[context.visibleEntryCount++] = entry;
 	}
 	const entryCount = context.visibleEntryCount - entryStart;
@@ -548,7 +749,7 @@ function layoutComponent(
 	const numberStart = context.numberCount;
 	for (let index = 0; index < node.entries.length; index++) {
 		const entry = node.entries[index]!;
-		if (entry.visible !== undefined && !entry.visible(context.viewport)) continue;
+		if (entry.visible !== undefined && !entry.visible(getVisibleViewport(context))) continue;
 		context.visibleEntries[context.visibleEntryCount++] = entry;
 	}
 	const entryCount = context.visibleEntryCount - entryStart;
@@ -754,16 +955,49 @@ export function getScrollbarGeometry(box: LayoutBox): ScrollbarGeometry | undefi
 
 function markRowUncacheable(context: LayoutContext, row: number): void {
 	if (row < 0 || row >= context.currentFullWidthModes.length) return;
+	const source = context.currentFullWidthSources[row];
+	const painted = context.currentFullWidthLines[row];
+	if (source !== undefined) context.currentCachedSourceCodeUnits -= source.length;
+	if (painted !== undefined) context.currentCachedPaintedCodeUnits -= painted.length;
 	context.currentFullWidthModes[row] = 2;
 	context.currentFullWidthSources[row] = undefined;
 	context.currentFullWidthLines[row] = undefined;
+}
+
+function cacheFullWidthRow(context: LayoutContext, row: number, source: string, painted: string): boolean {
+	if (row < 0 || row >= context.currentFullWidthModes.length) return false;
+	const rowCodeUnits = source.length + painted.length;
+	const totalCodeUnits =
+		context.previousCachedSourceCodeUnits +
+		context.previousCachedPaintedCodeUnits +
+		context.currentCachedSourceCodeUnits +
+		context.currentCachedPaintedCodeUnits +
+		rowCodeUnits;
+	if (rowCodeUnits > MAX_RETAINED_ROW_CODE_UNITS || totalCodeUnits > MAX_RETAINED_ROW_CACHE_CODE_UNITS) {
+		context.rowCacheRejectedBySize++;
+		markRowUncacheable(context, row);
+		return false;
+	}
+	if (context.currentFullWidthModes[row] !== 0) markRowUncacheable(context, row);
+	context.currentFullWidthModes[row] = 1;
+	context.currentFullWidthSources[row] = source;
+	context.currentFullWidthLines[row] = painted;
+	context.currentCachedSourceCodeUnits += source.length;
+	context.currentCachedPaintedCodeUnits += painted.length;
+	if (rowCodeUnits > context.maximumCachedRowCodeUnits) context.maximumCachedRowCodeUnits = rowCodeUnits;
+	return true;
+}
+
+function rejectRowCacheBySize(context: LayoutContext, row: number): void {
+	context.rowCacheRejectedBySize++;
+	markRowUncacheable(context, row);
 }
 
 function paintScrollbar(context: LayoutContext, box: LayoutBox): void {
 	const geometry = getScrollbarGeometry(box);
 	if (!geometry || !box.scrollView) return;
 	const screen = context.screen;
-	const totalWidth = context.viewport.width;
+	const totalWidth = context.viewportWidth;
 
 	for (let offset = 0; offset < geometry.thumbHeight; offset++) {
 		const row = geometry.thumbTop + offset;
@@ -782,7 +1016,7 @@ function paintScrollbar(context: LayoutContext, box: LayoutBox): void {
 function paintBox(context: LayoutContext, box: LayoutBox): void {
 	context.paintBoxCalls++;
 	const screen = context.screen;
-	const totalWidth = context.viewport.width;
+	const totalWidth = context.viewportWidth;
 	if (box.lines) {
 		const offset = box.lineOffset ?? 0;
 		const firstRow = Math.max(box.rect.y, box.clip.y, 0);
@@ -801,6 +1035,7 @@ function paintBox(context: LayoutContext, box: LayoutBox): void {
 				markRowUncacheable(context, row);
 				screen[row] = line;
 			} else if (screen[row] === "" && box.rect.x === 0 && box.rect.width === totalWidth && !line.includes("\t")) {
+				const sourceExceedsRowCache = line.length > MAX_RETAINED_ROW_CODE_UNITS;
 				const reusable =
 					context.rowCacheEnabled &&
 					context.previousFullWidthModes[row] === 1 &&
@@ -810,9 +1045,7 @@ function paintBox(context: LayoutContext, box: LayoutBox): void {
 					if (cached !== undefined) {
 						screen[row] = cached;
 						context.fullWidthRowCacheHits++;
-						context.currentFullWidthModes[row] = 1;
-						context.currentFullWidthSources[row] = line;
-						context.currentFullWidthLines[row] = cached;
+						cacheFullWidthRow(context, row, line, cached);
 						continue;
 					}
 				}
@@ -821,13 +1054,11 @@ function paintBox(context: LayoutContext, box: LayoutBox): void {
 					const painted =
 						FULL_WIDTH_LINE_RESET + line + repeatSpaces(context, totalWidth - lineWidth) + FULL_WIDTH_LINE_RESET;
 					screen[row] = painted;
-					if (row < context.currentFullWidthModes.length) {
-						context.currentFullWidthModes[row] = 1;
-						context.currentFullWidthSources[row] = line;
-						context.currentFullWidthLines[row] = painted;
-					}
+					if (sourceExceedsRowCache) rejectRowCacheBySize(context, row);
+					else cacheFullWidthRow(context, row, line, painted);
 				} else {
-					markRowUncacheable(context, row);
+					if (sourceExceedsRowCache) rejectRowCacheBySize(context, row);
+					else markRowUncacheable(context, row);
 					screen[row] = compositeTuiLine("", line, 0, totalWidth, totalWidth);
 				}
 			} else {
@@ -908,8 +1139,6 @@ export function renderLayoutFrame(
 			layoutBoxObjects: context.layoutBoxObjects,
 			layoutRectObjects: context.layoutRectObjects,
 			clipObjects: context.clipObjects,
-			renderCacheMapsCreated: context.renderCacheMapsCreated,
-			nestedRenderCacheMapsCreated: context.nestedRenderCacheMapsCreated,
 			screenArraysCreated: context.screenArraysCreated,
 			fullViewportArrayCopies: context.fullViewportArrayCopies,
 			stringRepeatCalls: context.stringRepeatCalls,
@@ -917,6 +1146,15 @@ export function renderLayoutFrame(
 			paintBoxCalls: context.paintBoxCalls,
 			childRenderCalls: context.childRenderCalls,
 			fullWidthRowCacheHits: context.fullWidthRowCacheHits,
+			renderCacheLookupProbes: context.renderCacheLookupProbes,
+			renderCacheRecordCount: context.renderCacheRecordCount,
+			renderCacheIndexActivations: context.renderCacheIndexActivations,
+			cachedSourceCodeUnits:
+				context.previousCachedSourceCodeUnits + context.currentCachedSourceCodeUnits,
+			cachedPaintedCodeUnits:
+				context.previousCachedPaintedCodeUnits + context.currentCachedPaintedCodeUnits,
+			maximumCachedRowCodeUnits: context.maximumCachedRowCodeUnits,
+			rowCacheRejectedBySize: context.rowCacheRejectedBySize,
 		};
 		if (context.primaryScrollView !== undefined) frame.primaryScrollView = context.primaryScrollView;
 		activeScratch!.complete(safeWidth, safeHeight);

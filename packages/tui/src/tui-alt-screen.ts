@@ -359,6 +359,12 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		lines: number;
 		sources: number;
 		cachedRows: number;
+		sourceCodeUnits: number;
+		paintedCodeUnits: number;
+		maximumRowCodeUnits: number;
+		indexedComponents: number;
+		screenRows: number;
+		screenCodeUnits: number;
 	} {
 		return this.layoutScratch.getRetainedReferenceCounts();
 	}
@@ -1138,8 +1144,9 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			nextLayout.layoutBoxObjects ?? 0,
 			nextLayout.layoutRectObjects ?? 0,
 			nextLayout.clipObjects ?? 0,
-			nextLayout.renderCacheMapsCreated ?? 0,
-			nextLayout.nestedRenderCacheMapsCreated ?? 0,
+			nextLayout.renderCacheLookupProbes ?? 0,
+			nextLayout.renderCacheRecordCount ?? 0,
+			nextLayout.renderCacheIndexActivations ?? 0,
 			nextLayout.screenArraysCreated ?? 0,
 			nextLayout.fullViewportArrayCopies ?? 0,
 			nextLayout.stringRepeatCalls ?? 0,
@@ -1147,6 +1154,10 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			nextLayout.paintBoxCalls ?? 0,
 			nextLayout.childRenderCalls ?? 0,
 			nextLayout.fullWidthRowCacheHits ?? 0,
+			nextLayout.cachedSourceCodeUnits ?? 0,
+			nextLayout.cachedPaintedCodeUnits ?? 0,
+			nextLayout.maximumCachedRowCodeUnits ?? 0,
+			nextLayout.rowCacheRejectedBySize ?? 0,
 		);
 		this.recordRootRender(nextLayout.generatedLineCount, Math.min(screen.length, height));
 		for (let row = 0; row < screen.length; row++) {
