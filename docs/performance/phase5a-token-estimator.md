@@ -6,7 +6,7 @@ Phase 5A adds a versioned, provider-neutral conservative estimator, an optional 
 
 It does not truncate, summarize, window, rewrite, artifact, continue, or otherwise change a tool result. Shadow mode is disabled unless `toolOutputShadow.enabled` is explicitly true. Enabling it does not replace content arrays, mutate tool-result objects, add extension-visible fields, change error flags, or alter usage/cost.
 
-The measured implementation is commit `52f43afb633d2ff0943578a6798bff0b95ef3941` on branch `phase/5a-token-estimator-shadow`, in clean worktree `D:/RMProjects/Pi-phase5a-token-estimator`. Node was `v26.4.0` on Windows x64. Immediately before profiling, no other Node benchmark, HeapProfiler, controlled-GC soak, or Phase 4D-A1 benchmark process was running.
+Measurements use branch `phase/5a-token-estimator-shadow` in clean worktree `D:/RMProjects/Pi-phase5a-token-estimator`. Node was `v26.4.0` on Windows x64. Exact measured revisions are recorded with each closeout below. Immediately before profiling, no other Node benchmark, HeapProfiler, controlled-GC soak, or Phase 4D-A1 benchmark process was running.
 
 ## Audited production result chain
 
@@ -97,6 +97,25 @@ The initial correctness implementation showed a stable performance regression, s
 Aggregate throughput was 141.04 MiB/s, compared with the frozen 94.11 MiB/s baseline. HeapProfiler sampled 206,072 bytes, with no per-character allocation site. Dynamic counters remained exactly one scan-state and one estimate object per call; controlled-GC slope remained 27.2 bytes/cycle. Full copies, serializations, line arrays, and object pools remained source-invariant zero.
 
 The corresponding production shadow benchmark measured observer enabled at 0.8486/0.9806 ms p50/p95 and real AgentSession absent/disabled/enabled at 0.0222/0.0475, 0.0169/0.0345, and 0.8723/0.9311 ms. Disabled mode recorded zero estimator, scan-state, estimate, payload, and sink work. Clear/dispose reduced heap by 86,456 bytes, left zero active retained references, and produced a 25.6-byte/cycle controlled-GC slope.
+
+### Length-boundary closeout
+
+The fixed `phase5a-v4` corpus retains all 42 original Merge Gate fixtures and all `phase5a-v3` entropy fixtures. It adds four deterministic seeds at lowercase lengths/cardinalities 8/(6,8), 10/(8,10), 11/(8,10,11), 15/(8,12,15), 17/(8,12,16,17), and 18/(8,12,16,18), while retaining the 12-, 16-, 64-, and 256-character matrices. Uppercase and normalized mixed-case fixtures cover lengths 11, 16, and 17 with the same boundary cardinalities. Three aggregate fixtures contain 1,024 high-entropy 11- or 17-character runs separated by spaces or newlines.
+
+The unmodified `phase5a-v3` formula failed the new matrix as expected. `cl100k_base` had 81 fixtures above 10% underestimation, p99 75.00%, and maximum 77.78%; `o200k_base` had 70 failures with p99/maximum 71.43%. The two 11-character aggregate fixtures were underestimated by approximately 62%–65%, proving the failure was material at tool-output scale rather than a tiny-string artifact.
+
+The correction removes the discontinuities at 11/12 and 16/17. Non-repeated alpha runs of at least eight characters use continuous length and distinct-letter contributions, a primitive uppercase adjustment, and the existing mixed-case transition count. The short-run estimate is blended back into the frozen long-run estimate from length 18 through 32. The repeated-ASCII fast path, one-pass scan, fixed `ScanState`, and 64/256-character long-run formula remain unchanged; there are no seed-specific branches, maps, sets, lookup tables, second scans, per-character objects, per-result closures, full copies, line arrays, or object pools.
+
+| Reference | Fixtures | p95 under | p99 under | Max under | Average over |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `cl100k_base` | 285 | 4.76% | 8.57% | 9.09% | 26.38% |
+| `o200k_base` | 283 | 0.00% | 5.88% | 8.51% | 33.92% |
+
+Every fixture is at or below 10% underestimation, p99 is below 10%, and average overestimation is below 35% for both tokenizers.
+
+The first clean benchmark of the final formula at `d074f542aaa9615a55632bf1514c250827f4918e` measured aggregate throughput at 144.39 MiB/s. Against the frozen pre-main-merge `ccfe8944` benchmark, 64 KiB p50/p95 changed by -1.79%/+3.43%, 1 MiB by -1.55%/+0.34%, and 10 MiB single-line by -3.47%/-4.93%. HeapProfiler sampled 212,488 bytes with no per-character allocation site. Dynamic counters remained one scan state and one estimate object per call, source-invariant full copies/serializations/line arrays/object pools remained zero, and controlled-GC slope was 27.2 bytes/cycle.
+
+The same revision's production shadow benchmark measured observer enabled at 0.8830/1.0653 ms p50/p95 and AgentSession absent/disabled/enabled at 0.0191/0.0421, 0.0175/0.0423, and 0.8850/0.9197 ms. Enabled paths created one scan state, estimate, telemetry payload, and sink call per result. Absent and disabled paths created none of them while still delivering one listener event and one persisted message per result. Clear/dispose left zero active retained references, reduced heap by 86,456 bytes, and produced a 25.6-byte/cycle controlled-GC slope.
 
 ## Initial Candidate Gate corpus (historical, superseded by phase5a-v2)
 
