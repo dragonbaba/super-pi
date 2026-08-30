@@ -246,6 +246,10 @@ function beginOrExtendAsciiRun(state: ScanState, code: number): void {
 	} else {
 		kind = AsciiRunKind.Symbols;
 	}
+	if (state.runLength !== 0 && state.runLastCode === code) {
+		state.runLength++;
+		return;
+	}
 
 	const currentIsWord =
 		state.runKind === AsciiRunKind.LowerAlpha ||
@@ -257,15 +261,30 @@ function beginOrExtendAsciiRun(state: ScanState, code: number): void {
 	if (state.runKind !== AsciiRunKind.None && state.runKind !== kind && !(currentIsWord && nextIsWord)) {
 		addAsciiRunTokens(state);
 	}
-
 	if (state.runLength === 0) {
 		state.runKind = kind;
-		state.runAllHex = true;
+		state.runLength = 1;
+		state.runHasLower = lower;
+		state.runHasUpper = upper;
+		state.runHasDigit = digit;
+		state.runAllHex = isAsciiHex(code);
 		state.runLastWordClass = wordClass;
-	} else if (wordClass !== 0 && state.runLastWordClass !== 0 && wordClass !== state.runLastWordClass) {
+		state.runLastCode = code;
+		if (lower || upper) {
+			const normalizedLetter = lower ? code - 0x61 : code - 0x41;
+			state.runLetterMask = 1 << normalizedLetter;
+			state.runDistinctLetters = 1;
+		} else if (kind === AsciiRunKind.Symbols) {
+			state.runSymbolMask = printableAsciiSymbolBit(code);
+			if (state.runSymbolMask !== 0) state.runDistinctSymbols = 1;
+		}
+		return;
+	}
+
+	if (wordClass !== 0 && state.runLastWordClass !== 0 && wordClass !== state.runLastWordClass) {
 		state.runTransitions++;
 	}
-	if (state.runLength > 0 && state.runLastCode !== code) state.runAdjacentChanges++;
+	state.runAdjacentChanges++;
 	state.runLength++;
 	state.runHasLower = state.runHasLower || lower;
 	state.runHasUpper = state.runHasUpper || upper;
