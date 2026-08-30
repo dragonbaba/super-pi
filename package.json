@@ -46,6 +46,7 @@
 		"bench:model-catalog-restore": "node --experimental-strip-types ./scripts/bench/model-catalog-restore.ts",
 		"bench:tool-output": "node --experimental-strip-types ./scripts/bench/tool-output.ts",
 		"bench:tool-token-estimator": "node --expose-gc --experimental-strip-types ./scripts/bench/tool-token-estimator.ts",
+		"bench:tool-output-shadow": "node --expose-gc --experimental-strip-types ./scripts/bench/tool-output-shadow.ts",
 		"test:tool-token-estimator-accuracy": "node --experimental-strip-types ./scripts/bench/tool-token-estimator-accuracy.ts",
 		"bench:compare": "node --experimental-strip-types ./scripts/bench/compare.ts",
 		"clean": "npm run clean --workspaces --if-present",

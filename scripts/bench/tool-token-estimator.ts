@@ -3,7 +3,6 @@ import { Session } from "node:inspector/promises";
 import { performance } from "node:perf_hooks";
 import {
 	createToolOutputEstimatorCounters,
-	createToolOutputShadowObserver,
 	estimateToolOutputTokens,
 } from "../../packages/coding-agent/src/core/tool-output-budget.ts";
 
@@ -164,12 +163,6 @@ for (let cycle = 0; cycle < 5; cycle++) {
 	controlledGcSamples.push(process.memoryUsage().heapUsed);
 }
 
-const disabledCounters = createToolOutputEstimatorCounters();
-const disabled = createToolOutputShadowObserver({ enabled: false, counters: disabledCounters });
-const disabledStarted = performance.now();
-for (let call = 0; call < 1_000_000; call++) disabled?.observe({ toolName: "bash", content: [] });
-const disabledDurationMs = performance.now() - disabledStarted;
-
 process.stdout.write(`${JSON.stringify({
 	schemaVersion: 1,
 	benchmark: "tool-token-estimator",
@@ -197,9 +190,6 @@ process.stdout.write(`${JSON.stringify({
 		controlledGcHeapDeltaBytes: controlledGcAfterHeapBytes - controlledGcBeforeHeapBytes,
 		controlledGcSamples,
 		controlledGcSlopeBytesPerCycle: slope(controlledGcSamples),
-		disabledShadowCalls: 1_000_000,
-		disabledShadowDurationMs: disabledDurationMs,
-		disabledShadowEstimatorCalls: disabledCounters.estimatorCalls,
 		...counters,
 	},
 	topAllocationSites: sampled.top,
