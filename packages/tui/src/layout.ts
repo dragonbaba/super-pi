@@ -104,8 +104,10 @@ export interface LayoutContext {
 	currentFullWidthModes: Uint8Array;
 	previousCachedSourceCodeUnits: number;
 	previousCachedPaintedCodeUnits: number;
+	previousCachedCodeUnits: number;
 	currentCachedSourceCodeUnits: number;
 	currentCachedPaintedCodeUnits: number;
+	currentCachedCodeUnits: number;
 	rowCacheEnabled: boolean;
 	layoutNodesVisited: number;
 	layoutBoxObjects: number;
@@ -157,8 +159,10 @@ export class LayoutFrameScratch {
 		currentFullWidthModes: new Uint8Array(0),
 		previousCachedSourceCodeUnits: 0,
 		previousCachedPaintedCodeUnits: 0,
+		previousCachedCodeUnits: 0,
 		currentCachedSourceCodeUnits: 0,
 		currentCachedPaintedCodeUnits: 0,
+		currentCachedCodeUnits: 0,
 		rowCacheEnabled: false,
 		layoutNodesVisited: 0,
 		layoutBoxObjects: 0,
@@ -236,8 +240,10 @@ export class LayoutFrameScratch {
 			context.currentFullWidthModes = EMPTY_ROW_MODES;
 			context.previousCachedSourceCodeUnits = 0;
 			context.previousCachedPaintedCodeUnits = 0;
+			context.previousCachedCodeUnits = 0;
 			context.currentCachedSourceCodeUnits = 0;
 			context.currentCachedPaintedCodeUnits = 0;
+			context.currentCachedCodeUnits = 0;
 			context.rowCacheEnabled = false;
 		} else {
 			this.ensureRowCapacity(height);
@@ -252,8 +258,11 @@ export class LayoutFrameScratch {
 			context.previousCachedPaintedCodeUnits = this.nextBufferA
 				? this.paintedCodeUnitsB
 				: this.paintedCodeUnitsA;
+			context.previousCachedCodeUnits =
+				context.previousCachedSourceCodeUnits + context.previousCachedPaintedCodeUnits;
 			context.currentCachedSourceCodeUnits = 0;
 			context.currentCachedPaintedCodeUnits = 0;
+			context.currentCachedCodeUnits = 0;
 			if (this.nextBufferA) {
 				this.sourceCodeUnitsA = 0;
 				this.paintedCodeUnitsA = 0;
@@ -304,6 +313,7 @@ export class LayoutFrameScratch {
 		this.modeB.fill(0);
 		context.currentCachedSourceCodeUnits = 0;
 		context.currentCachedPaintedCodeUnits = 0;
+		context.currentCachedCodeUnits = 0;
 		this.sourceCodeUnitsA = 0;
 		this.sourceCodeUnitsB = 0;
 		this.paintedCodeUnitsA = 0;
@@ -341,8 +351,10 @@ export class LayoutFrameScratch {
 		this.context.currentFullWidthModes = EMPTY_ROW_MODES;
 		this.context.previousCachedSourceCodeUnits = 0;
 		this.context.previousCachedPaintedCodeUnits = 0;
+		this.context.previousCachedCodeUnits = 0;
 		this.context.currentCachedSourceCodeUnits = 0;
 		this.context.currentCachedPaintedCodeUnits = 0;
+		this.context.currentCachedCodeUnits = 0;
 		this.context.rowCacheEnabled = false;
 	}
 
@@ -957,8 +969,14 @@ function markRowUncacheable(context: LayoutContext, row: number): void {
 	if (row < 0 || row >= context.currentFullWidthModes.length) return;
 	const source = context.currentFullWidthSources[row];
 	const painted = context.currentFullWidthLines[row];
-	if (source !== undefined) context.currentCachedSourceCodeUnits -= source.length;
-	if (painted !== undefined) context.currentCachedPaintedCodeUnits -= painted.length;
+	if (source !== undefined) {
+		context.currentCachedSourceCodeUnits -= source.length;
+		context.currentCachedCodeUnits -= source.length;
+	}
+	if (painted !== undefined) {
+		context.currentCachedPaintedCodeUnits -= painted.length;
+		context.currentCachedCodeUnits -= painted.length;
+	}
 	context.currentFullWidthModes[row] = 2;
 	context.currentFullWidthSources[row] = undefined;
 	context.currentFullWidthLines[row] = undefined;
@@ -967,12 +985,7 @@ function markRowUncacheable(context: LayoutContext, row: number): void {
 function cacheFullWidthRow(context: LayoutContext, row: number, source: string, painted: string): boolean {
 	if (row < 0 || row >= context.currentFullWidthModes.length) return false;
 	const rowCodeUnits = source.length + painted.length;
-	const totalCodeUnits =
-		context.previousCachedSourceCodeUnits +
-		context.previousCachedPaintedCodeUnits +
-		context.currentCachedSourceCodeUnits +
-		context.currentCachedPaintedCodeUnits +
-		rowCodeUnits;
+	const totalCodeUnits = context.previousCachedCodeUnits + context.currentCachedCodeUnits + rowCodeUnits;
 	if (rowCodeUnits > MAX_RETAINED_ROW_CODE_UNITS || totalCodeUnits > MAX_RETAINED_ROW_CACHE_CODE_UNITS) {
 		context.rowCacheRejectedBySize++;
 		markRowUncacheable(context, row);
@@ -984,6 +997,7 @@ function cacheFullWidthRow(context: LayoutContext, row: number, source: string, 
 	context.currentFullWidthLines[row] = painted;
 	context.currentCachedSourceCodeUnits += source.length;
 	context.currentCachedPaintedCodeUnits += painted.length;
+	context.currentCachedCodeUnits += rowCodeUnits;
 	if (rowCodeUnits > context.maximumCachedRowCodeUnits) context.maximumCachedRowCodeUnits = rowCodeUnits;
 	return true;
 }
