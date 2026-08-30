@@ -115,13 +115,19 @@ test("letter and printable-symbol masks include the first character without coll
 test("threshold corpus retains v2 and locks every seed/cardinality boundary", () => {
 	const fixtures = createToolTokenEstimatorCorpus();
 	const byId = new Map(fixtures.map((fixture) => [fixture.id, fixture]));
-	assert.equal(fixtures.length, 130);
+	assert.equal(fixtures.length, 285);
 	assert.equal(PHASE5A_V2_FIXTURE_IDS.length, 42);
 	for (const id of PHASE5A_V2_FIXTURE_IDS) assert.ok(byId.has(id), `missing retained fixture ${id}`);
 
 	for (const [length, cardinalities] of [
+		[8, [6, 8]],
+		[10, [8, 10]],
+		[11, [8, 10, 11]],
 		[12, [8, 10, 12]],
+		[15, [8, 12, 15]],
 		[16, [12, 14, 16]],
+		[17, [8, 12, 16, 17]],
+		[18, [8, 12, 16, 18]],
 		[64, [16, 19, 20, 26]],
 		[256, [16, 19, 20, 26]],
 	] as const) {
@@ -133,14 +139,35 @@ test("threshold corpus retains v2 and locks every seed/cardinality boundary", ()
 			}
 		}
 	}
-	for (const cardinality of [16, 19, 20] as const) {
-		for (let seed = 1; seed <= 4; seed++) {
-			const upper = byId.get(`threshold-upper-l64-c${cardinality}-s${seed}`)!;
-			const mixed = byId.get(`threshold-mixed-l64-c${cardinality}-s${seed}`)!;
-			assert.equal(new Set(upper.text).size, cardinality);
-			assert.equal(new Set(mixed.text.toLowerCase()).size, cardinality);
-			assert.match(mixed.text, /[a-z]/);
-			assert.match(mixed.text, /[A-Z]/);
+	for (const [length, cardinalities] of [
+		[11, [8, 10, 11]],
+		[16, [12, 14, 16]],
+		[17, [8, 12, 16, 17]],
+		[64, [16, 19, 20]],
+	] as const) {
+		for (const cardinality of cardinalities) {
+			for (let seed = 1; seed <= 4; seed++) {
+				const upper = byId.get(`threshold-upper-l${length}-c${cardinality}-s${seed}`)!;
+				const mixed = byId.get(`threshold-mixed-l${length}-c${cardinality}-s${seed}`)!;
+				assert.equal(upper.text.length, length);
+				assert.equal(mixed.text.length, length);
+				assert.equal(new Set(upper.text).size, cardinality);
+				assert.equal(new Set(mixed.text.toLowerCase()).size, cardinality);
+				assert.match(mixed.text, /[a-z]/);
+				assert.match(mixed.text, /[A-Z]/);
+			}
+		}
+	}
+	for (const [id, length, cardinality, separator] of [
+		["threshold-aggregate-lower-l11-c11-space", 11, 11, " "],
+		["threshold-aggregate-mixed-l11-c11-newline", 11, 11, "\n"],
+		["threshold-aggregate-lower-l17-c17-space", 17, 17, " "],
+	] as const) {
+		const runs = byId.get(id)!.text.split(separator);
+		assert.equal(runs.length, 1_024);
+		for (const run of runs) {
+			assert.equal(run.length, length);
+			assert.equal(new Set(run.toLowerCase()).size, cardinality);
 		}
 	}
 	for (const length of [64, 256] as const) {
@@ -156,7 +183,7 @@ test("fixed reference corpus meets conservative accuracy gates", { timeout: 120_
 	const encoding = getEncoding("cl100k_base");
 	try {
 		const fixtures = createToolTokenEstimatorCorpus();
-		assert.equal(fixtures.length, 130);
+		assert.equal(fixtures.length, 285);
 		const under: number[] = [];
 		const over: number[] = [];
 		const categoryUnder = new Map<string, { total: number; count: number }>();

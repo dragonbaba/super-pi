@@ -40,6 +40,24 @@ const MIXED_CASE = `${LOWERCASE}${UPPERCASE}`;
 const PUNCTUATION = "!@#$%^&*()-_=+[]{};:'\",.<>/?\\|`~";
 const SYMBOL_COLLISION_ALPHABET = ";[{<\\|=]}>^~?_@`";
 const MATRIX_SEEDS = [0x5a17_0001, 0x5a17_0002, 0x5a17_0003, 0x5a17_0004] as const;
+const LOWER_THRESHOLD_MATRIX = [
+	[8, [6, 8]],
+	[10, [8, 10]],
+	[11, [8, 10, 11]],
+	[12, [8, 10, 12]],
+	[15, [8, 12, 15]],
+	[16, [12, 14, 16]],
+	[17, [8, 12, 16, 17]],
+	[18, [8, 12, 16, 18]],
+	[64, [16, 19, 20, 26]],
+	[256, [16, 19, 20, 26]],
+] as const;
+const CASE_THRESHOLD_MATRIX = [
+	[11, [8, 10, 11]],
+	[16, [12, 14, 16]],
+	[17, [8, 12, 16, 17]],
+	[64, [16, 19, 20]],
+] as const;
 
 function seededCharacters(length: number, alphabet: string, seed: number): string {
 	let state = seed >>> 0;
@@ -65,6 +83,30 @@ function seededCharactersWithRequiredAlphabet(length: number, alphabet: string, 
 	return value;
 }
 
+function seededMixedCaseWithRequiredAlphabet(length: number, cardinality: number, seed: number): string {
+	const normalized = seededCharactersWithRequiredAlphabet(length, LOWERCASE.slice(0, cardinality), seed);
+	let value = "";
+	for (let index = 0; index < normalized.length; index++) {
+		const uppercase = (((seed >>> (index & 15)) ^ index) & 1) !== 0;
+		value += uppercase ? normalized[index]!.toUpperCase() : normalized[index];
+	}
+	if (!/[a-z]/.test(value)) value = `${value[0]!.toLowerCase()}${value.slice(1)}`;
+	if (!/[A-Z]/.test(value)) value = `${value.slice(0, -1)}${value.at(-1)!.toUpperCase()}`;
+	return value;
+}
+
+function createRunAggregate(length: number, cardinality: number, separator: string, mixedCase: boolean): string {
+	let value = "";
+	for (let index = 0; index < 1_024; index++) {
+		if (index !== 0) value += separator;
+		const seed = (MATRIX_SEEDS[index & 3]! ^ Math.imul(index + 1, 0x9e37_79b9)) >>> 0;
+		value += mixedCase
+			? seededMixedCaseWithRequiredAlphabet(length, cardinality, seed)
+			: seededCharactersWithRequiredAlphabet(length, LOWERCASE.slice(0, cardinality), seed);
+	}
+	return value;
+}
+
 function greatestCommonDivisor(left: number, right: number): number {
 	while (right !== 0) {
 		const remainder = left % right;
@@ -74,7 +116,7 @@ function greatestCommonDivisor(left: number, right: number): number {
 	return left;
 }
 
-export const TOOL_TOKEN_ESTIMATOR_CORPUS_VERSION = "phase5a-v3" as const;
+export const TOOL_TOKEN_ESTIMATOR_CORPUS_VERSION = "phase5a-v4" as const;
 
 export function createToolTokenEstimatorCorpus(includeLarge = true): ToolTokenCorpusFixture[] {
 	const fixtures: ToolTokenCorpusFixture[] = [
@@ -119,12 +161,7 @@ export function createToolTokenEstimatorCorpus(includeLarge = true): ToolTokenCo
 		{ id: "malformed-low", category: "malformed-unicode", text: `left${String.fromCharCode(0xdc00)}right` },
 		{ id: "malformed-boundary", category: "malformed-unicode", text: `${String.fromCharCode(0xd83d)}\n${String.fromCharCode(0xdc00)}` },
 	];
-	for (const [length, cardinalities] of [
-		[12, [8, 10, 12]],
-		[16, [12, 14, 16]],
-		[64, [16, 19, 20, 26]],
-		[256, [16, 19, 20, 26]],
-	] as const) {
+	for (const [length, cardinalities] of LOWER_THRESHOLD_MATRIX) {
 		for (const cardinality of cardinalities) {
 			const alphabet = LOWERCASE.slice(0, cardinality);
 			for (let seedIndex = 0; seedIndex < MATRIX_SEEDS.length; seedIndex++) {
@@ -136,24 +173,42 @@ export function createToolTokenEstimatorCorpus(includeLarge = true): ToolTokenCo
 			}
 		}
 	}
-	for (const cardinality of [16, 19, 20] as const) {
-		const upperAlphabet = UPPERCASE.slice(0, cardinality);
-		const mixedAlphabet = `${LOWERCASE.slice(0, cardinality)}${UPPERCASE.slice(0, cardinality)}`;
-		for (let seedIndex = 0; seedIndex < MATRIX_SEEDS.length; seedIndex++) {
-			fixtures.push(
-				{
-					id: `threshold-upper-l64-c${cardinality}-s${seedIndex + 1}`,
-					category: "threshold-alpha",
-					text: seededCharactersWithRequiredAlphabet(64, upperAlphabet, MATRIX_SEEDS[seedIndex]!),
-				},
-				{
-					id: `threshold-mixed-l64-c${cardinality}-s${seedIndex + 1}`,
-					category: "threshold-alpha",
-					text: seededCharactersWithRequiredAlphabet(64, mixedAlphabet, MATRIX_SEEDS[seedIndex]!),
-				},
-			);
+	for (const [length, cardinalities] of CASE_THRESHOLD_MATRIX) {
+		for (const cardinality of cardinalities) {
+			const upperAlphabet = UPPERCASE.slice(0, cardinality);
+			for (let seedIndex = 0; seedIndex < MATRIX_SEEDS.length; seedIndex++) {
+				fixtures.push(
+					{
+						id: `threshold-upper-l${length}-c${cardinality}-s${seedIndex + 1}`,
+						category: "threshold-alpha",
+						text: seededCharactersWithRequiredAlphabet(length, upperAlphabet, MATRIX_SEEDS[seedIndex]!),
+					},
+					{
+						id: `threshold-mixed-l${length}-c${cardinality}-s${seedIndex + 1}`,
+						category: "threshold-alpha",
+						text: seededMixedCaseWithRequiredAlphabet(length, cardinality, MATRIX_SEEDS[seedIndex]!),
+					},
+				);
+			}
 		}
 	}
+	fixtures.push(
+		{
+			id: "threshold-aggregate-lower-l11-c11-space",
+			category: "threshold-length-aggregate",
+			text: createRunAggregate(11, 11, " ", false),
+		},
+		{
+			id: "threshold-aggregate-mixed-l11-c11-newline",
+			category: "threshold-length-aggregate",
+			text: createRunAggregate(11, 11, "\n", true),
+		},
+		{
+			id: "threshold-aggregate-lower-l17-c17-space",
+			category: "threshold-length-aggregate",
+			text: createRunAggregate(17, 17, " ", false),
+		},
+	);
 	for (const length of [64, 256] as const) {
 		for (let seedIndex = 0; seedIndex < MATRIX_SEEDS.length; seedIndex++) {
 			fixtures.push({
