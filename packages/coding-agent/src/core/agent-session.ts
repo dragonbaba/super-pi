@@ -1021,7 +1021,11 @@ export class AgentSession {
 
 		if (this._extensionRunner.hasHandlers(event.type)) await this._emitExtensionEvent(event);
 		if (event.type === "message_end" && event.message.role === "toolResult") {
-			this._toolOutputShadow?.observe(event.message);
+			const model = this.model;
+			this._toolOutputShadow?.observe(
+				event.message,
+				model ? { api: model.api, provider: model.provider, model: model.id } : undefined,
+			);
 		}
 
 		// Notify all listeners. The final boundary is awaited so prompt/abort/idle

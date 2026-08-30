@@ -34,7 +34,24 @@ const STACK = `Error: fixture failure
     at async main (src/main.ts:7:3)`;
 const REPEATED_ERROR = "ERROR fixture worker failed code=E_RETRY attempt=3\n";
 
-export const TOOL_TOKEN_ESTIMATOR_CORPUS_VERSION = "phase5a-v1" as const;
+const LOWERCASE = "abcdefghijklmnopqrstuvwxyz";
+const UPPERCASE = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+const MIXED_CASE = `${LOWERCASE}${UPPERCASE}`;
+const PUNCTUATION = "!@#$%^&*()-_=+[]{};:'\",.<>/?\\|`~";
+
+function seededCharacters(length: number, alphabet: string, seed: number): string {
+	let state = seed >>> 0;
+	let value = "";
+	for (let index = 0; index < length; index++) {
+		state ^= state << 13;
+		state ^= state >>> 17;
+		state ^= state << 5;
+		value += alphabet[(state >>> 0) % alphabet.length];
+	}
+	return value;
+}
+
+export const TOOL_TOKEN_ESTIMATOR_CORPUS_VERSION = "phase5a-v2" as const;
 
 export function createToolTokenEstimatorCorpus(includeLarge = true): ToolTokenCorpusFixture[] {
 	const fixtures: ToolTokenCorpusFixture[] = [
@@ -62,6 +79,19 @@ export function createToolTokenEstimatorCorpus(includeLarge = true): ToolTokenCo
 		{ id: "base64-like", category: "base64-like", text: "VGhpcy1pcy1ub3QtYS1zZWNyZXQtZml4dHVyZS0wMTIzNDU2Nzg5QUJDREVGRw==".repeat(16) },
 		{ id: "long-word-lower", category: "long-unbroken-word", text: "deterministicfixtureword".repeat(128) },
 		{ id: "long-word-mixed", category: "long-unbroken-word", text: "Ab9xQ2Lm7Pz4".repeat(256) },
+		{ id: "random-lowercase-12", category: "adversarial-alpha", text: seededCharacters(12, LOWERCASE, 0x5a17_0012) },
+		{ id: "random-lowercase-64", category: "adversarial-alpha", text: seededCharacters(64, LOWERCASE, 0x5a17_0064) },
+		{ id: "random-lowercase-256", category: "adversarial-alpha", text: seededCharacters(256, LOWERCASE, 0x5a17_0256) },
+		{ id: "random-uppercase-64", category: "adversarial-alpha", text: seededCharacters(64, UPPERCASE, 0x5a17_1064) },
+		{ id: "random-mixed-case-128", category: "adversarial-alpha", text: seededCharacters(128, MIXED_CASE, 0x5a17_2128) },
+		{ id: "camel-case-identifiers", category: "adversarial-alpha", text: "parseHTTPResponseIntoModelVisibleTokenBudgetCandidateWithoutCopyingTextBlocks".repeat(4) },
+		{ id: "alphabetic-api-key-like", category: "adversarial-alpha", text: `FixtureApiToken${seededCharacters(192, MIXED_CASE, 0x5a17_3192)}` },
+		{ id: "random-punctuation-256", category: "adversarial-punctuation", text: seededCharacters(256, PUNCTUATION, 0x5a17_4256) },
+		{ id: "rare-han", category: "adversarial-cjk", text: "龘麤靐齉纛鱻灥爨籲讟钃鸜".repeat(16) },
+		{ id: "cjk-extension", category: "adversarial-cjk", text: "𠀀𠮷𡃁𡈼𡚴𢀖𢎭𣏟".repeat(16) },
+		{ id: "hiragana-katakana", category: "adversarial-cjk", text: "ひらがなカタカナヷヸヹヺゔヵヶ".repeat(16) },
+		{ id: "hangul", category: "adversarial-cjk", text: "한글도구출력토큰예산관찰값".repeat(16) },
+		{ id: "mixed-cjk-ascii-identifiers", category: "adversarial-cjk", text: "工具Result解析器Model预算値tokenCount한국어ID".repeat(16) },
 		{ id: "malformed-high", category: "malformed-unicode", text: `before${String.fromCharCode(0xd83d)}after` },
 		{ id: "malformed-low", category: "malformed-unicode", text: `left${String.fromCharCode(0xdc00)}right` },
 		{ id: "malformed-boundary", category: "malformed-unicode", text: `${String.fromCharCode(0xd83d)}\n${String.fromCharCode(0xdc00)}` },

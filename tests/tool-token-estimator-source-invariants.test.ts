@@ -5,7 +5,7 @@ import ts from "typescript";
 
 const SOURCE_PATH = "packages/coding-agent/src/core/tool-output-budget.ts";
 
-test("tool estimator production source keeps forbidden hot-path allocations at zero", () => {
+test("tool estimator source invariants forbid hot-path allocation regressions", () => {
 	const source = readFileSync(SOURCE_PATH, "utf8");
 	const ast = ts.createSourceFile(SOURCE_PATH, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
 	let arrows = 0;
@@ -39,12 +39,25 @@ test("tool estimator production source keeps forbidden hot-path allocations at z
 		ts.forEachChild(node, visit);
 	}
 	visit(ast);
-	assert.equal(arrows, 0, "closuresCreated (ArrowFunction)");
-	assert.equal(functionExpressions, 0, "closuresCreated (FunctionExpression)");
+	assert.equal(arrows, 0, "sourceInvariantArrowFunctions");
+	assert.equal(functionExpressions, 0, "sourceInvariantFunctionExpressions");
 	assert.equal(promiseConstructions, 0);
 	assert.equal(abortControllerConstructions, 0);
 	assert.equal(dynamicRegexConstructions, 0);
 	assert.equal(forbiddenCalls, 0);
 	assert.equal(source.includes("new String"), false);
 	assert.equal(source.includes("ObjectPool"), false);
+	assert.equal(source.includes("Promise.all"), false);
+	assert.equal(source.includes(".catch("), false);
+	assert.equal(source.includes("recordRejectedTelemetry.bind(undefined, this.counters)"), true);
+	for (const removedPseudoRuntimeCounter of [
+		"closuresCreated",
+		"promisesCreated",
+		"fullStringCopies",
+		"fullStringSerializations",
+		"temporaryLineArrays",
+		"finalRetainedReferences",
+	]) {
+		assert.equal(source.includes(removedPseudoRuntimeCounter), false, removedPseudoRuntimeCounter);
+	}
 });

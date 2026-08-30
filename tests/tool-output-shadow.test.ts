@@ -6,6 +6,10 @@ import type { Context, Model, ToolResultMessage, Usage } from "../packages/ai/sr
 import {
 	createToolOutputEstimatorCounters,
 	createToolOutputShadowObserver,
+	TOOL_OUTPUT_EXACT_ESTIMATOR_ID,
+	TOOL_OUTPUT_FALLBACK_ESTIMATOR_ID,
+	TOOL_OUTPUT_SHADOW_BUDGETS,
+	type ToolOutputExactEstimatorInput,
 	type ToolOutputShadowTelemetry,
 } from "../packages/coding-agent/src/core/tool-output-budget.ts";
 
@@ -44,7 +48,7 @@ interface PipelineSnapshot {
 
 function runControlPipeline(
 	enabled: boolean,
-	telemetry?: { recordToolOutputShadow(record: ToolOutputShadowTelemetry): void },
+	telemetry?: { recordToolOutputShadow(record: ToolOutputShadowTelemetry): void | Promise<void> },
 ): PipelineSnapshot {
 	const content = [{ type: "text" as const, text: "final extension-visible tool output\n第二行 😀" }];
 	const result = { content, details: { truncation: { totalBytes: 9_999, totalLines: 77 } }, usage: USAGE };
@@ -119,7 +123,8 @@ test("shadow telemetry is metadata-only and a throwing or absent consumer is iso
 	};
 	observer!.observe(message);
 	assert.equal(counters.telemetryPayloadsCreated, 1);
-	assert.equal(counters.telemetryPayloadsDropped, 1);
+	assert.equal(counters.telemetrySinkDrops, 1);
+	assert.equal(counters.telemetrySinkRejections, 1);
 
 	let record: ToolOutputShadowTelemetry | undefined;
 	const recording = createToolOutputShadowObserver({
@@ -135,7 +140,151 @@ test("shadow telemetry is metadata-only and a throwing or absent consumer is iso
 
 	const noConsumerCounters = createToolOutputEstimatorCounters();
 	createToolOutputShadowObserver({ enabled: true, counters: noConsumerCounters })!.observe(message);
-	assert.equal(noConsumerCounters.telemetryPayloadsDropped, 1);
+	assert.equal(noConsumerCounters.telemetrySinkDrops, 1);
+});
+
+test("async telemetry rejection is isolated from final delivery", async () => {
+	const counters = createToolOutputEstimatorCounters();
+	let unhandledRejections = 0;
+	const onUnhandledRejection = (): void => { unhandledRejections++; };
+	process.on("unhandledRejection", onUnhandledRejection);
+	try {
+		const observer = createToolOutputShadowObserver({
+			enabled: true,
+			counters,
+			telemetry: {
+				async recordToolOutputShadow(): Promise<void> {
+					throw new Error("telemetry rejection");
+				},
+			},
+		})!;
+		const message = { toolName: "bash", content: [{ type: "text" as const, text: "persist me" }] };
+		const persisted: typeof message[] = [];
+		let listenerMessage: typeof message | undefined;
+		observer.observe(message);
+		listenerMessage = message;
+		persisted.push(message);
+		await new Promise<void>((resolve) => { setImmediate(resolve); });
+		assert.equal(unhandledRejections, 0);
+		assert.equal(listenerMessage, message);
+		assert.equal(persisted[0], message);
+		assert.equal(counters.telemetrySinkDrops, 1);
+		assert.equal(counters.telemetrySinkRejections, 1);
+		assert.equal(counters.telemetryRejectionObserversAttached, 1);
+
+		const healthyCounters = createToolOutputEstimatorCounters();
+		let healthyCalls = 0;
+		createToolOutputShadowObserver({
+			enabled: true,
+			counters: healthyCounters,
+			telemetry: {
+				async recordToolOutputShadow(): Promise<void> { healthyCalls++; },
+			},
+		})!.observe(message);
+		await Promise.resolve();
+		assert.equal(healthyCalls, 1);
+		assert.equal(healthyCounters.telemetrySinkCalls, 1);
+		assert.equal(healthyCounters.telemetrySinkDrops, 0);
+		assert.equal(healthyCounters.telemetrySinkRejections, 0);
+	} finally {
+		process.off("unhandledRejection", onUnhandledRejection);
+	}
+});
+
+test("exact resolver is model-aware and receives immutable text-only input", () => {
+	const secret = "SECRET_estimator_id/D:/private/path";
+	const imageBody = "sensitive-image-base64-body";
+	const originalText = "model-visible text";
+	const message = {
+		toolName: "mcp_fixture",
+		content: [
+			{ type: "text" as const, text: originalText },
+			{ type: "image" as const, data: imageBody, mimeType: "image/png" },
+			{ type: "image" as const, data: `${imageBody}-second`, mimeType: secret },
+		],
+	};
+	const resolvedModels: string[] = [];
+	const exactInputs: unknown[] = [];
+	const records: ToolOutputShadowTelemetry[] = [];
+	const observer = createToolOutputShadowObserver({
+		enabled: true,
+		resolveExactEstimator: (identity) => {
+			resolvedModels.push(`${identity.api}/${identity.provider}/${identity.model}`);
+			if (identity.model === "unsupported") return undefined;
+			const tokens = identity.model === "model-a" ? 11 : 22;
+			return {
+				estimatorId: secret,
+				estimateToolOutputTokens: (input: ToolOutputExactEstimatorInput) => {
+					exactInputs.push(input);
+					assert.throws(() => { (input.textBlocks as string[])[0] = "mutated"; });
+					assert.throws(() => { (input.imageMimeTypes as string[])[0] = imageBody; });
+					assert.equal(input.textBlockCount, 1);
+					assert.equal(input.imageCount, 2);
+					assert.deepEqual(input.imageMimeTypes, ["image/png", "application/octet-stream"]);
+					assert.equal(JSON.stringify(input).includes(imageBody), false);
+					return tokens;
+				},
+			} as never;
+		},
+		telemetry: { recordToolOutputShadow: (record) => { records.push(record); } },
+	})!;
+	observer.observe(message, { api: "api-a", provider: "provider-a", model: "model-a" });
+	observer.observe(message, { api: "api-b", provider: "provider-b", model: "model-b" });
+	observer.observe(message, { api: "api-c", provider: "provider-c", model: "unsupported" });
+	assert.deepEqual(resolvedModels, ["api-a/provider-a/model-a", "api-b/provider-b/model-b", "api-c/provider-c/unsupported"]);
+	assert.equal(exactInputs.length, 2);
+	assert.equal(message.content[0].text, originalText);
+	assert.equal(records[0]!.estimatedTokens, 11);
+	assert.equal(records[1]!.estimatedTokens, 22);
+	assert.equal(records[0]!.estimatorId, TOOL_OUTPUT_EXACT_ESTIMATOR_ID);
+	assert.equal(records[1]!.estimatorId, TOOL_OUTPUT_EXACT_ESTIMATOR_ID);
+	assert.match(records[0]!.estimatorId, /^[a-z0-9][a-z0-9._-]{0,63}$/);
+	assert.ok(records[0]!.estimatorId.length <= 64);
+	assert.equal(records[2]!.estimatorId, TOOL_OUTPUT_FALLBACK_ESTIMATOR_ID);
+	const serialized = JSON.stringify(records);
+	assert.equal(serialized.includes(secret), false);
+	assert.equal(serialized.includes(imageBody), false);
+});
+
+test("shadow budget constants and fixed telemetry payload schema cannot drift", () => {
+	let record: ToolOutputShadowTelemetry | undefined;
+	createToolOutputShadowObserver({
+		enabled: true,
+		telemetry: { recordToolOutputShadow: (value) => { record = value; } },
+	})!.observe({ toolName: "bash", content: [{ type: "text", text: "x".repeat(20_000) }] });
+	assert.deepEqual(TOOL_OUTPUT_SHADOW_BUDGETS, [1024, 2048, 4096, 8192, 16384]);
+	for (const budget of TOOL_OUTPUT_SHADOW_BUDGETS) {
+		const suffix = `${budget / 1024}k`;
+		const values = record as unknown as Record<string, unknown>;
+		assert.equal(values[`proposedModelViewTokens${suffix}`], Math.min(record!.estimatedTokens, budget));
+		assert.equal(values[`wouldTruncate${suffix}`], record!.estimatedTokens > budget);
+	}
+	assert.equal(record!.candidateBudgetTokens, null);
+	assert.equal(record!.wouldTruncate, null);
+	assert.deepEqual(Object.keys(record!).sort(), [
+		"candidateBudgetTokens",
+		"estimatedModelVisibleTextBytes",
+		"estimatedModelVisibleTextTokens",
+		"estimatedTokens",
+		"estimatorConfidence",
+		"estimatorId",
+		"estimatorVersion",
+		"proposedModelViewTokens16k",
+		"proposedModelViewTokens1k",
+		"proposedModelViewTokens2k",
+		"proposedModelViewTokens4k",
+		"proposedModelViewTokens8k",
+		"proposedTruncationReason",
+		"rawLines",
+		"rawUtf8Bytes",
+		"toolCategory",
+		"wouldTruncate",
+		"wouldTruncate16k",
+		"wouldTruncate1k",
+		"wouldTruncate2k",
+		"wouldTruncate4k",
+		"wouldTruncate8k",
+	].sort());
 });
 
 test("parallel, repeated, and multi-session observers keep isolated primitive counters", async () => {
@@ -173,22 +322,18 @@ test("dispose releases estimator and telemetry references without retaining outp
 	const observer = createToolOutputShadowObserver({
 		enabled: true,
 		counters,
-		exactEstimator: {
-			estimatorId: "exact.fixture",
-			estimateToolOutputTokens: () => { exactCalls++; return 1; },
-		},
+		resolveExactEstimator: () => ({ estimateToolOutputTokens: () => { exactCalls++; return 1; } }),
 		telemetry: { recordToolOutputShadow: () => { telemetryCalls++; } },
 	})!;
 	const output = { toolName: "bash", content: [{ type: "text" as const, text: "output" }] };
-	observer.observe(output);
+	observer.observe(output, { api: "fixture", provider: "fixture", model: "fixture-a" });
 	observer.dispose();
-	observer.observe(output);
+	observer.observe(output, { api: "fixture", provider: "fixture", model: "fixture-a" });
 	assert.equal(exactCalls, 1);
 	assert.equal(telemetryCalls, 1);
-	assert.equal(counters.finalRetainedReferences, 0);
-	assert.equal(counters.fullStringCopies, 0);
-	assert.equal(counters.fullStringSerializations, 0);
-	assert.equal(counters.temporaryLineArrays, 0);
+	assert.equal(counters.activeRetainedReferencesHighWaterMark, 2);
+	assert.equal(counters.activeRetainedReferences, 0);
+	assert.equal(counters.activeObservations, 0);
 });
 
 test("disabled shadow constructs no observer and production insertion follows final extension transformation", () => {
@@ -198,7 +343,7 @@ test("disabled shadow constructs no observer and production insertion follows fi
 
 	const source = readFileSync("packages/coding-agent/src/core/agent-session.ts", "utf8");
 	const extension = source.indexOf("if (this._extensionRunner.hasHandlers(event.type)) await this._emitExtensionEvent(event);");
-	const shadow = source.indexOf("this._toolOutputShadow?.observe(event.message);");
+	const shadow = source.indexOf("this._toolOutputShadow?.observe(");
 	const listeners = source.indexOf("// Notify all listeners.", shadow);
 	const persistence = source.indexOf("// Handle session persistence", shadow);
 	assert.ok(extension >= 0 && extension < shadow);

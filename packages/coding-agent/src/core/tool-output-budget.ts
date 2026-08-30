@@ -7,6 +7,7 @@
 
 export const TOOL_OUTPUT_ESTIMATOR_VERSION = 1 as const;
 export const TOOL_OUTPUT_FALLBACK_ESTIMATOR_ID = "super-pi.conservative-v1";
+export const TOOL_OUTPUT_EXACT_ESTIMATOR_ID = "super-pi.exact-v1";
 export const TOOL_OUTPUT_SHADOW_BUDGETS = [1024, 2048, 4096, 8192, 16384] as const;
 
 export type ToolOutputEstimateConfidence = "exact" | "conservative-fallback";
@@ -37,13 +38,31 @@ export interface ToolOutputTokenEstimate {
 }
 
 /**
- * Optional synchronous provider tokenizer boundary. Implementations must not
- * mutate or retain `content`, and must return a finite non-negative integer.
+ * Optional synchronous provider tokenizer boundary. The input owns frozen
+ * arrays containing immutable text references and bounded MIME metadata only;
+ * image bodies are never exposed. The returned count is text-only and must not
+ * include provider image-token billing.
  */
 export interface ToolOutputExactTokenEstimator {
-	readonly estimatorId: string;
-	estimateToolOutputTokens(content: readonly ToolOutputContent[]): number;
+	estimateToolOutputTokens(input: ToolOutputExactEstimatorInput): number;
 }
+
+export interface ToolOutputExactEstimatorInput {
+	readonly textBlocks: readonly string[];
+	readonly textBlockCount: number;
+	readonly imageCount: number;
+	readonly imageMimeTypes: readonly string[];
+}
+
+export interface ToolOutputModelIdentity {
+	readonly api: string;
+	readonly provider: string;
+	readonly model: string;
+}
+
+export type ToolOutputExactEstimatorResolver = (
+	model: ToolOutputModelIdentity,
+) => ToolOutputExactTokenEstimator | undefined;
 
 export interface ToolOutputEstimatorCounters {
 	estimatorCalls: number;
@@ -52,16 +71,21 @@ export interface ToolOutputEstimatorCounters {
 	charactersScanned: number;
 	utf8BytesObserved: number;
 	lineBreaksObserved: number;
-	fullStringCopies: number;
-	fullStringSerializations: number;
-	temporaryLineArrays: number;
-	promisesCreated: number;
-	closuresCreated: number;
-	wrapperObjectsCreated: number;
+	scanStateObjectsCreated: number;
+	estimateObjectsCreated: number;
+	exactInputObjectsCreated: number;
 	telemetryPayloadsCreated: number;
-	telemetryPayloadsDropped: number;
+	telemetrySinkCalls: number;
+	/** Records not accepted because the sink was absent, threw, rejected, or observation failed. */
+	telemetrySinkDrops: number;
+	telemetrySinkRejections: number;
+	telemetryRejectionObserversAttached: number;
+	shadowObservationErrors: number;
 	maximumInputCharacters: number;
-	finalRetainedReferences: number;
+	activeObservations: number;
+	activeObservationsHighWaterMark: number;
+	activeRetainedReferences: number;
+	activeRetainedReferencesHighWaterMark: number;
 }
 
 export function createToolOutputEstimatorCounters(): ToolOutputEstimatorCounters {
@@ -72,16 +96,20 @@ export function createToolOutputEstimatorCounters(): ToolOutputEstimatorCounters
 		charactersScanned: 0,
 		utf8BytesObserved: 0,
 		lineBreaksObserved: 0,
-		fullStringCopies: 0,
-		fullStringSerializations: 0,
-		temporaryLineArrays: 0,
-		promisesCreated: 0,
-		closuresCreated: 0,
-		wrapperObjectsCreated: 0,
+		scanStateObjectsCreated: 0,
+		estimateObjectsCreated: 0,
+		exactInputObjectsCreated: 0,
 		telemetryPayloadsCreated: 0,
-		telemetryPayloadsDropped: 0,
+		telemetrySinkCalls: 0,
+		telemetrySinkDrops: 0,
+		telemetrySinkRejections: 0,
+		telemetryRejectionObserversAttached: 0,
+		shadowObservationErrors: 0,
 		maximumInputCharacters: 0,
-		finalRetainedReferences: 0,
+		activeObservations: 0,
+		activeObservationsHighWaterMark: 0,
+		activeRetainedReferences: 0,
+		activeRetainedReferencesHighWaterMark: 0,
 	};
 }
 
@@ -113,11 +141,19 @@ interface ScanState {
 	runLastWordClass: number;
 	runAdjacentChanges: number;
 	runLastCode: number;
+	runLetterMask: number;
+	runDistinctLetters: number;
+	runSymbolMask: number;
+	runDistinctSymbols: number;
 	cjkCharacters: number;
+	cjkExtensionCharacters: number;
+	kanaCharacters: number;
+	hangulCharacters: number;
 	otherBmpCharacters: number;
 	emojiCharacters: number;
 	combiningCharacters: number;
 	controlCharacters: number;
+	lowSurrogateJoins: number;
 	hasVisibleText: boolean;
 	endsWithLineBreak: boolean;
 }
@@ -144,14 +180,27 @@ function addAsciiRunTokens(state: ScanState): void {
 					: Math.ceil(length / 3);
 			break;
 		case AsciiRunKind.Symbols:
-			state.estimatedTokens += Math.ceil(length / 2);
+			state.estimatedTokens +=
+				length >= 12 && state.runDistinctSymbols >= 12
+					? Math.ceil((length * 2) / 3)
+					: Math.ceil(length / 2);
 			break;
 		case AsciiRunKind.LowerAlpha:
 		case AsciiRunKind.Alpha:
-			state.estimatedTokens += Math.max(
-				1,
-				Math.ceil(length / (length > 16 ? (state.runAdjacentChanges === 0 ? 8 : 4) : 6)),
-			);
+			if (
+				length >= 12 &&
+				(length <= 16
+					? state.runDistinctLetters >= length - 1
+					: state.runDistinctLetters * 4 >= 26 * 3) &&
+				(!state.runHasLower || !state.runHasUpper || state.runTransitions * 3 >= length)
+			) {
+				state.estimatedTokens += Math.ceil((length * 2) / 3);
+			} else {
+				state.estimatedTokens += Math.max(
+					1,
+					Math.ceil(length / (length > 16 ? (state.runAdjacentChanges === 0 ? 8 : 4) : 6)),
+				);
+			}
 			break;
 	}
 	state.runKind = AsciiRunKind.None;
@@ -164,6 +213,10 @@ function addAsciiRunTokens(state: ScanState): void {
 	state.runLastWordClass = 0;
 	state.runAdjacentChanges = 0;
 	state.runLastCode = -1;
+	state.runLetterMask = 0;
+	state.runDistinctLetters = 0;
+	state.runSymbolMask = 0;
+	state.runDistinctSymbols = 0;
 }
 
 function isAsciiHex(code: number): boolean {
@@ -175,6 +228,7 @@ function beginOrExtendAsciiRun(state: ScanState, code: number): void {
 	const lower = code >= 0x61 && code <= 0x7a;
 	const upper = code >= 0x41 && code <= 0x5a;
 	const digit = code >= 0x30 && code <= 0x39;
+	const normalizedLetter = lower ? code - 0x61 : upper ? code - 0x41 : -1;
 	const wordClass = lower ? 1 : upper ? 2 : digit ? 3 : 0;
 	if (code === 0x20 || code === 0x09 || code === 0x0a || code === 0x0d) {
 		kind = AsciiRunKind.Whitespace;
@@ -211,6 +265,19 @@ function beginOrExtendAsciiRun(state: ScanState, code: number): void {
 	state.runAllHex = state.runAllHex && isAsciiHex(code);
 	if (wordClass !== 0) state.runLastWordClass = wordClass;
 	state.runLastCode = code;
+	if (normalizedLetter >= 0) {
+		const letterBit = 1 << normalizedLetter;
+		if ((state.runLetterMask & letterBit) === 0) {
+			state.runLetterMask |= letterBit;
+			state.runDistinctLetters++;
+		}
+	} else if (!nextIsWord && kind === AsciiRunKind.Symbols) {
+		const symbolBit = 1 << (code & 31);
+		if ((state.runSymbolMask & symbolBit) === 0) {
+			state.runSymbolMask |= symbolBit;
+			state.runDistinctSymbols++;
+		}
+	}
 	if (nextIsWord) {
 		if (state.runHasDigit && (state.runHasLower || state.runHasUpper)) {
 			state.runKind = state.runAllHex ? AsciiRunKind.Hex : AsciiRunKind.MixedAlphaNumeric;
@@ -260,6 +327,7 @@ function scanText(state: ScanState, text: string): void {
 		}
 
 		addAsciiRunTokens(state);
+		const followsLineBreak = state.endsWithLineBreak;
 		state.endsWithLineBreak = false;
 		if (first >= 0xd800 && first <= 0xdbff) {
 			const second = index + 1 < text.length ? text.charCodeAt(index + 1) : 0;
@@ -267,7 +335,7 @@ function scanText(state: ScanState, text: string): void {
 				const codePoint = 0x10000 + ((first - 0xd800) << 10) + (second - 0xdc00);
 				state.rawUtf8Bytes += 4;
 				state.modelVisibleUtf8Bytes += 4;
-				if (isCjk(codePoint)) state.cjkCharacters++;
+				if (isCjk(codePoint)) state.cjkExtensionCharacters++;
 				else if (isCombiningOrJoiner(codePoint)) state.combiningCharacters++;
 				else state.emojiCharacters++;
 				index++;
@@ -279,13 +347,18 @@ function scanText(state: ScanState, text: string): void {
 		}
 		if (first >= 0xdc00 && first <= 0xdfff) {
 			state.rawUtf8Bytes += 3;
+			if (!followsLineBreak) state.lowSurrogateJoins++;
 			continue;
 		}
 
 		const bytes = first <= 0x7ff ? 2 : 3;
 		state.rawUtf8Bytes += bytes;
 		state.modelVisibleUtf8Bytes += bytes;
-		if (isCjk(first)) state.cjkCharacters++;
+		if (isCjk(first)) {
+			if (first >= 0x3040 && first <= 0x30ff) state.kanaCharacters++;
+			else if (first >= 0xac00 && first <= 0xd7af) state.hangulCharacters++;
+			else state.cjkCharacters++;
+		}
 		else if (isCombiningOrJoiner(first)) state.combiningCharacters++;
 		else state.otherBmpCharacters++;
 	}
@@ -308,17 +381,73 @@ function createScanState(): ScanState {
 		runLastWordClass: 0,
 		runAdjacentChanges: 0,
 		runLastCode: -1,
+		runLetterMask: 0,
+		runDistinctLetters: 0,
+		runSymbolMask: 0,
+		runDistinctSymbols: 0,
 		cjkCharacters: 0,
+		cjkExtensionCharacters: 0,
+		kanaCharacters: 0,
+		hangulCharacters: 0,
 		otherBmpCharacters: 0,
 		emojiCharacters: 0,
 		combiningCharacters: 0,
 		controlCharacters: 0,
+		lowSurrogateJoins: 0,
 		hasVisibleText: false,
 		endsWithLineBreak: false,
 	};
 }
 
 const IMAGE_ONLY_PLACEHOLDER = "(see attached image)";
+const UNKNOWN_IMAGE_MIME_TYPE = "application/octet-stream";
+
+function boundedImageMimeType(mimeType: string): string {
+	if (mimeType.length === 0 || mimeType.length > 64) return UNKNOWN_IMAGE_MIME_TYPE;
+	for (let index = 0; index < mimeType.length; index++) {
+		const code = mimeType.charCodeAt(index);
+		const allowed =
+			(code >= 0x30 && code <= 0x39) ||
+			(code >= 0x41 && code <= 0x5a) ||
+			(code >= 0x61 && code <= 0x7a) ||
+			code === 0x21 ||
+			code === 0x23 ||
+			code === 0x24 ||
+			code === 0x26 ||
+			code === 0x2b ||
+			code === 0x2d ||
+			code === 0x2e ||
+			code === 0x2f ||
+			code === 0x5e ||
+			code === 0x5f;
+		if (!allowed) return UNKNOWN_IMAGE_MIME_TYPE;
+	}
+	return mimeType;
+}
+
+type RejectionObserver = (reason: unknown) => void;
+
+function attachRejectionObserver(value: unknown, observer: RejectionObserver): boolean {
+	if ((typeof value !== "object" && typeof value !== "function") || value === null) return false;
+	let then: unknown;
+	try {
+		then = (value as { then?: unknown }).then;
+	} catch (error) {
+		observer(error);
+		return true;
+	}
+	if (typeof then !== "function") return false;
+	try {
+		then.call(value, undefined, observer);
+	} catch (error) {
+		observer(error);
+	}
+	return true;
+}
+
+function observeRejectedExactThenable(_reason: unknown): void {
+	// The exact boundary is synchronous; rejected thenables are invalid and ignored.
+}
 
 export function estimateToolOutputTokens(
 	content: readonly ToolOutputContent[],
@@ -327,26 +456,34 @@ export function estimateToolOutputTokens(
 ): ToolOutputTokenEstimate {
 	if (counters) counters.estimatorCalls++;
 	const state = createScanState();
-	if (counters) counters.wrapperObjectsCreated++;
+	if (counters) counters.scanStateObjectsCreated++;
 	let textBlocks = 0;
-	let hasImage = false;
+	let imageCount = 0;
+	const exactTextBlocks: string[] | undefined = exactEstimator ? [] : undefined;
+	const exactImageMimeTypes: string[] | undefined = exactEstimator ? [] : undefined;
 	for (let blockIndex = 0; blockIndex < content.length; blockIndex++) {
 		const block = content[blockIndex]!;
 		if (block.type === "image") {
-			hasImage = true;
+			imageCount++;
+			exactImageMimeTypes?.push(boundedImageMimeType(block.mimeType));
 			continue;
 		}
 		if (textBlocks > 0) scanText(state, "\n");
 		scanText(state, block.text);
+		exactTextBlocks?.push(block.text);
 		textBlocks++;
 	}
-	if (!state.hasVisibleText && hasImage) scanText(state, IMAGE_ONLY_PLACEHOLDER);
+	if (!state.hasVisibleText && imageCount > 0) scanText(state, IMAGE_ONLY_PLACEHOLDER);
 	addAsciiRunTokens(state);
-	state.estimatedTokens += Math.ceil((state.cjkCharacters * 5) / 4);
+	state.estimatedTokens += Math.ceil((state.cjkCharacters * 11) / 4);
+	state.estimatedTokens += state.cjkExtensionCharacters * 4;
+	state.estimatedTokens += state.kanaCharacters * 2;
+	state.estimatedTokens += state.hangulCharacters * 2;
 	state.estimatedTokens += state.otherBmpCharacters * 2;
 	state.estimatedTokens += state.emojiCharacters * 3;
 	state.estimatedTokens += state.combiningCharacters * 2;
-	state.estimatedTokens += Math.ceil(state.controlCharacters / 2);
+	state.estimatedTokens += Math.ceil((state.controlCharacters * 3) / 2);
+	state.estimatedTokens += state.lowSurrogateJoins;
 	state.estimatedTokens += state.lineBreaks;
 	if (state.modelVisibleUtf8Bytes > 0 && state.estimatedTokens === 0) state.estimatedTokens = 1;
 
@@ -356,10 +493,19 @@ export function estimateToolOutputTokens(
 	if (exactEstimator) {
 		if (counters) counters.exactEstimatorCalls++;
 		try {
-			const exactTokens = exactEstimator.estimateToolOutputTokens(content);
-			if (Number.isSafeInteger(exactTokens) && exactTokens >= 0) {
-				estimatedTokens = exactTokens;
-				estimatorId = exactEstimator.estimatorId;
+			const exactInput: ToolOutputExactEstimatorInput = Object.freeze({
+				textBlocks: Object.freeze(exactTextBlocks!),
+				textBlockCount: textBlocks,
+				imageCount,
+				imageMimeTypes: Object.freeze(exactImageMimeTypes!),
+			});
+			if (counters) counters.exactInputObjectsCreated++;
+			const exactTokens: unknown = exactEstimator.estimateToolOutputTokens(exactInput);
+			if (attachRejectionObserver(exactTokens, observeRejectedExactThenable)) {
+				// A thenable violates the synchronous exact-estimator contract.
+			} else if (Number.isSafeInteger(exactTokens) && (exactTokens as number) >= 0) {
+				estimatedTokens = exactTokens as number;
+				estimatorId = TOOL_OUTPUT_EXACT_ESTIMATOR_ID;
 				confidence = "exact";
 			}
 		} catch {
@@ -373,7 +519,7 @@ export function estimateToolOutputTokens(
 		counters.utf8BytesObserved += state.rawUtf8Bytes;
 		counters.lineBreaksObserved += state.lineBreaks;
 		counters.maximumInputCharacters = Math.max(counters.maximumInputCharacters, state.characters);
-		counters.wrapperObjectsCreated++;
+		counters.estimateObjectsCreated++;
 	}
 	return {
 		estimatorVersion: TOOL_OUTPUT_ESTIMATOR_VERSION,
@@ -393,8 +539,10 @@ export interface ToolOutputShadowTelemetry {
 	rawUtf8Bytes: number;
 	rawLines: number;
 	estimatedTokens: number;
-	currentModelVisibleBytes: number;
-	currentModelVisibleTokens: number;
+	/** Estimated provider-visible text bytes; image-token billing is not included. */
+	estimatedModelVisibleTextBytes: number;
+	/** Estimated provider-visible text tokens; image-token billing is not included. */
+	estimatedModelVisibleTextTokens: number;
 	proposedModelViewTokens1k: number;
 	proposedModelViewTokens2k: number;
 	proposedModelViewTokens4k: number;
@@ -405,7 +553,8 @@ export interface ToolOutputShadowTelemetry {
 	wouldTruncate4k: boolean;
 	wouldTruncate8k: boolean;
 	wouldTruncate16k: boolean;
-	wouldTruncate: boolean;
+	candidateBudgetTokens: number | null;
+	wouldTruncate: boolean | null;
 	proposedTruncationReason: ToolOutputShadowReason;
 	toolCategory: ToolOutputCategory;
 	estimatorId: string;
@@ -414,12 +563,14 @@ export interface ToolOutputShadowTelemetry {
 }
 
 export interface ToolOutputShadowTelemetrySink {
-	recordToolOutputShadow(record: ToolOutputShadowTelemetry): void;
+	recordToolOutputShadow(record: ToolOutputShadowTelemetry): void | Promise<void>;
 }
 
 export interface ToolOutputShadowOptions {
 	enabled?: boolean;
-	exactEstimator?: ToolOutputExactTokenEstimator;
+	/** Resolved for every observation using the current model identity; results are never cached. */
+	resolveExactEstimator?: ToolOutputExactEstimatorResolver;
+	candidateBudgetTokens?: number;
 	telemetry?: ToolOutputShadowTelemetrySink;
 	counters?: ToolOutputEstimatorCounters;
 }
@@ -461,31 +612,66 @@ function originalOutputMetric(details: unknown, key: "totalBytes" | "totalLines"
 	}
 }
 
+function recordRejectedTelemetry(counters: ToolOutputEstimatorCounters, _reason: unknown): void {
+	counters.telemetrySinkRejections++;
+	counters.telemetrySinkDrops++;
+}
+
 export class ToolOutputShadowObserver {
-	private exactEstimator: ToolOutputExactTokenEstimator | undefined;
+	private resolveExactEstimator: ToolOutputExactEstimatorResolver | undefined;
 	private telemetry: ToolOutputShadowTelemetrySink | undefined;
+	private readonly rejectionObserver: RejectionObserver;
+	private readonly candidateBudgetTokens: number | undefined;
 	private active = true;
 	readonly counters: ToolOutputEstimatorCounters;
 
 	constructor(options: ToolOutputShadowOptions) {
-		this.exactEstimator = options.exactEstimator;
-		this.telemetry = options.telemetry;
 		this.counters = options.counters ?? createToolOutputEstimatorCounters();
+		this.resolveExactEstimator = options.resolveExactEstimator;
+		this.telemetry = options.telemetry;
+		this.rejectionObserver = recordRejectedTelemetry.bind(undefined, this.counters);
+		this.candidateBudgetTokens =
+			Number.isSafeInteger(options.candidateBudgetTokens) && options.candidateBudgetTokens! > 0
+				? options.candidateBudgetTokens
+				: undefined;
+		if (this.resolveExactEstimator) this.counters.activeRetainedReferences++;
+		if (this.telemetry) this.counters.activeRetainedReferences++;
+		this.counters.activeRetainedReferencesHighWaterMark = this.counters.activeRetainedReferences;
 	}
 
-	observe(message: ToolResultMessageLike): void {
+	observe(message: ToolResultMessageLike, model?: ToolOutputModelIdentity): void {
 		if (!this.active) return;
+		this.counters.activeObservations++;
+		this.counters.activeObservationsHighWaterMark = Math.max(
+			this.counters.activeObservationsHighWaterMark,
+			this.counters.activeObservations,
+		);
 		try {
-			const estimate = estimateToolOutputTokens(message.content, this.exactEstimator, this.counters);
+			let exactEstimator: ToolOutputExactTokenEstimator | undefined;
+			if (this.resolveExactEstimator && model) {
+				try {
+					const resolved: unknown = this.resolveExactEstimator(model);
+					if (!attachRejectionObserver(resolved, observeRejectedExactThenable)) {
+						const candidate = resolved as { estimateToolOutputTokens?: unknown } | undefined;
+						if (typeof candidate?.estimateToolOutputTokens === "function") {
+							exactEstimator = candidate as ToolOutputExactTokenEstimator;
+						}
+					}
+				} catch {
+					// Resolver failure is observational and falls back to the neutral estimator.
+				}
+			}
+			const estimate = estimateToolOutputTokens(message.content, exactEstimator, this.counters);
 			const rawUtf8Bytes = originalOutputMetric(message.details, "totalBytes", estimate.rawUtf8Bytes);
 			const rawLines = originalOutputMetric(message.details, "totalLines", estimate.rawLines);
 			const tokens = estimate.estimatedTokens;
+			const candidateBudgetTokens = this.candidateBudgetTokens;
 			const payload: ToolOutputShadowTelemetry = {
 				rawUtf8Bytes,
 				rawLines,
 				estimatedTokens: tokens,
-				currentModelVisibleBytes: estimate.modelVisibleUtf8Bytes,
-				currentModelVisibleTokens: tokens,
+				estimatedModelVisibleTextBytes: estimate.modelVisibleUtf8Bytes,
+				estimatedModelVisibleTextTokens: tokens,
 				proposedModelViewTokens1k: Math.min(tokens, 1024),
 				proposedModelViewTokens2k: Math.min(tokens, 2048),
 				proposedModelViewTokens4k: Math.min(tokens, 4096),
@@ -496,36 +682,53 @@ export class ToolOutputShadowObserver {
 				wouldTruncate4k: tokens > 4096,
 				wouldTruncate8k: tokens > 8192,
 				wouldTruncate16k: tokens > 16384,
-				wouldTruncate: tokens > 1024,
-				proposedTruncationReason: tokens > 1024 ? "candidate-token-budget" : "none",
+				candidateBudgetTokens: candidateBudgetTokens ?? null,
+				wouldTruncate: candidateBudgetTokens === undefined ? null : tokens > candidateBudgetTokens,
+				proposedTruncationReason:
+					candidateBudgetTokens !== undefined && tokens > candidateBudgetTokens
+						? "candidate-token-budget"
+						: "none",
 				toolCategory: classifyTool(message.toolName),
 				estimatorId: estimate.estimatorId,
 				estimatorVersion: estimate.estimatorVersion,
 				estimatorConfidence: estimate.confidence,
 			};
-			this.counters.wrapperObjectsCreated++;
 			this.counters.telemetryPayloadsCreated++;
 			const telemetry = this.telemetry;
 			if (!telemetry) {
-				this.counters.telemetryPayloadsDropped++;
+				this.counters.telemetrySinkDrops++;
 				return;
 			}
 			try {
-				telemetry.recordToolOutputShadow(payload);
+				this.counters.telemetrySinkCalls++;
+				const result = telemetry.recordToolOutputShadow(payload);
+				if (attachRejectionObserver(result, this.rejectionObserver)) {
+					this.counters.telemetryRejectionObserversAttached++;
+				}
 			} catch {
-				this.counters.telemetryPayloadsDropped++;
+				this.counters.telemetrySinkRejections++;
+				this.counters.telemetrySinkDrops++;
 			}
 		} catch {
 			// Shadow mode is observational and cannot alter result delivery or errors.
-			this.counters.telemetryPayloadsDropped++;
+			this.counters.shadowObservationErrors++;
+			this.counters.telemetrySinkDrops++;
+		} finally {
+			this.counters.activeObservations--;
 		}
 	}
 
 	dispose(): void {
+		if (!this.active) return;
 		this.active = false;
-		this.exactEstimator = undefined;
-		this.telemetry = undefined;
-		this.counters.finalRetainedReferences = 0;
+		if (this.resolveExactEstimator) {
+			this.resolveExactEstimator = undefined;
+			this.counters.activeRetainedReferences--;
+		}
+		if (this.telemetry) {
+			this.telemetry = undefined;
+			this.counters.activeRetainedReferences--;
+		}
 	}
 }
 

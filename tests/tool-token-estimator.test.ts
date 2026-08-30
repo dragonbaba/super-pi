@@ -4,6 +4,7 @@ import { getEncoding } from "js-tiktoken";
 import {
 	createToolOutputEstimatorCounters,
 	estimateToolOutputTokens,
+	TOOL_OUTPUT_EXACT_ESTIMATOR_ID,
 	TOOL_OUTPUT_FALLBACK_ESTIMATOR_ID,
 } from "../packages/coding-agent/src/core/tool-output-budget.ts";
 import { createToolTokenEstimatorCorpus } from "./fixtures/tool-token-estimator-corpus.ts";
@@ -40,27 +41,40 @@ test("content blocks are scanned without joining and image bodies are not inspec
 	);
 	assert.equal(estimate.rawUtf8Bytes, Buffer.byteLength("first\nsecond"));
 	assert.equal(counters.charactersScanned, "first\nsecond".length);
-	assert.equal(counters.fullStringCopies, 0);
-	assert.equal(counters.fullStringSerializations, 0);
-	assert.equal(counters.temporaryLineArrays, 0);
+	assert.equal(counters.scanStateObjectsCreated, 1);
+	assert.equal(counters.estimateObjectsCreated, 1);
 });
 
 test("exact provider estimator succeeds and invalid or throwing estimators fall back", () => {
 	const exact = estimateToolOutputTokens([{ type: "text", text: "fixture" }], {
-		estimatorId: "provider.fixture-v1",
 		estimateToolOutputTokens: () => 7,
 	});
 	assert.equal(exact.estimatedTokens, 7);
-	assert.equal(exact.estimatorId, "provider.fixture-v1");
+	assert.equal(exact.estimatorId, TOOL_OUTPUT_EXACT_ESTIMATOR_ID);
 	assert.equal(exact.confidence, "exact");
 
 	for (const brokenEstimator of [() => { throw new Error("unavailable"); }, () => Number.NaN, () => -1]) {
 		const fallback = estimateToolOutputTokens([{ type: "text", text: "fixture" }], {
-			estimatorId: "provider.broken",
 			estimateToolOutputTokens: brokenEstimator,
 		});
 		assert.equal(fallback.estimatorId, TOOL_OUTPUT_FALLBACK_ESTIMATOR_ID);
 		assert.equal(fallback.confidence, "conservative-fallback");
+	}
+});
+
+test("a rejected thenable from the synchronous exact boundary is isolated", async () => {
+	let unhandledRejections = 0;
+	const onUnhandledRejection = (): void => { unhandledRejections++; };
+	process.on("unhandledRejection", onUnhandledRejection);
+	try {
+		const estimate = estimateToolOutputTokens([{ type: "text", text: "fixture" }], {
+			estimateToolOutputTokens: (() => Promise.reject(new Error("invalid exact estimator"))) as never,
+		});
+		assert.equal(estimate.confidence, "conservative-fallback");
+		await new Promise<void>((resolve) => { setImmediate(resolve); });
+		assert.equal(unhandledRejections, 0);
+	} finally {
+		process.off("unhandledRejection", onUnhandledRejection);
 	}
 });
 
@@ -72,9 +86,8 @@ test("10 MiB single line uses one bounded scan and no line array or full copy", 
 	assert.equal(estimate.rawLines, 1);
 	assert.equal(counters.charactersScanned, text.length);
 	assert.equal(counters.maximumInputCharacters, text.length);
-	assert.equal(counters.fullStringCopies, 0);
-	assert.equal(counters.temporaryLineArrays, 0);
-	assert.equal(counters.promisesCreated, 0);
+	assert.equal(counters.scanStateObjectsCreated, 1);
+	assert.equal(counters.estimateObjectsCreated, 1);
 });
 
 test("fixed reference corpus meets conservative accuracy gates", { timeout: 120_000 }, () => {

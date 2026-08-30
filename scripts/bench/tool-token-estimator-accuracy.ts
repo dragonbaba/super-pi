@@ -36,6 +36,23 @@ for (const fixture of fixtures) {
 	});
 }
 
+const secondaryEncoding = getEncoding("o200k_base");
+const secondaryResults: FixtureResult[] = [];
+for (const fixture of createToolTokenEstimatorCorpus(false)) {
+	const actualTokens = secondaryEncoding.encode(sanitizeSurrogates(fixture.text)).length;
+	const estimatedTokens = estimateToolOutputTokens([{ type: "text", text: fixture.text }]).estimatedTokens;
+	secondaryResults.push({
+		id: fixture.id,
+		category: fixture.category,
+		actualTokens,
+		estimatedTokens,
+		underestimation: actualTokens === 0 ? 0 : Math.max(0, (actualTokens - estimatedTokens) / actualTokens),
+		overestimation: actualTokens === 0 ? 0 : Math.max(0, (estimatedTokens - actualTokens) / actualTokens),
+	});
+}
+const secondaryUnder = secondaryResults.map((result) => result.underestimation).sort((left, right) => left - right);
+const secondaryOver = secondaryResults.map((result) => result.overestimation).sort((left, right) => left - right);
+
 const under = results.map((result) => result.underestimation).sort((left, right) => left - right);
 const over = results.map((result) => result.overestimation).sort((left, right) => left - right);
 const categoryMap = new Map<string, FixtureResult[]>();
@@ -108,6 +125,17 @@ const report = {
 	schemaVersion: 1,
 	corpusVersion: TOOL_TOKEN_ESTIMATOR_CORPUS_VERSION,
 	referenceTokenizer: "js-tiktoken@1.0.21/cl100k_base",
+	secondaryReferenceValidation: {
+		referenceTokenizer: "js-tiktoken@1.0.21/o200k_base",
+		fixtureCount: secondaryResults.length,
+		metrics: {
+			underestimationP99: percentile(secondaryUnder, 0.99),
+			underestimationMax: percentile(secondaryUnder, 1),
+			overestimationAverage:
+				secondaryOver.reduce((sum, value) => sum + value, 0) / secondaryOver.length,
+		},
+		fixtures: secondaryResults,
+	},
 	fixtureCount: results.length,
 	gates: {
 		p99UnderestimationAtMost: 0.1,
@@ -137,10 +165,30 @@ const report = {
 	fixtures: results,
 };
 
+process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+for (const result of results) {
+	if (result.underestimation > report.gates.p99UnderestimationAtMost) {
+		throw new Error(`${result.id} underestimation gate failed: ${result.underestimation}`);
+	}
+}
+for (const result of secondaryResults) {
+	if (result.underestimation > report.gates.p99UnderestimationAtMost) {
+		throw new Error(`o200k/${result.id} underestimation gate failed: ${result.underestimation}`);
+	}
+}
 if (report.metrics.underestimationP99 > report.gates.p99UnderestimationAtMost) {
 	throw new Error(`p99 underestimation gate failed: ${report.metrics.underestimationP99}`);
 }
 if (report.metrics.overestimationAverage > report.gates.averageOverestimationAtMost) {
 	throw new Error(`average overestimation gate failed: ${report.metrics.overestimationAverage}`);
 }
-process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+if (report.secondaryReferenceValidation.metrics.underestimationP99 > report.gates.p99UnderestimationAtMost) {
+	throw new Error(
+		`o200k p99 underestimation gate failed: ${report.secondaryReferenceValidation.metrics.underestimationP99}`,
+	);
+}
+if (report.secondaryReferenceValidation.metrics.overestimationAverage > report.gates.averageOverestimationAtMost) {
+	throw new Error(
+		`o200k average overestimation gate failed: ${report.secondaryReferenceValidation.metrics.overestimationAverage}`,
+	);
+}
