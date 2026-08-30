@@ -45,6 +45,8 @@
 		"bench:model-runtime:warm": "node --experimental-strip-types ./scripts/bench/model-runtime-startup.ts --mode warm",
 		"bench:model-catalog-restore": "node --experimental-strip-types ./scripts/bench/model-catalog-restore.ts",
 		"bench:tool-output": "node --experimental-strip-types ./scripts/bench/tool-output.ts",
+		"bench:tool-token-estimator": "node --expose-gc --experimental-strip-types ./scripts/bench/tool-token-estimator.ts",
+		"test:tool-token-estimator-accuracy": "node --experimental-strip-types ./scripts/bench/tool-token-estimator-accuracy.ts",
 		"bench:compare": "node --experimental-strip-types ./scripts/bench/compare.ts",
 		"clean": "npm run clean --workspaces --if-present",
 		"build": "cd packages/tui && npm run build && cd ../telemetry && npm run build && cd ../ai && npm run build && cd ../agent && npm run build && cd ../session-backends/sqlite-node && npm run build && cd ../../protocol && npm run build && cd ../client && npm run build && cd ../server && npm run build && cd ../coding-agent && npm run build && cd ../memory && npm run build && cd ../statusline && npm run build",
@@ -54,6 +56,7 @@
 	"devDependencies": {
 		"@types/node": "22.19.19",
 		"@typescript/native-preview": "7.0.0-dev.20260120.1",
+		"js-tiktoken": "1.0.21",
 		"shx": "0.4.0",
 		"typescript": "5.9.3"
 	},

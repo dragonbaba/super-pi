@@ -132,6 +132,11 @@ import { type BashOperations, createLocalBashOperations } from "./tools/bash.ts"
 import { createAllToolDefinitions, getDefaultToolNames } from "./tools/index.ts";
 import { createPowerShellToolState } from "./tools/powershell.ts";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.ts";
+import {
+	createToolOutputShadowObserver,
+	type ToolOutputShadowObserver,
+	type ToolOutputShadowOptions,
+} from "./tool-output-budget.ts";
 import { addUsageToTotals, createUsageTotals, getUnboundCompactionLedgerUsages } from "./usage-totals.ts";
 
 function getBuiltinExecutionPath(name: string, cwd: string) {
@@ -361,6 +366,8 @@ export interface AgentSessionConfig {
 	prefixManifestRecorder?: PrefixManifestRecorder;
 	/** Session start event metadata emitted when extensions bind to this runtime. */
 	sessionStartEvent?: SessionStartEvent;
+	/** Optional Phase 5A metadata-only observation. Disabled unless explicitly enabled. */
+	toolOutputShadow?: ToolOutputShadowOptions;
 }
 
 export interface ModelMutationOptions {
@@ -634,6 +641,7 @@ export class AgentSession {
 	private _providerRequestPayloadBuilder: AgentSessionConfig["providerRequestPayloadBuilder"];
 	private _providerRequestCompactor: AgentSessionConfig["providerRequestCompactor"];
 	private _prefixManifestRecorder?: PrefixManifestRecorder;
+	private _toolOutputShadow: ToolOutputShadowObserver | undefined;
 
 	// Tool registry for extension getTools/setTools
 	private _toolRegistry: Map<string, AgentTool> = new Map();
@@ -661,6 +669,7 @@ export class AgentSession {
 		this._providerRequestPayloadBuilder = config.providerRequestPayloadBuilder;
 		this._providerRequestCompactor = config.providerRequestCompactor;
 		this._prefixManifestRecorder = config.prefixManifestRecorder;
+		this._toolOutputShadow = createToolOutputShadowObserver(config.toolOutputShadow);
 		this._extensionRunnerRef = config.extensionRunnerRef;
 		this._extensionRunnerOptions = config.extensionRunnerOptions;
 		this._initialActiveToolNames = config.initialActiveToolNames;
@@ -1011,6 +1020,9 @@ export class AgentSession {
 		}
 
 		if (this._extensionRunner.hasHandlers(event.type)) await this._emitExtensionEvent(event);
+		if (event.type === "message_end" && event.message.role === "toolResult") {
+			this._toolOutputShadow?.observe(event.message);
+		}
 
 		// Notify all listeners. The final boundary is awaited so prompt/abort/idle
 		// cannot overtake critical UI output; high-frequency events stay unchanged.
@@ -1285,6 +1297,8 @@ export class AgentSession {
 			"This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload(). For newSession, fork, and switchSession, move post-replacement work into withSession and use the ctx passed to withSession. For reload, do not use the old ctx after await ctx.reload().",
 		);
 		this._disconnectFromAgent();
+		this._toolOutputShadow?.dispose();
+		this._toolOutputShadow = undefined;
 		this._eventListeners = [];
 		cleanupSessionResources(this.sessionId);
 	}

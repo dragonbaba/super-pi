@@ -19,6 +19,21 @@ export {
 	createAgentSessionRuntime,
 } from "./agent-session-runtime.ts";
 export {
+	createToolOutputEstimatorCounters,
+	createToolOutputShadowObserver,
+	estimateToolOutputTokens,
+	TOOL_OUTPUT_ESTIMATOR_VERSION,
+	TOOL_OUTPUT_FALLBACK_ESTIMATOR_ID,
+	TOOL_OUTPUT_SHADOW_BUDGETS,
+	type ToolOutputCategory,
+	type ToolOutputEstimatorCounters,
+	type ToolOutputExactTokenEstimator,
+	type ToolOutputShadowOptions,
+	type ToolOutputShadowTelemetry,
+	type ToolOutputShadowTelemetrySink,
+	type ToolOutputTokenEstimate,
+} from "./tool-output-budget.ts";
+export {
 	type AgentSessionRuntimeDiagnostic,
 	type AgentSessionServices,
 	type CreateAgentSessionFromServicesOptions,
