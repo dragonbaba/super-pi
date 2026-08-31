@@ -104,6 +104,7 @@ test("budgeted model-view benchmark retains the Candidate Gate fixtures and life
 	assert.match(source, /"10-mib"/);
 	assert.match(source, /"multi-block"/);
 	assert.match(source, /"text-plus-image"/);
+	assert.match(source, /"ansi-grapheme-adversarial"/);
 	assert.match(source, /measureProduction\(inspector, productionRoot, "absent"\)/);
 	assert.match(source, /measureProduction\(inspector, productionRoot, "disabled"\)/);
 	assert.match(source, /measureProduction\(inspector, productionRoot, "enabled"\)/);
@@ -111,6 +112,13 @@ test("budgeted model-view benchmark retains the Candidate Gate fixtures and life
 	assert.match(source, /new WeakRef\(presentation\.modelContent as object\)/);
 	assert.match(source, /new WeakRef\(presentation\.uiContent as object\)/);
 	assert.match(source, /\[measureParallelScopes\(2\), measureParallelScopes\(4\), measureParallelScopes\(8\)\]/);
+	assert.match(source, /measureHistoricalProjection\(inspector, 1\)/);
+	assert.match(source, /measureHistoricalProjection\(inspector, 10\)/);
+	assert.match(source, /measureHistoricalProjection\(inspector, 100\)/);
+	assert.match(source, /measureBlockImagePolicy\(inspector, productionRoot\)/);
+	assert.match(source, /measureContinuationChain\(inspector\)/);
+	assert.match(source, /measureResumedHistoryLookup\(\)/);
+	assert.match(source, /retainedSourceOuterArrayWeakReferences/);
 	assert.match(source, /sourceInvariantFullStringCopies: 0/);
 	assert.match(source, /sourceInvariantFullResultSerializations: 0/);
 	assert.match(source, /sourceInvariantTemporaryLineArrays: 0/);
