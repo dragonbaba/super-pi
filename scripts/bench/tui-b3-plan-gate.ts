@@ -21,7 +21,7 @@ import { TuiAltScreen } from "../../packages/tui/src/tui-alt-screen.ts";
 import { currentCommit, readIntegerOption } from "./benchmark.ts";
 
 type Candidate = "editor-frame" | "mouse-hit" | "selection-auto-scroll" | "kitty-fallback" | "stack-direct";
-type EditorUpdate = "stable" | "cursor";
+type EditorUpdate = "stable" | "cursor" | "oversize-small";
 
 interface SamplingNode {
 	callFrame: { functionName: string; url: string; lineNumber: number; columnNumber: number };
@@ -278,6 +278,7 @@ function createEditorRuntime(
 	const shell = createAltShell(itemCount, width, height, "editor", editorLineCount);
 	const editor = shell.editor!;
 	editor.renderCalls = 0;
+	let oversizeCapacityRejections = 0;
 	return {
 		unit: "frame",
 		productionPath: "Retained viewport -> ScrollView/VStack -> real Editor.render -> TuiAltScreen.doRender -> frame queue",
@@ -287,6 +288,11 @@ function createEditorRuntime(
 			shell.tui.renderNow();
 		},
 		reset(): void {
+			if (editorUpdate === "oversize-small") {
+				oversizeCapacityRejections = getEditorLayoutCacheMetrics(editor).layoutCacheRejectedByCapacity;
+				editor.setText("small");
+				editor.render(width);
+			}
 			editor.renderCalls = 0;
 			resetEditorLayoutCacheMetrics(editor);
 			shell.terminal.frameWrites = 0;
@@ -306,6 +312,7 @@ function createEditorRuntime(
 				layoutCacheRejectedByCapacity: layoutCache.layoutCacheRejectedByCapacity,
 				layoutCacheRetainedSourceCodeUnits: layoutCache.layoutCacheRetainedSourceCodeUnits,
 				layoutCacheRetainedLayoutLines: layoutCache.layoutCacheRetainedLayoutLines,
+				oversizeCapacityRejections,
 				completedItemRenders: metrics.completedItemRenders,
 				viewportItemVisits: metrics.viewportItemVisits,
 				frameWrites: shell.terminal.frameWrites,
@@ -541,8 +548,8 @@ const measured = readIntegerOption("--measured", 20_000);
 const profile = process.argv.includes("--profile");
 const editorUpdateIndex = process.argv.indexOf("--editor-update");
 const editorUpdate = (editorUpdateIndex === -1 ? "stable" : process.argv[editorUpdateIndex + 1]) as EditorUpdate;
-if (editorUpdate !== "stable" && editorUpdate !== "cursor") {
-	throw new Error("--editor-update must be stable or cursor");
+if (editorUpdate !== "stable" && editorUpdate !== "cursor" && editorUpdate !== "oversize-small") {
+	throw new Error("--editor-update must be stable, cursor, or oversize-small");
 }
 if (profile && typeof globalThis.gc !== "function") throw new Error("--profile requires --expose-gc");
 
