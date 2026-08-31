@@ -243,6 +243,15 @@ function graphemeWidth(segment: string): number {
 	return width;
 }
 
+/** True when every cell in a terminal text run has context-free ASCII width. */
+function isSimpleTerminalAsciiRun(text: string, start: number, end: number): boolean {
+	for (let index = start; index < end; index++) {
+		const codeUnit = text.charCodeAt(index);
+		if (codeUnit !== 0x09 && (codeUnit < 0x20 || codeUnit > 0x7e)) return false;
+	}
+	return true;
+}
+
 /**
  * Calculate the visible width of a string in terminal columns.
  */
@@ -328,19 +337,52 @@ interface GraphemeCellRange {
 /** Return the terminal-cell range occupied by the grapheme at a visible column. */
 export function getGraphemeCellRange(line: string, column: number): GraphemeCellRange | undefined {
 	let currentCol = 0;
+	let index = 0;
+	while (index < line.length) {
+		const ansiEnd = findTerminalSequenceEnd(line, index);
+		if (ansiEnd !== 0) {
+			index = ansiEnd;
+			continue;
+		}
+		let textEnd = index;
+		while (textEnd < line.length && findTerminalSequenceEnd(line, textEnd) === 0) textEnd++;
+		for (const part of graphemeSegmenter.segment(line.substring(index, textEnd))) {
+			const width = graphemeWidth(part.segment);
+			if (width > 0 && column >= currentCol && column < currentCol + width) {
+				return { start: currentCol, end: currentCol + width };
+			}
+			currentCol += width;
+		}
+		index = textEnd;
+	}
+	return undefined;
+}
+
+/** Return one grapheme boundary as a primitive for allocation-sensitive selection paint. */
+export function getGraphemeCellStart(line: string, column: number): number | undefined {
+	return getGraphemeCellBoundary(line, column, false);
+}
+
+/** Return one grapheme boundary as a primitive for allocation-sensitive selection paint. */
+export function getGraphemeCellEnd(line: string, column: number): number | undefined {
+	return getGraphemeCellBoundary(line, column, true);
+}
+
+function getGraphemeCellBoundary(line: string, column: number, endBoundary: boolean): number | undefined {
+	let currentCol = 0;
 	let i = 0;
 	while (i < line.length) {
-		const ansi = extractAnsiCode(line, i);
-		if (ansi) {
-			i += ansi.length;
+		const ansiEnd = findTerminalSequenceEnd(line, i);
+		if (ansiEnd !== 0) {
+			i = ansiEnd;
 			continue;
 		}
 		let textEnd = i;
-		while (textEnd < line.length && !extractAnsiCode(line, textEnd)) textEnd++;
+		while (textEnd < line.length && findTerminalSequenceEnd(line, textEnd) === 0) textEnd++;
 		for (const { segment } of graphemeSegmenter.segment(line.slice(i, textEnd))) {
 			const width = graphemeWidth(segment);
 			if (width > 0 && column >= currentCol && column < currentCol + width) {
-				return { start: currentCol, end: currentCol + width };
+				return endBoundary ? currentCol + width : currentCol;
 			}
 			currentCol += width;
 		}
@@ -417,43 +459,28 @@ export function normalizeTerminalOutput(str: string): string {
  * Extract ANSI escape sequences from a string at the given position.
  */
 export function extractAnsiCode(str: string, pos: number): { code: string; length: number } | null {
-	if (pos >= str.length || str[pos] !== "\x1b") return null;
+	const end = findTerminalSequenceEnd(str, pos);
+	return end === 0 ? null : { code: str.substring(pos, end), length: end - pos };
+}
 
+/** Return the exclusive end of a supported terminal sequence without allocating a result wrapper. */
+function findTerminalSequenceEnd(str: string, pos: number): number {
+	if (pos >= str.length || str[pos] !== "\x1b") return 0;
 	const next = str[pos + 1];
-
-	// CSI sequence: ESC [ ... m/G/K/H/J
 	if (next === "[") {
-		let j = pos + 2;
-		while (j < str.length && !ANSI_SEQUENCE_FINAL_PATTERN.test(str[j]!)) j++;
-		if (j < str.length) return { code: str.substring(pos, j + 1), length: j + 1 - pos };
-		return null;
+		let index = pos + 2;
+		while (index < str.length && !ANSI_SEQUENCE_FINAL_PATTERN.test(str[index]!)) index++;
+		return index < str.length ? index + 1 : 0;
 	}
-
-	// OSC sequence: ESC ] ... BEL or ESC ] ... ST (ESC \)
-	// Used for hyperlinks (OSC 8), window titles, etc.
-	if (next === "]") {
-		let j = pos + 2;
-		while (j < str.length) {
-			if (str[j] === "\x07") return { code: str.substring(pos, j + 1), length: j + 1 - pos };
-			if (str[j] === "\x1b" && str[j + 1] === "\\") return { code: str.substring(pos, j + 2), length: j + 2 - pos };
-			j++;
+	if (next === "]" || next === "_") {
+		let index = pos + 2;
+		while (index < str.length) {
+			if (str[index] === "\x07") return index + 1;
+			if (str[index] === "\x1b" && str[index + 1] === "\\") return index + 2;
+			index++;
 		}
-		return null;
 	}
-
-	// APC sequence: ESC _ ... BEL or ESC _ ... ST (ESC \)
-	// Used for cursor marker and application-specific commands
-	if (next === "_") {
-		let j = pos + 2;
-		while (j < str.length) {
-			if (str[j] === "\x07") return { code: str.substring(pos, j + 1), length: j + 1 - pos };
-			if (str[j] === "\x1b" && str[j + 1] === "\\") return { code: str.substring(pos, j + 2), length: j + 2 - pos };
-			j++;
-		}
-		return null;
-	}
-
-	return null;
+	return 0;
 }
 
 type Osc8Terminator = "\x07" | "\x1b\\";
@@ -1223,7 +1250,12 @@ export function truncateToWidth(
  * @param strict - If true, exclude wide chars at boundary that would extend past the range
  */
 export function sliceByColumn(line: string, startCol: number, length: number, strict = false): string {
-	return sliceWithWidth(line, startCol, length, strict).text;
+	return sliceColumns(line, startCol, length, strict);
+}
+
+export interface SliceWithWidthResult {
+	text: string;
+	width: number;
 }
 
 /** Like sliceByColumn but also returns the actual visible width of the result. */
@@ -1232,8 +1264,34 @@ export function sliceWithWidth(
 	startCol: number,
 	length: number,
 	strict = false,
-): { text: string; width: number } {
-	if (length <= 0) return { text: "", width: 0 };
+): SliceWithWidthResult {
+	const result: SliceWithWidthResult = { text: "", width: 0 };
+	result.text = sliceColumns(line, startCol, length, strict, result);
+	return result;
+}
+
+/** Fill caller-owned scratch for hot paths that need both text and width. */
+export function sliceWithWidthInto(
+	line: string,
+	startCol: number,
+	length: number,
+	strict: boolean,
+	result: SliceWithWidthResult,
+): void {
+	result.text = sliceColumns(line, startCol, length, strict, result);
+}
+
+function sliceColumns(
+	line: string,
+	startCol: number,
+	length: number,
+	strict: boolean,
+	widthResult?: SliceWithWidthResult,
+): string {
+	if (length <= 0) {
+		if (widthResult) widthResult.width = 0;
+		return "";
+	}
 	const endCol = startCol + length;
 	let result = "",
 		resultWidth = 0,
@@ -1242,36 +1300,57 @@ export function sliceWithWidth(
 		pendingAnsi = "";
 
 	while (i < line.length) {
-		const ansi = extractAnsiCode(line, i);
-		if (ansi) {
-			if (currentCol >= startCol && currentCol < endCol) result += ansi.code;
-			else if (currentCol < startCol) pendingAnsi += ansi.code;
-			i += ansi.length;
+		const ansiEnd = findTerminalSequenceEnd(line, i);
+		if (ansiEnd !== 0) {
+			const code = line.substring(i, ansiEnd);
+			if (currentCol >= startCol && currentCol < endCol) result += code;
+			else if (currentCol < startCol) pendingAnsi += code;
+			i = ansiEnd;
 			continue;
 		}
 
 		let textEnd = i;
-		while (textEnd < line.length && !extractAnsiCode(line, textEnd)) textEnd++;
+		while (textEnd < line.length && findTerminalSequenceEnd(line, textEnd) === 0) textEnd++;
 
-		for (const { segment } of graphemeSegmenter.segment(line.slice(i, textEnd))) {
-			const w = graphemeWidth(segment);
-			const inRange = currentCol >= startCol && currentCol < endCol;
-			const fits = !strict || currentCol + w <= endCol;
-			if (inRange && fits) {
-				if (pendingAnsi) {
-					result += pendingAnsi;
-					pendingAnsi = "";
+		if (isSimpleTerminalAsciiRun(line, i, textEnd)) {
+			for (let textIndex = i; textIndex < textEnd; textIndex++) {
+				const width = line.charCodeAt(textIndex) === 0x09 ? 3 : 1;
+				const inRange = currentCol >= startCol && currentCol < endCol;
+				const fits = !strict || currentCol + width <= endCol;
+				if (inRange && fits) {
+					if (pendingAnsi) {
+						result += pendingAnsi;
+						pendingAnsi = "";
+					}
+					result += line[textIndex];
+					resultWidth += width;
 				}
-				result += segment;
-				resultWidth += w;
+				currentCol += width;
+				if (currentCol >= endCol) break;
 			}
-			currentCol += w;
-			if (currentCol >= endCol) break;
+		} else {
+			for (const part of graphemeSegmenter.segment(line.substring(i, textEnd))) {
+				const segment = part.segment;
+				const width = graphemeWidth(segment);
+				const inRange = currentCol >= startCol && currentCol < endCol;
+				const fits = !strict || currentCol + width <= endCol;
+				if (inRange && fits) {
+					if (pendingAnsi) {
+						result += pendingAnsi;
+						pendingAnsi = "";
+					}
+					result += segment;
+					resultWidth += width;
+				}
+				currentCol += width;
+				if (currentCol >= endCol) break;
+			}
 		}
 		i = textEnd;
 		if (currentCol >= endCol) break;
 	}
-	return { text: result, width: resultWidth };
+	if (widthResult) widthResult.width = resultWidth;
+	return result;
 }
 
 // Pooled tracker instance for extractSegments (avoids allocation per call)
@@ -1288,7 +1367,28 @@ export function extractSegments(
 	afterStart: number,
 	afterLen: number,
 	strictAfter = false,
-): { before: string; beforeWidth: number; after: string; afterWidth: number } {
+): ExtractedSegmentsResult {
+	const result: ExtractedSegmentsResult = { before: "", beforeWidth: 0, after: "", afterWidth: 0 };
+	extractSegmentsInto(line, beforeEnd, afterStart, afterLen, strictAfter, result);
+	return result;
+}
+
+export interface ExtractedSegmentsResult {
+	before: string;
+	beforeWidth: number;
+	after: string;
+	afterWidth: number;
+}
+
+/** Fill caller-owned segment scratch for synchronous overlay composition. */
+export function extractSegmentsInto(
+	line: string,
+	beforeEnd: number,
+	afterStart: number,
+	afterLen: number,
+	strictAfter: boolean,
+	result: ExtractedSegmentsResult,
+): void {
 	let before = "",
 		beforeWidth = 0,
 		after = "",
@@ -1303,54 +1403,161 @@ export function extractSegments(
 	pooledStyleTracker.clear();
 
 	while (i < line.length) {
-		const ansi = extractAnsiCode(line, i);
-		if (ansi) {
+		const ansiEnd = findTerminalSequenceEnd(line, i);
+		if (ansiEnd !== 0) {
+			const code = line.substring(i, ansiEnd);
 			// Track all SGR codes to know styling state at afterStart
-			pooledStyleTracker.process(ansi.code);
+			pooledStyleTracker.process(code);
 			// Include ANSI codes in their respective segments
 			if (currentCol < beforeEnd) {
-				pendingAnsiBefore += ansi.code;
+				pendingAnsiBefore += code;
 			} else if (currentCol >= afterStart && currentCol < afterEnd && afterStarted) {
 				// Only include after we've started "after" (styling already prepended)
-				after += ansi.code;
+				after += code;
 			}
-			i += ansi.length;
+			i = ansiEnd;
 			continue;
 		}
 
 		let textEnd = i;
-		while (textEnd < line.length && !extractAnsiCode(line, textEnd)) textEnd++;
+		while (textEnd < line.length && findTerminalSequenceEnd(line, textEnd) === 0) textEnd++;
 
-		for (const { segment } of graphemeSegmenter.segment(line.slice(i, textEnd))) {
-			const w = graphemeWidth(segment);
-
-			if (currentCol < beforeEnd && currentCol + w <= beforeEnd) {
-				if (pendingAnsiBefore) {
-					before += pendingAnsiBefore;
-					pendingAnsiBefore = "";
-				}
-				before += segment;
-				beforeWidth += w;
-			} else if (currentCol >= afterStart && currentCol < afterEnd) {
-				const fits = !strictAfter || currentCol + w <= afterEnd;
-				if (fits) {
-					// On first "after" grapheme, prepend inherited styling from before overlay
-					if (!afterStarted) {
-						after += pooledStyleTracker.getActiveCodes();
-						afterStarted = true;
+		if (isSimpleTerminalAsciiRun(line, i, textEnd)) {
+			for (let textIndex = i; textIndex < textEnd; textIndex++) {
+				const width = line.charCodeAt(textIndex) === 0x09 ? 3 : 1;
+				if (currentCol < beforeEnd && currentCol + width <= beforeEnd) {
+					if (pendingAnsiBefore) {
+						before += pendingAnsiBefore;
+						pendingAnsiBefore = "";
 					}
-					after += segment;
-					afterWidth += w;
+					before += line[textIndex];
+					beforeWidth += width;
+				} else if (currentCol >= afterStart && currentCol < afterEnd) {
+					const fits = !strictAfter || currentCol + width <= afterEnd;
+					if (fits) {
+						if (!afterStarted) {
+							after += pooledStyleTracker.getActiveCodes();
+							afterStarted = true;
+						}
+						after += line[textIndex];
+						afterWidth += width;
+					}
 				}
+				currentCol += width;
+				if (afterLen <= 0 ? currentCol >= beforeEnd : currentCol >= afterEnd) break;
 			}
-
-			currentCol += w;
-			// Early exit: done with "before" only, or done with both segments
-			if (afterLen <= 0 ? currentCol >= beforeEnd : currentCol >= afterEnd) break;
+		} else {
+			for (const part of graphemeSegmenter.segment(line.substring(i, textEnd))) {
+				const segment = part.segment;
+				const width = graphemeWidth(segment);
+				if (currentCol < beforeEnd && currentCol + width <= beforeEnd) {
+					if (pendingAnsiBefore) {
+						before += pendingAnsiBefore;
+						pendingAnsiBefore = "";
+					}
+					before += segment;
+					beforeWidth += width;
+				} else if (currentCol >= afterStart && currentCol < afterEnd) {
+					const fits = !strictAfter || currentCol + width <= afterEnd;
+					if (fits) {
+						if (!afterStarted) {
+							after += pooledStyleTracker.getActiveCodes();
+							afterStarted = true;
+						}
+						after += segment;
+						afterWidth += width;
+					}
+				}
+				currentCol += width;
+				if (afterLen <= 0 ? currentCol >= beforeEnd : currentCol >= afterEnd) break;
+			}
 		}
 		i = textEnd;
 		if (afterLen <= 0 ? currentCol >= beforeEnd : currentCol >= afterEnd) break;
 	}
 
-	return { before, beforeWidth, after, afterWidth };
+	result.before = before;
+	result.beforeWidth = beforeWidth;
+	result.after = after;
+	result.afterWidth = afterWidth;
+}
+
+/**
+ * Apply terminal reverse-video to one visible-column range in one line scan.
+ * The output is a new immutable line string; no range or segment wrapper is created.
+ */
+export function highlightTerminalColumns(line: string, startColumn: number, endColumn: number, lineWidth: number): string {
+	let before = "";
+	let selected = "\x1b[7m";
+	let after = "";
+	let pendingSelected = "";
+	let pendingAfter = "";
+	let currentColumn = 0;
+	let index = 0;
+	while (index < line.length) {
+		const ansiEnd = findTerminalSequenceEnd(line, index);
+		if (ansiEnd !== 0) {
+			const code = line.substring(index, ansiEnd);
+			if (currentColumn < startColumn) before += code;
+			if (currentColumn >= startColumn && currentColumn < endColumn) {
+				selected += code;
+				if (code.endsWith("m")) selected += "\x1b[7m";
+			} else if (currentColumn < startColumn) {
+				pendingSelected += code;
+				if (code.endsWith("m")) pendingSelected += "\x1b[7m";
+			}
+			if (currentColumn >= endColumn && currentColumn < lineWidth) after += code;
+			else if (currentColumn < endColumn) pendingAfter += code;
+			index = ansiEnd;
+			continue;
+		}
+
+		let textEnd = index;
+		while (textEnd < line.length && findTerminalSequenceEnd(line, textEnd) === 0) textEnd++;
+		if (isSimpleTerminalAsciiRun(line, index, textEnd)) {
+			for (let textIndex = index; textIndex < textEnd; textIndex++) {
+				const width = line.charCodeAt(textIndex) === 0x09 ? 3 : 1;
+				if (currentColumn < startColumn && currentColumn + width <= startColumn) before += line[textIndex];
+				else if (currentColumn >= startColumn && currentColumn < endColumn && currentColumn + width <= endColumn) {
+					if (pendingSelected.length !== 0) {
+						selected += pendingSelected;
+						pendingSelected = "";
+					}
+					selected += line[textIndex];
+				} else if (currentColumn >= endColumn && currentColumn < lineWidth && currentColumn + width <= lineWidth) {
+					if (pendingAfter.length !== 0) {
+						after += pendingAfter;
+						pendingAfter = "";
+					}
+					after += line[textIndex];
+				}
+				currentColumn += width;
+				if (currentColumn >= lineWidth) break;
+			}
+		} else {
+			for (const part of graphemeSegmenter.segment(line.substring(index, textEnd))) {
+				const segment = part.segment;
+				const width = graphemeWidth(segment);
+				if (currentColumn < startColumn && currentColumn + width <= startColumn) before += segment;
+				else if (currentColumn >= startColumn && currentColumn < endColumn && currentColumn + width <= endColumn) {
+					if (pendingSelected.length !== 0) {
+						selected += pendingSelected;
+						pendingSelected = "";
+					}
+					selected += segment;
+				} else if (currentColumn >= endColumn && currentColumn < lineWidth && currentColumn + width <= lineWidth) {
+					if (pendingAfter.length !== 0) {
+						after += pendingAfter;
+						pendingAfter = "";
+					}
+					after += segment;
+				}
+				currentColumn += width;
+				if (currentColumn >= lineWidth) break;
+			}
+		}
+		index = textEnd;
+		if (currentColumn >= lineWidth) break;
+	}
+	return before + selected + "\x1b[27m" + after;
 }

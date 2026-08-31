@@ -6,6 +6,11 @@ export interface TuiRenderMetrics {
 	generatedLines: number;
 	visibleLines: number;
 	overlayRenders: number;
+	overlayComposedLines: number;
+	overlayStringRepeatCalls: number;
+	overlayStringRepeatBytes: number;
+	selectionRowsVisited: number;
+	selectionComposedLines: number;
 	terminalDiffLines: number;
 	terminalBytes: number;
 	pendingRenderRequestHighWaterMark: number;
@@ -64,6 +69,11 @@ const EMPTY_METRICS: TuiRenderMetrics = {
 	generatedLines: 0,
 	visibleLines: 0,
 	overlayRenders: 0,
+	overlayComposedLines: 0,
+	overlayStringRepeatCalls: 0,
+	overlayStringRepeatBytes: 0,
+	selectionRowsVisited: 0,
+	selectionComposedLines: 0,
 	terminalDiffLines: 0,
 	terminalBytes: 0,
 	pendingRenderRequestHighWaterMark: 0,
@@ -237,6 +247,17 @@ export class TuiRenderInstrumentation {
 
 	recordOverlayRender(): void {
 		this.metrics.overlayRenders++;
+	}
+
+	recordOverlayComposition(lines: number, stringRepeatCalls: number, stringRepeatBytes: number): void {
+		this.metrics.overlayComposedLines += lines;
+		this.metrics.overlayStringRepeatCalls += stringRepeatCalls;
+		this.metrics.overlayStringRepeatBytes += stringRepeatBytes;
+	}
+
+	recordSelectionComposition(rowsVisited: number, linesComposed: number): void {
+		this.metrics.selectionRowsVisited += rowsVisited;
+		this.metrics.selectionComposedLines += linesComposed;
 	}
 
 	recordTerminalFrame(utf8Bytes: number, diffLines: number): void {

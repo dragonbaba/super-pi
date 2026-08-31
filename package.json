@@ -26,6 +26,7 @@
 		"bench:tui-retained-lifecycle": "node --expose-gc --experimental-strip-types ./scripts/bench/tui-retained-lifecycle.ts",
 		"bench:tui-frame-allocations": "node --expose-gc --experimental-strip-types ./scripts/bench/tui-frame-allocations.ts",
 		"bench:tui-alt-layout-allocations": "node --expose-gc --experimental-strip-types ./scripts/bench/tui-frame-allocations.ts --fixture production-alt",
+		"bench:tui-alt-overlay-selection": "node --expose-gc --experimental-strip-types ./scripts/bench/tui-frame-allocations.ts --fixture production-alt",
 		"bench:tui-alt-layout-closeout": "node --experimental-strip-types ./scripts/bench/tui-alt-layout-closeout.ts",
 		"bench:tui-frame-queue-allocations": "node --expose-gc --experimental-strip-types ./scripts/bench/tui-frame-queue-allocations.ts",
 		"bench:tui-session-event-allocations": "node --expose-gc --experimental-strip-types ./scripts/bench/tui-session-event-allocations.ts",
