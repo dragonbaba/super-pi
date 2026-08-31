@@ -10,6 +10,7 @@ const MAX_PROJECTION_SHRINK_PASSES = 4;
 const MAX_CONTINUATION_BLOCKS = 256;
 const MAX_PROJECTION_RECORD_ENTRIES = 128;
 const MAX_RETAINED_PROJECTION_CODE_UNITS = 128 * 1024 * 1024;
+const MAX_TERMINAL_SEQUENCE_INTERVALS = 4096;
 const CURSOR_PREFIX = "tr1.";
 const NOTICE_PREFIX = "[Tool result truncated. Continue with cursor ";
 const NOTICE_SUFFIX = ".]";
@@ -109,6 +110,17 @@ export interface ToolResultPresentationCounters {
 	retainedProjectionCodeUnits: number;
 	postImagePolicyEstimatorScans: number;
 	postImagePolicyShrinkPasses: number;
+	admissionRejected: number;
+	transientProjections: number;
+	residentReadHits: number;
+	providerReadMisses: number;
+	activeContinuationRecordHits: number;
+	capacityThrashPrevented: number;
+	terminalBoundaryCharactersScanned: number;
+	terminalBoundaryLookups: number;
+	terminalSequenceIntervals: number;
+	terminalIndexCapacityFallbacks: number;
+	graphemeBoundaryLookups: number;
 	completedDispatchPresentationScopes: number;
 	releaseWithoutActiveScope: number;
 	activeDispatchPresentationScopes: number;
@@ -150,6 +162,9 @@ interface SourceScan {
 	imageDataCodeUnits: number;
 	retainedCodeUnits: number;
 	hasTerminalSequences: boolean;
+	terminalSequenceIntervals: Uint32Array | undefined;
+	terminalSequenceIntervalCount: number;
+	terminalIndexCapacityFallback: boolean;
 }
 
 interface ProjectionBuild {
@@ -177,11 +192,16 @@ interface ProjectionRecord {
 	sourceContent: readonly ToolResultPresentationContent[];
 	sourceScan: SourceScan;
 	projection: ProjectionBuild | undefined;
+	imagePolicyProjection: ProjectionBuild | undefined;
 	retainedCodeUnits: number;
-	validatedMessages: readonly unknown[] | undefined;
+	validatedMessages: WeakRef<object> | undefined;
+	validatedMessageCount: number;
+	validatedSourceIndex: number;
 	previous: ProjectionRecord | undefined;
 	next: ProjectionRecord | undefined;
 }
+
+type ProjectionRecordAdmission = "write" | "provider" | "continuation";
 
 export function createToolResultPresentationCounters(): ToolResultPresentationCounters {
 	return {
@@ -212,6 +232,17 @@ export function createToolResultPresentationCounters(): ToolResultPresentationCo
 		retainedProjectionCodeUnits: 0,
 		postImagePolicyEstimatorScans: 0,
 		postImagePolicyShrinkPasses: 0,
+		admissionRejected: 0,
+		transientProjections: 0,
+		residentReadHits: 0,
+		providerReadMisses: 0,
+		activeContinuationRecordHits: 0,
+		capacityThrashPrevented: 0,
+		terminalBoundaryCharactersScanned: 0,
+		terminalBoundaryLookups: 0,
+		terminalSequenceIntervals: 0,
+		terminalIndexCapacityFallbacks: 0,
+		graphemeBoundaryLookups: 0,
 		completedDispatchPresentationScopes: 0,
 		releaseWithoutActiveScope: 0,
 		activeDispatchPresentationScopes: 0,
@@ -261,11 +292,12 @@ function isToolResultPresentationV2(value: unknown): value is ToolResultPresenta
 		) return false;
 		const cursor = value.continuation.cursor;
 		const truncation = value.truncation;
+		const cursorState = typeof cursor === "string" ? parseCursor(cursor) : undefined;
 		if (
 			value.continuation.version === TOOL_RESULT_CONTINUATION_VERSION &&
 			typeof cursor === "string" &&
 			cursor.startsWith(CURSOR_PREFIX) &&
-			parseCursor(cursor) !== undefined &&
+			cursorState !== undefined &&
 			truncation.version === 1 &&
 			truncation.strategy === "text-head-tail" &&
 			isPositiveSafeInteger(truncation.budgetTokens) &&
@@ -281,8 +313,15 @@ function isToolResultPresentationV2(value: unknown): value is ToolResultPresenta
 			truncation.imageTokensIncluded === false
 		) {
 			const notice = value.modelContent[truncation.noticeBlockIndex];
+			const uiContent = value.uiContent as readonly ToolResultPresentationContent[];
 			return (
 				truncation.modelEstimatedTokens <= truncation.budgetTokens &&
+				cursorState.estimatedTokens === truncation.originalEstimatedTokens &&
+				cursorState.contentBlocks === uiContent.length &&
+				cursorState.startBlock <= uiContent.length &&
+				cursorState.endBlock <= uiContent.length &&
+				isValidPosition(uiContent, { blockIndex: cursorState.startBlock, textOffset: cursorState.startOffset }) &&
+				isValidPosition(uiContent, { blockIndex: cursorState.endBlock, textOffset: cursorState.endOffset }) &&
 				truncation.retainedTextCodeUnits === truncation.headTextCodeUnits + truncation.tailTextCodeUnits &&
 				truncation.originalTextCodeUnits >= truncation.retainedTextCodeUnits &&
 				truncation.omittedTextCodeUnits === truncation.originalTextCodeUnits - truncation.retainedTextCodeUnits &&
@@ -323,12 +362,19 @@ function countTextCodeUnits(content: readonly ToolResultPresentationContent[]): 
 	return total;
 }
 
-function terminalSequenceEnd(text: string, start: number): number {
+function terminalSequenceEnd(
+	text: string,
+	start: number,
+	counters?: ToolResultPresentationCounters,
+): number {
+	if (counters) counters.terminalBoundaryCharactersScanned++;
 	if (text.charCodeAt(start) !== ESCAPE_CODE) return start + 1;
 	if (start + 1 >= text.length) return text.length;
+	if (counters) counters.terminalBoundaryCharactersScanned++;
 	const kind = text.charCodeAt(start + 1);
 	if (kind === 0x5b) {
 		for (let index = start + 2; index < text.length; index++) {
+			if (counters) counters.terminalBoundaryCharactersScanned++;
 			const code = text.charCodeAt(index);
 			if (code >= 0x40 && code <= 0x7e) return index + 1;
 		}
@@ -336,6 +382,7 @@ function terminalSequenceEnd(text: string, start: number): number {
 	}
 	if (kind === 0x5d || kind === 0x5f || kind === 0x50 || kind === 0x5e) {
 		for (let index = start + 2; index < text.length; index++) {
+			if (counters) counters.terminalBoundaryCharactersScanned++;
 			const code = text.charCodeAt(index);
 			if (kind === 0x5d && code === 0x07) return index + 1;
 			if (code === ESCAPE_CODE && text.charCodeAt(index + 1) === 0x5c) return index + 2;
@@ -345,50 +392,137 @@ function terminalSequenceEnd(text: string, start: number): number {
 	return Math.min(text.length, start + 2);
 }
 
-function containingTerminalSequenceStart(text: string, requested: number): number {
+function containingTerminalSequenceStart(
+	text: string,
+	requested: number,
+	counters: ToolResultPresentationCounters,
+): number {
+	counters.terminalBoundaryLookups++;
 	let index = 0;
 	while (index < requested) {
+		counters.terminalBoundaryCharactersScanned++;
 		if (text.charCodeAt(index) !== ESCAPE_CODE) {
 			index++;
 			continue;
 		}
-		const end = terminalSequenceEnd(text, index);
+		const end = terminalSequenceEnd(text, index, counters);
 		if (requested > index && requested < end) return index;
 		index = Math.max(index + 1, end);
 	}
 	return -1;
 }
 
-function safeTerminalPrefixOffset(text: string, requested: number): number {
-	const start = containingTerminalSequenceStart(text, requested);
+function safeTerminalPrefixOffset(text: string, requested: number, counters: ToolResultPresentationCounters): number {
+	const start = containingTerminalSequenceStart(text, requested, counters);
 	return start < 0 ? requested : start;
 }
 
-function safeTerminalSuffixOffset(text: string, requested: number): number {
-	const start = containingTerminalSequenceStart(text, requested);
-	return start < 0 ? requested : terminalSequenceEnd(text, start);
+function safeTerminalSuffixOffset(text: string, requested: number, counters: ToolResultPresentationCounters): number {
+	const start = containingTerminalSequenceStart(text, requested, counters);
+	return start < 0 ? requested : terminalSequenceEnd(text, start, counters);
 }
 
-function safePrefixOffset(text: string, requested: number, hasTerminalSequences: boolean): number {
+function safePrefixOffset(
+	text: string,
+	requested: number,
+	hasTerminalSequences: boolean,
+	counters: ToolResultPresentationCounters,
+): number {
 	let offset = Math.max(0, Math.min(requested, text.length));
 	if (offset === 0 || offset === text.length) return offset;
-	if (hasTerminalSequences) offset = safeTerminalPrefixOffset(text, offset);
+	if (hasTerminalSequences) offset = safeTerminalPrefixOffset(text, offset, counters);
 	if (offset === 0 || offset === text.length) return offset;
 	const previous = text.charCodeAt(offset - 1);
 	const next = text.charCodeAt(offset);
 	if (previous <= 0x7f && next <= 0x7f) return offset;
+	counters.graphemeBoundaryLookups++;
 	const segment = GRAPHEME_SEGMENTER.segment(text).containing(offset);
 	return segment && segment.index < offset ? segment.index : offset;
 }
 
-function safeSuffixOffset(text: string, requested: number, hasTerminalSequences: boolean): number {
+function safeSuffixOffset(
+	text: string,
+	requested: number,
+	hasTerminalSequences: boolean,
+	counters: ToolResultPresentationCounters,
+): number {
 	let offset = Math.max(0, Math.min(requested, text.length));
 	if (offset === 0 || offset === text.length) return offset;
-	if (hasTerminalSequences) offset = safeTerminalSuffixOffset(text, offset);
+	if (hasTerminalSequences) offset = safeTerminalSuffixOffset(text, offset, counters);
 	if (offset === 0 || offset === text.length) return offset;
 	const previous = text.charCodeAt(offset - 1);
 	const next = text.charCodeAt(offset);
 	if (previous <= 0x7f && next <= 0x7f) return offset;
+	counters.graphemeBoundaryLookups++;
+	const segment = GRAPHEME_SEGMENTER.segment(text).containing(offset);
+	return segment && segment.index < offset ? segment.index + segment.segment.length : offset;
+}
+
+function indexedTerminalBoundaryOffset(
+	sourceScan: SourceScan,
+	blockIndex: number,
+	requested: number,
+	textLength: number,
+	prefix: boolean,
+	counters: ToolResultPresentationCounters,
+): number {
+	if (!sourceScan.hasTerminalSequences) return requested;
+	counters.terminalBoundaryLookups++;
+	if (sourceScan.terminalIndexCapacityFallback) return prefix ? 0 : textLength;
+	const intervals = sourceScan.terminalSequenceIntervals;
+	if (!intervals || sourceScan.terminalSequenceIntervalCount === 0) return requested;
+	let low = 0;
+	let high = sourceScan.terminalSequenceIntervalCount;
+	while (low < high) {
+		const middle = (low + high) >>> 1;
+		const intervalOffset = middle * 3;
+		const intervalBlock = intervals[intervalOffset]!;
+		const intervalStart = intervals[intervalOffset + 1]!;
+		if (intervalBlock < blockIndex || (intervalBlock === blockIndex && intervalStart < requested)) low = middle + 1;
+		else high = middle;
+	}
+	if (low === 0) return requested;
+	const intervalOffset = (low - 1) * 3;
+	if (intervals[intervalOffset] !== blockIndex) return requested;
+	const start = intervals[intervalOffset + 1]!;
+	const end = intervals[intervalOffset + 2]!;
+	return requested > start && requested < end ? (prefix ? start : end) : requested;
+}
+
+function safeIndexedPrefixOffset(
+	text: string,
+	requested: number,
+	blockIndex: number,
+	sourceScan: SourceScan,
+	counters: ToolResultPresentationCounters,
+): number {
+	let offset = Math.max(0, Math.min(requested, text.length));
+	if (offset === 0 || offset === text.length) return offset;
+	offset = indexedTerminalBoundaryOffset(sourceScan, blockIndex, offset, text.length, true, counters);
+	if (offset === 0 || offset === text.length) return offset;
+	const previous = text.charCodeAt(offset - 1);
+	const next = text.charCodeAt(offset);
+	if (previous <= 0x7f && next <= 0x7f) return offset;
+	counters.graphemeBoundaryLookups++;
+	const segment = GRAPHEME_SEGMENTER.segment(text).containing(offset);
+	return segment && segment.index < offset ? segment.index : offset;
+}
+
+function safeIndexedSuffixOffset(
+	text: string,
+	requested: number,
+	blockIndex: number,
+	sourceScan: SourceScan,
+	counters: ToolResultPresentationCounters,
+): number {
+	let offset = Math.max(0, Math.min(requested, text.length));
+	if (offset === 0 || offset === text.length) return offset;
+	offset = indexedTerminalBoundaryOffset(sourceScan, blockIndex, offset, text.length, false, counters);
+	if (offset === 0 || offset === text.length) return offset;
+	const previous = text.charCodeAt(offset - 1);
+	const next = text.charCodeAt(offset);
+	if (previous <= 0x7f && next <= 0x7f) return offset;
+	counters.graphemeBoundaryLookups++;
 	const segment = GRAPHEME_SEGMENTER.segment(text).containing(offset);
 	return segment && segment.index < offset ? segment.index + segment.segment.length : offset;
 }
@@ -396,13 +530,14 @@ function safeSuffixOffset(text: string, requested: number, hasTerminalSequences:
 function locateHeadEnd(
 	content: readonly ToolResultPresentationContent[],
 	textCodeUnits: number,
-	hasTerminalSequences: boolean,
+	sourceScan: SourceScan,
+	counters: ToolResultPresentationCounters,
 ): ContentPosition {
 	let remaining = textCodeUnits;
 	for (let index = 0; index < content.length; index++) {
 		const block = content[index]!;
 		if (block.type !== "text") continue;
-		if (remaining < block.text.length) return { blockIndex: index, textOffset: safePrefixOffset(block.text, remaining, hasTerminalSequences) };
+		if (remaining < block.text.length) return { blockIndex: index, textOffset: safeIndexedPrefixOffset(block.text, remaining, index, sourceScan, counters) };
 		remaining -= block.text.length;
 		if (remaining === 0) return { blockIndex: index + 1, textOffset: 0 };
 	}
@@ -412,14 +547,15 @@ function locateHeadEnd(
 function locateTailStart(
 	content: readonly ToolResultPresentationContent[],
 	textCodeUnits: number,
-	hasTerminalSequences: boolean,
+	sourceScan: SourceScan,
+	counters: ToolResultPresentationCounters,
 ): ContentPosition {
 	let remaining = textCodeUnits;
 	for (let index = content.length - 1; index >= 0; index--) {
 		const block = content[index]!;
 		if (block.type !== "text") continue;
 		if (remaining < block.text.length) {
-			return { blockIndex: index, textOffset: safeSuffixOffset(block.text, block.text.length - remaining, hasTerminalSequences) };
+			return { blockIndex: index, textOffset: safeIndexedSuffixOffset(block.text, block.text.length - remaining, index, sourceScan, counters) };
 		}
 		remaining -= block.text.length;
 		if (remaining === 0) return { blockIndex: index, textOffset: 0 };
@@ -468,13 +604,37 @@ function scanSource(
 	let imageDataCodeUnits = 0;
 	let retainedCodeUnits = 0;
 	let hasTerminalSequences = false;
+	let terminalSequenceIntervals: Uint32Array | undefined;
+	let terminalSequenceIntervalCount = 0;
+	let terminalIndexCapacityFallback = false;
 	for (let index = 0; index < content.length; index++) {
 		const block = content[index]!;
 		if (block.type === "text") {
 			digest.update("t").update(block.text.length.toString(36)).update(":").update(block.text, "utf16le");
 			textCodeUnits += block.text.length;
 			retainedCodeUnits += block.text.length;
-			if (!hasTerminalSequences && block.text.indexOf("\u001b") >= 0) hasTerminalSequences = true;
+			counters.terminalBoundaryCharactersScanned += block.text.length;
+			let terminalOffset = block.text.indexOf("\u001b");
+			if (terminalOffset >= 0) {
+				hasTerminalSequences = true;
+				while (terminalOffset < block.text.length) {
+					const terminalEnd = terminalSequenceEnd(block.text, terminalOffset);
+					if (terminalSequenceIntervalCount < MAX_TERMINAL_SEQUENCE_INTERVALS) {
+						terminalSequenceIntervals ??= new Uint32Array(MAX_TERMINAL_SEQUENCE_INTERVALS * 3);
+						const intervalOffset = terminalSequenceIntervalCount * 3;
+						terminalSequenceIntervals[intervalOffset] = index;
+						terminalSequenceIntervals[intervalOffset + 1] = terminalOffset;
+						terminalSequenceIntervals[intervalOffset + 2] = terminalEnd;
+						terminalSequenceIntervalCount++;
+						counters.terminalSequenceIntervals++;
+					} else if (!terminalIndexCapacityFallback) {
+						terminalIndexCapacityFallback = true;
+						counters.terminalIndexCapacityFallbacks++;
+					}
+					terminalOffset = block.text.indexOf("\u001b", Math.max(terminalOffset + 1, terminalEnd));
+					if (terminalOffset < 0) break;
+				}
+			}
 		} else {
 			digest.update("i").update(block.mimeType.length.toString(36)).update(":").update(block.mimeType);
 			digest.update(block.data.length.toString(36)).update(":").update(block.data);
@@ -490,6 +650,9 @@ function scanSource(
 		imageDataCodeUnits,
 		retainedCodeUnits,
 		hasTerminalSequences,
+		terminalSequenceIntervals,
+		terminalSequenceIntervalCount,
+		terminalIndexCapacityFallback,
 	};
 }
 
@@ -548,8 +711,8 @@ function buildProjection(
 	sourceScan: SourceScan,
 	counters: ToolResultPresentationCounters,
 ): ProjectionBuild {
-	const start = locateHeadEnd(content, headTextCodeUnits, sourceScan.hasTerminalSequences);
-	const end = locateTailStart(content, tailTextCodeUnits, sourceScan.hasTerminalSequences);
+	const start = locateHeadEnd(content, headTextCodeUnits, sourceScan, counters);
+	const end = locateTailStart(content, tailTextCodeUnits, sourceScan, counters);
 	const actualHeadTextCodeUnits = textCodeUnitsBetween(
 		content,
 		{ blockIndex: 0, textOffset: 0 },
@@ -583,6 +746,43 @@ function buildProjection(
 		end,
 		headTextCodeUnits: actualHeadTextCodeUnits,
 		tailTextCodeUnits: actualTailTextCodeUnits,
+		cursor,
+		estimate: estimateToolOutputTokens(projected),
+		fullEstimate: sourceScan.estimate,
+	};
+}
+
+function buildFullOmissionProjection(
+	content: readonly ToolResultPresentationContent[],
+	sourceKey: string,
+	sourceDigest: string,
+	sourceScan: SourceScan,
+	counters: ToolResultPresentationCounters,
+): ProjectionBuild {
+	const start = { blockIndex: 0, textOffset: 0 };
+	const end = { blockIndex: content.length, textOffset: 0 };
+	const cursor = createCursor(
+		sourceKey,
+		sourceDigest,
+		start,
+		end,
+		content.length,
+		sourceScan.estimate.rawUtf8Bytes,
+		sourceScan.estimate.estimatedTokens,
+		counters,
+	);
+	const projected: ToolResultPresentationContent[] = [{
+		type: "text",
+		text: NOTICE_PREFIX + cursor + NOTICE_SUFFIX,
+	}];
+	counters.modelProjectionArraysCreated++;
+	return {
+		content: projected,
+		noticeBlockIndex: 0,
+		start,
+		end,
+		headTextCodeUnits: 0,
+		tailTextCodeUnits: 0,
 		cursor,
 		estimate: estimateToolOutputTokens(projected),
 		fullEstimate: sourceScan.estimate,
@@ -711,7 +911,8 @@ function advancePosition(
 	start: ContentPosition,
 	end: ContentPosition,
 	requestedTextCodeUnits: number,
-	hasTerminalSequences: boolean,
+	sourceScan: SourceScan,
+	counters: ToolResultPresentationCounters,
 ): ContentPosition {
 	let remaining = Math.max(1, requestedTextCodeUnits);
 	let blocks = 0;
@@ -730,9 +931,9 @@ function advancePosition(
 		const available = Math.max(0, limit - offset);
 		if (remaining < available) {
 			const requestedOffset = offset + remaining;
-			let safeOffset = safePrefixOffset(block.text, requestedOffset, hasTerminalSequences);
+			let safeOffset = safeIndexedPrefixOffset(block.text, requestedOffset, index, sourceScan, counters);
 			if (safeOffset <= offset) {
-				safeOffset = Math.min(limit, safeSuffixOffset(block.text, requestedOffset, hasTerminalSequences));
+				safeOffset = Math.min(limit, safeIndexedSuffixOffset(block.text, requestedOffset, index, sourceScan, counters));
 			}
 			return {
 				blockIndex: index,
@@ -810,7 +1011,7 @@ function appendBoundedHead(
 			continue;
 		}
 		if (remaining > 0) {
-			const offset = safePrefixOffset(block.text, remaining, block.text.indexOf("\u001b") >= 0);
+			const offset = safePrefixOffset(block.text, remaining, block.text.indexOf("\u001b") >= 0, counters);
 			if (offset > 0) {
 				result.push({ type: "text", text: block.text.substring(0, offset) });
 				counters.boundedTextStringsCreated++;
@@ -849,6 +1050,7 @@ function appendBoundedTail(
 				block.text,
 				block.text.length - remaining,
 				block.text.indexOf("\u001b") >= 0,
+				counters,
 			);
 		}
 		break;
@@ -910,15 +1112,22 @@ export class ToolResultPresentationOwner {
 		record.previous = undefined;
 		record.next = undefined;
 		record.validatedMessages = undefined;
+		record.validatedMessageCount = 0;
+		record.validatedSourceIndex = -1;
 		records.delete(record.toolCallId);
 		this.counters.projectionRecordEntries--;
 		this.counters.retainedProjectionCodeUnits -= record.retainedCodeUnits;
 		if (eviction) this.counters.projectionRecordEvictions++;
 	}
 
-	private insertProjectionRecord(record: ProjectionRecord): void {
+	private insertProjectionRecord(record: ProjectionRecord, allowEviction: boolean): boolean {
 		const records = this.projectionRecords;
-		if (!records || record.retainedCodeUnits > MAX_RETAINED_PROJECTION_CODE_UNITS) return;
+		if (!records || record.retainedCodeUnits > MAX_RETAINED_PROJECTION_CODE_UNITS) return false;
+		if (
+			!allowEviction &&
+			(records.size >= MAX_PROJECTION_RECORD_ENTRIES ||
+				this.counters.retainedProjectionCodeUnits + record.retainedCodeUnits > MAX_RETAINED_PROJECTION_CODE_UNITS)
+		) return false;
 		while (
 			this.projectionRecordHead &&
 			(records.size >= MAX_PROJECTION_RECORD_ENTRIES ||
@@ -935,11 +1144,13 @@ export class ToolResultPresentationOwner {
 			this.counters.projectionRecordEntries,
 		);
 		this.counters.retainedProjectionCodeUnits += record.retainedCodeUnits;
+		return true;
 	}
 
 	private getOrCreateProjectionRecord(
 		content: readonly ToolResultPresentationContent[],
 		toolCallId: string,
+		admission: ProjectionRecordAdmission = "write",
 	): ProjectionRecord {
 		const records = this.projectionRecords;
 		const existing = records?.get(toolCallId);
@@ -968,12 +1179,24 @@ export class ToolResultPresentationOwner {
 			sourceContent: content,
 			sourceScan,
 			projection,
+			imagePolicyProjection: undefined,
 			retainedCodeUnits,
 			validatedMessages: undefined,
+			validatedMessageCount: 0,
+			validatedSourceIndex: -1,
 			previous: undefined,
 			next: undefined,
 		};
-		this.insertProjectionRecord(record);
+		const capacityWouldEvict = !!records && (
+			records.size >= MAX_PROJECTION_RECORD_ENTRIES ||
+			this.counters.retainedProjectionCodeUnits + record.retainedCodeUnits > MAX_RETAINED_PROJECTION_CODE_UNITS
+		);
+		const inserted = this.insertProjectionRecord(record, admission !== "provider");
+		if (admission === "provider" && !inserted) {
+			this.counters.admissionRejected++;
+			this.counters.transientProjections++;
+			if (capacityWouldEvict) this.counters.capacityThrashPrevented++;
+		}
 		return record;
 	}
 
@@ -990,8 +1213,26 @@ export class ToolResultPresentationOwner {
 		record: ProjectionRecord,
 		messages: readonly unknown[],
 	): ProjectionRecord {
-		if (record.validatedMessages === messages) return record;
+		if (record.validatedMessages?.deref() === messages) {
+			const source = messages[record.validatedSourceIndex];
+			if (!isSourceMessageLike(source) || source.toolCallId !== record.toolCallId || source.content !== record.sourceContent) {
+				throw new ToolResultContinuationError("stale-cursor", "Continuation source identity changed or moved.");
+			}
+			if (messages.length === record.validatedMessageCount) return record;
+			if (messages.length > record.validatedMessageCount) {
+				for (let index = record.validatedMessageCount; index < messages.length; index++) {
+					this.counters.continuationSourceLookupProbes++;
+					const candidate = messages[index];
+					if (isSourceMessageLike(candidate) && candidate.toolCallId === record.toolCallId) {
+						throw new ToolResultContinuationError("stale-cursor", "Continuation source identity is duplicated.");
+					}
+				}
+				record.validatedMessageCount = messages.length;
+				return record;
+			}
+		}
 		let found = false;
+		let sourceIndex = -1;
 		for (let index = 0; index < messages.length; index++) {
 			this.counters.continuationSourceLookupProbes++;
 			const candidate = messages[index];
@@ -1000,9 +1241,12 @@ export class ToolResultPresentationOwner {
 				throw new ToolResultContinuationError("stale-cursor", "Continuation source identity changed or is ambiguous.");
 			}
 			found = true;
+			sourceIndex = index;
 		}
 		if (!found) throw new ToolResultContinuationError("stale-cursor", "Continuation source is not on the active branch.");
-		record.validatedMessages = messages;
+		record.validatedMessages = new WeakRef(messages as object);
+		record.validatedMessageCount = messages.length;
+		record.validatedSourceIndex = sourceIndex;
 		return record;
 	}
 
@@ -1010,9 +1254,11 @@ export class ToolResultPresentationOwner {
 		const cached = this.findProjectionRecord(state.sourceKey, state.sourceDigest);
 		if (cached) {
 			this.counters.continuationSourceRecordHits++;
+			this.counters.activeContinuationRecordHits++;
 			return this.validateContinuationRecord(cached, messages);
 		}
 		let resolved: ProjectionRecord | undefined;
+		let resolvedIndex = -1;
 		let matchedSourceIdentity = false;
 		for (let index = 0; index < messages.length; index++) {
 			this.counters.continuationSourceLookupProbes++;
@@ -1023,12 +1269,15 @@ export class ToolResultPresentationOwner {
 				throw new ToolResultContinuationError("stale-cursor", "Continuation cursor is ambiguous.");
 			}
 			matchedSourceIdentity = true;
-			const record = this.getOrCreateProjectionRecord(candidate.content, candidate.toolCallId);
+			const record = this.getOrCreateProjectionRecord(candidate.content, candidate.toolCallId, "continuation");
 			if (record.sourceDigest !== state.sourceDigest) continue;
 			resolved = record;
+			resolvedIndex = index;
 		}
 		if (!resolved) throw new ToolResultContinuationError("stale-cursor", "Continuation source is not on the active branch.");
-		resolved.validatedMessages = messages;
+		resolved.validatedMessages = new WeakRef(messages as object);
+		resolved.validatedMessageCount = messages.length;
+		resolved.validatedSourceIndex = resolvedIndex;
 		return resolved;
 	}
 
@@ -1041,6 +1290,8 @@ export class ToolResultPresentationOwner {
 			record.previous = undefined;
 			record.next = undefined;
 			record.validatedMessages = undefined;
+			record.validatedMessageCount = 0;
+			record.validatedSourceIndex = -1;
 			record = next;
 		}
 		records.clear();
@@ -1117,108 +1368,135 @@ export class ToolResultPresentationOwner {
 		return presentation;
 	}
 
-	/** Mutates only the caller-owned outer array; legacy message objects remain untouched. */
-	projectMessagesForModel(messages: Message[]): Message[] {
-		if (!this.accepting || this.budgetTokens === undefined) return messages;
-		for (let index = 0; index < messages.length; index++) {
-			const message = messages[index]!;
-			if (message.role !== "toolResult") continue;
-			const record = this.getOrCreateProjectionRecord(message.content, message.toolCallId);
-			const projection = record.projection;
-			if (!projection) continue;
-			const projected: ToolResultMessage = {
-				role: "toolResult",
-				toolCallId: message.toolCallId,
-				toolName: message.toolName,
-				content: projection.content as ToolResultMessage["content"],
-				details: message.details,
-				usage: message.usage,
-				addedToolNames: message.addedToolNames,
-				isError: message.isError,
-				timestamp: message.timestamp,
-			};
-			messages[index] = projected;
-			this.counters.modelMessageWrappersCreated++;
+	private getImagePolicyProjection(record: ProjectionRecord): ProjectionBuild {
+		if (record.imagePolicyProjection) return record.imagePolicyProjection;
+		const projection = buildFullOmissionProjection(
+			record.sourceContent,
+			record.sourceKey,
+			record.sourceDigest,
+			record.sourceScan,
+			this.counters,
+		);
+		if (projection.estimate.estimatedTokens > this.budgetTokens!) {
+			throw new ToolResultContinuationError(
+				"budget-too-small",
+				`Tool-result budget ${this.budgetTokens} cannot contain the fixed continuation notice.`,
+			);
 		}
-		return messages;
+		const records = this.projectionRecords;
+		const retainedCodeUnits = countTextCodeUnits(projection.content);
+		if (
+			records?.get(record.toolCallId) === record &&
+			this.counters.retainedProjectionCodeUnits + retainedCodeUnits <= MAX_RETAINED_PROJECTION_CODE_UNITS
+		) {
+			record.imagePolicyProjection = projection;
+			record.retainedCodeUnits += retainedCodeUnits;
+			this.counters.retainedProjectionCodeUnits += retainedCodeUnits;
+		}
+		return projection;
 	}
 
-	/** Rechecks only the already-bounded model view after SDK image replacement. */
-	enforcePostImagePolicyBudgets(messages: Message[], beforeImagePolicy?: readonly Message[]): Message[] {
+	private createModelMessage(
+		message: ToolResultMessage,
+		content: readonly ToolResultPresentationContent[],
+	): ToolResultMessage {
+		this.counters.modelMessageWrappersCreated++;
+		return {
+			role: "toolResult",
+			toolCallId: message.toolCallId,
+			toolName: message.toolName,
+			content: content as ToolResultMessage["content"],
+			details: message.details,
+			usage: message.usage,
+			addedToolNames: message.addedToolNames,
+			isError: message.isError,
+			timestamp: message.timestamp,
+		};
+	}
+
+	private fitPostImagePolicyContent(
+		content: readonly ToolResultPresentationContent[],
+		projection: ProjectionBuild,
+	): readonly ToolResultPresentationContent[] {
+		this.counters.postImagePolicyEstimatorScans++;
+		let estimate = estimateToolOutputTokens(content);
+		if (estimate.estimatedTokens <= this.budgetTokens!) return content;
+		const notice = projection.content[projection.noticeBlockIndex];
+		let noticeBlockIndex = -1;
+		for (let index = 0; index < content.length; index++) {
+			if (content[index] !== notice) continue;
+			noticeBlockIndex = index;
+			break;
+		}
+		if (noticeBlockIndex < 0) {
+			throw new ToolResultContinuationError("stale-cursor", "Internal continuation notice identity was not preserved.");
+		}
+		const originalHead = boundedTextCodeUnits(content, 0, noticeBlockIndex);
+		const originalTail = boundedTextCodeUnits(content, noticeBlockIndex + 1, content.length);
+		let retainedTextCodeUnits = originalHead + originalTail;
+		let candidate: ToolResultPresentationContent[] | undefined;
+		for (let pass = 0; pass < MAX_PROJECTION_SHRINK_PASSES; pass++) {
+			const next = Math.max(
+				0,
+				Math.min(
+					retainedTextCodeUnits - 1,
+					Math.floor((retainedTextCodeUnits * Math.max(1, this.budgetTokens! - 2)) / estimate.estimatedTokens),
+				),
+			);
+			retainedTextCodeUnits = next;
+			const head = Math.min(originalHead, Math.ceil(next / 2));
+			const tail = Math.min(originalTail, next - head);
+			candidate = buildPostImagePolicyView(content, noticeBlockIndex, head, tail, this.counters);
+			this.counters.postImagePolicyShrinkPasses++;
+			this.counters.postImagePolicyEstimatorScans++;
+			estimate = estimateToolOutputTokens(candidate);
+			if (estimate.estimatedTokens <= this.budgetTokens!) break;
+		}
+		if (!candidate || estimate.estimatedTokens > this.budgetTokens!) {
+			candidate = buildPostImagePolicyView(content, noticeBlockIndex, 0, 0, this.counters);
+			this.counters.postImagePolicyShrinkPasses++;
+			this.counters.postImagePolicyEstimatorScans++;
+			estimate = estimateToolOutputTokens(candidate);
+		}
+		if (estimate.estimatedTokens > this.budgetTokens!) {
+			throw new ToolResultContinuationError(
+				"budget-too-small",
+				`Tool-result budget ${this.budgetTokens} cannot contain the fixed continuation notice.`,
+			);
+		}
+		return candidate;
+	}
+
+	/** Mutates only the caller-owned outer array; legacy message objects remain untouched. */
+	projectMessagesForModel(messages: Message[], imagePolicy?: (message: Message) => Message): Message[] {
 		if (!this.accepting || this.budgetTokens === undefined) return messages;
 		for (let index = 0; index < messages.length; index++) {
 			const message = messages[index]!;
 			if (message.role !== "toolResult") continue;
-			if (beforeImagePolicy?.[index] === message) continue;
-			const record = this.projectionRecords?.get(message.toolCallId);
-			const projectedContent = record ? (record.projection?.content ?? record.sourceContent) : undefined;
-			if (!beforeImagePolicy && message.content === projectedContent) continue;
-			this.counters.postImagePolicyEstimatorScans++;
-			let estimate = estimateToolOutputTokens(message.content);
-			if (estimate.estimatedTokens <= this.budgetTokens) continue;
-			let noticeBlockIndex = -1;
-			for (let blockIndex = 0; blockIndex < message.content.length; blockIndex++) {
-				const block = message.content[blockIndex]!;
-				if (
-					block.type === "text" &&
-					block.text.startsWith(NOTICE_PREFIX + CURSOR_PREFIX) &&
-					block.text.endsWith(NOTICE_SUFFIX)
-				) {
-					noticeBlockIndex = blockIndex;
-					break;
+			const resident = this.projectionRecords?.get(message.toolCallId);
+			if (resident?.sourceContent === message.content) this.counters.residentReadHits++;
+			else this.counters.providerReadMisses++;
+			const record = this.getOrCreateProjectionRecord(message.content, message.toolCallId, "provider");
+			let projection = record.projection;
+			let projected = projection ? this.createModelMessage(message, projection.content) : message;
+			if (imagePolicy) {
+				let filtered = imagePolicy(projected);
+				if (filtered !== projected && !projection) {
+					this.counters.postImagePolicyEstimatorScans++;
+					const filteredEstimate = estimateToolOutputTokens((filtered as ToolResultMessage).content);
+					if (filteredEstimate.estimatedTokens > this.budgetTokens) {
+						projection = this.getImagePolicyProjection(record);
+						projected = this.createModelMessage(message, projection.content);
+						filtered = imagePolicy(projected);
+					}
 				}
+				if (filtered !== projected && projection) {
+					const fitted = this.fitPostImagePolicyContent((filtered as ToolResultMessage).content, projection);
+					filtered = this.createModelMessage(message, fitted);
+				}
+				projected = filtered as ToolResultMessage;
 			}
-			if (noticeBlockIndex < 0) {
-				throw new ToolResultContinuationError(
-					"budget-too-small",
-					`Tool-result budget ${this.budgetTokens} cannot contain the blocked-image placeholder view.`,
-				);
-			}
-			const originalHead = boundedTextCodeUnits(message.content, 0, noticeBlockIndex);
-			const originalTail = boundedTextCodeUnits(message.content, noticeBlockIndex + 1, message.content.length);
-			let retainedTextCodeUnits = originalHead + originalTail;
-			let candidate: ToolResultPresentationContent[] | undefined;
-			for (let pass = 0; pass < MAX_PROJECTION_SHRINK_PASSES; pass++) {
-				const next = Math.max(
-					0,
-					Math.min(
-						retainedTextCodeUnits - 1,
-						Math.floor((retainedTextCodeUnits * Math.max(1, this.budgetTokens - 2)) / estimate.estimatedTokens),
-					),
-				);
-				retainedTextCodeUnits = next;
-				const head = Math.min(originalHead, Math.ceil(next / 2));
-				const tail = Math.min(originalTail, next - head);
-				candidate = buildPostImagePolicyView(message.content, noticeBlockIndex, head, tail, this.counters);
-				this.counters.postImagePolicyShrinkPasses++;
-				this.counters.postImagePolicyEstimatorScans++;
-				estimate = estimateToolOutputTokens(candidate);
-				if (estimate.estimatedTokens <= this.budgetTokens) break;
-			}
-			if (!candidate || estimate.estimatedTokens > this.budgetTokens) {
-				candidate = buildPostImagePolicyView(message.content, noticeBlockIndex, 0, 0, this.counters);
-				this.counters.postImagePolicyShrinkPasses++;
-				this.counters.postImagePolicyEstimatorScans++;
-				estimate = estimateToolOutputTokens(candidate);
-			}
-			if (estimate.estimatedTokens > this.budgetTokens) {
-				throw new ToolResultContinuationError(
-					"budget-too-small",
-					`Tool-result budget ${this.budgetTokens} cannot contain the fixed continuation notice.`,
-				);
-			}
-			messages[index] = {
-				role: "toolResult",
-				toolCallId: message.toolCallId,
-				toolName: message.toolName,
-				content: candidate as ToolResultMessage["content"],
-				details: message.details,
-				usage: message.usage,
-				addedToolNames: message.addedToolNames,
-				isError: message.isError,
-				timestamp: message.timestamp,
-			};
-			this.counters.modelMessageWrappersCreated++;
+			if (projected !== message) messages[index] = projected;
 		}
 		return messages;
 	}
@@ -1250,7 +1528,8 @@ export class ToolResultPresentationOwner {
 			start,
 			end,
 			requestedTextCodeUnits,
-			record.sourceScan.hasTerminalSequences,
+			record.sourceScan,
+			this.counters,
 		);
 		let chunkContent: ToolResultPresentationContent[] = [];
 		let chunkEstimate: ToolOutputTokenEstimate | undefined;
@@ -1265,7 +1544,8 @@ export class ToolResultPresentationOwner {
 				start,
 				end,
 				requestedTextCodeUnits,
-				record.sourceScan.hasTerminalSequences,
+				record.sourceScan,
+				this.counters,
 			);
 		}
 		if (!chunkEstimate || chunkEstimate.estimatedTokens > budgetTokens || comparePositions(start, chunkEnd) >= 0) {

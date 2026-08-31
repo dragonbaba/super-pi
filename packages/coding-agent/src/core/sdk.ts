@@ -354,11 +354,13 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	// Projection stays bound to the complete persisted source; image policy applies only to the bounded model view.
 	const convertToLlmWithBlockImages = (messages: AgentMessage[]): Message[] => {
 		const converted = convertToLlm(messages);
-		const projected = toolResultPresentationOwner?.projectMessagesForModel(converted) ?? converted;
 		// Check setting dynamically so mid-session changes take effect
-		if (!settingsManager.getBlockImages()) return projected;
-		const imageFiltered = replaceBlockedImagesInMessages(projected);
-		return toolResultPresentationOwner?.enforcePostImagePolicyBudgets(imageFiltered, projected) ?? imageFiltered;
+		const blockImages = settingsManager.getBlockImages();
+		const projected = toolResultPresentationOwner?.projectMessagesForModel(
+			converted,
+			blockImages ? replaceBlockedImages : undefined,
+		) ?? converted;
+		return blockImages ? replaceBlockedImagesInMessages(projected) : projected;
 	};
 
 	const extensionRunnerRef: { current?: ExtensionRunner } = {};
