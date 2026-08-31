@@ -1059,8 +1059,6 @@ export class AgentSession {
 					return;
 				}
 			}
-		}
-		if (event.type === "message_end" && event.message.role === "toolResult") {
 			const model = this.model;
 			this._toolOutputShadow?.observe(
 				event.message,
