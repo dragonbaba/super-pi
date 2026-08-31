@@ -128,7 +128,7 @@ test("ANSI OSC and APC sequences stay atomic at model and continuation boundarie
 	] as const;
 	for (const [name, sequence] of terminalFixtures) {
 		for (const budget of [64, 96, 128, 192]) {
-			for (let shift = 0; shift <= sequence.length; shift += Math.max(1, Math.floor(sequence.length / 8))) {
+			for (let shift = 0; shift <= sequence.length; shift++) {
 				const text = "a".repeat(24 + shift) + sequence + "b".repeat(2048);
 				assertLegalProjectionAndChunks(text, budget, `${name}-${budget}-${shift}`);
 			}

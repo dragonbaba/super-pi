@@ -345,18 +345,28 @@ function terminalSequenceEnd(text: string, start: number): number {
 	return Math.min(text.length, start + 2);
 }
 
+function containingTerminalSequenceStart(text: string, requested: number): number {
+	let index = 0;
+	while (index < requested) {
+		if (text.charCodeAt(index) !== ESCAPE_CODE) {
+			index++;
+			continue;
+		}
+		const end = terminalSequenceEnd(text, index);
+		if (requested > index && requested < end) return index;
+		index = Math.max(index + 1, end);
+	}
+	return -1;
+}
+
 function safeTerminalPrefixOffset(text: string, requested: number): number {
-	const start = text.lastIndexOf("\u001b", requested - 1);
-	if (start < 0) return requested;
-	const end = terminalSequenceEnd(text, start);
-	return requested > start && requested < end ? start : requested;
+	const start = containingTerminalSequenceStart(text, requested);
+	return start < 0 ? requested : start;
 }
 
 function safeTerminalSuffixOffset(text: string, requested: number): number {
-	const start = text.lastIndexOf("\u001b", requested - 1);
-	if (start < 0) return requested;
-	const end = terminalSequenceEnd(text, start);
-	return requested > start && requested < end ? end : requested;
+	const start = containingTerminalSequenceStart(text, requested);
+	return start < 0 ? requested : terminalSequenceEnd(text, start);
 }
 
 function safePrefixOffset(text: string, requested: number, hasTerminalSequences: boolean): number {
