@@ -6,6 +6,7 @@ import ts from "typescript";
 const SOURCE_PATH = "packages/coding-agent/src/core/tool-result-presentation.ts";
 const AGENT_SESSION_SOURCE_PATH = "packages/coding-agent/src/core/agent-session.ts";
 const SDK_SOURCE_PATH = "packages/coding-agent/src/core/sdk.ts";
+const BENCHMARK_SOURCE_PATH = "scripts/bench/tool-result-budgeted-model-view.ts";
 
 test("presentation core forbids large-result hot-path allocation regressions", () => {
 	const source = readFileSync(SOURCE_PATH, "utf8");
@@ -77,4 +78,28 @@ test("SDK applies the provider-neutral projection after image policy without exp
 	assert.equal(source.includes("toolResultPresentationOwner,"), true);
 	assert.equal(source.includes("uiContent"), false);
 	assert.equal(source.includes("toolResultPresentation:"), false);
+});
+
+test("budgeted model-view benchmark retains the Candidate Gate fixtures and lifecycle evidence", () => {
+	const source = readFileSync(BENCHMARK_SOURCE_PATH, "utf8");
+	assert.match(source, /const WARMUP_RUNS = 5;/);
+	assert.match(source, /const MEASURED_RUNS = 20;/);
+	assert.match(source, /samplingInterval: 1024/);
+	assert.match(source, /"tiny"/);
+	assert.match(source, /"64-kib"/);
+	assert.match(source, /"1-mib"/);
+	assert.match(source, /"10-mib"/);
+	assert.match(source, /"multi-block"/);
+	assert.match(source, /"text-plus-image"/);
+	assert.match(source, /measureProduction\(inspector, productionRoot, "absent"\)/);
+	assert.match(source, /measureProduction\(inspector, productionRoot, "disabled"\)/);
+	assert.match(source, /measureProduction\(inspector, productionRoot, "enabled"\)/);
+	assert.match(source, /new WeakRef\(presentation\)/);
+	assert.match(source, /new WeakRef\(presentation\.modelContent as object\)/);
+	assert.match(source, /new WeakRef\(presentation\.uiContent as object\)/);
+	assert.match(source, /\[measureParallelScopes\(2\), measureParallelScopes\(4\), measureParallelScopes\(8\)\]/);
+	assert.match(source, /sourceInvariantFullStringCopies: 0/);
+	assert.match(source, /sourceInvariantFullResultSerializations: 0/);
+	assert.match(source, /sourceInvariantTemporaryLineArrays: 0/);
+	assert.match(source, /sourceInvariantObjectPools: 0/);
 });
