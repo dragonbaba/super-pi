@@ -49,7 +49,10 @@ import {
 	withFileMutationQueue,
 } from "./tools/index.ts";
 import type { ToolOutputShadowOptions } from "./tool-output-budget.ts";
-import type { ToolResultPresentationOptions } from "./tool-result-presentation.ts";
+import {
+	createToolResultPresentationOwner,
+	type ToolResultPresentationOptions,
+} from "./tool-result-presentation.ts";
 
 // Preserve the pre-0.81 fallback for extensions that construct Agent instances
 // or invoke low-level agent loops without supplying streamFn. Agent core remains
@@ -343,12 +346,17 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	}
 
 	let agent: Agent;
+	const toolResultPresentationOwner = createToolResultPresentationOwner(
+		options.toolResultPresentation,
+		sessionManager.getSessionId(),
+	);
 
 	// Create convertToLlm wrapper that filters images if blockImages is enabled (defense-in-depth)
 	const convertToLlmWithBlockImages = (messages: AgentMessage[]): Message[] => {
 		const converted = convertToLlm(messages);
 		// Check setting dynamically so mid-session changes take effect
-		return settingsManager.getBlockImages() ? replaceBlockedImagesInMessages(converted) : converted;
+		const imageFiltered = settingsManager.getBlockImages() ? replaceBlockedImagesInMessages(converted) : converted;
+		return toolResultPresentationOwner?.projectMessagesForModel(imageFiltered) ?? imageFiltered;
 	};
 
 	const extensionRunnerRef: { current?: ExtensionRunner } = {};
@@ -543,7 +551,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		extensionRunnerOptions: options.extensionRunnerOptions,
 		sessionStartEvent: options.sessionStartEvent,
 		toolOutputShadow: options.toolOutputShadow,
-		toolResultPresentation: options.toolResultPresentation,
+		toolResultPresentationOwner,
 	});
 	const extensionsResult = resourceLoader.getExtensions();
 

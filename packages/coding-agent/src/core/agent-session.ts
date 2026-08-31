@@ -139,9 +139,11 @@ import {
 } from "./tool-output-budget.ts";
 import {
 	createToolResultPresentationOwner,
+	ToolResultContinuationError,
+	type ToolResultContinuationChunkV1,
 	type ToolResultPresentationOptions,
 	type ToolResultPresentationOwner,
-	type ToolResultPresentationV1,
+	type ToolResultPresentation,
 } from "./tool-result-presentation.ts";
 import { addUsageToTotals, createUsageTotals, getUnboundCompactionLedgerUsages } from "./usage-totals.ts";
 
@@ -189,7 +191,7 @@ export type AgentSessionEvent =
 	| Exclude<AgentEvent, { type: "agent_end" | "message_end" }>
 	| (Extract<AgentEvent, { type: "message_end" }> & {
 			/** Present only for enabled Phase 5B-A final tool results. Extensions never receive this sidecar. */
-			toolResultPresentation?: ToolResultPresentationV1;
+			toolResultPresentation?: ToolResultPresentation;
 	  })
 	| {
 			type: "agent_end";
@@ -380,6 +382,8 @@ export interface AgentSessionConfig {
 	toolOutputShadow?: ToolOutputShadowOptions;
 	/** Optional Phase 5B-A final tool-result dual-view ownership. Disabled unless explicitly enabled. */
 	toolResultPresentation?: ToolResultPresentationOptions;
+	/** Internal shared owner used by the SDK's provider-neutral model projection boundary. */
+	toolResultPresentationOwner?: ToolResultPresentationOwner;
 }
 
 export interface ModelMutationOptions {
@@ -683,7 +687,9 @@ export class AgentSession {
 		this._providerRequestCompactor = config.providerRequestCompactor;
 		this._prefixManifestRecorder = config.prefixManifestRecorder;
 		this._toolOutputShadow = createToolOutputShadowObserver(config.toolOutputShadow);
-		this._toolResultPresentation = createToolResultPresentationOwner(config.toolResultPresentation);
+		this._toolResultPresentation =
+			config.toolResultPresentationOwner ??
+			createToolResultPresentationOwner(config.toolResultPresentation, this.sessionManager.getSessionId());
 		this._extensionRunnerRef = config.extensionRunnerRef;
 		this._extensionRunnerOptions = config.extensionRunnerOptions;
 		this._initialActiveToolNames = config.initialActiveToolNames;
@@ -1037,7 +1043,7 @@ export class AgentSession {
 		if (event.type === "message_end" && event.message.role === "toolResult") {
 			const presentationOwner = this._toolResultPresentation;
 			if (presentationOwner) {
-				const presentation = presentationOwner.create(event.message.content);
+				const presentation = presentationOwner.create(event.message.content, event.message.toolCallId);
 				if (presentation) {
 					const sessionEvent: Extract<AgentSessionEvent, { type: "message_end" }> = {
 						type: "message_end",
@@ -1407,6 +1413,18 @@ export class AgentSession {
 	 */
 	getActiveToolNames(): string[] {
 		return this.agent.state.tools.map((t) => t.name);
+	}
+
+	/** Read one bounded continuation chunk from the current active session branch. */
+	readToolResultContinuation(cursor: string, budgetTokens?: number): ToolResultContinuationChunkV1 {
+		const owner = this._toolResultPresentation;
+		if (!owner) {
+			throw new ToolResultContinuationError(
+				"stale-cursor",
+				"Tool-result continuation is unavailable for this session.",
+			);
+		}
+		return owner.readContinuation(cursor, this.agent.state.messages, budgetTokens);
 	}
 
 	/**

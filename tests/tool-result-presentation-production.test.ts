@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { Model, ToolResultMessage } from "../packages/ai/src/types.ts";
+import { estimateToolOutputTokens } from "../packages/coding-agent/src/core/tool-output-budget.ts";
 import type { AgentSessionEvent } from "../packages/coding-agent/src/core/agent-session.ts";
 import type { ModelRuntime } from "../packages/coding-agent/src/core/model-runtime.ts";
 import { DefaultResourceLoader } from "../packages/coding-agent/src/core/resource-loader.ts";
@@ -12,8 +13,10 @@ import { SessionManager } from "../packages/coding-agent/src/core/session-manage
 import { SettingsManager } from "../packages/coding-agent/src/core/settings-manager.ts";
 import {
 	createToolResultPresentationCounters,
+	createToolResultPresentationOwner,
 	type ToolResultPresentationCounters,
-	type ToolResultPresentationV1,
+	type ToolResultPresentation,
+	type ToolResultPresentationV2,
 } from "../packages/coding-agent/src/core/tool-result-presentation.ts";
 
 type ToolResultMessageEndEvent = {
@@ -22,7 +25,7 @@ type ToolResultMessageEndEvent = {
 };
 
 type ToolResultSessionMessageEndEvent = ToolResultMessageEndEvent & {
-	toolResultPresentation?: ToolResultPresentationV1;
+	toolResultPresentation?: ToolResultPresentation;
 };
 
 function fixtureModel(): Model<"openai-responses"> {
@@ -57,7 +60,7 @@ function fixtureModelRuntime(): ModelRuntime {
 interface ProductionResult {
 	message: ToolResultMessage;
 	persisted: ToolResultMessage;
-	presentation: ToolResultPresentationV1 | undefined;
+	presentation: ToolResultPresentation | undefined;
 	extensionSawPresentation: boolean;
 	extensionContent: ToolResultMessage["content"];
 	originalEvent: ToolResultMessageEndEvent;
@@ -113,7 +116,7 @@ async function runProductionFixture(
 		toolResultPresentation: mode === "absent" ? undefined : { enabled: mode === "enabled", counters },
 	});
 	try {
-		let presentation: ToolResultPresentationV1 | undefined;
+		let presentation: ToolResultPresentation | undefined;
 		let retainedSessionEvent: ToolResultSessionMessageEndEvent | undefined;
 		session.subscribe((event: AgentSessionEvent) => {
 			if (event.type === "message_end" && event.message.role === "toolResult") {
@@ -229,6 +232,115 @@ test("synchronous listener disposal releases the stable presentation scope exact
 		assert.equal("toolResultPresentation" in result.persisted, false);
 		assert.equal(result.presentation.modelContent, result.message.content);
 		assert.equal(result.presentation.uiContent?.[0], result.message.content[0]);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("budgeted production persists full UI content and resumes the identical provider projection", async () => {
+	const root = mkdtempSync(join(tmpdir(), "pi-presentation-v2-production-"));
+	const cwd = join(root, "workspace");
+	const agentDir = join(root, "agent");
+	mkdirSync(cwd, { recursive: true });
+	mkdirSync(agentDir, { recursive: true });
+	const fullText = "post-extension-provider-source-".repeat(4096);
+	let extensionEventRetained: ToolResultMessageEndEvent | undefined;
+	const settingsManager = SettingsManager.create(cwd, agentDir);
+	const resourceLoader = new DefaultResourceLoader({
+		cwd,
+		agentDir,
+		settingsManager,
+		noContextFiles: true,
+		noPromptTemplates: true,
+		noSkills: true,
+		noThemes: true,
+		extensionFactories: [(pi) => {
+			pi.on("message_end", (event) => {
+				if (event.message.role !== "toolResult") return undefined;
+				extensionEventRetained = event as ToolResultMessageEndEvent;
+				return { message: { ...event.message, content: [{ type: "text", text: fullText }] } };
+			});
+		}],
+	});
+	await resourceLoader.reload();
+	const sessionManager = SessionManager.inMemory(cwd, { id: "presentation-v2-resume" });
+	const counters = createToolResultPresentationCounters();
+	const commonOptions = {
+		cwd,
+		agentDir,
+		model: fixtureModel(),
+		modelRuntime: fixtureModelRuntime(),
+		settingsManager,
+		sessionManager,
+		resourceLoader,
+		noTools: "all" as const,
+		toolResultPresentation: { enabled: true, budgetTokens: 128, counters },
+	};
+	try {
+		const { session } = await createAgentSession(commonOptions);
+		let retainedPresentation: ToolResultPresentationV2 | undefined;
+		session.subscribe((event) => {
+			if (event.type !== "message_end" || event.message.role !== "toolResult") return;
+			if (event.toolResultPresentation?.version === 2) retainedPresentation = event.toolResultPresentation;
+		});
+		const message: ToolResultMessage = {
+			role: "toolResult",
+			toolCallId: "presentation-v2-call",
+			toolName: "read",
+			content: [{ type: "text", text: "before-extension" }],
+			isError: false,
+			timestamp: 1,
+		};
+		session.agent.state.messages.push(message);
+		await (session as unknown as {
+			_handleAgentEvent(event: ToolResultMessageEndEvent): Promise<void>;
+		})._handleAgentEvent({ type: "message_end", message });
+		assert.ok(retainedPresentation);
+		assert.equal("toolResultPresentation" in extensionEventRetained!, false);
+		assert.equal(message.content[0]?.type === "text" ? message.content[0].text : undefined, fullText);
+		const persisted = sessionManager.getBranch().at(-1);
+		assert.equal(persisted?.type, "message");
+		assert.equal(
+			persisted?.type === "message" && persisted.message.role === "toolResult" && persisted.message.content[0]?.type === "text"
+				? persisted.message.content[0].text
+				: undefined,
+			fullText,
+		);
+		const providerMessages = await session.agent.convertToLlm(session.agent.state.messages.slice());
+		const providerToolResult = providerMessages.find((candidate) => candidate.role === "toolResult");
+		assert.ok(providerToolResult?.role === "toolResult");
+		assert.deepEqual(providerToolResult.content, retainedPresentation.modelContent);
+		assert.ok(estimateToolOutputTokens(providerToolResult.content).estimatedTokens <= 128);
+		assert.ok(JSON.stringify(providerToolResult).length < fullText.length / 2);
+		assert.equal("uiContent" in providerToolResult, false);
+		assert.equal("toolResultPresentation" in providerToolResult, false);
+		const firstChunk = session.readToolResultContinuation(retainedPresentation.continuation.cursor, 128);
+		assert.ok(firstChunk.content.length > 0);
+		assert.ok(firstChunk.estimatedTokens <= 128);
+		const firstProjection = providerToolResult.content;
+		const firstCursor = retainedPresentation.continuation.cursor;
+		session.dispose();
+
+		const { session: resumed } = await createAgentSession(commonOptions);
+		try {
+			const resumedMessages = await resumed.agent.convertToLlm(resumed.agent.state.messages.slice());
+			const resumedToolResult = resumedMessages.find((candidate) => candidate.role === "toolResult");
+			assert.ok(resumedToolResult?.role === "toolResult");
+			assert.deepEqual(resumedToolResult.content, firstProjection);
+			const resumedPresentationOwner = createToolResultPresentationOwner(
+				{ enabled: true, budgetTokens: 128 },
+				sessionManager.getSessionId(),
+			)!;
+			const replayedPresentation = resumedPresentationOwner.create(
+				(resumed.agent.state.messages.find((candidate) => candidate.role === "toolResult") as ToolResultMessage).content,
+				"presentation-v2-call",
+			) as ToolResultPresentationV2;
+			assert.equal(replayedPresentation.continuation.cursor, firstCursor);
+			resumedPresentationOwner.release();
+			resumedPresentationOwner.dispose();
+		} finally {
+			resumed.dispose();
+		}
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}

@@ -5,6 +5,7 @@ import ts from "typescript";
 
 const SOURCE_PATH = "packages/coding-agent/src/core/tool-result-presentation.ts";
 const AGENT_SESSION_SOURCE_PATH = "packages/coding-agent/src/core/agent-session.ts";
+const SDK_SOURCE_PATH = "packages/coding-agent/src/core/sdk.ts";
 
 test("presentation core forbids large-result hot-path allocation regressions", () => {
 	const source = readFileSync(SOURCE_PATH, "utf8");
@@ -53,6 +54,7 @@ test("presentation core forbids large-result hot-path allocation regressions", (
 	assert.equal(source.includes("ObjectPool"), false);
 	assert.equal(source.includes("Promise.all"), false);
 	assert.equal(source.includes("...modelContent"), false);
+	assert.equal(source.includes("comparePositions({"), false, "sourceInvariantPerBlockPositionObjects");
 });
 
 test("AgentSession isolates the session event and pairs release with a stable owner", () => {
@@ -66,4 +68,13 @@ test("AgentSession isolates the session event and pairs release with a stable ow
 	assert.equal(source.includes("Object.assign(event"), false);
 	assert.equal(source.includes("Object.defineProperty(event"), false);
 	assert.equal(source.includes("event.toolResultPresentation ="), false);
+	assert.equal(source.includes("presentationOwner.create(event.message.content, event.message.toolCallId)"), true);
+});
+
+test("SDK applies the provider-neutral projection after image policy without exposing UI sidecars", () => {
+	const source = readFileSync(SDK_SOURCE_PATH, "utf8");
+	assert.equal(source.includes("toolResultPresentationOwner?.projectMessagesForModel(imageFiltered)"), true);
+	assert.equal(source.includes("toolResultPresentationOwner,"), true);
+	assert.equal(source.includes("uiContent"), false);
+	assert.equal(source.includes("toolResultPresentation:"), false);
 });

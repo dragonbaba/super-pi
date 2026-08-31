@@ -63,7 +63,7 @@ test("disabled owner performs no presentation or array work", () => {
 test("unknown or malformed versions conservatively fall back to legacy content", () => {
 	const fallback: ToolResultPresentationContent[] = [{ type: "text", text: "legacy" }];
 	const unknown = {
-		version: 2,
+		version: 999,
 		modelContent: [{ type: "text", text: "unknown model" }],
 		uiContent: [{ type: "text", text: "unknown ui" }],
 	};
