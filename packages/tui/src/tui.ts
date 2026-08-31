@@ -569,6 +569,9 @@ export abstract class TuiBase extends Container implements TUI {
 
 	protected afterTerminalStop(_options: TuiStopOptions): void | Promise<void> {}
 
+	/** Final unmount boundary. Ordinary stop/restart deliberately does not call this hook. */
+	protected releaseMountedComponentsAfterDispose(): void {}
+
 	get fullRedraws(): number {
 		return this.fullRedrawCount;
 	}
@@ -1095,6 +1098,14 @@ export abstract class TuiBase extends Container implements TUI {
 		try {
 			await this.stop(options);
 		} finally {
+			let mountedReleaseError: unknown;
+			let mountedReleaseFailed = false;
+			try {
+				this.releaseMountedComponentsAfterDispose();
+			} catch (error) {
+				mountedReleaseFailed = true;
+				mountedReleaseError = error;
+			}
 			this.disposed = true;
 			this.terminalFrameQueue.detach();
 			this.terminal.setFrameWriteCompletionListener(undefined);
@@ -1112,6 +1123,7 @@ export abstract class TuiBase extends Container implements TUI {
 			this.osc11BackgroundUnsupported = false;
 			this.osc11BackgroundActiveGeneration = 0;
 			resolve?.(undefined);
+			if (mountedReleaseFailed) throw mountedReleaseError;
 		}
 	}
 

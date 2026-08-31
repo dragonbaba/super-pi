@@ -252,9 +252,15 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 
 	setLayoutRoot(component: Component | undefined): void {
 		if (this.layoutRoot === component) return;
-		this.layoutRoot = component;
-		this.currentLayout = undefined;
-		this.requestRender();
+		const previousRoot = this.layoutRoot;
+		try {
+			previousRoot?.invalidate();
+		} finally {
+			this.layoutScratch.clear();
+			this.layoutRoot = component;
+			this.currentLayout = undefined;
+			this.requestRender();
+		}
 	}
 
 	override render(width: number): string[] {
@@ -358,6 +364,16 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		}
 		this.resetRenderState();
 		return write;
+	}
+
+	protected override releaseMountedComponentsAfterDispose(): void {
+		try {
+			this.invalidate();
+		} finally {
+			this.layoutRoot = undefined;
+			this.currentLayout = undefined;
+			this.layoutScratch.clear();
+		}
 	}
 
 	private deleteKittyImages(): string {
