@@ -1,8 +1,17 @@
 import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { Session } from "node:inspector/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 import { setImmediate as yieldToEventLoop } from "node:timers/promises";
-import type { Message, ToolResultMessage } from "../../packages/ai/src/types.ts";
+import type { Message, Model, ToolResultMessage } from "../../packages/ai/src/types.ts";
+import type { AgentSessionEvent } from "../../packages/coding-agent/src/core/agent-session.ts";
+import type { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.ts";
+import { DefaultResourceLoader } from "../../packages/coding-agent/src/core/resource-loader.ts";
+import { createAgentSession } from "../../packages/coding-agent/src/core/sdk.ts";
+import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.ts";
+import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.ts";
 import { estimateToolOutputTokens } from "../../packages/coding-agent/src/core/tool-output-budget.ts";
 import {
 	createToolResultPresentationCounters,
@@ -118,16 +127,55 @@ async function measure(inspector: Session, operation: () => void): Promise<Timin
 	};
 }
 
+async function measureAsync(inspector: Session, operation: () => Promise<void>): Promise<TimingResult> {
+	globalThis.gc!();
+	globalThis.gc!();
+	await inspector.post("HeapProfiler.startSampling", {
+		samplingInterval: 1024,
+		includeObjectsCollectedByMajorGC: true,
+		includeObjectsCollectedByMinorGC: true,
+	});
+	const durations = new Array<number>(MEASURED_RUNS);
+	for (let run = 0; run < MEASURED_RUNS; run++) {
+		const started = performance.now();
+		await operation();
+		durations[run] = performance.now() - started;
+	}
+	const stopped = await inspector.post("HeapProfiler.stopSampling");
+	durations.sort((left, right) => left - right);
+	const sampled = allocationSites(stopped.profile.head as SamplingNode);
+	return {
+		cpuP50Ms: percentile(durations, 0.5),
+		cpuP95Ms: percentile(durations, 0.95),
+		sampledAllocationBytes: sampled.sampledBytes,
+		sampledBytesPerResult: sampled.sampledBytes / MEASURED_RUNS,
+		topAllocationSites: sampled.top,
+	};
+}
+
 function counterSnapshot(counters: ToolResultPresentationCounters): ToolResultPresentationCounters {
 	return { ...counters };
 }
 
 function counterDelta(before: ToolResultPresentationCounters, after: ToolResultPresentationCounters): Record<string, number> {
-	const delta: Record<string, number> = {};
-	for (const key of Object.keys(before) as Array<keyof ToolResultPresentationCounters>) {
-		delta[key] = (after[key] - before[key]) / MEASURED_RUNS;
-	}
-	return delta;
+	return {
+		presentationObjectsCreated: (after.presentationObjectsCreated - before.presentationObjectsCreated) / MEASURED_RUNS,
+		uiOuterArraysCreated: (after.uiOuterArraysCreated - before.uiOuterArraysCreated) / MEASURED_RUNS,
+		modelOuterArraysReused: (after.modelOuterArraysReused - before.modelOuterArraysReused) / MEASURED_RUNS,
+		presentationOuterArrayReferences: (after.presentationOuterArrayReferences - before.presentationOuterArrayReferences) / MEASURED_RUNS,
+		contentBlockReferencesReused: (after.contentBlockReferencesReused - before.contentBlockReferencesReused) / MEASURED_RUNS,
+		textStringReferencesReused: (after.textStringReferencesReused - before.textStringReferencesReused) / MEASURED_RUNS,
+		imageDataReferencesReused: (after.imageDataReferencesReused - before.imageDataReferencesReused) / MEASURED_RUNS,
+		modelProjectionCalls: (after.modelProjectionCalls - before.modelProjectionCalls) / MEASURED_RUNS,
+		modelProjectionArraysCreated: (after.modelProjectionArraysCreated - before.modelProjectionArraysCreated) / MEASURED_RUNS,
+		modelMessageWrappersCreated: (after.modelMessageWrappersCreated - before.modelMessageWrappersCreated) / MEASURED_RUNS,
+		truncatedPresentationsCreated: (after.truncatedPresentationsCreated - before.truncatedPresentationsCreated) / MEASURED_RUNS,
+		continuationChunksCreated: (after.continuationChunksCreated - before.continuationChunksCreated) / MEASURED_RUNS,
+		continuationCursorStringsCreated: (after.continuationCursorStringsCreated - before.continuationCursorStringsCreated) / MEASURED_RUNS,
+		boundedTextStringsCreated: (after.boundedTextStringsCreated - before.boundedTextStringsCreated) / MEASURED_RUNS,
+		completedDispatchPresentationScopes: (after.completedDispatchPresentationScopes - before.completedDispatchPresentationScopes) / MEASURED_RUNS,
+		releaseWithoutActiveScope: (after.releaseWithoutActiveScope - before.releaseWithoutActiveScope) / MEASURED_RUNS,
+	};
 }
 
 function toolMessage(content: ToolResultPresentationContent[], toolCallId: string): ToolResultMessage {
@@ -189,6 +237,10 @@ async function measureDirect(
 		...timing,
 		countersPerResult: delta,
 		activeDispatchScopesAfterMeasurement: counters.activeDispatchPresentationScopes,
+		dispatchScopeHighWaterMark: counters.dispatchPresentationScopesHighWaterMark,
+		maximumContentBlocks: counters.maximumContentBlocks,
+		maximumTextCodeUnits: counters.maximumTextCodeUnits,
+		maximumImageDataCodeUnits: counters.maximumImageDataCodeUnits,
 	};
 }
 
@@ -208,6 +260,7 @@ async function measureProviderProjection(inspector: Session): Promise<Record<str
 	for (let run = 0; run < WARMUP_RUNS; run++) project();
 	const before = counterSnapshot(counters);
 	const timing = await measure(inspector, project);
+	const delta = counterDelta(before, counters);
 	const projectedTool = projected[0];
 	const modelTokens = projectedTool?.role === "toolResult" ? estimateToolOutputTokens(projectedTool.content).estimatedTokens : -1;
 	owner.dispose();
@@ -219,8 +272,111 @@ async function measureProviderProjection(inspector: Session): Promise<Record<str
 		providerMessageIsWrapper: projectedTool !== source,
 		providerWireHasUiContent: projectedTool ? "uiContent" in projectedTool : true,
 		providerWireHasPresentationSidecar: projectedTool ? "toolResultPresentation" in projectedTool : true,
-		countersPerResult: counterDelta(before, counters),
+		countersPerResult: delta,
 	};
+}
+
+function fixtureModel(): Model<"openai-responses"> {
+	return {
+		id: "budgeted-model-view-benchmark",
+		name: "Budgeted Model View Benchmark",
+		api: "openai-responses",
+		provider: "fixture",
+		baseUrl: "https://example.test",
+		reasoning: false,
+		input: ["text"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 128_000,
+		maxTokens: 4_096,
+	};
+}
+
+function fixtureModelRuntime(): ModelRuntime {
+	return {
+		hasConfiguredAuth: function hasConfiguredAuth(): boolean { return true; },
+		checkAuth: async function checkAuth() { return { type: "api_key" as const }; },
+		isUsingOAuth: function isUsingOAuth(): boolean { return false; },
+		streamSimple: function streamSimple(): never { throw new Error("provider dispatch is outside this benchmark"); },
+		registerProvider: function registerProvider(): void {},
+		registerNativeProvider: function registerNativeProvider(): void {},
+		unregisterProvider: function unregisterProvider(): void {},
+		getModel: function getModel(): undefined { return undefined; },
+		getAuth: async function getAuth(): Promise<undefined> { return undefined; },
+	} as unknown as ModelRuntime;
+}
+
+type ProductionMode = "absent" | "disabled" | "enabled";
+
+async function measureProduction(
+	inspector: Session,
+	root: string,
+	mode: ProductionMode,
+): Promise<Record<string, unknown>> {
+	const cwd = join(root, mode, "workspace");
+	const agentDir = join(root, mode, "agent");
+	mkdirSync(cwd, { recursive: true });
+	mkdirSync(agentDir, { recursive: true });
+	const settingsManager = SettingsManager.create(cwd, agentDir);
+	const resourceLoader = new DefaultResourceLoader({
+		cwd,
+		agentDir,
+		settingsManager,
+		noContextFiles: true,
+		noPromptTemplates: true,
+		noSkills: true,
+		noThemes: true,
+	});
+	await resourceLoader.reload();
+	const sessionManager = SessionManager.inMemory(cwd, { id: `budgeted-production-${mode}` });
+	const counters = createToolResultPresentationCounters();
+	const { session } = await createAgentSession({
+		cwd,
+		agentDir,
+		model: fixtureModel(),
+		modelRuntime: fixtureModelRuntime(),
+		settingsManager,
+		sessionManager,
+		resourceLoader,
+		noTools: "all",
+		toolResultPresentation:
+			mode === "absent"
+				? undefined
+				: { enabled: mode === "enabled", budgetTokens: BUDGET_TOKENS, counters },
+	});
+	let sequence = 0;
+	let listenerCalls = 0;
+	let v2PresentationCalls = 0;
+	session.subscribe(function observeFinalResult(event: AgentSessionEvent): void {
+		if (event.type !== "message_end" || event.message.role !== "toolResult") return;
+		listenerCalls++;
+		if (event.toolResultPresentation?.version === 2) v2PresentationCalls++;
+	});
+	async function deliver(): Promise<void> {
+		const message = toolMessage([{ type: "text", text: TEXT_10_MIB }], `production-${mode}-${sequence++}`);
+		await (session as unknown as {
+			_handleAgentEvent(event: { type: "message_end"; message: ToolResultMessage }): Promise<void>;
+		})._handleAgentEvent({ type: "message_end", message });
+	}
+	for (let run = 0; run < WARMUP_RUNS; run++) await deliver();
+	const before = counterSnapshot(counters);
+	const listenersBefore = listenerCalls;
+	const v2Before = v2PresentationCalls;
+	const persistedBefore = sessionManager.getBranch().length;
+	const timing = await measureAsync(inspector, deliver);
+	const delta = counterDelta(before, counters);
+	const result = {
+		mode,
+		...timing,
+		countersPerResult: delta,
+		listenerCallsPerResult: (listenerCalls - listenersBefore) / MEASURED_RUNS,
+		v2PresentationCallsPerResult: (v2PresentationCalls - v2Before) / MEASURED_RUNS,
+		persistedMessagesPerResult: (sessionManager.getBranch().length - persistedBefore) / MEASURED_RUNS,
+		activeDispatchScopesAfterMeasurement: counters.activeDispatchPresentationScopes,
+		dispatchScopeHighWaterMark: counters.dispatchPresentationScopesHighWaterMark,
+	};
+	sessionManager.newSession({ id: `cleared-${mode}` });
+	session.dispose();
+	return result;
 }
 
 function measureResumeProjection(): Record<string, unknown> {
@@ -315,6 +471,7 @@ if (typeof globalThis.gc !== "function") throw new Error("bench:tool-result-budg
 const inspector = new Session();
 inspector.connect();
 await inspector.post("HeapProfiler.enable");
+const productionRoot = mkdtempSync(join(tmpdir(), "pi-budgeted-model-view-benchmark-"));
 try {
 	const directResults = [
 		await measureDirect(inspector, "tiny", [{ type: "text", text: TINY_TEXT }]),
@@ -333,6 +490,11 @@ try {
 		]),
 	];
 	const providerProjection = await measureProviderProjection(inspector);
+	const productionResults = [
+		await measureProduction(inspector, productionRoot, "absent"),
+		await measureProduction(inspector, productionRoot, "disabled"),
+		await measureProduction(inspector, productionRoot, "enabled"),
+	];
 	const resumeProjection = measureResumeProjection();
 	const parallelScopes = [measureParallelScopes(2), measureParallelScopes(4), measureParallelScopes(8)];
 	const lifecycle = await measureLifecycle();
@@ -352,6 +514,7 @@ try {
 		heapProfilerSamplingIntervalBytes: 1024,
 		directResults,
 		providerProjection,
+		productionResults,
 		resumeProjection,
 		parallelScopes,
 		lifecycle,
@@ -367,4 +530,5 @@ try {
 } finally {
 	await inspector.post("HeapProfiler.disable");
 	inspector.disconnect();
+	rmSync(productionRoot, { recursive: true, force: true });
 }
