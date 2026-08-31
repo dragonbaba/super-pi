@@ -7,6 +7,7 @@ export const TOOL_RESULT_PRESENTATION_V2_VERSION = 2 as const;
 export const TOOL_RESULT_CONTINUATION_VERSION = 1 as const;
 
 const MAX_PROJECTION_SHRINK_PASSES = 4;
+const MAX_CONTINUATION_SHRINK_PASSES = 8;
 const MAX_CONTINUATION_BLOCKS = 256;
 const MAX_PROJECTION_RECORD_ENTRIES = 128;
 const MAX_RETAINED_PROJECTION_CODE_UNITS = 128 * 1024 * 1024;
@@ -1533,7 +1534,7 @@ export class ToolResultPresentationOwner {
 		);
 		let chunkContent: ToolResultPresentationContent[] = [];
 		let chunkEstimate: ToolOutputTokenEstimate | undefined;
-		for (let pass = 0; pass < MAX_PROJECTION_SHRINK_PASSES; pass++) {
+		for (let pass = 0; pass < MAX_CONTINUATION_SHRINK_PASSES; pass++) {
 			chunkContent = [];
 			appendRegion(chunkContent, sourceContent, start, chunkEnd, this.counters);
 			chunkEstimate = estimateToolOutputTokens(chunkContent);

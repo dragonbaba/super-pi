@@ -105,6 +105,27 @@ test("terminal boundary work does not repeatedly scan the consumed prefix", () =
 	owner.dispose();
 });
 
+test("continuation shrink converges across dense ANSI to plain-text transitions", () => {
+	const ansiUnit = "\u001b[38;2;1;2;3mline\u001b[0m\u001b]8;;https://e.test\u0007url\u001b]8;;\u0007\u001b_payload\u001b\\";
+	const content: ToolResultPresentationContent[] = [{
+		type: "text",
+		text: ansiUnit.repeat(750) + "tail".repeat(512 * 1024),
+	}];
+	const message = toolResult(content, "dense-ansi-transition");
+	const owner = createToolResultPresentationOwner({ enabled: true, budgetTokens: 128 }, SESSION_ID)!;
+	const presentation = owner.create(content, message.toolCallId) as ToolResultPresentationV2;
+	owner.release();
+	let cursor = presentation.continuation.cursor;
+	for (let index = 0; index < 12; index++) {
+		const chunk = owner.readContinuation(cursor, [message], 3_000);
+		assert.ok(chunk.estimatedTokens <= 3_000);
+		assert.ok(chunk.content.length > 0);
+		assert.ok(chunk.nextCursor);
+		cursor = chunk.nextCursor;
+	}
+	owner.dispose();
+});
+
 test("same-array continuation validation checks append and source mutations", () => {
 	const content: ToolResultPresentationContent[] = [{ type: "text", text: "validation-source-".repeat(20_000) }];
 	const message = toolResult(content, "validation-source");
