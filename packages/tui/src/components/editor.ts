@@ -300,6 +300,8 @@ export class Editor implements Component, Focusable {
 	private layoutCacheWidth = 0;
 	private layoutCacheCursorLine = -1;
 	private layoutCacheCursorCol = -1;
+	private layoutCachePendingCursorLine = -1;
+	private layoutCachePendingCursorCol = -1;
 	private layoutCachePasteGeneration = -1;
 	private layoutCacheSourceCodeUnits = 0;
 	private layoutCacheSourceLines: string[] = [];
@@ -965,11 +967,10 @@ export class Editor implements Component, Focusable {
 	private layoutText(contentWidth: number): LayoutLine[] {
 		const cached = this.layoutCacheLines;
 		const source = this.state.lines;
+		let sourceMatches = false;
 		if (
 			cached !== undefined &&
 			this.layoutCacheWidth === contentWidth &&
-			this.layoutCacheCursorLine === this.state.cursorLine &&
-			this.layoutCacheCursorCol === this.state.cursorCol &&
 			this.layoutCachePasteGeneration === this.pasteLayoutGeneration &&
 			this.layoutCacheSourceLines.length === source.length
 		) {
@@ -981,14 +982,40 @@ export class Editor implements Component, Focusable {
 				break;
 			}
 			if (unchanged) {
-				this.layoutCacheHits++;
-				return cached;
+				sourceMatches = true;
+				if (
+					this.layoutCacheCursorLine === this.state.cursorLine &&
+					this.layoutCacheCursorCol === this.state.cursorCol
+				) {
+					this.layoutCachePendingCursorLine = -1;
+					this.layoutCachePendingCursorCol = -1;
+					this.layoutCacheHits++;
+					return cached;
+				}
 			}
 		}
 
 		this.layoutCacheMisses++;
 		const layoutLines = this.buildLayoutText(contentWidth);
-		this.updateLayoutCache(contentWidth, layoutLines);
+		if (sourceMatches) {
+			if (
+				this.layoutCachePendingCursorLine === this.state.cursorLine &&
+				this.layoutCachePendingCursorCol === this.state.cursorCol
+			) {
+				this.layoutCacheCursorLine = this.state.cursorLine;
+				this.layoutCacheCursorCol = this.state.cursorCol;
+				this.layoutCacheLines = layoutLines;
+				this.layoutCachePendingCursorLine = -1;
+				this.layoutCachePendingCursorCol = -1;
+			} else {
+				this.layoutCachePendingCursorLine = this.state.cursorLine;
+				this.layoutCachePendingCursorCol = this.state.cursorCol;
+			}
+		} else {
+			this.updateLayoutCache(contentWidth, layoutLines);
+			this.layoutCachePendingCursorLine = -1;
+			this.layoutCachePendingCursorCol = -1;
+		}
 		return layoutLines;
 	}
 
@@ -1110,6 +1137,8 @@ export class Editor implements Component, Focusable {
 		this.layoutCacheWidth = 0;
 		this.layoutCacheCursorLine = -1;
 		this.layoutCacheCursorCol = -1;
+		this.layoutCachePendingCursorLine = -1;
+		this.layoutCachePendingCursorCol = -1;
 		this.layoutCachePasteGeneration = -1;
 		this.layoutCacheSourceCodeUnits = 0;
 		this.layoutCacheSourceLines.length = 0;
