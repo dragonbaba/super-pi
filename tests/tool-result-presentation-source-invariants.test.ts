@@ -58,6 +58,10 @@ test("presentation core forbids large-result hot-path allocation regressions", (
 	assert.equal(source.includes("ObjectPool"), false);
 	assert.equal(source.includes("new Map<string, ProjectionRecord>()"), true);
 	assert.equal(source.includes("globalThis"), false, "sourceInvariantNoGlobalProjectionRegistry");
+	assert.equal(source.includes("validatedMessages: WeakRef<object>"), true);
+	assert.equal(source.includes("validatedMessages === messages"), false);
+	assert.equal(source.includes("new Uint32Array(MAX_TERMINAL_SEQUENCE_INTERVALS * 3)"), true);
+	assert.equal(source.includes("startsWith(NOTICE_PREFIX + CURSOR_PREFIX)"), false, "sourceInvariantNoUserNoticeTextDiscovery");
 	assert.equal(source.includes("Promise.all"), false);
 	assert.equal(source.includes("...modelContent"), false);
 	assert.equal(source.includes("comparePositions({"), false, "sourceInvariantPerBlockPositionObjects");
@@ -84,9 +88,10 @@ test("AgentSession isolates the session event and pairs release with a stable ow
 
 test("SDK binds projection to full source before applying image policy without exposing UI sidecars", () => {
 	const source = readFileSync(SDK_SOURCE_PATH, "utf8");
-	assert.equal(source.includes("toolResultPresentationOwner?.projectMessagesForModel(converted)"), true);
+	assert.equal(source.includes("toolResultPresentationOwner?.projectMessagesForModel("), true);
+	assert.equal(source.includes("blockImages ? replaceBlockedImages : undefined"), true);
 	assert.equal(source.includes("replaceBlockedImagesInMessages(projected)"), true);
-	assert.equal(source.includes("toolResultPresentationOwner?.enforcePostImagePolicyBudgets(imageFiltered, projected)"), true);
+	assert.equal(source.includes("enforcePostImagePolicyBudgets"), false);
 	assert.equal(source.includes("projectMessagesForModel(imageFiltered)"), false);
 	assert.equal(source.includes("toolResultPresentationOwner,"), true);
 	assert.equal(source.includes("uiContent"), false);
