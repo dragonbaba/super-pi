@@ -81,4 +81,30 @@ The fixed tests cover:
 - release and disposal without fabricated reference clearing, with separate weak-reference gates for the presentation and both outer arrays;
 - source allocation invariants.
 
-Formal HeapProfiler, controlled-GC, and 10 MiB allocation results are intentionally deferred until the concurrent Phase 4D-B1 formal benchmark has ended. After PR #12 merges, this branch must merge the resulting `origin/main` and rerun the complete validation and presentation benchmark before Candidate Gate delivery.
+## Closeout benchmark method
+
+The branch merged `main@fc8145843435a3bacbc130ffa26670a3ed1822e7`, the PR #12 merge commit. PR #12 exact head `00e7510877b9fe413ab114bc43782710d6fb7928` is an ancestor of the candidate branch. Formal results are stamped with the final candidate commit and an empty `git status --short`.
+
+The direct benchmark uses 5 warmups, 20 measurements, controlled GC, and HeapProfiler sampling at 1,024 bytes. It separately measures tiny text, 1 MiB text, 10 MiB text, and fixed text-plus-image content. The production benchmark exercises actual AgentSession final `message_end` delivery in absent, disabled, and enabled modes with a 10 MiB text result.
+
+The default-off A/B uses an unmodified detached worktree at the merged main commit. Five child-process rounds interleave baseline, candidate absent, and candidate disabled order. Each process uses the same Node runtime, fixture, 5 warmup batches, 20 measured batches, 100 results per batch, and 1,024-byte HeapProfiler interval. This produces stable per-result medians instead of treating one sub-millisecond run as a regression signal.
+
+The lifecycle section clears session history, starts a new session, disposes the AgentSession, yields an event-loop turn, and records eight controlled-GC samples. Separate WeakRefs cover the presentation, model outer array, and UI outer array. Structural 2/4/8 scope fixtures retain every presentation across owner disposal, then prove exact scope release and bounded high-water marks.
+
+## Closeout gates
+
+- candidate absent and disabled have no stable p50 or p95 regression above 5% against clean merged main;
+- absent and disabled create zero presentation objects, UI arrays, model-array reuse work, and content-reference work;
+- enabled creates exactly one presentation object and one UI array per result and reuses exactly one model array;
+- direct 1 MiB and 10 MiB sampled allocation remain in the same bounded range rather than scaling with string size;
+- text-plus-image reuses both block references, the text string, and image-data string while reporting separate code-unit maxima;
+- 2/4/8 dispatch scopes produce HWM 2/4/8, retain listener-visible presentations, and return active scope count to zero without unmatched releases;
+- presentation, model-array, and UI-array WeakRefs all clear after lifecycle cleanup;
+- controlled GC has no sustained positive run;
+- listener and persistence delivery remain exactly one per production result.
+
+Full-string copies, full-result serialization, temporary line arrays, per-result Map/Set, per-result closures, and object pools remain source-invariant zero. HeapProfiler sampling is statistical and includes inspector/runtime allocation sites; exact machine-local timing and allocation values belong in the Draft PR closeout body rather than committed raw JSON.
+
+## Known limitations
+
+Phase 5B-A still performs no truncation, summary, continuation, artifact creation, token-budget enforcement, TUI view selection, or provider assembly change. Dispatch-scope counters do not establish GC reachability; only the lifecycle WeakRef evidence does. The fixed image payload is deliberately small and base64-like because the ownership proof concerns identity, not image decoding or token cost.
