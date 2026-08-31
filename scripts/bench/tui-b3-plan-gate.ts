@@ -39,7 +39,15 @@ interface CandidateRuntime {
 	step(index: number): void;
 	reset(): void;
 	snapshot(): Record<string, number | string | boolean>;
+	disposedOwnerSnapshot?(): Record<string, number>;
+	createOwnerWeakReferences?(): OwnerWeakReferences;
 	dispose(): Promise<void>;
+}
+
+interface OwnerWeakReferences {
+	tui: WeakRef<object>;
+	root: WeakRef<object>;
+	editor: WeakRef<object>;
 }
 
 interface EditorLayoutCacheMetrics {
@@ -219,6 +227,7 @@ function createAltShell(
 	instrumentation: TuiRenderInstrumentation;
 	transcriptScrollView: ScrollView;
 	editor: CountingEditor | undefined;
+	layoutRoot: VStack;
 	advanceTranscript(): void;
 } {
 	const instrumentation = new TuiRenderInstrumentation();
@@ -265,7 +274,15 @@ function createAltShell(
 	tui.start();
 	tui.renderNow();
 	instrumentation.reset();
-	return { tui, terminal, instrumentation, transcriptScrollView, editor, advanceTranscript: transcript.advance };
+	return {
+		tui,
+		terminal,
+		instrumentation,
+		transcriptScrollView,
+		editor,
+		layoutRoot: layout,
+		advanceTranscript: transcript.advance,
+	};
 }
 
 function createEditorRuntime(
@@ -318,6 +335,36 @@ function createEditorRuntime(
 				frameWrites: shell.terminal.frameWrites,
 				frameBytes: shell.terminal.frameBytes,
 				finalFrameHash: shell.terminal.finalFrameHash(),
+			};
+		},
+		disposedOwnerSnapshot(): Record<string, number> {
+			const layoutCache = getEditorLayoutCacheMetrics(editor);
+			const retained = shell.tui.getAltLayoutRetainedReferenceCounts();
+			const internals = shell.tui as unknown as {
+				layoutRoot: Component | undefined;
+				currentLayout: LayoutFrame | undefined;
+			};
+			return {
+				disposedOwnerLayoutCacheSourceRecords: layoutCache.layoutCacheSourceRecords,
+				disposedOwnerLayoutCacheLayoutRecords: layoutCache.layoutCacheLayoutRecords,
+				disposedOwnerRetainedSourceCodeUnits: layoutCache.layoutCacheRetainedSourceCodeUnits,
+				disposedOwnerRetainedLayoutLines: layoutCache.layoutCacheRetainedLayoutLines,
+				disposedOwnerLayoutRootReferences: internals.layoutRoot === undefined ? 0 : 1,
+				disposedOwnerCurrentLayoutReferences: internals.currentLayout === undefined ? 0 : 1,
+				disposedOwnerLayoutScratchReferences:
+					retained.components +
+					retained.lines +
+					retained.sources +
+					retained.cachedRows +
+					retained.indexedComponents +
+					retained.screenRows,
+			};
+		},
+		createOwnerWeakReferences(): OwnerWeakReferences {
+			return {
+				tui: new WeakRef(shell.tui),
+				root: new WeakRef(shell.layoutRoot),
+				editor: new WeakRef(editor),
 			};
 		},
 		async dispose(): Promise<void> {
@@ -554,6 +601,7 @@ if (editorUpdate !== "stable" && editorUpdate !== "cursor" && editorUpdate !== "
 if (profile && typeof globalThis.gc !== "function") throw new Error("--profile requires --expose-gc");
 
 let runtime: CandidateRuntime | undefined = createRuntime(candidate, itemCount, width, height, editorUpdate, editorLineCount);
+const ownerWeakReferences = profile ? runtime.createOwnerWeakReferences?.() : undefined;
 for (let index = 0; index < warmup; index++) runtime.step(index);
 runtime.reset();
 const runtimeUnit = runtime.unit;
@@ -621,12 +669,21 @@ function resolveAfterProfile(resolve: () => void): void {
 durations.sort(numericAscending);
 const runtimeSnapshot = runtime.snapshot();
 await runtime.dispose();
+const disposedOwnerSnapshot = runtime.disposedOwnerSnapshot?.() ?? {};
 runtime = undefined;
+if (ownerWeakReferences) await new Promise<void>(resolveAfterProfile);
 if (profile) {
 	globalThis.gc!();
 	globalThis.gc!();
 	controlledGcAfterDisposeHeapBytes = process.memoryUsage().heapUsed;
 }
+const unreachableOwnerSnapshot = ownerWeakReferences
+	? {
+			unreachableOwnerTuiReferences: ownerWeakReferences.tui.deref() === undefined ? 0 : 1,
+			unreachableOwnerRootReferences: ownerWeakReferences.root.deref() === undefined ? 0 : 1,
+			unreachableOwnerEditorReferences: ownerWeakReferences.editor.deref() === undefined ? 0 : 1,
+		}
+	: {};
 
 process.stdout.write(
 	`${JSON.stringify(
@@ -664,6 +721,8 @@ process.stdout.write(
 					? controlledGcAfterDisposeHeapBytes - controlledGcBeforeHeapBytes
 					: null,
 				...runtimeSnapshot,
+				...disposedOwnerSnapshot,
+				...unreachableOwnerSnapshot,
 			},
 			topAllocationSites,
 		},
