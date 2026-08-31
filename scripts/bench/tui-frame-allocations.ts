@@ -13,7 +13,14 @@ import { TuiMainScreen } from "../../packages/tui/src/tui-main-screen.ts";
 import { currentCommit, readIntegerOption } from "./benchmark.ts";
 
 type Fixture = "direct-main" | "production-main" | "production-alt";
-type AltControl = "stable" | "overlay" | "selection" | "cursor-ime" | "mixed";
+type AltControl =
+	| "stable"
+	| "overlay"
+	| "overlay-multiple"
+	| "selection"
+	| "selection-multi"
+	| "cursor-ime"
+	| "mixed";
 
 interface SamplingNode {
 	callFrame: {
@@ -133,6 +140,10 @@ interface FixtureRuntime {
 		screenRows: number;
 		screenCodeUnits: number;
 	};
+	getAltCompositionRetainedReferenceCounts(): {
+		overlayLineReferences: number;
+		selectionPointReferences: number;
+	};
 	dispose(): Promise<void>;
 }
 
@@ -226,16 +237,30 @@ function createFixture(
 			const alt = new TuiAltScreen(terminal, false, undefined, { mouse: false });
 			for (const root of roots) alt.addChild(root);
 			alt.setLayoutRoot(layout);
-			if (altControl === "overlay") alt.showOverlay(new StaticLines("overlay-中😀e\u0301"), { width: 24 });
+			if (altControl === "overlay" || altControl === "overlay-multiple" || altControl === "mixed") {
+				alt.showOverlay(new StaticLines("overlay-中😀e\u0301"), { width: 24, row: 4, col: 7 });
+				if (altControl === "overlay-multiple" || altControl === "mixed") {
+					alt.showOverlay(new StaticLines("overlay-ansi-\x1b[31msecond\x1b[0m"), {
+						width: 30,
+						row: 8,
+						col: 13,
+					});
+				}
+			}
 			alt.start();
-			if (altControl === "selection") {
-				const row = Math.max(0, itemCount - 2);
+			if (altControl === "selection" || altControl === "selection-multi" || altControl === "mixed") {
+				const row = Math.max(0, itemCount - (altControl === "selection" ? 2 : 12));
 				const internals = alt as unknown as {
 					selectionAnchor?: { row: number; col: number; scrollView: ScrollView };
 					selectionFocus?: { row: number; col: number; boundary?: boolean; scrollView: ScrollView };
 				};
 				internals.selectionAnchor = { row, col: 0, scrollView: transcriptScrollView };
-				internals.selectionFocus = { row, col: 8, boundary: true, scrollView: transcriptScrollView };
+				internals.selectionFocus = {
+					row: altControl === "selection" ? row : Math.min(itemCount, row + 10),
+					col: 8,
+					boundary: true,
+					scrollView: transcriptScrollView,
+				};
 			}
 			tui = alt;
 		}
@@ -267,6 +292,10 @@ function createFixture(
 					screenRows: 0,
 					screenCodeUnits: 0,
 				},
+		getAltCompositionRetainedReferenceCounts: () =>
+			tui instanceof TuiAltScreen
+				? tui.getAltCompositionRetainedReferenceCounts()
+				: { overlayLineReferences: 0, selectionPointReferences: 0 },
 		dispose: async () => {
 			await tui.stop({ preserveScreen: true });
 		},
@@ -341,8 +370,14 @@ const width = readIntegerOption("--width", 120);
 const height = readIntegerOption("--height", 40);
 const altControlIndex = process.argv.indexOf("--alt-control");
 const altControlArgument = (altControlIndex === -1 ? "stable" : process.argv[altControlIndex + 1]) as AltControl;
-if (!["stable", "overlay", "selection", "cursor-ime", "mixed"].includes(altControlArgument)) {
-	throw new Error("--alt-control must be stable, overlay, selection, cursor-ime, or mixed");
+if (
+	!["stable", "overlay", "overlay-multiple", "selection", "selection-multi", "cursor-ime", "mixed"].includes(
+		altControlArgument,
+	)
+) {
+	throw new Error(
+		"--alt-control must be stable, overlay, overlay-multiple, selection, selection-multi, cursor-ime, or mixed",
+	);
 }
 if (typeof globalThis.gc !== "function") throw new Error("tui-frame-allocations requires --expose-gc");
 
@@ -407,6 +442,7 @@ const sortedDurations = durations.slice().sort((left, right) => left - right);
 const sampled = allocationSites(stopped.profile.head as SamplingNode);
 const metrics = runtime.instrumentation.snapshot();
 const retainedReferencesBeforeDispose = runtime.getAltLayoutRetainedReferenceCounts();
+const compositionReferencesBeforeDispose = runtime.getAltCompositionRetainedReferenceCounts();
 let plainRenderCalls = 0;
 let maxPlainRenderCalls = 0;
 for (const child of runtime.plainChildren) {
@@ -418,6 +454,7 @@ globalThis.gc();
 globalThis.gc();
 const controlledGcAfterDisposeHeapBytes = process.memoryUsage().heapUsed;
 const retainedReferencesAfterDispose = runtime.getAltLayoutRetainedReferenceCounts();
+const compositionReferencesAfterDispose = runtime.getAltCompositionRetainedReferenceCounts();
 const lifecycleHeapSamples: number[] = [];
 let lifecycleMaximumRetainedReferencesAfterDispose = 0;
 for (let cycle = 0; cycle < lifecycleCycles; cycle++) {
@@ -465,6 +502,8 @@ process.stdout.write(`${JSON.stringify({
 		controlledGcAfterDisposeHeapDeltaBytes: controlledGcAfterDisposeHeapBytes - controlledGcBeforeHeapBytes,
 		retainedReferencesBeforeDispose,
 		retainedReferencesAfterDispose,
+		compositionReferencesBeforeDispose,
+		compositionReferencesAfterDispose,
 		lifecycleCycles,
 		lifecycleHeapSamples,
 		lifecycleHeapSlopeBytesPerCycle: linearSlope(lifecycleHeapSamples),
@@ -473,6 +512,12 @@ process.stdout.write(`${JSON.stringify({
 		maxPlainChildRenderCallsPerFrame: maxPlainRenderCalls / measuredFrames,
 		activeRenderCallsPerFrame: runtime.active.renderCalls / measuredFrames,
 		completedItemRendersPerFrame: metrics.completedItemRenders / measuredFrames,
+		overlayRendersPerFrame: metrics.overlayRenders / measuredFrames,
+		overlayComposedLinesPerFrame: metrics.overlayComposedLines / measuredFrames,
+		overlayStringRepeatCallsPerFrame: metrics.overlayStringRepeatCalls / measuredFrames,
+		overlayStringRepeatBytesPerFrame: metrics.overlayStringRepeatBytes / measuredFrames,
+		selectionRowsVisitedPerFrame: metrics.selectionRowsVisited / measuredFrames,
+		selectionComposedLinesPerFrame: metrics.selectionComposedLines / measuredFrames,
 		viewportItemVisitsPerFrame: metrics.viewportItemVisits / measuredFrames,
 		viewportLineArraysPerFrame: metrics.viewportLineArrays / measuredFrames,
 		viewportComposedLinesPerFrame: metrics.viewportComposedLines / measuredFrames,
@@ -517,6 +562,9 @@ process.stdout.write(`${JSON.stringify({
 		layoutRowCacheRejectedBySizePerFrame: metrics.altLayoutRowCacheRejectedBySize / measuredFrames,
 		sourceInvariantNestedRenderCacheMapsPerFrame: 0,
 		sourceInvariantRenderCacheLookupWrapperObjectsPerFrame: 0,
+		sourceInvariantOverlayTemporaryArraysPerFrame: 0,
+		sourceInvariantSelectionTemporaryArraysPerFrame: 0,
+		sourceInvariantOverlaySelectionWrapperObjectsPerFrame: 0,
 	},
 	topAllocationSites: sampled.top,
 }, null, 2)}\n`);
