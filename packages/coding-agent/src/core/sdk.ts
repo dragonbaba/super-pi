@@ -351,12 +351,14 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		sessionManager.getSessionId(),
 	);
 
-	// Create convertToLlm wrapper that filters images if blockImages is enabled (defense-in-depth)
+	// Projection stays bound to the complete persisted source; image policy applies only to the bounded model view.
 	const convertToLlmWithBlockImages = (messages: AgentMessage[]): Message[] => {
 		const converted = convertToLlm(messages);
+		const projected = toolResultPresentationOwner?.projectMessagesForModel(converted) ?? converted;
 		// Check setting dynamically so mid-session changes take effect
-		const imageFiltered = settingsManager.getBlockImages() ? replaceBlockedImagesInMessages(converted) : converted;
-		return toolResultPresentationOwner?.projectMessagesForModel(imageFiltered) ?? imageFiltered;
+		if (!settingsManager.getBlockImages()) return projected;
+		const imageFiltered = replaceBlockedImagesInMessages(projected);
+		return toolResultPresentationOwner?.enforcePostImagePolicyBudgets(imageFiltered, projected) ?? imageFiltered;
 	};
 
 	const extensionRunnerRef: { current?: ExtensionRunner } = {};

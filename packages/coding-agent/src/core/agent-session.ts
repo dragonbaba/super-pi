@@ -2520,6 +2520,7 @@ export class AgentSession {
 			);
 			const newEntries = this.sessionManager.getEntries();
 			const sessionContext = this.sessionManager.buildSessionContext();
+			this._toolResultPresentation?.clearProjectionRecords();
 			this.agent.state.messages = sessionContext.messages;
 			const estimatedTokensAfter = estimateMessagesTokens(sessionContext.messages);
 
@@ -2842,6 +2843,7 @@ export class AgentSession {
 			);
 			const newEntries = this.sessionManager.getEntries();
 			const sessionContext = this.sessionManager.buildSessionContext();
+			this._toolResultPresentation?.clearProjectionRecords();
 			this.agent.state.messages = sessionContext.messages;
 			const estimatedTokensAfter = estimateMessagesTokens(sessionContext.messages);
 
@@ -3831,6 +3833,7 @@ export class AgentSession {
 
 			// Update agent state
 			const sessionContext = this.sessionManager.buildSessionContext();
+			this._toolResultPresentation?.clearProjectionRecords();
 			this.agent.state.messages = sessionContext.messages;
 
 			// Emit session_tree event
