@@ -45,10 +45,12 @@ import {
 	type ViewportTUI,
 } from "./tui.ts";
 import {
-	extractAnsiCode,
 	getGraphemeCellRange,
+	getGraphemeCellEnd,
+	getGraphemeCellStart,
 	getOsc8LinkAtColumn,
 	getWordSegmenter,
+	highlightTerminalColumns,
 	sliceByColumn,
 	stripTerminalSequences,
 	visibleWidth,
@@ -187,6 +189,15 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	private scrollbarHover?: ScrollView;
 	private pressedUrl?: string;
 	private selectionDragged = false;
+	private resolvedSelectionStart: SelectionPoint | undefined;
+	private resolvedSelectionEnd: SelectionPoint | undefined;
+	private resolvedSelectionStartRow = 0;
+	private resolvedSelectionStartCol = 0;
+	private resolvedSelectionEndRow = 0;
+	private resolvedSelectionEndCol = 0;
+	private resolvedSelectionEndBoundary = false;
+	private resolvedSelectionColumnStart = 0;
+	private resolvedSelectionColumnEnd = 0;
 	private readonly wheelScrollLines: number;
 	private readonly mouseEnabled: boolean;
 	private readonly openUrl?: (url: string) => void;
@@ -367,6 +378,18 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		screenCodeUnits: number;
 	} {
 		return this.layoutScratch.getRetainedReferenceCounts();
+	}
+
+	/** Low-frequency composition lifecycle diagnostics; never called from the frame path. */
+	getAltCompositionRetainedReferenceCounts(): {
+		overlayLineReferences: number;
+		selectionPointReferences: number;
+	} {
+		return {
+			overlayLineReferences: this.getOverlayCompositionRetainedLineReferences(),
+			selectionPointReferences:
+				(this.resolvedSelectionStart === undefined ? 0 : 1) + (this.resolvedSelectionEnd === undefined ? 0 : 1),
+		};
 	}
 
 	private prepareKittyScreen(screen: string[]): { lines: string[]; evictedImageDeletion: string } {
@@ -990,6 +1013,41 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			: { start: this.selectionFocus, end: this.selectionAnchor };
 	}
 
+	private resolveSelectionBounds(): boolean {
+		const anchor = this.selectionAnchor;
+		const focus = this.selectionFocus;
+		if (!anchor || !focus || anchor.scrollView !== focus.scrollView) return false;
+		if (anchor.row === focus.row && anchor.col === focus.col) return false;
+		const anchorBeforeFocus = anchor.row < focus.row || (anchor.row === focus.row && anchor.col < focus.col);
+		this.resolvedSelectionStart = anchorBeforeFocus ? anchor : focus;
+		this.resolvedSelectionEnd = anchorBeforeFocus ? focus : anchor;
+		return true;
+	}
+
+	private resolveSelectionColumns(
+		line: string,
+		row: number,
+		minColumn: number,
+		maxColumn: number,
+		lineWidth: number,
+	): boolean {
+		let start = Math.max(0, minColumn);
+		let end = Math.min(lineWidth, maxColumn);
+		if (row === this.resolvedSelectionStartRow) {
+			start = getGraphemeCellStart(line, this.resolvedSelectionStartCol)
+				?? Math.min(this.resolvedSelectionStartCol, lineWidth);
+		}
+		if (row === this.resolvedSelectionEndRow) {
+			end = this.resolvedSelectionEndBoundary
+				? Math.min(this.resolvedSelectionEndCol, lineWidth)
+				: (getGraphemeCellEnd(line, this.resolvedSelectionEndCol)
+					?? Math.min(this.resolvedSelectionEndCol + 1, lineWidth));
+		}
+		this.resolvedSelectionColumnStart = Math.max(minColumn, start);
+		this.resolvedSelectionColumnEnd = Math.min(maxColumn, end);
+		return this.resolvedSelectionColumnEnd > this.resolvedSelectionColumnStart;
+	}
+
 	private getSelectionColumns(
 		line: string,
 		row: number,
@@ -1052,66 +1110,57 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		this.flash("Copied!");
 	}
 
-	private applySelectionHighlight(text: string): string {
-		let result = "\x1b[7m";
-		let index = 0;
-		while (index < text.length) {
-			const ansi = extractAnsiCode(text, index);
-			if (!ansi) {
-				result += text[index];
-				index += 1;
-				continue;
-			}
-			result += ansi.code;
-			if (ansi.code.endsWith("m")) result += "\x1b[7m";
-			index += ansi.length;
-		}
-		return `${result}\x1b[27m`;
-	}
-
 	private applySelection(screen: string[], layout = this.currentLayout): string[] {
-		const selection = this.getSelectionBounds();
-		if (!selection) return screen;
-		let screenSelection = selection;
-		let minRow = 0;
-		let maxRow = screen.length - 1;
-		let minColumn = 0;
-		let maxColumn = this.terminal.columns;
-		if (selection.start.scrollView) {
-			if (!layout) return screen;
-			const box = getScrollViewBox(layout, selection.start.scrollView);
-			if (!box) return screen;
-			minRow = Math.max(0, box.rect.y, box.clip.y);
-			maxRow = Math.min(screen.length - 1, box.rect.y + box.rect.height - 1, box.clip.y + box.clip.height - 1);
-			minColumn = Math.max(0, box.rect.x, box.clip.x);
-			maxColumn = Math.min(this.terminal.columns, box.rect.x + box.rect.width, box.clip.x + box.clip.width);
-			screenSelection = {
-				start: {
-					...selection.start,
-					row: box.rect.y + selection.start.row - selection.start.scrollView.scrollTop,
-					col: box.rect.x + selection.start.col,
-				},
-				end: {
-					...selection.end,
-					row: box.rect.y + selection.end.row - selection.start.scrollView.scrollTop,
-					col: box.rect.x + selection.end.col,
-				},
-			};
+		if (!this.resolveSelectionBounds()) return screen;
+		let rowsVisited = 0;
+		let linesComposed = 0;
+		try {
+			const start = this.resolvedSelectionStart!;
+			const end = this.resolvedSelectionEnd!;
+			let minRow = 0;
+			let maxRow = screen.length - 1;
+			let minColumn = 0;
+			let maxColumn = this.terminal.columns;
+			this.resolvedSelectionStartRow = start.row;
+			this.resolvedSelectionStartCol = start.col;
+			this.resolvedSelectionEndRow = end.row;
+			this.resolvedSelectionEndCol = end.col;
+			this.resolvedSelectionEndBoundary = end.boundary === true;
+			if (start.scrollView) {
+				if (!layout) return screen;
+				const box = getScrollViewBox(layout, start.scrollView);
+				if (!box) return screen;
+				minRow = Math.max(0, box.rect.y, box.clip.y);
+				maxRow = Math.min(screen.length - 1, box.rect.y + box.rect.height - 1, box.clip.y + box.clip.height - 1);
+				minColumn = Math.max(0, box.rect.x, box.clip.x);
+				maxColumn = Math.min(this.terminal.columns, box.rect.x + box.rect.width, box.clip.x + box.clip.width);
+				this.resolvedSelectionStartRow = box.rect.y + start.row - start.scrollView.scrollTop;
+				this.resolvedSelectionStartCol = box.rect.x + start.col;
+				this.resolvedSelectionEndRow = box.rect.y + end.row - start.scrollView.scrollTop;
+				this.resolvedSelectionEndCol = box.rect.x + end.col;
+			}
+			const firstRow = Math.max(minRow, this.resolvedSelectionStartRow);
+			const lastRow = Math.min(maxRow, this.resolvedSelectionEndRow);
+			for (let row = firstRow; row <= lastRow; row++) {
+				rowsVisited++;
+				const line = screen[row];
+				if (line === undefined || isImageLine(line)) continue;
+				const lineWidth = visibleWidth(line);
+				if (!this.resolveSelectionColumns(line, row, minColumn, maxColumn, lineWidth)) continue;
+				screen[row] = highlightTerminalColumns(
+					line,
+					this.resolvedSelectionColumnStart,
+					this.resolvedSelectionColumnEnd,
+					lineWidth,
+				);
+				linesComposed++;
+			}
+			return screen;
+		} finally {
+			this.recordSelectionComposition(rowsVisited, linesComposed);
+			this.resolvedSelectionStart = undefined;
+			this.resolvedSelectionEnd = undefined;
 		}
-		const firstRow = Math.max(minRow, screenSelection.start.row);
-		const lastRow = Math.min(maxRow, screenSelection.end.row);
-		for (let row = firstRow; row <= lastRow; row++) {
-			const line = screen[row];
-			if (line === undefined || isImageLine(line)) continue;
-			const lineWidth = visibleWidth(line);
-			const columns = this.getSelectionColumns(line, row, screenSelection, minColumn, maxColumn, lineWidth);
-			if (columns.end <= columns.start) continue;
-			const before = sliceByColumn(line, 0, columns.start, true);
-			const selected = sliceByColumn(line, columns.start, columns.end - columns.start, true);
-			const after = sliceByColumn(line, columns.end, Math.max(0, lineWidth - columns.end), true);
-			screen[row] = `${before}${this.applySelectionHighlight(selected)}${after}`;
-		}
-		return screen;
 	}
 
 	private isMouseSequence(data: string): boolean {

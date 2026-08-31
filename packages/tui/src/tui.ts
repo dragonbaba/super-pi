@@ -17,7 +17,17 @@ import {
 	type TerminalColorScheme,
 } from "./terminal-colors.ts";
 import { getCapabilities, isImageLine, setCellDimensions } from "./terminal-image.ts";
-import { extractSegments, normalizeTerminalOutput, sliceByColumn, sliceWithWidth, visibleWidth } from "./utils.ts";
+import {
+	extractSegments,
+	extractSegmentsInto,
+	type ExtractedSegmentsResult,
+	normalizeTerminalOutput,
+	sliceByColumn,
+	sliceWithWidth,
+	sliceWithWidthInto,
+	type SliceWithWidthResult,
+	visibleWidth,
+} from "./utils.ts";
 
 function asError(error: unknown): Error {
 	return error instanceof Error ? error : new Error(String(error));
@@ -430,6 +440,13 @@ export abstract class TuiBase extends Container implements TUI {
 	private readonly overlayColsScratch: number[] = [];
 	private readonly overlayWidthsScratch: number[] = [];
 	private readonly overlayLineCountsScratch: number[] = [];
+	private readonly overlaySegmentsScratch: ExtractedSegmentsResult = {
+		before: "",
+		beforeWidth: 0,
+		after: "",
+		afterWidth: 0,
+	};
+	private readonly overlaySliceScratch: SliceWithWidthResult = { text: "", width: 0 };
 	private resolvedOverlayWidth = 0;
 	private resolvedOverlayRow = 0;
 	private resolvedOverlayCol = 0;
@@ -606,6 +623,19 @@ export abstract class TuiBase extends Container implements TUI {
 			maximumCachedRowCodeUnits,
 			rowCacheRejectedBySize,
 		);
+	}
+
+	protected recordSelectionComposition(rowsVisited: number, linesComposed: number): void {
+		this.renderInstrumentation?.recordSelectionComposition(rowsVisited, linesComposed);
+	}
+
+	/** Low-frequency lifecycle diagnostic; never called from the frame path. */
+	protected getOverlayCompositionRetainedLineReferences(): number {
+		let references = this.overlayLinesScratch.length;
+		if (this.overlaySegmentsScratch.before.length !== 0) references++;
+		if (this.overlaySegmentsScratch.after.length !== 0) references++;
+		if (this.overlaySliceScratch.text.length !== 0) references++;
+		return references;
 	}
 
 	protected writeTerminalFrame(data: string, diffLines: number): void {
@@ -1667,6 +1697,9 @@ export abstract class TuiBase extends Container implements TUI {
 			this.overlayColsScratch.length = 0;
 			this.overlayWidthsScratch.length = 0;
 			this.overlayLineCountsScratch.length = 0;
+			this.overlaySegmentsScratch.before = "";
+			this.overlaySegmentsScratch.after = "";
+			this.overlaySliceScratch.text = "";
 		}
 	}
 
@@ -1688,7 +1721,50 @@ export abstract class TuiBase extends Container implements TUI {
 		overlayWidth: number,
 		totalWidth: number,
 	): string {
-		return compositeTuiLine(baseLine, overlayLine, startCol, overlayWidth, totalWidth);
+		if (isImageLine(baseLine)) return baseLine;
+
+		const afterStart = startCol + overlayWidth;
+		const base = this.overlaySegmentsScratch;
+		extractSegmentsInto(baseLine, startCol, afterStart, totalWidth - afterStart, true, base);
+		const overlay = this.overlaySliceScratch;
+		sliceWithWidthInto(overlayLine, 0, overlayWidth, true, overlay);
+		const beforePad = Math.max(0, startCol - base.beforeWidth);
+		const overlayPad = Math.max(0, overlayWidth - overlay.width);
+		const actualBeforeWidth = Math.max(startCol, base.beforeWidth);
+		const actualOverlayWidth = Math.max(overlayWidth, overlay.width);
+		const afterTarget = Math.max(0, totalWidth - actualBeforeWidth - actualOverlayWidth);
+		const afterPad = Math.max(0, afterTarget - base.afterWidth);
+		let repeatCalls = 0;
+		let repeatBytes = 0;
+		let beforeSpaces = "";
+		let overlaySpaces = "";
+		let afterSpaces = "";
+		if (beforePad !== 0) {
+			beforeSpaces = " ".repeat(beforePad);
+			repeatCalls++;
+			repeatBytes += beforePad;
+		}
+		if (overlayPad !== 0) {
+			overlaySpaces = " ".repeat(overlayPad);
+			repeatCalls++;
+			repeatBytes += overlayPad;
+		}
+		if (afterPad !== 0) {
+			afterSpaces = " ".repeat(afterPad);
+			repeatCalls++;
+			repeatBytes += afterPad;
+		}
+		const result =
+			base.before
+			+ beforeSpaces
+			+ SEGMENT_RESET
+			+ overlay.text
+			+ overlaySpaces
+			+ SEGMENT_RESET
+			+ base.after
+			+ afterSpaces;
+		this.renderInstrumentation?.recordOverlayComposition(1, repeatCalls, repeatBytes);
+		return visibleWidth(result) <= totalWidth ? result : sliceByColumn(result, 0, totalWidth, true);
 	}
 
 	/**
