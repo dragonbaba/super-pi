@@ -49,6 +49,7 @@ import {
 	withFileMutationQueue,
 } from "./tools/index.ts";
 import type { ToolOutputShadowOptions } from "./tool-output-budget.ts";
+import type { ToolResultPresentationOptions } from "./tool-result-presentation.ts";
 
 // Preserve the pre-0.81 fallback for extensions that construct Agent instances
 // or invoke low-level agent loops without supplying streamFn. Agent core remains
@@ -109,6 +110,8 @@ export interface CreateAgentSessionOptions {
 	prefixManifestRecorder?: PrefixManifestRecorder;
 	/** Optional Phase 5A metadata-only tool-output observation. Disabled unless explicitly enabled. */
 	toolOutputShadow?: ToolOutputShadowOptions;
+	/** Optional Phase 5B-A final tool-result dual-view ownership. Disabled unless explicitly enabled. */
+	toolResultPresentation?: ToolResultPresentationOptions;
 }
 
 /** Result from createAgentSession */
@@ -540,6 +543,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		extensionRunnerOptions: options.extensionRunnerOptions,
 		sessionStartEvent: options.sessionStartEvent,
 		toolOutputShadow: options.toolOutputShadow,
+		toolResultPresentation: options.toolResultPresentation,
 	});
 	const extensionsResult = resourceLoader.getExtensions();
 
