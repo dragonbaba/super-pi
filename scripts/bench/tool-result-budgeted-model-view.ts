@@ -987,7 +987,9 @@ try {
 			{ type: "text", text: TEXT_10_MIB },
 		], 5_000),
 		await measureBoundaryContinuation(inspector, "dense-ansi-log", [
-			{ type: "text", text: denseAnsiUnit.repeat(1_000) + "tail".repeat(128 * 1024) },
+			// Keep the measured atomic-sequence index below its documented hard cap;
+			// capacity exhaustion is covered separately by the conservative-fallback tests.
+			{ type: "text", text: denseAnsiUnit.repeat(750) + "tail".repeat(512 * 1024) },
 		], 3_000),
 	];
 	const graphemeBoundaryScaling = [
