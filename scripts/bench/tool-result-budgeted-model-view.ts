@@ -52,6 +52,7 @@ const TINY_TEXT = "tool result";
 const TEXT_64_KIB = "0123456789abcdef".repeat((64 * 1024) / 16);
 const TEXT_1_MIB = "0123456789abcdef".repeat((1024 * 1024) / 16);
 const TEXT_10_MIB = "0123456789abcdef".repeat((10 * 1024 * 1024) / 16);
+const TEXT_11_MIB = "0123456789abcdef".repeat((11 * 1024 * 1024) / 16);
 const IMAGE_DATA = "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo9PQ==";
 
 function percentile(sorted: readonly number[], ratio: number): number {
@@ -195,6 +196,17 @@ function counterDelta(
 		retainedProjectionCodeUnits: after.retainedProjectionCodeUnits,
 		postImagePolicyEstimatorScans: (after.postImagePolicyEstimatorScans - before.postImagePolicyEstimatorScans) / resultCount,
 		postImagePolicyShrinkPasses: (after.postImagePolicyShrinkPasses - before.postImagePolicyShrinkPasses) / resultCount,
+		admissionRejected: (after.admissionRejected - before.admissionRejected) / resultCount,
+		transientProjections: (after.transientProjections - before.transientProjections) / resultCount,
+		residentReadHits: (after.residentReadHits - before.residentReadHits) / resultCount,
+		providerReadMisses: (after.providerReadMisses - before.providerReadMisses) / resultCount,
+		activeContinuationRecordHits: (after.activeContinuationRecordHits - before.activeContinuationRecordHits) / resultCount,
+		capacityThrashPrevented: (after.capacityThrashPrevented - before.capacityThrashPrevented) / resultCount,
+		terminalBoundaryCharactersScanned: (after.terminalBoundaryCharactersScanned - before.terminalBoundaryCharactersScanned) / resultCount,
+		terminalBoundaryLookups: (after.terminalBoundaryLookups - before.terminalBoundaryLookups) / resultCount,
+		terminalSequenceIntervals: (after.terminalSequenceIntervals - before.terminalSequenceIntervals) / resultCount,
+		terminalIndexCapacityFallbacks: (after.terminalIndexCapacityFallbacks - before.terminalIndexCapacityFallbacks) / resultCount,
+		graphemeBoundaryLookups: (after.graphemeBoundaryLookups - before.graphemeBoundaryLookups) / resultCount,
 		completedDispatchPresentationScopes: (after.completedDispatchPresentationScopes - before.completedDispatchPresentationScopes) / resultCount,
 		releaseWithoutActiveScope: (after.releaseWithoutActiveScope - before.releaseWithoutActiveScope) / resultCount,
 	};
@@ -223,17 +235,26 @@ async function measureDirect(
 	)!;
 	let sequence = 0;
 	let lastPresentation: ToolResultPresentation | undefined;
+	let peakHeapUsed = 0;
+	let peakExternal = 0;
+	let peakArrayBuffers = 0;
 	function createAndRelease(): void {
 		lastPresentation = owner.create(content, `${name}-${sequence++}`);
 		owner.release();
+		const memory = process.memoryUsage();
+		peakHeapUsed = Math.max(peakHeapUsed, memory.heapUsed);
+		peakExternal = Math.max(peakExternal, memory.external);
+		peakArrayBuffers = Math.max(peakArrayBuffers, memory.arrayBuffers);
 	}
 	for (let run = 0; run < WARMUP_RUNS; run++) createAndRelease();
+	const memoryBefore = process.memoryUsage();
 	const before = counterSnapshot(counters);
 	const timing = await measure(inspector, createAndRelease);
 	const delta = counterDelta(before, counters);
 	const originalEstimate = estimateToolOutputTokens(content).estimatedTokens;
 	const modelEstimate = estimateToolOutputTokens(lastPresentation!.modelContent).estimatedTokens;
 	const version = lastPresentation!.version;
+	const memoryAfter = process.memoryUsage();
 	const uiContent = lastPresentation!.uiContent;
 	let imageBlockReferenceReused = true;
 	let imageDataReferenceReused = true;
@@ -263,6 +284,20 @@ async function measureDirect(
 		maximumContentBlocks: counters.maximumContentBlocks,
 		maximumTextCodeUnits: counters.maximumTextCodeUnits,
 		maximumImageDataCodeUnits: counters.maximumImageDataCodeUnits,
+		memory: {
+			heapUsedBefore: memoryBefore.heapUsed,
+			heapUsedAfter: memoryAfter.heapUsed,
+			heapUsedDelta: memoryAfter.heapUsed - memoryBefore.heapUsed,
+			heapUsedPeak: peakHeapUsed,
+			externalBefore: memoryBefore.external,
+			externalAfter: memoryAfter.external,
+			externalDelta: memoryAfter.external - memoryBefore.external,
+			externalPeak: peakExternal,
+			arrayBuffersBefore: memoryBefore.arrayBuffers,
+			arrayBuffersAfter: memoryAfter.arrayBuffers,
+			arrayBuffersDelta: memoryAfter.arrayBuffers - memoryBefore.arrayBuffers,
+			arrayBuffersPeak: peakArrayBuffers,
+		},
 	};
 }
 
@@ -334,6 +369,47 @@ async function measureHistoricalProjection(
 		firstProjectionDigests,
 		...timing,
 		steadyCountersPerRequest: delta,
+		entriesAfterDispose: counters.projectionRecordEntries,
+		retainedCodeUnitsAfterDispose: counters.retainedProjectionCodeUnits,
+	};
+}
+
+async function measureRetainedCodeCapacity(inspector: Session): Promise<Record<string, unknown>> {
+	const counters = createToolResultPresentationCounters();
+	const owner = createToolResultPresentationOwner(
+		{ enabled: true, budgetTokens: BUDGET_TOKENS, counters },
+		`${SESSION_ID}-retained-capacity`,
+	)!;
+	const messages = new Array<ToolResultMessage>(12);
+	for (let index = 0; index < messages.length; index++) {
+		const content: ToolResultPresentationContent[] = [{ type: "text", text: TEXT_11_MIB }];
+		messages[index] = toolMessage(content, `retained-capacity-${index}`);
+		owner.create(content, `retained-capacity-${index}`);
+		owner.release();
+	}
+	const residentEntries = counters.projectionRecordEntries;
+	const retainedCodeUnits = counters.retainedProjectionCodeUnits;
+	const scansBefore = counters.fullSourceEstimatorScans;
+	const evictionsBefore = counters.projectionRecordEvictions;
+	const before = counterSnapshot(counters);
+	function project(): void {
+		owner.projectMessagesForModel(messages.slice());
+	}
+	const timing = await measureRuns(inspector, 10, project);
+	const delta = counterDelta(before, counters, 10);
+	const result = {
+		resultCount: messages.length,
+		codeUnitsPerResult: TEXT_11_MIB.length,
+		residentEntries,
+		retainedCodeUnits,
+		...timing,
+		countersPerRequest: delta,
+		fullScansDuringRequests: counters.fullSourceEstimatorScans - scansBefore,
+		evictionsDuringRequests: counters.projectionRecordEvictions - evictionsBefore,
+	};
+	owner.dispose();
+	return {
+		...result,
 		entriesAfterDispose: counters.projectionRecordEntries,
 		retainedCodeUnitsAfterDispose: counters.retainedProjectionCodeUnits,
 	};
@@ -414,6 +490,83 @@ function measureResumedHistoryLookup(): Record<string, unknown> {
 		...result,
 		entriesAfterDispose: counters.projectionRecordEntries,
 		retainedCodeUnitsAfterDispose: counters.retainedProjectionCodeUnits,
+	};
+}
+
+async function measureEvictedContinuation(inspector: Session): Promise<Record<string, unknown>> {
+	const content: ToolResultPresentationContent[] = [{ type: "text", text: TEXT_10_MIB }];
+	const source = toolMessage(content, "evicted-continuation-benchmark");
+	const counters = createToolResultPresentationCounters();
+	const owner = createToolResultPresentationOwner({ enabled: true, budgetTokens: 128, counters }, `${SESSION_ID}-evicted`)!;
+	const presentation = owner.create(content, source.toolCallId) as ToolResultPresentationV2;
+	owner.release();
+	for (let index = 0; index < 128; index++) {
+		const residentContent: ToolResultPresentationContent[] = [{ type: "text", text: `${index}:` + TEXT_64_KIB }];
+		owner.create(residentContent, `evicted-resident-${index}`);
+		owner.release();
+	}
+	const history: unknown[] = new Array(50_000);
+	for (let index = 0; index < history.length - 1; index++) history[index] = { role: "user", marker: index };
+	history[history.length - 1] = source;
+	let cursor = presentation.continuation.cursor;
+	const scansBeforeFirst = counters.fullSourceEstimatorScans;
+	const probesBeforeFirst = counters.continuationSourceLookupProbes;
+	const first = owner.readContinuation(cursor, history, 128);
+	if (!first.nextCursor) throw new Error("evicted continuation benchmark exhausted on first chunk");
+	cursor = first.nextCursor;
+	const firstChunkScans = counters.fullSourceEstimatorScans - scansBeforeFirst;
+	const firstChunkLookupProbes = counters.continuationSourceLookupProbes - probesBeforeFirst;
+	const before = counterSnapshot(counters);
+	function readChunk(): void {
+		const chunk = owner.readContinuation(cursor, history, 128);
+		if (!chunk.nextCursor) throw new Error("evicted continuation benchmark exhausted before 100 chunks");
+		cursor = chunk.nextCursor;
+	}
+	const timing = await measureRuns(inspector, CONTINUATION_CHUNKS, readChunk);
+	const delta = counterDelta(before, counters, CONTINUATION_CHUNKS);
+	owner.dispose();
+	return {
+		...timing,
+		firstChunkScans,
+		firstChunkLookupProbes,
+		steadyCountersPerChunk: delta,
+		entriesAfterDispose: counters.projectionRecordEntries,
+		retainedCodeUnitsAfterDispose: counters.retainedProjectionCodeUnits,
+	};
+}
+
+async function measureBoundaryContinuation(
+	inspector: Session,
+	name: string,
+	content: ToolResultPresentationContent[],
+	continuationBudget: number,
+): Promise<Record<string, unknown>> {
+	const source = toolMessage(content, `boundary-${name}`);
+	const counters = createToolResultPresentationCounters();
+	const owner = createToolResultPresentationOwner({ enabled: true, budgetTokens: 128, counters }, `${SESSION_ID}-${name}`)!;
+	const presentation = owner.create(content, source.toolCallId) as ToolResultPresentationV2;
+	owner.release();
+	let cursor = presentation.continuation.cursor;
+	const messages: readonly unknown[] = [source];
+	owner.readContinuation(cursor, messages, continuationBudget);
+	const before = counterSnapshot(counters);
+	function readChunk(): void {
+		const chunk = owner.readContinuation(cursor, messages, continuationBudget);
+		if (!chunk.nextCursor) throw new Error(`${name} exhausted before 100 measured chunks`);
+		cursor = chunk.nextCursor;
+	}
+	const timing = await measureRuns(inspector, CONTINUATION_CHUNKS, readChunk);
+	const delta = counterDelta(before, counters, CONTINUATION_CHUNKS);
+	owner.dispose();
+	return {
+		name,
+		contentBlocks: content.length,
+		textCodeUnits: content.reduce((total, block) => total + (block.type === "text" ? block.text.length : 0), 0),
+		continuationBudget,
+		...timing,
+		countersPerChunk: delta,
+		terminalIntervalsBuilt: counters.terminalSequenceIntervals,
+		terminalIndexCapacityFallbacks: counters.terminalIndexCapacityFallbacks,
 	};
 }
 
@@ -614,6 +767,38 @@ async function measureBlockImagePolicy(
 	const toggled = await measureAsync(inspector, toggle);
 	const toggleCounters = counterDelta(toggleBefore, counters, MEASURED_RUNS * 3);
 	const continuation = session.readToolResultContinuation(cursor, 256);
+	const v1Content: ToolResultMessage["content"] = [];
+	for (let index = 0; index < 160; index++) {
+		v1Content.push(index % 2 === 0
+			? { type: "image", data: IMAGE_DATA, mimeType: "image/png" }
+			: { type: "text", text: "v" });
+	}
+	const v1Source = toolMessage(v1Content as ToolResultPresentationContent[], "block-image-v1-expansion");
+	session.agent.state.messages.push(v1Source);
+	await (session as unknown as {
+		_handleAgentEvent(event: { type: "message_end"; message: ToolResultMessage }): Promise<void>;
+	})._handleAgentEvent({ type: "message_end", message: v1Source });
+	settingsManager.setBlockImages(true);
+	await convert();
+	const v1Blocked = lastMessages.find((message) =>
+		message.role === "toolResult" && message.toolCallId === v1Source.toolCallId) as ToolResultMessage | undefined;
+	let v1Cursor = "";
+	let v1ImageBlocks = 0;
+	if (v1Blocked) {
+		for (let index = 0; index < v1Blocked.content.length; index++) {
+			const block = v1Blocked.content[index]!;
+			if (block.type === "image") v1ImageBlocks++;
+			else if (block.text.startsWith("[Tool result truncated. Continue with cursor tr1.")) {
+				const cursorStart = block.text.indexOf("tr1.");
+				v1Cursor = block.text.substring(cursorStart, block.text.length - 2);
+			}
+		}
+	}
+	const v1Continuation = session.readToolResultContinuation(v1Cursor, 256);
+	settingsManager.setBlockImages(false);
+	await convert();
+	const v1UnblockedAgain = lastMessages.find((message) =>
+		message.role === "toolResult" && message.toolCallId === v1Source.toolCallId) as ToolResultMessage | undefined;
 	session.dispose();
 	return {
 		unblocked: { ...unblocked, countersPerRequest: unblockedCounters },
@@ -623,6 +808,14 @@ async function measureBlockImagePolicy(
 		leakedImageDataBlocks,
 		providerCursorMatchesPersistedSource: providerCursor === cursor,
 		continuationWithinBudget: continuation.estimatedTokens <= 256,
+		v1Expansion: {
+			originalWithinBudget: estimateToolOutputTokens(v1Source.content).estimatedTokens <= 256,
+			blockedWithinBudget: !!v1Blocked && estimateToolOutputTokens(v1Blocked.content).estimatedTokens <= 256,
+			blockedImageBlocks: v1ImageBlocks,
+			cursorCreated: v1Cursor.length > 0,
+			continuationWithinBudget: v1Continuation.estimatedTokens <= 256,
+			falseToggleRestoresLegacyContent: v1UnblockedAgain?.content === v1Source.content,
+		},
 		postImagePolicyShrinkPasses: counters.postImagePolicyShrinkPasses,
 		entriesAfterDispose: counters.projectionRecordEntries,
 		retainedCodeUnitsAfterDispose: counters.retainedProjectionCodeUnits,
@@ -679,7 +872,11 @@ async function measureLifecycle(): Promise<Record<string, unknown>> {
 	let owner = createToolResultPresentationOwner({ enabled: true, budgetTokens: BUDGET_TOKENS, counters }, SESSION_ID)!;
 	let sourceContent: ToolResultPresentationContent[] | undefined = [{ type: "text", text: TEXT_10_MIB }];
 	let presentation: ToolResultPresentation | undefined = owner.create(sourceContent, "lifecycle");
+	let sourceMessage: ToolResultMessage | undefined = toolMessage(sourceContent, "lifecycle");
+	let validationMessages: unknown[] | undefined = [sourceMessage];
+	if (presentation.version === 2) owner.readContinuation(presentation.continuation.cursor, validationMessages, BUDGET_TOKENS);
 	const weakSourceOuterArray = new WeakRef(sourceContent);
+	const weakValidationMessagesOuterArray = new WeakRef(validationMessages);
 	const weakPresentation = new WeakRef(presentation);
 	const weakModel = new WeakRef(presentation.modelContent as object);
 	const weakUi = new WeakRef(presentation.uiContent as object);
@@ -690,6 +887,8 @@ async function measureLifecycle(): Promise<Record<string, unknown>> {
 	owner.dispose();
 	presentation = undefined;
 	sourceContent = undefined;
+	sourceMessage = undefined;
+	validationMessages = undefined;
 	owner = undefined as unknown as NonNullable<typeof owner>;
 	await yieldToEventLoop();
 	globalThis.gc!();
@@ -719,6 +918,7 @@ async function measureLifecycle(): Promise<Record<string, unknown>> {
 		retainedModelOuterArrayWeakReferences: weakModel.deref() ? 1 : 0,
 		retainedUiOuterArrayWeakReferences: weakUi.deref() ? 1 : 0,
 		retainedSourceOuterArrayWeakReferences: weakSourceOuterArray.deref() ? 1 : 0,
+		retainedValidationMessagesOuterArrayWeakReferences: weakValidationMessagesOuterArray.deref() ? 1 : 0,
 		entriesAfterClear,
 		retainedCodeUnitsAfterClear,
 	};
@@ -760,7 +960,10 @@ try {
 		await measureHistoricalProjection(inspector, 1),
 		await measureHistoricalProjection(inspector, 10),
 		await measureHistoricalProjection(inspector, 100),
+		await measureHistoricalProjection(inspector, 129),
+		await measureHistoricalProjection(inspector, 256),
 	];
+	const retainedCodeCapacity = await measureRetainedCodeCapacity(inspector);
 	const productionResults = [
 		await measureProduction(inspector, productionRoot, "absent"),
 		await measureProduction(inspector, productionRoot, "disabled"),
@@ -768,7 +971,44 @@ try {
 	];
 	const blockImagePolicy = await measureBlockImagePolicy(inspector, productionRoot);
 	const continuationChain = await measureContinuationChain(inspector);
+	const evictedContinuation = await measureEvictedContinuation(inspector);
 	const resumedHistoryLookup = measureResumedHistoryLookup();
+	const ansiPrefix = "\u001b]8;;https://example.test/at-start\u001b\\link\u001b]8;;\u001b\\";
+	const denseAnsiUnit = "\u001b[38;2;1;2;3mline\u001b[0m\u001b]8;;https://e.test\u0007url\u001b]8;;\u0007\u001b_payload\u001b\\";
+	const terminalBoundaryScaling = [
+		await measureBoundaryContinuation(inspector, "ansi-prefix-1-mib", [
+			{ type: "text", text: ansiPrefix + "x".repeat(1024 * 1024) },
+		], 512),
+		await measureBoundaryContinuation(inspector, "ansi-prefix-10-mib", [
+			{ type: "text", text: ansiPrefix + TEXT_10_MIB },
+		], 5_000),
+		await measureBoundaryContinuation(inspector, "ansi-small-block-plus-10-mib", [
+			{ type: "text", text: ansiPrefix },
+			{ type: "text", text: TEXT_10_MIB },
+		], 5_000),
+		await measureBoundaryContinuation(inspector, "dense-ansi-log", [
+			{ type: "text", text: denseAnsiUnit.repeat(1_000) + "tail".repeat(128 * 1024) },
+		], 3_000),
+	];
+	const graphemeBoundaryScaling = [
+		await measureBoundaryContinuation(inspector, "cjk-1-mib-utf8", [
+			{ type: "text", text: "汉".repeat(Math.ceil((1024 * 1024) / 3)) },
+		], 3_000),
+		await measureBoundaryContinuation(inspector, "cjk-10-mib-utf8", [
+			{ type: "text", text: "汉".repeat(Math.ceil((10 * 1024 * 1024) / 3)) },
+		], 40_000),
+		await measureBoundaryContinuation(inspector, "combining-256", [
+			{ type: "text", text: ("A" + "\u0301".repeat(256) + "plain").repeat(2_048) },
+		], 512),
+		await measureBoundaryContinuation(inspector, "zwj-flag-keycap-tag", [
+			{ type: "text", text: (
+				"\u{1f468}\u200d\u{1f469}\u200d\u{1f467}\u200d\u{1f466}" +
+				"\u{1f1fa}\u{1f1f8}" +
+				"1\ufe0f\u20e3" +
+				"\u{1f3f4}\u{e0067}\u{e0062}\u{e0065}\u{e006e}\u{e0067}\u{e007f}"
+			).repeat(16_384) },
+		], 2_000),
+	];
 	const resumeProjection = measureResumeProjection();
 	const parallelScopes = [measureParallelScopes(2), measureParallelScopes(4), measureParallelScopes(8)];
 	const lifecycle = await measureLifecycle();
@@ -789,10 +1029,14 @@ try {
 		directResults,
 		providerProjection,
 		historicalProjection,
+		retainedCodeCapacity,
 		productionResults,
 		blockImagePolicy,
 		continuationChain,
+		evictedContinuation,
 		resumedHistoryLookup,
+		terminalBoundaryScaling,
+		graphemeBoundaryScaling,
 		resumeProjection,
 		parallelScopes,
 		lifecycle,
