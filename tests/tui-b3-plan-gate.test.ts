@@ -499,3 +499,40 @@ test("Editor layout key misses only for layout dependencies", () => {
 	reference.invalidate();
 	expectMiss(120);
 });
+
+test("Editor retains stable cursor layout across transient cursor frames", () => {
+	const candidateTerminal = new FakeTerminal(120, 40);
+	const referenceTerminal = new FakeTerminal(120, 40);
+	const candidate = new Editor({ terminal: candidateTerminal, requestRender(): void {} } as unknown as TUI, EDITOR_THEME);
+	const reference = new Editor({ terminal: referenceTerminal, requestRender(): void {} } as unknown as TUI, EDITOR_THEME);
+	candidate.setText("stable cursor layout");
+	reference.setText("stable cursor layout");
+	assert.deepEqual(candidate.render(120), reference.render(120));
+	const initialCursorCol = testState(candidate).state.cursorCol;
+	diagnostics(candidate).resetLayoutCacheMetrics();
+
+	for (const cursorCol of [initialCursorCol - 1, initialCursorCol - 2]) {
+		testState(candidate).state.cursorCol = cursorCol;
+		testState(reference).state.cursorCol = cursorCol;
+		reference.invalidate();
+		assert.deepEqual(candidate.render(120), reference.render(120));
+	}
+	assert.equal(diagnostics(candidate).getLayoutCacheMetrics().layoutCacheMisses, 2);
+
+	testState(candidate).state.cursorCol = initialCursorCol;
+	testState(reference).state.cursorCol = initialCursorCol;
+	reference.invalidate();
+	assert.deepEqual(candidate.render(120), reference.render(120));
+	assert.equal(diagnostics(candidate).getLayoutCacheMetrics().layoutCacheHits, 1);
+
+	diagnostics(candidate).resetLayoutCacheMetrics();
+	for (let frame = 0; frame < 3; frame++) {
+		testState(candidate).state.cursorCol = initialCursorCol - 3;
+		testState(reference).state.cursorCol = initialCursorCol - 3;
+		reference.invalidate();
+		assert.deepEqual(candidate.render(120), reference.render(120));
+	}
+	const promotedMetrics = diagnostics(candidate).getLayoutCacheMetrics();
+	assert.equal(promotedMetrics.layoutCacheMisses, 2);
+	assert.equal(promotedMetrics.layoutCacheHits, 1);
+});
