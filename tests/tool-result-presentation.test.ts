@@ -9,12 +9,14 @@ import {
 	getToolResultUiContent,
 	TOOL_RESULT_PRESENTATION_VERSION,
 	type ToolResultPresentationContent,
+	type ToolResultPresentationV1,
 } from "../packages/coding-agent/src/core/tool-result-presentation.ts";
 
 test("presentation owns independent outer arrays while reusing blocks and strings", () => {
 	const text = "x".repeat(10 * 1024 * 1024);
+	const imageData = "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo9PQ==";
 	const textBlock: TextContent = { type: "text", text };
-	const imageBlock: ImageContent = { type: "image", data: "fixture-image-data", mimeType: "image/png" };
+	const imageBlock: ImageContent = { type: "image", data: imageData, mimeType: "image/png" };
 	const modelContent: ToolResultPresentationContent[] = [textBlock, imageBlock];
 	const counters = createToolResultPresentationCounters();
 	const owner = createToolResultPresentationOwner({ enabled: true, counters })!;
@@ -27,7 +29,8 @@ test("presentation owns independent outer arrays while reusing blocks and string
 	assert.equal(presentation.modelContent[1], presentation.uiContent?.[1]);
 	assert.equal((presentation.uiContent?.[0] as TextContent).text, text);
 	assert.equal((presentation.uiContent?.[0] as TextContent).text === text, true);
-	assert.equal((presentation.uiContent?.[1] as ImageContent).data, imageBlock.data);
+	assert.equal((presentation.uiContent?.[1] as ImageContent).data, imageData);
+	assert.equal((presentation.uiContent?.[1] as ImageContent).data === imageData, true);
 
 	(presentation.uiContent as ToolResultPresentationContent[]).pop();
 	assert.equal(presentation.modelContent.length, 2);
@@ -39,7 +42,7 @@ test("presentation owns independent outer arrays while reusing blocks and string
 	assert.equal(counters.textStringReferencesReused, 1);
 	assert.equal(counters.imageDataReferencesReused, 1);
 	assert.equal(counters.maximumTextCodeUnits, text.length);
-	assert.equal(counters.maximumImageDataCodeUnits, imageBlock.data.length);
+	assert.equal(counters.maximumImageDataCodeUnits, imageData.length);
 	assert.equal(counters.activeDispatchPresentationScopes, 1);
 	assert.equal(counters.dispatchPresentationScopesHighWaterMark, 1);
 	owner.release();
@@ -101,20 +104,26 @@ test("legacy session tool results remain provider-readable without presentation 
 	assert.equal(messages[0]?.role === "toolResult" ? messages[0].content : undefined, content);
 });
 
-test("parallel ownership raises HWM and dispose never fabricates release", () => {
-	const counters = createToolResultPresentationCounters();
-	const owner = createToolResultPresentationOwner({ enabled: true, counters })!;
-	const content: ToolResultPresentationContent[] = [{ type: "text", text: "parallel" }];
-	assert.ok(owner.create(content));
-	assert.ok(owner.create(content));
-	assert.equal(counters.activeDispatchPresentationScopes, 2);
-	assert.equal(counters.dispatchPresentationScopesHighWaterMark, 2);
-	owner.release();
-	assert.equal(counters.activeDispatchPresentationScopes, 1);
-	owner.dispose();
-	assert.equal(counters.activeDispatchPresentationScopes, 1);
-	assert.equal(owner.create(content), undefined);
-	owner.release();
-	assert.equal(counters.activeDispatchPresentationScopes, 0);
-	assert.equal(counters.completedDispatchPresentationScopes, 2);
+test("parallel 2/4/8 dispatch scopes have bounded HWM and exact release", () => {
+	for (const scopeCount of [2, 4, 8]) {
+		const counters = createToolResultPresentationCounters();
+		const owner = createToolResultPresentationOwner({ enabled: true, counters })!;
+		const content: ToolResultPresentationContent[] = [{ type: "text", text: `parallel-${scopeCount}` }];
+		const listenerRetainedPresentations: ToolResultPresentationV1[] = [];
+		for (let scope = 0; scope < scopeCount; scope++) {
+			listenerRetainedPresentations.push(owner.create(content)!);
+		}
+		assert.equal(counters.activeDispatchPresentationScopes, scopeCount);
+		assert.equal(counters.dispatchPresentationScopesHighWaterMark, scopeCount);
+		owner.dispose();
+		assert.equal(counters.activeDispatchPresentationScopes, scopeCount);
+		assert.equal(counters.completedDispatchPresentationScopes, 0);
+		assert.equal(owner.create(content), undefined);
+		for (let scope = 0; scope < scopeCount; scope++) owner.release();
+		assert.equal(counters.activeDispatchPresentationScopes, 0);
+		assert.equal(counters.completedDispatchPresentationScopes, scopeCount);
+		assert.equal(counters.releaseWithoutActiveScope, 0);
+		assert.equal(listenerRetainedPresentations.length, scopeCount);
+		assert.equal(listenerRetainedPresentations[scopeCount - 1]?.modelContent, content);
+	}
 });

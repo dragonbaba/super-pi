@@ -50,7 +50,10 @@ type ProductionMode = "absent" | "disabled" | "enabled";
 
 const WARMUP_RUNS = 5;
 const MEASURED_RUNS = 20;
+const TINY_TEXT = "tool result";
+const ONE_MIB_TEXT = "m".repeat(1024 * 1024);
 const TEN_MIB_TEXT = "x".repeat(10 * 1024 * 1024);
+const IMAGE_DATA = "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo9PQ==";
 
 function percentile(sorted: readonly number[], ratio: number): number {
 	return sorted[Math.min(sorted.length - 1, Math.max(0, Math.ceil(sorted.length * ratio) - 1))] ?? 0;
@@ -82,7 +85,7 @@ function allocationSites(head: SamplingNode): { sampledBytes: number; top: Alloc
 		}
 		if (node.children) for (const child of node.children) pending.push(child);
 	}
-	return { sampledBytes, top: [...sites.values()].sort((left, right) => right.bytes - left.bytes).slice(0, 15) };
+	return { sampledBytes, top: [...sites.values()].sort((left, right) => right.bytes - left.bytes).slice(0, 20) };
 }
 
 function slope(values: readonly number[]): number {
@@ -281,6 +284,85 @@ function perResult(delta: ToolResultPresentationCounters): Record<string, number
 	};
 }
 
+async function measureDirectCase(
+	inspector: Session,
+	name: string,
+	content: ToolResultMessage["content"],
+): Promise<Record<string, unknown>> {
+	const counters = createToolResultPresentationCounters();
+	const owner = createToolResultPresentationOwner({ enabled: true, counters })!;
+	const identityProbe = owner.create(content)!;
+	const modelUiOuterArraysDiffer = identityProbe.modelContent !== identityProbe.uiContent;
+	let blockReferencesReused = true;
+	let textStringReferencesReused = true;
+	let imageDataReferencesReused = true;
+	for (let index = 0; index < content.length; index++) {
+		const modelBlock = content[index]!;
+		const uiBlock = identityProbe.uiContent?.[index];
+		if (modelBlock !== uiBlock) blockReferencesReused = false;
+		if (modelBlock.type === "text" && uiBlock?.type === "text" && modelBlock.text !== uiBlock.text) {
+			textStringReferencesReused = false;
+		}
+		if (modelBlock.type === "image" && uiBlock?.type === "image" && modelBlock.data !== uiBlock.data) {
+			imageDataReferencesReused = false;
+		}
+	}
+	owner.release();
+	for (let run = 0; run < WARMUP_RUNS; run++) {
+		owner.create(content);
+		owner.release();
+	}
+	const before = { ...counters };
+	const timing = await measureSync(inspector, function createAndReleasePresentation(): void {
+		owner.create(content);
+		owner.release();
+	});
+	const measured = counterDelta(before, counters);
+	owner.dispose();
+	return {
+		name,
+		contentBlocks: content.length,
+		textCodeUnits: counters.maximumTextCodeUnits,
+		imageDataCodeUnits: counters.maximumImageDataCodeUnits,
+		...timing,
+		countersPerResult: perResult(measured),
+		modelUiOuterArraysDiffer,
+		blockReferencesReused,
+		textStringReferencesReused,
+		imageDataReferencesReused,
+		activeDispatchPresentationScopesAfterMeasurement: counters.activeDispatchPresentationScopes,
+		dispatchPresentationScopesHighWaterMark: counters.dispatchPresentationScopesHighWaterMark,
+	};
+}
+
+function measureParallelScopes(scopeCount: number): Record<string, unknown> {
+	const counters = createToolResultPresentationCounters();
+	const owner = createToolResultPresentationOwner({ enabled: true, counters })!;
+	const content = [{ type: "text" as const, text: `parallel-${scopeCount}` }];
+	const listenerRetainedPresentations: ToolResultPresentationV1[] = [];
+	for (let scope = 0; scope < scopeCount; scope++) {
+		listenerRetainedPresentations.push(owner.create(content)!);
+	}
+	const activeBeforeDispose = counters.activeDispatchPresentationScopes;
+	const highWaterMark = counters.dispatchPresentationScopesHighWaterMark;
+	owner.dispose();
+	const activeAfterDispose = counters.activeDispatchPresentationScopes;
+	for (let scope = 0; scope < scopeCount; scope++) owner.release();
+	return {
+		scopeCount,
+		activeBeforeDispose,
+		activeAfterDispose,
+		highWaterMark,
+		activeAfterRelease: counters.activeDispatchPresentationScopes,
+		completedScopes: counters.completedDispatchPresentationScopes,
+		releaseWithoutActiveScope: counters.releaseWithoutActiveScope,
+		ownerDisposeCalls: counters.ownerDisposeCalls,
+		listenerRetainedPresentations: listenerRetainedPresentations.length,
+		listenerRetainedPresentationStillValid:
+			listenerRetainedPresentations[scopeCount - 1]?.modelContent === content,
+	};
+}
+
 if (typeof globalThis.gc !== "function") {
 	throw new Error("tool-result-presentation-benchmark requires --expose-gc");
 }
@@ -290,20 +372,16 @@ const inspector = new Session();
 inspector.connect();
 await inspector.post("HeapProfiler.enable");
 try {
-	const directCounters = createToolResultPresentationCounters();
-	const directOwner = createToolResultPresentationOwner({ enabled: true, counters: directCounters })!;
-	const directContent = [{ type: "text" as const, text: TEN_MIB_TEXT }];
-	for (let run = 0; run < WARMUP_RUNS; run++) {
-		directOwner.create(directContent);
-		directOwner.release();
-	}
-	const directBefore = { ...directCounters };
-	const directTiming = await measureSync(inspector, function createAndReleasePresentation(): void {
-		directOwner.create(directContent);
-		directOwner.release();
-	});
-	const directMeasured = counterDelta(directBefore, directCounters);
-	directOwner.dispose();
+	const directResults = [
+		await measureDirectCase(inspector, "tiny-text", [{ type: "text", text: TINY_TEXT }]),
+		await measureDirectCase(inspector, "1-mib-text", [{ type: "text", text: ONE_MIB_TEXT }]),
+		await measureDirectCase(inspector, "10-mib-text", [{ type: "text", text: TEN_MIB_TEXT }]),
+		await measureDirectCase(inspector, "text-plus-image", [
+			{ type: "text", text: TINY_TEXT },
+			{ type: "image", data: IMAGE_DATA, mimeType: "image/png" },
+		]),
+	];
+	const parallelScopeResults = [2, 4, 8].map(measureParallelScopes);
 
 	const fixtures = [
 		await createProductionFixture(root, "absent"),
@@ -348,7 +426,7 @@ try {
 	globalThis.gc();
 	const heapAfterClearAndDisposeBytes = process.memoryUsage().heapUsed;
 	const controlledGcSamples: number[] = [];
-	for (let cycle = 0; cycle < 5; cycle++) {
+	for (let cycle = 0; cycle < 8; cycle++) {
 		globalThis.gc();
 		globalThis.gc();
 		controlledGcSamples.push(process.memoryUsage().heapUsed);
@@ -361,9 +439,24 @@ try {
 		if (weak.modelContent.deref()) retainedModelContentWeakReferences++;
 		if (weak.uiContent.deref()) retainedUiContentWeakReferences++;
 	}
+	let controlledGcPositiveDeltas = 0;
+	let controlledGcMaximumConsecutiveIncreases = 0;
+	let consecutiveIncreases = 0;
+	for (let index = 1; index < controlledGcSamples.length; index++) {
+		if (controlledGcSamples[index]! > controlledGcSamples[index - 1]!) {
+			controlledGcPositiveDeltas++;
+			consecutiveIncreases++;
+			controlledGcMaximumConsecutiveIncreases = Math.max(
+				controlledGcMaximumConsecutiveIncreases,
+				consecutiveIncreases,
+			);
+		} else {
+			consecutiveIncreases = 0;
+		}
+	}
 
 	process.stdout.write(`${JSON.stringify({
-		schemaVersion: 1,
+		schemaVersion: 2,
 		benchmark: "tool-result-presentation",
 		commit: git(["rev-parse", "HEAD"]),
 		branch: git(["branch", "--show-current"]),
@@ -372,24 +465,20 @@ try {
 		node: process.version,
 		platform: process.platform,
 		arch: process.arch,
-		inputCharacters: TEN_MIB_TEXT.length,
 		warmupRuns: WARMUP_RUNS,
 		measuredRuns: MEASURED_RUNS,
-		directEnabled: {
-			...directTiming,
-			countersPerResult: perResult(directMeasured),
-			activeDispatchPresentationScopesAfterMeasurement:
-				directCounters.activeDispatchPresentationScopes,
-			dispatchPresentationScopesHighWaterMark:
-				directCounters.dispatchPresentationScopesHighWaterMark,
-		},
+		heapProfilerSamplingIntervalBytes: 1024,
+		directResults,
 		productionResults,
+		parallelScopeResults,
 		lifecycle: {
 			heapBeforeClearAndDisposeBytes,
 			heapAfterClearAndDisposeBytes,
 			heapDeltaBytes: heapAfterClearAndDisposeBytes - heapBeforeClearAndDisposeBytes,
 			controlledGcSamples,
 			controlledGcSlopeBytesPerCycle: slope(controlledGcSamples),
+			controlledGcPositiveDeltas,
+			controlledGcMaximumConsecutiveIncreases,
 			retainedPresentationWeakReferences,
 			retainedModelContentWeakReferences,
 			retainedUiContentWeakReferences,
