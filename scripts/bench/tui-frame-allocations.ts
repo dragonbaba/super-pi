@@ -1,17 +1,19 @@
 import { Session } from "node:inspector/promises";
 import { constants, performance, PerformanceObserver, type PerformanceEntry } from "node:perf_hooks";
+import { setImmediate as waitImmediate } from "node:timers/promises";
 import { RetainedContainer } from "../../packages/tui/src/components/retained-item.ts";
 import { ScrollView } from "../../packages/tui/src/components/scroll-view.ts";
 import { VStack } from "../../packages/tui/src/components/v-stack.ts";
 import { ViewportContainer } from "../../packages/tui/src/components/viewport-container.ts";
 import { TuiRenderInstrumentation } from "../../packages/tui/src/render-instrumentation.ts";
 import type { Terminal } from "../../packages/tui/src/terminal.ts";
-import { type Component, Container, type TUI } from "../../packages/tui/src/tui.ts";
+import { type Component, Container, CURSOR_MARKER, type TUI } from "../../packages/tui/src/tui.ts";
 import { TuiAltScreen } from "../../packages/tui/src/tui-alt-screen.ts";
 import { TuiMainScreen } from "../../packages/tui/src/tui-main-screen.ts";
 import { currentCommit, readIntegerOption } from "./benchmark.ts";
 
 type Fixture = "direct-main" | "production-main" | "production-alt";
+type AltControl = "stable" | "overlay" | "selection" | "cursor-ime" | "mixed";
 
 interface SamplingNode {
 	callFrame: {
@@ -85,8 +87,21 @@ class StaticLines implements Component {
 class ActiveLines implements Component {
 	renderCalls = 0;
 	private generation = 0;
-	private readonly even = ["active-even"];
-	private readonly odd = ["active-odd"];
+	private readonly even: string[];
+	private readonly odd: string[];
+
+	constructor(control: AltControl) {
+		if (control === "cursor-ime") {
+			this.even = [`输入中😀e\u0301${CURSOR_MARKER}`];
+			this.odd = [`输入完成中😀e\u0301${CURSOR_MARKER}`];
+		} else if (control === "mixed") {
+			this.even = ["\x1b[31m中😀e\u0301-active-even\x1b[0m"];
+			this.odd = ["\x1b[32m中😀e\u0301-active-odd\x1b[0m"];
+		} else {
+			this.even = ["active-even"];
+			this.odd = ["active-odd"];
+		}
+	}
 
 	advance(): void {
 		this.generation++;
@@ -106,7 +121,19 @@ interface FixtureRuntime {
 	active: ActiveLines;
 	advanceActive(): void;
 	plainChildren: readonly StaticLines[];
-	dispose(): void;
+	getAltLayoutRetainedReferenceCounts(): {
+		components: number;
+		lines: number;
+		sources: number;
+		cachedRows: number;
+		sourceCodeUnits: number;
+		paintedCodeUnits: number;
+		maximumRowCodeUnits: number;
+		indexedComponents: number;
+		screenRows: number;
+		screenCodeUnits: number;
+	};
+	dispose(): Promise<void>;
 }
 
 function addPlainContainer(plainChildren: StaticLines[], id: string, lineCount = 1): Container {
@@ -117,7 +144,7 @@ function addPlainContainer(plainChildren: StaticLines[], id: string, lineCount =
 	return container;
 }
 
-function createTranscript(itemCount: number, instrumentation: TuiRenderInstrumentation): {
+function createTranscript(itemCount: number, instrumentation: TuiRenderInstrumentation, control: AltControl): {
 	transcript: RetainedContainer;
 	active: ActiveLines;
 	advanceActive(): void;
@@ -130,7 +157,7 @@ function createTranscript(itemCount: number, instrumentation: TuiRenderInstrumen
 			completed: true,
 		});
 	}
-	const active = new ActiveLines();
+	const active = new ActiveLines(control);
 	const retained = transcript.addRetainedChild(active, { id: "active", version: 0 });
 	return {
 		transcript,
@@ -142,10 +169,16 @@ function createTranscript(itemCount: number, instrumentation: TuiRenderInstrumen
 	};
 }
 
-function createFixture(fixture: Fixture, itemCount: number, width: number, height: number): FixtureRuntime {
+function createFixture(
+	fixture: Fixture,
+	itemCount: number,
+	width: number,
+	height: number,
+	altControl: AltControl,
+): FixtureRuntime {
 	const instrumentation = new TuiRenderInstrumentation();
 	const terminal = new NoopTerminal(width, height);
-	const { transcript, active, advanceActive } = createTranscript(itemCount, instrumentation);
+	const { transcript, active, advanceActive } = createTranscript(itemCount, instrumentation, altControl);
 	const plainChildren: StaticLines[] = [];
 	let tui: TUI;
 
@@ -193,7 +226,17 @@ function createFixture(fixture: Fixture, itemCount: number, width: number, heigh
 			const alt = new TuiAltScreen(terminal, false, undefined, { mouse: false });
 			for (const root of roots) alt.addChild(root);
 			alt.setLayoutRoot(layout);
+			if (altControl === "overlay") alt.showOverlay(new StaticLines("overlay-中😀e\u0301"), { width: 24 });
 			alt.start();
+			if (altControl === "selection") {
+				const row = Math.max(0, itemCount - 2);
+				const internals = alt as unknown as {
+					selectionAnchor?: { row: number; col: number; scrollView: ScrollView };
+					selectionFocus?: { row: number; col: number; boundary?: boolean; scrollView: ScrollView };
+				};
+				internals.selectionAnchor = { row, col: 0, scrollView: transcriptScrollView };
+				internals.selectionFocus = { row, col: 8, boundary: true, scrollView: transcriptScrollView };
+			}
 			tui = alt;
 		}
 	}
@@ -209,12 +252,54 @@ function createFixture(fixture: Fixture, itemCount: number, width: number, heigh
 		active,
 		advanceActive,
 		plainChildren,
-		dispose: () => tui.stop({ preserveScreen: true }),
+		getAltLayoutRetainedReferenceCounts: () =>
+			tui instanceof TuiAltScreen
+				? tui.getAltLayoutRetainedReferenceCounts()
+				: {
+					components: 0,
+					lines: 0,
+					sources: 0,
+					cachedRows: 0,
+					sourceCodeUnits: 0,
+					paintedCodeUnits: 0,
+					maximumRowCodeUnits: 0,
+					indexedComponents: 0,
+					screenRows: 0,
+					screenCodeUnits: 0,
+				},
+		dispose: async () => {
+			await tui.stop({ preserveScreen: true });
+		},
 	};
 }
 
 function percentile(sorted: readonly number[], ratio: number): number {
 	return sorted[Math.min(sorted.length - 1, Math.max(0, Math.ceil(sorted.length * ratio) - 1))] ?? 0;
+}
+
+function linearSlope(values: readonly number[]): number {
+	if (values.length < 2) return 0;
+	const xMean = (values.length - 1) / 2;
+	let ySum = 0;
+	for (let index = 0; index < values.length; index++) ySum += values[index]!;
+	const yMean = ySum / values.length;
+	let numerator = 0;
+	let denominator = 0;
+	for (let index = 0; index < values.length; index++) {
+		const xDelta = index - xMean;
+		numerator += xDelta * (values[index]! - yMean);
+		denominator += xDelta * xDelta;
+	}
+	return denominator === 0 ? 0 : numerator / denominator;
+}
+
+async function runAltLifecycleCycle(itemCount: number, width: number, height: number): Promise<number> {
+	const cycle = createFixture("production-alt", itemCount, width, height, "stable");
+	cycle.advanceActive();
+	cycle.tui.renderNow();
+	await cycle.tui.dispose({ preserveScreen: true });
+	const references = cycle.getAltLayoutRetainedReferenceCounts();
+	return references.components + references.lines + references.sources + references.cachedRows;
 }
 
 function allocationSites(head: SamplingNode): { sampledBytes: number; top: AllocationSite[] } {
@@ -251,11 +336,17 @@ if (!fixtureArgument || !new Set<Fixture>(["direct-main", "production-main", "pr
 const itemCount = readIntegerOption("--items", 5_000);
 const measuredFrames = readIntegerOption("--frames", 20_000);
 const warmupFrames = readIntegerOption("--warmup", 1_000);
+const lifecycleCycles = readIntegerOption("--lifecycle-cycles", 0);
 const width = readIntegerOption("--width", 120);
 const height = readIntegerOption("--height", 40);
+const altControlIndex = process.argv.indexOf("--alt-control");
+const altControlArgument = (altControlIndex === -1 ? "stable" : process.argv[altControlIndex + 1]) as AltControl;
+if (!["stable", "overlay", "selection", "cursor-ime", "mixed"].includes(altControlArgument)) {
+	throw new Error("--alt-control must be stable, overlay, selection, cursor-ime, or mixed");
+}
 if (typeof globalThis.gc !== "function") throw new Error("tui-frame-allocations requires --expose-gc");
 
-const runtime = createFixture(fixtureArgument, itemCount, width, height);
+const runtime = createFixture(fixtureArgument, itemCount, width, height, altControlArgument);
 for (let index = 0; index < warmupFrames; index++) {
 	runtime.advanceActive();
 	runtime.tui.renderNow();
@@ -315,13 +406,31 @@ const controlledGcAfterHeapBytes = process.memoryUsage().heapUsed;
 const sortedDurations = durations.slice().sort((left, right) => left - right);
 const sampled = allocationSites(stopped.profile.head as SamplingNode);
 const metrics = runtime.instrumentation.snapshot();
+const retainedReferencesBeforeDispose = runtime.getAltLayoutRetainedReferenceCounts();
 let plainRenderCalls = 0;
 let maxPlainRenderCalls = 0;
 for (const child of runtime.plainChildren) {
 	plainRenderCalls += child.renderCalls;
 	maxPlainRenderCalls = Math.max(maxPlainRenderCalls, child.renderCalls);
 }
-runtime.dispose();
+await runtime.dispose();
+globalThis.gc();
+globalThis.gc();
+const controlledGcAfterDisposeHeapBytes = process.memoryUsage().heapUsed;
+const retainedReferencesAfterDispose = runtime.getAltLayoutRetainedReferenceCounts();
+const lifecycleHeapSamples: number[] = [];
+let lifecycleMaximumRetainedReferencesAfterDispose = 0;
+for (let cycle = 0; cycle < lifecycleCycles; cycle++) {
+	const retainedReferences = await runAltLifecycleCycle(itemCount, width, height);
+	await waitImmediate();
+	lifecycleMaximumRetainedReferencesAfterDispose = Math.max(
+		lifecycleMaximumRetainedReferencesAfterDispose,
+		retainedReferences,
+	);
+	globalThis.gc();
+	globalThis.gc();
+	lifecycleHeapSamples.push(process.memoryUsage().heapUsed);
+}
 
 process.stdout.write(`${JSON.stringify({
 	schemaVersion: 1,
@@ -329,6 +438,7 @@ process.stdout.write(`${JSON.stringify({
 	commit: currentCommit(),
 	fixtureClass: "render-plus-queue",
 	fixture: fixtureArgument,
+	altControl: altControlArgument,
 	items: itemCount,
 	width,
 	height,
@@ -351,9 +461,18 @@ process.stdout.write(`${JSON.stringify({
 		heapAfterFramesBytes,
 		controlledGcAfterHeapBytes,
 		controlledGcHeapDeltaBytes: controlledGcAfterHeapBytes - controlledGcBeforeHeapBytes,
+		controlledGcAfterDisposeHeapBytes,
+		controlledGcAfterDisposeHeapDeltaBytes: controlledGcAfterDisposeHeapBytes - controlledGcBeforeHeapBytes,
+		retainedReferencesBeforeDispose,
+		retainedReferencesAfterDispose,
+		lifecycleCycles,
+		lifecycleHeapSamples,
+		lifecycleHeapSlopeBytesPerCycle: linearSlope(lifecycleHeapSamples),
+		lifecycleMaximumRetainedReferencesAfterDispose,
 		plainChildRenderCallsPerFrame: plainRenderCalls / measuredFrames,
 		maxPlainChildRenderCallsPerFrame: maxPlainRenderCalls / measuredFrames,
 		activeRenderCallsPerFrame: runtime.active.renderCalls / measuredFrames,
+		completedItemRendersPerFrame: metrics.completedItemRenders / measuredFrames,
 		viewportItemVisitsPerFrame: metrics.viewportItemVisits / measuredFrames,
 		viewportLineArraysPerFrame: metrics.viewportLineArrays / measuredFrames,
 		viewportComposedLinesPerFrame: metrics.viewportComposedLines / measuredFrames,
@@ -369,10 +488,35 @@ process.stdout.write(`${JSON.stringify({
 		maximumFrameUtf8Bytes: metrics.maximumFrameUtf8Bytes,
 		activeFrameUtf8Bytes: metrics.activeFrameUtf8Bytes,
 		pendingFrameUtf8Bytes: metrics.pendingFrameUtf8Bytes,
+		terminalFrameQueueHighWaterMark: metrics.terminalFrameQueueHighWaterMark,
+		terminalActiveWriteHighWaterMark: metrics.terminalActiveWriteHighWaterMark,
+		terminalPendingFrameHighWaterMark: metrics.terminalPendingFrameHighWaterMark,
 		fullSizeFrameCopies: metrics.fullSizeFrameCopies,
 		framePromisesCreated: metrics.framePromisesCreated,
 		frameAbortControllersCreated: metrics.frameAbortControllersCreated,
 		frameWrapperObjectsCreated: metrics.frameWrapperObjectsCreated,
+		layoutNodesVisitedPerFrame: metrics.altLayoutNodesVisited / measuredFrames,
+		layoutBoxObjectsPerFrame: metrics.altLayoutBoxObjects / measuredFrames,
+		layoutRectObjectsPerFrame: metrics.altLayoutRectObjects / measuredFrames,
+		layoutClipObjectsPerFrame: metrics.altLayoutClipObjects / measuredFrames,
+		layoutRenderCacheLookupProbesPerFrame: metrics.altLayoutRenderCacheLookupProbes / measuredFrames,
+		layoutRenderCacheRecordCountPerFrame: metrics.altLayoutRenderCacheRecordCount / measuredFrames,
+		layoutRenderCacheIndexActivationsPerFrame: metrics.altLayoutRenderCacheIndexActivations / measuredFrames,
+		layoutRenderCacheWidthVariantBypassesPerFrame:
+			metrics.altLayoutRenderCacheWidthVariantBypasses / measuredFrames,
+		layoutScreenArraysCreatedPerFrame: metrics.altLayoutScreenArraysCreated / measuredFrames,
+		layoutFullViewportArrayCopiesPerFrame: metrics.altLayoutFullViewportArrayCopies / measuredFrames,
+		layoutStringRepeatCallsPerFrame: metrics.altLayoutStringRepeatCalls / measuredFrames,
+		layoutStringRepeatBytesPerFrame: metrics.altLayoutStringRepeatBytes / measuredFrames,
+		layoutPaintBoxCallsPerFrame: metrics.altLayoutPaintBoxCalls / measuredFrames,
+		layoutChildRenderCallsPerFrame: metrics.altLayoutChildRenderCalls / measuredFrames,
+		layoutFullWidthRowCacheHitsPerFrame: metrics.altLayoutFullWidthRowCacheHits / measuredFrames,
+		layoutCachedSourceCodeUnitsPerFrame: metrics.altLayoutCachedSourceCodeUnits / measuredFrames,
+		layoutCachedPaintedCodeUnitsPerFrame: metrics.altLayoutCachedPaintedCodeUnits / measuredFrames,
+		layoutMaximumCachedRowCodeUnits: metrics.altLayoutMaximumCachedRowCodeUnits,
+		layoutRowCacheRejectedBySizePerFrame: metrics.altLayoutRowCacheRejectedBySize / measuredFrames,
+		sourceInvariantNestedRenderCacheMapsPerFrame: 0,
+		sourceInvariantRenderCacheLookupWrapperObjectsPerFrame: 0,
 	},
 	topAllocationSites: sampled.top,
 }, null, 2)}\n`);

@@ -47,9 +47,12 @@ export class AltScreenFlashContainer implements Component {
 	invalidate(): void {}
 
 	render(width: number): string[] {
-		return this.entries.map((entry) => {
+		const lines = new Array<string>(this.entries.length);
+		for (let index = 0; index < this.entries.length; index++) {
+			const entry = this.entries[index]!;
 			const message = truncateToWidth(` ${entry.message} `, width, "");
-			return `\x1b[7m${message}\x1b[27m`;
-		});
+			lines[index] = `\x1b[7m${message}\x1b[27m`;
+		}
+		return lines;
 	}
 }

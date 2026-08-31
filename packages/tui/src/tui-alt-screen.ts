@@ -13,6 +13,7 @@ import {
 	getScrollbarGeometry,
 	getScrollViewBox,
 	getScrollViewsAt,
+	LayoutFrameScratch,
 	type LayoutFrame,
 	renderLayoutFrame,
 	type ScrollbarGeometry,
@@ -154,6 +155,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	readonly mode = "fullscreen" as const;
 	readonly [VIEWPORT_TUI] = true as const;
 	private previousScreen: string[] = [];
+	private nextScreen: string[] = [];
 	private previousRawScreen: string[] = [];
 	private readonly lineResetBuffer = [""];
 	private lastDocument: string[] = [];
@@ -161,6 +163,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	private previousScreenHeight = 0;
 	private layoutRoot: Component | undefined;
 	private currentLayout: LayoutFrame | undefined;
+	private readonly layoutScratch = new LayoutFrameScratch();
 	private readonly implicitDocument: LineViewportComponent;
 	private readonly implicitScrollView: ScrollView;
 	private readonly flashes: AltScreenFlashContainer;
@@ -342,11 +345,28 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			setCapabilities(this.savedCapabilities);
 			this.savedCapabilities = undefined;
 		}
+		this.resetRenderState();
 		return write;
 	}
 
 	private deleteKittyImages(): string {
 		return this.imageProtocol === "kitty" ? deleteAllKittyImages() : "";
+	}
+
+	/** Low-frequency lifecycle diagnostics; never called from the frame path. */
+	getAltLayoutRetainedReferenceCounts(): {
+		components: number;
+		lines: number;
+		sources: number;
+		cachedRows: number;
+		sourceCodeUnits: number;
+		paintedCodeUnits: number;
+		maximumRowCodeUnits: number;
+		indexedComponents: number;
+		screenRows: number;
+		screenCodeUnits: number;
+	} {
+		return this.layoutScratch.getRetainedReferenceCounts();
 	}
 
 	private prepareKittyScreen(screen: string[]): { lines: string[]; evictedImageDeletion: string } {
@@ -401,10 +421,12 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 
 	protected override resetRenderState(): void {
 		this.previousScreen = [];
+		this.nextScreen = [];
 		this.previousRawScreen = [];
 		this.previousScreenWidth = 0;
 		this.previousScreenHeight = 0;
 		this.currentLayout = undefined;
+		this.layoutScratch.clear();
 	}
 
 	scrollBy(lines: number): void {
@@ -1098,16 +1120,16 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 
 	private compositeFlashes(screen: string[], width: number, height: number): string[] {
 		if (!this.flashes.hasEntries) return screen;
-		const flashLines = this.flashes.render(width).slice(-height);
-		const result = [...screen];
-		while (result.length < height) result.push("");
-		for (let row = 0; row < flashLines.length; row++) {
-			const line = flashLines[row]!;
+		const flashLines = this.flashes.render(width);
+		const flashStart = Math.max(0, flashLines.length - height);
+		while (screen.length < height) screen.push("");
+		for (let row = 0; row < flashLines.length - flashStart; row++) {
+			const line = flashLines[flashStart + row]!;
 			const flashWidth = visibleWidth(line);
 			if (flashWidth === 0) continue;
-			result[row] = compositeTuiLine(result[row] ?? "", line, width - flashWidth, flashWidth, width);
+			screen[row] = compositeTuiLine(screen[row] ?? "", line, width - flashWidth, flashWidth, width);
 		}
-		return result;
+		return screen;
 	}
 
 	protected override doRender(): void {
@@ -1115,20 +1137,47 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		const width = Math.max(1, this.terminal.columns);
 		const height = Math.max(1, this.terminal.rows);
 		const root = this.layoutRoot ?? this.implicitScrollView;
-		const nextLayout = renderLayoutFrame(root, width, height, this.layoutRequestRender);
+		const nextLayout = renderLayoutFrame(root, width, height, this.layoutRequestRender, this.layoutScratch);
 		let screen = nextLayout.lines;
+		this.recordAltLayoutFrame(
+			nextLayout.layoutNodesVisited ?? 0,
+			nextLayout.layoutBoxObjects ?? 0,
+			nextLayout.layoutRectObjects ?? 0,
+			nextLayout.clipObjects ?? 0,
+			nextLayout.renderCacheLookupProbes ?? 0,
+			nextLayout.renderCacheRecordCount ?? 0,
+			nextLayout.renderCacheIndexActivations ?? 0,
+			nextLayout.renderCacheWidthVariantBypasses ?? 0,
+			nextLayout.screenArraysCreated ?? 0,
+			nextLayout.fullViewportArrayCopies ?? 0,
+			nextLayout.stringRepeatCalls ?? 0,
+			nextLayout.stringRepeatBytes ?? 0,
+			nextLayout.paintBoxCalls ?? 0,
+			nextLayout.childRenderCalls ?? 0,
+			nextLayout.fullWidthRowCacheHits ?? 0,
+			nextLayout.cachedSourceCodeUnits ?? 0,
+			nextLayout.cachedPaintedCodeUnits ?? 0,
+			nextLayout.maximumCachedRowCodeUnits ?? 0,
+			nextLayout.rowCacheRejectedBySize ?? 0,
+		);
 		this.recordRootRender(nextLayout.generatedLineCount, Math.min(screen.length, height));
 		for (let row = 0; row < screen.length; row++) {
 			const line = screen[row];
 			if (line.startsWith("\x1b]133;")) screen[row] = line.replace(OSC133_ZONE_PREFIX_PATTERN, "");
 		}
 		screen = this.compositeOverlays(screen, width, height);
-		if (screen.length > height) screen = screen.slice(screen.length - height);
+		if (screen.length > height) {
+			const start = screen.length - height;
+			for (let row = 0; row < height; row++) screen[row] = screen[start + row]!;
+			screen.length = height;
+		}
 		screen = this.applySelection(screen, nextLayout);
 		screen = this.compositeFlashes(screen, width, height);
 
 		const cursorPos = this.extractCursorPosition(screen, height);
-		const rawScreen = screen.slice();
+		const rawScreen = screen;
+		const nextScreen = this.nextScreen;
+		nextScreen.length = screen.length;
 		const fullRedraw =
 			this.previousScreen.length === 0 || this.previousScreenWidth !== width || this.previousScreenHeight !== height;
 		let imagesNeedRedraw = false;
@@ -1140,7 +1189,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			if (!fullRedraw && previousLine !== undefined && rawLine === this.previousRawScreen[row]) {
 				line = previousLine;
 				imageLine = isImageLine(line);
-				screen[row] = line;
+				nextScreen[row] = line;
 			} else {
 				line = rawLine;
 				imageLine = isImageLine(line);
@@ -1149,7 +1198,9 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 					this.applyLineResets(this.lineResetBuffer);
 					line = this.lineResetBuffer[0];
 					if (visibleWidth(line) > width) line = sliceByColumn(line, 0, width, true);
-					screen[row] = line;
+					nextScreen[row] = line;
+				} else {
+					nextScreen[row] = line;
 				}
 			}
 			const comparablePreviousLine = previousLine ?? "";
@@ -1159,10 +1210,10 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		}
 		const redrawImages = fullRedraw || imagesNeedRedraw;
 		const hadUploadedKittyImages = this.uploadedKittyImages.size > 0;
-		let preparedLines = screen;
+		let preparedLines = nextScreen;
 		let evictedImageDeletion = "";
 		if (redrawImages && this.imageProtocol === "kitty") {
-			const preparedKittyScreen = this.prepareKittyScreen(screen);
+			const preparedKittyScreen = this.prepareKittyScreen(nextScreen);
 			preparedLines = preparedKittyScreen.lines;
 			evictedImageDeletion = preparedKittyScreen.evictedImageDeletion;
 		}
@@ -1183,7 +1234,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 
 		let diffLines = 0;
 		for (let row = 0; row < height; row++) {
-			if (!fullRedraw && !imagesNeedRedraw && screen[row] === this.previousScreen[row]) continue;
+			if (!fullRedraw && !imagesNeedRedraw && nextScreen[row] === this.previousScreen[row]) continue;
 			diffLines++;
 			buffer += `\x1b[${row + 1};1H\x1b[2K${preparedLines[row] ?? ""}`;
 		}
@@ -1197,10 +1248,13 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		buffer += END_SYNCHRONIZED_OUTPUT;
 		this.writeTerminalFrame(buffer, diffLines);
 
-		this.previousScreen = screen;
+		const reusableScreen = this.previousScreen;
+		this.previousScreen = nextScreen;
+		this.nextScreen = reusableScreen;
 		this.previousRawScreen = rawScreen;
 		this.previousScreenWidth = width;
 		this.previousScreenHeight = height;
+		nextLayout.lines = this.previousScreen;
 		this.currentLayout = nextLayout;
 	}
 }

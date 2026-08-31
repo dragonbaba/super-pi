@@ -564,6 +564,50 @@ export abstract class TuiBase extends Container implements TUI {
 		this.renderInstrumentation?.recordRootRender(generatedLines, visibleLines);
 	}
 
+	protected recordAltLayoutFrame(
+		nodesVisited: number,
+		boxObjects: number,
+		rectObjects: number,
+		clipObjects: number,
+		renderCacheLookupProbes: number,
+		renderCacheRecordCount: number,
+		renderCacheIndexActivations: number,
+		renderCacheWidthVariantBypasses: number,
+		screenArraysCreated: number,
+		fullViewportArrayCopies: number,
+		stringRepeatCalls: number,
+		stringRepeatBytes: number,
+		paintBoxCalls: number,
+		childRenderCalls: number,
+		fullWidthRowCacheHits: number,
+		cachedSourceCodeUnits: number,
+		cachedPaintedCodeUnits: number,
+		maximumCachedRowCodeUnits: number,
+		rowCacheRejectedBySize: number,
+	): void {
+		this.renderInstrumentation?.recordAltLayoutFrame(
+			nodesVisited,
+			boxObjects,
+			rectObjects,
+			clipObjects,
+			renderCacheLookupProbes,
+			renderCacheRecordCount,
+			renderCacheIndexActivations,
+			renderCacheWidthVariantBypasses,
+			screenArraysCreated,
+			fullViewportArrayCopies,
+			stringRepeatCalls,
+			stringRepeatBytes,
+			paintBoxCalls,
+			childRenderCalls,
+			fullWidthRowCacheHits,
+			cachedSourceCodeUnits,
+			cachedPaintedCodeUnits,
+			maximumCachedRowCodeUnits,
+			rowCacheRejectedBySize,
+		);
+	}
+
 	protected writeTerminalFrame(data: string, diffLines: number): void {
 		if (this.composingTerminalFrame) {
 			this.composedTerminalFrame += data;
