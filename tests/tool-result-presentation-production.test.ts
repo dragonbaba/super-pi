@@ -345,3 +345,108 @@ test("budgeted production persists full UI content and resumes the identical pro
 		rmSync(root, { recursive: true, force: true });
 	}
 });
+
+test("blocked-image provider projection keeps its cursor bound to the persisted source across toggles", async () => {
+	const root = mkdtempSync(join(tmpdir(), "pi-presentation-blocked-image-source-"));
+	const cwd = join(root, "workspace");
+	const agentDir = join(root, "agent");
+	mkdirSync(cwd, { recursive: true });
+	mkdirSync(agentDir, { recursive: true });
+	const settingsManager = SettingsManager.create(cwd, agentDir);
+	const resourceLoader = new DefaultResourceLoader({
+		cwd,
+		agentDir,
+		settingsManager,
+		noContextFiles: true,
+		noPromptTemplates: true,
+		noSkills: true,
+		noThemes: true,
+	});
+	await resourceLoader.reload();
+	const sessionManager = SessionManager.inMemory(cwd, { id: "blocked-image-continuation" });
+	const imageA = { type: "image" as const, data: "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo=", mimeType: "image/png" };
+	const imageB = { type: "image" as const, data: "YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXo=", mimeType: "image/jpeg" };
+	const sourceContent: ToolResultMessage["content"] = [{ type: "text", text: "head-".repeat(4) }];
+	for (let imageIndex = 0; imageIndex < 24; imageIndex++) {
+		sourceContent.push(imageA, { type: "text", text: `x${imageIndex}` });
+	}
+	sourceContent.push(
+		{ type: "text", text: "middle-".repeat(4096) },
+		imageB,
+		{ type: "text", text: "tail-".repeat(4) },
+	);
+	const message: ToolResultMessage = {
+		role: "toolResult",
+		toolCallId: "blocked-image-call",
+		toolName: "read",
+		content: sourceContent,
+		isError: false,
+		timestamp: 1,
+	};
+	const counters = createToolResultPresentationCounters();
+	const { session } = await createAgentSession({
+		cwd,
+		agentDir,
+		model: fixtureModel(),
+		modelRuntime: fixtureModelRuntime(),
+		settingsManager,
+		sessionManager,
+		resourceLoader,
+		noTools: "all",
+		toolResultPresentation: { enabled: true, budgetTokens: 256, counters },
+	});
+	let presentation: ToolResultPresentationV2 | undefined;
+	session.subscribe((event) => {
+		if (event.type === "message_end" && event.message.role === "toolResult" && event.toolResultPresentation?.version === 2) {
+			presentation = event.toolResultPresentation;
+		}
+	});
+	function cursorFrom(content: ToolResultMessage["content"]): string {
+		for (let index = 0; index < content.length; index++) {
+			const block = content[index]!;
+			if (block.type !== "text") continue;
+			const match = /Continue with cursor (tr1\.[a-z0-9.]+)\.\]/.exec(block.text);
+			if (match?.[1]) return match[1];
+		}
+		throw new Error("provider model view is missing its continuation cursor");
+	}
+	async function providerResult(): Promise<ToolResultMessage> {
+		const converted = await session.agent.convertToLlm(session.agent.state.messages.slice());
+		const result = converted.find((candidate) => candidate.role === "toolResult");
+		assert.ok(result?.role === "toolResult");
+		return result;
+	}
+	try {
+		session.agent.state.messages.push(message);
+		await (session as unknown as {
+			_handleAgentEvent(event: ToolResultMessageEndEvent): Promise<void>;
+		})._handleAgentEvent({ type: "message_end", message });
+		assert.ok(presentation);
+
+		settingsManager.setBlockImages(false);
+		const unblockedFirst = await providerResult();
+		const unblockedCursor = cursorFrom(unblockedFirst.content);
+		assert.equal(unblockedCursor, presentation.continuation.cursor);
+
+		settingsManager.setBlockImages(true);
+		const blocked = await providerResult();
+		const blockedWire = JSON.stringify(blocked);
+		assert.equal(blockedWire.includes(imageA.data), false);
+		assert.equal(blockedWire.includes(imageB.data), false);
+		assert.equal(blocked.content.some((block) => block.type === "image"), false);
+		assert.equal(blocked.content.some((block) => block.type === "text" && block.text === "Image reading is disabled."), true);
+		assert.ok(estimateToolOutputTokens(blocked.content).estimatedTokens <= 256);
+		assert.ok(counters.postImagePolicyShrinkPasses > 0);
+		const blockedCursor = cursorFrom(blocked.content);
+		assert.equal(blockedCursor, presentation.continuation.cursor);
+		assert.doesNotThrow(() => session.readToolResultContinuation(blockedCursor, 256));
+
+		settingsManager.setBlockImages(false);
+		const unblockedAgain = await providerResult();
+		assert.equal(cursorFrom(unblockedAgain.content), presentation.continuation.cursor);
+		assert.equal(unblockedCursor, cursorFrom(unblockedAgain.content));
+	} finally {
+		session.dispose();
+		rmSync(root, { recursive: true, force: true });
+	}
+});

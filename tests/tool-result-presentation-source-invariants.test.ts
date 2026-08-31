@@ -15,7 +15,8 @@ test("presentation core forbids large-result hot-path allocation regressions", (
 	let functionExpressions = 0;
 	let promiseConstructions = 0;
 	let abortControllerConstructions = 0;
-	let mapOrSetConstructions = 0;
+	let mapConstructions = 0;
+	let setConstructions = 0;
 	let objectSpreadAssignments = 0;
 	let forbiddenCalls = 0;
 	const forbiddenMethods = new Set(["split", "map", "filter", "flatMap", "join", "slice"]);
@@ -28,7 +29,8 @@ test("presentation core forbids large-result hot-path allocation regressions", (
 			const name = node.expression.getText(ast);
 			if (name === "Promise") promiseConstructions++;
 			if (name === "AbortController") abortControllerConstructions++;
-			if (name === "Map" || name === "Set" || name === "WeakMap" || name === "WeakSet") mapOrSetConstructions++;
+			if (name === "Map") mapConstructions++;
+			if (name === "Set" || name === "WeakMap" || name === "WeakSet") setConstructions++;
 		}
 		if (ts.isCallExpression(node)) {
 			const expression = node.expression;
@@ -48,11 +50,14 @@ test("presentation core forbids large-result hot-path allocation regressions", (
 	assert.equal(functionExpressions, 0, "sourceInvariantFunctionExpressions");
 	assert.equal(promiseConstructions, 0, "sourceInvariantPromiseConstructions");
 	assert.equal(abortControllerConstructions, 0, "sourceInvariantAbortControllerConstructions");
-	assert.equal(mapOrSetConstructions, 0, "sourceInvariantMapOrSetConstructions");
+	assert.equal(mapConstructions, 1, "sourceInvariantOneSessionLocalProjectionRecordMap");
+	assert.equal(setConstructions, 0, "sourceInvariantSetOrGlobalWeakMapConstructions");
 	assert.equal(objectSpreadAssignments, 0, "sourceInvariantObjectSpreadAssignments");
 	assert.equal(forbiddenCalls, 0, "sourceInvariantFullStringCopiesOrLineArrays");
 	assert.equal(source.includes("new String"), false);
 	assert.equal(source.includes("ObjectPool"), false);
+	assert.equal(source.includes("new Map<string, ProjectionRecord>()"), true);
+	assert.equal(source.includes("globalThis"), false, "sourceInvariantNoGlobalProjectionRegistry");
 	assert.equal(source.includes("Promise.all"), false);
 	assert.equal(source.includes("...modelContent"), false);
 	assert.equal(source.includes("comparePositions({"), false, "sourceInvariantPerBlockPositionObjects");
@@ -70,11 +75,19 @@ test("AgentSession isolates the session event and pairs release with a stable ow
 	assert.equal(source.includes("Object.defineProperty(event"), false);
 	assert.equal(source.includes("event.toolResultPresentation ="), false);
 	assert.equal(source.includes("presentationOwner.create(event.message.content, event.message.toolCallId)"), true);
+	assert.equal(
+		source.match(/this\._toolResultPresentation\?\.clearProjectionRecords\(\);/g)?.length,
+		3,
+		"sourceInvariantPermanentSessionContextReplacementsClearProjectionRecords",
+	);
 });
 
-test("SDK applies the provider-neutral projection after image policy without exposing UI sidecars", () => {
+test("SDK binds projection to full source before applying image policy without exposing UI sidecars", () => {
 	const source = readFileSync(SDK_SOURCE_PATH, "utf8");
-	assert.equal(source.includes("toolResultPresentationOwner?.projectMessagesForModel(imageFiltered)"), true);
+	assert.equal(source.includes("toolResultPresentationOwner?.projectMessagesForModel(converted)"), true);
+	assert.equal(source.includes("replaceBlockedImagesInMessages(projected)"), true);
+	assert.equal(source.includes("toolResultPresentationOwner?.enforcePostImagePolicyBudgets(imageFiltered, projected)"), true);
+	assert.equal(source.includes("projectMessagesForModel(imageFiltered)"), false);
 	assert.equal(source.includes("toolResultPresentationOwner,"), true);
 	assert.equal(source.includes("uiContent"), false);
 	assert.equal(source.includes("toolResultPresentation:"), false);
