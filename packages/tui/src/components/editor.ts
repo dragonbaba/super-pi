@@ -228,6 +228,10 @@ interface LayoutLine {
 	cursorPos?: number;
 }
 
+const MAX_EDITOR_LAYOUT_CACHE_SOURCE_LINES = 4_096;
+const MAX_EDITOR_LAYOUT_CACHE_SOURCE_CODE_UNITS = 512 * 1_024;
+const MAX_EDITOR_LAYOUT_CACHE_LINES = 16_384;
+
 export interface EditorTheme {
 	borderColor: (str: string) => string;
 	selectList: SelectListTheme;
@@ -292,6 +296,17 @@ export class Editor implements Component, Focusable {
 		cursorLine: 0,
 		cursorCol: 0,
 	};
+	private layoutCacheLines: LayoutLine[] | undefined;
+	private layoutCacheWidth = 0;
+	private layoutCacheCursorLine = -1;
+	private layoutCacheCursorCol = -1;
+	private layoutCachePasteGeneration = -1;
+	private layoutCacheSourceCodeUnits = 0;
+	private layoutCacheSourceLines: string[] = [];
+	private layoutCacheHits = 0;
+	private layoutCacheMisses = 0;
+	private layoutCacheSourceLineComparisons = 0;
+	private layoutCacheRejectedByCapacity = 0;
 
 	/** Focusable interface - set by TUI when focus changes */
 	focused: boolean = false;
@@ -327,6 +342,7 @@ export class Editor implements Component, Focusable {
 	// Paste tracking for large pastes
 	private pastes: Map<number, string> = new Map();
 	private pasteCounter: number = 0;
+	private pasteLayoutGeneration: number = 0;
 
 	// Bracketed paste mode buffering
 	private pasteBuffer: string = "";
@@ -374,6 +390,27 @@ export class Editor implements Component, Focusable {
 	/** Segment text with paste-marker awareness, only merging markers with valid IDs. */
 	private segment(text: string, mode: "word" | "grapheme"): Iterable<Intl.SegmentData> {
 		return segmentWithMarkers(text, mode === "word" ? wordSegmenter : graphemeSegmenter, this.pastes);
+	}
+
+	private setPaste(id: number, value: string): void {
+		this.pastes.set(id, value);
+		this.pasteLayoutGeneration++;
+	}
+
+	private deletePaste(id: number): boolean {
+		if (!this.pastes.delete(id)) return false;
+		this.pasteLayoutGeneration++;
+		return true;
+	}
+
+	private clearPastes(): void {
+		this.pastes.clear();
+		this.pasteLayoutGeneration++;
+	}
+
+	private replacePastes(pastes: Map<number, string>): void {
+		this.pastes = pastes;
+		this.pasteLayoutGeneration++;
 	}
 
 	getPaddingX(): number {
@@ -490,7 +527,7 @@ export class Editor implements Component, Focusable {
 	}
 
 	invalidate(): void {
-		// No cached state to invalidate currently
+		this.clearLayoutCache();
 	}
 
 	render(width: number): string[] {
@@ -515,7 +552,12 @@ export class Editor implements Component, Focusable {
 		const maxVisibleLines = Math.max(5, Math.floor(terminalRows * 0.3));
 
 		// Find the cursor line index in layoutLines
-		let cursorLineIndex = layoutLines.findIndex((line) => line.hasCursor);
+		let cursorLineIndex = -1;
+		for (let index = 0; index < layoutLines.length; index++) {
+			if (!layoutLines[index]!.hasCursor) continue;
+			cursorLineIndex = index;
+			break;
+		}
 		if (cursorLineIndex === -1) cursorLineIndex = 0;
 
 		// Adjust scroll offset to keep cursor visible
@@ -529,8 +571,8 @@ export class Editor implements Component, Focusable {
 		const maxScrollOffset = Math.max(0, layoutLines.length - maxVisibleLines);
 		this.scrollOffset = Math.max(0, Math.min(this.scrollOffset, maxScrollOffset));
 
-		// Get visible lines slice
-		const visibleLines = layoutLines.slice(this.scrollOffset, this.scrollOffset + maxVisibleLines);
+		const visibleLineStart = this.scrollOffset;
+		const visibleLineEnd = Math.min(layoutLines.length, visibleLineStart + maxVisibleLines);
 
 		const result: string[] = [];
 		const leftPadding = " ".repeat(paddingX);
@@ -550,7 +592,8 @@ export class Editor implements Component, Focusable {
 		// autocomplete (e.g. slash-command menu) is visible.
 		const emitCursorMarker = this.focused;
 
-		for (const layoutLine of visibleLines) {
+		for (let layoutLineIndex = visibleLineStart; layoutLineIndex < visibleLineEnd; layoutLineIndex++) {
+			const layoutLine = layoutLines[layoutLineIndex]!;
 			let displayText = layoutLine.text;
 			let lineVisibleWidth = visibleWidth(layoutLine.text);
 			let cursorInPadding = false;
@@ -566,8 +609,11 @@ export class Editor implements Component, Focusable {
 				if (after.length > 0) {
 					// Cursor is on a character (grapheme) - replace it with highlighted version
 					// Get the first grapheme from 'after'
-					const afterGraphemes = [...this.segment(after, "grapheme")];
-					const firstGrapheme = afterGraphemes[0]?.segment || "";
+					let firstGrapheme = "";
+					for (const grapheme of this.segment(after, "grapheme")) {
+						firstGrapheme = grapheme.segment;
+						break;
+					}
 					const restAfter = after.slice(firstGrapheme.length);
 					const cursor = `\x1b[7m${firstGrapheme}\x1b[0m`;
 					displayText = before + marker + cursor + restAfter;
@@ -593,7 +639,7 @@ export class Editor implements Component, Focusable {
 		}
 
 		// Render bottom border (with scroll indicator if more content below)
-		const linesBelow = layoutLines.length - (this.scrollOffset + visibleLines.length);
+		const linesBelow = layoutLines.length - visibleLineEnd;
 		if (linesBelow > 0) {
 			const border = createScrollBorder("↓", linesBelow, width);
 			result.push(this.borderColor(border));
@@ -917,6 +963,36 @@ export class Editor implements Component, Focusable {
 	}
 
 	private layoutText(contentWidth: number): LayoutLine[] {
+		const cached = this.layoutCacheLines;
+		const source = this.state.lines;
+		if (
+			cached !== undefined &&
+			this.layoutCacheWidth === contentWidth &&
+			this.layoutCacheCursorLine === this.state.cursorLine &&
+			this.layoutCacheCursorCol === this.state.cursorCol &&
+			this.layoutCachePasteGeneration === this.pasteLayoutGeneration &&
+			this.layoutCacheSourceLines.length === source.length
+		) {
+			let unchanged = true;
+			for (let index = 0; index < source.length; index++) {
+				this.layoutCacheSourceLineComparisons++;
+				if (this.layoutCacheSourceLines[index] === source[index]) continue;
+				unchanged = false;
+				break;
+			}
+			if (unchanged) {
+				this.layoutCacheHits++;
+				return cached;
+			}
+		}
+
+		this.layoutCacheMisses++;
+		const layoutLines = this.buildLayoutText(contentWidth);
+		this.updateLayoutCache(contentWidth, layoutLines);
+		return layoutLines;
+	}
+
+	private buildLayoutText(contentWidth: number): LayoutLine[] {
 		const layoutLines: LayoutLine[] = [];
 
 		if (this.state.lines.length === 0 || (this.state.lines.length === 1 && this.state.lines[0] === "")) {
@@ -1004,6 +1080,71 @@ export class Editor implements Component, Focusable {
 		return layoutLines;
 	}
 
+	private updateLayoutCache(contentWidth: number, layoutLines: LayoutLine[]): void {
+		const source = this.state.lines;
+		if (source.length > MAX_EDITOR_LAYOUT_CACHE_SOURCE_LINES || layoutLines.length > MAX_EDITOR_LAYOUT_CACHE_LINES) {
+			this.layoutCacheRejectedByCapacity++;
+			this.clearLayoutCache();
+			return;
+		}
+		let sourceCodeUnits = 0;
+		for (let index = 0; index < source.length; index++) {
+			sourceCodeUnits += source[index]!.length;
+			if (sourceCodeUnits <= MAX_EDITOR_LAYOUT_CACHE_SOURCE_CODE_UNITS) continue;
+			this.layoutCacheRejectedByCapacity++;
+			this.clearLayoutCache();
+			return;
+		}
+		this.layoutCacheWidth = contentWidth;
+		this.layoutCacheCursorLine = this.state.cursorLine;
+		this.layoutCacheCursorCol = this.state.cursorCol;
+		this.layoutCachePasteGeneration = this.pasteLayoutGeneration;
+		this.layoutCacheSourceCodeUnits = sourceCodeUnits;
+		this.layoutCacheSourceLines.length = source.length;
+		for (let index = 0; index < source.length; index++) this.layoutCacheSourceLines[index] = source[index]!;
+		this.layoutCacheLines = layoutLines;
+	}
+
+	private clearLayoutCache(): void {
+		this.layoutCacheLines = undefined;
+		this.layoutCacheWidth = 0;
+		this.layoutCacheCursorLine = -1;
+		this.layoutCacheCursorCol = -1;
+		this.layoutCachePasteGeneration = -1;
+		this.layoutCacheSourceCodeUnits = 0;
+		this.layoutCacheSourceLines.length = 0;
+	}
+
+	/** Low-frequency benchmark diagnostics. The returned object is never created by render(). */
+	private getLayoutCacheMetrics(): {
+		layoutCacheHits: number;
+		layoutCacheMisses: number;
+		layoutCacheValidationLineComparisons: number;
+		layoutCacheSourceRecords: number;
+		layoutCacheLayoutRecords: number;
+		layoutCacheRejectedByCapacity: number;
+		layoutCacheRetainedSourceCodeUnits: number;
+		layoutCacheRetainedLayoutLines: number;
+	} {
+		return {
+			layoutCacheHits: this.layoutCacheHits,
+			layoutCacheMisses: this.layoutCacheMisses,
+			layoutCacheValidationLineComparisons: this.layoutCacheSourceLineComparisons,
+			layoutCacheSourceRecords: this.layoutCacheSourceLines.length,
+			layoutCacheLayoutRecords: this.layoutCacheLines?.length ?? 0,
+			layoutCacheRejectedByCapacity: this.layoutCacheRejectedByCapacity,
+			layoutCacheRetainedSourceCodeUnits: this.layoutCacheSourceCodeUnits,
+			layoutCacheRetainedLayoutLines: this.layoutCacheLines?.length ?? 0,
+		};
+	}
+
+	private resetLayoutCacheMetrics(): void {
+		this.layoutCacheHits = 0;
+		this.layoutCacheMisses = 0;
+		this.layoutCacheSourceLineComparisons = 0;
+		this.layoutCacheRejectedByCapacity = 0;
+	}
+
 	getText(): string {
 		return this.state.lines.join("\n");
 	}
@@ -1037,7 +1178,7 @@ export class Editor implements Component, Focusable {
 		if (this.getText() !== normalized) {
 			this.pushUndoSnapshot();
 		}
-		this.pastes.clear();
+		this.clearPastes();
 		this.pasteCounter = 0;
 		this.setTextInternal(normalized);
 	}
@@ -1221,7 +1362,7 @@ export class Editor implements Component, Focusable {
 			// Store the paste and insert a marker
 			this.pasteCounter++;
 			const pasteId = this.pasteCounter;
-			this.pastes.set(pasteId, filteredText);
+			this.setPaste(pasteId, filteredText);
 
 			// Insert marker like "[paste #1 +123 lines]" or "[paste #1 1234 chars]"
 			const marker =
@@ -1283,7 +1424,7 @@ export class Editor implements Component, Focusable {
 		const result = this.expandPasteMarkers(this.state.lines.join("\n")).trim();
 
 		this.state = { lines: [""], cursorLine: 0, cursorCol: 0 };
-		this.pastes.clear();
+		this.clearPastes();
 		this.pasteCounter = 0;
 		this.exitHistoryBrowsing();
 		this.scrollOffset = 0;
@@ -1314,7 +1455,7 @@ export class Editor implements Component, Focusable {
 			if (isPastedSegmented) {
 				// This contains the id part e.g 4 from [paste #4 +123 lines]
 				const targetId = Number(isPastedSegmented[1]);
-				this.pastes.delete(targetId);
+				this.deletePaste(targetId);
 				this.pasteCounter--;
 
 				// Shift registry entries down in ascending id order, independent
@@ -1322,8 +1463,8 @@ export class Editor implements Component, Focusable {
 				// [paste #1] is removed).
 				const higherIds = [...this.pastes.keys()].filter((id) => id > targetId).sort((a, b) => a - b);
 				for (const id of higherIds) {
-					this.pastes.set(id - 1, this.pastes.get(id)!);
-					this.pastes.delete(id);
+					this.setPaste(id - 1, this.pastes.get(id)!);
+					this.deletePaste(id);
 				}
 
 				// Renumber markers with ids greater than the removed one.
@@ -2039,7 +2180,7 @@ export class Editor implements Component, Focusable {
 		const snapshot = this.undoStack.pop();
 		if (!snapshot) return;
 		Object.assign(this.state, snapshot.state);
-		this.pastes = snapshot.pastes;
+		this.replacePastes(snapshot.pastes);
 		this.pasteCounter = snapshot.pasteCounter;
 		this.lastAction = null;
 		this.preferredVisualCol = null;
