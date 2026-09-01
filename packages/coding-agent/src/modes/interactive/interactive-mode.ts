@@ -1116,7 +1116,10 @@ export class InteractiveMode {
 	}
 
 	private async applyTuiModeSetting(mode: TuiMode, selector: SettingsSelectorComponent | undefined): Promise<void> {
-		if (!(await this.switchTuiMode(mode))) {
+		const lifecycleGeneration = this.tuiLifecycleGeneration;
+		const switched = await this.switchTuiMode(mode);
+		if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
+		if (!switched) {
 			selector?.getSettingsList().updateValue("tui-mode", this.ui.mode);
 			this.showStatus("Close active overlays before changing TUI mode");
 			return;
@@ -5719,6 +5722,7 @@ export class InteractiveMode {
 	private async maybeWarnAboutAnthropicSubscriptionAuth(
 		model: Model<any> | undefined = this.session.model,
 	): Promise<void> {
+		const lifecycleGeneration = this.tuiLifecycleGeneration;
 		if (this.settingsManager.getWarnings().anthropicExtraUsage === false) {
 			return;
 		}
@@ -5730,12 +5734,16 @@ export class InteractiveMode {
 		}
 
 		try {
-			if ((await this.session.modelRuntime.checkAuth("anthropic"))?.type === "oauth") {
+			const checkedAuth = await this.session.modelRuntime.checkAuth("anthropic");
+			if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
+			if (checkedAuth?.type === "oauth") {
 				this.anthropicSubscriptionWarningShown = true;
 				this.showWarning(ANTHROPIC_SUBSCRIPTION_AUTH_WARNING);
 				return;
 			}
-			const apiKey = (await this.session.modelRuntime.getAuth(model.provider))?.auth.apiKey;
+			const auth = await this.session.modelRuntime.getAuth(model.provider);
+			if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
+			const apiKey = auth?.auth.apiKey;
 			if (!isAnthropicSubscriptionAuthKey(apiKey)) {
 				return;
 			}
@@ -6159,10 +6167,13 @@ export class InteractiveMode {
 					this.showError("Selected entry has no text to copy");
 					return;
 				}
+				const lifecycleGeneration = this.tuiLifecycleGeneration;
 				try {
-					await copyToClipboard(text);
+					await this.copyTextToClipboard(text);
+					if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 					this.showStatus("Copied selected message to clipboard");
 				} catch (error) {
+					if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 					this.showError(error instanceof Error ? error.message : String(error));
 				}
 			};
