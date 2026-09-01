@@ -1178,18 +1178,55 @@ export abstract class TuiBase extends Container implements TUI {
 		try {
 			await this.stop(options);
 		} finally {
-			let mountedReleaseError: unknown;
-			let mountedReleaseFailed = false;
+			let disposeError: unknown;
+			let disposeFailed = false;
 			this.disposed = true;
 			try {
 				this.releaseMountedComponentsAfterDispose();
 			} catch (error) {
-				mountedReleaseFailed = true;
-				mountedReleaseError = error;
+				disposeFailed = true;
+				disposeError = error;
 			}
-			this.terminalFrameQueue.detach();
-			this.terminal.setFrameWriteCompletionListener(undefined);
-			this.terminal.dispose?.();
+			try {
+				this.terminalFrameQueue.detach();
+			} catch (error) {
+				if (!disposeFailed) {
+					disposeFailed = true;
+					disposeError = error;
+				}
+			}
+			try {
+				this.terminal.setFrameWriteReadyListener?.(undefined);
+			} catch (error) {
+				if (!disposeFailed) {
+					disposeFailed = true;
+					disposeError = error;
+				}
+			}
+			try {
+				this.terminal.setFrameWriteCompletionListener(undefined);
+			} catch (error) {
+				if (!disposeFailed) {
+					disposeFailed = true;
+					disposeError = error;
+				}
+			}
+			try {
+				this.terminal.setFrameWriteStartedListener?.(undefined);
+			} catch (error) {
+				if (!disposeFailed) {
+					disposeFailed = true;
+					disposeError = error;
+				}
+			}
+			try {
+				this.terminal.dispose?.();
+			} catch (error) {
+				if (!disposeFailed) {
+					disposeFailed = true;
+					disposeError = error;
+				}
+			}
 			this.focusedComponent = null;
 			this.inputListeners.clear();
 			this.terminalColorSchemeListeners.clear();
@@ -1203,7 +1240,7 @@ export abstract class TuiBase extends Container implements TUI {
 			this.osc11BackgroundUnsupported = false;
 			this.osc11BackgroundActiveGeneration = 0;
 			resolve?.(undefined);
-			if (mountedReleaseFailed) throw mountedReleaseError;
+			if (disposeFailed) throw disposeError;
 		}
 	}
 
