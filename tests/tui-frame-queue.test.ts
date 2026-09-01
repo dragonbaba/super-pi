@@ -10,6 +10,9 @@ import {
 	type TuiMainScreenRenderState,
 } from "@super-pi/tui";
 import { AgentSession } from "../packages/coding-agent/src/core/agent-session.ts";
+import { ExtensionInputComponent } from "../packages/coding-agent/src/modes/interactive/components/extension-input.ts";
+import { ExtensionSelectorComponent } from "../packages/coding-agent/src/modes/interactive/components/extension-selector.ts";
+import { initTheme } from "../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 import {
 	createInteractiveTuiReference,
 	InteractiveMode,
@@ -20,6 +23,8 @@ import { ProcessTerminal, type Terminal } from "../packages/tui/src/terminal.ts"
 import { type Component, TuiBase } from "../packages/tui/src/tui.ts";
 import { TuiAltScreen } from "../packages/tui/src/tui-alt-screen.ts";
 import { TuiMainScreen } from "../packages/tui/src/tui-main-screen.ts";
+
+initTheme("dark");
 
 interface Gate {
 	resolve(): void;
@@ -1560,6 +1565,71 @@ test("Main to Alt mode switch preserves a Loader reused by the explicit layout r
 	assert.equal(raw.ui, null);
 });
 
+test("Alt to Main mode switch preserves animation owners reused by the regular roots", async () => {
+	const terminal = new ImmediateInputTerminal();
+	const previousUi = new InstrumentedMainTui(terminal);
+	const mode = createModeSwitchHarness(previousUi);
+	const stableTui = createInteractiveTuiReference(() => mode.renderer);
+	const loader = new Loader(stableTui, preserveLoaderText, preserveLoaderText, "switching-back");
+	previousUi.addChild(loader);
+	mode.fullscreenLayoutRoot = loader;
+	previousUi.start();
+	previousUi.renderNow();
+
+	assert.equal(await mode.switchTuiMode.call(mode, "fullscreen", false, false), true);
+	const raw = loader as unknown as { intervalId: NodeJS.Timeout | null; ui: unknown };
+	assert.ok(raw.intervalId);
+	assert.equal(await mode.switchTuiMode.call(mode, "regular", false, false), true);
+	assert.equal(mode.renderer.mode, "regular");
+	assert.ok(raw.intervalId);
+	assert.equal(raw.ui, stableTui);
+	await mode.renderer.dispose({ preserveScreen: true });
+	assert.equal(raw.intervalId, null);
+	assert.equal(raw.ui, null);
+});
+
+test("InteractiveMode stop cancels and settles timed extension dialogs", async () => {
+	for (const kind of ["selector", "input"] as const) {
+		const terminal = new ImmediateInputTerminal();
+		terminal.backpressure = false;
+		const previousUi = new InstrumentedMainTui(terminal);
+		const mode = createModeSwitchHarness(previousUi);
+		let cancelCalls = 0;
+		const component = kind === "selector"
+			? new ExtensionSelectorComponent("Timed selector", ["one"], preserveLoaderText, () => {
+				cancelCalls++;
+				mode.extensionSelector = undefined;
+			}, {
+				tui: previousUi,
+				timeout: 60_000,
+			})
+			: new ExtensionInputComponent("Timed input", undefined, preserveLoaderText, () => {
+				cancelCalls++;
+				mode.extensionInput = undefined;
+			}, {
+				tui: previousUi,
+				timeout: 60_000,
+			});
+		const raw = component as unknown as { countdown?: { intervalId?: NodeJS.Timeout } };
+		mode.extensionSelector = kind === "selector" ? component : undefined;
+		mode.extensionInput = kind === "input" ? component : undefined;
+		previousUi.addChild(component);
+		previousUi.start();
+		assert.ok(raw.countdown?.intervalId);
+		try {
+			await mode.stop.call(mode, "resume-hint");
+			assert.equal(cancelCalls, 1);
+			assert.equal(raw.countdown?.intervalId, undefined);
+			assert.equal(mode.extensionSelector, undefined);
+			assert.equal(mode.extensionInput, undefined);
+			await mode.stop.call(mode, "resume-hint");
+			assert.equal(cancelCalls, 1);
+		} finally {
+			component.dispose();
+		}
+	}
+});
+
 test("mode switch snapshots the final root focus and Main render state after stop", async () => {
 	const terminal = new GatedTerminal();
 	const previousUi = new InstrumentedMainTui(terminal);
@@ -2700,6 +2770,42 @@ test("frame queue source retains one string without Promise tails or pooling", (
 			mountInteractiveTui.indexOf("for (const component of components)"),
 	);
 	assert.doesNotMatch(mountInteractiveTui, /new (?:Map|Set|Promise|AbortController)|=>|function\s*\(/);
+	const switchTuiMode = interactiveSource.match(/private async switchTuiMode[\s\S]*?\n\t}\n/)?.[0] ?? "";
+	assert.notEqual(switchTuiMode, "");
+	assert.match(
+		switchTuiMode,
+		/previousUi instanceof TuiAltScreen\) previousUi\.detachLayoutRootForTransfer\(\)/,
+	);
+	assert.doesNotMatch(switchTuiMode, /new (?:Map|Set|AbortController)|\.map\(|\.filter\(|\.flatMap\(/);
+	const cancelExtensionDialogs = interactiveSource.match(
+		/private cancelExtensionDialogs[\s\S]*?\n\t}/,
+	)?.[0] ?? "";
+	assert.notEqual(cancelExtensionDialogs, "");
+	assert.match(cancelExtensionDialogs, /this\.extensionSelector\?\.cancel\(\)/);
+	assert.match(cancelExtensionDialogs, /this\.extensionInput\?\.cancel\(\)/);
+	assert.doesNotMatch(
+		cancelExtensionDialogs,
+		/new (?:Map|Set|Promise|AbortController)|=>|function\s*\(|\.map\(|\.filter\(|\.flatMap\(/,
+	);
+	const interactiveStop = interactiveSource.match(
+		/async stop\(fullscreenExitOutput[\s\S]*?\n\t}/,
+	)?.[0] ?? "";
+	assert.notEqual(interactiveStop, "");
+	assert.ok(
+		interactiveStop.indexOf("this.cancelExtensionDialogs()") <
+			interactiveStop.indexOf("this.disposeActiveSelector()"),
+	);
+	const altSource = readFileSync("packages/tui/src/tui-alt-screen.ts", "utf8");
+	const detachLayoutRootForTransfer = altSource.match(
+		/detachLayoutRootForTransfer\(\): void \{[\s\S]*?\n\t}/,
+	)?.[0] ?? "";
+	assert.notEqual(detachLayoutRootForTransfer, "");
+	assert.match(detachLayoutRootForTransfer, /this\.layoutRoot = undefined/);
+	assert.match(detachLayoutRootForTransfer, /this\.layoutScratch\.clear\(\)/);
+	assert.doesNotMatch(
+		detachLayoutRootForTransfer,
+		/releaseComponentRenderCaches|\.invalidate\(|\.render\(|new (?:Map|Set|Promise|AbortController)|=>|function\s*\(/,
+	);
 	assert.match(interactiveSource, /await previousUi\.stop\(\{ preserveScreen: true \}\)/);
 	assert.match(interactiveSource, /await this\.stopInteractiveTui\(fullscreenExitOutput\)/);
 	assert.match(interactiveSource, /criticalAgentEnd: true/);

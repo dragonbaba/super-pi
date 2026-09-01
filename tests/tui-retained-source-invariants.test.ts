@@ -344,6 +344,10 @@ test("overlay focus lookup paths avoid per-call find and some callbacks", () => 
 	assert.equal(closures, 0);
 	const ancestor = findMethod(source, "TuiBase", "isOverlayFocusAncestor");
 	assert.doesNotMatch(ancestor.getText(source), /new Set|\.find\(/);
+	const contains = findMethod(source, "TuiBase", "containsComponent").getText(source);
+	assert.match(contains, /root\[GET_COMPONENT_RENDER_CACHE_CHILD\]\?\.\(\)/);
+	assert.match(contains, /root\[GET_COMPONENT_RENDER_CACHE_CHILDREN\]\?\.\(\)/);
+	assert.doesNotMatch(contains, /new (?:Map|Set|Promise|AbortController)|=>|function\s*\(|\.map\(|\.filter\(/);
 });
 
 test("overlay focus state uses direct parameters and one fixed mutable record", () => {

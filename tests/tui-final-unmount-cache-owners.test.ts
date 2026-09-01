@@ -5,6 +5,7 @@ import {
 	Box as ProductionBox,
 	Editor as ProductionEditor,
 	Image as ProductionImage,
+	Loader as ProductionLoader,
 	Markdown as ProductionMarkdown,
 	RetainedContainer as ProductionRetainedContainer,
 	RetainedItem as ProductionRetainedItem,
@@ -17,6 +18,7 @@ import ts from "typescript";
 import type { AssistantMessage } from "../packages/ai/src/types.ts";
 import { ArminComponent } from "../packages/coding-agent/src/modes/interactive/components/armin.ts";
 import { DaxnutsComponent } from "../packages/coding-agent/src/modes/interactive/components/daxnuts.ts";
+import { ExtensionInputComponent } from "../packages/coding-agent/src/modes/interactive/components/extension-input.ts";
 import { ExtensionSelectorComponent } from "../packages/coding-agent/src/modes/interactive/components/extension-selector.ts";
 import { RetryStatusIndicator } from "../packages/coding-agent/src/modes/interactive/components/status-indicator.ts";
 import type { AutocompleteProvider } from "../packages/tui/src/autocomplete.ts";
@@ -24,10 +26,11 @@ import {
 	type BashRenderState,
 	createBashToolDefinition,
 } from "../packages/coding-agent/src/core/tools/bash.ts";
+import { createWriteToolDefinition } from "../packages/coding-agent/src/core/tools/write.ts";
 import { AssistantMessageComponent } from "../packages/coding-agent/src/modes/interactive/components/assistant-message.ts";
 import { SteppedSubmenu } from "../packages/coding-agent/src/modes/interactive/components/settings-submenu.ts";
 import { UserMessageComponent } from "../packages/coding-agent/src/modes/interactive/components/user-message.ts";
-import { initTheme } from "../packages/coding-agent/src/modes/interactive/theme/theme.ts";
+import { initTheme, theme } from "../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 import {
 	GET_COMPONENT_RENDER_CACHE_CHILD,
 	GET_COMPONENT_RENDER_CACHE_CHILDREN,
@@ -236,6 +239,14 @@ interface BashResultRawState {
 		preparedStyledOutputCodeUnits: number;
 		expandedOutputReferences: number;
 		derivedChildReferences: number;
+	};
+}
+
+interface WriteCallRawState extends TextRawCache {
+	cache?: {
+		rawContent: string;
+		normalizedLines: string[];
+		highlightedLines: string[];
 	};
 }
 
@@ -585,6 +596,39 @@ test("extension countdown natural expiry invokes its callback before releasing o
 	await tui.dispose({ preserveScreen: true });
 });
 
+test("final disposal releases timed extension dialog countdown owners", async () => {
+	const tui = new CountingProductionMainScreen(new FakeTerminal(80, 20), false);
+	const selector = new ExtensionSelectorComponent("Timed selector", ["one"], noOperation, noOperation, {
+		tui,
+		timeout: 60_000,
+	});
+	const input = new ExtensionInputComponent("Timed input", undefined, noOperation, noOperation, {
+		tui,
+		timeout: 60_000,
+	});
+	const selectorRaw = selector as unknown as { countdown?: CountdownRawState };
+	const inputRaw = input as unknown as { countdown?: CountdownRawState };
+	tui.addChild(selector);
+	tui.addChild(input);
+	tui.start();
+	assert.ok(selectorRaw.countdown?.intervalId);
+	assert.ok(inputRaw.countdown?.intervalId);
+	try {
+		await tui.stop({ preserveScreen: true });
+		assert.ok(selectorRaw.countdown?.intervalId);
+		assert.ok(inputRaw.countdown?.intervalId);
+		tui.start();
+		await tui.dispose({ preserveScreen: true });
+		assert.equal(selectorRaw.countdown?.intervalId, undefined);
+		assert.equal(inputRaw.countdown?.intervalId, undefined);
+		assert.equal(selectorRaw.countdown?.tui, undefined);
+		assert.equal(inputRaw.countdown?.tui, undefined);
+	} finally {
+		selector.dispose();
+		input.dispose();
+	}
+});
+
 test("final release stops coding-agent animation owners and retry countdown", async () => {
 	const tui = new CountingProductionMainScreen(new FakeTerminal(120, 40), false);
 	const armin = new ArminComponent(tui);
@@ -753,6 +797,121 @@ test("final disposal releases built-in Bash result sidecar caches", async () => 
 	assert.equal(rebuilt, component);
 	assert.ok(rebuilt.render(120).length > 0);
 	assert.ok(raw.getBashResultRenderCacheReferenceCounts().cachedLineReferences > 0);
+});
+
+test("final disposal releases write-call highlight sidecars", async () => {
+	const definition = createWriteToolDefinition(process.cwd());
+	assert.ok(definition.renderCall);
+	const sourceLines = new Array<string>(4_096);
+	for (let index = 0; index < sourceLines.length; index++) {
+		sourceLines[index] = `const value${index} = "中文-😀-e\u0301";`;
+	}
+	const source = sourceLines.join("\n");
+	const component = definition.renderCall(
+		{ path: "large-fixture.ts", content: source },
+		theme,
+		{
+			args: { path: "large-fixture.ts", content: source },
+			toolCallId: "write-final-unmount",
+			invalidate: noOperation,
+			lastComponent: undefined,
+			state: {},
+			cwd: process.cwd(),
+			executionStarted: true,
+			argsComplete: true,
+			isPartial: false,
+			expanded: false,
+			showImages: false,
+			isError: false,
+		},
+	);
+	const raw = component as unknown as WriteCallRawState;
+	assert.equal(raw.cache?.rawContent, source);
+	assert.equal(raw.cache?.normalizedLines.length, sourceLines.length);
+	assert.equal(raw.cache?.highlightedLines.length, sourceLines.length);
+	const tui = new ProductionTuiMainScreen(new FakeTerminal(120, 40), false);
+	tui.addChild(component);
+	tui.start();
+	tui.renderNow();
+	await tui.dispose({ preserveScreen: true });
+	assert.equal(raw.cache, undefined);
+	assert.equal(raw.cachedLines, undefined);
+	const rebuilt = definition.renderCall(
+		{ path: "large-fixture.ts", content: source },
+		theme,
+		{
+			args: { path: "large-fixture.ts", content: source },
+			toolCallId: "write-final-unmount",
+			invalidate: noOperation,
+			lastComponent: component,
+			state: {},
+			cwd: process.cwd(),
+			executionStarted: true,
+			argsComplete: true,
+			isPartial: false,
+			expanded: false,
+			showImages: false,
+			isError: false,
+		},
+	);
+	assert.equal(rebuilt, component);
+	const rebuiltRaw = rebuilt as unknown as WriteCallRawState;
+	assert.equal(rebuiltRaw.cache?.rawContent, source);
+	assert.ok(rebuilt.render(120).length > 0);
+});
+
+test("permanently removed overlays release animation owners", async () => {
+	for (const useHandle of [true, false]) {
+		const tui = new CountingProductionMainScreen(new FakeTerminal(80, 20), false);
+		const loader = new ProductionLoader(tui, identity, identity, useHandle ? "handle" : "stack");
+		const raw = loader as unknown as LoaderRawState;
+		const handle = tui.showOverlay(loader);
+		tui.start();
+		assert.ok(raw.intervalId);
+		try {
+			handle.setHidden(true);
+			assert.ok(raw.intervalId);
+			handle.setHidden(false);
+			if (useHandle) handle.hide();
+			else tui.hideOverlay();
+			assert.equal(raw.intervalId, null);
+			assert.equal(raw.ui, null);
+		} finally {
+			loader.dispose();
+			await tui.dispose({ preserveScreen: true });
+		}
+	}
+
+	const mountedTui = new CountingProductionMainScreen(new FakeTerminal(80, 20), false);
+	const mountedLoader = new ProductionLoader(mountedTui, identity, identity, "mounted-overlay");
+	const mountedRaw = mountedLoader as unknown as LoaderRawState;
+	mountedTui.addChild(mountedLoader);
+	const mountedHandle = mountedTui.showOverlay(mountedLoader);
+	mountedTui.start();
+	mountedHandle.hide();
+	assert.ok(mountedRaw.intervalId);
+	assert.equal(mountedRaw.ui, mountedTui);
+	await mountedTui.dispose({ preserveScreen: true });
+	assert.equal(mountedRaw.intervalId, null);
+	assert.equal(mountedRaw.ui, null);
+
+	const wrappedTui = new CountingProductionMainScreen(new FakeTerminal(80, 20), false);
+	const wrappedLoader = new ProductionLoader(wrappedTui, identity, identity, "wrapped-overlay");
+	const wrappedRaw = wrappedLoader as unknown as LoaderRawState;
+	const retainedLoader = new ProductionRetainedItem(wrappedLoader, {
+		id: "wrapped-overlay-loader",
+		version: 1,
+		completed: false,
+	});
+	wrappedTui.addChild(retainedLoader);
+	const wrappedHandle = wrappedTui.showOverlay(wrappedLoader);
+	wrappedTui.start();
+	wrappedHandle.hide();
+	assert.ok(wrappedRaw.intervalId);
+	assert.equal(wrappedRaw.ui, wrappedTui);
+	await wrappedTui.dispose({ preserveScreen: true });
+	assert.equal(wrappedRaw.intervalId, null);
+	assert.equal(wrappedRaw.ui, null);
 });
 
 test("production Assistant and User message trees release nested Markdown and Text caches", async () => {
@@ -1235,6 +1394,9 @@ test("built-in cache owner contract stays lifecycle-only and complete", async ()
 		["DaxnutsComponent", "packages/coding-agent/src/modes/interactive/components/daxnuts.ts"],
 		["RetryStatusIndicator", "packages/coding-agent/src/modes/interactive/components/status-indicator.ts"],
 		["BashResultRenderComponent", "packages/coding-agent/src/core/tools/bash.ts"],
+		["WriteCallRenderComponent", "packages/coding-agent/src/core/tools/write.ts"],
+		["ExtensionSelectorComponent", "packages/coding-agent/src/modes/interactive/components/extension-selector.ts"],
+		["ExtensionInputComponent", "packages/coding-agent/src/modes/interactive/components/extension-input.ts"],
 	] as const;
 	for (const [className, filePath] of ownerFiles) {
 		const sourceText = await readFile(filePath, "utf8");
@@ -1277,6 +1439,10 @@ test("built-in cache owner contract stays lifecycle-only and complete", async ()
 
 	const tuiPath = "packages/tui/src/tui.ts";
 	const tuiText = await readFile(tuiPath, "utf8");
+	const overlayHandleHide = tuiText.match(/hide: \(\) => \{[\s\S]*?\n\t\t\t},/)?.[0] ?? "";
+	const hideOverlay = tuiText.match(/hideOverlay\(\): void \{[\s\S]*?\n\t}/)?.[0] ?? "";
+	assert.match(overlayHandleHide, /this\.releaseDetachedOverlayComponent\(component\)/);
+	assert.match(hideOverlay, /this\.releaseDetachedOverlayComponent\(overlay\.component\)/);
 	const traversal = tuiText.match(/export function releaseComponentRenderCaches[\s\S]*?\n}\n/)?.[0] ?? "";
 	assert.notEqual(traversal, "");
 	assert.doesNotMatch(traversal, /new (?:Map|Set|Promise|AbortController)|=>|function\s*\(/);
