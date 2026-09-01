@@ -8,7 +8,11 @@ import { TuiAltScreen } from "../packages/tui/src/tui-alt-screen.ts";
 import { TuiMainScreen } from "../packages/tui/src/tui-main-screen.ts";
 import { Box } from "../packages/tui/src/components/box.ts";
 import { Editor, type EditorTheme } from "../packages/tui/src/components/editor.ts";
-import { RetainedContainer, RetainedItem } from "../packages/tui/src/components/retained-item.ts";
+import {
+	RetainedContainer,
+	RetainedItem,
+	type RetainedViewportLifecycleReferenceCounts,
+} from "../packages/tui/src/components/retained-item.ts";
 import { VStack } from "../packages/tui/src/components/v-stack.ts";
 import type { LayoutFrame } from "../packages/tui/src/layout.ts";
 import { FakeTerminal } from "./helpers/runtime-instrumentation.ts";
@@ -290,6 +294,69 @@ test("Main final dispose releases retained transcript sidecar cache while owners
 	assert.equal(transcript.children[0], component);
 	assert.equal(item.released, false);
 	assert.equal(item.component, component);
+});
+
+test("Main final dispose releases retained viewport indexes while logical owners remain reachable", async () => {
+	const tui = new TuiMainScreen(new FakeTerminal(120, 40), false);
+	const transcript = new RetainedContainer();
+	const completedItems = new Array<RetainedItem>(5_000);
+	const completedComponents = new Array<StaticCacheLine>(5_000);
+	for (let index = 0; index < completedComponents.length; index++) {
+		const component = new StaticCacheLine(`history-${index} \x1b[31mANSI\x1b[0m 中文 👨‍👩‍👧‍👦 e\u0301`);
+		completedComponents[index] = component;
+		completedItems[index] = transcript.addRetainedChild(component, {
+			id: `history-${index}`,
+			version: 1,
+			completed: true,
+		});
+	}
+	const activeComponent = new StaticCacheLine("active-dynamic");
+	const activeItem = transcript.addRetainedChild(activeComponent, { id: "active", version: 1 });
+	tui.addChild(transcript);
+	tui.start();
+	tui.renderNow();
+	activeItem.updateVersion(2);
+
+	const primedReferences = transcript.getRetainedLifecycleReferenceCounts();
+	assert.equal(primedReferences.viewportRecords, 5_001);
+	assert.equal(primedReferences.viewportRecordComponentReferences, 5_001);
+	assert.equal(primedReferences.viewportRecordRetainedItemReferences, 5_001);
+	assert.ok(primedReferences.dirtyViewportRecords > 0);
+	assert.ok(primedReferences.viewportBlockHeights > 0);
+	assert.ok(primedReferences.viewportTotalHeight > 0);
+	assert.equal(primedReferences.viewportWidthDefined, 1);
+	assert.ok(transcript.getRetainedStats().cachedItems > 0);
+
+	await tui.dispose({ preserveScreen: true });
+	const released = transcript.getRetainedStats();
+	assert.equal(released.cachedItems, 0);
+	assert.equal(released.cachedLines, 0);
+	assert.equal(released.estimatedCachedBytes, 0);
+	const releasedReferences: RetainedViewportLifecycleReferenceCounts =
+		transcript.getRetainedLifecycleReferenceCounts();
+	assert.deepEqual(releasedReferences, {
+		children: 5_001,
+		retainedItems: 5_001,
+		retainedComponents: 5_001,
+		viewportRecords: 0,
+		viewportRecordComponentReferences: 0,
+		viewportRecordRetainedItemReferences: 0,
+		dirtyViewportRecords: 0,
+		preparedViewportRecords: 0,
+		viewportBlockHeights: 0,
+		preparedLineReferences: 0,
+		kittyLineReferences: 0,
+		viewportTotalHeight: 0,
+		viewportWidthDefined: 0,
+	});
+	assert.equal(transcript.children.length, 5_001);
+	assert.equal(transcript.children[0], completedComponents[0]);
+	assert.equal(completedItems[0].component, completedComponents[0]);
+	assert.equal(completedItems[0].completed, true);
+	assert.equal(completedItems[0].completedVersion, 1);
+	assert.equal(activeItem.component, activeComponent);
+	assert.equal(activeItem.completed, false);
+	assert.doesNotThrow(() => activeItem.updateVersion(3));
 });
 
 test("Main final dispose traverses a directly mounted RetainedItem into its Editor", async () => {
@@ -628,14 +695,25 @@ test("lifecycle cleanup remains outside frame and recoverable-stop hot paths", a
 	const layoutText = await readFile(layoutPath, "utf-8");
 	const benchmarkText = await readFile(benchmarkPath, "utf-8");
 	const altSource = ts.createSourceFile(altPath, altText, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+	const retainedSource = ts.createSourceFile(retainedPath, retainedText, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
 	let setLayoutRoot: ts.MethodDeclaration | undefined;
+	let releaseRetainedCache: ts.MethodDeclaration | undefined;
 	for (const statement of altSource.statements) {
 		if (!ts.isClassDeclaration(statement) || statement.name?.text !== "TuiAltScreen") continue;
 		for (const member of statement.members) {
 			if (ts.isMethodDeclaration(member) && member.name.getText(altSource) === "setLayoutRoot") setLayoutRoot = member;
 		}
 	}
+	for (const statement of retainedSource.statements) {
+		if (!ts.isClassDeclaration(statement) || statement.name?.text !== "RetainedContainer") continue;
+		for (const member of statement.members) {
+			if (ts.isMethodDeclaration(member) && member.name.getText(retainedSource) === "[RELEASE_COMPONENT_RENDER_CACHE]") {
+				releaseRetainedCache = member;
+			}
+		}
+	}
 	assert.ok(setLayoutRoot);
+	assert.ok(releaseRetainedCache);
 	let forbiddenAllocations = 0;
 	function visit(node: ts.Node): void {
 		if (
@@ -676,6 +754,22 @@ test("lifecycle cleanup remains outside frame and recoverable-stop hot paths", a
 		retainedText,
 		/class RetainedContainer extends Container implements LineViewportComponent[\s\S]*?\[RELEASE_COMPONENT_RENDER_CACHE\]\(\): void \{[\s\S]*retainedById\.values\(\)/,
 	);
+	const retainedReleaseText = releaseRetainedCache.getText(retainedSource);
+	for (const requiredRelease of [
+		"this.viewportRecords = []",
+		"this.viewportRecordByComponent.clear()",
+		"this.dirtyViewportRecords.clear()",
+		"this.preparedViewportRecords.clear()",
+		"this.viewportBlockHeights = []",
+		"this.viewportTotalHeight = 0",
+		"this.viewportWidth = undefined",
+		"this.viewportMeasuredItems = 0",
+		"this.viewportStructureDirty = true",
+		"this.recordUnsafeViewportMutation()",
+	]) {
+		assert.match(retainedReleaseText, new RegExp(requiredRelease.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+	}
+	assert.doesNotMatch(retainedReleaseText, /\.invalidate\(|onRenderStateChanged|new (?:Map|Set|Promise|AbortController)|=>|function\s*\(/);
 	assert.doesNotMatch(
 		tuiText.match(/protected releaseMountedComponentsAfterDispose[\s\S]*?\n\t}\n/)?.[0] ?? "",
 		/this\.invalidate\(\)/,
