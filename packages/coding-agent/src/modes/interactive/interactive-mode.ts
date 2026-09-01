@@ -642,6 +642,9 @@ export class InteractiveMode {
 	private extensionInput: ExtensionInputComponent | undefined = undefined;
 	private extensionEditor: ExtensionEditorComponent | undefined = undefined;
 	private activeLoginDialog: LoginDialogComponent | undefined = undefined;
+	private activeModelLookupController: AbortController | undefined = undefined;
+	private modelLookupGeneration = 0;
+	private modelLookupTimedOutGeneration = 0;
 	private extensionTerminalInputSubscriptions = new Set<{
 		handler: (data: string) => { consume?: boolean; data?: string } | undefined;
 		unsubscribe: () => void;
@@ -669,6 +672,15 @@ export class InteractiveMode {
 	private readonly onRightClickPaste = (): void => {
 		this.observeLifecyclePromise(this.handleRightClickPaste());
 	};
+	private static handleModelLookupTimeout(
+		mode: InteractiveMode,
+		controller: AbortController,
+		generation: number,
+	): void {
+		if (mode.activeModelLookupController !== controller || mode.modelLookupGeneration !== generation) return;
+		mode.modelLookupTimedOutGeneration = generation;
+		controller.abort();
+	}
 	private autoTrustOnReloadCwd: string | undefined;
 	private themeController: InteractiveThemeController;
 
@@ -2771,6 +2783,68 @@ export class InteractiveMode {
 		const dialog = this.activeLoginDialog;
 		this.activeLoginDialog = undefined;
 		dialog?.cancel();
+	}
+
+	private cancelActiveModelLookup(): void {
+		this.modelLookupGeneration++;
+		this.modelLookupTimedOutGeneration = 0;
+		const controller = this.activeModelLookupController;
+		this.activeModelLookupController = undefined;
+		controller?.abort();
+	}
+
+	private releaseExtensionUiOwners(): void {
+		let releaseError: unknown;
+		let releaseFailed = false;
+		if (this.extensionWidgetsAbove !== undefined) {
+			for (const widget of this.extensionWidgetsAbove.values()) {
+				try {
+					widget.dispose?.();
+				} catch (error) {
+					if (!releaseFailed) {
+						releaseFailed = true;
+						releaseError = error;
+					}
+				}
+			}
+		}
+		if (this.extensionWidgetsBelow !== undefined) {
+			for (const widget of this.extensionWidgetsBelow.values()) {
+				try {
+					widget.dispose?.();
+				} catch (error) {
+					if (!releaseFailed) {
+						releaseFailed = true;
+						releaseError = error;
+					}
+				}
+			}
+		}
+		this.extensionWidgetsAbove?.clear();
+		this.extensionWidgetsBelow?.clear();
+		try {
+			this.customFooter?.dispose?.();
+		} catch (error) {
+			if (!releaseFailed) {
+				releaseFailed = true;
+				releaseError = error;
+			}
+		}
+		try {
+			this.customHeader?.dispose?.();
+		} catch (error) {
+			if (!releaseFailed) {
+				releaseFailed = true;
+				releaseError = error;
+			}
+		}
+		this.customFooter = undefined;
+		this.customHeader = undefined;
+		this.widgetContainerAbove?.clear();
+		this.widgetContainerBelow?.clear();
+		this.footerContainer?.clear();
+		this.headerContainer?.clear();
+		if (releaseFailed) throw releaseError;
 	}
 
 	/**
@@ -5186,16 +5260,20 @@ export class InteractiveMode {
 			return;
 		}
 
+		const lifecycleGeneration = this.tuiLifecycleGeneration;
 		const model = await this.findExactModelMatch(searchTerm);
+		if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 		if (model) {
 			try {
 				await this.session.setModel(model, { persist: false });
+				if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 				this.footer.invalidate();
 				this.updateEditorBorderColor();
 				this.showStatus(`Model: ${model.id}`);
 				this.observeLifecyclePromise(this.maybeWarnAboutAnthropicSubscriptionAuth(model));
 				this.checkDaxnutsEasterEgg(model);
 			} catch (error) {
+				if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 				this.showError(error instanceof Error ? error.message : String(error));
 			}
 			return;
@@ -5213,27 +5291,48 @@ export class InteractiveMode {
 		if (cachedMatch || this.session.scopedModels.length > 0) return cachedMatch;
 
 		this.showStatus("Refreshing model catalogs…");
+		this.cancelActiveModelLookup();
 		const controller = new AbortController();
-		let timedOut = false;
-		const timeout = setTimeout(() => {
-			timedOut = true;
-			controller.abort();
-		}, 15_000);
+		const generation = ++this.modelLookupGeneration;
+		const lifecycleGeneration = this.tuiLifecycleGeneration;
+		this.activeModelLookupController = controller;
+		const timeout = setTimeout(InteractiveMode.handleModelLookupTimeout, 15_000, this, controller, generation);
 		try {
 			const result = await refreshModelCatalogs(this.session.modelRuntime, controller.signal);
-			if (result.aborted && timedOut) {
+			if (
+				this.activeModelLookupController !== controller ||
+				this.modelLookupGeneration !== generation ||
+				this.tuiLifecycleGeneration !== lifecycleGeneration
+			) {
+				return undefined;
+			}
+			if (result.aborted && this.modelLookupTimedOutGeneration === generation) {
 				this.showWarning("Model refresh timed out; searching cached models.");
 			} else if (result.errors.size > 0) {
 				this.showWarning(`Could not refresh ${[...result.errors.keys()].join(", ")}; searching cached models.`);
 			}
 		} catch (error) {
+			if (
+				this.activeModelLookupController !== controller ||
+				this.modelLookupGeneration !== generation ||
+				this.tuiLifecycleGeneration !== lifecycleGeneration
+			) {
+				return undefined;
+			}
 			this.showWarning(
-				timedOut
+				this.modelLookupTimedOutGeneration === generation
 					? "Model refresh timed out; searching cached models."
 					: `Could not refresh model catalogs: ${error instanceof Error ? error.message : String(error)}`,
 			);
 		} finally {
 			clearTimeout(timeout);
+			if (this.activeModelLookupController === controller && this.modelLookupGeneration === generation) {
+				this.activeModelLookupController = undefined;
+				this.modelLookupTimedOutGeneration = 0;
+			}
+		}
+		if (this.modelLookupGeneration !== generation || this.tuiLifecycleGeneration !== lifecycleGeneration) {
+			return undefined;
 		}
 		return findExactModelReferenceMatch(searchTerm, [...this.session.modelRuntime.getAvailableSnapshot()]);
 	}
@@ -7009,8 +7108,17 @@ export class InteractiveMode {
 	async stop(fullscreenExitOutput = this.settingsManager.getFullscreenExitOutput()): Promise<void> {
 		this.tuiLifecycleGeneration++;
 		this.cancelActiveLoginDialog();
+		this.cancelActiveModelLookup();
 		this.cancelExtensionDialogs();
 		this.disposeActiveSelector();
+		let extensionReleaseError: unknown;
+		let extensionReleaseFailed = false;
+		try {
+			this.releaseExtensionUiOwners();
+		} catch (error) {
+			extensionReleaseFailed = true;
+			extensionReleaseError = error;
+		}
 		if (this.settingsManager.getShowTerminalProgress()) {
 			this.ui.terminal.setProgress(false);
 		}
@@ -7027,5 +7135,6 @@ export class InteractiveMode {
 			this.isInitialized = false;
 		}
 		this.unregisterSignalHandlers();
+		if (extensionReleaseFailed) throw extensionReleaseError;
 	}
 }
