@@ -194,7 +194,7 @@ test("B3 lifecycle allocation fixture exercises production render-time root repl
 	assert.equal(output.candidate, "root-replacement");
 	assert.equal(output.metrics.rootReplacementFrames, 8);
 	assert.equal(output.metrics.detachedBoxCaches, 0);
-	assert.equal(output.metrics.layoutScratchReferences, 0);
+	assert.equal(output.metrics.currentLayoutScratchReferences, 0);
 	assert.equal(output.metrics.frameWrites, 8);
 	assert.equal(output.metrics.disposedOwnerDetachedBoxCaches, 0);
 	assert.equal(output.metrics.disposedOwnerLayoutRootReferences, 0);

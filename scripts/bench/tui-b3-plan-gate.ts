@@ -170,7 +170,9 @@ class RootReplacementLeaf implements Component {
 	private readonly tui: TuiAltScreen;
 	private readonly lines: string[];
 	private target: Component | undefined;
+	private armed = false;
 	renderCalls = 0;
+	replacementFrames = 0;
 
 	constructor(tui: TuiAltScreen, line: string) {
 		this.tui = tui;
@@ -181,9 +183,17 @@ class RootReplacementLeaf implements Component {
 		this.target = target;
 	}
 
+	arm(): void {
+		this.armed = true;
+	}
+
 	render(): string[] {
 		this.renderCalls++;
-		this.tui.setLayoutRoot(this.target);
+		if (this.armed) {
+			this.armed = false;
+			this.replacementFrames++;
+			this.tui.setLayoutRoot(this.target);
+		}
 		return this.lines;
 	}
 
@@ -535,8 +545,11 @@ function createRootReplacementRuntime(width: number, height: number): CandidateR
 	tui.setLayoutRoot(firstRoot);
 	tui.start();
 	tui.renderNow(true);
+	let firstRootMounted = true;
 	firstLeaf.renderCalls = 0;
+	firstLeaf.replacementFrames = 0;
 	secondLeaf.renderCalls = 0;
+	secondLeaf.replacementFrames = 0;
 	terminal.frameWrites = 0;
 	terminal.frameBytes = 0;
 	return {
@@ -544,20 +557,29 @@ function createRootReplacementRuntime(width: number, height: number): CandidateR
 		productionPath:
 			"Box child render -> TuiAltScreen.setLayoutRoot -> deferred cache release -> Alt frame queue",
 		step(): void {
+			if (firstRootMounted) firstLeaf.arm();
+			else secondLeaf.arm();
 			tui.renderNow(true);
+			firstRootMounted = !firstRootMounted;
 		},
 		reset(): void {
 			firstLeaf.renderCalls = 0;
+			firstLeaf.replacementFrames = 0;
 			secondLeaf.renderCalls = 0;
+			secondLeaf.replacementFrames = 0;
 			terminal.frameWrites = 0;
 			terminal.frameBytes = 0;
 		},
 		snapshot(): Record<string, number | string | boolean> {
 			const retained = tui.getAltLayoutRetainedReferenceCounts();
+			const mountedRoot = firstRootMounted ? firstRoot : secondRoot;
+			const detachedRoot = firstRootMounted ? secondRoot : firstRoot;
 			return {
-				rootReplacementFrames: firstLeaf.renderCalls + secondLeaf.renderCalls,
-				detachedBoxCaches: Number(boxHasCache(firstRoot)) + Number(boxHasCache(secondRoot)),
-				layoutScratchReferences:
+				rootReplacementFrames: firstLeaf.replacementFrames + secondLeaf.replacementFrames,
+				rootRenderCalls: firstLeaf.renderCalls + secondLeaf.renderCalls,
+				mountedBoxCaches: Number(boxHasCache(mountedRoot)),
+				detachedBoxCaches: Number(boxHasCache(detachedRoot)),
+				currentLayoutScratchReferences:
 					retained.components +
 					retained.lines +
 					retained.sources +
