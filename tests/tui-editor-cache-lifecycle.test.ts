@@ -222,6 +222,35 @@ class ReentrantLayoutRoot extends Container {
 	}
 }
 
+class NestedRenderLayoutRoot extends Container {
+	private replaced = false;
+	private readonly tui: TuiAltScreen;
+	private readonly replacement: Component;
+	nestedRenderError: unknown;
+	owner: CountingCacheContainer | undefined;
+	ownerReleaseCallsAfterNested = -1;
+
+	constructor(tui: TuiAltScreen, replacement: Component) {
+		super();
+		this.tui = tui;
+		this.replacement = replacement;
+	}
+
+	override render(): string[] {
+		if (!this.replaced) {
+			this.replaced = true;
+			this.tui.setLayoutRoot(this.replacement);
+			try {
+				this.tui.renderNow(true);
+			} catch (error) {
+				this.nestedRenderError = error;
+			}
+			this.ownerReleaseCallsAfterNested = this.owner?.releaseCalls ?? -1;
+		}
+		return ["nested-render-old-root"];
+	}
+}
+
 function createMainEditorTree(tui: TuiMainScreen, root: Container = new Container()): {
 	editor: Editor;
 	editorContainer: Container;
@@ -532,6 +561,31 @@ test("layout root replacement requested during render completes after scratch ow
 	assertScratchReleased(tui);
 });
 
+test("nested renderNow cannot release an old layout owner before the outer render exits", async () => {
+	const tui = new TuiAltScreen(new FakeTerminal(120, 40), false, undefined, { mouse: false });
+	const replacement = new StaticCacheLine("nested-render-new-root");
+	const reentrantChild = new NestedRenderLayoutRoot(tui, replacement);
+	const oldBox = new Box(0, 0);
+	oldBox.addChild(reentrantChild);
+	const oldRoot = new CountingCacheContainer();
+	oldRoot.addChild(oldBox);
+	reentrantChild.owner = oldRoot;
+	tui.setLayoutRoot(oldRoot);
+	tui.start();
+
+	assert.doesNotThrow(() => tui.renderNow(true));
+	assert.ok(reentrantChild.nestedRenderError instanceof Error);
+	assert.equal(reentrantChild.ownerReleaseCallsAfterNested, 0);
+	assert.equal(oldRoot.releaseCalls, 1);
+	assert.equal(altDiagnostics(tui).layoutRoot, replacement);
+	assert.equal(boxCache(oldBox), undefined);
+	assertScratchReleased(tui);
+
+	tui.renderNow(true);
+	assert.equal(replacement.renderCalls, 1);
+	await tui.dispose({ preserveScreen: true });
+});
+
 test("layout-root replacement releases Box caches without semantic invalidation", async () => {
 	const tui = new TuiAltScreen(new FakeTerminal(120, 40), false, undefined, { mouse: false });
 	const nested = createNestedRoot(tui);
@@ -741,6 +795,11 @@ test("lifecycle cleanup remains outside frame and recoverable-stop hot paths", a
 	assert.match(altText, /releaseComponentRenderCaches\(pendingLayoutCacheRelease\)/);
 	assert.match(altText, /this\.activeLayoutCacheOwner = this\.layoutRoot \?\? this/);
 	assert.match(altText, /this\.activeLayoutCacheOwner = undefined/);
+	assert.match(altText, /private layoutRenderDepth = 0/);
+	assert.match(altText, /const outermostLayoutRender = this\.layoutRenderDepth === 0/);
+	assert.match(altText, /this\.layoutRenderDepth\+\+/);
+	assert.match(altText, /this\.layoutRenderDepth--/);
+	assert.match(altText, /if \(this\.layoutRenderDepth === 0\)/);
 	assert.match(setLayoutRoot.getText(altSource), /layoutScratch\.requestClear\(\)/);
 	assert.doesNotMatch(setLayoutRoot.getText(altSource), /layoutScratch\.clear\(\)/);
 	assert.match(altText, /finally \{\s*this\.layoutScratch\.flushRequestedClear\(\)/);

@@ -31,6 +31,7 @@ import {
 	type MarkdownTheme,
 } from "../packages/tui/src/components/markdown.ts";
 import { RetainedItem } from "../packages/tui/src/components/retained-item.ts";
+import { SettingsList, type SettingsListTheme } from "../packages/tui/src/components/settings-list.ts";
 import { Text } from "../packages/tui/src/components/text.ts";
 import { ViewportContainer } from "../packages/tui/src/components/viewport-container.ts";
 import { getCapabilities, setCapabilities } from "../packages/tui/src/terminal-image.ts";
@@ -72,6 +73,18 @@ const EDITOR_THEME: EditorTheme = {
 		noMatch: identity,
 	},
 };
+
+const SETTINGS_THEME: SettingsListTheme = {
+	label: identitySelection,
+	value: identitySelection,
+	description: identity,
+	cursor: "> ",
+	hint: identity,
+};
+
+function identitySelection(value: string, _selected: boolean): string {
+	return value;
+}
 
 const EMPTY_USAGE = {
 	input: 0,
@@ -359,6 +372,39 @@ test("production Assistant and User message trees release nested Markdown and Te
 	assert.equal(userMarkdownRaw.cachedLines, undefined);
 	assert.ok(assistant.render(80).length > 0);
 	assert.ok(user.render(80).length > 0);
+});
+
+test("final disposal traverses an active SettingsList submenu without closing it", async () => {
+	const submenuText = new Text("submenu cached text 中文 😀 e\u0301", 0, 0);
+	const submenu = new Container();
+	submenu.addChild(submenuText);
+	const settings = new SettingsList(
+		[
+			{
+				id: "theme",
+				label: "Theme",
+				currentValue: "dark",
+				submenu: () => submenu,
+			},
+		],
+		5,
+		SETTINGS_THEME,
+		() => {},
+		() => {},
+	);
+	settings.handleInput("\r");
+	assert.ok(settings.render(80).length > 0);
+	const raw = submenuText as unknown as TextRawCache;
+	assert.ok((raw.cachedLines?.length ?? 0) > 0);
+
+	const tui = new TuiMainScreen(new FakeTerminal(120, 40), false);
+	tui.addChild(settings);
+	tui.start();
+	tui.renderNow();
+	await tui.dispose({ preserveScreen: true });
+
+	assert.equal(raw.cachedLines, undefined);
+	assert.deepEqual(settings.render(80), submenu.render(80));
 });
 
 test("Kitty Image release clears the cached sequence without changing image identity or source", () => {
@@ -722,6 +768,11 @@ test("built-in cache owner contract stays lifecycle-only and complete", async ()
 		const releaseText = releaseMethod.getText(source);
 		assert.doesNotMatch(releaseText, /\.invalidate\(|\.render\(|new (?:Map|Set|Promise|AbortController)|=>|function\s*\(/);
 	}
+	const settingsText = await readFile("packages/tui/src/components/settings-list.ts", "utf8");
+	assert.match(
+		settingsText,
+		/\[GET_COMPONENT_RENDER_CACHE_CHILD\]\(\): Component \| undefined \{\s*return this\.submenuComponent \?\? undefined;\s*\}/,
+	);
 
 	const tuiPath = "packages/tui/src/tui.ts";
 	const tuiText = await readFile(tuiPath, "utf8");
