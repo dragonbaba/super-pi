@@ -654,6 +654,9 @@ export class InteractiveMode {
 	private activeProviderAuthenticationController: AbortController | undefined = undefined;
 	private activeProviderAuthenticationTimeout: ReturnType<typeof setTimeout> | undefined = undefined;
 	private providerAuthenticationGeneration = 0;
+	private activeStartupModelRefreshController: AbortController | undefined = undefined;
+	private activeStartupModelRefreshTimeout: ReturnType<typeof setTimeout> | undefined = undefined;
+	private startupModelRefreshGeneration = 0;
 	private activeModelLookupController: AbortController | undefined = undefined;
 	private activeModelLookupTimeout: ReturnType<typeof setTimeout> | undefined = undefined;
 	private modelCommandGeneration = 0;
@@ -695,6 +698,20 @@ export class InteractiveMode {
 		if (mode.activeModelLookupController !== controller || mode.modelLookupGeneration !== generation) return;
 		mode.modelLookupTimedOutGeneration = generation;
 		mode.activeModelLookupTimeout = undefined;
+		controller.abort();
+	}
+	private static handleStartupModelRefreshTimeout(
+		mode: InteractiveMode,
+		controller: AbortController,
+		generation: number,
+	): void {
+		if (
+			mode.activeStartupModelRefreshController !== controller ||
+			mode.startupModelRefreshGeneration !== generation
+		) {
+			return;
+		}
+		mode.activeStartupModelRefreshTimeout = undefined;
 		controller.abort();
 	}
 	private static handleProviderAuthenticationTimeout(
@@ -1271,14 +1288,7 @@ export class InteractiveMode {
 		await this.init();
 
 		if (!process.env.SP_OFFLINE) {
-			const controller = new AbortController();
-			const timeout = setTimeout(() => controller.abort(), 15_000);
-			this.observeLifecyclePromise(
-				refreshModelCatalogs(this.session.modelRuntime, controller.signal)
-					.then(() => this.updateAvailableProviderCount())
-					.catch(() => {})
-					.finally(() => clearTimeout(timeout)),
-			);
+			this.startStartupModelRefresh();
 		}
 
 		// Start package update check asynchronously
@@ -2830,6 +2840,65 @@ export class InteractiveMode {
 		const timeout = this.activeProviderAuthenticationTimeout;
 		this.activeProviderAuthenticationTimeout = undefined;
 		if (timeout !== undefined) clearTimeout(timeout);
+	}
+
+	private cancelActiveStartupModelRefresh(): void {
+		this.startupModelRefreshGeneration++;
+		const controller = this.activeStartupModelRefreshController;
+		this.activeStartupModelRefreshController = undefined;
+		const timeout = this.activeStartupModelRefreshTimeout;
+		this.activeStartupModelRefreshTimeout = undefined;
+		if (timeout !== undefined) clearTimeout(timeout);
+		controller?.abort();
+	}
+
+	private startStartupModelRefresh(): void {
+		this.cancelActiveStartupModelRefresh();
+		const controller = new AbortController();
+		const generation = ++this.startupModelRefreshGeneration;
+		const lifecycleGeneration = this.tuiLifecycleGeneration;
+		this.activeStartupModelRefreshController = controller;
+		const timeout = setTimeout(
+			InteractiveMode.handleStartupModelRefreshTimeout,
+			15_000,
+			this,
+			controller,
+			generation,
+		);
+		this.activeStartupModelRefreshTimeout = timeout;
+		this.observeLifecyclePromise(
+			this.refreshStartupModelCatalogs(controller, generation, lifecycleGeneration, timeout),
+		);
+	}
+
+	private async refreshStartupModelCatalogs(
+		controller: AbortController,
+		generation: number,
+		lifecycleGeneration: number,
+		timeout: ReturnType<typeof setTimeout>,
+	): Promise<void> {
+		try {
+			await refreshModelCatalogs(this.session.modelRuntime, controller.signal);
+			if (
+				this.activeStartupModelRefreshController !== controller ||
+				this.startupModelRefreshGeneration !== generation ||
+				this.tuiLifecycleGeneration !== lifecycleGeneration
+			) {
+				return;
+			}
+			this.updateAvailableProviderCount();
+		} catch {
+			// Startup refresh is best-effort; cancellation and catalog errors are silent.
+		} finally {
+			clearTimeout(timeout);
+			if (this.activeStartupModelRefreshTimeout === timeout) this.activeStartupModelRefreshTimeout = undefined;
+			if (
+				this.activeStartupModelRefreshController === controller &&
+				this.startupModelRefreshGeneration === generation
+			) {
+				this.activeStartupModelRefreshController = undefined;
+			}
+		}
 	}
 
 	private cancelActiveModelLookup(): void {
@@ -6895,16 +6964,23 @@ export class InteractiveMode {
 			return;
 		}
 
+		const lifecycleGeneration = this.tuiLifecycleGeneration;
 		try {
-			await copyToClipboard(text);
+			await this.copyTextToClipboard(text);
+			if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 			if (options.flashConfirmation && this.renderer instanceof TuiAltScreen) {
 				this.renderer.flash("Copied!");
 			} else {
 				this.showStatus("Copied last agent message to clipboard");
 			}
 		} catch (error) {
+			if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 			this.showError(error instanceof Error ? error.message : String(error));
 		}
+	}
+
+	private copyTextToClipboard(text: string): Promise<void> {
+		return copyToClipboard(text);
 	}
 
 	private handleNameCommand(text: string): void {
@@ -7346,6 +7422,7 @@ export class InteractiveMode {
 		this.bashComponent = undefined;
 		this.cancelActiveLoginDialog();
 		this.cancelActiveProviderAuthentication();
+		this.cancelActiveStartupModelRefresh();
 		this.cancelActiveModelLookup();
 		this.cancelActiveExtensionCustom();
 		this.cancelExtensionDialogs();
