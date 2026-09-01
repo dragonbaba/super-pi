@@ -989,7 +989,8 @@ export class InteractiveMode {
 		}
 		previousUi.setFocus(null);
 		previousUi.clear();
-		if (TuiLayouts.isViewportTUI(previousUi)) previousUi.setLayoutRoot(undefined);
+		if (previousUi instanceof TuiAltScreen) previousUi.detachLayoutRootForTransfer();
+		else if (TuiLayouts.isViewportTUI(previousUi)) previousUi.setLayoutRoot(undefined);
 
 		const nextUi = createInteractiveTui({
 			tuiMode: mode,
@@ -2738,6 +2739,11 @@ export class InteractiveMode {
 		this.extensionInput = undefined;
 		this.ui.setFocus(this.editor);
 		this.ui.requestRender();
+	}
+
+	private cancelExtensionDialogs(): void {
+		this.extensionSelector?.cancel();
+		this.extensionInput?.cancel();
 	}
 
 	/**
@@ -6945,6 +6951,7 @@ export class InteractiveMode {
 
 	async stop(fullscreenExitOutput = this.settingsManager.getFullscreenExitOutput()): Promise<void> {
 		this.tuiLifecycleGeneration++;
+		this.cancelExtensionDialogs();
 		this.disposeActiveSelector();
 		if (this.settingsManager.getShowTerminalProgress()) {
 			this.ui.terminal.setProgress(false);

@@ -285,6 +285,17 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		}
 	}
 
+	detachLayoutRootForTransfer(): void {
+		if (this.layoutRoot === undefined) return;
+		// The caller is transferring this root to another TUI owner. Drop only
+		// Alt-owned layout state; releasing component caches would race the mount.
+		this.releaseLayoutInteractionOwners();
+		this.layoutScratch.clear();
+		this.layoutRoot = undefined;
+		this.layoutRootGeneration++;
+		this.currentLayout = undefined;
+	}
+
 	override render(width: number): string[] {
 		return this.layoutRoot?.render(width) ?? super.render(width);
 	}

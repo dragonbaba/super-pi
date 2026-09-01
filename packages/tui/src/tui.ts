@@ -935,11 +935,22 @@ export abstract class TuiBase extends Container implements TUI {
 		return false;
 	}
 
+	private releaseDetachedOverlayComponent(component: Component): void {
+		if (this.isComponentMounted(component)) return;
+		for (let index = 0; index < this.overlayStack.length; index++) {
+			if (this.overlayStack[index]!.component === component) return;
+		}
+		releaseComponentRenderCaches(component);
+	}
+
 	private containsComponent(root: Component, target: Component): boolean {
 		if (root === target) return true;
-		if (!(root instanceof Container)) return false;
-		for (let index = 0; index < root.children.length; index++) {
-			if (this.containsComponent(root.children[index]!, target)) return true;
+		const child = root[GET_COMPONENT_RENDER_CACHE_CHILD]?.();
+		if (child !== undefined && this.containsComponent(child, target)) return true;
+		const children = root[GET_COMPONENT_RENDER_CACHE_CHILDREN]?.();
+		if (children === undefined) return false;
+		for (let index = 0; index < children.length; index++) {
+			if (this.containsComponent(children[index]!, target)) return true;
 		}
 		return false;
 	}
@@ -979,6 +990,7 @@ export abstract class TuiBase extends Container implements TUI {
 					}
 					if (this.overlayStack.length === 0) this.terminal.hideCursor();
 					this.requestRender();
+					this.releaseDetachedOverlayComponent(component);
 				}
 			},
 			setHidden: (hidden: boolean) => {
@@ -1052,6 +1064,7 @@ export abstract class TuiBase extends Container implements TUI {
 		}
 		if (this.overlayStack.length === 0) this.terminal.hideCursor();
 		this.requestRender();
+		this.releaseDetachedOverlayComponent(overlay.component);
 	}
 
 	/** Check if there are any visible overlays */
