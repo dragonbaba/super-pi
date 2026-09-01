@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import ts from "typescript";
@@ -168,6 +169,36 @@ test("B3 Plan Gate records allocation shapes only for the five exact candidate l
 	assert.ok(kitty.mapOrSetConstructions >= 1);
 	assert.ok(hStackRender.closures >= 4);
 	assert.ok(vStackRender.closures >= 2);
+});
+
+test("B3 lifecycle allocation fixture exercises production render-time root replacement", () => {
+	const result = spawnSync(
+		process.execPath,
+		[
+			"--experimental-strip-types",
+			"scripts/bench/tui-b3-plan-gate.ts",
+			"--candidate",
+			"root-replacement",
+			"--warmup",
+			"2",
+			"--measured",
+			"8",
+		],
+		{ encoding: "utf8" },
+	);
+	assert.equal(result.status, 0, result.stderr);
+	const output = JSON.parse(result.stdout) as {
+		candidate: string;
+		metrics: Record<string, number>;
+	};
+	assert.equal(output.candidate, "root-replacement");
+	assert.equal(output.metrics.rootReplacementFrames, 8);
+	assert.equal(output.metrics.detachedBoxCaches, 0);
+	assert.equal(output.metrics.layoutScratchReferences, 0);
+	assert.equal(output.metrics.frameWrites, 8);
+	assert.equal(output.metrics.disposedOwnerDetachedBoxCaches, 0);
+	assert.equal(output.metrics.disposedOwnerLayoutRootReferences, 0);
+	assert.equal(output.metrics.disposedOwnerLayoutScratchReferences, 0);
 });
 
 test("Editor layout and paste-registry ownership remain private and generation-aware", () => {

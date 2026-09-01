@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { constants, performance, PerformanceObserver, type PerformanceEntry } from "node:perf_hooks";
 import { Editor, type EditorTheme } from "../../packages/tui/src/components/editor.ts";
+import { Box } from "../../packages/tui/src/components/box.ts";
 import { HStack } from "../../packages/tui/src/components/h-stack.ts";
 import { RetainedContainer } from "../../packages/tui/src/components/retained-item.ts";
 import { ScrollView } from "../../packages/tui/src/components/scroll-view.ts";
@@ -21,7 +22,13 @@ import { TuiAltScreen } from "../../packages/tui/src/tui-alt-screen.ts";
 import { TuiMainScreen } from "../../packages/tui/src/tui-main-screen.ts";
 import { currentCommit, readIntegerOption } from "./benchmark.ts";
 
-type Candidate = "editor-frame" | "mouse-hit" | "selection-auto-scroll" | "kitty-fallback" | "stack-direct";
+type Candidate =
+	| "editor-frame"
+	| "root-replacement"
+	| "mouse-hit"
+	| "selection-auto-scroll"
+	| "kitty-fallback"
+	| "stack-direct";
 type EditorUpdate = "stable" | "cursor" | "oversize-small";
 type EditorScreen = "alt" | "main";
 
@@ -154,6 +161,30 @@ class ActiveLines implements Component {
 	render(): string[] {
 		this.renderCalls++;
 		return (this.generation & 1) === 0 ? this.even : this.odd;
+	}
+
+	invalidate(): void {}
+}
+
+class RootReplacementLeaf implements Component {
+	private readonly tui: TuiAltScreen;
+	private readonly lines: string[];
+	private target: Component | undefined;
+	renderCalls = 0;
+
+	constructor(tui: TuiAltScreen, line: string) {
+		this.tui = tui;
+		this.lines = [line];
+	}
+
+	setTarget(target: Component): void {
+		this.target = target;
+	}
+
+	render(): string[] {
+		this.renderCalls++;
+		this.tui.setLayoutRoot(this.target);
+		return this.lines;
 	}
 
 	invalidate(): void {}
@@ -486,6 +517,79 @@ function createMainEditorRuntime(
 	};
 }
 
+function boxHasCache(box: Box): boolean {
+	return (box as unknown as { cache: unknown }).cache !== undefined;
+}
+
+function createRootReplacementRuntime(width: number, height: number): CandidateRuntime {
+	const terminal = new BenchTerminal(width, height);
+	const tui = new TuiAltScreen(terminal, false, undefined, { mouse: false });
+	const firstLeaf = new RootReplacementLeaf(tui, "first-root");
+	const secondLeaf = new RootReplacementLeaf(tui, "second-root");
+	const firstRoot = new Box(0, 0);
+	const secondRoot = new Box(0, 0);
+	firstRoot.addChild(firstLeaf);
+	secondRoot.addChild(secondLeaf);
+	firstLeaf.setTarget(secondRoot);
+	secondLeaf.setTarget(firstRoot);
+	tui.setLayoutRoot(firstRoot);
+	tui.start();
+	tui.renderNow(true);
+	firstLeaf.renderCalls = 0;
+	secondLeaf.renderCalls = 0;
+	terminal.frameWrites = 0;
+	terminal.frameBytes = 0;
+	return {
+		unit: "frame",
+		productionPath:
+			"Box child render -> TuiAltScreen.setLayoutRoot -> deferred cache release -> Alt frame queue",
+		step(): void {
+			tui.renderNow(true);
+		},
+		reset(): void {
+			firstLeaf.renderCalls = 0;
+			secondLeaf.renderCalls = 0;
+			terminal.frameWrites = 0;
+			terminal.frameBytes = 0;
+		},
+		snapshot(): Record<string, number | string | boolean> {
+			const retained = tui.getAltLayoutRetainedReferenceCounts();
+			return {
+				rootReplacementFrames: firstLeaf.renderCalls + secondLeaf.renderCalls,
+				detachedBoxCaches: Number(boxHasCache(firstRoot)) + Number(boxHasCache(secondRoot)),
+				layoutScratchReferences:
+					retained.components +
+					retained.lines +
+					retained.sources +
+					retained.cachedRows +
+					retained.indexedComponents +
+					retained.screenRows,
+				frameWrites: terminal.frameWrites,
+				frameBytes: terminal.frameBytes,
+				finalFrameHash: terminal.finalFrameHash(),
+			};
+		},
+		disposedOwnerSnapshot(): Record<string, number> {
+			const retained = tui.getAltLayoutRetainedReferenceCounts();
+			const internals = tui as unknown as { layoutRoot: Component | undefined };
+			return {
+				disposedOwnerDetachedBoxCaches: Number(boxHasCache(firstRoot)) + Number(boxHasCache(secondRoot)),
+				disposedOwnerLayoutRootReferences: internals.layoutRoot === undefined ? 0 : 1,
+				disposedOwnerLayoutScratchReferences:
+					retained.components +
+					retained.lines +
+					retained.sources +
+					retained.cachedRows +
+					retained.indexedComponents +
+					retained.screenRows,
+			};
+		},
+		async dispose(): Promise<void> {
+			await tui.dispose({ preserveScreen: true });
+		},
+	};
+}
+
 function createMouseRuntime(itemCount: number, width: number, height: number): CandidateRuntime {
 	const shell = createAltShell(itemCount, width, height, "static", 1);
 	const internals = shell.tui as unknown as { currentLayout: LayoutFrame | undefined };
@@ -645,6 +749,7 @@ function createRuntime(
 			? createMainEditorRuntime(itemCount, width, height, editorUpdate, editorLineCount)
 			: createEditorRuntime(itemCount, width, height, editorUpdate, editorLineCount);
 	}
+	if (candidate === "root-replacement") return createRootReplacementRuntime(width, height);
 	if (candidate === "mouse-hit") return createMouseRuntime(itemCount, width, height);
 	if (candidate === "selection-auto-scroll") return createSelectionAutoScrollRuntime(itemCount, width, height);
 	if (candidate === "kitty-fallback") return createKittyRuntime(width, height);
@@ -664,12 +769,15 @@ function readCandidate(): Candidate {
 	const value = index === -1 ? "editor-frame" : process.argv[index + 1];
 	if (
 		value !== "editor-frame" &&
+		value !== "root-replacement" &&
 		value !== "mouse-hit" &&
 		value !== "selection-auto-scroll" &&
 		value !== "kitty-fallback" &&
 		value !== "stack-direct"
 	) {
-		throw new Error("--candidate must be editor-frame, mouse-hit, selection-auto-scroll, kitty-fallback, or stack-direct");
+		throw new Error(
+			"--candidate must be editor-frame, root-replacement, mouse-hit, selection-auto-scroll, kitty-fallback, or stack-direct",
+		);
 	}
 	return value;
 }
