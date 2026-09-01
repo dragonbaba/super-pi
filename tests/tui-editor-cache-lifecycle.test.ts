@@ -6,6 +6,7 @@ import { RELEASE_COMPONENT_RENDER_CACHE } from "../packages/tui/src/component-ca
 import { Container, type Component, type TUI } from "../packages/tui/src/tui.ts";
 import { TuiAltScreen } from "../packages/tui/src/tui-alt-screen.ts";
 import { TuiMainScreen } from "../packages/tui/src/tui-main-screen.ts";
+import { Box } from "../packages/tui/src/components/box.ts";
 import { Editor, type EditorTheme } from "../packages/tui/src/components/editor.ts";
 import { VStack } from "../packages/tui/src/components/v-stack.ts";
 import type { LayoutFrame } from "../packages/tui/src/layout.ts";
@@ -35,6 +36,10 @@ interface AltDiagnostics {
 	currentLayout: LayoutFrame | undefined;
 }
 
+interface BoxDiagnostics {
+	cache: unknown;
+}
+
 const EDITOR_THEME: EditorTheme = {
 	borderColor: identity,
 	selectList: {
@@ -60,6 +65,10 @@ function altDiagnostics(tui: TuiAltScreen): AltDiagnostics {
 
 function editorTestState(editor: Editor): EditorTestState {
 	return editor as unknown as EditorTestState;
+}
+
+function boxCache(box: Box): unknown {
+	return (box as unknown as BoxDiagnostics).cache;
 }
 
 function createEditorText(lineCount = 512): string {
@@ -126,16 +135,18 @@ class CountingRoot extends VStack {
 	}
 }
 
-class ThrowingRoot extends VStack {
-	override invalidate(): void {
-		super.invalidate();
-		throw new Error("fixture invalidate failure");
-	}
-}
-
 class ThrowingCacheRoot extends VStack {
 	[RELEASE_COMPONENT_RENDER_CACHE](): void {
 		throw new Error("fixture cache release failure");
+	}
+}
+
+class CountingBox extends Box {
+	invalidateCalls = 0;
+
+	override invalidate(): void {
+		this.invalidateCalls++;
+		super.invalidate();
 	}
 }
 
@@ -215,6 +226,30 @@ test("Main final dispose releases nested Editor cache while every owner remains 
 	assert.equal(tree.editor.getExpandedText(), baseText);
 });
 
+test("Main final dispose traverses Box ownership without semantic invalidation", async () => {
+	const tui = new TuiMainScreen(new FakeTerminal(120, 40), false);
+	const editor = new Editor(tui, EDITOR_THEME);
+	editor.focused = true;
+	editor.setText(createEditorText());
+	const nested = new Container();
+	nested.addChild(editor);
+	const box = new CountingBox(1, 1);
+	box.addChild(nested);
+	tui.addChild(box);
+	tui.start();
+	tui.renderNow();
+	assertCachePrimed(editor);
+	assert.notEqual(boxCache(box), undefined);
+
+	await tui.dispose({ preserveScreen: true });
+	assertCacheReleased(editor);
+	assert.equal(boxCache(box), undefined);
+	assert.equal(box.invalidateCalls, 0);
+	assert.equal(tui.children[0], box);
+	assert.equal(box.children[0], nested);
+	assert.equal(nested.children[0], editor);
+});
+
 test("Main recoverable stop preserves mounted Editor cache and restart behavior", async () => {
 	const terminal = new FakeTerminal(120, 40);
 	const tui = new TuiMainScreen(terminal, false);
@@ -277,7 +312,7 @@ test("layout-root replacement releases nested Editor cache and Alt scratch immed
 	const terminal = new FakeTerminal(120, 40);
 	const tui = new TuiAltScreen(terminal, false, undefined, { mouse: false });
 	const nested = createNestedRoot(tui);
-	const oldRoot = nested.root;
+	const oldRoot = new CountingRoot([nested.container]);
 	tui.setLayoutRoot(oldRoot);
 	tui.start();
 	tui.renderNow();
@@ -286,6 +321,8 @@ test("layout-root replacement releases nested Editor cache and Alt scratch immed
 	const replacement = new VStack([]);
 	tui.setLayoutRoot(replacement);
 	assertCacheReleased(nested.editor);
+	assert.equal(oldRoot.invalidateCalls, 0);
+	assert.equal(oldRoot.releaseCalls, 1);
 	assert.equal(altDiagnostics(tui).layoutRoot, replacement);
 	assert.equal(altDiagnostics(tui).currentLayout, undefined);
 	assertScratchReleased(tui);
@@ -294,6 +331,27 @@ test("layout-root replacement releases nested Editor cache and Alt scratch immed
 	assert.equal(altDiagnostics(tui).layoutRoot, undefined);
 	assertScratchReleased(tui);
 	assert.equal(oldRoot.children[0], nested.container);
+	await tui.dispose({ preserveScreen: true });
+});
+
+test("layout-root replacement releases Box caches without semantic invalidation", async () => {
+	const tui = new TuiAltScreen(new FakeTerminal(120, 40), false, undefined, { mouse: false });
+	const nested = createNestedRoot(tui);
+	const box = new CountingBox(1, 1);
+	box.addChild(nested.container);
+	tui.setLayoutRoot(box);
+	tui.start();
+	tui.renderNow();
+	assertCachePrimed(nested.editor);
+	assert.notEqual(boxCache(box), undefined);
+
+	const replacement = new VStack([]);
+	tui.setLayoutRoot(replacement);
+	assertCacheReleased(nested.editor);
+	assert.equal(boxCache(box), undefined);
+	assert.equal(box.invalidateCalls, 0);
+	assert.equal(altDiagnostics(tui).layoutRoot, replacement);
+	assertScratchReleased(tui);
 	await tui.dispose({ preserveScreen: true });
 });
 
@@ -396,16 +454,16 @@ test("a stopped root can transfer to a new Alt owner after the old owner is disp
 	await newTui.dispose({ preserveScreen: true });
 });
 
-test("replacement and final disposal release ownership across invalidation and cache-release errors", async () => {
+test("replacement and final disposal release ownership across cache-release errors", async () => {
 	const replacementTui = new TuiAltScreen(new FakeTerminal(120, 40), false, undefined, { mouse: false });
 	const replacementNested = createNestedRoot(replacementTui);
-	const throwingReplacementRoot = new ThrowingRoot([replacementNested.container]);
+	const throwingReplacementRoot = new ThrowingCacheRoot([replacementNested.container]);
 	replacementTui.setLayoutRoot(throwingReplacementRoot);
 	replacementTui.start();
 	replacementTui.renderNow();
 	assertCachePrimed(replacementNested.editor);
 	const replacement = new VStack([]);
-	assert.throws(() => replacementTui.setLayoutRoot(replacement), /fixture invalidate failure/);
+	assert.throws(() => replacementTui.setLayoutRoot(replacement), /fixture cache release failure/);
 	assertCacheReleased(replacementNested.editor);
 	assert.equal(altDiagnostics(replacementTui).layoutRoot, replacement);
 	assert.equal(altDiagnostics(replacementTui).currentLayout, undefined);
@@ -428,9 +486,11 @@ test("replacement and final disposal release ownership across invalidation and c
 test("lifecycle cleanup remains outside frame and recoverable-stop hot paths", async () => {
 	const tuiPath = "packages/tui/src/tui.ts";
 	const altPath = "packages/tui/src/tui-alt-screen.ts";
+	const boxPath = "packages/tui/src/components/box.ts";
 	const benchmarkPath = "scripts/bench/tui-b3-plan-gate.ts";
 	const tuiText = await readFile(tuiPath, "utf-8");
 	const altText = await readFile(altPath, "utf-8");
+	const boxText = await readFile(boxPath, "utf-8");
 	const benchmarkText = await readFile(benchmarkPath, "utf-8");
 	const altSource = ts.createSourceFile(altPath, altText, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
 	let setLayoutRoot: ts.MethodDeclaration | undefined;
@@ -456,7 +516,12 @@ test("lifecycle cleanup remains outside frame and recoverable-stop hot paths", a
 	}
 	visit(setLayoutRoot);
 	assert.equal(forbiddenAllocations, 0);
-	assert.match(tuiText, /function releaseComponentRenderCaches\(component: Component\)/);
+	assert.match(tuiText, /function releaseComponentRenderCaches\(component: Component \| undefined\)/);
+	assert.match(tuiText, /GET_COMPONENT_RENDER_CACHE_CHILDREN/);
+	assert.match(boxText, /GET_COMPONENT_RENDER_CACHE_CHILDREN/);
+	assert.match(boxText, /RELEASE_COMPONENT_RENDER_CACHE/);
+	assert.doesNotMatch(setLayoutRoot.getText(altSource), /previousRoot\?\.invalidate/);
+	assert.match(setLayoutRoot.getText(altSource), /releaseComponentRenderCaches\(previousRoot\)/);
 	assert.doesNotMatch(
 		tuiText.match(/protected releaseMountedComponentsAfterDispose[\s\S]*?\n\t}\n/)?.[0] ?? "",
 		/this\.invalidate\(\)/,
