@@ -324,41 +324,74 @@ function renderContainerInto(container: Container, width: number, target: string
 	}
 }
 
-export function releaseComponentRenderCaches(component: Component | undefined): void {
-	if (component === undefined) return;
-	let releaseError: unknown;
-	let releaseFailed = false;
+function collectComponentReleaseOrder(
+	component: Component | undefined,
+	identities: Set<Component>,
+	releaseOrder: Component[],
+): void {
+	if (component === undefined || identities.has(component)) return;
+	identities.add(component);
 	const child = component[GET_COMPONENT_RENDER_CACHE_CHILD]?.();
-	if (child !== undefined) {
-		try {
-			releaseComponentRenderCaches(child);
-		} catch (error) {
-			releaseFailed = true;
-			releaseError = error;
-		}
-	}
+	if (child !== undefined) collectComponentReleaseOrder(child, identities, releaseOrder);
 	const children = component[GET_COMPONENT_RENDER_CACHE_CHILDREN]?.();
 	if (children !== undefined) {
 		for (let index = 0; index < children.length; index++) {
-			try {
-				releaseComponentRenderCaches(children[index]!);
-			} catch (error) {
-				if (!releaseFailed) {
-					releaseFailed = true;
-					releaseError = error;
-				}
+			collectComponentReleaseOrder(children[index], identities, releaseOrder);
+		}
+	}
+	releaseOrder.push(component);
+}
+
+function releaseCollectedComponentRenderCaches(
+	releaseOrder: readonly Component[],
+	metrics: DetachedComponentReleaseMetrics | undefined,
+): void {
+	let releaseError: unknown;
+	let releaseFailed = false;
+	for (let index = 0; index < releaseOrder.length; index++) {
+		try {
+			releaseOrder[index]![RELEASE_COMPONENT_RENDER_CACHE]?.();
+			if (metrics) metrics.releasedNodes++;
+		} catch (error) {
+			if (!releaseFailed) {
+				releaseFailed = true;
+				releaseError = error;
 			}
 		}
 	}
-	try {
-		component[RELEASE_COMPONENT_RENDER_CACHE]?.();
-	} catch (error) {
-		if (!releaseFailed) {
-			releaseFailed = true;
-			releaseError = error;
-		}
-	}
 	if (releaseFailed) throw releaseError;
+}
+
+export function releaseComponentRenderCaches(component: Component | undefined): void {
+	const identities = new Set<Component>();
+	const releaseOrder: Component[] = [];
+	try {
+		collectComponentReleaseOrder(component, identities, releaseOrder);
+		releaseCollectedComponentRenderCaches(releaseOrder, undefined);
+	} finally {
+		releaseOrder.length = 0;
+		identities.clear();
+	}
+}
+
+function releaseMountedComponentRenderCaches(
+	roots: readonly Component[],
+	overlays: readonly OverlayStackEntry[],
+): void {
+	const identities = new Set<Component>();
+	const releaseOrder: Component[] = [];
+	try {
+		for (let index = 0; index < roots.length; index++) {
+			collectComponentReleaseOrder(roots[index], identities, releaseOrder);
+		}
+		for (let index = 0; index < overlays.length; index++) {
+			collectComponentReleaseOrder(overlays[index]?.component, identities, releaseOrder);
+		}
+		releaseCollectedComponentRenderCaches(releaseOrder, undefined);
+	} finally {
+		releaseOrder.length = 0;
+		identities.clear();
+	}
 }
 
 const COMPONENT_RELEASE_LIVE = 1;
@@ -400,9 +433,10 @@ function collectLiveComponentIdentity(
 	}
 }
 
-function releaseDetachedComponentIdentity(
+function collectDetachedComponentReleaseOrder(
 	component: Component | undefined,
 	identities: Map<Component, number>,
+	releaseOrder: Component[],
 	metrics: DetachedComponentReleaseMetrics | undefined,
 ): void {
 	if (component === undefined) return;
@@ -411,40 +445,17 @@ function releaseDetachedComponentIdentity(
 	identities.set(component, state | COMPONENT_RELEASE_VISITED);
 	if (metrics) metrics.detachedNodesScanned++;
 	recordComponentReleaseIdentityHighWaterMark(identities, metrics);
-	let releaseError: unknown;
-	let releaseFailed = false;
 	const child = component[GET_COMPONENT_RENDER_CACHE_CHILD]?.();
 	if (child !== undefined) {
-		try {
-			releaseDetachedComponentIdentity(child, identities, metrics);
-		} catch (error) {
-			releaseFailed = true;
-			releaseError = error;
-		}
+		collectDetachedComponentReleaseOrder(child, identities, releaseOrder, metrics);
 	}
 	const children = component[GET_COMPONENT_RENDER_CACHE_CHILDREN]?.();
 	if (children !== undefined) {
 		for (let index = 0; index < children.length; index++) {
-			try {
-				releaseDetachedComponentIdentity(children[index], identities, metrics);
-			} catch (error) {
-				if (!releaseFailed) {
-					releaseFailed = true;
-					releaseError = error;
-				}
-			}
+			collectDetachedComponentReleaseOrder(children[index], identities, releaseOrder, metrics);
 		}
 	}
-	try {
-		component[RELEASE_COMPONENT_RENDER_CACHE]?.();
-		if (metrics) metrics.releasedNodes++;
-	} catch (error) {
-		if (!releaseFailed) {
-			releaseFailed = true;
-			releaseError = error;
-		}
-	}
-	if (releaseFailed) throw releaseError;
+	releaseOrder.push(component);
 }
 
 /**
@@ -458,12 +469,15 @@ export function releaseDetachedComponentRenderCaches(
 	metrics?: DetachedComponentReleaseMetrics,
 ): void {
 	const identities = new Map<Component, number>();
+	const releaseOrder: Component[] = [];
 	try {
 		for (let index = 0; index < liveRoots.length; index++) {
 			collectLiveComponentIdentity(liveRoots[index], identities, metrics);
 		}
-		releaseDetachedComponentIdentity(component, identities, metrics);
+		collectDetachedComponentReleaseOrder(component, identities, releaseOrder, metrics);
+		releaseCollectedComponentRenderCaches(releaseOrder, metrics);
 	} finally {
+		releaseOrder.length = 0;
 		identities.clear();
 		if (metrics) metrics.retainedIdentityEntries = 0;
 	}
@@ -734,30 +748,8 @@ export abstract class TuiBase extends Container implements TUI {
 
 	/** Final unmount boundary. Ordinary stop/restart deliberately does not call this hook. */
 	protected releaseMountedComponentsAfterDispose(): void {
-		let releaseError: unknown;
-		let releaseFailed = false;
 		const roots = this.getMountedRoots();
-		for (let index = 0; index < roots.length; index++) {
-			try {
-				releaseComponentRenderCaches(roots[index]!);
-			} catch (error) {
-				if (!releaseFailed) {
-					releaseFailed = true;
-					releaseError = error;
-				}
-			}
-		}
-		for (let index = 0; index < this.overlayStack.length; index++) {
-			try {
-				releaseComponentRenderCaches(this.overlayStack[index]!.component);
-			} catch (error) {
-				if (!releaseFailed) {
-					releaseFailed = true;
-					releaseError = error;
-				}
-			}
-		}
-		if (releaseFailed) throw releaseError;
+		releaseMountedComponentRenderCaches(roots, this.overlayStack);
 	}
 
 	get fullRedraws(): number {
