@@ -18,10 +18,12 @@ import {
 } from "../../packages/tui/src/terminal-image.ts";
 import { type Component, Container } from "../../packages/tui/src/tui.ts";
 import { TuiAltScreen } from "../../packages/tui/src/tui-alt-screen.ts";
+import { TuiMainScreen } from "../../packages/tui/src/tui-main-screen.ts";
 import { currentCommit, readIntegerOption } from "./benchmark.ts";
 
 type Candidate = "editor-frame" | "mouse-hit" | "selection-auto-scroll" | "kitty-fallback" | "stack-direct";
 type EditorUpdate = "stable" | "cursor" | "oversize-small";
+type EditorScreen = "alt" | "main";
 
 interface SamplingNode {
 	callFrame: { functionName: string; url: string; lineNumber: number; columnNumber: number };
@@ -373,6 +375,117 @@ function createEditorRuntime(
 	};
 }
 
+function createMainEditorRuntime(
+	itemCount: number,
+	width: number,
+	height: number,
+	editorUpdate: EditorUpdate,
+	editorLineCount: number,
+): CandidateRuntime {
+	const instrumentation = new TuiRenderInstrumentation();
+	const terminal = new BenchTerminal(width, height);
+	const tui = new TuiMainScreen(terminal, false);
+	const editor = new CountingEditor(tui, EDITOR_THEME);
+	editor.focused = true;
+	if (editorLineCount === 1) {
+		editor.setText(
+			"A production editor line with English words, CJK 中文, emoji 👨‍👩‍👧‍👦, and combining e\u0301. ".repeat(8),
+		);
+	} else {
+		const lines = new Array<string>(editorLineCount);
+		for (let index = 0; index < editorLineCount; index++) lines[index] = `editor-validation-line-${index}`;
+		editor.setText(lines.join("\n"));
+	}
+	const transcript = createTranscript(itemCount, instrumentation);
+	const documentContainer = new ViewportContainer();
+	documentContainer.addChild(new StaticLines("header"));
+	documentContainer.addChild(new StaticLines("loaded-resources"));
+	documentContainer.addChild(transcript.container);
+	const editorContainer = new Container();
+	const nestedEditorContainer = new Container();
+	nestedEditorContainer.addChild(editor);
+	editorContainer.addChild(nestedEditorContainer);
+	for (const root of [
+		documentContainer,
+		new StaticLines("pending"),
+		new StaticLines("status"),
+		new StaticLines("widget-above"),
+		editorContainer,
+		new StaticLines("widget-below"),
+		new StaticLines("footer"),
+	]) {
+		tui.addChild(root);
+	}
+	tui.setRenderInstrumentation(instrumentation);
+	tui.start();
+	tui.renderNow();
+	instrumentation.reset();
+	editor.renderCalls = 0;
+	let oversizeCapacityRejections = 0;
+	return {
+		unit: "frame",
+		productionPath: "Retained viewport -> production Main roots -> nested Editor.render -> TuiMainScreen.doRender -> frame queue",
+		step(index: number): void {
+			if (editorUpdate === "cursor") editor.handleInput((index & 1) === 0 ? "\x1b[D" : "\x1b[C");
+			transcript.advance();
+			tui.renderNow();
+		},
+		reset(): void {
+			if (editorUpdate === "oversize-small") {
+				oversizeCapacityRejections = getEditorLayoutCacheMetrics(editor).layoutCacheRejectedByCapacity;
+				editor.setText("small");
+				editor.render(width);
+			}
+			editor.renderCalls = 0;
+			resetEditorLayoutCacheMetrics(editor);
+			terminal.frameWrites = 0;
+			terminal.frameBytes = 0;
+			instrumentation.reset();
+		},
+		snapshot(): Record<string, number | string | boolean> {
+			const metrics = instrumentation.snapshot();
+			const layoutCache = getEditorLayoutCacheMetrics(editor);
+			return {
+				editorRenderCalls: editor.renderCalls,
+				layoutCacheHits: layoutCache.layoutCacheHits,
+				layoutCacheMisses: layoutCache.layoutCacheMisses,
+				layoutCacheValidationLineComparisons: layoutCache.layoutCacheValidationLineComparisons,
+				layoutCacheSourceRecords: layoutCache.layoutCacheSourceRecords,
+				layoutCacheLayoutRecords: layoutCache.layoutCacheLayoutRecords,
+				layoutCacheRejectedByCapacity: layoutCache.layoutCacheRejectedByCapacity,
+				layoutCacheRetainedSourceCodeUnits: layoutCache.layoutCacheRetainedSourceCodeUnits,
+				layoutCacheRetainedLayoutLines: layoutCache.layoutCacheRetainedLayoutLines,
+				oversizeCapacityRejections,
+				completedItemRenders: metrics.completedItemRenders,
+				viewportItemVisits: metrics.viewportItemVisits,
+				frameWrites: terminal.frameWrites,
+				frameBytes: terminal.frameBytes,
+				finalFrameHash: terminal.finalFrameHash(),
+			};
+		},
+		disposedOwnerSnapshot(): Record<string, number> {
+			const layoutCache = getEditorLayoutCacheMetrics(editor);
+			return {
+				disposedOwnerLayoutCacheSourceRecords: layoutCache.layoutCacheSourceRecords,
+				disposedOwnerLayoutCacheLayoutRecords: layoutCache.layoutCacheLayoutRecords,
+				disposedOwnerRetainedSourceCodeUnits: layoutCache.layoutCacheRetainedSourceCodeUnits,
+				disposedOwnerRetainedLayoutLines: layoutCache.layoutCacheRetainedLayoutLines,
+				disposedOwnerMainChildrenRetained: tui.children.length,
+			};
+		},
+		createOwnerWeakReferences(): OwnerWeakReferences {
+			return {
+				tui: new WeakRef(tui),
+				root: new WeakRef(editorContainer),
+				editor: new WeakRef(editor),
+			};
+		},
+		async dispose(): Promise<void> {
+			await tui.dispose({ preserveScreen: true });
+		},
+	};
+}
+
 function createMouseRuntime(itemCount: number, width: number, height: number): CandidateRuntime {
 	const shell = createAltShell(itemCount, width, height, "static", 1);
 	const internals = shell.tui as unknown as { currentLayout: LayoutFrame | undefined };
@@ -525,8 +638,13 @@ function createRuntime(
 	height: number,
 	editorUpdate: EditorUpdate,
 	editorLineCount: number,
+	editorScreen: EditorScreen,
 ): CandidateRuntime {
-	if (candidate === "editor-frame") return createEditorRuntime(itemCount, width, height, editorUpdate, editorLineCount);
+	if (candidate === "editor-frame") {
+		return editorScreen === "main"
+			? createMainEditorRuntime(itemCount, width, height, editorUpdate, editorLineCount)
+			: createEditorRuntime(itemCount, width, height, editorUpdate, editorLineCount);
+	}
 	if (candidate === "mouse-hit") return createMouseRuntime(itemCount, width, height);
 	if (candidate === "selection-auto-scroll") return createSelectionAutoScrollRuntime(itemCount, width, height);
 	if (candidate === "kitty-fallback") return createKittyRuntime(width, height);
@@ -598,9 +716,20 @@ const editorUpdate = (editorUpdateIndex === -1 ? "stable" : process.argv[editorU
 if (editorUpdate !== "stable" && editorUpdate !== "cursor" && editorUpdate !== "oversize-small") {
 	throw new Error("--editor-update must be stable, cursor, or oversize-small");
 }
+const editorScreenIndex = process.argv.indexOf("--editor-screen");
+const editorScreen = (editorScreenIndex === -1 ? "alt" : process.argv[editorScreenIndex + 1]) as EditorScreen;
+if (editorScreen !== "alt" && editorScreen !== "main") throw new Error("--editor-screen must be alt or main");
 if (profile && typeof globalThis.gc !== "function") throw new Error("--profile requires --expose-gc");
 
-let runtime: CandidateRuntime | undefined = createRuntime(candidate, itemCount, width, height, editorUpdate, editorLineCount);
+let runtime: CandidateRuntime | undefined = createRuntime(
+	candidate,
+	itemCount,
+	width,
+	height,
+	editorUpdate,
+	editorLineCount,
+	editorScreen,
+);
 const ownerWeakReferences = profile ? runtime.createOwnerWeakReferences?.() : undefined;
 for (let index = 0; index < warmup; index++) runtime.step(index);
 runtime.reset();
@@ -701,6 +830,7 @@ process.stdout.write(
 			measured,
 			editorUpdate,
 			editorLineCount,
+			editorScreen,
 			worktreeStatus: spawnSync("git", ["status", "--short"], { encoding: "utf8" }).stdout.trim() || "clean",
 			profile,
 			node: process.version,

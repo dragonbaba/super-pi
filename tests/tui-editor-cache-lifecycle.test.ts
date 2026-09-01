@@ -4,6 +4,7 @@ import test from "node:test";
 import ts from "typescript";
 import { Container, type Component, type TUI } from "../packages/tui/src/tui.ts";
 import { TuiAltScreen } from "../packages/tui/src/tui-alt-screen.ts";
+import { TuiMainScreen } from "../packages/tui/src/tui-main-screen.ts";
 import { Editor, type EditorTheme } from "../packages/tui/src/components/editor.ts";
 import { VStack } from "../packages/tui/src/components/v-stack.ts";
 import type { LayoutFrame } from "../packages/tui/src/layout.ts";
@@ -22,6 +23,10 @@ interface EditorLayoutCacheMetrics {
 
 interface EditorDiagnostics {
 	getLayoutCacheMetrics(): EditorLayoutCacheMetrics;
+}
+
+interface EditorTestState {
+	undo(): void;
 }
 
 interface AltDiagnostics {
@@ -50,6 +55,10 @@ function editorMetrics(editor: Editor): EditorLayoutCacheMetrics {
 
 function altDiagnostics(tui: TuiAltScreen): AltDiagnostics {
 	return tui as unknown as AltDiagnostics;
+}
+
+function editorTestState(editor: Editor): EditorTestState {
+	return editor as unknown as EditorTestState;
 }
 
 function createEditorText(lineCount = 512): string {
@@ -117,6 +126,121 @@ class ThrowingRoot extends VStack {
 		throw new Error("fixture invalidate failure");
 	}
 }
+
+class CountingContainer extends Container {
+	invalidateCalls = 0;
+
+	override invalidate(): void {
+		this.invalidateCalls++;
+		super.invalidate();
+	}
+}
+
+class ReentrantStartContainer extends Container {
+	startError: unknown;
+	private readonly tui: TuiMainScreen;
+
+	constructor(tui: TuiMainScreen) {
+		super();
+		this.tui = tui;
+	}
+
+	override invalidate(): void {
+		super.invalidate();
+		try {
+			this.tui.start();
+		} catch (error) {
+			this.startError = error;
+		}
+	}
+}
+
+function createMainEditorTree(tui: TuiMainScreen, root: Container = new Container()): {
+	editor: Editor;
+	editorContainer: Container;
+	nestedContainer: Container;
+	root: Container;
+} {
+	const editor = new Editor(tui, EDITOR_THEME);
+	editor.focused = true;
+	editor.setText(createEditorText());
+	const nestedContainer = new Container();
+	nestedContainer.addChild(editor);
+	const editorContainer = new Container();
+	editorContainer.addChild(nestedContainer);
+	root.addChild(editorContainer);
+	tui.addChild(root);
+	return { editor, editorContainer, nestedContainer, root };
+}
+
+test("Main final dispose releases nested Editor cache while every owner remains reachable", async () => {
+	const terminal = new FakeTerminal(120, 40);
+	const tui = new TuiMainScreen(terminal, false);
+	const tree = createMainEditorTree(tui);
+	const children = tui.children;
+	const baseText = tree.editor.getExpandedText();
+	const paste = "retained-paste-".repeat(80);
+	tree.editor.handleInput(`\x1b[200~${paste}\x1b[201~`);
+	const expandedText = tree.editor.getExpandedText();
+	const cursor = tree.editor.getCursor();
+	tui.start();
+	tui.renderNow();
+	assertCachePrimed(tree.editor);
+
+	await tui.dispose({ preserveScreen: true });
+	assertCacheReleased(tree.editor);
+	assert.equal(tui.children, children);
+	assert.equal(tui.children[0], tree.root);
+	assert.equal(tree.root.children[0], tree.editorContainer);
+	assert.equal(tree.editorContainer.children[0], tree.nestedContainer);
+	assert.equal(tree.nestedContainer.children[0], tree.editor);
+	assert.equal(tree.editor.getExpandedText(), expandedText);
+	assert.deepEqual(tree.editor.getCursor(), cursor);
+	editorTestState(tree.editor).undo();
+	assert.equal(tree.editor.getExpandedText(), baseText);
+});
+
+test("Main recoverable stop preserves mounted Editor cache and restart behavior", async () => {
+	const terminal = new FakeTerminal(120, 40);
+	const tui = new TuiMainScreen(terminal, false);
+	const tree = createMainEditorTree(tui);
+	tui.start();
+	tui.renderNow();
+	assertCachePrimed(tree.editor);
+	const hitsBefore = editorMetrics(tree.editor).layoutCacheHits;
+
+	await tui.stop({ preserveScreen: true });
+	assertCachePrimed(tree.editor);
+	assert.equal(tui.children[0], tree.root);
+	tui.start();
+	tui.renderNow();
+	assert.ok(editorMetrics(tree.editor).layoutCacheHits > hitsBefore);
+	await tui.dispose({ preserveScreen: true });
+});
+
+test("Main concurrent disposal releases mounted caches once and closes start reentry", async () => {
+	const terminal = new FakeTerminal(120, 40);
+	const tui = new TuiMainScreen(terminal, false);
+	const root = new ReentrantStartContainer(tui);
+	const tree = createMainEditorTree(tui, root);
+	const countingRoot = new CountingContainer();
+	const countingNested = createMainEditorTree(tui, countingRoot);
+	tui.start();
+	tui.renderNow();
+	assertCachePrimed(tree.editor);
+	assertCachePrimed(countingNested.editor);
+
+	const first = tui.dispose({ preserveScreen: true });
+	const second = tui.dispose({ preserveScreen: true });
+	assert.equal(first, second);
+	await Promise.all([first, second]);
+	await tui.dispose({ preserveScreen: true });
+	assert.match(String(root.startError), /Cannot start a disposed TUI/);
+	assert.equal(terminal.started, false);
+	assert.equal(countingRoot.invalidateCalls, 1);
+	assertCacheReleased(tree.editor);
+	assertCacheReleased(countingNested.editor);
+});
 
 test("layout-root replacement releases nested Editor cache and Alt scratch immediately", async () => {
 	const terminal = new FakeTerminal(120, 40);
@@ -298,8 +422,17 @@ test("lifecycle cleanup remains outside frame and recoverable-stop hot paths", a
 	}
 	visit(setLayoutRoot);
 	assert.equal(forbiddenAllocations, 0);
+	assert.match(
+		tuiText,
+		/protected releaseMountedComponentsAfterDispose\(\): void \{\s*this\.invalidate\(\);\s*\}/,
+	);
 	assert.match(tuiText, /finishDispose[\s\S]*releaseMountedComponentsAfterDispose\(\)/);
 	assert.doesNotMatch(tuiText.match(/private async finishTerminalStop[\s\S]*?\n\t}\n/)?.[0] ?? "", /releaseMountedComponents/);
+	const finishDispose = tuiText.match(/private async finishDispose[\s\S]*?\n\t}\n/)?.[0] ?? "";
+	const disposedIndex = finishDispose.indexOf("this.disposed = true");
+	const mountedReleaseIndex = finishDispose.indexOf("this.releaseMountedComponentsAfterDispose()");
+	assert.ok(disposedIndex >= 0 && mountedReleaseIndex > disposedIndex);
+	assert.match(altText, /releaseMountedComponentsAfterDispose[\s\S]*super\.releaseMountedComponentsAfterDispose\(\)/);
 	const disposeIndex = benchmarkText.indexOf("await runtime.dispose()");
 	const structuralIndex = benchmarkText.indexOf("runtime.disposedOwnerSnapshot?.()");
 	const unreachableIndex = benchmarkText.indexOf("runtime = undefined", structuralIndex);
@@ -311,6 +444,8 @@ test("lifecycle cleanup remains outside frame and recoverable-stop hot paths", a
 		"disposedOwnerRetainedLayoutLines",
 		"disposedOwnerLayoutRootReferences",
 		"disposedOwnerLayoutScratchReferences",
+		"disposedOwnerMainChildrenRetained",
+		"--editor-screen",
 	]) {
 		assert.match(benchmarkText, new RegExp(field));
 	}
