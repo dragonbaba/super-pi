@@ -1,7 +1,7 @@
 import { constants } from "node:fs";
 import { access as fsAccess } from "node:fs/promises";
 import type { AgentTool } from "@super-pi/agent-core";
-import { Container, getCapabilities, Text, truncateToWidth } from "@super-pi/tui";
+import { Container, getCapabilities, RELEASE_COMPONENT_RENDER_CACHE, Text, truncateToWidth } from "@super-pi/tui";
 import { spawn } from "child_process";
 import { type Static, Type } from "typebox";
 import { keyHint } from "../../modes/interactive/components/keybinding-hints.ts";
@@ -262,6 +262,43 @@ class BashResultRenderComponent extends Container {
 	override invalidate(): void {
 		// ToolExecutionComponent immediately calls renderResult after invalidation.
 		// Dependency checks below invalidate only the output caches that actually changed.
+	}
+
+	[RELEASE_COMPONENT_RENDER_CACHE](): void {
+		this.children.length = 0;
+		const state = this.state;
+		state.cachedWidth = undefined;
+		state.cachedLines = undefined;
+		state.cachedSkipped = undefined;
+		state.preparedContent = undefined;
+		state.preparedShowImages = undefined;
+		state.preparedCapabilitiesImages = undefined;
+		state.preparedIsPartial = undefined;
+		state.preparedTruncated = undefined;
+		state.preparedFullOutputPath = undefined;
+		state.preparedToolOutputStyle = undefined;
+		state.preparedStyledOutput = undefined;
+		state.expandedOutputComponent = undefined;
+		state.expandedOutputText = undefined;
+	}
+
+	/** Low-frequency final-unmount diagnostics; never called from result rendering. */
+	getBashResultRenderCacheReferenceCounts(): {
+		cachedLineReferences: number;
+		preparedContentReferences: number;
+		preparedStyledOutputCodeUnits: number;
+		expandedOutputReferences: number;
+		derivedChildReferences: number;
+	} {
+		return {
+			cachedLineReferences: this.state.cachedLines?.length ?? 0,
+			preparedContentReferences: this.state.preparedContent?.length ?? 0,
+			preparedStyledOutputCodeUnits: this.state.preparedStyledOutput?.length ?? 0,
+			expandedOutputReferences:
+				(this.state.expandedOutputComponent === undefined ? 0 : 1) +
+				(this.state.expandedOutputText === undefined ? 0 : 1),
+			derivedChildReferences: this.children.length,
+		};
 	}
 }
 
