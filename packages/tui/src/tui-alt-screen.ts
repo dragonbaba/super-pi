@@ -368,7 +368,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 
 	protected override releaseMountedComponentsAfterDispose(): void {
 		try {
-			this.invalidate();
+			super.releaseMountedComponentsAfterDispose();
 		} finally {
 			this.layoutRoot = undefined;
 			this.currentLayout = undefined;
