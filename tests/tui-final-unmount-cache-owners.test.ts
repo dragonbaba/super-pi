@@ -16,6 +16,7 @@ import {
 import ts from "typescript";
 import type { AssistantMessage } from "../packages/ai/src/types.ts";
 import { AssistantMessageComponent } from "../packages/coding-agent/src/modes/interactive/components/assistant-message.ts";
+import { SteppedSubmenu } from "../packages/coding-agent/src/modes/interactive/components/settings-submenu.ts";
 import { UserMessageComponent } from "../packages/coding-agent/src/modes/interactive/components/user-message.ts";
 import { initTheme } from "../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 import {
@@ -178,6 +179,10 @@ interface ViewportRawScratch {
 
 interface EditorRawCache {
 	layoutCacheSourceLines: string[];
+}
+
+interface SteppedSubmenuRawState {
+	activeComponent: Component;
 }
 
 interface AltRawDocument {
@@ -405,6 +410,37 @@ test("final disposal traverses an active SettingsList submenu without closing it
 
 	assert.equal(raw.cachedLines, undefined);
 	assert.deepEqual(settings.render(80), submenu.render(80));
+});
+
+test("final disposal traverses the active production SteppedSubmenu component", async () => {
+	const stepped = new SteppedSubmenu(
+		[
+			{
+				key: "model",
+				title: "Model",
+				description: "Default thinking level per model",
+				options: () => [{ value: "high", label: "High" }],
+			},
+		],
+		() => {},
+		() => {},
+	);
+	const activeComponent = (stepped as unknown as SteppedSubmenuRawState).activeComponent;
+	const nestedText = findComponent(activeComponent, ProductionText);
+	assert.ok(nestedText);
+	assert.ok(stepped.render(80).length > 0);
+	const raw = nestedText as unknown as TextRawCache;
+	assert.ok((raw.cachedLines?.length ?? 0) > 0);
+
+	const tui = new ProductionTuiMainScreen(new FakeTerminal(120, 40), false);
+	tui.addChild(stepped);
+	tui.start();
+	tui.renderNow();
+	await tui.dispose({ preserveScreen: true });
+
+	assert.equal(raw.cachedLines, undefined);
+	assert.equal((stepped as unknown as SteppedSubmenuRawState).activeComponent, activeComponent);
+	assert.ok(stepped.render(80).length > 0);
 });
 
 test("Kitty Image release clears the cached sequence without changing image identity or source", () => {
@@ -751,6 +787,7 @@ test("built-in cache owner contract stays lifecycle-only and complete", async ()
 		["RetainedItem", "packages/tui/src/components/retained-item.ts"],
 		["RetainedContainer", "packages/tui/src/components/retained-item.ts"],
 		["ViewportContainer", "packages/tui/src/components/viewport-container.ts"],
+		["ScrollView", "packages/tui/src/components/scroll-view.ts"],
 	] as const;
 	for (const [className, filePath] of ownerFiles) {
 		const sourceText = await readFile(filePath, "utf8");
@@ -772,6 +809,15 @@ test("built-in cache owner contract stays lifecycle-only and complete", async ()
 	assert.match(
 		settingsText,
 		/\[GET_COMPONENT_RENDER_CACHE_CHILD\]\(\): Component \| undefined \{\s*return this\.submenuComponent \?\? undefined;\s*\}/,
+	);
+	const steppedText = await readFile(
+		"packages/coding-agent/src/modes/interactive/components/settings-submenu.ts",
+		"utf8",
+	);
+	assert.match(steppedText, /this\.children\.push\(this\.activeComponent\)/);
+	assert.match(
+		steppedText,
+		/private setActiveComponent\(component: Component\): void \{\s*this\.activeComponent = component;\s*this\.children\[0\] = component;/,
 	);
 
 	const tuiPath = "packages/tui/src/tui.ts";

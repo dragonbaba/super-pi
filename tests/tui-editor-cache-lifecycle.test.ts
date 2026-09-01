@@ -13,6 +13,7 @@ import {
 	RetainedItem,
 	type RetainedViewportLifecycleReferenceCounts,
 } from "../packages/tui/src/components/retained-item.ts";
+import { ScrollView } from "../packages/tui/src/components/scroll-view.ts";
 import { VStack } from "../packages/tui/src/components/v-stack.ts";
 import type { LayoutFrame } from "../packages/tui/src/layout.ts";
 import { FakeTerminal } from "./helpers/runtime-instrumentation.ts";
@@ -45,6 +46,11 @@ interface BoxDiagnostics {
 	cache: unknown;
 }
 
+interface ScrollViewDiagnostics {
+	requestRenderCallback: (() => void) | undefined;
+	scrollbarHideTimer: NodeJS.Timeout | undefined;
+}
+
 const EDITOR_THEME: EditorTheme = {
 	borderColor: identity,
 	selectList: {
@@ -74,6 +80,10 @@ function editorTestState(editor: Editor): EditorTestState {
 
 function boxCache(box: Box): unknown {
 	return (box as unknown as BoxDiagnostics).cache;
+}
+
+function scrollDiagnostics(scroll: ScrollView): ScrollViewDiagnostics {
+	return scroll as unknown as ScrollViewDiagnostics;
 }
 
 function createEditorText(lineCount = 512): string {
@@ -241,13 +251,35 @@ class NestedRenderLayoutRoot extends Container {
 			this.replaced = true;
 			this.tui.setLayoutRoot(this.replacement);
 			try {
-				this.tui.renderNow(true);
+				this.tui.renderNow();
 			} catch (error) {
 				this.nestedRenderError = error;
 			}
 			this.ownerReleaseCallsAfterNested = this.owner?.releaseCalls ?? -1;
 		}
 		return ["nested-render-old-root"];
+	}
+}
+
+class DetachAndReattachLayoutRoot extends Container {
+	private replaced = false;
+	private readonly tui: TuiAltScreen;
+	private readonly replacement: Component;
+	owner: Component | undefined;
+
+	constructor(tui: TuiAltScreen, replacement: Component) {
+		super();
+		this.tui = tui;
+		this.replacement = replacement;
+	}
+
+	override render(): string[] {
+		if (!this.replaced) {
+			this.replaced = true;
+			this.tui.setLayoutRoot(this.replacement);
+			this.tui.setLayoutRoot(this.owner);
+		}
+		return ["reattached-root"];
 	}
 }
 
@@ -574,16 +606,100 @@ test("nested renderNow cannot release an old layout owner before the outer rende
 	tui.start();
 
 	assert.doesNotThrow(() => tui.renderNow(true));
-	assert.ok(reentrantChild.nestedRenderError instanceof Error);
+	assert.equal(reentrantChild.nestedRenderError, undefined);
 	assert.equal(reentrantChild.ownerReleaseCallsAfterNested, 0);
 	assert.equal(oldRoot.releaseCalls, 1);
 	assert.equal(altDiagnostics(tui).layoutRoot, replacement);
 	assert.equal(boxCache(oldBox), undefined);
 	assertScratchReleased(tui);
-
-	tui.renderNow(true);
 	assert.equal(replacement.renderCalls, 1);
 	await tui.dispose({ preserveScreen: true });
+});
+
+test("each nested layout frame releases its own detached owner after that frame exits", async () => {
+	const tui = new TuiAltScreen(new FakeTerminal(120, 40), false, undefined, { mouse: false });
+	const finalRoot = new StaticCacheLine("nested-final-root");
+	const nestedReplacementChild = new ReentrantLayoutRoot(tui, finalRoot);
+	const nestedBox = new Box(0, 0);
+	nestedBox.addChild(nestedReplacementChild);
+	const nestedRoot = new CountingCacheContainer();
+	nestedRoot.addChild(nestedBox);
+
+	const outerReplacementChild = new NestedRenderLayoutRoot(tui, nestedRoot);
+	const outerBox = new Box(0, 0);
+	outerBox.addChild(outerReplacementChild);
+	const outerRoot = new CountingCacheContainer();
+	outerRoot.addChild(outerBox);
+	outerReplacementChild.owner = outerRoot;
+	tui.setLayoutRoot(outerRoot);
+	tui.start();
+
+	assert.doesNotThrow(() => tui.renderNow(true));
+	assert.equal(altDiagnostics(tui).layoutRoot, finalRoot);
+	assert.equal(outerRoot.releaseCalls, 1);
+	assert.equal(nestedRoot.releaseCalls, 1);
+	assert.equal(boxCache(outerBox), undefined);
+	assert.equal(boxCache(nestedBox), undefined);
+	assertScratchReleased(tui);
+
+	tui.renderNow(true);
+	assert.equal(finalRoot.renderCalls, 1);
+	await tui.dispose({ preserveScreen: true });
+});
+
+test("reattaching a rendering owner cancels its deferred cache release", async () => {
+	const tui = new TuiAltScreen(new FakeTerminal(120, 40), false, undefined, { mouse: false });
+	const transientRoot = new CountingCacheContainer();
+	const reattachingChild = new DetachAndReattachLayoutRoot(tui, transientRoot);
+	const root = new CountingCacheContainer();
+	root.addChild(reattachingChild);
+	reattachingChild.owner = root;
+	tui.setLayoutRoot(root);
+	tui.start();
+
+	assert.doesNotThrow(() => tui.renderNow(true));
+	assert.equal(altDiagnostics(tui).layoutRoot, root);
+	assert.equal(root.releaseCalls, 0);
+	assert.equal(transientRoot.releaseCalls, 1);
+	assertScratchReleased(tui);
+
+	await tui.dispose({ preserveScreen: true });
+	assert.equal(root.releaseCalls, 1);
+});
+
+test("detached and disposed ScrollView releases TUI callback and auto-hide timer", async () => {
+	const document = new Container();
+	for (let index = 0; index < 100; index++) document.addChild(new StaticCacheLine(`scroll-line-${index}`));
+	const scroll = new ScrollView(document, {
+		follow: "none",
+		primary: true,
+		scrollbar: "auto",
+		scrollbarHideDelayMs: 60_000,
+	});
+	const firstTui = new TuiAltScreen(new FakeTerminal(120, 20), false, undefined, { mouse: false });
+	firstTui.setLayoutRoot(scroll);
+	firstTui.start();
+	firstTui.renderNow();
+	scroll.scrollBy(1);
+	const firstScrollTop = scroll.scrollTop;
+	assert.equal(typeof scrollDiagnostics(scroll).requestRenderCallback, "function");
+	assert.ok(scrollDiagnostics(scroll).scrollbarHideTimer);
+
+	firstTui.setLayoutRoot(new VStack([]));
+	assert.equal(scrollDiagnostics(scroll).requestRenderCallback, undefined);
+	assert.equal(scrollDiagnostics(scroll).scrollbarHideTimer, undefined);
+	assert.equal(scroll.scrollTop, firstScrollTop);
+	await firstTui.dispose({ preserveScreen: true });
+
+	const secondTui = new TuiAltScreen(new FakeTerminal(120, 20), false, undefined, { mouse: false });
+	secondTui.setLayoutRoot(scroll);
+	secondTui.start();
+	secondTui.renderNow();
+	assert.equal(typeof scrollDiagnostics(scroll).requestRenderCallback, "function");
+	await secondTui.dispose({ preserveScreen: true });
+	assert.equal(scrollDiagnostics(scroll).requestRenderCallback, undefined);
+	assert.equal(scrollDiagnostics(scroll).scrollbarHideTimer, undefined);
+	assert.equal(scroll.scrollTop, firstScrollTop);
 });
 
 test("layout-root replacement releases Box caches without semantic invalidation", async () => {
@@ -790,19 +906,18 @@ test("lifecycle cleanup remains outside frame and recoverable-stop hot paths", a
 	assert.match(boxText, /RELEASE_COMPONENT_RENDER_CACHE/);
 	assert.doesNotMatch(setLayoutRoot.getText(altSource), /previousRoot\?\.invalidate/);
 	assert.match(setLayoutRoot.getText(altSource), /const previousOwner = previousRoot \?\? this/);
-	assert.match(setLayoutRoot.getText(altSource), /previousOwner === this\.activeLayoutCacheOwner/);
-	assert.match(setLayoutRoot.getText(altSource), /this\.pendingLayoutCacheRelease = previousOwner/);
+	assert.match(setLayoutRoot.getText(altSource), /this\.layoutRenderOwners\[depth\] !== previousOwner/);
+	assert.match(setLayoutRoot.getText(altSource), /this\.pendingLayoutCacheReleases\[depth\] = previousOwner/);
 	assert.match(altText, /releaseComponentRenderCaches\(pendingLayoutCacheRelease\)/);
-	assert.match(altText, /this\.activeLayoutCacheOwner = this\.layoutRoot \?\? this/);
-	assert.match(altText, /this\.activeLayoutCacheOwner = undefined/);
 	assert.match(altText, /private layoutRenderDepth = 0/);
-	assert.match(altText, /const outermostLayoutRender = this\.layoutRenderDepth === 0/);
-	assert.match(altText, /this\.layoutRenderDepth\+\+/);
-	assert.match(altText, /this\.layoutRenderDepth--/);
-	assert.match(altText, /if \(this\.layoutRenderDepth === 0\)/);
+	assert.match(altText, /layoutRenderOwners: Array<Component \| undefined> = \[undefined\]/);
+	assert.match(altText, /pendingLayoutCacheReleases: Array<Component \| undefined> = \[undefined\]/);
+	assert.match(altText, /this\.layoutRenderDepth = layoutRenderDepth \+ 1/);
+	assert.match(altText, /this\.layoutRenderOwners\[layoutRenderDepth\] = this\.layoutRoot \?\? this/);
+	assert.match(altText, /this\.layoutRenderDepth = layoutRenderDepth/);
+	assert.match(altText, /if \(layoutRenderDepth === 0\) this\.layoutScratch\.flushRequestedClear\(\)/);
 	assert.match(setLayoutRoot.getText(altSource), /layoutScratch\.requestClear\(\)/);
 	assert.doesNotMatch(setLayoutRoot.getText(altSource), /layoutScratch\.clear\(\)/);
-	assert.match(altText, /finally \{\s*this\.layoutScratch\.flushRequestedClear\(\)/);
 	assert.match(layoutText, /requestClear\(\): void \{[\s\S]*this\.clearRequested = true/);
 	assert.match(layoutText, /flushRequestedClear\(\): void \{[\s\S]*this\.clearRequested/);
 	assert.match(

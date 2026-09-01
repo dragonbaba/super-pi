@@ -167,8 +167,8 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	private layoutRoot: Component | undefined;
 	private layoutRootGeneration = 0;
 	private layoutRenderDepth = 0;
-	private activeLayoutCacheOwner: Component | undefined;
-	private pendingLayoutCacheRelease: Component | undefined;
+	private readonly layoutRenderOwners: Array<Component | undefined> = [undefined];
+	private readonly pendingLayoutCacheReleases: Array<Component | undefined> = [undefined];
 	private currentLayout: LayoutFrame | undefined;
 	private readonly layoutScratch = new LayoutFrameScratch();
 	private readonly implicitDocument: LineViewportComponent;
@@ -260,8 +260,20 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		const previousRoot = this.layoutRoot;
 		const previousOwner = previousRoot ?? this;
 		try {
-			if (previousOwner === this.activeLayoutCacheOwner) this.pendingLayoutCacheRelease = previousOwner;
-			else releaseComponentRenderCaches(previousOwner);
+			let releaseDeferred = false;
+			for (let depth = this.layoutRenderDepth - 1; depth >= 0; depth--) {
+				if (this.layoutRenderOwners[depth] !== previousOwner) continue;
+				this.pendingLayoutCacheReleases[depth] = previousOwner;
+				releaseDeferred = true;
+				break;
+			}
+			if (!releaseDeferred) releaseComponentRenderCaches(previousOwner);
+			const nextOwner = component ?? this;
+			for (let depth = this.layoutRenderDepth - 1; depth >= 0; depth--) {
+				if (this.pendingLayoutCacheReleases[depth] === nextOwner) {
+					this.pendingLayoutCacheReleases[depth] = undefined;
+				}
+			}
 		} finally {
 			this.layoutScratch.requestClear();
 			this.layoutRoot = component;
@@ -1239,9 +1251,9 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		const width = Math.max(1, this.terminal.columns);
 		const height = Math.max(1, this.terminal.rows);
 		const layoutRootGeneration = this.layoutRootGeneration;
-		const outermostLayoutRender = this.layoutRenderDepth === 0;
-		this.layoutRenderDepth++;
-		if (outermostLayoutRender) this.activeLayoutCacheOwner = this.layoutRoot ?? this;
+		const layoutRenderDepth = this.layoutRenderDepth;
+		this.layoutRenderDepth = layoutRenderDepth + 1;
+		this.layoutRenderOwners[layoutRenderDepth] = this.layoutRoot ?? this;
 		try {
 		const root = this.layoutRoot ?? this.implicitScrollView;
 		const nextLayout = renderLayoutFrame(root, width, height, this.layoutRequestRender, this.layoutScratch);
@@ -1368,18 +1380,16 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			this.currentLayout = undefined;
 		}
 		} finally {
-			this.layoutRenderDepth--;
-			if (this.layoutRenderDepth === 0) {
-				this.activeLayoutCacheOwner = undefined;
-				try {
-					const pendingLayoutCacheRelease = this.pendingLayoutCacheRelease;
-					this.pendingLayoutCacheRelease = undefined;
-					if (pendingLayoutCacheRelease !== undefined) {
-						releaseComponentRenderCaches(pendingLayoutCacheRelease);
-					}
-				} finally {
-					this.layoutScratch.flushRequestedClear();
+			this.layoutRenderOwners[layoutRenderDepth] = undefined;
+			this.layoutRenderDepth = layoutRenderDepth;
+			try {
+				const pendingLayoutCacheRelease = this.pendingLayoutCacheReleases[layoutRenderDepth];
+				this.pendingLayoutCacheReleases[layoutRenderDepth] = undefined;
+				if (pendingLayoutCacheRelease !== undefined) {
+					releaseComponentRenderCaches(pendingLayoutCacheRelease);
 				}
+			} finally {
+				if (layoutRenderDepth === 0) this.layoutScratch.flushRequestedClear();
 			}
 		}
 	}
