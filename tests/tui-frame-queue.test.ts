@@ -4,9 +4,16 @@ import { EventEmitter } from "node:events";
 import { readFileSync } from "node:fs";
 import { Writable } from "node:stream";
 import test from "node:test";
-import { TuiMainScreen as InteractiveTuiMainScreen, type TuiMainScreenRenderState } from "@super-pi/tui";
+import {
+	Loader,
+	TuiMainScreen as InteractiveTuiMainScreen,
+	type TuiMainScreenRenderState,
+} from "@super-pi/tui";
 import { AgentSession } from "../packages/coding-agent/src/core/agent-session.ts";
-import { InteractiveMode } from "../packages/coding-agent/src/modes/interactive/interactive-mode.ts";
+import {
+	createInteractiveTuiReference,
+	InteractiveMode,
+} from "../packages/coding-agent/src/modes/interactive/interactive-mode.ts";
 import { TerminalFrameQueue, type TerminalFrameSink } from "../packages/tui/src/terminal-frame-queue.ts";
 import { TuiRenderInstrumentation } from "../packages/tui/src/render-instrumentation.ts";
 import { ProcessTerminal, type Terminal } from "../packages/tui/src/terminal.ts";
@@ -164,6 +171,10 @@ class InstrumentedMainTui extends InteractiveTuiMainScreen {
 		this.captureRenderStateCalls++;
 		return super.captureRenderState();
 	}
+}
+
+function preserveLoaderText(value: string): string {
+	return value;
 }
 
 class SplitFrameTui extends FrameTui {
@@ -1527,6 +1538,28 @@ test("concurrent mode switches create one replacement after sharing the previous
 	await mode.renderer.dispose();
 });
 
+test("Main to Alt mode switch preserves a Loader reused by the explicit layout root", async () => {
+	const terminal = new ImmediateInputTerminal();
+	const previousUi = new InstrumentedMainTui(terminal);
+	const mode = createModeSwitchHarness(previousUi);
+	const stableTui = createInteractiveTuiReference(() => mode.renderer);
+	const loader = new Loader(stableTui, preserveLoaderText, preserveLoaderText, "switching");
+	previousUi.addChild(loader);
+	mode.fullscreenLayoutRoot = loader;
+	previousUi.start();
+	previousUi.renderNow();
+
+	const switched = await mode.switchTuiMode.call(mode, "fullscreen", false, false);
+	assert.equal(switched, true);
+	assert.equal(mode.renderer.mode, "fullscreen");
+	const raw = loader as unknown as { intervalId: NodeJS.Timeout | null; ui: unknown };
+	assert.ok(raw.intervalId);
+	assert.equal(raw.ui, stableTui);
+	await mode.renderer.dispose({ preserveScreen: true });
+	assert.equal(raw.intervalId, null);
+	assert.equal(raw.ui, null);
+});
+
 test("mode switch snapshots the final root focus and Main render state after stop", async () => {
 	const terminal = new GatedTerminal();
 	const previousUi = new InstrumentedMainTui(terminal);
@@ -2658,6 +2691,15 @@ test("frame queue source retains one string without Promise tails or pooling", (
 		"packages/coding-agent/src/modes/interactive/interactive-mode.ts",
 		"utf8",
 	);
+	const mountInteractiveTui = interactiveSource.match(
+		/private mountInteractiveTui[\s\S]*?\n\t}\n/,
+	)?.[0] ?? "";
+	assert.notEqual(mountInteractiveTui, "");
+	assert.ok(
+		mountInteractiveTui.indexOf("tui.setLayoutRoot(this.fullscreenLayoutRoot)") <
+			mountInteractiveTui.indexOf("for (const component of components)"),
+	);
+	assert.doesNotMatch(mountInteractiveTui, /new (?:Map|Set|Promise|AbortController)|=>|function\s*\(/);
 	assert.match(interactiveSource, /await previousUi\.stop\(\{ preserveScreen: true \}\)/);
 	assert.match(interactiveSource, /await this\.stopInteractiveTui\(fullscreenExitOutput\)/);
 	assert.match(interactiveSource, /criticalAgentEnd: true/);

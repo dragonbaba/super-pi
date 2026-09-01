@@ -17,6 +17,7 @@ import ts from "typescript";
 import type { AssistantMessage } from "../packages/ai/src/types.ts";
 import { ArminComponent } from "../packages/coding-agent/src/modes/interactive/components/armin.ts";
 import { DaxnutsComponent } from "../packages/coding-agent/src/modes/interactive/components/daxnuts.ts";
+import { ExtensionSelectorComponent } from "../packages/coding-agent/src/modes/interactive/components/extension-selector.ts";
 import { RetryStatusIndicator } from "../packages/coding-agent/src/modes/interactive/components/status-indicator.ts";
 import type { AutocompleteProvider } from "../packages/tui/src/autocomplete.ts";
 import {
@@ -562,6 +563,26 @@ test("Editor final release cancels debounced and active autocomplete work", asyn
 	await Promise.resolve();
 	await Promise.resolve();
 	assert.equal(activeEditor.isShowingAutocomplete(), false);
+});
+
+test("extension countdown natural expiry invokes its callback before releasing owners", async () => {
+	const tui = new CountingProductionMainScreen(new FakeTerminal(80, 20), false);
+	let cancelCalls = 0;
+	const selector = new ExtensionSelectorComponent("Timed selector", ["one"], noOperation, () => {
+		cancelCalls++;
+	}, { tui, timeout: 1_000 });
+	tui.addChild(selector);
+	tui.start();
+	const raw = selector as unknown as { countdown?: CountdownRawState };
+	const timer = raw.countdown?.intervalId;
+	assert.ok(timer);
+	const callback = timer._onTimeout;
+	assert.ok(callback);
+	callback.call(timer);
+	assert.equal(cancelCalls, 1);
+	assert.equal(raw.countdown?.intervalId, undefined);
+	selector.dispose();
+	await tui.dispose({ preserveScreen: true });
 });
 
 test("final release stops coding-agent animation owners and retry countdown", async () => {
@@ -1244,6 +1265,14 @@ test("built-in cache owner contract stays lifecycle-only and complete", async ()
 	assert.match(
 		steppedText,
 		/private setActiveComponent\(component: Component\): void \{\s*this\.activeComponent = component;\s*this\.children\[0\] = component;/,
+	);
+	const countdownText = await readFile(
+		"packages/coding-agent/src/modes/interactive/components/countdown-timer.ts",
+		"utf8",
+	);
+	assert.match(
+		countdownText,
+		/const onExpire = this\.onExpire;\s*this\.dispose\(\);\s*onExpire\(\);/,
 	);
 
 	const tuiPath = "packages/tui/src/tui.ts";
