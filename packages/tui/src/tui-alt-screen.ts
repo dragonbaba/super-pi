@@ -380,38 +380,44 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	protected override afterTerminalStop(options: TuiStopOptions): void | Promise<void> {
 		if (!this.altScreenActive) return;
 		this.altScreenActive = false;
-		let write: void | Promise<void>;
-		if (options.preserveScreen) {
-			write = this.terminal.write(`${BEGIN_SYNCHRONIZED_OUTPUT}${EXIT_ALT_SCREEN}\x1b[?25h${END_SYNCHRONIZED_OUTPUT}`);
-		} else {
-			const width = Math.max(1, this.terminal.columns);
-			const documentLines = this.render(width);
-			for (let index = 0; index < documentLines.length; index++) {
-				documentLines[index] = documentLines[index]
-					.replace(OSC133_ZONE_PREFIX_PATTERN, "")
-					.replaceAll(CURSOR_MARKER, "");
-			}
-			this.lastDocument = this.applyLineResets(documentLines);
-			for (let index = 0; index < this.lastDocument.length; index++) {
-				const line = this.lastDocument[index];
-				if (!isImageLine(line) && visibleWidth(line) > width) {
-					this.lastDocument[index] = sliceByColumn(line, 0, width, true);
+		try {
+			let write: void | Promise<void>;
+			if (options.preserveScreen) {
+				write = this.terminal.write(`${BEGIN_SYNCHRONIZED_OUTPUT}${EXIT_ALT_SCREEN}\x1b[?25h${END_SYNCHRONIZED_OUTPUT}`);
+			} else {
+				const width = Math.max(1, this.terminal.columns);
+				const documentLines = this.render(width);
+				for (let index = 0; index < documentLines.length; index++) {
+					documentLines[index] = documentLines[index]
+						.replace(OSC133_ZONE_PREFIX_PATTERN, "")
+						.replaceAll(CURSOR_MARKER, "");
 				}
+				this.lastDocument = this.applyLineResets(documentLines);
+				for (let index = 0; index < this.lastDocument.length; index++) {
+					const line = this.lastDocument[index];
+					if (!isImageLine(line) && visibleWidth(line) > width) {
+						this.lastDocument[index] = sliceByColumn(line, 0, width, true);
+					}
+				}
+				let buffer = `${BEGIN_SYNCHRONIZED_OUTPUT}${EXIT_ALT_SCREEN}${DISABLE_AUTOWRAP}`;
+				for (let row = 0; row < this.lastDocument.length; row++) {
+					if (row > 0) buffer += "\r\n";
+					buffer += `\r\x1b[2K${this.lastDocument[row] ?? ""}`;
+				}
+				buffer += `\x1b[0m${ENABLE_AUTOWRAP}\r\n\x1b[?25h${END_SYNCHRONIZED_OUTPUT}`;
+				write = this.terminal.write(buffer);
 			}
-			let buffer = `${BEGIN_SYNCHRONIZED_OUTPUT}${EXIT_ALT_SCREEN}${DISABLE_AUTOWRAP}`;
-			for (let row = 0; row < this.lastDocument.length; row++) {
-				if (row > 0) buffer += "\r\n";
-				buffer += `\r\x1b[2K${this.lastDocument[row] ?? ""}`;
-			}
-			buffer += `\x1b[0m${ENABLE_AUTOWRAP}\r\n\x1b[?25h${END_SYNCHRONIZED_OUTPUT}`;
-			write = this.terminal.write(buffer);
+			return write;
+		} finally {
+			this.restoreSavedCapabilities();
+			this.resetRenderState();
 		}
-		if (this.savedCapabilities) {
-			setCapabilities(this.savedCapabilities);
-			this.savedCapabilities = undefined;
-		}
-		this.resetRenderState();
-		return write;
+	}
+
+	private restoreSavedCapabilities(): void {
+		if (!this.savedCapabilities) return;
+		setCapabilities(this.savedCapabilities);
+		this.savedCapabilities = undefined;
 	}
 
 	protected override releaseMountedComponentsAfterDispose(): void {
@@ -419,10 +425,18 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		let releaseFailed = false;
 		try {
 			try {
-				super.releaseMountedComponentsAfterDispose();
+				this.restoreSavedCapabilities();
 			} catch (error) {
 				releaseFailed = true;
 				releaseError = error;
+			}
+			try {
+				super.releaseMountedComponentsAfterDispose();
+			} catch (error) {
+				if (!releaseFailed) {
+					releaseFailed = true;
+					releaseError = error;
+				}
 			}
 			try {
 				releaseComponentRenderCaches(this.implicitScrollView);
@@ -456,6 +470,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		lastDocumentReference: 0 | 1;
 		lineResetCodeUnits: number;
 		uploadedKittyImages: number;
+		savedCapabilitiesReferences: 0 | 1;
 		selectionPointReferences: number;
 		layoutRenderOwnerReferences: number;
 		pendingLayoutReleaseReferences: number;
@@ -478,6 +493,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			lastDocumentReference: this.lastDocument.length === 0 ? 0 : 1,
 			lineResetCodeUnits: this.lineResetBuffer[0].length,
 			uploadedKittyImages: this.uploadedKittyImages.size,
+			savedCapabilitiesReferences: this.savedCapabilities === undefined ? 0 : 1,
 			selectionPointReferences:
 				(this.resolvedSelectionStart === undefined ? 0 : 1) + (this.resolvedSelectionEnd === undefined ? 0 : 1),
 			layoutRenderOwnerReferences,
