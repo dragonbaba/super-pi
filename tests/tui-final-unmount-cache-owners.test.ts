@@ -30,6 +30,7 @@ import {
 } from "../packages/tui/src/component-cache.ts";
 import { Editor, type EditorTheme } from "../packages/tui/src/components/editor.ts";
 import { Image } from "../packages/tui/src/components/image.ts";
+import { Loader } from "../packages/tui/src/components/loader.ts";
 import {
 	Markdown,
 	type MarkdownIncrementalMetrics,
@@ -232,6 +233,20 @@ interface BashResultRawState {
 	};
 }
 
+interface LoaderRawState {
+	intervalId: (NodeJS.Timeout & { _onTimeout(): void }) | null;
+	ui: TuiAltScreen | null;
+}
+
+class CountingAltScreen extends TuiAltScreen {
+	requestRenderCalls = 0;
+
+	override requestRender(force = false): void {
+		this.requestRenderCalls++;
+		super.requestRender(force);
+	}
+}
+
 class StaticLine implements Component {
 	value: string;
 
@@ -362,6 +377,52 @@ test("final disposal releases Markdown Text and Image derived caches while prese
 		image.render(80),
 		new Image(imageSource, "image/png", { fallbackColor: identity }, {}, { widthPx: 10, heightPx: 10 }).render(80),
 	);
+});
+
+test("Alt root replacement releases Loader timer and stale TUI callback ownership", async () => {
+	const tui = new CountingAltScreen(new FakeTerminal(80, 20), false, undefined, { mouse: false });
+	const loader = new Loader(tui, identity, identity, "loading", {
+		frames: ["a", "b"],
+		intervalMs: 60_000,
+	});
+	const root = new Container();
+	root.addChild(loader);
+	tui.setLayoutRoot(root);
+	tui.start();
+	tui.renderNow();
+
+	const raw = loader as unknown as LoaderRawState;
+	const staleTimer = raw.intervalId;
+	assert.ok(staleTimer);
+	const staleCallback = staleTimer._onTimeout;
+	assert.equal(raw.ui, tui);
+
+	const replacement = new StaticLine("replacement");
+	tui.setLayoutRoot(replacement);
+	assert.equal(raw.intervalId, null);
+	assert.equal(raw.ui, null);
+	const callsAfterDetach = tui.requestRenderCalls;
+	staleCallback.call(staleTimer);
+	assert.equal(tui.requestRenderCalls, callsAfterDetach);
+	tui.renderNow();
+	assert.deepEqual(replacement.render(), ["replacement"]);
+
+	await tui.dispose({ preserveScreen: true });
+
+	const nextTui = new CountingAltScreen(new FakeTerminal(80, 20), false, undefined, { mouse: false });
+	loader.setTui(nextTui);
+	loader.start();
+	const nextRoot = new Container();
+	nextRoot.addChild(loader);
+	nextTui.setLayoutRoot(nextRoot);
+	nextTui.start();
+	nextTui.renderNow();
+	assert.equal(raw.ui, nextTui);
+	assert.ok(raw.intervalId);
+	assert.ok(loader.render(80).length > 0);
+	await nextTui.dispose({ preserveScreen: true });
+	assert.equal(raw.intervalId, null);
+	assert.equal(raw.ui, null);
 });
 
 test("final disposal releases built-in Bash result sidecar caches", async () => {
@@ -919,6 +980,7 @@ test("built-in cache owner contract stays lifecycle-only and complete", async ()
 		["RetainedContainer", "packages/tui/src/components/retained-item.ts"],
 		["ViewportContainer", "packages/tui/src/components/viewport-container.ts"],
 		["ScrollView", "packages/tui/src/components/scroll-view.ts"],
+		["Loader", "packages/tui/src/components/loader.ts"],
 		["BashResultRenderComponent", "packages/coding-agent/src/core/tools/bash.ts"],
 	] as const;
 	for (const [className, filePath] of ownerFiles) {
