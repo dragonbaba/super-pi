@@ -650,6 +650,7 @@ export class InteractiveMode {
 	private extensionInput: ExtensionInputComponent | undefined = undefined;
 	private extensionEditor: ExtensionEditorComponent | undefined = undefined;
 	private activeLoginDialog: LoginDialogComponent | undefined = undefined;
+	private activeAuthSelector: ExtensionSelectorComponent | undefined = undefined;
 	private activeProviderAuthenticationController: AbortController | undefined = undefined;
 	private activeProviderAuthenticationTimeout: ReturnType<typeof setTimeout> | undefined = undefined;
 	private providerAuthenticationGeneration = 0;
@@ -2811,7 +2812,14 @@ export class InteractiveMode {
 	private cancelActiveLoginDialog(): void {
 		const dialog = this.activeLoginDialog;
 		this.activeLoginDialog = undefined;
+		this.cancelActiveAuthSelector();
 		dialog?.cancel();
+	}
+
+	private cancelActiveAuthSelector(): void {
+		const selector = this.activeAuthSelector;
+		this.activeAuthSelector = undefined;
+		selector?.cancel();
 	}
 
 	private cancelActiveProviderAuthentication(): void {
@@ -3053,13 +3061,14 @@ export class InteractiveMode {
 
 		return new Promise((resolve, reject) => {
 			let component: Component & { dispose?(): void };
+			let overlayHandle: OverlayHandle | undefined;
 			let closed = false;
 			const cancel = () => {
 				if (closed) return;
 				closed = true;
 				if (this.activeExtensionCustomCancel === cancel) this.activeExtensionCustomCancel = undefined;
 				if (isOverlay) {
-					this.ui.hideOverlay();
+					overlayHandle?.hide();
 				} else {
 					this.editorContainer.clear();
 					this.editorContainer.addChild(this.editor);
@@ -3075,7 +3084,7 @@ export class InteractiveMode {
 				if (closed) return;
 				closed = true;
 				if (this.activeExtensionCustomCancel === cancel) this.activeExtensionCustomCancel = undefined;
-				if (isOverlay) this.ui.hideOverlay();
+				if (isOverlay) overlayHandle?.hide();
 				else restoreEditor();
 				// Note: both branches above already call requestRender
 				resolve(result);
@@ -3119,9 +3128,9 @@ export class InteractiveMode {
 							const w = (component as { width?: number }).width;
 							return w ? { width: w } : undefined;
 						};
-						const handle = this.ui.showOverlay(component, resolveOptions());
+						overlayHandle = this.ui.showOverlay(component, resolveOptions());
 						// Expose handle to caller for visibility control
-						options?.onHandle?.(handle);
+						options?.onHandle?.(overlayHandle);
 					} else {
 						this.disposeActiveSelector();
 						this.editorContainer.clear();
@@ -3134,7 +3143,8 @@ export class InteractiveMode {
 					if (closed) return;
 					closed = true;
 					if (this.activeExtensionCustomCancel === cancel) this.activeExtensionCustomCancel = undefined;
-					if (!isOverlay) restoreEditor();
+					if (isOverlay) overlayHandle?.hide();
+					else restoreEditor();
 					reject(err);
 				});
 		});
@@ -5362,8 +5372,8 @@ export class InteractiveMode {
 
 	private async handleModelCommand(searchTerm?: string): Promise<void> {
 		const commandGeneration = ++this.modelCommandGeneration;
+		this.cancelActiveModelLookup();
 		if (!searchTerm) {
-			this.cancelActiveModelLookup();
 			this.showModelSelector();
 			return;
 		}
@@ -5414,7 +5424,6 @@ export class InteractiveMode {
 		if (cachedMatch || this.session.scopedModels.length > 0) return cachedMatch;
 
 		this.showStatus("Refreshing model catalogs…");
-		this.cancelActiveModelLookup();
 		const controller = new AbortController();
 		const generation = ++this.modelLookupGeneration;
 		const lifecycleGeneration = this.tuiLifecycleGeneration;
@@ -6455,29 +6464,39 @@ export class InteractiveMode {
 		dialog: LoginDialogComponent,
 		prompt: Extract<AuthPrompt, { type: "select" }>,
 	): Promise<string> {
+		this.cancelActiveAuthSelector();
 		return new Promise((resolve, reject) => {
+			let settled = false;
+			let selector: ExtensionSelectorComponent;
 			const restoreDialog = () => {
-				if (this.activeLoginDialog !== dialog) return;
 				this.editorContainer.clear();
-				this.editorContainer.addChild(dialog);
-				this.ui.setFocus(dialog);
-				this.ui.requestRender();
+				if (this.activeLoginDialog === dialog) {
+					this.editorContainer.addChild(dialog);
+					this.ui.setFocus(dialog);
+					this.ui.requestRender();
+				}
+			};
+			const finish = (selection: string | undefined) => {
+				if (settled) return;
+				settled = true;
+				if (this.activeAuthSelector === selector) this.activeAuthSelector = undefined;
+				selector.dispose();
+				restoreDialog();
+				if (selection === undefined) reject(new Error("Login cancelled"));
+				else resolve(selection);
 			};
 			const labels = prompt.options.map((option) => option.label);
-			const selector = new ExtensionSelectorComponent(
+			selector = new ExtensionSelectorComponent(
 				prompt.message,
 				labels,
 				(optionLabel) => {
-					restoreDialog();
 					const id = prompt.options.find((option) => option.label === optionLabel)?.id;
-					if (id) resolve(id);
-					else reject(new Error("Login cancelled"));
+					if (id) finish(id);
+					else finish(undefined);
 				},
-				() => {
-					restoreDialog();
-					reject(new Error("Login cancelled"));
-				},
+				() => finish(undefined),
 			);
+			this.activeAuthSelector = selector;
 			this.editorContainer.clear();
 			this.editorContainer.addChild(selector);
 			this.ui.setFocus(selector);
@@ -6487,6 +6506,7 @@ export class InteractiveMode {
 
 	private async showAuthPrompt(dialog: LoginDialogComponent, prompt: AuthPrompt): Promise<string> {
 		if (this.activeLoginDialog !== dialog) throw new Error("Login cancelled");
+		if (prompt.signal?.aborted) throw new Error("Login cancelled");
 		let response: Promise<string>;
 		if (prompt.type === "select") {
 			response = this.showAuthSelect(dialog, prompt);
@@ -6496,11 +6516,13 @@ export class InteractiveMode {
 			response = dialog.showPrompt(prompt.message, prompt.placeholder);
 		}
 		if (!prompt.signal) return response;
-		if (prompt.signal.aborted) throw new Error("Login cancelled");
 		const signal = prompt.signal;
 		let onAbort: (() => void) | undefined;
 		const aborted = new Promise<string>((_resolve, reject) => {
-			onAbort = () => reject(new Error("Login cancelled"));
+			onAbort = () => {
+				if (prompt.type === "select") this.cancelActiveAuthSelector();
+				reject(new Error("Login cancelled"));
+			};
 			signal.addEventListener("abort", onAbort, { once: true });
 		});
 		try {
