@@ -15,6 +15,10 @@ import {
 } from "@super-pi/tui";
 import ts from "typescript";
 import type { AssistantMessage } from "../packages/ai/src/types.ts";
+import { ArminComponent } from "../packages/coding-agent/src/modes/interactive/components/armin.ts";
+import { DaxnutsComponent } from "../packages/coding-agent/src/modes/interactive/components/daxnuts.ts";
+import { RetryStatusIndicator } from "../packages/coding-agent/src/modes/interactive/components/status-indicator.ts";
+import type { AutocompleteProvider } from "../packages/tui/src/autocomplete.ts";
 import {
 	type BashRenderState,
 	createBashToolDefinition,
@@ -53,6 +57,7 @@ function identity(value: string): string {
 }
 
 function noOperation(): void {}
+function noInputResult(): undefined { return undefined; }
 
 const MARKDOWN_THEME: MarkdownTheme = {
 	heading: identity,
@@ -238,6 +243,32 @@ interface LoaderRawState {
 	ui: TuiAltScreen | null;
 }
 
+interface EditorAutocompleteRawState {
+	autocompleteAbort?: AbortController;
+	autocompleteDebounceTimer?: NodeJS.Timeout & { _onTimeout: (() => void) | null };
+	autocompleteRequestTask: Promise<void>;
+}
+
+interface AnimatedOwnerRawState {
+	interval: (NodeJS.Timeout & { _onTimeout: (() => void) | null }) | null;
+	ui: ProductionTuiMainScreen | null;
+	cachedLines: string[];
+}
+
+interface CountdownRawState {
+	intervalId?: NodeJS.Timeout & { _onTimeout: (() => void) | null };
+	tui?: ProductionTuiMainScreen;
+}
+
+interface RetryRawState extends LoaderRawState {
+	countdown?: CountdownRawState;
+}
+
+interface TuiDisposeRawState {
+	inputListeners: Set<unknown>;
+	terminalColorSchemeListeners: Set<unknown>;
+}
+
 class CountingAltScreen extends TuiAltScreen {
 	requestRenderCalls = 0;
 
@@ -245,6 +276,52 @@ class CountingAltScreen extends TuiAltScreen {
 		this.requestRenderCalls++;
 		super.requestRender(force);
 	}
+}
+
+class CountingProductionMainScreen extends ProductionTuiMainScreen {
+	requestRenderCalls = 0;
+
+	override requestRender(force = false): void {
+		this.requestRenderCalls++;
+		super.requestRender(force);
+	}
+}
+
+class ThrowingFinalCleanupTerminal extends FakeTerminal {
+	frameListenerClearCalls = 0;
+	disposeCalls = 0;
+	throwOnFinalCleanup = false;
+
+	override setFrameWriteCompletionListener(
+		listener: ((generation: number, error?: Error) => void) | undefined,
+	): void {
+		if (listener === undefined) {
+			this.frameListenerClearCalls++;
+			if (this.throwOnFinalCleanup) throw new Error("terminal listener cleanup failure");
+		}
+		super.setFrameWriteCompletionListener(listener);
+	}
+
+	dispose(): void {
+		this.disposeCalls++;
+		if (this.throwOnFinalCleanup) throw new Error("terminal dispose failure");
+	}
+}
+
+class ThrowingCacheRelease implements Component {
+	private readonly terminal: ThrowingFinalCleanupTerminal;
+
+	constructor(terminal: ThrowingFinalCleanupTerminal) {
+		this.terminal = terminal;
+	}
+
+	[RELEASE_COMPONENT_RENDER_CACHE](): void {
+		this.terminal.throwOnFinalCleanup = true;
+		throw new Error("mounted release first failure");
+	}
+
+	invalidate(): void {}
+	render(): string[] { return ["throwing-release"]; }
 }
 
 class StaticLine implements Component {
@@ -423,6 +500,158 @@ test("Alt root replacement releases Loader timer and stale TUI callback ownershi
 	await nextTui.dispose({ preserveScreen: true });
 	assert.equal(raw.intervalId, null);
 	assert.equal(raw.ui, null);
+});
+
+test("Editor final release cancels debounced and active autocomplete work", async () => {
+	let debounceProviderCalls = 0;
+	const debounceProvider: AutocompleteProvider = {
+		triggerCharacters: ["@"],
+		async getSuggestions() {
+			debounceProviderCalls++;
+			return null;
+		},
+		applyCompletion(lines, cursorLine, cursorCol) {
+			return { lines, cursorLine, cursorCol };
+		},
+	};
+	const debounceTui = new TuiMainScreen(new FakeTerminal(80, 20), false);
+	const debounceEditor = new Editor(debounceTui, EDITOR_THEME);
+	debounceEditor.setAutocompleteProvider(debounceProvider);
+	debounceTui.addChild(debounceEditor);
+	debounceTui.start();
+	debounceEditor.handleInput("@");
+	const debounceRaw = debounceEditor as unknown as EditorAutocompleteRawState;
+	const staleTimer = debounceRaw.autocompleteDebounceTimer;
+	assert.ok(staleTimer);
+	const staleDebounceCallback = staleTimer._onTimeout;
+	assert.ok(staleDebounceCallback);
+	await debounceTui.dispose({ preserveScreen: true });
+	assert.equal(debounceRaw.autocompleteDebounceTimer, undefined);
+	staleDebounceCallback.call(staleTimer);
+	await Promise.resolve();
+	await Promise.resolve();
+	assert.equal(debounceProviderCalls, 0);
+
+	let activeSignal: AbortSignal | undefined;
+	let resolveActive: ((value: null) => void) | undefined;
+	const activeProvider: AutocompleteProvider = {
+		getSuggestions(_lines, _cursorLine, _cursorCol, options) {
+			activeSignal = options.signal;
+			return new Promise((resolve) => { resolveActive = resolve; });
+		},
+		applyCompletion(lines, cursorLine, cursorCol) {
+			return { lines, cursorLine, cursorCol };
+		},
+		shouldTriggerFileCompletion() { return true; },
+	};
+	const activeTui = new TuiMainScreen(new FakeTerminal(80, 20), false);
+	const activeEditor = new Editor(activeTui, EDITOR_THEME);
+	activeEditor.setAutocompleteProvider(activeProvider);
+	activeTui.addChild(activeEditor);
+	activeTui.start();
+	activeEditor.handleInput("\t");
+	await Promise.resolve();
+	await Promise.resolve();
+	assert.ok(activeSignal);
+	const activeRaw = activeEditor as unknown as EditorAutocompleteRawState;
+	assert.ok(activeRaw.autocompleteAbort);
+	await activeTui.dispose({ preserveScreen: true });
+	assert.equal(activeSignal.aborted, true);
+	assert.equal(activeRaw.autocompleteAbort, undefined);
+	resolveActive?.(null);
+	await Promise.resolve();
+	await Promise.resolve();
+	assert.equal(activeEditor.isShowingAutocomplete(), false);
+});
+
+test("final release stops coding-agent animation owners and retry countdown", async () => {
+	const tui = new CountingProductionMainScreen(new FakeTerminal(120, 40), false);
+	const armin = new ArminComponent(tui);
+	const daxnuts = new DaxnutsComponent(tui);
+	const retry = new RetryStatusIndicator(tui, 1, 3, 60_000);
+	tui.addChild(armin);
+	tui.addChild(daxnuts);
+	tui.addChild(retry);
+	tui.start();
+	tui.renderNow();
+
+	const arminRaw = armin as unknown as AnimatedOwnerRawState;
+	const daxRaw = daxnuts as unknown as AnimatedOwnerRawState;
+	const retryRaw = retry as unknown as RetryRawState;
+	assert.ok(arminRaw.interval);
+	assert.ok(daxRaw.interval);
+	assert.ok(retryRaw.intervalId);
+	assert.ok(retryRaw.countdown?.intervalId);
+	assert.ok(arminRaw.cachedLines.length > 0);
+	assert.ok(daxRaw.cachedLines.length > 0);
+	const staleArminTimer = arminRaw.interval;
+	const staleDaxTimer = daxRaw.interval;
+	const staleRetryLoaderTimer = retryRaw.intervalId;
+	const staleRetryCountdownTimer = retryRaw.countdown.intervalId;
+	const staleArminCallback = staleArminTimer._onTimeout;
+	const staleDaxCallback = staleDaxTimer._onTimeout;
+	const staleRetryLoaderCallback = staleRetryLoaderTimer._onTimeout;
+	const staleRetryCountdownCallback = staleRetryCountdownTimer._onTimeout;
+
+	await tui.dispose({ preserveScreen: true });
+	assert.equal(arminRaw.interval, null);
+	assert.equal(arminRaw.ui, null);
+	assert.equal(arminRaw.cachedLines.length, 0);
+	assert.equal(daxRaw.interval, null);
+	assert.equal(daxRaw.ui, null);
+	assert.equal(daxRaw.cachedLines.length, 0);
+	assert.equal(retryRaw.intervalId, null);
+	assert.equal(retryRaw.ui, null);
+	assert.equal(retryRaw.countdown, undefined);
+	const renderCallsAfterDispose = tui.requestRenderCalls;
+	staleArminCallback?.call(staleArminTimer);
+	staleDaxCallback?.call(staleDaxTimer);
+	staleRetryLoaderCallback?.call(staleRetryLoaderTimer);
+	staleRetryCountdownCallback?.call(staleRetryCountdownTimer);
+	assert.equal(tui.requestRenderCalls, renderCallsAfterDispose);
+
+	const replacementTui = new CountingProductionMainScreen(new FakeTerminal(120, 40), false);
+	armin.setTui(replacementTui);
+	daxnuts.setTui(replacementTui);
+	replacementTui.addChild(armin);
+	replacementTui.addChild(daxnuts);
+	replacementTui.start();
+	replacementTui.renderNow();
+	assert.equal(arminRaw.ui, replacementTui);
+	assert.equal(daxRaw.ui, replacementTui);
+	assert.ok(arminRaw.interval);
+	assert.ok(daxRaw.interval);
+	assert.ok(arminRaw.cachedLines.length > 0);
+	assert.ok(daxRaw.cachedLines.length > 0);
+	await replacementTui.dispose({ preserveScreen: true });
+	assert.equal(arminRaw.interval, null);
+	assert.equal(arminRaw.ui, null);
+	assert.equal(arminRaw.cachedLines.length, 0);
+	assert.equal(daxRaw.interval, null);
+	assert.equal(daxRaw.ui, null);
+	assert.equal(daxRaw.cachedLines.length, 0);
+});
+
+test("final disposal preserves the first release error and continues terminal cleanup", async () => {
+	const terminal = new ThrowingFinalCleanupTerminal(80, 20);
+	const tui = new TuiMainScreen(terminal, false);
+	const release = new ThrowingCacheRelease(terminal);
+	const cachedText = new Text("cached-after-error", 0, 0);
+	tui.addChild(release);
+	tui.addChild(cachedText);
+	tui.addInputListener(noInputResult);
+	tui.onTerminalColorSchemeChange(noOperation);
+	tui.start();
+	tui.renderNow();
+	assert.ok((cachedText as unknown as TextRawCache).cachedLines);
+
+	await assert.rejects(tui.dispose({ preserveScreen: true }), /mounted release first failure/);
+	assert.equal(terminal.frameListenerClearCalls, 3);
+	assert.equal(terminal.disposeCalls, 1);
+	assert.equal((cachedText as unknown as TextRawCache).cachedLines, undefined);
+	const raw = tui as unknown as TuiDisposeRawState;
+	assert.equal(raw.inputListeners.size, 0);
+	assert.equal(raw.terminalColorSchemeListeners.size, 0);
 });
 
 test("final disposal releases built-in Bash result sidecar caches", async () => {
@@ -981,6 +1210,9 @@ test("built-in cache owner contract stays lifecycle-only and complete", async ()
 		["ViewportContainer", "packages/tui/src/components/viewport-container.ts"],
 		["ScrollView", "packages/tui/src/components/scroll-view.ts"],
 		["Loader", "packages/tui/src/components/loader.ts"],
+		["ArminComponent", "packages/coding-agent/src/modes/interactive/components/armin.ts"],
+		["DaxnutsComponent", "packages/coding-agent/src/modes/interactive/components/daxnuts.ts"],
+		["RetryStatusIndicator", "packages/coding-agent/src/modes/interactive/components/status-indicator.ts"],
 		["BashResultRenderComponent", "packages/coding-agent/src/core/tools/bash.ts"],
 	] as const;
 	for (const [className, filePath] of ownerFiles) {
@@ -1026,4 +1258,16 @@ test("built-in cache owner contract stays lifecycle-only and complete", async ()
 	const admission = disposeMethod.indexOf("this.disposed = true");
 	const release = disposeMethod.indexOf("this.releaseMountedComponentsAfterDispose()");
 	assert.ok(stopped >= 0 && admission > stopped && release > admission);
+	for (const cleanup of [
+		"this.terminalFrameQueue.detach()",
+		"this.terminal.setFrameWriteReadyListener?.(undefined)",
+		"this.terminal.setFrameWriteCompletionListener(undefined)",
+		"this.terminal.setFrameWriteStartedListener?.(undefined)",
+		"this.terminal.dispose?.()",
+		"this.inputListeners.clear()",
+		"this.terminalColorSchemeListeners.clear()",
+	]) {
+		assert.ok(disposeMethod.indexOf(cleanup) > release, `${cleanup} must run after mounted release admission closes`);
+	}
+	assert.match(disposeMethod, /if \(disposeFailed\) throw disposeError;/);
 });
