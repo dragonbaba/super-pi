@@ -452,6 +452,7 @@ function createEditorRuntime(
 				disposedOwnerLastDocumentRows: finalUnmount.lastDocumentRows,
 				disposedOwnerLastDocumentCodeUnits: finalUnmount.lastDocumentCodeUnits,
 				disposedOwnerLastDocumentReferences: finalUnmount.lastDocumentReference,
+				disposedOwnerSavedCapabilitiesReferences: finalUnmount.savedCapabilitiesReferences,
 				disposedOwnerLayoutRenderOwnerReferences: finalUnmount.layoutRenderOwnerReferences,
 				disposedOwnerPendingLayoutReleaseReferences: finalUnmount.pendingLayoutReleaseReferences,
 				disposedOwnerSelectionReferences:
@@ -778,6 +779,7 @@ function createNestedSameOwnerReplacementRuntime(width: number, height: number):
 			return {
 				disposedOwnerDetachedBoxCaches: Number(boxHasCache(firstRoot)) + Number(boxHasCache(secondRoot)),
 				disposedOwnerLayoutRootReferences: internals.layoutRoot === undefined ? 0 : 1,
+				disposedOwnerSavedCapabilitiesReferences: finalUnmount.savedCapabilitiesReferences,
 				disposedOwnerLayoutRenderOwnerReferences: finalUnmount.layoutRenderOwnerReferences,
 				disposedOwnerPendingLayoutReleaseReferences: finalUnmount.pendingLayoutReleaseReferences,
 				disposedOwnerLayoutScratchReferences:

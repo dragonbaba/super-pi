@@ -15,6 +15,10 @@ import {
 } from "@super-pi/tui";
 import ts from "typescript";
 import type { AssistantMessage } from "../packages/ai/src/types.ts";
+import {
+	type BashRenderState,
+	createBashToolDefinition,
+} from "../packages/coding-agent/src/core/tools/bash.ts";
 import { AssistantMessageComponent } from "../packages/coding-agent/src/modes/interactive/components/assistant-message.ts";
 import { SteppedSubmenu } from "../packages/coding-agent/src/modes/interactive/components/settings-submenu.ts";
 import { UserMessageComponent } from "../packages/coding-agent/src/modes/interactive/components/user-message.ts";
@@ -46,6 +50,8 @@ initTheme("dark");
 function identity(value: string): string {
 	return value;
 }
+
+function noOperation(): void {}
 
 const MARKDOWN_THEME: MarkdownTheme = {
 	heading: identity,
@@ -208,6 +214,24 @@ interface RetainedItemRawState {
 	logicalVersion: number;
 }
 
+interface BashResultRawState {
+	state: {
+		cachedLines: string[] | undefined;
+		preparedContent: unknown[] | undefined;
+		preparedStyledOutput: string | undefined;
+		expandedOutputComponent: Component | undefined;
+		expandedOutputText: string | undefined;
+	};
+	children: Component[];
+	getBashResultRenderCacheReferenceCounts(): {
+		cachedLineReferences: number;
+		preparedContentReferences: number;
+		preparedStyledOutputCodeUnits: number;
+		expandedOutputReferences: number;
+		derivedChildReferences: number;
+	};
+}
+
 class StaticLine implements Component {
 	value: string;
 
@@ -277,6 +301,14 @@ class StaticDocument implements Component {
 	}
 }
 
+class ThrowingRestorationDocument implements Component {
+	invalidate(): void {}
+
+	render(): string[] {
+		throw new Error("fixture restoration render failure");
+	}
+}
+
 test("final disposal releases Markdown Text and Image derived caches while preserving logical sources", async () => {
 	const terminal = new FakeTerminal(120, 40);
 	const tui = new TuiMainScreen(terminal, false);
@@ -330,6 +362,86 @@ test("final disposal releases Markdown Text and Image derived caches while prese
 		image.render(80),
 		new Image(imageSource, "image/png", { fallbackColor: identity }, {}, { widthPx: 10, heightPx: 10 }).render(80),
 	);
+});
+
+test("final disposal releases built-in Bash result sidecar caches", async () => {
+	const definition = createBashToolDefinition(process.cwd());
+	assert.ok(definition.renderResult);
+	const renderState: BashRenderState = { startedAt: undefined, endedAt: undefined, interval: undefined };
+	const output = new Array<string>(4_096);
+	for (let index = 0; index < output.length; index++) output[index] = `bash-output-${index}-中文-😀-e\u0301`;
+	const outputText = output.join("\n");
+	const component = definition.renderResult(
+		{ content: [{ type: "text", text: outputText }], details: undefined },
+		{ expanded: false, isPartial: false },
+		undefined as never,
+		{
+			args: { command: "fixture" },
+			toolCallId: "bash-final-unmount",
+			invalidate: noOperation,
+			lastComponent: undefined,
+			state: renderState,
+			cwd: process.cwd(),
+			executionStarted: true,
+			argsComplete: true,
+			isPartial: false,
+			expanded: false,
+			showImages: false,
+			isError: false,
+		},
+	);
+	const tui = new ProductionTuiMainScreen(new FakeTerminal(120, 40), false);
+	tui.addChild(component);
+	tui.start();
+	tui.renderNow();
+	const raw = component as unknown as BashResultRawState;
+	assert.ok((raw.state.cachedLines?.length ?? 0) > 0);
+	assert.ok((raw.state.preparedContent?.length ?? 0) > 0);
+	assert.ok((raw.state.preparedStyledOutput?.length ?? 0) > 0);
+	assert.ok(raw.children.length > 0);
+	const beforeRelease = raw.getBashResultRenderCacheReferenceCounts();
+	assert.ok(beforeRelease.cachedLineReferences > 0);
+	assert.equal(beforeRelease.preparedContentReferences, 1);
+	assert.ok(beforeRelease.preparedStyledOutputCodeUnits > 0);
+	assert.ok(beforeRelease.derivedChildReferences > 0);
+
+	await tui.dispose({ preserveScreen: true });
+	assert.equal(raw.state.cachedLines, undefined);
+	assert.equal(raw.state.preparedContent, undefined);
+	assert.equal(raw.state.preparedStyledOutput, undefined);
+	assert.equal(raw.state.expandedOutputComponent, undefined);
+	assert.equal(raw.state.expandedOutputText, undefined);
+	assert.equal(raw.children.length, 0);
+	assert.deepEqual(raw.getBashResultRenderCacheReferenceCounts(), {
+		cachedLineReferences: 0,
+		preparedContentReferences: 0,
+		preparedStyledOutputCodeUnits: 0,
+		expandedOutputReferences: 0,
+		derivedChildReferences: 0,
+	});
+
+	const rebuilt = definition.renderResult(
+		{ content: [{ type: "text", text: outputText }], details: undefined },
+		{ expanded: false, isPartial: false },
+		undefined as never,
+		{
+			args: { command: "fixture" },
+			toolCallId: "bash-final-unmount",
+			invalidate: noOperation,
+			lastComponent: component,
+			state: renderState,
+			cwd: process.cwd(),
+			executionStarted: true,
+			argsComplete: true,
+			isPartial: false,
+			expanded: false,
+			showImages: false,
+			isError: false,
+		},
+	);
+	assert.equal(rebuilt, component);
+	assert.ok(rebuilt.render(120).length > 0);
+	assert.ok(raw.getBashResultRenderCacheReferenceCounts().cachedLineReferences > 0);
 });
 
 test("production Assistant and User message trees release nested Markdown and Text caches", async () => {
@@ -645,6 +757,7 @@ test("Alt final disposal drops lastDocument only after full restoration output c
 		lastDocumentReference: 0,
 		lineResetCodeUnits: 0,
 		uploadedKittyImages: 0,
+		savedCapabilitiesReferences: 0,
 		selectionPointReferences: 0,
 		layoutRenderOwnerReferences: 0,
 		pendingLayoutReleaseReferences: 0,
@@ -665,6 +778,22 @@ test("Alt final release runs after rejected and timed-out terminal restoration b
 		assert.equal((tui as unknown as AltRawDocument).lastDocument.length, 0);
 		assert.equal(tui.getAltFinalUnmountRetainedReferenceCounts().lastDocumentReference, 0);
 		await tui.dispose({ preserveScreen: false });
+	}
+});
+
+test("Alt final disposal restores global image capabilities after restoration render failure", async () => {
+	const previousCapabilities = getCapabilities();
+	const expectedCapabilities = { images: "iterm2" as const, trueColor: true, hyperlinks: true };
+	setCapabilities(expectedCapabilities);
+	try {
+		const tui = new TuiAltScreen(new FakeTerminal(80, 20), false, undefined, { mouse: false });
+		tui.setLayoutRoot(new ThrowingRestorationDocument());
+		tui.start();
+		assert.equal(getCapabilities().images, null);
+		await tui.dispose({ preserveScreen: false });
+		assert.deepEqual(getCapabilities(), expectedCapabilities);
+	} finally {
+		setCapabilities(previousCapabilities);
 	}
 });
 
@@ -790,6 +919,7 @@ test("built-in cache owner contract stays lifecycle-only and complete", async ()
 		["RetainedContainer", "packages/tui/src/components/retained-item.ts"],
 		["ViewportContainer", "packages/tui/src/components/viewport-container.ts"],
 		["ScrollView", "packages/tui/src/components/scroll-view.ts"],
+		["BashResultRenderComponent", "packages/coding-agent/src/core/tools/bash.ts"],
 	] as const;
 	for (const [className, filePath] of ownerFiles) {
 		const sourceText = await readFile(filePath, "utf8");

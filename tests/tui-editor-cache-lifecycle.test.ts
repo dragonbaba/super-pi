@@ -1262,6 +1262,8 @@ test("lifecycle cleanup remains outside frame and recoverable-stop hot paths", a
 	);
 	assert.doesNotMatch(releaseLayoutInteractionOwners.getText(altSource), /\.invalidate\(|\.render\(|new (?:Map|Set|Promise|AbortController)|=>|function\s*\(/);
 	assert.doesNotMatch(beforeTerminalStop.getText(altSource), /releaseLayoutInteractionOwners/);
+	assert.match(altText, /afterTerminalStop[\s\S]*finally \{\s*this\.restoreSavedCapabilities\(\);\s*this\.resetRenderState\(\)/);
+	assert.match(altText, /releaseMountedComponentsAfterDispose[\s\S]*this\.restoreSavedCapabilities\(\)/);
 	assert.match(layoutText, /requestClear\(\): void \{[\s\S]*this\.clearRequested = true/);
 	assert.match(layoutText, /flushRequestedClear\(\): void \{[\s\S]*this\.clearRequested/);
 	assert.match(
