@@ -723,6 +723,7 @@ export class SessionSelectorComponent extends Container implements Focusable {
 	private allLoadSeq = 0;
 	private lifecycleGeneration = 0;
 	private disposed = false;
+	private deleteSessionOperation = deleteSessionFile;
 
 	private mode: "list" | "rename" = "list";
 	private renameInput = new Input();
@@ -840,7 +841,9 @@ export class SessionSelectorComponent extends Container implements Focusable {
 
 		// Handle session deletion
 		this.sessionList.onDeleteSession = async (sessionPath: string) => {
-			const result = await deleteSessionFile(sessionPath);
+			const lifecycleGeneration = this.lifecycleGeneration;
+			const result = await this.deleteSessionOperation(sessionPath);
+			if (lifecycleGeneration !== this.lifecycleGeneration) return;
 
 			if (result.ok) {
 				if (this.currentSessions) {
@@ -857,6 +860,7 @@ export class SessionSelectorComponent extends Container implements Focusable {
 				const msg = result.method === "trash" ? "Session moved to trash" : "Session deleted";
 				this.header.setStatusMessage({ type: "info", message: msg }, 2000);
 				await this.refreshSessionsAfterMutation();
+				if (lifecycleGeneration !== this.lifecycleGeneration) return;
 			} else {
 				const errorMessage = result.error ?? "Unknown error";
 				this.header.setStatusMessage({ type: "error", message: `Failed to delete: ${errorMessage}` }, 3000);

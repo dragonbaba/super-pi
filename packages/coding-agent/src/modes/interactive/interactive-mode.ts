@@ -643,8 +643,10 @@ export class InteractiveMode {
 	private extensionEditor: ExtensionEditorComponent | undefined = undefined;
 	private activeLoginDialog: LoginDialogComponent | undefined = undefined;
 	private activeModelLookupController: AbortController | undefined = undefined;
+	private modelCommandGeneration = 0;
 	private modelLookupGeneration = 0;
 	private modelLookupTimedOutGeneration = 0;
+	private activeExtensionCustomCancel: (() => void) | undefined = undefined;
 	private extensionTerminalInputSubscriptions = new Set<{
 		handler: (data: string) => { consume?: boolean; data?: string } | undefined;
 		unsubscribe: () => void;
@@ -2793,6 +2795,12 @@ export class InteractiveMode {
 		controller?.abort();
 	}
 
+	private cancelActiveExtensionCustom(): void {
+		const cancel = this.activeExtensionCustomCancel;
+		this.activeExtensionCustomCancel = undefined;
+		cancel?.();
+	}
+
 	private releaseExtensionUiOwners(): void {
 		let releaseError: unknown;
 		let releaseFailed = false;
@@ -2990,6 +2998,8 @@ export class InteractiveMode {
 			onHandle?: (handle: OverlayHandle) => void;
 		},
 	): Promise<T> {
+		this.cancelActiveExtensionCustom();
+		const lifecycleGeneration = this.tuiLifecycleGeneration;
 		const savedText = this.editor.getText();
 		const isOverlay = options?.overlay ?? false;
 
@@ -3004,10 +3014,27 @@ export class InteractiveMode {
 		return new Promise((resolve, reject) => {
 			let component: Component & { dispose?(): void };
 			let closed = false;
+			const cancel = () => {
+				if (closed) return;
+				closed = true;
+				if (this.activeExtensionCustomCancel === cancel) this.activeExtensionCustomCancel = undefined;
+				if (isOverlay) {
+					this.ui.hideOverlay();
+				} else {
+					this.editorContainer.clear();
+					this.editorContainer.addChild(this.editor);
+				}
+				try {
+					component?.dispose?.();
+				} catch {}
+				resolve(undefined as T);
+			};
+			this.activeExtensionCustomCancel = cancel;
 
 			const close = (result: T) => {
 				if (closed) return;
 				closed = true;
+				if (this.activeExtensionCustomCancel === cancel) this.activeExtensionCustomCancel = undefined;
 				if (isOverlay) this.ui.hideOverlay();
 				else restoreEditor();
 				// Note: both branches above already call requestRender
@@ -3019,9 +3046,24 @@ export class InteractiveMode {
 				}
 			};
 
-			Promise.resolve(factory(this.ui, theme, this.keybindings, close))
+			let factoryResult: (Component & { dispose?(): void }) | Promise<Component & { dispose?(): void }>;
+			try {
+				factoryResult = factory(this.ui, theme, this.keybindings, close);
+			} catch (error) {
+				closed = true;
+				if (this.activeExtensionCustomCancel === cancel) this.activeExtensionCustomCancel = undefined;
+				reject(error);
+				return;
+			}
+			Promise.resolve(factoryResult)
 				.then((c) => {
-					if (closed) return;
+					if (closed || this.tuiLifecycleGeneration !== lifecycleGeneration) {
+						try {
+							c.dispose?.();
+						} catch {}
+						if (!closed) cancel();
+						return;
+					}
 					component = c;
 					if (isOverlay) {
 						// Resolve overlay options - can be static or dynamic function
@@ -3050,6 +3092,8 @@ export class InteractiveMode {
 				})
 				.catch((err) => {
 					if (closed) return;
+					closed = true;
+					if (this.activeExtensionCustomCancel === cancel) this.activeExtensionCustomCancel = undefined;
 					if (!isOverlay) restoreEditor();
 					reject(err);
 				});
@@ -5255,25 +5299,42 @@ export class InteractiveMode {
 	}
 
 	private async handleModelCommand(searchTerm?: string): Promise<void> {
+		const commandGeneration = ++this.modelCommandGeneration;
 		if (!searchTerm) {
+			this.cancelActiveModelLookup();
 			this.showModelSelector();
 			return;
 		}
 
 		const lifecycleGeneration = this.tuiLifecycleGeneration;
 		const model = await this.findExactModelMatch(searchTerm);
-		if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
+		if (
+			this.tuiLifecycleGeneration !== lifecycleGeneration ||
+			this.modelCommandGeneration !== commandGeneration
+		) {
+			return;
+		}
 		if (model) {
 			try {
 				await this.session.setModel(model, { persist: false });
-				if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
+				if (
+					this.tuiLifecycleGeneration !== lifecycleGeneration ||
+					this.modelCommandGeneration !== commandGeneration
+				) {
+					return;
+				}
 				this.footer.invalidate();
 				this.updateEditorBorderColor();
 				this.showStatus(`Model: ${model.id}`);
 				this.observeLifecyclePromise(this.maybeWarnAboutAnthropicSubscriptionAuth(model));
 				this.checkDaxnutsEasterEgg(model);
 			} catch (error) {
-				if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
+				if (
+					this.tuiLifecycleGeneration !== lifecycleGeneration ||
+					this.modelCommandGeneration !== commandGeneration
+				) {
+					return;
+				}
 				this.showError(error instanceof Error ? error.message : String(error));
 			}
 			return;
@@ -7109,6 +7170,7 @@ export class InteractiveMode {
 		this.tuiLifecycleGeneration++;
 		this.cancelActiveLoginDialog();
 		this.cancelActiveModelLookup();
+		this.cancelActiveExtensionCustom();
 		this.cancelExtensionDialogs();
 		this.disposeActiveSelector();
 		let extensionReleaseError: unknown;
