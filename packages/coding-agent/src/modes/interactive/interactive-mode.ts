@@ -195,6 +195,7 @@ import {
 	getEditorTheme,
 	getMarkdownTheme,
 	getThemeByName,
+	offThemeChange,
 	onThemeChange,
 	setRegisteredThemes,
 	stopThemeWatcher,
@@ -211,6 +212,7 @@ interface ClipboardArtifactLifecycle {
 }
 
 const CLIPBOARD_ARTIFACT_LIFECYCLE_SYMBOL = Symbol.for("super-pi.clipboard-artifact-lifecycle.v1");
+const NOOP_EXTENSION_TERMINAL_INPUT_UNSUBSCRIBE = (): void => {};
 function clipboardArtifactLifecycle(): ClipboardArtifactLifecycle | undefined {
 	return (globalThis as any)[CLIPBOARD_ARTIFACT_LIFECYCLE_SYMBOL];
 }
@@ -507,6 +509,7 @@ export class InteractiveMode {
 	private renderer: TuiMainScreen | TuiAltScreen;
 	private ui: TUI;
 	private tuiLifecycleGeneration = 0;
+	private extensionUiGeneration = 0;
 	private mainScreenRenderState: TuiMainScreenRenderState | undefined;
 	private loadedResourcesContainer: Container;
 	private chatContainer: RetainedContainer;
@@ -587,6 +590,11 @@ export class InteractiveMode {
 	private readonly handleClipboardPasteAction = (): void =>
 		this.observeLifecyclePromise(this.handleClipboardPaste());
 	private readonly handleShutdownAction = (): void => this.observeLifecyclePromise(this.shutdown());
+	private readonly handleThemeChange = (): void => {
+		this.ui.invalidate();
+		this.updateEditorBorderColor();
+		this.ui.requestRender();
+	};
 	private readonly ignoreSuspendSigint = (): void => {};
 	private readonly handleSuspendContinue = (): void => {
 		const generation = this.activeSuspendGeneration;
@@ -1267,11 +1275,7 @@ export class InteractiveMode {
 		this.renderInitialMessages();
 
 		// Set up theme file watcher
-		onThemeChange(() => {
-			this.ui.invalidate();
-			this.updateEditorBorderColor();
-			this.ui.requestRender();
-		});
+		onThemeChange(this.handleThemeChange);
 
 		// Set up git branch watcher (uses provider instead of footer)
 		this.footerDataProvider.onBranchChange(() => {
@@ -2147,7 +2151,8 @@ export class InteractiveMode {
 	 * Initialize the extension system with TUI-based UI context.
 	 */
 	private async bindCurrentSessionExtensions(lifecycleGeneration?: number): Promise<void> {
-		const uiContext = this.createExtensionUIContext();
+		const extensionUiGeneration = ++this.extensionUiGeneration;
+		const uiContext = this.createExtensionUIContext(extensionUiGeneration);
 		await this.session.bindExtensions({
 			uiContext,
 			mode: "tui",
@@ -2184,12 +2189,14 @@ export class InteractiveMode {
 					}
 				},
 				navigateTree: async (targetId, options) => {
+					const lifecycleGeneration = this.tuiLifecycleGeneration;
 					const result = await this.session.navigateTree(targetId, {
 						summarize: options?.summarize,
 						customInstructions: options?.customInstructions,
 						replaceInstructions: options?.replaceInstructions,
 						label: options?.label,
 					});
+					if (this.tuiLifecycleGeneration !== lifecycleGeneration) return { cancelled: true };
 					if (result.cancelled) {
 						return { cancelled: true };
 					}
@@ -2217,6 +2224,7 @@ export class InteractiveMode {
 				}
 			},
 			onError: (error) => {
+				if (this.extensionUiGeneration !== extensionUiGeneration) return;
 				this.showExtensionError(error.extensionPath, error.error, error.stack);
 			},
 		});
@@ -2692,37 +2700,77 @@ export class InteractiveMode {
 		};
 	}
 
-	private createExtensionUIContext(): ExtensionUIContext {
+	private createExtensionUIContext(extensionUiGeneration = this.extensionUiGeneration): ExtensionUIContext {
 		return {
-			select: (title, options, opts) => this.showExtensionSelector(title, options, opts),
-			confirm: (title, message, opts) => this.showExtensionConfirm(title, message, opts),
-			input: (title, placeholder, opts) => this.showExtensionInput(title, placeholder, opts),
-			notify: (message, type) => this.showExtensionNotify(message, type),
-			onTerminalInput: (handler) => this.addExtensionTerminalInputListener(handler),
-			setStatus: (key, text) => this.setExtensionStatus(key, text),
+			select: (title, options, opts) => this.extensionUiGeneration !== extensionUiGeneration
+				? Promise.resolve(undefined)
+				: this.showExtensionSelector(title, options, opts),
+			confirm: (title, message, opts) => this.extensionUiGeneration !== extensionUiGeneration
+				? Promise.resolve(false)
+				: this.showExtensionConfirm(title, message, opts),
+			input: (title, placeholder, opts) => this.extensionUiGeneration !== extensionUiGeneration
+				? Promise.resolve(undefined)
+				: this.showExtensionInput(title, placeholder, opts),
+			notify: (message, type) => {
+				if (this.extensionUiGeneration === extensionUiGeneration) this.showExtensionNotify(message, type);
+			},
+			onTerminalInput: (handler) => this.extensionUiGeneration !== extensionUiGeneration
+				? NOOP_EXTENSION_TERMINAL_INPUT_UNSUBSCRIBE
+				: this.addExtensionTerminalInputListener(handler),
+			setStatus: (key, text) => {
+				if (this.extensionUiGeneration === extensionUiGeneration) this.setExtensionStatus(key, text);
+			},
 			setWorkingMessage: (message) => {
+				if (this.extensionUiGeneration !== extensionUiGeneration) return;
 				this.workingMessage = message;
 				if (this.activeStatusIndicator?.kind === "working") {
 					this.activeStatusIndicator.setMessage(message ?? this.defaultWorkingMessage);
 				}
 			},
-			setWorkingVisible: (visible) => this.setWorkingVisible(visible),
-			setWorkingIndicator: (options) => this.setWorkingIndicator(options),
-			setHiddenThinkingLabel: (label) => this.setHiddenThinkingLabel(label),
-			setWidget: (key, content, options) => this.setExtensionWidget(key, content, options),
-			setFooter: (factory) => this.setExtensionFooter(factory),
-			setHeader: (factory) => this.setExtensionHeader(factory),
-			setTitle: (title) => this.ui.terminal.setTitle(title),
-			custom: (factory, options) => this.showExtensionCustom(factory, options),
-			pasteToEditor: (text) => this.editor.handleInput(`\x1b[200~${text}\x1b[201~`),
-			setEditorText: (text) => this.editor.setText(text),
+			setWorkingVisible: (visible) => {
+				if (this.extensionUiGeneration === extensionUiGeneration) this.setWorkingVisible(visible);
+			},
+			setWorkingIndicator: (options) => {
+				if (this.extensionUiGeneration === extensionUiGeneration) this.setWorkingIndicator(options);
+			},
+			setHiddenThinkingLabel: (label) => {
+				if (this.extensionUiGeneration === extensionUiGeneration) this.setHiddenThinkingLabel(label);
+			},
+			setWidget: (key, content, options) => {
+				if (this.extensionUiGeneration === extensionUiGeneration) this.setExtensionWidget(key, content, options);
+			},
+			setFooter: (factory) => {
+				if (this.extensionUiGeneration === extensionUiGeneration) this.setExtensionFooter(factory);
+			},
+			setHeader: (factory) => {
+				if (this.extensionUiGeneration === extensionUiGeneration) this.setExtensionHeader(factory);
+			},
+			setTitle: (title) => {
+				if (this.extensionUiGeneration === extensionUiGeneration) this.ui.terminal.setTitle(title);
+			},
+			custom: (factory, options) => this.extensionUiGeneration !== extensionUiGeneration
+				? Promise.resolve(undefined as never)
+				: this.showExtensionCustom(factory, options),
+			pasteToEditor: (text) => {
+				if (this.extensionUiGeneration === extensionUiGeneration) {
+					this.editor.handleInput(`\x1b[200~${text}\x1b[201~`);
+				}
+			},
+			setEditorText: (text) => {
+				if (this.extensionUiGeneration === extensionUiGeneration) this.editor.setText(text);
+			},
 			getEditorText: () => this.editor.getExpandedText?.() ?? this.editor.getText(),
-			editor: (title, prefill) => this.showExtensionEditor(title, prefill),
+			editor: (title, prefill) => this.extensionUiGeneration !== extensionUiGeneration
+				? Promise.resolve(undefined)
+				: this.showExtensionEditor(title, prefill),
 			addAutocompleteProvider: (factory) => {
+				if (this.extensionUiGeneration !== extensionUiGeneration) return;
 				this.autocompleteProviderWrappers.push(factory);
 				this.setupAutocompleteProvider();
 			},
-			setEditorComponent: (factory) => this.setCustomEditorComponent(factory),
+			setEditorComponent: (factory) => {
+				if (this.extensionUiGeneration === extensionUiGeneration) this.setCustomEditorComponent(factory);
+			},
 			getEditorComponent: () => this.editorComponentFactory,
 			get theme() {
 				return theme;
@@ -2730,6 +2778,9 @@ export class InteractiveMode {
 			getAllThemes: () => getAvailableThemesWithPaths(),
 			getTheme: (name) => getThemeByName(name),
 			setTheme: (themeOrName) => {
+				if (this.extensionUiGeneration !== extensionUiGeneration) {
+					return { success: false, error: "UI not available" };
+				}
 				if (themeOrName instanceof Theme) {
 					return this.themeController.setThemeInstance(themeOrName);
 				}
@@ -2742,8 +2793,15 @@ export class InteractiveMode {
 				return result;
 			},
 			getToolsExpanded: () => this.toolOutputExpanded,
-			setToolsExpanded: (expanded) => this.setToolsExpanded(expanded),
+			setToolsExpanded: (expanded) => {
+				if (this.extensionUiGeneration === extensionUiGeneration) this.setToolsExpanded(expanded);
+			},
 		};
+	}
+
+	private closeExtensionUiContext(): void {
+		this.extensionUiGeneration++;
+		this.session.extensionRunner?.setUIContext?.(undefined);
 	}
 
 	/**
@@ -3453,8 +3511,10 @@ export class InteractiveMode {
 	}
 
 	private async handleClipboardPaste(): Promise<void> {
+		const lifecycleGeneration = this.tuiLifecycleGeneration;
 		try {
-			const image = await readClipboardImage();
+			const image = await this.readClipboardImageForPaste();
+			if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 			if (image) {
 				const tmpDir = os.tmpdir();
 				const ext = extensionForImageMimeType(image.mimeType) ?? "png";
@@ -3476,7 +3536,8 @@ export class InteractiveMode {
 				return;
 			}
 
-			const text = await readClipboardText();
+			const text = await this.readClipboardTextForPaste();
+			if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 			if (text) {
 				this.editor.insertTextAtCursor?.(text);
 				this.ui.requestRender();
@@ -3484,6 +3545,14 @@ export class InteractiveMode {
 		} catch {
 			// Silently ignore clipboard errors (may not have permission, etc.)
 		}
+	}
+
+	private readClipboardImageForPaste(): ReturnType<typeof readClipboardImage> {
+		return readClipboardImage();
+	}
+
+	private readClipboardTextForPaste(): Promise<string | null> {
+		return readClipboardText();
 	}
 
 	private setupEditorSubmitHandler(): void {
@@ -7639,6 +7708,8 @@ export class InteractiveMode {
 
 	async stop(fullscreenExitOutput = this.settingsManager.getFullscreenExitOutput()): Promise<void> {
 		this.tuiLifecycleGeneration++;
+		this.closeExtensionUiContext();
+		offThemeChange(this.handleThemeChange);
 		this.runtimeHost.cancelPendingReplacements?.();
 		this.bashComponent = undefined;
 		this.cancelActiveSuspend();
