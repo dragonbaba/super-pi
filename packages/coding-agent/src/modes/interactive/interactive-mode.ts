@@ -284,6 +284,14 @@ function quoteIfNeeded(value: string): string {
 	return `'${value.replace(SHELL_ARGUMENT_APOSTROPHE_PATTERN, `'\\''`)}'`;
 }
 
+function removeTemporaryShareFile(filePath: string): void {
+	try {
+		fs.unlinkSync(filePath);
+	} catch {
+		// Ignore cleanup errors.
+	}
+}
+
 export function formatResumeCommand(sessionManager: SessionManager): string | undefined {
 	if (!process.stdout.isTTY) return undefined;
 	if (!sessionManager.isPersisted()) return undefined;
@@ -4752,20 +4760,25 @@ export class InteractiveMode {
 	}
 
 	private async handleOpenExternalEditor(): Promise<void> {
+		const lifecycleGeneration = this.tuiLifecycleGeneration;
 		const editorCmd = this.settingsManager.getExternalEditorCommand();
 		const content = this.editor.getExpandedText?.() ?? this.editor.getText();
 		await this.ui.stop();
+		if (lifecycleGeneration !== this.tuiLifecycleGeneration) return;
 		try {
 			const result = await this.runExternalEditor({
 				command: editorCmd,
 				content,
 			});
+			if (lifecycleGeneration !== this.tuiLifecycleGeneration) return;
 			if (result.status === "complete") {
 				this.editor.setText(result.content);
 			}
 		} finally {
-			this.ui.start();
-			this.ui.requestRender(true);
+			if (lifecycleGeneration === this.tuiLifecycleGeneration) {
+				this.ui.start();
+				this.ui.requestRender(true);
+			}
 		}
 	}
 
@@ -5492,8 +5505,10 @@ export class InteractiveMode {
 	private showModelSelector(initialSearchInput?: string): void {
 		this.showSelector((done) => {
 			const selectModel = async (model: Model<any>, persist: boolean) => {
+				const lifecycleGeneration = this.tuiLifecycleGeneration;
 				try {
 					await this.session.setModel(model, { persist });
+					if (lifecycleGeneration !== this.tuiLifecycleGeneration) return;
 					this.footer.invalidate();
 					this.updateEditorBorderColor();
 					done();
@@ -5501,6 +5516,7 @@ export class InteractiveMode {
 					this.observeLifecyclePromise(this.maybeWarnAboutAnthropicSubscriptionAuth(model));
 					this.checkDaxnutsEasterEgg(model);
 				} catch (error) {
+					if (lifecycleGeneration !== this.tuiLifecycleGeneration) return;
 					done();
 					this.showError(error instanceof Error ? error.message : String(error));
 				}
@@ -6645,17 +6661,26 @@ export class InteractiveMode {
 		}
 
 		// Export to a temp file
+		const lifecycleGeneration = this.tuiLifecycleGeneration;
 		const tmpFile = path.join(os.tmpdir(), "session.html");
 		try {
 			await this.session.exportToHtml(tmpFile);
 		} catch (error: unknown) {
+			if (lifecycleGeneration !== this.tuiLifecycleGeneration) {
+				removeTemporaryShareFile(tmpFile);
+				return;
+			}
 			this.showError(`Failed to export session: ${error instanceof Error ? error.message : "Unknown error"}`);
+			return;
+		}
+		if (lifecycleGeneration !== this.tuiLifecycleGeneration) {
+			removeTemporaryShareFile(tmpFile);
 			return;
 		}
 
 		// Show cancellable loader, replacing the editor
 		const loader = new BorderedLoader(this.ui, theme, "Creating gist...");
-		const loaderLifecycleGeneration = this.tuiLifecycleGeneration;
+		const loaderLifecycleGeneration = lifecycleGeneration;
 		this.editorContainer.clear();
 		this.editorContainer.addChild(loader);
 		this.ui.setFocus(loader);
@@ -6666,11 +6691,7 @@ export class InteractiveMode {
 			this.editorContainer.clear();
 			this.editorContainer.addChild(this.editor);
 			this.ui.setFocus(this.editor);
-			try {
-				fs.unlinkSync(tmpFile);
-			} catch {
-				// Ignore cleanup errors
-			}
+			removeTemporaryShareFile(tmpFile);
 		};
 
 		// Create a secret gist asynchronously
@@ -6679,11 +6700,7 @@ export class InteractiveMode {
 		loader.onAbort = () => {
 			proc?.kill();
 			if (loaderLifecycleGeneration !== this.tuiLifecycleGeneration) {
-				try {
-					fs.unlinkSync(tmpFile);
-				} catch {
-					// Ignore cleanup errors
-				}
+				removeTemporaryShareFile(tmpFile);
 				return;
 			}
 			restoreEditor();
