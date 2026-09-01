@@ -14,8 +14,11 @@ import {
 	VStack as InteractiveVStack,
 } from "@super-pi/tui";
 import { AgentSession } from "../packages/coding-agent/src/core/agent-session.ts";
+import { KeybindingsManager } from "../packages/coding-agent/src/core/keybindings.ts";
+import { ExtensionEditorComponent } from "../packages/coding-agent/src/modes/interactive/components/extension-editor.ts";
 import { ExtensionInputComponent } from "../packages/coding-agent/src/modes/interactive/components/extension-input.ts";
 import { ExtensionSelectorComponent } from "../packages/coding-agent/src/modes/interactive/components/extension-selector.ts";
+import { SessionSelectorComponent } from "../packages/coding-agent/src/modes/interactive/components/session-selector.ts";
 import { initTheme } from "../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 import {
 	createInteractiveTuiReference,
@@ -1777,6 +1780,172 @@ test("InteractiveMode stop cancels and settles timed extension dialogs", async (
 	}
 });
 
+test("InteractiveMode stop disposes active session selector work", async () => {
+	const terminal = new ImmediateInputTerminal();
+	terminal.backpressure = false;
+	const previousUi = new InstrumentedMainTui(terminal);
+	const mode = createModeSwitchHarness(previousUi);
+	let progress: ((loaded: number, total: number) => void) | undefined;
+	let resolveLoad: ((sessions: []) => void) | undefined;
+	let requestRenderCalls = 0;
+	const selector = new SessionSelectorComponent(
+		(onProgress) => {
+			progress = onProgress;
+			return new Promise<[]>((resolve) => {
+				resolveLoad = resolve;
+			});
+		},
+		async () => [],
+		() => {},
+		() => {},
+		() => {},
+		() => {
+			requestRenderCalls++;
+		},
+	);
+	const selectorState = selector as unknown as {
+		dispose(): void;
+		header: {
+			setStatusMessage(message: { type: "info"; message: string }, autoHideMs: number): void;
+			statusTimeout: NodeJS.Timeout | null;
+		};
+	};
+	selectorState.header.setStatusMessage({ type: "info", message: "pending" }, 60_000);
+	assert.ok(selectorState.header.statusTimeout);
+	const staleStatusCallback = (
+		selectorState.header.statusTimeout as NodeJS.Timeout & { _onTimeout?: () => void }
+	)._onTimeout;
+	delete mode.disposeActiveSelector;
+	mode.activeSelectorToken = {};
+	mode.activeSelectorDispose = () => selectorState.dispose();
+	previousUi.addChild(selector);
+	previousUi.start();
+
+	await mode.stop.call(mode, "resume-hint");
+	const rendersAfterStop = requestRenderCalls;
+	assert.equal(selectorState.header.statusTimeout, null);
+	progress?.(1, 1);
+	staleStatusCallback?.();
+	resolveLoad?.([]);
+	await Promise.resolve();
+	await Promise.resolve();
+	assert.equal(requestRenderCalls, rendersAfterStop);
+	assert.equal(mode.activeSelectorDispose, undefined);
+});
+
+test("InteractiveMode stop cancels and settles an extension editor", async () => {
+	const terminal = new ImmediateInputTerminal();
+	terminal.backpressure = false;
+	const previousUi = new InstrumentedMainTui(terminal);
+	const mode = createModeSwitchHarness(previousUi);
+	let cancelCalls = 0;
+	const component = new ExtensionEditorComponent(
+		previousUi,
+		KeybindingsManager.create(),
+		"Edit",
+		"draft",
+		() => {},
+		() => {
+			cancelCalls++;
+			mode.extensionEditor = undefined;
+		},
+	);
+	mode.extensionEditor = component;
+	previousUi.addChild(component);
+	previousUi.start();
+
+	await mode.stop.call(mode, "resume-hint");
+	assert.equal(cancelCalls, 1);
+	assert.equal(mode.extensionEditor, undefined);
+	await mode.stop.call(mode, "resume-hint");
+	assert.equal(cancelCalls, 1);
+});
+
+test("extension editor late external completion cannot restart a stopped owner", async () => {
+	let resolveExternal:
+		| ((result: { status: "complete"; content: string } | { status: "failed" }) => void)
+		| undefined;
+	let rejectExternal: ((error: Error) => void) | undefined;
+	let externalCalls = 0;
+	class DeferredExtensionEditor extends ExtensionEditorComponent {
+		protected override openExternalEditor(): Promise<
+			{ status: "complete"; content: string } | { status: "failed" }
+		> {
+			externalCalls++;
+			return new Promise((resolve, reject) => {
+				resolveExternal = resolve;
+				rejectExternal = reject;
+			});
+		}
+	}
+
+	const terminal = new ImmediateInputTerminal();
+	terminal.backpressure = false;
+	const tui = new InstrumentedMainTui(terminal);
+	const mode = createModeSwitchHarness(tui);
+	let cancelCalls = 0;
+	const component = new DeferredExtensionEditor(
+		tui,
+		KeybindingsManager.create(),
+		"Edit",
+		"original",
+		() => {},
+		() => {
+			cancelCalls++;
+			mode.extensionEditor = undefined;
+		},
+	);
+	mode.extensionEditor = component;
+	tui.addChild(component);
+	tui.start();
+	const task = (
+		component as unknown as { handleOpenExternalEditor(): Promise<void> }
+	).handleOpenExternalEditor();
+	while (externalCalls === 0) await Promise.resolve();
+	assert.equal(terminal.started, false);
+
+	await mode.stop.call(mode, "resume-hint");
+	resolveExternal?.({ status: "complete", content: "stale" });
+	await task;
+	assert.equal(cancelCalls, 1);
+	assert.equal(terminal.started, false);
+	assert.equal(
+		(component as unknown as { editor: { getText(): string } }).editor.getText(),
+		"original",
+	);
+	component.cancel();
+	assert.equal(cancelCalls, 1);
+
+	const rejectionTerminal = new ImmediateInputTerminal();
+	rejectionTerminal.backpressure = false;
+	const rejectionTui = new InstrumentedMainTui(rejectionTerminal);
+	let observedErrors = 0;
+	const rejecting = new DeferredExtensionEditor(
+		rejectionTui,
+		KeybindingsManager.create(),
+		"Edit",
+		"original",
+		() => {},
+		() => {},
+		undefined,
+		undefined,
+		() => {
+			observedErrors++;
+		},
+	);
+	rejectionTui.addChild(rejecting);
+	rejectionTui.start();
+	const rejectionTask = (
+		rejecting as unknown as { handleOpenExternalEditor(): Promise<void> }
+	).handleOpenExternalEditor();
+	while (externalCalls < 2) await Promise.resolve();
+	rejectExternal?.(new Error("external editor fixture failure"));
+	await rejectionTask;
+	assert.equal(observedErrors, 1);
+	assert.equal(rejectionTerminal.started, true);
+	await rejectionTui.dispose({ preserveScreen: true });
+});
+
 test("mode switch snapshots the final root focus and Main render state after stop", async () => {
 	const terminal = new GatedTerminal();
 	const previousUi = new InstrumentedMainTui(terminal);
@@ -2946,6 +3115,7 @@ test("frame queue source retains one string without Promise tails or pooling", (
 	assert.notEqual(cancelExtensionDialogs, "");
 	assert.match(cancelExtensionDialogs, /this\.extensionSelector\?\.cancel\(\)/);
 	assert.match(cancelExtensionDialogs, /this\.extensionInput\?\.cancel\(\)/);
+	assert.match(cancelExtensionDialogs, /this\.extensionEditor\?\.cancel\(\)/);
 	assert.doesNotMatch(
 		cancelExtensionDialogs,
 		/new (?:Map|Set|Promise|AbortController)|=>|function\s*\(|\.map\(|\.filter\(|\.flatMap\(/,
@@ -2958,6 +3128,16 @@ test("frame queue source retains one string without Promise tails or pooling", (
 		interactiveStop.indexOf("this.cancelExtensionDialogs()") <
 			interactiveStop.indexOf("this.disposeActiveSelector()"),
 	);
+	const showSessionSelector = interactiveSource.match(
+		/private showSessionSelector[\s\S]*?\n\t}/,
+	)?.[0] ?? "";
+	assert.match(showSessionSelector, /dispose: \(\) => selector\.dispose\(\)/);
+	const extensionEditorSource = readFileSync(
+		"packages/coding-agent/src/modes/interactive/components/extension-editor.ts",
+		"utf8",
+	);
+	assert.match(extensionEditorSource, /taskGeneration !== this\.activeExternalEditorGeneration/);
+	assert.match(extensionEditorSource, /lifecycleGeneration !== this\.lifecycleGeneration/);
 	const altSource = readFileSync("packages/tui/src/tui-alt-screen.ts", "utf8");
 	const detachLayoutRootForTransfer = altSource.match(
 		/detachLayoutRootForTransfer\(\): void \{[\s\S]*?\n\t}/,
