@@ -6650,7 +6650,7 @@ export class InteractiveMode {
 	private async handleShareCommand(): Promise<void> {
 		// Check if gh is available and logged in
 		try {
-			const authResult = spawnSync("gh", ["auth", "status"], { encoding: "utf-8" });
+			const authResult = this.getGitHubCliAuthStatus();
 			if (authResult.status !== 0) {
 				this.showError("GitHub CLI is not logged in. Run 'gh auth login' first.");
 				return;
@@ -6749,6 +6749,10 @@ export class InteractiveMode {
 				this.showError(`Failed to create gist: ${error instanceof Error ? error.message : "Unknown error"}`);
 			}
 		}
+	}
+
+	private getGitHubCliAuthStatus(): ReturnType<typeof spawnSync> {
+		return spawnSync("gh", ["auth", "status"], { encoding: "utf-8" });
 	}
 
 	private async handleCopyCommand(options: { flashConfirmation?: boolean } = {}): Promise<void> {

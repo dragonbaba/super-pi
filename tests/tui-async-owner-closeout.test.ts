@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { access, chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -799,16 +799,9 @@ test("final shutdown rejects a late model-selector selection", async () => {
 test("final shutdown rejects a late share export before mounting its loader", async () => {
 	initTheme("dark");
 	const directory = await mkdtemp(path.join(os.tmpdir(), "super-pi-share-export-owner-"));
-	const executable = path.join(directory, "gh");
-	const command = path.join(directory, "gh.cmd");
-	await writeFile(executable, "#!/bin/sh\nexit 0\n", "utf8");
-	await chmod(executable, 0o755);
-	await writeFile(command, "@exit /b 0\r\n", "utf8");
-	const previousPath = process.env.PATH;
 	const previousTmp = process.env.TMP;
 	const previousTemp = process.env.TEMP;
 	const previousTmpdir = process.env.TMPDIR;
-	process.env.PATH = `${directory}${path.delimiter}${previousPath ?? ""}`;
 	process.env.TMP = directory;
 	process.env.TEMP = directory;
 	process.env.TMPDIR = directory;
@@ -820,6 +813,7 @@ test("final shutdown rejects a late share export before mounting its loader", as
 		let exportedPath = "";
 		const mode = Object.create(InteractiveMode.prototype) as any;
 		mode.tuiLifecycleGeneration = 0;
+		mode.getGitHubCliAuthStatus = () => ({ status: 0 });
 		mode.runtimeHost = { session: {
 			exportToHtml: async (filePath: string) => {
 				exportedPath = filePath;
@@ -851,8 +845,6 @@ test("final shutdown rejects a late share export before mounting its loader", as
 		assert.equal(renderCalls, 0);
 		await assert.rejects(access(exportedPath));
 	} finally {
-		if (previousPath === undefined) delete process.env.PATH;
-		else process.env.PATH = previousPath;
 		if (previousTmp === undefined) delete process.env.TMP;
 		else process.env.TMP = previousTmp;
 		if (previousTemp === undefined) delete process.env.TEMP;
