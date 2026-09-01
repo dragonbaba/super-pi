@@ -269,6 +269,8 @@ function createAltShell(
 	terminal: BenchTerminal;
 	instrumentation: TuiRenderInstrumentation;
 	transcriptScrollView: ScrollView;
+	transcript: RetainedContainer;
+	documentContainer: ViewportContainer;
 	editor: CountingEditor | undefined;
 	layoutRoot: VStack;
 	advanceTranscript(): void;
@@ -322,6 +324,8 @@ function createAltShell(
 		terminal,
 		instrumentation,
 		transcriptScrollView,
+		transcript: transcript.container,
+		documentContainer,
 		editor,
 		layoutRoot: layout,
 		advanceTranscript: transcript.advance,
@@ -383,6 +387,9 @@ function createEditorRuntime(
 		disposedOwnerSnapshot(): Record<string, number> {
 			const layoutCache = getEditorLayoutCacheMetrics(editor);
 			const retained = shell.tui.getAltLayoutRetainedReferenceCounts();
+			const finalUnmount = shell.tui.getAltFinalUnmountRetainedReferenceCounts();
+			const transcriptReferences = shell.transcript.getRetainedLifecycleReferenceCounts();
+			const viewportReferences = shell.documentContainer.getViewportLifecycleReferenceCounts();
 			const internals = shell.tui as unknown as {
 				layoutRoot: Component | undefined;
 				currentLayout: LayoutFrame | undefined;
@@ -401,6 +408,20 @@ function createEditorRuntime(
 					retained.cachedRows +
 					retained.indexedComponents +
 					retained.screenRows,
+				disposedOwnerLastDocumentRows: finalUnmount.lastDocumentRows,
+				disposedOwnerLastDocumentCodeUnits: finalUnmount.lastDocumentCodeUnits,
+				disposedOwnerLastDocumentReferences: finalUnmount.lastDocumentReference,
+				disposedOwnerRetainedViewportRecords: transcriptReferences.viewportRecords,
+				disposedOwnerRetainedViewportComponentReferences:
+					transcriptReferences.viewportRecordComponentReferences,
+				disposedOwnerViewportChildScratchReferences:
+					viewportReferences.childMutationTokens +
+					viewportReferences.childHeights +
+					viewportReferences.tailChildLines +
+					viewportReferences.tailChildStarts +
+					viewportReferences.tailChildLeadingKittyImages +
+					viewportReferences.childMutationScratchToken +
+					viewportReferences.childHeightWidth,
 			};
 		},
 		createOwnerWeakReferences(): OwnerWeakReferences {
@@ -506,12 +527,33 @@ function createMainEditorRuntime(
 		},
 		disposedOwnerSnapshot(): Record<string, number> {
 			const layoutCache = getEditorLayoutCacheMetrics(editor);
+			const finalUnmount = tui.getMainFinalUnmountRetainedReferenceCounts();
+			const transcriptReferences = transcript.container.getRetainedLifecycleReferenceCounts();
+			const viewportReferences = documentContainer.getViewportLifecycleReferenceCounts();
 			return {
 				disposedOwnerLayoutCacheSourceRecords: layoutCache.layoutCacheSourceRecords,
 				disposedOwnerLayoutCacheLayoutRecords: layoutCache.layoutCacheLayoutRecords,
 				disposedOwnerRetainedSourceCodeUnits: layoutCache.layoutCacheRetainedSourceCodeUnits,
 				disposedOwnerRetainedLayoutLines: layoutCache.layoutCacheRetainedLayoutLines,
 				disposedOwnerMainChildrenRetained: tui.children.length,
+				disposedOwnerMainFrameReferences:
+					finalUnmount.previousLines +
+					finalUnmount.previousKittyImageIds +
+					finalUnmount.viewportMutationTokens +
+					finalUnmount.frameRootRecords +
+					finalUnmount.boundedFrameLines +
+					finalUnmount.rootFrameLines,
+				disposedOwnerRetainedViewportRecords: transcriptReferences.viewportRecords,
+				disposedOwnerRetainedViewportComponentReferences:
+					transcriptReferences.viewportRecordComponentReferences,
+				disposedOwnerViewportChildScratchReferences:
+					viewportReferences.childMutationTokens +
+					viewportReferences.childHeights +
+					viewportReferences.tailChildLines +
+					viewportReferences.tailChildStarts +
+					viewportReferences.tailChildLeadingKittyImages +
+					viewportReferences.childMutationScratchToken +
+					viewportReferences.childHeightWidth,
 			};
 		},
 		createOwnerWeakReferences(): OwnerWeakReferences {
