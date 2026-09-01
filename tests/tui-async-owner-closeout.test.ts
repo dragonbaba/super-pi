@@ -11,6 +11,7 @@ import type { TUI } from "../packages/tui/src/tui.ts";
 import { InteractiveMode } from "../packages/coding-agent/src/modes/interactive/interactive-mode.ts";
 import { BashExecutionComponent } from "../packages/coding-agent/src/modes/interactive/components/bash-execution.ts";
 import { LoginDialogComponent } from "../packages/coding-agent/src/modes/interactive/components/login-dialog.ts";
+import { SessionSelectorComponent } from "../packages/coding-agent/src/modes/interactive/components/session-selector.ts";
 import { ToolExecutionComponent } from "../packages/coding-agent/src/modes/interactive/components/tool-execution.ts";
 import { initTheme } from "../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 
@@ -283,6 +284,7 @@ test("async owner closeout remains lifecycle-only in source", () => {
 	assert.match(extensionReleaseSource, /this\.customHeader\?\.dispose\?\.\(\)/);
 	assert.doesNotMatch(extensionReleaseSource, /requestRender|renderWidgets|new (?:Map|Set|Promise|AbortController)/);
 	assert.ok(stopSource.indexOf("this.cancelActiveModelLookup()") < stopSource.indexOf("this.stopInteractiveTui"));
+	assert.ok(stopSource.indexOf("this.cancelActiveExtensionCustom()") < stopSource.indexOf("this.stopInteractiveTui"));
 	assert.ok(stopSource.indexOf("this.releaseExtensionUiOwners()") < stopSource.indexOf("this.stopInteractiveTui"));
 	assert.match(
 		interactiveSource,
@@ -292,6 +294,29 @@ test("async owner closeout remains lifecycle-only in source", () => {
 	const modelLookupEnd = interactiveSource.indexOf("\n\t/**", modelLookupStart);
 	const modelLookupSource = interactiveSource.slice(modelLookupStart, modelLookupEnd);
 	assert.doesNotMatch(modelLookupSource, /setTimeout\(\(\)|\.then\(|\.catch\(|Promise\.all/);
+	const modelCommandStart = interactiveSource.indexOf("private async handleModelCommand");
+	const modelCommandSource = interactiveSource.slice(modelCommandStart, modelLookupStart);
+	assert.match(modelCommandSource, /const commandGeneration = \+\+this\.modelCommandGeneration/);
+	assert.match(modelCommandSource, /this\.modelCommandGeneration !== commandGeneration/);
+	const extensionCustomStart = interactiveSource.indexOf("private async showExtensionCustom");
+	const extensionCustomEnd = interactiveSource.indexOf("\n\t/**", extensionCustomStart);
+	const extensionCustomSource = interactiveSource.slice(extensionCustomStart, extensionCustomEnd);
+	assert.match(extensionCustomSource, /this\.activeExtensionCustomCancel = cancel/);
+	assert.match(extensionCustomSource, /this\.tuiLifecycleGeneration !== lifecycleGeneration/);
+	assert.match(extensionCustomSource, /c\.dispose\?\.\(\)/);
+
+	const sessionSelectorSource = readFileSync(
+		"packages/coding-agent/src/modes/interactive/components/session-selector.ts",
+		"utf8",
+	);
+	const deleteStart = sessionSelectorSource.indexOf("this.sessionList.onDeleteSession = async");
+	const deleteEnd = sessionSelectorSource.indexOf("\n\t\t};", deleteStart);
+	const deleteSource = sessionSelectorSource.slice(deleteStart, deleteEnd);
+	assert.match(deleteSource, /const lifecycleGeneration = this\.lifecycleGeneration/);
+	assert.ok(
+		deleteSource.indexOf("lifecycleGeneration !== this.lifecycleGeneration") >
+			deleteSource.indexOf("await this.deleteSessionOperation(sessionPath)"),
+	);
 });
 
 test("final release drops BashExecution preview and private Loader ownership", () => {
@@ -450,6 +475,7 @@ test("interactive stop aborts model lookup and rejects its late catalog result",
 	};
 	mode.ui = tui;
 	mode.tuiLifecycleGeneration = 0;
+	mode.modelCommandGeneration = 0;
 	mode.extensionWidgetsAbove = new Map();
 	mode.extensionWidgetsBelow = new Map();
 	mode.widgetContainerAbove = { clear(): void {} };
@@ -481,4 +507,183 @@ test("interactive stop aborts model lookup and rejects its late catalog result",
 	assert.equal(selectorCalls, 0);
 	assert.equal(warningCalls, 0);
 	assert.equal(mode.activeModelLookupController, undefined);
+});
+
+test("a superseded model lookup cannot open its stale selector", async () => {
+	let settleRefresh: ((value: { aborted: boolean; errors: Map<string, Error> }) => void) | undefined;
+	const selectorSearches: string[] = [];
+	const modelRuntime = {
+		getAvailableSnapshot: () => [],
+		refresh(): Promise<{ aborted: boolean; errors: Map<string, Error> }> {
+			return new Promise((resolve) => {
+				settleRefresh = resolve;
+			});
+		},
+	};
+	const mode = Object.create(InteractiveMode.prototype) as any;
+	mode.runtimeHost = { session: { modelRuntime, scopedModels: [] } };
+	mode.tuiLifecycleGeneration = 0;
+	mode.modelCommandGeneration = 0;
+	mode.modelLookupGeneration = 0;
+	mode.modelLookupTimedOutGeneration = 0;
+	mode.showStatus = (): void => {};
+	mode.showWarning = (): void => {};
+	mode.showModelSelector = (search: string): void => { selectorSearches.push(search); };
+
+	const first = mode.handleModelCommand("first");
+	await Promise.resolve();
+	const second = mode.handleModelCommand("second");
+	await Promise.resolve();
+	settleRefresh?.({ aborted: false, errors: new Map() });
+	await Promise.all([first, second]);
+
+	assert.deepEqual(selectorSearches, ["second"]);
+});
+
+test("interactive stop settles a pending extension custom factory and disposes its late result", async () => {
+	const tui = createCountingTui() as any;
+	let settleFactory: ((component: { render(): string[]; dispose(): void }) => void) | undefined;
+	let disposeCalls = 0;
+	let mountedLateComponent = false;
+	let operationSettled = false;
+	const component = {
+		render(): string[] { return []; },
+		dispose(): void { disposeCalls++; },
+	};
+	const mode = Object.create(InteractiveMode.prototype) as any;
+	mode.runtimeHost = {
+		session: {
+			settingsManager: {
+				getFullscreenExitOutput: () => "transcript",
+				getShowTerminalProgress: () => false,
+			},
+		},
+	};
+	mode.ui = tui;
+	mode.tuiLifecycleGeneration = 0;
+	mode.keybindings = {};
+	mode.editor = { getText: () => "draft", setText(): void {} };
+	mode.editorContainer = {
+		clear(): void {},
+		addChild(child: unknown): void { if (child === component) mountedLateComponent = true; },
+	};
+	mode.extensionWidgetsAbove = new Map();
+	mode.extensionWidgetsBelow = new Map();
+	mode.widgetContainerAbove = { clear(): void {} };
+	mode.widgetContainerBelow = { clear(): void {} };
+	mode.footerContainer = { clear(): void {} };
+	mode.headerContainer = { clear(): void {} };
+	mode.themeController = { disableAutoSync(): void {} };
+	mode.footer = { dispose(): void {} };
+	mode.footerDataProvider = { dispose(): void {} };
+	mode.isInitialized = false;
+	mode.clearStatusIndicator = (): void => {};
+	mode.clearExtensionTerminalInputListeners = (): void => {};
+	mode.unregisterSignalHandlers = (): void => {};
+
+	void mode.showExtensionCustom(
+		() => new Promise((resolve) => { settleFactory = resolve; }),
+	).then(
+		() => { operationSettled = true; },
+		() => assert.fail("shutdown cancellation must not reject extension custom UI"),
+	);
+	await Promise.resolve();
+	await mode.stop();
+	settleFactory?.(component);
+	await Promise.resolve();
+	await Promise.resolve();
+
+	assert.equal(operationSettled, true);
+	assert.equal(disposeCalls, 1);
+	assert.equal(mountedLateComponent, false);
+});
+
+test("interactive custom cancellation disposes an already mounted component", async () => {
+	let disposeCalls = 0;
+	let mounted = false;
+	const component = {
+		render(): string[] { return []; },
+		dispose(): void { disposeCalls++; },
+	};
+	const editor = { getText: () => "draft", setText(): void {} };
+	const mode = Object.create(InteractiveMode.prototype) as any;
+	mode.ui = createCountingTui();
+	mode.tuiLifecycleGeneration = 0;
+	mode.keybindings = {};
+	mode.editor = editor;
+	mode.editorContainer = {
+		clear(): void {},
+		addChild(child: unknown): void { if (child === component) mounted = true; },
+	};
+
+	const operation = mode.showExtensionCustom(() => component) as Promise<void>;
+	await Promise.resolve();
+	assert.equal(mounted, true);
+	mode.cancelActiveExtensionCustom();
+	await operation;
+
+	assert.equal(disposeCalls, 1);
+	assert.equal(mode.activeExtensionCustomCancel, undefined);
+});
+
+test("interactive custom cancellation closes an already mounted overlay", async () => {
+	let disposeCalls = 0;
+	let showOverlayCalls = 0;
+	let hideOverlayCalls = 0;
+	const component = {
+		render(): string[] { return []; },
+		dispose(): void { disposeCalls++; },
+	};
+	const tui = createCountingTui() as any;
+	tui.showOverlay = (): object => {
+		showOverlayCalls++;
+		return {};
+	};
+	tui.hideOverlay = (): void => { hideOverlayCalls++; };
+	const mode = Object.create(InteractiveMode.prototype) as any;
+	mode.ui = tui;
+	mode.tuiLifecycleGeneration = 0;
+	mode.keybindings = {};
+	mode.editor = { getText: () => "draft", setText(): void {} };
+
+	const operation = mode.showExtensionCustom(
+		() => component,
+		{ overlay: true },
+	) as Promise<void>;
+	await Promise.resolve();
+	assert.equal(showOverlayCalls, 1);
+	mode.cancelActiveExtensionCustom();
+	await operation;
+
+	assert.equal(hideOverlayCalls, 1);
+	assert.equal(disposeCalls, 1);
+	assert.equal(mode.activeExtensionCustomCancel, undefined);
+});
+
+test("disposed session selector rejects a late deletion continuation", async () => {
+	let settleDelete: ((result: { ok: boolean; method: "trash" | "unlink" }) => void) | undefined;
+	let requestRenderCalls = 0;
+	const selector = new SessionSelectorComponent(
+		async () => [],
+		async () => [],
+		() => {},
+		() => {},
+		() => {},
+		() => { requestRenderCalls++; },
+	);
+	await Promise.resolve();
+	const state = selector as any;
+	state.currentSessions = [{ path: "fixture-session.jsonl" }];
+	state.deleteSessionOperation = () => new Promise((resolve) => { settleDelete = resolve; });
+	const deletion = state.sessionList.onDeleteSession("fixture-session.jsonl");
+	await Promise.resolve();
+	assert.ok(settleDelete);
+	selector.dispose();
+	const rendersAfterDispose = requestRenderCalls;
+	settleDelete?.({ ok: true, method: "trash" });
+	await deletion;
+
+	assert.equal(state.header.statusTimeout, null);
+	assert.equal(requestRenderCalls, rendersAfterDispose);
+	assert.equal(state.currentSessions.length, 1);
 });
