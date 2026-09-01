@@ -201,6 +201,39 @@ test("B3 lifecycle allocation fixture exercises production render-time root repl
 	assert.equal(output.metrics.disposedOwnerLayoutScratchReferences, 0);
 });
 
+test("B3 lifecycle allocation fixture exercises nested same-owner replacement", () => {
+	const result = spawnSync(
+		process.execPath,
+		[
+			"--experimental-strip-types",
+			"scripts/bench/tui-b3-plan-gate.ts",
+			"--candidate",
+			"nested-same-owner-replacement",
+			"--warmup",
+			"2",
+			"--measured",
+			"8",
+		],
+		{ encoding: "utf8" },
+	);
+	assert.equal(result.status, 0, result.stderr);
+	const output = JSON.parse(result.stdout) as {
+		candidate: string;
+		metrics: Record<string, number>;
+	};
+	assert.equal(output.candidate, "nested-same-owner-replacement");
+	assert.equal(output.metrics.nestedFrames, 8);
+	assert.equal(output.metrics.rootReplacementFrames, 8);
+	assert.equal(output.metrics.rootRenderCalls, 16);
+	assert.equal(output.metrics.detachedBoxCaches, 0);
+	assert.equal(output.metrics.currentLayoutScratchReferences, 0);
+	assert.equal(output.metrics.disposedOwnerDetachedBoxCaches, 0);
+	assert.equal(output.metrics.disposedOwnerLayoutRootReferences, 0);
+	assert.equal(output.metrics.disposedOwnerLayoutRenderOwnerReferences, 0);
+	assert.equal(output.metrics.disposedOwnerPendingLayoutReleaseReferences, 0);
+	assert.equal(output.metrics.disposedOwnerLayoutScratchReferences, 0);
+});
+
 test("Editor layout and paste-registry ownership remain private and generation-aware", () => {
 	const editorPath = "packages/tui/src/components/editor.ts";
 	const source = ts.createSourceFile(editorPath, readFileSync(editorPath, "utf8"), ts.ScriptTarget.Latest, true);

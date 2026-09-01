@@ -646,6 +646,8 @@ test("Alt final disposal drops lastDocument only after full restoration output c
 		lineResetCodeUnits: 0,
 		uploadedKittyImages: 0,
 		selectionPointReferences: 0,
+		layoutRenderOwnerReferences: 0,
+		pendingLayoutReleaseReferences: 0,
 	});
 });
 

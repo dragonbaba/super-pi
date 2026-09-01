@@ -40,6 +40,9 @@ interface EditorTestState {
 interface AltDiagnostics {
 	layoutRoot: Component | undefined;
 	currentLayout: LayoutFrame | undefined;
+	implicitScrollView: ScrollView;
+	layoutRenderOwners: Array<Component | undefined>;
+	pendingLayoutCacheReleases: Array<Component | undefined>;
 }
 
 interface BoxDiagnostics {
@@ -49,6 +52,32 @@ interface BoxDiagnostics {
 interface ScrollViewDiagnostics {
 	requestRenderCallback: (() => void) | undefined;
 	scrollbarHideTimer: NodeJS.Timeout | undefined;
+	transientScrollbarVisible: boolean;
+}
+
+interface AltInteractionDiagnostics {
+	selectionAnchor: { row: number; col: number; scrollView?: ScrollView } | undefined;
+	selectionFocus: { row: number; col: number; scrollView?: ScrollView } | undefined;
+	selectionInitialRange:
+		| {
+				start: { row: number; col: number; scrollView?: ScrollView };
+				end: { row: number; col: number; scrollView?: ScrollView };
+		  }
+		| undefined;
+	lastClick: { timestamp: number; count: number; row: number; scrollView?: ScrollView; wordStart: number; wordEnd: number }
+		| undefined;
+	selectionDragPointer: { x: number; y: number } | undefined;
+	selectionAutoScrollDirection: -1 | 0 | 1;
+	selectionAutoScrollTimer: NodeJS.Timeout | undefined;
+	selectionPressActive: boolean;
+	scrollbarDrag: { scrollView: ScrollView; grabOffset: number } | undefined;
+	scrollbarDragFrameTimer: NodeJS.Timeout | undefined;
+	pendingScrollbarDragScrollTop: number | undefined;
+	scrollbarHover: ScrollView | undefined;
+	pressedUrl: string | undefined;
+	selectionDragged: boolean;
+	resolvedSelectionStart: { row: number; col: number; scrollView?: ScrollView } | undefined;
+	resolvedSelectionEnd: { row: number; col: number; scrollView?: ScrollView } | undefined;
 }
 
 const EDITOR_THEME: EditorTheme = {
@@ -64,6 +93,35 @@ const EDITOR_THEME: EditorTheme = {
 
 function identity(value: string): string {
 	return value;
+}
+
+function noOperation(): void {}
+
+function primeAltInteractionState(state: AltInteractionDiagnostics, scroll: ScrollView): {
+	anchor: { row: number; col: number; scrollView: ScrollView };
+	focus: { row: number; col: number; scrollView: ScrollView };
+} {
+	const anchor = { row: 1, col: 0, scrollView: scroll };
+	const focus = { row: 2, col: 4, scrollView: scroll };
+	state.selectionAnchor = anchor;
+	state.selectionFocus = focus;
+	state.selectionInitialRange = { start: anchor, end: focus };
+	state.lastClick = { timestamp: Date.now(), count: 2, row: 1, scrollView: scroll, wordStart: 0, wordEnd: 4 };
+	state.selectionDragPointer = { x: 1, y: 19 };
+	state.selectionAutoScrollDirection = 1;
+	state.selectionAutoScrollTimer = setInterval(noOperation, 60_000);
+	state.selectionAutoScrollTimer.unref();
+	state.selectionPressActive = true;
+	state.scrollbarHover = scroll;
+	state.scrollbarDrag = { scrollView: scroll, grabOffset: 0 };
+	state.scrollbarDragFrameTimer = setTimeout(noOperation, 60_000);
+	state.scrollbarDragFrameTimer.unref();
+	state.pendingScrollbarDragScrollTop = 3;
+	state.pressedUrl = "https://example.com";
+	state.selectionDragged = true;
+	state.resolvedSelectionStart = anchor;
+	state.resolvedSelectionEnd = focus;
+	return { anchor, focus };
 }
 
 function editorMetrics(editor: Editor): EditorLayoutCacheMetrics {
@@ -281,6 +339,52 @@ class DetachAndReattachLayoutRoot extends Container {
 		}
 		return ["reattached-root"];
 	}
+}
+
+class SameOwnerNestedReplacementChild implements Component {
+	private phase = 0;
+	private readonly tui: TuiAltScreen;
+	private readonly owner: CountingCacheContainer;
+	private readonly replacements: readonly (Component | undefined)[];
+	private readonly forceNested: boolean;
+	private readonly throwAfterReplacement: boolean;
+	nestedError: unknown;
+	releaseCallsAfterNested = -1;
+
+	constructor(
+		tui: TuiAltScreen,
+		owner: CountingCacheContainer,
+		replacements: readonly (Component | undefined)[],
+		forceNested = false,
+		throwAfterReplacement = false,
+	) {
+		this.tui = tui;
+		this.owner = owner;
+		this.replacements = replacements;
+		this.forceNested = forceNested;
+		this.throwAfterReplacement = throwAfterReplacement;
+	}
+
+	render(): string[] {
+		if (this.phase === 0) {
+			this.phase = 1;
+			try {
+				this.tui.renderNow(this.forceNested);
+			} catch (error) {
+				this.nestedError = error;
+			}
+			this.releaseCallsAfterNested = this.owner.releaseCalls;
+		} else if (this.phase === 1) {
+			this.phase = 2;
+			for (let index = 0; index < this.replacements.length; index++) {
+				this.tui.setLayoutRoot(this.replacements[index]);
+			}
+			if (this.throwAfterReplacement) throw new Error("nested same-owner fixture failure");
+		}
+		return ["same-owner-nested-root"];
+	}
+
+	invalidate(): void {}
 }
 
 function createMainEditorTree(tui: TuiMainScreen, root: Container = new Container()): {
@@ -647,6 +751,89 @@ test("each nested layout frame releases its own detached owner after that frame 
 	await tui.dispose({ preserveScreen: true });
 });
 
+test("the outermost active frame owns release when the same layout owner renders at multiple depths", async () => {
+	const tui = new TuiAltScreen(new FakeTerminal(120, 40), false, undefined, { mouse: false });
+	const replacement = new StaticCacheLine("same-owner-replacement");
+	const owner = new CountingCacheContainer();
+	const child = new SameOwnerNestedReplacementChild(tui, owner, [replacement]);
+	const box = new Box(0, 0);
+	box.addChild(child);
+	owner.addChild(box);
+	tui.setLayoutRoot(owner);
+	tui.start();
+
+	assert.doesNotThrow(() => tui.renderNow(true));
+	assert.equal(child.nestedError, undefined);
+	assert.equal(child.releaseCallsAfterNested, 0);
+	assert.equal(owner.releaseCalls, 1);
+	assert.equal(boxCache(box), undefined);
+	assert.equal(altDiagnostics(tui).layoutRoot, replacement);
+	assert.deepEqual(tui.render(120), ["same-owner-replacement"]);
+
+	await tui.dispose({ preserveScreen: true });
+	assert.equal(owner.releaseCalls, 1);
+});
+
+test("forced same-owner nested render defers release without clearing borrowed scratch", async () => {
+	const tui = new TuiAltScreen(new FakeTerminal(120, 40), false, undefined, { mouse: false });
+	const replacement = new StaticCacheLine("forced-same-owner-replacement");
+	const owner = new CountingCacheContainer();
+	const child = new SameOwnerNestedReplacementChild(tui, owner, [replacement], true);
+	const box = new Box(0, 0);
+	box.addChild(child);
+	owner.addChild(box);
+	tui.setLayoutRoot(owner);
+	tui.start();
+
+	assert.doesNotThrow(() => tui.renderNow(true));
+	assert.equal(child.nestedError, undefined);
+	assert.equal(child.releaseCallsAfterNested, 0);
+	assert.equal(owner.releaseCalls, 1);
+	assert.equal(boxCache(box), undefined);
+	await tui.dispose({ preserveScreen: true });
+});
+
+test("same-owner A to B to A to C replacement releases A once after its outer frame", async () => {
+	const tui = new TuiAltScreen(new FakeTerminal(120, 40), false, undefined, { mouse: false });
+	const owner = new CountingCacheContainer();
+	const transient = new CountingCacheContainer();
+	const finalRoot = new StaticCacheLine("same-owner-final-root");
+	const child = new SameOwnerNestedReplacementChild(tui, owner, [transient, owner, finalRoot]);
+	const box = new Box(0, 0);
+	box.addChild(child);
+	owner.addChild(box);
+	tui.setLayoutRoot(owner);
+	tui.start();
+
+	tui.renderNow(true);
+	assert.equal(child.releaseCallsAfterNested, 0);
+	assert.equal(owner.releaseCalls, 1);
+	assert.equal(transient.releaseCalls, 1);
+	assert.equal(boxCache(box), undefined);
+	assert.equal(altDiagnostics(tui).layoutRoot, finalRoot);
+	await tui.dispose({ preserveScreen: true });
+	assert.equal(owner.releaseCalls, 1);
+});
+
+test("same-owner deferred release survives a nested render error", async () => {
+	const tui = new TuiAltScreen(new FakeTerminal(120, 40), false, undefined, { mouse: false });
+	const replacement = new StaticCacheLine("same-owner-error-replacement");
+	const owner = new CountingCacheContainer();
+	const child = new SameOwnerNestedReplacementChild(tui, owner, [replacement], false, true);
+	const box = new Box(0, 0);
+	box.addChild(child);
+	owner.addChild(box);
+	tui.setLayoutRoot(owner);
+	tui.start();
+
+	assert.doesNotThrow(() => tui.renderNow(true));
+	assert.match(String(child.nestedError), /nested same-owner fixture failure/);
+	assert.equal(child.releaseCallsAfterNested, 0);
+	assert.equal(owner.releaseCalls, 1);
+	assert.equal(boxCache(box), undefined);
+	await tui.dispose({ preserveScreen: true });
+});
+
 test("reattaching a rendering owner cancels its deferred cache release", async () => {
 	const tui = new TuiAltScreen(new FakeTerminal(120, 40), false, undefined, { mouse: false });
 	const transientRoot = new CountingCacheContainer();
@@ -700,6 +887,132 @@ test("detached and disposed ScrollView releases TUI callback and auto-hide timer
 	assert.equal(scrollDiagnostics(scroll).requestRenderCallback, undefined);
 	assert.equal(scrollDiagnostics(scroll).scrollbarHideTimer, undefined);
 	assert.equal(scroll.scrollTop, firstScrollTop);
+});
+
+test("implicit ScrollView releases and reinstalls its TUI callback across real root ownership", async () => {
+	const tui = new TuiAltScreen(new FakeTerminal(120, 20), false, undefined, { mouse: false });
+	for (let index = 0; index < 100; index++) tui.addChild(new StaticCacheLine(`implicit-scroll-line-${index}`));
+	const diagnostics = altDiagnostics(tui);
+	const implicitScrollView = diagnostics.implicitScrollView;
+	const children = tui.children;
+	tui.start();
+	tui.renderNow();
+	implicitScrollView.setScrollbar("auto");
+	implicitScrollView.scrollBy(-1);
+	assert.equal(typeof scrollDiagnostics(implicitScrollView).requestRenderCallback, "function");
+	assert.ok(scrollDiagnostics(implicitScrollView).scrollbarHideTimer);
+	assert.equal(scrollDiagnostics(implicitScrollView).transientScrollbarVisible, true);
+
+	const explicitRoot = new VStack([]);
+	tui.setLayoutRoot(explicitRoot);
+	assert.equal(scrollDiagnostics(implicitScrollView).requestRenderCallback, undefined);
+	assert.equal(scrollDiagnostics(implicitScrollView).scrollbarHideTimer, undefined);
+	assert.equal(scrollDiagnostics(implicitScrollView).transientScrollbarVisible, false);
+	assert.equal(tui.children, children);
+
+	tui.setLayoutRoot(undefined);
+	tui.renderNow();
+	assert.equal(typeof scrollDiagnostics(implicitScrollView).requestRenderCallback, "function");
+	await tui.dispose({ preserveScreen: true });
+	assert.equal(scrollDiagnostics(implicitScrollView).requestRenderCallback, undefined);
+	assert.equal(scrollDiagnostics(implicitScrollView).scrollbarHideTimer, undefined);
+	assert.equal(tui.children, children);
+});
+
+test("layout-root replacement clears every Alt interaction owner without changing same-root or stop semantics", async () => {
+	const document = new Container();
+	for (let index = 0; index < 100; index++) document.addChild(new StaticCacheLine(`selection-owner-${index}`));
+	const scroll = new ScrollView(document, { primary: true, scrollbar: "auto", scrollbarHideDelayMs: 60_000 });
+	const tui = new TuiAltScreen(new FakeTerminal(120, 20), false, undefined, { mouse: false });
+	tui.setLayoutRoot(scroll);
+	tui.start();
+	tui.renderNow();
+	const state = tui as unknown as AltInteractionDiagnostics;
+	let interaction = primeAltInteractionState(state, scroll);
+
+	tui.setLayoutRoot(scroll);
+	assert.equal(state.selectionAnchor, interaction.anchor);
+	await tui.stop({ preserveScreen: true });
+	assert.equal(state.selectionAnchor, interaction.anchor);
+	tui.start();
+	tui.renderNow();
+	interaction = primeAltInteractionState(state, scroll);
+	const before = tui.getAltInteractionRetainedReferenceCounts();
+	assert.equal(before.selectionAnchorReferences, 1);
+	assert.equal(before.selectionFocusReferences, 1);
+	assert.equal(before.selectionInitialRangeReferences, 1);
+	assert.equal(before.lastClickReferences, 1);
+	assert.equal(before.selectionScrollViewReferences, 7);
+	assert.equal(before.selectionTimerReferences, 1);
+	assert.equal(before.scrollbarOwnerReferences, 2);
+	assert.equal(before.scrollbarTimerReferences, 1);
+
+	const replacement = new StaticCacheLine("selection-owner-replacement");
+	tui.setLayoutRoot(replacement);
+	const afterReplacement = tui.getAltInteractionRetainedReferenceCounts();
+	assert.deepEqual(afterReplacement, {
+		selectionAnchorReferences: 0,
+		selectionFocusReferences: 0,
+		selectionInitialRangeReferences: 0,
+		lastClickReferences: 0,
+		selectionScrollViewReferences: 0,
+		selectionTimerReferences: 0,
+		scrollbarOwnerReferences: 0,
+		scrollbarTimerReferences: 0,
+	});
+	assert.equal(state.selectionAnchor, undefined);
+	assert.equal(state.selectionFocus, undefined);
+	assert.equal(state.selectionInitialRange, undefined);
+	assert.equal(state.lastClick, undefined);
+	assert.equal(state.selectionDragPointer, undefined);
+	assert.equal(state.selectionAutoScrollTimer, undefined);
+	assert.equal(state.selectionPressActive, false);
+	assert.equal(state.scrollbarHover, undefined);
+	assert.equal(state.scrollbarDrag, undefined);
+	assert.equal(state.scrollbarDragFrameTimer, undefined);
+	assert.equal(state.pendingScrollbarDragScrollTop, undefined);
+	assert.equal(state.pressedUrl, undefined);
+	assert.equal(state.selectionDragged, false);
+	assert.equal(state.resolvedSelectionStart, undefined);
+	assert.equal(state.resolvedSelectionEnd, undefined);
+	assert.equal(scrollDiagnostics(scroll).requestRenderCallback, undefined);
+	tui.renderNow();
+	assert.deepEqual(tui.render(120), ["selection-owner-replacement"]);
+	interaction = primeAltInteractionState(state, scroll);
+	assert.equal(state.selectionAnchor, interaction.anchor);
+	await tui.dispose({ preserveScreen: true });
+	assert.deepEqual(tui.getAltInteractionRetainedReferenceCounts(), afterReplacement);
+});
+
+test("final disposal discards historical reentrant owner slot backing", async () => {
+	const tui = new TuiAltScreen(new FakeTerminal(120, 40), false, undefined, { mouse: false });
+	const owners = new Array<CountingCacheContainer>(64);
+	let root: Component = new StaticCacheLine("deep-layout-final-root");
+	for (let depth = owners.length - 1; depth >= 0; depth--) {
+		const owner = new CountingCacheContainer();
+		const nestedRoot = new NestedRenderLayoutRoot(tui, root);
+		nestedRoot.owner = owner;
+		owner.addChild(nestedRoot);
+		owners[depth] = owner;
+		root = owner;
+	}
+	tui.setLayoutRoot(root);
+	tui.start();
+	tui.renderNow();
+	const diagnostics = altDiagnostics(tui);
+	const ownerSlots = diagnostics.layoutRenderOwners;
+	const pendingSlots = diagnostics.pendingLayoutCacheReleases;
+	for (let index = 0; index < owners.length; index++) assert.equal(owners[index].releaseCalls, 1);
+	assert.ok(ownerSlots.length >= 64);
+	assert.ok(pendingSlots.length >= 64);
+
+	await tui.dispose({ preserveScreen: true });
+	assert.notEqual(diagnostics.layoutRenderOwners, ownerSlots);
+	assert.notEqual(diagnostics.pendingLayoutCacheReleases, pendingSlots);
+	assert.ok(diagnostics.layoutRenderOwners.length <= 1);
+	assert.ok(diagnostics.pendingLayoutCacheReleases.length <= 1);
+	assert.equal(diagnostics.layoutRenderOwners.filter(Boolean).length, 0);
+	assert.equal(diagnostics.pendingLayoutCacheReleases.filter(Boolean).length, 0);
 });
 
 test("layout-root replacement releases Box caches without semantic invalidation", async () => {
@@ -867,11 +1180,19 @@ test("lifecycle cleanup remains outside frame and recoverable-stop hot paths", a
 	const altSource = ts.createSourceFile(altPath, altText, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
 	const retainedSource = ts.createSourceFile(retainedPath, retainedText, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
 	let setLayoutRoot: ts.MethodDeclaration | undefined;
+	let releaseLayoutInteractionOwners: ts.MethodDeclaration | undefined;
+	let beforeTerminalStop: ts.MethodDeclaration | undefined;
 	let releaseRetainedCache: ts.MethodDeclaration | undefined;
 	for (const statement of altSource.statements) {
 		if (!ts.isClassDeclaration(statement) || statement.name?.text !== "TuiAltScreen") continue;
 		for (const member of statement.members) {
 			if (ts.isMethodDeclaration(member) && member.name.getText(altSource) === "setLayoutRoot") setLayoutRoot = member;
+			if (ts.isMethodDeclaration(member) && member.name.getText(altSource) === "releaseLayoutInteractionOwners") {
+				releaseLayoutInteractionOwners = member;
+			}
+			if (ts.isMethodDeclaration(member) && member.name.getText(altSource) === "beforeTerminalStop") {
+				beforeTerminalStop = member;
+			}
 		}
 	}
 	for (const statement of retainedSource.statements) {
@@ -883,6 +1204,8 @@ test("lifecycle cleanup remains outside frame and recoverable-stop hot paths", a
 		}
 	}
 	assert.ok(setLayoutRoot);
+	assert.ok(releaseLayoutInteractionOwners);
+	assert.ok(beforeTerminalStop);
 	assert.ok(releaseRetainedCache);
 	let forbiddenAllocations = 0;
 	function visit(node: ts.Node): void {
@@ -898,7 +1221,15 @@ test("lifecycle cleanup remains outside frame and recoverable-stop hot paths", a
 		ts.forEachChild(node, visit);
 	}
 	visit(setLayoutRoot);
+	visit(releaseLayoutInteractionOwners);
 	assert.equal(forbiddenAllocations, 0);
+	let interactionCleanupTemporaryStructures = 0;
+	function visitInteractionCleanup(node: ts.Node): void {
+		if (ts.isObjectLiteralExpression(node) || ts.isArrayLiteralExpression(node)) interactionCleanupTemporaryStructures++;
+		ts.forEachChild(node, visitInteractionCleanup);
+	}
+	visitInteractionCleanup(releaseLayoutInteractionOwners);
+	assert.equal(interactionCleanupTemporaryStructures, 0);
 	assert.match(tuiText, /function releaseComponentRenderCaches\(component: Component \| undefined\)/);
 	assert.match(tuiText, /GET_COMPONENT_RENDER_CACHE_CHILD/);
 	assert.match(tuiText, /GET_COMPONENT_RENDER_CACHE_CHILDREN/);
@@ -906,6 +1237,11 @@ test("lifecycle cleanup remains outside frame and recoverable-stop hot paths", a
 	assert.match(boxText, /RELEASE_COMPONENT_RENDER_CACHE/);
 	assert.doesNotMatch(setLayoutRoot.getText(altSource), /previousRoot\?\.invalidate/);
 	assert.match(setLayoutRoot.getText(altSource), /const previousOwner = previousRoot \?\? this/);
+	assert.match(setLayoutRoot.getText(altSource), /for \(let depth = 0; depth < this\.layoutRenderDepth; depth\+\+\)/);
+	assert.doesNotMatch(
+		setLayoutRoot.getText(altSource),
+		/for \(let depth = this\.layoutRenderDepth - 1; depth >= 0; depth--\)[\s\S]*this\.layoutRenderOwners\[depth\] !== previousOwner/,
+	);
 	assert.match(setLayoutRoot.getText(altSource), /this\.layoutRenderOwners\[depth\] !== previousOwner/);
 	assert.match(setLayoutRoot.getText(altSource), /this\.pendingLayoutCacheReleases\[depth\] = previousOwner/);
 	assert.match(altText, /releaseComponentRenderCaches\(pendingLayoutCacheRelease\)/);
@@ -918,6 +1254,14 @@ test("lifecycle cleanup remains outside frame and recoverable-stop hot paths", a
 	assert.match(altText, /if \(layoutRenderDepth === 0\) this\.layoutScratch\.flushRequestedClear\(\)/);
 	assert.match(setLayoutRoot.getText(altSource), /layoutScratch\.requestClear\(\)/);
 	assert.doesNotMatch(setLayoutRoot.getText(altSource), /layoutScratch\.clear\(\)/);
+	assert.match(setLayoutRoot.getText(altSource), /releaseComponentRenderCaches\(this\.implicitScrollView\)/);
+	assert.match(altText, /resetRenderState\(\): void \{[\s\S]*this\.layoutScratch\.requestClear\(\)/);
+	assert.match(
+		altText,
+		/releaseMountedComponentsAfterDispose[\s\S]*this\.layoutRenderOwners = \[\][\s\S]*this\.pendingLayoutCacheReleases = \[\]/,
+	);
+	assert.doesNotMatch(releaseLayoutInteractionOwners.getText(altSource), /\.invalidate\(|\.render\(|new (?:Map|Set|Promise|AbortController)|=>|function\s*\(/);
+	assert.doesNotMatch(beforeTerminalStop.getText(altSource), /releaseLayoutInteractionOwners/);
 	assert.match(layoutText, /requestClear\(\): void \{[\s\S]*this\.clearRequested = true/);
 	assert.match(layoutText, /flushRequestedClear\(\): void \{[\s\S]*this\.clearRequested/);
 	assert.match(

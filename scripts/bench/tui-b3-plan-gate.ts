@@ -25,6 +25,7 @@ import { currentCommit, readIntegerOption } from "./benchmark.ts";
 type Candidate =
 	| "editor-frame"
 	| "root-replacement"
+	| "nested-same-owner-replacement"
 	| "mouse-hit"
 	| "selection-auto-scroll"
 	| "kitty-fallback"
@@ -191,6 +192,45 @@ class RootReplacementLeaf implements Component {
 		this.renderCalls++;
 		if (this.armed) {
 			this.armed = false;
+			this.replacementFrames++;
+			this.tui.setLayoutRoot(this.target);
+		}
+		return this.lines;
+	}
+
+	invalidate(): void {}
+}
+
+class NestedSameOwnerReplacementLeaf implements Component {
+	private readonly tui: TuiAltScreen;
+	private readonly lines: string[];
+	private target: Component | undefined;
+	private phase = 2;
+	renderCalls = 0;
+	nestedFrames = 0;
+	replacementFrames = 0;
+
+	constructor(tui: TuiAltScreen, line: string) {
+		this.tui = tui;
+		this.lines = [line];
+	}
+
+	setTarget(target: Component): void {
+		this.target = target;
+	}
+
+	arm(): void {
+		this.phase = 0;
+	}
+
+	render(): string[] {
+		this.renderCalls++;
+		if (this.phase === 0) {
+			this.phase = 1;
+			this.nestedFrames++;
+			this.tui.renderNow(true);
+		} else if (this.phase === 1) {
+			this.phase = 2;
 			this.replacementFrames++;
 			this.tui.setLayoutRoot(this.target);
 		}
@@ -388,6 +428,7 @@ function createEditorRuntime(
 			const layoutCache = getEditorLayoutCacheMetrics(editor);
 			const retained = shell.tui.getAltLayoutRetainedReferenceCounts();
 			const finalUnmount = shell.tui.getAltFinalUnmountRetainedReferenceCounts();
+			const interaction = shell.tui.getAltInteractionRetainedReferenceCounts();
 			const transcriptReferences = shell.transcript.getRetainedLifecycleReferenceCounts();
 			const viewportReferences = shell.documentContainer.getViewportLifecycleReferenceCounts();
 			const internals = shell.tui as unknown as {
@@ -411,6 +452,17 @@ function createEditorRuntime(
 				disposedOwnerLastDocumentRows: finalUnmount.lastDocumentRows,
 				disposedOwnerLastDocumentCodeUnits: finalUnmount.lastDocumentCodeUnits,
 				disposedOwnerLastDocumentReferences: finalUnmount.lastDocumentReference,
+				disposedOwnerLayoutRenderOwnerReferences: finalUnmount.layoutRenderOwnerReferences,
+				disposedOwnerPendingLayoutReleaseReferences: finalUnmount.pendingLayoutReleaseReferences,
+				disposedOwnerSelectionReferences:
+					interaction.selectionAnchorReferences +
+					interaction.selectionFocusReferences +
+					interaction.selectionInitialRangeReferences +
+					interaction.lastClickReferences +
+					interaction.selectionScrollViewReferences,
+				disposedOwnerSelectionTimerReferences: interaction.selectionTimerReferences,
+				disposedOwnerScrollbarReferences:
+					interaction.scrollbarOwnerReferences + interaction.scrollbarTimerReferences,
 				disposedOwnerRetainedViewportRecords: transcriptReferences.viewportRecords,
 				disposedOwnerRetainedViewportComponentReferences:
 					transcriptReferences.viewportRecordComponentReferences,
@@ -654,6 +706,95 @@ function createRootReplacementRuntime(width: number, height: number): CandidateR
 	};
 }
 
+function createNestedSameOwnerReplacementRuntime(width: number, height: number): CandidateRuntime {
+	const terminal = new BenchTerminal(width, height);
+	const tui = new TuiAltScreen(terminal, false, undefined, { mouse: false });
+	const firstLeaf = new NestedSameOwnerReplacementLeaf(tui, "first-nested-root");
+	const secondLeaf = new NestedSameOwnerReplacementLeaf(tui, "second-nested-root");
+	const firstRoot = new Box(0, 0);
+	const secondRoot = new Box(0, 0);
+	firstRoot.addChild(firstLeaf);
+	secondRoot.addChild(secondLeaf);
+	firstLeaf.setTarget(secondRoot);
+	secondLeaf.setTarget(firstRoot);
+	tui.setLayoutRoot(firstRoot);
+	tui.start();
+	tui.renderNow(true);
+	let firstRootMounted = true;
+	firstLeaf.renderCalls = 0;
+	firstLeaf.nestedFrames = 0;
+	firstLeaf.replacementFrames = 0;
+	secondLeaf.renderCalls = 0;
+	secondLeaf.nestedFrames = 0;
+	secondLeaf.replacementFrames = 0;
+	terminal.frameWrites = 0;
+	terminal.frameBytes = 0;
+	return {
+		unit: "frame",
+		productionPath:
+			"Box child render -> nested same-owner Alt frame -> root replacement -> outermost-owner cache release -> Alt frame queue",
+		step(): void {
+			if (firstRootMounted) firstLeaf.arm();
+			else secondLeaf.arm();
+			tui.renderNow(true);
+			firstRootMounted = !firstRootMounted;
+		},
+		reset(): void {
+			firstLeaf.renderCalls = 0;
+			firstLeaf.nestedFrames = 0;
+			firstLeaf.replacementFrames = 0;
+			secondLeaf.renderCalls = 0;
+			secondLeaf.nestedFrames = 0;
+			secondLeaf.replacementFrames = 0;
+			terminal.frameWrites = 0;
+			terminal.frameBytes = 0;
+		},
+		snapshot(): Record<string, number | string | boolean> {
+			const retained = tui.getAltLayoutRetainedReferenceCounts();
+			const mountedRoot = firstRootMounted ? firstRoot : secondRoot;
+			const detachedRoot = firstRootMounted ? secondRoot : firstRoot;
+			return {
+				nestedFrames: firstLeaf.nestedFrames + secondLeaf.nestedFrames,
+				rootReplacementFrames: firstLeaf.replacementFrames + secondLeaf.replacementFrames,
+				rootRenderCalls: firstLeaf.renderCalls + secondLeaf.renderCalls,
+				mountedBoxCaches: Number(boxHasCache(mountedRoot)),
+				detachedBoxCaches: Number(boxHasCache(detachedRoot)),
+				currentLayoutScratchReferences:
+					retained.components +
+					retained.lines +
+					retained.sources +
+					retained.cachedRows +
+					retained.indexedComponents +
+					retained.screenRows,
+				frameWrites: terminal.frameWrites,
+				frameBytes: terminal.frameBytes,
+				finalFrameHash: terminal.finalFrameHash(),
+			};
+		},
+		disposedOwnerSnapshot(): Record<string, number> {
+			const retained = tui.getAltLayoutRetainedReferenceCounts();
+			const finalUnmount = tui.getAltFinalUnmountRetainedReferenceCounts();
+			const internals = tui as unknown as { layoutRoot: Component | undefined };
+			return {
+				disposedOwnerDetachedBoxCaches: Number(boxHasCache(firstRoot)) + Number(boxHasCache(secondRoot)),
+				disposedOwnerLayoutRootReferences: internals.layoutRoot === undefined ? 0 : 1,
+				disposedOwnerLayoutRenderOwnerReferences: finalUnmount.layoutRenderOwnerReferences,
+				disposedOwnerPendingLayoutReleaseReferences: finalUnmount.pendingLayoutReleaseReferences,
+				disposedOwnerLayoutScratchReferences:
+					retained.components +
+					retained.lines +
+					retained.sources +
+					retained.cachedRows +
+					retained.indexedComponents +
+					retained.screenRows,
+			};
+		},
+		async dispose(): Promise<void> {
+			await tui.dispose({ preserveScreen: true });
+		},
+	};
+}
+
 function createMouseRuntime(itemCount: number, width: number, height: number): CandidateRuntime {
 	const shell = createAltShell(itemCount, width, height, "static", 1);
 	const internals = shell.tui as unknown as { currentLayout: LayoutFrame | undefined };
@@ -814,6 +955,7 @@ function createRuntime(
 			: createEditorRuntime(itemCount, width, height, editorUpdate, editorLineCount);
 	}
 	if (candidate === "root-replacement") return createRootReplacementRuntime(width, height);
+	if (candidate === "nested-same-owner-replacement") return createNestedSameOwnerReplacementRuntime(width, height);
 	if (candidate === "mouse-hit") return createMouseRuntime(itemCount, width, height);
 	if (candidate === "selection-auto-scroll") return createSelectionAutoScrollRuntime(itemCount, width, height);
 	if (candidate === "kitty-fallback") return createKittyRuntime(width, height);
@@ -834,13 +976,14 @@ function readCandidate(): Candidate {
 	if (
 		value !== "editor-frame" &&
 		value !== "root-replacement" &&
+		value !== "nested-same-owner-replacement" &&
 		value !== "mouse-hit" &&
 		value !== "selection-auto-scroll" &&
 		value !== "kitty-fallback" &&
 		value !== "stack-direct"
 	) {
 		throw new Error(
-			"--candidate must be editor-frame, root-replacement, mouse-hit, selection-auto-scroll, kitty-fallback, or stack-direct",
+			"--candidate must be editor-frame, root-replacement, nested-same-owner-replacement, mouse-hit, selection-auto-scroll, kitty-fallback, or stack-direct",
 		);
 	}
 	return value;
