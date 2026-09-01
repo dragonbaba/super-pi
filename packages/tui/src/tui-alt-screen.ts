@@ -165,6 +165,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	private previousScreenWidth = 0;
 	private previousScreenHeight = 0;
 	private layoutRoot: Component | undefined;
+	private layoutRootGeneration = 0;
 	private currentLayout: LayoutFrame | undefined;
 	private readonly layoutScratch = new LayoutFrameScratch();
 	private readonly implicitDocument: LineViewportComponent;
@@ -257,8 +258,9 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		try {
 			releaseComponentRenderCaches(previousRoot ?? this);
 		} finally {
-			this.layoutScratch.clear();
+			this.layoutScratch.requestClear();
 			this.layoutRoot = component;
+			this.layoutRootGeneration++;
 			this.currentLayout = undefined;
 			this.requestRender();
 		}
@@ -1202,6 +1204,8 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		if (this.stopped || !this.altScreenActive) return;
 		const width = Math.max(1, this.terminal.columns);
 		const height = Math.max(1, this.terminal.rows);
+		const layoutRootGeneration = this.layoutRootGeneration;
+		try {
 		const root = this.layoutRoot ?? this.implicitScrollView;
 		const nextLayout = renderLayoutFrame(root, width, height, this.layoutRequestRender, this.layoutScratch);
 		let screen = nextLayout.lines;
@@ -1320,7 +1324,14 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		this.previousRawScreen = rawScreen;
 		this.previousScreenWidth = width;
 		this.previousScreenHeight = height;
-		nextLayout.lines = this.previousScreen;
-		this.currentLayout = nextLayout;
+		if (layoutRootGeneration === this.layoutRootGeneration) {
+			nextLayout.lines = this.previousScreen;
+			this.currentLayout = nextLayout;
+		} else {
+			this.currentLayout = undefined;
+		}
+		} finally {
+			this.layoutScratch.flushRequestedClear();
+		}
 	}
 }

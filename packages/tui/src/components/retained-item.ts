@@ -1,3 +1,4 @@
+import { RELEASE_COMPONENT_RENDER_CACHE } from "../component-cache.ts";
 import { TuiRenderInstrumentation, utf8ByteLength } from "../render-instrumentation.ts";
 import { getKittyImageMetadata } from "../terminal-image.ts";
 import { type Component, Container } from "../tui.ts";
@@ -182,6 +183,10 @@ export class RetainedItem implements Component {
 		if (this.isReleased) return;
 		this.invalidateRetainedRender();
 		this.inner?.invalidate();
+	}
+
+	[RELEASE_COMPONENT_RENDER_CACHE](): void {
+		this.clearCache();
 	}
 
 	/** Invalidates only retained render state after the component has already updated itself. */
@@ -602,6 +607,16 @@ export class RetainedContainer extends Container implements LineViewportComponen
 			}
 		} finally {
 			this.suppressRecordMutation = false;
+		}
+	}
+
+	[RELEASE_COMPONENT_RENDER_CACHE](): void {
+		for (const item of this.retainedById.values()) item[RELEASE_COMPONENT_RENDER_CACHE]();
+		this.clearPreparedViewportLines();
+		for (let index = 0; index < this.viewportRecords.length; index++) {
+			const record = this.viewportRecords[index]!;
+			record.kittySpans = undefined;
+			record.kittySpanLines = undefined;
 		}
 	}
 

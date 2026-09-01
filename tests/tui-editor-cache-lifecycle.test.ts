@@ -8,6 +8,7 @@ import { TuiAltScreen } from "../packages/tui/src/tui-alt-screen.ts";
 import { TuiMainScreen } from "../packages/tui/src/tui-main-screen.ts";
 import { Box } from "../packages/tui/src/components/box.ts";
 import { Editor, type EditorTheme } from "../packages/tui/src/components/editor.ts";
+import { RetainedContainer } from "../packages/tui/src/components/retained-item.ts";
 import { VStack } from "../packages/tui/src/components/v-stack.ts";
 import type { LayoutFrame } from "../packages/tui/src/layout.ts";
 import { FakeTerminal } from "./helpers/runtime-instrumentation.ts";
@@ -181,6 +182,42 @@ class ReentrantStartContainer extends Container {
 	}
 }
 
+class StaticCacheLine implements Component {
+	readonly value: string;
+	renderCalls = 0;
+
+	constructor(value: string) {
+		this.value = value;
+	}
+
+	render(): string[] {
+		this.renderCalls++;
+		return [this.value];
+	}
+
+	invalidate(): void {}
+}
+
+class ReentrantLayoutRoot extends Container {
+	private replaced = false;
+	private readonly tui: TuiAltScreen;
+	private readonly replacement: Component;
+
+	constructor(tui: TuiAltScreen, replacement: Component) {
+		super();
+		this.tui = tui;
+		this.replacement = replacement;
+	}
+
+	override render(): string[] {
+		if (!this.replaced) {
+			this.replaced = true;
+			this.tui.setLayoutRoot(this.replacement);
+		}
+		return ["reentrant-old-root"];
+	}
+}
+
 function createMainEditorTree(tui: TuiMainScreen, root: Container = new Container()): {
 	editor: Editor;
 	editorContainer: Container;
@@ -224,6 +261,35 @@ test("Main final dispose releases nested Editor cache while every owner remains 
 	assert.deepEqual(tree.editor.getCursor(), cursor);
 	editorTestState(tree.editor).undo();
 	assert.equal(tree.editor.getExpandedText(), baseText);
+});
+
+test("Main final dispose releases retained transcript sidecar cache while owners remain reachable", async () => {
+	const tui = new TuiMainScreen(new FakeTerminal(120, 40), false);
+	const transcript = new RetainedContainer();
+	const component = new StaticCacheLine("retained-sidecar-cache");
+	const item = transcript.addRetainedChild(component, { id: "retained-sidecar", version: 1, completed: true });
+	tui.addChild(transcript);
+	tui.start();
+	tui.renderNow();
+
+	const primed = transcript.getRetainedStats();
+	assert.equal(primed.retainedItems, 1);
+	assert.equal(primed.cachedItems, 1);
+	assert.equal(primed.cachedLines, 1);
+	assert.ok(primed.estimatedCachedBytes > 0);
+
+	await tui.dispose({ preserveScreen: true });
+	assert.deepEqual(transcript.getRetainedStats(), {
+		retainedItems: 1,
+		completedItems: 1,
+		activeItems: 0,
+		cachedItems: 0,
+		cachedLines: 0,
+		estimatedCachedBytes: 0,
+	});
+	assert.equal(transcript.children[0], component);
+	assert.equal(item.released, false);
+	assert.equal(item.component, component);
 });
 
 test("Main final dispose traverses Box ownership without semantic invalidation", async () => {
@@ -355,6 +421,27 @@ test("first explicit layout root releases the previously mounted implicit childr
 
 	await tui.dispose({ preserveScreen: true });
 	assertCacheReleased(nested.editor);
+});
+
+test("layout root replacement requested during render completes after scratch ownership ends", async () => {
+	const terminal = new FakeTerminal(120, 40);
+	const tui = new TuiAltScreen(terminal, false, undefined, { mouse: false });
+	const replacement = new StaticCacheLine("reentrant-new-root");
+	const root = new ReentrantLayoutRoot(tui, replacement);
+	tui.setLayoutRoot(root);
+	tui.start();
+
+	assert.doesNotThrow(() => tui.renderNow(true));
+	assert.equal(altDiagnostics(tui).layoutRoot, replacement);
+	assert.equal(altDiagnostics(tui).currentLayout, undefined);
+	assertScratchReleased(tui);
+	tui.renderNow(true);
+	assert.equal(altDiagnostics(tui).layoutRoot, replacement);
+	assert.notEqual(altDiagnostics(tui).currentLayout, undefined);
+	assert.equal(replacement.renderCalls, 1);
+
+	await tui.dispose({ preserveScreen: true });
+	assertScratchReleased(tui);
 });
 
 test("layout-root replacement releases Box caches without semantic invalidation", async () => {
@@ -510,10 +597,14 @@ test("lifecycle cleanup remains outside frame and recoverable-stop hot paths", a
 	const tuiPath = "packages/tui/src/tui.ts";
 	const altPath = "packages/tui/src/tui-alt-screen.ts";
 	const boxPath = "packages/tui/src/components/box.ts";
+	const retainedPath = "packages/tui/src/components/retained-item.ts";
+	const layoutPath = "packages/tui/src/layout.ts";
 	const benchmarkPath = "scripts/bench/tui-b3-plan-gate.ts";
 	const tuiText = await readFile(tuiPath, "utf-8");
 	const altText = await readFile(altPath, "utf-8");
 	const boxText = await readFile(boxPath, "utf-8");
+	const retainedText = await readFile(retainedPath, "utf-8");
+	const layoutText = await readFile(layoutPath, "utf-8");
 	const benchmarkText = await readFile(benchmarkPath, "utf-8");
 	const altSource = ts.createSourceFile(altPath, altText, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
 	let setLayoutRoot: ts.MethodDeclaration | undefined;
@@ -545,6 +636,19 @@ test("lifecycle cleanup remains outside frame and recoverable-stop hot paths", a
 	assert.match(boxText, /RELEASE_COMPONENT_RENDER_CACHE/);
 	assert.doesNotMatch(setLayoutRoot.getText(altSource), /previousRoot\?\.invalidate/);
 	assert.match(setLayoutRoot.getText(altSource), /releaseComponentRenderCaches\(previousRoot \?\? this\)/);
+	assert.match(setLayoutRoot.getText(altSource), /layoutScratch\.requestClear\(\)/);
+	assert.doesNotMatch(setLayoutRoot.getText(altSource), /layoutScratch\.clear\(\)/);
+	assert.match(altText, /finally \{\s*this\.layoutScratch\.flushRequestedClear\(\)/);
+	assert.match(layoutText, /requestClear\(\): void \{[\s\S]*this\.clearRequested = true/);
+	assert.match(layoutText, /flushRequestedClear\(\): void \{[\s\S]*this\.clearRequested/);
+	assert.match(
+		retainedText,
+		/class RetainedItem implements Component[\s\S]*?\[RELEASE_COMPONENT_RENDER_CACHE\]\(\): void \{\s*this\.clearCache\(\)/,
+	);
+	assert.match(
+		retainedText,
+		/class RetainedContainer extends Container implements LineViewportComponent[\s\S]*?\[RELEASE_COMPONENT_RENDER_CACHE\]\(\): void \{[\s\S]*retainedById\.values\(\)/,
+	);
 	assert.doesNotMatch(
 		tuiText.match(/protected releaseMountedComponentsAfterDispose[\s\S]*?\n\t}\n/)?.[0] ?? "",
 		/this\.invalidate\(\)/,
