@@ -371,6 +371,21 @@ test("async owner closeout remains lifecycle-only in source", () => {
 	assert.equal(copySource.match(/this\.tuiLifecycleGeneration !== lifecycleGeneration/g)?.length, 2);
 	assert.ok(copySource.indexOf("this.tuiLifecycleGeneration !== lifecycleGeneration") < copySource.indexOf("this.renderer.flash"));
 	assert.ok(copySource.lastIndexOf("this.tuiLifecycleGeneration !== lifecycleGeneration") < copySource.lastIndexOf("this.showError"));
+	const modeSettingStart = interactiveSource.indexOf("private async applyTuiModeSetting");
+	const modeSettingEnd = interactiveSource.indexOf("\n\tasync init", modeSettingStart);
+	const modeSettingSource = interactiveSource.slice(modeSettingStart, modeSettingEnd);
+	assert.ok(
+		modeSettingSource.indexOf("const lifecycleGeneration = this.tuiLifecycleGeneration") <
+			modeSettingSource.indexOf("await this.switchTuiMode(mode)"),
+	);
+	assert.ok(
+		modeSettingSource.indexOf("this.tuiLifecycleGeneration !== lifecycleGeneration") >
+			modeSettingSource.indexOf("await this.switchTuiMode(mode)"),
+	);
+	assert.ok(
+		modeSettingSource.indexOf("this.tuiLifecycleGeneration !== lifecycleGeneration") <
+			modeSettingSource.indexOf("selector?.getSettingsList().updateValue"),
+	);
 	const startupRefreshStart = interactiveSource.indexOf("private startStartupModelRefresh");
 	const startupRefreshEnd = interactiveSource.indexOf("\n\tprivate cancelActiveModelLookup", startupRefreshStart);
 	const startupRefreshSource = interactiveSource.slice(startupRefreshStart, startupRefreshEnd);
@@ -398,6 +413,19 @@ test("async owner closeout remains lifecycle-only in source", () => {
 	const treeSource = interactiveSource.slice(treeStart, treeEnd);
 	assert.ok(treeSource.indexOf("const lifecycleGeneration = this.tuiLifecycleGeneration") < treeSource.indexOf("await this.session.navigateTree"));
 	assert.ok(treeSource.indexOf("this.tuiLifecycleGeneration !== lifecycleGeneration", treeSource.indexOf("await this.session.navigateTree")) > 0);
+	const treeCopyStart = treeSource.indexOf("selector.onCopy = async");
+	const treeCopySource = treeSource.slice(treeCopyStart);
+	assert.ok(treeCopySource.indexOf("const lifecycleGeneration = this.tuiLifecycleGeneration") < treeCopySource.indexOf("await this.copyTextToClipboard(text)"));
+	assert.equal(treeCopySource.match(/this\.tuiLifecycleGeneration !== lifecycleGeneration/g)?.length, 2);
+	assert.ok(treeCopySource.indexOf("this.tuiLifecycleGeneration !== lifecycleGeneration") < treeCopySource.indexOf("this.showStatus"));
+	assert.ok(treeCopySource.lastIndexOf("this.tuiLifecycleGeneration !== lifecycleGeneration") < treeCopySource.lastIndexOf("this.showError"));
+	const authWarningStart = interactiveSource.indexOf("private async maybeWarnAboutAnthropicSubscriptionAuth");
+	const authWarningEnd = interactiveSource.indexOf("\n\tprivate maybeSaveImplicitProjectTrustAfterReload", authWarningStart);
+	const authWarningSource = interactiveSource.slice(authWarningStart, authWarningEnd);
+	assert.ok(authWarningSource.indexOf("const lifecycleGeneration = this.tuiLifecycleGeneration") < authWarningSource.indexOf("await this.session.modelRuntime.checkAuth"));
+	assert.ok(authWarningSource.indexOf("this.tuiLifecycleGeneration !== lifecycleGeneration") > authWarningSource.indexOf("await this.session.modelRuntime.checkAuth"));
+	assert.ok(authWarningSource.lastIndexOf("this.tuiLifecycleGeneration !== lifecycleGeneration") > authWarningSource.indexOf("await this.session.modelRuntime.getAuth"));
+	assert.ok(authWarningSource.lastIndexOf("this.tuiLifecycleGeneration !== lifecycleGeneration") < authWarningSource.lastIndexOf("this.showWarning"));
 	const reloadStart = interactiveSource.indexOf("private async handleReloadCommand");
 	const reloadEnd = interactiveSource.indexOf("\n\tprivate async handleExportCommand", reloadStart);
 	const reloadSource = interactiveSource.slice(reloadStart, reloadEnd);
@@ -829,6 +857,72 @@ test("clipboard completion is inert after the interactive lifecycle closes", asy
 	}
 });
 
+test("a stale settings mode switch is not reported as an overlay rejection", async () => {
+	let settleSwitch: ((result: boolean) => void) | undefined;
+	let selectorUpdates = 0;
+	let statusCalls = 0;
+	let persistedModes = 0;
+	const mode = Object.create(InteractiveMode.prototype) as any;
+	mode.tuiLifecycleGeneration = 0;
+	mode.ui = { mode: "regular" };
+	mode.switchTuiMode = (): Promise<boolean> => new Promise((resolve) => { settleSwitch = resolve; });
+	mode.runtimeHost = { session: { settingsManager: { setTuiMode(): void { persistedModes++; } } } };
+	mode.activeStatusIndicator = {};
+	mode.statusContainer = { clear(): void {} };
+	mode.showStatus = (): void => { statusCalls++; };
+	const selector = {
+		getSettingsList: () => ({ updateValue(): void { selectorUpdates++; } }),
+	};
+
+	const operation = mode.applyTuiModeSetting("fullscreen", selector) as Promise<void>;
+	await Promise.resolve();
+	mode.tuiLifecycleGeneration++;
+	settleSwitch?.(false);
+	await operation;
+
+	assert.equal(selectorUpdates, 0);
+	assert.equal(statusCalls, 0);
+	assert.equal(persistedModes, 0);
+});
+
+test("anthropic auth warning lookup is inert after the interactive lifecycle closes", async () => {
+	for (const pendingStage of ["check", "get"] as const) {
+		let settleCheck: ((value: { type: string } | undefined) => void) | undefined;
+		let settleGet: ((value: { auth: { apiKey: string } } | undefined) => void) | undefined;
+		let getAuthCalls = 0;
+		let warningCalls = 0;
+		const mode = Object.create(InteractiveMode.prototype) as any;
+		mode.tuiLifecycleGeneration = 0;
+		mode.anthropicSubscriptionWarningShown = false;
+		mode.runtimeHost = { session: {
+			model: { provider: "anthropic" },
+			settingsManager: { getWarnings: () => ({ anthropicExtraUsage: true }) },
+			modelRuntime: {
+				checkAuth: () => pendingStage === "check"
+					? new Promise((resolve) => { settleCheck = resolve; })
+					: Promise.resolve(undefined),
+				getAuth: () => {
+					getAuthCalls++;
+					return new Promise((resolve) => { settleGet = resolve; });
+				},
+			},
+		} };
+		mode.showWarning = (): void => { warningCalls++; };
+
+		const operation = mode.maybeWarnAboutAnthropicSubscriptionAuth() as Promise<void>;
+		await Promise.resolve();
+		if (pendingStage === "get") await Promise.resolve();
+		mode.tuiLifecycleGeneration++;
+		if (pendingStage === "check") settleCheck?.({ type: "oauth" });
+		else settleGet?.({ auth: { apiKey: "sk-ant-oat01-late" } });
+		await operation;
+
+		assert.equal(warningCalls, 0);
+		assert.equal(mode.anthropicSubscriptionWarningShown, false);
+		assert.equal(getAuthCalls, pendingStage === "check" ? 0 : 1);
+	}
+});
+
 test("interactive stop cancels the startup model catalog refresh and owned deadline", async () => {
 	let refreshSignal: AbortSignal | undefined;
 	let settleRefresh: ((value: { aborted: boolean; errors: Map<string, Error> }) => void) | undefined;
@@ -1134,6 +1228,61 @@ test("final shutdown rejects a late tree-navigation continuation after selector 
 	assert.equal(statusCalls, 0);
 	assert.equal(transcriptRebuilds, 0);
 	assert.equal(renderCalls, 0);
+});
+
+test("final shutdown rejects late tree-selector clipboard UI", async () => {
+	initTheme("dark");
+	for (const rejects of [false, true]) {
+		let settleCopy: (() => void) | undefined;
+		let rejectCopy: ((error: Error) => void) | undefined;
+		let selector: any;
+		let statusCalls = 0;
+		let errorCalls = 0;
+		const tree = [{
+			entry: {
+				id: "target",
+				parentId: null,
+				type: "message",
+				message: { role: "user", content: "copy target" },
+				timestamp: new Date().toISOString(),
+			},
+			children: [],
+		}];
+		const mode = Object.create(InteractiveMode.prototype) as any;
+		mode.tuiLifecycleGeneration = 0;
+		mode.runtimeHost = { session: {
+			isStreaming: false,
+			sessionManager: {
+				getTree: () => tree,
+				getLeafId: () => "target",
+				appendLabelChange(): void {},
+			},
+			settingsManager: {
+				getTreeFilterMode: () => "default",
+				getBranchSummarySkipPrompt: () => true,
+			},
+		} };
+		mode.ui = { terminal: { rows: 40 }, requestRender(): void {} };
+		mode.showSelector = (factory: (done: () => void) => { component: unknown }): void => {
+			selector = factory((): void => {}).component;
+		};
+		mode.showStatus = (): void => { statusCalls++; };
+		mode.showError = (): void => { errorCalls++; };
+		mode.copyTextToClipboard = (): Promise<void> => new Promise((resolve, reject) => {
+			settleCopy = resolve;
+			rejectCopy = reject;
+		});
+
+		mode.showTreeSelector();
+		const operation = selector.onCopy("copy target") as Promise<void>;
+		await Promise.resolve();
+		mode.tuiLifecycleGeneration++;
+		if (rejects) rejectCopy?.(new Error("late tree clipboard failure"));
+		else settleCopy?.();
+		await operation;
+		assert.equal(statusCalls, 0);
+		assert.equal(errorCalls, 0);
+	}
 });
 
 test("final shutdown rejects reload callbacks and completion UI", async () => {
