@@ -289,6 +289,8 @@ test("async owner closeout remains lifecycle-only in source", () => {
 	);
 	assert.ok(stopSource.indexOf("this.cancelActiveExtensionCustom()") < stopSource.indexOf("this.stopInteractiveTui"));
 	assert.ok(stopSource.indexOf("this.releaseExtensionUiOwners()") < stopSource.indexOf("this.stopInteractiveTui"));
+	assert.match(stopSource, /finally \{\s*this\.isInitialized = false/);
+	assert.ok(stopSource.indexOf("this.unregisterSignalHandlers()") < stopSource.indexOf("if (cleanupFailed) throw cleanupError"));
 	assert.match(
 		interactiveSource,
 		/setTimeout\(InteractiveMode\.handleModelLookupTimeout, 15_000, this, controller, generation\)/,
@@ -355,6 +357,17 @@ test("async owner closeout remains lifecycle-only in source", () => {
 		bashCommandSource.indexOf("this.tuiLifecycleGeneration !== lifecycleGeneration") <
 			bashCommandSource.indexOf("new BashExecutionComponent"),
 	);
+	const executeBashIndex = bashCommandSource.indexOf("await this.session.executeBash");
+	assert.ok(bashCommandSource.indexOf("this.tuiLifecycleGeneration === lifecycleGeneration", executeBashIndex) > executeBashIndex);
+	assert.ok(bashCommandSource.indexOf("this.bashComponent === bashComponent", executeBashIndex) > executeBashIndex);
+	assert.ok(
+		bashCommandSource.indexOf("this.tuiLifecycleGeneration !== lifecycleGeneration", executeBashIndex) > executeBashIndex,
+	);
+	const shutdownStart = interactiveSource.indexOf("private async shutdown");
+	const shutdownEnd = interactiveSource.indexOf("\n\tprivate emergencyTerminalExit", shutdownStart);
+	const shutdownSource = interactiveSource.slice(shutdownStart, shutdownEnd);
+	assert.ok(shutdownSource.lastIndexOf("await this.runtimeHost.dispose()") > shutdownSource.lastIndexOf("await this.stop()"));
+	assert.ok(shutdownSource.lastIndexOf("if (cleanupFailed) throw cleanupError") > shutdownSource.lastIndexOf("await this.runtimeHost.dispose()"));
 
 	const sessionSelectorSource = readFileSync(
 		"packages/coding-agent/src/modes/interactive/components/session-selector.ts",
@@ -1085,4 +1098,150 @@ test("final shutdown rejects late extension bash setup before constructing its l
 	assert.equal(mountedBashOwners, 0);
 	assert.equal(renderCalls, rendersAfterStop);
 	assert.equal(mode.bashComponent, undefined);
+});
+
+test("final shutdown rejects late active bash chunks and completion after display release", async () => {
+	initTheme("dark");
+	let onChunk: ((chunk: string) => void) | undefined;
+	let settleBash: ((result: any) => void) | undefined;
+	let mountedComponent: BashExecutionComponent | undefined;
+	let renderCalls = 0;
+	const mode = Object.create(InteractiveMode.prototype) as any;
+	mode.tuiLifecycleGeneration = 0;
+	mode.runtimeHost = { session: {
+		extensionRunner: { emitUserBash: async () => undefined },
+		isStreaming: false,
+		executeBash: (_command: string, chunk: (value: string) => void) => {
+			onChunk = chunk;
+			return new Promise((resolve) => { settleBash = resolve; });
+		},
+		recordBashResult(): void {},
+		settingsManager: {
+			getFullscreenExitOutput: () => "transcript",
+			getShowTerminalProgress: () => false,
+		},
+		sessionManager: { getCwd: () => process.cwd() },
+	} };
+	mode.ui = createCountingTui();
+	mode.ui.requestRender = (): void => { renderCalls++; };
+	mode.chatContainer = {
+		addChild(component: BashExecutionComponent): void { mountedComponent = component; },
+		invalidateViewportChild(): void {},
+	};
+	mode.pendingMessagesContainer = { addChild(): void {} };
+	mode.pendingBashComponents = [];
+	mode.themeController = { disableAutoSync(): void {} };
+	mode.footer = { dispose(): void {} };
+	mode.footerDataProvider = { dispose(): void {} };
+	mode.isInitialized = false;
+	mode.clearStatusIndicator = (): void => {};
+	mode.clearExtensionTerminalInputListeners = (): void => {};
+	mode.unregisterSignalHandlers = (): void => {};
+	mode.showError = (): void => assert.fail("stale bash completion must not report an error");
+
+	const operation = mode.handleBashCommand("echo late");
+	await waitFor(() => onChunk !== undefined && mountedComponent !== undefined);
+	await mode.stop();
+	mountedComponent?.[TOOL_RELEASE_COMPONENT_RENDER_CACHE]();
+	const rendersAfterStop = renderCalls;
+	onChunk?.("late output");
+	settleBash?.({ exitCode: 0, cancelled: false, truncated: false, output: "late output", fullOutputPath: undefined });
+	await operation;
+
+	assert.equal(mountedComponent?.getOutput(), "");
+	assert.equal((mountedComponent as any).contentContainer.children.length, 0);
+	assert.equal(renderCalls, rendersAfterStop);
+	assert.equal(mode.bashComponent, undefined);
+});
+
+test("final shutdown rejects a late active bash error continuation", async () => {
+	initTheme("dark");
+	let rejectBash: ((error: Error) => void) | undefined;
+	let mountedComponent: BashExecutionComponent | undefined;
+	let errorCalls = 0;
+	let renderCalls = 0;
+	const mode = Object.create(InteractiveMode.prototype) as any;
+	mode.tuiLifecycleGeneration = 0;
+	mode.runtimeHost = { session: {
+		extensionRunner: { emitUserBash: async () => undefined },
+		isStreaming: false,
+		executeBash: () => new Promise((_resolve, reject) => { rejectBash = reject; }),
+		recordBashResult(): void {},
+		settingsManager: {
+			getFullscreenExitOutput: () => "transcript",
+			getShowTerminalProgress: () => false,
+		},
+		sessionManager: { getCwd: () => process.cwd() },
+	} };
+	mode.ui = createCountingTui();
+	mode.ui.requestRender = (): void => { renderCalls++; };
+	mode.chatContainer = {
+		addChild(component: BashExecutionComponent): void { mountedComponent = component; },
+		invalidateViewportChild(): void {},
+	};
+	mode.pendingMessagesContainer = { addChild(): void {} };
+	mode.pendingBashComponents = [];
+	mode.themeController = { disableAutoSync(): void {} };
+	mode.footer = { dispose(): void {} };
+	mode.footerDataProvider = { dispose(): void {} };
+	mode.isInitialized = false;
+	mode.clearStatusIndicator = (): void => {};
+	mode.clearExtensionTerminalInputListeners = (): void => {};
+	mode.unregisterSignalHandlers = (): void => {};
+	mode.showError = (): void => { errorCalls++; };
+
+	const operation = mode.handleBashCommand("exit 1");
+	await waitFor(() => rejectBash !== undefined && mountedComponent !== undefined);
+	await mode.stop();
+	mountedComponent?.[TOOL_RELEASE_COMPONENT_RENDER_CACHE]();
+	const rendersAfterStop = renderCalls;
+	rejectBash?.(new Error("late failure"));
+	await operation;
+
+	assert.equal(errorCalls, 0);
+	assert.equal((mountedComponent as any).contentContainer.children.length, 0);
+	assert.equal(renderCalls, rendersAfterStop);
+	assert.equal(mode.bashComponent, undefined);
+});
+
+test("mode stop preserves its first error while finishing TUI and signal cleanup", async () => {
+	const extensionError = new Error("extension release failed");
+	const terminalError = new Error("terminal dispose failed");
+	let unregisterCalls = 0;
+	const mode = Object.create(InteractiveMode.prototype) as any;
+	mode.tuiLifecycleGeneration = 0;
+	mode.providerAuthenticationGeneration = 0;
+	mode.runtimeHost = { session: { settingsManager: {
+		getFullscreenExitOutput: () => "transcript",
+		getShowTerminalProgress: () => false,
+	} } };
+	mode.ui = createCountingTui();
+	mode.themeController = { disableAutoSync(): void {} };
+	mode.footer = { dispose(): void {} };
+	mode.footerDataProvider = { dispose(): void {} };
+	mode.isInitialized = true;
+	mode.clearStatusIndicator = (): void => {};
+	mode.clearExtensionTerminalInputListeners = (): void => {};
+	mode.releaseExtensionUiOwners = (): void => { throw extensionError; };
+	mode.stopInteractiveTui = async (): Promise<void> => { throw terminalError; };
+	mode.unregisterSignalHandlers = (): void => { unregisterCalls++; };
+
+	await assert.rejects(mode.stop(), (error: unknown) => error === extensionError);
+	assert.equal(mode.isInitialized, false);
+	assert.equal(unregisterCalls, 1);
+});
+
+test("normal shutdown disposes the runtime after TUI stop rejects", async () => {
+	const stopError = new Error("stop failed");
+	let runtimeDisposeCalls = 0;
+	const mode = Object.create(InteractiveMode.prototype) as any;
+	mode.isShuttingDown = false;
+	mode.tuiLifecycleGeneration = 0;
+	mode.ui = { terminal: { drainInput: async (): Promise<void> => {} } };
+	mode.themeController = { disableAutoSync(): void {} };
+	mode.stop = async (): Promise<void> => { throw stopError; };
+	mode.runtimeHost = { dispose: async (): Promise<void> => { runtimeDisposeCalls++; } };
+
+	await assert.rejects(mode.shutdown(), (error: unknown) => error === stopError);
+	assert.equal(runtimeDisposeCalls, 1);
 });
