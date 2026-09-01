@@ -2,6 +2,7 @@ import type { AssistantMessage } from "../../packages/ai/src/types.ts";
 import { AssistantMessageComponent } from "../../packages/coding-agent/src/modes/interactive/components/assistant-message.ts";
 import { UserMessageComponent } from "../../packages/coding-agent/src/modes/interactive/components/user-message.ts";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
+import { RELEASE_COMPONENT_RENDER_CACHE } from "../../packages/tui/src/component-cache.ts";
 import { RetainedContainer } from "../../packages/tui/src/components/retained-item.ts";
 import { readIntegerOption, runBenchmarkMain } from "./benchmark.ts";
 import { BENCHMARK_FIXTURE_VERSION, createTranscriptItems } from "./fixtures.ts";
@@ -75,6 +76,23 @@ await runBenchmarkMain({
 		let clearedEstimatedCachedBytes = -1;
 		let indexedItems = 0;
 		let heightBlocks = 0;
+		let releasedChildren = -1;
+		let releasedRetainedItems = -1;
+		let releasedRetainedComponents = -1;
+		let releasedCachedItems = -1;
+		let releasedCachedLines = -1;
+		let releasedEstimatedCachedBytes = -1;
+		let releasedViewportRecords = -1;
+		let releasedViewportRecordComponentReferences = -1;
+		let releasedViewportRecordRetainedItemReferences = -1;
+		let releasedDirtyViewportRecords = -1;
+		let releasedPreparedViewportRecords = -1;
+		let releasedViewportBlockHeights = -1;
+		let releasedPreparedLineReferences = -1;
+		let releasedKittyLineReferences = -1;
+		let rebuiltViewportRecords = -1;
+		let rebuiltViewportRecordComponentReferences = -1;
+		let rereleasedViewportRecords = -1;
 		let clearedIndexedItems = -1;
 		let clearedHeightBlocks = -1;
 
@@ -95,6 +113,31 @@ await runBenchmarkMain({
 			estimatedCachedBytes = retained.estimatedCachedBytes;
 			indexedItems = viewportIndex.indexedItems;
 			heightBlocks = viewportIndex.heightBlocks;
+
+			transcript[RELEASE_COMPONENT_RENDER_CACHE]();
+			const released = transcript.getRetainedStats();
+			const releasedReferences = transcript.getRetainedLifecycleReferenceCounts();
+			releasedChildren = releasedReferences.children;
+			releasedRetainedItems = releasedReferences.retainedItems;
+			releasedRetainedComponents = releasedReferences.retainedComponents;
+			releasedCachedItems = released.cachedItems;
+			releasedCachedLines = released.cachedLines;
+			releasedEstimatedCachedBytes = released.estimatedCachedBytes;
+			releasedViewportRecords = releasedReferences.viewportRecords;
+			releasedViewportRecordComponentReferences = releasedReferences.viewportRecordComponentReferences;
+			releasedViewportRecordRetainedItemReferences = releasedReferences.viewportRecordRetainedItemReferences;
+			releasedDirtyViewportRecords = releasedReferences.dirtyViewportRecords;
+			releasedPreparedViewportRecords = releasedReferences.preparedViewportRecords;
+			releasedViewportBlockHeights = releasedReferences.viewportBlockHeights;
+			releasedPreparedLineReferences = releasedReferences.preparedLineReferences;
+			releasedKittyLineReferences = releasedReferences.kittyLineReferences;
+
+			transcript.renderViewportTail(width, 40);
+			const rebuiltReferences = transcript.getRetainedLifecycleReferenceCounts();
+			rebuiltViewportRecords = rebuiltReferences.viewportRecords;
+			rebuiltViewportRecordComponentReferences = rebuiltReferences.viewportRecordComponentReferences;
+			transcript[RELEASE_COMPONENT_RENDER_CACHE]();
+			rereleasedViewportRecords = transcript.getRetainedLifecycleReferenceCounts().viewportRecords;
 
 			transcript.clear();
 			const cleared = transcript.getRetainedStats();
@@ -126,6 +169,23 @@ await runBenchmarkMain({
 			estimatedCachedBytes,
 			indexedItems,
 			heightBlocks,
+			releasedChildren,
+			releasedRetainedItems,
+			releasedRetainedComponents,
+			releasedCachedItems,
+			releasedCachedLines,
+			releasedEstimatedCachedBytes,
+			releasedViewportRecords,
+			releasedViewportRecordComponentReferences,
+			releasedViewportRecordRetainedItemReferences,
+			releasedDirtyViewportRecords,
+			releasedPreparedViewportRecords,
+			releasedViewportBlockHeights,
+			releasedPreparedLineReferences,
+			releasedKittyLineReferences,
+			rebuiltViewportRecords,
+			rebuiltViewportRecordComponentReferences,
+			rereleasedViewportRecords,
 			clearedRetainedItems,
 			clearedCachedItems,
 			clearedCachedLines,
