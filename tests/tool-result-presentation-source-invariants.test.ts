@@ -7,6 +7,7 @@ const SOURCE_PATH = "packages/coding-agent/src/core/tool-result-presentation.ts"
 const AGENT_SESSION_SOURCE_PATH = "packages/coding-agent/src/core/agent-session.ts";
 const SDK_SOURCE_PATH = "packages/coding-agent/src/core/sdk.ts";
 const BENCHMARK_SOURCE_PATH = "scripts/bench/tool-result-budgeted-model-view.ts";
+const PACKAGE_JSON_PATH = "package.json";
 
 test("presentation core forbids large-result hot-path allocation regressions", () => {
 	const source = readFileSync(SOURCE_PATH, "utf8");
@@ -144,4 +145,27 @@ test("budgeted model-view benchmark retains the Candidate Gate fixtures and life
 	assert.match(source, /sourceInvariantFullResultSerializations: 0/);
 	assert.match(source, /sourceInvariantTemporaryLineArrays: 0/);
 	assert.match(source, /sourceInvariantObjectPools: 0/);
+});
+
+test("budgeted model-view benchmark command and output stamp the exact measured revision", () => {
+	const packageJson = JSON.parse(readFileSync(PACKAGE_JSON_PATH, "utf8")) as {
+		scripts?: Record<string, string>;
+	};
+	assert.equal(
+		packageJson.scripts?.["bench:tool-result-budgeted-model-view"],
+		"node --expose-gc --experimental-strip-types ./scripts/bench/tool-result-budgeted-model-view.ts",
+	);
+	const source = readFileSync(BENCHMARK_SOURCE_PATH, "utf8");
+	assert.match(source, /schemaVersion: 1/);
+	assert.match(source, /benchmark: "tool-result-budgeted-model-view"/);
+	assert.match(source, /commit: git\(\["rev-parse", "HEAD"\]\)/);
+	assert.match(source, /branch: git\(\["branch", "--show-current"\]\)/);
+	assert.match(source, /worktree: git\(\["rev-parse", "--show-toplevel"\]\)/);
+	assert.match(source, /worktreeStatus: git\(\["status", "--short"\]\)/);
+	assert.match(source, /heapProfilerSamplingIntervalBytes: 1024/);
+	assert.match(source, /terminalBoundaryScaling/);
+	assert.match(source, /graphemeBoundaryScaling/);
+	assert.match(source, /parallelScopes/);
+	assert.match(source, /lifecycle/);
+	assert.match(source, /sourceInvariants/);
 });
