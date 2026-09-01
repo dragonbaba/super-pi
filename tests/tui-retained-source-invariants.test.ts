@@ -168,7 +168,8 @@ test("allocation hot paths keep cache hits and mutation writes allocation-free",
 
 test("Main reuses mutation tokens and Alt avoids duplicate no-op frame copies", () => {
 	const mainText = readFileSync(MAIN_SCREEN_PATH, "utf8");
-	assert.match(mainText, /private readonly viewportMutationTokens: unknown\[\] = \[\]/);
+	assert.match(mainText, /private viewportMutationTokens: unknown\[\] = \[\]/);
+	assert.match(mainText, /releaseMountedComponentsAfterDispose[\s\S]*this\.viewportMutationTokens = \[\]/);
 	assert.doesNotMatch(mainText, /childTokens\s*:/);
 
 	const altText = readFileSync(ALT_SCREEN_PATH, "utf8");
