@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import ts from "typescript";
+import { RELEASE_COMPONENT_RENDER_CACHE } from "../packages/tui/src/component-cache.ts";
 import { Container, type Component, type TUI } from "../packages/tui/src/tui.ts";
 import { TuiAltScreen } from "../packages/tui/src/tui-alt-screen.ts";
 import { TuiMainScreen } from "../packages/tui/src/tui-main-screen.ts";
@@ -113,10 +114,15 @@ function assertScratchReleased(tui: TuiAltScreen): void {
 
 class CountingRoot extends VStack {
 	invalidateCalls = 0;
+	releaseCalls = 0;
 
 	override invalidate(): void {
 		this.invalidateCalls++;
 		super.invalidate();
+	}
+
+	[RELEASE_COMPONENT_RENDER_CACHE](): void {
+		this.releaseCalls++;
 	}
 }
 
@@ -127,16 +133,22 @@ class ThrowingRoot extends VStack {
 	}
 }
 
-class CountingContainer extends Container {
-	invalidateCalls = 0;
+class ThrowingCacheRoot extends VStack {
+	[RELEASE_COMPONENT_RENDER_CACHE](): void {
+		throw new Error("fixture cache release failure");
+	}
+}
 
-	override invalidate(): void {
-		this.invalidateCalls++;
-		super.invalidate();
+class CountingCacheContainer extends Container {
+	releaseCalls = 0;
+
+	[RELEASE_COMPONENT_RENDER_CACHE](): void {
+		this.releaseCalls++;
 	}
 }
 
 class ReentrantStartContainer extends Container {
+	invalidateCalls = 0;
 	startError: unknown;
 	private readonly tui: TuiMainScreen;
 
@@ -146,7 +158,10 @@ class ReentrantStartContainer extends Container {
 	}
 
 	override invalidate(): void {
-		super.invalidate();
+		this.invalidateCalls++;
+	}
+
+	[RELEASE_COMPONENT_RENDER_CACHE](): void {
 		try {
 			this.tui.start();
 		} catch (error) {
@@ -223,7 +238,7 @@ test("Main concurrent disposal releases mounted caches once and closes start ree
 	const tui = new TuiMainScreen(terminal, false);
 	const root = new ReentrantStartContainer(tui);
 	const tree = createMainEditorTree(tui, root);
-	const countingRoot = new CountingContainer();
+	const countingRoot = new CountingCacheContainer();
 	const countingNested = createMainEditorTree(tui, countingRoot);
 	tui.start();
 	tui.renderNow();
@@ -236,10 +251,26 @@ test("Main concurrent disposal releases mounted caches once and closes start ree
 	await Promise.all([first, second]);
 	await tui.dispose({ preserveScreen: true });
 	assert.match(String(root.startError), /Cannot start a disposed TUI/);
+	assert.equal(root.invalidateCalls, 0);
 	assert.equal(terminal.started, false);
-	assert.equal(countingRoot.invalidateCalls, 1);
+	assert.equal(countingRoot.releaseCalls, 1);
 	assertCacheReleased(tree.editor);
 	assertCacheReleased(countingNested.editor);
+});
+
+test("Main final disposal continues cache release after an earlier sibling throws", async () => {
+	const tui = new TuiMainScreen(new FakeTerminal(120, 40), false);
+	const throwingRoot = new ThrowingCacheRoot([]);
+	tui.addChild(throwingRoot);
+	const laterTree = createMainEditorTree(tui);
+	tui.start();
+	tui.renderNow();
+	assertCachePrimed(laterTree.editor);
+
+	await assert.rejects(tui.dispose({ preserveScreen: true }), /fixture cache release failure/);
+	assertCacheReleased(laterTree.editor);
+	assert.equal(tui.children[0], throwingRoot);
+	assert.equal(tui.children[1], laterTree.root);
 });
 
 test("layout-root replacement releases nested Editor cache and Alt scratch immediately", async () => {
@@ -279,6 +310,8 @@ test("same layout root remains a no-op", async () => {
 	assert.equal(root.invalidateCalls, 0);
 	assertCachePrimed(nested.editor);
 	await tui.dispose({ preserveScreen: true });
+	assert.equal(root.invalidateCalls, 0);
+	assert.equal(root.releaseCalls, 1);
 });
 
 test("final dispose releases the root and Editor cache while every owner remains reachable", async () => {
@@ -332,7 +365,8 @@ test("concurrent and repeated dispose release mounted components exactly once", 
 	assert.equal(first, second);
 	await Promise.all([first, second]);
 	await tui.dispose({ preserveScreen: true });
-	assert.equal(root.invalidateCalls, 1);
+	assert.equal(root.invalidateCalls, 0);
+	assert.equal(root.releaseCalls, 1);
 	assertCacheReleased(nested.editor);
 	assertScratchReleased(tui);
 });
@@ -362,7 +396,7 @@ test("a stopped root can transfer to a new Alt owner after the old owner is disp
 	await newTui.dispose({ preserveScreen: true });
 });
 
-test("replacement and final disposal release ownership even when root invalidation throws", async () => {
+test("replacement and final disposal release ownership across invalidation and cache-release errors", async () => {
 	const replacementTui = new TuiAltScreen(new FakeTerminal(120, 40), false, undefined, { mouse: false });
 	const replacementNested = createNestedRoot(replacementTui);
 	const throwingReplacementRoot = new ThrowingRoot([replacementNested.container]);
@@ -380,11 +414,11 @@ test("replacement and final disposal release ownership even when root invalidati
 
 	const disposeTui = new TuiAltScreen(new FakeTerminal(120, 40), false, undefined, { mouse: false });
 	const disposeNested = createNestedRoot(disposeTui);
-	const throwingDisposeRoot = new ThrowingRoot([disposeNested.container]);
+	const throwingDisposeRoot = new ThrowingCacheRoot([disposeNested.container]);
 	disposeTui.setLayoutRoot(throwingDisposeRoot);
 	disposeTui.start();
 	disposeTui.renderNow();
-	await assert.rejects(disposeTui.dispose({ preserveScreen: true }), /fixture invalidate failure/);
+	await assert.rejects(disposeTui.dispose({ preserveScreen: true }), /fixture cache release failure/);
 	assertCacheReleased(disposeNested.editor);
 	assert.equal(altDiagnostics(disposeTui).layoutRoot, undefined);
 	assert.equal(altDiagnostics(disposeTui).currentLayout, undefined);
@@ -422,9 +456,10 @@ test("lifecycle cleanup remains outside frame and recoverable-stop hot paths", a
 	}
 	visit(setLayoutRoot);
 	assert.equal(forbiddenAllocations, 0);
-	assert.match(
-		tuiText,
-		/protected releaseMountedComponentsAfterDispose\(\): void \{\s*this\.invalidate\(\);\s*\}/,
+	assert.match(tuiText, /function releaseComponentRenderCaches\(component: Component\)/);
+	assert.doesNotMatch(
+		tuiText.match(/protected releaseMountedComponentsAfterDispose[\s\S]*?\n\t}\n/)?.[0] ?? "",
+		/this\.invalidate\(\)/,
 	);
 	assert.match(tuiText, /finishDispose[\s\S]*releaseMountedComponentsAfterDispose\(\)/);
 	assert.doesNotMatch(tuiText.match(/private async finishTerminalStop[\s\S]*?\n\t}\n/)?.[0] ?? "", /releaseMountedComponents/);
