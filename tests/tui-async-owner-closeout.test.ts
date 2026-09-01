@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -304,6 +304,27 @@ test("async owner closeout remains lifecycle-only in source", () => {
 	assert.match(extensionCustomSource, /this\.activeExtensionCustomCancel = cancel/);
 	assert.match(extensionCustomSource, /this\.tuiLifecycleGeneration !== lifecycleGeneration/);
 	assert.match(extensionCustomSource, /c\.dispose\?\.\(\)/);
+	const externalEditorStart = interactiveSource.indexOf("private async handleOpenExternalEditor");
+	const externalEditorEnd = interactiveSource.indexOf("\n\tprivate runExternalEditor", externalEditorStart);
+	const externalEditorSource = interactiveSource.slice(externalEditorStart, externalEditorEnd);
+	assert.match(externalEditorSource, /const lifecycleGeneration = this\.tuiLifecycleGeneration/);
+	assert.match(externalEditorSource, /lifecycleGeneration !== this\.tuiLifecycleGeneration/);
+	const modelSelectorStart = interactiveSource.indexOf("private showModelSelector");
+	const modelSelectorEnd = interactiveSource.indexOf("\n\tprivate showModelsSelector", modelSelectorStart);
+	const modelSelectorSource = interactiveSource.slice(modelSelectorStart, modelSelectorEnd);
+	assert.match(modelSelectorSource, /const lifecycleGeneration = this\.tuiLifecycleGeneration/);
+	assert.match(modelSelectorSource, /lifecycleGeneration !== this\.tuiLifecycleGeneration/);
+	const shareStart = interactiveSource.indexOf("private async handleShareCommand");
+	const shareEnd = interactiveSource.indexOf("\n\tprivate async handleCopyCommand", shareStart);
+	const shareSource = interactiveSource.slice(shareStart, shareEnd);
+	assert.ok(
+		shareSource.indexOf("const lifecycleGeneration = this.tuiLifecycleGeneration") <
+			shareSource.indexOf("await this.session.exportToHtml(tmpFile)"),
+	);
+	assert.ok(
+		shareSource.indexOf("lifecycleGeneration !== this.tuiLifecycleGeneration") >
+			shareSource.indexOf("await this.session.exportToHtml(tmpFile)"),
+	);
 
 	const sessionSelectorSource = readFileSync(
 		"packages/coding-agent/src/modes/interactive/components/session-selector.ts",
@@ -686,4 +707,158 @@ test("disposed session selector rejects a late deletion continuation", async () 
 	assert.equal(state.header.statusTimeout, null);
 	assert.equal(requestRenderCalls, rendersAfterDispose);
 	assert.equal(state.currentSessions.length, 1);
+});
+
+test("final shutdown rejects a late main external-editor completion", async () => {
+	let settleEditor: ((result: { status: "complete"; content: string }) => void) | undefined;
+	let setTextCalls = 0;
+	let startCalls = 0;
+	let renderCalls = 0;
+	const mode = Object.create(InteractiveMode.prototype) as any;
+	mode.tuiLifecycleGeneration = 0;
+	mode.runtimeHost = {
+		session: { settingsManager: { getExternalEditorCommand: () => "fixture-editor" } },
+	};
+	mode.editor = {
+		getText: () => "before",
+		setText(): void { setTextCalls++; },
+	};
+	mode.ui = {
+		stop: async (): Promise<void> => {},
+		start(): void { startCalls++; },
+		requestRender(): void { renderCalls++; },
+	};
+	mode.runExternalEditor = () => new Promise((resolve) => { settleEditor = resolve; });
+
+	const operation = mode.handleOpenExternalEditor();
+	await Promise.resolve();
+	await Promise.resolve();
+	assert.ok(settleEditor);
+	mode.tuiLifecycleGeneration++;
+	settleEditor?.({ status: "complete", content: "late" });
+	await operation;
+
+	assert.equal(setTextCalls, 0);
+	assert.equal(startCalls, 0);
+	assert.equal(renderCalls, 0);
+});
+
+test("final shutdown rejects a late model-selector selection", async () => {
+	initTheme("dark");
+	let settleModel: (() => void) | undefined;
+	let selector: any;
+	let doneCalls = 0;
+	let footerCalls = 0;
+	let statusCalls = 0;
+	let warningCalls = 0;
+	let easterEggCalls = 0;
+	const model = { provider: "fixture", id: "fixture-model" } as any;
+	const mode = Object.create(InteractiveMode.prototype) as any;
+	mode.tuiLifecycleGeneration = 0;
+	mode.ui = createCountingTui();
+	mode.runtimeHost = { session: {
+		model: undefined,
+		settingsManager: {
+			getDefaultProvider: () => undefined,
+			getDefaultModel: () => undefined,
+		},
+		modelRuntime: {
+			getAvailableSnapshot: () => [model],
+			getModel: () => model,
+			refresh: async () => ({ aborted: false, errors: new Map() }),
+		},
+		scopedModels: [],
+		setModel: () => new Promise<void>((resolve) => { settleModel = resolve; }),
+	} };
+	mode.footer = { invalidate(): void { footerCalls++; } };
+	mode.updateEditorBorderColor = (): void => {};
+	mode.showStatus = (): void => { statusCalls++; };
+	mode.showError = (): void => assert.fail("late model selection must not report an error");
+	mode.observeLifecyclePromise = (): void => { warningCalls++; };
+	mode.maybeWarnAboutAnthropicSubscriptionAuth = async (): Promise<void> => {};
+	mode.checkDaxnutsEasterEgg = (): void => { easterEggCalls++; };
+	mode.showSelector = (create: (done: () => void) => { component: unknown }) => {
+		selector = create(() => { doneCalls++; }).component;
+	};
+
+	mode.showModelSelector();
+	const selection = (selector as any).onSelectCallback(model) as Promise<void>;
+	assert.ok(settleModel);
+	mode.tuiLifecycleGeneration++;
+	settleModel?.();
+	await selection;
+	selector.dispose();
+
+	assert.equal(doneCalls, 0);
+	assert.equal(footerCalls, 0);
+	assert.equal(statusCalls, 0);
+	assert.equal(warningCalls, 0);
+	assert.equal(easterEggCalls, 0);
+});
+
+test("final shutdown rejects a late share export before mounting its loader", async () => {
+	initTheme("dark");
+	const directory = await mkdtemp(path.join(os.tmpdir(), "super-pi-share-export-owner-"));
+	const executable = path.join(directory, "gh");
+	const command = path.join(directory, "gh.cmd");
+	await writeFile(executable, "#!/bin/sh\nexit 0\n", "utf8");
+	await chmod(executable, 0o755);
+	await writeFile(command, "@exit /b 0\r\n", "utf8");
+	const previousPath = process.env.PATH;
+	const previousTmp = process.env.TMP;
+	const previousTemp = process.env.TEMP;
+	const previousTmpdir = process.env.TMPDIR;
+	process.env.PATH = `${directory}${path.delimiter}${previousPath ?? ""}`;
+	process.env.TMP = directory;
+	process.env.TEMP = directory;
+	process.env.TMPDIR = directory;
+	try {
+		let settleExport: (() => void) | undefined;
+		let mountedOwners = 0;
+		let focusCalls = 0;
+		let renderCalls = 0;
+		let exportedPath = "";
+		const mode = Object.create(InteractiveMode.prototype) as any;
+		mode.tuiLifecycleGeneration = 0;
+		mode.runtimeHost = { session: {
+			exportToHtml: async (filePath: string) => {
+				exportedPath = filePath;
+				await new Promise<void>((resolve) => { settleExport = resolve; });
+				await writeFile(filePath, "late export", "utf8");
+			},
+		} };
+		mode.ui = {
+			requestRender(): void { renderCalls++; },
+			setFocus(): void { focusCalls++; },
+		};
+		mode.editor = {};
+		mode.editorContainer = {
+			clear(): void {},
+			addChild(): void { mountedOwners++; },
+		};
+		mode.showError = (): void => {};
+		mode.showStatus = (): void => {};
+
+		const operation = mode.handleShareCommand();
+		await Promise.resolve();
+		assert.ok(settleExport);
+		mode.tuiLifecycleGeneration++;
+		settleExport?.();
+		await operation;
+
+		assert.equal(mountedOwners, 0);
+		assert.equal(focusCalls, 0);
+		assert.equal(renderCalls, 0);
+		await assert.rejects(access(exportedPath));
+	} finally {
+		if (previousPath === undefined) delete process.env.PATH;
+		else process.env.PATH = previousPath;
+		if (previousTmp === undefined) delete process.env.TMP;
+		else process.env.TMP = previousTmp;
+		if (previousTemp === undefined) delete process.env.TEMP;
+		else process.env.TEMP = previousTemp;
+		if (previousTmpdir === undefined) delete process.env.TMPDIR;
+		else process.env.TMPDIR = previousTmpdir;
+		await rm(directory, { recursive: true, force: true });
+	}
 });
