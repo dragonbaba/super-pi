@@ -2,7 +2,7 @@
  * Armin says hi! A fun easter egg with animated XBM art.
  */
 
-import type { Component, TUI } from "@super-pi/tui";
+import { RELEASE_COMPONENT_RENDER_CACHE, type Component, type TUI } from "@super-pi/tui";
 import { theme } from "../theme/theme.ts";
 
 // XBM image: 31x36 pixels, LSB first, 1=background, 0=foreground
@@ -58,7 +58,7 @@ function buildFinalGrid(): string[][] {
 }
 
 export class ArminComponent implements Component {
-	private ui: TUI;
+	private ui: TUI | null;
 	private interval: ReturnType<typeof setInterval> | null = null;
 	private effect: Effect;
 	private finalGrid: string[][];
@@ -81,6 +81,15 @@ export class ArminComponent implements Component {
 
 	invalidate(): void {
 		this.cachedWidth = 0;
+	}
+
+	[RELEASE_COMPONENT_RENDER_CACHE](): void {
+		this.releaseAnimationOwner();
+	}
+
+	setTui(ui: TUI): void {
+		this.ui = ui;
+		this.startAnimation();
 	}
 
 	render(width: number): string[] {
@@ -178,11 +187,12 @@ export class ArminComponent implements Component {
 	}
 
 	private startAnimation(): void {
+		this.stopAnimation();
 		const fps = this.effect === "glitch" ? 60 : 30;
 		this.interval = setInterval(() => {
 			const done = this.tickEffect();
 			this.updateDisplay();
-			this.ui.requestRender();
+			this.ui?.requestRender();
 			if (done) {
 				this.stopAnimation();
 			}
@@ -376,7 +386,15 @@ export class ArminComponent implements Component {
 		this.gridVersion++;
 	}
 
-	dispose(): void {
+	private releaseAnimationOwner(): void {
 		this.stopAnimation();
+		this.ui = null;
+		this.cachedLines = [];
+		this.cachedWidth = 0;
+		this.cachedVersion = -1;
+	}
+
+	dispose(): void {
+		this.releaseAnimationOwner();
 	}
 }

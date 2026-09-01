@@ -1,4 +1,4 @@
-import { type Component, Loader, type TUI } from "@super-pi/tui";
+import { type Component, Loader, RELEASE_COMPONENT_RENDER_CACHE, type TUI } from "@super-pi/tui";
 import type { WorkingIndicatorOptions } from "../../../core/extensions/index.ts";
 import { theme } from "../theme/theme.ts";
 import { CountdownTimer } from "./countdown-timer.ts";
@@ -21,8 +21,8 @@ export class StatusIndicator extends Loader {
 		this.kind = kind;
 	}
 
-	dispose(): void {
-		this.stop();
+	override dispose(): void {
+		super.dispose();
 	}
 }
 
@@ -65,9 +65,18 @@ export class RetryStatusIndicator extends StatusIndicator {
 	}
 
 	override dispose(): void {
+		this.releaseCountdown();
+		super.dispose();
+	}
+
+	override [RELEASE_COMPONENT_RENDER_CACHE](): void {
+		this.releaseCountdown();
+		super[RELEASE_COMPONENT_RENDER_CACHE]();
+	}
+
+	private releaseCountdown(): void {
 		this.countdown?.dispose();
 		this.countdown = undefined;
-		super.dispose();
 	}
 }
 

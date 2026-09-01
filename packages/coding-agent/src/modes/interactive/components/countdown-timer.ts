@@ -4,6 +4,9 @@
 
 import type { TUI } from "@super-pi/tui";
 
+function ignoreCountdownTick(_seconds: number): void {}
+function ignoreCountdownExpiry(): void {}
+
 export class CountdownTimer {
 	private intervalId: ReturnType<typeof setInterval> | undefined;
 	private remainingSeconds: number;
@@ -35,5 +38,8 @@ export class CountdownTimer {
 			clearInterval(this.intervalId);
 			this.intervalId = undefined;
 		}
+		this.tui = undefined;
+		this.onTick = ignoreCountdownTick;
+		this.onExpire = ignoreCountdownExpiry;
 	}
 }
