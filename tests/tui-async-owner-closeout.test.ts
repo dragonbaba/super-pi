@@ -375,6 +375,23 @@ test("async owner closeout remains lifecycle-only in source", () => {
 	assert.match(startupRefreshSource, /InteractiveMode\.handleStartupModelRefreshTimeout/);
 	assert.doesNotMatch(startupRefreshSource, /setTimeout\(\(\)|\.then\(|\.catch\(|\.finally\(/);
 	assert.ok(stopSource.indexOf("this.cancelActiveStartupModelRefresh()") < stopSource.indexOf("this.stopInteractiveTui"));
+	const cycleModelStart = interactiveSource.indexOf("private async cycleModel");
+	const cycleModelEnd = interactiveSource.indexOf("\n\tprivate toggleToolOutputExpansion", cycleModelStart);
+	const cycleModelSource = interactiveSource.slice(cycleModelStart, cycleModelEnd);
+	assert.ok(cycleModelSource.indexOf("const lifecycleGeneration = this.tuiLifecycleGeneration") < cycleModelSource.indexOf("await this.session.cycleModel(direction)"));
+	assert.equal(cycleModelSource.match(/this\.tuiLifecycleGeneration !== lifecycleGeneration/g)?.length, 2);
+	const treeStart = interactiveSource.indexOf("private showTreeSelector");
+	const treeEnd = interactiveSource.indexOf("\n\tprivate showSessionSelector", treeStart);
+	const treeSource = interactiveSource.slice(treeStart, treeEnd);
+	assert.ok(treeSource.indexOf("const lifecycleGeneration = this.tuiLifecycleGeneration") < treeSource.indexOf("await this.session.navigateTree"));
+	assert.ok(treeSource.indexOf("this.tuiLifecycleGeneration !== lifecycleGeneration", treeSource.indexOf("await this.session.navigateTree")) > 0);
+	const reloadStart = interactiveSource.indexOf("private async handleReloadCommand");
+	const reloadEnd = interactiveSource.indexOf("\n\tprivate async handleExportCommand", reloadStart);
+	const reloadSource = interactiveSource.slice(reloadStart, reloadEnd);
+	assert.ok(reloadSource.indexOf("const lifecycleGeneration = this.tuiLifecycleGeneration") < reloadSource.indexOf("await this.session.reload"));
+	assert.match(reloadSource, /const restoreChatBeforeSessionStart = \(\) => \{\s*if \(this\.tuiLifecycleGeneration !== lifecycleGeneration\) return/);
+	assert.ok(reloadSource.indexOf("this.tuiLifecycleGeneration !== lifecycleGeneration", reloadSource.indexOf("await this.session.reload")) > 0);
+	assert.doesNotMatch(`${cycleModelSource}\n${treeSource}\n${reloadSource}`, /Promise\.all|new AbortController|\.then\(|\.catch\(|\.finally\(/);
 	const bashCommandStart = interactiveSource.indexOf("private async handleBashCommand");
 	const bashCommandEnd = interactiveSource.indexOf("\n\tprivate async handleCompactCommand", bashCommandStart);
 	const bashCommandSource = interactiveSource.slice(bashCommandStart, bashCommandEnd);
@@ -835,6 +852,168 @@ test("interactive stop cancels the startup model catalog refresh and owned deadl
 		else process.env.SP_OFFLINE = originalOffline;
 		settleRefresh?.({ aborted: true, errors: new Map() });
 	}
+});
+
+test("final shutdown rejects a late keyboard model-cycle continuation", async () => {
+	let settleCycle: ((value: any) => void) | undefined;
+	let footerCalls = 0;
+	let borderCalls = 0;
+	let statusCalls = 0;
+	let errorCalls = 0;
+	const mode = Object.create(InteractiveMode.prototype) as any;
+	mode.tuiLifecycleGeneration = 0;
+	mode.runtimeHost = { session: {
+		cycleModel: () => new Promise((resolve) => { settleCycle = resolve; }),
+		scopedModels: [],
+	} };
+	mode.footer = { invalidate(): void { footerCalls++; } };
+	mode.updateEditorBorderColor = (): void => { borderCalls++; };
+	mode.showStatus = (): void => { statusCalls++; };
+	mode.showError = (): void => { errorCalls++; };
+	mode.maybeWarnAboutAnthropicSubscriptionAuth = async (): Promise<void> => {};
+	mode.observeLifecyclePromise = (): void => {};
+
+	const operation = mode.cycleModel("forward") as Promise<void>;
+	await Promise.resolve();
+	mode.tuiLifecycleGeneration++;
+	settleCycle?.({ model: { id: "late-model", name: "Late", reasoning: false }, thinkingLevel: "off" });
+	await operation;
+
+	assert.equal(footerCalls, 0);
+	assert.equal(borderCalls, 0);
+	assert.equal(statusCalls, 0);
+	assert.equal(errorCalls, 0);
+});
+
+test("final shutdown rejects a late tree-navigation continuation after selector close", async () => {
+	initTheme("dark");
+	let settleNavigation: ((value: any) => void) | undefined;
+	let selector: any;
+	let selectorShows = 0;
+	let statusCalls = 0;
+	let transcriptRebuilds = 0;
+	let renderCalls = 0;
+	const tree = [{
+		entry: {
+			id: "target",
+			parentId: null,
+			type: "message",
+			message: { role: "user", content: "target" },
+			timestamp: new Date().toISOString(),
+		},
+		children: [],
+	}];
+	const mode = Object.create(InteractiveMode.prototype) as any;
+	mode.tuiLifecycleGeneration = 0;
+	mode.runtimeHost = { session: {
+		isStreaming: false,
+		navigateTree: () => new Promise((resolve) => { settleNavigation = resolve; }),
+		sessionManager: {
+			getTree: () => tree,
+			getLeafId: () => "current",
+			appendLabelChange(): void {},
+		},
+		settingsManager: {
+			getTreeFilterMode: () => "default",
+			getBranchSummarySkipPrompt: () => true,
+		},
+	} };
+	mode.ui = { terminal: { rows: 40 }, requestRender(): void { renderCalls++; } };
+	mode.showSelector = (factory: (done: () => void) => { component: unknown }): void => {
+		selectorShows++;
+		selector = factory((): void => {}).component;
+	};
+	mode.showStatus = (): void => { statusCalls++; };
+	mode.showError = (): void => assert.fail("stale navigation must not report an error");
+	mode.chatContainer = { clear(): void { transcriptRebuilds++; } };
+	mode.renderInitialMessages = (): void => { transcriptRebuilds++; };
+	mode.editor = { getText: () => "", setText(): void {} };
+	mode.defaultEditor = { onEscape: undefined };
+	mode.flushCompactionQueue = async (): Promise<void> => {};
+	mode.clearStatusIndicator = (): void => {};
+
+	mode.showTreeSelector();
+	const operation = selector.getTreeList().onSelect("target") as Promise<void>;
+	await Promise.resolve();
+	mode.tuiLifecycleGeneration++;
+	settleNavigation?.({ aborted: true, cancelled: false });
+	await operation;
+
+	assert.equal(selectorShows, 1);
+	assert.equal(statusCalls, 0);
+	assert.equal(transcriptRebuilds, 0);
+	assert.equal(renderCalls, 0);
+
+	mode.showTreeSelector();
+	const successOperation = selector.getTreeList().onSelect("target") as Promise<void>;
+	await Promise.resolve();
+	mode.tuiLifecycleGeneration++;
+	settleNavigation?.({ aborted: false, cancelled: false, editorText: "late" });
+	await successOperation;
+
+	assert.equal(selectorShows, 2);
+	assert.equal(statusCalls, 0);
+	assert.equal(transcriptRebuilds, 0);
+	assert.equal(renderCalls, 0);
+});
+
+test("final shutdown rejects reload callbacks and completion UI", async () => {
+	initTheme("dark");
+	let settleReload: (() => void) | undefined;
+	let beforeSessionStart: (() => void | Promise<void>) | undefined;
+	let rebuildCalls = 0;
+	let postReloadCalls = 0;
+	let statusCalls = 0;
+	let errorCalls = 0;
+	const editorChildren: unknown[] = [];
+	const mode = Object.create(InteractiveMode.prototype) as any;
+	mode.tuiLifecycleGeneration = 0;
+	mode.runtimeHost = { session: {
+		isStreaming: false,
+		isCompacting: false,
+		reload(options: { beforeSessionStart?: () => void | Promise<void> }): Promise<void> {
+			beforeSessionStart = options.beforeSessionStart;
+			return new Promise((resolve) => { settleReload = resolve; });
+		},
+		settingsManager: {
+			getHideThinkingBlock: () => false,
+			getOutputPad: () => 0,
+		},
+		resourceLoader: { getThemes: () => ({ themes: [] }) },
+		extensionRunner: {},
+		modelRuntime: { getError: () => undefined },
+	} };
+	mode.resetExtensionUI = (): void => {};
+	mode.editor = { render: () => [] };
+	mode.editorContainer = {
+		clear(): void { editorChildren.length = 0; },
+		addChild(child: unknown): void { editorChildren.push(child); },
+	};
+	mode.ui = { setFocus(): void {}, requestRender(): void {} };
+	mode.rebuildChatFromMessages = (): void => { rebuildCalls++; };
+	mode.keybindings = { reload(): void { postReloadCalls++; } };
+	mode.builtInHeader = undefined;
+	mode.customHeader = undefined;
+	mode.themeController = { applyFromSettings: async (): Promise<void> => { postReloadCalls++; } };
+	mode.applyRuntimeSettings = (): void => { postReloadCalls++; };
+	mode.setupAutocompleteProvider = (): void => { postReloadCalls++; };
+	mode.setupExtensionShortcuts = (): void => { postReloadCalls++; };
+	mode.showLoadedResources = (): void => { postReloadCalls++; };
+	mode.maybeSaveImplicitProjectTrustAfterReload = (): boolean => false;
+	mode.showStatus = (): void => { statusCalls++; };
+	mode.showError = (): void => { errorCalls++; };
+
+	const operation = mode.handleReloadCommand() as Promise<void>;
+	await waitFor(() => settleReload !== undefined);
+	mode.tuiLifecycleGeneration++;
+	await beforeSessionStart?.();
+	settleReload?.();
+	await operation;
+
+	assert.equal(rebuildCalls, 0);
+	assert.equal(postReloadCalls, 0);
+	assert.equal(statusCalls, 0);
+	assert.equal(errorCalls, 0);
 });
 
 test("interactive stop settles a pending extension custom factory and disposes its late result", async () => {
