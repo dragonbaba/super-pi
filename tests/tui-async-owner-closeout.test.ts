@@ -321,6 +321,11 @@ test("async owner closeout remains lifecycle-only in source", () => {
 	const modelCommandStart = interactiveSource.indexOf("private async handleModelCommand");
 	const modelCommandSource = interactiveSource.slice(modelCommandStart, modelLookupStart);
 	assert.match(modelCommandSource, /const commandGeneration = \+\+this\.modelCommandGeneration/);
+	assert.ok(modelCommandSource.indexOf("this.cancelActiveModelLookup()") < modelCommandSource.indexOf("if (!searchTerm)"));
+	assert.ok(
+		modelCommandSource.indexOf("this.cancelActiveModelLookup()") <
+			modelCommandSource.indexOf("await this.findExactModelMatch(searchTerm)"),
+	);
 	assert.match(modelCommandSource, /this\.modelCommandGeneration !== commandGeneration/);
 	const extensionCustomStart = interactiveSource.indexOf("private async showExtensionCustom");
 	const extensionCustomEnd = interactiveSource.indexOf("\n\t/**", extensionCustomStart);
@@ -328,6 +333,14 @@ test("async owner closeout remains lifecycle-only in source", () => {
 	assert.match(extensionCustomSource, /this\.activeExtensionCustomCancel = cancel/);
 	assert.match(extensionCustomSource, /this\.tuiLifecycleGeneration !== lifecycleGeneration/);
 	assert.match(extensionCustomSource, /c\.dispose\?\.\(\)/);
+	assert.match(extensionCustomSource, /let overlayHandle: OverlayHandle \| undefined/);
+	assert.match(extensionCustomSource, /overlayHandle\?\.hide\(\)/);
+	assert.doesNotMatch(extensionCustomSource, /this\.ui\.hideOverlay\(\)/);
+	const cancelLoginStart = interactiveSource.indexOf("private cancelActiveLoginDialog");
+	const cancelLoginEnd = interactiveSource.indexOf("\n\tprivate cancelActiveProviderAuthentication", cancelLoginStart);
+	const cancelLoginSource = interactiveSource.slice(cancelLoginStart, cancelLoginEnd);
+	assert.ok(cancelLoginSource.indexOf("this.activeLoginDialog = undefined") < cancelLoginSource.indexOf("this.cancelActiveAuthSelector()"));
+	assert.ok(cancelLoginSource.indexOf("this.cancelActiveAuthSelector()") < cancelLoginSource.indexOf("dialog?.cancel()"));
 	const externalEditorStart = interactiveSource.indexOf("private async handleOpenExternalEditor");
 	const externalEditorEnd = interactiveSource.indexOf("\n\tprivate runExternalEditor", externalEditorStart);
 	const externalEditorSource = interactiveSource.slice(externalEditorStart, externalEditorEnd);
@@ -665,6 +678,55 @@ test("a superseded model lookup cannot open its stale selector", async () => {
 	assert.deepEqual(selectorSearches, ["second"]);
 });
 
+test("a cached model command cancels the previous uncached lookup before selecting", async () => {
+	let availableModels: any[] = [];
+	let refreshSignal: AbortSignal | undefined;
+	let settleRefresh: ((value: { aborted: boolean; errors: Map<string, Error> }) => void) | undefined;
+	const selectedModels: string[] = [];
+	let warningCalls = 0;
+	const mode = Object.create(InteractiveMode.prototype) as any;
+	mode.runtimeHost = { session: {
+		scopedModels: [],
+		modelRuntime: {
+			getAvailableSnapshot: () => availableModels,
+			refresh(options: { signal: AbortSignal }): Promise<{ aborted: boolean; errors: Map<string, Error> }> {
+				refreshSignal = options.signal;
+				return new Promise((resolve) => { settleRefresh = resolve; });
+			},
+		},
+		setModel: async (model: { id: string }): Promise<void> => { selectedModels.push(model.id); },
+	} };
+	mode.tuiLifecycleGeneration = 0;
+	mode.modelCommandGeneration = 0;
+	mode.modelLookupGeneration = 0;
+	mode.modelLookupTimedOutGeneration = 0;
+	mode.footer = { invalidate(): void {} };
+	mode.showStatus = (): void => {};
+	mode.showWarning = (): void => { warningCalls++; };
+	mode.showError = (): void => assert.fail("cached replacement must not fail");
+	mode.showModelSelector = (): void => assert.fail("exact cached model must not open the selector");
+	mode.updateEditorBorderColor = (): void => {};
+	mode.observeLifecyclePromise = (): void => {};
+	mode.maybeWarnAboutAnthropicSubscriptionAuth = async (): Promise<void> => {};
+	mode.checkDaxnutsEasterEgg = (): void => {};
+
+	const first = mode.handleModelCommand("uncached-a") as Promise<void>;
+	await Promise.resolve();
+	assert.equal(refreshSignal?.aborted, false);
+	availableModels = [{ provider: "fixture", id: "cached-b" }];
+	try {
+		await mode.handleModelCommand("cached-b");
+		assert.equal(refreshSignal?.aborted, true);
+		assert.equal(mode.activeModelLookupController, undefined);
+		assert.equal(mode.activeModelLookupTimeout, undefined);
+		assert.deepEqual(selectedModels, ["cached-b"]);
+	} finally {
+		settleRefresh?.({ aborted: false, errors: new Map() });
+		await first;
+	}
+	assert.equal(warningCalls, 0);
+});
+
 test("interactive stop settles a pending extension custom factory and disposes its late result", async () => {
 	const tui = createCountingTui() as any;
 	let settleFactory: ((component: { render(): string[]; dispose(): void }) => void) | undefined;
@@ -762,9 +824,9 @@ test("interactive custom cancellation closes an already mounted overlay", async 
 	const tui = createCountingTui() as any;
 	tui.showOverlay = (): object => {
 		showOverlayCalls++;
-		return {};
+		return { hide(): void { hideOverlayCalls++; } };
 	};
-	tui.hideOverlay = (): void => { hideOverlayCalls++; };
+	tui.hideOverlay = (): void => assert.fail("custom overlays must close their exact handle");
 	const mode = Object.create(InteractiveMode.prototype) as any;
 	mode.ui = tui;
 	mode.tuiLifecycleGeneration = 0;
@@ -783,6 +845,114 @@ test("interactive custom cancellation closes an already mounted overlay", async 
 	assert.equal(hideOverlayCalls, 1);
 	assert.equal(disposeCalls, 1);
 	assert.equal(mode.activeExtensionCustomCancel, undefined);
+});
+
+test("custom overlay cancellation hides its own entry without removing a nested overlay", async () => {
+	const stack: unknown[] = [];
+	let hideTopCalls = 0;
+	let firstDisposeCalls = 0;
+	const first = { render(): string[] { return []; }, dispose(): void { firstDisposeCalls++; } };
+	const nested = { render(): string[] { return []; } };
+	const tui = createCountingTui() as any;
+	tui.showOverlay = (component: unknown): { hide(): void } => {
+		stack.push(component);
+		return {
+			hide(): void {
+				const index = stack.indexOf(component);
+				if (index !== -1) stack.splice(index, 1);
+			},
+		};
+	};
+	tui.hideOverlay = (): void => {
+		hideTopCalls++;
+		stack.pop();
+	};
+	const mode = Object.create(InteractiveMode.prototype) as any;
+	mode.ui = tui;
+	mode.tuiLifecycleGeneration = 0;
+	mode.keybindings = {};
+	mode.editor = { getText: () => "draft", setText(): void {} };
+
+	const operation = mode.showExtensionCustom(
+		() => first,
+		{
+			overlay: true,
+			onHandle(): void { tui.showOverlay(nested); },
+		},
+	) as Promise<void>;
+	await Promise.resolve();
+	await Promise.resolve();
+	assert.deepEqual(stack, [first, nested]);
+	mode.cancelActiveExtensionCustom();
+	await operation;
+
+	assert.deepEqual(stack, [nested]);
+	assert.equal(hideTopCalls, 0);
+	assert.equal(firstDisposeCalls, 1);
+});
+
+test("login cancellation settles and removes an auth selector without a prompt signal", async () => {
+	initTheme("dark");
+	const tui = createCountingTui();
+	const dialog = new LoginDialogComponent(tui, "fixture", () => {});
+	const children: unknown[] = [];
+	const mode = Object.create(InteractiveMode.prototype) as any;
+	mode.ui = tui;
+	mode.editorContainer = {
+		children,
+		clear(): void { children.length = 0; },
+		addChild(component: unknown): void { children.push(component); },
+	};
+	mode.activeLoginDialog = dialog;
+	const selection = mode.showAuthSelect(dialog, {
+		type: "select",
+		message: "Choose authentication",
+		options: [{ id: "fixture", label: "Fixture" }],
+	}) as Promise<string>;
+	let settlement: "pending" | "resolved" | "rejected" = "pending";
+	const observed = selection.then(
+		() => { settlement = "resolved"; },
+		() => { settlement = "rejected"; },
+	);
+	assert.equal(children.length, 1);
+	mode.cancelActiveLoginDialog();
+	await Promise.resolve();
+	await Promise.resolve();
+
+	assert.equal(settlement, "rejected");
+	assert.equal(mode.activeLoginDialog, undefined);
+	assert.equal(mode.activeAuthSelector, undefined);
+	assert.equal(children.length, 0);
+	await observed;
+});
+
+test("auth prompt signal cancellation releases its tracked selector and restores the live dialog", async () => {
+	initTheme("dark");
+	const tui = createCountingTui();
+	const dialog = new LoginDialogComponent(tui, "fixture", () => {});
+	const children: unknown[] = [];
+	const mode = Object.create(InteractiveMode.prototype) as any;
+	mode.ui = tui;
+	mode.editorContainer = {
+		children,
+		clear(): void { children.length = 0; },
+		addChild(component: unknown): void { children.push(component); },
+	};
+	mode.activeLoginDialog = dialog;
+	const controller = new AbortController();
+	const selection = mode.showAuthPrompt(dialog, {
+		type: "select",
+		message: "Choose authentication",
+		options: [{ id: "fixture", label: "Fixture" }],
+		signal: controller.signal,
+	}) as Promise<string>;
+	assert.equal(children.length, 1);
+	controller.abort();
+	await assert.rejects(selection, /Login cancelled/);
+
+	assert.equal(mode.activeAuthSelector, undefined);
+	assert.deepEqual(children, [dialog]);
+	assert.equal(mode.activeLoginDialog, dialog);
 });
 
 test("disposed session selector rejects a late deletion continuation", async () => {
