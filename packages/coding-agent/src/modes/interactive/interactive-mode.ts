@@ -650,6 +650,9 @@ export class InteractiveMode {
 	private extensionInput: ExtensionInputComponent | undefined = undefined;
 	private extensionEditor: ExtensionEditorComponent | undefined = undefined;
 	private activeLoginDialog: LoginDialogComponent | undefined = undefined;
+	private activeProviderAuthenticationController: AbortController | undefined = undefined;
+	private activeProviderAuthenticationTimeout: ReturnType<typeof setTimeout> | undefined = undefined;
+	private providerAuthenticationGeneration = 0;
 	private activeModelLookupController: AbortController | undefined = undefined;
 	private modelCommandGeneration = 0;
 	private modelLookupGeneration = 0;
@@ -689,6 +692,20 @@ export class InteractiveMode {
 	): void {
 		if (mode.activeModelLookupController !== controller || mode.modelLookupGeneration !== generation) return;
 		mode.modelLookupTimedOutGeneration = generation;
+		controller.abort();
+	}
+	private static handleProviderAuthenticationTimeout(
+		mode: InteractiveMode,
+		controller: AbortController,
+		generation: number,
+	): void {
+		if (
+			mode.activeProviderAuthenticationController !== controller ||
+			mode.providerAuthenticationGeneration !== generation
+		) {
+			return;
+		}
+		mode.activeProviderAuthenticationTimeout = undefined;
 		controller.abort();
 	}
 	private autoTrustOnReloadCwd: string | undefined;
@@ -2795,6 +2812,16 @@ export class InteractiveMode {
 		dialog?.cancel();
 	}
 
+	private cancelActiveProviderAuthentication(): void {
+		this.providerAuthenticationGeneration++;
+		const controller = this.activeProviderAuthenticationController;
+		this.activeProviderAuthenticationController = undefined;
+		controller?.abort();
+		const timeout = this.activeProviderAuthenticationTimeout;
+		this.activeProviderAuthenticationTimeout = undefined;
+		if (timeout !== undefined) clearTimeout(timeout);
+	}
+
 	private cancelActiveModelLookup(): void {
 		this.modelLookupGeneration++;
 		this.modelLookupTimedOutGeneration = 0;
@@ -3401,7 +3428,9 @@ export class InteractiveMode {
 						return;
 					}
 					this.editor.addToHistory?.(text);
+					const bashLifecycleGeneration = this.tuiLifecycleGeneration;
 					await this.handleBashCommand(command, isExcluded);
+					if (this.tuiLifecycleGeneration !== bashLifecycleGeneration) return;
 					this.isBashMode = false;
 					this.updateEditorBorderColor();
 					return;
@@ -6186,12 +6215,71 @@ export class InteractiveMode {
 		});
 	}
 
+	private async refreshProviderAuthenticationCatalog(
+		providerId: string,
+		actionLabel: string,
+		generation: number,
+		lifecycleGeneration: number,
+	): Promise<void> {
+		const controller = new AbortController();
+		this.activeProviderAuthenticationController = controller;
+		const timeout = setTimeout(
+			InteractiveMode.handleProviderAuthenticationTimeout,
+			15_000,
+			this,
+			controller,
+			generation,
+		);
+		this.activeProviderAuthenticationTimeout = timeout;
+		try {
+			const result = await this.session.modelRuntime.refresh({ providers: [providerId], signal: controller.signal });
+			if (
+				this.activeProviderAuthenticationController !== controller ||
+				this.providerAuthenticationGeneration !== generation ||
+				this.tuiLifecycleGeneration !== lifecycleGeneration
+			) {
+				return;
+			}
+			if (result.aborted) {
+				this.showWarning(`${actionLabel}, but its model catalog refresh timed out; using cached models.`);
+			} else if (result.errors.size > 0) {
+				this.showWarning(`${actionLabel}, but its model catalog could not be refreshed; using cached models.`);
+			}
+			this.updateAvailableProviderCount();
+			this.footer.invalidate();
+			this.ui.requestRender();
+		} catch (error: unknown) {
+			if (
+				this.activeProviderAuthenticationController !== controller ||
+				this.providerAuthenticationGeneration !== generation ||
+				this.tuiLifecycleGeneration !== lifecycleGeneration
+			) {
+				return;
+			}
+			this.showWarning(
+				`${actionLabel}, but its model catalog could not be refreshed: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		} finally {
+			clearTimeout(timeout);
+			if (
+				this.activeProviderAuthenticationController === controller &&
+				this.providerAuthenticationGeneration === generation
+			) {
+				this.activeProviderAuthenticationController = undefined;
+				this.activeProviderAuthenticationTimeout = undefined;
+			}
+		}
+	}
+
 	private async completeProviderAuthentication(
 		providerId: string,
 		providerName: string,
 		authType: "oauth" | "api_key",
 		previousModel: Model<any> | undefined,
 	): Promise<void> {
+		this.cancelActiveProviderAuthentication();
+		const generation = this.providerAuthenticationGeneration;
+		const lifecycleGeneration = this.tuiLifecycleGeneration;
 		const actionLabel = authType === "oauth" ? `Logged in to ${providerName}` : `Saved API key for ${providerName}`;
 
 		let selectedModel: Model<any> | undefined;
@@ -6211,7 +6299,19 @@ export class InteractiveMode {
 				} else {
 					try {
 						await this.session.setModel(selectedModel);
+						if (
+							this.providerAuthenticationGeneration !== generation ||
+							this.tuiLifecycleGeneration !== lifecycleGeneration
+						) {
+							return;
+						}
 					} catch (error: unknown) {
+						if (
+							this.providerAuthenticationGeneration !== generation ||
+							this.tuiLifecycleGeneration !== lifecycleGeneration
+						) {
+							return;
+						}
 						selectedModel = undefined;
 						const errorMessage = error instanceof Error ? error.message : String(error);
 						selectionError = `${actionLabel}, but selecting its default model failed: ${errorMessage}. Use /model to select a model.`;
@@ -6221,6 +6321,12 @@ export class InteractiveMode {
 		}
 
 		await this.updateAvailableProviderCount();
+		if (
+			this.providerAuthenticationGeneration !== generation ||
+			this.tuiLifecycleGeneration !== lifecycleGeneration
+		) {
+			return;
+		}
 		this.footer.invalidate();
 		this.updateEditorBorderColor();
 		if (selectedModel) {
@@ -6236,26 +6342,9 @@ export class InteractiveMode {
 			}
 		}
 
-		const controller = new AbortController();
-		const timeout = setTimeout(() => controller.abort(), 15_000);
-		void this.session.modelRuntime
-			.refresh({ providers: [providerId], signal: controller.signal })
-			.then((result) => {
-				if (result.aborted) {
-					this.showWarning(`${actionLabel}, but its model catalog refresh timed out; using cached models.`);
-				} else if (result.errors.size > 0) {
-					this.showWarning(`${actionLabel}, but its model catalog could not be refreshed; using cached models.`);
-				}
-				this.updateAvailableProviderCount();
-				this.footer.invalidate();
-				this.ui.requestRender();
-			})
-			.catch((error: unknown) => {
-				this.showWarning(
-					`${actionLabel}, but its model catalog could not be refreshed: ${error instanceof Error ? error.message : String(error)}`,
-				);
-			})
-			.finally(() => clearTimeout(timeout));
+		this.observeLifecyclePromise(
+			this.refreshProviderAuthenticationCatalog(providerId, actionLabel, generation, lifecycleGeneration),
+		);
 	}
 
 	private showAmbientAuthDialog(providerOption: AuthSelectorProvider): void {
@@ -7087,14 +7176,22 @@ export class InteractiveMode {
 
 	private async handleBashCommand(command: string, excludeFromContext = false): Promise<void> {
 		const extensionRunner = this.session.extensionRunner;
+		const lifecycleGeneration = this.tuiLifecycleGeneration;
 
 		// Emit user_bash event to let extensions intercept
-		const eventResult = await extensionRunner.emitUserBash({
-			type: "user_bash",
-			command,
-			excludeFromContext,
-			cwd: this.sessionManager.getCwd(),
-		});
+		let eventResult: Awaited<ReturnType<typeof extensionRunner.emitUserBash>>;
+		try {
+			eventResult = await extensionRunner.emitUserBash({
+				type: "user_bash",
+				command,
+				excludeFromContext,
+				cwd: this.sessionManager.getCwd(),
+			});
+		} catch (error) {
+			if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
+			throw error;
+		}
+		if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 
 		// If extension returned a full result, use it directly
 		if (eventResult?.result) {
@@ -7190,6 +7287,7 @@ export class InteractiveMode {
 	async stop(fullscreenExitOutput = this.settingsManager.getFullscreenExitOutput()): Promise<void> {
 		this.tuiLifecycleGeneration++;
 		this.cancelActiveLoginDialog();
+		this.cancelActiveProviderAuthentication();
 		this.cancelActiveModelLookup();
 		this.cancelActiveExtensionCustom();
 		this.cancelExtensionDialogs();
