@@ -2290,22 +2290,36 @@ test("external-editor production lifecycle restarts the same TUI after a timed-o
 	await tui.dispose();
 });
 
-test(
-	"Ctrl-Z production lifecycle restarts the same TUI after a timed-out frame",
-	{ skip: process.platform === "win32" },
-	async () => {
+test("Ctrl-Z production lifecycle restarts the same TUI after a timed-out frame", async () => {
+	const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform");
+	const originalSigintListeners = process.listeners("SIGINT");
+	const originalSigcontListeners = process.listeners("SIGCONT");
+	let mode: any;
+	try {
+		Object.defineProperty(process, "platform", { configurable: true, value: "linux" });
 		const output = new ControlledFrameOutput();
 		const terminal = new LifecycleProcessTerminal(output as never);
 		const tui = new FrameTui(terminal, false, undefined, 20);
 		tui.renderNow();
 		const callbackA = output.callbacks[0];
 		assert.ok(callbackA);
-		const mode = Object.create(InteractiveMode.prototype) as {
-			ui: FrameTui;
-			suspendProcessGroup(): void;
-			handleCtrlZ(): Promise<void>;
-		};
+		mode = Object.create(InteractiveMode.prototype) as any;
 		Object.defineProperty(mode, "ui", { value: tui, configurable: true });
+		mode.tuiLifecycleGeneration = 0;
+		mode.suspendGeneration = 0;
+		mode.activeSuspendGeneration = 0;
+		mode.activeSuspendLifecycleGeneration = 0;
+		mode.activeSuspendKeepAlive = undefined;
+		mode.ignoreSuspendSigint = (): void => {};
+		mode.handleSuspendContinue = (): void => {
+			const generation = mode.activeSuspendGeneration;
+			if (generation === 0) return;
+			const lifecycleGeneration = mode.activeSuspendLifecycleGeneration;
+			mode.clearActiveSuspend(generation);
+			if (mode.tuiLifecycleGeneration !== lifecycleGeneration) return;
+			mode.ui.start();
+			mode.ui.requestRender(true);
+		};
 		mode.suspendProcessGroup = () => { process.emit("SIGCONT"); };
 		await mode.handleCtrlZ();
 		assert.equal(terminal.lifecycleStarted, true);
@@ -2319,8 +2333,17 @@ test(
 		output.emit("drain");
 		await tui.flushTerminalFrames();
 		await tui.dispose();
-	},
-);
+	} finally {
+		mode?.cancelActiveSuspend?.();
+		for (const listener of process.listeners("SIGINT")) {
+			if (!originalSigintListeners.includes(listener)) process.removeListener("SIGINT", listener);
+		}
+		for (const listener of process.listeners("SIGCONT")) {
+			if (!originalSigcontListeners.includes(listener)) process.removeListener("SIGCONT", listener);
+		}
+		if (platformDescriptor) Object.defineProperty(process, "platform", platformDescriptor);
+	}
+});
 
 test("final ProcessTerminal dispose retains orphan error ownership until physical settlement", async () => {
 	const output = new ControlledFrameOutput();
