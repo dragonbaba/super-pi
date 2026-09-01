@@ -5,9 +5,13 @@ import { readFileSync } from "node:fs";
 import { Writable } from "node:stream";
 import test from "node:test";
 import {
+	Container as InteractiveContainer,
 	Loader,
+	ScrollView as InteractiveScrollView,
+	Text as InteractiveText,
 	TuiMainScreen as InteractiveTuiMainScreen,
 	type TuiMainScreenRenderState,
+	VStack as InteractiveVStack,
 } from "@super-pi/tui";
 import { AgentSession } from "../packages/coding-agent/src/core/agent-session.ts";
 import { ExtensionInputComponent } from "../packages/coding-agent/src/modes/interactive/components/extension-input.ts";
@@ -180,6 +184,13 @@ class InstrumentedMainTui extends InteractiveTuiMainScreen {
 
 function preserveLoaderText(value: string): string {
 	return value;
+}
+
+interface TransferScrollViewState {
+	requestRenderCallback: (() => void) | undefined;
+	scrollbarHideTimer: (NodeJS.Timeout & { _onTimeout?: () => void }) | undefined;
+	transientScrollbarVisible: boolean;
+	scrollbarActive: boolean;
 }
 
 class SplitFrameTui extends FrameTui {
@@ -1588,6 +1599,142 @@ test("Alt to Main mode switch preserves animation owners reused by the regular r
 	assert.equal(raw.ui, null);
 });
 
+test("Alt to Main releases only the fullscreen ScrollView owner in the production root shape", async () => {
+	const terminal = new ImmediateInputTerminal();
+	terminal.backpressure = false;
+	const previousUi = new InstrumentedMainTui(terminal);
+	const mode = createModeSwitchHarness(previousUi);
+	const stableTui = createInteractiveTuiReference(() => mode.renderer);
+	mode.ui = stableTui;
+	const documentContainer = new InteractiveContainer();
+	let documentText = "document-0";
+	for (let index = 1; index < 200; index++) documentText += `\ndocument-${index}`;
+	const sharedDocumentText = new InteractiveText(documentText, 0, 0);
+	documentContainer.addChild(sharedDocumentText);
+	const transcriptScrollView = new InteractiveScrollView(documentContainer, {
+		follow: "end",
+		primary: true,
+		overscroll: "chain",
+		scrollbar: "auto",
+		scrollbarHideDelayMs: 60_000,
+	});
+	const loader = new Loader(stableTui, preserveLoaderText, preserveLoaderText, "shared-dock-loader", {
+		frames: ["*", "*"],
+		intervalMs: 60_000,
+	});
+	const dock = new InteractiveVStack([{ component: loader, shrink: 1, minSize: 1 }]);
+	const fullscreenLayoutRoot = new InteractiveVStack([
+		{ component: transcriptScrollView, basis: 0, grow: 1, shrink: 1, minSize: 1 },
+		{ component: dock, basis: "auto", grow: 0, shrink: 1, minSize: 1 },
+	]);
+	mode.transcriptScrollView = transcriptScrollView;
+	mode.fullscreenLayoutRoot = fullscreenLayoutRoot;
+	previousUi.addChild(documentContainer);
+	previousUi.addChild(loader);
+	previousUi.start();
+	previousUi.renderNow();
+
+	assert.equal(await mode.switchTuiMode.call(mode, "fullscreen", false, false), true);
+	const firstAlt = mode.renderer as TuiAltScreen;
+	firstAlt.start();
+	firstAlt.renderNow(true);
+	transcriptScrollView.scrollBy(-1);
+	firstAlt.renderNow(true);
+	const scrollState = transcriptScrollView as unknown as TransferScrollViewState;
+	const firstCallback = scrollState.requestRenderCallback;
+	const firstTimer = scrollState.scrollbarHideTimer;
+	const firstTimerCallback = firstTimer?._onTimeout;
+	const firstScrollTop = transcriptScrollView.scrollTop;
+	const loaderState = loader as unknown as { intervalId: NodeJS.Timeout | null; ui: unknown };
+	assert.equal(typeof firstCallback, "function");
+	assert.ok(firstTimer);
+	assert.equal(scrollState.transientScrollbarVisible, true);
+	assert.ok(loaderState.intervalId);
+	assert.equal(loaderState.ui, stableTui);
+
+	assert.equal(await mode.switchTuiMode.call(mode, "regular", false, false), true);
+	mode.renderer.start();
+	assert.equal(scrollState.requestRenderCallback, undefined);
+	assert.equal(scrollState.scrollbarHideTimer, undefined);
+	assert.equal(scrollState.transientScrollbarVisible, false);
+	assert.equal(scrollState.scrollbarActive, false);
+	assert.ok(loaderState.intervalId);
+	assert.equal(loaderState.ui, stableTui);
+	assert.equal(transcriptScrollView.scrollTop, firstScrollTop);
+	assert.equal(mode.fullscreenLayoutRoot, fullscreenLayoutRoot);
+
+	const oldAltQueue = firstAlt.getTerminalFrameQueueSnapshot();
+	firstTimerCallback?.call(firstTimer);
+	assert.deepEqual(firstAlt.getTerminalFrameQueueSnapshot(), oldAltQueue);
+
+	assert.equal(await mode.switchTuiMode.call(mode, "fullscreen", false, false), true);
+	const secondAlt = mode.renderer as TuiAltScreen;
+	secondAlt.start();
+	secondAlt.renderNow(true);
+	assert.equal(mode.transcriptScrollView, transcriptScrollView);
+	assert.equal(typeof scrollState.requestRenderCallback, "function");
+	assert.notEqual(scrollState.requestRenderCallback, firstCallback);
+	assert.equal(transcriptScrollView.scrollTop, firstScrollTop);
+	assert.ok(terminal.writer.writes.some((frame) => frame.includes("document-199")));
+	const freshDocumentContainer = new InteractiveContainer();
+	freshDocumentContainer.addChild(new InteractiveText(documentText, 0, 0));
+	const freshScrollView = new InteractiveScrollView(freshDocumentContainer, {
+		follow: "end",
+		primary: true,
+		overscroll: "chain",
+		scrollbar: "auto",
+		scrollbarHideDelayMs: 60_000,
+	});
+	const freshLoader = new Loader({ requestRender(): void {} } as never, preserveLoaderText, preserveLoaderText,
+		"shared-dock-loader", { frames: ["*", "*"], intervalMs: 60_000 });
+	const freshRoot = new InteractiveVStack([
+		{ component: freshScrollView, basis: 0, grow: 1, shrink: 1, minSize: 1 },
+		{ component: new InteractiveVStack([{ component: freshLoader, shrink: 1, minSize: 1 }]),
+			basis: "auto", grow: 0, shrink: 1, minSize: 1 },
+	]);
+	assert.deepEqual(fullscreenLayoutRoot.render(120), freshRoot.render(120));
+	freshLoader.dispose();
+
+	assert.equal(await mode.switchTuiMode.call(mode, "regular", false, false), true);
+	mode.renderer.start();
+	assert.equal(scrollState.requestRenderCallback, undefined);
+	assert.equal(scrollState.scrollbarHideTimer, undefined);
+	assert.ok(loaderState.intervalId);
+	let completedRoundTrips = 0;
+	let mainBoundaryOwnerReferences = 0;
+	for (let cycle = 0; cycle < 100; cycle++) {
+		assert.equal(await mode.switchTuiMode.call(mode, "fullscreen", false, false), true);
+		const cycleAlt = mode.renderer as TuiAltScreen;
+		cycleAlt.start();
+		cycleAlt.renderNow(true);
+		assert.equal(mode.transcriptScrollView, transcriptScrollView);
+		assert.equal(typeof scrollState.requestRenderCallback, "function");
+		transcriptScrollView.scrollToEnd();
+		transcriptScrollView.scrollBy(-1);
+		cycleAlt.renderNow(true);
+		assert.equal(await mode.switchTuiMode.call(mode, "regular", false, false), true);
+		mode.renderer.start();
+		assert.equal(scrollState.requestRenderCallback, undefined);
+		assert.equal(scrollState.scrollbarHideTimer, undefined);
+		assert.equal(scrollState.transientScrollbarVisible, false);
+		assert.equal(scrollState.scrollbarActive, false);
+		assert.equal(loaderState.ui, stableTui);
+		if (scrollState.requestRenderCallback !== undefined) mainBoundaryOwnerReferences++;
+		if (scrollState.scrollbarHideTimer !== undefined) mainBoundaryOwnerReferences++;
+		if (scrollState.transientScrollbarVisible) mainBoundaryOwnerReferences++;
+		if (scrollState.scrollbarActive) mainBoundaryOwnerReferences++;
+		completedRoundTrips++;
+	}
+	assert.equal(completedRoundTrips, 100);
+	assert.equal(mainBoundaryOwnerReferences, 0);
+	assert.equal(mode.fullscreenLayoutRoot, fullscreenLayoutRoot);
+	await mode.stop.call(mode, "resume-hint");
+	assert.equal(scrollState.requestRenderCallback, undefined);
+	assert.equal(scrollState.scrollbarHideTimer, undefined);
+	assert.equal(loaderState.intervalId, null);
+	assert.equal(loaderState.ui, null);
+});
+
 test("InteractiveMode stop cancels and settles timed extension dialogs", async () => {
 	for (const kind of ["selector", "input"] as const) {
 		const terminal = new ImmediateInputTerminal();
@@ -2774,9 +2921,25 @@ test("frame queue source retains one string without Promise tails or pooling", (
 	assert.notEqual(switchTuiMode, "");
 	assert.match(
 		switchTuiMode,
-		/previousUi instanceof TuiAltScreen\) previousUi\.detachLayoutRootForTransfer\(\)/,
+		/previousUi instanceof TuiAltScreen\) \{\s*this\.releaseFullscreenTransferOwners\(\);\s*previousUi\.detachLayoutRootForTransfer\(\)/,
+	);
+	assert.ok(
+		switchTuiMode.indexOf("this.releaseFullscreenTransferOwners()") <
+			switchTuiMode.indexOf("previousUi.detachLayoutRootForTransfer()"),
 	);
 	assert.doesNotMatch(switchTuiMode, /new (?:Map|Set|AbortController)|\.map\(|\.filter\(|\.flatMap\(/);
+	const releaseFullscreenTransferOwners = interactiveSource.match(
+		/private releaseFullscreenTransferOwners\(\): void \{[\s\S]*?\n\t}/,
+	)?.[0] ?? "";
+	assert.notEqual(releaseFullscreenTransferOwners, "");
+	assert.match(
+		releaseFullscreenTransferOwners,
+		/this\.transcriptScrollView\?\.\[RELEASE_COMPONENT_RENDER_CACHE\]\?\.\(\)/,
+	);
+	assert.doesNotMatch(
+		releaseFullscreenTransferOwners,
+		/fullscreenLayoutRoot|releaseComponentRenderCaches|\.invalidate\(|\.render\(|new (?:Map|Set|Promise|AbortController)|=>|function\s*\(|\{\s*(?:data|component|owner)\s*:/,
+	);
 	const cancelExtensionDialogs = interactiveSource.match(
 		/private cancelExtensionDialogs[\s\S]*?\n\t}/,
 	)?.[0] ?? "";
