@@ -9,6 +9,7 @@ import { RELEASE_COMPONENT_RENDER_CACHE } from "../packages/tui/src/component-ca
 import { CancellableLoader } from "../packages/tui/src/components/cancellable-loader.ts";
 import type { TUI } from "../packages/tui/src/tui.ts";
 import { InteractiveMode } from "../packages/coding-agent/src/modes/interactive/interactive-mode.ts";
+import { BashExecutionComponent } from "../packages/coding-agent/src/modes/interactive/components/bash-execution.ts";
 import { LoginDialogComponent } from "../packages/coding-agent/src/modes/interactive/components/login-dialog.ts";
 import { ToolExecutionComponent } from "../packages/coding-agent/src/modes/interactive/components/tool-execution.ts";
 import { initTheme } from "../packages/coding-agent/src/modes/interactive/theme/theme.ts";
@@ -264,4 +265,220 @@ test("async owner closeout remains lifecycle-only in source", () => {
 		editSource.indexOf("TOOL_RENDER_LIFECYCLE_GENERATION] !== requestGeneration") <
 			editSource.indexOf("setEditPreview(component, preview, requestKey)"),
 	);
+
+	const bashSource = readFileSync(
+		"packages/coding-agent/src/modes/interactive/components/bash-execution.ts",
+		"utf8",
+	);
+	assert.match(bashSource, /class BashPreviewComponent implements Component/);
+	assert.match(bashSource, /this\.previewComponent\?\.\[RELEASE_COMPONENT_RENDER_CACHE\]\(\)/);
+	assert.match(bashSource, /this\.loader\[RELEASE_COMPONENT_RENDER_CACHE\]\(\)/);
+	assert.doesNotMatch(bashSource, /render:\s*\(width: number\)\s*=>/);
+
+	const extensionReleaseStart = interactiveSource.indexOf("private releaseExtensionUiOwners(): void");
+	const extensionReleaseEnd = interactiveSource.indexOf("\n\t/**", extensionReleaseStart);
+	const extensionReleaseSource = interactiveSource.slice(extensionReleaseStart, extensionReleaseEnd);
+	assert.match(extensionReleaseSource, /widget\.dispose\?\.\(\)/);
+	assert.match(extensionReleaseSource, /this\.customFooter\?\.dispose\?\.\(\)/);
+	assert.match(extensionReleaseSource, /this\.customHeader\?\.dispose\?\.\(\)/);
+	assert.doesNotMatch(extensionReleaseSource, /requestRender|renderWidgets|new (?:Map|Set|Promise|AbortController)/);
+	assert.ok(stopSource.indexOf("this.cancelActiveModelLookup()") < stopSource.indexOf("this.stopInteractiveTui"));
+	assert.ok(stopSource.indexOf("this.releaseExtensionUiOwners()") < stopSource.indexOf("this.stopInteractiveTui"));
+	assert.match(
+		interactiveSource,
+		/setTimeout\(InteractiveMode\.handleModelLookupTimeout, 15_000, this, controller, generation\)/,
+	);
+	const modelLookupStart = interactiveSource.indexOf("private async findExactModelMatch");
+	const modelLookupEnd = interactiveSource.indexOf("\n\t/**", modelLookupStart);
+	const modelLookupSource = interactiveSource.slice(modelLookupStart, modelLookupEnd);
+	assert.doesNotMatch(modelLookupSource, /setTimeout\(\(\)|\.then\(|\.catch\(|Promise\.all/);
+});
+
+test("final release drops BashExecution preview and private Loader ownership", () => {
+	initTheme("dark");
+	const tui = createCountingTui();
+	const bash = new BashExecutionComponent("fixture", tui);
+	bash.appendOutput("x".repeat(64 * 1024));
+	bash.setComplete(0, false);
+	bash.render(80);
+	const internals = bash as any;
+	const preview = internals.contentContainer.children[1];
+	const firstLines = preview.render(80);
+	assert.ok(firstLines.length > 0);
+	assert.equal(internals.loader.ui, tui);
+
+	bash[TOOL_RELEASE_COMPONENT_RENDER_CACHE]();
+
+	const afterReleaseLines = preview.render(80);
+	assert.notEqual(afterReleaseLines, firstLines);
+	assert.equal((preview as any).styledInput, undefined);
+	assert.equal((preview as any).cachedLines, undefined);
+	assert.equal(internals.loader.ui, null);
+	assert.equal(internals.contentContainer.children.length, 0);
+	assert.equal(bash.getOutput(), "x".repeat(64 * 1024));
+	const candidateLines = bash.render(80);
+	const reference = new BashExecutionComponent("fixture", createCountingTui());
+	reference.appendOutput("x".repeat(64 * 1024));
+	reference.setComplete(0, false);
+	assert.deepEqual(candidateLines, reference.render(80));
+	reference[TOOL_RELEASE_COMPONENT_RENDER_CACHE]();
+});
+
+test("interactive stop disposes extension widgets header and footer exactly once", async () => {
+	const tui = createCountingTui();
+	const calls = { above: 0, below: 0, footer: 0, header: 0 };
+	const above = { render: () => [], dispose: () => { calls.above++; } };
+	const below = { render: () => [], dispose: () => { calls.below++; } };
+	const footer = { render: () => [], dispose: () => { calls.footer++; } };
+	const header = { render: () => [], dispose: () => { calls.header++; } };
+	const mode = Object.create(InteractiveMode.prototype) as any;
+	mode.runtimeHost = {
+		session: {
+			settingsManager: {
+				getFullscreenExitOutput: () => "transcript",
+				getShowTerminalProgress: () => false,
+			},
+		},
+	};
+	mode.ui = tui;
+	mode.tuiLifecycleGeneration = 0;
+	mode.extensionWidgetsAbove = new Map([["above", above]]);
+	mode.extensionWidgetsBelow = new Map([["below", below]]);
+	mode.customFooter = footer;
+	mode.customHeader = header;
+	mode.widgetContainerAbove = { clear(): void {} };
+	mode.widgetContainerBelow = { clear(): void {} };
+	mode.footerContainer = { clear(): void {} };
+	mode.headerContainer = { children: [header], clear(): void { this.children.length = 0; } };
+	mode.themeController = { disableAutoSync(): void {} };
+	mode.footer = { dispose(): void {} };
+	mode.footerDataProvider = { dispose(): void {} };
+	mode.isInitialized = false;
+	mode.clearStatusIndicator = (): void => {};
+	mode.clearExtensionTerminalInputListeners = (): void => {};
+	mode.unregisterSignalHandlers = (): void => {};
+
+	await mode.stop();
+
+	assert.deepEqual(calls, { above: 1, below: 1, footer: 1, header: 1 });
+	assert.equal(mode.extensionWidgetsAbove.size, 0);
+	assert.equal(mode.extensionWidgetsBelow.size, 0);
+	assert.equal(mode.customFooter, undefined);
+	assert.equal(mode.customHeader, undefined);
+	await mode.stop();
+	assert.deepEqual(calls, { above: 1, below: 1, footer: 1, header: 1 });
+});
+
+test("interactive stop isolates extension disposal errors and releases later owners", async () => {
+	const firstError = new Error("first extension dispose failed");
+	let laterWidgetCalls = 0;
+	let footerCalls = 0;
+	let headerCalls = 0;
+	const mode = Object.create(InteractiveMode.prototype) as any;
+	mode.runtimeHost = {
+		session: {
+			settingsManager: {
+				getFullscreenExitOutput: () => "transcript",
+				getShowTerminalProgress: () => false,
+			},
+		},
+	};
+	mode.ui = createCountingTui();
+	mode.tuiLifecycleGeneration = 0;
+	mode.extensionWidgetsAbove = new Map([
+		["first", { dispose(): void { throw firstError; } }],
+		["later", { dispose(): void { laterWidgetCalls++; } }],
+	]);
+	mode.extensionWidgetsBelow = new Map();
+	mode.customFooter = { dispose(): void { footerCalls++; } };
+	mode.customHeader = { dispose(): void { headerCalls++; } };
+	mode.widgetContainerAbove = { clear(): void {} };
+	mode.widgetContainerBelow = { clear(): void {} };
+	mode.footerContainer = { clear(): void {} };
+	mode.headerContainer = { clear(): void {} };
+	mode.themeController = { disableAutoSync(): void {} };
+	mode.footer = { dispose(): void {} };
+	mode.footerDataProvider = { dispose(): void {} };
+	mode.isInitialized = false;
+	mode.clearStatusIndicator = (): void => {};
+	mode.clearExtensionTerminalInputListeners = (): void => {};
+	mode.unregisterSignalHandlers = (): void => {};
+
+	await assert.rejects(mode.stop(), firstError);
+	assert.equal(laterWidgetCalls, 1);
+	assert.equal(footerCalls, 1);
+	assert.equal(headerCalls, 1);
+	assert.equal(mode.extensionWidgetsAbove.size, 0);
+	assert.equal(mode.customFooter, undefined);
+	assert.equal(mode.customHeader, undefined);
+	await mode.stop();
+	assert.equal(laterWidgetCalls, 1);
+	assert.equal(footerCalls, 1);
+	assert.equal(headerCalls, 1);
+});
+
+test("interactive stop aborts model lookup and rejects its late catalog result", async () => {
+	const tui = createCountingTui();
+	let refreshSignal: AbortSignal | undefined;
+	let settleRefresh: ((value: { aborted: boolean; errors: Map<string, Error> }) => void) | undefined;
+	let availableModels: any[] = [];
+	let setModelCalls = 0;
+	let selectorCalls = 0;
+	let warningCalls = 0;
+	const modelRuntime = {
+		getAvailableSnapshot: () => availableModels,
+		refresh(options: { signal: AbortSignal }): Promise<{ aborted: boolean; errors: Map<string, Error> }> {
+			refreshSignal = options.signal;
+			return new Promise((resolve) => {
+				settleRefresh = resolve;
+			});
+		},
+	};
+	const mode = Object.create(InteractiveMode.prototype) as any;
+	mode.runtimeHost = {
+		session: {
+			modelRuntime,
+			scopedModels: [],
+			setModel: async (): Promise<void> => {
+				setModelCalls++;
+			},
+			settingsManager: {
+				getFullscreenExitOutput: () => "transcript",
+				getShowTerminalProgress: () => false,
+			},
+		},
+	};
+	mode.ui = tui;
+	mode.tuiLifecycleGeneration = 0;
+	mode.extensionWidgetsAbove = new Map();
+	mode.extensionWidgetsBelow = new Map();
+	mode.widgetContainerAbove = { clear(): void {} };
+	mode.widgetContainerBelow = { clear(): void {} };
+	mode.footerContainer = { clear(): void {} };
+	mode.headerContainer = { clear(): void {} };
+	mode.showStatus = (): void => {};
+	mode.showWarning = (): void => { warningCalls++; };
+	mode.showModelSelector = (): void => { selectorCalls++; };
+	mode.themeController = { disableAutoSync(): void {} };
+	mode.footer = { dispose(): void {} };
+	mode.footerDataProvider = { dispose(): void {} };
+	mode.isInitialized = false;
+	mode.clearStatusIndicator = (): void => {};
+	mode.clearExtensionTerminalInputListeners = (): void => {};
+	mode.unregisterSignalHandlers = (): void => {};
+
+	const command = mode.handleModelCommand("target");
+	await Promise.resolve();
+	assert.equal(refreshSignal?.aborted, false);
+	await mode.stop();
+	await Promise.resolve();
+	assert.equal(refreshSignal?.aborted, true);
+	availableModels = [{ provider: "fixture", id: "target" }];
+	settleRefresh?.({ aborted: false, errors: new Map() });
+	await command;
+
+	assert.equal(setModelCalls, 0);
+	assert.equal(selectorCalls, 0);
+	assert.equal(warningCalls, 0);
+	assert.equal(mode.activeModelLookupController, undefined);
 });
