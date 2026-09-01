@@ -250,6 +250,7 @@ const SLASH_COMMAND_SELECT_LIST_LAYOUT: SelectListLayoutOptions = {
 
 const ATTACHMENT_AUTOCOMPLETE_DEBOUNCE_MS = 20;
 const DEFAULT_AUTOCOMPLETE_TRIGGER_CHARACTERS = ["@", "#"];
+const SETTLED_AUTOCOMPLETE_REQUEST_TASK = Promise.resolve();
 
 function escapeCharacterClass(value: string): string {
 	return value.replace(REGEX_CHARACTER_CLASS_ESCAPE_PATTERN, "\\$&");
@@ -338,7 +339,7 @@ export class Editor implements Component, Focusable {
 	private autocompleteMaxVisible: number = 5;
 	private autocompleteAbort?: AbortController;
 	private autocompleteDebounceTimer?: ReturnType<typeof setTimeout>;
-	private autocompleteRequestTask: Promise<void> = Promise.resolve();
+	private autocompleteRequestTask: Promise<void> = SETTLED_AUTOCOMPLETE_REQUEST_TASK;
 	private autocompleteStartToken: number = 0;
 	private autocompleteRequestId: number = 0;
 
@@ -534,6 +535,8 @@ export class Editor implements Component, Focusable {
 	}
 
 	[RELEASE_COMPONENT_RENDER_CACHE](): void {
+		this.cancelAutocomplete();
+		this.autocompleteRequestTask = SETTLED_AUTOCOMPLETE_REQUEST_TASK;
 		this.releaseLayoutCacheStorage();
 	}
 
