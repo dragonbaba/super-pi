@@ -4825,8 +4825,10 @@ export class InteractiveMode {
 	}
 
 	private async cycleModel(direction: "forward" | "backward"): Promise<void> {
+		const lifecycleGeneration = this.tuiLifecycleGeneration;
 		try {
 			const result = await this.session.cycleModel(direction);
+			if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 			if (result === undefined) {
 				const msg = this.session.scopedModels.length > 0 ? "Only one model in scope" : "Only one model available";
 				this.showStatus(msg);
@@ -4839,6 +4841,7 @@ export class InteractiveMode {
 				this.observeLifecyclePromise(this.maybeWarnAboutAnthropicSubscriptionAuth(result.model));
 			}
 		} catch (error) {
+			if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 			this.showError(error instanceof Error ? error.message : String(error));
 		}
 	}
@@ -5867,6 +5870,7 @@ export class InteractiveMode {
 				realLeafId,
 				this.ui.terminal.rows,
 				async (entryId) => {
+					const lifecycleGeneration = this.tuiLifecycleGeneration;
 					// Selecting the current leaf is a no-op (already there)
 					if (entryId === this.sessionManager.getLeafId()) {
 						done();
@@ -5889,6 +5893,7 @@ export class InteractiveMode {
 								"Summarize",
 								"Summarize with custom prompt",
 							]);
+							if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 
 							if (summaryChoice === undefined) {
 								// User pressed escape - re-show tree selector with same selection
@@ -5900,6 +5905,7 @@ export class InteractiveMode {
 
 							if (summaryChoice === "Summarize with custom prompt") {
 								customInstructions = await this.showExtensionEditor("Custom summarization instructions");
+								if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 								if (customInstructions === undefined) {
 									// User cancelled - loop back to summary selector
 									continue;
@@ -5915,6 +5921,7 @@ export class InteractiveMode {
 					if (this.session.isStreaming) {
 						this.restoreQueuedMessagesToEditor();
 						await this.session.abort();
+						if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 					}
 
 					// Set up escape handler and status indicator if summarizing
@@ -5936,6 +5943,7 @@ export class InteractiveMode {
 							summarize: wantsSummary,
 							customInstructions,
 						});
+						if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 
 						if (result.aborted) {
 							// Summarization aborted - re-show tree selector with same selection
@@ -5957,9 +5965,10 @@ export class InteractiveMode {
 						this.showStatus("Navigated to selected point");
 						await this.flushCompactionQueue({ willRetry: false });
 					} catch (error) {
+						if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 						this.showError(error instanceof Error ? error.message : String(error));
 					} finally {
-						if (showingSummaryIndicator) {
+						if (showingSummaryIndicator && this.tuiLifecycleGeneration === lifecycleGeneration) {
 							this.clearStatusIndicator("branchSummary");
 						}
 						this.defaultEditor.onEscape = originalOnEscape;
@@ -6679,6 +6688,7 @@ export class InteractiveMode {
 			this.showWarning("Wait for compaction to finish before reloading.");
 			return;
 		}
+		const lifecycleGeneration = this.tuiLifecycleGeneration;
 
 		this.resetExtensionUI();
 
@@ -6702,6 +6712,7 @@ export class InteractiveMode {
 		this.ui.setFocus(reloadBox);
 		this.ui.requestRender(true);
 		await new Promise((resolve) => process.nextTick(resolve));
+		if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 
 		const dismissReloadBox = (editor: Component) => {
 			this.editorContainer.clear();
@@ -6713,6 +6724,7 @@ export class InteractiveMode {
 		let chatRestoredBeforeSessionStart = false;
 		let reloadBoxDismissed = false;
 		const restoreChatBeforeSessionStart = () => {
+			if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 			if (chatRestoredBeforeSessionStart) {
 				return;
 			}
@@ -6724,6 +6736,7 @@ export class InteractiveMode {
 
 		try {
 			await this.session.reload({ beforeSessionStart: restoreChatBeforeSessionStart });
+			if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 			restoreChatBeforeSessionStart();
 			this.keybindings.reload();
 			const activeHeader = this.customHeader ?? this.builtInHeader;
@@ -6732,6 +6745,7 @@ export class InteractiveMode {
 			}
 			setRegisteredThemes(this.session.resourceLoader.getThemes().themes);
 			await this.themeController.applyFromSettings();
+			if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 			this.applyRuntimeSettings();
 			this.setupAutocompleteProvider();
 			const runner = this.session.extensionRunner;
@@ -6753,6 +6767,7 @@ export class InteractiveMode {
 			dismissReloadBox(this.editor as Component);
 			reloadBoxDismissed = true;
 		} catch (error) {
+			if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 			if (!reloadBoxDismissed) {
 				dismissReloadBox(previousEditor as Component);
 			}
