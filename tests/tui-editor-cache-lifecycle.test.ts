@@ -3,7 +3,13 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import ts from "typescript";
 import { RELEASE_COMPONENT_RENDER_CACHE } from "../packages/tui/src/component-cache.ts";
-import { Container, type Component, type TUI } from "../packages/tui/src/tui.ts";
+import {
+	Container,
+	type DetachedComponentReleaseMetrics,
+	type Component,
+	releaseDetachedComponentRenderCaches,
+	type TUI,
+} from "../packages/tui/src/tui.ts";
 import { TuiAltScreen } from "../packages/tui/src/tui-alt-screen.ts";
 import { TuiMainScreen } from "../packages/tui/src/tui-main-screen.ts";
 import { Box } from "../packages/tui/src/components/box.ts";
@@ -229,6 +235,42 @@ class CountingCacheContainer extends Container {
 	[RELEASE_COMPONENT_RENDER_CACHE](): void {
 		this.releaseCalls++;
 	}
+}
+
+class SharedNestedTransitionDriver implements Component {
+	private phase = 0;
+	private readonly tui: TuiAltScreen;
+	private readonly middle: Component;
+	private readonly replacement: Component;
+	sharedReleaseCallsAfterNested = -1;
+	private readonly shared: CountingCacheContainer;
+
+	constructor(
+		tui: TuiAltScreen,
+		middle: Component,
+		replacement: Component,
+		shared: CountingCacheContainer,
+	) {
+		this.tui = tui;
+		this.middle = middle;
+		this.replacement = replacement;
+		this.shared = shared;
+	}
+
+	render(): string[] {
+		if (this.phase === 0) {
+			this.phase = 1;
+			this.tui.renderNow(true);
+			this.sharedReleaseCallsAfterNested = this.shared.releaseCalls;
+		} else if (this.phase === 1) {
+			this.phase = 2;
+			this.tui.setLayoutRoot(this.middle);
+			this.tui.setLayoutRoot(this.replacement);
+		}
+		return ["shared-transition-driver"];
+	}
+
+	invalidate(): void {}
 }
 
 class ReentrantStartContainer extends Container {
@@ -673,6 +715,31 @@ test("first explicit layout root releases the previously mounted implicit childr
 	assertCacheReleased(nested.editor);
 });
 
+test("implicit and explicit layout ownership preserve shared descendants in both directions", async () => {
+	const tui = new TuiAltScreen(new FakeTerminal(120, 40), false, undefined, { mouse: false });
+	const shared = new CountingCacheContainer();
+	shared.addChild(new StaticCacheLine("implicit-explicit-shared"));
+	tui.addChild(shared);
+	tui.start();
+	tui.renderNow(true);
+	const explicitWrapper = new CountingCacheContainer();
+	explicitWrapper.addChild(shared);
+	const explicitRoot = new VStack([explicitWrapper]);
+
+	tui.setLayoutRoot(explicitRoot);
+	assert.equal(shared.releaseCalls, 0);
+	tui.renderNow(true);
+	assert.notEqual(altDiagnostics(tui).currentLayout, undefined);
+
+	tui.setLayoutRoot(undefined);
+	assert.equal(explicitWrapper.releaseCalls, 1);
+	assert.equal(shared.releaseCalls, 0);
+	tui.renderNow(true);
+	assert.notEqual(altDiagnostics(tui).currentLayout, undefined);
+	await tui.dispose({ preserveScreen: true });
+	assert.equal(shared.releaseCalls, 1);
+});
+
 test("layout root replacement requested during render completes after scratch ownership ends", async () => {
 	const terminal = new FakeTerminal(120, 40);
 	const tui = new TuiAltScreen(terminal, false, undefined, { mouse: false });
@@ -718,6 +785,115 @@ test("nested renderNow cannot release an old layout owner before the outer rende
 	assertScratchReleased(tui);
 	assert.equal(replacement.renderCalls, 1);
 	await tui.dispose({ preserveScreen: true });
+});
+
+test("deferred root release reevaluates shared descendants at the outer frame exit", async () => {
+	for (const replacementKeepsShared of [true, false]) {
+		const tui = new TuiAltScreen(new FakeTerminal(120, 40), false, undefined, { mouse: false });
+		const shared = new CountingCacheContainer();
+		shared.addChild(new StaticCacheLine("shared-live-child"));
+		const middleWrapper = new CountingCacheContainer();
+		middleWrapper.addChild(shared);
+		const middle = new VStack([middleWrapper]);
+		const replacementWrapper = new CountingCacheContainer();
+		if (replacementKeepsShared) replacementWrapper.addChild(shared);
+		else replacementWrapper.addChild(new StaticCacheLine("replacement-only"));
+		const replacement = new VStack([replacementWrapper]);
+		const oldRoot = new CountingCacheContainer();
+		const driver = new SharedNestedTransitionDriver(tui, middle, replacement, shared);
+		oldRoot.addChild(driver);
+		oldRoot.addChild(shared);
+		tui.setLayoutRoot(oldRoot);
+		tui.start();
+
+		tui.renderNow(true);
+		assert.equal(driver.sharedReleaseCallsAfterNested, 0);
+		assert.equal(oldRoot.releaseCalls, 1);
+		assert.equal(middleWrapper.releaseCalls, 1);
+		assert.equal(shared.releaseCalls, replacementKeepsShared ? 0 : 1);
+		assert.equal(altDiagnostics(tui).layoutRoot, replacement);
+		tui.renderNow(true);
+		assert.notEqual(altDiagnostics(tui).currentLayout, undefined);
+		await tui.dispose({ preserveScreen: true });
+		assert.equal(shared.releaseCalls, replacementKeepsShared ? 1 : 1);
+	}
+});
+
+test("selective release identity probes remain linear for disjoint and differently wrapped shared leaves", () => {
+	for (const count of [1, 16, 64, 256, 1024]) {
+		const detached = new Container();
+		const live = new Container();
+		const leaves = new Array<CountingCacheContainer>(count);
+		for (let index = 0; index < count; index++) {
+			const leaf = new CountingCacheContainer();
+			leaves[index] = leaf;
+			const detachedWrapper = new Container();
+			detachedWrapper.addChild(leaf);
+			detached.addChild(detachedWrapper);
+			if ((index & 1) === 0) {
+				const liveWrapper = new Container();
+				liveWrapper.addChild(leaf);
+				live.addChild(liveWrapper);
+			}
+		}
+		const metrics: DetachedComponentReleaseMetrics = {
+			liveNodesScanned: 0,
+			detachedNodesScanned: 0,
+			releasedNodes: 0,
+			identityTableHighWaterMark: 0,
+			retainedIdentityEntries: -1,
+		};
+		releaseDetachedComponentRenderCaches(detached, [live], metrics);
+		assert.ok(metrics.liveNodesScanned <= count * 2 + 1);
+		assert.ok(metrics.detachedNodesScanned <= count * 2 + 1);
+		assert.ok(metrics.identityTableHighWaterMark <= count * 3 + 2);
+		assert.equal(metrics.retainedIdentityEntries, 0);
+		for (let index = 0; index < count; index++) {
+			assert.equal(leaves[index]!.releaseCalls, (index & 1) === 0 ? 0 : 1);
+		}
+	}
+});
+
+test("selective release keeps 5k and 50k retained logical owners while dropping its identity table", () => {
+	for (const count of [5_000, 50_000]) {
+		const retained = new RetainedContainer();
+		const live = new Container();
+		for (let index = 0; index < count; index++) {
+			const component = new StaticCacheLine(`retained-${index}`);
+			retained.addRetainedChild(component, { id: `retained-${index}`, version: 1, completed: true });
+			if ((index & 1) === 0) live.addChild(component);
+		}
+		const children = retained.children;
+		const metrics: DetachedComponentReleaseMetrics = {
+			liveNodesScanned: 0,
+			detachedNodesScanned: 0,
+			releasedNodes: 0,
+			identityTableHighWaterMark: 0,
+			retainedIdentityEntries: -1,
+		};
+		releaseDetachedComponentRenderCaches(retained, [live], metrics);
+		assert.equal(retained.children, children);
+		assert.equal(retained.children.length, count);
+		assert.ok(metrics.liveNodesScanned <= count / 2 + 1);
+		assert.ok(metrics.detachedNodesScanned <= count * 2 + 1);
+		assert.ok(metrics.identityTableHighWaterMark <= count * 2 + 2);
+		assert.equal(metrics.retainedIdentityEntries, 0);
+	}
+});
+
+test("selective release preserves the first hook error while releasing later detached siblings", () => {
+	const detached = new Container();
+	const throwing = new ThrowingCacheRoot([]);
+	const later = new CountingCacheContainer();
+	const shared = new CountingCacheContainer();
+	detached.addChild(throwing);
+	detached.addChild(later);
+	detached.addChild(shared);
+	const live = new Container();
+	live.addChild(shared);
+	assert.throws(() => releaseDetachedComponentRenderCaches(detached, [live]), /fixture cache release failure/);
+	assert.equal(later.releaseCalls, 1);
+	assert.equal(shared.releaseCalls, 0);
 });
 
 test("each nested layout frame releases its own detached owner after that frame exits", async () => {
@@ -1244,7 +1420,7 @@ test("lifecycle cleanup remains outside frame and recoverable-stop hot paths", a
 	);
 	assert.match(setLayoutRoot.getText(altSource), /this\.layoutRenderOwners\[depth\] !== previousOwner/);
 	assert.match(setLayoutRoot.getText(altSource), /this\.pendingLayoutCacheReleases\[depth\] = previousOwner/);
-	assert.match(altText, /releaseComponentRenderCaches\(pendingLayoutCacheRelease\)/);
+	assert.match(altText, /this\.releaseDetachedLayoutOwner\([\s\S]*pendingLayoutCacheRelease/);
 	assert.match(altText, /private layoutRenderDepth = 0/);
 	assert.match(altText, /layoutRenderOwners: Array<Component \| undefined> = \[undefined\]/);
 	assert.match(altText, /pendingLayoutCacheReleases: Array<Component \| undefined> = \[undefined\]/);
@@ -1254,7 +1430,7 @@ test("lifecycle cleanup remains outside frame and recoverable-stop hot paths", a
 	assert.match(altText, /if \(layoutRenderDepth === 0\) this\.layoutScratch\.flushRequestedClear\(\)/);
 	assert.match(setLayoutRoot.getText(altSource), /layoutScratch\.requestClear\(\)/);
 	assert.doesNotMatch(setLayoutRoot.getText(altSource), /layoutScratch\.clear\(\)/);
-	assert.match(setLayoutRoot.getText(altSource), /releaseComponentRenderCaches\(this\.implicitScrollView\)/);
+	assert.match(altText, /releaseDetachedComponentRenderCaches\(this\.implicitScrollView, liveRoots\)/);
 	assert.match(altText, /resetRenderState\(\): void \{[\s\S]*this\.layoutScratch\.requestClear\(\)/);
 	assert.match(
 		altText,

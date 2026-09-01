@@ -37,6 +37,7 @@ import {
 	RELEASE_COMPONENT_RENDER_CACHE,
 } from "../packages/tui/src/component-cache.ts";
 import { Editor, type EditorTheme } from "../packages/tui/src/components/editor.ts";
+import { Box } from "../packages/tui/src/components/box.ts";
 import { Image } from "../packages/tui/src/components/image.ts";
 import { Loader } from "../packages/tui/src/components/loader.ts";
 import {
@@ -52,6 +53,7 @@ import { getCapabilities, setCapabilities } from "../packages/tui/src/terminal-i
 import { Container, type Component } from "../packages/tui/src/tui.ts";
 import { TuiAltScreen } from "../packages/tui/src/tui-alt-screen.ts";
 import { TuiMainScreen } from "../packages/tui/src/tui-main-screen.ts";
+import { VStack } from "../packages/tui/src/components/v-stack.ts";
 import { FakeTerminal } from "./helpers/runtime-instrumentation.ts";
 
 initTheme("dark");
@@ -336,6 +338,14 @@ class ThrowingCacheRelease implements Component {
 	render(): string[] { return ["throwing-release"]; }
 }
 
+class CountingDetachedCacheOwner extends Container {
+	releaseCalls = 0;
+
+	[RELEASE_COMPONENT_RENDER_CACHE](): void {
+		this.releaseCalls++;
+	}
+}
+
 class StaticLine implements Component {
 	value: string;
 
@@ -514,6 +524,58 @@ test("Alt root replacement releases Loader timer and stale TUI callback ownershi
 	assert.equal(raw.ui, null);
 });
 
+test("Alt root replacement preserves shared Loader and Editor descendants under different wrappers", async () => {
+	const tui = new CountingAltScreen(new FakeTerminal(100, 30), false, undefined, { mouse: false });
+	const loader = new Loader(tui, identity, identity, "shared", { frames: ["a", "b"], intervalMs: 60_000 });
+	const loaderRaw = loader as unknown as LoaderRawState;
+	const editor = new Editor(tui, EDITOR_THEME);
+	const provider: AutocompleteProvider = {
+		triggerCharacters: ["@"],
+		async getSuggestions() { return null; },
+		applyCompletion(lines, cursorLine, cursorCol) { return { lines, cursorLine, cursorCol }; },
+	};
+	editor.setAutocompleteProvider(provider);
+	editor.focused = true;
+	editor.setText("shared editor ");
+	const oldLoaderBox = new Box(0, 0);
+	oldLoaderBox.addChild(loader);
+	const oldEditorWrapper = new Container();
+	oldEditorWrapper.addChild(editor);
+	const detachedOwner = new CountingDetachedCacheOwner();
+	const rootA = new VStack([oldLoaderBox, oldEditorWrapper, detachedOwner]);
+	const newLoaderBox = new Box(0, 0);
+	newLoaderBox.addChild(loader);
+	const newEditorWrapper = new Container();
+	newEditorWrapper.addChild(editor);
+	const rootB = new VStack([newLoaderBox, newEditorWrapper, new CountingDetachedCacheOwner()]);
+	tui.setLayoutRoot(rootA);
+	tui.start();
+	const editorRaw = editor as unknown as EditorAutocompleteRawState;
+	try {
+		tui.renderNow(true);
+		editor.handleInput("@");
+		const autocompleteTimer = editorRaw.autocompleteDebounceTimer;
+		assert.ok(loaderRaw.intervalId);
+		assert.ok(autocompleteTimer);
+		assert.equal(loaderRaw.ui, tui);
+
+		tui.setLayoutRoot(rootB);
+		assert.equal(detachedOwner.releaseCalls, 1);
+		assert.equal((oldLoaderBox as unknown as BoxRawCache).cache, undefined);
+		assert.ok(loaderRaw.intervalId, "shared Loader animation remains owned by the incoming root");
+		assert.equal(loaderRaw.ui, tui);
+		assert.equal(editorRaw.autocompleteDebounceTimer, autocompleteTimer);
+		assert.equal(editor.getText(), "shared editor @");
+		tui.renderNow(true);
+		assert.ok(loader.render(80).length > 0);
+	} finally {
+		await tui.dispose({ preserveScreen: true });
+	}
+	assert.equal(loaderRaw.intervalId, null);
+	assert.equal(loaderRaw.ui, null);
+	assert.equal(editorRaw.autocompleteDebounceTimer, undefined);
+});
+
 test("Editor final release cancels debounced and active autocomplete work", async () => {
 	let debounceProviderCalls = 0;
 	const debounceProvider: AutocompleteProvider = {
@@ -577,7 +639,7 @@ test("Editor final release cancels debounced and active autocomplete work", asyn
 });
 
 test("extension countdown natural expiry invokes its callback before releasing owners", async () => {
-	const tui = new CountingProductionMainScreen(new FakeTerminal(80, 20), false);
+	const tui = new TuiMainScreen(new FakeTerminal(80, 20), false);
 	let cancelCalls = 0;
 	const selector = new ExtensionSelectorComponent("Timed selector", ["one"], noOperation, () => {
 		cancelCalls++;
@@ -912,6 +974,135 @@ test("permanently removed overlays release animation owners", async () => {
 	await wrappedTui.dispose({ preserveScreen: true });
 	assert.equal(wrappedRaw.intervalId, null);
 	assert.equal(wrappedRaw.ui, null);
+});
+
+test("overlay removal preserves descendants still owned through nested and partially shared overlays", async () => {
+	const tui = new TuiMainScreen(new FakeTerminal(80, 20), false);
+	const loader = new Loader(tui, identity, identity, "shared-overlay", {
+		frames: ["a", "b"],
+		intervalMs: 60_000,
+	});
+	const raw = loader as unknown as LoaderRawState;
+	const nestedWrapper = new CountingDetachedCacheOwner();
+	nestedWrapper.addChild(loader);
+	const direct = tui.showOverlay(loader);
+	const nested = tui.showOverlay(nestedWrapper);
+	tui.start();
+	try {
+		assert.ok(raw.intervalId);
+
+		direct.hide();
+		assert.ok(raw.intervalId, "nested structural owner keeps the Loader active");
+		assert.equal(raw.ui, tui);
+		assert.equal(nestedWrapper.releaseCalls, 0);
+
+		nested.hide();
+		assert.equal(raw.intervalId, null);
+		assert.equal(raw.ui, null);
+		assert.equal(nestedWrapper.releaseCalls, 1);
+	} finally {
+		loader.dispose();
+		await tui.dispose({ preserveScreen: true });
+	}
+
+	const partialTui = new TuiMainScreen(new FakeTerminal(80, 20), false);
+	const partialLoader = new Loader(partialTui, identity, identity, "partial-shared", {
+		frames: ["a", "b"],
+		intervalMs: 60_000,
+	});
+	const partialRaw = partialLoader as unknown as LoaderRawState;
+	const oldWrapper = new CountingDetachedCacheOwner();
+	oldWrapper.addChild(partialLoader);
+	const remainingWrapper = new CountingDetachedCacheOwner();
+	remainingWrapper.addChild(partialLoader);
+	const oldHandle = partialTui.showOverlay(oldWrapper);
+	const remainingHandle = partialTui.showOverlay(remainingWrapper);
+	partialTui.start();
+	try {
+		oldHandle.hide();
+		assert.equal(oldWrapper.releaseCalls, 1);
+		assert.equal(remainingWrapper.releaseCalls, 0);
+		assert.ok(partialRaw.intervalId);
+		assert.equal(partialRaw.ui, partialTui);
+		remainingHandle.hide();
+		assert.equal(remainingWrapper.releaseCalls, 1);
+		assert.equal(partialRaw.intervalId, null);
+		assert.equal(partialRaw.ui, null);
+	} finally {
+		partialLoader.dispose();
+		await partialTui.dispose({ preserveScreen: true });
+	}
+
+	const sameRootTui = new TuiMainScreen(new FakeTerminal(80, 20), false);
+	const sameRootLoader = new Loader(sameRootTui, identity, identity, "same-root", {
+		frames: ["a", "b"],
+		intervalMs: 60_000,
+	});
+	const sameRootRaw = sameRootLoader as unknown as LoaderRawState;
+	const sameRootFirst = sameRootTui.showOverlay(sameRootLoader);
+	const sameRootSecond = sameRootTui.showOverlay(sameRootLoader);
+	sameRootTui.start();
+	try {
+		sameRootFirst.hide();
+		assert.ok(sameRootRaw.intervalId);
+		assert.equal(sameRootRaw.ui, sameRootTui);
+		sameRootSecond.hide();
+		assert.equal(sameRootRaw.intervalId, null);
+		assert.equal(sameRootRaw.ui, null);
+	} finally {
+		sameRootLoader.dispose();
+		await sameRootTui.dispose({ preserveScreen: true });
+	}
+
+	const hiddenTui = new TuiMainScreen(new FakeTerminal(80, 20), false);
+	const hiddenLoader = new Loader(hiddenTui, identity, identity, "hidden-owner", {
+		frames: ["a", "b"],
+		intervalMs: 60_000,
+	});
+	const hiddenRaw = hiddenLoader as unknown as LoaderRawState;
+	const removedWrapper = new CountingDetachedCacheOwner();
+	removedWrapper.addChild(hiddenLoader);
+	const hiddenWrapper = new CountingDetachedCacheOwner();
+	hiddenWrapper.addChild(hiddenLoader);
+	const removedHandle = hiddenTui.showOverlay(removedWrapper);
+	const hiddenHandle = hiddenTui.showOverlay(hiddenWrapper);
+	hiddenHandle.setHidden(true);
+	hiddenTui.start();
+	try {
+		removedHandle.hide();
+		assert.ok(hiddenRaw.intervalId, "hidden overlays retain structural ownership");
+		assert.equal(hiddenRaw.ui, hiddenTui);
+		hiddenHandle.hide();
+		assert.equal(hiddenRaw.intervalId, null);
+		assert.equal(hiddenRaw.ui, null);
+	} finally {
+		hiddenLoader.dispose();
+		await hiddenTui.dispose({ preserveScreen: true });
+	}
+
+	const mountedTui = new TuiMainScreen(new FakeTerminal(80, 20), false);
+	const mountedLoader = new Loader(mountedTui, identity, identity, "mounted-shared", {
+		frames: ["a", "b"],
+		intervalMs: 60_000,
+	});
+	const mountedRaw = mountedLoader as unknown as LoaderRawState;
+	const mountedWrapper = new Container();
+	mountedWrapper.addChild(mountedLoader);
+	mountedTui.addChild(mountedWrapper);
+	const overlayWrapper = new CountingDetachedCacheOwner();
+	overlayWrapper.addChild(mountedLoader);
+	const mountedOverlay = mountedTui.showOverlay(overlayWrapper);
+	mountedTui.start();
+	try {
+		mountedOverlay.hide();
+		assert.equal(overlayWrapper.releaseCalls, 1);
+		assert.ok(mountedRaw.intervalId);
+		assert.equal(mountedRaw.ui, mountedTui);
+	} finally {
+		await mountedTui.dispose({ preserveScreen: true });
+	}
+	assert.equal(mountedRaw.intervalId, null);
+	assert.equal(mountedRaw.ui, null);
 });
 
 test("production Assistant and User message trees release nested Markdown and Text caches", async () => {
@@ -1395,6 +1586,7 @@ test("built-in cache owner contract stays lifecycle-only and complete", async ()
 		["RetryStatusIndicator", "packages/coding-agent/src/modes/interactive/components/status-indicator.ts"],
 		["BashResultRenderComponent", "packages/coding-agent/src/core/tools/bash.ts"],
 		["WriteCallRenderComponent", "packages/coding-agent/src/core/tools/write.ts"],
+		["ToolExecutionComponent", "packages/coding-agent/src/modes/interactive/components/tool-execution.ts"],
 		["ExtensionSelectorComponent", "packages/coding-agent/src/modes/interactive/components/extension-selector.ts"],
 		["ExtensionInputComponent", "packages/coding-agent/src/modes/interactive/components/extension-input.ts"],
 	] as const;
@@ -1412,7 +1604,12 @@ test("built-in cache owner contract stays lifecycle-only and complete", async ()
 		}
 		assert.ok(releaseMethod, `${className} must own an explicit cache-only final-unmount hook`);
 		const releaseText = releaseMethod.getText(source);
-		assert.doesNotMatch(releaseText, /\.invalidate\(|\.render\(|new (?:Map|Set|Promise|AbortController)|=>|function\s*\(/);
+		assert.doesNotMatch(releaseText, /\.invalidate\(|\.render\(|new (?:Set|Promise|AbortController)|=>|function\s*\(/);
+		if (className === "ToolExecutionComponent") {
+			assert.equal(releaseText.match(/new Map\(/g)?.length ?? 0, 1);
+		} else {
+			assert.doesNotMatch(releaseText, /new Map\(/);
+		}
 	}
 	const settingsText = await readFile("packages/tui/src/components/settings-list.ts", "utf8");
 	assert.match(
@@ -1443,6 +1640,9 @@ test("built-in cache owner contract stays lifecycle-only and complete", async ()
 	const hideOverlay = tuiText.match(/hideOverlay\(\): void \{[\s\S]*?\n\t}/)?.[0] ?? "";
 	assert.match(overlayHandleHide, /this\.releaseDetachedOverlayComponent\(component\)/);
 	assert.match(hideOverlay, /this\.releaseDetachedOverlayComponent\(overlay\.component\)/);
+	assert.match(tuiText, /export function releaseDetachedComponentRenderCaches/);
+	assert.match(tuiText, /const identities = new Map<Component, number>\(\)/);
+	assert.match(tuiText, /identities\.clear\(\)/);
 	const traversal = tuiText.match(/export function releaseComponentRenderCaches[\s\S]*?\n}\n/)?.[0] ?? "";
 	assert.notEqual(traversal, "");
 	assert.doesNotMatch(traversal, /new (?:Map|Set|Promise|AbortController)|=>|function\s*\(/);
