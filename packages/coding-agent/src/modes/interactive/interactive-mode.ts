@@ -4510,8 +4510,23 @@ export class InteractiveMode {
 		this.themeController.disableAutoSync();
 		await this.ui.terminal.drainInput(1000);
 
-		await this.stop();
-		await this.runtimeHost.dispose();
+		let cleanupError: unknown;
+		let cleanupFailed = false;
+		try {
+			await this.stop();
+		} catch (error) {
+			cleanupFailed = true;
+			cleanupError = error;
+		}
+		try {
+			await this.runtimeHost.dispose();
+		} catch (error) {
+			if (!cleanupFailed) {
+				cleanupFailed = true;
+				cleanupError = error;
+			}
+		}
+		if (cleanupFailed) throw cleanupError;
 
 		const resumeCommand = formatResumeCommand(this.sessionManager);
 		if (resumeCommand) {
@@ -7198,45 +7213,47 @@ export class InteractiveMode {
 			const result = eventResult.result;
 
 			// Create UI component for display
-			this.bashComponent = new BashExecutionComponent(command, this.ui, excludeFromContext);
+			const bashComponent = new BashExecutionComponent(command, this.ui, excludeFromContext);
+			this.bashComponent = bashComponent;
 			if (this.session.isStreaming) {
-				this.pendingMessagesContainer.addChild(this.bashComponent);
-				this.pendingBashComponents.push(this.bashComponent);
+				this.pendingMessagesContainer.addChild(bashComponent);
+				this.pendingBashComponents.push(bashComponent);
 			} else {
-				this.chatContainer.addChild(this.bashComponent);
+				this.chatContainer.addChild(bashComponent);
 			}
 
 			// Show output and complete
 			if (result.output) {
-				this.bashComponent.appendOutput(result.output);
-				this.chatContainer.invalidateViewportChild(this.bashComponent);
+				bashComponent.appendOutput(result.output);
+				this.chatContainer.invalidateViewportChild(bashComponent);
 			}
-			this.bashComponent.setComplete(
+			bashComponent.setComplete(
 				result.exitCode,
 				result.cancelled,
 				result.truncated ? ({ truncated: true, content: result.output } as TruncationResult) : undefined,
 				result.fullOutputPath,
 			);
-			this.chatContainer.invalidateViewportChild(this.bashComponent);
+			this.chatContainer.invalidateViewportChild(bashComponent);
 
 			// Record the result in session
 			this.session.recordBashResult(command, result, { excludeFromContext });
-			this.bashComponent = undefined;
+			if (this.bashComponent === bashComponent) this.bashComponent = undefined;
 			this.ui.requestRender();
 			return;
 		}
 
 		// Normal execution path (possibly with custom operations)
 		const isDeferred = this.session.isStreaming;
-		this.bashComponent = new BashExecutionComponent(command, this.ui, excludeFromContext);
+		const bashComponent = new BashExecutionComponent(command, this.ui, excludeFromContext);
+		this.bashComponent = bashComponent;
 
 		if (isDeferred) {
 			// Show in pending area when agent is streaming
-			this.pendingMessagesContainer.addChild(this.bashComponent);
-			this.pendingBashComponents.push(this.bashComponent);
+			this.pendingMessagesContainer.addChild(bashComponent);
+			this.pendingBashComponents.push(bashComponent);
 		} else {
 			// Show in chat immediately when agent is idle
-			this.chatContainer.addChild(this.bashComponent);
+			this.chatContainer.addChild(bashComponent);
 		}
 		this.ui.requestRender();
 
@@ -7244,33 +7261,44 @@ export class InteractiveMode {
 			const result = await this.session.executeBash(
 				command,
 				(chunk) => {
-					if (this.bashComponent) {
-						this.bashComponent.appendOutput(chunk);
-						this.chatContainer.invalidateViewportChild(this.bashComponent);
+					if (
+						this.tuiLifecycleGeneration === lifecycleGeneration &&
+						this.bashComponent === bashComponent
+					) {
+						bashComponent.appendOutput(chunk);
+						this.chatContainer.invalidateViewportChild(bashComponent);
 						this.ui.requestRender();
 					}
 				},
 				{ excludeFromContext, operations: eventResult?.operations },
 			);
 
-			if (this.bashComponent) {
-				this.bashComponent.setComplete(
+			if (this.tuiLifecycleGeneration !== lifecycleGeneration) {
+				if (this.bashComponent === bashComponent) this.bashComponent = undefined;
+				return;
+			}
+			if (this.bashComponent === bashComponent) {
+				bashComponent.setComplete(
 					result.exitCode,
 					result.cancelled,
 					result.truncated ? ({ truncated: true, content: result.output } as TruncationResult) : undefined,
 					result.fullOutputPath,
 				);
-				this.chatContainer.invalidateViewportChild(this.bashComponent);
+				this.chatContainer.invalidateViewportChild(bashComponent);
 			}
 		} catch (error) {
-			if (this.bashComponent) {
-				this.bashComponent.setComplete(undefined, false);
-				this.chatContainer.invalidateViewportChild(this.bashComponent);
+			if (this.tuiLifecycleGeneration !== lifecycleGeneration) {
+				if (this.bashComponent === bashComponent) this.bashComponent = undefined;
+				return;
+			}
+			if (this.bashComponent === bashComponent) {
+				bashComponent.setComplete(undefined, false);
+				this.chatContainer.invalidateViewportChild(bashComponent);
 			}
 			this.showError(`Bash command failed: ${error instanceof Error ? error.message : "Unknown error"}`);
 		}
 
-		this.bashComponent = undefined;
+		if (this.bashComponent === bashComponent) this.bashComponent = undefined;
 		this.ui.requestRender();
 	}
 
@@ -7286,19 +7314,20 @@ export class InteractiveMode {
 
 	async stop(fullscreenExitOutput = this.settingsManager.getFullscreenExitOutput()): Promise<void> {
 		this.tuiLifecycleGeneration++;
+		this.bashComponent = undefined;
 		this.cancelActiveLoginDialog();
 		this.cancelActiveProviderAuthentication();
 		this.cancelActiveModelLookup();
 		this.cancelActiveExtensionCustom();
 		this.cancelExtensionDialogs();
 		this.disposeActiveSelector();
-		let extensionReleaseError: unknown;
-		let extensionReleaseFailed = false;
+		let cleanupError: unknown;
+		let cleanupFailed = false;
 		try {
 			this.releaseExtensionUiOwners();
 		} catch (error) {
-			extensionReleaseFailed = true;
-			extensionReleaseError = error;
+			cleanupFailed = true;
+			cleanupError = error;
 		}
 		if (this.settingsManager.getShowTerminalProgress()) {
 			this.ui.terminal.setProgress(false);
@@ -7312,10 +7341,25 @@ export class InteractiveMode {
 			this.unsubscribe();
 		}
 		if (this.isInitialized) {
-			await this.stopInteractiveTui(fullscreenExitOutput);
-			this.isInitialized = false;
+			try {
+				await this.stopInteractiveTui(fullscreenExitOutput);
+			} catch (error) {
+				if (!cleanupFailed) {
+					cleanupFailed = true;
+					cleanupError = error;
+				}
+			} finally {
+				this.isInitialized = false;
+			}
 		}
-		this.unregisterSignalHandlers();
-		if (extensionReleaseFailed) throw extensionReleaseError;
+		try {
+			this.unregisterSignalHandlers();
+		} catch (error) {
+			if (!cleanupFailed) {
+				cleanupFailed = true;
+				cleanupError = error;
+			}
+		}
+		if (cleanupFailed) throw cleanupError;
 	}
 }
