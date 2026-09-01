@@ -334,6 +334,29 @@ test("layout-root replacement releases nested Editor cache and Alt scratch immed
 	await tui.dispose({ preserveScreen: true });
 });
 
+test("first explicit layout root releases the previously mounted implicit children", async () => {
+	const tui = new TuiAltScreen(new FakeTerminal(120, 40), false, undefined, { mouse: false });
+	const nested = createNestedRoot(tui);
+	const implicitRoot = new CountingRoot([nested.container]);
+	tui.addChild(implicitRoot);
+	tui.start();
+	tui.renderNow();
+	assertCachePrimed(nested.editor);
+
+	const explicitRoot = new VStack([]);
+	tui.setLayoutRoot(explicitRoot);
+	assertCacheReleased(nested.editor);
+	assert.equal(implicitRoot.invalidateCalls, 0);
+	assert.equal(implicitRoot.releaseCalls, 1);
+	assert.equal(tui.children[0], implicitRoot);
+	assert.equal(implicitRoot.children[0], nested.container);
+	assert.equal(altDiagnostics(tui).layoutRoot, explicitRoot);
+	assertScratchReleased(tui);
+
+	await tui.dispose({ preserveScreen: true });
+	assertCacheReleased(nested.editor);
+});
+
 test("layout-root replacement releases Box caches without semantic invalidation", async () => {
 	const tui = new TuiAltScreen(new FakeTerminal(120, 40), false, undefined, { mouse: false });
 	const nested = createNestedRoot(tui);
@@ -521,7 +544,7 @@ test("lifecycle cleanup remains outside frame and recoverable-stop hot paths", a
 	assert.match(boxText, /GET_COMPONENT_RENDER_CACHE_CHILDREN/);
 	assert.match(boxText, /RELEASE_COMPONENT_RENDER_CACHE/);
 	assert.doesNotMatch(setLayoutRoot.getText(altSource), /previousRoot\?\.invalidate/);
-	assert.match(setLayoutRoot.getText(altSource), /releaseComponentRenderCaches\(previousRoot\)/);
+	assert.match(setLayoutRoot.getText(altSource), /releaseComponentRenderCaches\(previousRoot \?\? this\)/);
 	assert.doesNotMatch(
 		tuiText.match(/protected releaseMountedComponentsAfterDispose[\s\S]*?\n\t}\n/)?.[0] ?? "",
 		/this\.invalidate\(\)/,

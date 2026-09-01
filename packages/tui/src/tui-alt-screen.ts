@@ -255,7 +255,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		if (this.layoutRoot === component) return;
 		const previousRoot = this.layoutRoot;
 		try {
-			releaseComponentRenderCaches(previousRoot);
+			releaseComponentRenderCaches(previousRoot ?? this);
 		} finally {
 			this.layoutScratch.clear();
 			this.layoutRoot = component;
