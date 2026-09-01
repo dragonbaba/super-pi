@@ -13,6 +13,11 @@ import type { StreamedToolArgumentOwnership } from "@super-pi/ai";
 import type { ToolDefinition, ToolRenderContext } from "../../../core/extensions/types.ts";
 import { createAllToolDefinitions, type ToolName } from "../../../core/tools/index.ts";
 import { getTextOutput as getRenderedTextOutput } from "../../../core/tools/render-utils.ts";
+import {
+	RELEASE_TOOL_RENDER_DERIVED_STATE,
+	TOOL_RENDER_LIFECYCLE_GENERATION,
+	type ToolRenderLifecycleState,
+} from "../../../core/tools/tool-render-lifecycle.ts";
 import { convertToPng } from "../../../utils/image-convert.ts";
 import { ObjectPool } from "../../../utils/object-pool.ts";
 import { theme } from "../theme/theme.ts";
@@ -273,6 +278,7 @@ export class ToolExecutionComponent extends Container {
 	private callRendererComponent?: Component;
 	private resultRendererComponent?: Component;
 	private rendererState: any = {};
+	private renderLifecycleGeneration = 1;
 	private imageComponents: Image[] = [];
 	private imageSpacers: Spacer[] = [];
 	private imageSourceData: string[] = [];
@@ -349,6 +355,8 @@ export class ToolExecutionComponent extends Container {
 		this.allocationMetrics = options.allocationMetrics;
 		this.ui = ui;
 		this.cwd = cwd;
+		(this.rendererState as ToolRenderLifecycleState)[TOOL_RENDER_LIFECYCLE_GENERATION] =
+			this.renderLifecycleGeneration;
 
 		this.addChild(new Spacer(1));
 
@@ -740,6 +748,17 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	[RELEASE_COMPONENT_RENDER_CACHE](): void {
+		this.renderLifecycleGeneration++;
+		const lifecycleState = this.rendererState as ToolRenderLifecycleState;
+		lifecycleState[TOOL_RENDER_LIFECYCLE_GENERATION] = this.renderLifecycleGeneration;
+		let releaseError: unknown;
+		let releaseFailed = false;
+		try {
+			lifecycleState[RELEASE_TOOL_RENDER_DERIVED_STATE]?.(lifecycleState);
+		} catch (error) {
+			releaseError = error;
+			releaseFailed = true;
+		}
 		for (let index = 0; index < this.imageComponents.length; index++) {
 			this.removeChild(this.imageComponents[index]!);
 		}
@@ -758,6 +777,7 @@ export class ToolExecutionComponent extends Container {
 		this.imageTreeProtocol = null;
 		this.imageTreeWidthCells = 0;
 		this.imageTreeConversionGeneration = -1;
+		if (releaseFailed) throw releaseError;
 	}
 
 	/** Low-frequency lifecycle diagnostics; never called from update/render. */

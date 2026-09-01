@@ -641,6 +641,7 @@ export class InteractiveMode {
 	private extensionSelector: ExtensionSelectorComponent | undefined = undefined;
 	private extensionInput: ExtensionInputComponent | undefined = undefined;
 	private extensionEditor: ExtensionEditorComponent | undefined = undefined;
+	private activeLoginDialog: LoginDialogComponent | undefined = undefined;
 	private extensionTerminalInputSubscriptions = new Set<{
 		handler: (data: string) => { consume?: boolean; data?: string } | undefined;
 		unsubscribe: () => void;
@@ -2753,6 +2754,23 @@ export class InteractiveMode {
 		this.extensionSelector?.cancel();
 		this.extensionInput?.cancel();
 		this.extensionEditor?.cancel();
+	}
+
+	private setActiveLoginDialog(dialog: LoginDialogComponent): void {
+		this.cancelActiveLoginDialog();
+		this.activeLoginDialog = dialog;
+	}
+
+	private releaseActiveLoginDialog(dialog: LoginDialogComponent): boolean {
+		if (this.activeLoginDialog !== dialog) return false;
+		this.activeLoginDialog = undefined;
+		return true;
+	}
+
+	private cancelActiveLoginDialog(): void {
+		const dialog = this.activeLoginDialog;
+		this.activeLoginDialog = undefined;
+		dialog?.cancel();
 	}
 
 	/**
@@ -6065,20 +6083,23 @@ export class InteractiveMode {
 	}
 
 	private showAmbientAuthDialog(providerOption: AuthSelectorProvider): void {
+		let dialog: LoginDialogComponent;
 		const restoreEditor = () => {
+			if (!this.releaseActiveLoginDialog(dialog)) return;
 			this.editorContainer.clear();
 			this.editorContainer.addChild(this.editor);
 			this.ui.setFocus(this.editor);
 			this.ui.requestRender();
 		};
 
-		const dialog = new LoginDialogComponent(
+		dialog = new LoginDialogComponent(
 			this.ui,
 			providerOption.id,
 			() => restoreEditor(),
 			providerOption.name,
 			`${providerOption.name} setup`,
 		);
+		this.setActiveLoginDialog(dialog);
 		dialog.showInfo(`${providerOption.method?.name ?? "Authentication"} is configured outside pi.`, [], true);
 
 		this.editorContainer.clear();
@@ -6098,6 +6119,7 @@ export class InteractiveMode {
 			},
 			providerName,
 		);
+		this.setActiveLoginDialog(dialog);
 
 		if (providerId === "amazon-bedrock") {
 			dialog.showDetails([
@@ -6121,10 +6143,16 @@ export class InteractiveMode {
 
 		try {
 			await this.loginProvider(dialog, providerId, "api_key");
+			if (!this.releaseActiveLoginDialog(dialog)) return;
 			restoreEditor();
 			await this.completeProviderAuthentication(providerId, providerName, "api_key", previousModel);
 		} catch (error: unknown) {
-			restoreEditor();
+			if (this.activeLoginDialog === dialog) {
+				this.activeLoginDialog = undefined;
+				restoreEditor();
+			} else if (dialog.signal.aborted) {
+				return;
+			}
 			const errorMsg = error instanceof Error ? error.message : String(error);
 			if (error instanceof CredentialSynchronizationError) {
 				this.showError(
@@ -6142,6 +6170,7 @@ export class InteractiveMode {
 	): Promise<string> {
 		return new Promise((resolve, reject) => {
 			const restoreDialog = () => {
+				if (this.activeLoginDialog !== dialog) return;
 				this.editorContainer.clear();
 				this.editorContainer.addChild(dialog);
 				this.ui.setFocus(dialog);
@@ -6170,6 +6199,7 @@ export class InteractiveMode {
 	}
 
 	private async showAuthPrompt(dialog: LoginDialogComponent, prompt: AuthPrompt): Promise<string> {
+		if (this.activeLoginDialog !== dialog) throw new Error("Login cancelled");
 		let response: Promise<string>;
 		if (prompt.type === "select") {
 			response = this.showAuthSelect(dialog, prompt);
@@ -6194,6 +6224,7 @@ export class InteractiveMode {
 	}
 
 	private notifyAuthDialog(dialog: LoginDialogComponent, event: AuthEvent): void {
+		if (this.activeLoginDialog !== dialog) return;
 		if (event.type === "auth_url") {
 			dialog.showAuth(event.url, event.instructions);
 		} else if (event.type === "device_code") {
@@ -6221,6 +6252,7 @@ export class InteractiveMode {
 	private async showLoginDialog(providerId: string, providerName: string): Promise<void> {
 		const previousModel = this.session.model;
 		const dialog = new LoginDialogComponent(this.ui, providerId, (_success, _message) => {}, providerName);
+		this.setActiveLoginDialog(dialog);
 		this.editorContainer.clear();
 		this.editorContainer.addChild(dialog);
 		this.ui.setFocus(dialog);
@@ -6235,10 +6267,16 @@ export class InteractiveMode {
 
 		try {
 			await this.loginProvider(dialog, providerId, "oauth");
+			if (!this.releaseActiveLoginDialog(dialog)) return;
 			restoreEditor();
 			await this.completeProviderAuthentication(providerId, providerName, "oauth", previousModel);
 		} catch (error: unknown) {
-			restoreEditor();
+			if (this.activeLoginDialog === dialog) {
+				this.activeLoginDialog = undefined;
+				restoreEditor();
+			} else if (dialog.signal.aborted) {
+				return;
+			}
 			const errorMsg = error instanceof Error ? error.message : String(error);
 			if (error instanceof CredentialSynchronizationError) {
 				this.showError(
@@ -6457,6 +6495,7 @@ export class InteractiveMode {
 
 		// Show cancellable loader, replacing the editor
 		const loader = new BorderedLoader(this.ui, theme, "Creating gist...");
+		const loaderLifecycleGeneration = this.tuiLifecycleGeneration;
 		this.editorContainer.clear();
 		this.editorContainer.addChild(loader);
 		this.ui.setFocus(loader);
@@ -6479,6 +6518,14 @@ export class InteractiveMode {
 
 		loader.onAbort = () => {
 			proc?.kill();
+			if (loaderLifecycleGeneration !== this.tuiLifecycleGeneration) {
+				try {
+					fs.unlinkSync(tmpFile);
+				} catch {
+					// Ignore cleanup errors
+				}
+				return;
+			}
 			restoreEditor();
 			this.showStatus("Share cancelled");
 		};
@@ -6961,6 +7008,7 @@ export class InteractiveMode {
 
 	async stop(fullscreenExitOutput = this.settingsManager.getFullscreenExitOutput()): Promise<void> {
 		this.tuiLifecycleGeneration++;
+		this.cancelActiveLoginDialog();
 		this.cancelExtensionDialogs();
 		this.disposeActiveSelector();
 		if (this.settingsManager.getShowTerminalProgress()) {
