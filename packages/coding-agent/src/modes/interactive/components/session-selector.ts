@@ -24,6 +24,8 @@ import { filterAndSortSessions, hasSessionName, type NameFilter, type SortMode }
 
 type SessionScope = "current" | "all";
 
+function ignoreSessionSelectorRender(): void {}
+
 function shortenPath(path: string): string {
 	const home = os.homedir();
 	if (!path) return path;
@@ -112,6 +114,12 @@ class SessionSelectorHeader implements Component {
 		if (!this.statusTimeout) return;
 		clearTimeout(this.statusTimeout);
 		this.statusTimeout = null;
+	}
+
+	dispose(): void {
+		this.clearStatusTimeout();
+		this.statusMessage = null;
+		this.requestRender = ignoreSessionSelectorRender;
 	}
 
 	setStatusMessage(msg: { type: "info" | "error"; message: string } | null, autoHideMs?: number): void {
@@ -713,6 +721,8 @@ export class SessionSelectorComponent extends Container implements Focusable {
 	private currentLoading = false;
 	private allLoading = false;
 	private allLoadSeq = 0;
+	private lifecycleGeneration = 0;
+	private disposed = false;
 
 	private mode: "list" | "rename" = "list";
 	private renameInput = new Input();
@@ -863,6 +873,17 @@ export class SessionSelectorComponent extends Container implements Focusable {
 		void this.loadScope("current", "initial");
 	}
 
+	dispose(): void {
+		if (this.disposed) return;
+		this.disposed = true;
+		this.lifecycleGeneration++;
+		this.allLoadSeq++;
+		this.currentLoading = false;
+		this.allLoading = false;
+		this.header.dispose();
+		this.requestRender = ignoreSessionSelectorRender;
+	}
+
 	private enterRenameMode(sessionPath: string, currentName: string | undefined): void {
 		this.mode = "rename";
 		this.renameTargetPath = sessionPath;
@@ -920,6 +941,8 @@ export class SessionSelectorComponent extends Container implements Focusable {
 	}
 
 	private async loadScope(scope: SessionScope, reason: "initial" | "refresh" | "toggle"): Promise<void> {
+		if (this.disposed) return;
+		const lifecycleGeneration = this.lifecycleGeneration;
 		const showCwd = scope === "all";
 
 		// Mark loading
@@ -935,6 +958,7 @@ export class SessionSelectorComponent extends Container implements Focusable {
 		this.requestRender();
 
 		const onProgress = (loaded: number, total: number) => {
+			if (lifecycleGeneration !== this.lifecycleGeneration) return;
 			if (scope !== this.scope) return;
 			if (seq !== undefined && seq !== this.allLoadSeq) return;
 			this.header.setProgress(loaded, total);
@@ -946,6 +970,7 @@ export class SessionSelectorComponent extends Container implements Focusable {
 				? this.currentSessionsLoader(onProgress)
 				: this.allSessionsLoader(onProgress));
 
+			if (lifecycleGeneration !== this.lifecycleGeneration) return;
 			if (scope === "current") {
 				this.currentSessions = sessions;
 				this.currentLoading = false;
@@ -961,6 +986,7 @@ export class SessionSelectorComponent extends Container implements Focusable {
 			this.sessionList.setSessions(sessions, showCwd);
 			this.requestRender();
 		} catch (err) {
+			if (lifecycleGeneration !== this.lifecycleGeneration) return;
 			if (scope === "current") {
 				this.currentLoading = false;
 			} else {

@@ -2752,6 +2752,7 @@ export class InteractiveMode {
 	private cancelExtensionDialogs(): void {
 		this.extensionSelector?.cancel();
 		this.extensionInput?.cancel();
+		this.extensionEditor?.cancel();
 	}
 
 	/**
@@ -2774,6 +2775,7 @@ export class InteractiveMode {
 				},
 				undefined,
 				this.settingsManager.getExternalEditorCommand(),
+				this.handleLifecyclePromiseRejection,
 			);
 
 			this.disposeActiveSelector();
@@ -5699,7 +5701,7 @@ export class InteractiveMode {
 
 				this.sessionManager.getSessionFile(),
 			);
-			return { component: selector, focus: selector };
+			return { component: selector, focus: selector, dispose: () => selector.dispose() };
 		});
 	}
 

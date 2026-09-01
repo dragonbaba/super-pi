@@ -26,6 +26,11 @@ export class ExtensionEditorComponent extends Container implements Focusable {
 	private tui: TUI;
 	private keybindings: KeybindingsManager;
 	private externalEditorCommand: string;
+	private onExternalEditorError: ((error: unknown) => void) | undefined;
+	private lifecycleGeneration = 0;
+	private nextExternalEditorGeneration = 0;
+	private activeExternalEditorGeneration = 0;
+	private settled = false;
 
 	private _focused = false;
 	get focused(): boolean {
@@ -45,6 +50,7 @@ export class ExtensionEditorComponent extends Container implements Focusable {
 		onCancel: () => void,
 		options?: EditorOptions,
 		externalEditorCommand?: string,
+		onExternalEditorError?: (error: unknown) => void,
 	) {
 		super();
 
@@ -55,6 +61,7 @@ export class ExtensionEditorComponent extends Container implements Focusable {
 			process.env.VISUAL ||
 			process.env.EDITOR ||
 			(process.platform === "win32" ? "notepad" : "nano");
+		this.onExternalEditorError = onExternalEditorError;
 		this.onSubmitCallback = onSubmit;
 		this.onCancelCallback = onCancel;
 
@@ -73,6 +80,10 @@ export class ExtensionEditorComponent extends Container implements Focusable {
 		}
 		// Wire up Enter to submit (Shift+Enter for newlines, like the main editor)
 		this.editor.onSubmit = (text: string) => {
+			if (this.settled) return;
+			this.settled = true;
+			this.lifecycleGeneration++;
+			this.activeExternalEditorGeneration = 0;
 			this.onSubmitCallback(text);
 		};
 		this.addChild(this.editor);
@@ -99,7 +110,7 @@ export class ExtensionEditorComponent extends Container implements Focusable {
 		const kb = getKeybindings();
 		// Escape or Ctrl+C to cancel
 		if (kb.matches(keyData, "tui.select.cancel")) {
-			this.onCancelCallback();
+			this.cancel();
 			return;
 		}
 
@@ -113,20 +124,65 @@ export class ExtensionEditorComponent extends Container implements Focusable {
 		this.editor.handleInput(keyData);
 	}
 
+	cancel(): void {
+		if (this.settled) return;
+		this.settled = true;
+		this.lifecycleGeneration++;
+		this.activeExternalEditorGeneration = 0;
+		this.onCancelCallback();
+	}
+
+	protected openExternalEditor(content: string): ReturnType<typeof editInExternalEditor> {
+		return editInExternalEditor({
+			command: this.externalEditorCommand,
+			content,
+		});
+	}
+
 	private async handleOpenExternalEditor(): Promise<void> {
+		if (this.settled || this.activeExternalEditorGeneration !== 0) return;
+		const lifecycleGeneration = this.lifecycleGeneration;
+		const taskGeneration = ++this.nextExternalEditorGeneration;
+		this.activeExternalEditorGeneration = taskGeneration;
 		const content = this.editor.getText();
-		await this.tui.stop();
+		let terminalStopped = false;
 		try {
-			const result = await editInExternalEditor({
-				command: this.externalEditorCommand,
-				content,
-			});
+			await this.tui.stop();
+			terminalStopped = true;
+			if (
+				this.settled ||
+				lifecycleGeneration !== this.lifecycleGeneration ||
+				taskGeneration !== this.activeExternalEditorGeneration
+			) return;
+			const result = await this.openExternalEditor(content);
+			if (
+				this.settled ||
+				lifecycleGeneration !== this.lifecycleGeneration ||
+				taskGeneration !== this.activeExternalEditorGeneration
+			) return;
 			if (result.status === "complete") {
 				this.editor.setText(result.content);
 			}
+		} catch (error) {
+			if (
+				!this.settled &&
+				lifecycleGeneration === this.lifecycleGeneration &&
+				taskGeneration === this.activeExternalEditorGeneration
+			) {
+				this.onExternalEditorError?.(error);
+			}
 		} finally {
-			this.tui.start();
-			this.tui.requestRender(true);
+			if (
+				!this.settled &&
+				lifecycleGeneration === this.lifecycleGeneration &&
+				taskGeneration === this.activeExternalEditorGeneration
+			) {
+				this.activeExternalEditorGeneration = 0;
+				if (terminalStopped) {
+					this.tui.start();
+					this.tui.requestRender(true);
+				}
+			}
 		}
 	}
 }
