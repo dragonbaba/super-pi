@@ -27,8 +27,9 @@ export class CountdownTimer {
 			this.tui?.requestRender();
 
 			if (this.remainingSeconds <= 0) {
+				const onExpire = this.onExpire;
 				this.dispose();
-				this.onExpire();
+				onExpire();
 			}
 		}, 1000);
 	}

@@ -951,11 +951,11 @@ export class InteractiveMode {
 	}
 
 	private mountInteractiveTui(tui: TuiMainScreen | TuiAltScreen, components: readonly Component[]): void {
-		for (const component of components) tui.addChild(component);
 		if (TuiLayouts.isViewportTUI(tui)) {
 			if (!this.fullscreenLayoutRoot) throw new Error("Fullscreen layout is not initialized");
 			tui.setLayoutRoot(this.fullscreenLayoutRoot);
 		}
+		for (const component of components) tui.addChild(component);
 	}
 
 	private async stopInteractiveTui(fullscreenExitOutput: FullscreenExitOutput): Promise<void> {
