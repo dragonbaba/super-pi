@@ -20,6 +20,11 @@ import {
 import type { ExtensionContext, ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
 import { OutputAccumulator } from "./output-accumulator.ts";
 import { getTextOutput, invalidArgText, str } from "./render-utils.ts";
+import {
+	RELEASE_TOOL_RENDER_DERIVED_STATE,
+	TOOL_RENDER_LIFECYCLE_GENERATION,
+	type ToolRenderLifecycleState,
+} from "./tool-render-lifecycle.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, type TruncationResult } from "./truncate.ts";
 
@@ -220,11 +225,20 @@ export interface BashToolOptions {
 const BASH_PREVIEW_LINES = 5;
 const BASH_UPDATE_THROTTLE_MS = 100;
 
-export type BashRenderState = {
+export type BashRenderState = ToolRenderLifecycleState & {
 	startedAt: number | undefined;
 	endedAt: number | undefined;
 	interval: NodeJS.Timeout | undefined;
 };
+
+function releaseBashRenderDerivedState(state: unknown): void {
+	const bashState = state as BashRenderState;
+	const interval = bashState.interval;
+	bashState.interval = undefined;
+	if (interval !== undefined) clearInterval(interval);
+	bashState.startedAt = undefined;
+	bashState.endedAt = undefined;
+}
 
 type BashResultRenderState = {
 	cachedWidth: number | undefined;
@@ -608,6 +622,7 @@ export function createShellToolDefinition(
 		},
 		renderCall(args, _theme, context) {
 			const state = context.state;
+			state[RELEASE_TOOL_RENDER_DERIVED_STATE] = releaseBashRenderDerivedState;
 			if (context.executionStarted && state.startedAt === undefined) {
 				state.startedAt = Date.now();
 				state.endedAt = undefined;
@@ -618,9 +633,16 @@ export function createShellToolDefinition(
 		},
 		renderResult(result, options, _theme, context) {
 			const state = context.state;
+			state[RELEASE_TOOL_RENDER_DERIVED_STATE] = releaseBashRenderDerivedState;
+			if (context.executionStarted && state.startedAt === undefined) {
+				state.startedAt = Date.now();
+				state.endedAt = undefined;
+			}
 			if (state.startedAt !== undefined && options.isPartial && !state.interval) {
 				const contextRef = new WeakRef(context);
+				const intervalGeneration = state[TOOL_RENDER_LIFECYCLE_GENERATION];
 				state.interval = setInterval(() => {
+					if (state[TOOL_RENDER_LIFECYCLE_GENERATION] !== intervalGeneration) return;
 					const currentContext = contextRef.deref();
 					if (currentContext) currentContext.invalidate();
 					else if (state.interval) {
