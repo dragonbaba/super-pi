@@ -5,7 +5,10 @@
 import * as os from "node:os";
 import * as path from "node:path";
 import { performance } from "node:perf_hooks";
-import { RELEASE_COMPONENT_RENDER_CACHE } from "./component-cache.ts";
+import {
+	GET_COMPONENT_RENDER_CACHE_CHILDREN,
+	RELEASE_COMPONENT_RENDER_CACHE,
+} from "./component-cache.ts";
 import { isKeyRelease, matchesKey } from "./keys.ts";
 import type { TuiRenderInstrumentation } from "./render-instrumentation.ts";
 import type { Terminal } from "./terminal.ts";
@@ -75,6 +78,9 @@ export interface Component {
 	 * Called when theme changes or when component needs to re-render from scratch.
 	 */
 	invalidate(): void;
+
+	/** Internal child ownership for cache-only lifecycle traversal. */
+	[GET_COMPONENT_RENDER_CACHE_CHILDREN]?(): readonly Component[];
 
 	/** Internal final-unmount cache release. Must not perform semantic rerendering. */
 	[RELEASE_COMPONENT_RENDER_CACHE]?(): void;
@@ -264,6 +270,10 @@ type OverlayFocusRestorePolicy = "clear" | "preserve";
 export class Container implements Component {
 	children: Component[] = [];
 
+	[GET_COMPONENT_RENDER_CACHE_CHILDREN](): readonly Component[] {
+		return this.children;
+	}
+
 	addChild(component: Component): void {
 		this.children.push(component);
 	}
@@ -310,13 +320,15 @@ function renderContainerInto(container: Container, width: number, target: string
 	}
 }
 
-function releaseComponentRenderCaches(component: Component): void {
+export function releaseComponentRenderCaches(component: Component | undefined): void {
+	if (component === undefined) return;
 	let releaseError: unknown;
 	let releaseFailed = false;
-	if (component instanceof Container) {
-		for (let index = 0; index < component.children.length; index++) {
+	const children = component[GET_COMPONENT_RENDER_CACHE_CHILDREN]?.();
+	if (children !== undefined) {
+		for (let index = 0; index < children.length; index++) {
 			try {
-				releaseComponentRenderCaches(component.children[index]!);
+				releaseComponentRenderCaches(children[index]!);
 			} catch (error) {
 				if (!releaseFailed) {
 					releaseFailed = true;

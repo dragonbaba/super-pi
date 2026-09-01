@@ -1,3 +1,7 @@
+import {
+	GET_COMPONENT_RENDER_CACHE_CHILDREN,
+	RELEASE_COMPONENT_RENDER_CACHE,
+} from "../component-cache.ts";
 import type { Component } from "../tui.ts";
 import { applyBackgroundToLine, visibleWidth } from "../utils.ts";
 
@@ -24,6 +28,14 @@ export class Box implements Component {
 		this.paddingX = paddingX;
 		this.paddingY = paddingY;
 		this.bgFn = bgFn;
+	}
+
+	[GET_COMPONENT_RENDER_CACHE_CHILDREN](): readonly Component[] {
+		return this.children;
+	}
+
+	[RELEASE_COMPONENT_RENDER_CACHE](): void {
+		this.cache = undefined;
 	}
 
 	addChild(component: Component): void {

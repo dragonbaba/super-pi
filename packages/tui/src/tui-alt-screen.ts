@@ -39,6 +39,7 @@ import {
 	type Component,
 	CURSOR_MARKER,
 	compositeTuiLine,
+	releaseComponentRenderCaches,
 	TuiBase,
 	type TuiStopOptions,
 	VIEWPORT_TUI,
@@ -254,7 +255,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		if (this.layoutRoot === component) return;
 		const previousRoot = this.layoutRoot;
 		try {
-			previousRoot?.invalidate();
+			releaseComponentRenderCaches(previousRoot);
 		} finally {
 			this.layoutScratch.clear();
 			this.layoutRoot = component;
