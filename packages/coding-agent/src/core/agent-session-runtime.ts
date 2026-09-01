@@ -79,6 +79,8 @@ export class AgentSessionRuntime {
 	private readonly createRuntime: CreateAgentSessionRuntimeFactory;
 	private _diagnostics: AgentSessionRuntimeDiagnostic[];
 	private _modelFallbackMessage?: string;
+	private replacementGeneration = 0;
+	private disposed = false;
 
 	constructor(
 		_session: AgentSession,
@@ -128,6 +130,32 @@ export class AgentSessionRuntime {
 	 */
 	setBeforeSessionInvalidate(beforeSessionInvalidate?: () => void): void {
 		this.beforeSessionInvalidate = beforeSessionInvalidate;
+	}
+
+	cancelPendingReplacements(): void {
+		this.replacementGeneration++;
+	}
+
+	private beginReplacement(): number {
+		if (this.disposed) throw new Error("Agent session runtime is disposed");
+		return this.replacementGeneration;
+	}
+
+	private isReplacementCurrent(generation: number): boolean {
+		return !this.disposed && this.replacementGeneration === generation;
+	}
+
+	private async createAndApplyReplacement(
+		options: Parameters<CreateAgentSessionRuntimeFactory>[0],
+		generation: number,
+	): Promise<boolean> {
+		const result = await this.createRuntime(options);
+		if (!this.isReplacementCurrent(generation)) {
+			result.session.dispose();
+			return false;
+		}
+		this.apply(result);
+		return true;
 	}
 
 	private async emitBeforeSwitch(
@@ -184,13 +212,20 @@ export class AgentSessionRuntime {
 		this._modelFallbackMessage = result.modelFallbackMessage;
 	}
 
-	private async finishSessionReplacement(withSession?: (ctx: ReplacedSessionContext) => Promise<void>): Promise<void> {
+	private async finishSessionReplacement(
+		generation: number,
+		withSession?: (ctx: ReplacedSessionContext) => Promise<void>,
+	): Promise<boolean> {
+		if (!this.isReplacementCurrent(generation)) return false;
 		if (this.rebindSession) {
 			await this.rebindSession(this.session);
+			if (!this.isReplacementCurrent(generation)) return false;
 		}
 		if (withSession) {
 			await withSession(this.session.createReplacedSessionContext());
+			if (!this.isReplacementCurrent(generation)) return false;
 		}
+		return true;
 	}
 
 	async switchSession(
@@ -201,25 +236,25 @@ export class AgentSessionRuntime {
 			projectTrustContextFactory?: (cwd: string) => ProjectTrustContext;
 		},
 	): Promise<{ cancelled: boolean }> {
+		const generation = this.beginReplacement();
 		const beforeResult = await this.emitBeforeSwitch("resume", sessionPath);
-		if (beforeResult.cancelled) {
-			return beforeResult;
+		if (beforeResult.cancelled || !this.isReplacementCurrent(generation)) {
+			return { cancelled: true };
 		}
 
 		const previousSessionFile = this.session.sessionFile;
 		const sessionManager = SessionManager.open(sessionPath, undefined, options?.cwdOverride);
 		assertSessionCwdExists(sessionManager, this.cwd);
 		await this.teardownCurrent("resume", sessionManager.getSessionFile());
-		this.apply(
-			await this.createRuntime({
+		if (!this.isReplacementCurrent(generation)) return { cancelled: true };
+		if (!(await this.createAndApplyReplacement({
 				cwd: sessionManager.getCwd(),
 				agentDir: this.services.agentDir,
 				sessionManager,
 				sessionStartEvent: { type: "session_start", reason: "resume", previousSessionFile },
 				projectTrustContext: options?.projectTrustContextFactory?.(sessionManager.getCwd()),
-			}),
-		);
-		await this.finishSessionReplacement(options?.withSession);
+			}, generation))) return { cancelled: true };
+		if (!(await this.finishSessionReplacement(generation, options?.withSession))) return { cancelled: true };
 		return { cancelled: false };
 	}
 
@@ -228,9 +263,10 @@ export class AgentSessionRuntime {
 		setup?: (sessionManager: SessionManager) => Promise<void>;
 		withSession?: (ctx: ReplacedSessionContext) => Promise<void>;
 	}): Promise<{ cancelled: boolean }> {
+		const generation = this.beginReplacement();
 		const beforeResult = await this.emitBeforeSwitch("new");
-		if (beforeResult.cancelled) {
-			return beforeResult;
+		if (beforeResult.cancelled || !this.isReplacementCurrent(generation)) {
+			return { cancelled: true };
 		}
 
 		const previousSessionFile = this.session.sessionFile;
@@ -243,19 +279,19 @@ export class AgentSessionRuntime {
 		}
 
 		await this.teardownCurrent("new", sessionManager.getSessionFile());
-		this.apply(
-			await this.createRuntime({
+		if (!this.isReplacementCurrent(generation)) return { cancelled: true };
+		if (!(await this.createAndApplyReplacement({
 				cwd: this.cwd,
 				agentDir: this.services.agentDir,
 				sessionManager,
 				sessionStartEvent: { type: "session_start", reason: "new", previousSessionFile },
-			}),
-		);
+			}, generation))) return { cancelled: true };
 		if (options?.setup) {
 			await options.setup(this.session.sessionManager);
+			if (!this.isReplacementCurrent(generation)) return { cancelled: true };
 			this.session.agent.state.messages = this.session.sessionManager.buildSessionContext().messages;
 		}
-		await this.finishSessionReplacement(options?.withSession);
+		if (!(await this.finishSessionReplacement(generation, options?.withSession))) return { cancelled: true };
 		return { cancelled: false };
 	}
 
@@ -263,9 +299,10 @@ export class AgentSessionRuntime {
 		entryId: string,
 		options?: { position?: "before" | "at"; withSession?: (ctx: ReplacedSessionContext) => Promise<void> },
 	): Promise<{ cancelled: boolean; selectedText?: string }> {
+		const generation = this.beginReplacement();
 		const position = options?.position ?? "before";
 		const beforeResult = await this.emitBeforeFork(entryId, { position });
-		if (beforeResult.cancelled) {
+		if (beforeResult.cancelled || !this.isReplacementCurrent(generation)) {
 			return { cancelled: true };
 		}
 		let targetLeafId: string | null;
@@ -297,15 +334,14 @@ export class AgentSessionRuntime {
 				const sessionManager = SessionManager.create(this.cwd, sessionDir);
 				sessionManager.newSession({ parentSession: currentSessionFile });
 				await this.teardownCurrent("fork", sessionManager.getSessionFile());
-				this.apply(
-					await this.createRuntime({
+				if (!this.isReplacementCurrent(generation)) return { cancelled: true };
+				if (!(await this.createAndApplyReplacement({
 						cwd: this.cwd,
 						agentDir: this.services.agentDir,
 						sessionManager,
 						sessionStartEvent: { type: "session_start", reason: "fork", previousSessionFile },
-					}),
-				);
-				await this.finishSessionReplacement(options?.withSession);
+					}, generation))) return { cancelled: true };
+				if (!(await this.finishSessionReplacement(generation, options?.withSession))) return { cancelled: true };
 				return { cancelled: false, selectedText };
 			}
 
@@ -320,15 +356,14 @@ export class AgentSessionRuntime {
 				throw new Error("Failed to create forked session");
 			}
 			await this.teardownCurrent("fork", sessionManager.getSessionFile());
-			this.apply(
-				await this.createRuntime({
+			if (!this.isReplacementCurrent(generation)) return { cancelled: true };
+			if (!(await this.createAndApplyReplacement({
 					cwd: sessionManager.getCwd(),
 					agentDir: this.services.agentDir,
 					sessionManager,
 					sessionStartEvent: { type: "session_start", reason: "fork", previousSessionFile },
-				}),
-			);
-			await this.finishSessionReplacement(options?.withSession);
+				}, generation))) return { cancelled: true };
+			if (!(await this.finishSessionReplacement(generation, options?.withSession))) return { cancelled: true };
 			return { cancelled: false, selectedText };
 		}
 
@@ -339,15 +374,14 @@ export class AgentSessionRuntime {
 			sessionManager.createBranchedSession(targetLeafId);
 		}
 		await this.teardownCurrent("fork", sessionManager.getSessionFile());
-		this.apply(
-			await this.createRuntime({
+		if (!this.isReplacementCurrent(generation)) return { cancelled: true };
+		if (!(await this.createAndApplyReplacement({
 				cwd: this.cwd,
 				agentDir: this.services.agentDir,
 				sessionManager,
 				sessionStartEvent: { type: "session_start", reason: "fork", previousSessionFile },
-			}),
-		);
-		await this.finishSessionReplacement(options?.withSession);
+			}, generation))) return { cancelled: true };
+		if (!(await this.finishSessionReplacement(generation, options?.withSession))) return { cancelled: true };
 		return { cancelled: false, selectedText };
 	}
 
@@ -359,6 +393,7 @@ export class AgentSessionRuntime {
 	 * @throws {MissingSessionCwdError} When the imported session cwd cannot be resolved and no override is provided.
 	 */
 	async importFromJsonl(inputPath: string, cwdOverride?: string): Promise<{ cancelled: boolean }> {
+		const generation = this.beginReplacement();
 		const resolvedPath = resolvePath(inputPath);
 		if (!existsSync(resolvedPath)) {
 			throw new SessionImportFileNotFoundError(resolvedPath);
@@ -371,8 +406,8 @@ export class AgentSessionRuntime {
 
 		const destinationPath = join(sessionDir, basename(resolvedPath));
 		const beforeResult = await this.emitBeforeSwitch("resume", destinationPath);
-		if (beforeResult.cancelled) {
-			return beforeResult;
+		if (beforeResult.cancelled || !this.isReplacementCurrent(generation)) {
+			return { cancelled: true };
 		}
 
 		const previousSessionFile = this.session.sessionFile;
@@ -383,19 +418,20 @@ export class AgentSessionRuntime {
 		const sessionManager = SessionManager.open(destinationPath, sessionDir, cwdOverride);
 		assertSessionCwdExists(sessionManager, this.cwd);
 		await this.teardownCurrent("resume", sessionManager.getSessionFile());
-		this.apply(
-			await this.createRuntime({
+		if (!this.isReplacementCurrent(generation)) return { cancelled: true };
+		if (!(await this.createAndApplyReplacement({
 				cwd: sessionManager.getCwd(),
 				agentDir: this.services.agentDir,
 				sessionManager,
 				sessionStartEvent: { type: "session_start", reason: "resume", previousSessionFile },
-			}),
-		);
-		await this.finishSessionReplacement();
+			}, generation))) return { cancelled: true };
+		if (!(await this.finishSessionReplacement(generation))) return { cancelled: true };
 		return { cancelled: false };
 	}
 
 	async dispose(): Promise<void> {
+		this.disposed = true;
+		this.cancelPendingReplacements();
 		await emitSessionShutdownEvent(this.session.extensionRunner, {
 			type: "session_shutdown",
 			reason: "quit",

@@ -587,6 +587,16 @@ export class InteractiveMode {
 	private readonly handleClipboardPasteAction = (): void =>
 		this.observeLifecyclePromise(this.handleClipboardPaste());
 	private readonly handleShutdownAction = (): void => this.observeLifecyclePromise(this.shutdown());
+	private readonly ignoreSuspendSigint = (): void => {};
+	private readonly handleSuspendContinue = (): void => {
+		const generation = this.activeSuspendGeneration;
+		if (generation === 0) return;
+		const lifecycleGeneration = this.activeSuspendLifecycleGeneration;
+		this.clearActiveSuspend(generation);
+		if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
+		this.ui.start();
+		this.ui.requestRender(true);
+	};
 
 	private observeLifecyclePromise(promise: Promise<void>): void {
 		void promise.then(undefined, this.handleLifecyclePromiseRejection);
@@ -657,6 +667,17 @@ export class InteractiveMode {
 	private activeStartupModelRefreshController: AbortController | undefined = undefined;
 	private activeStartupModelRefreshTimeout: ReturnType<typeof setTimeout> | undefined = undefined;
 	private startupModelRefreshGeneration = 0;
+	private startupDiagnosticsGeneration = 0;
+	private activeTmuxExtendedKeysProcess: ReturnType<typeof spawn> | undefined = undefined;
+	private activeTmuxExtendedKeysTimeout: ReturnType<typeof setTimeout> | undefined = undefined;
+	private activeTmuxExtendedKeysResolve: ((value: string | undefined) => void) | undefined = undefined;
+	private activeTmuxExtendedKeysFormatProcess: ReturnType<typeof spawn> | undefined = undefined;
+	private activeTmuxExtendedKeysFormatTimeout: ReturnType<typeof setTimeout> | undefined = undefined;
+	private activeTmuxExtendedKeysFormatResolve: ((value: string | undefined) => void) | undefined = undefined;
+	private suspendGeneration = 0;
+	private activeSuspendGeneration = 0;
+	private activeSuspendLifecycleGeneration = 0;
+	private activeSuspendKeepAlive: ReturnType<typeof setInterval> | undefined = undefined;
 	private activeModelLookupController: AbortController | undefined = undefined;
 	private activeModelLookupTimeout: ReturnType<typeof setTimeout> | undefined = undefined;
 	private modelCommandGeneration = 0;
@@ -754,7 +775,8 @@ export class InteractiveMode {
 			this.resetExtensionUI();
 		});
 		this.runtimeHost.setRebindSession(async () => {
-			await this.rebindCurrentSession({ renderBeforeBind: true });
+			const lifecycleGeneration = this.tuiLifecycleGeneration;
+			await this.rebindCurrentSession({ renderBeforeBind: true }, lifecycleGeneration);
 		});
 		this.version = VERSION;
 		this.renderer = createInteractiveTui({
@@ -1291,31 +1313,7 @@ export class InteractiveMode {
 			this.startStartupModelRefresh();
 		}
 
-		// Start package update check asynchronously
-		this.observeLifecyclePromise(
-			this.checkForPackageUpdates()
-				.then((updates) => {
-					if (updates.length > 0) {
-						this.showPackageUpdateNotification(updates);
-					}
-				})
-				.finally(() => {
-					// On Windows, npm can overwrite the shared console title while checking
-					// extension package versions. Restore Super Pi's title after the startup check.
-					if (process.platform === "win32" && this.isInitialized) {
-						this.updateTerminalTitle();
-					}
-				}),
-		);
-
-		// Check tmux keyboard setup asynchronously
-		this.observeLifecyclePromise(
-			this.checkTmuxKeyboardSetup().then((warning) => {
-				if (warning) {
-					this.showWarning(warning);
-				}
-			}),
-		);
+		this.startStartupDiagnostics();
 
 		// Show startup warnings
 		const { migratedProviders, modelFallbackMessage, initialMessage, initialImages, initialMessages } = this.options;
@@ -1386,37 +1384,99 @@ export class InteractiveMode {
 		}
 	}
 
-	private async checkTmuxKeyboardSetup(): Promise<string | undefined> {
+	private startStartupDiagnostics(): void {
+		this.cancelActiveStartupDiagnostics();
+		const generation = ++this.startupDiagnosticsGeneration;
+		const lifecycleGeneration = this.tuiLifecycleGeneration;
+		this.observeLifecyclePromise(this.finishStartupPackageCheck(generation, lifecycleGeneration));
+		this.observeLifecyclePromise(this.finishStartupTmuxCheck(generation, lifecycleGeneration));
+	}
+
+	private async finishStartupPackageCheck(generation: number, lifecycleGeneration: number): Promise<void> {
+		let updates: string[];
+		try {
+			updates = await this.checkForPackageUpdates();
+		} catch (error) {
+			if (
+				this.startupDiagnosticsGeneration !== generation ||
+				this.tuiLifecycleGeneration !== lifecycleGeneration
+			) {
+				return;
+			}
+			throw error;
+		}
+		if (
+			this.startupDiagnosticsGeneration !== generation ||
+			this.tuiLifecycleGeneration !== lifecycleGeneration
+		) {
+			return;
+		}
+		if (updates.length > 0) this.showPackageUpdateNotification(updates);
+		// On Windows, npm can overwrite the shared console title while checking
+		// extension package versions. Restore Super Pi's title after the startup check.
+		if (process.platform === "win32" && this.isInitialized) this.updateTerminalTitle();
+	}
+
+	private async finishStartupTmuxCheck(generation: number, lifecycleGeneration: number): Promise<void> {
+		let warning: string | undefined;
+		try {
+			warning = await this.checkTmuxKeyboardSetup(generation);
+		} catch (error) {
+			if (
+				this.startupDiagnosticsGeneration !== generation ||
+				this.tuiLifecycleGeneration !== lifecycleGeneration
+			) {
+				return;
+			}
+			throw error;
+		}
+		if (
+			this.startupDiagnosticsGeneration !== generation ||
+			this.tuiLifecycleGeneration !== lifecycleGeneration
+		) {
+			return;
+		}
+		if (warning) this.showWarning(warning);
+	}
+
+	private async checkTmuxKeyboardSetup(generation = this.startupDiagnosticsGeneration): Promise<string | undefined> {
 		if (!process.env.TMUX) return undefined;
 
-		const runTmuxShow = (option: string): Promise<string | undefined> => {
+		const runTmuxShow = (option: string, slot: 1 | 2): Promise<string | undefined> => {
 			return new Promise((resolve) => {
 				const proc = spawn("tmux", ["show", "-gv", option], {
 					stdio: ["ignore", "pipe", "ignore"],
 				});
+				if (slot === 1) {
+					this.activeTmuxExtendedKeysProcess = proc;
+					this.activeTmuxExtendedKeysResolve = resolve;
+				} else {
+					this.activeTmuxExtendedKeysFormatProcess = proc;
+					this.activeTmuxExtendedKeysFormatResolve = resolve;
+				}
 				let stdout = "";
 				const timer = setTimeout(() => {
 					proc.kill();
-					resolve(undefined);
+					this.finishTmuxShow(slot, proc, generation, undefined);
 				}, 2000);
+				if (slot === 1) this.activeTmuxExtendedKeysTimeout = timer;
+				else this.activeTmuxExtendedKeysFormatTimeout = timer;
 
 				proc.stdout?.on("data", (data) => {
 					stdout += data.toString();
 				});
 				proc.on("error", () => {
-					clearTimeout(timer);
-					resolve(undefined);
+					this.finishTmuxShow(slot, proc, generation, undefined);
 				});
 				proc.on("close", (code) => {
-					clearTimeout(timer);
-					resolve(code === 0 ? stdout.trim() : undefined);
+					this.finishTmuxShow(slot, proc, generation, code === 0 ? stdout.trim() : undefined);
 				});
 			});
 		};
 
 		const [extendedKeys, extendedKeysFormat] = await Promise.all([
-			runTmuxShow("extended-keys"),
-			runTmuxShow("extended-keys-format"),
+			runTmuxShow("extended-keys", 1),
+			runTmuxShow("extended-keys-format", 2),
 		]);
 
 		// If we couldn't query tmux (timeout, sandbox, etc.), don't warn
@@ -2083,7 +2143,7 @@ export class InteractiveMode {
 	/**
 	 * Initialize the extension system with TUI-based UI context.
 	 */
-	private async bindCurrentSessionExtensions(): Promise<void> {
+	private async bindCurrentSessionExtensions(lifecycleGeneration?: number): Promise<void> {
 		const uiContext = this.createExtensionUIContext();
 		await this.session.bindExtensions({
 			uiContext,
@@ -2094,22 +2154,29 @@ export class InteractiveMode {
 			commandContextActions: {
 				waitForIdle: () => this.session.waitForIdle(),
 				newSession: async (options) => {
+					const lifecycleGeneration = this.tuiLifecycleGeneration;
 					this.clearStatusIndicator();
 					try {
-						return await this.runtimeHost.newSession(options);
+						const result = await this.runtimeHost.newSession(options);
+						if (this.tuiLifecycleGeneration !== lifecycleGeneration) return { cancelled: true };
+						return result;
 					} catch (error: unknown) {
+						if (this.tuiLifecycleGeneration !== lifecycleGeneration) return { cancelled: true };
 						return this.handleFatalRuntimeError("Failed to create session", error);
 					}
 				},
 				fork: async (entryId, options) => {
+					const lifecycleGeneration = this.tuiLifecycleGeneration;
 					try {
 						const result = await this.runtimeHost.fork(entryId, options);
+						if (this.tuiLifecycleGeneration !== lifecycleGeneration) return { cancelled: true };
 						if (!result.cancelled) {
 							this.editor.setText(result.selectedText ?? "");
 							this.showStatus("Forked to new session");
 						}
 						return { cancelled: result.cancelled };
 					} catch (error: unknown) {
+						if (this.tuiLifecycleGeneration !== lifecycleGeneration) return { cancelled: true };
 						return this.handleFatalRuntimeError("Failed to fork session", error);
 					}
 				},
@@ -2150,6 +2217,7 @@ export class InteractiveMode {
 				this.showExtensionError(error.extensionPath, error.error, error.stack);
 			},
 		});
+		if (lifecycleGeneration !== undefined && this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 
 		setRegisteredThemes(this.session.resourceLoader.getThemes().themes);
 		this.setupAutocompleteProvider();
@@ -2188,8 +2256,12 @@ export class InteractiveMode {
 		}
 	}
 
-	private async rebindCurrentSession(options: { renderBeforeBind?: boolean } = {}): Promise<void> {
+	private async rebindCurrentSession(
+		options: { renderBeforeBind?: boolean } = {},
+		lifecycleGeneration = this.tuiLifecycleGeneration,
+	): Promise<void> {
 		const session = this.session;
+		if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 
 		this.unsubscribe?.();
 		this.unsubscribe = undefined;
@@ -2200,9 +2272,9 @@ export class InteractiveMode {
 			this.subscribeToAgent();
 		}
 
-		await this.bindCurrentSessionExtensions();
+		await this.bindCurrentSessionExtensions(lifecycleGeneration);
 
-		if (this.session !== session) {
+		if (this.session !== session || this.tuiLifecycleGeneration !== lifecycleGeneration) {
 			return;
 		}
 
@@ -2211,6 +2283,7 @@ export class InteractiveMode {
 		}
 
 		await this.updateAvailableProviderCount();
+		if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 		this.updateEditorBorderColor();
 		this.updateTerminalTitle();
 	}
@@ -2850,6 +2923,57 @@ export class InteractiveMode {
 		this.activeStartupModelRefreshTimeout = undefined;
 		if (timeout !== undefined) clearTimeout(timeout);
 		controller?.abort();
+	}
+
+	private finishTmuxShow(
+		slot: 1 | 2,
+		processOwner: ReturnType<typeof spawn>,
+		generation: number,
+		value: string | undefined,
+	): void {
+		if (this.startupDiagnosticsGeneration !== generation) return;
+		if (slot === 1) {
+			if (this.activeTmuxExtendedKeysProcess !== processOwner) return;
+			const timeout = this.activeTmuxExtendedKeysTimeout;
+			const resolve = this.activeTmuxExtendedKeysResolve;
+			this.activeTmuxExtendedKeysProcess = undefined;
+			this.activeTmuxExtendedKeysTimeout = undefined;
+			this.activeTmuxExtendedKeysResolve = undefined;
+			if (timeout !== undefined) clearTimeout(timeout);
+			resolve?.(value);
+			return;
+		}
+		if (this.activeTmuxExtendedKeysFormatProcess !== processOwner) return;
+		const timeout = this.activeTmuxExtendedKeysFormatTimeout;
+		const resolve = this.activeTmuxExtendedKeysFormatResolve;
+		this.activeTmuxExtendedKeysFormatProcess = undefined;
+		this.activeTmuxExtendedKeysFormatTimeout = undefined;
+		this.activeTmuxExtendedKeysFormatResolve = undefined;
+		if (timeout !== undefined) clearTimeout(timeout);
+		resolve?.(value);
+	}
+
+	private cancelActiveStartupDiagnostics(): void {
+		this.startupDiagnosticsGeneration++;
+		const firstProcess = this.activeTmuxExtendedKeysProcess;
+		const firstTimeout = this.activeTmuxExtendedKeysTimeout;
+		const firstResolve = this.activeTmuxExtendedKeysResolve;
+		this.activeTmuxExtendedKeysProcess = undefined;
+		this.activeTmuxExtendedKeysTimeout = undefined;
+		this.activeTmuxExtendedKeysResolve = undefined;
+		if (firstTimeout !== undefined) clearTimeout(firstTimeout);
+		firstProcess?.kill();
+		firstResolve?.(undefined);
+
+		const secondProcess = this.activeTmuxExtendedKeysFormatProcess;
+		const secondTimeout = this.activeTmuxExtendedKeysFormatTimeout;
+		const secondResolve = this.activeTmuxExtendedKeysFormatResolve;
+		this.activeTmuxExtendedKeysFormatProcess = undefined;
+		this.activeTmuxExtendedKeysFormatTimeout = undefined;
+		this.activeTmuxExtendedKeysFormatResolve = undefined;
+		if (secondTimeout !== undefined) clearTimeout(secondTimeout);
+		secondProcess?.kill();
+		secondResolve?.(undefined);
 	}
 
 	private startStartupModelRefresh(): void {
@@ -3538,7 +3662,14 @@ export class InteractiveMode {
 			if (this.session.isStreaming) {
 				this.editor.addToHistory?.(text);
 				this.editor.setText("");
-				await this.session.prompt(text, { streamingBehavior: "steer" });
+				const promptLifecycleGeneration = this.tuiLifecycleGeneration;
+				try {
+					await this.session.prompt(text, { streamingBehavior: "steer" });
+				} catch (error) {
+					if (this.tuiLifecycleGeneration !== promptLifecycleGeneration) return;
+					throw error;
+				}
+				if (this.tuiLifecycleGeneration !== promptLifecycleGeneration) return;
 				this.updatePendingMessagesDisplay();
 				this.ui.requestRender();
 				return;
@@ -4726,36 +4857,61 @@ export class InteractiveMode {
 			this.showStatus("Suspend to background is not supported on Windows");
 			return;
 		}
+		if (this.activeSuspendGeneration !== 0) return;
 
 		// Keep the event loop alive while suspended. Without this, stopping the TUI
 		// can leave Node with no ref'ed handles, causing the process to exit on fg
 		// before the SIGCONT handler gets a chance to restore the terminal.
-		const suspendKeepAlive = setInterval(() => {}, 2 ** 30);
+		const generation = ++this.suspendGeneration;
+		const lifecycleGeneration = this.tuiLifecycleGeneration;
+		this.activeSuspendGeneration = generation;
+		this.activeSuspendLifecycleGeneration = lifecycleGeneration;
+		this.activeSuspendKeepAlive = setInterval(InteractiveMode.keepSuspendAlive, 2 ** 30);
 
 		// Ignore SIGINT while suspended so Ctrl+C in the terminal does not
 		// kill the backgrounded process. The handler is removed on resume.
-		const ignoreSigint = () => {};
-		process.on("SIGINT", ignoreSigint);
+		process.on("SIGINT", this.ignoreSuspendSigint);
 
 		// Set up handler to restore TUI when resumed
-		process.once("SIGCONT", () => {
-			clearInterval(suspendKeepAlive);
-			process.removeListener("SIGINT", ignoreSigint);
-			this.ui.start();
-			this.ui.requestRender(true);
-		});
+		process.once("SIGCONT", this.handleSuspendContinue);
 
 		try {
 			// Stop the TUI (restore terminal to normal mode)
 			await this.ui.stop();
+			if (
+				this.activeSuspendGeneration !== generation ||
+				this.tuiLifecycleGeneration !== lifecycleGeneration
+			) {
+				this.clearActiveSuspend(generation);
+				return;
+			}
 
 			// Send SIGTSTP to process group (pid=0 means all processes in group)
 			this.suspendProcessGroup();
 		} catch (error) {
-			clearInterval(suspendKeepAlive);
-			process.removeListener("SIGINT", ignoreSigint);
+			this.clearActiveSuspend(generation);
+			if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 			throw error;
 		}
+	}
+
+	private static keepSuspendAlive(): void {}
+
+	private clearActiveSuspend(generation: number): void {
+		if (this.activeSuspendGeneration !== generation) return;
+		this.activeSuspendGeneration = 0;
+		this.activeSuspendLifecycleGeneration = 0;
+		const keepAlive = this.activeSuspendKeepAlive;
+		this.activeSuspendKeepAlive = undefined;
+		if (keepAlive !== undefined) clearInterval(keepAlive);
+		if (this.ignoreSuspendSigint) process.removeListener("SIGINT", this.ignoreSuspendSigint);
+		if (this.handleSuspendContinue) process.removeListener("SIGCONT", this.handleSuspendContinue);
+	}
+
+	private cancelActiveSuspend(): void {
+		this.suspendGeneration++;
+		const generation = this.activeSuspendGeneration;
+		if (typeof generation === "number" && generation !== 0) this.clearActiveSuspend(generation);
 	}
 
 	private suspendProcessGroup(): void {
@@ -4783,7 +4939,14 @@ export class InteractiveMode {
 		if (this.session.isStreaming) {
 			this.editor.addToHistory?.(text);
 			this.editor.setText("");
-			await this.session.prompt(text, { streamingBehavior: "followUp" });
+			const lifecycleGeneration = this.tuiLifecycleGeneration;
+			try {
+				await this.session.prompt(text, { streamingBehavior: "followUp" });
+			} catch (error) {
+				if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
+				throw error;
+			}
+			if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 			this.updatePendingMessagesDisplay();
 			this.ui.requestRender();
 		}
@@ -5809,9 +5972,11 @@ export class InteractiveMode {
 			const selector = new UserMessageSelectorComponent(
 				userMessages.map((m) => ({ id: m.entryId, text: m.text })),
 				async (entryId) => {
+					const lifecycleGeneration = this.tuiLifecycleGeneration;
 					done();
 					try {
 						const result = await this.runtimeHost.fork(entryId);
+						if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 						if (result.cancelled) {
 							this.ui.requestRender();
 							return;
@@ -5820,6 +5985,7 @@ export class InteractiveMode {
 						this.editor.setText(result.selectedText ?? "");
 						this.showStatus("Forked to new session");
 					} catch (error: unknown) {
+						if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 						this.showError(error instanceof Error ? error.message : String(error));
 					}
 				},
@@ -5840,8 +6006,10 @@ export class InteractiveMode {
 			return;
 		}
 
+		const lifecycleGeneration = this.tuiLifecycleGeneration;
 		try {
 			const result = await this.runtimeHost.fork(leafId, { position: "at" });
+			if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 			if (result.cancelled) {
 				this.ui.requestRender();
 				return;
@@ -5850,6 +6018,7 @@ export class InteractiveMode {
 			this.editor.setText("");
 			this.showStatus("Cloned to new session");
 		} catch (error: unknown) {
+			if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 			this.showError(error instanceof Error ? error.message : String(error));
 		}
 	}
@@ -6041,20 +6210,24 @@ export class InteractiveMode {
 		sessionPath: string,
 		options?: Parameters<ExtensionCommandContext["switchSession"]>[1],
 	): Promise<{ cancelled: boolean }> {
+		const lifecycleGeneration = this.tuiLifecycleGeneration;
 		this.clearStatusIndicator();
 		try {
 			const result = await this.runtimeHost.switchSession(sessionPath, {
 				withSession: options?.withSession,
 				projectTrustContextFactory: (cwd) => this.createProjectTrustContext(cwd),
 			});
+			if (this.tuiLifecycleGeneration !== lifecycleGeneration) return { cancelled: true };
 			if (result.cancelled) {
 				return result;
 			}
 			this.showStatus("Resumed session");
 			return result;
 		} catch (error: unknown) {
+			if (this.tuiLifecycleGeneration !== lifecycleGeneration) return { cancelled: true };
 			if (error instanceof MissingSessionCwdError) {
 				const selectedCwd = await this.promptForMissingSessionCwd(error);
+				if (this.tuiLifecycleGeneration !== lifecycleGeneration) return { cancelled: true };
 				if (!selectedCwd) {
 					this.showStatus("Resume cancelled");
 					return { cancelled: true };
@@ -6064,6 +6237,7 @@ export class InteractiveMode {
 					withSession: options?.withSession,
 					projectTrustContextFactory: (cwd) => this.createProjectTrustContext(cwd),
 				});
+				if (this.tuiLifecycleGeneration !== lifecycleGeneration) return { cancelled: true };
 				if (result.cancelled) {
 					return result;
 				}
@@ -6270,13 +6444,16 @@ export class InteractiveMode {
 			return;
 		}
 
+		const lifecycleGeneration = this.tuiLifecycleGeneration;
 		let providerOptions: AuthSelectorProvider[];
 		try {
 			providerOptions = await this.getLogoutProviderOptions();
 		} catch (error) {
+			if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 			this.showError(`Could not read stored credentials: ${error instanceof Error ? error.message : String(error)}`);
 			return;
 		}
+		if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 		if (providerOptions.length === 0) {
 			this.showStatus(
 				"No stored credentials to remove. /logout only removes credentials saved by /login; environment variables and models.json config are unchanged.",
@@ -6290,6 +6467,7 @@ export class InteractiveMode {
 				providerOptions,
 				async (providerId: string) => {
 					done();
+					if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 
 					const providerOption = providerOptions.find((provider) => provider.id === providerId);
 					if (!providerOption) {
@@ -6300,13 +6478,16 @@ export class InteractiveMode {
 						await this.session.modelRuntime.logout(providerOption.id, {
 							signal: AbortSignal.timeout(15_000),
 						});
+						if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 						await this.updateAvailableProviderCount();
+						if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 						const message =
 							providerOption.authType === "oauth"
 								? `Logged out of ${providerOption.name}`
 								: `Removed stored API key for ${providerOption.name}. Environment variables and models.json config are unchanged.`;
 						this.showStatus(message);
 					} catch (error: unknown) {
+						if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 						const message = error instanceof Error ? error.message : String(error);
 						this.showError(
 							error instanceof CredentialSynchronizationError
@@ -6777,16 +6958,20 @@ export class InteractiveMode {
 
 	private async handleExportCommand(text: string): Promise<void> {
 		const outputPath = this.getPathCommandArgument(text, "/export");
+		const lifecycleGeneration = this.tuiLifecycleGeneration;
 
 		try {
 			if (outputPath?.endsWith(".jsonl")) {
 				const filePath = this.session.exportToJsonl(outputPath);
+				if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 				this.showStatus(`Session exported to: ${filePath}`);
 			} else {
 				const filePath = await this.session.exportToHtml(outputPath);
+				if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 				this.showStatus(`Session exported to: ${filePath}`);
 			}
 		} catch (error: unknown) {
+			if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 			this.showError(`Failed to export session: ${error instanceof Error ? error.message : "Unknown error"}`);
 		}
 	}
@@ -6821,6 +7006,7 @@ export class InteractiveMode {
 	}
 
 	private async handleImportCommand(text: string): Promise<void> {
+		const lifecycleGeneration = this.tuiLifecycleGeneration;
 		const inputPath = this.getPathCommandArgument(text, "/import");
 		if (!inputPath) {
 			this.showError("Usage: /import <path.jsonl>");
@@ -6828,6 +7014,7 @@ export class InteractiveMode {
 		}
 
 		const confirmed = await this.showExtensionConfirm("Import session", `Replace current session with ${inputPath}?`);
+		if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 		if (!confirmed) {
 			this.showStatus("Import cancelled");
 			return;
@@ -6836,19 +7023,23 @@ export class InteractiveMode {
 		try {
 			this.clearStatusIndicator();
 			const result = await this.runtimeHost.importFromJsonl(inputPath);
+			if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 			if (result.cancelled) {
 				this.showStatus("Import cancelled");
 				return;
 			}
 			this.showStatus(`Session imported from: ${inputPath}`);
 		} catch (error: unknown) {
+			if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 			if (error instanceof MissingSessionCwdError) {
 				const selectedCwd = await this.promptForMissingSessionCwd(error);
+				if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 				if (!selectedCwd) {
 					this.showStatus("Import cancelled");
 					return;
 				}
 				const result = await this.runtimeHost.importFromJsonl(inputPath, selectedCwd);
+				if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 				if (result.cancelled) {
 					this.showStatus("Import cancelled");
 					return;
@@ -7238,9 +7429,11 @@ export class InteractiveMode {
 	}
 
 	private async handleClearCommand(): Promise<void> {
+		const lifecycleGeneration = this.tuiLifecycleGeneration;
 		this.clearStatusIndicator();
 		try {
 			const result = await this.runtimeHost.newSession();
+			if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 			if (result.cancelled) {
 				return;
 			}
@@ -7248,6 +7441,7 @@ export class InteractiveMode {
 			this.chatContainer.addChild(new Text(`${theme.fg("accent", "✓ New session started")}`, 1, 1));
 			this.ui.requestRender();
 		} catch (error: unknown) {
+			if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 			await this.handleFatalRuntimeError("Failed to create session", error);
 		}
 	}
@@ -7434,10 +7628,13 @@ export class InteractiveMode {
 
 	async stop(fullscreenExitOutput = this.settingsManager.getFullscreenExitOutput()): Promise<void> {
 		this.tuiLifecycleGeneration++;
+		this.runtimeHost.cancelPendingReplacements?.();
 		this.bashComponent = undefined;
+		this.cancelActiveSuspend();
 		this.cancelActiveLoginDialog();
 		this.cancelActiveProviderAuthentication();
 		this.cancelActiveStartupModelRefresh();
+		this.cancelActiveStartupDiagnostics();
 		this.cancelActiveModelLookup();
 		this.cancelActiveExtensionCustom();
 		this.cancelExtensionDialogs();
