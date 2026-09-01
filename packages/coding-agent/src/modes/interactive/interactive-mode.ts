@@ -41,6 +41,7 @@ import {
 	Markdown,
 	matchesKey,
 	ProcessTerminal,
+	RELEASE_COMPONENT_RENDER_CACHE,
 	RetainedContainer,
 	type RetainedItem,
 	type RetainedRenderContext,
@@ -958,6 +959,10 @@ export class InteractiveMode {
 		for (const component of components) tui.addChild(component);
 	}
 
+	private releaseFullscreenTransferOwners(): void {
+		this.transcriptScrollView?.[RELEASE_COMPONENT_RENDER_CACHE]?.();
+	}
+
 	private async stopInteractiveTui(fullscreenExitOutput: FullscreenExitOutput): Promise<void> {
 		if (this.renderer.mode === "fullscreen" && fullscreenExitOutput === "transcript") {
 			while (this.renderer.hasOverlayEntries) this.renderer.hideOverlay();
@@ -989,7 +994,10 @@ export class InteractiveMode {
 		}
 		previousUi.setFocus(null);
 		previousUi.clear();
-		if (previousUi instanceof TuiAltScreen) previousUi.detachLayoutRootForTransfer();
+		if (previousUi instanceof TuiAltScreen) {
+			this.releaseFullscreenTransferOwners();
+			previousUi.detachLayoutRootForTransfer();
+		}
 		else if (TuiLayouts.isViewportTUI(previousUi)) previousUi.setLayoutRoot(undefined);
 
 		const nextUi = createInteractiveTui({
