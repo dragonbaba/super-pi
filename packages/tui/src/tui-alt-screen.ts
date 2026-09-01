@@ -167,8 +167,8 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	private layoutRoot: Component | undefined;
 	private layoutRootGeneration = 0;
 	private layoutRenderDepth = 0;
-	private readonly layoutRenderOwners: Array<Component | undefined> = [undefined];
-	private readonly pendingLayoutCacheReleases: Array<Component | undefined> = [undefined];
+	private layoutRenderOwners: Array<Component | undefined> = [undefined];
+	private pendingLayoutCacheReleases: Array<Component | undefined> = [undefined];
 	private currentLayout: LayoutFrame | undefined;
 	private readonly layoutScratch = new LayoutFrameScratch();
 	private readonly implicitDocument: LineViewportComponent;
@@ -259,9 +259,11 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		if (this.layoutRoot === component) return;
 		const previousRoot = this.layoutRoot;
 		const previousOwner = previousRoot ?? this;
+		this.releaseLayoutInteractionOwners();
 		try {
+			if (previousRoot === undefined) releaseComponentRenderCaches(this.implicitScrollView);
 			let releaseDeferred = false;
-			for (let depth = this.layoutRenderDepth - 1; depth >= 0; depth--) {
+			for (let depth = 0; depth < this.layoutRenderDepth; depth++) {
 				if (this.layoutRenderOwners[depth] !== previousOwner) continue;
 				this.pendingLayoutCacheReleases[depth] = previousOwner;
 				releaseDeferred = true;
@@ -293,6 +295,32 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 
 	private getPrimaryScrollView(): ScrollView {
 		return this.currentLayout?.primaryScrollView ?? this.implicitScrollView;
+	}
+
+	private releaseLayoutInteractionOwners(): void {
+		if (this.selectionAutoScrollTimer) {
+			clearInterval(this.selectionAutoScrollTimer);
+			this.selectionAutoScrollTimer = undefined;
+		}
+		this.selectionAutoScrollDirection = 0;
+		this.selectionDragPointer = undefined;
+		if (this.scrollbarDragFrameTimer) {
+			clearTimeout(this.scrollbarDragFrameTimer);
+			this.scrollbarDragFrameTimer = undefined;
+		}
+		this.pendingScrollbarDragScrollTop = undefined;
+		this.scrollbarDrag = undefined;
+		this.scrollbarHover = undefined;
+		this.selectionAnchor = undefined;
+		this.selectionFocus = undefined;
+		this.selectionGranularity = "character";
+		this.selectionInitialRange = undefined;
+		this.lastClick = undefined;
+		this.pressedUrl = undefined;
+		this.selectionPressActive = false;
+		this.selectionDragged = false;
+		this.resolvedSelectionStart = undefined;
+		this.resolvedSelectionEnd = undefined;
 	}
 
 	protected override beforeTerminalStart(): void {
@@ -387,9 +415,25 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	}
 
 	protected override releaseMountedComponentsAfterDispose(): void {
+		let releaseError: unknown;
+		let releaseFailed = false;
 		try {
-			super.releaseMountedComponentsAfterDispose();
+			try {
+				super.releaseMountedComponentsAfterDispose();
+			} catch (error) {
+				releaseFailed = true;
+				releaseError = error;
+			}
+			try {
+				releaseComponentRenderCaches(this.implicitScrollView);
+			} catch (error) {
+				if (!releaseFailed) {
+					releaseFailed = true;
+					releaseError = error;
+				}
+			}
 		} finally {
+			this.releaseLayoutInteractionOwners();
 			this.lastDocument = [];
 			this.lineResetBuffer[0] = "";
 			this.uploadedKittyImages.clear();
@@ -397,8 +441,12 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			this.resolvedSelectionEnd = undefined;
 			this.layoutRoot = undefined;
 			this.currentLayout = undefined;
+			this.layoutRenderDepth = 0;
+			this.layoutRenderOwners = [];
+			this.pendingLayoutCacheReleases = [];
 			this.layoutScratch.clear();
 		}
+		if (releaseFailed) throw releaseError;
 	}
 
 	/** Low-frequency final-unmount diagnostics; never called from the frame path. */
@@ -409,10 +457,20 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		lineResetCodeUnits: number;
 		uploadedKittyImages: number;
 		selectionPointReferences: number;
+		layoutRenderOwnerReferences: number;
+		pendingLayoutReleaseReferences: number;
 	} {
 		let lastDocumentCodeUnits = 0;
 		for (let index = 0; index < this.lastDocument.length; index++) {
 			lastDocumentCodeUnits += this.lastDocument[index]?.length ?? 0;
+		}
+		let layoutRenderOwnerReferences = 0;
+		for (let index = 0; index < this.layoutRenderOwners.length; index++) {
+			if (this.layoutRenderOwners[index] !== undefined) layoutRenderOwnerReferences++;
+		}
+		let pendingLayoutReleaseReferences = 0;
+		for (let index = 0; index < this.pendingLayoutCacheReleases.length; index++) {
+			if (this.pendingLayoutCacheReleases[index] !== undefined) pendingLayoutReleaseReferences++;
 		}
 		return {
 			lastDocumentRows: this.lastDocument.length,
@@ -422,6 +480,40 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			uploadedKittyImages: this.uploadedKittyImages.size,
 			selectionPointReferences:
 				(this.resolvedSelectionStart === undefined ? 0 : 1) + (this.resolvedSelectionEnd === undefined ? 0 : 1),
+			layoutRenderOwnerReferences,
+			pendingLayoutReleaseReferences,
+		};
+	}
+
+	/** Low-frequency layout-interaction ownership diagnostics; never called from the frame path. */
+	getAltInteractionRetainedReferenceCounts(): {
+		selectionAnchorReferences: 0 | 1;
+		selectionFocusReferences: 0 | 1;
+		selectionInitialRangeReferences: 0 | 1;
+		lastClickReferences: 0 | 1;
+		selectionScrollViewReferences: number;
+		selectionTimerReferences: 0 | 1;
+		scrollbarOwnerReferences: number;
+		scrollbarTimerReferences: 0 | 1;
+	} {
+		let selectionScrollViewReferences = 0;
+		if (this.selectionAnchor?.scrollView !== undefined) selectionScrollViewReferences++;
+		if (this.selectionFocus?.scrollView !== undefined) selectionScrollViewReferences++;
+		if (this.selectionInitialRange?.start.scrollView !== undefined) selectionScrollViewReferences++;
+		if (this.selectionInitialRange?.end.scrollView !== undefined) selectionScrollViewReferences++;
+		if (this.lastClick?.scrollView !== undefined) selectionScrollViewReferences++;
+		if (this.resolvedSelectionStart?.scrollView !== undefined) selectionScrollViewReferences++;
+		if (this.resolvedSelectionEnd?.scrollView !== undefined) selectionScrollViewReferences++;
+		return {
+			selectionAnchorReferences: this.selectionAnchor === undefined ? 0 : 1,
+			selectionFocusReferences: this.selectionFocus === undefined ? 0 : 1,
+			selectionInitialRangeReferences: this.selectionInitialRange === undefined ? 0 : 1,
+			lastClickReferences: this.lastClick === undefined ? 0 : 1,
+			selectionScrollViewReferences,
+			selectionTimerReferences: this.selectionAutoScrollTimer === undefined ? 0 : 1,
+			scrollbarOwnerReferences:
+				(this.scrollbarHover === undefined ? 0 : 1) + (this.scrollbarDrag === undefined ? 0 : 1),
+			scrollbarTimerReferences: this.scrollbarDragFrameTimer === undefined ? 0 : 1,
 		};
 	}
 
@@ -514,7 +606,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		this.previousScreenWidth = 0;
 		this.previousScreenHeight = 0;
 		this.currentLayout = undefined;
-		this.layoutScratch.clear();
+		this.layoutScratch.requestClear();
 	}
 
 	scrollBy(lines: number): void {

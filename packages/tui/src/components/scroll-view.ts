@@ -194,6 +194,7 @@ export class ScrollView extends Container {
 
 	[RELEASE_COMPONENT_RENDER_CACHE](): void {
 		this.requestRenderCallback = undefined;
+		this.scrollbarActive = false;
 		this.hideTransientScrollbar();
 	}
 
