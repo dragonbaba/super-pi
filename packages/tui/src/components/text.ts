@@ -1,3 +1,4 @@
+import { RELEASE_COMPONENT_RENDER_CACHE } from "../component-cache.ts";
 import type { Component } from "../tui.ts";
 import { TAB_PATTERN } from "../regex.ts";
 import { applyBackgroundToLine, visibleWidth, wrapTextWithAnsi } from "../utils.ts";
@@ -38,6 +39,14 @@ export class Text implements Component {
 	}
 
 	invalidate(): void {
+		this.clearRenderCache();
+	}
+
+	[RELEASE_COMPONENT_RENDER_CACHE](): void {
+		this.clearRenderCache();
+	}
+
+	private clearRenderCache(): void {
 		this.cachedText = undefined;
 		this.cachedWidth = undefined;
 		this.cachedLines = undefined;
