@@ -654,6 +654,7 @@ export class InteractiveMode {
 	private activeProviderAuthenticationTimeout: ReturnType<typeof setTimeout> | undefined = undefined;
 	private providerAuthenticationGeneration = 0;
 	private activeModelLookupController: AbortController | undefined = undefined;
+	private activeModelLookupTimeout: ReturnType<typeof setTimeout> | undefined = undefined;
 	private modelCommandGeneration = 0;
 	private modelLookupGeneration = 0;
 	private modelLookupTimedOutGeneration = 0;
@@ -692,6 +693,7 @@ export class InteractiveMode {
 	): void {
 		if (mode.activeModelLookupController !== controller || mode.modelLookupGeneration !== generation) return;
 		mode.modelLookupTimedOutGeneration = generation;
+		mode.activeModelLookupTimeout = undefined;
 		controller.abort();
 	}
 	private static handleProviderAuthenticationTimeout(
@@ -2828,6 +2830,9 @@ export class InteractiveMode {
 		const controller = this.activeModelLookupController;
 		this.activeModelLookupController = undefined;
 		controller?.abort();
+		const timeout = this.activeModelLookupTimeout;
+		this.activeModelLookupTimeout = undefined;
+		if (timeout !== undefined) clearTimeout(timeout);
 	}
 
 	private cancelActiveExtensionCustom(): void {
@@ -5415,6 +5420,7 @@ export class InteractiveMode {
 		const lifecycleGeneration = this.tuiLifecycleGeneration;
 		this.activeModelLookupController = controller;
 		const timeout = setTimeout(InteractiveMode.handleModelLookupTimeout, 15_000, this, controller, generation);
+		this.activeModelLookupTimeout = timeout;
 		try {
 			const result = await refreshModelCatalogs(this.session.modelRuntime, controller.signal);
 			if (
@@ -5444,6 +5450,7 @@ export class InteractiveMode {
 			);
 		} finally {
 			clearTimeout(timeout);
+			if (this.activeModelLookupTimeout === timeout) this.activeModelLookupTimeout = undefined;
 			if (this.activeModelLookupController === controller && this.modelLookupGeneration === generation) {
 				this.activeModelLookupController = undefined;
 				this.modelLookupTimedOutGeneration = 0;
