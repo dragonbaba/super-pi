@@ -9,6 +9,8 @@ import { RELEASE_COMPONENT_RENDER_CACHE } from "../packages/tui/src/component-ca
 import { CancellableLoader } from "../packages/tui/src/components/cancellable-loader.ts";
 import type { TUI } from "../packages/tui/src/tui.ts";
 import { InteractiveMode } from "../packages/coding-agent/src/modes/interactive/interactive-mode.ts";
+import { AgentSessionRuntime } from "../packages/coding-agent/src/core/agent-session-runtime.ts";
+import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
 import { BashExecutionComponent } from "../packages/coding-agent/src/modes/interactive/components/bash-execution.ts";
 import { LoginDialogComponent } from "../packages/coding-agent/src/modes/interactive/components/login-dialog.ts";
 import { SessionSelectorComponent } from "../packages/coding-agent/src/modes/interactive/components/session-selector.ts";
@@ -375,6 +377,17 @@ test("async owner closeout remains lifecycle-only in source", () => {
 	assert.match(startupRefreshSource, /InteractiveMode\.handleStartupModelRefreshTimeout/);
 	assert.doesNotMatch(startupRefreshSource, /setTimeout\(\(\)|\.then\(|\.catch\(|\.finally\(/);
 	assert.ok(stopSource.indexOf("this.cancelActiveStartupModelRefresh()") < stopSource.indexOf("this.stopInteractiveTui"));
+	assert.ok(stopSource.indexOf("this.cancelActiveStartupDiagnostics()") < stopSource.indexOf("this.stopInteractiveTui"));
+	assert.ok(stopSource.indexOf("this.cancelActiveSuspend()") < stopSource.indexOf("this.stopInteractiveTui"));
+	assert.ok(stopSource.indexOf("this.runtimeHost.cancelPendingReplacements?.()") < stopSource.indexOf("this.stopInteractiveTui"));
+	const startupDiagnosticsStart = interactiveSource.indexOf("private startStartupDiagnostics");
+	const startupDiagnosticsEnd = interactiveSource.indexOf("\n\t/**", startupDiagnosticsStart);
+	const startupDiagnosticsSource = interactiveSource.slice(startupDiagnosticsStart, startupDiagnosticsEnd);
+	assert.match(startupDiagnosticsSource, /this\.startupDiagnosticsGeneration !== generation/);
+	assert.match(startupDiagnosticsSource, /this\.tuiLifecycleGeneration !== lifecycleGeneration/);
+	assert.match(interactiveSource, /private cancelActiveStartupDiagnostics\(\): void/);
+	assert.match(interactiveSource, /firstProcess\?\.kill\(\)/);
+	assert.match(interactiveSource, /secondProcess\?\.kill\(\)/);
 	const cycleModelStart = interactiveSource.indexOf("private async cycleModel");
 	const cycleModelEnd = interactiveSource.indexOf("\n\tprivate toggleToolOutputExpansion", cycleModelStart);
 	const cycleModelSource = interactiveSource.slice(cycleModelStart, cycleModelEnd);
@@ -392,6 +405,31 @@ test("async owner closeout remains lifecycle-only in source", () => {
 	assert.match(reloadSource, /const restoreChatBeforeSessionStart = \(\) => \{\s*if \(this\.tuiLifecycleGeneration !== lifecycleGeneration\) return/);
 	assert.ok(reloadSource.indexOf("this.tuiLifecycleGeneration !== lifecycleGeneration", reloadSource.indexOf("await this.session.reload")) > 0);
 	assert.doesNotMatch(`${cycleModelSource}\n${treeSource}\n${reloadSource}`, /Promise\.all|new AbortController|\.then\(|\.catch\(|\.finally\(/);
+	const exportStart = interactiveSource.indexOf("private async handleExportCommand");
+	const exportEnd = interactiveSource.indexOf("\n\tprivate getPathCommandArgument", exportStart);
+	const exportSource = interactiveSource.slice(exportStart, exportEnd);
+	assert.ok(exportSource.indexOf("const lifecycleGeneration = this.tuiLifecycleGeneration") < exportSource.indexOf("await this.session.exportToHtml"));
+	assert.equal(exportSource.match(/this\.tuiLifecycleGeneration !== lifecycleGeneration/g)?.length, 3);
+	const followUpStart = interactiveSource.indexOf("private async handleFollowUp");
+	const followUpEnd = interactiveSource.indexOf("\n\tprivate handleDequeue", followUpStart);
+	const followUpSource = interactiveSource.slice(followUpStart, followUpEnd);
+	assert.ok(
+		followUpSource.indexOf("const lifecycleGeneration = this.tuiLifecycleGeneration") <
+			followUpSource.indexOf('await this.session.prompt(text, { streamingBehavior: "followUp" })'),
+	);
+	assert.equal(followUpSource.match(/this\.tuiLifecycleGeneration !== lifecycleGeneration/g)?.length, 2);
+	const suspendStart = interactiveSource.indexOf("private async handleCtrlZ");
+	const suspendEnd = interactiveSource.indexOf("\n\tprivate suspendProcessGroup", suspendStart);
+	const suspendSource = interactiveSource.slice(suspendStart, suspendEnd);
+	assert.match(suspendSource, /process\.once\("SIGCONT", this\.handleSuspendContinue\)/);
+	assert.match(suspendSource, /this\.activeSuspendGeneration !== generation/);
+	assert.doesNotMatch(suspendSource, /setInterval\(\(\)|process\.once\("SIGCONT", \(\)/);
+	const logoutStart = interactiveSource.indexOf("private async showOAuthSelector");
+	const logoutEnd = interactiveSource.indexOf("\n\tprivate async refreshProviderAuthenticationCatalog", logoutStart);
+	const logoutSource = interactiveSource.slice(logoutStart, logoutEnd);
+	assert.ok(logoutSource.indexOf("const lifecycleGeneration = this.tuiLifecycleGeneration") < logoutSource.indexOf("await this.getLogoutProviderOptions"));
+	assert.ok(logoutSource.indexOf("this.tuiLifecycleGeneration !== lifecycleGeneration", logoutSource.indexOf("await this.session.modelRuntime.logout")) > 0);
+	assert.ok(logoutSource.indexOf("this.tuiLifecycleGeneration !== lifecycleGeneration", logoutSource.indexOf("await this.updateAvailableProviderCount")) > 0);
 	const bashCommandStart = interactiveSource.indexOf("private async handleBashCommand");
 	const bashCommandEnd = interactiveSource.indexOf("\n\tprivate async handleCompactCommand", bashCommandStart);
 	const bashCommandSource = interactiveSource.slice(bashCommandStart, bashCommandEnd);
@@ -418,6 +456,11 @@ test("async owner closeout remains lifecycle-only in source", () => {
 	const shutdownSource = interactiveSource.slice(shutdownStart, shutdownEnd);
 	assert.ok(shutdownSource.lastIndexOf("await this.runtimeHost.dispose()") > shutdownSource.lastIndexOf("await this.stop()"));
 	assert.ok(shutdownSource.lastIndexOf("if (cleanupFailed) throw cleanupError") > shutdownSource.lastIndexOf("await this.runtimeHost.dispose()"));
+	const runtimeSource = readFileSync("packages/coding-agent/src/core/agent-session-runtime.ts", "utf8");
+	assert.match(runtimeSource, /cancelPendingReplacements\(\): void/);
+	assert.match(runtimeSource, /this\.replacementGeneration === generation/);
+	assert.ok(runtimeSource.indexOf("if (!this.isReplacementCurrent(generation))") < runtimeSource.indexOf("this.apply(result)"));
+	assert.doesNotMatch(runtimeSource, /Promise\.all|new (?:Map|Set|AbortController)/);
 
 	const sessionSelectorSource = readFileSync(
 		"packages/coding-agent/src/modes/interactive/components/session-selector.ts",
@@ -854,6 +897,142 @@ test("interactive stop cancels the startup model catalog refresh and owned deadl
 	}
 });
 
+test("final shutdown rejects remaining startup diagnostic UI", async () => {
+	let settleUpdates: ((updates: string[]) => void) | undefined;
+	let notificationCalls = 0;
+	let warningCalls = 0;
+	const observed: Promise<unknown>[] = [];
+	const mode = Object.create(InteractiveMode.prototype) as any;
+	mode.init = async (): Promise<void> => {};
+	mode.options = {};
+	mode.isInitialized = false;
+	mode.tuiLifecycleGeneration = 0;
+	mode.observeLifecyclePromise = (promise: Promise<unknown>): void => { observed.push(promise); };
+	mode.checkForPackageUpdates = (): Promise<string[]> => new Promise((resolve) => { settleUpdates = resolve; });
+	mode.checkTmuxKeyboardSetup = async (): Promise<undefined> => undefined;
+	mode.maybeWarnAboutAnthropicSubscriptionAuth = async (): Promise<void> => {};
+	mode.showPackageUpdateNotification = (): void => { notificationCalls++; };
+	mode.showWarning = (): void => { warningCalls++; };
+	mode.showError = (): void => {};
+	mode.getUserInput = (): Promise<string> => new Promise(() => {});
+	mode.runtimeHost = { session: { modelRuntime: { getError: () => undefined } } };
+
+	const originalOffline = process.env.SP_OFFLINE;
+	process.env.SP_OFFLINE = "1";
+	try {
+		void mode.run();
+		await waitFor(() => settleUpdates !== undefined);
+		mode.tuiLifecycleGeneration++;
+		settleUpdates?.(["late-package"]);
+		await Promise.all(observed);
+		assert.equal(notificationCalls, 0);
+		assert.equal(warningCalls, 0);
+	} finally {
+		if (originalOffline === undefined) delete process.env.SP_OFFLINE;
+		else process.env.SP_OFFLINE = originalOffline;
+	}
+});
+
+test("startup diagnostic cancellation releases both tmux process slots and deadlines", () => {
+	let firstKills = 0;
+	let secondKills = 0;
+	let firstSettles = 0;
+	let secondSettles = 0;
+	const firstTimer = setTimeout(() => assert.fail("first tmux timer leaked"), 60_000);
+	const secondTimer = setTimeout(() => assert.fail("second tmux timer leaked"), 60_000);
+	const mode = Object.create(InteractiveMode.prototype) as any;
+	mode.startupDiagnosticsGeneration = 3;
+	mode.activeTmuxExtendedKeysProcess = { kill(): void { firstKills++; } };
+	mode.activeTmuxExtendedKeysTimeout = firstTimer;
+	mode.activeTmuxExtendedKeysResolve = (): void => { firstSettles++; };
+	mode.activeTmuxExtendedKeysFormatProcess = { kill(): void { secondKills++; } };
+	mode.activeTmuxExtendedKeysFormatTimeout = secondTimer;
+	mode.activeTmuxExtendedKeysFormatResolve = (): void => { secondSettles++; };
+
+	mode.cancelActiveStartupDiagnostics();
+
+	assert.equal(firstKills, 1);
+	assert.equal(secondKills, 1);
+	assert.equal(firstSettles, 1);
+	assert.equal(secondSettles, 1);
+	assert.equal(mode.activeTmuxExtendedKeysProcess, undefined);
+	assert.equal(mode.activeTmuxExtendedKeysTimeout, undefined);
+	assert.equal(mode.activeTmuxExtendedKeysResolve, undefined);
+	assert.equal(mode.activeTmuxExtendedKeysFormatProcess, undefined);
+	assert.equal(mode.activeTmuxExtendedKeysFormatTimeout, undefined);
+	assert.equal(mode.activeTmuxExtendedKeysFormatResolve, undefined);
+});
+
+test("runtime disposal rejects an in-flight session replacement before apply", async () => {
+	const sessionManager = SessionManager.inMemory(process.cwd());
+	let settleRuntime: ((result: any) => void) | undefined;
+	let oldDisposeCalls = 0;
+	let replacementDisposeCalls = 0;
+	const extensionRunner = { hasHandlers: () => false };
+	const oldSession = {
+		extensionRunner,
+		sessionFile: undefined,
+		sessionManager,
+		abort: async (): Promise<void> => {},
+		dispose(): void { oldDisposeCalls++; },
+	};
+	const replacementSession = {
+		extensionRunner,
+		sessionFile: undefined,
+		sessionManager: SessionManager.inMemory(process.cwd()),
+		agent: { state: { messages: [] } },
+		createReplacedSessionContext: () => ({}),
+		dispose(): void { replacementDisposeCalls++; },
+	};
+	const services = { cwd: process.cwd(), agentDir: process.cwd() };
+	const runtime = new AgentSessionRuntime(
+		oldSession as never,
+		services as never,
+		() => new Promise((resolve) => { settleRuntime = resolve; }),
+	);
+
+	const replacement = runtime.newSession();
+	await waitFor(() => settleRuntime !== undefined);
+	const disposal = runtime.dispose();
+	settleRuntime?.({ session: replacementSession, services, diagnostics: [] });
+	const replacementResult = await replacement;
+	await disposal;
+
+	assert.equal(replacementResult.cancelled, true);
+	assert.notEqual(runtime.session, replacementSession);
+	assert.equal(replacementDisposeCalls, 1);
+	assert.ok(oldDisposeCalls >= 1);
+});
+
+test("final shutdown rejects new-session command completion UI", async () => {
+	let settleReplacement: ((result: { cancelled: boolean }) => void) | undefined;
+	let transcriptCalls = 0;
+	let renderCalls = 0;
+	let fatalCalls = 0;
+	const mode = Object.create(InteractiveMode.prototype) as any;
+	mode.tuiLifecycleGeneration = 0;
+	mode.runtimeHost = {
+		newSession: () => new Promise((resolve) => { settleReplacement = resolve; }),
+	};
+	mode.clearStatusIndicator = (): void => {};
+	mode.chatContainer = { addChild(): void { transcriptCalls++; } };
+	mode.ui = { requestRender(): void { renderCalls++; } };
+	mode.handleFatalRuntimeError = async (): Promise<never> => {
+		fatalCalls++;
+		throw new Error("unexpected fatal runtime path");
+	};
+
+	const operation = mode.handleClearCommand() as Promise<void>;
+	await Promise.resolve();
+	mode.tuiLifecycleGeneration++;
+	settleReplacement?.({ cancelled: false });
+	await operation;
+
+	assert.equal(transcriptCalls, 0);
+	assert.equal(renderCalls, 0);
+	assert.equal(fatalCalls, 0);
+});
+
 test("final shutdown rejects a late keyboard model-cycle continuation", async () => {
 	let settleCycle: ((value: any) => void) | undefined;
 	let footerCalls = 0;
@@ -1014,6 +1193,201 @@ test("final shutdown rejects reload callbacks and completion UI", async () => {
 	assert.equal(postReloadCalls, 0);
 	assert.equal(statusCalls, 0);
 	assert.equal(errorCalls, 0);
+});
+
+test("final shutdown rejects late export completion UI", async () => {
+	for (const rejects of [false, true]) {
+		let settleExport: ((path: string) => void) | undefined;
+		let rejectExport: ((error: Error) => void) | undefined;
+		let statusCalls = 0;
+		let errorCalls = 0;
+		const mode = Object.create(InteractiveMode.prototype) as any;
+		mode.tuiLifecycleGeneration = 0;
+		mode.runtimeHost = { session: {
+			exportToHtml(): Promise<string> {
+				return new Promise((resolve, reject) => {
+					settleExport = resolve;
+					rejectExport = reject;
+				});
+			},
+		} };
+		mode.showStatus = (): void => { statusCalls++; };
+		mode.showError = (): void => { errorCalls++; };
+
+		const operation = mode.handleExportCommand("/export") as Promise<void>;
+		await Promise.resolve();
+		mode.tuiLifecycleGeneration++;
+		if (rejects) rejectExport?.(new Error("late export failure"));
+		else settleExport?.("late.html");
+		await operation;
+
+		assert.equal(statusCalls, 0);
+		assert.equal(errorCalls, 0);
+	}
+});
+
+test("final shutdown rejects logout work after its selector closes", async () => {
+	initTheme("dark");
+	let selector: any;
+	let settleLogout: (() => void) | undefined;
+	let providerCountCalls = 0;
+	let statusCalls = 0;
+	let errorCalls = 0;
+	const mode = Object.create(InteractiveMode.prototype) as any;
+	mode.tuiLifecycleGeneration = 0;
+	mode.getLogoutProviderOptions = async () => [{
+		id: "fixture",
+		name: "Fixture",
+		authType: "oauth",
+	}];
+	mode.runtimeHost = { session: { modelRuntime: {
+		logout(): Promise<void> {
+			return new Promise((resolve) => { settleLogout = resolve; });
+		},
+	} } };
+	mode.showSelector = (factory: (done: () => void) => { component: unknown }): void => {
+		selector = factory((): void => {}).component;
+	};
+	mode.updateAvailableProviderCount = async (): Promise<void> => { providerCountCalls++; };
+	mode.showStatus = (): void => { statusCalls++; };
+	mode.showError = (): void => { errorCalls++; };
+	mode.ui = { requestRender(): void {} };
+
+	await mode.showOAuthSelector("logout");
+	const operation = selector.onSelectCallback("fixture", "oauth") as Promise<void>;
+	await Promise.resolve();
+	mode.tuiLifecycleGeneration++;
+	settleLogout?.();
+	await operation;
+
+	assert.equal(providerCountCalls, 0);
+	assert.equal(statusCalls, 0);
+	assert.equal(errorCalls, 0);
+});
+
+test("final shutdown rejects logout provider-count completion UI", async () => {
+	initTheme("dark");
+	let selector: any;
+	let settleProviderCount: (() => void) | undefined;
+	let statusCalls = 0;
+	let errorCalls = 0;
+	const mode = Object.create(InteractiveMode.prototype) as any;
+	mode.tuiLifecycleGeneration = 0;
+	mode.getLogoutProviderOptions = async () => [{ id: "fixture", name: "Fixture", authType: "oauth" }];
+	mode.runtimeHost = { session: { modelRuntime: { logout: async (): Promise<void> => {} } } };
+	mode.showSelector = (factory: (done: () => void) => { component: unknown }): void => {
+		selector = factory((): void => {}).component;
+	};
+	mode.updateAvailableProviderCount = (): Promise<void> => new Promise((resolve) => { settleProviderCount = resolve; });
+	mode.showStatus = (): void => { statusCalls++; };
+	mode.showError = (): void => { errorCalls++; };
+	mode.ui = { requestRender(): void {} };
+
+	await mode.showOAuthSelector("logout");
+	const operation = selector.onSelectCallback("fixture", "oauth") as Promise<void>;
+	await waitFor(() => settleProviderCount !== undefined);
+	mode.tuiLifecycleGeneration++;
+	settleProviderCount?.();
+	await operation;
+
+	assert.equal(statusCalls, 0);
+	assert.equal(errorCalls, 0);
+});
+
+test("final shutdown rejects follow-up prompt completion UI", async () => {
+	for (const rejects of [false, true]) {
+		let settlePrompt: (() => void) | undefined;
+		let rejectPrompt: ((error: Error) => void) | undefined;
+		let pendingDisplayCalls = 0;
+		let renderCalls = 0;
+		const mode = Object.create(InteractiveMode.prototype) as any;
+		mode.tuiLifecycleGeneration = 0;
+		mode.editor = {
+			getText: () => "follow-up",
+			setText(): void {},
+			addToHistory(): void {},
+		};
+		mode.runtimeHost = { session: {
+			isCompacting: false,
+			isStreaming: true,
+			prompt(): Promise<void> {
+				return new Promise((resolve, reject) => {
+					settlePrompt = resolve;
+					rejectPrompt = reject;
+				});
+			},
+		} };
+		mode.updatePendingMessagesDisplay = (): void => { pendingDisplayCalls++; };
+		mode.ui = { requestRender(): void { renderCalls++; } };
+
+		const operation = mode.handleFollowUp() as Promise<void>;
+		await Promise.resolve();
+		mode.tuiLifecycleGeneration++;
+		if (rejects) rejectPrompt?.(new Error("late prompt failure"));
+		else settlePrompt?.();
+		await operation;
+
+		assert.equal(pendingDisplayCalls, 0);
+		assert.equal(renderCalls, 0);
+	}
+});
+
+test("final shutdown cancels a pending suspend handoff", async () => {
+	const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform");
+	const originalSigintListeners = process.listeners("SIGINT");
+	const originalSigcontListeners = process.listeners("SIGCONT");
+	let settleStop: (() => void) | undefined;
+	let suspendCalls = 0;
+	let startCalls = 0;
+	let renderCalls = 0;
+	const mode = Object.create(InteractiveMode.prototype) as any;
+	mode.tuiLifecycleGeneration = 0;
+	mode.suspendGeneration = 0;
+	mode.activeSuspendGeneration = 0;
+	mode.activeSuspendLifecycleGeneration = 0;
+	mode.ignoreSuspendSigint = (): void => {};
+	mode.handleSuspendContinue = (): void => {
+		const generation = mode.activeSuspendGeneration;
+		if (generation === 0) return;
+		const lifecycleGeneration = mode.activeSuspendLifecycleGeneration;
+		mode.clearActiveSuspend(generation);
+		if (mode.tuiLifecycleGeneration !== lifecycleGeneration) return;
+		mode.ui.start();
+		mode.ui.requestRender(true);
+	};
+	mode.ui = {
+		stop: () => new Promise<void>((resolve) => { settleStop = resolve; }),
+		start(): void { startCalls++; },
+		requestRender(): void { renderCalls++; },
+	};
+	mode.suspendProcessGroup = (): void => { suspendCalls++; };
+
+	try {
+		Object.defineProperty(process, "platform", { configurable: true, value: "linux" });
+		const operation = mode.handleCtrlZ() as Promise<void>;
+		await Promise.resolve();
+		mode.tuiLifecycleGeneration++;
+		mode.cancelActiveSuspend();
+		assert.equal(mode.activeSuspendGeneration, 0);
+		assert.equal(mode.activeSuspendKeepAlive, undefined);
+		settleStop?.();
+		await operation;
+		process.emit("SIGCONT");
+
+		assert.equal(suspendCalls, 0);
+		assert.equal(startCalls, 0);
+		assert.equal(renderCalls, 0);
+	} finally {
+		const currentSigint = process.listeners("SIGINT");
+		for (const listener of currentSigint) {
+			if (!originalSigintListeners.includes(listener)) process.removeListener("SIGINT", listener);
+		}
+		const currentSigcont = process.listeners("SIGCONT");
+		for (const listener of currentSigcont) {
+			if (!originalSigcontListeners.includes(listener)) process.removeListener("SIGCONT", listener);
+		}
+		if (platformDescriptor) Object.defineProperty(process, "platform", platformDescriptor);
+	}
 });
 
 test("interactive stop settles a pending extension custom factory and disposes its late result", async () => {

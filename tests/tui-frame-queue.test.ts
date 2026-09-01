@@ -957,7 +957,11 @@ test("cancelled physical write settles before a reused generation can start", as
 	);
 	const suspendSource = interactiveSource.match(/private async handleCtrlZ[\s\S]*?\n\tprivate async handleFollowUp/)?.[0] ?? "";
 	assert.match(suspendSource, /await this\.ui\.stop\(\)/);
-	assert.match(suspendSource, /this\.ui\.start\(\)/);
+	assert.match(suspendSource, /process\.once\("SIGCONT", this\.handleSuspendContinue\)/);
+	const suspendContinueSource =
+		interactiveSource.match(/private readonly handleSuspendContinue[\s\S]*?\n\t};/)?.[0] ?? "";
+	assert.match(suspendContinueSource, /this\.tuiLifecycleGeneration !== lifecycleGeneration/);
+	assert.match(suspendContinueSource, /this\.ui\.start\(\)/);
 	assert.match(interactiveSource, /private async handleOpenExternalEditor[\s\S]{0,800}await this\.ui\.stop\(\)[\s\S]{0,800}this\.ui\.start\(\)/);
 });
 
