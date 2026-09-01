@@ -534,7 +534,7 @@ export class Editor implements Component, Focusable {
 	}
 
 	[RELEASE_COMPONENT_RENDER_CACHE](): void {
-		this.clearLayoutCache();
+		this.releaseLayoutCacheStorage();
 	}
 
 	render(width: number): string[] {
@@ -1147,6 +1147,11 @@ export class Editor implements Component, Focusable {
 		this.layoutCachePasteGeneration = -1;
 		this.layoutCacheSourceCodeUnits = 0;
 		this.layoutCacheSourceLines.length = 0;
+	}
+
+	private releaseLayoutCacheStorage(): void {
+		this.clearLayoutCache();
+		this.layoutCacheSourceLines = [];
 	}
 
 	/** Low-frequency benchmark diagnostics. The returned object is never created by render(). */

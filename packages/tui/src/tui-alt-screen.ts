@@ -377,10 +377,39 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		try {
 			super.releaseMountedComponentsAfterDispose();
 		} finally {
+			this.lastDocument = [];
+			this.lineResetBuffer[0] = "";
+			this.uploadedKittyImages.clear();
+			this.resolvedSelectionStart = undefined;
+			this.resolvedSelectionEnd = undefined;
 			this.layoutRoot = undefined;
 			this.currentLayout = undefined;
 			this.layoutScratch.clear();
 		}
+	}
+
+	/** Low-frequency final-unmount diagnostics; never called from the frame path. */
+	getAltFinalUnmountRetainedReferenceCounts(): {
+		lastDocumentRows: number;
+		lastDocumentCodeUnits: number;
+		lastDocumentReference: 0 | 1;
+		lineResetCodeUnits: number;
+		uploadedKittyImages: number;
+		selectionPointReferences: number;
+	} {
+		let lastDocumentCodeUnits = 0;
+		for (let index = 0; index < this.lastDocument.length; index++) {
+			lastDocumentCodeUnits += this.lastDocument[index]?.length ?? 0;
+		}
+		return {
+			lastDocumentRows: this.lastDocument.length,
+			lastDocumentCodeUnits,
+			lastDocumentReference: this.lastDocument.length === 0 ? 0 : 1,
+			lineResetCodeUnits: this.lineResetBuffer[0].length,
+			uploadedKittyImages: this.uploadedKittyImages.size,
+			selectionPointReferences:
+				(this.resolvedSelectionStart === undefined ? 0 : 1) + (this.resolvedSelectionEnd === undefined ? 0 : 1),
+		};
 	}
 
 	private deleteKittyImages(): string {

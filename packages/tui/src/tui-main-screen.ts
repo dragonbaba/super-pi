@@ -77,15 +77,15 @@ export class TuiMainScreen extends TuiBase implements TUI {
 	private previousViewportTop = 0;
 	private viewportWindowStart: number | undefined;
 	private viewportDocumentHeight: number | undefined;
-	private readonly viewportMutationTokens: unknown[] = [];
+	private viewportMutationTokens: unknown[] = [];
 	private readonly viewportMutationScratch: LineViewportMutationObservation = { token: 0, kind: "none" };
 	private readonly viewportMutationSummary: LineViewportMutationObservation = { token: 0, kind: "none" };
-	private readonly frameRootHeights: number[] = [];
-	private readonly frameRootLines: Array<readonly string[] | undefined> = [];
-	private readonly frameRootLineStarts: number[] = [];
-	private readonly frameRootLeadingKittyImages: Array<LineViewportRender["leadingKittyImage"]> = [];
-	private readonly boundedFrameLinesA: string[] = [];
-	private readonly boundedFrameLinesB: string[] = [];
+	private frameRootHeights: number[] = [];
+	private frameRootLines: Array<readonly string[] | undefined> = [];
+	private frameRootLineStarts: number[] = [];
+	private frameRootLeadingKittyImages: Array<LineViewportRender["leadingKittyImage"]> = [];
+	private boundedFrameLinesA: string[] = [];
+	private boundedFrameLinesB: string[] = [];
 	private readonly rootFrameRender: LineViewportRender = { lines: [], startLine: 0, totalHeight: 0 };
 	private expandedFirstChanged = -1;
 	private expandedLastChanged = -1;
@@ -134,6 +134,68 @@ export class TuiMainScreen extends TuiBase implements TUI {
 		this.viewportWindowStart = undefined;
 		this.viewportDocumentHeight = undefined;
 		this.viewportMutationTokens.length = 0;
+	}
+
+	protected override releaseMountedComponentsAfterDispose(): void {
+		try {
+			super.releaseMountedComponentsAfterDispose();
+		} finally {
+			this.previousLines = [];
+			this.previousKittyImageIds.clear();
+			this.previousWidth = -1;
+			this.previousHeight = -1;
+			this.cursorRow = 0;
+			this.hardwareCursorRow = 0;
+			this.maxLinesRendered = 0;
+			this.previousViewportTop = 0;
+			this.viewportWindowStart = undefined;
+			this.viewportDocumentHeight = undefined;
+			this.viewportMutationTokens = [];
+			this.viewportMutationScratch.token = undefined;
+			this.viewportMutationScratch.kind = "none";
+			this.viewportMutationScratch.earliestChangedLine = undefined;
+			this.viewportMutationScratch.latestChangedLine = undefined;
+			this.viewportMutationScratch.heightChanged = undefined;
+			this.viewportMutationSummary.token = undefined;
+			this.viewportMutationSummary.kind = "none";
+			this.viewportMutationSummary.earliestChangedLine = undefined;
+			this.viewportMutationSummary.latestChangedLine = undefined;
+			this.viewportMutationSummary.heightChanged = undefined;
+			this.frameRootHeights = [];
+			this.frameRootLines = [];
+			this.frameRootLineStarts = [];
+			this.frameRootLeadingKittyImages = [];
+			this.boundedFrameLinesA = [];
+			this.boundedFrameLinesB = [];
+			this.rootFrameRender.lines = [];
+			this.rootFrameRender.startLine = 0;
+			this.rootFrameRender.totalHeight = 0;
+			this.rootFrameRender.leadingKittyImage = undefined;
+		}
+	}
+
+	/** Low-frequency final-unmount diagnostics; never called from the frame path. */
+	getMainFinalUnmountRetainedReferenceCounts(): {
+		previousLines: number;
+		previousKittyImageIds: number;
+		viewportMutationTokens: number;
+		frameRootRecords: number;
+		boundedFrameLines: number;
+		rootFrameLines: number;
+	} {
+		return {
+			previousLines: this.previousLines.length,
+			previousKittyImageIds: this.previousKittyImageIds.size,
+			viewportMutationTokens: this.viewportMutationTokens.length,
+			frameRootRecords: Math.max(
+				this.frameRootHeights.length,
+				this.frameRootLines.length,
+				this.frameRootLineStarts.length,
+				this.frameRootLeadingKittyImages.length,
+			),
+			boundedFrameLines: this.boundedFrameLinesA.length + this.boundedFrameLinesB.length,
+			rootFrameLines: this.rootFrameRender.lines.length,
+		};
 	}
 
 	protected override beforeTerminalStop(options: TuiStopOptions): void | Promise<void> {
