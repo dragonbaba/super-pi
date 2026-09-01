@@ -284,12 +284,27 @@ test("async owner closeout remains lifecycle-only in source", () => {
 	assert.match(extensionReleaseSource, /this\.customHeader\?\.dispose\?\.\(\)/);
 	assert.doesNotMatch(extensionReleaseSource, /requestRender|renderWidgets|new (?:Map|Set|Promise|AbortController)/);
 	assert.ok(stopSource.indexOf("this.cancelActiveModelLookup()") < stopSource.indexOf("this.stopInteractiveTui"));
+	assert.ok(
+		stopSource.indexOf("this.cancelActiveProviderAuthentication()") < stopSource.indexOf("this.stopInteractiveTui"),
+	);
 	assert.ok(stopSource.indexOf("this.cancelActiveExtensionCustom()") < stopSource.indexOf("this.stopInteractiveTui"));
 	assert.ok(stopSource.indexOf("this.releaseExtensionUiOwners()") < stopSource.indexOf("this.stopInteractiveTui"));
 	assert.match(
 		interactiveSource,
 		/setTimeout\(InteractiveMode\.handleModelLookupTimeout, 15_000, this, controller, generation\)/,
 	);
+	assert.match(interactiveSource, /private static handleProviderAuthenticationTimeout/);
+	const providerRefreshStart = interactiveSource.indexOf("private async refreshProviderAuthenticationCatalog");
+	const providerCompletionStart = interactiveSource.indexOf("private async completeProviderAuthentication");
+	const providerCompletionEnd = interactiveSource.indexOf("\n\tprivate showAmbientAuthDialog", providerCompletionStart);
+	const providerRefreshSource = interactiveSource.slice(providerRefreshStart, providerCompletionStart);
+	const providerCompletionSource = interactiveSource.slice(providerCompletionStart, providerCompletionEnd);
+	assert.match(providerCompletionSource, /const lifecycleGeneration = this\.tuiLifecycleGeneration/);
+	assert.match(providerCompletionSource, /this\.providerAuthenticationGeneration !== generation/);
+	assert.match(providerCompletionSource, /this\.refreshProviderAuthenticationCatalog/);
+	assert.match(providerRefreshSource, /this\.activeProviderAuthenticationController !== controller/);
+	assert.match(providerRefreshSource, /InteractiveMode\.handleProviderAuthenticationTimeout/);
+	assert.doesNotMatch(providerRefreshSource, /\.then\(|\.catch\(|\.finally\(|setTimeout\(\(\)/);
 	const modelLookupStart = interactiveSource.indexOf("private async findExactModelMatch");
 	const modelLookupEnd = interactiveSource.indexOf("\n\t/**", modelLookupStart);
 	const modelLookupSource = interactiveSource.slice(modelLookupStart, modelLookupEnd);
@@ -324,6 +339,21 @@ test("async owner closeout remains lifecycle-only in source", () => {
 	assert.ok(
 		shareSource.indexOf("lifecycleGeneration !== this.tuiLifecycleGeneration") >
 			shareSource.indexOf("await this.session.exportToHtml(tmpFile)"),
+	);
+	const bashCommandStart = interactiveSource.indexOf("private async handleBashCommand");
+	const bashCommandEnd = interactiveSource.indexOf("\n\tprivate async handleCompactCommand", bashCommandStart);
+	const bashCommandSource = interactiveSource.slice(bashCommandStart, bashCommandEnd);
+	assert.ok(
+		bashCommandSource.indexOf("const lifecycleGeneration = this.tuiLifecycleGeneration") <
+			bashCommandSource.indexOf("await extensionRunner.emitUserBash"),
+	);
+	assert.ok(
+		bashCommandSource.indexOf("this.tuiLifecycleGeneration !== lifecycleGeneration") >
+			bashCommandSource.indexOf("await extensionRunner.emitUserBash"),
+	);
+	assert.ok(
+		bashCommandSource.indexOf("this.tuiLifecycleGeneration !== lifecycleGeneration") <
+			bashCommandSource.indexOf("new BashExecutionComponent"),
 	);
 
 	const sessionSelectorSource = readFileSync(
@@ -853,4 +883,206 @@ test("final shutdown rejects a late share export before mounting its loader", as
 		else process.env.TMPDIR = previousTmpdir;
 		await rm(directory, { recursive: true, force: true });
 	}
+});
+
+test("final shutdown rejects post-login model selection before catalog refresh", async () => {
+	initTheme("dark");
+	let settleModel: (() => void) | undefined;
+	let refreshCalls = 0;
+	let footerInvalidations = 0;
+	let statusCalls = 0;
+	let renderCalls = 0;
+	const defaultModel = {
+		provider: "anthropic",
+		id: "claude-opus-4-8",
+		api: "anthropic-messages",
+	} as any;
+	const mode = Object.create(InteractiveMode.prototype) as any;
+	mode.tuiLifecycleGeneration = 0;
+	mode.providerAuthenticationGeneration = 0;
+	mode.runtimeHost = { session: {
+		modelRuntime: {
+			getAvailableSnapshot: () => [defaultModel],
+			refresh: async () => {
+				refreshCalls++;
+				return { aborted: false, errors: new Map() };
+			},
+		},
+		scopedModels: [],
+		setModel: () => new Promise<void>((resolve) => { settleModel = resolve; }),
+		settingsManager: {
+			getFullscreenExitOutput: () => "transcript",
+			getShowTerminalProgress: () => false,
+		},
+	} };
+	mode.ui = { requestRender(): void { renderCalls++; } };
+	mode.footer = {
+		invalidate(): void { footerInvalidations++; },
+		dispose(): void {},
+	};
+	mode.footerDataProvider = {
+		setAvailableProviderCount(): void {},
+		dispose(): void {},
+	};
+	mode.updateEditorBorderColor = (): void => {};
+	mode.showStatus = (): void => { statusCalls++; };
+	mode.showError = (): void => {};
+	mode.showWarning = (): void => {};
+	mode.observeLifecyclePromise = (): void => {};
+	mode.maybeWarnAboutAnthropicSubscriptionAuth = async (): Promise<void> => {};
+	mode.checkDaxnutsEasterEgg = (): void => {};
+	mode.themeController = { disableAutoSync(): void {} };
+	mode.isInitialized = false;
+	mode.clearStatusIndicator = (): void => {};
+	mode.clearExtensionTerminalInputListeners = (): void => {};
+	mode.unregisterSignalHandlers = (): void => {};
+
+	const operation = mode.completeProviderAuthentication("anthropic", "Anthropic", "oauth", {
+		provider: "unknown",
+		id: "unknown",
+		api: "unknown",
+	});
+	await Promise.resolve();
+	assert.ok(settleModel);
+	await mode.stop();
+	const footerAfterStop = footerInvalidations;
+	const statusAfterStop = statusCalls;
+	const rendersAfterStop = renderCalls;
+	settleModel?.();
+	await operation;
+	await Promise.resolve();
+
+	assert.equal(refreshCalls, 0);
+	assert.equal(footerInvalidations, footerAfterStop);
+	assert.equal(statusCalls, statusAfterStop);
+	assert.equal(renderCalls, rendersAfterStop);
+});
+
+test("final shutdown aborts the post-login catalog refresh and rejects its late completion", async () => {
+	initTheme("dark");
+	let settleRefresh: ((result: { aborted: boolean; errors: Map<string, Error> }) => void) | undefined;
+	let refreshSignal: AbortSignal | undefined;
+	let footerInvalidations = 0;
+	let warningCalls = 0;
+	let renderCalls = 0;
+	const mode = Object.create(InteractiveMode.prototype) as any;
+	mode.tuiLifecycleGeneration = 0;
+	mode.providerAuthenticationGeneration = 0;
+	mode.runtimeHost = { session: {
+		modelRuntime: {
+			getAvailableSnapshot: () => [],
+			refresh: ({ signal }: { signal: AbortSignal }) => {
+				refreshSignal = signal;
+				return new Promise((resolve) => { settleRefresh = resolve; });
+			},
+		},
+		scopedModels: [],
+		settingsManager: {
+			getFullscreenExitOutput: () => "transcript",
+			getShowTerminalProgress: () => false,
+		},
+	} };
+	mode.ui = { requestRender(): void { renderCalls++; } };
+	mode.footer = {
+		invalidate(): void { footerInvalidations++; },
+		dispose(): void {},
+	};
+	mode.footerDataProvider = {
+		setAvailableProviderCount(): void {},
+		dispose(): void {},
+	};
+	mode.updateEditorBorderColor = (): void => {};
+	mode.showStatus = (): void => {};
+	mode.showError = (): void => {};
+	mode.showWarning = (): void => { warningCalls++; };
+	mode.observeLifecyclePromise = (): void => {};
+	mode.maybeWarnAboutAnthropicSubscriptionAuth = async (): Promise<void> => {};
+	mode.themeController = { disableAutoSync(): void {} };
+	mode.isInitialized = false;
+	mode.clearStatusIndicator = (): void => {};
+	mode.clearExtensionTerminalInputListeners = (): void => {};
+	mode.unregisterSignalHandlers = (): void => {};
+
+	const operation = mode.completeProviderAuthentication("fixture", "Fixture", "oauth", {
+		provider: "fixture",
+		id: "known",
+		api: "fixture",
+	});
+	await waitFor(() => refreshSignal !== undefined);
+	await operation;
+	await mode.stop();
+	assert.equal(refreshSignal?.aborted, true);
+	assert.equal(mode.activeProviderAuthenticationController, undefined);
+	assert.equal(mode.activeProviderAuthenticationTimeout, undefined);
+	const footerAfterStop = footerInvalidations;
+	const warningsAfterStop = warningCalls;
+	const rendersAfterStop = renderCalls;
+	settleRefresh?.({ aborted: true, errors: new Map() });
+	await Promise.resolve();
+	await Promise.resolve();
+
+	assert.equal(footerInvalidations, footerAfterStop);
+	assert.equal(warningCalls, warningsAfterStop);
+	assert.equal(renderCalls, rendersAfterStop);
+	assert.equal(mode.activeProviderAuthenticationController, undefined);
+	assert.equal(mode.activeProviderAuthenticationTimeout, undefined);
+});
+
+test("final shutdown rejects late extension bash setup before constructing its loader", async () => {
+	initTheme("dark");
+	let settleExtension: ((result: undefined) => void) | undefined;
+	let settleBash: ((result: any) => void) | undefined;
+	let executeCalls = 0;
+	let mountedBashOwners = 0;
+	let renderCalls = 0;
+	const mode = Object.create(InteractiveMode.prototype) as any;
+	mode.tuiLifecycleGeneration = 0;
+	mode.runtimeHost = { session: {
+		extensionRunner: {
+			emitUserBash: () => new Promise<undefined>((resolve) => { settleExtension = resolve; }),
+		},
+		isStreaming: false,
+		executeBash: () => {
+			executeCalls++;
+			return new Promise((resolve) => { settleBash = resolve; });
+		},
+		recordBashResult(): void {},
+		settingsManager: {
+			getFullscreenExitOutput: () => "transcript",
+			getShowTerminalProgress: () => false,
+		},
+		sessionManager: { getCwd: () => process.cwd() },
+	} };
+	mode.ui = createCountingTui();
+	mode.ui.requestRender = (): void => { renderCalls++; };
+	mode.chatContainer = {
+		addChild(): void { mountedBashOwners++; },
+		invalidateViewportChild(): void {},
+	};
+	mode.pendingMessagesContainer = { addChild(): void { mountedBashOwners++; } };
+	mode.pendingBashComponents = [];
+	mode.themeController = { disableAutoSync(): void {} };
+	mode.footer = { dispose(): void {} };
+	mode.footerDataProvider = { dispose(): void {} };
+	mode.isInitialized = false;
+	mode.clearStatusIndicator = (): void => {};
+	mode.clearExtensionTerminalInputListeners = (): void => {};
+	mode.unregisterSignalHandlers = (): void => {};
+	mode.showError = (): void => {};
+
+	const operation = mode.handleBashCommand("echo late");
+	await Promise.resolve();
+	assert.ok(settleExtension);
+	await mode.stop();
+	const rendersAfterStop = renderCalls;
+	settleExtension?.(undefined);
+	await Promise.resolve();
+	await Promise.resolve();
+	settleBash?.({ exitCode: 0, cancelled: false, truncated: false, output: "", fullOutputPath: undefined });
+	await operation;
+
+	assert.equal(executeCalls, 0);
+	assert.equal(mountedBashOwners, 0);
+	assert.equal(renderCalls, rendersAfterStop);
+	assert.equal(mode.bashComponent, undefined);
 });
