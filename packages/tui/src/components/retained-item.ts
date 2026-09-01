@@ -1,4 +1,7 @@
-import { RELEASE_COMPONENT_RENDER_CACHE } from "../component-cache.ts";
+import {
+	GET_COMPONENT_RENDER_CACHE_CHILD,
+	RELEASE_COMPONENT_RENDER_CACHE,
+} from "../component-cache.ts";
 import { TuiRenderInstrumentation, utf8ByteLength } from "../render-instrumentation.ts";
 import { getKittyImageMetadata } from "../terminal-image.ts";
 import { type Component, Container } from "../tui.ts";
@@ -183,6 +186,10 @@ export class RetainedItem implements Component {
 		if (this.isReleased) return;
 		this.invalidateRetainedRender();
 		this.inner?.invalidate();
+	}
+
+	[GET_COMPONENT_RENDER_CACHE_CHILD](): Component | undefined {
+		return this.inner;
 	}
 
 	[RELEASE_COMPONENT_RENDER_CACHE](): void {

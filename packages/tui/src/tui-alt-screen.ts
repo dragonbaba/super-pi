@@ -166,6 +166,8 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	private previousScreenHeight = 0;
 	private layoutRoot: Component | undefined;
 	private layoutRootGeneration = 0;
+	private activeLayoutCacheOwner: Component | undefined;
+	private pendingLayoutCacheRelease: Component | undefined;
 	private currentLayout: LayoutFrame | undefined;
 	private readonly layoutScratch = new LayoutFrameScratch();
 	private readonly implicitDocument: LineViewportComponent;
@@ -255,8 +257,10 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	setLayoutRoot(component: Component | undefined): void {
 		if (this.layoutRoot === component) return;
 		const previousRoot = this.layoutRoot;
+		const previousOwner = previousRoot ?? this;
 		try {
-			releaseComponentRenderCaches(previousRoot ?? this);
+			if (previousOwner === this.activeLayoutCacheOwner) this.pendingLayoutCacheRelease = previousOwner;
+			else releaseComponentRenderCaches(previousOwner);
 		} finally {
 			this.layoutScratch.requestClear();
 			this.layoutRoot = component;
@@ -1205,6 +1209,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		const width = Math.max(1, this.terminal.columns);
 		const height = Math.max(1, this.terminal.rows);
 		const layoutRootGeneration = this.layoutRootGeneration;
+		this.activeLayoutCacheOwner = this.layoutRoot ?? this;
 		try {
 		const root = this.layoutRoot ?? this.implicitScrollView;
 		const nextLayout = renderLayoutFrame(root, width, height, this.layoutRequestRender, this.layoutScratch);
@@ -1331,7 +1336,16 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			this.currentLayout = undefined;
 		}
 		} finally {
-			this.layoutScratch.flushRequestedClear();
+			this.activeLayoutCacheOwner = undefined;
+			try {
+				const pendingLayoutCacheRelease = this.pendingLayoutCacheRelease;
+				this.pendingLayoutCacheRelease = undefined;
+				if (pendingLayoutCacheRelease !== undefined) {
+					releaseComponentRenderCaches(pendingLayoutCacheRelease);
+				}
+			} finally {
+				this.layoutScratch.flushRequestedClear();
+			}
 		}
 	}
 }

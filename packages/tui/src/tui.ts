@@ -6,6 +6,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { performance } from "node:perf_hooks";
 import {
+	GET_COMPONENT_RENDER_CACHE_CHILD,
 	GET_COMPONENT_RENDER_CACHE_CHILDREN,
 	RELEASE_COMPONENT_RENDER_CACHE,
 } from "./component-cache.ts";
@@ -81,6 +82,9 @@ export interface Component {
 
 	/** Internal child ownership for cache-only lifecycle traversal. */
 	[GET_COMPONENT_RENDER_CACHE_CHILDREN]?(): readonly Component[];
+
+	/** Internal single-child ownership for wrappers without a temporary child array. */
+	[GET_COMPONENT_RENDER_CACHE_CHILD]?(): Component | undefined;
 
 	/** Internal final-unmount cache release. Must not perform semantic rerendering. */
 	[RELEASE_COMPONENT_RENDER_CACHE]?(): void;
@@ -324,6 +328,15 @@ export function releaseComponentRenderCaches(component: Component | undefined): 
 	if (component === undefined) return;
 	let releaseError: unknown;
 	let releaseFailed = false;
+	const child = component[GET_COMPONENT_RENDER_CACHE_CHILD]?.();
+	if (child !== undefined) {
+		try {
+			releaseComponentRenderCaches(child);
+		} catch (error) {
+			releaseFailed = true;
+			releaseError = error;
+		}
+	}
 	const children = component[GET_COMPONENT_RENDER_CACHE_CHILDREN]?.();
 	if (children !== undefined) {
 		for (let index = 0; index < children.length; index++) {

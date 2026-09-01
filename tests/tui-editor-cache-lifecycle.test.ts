@@ -8,7 +8,7 @@ import { TuiAltScreen } from "../packages/tui/src/tui-alt-screen.ts";
 import { TuiMainScreen } from "../packages/tui/src/tui-main-screen.ts";
 import { Box } from "../packages/tui/src/components/box.ts";
 import { Editor, type EditorTheme } from "../packages/tui/src/components/editor.ts";
-import { RetainedContainer } from "../packages/tui/src/components/retained-item.ts";
+import { RetainedContainer, RetainedItem } from "../packages/tui/src/components/retained-item.ts";
 import { VStack } from "../packages/tui/src/components/v-stack.ts";
 import type { LayoutFrame } from "../packages/tui/src/layout.ts";
 import { FakeTerminal } from "./helpers/runtime-instrumentation.ts";
@@ -292,6 +292,24 @@ test("Main final dispose releases retained transcript sidecar cache while owners
 	assert.equal(item.component, component);
 });
 
+test("Main final dispose traverses a directly mounted RetainedItem into its Editor", async () => {
+	const tui = new TuiMainScreen(new FakeTerminal(120, 40), false);
+	const editor = new Editor(tui, EDITOR_THEME);
+	editor.setText(createEditorText());
+	const item = new RetainedItem(editor, { id: "direct-retained-editor", version: 1, completed: true });
+	tui.addChild(item);
+	tui.start();
+	tui.renderNow();
+	assertCachePrimed(editor);
+	assert.ok(item.cachedLineCount > 0);
+
+	await tui.dispose({ preserveScreen: true });
+	assertCacheReleased(editor);
+	assert.equal(item.cachedLineCount, 0);
+	assert.equal(item.released, false);
+	assert.equal(item.component, editor);
+});
+
 test("Main final dispose traverses Box ownership without semantic invalidation", async () => {
 	const tui = new TuiMainScreen(new FakeTerminal(120, 40), false);
 	const editor = new Editor(tui, EDITOR_THEME);
@@ -427,13 +445,16 @@ test("layout root replacement requested during render completes after scratch ow
 	const terminal = new FakeTerminal(120, 40);
 	const tui = new TuiAltScreen(terminal, false, undefined, { mouse: false });
 	const replacement = new StaticCacheLine("reentrant-new-root");
-	const root = new ReentrantLayoutRoot(tui, replacement);
+	const reentrantChild = new ReentrantLayoutRoot(tui, replacement);
+	const root = new Box(0, 0);
+	root.addChild(reentrantChild);
 	tui.setLayoutRoot(root);
 	tui.start();
 
 	assert.doesNotThrow(() => tui.renderNow(true));
 	assert.equal(altDiagnostics(tui).layoutRoot, replacement);
 	assert.equal(altDiagnostics(tui).currentLayout, undefined);
+	assert.equal(boxCache(root), undefined);
 	assertScratchReleased(tui);
 	tui.renderNow(true);
 	assert.equal(altDiagnostics(tui).layoutRoot, replacement);
@@ -631,11 +652,17 @@ test("lifecycle cleanup remains outside frame and recoverable-stop hot paths", a
 	visit(setLayoutRoot);
 	assert.equal(forbiddenAllocations, 0);
 	assert.match(tuiText, /function releaseComponentRenderCaches\(component: Component \| undefined\)/);
+	assert.match(tuiText, /GET_COMPONENT_RENDER_CACHE_CHILD/);
 	assert.match(tuiText, /GET_COMPONENT_RENDER_CACHE_CHILDREN/);
 	assert.match(boxText, /GET_COMPONENT_RENDER_CACHE_CHILDREN/);
 	assert.match(boxText, /RELEASE_COMPONENT_RENDER_CACHE/);
 	assert.doesNotMatch(setLayoutRoot.getText(altSource), /previousRoot\?\.invalidate/);
-	assert.match(setLayoutRoot.getText(altSource), /releaseComponentRenderCaches\(previousRoot \?\? this\)/);
+	assert.match(setLayoutRoot.getText(altSource), /const previousOwner = previousRoot \?\? this/);
+	assert.match(setLayoutRoot.getText(altSource), /previousOwner === this\.activeLayoutCacheOwner/);
+	assert.match(setLayoutRoot.getText(altSource), /this\.pendingLayoutCacheRelease = previousOwner/);
+	assert.match(altText, /releaseComponentRenderCaches\(pendingLayoutCacheRelease\)/);
+	assert.match(altText, /this\.activeLayoutCacheOwner = this\.layoutRoot \?\? this/);
+	assert.match(altText, /this\.activeLayoutCacheOwner = undefined/);
 	assert.match(setLayoutRoot.getText(altSource), /layoutScratch\.requestClear\(\)/);
 	assert.doesNotMatch(setLayoutRoot.getText(altSource), /layoutScratch\.clear\(\)/);
 	assert.match(altText, /finally \{\s*this\.layoutScratch\.flushRequestedClear\(\)/);
@@ -643,7 +670,7 @@ test("lifecycle cleanup remains outside frame and recoverable-stop hot paths", a
 	assert.match(layoutText, /flushRequestedClear\(\): void \{[\s\S]*this\.clearRequested/);
 	assert.match(
 		retainedText,
-		/class RetainedItem implements Component[\s\S]*?\[RELEASE_COMPONENT_RENDER_CACHE\]\(\): void \{\s*this\.clearCache\(\)/,
+		/class RetainedItem implements Component[\s\S]*?\[GET_COMPONENT_RENDER_CACHE_CHILD\]\(\): Component \| undefined \{\s*return this\.inner[\s\S]*?\[RELEASE_COMPONENT_RENDER_CACHE\]\(\): void \{\s*this\.clearCache\(\)/,
 	);
 	assert.match(
 		retainedText,
