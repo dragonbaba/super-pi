@@ -259,6 +259,23 @@ export interface RetainedViewportIndexStats {
 	preparedItems: number;
 }
 
+/** Raw, non-rebuilding lifecycle diagnostics for derived viewport ownership. */
+export interface RetainedViewportLifecycleReferenceCounts {
+	children: number;
+	retainedItems: number;
+	retainedComponents: number;
+	viewportRecords: number;
+	viewportRecordComponentReferences: number;
+	viewportRecordRetainedItemReferences: number;
+	dirtyViewportRecords: number;
+	preparedViewportRecords: number;
+	viewportBlockHeights: number;
+	preparedLineReferences: number;
+	kittyLineReferences: number;
+	viewportTotalHeight: number;
+	viewportWidthDefined: 0 | 1;
+}
+
 interface RetainedViewportRecord {
 	component: Component;
 	retained: RetainedItem | undefined;
@@ -436,6 +453,34 @@ export class RetainedContainer extends Container implements LineViewportComponen
 			totalHeight: this.totalViewportHeight(),
 			width: this.viewportWidth,
 			preparedItems: this.preparedViewportRecords.size,
+		});
+	}
+
+	/** Returns primitive raw counts without ensuring or rebuilding the viewport index. */
+	getRetainedLifecycleReferenceCounts(): Readonly<RetainedViewportLifecycleReferenceCounts> {
+		let viewportRecordRetainedItemReferences = 0;
+		let preparedLineReferences = 0;
+		let kittyLineReferences = 0;
+		for (let index = 0; index < this.viewportRecords.length; index++) {
+			const record = this.viewportRecords[index]!;
+			if (record.retained !== undefined) viewportRecordRetainedItemReferences++;
+			if (record.preparedLines !== undefined) preparedLineReferences++;
+			if (record.kittySpanLines !== undefined) kittyLineReferences++;
+		}
+		return Object.freeze({
+			children: this.children.length,
+			retainedItems: this.retainedById.size,
+			retainedComponents: this.retainedByComponent.size,
+			viewportRecords: this.viewportRecords.length,
+			viewportRecordComponentReferences: this.viewportRecordByComponent.size,
+			viewportRecordRetainedItemReferences,
+			dirtyViewportRecords: this.dirtyViewportRecords.size,
+			preparedViewportRecords: this.preparedViewportRecords.size,
+			viewportBlockHeights: this.viewportBlockHeights.length,
+			preparedLineReferences,
+			kittyLineReferences,
+			viewportTotalHeight: this.viewportTotalHeight,
+			viewportWidthDefined: this.viewportWidth === undefined ? 0 : 1,
 		});
 	}
 
@@ -625,6 +670,17 @@ export class RetainedContainer extends Container implements LineViewportComponen
 			record.kittySpans = undefined;
 			record.kittySpanLines = undefined;
 		}
+		this.viewportRecords = [];
+		this.viewportRecordByComponent.clear();
+		this.dirtyViewportRecords.clear();
+		this.preparedViewportRecords.clear();
+		this.viewportBlockHeights = [];
+		this.viewportTotalHeight = 0;
+		this.viewportWidth = undefined;
+		this.viewportMeasuredItems = 0;
+		this.viewportStructureDirty = true;
+		this.suppressRecordMutation = false;
+		this.recordUnsafeViewportMutation();
 	}
 
 	override removeChild(component: Component): void {
