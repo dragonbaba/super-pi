@@ -13,6 +13,7 @@ import {
 } from "../regex.ts";
 import { type Component, CURSOR_MARKER, type Focusable, type TUI } from "../tui.ts";
 import { UndoStack } from "../undo-stack.ts";
+import { RELEASE_COMPONENT_RENDER_CACHE } from "../component-cache.ts";
 import {
 	cjkBreakRegex,
 	getGraphemeSegmenter,
@@ -529,6 +530,10 @@ export class Editor implements Component, Focusable {
 	}
 
 	invalidate(): void {
+		this.clearLayoutCache();
+	}
+
+	[RELEASE_COMPONENT_RENDER_CACHE](): void {
 		this.clearLayoutCache();
 	}
 

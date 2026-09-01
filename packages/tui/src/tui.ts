@@ -5,6 +5,7 @@
 import * as os from "node:os";
 import * as path from "node:path";
 import { performance } from "node:perf_hooks";
+import { RELEASE_COMPONENT_RENDER_CACHE } from "./component-cache.ts";
 import { isKeyRelease, matchesKey } from "./keys.ts";
 import type { TuiRenderInstrumentation } from "./render-instrumentation.ts";
 import type { Terminal } from "./terminal.ts";
@@ -74,6 +75,9 @@ export interface Component {
 	 * Called when theme changes or when component needs to re-render from scratch.
 	 */
 	invalidate(): void;
+
+	/** Internal final-unmount cache release. Must not perform semantic rerendering. */
+	[RELEASE_COMPONENT_RENDER_CACHE]?(): void;
 }
 
 export type TuiInputListenerResult = { consume?: boolean; data?: string } | undefined;
@@ -304,6 +308,32 @@ function renderContainerInto(container: Container, width: number, target: string
 			target.push(childLines[lineIndex]!);
 		}
 	}
+}
+
+function releaseComponentRenderCaches(component: Component): void {
+	let releaseError: unknown;
+	let releaseFailed = false;
+	if (component instanceof Container) {
+		for (let index = 0; index < component.children.length; index++) {
+			try {
+				releaseComponentRenderCaches(component.children[index]!);
+			} catch (error) {
+				if (!releaseFailed) {
+					releaseFailed = true;
+					releaseError = error;
+				}
+			}
+		}
+	}
+	try {
+		component[RELEASE_COMPONENT_RENDER_CACHE]?.();
+	} catch (error) {
+		if (!releaseFailed) {
+			releaseFailed = true;
+			releaseError = error;
+		}
+	}
+	if (releaseFailed) throw releaseError;
 }
 
 /**
@@ -571,7 +601,30 @@ export abstract class TuiBase extends Container implements TUI {
 
 	/** Final unmount boundary. Ordinary stop/restart deliberately does not call this hook. */
 	protected releaseMountedComponentsAfterDispose(): void {
-		this.invalidate();
+		let releaseError: unknown;
+		let releaseFailed = false;
+		const roots = this.getMountedRoots();
+		for (let index = 0; index < roots.length; index++) {
+			try {
+				releaseComponentRenderCaches(roots[index]!);
+			} catch (error) {
+				if (!releaseFailed) {
+					releaseFailed = true;
+					releaseError = error;
+				}
+			}
+		}
+		for (let index = 0; index < this.overlayStack.length; index++) {
+			try {
+				releaseComponentRenderCaches(this.overlayStack[index]!.component);
+			} catch (error) {
+				if (!releaseFailed) {
+					releaseFailed = true;
+					releaseError = error;
+				}
+			}
+		}
+		if (releaseFailed) throw releaseError;
 	}
 
 	get fullRedraws(): number {
