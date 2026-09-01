@@ -15,7 +15,7 @@ import { BashExecutionComponent } from "../packages/coding-agent/src/modes/inter
 import { LoginDialogComponent } from "../packages/coding-agent/src/modes/interactive/components/login-dialog.ts";
 import { SessionSelectorComponent } from "../packages/coding-agent/src/modes/interactive/components/session-selector.ts";
 import { ToolExecutionComponent } from "../packages/coding-agent/src/modes/interactive/components/tool-execution.ts";
-import { initTheme } from "../packages/coding-agent/src/modes/interactive/theme/theme.ts";
+import { initTheme, onThemeChange, setTheme } from "../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 
 type CountingTui = TUI & {
 	requestRenderCalls: number;
@@ -426,6 +426,57 @@ test("async owner closeout remains lifecycle-only in source", () => {
 	assert.ok(authWarningSource.indexOf("this.tuiLifecycleGeneration !== lifecycleGeneration") > authWarningSource.indexOf("await this.session.modelRuntime.checkAuth"));
 	assert.ok(authWarningSource.lastIndexOf("this.tuiLifecycleGeneration !== lifecycleGeneration") > authWarningSource.indexOf("await this.session.modelRuntime.getAuth"));
 	assert.ok(authWarningSource.lastIndexOf("this.tuiLifecycleGeneration !== lifecycleGeneration") < authWarningSource.lastIndexOf("this.showWarning"));
+	const bindExtensionsStart = interactiveSource.indexOf("private async bindCurrentSessionExtensions");
+	const bindExtensionsEnd = interactiveSource.indexOf("\n\tprivate applyFullscreenScrollbarSetting", bindExtensionsStart);
+	const bindExtensionsSource = interactiveSource.slice(bindExtensionsStart, bindExtensionsEnd);
+	const extensionNavigateStart = bindExtensionsSource.indexOf("navigateTree: async");
+	const extensionNavigateEnd = bindExtensionsSource.indexOf("\n\t\t\t\tswitchSession:", extensionNavigateStart);
+	const extensionNavigateSource = bindExtensionsSource.slice(extensionNavigateStart, extensionNavigateEnd);
+	assert.ok(
+		extensionNavigateSource.indexOf("const lifecycleGeneration = this.tuiLifecycleGeneration") <
+			extensionNavigateSource.indexOf("await this.session.navigateTree"),
+	);
+	assert.ok(
+		extensionNavigateSource.indexOf("this.tuiLifecycleGeneration !== lifecycleGeneration") >
+			extensionNavigateSource.indexOf("await this.session.navigateTree"),
+	);
+	assert.ok(
+		extensionNavigateSource.indexOf("this.tuiLifecycleGeneration !== lifecycleGeneration") <
+			extensionNavigateSource.indexOf("this.chatContainer.clear()"),
+	);
+	assert.match(bindExtensionsSource, /const extensionUiGeneration = \+\+this\.extensionUiGeneration/);
+	assert.match(bindExtensionsSource, /if \(this\.extensionUiGeneration !== extensionUiGeneration\) return/);
+	const clipboardPasteStart = interactiveSource.indexOf("private async handleClipboardPaste");
+	const clipboardPasteEnd = interactiveSource.indexOf("\n\tprivate readClipboardImageForPaste", clipboardPasteStart);
+	const clipboardPasteSource = interactiveSource.slice(clipboardPasteStart, clipboardPasteEnd);
+	assert.ok(
+		clipboardPasteSource.indexOf("const lifecycleGeneration = this.tuiLifecycleGeneration") <
+			clipboardPasteSource.indexOf("await this.readClipboardImageForPaste()"),
+	);
+	assert.equal(clipboardPasteSource.match(/this\.tuiLifecycleGeneration !== lifecycleGeneration/g)?.length, 2);
+	assert.ok(
+		clipboardPasteSource.indexOf("this.tuiLifecycleGeneration !== lifecycleGeneration") <
+			clipboardPasteSource.indexOf("fs.writeFileSync"),
+	);
+	assert.ok(
+		clipboardPasteSource.lastIndexOf("this.tuiLifecycleGeneration !== lifecycleGeneration") <
+			clipboardPasteSource.lastIndexOf("this.editor.insertTextAtCursor"),
+	);
+	const closeExtensionUiStart = interactiveSource.indexOf("private closeExtensionUiContext");
+	const closeExtensionUiEnd = interactiveSource.indexOf("\n\t/**", closeExtensionUiStart);
+	const closeExtensionUiSource = interactiveSource.slice(closeExtensionUiStart, closeExtensionUiEnd);
+	assert.match(closeExtensionUiSource, /this\.extensionUiGeneration\+\+/);
+	assert.match(closeExtensionUiSource, /setUIContext\?\.\(undefined\)/);
+	assert.ok(stopSource.indexOf("this.closeExtensionUiContext()") < stopSource.indexOf("this.releaseExtensionUiOwners()"));
+	assert.ok(stopSource.indexOf("offThemeChange(this.handleThemeChange)") < stopSource.indexOf("this.stopInteractiveTui"));
+	assert.match(interactiveSource, /private readonly handleThemeChange = \(\): void =>/);
+	assert.match(interactiveSource, /onThemeChange\(this\.handleThemeChange\)/);
+	assert.doesNotMatch(
+		`${extensionNavigateSource}\n${clipboardPasteSource}\n${closeExtensionUiSource}`,
+		/Promise\.all|new AbortController|\.then\(|\.catch\(|\.finally\(/,
+	);
+	const themeSource = readFileSync("packages/coding-agent/src/modes/interactive/theme/theme.ts", "utf8");
+	assert.match(themeSource, /export function offThemeChange\(callback: \(\) => void\): void \{\s*if \(onThemeChangeCallback === callback\) onThemeChangeCallback = undefined;\s*\}/);
 	const reloadStart = interactiveSource.indexOf("private async handleReloadCommand");
 	const reloadEnd = interactiveSource.indexOf("\n\tprivate async handleExportCommand", reloadStart);
 	const reloadSource = interactiveSource.slice(reloadStart, reloadEnd);
@@ -920,6 +971,227 @@ test("anthropic auth warning lookup is inert after the interactive lifecycle clo
 		assert.equal(warningCalls, 0);
 		assert.equal(mode.anthropicSubscriptionWarningShown, false);
 		assert.equal(getAuthCalls, pendingStage === "check" ? 0 : 1);
+	}
+});
+
+test("extension tree navigation is inert after the interactive lifecycle closes", async () => {
+	let bindings: any;
+	let settleNavigation: ((value: { cancelled: boolean; editorText?: string }) => void) | undefined;
+	let transcriptCalls = 0;
+	let editorCalls = 0;
+	let statusCalls = 0;
+	let flushCalls = 0;
+	const session = {
+		bindExtensions: async (value: unknown): Promise<void> => { bindings = value; },
+		navigateTree: (): Promise<{ cancelled: boolean; editorText?: string }> => new Promise((resolve) => {
+			settleNavigation = resolve;
+		}),
+		resourceLoader: { getThemes: () => ({ themes: [] }) },
+		extensionRunner: {
+			getCommandDiagnostics: () => [],
+			getShortcutDiagnostics: () => [],
+		},
+	};
+	const mode = Object.create(InteractiveMode.prototype) as any;
+	mode.tuiLifecycleGeneration = 0;
+	mode.runtimeHost = { session };
+	mode.chatContainer = { clear(): void { transcriptCalls++; } };
+	mode.renderInitialMessages = (): void => { transcriptCalls++; };
+	mode.editor = {
+		getText: () => "",
+		setText(): void { editorCalls++; },
+	};
+	mode.showStatus = (): void => { statusCalls++; };
+	mode.flushCompactionQueue = async (): Promise<void> => { flushCalls++; };
+	mode.setupAutocompleteProvider = (): void => {};
+	mode.setupExtensionShortcuts = (): void => {};
+	mode.showLoadedResources = (): void => {};
+	mode.showStartupNoticesIfNeeded = (): void => {};
+
+	await mode.bindCurrentSessionExtensions();
+	const operation = bindings.commandContextActions.navigateTree("target") as Promise<{ cancelled: boolean }>;
+	await Promise.resolve();
+	mode.tuiLifecycleGeneration++;
+	settleNavigation?.({ cancelled: false, editorText: "late" });
+	const result = await operation;
+
+	assert.deepEqual(result, { cancelled: true });
+	assert.equal(transcriptCalls, 0);
+	assert.equal(editorCalls, 0);
+	assert.equal(statusCalls, 0);
+	assert.equal(flushCalls, 0);
+});
+
+test("clipboard paste completion is inert after the interactive lifecycle closes", async () => {
+	for (const kind of ["text", "image"] as const) {
+		let settleImage: ((value: any) => void) | undefined;
+		let settleText: ((value: string | null) => void) | undefined;
+		let insertCalls = 0;
+		let renderCalls = 0;
+		let artifactCalls = 0;
+		let artifactPath: string | undefined;
+		const mode = Object.create(InteractiveMode.prototype) as any;
+		mode.tuiLifecycleGeneration = 0;
+		mode.runtimeHost = { session: { sessionManager: { getSessionId: () => "fixture-session" } } };
+		mode.editor = { insertTextAtCursor(): void { insertCalls++; } };
+		mode.ui = { requestRender(): void { renderCalls++; } };
+		mode.readClipboardImageForPaste = (): Promise<any> => new Promise((resolve) => { settleImage = resolve; });
+		mode.readClipboardTextForPaste = (): Promise<string | null> => new Promise((resolve) => { settleText = resolve; });
+		const artifactSymbol = Symbol.for("super-pi.clipboard-artifact-lifecycle.v1");
+		const previousArtifactLifecycle = (globalThis as any)[artifactSymbol];
+		(globalThis as any)[artifactSymbol] = {
+			editorChanged(): void {},
+			created(input: { path: string }): boolean {
+				artifactCalls++;
+				artifactPath = input.path;
+				return true;
+			},
+			submitted(): void {},
+		};
+
+		try {
+			const operation = mode.handleClipboardPaste() as Promise<void>;
+			await Promise.resolve();
+			if (kind === "text") {
+				settleImage?.(null);
+				await Promise.resolve();
+				mode.tuiLifecycleGeneration++;
+				settleText?.("late clipboard text");
+			} else {
+				mode.tuiLifecycleGeneration++;
+				settleImage?.({ bytes: Uint8Array.from([137, 80, 78, 71]), mimeType: "image/png" });
+			}
+			await operation;
+		} finally {
+			if (previousArtifactLifecycle === undefined) delete (globalThis as any)[artifactSymbol];
+			else (globalThis as any)[artifactSymbol] = previousArtifactLifecycle;
+			if (artifactPath) await rm(artifactPath, { force: true });
+		}
+
+		assert.equal(insertCalls, 0);
+		assert.equal(renderCalls, 0);
+		assert.equal(artifactCalls, 0);
+	}
+});
+
+test("final stop disables extension UI and error callbacks before shutdown hooks", async () => {
+	let bindings: any;
+	let runnerUiContext: unknown = "not-cleared";
+	let widgetCalls = 0;
+	let customCalls = 0;
+	let errorCalls = 0;
+	const extensionRunner = {
+		getCommandDiagnostics: () => [],
+		getShortcutDiagnostics: () => [],
+		setUIContext(context: unknown): void { runnerUiContext = context; },
+	};
+	const session = {
+		bindExtensions: async (value: unknown): Promise<void> => { bindings = value; },
+		resourceLoader: { getThemes: () => ({ themes: [] }) },
+		extensionRunner,
+		settingsManager: {
+			getFullscreenExitOutput: () => "transcript",
+			getShowTerminalProgress: () => false,
+		},
+	};
+	const mode = Object.create(InteractiveMode.prototype) as any;
+	mode.tuiLifecycleGeneration = 0;
+	mode.extensionUiGeneration = 0;
+	mode.runtimeHost = { session, cancelPendingReplacements(): void {} };
+	mode.ui = createCountingTui();
+	mode.setupAutocompleteProvider = (): void => {};
+	mode.setupExtensionShortcuts = (): void => {};
+	mode.showLoadedResources = (): void => {};
+	mode.showStartupNoticesIfNeeded = (): void => {};
+	mode.setExtensionWidget = (): void => { widgetCalls++; };
+	mode.showExtensionCustom = async (): Promise<undefined> => { customCalls++; return undefined; };
+	mode.showExtensionError = (): void => { errorCalls++; };
+	mode.cancelActiveSuspend = (): void => {};
+	mode.cancelActiveLoginDialog = (): void => {};
+	mode.cancelActiveProviderAuthentication = (): void => {};
+	mode.cancelActiveStartupModelRefresh = (): void => {};
+	mode.cancelActiveStartupDiagnostics = (): void => {};
+	mode.cancelActiveModelLookup = (): void => {};
+	mode.cancelActiveExtensionCustom = (): void => {};
+	mode.cancelExtensionDialogs = (): void => {};
+	mode.disposeActiveSelector = (): void => {};
+	mode.releaseExtensionUiOwners = (): void => {};
+	mode.clearStatusIndicator = (): void => {};
+	mode.themeController = { disableAutoSync(): void {} };
+	mode.clearExtensionTerminalInputListeners = (): void => {};
+	mode.footer = { dispose(): void {} };
+	mode.footerDataProvider = { dispose(): void {} };
+	mode.isInitialized = false;
+	mode.unregisterSignalHandlers = (): void => {};
+
+	await mode.bindCurrentSessionExtensions();
+	const staleUi = bindings.uiContext;
+	const staleOnError = bindings.onError;
+	await mode.stop();
+	staleUi.setWidget("late", ["late"]);
+	await staleUi.custom(() => ({ render: () => [] }));
+	staleOnError({ extensionPath: "late.ts", error: "late" });
+
+	assert.equal(widgetCalls, 0);
+	assert.equal(customCalls, 0);
+	assert.equal(errorCalls, 0);
+	assert.equal(runnerUiContext, undefined);
+});
+
+test("final stop unregisters only its own global theme callback", async () => {
+	let oldThemeCalls = 0;
+	let newerThemeCalls = 0;
+	const createMode = (): any => {
+		const mode = Object.create(InteractiveMode.prototype) as any;
+		mode.tuiLifecycleGeneration = 0;
+		mode.runtimeHost = {
+			session: {
+				extensionRunner: { setUIContext(): void {} },
+				settingsManager: {
+					getFullscreenExitOutput: () => "transcript",
+					getShowTerminalProgress: () => false,
+				},
+			},
+			cancelPendingReplacements(): void {},
+		};
+		mode.ui = createCountingTui();
+		mode.cancelActiveSuspend = (): void => {};
+		mode.cancelActiveLoginDialog = (): void => {};
+		mode.cancelActiveProviderAuthentication = (): void => {};
+		mode.cancelActiveStartupModelRefresh = (): void => {};
+		mode.cancelActiveStartupDiagnostics = (): void => {};
+		mode.cancelActiveModelLookup = (): void => {};
+		mode.cancelActiveExtensionCustom = (): void => {};
+		mode.cancelExtensionDialogs = (): void => {};
+		mode.disposeActiveSelector = (): void => {};
+		mode.releaseExtensionUiOwners = (): void => {};
+		mode.clearStatusIndicator = (): void => {};
+		mode.themeController = { disableAutoSync(): void {} };
+		mode.clearExtensionTerminalInputListeners = (): void => {};
+		mode.footer = { dispose(): void {} };
+		mode.footerDataProvider = { dispose(): void {} };
+		mode.isInitialized = false;
+		mode.unregisterSignalHandlers = (): void => {};
+		return mode;
+	};
+
+	try {
+		const oldMode = createMode();
+		oldMode.handleThemeChange = (): void => { oldThemeCalls++; };
+		onThemeChange(oldMode.handleThemeChange);
+		await oldMode.stop();
+		setTheme("dark");
+		assert.equal(oldThemeCalls, 0);
+
+		const supersededMode = createMode();
+		supersededMode.handleThemeChange = (): void => { oldThemeCalls++; };
+		onThemeChange(supersededMode.handleThemeChange);
+		onThemeChange((): void => { newerThemeCalls++; });
+		await supersededMode.stop();
+		setTheme("dark");
+		assert.equal(newerThemeCalls, 1);
+	} finally {
+		onThemeChange((): void => {});
 	}
 });
 
