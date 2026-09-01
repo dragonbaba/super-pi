@@ -39,6 +39,7 @@ import {
 	type Component,
 	CURSOR_MARKER,
 	compositeTuiLine,
+	releaseDetachedComponentRenderCaches,
 	releaseComponentRenderCaches,
 	TuiBase,
 	type TuiStopOptions,
@@ -169,6 +170,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	private layoutRenderDepth = 0;
 	private layoutRenderOwners: Array<Component | undefined> = [undefined];
 	private pendingLayoutCacheReleases: Array<Component | undefined> = [undefined];
+	private pendingImplicitScrollReleases: boolean[] = [false];
 	private currentLayout: LayoutFrame | undefined;
 	private readonly layoutScratch = new LayoutFrameScratch();
 	private readonly implicitDocument: LineViewportComponent;
@@ -261,19 +263,20 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		const previousOwner = previousRoot ?? this;
 		this.releaseLayoutInteractionOwners();
 		try {
-			if (previousRoot === undefined) releaseComponentRenderCaches(this.implicitScrollView);
 			let releaseDeferred = false;
 			for (let depth = 0; depth < this.layoutRenderDepth; depth++) {
 				if (this.layoutRenderOwners[depth] !== previousOwner) continue;
 				this.pendingLayoutCacheReleases[depth] = previousOwner;
+				this.pendingImplicitScrollReleases[depth] = previousRoot === undefined;
 				releaseDeferred = true;
 				break;
 			}
-			if (!releaseDeferred) releaseComponentRenderCaches(previousOwner);
+			if (!releaseDeferred) this.releaseDetachedLayoutOwner(previousOwner, previousRoot === undefined, component);
 			const nextOwner = component ?? this;
 			for (let depth = this.layoutRenderDepth - 1; depth >= 0; depth--) {
 				if (this.pendingLayoutCacheReleases[depth] === nextOwner) {
 					this.pendingLayoutCacheReleases[depth] = undefined;
+					this.pendingImplicitScrollReleases[depth] = false;
 				}
 			}
 		} finally {
@@ -282,6 +285,41 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			this.layoutRootGeneration++;
 			this.currentLayout = undefined;
 			this.requestRender();
+		}
+	}
+
+	private appendLayoutOwnershipRoots(target: Component[], component: Component | undefined): void {
+		if (component === undefined) {
+			target.push(this);
+			target.push(this.implicitScrollView);
+		} else {
+			target.push(component);
+		}
+		this.appendOverlayComponentOwnershipRoots(target);
+		this.appendActiveComponentOwnershipRoots(target);
+	}
+
+	private releaseDetachedLayoutOwner(
+		owner: Component,
+		releaseImplicitScrollView: boolean,
+		component: Component | undefined,
+	): void {
+		const liveRoots: Component[] = [];
+		try {
+			this.appendLayoutOwnershipRoots(liveRoots, component);
+			if (releaseImplicitScrollView) {
+				releaseDetachedComponentRenderCaches(this.implicitScrollView, liveRoots);
+			}
+			releaseDetachedComponentRenderCaches(owner, liveRoots);
+		} finally {
+			liveRoots.length = 0;
+		}
+	}
+
+	protected override appendActiveComponentOwnershipRoots(target: Component[]): void {
+		for (let depth = 0; depth < this.layoutRenderDepth; depth++) {
+			const owner = this.layoutRenderOwners[depth];
+			if (owner !== undefined) target.push(owner);
 		}
 	}
 
@@ -469,6 +507,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			this.layoutRenderDepth = 0;
 			this.layoutRenderOwners = [];
 			this.pendingLayoutCacheReleases = [];
+			this.pendingImplicitScrollReleases = [];
 			this.layoutScratch.clear();
 		}
 		if (releaseFailed) throw releaseError;
@@ -1504,8 +1543,14 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			try {
 				const pendingLayoutCacheRelease = this.pendingLayoutCacheReleases[layoutRenderDepth];
 				this.pendingLayoutCacheReleases[layoutRenderDepth] = undefined;
+				const releaseImplicitScrollView = this.pendingImplicitScrollReleases[layoutRenderDepth] === true;
+				this.pendingImplicitScrollReleases[layoutRenderDepth] = false;
 				if (pendingLayoutCacheRelease !== undefined) {
-					releaseComponentRenderCaches(pendingLayoutCacheRelease);
+					this.releaseDetachedLayoutOwner(
+						pendingLayoutCacheRelease,
+						releaseImplicitScrollView,
+						this.layoutRoot,
+					);
 				}
 			} finally {
 				if (layoutRenderDepth === 0) this.layoutScratch.flushRequestedClear();

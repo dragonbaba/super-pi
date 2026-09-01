@@ -361,6 +361,114 @@ export function releaseComponentRenderCaches(component: Component | undefined): 
 	if (releaseFailed) throw releaseError;
 }
 
+const COMPONENT_RELEASE_LIVE = 1;
+const COMPONENT_RELEASE_VISITED = 2;
+
+export interface DetachedComponentReleaseMetrics {
+	liveNodesScanned: number;
+	detachedNodesScanned: number;
+	releasedNodes: number;
+	identityTableHighWaterMark: number;
+	retainedIdentityEntries: number;
+}
+
+function recordComponentReleaseIdentityHighWaterMark(
+	identities: Map<Component, number>,
+	metrics: DetachedComponentReleaseMetrics | undefined,
+): void {
+	if (metrics && identities.size > metrics.identityTableHighWaterMark) {
+		metrics.identityTableHighWaterMark = identities.size;
+	}
+}
+
+function collectLiveComponentIdentity(
+	component: Component | undefined,
+	identities: Map<Component, number>,
+	metrics: DetachedComponentReleaseMetrics | undefined,
+): void {
+	if (component === undefined) return;
+	const state = identities.get(component) ?? 0;
+	if ((state & COMPONENT_RELEASE_LIVE) !== 0) return;
+	identities.set(component, state | COMPONENT_RELEASE_LIVE);
+	if (metrics) metrics.liveNodesScanned++;
+	recordComponentReleaseIdentityHighWaterMark(identities, metrics);
+	collectLiveComponentIdentity(component[GET_COMPONENT_RENDER_CACHE_CHILD]?.(), identities, metrics);
+	const children = component[GET_COMPONENT_RENDER_CACHE_CHILDREN]?.();
+	if (children === undefined) return;
+	for (let index = 0; index < children.length; index++) {
+		collectLiveComponentIdentity(children[index], identities, metrics);
+	}
+}
+
+function releaseDetachedComponentIdentity(
+	component: Component | undefined,
+	identities: Map<Component, number>,
+	metrics: DetachedComponentReleaseMetrics | undefined,
+): void {
+	if (component === undefined) return;
+	const state = identities.get(component) ?? 0;
+	if ((state & (COMPONENT_RELEASE_LIVE | COMPONENT_RELEASE_VISITED)) !== 0) return;
+	identities.set(component, state | COMPONENT_RELEASE_VISITED);
+	if (metrics) metrics.detachedNodesScanned++;
+	recordComponentReleaseIdentityHighWaterMark(identities, metrics);
+	let releaseError: unknown;
+	let releaseFailed = false;
+	const child = component[GET_COMPONENT_RENDER_CACHE_CHILD]?.();
+	if (child !== undefined) {
+		try {
+			releaseDetachedComponentIdentity(child, identities, metrics);
+		} catch (error) {
+			releaseFailed = true;
+			releaseError = error;
+		}
+	}
+	const children = component[GET_COMPONENT_RENDER_CACHE_CHILDREN]?.();
+	if (children !== undefined) {
+		for (let index = 0; index < children.length; index++) {
+			try {
+				releaseDetachedComponentIdentity(children[index], identities, metrics);
+			} catch (error) {
+				if (!releaseFailed) {
+					releaseFailed = true;
+					releaseError = error;
+				}
+			}
+		}
+	}
+	try {
+		component[RELEASE_COMPONENT_RENDER_CACHE]?.();
+		if (metrics) metrics.releasedNodes++;
+	} catch (error) {
+		if (!releaseFailed) {
+			releaseFailed = true;
+			releaseError = error;
+		}
+	}
+	if (releaseFailed) throw releaseError;
+}
+
+/**
+ * Release only detached component sidecars while preserving identities still
+ * reachable from a live ownership graph. This lifecycle-only traversal owns a
+ * call-local identity table and releases it before returning.
+ */
+export function releaseDetachedComponentRenderCaches(
+	component: Component | undefined,
+	liveRoots: readonly Component[],
+	metrics?: DetachedComponentReleaseMetrics,
+): void {
+	const identities = new Map<Component, number>();
+	try {
+		for (let index = 0; index < liveRoots.length; index++) {
+			collectLiveComponentIdentity(liveRoots[index], identities, metrics);
+		}
+		releaseDetachedComponentIdentity(component, identities, metrics);
+	} finally {
+		identities.clear();
+		if (metrics) metrics.retainedIdentityEntries = 0;
+	}
+}
+
 /**
  * TUI - Main class for managing terminal UI with differential rendering
  */
@@ -927,6 +1035,14 @@ export abstract class TuiBase extends Container implements TUI {
 		return this.children;
 	}
 
+	protected appendActiveComponentOwnershipRoots(_target: Component[]): void {}
+
+	protected appendOverlayComponentOwnershipRoots(target: Component[]): void {
+		for (let index = 0; index < this.overlayStack.length; index++) {
+			target.push(this.overlayStack[index]!.component);
+		}
+	}
+
 	private isComponentMounted(component: Component): boolean {
 		const roots = this.getMountedRoots();
 		for (let index = 0; index < roots.length; index++) {
@@ -936,11 +1052,18 @@ export abstract class TuiBase extends Container implements TUI {
 	}
 
 	private releaseDetachedOverlayComponent(component: Component): void {
-		if (this.isComponentMounted(component)) return;
-		for (let index = 0; index < this.overlayStack.length; index++) {
-			if (this.overlayStack[index]!.component === component) return;
+		const liveRoots: Component[] = [];
+		try {
+			const mountedRoots = this.getMountedRoots();
+			for (let index = 0; index < mountedRoots.length; index++) {
+				liveRoots.push(mountedRoots[index]!);
+			}
+			this.appendOverlayComponentOwnershipRoots(liveRoots);
+			this.appendActiveComponentOwnershipRoots(liveRoots);
+			releaseDetachedComponentRenderCaches(component, liveRoots);
+		} finally {
+			liveRoots.length = 0;
 		}
-		releaseComponentRenderCaches(component);
 	}
 
 	private containsComponent(root: Component, target: Component): boolean {
