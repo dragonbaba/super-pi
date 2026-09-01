@@ -362,6 +362,19 @@ test("async owner closeout remains lifecycle-only in source", () => {
 		shareSource.indexOf("lifecycleGeneration !== this.tuiLifecycleGeneration") >
 			shareSource.indexOf("await this.session.exportToHtml(tmpFile)"),
 	);
+	const copyStart = interactiveSource.indexOf("private async handleCopyCommand");
+	const copyEnd = interactiveSource.indexOf("\n\tprivate handleNameCommand", copyStart);
+	const copySource = interactiveSource.slice(copyStart, copyEnd);
+	assert.ok(copySource.indexOf("const lifecycleGeneration = this.tuiLifecycleGeneration") < copySource.indexOf("await this.copyTextToClipboard(text)"));
+	assert.equal(copySource.match(/this\.tuiLifecycleGeneration !== lifecycleGeneration/g)?.length, 2);
+	assert.ok(copySource.indexOf("this.tuiLifecycleGeneration !== lifecycleGeneration") < copySource.indexOf("this.renderer.flash"));
+	assert.ok(copySource.lastIndexOf("this.tuiLifecycleGeneration !== lifecycleGeneration") < copySource.lastIndexOf("this.showError"));
+	const startupRefreshStart = interactiveSource.indexOf("private startStartupModelRefresh");
+	const startupRefreshEnd = interactiveSource.indexOf("\n\tprivate cancelActiveModelLookup", startupRefreshStart);
+	const startupRefreshSource = interactiveSource.slice(startupRefreshStart, startupRefreshEnd);
+	assert.match(startupRefreshSource, /InteractiveMode\.handleStartupModelRefreshTimeout/);
+	assert.doesNotMatch(startupRefreshSource, /setTimeout\(\(\)|\.then\(|\.catch\(|\.finally\(/);
+	assert.ok(stopSource.indexOf("this.cancelActiveStartupModelRefresh()") < stopSource.indexOf("this.stopInteractiveTui"));
 	const bashCommandStart = interactiveSource.indexOf("private async handleBashCommand");
 	const bashCommandEnd = interactiveSource.indexOf("\n\tprivate async handleCompactCommand", bashCommandStart);
 	const bashCommandSource = interactiveSource.slice(bashCommandStart, bashCommandEnd);
@@ -725,6 +738,103 @@ test("a cached model command cancels the previous uncached lookup before selecti
 		await first;
 	}
 	assert.equal(warningCalls, 0);
+});
+
+test("clipboard completion is inert after the interactive lifecycle closes", async () => {
+	for (const rejects of [false, true]) {
+		let settleCopy: (() => void) | undefined;
+		let rejectCopy: ((error: Error) => void) | undefined;
+		let statusCalls = 0;
+		let errorCalls = 0;
+		const mode = Object.create(InteractiveMode.prototype) as any;
+		mode.tuiLifecycleGeneration = 0;
+		mode.runtimeHost = { session: { getLastAssistantText: () => "copy fixture" } };
+		mode.copyTextToClipboard = (): Promise<void> => new Promise((resolve, reject) => {
+			settleCopy = resolve;
+			rejectCopy = reject;
+		});
+		mode.showStatus = (): void => { statusCalls++; };
+		mode.showError = (): void => { errorCalls++; };
+		assert.equal(typeof InteractiveMode.prototype["copyTextToClipboard" as keyof InteractiveMode], "function");
+
+		const operation = mode.handleCopyCommand() as Promise<void>;
+		await Promise.resolve();
+		mode.tuiLifecycleGeneration++;
+		if (rejects) rejectCopy?.(new Error("late clipboard failure"));
+		else settleCopy?.();
+		await operation;
+
+		assert.equal(statusCalls, 0);
+		assert.equal(errorCalls, 0);
+	}
+});
+
+test("interactive stop cancels the startup model catalog refresh and owned deadline", async () => {
+	let refreshSignal: AbortSignal | undefined;
+	let settleRefresh: ((value: { aborted: boolean; errors: Map<string, Error> }) => void) | undefined;
+	let providerCountUpdates = 0;
+	const observed: Promise<unknown>[] = [];
+	const mode = Object.create(InteractiveMode.prototype) as any;
+	mode.init = async (): Promise<void> => {};
+	mode.runtimeHost = { session: {
+		modelRuntime: {
+			getError: () => undefined,
+			refresh(options: { signal: AbortSignal }): Promise<{ aborted: boolean; errors: Map<string, Error> }> {
+				refreshSignal = options.signal;
+				return new Promise((resolve) => { settleRefresh = resolve; });
+			},
+		},
+		settingsManager: {
+			getFullscreenExitOutput: () => "transcript",
+			getShowTerminalProgress: () => false,
+		},
+	} };
+	mode.options = {};
+	mode.isInitialized = false;
+	mode.tuiLifecycleGeneration = 0;
+	mode.startupModelRefreshGeneration = 0;
+	mode.observeLifecyclePromise = (promise: Promise<unknown>): void => { observed.push(promise); };
+	mode.checkForPackageUpdates = async (): Promise<string[]> => [];
+	mode.checkTmuxKeyboardSetup = async (): Promise<undefined> => undefined;
+	mode.maybeWarnAboutAnthropicSubscriptionAuth = async (): Promise<void> => {};
+	mode.updateAvailableProviderCount = (): void => { providerCountUpdates++; };
+	mode.getUserInput = (): Promise<string> => new Promise(() => {});
+	mode.showWarning = (): void => {};
+	mode.showError = (): void => {};
+	mode.ui = createCountingTui();
+	mode.themeController = { disableAutoSync(): void {} };
+	mode.footer = { dispose(): void {} };
+	mode.footerDataProvider = { dispose(): void {} };
+	mode.clearStatusIndicator = (): void => {};
+	mode.clearExtensionTerminalInputListeners = (): void => {};
+	mode.unregisterSignalHandlers = (): void => {};
+	mode.stopInteractiveTui = async (): Promise<void> => {};
+	mode.releaseExtensionUiOwners = (): void => {};
+	mode.cancelExtensionDialogs = (): void => {};
+	mode.disposeActiveSelector = (): void => {};
+	mode.cancelActiveLoginDialog = (): void => {};
+	mode.cancelActiveProviderAuthentication = (): void => {};
+	mode.cancelActiveModelLookup = (): void => {};
+	mode.cancelActiveExtensionCustom = (): void => {};
+
+	const originalOffline = process.env.SP_OFFLINE;
+	delete process.env.SP_OFFLINE;
+	try {
+		void mode.run();
+		await waitFor(() => refreshSignal !== undefined);
+		assert.equal(refreshSignal?.aborted, false);
+		await mode.stop();
+		assert.equal(refreshSignal?.aborted, true);
+		assert.equal(mode.activeStartupModelRefreshController, undefined);
+		assert.equal(mode.activeStartupModelRefreshTimeout, undefined);
+		settleRefresh?.({ aborted: false, errors: new Map() });
+		await Promise.all(observed);
+		assert.equal(providerCountUpdates, 0);
+	} finally {
+		if (originalOffline === undefined) delete process.env.SP_OFFLINE;
+		else process.env.SP_OFFLINE = originalOffline;
+		settleRefresh?.({ aborted: true, errors: new Map() });
+	}
 });
 
 test("interactive stop settles a pending extension custom factory and disposes its late result", async () => {

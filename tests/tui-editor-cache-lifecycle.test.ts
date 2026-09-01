@@ -237,6 +237,26 @@ class CountingCacheContainer extends Container {
 	}
 }
 
+class ClearingCacheOwner implements Component {
+	releaseCalls = 0;
+	private readonly clearOwner: () => void;
+
+	constructor(clearOwner: () => void) {
+		this.clearOwner = clearOwner;
+	}
+
+	render(): string[] {
+		return [];
+	}
+
+	invalidate(): void {}
+
+	[RELEASE_COMPONENT_RENDER_CACHE](): void {
+		this.releaseCalls++;
+		this.clearOwner();
+	}
+}
+
 class SharedNestedTransitionDriver implements Component {
 	private phase = 0;
 	private readonly tui: TuiAltScreen;
@@ -666,6 +686,28 @@ test("Main final disposal continues cache release after an earlier sibling throw
 	assert.equal(tui.children[1], laterTree.root);
 });
 
+test("final cache release snapshots root and nested sibling ownership before invoking hooks", async () => {
+	const tui = new TuiMainScreen(new FakeTerminal(120, 40), false);
+	const laterRoot = new CountingCacheContainer();
+	const clearingRoot = new ClearingCacheOwner(() => { tui.children.length = 0; });
+	const nested = new Container();
+	const laterNested = new CountingCacheContainer();
+	const clearingNested = new ClearingCacheOwner(() => { nested.children.length = 0; });
+	nested.addChild(clearingNested);
+	nested.addChild(laterNested);
+	tui.addChild(clearingRoot);
+	tui.addChild(laterRoot);
+	tui.addChild(nested);
+	tui.start();
+
+	await tui.dispose({ preserveScreen: true });
+
+	assert.equal(clearingRoot.releaseCalls, 1);
+	assert.equal(laterRoot.releaseCalls, 1);
+	assert.equal(clearingNested.releaseCalls, 1);
+	assert.equal(laterNested.releaseCalls, 1);
+});
+
 test("layout-root replacement releases nested Editor cache and Alt scratch immediately", async () => {
 	const terminal = new FakeTerminal(120, 40);
 	const tui = new TuiAltScreen(terminal, false, undefined, { mouse: false });
@@ -894,6 +936,19 @@ test("selective release preserves the first hook error while releasing later det
 	assert.throws(() => releaseDetachedComponentRenderCaches(detached, [live]), /fixture cache release failure/);
 	assert.equal(later.releaseCalls, 1);
 	assert.equal(shared.releaseCalls, 0);
+});
+
+test("selective release snapshots detached siblings before a release hook mutates their parent", () => {
+	const detached = new Container();
+	const later = new CountingCacheContainer();
+	const clearing = new ClearingCacheOwner(() => { detached.children.length = 0; });
+	detached.addChild(clearing);
+	detached.addChild(later);
+
+	releaseDetachedComponentRenderCaches(detached, []);
+
+	assert.equal(clearing.releaseCalls, 1);
+	assert.equal(later.releaseCalls, 1);
 });
 
 test("each nested layout frame releases its own detached owner after that frame exits", async () => {

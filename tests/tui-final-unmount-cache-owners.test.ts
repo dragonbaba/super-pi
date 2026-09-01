@@ -1645,7 +1645,11 @@ test("built-in cache owner contract stays lifecycle-only and complete", async ()
 	assert.match(tuiText, /identities\.clear\(\)/);
 	const traversal = tuiText.match(/export function releaseComponentRenderCaches[\s\S]*?\n}\n/)?.[0] ?? "";
 	assert.notEqual(traversal, "");
-	assert.doesNotMatch(traversal, /new (?:Map|Set|Promise|AbortController)|=>|function\s*\(/);
+	assert.match(traversal, /collectComponentReleaseOrder\(component, identities, releaseOrder\)/);
+	assert.match(traversal, /releaseCollectedComponentRenderCaches\(releaseOrder, undefined\)/);
+	assert.doesNotMatch(traversal, /new (?:Map|Promise|AbortController)|=>|function\s*\(/);
+	assert.match(tuiText, /function releaseMountedComponentRenderCaches[\s\S]*collectComponentReleaseOrder[\s\S]*releaseCollectedComponentRenderCaches/);
+	assert.match(tuiText, /collectDetachedComponentReleaseOrder[\s\S]*releaseCollectedComponentRenderCaches\(releaseOrder, metrics\)/);
 	const stopMethod = tuiText.match(/private async finishTerminalStop[\s\S]*?\n\t}\n/)?.[0] ?? "";
 	assert.doesNotMatch(stopMethod, /releaseMountedComponentsAfterDispose|releaseComponentRenderCaches/);
 	const disposeMethod = tuiText.match(/private async finishDispose[\s\S]*?\n\t}\n/)?.[0] ?? "";
