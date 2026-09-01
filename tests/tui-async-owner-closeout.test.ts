@@ -295,6 +295,13 @@ test("async owner closeout remains lifecycle-only in source", () => {
 		interactiveSource,
 		/setTimeout\(InteractiveMode\.handleModelLookupTimeout, 15_000, this, controller, generation\)/,
 	);
+	assert.match(interactiveSource, /private activeModelLookupTimeout: ReturnType<typeof setTimeout>/);
+	const cancelModelLookup = interactiveSource.match(/private cancelActiveModelLookup\(\): void \{[\s\S]*?\n\t\}/)?.[0] ?? "";
+	assert.match(cancelModelLookup, /this\.activeModelLookupTimeout = undefined/);
+	assert.match(cancelModelLookup, /clearTimeout\(timeout\)/);
+	const shellSource = readFileSync("packages/coding-agent/src/core/tools/bash.ts", "utf8");
+	assert.match(shellSource, /RELEASE_TOOL_RENDER_DERIVED_STATE\] = releaseBashRenderDerivedState/);
+	assert.match(shellSource, /TOOL_RENDER_LIFECYCLE_GENERATION\] !== intervalGeneration/);
 	assert.match(interactiveSource, /private static handleProviderAuthenticationTimeout/);
 	const providerRefreshStart = interactiveSource.indexOf("private async refreshProviderAuthenticationCatalog");
 	const providerCompletionStart = interactiveSource.indexOf("private async completeProviderAuthentication");
@@ -571,6 +578,60 @@ test("interactive stop aborts model lookup and rejects its late catalog result",
 	assert.equal(selectorCalls, 0);
 	assert.equal(warningCalls, 0);
 	assert.equal(mode.activeModelLookupController, undefined);
+});
+
+test("model lookup cancellation clears its owned deadline before a deferred refresh settles", async () => {
+	let settleRefresh: ((value: { aborted: boolean; errors: Map<string, Error> }) => void) | undefined;
+	const modelRuntime = {
+		getAvailableSnapshot: () => [],
+		refresh(): Promise<{ aborted: boolean; errors: Map<string, Error> }> {
+			return new Promise((resolve) => {
+				settleRefresh = resolve;
+			});
+		},
+	};
+	const mode = Object.create(InteractiveMode.prototype) as any;
+	mode.runtimeHost = { session: { modelRuntime, scopedModels: [] } };
+	mode.tuiLifecycleGeneration = 0;
+	mode.modelLookupGeneration = 0;
+	mode.modelLookupTimedOutGeneration = 0;
+	mode.showStatus = (): void => {};
+	mode.showWarning = (): void => {};
+
+	const originalSetTimeout = globalThis.setTimeout;
+	const originalClearTimeout = globalThis.clearTimeout;
+	const deadline = { fixture: "model-lookup-deadline" } as unknown as ReturnType<typeof setTimeout>;
+	let deadlineCreated = 0;
+	let deadlineCleared = 0;
+	globalThis.setTimeout = ((_callback: TimerHandler, delay?: number) => {
+		if (delay === 15_000) {
+			deadlineCreated++;
+			return deadline;
+		}
+		return originalSetTimeout(_callback, delay);
+	}) as typeof setTimeout;
+	globalThis.clearTimeout = ((handle?: ReturnType<typeof setTimeout>) => {
+		if (handle === deadline) {
+			deadlineCleared++;
+			return;
+		}
+		originalClearTimeout(handle);
+	}) as typeof clearTimeout;
+
+	let lookup: Promise<unknown> | undefined;
+	try {
+		lookup = mode.findExactModelMatch("target");
+		await Promise.resolve();
+		assert.equal(deadlineCreated, 1);
+		mode.cancelActiveModelLookup();
+		assert.equal(deadlineCleared, 1);
+		assert.equal(mode.activeModelLookupTimeout, undefined);
+	} finally {
+		settleRefresh?.({ aborted: true, errors: new Map() });
+		await lookup;
+		globalThis.setTimeout = originalSetTimeout;
+		globalThis.clearTimeout = originalClearTimeout;
+	}
 });
 
 test("a superseded model lookup cannot open its stale selector", async () => {
@@ -1202,6 +1263,60 @@ test("final shutdown rejects a late active bash error continuation", async () =>
 	assert.equal((mountedComponent as any).contentContainer.children.length, 0);
 	assert.equal(renderCalls, rendersAfterStop);
 	assert.equal(mode.bashComponent, undefined);
+});
+
+test("cache-only release clears the built-in Bash elapsed timer and timing sidecars", () => {
+	initTheme("dark");
+	const originalSetInterval = globalThis.setInterval;
+	const originalClearInterval = globalThis.clearInterval;
+	const interval = { unref(): void {} } as unknown as ReturnType<typeof setInterval>;
+	let intervalCallback: (() => void) | undefined;
+	let clearCalls = 0;
+	globalThis.setInterval = ((callback: () => void) => {
+		intervalCallback = callback;
+		return interval;
+	}) as typeof setInterval;
+	globalThis.clearInterval = ((handle?: ReturnType<typeof setInterval>) => {
+		if (handle === interval) clearCalls++;
+		else originalClearInterval(handle);
+	}) as typeof clearInterval;
+	const tui = createCountingTui();
+	try {
+		const component = new ToolExecutionComponent(
+			"bash",
+			"bash-render-lifecycle",
+			{ command: "sleep 30" },
+			{},
+			undefined,
+			tui,
+			process.cwd(),
+		);
+		component.markExecutionStarted();
+		component.updateResult({ content: [{ type: "text", text: "partial" }] }, true, false);
+		const state = (component as any).rendererState as {
+			startedAt: number | undefined;
+			endedAt: number | undefined;
+			interval: ReturnType<typeof setInterval> | undefined;
+		};
+		assert.equal(state.interval, interval);
+		const rendersBeforeRelease = tui.requestRenderCalls;
+		component[TOOL_RELEASE_COMPONENT_RENDER_CACHE]();
+		assert.equal(state.interval, undefined);
+		assert.equal(state.startedAt, undefined);
+		assert.equal(state.endedAt, undefined);
+		assert.equal(clearCalls, 1);
+		intervalCallback?.();
+		assert.equal(tui.requestRenderCalls, rendersBeforeRelease);
+		component.updateResult({ content: [{ type: "text", text: "remounted partial" }] }, true, false);
+		assert.equal(state.interval, interval);
+		assert.notEqual(state.startedAt, undefined);
+		component[TOOL_RELEASE_COMPONENT_RENDER_CACHE]();
+		assert.equal(clearCalls, 2);
+		assert.equal(state.interval, undefined);
+	} finally {
+		globalThis.setInterval = originalSetInterval;
+		globalThis.clearInterval = originalClearInterval;
+	}
 });
 
 test("mode stop preserves its first error while finishing TUI and signal cleanup", async () => {
