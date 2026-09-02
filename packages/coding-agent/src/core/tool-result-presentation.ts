@@ -1224,9 +1224,22 @@ export class ToolResultPresentationOwner {
 		const records = this.projectionRecords;
 		const existing = records?.get(toolCallId);
 		if (existing?.sourceContent === content) {
-			this.ensureRecordProjection(existing, admission === "write");
-			this.counters.projectionRecordHits++;
-			return existing;
+			const staleArtifactOnlyRecord =
+				existing.projection === undefined &&
+				existing.artifact !== undefined &&
+				!validateArtifactIdentity(
+					existing.sourceContent,
+					existing.sourceScan.sha256,
+					existing.sourceScan.artifactBytes,
+					this.counters,
+				);
+			if (staleArtifactOnlyRecord) {
+				this.removeProjectionRecord(existing, true);
+			} else {
+				this.ensureRecordProjection(existing, admission === "write");
+				this.counters.projectionRecordHits++;
+				return existing;
+			}
 		}
 		const sourceScan = scanSource(content, this.counters);
 		if (
