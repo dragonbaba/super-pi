@@ -52,6 +52,13 @@ export interface ImageSettings {
 	blockImages?: boolean; // default: false - when true, prevents all images from being sent to LLM providers
 }
 
+export interface ToolResultPresentationSettings {
+	/** Explicit opt-in. Missing, false, and malformed values remain disabled. */
+	enabled?: boolean;
+	/** Required positive safe integer when enabled; no production default is selected. */
+	budgetTokens?: number;
+}
+
 export interface ThinkingBudgetsSettings {
 	minimal?: number;
 	low?: number;
@@ -143,6 +150,7 @@ export interface Settings {
 	enableSkillCommands?: boolean; // default: true - register skills as /skill:name commands
 	terminal?: TerminalSettings;
 	images?: ImageSettings;
+	toolResultPresentation?: ToolResultPresentationSettings;
 	enabledModels?: string[]; // Model patterns for cycling (same format as --models CLI flag)
 	defaultTools?: string[]; // Initial built-in tool selection
 	doubleEscapeAction?: "fork" | "tree" | "none"; // Action for double-escape with empty editor (default: "tree")
@@ -1327,6 +1335,18 @@ export class SettingsManager {
 
 	getBlockImages(): boolean {
 		return this.settings.images?.blockImages ?? false;
+	}
+
+	getToolResultPresentationOptions(): { enabled: true; budgetTokens: number } | undefined {
+		const configured = this.settings.toolResultPresentation;
+		if (configured?.enabled !== true) return undefined;
+		const budgetTokens = configured.budgetTokens;
+		if (typeof budgetTokens !== "number" || !Number.isSafeInteger(budgetTokens) || budgetTokens <= 0) {
+			throw new Error(
+				`Invalid toolResultPresentation.budgetTokens setting: ${String(budgetTokens)}`,
+			);
+		}
+		return { enabled: true, budgetTokens };
 	}
 
 	setBlockImages(blocked: boolean): void {

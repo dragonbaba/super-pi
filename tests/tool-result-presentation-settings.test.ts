@@ -15,11 +15,15 @@ function presentationOptions(settings: Record<string, unknown> = {}) {
 test("production tool-result presentation stays disabled unless explicitly enabled", () => {
 	assert.equal(presentationOptions(), undefined);
 	assert.equal(
-		presentationOptions({ toolResultPresentation: { enabled: false, budgetTokens: 128 } }),
+		presentationOptions({ toolResultPresentation: { enabled: false, budgetTokens: 0 } }),
 		undefined,
 	);
 	assert.equal(
 		presentationOptions({ toolResultPresentation: { budgetTokens: 128 } }),
+		undefined,
+	);
+	assert.equal(
+		presentationOptions({ toolResultPresentation: { enabled: "true", budgetTokens: 128 } }),
 		undefined,
 	);
 });
