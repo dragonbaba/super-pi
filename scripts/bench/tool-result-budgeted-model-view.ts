@@ -766,7 +766,8 @@ async function measureBlockImagePolicy(
 	const toggleBefore = counterSnapshot(counters);
 	const toggled = await measureAsync(inspector, toggle);
 	const toggleCounters = counterDelta(toggleBefore, counters, MEASURED_RUNS * 3);
-	const continuation = session.readToolResultContinuation(cursor, 256);
+	const persistedCursorContinuation = session.readToolResultContinuation(cursor, 256);
+	const providerCursorContinuation = session.readToolResultContinuation(providerCursor, 256);
 	const v1Content: ToolResultMessage["content"] = [];
 	for (let index = 0; index < 160; index++) {
 		v1Content.push(index % 2 === 0
@@ -806,8 +807,11 @@ async function measureBlockImagePolicy(
 		toggle: { ...toggled, countersPerRequest: toggleCounters },
 		blockedImageBlocks,
 		leakedImageDataBlocks,
-		providerCursorMatchesPersistedSource: providerCursor === cursor,
-		continuationWithinBudget: continuation.estimatedTokens <= 256,
+		providerCursorCreated: providerCursor.length > 0,
+		providerCursorWidensOmittedSource: providerCursor !== cursor,
+		providerCursorAcceptedAgainstPersistedSource: providerCursorContinuation.content.length > 0,
+		providerContinuationWithinBudget: providerCursorContinuation.estimatedTokens <= 256,
+		persistedCursorContinuationWithinBudget: persistedCursorContinuation.estimatedTokens <= 256,
 		v1Expansion: {
 			originalWithinBudget: estimateToolOutputTokens(v1Source.content).estimatedTokens <= 256,
 			blockedWithinBudget: !!v1Blocked && estimateToolOutputTokens(v1Blocked.content).estimatedTokens <= 256,

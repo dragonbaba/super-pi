@@ -125,6 +125,9 @@ test("budgeted model-view benchmark retains the Candidate Gate fixtures and life
 	assert.match(source, /measureHistoricalProjection\(inspector, 256\)/);
 	assert.match(source, /measureRetainedCodeCapacity\(inspector\)/);
 	assert.match(source, /measureBlockImagePolicy\(inspector, productionRoot\)/);
+	assert.match(source, /providerCursorWidensOmittedSource: providerCursor !== cursor/);
+	assert.match(source, /providerCursorAcceptedAgainstPersistedSource: providerCursorContinuation\.content\.length > 0/);
+	assert.match(source, /providerContinuationWithinBudget: providerCursorContinuation\.estimatedTokens <= 256/);
 	assert.match(source, /measureContinuationChain\(inspector\)/);
 	assert.match(source, /measureEvictedContinuation\(inspector\)/);
 	assert.match(source, /measureResumedHistoryLookup\(\)/);
