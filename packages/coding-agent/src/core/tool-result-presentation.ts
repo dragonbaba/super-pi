@@ -1063,23 +1063,29 @@ export class ToolResultPresentationOwner {
 			previous: undefined,
 			next: undefined,
 		};
-		if (existing && admission === "provider") {
-			this.counters.admissionRejected++;
-			this.counters.transientProjections++;
-			return record;
-		}
-		if (existing) this.removeProjectionRecord(existing, true);
-		const capacityWouldEvict = !!records && (
-			records.size >= MAX_PROJECTION_RECORD_ENTRIES ||
-			this.counters.retainedProjectionCodeUnits + record.retainedCodeUnits > MAX_RETAINED_PROJECTION_CODE_UNITS
-		);
-		const inserted = this.insertProjectionRecord(record, admission !== "provider");
-		if (admission === "provider" && !inserted) {
+		if (admission === "provider") {
+			const capacityWouldEvict = !!records && (
+				records.size >= MAX_PROJECTION_RECORD_ENTRIES ||
+				this.counters.retainedProjectionCodeUnits + record.retainedCodeUnits > MAX_RETAINED_PROJECTION_CODE_UNITS
+			);
 			this.counters.admissionRejected++;
 			this.counters.transientProjections++;
 			if (capacityWouldEvict) this.counters.capacityThrashPrevented++;
+			return record;
 		}
+		if (admission === "continuation") return record;
+		if (existing) this.removeProjectionRecord(existing, true);
+		this.insertProjectionRecord(record, true);
 		return record;
+	}
+
+	private bindValidatedContinuationRecord(record: ProjectionRecord): void {
+		const records = this.projectionRecords;
+		if (!records || records.get(record.toolCallId) === record) return;
+		if (record.retainedCodeUnits > MAX_RETAINED_PROJECTION_CODE_UNITS) return;
+		const existing = records.get(record.toolCallId);
+		if (existing) this.removeProjectionRecord(existing, true);
+		this.insertProjectionRecord(record, true);
 	}
 
 	private findProjectionRecord(sourceKey: string, sourceDigest: string): ProjectionRecord | undefined {
@@ -1441,6 +1447,7 @@ export class ToolResultPresentationOwner {
 		if (!isValidPosition(sourceContent, start) || !isValidPosition(sourceContent, end) || comparePositions(start, end) >= 0) {
 			throw new ToolResultContinuationError("invalid-cursor", "Continuation cursor positions are invalid.");
 		}
+		this.bindValidatedContinuationRecord(record);
 		const sourceTextCodeUnits = record.sourceScan.textCodeUnits;
 		let requestedTextCodeUnits = Math.max(1, Math.floor((sourceTextCodeUnits * budgetTokens) / Math.max(estimate.estimatedTokens, budgetTokens)));
 		let chunkEnd = advancePosition(
