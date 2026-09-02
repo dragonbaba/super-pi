@@ -3,7 +3,8 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import type { Model, ToolResultMessage } from "../packages/ai/src/types.ts";
+import type { AssistantMessage, Context, Model, ToolResultMessage } from "../packages/ai/src/types.ts";
+import { AssistantMessageEventStream } from "../packages/ai/src/utils/event-stream.ts";
 import { estimateToolOutputTokens } from "../packages/coding-agent/src/core/tool-output-budget.ts";
 import type { AgentSessionEvent } from "../packages/coding-agent/src/core/agent-session.ts";
 import type { ModelRuntime } from "../packages/coding-agent/src/core/model-runtime.ts";
@@ -55,6 +56,56 @@ function fixtureModelRuntime(): ModelRuntime {
 		getModel: () => undefined,
 		getAuth: async () => undefined,
 	} as unknown as ModelRuntime;
+}
+
+function capturingModelRuntime(capture: (context: Context) => void): ModelRuntime {
+	return {
+		hasConfiguredAuth: () => true,
+		checkAuth: async () => ({ type: "api_key" as const }),
+		isUsingOAuth: () => false,
+		streamSimple: (model: Model<any>, context: Context) => {
+			capture(context);
+			const stream = new AssistantMessageEventStream();
+			queueMicrotask(() => {
+				const message: AssistantMessage = {
+					role: "assistant",
+					content: [],
+					api: model.api,
+					provider: model.provider,
+					model: model.id,
+					usage: {
+						input: 0,
+						output: 0,
+						cacheRead: 0,
+						cacheWrite: 0,
+						totalTokens: 0,
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+					},
+					stopReason: "stop",
+					timestamp: 1,
+				};
+				stream.push({ type: "start", partial: message });
+				stream.push({ type: "done", reason: "stop", message });
+				stream.end();
+			});
+			return stream;
+		},
+		registerProvider: () => {},
+		registerNativeProvider: () => {},
+		unregisterProvider: () => {},
+		getModel: () => undefined,
+		getAuth: async () => undefined,
+	} as unknown as ModelRuntime;
+}
+
+function providerCursorFrom(content: ToolResultMessage["content"]): string {
+	for (let index = 0; index < content.length; index++) {
+		const block = content[index]!;
+		if (block.type !== "text") continue;
+		const match = /Continue with cursor (tr1\.[a-z0-9.]+)\.\]/.exec(block.text);
+		if (match?.[1]) return match[1];
+	}
+	throw new Error("provider model view is missing its continuation cursor");
 }
 
 interface ProductionResult {
@@ -571,4 +622,142 @@ test("V1 image placeholder expansion creates an internal V2 cursor without trust
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
+});
+
+async function runEmptyRecordContextCloneFixture(
+	mode: "resume" | "clear",
+	contextMutation: "none" | "change-source" = "none",
+): Promise<void> {
+	const root = mkdtempSync(join(tmpdir(), `pi-presentation-context-clone-${mode}-`));
+	const cwd = join(root, "workspace");
+	const agentDir = join(root, "agent");
+	mkdirSync(cwd, { recursive: true });
+	mkdirSync(agentDir, { recursive: true });
+	const settingsManager = SettingsManager.create(cwd, agentDir);
+	let clonedSourceContent: ToolResultMessage["content"] | undefined;
+	const resourceLoader = new DefaultResourceLoader({
+		cwd,
+		agentDir,
+		settingsManager,
+		noContextFiles: true,
+		noPromptTemplates: true,
+		noSkills: true,
+		noThemes: true,
+		extensionFactories: [(pi) => {
+			pi.on("context", (event) => {
+				for (let index = 0; index < event.messages.length; index++) {
+					const candidate = event.messages[index];
+					if (candidate?.role === "toolResult" && candidate.toolCallId === `context-clone-${mode}`) {
+						if (contextMutation === "change-source") {
+							const changedContent = candidate.content.slice();
+							const first = changedContent[0];
+							assert.ok(first?.type === "text");
+							changedContent[0] = { type: "text", text: `x${first.text.slice(1)}` };
+							clonedSourceContent = changedContent;
+							const changed = { ...candidate, content: changedContent };
+							return { messages: event.messages.map((message) => message === candidate ? changed : message) };
+						}
+						clonedSourceContent = candidate.content;
+					}
+				}
+				return undefined;
+			});
+		}],
+	});
+	await resourceLoader.reload();
+	const sessionManager = SessionManager.inMemory(cwd, { id: `context-clone-${mode}` });
+	const counters = createToolResultPresentationCounters();
+	let providerContext: Context | undefined;
+	const options = {
+		cwd,
+		agentDir,
+		model: fixtureModel(),
+		modelRuntime: capturingModelRuntime((context) => { providerContext = context; }),
+		settingsManager,
+		sessionManager,
+		resourceLoader,
+		noTools: "all" as const,
+		toolResultPresentation: { enabled: true, budgetTokens: 128, counters },
+	};
+	let active = (await createAgentSession(options)).session;
+	try {
+		const source: ToolResultMessage = {
+			role: "toolResult",
+			toolCallId: `context-clone-${mode}`,
+			toolName: "read",
+			content: [{ type: "text", text: `persisted-${mode}-`.repeat(20_000) }],
+			isError: false,
+			timestamp: 1,
+		};
+		active.agent.state.messages.push(source);
+		await (active as unknown as {
+			_handleAgentEvent(event: ToolResultMessageEndEvent): Promise<void>;
+		})._handleAgentEvent({ type: "message_end", message: source });
+		if (mode === "resume") {
+			active.dispose();
+			active = (await createAgentSession(options)).session;
+		} else {
+			(active as unknown as {
+				_toolResultPresentation?: { clearProjectionRecords(): void };
+			})._toolResultPresentation?.clearProjectionRecords();
+		}
+		await active.prompt("continue", { expandPromptTemplates: false });
+		assert.ok(providerContext);
+		const providerResult = providerContext.messages.find((message) =>
+			message.role === "toolResult" && message.toolCallId === source.toolCallId
+		);
+		const activeSource = active.agent.state.messages.find((message) =>
+			message.role === "toolResult" && message.toolCallId === source.toolCallId
+		);
+		assert.ok(providerResult?.role === "toolResult");
+		assert.ok(activeSource?.role === "toolResult");
+		assert.ok(clonedSourceContent);
+		assert.notEqual(clonedSourceContent, activeSource.content);
+		const cursor = providerCursorFrom(providerResult.content);
+		const scansBefore = counters.fullSourceEstimatorScans;
+		const probesBefore = counters.continuationSourceLookupProbes;
+		assert.equal(counters.projectionRecordEntries, 0, "provider-only clone remains transient");
+		if (contextMutation === "change-source") {
+			assert.throws(
+				() => active.readToolResultContinuation(cursor, 128),
+				(error: unknown) => error instanceof Error && "code" in error && error.code === "stale-cursor",
+			);
+			assert.equal(counters.projectionRecordEntries, 0, "modified provider source is not rebound");
+			return;
+		}
+		const chunk = active.readToolResultContinuation(cursor, 128);
+		assert.ok(chunk.content.length > 0);
+		assert.ok(chunk.estimatedTokens <= 128);
+		assert.ok(chunk.nextCursor);
+		assert.equal(counters.fullSourceEstimatorScans - scansBefore, 1, "first continuation scans the persisted source once");
+		assert.equal(
+			counters.continuationSourceLookupProbes - probesBefore,
+			active.agent.state.messages.length,
+			"first continuation checks the active history once",
+		);
+		assert.equal(counters.projectionRecordEntries, 1, "validated persisted source becomes resident");
+		const steadyScans = counters.fullSourceEstimatorScans;
+		const steadyProbes = counters.continuationSourceLookupProbes;
+		const steadyHits = counters.continuationSourceRecordHits;
+		const second = active.readToolResultContinuation(chunk.nextCursor, 128);
+		assert.ok(second.content.length > 0);
+		assert.equal(counters.fullSourceEstimatorScans, steadyScans, "resident continuation avoids source rescans");
+		assert.equal(counters.continuationSourceLookupProbes, steadyProbes, "indexed continuation avoids history rescans");
+		assert.equal(counters.continuationSourceRecordHits, steadyHits + 1);
+	} finally {
+		active.dispose();
+		rmSync(root, { recursive: true, force: true });
+	}
+}
+
+test("resumed production context clones bind provider cursors to the persisted source", async () => {
+	await runEmptyRecordContextCloneFixture("resume");
+});
+
+test("record-cleared production context clones bind provider cursors to the persisted source", async () => {
+	await runEmptyRecordContextCloneFixture("clear");
+});
+
+test("modified production context clones cannot bind to the persisted source", async () => {
+	await runEmptyRecordContextCloneFixture("clear", "change-source");
 });
