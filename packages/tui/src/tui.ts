@@ -349,8 +349,11 @@ function releaseCollectedComponentRenderCaches(
 	let releaseError: unknown;
 	let releaseFailed = false;
 	for (let index = 0; index < releaseOrder.length; index++) {
+		const component = releaseOrder[index]!;
 		try {
-			releaseOrder[index]![RELEASE_COMPONENT_RENDER_CACHE]?.();
+			const release = component[RELEASE_COMPONENT_RENDER_CACHE];
+			if (release === undefined) continue;
+			release.call(component);
 			if (metrics) metrics.releasedNodes++;
 		} catch (error) {
 			if (!releaseFailed) {
