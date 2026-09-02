@@ -52,13 +52,21 @@ export {
 	createToolResultPresentationOwner,
 	getToolResultModelContent,
 	getToolResultUiContent,
+	TOOL_RESULT_CONTINUATION_VERSION,
 	TOOL_RESULT_PRESENTATION_VERSION,
+	TOOL_RESULT_PRESENTATION_V2_VERSION,
+	ToolResultContinuationError,
 	ToolResultPresentationOwner,
 	type ToolResultPresentation,
 	type ToolResultPresentationContent,
+	type ToolResultContinuationChunkV1,
+	type ToolResultContinuationErrorCode,
+	type ToolResultContinuationV1,
 	type ToolResultPresentationCounters,
 	type ToolResultPresentationOptions,
 	type ToolResultPresentationV1,
+	type ToolResultPresentationV2,
+	type ToolResultTruncationV1,
 } from "./core/tool-result-presentation.ts";
 export { readStoredCredential } from "./core/auth-storage.ts";
 // Compaction

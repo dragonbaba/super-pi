@@ -52,6 +52,7 @@
 		"bench:tool-output": "node --experimental-strip-types ./scripts/bench/tool-output.ts",
 		"bench:tool-token-estimator": "node --expose-gc --experimental-strip-types ./scripts/bench/tool-token-estimator.ts",
 		"bench:tool-output-shadow": "node --expose-gc --experimental-strip-types ./scripts/bench/tool-output-shadow.ts",
+		"bench:tool-result-budgeted-model-view": "node --expose-gc --experimental-strip-types ./scripts/bench/tool-result-budgeted-model-view.ts",
 		"test:tool-token-estimator-accuracy": "node --experimental-strip-types ./scripts/bench/tool-token-estimator-accuracy.ts",
 		"bench:compare": "node --experimental-strip-types ./scripts/bench/compare.ts",
 		"clean": "npm run clean --workspaces --if-present",

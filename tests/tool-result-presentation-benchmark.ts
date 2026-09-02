@@ -16,6 +16,7 @@ import {
 	createToolResultPresentationCounters,
 	createToolResultPresentationOwner,
 	type ToolResultPresentationCounters,
+	type ToolResultPresentation,
 	type ToolResultPresentationV1,
 } from "../packages/coding-agent/src/core/tool-result-presentation.ts";
 
@@ -41,7 +42,7 @@ interface TimingResult {
 }
 
 interface PresentationWeakReferences {
-	presentation: WeakRef<ToolResultPresentationV1>;
+	presentation: WeakRef<ToolResultPresentation>;
 	modelContent: WeakRef<object>;
 	uiContent: WeakRef<object>;
 }
@@ -214,7 +215,7 @@ async function createProductionFixture(root: string, mode: ProductionMode) {
 	let sequence = 0;
 	let listenerCalls = 0;
 	let presentationCalls = 0;
-	let lastPresentation: ToolResultPresentationV1 | undefined;
+	let lastPresentation: ToolResultPresentation | undefined;
 	session.subscribe(function onSessionEvent(event: AgentSessionEvent): void {
 		if (event.type !== "message_end" || event.message.role !== "toolResult") return;
 		listenerCalls++;

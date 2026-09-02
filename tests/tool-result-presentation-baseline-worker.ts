@@ -27,7 +27,7 @@ type WorkerMode = "baseline" | "absent" | "disabled";
 
 const WARMUP_RUNS = 5;
 const MEASURED_RUNS = 20;
-const RESULTS_PER_RUN = 100;
+const RESULTS_PER_RUN = 1_000;
 const SAMPLING_INTERVAL_BYTES = 1024;
 const TEN_MIB_TEXT = "x".repeat(10 * 1024 * 1024);
 
