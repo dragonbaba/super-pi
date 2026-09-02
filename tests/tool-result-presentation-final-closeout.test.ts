@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { ToolResultMessage } from "../packages/ai/src/types.ts";
+import { estimateToolOutputTokens } from "../packages/coding-agent/src/core/tool-output-budget.ts";
 import {
 	createToolResultPresentationCounters,
 	createToolResultPresentationOwner,
 	getToolResultModelContent,
 	ToolResultContinuationError,
+	ToolResultPresentationOwner,
 	type ToolResultPresentationContent,
 	type ToolResultPresentationV2,
 } from "../packages/coding-agent/src/core/tool-result-presentation.ts";
@@ -22,6 +24,15 @@ function toolResult(content: ToolResultPresentationContent[], toolCallId: string
 		isError: false,
 		timestamp: 1,
 	};
+}
+
+function textContent(content: readonly ToolResultPresentationContent[]): string {
+	let result = "";
+	for (let index = 0; index < content.length; index++) {
+		const block = content[index]!;
+		if (block.type === "text") result += block.text;
+	}
+	return result;
 }
 
 test("provider reads over the entry cap do not cascade resident eviction", () => {
@@ -204,5 +215,127 @@ test("V2 public validation binds cursor metrics and positions to the complete UI
 		const malformed = { ...presentation, modelContent, continuation: { ...presentation.continuation, cursor } };
 		assert.equal(getToolResultModelContent(malformed, legacy), legacy);
 	}
+	owner.dispose();
+});
+
+test("provider context clones cannot evict the persisted continuation record", () => {
+	const content: ToolResultPresentationContent[] = [{ type: "text", text: "context-clone-".repeat(20_000) }];
+	const message = toolResult(content, "context-clone");
+	const counters = createToolResultPresentationCounters();
+	const owner = createToolResultPresentationOwner({ enabled: true, budgetTokens: 128, counters }, SESSION_ID)!;
+	const presentation = owner.create(content, message.toolCallId) as ToolResultPresentationV2;
+	owner.release();
+	const clonedMessages = structuredClone([message]);
+	owner.projectMessagesForModel(clonedMessages);
+	const chunk = owner.readContinuation(presentation.continuation.cursor, [message], 128);
+	assert.ok(chunk.content.length > 0);
+	assert.equal(counters.projectionRecordEvictions, 0);
+	assert.equal(counters.projectionRecordEntries, 1);
+	owner.dispose();
+});
+
+test("CRLF remains one grapheme at model and continuation cuts", () => {
+	const text = "x".repeat(118) + "\r\n" + "y".repeat(584);
+	const content: ToolResultPresentationContent[] = [{ type: "text", text }];
+	const message = toolResult(content, "crlf-boundary");
+	const owner = createToolResultPresentationOwner({ enabled: true, budgetTokens: 89 }, SESSION_ID)!;
+	const presentation = owner.create(content, message.toolCallId) as ToolResultPresentationV2;
+	owner.release();
+	const notice = presentation.truncation.noticeBlockIndex;
+	const head = textContent(presentation.modelContent.slice(0, notice));
+	assert.equal(head.endsWith("\r"), false);
+	let cursor: string | undefined = presentation.continuation.cursor;
+	let previousEndedWithCr = false;
+	while (cursor) {
+		const chunk = owner.readContinuation(cursor, [message], 1_024);
+		const text = textContent(chunk.content);
+		assert.equal(previousEndedWithCr && text.startsWith("\n"), false);
+		previousEndedWithCr = text.endsWith("\r");
+		cursor = chunk.nextCursor;
+	}
+	owner.dispose();
+});
+
+test("the exported owner constructor keeps its one-argument V1 contract", () => {
+	const owner = new ToolResultPresentationOwner({ enabled: true });
+	const content: ToolResultPresentationContent[] = [{ type: "text", text: "legacy" }];
+	assert.equal(owner.create(content)?.version, 1);
+	owner.release();
+	owner.dispose();
+});
+
+test("continuation re-estimates the final bounded shrink candidate", () => {
+	const content: ToolResultPresentationContent[] = [
+		{ type: "text", text: "a\n".repeat(43) },
+		{ type: "text", text: "abcdef0123456789".repeat(30) },
+		{ type: "text", text: "z".repeat(1_000) },
+	];
+	const message = toolResult(content, "final-shrink-estimate");
+	const owner = createToolResultPresentationOwner({ enabled: true, budgetTokens: 56 }, SESSION_ID)!;
+	const presentation = owner.create(content, message.toolCallId) as ToolResultPresentationV2;
+	owner.release();
+	const chunk = owner.readContinuation(presentation.continuation.cursor, [message], 88);
+	assert.ok(chunk.content.length > 0);
+	assert.ok(chunk.estimatedTokens <= 88);
+	owner.dispose();
+});
+
+test("image-policy fitting widens the provider cursor around every dropped source unit", () => {
+	const sourceText = "abcdef0123456789".repeat(1_000);
+	const content: ToolResultPresentationContent[] = [
+		{ type: "image", data: "aGVsbG8=", mimeType: "image/png" },
+		{ type: "text", text: sourceText },
+	];
+	const message = toolResult(content, "image-policy-cursor");
+	const owner = createToolResultPresentationOwner({ enabled: true, budgetTokens: 64 }, SESSION_ID)!;
+	owner.create(content, message.toolCallId);
+	owner.release();
+	const messages = [message];
+	owner.projectMessagesForModel(messages, (candidate) => {
+		if (candidate.role !== "toolResult") return candidate;
+		const replaced = [] as ToolResultMessage["content"];
+		for (let index = 0; index < candidate.content.length; index++) {
+			const block = candidate.content[index]!;
+			replaced.push(block.type === "image" ? { type: "text", text: "Image reading is disabled." } : block);
+		}
+		return { ...candidate, content: replaced };
+	});
+	const projected = messages[0]!;
+	assert.equal(projected.role, "toolResult");
+	assert.ok(estimateToolOutputTokens(projected.content).estimatedTokens <= 64);
+	const notice = projected.content.find((block) => block.type === "text" && block.text.startsWith("[Tool result truncated. Continue with cursor "));
+	assert.ok(notice?.type === "text");
+	const cursor = notice.text.substring("[Tool result truncated. Continue with cursor ".length, notice.text.length - 2);
+	let nextCursor: string | undefined = cursor;
+	let reconstructed = "";
+	while (nextCursor) {
+		const chunk = owner.readContinuation(nextCursor, [message], 1_024);
+		reconstructed += textContent(chunk.content);
+		nextCursor = chunk.nextCursor;
+	}
+	assert.equal(reconstructed, sourceText);
+	owner.dispose();
+});
+
+test("oversized empty text-block structure is projected and continued within budget", () => {
+	const content: ToolResultPresentationContent[] = new Array(1_000);
+	for (let index = 0; index < content.length; index++) content[index] = { type: "text", text: "" };
+	assert.ok(estimateToolOutputTokens(content).estimatedTokens > 64);
+	const message = toolResult(content, "empty-text-blocks");
+	const owner = createToolResultPresentationOwner({ enabled: true, budgetTokens: 64 }, SESSION_ID)!;
+	const presentation = owner.create(content, message.toolCallId) as ToolResultPresentationV2;
+	owner.release();
+	assert.equal(presentation.version, 2);
+	assert.ok(estimateToolOutputTokens(presentation.modelContent).estimatedTokens <= 64);
+	let cursor: string | undefined = presentation.continuation.cursor;
+	let chunks = 0;
+	while (cursor) {
+		const chunk = owner.readContinuation(cursor, [message], 64);
+		assert.ok(chunk.estimatedTokens <= 64);
+		cursor = chunk.nextCursor;
+		chunks++;
+		assert.ok(chunks <= 4);
+	}
+	assert.equal(chunks, 4);
 	owner.dispose();
 });

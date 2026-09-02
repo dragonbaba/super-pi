@@ -423,42 +423,6 @@ function safeTerminalSuffixOffset(text: string, requested: number, counters: Too
 	return start < 0 ? requested : terminalSequenceEnd(text, start, counters);
 }
 
-function safePrefixOffset(
-	text: string,
-	requested: number,
-	hasTerminalSequences: boolean,
-	counters: ToolResultPresentationCounters,
-): number {
-	let offset = Math.max(0, Math.min(requested, text.length));
-	if (offset === 0 || offset === text.length) return offset;
-	if (hasTerminalSequences) offset = safeTerminalPrefixOffset(text, offset, counters);
-	if (offset === 0 || offset === text.length) return offset;
-	const previous = text.charCodeAt(offset - 1);
-	const next = text.charCodeAt(offset);
-	if (previous <= 0x7f && next <= 0x7f) return offset;
-	counters.graphemeBoundaryLookups++;
-	const segment = GRAPHEME_SEGMENTER.segment(text).containing(offset);
-	return segment && segment.index < offset ? segment.index : offset;
-}
-
-function safeSuffixOffset(
-	text: string,
-	requested: number,
-	hasTerminalSequences: boolean,
-	counters: ToolResultPresentationCounters,
-): number {
-	let offset = Math.max(0, Math.min(requested, text.length));
-	if (offset === 0 || offset === text.length) return offset;
-	if (hasTerminalSequences) offset = safeTerminalSuffixOffset(text, offset, counters);
-	if (offset === 0 || offset === text.length) return offset;
-	const previous = text.charCodeAt(offset - 1);
-	const next = text.charCodeAt(offset);
-	if (previous <= 0x7f && next <= 0x7f) return offset;
-	counters.graphemeBoundaryLookups++;
-	const segment = GRAPHEME_SEGMENTER.segment(text).containing(offset);
-	return segment && segment.index < offset ? segment.index + segment.segment.length : offset;
-}
-
 function indexedTerminalBoundaryOffset(
 	sourceScan: SourceScan,
 	blockIndex: number,
@@ -503,7 +467,7 @@ function safeIndexedPrefixOffset(
 	if (offset === 0 || offset === text.length) return offset;
 	const previous = text.charCodeAt(offset - 1);
 	const next = text.charCodeAt(offset);
-	if (previous <= 0x7f && next <= 0x7f) return offset;
+	if (previous <= 0x7f && next <= 0x7f && !(previous === 0x0d && next === 0x0a)) return offset;
 	counters.graphemeBoundaryLookups++;
 	const segment = GRAPHEME_SEGMENTER.segment(text).containing(offset);
 	return segment && segment.index < offset ? segment.index : offset;
@@ -522,7 +486,7 @@ function safeIndexedSuffixOffset(
 	if (offset === 0 || offset === text.length) return offset;
 	const previous = text.charCodeAt(offset - 1);
 	const next = text.charCodeAt(offset);
-	if (previous <= 0x7f && next <= 0x7f) return offset;
+	if (previous <= 0x7f && next <= 0x7f && !(previous === 0x0d && next === 0x0a)) return offset;
 	counters.graphemeBoundaryLookups++;
 	const segment = GRAPHEME_SEGMENTER.segment(text).containing(offset);
 	return segment && segment.index < offset ? segment.index + segment.segment.length : offset;
@@ -802,7 +766,13 @@ function projectContent(
 	const fullEstimate = sourceScan.estimate;
 	if (fullEstimate.estimatedTokens <= budgetTokens) return undefined;
 	const totalTextCodeUnits = sourceScan.textCodeUnits;
-	if (totalTextCodeUnits === 0) return undefined;
+	if (totalTextCodeUnits === 0) {
+		const build = buildFullOmissionProjection(content, sourceKey, sourceDigest, sourceScan, counters);
+		if (build.estimate.estimatedTokens > budgetTokens) {
+			throw new ToolResultContinuationError("budget-too-small", `Tool-result budget ${budgetTokens} cannot contain the fixed continuation notice.`);
+		}
+		return build;
+	}
 	let retainedTextCodeUnits = Math.floor((totalTextCodeUnits * Math.max(1, budgetTokens - 48)) / Math.max(1, fullEstimate.estimatedTokens));
 	retainedTextCodeUnits = Math.max(0, Math.min(retainedTextCodeUnits, totalTextCodeUnits - 1));
 	let build: ProjectionBuild | undefined;
@@ -979,111 +949,6 @@ function samePosition(left: ContentPosition, right: ContentPosition): boolean {
 	return left.blockIndex === right.blockIndex && left.textOffset === right.textOffset;
 }
 
-function boundedTextCodeUnits(
-	content: readonly ToolResultPresentationContent[],
-	start: number,
-	end: number,
-): number {
-	let total = 0;
-	for (let index = start; index < end; index++) {
-		const block = content[index]!;
-		if (block.type === "text") total += block.text.length;
-	}
-	return total;
-}
-
-function appendBoundedHead(
-	result: ToolResultPresentationContent[],
-	content: readonly ToolResultPresentationContent[],
-	endBlock: number,
-	requestedTextCodeUnits: number,
-	counters: ToolResultPresentationCounters,
-): void {
-	let remaining = requestedTextCodeUnits;
-	for (let index = 0; index < endBlock; index++) {
-		const block = content[index]!;
-		if (block.type === "image") {
-			result.push(block);
-			continue;
-		}
-		if (remaining >= block.text.length) {
-			result.push(block);
-			remaining -= block.text.length;
-			continue;
-		}
-		if (remaining > 0) {
-			const offset = safePrefixOffset(block.text, remaining, block.text.indexOf("\u001b") >= 0, counters);
-			if (offset > 0) {
-				result.push({ type: "text", text: block.text.substring(0, offset) });
-				counters.boundedTextStringsCreated++;
-			}
-		}
-		return;
-	}
-}
-
-function appendBoundedTail(
-	result: ToolResultPresentationContent[],
-	content: readonly ToolResultPresentationContent[],
-	startBlock: number,
-	requestedTextCodeUnits: number,
-	counters: ToolResultPresentationCounters,
-): void {
-	let remaining = requestedTextCodeUnits;
-	let firstBlock = content.length;
-	let firstOffset = 0;
-	for (let index = content.length - 1; index >= startBlock; index--) {
-		const block = content[index]!;
-		if (block.type === "image") {
-			firstBlock = index;
-			firstOffset = 0;
-			continue;
-		}
-		if (remaining >= block.text.length) {
-			remaining -= block.text.length;
-			firstBlock = index;
-			firstOffset = 0;
-			continue;
-		}
-		if (remaining > 0) {
-			firstBlock = index;
-			firstOffset = safeSuffixOffset(
-				block.text,
-				block.text.length - remaining,
-				block.text.indexOf("\u001b") >= 0,
-				counters,
-			);
-		}
-		break;
-	}
-	if (firstBlock >= content.length) return;
-	let index = firstBlock;
-	if (firstOffset > 0) {
-		const block = content[index];
-		if (block?.type === "text" && firstOffset < block.text.length) {
-			result.push({ type: "text", text: block.text.substring(firstOffset) });
-			counters.boundedTextStringsCreated++;
-		}
-		index++;
-	}
-	for (; index < content.length; index++) result.push(content[index]!);
-}
-
-function buildPostImagePolicyView(
-	content: readonly ToolResultPresentationContent[],
-	noticeBlockIndex: number,
-	headTextCodeUnits: number,
-	tailTextCodeUnits: number,
-	counters: ToolResultPresentationCounters,
-): ToolResultPresentationContent[] {
-	const result: ToolResultPresentationContent[] = [];
-	appendBoundedHead(result, content, noticeBlockIndex, headTextCodeUnits, counters);
-	result.push(content[noticeBlockIndex]!);
-	appendBoundedTail(result, content, noticeBlockIndex + 1, tailTextCodeUnits, counters);
-	counters.modelProjectionArraysCreated++;
-	return result;
-}
-
 export class ToolResultPresentationOwner {
 	private accepting = true;
 	private readonly budgetTokens: number | undefined;
@@ -1093,7 +958,7 @@ export class ToolResultPresentationOwner {
 	private projectionRecordTail: ProjectionRecord | undefined;
 	readonly counters: ToolResultPresentationCounters;
 
-	constructor(options: ToolResultPresentationOptions, sessionId: string) {
+	constructor(options: ToolResultPresentationOptions, sessionId = "") {
 		this.counters = options.counters ?? createToolResultPresentationCounters();
 		this.sessionId = sessionId;
 		if (options.budgetTokens !== undefined) {
@@ -1159,9 +1024,19 @@ export class ToolResultPresentationOwner {
 			this.counters.projectionRecordHits++;
 			return existing;
 		}
-		if (existing) this.removeProjectionRecord(existing, true);
-		this.counters.projectionRecordMisses++;
 		const sourceScan = scanSource(content, this.counters);
+		if (
+			existing &&
+			admission === "provider" &&
+			existing.sourceDigest === sourceScan.digest &&
+			existing.sourceContent.length === content.length &&
+			existing.sourceScan.estimate.rawUtf8Bytes === sourceScan.estimate.rawUtf8Bytes &&
+			existing.sourceScan.estimate.estimatedTokens === sourceScan.estimate.estimatedTokens
+		) {
+			this.counters.projectionRecordHits++;
+			return existing;
+		}
+		this.counters.projectionRecordMisses++;
 		const sourceKey = createSourceKey(this.sessionId, toolCallId, this.counters);
 		const projection = projectContent(
 			content,
@@ -1188,6 +1063,12 @@ export class ToolResultPresentationOwner {
 			previous: undefined,
 			next: undefined,
 		};
+		if (existing && admission === "provider") {
+			this.counters.admissionRejected++;
+			this.counters.transientProjections++;
+			return record;
+		}
+		if (existing) this.removeProjectionRecord(existing, true);
 		const capacityWouldEvict = !!records && (
 			records.size >= MAX_PROJECTION_RECORD_ENTRIES ||
 			this.counters.retainedProjectionCodeUnits + record.retainedCodeUnits > MAX_RETAINED_PROJECTION_CODE_UNITS
@@ -1415,27 +1296,19 @@ export class ToolResultPresentationOwner {
 		};
 	}
 
-	private fitPostImagePolicyContent(
-		content: readonly ToolResultPresentationContent[],
+	private fitPostImagePolicyMessage(
+		message: ToolResultMessage,
+		record: ProjectionRecord,
 		projection: ProjectionBuild,
-	): readonly ToolResultPresentationContent[] {
+		filtered: ToolResultMessage,
+		imagePolicy: (message: Message) => Message,
+	): ToolResultMessage {
 		this.counters.postImagePolicyEstimatorScans++;
-		let estimate = estimateToolOutputTokens(content);
-		if (estimate.estimatedTokens <= this.budgetTokens!) return content;
-		const notice = projection.content[projection.noticeBlockIndex];
-		let noticeBlockIndex = -1;
-		for (let index = 0; index < content.length; index++) {
-			if (content[index] !== notice) continue;
-			noticeBlockIndex = index;
-			break;
-		}
-		if (noticeBlockIndex < 0) {
-			throw new ToolResultContinuationError("stale-cursor", "Internal continuation notice identity was not preserved.");
-		}
-		const originalHead = boundedTextCodeUnits(content, 0, noticeBlockIndex);
-		const originalTail = boundedTextCodeUnits(content, noticeBlockIndex + 1, content.length);
+		let estimate = estimateToolOutputTokens(filtered.content);
+		if (estimate.estimatedTokens <= this.budgetTokens!) return filtered;
+		const originalHead = projection.headTextCodeUnits;
+		const originalTail = projection.tailTextCodeUnits;
 		let retainedTextCodeUnits = originalHead + originalTail;
-		let candidate: ToolResultPresentationContent[] | undefined;
 		for (let pass = 0; pass < MAX_PROJECTION_SHRINK_PASSES; pass++) {
 			const next = Math.max(
 				0,
@@ -1447,18 +1320,59 @@ export class ToolResultPresentationOwner {
 			retainedTextCodeUnits = next;
 			const head = Math.min(originalHead, Math.ceil(next / 2));
 			const tail = Math.min(originalTail, next - head);
-			candidate = buildPostImagePolicyView(content, noticeBlockIndex, head, tail, this.counters);
+			const candidateProjection = buildProjection(
+				record.sourceContent,
+				head,
+				tail,
+				record.sourceKey,
+				record.sourceDigest,
+				record.sourceScan,
+				this.counters,
+			);
+			const candidate = imagePolicy(this.createModelMessage(message, candidateProjection.content)) as ToolResultMessage;
 			this.counters.postImagePolicyShrinkPasses++;
 			this.counters.postImagePolicyEstimatorScans++;
-			estimate = estimateToolOutputTokens(candidate);
-			if (estimate.estimatedTokens <= this.budgetTokens!) break;
+			estimate = estimateToolOutputTokens(candidate.content);
+			if (estimate.estimatedTokens <= this.budgetTokens!) return candidate;
 		}
-		if (!candidate || estimate.estimatedTokens > this.budgetTokens!) {
-			candidate = buildPostImagePolicyView(content, noticeBlockIndex, 0, 0, this.counters);
-			this.counters.postImagePolicyShrinkPasses++;
+		const omission = this.getImagePolicyProjection(record);
+		let candidate = imagePolicy(this.createModelMessage(message, omission.content)) as ToolResultMessage;
+		for (let index = 0; index < record.sourceContent.length; index++) {
+			const block = record.sourceContent[index]!;
+			if (block.type !== "image") continue;
+			const probeContent: ToolResultPresentationContent[] = [block];
+			this.counters.modelProjectionArraysCreated++;
+			const probe = this.createModelMessage(message, probeContent);
+			const filteredProbe = imagePolicy(probe) as ToolResultMessage;
+			if (filteredProbe === probe) break;
+			let retainedImage = false;
+			for (let probeIndex = 0; probeIndex < filteredProbe.content.length; probeIndex++) {
+				if (filteredProbe.content[probeIndex]?.type !== "image") continue;
+				retainedImage = true;
+				break;
+			}
+			if (retainedImage || filteredProbe.content.length === 0) break;
+			const withPolicyNoticeContent = new Array<ToolResultPresentationContent>(
+				filteredProbe.content.length + omission.content.length,
+			);
+			let outputIndex = 0;
+			for (let probeIndex = 0; probeIndex < filteredProbe.content.length; probeIndex++) {
+				withPolicyNoticeContent[outputIndex++] = filteredProbe.content[probeIndex]!;
+			}
+			for (let omissionIndex = 0; omissionIndex < omission.content.length; omissionIndex++) {
+				withPolicyNoticeContent[outputIndex++] = omission.content[omissionIndex]!;
+			}
+			this.counters.modelProjectionArraysCreated++;
+			const withPolicyNotice = this.createModelMessage(message, withPolicyNoticeContent);
 			this.counters.postImagePolicyEstimatorScans++;
-			estimate = estimateToolOutputTokens(candidate);
+			if (estimateToolOutputTokens(withPolicyNotice.content).estimatedTokens <= this.budgetTokens!) {
+				candidate = withPolicyNotice;
+			}
+			break;
 		}
+		this.counters.postImagePolicyShrinkPasses++;
+		this.counters.postImagePolicyEstimatorScans++;
+		estimate = estimateToolOutputTokens(candidate.content);
 		if (estimate.estimatedTokens > this.budgetTokens!) {
 			throw new ToolResultContinuationError(
 				"budget-too-small",
@@ -1492,8 +1406,13 @@ export class ToolResultPresentationOwner {
 					}
 				}
 				if (filtered !== projected && projection) {
-					const fitted = this.fitPostImagePolicyContent((filtered as ToolResultMessage).content, projection);
-					filtered = this.createModelMessage(message, fitted);
+					filtered = this.fitPostImagePolicyMessage(
+						message,
+						record,
+						projection,
+						filtered as ToolResultMessage,
+						imagePolicy,
+					);
 				}
 				projected = filtered as ToolResultMessage;
 			}
@@ -1534,10 +1453,14 @@ export class ToolResultPresentationOwner {
 		);
 		let chunkContent: ToolResultPresentationContent[] = [];
 		let chunkEstimate: ToolOutputTokenEstimate | undefined;
+		let measuredEndBlock = -1;
+		let measuredEndOffset = -1;
 		for (let pass = 0; pass < MAX_CONTINUATION_SHRINK_PASSES; pass++) {
 			chunkContent = [];
 			appendRegion(chunkContent, sourceContent, start, chunkEnd, this.counters);
 			chunkEstimate = estimateToolOutputTokens(chunkContent);
+			measuredEndBlock = chunkEnd.blockIndex;
+			measuredEndOffset = chunkEnd.textOffset;
 			if (chunkEstimate.estimatedTokens <= budgetTokens && comparePositions(start, chunkEnd) < 0) break;
 			requestedTextCodeUnits = Math.max(1, Math.min(requestedTextCodeUnits - 1, Math.floor((requestedTextCodeUnits * budgetTokens) / Math.max(1, chunkEstimate.estimatedTokens))));
 			chunkEnd = advancePosition(
@@ -1548,6 +1471,11 @@ export class ToolResultPresentationOwner {
 				record.sourceScan,
 				this.counters,
 			);
+		}
+		if (measuredEndBlock !== chunkEnd.blockIndex || measuredEndOffset !== chunkEnd.textOffset) {
+			chunkContent = [];
+			appendRegion(chunkContent, sourceContent, start, chunkEnd, this.counters);
+			chunkEstimate = estimateToolOutputTokens(chunkContent);
 		}
 		if (!chunkEstimate || chunkEstimate.estimatedTokens > budgetTokens || comparePositions(start, chunkEnd) >= 0) {
 			throw new ToolResultContinuationError("budget-too-small", `Continuation budget ${budgetTokens} cannot make forward progress.`);

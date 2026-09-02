@@ -438,7 +438,7 @@ test("blocked-image provider projection keeps its cursor bound to the persisted 
 		assert.ok(estimateToolOutputTokens(blocked.content).estimatedTokens <= 256);
 		assert.ok(counters.postImagePolicyShrinkPasses > 0);
 		const blockedCursor = cursorFrom(blocked.content);
-		assert.equal(blockedCursor, presentation.continuation.cursor);
+		assert.notEqual(blockedCursor, presentation.continuation.cursor);
 		assert.doesNotThrow(() => session.readToolResultContinuation(blockedCursor, 256));
 
 		settingsManager.setBlockImages(false);
