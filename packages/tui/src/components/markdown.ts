@@ -1,4 +1,5 @@
 import { Marked, type Token, Tokenizer, type TokenizerExtension, type Tokens } from "marked";
+import { RELEASE_COMPONENT_RENDER_CACHE } from "../component-cache.ts";
 import { renderLatex } from "../latex.ts";
 import {
 	ANSI_RESET_PATTERN,
@@ -410,9 +411,19 @@ export class Markdown implements Component {
 	}
 
 	invalidate(): void {
+		this.clearRenderCache();
+	}
+
+	[RELEASE_COMPONENT_RENDER_CACHE](): void {
+		this.clearRenderCache();
+	}
+
+	private clearRenderCache(): void {
 		this.cachedText = undefined;
 		this.cachedWidth = undefined;
 		this.cachedLines = undefined;
+		this.defaultStylePrefix = undefined;
+		this.defaultInlineStyleContext.stylePrefix = "";
 		this.incrementalNormalizedText = undefined;
 		this.incrementalWidth = undefined;
 		this.incrementalLinksSignature = undefined;
@@ -430,7 +441,12 @@ export class Markdown implements Component {
 		this.incrementalPlainTailStylePrefix = "";
 		this.plainStylePrefix = "";
 		this.plainStyleSuffix = "";
+		this.plainScanLineWidth = 0;
+		this.plainScanLineStart = 0;
+		this.plainScanStableLines = 0;
+		this.plainLexicalNextTailSourceOffset = 0;
 		this.lastIncrementalReuseCount = 0;
+		this.lastParserTokenCount = 0;
 		this.incrementalAppendCandidate = false;
 		this.incrementalSyntaxTransitionFallback = false;
 		this.updateIncrementalCacheMetrics();

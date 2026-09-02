@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { RELEASE_COMPONENT_RENDER_CACHE } from "../packages/tui/src/component-cache.ts";
 import {
 	RetainedContainer,
 	RetainedItem,
@@ -30,6 +31,19 @@ class MutableLine implements Component {
 	invalidate(): void {
 		this.invalidations++;
 	}
+}
+
+interface RawRetainedViewportRecord {
+	component: Component;
+	kittySpanLines?: readonly string[];
+}
+
+interface RawRetainedContainer {
+	viewportRecords: RawRetainedViewportRecord[];
+}
+
+function passthrough(value: string): string {
+	return value;
 }
 
 test("active updates do not rerender 5,000 completed transcript items", () => {
@@ -276,6 +290,133 @@ test("invalidate reaches an image component and refreshes Kitty cell-dimension o
 	} finally {
 		setCellDimensions({ widthPx: 9, heightPx: 18 });
 		setCapabilities({ images: null, trueColor: false, hyperlinks: false });
+	}
+});
+
+test("released retained viewport indexes rebuild golden without changing logical ownership", () => {
+	setCapabilities({ images: "kitty", trueColor: true, hyperlinks: true });
+	setCellDimensions({ widthPx: 10, heightPx: 20 });
+	try {
+		function createFixture(): {
+			transcript: RetainedContainer;
+			firstItem: RetainedItem;
+			firstComponent: Component;
+			activeItem: RetainedItem;
+			activeComponent: MutableLine;
+		} {
+			const transcript = new RetainedContainer();
+			const image = new Image(
+				"AA==",
+				"image/png",
+				{ fallbackColor: passthrough },
+				{ maxWidthCells: 10 },
+				{ widthPx: 100, heightPx: 100 },
+			);
+			const firstItem = transcript.addRetainedChild(image, {
+				id: "history-image",
+				version: 1,
+				completed: true,
+			});
+			for (let index = 1; index < 5_000; index++) {
+				transcript.addRetainedChild(
+					new MutableLine(`history-${index} \x1b[32mANSI\x1b[0m 中文 😀 e\u0301`),
+					{ id: `history-${index}`, version: 1, completed: true },
+				);
+			}
+			const activeComponent = new MutableLine("active-0");
+			const activeItem = transcript.addRetainedChild(activeComponent, { id: "active", version: 1 });
+			return { transcript, firstItem, firstComponent: image, activeItem, activeComponent };
+		}
+
+		const candidate = createFixture();
+		const reference = createFixture();
+		assert.deepEqual(candidate.transcript.renderViewportTail(120, 40), reference.transcript.renderViewportTail(120, 40));
+		const oldMutation = candidate.transcript.observeViewportMutation(120);
+		const raw = candidate.transcript as unknown as RawRetainedContainer;
+		const oldImageLines = raw.viewportRecords[0]?.kittySpanLines;
+		assert.notEqual(oldImageLines, undefined);
+		const firstItemIdentity = candidate.firstItem;
+		const childrenIdentity = candidate.transcript.children;
+
+		candidate.transcript[RELEASE_COMPONENT_RENDER_CACHE]();
+		assert.deepEqual(candidate.transcript.getRetainedLifecycleReferenceCounts(), {
+			children: 5_001,
+			retainedItems: 5_001,
+			retainedComponents: 5_001,
+			viewportRecords: 0,
+			viewportRecordComponentReferences: 0,
+			viewportRecordRetainedItemReferences: 0,
+			dirtyViewportRecords: 0,
+			preparedViewportRecords: 0,
+			viewportBlockHeights: 0,
+			preparedLineReferences: 0,
+			kittyLineReferences: 0,
+			viewportTotalHeight: 0,
+			viewportWidthDefined: 0,
+		});
+		assert.equal(candidate.transcript.children, childrenIdentity);
+		assert.equal(candidate.transcript.children[0], candidate.firstComponent);
+		assert.equal(candidate.firstItem, firstItemIdentity);
+		assert.equal(candidate.firstItem.component, candidate.firstComponent);
+		assert.equal(candidate.firstItem.completedVersion, 1);
+		assert.equal(candidate.firstItem.released, false);
+
+		candidate.activeComponent.value = "active-1";
+		candidate.activeItem.updateVersion(2);
+		reference.activeComponent.value = "active-1";
+		reference.activeItem.updateVersion(2);
+		const observation = candidate.transcript.observeViewportMutation(80, oldMutation.token);
+		assert.equal(observation.kind, "unsafe");
+		const candidateTail = candidate.transcript.renderViewportTail(80, 40);
+		const referenceTail = reference.transcript.renderViewportTail(80, 40);
+		assert.deepEqual(candidateTail.lines, referenceTail.lines);
+		assert.equal(candidateTail.startLine, referenceTail.startLine);
+		assert.equal(candidateTail.totalHeight, referenceTail.totalHeight);
+		assert.equal(candidateTail.leadingKittyImage, referenceTail.leadingKittyImage);
+		const rebuilt = candidate.transcript.getRetainedLifecycleReferenceCounts();
+		assert.equal(rebuilt.viewportRecords, 5_001);
+		assert.equal(rebuilt.viewportRecordComponentReferences, 5_001);
+		assert.equal(rebuilt.viewportRecordRetainedItemReferences, 5_001);
+		assert.equal(rebuilt.preparedViewportRecords, 0);
+		assert.equal(rebuilt.preparedLineReferences, 0);
+		assert.notEqual(raw.viewportRecords[0]?.kittySpanLines, oldImageLines);
+
+		candidate.transcript[RELEASE_COMPONENT_RENDER_CACHE]();
+		assert.equal(candidate.transcript.getRetainedLifecycleReferenceCounts().viewportRecords, 0);
+		assert.equal(candidate.transcript.getRetainedStats().retainedItems, 5_001);
+		assert.equal(candidate.transcript.children.length, 5_001);
+	} finally {
+		setCellDimensions({ widthPx: 9, heightPx: 18 });
+		setCapabilities({ images: null, trueColor: false, hyperlinks: false });
+	}
+});
+
+test("5k and 50k retained owners keep no derived viewport records after cache release", () => {
+	for (const itemCount of [5_000, 50_000]) {
+		const transcript = new RetainedContainer();
+		for (let index = 0; index < itemCount; index++) {
+			transcript.addRetainedChild(new MutableLine(`history-${index}`), {
+				id: `history-${index}`,
+				version: 1,
+				completed: true,
+			});
+		}
+		transcript.renderViewportTail(120, 40);
+		assert.equal(transcript.getRetainedLifecycleReferenceCounts().viewportRecords, itemCount);
+
+		transcript[RELEASE_COMPONENT_RENDER_CACHE]();
+		const released = transcript.getRetainedLifecycleReferenceCounts();
+		assert.equal(released.children, itemCount);
+		assert.equal(released.retainedItems, itemCount);
+		assert.equal(released.retainedComponents, itemCount);
+		assert.equal(released.viewportRecords, 0);
+		assert.equal(released.viewportRecordComponentReferences, 0);
+		assert.equal(released.viewportRecordRetainedItemReferences, 0);
+		assert.equal(released.dirtyViewportRecords, 0);
+		assert.equal(released.preparedViewportRecords, 0);
+		assert.equal(released.viewportBlockHeights, 0);
+		assert.equal(released.preparedLineReferences, 0);
+		assert.equal(released.kittyLineReferences, 0);
 	}
 });
 

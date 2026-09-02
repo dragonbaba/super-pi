@@ -4,15 +4,34 @@ import { EventEmitter } from "node:events";
 import { readFileSync } from "node:fs";
 import { Writable } from "node:stream";
 import test from "node:test";
-import { TuiMainScreen as InteractiveTuiMainScreen, type TuiMainScreenRenderState } from "@super-pi/tui";
+import {
+	Container as InteractiveContainer,
+	Loader,
+	ScrollView as InteractiveScrollView,
+	Text as InteractiveText,
+	TuiMainScreen as InteractiveTuiMainScreen,
+	type TuiMainScreenRenderState,
+	VStack as InteractiveVStack,
+} from "@super-pi/tui";
 import { AgentSession } from "../packages/coding-agent/src/core/agent-session.ts";
-import { InteractiveMode } from "../packages/coding-agent/src/modes/interactive/interactive-mode.ts";
+import { KeybindingsManager } from "../packages/coding-agent/src/core/keybindings.ts";
+import { ExtensionEditorComponent } from "../packages/coding-agent/src/modes/interactive/components/extension-editor.ts";
+import { ExtensionInputComponent } from "../packages/coding-agent/src/modes/interactive/components/extension-input.ts";
+import { ExtensionSelectorComponent } from "../packages/coding-agent/src/modes/interactive/components/extension-selector.ts";
+import { SessionSelectorComponent } from "../packages/coding-agent/src/modes/interactive/components/session-selector.ts";
+import { initTheme } from "../packages/coding-agent/src/modes/interactive/theme/theme.ts";
+import {
+	createInteractiveTuiReference,
+	InteractiveMode,
+} from "../packages/coding-agent/src/modes/interactive/interactive-mode.ts";
 import { TerminalFrameQueue, type TerminalFrameSink } from "../packages/tui/src/terminal-frame-queue.ts";
 import { TuiRenderInstrumentation } from "../packages/tui/src/render-instrumentation.ts";
 import { ProcessTerminal, type Terminal } from "../packages/tui/src/terminal.ts";
 import { type Component, TuiBase } from "../packages/tui/src/tui.ts";
 import { TuiAltScreen } from "../packages/tui/src/tui-alt-screen.ts";
 import { TuiMainScreen } from "../packages/tui/src/tui-main-screen.ts";
+
+initTheme("dark");
 
 interface Gate {
 	resolve(): void;
@@ -164,6 +183,17 @@ class InstrumentedMainTui extends InteractiveTuiMainScreen {
 		this.captureRenderStateCalls++;
 		return super.captureRenderState();
 	}
+}
+
+function preserveLoaderText(value: string): string {
+	return value;
+}
+
+interface TransferScrollViewState {
+	requestRenderCallback: (() => void) | undefined;
+	scrollbarHideTimer: (NodeJS.Timeout & { _onTimeout?: () => void }) | undefined;
+	transientScrollbarVisible: boolean;
+	scrollbarActive: boolean;
 }
 
 class SplitFrameTui extends FrameTui {
@@ -927,7 +957,11 @@ test("cancelled physical write settles before a reused generation can start", as
 	);
 	const suspendSource = interactiveSource.match(/private async handleCtrlZ[\s\S]*?\n\tprivate async handleFollowUp/)?.[0] ?? "";
 	assert.match(suspendSource, /await this\.ui\.stop\(\)/);
-	assert.match(suspendSource, /this\.ui\.start\(\)/);
+	assert.match(suspendSource, /process\.once\("SIGCONT", this\.handleSuspendContinue\)/);
+	const suspendContinueSource =
+		interactiveSource.match(/private readonly handleSuspendContinue[\s\S]*?\n\t};/)?.[0] ?? "";
+	assert.match(suspendContinueSource, /this\.tuiLifecycleGeneration !== lifecycleGeneration/);
+	assert.match(suspendContinueSource, /this\.ui\.start\(\)/);
 	assert.match(interactiveSource, /private async handleOpenExternalEditor[\s\S]{0,800}await this\.ui\.stop\(\)[\s\S]{0,800}this\.ui\.start\(\)/);
 });
 
@@ -1527,6 +1561,395 @@ test("concurrent mode switches create one replacement after sharing the previous
 	await mode.renderer.dispose();
 });
 
+test("Main to Alt mode switch preserves a Loader reused by the explicit layout root", async () => {
+	const terminal = new ImmediateInputTerminal();
+	const previousUi = new InstrumentedMainTui(terminal);
+	const mode = createModeSwitchHarness(previousUi);
+	const stableTui = createInteractiveTuiReference(() => mode.renderer);
+	const loader = new Loader(stableTui, preserveLoaderText, preserveLoaderText, "switching");
+	previousUi.addChild(loader);
+	mode.fullscreenLayoutRoot = loader;
+	previousUi.start();
+	previousUi.renderNow();
+
+	const switched = await mode.switchTuiMode.call(mode, "fullscreen", false, false);
+	assert.equal(switched, true);
+	assert.equal(mode.renderer.mode, "fullscreen");
+	const raw = loader as unknown as { intervalId: NodeJS.Timeout | null; ui: unknown };
+	assert.ok(raw.intervalId);
+	assert.equal(raw.ui, stableTui);
+	await mode.renderer.dispose({ preserveScreen: true });
+	assert.equal(raw.intervalId, null);
+	assert.equal(raw.ui, null);
+});
+
+test("Alt to Main mode switch preserves animation owners reused by the regular roots", async () => {
+	const terminal = new ImmediateInputTerminal();
+	const previousUi = new InstrumentedMainTui(terminal);
+	const mode = createModeSwitchHarness(previousUi);
+	const stableTui = createInteractiveTuiReference(() => mode.renderer);
+	const loader = new Loader(stableTui, preserveLoaderText, preserveLoaderText, "switching-back");
+	previousUi.addChild(loader);
+	mode.fullscreenLayoutRoot = loader;
+	previousUi.start();
+	previousUi.renderNow();
+
+	assert.equal(await mode.switchTuiMode.call(mode, "fullscreen", false, false), true);
+	const raw = loader as unknown as { intervalId: NodeJS.Timeout | null; ui: unknown };
+	assert.ok(raw.intervalId);
+	assert.equal(await mode.switchTuiMode.call(mode, "regular", false, false), true);
+	assert.equal(mode.renderer.mode, "regular");
+	assert.ok(raw.intervalId);
+	assert.equal(raw.ui, stableTui);
+	await mode.renderer.dispose({ preserveScreen: true });
+	assert.equal(raw.intervalId, null);
+	assert.equal(raw.ui, null);
+});
+
+test("Alt to Main releases only the fullscreen ScrollView owner in the production root shape", async () => {
+	const terminal = new ImmediateInputTerminal();
+	terminal.backpressure = false;
+	const previousUi = new InstrumentedMainTui(terminal);
+	const mode = createModeSwitchHarness(previousUi);
+	const stableTui = createInteractiveTuiReference(() => mode.renderer);
+	mode.ui = stableTui;
+	const documentContainer = new InteractiveContainer();
+	let documentText = "document-0";
+	for (let index = 1; index < 200; index++) documentText += `\ndocument-${index}`;
+	const sharedDocumentText = new InteractiveText(documentText, 0, 0);
+	documentContainer.addChild(sharedDocumentText);
+	const transcriptScrollView = new InteractiveScrollView(documentContainer, {
+		follow: "end",
+		primary: true,
+		overscroll: "chain",
+		scrollbar: "auto",
+		scrollbarHideDelayMs: 60_000,
+	});
+	const loader = new Loader(stableTui, preserveLoaderText, preserveLoaderText, "shared-dock-loader", {
+		frames: ["*", "*"],
+		intervalMs: 60_000,
+	});
+	const dock = new InteractiveVStack([{ component: loader, shrink: 1, minSize: 1 }]);
+	const fullscreenLayoutRoot = new InteractiveVStack([
+		{ component: transcriptScrollView, basis: 0, grow: 1, shrink: 1, minSize: 1 },
+		{ component: dock, basis: "auto", grow: 0, shrink: 1, minSize: 1 },
+	]);
+	mode.transcriptScrollView = transcriptScrollView;
+	mode.fullscreenLayoutRoot = fullscreenLayoutRoot;
+	previousUi.addChild(documentContainer);
+	previousUi.addChild(loader);
+	previousUi.start();
+	previousUi.renderNow();
+
+	assert.equal(await mode.switchTuiMode.call(mode, "fullscreen", false, false), true);
+	const firstAlt = mode.renderer as TuiAltScreen;
+	firstAlt.start();
+	firstAlt.renderNow(true);
+	transcriptScrollView.scrollBy(-1);
+	firstAlt.renderNow(true);
+	const scrollState = transcriptScrollView as unknown as TransferScrollViewState;
+	const firstCallback = scrollState.requestRenderCallback;
+	const firstTimer = scrollState.scrollbarHideTimer;
+	const firstTimerCallback = firstTimer?._onTimeout;
+	const firstScrollTop = transcriptScrollView.scrollTop;
+	const loaderState = loader as unknown as { intervalId: NodeJS.Timeout | null; ui: unknown };
+	assert.equal(typeof firstCallback, "function");
+	assert.ok(firstTimer);
+	assert.equal(scrollState.transientScrollbarVisible, true);
+	assert.ok(loaderState.intervalId);
+	assert.equal(loaderState.ui, stableTui);
+
+	assert.equal(await mode.switchTuiMode.call(mode, "regular", false, false), true);
+	mode.renderer.start();
+	assert.equal(scrollState.requestRenderCallback, undefined);
+	assert.equal(scrollState.scrollbarHideTimer, undefined);
+	assert.equal(scrollState.transientScrollbarVisible, false);
+	assert.equal(scrollState.scrollbarActive, false);
+	assert.ok(loaderState.intervalId);
+	assert.equal(loaderState.ui, stableTui);
+	assert.equal(transcriptScrollView.scrollTop, firstScrollTop);
+	assert.equal(mode.fullscreenLayoutRoot, fullscreenLayoutRoot);
+
+	const oldAltQueue = firstAlt.getTerminalFrameQueueSnapshot();
+	firstTimerCallback?.call(firstTimer);
+	assert.deepEqual(firstAlt.getTerminalFrameQueueSnapshot(), oldAltQueue);
+
+	assert.equal(await mode.switchTuiMode.call(mode, "fullscreen", false, false), true);
+	const secondAlt = mode.renderer as TuiAltScreen;
+	secondAlt.start();
+	secondAlt.renderNow(true);
+	assert.equal(mode.transcriptScrollView, transcriptScrollView);
+	assert.equal(typeof scrollState.requestRenderCallback, "function");
+	assert.notEqual(scrollState.requestRenderCallback, firstCallback);
+	assert.equal(transcriptScrollView.scrollTop, firstScrollTop);
+	assert.ok(terminal.writer.writes.some((frame) => frame.includes("document-199")));
+	const freshDocumentContainer = new InteractiveContainer();
+	freshDocumentContainer.addChild(new InteractiveText(documentText, 0, 0));
+	const freshScrollView = new InteractiveScrollView(freshDocumentContainer, {
+		follow: "end",
+		primary: true,
+		overscroll: "chain",
+		scrollbar: "auto",
+		scrollbarHideDelayMs: 60_000,
+	});
+	const freshLoader = new Loader({ requestRender(): void {} } as never, preserveLoaderText, preserveLoaderText,
+		"shared-dock-loader", { frames: ["*", "*"], intervalMs: 60_000 });
+	const freshRoot = new InteractiveVStack([
+		{ component: freshScrollView, basis: 0, grow: 1, shrink: 1, minSize: 1 },
+		{ component: new InteractiveVStack([{ component: freshLoader, shrink: 1, minSize: 1 }]),
+			basis: "auto", grow: 0, shrink: 1, minSize: 1 },
+	]);
+	assert.deepEqual(fullscreenLayoutRoot.render(120), freshRoot.render(120));
+	freshLoader.dispose();
+
+	assert.equal(await mode.switchTuiMode.call(mode, "regular", false, false), true);
+	mode.renderer.start();
+	assert.equal(scrollState.requestRenderCallback, undefined);
+	assert.equal(scrollState.scrollbarHideTimer, undefined);
+	assert.ok(loaderState.intervalId);
+	let completedRoundTrips = 0;
+	let mainBoundaryOwnerReferences = 0;
+	for (let cycle = 0; cycle < 100; cycle++) {
+		assert.equal(await mode.switchTuiMode.call(mode, "fullscreen", false, false), true);
+		const cycleAlt = mode.renderer as TuiAltScreen;
+		cycleAlt.start();
+		cycleAlt.renderNow(true);
+		assert.equal(mode.transcriptScrollView, transcriptScrollView);
+		assert.equal(typeof scrollState.requestRenderCallback, "function");
+		transcriptScrollView.scrollToEnd();
+		transcriptScrollView.scrollBy(-1);
+		cycleAlt.renderNow(true);
+		assert.equal(await mode.switchTuiMode.call(mode, "regular", false, false), true);
+		mode.renderer.start();
+		assert.equal(scrollState.requestRenderCallback, undefined);
+		assert.equal(scrollState.scrollbarHideTimer, undefined);
+		assert.equal(scrollState.transientScrollbarVisible, false);
+		assert.equal(scrollState.scrollbarActive, false);
+		assert.equal(loaderState.ui, stableTui);
+		if (scrollState.requestRenderCallback !== undefined) mainBoundaryOwnerReferences++;
+		if (scrollState.scrollbarHideTimer !== undefined) mainBoundaryOwnerReferences++;
+		if (scrollState.transientScrollbarVisible) mainBoundaryOwnerReferences++;
+		if (scrollState.scrollbarActive) mainBoundaryOwnerReferences++;
+		completedRoundTrips++;
+	}
+	assert.equal(completedRoundTrips, 100);
+	assert.equal(mainBoundaryOwnerReferences, 0);
+	assert.equal(mode.fullscreenLayoutRoot, fullscreenLayoutRoot);
+	await mode.stop.call(mode, "resume-hint");
+	assert.equal(scrollState.requestRenderCallback, undefined);
+	assert.equal(scrollState.scrollbarHideTimer, undefined);
+	assert.equal(loaderState.intervalId, null);
+	assert.equal(loaderState.ui, null);
+});
+
+test("InteractiveMode stop cancels and settles timed extension dialogs", async () => {
+	for (const kind of ["selector", "input"] as const) {
+		const terminal = new ImmediateInputTerminal();
+		terminal.backpressure = false;
+		const previousUi = new InstrumentedMainTui(terminal);
+		const mode = createModeSwitchHarness(previousUi);
+		let cancelCalls = 0;
+		const component = kind === "selector"
+			? new ExtensionSelectorComponent("Timed selector", ["one"], preserveLoaderText, () => {
+				cancelCalls++;
+				mode.extensionSelector = undefined;
+			}, {
+				tui: previousUi,
+				timeout: 60_000,
+			})
+			: new ExtensionInputComponent("Timed input", undefined, preserveLoaderText, () => {
+				cancelCalls++;
+				mode.extensionInput = undefined;
+			}, {
+				tui: previousUi,
+				timeout: 60_000,
+			});
+		const raw = component as unknown as { countdown?: { intervalId?: NodeJS.Timeout } };
+		mode.extensionSelector = kind === "selector" ? component : undefined;
+		mode.extensionInput = kind === "input" ? component : undefined;
+		previousUi.addChild(component);
+		previousUi.start();
+		assert.ok(raw.countdown?.intervalId);
+		try {
+			await mode.stop.call(mode, "resume-hint");
+			assert.equal(cancelCalls, 1);
+			assert.equal(raw.countdown?.intervalId, undefined);
+			assert.equal(mode.extensionSelector, undefined);
+			assert.equal(mode.extensionInput, undefined);
+			await mode.stop.call(mode, "resume-hint");
+			assert.equal(cancelCalls, 1);
+		} finally {
+			component.dispose();
+		}
+	}
+});
+
+test("InteractiveMode stop disposes active session selector work", async () => {
+	const terminal = new ImmediateInputTerminal();
+	terminal.backpressure = false;
+	const previousUi = new InstrumentedMainTui(terminal);
+	const mode = createModeSwitchHarness(previousUi);
+	let progress: ((loaded: number, total: number) => void) | undefined;
+	let resolveLoad: ((sessions: []) => void) | undefined;
+	let requestRenderCalls = 0;
+	const selector = new SessionSelectorComponent(
+		(onProgress) => {
+			progress = onProgress;
+			return new Promise<[]>((resolve) => {
+				resolveLoad = resolve;
+			});
+		},
+		async () => [],
+		() => {},
+		() => {},
+		() => {},
+		() => {
+			requestRenderCalls++;
+		},
+	);
+	const selectorState = selector as unknown as {
+		dispose(): void;
+		header: {
+			setStatusMessage(message: { type: "info"; message: string }, autoHideMs: number): void;
+			statusTimeout: NodeJS.Timeout | null;
+		};
+	};
+	selectorState.header.setStatusMessage({ type: "info", message: "pending" }, 60_000);
+	assert.ok(selectorState.header.statusTimeout);
+	const staleStatusCallback = (
+		selectorState.header.statusTimeout as NodeJS.Timeout & { _onTimeout?: () => void }
+	)._onTimeout;
+	delete mode.disposeActiveSelector;
+	mode.activeSelectorToken = {};
+	mode.activeSelectorDispose = () => selectorState.dispose();
+	previousUi.addChild(selector);
+	previousUi.start();
+
+	await mode.stop.call(mode, "resume-hint");
+	const rendersAfterStop = requestRenderCalls;
+	assert.equal(selectorState.header.statusTimeout, null);
+	progress?.(1, 1);
+	staleStatusCallback?.();
+	resolveLoad?.([]);
+	await Promise.resolve();
+	await Promise.resolve();
+	assert.equal(requestRenderCalls, rendersAfterStop);
+	assert.equal(mode.activeSelectorDispose, undefined);
+});
+
+test("InteractiveMode stop cancels and settles an extension editor", async () => {
+	const terminal = new ImmediateInputTerminal();
+	terminal.backpressure = false;
+	const previousUi = new InstrumentedMainTui(terminal);
+	const mode = createModeSwitchHarness(previousUi);
+	let cancelCalls = 0;
+	const component = new ExtensionEditorComponent(
+		previousUi,
+		KeybindingsManager.create(),
+		"Edit",
+		"draft",
+		() => {},
+		() => {
+			cancelCalls++;
+			mode.extensionEditor = undefined;
+		},
+	);
+	mode.extensionEditor = component;
+	previousUi.addChild(component);
+	previousUi.start();
+
+	await mode.stop.call(mode, "resume-hint");
+	assert.equal(cancelCalls, 1);
+	assert.equal(mode.extensionEditor, undefined);
+	await mode.stop.call(mode, "resume-hint");
+	assert.equal(cancelCalls, 1);
+});
+
+test("extension editor late external completion cannot restart a stopped owner", async () => {
+	let resolveExternal:
+		| ((result: { status: "complete"; content: string } | { status: "failed" }) => void)
+		| undefined;
+	let rejectExternal: ((error: Error) => void) | undefined;
+	let externalCalls = 0;
+	class DeferredExtensionEditor extends ExtensionEditorComponent {
+		protected override openExternalEditor(): Promise<
+			{ status: "complete"; content: string } | { status: "failed" }
+		> {
+			externalCalls++;
+			return new Promise((resolve, reject) => {
+				resolveExternal = resolve;
+				rejectExternal = reject;
+			});
+		}
+	}
+
+	const terminal = new ImmediateInputTerminal();
+	terminal.backpressure = false;
+	const tui = new InstrumentedMainTui(terminal);
+	const mode = createModeSwitchHarness(tui);
+	let cancelCalls = 0;
+	const component = new DeferredExtensionEditor(
+		tui,
+		KeybindingsManager.create(),
+		"Edit",
+		"original",
+		() => {},
+		() => {
+			cancelCalls++;
+			mode.extensionEditor = undefined;
+		},
+	);
+	mode.extensionEditor = component;
+	tui.addChild(component);
+	tui.start();
+	const task = (
+		component as unknown as { handleOpenExternalEditor(): Promise<void> }
+	).handleOpenExternalEditor();
+	while (externalCalls === 0) await Promise.resolve();
+	assert.equal(terminal.started, false);
+
+	await mode.stop.call(mode, "resume-hint");
+	resolveExternal?.({ status: "complete", content: "stale" });
+	await task;
+	assert.equal(cancelCalls, 1);
+	assert.equal(terminal.started, false);
+	assert.equal(
+		(component as unknown as { editor: { getText(): string } }).editor.getText(),
+		"original",
+	);
+	component.cancel();
+	assert.equal(cancelCalls, 1);
+
+	const rejectionTerminal = new ImmediateInputTerminal();
+	rejectionTerminal.backpressure = false;
+	const rejectionTui = new InstrumentedMainTui(rejectionTerminal);
+	let observedErrors = 0;
+	const rejecting = new DeferredExtensionEditor(
+		rejectionTui,
+		KeybindingsManager.create(),
+		"Edit",
+		"original",
+		() => {},
+		() => {},
+		undefined,
+		undefined,
+		() => {
+			observedErrors++;
+		},
+	);
+	rejectionTui.addChild(rejecting);
+	rejectionTui.start();
+	const rejectionTask = (
+		rejecting as unknown as { handleOpenExternalEditor(): Promise<void> }
+	).handleOpenExternalEditor();
+	while (externalCalls < 2) await Promise.resolve();
+	rejectExternal?.(new Error("external editor fixture failure"));
+	await rejectionTask;
+	assert.equal(observedErrors, 1);
+	assert.equal(rejectionTerminal.started, true);
+	await rejectionTui.dispose({ preserveScreen: true });
+});
+
 test("mode switch snapshots the final root focus and Main render state after stop", async () => {
 	const terminal = new GatedTerminal();
 	const previousUi = new InstrumentedMainTui(terminal);
@@ -1867,22 +2290,36 @@ test("external-editor production lifecycle restarts the same TUI after a timed-o
 	await tui.dispose();
 });
 
-test(
-	"Ctrl-Z production lifecycle restarts the same TUI after a timed-out frame",
-	{ skip: process.platform === "win32" },
-	async () => {
+test("Ctrl-Z production lifecycle restarts the same TUI after a timed-out frame", async () => {
+	const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform");
+	const originalSigintListeners = process.listeners("SIGINT");
+	const originalSigcontListeners = process.listeners("SIGCONT");
+	let mode: any;
+	try {
+		Object.defineProperty(process, "platform", { configurable: true, value: "linux" });
 		const output = new ControlledFrameOutput();
 		const terminal = new LifecycleProcessTerminal(output as never);
 		const tui = new FrameTui(terminal, false, undefined, 20);
 		tui.renderNow();
 		const callbackA = output.callbacks[0];
 		assert.ok(callbackA);
-		const mode = Object.create(InteractiveMode.prototype) as {
-			ui: FrameTui;
-			suspendProcessGroup(): void;
-			handleCtrlZ(): Promise<void>;
-		};
+		mode = Object.create(InteractiveMode.prototype) as any;
 		Object.defineProperty(mode, "ui", { value: tui, configurable: true });
+		mode.tuiLifecycleGeneration = 0;
+		mode.suspendGeneration = 0;
+		mode.activeSuspendGeneration = 0;
+		mode.activeSuspendLifecycleGeneration = 0;
+		mode.activeSuspendKeepAlive = undefined;
+		mode.ignoreSuspendSigint = (): void => {};
+		mode.handleSuspendContinue = (): void => {
+			const generation = mode.activeSuspendGeneration;
+			if (generation === 0) return;
+			const lifecycleGeneration = mode.activeSuspendLifecycleGeneration;
+			mode.clearActiveSuspend(generation);
+			if (mode.tuiLifecycleGeneration !== lifecycleGeneration) return;
+			mode.ui.start();
+			mode.ui.requestRender(true);
+		};
 		mode.suspendProcessGroup = () => { process.emit("SIGCONT"); };
 		await mode.handleCtrlZ();
 		assert.equal(terminal.lifecycleStarted, true);
@@ -1896,8 +2333,17 @@ test(
 		output.emit("drain");
 		await tui.flushTerminalFrames();
 		await tui.dispose();
-	},
-);
+	} finally {
+		mode?.cancelActiveSuspend?.();
+		for (const listener of process.listeners("SIGINT")) {
+			if (!originalSigintListeners.includes(listener)) process.removeListener("SIGINT", listener);
+		}
+		for (const listener of process.listeners("SIGCONT")) {
+			if (!originalSigcontListeners.includes(listener)) process.removeListener("SIGCONT", listener);
+		}
+		if (platformDescriptor) Object.defineProperty(process, "platform", platformDescriptor);
+	}
+});
 
 test("final ProcessTerminal dispose retains orphan error ownership until physical settlement", async () => {
 	const output = new ControlledFrameOutput();
@@ -2657,6 +3103,78 @@ test("frame queue source retains one string without Promise tails or pooling", (
 	const interactiveSource = readFileSync(
 		"packages/coding-agent/src/modes/interactive/interactive-mode.ts",
 		"utf8",
+	);
+	const mountInteractiveTui = interactiveSource.match(
+		/private mountInteractiveTui[\s\S]*?\n\t}\n/,
+	)?.[0] ?? "";
+	assert.notEqual(mountInteractiveTui, "");
+	assert.ok(
+		mountInteractiveTui.indexOf("tui.setLayoutRoot(this.fullscreenLayoutRoot)") <
+			mountInteractiveTui.indexOf("for (const component of components)"),
+	);
+	assert.doesNotMatch(mountInteractiveTui, /new (?:Map|Set|Promise|AbortController)|=>|function\s*\(/);
+	const switchTuiMode = interactiveSource.match(/private async switchTuiMode[\s\S]*?\n\t}\n/)?.[0] ?? "";
+	assert.notEqual(switchTuiMode, "");
+	assert.match(
+		switchTuiMode,
+		/previousUi instanceof TuiAltScreen\) \{\s*this\.releaseFullscreenTransferOwners\(\);\s*previousUi\.detachLayoutRootForTransfer\(\)/,
+	);
+	assert.ok(
+		switchTuiMode.indexOf("this.releaseFullscreenTransferOwners()") <
+			switchTuiMode.indexOf("previousUi.detachLayoutRootForTransfer()"),
+	);
+	assert.doesNotMatch(switchTuiMode, /new (?:Map|Set|AbortController)|\.map\(|\.filter\(|\.flatMap\(/);
+	const releaseFullscreenTransferOwners = interactiveSource.match(
+		/private releaseFullscreenTransferOwners\(\): void \{[\s\S]*?\n\t}/,
+	)?.[0] ?? "";
+	assert.notEqual(releaseFullscreenTransferOwners, "");
+	assert.match(
+		releaseFullscreenTransferOwners,
+		/this\.transcriptScrollView\?\.\[RELEASE_COMPONENT_RENDER_CACHE\]\?\.\(\)/,
+	);
+	assert.doesNotMatch(
+		releaseFullscreenTransferOwners,
+		/fullscreenLayoutRoot|releaseComponentRenderCaches|\.invalidate\(|\.render\(|new (?:Map|Set|Promise|AbortController)|=>|function\s*\(|\{\s*(?:data|component|owner)\s*:/,
+	);
+	const cancelExtensionDialogs = interactiveSource.match(
+		/private cancelExtensionDialogs[\s\S]*?\n\t}/,
+	)?.[0] ?? "";
+	assert.notEqual(cancelExtensionDialogs, "");
+	assert.match(cancelExtensionDialogs, /this\.extensionSelector\?\.cancel\(\)/);
+	assert.match(cancelExtensionDialogs, /this\.extensionInput\?\.cancel\(\)/);
+	assert.match(cancelExtensionDialogs, /this\.extensionEditor\?\.cancel\(\)/);
+	assert.doesNotMatch(
+		cancelExtensionDialogs,
+		/new (?:Map|Set|Promise|AbortController)|=>|function\s*\(|\.map\(|\.filter\(|\.flatMap\(/,
+	);
+	const interactiveStop = interactiveSource.match(
+		/async stop\(fullscreenExitOutput[\s\S]*?\n\t}/,
+	)?.[0] ?? "";
+	assert.notEqual(interactiveStop, "");
+	assert.ok(
+		interactiveStop.indexOf("this.cancelExtensionDialogs()") <
+			interactiveStop.indexOf("this.disposeActiveSelector()"),
+	);
+	const showSessionSelector = interactiveSource.match(
+		/private showSessionSelector[\s\S]*?\n\t}/,
+	)?.[0] ?? "";
+	assert.match(showSessionSelector, /dispose: \(\) => selector\.dispose\(\)/);
+	const extensionEditorSource = readFileSync(
+		"packages/coding-agent/src/modes/interactive/components/extension-editor.ts",
+		"utf8",
+	);
+	assert.match(extensionEditorSource, /taskGeneration !== this\.activeExternalEditorGeneration/);
+	assert.match(extensionEditorSource, /lifecycleGeneration !== this\.lifecycleGeneration/);
+	const altSource = readFileSync("packages/tui/src/tui-alt-screen.ts", "utf8");
+	const detachLayoutRootForTransfer = altSource.match(
+		/detachLayoutRootForTransfer\(\): void \{[\s\S]*?\n\t}/,
+	)?.[0] ?? "";
+	assert.notEqual(detachLayoutRootForTransfer, "");
+	assert.match(detachLayoutRootForTransfer, /this\.layoutRoot = undefined/);
+	assert.match(detachLayoutRootForTransfer, /this\.layoutScratch\.clear\(\)/);
+	assert.doesNotMatch(
+		detachLayoutRootForTransfer,
+		/releaseComponentRenderCaches|\.invalidate\(|\.render\(|new (?:Map|Set|Promise|AbortController)|=>|function\s*\(/,
 	);
 	assert.match(interactiveSource, /await previousUi\.stop\(\{ preserveScreen: true \}\)/);
 	assert.match(interactiveSource, /await this\.stopInteractiveTui\(fullscreenExitOutput\)/);

@@ -2,7 +2,7 @@
  * Component for displaying bash command execution with streaming output.
  */
 
-import { Container, Loader, Spacer, Text, type TUI } from "@super-pi/tui";
+import { Container, type Component, Loader, RELEASE_COMPONENT_RENDER_CACHE, Spacer, Text, type TUI } from "@super-pi/tui";
 import {
 	DEFAULT_MAX_BYTES,
 	DEFAULT_MAX_LINES,
@@ -17,6 +17,39 @@ import { truncateToVisualLines } from "./visual-truncate.ts";
 
 // Preview line limit when not expanded (matches tool execution behavior)
 const PREVIEW_LINES = 20;
+const EMPTY_BASH_PREVIEW_LINES: string[] = [];
+Object.freeze(EMPTY_BASH_PREVIEW_LINES);
+
+class BashPreviewComponent implements Component {
+	private styledInput: string | undefined;
+	private cachedWidth: number | undefined;
+	private cachedLines: string[] | undefined;
+
+	constructor(styledInput: string) {
+		this.styledInput = styledInput;
+	}
+
+	render(width: number): string[] {
+		if (this.styledInput === undefined) return EMPTY_BASH_PREVIEW_LINES;
+		if (this.cachedLines === undefined || this.cachedWidth !== width) {
+			const result = truncateToVisualLines(this.styledInput, PREVIEW_LINES, width, 1);
+			this.cachedLines = result.visualLines;
+			this.cachedWidth = width;
+		}
+		return this.cachedLines;
+	}
+
+	invalidate(): void {
+		this.cachedWidth = undefined;
+		this.cachedLines = undefined;
+	}
+
+	[RELEASE_COMPONENT_RENDER_CACHE](): void {
+		this.styledInput = undefined;
+		this.cachedWidth = undefined;
+		this.cachedLines = undefined;
+	}
+}
 
 export class BashExecutionComponent extends Container {
 	private command: string;
@@ -28,6 +61,8 @@ export class BashExecutionComponent extends Container {
 	private fullOutputPath?: string;
 	private expanded = false;
 	private contentContainer: Container;
+	private previewComponent: BashPreviewComponent | undefined;
+	private displayReleased = false;
 
 	constructor(command: string, ui: TUI, excludeFromContext = false) {
 		super();
@@ -77,6 +112,21 @@ export class BashExecutionComponent extends Container {
 		this.updateDisplay();
 	}
 
+	override render(width: number): string[] {
+		if (this.displayReleased) {
+			this.updateDisplay();
+		}
+		return super.render(width);
+	}
+
+	[RELEASE_COMPONENT_RENDER_CACHE](): void {
+		this.previewComponent?.[RELEASE_COMPONENT_RENDER_CACHE]();
+		this.previewComponent = undefined;
+		this.loader[RELEASE_COMPONENT_RENDER_CACHE]();
+		this.contentContainer.clear();
+		this.displayReleased = true;
+	}
+
 	appendOutput(chunk: string): void {
 		// Strip ANSI codes and normalize line endings
 		// Note: binary data is already sanitized in tui-renderer.ts executeBashCommand
@@ -117,6 +167,8 @@ export class BashExecutionComponent extends Container {
 	}
 
 	private updateDisplay(): void {
+		this.displayReleased = false;
+		this.previewComponent = undefined;
 		// Apply truncation for LLM context limits (same limits as bash tool)
 		const fullOutput = this.outputLines.join("\n");
 		const contextTruncation = truncateTail(fullOutput, {
@@ -147,23 +199,8 @@ export class BashExecutionComponent extends Container {
 			} else {
 				// Use shared visual truncation utility with width-aware caching
 				const styledOutput = previewLogicalLines.map((line) => theme.fg("muted", line)).join("\n");
-				const styledInput = `\n${styledOutput}`;
-				let cachedWidth: number | undefined;
-				let cachedLines: string[] | undefined;
-				this.contentContainer.addChild({
-					render: (width: number) => {
-						if (cachedLines === undefined || cachedWidth !== width) {
-							const result = truncateToVisualLines(styledInput, PREVIEW_LINES, width, 1);
-							cachedLines = result.visualLines;
-							cachedWidth = width;
-						}
-						return cachedLines ?? [];
-					},
-					invalidate: () => {
-						cachedWidth = undefined;
-						cachedLines = undefined;
-					},
-				});
+				this.previewComponent = new BashPreviewComponent(`\n${styledOutput}`);
+				this.contentContainer.addChild(this.previewComponent);
 			}
 		}
 

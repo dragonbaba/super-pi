@@ -4,7 +4,7 @@
  * A heartfelt tribute to dax (@thdxr) for providing free Kimi K2.5 access via OpenCode.
  */
 
-import type { Component, TUI } from "@super-pi/tui";
+import { RELEASE_COMPONENT_RENDER_CACHE, type Component, type TUI } from "@super-pi/tui";
 import { theme } from "../theme/theme.ts";
 
 // 32x32 RGB image of dax, hex encoded (3 bytes per pixel)
@@ -55,7 +55,7 @@ function buildImage(): string[] {
 }
 
 export class DaxnutsComponent implements Component {
-	private ui: TUI;
+	private ui: TUI | null;
 	private image: string[];
 	private interval: ReturnType<typeof setInterval> | null = null;
 	private tick = 0;
@@ -74,14 +74,24 @@ export class DaxnutsComponent implements Component {
 		this.cachedWidth = 0;
 	}
 
+	[RELEASE_COMPONENT_RENDER_CACHE](): void {
+		this.releaseAnimationOwner();
+	}
+
+	setTui(ui: TUI): void {
+		this.ui = ui;
+		this.startAnimation();
+	}
+
 	private startAnimation(): void {
+		this.stopAnimation();
 		this.interval = setInterval(() => {
 			this.tick++;
 			if (this.tick >= this.maxTicks) {
 				this.stopAnimation();
 			}
 			this.cachedWidth = 0;
-			this.ui.requestRender();
+			this.ui?.requestRender();
 		}, 80);
 	}
 
@@ -158,7 +168,15 @@ export class DaxnutsComponent implements Component {
 		return lines;
 	}
 
-	dispose(): void {
+	private releaseAnimationOwner(): void {
 		this.stopAnimation();
+		this.ui = null;
+		this.cachedLines = [];
+		this.cachedWidth = 0;
+		this.cachedTick = -1;
+	}
+
+	dispose(): void {
+		this.releaseAnimationOwner();
 	}
 }

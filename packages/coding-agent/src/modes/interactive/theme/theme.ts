@@ -908,6 +908,10 @@ export function onThemeChange(callback: () => void): void {
 	onThemeChangeCallback = callback;
 }
 
+export function offThemeChange(callback: () => void): void {
+	if (onThemeChangeCallback === callback) onThemeChangeCallback = undefined;
+}
+
 function startThemeWatcher(): void {
 	stopThemeWatcher();
 

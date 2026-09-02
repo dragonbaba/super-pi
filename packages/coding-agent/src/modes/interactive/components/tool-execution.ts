@@ -1,8 +1,23 @@
-import { Box, type Component, Container, getCapabilities, Image, Spacer, Text, type TUI } from "@super-pi/tui";
+import {
+	Box,
+	type Component,
+	Container,
+	getCapabilities,
+	Image,
+	RELEASE_COMPONENT_RENDER_CACHE,
+	Spacer,
+	Text,
+	type TUI,
+} from "@super-pi/tui";
 import type { StreamedToolArgumentOwnership } from "@super-pi/ai";
 import type { ToolDefinition, ToolRenderContext } from "../../../core/extensions/types.ts";
 import { createAllToolDefinitions, type ToolName } from "../../../core/tools/index.ts";
 import { getTextOutput as getRenderedTextOutput } from "../../../core/tools/render-utils.ts";
+import {
+	RELEASE_TOOL_RENDER_DERIVED_STATE,
+	TOOL_RENDER_LIFECYCLE_GENERATION,
+	type ToolRenderLifecycleState,
+} from "../../../core/tools/tool-render-lifecycle.ts";
 import { convertToPng } from "../../../utils/image-convert.ts";
 import { ObjectPool } from "../../../utils/object-pool.ts";
 import { theme } from "../theme/theme.ts";
@@ -248,7 +263,13 @@ export interface ToolExecutionAllocationMetrics {
 	toolArgsMissingGenerationUpdates: number;
 	/** Per-tool stream finalization boundaries accepted by this component. */
 	toolArgsFinalizations: number;
+	imageConversionsScheduled?: number;
+	imageConversionsAccepted?: number;
+	imageConversionsDropped?: number;
+	imageConversionRejections?: number;
 }
+
+type ConvertedTerminalImage = { data: string; mimeType: string };
 
 export class ToolExecutionComponent extends Container {
 	private contentBox: Box;
@@ -257,12 +278,21 @@ export class ToolExecutionComponent extends Container {
 	private callRendererComponent?: Component;
 	private resultRendererComponent?: Component;
 	private rendererState: any = {};
-	private readonly imageComponents: Image[] = [];
-	private readonly imageSpacers: Spacer[] = [];
-	private readonly imageSourceData: string[] = [];
-	private readonly imageSourceMimeTypes: string[] = [];
-	private readonly pendingImageSourceData: Array<string | undefined> = [];
-	private readonly pendingImageSourceMimeTypes: Array<string | undefined> = [];
+	private renderLifecycleGeneration = 1;
+	private imageComponents: Image[] = [];
+	private imageSpacers: Spacer[] = [];
+	private imageSourceData: string[] = [];
+	private imageSourceMimeTypes: string[] = [];
+	private pendingImageSourceData: Array<string | undefined> = [];
+	private pendingImageSourceMimeTypes: Array<string | undefined> = [];
+	private pendingImageTaskGenerations: number[] = [];
+	private nextImageTaskGeneration = 0;
+	private activeImageConversions = 0;
+	private activeImageConversionsHighWaterMark = 0;
+	private imageConversionsScheduled = 0;
+	private imageConversionsAccepted = 0;
+	private imageConversionsDropped = 0;
+	private imageConversionRejections = 0;
 	private toolName: string;
 	private toolCallId: string;
 	private args: any;
@@ -325,6 +355,8 @@ export class ToolExecutionComponent extends Container {
 		this.allocationMetrics = options.allocationMetrics;
 		this.ui = ui;
 		this.cwd = cwd;
+		(this.rendererState as ToolRenderLifecycleState)[TOOL_RENDER_LIFECYCLE_GENERATION] =
+			this.renderLifecycleGeneration;
 
 		this.addChild(new Spacer(1));
 
@@ -587,26 +619,99 @@ export class ToolExecutionComponent extends Container {
 				this.pendingImageSourceMimeTypes[index] === img.mimeType
 			) continue;
 
+			this.cancelPendingImageConversion(index);
+			const generation = ++this.nextImageTaskGeneration;
 			const sourceData = img.data;
 			const sourceMimeType = img.mimeType;
 			this.pendingImageSourceData[index] = sourceData;
 			this.pendingImageSourceMimeTypes[index] = sourceMimeType;
-			convertToPng(sourceData, sourceMimeType).then((converted) => {
-				if (
-					this.pendingImageSourceData[index] !== sourceData ||
-					this.pendingImageSourceMimeTypes[index] !== sourceMimeType
-				) return;
-				this.pendingImageSourceData[index] = undefined;
-				this.pendingImageSourceMimeTypes[index] = undefined;
-				if (this.imageSourceData[index] !== sourceData || this.imageSourceMimeTypes[index] !== sourceMimeType) return;
-				if (converted) {
-					this.convertedImages.set(index, converted);
-					this.imageConversionGeneration++;
-					this.updateDisplay();
-					this.notifyVisualInvalidation();
-				}
-			});
+			this.pendingImageTaskGenerations[index] = generation;
+			this.activeImageConversions++;
+			if (this.activeImageConversions > this.activeImageConversionsHighWaterMark) {
+				this.activeImageConversionsHighWaterMark = this.activeImageConversions;
+			}
+			this.imageConversionsScheduled++;
+			if (this.allocationMetrics) {
+				this.allocationMetrics.imageConversionsScheduled =
+					(this.allocationMetrics.imageConversionsScheduled ?? 0) + 1;
+			}
+			void this.convertImageForTerminal(sourceData, sourceMimeType).then(
+				(converted) => this.completeImageConversion(index, generation, converted),
+				() => this.rejectImageConversion(index, generation),
+			);
 		}
+	}
+
+	private cancelPendingImageConversion(index: number): void {
+		if ((this.pendingImageTaskGenerations[index] ?? 0) === 0) return;
+		this.pendingImageTaskGenerations[index] = 0;
+		this.pendingImageSourceData[index] = undefined;
+		this.pendingImageSourceMimeTypes[index] = undefined;
+		this.activeImageConversions--;
+	}
+
+	/** Deterministic conversion seam for lifecycle tests; production uses Photon. */
+	protected convertImageForTerminal(data: string, mimeType: string): Promise<ConvertedTerminalImage | null> {
+		return convertToPng(data, mimeType);
+	}
+
+	private completeImageConversion(
+		index: number,
+		generation: number,
+		converted: ConvertedTerminalImage | null,
+	): void {
+		if (this.pendingImageTaskGenerations[index] !== generation) {
+			this.recordDroppedImageConversion();
+			return;
+		}
+		const sourceData = this.pendingImageSourceData[index];
+		const sourceMimeType = this.pendingImageSourceMimeTypes[index];
+		this.finishImageConversion(index);
+		if (
+			this.imageSourceData[index] !== sourceData ||
+			this.imageSourceMimeTypes[index] !== sourceMimeType
+		) {
+			this.recordDroppedImageConversion();
+			return;
+		}
+		if (converted === null) return;
+		this.convertedImages.set(index, converted);
+		this.imageConversionsAccepted++;
+		if (this.allocationMetrics) {
+			this.allocationMetrics.imageConversionsAccepted =
+				(this.allocationMetrics.imageConversionsAccepted ?? 0) + 1;
+		}
+		this.imageConversionGeneration++;
+		this.updateDisplay();
+		this.notifyVisualInvalidation();
+	}
+
+	private rejectImageConversion(index: number, generation: number): void {
+		if (this.pendingImageTaskGenerations[index] !== generation) {
+			this.recordDroppedImageConversion();
+			return;
+		}
+		this.finishImageConversion(index);
+		this.imageConversionRejections++;
+		if (this.allocationMetrics) {
+			this.allocationMetrics.imageConversionRejections =
+				(this.allocationMetrics.imageConversionRejections ?? 0) + 1;
+		}
+	}
+
+	private recordDroppedImageConversion(): void {
+		this.imageConversionsDropped++;
+		if (this.allocationMetrics) {
+			this.allocationMetrics.imageConversionsDropped =
+				(this.allocationMetrics.imageConversionsDropped ?? 0) + 1;
+		}
+	}
+
+	private finishImageConversion(index: number): void {
+		this.pendingImageTaskGenerations[index] = 0;
+		this.pendingImageSourceData[index] = undefined;
+		this.pendingImageSourceMimeTypes[index] = undefined;
+		this.activeImageConversions--;
 	}
 
 	private notifyVisualInvalidation(): void {
@@ -639,6 +744,78 @@ export class ToolExecutionComponent extends Container {
 		super.invalidate();
 		this.callRendererDirty = true;
 		this.updateDisplay();
+		this.maybeConvertImagesForKitty();
+	}
+
+	[RELEASE_COMPONENT_RENDER_CACHE](): void {
+		this.renderLifecycleGeneration++;
+		const lifecycleState = this.rendererState as ToolRenderLifecycleState;
+		lifecycleState[TOOL_RENDER_LIFECYCLE_GENERATION] = this.renderLifecycleGeneration;
+		let releaseError: unknown;
+		let releaseFailed = false;
+		try {
+			lifecycleState[RELEASE_TOOL_RENDER_DERIVED_STATE]?.(lifecycleState);
+		} catch (error) {
+			releaseError = error;
+			releaseFailed = true;
+		}
+		for (let index = 0; index < this.imageComponents.length; index++) {
+			this.removeChild(this.imageComponents[index]!);
+		}
+		for (let index = 0; index < this.imageSpacers.length; index++) {
+			this.removeChild(this.imageSpacers[index]!);
+		}
+		this.activeImageConversions = 0;
+		this.convertedImages = new Map();
+		this.imageComponents = [];
+		this.imageSpacers = [];
+		this.imageSourceData = [];
+		this.imageSourceMimeTypes = [];
+		this.pendingImageSourceData = [];
+		this.pendingImageSourceMimeTypes = [];
+		this.pendingImageTaskGenerations = [];
+		this.imageTreeProtocol = null;
+		this.imageTreeWidthCells = 0;
+		this.imageTreeConversionGeneration = -1;
+		if (releaseFailed) throw releaseError;
+	}
+
+	/** Low-frequency lifecycle diagnostics; never called from update/render. */
+	getImageConversionLifecycleCounts(): {
+		activePending: number;
+		activePendingHighWaterMark: number;
+		scheduled: number;
+		accepted: number;
+		dropped: number;
+		rejected: number;
+		convertedImages: number;
+		imageComponents: number;
+		imageSpacers: number;
+		sourceReferences: number;
+		pendingSourceReferences: number;
+		pendingGenerationReferences: number;
+	} {
+		let pendingSourceReferences = 0;
+		let pendingGenerationReferences = 0;
+		for (let index = 0; index < this.pendingImageSourceData.length; index++) {
+			if (this.pendingImageSourceData[index] !== undefined) pendingSourceReferences++;
+			if (this.pendingImageSourceMimeTypes[index] !== undefined) pendingSourceReferences++;
+			if ((this.pendingImageTaskGenerations[index] ?? 0) !== 0) pendingGenerationReferences++;
+		}
+		return {
+			activePending: this.activeImageConversions,
+			activePendingHighWaterMark: this.activeImageConversionsHighWaterMark,
+			scheduled: this.imageConversionsScheduled,
+			accepted: this.imageConversionsAccepted,
+			dropped: this.imageConversionsDropped,
+			rejected: this.imageConversionRejections,
+			convertedImages: this.convertedImages.size,
+			imageComponents: this.imageComponents.length,
+			imageSpacers: this.imageSpacers.length,
+			sourceReferences: this.imageSourceData.length + this.imageSourceMimeTypes.length,
+			pendingSourceReferences,
+			pendingGenerationReferences,
+		};
 	}
 
 	override render(width: number): string[] {
@@ -802,6 +979,9 @@ export class ToolExecutionComponent extends Container {
 		for (const index of this.convertedImages.keys()) {
 			if (index >= imageCount) this.convertedImages.delete(index);
 		}
+		for (let index = imageCount; index < this.pendingImageTaskGenerations.length; index++) {
+			this.cancelPendingImageConversion(index);
+		}
 
 		for (let index = 0; index < this.imageComponents.length; index++) this.removeChild(this.imageComponents[index]);
 		for (let index = 0; index < this.imageSpacers.length; index++) this.removeChild(this.imageSpacers[index]);
@@ -811,6 +991,7 @@ export class ToolExecutionComponent extends Container {
 		this.imageSourceMimeTypes.length = 0;
 		this.pendingImageSourceData.length = imageCount;
 		this.pendingImageSourceMimeTypes.length = imageCount;
+		this.pendingImageTaskGenerations.length = imageCount;
 		this.imageTreeShowImages = this.showImages;
 		this.imageTreeWidthCells = this.imageWidthCells;
 		this.imageTreeProtocol = capabilities.images;

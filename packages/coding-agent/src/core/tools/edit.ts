@@ -23,14 +23,22 @@ import {
 import { withFileMutationQueue } from "./file-mutation-queue.ts";
 import { resolveToCwd } from "./path-utils.ts";
 import { renderToolPath, str } from "./render-utils.ts";
+import {
+	RELEASE_TOOL_RENDER_DERIVED_STATE,
+	TOOL_RENDER_LIFECYCLE_GENERATION,
+	type ToolRenderLifecycleState,
+} from "./tool-render-lifecycle.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 
 const strictUtf8Decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
 type EditPreview = EditDiffResult | EditDiffError;
 
-type EditRenderState = {
+type EditRenderState = ToolRenderLifecycleState & {
 	callComponent?: EditCallRenderComponent;
+	previewTasksScheduled?: number;
+	previewTasksAccepted?: number;
+	previewTasksDropped?: number;
 };
 
 const replaceEditSchema = Type.Object(
@@ -179,7 +187,22 @@ function createEditCallRenderComponent(): EditCallRenderComponent {
 	});
 }
 
+function releaseEditRenderDerivedState(state: unknown): void {
+	const component = (state as EditRenderState).callComponent;
+	if (!component) return;
+	component.preview = undefined;
+	component.previewArgsKey = undefined;
+	component.previewPending = false;
+	component.settledError = false;
+	component.renderedDiffSource = undefined;
+	component.renderedDiffExpanded = undefined;
+	component.renderedDiffThemeSignature = undefined;
+	component.renderedDiffBody = undefined;
+	component.clear();
+}
+
 function getEditCallRenderComponent(state: EditRenderState, lastComponent: unknown): EditCallRenderComponent {
+	state[RELEASE_TOOL_RENDER_DERIVED_STATE] = releaseEditRenderDerivedState;
 	if ((lastComponent as EditCallRenderComponent | undefined)?.editCallRenderComponent === true) {
 		const component = lastComponent as EditCallRenderComponent;
 		state.callComponent = component;
@@ -409,7 +432,8 @@ export function createEditToolDefinition(
 			});
 		},
 		renderCall(args, theme, context) {
-			const component = getEditCallRenderComponent(context.state, context.lastComponent);
+			const state = context.state as EditRenderState;
+			const component = getEditCallRenderComponent(state, context.lastComponent);
 			const previewInput = getRenderablePreviewInput(args as RenderableEditArgs | undefined);
 			const argsKey = previewInput
 				? JSON.stringify({ path: previewInput.path, edits: previewInput.edits })
@@ -424,12 +448,21 @@ export function createEditToolDefinition(
 
 			if (context.argsComplete && previewInput && !component.preview && !component.previewPending) {
 				component.previewPending = true;
+				state.previewTasksScheduled = (state.previewTasksScheduled ?? 0) + 1;
 				const requestKey = argsKey;
+				const requestGeneration = state[TOOL_RENDER_LIFECYCLE_GENERATION];
+				const invalidate = context.invalidate;
 				void computeEditsDiff(previewInput.path, previewInput.edits, context.cwd).then((preview) => {
-					if (component.previewArgsKey === requestKey) {
-						setEditPreview(component, preview, requestKey);
-						context.invalidate();
+					if (
+						state[TOOL_RENDER_LIFECYCLE_GENERATION] !== requestGeneration ||
+						component.previewArgsKey !== requestKey
+					) {
+						state.previewTasksDropped = (state.previewTasksDropped ?? 0) + 1;
+						return;
 					}
+					state.previewTasksAccepted = (state.previewTasksAccepted ?? 0) + 1;
+					setEditPreview(component, preview, requestKey);
+					invalidate();
 				});
 			}
 

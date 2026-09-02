@@ -7,6 +7,7 @@ import {
 	imageFallback,
 	renderImage,
 } from "../terminal-image.ts";
+import { RELEASE_COMPONENT_RENDER_CACHE } from "../component-cache.ts";
 import type { Component } from "../tui.ts";
 import { truncateToWidth } from "../utils.ts";
 
@@ -54,6 +55,14 @@ export class Image implements Component {
 	}
 
 	invalidate(): void {
+		this.clearRenderCache();
+	}
+
+	[RELEASE_COMPONENT_RENDER_CACHE](): void {
+		this.clearRenderCache();
+	}
+
+	private clearRenderCache(): void {
 		this.cachedLines = undefined;
 		this.cachedWidth = undefined;
 	}

@@ -15,7 +15,7 @@ export class LoginDialogComponent extends Container implements Focusable {
 	private abortController = new AbortController();
 	private inputResolver?: (value: string) => void;
 	private inputRejecter?: (error: Error) => void;
-	private onComplete: (success: boolean, message?: string) => void;
+	private onComplete: ((success: boolean, message?: string) => void) | undefined;
 
 	// Focusable implementation - propagate to input for IME cursor positioning
 	private _focused = false;
@@ -80,14 +80,17 @@ export class LoginDialogComponent extends Container implements Focusable {
 		);
 	}
 
-	private cancel(): void {
+	cancel(): void {
+		if (this.abortController.signal.aborted) return;
+		const onComplete = this.onComplete;
+		this.onComplete = undefined;
 		this.abortController.abort();
 		if (this.inputRejecter) {
 			this.inputRejecter(new Error("Login cancelled"));
 			this.inputResolver = undefined;
 			this.inputRejecter = undefined;
 		}
-		this.onComplete(false, "Login cancelled");
+		onComplete?.(false, "Login cancelled");
 	}
 
 	/**

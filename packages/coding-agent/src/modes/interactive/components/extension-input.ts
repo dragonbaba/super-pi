@@ -2,7 +2,16 @@
  * Simple text input component for extensions.
  */
 
-import { Container, type Focusable, getKeybindings, Input, Spacer, Text, type TUI } from "@super-pi/tui";
+import {
+	Container,
+	type Focusable,
+	getKeybindings,
+	Input,
+	RELEASE_COMPONENT_RENDER_CACHE,
+	Spacer,
+	Text,
+	type TUI,
+} from "@super-pi/tui";
 import { theme } from "../theme/theme.ts";
 import { CountdownTimer } from "./countdown-timer.ts";
 import { DynamicBorder } from "./dynamic-border.ts";
@@ -83,5 +92,14 @@ export class ExtensionInputComponent extends Container implements Focusable {
 
 	dispose(): void {
 		this.countdown?.dispose();
+	}
+
+	cancel(): void {
+		this.dispose();
+		this.onCancelCallback();
+	}
+
+	[RELEASE_COMPONENT_RENDER_CACHE](): void {
+		this.dispose();
 	}
 }
