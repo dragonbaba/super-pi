@@ -347,11 +347,17 @@ test("mode switch validates renderer identity and lifecycle generation after sto
 	);
 
 	const stopMethod = methodNamed(source, "InteractiveMode", "stop");
-	assert.equal(stopMethod.body?.statements[0]?.getText(source), "this.tuiLifecycleGeneration++;");
+	const stopBody = stopMethod.getText(source);
+	const activeJoin = stopBody.indexOf("const activeOperation = this.stopOperation;");
+	const initializationInvalidation = stopBody.indexOf("this.invalidateInitialization();");
+	const lifecycleInvalidation = stopBody.indexOf("this.tuiLifecycleGeneration++;");
+	assert.ok(activeJoin >= 0);
+	assert.ok(initializationInvalidation > activeJoin);
+	assert.ok(lifecycleInvalidation > initializationInvalidation);
 	const shutdownMethod = methodNamed(source, "InteractiveMode", "shutdown");
 	assert.match(
 		shutdownMethod.getText(source),
-		/this\.isShuttingDown = true;\s*this\.tuiLifecycleGeneration\+\+;/,
+		/this\.isShuttingDown = true;\s*this\.invalidateInitialization\(\);\s*this\.tuiLifecycleGeneration\+\+;/,
 	);
 });
 
@@ -362,6 +368,7 @@ test("terminal lifecycle entry points have primitive admission or post-stop owne
 	const externalEditor = methodNamed(source, "InteractiveMode", "handleOpenExternalEditor").getText(source);
 	const stopInteractive = methodNamed(source, "InteractiveMode", "stopInteractiveTui").getText(source);
 	const stop = methodNamed(source, "InteractiveMode", "stop").getText(source);
+	const performStop = methodNamed(source, "InteractiveMode", "performStop").getText(source);
 	const shutdown = methodNamed(source, "InteractiveMode", "shutdown").getText(source);
 
 	const ctrlZStop = ctrlZ.indexOf("await this.ui.stop();");
@@ -375,7 +382,8 @@ test("terminal lifecycle entry points have primitive admission or post-stop owne
 	assert.match(sourceText, /defaultEditor\.onAction\("app\.suspend", this\.handleSuspendAction\)/);
 	assert.match(sourceText, /defaultEditor\.onAction\("app\.editor\.external", this\.handleExternalEditorAction\)/);
 	assert.match(stopInteractive, /await this\.switchTuiMode\("regular", false, false\)/);
-	assert.match(stop, /this\.tuiLifecycleGeneration\+\+;[\s\S]*await this\.stopInteractiveTui/);
+	assert.match(stop, /this\.invalidateInitialization\(\);\s*this\.tuiLifecycleGeneration\+\+;[\s\S]*this\.performStop\(fullscreenExitOutput\)/);
+	assert.match(performStop, /await this\.stopInteractiveTui/);
 	assert.match(shutdown, /this\.tuiLifecycleGeneration\+\+;[\s\S]*await this\.ui\.terminal\.drainInput/);
 });
 

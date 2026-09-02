@@ -1,4 +1,5 @@
 import { getKeybindings } from "../keybindings.ts";
+import { RELEASE_COMPONENT_RENDER_CACHE } from "../component-cache.ts";
 import { Loader } from "./loader.ts";
 
 /**
@@ -29,12 +30,30 @@ export class CancellableLoader extends Loader {
 	handleInput(data: string): void {
 		const kb = getKeybindings();
 		if (kb.matches(data, "tui.select.cancel")) {
-			this.abortController.abort();
-			this.onAbort?.();
+			this.cancel();
 		}
 	}
 
-	dispose(): void {
-		this.stop();
+	cancel(): void {
+		if (this.abortController.signal.aborted) {
+			this.onAbort = undefined;
+			return;
+		}
+		const onAbort = this.onAbort;
+		this.onAbort = undefined;
+		this.abortController.abort();
+		onAbort?.();
+	}
+
+	override dispose(): void {
+		super.dispose();
+	}
+
+	override [RELEASE_COMPONENT_RENDER_CACHE](): void {
+		try {
+			this.cancel();
+		} finally {
+			super[RELEASE_COMPONENT_RENDER_CACHE]();
+		}
 	}
 }

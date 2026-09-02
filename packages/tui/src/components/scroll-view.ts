@@ -1,4 +1,5 @@
 import { LAYOUT_NODE, type ScrollLayoutNode } from "../layout-node.ts";
+import { RELEASE_COMPONENT_RENDER_CACHE } from "../component-cache.ts";
 import { type Component, Container } from "../tui.ts";
 
 export type ScrollViewScrollbar = "hidden" | "auto" | "always";
@@ -189,6 +190,12 @@ export class ScrollView extends Container {
 		const contentWidth = this.getContentWidth(width);
 		const lines = this.child.render(contentWidth);
 		return contentWidth === width ? lines : lines.map((line) => `${line} `);
+	}
+
+	[RELEASE_COMPONENT_RENDER_CACHE](): void {
+		this.requestRenderCallback = undefined;
+		this.scrollbarActive = false;
+		this.hideTransientScrollbar();
 	}
 
 	[LAYOUT_NODE](): ScrollLayoutNode {

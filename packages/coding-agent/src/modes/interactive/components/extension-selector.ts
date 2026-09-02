@@ -3,7 +3,7 @@
  * Displays a list of string options with keyboard navigation.
  */
 
-import { Container, getKeybindings, Spacer, Text, type TUI } from "@super-pi/tui";
+import { Container, getKeybindings, RELEASE_COMPONENT_RENDER_CACHE, Spacer, Text, type TUI } from "@super-pi/tui";
 import { theme } from "../theme/theme.ts";
 import { CountdownTimer } from "./countdown-timer.ts";
 import { DynamicBorder } from "./dynamic-border.ts";
@@ -108,5 +108,14 @@ export class ExtensionSelectorComponent extends Container {
 
 	dispose(): void {
 		this.countdown?.dispose();
+	}
+
+	cancel(): void {
+		this.dispose();
+		this.onCancelCallback();
+	}
+
+	[RELEASE_COMPONENT_RENDER_CACHE](): void {
+		this.dispose();
 	}
 }

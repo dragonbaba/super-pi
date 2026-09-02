@@ -41,6 +41,7 @@ import {
 	Markdown,
 	matchesKey,
 	ProcessTerminal,
+	RELEASE_COMPONENT_RENDER_CACHE,
 	RetainedContainer,
 	type RetainedItem,
 	type RetainedRenderContext,
@@ -194,6 +195,7 @@ import {
 	getEditorTheme,
 	getMarkdownTheme,
 	getThemeByName,
+	offThemeChange,
 	onThemeChange,
 	setRegisteredThemes,
 	stopThemeWatcher,
@@ -210,6 +212,7 @@ interface ClipboardArtifactLifecycle {
 }
 
 const CLIPBOARD_ARTIFACT_LIFECYCLE_SYMBOL = Symbol.for("super-pi.clipboard-artifact-lifecycle.v1");
+const NOOP_EXTENSION_TERMINAL_INPUT_UNSUBSCRIBE = (): void => {};
 function clipboardArtifactLifecycle(): ClipboardArtifactLifecycle | undefined {
 	return (globalThis as any)[CLIPBOARD_ARTIFACT_LIFECYCLE_SYMBOL];
 }
@@ -281,6 +284,14 @@ function quoteIfNeeded(value: string): string {
 		return value;
 	}
 	return `'${value.replace(SHELL_ARGUMENT_APOSTROPHE_PATTERN, `'\\''`)}'`;
+}
+
+function removeTemporaryShareFile(filePath: string): void {
+	try {
+		fs.unlinkSync(filePath);
+	} catch {
+		// Ignore cleanup errors.
+	}
 }
 
 export function formatResumeCommand(sessionManager: SessionManager): string | undefined {
@@ -498,6 +509,7 @@ export class InteractiveMode {
 	private renderer: TuiMainScreen | TuiAltScreen;
 	private ui: TUI;
 	private tuiLifecycleGeneration = 0;
+	private extensionUiGeneration = 0;
 	private mainScreenRenderState: TuiMainScreenRenderState | undefined;
 	private loadedResourcesContainer: Container;
 	private chatContainer: RetainedContainer;
@@ -522,6 +534,10 @@ export class InteractiveMode {
 	private keybindings: KeybindingsManager;
 	private version: string;
 	private isInitialized = false;
+	private initializationGeneration = 0;
+	private initializedGeneration = 0;
+	private stopCompleted = false;
+	private stopOperation: Promise<void> | undefined;
 	private onInputCallback?: (text: string) => void;
 	private pendingUserInputs: string[] = [];
 	private activeStatusIndicator: StatusIndicator | undefined = undefined;
@@ -578,6 +594,21 @@ export class InteractiveMode {
 	private readonly handleClipboardPasteAction = (): void =>
 		this.observeLifecyclePromise(this.handleClipboardPaste());
 	private readonly handleShutdownAction = (): void => this.observeLifecyclePromise(this.shutdown());
+	private readonly handleThemeChange = (): void => {
+		this.ui.invalidate();
+		this.updateEditorBorderColor();
+		this.ui.requestRender();
+	};
+	private readonly ignoreSuspendSigint = (): void => {};
+	private readonly handleSuspendContinue = (): void => {
+		const generation = this.activeSuspendGeneration;
+		if (generation === 0) return;
+		const lifecycleGeneration = this.activeSuspendLifecycleGeneration;
+		this.clearActiveSuspend(generation);
+		if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
+		this.ui.start();
+		this.ui.requestRender(true);
+	};
 
 	private observeLifecyclePromise(promise: Promise<void>): void {
 		void promise.then(undefined, this.handleLifecyclePromiseRejection);
@@ -640,6 +671,31 @@ export class InteractiveMode {
 	private extensionSelector: ExtensionSelectorComponent | undefined = undefined;
 	private extensionInput: ExtensionInputComponent | undefined = undefined;
 	private extensionEditor: ExtensionEditorComponent | undefined = undefined;
+	private activeLoginDialog: LoginDialogComponent | undefined = undefined;
+	private activeAuthSelector: ExtensionSelectorComponent | undefined = undefined;
+	private activeProviderAuthenticationController: AbortController | undefined = undefined;
+	private activeProviderAuthenticationTimeout: ReturnType<typeof setTimeout> | undefined = undefined;
+	private providerAuthenticationGeneration = 0;
+	private activeStartupModelRefreshController: AbortController | undefined = undefined;
+	private activeStartupModelRefreshTimeout: ReturnType<typeof setTimeout> | undefined = undefined;
+	private startupModelRefreshGeneration = 0;
+	private startupDiagnosticsGeneration = 0;
+	private activeTmuxExtendedKeysProcess: ReturnType<typeof spawn> | undefined = undefined;
+	private activeTmuxExtendedKeysTimeout: ReturnType<typeof setTimeout> | undefined = undefined;
+	private activeTmuxExtendedKeysResolve: ((value: string | undefined) => void) | undefined = undefined;
+	private activeTmuxExtendedKeysFormatProcess: ReturnType<typeof spawn> | undefined = undefined;
+	private activeTmuxExtendedKeysFormatTimeout: ReturnType<typeof setTimeout> | undefined = undefined;
+	private activeTmuxExtendedKeysFormatResolve: ((value: string | undefined) => void) | undefined = undefined;
+	private suspendGeneration = 0;
+	private activeSuspendGeneration = 0;
+	private activeSuspendLifecycleGeneration = 0;
+	private activeSuspendKeepAlive: ReturnType<typeof setInterval> | undefined = undefined;
+	private activeModelLookupController: AbortController | undefined = undefined;
+	private activeModelLookupTimeout: ReturnType<typeof setTimeout> | undefined = undefined;
+	private modelCommandGeneration = 0;
+	private modelLookupGeneration = 0;
+	private modelLookupTimedOutGeneration = 0;
+	private activeExtensionCustomCancel: (() => void) | undefined = undefined;
 	private extensionTerminalInputSubscriptions = new Set<{
 		handler: (data: string) => { consume?: boolean; data?: string } | undefined;
 		unsubscribe: () => void;
@@ -667,6 +723,44 @@ export class InteractiveMode {
 	private readonly onRightClickPaste = (): void => {
 		this.observeLifecyclePromise(this.handleRightClickPaste());
 	};
+	private static handleModelLookupTimeout(
+		mode: InteractiveMode,
+		controller: AbortController,
+		generation: number,
+	): void {
+		if (mode.activeModelLookupController !== controller || mode.modelLookupGeneration !== generation) return;
+		mode.modelLookupTimedOutGeneration = generation;
+		mode.activeModelLookupTimeout = undefined;
+		controller.abort();
+	}
+	private static handleStartupModelRefreshTimeout(
+		mode: InteractiveMode,
+		controller: AbortController,
+		generation: number,
+	): void {
+		if (
+			mode.activeStartupModelRefreshController !== controller ||
+			mode.startupModelRefreshGeneration !== generation
+		) {
+			return;
+		}
+		mode.activeStartupModelRefreshTimeout = undefined;
+		controller.abort();
+	}
+	private static handleProviderAuthenticationTimeout(
+		mode: InteractiveMode,
+		controller: AbortController,
+		generation: number,
+	): void {
+		if (
+			mode.activeProviderAuthenticationController !== controller ||
+			mode.providerAuthenticationGeneration !== generation
+		) {
+			return;
+		}
+		mode.activeProviderAuthenticationTimeout = undefined;
+		controller.abort();
+	}
 	private autoTrustOnReloadCwd: string | undefined;
 	private themeController: InteractiveThemeController;
 
@@ -693,7 +787,8 @@ export class InteractiveMode {
 			this.resetExtensionUI();
 		});
 		this.runtimeHost.setRebindSession(async () => {
-			await this.rebindCurrentSession({ renderBeforeBind: true });
+			const lifecycleGeneration = this.tuiLifecycleGeneration;
+			await this.rebindCurrentSession({ renderBeforeBind: true }, lifecycleGeneration);
 		});
 		this.version = VERSION;
 		this.renderer = createInteractiveTui({
@@ -951,11 +1046,15 @@ export class InteractiveMode {
 	}
 
 	private mountInteractiveTui(tui: TuiMainScreen | TuiAltScreen, components: readonly Component[]): void {
-		for (const component of components) tui.addChild(component);
 		if (TuiLayouts.isViewportTUI(tui)) {
 			if (!this.fullscreenLayoutRoot) throw new Error("Fullscreen layout is not initialized");
 			tui.setLayoutRoot(this.fullscreenLayoutRoot);
 		}
+		for (const component of components) tui.addChild(component);
+	}
+
+	private releaseFullscreenTransferOwners(): void {
+		this.transcriptScrollView?.[RELEASE_COMPONENT_RENDER_CACHE]?.();
 	}
 
 	private async stopInteractiveTui(fullscreenExitOutput: FullscreenExitOutput): Promise<void> {
@@ -989,7 +1088,11 @@ export class InteractiveMode {
 		}
 		previousUi.setFocus(null);
 		previousUi.clear();
-		if (TuiLayouts.isViewportTUI(previousUi)) previousUi.setLayoutRoot(undefined);
+		if (previousUi instanceof TuiAltScreen) {
+			this.releaseFullscreenTransferOwners();
+			previousUi.detachLayoutRootForTransfer();
+		}
+		else if (TuiLayouts.isViewportTUI(previousUi)) previousUi.setLayoutRoot(undefined);
 
 		const nextUi = createInteractiveTui({
 			tuiMode: mode,
@@ -1025,7 +1128,10 @@ export class InteractiveMode {
 	}
 
 	private async applyTuiModeSetting(mode: TuiMode, selector: SettingsSelectorComponent | undefined): Promise<void> {
-		if (!(await this.switchTuiMode(mode))) {
+		const lifecycleGeneration = this.tuiLifecycleGeneration;
+		const switched = await this.switchTuiMode(mode);
+		if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
+		if (!switched) {
 			selector?.getSettingsList().updateValue("tui-mode", this.ui.mode);
 			this.showStatus("Close active overlays before changing TUI mode");
 			return;
@@ -1035,8 +1141,50 @@ export class InteractiveMode {
 		this.showStatus(`TUI mode: ${mode}`);
 	}
 
-	async init(): Promise<void> {
-		if (this.isInitialized) return;
+	private ownsInitialization(initializationGeneration: number, lifecycleGeneration: number): boolean {
+		return (
+			this.initializationGeneration === initializationGeneration &&
+			this.tuiLifecycleGeneration === lifecycleGeneration &&
+			this.stopCompleted !== true &&
+			this.isShuttingDown !== true
+		);
+	}
+
+	private invalidateInitialization(): void {
+		this.initializationGeneration++;
+		this.initializedGeneration = 0;
+	}
+
+	private ensureInitializationTools(): Promise<[string | undefined, string | undefined]> {
+		return Promise.all([ensureTool("fd"), ensureTool("rg")]);
+	}
+
+	private loadInitializationHighlightLanguages(): Promise<void> {
+		return loadAllHighlightLanguages();
+	}
+
+	private async finishInitializationHighlightLanguages(
+		initializationGeneration: number,
+		lifecycleGeneration: number,
+	): Promise<void> {
+		try {
+			await this.loadInitializationHighlightLanguages();
+		} catch (error) {
+			if (!this.ownsInitialization(initializationGeneration, lifecycleGeneration)) return;
+			throw error;
+		}
+		if (!this.ownsInitialization(initializationGeneration, lifecycleGeneration) || !this.isInitialized) return;
+		this.ui.invalidate();
+		this.ui.requestRender();
+	}
+
+	async init(): Promise<boolean> {
+		if (this.stopCompleted === true || this.isShuttingDown === true) return false;
+		if (this.isInitialized) {
+			return this.initializedGeneration !== 0 && this.initializedGeneration === this.initializationGeneration;
+		}
+		const initializationGeneration = ++this.initializationGeneration;
+		const lifecycleGeneration = this.tuiLifecycleGeneration;
 
 		this.registerSignalHandlers();
 
@@ -1045,7 +1193,14 @@ export class InteractiveMode {
 
 		// Ensure fd and rg are available (downloads if missing, adds to PATH via getBinDir)
 		// Both are needed: fd for autocomplete, rg for grep tool and bash commands
-		const [fdPath] = await Promise.all([ensureTool("fd"), ensureTool("rg")]);
+		let fdPath: string | undefined;
+		try {
+			[fdPath] = await this.ensureInitializationTools();
+		} catch (error) {
+			if (!this.ownsInitialization(initializationGeneration, lifecycleGeneration)) return false;
+			throw error;
+		}
+		if (!this.ownsInitialization(initializationGeneration, lifecycleGeneration)) return false;
 		this.fdPath = fdPath;
 
 		if (this.session.scopedModels.length > 0 && (this.options.verbose || !this.settingsManager.getQuietStartup())) {
@@ -1102,7 +1257,13 @@ export class InteractiveMode {
 		this.ui.start();
 		this.isInitialized = true;
 
-		await this.themeController.applyFromSettings();
+		try {
+			await this.themeController.applyFromSettings();
+		} catch (error) {
+			if (!this.ownsInitialization(initializationGeneration, lifecycleGeneration)) return false;
+			throw error;
+		}
+		if (!this.ownsInitialization(initializationGeneration, lifecycleGeneration)) return false;
 
 		// Add header with keybindings from config (unless silenced)
 		if (this.options.verbose || !this.settingsManager.getQuietStartup()) {
@@ -1167,35 +1328,44 @@ export class InteractiveMode {
 		this.ui.requestRender();
 
 		// Initialize extensions first so resources are shown before messages
-		await this.rebindCurrentSession();
+		try {
+			await this.rebindCurrentSession({}, lifecycleGeneration);
+		} catch (error) {
+			if (!this.ownsInitialization(initializationGeneration, lifecycleGeneration)) return false;
+			throw error;
+		}
+		if (!this.ownsInitialization(initializationGeneration, lifecycleGeneration)) return false;
 
 		// Render initial messages AFTER showing loaded resources
 		this.renderInitialMessages();
 
 		// Set up theme file watcher
-		onThemeChange(() => {
-			this.ui.invalidate();
-			this.updateEditorBorderColor();
-			this.ui.requestRender();
-		});
+		if (!this.ownsInitialization(initializationGeneration, lifecycleGeneration)) return false;
+		onThemeChange(this.handleThemeChange);
 
 		// Set up git branch watcher (uses provider instead of footer)
+		if (!this.ownsInitialization(initializationGeneration, lifecycleGeneration)) return false;
 		this.footerDataProvider.onBranchChange(() => {
 			this.ui.requestRender();
 		});
 
 		// Initialize available provider count for footer display
-		await this.updateAvailableProviderCount();
+		try {
+			await this.updateAvailableProviderCount();
+		} catch (error) {
+			if (!this.ownsInitialization(initializationGeneration, lifecycleGeneration)) return false;
+			throw error;
+		}
+		if (!this.ownsInitialization(initializationGeneration, lifecycleGeneration)) return false;
 
 		// Flush completed startup state before loading uncommon syntax grammars.
 		this.ui.renderNow();
+		if (!this.ownsInitialization(initializationGeneration, lifecycleGeneration)) return false;
+		this.initializedGeneration = initializationGeneration;
 		this.observeLifecyclePromise(
-			loadAllHighlightLanguages().then(() => {
-				if (!this.isInitialized) return;
-				this.ui.invalidate();
-				this.ui.requestRender();
-			}),
+			this.finishInitializationHighlightLanguages(initializationGeneration, lifecycleGeneration),
 		);
+		return true;
 	}
 
 	/**
@@ -1216,44 +1386,14 @@ export class InteractiveMode {
 	 * Initializes the UI, shows warnings, processes initial messages, and starts the interactive loop.
 	 */
 	async run(): Promise<void> {
-		await this.init();
+		const lifecycleGeneration = this.tuiLifecycleGeneration;
+		if (!(await this.init()) || !this.isRunLifecycleCurrent(lifecycleGeneration)) return;
 
 		if (!process.env.SP_OFFLINE) {
-			const controller = new AbortController();
-			const timeout = setTimeout(() => controller.abort(), 15_000);
-			this.observeLifecyclePromise(
-				refreshModelCatalogs(this.session.modelRuntime, controller.signal)
-					.then(() => this.updateAvailableProviderCount())
-					.catch(() => {})
-					.finally(() => clearTimeout(timeout)),
-			);
+			this.startStartupModelRefresh();
 		}
 
-		// Start package update check asynchronously
-		this.observeLifecyclePromise(
-			this.checkForPackageUpdates()
-				.then((updates) => {
-					if (updates.length > 0) {
-						this.showPackageUpdateNotification(updates);
-					}
-				})
-				.finally(() => {
-					// On Windows, npm can overwrite the shared console title while checking
-					// extension package versions. Restore Super Pi's title after the startup check.
-					if (process.platform === "win32" && this.isInitialized) {
-						this.updateTerminalTitle();
-					}
-				}),
-		);
-
-		// Check tmux keyboard setup asynchronously
-		this.observeLifecyclePromise(
-			this.checkTmuxKeyboardSetup().then((warning) => {
-				if (warning) {
-					this.showWarning(warning);
-				}
-			}),
-		);
+		this.startStartupDiagnostics();
 
 		// Show startup warnings
 		const { migratedProviders, modelFallbackMessage, initialMessage, initialImages, initialMessages } = this.options;
@@ -1275,35 +1415,52 @@ export class InteractiveMode {
 
 		// Process initial messages
 		if (initialMessage) {
+			if (!this.isRunLifecycleCurrent(lifecycleGeneration)) return;
 			try {
 				await this.session.prompt(initialMessage, { images: initialImages });
 			} catch (error: unknown) {
+				if (!this.isRunLifecycleCurrent(lifecycleGeneration)) return;
 				const errorMessage = error instanceof Error ? error.message : "Unknown error occurred";
 				this.showError(errorMessage);
 			}
+			if (!this.isRunLifecycleCurrent(lifecycleGeneration)) return;
 		}
 
 		if (initialMessages) {
 			for (const message of initialMessages) {
+				if (!this.isRunLifecycleCurrent(lifecycleGeneration)) return;
 				try {
 					await this.session.prompt(message);
 				} catch (error: unknown) {
+					if (!this.isRunLifecycleCurrent(lifecycleGeneration)) return;
 					const errorMessage = error instanceof Error ? error.message : "Unknown error occurred";
 					this.showError(errorMessage);
 				}
+				if (!this.isRunLifecycleCurrent(lifecycleGeneration)) return;
 			}
 		}
 
 		// Main interactive loop
-		while (true) {
+		while (this.isRunLifecycleCurrent(lifecycleGeneration)) {
 			const userInput = await this.getUserInput();
+			if (!this.isRunLifecycleCurrent(lifecycleGeneration)) return;
 			try {
 				await this.session.prompt(userInput);
 			} catch (error: unknown) {
+				if (!this.isRunLifecycleCurrent(lifecycleGeneration)) return;
 				const errorMessage = error instanceof Error ? error.message : "Unknown error occurred";
 				this.showError(errorMessage);
 			}
 		}
+	}
+
+	private isRunLifecycleCurrent(lifecycleGeneration: number): boolean {
+		return (
+			this.tuiLifecycleGeneration === lifecycleGeneration &&
+			this.isInitialized &&
+			this.stopCompleted !== true &&
+			this.isShuttingDown !== true
+		);
 	}
 
 	private async checkForPackageUpdates(): Promise<string[]> {
@@ -1324,37 +1481,99 @@ export class InteractiveMode {
 		}
 	}
 
-	private async checkTmuxKeyboardSetup(): Promise<string | undefined> {
+	private startStartupDiagnostics(): void {
+		this.cancelActiveStartupDiagnostics();
+		const generation = ++this.startupDiagnosticsGeneration;
+		const lifecycleGeneration = this.tuiLifecycleGeneration;
+		this.observeLifecyclePromise(this.finishStartupPackageCheck(generation, lifecycleGeneration));
+		this.observeLifecyclePromise(this.finishStartupTmuxCheck(generation, lifecycleGeneration));
+	}
+
+	private async finishStartupPackageCheck(generation: number, lifecycleGeneration: number): Promise<void> {
+		let updates: string[];
+		try {
+			updates = await this.checkForPackageUpdates();
+		} catch (error) {
+			if (
+				this.startupDiagnosticsGeneration !== generation ||
+				this.tuiLifecycleGeneration !== lifecycleGeneration
+			) {
+				return;
+			}
+			throw error;
+		}
+		if (
+			this.startupDiagnosticsGeneration !== generation ||
+			this.tuiLifecycleGeneration !== lifecycleGeneration
+		) {
+			return;
+		}
+		if (updates.length > 0) this.showPackageUpdateNotification(updates);
+		// On Windows, npm can overwrite the shared console title while checking
+		// extension package versions. Restore Super Pi's title after the startup check.
+		if (process.platform === "win32" && this.isInitialized) this.updateTerminalTitle();
+	}
+
+	private async finishStartupTmuxCheck(generation: number, lifecycleGeneration: number): Promise<void> {
+		let warning: string | undefined;
+		try {
+			warning = await this.checkTmuxKeyboardSetup(generation);
+		} catch (error) {
+			if (
+				this.startupDiagnosticsGeneration !== generation ||
+				this.tuiLifecycleGeneration !== lifecycleGeneration
+			) {
+				return;
+			}
+			throw error;
+		}
+		if (
+			this.startupDiagnosticsGeneration !== generation ||
+			this.tuiLifecycleGeneration !== lifecycleGeneration
+		) {
+			return;
+		}
+		if (warning) this.showWarning(warning);
+	}
+
+	private async checkTmuxKeyboardSetup(generation = this.startupDiagnosticsGeneration): Promise<string | undefined> {
 		if (!process.env.TMUX) return undefined;
 
-		const runTmuxShow = (option: string): Promise<string | undefined> => {
+		const runTmuxShow = (option: string, slot: 1 | 2): Promise<string | undefined> => {
 			return new Promise((resolve) => {
 				const proc = spawn("tmux", ["show", "-gv", option], {
 					stdio: ["ignore", "pipe", "ignore"],
 				});
+				if (slot === 1) {
+					this.activeTmuxExtendedKeysProcess = proc;
+					this.activeTmuxExtendedKeysResolve = resolve;
+				} else {
+					this.activeTmuxExtendedKeysFormatProcess = proc;
+					this.activeTmuxExtendedKeysFormatResolve = resolve;
+				}
 				let stdout = "";
 				const timer = setTimeout(() => {
 					proc.kill();
-					resolve(undefined);
+					this.finishTmuxShow(slot, proc, generation, undefined);
 				}, 2000);
+				if (slot === 1) this.activeTmuxExtendedKeysTimeout = timer;
+				else this.activeTmuxExtendedKeysFormatTimeout = timer;
 
 				proc.stdout?.on("data", (data) => {
 					stdout += data.toString();
 				});
 				proc.on("error", () => {
-					clearTimeout(timer);
-					resolve(undefined);
+					this.finishTmuxShow(slot, proc, generation, undefined);
 				});
 				proc.on("close", (code) => {
-					clearTimeout(timer);
-					resolve(code === 0 ? stdout.trim() : undefined);
+					this.finishTmuxShow(slot, proc, generation, code === 0 ? stdout.trim() : undefined);
 				});
 			});
 		};
 
 		const [extendedKeys, extendedKeysFormat] = await Promise.all([
-			runTmuxShow("extended-keys"),
-			runTmuxShow("extended-keys-format"),
+			runTmuxShow("extended-keys", 1),
+			runTmuxShow("extended-keys-format", 2),
 		]);
 
 		// If we couldn't query tmux (timeout, sandbox, etc.), don't warn
@@ -2021,8 +2240,9 @@ export class InteractiveMode {
 	/**
 	 * Initialize the extension system with TUI-based UI context.
 	 */
-	private async bindCurrentSessionExtensions(): Promise<void> {
-		const uiContext = this.createExtensionUIContext();
+	private async bindCurrentSessionExtensions(lifecycleGeneration?: number): Promise<void> {
+		const extensionUiGeneration = ++this.extensionUiGeneration;
+		const uiContext = this.createExtensionUIContext(extensionUiGeneration);
 		await this.session.bindExtensions({
 			uiContext,
 			mode: "tui",
@@ -2032,32 +2252,41 @@ export class InteractiveMode {
 			commandContextActions: {
 				waitForIdle: () => this.session.waitForIdle(),
 				newSession: async (options) => {
+					const lifecycleGeneration = this.tuiLifecycleGeneration;
 					this.clearStatusIndicator();
 					try {
-						return await this.runtimeHost.newSession(options);
+						const result = await this.runtimeHost.newSession(options);
+						if (this.tuiLifecycleGeneration !== lifecycleGeneration) return { cancelled: true };
+						return result;
 					} catch (error: unknown) {
+						if (this.tuiLifecycleGeneration !== lifecycleGeneration) return { cancelled: true };
 						return this.handleFatalRuntimeError("Failed to create session", error);
 					}
 				},
 				fork: async (entryId, options) => {
+					const lifecycleGeneration = this.tuiLifecycleGeneration;
 					try {
 						const result = await this.runtimeHost.fork(entryId, options);
+						if (this.tuiLifecycleGeneration !== lifecycleGeneration) return { cancelled: true };
 						if (!result.cancelled) {
 							this.editor.setText(result.selectedText ?? "");
 							this.showStatus("Forked to new session");
 						}
 						return { cancelled: result.cancelled };
 					} catch (error: unknown) {
+						if (this.tuiLifecycleGeneration !== lifecycleGeneration) return { cancelled: true };
 						return this.handleFatalRuntimeError("Failed to fork session", error);
 					}
 				},
 				navigateTree: async (targetId, options) => {
+					const lifecycleGeneration = this.tuiLifecycleGeneration;
 					const result = await this.session.navigateTree(targetId, {
 						summarize: options?.summarize,
 						customInstructions: options?.customInstructions,
 						replaceInstructions: options?.replaceInstructions,
 						label: options?.label,
 					});
+					if (this.tuiLifecycleGeneration !== lifecycleGeneration) return { cancelled: true };
 					if (result.cancelled) {
 						return { cancelled: true };
 					}
@@ -2085,9 +2314,11 @@ export class InteractiveMode {
 				}
 			},
 			onError: (error) => {
+				if (this.extensionUiGeneration !== extensionUiGeneration) return;
 				this.showExtensionError(error.extensionPath, error.error, error.stack);
 			},
 		});
+		if (lifecycleGeneration !== undefined && this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 
 		setRegisteredThemes(this.session.resourceLoader.getThemes().themes);
 		this.setupAutocompleteProvider();
@@ -2126,8 +2357,12 @@ export class InteractiveMode {
 		}
 	}
 
-	private async rebindCurrentSession(options: { renderBeforeBind?: boolean } = {}): Promise<void> {
+	private async rebindCurrentSession(
+		options: { renderBeforeBind?: boolean } = {},
+		lifecycleGeneration = this.tuiLifecycleGeneration,
+	): Promise<void> {
 		const session = this.session;
+		if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 
 		this.unsubscribe?.();
 		this.unsubscribe = undefined;
@@ -2138,9 +2373,9 @@ export class InteractiveMode {
 			this.subscribeToAgent();
 		}
 
-		await this.bindCurrentSessionExtensions();
+		await this.bindCurrentSessionExtensions(lifecycleGeneration);
 
-		if (this.session !== session) {
+		if (this.session !== session || this.tuiLifecycleGeneration !== lifecycleGeneration) {
 			return;
 		}
 
@@ -2149,6 +2384,7 @@ export class InteractiveMode {
 		}
 
 		await this.updateAvailableProviderCount();
+		if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 		this.updateEditorBorderColor();
 		this.updateTerminalTitle();
 	}
@@ -2554,37 +2790,77 @@ export class InteractiveMode {
 		};
 	}
 
-	private createExtensionUIContext(): ExtensionUIContext {
+	private createExtensionUIContext(extensionUiGeneration = this.extensionUiGeneration): ExtensionUIContext {
 		return {
-			select: (title, options, opts) => this.showExtensionSelector(title, options, opts),
-			confirm: (title, message, opts) => this.showExtensionConfirm(title, message, opts),
-			input: (title, placeholder, opts) => this.showExtensionInput(title, placeholder, opts),
-			notify: (message, type) => this.showExtensionNotify(message, type),
-			onTerminalInput: (handler) => this.addExtensionTerminalInputListener(handler),
-			setStatus: (key, text) => this.setExtensionStatus(key, text),
+			select: (title, options, opts) => this.extensionUiGeneration !== extensionUiGeneration
+				? Promise.resolve(undefined)
+				: this.showExtensionSelector(title, options, opts),
+			confirm: (title, message, opts) => this.extensionUiGeneration !== extensionUiGeneration
+				? Promise.resolve(false)
+				: this.showExtensionConfirm(title, message, opts),
+			input: (title, placeholder, opts) => this.extensionUiGeneration !== extensionUiGeneration
+				? Promise.resolve(undefined)
+				: this.showExtensionInput(title, placeholder, opts),
+			notify: (message, type) => {
+				if (this.extensionUiGeneration === extensionUiGeneration) this.showExtensionNotify(message, type);
+			},
+			onTerminalInput: (handler) => this.extensionUiGeneration !== extensionUiGeneration
+				? NOOP_EXTENSION_TERMINAL_INPUT_UNSUBSCRIBE
+				: this.addExtensionTerminalInputListener(handler),
+			setStatus: (key, text) => {
+				if (this.extensionUiGeneration === extensionUiGeneration) this.setExtensionStatus(key, text);
+			},
 			setWorkingMessage: (message) => {
+				if (this.extensionUiGeneration !== extensionUiGeneration) return;
 				this.workingMessage = message;
 				if (this.activeStatusIndicator?.kind === "working") {
 					this.activeStatusIndicator.setMessage(message ?? this.defaultWorkingMessage);
 				}
 			},
-			setWorkingVisible: (visible) => this.setWorkingVisible(visible),
-			setWorkingIndicator: (options) => this.setWorkingIndicator(options),
-			setHiddenThinkingLabel: (label) => this.setHiddenThinkingLabel(label),
-			setWidget: (key, content, options) => this.setExtensionWidget(key, content, options),
-			setFooter: (factory) => this.setExtensionFooter(factory),
-			setHeader: (factory) => this.setExtensionHeader(factory),
-			setTitle: (title) => this.ui.terminal.setTitle(title),
-			custom: (factory, options) => this.showExtensionCustom(factory, options),
-			pasteToEditor: (text) => this.editor.handleInput(`\x1b[200~${text}\x1b[201~`),
-			setEditorText: (text) => this.editor.setText(text),
+			setWorkingVisible: (visible) => {
+				if (this.extensionUiGeneration === extensionUiGeneration) this.setWorkingVisible(visible);
+			},
+			setWorkingIndicator: (options) => {
+				if (this.extensionUiGeneration === extensionUiGeneration) this.setWorkingIndicator(options);
+			},
+			setHiddenThinkingLabel: (label) => {
+				if (this.extensionUiGeneration === extensionUiGeneration) this.setHiddenThinkingLabel(label);
+			},
+			setWidget: (key, content, options) => {
+				if (this.extensionUiGeneration === extensionUiGeneration) this.setExtensionWidget(key, content, options);
+			},
+			setFooter: (factory) => {
+				if (this.extensionUiGeneration === extensionUiGeneration) this.setExtensionFooter(factory);
+			},
+			setHeader: (factory) => {
+				if (this.extensionUiGeneration === extensionUiGeneration) this.setExtensionHeader(factory);
+			},
+			setTitle: (title) => {
+				if (this.extensionUiGeneration === extensionUiGeneration) this.ui.terminal.setTitle(title);
+			},
+			custom: (factory, options) => this.extensionUiGeneration !== extensionUiGeneration
+				? Promise.resolve(undefined as never)
+				: this.showExtensionCustom(factory, options),
+			pasteToEditor: (text) => {
+				if (this.extensionUiGeneration === extensionUiGeneration) {
+					this.editor.handleInput(`\x1b[200~${text}\x1b[201~`);
+				}
+			},
+			setEditorText: (text) => {
+				if (this.extensionUiGeneration === extensionUiGeneration) this.editor.setText(text);
+			},
 			getEditorText: () => this.editor.getExpandedText?.() ?? this.editor.getText(),
-			editor: (title, prefill) => this.showExtensionEditor(title, prefill),
+			editor: (title, prefill) => this.extensionUiGeneration !== extensionUiGeneration
+				? Promise.resolve(undefined)
+				: this.showExtensionEditor(title, prefill),
 			addAutocompleteProvider: (factory) => {
+				if (this.extensionUiGeneration !== extensionUiGeneration) return;
 				this.autocompleteProviderWrappers.push(factory);
 				this.setupAutocompleteProvider();
 			},
-			setEditorComponent: (factory) => this.setCustomEditorComponent(factory),
+			setEditorComponent: (factory) => {
+				if (this.extensionUiGeneration === extensionUiGeneration) this.setCustomEditorComponent(factory);
+			},
 			getEditorComponent: () => this.editorComponentFactory,
 			get theme() {
 				return theme;
@@ -2592,6 +2868,9 @@ export class InteractiveMode {
 			getAllThemes: () => getAvailableThemesWithPaths(),
 			getTheme: (name) => getThemeByName(name),
 			setTheme: (themeOrName) => {
+				if (this.extensionUiGeneration !== extensionUiGeneration) {
+					return { success: false, error: "UI not available" };
+				}
 				if (themeOrName instanceof Theme) {
 					return this.themeController.setThemeInstance(themeOrName);
 				}
@@ -2604,8 +2883,15 @@ export class InteractiveMode {
 				return result;
 			},
 			getToolsExpanded: () => this.toolOutputExpanded,
-			setToolsExpanded: (expanded) => this.setToolsExpanded(expanded),
+			setToolsExpanded: (expanded) => {
+				if (this.extensionUiGeneration === extensionUiGeneration) this.setToolsExpanded(expanded);
+			},
 		};
+	}
+
+	private closeExtensionUiContext(): void {
+		this.extensionUiGeneration++;
+		this.session.extensionRunner?.setUIContext?.(undefined);
 	}
 
 	/**
@@ -2740,6 +3026,227 @@ export class InteractiveMode {
 		this.ui.requestRender();
 	}
 
+	private cancelExtensionDialogs(): void {
+		this.extensionSelector?.cancel();
+		this.extensionInput?.cancel();
+		this.extensionEditor?.cancel();
+	}
+
+	private setActiveLoginDialog(dialog: LoginDialogComponent): void {
+		this.cancelActiveLoginDialog();
+		this.activeLoginDialog = dialog;
+	}
+
+	private releaseActiveLoginDialog(dialog: LoginDialogComponent): boolean {
+		if (this.activeLoginDialog !== dialog) return false;
+		this.activeLoginDialog = undefined;
+		return true;
+	}
+
+	private cancelActiveLoginDialog(): void {
+		const dialog = this.activeLoginDialog;
+		this.activeLoginDialog = undefined;
+		this.cancelActiveAuthSelector();
+		dialog?.cancel();
+	}
+
+	private cancelActiveAuthSelector(): void {
+		const selector = this.activeAuthSelector;
+		this.activeAuthSelector = undefined;
+		selector?.cancel();
+	}
+
+	private cancelActiveProviderAuthentication(): void {
+		this.providerAuthenticationGeneration++;
+		const controller = this.activeProviderAuthenticationController;
+		this.activeProviderAuthenticationController = undefined;
+		controller?.abort();
+		const timeout = this.activeProviderAuthenticationTimeout;
+		this.activeProviderAuthenticationTimeout = undefined;
+		if (timeout !== undefined) clearTimeout(timeout);
+	}
+
+	private cancelActiveStartupModelRefresh(): void {
+		this.startupModelRefreshGeneration++;
+		const controller = this.activeStartupModelRefreshController;
+		this.activeStartupModelRefreshController = undefined;
+		const timeout = this.activeStartupModelRefreshTimeout;
+		this.activeStartupModelRefreshTimeout = undefined;
+		if (timeout !== undefined) clearTimeout(timeout);
+		controller?.abort();
+	}
+
+	private finishTmuxShow(
+		slot: 1 | 2,
+		processOwner: ReturnType<typeof spawn>,
+		generation: number,
+		value: string | undefined,
+	): void {
+		if (this.startupDiagnosticsGeneration !== generation) return;
+		if (slot === 1) {
+			if (this.activeTmuxExtendedKeysProcess !== processOwner) return;
+			const timeout = this.activeTmuxExtendedKeysTimeout;
+			const resolve = this.activeTmuxExtendedKeysResolve;
+			this.activeTmuxExtendedKeysProcess = undefined;
+			this.activeTmuxExtendedKeysTimeout = undefined;
+			this.activeTmuxExtendedKeysResolve = undefined;
+			if (timeout !== undefined) clearTimeout(timeout);
+			resolve?.(value);
+			return;
+		}
+		if (this.activeTmuxExtendedKeysFormatProcess !== processOwner) return;
+		const timeout = this.activeTmuxExtendedKeysFormatTimeout;
+		const resolve = this.activeTmuxExtendedKeysFormatResolve;
+		this.activeTmuxExtendedKeysFormatProcess = undefined;
+		this.activeTmuxExtendedKeysFormatTimeout = undefined;
+		this.activeTmuxExtendedKeysFormatResolve = undefined;
+		if (timeout !== undefined) clearTimeout(timeout);
+		resolve?.(value);
+	}
+
+	private cancelActiveStartupDiagnostics(): void {
+		this.startupDiagnosticsGeneration++;
+		const firstProcess = this.activeTmuxExtendedKeysProcess;
+		const firstTimeout = this.activeTmuxExtendedKeysTimeout;
+		const firstResolve = this.activeTmuxExtendedKeysResolve;
+		this.activeTmuxExtendedKeysProcess = undefined;
+		this.activeTmuxExtendedKeysTimeout = undefined;
+		this.activeTmuxExtendedKeysResolve = undefined;
+		if (firstTimeout !== undefined) clearTimeout(firstTimeout);
+		firstProcess?.kill();
+		firstResolve?.(undefined);
+
+		const secondProcess = this.activeTmuxExtendedKeysFormatProcess;
+		const secondTimeout = this.activeTmuxExtendedKeysFormatTimeout;
+		const secondResolve = this.activeTmuxExtendedKeysFormatResolve;
+		this.activeTmuxExtendedKeysFormatProcess = undefined;
+		this.activeTmuxExtendedKeysFormatTimeout = undefined;
+		this.activeTmuxExtendedKeysFormatResolve = undefined;
+		if (secondTimeout !== undefined) clearTimeout(secondTimeout);
+		secondProcess?.kill();
+		secondResolve?.(undefined);
+	}
+
+	private startStartupModelRefresh(): void {
+		this.cancelActiveStartupModelRefresh();
+		const controller = new AbortController();
+		const generation = ++this.startupModelRefreshGeneration;
+		const lifecycleGeneration = this.tuiLifecycleGeneration;
+		this.activeStartupModelRefreshController = controller;
+		const timeout = setTimeout(
+			InteractiveMode.handleStartupModelRefreshTimeout,
+			15_000,
+			this,
+			controller,
+			generation,
+		);
+		this.activeStartupModelRefreshTimeout = timeout;
+		this.observeLifecyclePromise(
+			this.refreshStartupModelCatalogs(controller, generation, lifecycleGeneration, timeout),
+		);
+	}
+
+	private async refreshStartupModelCatalogs(
+		controller: AbortController,
+		generation: number,
+		lifecycleGeneration: number,
+		timeout: ReturnType<typeof setTimeout>,
+	): Promise<void> {
+		try {
+			await refreshModelCatalogs(this.session.modelRuntime, controller.signal);
+			if (
+				this.activeStartupModelRefreshController !== controller ||
+				this.startupModelRefreshGeneration !== generation ||
+				this.tuiLifecycleGeneration !== lifecycleGeneration
+			) {
+				return;
+			}
+			this.updateAvailableProviderCount();
+		} catch {
+			// Startup refresh is best-effort; cancellation and catalog errors are silent.
+		} finally {
+			clearTimeout(timeout);
+			if (this.activeStartupModelRefreshTimeout === timeout) this.activeStartupModelRefreshTimeout = undefined;
+			if (
+				this.activeStartupModelRefreshController === controller &&
+				this.startupModelRefreshGeneration === generation
+			) {
+				this.activeStartupModelRefreshController = undefined;
+			}
+		}
+	}
+
+	private cancelActiveModelLookup(): void {
+		this.modelLookupGeneration++;
+		this.modelLookupTimedOutGeneration = 0;
+		const controller = this.activeModelLookupController;
+		this.activeModelLookupController = undefined;
+		controller?.abort();
+		const timeout = this.activeModelLookupTimeout;
+		this.activeModelLookupTimeout = undefined;
+		if (timeout !== undefined) clearTimeout(timeout);
+	}
+
+	private cancelActiveExtensionCustom(): void {
+		const cancel = this.activeExtensionCustomCancel;
+		this.activeExtensionCustomCancel = undefined;
+		cancel?.();
+	}
+
+	private releaseExtensionUiOwners(): void {
+		let releaseError: unknown;
+		let releaseFailed = false;
+		if (this.extensionWidgetsAbove !== undefined) {
+			for (const widget of this.extensionWidgetsAbove.values()) {
+				try {
+					widget.dispose?.();
+				} catch (error) {
+					if (!releaseFailed) {
+						releaseFailed = true;
+						releaseError = error;
+					}
+				}
+			}
+		}
+		if (this.extensionWidgetsBelow !== undefined) {
+			for (const widget of this.extensionWidgetsBelow.values()) {
+				try {
+					widget.dispose?.();
+				} catch (error) {
+					if (!releaseFailed) {
+						releaseFailed = true;
+						releaseError = error;
+					}
+				}
+			}
+		}
+		this.extensionWidgetsAbove?.clear();
+		this.extensionWidgetsBelow?.clear();
+		try {
+			this.customFooter?.dispose?.();
+		} catch (error) {
+			if (!releaseFailed) {
+				releaseFailed = true;
+				releaseError = error;
+			}
+		}
+		try {
+			this.customHeader?.dispose?.();
+		} catch (error) {
+			if (!releaseFailed) {
+				releaseFailed = true;
+				releaseError = error;
+			}
+		}
+		this.customFooter = undefined;
+		this.customHeader = undefined;
+		this.widgetContainerAbove?.clear();
+		this.widgetContainerBelow?.clear();
+		this.footerContainer?.clear();
+		this.headerContainer?.clear();
+		if (releaseFailed) throw releaseError;
+	}
+
 	/**
 	 * Show a multi-line editor for extensions (with Ctrl+G support).
 	 */
@@ -2760,6 +3267,7 @@ export class InteractiveMode {
 				},
 				undefined,
 				this.settingsManager.getExternalEditorCommand(),
+				this.handleLifecyclePromiseRejection,
 			);
 
 			this.disposeActiveSelector();
@@ -2882,6 +3390,8 @@ export class InteractiveMode {
 			onHandle?: (handle: OverlayHandle) => void;
 		},
 	): Promise<T> {
+		this.cancelActiveExtensionCustom();
+		const lifecycleGeneration = this.tuiLifecycleGeneration;
 		const savedText = this.editor.getText();
 		const isOverlay = options?.overlay ?? false;
 
@@ -2895,12 +3405,30 @@ export class InteractiveMode {
 
 		return new Promise((resolve, reject) => {
 			let component: Component & { dispose?(): void };
+			let overlayHandle: OverlayHandle | undefined;
 			let closed = false;
+			const cancel = () => {
+				if (closed) return;
+				closed = true;
+				if (this.activeExtensionCustomCancel === cancel) this.activeExtensionCustomCancel = undefined;
+				if (isOverlay) {
+					overlayHandle?.hide();
+				} else {
+					this.editorContainer.clear();
+					this.editorContainer.addChild(this.editor);
+				}
+				try {
+					component?.dispose?.();
+				} catch {}
+				resolve(undefined as T);
+			};
+			this.activeExtensionCustomCancel = cancel;
 
 			const close = (result: T) => {
 				if (closed) return;
 				closed = true;
-				if (isOverlay) this.ui.hideOverlay();
+				if (this.activeExtensionCustomCancel === cancel) this.activeExtensionCustomCancel = undefined;
+				if (isOverlay) overlayHandle?.hide();
 				else restoreEditor();
 				// Note: both branches above already call requestRender
 				resolve(result);
@@ -2911,9 +3439,24 @@ export class InteractiveMode {
 				}
 			};
 
-			Promise.resolve(factory(this.ui, theme, this.keybindings, close))
+			let factoryResult: (Component & { dispose?(): void }) | Promise<Component & { dispose?(): void }>;
+			try {
+				factoryResult = factory(this.ui, theme, this.keybindings, close);
+			} catch (error) {
+				closed = true;
+				if (this.activeExtensionCustomCancel === cancel) this.activeExtensionCustomCancel = undefined;
+				reject(error);
+				return;
+			}
+			Promise.resolve(factoryResult)
 				.then((c) => {
-					if (closed) return;
+					if (closed || this.tuiLifecycleGeneration !== lifecycleGeneration) {
+						try {
+							c.dispose?.();
+						} catch {}
+						if (!closed) cancel();
+						return;
+					}
 					component = c;
 					if (isOverlay) {
 						// Resolve overlay options - can be static or dynamic function
@@ -2929,9 +3472,9 @@ export class InteractiveMode {
 							const w = (component as { width?: number }).width;
 							return w ? { width: w } : undefined;
 						};
-						const handle = this.ui.showOverlay(component, resolveOptions());
+						overlayHandle = this.ui.showOverlay(component, resolveOptions());
 						// Expose handle to caller for visibility control
-						options?.onHandle?.(handle);
+						options?.onHandle?.(overlayHandle);
 					} else {
 						this.disposeActiveSelector();
 						this.editorContainer.clear();
@@ -2942,7 +3485,10 @@ export class InteractiveMode {
 				})
 				.catch((err) => {
 					if (closed) return;
-					if (!isOverlay) restoreEditor();
+					closed = true;
+					if (this.activeExtensionCustomCancel === cancel) this.activeExtensionCustomCancel = undefined;
+					if (isOverlay) overlayHandle?.hide();
+					else restoreEditor();
 					reject(err);
 				});
 		});
@@ -3055,8 +3601,10 @@ export class InteractiveMode {
 	}
 
 	private async handleClipboardPaste(): Promise<void> {
+		const lifecycleGeneration = this.tuiLifecycleGeneration;
 		try {
-			const image = await readClipboardImage();
+			const image = await this.readClipboardImageForPaste();
+			if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 			if (image) {
 				const tmpDir = os.tmpdir();
 				const ext = extensionForImageMimeType(image.mimeType) ?? "png";
@@ -3078,7 +3626,8 @@ export class InteractiveMode {
 				return;
 			}
 
-			const text = await readClipboardText();
+			const text = await this.readClipboardTextForPaste();
+			if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 			if (text) {
 				this.editor.insertTextAtCursor?.(text);
 				this.ui.requestRender();
@@ -3086,6 +3635,14 @@ export class InteractiveMode {
 		} catch {
 			// Silently ignore clipboard errors (may not have permission, etc.)
 		}
+	}
+
+	private readClipboardImageForPaste(): ReturnType<typeof readClipboardImage> {
+		return readClipboardImage();
+	}
+
+	private readClipboardTextForPaste(): Promise<string | null> {
+		return readClipboardText();
 	}
 
 	private setupEditorSubmitHandler(): void {
@@ -3241,7 +3798,9 @@ export class InteractiveMode {
 						return;
 					}
 					this.editor.addToHistory?.(text);
+					const bashLifecycleGeneration = this.tuiLifecycleGeneration;
 					await this.handleBashCommand(command, isExcluded);
+					if (this.tuiLifecycleGeneration !== bashLifecycleGeneration) return;
 					this.isBashMode = false;
 					this.updateEditorBorderColor();
 					return;
@@ -3265,7 +3824,14 @@ export class InteractiveMode {
 			if (this.session.isStreaming) {
 				this.editor.addToHistory?.(text);
 				this.editor.setText("");
-				await this.session.prompt(text, { streamingBehavior: "steer" });
+				const promptLifecycleGeneration = this.tuiLifecycleGeneration;
+				try {
+					await this.session.prompt(text, { streamingBehavior: "steer" });
+				} catch (error) {
+					if (this.tuiLifecycleGeneration !== promptLifecycleGeneration) return;
+					throw error;
+				}
+				if (this.tuiLifecycleGeneration !== promptLifecycleGeneration) return;
 				this.updatePendingMessagesDisplay();
 				this.ui.requestRender();
 				return;
@@ -3625,7 +4191,8 @@ export class InteractiveMode {
 	}
 
 	private async initializeAndHandleEvent(event: AgentSessionEvent): Promise<void> {
-		await this.init();
+		const lifecycleGeneration = this.tuiLifecycleGeneration;
+		if (!(await this.init()) || !this.isRunLifecycleCurrent(lifecycleGeneration)) return;
 		await this.handleEvent(event);
 	}
 
@@ -4293,6 +4860,7 @@ export class InteractiveMode {
 	private async shutdown(options?: { fromSignal?: boolean }): Promise<void> {
 		if (this.isShuttingDown) return;
 		this.isShuttingDown = true;
+		this.invalidateInitialization();
 		this.tuiLifecycleGeneration++;
 		// Keep signal handlers registered until terminal cleanup has completed.
 		// `signal-exit` checks the listener list during the same SIGTERM/SIGHUP
@@ -4321,8 +4889,23 @@ export class InteractiveMode {
 		this.themeController.disableAutoSync();
 		await this.ui.terminal.drainInput(1000);
 
-		await this.stop();
-		await this.runtimeHost.dispose();
+		let cleanupError: unknown;
+		let cleanupFailed = false;
+		try {
+			await this.stop();
+		} catch (error) {
+			cleanupFailed = true;
+			cleanupError = error;
+		}
+		try {
+			await this.runtimeHost.dispose();
+		} catch (error) {
+			if (!cleanupFailed) {
+				cleanupFailed = true;
+				cleanupError = error;
+			}
+		}
+		if (cleanupFailed) throw cleanupError;
 
 		const resumeCommand = formatResumeCommand(this.sessionManager);
 		if (resumeCommand) {
@@ -4438,36 +5021,61 @@ export class InteractiveMode {
 			this.showStatus("Suspend to background is not supported on Windows");
 			return;
 		}
+		if (this.activeSuspendGeneration !== 0) return;
 
 		// Keep the event loop alive while suspended. Without this, stopping the TUI
 		// can leave Node with no ref'ed handles, causing the process to exit on fg
 		// before the SIGCONT handler gets a chance to restore the terminal.
-		const suspendKeepAlive = setInterval(() => {}, 2 ** 30);
+		const generation = ++this.suspendGeneration;
+		const lifecycleGeneration = this.tuiLifecycleGeneration;
+		this.activeSuspendGeneration = generation;
+		this.activeSuspendLifecycleGeneration = lifecycleGeneration;
+		this.activeSuspendKeepAlive = setInterval(InteractiveMode.keepSuspendAlive, 2 ** 30);
 
 		// Ignore SIGINT while suspended so Ctrl+C in the terminal does not
 		// kill the backgrounded process. The handler is removed on resume.
-		const ignoreSigint = () => {};
-		process.on("SIGINT", ignoreSigint);
+		process.on("SIGINT", this.ignoreSuspendSigint);
 
 		// Set up handler to restore TUI when resumed
-		process.once("SIGCONT", () => {
-			clearInterval(suspendKeepAlive);
-			process.removeListener("SIGINT", ignoreSigint);
-			this.ui.start();
-			this.ui.requestRender(true);
-		});
+		process.once("SIGCONT", this.handleSuspendContinue);
 
 		try {
 			// Stop the TUI (restore terminal to normal mode)
 			await this.ui.stop();
+			if (
+				this.activeSuspendGeneration !== generation ||
+				this.tuiLifecycleGeneration !== lifecycleGeneration
+			) {
+				this.clearActiveSuspend(generation);
+				return;
+			}
 
 			// Send SIGTSTP to process group (pid=0 means all processes in group)
 			this.suspendProcessGroup();
 		} catch (error) {
-			clearInterval(suspendKeepAlive);
-			process.removeListener("SIGINT", ignoreSigint);
+			this.clearActiveSuspend(generation);
+			if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 			throw error;
 		}
+	}
+
+	private static keepSuspendAlive(): void {}
+
+	private clearActiveSuspend(generation: number): void {
+		if (this.activeSuspendGeneration !== generation) return;
+		this.activeSuspendGeneration = 0;
+		this.activeSuspendLifecycleGeneration = 0;
+		const keepAlive = this.activeSuspendKeepAlive;
+		this.activeSuspendKeepAlive = undefined;
+		if (keepAlive !== undefined) clearInterval(keepAlive);
+		if (this.ignoreSuspendSigint) process.removeListener("SIGINT", this.ignoreSuspendSigint);
+		if (this.handleSuspendContinue) process.removeListener("SIGCONT", this.handleSuspendContinue);
+	}
+
+	private cancelActiveSuspend(): void {
+		this.suspendGeneration++;
+		const generation = this.activeSuspendGeneration;
+		if (typeof generation === "number" && generation !== 0) this.clearActiveSuspend(generation);
 	}
 
 	private suspendProcessGroup(): void {
@@ -4495,7 +5103,14 @@ export class InteractiveMode {
 		if (this.session.isStreaming) {
 			this.editor.addToHistory?.(text);
 			this.editor.setText("");
-			await this.session.prompt(text, { streamingBehavior: "followUp" });
+			const lifecycleGeneration = this.tuiLifecycleGeneration;
+			try {
+				await this.session.prompt(text, { streamingBehavior: "followUp" });
+			} catch (error) {
+				if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
+				throw error;
+			}
+			if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 			this.updatePendingMessagesDisplay();
 			this.ui.requestRender();
 		}
@@ -4537,8 +5152,10 @@ export class InteractiveMode {
 	}
 
 	private async cycleModel(direction: "forward" | "backward"): Promise<void> {
+		const lifecycleGeneration = this.tuiLifecycleGeneration;
 		try {
 			const result = await this.session.cycleModel(direction);
+			if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 			if (result === undefined) {
 				const msg = this.session.scopedModels.length > 0 ? "Only one model in scope" : "Only one model available";
 				this.showStatus(msg);
@@ -4551,6 +5168,7 @@ export class InteractiveMode {
 				this.observeLifecyclePromise(this.maybeWarnAboutAnthropicSubscriptionAuth(result.model));
 			}
 		} catch (error) {
+			if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 			this.showError(error instanceof Error ? error.message : String(error));
 		}
 	}
@@ -4600,20 +5218,25 @@ export class InteractiveMode {
 	}
 
 	private async handleOpenExternalEditor(): Promise<void> {
+		const lifecycleGeneration = this.tuiLifecycleGeneration;
 		const editorCmd = this.settingsManager.getExternalEditorCommand();
 		const content = this.editor.getExpandedText?.() ?? this.editor.getText();
 		await this.ui.stop();
+		if (lifecycleGeneration !== this.tuiLifecycleGeneration) return;
 		try {
 			const result = await this.runExternalEditor({
 				command: editorCmd,
 				content,
 			});
+			if (lifecycleGeneration !== this.tuiLifecycleGeneration) return;
 			if (result.status === "complete") {
 				this.editor.setText(result.content);
 			}
 		} finally {
-			this.ui.start();
-			this.ui.requestRender(true);
+			if (lifecycleGeneration === this.tuiLifecycleGeneration) {
+				this.ui.start();
+				this.ui.requestRender(true);
+			}
 		}
 	}
 
@@ -5147,21 +5770,42 @@ export class InteractiveMode {
 	}
 
 	private async handleModelCommand(searchTerm?: string): Promise<void> {
+		const commandGeneration = ++this.modelCommandGeneration;
+		this.cancelActiveModelLookup();
 		if (!searchTerm) {
 			this.showModelSelector();
 			return;
 		}
 
+		const lifecycleGeneration = this.tuiLifecycleGeneration;
 		const model = await this.findExactModelMatch(searchTerm);
+		if (
+			this.tuiLifecycleGeneration !== lifecycleGeneration ||
+			this.modelCommandGeneration !== commandGeneration
+		) {
+			return;
+		}
 		if (model) {
 			try {
 				await this.session.setModel(model, { persist: false });
+				if (
+					this.tuiLifecycleGeneration !== lifecycleGeneration ||
+					this.modelCommandGeneration !== commandGeneration
+				) {
+					return;
+				}
 				this.footer.invalidate();
 				this.updateEditorBorderColor();
 				this.showStatus(`Model: ${model.id}`);
 				this.observeLifecyclePromise(this.maybeWarnAboutAnthropicSubscriptionAuth(model));
 				this.checkDaxnutsEasterEgg(model);
 			} catch (error) {
+				if (
+					this.tuiLifecycleGeneration !== lifecycleGeneration ||
+					this.modelCommandGeneration !== commandGeneration
+				) {
+					return;
+				}
 				this.showError(error instanceof Error ? error.message : String(error));
 			}
 			return;
@@ -5180,26 +5824,48 @@ export class InteractiveMode {
 
 		this.showStatus("Refreshing model catalogs…");
 		const controller = new AbortController();
-		let timedOut = false;
-		const timeout = setTimeout(() => {
-			timedOut = true;
-			controller.abort();
-		}, 15_000);
+		const generation = ++this.modelLookupGeneration;
+		const lifecycleGeneration = this.tuiLifecycleGeneration;
+		this.activeModelLookupController = controller;
+		const timeout = setTimeout(InteractiveMode.handleModelLookupTimeout, 15_000, this, controller, generation);
+		this.activeModelLookupTimeout = timeout;
 		try {
 			const result = await refreshModelCatalogs(this.session.modelRuntime, controller.signal);
-			if (result.aborted && timedOut) {
+			if (
+				this.activeModelLookupController !== controller ||
+				this.modelLookupGeneration !== generation ||
+				this.tuiLifecycleGeneration !== lifecycleGeneration
+			) {
+				return undefined;
+			}
+			if (result.aborted && this.modelLookupTimedOutGeneration === generation) {
 				this.showWarning("Model refresh timed out; searching cached models.");
 			} else if (result.errors.size > 0) {
 				this.showWarning(`Could not refresh ${[...result.errors.keys()].join(", ")}; searching cached models.`);
 			}
 		} catch (error) {
+			if (
+				this.activeModelLookupController !== controller ||
+				this.modelLookupGeneration !== generation ||
+				this.tuiLifecycleGeneration !== lifecycleGeneration
+			) {
+				return undefined;
+			}
 			this.showWarning(
-				timedOut
+				this.modelLookupTimedOutGeneration === generation
 					? "Model refresh timed out; searching cached models."
 					: `Could not refresh model catalogs: ${error instanceof Error ? error.message : String(error)}`,
 			);
 		} finally {
 			clearTimeout(timeout);
+			if (this.activeModelLookupTimeout === timeout) this.activeModelLookupTimeout = undefined;
+			if (this.activeModelLookupController === controller && this.modelLookupGeneration === generation) {
+				this.activeModelLookupController = undefined;
+				this.modelLookupTimedOutGeneration = 0;
+			}
+		}
+		if (this.modelLookupGeneration !== generation || this.tuiLifecycleGeneration !== lifecycleGeneration) {
+			return undefined;
 		}
 		return findExactModelReferenceMatch(searchTerm, [...this.session.modelRuntime.getAvailableSnapshot()]);
 	}
@@ -5217,6 +5883,7 @@ export class InteractiveMode {
 	private async maybeWarnAboutAnthropicSubscriptionAuth(
 		model: Model<any> | undefined = this.session.model,
 	): Promise<void> {
+		const lifecycleGeneration = this.tuiLifecycleGeneration;
 		if (this.settingsManager.getWarnings().anthropicExtraUsage === false) {
 			return;
 		}
@@ -5228,12 +5895,16 @@ export class InteractiveMode {
 		}
 
 		try {
-			if ((await this.session.modelRuntime.checkAuth("anthropic"))?.type === "oauth") {
+			const checkedAuth = await this.session.modelRuntime.checkAuth("anthropic");
+			if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
+			if (checkedAuth?.type === "oauth") {
 				this.anthropicSubscriptionWarningShown = true;
 				this.showWarning(ANTHROPIC_SUBSCRIPTION_AUTH_WARNING);
 				return;
 			}
-			const apiKey = (await this.session.modelRuntime.getAuth(model.provider))?.auth.apiKey;
+			const auth = await this.session.modelRuntime.getAuth(model.provider);
+			if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
+			const apiKey = auth?.auth.apiKey;
 			if (!isAnthropicSubscriptionAuthKey(apiKey)) {
 				return;
 			}
@@ -5298,8 +5969,10 @@ export class InteractiveMode {
 	private showModelSelector(initialSearchInput?: string): void {
 		this.showSelector((done) => {
 			const selectModel = async (model: Model<any>, persist: boolean) => {
+				const lifecycleGeneration = this.tuiLifecycleGeneration;
 				try {
 					await this.session.setModel(model, { persist });
+					if (lifecycleGeneration !== this.tuiLifecycleGeneration) return;
 					this.footer.invalidate();
 					this.updateEditorBorderColor();
 					done();
@@ -5307,6 +5980,7 @@ export class InteractiveMode {
 					this.observeLifecyclePromise(this.maybeWarnAboutAnthropicSubscriptionAuth(model));
 					this.checkDaxnutsEasterEgg(model);
 				} catch (error) {
+					if (lifecycleGeneration !== this.tuiLifecycleGeneration) return;
 					done();
 					this.showError(error instanceof Error ? error.message : String(error));
 				}
@@ -5467,9 +6141,11 @@ export class InteractiveMode {
 			const selector = new UserMessageSelectorComponent(
 				userMessages.map((m) => ({ id: m.entryId, text: m.text })),
 				async (entryId) => {
+					const lifecycleGeneration = this.tuiLifecycleGeneration;
 					done();
 					try {
 						const result = await this.runtimeHost.fork(entryId);
+						if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 						if (result.cancelled) {
 							this.ui.requestRender();
 							return;
@@ -5478,6 +6154,7 @@ export class InteractiveMode {
 						this.editor.setText(result.selectedText ?? "");
 						this.showStatus("Forked to new session");
 					} catch (error: unknown) {
+						if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 						this.showError(error instanceof Error ? error.message : String(error));
 					}
 				},
@@ -5498,8 +6175,10 @@ export class InteractiveMode {
 			return;
 		}
 
+		const lifecycleGeneration = this.tuiLifecycleGeneration;
 		try {
 			const result = await this.runtimeHost.fork(leafId, { position: "at" });
+			if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 			if (result.cancelled) {
 				this.ui.requestRender();
 				return;
@@ -5508,6 +6187,7 @@ export class InteractiveMode {
 			this.editor.setText("");
 			this.showStatus("Cloned to new session");
 		} catch (error: unknown) {
+			if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 			this.showError(error instanceof Error ? error.message : String(error));
 		}
 	}
@@ -5528,6 +6208,7 @@ export class InteractiveMode {
 				realLeafId,
 				this.ui.terminal.rows,
 				async (entryId) => {
+					const lifecycleGeneration = this.tuiLifecycleGeneration;
 					// Selecting the current leaf is a no-op (already there)
 					if (entryId === this.sessionManager.getLeafId()) {
 						done();
@@ -5550,6 +6231,7 @@ export class InteractiveMode {
 								"Summarize",
 								"Summarize with custom prompt",
 							]);
+							if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 
 							if (summaryChoice === undefined) {
 								// User pressed escape - re-show tree selector with same selection
@@ -5561,6 +6243,7 @@ export class InteractiveMode {
 
 							if (summaryChoice === "Summarize with custom prompt") {
 								customInstructions = await this.showExtensionEditor("Custom summarization instructions");
+								if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 								if (customInstructions === undefined) {
 									// User cancelled - loop back to summary selector
 									continue;
@@ -5576,6 +6259,7 @@ export class InteractiveMode {
 					if (this.session.isStreaming) {
 						this.restoreQueuedMessagesToEditor();
 						await this.session.abort();
+						if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 					}
 
 					// Set up escape handler and status indicator if summarizing
@@ -5597,6 +6281,7 @@ export class InteractiveMode {
 							summarize: wantsSummary,
 							customInstructions,
 						});
+						if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 
 						if (result.aborted) {
 							// Summarization aborted - re-show tree selector with same selection
@@ -5618,9 +6303,10 @@ export class InteractiveMode {
 						this.showStatus("Navigated to selected point");
 						await this.flushCompactionQueue({ willRetry: false });
 					} catch (error) {
+						if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 						this.showError(error instanceof Error ? error.message : String(error));
 					} finally {
-						if (showingSummaryIndicator) {
+						if (showingSummaryIndicator && this.tuiLifecycleGeneration === lifecycleGeneration) {
 							this.clearStatusIndicator("branchSummary");
 						}
 						this.defaultEditor.onEscape = originalOnEscape;
@@ -5642,10 +6328,13 @@ export class InteractiveMode {
 					this.showError("Selected entry has no text to copy");
 					return;
 				}
+				const lifecycleGeneration = this.tuiLifecycleGeneration;
 				try {
-					await copyToClipboard(text);
+					await this.copyTextToClipboard(text);
+					if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 					this.showStatus("Copied selected message to clipboard");
 				} catch (error) {
+					if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 					this.showError(error instanceof Error ? error.message : String(error));
 				}
 			};
@@ -5685,7 +6374,7 @@ export class InteractiveMode {
 
 				this.sessionManager.getSessionFile(),
 			);
-			return { component: selector, focus: selector };
+			return { component: selector, focus: selector, dispose: () => selector.dispose() };
 		});
 	}
 
@@ -5693,20 +6382,24 @@ export class InteractiveMode {
 		sessionPath: string,
 		options?: Parameters<ExtensionCommandContext["switchSession"]>[1],
 	): Promise<{ cancelled: boolean }> {
+		const lifecycleGeneration = this.tuiLifecycleGeneration;
 		this.clearStatusIndicator();
 		try {
 			const result = await this.runtimeHost.switchSession(sessionPath, {
 				withSession: options?.withSession,
 				projectTrustContextFactory: (cwd) => this.createProjectTrustContext(cwd),
 			});
+			if (this.tuiLifecycleGeneration !== lifecycleGeneration) return { cancelled: true };
 			if (result.cancelled) {
 				return result;
 			}
 			this.showStatus("Resumed session");
 			return result;
 		} catch (error: unknown) {
+			if (this.tuiLifecycleGeneration !== lifecycleGeneration) return { cancelled: true };
 			if (error instanceof MissingSessionCwdError) {
 				const selectedCwd = await this.promptForMissingSessionCwd(error);
+				if (this.tuiLifecycleGeneration !== lifecycleGeneration) return { cancelled: true };
 				if (!selectedCwd) {
 					this.showStatus("Resume cancelled");
 					return { cancelled: true };
@@ -5716,6 +6409,7 @@ export class InteractiveMode {
 					withSession: options?.withSession,
 					projectTrustContextFactory: (cwd) => this.createProjectTrustContext(cwd),
 				});
+				if (this.tuiLifecycleGeneration !== lifecycleGeneration) return { cancelled: true };
 				if (result.cancelled) {
 					return result;
 				}
@@ -5922,13 +6616,16 @@ export class InteractiveMode {
 			return;
 		}
 
+		const lifecycleGeneration = this.tuiLifecycleGeneration;
 		let providerOptions: AuthSelectorProvider[];
 		try {
 			providerOptions = await this.getLogoutProviderOptions();
 		} catch (error) {
+			if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 			this.showError(`Could not read stored credentials: ${error instanceof Error ? error.message : String(error)}`);
 			return;
 		}
+		if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 		if (providerOptions.length === 0) {
 			this.showStatus(
 				"No stored credentials to remove. /logout only removes credentials saved by /login; environment variables and models.json config are unchanged.",
@@ -5942,6 +6639,7 @@ export class InteractiveMode {
 				providerOptions,
 				async (providerId: string) => {
 					done();
+					if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 
 					const providerOption = providerOptions.find((provider) => provider.id === providerId);
 					if (!providerOption) {
@@ -5952,13 +6650,16 @@ export class InteractiveMode {
 						await this.session.modelRuntime.logout(providerOption.id, {
 							signal: AbortSignal.timeout(15_000),
 						});
+						if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 						await this.updateAvailableProviderCount();
+						if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 						const message =
 							providerOption.authType === "oauth"
 								? `Logged out of ${providerOption.name}`
 								: `Removed stored API key for ${providerOption.name}. Environment variables and models.json config are unchanged.`;
 						this.showStatus(message);
 					} catch (error: unknown) {
+						if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 						const message = error instanceof Error ? error.message : String(error);
 						this.showError(
 							error instanceof CredentialSynchronizationError
@@ -5976,12 +6677,71 @@ export class InteractiveMode {
 		});
 	}
 
+	private async refreshProviderAuthenticationCatalog(
+		providerId: string,
+		actionLabel: string,
+		generation: number,
+		lifecycleGeneration: number,
+	): Promise<void> {
+		const controller = new AbortController();
+		this.activeProviderAuthenticationController = controller;
+		const timeout = setTimeout(
+			InteractiveMode.handleProviderAuthenticationTimeout,
+			15_000,
+			this,
+			controller,
+			generation,
+		);
+		this.activeProviderAuthenticationTimeout = timeout;
+		try {
+			const result = await this.session.modelRuntime.refresh({ providers: [providerId], signal: controller.signal });
+			if (
+				this.activeProviderAuthenticationController !== controller ||
+				this.providerAuthenticationGeneration !== generation ||
+				this.tuiLifecycleGeneration !== lifecycleGeneration
+			) {
+				return;
+			}
+			if (result.aborted) {
+				this.showWarning(`${actionLabel}, but its model catalog refresh timed out; using cached models.`);
+			} else if (result.errors.size > 0) {
+				this.showWarning(`${actionLabel}, but its model catalog could not be refreshed; using cached models.`);
+			}
+			this.updateAvailableProviderCount();
+			this.footer.invalidate();
+			this.ui.requestRender();
+		} catch (error: unknown) {
+			if (
+				this.activeProviderAuthenticationController !== controller ||
+				this.providerAuthenticationGeneration !== generation ||
+				this.tuiLifecycleGeneration !== lifecycleGeneration
+			) {
+				return;
+			}
+			this.showWarning(
+				`${actionLabel}, but its model catalog could not be refreshed: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		} finally {
+			clearTimeout(timeout);
+			if (
+				this.activeProviderAuthenticationController === controller &&
+				this.providerAuthenticationGeneration === generation
+			) {
+				this.activeProviderAuthenticationController = undefined;
+				this.activeProviderAuthenticationTimeout = undefined;
+			}
+		}
+	}
+
 	private async completeProviderAuthentication(
 		providerId: string,
 		providerName: string,
 		authType: "oauth" | "api_key",
 		previousModel: Model<any> | undefined,
 	): Promise<void> {
+		this.cancelActiveProviderAuthentication();
+		const generation = this.providerAuthenticationGeneration;
+		const lifecycleGeneration = this.tuiLifecycleGeneration;
 		const actionLabel = authType === "oauth" ? `Logged in to ${providerName}` : `Saved API key for ${providerName}`;
 
 		let selectedModel: Model<any> | undefined;
@@ -6001,7 +6761,19 @@ export class InteractiveMode {
 				} else {
 					try {
 						await this.session.setModel(selectedModel);
+						if (
+							this.providerAuthenticationGeneration !== generation ||
+							this.tuiLifecycleGeneration !== lifecycleGeneration
+						) {
+							return;
+						}
 					} catch (error: unknown) {
+						if (
+							this.providerAuthenticationGeneration !== generation ||
+							this.tuiLifecycleGeneration !== lifecycleGeneration
+						) {
+							return;
+						}
 						selectedModel = undefined;
 						const errorMessage = error instanceof Error ? error.message : String(error);
 						selectionError = `${actionLabel}, but selecting its default model failed: ${errorMessage}. Use /model to select a model.`;
@@ -6011,6 +6783,12 @@ export class InteractiveMode {
 		}
 
 		await this.updateAvailableProviderCount();
+		if (
+			this.providerAuthenticationGeneration !== generation ||
+			this.tuiLifecycleGeneration !== lifecycleGeneration
+		) {
+			return;
+		}
 		this.footer.invalidate();
 		this.updateEditorBorderColor();
 		if (selectedModel) {
@@ -6026,43 +6804,29 @@ export class InteractiveMode {
 			}
 		}
 
-		const controller = new AbortController();
-		const timeout = setTimeout(() => controller.abort(), 15_000);
-		void this.session.modelRuntime
-			.refresh({ providers: [providerId], signal: controller.signal })
-			.then((result) => {
-				if (result.aborted) {
-					this.showWarning(`${actionLabel}, but its model catalog refresh timed out; using cached models.`);
-				} else if (result.errors.size > 0) {
-					this.showWarning(`${actionLabel}, but its model catalog could not be refreshed; using cached models.`);
-				}
-				this.updateAvailableProviderCount();
-				this.footer.invalidate();
-				this.ui.requestRender();
-			})
-			.catch((error: unknown) => {
-				this.showWarning(
-					`${actionLabel}, but its model catalog could not be refreshed: ${error instanceof Error ? error.message : String(error)}`,
-				);
-			})
-			.finally(() => clearTimeout(timeout));
+		this.observeLifecyclePromise(
+			this.refreshProviderAuthenticationCatalog(providerId, actionLabel, generation, lifecycleGeneration),
+		);
 	}
 
 	private showAmbientAuthDialog(providerOption: AuthSelectorProvider): void {
+		let dialog: LoginDialogComponent;
 		const restoreEditor = () => {
+			if (!this.releaseActiveLoginDialog(dialog)) return;
 			this.editorContainer.clear();
 			this.editorContainer.addChild(this.editor);
 			this.ui.setFocus(this.editor);
 			this.ui.requestRender();
 		};
 
-		const dialog = new LoginDialogComponent(
+		dialog = new LoginDialogComponent(
 			this.ui,
 			providerOption.id,
 			() => restoreEditor(),
 			providerOption.name,
 			`${providerOption.name} setup`,
 		);
+		this.setActiveLoginDialog(dialog);
 		dialog.showInfo(`${providerOption.method?.name ?? "Authentication"} is configured outside pi.`, [], true);
 
 		this.editorContainer.clear();
@@ -6082,6 +6846,7 @@ export class InteractiveMode {
 			},
 			providerName,
 		);
+		this.setActiveLoginDialog(dialog);
 
 		if (providerId === "amazon-bedrock") {
 			dialog.showDetails([
@@ -6105,10 +6870,16 @@ export class InteractiveMode {
 
 		try {
 			await this.loginProvider(dialog, providerId, "api_key");
+			if (!this.releaseActiveLoginDialog(dialog)) return;
 			restoreEditor();
 			await this.completeProviderAuthentication(providerId, providerName, "api_key", previousModel);
 		} catch (error: unknown) {
-			restoreEditor();
+			if (this.activeLoginDialog === dialog) {
+				this.activeLoginDialog = undefined;
+				restoreEditor();
+			} else if (dialog.signal.aborted) {
+				return;
+			}
 			const errorMsg = error instanceof Error ? error.message : String(error);
 			if (error instanceof CredentialSynchronizationError) {
 				this.showError(
@@ -6124,28 +6895,39 @@ export class InteractiveMode {
 		dialog: LoginDialogComponent,
 		prompt: Extract<AuthPrompt, { type: "select" }>,
 	): Promise<string> {
+		this.cancelActiveAuthSelector();
 		return new Promise((resolve, reject) => {
+			let settled = false;
+			let selector: ExtensionSelectorComponent;
 			const restoreDialog = () => {
 				this.editorContainer.clear();
-				this.editorContainer.addChild(dialog);
-				this.ui.setFocus(dialog);
-				this.ui.requestRender();
+				if (this.activeLoginDialog === dialog) {
+					this.editorContainer.addChild(dialog);
+					this.ui.setFocus(dialog);
+					this.ui.requestRender();
+				}
+			};
+			const finish = (selection: string | undefined) => {
+				if (settled) return;
+				settled = true;
+				if (this.activeAuthSelector === selector) this.activeAuthSelector = undefined;
+				selector.dispose();
+				restoreDialog();
+				if (selection === undefined) reject(new Error("Login cancelled"));
+				else resolve(selection);
 			};
 			const labels = prompt.options.map((option) => option.label);
-			const selector = new ExtensionSelectorComponent(
+			selector = new ExtensionSelectorComponent(
 				prompt.message,
 				labels,
 				(optionLabel) => {
-					restoreDialog();
 					const id = prompt.options.find((option) => option.label === optionLabel)?.id;
-					if (id) resolve(id);
-					else reject(new Error("Login cancelled"));
+					if (id) finish(id);
+					else finish(undefined);
 				},
-				() => {
-					restoreDialog();
-					reject(new Error("Login cancelled"));
-				},
+				() => finish(undefined),
 			);
+			this.activeAuthSelector = selector;
 			this.editorContainer.clear();
 			this.editorContainer.addChild(selector);
 			this.ui.setFocus(selector);
@@ -6154,6 +6936,8 @@ export class InteractiveMode {
 	}
 
 	private async showAuthPrompt(dialog: LoginDialogComponent, prompt: AuthPrompt): Promise<string> {
+		if (this.activeLoginDialog !== dialog) throw new Error("Login cancelled");
+		if (prompt.signal?.aborted) throw new Error("Login cancelled");
 		let response: Promise<string>;
 		if (prompt.type === "select") {
 			response = this.showAuthSelect(dialog, prompt);
@@ -6163,11 +6947,13 @@ export class InteractiveMode {
 			response = dialog.showPrompt(prompt.message, prompt.placeholder);
 		}
 		if (!prompt.signal) return response;
-		if (prompt.signal.aborted) throw new Error("Login cancelled");
 		const signal = prompt.signal;
 		let onAbort: (() => void) | undefined;
 		const aborted = new Promise<string>((_resolve, reject) => {
-			onAbort = () => reject(new Error("Login cancelled"));
+			onAbort = () => {
+				if (prompt.type === "select") this.cancelActiveAuthSelector();
+				reject(new Error("Login cancelled"));
+			};
 			signal.addEventListener("abort", onAbort, { once: true });
 		});
 		try {
@@ -6178,6 +6964,7 @@ export class InteractiveMode {
 	}
 
 	private notifyAuthDialog(dialog: LoginDialogComponent, event: AuthEvent): void {
+		if (this.activeLoginDialog !== dialog) return;
 		if (event.type === "auth_url") {
 			dialog.showAuth(event.url, event.instructions);
 		} else if (event.type === "device_code") {
@@ -6205,6 +6992,7 @@ export class InteractiveMode {
 	private async showLoginDialog(providerId: string, providerName: string): Promise<void> {
 		const previousModel = this.session.model;
 		const dialog = new LoginDialogComponent(this.ui, providerId, (_success, _message) => {}, providerName);
+		this.setActiveLoginDialog(dialog);
 		this.editorContainer.clear();
 		this.editorContainer.addChild(dialog);
 		this.ui.setFocus(dialog);
@@ -6219,10 +7007,16 @@ export class InteractiveMode {
 
 		try {
 			await this.loginProvider(dialog, providerId, "oauth");
+			if (!this.releaseActiveLoginDialog(dialog)) return;
 			restoreEditor();
 			await this.completeProviderAuthentication(providerId, providerName, "oauth", previousModel);
 		} catch (error: unknown) {
-			restoreEditor();
+			if (this.activeLoginDialog === dialog) {
+				this.activeLoginDialog = undefined;
+				restoreEditor();
+			} else if (dialog.signal.aborted) {
+				return;
+			}
 			const errorMsg = error instanceof Error ? error.message : String(error);
 			if (error instanceof CredentialSynchronizationError) {
 				this.showError(
@@ -6247,6 +7041,7 @@ export class InteractiveMode {
 			this.showWarning("Wait for compaction to finish before reloading.");
 			return;
 		}
+		const lifecycleGeneration = this.tuiLifecycleGeneration;
 
 		this.resetExtensionUI();
 
@@ -6270,6 +7065,7 @@ export class InteractiveMode {
 		this.ui.setFocus(reloadBox);
 		this.ui.requestRender(true);
 		await new Promise((resolve) => process.nextTick(resolve));
+		if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 
 		const dismissReloadBox = (editor: Component) => {
 			this.editorContainer.clear();
@@ -6281,6 +7077,7 @@ export class InteractiveMode {
 		let chatRestoredBeforeSessionStart = false;
 		let reloadBoxDismissed = false;
 		const restoreChatBeforeSessionStart = () => {
+			if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 			if (chatRestoredBeforeSessionStart) {
 				return;
 			}
@@ -6292,6 +7089,7 @@ export class InteractiveMode {
 
 		try {
 			await this.session.reload({ beforeSessionStart: restoreChatBeforeSessionStart });
+			if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 			restoreChatBeforeSessionStart();
 			this.keybindings.reload();
 			const activeHeader = this.customHeader ?? this.builtInHeader;
@@ -6300,6 +7098,7 @@ export class InteractiveMode {
 			}
 			setRegisteredThemes(this.session.resourceLoader.getThemes().themes);
 			await this.themeController.applyFromSettings();
+			if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 			this.applyRuntimeSettings();
 			this.setupAutocompleteProvider();
 			const runner = this.session.extensionRunner;
@@ -6321,6 +7120,7 @@ export class InteractiveMode {
 			dismissReloadBox(this.editor as Component);
 			reloadBoxDismissed = true;
 		} catch (error) {
+			if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 			if (!reloadBoxDismissed) {
 				dismissReloadBox(previousEditor as Component);
 			}
@@ -6330,16 +7130,20 @@ export class InteractiveMode {
 
 	private async handleExportCommand(text: string): Promise<void> {
 		const outputPath = this.getPathCommandArgument(text, "/export");
+		const lifecycleGeneration = this.tuiLifecycleGeneration;
 
 		try {
 			if (outputPath?.endsWith(".jsonl")) {
 				const filePath = this.session.exportToJsonl(outputPath);
+				if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 				this.showStatus(`Session exported to: ${filePath}`);
 			} else {
 				const filePath = await this.session.exportToHtml(outputPath);
+				if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 				this.showStatus(`Session exported to: ${filePath}`);
 			}
 		} catch (error: unknown) {
+			if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 			this.showError(`Failed to export session: ${error instanceof Error ? error.message : "Unknown error"}`);
 		}
 	}
@@ -6374,6 +7178,7 @@ export class InteractiveMode {
 	}
 
 	private async handleImportCommand(text: string): Promise<void> {
+		const lifecycleGeneration = this.tuiLifecycleGeneration;
 		const inputPath = this.getPathCommandArgument(text, "/import");
 		if (!inputPath) {
 			this.showError("Usage: /import <path.jsonl>");
@@ -6381,6 +7186,7 @@ export class InteractiveMode {
 		}
 
 		const confirmed = await this.showExtensionConfirm("Import session", `Replace current session with ${inputPath}?`);
+		if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 		if (!confirmed) {
 			this.showStatus("Import cancelled");
 			return;
@@ -6389,19 +7195,23 @@ export class InteractiveMode {
 		try {
 			this.clearStatusIndicator();
 			const result = await this.runtimeHost.importFromJsonl(inputPath);
+			if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 			if (result.cancelled) {
 				this.showStatus("Import cancelled");
 				return;
 			}
 			this.showStatus(`Session imported from: ${inputPath}`);
 		} catch (error: unknown) {
+			if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 			if (error instanceof MissingSessionCwdError) {
 				const selectedCwd = await this.promptForMissingSessionCwd(error);
+				if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 				if (!selectedCwd) {
 					this.showStatus("Import cancelled");
 					return;
 				}
 				const result = await this.runtimeHost.importFromJsonl(inputPath, selectedCwd);
+				if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 				if (result.cancelled) {
 					this.showStatus("Import cancelled");
 					return;
@@ -6420,7 +7230,7 @@ export class InteractiveMode {
 	private async handleShareCommand(): Promise<void> {
 		// Check if gh is available and logged in
 		try {
-			const authResult = spawnSync("gh", ["auth", "status"], { encoding: "utf-8" });
+			const authResult = this.getGitHubCliAuthStatus();
 			if (authResult.status !== 0) {
 				this.showError("GitHub CLI is not logged in. Run 'gh auth login' first.");
 				return;
@@ -6431,16 +7241,26 @@ export class InteractiveMode {
 		}
 
 		// Export to a temp file
+		const lifecycleGeneration = this.tuiLifecycleGeneration;
 		const tmpFile = path.join(os.tmpdir(), "session.html");
 		try {
 			await this.session.exportToHtml(tmpFile);
 		} catch (error: unknown) {
+			if (lifecycleGeneration !== this.tuiLifecycleGeneration) {
+				removeTemporaryShareFile(tmpFile);
+				return;
+			}
 			this.showError(`Failed to export session: ${error instanceof Error ? error.message : "Unknown error"}`);
+			return;
+		}
+		if (lifecycleGeneration !== this.tuiLifecycleGeneration) {
+			removeTemporaryShareFile(tmpFile);
 			return;
 		}
 
 		// Show cancellable loader, replacing the editor
 		const loader = new BorderedLoader(this.ui, theme, "Creating gist...");
+		const loaderLifecycleGeneration = lifecycleGeneration;
 		this.editorContainer.clear();
 		this.editorContainer.addChild(loader);
 		this.ui.setFocus(loader);
@@ -6451,11 +7271,7 @@ export class InteractiveMode {
 			this.editorContainer.clear();
 			this.editorContainer.addChild(this.editor);
 			this.ui.setFocus(this.editor);
-			try {
-				fs.unlinkSync(tmpFile);
-			} catch {
-				// Ignore cleanup errors
-			}
+			removeTemporaryShareFile(tmpFile);
 		};
 
 		// Create a secret gist asynchronously
@@ -6463,6 +7279,10 @@ export class InteractiveMode {
 
 		loader.onAbort = () => {
 			proc?.kill();
+			if (loaderLifecycleGeneration !== this.tuiLifecycleGeneration) {
+				removeTemporaryShareFile(tmpFile);
+				return;
+			}
 			restoreEditor();
 			this.showStatus("Share cancelled");
 		};
@@ -6511,6 +7331,10 @@ export class InteractiveMode {
 		}
 	}
 
+	private getGitHubCliAuthStatus(): ReturnType<typeof spawnSync> {
+		return spawnSync("gh", ["auth", "status"], { encoding: "utf-8" });
+	}
+
 	private async handleCopyCommand(options: { flashConfirmation?: boolean } = {}): Promise<void> {
 		const text = this.session.getLastAssistantText();
 		if (!text) {
@@ -6518,16 +7342,23 @@ export class InteractiveMode {
 			return;
 		}
 
+		const lifecycleGeneration = this.tuiLifecycleGeneration;
 		try {
-			await copyToClipboard(text);
+			await this.copyTextToClipboard(text);
+			if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 			if (options.flashConfirmation && this.renderer instanceof TuiAltScreen) {
 				this.renderer.flash("Copied!");
 			} else {
 				this.showStatus("Copied last agent message to clipboard");
 			}
 		} catch (error) {
+			if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 			this.showError(error instanceof Error ? error.message : String(error));
 		}
+	}
+
+	private copyTextToClipboard(text: string): Promise<void> {
+		return copyToClipboard(text);
 	}
 
 	private handleNameCommand(text: string): void {
@@ -6770,9 +7601,11 @@ export class InteractiveMode {
 	}
 
 	private async handleClearCommand(): Promise<void> {
+		const lifecycleGeneration = this.tuiLifecycleGeneration;
 		this.clearStatusIndicator();
 		try {
 			const result = await this.runtimeHost.newSession();
+			if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 			if (result.cancelled) {
 				return;
 			}
@@ -6780,6 +7613,7 @@ export class InteractiveMode {
 			this.chatContainer.addChild(new Text(`${theme.fg("accent", "✓ New session started")}`, 1, 1));
 			this.ui.requestRender();
 		} catch (error: unknown) {
+			if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 			await this.handleFatalRuntimeError("Failed to create session", error);
 		}
 	}
@@ -6843,59 +7677,69 @@ export class InteractiveMode {
 
 	private async handleBashCommand(command: string, excludeFromContext = false): Promise<void> {
 		const extensionRunner = this.session.extensionRunner;
+		const lifecycleGeneration = this.tuiLifecycleGeneration;
 
 		// Emit user_bash event to let extensions intercept
-		const eventResult = await extensionRunner.emitUserBash({
-			type: "user_bash",
-			command,
-			excludeFromContext,
-			cwd: this.sessionManager.getCwd(),
-		});
+		let eventResult: Awaited<ReturnType<typeof extensionRunner.emitUserBash>>;
+		try {
+			eventResult = await extensionRunner.emitUserBash({
+				type: "user_bash",
+				command,
+				excludeFromContext,
+				cwd: this.sessionManager.getCwd(),
+			});
+		} catch (error) {
+			if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
+			throw error;
+		}
+		if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
 
 		// If extension returned a full result, use it directly
 		if (eventResult?.result) {
 			const result = eventResult.result;
 
 			// Create UI component for display
-			this.bashComponent = new BashExecutionComponent(command, this.ui, excludeFromContext);
+			const bashComponent = new BashExecutionComponent(command, this.ui, excludeFromContext);
+			this.bashComponent = bashComponent;
 			if (this.session.isStreaming) {
-				this.pendingMessagesContainer.addChild(this.bashComponent);
-				this.pendingBashComponents.push(this.bashComponent);
+				this.pendingMessagesContainer.addChild(bashComponent);
+				this.pendingBashComponents.push(bashComponent);
 			} else {
-				this.chatContainer.addChild(this.bashComponent);
+				this.chatContainer.addChild(bashComponent);
 			}
 
 			// Show output and complete
 			if (result.output) {
-				this.bashComponent.appendOutput(result.output);
-				this.chatContainer.invalidateViewportChild(this.bashComponent);
+				bashComponent.appendOutput(result.output);
+				this.chatContainer.invalidateViewportChild(bashComponent);
 			}
-			this.bashComponent.setComplete(
+			bashComponent.setComplete(
 				result.exitCode,
 				result.cancelled,
 				result.truncated ? ({ truncated: true, content: result.output } as TruncationResult) : undefined,
 				result.fullOutputPath,
 			);
-			this.chatContainer.invalidateViewportChild(this.bashComponent);
+			this.chatContainer.invalidateViewportChild(bashComponent);
 
 			// Record the result in session
 			this.session.recordBashResult(command, result, { excludeFromContext });
-			this.bashComponent = undefined;
+			if (this.bashComponent === bashComponent) this.bashComponent = undefined;
 			this.ui.requestRender();
 			return;
 		}
 
 		// Normal execution path (possibly with custom operations)
 		const isDeferred = this.session.isStreaming;
-		this.bashComponent = new BashExecutionComponent(command, this.ui, excludeFromContext);
+		const bashComponent = new BashExecutionComponent(command, this.ui, excludeFromContext);
+		this.bashComponent = bashComponent;
 
 		if (isDeferred) {
 			// Show in pending area when agent is streaming
-			this.pendingMessagesContainer.addChild(this.bashComponent);
-			this.pendingBashComponents.push(this.bashComponent);
+			this.pendingMessagesContainer.addChild(bashComponent);
+			this.pendingBashComponents.push(bashComponent);
 		} else {
 			// Show in chat immediately when agent is idle
-			this.chatContainer.addChild(this.bashComponent);
+			this.chatContainer.addChild(bashComponent);
 		}
 		this.ui.requestRender();
 
@@ -6903,33 +7747,44 @@ export class InteractiveMode {
 			const result = await this.session.executeBash(
 				command,
 				(chunk) => {
-					if (this.bashComponent) {
-						this.bashComponent.appendOutput(chunk);
-						this.chatContainer.invalidateViewportChild(this.bashComponent);
+					if (
+						this.tuiLifecycleGeneration === lifecycleGeneration &&
+						this.bashComponent === bashComponent
+					) {
+						bashComponent.appendOutput(chunk);
+						this.chatContainer.invalidateViewportChild(bashComponent);
 						this.ui.requestRender();
 					}
 				},
 				{ excludeFromContext, operations: eventResult?.operations },
 			);
 
-			if (this.bashComponent) {
-				this.bashComponent.setComplete(
+			if (this.tuiLifecycleGeneration !== lifecycleGeneration) {
+				if (this.bashComponent === bashComponent) this.bashComponent = undefined;
+				return;
+			}
+			if (this.bashComponent === bashComponent) {
+				bashComponent.setComplete(
 					result.exitCode,
 					result.cancelled,
 					result.truncated ? ({ truncated: true, content: result.output } as TruncationResult) : undefined,
 					result.fullOutputPath,
 				);
-				this.chatContainer.invalidateViewportChild(this.bashComponent);
+				this.chatContainer.invalidateViewportChild(bashComponent);
 			}
 		} catch (error) {
-			if (this.bashComponent) {
-				this.bashComponent.setComplete(undefined, false);
-				this.chatContainer.invalidateViewportChild(this.bashComponent);
+			if (this.tuiLifecycleGeneration !== lifecycleGeneration) {
+				if (this.bashComponent === bashComponent) this.bashComponent = undefined;
+				return;
+			}
+			if (this.bashComponent === bashComponent) {
+				bashComponent.setComplete(undefined, false);
+				this.chatContainer.invalidateViewportChild(bashComponent);
 			}
 			this.showError(`Bash command failed: ${error instanceof Error ? error.message : "Unknown error"}`);
 		}
 
-		this.bashComponent = undefined;
+		if (this.bashComponent === bashComponent) this.bashComponent = undefined;
 		this.ui.requestRender();
 	}
 
@@ -6944,8 +7799,46 @@ export class InteractiveMode {
 	}
 
 	async stop(fullscreenExitOutput = this.settingsManager.getFullscreenExitOutput()): Promise<void> {
+		if (this.stopCompleted === true) return;
+		const activeOperation = this.stopOperation;
+		if (activeOperation !== undefined) {
+			await activeOperation;
+			return;
+		}
+		this.invalidateInitialization();
 		this.tuiLifecycleGeneration++;
+		const operation = Promise.resolve().then(() => this.performStop(fullscreenExitOutput));
+		this.stopOperation = operation;
+		try {
+			await operation;
+		} finally {
+			if (this.stopOperation === operation) this.stopOperation = undefined;
+			this.stopCompleted = true;
+		}
+	}
+
+	private async performStop(fullscreenExitOutput: FullscreenExitOutput): Promise<void> {
+		this.closeExtensionUiContext();
+		offThemeChange(this.handleThemeChange);
+		this.runtimeHost.cancelPendingReplacements?.();
+		this.bashComponent = undefined;
+		this.cancelActiveSuspend();
+		this.cancelActiveLoginDialog();
+		this.cancelActiveProviderAuthentication();
+		this.cancelActiveStartupModelRefresh();
+		this.cancelActiveStartupDiagnostics();
+		this.cancelActiveModelLookup();
+		this.cancelActiveExtensionCustom();
+		this.cancelExtensionDialogs();
 		this.disposeActiveSelector();
+		let cleanupError: unknown;
+		let cleanupFailed = false;
+		try {
+			this.releaseExtensionUiOwners();
+		} catch (error) {
+			cleanupFailed = true;
+			cleanupError = error;
+		}
 		if (this.settingsManager.getShowTerminalProgress()) {
 			this.ui.terminal.setProgress(false);
 		}
@@ -6957,10 +7850,28 @@ export class InteractiveMode {
 		if (this.unsubscribe) {
 			this.unsubscribe();
 		}
-		if (this.isInitialized) {
-			await this.stopInteractiveTui(fullscreenExitOutput);
+		try {
+			if (this.isInitialized) {
+				await this.stopInteractiveTui(fullscreenExitOutput);
+			} else {
+				await this.ui.dispose({ preserveScreen: true });
+			}
+		} catch (error) {
+			if (!cleanupFailed) {
+				cleanupFailed = true;
+				cleanupError = error;
+			}
+		} finally {
 			this.isInitialized = false;
 		}
-		this.unregisterSignalHandlers();
+		try {
+			this.unregisterSignalHandlers();
+		} catch (error) {
+			if (!cleanupFailed) {
+				cleanupFailed = true;
+				cleanupError = error;
+			}
+		}
+		if (cleanupFailed) throw cleanupError;
 	}
 }

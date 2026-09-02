@@ -39,6 +39,8 @@ import {
 	type Component,
 	CURSOR_MARKER,
 	compositeTuiLine,
+	releaseDetachedComponentRenderCaches,
+	releaseComponentRenderCaches,
 	TuiBase,
 	type TuiStopOptions,
 	VIEWPORT_TUI,
@@ -164,6 +166,11 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	private previousScreenWidth = 0;
 	private previousScreenHeight = 0;
 	private layoutRoot: Component | undefined;
+	private layoutRootGeneration = 0;
+	private layoutRenderDepth = 0;
+	private layoutRenderOwners: Array<Component | undefined> = [undefined];
+	private pendingLayoutCacheReleases: Array<Component | undefined> = [undefined];
+	private pendingImplicitScrollReleases: boolean[] = [false];
 	private currentLayout: LayoutFrame | undefined;
 	private readonly layoutScratch = new LayoutFrameScratch();
 	private readonly implicitDocument: LineViewportComponent;
@@ -252,9 +259,79 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 
 	setLayoutRoot(component: Component | undefined): void {
 		if (this.layoutRoot === component) return;
-		this.layoutRoot = component;
+		const previousRoot = this.layoutRoot;
+		const previousOwner = previousRoot ?? this;
+		this.releaseLayoutInteractionOwners();
+		try {
+			let releaseDeferred = false;
+			for (let depth = 0; depth < this.layoutRenderDepth; depth++) {
+				if (this.layoutRenderOwners[depth] !== previousOwner) continue;
+				this.pendingLayoutCacheReleases[depth] = previousOwner;
+				this.pendingImplicitScrollReleases[depth] = previousRoot === undefined;
+				releaseDeferred = true;
+				break;
+			}
+			if (!releaseDeferred) this.releaseDetachedLayoutOwner(previousOwner, previousRoot === undefined, component);
+			const nextOwner = component ?? this;
+			for (let depth = this.layoutRenderDepth - 1; depth >= 0; depth--) {
+				if (this.pendingLayoutCacheReleases[depth] === nextOwner) {
+					this.pendingLayoutCacheReleases[depth] = undefined;
+					this.pendingImplicitScrollReleases[depth] = false;
+				}
+			}
+		} finally {
+			this.layoutScratch.requestClear();
+			this.layoutRoot = component;
+			this.layoutRootGeneration++;
+			this.currentLayout = undefined;
+			this.requestRender();
+		}
+	}
+
+	private appendLayoutOwnershipRoots(target: Component[], component: Component | undefined): void {
+		if (component === undefined) {
+			target.push(this);
+			target.push(this.implicitScrollView);
+		} else {
+			target.push(component);
+		}
+		this.appendOverlayComponentOwnershipRoots(target);
+		this.appendActiveComponentOwnershipRoots(target);
+	}
+
+	private releaseDetachedLayoutOwner(
+		owner: Component,
+		releaseImplicitScrollView: boolean,
+		component: Component | undefined,
+	): void {
+		const liveRoots: Component[] = [];
+		try {
+			this.appendLayoutOwnershipRoots(liveRoots, component);
+			if (releaseImplicitScrollView) {
+				releaseDetachedComponentRenderCaches(this.implicitScrollView, liveRoots);
+			}
+			releaseDetachedComponentRenderCaches(owner, liveRoots);
+		} finally {
+			liveRoots.length = 0;
+		}
+	}
+
+	protected override appendActiveComponentOwnershipRoots(target: Component[]): void {
+		for (let depth = 0; depth < this.layoutRenderDepth; depth++) {
+			const owner = this.layoutRenderOwners[depth];
+			if (owner !== undefined) target.push(owner);
+		}
+	}
+
+	detachLayoutRootForTransfer(): void {
+		if (this.layoutRoot === undefined) return;
+		// The caller is transferring this root to another TUI owner. Drop only
+		// Alt-owned layout state; releasing component caches would race the mount.
+		this.releaseLayoutInteractionOwners();
+		this.layoutScratch.clear();
+		this.layoutRoot = undefined;
+		this.layoutRootGeneration++;
 		this.currentLayout = undefined;
-		this.requestRender();
 	}
 
 	override render(width: number): string[] {
@@ -267,6 +344,32 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 
 	private getPrimaryScrollView(): ScrollView {
 		return this.currentLayout?.primaryScrollView ?? this.implicitScrollView;
+	}
+
+	private releaseLayoutInteractionOwners(): void {
+		if (this.selectionAutoScrollTimer) {
+			clearInterval(this.selectionAutoScrollTimer);
+			this.selectionAutoScrollTimer = undefined;
+		}
+		this.selectionAutoScrollDirection = 0;
+		this.selectionDragPointer = undefined;
+		if (this.scrollbarDragFrameTimer) {
+			clearTimeout(this.scrollbarDragFrameTimer);
+			this.scrollbarDragFrameTimer = undefined;
+		}
+		this.pendingScrollbarDragScrollTop = undefined;
+		this.scrollbarDrag = undefined;
+		this.scrollbarHover = undefined;
+		this.selectionAnchor = undefined;
+		this.selectionFocus = undefined;
+		this.selectionGranularity = "character";
+		this.selectionInitialRange = undefined;
+		this.lastClick = undefined;
+		this.pressedUrl = undefined;
+		this.selectionPressActive = false;
+		this.selectionDragged = false;
+		this.resolvedSelectionStart = undefined;
+		this.resolvedSelectionEnd = undefined;
 	}
 
 	protected override beforeTerminalStart(): void {
@@ -326,38 +429,158 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	protected override afterTerminalStop(options: TuiStopOptions): void | Promise<void> {
 		if (!this.altScreenActive) return;
 		this.altScreenActive = false;
-		let write: void | Promise<void>;
-		if (options.preserveScreen) {
-			write = this.terminal.write(`${BEGIN_SYNCHRONIZED_OUTPUT}${EXIT_ALT_SCREEN}\x1b[?25h${END_SYNCHRONIZED_OUTPUT}`);
-		} else {
-			const width = Math.max(1, this.terminal.columns);
-			const documentLines = this.render(width);
-			for (let index = 0; index < documentLines.length; index++) {
-				documentLines[index] = documentLines[index]
-					.replace(OSC133_ZONE_PREFIX_PATTERN, "")
-					.replaceAll(CURSOR_MARKER, "");
+		try {
+			let write: void | Promise<void>;
+			if (options.preserveScreen) {
+				write = this.terminal.write(`${BEGIN_SYNCHRONIZED_OUTPUT}${EXIT_ALT_SCREEN}\x1b[?25h${END_SYNCHRONIZED_OUTPUT}`);
+			} else {
+				const width = Math.max(1, this.terminal.columns);
+				const documentLines = this.render(width);
+				for (let index = 0; index < documentLines.length; index++) {
+					documentLines[index] = documentLines[index]
+						.replace(OSC133_ZONE_PREFIX_PATTERN, "")
+						.replaceAll(CURSOR_MARKER, "");
+				}
+				this.lastDocument = this.applyLineResets(documentLines);
+				for (let index = 0; index < this.lastDocument.length; index++) {
+					const line = this.lastDocument[index];
+					if (!isImageLine(line) && visibleWidth(line) > width) {
+						this.lastDocument[index] = sliceByColumn(line, 0, width, true);
+					}
+				}
+				let buffer = `${BEGIN_SYNCHRONIZED_OUTPUT}${EXIT_ALT_SCREEN}${DISABLE_AUTOWRAP}`;
+				for (let row = 0; row < this.lastDocument.length; row++) {
+					if (row > 0) buffer += "\r\n";
+					buffer += `\r\x1b[2K${this.lastDocument[row] ?? ""}`;
+				}
+				buffer += `\x1b[0m${ENABLE_AUTOWRAP}\r\n\x1b[?25h${END_SYNCHRONIZED_OUTPUT}`;
+				write = this.terminal.write(buffer);
 			}
-			this.lastDocument = this.applyLineResets(documentLines);
-			for (let index = 0; index < this.lastDocument.length; index++) {
-				const line = this.lastDocument[index];
-				if (!isImageLine(line) && visibleWidth(line) > width) {
-					this.lastDocument[index] = sliceByColumn(line, 0, width, true);
+			return write;
+		} finally {
+			this.restoreSavedCapabilities();
+			this.resetRenderState();
+		}
+	}
+
+	private restoreSavedCapabilities(): void {
+		if (!this.savedCapabilities) return;
+		setCapabilities(this.savedCapabilities);
+		this.savedCapabilities = undefined;
+	}
+
+	protected override releaseMountedComponentsAfterDispose(): void {
+		let releaseError: unknown;
+		let releaseFailed = false;
+		try {
+			try {
+				this.restoreSavedCapabilities();
+			} catch (error) {
+				releaseFailed = true;
+				releaseError = error;
+			}
+			try {
+				super.releaseMountedComponentsAfterDispose();
+			} catch (error) {
+				if (!releaseFailed) {
+					releaseFailed = true;
+					releaseError = error;
 				}
 			}
-			let buffer = `${BEGIN_SYNCHRONIZED_OUTPUT}${EXIT_ALT_SCREEN}${DISABLE_AUTOWRAP}`;
-			for (let row = 0; row < this.lastDocument.length; row++) {
-				if (row > 0) buffer += "\r\n";
-				buffer += `\r\x1b[2K${this.lastDocument[row] ?? ""}`;
+			try {
+				releaseComponentRenderCaches(this.implicitScrollView);
+			} catch (error) {
+				if (!releaseFailed) {
+					releaseFailed = true;
+					releaseError = error;
+				}
 			}
-			buffer += `\x1b[0m${ENABLE_AUTOWRAP}\r\n\x1b[?25h${END_SYNCHRONIZED_OUTPUT}`;
-			write = this.terminal.write(buffer);
+		} finally {
+			this.releaseLayoutInteractionOwners();
+			this.lastDocument = [];
+			this.lineResetBuffer[0] = "";
+			this.uploadedKittyImages.clear();
+			this.resolvedSelectionStart = undefined;
+			this.resolvedSelectionEnd = undefined;
+			this.layoutRoot = undefined;
+			this.currentLayout = undefined;
+			this.layoutRenderDepth = 0;
+			this.layoutRenderOwners = [];
+			this.pendingLayoutCacheReleases = [];
+			this.pendingImplicitScrollReleases = [];
+			this.layoutScratch.clear();
 		}
-		if (this.savedCapabilities) {
-			setCapabilities(this.savedCapabilities);
-			this.savedCapabilities = undefined;
+		if (releaseFailed) throw releaseError;
+	}
+
+	/** Low-frequency final-unmount diagnostics; never called from the frame path. */
+	getAltFinalUnmountRetainedReferenceCounts(): {
+		lastDocumentRows: number;
+		lastDocumentCodeUnits: number;
+		lastDocumentReference: 0 | 1;
+		lineResetCodeUnits: number;
+		uploadedKittyImages: number;
+		savedCapabilitiesReferences: 0 | 1;
+		selectionPointReferences: number;
+		layoutRenderOwnerReferences: number;
+		pendingLayoutReleaseReferences: number;
+	} {
+		let lastDocumentCodeUnits = 0;
+		for (let index = 0; index < this.lastDocument.length; index++) {
+			lastDocumentCodeUnits += this.lastDocument[index]?.length ?? 0;
 		}
-		this.resetRenderState();
-		return write;
+		let layoutRenderOwnerReferences = 0;
+		for (let index = 0; index < this.layoutRenderOwners.length; index++) {
+			if (this.layoutRenderOwners[index] !== undefined) layoutRenderOwnerReferences++;
+		}
+		let pendingLayoutReleaseReferences = 0;
+		for (let index = 0; index < this.pendingLayoutCacheReleases.length; index++) {
+			if (this.pendingLayoutCacheReleases[index] !== undefined) pendingLayoutReleaseReferences++;
+		}
+		return {
+			lastDocumentRows: this.lastDocument.length,
+			lastDocumentCodeUnits,
+			lastDocumentReference: this.lastDocument.length === 0 ? 0 : 1,
+			lineResetCodeUnits: this.lineResetBuffer[0].length,
+			uploadedKittyImages: this.uploadedKittyImages.size,
+			savedCapabilitiesReferences: this.savedCapabilities === undefined ? 0 : 1,
+			selectionPointReferences:
+				(this.resolvedSelectionStart === undefined ? 0 : 1) + (this.resolvedSelectionEnd === undefined ? 0 : 1),
+			layoutRenderOwnerReferences,
+			pendingLayoutReleaseReferences,
+		};
+	}
+
+	/** Low-frequency layout-interaction ownership diagnostics; never called from the frame path. */
+	getAltInteractionRetainedReferenceCounts(): {
+		selectionAnchorReferences: 0 | 1;
+		selectionFocusReferences: 0 | 1;
+		selectionInitialRangeReferences: 0 | 1;
+		lastClickReferences: 0 | 1;
+		selectionScrollViewReferences: number;
+		selectionTimerReferences: 0 | 1;
+		scrollbarOwnerReferences: number;
+		scrollbarTimerReferences: 0 | 1;
+	} {
+		let selectionScrollViewReferences = 0;
+		if (this.selectionAnchor?.scrollView !== undefined) selectionScrollViewReferences++;
+		if (this.selectionFocus?.scrollView !== undefined) selectionScrollViewReferences++;
+		if (this.selectionInitialRange?.start.scrollView !== undefined) selectionScrollViewReferences++;
+		if (this.selectionInitialRange?.end.scrollView !== undefined) selectionScrollViewReferences++;
+		if (this.lastClick?.scrollView !== undefined) selectionScrollViewReferences++;
+		if (this.resolvedSelectionStart?.scrollView !== undefined) selectionScrollViewReferences++;
+		if (this.resolvedSelectionEnd?.scrollView !== undefined) selectionScrollViewReferences++;
+		return {
+			selectionAnchorReferences: this.selectionAnchor === undefined ? 0 : 1,
+			selectionFocusReferences: this.selectionFocus === undefined ? 0 : 1,
+			selectionInitialRangeReferences: this.selectionInitialRange === undefined ? 0 : 1,
+			lastClickReferences: this.lastClick === undefined ? 0 : 1,
+			selectionScrollViewReferences,
+			selectionTimerReferences: this.selectionAutoScrollTimer === undefined ? 0 : 1,
+			scrollbarOwnerReferences:
+				(this.scrollbarHover === undefined ? 0 : 1) + (this.scrollbarDrag === undefined ? 0 : 1),
+			scrollbarTimerReferences: this.scrollbarDragFrameTimer === undefined ? 0 : 1,
+		};
 	}
 
 	private deleteKittyImages(): string {
@@ -449,7 +672,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		this.previousScreenWidth = 0;
 		this.previousScreenHeight = 0;
 		this.currentLayout = undefined;
-		this.layoutScratch.clear();
+		this.layoutScratch.requestClear();
 	}
 
 	scrollBy(lines: number): void {
@@ -1185,6 +1408,11 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		if (this.stopped || !this.altScreenActive) return;
 		const width = Math.max(1, this.terminal.columns);
 		const height = Math.max(1, this.terminal.rows);
+		const layoutRootGeneration = this.layoutRootGeneration;
+		const layoutRenderDepth = this.layoutRenderDepth;
+		this.layoutRenderDepth = layoutRenderDepth + 1;
+		this.layoutRenderOwners[layoutRenderDepth] = this.layoutRoot ?? this;
+		try {
 		const root = this.layoutRoot ?? this.implicitScrollView;
 		const nextLayout = renderLayoutFrame(root, width, height, this.layoutRequestRender, this.layoutScratch);
 		let screen = nextLayout.lines;
@@ -1303,7 +1531,30 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		this.previousRawScreen = rawScreen;
 		this.previousScreenWidth = width;
 		this.previousScreenHeight = height;
-		nextLayout.lines = this.previousScreen;
-		this.currentLayout = nextLayout;
+		if (layoutRootGeneration === this.layoutRootGeneration) {
+			nextLayout.lines = this.previousScreen;
+			this.currentLayout = nextLayout;
+		} else {
+			this.currentLayout = undefined;
+		}
+		} finally {
+			this.layoutRenderOwners[layoutRenderDepth] = undefined;
+			this.layoutRenderDepth = layoutRenderDepth;
+			try {
+				const pendingLayoutCacheRelease = this.pendingLayoutCacheReleases[layoutRenderDepth];
+				this.pendingLayoutCacheReleases[layoutRenderDepth] = undefined;
+				const releaseImplicitScrollView = this.pendingImplicitScrollReleases[layoutRenderDepth] === true;
+				this.pendingImplicitScrollReleases[layoutRenderDepth] = false;
+				if (pendingLayoutCacheRelease !== undefined) {
+					this.releaseDetachedLayoutOwner(
+						pendingLayoutCacheRelease,
+						releaseImplicitScrollView,
+						this.layoutRoot,
+					);
+				}
+			} finally {
+				if (layoutRenderDepth === 0) this.layoutScratch.flushRequestedClear();
+			}
+		}
 	}
 }

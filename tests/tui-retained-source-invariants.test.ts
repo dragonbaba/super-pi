@@ -168,7 +168,8 @@ test("allocation hot paths keep cache hits and mutation writes allocation-free",
 
 test("Main reuses mutation tokens and Alt avoids duplicate no-op frame copies", () => {
 	const mainText = readFileSync(MAIN_SCREEN_PATH, "utf8");
-	assert.match(mainText, /private readonly viewportMutationTokens: unknown\[\] = \[\]/);
+	assert.match(mainText, /private viewportMutationTokens: unknown\[\] = \[\]/);
+	assert.match(mainText, /releaseMountedComponentsAfterDispose[\s\S]*this\.viewportMutationTokens = \[\]/);
 	assert.doesNotMatch(mainText, /childTokens\s*:/);
 
 	const altText = readFileSync(ALT_SCREEN_PATH, "utf8");
@@ -343,6 +344,10 @@ test("overlay focus lookup paths avoid per-call find and some callbacks", () => 
 	assert.equal(closures, 0);
 	const ancestor = findMethod(source, "TuiBase", "isOverlayFocusAncestor");
 	assert.doesNotMatch(ancestor.getText(source), /new Set|\.find\(/);
+	const contains = findMethod(source, "TuiBase", "containsComponent").getText(source);
+	assert.match(contains, /root\[GET_COMPONENT_RENDER_CACHE_CHILD\]\?\.\(\)/);
+	assert.match(contains, /root\[GET_COMPONENT_RENDER_CACHE_CHILDREN\]\?\.\(\)/);
+	assert.doesNotMatch(contains, /new (?:Map|Set|Promise|AbortController)|=>|function\s*\(|\.map\(|\.filter\(/);
 });
 
 test("overlay focus state uses direct parameters and one fixed mutable record", () => {

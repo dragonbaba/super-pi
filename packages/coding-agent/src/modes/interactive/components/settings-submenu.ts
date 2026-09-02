@@ -157,6 +157,12 @@ export class SteppedSubmenu extends Container {
 		this.options = options;
 		this.context = { ...(options.initialContext ?? {}) };
 		this.activeComponent = this.buildStep(options.startAtStep ?? 0);
+		this.children.push(this.activeComponent);
+	}
+
+	private setActiveComponent(component: Component): void {
+		this.activeComponent = component;
+		this.children[0] = component;
 	}
 
 	private buildStep(stepIndex: number): Component {
@@ -173,13 +179,13 @@ export class SteppedSubmenu extends Container {
 			(value) => {
 				this.context[step.key] = value;
 				if (stepIndex < this.steps.length - 1) {
-					this.activeComponent = this.buildStep(stepIndex + 1);
+					this.setActiveComponent(this.buildStep(stepIndex + 1));
 					return;
 				}
 				this.onComplete({ ...this.context });
 				if (this.options.loop) {
 					this.context = {};
-					this.activeComponent = this.buildStep(0);
+					this.setActiveComponent(this.buildStep(0));
 				} else {
 					this.onCancel();
 				}
@@ -197,7 +203,7 @@ export class SteppedSubmenu extends Container {
 					previousContext[key] = this.context[key]!;
 				}
 				this.context = previousContext;
-				this.activeComponent = this.buildStep(stepIndex - 1);
+				this.setActiveComponent(this.buildStep(stepIndex - 1));
 			},
 			undefined,
 			step.searchable || step.layout ? { searchable: step.searchable, layout: step.layout } : undefined,

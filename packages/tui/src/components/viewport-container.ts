@@ -1,3 +1,4 @@
+import { RELEASE_COMPONENT_RENDER_CACHE } from "../component-cache.ts";
 import { type Component, Container } from "../tui.ts";
 import { getKittyImageMetadata } from "../terminal-image.ts";
 
@@ -141,13 +142,51 @@ export function renderComponentsViewport(
 export class ViewportContainer extends Container implements LineViewportComponent {
 	readonly [LINE_VIEWPORT_COMPONENT] = true as const;
 	private mutationGeneration = 0;
-	private readonly childMutationTokens: unknown[] = [];
+	private childMutationTokens: unknown[] = [];
 	private readonly childMutationScratch: LineViewportMutationObservation = { token: 0, kind: "none" };
-	private readonly childHeights: number[] = [];
+	private childHeights: number[] = [];
 	private childHeightWidth: number | undefined;
-	private readonly tailChildLines: Array<readonly string[] | undefined> = [];
-	private readonly tailChildStarts: number[] = [];
-	private readonly tailChildLeadingKittyImages: Array<LineViewportRender["leadingKittyImage"]> = [];
+	private tailChildLines: Array<readonly string[] | undefined> = [];
+	private tailChildStarts: number[] = [];
+	private tailChildLeadingKittyImages: Array<LineViewportRender["leadingKittyImage"]> = [];
+
+	[RELEASE_COMPONENT_RENDER_CACHE](): void {
+		this.mutationGeneration++;
+		this.childMutationTokens = [];
+		this.childHeights = [];
+		this.tailChildLines = [];
+		this.tailChildStarts = [];
+		this.tailChildLeadingKittyImages = [];
+		this.childHeightWidth = undefined;
+		this.childMutationScratch.token = undefined;
+		this.childMutationScratch.kind = "none";
+		this.childMutationScratch.earliestChangedLine = undefined;
+		this.childMutationScratch.latestChangedLine = undefined;
+		this.childMutationScratch.heightChanged = undefined;
+	}
+
+	/** Low-frequency final-unmount diagnostics; never called from viewport rendering. */
+	getViewportLifecycleReferenceCounts(): {
+		children: number;
+		childMutationTokens: number;
+		childHeights: number;
+		tailChildLines: number;
+		tailChildStarts: number;
+		tailChildLeadingKittyImages: number;
+		childMutationScratchToken: 0 | 1;
+		childHeightWidth: 0 | 1;
+	} {
+		return {
+			children: this.children.length,
+			childMutationTokens: this.childMutationTokens.length,
+			childHeights: this.childHeights.length,
+			tailChildLines: this.tailChildLines.length,
+			tailChildStarts: this.tailChildStarts.length,
+			tailChildLeadingKittyImages: this.tailChildLeadingKittyImages.length,
+			childMutationScratchToken: this.childMutationScratch.token === undefined ? 0 : 1,
+			childHeightWidth: this.childHeightWidth === undefined ? 0 : 1,
+		};
+	}
 
 	private markStructureMutation(): void {
 		this.mutationGeneration++;

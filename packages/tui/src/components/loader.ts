@@ -1,4 +1,5 @@
 import type { TUI } from "../tui.ts";
+import { RELEASE_COMPONENT_RENDER_CACHE } from "../component-cache.ts";
 import { Text } from "./text.ts";
 
 export interface LoaderIndicatorOptions {
@@ -56,6 +57,21 @@ export class Loader extends Text {
 		}
 	}
 
+	/** Rebind a previously released loader before restarting it under a new TUI owner. */
+	setTui(ui: TUI): void {
+		this.ui = ui;
+	}
+
+	/** Permanently release animation ownership until the loader is explicitly rebound. */
+	dispose(): void {
+		this.releaseAnimationOwner();
+	}
+
+	override [RELEASE_COMPONENT_RENDER_CACHE](): void {
+		super[RELEASE_COMPONENT_RENDER_CACHE]();
+		this.releaseAnimationOwner();
+	}
+
 	setMessage(message: string): void {
 		this.message = message;
 		this.updateDisplay();
@@ -78,6 +94,11 @@ export class Loader extends Text {
 			this.currentFrame = (this.currentFrame + 1) % this.frames.length;
 			this.updateDisplay();
 		}, this.intervalMs);
+	}
+
+	private releaseAnimationOwner(): void {
+		this.stop();
+		this.ui = null;
 	}
 
 	private updateDisplay(): void {

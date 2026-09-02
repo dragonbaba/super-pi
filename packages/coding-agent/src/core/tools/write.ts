@@ -1,5 +1,5 @@
 import type { AgentTool } from "@super-pi/agent-core";
-import { Container, Text } from "@super-pi/tui";
+import { Container, RELEASE_COMPONENT_RENDER_CACHE, Text } from "@super-pi/tui";
 import { mkdir as fsMkdir, writeFile as fsWriteFile } from "fs/promises";
 import { dirname } from "path";
 import { type Static, Type } from "typebox";
@@ -57,6 +57,11 @@ class WriteCallRenderComponent extends Text {
 
 	constructor() {
 		super("", 0, 0);
+	}
+
+	override [RELEASE_COMPONENT_RENDER_CACHE](): void {
+		this.cache = undefined;
+		super[RELEASE_COMPONENT_RENDER_CACHE]();
 	}
 }
 

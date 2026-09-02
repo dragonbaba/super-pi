@@ -1,5 +1,6 @@
 import { fuzzyFilter } from "../fuzzy.ts";
 import { getKeybindings } from "../keybindings.ts";
+import { GET_COMPONENT_RENDER_CACHE_CHILD } from "../component-cache.ts";
 import type { Component } from "../tui.ts";
 import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "../utils.ts";
 import { Input } from "./input.ts";
@@ -76,6 +77,10 @@ export class SettingsList implements Component {
 
 	invalidate(): void {
 		this.submenuComponent?.invalidate?.();
+	}
+
+	[GET_COMPONENT_RENDER_CACHE_CHILD](): Component | undefined {
+		return this.submenuComponent ?? undefined;
 	}
 
 	render(width: number): string[] {

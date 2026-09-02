@@ -202,9 +202,11 @@ export class LayoutFrameScratch {
 	private previousWidth = 0;
 	private previousHeight = 0;
 	private inUse = false;
+	private clearRequested = false;
 
 	begin(width: number, height: number, requestRender: () => void): LayoutContext | undefined {
 		if (this.inUse) return undefined;
+		if (this.clearRequested) this.clear();
 		this.inUse = true;
 		const context = this.context;
 		context.viewportWidth = width;
@@ -328,10 +330,26 @@ export class LayoutFrameScratch {
 		this.previousHeight = 0;
 		this.releaseTransientReferences();
 		this.inUse = false;
+		if (this.clearRequested) this.clear();
+	}
+
+	/** Clear immediately when idle, or after the current borrower has consumed its frame lines. */
+	requestClear(): void {
+		if (this.inUse) {
+			this.clearRequested = true;
+			return;
+		}
+		this.clear();
+	}
+
+	/** Complete a deferred clear at the caller-owned end of synchronous frame composition. */
+	flushRequestedClear(): void {
+		if (this.clearRequested) this.clear();
 	}
 
 	clear(): void {
 		if (this.inUse) throw new Error("Cannot clear layout scratch during render");
+		this.clearRequested = false;
 		this.releaseTransientReferences();
 		this.screenA = [];
 		this.screenB = [];
