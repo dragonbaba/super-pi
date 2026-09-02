@@ -223,6 +223,16 @@ function toolMessage(content: ToolResultPresentationContent[], toolCallId: strin
 	};
 }
 
+function continuationCursor(content: ToolResultMessage["content"]): string {
+	for (let index = 0; index < content.length; index++) {
+		const block = content[index]!;
+		if (block.type !== "text") continue;
+		const match = /Continue with cursor (tr1\.[a-z0-9.]+)\.\]/.exec(block.text);
+		if (match?.[1]) return match[1];
+	}
+	throw new Error("projected tool result is missing its continuation cursor");
+}
+
 async function measureDirect(
 	inspector: Session,
 	name: string,
@@ -877,14 +887,37 @@ async function measureLifecycle(): Promise<Record<string, unknown>> {
 	let sourceContent: ToolResultPresentationContent[] | undefined = [{ type: "text", text: TEXT_10_MIB }];
 	let presentation: ToolResultPresentation | undefined = owner.create(sourceContent, "lifecycle");
 	let sourceMessage: ToolResultMessage | undefined = toolMessage(sourceContent, "lifecycle");
-	let validationMessages: unknown[] | undefined = [sourceMessage];
-	if (presentation.version === 2) owner.readContinuation(presentation.continuation.cursor, validationMessages, BUDGET_TOKENS);
+	let validationMessages: Message[] | undefined = [sourceMessage];
+	owner.release();
+	owner.clearProjectionRecords();
+	let providerCloneMessages: Message[] | undefined = structuredClone(validationMessages);
+	let providerCloneSourceContent: object | undefined = (providerCloneMessages[0] as ToolResultMessage).content;
+	let providerMessages: Message[] | undefined = owner.projectMessagesForModel(providerCloneMessages);
+	const projected = providerMessages[0];
+	if (projected?.role !== "toolResult") throw new Error("lifecycle provider projection is missing");
+	const cursor = continuationCursor(projected.content);
+	const entriesAfterProviderClone = counters.projectionRecordEntries;
+	const scansBeforeFirstContinuation = counters.fullSourceEstimatorScans;
+	const probesBeforeFirstContinuation = counters.continuationSourceLookupProbes;
+	const first = owner.readContinuation(cursor, validationMessages, BUDGET_TOKENS);
+	if (!first.nextCursor) throw new Error("lifecycle continuation exhausted on its first chunk");
+	const firstContinuationSourceScans = counters.fullSourceEstimatorScans - scansBeforeFirstContinuation;
+	const firstContinuationLookupProbes = counters.continuationSourceLookupProbes - probesBeforeFirstContinuation;
+	const scansBeforeSecondContinuation = counters.fullSourceEstimatorScans;
+	const probesBeforeSecondContinuation = counters.continuationSourceLookupProbes;
+	const hitsBeforeSecondContinuation = counters.continuationSourceRecordHits;
+	owner.readContinuation(first.nextCursor, validationMessages, BUDGET_TOKENS);
+	const secondContinuationSourceScans = counters.fullSourceEstimatorScans - scansBeforeSecondContinuation;
+	const secondContinuationLookupProbes = counters.continuationSourceLookupProbes - probesBeforeSecondContinuation;
+	const secondContinuationRecordHits = counters.continuationSourceRecordHits - hitsBeforeSecondContinuation;
+	const entriesAfterValidatedBind = counters.projectionRecordEntries;
 	const weakSourceOuterArray = new WeakRef(sourceContent);
 	const weakValidationMessagesOuterArray = new WeakRef(validationMessages);
+	const weakProviderCloneMessagesOuterArray = new WeakRef(providerCloneMessages);
+	const weakProviderCloneSourceOuterArray = new WeakRef(providerCloneSourceContent);
 	const weakPresentation = new WeakRef(presentation);
 	const weakModel = new WeakRef(presentation.modelContent as object);
 	const weakUi = new WeakRef(presentation.uiContent as object);
-	owner.release();
 	owner.clearProjectionRecords();
 	const entriesAfterClear = counters.projectionRecordEntries;
 	const retainedCodeUnitsAfterClear = counters.retainedProjectionCodeUnits;
@@ -893,6 +926,9 @@ async function measureLifecycle(): Promise<Record<string, unknown>> {
 	sourceContent = undefined;
 	sourceMessage = undefined;
 	validationMessages = undefined;
+	providerMessages = undefined;
+	providerCloneMessages = undefined;
+	providerCloneSourceContent = undefined;
 	owner = undefined as unknown as NonNullable<typeof owner>;
 	await yieldToEventLoop();
 	globalThis.gc!();
@@ -923,6 +959,15 @@ async function measureLifecycle(): Promise<Record<string, unknown>> {
 		retainedUiOuterArrayWeakReferences: weakUi.deref() ? 1 : 0,
 		retainedSourceOuterArrayWeakReferences: weakSourceOuterArray.deref() ? 1 : 0,
 		retainedValidationMessagesOuterArrayWeakReferences: weakValidationMessagesOuterArray.deref() ? 1 : 0,
+		retainedProviderCloneMessagesOuterArrayWeakReferences: weakProviderCloneMessagesOuterArray.deref() ? 1 : 0,
+		retainedProviderCloneSourceOuterArrayWeakReferences: weakProviderCloneSourceOuterArray.deref() ? 1 : 0,
+		entriesAfterProviderClone,
+		entriesAfterValidatedBind,
+		firstContinuationSourceScans,
+		firstContinuationLookupProbes,
+		secondContinuationSourceScans,
+		secondContinuationLookupProbes,
+		secondContinuationRecordHits,
 		entriesAfterClear,
 		retainedCodeUnitsAfterClear,
 	};

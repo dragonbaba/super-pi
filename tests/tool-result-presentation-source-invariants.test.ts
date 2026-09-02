@@ -141,6 +141,11 @@ test("budgeted model-view benchmark retains the Candidate Gate fixtures and life
 	assert.match(source, /"zwj-flag-keycap-tag"/);
 	assert.match(source, /retainedSourceOuterArrayWeakReferences/);
 	assert.match(source, /retainedValidationMessagesOuterArrayWeakReferences/);
+	assert.match(source, /retainedProviderCloneMessagesOuterArrayWeakReferences/);
+	assert.match(source, /retainedProviderCloneSourceOuterArrayWeakReferences/);
+	assert.match(source, /entriesAfterProviderClone/);
+	assert.match(source, /entriesAfterValidatedBind/);
+	assert.match(source, /secondContinuationRecordHits/);
 	assert.match(source, /heapUsedDelta/);
 	assert.match(source, /externalDelta/);
 	assert.match(source, /arrayBuffersDelta/);
