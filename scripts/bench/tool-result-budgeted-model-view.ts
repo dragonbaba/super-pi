@@ -1001,7 +1001,7 @@ try {
 		], 40_000),
 		await measureBoundaryContinuation(inspector, "combining-256", [
 			{ type: "text", text: ("A" + "\u0301".repeat(256) + "plain").repeat(2_048) },
-		], 512),
+		], 1_024),
 		await measureBoundaryContinuation(inspector, "zwj-flag-keycap-tag", [
 			{ type: "text", text: (
 				"\u{1f468}\u200d\u{1f469}\u200d\u{1f467}\u200d\u{1f466}" +
