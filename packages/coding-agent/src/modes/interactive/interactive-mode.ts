@@ -7799,14 +7799,15 @@ export class InteractiveMode {
 	}
 
 	async stop(fullscreenExitOutput = this.settingsManager.getFullscreenExitOutput()): Promise<void> {
-		this.invalidateInitialization();
-		this.tuiLifecycleGeneration++;
 		if (this.stopCompleted === true) return;
-		if (this.stopOperation !== undefined) {
-			await this.stopOperation;
+		const activeOperation = this.stopOperation;
+		if (activeOperation !== undefined) {
+			await activeOperation;
 			return;
 		}
-		const operation = this.performStop(fullscreenExitOutput);
+		this.invalidateInitialization();
+		this.tuiLifecycleGeneration++;
+		const operation = Promise.resolve().then(() => this.performStop(fullscreenExitOutput));
 		this.stopOperation = operation;
 		try {
 			await operation;
@@ -7849,17 +7850,19 @@ export class InteractiveMode {
 		if (this.unsubscribe) {
 			this.unsubscribe();
 		}
-		if (this.isInitialized) {
-			try {
+		try {
+			if (this.isInitialized) {
 				await this.stopInteractiveTui(fullscreenExitOutput);
-			} catch (error) {
-				if (!cleanupFailed) {
-					cleanupFailed = true;
-					cleanupError = error;
-				}
-			} finally {
-				this.isInitialized = false;
+			} else {
+				await this.ui.dispose({ preserveScreen: true });
 			}
+		} catch (error) {
+			if (!cleanupFailed) {
+				cleanupFailed = true;
+				cleanupError = error;
+			}
+		} finally {
+			this.isInitialized = false;
 		}
 		try {
 			this.unregisterSignalHandlers();

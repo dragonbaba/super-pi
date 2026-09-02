@@ -958,6 +958,35 @@ test("selective release preserves the first hook error while releasing later det
 	assert.equal(shared.releaseCalls, 0);
 });
 
+test("selective release isolates throwing hook accessors and releases later siblings", () => {
+	const accessorError = new Error("fixture cache release accessor failure");
+	const detached = new Container();
+	const throwing = new Container();
+	const later = new CountingCacheContainer();
+	Object.defineProperty(throwing, RELEASE_COMPONENT_RENDER_CACHE, {
+		get(): never {
+			throw accessorError;
+		},
+	});
+	detached.addChild(throwing);
+	detached.addChild(later);
+	const metrics: DetachedComponentReleaseMetrics = {
+		liveNodesScanned: 0,
+		detachedNodesScanned: 0,
+		releasedNodes: 0,
+		identityTableHighWaterMark: 0,
+		retainedIdentityEntries: -1,
+	};
+
+	assert.throws(
+		() => releaseDetachedComponentRenderCaches(detached, [], metrics),
+		(error: unknown) => error === accessorError,
+	);
+	assert.equal(later.releaseCalls, 1);
+	assert.equal(metrics.releasedNodes, 1);
+	assert.equal(metrics.retainedIdentityEntries, 0);
+});
+
 test("selective release snapshots detached siblings before a release hook mutates their parent", () => {
 	const detached = new Container();
 	const later = new CountingCacheContainer();

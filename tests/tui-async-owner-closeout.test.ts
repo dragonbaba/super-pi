@@ -32,6 +32,7 @@ function createCountingTui(): CountingTui {
 		setFocus(): void {
 			(this as CountingTui).setFocusCalls++;
 		},
+		async dispose(): Promise<void> {},
 	} as unknown as CountingTui;
 }
 
@@ -84,6 +85,7 @@ function createInitializationFixture(options: InitializationFixtureOptions = {})
 		prompts: 0,
 		userInputs: 0,
 		stopInteractiveTui: 0,
+		rendererDisposals: 0,
 		footerDisposals: 0,
 		footerProviderDisposals: 0,
 	};
@@ -144,6 +146,9 @@ function createInitializationFixture(options: InitializationFixtureOptions = {})
 			counters.renderRequests++;
 		},
 		renderNow(): void {},
+		async dispose(): Promise<void> {
+			counters.rendererDisposals++;
+		},
 		invalidate(): void {
 			counters.invalidations++;
 		},
@@ -235,6 +240,7 @@ test("interactive initialization is cancelled while tool discovery is pending", 
 	assert.equal(mode.fdPath, undefined);
 	assert.equal(counters.applyTheme, 0);
 	assert.equal(counters.rebind, 0);
+	assert.equal(counters.rendererDisposals, 1);
 });
 
 test("cancelled initialization suppresses a stale tool-discovery rejection", async () => {
@@ -561,8 +567,16 @@ test("async owner closeout remains lifecycle-only in source", () => {
 	const stopCoordinatorSource = interactiveSource.match(/async stop\(fullscreenExitOutput[\s\S]*?\n\t\}/)?.[0] ?? "";
 	const stopSource = interactiveSource.match(/private async performStop\(fullscreenExitOutput[\s\S]*?\n\t\}/)?.[0] ?? "";
 	assert.ok(
+		stopCoordinatorSource.indexOf("const activeOperation = this.stopOperation") <
+			stopCoordinatorSource.indexOf("this.invalidateInitialization()"),
+	);
+	assert.ok(
 		stopCoordinatorSource.indexOf("this.invalidateInitialization()") <
 			stopCoordinatorSource.indexOf("this.performStop(fullscreenExitOutput)"),
+	);
+	assert.match(
+		stopCoordinatorSource,
+		/const operation = Promise\.resolve\(\)\.then\(\(\) => this\.performStop\(fullscreenExitOutput\)\);\s*this\.stopOperation = operation/,
 	);
 	assert.ok(stopSource.indexOf("this.cancelActiveLoginDialog()") < stopSource.indexOf("this.stopInteractiveTui"));
 	const initStart = interactiveSource.indexOf("async init(): Promise<boolean>");
@@ -967,6 +981,47 @@ test("interactive stop disposes extension widgets header and footer exactly once
 	assert.equal(mode.customHeader, undefined);
 	await mode.stop();
 	assert.deepEqual(calls, { above: 1, below: 1, footer: 1, header: 1 });
+});
+
+test("interactive stop publishes one operation before extension disposal can re-enter", async () => {
+	const { mode } = createInitializationFixture();
+	let releaseCalls = 0;
+	let nestedStop: Promise<void> | undefined;
+	mode.releaseExtensionUiOwners = (): void => {
+		releaseCalls++;
+		nestedStop = mode.stop();
+	};
+
+	const outerStop = mode.stop();
+	await outerStop;
+	await nestedStop;
+
+	assert.equal(releaseCalls, 1);
+	assert.equal(mode.tuiLifecycleGeneration, 1);
+	assert.equal(mode.stopCompleted, true);
+});
+
+test("concurrent stop joins without invalidating fullscreen transcript transfer", async () => {
+	const { mode, counters } = createInitializationFixture();
+	const terminalStop = deferred<void>();
+	const exitOutputs: string[] = [];
+	mode.isInitialized = true;
+	mode.stopInteractiveTui = async (exitOutput: string): Promise<void> => {
+		counters.stopInteractiveTui++;
+		exitOutputs.push(exitOutput);
+		await terminalStop.promise;
+	};
+
+	const firstStop = mode.stop("transcript");
+	await waitFor(() => counters.stopInteractiveTui === 1);
+	const stopGeneration = mode.tuiLifecycleGeneration;
+	const secondStop = mode.stop("transcript");
+	assert.equal(mode.tuiLifecycleGeneration, stopGeneration);
+	terminalStop.resolve();
+	await Promise.all([firstStop, secondStop]);
+
+	assert.deepEqual(exitOutputs, ["transcript"]);
+	assert.equal(mode.tuiLifecycleGeneration, 1);
 });
 
 test("interactive stop isolates extension disposal errors and releases later owners", async () => {
@@ -2588,7 +2643,10 @@ test("final shutdown rejects post-login model selection before catalog refresh",
 			getShowTerminalProgress: () => false,
 		},
 	} };
-	mode.ui = { requestRender(): void { renderCalls++; } };
+	mode.ui = {
+		requestRender(): void { renderCalls++; },
+		async dispose(): Promise<void> {},
+	};
 	mode.footer = {
 		invalidate(): void { footerInvalidations++; },
 		dispose(): void {},
@@ -2655,7 +2713,10 @@ test("final shutdown aborts the post-login catalog refresh and rejects its late 
 			getShowTerminalProgress: () => false,
 		},
 	} };
-	mode.ui = { requestRender(): void { renderCalls++; } };
+	mode.ui = {
+		requestRender(): void { renderCalls++; },
+		async dispose(): Promise<void> {},
+	};
 	mode.footer = {
 		invalidate(): void { footerInvalidations++; },
 		dispose(): void {},

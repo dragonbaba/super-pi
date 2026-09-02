@@ -347,8 +347,13 @@ test("mode switch validates renderer identity and lifecycle generation after sto
 	);
 
 	const stopMethod = methodNamed(source, "InteractiveMode", "stop");
-	assert.equal(stopMethod.body?.statements[0]?.getText(source), "this.invalidateInitialization();");
-	assert.equal(stopMethod.body?.statements[1]?.getText(source), "this.tuiLifecycleGeneration++;");
+	const stopBody = stopMethod.getText(source);
+	const activeJoin = stopBody.indexOf("const activeOperation = this.stopOperation;");
+	const initializationInvalidation = stopBody.indexOf("this.invalidateInitialization();");
+	const lifecycleInvalidation = stopBody.indexOf("this.tuiLifecycleGeneration++;");
+	assert.ok(activeJoin >= 0);
+	assert.ok(initializationInvalidation > activeJoin);
+	assert.ok(lifecycleInvalidation > initializationInvalidation);
 	const shutdownMethod = methodNamed(source, "InteractiveMode", "shutdown");
 	assert.match(
 		shutdownMethod.getText(source),
