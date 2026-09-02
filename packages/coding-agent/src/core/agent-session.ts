@@ -139,6 +139,8 @@ import {
 } from "./tool-output-budget.ts";
 import {
 	createToolResultPresentationOwner,
+	ToolResultArtifactError,
+	type ToolResultArtifactReadV1,
 	ToolResultContinuationError,
 	type ToolResultContinuationChunkV1,
 	type ToolResultPresentationOptions,
@@ -1425,6 +1427,18 @@ export class AgentSession {
 			);
 		}
 		return owner.readContinuation(cursor, this.agent.state.messages, budgetTokens);
+	}
+
+	/** Resolve a bounded-presentation artifact handle against the current active session branch. */
+	readToolResultArtifact(id: string): ToolResultArtifactReadV1 {
+		const owner = this._toolResultPresentation;
+		if (!owner) {
+			throw new ToolResultArtifactError(
+				"stale-artifact",
+				"Tool-result artifacts are unavailable for this session.",
+			);
+		}
+		return owner.readArtifact(id, this.agent.state.messages);
 	}
 
 	/**

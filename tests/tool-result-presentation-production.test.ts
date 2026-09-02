@@ -368,8 +368,13 @@ test("budgeted production persists full UI content and resumes the identical pro
 		const firstChunk = session.readToolResultContinuation(retainedPresentation.continuation.cursor, 128);
 		assert.ok(firstChunk.content.length > 0);
 		assert.ok(firstChunk.estimatedTokens <= 128);
+		const firstArtifact = session.readToolResultArtifact(retainedPresentation.artifact.id);
+		assert.equal(firstArtifact.descriptor, retainedPresentation.artifact);
+		assert.equal(firstArtifact.content, message.content);
 		const firstProjection = providerToolResult.content;
 		const firstCursor = retainedPresentation.continuation.cursor;
+		const firstArtifactId = retainedPresentation.artifact.id;
+		const firstArtifactSha256 = retainedPresentation.artifact.sha256;
 		session.dispose();
 
 		const { session: resumed } = await createAgentSession(commonOptions);
@@ -378,6 +383,12 @@ test("budgeted production persists full UI content and resumes the identical pro
 			const resumedToolResult = resumedMessages.find((candidate) => candidate.role === "toolResult");
 			assert.ok(resumedToolResult?.role === "toolResult");
 			assert.deepEqual(resumedToolResult.content, firstProjection);
+			const resumedSource = resumed.agent.state.messages.find((candidate) => candidate.role === "toolResult");
+			assert.ok(resumedSource?.role === "toolResult");
+			const resumedArtifact = resumed.readToolResultArtifact(firstArtifactId);
+			assert.equal(resumedArtifact.content, resumedSource.content);
+			assert.equal(resumedArtifact.descriptor.id, firstArtifactId);
+			assert.equal(resumedArtifact.descriptor.sha256, firstArtifactSha256);
 			const resumedPresentationOwner = createToolResultPresentationOwner(
 				{ enabled: true, budgetTokens: 128 },
 				sessionManager.getSessionId(),

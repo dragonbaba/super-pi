@@ -5,6 +5,8 @@ import { estimateToolOutputTokens, type ToolOutputTokenEstimate } from "./tool-o
 export const TOOL_RESULT_PRESENTATION_VERSION = 1 as const;
 export const TOOL_RESULT_PRESENTATION_V2_VERSION = 2 as const;
 export const TOOL_RESULT_CONTINUATION_VERSION = 1 as const;
+export const TOOL_RESULT_ARTIFACT_VERSION = 1 as const;
+export const TOOL_RESULT_ARTIFACT_MEDIA_TYPE = "application/vnd.super-pi.tool-result-content" as const;
 
 const MAX_PROJECTION_SHRINK_PASSES = 4;
 const MAX_CONTINUATION_SHRINK_PASSES = 8;
@@ -13,6 +15,7 @@ const MAX_PROJECTION_RECORD_ENTRIES = 128;
 const MAX_RETAINED_PROJECTION_CODE_UNITS = 128 * 1024 * 1024;
 const MAX_TERMINAL_SEQUENCE_INTERVALS = 4096;
 const CURSOR_PREFIX = "tr1.";
+const ARTIFACT_PREFIX = "tra1.";
 const NOTICE_PREFIX = "[Tool result truncated. Continue with cursor ";
 const NOTICE_SUFFIX = ".]";
 const ESCAPE_CODE = 0x1b;
@@ -57,8 +60,8 @@ export interface ToolResultPresentationV2 {
 	readonly modelContent: readonly ToolResultPresentationContent[];
 	readonly uiContent: readonly ToolResultPresentationContent[];
 	readonly continuation: ToolResultContinuationV1;
+	readonly artifact: ToolResultArtifactV1;
 	readonly truncation: ToolResultTruncationV1;
-	readonly artifact?: never;
 }
 
 export type ToolResultPresentation = ToolResultPresentationV1 | ToolResultPresentationV2;
@@ -69,6 +72,35 @@ export interface ToolResultContinuationChunkV1 {
 	readonly estimatedTokens: number;
 	readonly nextCursor?: string;
 	readonly done: boolean;
+}
+
+export interface ToolResultArtifactV1 {
+	readonly version: typeof TOOL_RESULT_ARTIFACT_VERSION;
+	readonly id: string;
+	/** SHA-256 of the allocation-free `tool-result-source-v1` canonical identity stream. */
+	readonly sha256: string;
+	/** Byte length of that canonical identity stream; no serialized result copy is retained. */
+	readonly bytes: number;
+	readonly mediaType: typeof TOOL_RESULT_ARTIFACT_MEDIA_TYPE;
+}
+
+export interface ToolResultArtifactReadV1 {
+	readonly version: typeof TOOL_RESULT_ARTIFACT_VERSION;
+	readonly descriptor: ToolResultArtifactV1;
+	/** The canonical content owned by the active persisted session branch; no result copy is made. */
+	readonly content: readonly ToolResultPresentationContent[];
+}
+
+export type ToolResultArtifactErrorCode = "invalid-artifact" | "stale-artifact";
+
+export class ToolResultArtifactError extends Error {
+	readonly code: ToolResultArtifactErrorCode;
+
+	constructor(code: ToolResultArtifactErrorCode, message: string) {
+		super(message);
+		this.name = "ToolResultArtifactError";
+		this.code = code;
+	}
 }
 
 export type ToolResultContinuationErrorCode = "invalid-cursor" | "stale-cursor" | "budget-too-small";
@@ -97,6 +129,10 @@ export interface ToolResultPresentationCounters {
 	truncatedPresentationsCreated: number;
 	continuationChunksCreated: number;
 	continuationCursorStringsCreated: number;
+	artifactDescriptorsCreated: number;
+	artifactReads: number;
+	artifactRecordHits: number;
+	artifactSourceLookupProbes: number;
 	boundedTextStringsCreated: number;
 	projectionRecordHits: number;
 	projectionRecordMisses: number;
@@ -159,6 +195,8 @@ interface CursorState {
 interface SourceScan {
 	estimate: ToolOutputTokenEstimate;
 	digest: string;
+	sha256: string;
+	artifactBytes: number;
 	textCodeUnits: number;
 	imageDataCodeUnits: number;
 	retainedCodeUnits: number;
@@ -193,6 +231,7 @@ interface ProjectionRecord {
 	sourceContent: readonly ToolResultPresentationContent[];
 	sourceScan: SourceScan;
 	projection: ProjectionBuild | undefined;
+	artifact: ToolResultArtifactV1 | undefined;
 	imagePolicyProjection: ProjectionBuild | undefined;
 	retainedCodeUnits: number;
 	validatedMessages: WeakRef<object> | undefined;
@@ -219,6 +258,10 @@ export function createToolResultPresentationCounters(): ToolResultPresentationCo
 		truncatedPresentationsCreated: 0,
 		continuationChunksCreated: 0,
 		continuationCursorStringsCreated: 0,
+		artifactDescriptorsCreated: 0,
+		artifactReads: 0,
+		artifactRecordHits: 0,
+		artifactSourceLookupProbes: 0,
 		boundedTextStringsCreated: 0,
 		projectionRecordHits: 0,
 		projectionRecordMisses: 0,
@@ -280,6 +323,19 @@ function isPositiveSafeInteger(value: unknown): value is number {
 	return Number.isSafeInteger(value) && (value as number) > 0;
 }
 
+function isToolResultArtifactV1(value: unknown): value is ToolResultArtifactV1 {
+	if (!isPresentationRecord(value)) return false;
+	const parsed = typeof value.id === "string" ? parseArtifactId(value.id) : undefined;
+	return (
+		value.version === TOOL_RESULT_ARTIFACT_VERSION &&
+		parsed !== undefined &&
+		typeof value.sha256 === "string" &&
+		parsed.sha256 === value.sha256 &&
+		isNonnegativeSafeInteger(value.bytes) &&
+		value.mediaType === TOOL_RESULT_ARTIFACT_MEDIA_TYPE
+	);
+}
+
 function isToolResultPresentationV2(value: unknown): value is ToolResultPresentationV2 {
 	try {
 		if (!isPresentationRecord(value)) return false;
@@ -289,16 +345,22 @@ function isToolResultPresentationV2(value: unknown): value is ToolResultPresenta
 			!Array.isArray(value.uiContent) ||
 			value.uiContent === value.modelContent ||
 			!isPresentationRecord(value.continuation) ||
+			!isToolResultArtifactV1(value.artifact) ||
 			!isPresentationRecord(value.truncation)
 		) return false;
 		const cursor = value.continuation.cursor;
+		const artifact = value.artifact;
 		const truncation = value.truncation;
 		const cursorState = typeof cursor === "string" ? parseCursor(cursor) : undefined;
+		const artifactState = parseArtifactId(artifact.id);
 		if (
 			value.continuation.version === TOOL_RESULT_CONTINUATION_VERSION &&
 			typeof cursor === "string" &&
 			cursor.startsWith(CURSOR_PREFIX) &&
 			cursorState !== undefined &&
+			artifactState !== undefined &&
+			artifactState.sourceKey === cursorState.sourceKey &&
+			artifact.sha256.startsWith(cursorState.sourceDigest) &&
 			truncation.version === 1 &&
 			truncation.strategy === "text-head-tail" &&
 			isPositiveSafeInteger(truncation.budgetTokens) &&
@@ -564,7 +626,9 @@ function scanSource(
 	counters.fullSourceEstimatorScans++;
 	const estimate = estimateToolOutputTokens(content);
 	const digest = createHash("sha256");
-	digest.update("tool-result-source-v1\0");
+	const artifactPrefix = "tool-result-source-v1\0";
+	digest.update(artifactPrefix);
+	let artifactBytes = Buffer.byteLength(artifactPrefix);
 	let textCodeUnits = 0;
 	let imageDataCodeUnits = 0;
 	let retainedCodeUnits = 0;
@@ -575,7 +639,9 @@ function scanSource(
 	for (let index = 0; index < content.length; index++) {
 		const block = content[index]!;
 		if (block.type === "text") {
-			digest.update("t").update(block.text.length.toString(36)).update(":").update(block.text, "utf16le");
+			const textLength = block.text.length.toString(36);
+			digest.update("t").update(textLength).update(":").update(block.text, "utf16le");
+			artifactBytes += 1 + textLength.length + 1 + block.text.length * 2;
 			textCodeUnits += block.text.length;
 			retainedCodeUnits += block.text.length;
 			counters.terminalBoundaryCharactersScanned += block.text.length;
@@ -601,16 +667,23 @@ function scanSource(
 				}
 			}
 		} else {
-			digest.update("i").update(block.mimeType.length.toString(36)).update(":").update(block.mimeType);
-			digest.update(block.data.length.toString(36)).update(":").update(block.data);
+			const mimeLength = block.mimeType.length.toString(36);
+			const dataLength = block.data.length.toString(36);
+			digest.update("i").update(mimeLength).update(":").update(block.mimeType);
+			digest.update(dataLength).update(":").update(block.data);
+			artifactBytes += 1 + mimeLength.length + 1 + Buffer.byteLength(block.mimeType);
+			artifactBytes += dataLength.length + 1 + Buffer.byteLength(block.data);
 			imageDataCodeUnits += block.data.length;
 			retainedCodeUnits += block.data.length + block.mimeType.length;
 		}
 	}
 	counters.sourceDigestConstructions++;
+	const sha256 = digest.digest("hex");
 	return {
 		estimate,
-		digest: digest.digest("hex").substring(0, 24),
+		digest: sha256.substring(0, 24),
+		sha256,
+		artifactBytes,
 		textCodeUnits,
 		imageDataCodeUnits,
 		retainedCodeUnits,
@@ -818,6 +891,19 @@ function isLowerHex(value: string, start: number, end: number, expectedLength: n
 	return true;
 }
 
+function parseArtifactId(id: string): { sourceKey: string; sha256: string } | undefined {
+	if (!id.startsWith(ARTIFACT_PREFIX)) return undefined;
+	const sourceKeyStart = ARTIFACT_PREFIX.length;
+	const sourceKeyEnd = id.indexOf(".", sourceKeyStart);
+	if (sourceKeyEnd < 0 || !isLowerHex(id, sourceKeyStart, sourceKeyEnd, 16)) return undefined;
+	const sha256Start = sourceKeyEnd + 1;
+	if (!isLowerHex(id, sha256Start, id.length, 64)) return undefined;
+	return {
+		sourceKey: id.substring(sourceKeyStart, sourceKeyEnd),
+		sha256: id.substring(sha256Start),
+	};
+}
+
 function parseCursor(cursor: string): CursorState | undefined {
 	if (!cursor.startsWith(CURSOR_PREFIX)) return undefined;
 	let start = CURSOR_PREFIX.length;
@@ -949,6 +1035,25 @@ function samePosition(left: ContentPosition, right: ContentPosition): boolean {
 	return left.blockIndex === right.blockIndex && left.textOffset === right.textOffset;
 }
 
+function createArtifactDescriptor(
+	sourceKey: string,
+	sourceScan: SourceScan,
+	counters: ToolResultPresentationCounters,
+): ToolResultArtifactV1 {
+	counters.artifactDescriptorsCreated++;
+	return {
+		version: TOOL_RESULT_ARTIFACT_VERSION,
+		id: `${ARTIFACT_PREFIX}${sourceKey}.${sourceScan.sha256}`,
+		sha256: sourceScan.sha256,
+		bytes: sourceScan.artifactBytes,
+		mediaType: TOOL_RESULT_ARTIFACT_MEDIA_TYPE,
+	};
+}
+
+function artifactRetainedCodeUnits(artifact: ToolResultArtifactV1): number {
+	return artifact.id.length + artifact.sha256.length + artifact.mediaType.length;
+}
+
 export class ToolResultPresentationOwner {
 	private accepting = true;
 	private readonly budgetTokens: number | undefined;
@@ -1028,7 +1133,7 @@ export class ToolResultPresentationOwner {
 		if (
 			existing &&
 			admission === "provider" &&
-			existing.sourceDigest === sourceScan.digest &&
+			existing.sourceScan.sha256 === sourceScan.sha256 &&
 			existing.sourceContent.length === content.length &&
 			existing.sourceScan.estimate.rawUtf8Bytes === sourceScan.estimate.rawUtf8Bytes &&
 			existing.sourceScan.estimate.estimatedTokens === sourceScan.estimate.estimatedTokens
@@ -1046,8 +1151,12 @@ export class ToolResultPresentationOwner {
 			sourceScan,
 			this.counters,
 		);
+		const artifact = projection && admission === "write"
+			? createArtifactDescriptor(sourceKey, sourceScan, this.counters)
+			: undefined;
 		let retainedCodeUnits = sourceScan.retainedCodeUnits;
 		if (projection) retainedCodeUnits += countTextCodeUnits(projection.content);
+		if (artifact) retainedCodeUnits += artifactRetainedCodeUnits(artifact);
 		const record: ProjectionRecord = {
 			toolCallId,
 			sourceKey,
@@ -1055,6 +1164,7 @@ export class ToolResultPresentationOwner {
 			sourceContent: content,
 			sourceScan,
 			projection,
+			artifact,
 			imagePolicyProjection: undefined,
 			retainedCodeUnits,
 			validatedMessages: undefined,
@@ -1095,6 +1205,21 @@ export class ToolResultPresentationOwner {
 			record = record.next;
 		}
 		return undefined;
+	}
+
+	private findArtifactRecord(sourceKey: string, sha256: string): ProjectionRecord | undefined {
+		let matched: ProjectionRecord | undefined;
+		let record = this.projectionRecordHead;
+		while (record) {
+			if (record.sourceKey === sourceKey && record.sourceScan.sha256 === sha256) {
+				if (matched) {
+					throw new ToolResultArtifactError("stale-artifact", "Tool-result artifact identity is ambiguous.");
+				}
+				matched = record;
+			}
+			record = record.next;
+		}
+		return matched;
 	}
 
 	private validateContinuationRecord(
@@ -1169,6 +1294,70 @@ export class ToolResultPresentationOwner {
 		return resolved;
 	}
 
+	private validateArtifactRecord(record: ProjectionRecord, messages: readonly unknown[]): ProjectionRecord {
+		try {
+			return this.validateContinuationRecord(record, messages);
+		} catch (error) {
+			if (error instanceof ToolResultContinuationError) {
+				throw new ToolResultArtifactError("stale-artifact", "Tool-result artifact source is no longer uniquely active.");
+			}
+			throw error;
+		}
+	}
+
+	private resolveArtifactRecord(
+		state: { sourceKey: string; sha256: string },
+		messages: readonly unknown[],
+	): ProjectionRecord {
+		const cached = this.findArtifactRecord(state.sourceKey, state.sha256);
+		if (cached) {
+			this.counters.artifactRecordHits++;
+			return this.validateArtifactRecord(cached, messages);
+		}
+		let resolved: ProjectionRecord | undefined;
+		let resolvedIndex = -1;
+		let matchedSourceIdentity = false;
+		for (let index = 0; index < messages.length; index++) {
+			this.counters.artifactSourceLookupProbes++;
+			const candidate = messages[index];
+			if (!isSourceMessageLike(candidate)) continue;
+			if (createSourceKey(this.sessionId, candidate.toolCallId, this.counters) !== state.sourceKey) continue;
+			if (matchedSourceIdentity) {
+				throw new ToolResultArtifactError("stale-artifact", "Tool-result artifact identity is ambiguous.");
+			}
+			matchedSourceIdentity = true;
+			const record = this.getOrCreateProjectionRecord(candidate.content, candidate.toolCallId, "continuation");
+			if (record.sourceScan.sha256 !== state.sha256) continue;
+			resolved = record;
+			resolvedIndex = index;
+		}
+		if (!resolved) {
+			throw new ToolResultArtifactError("stale-artifact", "Tool-result artifact source is not on the active branch.");
+		}
+		resolved.validatedMessages = new WeakRef(messages as object);
+		resolved.validatedMessageCount = messages.length;
+		resolved.validatedSourceIndex = resolvedIndex;
+		return resolved;
+	}
+
+	private ensureArtifactDescriptor(record: ProjectionRecord): ToolResultArtifactV1 {
+		if (record.artifact) return record.artifact;
+		const artifact = createArtifactDescriptor(record.sourceKey, record.sourceScan, this.counters);
+		const retainedCodeUnits = artifactRetainedCodeUnits(artifact);
+		const isResident = this.projectionRecords?.get(record.toolCallId) === record;
+		if (
+			isResident &&
+			this.counters.retainedProjectionCodeUnits + retainedCodeUnits > MAX_RETAINED_PROJECTION_CODE_UNITS
+		) {
+			this.removeProjectionRecord(record, true);
+		} else if (isResident) {
+			this.counters.retainedProjectionCodeUnits += retainedCodeUnits;
+		}
+		record.artifact = artifact;
+		record.retainedCodeUnits += retainedCodeUnits;
+		return artifact;
+	}
+
 	clearProjectionRecords(): void {
 		const records = this.projectionRecords;
 		if (!records || records.size === 0) return;
@@ -1213,6 +1402,8 @@ export class ToolResultPresentationOwner {
 			const record = this.getOrCreateProjectionRecord(legacyContent, toolCallId);
 			const projection = record.projection;
 			if (projection) {
+				const artifact = record.artifact;
+				if (!artifact) throw new Error("Projected tool result is missing its artifact descriptor.");
 				const originalTextCodeUnits = record.sourceScan.textCodeUnits;
 				const retainedTextCodeUnits = projection.headTextCodeUnits + projection.tailTextCodeUnits;
 				presentation = {
@@ -1220,6 +1411,7 @@ export class ToolResultPresentationOwner {
 					modelContent: projection.content,
 					uiContent,
 					continuation: { version: TOOL_RESULT_CONTINUATION_VERSION, cursor: projection.cursor },
+					artifact,
 					truncation: {
 						version: 1,
 						strategy: "text-head-tail",
@@ -1425,6 +1617,23 @@ export class ToolResultPresentationOwner {
 			if (projected !== message) messages[index] = projected;
 		}
 		return messages;
+	}
+
+	/** Resolve a session-bound virtual artifact to the canonical content on the active branch. */
+	readArtifact(id: string, messages: readonly unknown[]): ToolResultArtifactReadV1 {
+		if (!this.accepting) {
+			throw new ToolResultArtifactError("stale-artifact", "Tool-result artifact owner is disposed.");
+		}
+		const state = parseArtifactId(id);
+		if (!state) throw new ToolResultArtifactError("invalid-artifact", "Malformed tool-result artifact handle.");
+		const record = this.resolveArtifactRecord(state, messages);
+		const descriptor = this.ensureArtifactDescriptor(record);
+		if (descriptor.id !== id) {
+			throw new ToolResultArtifactError("stale-artifact", "Tool-result artifact source no longer matches the handle.");
+		}
+		this.bindValidatedContinuationRecord(record);
+		this.counters.artifactReads++;
+		return { version: TOOL_RESULT_ARTIFACT_VERSION, descriptor, content: record.sourceContent };
 	}
 
 	readContinuation(cursor: string, messages: readonly unknown[], budgetTokens: number = this.budgetTokens ?? 0): ToolResultContinuationChunkV1 {

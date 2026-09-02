@@ -3,13 +3,14 @@ import { createHash } from "node:crypto";
 import test from "node:test";
 import type { ToolResultMessage } from "../packages/ai/src/types.ts";
 import {
+	createToolResultPresentationCounters,
 	createToolResultPresentationOwner,
 	type ToolResultPresentationContent,
 } from "../packages/coding-agent/src/core/tool-result-presentation.ts";
 
 const SESSION_ID = "phase-5b-artifact-session";
 const BUDGET_TOKENS = 128;
-const ARTIFACT_MEDIA_TYPE = "application/vnd.super-pi.tool-result-content+json";
+const ARTIFACT_MEDIA_TYPE = "application/vnd.super-pi.tool-result-content";
 
 interface ArtifactDescriptor {
 	version: 1;
@@ -157,4 +158,40 @@ test("artifact handles reject modified, ambiguous, foreign-session, and malforme
 		(error: unknown) => error instanceof Error && "code" in error && error.code === "stale-artifact",
 	);
 	foreign.dispose();
+});
+
+test("first artifact read scans active history once and subsequent reads stay indexed", () => {
+	const content: ToolResultPresentationContent[] = [{ type: "text", text: "indexed-artifact-".repeat(20_000) }];
+	const message = toolResult(content, "indexed-artifact");
+	const counters = createToolResultPresentationCounters();
+	const owner = createToolResultPresentationOwner(
+		{ enabled: true, budgetTokens: BUDGET_TOKENS, counters },
+		SESSION_ID,
+	)!;
+	const descriptor = artifactFrom(owner.create(content, message.toolCallId))!;
+	owner.release();
+	owner.clearProjectionRecords();
+	const history: unknown[] = new Array(50_000);
+	for (let index = 0; index < history.length - 1; index++) history[index] = { role: "user", index };
+	history[history.length - 1] = message;
+	const scansBefore = counters.fullSourceEstimatorScans;
+	const probesBefore = counters.artifactSourceLookupProbes;
+	const first = artifactOwner(owner).readArtifact(descriptor.id, history);
+	assert.equal(first.content, content);
+	assert.equal(counters.fullSourceEstimatorScans - scansBefore, 1);
+	assert.equal(counters.artifactSourceLookupProbes - probesBefore, history.length);
+	assert.equal(counters.projectionRecordEntries, 1);
+	const steadyScans = counters.fullSourceEstimatorScans;
+	const steadyProbes = counters.artifactSourceLookupProbes;
+	const steadyHits = counters.artifactRecordHits;
+	const second = artifactOwner(owner).readArtifact(descriptor.id, history);
+	assert.equal(second.content, content);
+	assert.equal(counters.fullSourceEstimatorScans, steadyScans);
+	assert.equal(counters.artifactSourceLookupProbes, steadyProbes);
+	assert.equal(counters.artifactRecordHits, steadyHits + 1);
+	assert.equal(counters.artifactReads, 2);
+	owner.clearProjectionRecords();
+	assert.equal(counters.projectionRecordEntries, 0);
+	assert.equal(counters.retainedProjectionCodeUnits, 0);
+	owner.dispose();
 });

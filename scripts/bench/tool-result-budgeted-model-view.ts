@@ -16,6 +16,7 @@ import { estimateToolOutputTokens } from "../../packages/coding-agent/src/core/t
 import {
 	createToolResultPresentationCounters,
 	createToolResultPresentationOwner,
+	type ToolResultArtifactReadV1,
 	type ToolResultPresentation,
 	type ToolResultPresentationContent,
 	type ToolResultPresentationCounters,
@@ -182,6 +183,10 @@ function counterDelta(
 		truncatedPresentationsCreated: (after.truncatedPresentationsCreated - before.truncatedPresentationsCreated) / resultCount,
 		continuationChunksCreated: (after.continuationChunksCreated - before.continuationChunksCreated) / resultCount,
 		continuationCursorStringsCreated: (after.continuationCursorStringsCreated - before.continuationCursorStringsCreated) / resultCount,
+		artifactDescriptorsCreated: (after.artifactDescriptorsCreated - before.artifactDescriptorsCreated) / resultCount,
+		artifactReads: (after.artifactReads - before.artifactReads) / resultCount,
+		artifactRecordHits: (after.artifactRecordHits - before.artifactRecordHits) / resultCount,
+		artifactSourceLookupProbes: (after.artifactSourceLookupProbes - before.artifactSourceLookupProbes) / resultCount,
 		boundedTextStringsCreated: (after.boundedTextStringsCreated - before.boundedTextStringsCreated) / resultCount,
 		projectionRecordHits: (after.projectionRecordHits - before.projectionRecordHits) / resultCount,
 		projectionRecordMisses: (after.projectionRecordMisses - before.projectionRecordMisses) / resultCount,
@@ -881,6 +886,82 @@ function measureParallelScopes(scopeCount: number): Record<string, unknown> {
 	};
 }
 
+async function measureArtifactLifecycle(): Promise<Record<string, unknown>> {
+	const counters = createToolResultPresentationCounters();
+	let owner = createToolResultPresentationOwner(
+		{ enabled: true, budgetTokens: BUDGET_TOKENS, counters },
+		`${SESSION_ID}-artifact-lifecycle`,
+	)!;
+	let sourceContent: ToolResultPresentationContent[] | undefined = [{ type: "text", text: TEXT_10_MIB }];
+	let sourceMessage: ToolResultMessage | undefined = toolMessage(sourceContent, "artifact-lifecycle");
+	let validationMessages: Message[] | undefined = [sourceMessage];
+	let presentation: ToolResultPresentationV2 | undefined = owner.create(
+		sourceContent,
+		sourceMessage.toolCallId,
+	) as ToolResultPresentationV2;
+	const artifactId = presentation.artifact.id;
+	owner.release();
+	owner.clearProjectionRecords();
+	let providerCloneMessages: Message[] | undefined = structuredClone(validationMessages);
+	let providerCloneSourceContent: object | undefined = (providerCloneMessages[0] as ToolResultMessage).content;
+	owner.projectMessagesForModel(providerCloneMessages);
+	const entriesAfterProviderClone = counters.projectionRecordEntries;
+	const scansBeforeFirstRead = counters.fullSourceEstimatorScans;
+	const probesBeforeFirstRead = counters.artifactSourceLookupProbes;
+	let firstRead: ToolResultArtifactReadV1 | undefined = owner.readArtifact(artifactId, validationMessages);
+	if (firstRead.content !== sourceContent) throw new Error("artifact lifecycle did not bind the persisted source");
+	const firstReadSourceScans = counters.fullSourceEstimatorScans - scansBeforeFirstRead;
+	const firstReadLookupProbes = counters.artifactSourceLookupProbes - probesBeforeFirstRead;
+	const entriesAfterValidatedBind = counters.projectionRecordEntries;
+	const scansBeforeSecondRead = counters.fullSourceEstimatorScans;
+	const probesBeforeSecondRead = counters.artifactSourceLookupProbes;
+	const hitsBeforeSecondRead = counters.artifactRecordHits;
+	owner.readArtifact(artifactId, validationMessages);
+	const secondReadSourceScans = counters.fullSourceEstimatorScans - scansBeforeSecondRead;
+	const secondReadLookupProbes = counters.artifactSourceLookupProbes - probesBeforeSecondRead;
+	const secondReadRecordHits = counters.artifactRecordHits - hitsBeforeSecondRead;
+	const weakSourceOuterArray = new WeakRef(sourceContent);
+	const weakValidationMessagesOuterArray = new WeakRef(validationMessages);
+	const weakProviderCloneMessagesOuterArray = new WeakRef(providerCloneMessages);
+	const weakProviderCloneSourceOuterArray = new WeakRef(providerCloneSourceContent);
+	const weakPresentation = new WeakRef(presentation);
+	const weakArtifactDescriptor = new WeakRef(presentation.artifact);
+	const weakArtifactRead = new WeakRef(firstRead);
+	owner.clearProjectionRecords();
+	const entriesAfterClear = counters.projectionRecordEntries;
+	const retainedCodeUnitsAfterClear = counters.retainedProjectionCodeUnits;
+	owner.dispose();
+	firstRead = undefined;
+	presentation = undefined;
+	sourceContent = undefined;
+	sourceMessage = undefined;
+	validationMessages = undefined;
+	providerCloneMessages = undefined;
+	providerCloneSourceContent = undefined;
+	owner = undefined as unknown as NonNullable<typeof owner>;
+	await yieldToEventLoop();
+	globalThis.gc!();
+	globalThis.gc!();
+	return {
+		retainedSourceOuterArrayWeakReferences: weakSourceOuterArray.deref() ? 1 : 0,
+		retainedValidationMessagesOuterArrayWeakReferences: weakValidationMessagesOuterArray.deref() ? 1 : 0,
+		retainedProviderCloneMessagesOuterArrayWeakReferences: weakProviderCloneMessagesOuterArray.deref() ? 1 : 0,
+		retainedProviderCloneSourceOuterArrayWeakReferences: weakProviderCloneSourceOuterArray.deref() ? 1 : 0,
+		retainedPresentationWeakReferences: weakPresentation.deref() ? 1 : 0,
+		retainedArtifactDescriptorWeakReferences: weakArtifactDescriptor.deref() ? 1 : 0,
+		retainedArtifactReadWeakReferences: weakArtifactRead.deref() ? 1 : 0,
+		entriesAfterProviderClone,
+		entriesAfterValidatedBind,
+		firstReadSourceScans,
+		firstReadLookupProbes,
+		secondReadSourceScans,
+		secondReadLookupProbes,
+		secondReadRecordHits,
+		entriesAfterClear,
+		retainedCodeUnitsAfterClear,
+	};
+}
+
 async function measureLifecycle(): Promise<Record<string, unknown>> {
 	const counters = createToolResultPresentationCounters();
 	let owner = createToolResultPresentationOwner({ enabled: true, budgetTokens: BUDGET_TOKENS, counters }, SESSION_ID)!;
@@ -1062,6 +1143,7 @@ try {
 	];
 	const resumeProjection = measureResumeProjection();
 	const parallelScopes = [measureParallelScopes(2), measureParallelScopes(4), measureParallelScopes(8)];
+	const artifactLifecycle = await measureArtifactLifecycle();
 	const lifecycle = await measureLifecycle();
 	process.stdout.write(`${JSON.stringify({
 		schemaVersion: 1,
@@ -1090,6 +1172,7 @@ try {
 		graphemeBoundaryScaling,
 		resumeProjection,
 		parallelScopes,
+		artifactLifecycle,
 		lifecycle,
 		sourceInvariants: {
 			sourceInvariantFullStringCopies: 0,

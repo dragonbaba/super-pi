@@ -342,6 +342,11 @@ test("V2 public validation rejects inconsistent bounded metadata without scannin
 		{ ...valid, truncation: { ...valid.truncation, retainedTextCodeUnits: valid.truncation.retainedTextCodeUnits + 1 } },
 		{ ...valid, truncation: { ...valid.truncation, omittedTextCodeUnits: valid.truncation.omittedTextCodeUnits + 1 } },
 		{ ...valid, truncation: { ...valid.truncation, noticeBlockIndex: valid.modelContent.length } },
+		{ ...valid, artifact: undefined },
+		{ ...valid, artifact: { ...valid.artifact, id: `tra1.0000000000000000.${valid.artifact.sha256}` } },
+		{ ...valid, artifact: { ...valid.artifact, sha256: "0".repeat(64) } },
+		{ ...valid, artifact: { ...valid.artifact, bytes: -1 } },
+		{ ...valid, artifact: { ...valid.artifact, mediaType: "application/octet-stream" } },
 		{
 			...valid,
 			modelContent: valid.modelContent.map((block, index) =>
