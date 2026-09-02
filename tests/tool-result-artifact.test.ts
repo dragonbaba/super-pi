@@ -210,6 +210,44 @@ test("artifact resume resolution is independent of the current projection budget
 	bounded.dispose();
 });
 
+test("lazy artifact binding revalidates in-place content before first provider projection", () => {
+	const content: ToolResultPresentationContent[] = [{ type: "text", text: "lazy-projection-A".repeat(20_000) }];
+	const message = toolResult(content, "lazy-projection-integrity");
+	const initial = createToolResultPresentationOwner({ enabled: true, budgetTokens: BUDGET_TOKENS }, SESSION_ID)!;
+	const descriptor = artifactFrom(initial.create(content, message.toolCallId))!;
+	initial.release();
+	initial.dispose();
+
+	const resumed = createToolResultPresentationOwner({ enabled: true, budgetTokens: BUDGET_TOKENS }, SESSION_ID)!;
+	assert.equal(artifactOwner(resumed).readArtifact(descriptor.id, [message]).content, content);
+	const scansAfterArtifactRead = resumed.counters.fullSourceEstimatorScans;
+	const integrityScansAfterArtifactRead = resumed.counters.artifactIntegrityScans;
+	(content[0] as { type: "text"; text: string }).text = "lazy-projection-B".repeat(20_000);
+
+	const providerMessages = [message];
+	resumed.projectMessagesForModel(providerMessages);
+	const projected = providerMessages[0] as ToolResultMessage;
+	const notice = projected.content.find(
+		(block) => block.type === "text" && block.text.startsWith("[Tool result truncated. Continue with cursor "),
+	);
+	assert.ok(notice && notice.type === "text");
+	const cursor = notice.text.substring("[Tool result truncated. Continue with cursor ".length, notice.text.length - 2);
+	assert.equal(resumed.counters.artifactIntegrityScans, integrityScansAfterArtifactRead + 1);
+	assert.equal(resumed.counters.fullSourceEstimatorScans, scansAfterArtifactRead + 1);
+
+	const fresh = createToolResultPresentationOwner({ enabled: true, budgetTokens: BUDGET_TOKENS }, SESSION_ID)!;
+	const chunk = fresh.readContinuation(cursor, [message], BUDGET_TOKENS);
+	assert.ok(chunk.content.length > 0);
+	assert.ok(chunk.estimatedTokens > 0);
+	assert.ok(chunk.estimatedTokens <= BUDGET_TOKENS);
+	assert.throws(
+		() => artifactOwner(resumed).readArtifact(descriptor.id, [message]),
+		(error: unknown) => error instanceof Error && "code" in error && error.code === "stale-artifact",
+	);
+	fresh.dispose();
+	resumed.dispose();
+});
+
 test("owners without a session identity do not issue or accept session-bound artifacts", () => {
 	const content: ToolResultPresentationContent[] = [{ type: "text", text: "anonymous-artifact-".repeat(20_000) }];
 	const anonymous = createToolResultPresentationOwner({ enabled: true, budgetTokens: BUDGET_TOKENS })!;
