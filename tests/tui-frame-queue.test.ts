@@ -3147,13 +3147,13 @@ test("frame queue source retains one string without Promise tails or pooling", (
 		cancelExtensionDialogs,
 		/new (?:Map|Set|Promise|AbortController)|=>|function\s*\(|\.map\(|\.filter\(|\.flatMap\(/,
 	);
-	const interactiveStop = interactiveSource.match(
-		/async stop\(fullscreenExitOutput[\s\S]*?\n\t}/,
+	const interactiveStopCleanup = interactiveSource.match(
+		/private async performStop\(fullscreenExitOutput[\s\S]*?\n\t}/,
 	)?.[0] ?? "";
-	assert.notEqual(interactiveStop, "");
+	assert.notEqual(interactiveStopCleanup, "");
 	assert.ok(
-		interactiveStop.indexOf("this.cancelExtensionDialogs()") <
-			interactiveStop.indexOf("this.disposeActiveSelector()"),
+		interactiveStopCleanup.indexOf("this.cancelExtensionDialogs()") <
+			interactiveStopCleanup.indexOf("this.disposeActiveSelector()"),
 	);
 	const showSessionSelector = interactiveSource.match(
 		/private showSessionSelector[\s\S]*?\n\t}/,

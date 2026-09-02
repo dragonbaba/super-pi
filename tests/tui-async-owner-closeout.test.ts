@@ -7,7 +7,7 @@ import test from "node:test";
 import { RELEASE_COMPONENT_RENDER_CACHE as TOOL_RELEASE_COMPONENT_RENDER_CACHE } from "@super-pi/tui";
 import { RELEASE_COMPONENT_RENDER_CACHE } from "../packages/tui/src/component-cache.ts";
 import { CancellableLoader } from "../packages/tui/src/components/cancellable-loader.ts";
-import type { TUI } from "../packages/tui/src/tui.ts";
+import { Container, type TUI } from "../packages/tui/src/tui.ts";
 import { InteractiveMode } from "../packages/coding-agent/src/modes/interactive/interactive-mode.ts";
 import { AgentSessionRuntime } from "../packages/coding-agent/src/core/agent-session-runtime.ts";
 import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
@@ -42,6 +42,319 @@ async function waitFor(predicate: () => boolean): Promise<void> {
 	}
 	assert.fail("timed out waiting for async owner fixture");
 }
+
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void; reject: (error: unknown) => void } {
+	let resolve!: (value: T) => void;
+	let reject!: (error: unknown) => void;
+	const promise = new Promise<T>((settle, fail) => {
+		resolve = settle;
+		reject = fail;
+	});
+	return { promise, resolve, reject };
+}
+
+interface InitializationFixtureOptions {
+	ensureTools?: () => Promise<[string | undefined, string | undefined]>;
+	applyTheme?: () => Promise<void>;
+	rebind?: () => Promise<void>;
+	updateProviderCount?: () => Promise<void>;
+	loadHighlightLanguages?: () => Promise<void>;
+	initialMessage?: string;
+}
+
+function createInitializationFixture(options: InitializationFixtureOptions = {}): {
+	mode: any;
+	counters: Record<string, number>;
+	observed: Promise<void>[];
+	branchCallbacks: Array<() => void>;
+} {
+	const counters: Record<string, number> = {
+		ensureTools: 0,
+		applyTheme: 0,
+		rebind: 0,
+		renderInitialMessages: 0,
+		themeCallbacks: 0,
+		branchRegistrations: 0,
+		providerCountUpdates: 0,
+		highlightLoads: 0,
+		invalidations: 0,
+		renderRequests: 0,
+		startupRefreshes: 0,
+		startupDiagnostics: 0,
+		prompts: 0,
+		userInputs: 0,
+		stopInteractiveTui: 0,
+		footerDisposals: 0,
+		footerProviderDisposals: 0,
+	};
+	const observed: Promise<void>[] = [];
+	const branchCallbacks: Array<() => void> = [];
+	const mode = Object.create(InteractiveMode.prototype) as any;
+	const settingsManager = {
+		getQuietStartup: () => true,
+		getFullscreenScrollbar: () => false,
+		getFullscreenExitOutput: () => "transcript",
+		getShowTerminalProgress: () => false,
+	};
+	mode.runtimeHost = {
+		session: {
+			scopedModels: [],
+			settingsManager,
+			modelRuntime: { getError: () => undefined },
+			prompt: async (): Promise<void> => {
+				counters.prompts++;
+			},
+		},
+		cancelPendingReplacements(): void {},
+	};
+	mode.options = { initialMessage: options.initialMessage };
+	mode.tuiLifecycleGeneration = 0;
+	mode.initializationGeneration = 0;
+	mode.initializedGeneration = 0;
+	mode.stopCompleted = false;
+	mode.stopOperation = undefined;
+	mode.isInitialized = false;
+	mode.isShuttingDown = false;
+	mode.registerSignalHandlers = (): void => {};
+	mode.unregisterSignalHandlers = (): void => {};
+	mode.getChangelogForDisplay = (): undefined => undefined;
+	mode.ensureInitializationTools = async (): Promise<[string | undefined, string | undefined]> => {
+		counters.ensureTools++;
+		return options.ensureTools?.() ?? ["fixture-fd", "fixture-rg"];
+	};
+	mode.renderWidgets = (): void => {};
+	mode.documentContainer = new Container();
+	mode.pendingMessagesContainer = new Container();
+	mode.statusContainer = new Container();
+	mode.widgetContainerAbove = new Container();
+	mode.editorContainer = new Container();
+	mode.widgetContainerBelow = new Container();
+	mode.footerContainer = new Container();
+	mode.headerContainer = new Container();
+	mode.editor = {};
+	mode.renderer = {};
+	mode.mountInteractiveTui = (): void => {};
+	mode.setupKeyHandlers = (): void => {};
+	mode.setupEditorSubmitHandler = (): void => {};
+	mode.ui = {
+		terminal: { setProgress(): void {} },
+		setFocus(): void {},
+		start(): void {},
+		requestRender(): void {
+			counters.renderRequests++;
+		},
+		renderNow(): void {},
+		invalidate(): void {
+			counters.invalidations++;
+		},
+	};
+	mode.themeController = {
+		async applyFromSettings(): Promise<void> {
+			counters.applyTheme++;
+			await options.applyTheme?.();
+		},
+		disableAutoSync(): void {},
+	};
+	mode.rebindCurrentSession = async (): Promise<void> => {
+		counters.rebind++;
+		await options.rebind?.();
+	};
+	mode.renderInitialMessages = (): void => {
+		counters.renderInitialMessages++;
+	};
+	mode.handleThemeChange = (): void => {
+		counters.themeCallbacks++;
+	};
+	mode.footerDataProvider = {
+		onBranchChange(callback: () => void): () => void {
+			counters.branchRegistrations++;
+			branchCallbacks.push(callback);
+			return (): void => {};
+		},
+		dispose(): void {
+			counters.footerProviderDisposals++;
+			branchCallbacks.length = 0;
+		},
+	};
+	mode.updateAvailableProviderCount = async (): Promise<void> => {
+		counters.providerCountUpdates++;
+		await options.updateProviderCount?.();
+	};
+	mode.loadInitializationHighlightLanguages = async (): Promise<void> => {
+		counters.highlightLoads++;
+		await options.loadHighlightLanguages?.();
+	};
+	mode.observeLifecyclePromise = (promise: Promise<void>): void => {
+		observed.push(promise);
+	};
+	mode.startStartupModelRefresh = (): void => {
+		counters.startupRefreshes++;
+	};
+	mode.startStartupDiagnostics = (): void => {
+		counters.startupDiagnostics++;
+	};
+	mode.maybeWarnAboutAnthropicSubscriptionAuth = async (): Promise<void> => {};
+	mode.showWarning = (): void => {};
+	mode.showError = (): void => {};
+	mode.getUserInput = (): Promise<string> => {
+		counters.userInputs++;
+		return new Promise(() => {});
+	};
+	mode.closeExtensionUiContext = (): void => {};
+	mode.cancelActiveSuspend = (): void => {};
+	mode.cancelActiveLoginDialog = (): void => {};
+	mode.cancelActiveProviderAuthentication = (): void => {};
+	mode.cancelActiveStartupModelRefresh = (): void => {};
+	mode.cancelActiveStartupDiagnostics = (): void => {};
+	mode.cancelActiveModelLookup = (): void => {};
+	mode.cancelActiveExtensionCustom = (): void => {};
+	mode.cancelExtensionDialogs = (): void => {};
+	mode.disposeActiveSelector = (): void => {};
+	mode.releaseExtensionUiOwners = (): void => {};
+	mode.clearStatusIndicator = (): void => {};
+	mode.clearExtensionTerminalInputListeners = (): void => {};
+	mode.footer = {
+		dispose(): void {
+			counters.footerDisposals++;
+		},
+	};
+	mode.stopInteractiveTui = async (): Promise<void> => {
+		counters.stopInteractiveTui++;
+	};
+	return { mode, counters, observed, branchCallbacks };
+}
+
+test("interactive initialization is cancelled while tool discovery is pending", async () => {
+	const tools = deferred<[string | undefined, string | undefined]>();
+	const { mode, counters } = createInitializationFixture({ ensureTools: () => tools.promise });
+	const initialization = mode.init();
+	await waitFor(() => counters.ensureTools === 1);
+	await mode.stop();
+	tools.resolve(["late-fd", "late-rg"]);
+	assert.equal(await initialization, false);
+	assert.equal(mode.fdPath, undefined);
+	assert.equal(counters.applyTheme, 0);
+	assert.equal(counters.rebind, 0);
+});
+
+test("cancelled initialization suppresses a stale tool-discovery rejection", async () => {
+	const tools = deferred<[string | undefined, string | undefined]>();
+	const { mode, counters } = createInitializationFixture({ ensureTools: () => tools.promise });
+	const initialization = mode.init();
+	await waitFor(() => counters.ensureTools === 1);
+	await mode.stop();
+	tools.reject(new Error("stale tool discovery failure"));
+	assert.equal(await initialization, false);
+	assert.equal(counters.applyTheme, 0);
+});
+
+test("interactive initialization is cancelled while theme application is pending", async () => {
+	const theme = deferred<void>();
+	const { mode, counters } = createInitializationFixture({ applyTheme: () => theme.promise });
+	const initialization = mode.init();
+	await waitFor(() => counters.applyTheme === 1);
+	await mode.stop();
+	theme.resolve();
+	assert.equal(await initialization, false);
+	assert.equal(counters.rebind, 0);
+	assert.equal(counters.themeCallbacks, 0);
+	assert.equal(counters.branchRegistrations, 0);
+});
+
+test("interactive initialization is cancelled while session rebind is pending", async () => {
+	const rebind = deferred<void>();
+	const { mode, counters } = createInitializationFixture({ rebind: () => rebind.promise });
+	const initialization = mode.init();
+	await waitFor(() => counters.rebind === 1);
+	await mode.stop();
+	rebind.resolve();
+	assert.equal(await initialization, false);
+	assert.equal(counters.renderInitialMessages, 0);
+	assert.equal(counters.branchRegistrations, 0);
+});
+
+test("a stale mode cannot overwrite callbacks registered by a newer initialized mode", async () => {
+	initTheme("dark");
+	const oldRebind = deferred<void>();
+	const oldFixture = createInitializationFixture({ rebind: () => oldRebind.promise });
+	const newFixture = createInitializationFixture();
+	const oldInitialization = oldFixture.mode.init();
+	await waitFor(() => oldFixture.counters.rebind === 1);
+	await oldFixture.mode.stop();
+	try {
+		assert.equal(await newFixture.mode.init(), true);
+		oldRebind.resolve();
+		assert.equal(await oldInitialization, false);
+		setTheme("light");
+		assert.equal(oldFixture.counters.themeCallbacks, 0);
+		assert.equal(oldFixture.counters.branchRegistrations, 0);
+		assert.equal(newFixture.counters.themeCallbacks, 1);
+		assert.equal(newFixture.counters.branchRegistrations, 1);
+	} finally {
+		oldRebind.resolve();
+		await newFixture.mode.stop();
+	}
+});
+
+test("cancelled initialization makes run return without startup work or input", async () => {
+	const tools = deferred<[string | undefined, string | undefined]>();
+	const { mode, counters } = createInitializationFixture({
+		ensureTools: () => tools.promise,
+		initialMessage: "must-not-run",
+	});
+	const run = mode.run();
+	await waitFor(() => counters.ensureTools === 1);
+	await mode.stop();
+	tools.resolve(["late-fd", "late-rg"]);
+	await run;
+	assert.equal(counters.startupRefreshes, 0);
+	assert.equal(counters.startupDiagnostics, 0);
+	assert.equal(counters.prompts, 0);
+	assert.equal(counters.userInputs, 0);
+});
+
+test("run rejects a successful init result from a cancelled lifecycle", async () => {
+	const initialization = deferred<boolean>();
+	const { mode, counters } = createInitializationFixture({ initialMessage: "must-not-run" });
+	mode.init = (): Promise<boolean> => initialization.promise;
+	const run = mode.run();
+	mode.isInitialized = true;
+	mode.tuiLifecycleGeneration++;
+	initialization.resolve(true);
+	await run;
+	assert.equal(counters.startupRefreshes, 0);
+	assert.equal(counters.startupDiagnostics, 0);
+	assert.equal(counters.prompts, 0);
+	assert.equal(counters.userInputs, 0);
+});
+
+test("stale highlight completion cannot affect a newer initialized mode", async () => {
+	const oldHighlight = deferred<void>();
+	const oldFixture = createInitializationFixture({ loadHighlightLanguages: () => oldHighlight.promise });
+	const newFixture = createInitializationFixture();
+	assert.equal(await oldFixture.mode.init(), true);
+	await oldFixture.mode.stop();
+	assert.equal(await newFixture.mode.init(), true);
+	await Promise.all(newFixture.observed);
+	const oldInvalidations = oldFixture.counters.invalidations;
+	const newInvalidations = newFixture.counters.invalidations;
+	oldHighlight.resolve();
+	await Promise.all(oldFixture.observed);
+	assert.equal(oldFixture.counters.invalidations, oldInvalidations);
+	assert.equal(newFixture.counters.invalidations, newInvalidations);
+	await newFixture.mode.stop();
+});
+
+test("repeated and concurrent interactive stop remain idempotent", async () => {
+	const { mode, counters, observed } = createInitializationFixture();
+	assert.equal(await mode.init(), true);
+	await Promise.all(observed);
+	await Promise.all([mode.stop(), mode.stop()]);
+	await mode.stop();
+	assert.equal(counters.stopInteractiveTui, 1);
+	assert.equal(counters.footerDisposals, 1);
+	assert.equal(counters.footerProviderDisposals, 1);
+});
 
 test("cache-only release aborts cancellable loader work and releases its callback", () => {
 	const tui = createCountingTui();
@@ -245,8 +558,34 @@ test("async owner closeout remains lifecycle-only in source", () => {
 		"packages/coding-agent/src/modes/interactive/interactive-mode.ts",
 		"utf8",
 	);
-	const stopSource = interactiveSource.match(/async stop\(fullscreenExitOutput[\s\S]*?\n\t\}/)?.[0] ?? "";
+	const stopCoordinatorSource = interactiveSource.match(/async stop\(fullscreenExitOutput[\s\S]*?\n\t\}/)?.[0] ?? "";
+	const stopSource = interactiveSource.match(/private async performStop\(fullscreenExitOutput[\s\S]*?\n\t\}/)?.[0] ?? "";
+	assert.ok(
+		stopCoordinatorSource.indexOf("this.invalidateInitialization()") <
+			stopCoordinatorSource.indexOf("this.performStop(fullscreenExitOutput)"),
+	);
 	assert.ok(stopSource.indexOf("this.cancelActiveLoginDialog()") < stopSource.indexOf("this.stopInteractiveTui"));
+	const initStart = interactiveSource.indexOf("async init(): Promise<boolean>");
+	const initEnd = interactiveSource.indexOf("\n\t/**\n\t * Update terminal title", initStart);
+	const initSource = interactiveSource.slice(initStart, initEnd);
+	for (const awaitedOwner of [
+		"await this.ensureInitializationTools()",
+		"await this.themeController.applyFromSettings()",
+		"await this.rebindCurrentSession({}, lifecycleGeneration)",
+		"await this.updateAvailableProviderCount()",
+	]) {
+		const awaitIndex = initSource.indexOf(awaitedOwner);
+		assert.notEqual(awaitIndex, -1);
+		assert.ok(initSource.indexOf("this.ownsInitialization(initializationGeneration, lifecycleGeneration)", awaitIndex) > awaitIndex);
+	}
+	assert.doesNotMatch(initSource, /loadAllHighlightLanguages|\.then\(/);
+	assert.ok(initSource.indexOf("onThemeChange(this.handleThemeChange)") > initSource.indexOf("this.ownsInitialization"));
+	const runStart = interactiveSource.indexOf("async run(): Promise<void>");
+	const runEnd = interactiveSource.indexOf("\n\tprivate isRunLifecycleCurrent", runStart);
+	const runSource = interactiveSource.slice(runStart, runEnd);
+	assert.ok(runSource.indexOf("await this.init()") < runSource.indexOf("this.startStartupModelRefresh()"));
+	assert.ok(runSource.indexOf("this.isRunLifecycleCurrent(lifecycleGeneration)") < runSource.indexOf("this.startStartupModelRefresh()"));
+	assert.match(runSource, /const userInput = await this\.getUserInput\(\);\s*if \(!this\.isRunLifecycleCurrent\(lifecycleGeneration\)\) return/);
 	const notifySource = interactiveSource.match(
 		/private notifyAuthDialog[\s\S]*?\n\t\}/,
 	)?.[0] ?? "";
@@ -1201,7 +1540,10 @@ test("interactive stop cancels the startup model catalog refresh and owned deadl
 	let providerCountUpdates = 0;
 	const observed: Promise<unknown>[] = [];
 	const mode = Object.create(InteractiveMode.prototype) as any;
-	mode.init = async (): Promise<void> => {};
+	mode.init = async (): Promise<boolean> => {
+		mode.isInitialized = true;
+		return true;
+	};
 	mode.runtimeHost = { session: {
 		modelRuntime: {
 			getError: () => undefined,
@@ -1269,7 +1611,10 @@ test("final shutdown rejects remaining startup diagnostic UI", async () => {
 	let warningCalls = 0;
 	const observed: Promise<unknown>[] = [];
 	const mode = Object.create(InteractiveMode.prototype) as any;
-	mode.init = async (): Promise<void> => {};
+	mode.init = async (): Promise<boolean> => {
+		mode.isInitialized = true;
+		return true;
+	};
 	mode.options = {};
 	mode.isInitialized = false;
 	mode.tuiLifecycleGeneration = 0;

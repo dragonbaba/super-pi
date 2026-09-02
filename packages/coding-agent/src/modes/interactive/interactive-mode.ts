@@ -534,6 +534,10 @@ export class InteractiveMode {
 	private keybindings: KeybindingsManager;
 	private version: string;
 	private isInitialized = false;
+	private initializationGeneration = 0;
+	private initializedGeneration = 0;
+	private stopCompleted = false;
+	private stopOperation: Promise<void> | undefined;
 	private onInputCallback?: (text: string) => void;
 	private pendingUserInputs: string[] = [];
 	private activeStatusIndicator: StatusIndicator | undefined = undefined;
@@ -1137,8 +1141,50 @@ export class InteractiveMode {
 		this.showStatus(`TUI mode: ${mode}`);
 	}
 
-	async init(): Promise<void> {
-		if (this.isInitialized) return;
+	private ownsInitialization(initializationGeneration: number, lifecycleGeneration: number): boolean {
+		return (
+			this.initializationGeneration === initializationGeneration &&
+			this.tuiLifecycleGeneration === lifecycleGeneration &&
+			this.stopCompleted !== true &&
+			this.isShuttingDown !== true
+		);
+	}
+
+	private invalidateInitialization(): void {
+		this.initializationGeneration++;
+		this.initializedGeneration = 0;
+	}
+
+	private ensureInitializationTools(): Promise<[string | undefined, string | undefined]> {
+		return Promise.all([ensureTool("fd"), ensureTool("rg")]);
+	}
+
+	private loadInitializationHighlightLanguages(): Promise<void> {
+		return loadAllHighlightLanguages();
+	}
+
+	private async finishInitializationHighlightLanguages(
+		initializationGeneration: number,
+		lifecycleGeneration: number,
+	): Promise<void> {
+		try {
+			await this.loadInitializationHighlightLanguages();
+		} catch (error) {
+			if (!this.ownsInitialization(initializationGeneration, lifecycleGeneration)) return;
+			throw error;
+		}
+		if (!this.ownsInitialization(initializationGeneration, lifecycleGeneration) || !this.isInitialized) return;
+		this.ui.invalidate();
+		this.ui.requestRender();
+	}
+
+	async init(): Promise<boolean> {
+		if (this.stopCompleted === true || this.isShuttingDown === true) return false;
+		if (this.isInitialized) {
+			return this.initializedGeneration !== 0 && this.initializedGeneration === this.initializationGeneration;
+		}
+		const initializationGeneration = ++this.initializationGeneration;
+		const lifecycleGeneration = this.tuiLifecycleGeneration;
 
 		this.registerSignalHandlers();
 
@@ -1147,7 +1193,14 @@ export class InteractiveMode {
 
 		// Ensure fd and rg are available (downloads if missing, adds to PATH via getBinDir)
 		// Both are needed: fd for autocomplete, rg for grep tool and bash commands
-		const [fdPath] = await Promise.all([ensureTool("fd"), ensureTool("rg")]);
+		let fdPath: string | undefined;
+		try {
+			[fdPath] = await this.ensureInitializationTools();
+		} catch (error) {
+			if (!this.ownsInitialization(initializationGeneration, lifecycleGeneration)) return false;
+			throw error;
+		}
+		if (!this.ownsInitialization(initializationGeneration, lifecycleGeneration)) return false;
 		this.fdPath = fdPath;
 
 		if (this.session.scopedModels.length > 0 && (this.options.verbose || !this.settingsManager.getQuietStartup())) {
@@ -1204,7 +1257,13 @@ export class InteractiveMode {
 		this.ui.start();
 		this.isInitialized = true;
 
-		await this.themeController.applyFromSettings();
+		try {
+			await this.themeController.applyFromSettings();
+		} catch (error) {
+			if (!this.ownsInitialization(initializationGeneration, lifecycleGeneration)) return false;
+			throw error;
+		}
+		if (!this.ownsInitialization(initializationGeneration, lifecycleGeneration)) return false;
 
 		// Add header with keybindings from config (unless silenced)
 		if (this.options.verbose || !this.settingsManager.getQuietStartup()) {
@@ -1269,31 +1328,44 @@ export class InteractiveMode {
 		this.ui.requestRender();
 
 		// Initialize extensions first so resources are shown before messages
-		await this.rebindCurrentSession();
+		try {
+			await this.rebindCurrentSession({}, lifecycleGeneration);
+		} catch (error) {
+			if (!this.ownsInitialization(initializationGeneration, lifecycleGeneration)) return false;
+			throw error;
+		}
+		if (!this.ownsInitialization(initializationGeneration, lifecycleGeneration)) return false;
 
 		// Render initial messages AFTER showing loaded resources
 		this.renderInitialMessages();
 
 		// Set up theme file watcher
+		if (!this.ownsInitialization(initializationGeneration, lifecycleGeneration)) return false;
 		onThemeChange(this.handleThemeChange);
 
 		// Set up git branch watcher (uses provider instead of footer)
+		if (!this.ownsInitialization(initializationGeneration, lifecycleGeneration)) return false;
 		this.footerDataProvider.onBranchChange(() => {
 			this.ui.requestRender();
 		});
 
 		// Initialize available provider count for footer display
-		await this.updateAvailableProviderCount();
+		try {
+			await this.updateAvailableProviderCount();
+		} catch (error) {
+			if (!this.ownsInitialization(initializationGeneration, lifecycleGeneration)) return false;
+			throw error;
+		}
+		if (!this.ownsInitialization(initializationGeneration, lifecycleGeneration)) return false;
 
 		// Flush completed startup state before loading uncommon syntax grammars.
 		this.ui.renderNow();
+		if (!this.ownsInitialization(initializationGeneration, lifecycleGeneration)) return false;
+		this.initializedGeneration = initializationGeneration;
 		this.observeLifecyclePromise(
-			loadAllHighlightLanguages().then(() => {
-				if (!this.isInitialized) return;
-				this.ui.invalidate();
-				this.ui.requestRender();
-			}),
+			this.finishInitializationHighlightLanguages(initializationGeneration, lifecycleGeneration),
 		);
+		return true;
 	}
 
 	/**
@@ -1314,7 +1386,8 @@ export class InteractiveMode {
 	 * Initializes the UI, shows warnings, processes initial messages, and starts the interactive loop.
 	 */
 	async run(): Promise<void> {
-		await this.init();
+		const lifecycleGeneration = this.tuiLifecycleGeneration;
+		if (!(await this.init()) || !this.isRunLifecycleCurrent(lifecycleGeneration)) return;
 
 		if (!process.env.SP_OFFLINE) {
 			this.startStartupModelRefresh();
@@ -1342,35 +1415,52 @@ export class InteractiveMode {
 
 		// Process initial messages
 		if (initialMessage) {
+			if (!this.isRunLifecycleCurrent(lifecycleGeneration)) return;
 			try {
 				await this.session.prompt(initialMessage, { images: initialImages });
 			} catch (error: unknown) {
+				if (!this.isRunLifecycleCurrent(lifecycleGeneration)) return;
 				const errorMessage = error instanceof Error ? error.message : "Unknown error occurred";
 				this.showError(errorMessage);
 			}
+			if (!this.isRunLifecycleCurrent(lifecycleGeneration)) return;
 		}
 
 		if (initialMessages) {
 			for (const message of initialMessages) {
+				if (!this.isRunLifecycleCurrent(lifecycleGeneration)) return;
 				try {
 					await this.session.prompt(message);
 				} catch (error: unknown) {
+					if (!this.isRunLifecycleCurrent(lifecycleGeneration)) return;
 					const errorMessage = error instanceof Error ? error.message : "Unknown error occurred";
 					this.showError(errorMessage);
 				}
+				if (!this.isRunLifecycleCurrent(lifecycleGeneration)) return;
 			}
 		}
 
 		// Main interactive loop
-		while (true) {
+		while (this.isRunLifecycleCurrent(lifecycleGeneration)) {
 			const userInput = await this.getUserInput();
+			if (!this.isRunLifecycleCurrent(lifecycleGeneration)) return;
 			try {
 				await this.session.prompt(userInput);
 			} catch (error: unknown) {
+				if (!this.isRunLifecycleCurrent(lifecycleGeneration)) return;
 				const errorMessage = error instanceof Error ? error.message : "Unknown error occurred";
 				this.showError(errorMessage);
 			}
 		}
+	}
+
+	private isRunLifecycleCurrent(lifecycleGeneration: number): boolean {
+		return (
+			this.tuiLifecycleGeneration === lifecycleGeneration &&
+			this.isInitialized &&
+			this.stopCompleted !== true &&
+			this.isShuttingDown !== true
+		);
 	}
 
 	private async checkForPackageUpdates(): Promise<string[]> {
@@ -4101,7 +4191,8 @@ export class InteractiveMode {
 	}
 
 	private async initializeAndHandleEvent(event: AgentSessionEvent): Promise<void> {
-		await this.init();
+		const lifecycleGeneration = this.tuiLifecycleGeneration;
+		if (!(await this.init()) || !this.isRunLifecycleCurrent(lifecycleGeneration)) return;
 		await this.handleEvent(event);
 	}
 
@@ -4769,6 +4860,7 @@ export class InteractiveMode {
 	private async shutdown(options?: { fromSignal?: boolean }): Promise<void> {
 		if (this.isShuttingDown) return;
 		this.isShuttingDown = true;
+		this.invalidateInitialization();
 		this.tuiLifecycleGeneration++;
 		// Keep signal handlers registered until terminal cleanup has completed.
 		// `signal-exit` checks the listener list during the same SIGTERM/SIGHUP
@@ -7707,7 +7799,24 @@ export class InteractiveMode {
 	}
 
 	async stop(fullscreenExitOutput = this.settingsManager.getFullscreenExitOutput()): Promise<void> {
+		this.invalidateInitialization();
 		this.tuiLifecycleGeneration++;
+		if (this.stopCompleted === true) return;
+		if (this.stopOperation !== undefined) {
+			await this.stopOperation;
+			return;
+		}
+		const operation = this.performStop(fullscreenExitOutput);
+		this.stopOperation = operation;
+		try {
+			await operation;
+		} finally {
+			if (this.stopOperation === operation) this.stopOperation = undefined;
+			this.stopCompleted = true;
+		}
+	}
+
+	private async performStop(fullscreenExitOutput: FullscreenExitOutput): Promise<void> {
 		this.closeExtensionUiContext();
 		offThemeChange(this.handleThemeChange);
 		this.runtimeHost.cancelPendingReplacements?.();
