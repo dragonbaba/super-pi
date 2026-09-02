@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, type Hash } from "node:crypto";
 import type { ImageContent, Message, TextContent, ToolResultMessage } from "@super-pi/ai/compat";
 import { estimateToolOutputTokens, type ToolOutputTokenEstimate } from "./tool-output-budget.ts";
 
@@ -16,6 +16,7 @@ const MAX_RETAINED_PROJECTION_CODE_UNITS = 128 * 1024 * 1024;
 const MAX_TERMINAL_SEQUENCE_INTERVALS = 4096;
 const CURSOR_PREFIX = "tr1.";
 const ARTIFACT_PREFIX = "tra1.";
+const SOURCE_IDENTITY_PREFIX = "tool-result-source-v1\0";
 const NOTICE_PREFIX = "[Tool result truncated. Continue with cursor ";
 const NOTICE_SUFFIX = ".]";
 const ESCAPE_CODE = 0x1b;
@@ -60,7 +61,8 @@ export interface ToolResultPresentationV2 {
 	readonly modelContent: readonly ToolResultPresentationContent[];
 	readonly uiContent: readonly ToolResultPresentationContent[];
 	readonly continuation: ToolResultContinuationV1;
-	readonly artifact: ToolResultArtifactV1;
+	/** Present on newly-created projected results; optional for pre-artifact V2 producers. */
+	readonly artifact?: ToolResultArtifactV1;
 	readonly truncation: ToolResultTruncationV1;
 }
 
@@ -133,6 +135,7 @@ export interface ToolResultPresentationCounters {
 	artifactReads: number;
 	artifactRecordHits: number;
 	artifactSourceLookupProbes: number;
+	artifactIntegrityScans: number;
 	boundedTextStringsCreated: number;
 	projectionRecordHits: number;
 	projectionRecordMisses: number;
@@ -262,6 +265,7 @@ export function createToolResultPresentationCounters(): ToolResultPresentationCo
 		artifactReads: 0,
 		artifactRecordHits: 0,
 		artifactSourceLookupProbes: 0,
+		artifactIntegrityScans: 0,
 		boundedTextStringsCreated: 0,
 		projectionRecordHits: 0,
 		projectionRecordMisses: 0,
@@ -345,22 +349,24 @@ function isToolResultPresentationV2(value: unknown): value is ToolResultPresenta
 			!Array.isArray(value.uiContent) ||
 			value.uiContent === value.modelContent ||
 			!isPresentationRecord(value.continuation) ||
-			!isToolResultArtifactV1(value.artifact) ||
+			(value.artifact !== undefined && !isToolResultArtifactV1(value.artifact)) ||
 			!isPresentationRecord(value.truncation)
 		) return false;
 		const cursor = value.continuation.cursor;
 		const artifact = value.artifact;
 		const truncation = value.truncation;
 		const cursorState = typeof cursor === "string" ? parseCursor(cursor) : undefined;
-		const artifactState = parseArtifactId(artifact.id);
+		const artifactState = artifact ? parseArtifactId(artifact.id) : undefined;
 		if (
 			value.continuation.version === TOOL_RESULT_CONTINUATION_VERSION &&
 			typeof cursor === "string" &&
 			cursor.startsWith(CURSOR_PREFIX) &&
 			cursorState !== undefined &&
-			artifactState !== undefined &&
-			artifactState.sourceKey === cursorState.sourceKey &&
-			artifact.sha256.startsWith(cursorState.sourceDigest) &&
+			(artifact === undefined || (
+				artifactState !== undefined &&
+				artifactState.sourceKey === cursorState.sourceKey &&
+				artifact.sha256.startsWith(cursorState.sourceDigest)
+			)) &&
 			truncation.version === 1 &&
 			truncation.strategy === "text-head-tail" &&
 			isPositiveSafeInteger(truncation.budgetTokens) &&
@@ -619,6 +625,44 @@ function createSourceKey(sessionId: string, toolCallId: string, counters: ToolRe
 	return fixedHex(first) + fixedHex(second);
 }
 
+function appendSourceIdentityBlock(
+	digest: Hash,
+	block: ToolResultPresentationContent,
+	artifactBytes: number,
+): number {
+	if (block.type === "text") {
+		const textLength = block.text.length.toString(36);
+		digest.update("t").update(textLength).update(":").update(block.text, "utf16le");
+		return artifactBytes + 1 + textLength.length + 1 + block.text.length * 2;
+	}
+	const mimeLength = block.mimeType.length.toString(36);
+	const dataLength = block.data.length.toString(36);
+	digest.update("i").update(mimeLength).update(":").update(block.mimeType);
+	digest.update(dataLength).update(":").update(block.data);
+	return artifactBytes + 1 + mimeLength.length + 1 + Buffer.byteLength(block.mimeType) +
+		dataLength.length + 1 + Buffer.byteLength(block.data);
+}
+
+function validateArtifactIdentity(
+	content: readonly ToolResultPresentationContent[],
+	expectedSha256: string,
+	expectedBytes: number,
+	counters: ToolResultPresentationCounters,
+): boolean {
+	counters.artifactIntegrityScans++;
+	const digest = createHash("sha256");
+	digest.update(SOURCE_IDENTITY_PREFIX);
+	let artifactBytes = Buffer.byteLength(SOURCE_IDENTITY_PREFIX);
+	try {
+		for (let index = 0; index < content.length; index++) {
+			artifactBytes = appendSourceIdentityBlock(digest, content[index]!, artifactBytes);
+		}
+	} catch {
+		return false;
+	}
+	return artifactBytes === expectedBytes && digest.digest("hex") === expectedSha256;
+}
+
 function scanSource(
 	content: readonly ToolResultPresentationContent[],
 	counters: ToolResultPresentationCounters,
@@ -626,9 +670,8 @@ function scanSource(
 	counters.fullSourceEstimatorScans++;
 	const estimate = estimateToolOutputTokens(content);
 	const digest = createHash("sha256");
-	const artifactPrefix = "tool-result-source-v1\0";
-	digest.update(artifactPrefix);
-	let artifactBytes = Buffer.byteLength(artifactPrefix);
+	digest.update(SOURCE_IDENTITY_PREFIX);
+	let artifactBytes = Buffer.byteLength(SOURCE_IDENTITY_PREFIX);
 	let textCodeUnits = 0;
 	let imageDataCodeUnits = 0;
 	let retainedCodeUnits = 0;
@@ -638,10 +681,8 @@ function scanSource(
 	let terminalIndexCapacityFallback = false;
 	for (let index = 0; index < content.length; index++) {
 		const block = content[index]!;
+		artifactBytes = appendSourceIdentityBlock(digest, block, artifactBytes);
 		if (block.type === "text") {
-			const textLength = block.text.length.toString(36);
-			digest.update("t").update(textLength).update(":").update(block.text, "utf16le");
-			artifactBytes += 1 + textLength.length + 1 + block.text.length * 2;
 			textCodeUnits += block.text.length;
 			retainedCodeUnits += block.text.length;
 			counters.terminalBoundaryCharactersScanned += block.text.length;
@@ -667,12 +708,6 @@ function scanSource(
 				}
 			}
 		} else {
-			const mimeLength = block.mimeType.length.toString(36);
-			const dataLength = block.data.length.toString(36);
-			digest.update("i").update(mimeLength).update(":").update(block.mimeType);
-			digest.update(dataLength).update(":").update(block.data);
-			artifactBytes += 1 + mimeLength.length + 1 + Buffer.byteLength(block.mimeType);
-			artifactBytes += dataLength.length + 1 + Buffer.byteLength(block.data);
 			imageDataCodeUnits += block.data.length;
 			retainedCodeUnits += block.data.length + block.mimeType.length;
 		}
@@ -1118,6 +1153,69 @@ export class ToolResultPresentationOwner {
 		return true;
 	}
 
+	private ensureRecordProjection(record: ProjectionRecord, issueArtifact: boolean): void {
+		let addedRetainedCodeUnits = 0;
+		if (
+			record.projection === undefined &&
+			record.sourceScan.estimate.estimatedTokens > this.budgetTokens!
+		) {
+			const projection = projectContent(
+				record.sourceContent,
+				this.budgetTokens!,
+				record.sourceKey,
+				record.sourceDigest,
+				record.sourceScan,
+				this.counters,
+			);
+			if (projection) {
+				record.projection = projection;
+				addedRetainedCodeUnits += countTextCodeUnits(projection.content);
+			}
+		}
+		if (issueArtifact && record.projection && !record.artifact && this.sessionId.length > 0) {
+			record.artifact = createArtifactDescriptor(record.sourceKey, record.sourceScan, this.counters);
+			addedRetainedCodeUnits += artifactRetainedCodeUnits(record.artifact);
+		}
+		if (addedRetainedCodeUnits === 0) return;
+		const isResident = this.projectionRecords?.get(record.toolCallId) === record;
+		const validatedMessages = record.validatedMessages;
+		const validatedMessageCount = record.validatedMessageCount;
+		const validatedSourceIndex = record.validatedSourceIndex;
+		if (isResident) this.removeProjectionRecord(record, false);
+		record.retainedCodeUnits += addedRetainedCodeUnits;
+		if (isResident) {
+			record.validatedMessages = validatedMessages;
+			record.validatedMessageCount = validatedMessageCount;
+			record.validatedSourceIndex = validatedSourceIndex;
+			this.insertProjectionRecord(record, true);
+		}
+	}
+
+	private createArtifactResolutionRecord(
+		content: readonly ToolResultPresentationContent[],
+		toolCallId: string,
+	): ProjectionRecord {
+		this.counters.projectionRecordMisses++;
+		const sourceScan = scanSource(content, this.counters);
+		const sourceKey = createSourceKey(this.sessionId, toolCallId, this.counters);
+		return {
+			toolCallId,
+			sourceKey,
+			sourceDigest: sourceScan.digest,
+			sourceContent: content,
+			sourceScan,
+			projection: undefined,
+			artifact: undefined,
+			imagePolicyProjection: undefined,
+			retainedCodeUnits: sourceScan.retainedCodeUnits,
+			validatedMessages: undefined,
+			validatedMessageCount: 0,
+			validatedSourceIndex: -1,
+			previous: undefined,
+			next: undefined,
+		};
+	}
+
 	private getOrCreateProjectionRecord(
 		content: readonly ToolResultPresentationContent[],
 		toolCallId: string,
@@ -1126,6 +1224,7 @@ export class ToolResultPresentationOwner {
 		const records = this.projectionRecords;
 		const existing = records?.get(toolCallId);
 		if (existing?.sourceContent === content) {
+			this.ensureRecordProjection(existing, admission === "write");
 			this.counters.projectionRecordHits++;
 			return existing;
 		}
@@ -1138,6 +1237,7 @@ export class ToolResultPresentationOwner {
 			existing.sourceScan.estimate.rawUtf8Bytes === sourceScan.estimate.rawUtf8Bytes &&
 			existing.sourceScan.estimate.estimatedTokens === sourceScan.estimate.estimatedTokens
 		) {
+			this.ensureRecordProjection(existing, false);
 			this.counters.projectionRecordHits++;
 			return existing;
 		}
@@ -1151,7 +1251,7 @@ export class ToolResultPresentationOwner {
 			sourceScan,
 			this.counters,
 		);
-		const artifact = projection && admission === "write"
+		const artifact = projection && admission === "write" && this.sessionId.length > 0
 			? createArtifactDescriptor(sourceKey, sourceScan, this.counters)
 			: undefined;
 		let retainedCodeUnits = sourceScan.retainedCodeUnits;
@@ -1296,8 +1396,18 @@ export class ToolResultPresentationOwner {
 
 	private validateArtifactRecord(record: ProjectionRecord, messages: readonly unknown[]): ProjectionRecord {
 		try {
-			return this.validateContinuationRecord(record, messages);
+			const validated = this.validateContinuationRecord(record, messages);
+			if (!validateArtifactIdentity(
+				validated.sourceContent,
+				validated.sourceScan.sha256,
+				validated.sourceScan.artifactBytes,
+				this.counters,
+			)) {
+				throw new ToolResultArtifactError("stale-artifact", "Tool-result artifact content no longer matches its digest.");
+			}
+			return validated;
 		} catch (error) {
+			if (error instanceof ToolResultArtifactError) throw error;
 			if (error instanceof ToolResultContinuationError) {
 				throw new ToolResultArtifactError("stale-artifact", "Tool-result artifact source is no longer uniquely active.");
 			}
@@ -1326,7 +1436,7 @@ export class ToolResultPresentationOwner {
 				throw new ToolResultArtifactError("stale-artifact", "Tool-result artifact identity is ambiguous.");
 			}
 			matchedSourceIdentity = true;
-			const record = this.getOrCreateProjectionRecord(candidate.content, candidate.toolCallId, "continuation");
+			const record = this.createArtifactResolutionRecord(candidate.content, candidate.toolCallId);
 			if (record.sourceScan.sha256 !== state.sha256) continue;
 			resolved = record;
 			resolvedIndex = index;
@@ -1403,7 +1513,6 @@ export class ToolResultPresentationOwner {
 			const projection = record.projection;
 			if (projection) {
 				const artifact = record.artifact;
-				if (!artifact) throw new Error("Projected tool result is missing its artifact descriptor.");
 				const originalTextCodeUnits = record.sourceScan.textCodeUnits;
 				const retainedTextCodeUnits = projection.headTextCodeUnits + projection.tailTextCodeUnits;
 				presentation = {
@@ -1623,6 +1732,9 @@ export class ToolResultPresentationOwner {
 	readArtifact(id: string, messages: readonly unknown[]): ToolResultArtifactReadV1 {
 		if (!this.accepting) {
 			throw new ToolResultArtifactError("stale-artifact", "Tool-result artifact owner is disposed.");
+		}
+		if (this.sessionId.length === 0) {
+			throw new ToolResultArtifactError("stale-artifact", "Tool-result artifacts require a session identity.");
 		}
 		const state = parseArtifactId(id);
 		if (!state) throw new ToolResultArtifactError("invalid-artifact", "Malformed tool-result artifact handle.");

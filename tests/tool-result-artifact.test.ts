@@ -160,6 +160,77 @@ test("artifact handles reject modified, ambiguous, foreign-session, and malforme
 	foreign.dispose();
 });
 
+test("resident artifact reads reject in-place source block mutation", () => {
+	const content: ToolResultPresentationContent[] = [{ type: "text", text: "mutable-artifact-A".repeat(20_000) }];
+	const message = toolResult(content, "mutable-artifact");
+	const counters = createToolResultPresentationCounters();
+	const owner = createToolResultPresentationOwner(
+		{ enabled: true, budgetTokens: BUDGET_TOKENS, counters },
+		SESSION_ID,
+	)!;
+	const descriptor = artifactFrom(owner.create(content, message.toolCallId))!;
+	owner.release();
+	assert.equal(artifactOwner(owner).readArtifact(descriptor.id, [message]).content, content);
+	assert.equal(counters.artifactIntegrityScans, 1);
+	(content[0] as { type: "text"; text: string }).text = "mutable-artifact-B".repeat(20_000);
+	assert.throws(
+		() => artifactOwner(owner).readArtifact(descriptor.id, [message]),
+		(error: unknown) => error instanceof Error && "code" in error && error.code === "stale-artifact",
+	);
+	assert.equal(counters.artifactIntegrityScans, 2);
+	owner.dispose();
+});
+
+test("artifact resume resolution is independent of the current projection budget", () => {
+	const content: ToolResultPresentationContent[] = [{ type: "text", text: "budget-independent-artifact-".repeat(20_000) }];
+	const message = toolResult(content, "budget-independent-artifact");
+	const initial = createToolResultPresentationOwner({ enabled: true, budgetTokens: BUDGET_TOKENS }, SESSION_ID)!;
+	const descriptor = artifactFrom(initial.create(content, message.toolCallId))!;
+	initial.release();
+	initial.dispose();
+	const resumed = createToolResultPresentationOwner({ enabled: true, budgetTokens: 1 }, SESSION_ID)!;
+	const read = artifactOwner(resumed).readArtifact(descriptor.id, [message]);
+	assert.equal(read.content, content);
+	assert.equal(read.descriptor.id, descriptor.id);
+	assert.throws(
+		() => resumed.projectMessagesForModel([message]),
+		(error: unknown) => error instanceof Error && "code" in error && error.code === "budget-too-small",
+		"provider projection still enforces its independently configured budget",
+	);
+	resumed.dispose();
+
+	const bounded = createToolResultPresentationOwner({ enabled: true, budgetTokens: BUDGET_TOKENS }, SESSION_ID)!;
+	artifactOwner(bounded).readArtifact(descriptor.id, [message]);
+	const scansAfterArtifactRead = bounded.counters.fullSourceEstimatorScans;
+	const providerMessages = [message];
+	bounded.projectMessagesForModel(providerMessages);
+	assert.notEqual(providerMessages[0], message);
+	assert.equal(bounded.counters.fullSourceEstimatorScans, scansAfterArtifactRead);
+	assert.equal(bounded.counters.projectionRecordEntries, 1);
+	bounded.dispose();
+});
+
+test("owners without a session identity do not issue or accept session-bound artifacts", () => {
+	const content: ToolResultPresentationContent[] = [{ type: "text", text: "anonymous-artifact-".repeat(20_000) }];
+	const anonymous = createToolResultPresentationOwner({ enabled: true, budgetTokens: BUDGET_TOKENS })!;
+	const presentation = anonymous.create(content, "anonymous-artifact")!;
+	assert.equal(presentation.version, 2);
+	assert.equal(artifactFrom(presentation), undefined);
+	anonymous.release();
+	const sessionOwner = createToolResultPresentationOwner(
+		{ enabled: true, budgetTokens: BUDGET_TOKENS },
+		SESSION_ID,
+	)!;
+	const descriptor = artifactFrom(sessionOwner.create(content, "anonymous-artifact"))!;
+	sessionOwner.release();
+	assert.throws(
+		() => artifactOwner(anonymous).readArtifact(descriptor.id, [toolResult(content, "anonymous-artifact")]),
+		(error: unknown) => error instanceof Error && "code" in error && error.code === "stale-artifact",
+	);
+	anonymous.dispose();
+	sessionOwner.dispose();
+});
+
 test("first artifact read scans active history once and subsequent reads stay indexed", () => {
 	const content: ToolResultPresentationContent[] = [{ type: "text", text: "indexed-artifact-".repeat(20_000) }];
 	const message = toolResult(content, "indexed-artifact");
@@ -184,11 +255,13 @@ test("first artifact read scans active history once and subsequent reads stay in
 	const steadyScans = counters.fullSourceEstimatorScans;
 	const steadyProbes = counters.artifactSourceLookupProbes;
 	const steadyHits = counters.artifactRecordHits;
+	const steadyIntegrityScans = counters.artifactIntegrityScans;
 	const second = artifactOwner(owner).readArtifact(descriptor.id, history);
 	assert.equal(second.content, content);
 	assert.equal(counters.fullSourceEstimatorScans, steadyScans);
 	assert.equal(counters.artifactSourceLookupProbes, steadyProbes);
 	assert.equal(counters.artifactRecordHits, steadyHits + 1);
+	assert.equal(counters.artifactIntegrityScans, steadyIntegrityScans + 1);
 	assert.equal(counters.artifactReads, 2);
 	owner.clearProjectionRecords();
 	assert.equal(counters.projectionRecordEntries, 0);

@@ -347,6 +347,8 @@ test("budgeted production persists full UI content and resumes the identical pro
 			_handleAgentEvent(event: ToolResultMessageEndEvent): Promise<void>;
 		})._handleAgentEvent({ type: "message_end", message });
 		assert.ok(retainedPresentation);
+		const retainedArtifact = retainedPresentation.artifact;
+		assert.ok(retainedArtifact);
 		assert.equal("toolResultPresentation" in extensionEventRetained!, false);
 		assert.equal(message.content[0]?.type === "text" ? message.content[0].text : undefined, fullText);
 		const persisted = sessionManager.getBranch().at(-1);
@@ -368,13 +370,13 @@ test("budgeted production persists full UI content and resumes the identical pro
 		const firstChunk = session.readToolResultContinuation(retainedPresentation.continuation.cursor, 128);
 		assert.ok(firstChunk.content.length > 0);
 		assert.ok(firstChunk.estimatedTokens <= 128);
-		const firstArtifact = session.readToolResultArtifact(retainedPresentation.artifact.id);
-		assert.equal(firstArtifact.descriptor, retainedPresentation.artifact);
+		const firstArtifact = session.readToolResultArtifact(retainedArtifact.id);
+		assert.equal(firstArtifact.descriptor, retainedArtifact);
 		assert.equal(firstArtifact.content, message.content);
 		const firstProjection = providerToolResult.content;
 		const firstCursor = retainedPresentation.continuation.cursor;
-		const firstArtifactId = retainedPresentation.artifact.id;
-		const firstArtifactSha256 = retainedPresentation.artifact.sha256;
+		const firstArtifactId = retainedArtifact.id;
+		const firstArtifactSha256 = retainedArtifact.sha256;
 		session.dispose();
 
 		const { session: resumed } = await createAgentSession(commonOptions);

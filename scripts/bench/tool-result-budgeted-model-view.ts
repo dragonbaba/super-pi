@@ -187,6 +187,7 @@ function counterDelta(
 		artifactReads: (after.artifactReads - before.artifactReads) / resultCount,
 		artifactRecordHits: (after.artifactRecordHits - before.artifactRecordHits) / resultCount,
 		artifactSourceLookupProbes: (after.artifactSourceLookupProbes - before.artifactSourceLookupProbes) / resultCount,
+		artifactIntegrityScans: (after.artifactIntegrityScans - before.artifactIntegrityScans) / resultCount,
 		boundedTextStringsCreated: (after.boundedTextStringsCreated - before.boundedTextStringsCreated) / resultCount,
 		projectionRecordHits: (after.projectionRecordHits - before.projectionRecordHits) / resultCount,
 		projectionRecordMisses: (after.projectionRecordMisses - before.projectionRecordMisses) / resultCount,
@@ -899,7 +900,9 @@ async function measureArtifactLifecycle(): Promise<Record<string, unknown>> {
 		sourceContent,
 		sourceMessage.toolCallId,
 	) as ToolResultPresentationV2;
-	const artifactId = presentation.artifact.id;
+	const artifactDescriptor = presentation.artifact;
+	if (!artifactDescriptor) throw new Error("artifact lifecycle presentation is missing its descriptor");
+	const artifactId = artifactDescriptor.id;
 	owner.release();
 	owner.clearProjectionRecords();
 	let providerCloneMessages: Message[] | undefined = structuredClone(validationMessages);
@@ -908,24 +911,28 @@ async function measureArtifactLifecycle(): Promise<Record<string, unknown>> {
 	const entriesAfterProviderClone = counters.projectionRecordEntries;
 	const scansBeforeFirstRead = counters.fullSourceEstimatorScans;
 	const probesBeforeFirstRead = counters.artifactSourceLookupProbes;
+	const integrityScansBeforeFirstRead = counters.artifactIntegrityScans;
 	let firstRead: ToolResultArtifactReadV1 | undefined = owner.readArtifact(artifactId, validationMessages);
 	if (firstRead.content !== sourceContent) throw new Error("artifact lifecycle did not bind the persisted source");
 	const firstReadSourceScans = counters.fullSourceEstimatorScans - scansBeforeFirstRead;
 	const firstReadLookupProbes = counters.artifactSourceLookupProbes - probesBeforeFirstRead;
+	const firstReadIntegrityScans = counters.artifactIntegrityScans - integrityScansBeforeFirstRead;
 	const entriesAfterValidatedBind = counters.projectionRecordEntries;
 	const scansBeforeSecondRead = counters.fullSourceEstimatorScans;
 	const probesBeforeSecondRead = counters.artifactSourceLookupProbes;
 	const hitsBeforeSecondRead = counters.artifactRecordHits;
+	const integrityScansBeforeSecondRead = counters.artifactIntegrityScans;
 	owner.readArtifact(artifactId, validationMessages);
 	const secondReadSourceScans = counters.fullSourceEstimatorScans - scansBeforeSecondRead;
 	const secondReadLookupProbes = counters.artifactSourceLookupProbes - probesBeforeSecondRead;
 	const secondReadRecordHits = counters.artifactRecordHits - hitsBeforeSecondRead;
+	const secondReadIntegrityScans = counters.artifactIntegrityScans - integrityScansBeforeSecondRead;
 	const weakSourceOuterArray = new WeakRef(sourceContent);
 	const weakValidationMessagesOuterArray = new WeakRef(validationMessages);
 	const weakProviderCloneMessagesOuterArray = new WeakRef(providerCloneMessages);
 	const weakProviderCloneSourceOuterArray = new WeakRef(providerCloneSourceContent);
 	const weakPresentation = new WeakRef(presentation);
-	const weakArtifactDescriptor = new WeakRef(presentation.artifact);
+	const weakArtifactDescriptor = new WeakRef(artifactDescriptor);
 	const weakArtifactRead = new WeakRef(firstRead);
 	owner.clearProjectionRecords();
 	const entriesAfterClear = counters.projectionRecordEntries;
@@ -954,9 +961,11 @@ async function measureArtifactLifecycle(): Promise<Record<string, unknown>> {
 		entriesAfterValidatedBind,
 		firstReadSourceScans,
 		firstReadLookupProbes,
+		firstReadIntegrityScans,
 		secondReadSourceScans,
 		secondReadLookupProbes,
 		secondReadRecordHits,
+		secondReadIntegrityScans,
 		entriesAfterClear,
 		retainedCodeUnitsAfterClear,
 	};

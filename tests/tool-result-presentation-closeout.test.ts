@@ -335,18 +335,25 @@ test("V2 public validation rejects inconsistent bounded metadata without scannin
 	const owner = createToolResultPresentationOwner({ enabled: true, budgetTokens: 128 }, SESSION_ID)!;
 	const valid = owner.create(content, "validation") as ToolResultPresentationV2;
 	owner.release();
+	const validArtifact = valid.artifact;
+	assert.ok(validArtifact);
 	assert.equal(getToolResultModelContent(valid, legacy), valid.modelContent);
+	const preArtifactV2 = { ...valid, artifact: undefined };
+	assert.equal(
+		getToolResultModelContent(preArtifactV2, legacy),
+		valid.modelContent,
+		"public V2 producers from before artifact support remain compatible",
+	);
 	const malformed = [
 		{ ...valid, truncation: { ...valid.truncation, originalEstimatedTokens: -1 } },
 		{ ...valid, truncation: { ...valid.truncation, modelEstimatedTokens: valid.truncation.budgetTokens + 1 } },
 		{ ...valid, truncation: { ...valid.truncation, retainedTextCodeUnits: valid.truncation.retainedTextCodeUnits + 1 } },
 		{ ...valid, truncation: { ...valid.truncation, omittedTextCodeUnits: valid.truncation.omittedTextCodeUnits + 1 } },
 		{ ...valid, truncation: { ...valid.truncation, noticeBlockIndex: valid.modelContent.length } },
-		{ ...valid, artifact: undefined },
-		{ ...valid, artifact: { ...valid.artifact, id: `tra1.0000000000000000.${valid.artifact.sha256}` } },
-		{ ...valid, artifact: { ...valid.artifact, sha256: "0".repeat(64) } },
-		{ ...valid, artifact: { ...valid.artifact, bytes: -1 } },
-		{ ...valid, artifact: { ...valid.artifact, mediaType: "application/octet-stream" } },
+		{ ...valid, artifact: { ...validArtifact, id: `tra1.0000000000000000.${validArtifact.sha256}` } },
+		{ ...valid, artifact: { ...validArtifact, sha256: "0".repeat(64) } },
+		{ ...valid, artifact: { ...validArtifact, bytes: -1 } },
+		{ ...valid, artifact: { ...validArtifact, mediaType: "application/octet-stream" } },
 		{
 			...valid,
 			modelContent: valid.modelContent.map((block, index) =>
