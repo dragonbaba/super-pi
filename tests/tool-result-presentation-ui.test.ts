@@ -14,6 +14,7 @@ import {
 	ToolExecutionComponent,
 } from "../packages/coding-agent/src/modes/interactive/components/tool-execution.ts";
 import { initTheme } from "../packages/coding-agent/src/modes/interactive/theme/theme.ts";
+import { auditToolResultPresentationUiSources } from "../scripts/bench/tool-result-presentation-ui-source-audit.ts";
 
 interface DiscoveryState {
 	readonly cursor: string;
@@ -162,17 +163,36 @@ test("interactive live and rebuild paths consume only the internal sidecar with 
 	assert.match(interactive, /clearToolResultDiscoveries/);
 	assert.match(session, /getToolResultPresentationForUi/);
 	assert.match(session, /toolResultPresentationEnabled/);
-	assert.match(benchmark, /transitiveResultRenderingSource/);
-	assert.match(benchmark, /render-utils\.ts/);
-	assert.match(benchmark, /tui\.ts\/Container/);
-	assert.match(benchmark, /components\/box\.ts/);
-	assert.match(benchmark, /components\/text\.ts/);
-	assert.match(benchmark, /utils\.ts\/wrapping/);
-	assert.match(benchmark, /extractNamedDeclarations/);
-	assert.match(benchmark, /extractClassMethods/);
-	assert.match(benchmark, /argumentSerializationSites/);
-	assert.match(benchmark, /\["serializeArgs"\]/);
+	assert.match(benchmark, /auditToolResultPresentationUiSources/);
+	assert.match(benchmark, /tool-result-presentation-ui-source-audit\.ts/);
 	assert.match(benchmark, /plainFullResultUi/);
 	assert.match(benchmark, /boundedDiscoveryUi/);
 	assert.doesNotMatch(benchmark, /fullResultCopies:\s*0/);
+});
+
+test("UI allocation source audit executes the selected production chain and locks structural counts", () => {
+	const audit = auditToolResultPresentationUiSources();
+	assert.deepEqual(audit.transitiveSourceFiles, [
+		"tool-execution.ts",
+		"render-utils.ts",
+		"interactive-mode.ts",
+		"agent-session.ts",
+		"tui.ts/Container",
+		"components/box.ts",
+		"components/text.ts",
+		"utils.ts/wrapping",
+	]);
+	assert.equal(audit.registryHardCap, 128);
+	assert.equal(audit.resultRenderingArrayMaterializationSites, 47);
+	assert.equal(audit.resultRenderingArrayLiteralSites, 29);
+	assert.equal(audit.resultRenderingArraySpreadSites, 6);
+	assert.equal(audit.resultRenderingArrayProducingCallSites, 12);
+	assert.equal(audit.resultRenderingArrayConstructorSites, 0);
+	assert.equal(audit.resultRenderingStringAppendSites, 40);
+	assert.equal(audit.resultRenderingSerializationSites, 0);
+	assert.equal(audit.argumentSerializationSites, 1);
+	assert.equal(audit.discoveryOwnershipCopyOperations, 0);
+	assert.equal(audit.discoveryOwnershipSerializations, 0);
+	assert.equal(audit.promises, 0);
+	assert.equal(audit.abortControllers, 0);
 });
