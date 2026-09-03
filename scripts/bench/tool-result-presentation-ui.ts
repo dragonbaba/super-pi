@@ -700,6 +700,14 @@ async function measureMixedHistoryRebuild(): Promise<{
 	durationMs: number;
 	selected: number;
 	counts: ReturnType<AgentSession["getToolResultPresentationUiRebuildCounts"]>;
+	selectedContinuation: {
+		firstFullSourceScanDelta: number;
+		firstHistoryLookupProbeDelta: number;
+		firstResidentRecordHitDelta: number;
+		secondFullSourceScanDelta: number;
+		secondHistoryLookupProbeDelta: number;
+		secondResidentRecordHitDelta: number;
+	};
 }> {
 	const messages: AgentMessage[] = [];
 	for (let index = 0; index < 50_000; index++) {
@@ -715,9 +723,42 @@ async function measureMixedHistoryRebuild(): Promise<{
 	const durationMs = performance.now() - started;
 	const counts = fixture.session.getToolResultPresentationUiRebuildCounts();
 	const selectedCount = selected.size;
+	const selectedPresentation = selected.values().next().value;
+	const ownerCounters = (fixture.session as unknown as {
+		_toolResultPresentation?: {
+			counters: {
+				fullSourceEstimatorScans: number;
+				continuationSourceLookupProbes: number;
+				activeContinuationRecordHits: number;
+			};
+		};
+	})._toolResultPresentation?.counters;
+	if (!ownerCounters || selectedPresentation?.version !== 2) {
+		throw new Error("mixed-history rebuild did not produce a resident V2 continuation");
+	}
+	const scansBeforeFirst = ownerCounters.fullSourceEstimatorScans;
+	const probesBeforeFirst = ownerCounters.continuationSourceLookupProbes;
+	const hitsBeforeFirst = ownerCounters.activeContinuationRecordHits;
+	const first = fixture.session.readToolResultContinuation(selectedPresentation.continuation.cursor, 128);
+	const firstFullSourceScanDelta = ownerCounters.fullSourceEstimatorScans - scansBeforeFirst;
+	const firstHistoryLookupProbeDelta = ownerCounters.continuationSourceLookupProbes - probesBeforeFirst;
+	const firstResidentRecordHitDelta = ownerCounters.activeContinuationRecordHits - hitsBeforeFirst;
+	if (!first.nextCursor) throw new Error("mixed-history continuation fixture ended before the second resident read");
+	const scansBeforeSecond = ownerCounters.fullSourceEstimatorScans;
+	const probesBeforeSecond = ownerCounters.continuationSourceLookupProbes;
+	const hitsBeforeSecond = ownerCounters.activeContinuationRecordHits;
+	fixture.session.readToolResultContinuation(first.nextCursor, 128);
+	const selectedContinuation = {
+		firstFullSourceScanDelta,
+		firstHistoryLookupProbeDelta,
+		firstResidentRecordHitDelta,
+		secondFullSourceScanDelta: ownerCounters.fullSourceEstimatorScans - scansBeforeSecond,
+		secondHistoryLookupProbeDelta: ownerCounters.continuationSourceLookupProbes - probesBeforeSecond,
+		secondResidentRecordHitDelta: ownerCounters.activeContinuationRecordHits - hitsBeforeSecond,
+	};
 	selected.clear();
 	await fixture.dispose();
-	return { durationMs, selected: selectedCount, counts };
+	return { durationMs, selected: selectedCount, counts, selectedContinuation };
 }
 
 async function captureProductionLifecycleRefs(): Promise<{
