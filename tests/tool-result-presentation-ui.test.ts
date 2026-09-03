@@ -294,6 +294,12 @@ test("UI allocation source audit executes the selected production chain and lock
 	assert.equal(audit.discoveryRegistrationObjectLiterals, 1);
 	assert.equal(audit.discoveryOwnershipObjectLiterals, 3);
 	assert.equal(audit.discoveryOwnershipMapConstructors, 5);
+	assert.equal(
+		(audit as typeof audit & { discoveryRebuildCallerMapConstructors?: number })
+			.discoveryRebuildCallerMapConstructors,
+		1,
+		"the production rebuild caller must participate in the structural audit",
+	);
 	assert.equal(audit.discoveryOwnershipSetConstructors, 0);
 	assert.equal(audit.promises, 0);
 	assert.equal(audit.abortControllers, 0);

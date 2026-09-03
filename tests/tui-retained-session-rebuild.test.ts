@@ -16,6 +16,7 @@ import { SessionManager } from "../packages/coding-agent/src/core/session-manage
 import { SettingsManager } from "../packages/coding-agent/src/core/settings-manager.ts";
 import type { ToolResultPresentationOptions } from "../packages/coding-agent/src/core/tool-result-presentation.ts";
 import {
+	createToolResultPresentationCounters,
 	createToolResultPresentationOwner,
 	type ToolResultPresentation,
 } from "../packages/coding-agent/src/core/tool-result-presentation.ts";
@@ -402,6 +403,38 @@ test("a live V1 result releases its pending discovery registration", async (t) =
 	assert.equal(counts.attached, 0);
 });
 
+test("a live V1 occurrence makes a later reused V2 identity fail closed", async (t) => {
+	const fixture = await createModeFixture([], [], { enabled: true, budgetTokens: 128 });
+	t.after(fixture.dispose);
+	fixture.internals.isInitialized = true;
+	const toolCallId = "live-v1-then-v2-reuse";
+	const driveResult = async (message: ToolResultMessage): Promise<ToolExecutionComponent> => {
+		await fixture.internals.handleEvent({ type: "tool_execution_start", toolCallId, toolName: "fixture-tool", args: {} });
+		const component = fixture.internals.pendingTools.get(toolCallId);
+		assert.ok(component instanceof ToolExecutionComponent);
+		await fixture.internals.handleEvent({
+			type: "tool_execution_end",
+			toolCallId,
+			toolName: "fixture-tool",
+			result: { content: message.content, isError: message.isError },
+			isError: false,
+		});
+		fixture.session.agent.state.messages.push(message);
+		await emitToolResultMessageEnd(fixture, message);
+		return component;
+	};
+	const first = result(toolCallId, "fixture-tool", "small-v1") as ToolResultMessage;
+	const firstComponent = await driveResult(first);
+	assert.equal(firstComponent.getToolResultPresentationDiscovery(toolCallId), undefined);
+	const second = result(toolCallId, "fixture-tool", "later-v2-".repeat(1_000)) as ToolResultMessage;
+	const secondComponent = await driveResult(second);
+	assert.equal(
+		secondComponent.getToolResultPresentationDiscovery(toolCallId),
+		undefined,
+		"a duplicate active identity must not advertise unusable artifact/continuation controls",
+	);
+});
+
 test("wholesale rebuild detaches 128 discoveries without updating discarded components", async (t) => {
 	const calls: AssistantMessage["content"] = [];
 	const messages: AgentMessage[] = [];
@@ -646,6 +679,32 @@ test("128 ambiguous V2 ids do not consume the 128 actual-discovery quota", async
 	fixture.session.collectRecentToolResultPresentationsForUi(selected, 128);
 	assert.equal(selected.size, 128);
 	assert.equal([...selected.keys()].every((message) => message.toolCallId.startsWith("valid-before-ambiguity-")), true);
+});
+
+test("the final 128 rebuild discoveries remain resident after evaluating 256 candidates", async (t) => {
+	const counters = createToolResultPresentationCounters();
+	const messages: AgentMessage[] = [];
+	for (let index = 0; index < 256; index++) {
+		messages.push(result(`resident-rebuild-${index}`, "fixture-tool", `resident-${index}-`.repeat(1_000)));
+	}
+	const fixture = await createModeFixture(messages, [], { enabled: true, budgetTokens: 128, counters });
+	t.after(fixture.dispose);
+	const selected = new Map<ToolResultMessage, ToolResultPresentation>();
+	fixture.session.collectRecentToolResultPresentationsForUi(selected, 128);
+	assert.equal(selected.size, 128);
+	const [canonical, presentation] = selected.entries().next().value!;
+	assert.equal(presentation.version, 2);
+	const scansBeforeRead = counters.fullSourceEstimatorScans;
+	const recordHitsBeforeRead = counters.activeContinuationRecordHits;
+	const chunk = fixture.session.readToolResultContinuation(presentation.continuation.cursor, 128);
+	assert.ok(chunk.content.length > 0);
+	assert.equal(
+		counters.fullSourceEstimatorScans,
+		scansBeforeRead,
+		"advertised rebuild discovery must not require a new full-source scan",
+	);
+	assert.equal(counters.activeContinuationRecordHits, recordHitsBeforeRead + 1);
+	assert.equal(canonical.toolCallId.startsWith("resident-rebuild-"), true);
 });
 
 test("foreign-session canonical wrappers are rejected", async (t) => {
