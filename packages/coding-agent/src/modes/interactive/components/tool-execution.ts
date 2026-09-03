@@ -218,9 +218,6 @@ export class ReadToolGroupComponent extends Container {
 	getToolResultPresentationDiscovery(toolCallId: string): ToolResultPresentationDiscoveryState | undefined {
 		return this.rows.get(toolCallId)?.toolResultDiscovery;
 	}
-	[RELEASE_COMPONENT_RENDER_CACHE](): void {
-		for (const row of this.rows.values()) row.toolResultDiscovery = undefined;
-	}
 
 	private getDisplayRows(): ReadGroupDisplayRow[] {
 		const displayRows: ReadGroupDisplayRow[] = [];
