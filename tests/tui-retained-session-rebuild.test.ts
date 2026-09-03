@@ -145,6 +145,7 @@ async function createModeFixture(
 	customTools: readonly ToolDefinition[] = [],
 	toolResultPresentation?: ToolResultPresentationOptions,
 	extensionFactories: Array<(pi: any) => void> = [],
+	settingsToolResultPresentation = toolResultPresentation,
 ): Promise<ModeFixture> {
 	initTheme("dark");
 	const root = mkdtempSync(join(tmpdir(), "super-pi-retained-rebuild-"));
@@ -152,11 +153,11 @@ async function createModeFixture(
 	const agentDir = join(root, "agent");
 	mkdirSync(cwd, { recursive: true });
 	mkdirSync(agentDir, { recursive: true });
-	const settingsManager = toolResultPresentation
+	const settingsManager = settingsToolResultPresentation
 		? SettingsManager.inMemory({
 			toolResultPresentation: {
-				enabled: toolResultPresentation.enabled,
-				budgetTokens: toolResultPresentation.budgetTokens,
+				enabled: settingsToolResultPresentation.enabled,
+				budgetTokens: settingsToolResultPresentation.budgetTokens,
 			},
 		})
 		: SettingsManager.create(cwd, agentDir);
@@ -231,7 +232,7 @@ test("live tool completion binds the internal presentation sidecar by canonical 
 		type: "tool_execution_end",
 		toolCallId,
 		toolName: "fixture-tool",
-		result: message,
+		result: { content: message.content, isError: message.isError },
 		isError: false,
 	});
 	assert.doesNotMatch(fixture.internals.chatContainer.render(80).join("\n"), /Model received a bounded view/);
@@ -289,7 +290,7 @@ test("post-extension canonical ToolResult replaces the live result and receives 
 		type: "tool_execution_end",
 		toolCallId,
 		toolName: "fixture-tool",
-		result: message,
+		result: { content: message.content, isError: message.isError },
 		isError: false,
 	});
 	let emittedPresentation: Extract<AgentSessionEvent, { type: "message_end" }>["toolResultPresentation"];
@@ -349,7 +350,7 @@ test("stale and duplicate live ToolResult registrations fail closed", async (t) 
 			type: "tool_execution_end",
 			toolCallId,
 			toolName: "fixture-tool",
-			result: message,
+			result: { content: message.content, isError: message.isError },
 			isError: false,
 		});
 		return component;
@@ -389,7 +390,7 @@ test("a live V1 result releases its pending discovery registration", async (t) =
 		type: "tool_execution_end",
 		toolCallId,
 		toolName: "fixture-tool",
-		result: message,
+		result: { content: message.content, isError: message.isError },
 		isError: false,
 	});
 	const owner = createToolResultPresentationOwner({ enabled: true, budgetTokens: 128 }, "live-v1")!;
@@ -598,6 +599,56 @@ test("128 trailing V1 results do not hide an earlier bounded V2 discovery", asyn
 			sourceScans: 129,
 		},
 	);
+});
+
+test("rebuild uses the shared owner override rather than an unrelated settings budget", async (t) => {
+	const toolCallId = "override-budget-v2";
+	const fixture = await createModeFixture(
+		[
+			assistant([{ type: "toolCall", id: toolCallId, name: "fixture-tool", arguments: {} }]),
+			result(toolCallId, "fixture-tool", "override-budget-large-".repeat(300)),
+		],
+		[],
+		{ enabled: true, budgetTokens: 128 },
+		[],
+		{ enabled: true, budgetTokens: 4_096 },
+	);
+	t.after(fixture.dispose);
+	fixture.mode.renderInitialMessages();
+	const component = fixture.internals.chatContainer.children.find(
+		(child): child is ToolExecutionComponent => child instanceof ToolExecutionComponent,
+	);
+	assert.ok(component?.getToolResultPresentationDiscovery(toolCallId));
+});
+
+test("a newer V1 reuse makes an older V2 tool-call identity ambiguous", async (t) => {
+	const duplicateId = "v1-v2-reuse";
+	const fixture = await createModeFixture([
+		result(duplicateId, "fixture-tool", "older-v2-".repeat(1_000)),
+		result(duplicateId, "fixture-tool", "newer-v1"),
+	], [], { enabled: true, budgetTokens: 128 });
+	t.after(fixture.dispose);
+	const selected = new Map<ToolResultMessage, ToolResultPresentation>();
+	fixture.session.collectRecentToolResultPresentationsForUi(selected, 128);
+	assert.equal(selected.size, 0);
+});
+
+test("128 ambiguous V2 ids do not consume the 128 actual-discovery quota", async (t) => {
+	const messages: AgentMessage[] = [];
+	for (let index = 0; index < 128; index++) {
+		messages.push(result(`valid-before-ambiguity-${index}`, "fixture-tool", `valid-${index}-`.repeat(1_000)));
+	}
+	for (let index = 0; index < 128; index++) {
+		const toolCallId = `ambiguous-quota-${index}`;
+		messages.push(result(toolCallId, "fixture-tool", `duplicate-a-${index}-`.repeat(1_000)));
+		messages.push(result(toolCallId, "fixture-tool", `duplicate-b-${index}-`.repeat(1_000)));
+	}
+	const fixture = await createModeFixture(messages, [], { enabled: true, budgetTokens: 128 });
+	t.after(fixture.dispose);
+	const selected = new Map<ToolResultMessage, ToolResultPresentation>();
+	fixture.session.collectRecentToolResultPresentationsForUi(selected, 128);
+	assert.equal(selected.size, 128);
+	assert.equal([...selected.keys()].every((message) => message.toolCallId.startsWith("valid-before-ambiguity-")), true);
 });
 
 test("foreign-session canonical wrappers are rejected", async (t) => {
