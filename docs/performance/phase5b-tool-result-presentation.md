@@ -108,3 +108,13 @@ Full-string copies, full-result serialization, temporary line arrays, per-result
 ## Known limitations
 
 Phase 5B-A still performs no truncation, summary, continuation, artifact creation, token-budget enforcement, TUI view selection, or provider assembly change. Dispatch-scope counters do not establish GC reachability; only the lifecycle WeakRef evidence does. The fixed image payload is deliberately small and base64-like because the ownership proof concerns identity, not image decoding or token cost.
+
+## G2C post-merge corrective evidence
+
+The post-merge corrective benchmark extends the existing UI allocation probe without changing the provider projection benchmark. Its enabled sampling window now executes the production event order `tool_execution_end -> pending registration -> post-extension message_end -> attach -> clear`; discovery is not injected before sampling. Runtime counters report registration objects created, attached, retained high-water mark, eviction, teardown release, and current pending/attached entries. Absent and explicitly disabled fixtures execute the same event driver and must report zero registration and discovery work.
+
+The same benchmark separately profiles expanded grouped reads, runs wholesale teardown over 128 bounded results, and scans a 50,000-message mixed V1/V2 history. Teardown instruments the discarded components and requires zero `updateDisplay`, full-result text scan, and image-conversion calls during both transcript/session rebuild and stop. Rebuild metadata and the attached registry remain hard-capped at 128; V1 results do not consume discovery capacity, and history/source probe counts remain linear.
+
+Controlled-GC evidence now covers production-owned component, discovery, registration, canonical source, and projection-validation records. Owner disposal must finish with projection record entries and retained projection code units at `0/0`, every corresponding WeakRef must clear, and the stabilized heap tail must have no sustained positive slope. The source audit distinguishes registration object literals, all ownership object literals, arrays, Map/Set construction, Promise/AbortController construction, closures, serialization, and full-result copies.
+
+Timing samples report p50, p95, p99, coefficient of variation, and absolute deltas. Grouped expansion and other millisecond-scale tails are treated as inconclusive when their process-level variation is high; deterministic work counts, allocation sites, and reference release remain the primary gates. Exact numeric results and the measured commit/worktree stamps belong in the Draft PR review packet so stale measurements cannot be mistaken for candidate evidence.
