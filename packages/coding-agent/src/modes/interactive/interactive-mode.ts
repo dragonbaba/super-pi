@@ -4593,6 +4593,8 @@ export class InteractiveMode {
 		liveCanonicalIndexAppendProbes: number;
 		liveCanonicalLookupProbes: number;
 		liveCanonicalIndexRebuilds: number;
+		liveCanonicalIndexEntries: number;
+		liveCanonicalIndexOverflowed: boolean;
 	} {
 		let attached = 0;
 		let pending = 0;

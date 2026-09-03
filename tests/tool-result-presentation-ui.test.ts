@@ -276,6 +276,7 @@ test("UI allocation source audit executes the selected production chain and lock
 	]);
 	assert.equal(audit.registryHardCap, 128);
 	assert.equal(audit.rebuildCandidateHardCap, 256);
+	assert.equal(audit.canonicalIndexHardCap, 65_536);
 	assert.equal(audit.resultRenderingArrayMaterializationSites, 39);
 	assert.equal(audit.resultRenderingArrayLiteralSites, 31);
 	assert.equal(audit.resultRenderingArraySpreadSites, 3);

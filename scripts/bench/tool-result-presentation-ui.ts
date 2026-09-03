@@ -384,6 +384,8 @@ interface InteractiveModeInternals {
 		liveCanonicalIndexAppendProbes: number;
 		liveCanonicalLookupProbes: number;
 		liveCanonicalIndexRebuilds: number;
+		liveCanonicalIndexEntries: number;
+		liveCanonicalIndexOverflowed: boolean;
 	};
 }
 
@@ -563,6 +565,8 @@ async function measureLiveRegistrationProfile(inspector: Session): Promise<{
 		measuredAppendProbes: number;
 		measuredLookupProbes: number;
 		rebuilds: number;
+		entries: number;
+		overflowed: boolean;
 	};
 	lifecycle: ReturnType<InteractiveModeInternals["getToolResultDiscoveryLifecycleCounts"]>;
 }> {
@@ -610,6 +614,8 @@ async function measureLiveRegistrationProfile(inspector: Session): Promise<{
 				after.liveCanonicalIndexAppendProbes - before.liveCanonicalIndexAppendProbes,
 			measuredLookupProbes: after.liveCanonicalLookupProbes - before.liveCanonicalLookupProbes,
 			rebuilds: after.liveCanonicalIndexRebuilds,
+			entries: after.liveCanonicalIndexEntries,
+			overflowed: after.liveCanonicalIndexOverflowed,
 		},
 		lifecycle: {
 			...after,

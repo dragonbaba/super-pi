@@ -114,6 +114,8 @@ interface InteractiveModeInternals {
 		liveCanonicalIndexAppendProbes?: number;
 		liveCanonicalLookupProbes?: number;
 		liveCanonicalIndexRebuilds?: number;
+		liveCanonicalIndexEntries?: number;
+		liveCanonicalIndexOverflowed?: boolean;
 	};
 	handleEvent(event: AgentSessionEvent): void | Promise<void>;
 	rebuildChatFromMessages(): void;
@@ -480,6 +482,42 @@ test("live canonical validation indexes resumed history once and performs one lo
 	assert.equal(lifecycle.liveCanonicalIndexBuildProbes, 10_000);
 	assert.equal(lifecycle.liveCanonicalIndexAppendProbes, 8);
 	assert.equal(lifecycle.liveCanonicalLookupProbes, 8);
+	assert.equal(lifecycle.liveCanonicalIndexEntries, 10_008);
+	assert.equal(lifecycle.liveCanonicalIndexOverflowed, false);
+});
+
+test("live canonical identity index fails closed at its hard metadata cap", async (t) => {
+	const messages: AgentMessage[] = [];
+	for (let index = 0; index < 65_536; index++) {
+		messages.push(result(`capped-history-${index}`, "fixture-tool", "small"));
+	}
+	const fixture = await createModeFixture(messages, [], { enabled: true, budgetTokens: 128 });
+	t.after(fixture.dispose);
+	fixture.internals.isInitialized = true;
+	const toolCallId = "capped-live-result";
+	await fixture.internals.handleEvent({
+		type: "tool_execution_start",
+		toolCallId,
+		toolName: "fixture-tool",
+		args: {},
+	});
+	const component = fixture.internals.pendingTools.get(toolCallId);
+	assert.ok(component instanceof ToolExecutionComponent);
+	const message = result(toolCallId, "fixture-tool", "capped-live-".repeat(1_000)) as ToolResultMessage;
+	await fixture.internals.handleEvent({
+		type: "tool_execution_end",
+		toolCallId,
+		toolName: "fixture-tool",
+		result: { content: message.content, isError: message.isError },
+		isError: false,
+	});
+	fixture.session.agent.state.messages.push(message);
+	await emitToolResultMessageEnd(fixture, message);
+	const lifecycle = fixture.internals.getToolResultDiscoveryLifecycleCounts();
+	assert.equal(component.getToolResultPresentationDiscovery(toolCallId), undefined);
+	assert.equal(lifecycle.entries, 0);
+	assert.equal(lifecycle.liveCanonicalIndexEntries, 65_536);
+	assert.equal(lifecycle.liveCanonicalIndexOverflowed, true);
 });
 
 test("wholesale rebuild detaches 128 discoveries without updating discarded components", async (t) => {
@@ -678,6 +716,8 @@ test("128 trailing V1 results do not hide an earlier bounded V2 discovery", asyn
 			liveCanonicalIndexAppendProbes: 0,
 			liveCanonicalLookupProbes: 0,
 			liveCanonicalIndexRebuilds: 1,
+			liveCanonicalIndexEntries: 129,
+			liveCanonicalIndexOverflowed: false,
 		},
 	);
 });

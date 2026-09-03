@@ -6,6 +6,7 @@ import ts from "typescript";
 export interface ToolResultPresentationUiSourceAudit {
 	readonly registryHardCap: number;
 	readonly rebuildCandidateHardCap: number;
+	readonly canonicalIndexHardCap: number;
 	readonly transitiveSourceFiles: readonly string[];
 	readonly resultRenderingArrayMaterializationSites: number;
 	readonly resultRenderingArrayLiteralSites: number;
@@ -372,9 +373,13 @@ export function auditToolResultPresentationUiSources(): ToolResultPresentationUi
 	const rebuildCandidateHardCap = Number(
 		agentSessionSource.match(/MAX_TOOL_RESULT_UI_REBUILD_CANDIDATES\s*=\s*(\d+)/u)?.[1] ?? 0,
 	);
+	const canonicalIndexHardCap = Number(
+		agentSessionSource.match(/MAX_TOOL_RESULT_UI_CANONICAL_INDEX_ENTRIES\s*=\s*(\d[\d_]*)/u)?.[1]?.replaceAll("_", "") ?? 0,
+	);
 	return {
 		registryHardCap,
 		rebuildCandidateHardCap,
+		canonicalIndexHardCap,
 		transitiveSourceFiles: [
 			"tool-execution.ts",
 			"render-utils.ts",

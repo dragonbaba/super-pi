@@ -269,6 +269,7 @@ function createEventListenerRejectionObserver(onError: ((error: unknown) => void
 const DEFAULT_CRITICAL_AGENT_END_TIMEOUT_MS = 30_000;
 const MAX_TOOL_RESULT_UI_DISCOVERIES = 128;
 const MAX_TOOL_RESULT_UI_REBUILD_CANDIDATES = 256;
+const MAX_TOOL_RESULT_UI_CANONICAL_INDEX_ENTRIES = 65_536;
 
 const STRING_SET_POOL = new ObjectPool<Set<string>>(
 	() => new Set<string>(),
@@ -671,6 +672,7 @@ export class AgentSession {
 	private _toolResultUiCanonicalMessagesSource: AgentMessage[] | undefined;
 	private _toolResultUiCanonicalMessagesLength = 0;
 	private _toolResultUiCanonicalMessagesTail: AgentMessage | undefined;
+	private _toolResultUiCanonicalMessagesOverflowed = false;
 	private _toolResultUiLiveCanonicalIndexBuildProbes = 0;
 	private _toolResultUiLiveCanonicalIndexAppendProbes = 0;
 	private _toolResultUiLiveCanonicalLookupProbes = 0;
@@ -1387,6 +1389,7 @@ export class AgentSession {
 		this._toolResultUiCanonicalMessagesSource = undefined;
 		this._toolResultUiCanonicalMessagesLength = 0;
 		this._toolResultUiCanonicalMessagesTail = undefined;
+		this._toolResultUiCanonicalMessagesOverflowed = false;
 		this._eventListeners = [];
 		cleanupSessionResources(this.sessionId);
 	}
@@ -1461,8 +1464,15 @@ export class AgentSession {
 	private _recordToolResultUiCanonicalMessage(message: AgentMessage): void {
 		if (message.role !== "toolResult") return;
 		const canonicalMessages = this._toolResultUiCanonicalMessages ??= new Map();
-		if (!canonicalMessages.has(message.toolCallId)) canonicalMessages.set(message.toolCallId, message);
-		else canonicalMessages.set(message.toolCallId, null);
+		if (canonicalMessages.has(message.toolCallId)) {
+			canonicalMessages.set(message.toolCallId, null);
+			return;
+		}
+		if (canonicalMessages.size >= MAX_TOOL_RESULT_UI_CANONICAL_INDEX_ENTRIES) {
+			this._toolResultUiCanonicalMessagesOverflowed = true;
+			return;
+		}
+		canonicalMessages.set(message.toolCallId, message);
 	}
 
 	private _rebuildToolResultUiCanonicalIndex(): void {
@@ -1470,6 +1480,7 @@ export class AgentSession {
 		const messages = this.agent.state.messages;
 		const canonicalMessages = this._toolResultUiCanonicalMessages ??= new Map();
 		canonicalMessages.clear();
+		this._toolResultUiCanonicalMessagesOverflowed = false;
 		this._toolResultUiLiveCanonicalIndexRebuilds++;
 		for (let index = 0; index < messages.length; index++) {
 			this._toolResultUiLiveCanonicalIndexBuildProbes++;
@@ -1509,6 +1520,7 @@ export class AgentSession {
 		}
 		this._synchronizeToolResultUiCanonicalIndex();
 		this._toolResultUiLiveCanonicalLookupProbes++;
+		if (this._toolResultUiCanonicalMessagesOverflowed) return "ambiguous";
 		const canonical = this._toolResultUiCanonicalMessages?.get(message.toolCallId);
 		if (canonical === message) return "current";
 		return canonical === null ? "ambiguous" : "stale";
@@ -1632,6 +1644,8 @@ export class AgentSession {
 		liveCanonicalIndexAppendProbes: number;
 		liveCanonicalLookupProbes: number;
 		liveCanonicalIndexRebuilds: number;
+		liveCanonicalIndexEntries: number;
+		liveCanonicalIndexOverflowed: boolean;
 	} {
 		return {
 			historyMessagesVisited: this._toolResultUiHistoryMessagesVisited,
@@ -1643,6 +1657,8 @@ export class AgentSession {
 			liveCanonicalIndexAppendProbes: this._toolResultUiLiveCanonicalIndexAppendProbes,
 			liveCanonicalLookupProbes: this._toolResultUiLiveCanonicalLookupProbes,
 			liveCanonicalIndexRebuilds: this._toolResultUiLiveCanonicalIndexRebuilds,
+			liveCanonicalIndexEntries: this._toolResultUiCanonicalMessages?.size ?? 0,
+			liveCanonicalIndexOverflowed: this._toolResultUiCanonicalMessagesOverflowed,
 		};
 	}
 
