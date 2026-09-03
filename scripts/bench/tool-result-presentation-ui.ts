@@ -4,6 +4,7 @@ import { Session } from "node:inspector/promises";
 import { performance } from "node:perf_hooks";
 import { setImmediate as yieldToEventLoop } from "node:timers/promises";
 import { RELEASE_COMPONENT_RENDER_CACHE, setKeybindings, type TUI } from "@super-pi/tui";
+import ts from "typescript";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
 import {
 	createToolResultPresentationOwner,
@@ -210,6 +211,41 @@ function sourceRegion(source: string, start: string, end: string, from = 0): str
 	return source.slice(startIndex, endIndex);
 }
 
+function declarationName(name: ts.DeclarationName | undefined): string | undefined {
+	if (!name) return undefined;
+	if (ts.isIdentifier(name) || ts.isStringLiteral(name) || ts.isNumericLiteral(name)) return name.text;
+	return undefined;
+}
+
+function extractNamedDeclarations(source: string, fileName: string, names: readonly string[]): string {
+	const sourceFile = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+	const declarations = new Map<string, string>();
+	for (const statement of sourceFile.statements) {
+		if ((!ts.isFunctionDeclaration(statement) && !ts.isClassDeclaration(statement)) || !statement.name) continue;
+		if (names.includes(statement.name.text)) declarations.set(statement.name.text, statement.getText(sourceFile));
+	}
+	const missing = names.filter((name) => !declarations.has(name));
+	if (missing.length > 0) throw new Error(`Missing declarations in ${fileName}: ${missing.join(", ")}`);
+	return names.map((name) => declarations.get(name)!).join("\n");
+}
+
+function extractClassMethods(source: string, fileName: string, className: string, names: readonly string[]): string {
+	const sourceFile = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+	const classDeclaration = sourceFile.statements.find(
+		(statement): statement is ts.ClassDeclaration => ts.isClassDeclaration(statement) && statement.name?.text === className,
+	);
+	if (!classDeclaration) throw new Error(`Missing class in ${fileName}: ${className}`);
+	const methods = new Map<string, string>();
+	for (const member of classDeclaration.members) {
+		if (!ts.isMethodDeclaration(member)) continue;
+		const name = declarationName(member.name);
+		if (name && names.includes(name)) methods.set(name, member.getText(sourceFile));
+	}
+	const missing = names.filter((name) => !methods.has(name));
+	if (missing.length > 0) throw new Error(`Missing methods in ${fileName}:${className}: ${missing.join(", ")}`);
+	return names.map((name) => methods.get(name)!).join("\n");
+}
+
 function countMatches(source: string, pattern: RegExp): number {
 	return source.match(pattern)?.length ?? 0;
 }
@@ -235,6 +271,10 @@ const renderUtilsSource = readFileSync(
 	new URL("../../packages/coding-agent/src/core/tools/render-utils.ts", import.meta.url),
 	"utf8",
 );
+const tuiContainerSource = readFileSync(new URL("../../packages/tui/src/tui.ts", import.meta.url), "utf8");
+const tuiBoxSource = readFileSync(new URL("../../packages/tui/src/components/box.ts", import.meta.url), "utf8");
+const tuiTextSource = readFileSync(new URL("../../packages/tui/src/components/text.ts", import.meta.url), "utf8");
+const tuiUtilsSource = readFileSync(new URL("../../packages/tui/src/utils.ts", import.meta.url), "utf8");
 const firstComponentSetter = toolComponentSource.indexOf("\tsetToolResultPresentation(");
 const secondComponentSetter = toolComponentSource.indexOf("\tsetToolResultPresentation(", firstComponentSetter + 1);
 const discoveryHotSource = [
@@ -244,12 +284,79 @@ const discoveryHotSource = [
 	sourceRegion(interactiveSource, "\tprivate evictOldestToolResultDiscovery(", "\n\tprivate retainActiveToolComponent"),
 	sourceRegion(agentSessionSource, "\tget toolResultPresentationEnabled", "\n\t/** Read one bounded continuation"),
 ].join("\n");
+const toolResultRenderingSource = [
+	extractNamedDeclarations(toolComponentSource, "tool-execution.ts", [
+		"createToolResultDiscovery",
+		"formatToolResultDiscovery",
+		"getReadGroupResultText",
+		"boundReadGroupPreview",
+	]),
+	extractClassMethods(toolComponentSource, "tool-execution.ts", "ReadToolGroupComponent", [
+		"setToolResultPresentation",
+		"clearToolResultPresentation",
+		"getDisplayRows",
+		"rebuild",
+	]),
+	extractClassMethods(toolComponentSource, "tool-execution.ts", "ToolExecutionComponent", [
+		"createCallFallback",
+		"createResultFallback",
+		"getCallRenderer",
+		"getResultRenderer",
+		"isCallRendererArgsOnly",
+		"hasRendererDefinition",
+		"getRenderShell",
+		"getRenderContext",
+		"setToolResultPresentation",
+		"clearToolResultPresentation",
+		"render",
+		"updateDisplay",
+		"getTextOutput",
+		"formatToolExecution",
+		"refreshImageTree",
+	]),
+	extractNamedDeclarations(renderUtilsSource, "render-utils.ts", ["getTextOutput"]),
+].join("\n");
+const tuiResultRenderingSource = [
+	extractClassMethods(tuiContainerSource, "tui.ts", "Container", ["render"]),
+	extractNamedDeclarations(tuiContainerSource, "tui.ts", ["renderContainerInto"]),
+	extractClassMethods(tuiBoxSource, "components/box.ts", "Box", ["matchCache", "render", "applyBg"]),
+	extractClassMethods(tuiTextSource, "components/text.ts", "Text", ["render"]),
+	extractNamedDeclarations(tuiUtilsSource, "utils.ts", [
+		"getGraphemeSegmenter",
+		"getWordSegmenter",
+		"couldBeEmoji",
+		"isPrintableAscii",
+		"graphemeWidth",
+		"isSimpleTerminalAsciiRun",
+		"visibleWidth",
+		"extractAnsiCode",
+		"findTerminalSequenceEnd",
+		"parseOsc8Hyperlink",
+		"formatOsc8Hyperlink",
+		"formatOsc8Close",
+		"getActiveOsc8Close",
+		"AnsiCodeTracker",
+		"updateTrackerFromText",
+		"splitIntoTokensWithAnsi",
+		"wrapTextWithAnsi",
+		"wrapSingleLine",
+		"isWhitespaceChar",
+		"isPunctuationChar",
+		"breakLongWord",
+		"applyBackgroundToLine",
+	]),
+].join("\n");
 const transitiveResultRenderingSource = [
-	sourceRegion(toolComponentSource, "function getReadGroupResultText", "\nlet cachedBuiltInToolDefinitions"),
-	toolComponentSource.slice(toolComponentSource.indexOf("export class ToolExecutionComponent")),
-	sourceRegion(renderUtilsSource, "export function getTextOutput(", "\nexport type ToolRenderResultLike"),
+	toolResultRenderingSource,
+	tuiResultRenderingSource,
 	discoveryHotSource,
 ].join("\n");
+const argumentSerializationSource = extractClassMethods(
+	toolComponentSource,
+	"tool-execution.ts",
+	"ToolExecutionComponent",
+	["serializeArgs"],
+);
 const registryHardCap = Number(interactiveSource.match(/MAX_TOOL_RESULT_DISCOVERIES\s*=\s*(\d+)/u)?.[1] ?? 0);
 const inspector = new Session();
 inspector.connect();
@@ -314,10 +421,20 @@ const result = {
 	structure: {
 		defaultOffDiscoveryStates: disabledDiscoveryState,
 		registryHardCap,
-		transitiveSourceFiles: ["tool-execution.ts", "render-utils.ts", "interactive-mode.ts", "agent-session.ts"],
+		transitiveSourceFiles: [
+			"tool-execution.ts",
+			"render-utils.ts",
+			"interactive-mode.ts",
+			"agent-session.ts",
+			"tui.ts/Container",
+			"components/box.ts",
+			"components/text.ts",
+			"utils.ts/wrapping",
+		],
 		resultRenderingArrayTransformSites: countMatches(transitiveResultRenderingSource, /\.slice\(|\.map\(|\.filter\(/gu),
 		resultRenderingStringAppendSites: countMatches(transitiveResultRenderingSource, /\b(?:text|output|bounded|preview)\s*\+=/gu),
 		resultRenderingSerializationSites: countMatches(transitiveResultRenderingSource, /JSON\.stringify/gu),
+		argumentSerializationSites: countMatches(argumentSerializationSource, /JSON\.stringify/gu),
 		discoveryOwnershipCopyOperations: countMatches(discoveryHotSource, /structuredClone|\.slice\(|\.map\(/gu),
 		discoveryOwnershipSerializations: countMatches(discoveryHotSource, /JSON\.stringify/gu),
 		promises: countMatches(discoveryHotSource, /new\s+Promise/gu),

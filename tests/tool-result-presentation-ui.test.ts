@@ -164,6 +164,14 @@ test("interactive live and rebuild paths consume only the internal sidecar with 
 	assert.match(session, /toolResultPresentationEnabled/);
 	assert.match(benchmark, /transitiveResultRenderingSource/);
 	assert.match(benchmark, /render-utils\.ts/);
+	assert.match(benchmark, /tui\.ts\/Container/);
+	assert.match(benchmark, /components\/box\.ts/);
+	assert.match(benchmark, /components\/text\.ts/);
+	assert.match(benchmark, /utils\.ts\/wrapping/);
+	assert.match(benchmark, /extractNamedDeclarations/);
+	assert.match(benchmark, /extractClassMethods/);
+	assert.match(benchmark, /argumentSerializationSites/);
+	assert.match(benchmark, /\["serializeArgs"\]/);
 	assert.match(benchmark, /plainFullResultUi/);
 	assert.match(benchmark, /boundedDiscoveryUi/);
 	assert.doesNotMatch(benchmark, /fullResultCopies:\s*0/);
