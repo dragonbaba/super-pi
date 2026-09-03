@@ -1863,14 +1863,11 @@ export class ToolResultPresentationOwner {
 		for (let index = messages.length - 1; index >= 0; index--) {
 			const message = messages[index]!;
 			if (message.role !== "assistant") continue;
-			let hasToolCall = false;
 			for (let contentIndex = 0; contentIndex < message.content.length; contentIndex++) {
 				if (message.content[contentIndex]?.type !== "toolCall") continue;
-				hasToolCall = true;
+				assistantIndex = index;
 				break;
 			}
-			if (!hasToolCall) continue;
-			assistantIndex = index;
 			break;
 		}
 		let currentResultCount = 0;

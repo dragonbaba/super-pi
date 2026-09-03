@@ -210,6 +210,42 @@ test("completion order cannot change source-ordered allocation", () => {
 	reversed.dispose();
 });
 
+test("a later assistant response closes the prior tool turn", () => {
+	const first = toolResult("closed-turn-a");
+	const second = toolResult("closed-turn-b");
+	const completedAssistant: Message = {
+		role: "assistant",
+		content: [{ type: "text", text: "done" }],
+		api: "openai-completions",
+		provider: "fixture",
+		model: "fixture",
+		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+		stopReason: "stop",
+		timestamp: 4,
+	};
+	const source: Message[] = [
+		assistantToolTurn([first.toolCallId, second.toolCallId]),
+		first,
+		second,
+		completedAssistant,
+		{ role: "user", content: "next turn", timestamp: 5 },
+	];
+	const owner = createToolResultPresentationOwner(
+		{ enabled: true, budgetTokens: 1_024 },
+		"closed-turn-budget",
+	)!;
+	owner.create(first.content, first.toolCallId);
+	owner.create(second.content, second.toolCallId);
+	const projected = projectContextually(owner, source.slice(), {
+		contextWindow: 32_768,
+		maxOutputTokens: 4_096,
+	});
+	assert.equal(projected[1], first);
+	assert.equal(projected[2], second);
+	assert.equal(owner.counters.contextualBudgetCalls, 0);
+	owner.dispose();
+});
+
 test("context clone rebinding accepts canonical content once and rejects modification", () => {
 	const canonical = toolResult("clone-call");
 	const source = [assistantToolTurn([canonical.toolCallId]), canonical];
