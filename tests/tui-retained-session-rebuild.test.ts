@@ -220,6 +220,25 @@ test("live tool completion binds the internal presentation sidecar by canonical 
 	);
 });
 
+test("default-off session rebuild creates no discovery registry or component state", async (t) => {
+	const toolCallId = "default-off-large";
+	const fixture = await createModeFixture([
+		assistant([{ type: "toolCall", id: toolCallId, name: "fixture-tool", arguments: {} }]),
+		result(toolCallId, "fixture-tool", "default-off-canonical-".repeat(1_000)),
+	]);
+	t.after(fixture.dispose);
+	fixture.mode.renderInitialMessages();
+	assert.deepEqual(
+		fixture.internals.getToolResultDiscoveryLifecycleCounts(),
+		{ entries: 0, attached: 0, pending: 0 },
+	);
+	const component = fixture.internals.chatContainer.children.find(
+		(child): child is ToolExecutionComponent => child instanceof ToolExecutionComponent,
+	);
+	assert.ok(component);
+	assert.equal(component.getToolResultPresentationDiscovery(toolCallId), undefined);
+});
+
 function assertEveryRebuiltToolIsRetained(internals: InteractiveModeInternals): void {
 	for (const child of internals.chatContainer.children) {
 		if (child instanceof ToolExecutionComponent || child instanceof ReadToolGroupComponent) {
