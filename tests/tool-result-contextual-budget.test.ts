@@ -108,11 +108,15 @@ test("per-turn budget deterministically bounds 2/4/8 source-ordered results and 
 			const chunk = owner.readContinuation(cursor, source, 128);
 			assert.ok(chunk.content.length > 0);
 		}
+		const scansAfterFirst = owner.counters.fullSourceEstimatorScans;
 		const retry = projectContextually(owner, source.slice(), {
 			contextWindow: 32_768,
 			maxOutputTokens: 4_096,
 		});
 		assert.deepEqual(retry, first, "retry must not cumulatively deduct the turn budget");
+		assert.equal(owner.counters.fullSourceEstimatorScans, scansAfterFirst, "retry must use resident source scans");
+		assert.equal(owner.counters.providerReadMisses, 0);
+		assert.equal(owner.counters.residentReadHits, resultCount * 2);
 		owner.dispose();
 	}
 });
@@ -175,6 +179,7 @@ test("context remaining constrains the turn and fails explicitly below the fixed
 		(error: unknown) => error instanceof Error && error.name === "ToolResultContinuationError" && "code" in error && error.code === "budget-too-small",
 	);
 	assert.equal(owner.counters.activeContextualCoordinators, 0);
+	assert.equal(owner.counters.contextualBudgetFailures, 1);
 	owner.dispose();
 });
 

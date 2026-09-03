@@ -1774,6 +1774,9 @@ export class ToolResultPresentationOwner {
 				"The remaining turn/context budget cannot contain a tool-result continuation notice.",
 			);
 		}
+		const resident = this.projectionRecords?.get(message.toolCallId);
+		if (resident?.sourceContent === message.content) this.counters.residentReadHits++;
+		else this.counters.providerReadMisses++;
 		const record = this.getOrCreateProjectionRecord(message.content, message.toolCallId, "provider");
 		for (let pass = 0; pass <= MAX_PROJECTION_SHRINK_PASSES; pass++) {
 			this.counters.contextualProjectionPasses++;
