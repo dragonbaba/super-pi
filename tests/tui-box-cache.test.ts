@@ -14,6 +14,8 @@ class MutableLines implements Component {
 	render(_width: number): string[] {
 		return this.lines;
 	}
+
+	invalidate(): void {}
 }
 
 test("Box cache preserves hit identity and misses on content, length, width, and background changes", () => {

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { RELEASE_COMPONENT_RENDER_CACHE, setKeybindings, type TUI } from "@super-pi/tui";
+import ts from "typescript";
 import type { ToolResultMessage } from "../packages/ai/src/types.ts";
 import { KeybindingsManager } from "../packages/coding-agent/src/core/keybindings.ts";
 import {
@@ -14,7 +15,10 @@ import {
 	ToolExecutionComponent,
 } from "../packages/coding-agent/src/modes/interactive/components/tool-execution.ts";
 import { initTheme } from "../packages/coding-agent/src/modes/interactive/theme/theme.ts";
-import { auditToolResultPresentationUiSources } from "../scripts/bench/tool-result-presentation-ui-source-audit.ts";
+import {
+	auditToolResultPresentationUiSources,
+	classifyProducingCallType,
+} from "../scripts/bench/tool-result-presentation-ui-source-audit.ts";
 
 interface DiscoveryState {
 	readonly cursor: string;
@@ -32,6 +36,40 @@ interface PresentationAwareComponent {
 function presentationAware(component: object): PresentationAwareComponent {
 	return component as PresentationAwareComponent;
 }
+
+function classifyFixtureCalls(source: string): Record<string, "array" | "string" | "other"> {
+	const fileName = "tool-result-presentation-type-fixture.ts";
+	const options: ts.CompilerOptions = { noEmit: true, target: ts.ScriptTarget.ES2022 };
+	const sourceFile = ts.createSourceFile(fileName, source, options.target!, true, ts.ScriptKind.TS);
+	const host = ts.createCompilerHost(options);
+	const readSourceFile = host.getSourceFile.bind(host);
+	host.fileExists = (path) => path === fileName || ts.sys.fileExists(path);
+	host.readFile = (path) => path === fileName ? source : ts.sys.readFile(path);
+	host.getSourceFile = (path, languageVersion, onError, shouldCreateNewSourceFile) =>
+		path === fileName ? sourceFile : readSourceFile(path, languageVersion, onError, shouldCreateNewSourceFile);
+	const program = ts.createProgram({ rootNames: [fileName], options, host });
+	const checker = program.getTypeChecker();
+	const result: Record<string, "array" | "string" | "other"> = {};
+	const visit = (node: ts.Node): void => {
+		if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
+			result[node.expression.name.text] = classifyProducingCallType(checker.getTypeAtLocation(node), checker);
+		}
+		ts.forEachChild(node, visit);
+	};
+	visit(sourceFile);
+	return result;
+}
+
+test("TypeChecker classifies RegExpMatchArray without materializing iterators or strings", () => {
+	const classifications = classifyFixtureCalls(`
+		const matched: RegExpMatchArray | null = "x".match(/x/);
+		const iterator = "x".matchAll(/x/g);
+		const sliced = "x".slice(0);
+	`);
+	assert.equal(classifications.match, "array");
+	assert.equal(classifications.matchAll, "other");
+	assert.equal(classifications.slice, "string");
+});
 
 function createTui(): TUI {
 	return { requestRender(): void {} } as TUI;

@@ -85,10 +85,22 @@ function includesTypeFlag(type: ts.Type, flag: ts.TypeFlags): boolean {
 	return type.isUnion() ? type.types.some((part) => includesTypeFlag(part, flag)) : (type.flags & flag) !== 0;
 }
 
-function includesArrayType(type: ts.Type, checker: ts.TypeChecker): boolean {
-	return type.isUnion()
-		? type.types.some((part) => includesArrayType(part, checker))
-		: checker.isArrayType(type) || checker.isTupleType(type);
+function includesArrayType(type: ts.Type, checker: ts.TypeChecker, visited = new Set<ts.Type>()): boolean {
+	if (visited.has(type)) return false;
+	visited.add(type);
+	if (type.isUnion()) return type.types.some((part) => includesArrayType(part, checker, visited));
+	if (checker.isArrayType(type) || checker.isTupleType(type)) return true;
+	if ((type.flags & ts.TypeFlags.Object) === 0) return false;
+	const objectType = type as ts.ObjectType;
+	if ((objectType.objectFlags & (ts.ObjectFlags.Class | ts.ObjectFlags.Interface)) === 0) return false;
+	const baseTypes = checker.getBaseTypes(type as ts.InterfaceType);
+	return baseTypes?.some((base) => includesArrayType(base, checker, visited)) === true;
+}
+
+export function classifyProducingCallType(type: ts.Type, checker: ts.TypeChecker): "array" | "string" | "other" {
+	if (includesArrayType(type, checker)) return "array";
+	if (includesTypeFlag(type, ts.TypeFlags.StringLike)) return "string";
+	return "other";
 }
 
 function countAst(nodes: readonly ts.Node[], checker?: ts.TypeChecker): AstCounts {
@@ -126,8 +138,11 @@ function countAst(nodes: readonly ts.Node[], checker?: ts.TypeChecker): AstCount
 			if (ts.isPropertyAccessExpression(expression)) {
 				const returnType = checker?.getTypeAtLocation(node);
 				if (ARRAY_PRODUCING_METHODS.has(expression.name.text)) {
-					if (!checker || !returnType || includesArrayType(returnType, checker)) counts.arrayProducingCalls++;
-					else if (includesTypeFlag(returnType, ts.TypeFlags.StringLike)) counts.stringProducingCalls++;
+					const classification = checker && returnType
+						? classifyProducingCallType(returnType, checker)
+						: "array";
+					if (classification === "array") counts.arrayProducingCalls++;
+					else if (classification === "string") counts.stringProducingCalls++;
 				}
 				if (isIdentifierNamed(expression.expression, "JSON") && expression.name.text === "stringify") {
 					counts.serializations++;
