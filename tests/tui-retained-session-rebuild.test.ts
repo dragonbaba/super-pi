@@ -110,6 +110,9 @@ interface InteractiveModeInternals {
 		registrationsHighWaterMark?: number;
 		registrationsEvicted?: number;
 		registrationsTeardownReleased?: number;
+		liveCanonicalIndexBuildProbes?: number;
+		liveCanonicalLookupProbes?: number;
+		liveCanonicalIndexRebuilds?: number;
 	};
 	handleEvent(event: AgentSessionEvent): void | Promise<void>;
 	rebuildChatFromMessages(): void;
@@ -436,6 +439,45 @@ test("a live V1 occurrence makes a later reused V2 identity fail closed", async 
 		undefined,
 		"a duplicate active identity must not advertise unusable artifact/continuation controls",
 	);
+	const lifecycle = fixture.internals.getToolResultDiscoveryLifecycleCounts();
+	assert.equal(lifecycle.entries, 0, "a rejected duplicate must release its pending registration immediately");
+	assert.equal(lifecycle.pending, 0);
+});
+
+test("live canonical validation indexes resumed history once and performs one lookup per result", async (t) => {
+	const messages: AgentMessage[] = [];
+	for (let index = 0; index < 10_000; index++) {
+		messages.push(result(`indexed-history-${index}`, "fixture-tool", "small"));
+	}
+	const fixture = await createModeFixture(messages, [], { enabled: true, budgetTokens: 128 });
+	t.after(fixture.dispose);
+	fixture.internals.isInitialized = true;
+	for (let index = 0; index < 8; index++) {
+		const toolCallId = `indexed-live-${index}`;
+		await fixture.internals.handleEvent({
+			type: "tool_execution_start",
+			toolCallId,
+			toolName: "fixture-tool",
+			args: {},
+		});
+		const component = fixture.internals.pendingTools.get(toolCallId);
+		assert.ok(component instanceof ToolExecutionComponent);
+		const message = result(toolCallId, "fixture-tool", `indexed-live-${index}-`.repeat(1_000)) as ToolResultMessage;
+		await fixture.internals.handleEvent({
+			type: "tool_execution_end",
+			toolCallId,
+			toolName: "fixture-tool",
+			result: { content: message.content, isError: message.isError },
+			isError: false,
+		});
+		fixture.session.agent.state.messages.push(message);
+		await emitToolResultMessageEnd(fixture, message);
+		assert.ok(component.getToolResultPresentationDiscovery(toolCallId));
+	}
+	const lifecycle = fixture.internals.getToolResultDiscoveryLifecycleCounts();
+	assert.equal(lifecycle.liveCanonicalIndexRebuilds, 1);
+	assert.equal(lifecycle.liveCanonicalIndexBuildProbes, 10_000);
+	assert.equal(lifecycle.liveCanonicalLookupProbes, 8);
 });
 
 test("wholesale rebuild detaches 128 discoveries without updating discarded components", async (t) => {
@@ -708,6 +750,62 @@ test("the final 128 rebuild discoveries remain resident after evaluating 256 can
 	);
 	assert.equal(counters.activeContinuationRecordHits, recordHitsBeforeRead + 1);
 	assert.equal(canonical.toolCallId.startsWith("resident-rebuild-"), true);
+});
+
+test("rebuild re-admission order stays aligned with chronological UI eviction", async (t) => {
+	const counters = createToolResultPresentationCounters();
+	const calls: AssistantMessage["content"] = [];
+	const messages: AgentMessage[] = [];
+	for (let index = 0; index < 128; index++) {
+		const toolCallId = `chronological-rebuild-${index}`;
+		calls.push({ type: "toolCall", id: toolCallId, name: "fixture-tool", arguments: {} });
+		messages.push(result(toolCallId, "fixture-tool", `chronological-${index}-`.repeat(1_000)));
+	}
+	messages.unshift(assistant(calls));
+	const fixture = await createModeFixture(messages, [], { enabled: true, budgetTokens: 128, counters });
+	t.after(fixture.dispose);
+	fixture.internals.isInitialized = true;
+	fixture.mode.renderInitialMessages();
+	const newestComponent = fixture.internals.chatContainer.children.find(
+		(child): child is ToolExecutionComponent =>
+			child instanceof ToolExecutionComponent &&
+			child.getToolResultPresentationDiscovery("chronological-rebuild-127") !== undefined,
+	);
+	assert.ok(newestComponent);
+	const newestDiscovery = newestComponent.getToolResultPresentationDiscovery("chronological-rebuild-127");
+	assert.ok(newestDiscovery);
+
+	const liveToolCallId = "chronological-live";
+	await fixture.internals.handleEvent({
+		type: "tool_execution_start",
+		toolCallId: liveToolCallId,
+		toolName: "fixture-tool",
+		args: {},
+	});
+	const liveMessage = result(liveToolCallId, "fixture-tool", "chronological-live-".repeat(1_000)) as ToolResultMessage;
+	await fixture.internals.handleEvent({
+		type: "tool_execution_end",
+		toolCallId: liveToolCallId,
+		toolName: "fixture-tool",
+		result: { content: liveMessage.content, isError: liveMessage.isError },
+		isError: false,
+	});
+	fixture.session.agent.state.messages.push(liveMessage);
+	await emitToolResultMessageEnd(fixture, liveMessage);
+	assert.ok(
+		newestComponent.getToolResultPresentationDiscovery("chronological-rebuild-127"),
+		"UI eviction must retain the newest rebuilt discovery",
+	);
+	const scansBeforeRead = counters.fullSourceEstimatorScans;
+	const hitsBeforeRead = counters.activeContinuationRecordHits;
+	const chunk = fixture.session.readToolResultContinuation(newestDiscovery.cursor, 128);
+	assert.ok(chunk.content.length > 0);
+	assert.equal(
+		counters.fullSourceEstimatorScans,
+		scansBeforeRead,
+		"the newest advertised discovery must remain resident after the next live admission",
+	);
+	assert.equal(counters.activeContinuationRecordHits, hitsBeforeRead + 1);
 });
 
 test("foreign-session canonical wrappers are rejected", async (t) => {
