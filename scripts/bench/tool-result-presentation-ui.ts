@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { Session } from "node:inspector/promises";
 import { performance } from "node:perf_hooks";
 import { setImmediate as yieldToEventLoop } from "node:timers/promises";
-import { RELEASE_COMPONENT_RENDER_CACHE, setKeybindings, type TUI } from "@super-pi/tui";
+import { Box, RELEASE_COMPONENT_RENDER_CACHE, setKeybindings, type Component, type TUI } from "@super-pi/tui";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
 import {
 	createToolResultPresentationOwner,
@@ -94,6 +94,70 @@ function slope(values: readonly number[]): number {
 
 function createTui(): TUI {
 	return { requestRender(): void {} } as TUI;
+}
+
+class MutableBoxChild implements Component {
+	lines = ["one", "two"];
+
+	render(_width: number): string[] {
+		return this.lines;
+	}
+
+	invalidate(): void {}
+}
+
+function measureBoxCache(): {
+	hits: number;
+	misses: number;
+	goldenMatches: boolean;
+	cacheHitPreservesLinesIdentity: boolean;
+} {
+	const child = new MutableBoxChild();
+	const box = new Box(0, 0);
+	box.addChild(child);
+	let hits = 0;
+	let misses = 0;
+	const initial = box.render(12);
+	const hit = box.render(12);
+	if (hit === initial) hits++;
+
+	child.lines = ["one", "changed"];
+	const contentMiss = box.render(12);
+	if (contentMiss !== hit) misses++;
+	child.lines = ["one", "changed", "three"];
+	const lengthMiss = box.render(12);
+	if (lengthMiss !== contentMiss) misses++;
+	const widthMiss = box.render(13);
+	if (widthMiss !== lengthMiss) misses++;
+	box.setBgFn((text) => `changed:${text}`);
+	const backgroundMiss = box.render(13);
+	if (backgroundMiss !== widthMiss) misses++;
+
+	const goldenBox = new Box(1, 1);
+	const goldenChild = new MutableBoxChild();
+	goldenChild.lines = ["alpha", "b"];
+	goldenBox.addChild(goldenChild);
+	const golden = goldenBox.render(8);
+	return {
+		hits,
+		misses,
+		goldenMatches:
+			golden.length === 4 &&
+			golden[0] === "        " &&
+			golden[1] === " alpha  " &&
+			golden[2] === " b      " &&
+			golden[3] === "        ",
+		cacheHitPreservesLinesIdentity: goldenBox.render(8) === golden,
+	};
+}
+
+function captureReleasedBoxCache(): WeakRef<object> {
+	const box = new Box(0, 0);
+	box.addChild(new MutableBoxChild());
+	const cachedLines = box.render(12);
+	const cacheRef = new WeakRef<object>(cachedLines);
+	box[RELEASE_COMPONENT_RENDER_CACHE]();
+	return cacheRef;
 }
 
 function createAttachedComponent(index: number): {
@@ -220,10 +284,13 @@ profiled.dispose();
 
 const componentRefs: WeakRef<object>[] = [];
 const discoveryRefs: WeakRef<object>[] = [];
+const boxCache = measureBoxCache();
+const boxCacheRef = captureReleasedBoxCache();
 captureReleasedFixtures(1, GC_CYCLES * COMPONENTS_PER_GC_CYCLE, componentRefs, discoveryRefs);
 await forceCollection();
 const liveComponentWeakRefs = componentRefs.reduce((count, ref) => count + (ref.deref() ? 1 : 0), 0);
 const liveDiscoveryWeakRefs = discoveryRefs.reduce((count, ref) => count + (ref.deref() ? 1 : 0), 0);
+const liveBoxCacheWeakRefs = boxCacheRef.deref() ? 1 : 0;
 const heapSamples: number[] = [];
 for (let cycle = 0; cycle < GC_CYCLES; cycle++) {
 	createAndReleaseBatch(10_000 + cycle * COMPONENTS_PER_GC_CYCLE, COMPONENTS_PER_GC_CYCLE);
@@ -265,9 +332,11 @@ const result = {
 		componentsCreated: componentRefs.length,
 		liveComponentWeakRefs,
 		liveDiscoveryWeakRefs,
+		liveBoxCacheWeakRefs,
 		heapSlopeBytesPerCycle: slope(heapSamples.slice(8)),
 		heapSamples,
 	},
+	boxCache,
 	structure: {
 		defaultOffDiscoveryStates: disabledDiscoveryState,
 		...sourceAudit,
