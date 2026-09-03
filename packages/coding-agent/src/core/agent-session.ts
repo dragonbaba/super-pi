@@ -1479,8 +1479,8 @@ export class AgentSession {
 
 	/**
 	 * Populate a caller-owned, bounded map from canonical active-branch messages.
-	 * The reverse scan evaluates V1 messages without retaining sidecars and stops
-	 * after the requested number of actual V2 discoveries.
+	 * The reverse scan evaluates V1 messages without retaining sidecars, keeps a
+	 * bounded set of V2 candidates, then rejects ambiguous ids in one forward pass.
 	 */
 	collectRecentToolResultPresentationsForUi(
 		target: Map<Extract<AgentMessage, { role: "toolResult" }>, ToolResultPresentation>,
