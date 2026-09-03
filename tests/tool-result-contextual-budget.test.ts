@@ -246,6 +246,46 @@ test("a later assistant response closes the prior tool turn", () => {
 	owner.dispose();
 });
 
+test("historical projections are charged before current headroom when provider usage is absent", () => {
+	const historical = toolResult("historical-no-usage", 4_000);
+	const current = toolResult("current-no-usage", 160);
+	const completedAssistant: Message = {
+		role: "assistant",
+		content: [{ type: "text", text: "prior turn complete" }],
+		api: "openai-completions",
+		provider: "fixture",
+		model: "fixture",
+		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+		stopReason: "stop",
+		timestamp: 4,
+	};
+	const source: Message[] = [
+		assistantToolTurn([historical.toolCallId]),
+		historical,
+		completedAssistant,
+		{ role: "user", content: "run the next tool", timestamp: 5 },
+		{ ...assistantToolTurn([current.toolCallId]), timestamp: 6 },
+		{ ...current, timestamp: 7 },
+	];
+	const owner = createToolResultPresentationOwner(
+		{ enabled: true, budgetTokens: 256 },
+		"historical-no-usage-budget",
+	)!;
+	owner.create(historical.content, historical.toolCallId);
+	owner.create(current.content, current.toolCallId);
+
+	const projected = projectContextually(owner, source.slice(), {
+		contextWindow: 1_200,
+		maxOutputTokens: 128,
+	});
+	assert.notEqual(projected[1], historical, "historical result must use its configured projection");
+	assert.ok(continuationCursor(projected[1] as ToolResultMessage));
+	assert.ok(continuationCursor(projected[5] as ToolResultMessage));
+	assert.ok(estimateToolOutputTokens((projected[5] as ToolResultMessage).content).estimatedTokens <= 256);
+	assert.equal(owner.counters.contextualBudgetFailures, 0);
+	owner.dispose();
+});
+
 test("context clone rebinding accepts canonical content once and rejects modification", () => {
 	const canonical = toolResult("clone-call");
 	const source = [assistantToolTurn([canonical.toolCallId]), canonical];

@@ -25,6 +25,19 @@ function methodText(sourcePath: string, className: string, methodName: string): 
 	return result;
 }
 
+function functionText(sourcePath: string, functionName: string): string {
+	const source = readFileSync(sourcePath, "utf8");
+	const ast = ts.createSourceFile(sourcePath, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+	let result = "";
+	function visit(node: ts.Node): void {
+		if (ts.isFunctionDeclaration(node) && node.name?.text === functionName) result = node.getText(ast);
+		ts.forEachChild(node, visit);
+	}
+	visit(ast);
+	assert.notEqual(result, "", `${functionName} was not found`);
+	return result;
+}
+
 test("contextual coordinator has no full-result copy, serialization, per-result async state, or callback transforms", () => {
 	const source = methodText(OWNER_PATH, "ToolResultPresentationOwner", "projectMessagesWithinContextualBudget");
 	for (const forbidden of [
@@ -57,6 +70,18 @@ test("agent loop and SDK pass the request envelope without allocating a context 
 	assert.match(sdk, /convertToLlmWithBlockImages\(messages, systemPrompt, tools, model\)/);
 	assert.equal(sdk.includes("ToolResultBudgetContext"), false);
 	assert.equal(sdk.includes("LlmConversionContext"), false);
+});
+
+test("context estimator scans trailing messages and selected tools without collection transforms", () => {
+	const estimatePath = "packages/ai/src/utils/estimate.ts";
+	const source = [
+		functionText(estimatePath, "estimateContextTokensFromParts"),
+		functionText(estimatePath, "estimateAddedToolsTokens"),
+		functionText(estimatePath, "wasToolAddedAfterUsage"),
+	].join("\n");
+	for (const forbidden of ["new Set", ".slice(", ".map(", ".filter(", ".flatMap(", "Array.from("]) {
+		assert.equal(source.includes(forbidden), false, forbidden);
+	}
 });
 
 test("contextual benchmark stamps exact revision, profiles 1/2/4/8 results, and records lifecycle gates", () => {
