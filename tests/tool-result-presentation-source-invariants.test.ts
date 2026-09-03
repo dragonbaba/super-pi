@@ -80,6 +80,7 @@ test("AgentSession isolates the session event and pairs release with a stable ow
 	assert.equal(source.includes("Object.defineProperty(event"), false);
 	assert.equal(source.includes("event.toolResultPresentation ="), false);
 	assert.equal(source.includes("presentationOwner.create(event.message.content, event.message.toolCallId)"), true);
+	assert.equal(source.includes("return owner.readArtifact(id, this.agent.state.messages);"), true);
 	assert.equal(
 		source.match(/this\._toolResultPresentation\?\.clearProjectionRecords\(\);/g)?.length,
 		3,
@@ -143,6 +144,10 @@ test("budgeted model-view benchmark retains the Candidate Gate fixtures and life
 	assert.match(source, /retainedValidationMessagesOuterArrayWeakReferences/);
 	assert.match(source, /retainedProviderCloneMessagesOuterArrayWeakReferences/);
 	assert.match(source, /retainedProviderCloneSourceOuterArrayWeakReferences/);
+	assert.match(source, /measureArtifactLifecycle\(\)/);
+	assert.match(source, /retainedArtifactDescriptorWeakReferences/);
+	assert.match(source, /retainedArtifactReadWeakReferences/);
+	assert.match(source, /secondReadRecordHits/);
 	assert.match(source, /entriesAfterProviderClone/);
 	assert.match(source, /entriesAfterValidatedBind/);
 	assert.match(source, /secondContinuationRecordHits/);
@@ -174,6 +179,7 @@ test("budgeted model-view benchmark command and output stamp the exact measured 
 	assert.match(source, /terminalBoundaryScaling/);
 	assert.match(source, /graphemeBoundaryScaling/);
 	assert.match(source, /parallelScopes/);
+	assert.match(source, /artifactLifecycle/);
 	assert.match(source, /lifecycle/);
 	assert.match(source, /sourceInvariants/);
 });
