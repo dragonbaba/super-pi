@@ -77,11 +77,12 @@ test("context estimator scans trailing messages and selected tools without colle
 	const source = [
 		functionText(estimatePath, "estimateContextTokensFromParts"),
 		functionText(estimatePath, "estimateAddedToolsTokens"),
-		functionText(estimatePath, "wasToolAddedAfterUsage"),
+		functionText(estimatePath, "findToolIndexByName"),
 	].join("\n");
-	for (const forbidden of ["new Set", ".slice(", ".map(", ".filter(", ".flatMap(", "Array.from("]) {
+	for (const forbidden of ["new Set", "new Map", ".slice(", ".map(", ".filter(", ".flatMap(", "Array.from("]) {
 		assert.equal(source.includes(forbidden), false, forbidden);
 	}
+	assert.equal((functionText(estimatePath, "estimateAddedToolsTokens").match(/messageIndex/g) ?? []).length, 4);
 });
 
 test("contextual benchmark stamps exact revision, profiles 1/2/4/8 results, and records lifecycle gates", () => {

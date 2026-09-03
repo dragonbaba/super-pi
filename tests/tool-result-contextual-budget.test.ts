@@ -305,6 +305,31 @@ test("usage-based context estimates count only tools added after the applicable 
 	assert.equal(estimate.tokens, 100 + estimate.trailingTokens);
 });
 
+test("usage-based added-tool estimation scans each trailing result once", () => {
+	const assistant = assistantToolTurn(["scan-tools"]);
+	if (assistant.role !== "assistant") throw new Error("expected assistant fixture");
+	assistant.usage.totalTokens = 100;
+	let addedToolNameReads = 0;
+	const messages: Message[] = [assistant];
+	for (let index = 0; index < 32; index++) {
+		const result = toolResult(`scan-${index}`, 1);
+		Object.defineProperty(result, "addedToolNames", {
+			configurable: true,
+			get: () => {
+				addedToolNameReads++;
+				return undefined;
+			},
+		});
+		messages.push(result);
+	}
+	const tools: Tool[] = [];
+	for (let index = 0; index < 16; index++) {
+		tools.push({ name: `tool-${index}`, description: "fixture", parameters: { type: "object", properties: {} } });
+	}
+	estimateContextTokensFromParts(undefined, messages, tools);
+	assert.equal(addedToolNameReads, 32, "trailing messages must not be rescanned for every tool");
+});
+
 test("context clone rebinding accepts canonical content once and rejects modification", () => {
 	const canonical = toolResult("clone-call");
 	const source = [assistantToolTurn([canonical.toolCallId]), canonical];
