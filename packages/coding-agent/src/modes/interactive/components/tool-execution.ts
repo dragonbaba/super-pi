@@ -210,10 +210,14 @@ export class ReadToolGroupComponent extends Container {
 		return row.toolResultDiscovery?.identity;
 	}
 	clearToolResultPresentation(toolCallId: string, identity?: string): void {
-		const row = this.rows.get(toolCallId);
-		if (!row?.toolResultDiscovery || (identity !== undefined && row.toolResultDiscovery.identity !== identity)) return;
-		row.toolResultDiscovery = undefined;
+		if (!this.detachToolResultPresentation(toolCallId, identity)) return;
 		this.rebuild();
+	}
+	detachToolResultPresentation(toolCallId: string, identity?: string): boolean {
+		const row = this.rows.get(toolCallId);
+		if (!row?.toolResultDiscovery || (identity !== undefined && row.toolResultDiscovery.identity !== identity)) return false;
+		row.toolResultDiscovery = undefined;
+		return true;
 	}
 	getToolResultPresentationDiscovery(toolCallId: string): ToolResultPresentationDiscoveryState | undefined {
 		return this.rows.get(toolCallId)?.toolResultDiscovery;
@@ -279,8 +283,15 @@ export class ReadToolGroupComponent extends Container {
 			for (const entry of group.entries) {
 				const output = getReadGroupResultText(entry.row.result);
 				if (!output || (!this.expanded && !entry.row.resultIsError)) continue;
-				const preview = boundReadGroupPreview(output, this.expanded ? READ_GROUP_MAX_PREVIEW_LINES : 10);
+				const preview = this.expanded ? output : boundReadGroupPreview(output, 10);
 				this.addChild(new Text(theme.fg(entry.row.resultIsError ? "error" : "toolOutput", preview), callCount > 1 ? 4 : 2, 0));
+				if (this.expanded && entry.row.toolResultDiscovery && entry.row.result) {
+					for (let blockIndex = 0; blockIndex < entry.row.result.content.length; blockIndex++) {
+						const block = entry.row.result.content[blockIndex];
+						if (block?.type !== "image" || !block.data || !block.mimeType) continue;
+						this.addChild(new Image(block.data, block.mimeType, { fallbackColor: toolImageFallbackColor }));
+					}
+				}
 			}
 			for (const entry of group.entries) {
 				const discovery = entry.row.toolResultDiscovery;
@@ -798,13 +809,18 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	clearToolResultPresentation(toolCallId: string, identity?: string): void {
+		if (!this.detachToolResultPresentation(toolCallId, identity)) return;
+		this.updateDisplay();
+	}
+
+	detachToolResultPresentation(toolCallId: string, identity?: string): boolean {
 		if (
 			toolCallId !== this.toolCallId ||
 			!this.toolResultDiscovery ||
 			(identity !== undefined && this.toolResultDiscovery.identity !== identity)
-		) return;
+		) return false;
 		this.toolResultDiscovery = undefined;
-		this.updateDisplay();
+		return true;
 	}
 
 	getToolResultPresentationDiscovery(toolCallId: string): ToolResultPresentationDiscoveryState | undefined {

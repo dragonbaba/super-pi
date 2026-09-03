@@ -134,6 +134,7 @@ import { createPowerShellToolState } from "./tools/powershell.ts";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.ts";
 import {
 	createToolOutputShadowObserver,
+	estimateToolOutputTokens,
 	type ToolOutputShadowObserver,
 	type ToolOutputShadowOptions,
 } from "./tool-output-budget.ts";
@@ -661,6 +662,12 @@ export class AgentSession {
 	private _prefixManifestRecorder?: PrefixManifestRecorder;
 	private _toolOutputShadow: ToolOutputShadowObserver | undefined;
 	private _toolResultPresentation: ToolResultPresentationOwner | undefined;
+	private readonly _toolResultPresentationBudgetTokens: number | undefined;
+	private _toolResultUiHistoryMessagesVisited = 0;
+	private _toolResultUiPresentationCandidatesEvaluated = 0;
+	private _toolResultUiActualV2Discoveries = 0;
+	private _toolResultUiCanonicalLookupProbes = 0;
+	private _toolResultUiSourceScans = 0;
 
 	// Tool registry for extension getTools/setTools
 	private _toolRegistry: Map<string, AgentTool> = new Map();
@@ -692,6 +699,10 @@ export class AgentSession {
 		this._toolResultPresentation =
 			config.toolResultPresentationOwner ??
 			createToolResultPresentationOwner(config.toolResultPresentation, this.sessionManager.getSessionId());
+		const configuredToolResultPresentation = config.toolResultPresentation ?? this.settingsManager.getToolResultPresentationOptions();
+		this._toolResultPresentationBudgetTokens = configuredToolResultPresentation?.enabled === true
+			? configuredToolResultPresentation.budgetTokens
+			: undefined;
 		this._extensionRunnerRef = config.extensionRunnerRef;
 		this._extensionRunnerOptions = config.extensionRunnerOptions;
 		this._initialActiveToolNames = config.initialActiveToolNames;
@@ -1431,25 +1442,97 @@ export class AgentSession {
 	): ToolResultPresentation | undefined {
 		const owner = this._toolResultPresentation;
 		if (!owner) return undefined;
-		let canonical: Extract<AgentMessage, { role: "toolResult" }> | undefined;
+		let canonical = false;
 		for (let index = 0; index < this.agent.state.messages.length; index++) {
+			this._toolResultUiCanonicalLookupProbes++;
 			const candidate = this.agent.state.messages[index];
-			if (
-				candidate?.role !== "toolResult" ||
-				candidate.toolCallId !== message.toolCallId ||
-				candidate.content !== message.content
-			) continue;
-			if (canonical) return undefined;
-			canonical = candidate;
+			if (candidate?.role !== "toolResult" || candidate.toolCallId !== message.toolCallId) continue;
+			if (candidate !== message || canonical) return undefined;
+			canonical = true;
 		}
 		if (!canonical) return undefined;
-		const presentation = owner.create(canonical.content, canonical.toolCallId);
+		const presentation = owner.create(message.content, message.toolCallId);
 		if (!presentation) return undefined;
 		try {
 			return presentation;
 		} finally {
 			owner.release();
 		}
+	}
+
+	/**
+	 * Populate a caller-owned, bounded map from canonical active-branch messages.
+	 * The reverse scan evaluates V1 messages without retaining sidecars and stops
+	 * after the requested number of actual V2 discoveries.
+	 */
+	collectRecentToolResultPresentationsForUi(
+		target: Map<Extract<AgentMessage, { role: "toolResult" }>, ToolResultPresentation>,
+		limit: number,
+	): void {
+		target.clear();
+		this._toolResultUiHistoryMessagesVisited = 0;
+		this._toolResultUiPresentationCandidatesEvaluated = 0;
+		this._toolResultUiActualV2Discoveries = 0;
+		this._toolResultUiCanonicalLookupProbes = 0;
+		this._toolResultUiSourceScans = 0;
+		const owner = this._toolResultPresentation;
+		const boundedLimit = Number.isSafeInteger(limit) ? Math.min(limit, 128) : 0;
+		if (!owner || boundedLimit <= 0) return;
+		const messages = this.agent.state.messages;
+		// A selected id maps to its exact canonical message. An undefined value is
+		// a fail-closed ambiguity marker. Both populations are capped at the UI
+		// limit, so even adversarial duplicate histories retain bounded metadata.
+		const candidatesByToolCallId = new Map<string, Extract<AgentMessage, { role: "toolResult" }> | undefined>();
+		let ambiguousToolCallIds = 0;
+		for (let index = messages.length - 1; index >= 0; index--) {
+			this._toolResultUiHistoryMessagesVisited++;
+			this._toolResultUiCanonicalLookupProbes++;
+			const candidate = messages[index];
+			if (candidate?.role !== "toolResult") continue;
+			const tracked = candidatesByToolCallId.get(candidate.toolCallId);
+			if (tracked !== undefined) {
+				target.delete(tracked);
+				candidatesByToolCallId.set(candidate.toolCallId, undefined);
+				ambiguousToolCallIds++;
+				continue;
+			}
+			if (candidatesByToolCallId.has(candidate.toolCallId)) continue;
+			if (target.size >= boundedLimit || ambiguousToolCallIds >= boundedLimit) continue;
+			this._toolResultUiPresentationCandidatesEvaluated++;
+			const budgetTokens = this._toolResultPresentationBudgetTokens;
+			if (budgetTokens !== undefined) {
+				this._toolResultUiSourceScans++;
+				if (estimateToolOutputTokens(candidate.content).estimatedTokens <= budgetTokens) continue;
+			}
+			const presentation = owner.create(candidate.content, candidate.toolCallId);
+			if (!presentation) continue;
+			try {
+				if (presentation.version !== 2) continue;
+				target.set(candidate, presentation);
+				candidatesByToolCallId.set(candidate.toolCallId, candidate);
+				this._toolResultUiActualV2Discoveries++;
+			} finally {
+				owner.release();
+			}
+		}
+		this._toolResultUiActualV2Discoveries = target.size;
+	}
+
+	/** Low-frequency deterministic probes for UI rebuild tests and benchmarks. */
+	getToolResultPresentationUiRebuildCounts(): {
+		historyMessagesVisited: number;
+		presentationCandidatesEvaluated: number;
+		actualV2Discoveries: number;
+		canonicalLookupProbes: number;
+		sourceScans: number;
+	} {
+		return {
+			historyMessagesVisited: this._toolResultUiHistoryMessagesVisited,
+			presentationCandidatesEvaluated: this._toolResultUiPresentationCandidatesEvaluated,
+			actualV2Discoveries: this._toolResultUiActualV2Discoveries,
+			canonicalLookupProbes: this._toolResultUiCanonicalLookupProbes,
+			sourceScans: this._toolResultUiSourceScans,
+		};
 	}
 
 	/** Read one bounded continuation chunk from the current active session branch. */

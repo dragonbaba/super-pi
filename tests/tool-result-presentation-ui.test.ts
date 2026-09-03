@@ -219,9 +219,11 @@ test("expanded grouped read rows expose complete canonical text beyond preview l
 	group.finalize();
 	group.setExpanded(true);
 	const expanded = plain(group.render(120));
-	assert.match(expanded, /character-tail/);
-	assert.match(expanded, /line-tail/);
+	const compactExpanded = expanded.replaceAll(" ", "");
+	assert.match(compactExpanded, /character-tail/);
+	assert.match(compactExpanded, /line-tail/);
 	assert.match(expanded, /image-row-text/);
+	assert.match(expanded, /image\/png/);
 	assert.match(expanded, /error-tail/);
 	assert.match(expanded, /Full canonical result is shown/);
 	owner.dispose();
@@ -241,7 +243,7 @@ test("interactive live and rebuild paths consume only the internal sidecar with 
 		"utf8",
 	);
 	assert.match(interactive, /event\.toolResultPresentation/);
-	assert.match(interactive, /getToolResultPresentationForUi/);
+	assert.match(interactive, /collectRecentToolResultPresentationsForUi/);
 	assert.match(interactive, /MAX_TOOL_RESULT_DISCOVERIES\s*=\s*128/);
 	assert.match(interactive, /clearToolResultDiscoveries/);
 	assert.match(session, /getToolResultPresentationForUi/);
@@ -255,7 +257,6 @@ test("interactive live and rebuild paths consume only the internal sidecar with 
 
 test("UI allocation source audit executes the selected production chain and locks structural counts", () => {
 	const audit = auditToolResultPresentationUiSources();
-	const correctiveAudit = audit as typeof audit & { discoveryRegistrationObjectLiterals?: number };
 	assert.deepEqual(audit.transitiveSourceFiles, [
 		"tool-execution.ts",
 		"render-utils.ts",
@@ -283,8 +284,10 @@ test("UI allocation source audit executes the selected production chain and lock
 	assert.equal(audit.argumentSerializationSites, 1);
 	assert.equal(audit.discoveryOwnershipCopyOperations, 0);
 	assert.equal(audit.discoveryOwnershipSerializations, 0);
+	assert.equal(audit.discoveryRegistrationObjectLiterals, 1);
+	assert.equal(audit.discoveryOwnershipObjectLiterals, 3);
+	assert.equal(audit.discoveryOwnershipMapConstructors, 3);
+	assert.equal(audit.discoveryOwnershipSetConstructors, 0);
 	assert.equal(audit.promises, 0);
 	assert.equal(audit.abortControllers, 0);
-	assert.equal(typeof correctiveAudit.discoveryRegistrationObjectLiterals, "number");
-	assert.ok((correctiveAudit.discoveryRegistrationObjectLiterals ?? 0) > 0);
 });

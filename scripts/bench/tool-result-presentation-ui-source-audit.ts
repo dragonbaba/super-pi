@@ -21,6 +21,10 @@ export interface ToolResultPresentationUiSourceAudit {
 	readonly argumentSerializationSites: number;
 	readonly discoveryOwnershipCopyOperations: number;
 	readonly discoveryOwnershipSerializations: number;
+	readonly discoveryRegistrationObjectLiterals: number;
+	readonly discoveryOwnershipObjectLiterals: number;
+	readonly discoveryOwnershipMapConstructors: number;
+	readonly discoveryOwnershipSetConstructors: number;
 	readonly promises: number;
 	readonly abortControllers: number;
 }
@@ -38,6 +42,9 @@ interface AstCounts {
 	inlineClosures: number;
 	serializations: number;
 	copyOperations: number;
+	objectLiterals: number;
+	mapConstructors: number;
+	setConstructors: number;
 	promises: number;
 	abortControllers: number;
 }
@@ -139,11 +146,16 @@ function countAst(nodes: readonly ts.Node[], checker?: ts.TypeChecker): AstCount
 		inlineClosures: 0,
 		serializations: 0,
 		copyOperations: 0,
+		objectLiterals: 0,
+		mapConstructors: 0,
+		setConstructors: 0,
 		promises: 0,
 		abortControllers: 0,
 	};
 	const visit = (node: ts.Node): void => {
-		if (ts.isArrayLiteralExpression(node)) {
+		if (ts.isObjectLiteralExpression(node)) {
+			counts.objectLiterals++;
+		} else if (ts.isArrayLiteralExpression(node)) {
 			counts.arrayLiterals++;
 		} else if (ts.isSpreadElement(node)) {
 			if (ts.isArrayLiteralExpression(node.parent)) counts.arraySpreads++;
@@ -181,6 +193,8 @@ function countAst(nodes: readonly ts.Node[], checker?: ts.TypeChecker): AstCount
 			}
 		} else if (ts.isNewExpression(node)) {
 			if (isIdentifierNamed(node.expression, "Array")) counts.arrayConstructors++;
+			if (isIdentifierNamed(node.expression, "Map")) counts.mapConstructors++;
+			if (isIdentifierNamed(node.expression, "Set")) counts.setConstructors++;
 			if (isIdentifierNamed(node.expression, "Promise")) counts.promises++;
 			if (isIdentifierNamed(node.expression, "AbortController")) counts.abortControllers++;
 		}
@@ -232,11 +246,15 @@ export function auditToolResultPresentationUiSources(): ToolResultPresentationUi
 	const tuiText = requireSourceFile(program, sourcePaths.tuiText);
 	const tuiSpacer = requireSourceFile(program, sourcePaths.tuiSpacer);
 	const tuiUtils = requireSourceFile(program, sourcePaths.tuiUtils);
+	const discoveryRegistrationNodes = selectClassMembers(interactive, "InteractiveMode", [
+		"createToolResultDiscoveryRegistration",
+	]);
 	const discoveryOwnershipNodes = [
-		...selectClassMembers(toolComponent, "ReadToolGroupComponent", ["setToolResultPresentation", "clearToolResultPresentation"]),
-		...selectClassMembers(toolComponent, "ToolExecutionComponent", ["setToolResultPresentation", "clearToolResultPresentation"]),
+		...selectClassMembers(toolComponent, "ReadToolGroupComponent", ["setToolResultPresentation", "clearToolResultPresentation", "detachToolResultPresentation"]),
+		...selectClassMembers(toolComponent, "ToolExecutionComponent", ["setToolResultPresentation", "clearToolResultPresentation", "detachToolResultPresentation"]),
 		...selectClassMembers(interactive, "InteractiveMode", [
 			"evictOldestToolResultDiscovery",
+			"createToolResultDiscoveryRegistration",
 			"addToolResultDiscovery",
 			"trackToolResultPresentationTarget",
 			"attachToolResultPresentation",
@@ -247,6 +265,8 @@ export function auditToolResultPresentationUiSources(): ToolResultPresentationUi
 		...selectClassMembers(agentSession, "AgentSession", [
 			"toolResultPresentationEnabled",
 			"getToolResultPresentationForUi",
+			"collectRecentToolResultPresentationsForUi",
+			"getToolResultPresentationUiRebuildCounts",
 			"readToolResultContinuation",
 			"readToolResultArtifact",
 		]),
@@ -261,6 +281,7 @@ export function auditToolResultPresentationUiSources(): ToolResultPresentationUi
 		...selectClassMembers(toolComponent, "ReadToolGroupComponent", [
 			"setToolResultPresentation",
 			"clearToolResultPresentation",
+			"detachToolResultPresentation",
 			"getDisplayRows",
 			"rebuild",
 		]),
@@ -275,6 +296,7 @@ export function auditToolResultPresentationUiSources(): ToolResultPresentationUi
 			"getRenderContext",
 			"setToolResultPresentation",
 			"clearToolResultPresentation",
+			"detachToolResultPresentation",
 			"render",
 			"updateDisplay",
 			"getTextOutput",
@@ -323,6 +345,7 @@ export function auditToolResultPresentationUiSources(): ToolResultPresentationUi
 		checker,
 	);
 	const ownershipCounts = countAst(discoveryOwnershipNodes, checker);
+	const registrationCounts = countAst(discoveryRegistrationNodes, checker);
 	const interactiveSource = readFileSync(sourcePaths.interactive, "utf8");
 	const registryHardCap = Number(interactiveSource.match(/MAX_TOOL_RESULT_DISCOVERIES\s*=\s*(\d+)/u)?.[1] ?? 0);
 	return {
@@ -357,6 +380,10 @@ export function auditToolResultPresentationUiSources(): ToolResultPresentationUi
 		argumentSerializationSites: argumentCounts.serializations,
 		discoveryOwnershipCopyOperations: ownershipCounts.copyOperations,
 		discoveryOwnershipSerializations: ownershipCounts.serializations,
+		discoveryRegistrationObjectLiterals: registrationCounts.objectLiterals,
+		discoveryOwnershipObjectLiterals: ownershipCounts.objectLiterals,
+		discoveryOwnershipMapConstructors: ownershipCounts.mapConstructors,
+		discoveryOwnershipSetConstructors: ownershipCounts.setConstructors,
 		promises: ownershipCounts.promises,
 		abortControllers: ownershipCounts.abortControllers,
 	};
