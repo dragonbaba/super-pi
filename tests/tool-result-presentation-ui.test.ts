@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { RELEASE_COMPONENT_RENDER_CACHE, type TUI } from "@super-pi/tui";
+import { RELEASE_COMPONENT_RENDER_CACHE, setKeybindings, type TUI } from "@super-pi/tui";
 import type { ToolResultMessage } from "../packages/ai/src/types.ts";
+import { KeybindingsManager } from "../packages/coding-agent/src/core/keybindings.ts";
 import {
 	createToolResultPresentationOwner,
 	type ToolResultPresentation,
@@ -33,6 +34,12 @@ function presentationAware(component: object): PresentationAwareComponent {
 
 function createTui(): TUI {
 	return { requestRender(): void {} } as TUI;
+}
+
+setKeybindings(new KeybindingsManager());
+
+function plain(lines: string[]): string {
+	return lines.join("\n").replaceAll(/\x1b\[[0-9;]*m/gu, "").replaceAll(/\s+/gu, " ");
 }
 
 function toolResult(toolCallId: string, content: ToolResultPresentationContent[]): ToolResultMessage {
@@ -87,9 +94,9 @@ test("bounded text and image results expose compact discovery without rendering 
 	const discovery = presentationAware(component).getToolResultPresentationDiscovery(message.toolCallId);
 	assert.ok(discovery?.artifactId);
 
-	const collapsed = component.render(44).join("\n");
+	const collapsed = plain(component.render(44));
 	assert.match(collapsed, /Model received a bounded view/);
-	assert.match(collapsed, /Ctrl\+O.*full result/);
+	assert.match(collapsed, /ctrl\+o.*full result/i);
 	assert.doesNotMatch(collapsed, /tr1\.|tra1\./);
 
 	const chunk = owner.readContinuation(discovery.cursor, [message], 128);
@@ -99,7 +106,7 @@ test("bounded text and image results expose compact discovery without rendering 
 	assert.equal(artifact.content, content);
 
 	component.setExpanded(true);
-	const expanded = component.render(100).join("\n");
+	const expanded = plain(component.render(100));
 	assert.match(expanded, /Full canonical result is shown/);
 	assert.match(expanded, /Continuation: available/);
 	assert.match(expanded, /Session artifact: available/);
@@ -108,7 +115,7 @@ test("bounded text and image results expose compact discovery without rendering 
 
 	initTheme("light");
 	component.invalidate();
-	assert.match(component.render(61).join("\n"), /Full canonical result is shown/);
+	assert.match(plain(component.render(61)), /Full canonical result is shown/);
 	component[RELEASE_COMPONENT_RENDER_CACHE]();
 	assert.equal(presentationAware(component).getToolResultPresentationDiscovery(message.toolCallId), undefined);
 	owner.release();
@@ -127,11 +134,11 @@ test("grouped read rows use the same bounded-result semantics", () => {
 	group.setArgsComplete(message.toolCallId);
 	group.updateResult(message.toolCallId, message);
 	assert.ok(presentationAware(group).setToolResultPresentation(message.toolCallId, presentation));
-	assert.match(group.render(52).join("\n"), /Model received a bounded view/);
+	assert.match(plain(group.render(52)), /Model received a bounded view/);
 	group.setExpanded(true);
-	assert.match(group.render(90).join("\n"), /Full canonical result is shown/);
+	assert.match(plain(group.render(90)), /Full canonical result is shown/);
 	presentationAware(group).clearToolResultPresentation(message.toolCallId);
-	assert.doesNotMatch(group.render(90).join("\n"), /Model received a bounded view/);
+	assert.doesNotMatch(plain(group.render(90)), /Model received a bounded view/);
 	owner.release();
 	owner.dispose();
 });

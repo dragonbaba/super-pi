@@ -6,6 +6,7 @@ import test from "node:test";
 import { Text, TuiMainScreen, type TuiRenderInstrumentation } from "@super-pi/tui";
 import type { AssistantMessage, Model } from "../packages/ai/src/types.ts";
 import type { AgentMessage } from "../packages/agent/src/types.ts";
+import type { AgentSession, AgentSessionEvent } from "../packages/coding-agent/src/core/agent-session.ts";
 import { AgentSessionRuntime, type AgentSessionServices } from "../packages/coding-agent/src/core/agent-session-runtime.ts";
 import type { ToolDefinition, ToolRenderContext } from "../packages/coding-agent/src/core/extensions/types.ts";
 import type { ModelRuntime } from "../packages/coding-agent/src/core/model-runtime.ts";
@@ -13,6 +14,7 @@ import { DefaultResourceLoader } from "../packages/coding-agent/src/core/resourc
 import { createAgentSession } from "../packages/coding-agent/src/core/sdk.ts";
 import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
 import { SettingsManager } from "../packages/coding-agent/src/core/settings-manager.ts";
+import type { ToolResultPresentationOptions } from "../packages/coding-agent/src/core/tool-result-presentation.ts";
 import {
 	ReadToolGroupComponent,
 	ToolExecutionComponent,
@@ -51,6 +53,7 @@ function createModelRuntime(): ModelRuntime {
 		hasConfiguredAuth: () => true,
 		checkAuth: async () => ({ type: "api_key" as const }),
 		isUsingOAuth: () => false,
+		isUsingSubscription: () => false,
 		streamSimple: () => {
 			throw new Error("streaming is not expected in retained rebuild tests");
 		},
@@ -87,10 +90,14 @@ function result(toolCallId: string, toolName: string, text = "done"): AgentMessa
 }
 
 interface InteractiveModeInternals {
+	isInitialized: boolean;
 	renderer: TuiMainScreen;
 	chatContainer: RetainedContainer;
 	renderInstrumentation: TuiRenderInstrumentation;
 	pendingTools: Map<string, ToolExecutionComponent | ReadToolGroupComponent>;
+	clearToolResultDiscoveries(): void;
+	getToolResultDiscoveryLifecycleCounts(): { entries: number; attached: number; pending: number };
+	handleEvent(event: AgentSessionEvent): void | Promise<void>;
 	rebuildChatFromMessages(): void;
 	showStatus(message: string): void;
 	updateTrackedToolArgs(
@@ -114,6 +121,7 @@ function assertIndexedTailMatchesFull(internals: InteractiveModeInternals, width
 interface ModeFixture {
 	mode: InteractiveMode;
 	internals: InteractiveModeInternals;
+	session: AgentSession;
 	sessionManager: SessionManager;
 	dispose(): void;
 }
@@ -121,6 +129,7 @@ interface ModeFixture {
 async function createModeFixture(
 	messages: readonly AgentMessage[],
 	customTools: readonly ToolDefinition[] = [],
+	toolResultPresentation?: ToolResultPresentationOptions,
 ): Promise<ModeFixture> {
 	initTheme("dark");
 	const root = mkdtempSync(join(tmpdir(), "super-pi-retained-rebuild-"));
@@ -151,6 +160,7 @@ async function createModeFixture(
 		sessionManager,
 		resourceLoader,
 		customTools: [...customTools],
+		toolResultPresentation,
 	});
 	const runtime = new AgentSessionRuntime(
 		session,
@@ -167,6 +177,7 @@ async function createModeFixture(
 	return {
 		mode,
 		internals,
+		session,
 		sessionManager,
 		dispose: () => {
 			renderer.stop({ preserveScreen: true });
@@ -176,6 +187,39 @@ async function createModeFixture(
 	};
 }
 
+test("live tool completion binds the internal presentation sidecar by canonical content identity", async (t) => {
+	const fixture = await createModeFixture([], [], { enabled: true, budgetTokens: 128 });
+	t.after(fixture.dispose);
+	fixture.internals.isInitialized = true;
+	const toolCallId = "live-bounded";
+	await fixture.internals.handleEvent({
+		type: "tool_execution_start",
+		toolCallId,
+		toolName: "fixture-tool",
+		args: {},
+	});
+	const component = fixture.internals.pendingTools.get(toolCallId);
+	assert.ok(component instanceof ToolExecutionComponent);
+	const message = result(toolCallId, "fixture-tool", "live-canonical-".repeat(1_000));
+	assert.equal(message.role, "toolResult");
+	await fixture.internals.handleEvent({
+		type: "tool_execution_end",
+		toolCallId,
+		toolName: "fixture-tool",
+		result: message,
+		isError: false,
+	});
+	fixture.session.agent.state.messages.push(message);
+	const presentation = fixture.session.getToolResultPresentationForUi(message);
+	assert.equal(presentation?.version, 2);
+	await fixture.internals.handleEvent({ type: "message_end", message, toolResultPresentation: presentation });
+	assert.ok(component.getToolResultPresentationDiscovery(toolCallId));
+	assert.deepEqual(
+		fixture.internals.getToolResultDiscoveryLifecycleCounts(),
+		{ entries: 1, attached: 1, pending: 0 },
+	);
+});
+
 function assertEveryRebuiltToolIsRetained(internals: InteractiveModeInternals): void {
 	for (const child of internals.chatContainer.children) {
 		if (child instanceof ToolExecutionComponent || child instanceof ReadToolGroupComponent) {
@@ -183,6 +227,70 @@ function assertEveryRebuiltToolIsRetained(internals: InteractiveModeInternals): 
 		}
 	}
 }
+
+test("resumed bounded results rebuild discoverability from canonical messages with a hard UI cap", async (t) => {
+	const calls: AssistantMessage["content"] = [];
+	const messages: AgentMessage[] = [];
+	for (let index = 0; index < 130; index++) {
+		calls.push({ type: "toolCall", id: `bounded-${index}`, name: "fixture-tool", arguments: { index } });
+	}
+	messages.push(assistant(calls));
+	for (let index = 0; index < 130; index++) {
+		messages.push(result(`bounded-${index}`, "fixture-tool", `canonical-${index}-`.repeat(600)));
+	}
+
+	const fixture = await createModeFixture(messages, [], { enabled: true, budgetTokens: 128 });
+	t.after(fixture.dispose);
+	fixture.mode.renderInitialMessages();
+	let components = fixture.internals.chatContainer.children.filter(
+		(child): child is ToolExecutionComponent => child instanceof ToolExecutionComponent,
+	);
+	assert.equal(components.length, 130);
+	assert.deepEqual(
+		fixture.internals.getToolResultDiscoveryLifecycleCounts(),
+		{ entries: 128, attached: 128, pending: 0 },
+	);
+	assert.equal(components[0]!.getToolResultPresentationDiscovery("bounded-0"), undefined);
+	assert.equal(components[1]!.getToolResultPresentationDiscovery("bounded-1"), undefined);
+	assert.ok(components[2]!.getToolResultPresentationDiscovery("bounded-2"));
+	assert.match(components.at(-1)!.render(80).join("\n"), /Model received a bounded view/);
+	const canonical = fixture.session.agent.state.messages.find(
+		(message): message is Extract<AgentMessage, { role: "toolResult" }> =>
+			message.role === "toolResult" && message.toolCallId === "bounded-129",
+	);
+	assert.ok(canonical);
+	assert.equal(
+		fixture.session.getToolResultPresentationForUi({ ...canonical, content: [...canonical.content] }),
+		undefined,
+		"a provider/context clone cannot become the UI canonical source",
+	);
+	fixture.session.agent.state.messages.push({ ...canonical });
+	assert.equal(
+		fixture.session.getToolResultPresentationForUi(canonical),
+		undefined,
+		"duplicate active source identity stays ambiguous",
+	);
+	fixture.session.agent.state.messages.pop();
+
+	fixture.internals.rebuildChatFromMessages();
+	components = fixture.internals.chatContainer.children.filter(
+		(child): child is ToolExecutionComponent => child instanceof ToolExecutionComponent,
+	);
+	assert.deepEqual(
+		fixture.internals.getToolResultDiscoveryLifecycleCounts(),
+		{ entries: 128, attached: 128, pending: 0 },
+	);
+	assert.ok(components.at(-1)!.getToolResultPresentationDiscovery("bounded-129"));
+
+	fixture.internals.clearToolResultDiscoveries();
+	assert.deepEqual(
+		fixture.internals.getToolResultDiscoveryLifecycleCounts(),
+		{ entries: 0, attached: 0, pending: 0 },
+	);
+	for (let index = 0; index < components.length; index++) {
+		assert.equal(components[index]!.getToolResultPresentationDiscovery(`bounded-${index}`), undefined);
+	}
+});
 
 test("initial render and compaction rebuild retain ordinary tools and one grouped read", async (t) => {
 	let customVisual = "first";

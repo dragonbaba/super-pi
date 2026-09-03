@@ -1417,6 +1417,41 @@ export class AgentSession {
 		return this.agent.state.tools.map((t) => t.name);
 	}
 
+	/** Whether this session owns the explicitly enabled presentation boundary. */
+	get toolResultPresentationEnabled(): boolean {
+		return this._toolResultPresentation !== undefined;
+	}
+
+	/**
+	 * Recreate the internal UI sidecar only for an exact canonical ToolResult on
+	 * the active branch. Provider/context clones are deliberately rejected.
+	 */
+	getToolResultPresentationForUi(
+		message: Extract<AgentMessage, { role: "toolResult" }>,
+	): ToolResultPresentation | undefined {
+		const owner = this._toolResultPresentation;
+		if (!owner) return undefined;
+		let canonical: Extract<AgentMessage, { role: "toolResult" }> | undefined;
+		for (let index = 0; index < this.agent.state.messages.length; index++) {
+			const candidate = this.agent.state.messages[index];
+			if (
+				candidate?.role !== "toolResult" ||
+				candidate.toolCallId !== message.toolCallId ||
+				candidate.content !== message.content
+			) continue;
+			if (canonical) return undefined;
+			canonical = candidate;
+		}
+		if (!canonical) return undefined;
+		const presentation = owner.create(canonical.content, canonical.toolCallId);
+		if (!presentation) return undefined;
+		try {
+			return presentation;
+		} finally {
+			owner.release();
+		}
+	}
+
 	/** Read one bounded continuation chunk from the current active session branch. */
 	readToolResultContinuation(cursor: string, budgetTokens?: number): ToolResultContinuationChunkV1 {
 		const owner = this._toolResultPresentation;
