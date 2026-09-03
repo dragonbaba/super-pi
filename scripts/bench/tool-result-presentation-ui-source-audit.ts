@@ -22,10 +22,21 @@ export interface ToolResultPresentationUiSourceAudit {
 	readonly argumentSerializationSites: number;
 	readonly discoveryOwnershipCopyOperations: number;
 	readonly discoveryOwnershipSerializations: number;
+	readonly discoveryOwnershipArrayMaterializationSites: number;
+	readonly discoveryOwnershipInlineClosureSites: number;
 	readonly discoveryRegistrationObjectLiterals: number;
 	readonly discoveryOwnershipObjectLiterals: number;
 	readonly discoveryOwnershipMapConstructors: number;
 	readonly discoveryOwnershipSetConstructors: number;
+	readonly discoveryRebuildCallerArrayMaterializationSites: number;
+	readonly discoveryRebuildCallerInlineClosureSites: number;
+	readonly discoveryRebuildCallerCopyOperations: number;
+	readonly discoveryRebuildCallerSerializations: number;
+	readonly discoveryRebuildCallerObjectLiterals: number;
+	readonly discoveryRebuildCallerMapConstructors: number;
+	readonly discoveryRebuildCallerSetConstructors: number;
+	readonly discoveryRebuildCallerPromises: number;
+	readonly discoveryRebuildCallerAbortControllers: number;
 	readonly promises: number;
 	readonly abortControllers: number;
 }
@@ -250,7 +261,8 @@ export function auditToolResultPresentationUiSources(): ToolResultPresentationUi
 	const discoveryRegistrationNodes = selectClassMembers(interactive, "InteractiveMode", [
 		"createToolResultDiscoveryRegistration",
 	]);
-	const discoveryOwnershipNodes = [
+	const discoveryRebuildCallerNodes = selectClassMembers(interactive, "InteractiveMode", ["renderSessionItems"]);
+	const discoveryCoreOwnershipNodes = [
 		...selectClassMembers(toolComponent, "ReadToolGroupComponent", ["setToolResultPresentation", "clearToolResultPresentation", "detachToolResultPresentation"]),
 		...selectClassMembers(toolComponent, "ToolExecutionComponent", ["setToolResultPresentation", "clearToolResultPresentation", "detachToolResultPresentation"]),
 		...selectClassMembers(interactive, "InteractiveMode", [
@@ -273,6 +285,7 @@ export function auditToolResultPresentationUiSources(): ToolResultPresentationUi
 			"readToolResultArtifact",
 		]),
 	];
+	const discoveryOwnershipNodes = [...discoveryCoreOwnershipNodes, ...discoveryRebuildCallerNodes];
 	const toolResultRenderingNodes = [
 		...selectNamedDeclarations(toolComponent, [
 			"createToolResultDiscovery",
@@ -339,7 +352,7 @@ export function auditToolResultPresentationUiSources(): ToolResultPresentationUi
 		]),
 	];
 	const renderingCounts = countAst(
-		[...toolResultRenderingNodes, ...tuiResultRenderingNodes, ...discoveryOwnershipNodes],
+		[...toolResultRenderingNodes, ...tuiResultRenderingNodes, ...discoveryCoreOwnershipNodes],
 		checker,
 	);
 	const argumentCounts = countAst(
@@ -347,6 +360,7 @@ export function auditToolResultPresentationUiSources(): ToolResultPresentationUi
 		checker,
 	);
 	const ownershipCounts = countAst(discoveryOwnershipNodes, checker);
+	const rebuildCallerCounts = countAst(discoveryRebuildCallerNodes, checker);
 	const registrationCounts = countAst(discoveryRegistrationNodes, checker);
 	const interactiveSource = readFileSync(sourcePaths.interactive, "utf8");
 	const agentSessionSource = readFileSync(sourcePaths.agentSession, "utf8");
@@ -387,10 +401,29 @@ export function auditToolResultPresentationUiSources(): ToolResultPresentationUi
 		argumentSerializationSites: argumentCounts.serializations,
 		discoveryOwnershipCopyOperations: ownershipCounts.copyOperations,
 		discoveryOwnershipSerializations: ownershipCounts.serializations,
+		discoveryOwnershipArrayMaterializationSites:
+			ownershipCounts.arrayLiterals +
+			ownershipCounts.arraySpreads +
+			ownershipCounts.arrayProducingCalls +
+			ownershipCounts.arrayConstructors,
+		discoveryOwnershipInlineClosureSites: ownershipCounts.inlineClosures,
 		discoveryRegistrationObjectLiterals: registrationCounts.objectLiterals,
 		discoveryOwnershipObjectLiterals: ownershipCounts.objectLiterals,
 		discoveryOwnershipMapConstructors: ownershipCounts.mapConstructors,
 		discoveryOwnershipSetConstructors: ownershipCounts.setConstructors,
+		discoveryRebuildCallerArrayMaterializationSites:
+			rebuildCallerCounts.arrayLiterals +
+			rebuildCallerCounts.arraySpreads +
+			rebuildCallerCounts.arrayProducingCalls +
+			rebuildCallerCounts.arrayConstructors,
+		discoveryRebuildCallerInlineClosureSites: rebuildCallerCounts.inlineClosures,
+		discoveryRebuildCallerCopyOperations: rebuildCallerCounts.copyOperations,
+		discoveryRebuildCallerSerializations: rebuildCallerCounts.serializations,
+		discoveryRebuildCallerObjectLiterals: rebuildCallerCounts.objectLiterals,
+		discoveryRebuildCallerMapConstructors: rebuildCallerCounts.mapConstructors,
+		discoveryRebuildCallerSetConstructors: rebuildCallerCounts.setConstructors,
+		discoveryRebuildCallerPromises: rebuildCallerCounts.promises,
+		discoveryRebuildCallerAbortControllers: rebuildCallerCounts.abortControllers,
 		promises: ownershipCounts.promises,
 		abortControllers: ownershipCounts.abortControllers,
 	};

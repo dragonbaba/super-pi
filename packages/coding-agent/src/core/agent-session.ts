@@ -1447,7 +1447,18 @@ export class AgentSession {
 		message: Extract<AgentMessage, { role: "toolResult" }>,
 		sourceContent: readonly unknown[],
 	): boolean {
-		return this._toolResultUiDispatchMessage === message && this._toolResultUiDispatchSourceContent === sourceContent;
+		if (this._toolResultUiDispatchMessage !== message || this._toolResultUiDispatchSourceContent !== sourceContent) {
+			return false;
+		}
+		let found = false;
+		const messages = this.agent.state.messages;
+		for (let index = 0; index < messages.length; index++) {
+			const candidate = messages[index];
+			if (candidate?.role !== "toolResult" || candidate.toolCallId !== message.toolCallId) continue;
+			if (candidate !== message || found) return false;
+			found = true;
+		}
+		return found;
 	}
 
 	/**
@@ -1501,7 +1512,6 @@ export class AgentSession {
 		// can disagree with a per-session SDK override.
 		const candidateLimit = Math.min(boundedLimit * 2, MAX_TOOL_RESULT_UI_REBUILD_CANDIDATES);
 		const candidatesByToolCallId = new Map<string, Extract<AgentMessage, { role: "toolResult" }>>();
-		const candidatePresentations = new Map<Extract<AgentMessage, { role: "toolResult" }>, ToolResultPresentation>();
 		for (let index = messages.length - 1; index >= 0 && candidatesByToolCallId.size < candidateLimit; index--) {
 			this._toolResultUiHistoryMessagesVisited++;
 			const candidate = messages[index];
@@ -1514,7 +1524,6 @@ export class AgentSession {
 			try {
 				if (presentation.version !== 2) continue;
 				candidatesByToolCallId.set(candidate.toolCallId, candidate);
-				candidatePresentations.set(candidate, presentation);
 			} finally {
 				owner.release();
 			}
@@ -1531,8 +1540,14 @@ export class AgentSession {
 		for (const [toolCallId, candidate] of candidatesByToolCallId) {
 			if (target.size >= boundedLimit) break;
 			if (candidateOccurrences.get(toolCallId) !== 1) continue;
-			const presentation = candidatePresentations.get(candidate);
-			if (presentation) target.set(candidate, presentation);
+			this._toolResultUiSourceScans++;
+			const presentation = owner.create(candidate.content, toolCallId);
+			if (!presentation) continue;
+			try {
+				if (presentation.version === 2) target.set(candidate, presentation);
+			} finally {
+				owner.release();
+			}
 		}
 		this._toolResultUiActualV2Discoveries = target.size;
 	}

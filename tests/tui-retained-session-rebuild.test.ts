@@ -369,6 +369,7 @@ test("stale and duplicate live ToolResult registrations fail closed", async (t) 
 	fixture.internals.clearToolResultDiscoveries();
 	const currentMessage = result(toolCallId, "fixture-tool", "current-".repeat(1_000)) as ToolResultMessage;
 	const currentComponent = await driveResult(currentMessage);
+	fixture.session.agent.state.messages.push(currentMessage);
 	await emitToolResultMessageEnd(fixture, oldMessage);
 	assert.equal(currentComponent.getToolResultPresentationDiscovery(toolCallId), undefined);
 	await emitToolResultMessageEnd(fixture, currentMessage);
@@ -377,6 +378,7 @@ test("stale and duplicate live ToolResult registrations fail closed", async (t) 
 
 	const duplicateMessage = result(toolCallId, "fixture-tool", "duplicate-".repeat(1_000)) as ToolResultMessage;
 	const duplicateComponent = await driveResult(duplicateMessage);
+	fixture.session.agent.state.messages.push(duplicateMessage);
 	await emitToolResultMessageEnd(fixture, duplicateMessage);
 	assert.equal(currentComponent.getToolResultPresentationDiscovery(toolCallId), undefined);
 	assert.equal(duplicateComponent.getToolResultPresentationDiscovery(toolCallId), undefined);
@@ -396,6 +398,7 @@ test("a live V1 result releases its pending discovery registration", async (t) =
 		result: { content: message.content, isError: message.isError },
 		isError: false,
 	});
+	fixture.session.agent.state.messages.push(message);
 	await emitToolResultMessageEnd(fixture, message);
 	const counts = fixture.internals.getToolResultDiscoveryLifecycleCounts();
 	assert.equal(counts.entries, 0);
@@ -626,7 +629,7 @@ test("128 trailing V1 results do not hide an earlier bounded V2 discovery", asyn
 			presentationCandidatesEvaluated: 129,
 			actualV2Discoveries: 1,
 			canonicalLookupProbes: 130,
-			sourceScans: 129,
+			sourceScans: 130,
 		},
 	);
 });
@@ -738,7 +741,7 @@ test("50,000 mixed history rebuild selection remains one bounded reverse scan", 
 	assert.ok(counts.historyMessagesVisited <= 50_000);
 	assert.ok(counts.presentationCandidatesEvaluated <= counts.historyMessagesVisited);
 	assert.equal(counts.canonicalLookupProbes, 50_000);
-	assert.equal(counts.sourceScans, counts.presentationCandidatesEvaluated);
+	assert.equal(counts.sourceScans, counts.presentationCandidatesEvaluated + selected.size);
 	assert.ok(counts.historyMessagesVisited + counts.canonicalLookupProbes <= 100_000);
 	selected.clear();
 });
