@@ -1891,6 +1891,12 @@ export class ToolResultPresentationOwner {
 			this.counters.activeContextualCoordinators,
 		);
 		try {
+			for (let index = 0; index <= assistantIndex; index++) {
+				const message = messages[index]!;
+				if (message.role !== "toolResult") continue;
+				const projected = this.projectMessageForConfiguredBudget(message, imagePolicy);
+				if (projected !== message) messages[index] = projected;
+			}
 			const contextEstimate = estimateContextTokensFromParts(systemPrompt, messages, tools).tokens;
 			const nonCurrentContextTokens = Math.max(0, contextEstimate - currentResultContextTokens);
 			const hasContextLimit = Number.isSafeInteger(contextWindow) && contextWindow > 0;
@@ -1905,10 +1911,7 @@ export class ToolResultPresentationOwner {
 			for (let index = 0; index < messages.length; index++) {
 				const message = messages[index]!;
 				if (message.role !== "toolResult") continue;
-				if (index <= assistantIndex) {
-					messages[index] = this.projectMessageForConfiguredBudget(message, imagePolicy);
-					continue;
-				}
+				if (index <= assistantIndex) continue;
 				const toolBudget = Math.floor(remainingToolTokens / remainingResults);
 				const contextBudget = Math.floor(remainingContextTokens / remainingResults);
 				const projected = this.projectMessageWithinContextualBudget(

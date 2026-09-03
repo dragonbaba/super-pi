@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { estimateContextTokensFromParts, estimateMessageTokens, type Tool } from "@super-pi/ai";
 import type { Message, ToolResultMessage } from "@super-pi/ai/compat";
 import { estimateToolOutputTokens } from "../packages/coding-agent/src/core/tool-output-budget.ts";
 import {
@@ -284,6 +285,24 @@ test("historical projections are charged before current headroom when provider u
 	assert.ok(estimateToolOutputTokens((projected[5] as ToolResultMessage).content).estimatedTokens <= 256);
 	assert.equal(owner.counters.contextualBudgetFailures, 0);
 	owner.dispose();
+});
+
+test("usage-based context estimates count only tools added after the applicable response", () => {
+	const assistant = assistantToolTurn(["add-tools"]);
+	if (assistant.role !== "assistant") throw new Error("expected assistant fixture");
+	assistant.usage.totalTokens = 100;
+	const added = toolResult("add-tools", 1);
+	added.addedToolNames = ["selected", "selected"];
+	added.timestamp = 3;
+	const tools: Tool[] = [
+		{ name: "ignored", description: "not added", parameters: { type: "object", properties: {} } },
+		{ name: "selected", description: "added later", parameters: { type: "object", properties: {} } },
+	];
+	const estimate = estimateContextTokensFromParts("already included in usage", [assistant, added], tools);
+	const selectedToolTokens = Math.ceil(JSON.stringify([tools[1]]).length / 4);
+	assert.equal(estimate.usageTokens, 100);
+	assert.equal(estimate.trailingTokens, estimateMessageTokens(added) + selectedToolTokens);
+	assert.equal(estimate.tokens, 100 + estimate.trailingTokens);
 });
 
 test("context clone rebinding accepts canonical content once and rejects modification", () => {

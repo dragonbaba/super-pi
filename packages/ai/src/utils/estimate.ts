@@ -107,6 +107,35 @@ function estimateToolsTokens(tools: readonly Tool[] | undefined): number {
 	return estimateTextTokens(safeJsonStringify(tools));
 }
 
+function wasToolAddedAfterUsage(messages: readonly Message[], startIndex: number, toolName: string): boolean {
+	for (let messageIndex = startIndex; messageIndex < messages.length; messageIndex++) {
+		const message = messages[messageIndex];
+		if (message.role !== "toolResult" || !message.addedToolNames) continue;
+		for (let nameIndex = 0; nameIndex < message.addedToolNames.length; nameIndex++) {
+			if (message.addedToolNames[nameIndex] === toolName) return true;
+		}
+	}
+	return false;
+}
+
+function estimateAddedToolsTokens(
+	messages: readonly Message[],
+	startIndex: number,
+	tools: readonly Tool[] | undefined,
+): number {
+	if (!tools || tools.length === 0) return 0;
+	let chars = 2;
+	let selectedCount = 0;
+	for (let toolIndex = 0; toolIndex < tools.length; toolIndex++) {
+		const tool = tools[toolIndex];
+		if (!wasToolAddedAfterUsage(messages, startIndex, tool.name)) continue;
+		if (selectedCount > 0) chars++;
+		chars += safeJsonStringify(tool).length;
+		selectedCount++;
+	}
+	return selectedCount === 0 ? 0 : Math.ceil(chars / CHARS_PER_TOKEN);
+}
+
 function isMessageArray(value: Context | readonly Message[]): value is readonly Message[] {
 	return Array.isArray(value);
 }
@@ -123,13 +152,7 @@ export function estimateContextTokensFromParts(
 ): ContextUsageEstimate {
 	const estimate = estimateMessages(messages);
 	if (estimate.lastUsageIndex !== null) {
-		const addedNames = new Set(
-			messages
-				.slice(estimate.lastUsageIndex + 1)
-				.filter((message) => message.role === "toolResult")
-				.flatMap((message) => message.addedToolNames ?? []),
-		);
-		const addedToolTokens = estimateToolsTokens(tools?.filter((tool) => addedNames.has(tool.name)));
+		const addedToolTokens = estimateAddedToolsTokens(messages, estimate.lastUsageIndex + 1, tools);
 		return {
 			tokens: estimate.tokens + addedToolTokens,
 			usageTokens: estimate.usageTokens,
