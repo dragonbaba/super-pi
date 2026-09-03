@@ -213,6 +213,24 @@ async function createModeFixture(
 	};
 }
 
+async function emitToolResultMessageEnd(
+	fixture: ModeFixture,
+	message: ToolResultMessage,
+	observe?: (event: Extract<AgentSessionEvent, { type: "message_end" }>) => void,
+): Promise<void> {
+	const unsubscribe = fixture.session.subscribe((event) => {
+		if (event.type === "message_end") observe?.(event);
+		return fixture.internals.handleEvent(event);
+	});
+	try {
+		await (fixture.session as unknown as {
+			_handleAgentEvent(event: { type: "message_end"; message: ToolResultMessage }): Promise<void>;
+		})._handleAgentEvent({ type: "message_end", message });
+	} finally {
+		unsubscribe();
+	}
+}
+
 test("live tool completion binds the internal presentation sidecar by canonical content identity", async (t) => {
 	const fixture = await createModeFixture([], [], { enabled: true, budgetTokens: 128 });
 	t.after(fixture.dispose);
@@ -237,9 +255,7 @@ test("live tool completion binds the internal presentation sidecar by canonical 
 	});
 	assert.doesNotMatch(fixture.internals.chatContainer.render(80).join("\n"), /Model received a bounded view/);
 	fixture.session.agent.state.messages.push(message);
-	const presentation = fixture.session.getToolResultPresentationForUi(message);
-	assert.equal(presentation?.version, 2);
-	await fixture.internals.handleEvent({ type: "message_end", message, toolResultPresentation: presentation });
+	await emitToolResultMessageEnd(fixture, message);
 	assert.ok(component.getToolResultPresentationDiscovery(toolCallId));
 	assert.match(
 		fixture.internals.chatContainer.render(80).join("\n"),
@@ -294,15 +310,9 @@ test("post-extension canonical ToolResult replaces the live result and receives 
 		isError: false,
 	});
 	let emittedPresentation: Extract<AgentSessionEvent, { type: "message_end" }>["toolResultPresentation"];
-	const unsubscribe = fixture.session.subscribe((event) => {
-		if (event.type !== "message_end" || event.message.role !== "toolResult") return;
-		emittedPresentation = event.toolResultPresentation;
-		return fixture.internals.handleEvent(event);
+	await emitToolResultMessageEnd(fixture, message, (event) => {
+		if (event.message.role === "toolResult") emittedPresentation = event.toolResultPresentation;
 	});
-	await (fixture.session as unknown as {
-		_handleAgentEvent(event: { type: "message_end"; message: ToolResultMessage }): Promise<void>;
-	})._handleAgentEvent({ type: "message_end", message });
-	unsubscribe();
 	assert.equal(extensionSawPresentation, false);
 	assert.equal(message.content[0]?.type === "text" ? message.content[0].text : undefined, canonicalText);
 	assert.ok(emittedPresentation?.version === 2);
@@ -339,8 +349,6 @@ test("stale and duplicate live ToolResult registrations fail closed", async (t) 
 	const fixture = await createModeFixture([], [], { enabled: true, budgetTokens: 128 });
 	t.after(fixture.dispose);
 	fixture.internals.isInitialized = true;
-	const owner = createToolResultPresentationOwner({ enabled: true, budgetTokens: 128 }, "live-stale")!;
-	t.after(() => owner.dispose());
 	const toolCallId = "reused-live-id";
 	const driveResult = async (message: ToolResultMessage): Promise<ToolExecutionComponent> => {
 		await fixture.internals.handleEvent({ type: "tool_execution_start", toolCallId, toolName: "fixture-tool", args: {} });
@@ -360,21 +368,15 @@ test("stale and duplicate live ToolResult registrations fail closed", async (t) 
 	fixture.internals.clearToolResultDiscoveries();
 	const currentMessage = result(toolCallId, "fixture-tool", "current-".repeat(1_000)) as ToolResultMessage;
 	const currentComponent = await driveResult(currentMessage);
-	const oldPresentation = owner.create(oldMessage.content, toolCallId)!;
-	owner.release();
-	await fixture.internals.handleEvent({ type: "message_end", message: oldMessage, toolResultPresentation: oldPresentation });
+	await emitToolResultMessageEnd(fixture, oldMessage);
 	assert.equal(currentComponent.getToolResultPresentationDiscovery(toolCallId), undefined);
-	const currentPresentation = owner.create(currentMessage.content, toolCallId)!;
-	owner.release();
-	await fixture.internals.handleEvent({ type: "message_end", message: currentMessage, toolResultPresentation: currentPresentation });
+	await emitToolResultMessageEnd(fixture, currentMessage);
 	assert.ok(currentComponent.getToolResultPresentationDiscovery(toolCallId));
 	assert.equal(oldComponent.getToolResultPresentationDiscovery(toolCallId), undefined);
 
 	const duplicateMessage = result(toolCallId, "fixture-tool", "duplicate-".repeat(1_000)) as ToolResultMessage;
 	const duplicateComponent = await driveResult(duplicateMessage);
-	const duplicatePresentation = owner.create(duplicateMessage.content, toolCallId)!;
-	owner.release();
-	await fixture.internals.handleEvent({ type: "message_end", message: duplicateMessage, toolResultPresentation: duplicatePresentation });
+	await emitToolResultMessageEnd(fixture, duplicateMessage);
 	assert.equal(currentComponent.getToolResultPresentationDiscovery(toolCallId), undefined);
 	assert.equal(duplicateComponent.getToolResultPresentationDiscovery(toolCallId), undefined);
 });
@@ -393,12 +395,7 @@ test("a live V1 result releases its pending discovery registration", async (t) =
 		result: { content: message.content, isError: message.isError },
 		isError: false,
 	});
-	const owner = createToolResultPresentationOwner({ enabled: true, budgetTokens: 128 }, "live-v1")!;
-	t.after(() => owner.dispose());
-	const presentation = owner.create(message.content, toolCallId)!;
-	owner.release();
-	assert.equal(presentation.version, 1);
-	await fixture.internals.handleEvent({ type: "message_end", message, toolResultPresentation: presentation });
+	await emitToolResultMessageEnd(fixture, message);
 	const counts = fixture.internals.getToolResultDiscoveryLifecycleCounts();
 	assert.equal(counts.entries, 0);
 	assert.equal(counts.pending, 0);

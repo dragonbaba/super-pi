@@ -225,7 +225,7 @@ interface Expandable {
 
 interface ToolResultDiscoveryRegistration {
 	component: ToolExecutionComponent | ReadToolGroupComponent;
-	toolCallId: string;
+	sourceContent: readonly unknown[];
 	generation: number;
 	identity: string | undefined;
 	ambiguous: boolean;
@@ -627,7 +627,7 @@ export class InteractiveMode {
 
 	// Grouped Read calls intentionally map multiple ids to one component.
 	private pendingTools = new Map<string, ToolExecutionComponent | ReadToolGroupComponent>();
-	private toolResultDiscoveries: Map<Extract<AgentMessage, { role: "toolResult" }>, ToolResultDiscoveryRegistration> | undefined;
+	private toolResultDiscoveries: Map<string, ToolResultDiscoveryRegistration> | undefined;
 	private toolResultDiscoveryRegistrationObjectsCreated = 0;
 	private toolResultDiscoveryRegistrationsAttached = 0;
 	private toolResultDiscoveryRegistrationsHighWaterMark = 0;
@@ -4445,14 +4445,14 @@ export class InteractiveMode {
 	}
 
 	private evictOldestToolResultDiscovery(
-		entries: Map<Extract<AgentMessage, { role: "toolResult" }>, ToolResultDiscoveryRegistration>,
+		entries: Map<string, ToolResultDiscoveryRegistration>,
 	): void {
-		for (const [key, registration] of entries) {
+		for (const [toolCallId, registration] of entries) {
 			if (registration.identity !== undefined) {
-				registration.component.clearToolResultPresentation(registration.toolCallId, registration.identity);
+				registration.component.clearToolResultPresentation(toolCallId, registration.identity);
 				this.chatContainer.invalidateRetainedChild(registration.component);
 			}
-			entries.delete(key);
+			entries.delete(toolCallId);
 			this.toolResultDiscoveryRegistrationsEvicted++;
 			return;
 		}
@@ -4460,12 +4460,12 @@ export class InteractiveMode {
 
 	private createToolResultDiscoveryRegistration(
 		component: ToolExecutionComponent | ReadToolGroupComponent,
-		toolCallId: string,
+		sourceContent: readonly unknown[],
 	): ToolResultDiscoveryRegistration {
 		this.toolResultDiscoveryRegistrationObjectsCreated++;
 		return {
 			component,
-			toolCallId,
+			sourceContent,
 			generation: this.tuiLifecycleGeneration,
 			identity: undefined,
 			ambiguous: false,
@@ -4473,12 +4473,12 @@ export class InteractiveMode {
 	}
 
 	private addToolResultDiscovery(
-		message: Extract<AgentMessage, { role: "toolResult" }>,
+		toolCallId: string,
 		registration: ToolResultDiscoveryRegistration,
 	): void {
 		const entries = this.toolResultDiscoveries ??= new Map();
 		while (entries.size >= MAX_TOOL_RESULT_DISCOVERIES) this.evictOldestToolResultDiscovery(entries);
-		entries.set(message, registration);
+		entries.set(toolCallId, registration);
 		if (entries.size > this.toolResultDiscoveryRegistrationsHighWaterMark) {
 			this.toolResultDiscoveryRegistrationsHighWaterMark = entries.size;
 		}
@@ -4486,31 +4486,27 @@ export class InteractiveMode {
 
 	private trackToolResultPresentationTarget(
 		toolCallId: string,
-		result: Extract<AgentMessage, { role: "toolResult" }>,
+		result: { content?: unknown },
 		component: ToolExecutionComponent | ReadToolGroupComponent,
 	): void {
 		if (
 			!this.session.toolResultPresentationEnabled ||
-			result.role !== "toolResult" ||
-			result.toolCallId !== toolCallId ||
 			!Array.isArray(result.content)
 		) return;
 		const entries = this.toolResultDiscoveries;
-		if (entries) {
-			for (const [message, existing] of entries) {
-				if (existing.toolCallId !== toolCallId) continue;
-				if (existing.identity !== undefined) {
-					existing.component.clearToolResultPresentation(existing.toolCallId, existing.identity);
-					this.chatContainer.invalidateRetainedChild(existing.component);
-				}
-				entries.delete(message);
-				const ambiguous = this.createToolResultDiscoveryRegistration(component, toolCallId);
-				ambiguous.ambiguous = true;
-				this.addToolResultDiscovery(result, ambiguous);
-				return;
+		const existing = entries?.get(toolCallId);
+		if (entries && existing) {
+			if (existing.identity !== undefined) {
+				existing.component.clearToolResultPresentation(toolCallId, existing.identity);
+				this.chatContainer.invalidateRetainedChild(existing.component);
 			}
+			entries.delete(toolCallId);
+			const ambiguous = this.createToolResultDiscoveryRegistration(component, result.content);
+			ambiguous.ambiguous = true;
+			this.addToolResultDiscovery(toolCallId, ambiguous);
+			return;
 		}
-		this.addToolResultDiscovery(result, this.createToolResultDiscoveryRegistration(component, toolCallId));
+		this.addToolResultDiscovery(toolCallId, this.createToolResultDiscoveryRegistration(component, result.content));
 	}
 
 	private attachToolResultPresentation(
@@ -4520,21 +4516,20 @@ export class InteractiveMode {
 	): boolean {
 		if (
 			registration.ambiguous === true ||
-			registration.generation !== this.tuiLifecycleGeneration ||
-			registration.toolCallId !== message.toolCallId
+			registration.generation !== this.tuiLifecycleGeneration
 		) return false;
-		const identity = registration.component.setToolResultPresentation(registration.toolCallId, presentation);
+		const identity = registration.component.setToolResultPresentation(message.toolCallId, presentation);
 		if (!identity) return false;
 		this.chatContainer.invalidateRetainedChild(registration.component);
 		const entries = this.toolResultDiscoveries ??= new Map();
-		for (const [candidate, duplicate] of entries) {
-			if (candidate === message || duplicate.identity !== identity) continue;
-			duplicate.component.clearToolResultPresentation(duplicate.toolCallId, identity);
-			registration.component.clearToolResultPresentation(registration.toolCallId, identity);
+		for (const [candidateToolCallId, duplicate] of entries) {
+			if (candidateToolCallId === message.toolCallId || duplicate.identity !== identity) continue;
+			duplicate.component.clearToolResultPresentation(candidateToolCallId, identity);
+			registration.component.clearToolResultPresentation(message.toolCallId, identity);
 			this.chatContainer.invalidateRetainedChild(duplicate.component);
 			this.chatContainer.invalidateRetainedChild(registration.component);
-			entries.delete(candidate);
-			entries.delete(message);
+			entries.delete(candidateToolCallId);
+			entries.delete(message.toolCallId);
 			return false;
 		}
 		registration.identity = identity;
@@ -4547,24 +4542,25 @@ export class InteractiveMode {
 		presentation: ToolResultPresentation,
 	): void {
 		const entries = this.toolResultDiscoveries;
-		const registration = entries?.get(message);
+		const registration = entries?.get(message.toolCallId);
 		if (!entries || !registration) return;
+		if (!this.session.isCurrentToolResultPresentationSourceForUi(message, registration.sourceContent)) return;
 		if (registration.ambiguous === true || registration.generation !== this.tuiLifecycleGeneration) {
-			entries.delete(message);
+			entries.delete(message.toolCallId);
 			if (entries.size === 0) this.toolResultDiscoveries = undefined;
 			return;
 		}
-		this.updateTrackedToolResult(registration.component, registration.toolCallId, message, false, message.isError);
-		if (!this.attachToolResultPresentation(message, registration, presentation)) entries.delete(message);
+		this.updateTrackedToolResult(registration.component, message.toolCallId, message, false, message.isError);
+		if (!this.attachToolResultPresentation(message, registration, presentation)) entries.delete(message.toolCallId);
 		if (entries.size === 0) this.toolResultDiscoveries = undefined;
 	}
 
 	private clearToolResultDiscoveries(): void {
 		const entries = this.toolResultDiscoveries;
 		if (!entries) return;
-		for (const registration of entries.values()) {
+		for (const [toolCallId, registration] of entries) {
 			if (registration.identity !== undefined) {
-				registration.component.detachToolResultPresentation(registration.toolCallId, registration.identity);
+				registration.component.detachToolResultPresentation(toolCallId, registration.identity);
 			}
 			this.toolResultDiscoveryRegistrationsTeardownReleased++;
 		}
@@ -4907,10 +4903,10 @@ export class InteractiveMode {
 					this.updateTrackedToolResult(component, message.toolCallId, message);
 					const presentation = discoverableMessages?.get(message);
 					if (presentation) {
-						const registration = this.createToolResultDiscoveryRegistration(component, message.toolCallId);
-						this.addToolResultDiscovery(message, registration);
+						const registration = this.createToolResultDiscoveryRegistration(component, message.content);
+						this.addToolResultDiscovery(message.toolCallId, registration);
 						if (!this.attachToolResultPresentation(message, registration, presentation)) {
-							this.toolResultDiscoveries?.delete(message);
+							this.toolResultDiscoveries?.delete(message.toolCallId);
 						}
 					}
 					renderedPendingTools.delete(message.toolCallId);

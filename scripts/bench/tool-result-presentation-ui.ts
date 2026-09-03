@@ -361,7 +361,7 @@ interface InteractiveModeInternals {
 	chatContainer: RetainedContainer;
 	renderInstrumentation: TuiRenderInstrumentation;
 	pendingTools: Map<string, ToolExecutionComponent | ReadToolGroupComponent>;
-	toolResultDiscoveries?: Map<ToolResultMessage, object>;
+	toolResultDiscoveries?: Map<string, object>;
 	handleEvent(event: AgentSessionEvent): void | Promise<void>;
 	clearToolResultDiscoveries(): void;
 	renderCurrentSessionState(): void;
@@ -509,10 +509,10 @@ async function runLiveToolResult(
 		type: "tool_execution_end",
 		toolCallId,
 		toolName: "fixture-tool",
-		result: message,
+		result: { content: message.content, isError: message.isError },
 		isError: false,
 	});
-	const registration = fixture.internals.toolResultDiscoveries?.get(message);
+	const registration = fixture.internals.toolResultDiscoveries?.get(toolCallId);
 	if (registration) onPendingRegistration?.(registration);
 	await (fixture.session as unknown as {
 		_handleAgentEvent(event: { type: "message_end"; message: ToolResultMessage }): Promise<void>;

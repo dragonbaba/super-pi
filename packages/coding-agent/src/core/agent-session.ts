@@ -134,7 +134,6 @@ import { createPowerShellToolState } from "./tools/powershell.ts";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.ts";
 import {
 	createToolOutputShadowObserver,
-	estimateToolOutputTokens,
 	type ToolOutputShadowObserver,
 	type ToolOutputShadowOptions,
 } from "./tool-output-budget.ts";
@@ -268,6 +267,8 @@ function createEventListenerRejectionObserver(onError: ((error: unknown) => void
 }
 
 const DEFAULT_CRITICAL_AGENT_END_TIMEOUT_MS = 30_000;
+const MAX_TOOL_RESULT_UI_DISCOVERIES = 128;
+const MAX_TOOL_RESULT_UI_REBUILD_CANDIDATES = 256;
 
 const STRING_SET_POOL = new ObjectPool<Set<string>>(
 	() => new Set<string>(),
@@ -662,7 +663,8 @@ export class AgentSession {
 	private _prefixManifestRecorder?: PrefixManifestRecorder;
 	private _toolOutputShadow: ToolOutputShadowObserver | undefined;
 	private _toolResultPresentation: ToolResultPresentationOwner | undefined;
-	private readonly _toolResultPresentationBudgetTokens: number | undefined;
+	private _toolResultUiDispatchMessage: Extract<AgentMessage, { role: "toolResult" }> | undefined;
+	private _toolResultUiDispatchSourceContent: Extract<AgentMessage, { role: "toolResult" }>["content"] | undefined;
 	private _toolResultUiHistoryMessagesVisited = 0;
 	private _toolResultUiPresentationCandidatesEvaluated = 0;
 	private _toolResultUiActualV2Discoveries = 0;
@@ -699,10 +701,6 @@ export class AgentSession {
 		this._toolResultPresentation =
 			config.toolResultPresentationOwner ??
 			createToolResultPresentationOwner(config.toolResultPresentation, this.sessionManager.getSessionId());
-		const configuredToolResultPresentation = config.toolResultPresentation ?? this.settingsManager.getToolResultPresentationOptions();
-		this._toolResultPresentationBudgetTokens = configuredToolResultPresentation?.enabled === true
-			? configuredToolResultPresentation.budgetTokens
-			: undefined;
 		this._extensionRunnerRef = config.extensionRunnerRef;
 		this._extensionRunnerOptions = config.extensionRunnerOptions;
 		this._initialActiveToolNames = config.initialActiveToolNames;
@@ -1024,6 +1022,9 @@ export class AgentSession {
 
 	/** Internal handler for agent events - shared by subscribe and reconnect */
 	private _handleAgentEvent = async (event: AgentEvent): Promise<void> => {
+		const toolResultSourceContent = event.type === "message_end" && event.message.role === "toolResult"
+			? event.message.content
+			: undefined;
 		if (isCoalescibleAgentEvent(event)) {
 			if (this._extensionRunner.hasHandlers(event.type)) await this._emitExtensionEvent(event);
 			return;
@@ -1063,6 +1064,10 @@ export class AgentSession {
 						message: event.message,
 						toolResultPresentation: presentation,
 					};
+					const previousUiMessage = this._toolResultUiDispatchMessage;
+					const previousUiSourceContent = this._toolResultUiDispatchSourceContent;
+					this._toolResultUiDispatchMessage = event.message;
+					this._toolResultUiDispatchSourceContent = toolResultSourceContent;
 					try {
 						const model = this.model;
 						this._toolOutputShadow?.observe(
@@ -1071,6 +1076,8 @@ export class AgentSession {
 						);
 						this._emit(sessionEvent);
 					} finally {
+						this._toolResultUiDispatchMessage = previousUiMessage;
+						this._toolResultUiDispatchSourceContent = previousUiSourceContent;
 						presentationOwner.release();
 					}
 					// This is the complete post-listener message_end tail for tool results.
@@ -1362,6 +1369,8 @@ export class AgentSession {
 		this._toolOutputShadow = undefined;
 		this._toolResultPresentation?.dispose();
 		this._toolResultPresentation = undefined;
+		this._toolResultUiDispatchMessage = undefined;
+		this._toolResultUiDispatchSourceContent = undefined;
 		this._eventListeners = [];
 		cleanupSessionResources(this.sessionId);
 	}
@@ -1433,6 +1442,14 @@ export class AgentSession {
 		return this._toolResultPresentation !== undefined;
 	}
 
+	/** Validate the synchronous pre-extension source for the current internal UI event. */
+	isCurrentToolResultPresentationSourceForUi(
+		message: Extract<AgentMessage, { role: "toolResult" }>,
+		sourceContent: readonly unknown[],
+	): boolean {
+		return this._toolResultUiDispatchMessage === message && this._toolResultUiDispatchSourceContent === sourceContent;
+	}
+
 	/**
 	 * Recreate the internal UI sidecar only for an exact canonical ToolResult on
 	 * the active branch. Provider/context clones are deliberately rejected.
@@ -1476,44 +1493,46 @@ export class AgentSession {
 		this._toolResultUiCanonicalLookupProbes = 0;
 		this._toolResultUiSourceScans = 0;
 		const owner = this._toolResultPresentation;
-		const boundedLimit = Number.isSafeInteger(limit) ? Math.min(limit, 128) : 0;
+		const boundedLimit = Number.isSafeInteger(limit) ? Math.min(limit, MAX_TOOL_RESULT_UI_DISCOVERIES) : 0;
 		if (!owner || boundedLimit <= 0) return;
 		const messages = this.agent.state.messages;
-		// A selected id maps to its exact canonical message. An undefined value is
-		// a fail-closed ambiguity marker. Both populations are capped at the UI
-		// limit, so even adversarial duplicate histories retain bounded metadata.
-		const candidatesByToolCallId = new Map<string, Extract<AgentMessage, { role: "toolResult" }> | undefined>();
-		let ambiguousToolCallIds = 0;
-		for (let index = messages.length - 1; index >= 0; index--) {
+		// Keep one bounded backup candidate per possible ambiguous output slot.
+		// The shared owner is the sole V1/V2 authority; a settings-side estimate
+		// can disagree with a per-session SDK override.
+		const candidateLimit = Math.min(boundedLimit * 2, MAX_TOOL_RESULT_UI_REBUILD_CANDIDATES);
+		const candidatesByToolCallId = new Map<string, Extract<AgentMessage, { role: "toolResult" }>>();
+		const candidatePresentations = new Map<Extract<AgentMessage, { role: "toolResult" }>, ToolResultPresentation>();
+		for (let index = messages.length - 1; index >= 0 && candidatesByToolCallId.size < candidateLimit; index--) {
 			this._toolResultUiHistoryMessagesVisited++;
-			this._toolResultUiCanonicalLookupProbes++;
 			const candidate = messages[index];
 			if (candidate?.role !== "toolResult") continue;
-			const tracked = candidatesByToolCallId.get(candidate.toolCallId);
-			if (tracked !== undefined) {
-				target.delete(tracked);
-				candidatesByToolCallId.set(candidate.toolCallId, undefined);
-				ambiguousToolCallIds++;
-				continue;
-			}
 			if (candidatesByToolCallId.has(candidate.toolCallId)) continue;
-			if (target.size >= boundedLimit || ambiguousToolCallIds >= boundedLimit) continue;
 			this._toolResultUiPresentationCandidatesEvaluated++;
-			const budgetTokens = this._toolResultPresentationBudgetTokens;
-			if (budgetTokens !== undefined) {
-				this._toolResultUiSourceScans++;
-				if (estimateToolOutputTokens(candidate.content).estimatedTokens <= budgetTokens) continue;
-			}
+			this._toolResultUiSourceScans++;
 			const presentation = owner.create(candidate.content, candidate.toolCallId);
 			if (!presentation) continue;
 			try {
 				if (presentation.version !== 2) continue;
-				target.set(candidate, presentation);
 				candidatesByToolCallId.set(candidate.toolCallId, candidate);
-				this._toolResultUiActualV2Discoveries++;
+				candidatePresentations.set(candidate, presentation);
 			} finally {
 				owner.release();
 			}
+		}
+		const candidateOccurrences = new Map<string, number>();
+		for (const toolCallId of candidatesByToolCallId.keys()) candidateOccurrences.set(toolCallId, 0);
+		for (let index = 0; index < messages.length; index++) {
+			this._toolResultUiCanonicalLookupProbes++;
+			const candidate = messages[index];
+			if (candidate?.role !== "toolResult") continue;
+			const occurrences = candidateOccurrences.get(candidate.toolCallId);
+			if (occurrences !== undefined) candidateOccurrences.set(candidate.toolCallId, occurrences + 1);
+		}
+		for (const [toolCallId, candidate] of candidatesByToolCallId) {
+			if (target.size >= boundedLimit) break;
+			if (candidateOccurrences.get(toolCallId) !== 1) continue;
+			const presentation = candidatePresentations.get(candidate);
+			if (presentation) target.set(candidate, presentation);
 		}
 		this._toolResultUiActualV2Discoveries = target.size;
 	}

@@ -5,6 +5,7 @@ import ts from "typescript";
 
 export interface ToolResultPresentationUiSourceAudit {
 	readonly registryHardCap: number;
+	readonly rebuildCandidateHardCap: number;
 	readonly transitiveSourceFiles: readonly string[];
 	readonly resultRenderingArrayMaterializationSites: number;
 	readonly resultRenderingArrayLiteralSites: number;
@@ -264,6 +265,7 @@ export function auditToolResultPresentationUiSources(): ToolResultPresentationUi
 		]),
 		...selectClassMembers(agentSession, "AgentSession", [
 			"toolResultPresentationEnabled",
+			"isCurrentToolResultPresentationSourceForUi",
 			"getToolResultPresentationForUi",
 			"collectRecentToolResultPresentationsForUi",
 			"getToolResultPresentationUiRebuildCounts",
@@ -347,9 +349,14 @@ export function auditToolResultPresentationUiSources(): ToolResultPresentationUi
 	const ownershipCounts = countAst(discoveryOwnershipNodes, checker);
 	const registrationCounts = countAst(discoveryRegistrationNodes, checker);
 	const interactiveSource = readFileSync(sourcePaths.interactive, "utf8");
+	const agentSessionSource = readFileSync(sourcePaths.agentSession, "utf8");
 	const registryHardCap = Number(interactiveSource.match(/MAX_TOOL_RESULT_DISCOVERIES\s*=\s*(\d+)/u)?.[1] ?? 0);
+	const rebuildCandidateHardCap = Number(
+		agentSessionSource.match(/MAX_TOOL_RESULT_UI_REBUILD_CANDIDATES\s*=\s*(\d+)/u)?.[1] ?? 0,
+	);
 	return {
 		registryHardCap,
+		rebuildCandidateHardCap,
 		transitiveSourceFiles: [
 			"tool-execution.ts",
 			"render-utils.ts",

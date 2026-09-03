@@ -275,6 +275,7 @@ test("UI allocation source audit executes the selected production chain and lock
 		"utils.ts/wrapping",
 	]);
 	assert.equal(audit.registryHardCap, 128);
+	assert.equal(audit.rebuildCandidateHardCap, 256);
 	assert.equal(audit.resultRenderingArrayMaterializationSites, 38);
 	assert.equal(audit.resultRenderingArrayLiteralSites, 30);
 	assert.equal(audit.resultRenderingArraySpreadSites, 3);
@@ -292,7 +293,7 @@ test("UI allocation source audit executes the selected production chain and lock
 	assert.equal(audit.discoveryOwnershipSerializations, 0);
 	assert.equal(audit.discoveryRegistrationObjectLiterals, 1);
 	assert.equal(audit.discoveryOwnershipObjectLiterals, 3);
-	assert.equal(audit.discoveryOwnershipMapConstructors, 3);
+	assert.equal(audit.discoveryOwnershipMapConstructors, 5);
 	assert.equal(audit.discoveryOwnershipSetConstructors, 0);
 	assert.equal(audit.promises, 0);
 	assert.equal(audit.abortControllers, 0);
