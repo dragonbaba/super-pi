@@ -111,6 +111,7 @@ interface InteractiveModeInternals {
 		registrationsEvicted?: number;
 		registrationsTeardownReleased?: number;
 		liveCanonicalIndexBuildProbes?: number;
+		liveCanonicalIndexAppendProbes?: number;
 		liveCanonicalLookupProbes?: number;
 		liveCanonicalIndexRebuilds?: number;
 	};
@@ -477,6 +478,7 @@ test("live canonical validation indexes resumed history once and performs one lo
 	const lifecycle = fixture.internals.getToolResultDiscoveryLifecycleCounts();
 	assert.equal(lifecycle.liveCanonicalIndexRebuilds, 1);
 	assert.equal(lifecycle.liveCanonicalIndexBuildProbes, 10_000);
+	assert.equal(lifecycle.liveCanonicalIndexAppendProbes, 8);
 	assert.equal(lifecycle.liveCanonicalLookupProbes, 8);
 });
 
@@ -672,6 +674,10 @@ test("128 trailing V1 results do not hide an earlier bounded V2 discovery", asyn
 			actualV2Discoveries: 1,
 			canonicalLookupProbes: 130,
 			sourceScans: 130,
+			liveCanonicalIndexBuildProbes: 130,
+			liveCanonicalIndexAppendProbes: 0,
+			liveCanonicalLookupProbes: 0,
+			liveCanonicalIndexRebuilds: 1,
 		},
 	);
 });

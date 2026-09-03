@@ -277,6 +277,10 @@ export function auditToolResultPresentationUiSources(): ToolResultPresentationUi
 		]),
 		...selectClassMembers(agentSession, "AgentSession", [
 			"toolResultPresentationEnabled",
+			"_recordToolResultUiCanonicalMessage",
+			"_rebuildToolResultUiCanonicalIndex",
+			"_synchronizeToolResultUiCanonicalIndex",
+			"getToolResultPresentationSourceStatusForUi",
 			"isCurrentToolResultPresentationSourceForUi",
 			"getToolResultPresentationForUi",
 			"collectRecentToolResultPresentationsForUi",

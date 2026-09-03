@@ -4544,7 +4544,13 @@ export class InteractiveMode {
 		const entries = this.toolResultDiscoveries;
 		const registration = entries?.get(message.toolCallId);
 		if (!entries || !registration) return;
-		if (!this.session.isCurrentToolResultPresentationSourceForUi(message, registration.sourceContent)) return;
+		const sourceStatus = this.session.getToolResultPresentationSourceStatusForUi(message, registration.sourceContent);
+		if (sourceStatus === "stale") return;
+		if (sourceStatus === "ambiguous") {
+			entries.delete(message.toolCallId);
+			if (entries.size === 0) this.toolResultDiscoveries = undefined;
+			return;
+		}
 		if (registration.ambiguous === true || registration.generation !== this.tuiLifecycleGeneration) {
 			entries.delete(message.toolCallId);
 			if (entries.size === 0) this.toolResultDiscoveries = undefined;
@@ -4583,6 +4589,10 @@ export class InteractiveMode {
 		actualV2Discoveries: number;
 		canonicalLookupProbes: number;
 		sourceScans: number;
+		liveCanonicalIndexBuildProbes: number;
+		liveCanonicalIndexAppendProbes: number;
+		liveCanonicalLookupProbes: number;
+		liveCanonicalIndexRebuilds: number;
 	} {
 		let attached = 0;
 		let pending = 0;

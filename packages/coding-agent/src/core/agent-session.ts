@@ -665,6 +665,16 @@ export class AgentSession {
 	private _toolResultPresentation: ToolResultPresentationOwner | undefined;
 	private _toolResultUiDispatchMessage: Extract<AgentMessage, { role: "toolResult" }> | undefined;
 	private _toolResultUiDispatchSourceContent: Extract<AgentMessage, { role: "toolResult" }>["content"] | undefined;
+	private _toolResultUiCanonicalMessages:
+		| Map<string, Extract<AgentMessage, { role: "toolResult" }> | null>
+		| undefined;
+	private _toolResultUiCanonicalMessagesSource: AgentMessage[] | undefined;
+	private _toolResultUiCanonicalMessagesLength = 0;
+	private _toolResultUiCanonicalMessagesTail: AgentMessage | undefined;
+	private _toolResultUiLiveCanonicalIndexBuildProbes = 0;
+	private _toolResultUiLiveCanonicalIndexAppendProbes = 0;
+	private _toolResultUiLiveCanonicalLookupProbes = 0;
+	private _toolResultUiLiveCanonicalIndexRebuilds = 0;
 	private _toolResultUiHistoryMessagesVisited = 0;
 	private _toolResultUiPresentationCandidatesEvaluated = 0;
 	private _toolResultUiActualV2Discoveries = 0;
@@ -701,6 +711,7 @@ export class AgentSession {
 		this._toolResultPresentation =
 			config.toolResultPresentationOwner ??
 			createToolResultPresentationOwner(config.toolResultPresentation, this.sessionManager.getSessionId());
+		if (this._toolResultPresentation) this._rebuildToolResultUiCanonicalIndex();
 		this._extensionRunnerRef = config.extensionRunnerRef;
 		this._extensionRunnerOptions = config.extensionRunnerOptions;
 		this._initialActiveToolNames = config.initialActiveToolNames;
@@ -1371,6 +1382,11 @@ export class AgentSession {
 		this._toolResultPresentation = undefined;
 		this._toolResultUiDispatchMessage = undefined;
 		this._toolResultUiDispatchSourceContent = undefined;
+		this._toolResultUiCanonicalMessages?.clear();
+		this._toolResultUiCanonicalMessages = undefined;
+		this._toolResultUiCanonicalMessagesSource = undefined;
+		this._toolResultUiCanonicalMessagesLength = 0;
+		this._toolResultUiCanonicalMessagesTail = undefined;
 		this._eventListeners = [];
 		cleanupSessionResources(this.sessionId);
 	}
@@ -1442,23 +1458,68 @@ export class AgentSession {
 		return this._toolResultPresentation !== undefined;
 	}
 
-	/** Validate the synchronous pre-extension source for the current internal UI event. */
+	private _recordToolResultUiCanonicalMessage(message: AgentMessage): void {
+		if (message.role !== "toolResult") return;
+		const canonicalMessages = this._toolResultUiCanonicalMessages ??= new Map();
+		if (!canonicalMessages.has(message.toolCallId)) canonicalMessages.set(message.toolCallId, message);
+		else canonicalMessages.set(message.toolCallId, null);
+	}
+
+	private _rebuildToolResultUiCanonicalIndex(): void {
+		if (!this._toolResultPresentation) return;
+		const messages = this.agent.state.messages;
+		const canonicalMessages = this._toolResultUiCanonicalMessages ??= new Map();
+		canonicalMessages.clear();
+		this._toolResultUiLiveCanonicalIndexRebuilds++;
+		for (let index = 0; index < messages.length; index++) {
+			this._toolResultUiLiveCanonicalIndexBuildProbes++;
+			this._recordToolResultUiCanonicalMessage(messages[index]!);
+		}
+		this._toolResultUiCanonicalMessagesSource = messages;
+		this._toolResultUiCanonicalMessagesLength = messages.length;
+		this._toolResultUiCanonicalMessagesTail = messages.at(-1);
+	}
+
+	private _synchronizeToolResultUiCanonicalIndex(): void {
+		const messages = this.agent.state.messages;
+		const indexedLength = this._toolResultUiCanonicalMessagesLength;
+		if (
+			this._toolResultUiCanonicalMessagesSource !== messages ||
+			indexedLength > messages.length ||
+			(indexedLength > 0 && messages[indexedLength - 1] !== this._toolResultUiCanonicalMessagesTail)
+		) {
+			this._rebuildToolResultUiCanonicalIndex();
+			return;
+		}
+		for (let index = indexedLength; index < messages.length; index++) {
+			this._toolResultUiLiveCanonicalIndexAppendProbes++;
+			this._recordToolResultUiCanonicalMessage(messages[index]!);
+		}
+		this._toolResultUiCanonicalMessagesLength = messages.length;
+		this._toolResultUiCanonicalMessagesTail = messages.at(-1);
+	}
+
+	/** Classify the synchronous pre-extension source for the current internal UI event. */
+	getToolResultPresentationSourceStatusForUi(
+		message: Extract<AgentMessage, { role: "toolResult" }>,
+		sourceContent: readonly unknown[],
+	): "current" | "ambiguous" | "stale" {
+		if (this._toolResultUiDispatchMessage !== message || this._toolResultUiDispatchSourceContent !== sourceContent) {
+			return "stale";
+		}
+		this._synchronizeToolResultUiCanonicalIndex();
+		this._toolResultUiLiveCanonicalLookupProbes++;
+		const canonical = this._toolResultUiCanonicalMessages?.get(message.toolCallId);
+		if (canonical === message) return "current";
+		return canonical === null ? "ambiguous" : "stale";
+	}
+
+	/** Backward-compatible boolean form for existing internal callers. */
 	isCurrentToolResultPresentationSourceForUi(
 		message: Extract<AgentMessage, { role: "toolResult" }>,
 		sourceContent: readonly unknown[],
 	): boolean {
-		if (this._toolResultUiDispatchMessage !== message || this._toolResultUiDispatchSourceContent !== sourceContent) {
-			return false;
-		}
-		let found = false;
-		const messages = this.agent.state.messages;
-		for (let index = 0; index < messages.length; index++) {
-			const candidate = messages[index];
-			if (candidate?.role !== "toolResult" || candidate.toolCallId !== message.toolCallId) continue;
-			if (candidate !== message || found) return false;
-			found = true;
-		}
-		return found;
+		return this.getToolResultPresentationSourceStatusForUi(message, sourceContent) === "current";
 	}
 
 	/**
@@ -1537,11 +1598,19 @@ export class AgentSession {
 			const occurrences = candidateOccurrences.get(candidate.toolCallId);
 			if (occurrences !== undefined) candidateOccurrences.set(candidate.toolCallId, occurrences + 1);
 		}
+		const selectedCandidates: Array<Extract<AgentMessage, { role: "toolResult" }>> = [];
 		for (const [toolCallId, candidate] of candidatesByToolCallId) {
-			if (target.size >= boundedLimit) break;
+			if (selectedCandidates.length >= boundedLimit) break;
 			if (candidateOccurrences.get(toolCallId) !== 1) continue;
+			selectedCandidates.push(candidate);
+		}
+		owner.clearProjectionRecords();
+		// Re-admit oldest to newest so the owner's eviction order stays aligned
+		// with the chronological UI registry when a later live result arrives.
+		for (let index = selectedCandidates.length - 1; index >= 0; index--) {
+			const candidate = selectedCandidates[index]!;
 			this._toolResultUiSourceScans++;
-			const presentation = owner.create(candidate.content, toolCallId);
+			const presentation = owner.create(candidate.content, candidate.toolCallId);
 			if (!presentation) continue;
 			try {
 				if (presentation.version === 2) target.set(candidate, presentation);
@@ -1559,6 +1628,10 @@ export class AgentSession {
 		actualV2Discoveries: number;
 		canonicalLookupProbes: number;
 		sourceScans: number;
+		liveCanonicalIndexBuildProbes: number;
+		liveCanonicalIndexAppendProbes: number;
+		liveCanonicalLookupProbes: number;
+		liveCanonicalIndexRebuilds: number;
 	} {
 		return {
 			historyMessagesVisited: this._toolResultUiHistoryMessagesVisited,
@@ -1566,6 +1639,10 @@ export class AgentSession {
 			actualV2Discoveries: this._toolResultUiActualV2Discoveries,
 			canonicalLookupProbes: this._toolResultUiCanonicalLookupProbes,
 			sourceScans: this._toolResultUiSourceScans,
+			liveCanonicalIndexBuildProbes: this._toolResultUiLiveCanonicalIndexBuildProbes,
+			liveCanonicalIndexAppendProbes: this._toolResultUiLiveCanonicalIndexAppendProbes,
+			liveCanonicalLookupProbes: this._toolResultUiLiveCanonicalLookupProbes,
+			liveCanonicalIndexRebuilds: this._toolResultUiLiveCanonicalIndexRebuilds,
 		};
 	}
 
@@ -2688,6 +2765,7 @@ export class AgentSession {
 			const sessionContext = this.sessionManager.buildSessionContext();
 			this._toolResultPresentation?.clearProjectionRecords();
 			this.agent.state.messages = sessionContext.messages;
+			this._rebuildToolResultUiCanonicalIndex();
 			const estimatedTokensAfter = estimateMessagesTokens(sessionContext.messages);
 
 			// Get the saved compaction entry for the extension event
@@ -2844,11 +2922,15 @@ export class AgentSession {
 			let removedAssistant = false;
 			if (messages.length > 0 && messages[messages.length - 1].role === "assistant") {
 				this.agent.state.messages = messages.slice(0, -1);
+				this._rebuildToolResultUiCanonicalIndex();
 				removedAssistant = true;
 			}
 			const compacted = await this._runAutoCompaction("overflow", willRetry);
 			if (!compacted) {
-				if (removedAssistant) this.agent.state.messages = messages;
+				if (removedAssistant) {
+					this.agent.state.messages = messages;
+					this._rebuildToolResultUiCanonicalIndex();
+				}
 				return false;
 			}
 			return true;
@@ -3011,6 +3093,7 @@ export class AgentSession {
 			const sessionContext = this.sessionManager.buildSessionContext();
 			this._toolResultPresentation?.clearProjectionRecords();
 			this.agent.state.messages = sessionContext.messages;
+			this._rebuildToolResultUiCanonicalIndex();
 			const estimatedTokensAfter = estimateMessagesTokens(sessionContext.messages);
 
 			// Get the saved compaction entry for the extension event
@@ -3048,6 +3131,7 @@ export class AgentSession {
 				// the retriable error or truncated-length response again before continuing the interrupted turn.
 				if (lastMsg?.role === "assistant" && (lastMsg.stopReason === "error" || lastMsg.stopReason === "length")) {
 					this.agent.state.messages = messages.slice(0, -1);
+					this._rebuildToolResultUiCanonicalIndex();
 				}
 				return true;
 			}
@@ -3635,6 +3719,7 @@ export class AgentSession {
 		const messages = this.agent.state.messages;
 		if (messages.length > 0 && messages[messages.length - 1].role === "assistant") {
 			this.agent.state.messages = messages.slice(0, -1);
+			this._rebuildToolResultUiCanonicalIndex();
 		}
 
 		// Wait with exponential backoff (abortable)
@@ -4001,6 +4086,7 @@ export class AgentSession {
 			const sessionContext = this.sessionManager.buildSessionContext();
 			this._toolResultPresentation?.clearProjectionRecords();
 			this.agent.state.messages = sessionContext.messages;
+			this._rebuildToolResultUiCanonicalIndex();
 
 			// Emit session_tree event
 			await this._extensionRunner.emit({

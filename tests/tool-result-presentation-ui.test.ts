@@ -276,8 +276,8 @@ test("UI allocation source audit executes the selected production chain and lock
 	]);
 	assert.equal(audit.registryHardCap, 128);
 	assert.equal(audit.rebuildCandidateHardCap, 256);
-	assert.equal(audit.resultRenderingArrayMaterializationSites, 38);
-	assert.equal(audit.resultRenderingArrayLiteralSites, 30);
+	assert.equal(audit.resultRenderingArrayMaterializationSites, 39);
+	assert.equal(audit.resultRenderingArrayLiteralSites, 31);
 	assert.equal(audit.resultRenderingArraySpreadSites, 3);
 	assert.equal(audit.resultRenderingCallSpreadSites, 3);
 	assert.equal(audit.resultRenderingArrayProducingCallSites, 5);
@@ -293,9 +293,9 @@ test("UI allocation source audit executes the selected production chain and lock
 	assert.equal(audit.discoveryOwnershipSerializations, 0);
 	assert.equal(audit.discoveryRegistrationObjectLiterals, 1);
 	assert.equal(audit.discoveryOwnershipObjectLiterals, 6);
-	assert.equal(audit.discoveryOwnershipArrayMaterializationSites, 1);
+	assert.equal(audit.discoveryOwnershipArrayMaterializationSites, 2);
 	assert.equal(audit.discoveryOwnershipInlineClosureSites, 1);
-	assert.equal(audit.discoveryOwnershipMapConstructors, 7);
+	assert.equal(audit.discoveryOwnershipMapConstructors, 9);
 	assert.equal(
 		(audit as typeof audit & { discoveryRebuildCallerMapConstructors?: number })
 			.discoveryRebuildCallerMapConstructors,

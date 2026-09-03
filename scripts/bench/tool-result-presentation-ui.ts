@@ -75,6 +75,7 @@ interface BoxCacheProfile {
 
 const PROFILE_ITERATIONS = 300;
 const LIVE_PROFILE_ITERATIONS = 64;
+const LIVE_PROFILE_HISTORY_MESSAGES = 50_000;
 const GC_CYCLES = 32;
 const COMPONENTS_PER_GC_CYCLE = 16;
 const content: ToolResultPresentationContent[] = [
@@ -379,6 +380,10 @@ interface InteractiveModeInternals {
 		actualV2Discoveries: number;
 		canonicalLookupProbes: number;
 		sourceScans: number;
+		liveCanonicalIndexBuildProbes: number;
+		liveCanonicalIndexAppendProbes: number;
+		liveCanonicalLookupProbes: number;
+		liveCanonicalIndexRebuilds: number;
 	};
 }
 
@@ -544,6 +549,7 @@ async function measureDefaultOffProduction(mode: "absent" | "disabled"): Promise
 }
 
 async function measureLiveRegistrationProfile(inspector: Session): Promise<{
+	resumedHistoryMessages: number;
 	iterations: number;
 	p50Ms: number;
 	p95Ms: number;
@@ -552,9 +558,19 @@ async function measureLiveRegistrationProfile(inspector: Session): Promise<{
 	sampledAllocationBytes: number;
 	topAllocationSites: AllocationSite[];
 	pendingRegistrationObjectsCreatedPerResult: number;
+	canonicalIndex: {
+		buildProbes: number;
+		measuredAppendProbes: number;
+		measuredLookupProbes: number;
+		rebuilds: number;
+	};
 	lifecycle: ReturnType<InteractiveModeInternals["getToolResultDiscoveryLifecycleCounts"]>;
 }> {
-	const fixture = await createModeFixture([], "enabled", true);
+	const resumedHistory: AgentMessage[] = [];
+	for (let index = 0; index < LIVE_PROFILE_HISTORY_MESSAGES; index++) {
+		resumedHistory.push(toolResult(`live-history-${index}`, "small"));
+	}
+	const fixture = await createModeFixture(resumedHistory, "enabled", true);
 	fixture.internals.isInitialized = true;
 	const unsubscribe = fixture.session.subscribe((event) => fixture.internals.handleEvent(event));
 	for (let index = 0; index < 8; index++) {
@@ -582,11 +598,19 @@ async function measureLiveRegistrationProfile(inspector: Session): Promise<{
 	unsubscribe();
 	await fixture.dispose();
 	return {
+		resumedHistoryMessages: resumedHistory.length,
 		iterations: LIVE_PROFILE_ITERATIONS,
 		...durationSummary(durations),
 		sampledAllocationBytes: allocations.sampledBytes,
 		topAllocationSites: allocations.top,
 		pendingRegistrationObjectsCreatedPerResult: created / LIVE_PROFILE_ITERATIONS,
+		canonicalIndex: {
+			buildProbes: before.liveCanonicalIndexBuildProbes,
+			measuredAppendProbes:
+				after.liveCanonicalIndexAppendProbes - before.liveCanonicalIndexAppendProbes,
+			measuredLookupProbes: after.liveCanonicalLookupProbes - before.liveCanonicalLookupProbes,
+			rebuilds: after.liveCanonicalIndexRebuilds,
+		},
 		lifecycle: {
 			...after,
 			registrationObjectsCreated: created,
@@ -596,6 +620,56 @@ async function measureLiveRegistrationProfile(inspector: Session): Promise<{
 				after.registrationsTeardownReleased - before.registrationsTeardownReleased,
 		},
 	};
+}
+
+async function measureChronologicalEviction(): Promise<{
+	initialDiscoveries: number;
+	discoveriesAfterLive: number;
+	newestStillAdvertised: boolean;
+	newestFullSourceScanDelta: number;
+	newestResidentRecordHitDelta: number;
+}> {
+	const calls: AssistantMessage["content"] = [];
+	const messages: AgentMessage[] = [];
+	for (let index = 0; index < 128; index++) {
+		const toolCallId = `eviction-profile-${index}`;
+		calls.push({ type: "toolCall", id: toolCallId, name: "fixture-tool", arguments: {} });
+		messages.push(toolResult(toolCallId, `eviction-profile-${index}-`.repeat(1_024)));
+	}
+	messages.unshift(assistant(calls));
+	const fixture = await createModeFixture(messages, "enabled");
+	fixture.internals.isInitialized = true;
+	fixture.mode.renderInitialMessages();
+	const newestComponent = fixture.internals.chatContainer.children.find(
+		(child): child is ToolExecutionComponent =>
+			child instanceof ToolExecutionComponent &&
+			child.getToolResultPresentationDiscovery("eviction-profile-127") !== undefined,
+	);
+	const newestBefore = newestComponent?.getToolResultPresentationDiscovery("eviction-profile-127");
+	if (!newestComponent || !newestBefore) throw new Error("chronological eviction fixture missed newest discovery");
+	const initialDiscoveries = fixture.internals.getToolResultDiscoveryLifecycleCounts().entries;
+	const unsubscribe = fixture.session.subscribe((event) => fixture.internals.handleEvent(event));
+	await runLiveToolResult(fixture, 200_000);
+	const newestAfter = newestComponent.getToolResultPresentationDiscovery("eviction-profile-127");
+	const ownerCounters = (fixture.session as unknown as {
+		_toolResultPresentation?: {
+			counters: { fullSourceEstimatorScans: number; activeContinuationRecordHits: number };
+		};
+	})._toolResultPresentation?.counters;
+	if (!ownerCounters || !newestAfter) throw new Error("newest rebuild discovery was evicted before validation");
+	const scansBefore = ownerCounters.fullSourceEstimatorScans;
+	const hitsBefore = ownerCounters.activeContinuationRecordHits;
+	fixture.session.readToolResultContinuation(newestAfter.cursor, 128);
+	const result = {
+		initialDiscoveries,
+		discoveriesAfterLive: fixture.internals.getToolResultDiscoveryLifecycleCounts().entries,
+		newestStillAdvertised: newestAfter.identity === newestBefore.identity,
+		newestFullSourceScanDelta: ownerCounters.fullSourceEstimatorScans - scansBefore,
+		newestResidentRecordHitDelta: ownerCounters.activeContinuationRecordHits - hitsBefore,
+	};
+	unsubscribe();
+	await fixture.dispose();
+	return result;
 }
 
 async function measureTeardown128(): Promise<{
@@ -931,6 +1005,7 @@ const defaultOffAbsent = await measureDefaultOffProduction("absent");
 const defaultOffDisabled = await measureDefaultOffProduction("disabled");
 const liveRegistrationProfile = await measureLiveRegistrationProfile(inspector);
 const teardown128 = await measureTeardown128();
+const chronologicalEviction = await measureChronologicalEviction();
 const mixedHistoryRebuild = await measureMixedHistoryRebuild();
 const productionLifecycleRefs = await captureProductionLifecycleRefs();
 
@@ -994,6 +1069,7 @@ const result = {
 		disabled: defaultOffDisabled,
 	},
 	teardown128,
+	chronologicalEviction,
 	mixedHistoryRebuild,
 	lifecycle: {
 		cycles: GC_CYCLES,
