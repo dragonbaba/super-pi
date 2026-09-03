@@ -798,6 +798,85 @@ test("the final 128 rebuild discoveries remain resident after evaluating 256 can
 	assert.equal(canonical.toolCallId.startsWith("resident-rebuild-"), true);
 });
 
+test("UI-only rebuild preserves unrelated shared projection records", async (t) => {
+	const counters = createToolResultPresentationCounters();
+	const small = result("shared-provider-v1", "fixture-tool", "small") as ToolResultMessage;
+	const large = result(
+		"shared-ui-v2",
+		"fixture-tool",
+		"shared-ui-discovery-".repeat(1_000),
+	) as ToolResultMessage;
+	const fixture = await createModeFixture(
+		[small, large],
+		[],
+		{ enabled: true, budgetTokens: 128, counters },
+	);
+	t.after(fixture.dispose);
+
+	const canonicalSmall = fixture.session.agent.state.messages[0];
+	assert.ok(canonicalSmall?.role === "toolResult");
+	assert.equal(fixture.session.getToolResultPresentationForUi(canonicalSmall)?.version, 1);
+	const scansAfterSharedAdmission = counters.fullSourceEstimatorScans;
+
+	const selected = new Map<ToolResultMessage, ToolResultPresentation>();
+	fixture.session.collectRecentToolResultPresentationsForUi(selected, 128);
+	assert.equal(selected.size, 1);
+	assert.equal([...selected.keys()][0]?.toolCallId, large.toolCallId);
+	assert.equal(fixture.session.getToolResultPresentationForUi(canonicalSmall)?.version, 1);
+	assert.equal(
+		counters.fullSourceEstimatorScans,
+		scansAfterSharedAdmission + 1,
+		"the rebuild may scan the new V2 candidate once but must preserve the unrelated shared V1 record",
+	);
+});
+
+test("UI rebind synchronizes setup-replaced history before the first live result", async (t) => {
+	const fixture = await createModeFixture([], [], { enabled: true, budgetTokens: 128 });
+	t.after(fixture.dispose);
+	const setupMessages: AgentMessage[] = [];
+	for (let index = 0; index < 64; index++) {
+		setupMessages.push(result(`setup-replaced-${index}`, "fixture-tool", "small"));
+	}
+	fixture.session.agent.state.messages = setupMessages;
+
+	const beforeRebind = fixture.session.getToolResultPresentationUiRebuildCounts();
+	fixture.mode.renderInitialMessages();
+	const afterRebind = fixture.session.getToolResultPresentationUiRebuildCounts();
+	assert.equal(
+		afterRebind.liveCanonicalIndexBuildProbes - beforeRebind.liveCanonicalIndexBuildProbes,
+		setupMessages.length,
+		"the setup replacement must be indexed by the UI rebind rather than the first live message_end",
+	);
+	assert.equal(afterRebind.liveCanonicalIndexEntries, setupMessages.length);
+
+	fixture.internals.isInitialized = true;
+	const liveToolCallId = "after-setup-live";
+	await fixture.internals.handleEvent({
+		type: "tool_execution_start",
+		toolCallId: liveToolCallId,
+		toolName: "fixture-tool",
+		args: {},
+	});
+	const liveMessage = result(
+		liveToolCallId,
+		"fixture-tool",
+		"after-setup-live-".repeat(1_000),
+	) as ToolResultMessage;
+	await fixture.internals.handleEvent({
+		type: "tool_execution_end",
+		toolCallId: liveToolCallId,
+		toolName: "fixture-tool",
+		result: { content: liveMessage.content, isError: liveMessage.isError },
+		isError: false,
+	});
+	fixture.session.agent.state.messages.push(liveMessage);
+	await emitToolResultMessageEnd(fixture, liveMessage);
+	const afterLive = fixture.session.getToolResultPresentationUiRebuildCounts();
+	assert.equal(afterLive.liveCanonicalIndexBuildProbes, afterRebind.liveCanonicalIndexBuildProbes);
+	assert.equal(afterLive.liveCanonicalIndexAppendProbes - afterRebind.liveCanonicalIndexAppendProbes, 1);
+	assert.equal(afterLive.liveCanonicalLookupProbes - afterRebind.liveCanonicalLookupProbes, 1);
+});
+
 test("rebuild re-admission order stays aligned with chronological UI eviction", async (t) => {
 	const counters = createToolResultPresentationCounters();
 	const calls: AssistantMessage["content"] = [];
