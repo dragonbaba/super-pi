@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { Session } from "node:inspector/promises";
 import { performance } from "node:perf_hooks";
 import { setImmediate as yieldToEventLoop } from "node:timers/promises";
@@ -149,11 +150,45 @@ function createAndReleaseBatch(start: number, count: number): void {
 	}
 }
 
+function sourceRegion(source: string, start: string, end: string, from = 0): string {
+	const startIndex = source.indexOf(start, from);
+	if (startIndex < 0) throw new Error(`Missing source marker: ${start}`);
+	const endIndex = source.indexOf(end, startIndex + start.length);
+	if (endIndex < 0) throw new Error(`Missing source marker: ${end}`);
+	return source.slice(startIndex, endIndex);
+}
+
+function countMatches(source: string, pattern: RegExp): number {
+	return source.match(pattern)?.length ?? 0;
+}
+
 if (!globalThis.gc) throw new Error("Run with --expose-gc");
 setKeybindings(new KeybindingsManager());
 initTheme("dark");
 const commit = git(["rev-parse", "HEAD"]);
 const worktreeStatusBefore = git(["status", "--porcelain"]);
+const toolComponentSource = readFileSync(
+	new URL("../../packages/coding-agent/src/modes/interactive/components/tool-execution.ts", import.meta.url),
+	"utf8",
+);
+const interactiveSource = readFileSync(
+	new URL("../../packages/coding-agent/src/modes/interactive/interactive-mode.ts", import.meta.url),
+	"utf8",
+);
+const agentSessionSource = readFileSync(
+	new URL("../../packages/coding-agent/src/core/agent-session.ts", import.meta.url),
+	"utf8",
+);
+const firstComponentSetter = toolComponentSource.indexOf("\tsetToolResultPresentation(");
+const secondComponentSetter = toolComponentSource.indexOf("\tsetToolResultPresentation(", firstComponentSetter + 1);
+const discoveryHotSource = [
+	sourceRegion(toolComponentSource, "export interface ToolResultPresentationDiscoveryState", "type ReadGroupRow"),
+	sourceRegion(toolComponentSource, "\tsetToolResultPresentation(", "\n\tprivate getDisplayRows"),
+	sourceRegion(toolComponentSource, "\tsetToolResultPresentation(", "\n\tsetShowImages", secondComponentSetter),
+	sourceRegion(interactiveSource, "\tprivate evictOldestToolResultDiscovery(", "\n\tprivate retainActiveToolComponent"),
+	sourceRegion(agentSessionSource, "\tget toolResultPresentationEnabled", "\n\t/** Read one bounded continuation"),
+].join("\n");
+const registryHardCap = Number(interactiveSource.match(/MAX_TOOL_RESULT_DISCOVERIES\s*=\s*(\d+)/u)?.[1] ?? 0);
 const inspector = new Session();
 inspector.connect();
 
@@ -229,10 +264,11 @@ const result = {
 	},
 	structure: {
 		defaultOffDiscoveryStates: disabledDiscoveryState,
-		registryHardCap: 128,
-		fullResultCopies: 0,
-		perFramePromises: 0,
-		perFrameAbortControllers: 0,
+		registryHardCap,
+		fullResultCopyOperations: countMatches(discoveryHotSource, /structuredClone|\.slice\(|\.map\(/gu),
+		fullResultSerializations: countMatches(discoveryHotSource, /JSON\.stringify/gu),
+		promises: countMatches(discoveryHotSource, /new\s+Promise/gu),
+		abortControllers: countMatches(discoveryHotSource, /new\s+AbortController/gu),
 	},
 };
 

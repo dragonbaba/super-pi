@@ -209,14 +209,26 @@ test("live tool completion binds the internal presentation sidecar by canonical 
 		result: message,
 		isError: false,
 	});
+	assert.doesNotMatch(fixture.internals.chatContainer.render(80).join("\n"), /Model received a bounded view/);
 	fixture.session.agent.state.messages.push(message);
 	const presentation = fixture.session.getToolResultPresentationForUi(message);
 	assert.equal(presentation?.version, 2);
 	await fixture.internals.handleEvent({ type: "message_end", message, toolResultPresentation: presentation });
 	assert.ok(component.getToolResultPresentationDiscovery(toolCallId));
+	assert.match(
+		fixture.internals.chatContainer.render(80).join("\n"),
+		/Model received a bounded view/,
+		"late sidecar attachment invalidates the completed retained render",
+	);
 	assert.deepEqual(
 		fixture.internals.getToolResultDiscoveryLifecycleCounts(),
 		{ entries: 1, attached: 1, pending: 0 },
+	);
+	fixture.internals.clearToolResultDiscoveries();
+	assert.doesNotMatch(
+		fixture.internals.chatContainer.render(80).join("\n"),
+		/Model received a bounded view/,
+		"clear invalidates the completed retained render",
 	);
 });
 

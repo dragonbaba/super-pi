@@ -223,13 +223,8 @@ interface Expandable {
 	setExpanded(expanded: boolean): void;
 }
 
-interface ToolResultPresentationTarget {
-	setToolResultPresentation(toolCallId: string, presentation: ToolResultPresentation): string | undefined;
-	clearToolResultPresentation(toolCallId: string, identity?: string): void;
-}
-
 interface ToolResultDiscoveryRegistration {
-	component: ToolResultPresentationTarget;
+	component: ToolExecutionComponent | ReadToolGroupComponent;
 	toolCallId: string;
 	identity?: string;
 }
@@ -4448,6 +4443,7 @@ export class InteractiveMode {
 		for (const [key, registration] of entries) {
 			if (registration.identity !== undefined) {
 				registration.component.clearToolResultPresentation(registration.toolCallId, registration.identity);
+				this.chatContainer.invalidateRetainedChild(registration.component);
 			}
 			entries.delete(key);
 			return;
@@ -4478,11 +4474,14 @@ export class InteractiveMode {
 	): void {
 		const identity = registration.component.setToolResultPresentation(registration.toolCallId, presentation);
 		if (!identity) return;
+		this.chatContainer.invalidateRetainedChild(registration.component);
 		const entries = this.toolResultDiscoveries ??= new Map();
 		const duplicate = entries.get(identity);
 		if (duplicate) {
 			duplicate.component.clearToolResultPresentation(duplicate.toolCallId, identity);
 			registration.component.clearToolResultPresentation(registration.toolCallId, identity);
+			this.chatContainer.invalidateRetainedChild(duplicate.component);
+			this.chatContainer.invalidateRetainedChild(registration.component);
 			entries.delete(identity);
 			return;
 		}
@@ -4508,6 +4507,7 @@ export class InteractiveMode {
 		for (const registration of entries.values()) {
 			if (registration.identity !== undefined) {
 				registration.component.clearToolResultPresentation(registration.toolCallId, registration.identity);
+				this.chatContainer.invalidateRetainedChild(registration.component);
 			}
 		}
 		entries.clear();
