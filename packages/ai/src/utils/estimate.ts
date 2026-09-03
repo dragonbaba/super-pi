@@ -107,22 +107,62 @@ function estimateToolsTokens(tools: readonly Tool[] | undefined): number {
 	return estimateTextTokens(safeJsonStringify(tools));
 }
 
+function addToolIndexesByName(tools: readonly Tool[], toolName: string, selectedIndexes: bigint): bigint {
+	for (let toolIndex = 0; toolIndex < tools.length; toolIndex++) {
+		if (tools[toolIndex].name === toolName) selectedIndexes |= 1n << BigInt(toolIndex);
+	}
+	return selectedIndexes;
+}
+
+function estimateAddedToolsTokens(
+	messages: readonly Message[],
+	startIndex: number,
+	tools: readonly Tool[] | undefined,
+): number {
+	if (!tools || tools.length === 0) return 0;
+	let selectedIndexes = 0n;
+	for (let messageIndex = startIndex; messageIndex < messages.length; messageIndex++) {
+		const message = messages[messageIndex];
+		if (message.role !== "toolResult") continue;
+		const addedToolNames = message.addedToolNames;
+		if (!addedToolNames) continue;
+		for (let nameIndex = 0; nameIndex < addedToolNames.length; nameIndex++) {
+			selectedIndexes = addToolIndexesByName(tools, addedToolNames[nameIndex], selectedIndexes);
+		}
+	}
+	if (selectedIndexes === 0n) return 0;
+	let chars = 2;
+	let selectedCount = 0;
+	let toolBit = 1n;
+	for (let toolIndex = 0; toolIndex < tools.length; toolIndex++) {
+		const tool = tools[toolIndex];
+		if ((selectedIndexes & toolBit) !== 0n) {
+			if (selectedCount > 0) chars++;
+			chars += safeJsonStringify(tool).length;
+			selectedCount++;
+		}
+		toolBit <<= 1n;
+	}
+	return Math.ceil(chars / CHARS_PER_TOKEN);
+}
+
 function isMessageArray(value: Context | readonly Message[]): value is readonly Message[] {
 	return Array.isArray(value);
 }
 
 export function estimateContextTokens(context: Context | readonly Message[]): ContextUsageEstimate {
 	if (isMessageArray(context)) return estimateMessages(context);
+	return estimateContextTokensFromParts(context.systemPrompt, context.messages, context.tools);
+}
 
-	const estimate = estimateMessages(context.messages);
+export function estimateContextTokensFromParts(
+	systemPrompt: string | undefined,
+	messages: readonly Message[],
+	tools: readonly Tool[] | undefined,
+): ContextUsageEstimate {
+	const estimate = estimateMessages(messages);
 	if (estimate.lastUsageIndex !== null) {
-		const addedNames = new Set(
-			context.messages
-				.slice(estimate.lastUsageIndex + 1)
-				.filter((message) => message.role === "toolResult")
-				.flatMap((message) => message.addedToolNames ?? []),
-		);
-		const addedToolTokens = estimateToolsTokens(context.tools?.filter((tool) => addedNames.has(tool.name)));
+		const addedToolTokens = estimateAddedToolsTokens(messages, estimate.lastUsageIndex + 1, tools);
 		return {
 			tokens: estimate.tokens + addedToolTokens,
 			usageTokens: estimate.usageTokens,
@@ -132,7 +172,7 @@ export function estimateContextTokens(context: Context | readonly Message[]): Co
 	}
 
 	const prefixTokens =
-		(context.systemPrompt ? estimateTextTokens(context.systemPrompt) : 0) + estimateToolsTokens(context.tools);
+		(systemPrompt ? estimateTextTokens(systemPrompt) : 0) + estimateToolsTokens(tools);
 
 	return {
 		tokens: estimate.tokens + prefixTokens,

@@ -44,6 +44,14 @@ function fixtureModel(): Model<"openai-responses"> {
 	};
 }
 
+function codexFixtureModel(): Model<"openai-codex-responses"> {
+	return {
+		...fixtureModel(),
+		api: "openai-codex-responses",
+		provider: "openai-codex",
+	};
+}
+
 function fixtureModelRuntime(): ModelRuntime {
 	return {
 		hasConfiguredAuth: () => true,
@@ -773,4 +781,172 @@ test("record-cleared production context clones bind provider cursors to the pers
 
 test("modified production context clones cannot bind to the persisted source", async () => {
 	await runEmptyRecordContextCloneFixture("clear", "change-source");
+});
+
+test("real transformContext to convertToLlm order enforces a source-ordered turn envelope", async () => {
+	const root = mkdtempSync(join(tmpdir(), "pi-contextual-turn-budget-"));
+	const cwd = join(root, "workspace");
+	const agentDir = join(root, "agent");
+	mkdirSync(cwd, { recursive: true });
+	mkdirSync(agentDir, { recursive: true });
+	const settingsManager = SettingsManager.create(cwd, agentDir);
+	const resourceLoader = new DefaultResourceLoader({
+		cwd,
+		agentDir,
+		settingsManager,
+		noContextFiles: true,
+		noPromptTemplates: true,
+		noSkills: true,
+		noThemes: true,
+		extensionFactories: [(pi) => {
+			pi.on("context", () => undefined);
+		}],
+	});
+	await resourceLoader.reload();
+	let providerContext: Context | undefined;
+	const counters = createToolResultPresentationCounters();
+	const { session } = await createAgentSession({
+		cwd,
+		agentDir,
+		model: fixtureModel(),
+		modelRuntime: capturingModelRuntime((context) => { providerContext = context; }),
+		settingsManager,
+		sessionManager: SessionManager.inMemory(cwd, { id: "contextual-turn-budget" }),
+		resourceLoader,
+		noTools: "all",
+		toolResultPresentation: { enabled: true, budgetTokens: 1_024, counters },
+	});
+	try {
+		const toolCallIds = ["contextual-a", "contextual-b"];
+		const assistant: AssistantMessage = {
+			role: "assistant",
+			content: toolCallIds.map((id) => ({ type: "toolCall", id, name: "fixture", arguments: {} })),
+			api: "openai-responses",
+			provider: "fixture",
+			model: fixtureModel().id,
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "toolUse",
+			timestamp: 1,
+		};
+		session.agent.state.messages.push(assistant);
+		const canonical: ToolResultMessage[] = toolCallIds.map((toolCallId, index) => ({
+			role: "toolResult",
+			toolCallId,
+			toolName: "fixture",
+			content: [{ type: "text", text: `${index}-abcdefgh `.repeat(160) }],
+			isError: false,
+			timestamp: index + 2,
+		}));
+		for (const result of canonical) {
+			session.agent.state.messages.push(result);
+			await (session as unknown as {
+				_handleAgentEvent(event: ToolResultMessageEndEvent): Promise<void>;
+			})._handleAgentEvent({ type: "message_end", message: result });
+		}
+		await session.prompt("continue", { expandPromptTemplates: false });
+		assert.ok(providerContext);
+		const providerResults = providerContext.messages.filter(
+			(message): message is ToolResultMessage => message.role === "toolResult",
+		);
+		assert.equal(providerResults.length, 2);
+		let totalTokens = 0;
+		for (const result of providerResults) {
+			totalTokens += estimateToolOutputTokens(result.content).estimatedTokens;
+			const cursor = providerCursorFrom(result.content);
+			assert.ok(session.readToolResultContinuation(cursor, 128).content.length > 0);
+		}
+		assert.ok(totalTokens <= 1_024);
+		assert.equal(counters.contextualBudgetCalls, 1);
+		assert.equal(counters.contextualTurnResults, 2);
+		assert.equal(counters.activeContextualCoordinators, 0);
+	} finally {
+		session.dispose();
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("provider request preview uses the same contextual turn envelope", async () => {
+	const root = mkdtempSync(join(tmpdir(), "pi-contextual-provider-preview-"));
+	const cwd = join(root, "workspace");
+	const agentDir = join(root, "agent");
+	mkdirSync(cwd, { recursive: true });
+	mkdirSync(agentDir, { recursive: true });
+	const settingsManager = SettingsManager.create(cwd, agentDir);
+	const resourceLoader = new DefaultResourceLoader({
+		cwd,
+		agentDir,
+		settingsManager,
+		noContextFiles: true,
+		noPromptTemplates: true,
+		noSkills: true,
+		noThemes: true,
+		extensionFactories: [(pi) => { pi.on("context", () => undefined); }],
+	});
+	await resourceLoader.reload();
+	const counters = createToolResultPresentationCounters();
+	const { session } = await createAgentSession({
+		cwd,
+		agentDir,
+		model: codexFixtureModel(),
+		modelRuntime: fixtureModelRuntime(),
+		settingsManager,
+		sessionManager: SessionManager.inMemory(cwd, { id: "contextual-provider-preview" }),
+		resourceLoader,
+		noTools: "all",
+		toolResultPresentation: { enabled: true, budgetTokens: 1_024, counters },
+	});
+	try {
+		const ids = ["preview-a", "preview-b"];
+		const assistant: AssistantMessage = {
+			role: "assistant",
+			content: ids.map((id) => ({ type: "toolCall", id, name: "fixture", arguments: {} })),
+			api: "openai-codex-responses",
+			provider: "openai-codex",
+			model: codexFixtureModel().id,
+			usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+			stopReason: "toolUse",
+			timestamp: 1,
+		};
+		const results: ToolResultMessage[] = ids.map((toolCallId, index) => ({
+			role: "toolResult",
+			toolCallId,
+			toolName: "fixture",
+			content: [{ type: "text", text: `${index}-preview-output `.repeat(400) }],
+			isError: false,
+			timestamp: index + 2,
+		}));
+		session.agent.state.messages.push(assistant, ...results);
+		for (const result of results) {
+			await (session as unknown as {
+				_handleAgentEvent(event: ToolResultMessageEndEvent): Promise<void>;
+			})._handleAgentEvent({ type: "message_end", message: result });
+		}
+		const payload = await session.buildProviderRequestPayload({
+			systemPrompt: "system",
+			messages: session.agent.state.messages,
+		});
+		assert.ok(payload);
+		const input = payload.input as Array<{ type?: string; output?: unknown }>;
+		const outputs = input.filter((item) => item.type === "function_call_output");
+		assert.equal(outputs.length, 2);
+		let totalTokens = 0;
+		for (const item of outputs) {
+			assert.equal(typeof item.output, "string");
+			totalTokens += estimateToolOutputTokens([{ type: "text", text: item.output as string }]).estimatedTokens;
+		}
+		assert.ok(totalTokens <= 1_024);
+		assert.equal(counters.contextualBudgetCalls, 1);
+		assert.equal(counters.contextualTurnResults, 2);
+		assert.equal(counters.activeContextualCoordinators, 0);
+	} finally {
+		session.dispose();
+		rmSync(root, { recursive: true, force: true });
+	}
 });

@@ -26,6 +26,7 @@ import type {
 	AgentEventInstrumentation,
 	AgentLoopConfig,
 	AgentLoopTurnUpdate,
+	AgentLlmConverter,
 	AgentMessage,
 	AgentState,
 	AgentTool,
@@ -125,7 +126,7 @@ function createMutableAgentState(
 /** Options for constructing an {@link Agent}. */
 export interface AgentOptions {
 	initialState?: Partial<Omit<AgentState, "pendingToolCalls" | "isStreaming" | "streamingMessage" | "errorMessage">>;
-	convertToLlm?: (messages: AgentMessage[]) => Message[] | Promise<Message[]>;
+	convertToLlm?: AgentLlmConverter;
 	transformContext?: (messages: AgentMessage[], signal?: AbortSignal) => Promise<AgentMessage[]>;
 	streamFn: StreamFn;
 	getApiKey?: (provider: string) => Promise<string | undefined> | string | undefined;
@@ -284,7 +285,7 @@ export class Agent {
 	private readonly steeringQueue: PendingMessageQueue;
 	private readonly followUpQueue: PendingMessageQueue;
 
-	public convertToLlm: (messages: AgentMessage[]) => Message[] | Promise<Message[]>;
+	public convertToLlm: AgentLlmConverter;
 	public transformContext?: (messages: AgentMessage[], signal?: AbortSignal) => Promise<AgentMessage[]>;
 	public streamFunction: StreamFn;
 	public getApiKey?: (provider: string) => Promise<string | undefined> | string | undefined;
