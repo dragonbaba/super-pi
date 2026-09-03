@@ -1,4 +1,6 @@
 import { readFileSync } from "node:fs";
+import { dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import ts from "typescript";
 
 export interface ToolResultPresentationUiSourceAudit {
@@ -7,9 +9,14 @@ export interface ToolResultPresentationUiSourceAudit {
 	readonly resultRenderingArrayMaterializationSites: number;
 	readonly resultRenderingArrayLiteralSites: number;
 	readonly resultRenderingArraySpreadSites: number;
+	readonly resultRenderingCallSpreadSites: number;
 	readonly resultRenderingArrayProducingCallSites: number;
+	readonly resultRenderingStringProducingCallSites: number;
 	readonly resultRenderingArrayConstructorSites: number;
 	readonly resultRenderingStringAppendSites: number;
+	readonly resultRenderingNumericAppendSites: number;
+	readonly resultRenderingUnclassifiedAppendSites: number;
+	readonly resultRenderingInlineClosureSites: number;
 	readonly resultRenderingSerializationSites: number;
 	readonly argumentSerializationSites: number;
 	readonly discoveryOwnershipCopyOperations: number;
@@ -21,9 +28,14 @@ export interface ToolResultPresentationUiSourceAudit {
 interface AstCounts {
 	arrayLiterals: number;
 	arraySpreads: number;
+	callSpreads: number;
 	arrayProducingCalls: number;
+	stringProducingCalls: number;
 	arrayConstructors: number;
-	appendAssignments: number;
+	stringAppendAssignments: number;
+	numericAppendAssignments: number;
+	unclassifiedAppendAssignments: number;
+	inlineClosures: number;
 	serializations: number;
 	copyOperations: number;
 	promises: number;
@@ -32,65 +44,65 @@ interface AstCounts {
 
 const ARRAY_PRODUCING_METHODS = new Set(["filter", "flat", "flatMap", "map", "match", "matchAll", "slice", "split"]);
 
-function sourceRegion(source: string, start: string, end: string, from = 0): string {
-	const startIndex = source.indexOf(start, from);
-	if (startIndex < 0) throw new Error(`Missing source marker: ${start}`);
-	const endIndex = source.indexOf(end, startIndex + start.length);
-	if (endIndex < 0) throw new Error(`Missing source marker: ${end}`);
-	return source.slice(startIndex, endIndex);
-}
-
 function declarationName(name: ts.DeclarationName | undefined): string | undefined {
 	if (!name) return undefined;
 	if (ts.isIdentifier(name) || ts.isStringLiteral(name) || ts.isNumericLiteral(name)) return name.text;
 	return undefined;
 }
 
-function extractNamedDeclarations(source: string, fileName: string, names: readonly string[]): string {
-	const sourceFile = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
-	const declarations = new Map<string, string>();
+function selectNamedDeclarations(sourceFile: ts.SourceFile, names: readonly string[]): ts.Node[] {
+	const declarations = new Map<string, ts.Node>();
 	for (const statement of sourceFile.statements) {
 		if ((!ts.isFunctionDeclaration(statement) && !ts.isClassDeclaration(statement)) || !statement.name) continue;
-		if (names.includes(statement.name.text)) declarations.set(statement.name.text, statement.getText(sourceFile));
+		if (names.includes(statement.name.text)) declarations.set(statement.name.text, statement);
 	}
 	const missing = names.filter((name) => !declarations.has(name));
-	if (missing.length > 0) throw new Error(`Missing declarations in ${fileName}: ${missing.join(", ")}`);
-	return names.map((name) => declarations.get(name)!).join("\n");
+	if (missing.length > 0) throw new Error(`Missing declarations in ${sourceFile.fileName}: ${missing.join(", ")}`);
+	return names.map((name) => declarations.get(name)!);
 }
 
-function extractClassMethods(source: string, fileName: string, className: string, names: readonly string[]): string {
-	const sourceFile = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+function selectClassMembers(sourceFile: ts.SourceFile, className: string, names: readonly string[]): ts.Node[] {
 	const classDeclaration = sourceFile.statements.find(
 		(statement): statement is ts.ClassDeclaration => ts.isClassDeclaration(statement) && statement.name?.text === className,
 	);
-	if (!classDeclaration) throw new Error(`Missing class in ${fileName}: ${className}`);
-	const methods = new Map<string, string>();
+	if (!classDeclaration) throw new Error(`Missing class in ${sourceFile.fileName}: ${className}`);
+	const members = new Map<string, ts.Node>();
 	for (const member of classDeclaration.members) {
-		if (!ts.isMethodDeclaration(member)) continue;
+		if (!ts.isMethodDeclaration(member) && !ts.isGetAccessorDeclaration(member)) continue;
 		const name = declarationName(member.name);
-		if (name && names.includes(name)) methods.set(name, member.getText(sourceFile));
+		if (name && names.includes(name)) members.set(name, member);
 	}
-	const missing = names.filter((name) => !methods.has(name));
-	if (missing.length > 0) throw new Error(`Missing methods in ${fileName}:${className}: ${missing.join(", ")}`);
-	return `class ${className}Audit {\n${names.map((name) => methods.get(name)!).join("\n")}\n}`;
-}
-
-function wrapClassMembers(name: string, members: string): string {
-	return `class ${name} {\n${members}\n}`;
+	const missing = names.filter((name) => !members.has(name));
+	if (missing.length > 0) throw new Error(`Missing members in ${sourceFile.fileName}:${className}: ${missing.join(", ")}`);
+	return names.map((name) => members.get(name)!);
 }
 
 function isIdentifierNamed(node: ts.Node | undefined, name: string): boolean {
 	return !!node && ts.isIdentifier(node) && node.text === name;
 }
 
-function countAst(source: string, fileName: string): AstCounts {
-	const sourceFile = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+function includesTypeFlag(type: ts.Type, flag: ts.TypeFlags): boolean {
+	return type.isUnion() ? type.types.some((part) => includesTypeFlag(part, flag)) : (type.flags & flag) !== 0;
+}
+
+function includesArrayType(type: ts.Type, checker: ts.TypeChecker): boolean {
+	return type.isUnion()
+		? type.types.some((part) => includesArrayType(part, checker))
+		: checker.isArrayType(type) || checker.isTupleType(type);
+}
+
+function countAst(nodes: readonly ts.Node[], checker?: ts.TypeChecker): AstCounts {
 	const counts: AstCounts = {
 		arrayLiterals: 0,
 		arraySpreads: 0,
+		callSpreads: 0,
 		arrayProducingCalls: 0,
+		stringProducingCalls: 0,
 		arrayConstructors: 0,
-		appendAssignments: 0,
+		stringAppendAssignments: 0,
+		numericAppendAssignments: 0,
+		unclassifiedAppendAssignments: 0,
+		inlineClosures: 0,
 		serializations: 0,
 		copyOperations: 0,
 		promises: 0,
@@ -100,20 +112,33 @@ function countAst(source: string, fileName: string): AstCounts {
 		if (ts.isArrayLiteralExpression(node)) {
 			counts.arrayLiterals++;
 		} else if (ts.isSpreadElement(node)) {
-			counts.arraySpreads++;
+			if (ts.isArrayLiteralExpression(node.parent)) counts.arraySpreads++;
+			else counts.callSpreads++;
 		} else if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusEqualsToken) {
-			counts.appendAssignments++;
+			const leftType = checker?.getTypeAtLocation(node.left);
+			if (leftType && includesTypeFlag(leftType, ts.TypeFlags.StringLike)) counts.stringAppendAssignments++;
+			else if (leftType && includesTypeFlag(leftType, ts.TypeFlags.NumberLike)) counts.numericAppendAssignments++;
+			else counts.unclassifiedAppendAssignments++;
+		} else if (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) {
+			counts.inlineClosures++;
 		} else if (ts.isCallExpression(node)) {
 			const expression = node.expression;
 			if (ts.isPropertyAccessExpression(expression)) {
-				if (ARRAY_PRODUCING_METHODS.has(expression.name.text)) counts.arrayProducingCalls++;
+				const returnType = checker?.getTypeAtLocation(node);
+				if (ARRAY_PRODUCING_METHODS.has(expression.name.text)) {
+					if (!checker || !returnType || includesArrayType(returnType, checker)) counts.arrayProducingCalls++;
+					else if (includesTypeFlag(returnType, ts.TypeFlags.StringLike)) counts.stringProducingCalls++;
+				}
 				if (isIdentifierNamed(expression.expression, "JSON") && expression.name.text === "stringify") {
 					counts.serializations++;
 				}
 				if (isIdentifierNamed(expression.expression, "Array") && (expression.name.text === "from" || expression.name.text === "of")) {
 					counts.arrayProducingCalls++;
 				}
-				if (expression.name.text === "slice" || expression.name.text === "map") counts.copyOperations++;
+				if (
+					(expression.name.text === "slice" || expression.name.text === "map") &&
+					(!checker || !returnType || includesArrayType(returnType, checker))
+				) counts.copyOperations++;
 			} else if (isIdentifierNamed(expression, "structuredClone")) {
 				counts.copyOperations++;
 			} else if (isIdentifierNamed(expression, "Array")) {
@@ -126,65 +151,85 @@ function countAst(source: string, fileName: string): AstCounts {
 		}
 		ts.forEachChild(node, visit);
 	};
-	visit(sourceFile);
+	const visited = new Set<ts.Node>();
+	for (const node of nodes) {
+		if (visited.has(node)) continue;
+		visited.add(node);
+		visit(node);
+	}
 	return counts;
 }
 
+function createSourceProgram(rootNames: readonly string[]): ts.Program {
+	const configPath = fileURLToPath(new URL("../../tsconfig.json", import.meta.url));
+	const config = ts.readConfigFile(configPath, ts.sys.readFile);
+	if (config.error) throw new Error(ts.flattenDiagnosticMessageText(config.error.messageText, "\n"));
+	const parsed = ts.parseJsonConfigFileContent(config.config, ts.sys, dirname(configPath));
+	return ts.createProgram({ rootNames: [...rootNames], options: { ...parsed.options, noEmit: true } });
+}
+
+function requireSourceFile(program: ts.Program, path: string): ts.SourceFile {
+	const sourceFile = program.getSourceFile(path);
+	if (!sourceFile) throw new Error(`Missing TypeScript program source: ${path}`);
+	return sourceFile;
+}
+
 export function auditToolResultPresentationUiSources(): ToolResultPresentationUiSourceAudit {
-	const toolComponentSource = readFileSync(
-		new URL("../../packages/coding-agent/src/modes/interactive/components/tool-execution.ts", import.meta.url),
-		"utf8",
-	);
-	const interactiveSource = readFileSync(
-		new URL("../../packages/coding-agent/src/modes/interactive/interactive-mode.ts", import.meta.url),
-		"utf8",
-	);
-	const agentSessionSource = readFileSync(
-		new URL("../../packages/coding-agent/src/core/agent-session.ts", import.meta.url),
-		"utf8",
-	);
-	const renderUtilsSource = readFileSync(
-		new URL("../../packages/coding-agent/src/core/tools/render-utils.ts", import.meta.url),
-		"utf8",
-	);
-	const tuiContainerSource = readFileSync(new URL("../../packages/tui/src/tui.ts", import.meta.url), "utf8");
-	const tuiBoxSource = readFileSync(new URL("../../packages/tui/src/components/box.ts", import.meta.url), "utf8");
-	const tuiTextSource = readFileSync(new URL("../../packages/tui/src/components/text.ts", import.meta.url), "utf8");
-	const tuiUtilsSource = readFileSync(new URL("../../packages/tui/src/utils.ts", import.meta.url), "utf8");
-	const firstComponentSetter = toolComponentSource.indexOf("\tsetToolResultPresentation(");
-	const secondComponentSetter = toolComponentSource.indexOf("\tsetToolResultPresentation(", firstComponentSetter + 1);
-	const discoveryOwnershipSource = [
-		wrapClassMembers(
-			"ReadGroupDiscoveryAudit",
-			sourceRegion(toolComponentSource, "\tsetToolResultPresentation(", "\n\tprivate getDisplayRows"),
-		),
-		wrapClassMembers(
-			"ToolDiscoveryAudit",
-			sourceRegion(toolComponentSource, "\tsetToolResultPresentation(", "\n\tsetShowImages", secondComponentSetter),
-		),
-		wrapClassMembers(
-			"InteractiveDiscoveryAudit",
-			sourceRegion(interactiveSource, "\tprivate evictOldestToolResultDiscovery(", "\n\tprivate retainActiveToolComponent"),
-		),
-		wrapClassMembers(
-			"SessionDiscoveryAudit",
-			sourceRegion(agentSessionSource, "\tget toolResultPresentationEnabled", "\n\t/** Read one bounded continuation"),
-		),
-	].join("\n");
-	const toolResultRenderingSource = [
-		extractNamedDeclarations(toolComponentSource, "tool-execution.ts", [
+	const sourcePaths = {
+		toolComponent: fileURLToPath(new URL("../../packages/coding-agent/src/modes/interactive/components/tool-execution.ts", import.meta.url)),
+		interactive: fileURLToPath(new URL("../../packages/coding-agent/src/modes/interactive/interactive-mode.ts", import.meta.url)),
+		agentSession: fileURLToPath(new URL("../../packages/coding-agent/src/core/agent-session.ts", import.meta.url)),
+		renderUtils: fileURLToPath(new URL("../../packages/coding-agent/src/core/tools/render-utils.ts", import.meta.url)),
+		tuiContainer: fileURLToPath(new URL("../../packages/tui/src/tui.ts", import.meta.url)),
+		tuiBox: fileURLToPath(new URL("../../packages/tui/src/components/box.ts", import.meta.url)),
+		tuiText: fileURLToPath(new URL("../../packages/tui/src/components/text.ts", import.meta.url)),
+		tuiSpacer: fileURLToPath(new URL("../../packages/tui/src/components/spacer.ts", import.meta.url)),
+		tuiUtils: fileURLToPath(new URL("../../packages/tui/src/utils.ts", import.meta.url)),
+	};
+	const program = createSourceProgram(Object.values(sourcePaths));
+	const checker = program.getTypeChecker();
+	const toolComponent = requireSourceFile(program, sourcePaths.toolComponent);
+	const interactive = requireSourceFile(program, sourcePaths.interactive);
+	const agentSession = requireSourceFile(program, sourcePaths.agentSession);
+	const renderUtils = requireSourceFile(program, sourcePaths.renderUtils);
+	const tuiContainer = requireSourceFile(program, sourcePaths.tuiContainer);
+	const tuiBox = requireSourceFile(program, sourcePaths.tuiBox);
+	const tuiText = requireSourceFile(program, sourcePaths.tuiText);
+	const tuiSpacer = requireSourceFile(program, sourcePaths.tuiSpacer);
+	const tuiUtils = requireSourceFile(program, sourcePaths.tuiUtils);
+	const discoveryOwnershipNodes = [
+		...selectClassMembers(toolComponent, "ReadToolGroupComponent", ["setToolResultPresentation", "clearToolResultPresentation"]),
+		...selectClassMembers(toolComponent, "ToolExecutionComponent", ["setToolResultPresentation", "clearToolResultPresentation"]),
+		...selectClassMembers(interactive, "InteractiveMode", [
+			"evictOldestToolResultDiscovery",
+			"addToolResultDiscovery",
+			"trackToolResultPresentationTarget",
+			"attachToolResultPresentation",
+			"attachLiveToolResultPresentation",
+			"clearToolResultDiscoveries",
+			"getToolResultDiscoveryLifecycleCounts",
+		]),
+		...selectClassMembers(agentSession, "AgentSession", [
+			"toolResultPresentationEnabled",
+			"getToolResultPresentationForUi",
+			"readToolResultContinuation",
+			"readToolResultArtifact",
+		]),
+	];
+	const toolResultRenderingNodes = [
+		...selectNamedDeclarations(toolComponent, [
 			"createToolResultDiscovery",
 			"formatToolResultDiscovery",
 			"getReadGroupResultText",
 			"boundReadGroupPreview",
 		]),
-		extractClassMethods(toolComponentSource, "tool-execution.ts", "ReadToolGroupComponent", [
+		...selectClassMembers(toolComponent, "ReadToolGroupComponent", [
 			"setToolResultPresentation",
 			"clearToolResultPresentation",
 			"getDisplayRows",
 			"rebuild",
 		]),
-		extractClassMethods(toolComponentSource, "tool-execution.ts", "ToolExecutionComponent", [
+		...selectClassMembers(toolComponent, "ToolExecutionComponent", [
 			"createCallFallback",
 			"createResultFallback",
 			"getCallRenderer",
@@ -201,14 +246,15 @@ export function auditToolResultPresentationUiSources(): ToolResultPresentationUi
 			"formatToolExecution",
 			"refreshImageTree",
 		]),
-		extractNamedDeclarations(renderUtilsSource, "render-utils.ts", ["getTextOutput"]),
-	].join("\n");
-	const tuiResultRenderingSource = [
-		extractClassMethods(tuiContainerSource, "tui.ts", "Container", ["render"]),
-		extractNamedDeclarations(tuiContainerSource, "tui.ts", ["renderContainerInto"]),
-		extractClassMethods(tuiBoxSource, "components/box.ts", "Box", ["matchCache", "render", "applyBg"]),
-		extractClassMethods(tuiTextSource, "components/text.ts", "Text", ["render"]),
-		extractNamedDeclarations(tuiUtilsSource, "utils.ts", [
+		...selectNamedDeclarations(renderUtils, ["getTextOutput"]),
+	];
+	const tuiResultRenderingNodes = [
+		...selectClassMembers(tuiContainer, "Container", ["render"]),
+		...selectNamedDeclarations(tuiContainer, ["renderContainerInto"]),
+		...selectClassMembers(tuiBox, "Box", ["matchCache", "render", "applyBg"]),
+		...selectClassMembers(tuiText, "Text", ["render"]),
+		...selectClassMembers(tuiSpacer, "Spacer", ["render"]),
+		...selectNamedDeclarations(tuiUtils, [
 			"getGraphemeSegmenter",
 			"getWordSegmenter",
 			"couldBeEmoji",
@@ -232,17 +278,17 @@ export function auditToolResultPresentationUiSources(): ToolResultPresentationUi
 			"breakLongWord",
 			"applyBackgroundToLine",
 		]),
-	].join("\n");
-	const transitiveResultRenderingSource = [toolResultRenderingSource, tuiResultRenderingSource, discoveryOwnershipSource].join("\n");
-	const argumentSerializationSource = extractClassMethods(
-		toolComponentSource,
-		"tool-execution.ts",
-		"ToolExecutionComponent",
-		["serializeArgs"],
+	];
+	const renderingCounts = countAst(
+		[...toolResultRenderingNodes, ...tuiResultRenderingNodes, ...discoveryOwnershipNodes],
+		checker,
 	);
-	const renderingCounts = countAst(transitiveResultRenderingSource, "transitive-result-rendering.ts");
-	const argumentCounts = countAst(argumentSerializationSource, "argument-serialization.ts");
-	const ownershipCounts = countAst(discoveryOwnershipSource, "discovery-ownership.ts");
+	const argumentCounts = countAst(
+		selectClassMembers(toolComponent, "ToolExecutionComponent", ["serializeArgs"]),
+		checker,
+	);
+	const ownershipCounts = countAst(discoveryOwnershipNodes, checker);
+	const interactiveSource = readFileSync(sourcePaths.interactive, "utf8");
 	const registryHardCap = Number(interactiveSource.match(/MAX_TOOL_RESULT_DISCOVERIES\s*=\s*(\d+)/u)?.[1] ?? 0);
 	return {
 		registryHardCap,
@@ -254,6 +300,7 @@ export function auditToolResultPresentationUiSources(): ToolResultPresentationUi
 			"tui.ts/Container",
 			"components/box.ts",
 			"components/text.ts",
+			"components/spacer.ts",
 			"utils.ts/wrapping",
 		],
 		resultRenderingArrayMaterializationSites:
@@ -263,9 +310,14 @@ export function auditToolResultPresentationUiSources(): ToolResultPresentationUi
 			renderingCounts.arrayConstructors,
 		resultRenderingArrayLiteralSites: renderingCounts.arrayLiterals,
 		resultRenderingArraySpreadSites: renderingCounts.arraySpreads,
+		resultRenderingCallSpreadSites: renderingCounts.callSpreads,
 		resultRenderingArrayProducingCallSites: renderingCounts.arrayProducingCalls,
+		resultRenderingStringProducingCallSites: renderingCounts.stringProducingCalls,
 		resultRenderingArrayConstructorSites: renderingCounts.arrayConstructors,
-		resultRenderingStringAppendSites: renderingCounts.appendAssignments,
+		resultRenderingStringAppendSites: renderingCounts.stringAppendAssignments,
+		resultRenderingNumericAppendSites: renderingCounts.numericAppendAssignments,
+		resultRenderingUnclassifiedAppendSites: renderingCounts.unclassifiedAppendAssignments,
+		resultRenderingInlineClosureSites: renderingCounts.inlineClosures,
 		resultRenderingSerializationSites: renderingCounts.serializations,
 		argumentSerializationSites: argumentCounts.serializations,
 		discoveryOwnershipCopyOperations: ownershipCounts.copyOperations,

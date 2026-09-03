@@ -180,15 +180,21 @@ test("UI allocation source audit executes the selected production chain and lock
 		"tui.ts/Container",
 		"components/box.ts",
 		"components/text.ts",
+		"components/spacer.ts",
 		"utils.ts/wrapping",
 	]);
 	assert.equal(audit.registryHardCap, 128);
-	assert.equal(audit.resultRenderingArrayMaterializationSites, 47);
-	assert.equal(audit.resultRenderingArrayLiteralSites, 29);
-	assert.equal(audit.resultRenderingArraySpreadSites, 6);
-	assert.equal(audit.resultRenderingArrayProducingCallSites, 12);
+	assert.equal(audit.resultRenderingArrayMaterializationSites, 37);
+	assert.equal(audit.resultRenderingArrayLiteralSites, 30);
+	assert.equal(audit.resultRenderingArraySpreadSites, 3);
+	assert.equal(audit.resultRenderingCallSpreadSites, 3);
+	assert.equal(audit.resultRenderingArrayProducingCallSites, 4);
+	assert.equal(audit.resultRenderingStringProducingCallSites, 7);
 	assert.equal(audit.resultRenderingArrayConstructorSites, 0);
-	assert.equal(audit.resultRenderingStringAppendSites, 40);
+	assert.equal(audit.resultRenderingStringAppendSites, 25);
+	assert.equal(audit.resultRenderingNumericAppendSites, 15);
+	assert.equal(audit.resultRenderingUnclassifiedAppendSites, 0);
+	assert.equal(audit.resultRenderingInlineClosureSites, 1);
 	assert.equal(audit.resultRenderingSerializationSites, 0);
 	assert.equal(audit.argumentSerializationSites, 1);
 	assert.equal(audit.discoveryOwnershipCopyOperations, 0);
