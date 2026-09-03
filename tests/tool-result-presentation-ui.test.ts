@@ -190,6 +190,43 @@ test("grouped read rows use the same bounded-result semantics", () => {
 	owner.dispose();
 });
 
+test("expanded grouped read rows expose complete canonical text beyond preview limits", () => {
+	initTheme("dark");
+	const longByCharacters = `character-prefix-${"x".repeat(4_001)}-character-tail`;
+	const longByLines = `${Array.from({ length: 51 }, (_, index) => `line-${index}-${"y".repeat(96)}`).join("\n")}\nline-tail`;
+	const imageData = "QUJDREVGRw==";
+	const rows = [
+		toolResult("read-characters", [{ type: "text", text: longByCharacters }]),
+		toolResult("read-lines", [{ type: "text", text: longByLines }]),
+		toolResult("read-image", [
+			{ type: "text", text: "image-row-text-".repeat(500) },
+			{ type: "image", data: imageData, mimeType: "image/png" },
+		]),
+		{ ...toolResult("read-error", [{ type: "text", text: `${"error-".repeat(1_000)}error-tail` }]), isError: true },
+	];
+	const owner = createToolResultPresentationOwner({ enabled: true, budgetTokens: 128 }, "ui-read-group-limits")!;
+	const group = new ReadToolGroupComponent();
+	for (let index = 0; index < rows.length; index++) {
+		const message = rows[index]!;
+		group.updateArgs(message.toolCallId, { path: `large-${index}.txt` });
+		group.setArgsComplete(message.toolCallId);
+		group.updateResult(message.toolCallId, message, false, message.isError === true);
+		const presentation = owner.create(message.content, message.toolCallId)!;
+		assert.equal(presentation.version, 2);
+		assert.ok(presentationAware(group).setToolResultPresentation(message.toolCallId, presentation));
+		owner.release();
+	}
+	group.finalize();
+	group.setExpanded(true);
+	const expanded = plain(group.render(120));
+	assert.match(expanded, /character-tail/);
+	assert.match(expanded, /line-tail/);
+	assert.match(expanded, /image-row-text/);
+	assert.match(expanded, /error-tail/);
+	assert.match(expanded, /Full canonical result is shown/);
+	owner.dispose();
+});
+
 test("interactive live and rebuild paths consume only the internal sidecar with a hard cap", () => {
 	const interactive = readFileSync(
 		new URL("../packages/coding-agent/src/modes/interactive/interactive-mode.ts", import.meta.url),
@@ -218,6 +255,7 @@ test("interactive live and rebuild paths consume only the internal sidecar with 
 
 test("UI allocation source audit executes the selected production chain and locks structural counts", () => {
 	const audit = auditToolResultPresentationUiSources();
+	const correctiveAudit = audit as typeof audit & { discoveryRegistrationObjectLiterals?: number };
 	assert.deepEqual(audit.transitiveSourceFiles, [
 		"tool-execution.ts",
 		"render-utils.ts",
@@ -247,4 +285,6 @@ test("UI allocation source audit executes the selected production chain and lock
 	assert.equal(audit.discoveryOwnershipSerializations, 0);
 	assert.equal(audit.promises, 0);
 	assert.equal(audit.abortControllers, 0);
+	assert.equal(typeof correctiveAudit.discoveryRegistrationObjectLiterals, "number");
+	assert.ok((correctiveAudit.discoveryRegistrationObjectLiterals ?? 0) > 0);
 });

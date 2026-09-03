@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { Text, TuiMainScreen, type TuiRenderInstrumentation } from "@super-pi/tui";
-import type { AssistantMessage, Model } from "../packages/ai/src/types.ts";
+import type { AssistantMessage, Model, ToolResultMessage } from "../packages/ai/src/types.ts";
 import type { AgentMessage } from "../packages/agent/src/types.ts";
 import type { AgentSession, AgentSessionEvent } from "../packages/coding-agent/src/core/agent-session.ts";
 import { AgentSessionRuntime, type AgentSessionServices } from "../packages/coding-agent/src/core/agent-session-runtime.ts";
@@ -96,7 +96,16 @@ interface InteractiveModeInternals {
 	renderInstrumentation: TuiRenderInstrumentation;
 	pendingTools: Map<string, ToolExecutionComponent | ReadToolGroupComponent>;
 	clearToolResultDiscoveries(): void;
-	getToolResultDiscoveryLifecycleCounts(): { entries: number; attached: number; pending: number };
+	getToolResultDiscoveryLifecycleCounts(): {
+		entries: number;
+		attached: number;
+		pending: number;
+		registrationObjectsCreated?: number;
+		registrationsAttached?: number;
+		registrationsHighWaterMark?: number;
+		registrationsEvicted?: number;
+		registrationsTeardownReleased?: number;
+	};
 	handleEvent(event: AgentSessionEvent): void | Promise<void>;
 	rebuildChatFromMessages(): void;
 	showStatus(message: string): void;
@@ -130,6 +139,7 @@ async function createModeFixture(
 	messages: readonly AgentMessage[],
 	customTools: readonly ToolDefinition[] = [],
 	toolResultPresentation?: ToolResultPresentationOptions,
+	extensionFactories: Array<(pi: any) => void> = [],
 ): Promise<ModeFixture> {
 	initTheme("dark");
 	const root = mkdtempSync(join(tmpdir(), "super-pi-retained-rebuild-"));
@@ -145,7 +155,8 @@ async function createModeFixture(
 		agentDir,
 		settingsManager,
 		noContextFiles: true,
-		noExtensions: true,
+		noExtensions: extensionFactories.length === 0,
+		extensionFactories,
 		noPromptTemplates: true,
 		noSkills: true,
 		noThemes: true,
@@ -232,6 +243,107 @@ test("live tool completion binds the internal presentation sidecar by canonical 
 	);
 });
 
+test("post-extension canonical ToolResult replaces the live result and receives discovery", async (t) => {
+	let extensionSawPresentation = false;
+	const canonicalText = "post-extension-canonical-".repeat(1_000);
+	const fixture = await createModeFixture(
+		[],
+		[],
+		{ enabled: true, budgetTokens: 128 },
+		[(pi) => {
+			pi.on("message_end", (event: { message: ToolResultMessage; toolResultPresentation?: unknown }) => {
+				if (event.message.role !== "toolResult") return undefined;
+				extensionSawPresentation ||= "toolResultPresentation" in event;
+				return { message: { ...event.message, content: [{ type: "text", text: canonicalText }] } };
+			});
+		}],
+	);
+	t.after(fixture.dispose);
+	fixture.internals.isInitialized = true;
+	const toolCallId = "post-extension-live";
+	await fixture.internals.handleEvent({
+		type: "tool_execution_start",
+		toolCallId,
+		toolName: "fixture-tool",
+		args: {},
+	});
+	const component = fixture.internals.pendingTools.get(toolCallId);
+	assert.ok(component instanceof ToolExecutionComponent);
+	const originalText = "pre-extension-result-".repeat(1_000);
+	const message = result(toolCallId, "fixture-tool", originalText) as ToolResultMessage;
+	fixture.session.agent.state.messages.push(message);
+	await fixture.internals.handleEvent({
+		type: "tool_execution_end",
+		toolCallId,
+		toolName: "fixture-tool",
+		result: message,
+		isError: false,
+	});
+	let emittedPresentation: AgentSessionEvent["toolResultPresentation"];
+	const unsubscribe = fixture.session.subscribe((event) => {
+		if (event.type !== "message_end" || event.message.role !== "toolResult") return;
+		emittedPresentation = event.toolResultPresentation;
+		return fixture.internals.handleEvent(event);
+	});
+	await (fixture.session as unknown as {
+		_handleAgentEvent(event: { type: "message_end"; message: ToolResultMessage }): Promise<void>;
+	})._handleAgentEvent({ type: "message_end", message });
+	unsubscribe();
+	assert.equal(extensionSawPresentation, false);
+	assert.equal(message.content[0]?.type === "text" ? message.content[0].text : undefined, canonicalText);
+	assert.ok(emittedPresentation?.version === 2);
+	assert.ok(component.getToolResultPresentationDiscovery(toolCallId));
+	component.setExpanded(true);
+	const rendered = component.render(120).join("\n");
+	assert.match(rendered, /post-extension-canonical/);
+	assert.doesNotMatch(rendered, /pre-extension-result/);
+	assert.match(rendered, /Model received a bounded view/);
+	const artifact = fixture.session.readToolResultArtifact(emittedPresentation.artifact!.id);
+	assert.equal(artifact.content, message.content);
+	const continuation = fixture.session.readToolResultContinuation(emittedPresentation.continuation.cursor, 128);
+	assert.ok(continuation.content.length > 0);
+	const provider = await fixture.session.agent.convertToLlm(fixture.session.agent.state.messages.slice());
+	const providerResult = provider.find((candidate) => candidate.role === "toolResult");
+	assert.ok(providerResult?.role === "toolResult");
+	assert.equal("toolResultPresentation" in providerResult, false);
+	assert.equal("uiContent" in providerResult, false);
+	const lifecycle = fixture.internals.getToolResultDiscoveryLifecycleCounts();
+	assert.equal(lifecycle.registrationObjectsCreated, 1);
+	assert.equal(lifecycle.registrationsAttached, 1);
+	assert.equal(lifecycle.registrationsHighWaterMark, 1);
+});
+
+test("wholesale rebuild detaches 128 discoveries without updating discarded components", async (t) => {
+	const calls: AssistantMessage["content"] = [];
+	const messages: AgentMessage[] = [];
+	for (let index = 0; index < 128; index++) {
+		calls.push({ type: "toolCall", id: `teardown-${index}`, name: "fixture-tool", arguments: {} });
+	}
+	messages.push(assistant(calls));
+	for (let index = 0; index < 128; index++) {
+		messages.push(result(`teardown-${index}`, "fixture-tool", `large-${index}-`.repeat(1_000)));
+	}
+	const fixture = await createModeFixture(messages, [], { enabled: true, budgetTokens: 128 });
+	t.after(fixture.dispose);
+	fixture.mode.renderInitialMessages();
+	const components = fixture.internals.chatContainer.children.filter(
+		(child): child is ToolExecutionComponent => child instanceof ToolExecutionComponent,
+	);
+	assert.equal(components.length, 128);
+	let discardedUpdateDisplayCalls = 0;
+	for (const component of components) {
+		const target = component as unknown as { updateDisplay(): void };
+		const original = target.updateDisplay.bind(component);
+		target.updateDisplay = () => {
+			discardedUpdateDisplayCalls++;
+			original();
+		};
+	}
+	fixture.internals.rebuildChatFromMessages();
+	assert.equal(discardedUpdateDisplayCalls, 0);
+	assert.equal(fixture.internals.getToolResultDiscoveryLifecycleCounts().registrationsTeardownReleased, 128);
+});
+
 test("default-off session rebuild creates no discovery registry or component state", async (t) => {
 	const toolCallId = "default-off-large";
 	const fixture = await createModeFixture([
@@ -295,6 +407,11 @@ test("resumed bounded results rebuild discoverability from canonical messages wi
 		undefined,
 		"a provider/context clone cannot become the UI canonical source",
 	);
+	assert.equal(
+		fixture.session.getToolResultPresentationForUi({ ...canonical }),
+		undefined,
+		"a shallow wrapper sharing canonical content cannot receive the internal UI sidecar",
+	);
 	fixture.session.agent.state.messages.push({ ...canonical });
 	assert.equal(
 		fixture.session.getToolResultPresentationForUi(canonical),
@@ -321,6 +438,39 @@ test("resumed bounded results rebuild discoverability from canonical messages wi
 	for (let index = 0; index < components.length; index++) {
 		assert.equal(components[index]!.getToolResultPresentationDiscovery(`bounded-${index}`), undefined);
 	}
+});
+
+test("128 trailing V1 results do not hide an earlier bounded V2 discovery", async (t) => {
+	const calls: AssistantMessage["content"] = [
+		{ type: "toolCall", id: "older-v2", name: "fixture-tool", arguments: {} },
+	];
+	const messages: AgentMessage[] = [result("older-v2", "fixture-tool", "older-large-".repeat(1_000))];
+	for (let index = 0; index < 128; index++) {
+		calls.push({ type: "toolCall", id: `newer-v1-${index}`, name: "fixture-tool", arguments: {} });
+		messages.push(result(`newer-v1-${index}`, "fixture-tool", "small"));
+	}
+	messages.unshift(assistant(calls));
+	const fixture = await createModeFixture(messages, [], { enabled: true, budgetTokens: 128 });
+	t.after(fixture.dispose);
+	fixture.mode.renderInitialMessages();
+	const components = fixture.internals.chatContainer.children.filter(
+		(child): child is ToolExecutionComponent => child instanceof ToolExecutionComponent,
+	);
+	assert.equal(components.length, 129);
+	assert.ok(components[0]!.getToolResultPresentationDiscovery("older-v2"));
+	assert.deepEqual(
+		fixture.internals.getToolResultDiscoveryLifecycleCounts(),
+		{
+			entries: 1,
+			attached: 1,
+			pending: 0,
+			registrationObjectsCreated: 1,
+			registrationsAttached: 1,
+			registrationsHighWaterMark: 1,
+			registrationsEvicted: 0,
+			registrationsTeardownReleased: 0,
+		},
+	);
 });
 
 test("initial render and compaction rebuild retain ordinary tools and one grouped read", async (t) => {
