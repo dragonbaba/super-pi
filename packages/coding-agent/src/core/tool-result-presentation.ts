@@ -1,5 +1,6 @@
 import { createHash, type Hash } from "node:crypto";
 import type { ImageContent, Message, TextContent, ToolResultMessage } from "@super-pi/ai/compat";
+import { estimateContextTokensFromParts, estimateMessageTokens, type Tool } from "@super-pi/ai";
 import { estimateToolOutputTokens, type ToolOutputTokenEstimate } from "./tool-output-budget.ts";
 
 export const TOOL_RESULT_PRESENTATION_VERSION = 1 as const;
@@ -168,6 +169,15 @@ export interface ToolResultPresentationCounters {
 	maximumContentBlocks: number;
 	maximumTextCodeUnits: number;
 	maximumImageDataCodeUnits: number;
+	contextualBudgetCalls: number;
+	contextualContextScans: number;
+	contextualTurnResults: number;
+	contextualProjectionPasses: number;
+	contextualBudgetFailures: number;
+	contextualToolTokensConsumed: number;
+	contextualContextTokensConsumed: number;
+	activeContextualCoordinators: number;
+	contextualCoordinatorsHighWaterMark: number;
 	ownerDisposeCalls: number;
 }
 
@@ -298,6 +308,15 @@ export function createToolResultPresentationCounters(): ToolResultPresentationCo
 		maximumContentBlocks: 0,
 		maximumTextCodeUnits: 0,
 		maximumImageDataCodeUnits: 0,
+		contextualBudgetCalls: 0,
+		contextualContextScans: 0,
+		contextualTurnResults: 0,
+		contextualProjectionPasses: 0,
+		contextualBudgetFailures: 0,
+		contextualToolTokensConsumed: 0,
+		contextualContextTokensConsumed: 0,
+		activeContextualCoordinators: 0,
+		contextualCoordinatorsHighWaterMark: 0,
 		ownerDisposeCalls: 0,
 	};
 }
@@ -1570,24 +1589,27 @@ export class ToolResultPresentationOwner {
 		return presentation;
 	}
 
-	private getImagePolicyProjection(record: ProjectionRecord): ProjectionBuild {
-		if (record.imagePolicyProjection) return record.imagePolicyProjection;
-		const projection = buildFullOmissionProjection(
-			record.sourceContent,
-			record.sourceKey,
-			record.sourceDigest,
-			record.sourceScan,
-			this.counters,
-		);
-		if (projection.estimate.estimatedTokens > this.budgetTokens!) {
+	private getImagePolicyProjection(record: ProjectionRecord, budgetTokens = this.budgetTokens!): ProjectionBuild {
+		let projection = record.imagePolicyProjection;
+		if (!projection) {
+			projection = buildFullOmissionProjection(
+				record.sourceContent,
+				record.sourceKey,
+				record.sourceDigest,
+				record.sourceScan,
+				this.counters,
+			);
+		}
+		if (projection.estimate.estimatedTokens > budgetTokens) {
 			throw new ToolResultContinuationError(
 				"budget-too-small",
-				`Tool-result budget ${this.budgetTokens} cannot contain the fixed continuation notice.`,
+				`Tool-result budget ${budgetTokens} cannot contain the fixed continuation notice.`,
 			);
 		}
 		const records = this.projectionRecords;
 		const retainedCodeUnits = countTextCodeUnits(projection.content);
 		if (
+			!record.imagePolicyProjection &&
 			records?.get(record.toolCallId) === record &&
 			this.counters.retainedProjectionCodeUnits + retainedCodeUnits <= MAX_RETAINED_PROJECTION_CODE_UNITS
 		) {
@@ -1622,10 +1644,11 @@ export class ToolResultPresentationOwner {
 		projection: ProjectionBuild,
 		filtered: ToolResultMessage,
 		imagePolicy: (message: Message) => Message,
+		budgetTokens = this.budgetTokens!,
 	): ToolResultMessage {
 		this.counters.postImagePolicyEstimatorScans++;
 		let estimate = estimateToolOutputTokens(filtered.content);
-		if (estimate.estimatedTokens <= this.budgetTokens!) return filtered;
+		if (estimate.estimatedTokens <= budgetTokens) return filtered;
 		const originalHead = projection.headTextCodeUnits;
 		const originalTail = projection.tailTextCodeUnits;
 		let retainedTextCodeUnits = originalHead + originalTail;
@@ -1634,7 +1657,7 @@ export class ToolResultPresentationOwner {
 				0,
 				Math.min(
 					retainedTextCodeUnits - 1,
-					Math.floor((retainedTextCodeUnits * Math.max(1, this.budgetTokens! - 2)) / estimate.estimatedTokens),
+					Math.floor((retainedTextCodeUnits * Math.max(1, budgetTokens - 2)) / estimate.estimatedTokens),
 				),
 			);
 			retainedTextCodeUnits = next;
@@ -1653,9 +1676,9 @@ export class ToolResultPresentationOwner {
 			this.counters.postImagePolicyShrinkPasses++;
 			this.counters.postImagePolicyEstimatorScans++;
 			estimate = estimateToolOutputTokens(candidate.content);
-			if (estimate.estimatedTokens <= this.budgetTokens!) return candidate;
+			if (estimate.estimatedTokens <= budgetTokens) return candidate;
 		}
-		const omission = this.getImagePolicyProjection(record);
+		const omission = this.getImagePolicyProjection(record, budgetTokens);
 		let candidate = imagePolicy(this.createModelMessage(message, omission.content)) as ToolResultMessage;
 		for (let index = 0; index < record.sourceContent.length; index++) {
 			const block = record.sourceContent[index]!;
@@ -1685,7 +1708,7 @@ export class ToolResultPresentationOwner {
 			this.counters.modelProjectionArraysCreated++;
 			const withPolicyNotice = this.createModelMessage(message, withPolicyNoticeContent);
 			this.counters.postImagePolicyEstimatorScans++;
-			if (estimateToolOutputTokens(withPolicyNotice.content).estimatedTokens <= this.budgetTokens!) {
+			if (estimateToolOutputTokens(withPolicyNotice.content).estimatedTokens <= budgetTokens) {
 				candidate = withPolicyNotice;
 			}
 			break;
@@ -1693,49 +1716,246 @@ export class ToolResultPresentationOwner {
 		this.counters.postImagePolicyShrinkPasses++;
 		this.counters.postImagePolicyEstimatorScans++;
 		estimate = estimateToolOutputTokens(candidate.content);
-		if (estimate.estimatedTokens > this.budgetTokens!) {
+		if (estimate.estimatedTokens > budgetTokens) {
 			throw new ToolResultContinuationError(
 				"budget-too-small",
-				`Tool-result budget ${this.budgetTokens} cannot contain the fixed continuation notice.`,
+				`Tool-result budget ${budgetTokens} cannot contain the fixed continuation notice.`,
 			);
 		}
 		return candidate;
 	}
 
+	private projectMessageForConfiguredBudget(
+		message: ToolResultMessage,
+		imagePolicy?: (message: Message) => Message,
+	): ToolResultMessage {
+		const resident = this.projectionRecords?.get(message.toolCallId);
+		if (resident?.sourceContent === message.content) this.counters.residentReadHits++;
+		else this.counters.providerReadMisses++;
+		const record = this.getOrCreateProjectionRecord(message.content, message.toolCallId, "provider");
+		let projection = record.projection;
+		let projected = projection ? this.createModelMessage(message, projection.content) : message;
+		if (imagePolicy) {
+			let filtered = imagePolicy(projected);
+			if (filtered !== projected && !projection) {
+				this.counters.postImagePolicyEstimatorScans++;
+				const filteredEstimate = estimateToolOutputTokens((filtered as ToolResultMessage).content);
+				if (filteredEstimate.estimatedTokens > this.budgetTokens!) {
+					projection = this.getImagePolicyProjection(record);
+					projected = this.createModelMessage(message, projection.content);
+					filtered = imagePolicy(projected);
+				}
+			}
+			if (filtered !== projected && projection) {
+				filtered = this.fitPostImagePolicyMessage(
+					message,
+					record,
+					projection,
+					filtered as ToolResultMessage,
+					imagePolicy,
+				);
+			}
+			projected = filtered as ToolResultMessage;
+		}
+		return projected;
+	}
+
+	private projectMessageWithinContextualBudget(
+		message: ToolResultMessage,
+		toolBudgetTokens: number,
+		contextBudgetTokens: number,
+		imagePolicy?: (message: Message) => Message,
+	): ToolResultMessage {
+		let candidateBudget = Math.min(toolBudgetTokens, contextBudgetTokens);
+		if (!Number.isSafeInteger(candidateBudget) || candidateBudget <= 0) {
+			this.counters.contextualBudgetFailures++;
+			throw new ToolResultContinuationError(
+				"budget-too-small",
+				"The remaining turn/context budget cannot contain a tool-result continuation notice.",
+			);
+		}
+		const record = this.getOrCreateProjectionRecord(message.content, message.toolCallId, "provider");
+		for (let pass = 0; pass <= MAX_PROJECTION_SHRINK_PASSES; pass++) {
+			this.counters.contextualProjectionPasses++;
+			let projection: ProjectionBuild | undefined;
+			try {
+				projection = candidateBudget === this.budgetTokens
+					? record.projection
+					: projectContent(
+							record.sourceContent,
+							candidateBudget,
+							record.sourceKey,
+							record.sourceDigest,
+							record.sourceScan,
+							this.counters,
+						);
+			} catch (error) {
+				this.rethrowContextualProjectionFailure(error);
+			}
+			if (projection) this.ensureArtifactDescriptor(record);
+			let projected = projection ? this.createModelMessage(message, projection.content) : message;
+			try {
+				if (imagePolicy) {
+					let filtered = imagePolicy(projected);
+					if (filtered !== projected && !projection) {
+						this.counters.postImagePolicyEstimatorScans++;
+						const filteredEstimate = estimateToolOutputTokens((filtered as ToolResultMessage).content);
+						if (filteredEstimate.estimatedTokens > candidateBudget) {
+							const omission = this.getImagePolicyProjection(record, candidateBudget);
+							projected = this.createModelMessage(message, omission.content);
+							filtered = imagePolicy(projected);
+						}
+					}
+					if (filtered !== projected && projection) {
+						filtered = this.fitPostImagePolicyMessage(
+							message,
+							record,
+							projection,
+							filtered as ToolResultMessage,
+							imagePolicy,
+							candidateBudget,
+						);
+					}
+					projected = filtered as ToolResultMessage;
+				}
+			} catch (error) {
+				this.rethrowContextualProjectionFailure(error);
+			}
+			const toolEstimate = estimateToolOutputTokens(projected.content).estimatedTokens;
+			const contextEstimate = estimateMessageTokens(projected);
+			if (toolEstimate <= toolBudgetTokens && contextEstimate <= contextBudgetTokens) return projected;
+			if (candidateBudget === 1) break;
+			let nextBudget = candidateBudget - 1;
+			if (toolEstimate > toolBudgetTokens) {
+				nextBudget = Math.min(nextBudget, Math.floor((candidateBudget * toolBudgetTokens) / toolEstimate));
+			}
+			if (contextEstimate > contextBudgetTokens) {
+				nextBudget = Math.min(nextBudget, Math.floor((candidateBudget * contextBudgetTokens) / contextEstimate));
+			}
+			candidateBudget = Math.max(1, nextBudget);
+		}
+		this.counters.contextualBudgetFailures++;
+		throw new ToolResultContinuationError(
+			"budget-too-small",
+			"The remaining turn/context budget cannot contain a tool-result continuation notice.",
+		);
+	}
+
+	private rethrowContextualProjectionFailure(error: unknown): never {
+		if (error instanceof ToolResultContinuationError && error.code === "budget-too-small") {
+			this.counters.contextualBudgetFailures++;
+		}
+		throw error;
+	}
+
+	private projectMessagesWithinContextualBudget(
+		messages: Message[],
+		imagePolicy: ((message: Message) => Message) | undefined,
+		systemPrompt: string | undefined,
+		tools: readonly Tool[] | undefined,
+		contextWindow: number,
+		maxOutputTokens: number | undefined,
+	): Message[] {
+		let assistantIndex = -1;
+		for (let index = messages.length - 1; index >= 0; index--) {
+			const message = messages[index]!;
+			if (message.role !== "assistant") continue;
+			let hasToolCall = false;
+			for (let contentIndex = 0; contentIndex < message.content.length; contentIndex++) {
+				if (message.content[contentIndex]?.type !== "toolCall") continue;
+				hasToolCall = true;
+				break;
+			}
+			if (!hasToolCall) continue;
+			assistantIndex = index;
+			break;
+		}
+		let currentResultCount = 0;
+		let currentResultContextTokens = 0;
+		if (assistantIndex >= 0) {
+			for (let index = assistantIndex + 1; index < messages.length; index++) {
+				const message = messages[index]!;
+				if (message.role !== "toolResult") continue;
+				currentResultCount++;
+				currentResultContextTokens += estimateMessageTokens(message);
+			}
+		}
+		if (currentResultCount === 0) return this.projectMessagesForModel(messages, imagePolicy);
+
+		this.counters.contextualBudgetCalls++;
+		this.counters.contextualContextScans++;
+		this.counters.contextualTurnResults += currentResultCount;
+		this.counters.activeContextualCoordinators++;
+		this.counters.contextualCoordinatorsHighWaterMark = Math.max(
+			this.counters.contextualCoordinatorsHighWaterMark,
+			this.counters.activeContextualCoordinators,
+		);
+		try {
+			const contextEstimate = estimateContextTokensFromParts(systemPrompt, messages, tools).tokens;
+			const nonCurrentContextTokens = Math.max(0, contextEstimate - currentResultContextTokens);
+			const hasContextLimit = Number.isSafeInteger(contextWindow) && contextWindow > 0;
+			const outputReserve = Number.isSafeInteger(maxOutputTokens) && maxOutputTokens! > 0
+				? maxOutputTokens!
+				: 0;
+			let remainingContextTokens = hasContextLimit
+				? Math.max(0, contextWindow - outputReserve - nonCurrentContextTokens)
+				: 0;
+			let remainingToolTokens = this.budgetTokens!;
+			let remainingResults = currentResultCount;
+			for (let index = 0; index < messages.length; index++) {
+				const message = messages[index]!;
+				if (message.role !== "toolResult") continue;
+				if (index <= assistantIndex) {
+					messages[index] = this.projectMessageForConfiguredBudget(message, imagePolicy);
+					continue;
+				}
+				const toolBudget = Math.floor(remainingToolTokens / remainingResults);
+				const contextBudget = Math.floor(remainingContextTokens / remainingResults);
+				const projected = this.projectMessageWithinContextualBudget(
+					message,
+					Math.min(this.budgetTokens!, toolBudget),
+					contextBudget,
+					imagePolicy,
+				);
+				if (projected !== message) messages[index] = projected;
+				const consumedToolTokens = estimateToolOutputTokens(projected.content).estimatedTokens;
+				const consumedContextTokens = estimateMessageTokens(projected);
+				remainingToolTokens = Math.max(0, remainingToolTokens - consumedToolTokens);
+				remainingContextTokens = Math.max(0, remainingContextTokens - consumedContextTokens);
+				remainingResults--;
+				this.counters.contextualToolTokensConsumed += consumedToolTokens;
+				this.counters.contextualContextTokensConsumed += consumedContextTokens;
+			}
+			return messages;
+		} finally {
+			this.counters.activeContextualCoordinators--;
+		}
+	}
+
 	/** Mutates only the caller-owned outer array; legacy message objects remain untouched. */
-	projectMessagesForModel(messages: Message[], imagePolicy?: (message: Message) => Message): Message[] {
+	projectMessagesForModel(
+		messages: Message[],
+		imagePolicy?: (message: Message) => Message,
+		systemPrompt?: string,
+		tools?: readonly Tool[],
+		contextWindow?: number,
+		maxOutputTokens?: number,
+	): Message[] {
 		if (!this.accepting || this.budgetTokens === undefined) return messages;
+		if (contextWindow !== undefined) {
+			return this.projectMessagesWithinContextualBudget(
+				messages,
+				imagePolicy,
+				systemPrompt,
+				tools,
+				contextWindow,
+				maxOutputTokens,
+			);
+		}
 		for (let index = 0; index < messages.length; index++) {
 			const message = messages[index]!;
 			if (message.role !== "toolResult") continue;
-			const resident = this.projectionRecords?.get(message.toolCallId);
-			if (resident?.sourceContent === message.content) this.counters.residentReadHits++;
-			else this.counters.providerReadMisses++;
-			const record = this.getOrCreateProjectionRecord(message.content, message.toolCallId, "provider");
-			let projection = record.projection;
-			let projected = projection ? this.createModelMessage(message, projection.content) : message;
-			if (imagePolicy) {
-				let filtered = imagePolicy(projected);
-				if (filtered !== projected && !projection) {
-					this.counters.postImagePolicyEstimatorScans++;
-					const filteredEstimate = estimateToolOutputTokens((filtered as ToolResultMessage).content);
-					if (filteredEstimate.estimatedTokens > this.budgetTokens) {
-						projection = this.getImagePolicyProjection(record);
-						projected = this.createModelMessage(message, projection.content);
-						filtered = imagePolicy(projected);
-					}
-				}
-				if (filtered !== projected && projection) {
-					filtered = this.fitPostImagePolicyMessage(
-						message,
-						record,
-						projection,
-						filtered as ToolResultMessage,
-						imagePolicy,
-					);
-				}
-				projected = filtered as ToolResultMessage;
-			}
+			const projected = this.projectMessageForConfiguredBudget(message, imagePolicy);
 			if (projected !== message) messages[index] = projected;
 		}
 		return messages;

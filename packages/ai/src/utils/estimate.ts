@@ -113,16 +113,23 @@ function isMessageArray(value: Context | readonly Message[]): value is readonly 
 
 export function estimateContextTokens(context: Context | readonly Message[]): ContextUsageEstimate {
 	if (isMessageArray(context)) return estimateMessages(context);
+	return estimateContextTokensFromParts(context.systemPrompt, context.messages, context.tools);
+}
 
-	const estimate = estimateMessages(context.messages);
+export function estimateContextTokensFromParts(
+	systemPrompt: string | undefined,
+	messages: readonly Message[],
+	tools: readonly Tool[] | undefined,
+): ContextUsageEstimate {
+	const estimate = estimateMessages(messages);
 	if (estimate.lastUsageIndex !== null) {
 		const addedNames = new Set(
-			context.messages
+			messages
 				.slice(estimate.lastUsageIndex + 1)
 				.filter((message) => message.role === "toolResult")
 				.flatMap((message) => message.addedToolNames ?? []),
 		);
-		const addedToolTokens = estimateToolsTokens(context.tools?.filter((tool) => addedNames.has(tool.name)));
+		const addedToolTokens = estimateToolsTokens(tools?.filter((tool) => addedNames.has(tool.name)));
 		return {
 			tokens: estimate.tokens + addedToolTokens,
 			usageTokens: estimate.usageTokens,
@@ -132,7 +139,7 @@ export function estimateContextTokens(context: Context | readonly Message[]): Co
 	}
 
 	const prefixTokens =
-		(context.systemPrompt ? estimateTextTokens(context.systemPrompt) : 0) + estimateToolsTokens(context.tools);
+		(systemPrompt ? estimateTextTokens(systemPrompt) : 0) + estimateToolsTokens(tools);
 
 	return {
 		tokens: estimate.tokens + prefixTokens,

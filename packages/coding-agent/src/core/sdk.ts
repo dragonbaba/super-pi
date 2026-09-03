@@ -1,5 +1,11 @@
 import { join } from "node:path";
-import { Agent, type AgentMessage, setDefaultStreamFn, type ThinkingLevel } from "@super-pi/agent-core";
+import {
+	Agent,
+	type AgentMessage,
+	type AgentTool,
+	setDefaultStreamFn,
+	type ThinkingLevel,
+} from "@super-pi/agent-core";
 import type { EffectiveDispatchObservation } from "@super-pi/ai";
 import {
 	buildOpenAICodexRequestBody,
@@ -352,13 +358,22 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	);
 
 	// Projection stays bound to the complete persisted source; image policy applies only to the bounded model view.
-	const convertToLlmWithBlockImages = (messages: AgentMessage[]): Message[] => {
+	const convertToLlmWithBlockImages = (
+		messages: AgentMessage[],
+		systemPrompt?: string,
+		tools?: AgentTool<any>[],
+		conversionModel?: Model<any>,
+	): Message[] => {
 		const converted = convertToLlm(messages);
 		// Check setting dynamically so mid-session changes take effect
 		const blockImages = settingsManager.getBlockImages();
 		const projected = toolResultPresentationOwner?.projectMessagesForModel(
 			converted,
 			blockImages ? replaceBlockedImages : undefined,
+			systemPrompt,
+			tools,
+			conversionModel?.contextWindow,
+			conversionModel?.maxTokens,
 		) ?? converted;
 		return blockImages ? replaceBlockedImagesInMessages(projected) : projected;
 	};
@@ -513,7 +528,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			if (model.api !== "openai-codex-responses") return undefined;
 			return buildOpenAICodexRequestBody(
 				model,
-				{ systemPrompt, messages: convertToLlmWithBlockImages(messages), tools },
+				{ systemPrompt, messages: convertToLlmWithBlockImages(messages, systemPrompt, tools, model), tools },
 				{ reasoningEffort: thinkingLevel === "off" ? undefined : thinkingLevel },
 				sessionId,
 			);

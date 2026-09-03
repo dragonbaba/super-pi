@@ -202,7 +202,7 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	 * })
 	 * ```
 	 */
-	convertToLlm: (messages: AgentMessage[]) => Message[] | Promise<Message[]>;
+	convertToLlm: AgentLlmConverter;
 
 	/**
 	 * Optional transform applied to the context before `convertToLlm`.
@@ -318,6 +318,14 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	 */
 	afterToolCall?: (context: AfterToolCallContext, signal?: AbortSignal) => Promise<AfterToolCallResult | undefined>;
 }
+
+/** Converts agent messages while optionally receiving the exact request envelope. */
+export type AgentLlmConverter = (
+	messages: AgentMessage[],
+	systemPrompt?: string,
+	tools?: AgentTool<any>[],
+	model?: Model<Api>,
+) => Message[] | Promise<Message[]>;
 
 /**
  * Thinking/reasoning level for models that support it.
