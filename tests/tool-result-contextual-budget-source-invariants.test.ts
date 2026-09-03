@@ -77,7 +77,7 @@ test("context estimator scans trailing messages and selected tools without colle
 	const source = [
 		functionText(estimatePath, "estimateContextTokensFromParts"),
 		functionText(estimatePath, "estimateAddedToolsTokens"),
-		functionText(estimatePath, "findToolIndexByName"),
+		functionText(estimatePath, "addToolIndexesByName"),
 	].join("\n");
 	for (const forbidden of ["new Set", "new Map", ".slice(", ".map(", ".filter(", ".flatMap(", "Array.from("]) {
 		assert.equal(source.includes(forbidden), false, forbidden);
