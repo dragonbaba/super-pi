@@ -152,10 +152,19 @@ test("interactive live and rebuild paths consume only the internal sidecar with 
 		new URL("../packages/coding-agent/src/core/agent-session.ts", import.meta.url),
 		"utf8",
 	);
+	const benchmark = readFileSync(
+		new URL("../scripts/bench/tool-result-presentation-ui.ts", import.meta.url),
+		"utf8",
+	);
 	assert.match(interactive, /event\.toolResultPresentation/);
 	assert.match(interactive, /getToolResultPresentationForUi/);
 	assert.match(interactive, /MAX_TOOL_RESULT_DISCOVERIES\s*=\s*128/);
 	assert.match(interactive, /clearToolResultDiscoveries/);
 	assert.match(session, /getToolResultPresentationForUi/);
 	assert.match(session, /toolResultPresentationEnabled/);
+	assert.match(benchmark, /transitiveResultRenderingSource/);
+	assert.match(benchmark, /render-utils\.ts/);
+	assert.match(benchmark, /plainFullResultUi/);
+	assert.match(benchmark, /boundedDiscoveryUi/);
+	assert.doesNotMatch(benchmark, /fullResultCopies:\s*0/);
 });

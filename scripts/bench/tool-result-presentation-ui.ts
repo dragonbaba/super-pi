@@ -25,6 +25,14 @@ interface AllocationSite {
 	line: number;
 }
 
+interface UiProfile {
+	p50Ms: number;
+	p95Ms: number;
+	sampledAllocationBytes: number;
+	sampledBytesPerToggleAndRender: number;
+	topAllocationSites: AllocationSite[];
+}
+
 const PROFILE_ITERATIONS = 300;
 const GC_CYCLES = 32;
 const COMPONENTS_PER_GC_CYCLE = 16;
@@ -118,11 +126,55 @@ function createAttachedComponent(index: number): {
 	};
 }
 
+function createPlainComponent(toolCallId: string): ToolExecutionComponent {
+	const component = new ToolExecutionComponent(
+		"fixture",
+		toolCallId,
+		{},
+		{ showImages: false },
+		undefined,
+		createTui(),
+		process.cwd(),
+	);
+	component.updateResult({ content });
+	return component;
+}
+
 async function forceCollection(): Promise<void> {
 	for (let pass = 0; pass < 6; pass++) {
 		globalThis.gc!();
 		await yieldToEventLoop();
 	}
+}
+
+async function measureProfile(inspector: Session, component: ToolExecutionComponent): Promise<UiProfile> {
+	for (let index = 0; index < 100; index++) {
+		component.setExpanded(index % 2 === 0);
+		component.render(60 + (index % 4) * 12);
+	}
+	await forceCollection();
+	await inspector.post("HeapProfiler.startSampling", {
+		samplingInterval: 1024,
+		includeObjectsCollectedByMajorGC: true,
+		includeObjectsCollectedByMinorGC: true,
+	});
+	const durations = new Array<number>(PROFILE_ITERATIONS);
+	for (let index = 0; index < PROFILE_ITERATIONS; index++) {
+		const started = performance.now();
+		component.setExpanded(index % 2 === 0);
+		component.render(60 + (index % 4) * 12);
+		durations[index] = performance.now() - started;
+	}
+	const stopped = await inspector.post("HeapProfiler.stopSampling");
+	durations.sort((left, right) => left - right);
+	const allocations = allocationSites(stopped.profile.head as SamplingNode);
+	return {
+		p50Ms: percentile(durations, 0.5),
+		p95Ms: percentile(durations, 0.95),
+		sampledAllocationBytes: allocations.sampledBytes,
+		sampledBytesPerToggleAndRender: allocations.sampledBytes / PROFILE_ITERATIONS,
+		topAllocationSites: allocations.top,
+	};
 }
 
 function captureReleasedFixtures(
@@ -179,6 +231,10 @@ const agentSessionSource = readFileSync(
 	new URL("../../packages/coding-agent/src/core/agent-session.ts", import.meta.url),
 	"utf8",
 );
+const renderUtilsSource = readFileSync(
+	new URL("../../packages/coding-agent/src/core/tools/render-utils.ts", import.meta.url),
+	"utf8",
+);
 const firstComponentSetter = toolComponentSource.indexOf("\tsetToolResultPresentation(");
 const secondComponentSetter = toolComponentSource.indexOf("\tsetToolResultPresentation(", firstComponentSetter + 1);
 const discoveryHotSource = [
@@ -188,31 +244,21 @@ const discoveryHotSource = [
 	sourceRegion(interactiveSource, "\tprivate evictOldestToolResultDiscovery(", "\n\tprivate retainActiveToolComponent"),
 	sourceRegion(agentSessionSource, "\tget toolResultPresentationEnabled", "\n\t/** Read one bounded continuation"),
 ].join("\n");
+const transitiveResultRenderingSource = [
+	sourceRegion(toolComponentSource, "function getReadGroupResultText", "\nlet cachedBuiltInToolDefinitions"),
+	toolComponentSource.slice(toolComponentSource.indexOf("export class ToolExecutionComponent")),
+	sourceRegion(renderUtilsSource, "export function getTextOutput(", "\nexport type ToolRenderResultLike"),
+	discoveryHotSource,
+].join("\n");
 const registryHardCap = Number(interactiveSource.match(/MAX_TOOL_RESULT_DISCOVERIES\s*=\s*(\d+)/u)?.[1] ?? 0);
 const inspector = new Session();
 inspector.connect();
 
+const plainProfiled = createPlainComponent("ui-profile-plain");
+const plainProfile = await measureProfile(inspector, plainProfiled);
+plainProfiled[RELEASE_COMPONENT_RENDER_CACHE]();
 const profiled = createAttachedComponent(0);
-for (let index = 0; index < 100; index++) {
-	profiled.component.setExpanded(index % 2 === 0);
-	profiled.component.render(60 + (index % 4) * 12);
-}
-await forceCollection();
-await inspector.post("HeapProfiler.startSampling", {
-	samplingInterval: 1024,
-	includeObjectsCollectedByMajorGC: true,
-	includeObjectsCollectedByMinorGC: true,
-});
-const durations = new Array<number>(PROFILE_ITERATIONS);
-for (let index = 0; index < PROFILE_ITERATIONS; index++) {
-	const started = performance.now();
-	profiled.component.setExpanded(index % 2 === 0);
-	profiled.component.render(60 + (index % 4) * 12);
-	durations[index] = performance.now() - started;
-}
-const stopped = await inspector.post("HeapProfiler.stopSampling");
-durations.sort((left, right) => left - right);
-const allocations = allocationSites(stopped.profile.head as SamplingNode);
+const discoveryProfile = await measureProfile(inspector, profiled.component);
 profiled.dispose();
 
 const componentRefs: WeakRef<object>[] = [];
@@ -248,11 +294,14 @@ const result = {
 	worktreeStatusAfter: git(["status", "--porcelain"]),
 	profile: {
 		iterations: PROFILE_ITERATIONS,
-		p50Ms: percentile(durations, 0.5),
-		p95Ms: percentile(durations, 0.95),
-		sampledAllocationBytes: allocations.sampledBytes,
-		sampledBytesPerToggleAndRender: allocations.sampledBytes / PROFILE_ITERATIONS,
-		topAllocationSites: allocations.top,
+		plainFullResultUi: plainProfile,
+		boundedDiscoveryUi: discoveryProfile,
+		incremental: {
+			p50Ms: discoveryProfile.p50Ms - plainProfile.p50Ms,
+			p95Ms: discoveryProfile.p95Ms - plainProfile.p95Ms,
+			sampledBytesPerToggleAndRender:
+				discoveryProfile.sampledBytesPerToggleAndRender - plainProfile.sampledBytesPerToggleAndRender,
+		},
 	},
 	lifecycle: {
 		cycles: GC_CYCLES,
@@ -265,8 +314,12 @@ const result = {
 	structure: {
 		defaultOffDiscoveryStates: disabledDiscoveryState,
 		registryHardCap,
-		fullResultCopyOperations: countMatches(discoveryHotSource, /structuredClone|\.slice\(|\.map\(/gu),
-		fullResultSerializations: countMatches(discoveryHotSource, /JSON\.stringify/gu),
+		transitiveSourceFiles: ["tool-execution.ts", "render-utils.ts", "interactive-mode.ts", "agent-session.ts"],
+		resultRenderingArrayTransformSites: countMatches(transitiveResultRenderingSource, /\.slice\(|\.map\(|\.filter\(/gu),
+		resultRenderingStringAppendSites: countMatches(transitiveResultRenderingSource, /\b(?:text|output|bounded|preview)\s*\+=/gu),
+		resultRenderingSerializationSites: countMatches(transitiveResultRenderingSource, /JSON\.stringify/gu),
+		discoveryOwnershipCopyOperations: countMatches(discoveryHotSource, /structuredClone|\.slice\(|\.map\(/gu),
+		discoveryOwnershipSerializations: countMatches(discoveryHotSource, /JSON\.stringify/gu),
 		promises: countMatches(discoveryHotSource, /new\s+Promise/gu),
 		abortControllers: countMatches(discoveryHotSource, /new\s+AbortController/gu),
 	},
