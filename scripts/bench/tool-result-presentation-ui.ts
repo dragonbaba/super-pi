@@ -33,6 +33,14 @@ interface UiProfile {
 	topAllocationSites: AllocationSite[];
 }
 
+interface BoxCacheProfile {
+	iterations: number;
+	cacheHits: number;
+	sampledAllocationBytes: number;
+	sampledBytesPerCacheHitRender: number;
+	topAllocationSites: AllocationSite[];
+}
+
 const PROFILE_ITERATIONS = 300;
 const GC_CYCLES = 32;
 const COMPONENTS_PER_GC_CYCLE = 16;
@@ -151,13 +159,13 @@ function measureBoxCache(): {
 	};
 }
 
-function captureReleasedBoxCache(): WeakRef<object> {
+function captureReleasedBoxCache(): { owner: Box; cacheRef: WeakRef<object> } {
 	const box = new Box(0, 0);
 	box.addChild(new MutableBoxChild());
 	const cachedLines = box.render(12);
 	const cacheRef = new WeakRef<object>(cachedLines);
 	box[RELEASE_COMPONENT_RENDER_CACHE]();
-	return cacheRef;
+	return { owner: box, cacheRef };
 }
 
 function createAttachedComponent(index: number): {
@@ -241,6 +249,39 @@ async function measureProfile(inspector: Session, component: ToolExecutionCompon
 	};
 }
 
+async function measureBoxCacheHitProfile(inspector: Session): Promise<BoxCacheProfile> {
+	const box = new Box(0, 0);
+	box.addChild(new MutableBoxChild());
+	let cachedLines = box.render(80);
+	for (let index = 0; index < 100; index++) {
+		const lines = box.render(80);
+		if (lines !== cachedLines) throw new Error("Box warmup cache hit changed lines identity");
+		cachedLines = lines;
+	}
+	await forceCollection();
+	await inspector.post("HeapProfiler.startSampling", {
+		samplingInterval: 1024,
+		includeObjectsCollectedByMajorGC: true,
+		includeObjectsCollectedByMinorGC: true,
+	});
+	let cacheHits = 0;
+	for (let index = 0; index < PROFILE_ITERATIONS; index++) {
+		const lines = box.render(80);
+		if (lines === cachedLines) cacheHits++;
+		cachedLines = lines;
+	}
+	const stopped = await inspector.post("HeapProfiler.stopSampling");
+	const allocations = allocationSites(stopped.profile.head as SamplingNode);
+	box[RELEASE_COMPONENT_RENDER_CACHE]();
+	return {
+		iterations: PROFILE_ITERATIONS,
+		cacheHits,
+		sampledAllocationBytes: allocations.sampledBytes,
+		sampledBytesPerCacheHitRender: allocations.sampledBytes / PROFILE_ITERATIONS,
+		topAllocationSites: allocations.top,
+	};
+}
+
 function captureReleasedFixtures(
 	start: number,
 	count: number,
@@ -281,16 +322,18 @@ plainProfiled[RELEASE_COMPONENT_RENDER_CACHE]();
 const profiled = createAttachedComponent(0);
 const discoveryProfile = await measureProfile(inspector, profiled.component);
 profiled.dispose();
+const boxCacheHitProfile = await measureBoxCacheHitProfile(inspector);
 
 const componentRefs: WeakRef<object>[] = [];
 const discoveryRefs: WeakRef<object>[] = [];
 const boxCache = measureBoxCache();
-const boxCacheRef = captureReleasedBoxCache();
+const releasedBoxCache = captureReleasedBoxCache();
 captureReleasedFixtures(1, GC_CYCLES * COMPONENTS_PER_GC_CYCLE, componentRefs, discoveryRefs);
 await forceCollection();
 const liveComponentWeakRefs = componentRefs.reduce((count, ref) => count + (ref.deref() ? 1 : 0), 0);
 const liveDiscoveryWeakRefs = discoveryRefs.reduce((count, ref) => count + (ref.deref() ? 1 : 0), 0);
-const liveBoxCacheWeakRefs = boxCacheRef.deref() ? 1 : 0;
+const liveBoxCacheWeakRefs = releasedBoxCache.cacheRef.deref() ? 1 : 0;
+const releasedBoxOwnerChildCount = releasedBoxCache.owner.children.length;
 const heapSamples: number[] = [];
 for (let cycle = 0; cycle < GC_CYCLES; cycle++) {
 	createAndReleaseBatch(10_000 + cycle * COMPONENTS_PER_GC_CYCLE, COMPONENTS_PER_GC_CYCLE);
@@ -320,6 +363,7 @@ const result = {
 		iterations: PROFILE_ITERATIONS,
 		plainFullResultUi: plainProfile,
 		boundedDiscoveryUi: discoveryProfile,
+		boxCacheHit: boxCacheHitProfile,
 		incremental: {
 			p50Ms: discoveryProfile.p50Ms - plainProfile.p50Ms,
 			p95Ms: discoveryProfile.p95Ms - plainProfile.p95Ms,
@@ -333,6 +377,7 @@ const result = {
 		liveComponentWeakRefs,
 		liveDiscoveryWeakRefs,
 		liveBoxCacheWeakRefs,
+		releasedBoxOwnerChildCount,
 		heapSlopeBytesPerCycle: slope(heapSamples.slice(8)),
 		heapSamples,
 	},

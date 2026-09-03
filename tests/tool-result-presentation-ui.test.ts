@@ -17,7 +17,7 @@ import {
 import { initTheme } from "../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 import {
 	auditToolResultPresentationUiSources,
-	classifyProducingCallType,
+	classifyProducingCall,
 } from "../scripts/bench/tool-result-presentation-ui-source-audit.ts";
 
 interface DiscoveryState {
@@ -52,7 +52,7 @@ function classifyFixtureCalls(source: string): Record<string, "array" | "string"
 	const result: Record<string, "array" | "string" | "other"> = {};
 	const visit = (node: ts.Node): void => {
 		if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
-			result[node.expression.name.text] = classifyProducingCallType(checker.getTypeAtLocation(node), checker);
+			result[node.expression.getText(sourceFile)] = classifyProducingCall(node, checker);
 		}
 		ts.forEachChild(node, visit);
 	};
@@ -62,13 +62,21 @@ function classifyFixtureCalls(source: string): Record<string, "array" | "string"
 
 test("TypeChecker classifies RegExpMatchArray without materializing iterators or strings", () => {
 	const classifications = classifyFixtureCalls(`
-		const matched: RegExpMatchArray | null = "x".match(/x/);
-		const iterator = "x".matchAll(/x/g);
-		const sliced = "x".slice(0);
+		class CustomMatcher {
+			private readonly cached: string[] = [];
+			match(): string[] { return this.cached; }
+		}
+		const text = "x";
+		const custom = new CustomMatcher();
+		const matched: RegExpMatchArray | null = text.match(/x/);
+		const iterator = text.matchAll(/x/g);
+		const sliced = text.slice(0);
+		const reused = custom.match();
 	`);
-	assert.equal(classifications.match, "array");
-	assert.equal(classifications.matchAll, "other");
-	assert.equal(classifications.slice, "string");
+	assert.equal(classifications["text.match"], "array");
+	assert.equal(classifications["text.matchAll"], "other");
+	assert.equal(classifications["text.slice"], "string");
+	assert.equal(classifications["custom.match"], "other");
 });
 
 function createTui(): TUI {

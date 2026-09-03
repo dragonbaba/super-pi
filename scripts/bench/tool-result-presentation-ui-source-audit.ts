@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { basename, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
 
@@ -97,10 +97,32 @@ function includesArrayType(type: ts.Type, checker: ts.TypeChecker, visited = new
 	return baseTypes?.some((base) => includesArrayType(base, checker, visited)) === true;
 }
 
-export function classifyProducingCallType(type: ts.Type, checker: ts.TypeChecker): "array" | "string" | "other" {
+function classifyProducingCallType(type: ts.Type, checker: ts.TypeChecker): "array" | "string" | "other" {
 	if (includesArrayType(type, checker)) return "array";
 	if (includesTypeFlag(type, ts.TypeFlags.StringLike)) return "string";
 	return "other";
+}
+
+function isDefaultLibraryDeclaration(declaration: ts.SignatureDeclaration): boolean {
+	const sourceFile = declaration.getSourceFile();
+	return sourceFile.isDeclarationFile && sourceFile.hasNoDefaultLib && /^lib(?:\..+)?\.d\.ts$/u.test(basename(sourceFile.fileName));
+}
+
+export function classifyProducingCall(node: ts.CallExpression, checker: ts.TypeChecker): "array" | "string" | "other" {
+	if (!ts.isPropertyAccessExpression(node.expression)) return "other";
+	const name = node.expression.name.text;
+	if (!ARRAY_PRODUCING_METHODS.has(name)) return "other";
+	const declaration = checker.getResolvedSignature(node)?.getDeclaration();
+	if (!declaration || !isDefaultLibraryDeclaration(declaration)) return "other";
+	const receiverType = checker.getTypeAtLocation(node.expression.expression);
+	const arrayReceiver = includesArrayType(receiverType, checker);
+	const stringReceiver = includesTypeFlag(receiverType, ts.TypeFlags.StringLike);
+	if (
+		((name === "filter" || name === "flat" || name === "flatMap" || name === "map") && !arrayReceiver) ||
+		((name === "match" || name === "matchAll" || name === "split") && !stringReceiver) ||
+		(name === "slice" && !arrayReceiver && !stringReceiver)
+	) return "other";
+	return classifyProducingCallType(checker.getTypeAtLocation(node), checker);
 }
 
 function countAst(nodes: readonly ts.Node[], checker?: ts.TypeChecker): AstCounts {
@@ -138,9 +160,7 @@ function countAst(nodes: readonly ts.Node[], checker?: ts.TypeChecker): AstCount
 			if (ts.isPropertyAccessExpression(expression)) {
 				const returnType = checker?.getTypeAtLocation(node);
 				if (ARRAY_PRODUCING_METHODS.has(expression.name.text)) {
-					const classification = checker && returnType
-						? classifyProducingCallType(returnType, checker)
-						: "array";
+					const classification = checker ? classifyProducingCall(node, checker) : "array";
 					if (classification === "array") counts.arrayProducingCalls++;
 					else if (classification === "string") counts.stringProducingCalls++;
 				}
