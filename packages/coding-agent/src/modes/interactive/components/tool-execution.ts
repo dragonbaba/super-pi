@@ -11,6 +11,7 @@ import {
 } from "@super-pi/tui";
 import type { StreamedToolArgumentOwnership } from "@super-pi/ai";
 import type { ToolDefinition, ToolRenderContext } from "../../../core/extensions/types.ts";
+import type { ToolResultPresentation } from "../../../core/tool-result-presentation.ts";
 import { createAllToolDefinitions, type ToolName } from "../../../core/tools/index.ts";
 import { getTextOutput as getRenderedTextOutput } from "../../../core/tools/render-utils.ts";
 import {
@@ -45,6 +46,46 @@ type ToolResultLike = {
 	details?: any;
 };
 
+export interface ToolResultPresentationDiscoveryState {
+	readonly identity: string;
+	readonly cursor: string;
+	readonly artifactId?: string;
+	readonly originalEstimatedTokens: number;
+	readonly modelEstimatedTokens: number;
+}
+
+function createToolResultDiscovery(
+	presentation: ToolResultPresentation,
+): ToolResultPresentationDiscoveryState | undefined {
+	if (presentation.version !== 2) return undefined;
+	return {
+		identity: presentation.artifact?.id ?? presentation.continuation.cursor,
+		cursor: presentation.continuation.cursor,
+		artifactId: presentation.artifact?.id,
+		originalEstimatedTokens: presentation.truncation.originalEstimatedTokens,
+		modelEstimatedTokens: presentation.truncation.modelEstimatedTokens,
+	};
+}
+
+function formatToolResultDiscovery(
+	discovery: ToolResultPresentationDiscoveryState,
+	expanded: boolean,
+): string {
+	const budget = `${discovery.modelEstimatedTokens}/${discovery.originalEstimatedTokens} estimated tokens`;
+	const availability = `Continuation: available · Session artifact: ${discovery.artifactId ? "available" : "unavailable"}.`;
+	if (expanded) {
+		return theme.fg(
+			"muted",
+			`Model received a bounded view (${budget}). Full canonical result is shown. ${availability}`,
+		);
+	}
+	return (
+		theme.fg("muted", `Model received a bounded view (${budget}); full result remains available (`) +
+		keyHint("app.tools.expand", "to show full result") +
+		theme.fg("muted", `). ${availability}`)
+	);
+}
+
 type ReadGroupRow = {
 	args: any;
 	started: boolean;
@@ -52,6 +93,7 @@ type ReadGroupRow = {
 	result?: ToolResultLike;
 	resultIsError: boolean;
 	isPartial: boolean;
+	toolResultDiscovery?: ToolResultPresentationDiscoveryState;
 };
 type ReadGroupEntry = { toolCallId: string; row: ReadGroupRow };
 type ReadGroupDisplayRow = { entries: ReadGroupEntry[] };
@@ -160,6 +202,22 @@ export class ReadToolGroupComponent extends Container {
 	}
 	setExpanded(expanded: boolean): void { if (this.expanded !== expanded) { this.expanded = expanded; this.rebuild(); } }
 	override invalidate(): void { super.invalidate(); this.rebuild(); }
+	setToolResultPresentation(toolCallId: string, presentation: ToolResultPresentation): string | undefined {
+		const row = this.rows.get(toolCallId);
+		if (!row) return undefined;
+		row.toolResultDiscovery = createToolResultDiscovery(presentation);
+		this.rebuild();
+		return row.toolResultDiscovery?.identity;
+	}
+	clearToolResultPresentation(toolCallId: string, identity?: string): void {
+		const row = this.rows.get(toolCallId);
+		if (!row?.toolResultDiscovery || (identity !== undefined && row.toolResultDiscovery.identity !== identity)) return;
+		row.toolResultDiscovery = undefined;
+		this.rebuild();
+	}
+	getToolResultPresentationDiscovery(toolCallId: string): ToolResultPresentationDiscoveryState | undefined {
+		return this.rows.get(toolCallId)?.toolResultDiscovery;
+	}
 
 	private getDisplayRows(): ReadGroupDisplayRow[] {
 		const displayRows: ReadGroupDisplayRow[] = [];
@@ -223,6 +281,11 @@ export class ReadToolGroupComponent extends Container {
 				if (!output || (!this.expanded && !entry.row.resultIsError)) continue;
 				const preview = boundReadGroupPreview(output, this.expanded ? READ_GROUP_MAX_PREVIEW_LINES : 10);
 				this.addChild(new Text(theme.fg(entry.row.resultIsError ? "error" : "toolOutput", preview), callCount > 1 ? 4 : 2, 0));
+			}
+			for (const entry of group.entries) {
+				const discovery = entry.row.toolResultDiscovery;
+				if (!discovery) continue;
+				this.addChild(new Text(formatToolResultDiscovery(discovery, this.expanded), callCount > 1 ? 4 : 2, 0));
 			}
 		}
 	}
@@ -315,6 +378,7 @@ export class ToolExecutionComponent extends Container {
 		details?: any;
 	};
 	private resultIsError = false;
+	private toolResultDiscovery: ToolResultPresentationDiscoveryState | undefined;
 	private convertedImages: Map<number, { data: string; mimeType: string }> = new Map();
 	private callRendererDirty = true;
 	private argsDisplayDirty = true;
@@ -726,6 +790,27 @@ export class ToolExecutionComponent extends Container {
 		this.updateDisplay();
 	}
 
+	setToolResultPresentation(toolCallId: string, presentation: ToolResultPresentation): string | undefined {
+		if (toolCallId !== this.toolCallId) return undefined;
+		this.toolResultDiscovery = createToolResultDiscovery(presentation);
+		this.updateDisplay();
+		return this.toolResultDiscovery?.identity;
+	}
+
+	clearToolResultPresentation(toolCallId: string, identity?: string): void {
+		if (
+			toolCallId !== this.toolCallId ||
+			!this.toolResultDiscovery ||
+			(identity !== undefined && this.toolResultDiscovery.identity !== identity)
+		) return;
+		this.toolResultDiscovery = undefined;
+		this.updateDisplay();
+	}
+
+	getToolResultPresentationDiscovery(toolCallId: string): ToolResultPresentationDiscoveryState | undefined {
+		return toolCallId === this.toolCallId ? this.toolResultDiscovery : undefined;
+	}
+
 	setShowImages(show: boolean): void {
 		if (this.showImages === show) return;
 		this.showImages = show;
@@ -777,6 +862,7 @@ export class ToolExecutionComponent extends Container {
 		this.imageTreeProtocol = null;
 		this.imageTreeWidthCells = 0;
 		this.imageTreeConversionGeneration = -1;
+		this.toolResultDiscovery = undefined;
 		if (releaseFailed) throw releaseError;
 	}
 
@@ -919,6 +1005,10 @@ export class ToolExecutionComponent extends Container {
 					}
 				}
 			}
+			if (this.toolResultDiscovery) {
+				renderContainer.addChild(new Text(formatToolResultDiscovery(this.toolResultDiscovery, this.expanded), 0, 0));
+				hasContent = true;
+			}
 		} else {
 			this.contentText.setCustomBgFn(bgFn);
 			this.contentText.setText(this.formatToolExecution());
@@ -949,6 +1039,9 @@ export class ToolExecutionComponent extends Container {
 		const output = this.getTextOutput();
 		if (output) {
 			text += `\n${output}`;
+		}
+		if (this.toolResultDiscovery) {
+			text += `\n${formatToolResultDiscovery(this.toolResultDiscovery, this.expanded)}`;
 		}
 		return text;
 	}

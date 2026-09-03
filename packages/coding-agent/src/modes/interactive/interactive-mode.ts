@@ -70,6 +70,7 @@ import {
 	VERSION,
 } from "../../config.ts";
 import { type AgentSession, type AgentSessionEvent, parseSkillBlock } from "../../core/agent-session.ts";
+import type { ToolResultPresentation } from "../../core/tool-result-presentation.ts";
 import { type AgentSessionRuntime, SessionImportFileNotFoundError } from "../../core/agent-session-runtime.ts";
 import { DEFAULT_THINKING_LEVEL } from "../../core/defaults.ts";
 import {
@@ -221,6 +222,14 @@ function clipboardArtifactLifecycle(): ClipboardArtifactLifecycle | undefined {
 interface Expandable {
 	setExpanded(expanded: boolean): void;
 }
+
+interface ToolResultDiscoveryRegistration {
+	component: ToolExecutionComponent | ReadToolGroupComponent;
+	toolCallId: string;
+	identity?: string;
+}
+
+const MAX_TOOL_RESULT_DISCOVERIES = 128;
 
 function isExpandable(obj: unknown): obj is Expandable {
 	return typeof obj === "object" && obj !== null && "setExpanded" in obj && typeof obj.setExpanded === "function";
@@ -616,6 +625,7 @@ export class InteractiveMode {
 
 	// Grouped Read calls intentionally map multiple ids to one component.
 	private pendingTools = new Map<string, ToolExecutionComponent | ReadToolGroupComponent>();
+	private toolResultDiscoveries: Map<object | string, ToolResultDiscoveryRegistration> | undefined;
 	private lastReadToolGroup?: ReadToolGroupComponent;
 	private deferredReadPlaceholders = new Map<string, Container>();
 	private deferredReadExecutions = new Map<string, {
@@ -3973,6 +3983,9 @@ export class InteractiveMode {
 
 			case "message_end":
 				if (event.message.role === "user") break;
+				if (event.message.role === "toolResult" && event.toolResultPresentation) {
+					this.attachLiveToolResultPresentation(event.message, event.toolResultPresentation);
+				}
 				if (this.streamingComponent && event.message.role === "assistant") {
 					this.streamingMessage = event.message;
 					let errorMessage: string | undefined;
@@ -4051,6 +4064,7 @@ export class InteractiveMode {
 				const component = this.pendingTools.get(event.toolCallId);
 				if (component) {
 					this.updateTrackedToolResult(component, event.toolCallId, event.result, false, event.isError);
+					this.trackToolResultPresentationTarget(event.toolCallId, event.result, component);
 					this.pendingTools.delete(event.toolCallId);
 					this.ui.requestRender();
 				} else if (this.deferredReadExecutions.has(event.toolCallId)) {
@@ -4268,6 +4282,7 @@ export class InteractiveMode {
 				deferred.isPartial ?? false,
 				deferred.resultIsError,
 			);
+			if (deferred.ended) this.trackToolResultPresentationTarget(toolCallId, deferred.result, component);
 		}
 		this.deferredReadExecutions.delete(toolCallId);
 	}
@@ -4420,6 +4435,97 @@ export class InteractiveMode {
 		else component.updateResult(result, isPartial, isError);
 		this.advanceActiveToolVersion(component);
 		if (!isPartial) this.completeTrackedToolIfReady(component);
+	}
+
+	private evictOldestToolResultDiscovery(
+		entries: Map<object | string, ToolResultDiscoveryRegistration>,
+	): void {
+		for (const [key, registration] of entries) {
+			if (registration.identity !== undefined) {
+				registration.component.clearToolResultPresentation(registration.toolCallId, registration.identity);
+				this.chatContainer.invalidateRetainedChild(registration.component);
+			}
+			entries.delete(key);
+			return;
+		}
+	}
+
+	private addToolResultDiscovery(
+		key: object | string,
+		registration: ToolResultDiscoveryRegistration,
+	): void {
+		const entries = this.toolResultDiscoveries ??= new Map();
+		while (entries.size >= MAX_TOOL_RESULT_DISCOVERIES) this.evictOldestToolResultDiscovery(entries);
+		entries.set(key, registration);
+	}
+
+	private trackToolResultPresentationTarget(
+		toolCallId: string,
+		result: { content?: unknown },
+		component: ToolExecutionComponent | ReadToolGroupComponent,
+	): void {
+		if (!this.session.toolResultPresentationEnabled || !Array.isArray(result.content)) return;
+		this.addToolResultDiscovery(result.content, { component, toolCallId });
+	}
+
+	private attachToolResultPresentation(
+		registration: ToolResultDiscoveryRegistration,
+		presentation: ToolResultPresentation,
+	): void {
+		const identity = registration.component.setToolResultPresentation(registration.toolCallId, presentation);
+		if (!identity) return;
+		this.chatContainer.invalidateRetainedChild(registration.component);
+		const entries = this.toolResultDiscoveries ??= new Map();
+		const duplicate = entries.get(identity);
+		if (duplicate) {
+			duplicate.component.clearToolResultPresentation(duplicate.toolCallId, identity);
+			registration.component.clearToolResultPresentation(registration.toolCallId, identity);
+			this.chatContainer.invalidateRetainedChild(duplicate.component);
+			this.chatContainer.invalidateRetainedChild(registration.component);
+			entries.delete(identity);
+			return;
+		}
+		registration.identity = identity;
+		this.addToolResultDiscovery(identity, registration);
+	}
+
+	private attachLiveToolResultPresentation(
+		message: Extract<AgentMessage, { role: "toolResult" }>,
+		presentation: ToolResultPresentation,
+	): void {
+		const entries = this.toolResultDiscoveries;
+		const registration = entries?.get(message.content);
+		if (!entries || !registration) return;
+		entries.delete(message.content);
+		this.attachToolResultPresentation(registration, presentation);
+		if (entries.size === 0) this.toolResultDiscoveries = undefined;
+	}
+
+	private clearToolResultDiscoveries(): void {
+		const entries = this.toolResultDiscoveries;
+		if (!entries) return;
+		for (const registration of entries.values()) {
+			if (registration.identity !== undefined) {
+				registration.component.clearToolResultPresentation(registration.toolCallId, registration.identity);
+				this.chatContainer.invalidateRetainedChild(registration.component);
+			}
+		}
+		entries.clear();
+		this.toolResultDiscoveries = undefined;
+	}
+
+	/** Low-frequency lifecycle diagnostics for tests and allocation evidence. */
+	getToolResultDiscoveryLifecycleCounts(): { entries: number; attached: number; pending: number } {
+		let attached = 0;
+		let pending = 0;
+		const entries = this.toolResultDiscoveries;
+		if (entries) {
+			for (const registration of entries.values()) {
+				if (registration.identity === undefined) pending++;
+				else attached++;
+			}
+		}
+		return { entries: attached + pending, attached, pending };
 	}
 
 	private retainActiveToolComponent(component: ToolExecutionComponent | ReadToolGroupComponent, toolCallId: string): void {
@@ -4633,10 +4739,19 @@ export class InteractiveMode {
 		items: readonly RenderSessionItem[],
 		options: { updateFooter?: boolean; populateHistory?: boolean } = {},
 	): void {
+		this.clearToolResultDiscoveries();
 		this.finalizeReadToolGroup();
 		this.clearDeferredReadArtifacts();
 		this.pendingTools.clear();
 		const renderedPendingTools = new Map<string, ToolExecutionComponent | ReadToolGroupComponent>();
+		let discoverableMessages: Set<AgentMessage> | undefined;
+		if (this.session.toolResultPresentationEnabled) {
+			discoverableMessages = new Set();
+			for (let index = items.length - 1; index >= 0 && discoverableMessages.size < MAX_TOOL_RESULT_DISCOVERIES; index--) {
+				const item = items[index];
+				if (!isCustomSessionEntry(item) && item.role === "toolResult") discoverableMessages.add(item);
+			}
+		}
 		let rebuildReadGroup: ReadToolGroupComponent | undefined;
 		const finalizeRebuildReadGroup = () => {
 			if (!rebuildReadGroup) return;
@@ -4711,6 +4826,12 @@ export class InteractiveMode {
 				const component = renderedPendingTools.get(message.toolCallId);
 				if (component) {
 					this.updateTrackedToolResult(component, message.toolCallId, message);
+					if (discoverableMessages?.has(message)) {
+						const presentation = this.session.getToolResultPresentationForUi(message);
+						if (presentation) {
+							this.attachToolResultPresentation({ component, toolCallId: message.toolCallId }, presentation);
+						}
+					}
 					renderedPendingTools.delete(message.toolCallId);
 				}
 			} else {
@@ -7819,6 +7940,7 @@ export class InteractiveMode {
 
 	private async performStop(fullscreenExitOutput: FullscreenExitOutput): Promise<void> {
 		this.closeExtensionUiContext();
+		this.clearToolResultDiscoveries();
 		offThemeChange(this.handleThemeChange);
 		this.runtimeHost.cancelPendingReplacements?.();
 		this.bashComponent = undefined;

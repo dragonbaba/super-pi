@@ -67,13 +67,16 @@ export class Box implements Component {
 
 	private matchCache(width: number, childLines: string[], bgSample: string | undefined): boolean {
 		const cache = this.cache;
-		return (
-			!!cache &&
-			cache.width === width &&
-			cache.bgSample === bgSample &&
-			cache.childLines.length === childLines.length &&
-			cache.childLines.every((line, i) => line === childLines[i])
-		);
+		if (
+			!cache ||
+			cache.width !== width ||
+			cache.bgSample !== bgSample ||
+			cache.childLines.length !== childLines.length
+		) return false;
+		for (let index = 0; index < childLines.length; index++) {
+			if (cache.childLines[index] !== childLines[index]) return false;
+		}
+		return true;
 	}
 
 	invalidate(): void {
