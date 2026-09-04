@@ -780,6 +780,10 @@ async function measureTeardown128(): Promise<{
 async function measureMixedHistoryRebuild(): Promise<{
 	durationMs: number;
 	selected: number;
+	presentationAdmissions: number;
+	ownerFullSourceEstimatorScans: number;
+	projectionEntryDelta: number;
+	evictionDelta: number;
 	counts: ReturnType<AgentSession["getToolResultPresentationUiRebuildCounts"]>;
 	selectedContinuation: {
 		firstFullSourceScanDelta: number;
@@ -808,6 +812,9 @@ async function measureMixedHistoryRebuild(): Promise<{
 	const ownerCounters = (fixture.session as unknown as {
 		_toolResultPresentation?: {
 			counters: {
+				presentationObjectsCreated: number;
+				projectionRecordEntries: number;
+				projectionRecordEvictions: number;
 				fullSourceEstimatorScans: number;
 				continuationSourceLookupProbes: number;
 				activeContinuationRecordHits: number;
@@ -817,6 +824,10 @@ async function measureMixedHistoryRebuild(): Promise<{
 	if (!ownerCounters || selectedPresentation?.version !== 2) {
 		throw new Error("mixed-history rebuild did not produce a resident V2 continuation");
 	}
+	const presentationAdmissions = ownerCounters.presentationObjectsCreated;
+	const ownerFullSourceEstimatorScans = ownerCounters.fullSourceEstimatorScans;
+	const projectionEntryDelta = ownerCounters.projectionRecordEntries;
+	const evictionDelta = ownerCounters.projectionRecordEvictions;
 	const scansBeforeFirst = ownerCounters.fullSourceEstimatorScans;
 	const probesBeforeFirst = ownerCounters.continuationSourceLookupProbes;
 	const hitsBeforeFirst = ownerCounters.activeContinuationRecordHits;
@@ -839,7 +850,16 @@ async function measureMixedHistoryRebuild(): Promise<{
 	};
 	selected.clear();
 	await fixture.dispose();
-	return { durationMs, selected: selectedCount, counts, selectedContinuation };
+	return {
+		durationMs,
+		selected: selectedCount,
+		presentationAdmissions,
+		ownerFullSourceEstimatorScans,
+		projectionEntryDelta,
+		evictionDelta,
+		counts,
+		selectedContinuation,
+	};
 }
 
 async function measureSharedOwnerUiRebuild(): Promise<{
