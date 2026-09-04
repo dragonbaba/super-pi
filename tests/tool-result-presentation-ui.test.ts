@@ -17,6 +17,7 @@ import {
 	estimateToolOutputTokens,
 } from "../packages/coding-agent/src/core/tool-output-budget.ts";
 import {
+	createToolResultPresentationCounters,
 	createToolResultPresentationOwner,
 	type ToolResultPresentation,
 	type ToolResultPresentationContent,
@@ -257,8 +258,11 @@ test("grouped bounded reads honor live image visibility, capability, and width c
 	}
 });
 
-test("expanded grouped read rows expose complete canonical text beyond preview limits", () => {
+test("expanded grouped read rows expose complete canonical text beyond preview limits", (t) => {
 	initTheme("dark");
+	const previousCapabilities = getCapabilities();
+	setCapabilities({ images: "iterm2", trueColor: true, hyperlinks: true });
+	t.after(() => setCapabilities(previousCapabilities));
 	const longByCharacters = `character-prefix-${"x".repeat(4_001)}-character-tail`;
 	const longByLines = `${Array.from({ length: 51 }, (_, index) => `line-${index}-${"y".repeat(96)}`).join("\n")}\nline-tail`;
 	const imageData = "QUJDREVGRw==";
@@ -290,7 +294,7 @@ test("expanded grouped read rows expose complete canonical text beyond preview l
 	assert.match(compactExpanded, /character-tail/);
 	assert.match(compactExpanded, /line-tail/);
 	assert.match(expanded, /image-row-text/);
-	assert.match(expanded, /image\/png/);
+	assert.equal(group.children.some((child) => child instanceof Image), true);
 	assert.match(expanded, /error-tail/);
 	assert.match(expanded, /Full canonical result is shown/);
 	owner.dispose();
@@ -422,4 +426,56 @@ test("UI candidate inspection fallback estimator has a bounded transient allocat
 	assert.equal(counters.exactInputObjectsCreated, 0);
 	assert.equal(counters.exactEstimatorCalls, 0);
 	assert.equal(counters.activeRetainedReferences, 0);
+});
+
+test("UI candidate inspection rejects malformed and throwing content before resident lookup or admission", () => {
+	const counters = createToolResultPresentationCounters();
+	const owner = createToolResultPresentationOwner(
+		{ enabled: true, budgetTokens: 128, counters },
+		"ui-candidate-shape-validation",
+	)!;
+	const canonical: ToolResultPresentationContent[] = [{ type: "text", text: "canonical-".repeat(1_000) }];
+	const presentation = owner.create(canonical, "resident-shape-id");
+	assert.equal(presentation?.version, 2);
+	owner.release();
+	const before = {
+		entries: counters.projectionRecordEntries,
+		retained: counters.retainedProjectionCodeUnits,
+		evictions: counters.projectionRecordEvictions,
+		artifacts: counters.artifactDescriptorsCreated,
+		hits: counters.projectionRecordHits,
+	};
+	const malformed: unknown[] = [
+		undefined,
+		null,
+		"not-an-array",
+		[null],
+		[1],
+		[{ type: "text" }],
+		[{ type: "text", text: 1 }],
+		[{ type: "image", data: "AA==" }],
+		[{ type: "image", mimeType: "image/png" }],
+		[{ type: "image", data: 1, mimeType: false }],
+		[{ type: "unknown", text: "nope" }],
+		[{ type: "text", text: "valid" }, { type: "image", data: "AA==" }],
+		new Proxy([], { get: () => { throw new Error("throwing array getter"); } }),
+		[new Proxy({}, { get: () => { throw new Error("throwing block getter"); } })],
+	];
+	for (const candidate of malformed) {
+		assert.doesNotThrow(() => {
+			assert.equal(owner.inspectToolResultPresentationForUiCandidate(candidate, "resident-shape-id"), undefined);
+		});
+	}
+	assert.deepEqual(
+		{
+			entries: counters.projectionRecordEntries,
+			retained: counters.retainedProjectionCodeUnits,
+			evictions: counters.projectionRecordEvictions,
+			artifacts: counters.artifactDescriptorsCreated,
+			hits: counters.projectionRecordHits,
+		},
+		before,
+	);
+	assert.equal(owner.inspectToolResultPresentationForUiCandidate([], "empty-valid-id"), "v1");
+	owner.dispose();
 });
