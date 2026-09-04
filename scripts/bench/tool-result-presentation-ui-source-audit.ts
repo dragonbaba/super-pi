@@ -313,6 +313,7 @@ export function auditToolResultPresentationUiSources(): ToolResultPresentationUi
 			"attachLiveToolResultPresentation",
 			"clearPendingToolResultDiscoveries",
 			"clearAttachedToolResultDiscoveries",
+			"clearToolResultDiscoveriesAfterCanonicalHistoryReplacement",
 			"clearToolResultDiscoveries",
 			"getToolResultDiscoveryLifecycleCounts",
 		]),

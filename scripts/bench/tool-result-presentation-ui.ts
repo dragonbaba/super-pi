@@ -455,6 +455,8 @@ interface InteractiveModeInternals {
 		attachedTeardownReleases: number;
 		pendingMapsCreated: number;
 		attachedMapsCreated: number;
+		canonicalV1RetainedInvalidations: number;
+		canonicalHistoryResetReleases: number;
 		historyMessagesVisited: number;
 		presentationCandidatesEvaluated: number;
 		actualV2Discoveries: number;
@@ -481,6 +483,7 @@ async function createModeFixture(
 	messages: readonly AgentMessage[],
 	presentationMode: "absent" | "disabled" | "enabled",
 	withReplacementExtension = false,
+	replacementText = "post-extension-profile-".repeat(1_024),
 ): Promise<ModeFixture> {
 	const root = mkdtempSync(join(tmpdir(), "super-pi-ui-corrective-bench-"));
 	const cwd = join(root, "workspace");
@@ -510,7 +513,7 @@ async function createModeFixture(
 					return {
 						message: {
 							...event.message,
-							content: [{ type: "text", text: "post-extension-profile-".repeat(1_024) }],
+							content: [{ type: "text", text: replacementText }],
 						},
 					};
 				});
@@ -705,6 +708,203 @@ async function measureLiveRegistrationProfile(inspector: Session): Promise<{
 			registrationsTeardownReleased:
 				after.registrationsTeardownReleased - before.registrationsTeardownReleased,
 		},
+	};
+}
+
+async function captureCanonicalReplacementLifecycle(inspector: Session): Promise<{
+	evidence: {
+		canonicalV1: {
+			oldTextVisibleBefore: boolean;
+			oldTextVisibleAfter: boolean;
+			newTextVisibleAfter: boolean;
+			retainedInvalidationDelta: number;
+			pendingAfter: number;
+			attachedAfter: number;
+		};
+		compactionReset: {
+			attachedBefore: number;
+			pendingBefore: number;
+			attachedAfter: number;
+			pendingAfter: number;
+			canonicalHistoryResetReleases: number;
+			pendingTeardownReleaseDelta: number;
+			retainedInvalidations: number;
+			staleDiscoveriesAfter: number;
+			capacityEvictionDelta: number;
+			fullSourceScanDelta: number;
+			sourceDigestDelta: number;
+			artifactIntegrityScanDelta: number;
+			modelProjectionDelta: number;
+			releasedProjectionRecordEntries: number;
+			releasedProjectionCodeUnits: number;
+			sampledAllocationBytes: number;
+			topAllocationSites: AllocationSite[];
+		};
+	};
+	component: WeakRef<object>;
+	discovery: WeakRef<object>;
+	attachedRegistration: WeakRef<object>;
+	pendingRegistration: WeakRef<object>;
+	attachedSource: WeakRef<object>;
+	pendingSource: WeakRef<object>;
+}> {
+	const v1Fixture = await createModeFixture([], "enabled", true, "POST_EXTENSION_V1");
+	v1Fixture.internals.isInitialized = true;
+	const v1Unsubscribe = v1Fixture.session.subscribe((event) => v1Fixture.internals.handleEvent(event));
+	const v1ToolCallId = "canonical-v1-profile";
+	await v1Fixture.internals.handleEvent({
+		type: "tool_execution_start",
+		toolCallId: v1ToolCallId,
+		toolName: "fixture-tool",
+		args: {},
+	});
+	const v1Message = toolResult(v1ToolCallId, "PRE_EXTENSION_V1");
+	await v1Fixture.internals.handleEvent({
+		type: "tool_execution_end",
+		toolCallId: v1ToolCallId,
+		toolName: "fixture-tool",
+		result: { content: v1Message.content, isError: false },
+		isError: false,
+	});
+	const v1RenderedBefore = v1Fixture.internals.chatContainer.render(100).join("\n");
+	const v1Before = v1Fixture.internals.getToolResultDiscoveryLifecycleCounts();
+	v1Fixture.session.agent.state.messages.push(v1Message);
+	await (v1Fixture.session as unknown as {
+		_handleAgentEvent(event: { type: "message_end"; message: ToolResultMessage }): Promise<void>;
+	})._handleAgentEvent({ type: "message_end", message: v1Message });
+	const v1After = v1Fixture.internals.getToolResultDiscoveryLifecycleCounts();
+	const v1RenderedAfter = v1Fixture.internals.chatContainer.render(100).join("\n");
+	const canonicalV1 = {
+		oldTextVisibleBefore: v1RenderedBefore.includes("PRE_EXTENSION_V1"),
+		oldTextVisibleAfter: v1RenderedAfter.includes("PRE_EXTENSION_V1"),
+		newTextVisibleAfter: v1RenderedAfter.includes("POST_EXTENSION_V1"),
+		retainedInvalidationDelta:
+			v1After.canonicalV1RetainedInvalidations - v1Before.canonicalV1RetainedInvalidations,
+		pendingAfter: v1After.pending,
+		attachedAfter: v1After.attached,
+	};
+	v1Unsubscribe();
+	await v1Fixture.dispose();
+
+	const fixture = await createModeFixture([], "enabled");
+	fixture.internals.isInitialized = true;
+	const unsubscribe = fixture.session.subscribe((event) => fixture.internals.handleEvent(event));
+	const components = new Array<ToolExecutionComponent>(128);
+	for (let index = 0; index < components.length; index++) {
+		components[index] = await runLiveToolResult(fixture, 300_000 + index);
+	}
+	const attachedEntries = fixture.internals.attachedToolResultDiscoveries as Map<string, {
+		component: object;
+		sourceContent: object;
+	}>;
+	const firstAttached = attachedEntries.values().next().value;
+	if (!firstAttached) throw new Error("compaction reset fixture missed an attached registration");
+	const firstDiscovery = components[0]!.getToolResultPresentationDiscovery("live-profile-300000");
+	if (!firstDiscovery) throw new Error("compaction reset fixture missed a discovery");
+	const pendingToolCallId = "compaction-reset-pending-profile";
+	await fixture.internals.handleEvent({
+		type: "tool_execution_start",
+		toolCallId: pendingToolCallId,
+		toolName: "fixture-tool",
+		args: {},
+	});
+	const pendingMessage = toolResult(pendingToolCallId, "compaction-reset-pending-profile-".repeat(1_024));
+	await fixture.internals.handleEvent({
+		type: "tool_execution_end",
+		toolCallId: pendingToolCallId,
+		toolName: "fixture-tool",
+		result: { content: pendingMessage.content, isError: false },
+		isError: false,
+	});
+	const pendingRegistration = fixture.internals.pendingToolResultDiscoveries?.get(pendingToolCallId) as {
+		component: object;
+		sourceContent: object;
+	} | undefined;
+	if (!pendingRegistration) throw new Error("compaction reset fixture missed a pending registration");
+	const componentRef = new WeakRef<object>(components[0]!);
+	const discoveryRef = new WeakRef<object>(firstDiscovery);
+	const attachedRegistrationRef = new WeakRef<object>(firstAttached);
+	const pendingRegistrationRef = new WeakRef<object>(pendingRegistration);
+	const attachedSourceRef = new WeakRef<object>(firstAttached.sourceContent);
+	const pendingSourceRef = new WeakRef<object>(pendingRegistration.sourceContent);
+	const before = fixture.internals.getToolResultDiscoveryLifecycleCounts();
+	const sessionInternals = fixture.session as unknown as {
+		_toolResultPresentation?: {
+			counters: ToolResultPresentationCounters;
+			clearProjectionRecords(): void;
+		};
+		_rebuildToolResultUiCanonicalIndex(): void;
+	};
+	const owner = sessionInternals._toolResultPresentation;
+	if (!owner) throw new Error("compaction reset fixture missed its presentation owner");
+	owner.clearProjectionRecords();
+	const retainedTail = fixture.session.agent.state.messages.at(-1);
+	fixture.session.agent.state.messages = retainedTail ? [retainedTail] : [];
+	sessionInternals._rebuildToolResultUiCanonicalIndex();
+	const ownerBefore = { ...owner.counters };
+	const originalInvalidate = fixture.internals.chatContainer.invalidateRetainedChild;
+	let retainedInvalidations = 0;
+	fixture.internals.chatContainer.invalidateRetainedChild = function (component): boolean {
+		retainedInvalidations++;
+		return originalInvalidate.call(this, component);
+	};
+	await forceCollection();
+	await inspector.post("HeapProfiler.startSampling", {
+		samplingInterval: 1024,
+		includeObjectsCollectedByMajorGC: true,
+		includeObjectsCollectedByMinorGC: true,
+	});
+	await fixture.internals.handleEvent({
+		type: "compaction_end",
+		reason: "threshold",
+		result: {
+			summary: "canonical replacement profile",
+			firstKeptEntryId: "kept",
+			tokensBefore: 32_768,
+			retainedTail: retainedTail ? [retainedTail] : [],
+		},
+		aborted: false,
+		willRetry: true,
+	});
+	const stopped = await inspector.post("HeapProfiler.stopSampling");
+	const allocations = allocationSites(stopped.profile.head as SamplingNode);
+	fixture.internals.chatContainer.invalidateRetainedChild = originalInvalidate;
+	const after = fixture.internals.getToolResultDiscoveryLifecycleCounts();
+	let staleDiscoveriesAfter = 0;
+	for (let index = 0; index < components.length; index++) {
+		if (components[index]!.getToolResultPresentationDiscovery(`live-profile-${300_000 + index}`)) {
+			staleDiscoveriesAfter++;
+		}
+	}
+	const compactionReset = {
+		attachedBefore: before.attached,
+		pendingBefore: before.pending,
+		attachedAfter: after.attached,
+		pendingAfter: after.pending,
+		canonicalHistoryResetReleases: after.canonicalHistoryResetReleases,
+		pendingTeardownReleaseDelta: after.pendingTeardownReleases - before.pendingTeardownReleases,
+		retainedInvalidations,
+		staleDiscoveriesAfter,
+		capacityEvictionDelta: after.attachedCapacityEvictions - before.attachedCapacityEvictions,
+		fullSourceScanDelta: owner.counters.fullSourceEstimatorScans - ownerBefore.fullSourceEstimatorScans,
+		sourceDigestDelta: owner.counters.sourceDigestConstructions - ownerBefore.sourceDigestConstructions,
+		artifactIntegrityScanDelta: owner.counters.artifactIntegrityScans - ownerBefore.artifactIntegrityScans,
+		modelProjectionDelta: owner.counters.modelProjectionCalls - ownerBefore.modelProjectionCalls,
+		releasedProjectionRecordEntries: owner.counters.projectionRecordEntries,
+		releasedProjectionCodeUnits: owner.counters.retainedProjectionCodeUnits,
+		sampledAllocationBytes: allocations.sampledBytes,
+		topAllocationSites: allocations.top,
+	};
+	unsubscribe();
+	await fixture.dispose();
+	return {
+		evidence: { canonicalV1, compactionReset },
+		component: componentRef,
+		discovery: discoveryRef,
+		attachedRegistration: attachedRegistrationRef,
+		pendingRegistration: pendingRegistrationRef,
+		attachedSource: attachedSourceRef,
+		pendingSource: pendingSourceRef,
 	};
 }
 
@@ -1636,6 +1836,7 @@ const malformedMixedHistoryRebuild = await measureMalformedMixedHistoryRebuild()
 const sharedOwnerUiRebuild = await measureSharedOwnerUiRebuild();
 const nonAdmittingCandidateInspection = await measureNonAdmittingCandidateInspection();
 const setupReplacedHistoryRebind = await measureSetupReplacedHistoryRebind();
+const canonicalReplacementLifecycle = await captureCanonicalReplacementLifecycle(inspector);
 const productionLifecycleRefs = await captureProductionLifecycleRefs();
 const pendingLifecycleRefs = await capturePendingLifecycleRefs();
 const inspectionTransientSourceRef = await captureInspectionTransientSourceRef();
@@ -1657,6 +1858,12 @@ const livePendingComponentWeakRefs = pendingLifecycleRefs.component.deref() ? 1 
 const livePendingRegistrationWeakRefs = pendingLifecycleRefs.registration.deref() ? 1 : 0;
 const livePendingSourceWeakRefs = pendingLifecycleRefs.source.deref() ? 1 : 0;
 const liveInspectionTransientSourceWeakRefs = inspectionTransientSourceRef.deref() ? 1 : 0;
+const liveCanonicalReplacementComponentWeakRefs = canonicalReplacementLifecycle.component.deref() ? 1 : 0;
+const liveCanonicalReplacementDiscoveryWeakRefs = canonicalReplacementLifecycle.discovery.deref() ? 1 : 0;
+const liveCanonicalReplacementAttachedRegistrationWeakRefs = canonicalReplacementLifecycle.attachedRegistration.deref() ? 1 : 0;
+const liveCanonicalReplacementPendingRegistrationWeakRefs = canonicalReplacementLifecycle.pendingRegistration.deref() ? 1 : 0;
+const liveCanonicalReplacementAttachedSourceWeakRefs = canonicalReplacementLifecycle.attachedSource.deref() ? 1 : 0;
+const liveCanonicalReplacementPendingSourceWeakRefs = canonicalReplacementLifecycle.pendingSource.deref() ? 1 : 0;
 const liveBoxCacheWeakRefs = releasedBoxCache.cacheRef.deref() ? 1 : 0;
 const releasedBoxOwnerChildCount = releasedBoxCache.owner.children.length;
 const heapSamples: number[] = [];
@@ -1714,6 +1921,7 @@ const result = {
 	sharedOwnerUiRebuild,
 	nonAdmittingCandidateInspection,
 	setupReplacedHistoryRebind,
+	canonicalReplacementLifecycle: canonicalReplacementLifecycle.evidence,
 	lifecycle: {
 		cycles: GC_CYCLES,
 		componentsCreated: componentRefs.length,
@@ -1731,6 +1939,12 @@ const result = {
 		attachedAfterStop: pendingLifecycleRefs.attachedAfterStop,
 		pendingTeardownReleases: pendingLifecycleRefs.pendingTeardownReleases,
 		liveInspectionTransientSourceWeakRefs,
+		liveCanonicalReplacementComponentWeakRefs,
+		liveCanonicalReplacementDiscoveryWeakRefs,
+		liveCanonicalReplacementAttachedRegistrationWeakRefs,
+		liveCanonicalReplacementPendingRegistrationWeakRefs,
+		liveCanonicalReplacementAttachedSourceWeakRefs,
+		liveCanonicalReplacementPendingSourceWeakRefs,
 		releasedProjectionRecordEntries: productionLifecycleRefs.releasedProjectionRecordEntries,
 		releasedProjectionCodeUnits: productionLifecycleRefs.releasedProjectionCodeUnits,
 		liveBoxCacheWeakRefs,

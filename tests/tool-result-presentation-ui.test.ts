@@ -329,6 +329,8 @@ test("interactive live and rebuild paths consume only the internal sidecar with 
 	assert.match(benchmark, /runLiveToolResult/);
 	assert.match(benchmark, /sessionSwitchUpdateDisplayCalls/);
 	assert.match(benchmark, /measureMixedHistoryRebuild/);
+	assert.match(benchmark, /captureCanonicalReplacementLifecycle/);
+	assert.match(benchmark, /canonicalReplacementLifecycle/);
 	assert.match(benchmark, /liveProductionRegistrationWeakRefs/);
 	assert.match(benchmark, /releasedProjectionRecordEntries/);
 	assert.doesNotMatch(benchmark, /fullResultCopies:\s*0/);
