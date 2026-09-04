@@ -107,6 +107,14 @@ interface InteractiveModeInternals {
 	chatContainer: RetainedContainer;
 	renderInstrumentation: TuiRenderInstrumentation;
 	pendingTools: Map<string, ToolExecutionComponent | ReadToolGroupComponent>;
+	createTrackedToolComponent(
+		toolName: string,
+		toolCallId: string,
+		args: unknown,
+		placeholder?: Container,
+		allowReadGrouping?: boolean,
+		applyBoundary?: boolean,
+	): ToolExecutionComponent | ReadToolGroupComponent;
 	toolResultDiscoveries?: Map<string, {
 		component: ToolExecutionComponent | ReadToolGroupComponent;
 		identity: string | undefined;
@@ -142,6 +150,8 @@ interface InteractiveModeInternals {
 		attachedTeardownReleases?: number;
 		pendingMapsCreated?: number;
 		attachedMapsCreated?: number;
+		canonicalV1RetainedInvalidations?: number;
+		canonicalHistoryResetReleases?: number;
 		actualV2Discoveries?: number;
 		liveCanonicalIndexBuildProbes?: number;
 		liveCanonicalIndexAppendProbes?: number;
@@ -824,6 +834,197 @@ test("post-extension canonical ToolResult replaces the live result and receives 
 	assert.equal(lifecycle.registrationObjectsCreated, 1);
 	assert.equal(lifecycle.registrationsAttached, 1);
 	assert.equal(lifecycle.registrationsHighWaterMark, 1);
+});
+
+test("post-extension canonical V1 invalidates a completed retained result", async (t) => {
+	const canonicalText = "POST_EXTENSION_CONTENT";
+	const fixture = await createModeFixture(
+		[],
+		[],
+		{ enabled: true, budgetTokens: 128 },
+		[(pi) => {
+			pi.on("message_end", (event: { message: ToolResultMessage }) => {
+				if (event.message.role !== "toolResult" || event.message.toolCallId !== "canonical-v1-cache") return undefined;
+				return { message: { ...event.message, content: [{ type: "text", text: canonicalText }] } };
+			});
+		}],
+	);
+	t.after(fixture.dispose);
+	fixture.internals.isInitialized = true;
+	const toolCallId = "canonical-v1-cache";
+	await fixture.internals.handleEvent({ type: "tool_execution_start", toolCallId, toolName: "fixture-tool", args: {} });
+	const component = fixture.internals.pendingTools.get(toolCallId);
+	assert.ok(component instanceof ToolExecutionComponent);
+	const message = result(toolCallId, "fixture-tool", "PRE_EXTENSION_CONTENT") as ToolResultMessage;
+	await fixture.internals.handleEvent({
+		type: "tool_execution_end",
+		toolCallId,
+		toolName: message.toolName,
+		result: { content: message.content, isError: false },
+		isError: false,
+	});
+	const cached = fixture.internals.chatContainer.render(80).join("\n");
+	assert.match(cached, /PRE_EXTENSION_CONTENT/);
+	const originalInvalidate = fixture.internals.chatContainer.invalidateRetainedChild;
+	let retainedInvalidations = 0;
+	fixture.internals.chatContainer.invalidateRetainedChild = function (candidate): void {
+		if (candidate === component) retainedInvalidations++;
+		originalInvalidate.call(this, candidate);
+	};
+	t.after(() => {
+		fixture.internals.chatContainer.invalidateRetainedChild = originalInvalidate;
+	});
+	fixture.session.agent.state.messages.push(message);
+	let version: number | undefined;
+	await emitToolResultMessageEnd(fixture, message, (event) => {
+		version = event.toolResultPresentation?.version;
+	});
+	assert.equal(version, 1);
+	assert.equal(retainedInvalidations, 1);
+	const rendered = fixture.internals.chatContainer.render(80).join("\n");
+	assert.match(rendered, /POST_EXTENSION_CONTENT/);
+	assert.doesNotMatch(rendered, /PRE_EXTENSION_CONTENT/);
+	assert.match(component.render(80).join("\n"), /POST_EXTENSION_CONTENT/);
+	const lifecycle = fixture.internals.getToolResultDiscoveryLifecycleCounts();
+	assert.equal(lifecycle.canonicalV1RetainedInvalidations, 1);
+	assert.equal(lifecycle.pending, 0);
+	assert.equal(lifecycle.attached, 0);
+	assert.equal(component.getToolResultPresentationDiscovery(toolCallId), undefined);
+});
+
+test("post-extension canonical V1 refreshes only its completed grouped read row", async (t) => {
+	const firstId = "canonical-v1-group-first";
+	const secondId = "canonical-v1-group-second";
+	const fixture = await createModeFixture(
+		[],
+		[],
+		{ enabled: true, budgetTokens: 128 },
+		[(pi) => {
+			pi.on("message_end", (event: { message: ToolResultMessage }) => {
+				if (event.message.role !== "toolResult" || event.message.toolCallId !== firstId) return undefined;
+				return { message: { ...event.message, content: [{ type: "text", text: "GROUP_POST_EXTENSION" }] } };
+			});
+		}],
+	);
+	t.after(fixture.dispose);
+	fixture.internals.isInitialized = true;
+	fixture.internals.createTrackedToolComponent("read", firstId, { path: "first.txt" }, undefined, true);
+	fixture.internals.createTrackedToolComponent("read", secondId, { path: "second.txt" }, undefined, true);
+	const group = fixture.internals.pendingTools.get(firstId);
+	assert.ok(group instanceof ReadToolGroupComponent);
+	assert.equal(fixture.internals.pendingTools.get(secondId), group);
+	const first = result(firstId, "read", "GROUP_PRE_EXTENSION") as ToolResultMessage;
+	const second = result(secondId, "read", "GROUP_UNCHANGED") as ToolResultMessage;
+	for (const message of [first, second]) {
+		await fixture.internals.handleEvent({
+			type: "tool_execution_end",
+			toolCallId: message.toolCallId,
+			toolName: message.toolName,
+			result: { content: message.content, isError: false },
+			isError: false,
+		});
+	}
+	group.setExpanded(true);
+	assert.match(fixture.internals.chatContainer.render(100).join("\n"), /GROUP_PRE_EXTENSION/);
+	fixture.session.agent.state.messages.push(first, second);
+	await emitToolResultMessageEnd(fixture, first);
+	const rendered = fixture.internals.chatContainer.render(100).join("\n");
+	assert.match(rendered, /GROUP_POST_EXTENSION/);
+	assert.match(rendered, /GROUP_UNCHANGED/);
+	assert.doesNotMatch(rendered, /GROUP_PRE_EXTENSION/);
+});
+
+test("successful compaction revokes stale live discoveries without rebuilding transcript content", async (t) => {
+	const fixture = await createModeFixture([], [], { enabled: true, budgetTokens: 128 });
+	t.after(fixture.dispose);
+	fixture.internals.isInitialized = true;
+	const toolCallId = "compaction-stale-discovery";
+	const message = result(toolCallId, "fixture-tool", "COMPACTION_VISIBLE_CONTENT-".repeat(1_000)) as ToolResultMessage;
+	await fixture.internals.handleEvent({ type: "tool_execution_start", toolCallId, toolName: message.toolName, args: {} });
+	const component = fixture.internals.pendingTools.get(toolCallId);
+	assert.ok(component instanceof ToolExecutionComponent);
+	await fixture.internals.handleEvent({
+		type: "tool_execution_end",
+		toolCallId,
+		toolName: message.toolName,
+		result: { content: message.content, isError: false },
+		isError: false,
+	});
+	fixture.session.agent.state.messages.push(message);
+	await emitToolResultMessageEnd(fixture, message);
+	component.setExpanded(true);
+	const discovery = component.getToolResultPresentationDiscovery(toolCallId);
+	assert.ok(discovery?.artifactId);
+	assert.match(fixture.internals.chatContainer.render(100).join("\n"), /Model received a bounded view/);
+	const childrenBefore = fixture.internals.chatContainer.children.slice();
+	const before = fixture.internals.getToolResultDiscoveryLifecycleCounts();
+	const sessionInternals = fixture.session as unknown as {
+		_toolResultPresentation?: { clearProjectionRecords(): void };
+		_rebuildToolResultUiCanonicalIndex(): void;
+	};
+	sessionInternals._toolResultPresentation?.clearProjectionRecords();
+	fixture.session.agent.state.messages = [];
+	sessionInternals._rebuildToolResultUiCanonicalIndex();
+	await fixture.internals.handleEvent({
+		type: "compaction_end",
+		reason: "manual",
+		result: { summary: "COMPACTION_SUMMARY", firstKeptEntryId: "kept", tokensBefore: 8_192, retainedTail: [] },
+		aborted: false,
+		willRetry: false,
+	});
+	const after = fixture.internals.getToolResultDiscoveryLifecycleCounts();
+	assert.equal(after.pending, 0);
+	assert.equal(after.attached, 0);
+	assert.equal(after.canonicalHistoryResetReleases, 1);
+	assert.equal(after.attachedCapacityEvictions, before.attachedCapacityEvictions);
+	assert.equal(component.getToolResultPresentationDiscovery(toolCallId), undefined);
+	const rendered = fixture.internals.chatContainer.render(100).join("\n");
+	assert.match(rendered, /COMPACTION_VISIBLE_CONTENT/);
+	assert.match(rendered, /COMPACTION_SUMMARY/);
+	assert.doesNotMatch(rendered, /Model received a bounded view/);
+	assert.deepEqual(fixture.internals.chatContainer.children.slice(0, childrenBefore.length), childrenBefore);
+	assert.throws(() => fixture.session.readToolResultArtifact(discovery.artifactId!));
+	assert.throws(() => fixture.session.readToolResultContinuation(discovery.cursor, 128));
+});
+
+test("aborted and failed compaction preserve attached discoveries", async (t) => {
+	const fixture = await createModeFixture([], [], { enabled: true, budgetTokens: 128 });
+	t.after(fixture.dispose);
+	fixture.internals.isInitialized = true;
+	const toolCallId = "compaction-preserved-discovery";
+	const message = result(toolCallId, "fixture-tool", "compaction-preserved-".repeat(1_000)) as ToolResultMessage;
+	await fixture.internals.handleEvent({ type: "tool_execution_start", toolCallId, toolName: message.toolName, args: {} });
+	const component = fixture.internals.pendingTools.get(toolCallId);
+	assert.ok(component instanceof ToolExecutionComponent);
+	await fixture.internals.handleEvent({
+		type: "tool_execution_end",
+		toolCallId,
+		toolName: message.toolName,
+		result: { content: message.content, isError: false },
+		isError: false,
+	});
+	fixture.session.agent.state.messages.push(message);
+	await emitToolResultMessageEnd(fixture, message);
+	const originalDiscovery = component.getToolResultPresentationDiscovery(toolCallId);
+	assert.ok(originalDiscovery);
+	await fixture.internals.handleEvent({
+		type: "compaction_end",
+		reason: "manual",
+		result: undefined,
+		aborted: true,
+		willRetry: false,
+	});
+	assert.equal(component.getToolResultPresentationDiscovery(toolCallId), originalDiscovery);
+	await fixture.internals.handleEvent({
+		type: "compaction_end",
+		reason: "threshold",
+		result: undefined,
+		aborted: false,
+		willRetry: false,
+		errorMessage: "compaction failed",
+	});
+	assert.equal(component.getToolResultPresentationDiscovery(toolCallId), originalDiscovery);
+	assert.equal(fixture.internals.getToolResultDiscoveryLifecycleCounts().canonicalHistoryResetReleases ?? 0, 0);
 });
 
 test("stale and duplicate live ToolResult registrations fail closed", async (t) => {
