@@ -842,6 +842,142 @@ test("UI-only rebuild preserves unrelated shared projection records", async (t) 
 	assert.equal(counters.projectionRecordEvictions, evictionsAfterFirstRebuild);
 });
 
+test("UI candidate inspection does not evict a hot resident across an all-V1 history", async (t) => {
+	const counters = createToolResultPresentationCounters();
+	const messages: AgentMessage[] = [];
+	for (let index = 0; index < 128; index++) {
+		messages.push(result(`inspection-v1-${index}`, "fixture-tool", `small-${index}`));
+	}
+	const hot = result("inspection-hot-v1", "fixture-tool", "hot-small") as ToolResultMessage;
+	messages.push(hot);
+	const fixture = await createModeFixture(messages, [], { enabled: true, budgetTokens: 128, counters });
+	t.after(fixture.dispose);
+
+	const canonicalHot = fixture.session.agent.state.messages.at(-1);
+	assert.ok(canonicalHot?.role === "toolResult");
+	assert.equal(fixture.session.getToolResultPresentationForUi(canonicalHot)?.version, 1);
+	const entriesBefore = counters.projectionRecordEntries;
+	const evictionsBefore = counters.projectionRecordEvictions;
+	const retainedBefore = counters.retainedProjectionCodeUnits;
+
+	const selected = new Map<ToolResultMessage, ToolResultPresentation>();
+	fixture.session.collectRecentToolResultPresentationsForUi(selected, 128);
+	assert.equal(selected.size, 0);
+	assert.equal(counters.projectionRecordEntries, entriesBefore, "non-selected V1 inspection must not become resident");
+	assert.equal(counters.projectionRecordEvictions, evictionsBefore, "all-V1 inspection must not evict the hot record");
+	assert.equal(counters.retainedProjectionCodeUnits, retainedBefore);
+
+	const scansBeforeProvider = counters.fullSourceEstimatorScans;
+	const hitsBeforeProvider = counters.residentReadHits;
+	await fixture.session.agent.convertToLlm([canonicalHot]);
+	assert.equal(counters.fullSourceEstimatorScans, scansBeforeProvider);
+	assert.equal(counters.residentReadHits, hitsBeforeProvider + 1);
+});
+
+test("UI candidate inspection admits only one selected V2 beside an unrelated hot V1", async (t) => {
+	const counters = createToolResultPresentationCounters();
+	const selectedV2 = result(
+		"inspection-selected-v2",
+		"fixture-tool",
+		"selected-discovery-".repeat(1_000),
+	) as ToolResultMessage;
+	const messages: AgentMessage[] = [selectedV2];
+	for (let index = 0; index < 128; index++) {
+		messages.push(result(`inspection-rejected-v1-${index}`, "fixture-tool", `small-${index}`));
+	}
+	const hot = result("inspection-mixed-hot-v1", "fixture-tool", "hot-small") as ToolResultMessage;
+	messages.push(hot);
+	const fixture = await createModeFixture(messages, [], { enabled: true, budgetTokens: 128, counters });
+	t.after(fixture.dispose);
+
+	const canonicalHot = fixture.session.agent.state.messages.at(-1);
+	assert.ok(canonicalHot?.role === "toolResult");
+	assert.equal(fixture.session.getToolResultPresentationForUi(canonicalHot)?.version, 1);
+	const entriesBefore = counters.projectionRecordEntries;
+	const evictionsBefore = counters.projectionRecordEvictions;
+
+	const selected = new Map<ToolResultMessage, ToolResultPresentation>();
+	fixture.session.collectRecentToolResultPresentationsForUi(selected, 128);
+	assert.equal(selected.size, 1);
+	assert.equal([...selected.keys()][0]?.toolCallId, selectedV2.toolCallId);
+	assert.equal(counters.projectionRecordEntries, entriesBefore + 1, "only the selected V2 may be admitted");
+	assert.equal(counters.projectionRecordEvictions, evictionsBefore);
+
+	const scansBeforeProvider = counters.fullSourceEstimatorScans;
+	const hitsBeforeProvider = counters.residentReadHits;
+	await fixture.session.agent.convertToLlm([canonicalHot]);
+	assert.equal(counters.fullSourceEstimatorScans, scansBeforeProvider);
+	assert.equal(counters.residentReadHits, hitsBeforeProvider + 1);
+});
+
+test("discarded duplicate, ambiguous, and backup UI candidates never enter the shared resident cache", async (t) => {
+	const duplicateV1Counters = createToolResultPresentationCounters();
+	const duplicateV1Hot = result("inspection-duplicate-v1-hot", "fixture-tool", "hot") as ToolResultMessage;
+	const duplicateV1Fixture = await createModeFixture(
+		[
+			duplicateV1Hot,
+			result("inspection-duplicate-v1", "fixture-tool", "first-small"),
+			result("inspection-duplicate-v1", "fixture-tool", "second-small"),
+		],
+		[],
+		{ enabled: true, budgetTokens: 128, counters: duplicateV1Counters },
+	);
+	t.after(duplicateV1Fixture.dispose);
+	assert.equal(duplicateV1Fixture.session.getToolResultPresentationForUi(duplicateV1Hot)?.version, 1);
+	const duplicateV1Entries = duplicateV1Counters.projectionRecordEntries;
+	const duplicateV1Evictions = duplicateV1Counters.projectionRecordEvictions;
+	const duplicateV1Retained = duplicateV1Counters.retainedProjectionCodeUnits;
+	const selected = new Map<ToolResultMessage, ToolResultPresentation>();
+	duplicateV1Fixture.session.collectRecentToolResultPresentationsForUi(selected, 128);
+	assert.equal(selected.size, 0);
+	assert.equal(duplicateV1Counters.projectionRecordEntries, duplicateV1Entries);
+	assert.equal(duplicateV1Counters.projectionRecordEvictions, duplicateV1Evictions);
+	assert.equal(duplicateV1Counters.retainedProjectionCodeUnits, duplicateV1Retained);
+
+	const ambiguousCounters = createToolResultPresentationCounters();
+	const ambiguousHot = result("inspection-ambiguous-hot", "fixture-tool", "hot") as ToolResultMessage;
+	const ambiguousFixture = await createModeFixture(
+		[
+			ambiguousHot,
+			result("inspection-ambiguous-v2", "fixture-tool", "ambiguous-first-".repeat(1_000)),
+			result("inspection-ambiguous-v2", "fixture-tool", "ambiguous-second-".repeat(1_000)),
+		],
+		[],
+		{ enabled: true, budgetTokens: 128, counters: ambiguousCounters },
+	);
+	t.after(ambiguousFixture.dispose);
+	assert.equal(ambiguousFixture.session.getToolResultPresentationForUi(ambiguousHot)?.version, 1);
+	const ambiguousEntries = ambiguousCounters.projectionRecordEntries;
+	const ambiguousEvictions = ambiguousCounters.projectionRecordEvictions;
+	const ambiguousRetained = ambiguousCounters.retainedProjectionCodeUnits;
+	ambiguousFixture.session.collectRecentToolResultPresentationsForUi(selected, 128);
+	assert.equal(selected.size, 0);
+	assert.equal(ambiguousCounters.projectionRecordEntries, ambiguousEntries);
+	assert.equal(ambiguousCounters.projectionRecordEvictions, ambiguousEvictions);
+	assert.equal(ambiguousCounters.retainedProjectionCodeUnits, ambiguousRetained);
+
+	const backupCounters = createToolResultPresentationCounters();
+	const backupHot = result("inspection-backup-hot", "fixture-tool", "hot") as ToolResultMessage;
+	const backupFixture = await createModeFixture(
+		[
+			backupHot,
+			result("inspection-backup-v2", "fixture-tool", "backup-discarded-".repeat(1_000)),
+			result("inspection-final-v2", "fixture-tool", "selected-newest-".repeat(1_000)),
+		],
+		[],
+		{ enabled: true, budgetTokens: 128, counters: backupCounters },
+	);
+	t.after(backupFixture.dispose);
+	assert.equal(backupFixture.session.getToolResultPresentationForUi(backupHot)?.version, 1);
+	const backupEntries = backupCounters.projectionRecordEntries;
+	const backupEvictions = backupCounters.projectionRecordEvictions;
+	backupFixture.session.collectRecentToolResultPresentationsForUi(selected, 1);
+	assert.equal(selected.size, 1);
+	assert.equal([...selected.keys()][0]?.toolCallId, "inspection-final-v2");
+	assert.equal(backupCounters.projectionRecordEntries, backupEntries + 1, "the discarded backup must stay transient");
+	assert.equal(backupCounters.projectionRecordEvictions, backupEvictions);
+});
+
 test("UI rebind synchronizes setup-replaced history before the first live result", async (t) => {
 	const fixture = await createModeFixture([], [], { enabled: true, budgetTokens: 128 });
 	t.after(fixture.dispose);
