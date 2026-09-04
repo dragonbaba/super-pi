@@ -121,6 +121,7 @@ interface InteractiveModeInternals {
 		registrationsHighWaterMark?: number;
 		registrationsEvicted?: number;
 		registrationsTeardownReleased?: number;
+		actualV2Discoveries?: number;
 		liveCanonicalIndexBuildProbes?: number;
 		liveCanonicalIndexAppendProbes?: number;
 		liveCanonicalLookupProbes?: number;
@@ -355,7 +356,6 @@ test("initial UI rebuild skips malformed historical presentation candidates", as
 	const messages: AgentMessage[] = [];
 	for (let index = 0; index < malformedContents.length; index++) {
 		const toolCallId = `malformed-history-${index}`;
-		calls.push({ type: "toolCall", id: toolCallId, name: "fixture-tool", arguments: {} });
 		messages.push({
 			role: "toolResult",
 			toolCallId,
