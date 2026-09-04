@@ -29,6 +29,17 @@ export interface ToolResultPresentationUiSourceAudit {
 	readonly discoveryOwnershipObjectLiterals: number;
 	readonly discoveryOwnershipMapConstructors: number;
 	readonly discoveryOwnershipSetConstructors: number;
+	readonly pendingRegistryMapConstructors: number;
+	readonly attachedRegistryMapConstructors: number;
+	readonly promotionArrayMaterializationSites: number;
+	readonly promotionInlineClosureSites: number;
+	readonly promotionCopyOperations: number;
+	readonly promotionSerializations: number;
+	readonly promotionObjectLiterals: number;
+	readonly promotionMapConstructors: number;
+	readonly promotionSetConstructors: number;
+	readonly promotionPromises: number;
+	readonly promotionAbortControllers: number;
 	readonly discoveryRebuildCallerArrayMaterializationSites: number;
 	readonly discoveryRebuildCallerInlineClosureSites: number;
 	readonly discoveryRebuildCallerCopyOperations: number;
@@ -289,12 +300,19 @@ export function auditToolResultPresentationUiSources(): ToolResultPresentationUi
 		...selectClassMembers(toolComponent, "ReadToolGroupComponent", ["setToolResultPresentation", "clearToolResultPresentation", "detachToolResultPresentation"]),
 		...selectClassMembers(toolComponent, "ToolExecutionComponent", ["setToolResultPresentation", "clearToolResultPresentation", "detachToolResultPresentation"]),
 		...selectClassMembers(interactive, "InteractiveMode", [
-			"evictOldestToolResultDiscovery",
+			"updateToolResultDiscoveryHighWaterMarks",
+			"evictOldestAttachedToolResultDiscovery",
 			"createToolResultDiscoveryRegistration",
-			"addToolResultDiscovery",
+			"addPendingToolResultDiscovery",
+			"releasePendingToolResultDiscovery",
+			"removePendingToolResultDiscoveryForAmbiguity",
+			"removeAttachedToolResultDiscoveryForAmbiguity",
+			"addAttachedToolResultDiscovery",
 			"trackToolResultPresentationTarget",
 			"attachToolResultPresentation",
 			"attachLiveToolResultPresentation",
+			"clearPendingToolResultDiscoveries",
+			"clearAttachedToolResultDiscoveries",
 			"clearToolResultDiscoveries",
 			"getToolResultDiscoveryLifecycleCounts",
 		]),
@@ -313,6 +331,24 @@ export function auditToolResultPresentationUiSources(): ToolResultPresentationUi
 		]),
 	];
 	const discoveryOwnershipNodes = [...discoveryCoreOwnershipNodes, ...discoveryRebuildCallerNodes];
+	const pendingRegistryCounts = countAst(
+		selectClassMembers(interactive, "InteractiveMode", ["addPendingToolResultDiscovery"]),
+		checker,
+	);
+	const attachedRegistryCounts = countAst(
+		selectClassMembers(interactive, "InteractiveMode", ["addAttachedToolResultDiscovery"]),
+		checker,
+	);
+	const promotionCounts = countAst(
+		selectClassMembers(interactive, "InteractiveMode", [
+			"evictOldestAttachedToolResultDiscovery",
+			"releasePendingToolResultDiscovery",
+			"addAttachedToolResultDiscovery",
+			"attachToolResultPresentation",
+			"attachLiveToolResultPresentation",
+		]),
+		checker,
+	);
 	const toolResultRenderingNodes = [
 		...selectNamedDeclarations(toolComponent, [
 			"createToolResultDiscovery",
@@ -474,6 +510,21 @@ export function auditToolResultPresentationUiSources(): ToolResultPresentationUi
 		discoveryOwnershipObjectLiterals: ownershipCounts.objectLiterals,
 		discoveryOwnershipMapConstructors: ownershipCounts.mapConstructors,
 		discoveryOwnershipSetConstructors: ownershipCounts.setConstructors,
+		pendingRegistryMapConstructors: pendingRegistryCounts.mapConstructors,
+		attachedRegistryMapConstructors: attachedRegistryCounts.mapConstructors,
+		promotionArrayMaterializationSites:
+			promotionCounts.arrayLiterals +
+			promotionCounts.arraySpreads +
+			promotionCounts.arrayProducingCalls +
+			promotionCounts.arrayConstructors,
+		promotionInlineClosureSites: promotionCounts.inlineClosures,
+		promotionCopyOperations: promotionCounts.copyOperations,
+		promotionSerializations: promotionCounts.serializations,
+		promotionObjectLiterals: promotionCounts.objectLiterals,
+		promotionMapConstructors: promotionCounts.mapConstructors,
+		promotionSetConstructors: promotionCounts.setConstructors,
+		promotionPromises: promotionCounts.promises,
+		promotionAbortControllers: promotionCounts.abortControllers,
 		discoveryRebuildCallerArrayMaterializationSites:
 			rebuildCallerCounts.arrayLiterals +
 			rebuildCallerCounts.arraySpreads +

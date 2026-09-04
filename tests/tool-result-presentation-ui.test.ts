@@ -316,6 +316,8 @@ test("interactive live and rebuild paths consume only the internal sidecar with 
 	assert.match(interactive, /event\.toolResultPresentation/);
 	assert.match(interactive, /collectRecentToolResultPresentationsForUi/);
 	assert.match(interactive, /MAX_TOOL_RESULT_DISCOVERIES\s*=\s*128/);
+	assert.match(interactive, /pendingToolResultDiscoveries/);
+	assert.match(interactive, /attachedToolResultDiscoveries/);
 	assert.match(interactive, /clearToolResultDiscoveries/);
 	assert.match(session, /getToolResultPresentationForUi/);
 	assert.match(session, /toolResultPresentationEnabled/);
@@ -359,7 +361,7 @@ test("UI allocation source audit executes the selected production chain and lock
 	assert.equal(audit.resultRenderingStringProducingCallSites, 7);
 	assert.equal(audit.resultRenderingArrayConstructorSites, 0);
 	assert.equal(audit.resultRenderingStringAppendSites, 25);
-	assert.equal(audit.resultRenderingNumericAppendSites, 15);
+	assert.equal(audit.resultRenderingNumericAppendSites, 16);
 	assert.equal(audit.resultRenderingUnclassifiedAppendSites, 0);
 	assert.equal(audit.resultRenderingInlineClosureSites, 0);
 	assert.equal(audit.resultRenderingSerializationSites, 0);
@@ -371,6 +373,17 @@ test("UI allocation source audit executes the selected production chain and lock
 	assert.equal(audit.discoveryOwnershipArrayMaterializationSites, 2);
 	assert.equal(audit.discoveryOwnershipInlineClosureSites, 1);
 	assert.equal(audit.discoveryOwnershipMapConstructors, 9);
+	assert.equal(audit.pendingRegistryMapConstructors, 1);
+	assert.equal(audit.attachedRegistryMapConstructors, 1);
+	assert.equal(audit.promotionArrayMaterializationSites, 0);
+	assert.equal(audit.promotionInlineClosureSites, 0);
+	assert.equal(audit.promotionCopyOperations, 0);
+	assert.equal(audit.promotionSerializations, 0);
+	assert.equal(audit.promotionObjectLiterals, 0);
+	assert.equal(audit.promotionMapConstructors, 1, "the attached registry is created lazily once per mode lifecycle");
+	assert.equal(audit.promotionSetConstructors, 0);
+	assert.equal(audit.promotionPromises, 0);
+	assert.equal(audit.promotionAbortControllers, 0);
 	assert.equal(
 		(audit as typeof audit & { discoveryRebuildCallerMapConstructors?: number })
 			.discoveryRebuildCallerMapConstructors,

@@ -428,7 +428,8 @@ interface InteractiveModeInternals {
 	chatContainer: RetainedContainer;
 	renderInstrumentation: TuiRenderInstrumentation;
 	pendingTools: Map<string, ToolExecutionComponent | ReadToolGroupComponent>;
-	toolResultDiscoveries?: Map<string, object>;
+	pendingToolResultDiscoveries?: Map<string, object>;
+	attachedToolResultDiscoveries?: Map<string, object>;
 	handleEvent(event: AgentSessionEvent): void | Promise<void>;
 	clearToolResultDiscoveries(): void;
 	renderCurrentSessionState(): void;
@@ -441,6 +442,19 @@ interface InteractiveModeInternals {
 		registrationsHighWaterMark: number;
 		registrationsEvicted: number;
 		registrationsTeardownReleased: number;
+		pendingEntries: number;
+		attachedEntries: number;
+		totalEntries: number;
+		pendingHighWaterMark: number;
+		attachedHighWaterMark: number;
+		totalHighWaterMark: number;
+		attachedCapacityEvictions: number;
+		ambiguityRemovals: number;
+		pendingCompletionReleases: number;
+		pendingTeardownReleases: number;
+		attachedTeardownReleases: number;
+		pendingMapsCreated: number;
+		attachedMapsCreated: number;
 		historyMessagesVisited: number;
 		presentationCandidatesEvaluated: number;
 		actualV2Discoveries: number;
@@ -585,7 +599,7 @@ async function runLiveToolResult(
 		result: { content: message.content, isError: message.isError },
 		isError: false,
 	});
-	const registration = fixture.internals.toolResultDiscoveries?.get(toolCallId);
+	const registration = fixture.internals.pendingToolResultDiscoveries?.get(toolCallId);
 	if (registration) onPendingRegistration?.(registration);
 	await (fixture.session as unknown as {
 		_handleAgentEvent(event: { type: "message_end"; message: ToolResultMessage }): Promise<void>;
@@ -658,9 +672,9 @@ async function measureLiveRegistrationProfile(inspector: Session): Promise<{
 	for (let index = 0; index < LIVE_PROFILE_ITERATIONS; index++) {
 		const started = performance.now();
 		await runLiveToolResult(fixture, index);
-		fixture.internals.clearToolResultDiscoveries();
 		durations[index] = performance.now() - started;
 	}
+	fixture.internals.clearToolResultDiscoveries();
 	const stopped = await inspector.post("HeapProfiler.stopSampling");
 	const allocations = allocationSites(stopped.profile.head as SamplingNode);
 	const after = fixture.internals.getToolResultDiscoveryLifecycleCounts();
@@ -745,6 +759,9 @@ async function measureChronologicalEviction(): Promise<{
 }
 
 async function measureParallelCanonicalAttachmentOrder(): Promise<{
+	pendingBeforeCanonical: number;
+	attachedBeforeCanonical: number;
+	preCanonicalEvictions: number;
 	registrations: number;
 	canonicalOrder: boolean;
 	nextAdmissionEvictedCanonicalOldest: boolean;
@@ -754,7 +771,7 @@ async function measureParallelCanonicalAttachmentOrder(): Promise<{
 }> {
 	const fixture = await createModeFixture([], "enabled");
 	fixture.internals.isInitialized = true;
-	const messages = new Array<ToolResultMessage>(128);
+	const messages = new Array<ToolResultMessage>(129);
 	for (let index = 0; index < messages.length; index++) {
 		const toolCallId = `parallel-profile-${index}`;
 		messages[index] = toolResult(toolCallId, `parallel-profile-${index}-`.repeat(1_024));
@@ -770,6 +787,7 @@ async function measureParallelCanonicalAttachmentOrder(): Promise<{
 			isError: false,
 		});
 	}
+	const beforeCanonical = fixture.internals.getToolResultDiscoveryLifecycleCounts();
 	const unsubscribe = fixture.session.subscribe((event) => fixture.internals.handleEvent(event));
 	for (let index = 0; index < messages.length; index++) {
 		const message = messages[index]!;
@@ -778,9 +796,9 @@ async function measureParallelCanonicalAttachmentOrder(): Promise<{
 			_handleAgentEvent(event: { type: "message_end"; message: ToolResultMessage }): Promise<void>;
 		})._handleAgentEvent({ type: "message_end", message });
 	}
-	const entries = fixture.internals.toolResultDiscoveries;
+	const entries = fixture.internals.attachedToolResultDiscoveries;
 	const canonicalOrder = entries !== undefined && [...entries.keys()].every(
-		(toolCallId, index) => toolCallId === messages[index]!.toolCallId,
+		(toolCallId, index) => toolCallId === messages[index + 1]!.toolCallId,
 	);
 	const newestComponent = fixture.internals.pendingTools.get(messages.at(-1)!.toolCallId);
 	const attachedNewest = fixture.internals.chatContainer.children.find(
@@ -805,8 +823,8 @@ async function measureParallelCanonicalAttachmentOrder(): Promise<{
 	})._handleAgentEvent({ type: "message_end", message: later });
 	const after = fixture.internals.getToolResultDiscoveryLifecycleCounts();
 	const nextAdmissionEvictedCanonicalOldest =
-		!fixture.internals.toolResultDiscoveries?.has(messages[0]!.toolCallId) &&
-		fixture.internals.toolResultDiscoveries?.has(messages[127]!.toolCallId) === true;
+		!fixture.internals.attachedToolResultDiscoveries?.has(messages[1]!.toolCallId) &&
+		fixture.internals.attachedToolResultDiscoveries?.has(messages[128]!.toolCallId) === true;
 	let newestContinuationReadable = false;
 	if (newestDiscovery) {
 		newestContinuationReadable = fixture.session.readToolResultContinuation(newestDiscovery.cursor, 128).content.length > 0;
@@ -815,6 +833,9 @@ async function measureParallelCanonicalAttachmentOrder(): Promise<{
 	unsubscribe();
 	await fixture.dispose();
 	return {
+		pendingBeforeCanonical: beforeCanonical.pending,
+		attachedBeforeCanonical: beforeCanonical.attached,
+		preCanonicalEvictions: beforeCanonical.attachedCapacityEvictions,
 		registrations: after.entries,
 		canonicalOrder,
 		nextAdmissionEvictedCanonicalOldest,
@@ -822,6 +843,71 @@ async function measureParallelCanonicalAttachmentOrder(): Promise<{
 		registrationObjectDelta: after.registrationObjectsCreated - before.registrationObjectsCreated,
 		evictionDelta: after.registrationsEvicted - before.registrationsEvicted,
 	};
+}
+
+async function measureAttachedCapacityUnderV1Batches(): Promise<{
+	initialAttached: number;
+	one: { pendingPeak: number; attachedDuringPending: number; evictionDelta: number; finalAttached: number; durationMs: number };
+	twoHundredFiftySix: { pendingPeak: number; attachedDuringPending: number; evictionDelta: number; finalAttached: number; durationMs: number };
+	oneThousandTwentyFour: { pendingPeak: number; attachedDuringPending: number; evictionDelta: number; finalAttached: number; durationMs: number };
+}> {
+	const fixture = await createModeFixture([], "enabled");
+	fixture.internals.isInitialized = true;
+	const unsubscribe = fixture.session.subscribe((event) => fixture.internals.handleEvent(event));
+	for (let index = 0; index < 128; index++) {
+		const message = toolResult(`v1-capacity-original-${index}`, `v1-capacity-original-${index}-`.repeat(1_024));
+		await fixture.internals.handleEvent({ type: "tool_execution_start", toolCallId: message.toolCallId, toolName: message.toolName, args: {} });
+		await fixture.internals.handleEvent({
+			type: "tool_execution_end",
+			toolCallId: message.toolCallId,
+			toolName: message.toolName,
+			result: { content: message.content, isError: false },
+			isError: false,
+		});
+		fixture.session.agent.state.messages.push(message);
+		await (fixture.session as unknown as {
+			_handleAgentEvent(event: { type: "message_end"; message: ToolResultMessage }): Promise<void>;
+		})._handleAgentEvent({ type: "message_end", message });
+	}
+	const initial = fixture.internals.getToolResultDiscoveryLifecycleCounts();
+	const runBatch = async (count: number, prefix: string) => {
+		const started = performance.now();
+		const messages = new Array<ToolResultMessage>(count);
+		const evictionsBefore = fixture.internals.getToolResultDiscoveryLifecycleCounts().attachedCapacityEvictions;
+		for (let index = 0; index < count; index++) {
+			const message = toolResult(`${prefix}-${index}`, "small");
+			messages[index] = message;
+			await fixture.internals.handleEvent({ type: "tool_execution_start", toolCallId: message.toolCallId, toolName: message.toolName, args: {} });
+			await fixture.internals.handleEvent({
+				type: "tool_execution_end",
+				toolCallId: message.toolCallId,
+				toolName: message.toolName,
+				result: { content: message.content, isError: false },
+				isError: false,
+			});
+		}
+		const during = fixture.internals.getToolResultDiscoveryLifecycleCounts();
+		for (const message of messages) {
+			fixture.session.agent.state.messages.push(message);
+			await (fixture.session as unknown as {
+				_handleAgentEvent(event: { type: "message_end"; message: ToolResultMessage }): Promise<void>;
+			})._handleAgentEvent({ type: "message_end", message });
+		}
+		const after = fixture.internals.getToolResultDiscoveryLifecycleCounts();
+		return {
+			pendingPeak: during.pending,
+			attachedDuringPending: during.attached,
+			evictionDelta: after.attachedCapacityEvictions - evictionsBefore,
+			finalAttached: after.attached,
+			durationMs: performance.now() - started,
+		};
+	};
+	const one = await runBatch(1, "v1-capacity-one");
+	const twoHundredFiftySix = await runBatch(256, "v1-capacity-256");
+	const oneThousandTwentyFour = await runBatch(1_024, "v1-capacity-1024");
+	unsubscribe();
+	await fixture.dispose();
+	return { initialAttached: initial.attached, one, twoHundredFiftySix, oneThousandTwentyFour };
 }
 
 async function measureMalformedMixedHistoryRebuild(): Promise<{
@@ -1296,6 +1382,51 @@ async function captureProductionLifecycleRefs(): Promise<{
 	};
 }
 
+async function capturePendingLifecycleRefs(): Promise<{
+	component: WeakRef<object>;
+	registration: WeakRef<object>;
+	source: WeakRef<object>;
+	pendingAfterStop: number;
+	attachedAfterStop: number;
+	pendingTeardownReleases: number;
+}> {
+	const fixture = await createModeFixture([], "enabled");
+	fixture.internals.isInitialized = true;
+	let message: ToolResultMessage | undefined = toolResult("pending-lifecycle-profile", "pending-lifecycle-".repeat(1_024));
+	await fixture.internals.handleEvent({
+		type: "tool_execution_start",
+		toolCallId: message.toolCallId,
+		toolName: message.toolName,
+		args: {},
+	});
+	const component = fixture.internals.pendingTools.get(message.toolCallId);
+	await fixture.internals.handleEvent({
+		type: "tool_execution_end",
+		toolCallId: message.toolCallId,
+		toolName: message.toolName,
+		result: { content: message.content, isError: false },
+		isError: false,
+	});
+	const registration = fixture.internals.pendingToolResultDiscoveries?.get(message.toolCallId);
+	if (!component || !registration) throw new Error("pending lifecycle fixture did not retain its registration");
+	const refs = {
+		component: new WeakRef<object>(component),
+		registration: new WeakRef<object>(registration),
+		source: new WeakRef<object>(message.content),
+	};
+	await fixture.mode.stop("transcript");
+	fixture.internals.chatContainer.clear();
+	const afterStop = fixture.internals.getToolResultDiscoveryLifecycleCounts();
+	message = undefined;
+	await fixture.dispose();
+	return {
+		...refs,
+		pendingAfterStop: afterStop.pending,
+		attachedAfterStop: afterStop.attached,
+		pendingTeardownReleases: afterStop.pendingTeardownReleases,
+	};
+}
+
 async function captureInspectionTransientSourceRef(): Promise<WeakRef<object>> {
 	const message = toolResult("inspection-lifecycle-v1", "inspection-lifecycle-small");
 	const fixture = await createModeFixture([message], "enabled");
@@ -1499,12 +1630,14 @@ const liveRegistrationProfile = await measureLiveRegistrationProfile(inspector);
 const teardown128 = await measureTeardown128();
 const chronologicalEviction = await measureChronologicalEviction();
 const parallelCanonicalAttachment = await measureParallelCanonicalAttachmentOrder();
+const attachedCapacityUnderV1Batches = await measureAttachedCapacityUnderV1Batches();
 const mixedHistoryRebuild = await measureMixedHistoryRebuild();
 const malformedMixedHistoryRebuild = await measureMalformedMixedHistoryRebuild();
 const sharedOwnerUiRebuild = await measureSharedOwnerUiRebuild();
 const nonAdmittingCandidateInspection = await measureNonAdmittingCandidateInspection();
 const setupReplacedHistoryRebind = await measureSetupReplacedHistoryRebind();
 const productionLifecycleRefs = await captureProductionLifecycleRefs();
+const pendingLifecycleRefs = await capturePendingLifecycleRefs();
 const inspectionTransientSourceRef = await captureInspectionTransientSourceRef();
 
 const componentRefs: WeakRef<object>[] = [];
@@ -1520,6 +1653,9 @@ const liveProductionDiscoveryWeakRefs = productionLifecycleRefs.discovery.deref(
 const liveProductionRegistrationWeakRefs = productionLifecycleRefs.registration.deref() ? 1 : 0;
 const liveProductionSourceWeakRefs = productionLifecycleRefs.source.deref() ? 1 : 0;
 const liveProductionValidationWeakRefs = productionLifecycleRefs.validation.deref() ? 1 : 0;
+const livePendingComponentWeakRefs = pendingLifecycleRefs.component.deref() ? 1 : 0;
+const livePendingRegistrationWeakRefs = pendingLifecycleRefs.registration.deref() ? 1 : 0;
+const livePendingSourceWeakRefs = pendingLifecycleRefs.source.deref() ? 1 : 0;
 const liveInspectionTransientSourceWeakRefs = inspectionTransientSourceRef.deref() ? 1 : 0;
 const liveBoxCacheWeakRefs = releasedBoxCache.cacheRef.deref() ? 1 : 0;
 const releasedBoxOwnerChildCount = releasedBoxCache.owner.children.length;
@@ -1571,6 +1707,7 @@ const result = {
 	teardown128,
 	chronologicalEviction,
 	parallelCanonicalAttachment,
+	attachedCapacityUnderV1Batches,
 	mixedHistoryRebuild,
 	malformedMixedHistoryRebuild,
 	groupedImageSettings,
@@ -1587,6 +1724,12 @@ const result = {
 		liveProductionRegistrationWeakRefs,
 		liveProductionSourceWeakRefs,
 		liveProductionValidationWeakRefs,
+		livePendingComponentWeakRefs,
+		livePendingRegistrationWeakRefs,
+		livePendingSourceWeakRefs,
+		pendingAfterStop: pendingLifecycleRefs.pendingAfterStop,
+		attachedAfterStop: pendingLifecycleRefs.attachedAfterStop,
+		pendingTeardownReleases: pendingLifecycleRefs.pendingTeardownReleases,
 		liveInspectionTransientSourceWeakRefs,
 		releasedProjectionRecordEntries: productionLifecycleRefs.releasedProjectionRecordEntries,
 		releasedProjectionCodeUnits: productionLifecycleRefs.releasedProjectionCodeUnits,

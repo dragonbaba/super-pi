@@ -129,6 +129,19 @@ interface InteractiveModeInternals {
 		registrationsHighWaterMark?: number;
 		registrationsEvicted?: number;
 		registrationsTeardownReleased?: number;
+		pendingEntries?: number;
+		attachedEntries?: number;
+		totalEntries?: number;
+		pendingHighWaterMark?: number;
+		attachedHighWaterMark?: number;
+		totalHighWaterMark?: number;
+		attachedCapacityEvictions?: number;
+		ambiguityRemovals?: number;
+		pendingCompletionReleases?: number;
+		pendingTeardownReleases?: number;
+		attachedTeardownReleases?: number;
+		pendingMapsCreated?: number;
+		attachedMapsCreated?: number;
 		actualV2Discoveries?: number;
 		liveCanonicalIndexBuildProbes?: number;
 		liveCanonicalIndexAppendProbes?: number;
@@ -310,12 +323,12 @@ test("parallel live discovery attachment follows canonical message order", async
 			await emitToolResultMessageEnd(fixture, message);
 		}
 		assert.deepEqual(
-			[...(fixture.internals.toolResultDiscoveries?.keys() ?? [])],
+			[...(attachedToolResultDiscoveries(fixture.internals)?.keys() ?? [])],
 			messages.map((message) => message.toolCallId),
 			"successful attachment must reorder the existing registration into canonical transcript order",
 		);
-		const oldestComponent = fixture.internals.toolResultDiscoveries?.get(messages[0]!.toolCallId)?.component;
-		const newestComponent = fixture.internals.toolResultDiscoveries?.get(messages[127]!.toolCallId)?.component;
+		const oldestComponent = attachedToolResultDiscoveries(fixture.internals)?.get(messages[0]!.toolCallId)?.component;
+		const newestComponent = attachedToolResultDiscoveries(fixture.internals)?.get(messages[127]!.toolCallId)?.component;
 		assert.ok(oldestComponent);
 		assert.ok(newestComponent);
 		const newestDiscovery = newestComponent.getToolResultPresentationDiscovery(messages[127]!.toolCallId);
@@ -335,7 +348,7 @@ test("parallel live discovery attachment follows canonical message order", async
 		assert.equal(oldestComponent.getToolResultPresentationDiscovery(messages[0]!.toolCallId), undefined);
 		assert.ok(newestComponent.getToolResultPresentationDiscovery(messages[127]!.toolCallId));
 		assert.deepEqual(
-			[...(fixture.internals.toolResultDiscoveries?.keys() ?? [])],
+			[...(attachedToolResultDiscoveries(fixture.internals)?.keys() ?? [])],
 			[...messages.slice(1).map((message) => message.toolCallId), later.toolCallId],
 		);
 		const lifecycle = fixture.internals.getToolResultDiscoveryLifecycleCounts();
@@ -354,71 +367,95 @@ test("parallel live discovery attachment follows canonical message order", async
 });
 
 test("129 pending parallel V2 results do not evict before canonical attachment", async (t) => {
-	const fixture = await createModeFixture([], [], { enabled: true, budgetTokens: 128 });
-	t.after(fixture.dispose);
-	fixture.internals.isInitialized = true;
-	const calls: AssistantMessage["content"] = [];
-	const messages = new Array<ToolResultMessage>(129);
-	for (let index = 0; index < messages.length; index++) {
-		const toolCallId = `pending-parallel-v2-${index}`;
-		calls.push({ type: "toolCall", id: toolCallId, name: "fixture-tool", arguments: {} });
-		messages[index] = result(toolCallId, "fixture-tool", `pending-parallel-${index}-`.repeat(1_000)) as ToolResultMessage;
-		await fixture.internals.handleEvent({ type: "tool_execution_start", toolCallId, toolName: "fixture-tool", args: {} });
-	}
-	const assistantMessage = assistant(calls);
-	fixture.session.agent.state.messages.push(assistantMessage);
-	fixture.sessionManager.appendMessage(assistantMessage);
-	const before = fixture.internals.getToolResultDiscoveryLifecycleCounts();
-	for (let index = messages.length - 1; index >= 0; index--) {
-		const message = messages[index]!;
-		await fixture.internals.handleEvent({
-			type: "tool_execution_end",
-			toolCallId: message.toolCallId,
-			toolName: message.toolName,
-			result: { content: message.content, isError: false },
-			isError: false,
-		});
-	}
-	const pending = fixture.internals.getToolResultDiscoveryLifecycleCounts();
-	assert.equal(pending.pending, 129);
-	assert.equal(pending.attached, 0);
-	assert.equal(pending.registrationsEvicted, before.registrationsEvicted);
+	const runPermutation = async (label: string, completionOrder: readonly number[]): Promise<string[]> => {
+		const fixture = await createModeFixture([], [], { enabled: true, budgetTokens: 128 });
+		t.after(fixture.dispose);
+		fixture.internals.isInitialized = true;
+		const calls: AssistantMessage["content"] = [];
+		const messages = new Array<ToolResultMessage>(129);
+		for (let index = 0; index < messages.length; index++) {
+			const toolCallId = `pending-parallel-${label}-${index}`;
+			calls.push({ type: "toolCall", id: toolCallId, name: "fixture-tool", arguments: {} });
+			messages[index] = result(toolCallId, "fixture-tool", `pending-parallel-${label}-${index}-`.repeat(1_000)) as ToolResultMessage;
+			await fixture.internals.handleEvent({ type: "tool_execution_start", toolCallId, toolName: "fixture-tool", args: {} });
+		}
+		const assistantMessage = assistant(calls);
+		fixture.session.agent.state.messages.push(assistantMessage);
+		fixture.sessionManager.appendMessage(assistantMessage);
+		const before = fixture.internals.getToolResultDiscoveryLifecycleCounts();
+		for (const index of completionOrder) {
+			const message = messages[index]!;
+			await fixture.internals.handleEvent({
+				type: "tool_execution_end",
+				toolCallId: message.toolCallId,
+				toolName: message.toolName,
+				result: { content: message.content, isError: false },
+				isError: false,
+			});
+		}
+		const pending = fixture.internals.getToolResultDiscoveryLifecycleCounts();
+		assert.equal(pending.pending, 129);
+		assert.equal(pending.attached, 0);
+		assert.equal(pending.pendingMapsCreated, 1);
+		assert.equal(pending.attachedMapsCreated, 0);
+		assert.equal(pending.registrationsEvicted, before.registrationsEvicted);
 
-	for (const message of messages) {
-		fixture.session.agent.state.messages.push(message);
-		await emitToolResultMessageEnd(fixture, message);
-	}
-	const attached = fixture.internals.getToolResultDiscoveryLifecycleCounts();
-	assert.equal(attached.pending, 0);
-	assert.equal(attached.attached, 128);
-	assert.equal(attached.registrationsEvicted, (before.registrationsEvicted ?? 0) + 1);
-	const entries = attachedToolResultDiscoveries(fixture.internals);
-	assert.deepEqual(
-		[...(entries?.keys() ?? [])],
-		messages.slice(1).map((message) => message.toolCallId),
-	);
-	assert.equal(entries?.has(messages[0]!.toolCallId), false);
-	const oldestRetained = entries?.get(messages[1]!.toolCallId)?.component;
-	const newestRetained = entries?.get(messages[128]!.toolCallId)?.component;
-	assert.ok(oldestRetained);
-	assert.ok(newestRetained);
-	for (const [component, message] of [[oldestRetained, messages[1]], [newestRetained, messages[128]]] as const) {
-		const discovery = component.getToolResultPresentationDiscovery(message!.toolCallId);
-		assert.ok(discovery);
-		assert.equal(fixture.session.readToolResultArtifact(discovery.artifactId).content, message!.content);
-		assert.ok(fixture.session.readToolResultContinuation(discovery.cursor, 128).content.length > 0);
-	}
+		for (const message of messages) {
+			fixture.session.agent.state.messages.push(message);
+			await emitToolResultMessageEnd(fixture, message);
+		}
+		const attached = fixture.internals.getToolResultDiscoveryLifecycleCounts();
+		assert.equal(attached.pending, 0);
+		assert.equal(attached.attached, 128);
+		assert.equal(attached.pendingMapsCreated, 1);
+		assert.equal(attached.attachedMapsCreated, 1);
+		assert.equal(attached.registrationsEvicted, (before.registrationsEvicted ?? 0) + 1);
+		const entries = attachedToolResultDiscoveries(fixture.internals);
+		const expectedOrder = messages.slice(1).map((message) => message.toolCallId);
+		assert.deepEqual([...(entries?.keys() ?? [])], expectedOrder);
+		assert.equal(entries?.has(messages[0]!.toolCallId), false);
+		const oldestRetained = entries?.get(messages[1]!.toolCallId)?.component;
+		const newestRetained = entries?.get(messages[128]!.toolCallId)?.component;
+		assert.ok(oldestRetained);
+		assert.ok(newestRetained);
+		for (const [component, message] of [[oldestRetained, messages[1]], [newestRetained, messages[128]]] as const) {
+			const discovery = component.getToolResultPresentationDiscovery(message!.toolCallId);
+			assert.ok(discovery);
+			assert.ok(discovery.artifactId);
+			assert.equal(fixture.session.readToolResultArtifact(discovery.artifactId).content, message!.content);
+			assert.ok(fixture.session.readToolResultContinuation(discovery.cursor, 128).content.length > 0);
+		}
 
-	fixture.internals.rebuildChatFromMessages();
-	assert.deepEqual(
-		[...(attachedToolResultDiscoveries(fixture.internals)?.keys() ?? [])],
-		messages.slice(1).map((message) => message.toolCallId),
-		"live and rebuild latest-128 sets must match canonical transcript order",
-	);
+		fixture.internals.rebuildChatFromMessages();
+		assert.deepEqual(
+			[...(attachedToolResultDiscoveries(fixture.internals)?.keys() ?? [])],
+			expectedOrder,
+			"live and rebuild latest-128 sets must match canonical transcript order",
+		);
+		return expectedOrder.map((toolCallId) => toolCallId.slice(toolCallId.lastIndexOf("-") + 1));
+	};
+
+	const forward = Array.from({ length: 129 }, (_, index) => index);
+	const reverse = Array.from({ length: 129 }, (_, index) => 128 - index);
+	const seeded = Array.from({ length: 129 }, (_, index) => (index * 37) % 129);
+	const forwardResult = await runPermutation("forward", forward);
+	assert.deepEqual(await runPermutation("reverse", reverse), forwardResult);
+	assert.deepEqual(await runPermutation("seeded", seeded), forwardResult);
 });
 
 test("pending V1 results do not consume an attached V2 discovery slot", async (t) => {
-	const fixture = await createModeFixture([], [], { enabled: true, budgetTokens: 128 });
+	const postExtensionV1Id = "pending-v1-255";
+	const fixture = await createModeFixture(
+		[],
+		[],
+		{ enabled: true, budgetTokens: 128 },
+		[(pi) => {
+			pi.on("message_end", (event: { message: ToolResultMessage }) => {
+				if (event.message.role !== "toolResult" || event.message.toolCallId !== postExtensionV1Id) return undefined;
+				return { message: { ...event.message, content: [{ type: "text", text: "post-extension-small" }] } };
+			});
+		}],
+	);
 	t.after(fixture.dispose);
 	fixture.internals.isInitialized = true;
 	const attachedMessages = new Array<ToolResultMessage>(128);
@@ -445,7 +482,17 @@ test("pending V1 results do not consume an attached V2 discovery slot", async (t
 	const smallMessages = new Array<ToolResultMessage>(256);
 	for (let index = 0; index < smallMessages.length; index++) {
 		const toolCallId = `pending-v1-${index}`;
-		const message = result(toolCallId, "fixture-tool", index % 2 === 0 ? "small" : "small error") as ToolResultMessage;
+		const message = result(
+			toolCallId,
+			"fixture-tool",
+			index === 255 ? "pre-extension-large-".repeat(1_000) : index % 2 === 0 ? "small" : "small error",
+		) as ToolResultMessage;
+		if (index === 254) {
+			message.content = [
+				{ type: "text", text: "small image result" },
+				{ type: "image", data: "QUJDREVGRw==", mimeType: "image/png" },
+			];
+		}
 		message.isError = index % 2 !== 0;
 		smallMessages[index] = message;
 		await fixture.internals.handleEvent({ type: "tool_execution_start", toolCallId, toolName: message.toolName, args: {} });
@@ -460,6 +507,8 @@ test("pending V1 results do not consume an attached V2 discovery slot", async (t
 	const pending = fixture.internals.getToolResultDiscoveryLifecycleCounts();
 	assert.equal(pending.pending, 256);
 	assert.equal(pending.attached, 128);
+	assert.equal(pending.pendingMapsCreated, 1);
+	assert.equal(pending.attachedMapsCreated, 1);
 	assert.equal(pending.registrationsEvicted, before.registrationsEvicted);
 	assert.deepEqual([...(attachedToolResultDiscoveries(fixture.internals)?.keys() ?? [])], expectedOrder);
 
@@ -476,9 +525,118 @@ test("pending V1 results do not consume an attached V2 discovery slot", async (t
 		const component = attachedToolResultDiscoveries(fixture.internals)?.get(message.toolCallId)?.component;
 		const discovery = component?.getToolResultPresentationDiscovery(message.toolCallId);
 		assert.ok(discovery);
+		assert.ok(discovery.artifactId);
 		assert.equal(fixture.session.readToolResultArtifact(discovery.artifactId).content, message.content);
 		assert.ok(fixture.session.readToolResultContinuation(discovery.cursor, 128).content.length > 0);
 	}
+});
+
+test("mixed parallel V1 and V2 results evict only on successful canonical V2 promotion", async (t) => {
+	const fixture = await createModeFixture([], [], { enabled: true, budgetTokens: 128 });
+	t.after(fixture.dispose);
+	fixture.internals.isInitialized = true;
+	const originalMessages = new Array<ToolResultMessage>(128);
+	for (let index = 0; index < originalMessages.length; index++) {
+		const toolCallId = `mixed-original-v2-${index}`;
+		const message = result(toolCallId, "fixture-tool", `mixed-original-${index}-`.repeat(1_000)) as ToolResultMessage;
+		originalMessages[index] = message;
+		await fixture.internals.handleEvent({ type: "tool_execution_start", toolCallId, toolName: message.toolName, args: {} });
+		await fixture.internals.handleEvent({
+			type: "tool_execution_end",
+			toolCallId,
+			toolName: message.toolName,
+			result: { content: message.content, isError: false },
+			isError: false,
+		});
+		fixture.session.agent.state.messages.push(message);
+		await emitToolResultMessageEnd(fixture, message);
+	}
+	const before = fixture.internals.getToolResultDiscoveryLifecycleCounts();
+	const batch = new Array<ToolResultMessage>(256);
+	const expectedV2Order: string[] = [];
+	for (let index = 0; index < batch.length; index++) {
+		const toolCallId = `mixed-batch-${index}`;
+		const isV2 = index % 2 === 0;
+		const message = result(toolCallId, "fixture-tool", isV2 ? `mixed-large-${index}-`.repeat(1_000) : "small") as ToolResultMessage;
+		batch[index] = message;
+		if (isV2) expectedV2Order.push(toolCallId);
+		await fixture.internals.handleEvent({ type: "tool_execution_start", toolCallId, toolName: message.toolName, args: {} });
+	}
+	for (let index = batch.length - 1; index >= 0; index--) {
+		const message = batch[index]!;
+		await fixture.internals.handleEvent({
+			type: "tool_execution_end",
+			toolCallId: message.toolCallId,
+			toolName: message.toolName,
+			result: { content: message.content, isError: false },
+			isError: false,
+		});
+	}
+	const pending = fixture.internals.getToolResultDiscoveryLifecycleCounts();
+	assert.equal(pending.pending, 256);
+	assert.equal(pending.attached, 128);
+	assert.equal(pending.registrationsEvicted, before.registrationsEvicted);
+	assert.equal(pending.totalEntries, 384);
+	for (const message of batch) {
+		fixture.session.agent.state.messages.push(message);
+		await emitToolResultMessageEnd(fixture, message);
+	}
+	const after = fixture.internals.getToolResultDiscoveryLifecycleCounts();
+	assert.equal(after.pending, 0);
+	assert.equal(after.attached, 128);
+	assert.equal(after.pendingHighWaterMark, 256);
+	assert.equal(after.attachedHighWaterMark, 128);
+	assert.equal(after.totalHighWaterMark, 384);
+	assert.equal(after.attachedCapacityEvictions, (before.attachedCapacityEvictions ?? 0) + 128);
+	assert.equal(after.registrationsEvicted, (before.registrationsEvicted ?? 0) + 128);
+	assert.equal(after.pendingCompletionReleases, (before.pendingCompletionReleases ?? 0) + 256);
+	assert.deepEqual([...(attachedToolResultDiscoveries(fixture.internals)?.keys() ?? [])], expectedV2Order);
+	for (const message of batch) {
+		const attached = attachedToolResultDiscoveries(fixture.internals)?.has(message.toolCallId) === true;
+		assert.equal(attached, Number(message.toolCallId.slice("mixed-batch-".length)) % 2 === 0);
+	}
+});
+
+test("pending discovery ownership is released at turn, agent, and stop boundaries", async (t) => {
+	const createPending = async (fixture: ModeFixture, toolCallId: string): Promise<void> => {
+		const message = result(toolCallId, "fixture-tool", `${toolCallId}-`.repeat(1_000)) as ToolResultMessage;
+		await fixture.internals.handleEvent({ type: "tool_execution_start", toolCallId, toolName: message.toolName, args: {} });
+		await fixture.internals.handleEvent({
+			type: "tool_execution_end",
+			toolCallId,
+			toolName: message.toolName,
+			result: { content: message.content, isError: false },
+			isError: false,
+		});
+	};
+
+	const turnFixture = await createModeFixture([], [], { enabled: true, budgetTokens: 128 });
+	t.after(turnFixture.dispose);
+	turnFixture.internals.isInitialized = true;
+	await createPending(turnFixture, "pending-turn-end");
+	await turnFixture.internals.handleEvent({ type: "turn_end", message: assistant([]), toolResults: [] });
+	let counts = turnFixture.internals.getToolResultDiscoveryLifecycleCounts();
+	assert.equal(counts.pending, 0);
+	assert.equal(counts.pendingTeardownReleases, 1);
+
+	const agentFixture = await createModeFixture([], [], { enabled: true, budgetTokens: 128 });
+	t.after(agentFixture.dispose);
+	agentFixture.internals.isInitialized = true;
+	await createPending(agentFixture, "pending-agent-end");
+	await agentFixture.internals.handleEvent({ type: "agent_end", messages: [], willRetry: false });
+	counts = agentFixture.internals.getToolResultDiscoveryLifecycleCounts();
+	assert.equal(counts.pending, 0);
+	assert.equal(counts.pendingTeardownReleases, 1);
+
+	const stopFixture = await createModeFixture([], [], { enabled: true, budgetTokens: 128 });
+	t.after(stopFixture.dispose);
+	stopFixture.internals.isInitialized = true;
+	await createPending(stopFixture, "pending-stop");
+	await stopFixture.mode.stop("transcript");
+	counts = stopFixture.internals.getToolResultDiscoveryLifecycleCounts();
+	assert.equal(counts.pending, 0);
+	assert.equal(counts.attached, 0);
+	assert.equal(counts.pendingTeardownReleases, 1);
 });
 
 test("initial UI rebuild skips malformed historical presentation candidates", async (t) => {
@@ -704,6 +862,10 @@ test("stale and duplicate live ToolResult registrations fail closed", async (t) 
 	await emitToolResultMessageEnd(fixture, duplicateMessage);
 	assert.equal(currentComponent.getToolResultPresentationDiscovery(toolCallId), undefined);
 	assert.equal(duplicateComponent.getToolResultPresentationDiscovery(toolCallId), undefined);
+	const lifecycle = fixture.internals.getToolResultDiscoveryLifecycleCounts();
+	assert.equal(lifecycle.attachedCapacityEvictions, 0);
+	assert.equal(lifecycle.ambiguityRemovals, 2);
+	assert.equal(lifecycle.pending, 0);
 });
 
 test("a live V1 result releases its pending discovery registration", async (t) => {
@@ -898,6 +1060,9 @@ test("default-off session rebuild creates no discovery registry or component sta
 		),
 		{ entries: 0, attached: 0, pending: 0 },
 	);
+	const lifecycle = fixture.internals.getToolResultDiscoveryLifecycleCounts();
+	assert.equal(lifecycle.pendingMapsCreated, 0);
+	assert.equal(lifecycle.attachedMapsCreated, 0);
 	const component = fixture.internals.chatContainer.children.find(
 		(child): child is ToolExecutionComponent => child instanceof ToolExecutionComponent,
 	);
@@ -1023,6 +1188,19 @@ test("128 trailing V1 results do not hide an earlier bounded V2 discovery", asyn
 			registrationsHighWaterMark: 1,
 			registrationsEvicted: 0,
 			registrationsTeardownReleased: 0,
+			pendingEntries: 0,
+			attachedEntries: 1,
+			totalEntries: 1,
+			pendingHighWaterMark: 0,
+			attachedHighWaterMark: 1,
+			totalHighWaterMark: 1,
+			attachedCapacityEvictions: 0,
+			ambiguityRemovals: 0,
+			pendingCompletionReleases: 0,
+			pendingTeardownReleases: 0,
+			attachedTeardownReleases: 0,
+			pendingMapsCreated: 0,
+			attachedMapsCreated: 1,
 			historyMessagesVisited: 130,
 			presentationCandidatesEvaluated: 129,
 			actualV2Discoveries: 1,
