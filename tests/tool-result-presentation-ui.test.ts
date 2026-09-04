@@ -270,6 +270,7 @@ test("UI allocation source audit executes the selected production chain and lock
 		"agent-session.ts",
 		"tool-result-presentation.ts/touchExactResidentProjectionRecord",
 		"tool-result-presentation.ts/inspectToolResultPresentationForUiCandidate",
+		"tool-output-budget.ts/candidate-inspection-fallback-estimator-chain",
 		"tui.ts/Container",
 		"components/box.ts",
 		"components/text.ts",
@@ -322,11 +323,19 @@ test("UI allocation source audit executes the selected production chain and lock
 	assert.equal(audit.exactResidentTouchSetConstructors, 0);
 	assert.equal(audit.exactResidentTouchPromises, 0);
 	assert.equal(audit.exactResidentTouchAbortControllers, 0);
-	assert.equal(audit.candidateInspectionArrayMaterializationSites, 0);
+	assert.equal(
+		audit.candidateInspectionArrayMaterializationSites,
+		2,
+		"the conservative source envelope includes the exact-estimator-only arrays even though UI inspection uses fallback estimation",
+	);
 	assert.equal(audit.candidateInspectionInlineClosureSites, 0);
 	assert.equal(audit.candidateInspectionCopyOperations, 0);
 	assert.equal(audit.candidateInspectionSerializations, 0);
-	assert.equal(audit.candidateInspectionObjectLiterals, 0);
+	assert.equal(
+		audit.candidateInspectionObjectLiterals,
+		3,
+		"the full estimator chain includes scan-state, estimate, and exact-estimator-only input objects",
+	);
 	assert.equal(audit.candidateInspectionMapConstructors, 0);
 	assert.equal(audit.candidateInspectionSetConstructors, 0);
 	assert.equal(audit.candidateInspectionPromises, 0);
