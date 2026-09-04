@@ -627,12 +627,20 @@ export class InteractiveMode {
 
 	// Grouped Read calls intentionally map multiple ids to one component.
 	private pendingTools = new Map<string, ToolExecutionComponent | ReadToolGroupComponent>();
-	private toolResultDiscoveries: Map<string, ToolResultDiscoveryRegistration> | undefined;
+	private pendingToolResultDiscoveries: Map<string, ToolResultDiscoveryRegistration> | undefined;
+	private attachedToolResultDiscoveries: Map<string, ToolResultDiscoveryRegistration> | undefined;
 	private toolResultDiscoveryRegistrationObjectsCreated = 0;
+	private toolResultDiscoveryPendingMapsCreated = 0;
+	private toolResultDiscoveryAttachedMapsCreated = 0;
 	private toolResultDiscoveryRegistrationsAttached = 0;
-	private toolResultDiscoveryRegistrationsHighWaterMark = 0;
-	private toolResultDiscoveryRegistrationsEvicted = 0;
-	private toolResultDiscoveryRegistrationsTeardownReleased = 0;
+	private toolResultDiscoveryPendingHighWaterMark = 0;
+	private toolResultDiscoveryAttachedHighWaterMark = 0;
+	private toolResultDiscoveryTotalHighWaterMark = 0;
+	private toolResultDiscoveryAttachedCapacityEvictions = 0;
+	private toolResultDiscoveryAmbiguityRemovals = 0;
+	private toolResultDiscoveryPendingCompletionReleases = 0;
+	private toolResultDiscoveryPendingTeardownReleases = 0;
+	private toolResultDiscoveryAttachedTeardownReleases = 0;
 	private lastReadToolGroup?: ReadToolGroupComponent;
 	private deferredReadPlaceholders = new Map<string, Container>();
 	private deferredReadExecutions = new Map<string, {
@@ -4020,6 +4028,7 @@ export class InteractiveMode {
 						}
 						this.finalizeReadToolGroup();
 						this.pendingTools.clear();
+						this.clearPendingToolResultDiscoveries();
 					} else {
 						// Args are now complete - trigger diff computation for edit tools
 						this.materializeStreamingReadTools(this.streamingMessage);
@@ -4080,9 +4089,14 @@ export class InteractiveMode {
 				break;
 			}
 
+			case "turn_end":
+				this.clearPendingToolResultDiscoveries();
+				break;
+
 			case "agent_end":
 				this.finalizeReadToolGroup();
 				this.clearDeferredReadArtifacts();
+				this.clearPendingToolResultDiscoveries();
 				this.streamedToolIds.clear();
 				if (this.settingsManager.getShowTerminalProgress()) {
 					this.ui.terminal.setProgress(false);
@@ -4447,16 +4461,29 @@ export class InteractiveMode {
 		if (!isPartial) this.completeTrackedToolIfReady(component);
 	}
 
-	private evictOldestToolResultDiscovery(
+	private updateToolResultDiscoveryHighWaterMarks(): void {
+		const pending = this.pendingToolResultDiscoveries?.size ?? 0;
+		const attached = this.attachedToolResultDiscoveries?.size ?? 0;
+		if (pending > this.toolResultDiscoveryPendingHighWaterMark) {
+			this.toolResultDiscoveryPendingHighWaterMark = pending;
+		}
+		if (attached > this.toolResultDiscoveryAttachedHighWaterMark) {
+			this.toolResultDiscoveryAttachedHighWaterMark = attached;
+		}
+		const total = pending + attached;
+		if (total > this.toolResultDiscoveryTotalHighWaterMark) {
+			this.toolResultDiscoveryTotalHighWaterMark = total;
+		}
+	}
+
+	private evictOldestAttachedToolResultDiscovery(
 		entries: Map<string, ToolResultDiscoveryRegistration>,
 	): void {
 		for (const [toolCallId, registration] of entries) {
-			if (registration.identity !== undefined) {
-				registration.component.clearToolResultPresentation(toolCallId, registration.identity);
-				this.chatContainer.invalidateRetainedChild(registration.component);
-			}
+			registration.component.clearToolResultPresentation(toolCallId, registration.identity);
+			this.chatContainer.invalidateRetainedChild(registration.component);
 			entries.delete(toolCallId);
-			this.toolResultDiscoveryRegistrationsEvicted++;
+			this.toolResultDiscoveryAttachedCapacityEvictions++;
 			return;
 		}
 	}
@@ -4475,16 +4502,68 @@ export class InteractiveMode {
 		};
 	}
 
-	private addToolResultDiscovery(
+	private addPendingToolResultDiscovery(
 		toolCallId: string,
 		registration: ToolResultDiscoveryRegistration,
 	): void {
-		const entries = this.toolResultDiscoveries ??= new Map();
-		while (entries.size >= MAX_TOOL_RESULT_DISCOVERIES) this.evictOldestToolResultDiscovery(entries);
-		entries.set(toolCallId, registration);
-		if (entries.size > this.toolResultDiscoveryRegistrationsHighWaterMark) {
-			this.toolResultDiscoveryRegistrationsHighWaterMark = entries.size;
+		let entries = this.pendingToolResultDiscoveries;
+		if (!entries) {
+			entries = new Map();
+			this.pendingToolResultDiscoveries = entries;
+			this.toolResultDiscoveryPendingMapsCreated++;
 		}
+		entries.set(toolCallId, registration);
+		this.updateToolResultDiscoveryHighWaterMarks();
+	}
+
+	private releasePendingToolResultDiscovery(
+		toolCallId: string,
+		registration: ToolResultDiscoveryRegistration,
+	): boolean {
+		const entries = this.pendingToolResultDiscoveries;
+		if (!entries || entries.get(toolCallId) !== registration) return false;
+		entries.delete(toolCallId);
+		this.toolResultDiscoveryPendingCompletionReleases++;
+		return true;
+	}
+
+	private removePendingToolResultDiscoveryForAmbiguity(
+		toolCallId: string,
+		registration: ToolResultDiscoveryRegistration,
+	): boolean {
+		const entries = this.pendingToolResultDiscoveries;
+		if (!entries || entries.get(toolCallId) !== registration) return false;
+		entries.delete(toolCallId);
+		this.toolResultDiscoveryAmbiguityRemovals++;
+		return true;
+	}
+
+	private removeAttachedToolResultDiscoveryForAmbiguity(toolCallId: string): void {
+		const entries = this.attachedToolResultDiscoveries;
+		const registration = entries?.get(toolCallId);
+		if (!entries || !registration) return;
+		registration.component.clearToolResultPresentation(toolCallId, registration.identity);
+		this.chatContainer.invalidateRetainedChild(registration.component);
+		entries.delete(toolCallId);
+		this.toolResultDiscoveryAmbiguityRemovals++;
+	}
+
+	private addAttachedToolResultDiscovery(
+		toolCallId: string,
+		registration: ToolResultDiscoveryRegistration,
+	): void {
+		let entries = this.attachedToolResultDiscoveries;
+		if (!entries) {
+			entries = new Map();
+			this.attachedToolResultDiscoveries = entries;
+			this.toolResultDiscoveryAttachedMapsCreated++;
+		}
+		while (entries.size >= MAX_TOOL_RESULT_DISCOVERIES) {
+			this.evictOldestAttachedToolResultDiscovery(entries);
+		}
+		entries.set(toolCallId, registration);
+		this.toolResultDiscoveryRegistrationsAttached++;
+		this.updateToolResultDiscoveryHighWaterMarks();
 	}
 
 	private trackToolResultPresentationTarget(
@@ -4496,20 +4575,18 @@ export class InteractiveMode {
 			!this.session.toolResultPresentationEnabled ||
 			!Array.isArray(result.content)
 		) return;
-		const entries = this.toolResultDiscoveries;
-		const existing = entries?.get(toolCallId);
-		if (entries && existing) {
-			if (existing.identity !== undefined) {
-				existing.component.clearToolResultPresentation(toolCallId, existing.identity);
-				this.chatContainer.invalidateRetainedChild(existing.component);
-			}
-			entries.delete(toolCallId);
-			const ambiguous = this.createToolResultDiscoveryRegistration(component, result.content);
-			ambiguous.ambiguous = true;
-			this.addToolResultDiscovery(toolCallId, ambiguous);
-			return;
+		let ambiguous = false;
+		const pendingEntries = this.pendingToolResultDiscoveries;
+		const existingPending = pendingEntries?.get(toolCallId);
+		if (pendingEntries && existingPending) {
+			pendingEntries.delete(toolCallId);
+			this.toolResultDiscoveryAmbiguityRemovals++;
+			ambiguous = true;
 		}
-		this.addToolResultDiscovery(toolCallId, this.createToolResultDiscoveryRegistration(component, result.content));
+		if (this.attachedToolResultDiscoveries?.has(toolCallId)) ambiguous = true;
+		const registration = this.createToolResultDiscoveryRegistration(component, result.content);
+		registration.ambiguous = ambiguous;
+		this.addPendingToolResultDiscovery(toolCallId, registration);
 	}
 
 	private attachToolResultPresentation(
@@ -4524,19 +4601,18 @@ export class InteractiveMode {
 		const identity = registration.component.setToolResultPresentation(message.toolCallId, presentation);
 		if (!identity) return false;
 		this.chatContainer.invalidateRetainedChild(registration.component);
-		const entries = this.toolResultDiscoveries ??= new Map();
-		for (const [candidateToolCallId, duplicate] of entries) {
+		const entries = this.attachedToolResultDiscoveries;
+		if (entries) for (const [candidateToolCallId, duplicate] of entries) {
 			if (candidateToolCallId === message.toolCallId || duplicate.identity !== identity) continue;
 			duplicate.component.clearToolResultPresentation(candidateToolCallId, identity);
 			registration.component.clearToolResultPresentation(message.toolCallId, identity);
 			this.chatContainer.invalidateRetainedChild(duplicate.component);
 			this.chatContainer.invalidateRetainedChild(registration.component);
 			entries.delete(candidateToolCallId);
-			entries.delete(message.toolCallId);
+			this.toolResultDiscoveryAmbiguityRemovals++;
 			return false;
 		}
 		registration.identity = identity;
-		this.toolResultDiscoveryRegistrationsAttached++;
 		return true;
 	}
 
@@ -4544,45 +4620,58 @@ export class InteractiveMode {
 		message: Extract<AgentMessage, { role: "toolResult" }>,
 		presentation: ToolResultPresentation,
 	): void {
-		const entries = this.toolResultDiscoveries;
+		const entries = this.pendingToolResultDiscoveries;
 		const registration = entries?.get(message.toolCallId);
 		if (!entries || !registration) return;
 		const sourceStatus = this.session.getToolResultPresentationSourceStatusForUi(message, registration.sourceContent);
 		if (sourceStatus === "stale") return;
 		if (sourceStatus === "ambiguous") {
-			entries.delete(message.toolCallId);
-			if (entries.size === 0) this.toolResultDiscoveries = undefined;
+			this.removePendingToolResultDiscoveryForAmbiguity(message.toolCallId, registration);
+			this.removeAttachedToolResultDiscoveryForAmbiguity(message.toolCallId);
 			return;
 		}
 		if (registration.ambiguous === true || registration.generation !== this.tuiLifecycleGeneration) {
-			entries.delete(message.toolCallId);
-			if (entries.size === 0) this.toolResultDiscoveries = undefined;
+			this.releasePendingToolResultDiscovery(message.toolCallId, registration);
 			return;
 		}
 		this.updateTrackedToolResult(registration.component, message.toolCallId, message, false, message.isError);
-		if (!this.attachToolResultPresentation(message, registration, presentation)) {
-			entries.delete(message.toolCallId);
-		} else if (
-			registration.identity !== undefined &&
-			entries.get(message.toolCallId) === registration
-		) {
-			entries.delete(message.toolCallId);
-			entries.set(message.toolCallId, registration);
+		if (presentation.version !== 2) {
+			this.releasePendingToolResultDiscovery(message.toolCallId, registration);
+			return;
 		}
-		if (entries.size === 0) this.toolResultDiscoveries = undefined;
+		if (!this.attachToolResultPresentation(message, registration, presentation)) {
+			this.releasePendingToolResultDiscovery(message.toolCallId, registration);
+			return;
+		}
+		if (!this.releasePendingToolResultDiscovery(message.toolCallId, registration)) {
+			registration.component.detachToolResultPresentation(message.toolCallId, registration.identity);
+			return;
+		}
+		this.addAttachedToolResultDiscovery(message.toolCallId, registration);
+	}
+
+	private clearPendingToolResultDiscoveries(): void {
+		const entries = this.pendingToolResultDiscoveries;
+		if (!entries) return;
+		this.toolResultDiscoveryPendingTeardownReleases += entries.size;
+		entries.clear();
+		this.pendingToolResultDiscoveries = undefined;
+	}
+
+	private clearAttachedToolResultDiscoveries(): void {
+		const entries = this.attachedToolResultDiscoveries;
+		if (!entries) return;
+		for (const [toolCallId, registration] of entries) {
+			registration.component.detachToolResultPresentation(toolCallId, registration.identity);
+			this.toolResultDiscoveryAttachedTeardownReleases++;
+		}
+		entries.clear();
+		this.attachedToolResultDiscoveries = undefined;
 	}
 
 	private clearToolResultDiscoveries(): void {
-		const entries = this.toolResultDiscoveries;
-		if (!entries) return;
-		for (const [toolCallId, registration] of entries) {
-			if (registration.identity !== undefined) {
-				registration.component.detachToolResultPresentation(toolCallId, registration.identity);
-			}
-			this.toolResultDiscoveryRegistrationsTeardownReleased++;
-		}
-		entries.clear();
-		this.toolResultDiscoveries = undefined;
+		this.clearPendingToolResultDiscoveries();
+		this.clearAttachedToolResultDiscoveries();
 	}
 
 	/** Low-frequency lifecycle diagnostics for tests and allocation evidence. */
@@ -4595,6 +4684,19 @@ export class InteractiveMode {
 		registrationsHighWaterMark: number;
 		registrationsEvicted: number;
 		registrationsTeardownReleased: number;
+		pendingEntries: number;
+		attachedEntries: number;
+		totalEntries: number;
+		pendingHighWaterMark: number;
+		attachedHighWaterMark: number;
+		totalHighWaterMark: number;
+		attachedCapacityEvictions: number;
+		ambiguityRemovals: number;
+		pendingCompletionReleases: number;
+		pendingTeardownReleases: number;
+		attachedTeardownReleases: number;
+		pendingMapsCreated: number;
+		attachedMapsCreated: number;
 		historyMessagesVisited: number;
 		presentationCandidatesEvaluated: number;
 		actualV2Discoveries: number;
@@ -4607,24 +4709,34 @@ export class InteractiveMode {
 		liveCanonicalIndexEntries: number;
 		liveCanonicalIndexOverflowed: boolean;
 	} {
-		let attached = 0;
-		let pending = 0;
-		const entries = this.toolResultDiscoveries;
-		if (entries) {
-			for (const registration of entries.values()) {
-				if (registration.identity === undefined) pending++;
-				else attached++;
-			}
-		}
+		const attached = this.attachedToolResultDiscoveries?.size ?? 0;
+		const pending = this.pendingToolResultDiscoveries?.size ?? 0;
+		const total = attached + pending;
+		const teardownReleased =
+			this.toolResultDiscoveryPendingTeardownReleases +
+			this.toolResultDiscoveryAttachedTeardownReleases;
 		return {
-			entries: attached + pending,
+			entries: total,
 			attached,
 			pending,
 			registrationObjectsCreated: this.toolResultDiscoveryRegistrationObjectsCreated,
 			registrationsAttached: this.toolResultDiscoveryRegistrationsAttached,
-			registrationsHighWaterMark: this.toolResultDiscoveryRegistrationsHighWaterMark,
-			registrationsEvicted: this.toolResultDiscoveryRegistrationsEvicted,
-			registrationsTeardownReleased: this.toolResultDiscoveryRegistrationsTeardownReleased,
+			registrationsHighWaterMark: this.toolResultDiscoveryTotalHighWaterMark,
+			registrationsEvicted: this.toolResultDiscoveryAttachedCapacityEvictions,
+			registrationsTeardownReleased: teardownReleased,
+			pendingEntries: pending,
+			attachedEntries: attached,
+			totalEntries: total,
+			pendingHighWaterMark: this.toolResultDiscoveryPendingHighWaterMark,
+			attachedHighWaterMark: this.toolResultDiscoveryAttachedHighWaterMark,
+			totalHighWaterMark: this.toolResultDiscoveryTotalHighWaterMark,
+			attachedCapacityEvictions: this.toolResultDiscoveryAttachedCapacityEvictions,
+			ambiguityRemovals: this.toolResultDiscoveryAmbiguityRemovals,
+			pendingCompletionReleases: this.toolResultDiscoveryPendingCompletionReleases,
+			pendingTeardownReleases: this.toolResultDiscoveryPendingTeardownReleases,
+			attachedTeardownReleases: this.toolResultDiscoveryAttachedTeardownReleases,
+			pendingMapsCreated: this.toolResultDiscoveryPendingMapsCreated,
+			attachedMapsCreated: this.toolResultDiscoveryAttachedMapsCreated,
 			...this.session.getToolResultPresentationUiRebuildCounts(),
 		};
 	}
@@ -4930,9 +5042,8 @@ export class InteractiveMode {
 					const presentation = discoverableMessages?.get(message);
 					if (presentation) {
 						const registration = this.createToolResultDiscoveryRegistration(component, message.content);
-						this.addToolResultDiscovery(message.toolCallId, registration);
-						if (!this.attachToolResultPresentation(message, registration, presentation)) {
-							this.toolResultDiscoveries?.delete(message.toolCallId);
+						if (this.attachToolResultPresentation(message, registration, presentation)) {
+							this.addAttachedToolResultDiscovery(message.toolCallId, registration);
 						}
 					}
 					renderedPendingTools.delete(message.toolCallId);
