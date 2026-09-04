@@ -1520,6 +1520,32 @@ export class ToolResultPresentationOwner {
 		this.counters.retainedProjectionCodeUnits = 0;
 	}
 
+	/**
+	 * Move one exact resident record to the eviction tail without changing its
+	 * identity, validation state, retained accounting, or admission semantics.
+	 *
+	 * @internal UI rebuild ordering only. This is not a general cache-hit policy.
+	 */
+	touchExactResidentProjectionRecord(
+		content: readonly ToolResultPresentationContent[],
+		toolCallId: string,
+	): boolean {
+		if (!this.accepting) return false;
+		const record = this.projectionRecords?.get(toolCallId);
+		if (!record || record.sourceContent !== content) return false;
+		if (record === this.projectionRecordTail) return true;
+		const previous = record.previous;
+		const next = record.next;
+		if (previous) previous.next = next;
+		else this.projectionRecordHead = next;
+		if (next) next.previous = previous;
+		record.previous = this.projectionRecordTail;
+		record.next = undefined;
+		this.projectionRecordTail!.next = record;
+		this.projectionRecordTail = record;
+		return true;
+	}
+
 	create(legacyContent: readonly ToolResultPresentationContent[]): ToolResultPresentationV1 | undefined;
 	create(legacyContent: readonly ToolResultPresentationContent[], toolCallId: string): ToolResultPresentation | undefined;
 	create(legacyContent: readonly ToolResultPresentationContent[], toolCallId?: string): ToolResultPresentation | undefined {

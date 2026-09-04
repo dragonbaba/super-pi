@@ -1579,6 +1579,7 @@ export class AgentSession {
 		const owner = this._toolResultPresentation;
 		const boundedLimit = Number.isSafeInteger(limit) ? Math.min(limit, MAX_TOOL_RESULT_UI_DISCOVERIES) : 0;
 		if (!owner || boundedLimit <= 0) return;
+		this._synchronizeToolResultUiCanonicalIndex();
 		const messages = this.agent.state.messages;
 		// Keep one bounded backup candidate per possible ambiguous output slot.
 		// The shared owner is the sole V1/V2 authority; a settings-side estimate
@@ -1616,16 +1617,18 @@ export class AgentSession {
 			if (candidateOccurrences.get(toolCallId) !== 1) continue;
 			selectedCandidates.push(candidate);
 		}
-		owner.clearProjectionRecords();
-		// Re-admit oldest to newest so the owner's eviction order stays aligned
-		// with the chronological UI registry when a later live result arrives.
+		// Re-admit and touch oldest to newest so selected records follow unrelated
+		// residents at the eviction tail without clearing the shared owner.
 		for (let index = selectedCandidates.length - 1; index >= 0; index--) {
 			const candidate = selectedCandidates[index]!;
 			this._toolResultUiSourceScans++;
 			const presentation = owner.create(candidate.content, candidate.toolCallId);
 			if (!presentation) continue;
 			try {
-				if (presentation.version === 2) target.set(candidate, presentation);
+				if (presentation.version === 2) {
+					owner.touchExactResidentProjectionRecord(candidate.content, candidate.toolCallId);
+					target.set(candidate, presentation);
+				}
 			} finally {
 				owner.release();
 			}
