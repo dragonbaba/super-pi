@@ -641,6 +641,8 @@ export class InteractiveMode {
 	private toolResultDiscoveryPendingCompletionReleases = 0;
 	private toolResultDiscoveryPendingTeardownReleases = 0;
 	private toolResultDiscoveryAttachedTeardownReleases = 0;
+	private toolResultDiscoveryCanonicalV1RetainedInvalidations = 0;
+	private toolResultDiscoveryCanonicalHistoryResetReleases = 0;
 	private lastReadToolGroup?: ReadToolGroupComponent;
 	private deferredReadPlaceholders = new Map<string, Container>();
 	private deferredReadExecutions = new Map<string, {
@@ -4148,6 +4150,7 @@ export class InteractiveMode {
 						this.showStatus("Auto-compaction cancelled");
 					}
 				} else if (event.result) {
+					this.clearToolResultDiscoveriesAfterCanonicalHistoryReplacement();
 					this.addMessageToChat(
 						createCompactionSummaryMessage(
 							event.result.summary,
@@ -4636,6 +4639,8 @@ export class InteractiveMode {
 		}
 		this.updateTrackedToolResult(registration.component, message.toolCallId, message, false, message.isError);
 		if (presentation.version !== 2) {
+			this.chatContainer.invalidateRetainedChild(registration.component);
+			this.toolResultDiscoveryCanonicalV1RetainedInvalidations++;
 			this.releasePendingToolResultDiscovery(message.toolCallId, registration);
 			return;
 		}
@@ -4669,6 +4674,19 @@ export class InteractiveMode {
 		this.attachedToolResultDiscoveries = undefined;
 	}
 
+	private clearToolResultDiscoveriesAfterCanonicalHistoryReplacement(): void {
+		this.clearPendingToolResultDiscoveries();
+		const entries = this.attachedToolResultDiscoveries;
+		if (!entries) return;
+		for (const [toolCallId, registration] of entries) {
+			registration.component.clearToolResultPresentation(toolCallId, registration.identity);
+			this.chatContainer.invalidateRetainedChild(registration.component);
+			this.toolResultDiscoveryCanonicalHistoryResetReleases++;
+		}
+		entries.clear();
+		this.attachedToolResultDiscoveries = undefined;
+	}
+
 	private clearToolResultDiscoveries(): void {
 		this.clearPendingToolResultDiscoveries();
 		this.clearAttachedToolResultDiscoveries();
@@ -4697,6 +4715,8 @@ export class InteractiveMode {
 		attachedTeardownReleases: number;
 		pendingMapsCreated: number;
 		attachedMapsCreated: number;
+		canonicalV1RetainedInvalidations: number;
+		canonicalHistoryResetReleases: number;
 		historyMessagesVisited: number;
 		presentationCandidatesEvaluated: number;
 		actualV2Discoveries: number;
@@ -4737,6 +4757,8 @@ export class InteractiveMode {
 			attachedTeardownReleases: this.toolResultDiscoveryAttachedTeardownReleases,
 			pendingMapsCreated: this.toolResultDiscoveryPendingMapsCreated,
 			attachedMapsCreated: this.toolResultDiscoveryAttachedMapsCreated,
+			canonicalV1RetainedInvalidations: this.toolResultDiscoveryCanonicalV1RetainedInvalidations,
+			canonicalHistoryResetReleases: this.toolResultDiscoveryCanonicalHistoryResetReleases,
 			...this.session.getToolResultPresentationUiRebuildCounts(),
 		};
 	}
