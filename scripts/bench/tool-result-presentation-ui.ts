@@ -912,7 +912,12 @@ async function measureSetupReplacedHistoryRebind(): Promise<{
 	fixture.mode.renderInitialMessages();
 	const afterRepeated = fixture.session.getToolResultPresentationUiRebuildCounts();
 	fixture.internals.isInitialized = true;
-	await runLiveToolResult(fixture, 64);
+	const unsubscribe = fixture.session.subscribe((event) => fixture.internals.handleEvent(event));
+	try {
+		await runLiveToolResult(fixture, 64);
+	} finally {
+		unsubscribe();
+	}
 	const afterLive = fixture.session.getToolResultPresentationUiRebuildCounts();
 	await fixture.dispose();
 	return {
@@ -1059,18 +1064,22 @@ async function measureExactResidentTouchProfile(inspector: Session): Promise<{
 	entryDelta: number;
 	retainedCodeUnitDelta: number;
 	sampledAllocationBytes: number;
+	sampledTouchMethodBytes: number;
 	topAllocationSites: AllocationSite[];
 }> {
 	const owner = createToolResultPresentationOwner({ enabled: true, budgetTokens: 128 }, "ui-touch-profile")!;
 	const contents = new Array<ToolResultPresentationContent[]>(128);
+	const toolCallIds = new Array<string>(128);
 	for (let index = 0; index < contents.length; index++) {
 		const entry: ToolResultPresentationContent[] = [{ type: "text", text: `touch-profile-${index}` }];
+		const toolCallId = `touch-profile-${index}`;
 		contents[index] = entry;
-		owner.create(entry, `touch-profile-${index}`);
+		toolCallIds[index] = toolCallId;
+		owner.create(entry, toolCallId);
 		owner.release();
 	}
 	for (let index = 0; index < contents.length; index++) {
-		owner.touchExactResidentProjectionRecord(contents[index]!, `touch-profile-${index}`);
+		owner.touchExactResidentProjectionRecord(contents[index]!, toolCallIds[index]!);
 	}
 	await forceCollection();
 	const counters = owner.counters;
@@ -1086,13 +1095,19 @@ async function measureExactResidentTouchProfile(inspector: Session): Promise<{
 	});
 	let successfulTouches = 0;
 	for (let index = 0; index < PROFILE_ITERATIONS; index++) {
+		const entryIndex = index % contents.length;
 		if (owner.touchExactResidentProjectionRecord(
-			contents[index % contents.length]!,
-			`touch-profile-${index % contents.length}`,
+			contents[entryIndex]!,
+			toolCallIds[entryIndex]!,
 		)) successfulTouches++;
 	}
 	const stopped = await inspector.post("HeapProfiler.stopSampling");
 	const allocations = allocationSites(stopped.profile.head as SamplingNode);
+	let sampledTouchMethodBytes = 0;
+	for (let index = 0; index < allocations.top.length; index++) {
+		const site = allocations.top[index]!;
+		if (site.functionName === "touchExactResidentProjectionRecord") sampledTouchMethodBytes += site.bytes;
+	}
 	const result = {
 		iterations: PROFILE_ITERATIONS,
 		successfulTouches,
@@ -1102,6 +1117,7 @@ async function measureExactResidentTouchProfile(inspector: Session): Promise<{
 		entryDelta: counters.projectionRecordEntries - entriesBefore,
 		retainedCodeUnitDelta: counters.retainedProjectionCodeUnits - retainedBefore,
 		sampledAllocationBytes: allocations.sampledBytes,
+		sampledTouchMethodBytes,
 		topAllocationSites: allocations.top,
 	};
 	owner.dispose();
