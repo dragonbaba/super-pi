@@ -841,6 +841,93 @@ async function measureMixedHistoryRebuild(): Promise<{
 	return { durationMs, selected: selectedCount, counts, selectedContinuation };
 }
 
+async function measureSharedOwnerUiRebuild(): Promise<{
+	selected: number;
+	initialAdmissionScans: number;
+	uiRebuildScanDelta: number;
+	providerAfterRebuildScanDelta: number;
+	repeatedRebuildScanDelta: number;
+	repeatedRebuildEvictionDelta: number;
+	entriesAfterRebuild: number;
+	retainedCodeUnitsAfterRebuild: number;
+}> {
+	const small = toolResult("shared-owner-v1", "small");
+	const large = toolResult("shared-owner-v2", "shared-owner-large-".repeat(1_024));
+	const fixture = await createModeFixture([small, large], "enabled");
+	const owner = (fixture.session as unknown as {
+		_toolResultPresentation?: {
+			counters: {
+				fullSourceEstimatorScans: number;
+				projectionRecordEvictions: number;
+				projectionRecordEntries: number;
+				retainedProjectionCodeUnits: number;
+			};
+		};
+	})._toolResultPresentation;
+	const canonicalSmall = fixture.session.agent.state.messages[0];
+	if (!owner || canonicalSmall?.role !== "toolResult") throw new Error("shared-owner fixture is incomplete");
+	fixture.session.getToolResultPresentationForUi(canonicalSmall);
+	await fixture.session.agent.convertToLlm(fixture.session.agent.state.messages.slice());
+	const initialAdmissionScans = owner.counters.fullSourceEstimatorScans;
+	const selected = new Map<ToolResultMessage, ToolResultPresentation>();
+	fixture.session.collectRecentToolResultPresentationsForUi(selected, 128);
+	const scansAfterRebuild = owner.counters.fullSourceEstimatorScans;
+	const evictionsAfterRebuild = owner.counters.projectionRecordEvictions;
+	await fixture.session.agent.convertToLlm(fixture.session.agent.state.messages.slice());
+	const scansAfterProvider = owner.counters.fullSourceEstimatorScans;
+	fixture.session.collectRecentToolResultPresentationsForUi(selected, 128);
+	const result = {
+		selected: selected.size,
+		initialAdmissionScans,
+		uiRebuildScanDelta: scansAfterRebuild - initialAdmissionScans,
+		providerAfterRebuildScanDelta: scansAfterProvider - scansAfterRebuild,
+		repeatedRebuildScanDelta: owner.counters.fullSourceEstimatorScans - scansAfterProvider,
+		repeatedRebuildEvictionDelta: owner.counters.projectionRecordEvictions - evictionsAfterRebuild,
+		entriesAfterRebuild: owner.counters.projectionRecordEntries,
+		retainedCodeUnitsAfterRebuild: owner.counters.retainedProjectionCodeUnits,
+	};
+	selected.clear();
+	await fixture.dispose();
+	return result;
+}
+
+async function measureSetupReplacedHistoryRebind(): Promise<{
+	historyMessages: number;
+	firstRebindBuildProbeDelta: number;
+	firstRebindRebuildDelta: number;
+	repeatedRebindBuildProbeDelta: number;
+	repeatedRebindRebuildDelta: number;
+	firstLiveBuildProbeDelta: number;
+	firstLiveAppendProbeDelta: number;
+	firstLiveLookupProbeDelta: number;
+}> {
+	const fixture = await createModeFixture([], "enabled");
+	const setupMessages: AgentMessage[] = [];
+	for (let index = 0; index < 64; index++) setupMessages.push(toolResult(`setup-profile-${index}`, "small"));
+	const historyMessages = setupMessages.length;
+	fixture.session.agent.state.messages = setupMessages;
+	const before = fixture.session.getToolResultPresentationUiRebuildCounts();
+	fixture.mode.renderInitialMessages();
+	const afterFirst = fixture.session.getToolResultPresentationUiRebuildCounts();
+	fixture.mode.renderInitialMessages();
+	const afterRepeated = fixture.session.getToolResultPresentationUiRebuildCounts();
+	fixture.internals.isInitialized = true;
+	await runLiveToolResult(fixture, 64);
+	const afterLive = fixture.session.getToolResultPresentationUiRebuildCounts();
+	await fixture.dispose();
+	return {
+		historyMessages,
+		firstRebindBuildProbeDelta: afterFirst.liveCanonicalIndexBuildProbes - before.liveCanonicalIndexBuildProbes,
+		firstRebindRebuildDelta: afterFirst.liveCanonicalIndexRebuilds - before.liveCanonicalIndexRebuilds,
+		repeatedRebindBuildProbeDelta:
+			afterRepeated.liveCanonicalIndexBuildProbes - afterFirst.liveCanonicalIndexBuildProbes,
+		repeatedRebindRebuildDelta: afterRepeated.liveCanonicalIndexRebuilds - afterFirst.liveCanonicalIndexRebuilds,
+		firstLiveBuildProbeDelta: afterLive.liveCanonicalIndexBuildProbes - afterRepeated.liveCanonicalIndexBuildProbes,
+		firstLiveAppendProbeDelta: afterLive.liveCanonicalIndexAppendProbes - afterRepeated.liveCanonicalIndexAppendProbes,
+		firstLiveLookupProbeDelta: afterLive.liveCanonicalLookupProbes - afterRepeated.liveCanonicalLookupProbes,
+	};
+}
+
 async function captureProductionLifecycleRefs(): Promise<{
 	component: WeakRef<object>;
 	discovery: WeakRef<object>;
@@ -963,6 +1050,64 @@ async function measureBoxCacheHitProfile(inspector: Session): Promise<BoxCachePr
 	};
 }
 
+async function measureExactResidentTouchProfile(inspector: Session): Promise<{
+	iterations: number;
+	successfulTouches: number;
+	fullSourceScanDelta: number;
+	sourceDigestDelta: number;
+	evictionDelta: number;
+	entryDelta: number;
+	retainedCodeUnitDelta: number;
+	sampledAllocationBytes: number;
+	topAllocationSites: AllocationSite[];
+}> {
+	const owner = createToolResultPresentationOwner({ enabled: true, budgetTokens: 128 }, "ui-touch-profile")!;
+	const contents = new Array<ToolResultPresentationContent[]>(128);
+	for (let index = 0; index < contents.length; index++) {
+		const entry: ToolResultPresentationContent[] = [{ type: "text", text: `touch-profile-${index}` }];
+		contents[index] = entry;
+		owner.create(entry, `touch-profile-${index}`);
+		owner.release();
+	}
+	for (let index = 0; index < contents.length; index++) {
+		owner.touchExactResidentProjectionRecord(contents[index]!, `touch-profile-${index}`);
+	}
+	await forceCollection();
+	const counters = owner.counters;
+	const scansBefore = counters.fullSourceEstimatorScans;
+	const digestsBefore = counters.sourceDigestConstructions;
+	const evictionsBefore = counters.projectionRecordEvictions;
+	const entriesBefore = counters.projectionRecordEntries;
+	const retainedBefore = counters.retainedProjectionCodeUnits;
+	await inspector.post("HeapProfiler.startSampling", {
+		samplingInterval: 1024,
+		includeObjectsCollectedByMajorGC: true,
+		includeObjectsCollectedByMinorGC: true,
+	});
+	let successfulTouches = 0;
+	for (let index = 0; index < PROFILE_ITERATIONS; index++) {
+		if (owner.touchExactResidentProjectionRecord(
+			contents[index % contents.length]!,
+			`touch-profile-${index % contents.length}`,
+		)) successfulTouches++;
+	}
+	const stopped = await inspector.post("HeapProfiler.stopSampling");
+	const allocations = allocationSites(stopped.profile.head as SamplingNode);
+	const result = {
+		iterations: PROFILE_ITERATIONS,
+		successfulTouches,
+		fullSourceScanDelta: counters.fullSourceEstimatorScans - scansBefore,
+		sourceDigestDelta: counters.sourceDigestConstructions - digestsBefore,
+		evictionDelta: counters.projectionRecordEvictions - evictionsBefore,
+		entryDelta: counters.projectionRecordEntries - entriesBefore,
+		retainedCodeUnitDelta: counters.retainedProjectionCodeUnits - retainedBefore,
+		sampledAllocationBytes: allocations.sampledBytes,
+		topAllocationSites: allocations.top,
+	};
+	owner.dispose();
+	return result;
+}
+
 function captureReleasedFixtures(
 	start: number,
 	count: number,
@@ -1007,12 +1152,15 @@ const groupedFixture = createGroupedReadFixture();
 const groupedExpandedProfile = await measureProfile(inspector, groupedFixture.component);
 groupedFixture.dispose();
 const boxCacheHitProfile = await measureBoxCacheHitProfile(inspector);
+const exactResidentTouchProfile = await measureExactResidentTouchProfile(inspector);
 const defaultOffAbsent = await measureDefaultOffProduction("absent");
 const defaultOffDisabled = await measureDefaultOffProduction("disabled");
 const liveRegistrationProfile = await measureLiveRegistrationProfile(inspector);
 const teardown128 = await measureTeardown128();
 const chronologicalEviction = await measureChronologicalEviction();
 const mixedHistoryRebuild = await measureMixedHistoryRebuild();
+const sharedOwnerUiRebuild = await measureSharedOwnerUiRebuild();
+const setupReplacedHistoryRebind = await measureSetupReplacedHistoryRebind();
 const productionLifecycleRefs = await captureProductionLifecycleRefs();
 
 const componentRefs: WeakRef<object>[] = [];
@@ -1062,6 +1210,7 @@ const result = {
 		groupedReadExpandedUi: groupedExpandedProfile,
 		liveRegistrationEventPath: liveRegistrationProfile,
 		boxCacheHit: boxCacheHitProfile,
+		exactResidentTouch: exactResidentTouchProfile,
 		incremental: {
 			p50Ms: discoveryProfile.p50Ms - plainProfile.p50Ms,
 			p95Ms: discoveryProfile.p95Ms - plainProfile.p95Ms,
@@ -1077,6 +1226,8 @@ const result = {
 	teardown128,
 	chronologicalEviction,
 	mixedHistoryRebuild,
+	sharedOwnerUiRebuild,
+	setupReplacedHistoryRebind,
 	lifecycle: {
 		cycles: GC_CYCLES,
 		componentsCreated: componentRefs.length,

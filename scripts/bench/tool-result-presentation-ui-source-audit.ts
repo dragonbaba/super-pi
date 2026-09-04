@@ -38,6 +38,15 @@ export interface ToolResultPresentationUiSourceAudit {
 	readonly discoveryRebuildCallerSetConstructors: number;
 	readonly discoveryRebuildCallerPromises: number;
 	readonly discoveryRebuildCallerAbortControllers: number;
+	readonly exactResidentTouchArrayMaterializationSites: number;
+	readonly exactResidentTouchInlineClosureSites: number;
+	readonly exactResidentTouchCopyOperations: number;
+	readonly exactResidentTouchSerializations: number;
+	readonly exactResidentTouchObjectLiterals: number;
+	readonly exactResidentTouchMapConstructors: number;
+	readonly exactResidentTouchSetConstructors: number;
+	readonly exactResidentTouchPromises: number;
+	readonly exactResidentTouchAbortControllers: number;
 	readonly promises: number;
 	readonly abortControllers: number;
 }
@@ -241,6 +250,7 @@ export function auditToolResultPresentationUiSources(): ToolResultPresentationUi
 		toolComponent: fileURLToPath(new URL("../../packages/coding-agent/src/modes/interactive/components/tool-execution.ts", import.meta.url)),
 		interactive: fileURLToPath(new URL("../../packages/coding-agent/src/modes/interactive/interactive-mode.ts", import.meta.url)),
 		agentSession: fileURLToPath(new URL("../../packages/coding-agent/src/core/agent-session.ts", import.meta.url)),
+		toolResultPresentation: fileURLToPath(new URL("../../packages/coding-agent/src/core/tool-result-presentation.ts", import.meta.url)),
 		renderUtils: fileURLToPath(new URL("../../packages/coding-agent/src/core/tools/render-utils.ts", import.meta.url)),
 		tuiContainer: fileURLToPath(new URL("../../packages/tui/src/tui.ts", import.meta.url)),
 		tuiBox: fileURLToPath(new URL("../../packages/tui/src/components/box.ts", import.meta.url)),
@@ -253,6 +263,7 @@ export function auditToolResultPresentationUiSources(): ToolResultPresentationUi
 	const toolComponent = requireSourceFile(program, sourcePaths.toolComponent);
 	const interactive = requireSourceFile(program, sourcePaths.interactive);
 	const agentSession = requireSourceFile(program, sourcePaths.agentSession);
+	const toolResultPresentation = requireSourceFile(program, sourcePaths.toolResultPresentation);
 	const renderUtils = requireSourceFile(program, sourcePaths.renderUtils);
 	const tuiContainer = requireSourceFile(program, sourcePaths.tuiContainer);
 	const tuiBox = requireSourceFile(program, sourcePaths.tuiBox);
@@ -367,6 +378,12 @@ export function auditToolResultPresentationUiSources(): ToolResultPresentationUi
 	const ownershipCounts = countAst(discoveryOwnershipNodes, checker);
 	const rebuildCallerCounts = countAst(discoveryRebuildCallerNodes, checker);
 	const registrationCounts = countAst(discoveryRegistrationNodes, checker);
+	const exactResidentTouchCounts = countAst(
+		selectClassMembers(toolResultPresentation, "ToolResultPresentationOwner", [
+			"touchExactResidentProjectionRecord",
+		]),
+		checker,
+	);
 	const interactiveSource = readFileSync(sourcePaths.interactive, "utf8");
 	const agentSessionSource = readFileSync(sourcePaths.agentSession, "utf8");
 	const registryHardCap = Number(interactiveSource.match(/MAX_TOOL_RESULT_DISCOVERIES\s*=\s*(\d+)/u)?.[1] ?? 0);
@@ -385,6 +402,7 @@ export function auditToolResultPresentationUiSources(): ToolResultPresentationUi
 			"render-utils.ts",
 			"interactive-mode.ts",
 			"agent-session.ts",
+			"tool-result-presentation.ts/touchExactResidentProjectionRecord",
 			"tui.ts/Container",
 			"components/box.ts",
 			"components/text.ts",
@@ -433,6 +451,19 @@ export function auditToolResultPresentationUiSources(): ToolResultPresentationUi
 		discoveryRebuildCallerSetConstructors: rebuildCallerCounts.setConstructors,
 		discoveryRebuildCallerPromises: rebuildCallerCounts.promises,
 		discoveryRebuildCallerAbortControllers: rebuildCallerCounts.abortControllers,
+		exactResidentTouchArrayMaterializationSites:
+			exactResidentTouchCounts.arrayLiterals +
+			exactResidentTouchCounts.arraySpreads +
+			exactResidentTouchCounts.arrayProducingCalls +
+			exactResidentTouchCounts.arrayConstructors,
+		exactResidentTouchInlineClosureSites: exactResidentTouchCounts.inlineClosures,
+		exactResidentTouchCopyOperations: exactResidentTouchCounts.copyOperations,
+		exactResidentTouchSerializations: exactResidentTouchCounts.serializations,
+		exactResidentTouchObjectLiterals: exactResidentTouchCounts.objectLiterals,
+		exactResidentTouchMapConstructors: exactResidentTouchCounts.mapConstructors,
+		exactResidentTouchSetConstructors: exactResidentTouchCounts.setConstructors,
+		exactResidentTouchPromises: exactResidentTouchCounts.promises,
+		exactResidentTouchAbortControllers: exactResidentTouchCounts.abortControllers,
 		promises: ownershipCounts.promises,
 		abortControllers: ownershipCounts.abortControllers,
 	};

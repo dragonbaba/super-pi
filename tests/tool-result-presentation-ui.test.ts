@@ -268,6 +268,7 @@ test("UI allocation source audit executes the selected production chain and lock
 		"render-utils.ts",
 		"interactive-mode.ts",
 		"agent-session.ts",
+		"tool-result-presentation.ts/touchExactResidentProjectionRecord",
 		"tui.ts/Container",
 		"components/box.ts",
 		"components/text.ts",
@@ -311,6 +312,15 @@ test("UI allocation source audit executes the selected production chain and lock
 	assert.equal(audit.discoveryRebuildCallerSetConstructors, 0);
 	assert.equal(audit.discoveryRebuildCallerPromises, 0);
 	assert.equal(audit.discoveryRebuildCallerAbortControllers, 0);
+	assert.equal(audit.exactResidentTouchArrayMaterializationSites, 0);
+	assert.equal(audit.exactResidentTouchInlineClosureSites, 0);
+	assert.equal(audit.exactResidentTouchCopyOperations, 0);
+	assert.equal(audit.exactResidentTouchSerializations, 0);
+	assert.equal(audit.exactResidentTouchObjectLiterals, 0);
+	assert.equal(audit.exactResidentTouchMapConstructors, 0);
+	assert.equal(audit.exactResidentTouchSetConstructors, 0);
+	assert.equal(audit.exactResidentTouchPromises, 0);
+	assert.equal(audit.exactResidentTouchAbortControllers, 0);
 	assert.equal(audit.discoveryOwnershipSetConstructors, 0);
 	assert.equal(audit.promises, 0);
 	assert.equal(audit.abortControllers, 0);

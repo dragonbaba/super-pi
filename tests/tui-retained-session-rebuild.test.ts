@@ -816,6 +816,7 @@ test("UI-only rebuild preserves unrelated shared projection records", async (t) 
 	const canonicalSmall = fixture.session.agent.state.messages[0];
 	assert.ok(canonicalSmall?.role === "toolResult");
 	assert.equal(fixture.session.getToolResultPresentationForUi(canonicalSmall)?.version, 1);
+	await fixture.session.agent.convertToLlm(fixture.session.agent.state.messages.slice());
 	const scansAfterSharedAdmission = counters.fullSourceEstimatorScans;
 
 	const selected = new Map<ToolResultMessage, ToolResultPresentation>();
@@ -823,11 +824,22 @@ test("UI-only rebuild preserves unrelated shared projection records", async (t) 
 	assert.equal(selected.size, 1);
 	assert.equal([...selected.keys()][0]?.toolCallId, large.toolCallId);
 	assert.equal(fixture.session.getToolResultPresentationForUi(canonicalSmall)?.version, 1);
+	await fixture.session.agent.convertToLlm(fixture.session.agent.state.messages.slice());
 	assert.equal(
 		counters.fullSourceEstimatorScans,
 		scansAfterSharedAdmission + 1,
 		"the rebuild may scan the new V2 candidate once but must preserve the unrelated shared V1 record",
 	);
+	const entriesAfterFirstRebuild = counters.projectionRecordEntries;
+	const retainedAfterFirstRebuild = counters.retainedProjectionCodeUnits;
+	const evictionsAfterFirstRebuild = counters.projectionRecordEvictions;
+	const scansAfterFirstRebuild = counters.fullSourceEstimatorScans;
+	fixture.session.collectRecentToolResultPresentationsForUi(selected, 128);
+	assert.equal(selected.size, 1);
+	assert.equal(counters.fullSourceEstimatorScans, scansAfterFirstRebuild);
+	assert.equal(counters.projectionRecordEntries, entriesAfterFirstRebuild);
+	assert.equal(counters.retainedProjectionCodeUnits, retainedAfterFirstRebuild);
+	assert.equal(counters.projectionRecordEvictions, evictionsAfterFirstRebuild);
 });
 
 test("UI rebind synchronizes setup-replaced history before the first live result", async (t) => {
@@ -848,6 +860,10 @@ test("UI rebind synchronizes setup-replaced history before the first live result
 		"the setup replacement must be indexed by the UI rebind rather than the first live message_end",
 	);
 	assert.equal(afterRebind.liveCanonicalIndexEntries, setupMessages.length);
+	fixture.mode.renderInitialMessages();
+	const afterRepeatedRebind = fixture.session.getToolResultPresentationUiRebuildCounts();
+	assert.equal(afterRepeatedRebind.liveCanonicalIndexBuildProbes, afterRebind.liveCanonicalIndexBuildProbes);
+	assert.equal(afterRepeatedRebind.liveCanonicalIndexRebuilds, afterRebind.liveCanonicalIndexRebuilds);
 
 	fixture.internals.isInitialized = true;
 	const liveToolCallId = "after-setup-live";
@@ -872,9 +888,9 @@ test("UI rebind synchronizes setup-replaced history before the first live result
 	fixture.session.agent.state.messages.push(liveMessage);
 	await emitToolResultMessageEnd(fixture, liveMessage);
 	const afterLive = fixture.session.getToolResultPresentationUiRebuildCounts();
-	assert.equal(afterLive.liveCanonicalIndexBuildProbes, afterRebind.liveCanonicalIndexBuildProbes);
-	assert.equal(afterLive.liveCanonicalIndexAppendProbes - afterRebind.liveCanonicalIndexAppendProbes, 1);
-	assert.equal(afterLive.liveCanonicalLookupProbes - afterRebind.liveCanonicalLookupProbes, 1);
+	assert.equal(afterLive.liveCanonicalIndexBuildProbes, afterRepeatedRebind.liveCanonicalIndexBuildProbes);
+	assert.equal(afterLive.liveCanonicalIndexAppendProbes - afterRepeatedRebind.liveCanonicalIndexAppendProbes, 1);
+	assert.equal(afterLive.liveCanonicalLookupProbes - afterRepeatedRebind.liveCanonicalLookupProbes, 1);
 });
 
 test("rebuild re-admission order stays aligned with chronological UI eviction", async (t) => {
