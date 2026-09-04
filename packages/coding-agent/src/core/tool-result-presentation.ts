@@ -1554,16 +1554,33 @@ export class ToolResultPresentationOwner {
 	 * general cache policy.
 	 */
 	inspectToolResultPresentationForUiCandidate(
-		content: readonly ToolResultPresentationContent[],
+		content: unknown,
 		toolCallId: string,
 	): "v1" | "v2" | undefined {
 		const budgetTokens = this.budgetTokens;
 		if (!this.accepting || budgetTokens === undefined) return undefined;
-		const resident = this.projectionRecords?.get(toolCallId);
-		const estimatedTokens = resident?.sourceContent === content
-			? resident.sourceScan.estimate.estimatedTokens
-			: estimateToolOutputTokens(content).estimatedTokens;
-		return estimatedTokens > budgetTokens ? "v2" : "v1";
+		try {
+			if (!Array.isArray(content)) return undefined;
+			for (let index = 0; index < content.length; index++) {
+				const block = content[index];
+				if (typeof block !== "object" || block === null) return undefined;
+				if (block.type === "text") {
+					if (typeof block.text !== "string") return undefined;
+				} else if (block.type === "image") {
+					if (typeof block.data !== "string" || typeof block.mimeType !== "string") return undefined;
+				} else {
+					return undefined;
+				}
+			}
+			const sourceContent = content as readonly ToolResultPresentationContent[];
+			const resident = this.projectionRecords?.get(toolCallId);
+			const estimatedTokens = resident?.sourceContent === sourceContent
+				? resident.sourceScan.estimate.estimatedTokens
+				: estimateToolOutputTokens(sourceContent).estimatedTokens;
+			return estimatedTokens > budgetTokens ? "v2" : "v1";
+		} catch {
+			return undefined;
+		}
 	}
 
 	create(legacyContent: readonly ToolResultPresentationContent[]): ToolResultPresentationV1 | undefined;
