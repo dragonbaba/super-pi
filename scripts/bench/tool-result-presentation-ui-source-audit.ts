@@ -260,6 +260,7 @@ export function auditToolResultPresentationUiSources(): ToolResultPresentationUi
 		interactive: fileURLToPath(new URL("../../packages/coding-agent/src/modes/interactive/interactive-mode.ts", import.meta.url)),
 		agentSession: fileURLToPath(new URL("../../packages/coding-agent/src/core/agent-session.ts", import.meta.url)),
 		toolResultPresentation: fileURLToPath(new URL("../../packages/coding-agent/src/core/tool-result-presentation.ts", import.meta.url)),
+		toolOutputBudget: fileURLToPath(new URL("../../packages/coding-agent/src/core/tool-output-budget.ts", import.meta.url)),
 		renderUtils: fileURLToPath(new URL("../../packages/coding-agent/src/core/tools/render-utils.ts", import.meta.url)),
 		tuiContainer: fileURLToPath(new URL("../../packages/tui/src/tui.ts", import.meta.url)),
 		tuiBox: fileURLToPath(new URL("../../packages/tui/src/components/box.ts", import.meta.url)),
@@ -273,6 +274,7 @@ export function auditToolResultPresentationUiSources(): ToolResultPresentationUi
 	const interactive = requireSourceFile(program, sourcePaths.interactive);
 	const agentSession = requireSourceFile(program, sourcePaths.agentSession);
 	const toolResultPresentation = requireSourceFile(program, sourcePaths.toolResultPresentation);
+	const toolOutputBudget = requireSourceFile(program, sourcePaths.toolOutputBudget);
 	const renderUtils = requireSourceFile(program, sourcePaths.renderUtils);
 	const tuiContainer = requireSourceFile(program, sourcePaths.tuiContainer);
 	const tuiBox = requireSourceFile(program, sourcePaths.tuiBox);
@@ -394,9 +396,26 @@ export function auditToolResultPresentationUiSources(): ToolResultPresentationUi
 		checker,
 	);
 	const candidateInspectionCounts = countAst(
-		selectClassMembers(toolResultPresentation, "ToolResultPresentationOwner", [
-			"inspectToolResultPresentationForUiCandidate",
-		]),
+		[
+			...selectClassMembers(toolResultPresentation, "ToolResultPresentationOwner", [
+				"inspectToolResultPresentationForUiCandidate",
+			]),
+			// The UI call supplies no exact estimator. Include the complete fallback
+			// scan chain plus estimateToolOutputTokens itself; the latter deliberately
+			// makes this a conservative envelope that also exposes allocations in its
+			// dormant exact-estimator branch.
+			...selectNamedDeclarations(toolOutputBudget, [
+				"estimateToolOutputTokens",
+				"createScanState",
+				"scanText",
+				"addAsciiRunTokens",
+				"beginOrExtendAsciiRun",
+				"isAsciiHex",
+				"printableAsciiSymbolBit",
+				"isCjk",
+				"isCombiningOrJoiner",
+			]),
+		],
 		checker,
 	);
 	const interactiveSource = readFileSync(sourcePaths.interactive, "utf8");
@@ -419,6 +438,7 @@ export function auditToolResultPresentationUiSources(): ToolResultPresentationUi
 			"agent-session.ts",
 			"tool-result-presentation.ts/touchExactResidentProjectionRecord",
 			"tool-result-presentation.ts/inspectToolResultPresentationForUiCandidate",
+			"tool-output-budget.ts/candidate-inspection-fallback-estimator-chain",
 			"tui.ts/Container",
 			"components/box.ts",
 			"components/text.ts",

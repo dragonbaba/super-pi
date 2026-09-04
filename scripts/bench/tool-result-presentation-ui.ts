@@ -28,6 +28,10 @@ import { createAgentSession } from "../../packages/coding-agent/src/core/sdk.ts"
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.ts";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.ts";
 import {
+	createToolOutputEstimatorCounters,
+	estimateToolOutputTokens,
+} from "../../packages/coding-agent/src/core/tool-output-budget.ts";
+import {
 	createToolResultPresentationOwner,
 	type ToolResultPresentation,
 	type ToolResultPresentationContent,
@@ -932,6 +936,13 @@ async function measureNonAdmittingCandidateInspection(): Promise<{
 		providerFullSourceScanDelta: number;
 		providerResidentHitDelta: number;
 	};
+	fallbackEstimatorAllocationContract: {
+		estimatorCalls: number;
+		scanStateObjectsCreated: number;
+		estimateObjectsCreated: number;
+		exactInputObjectsCreated: number;
+		exactEstimatorCalls: number;
+	};
 }> {
 	const allV1Messages: AgentMessage[] = [];
 	for (let index = 0; index < 128; index++) allV1Messages.push(toolResult(`inspect-v1-${index}`, `small-${index}`));
@@ -949,6 +960,15 @@ async function measureNonAdmittingCandidateInspection(): Promise<{
 	const allV1Counts = allV1Fixture.session.getToolResultPresentationUiRebuildCounts();
 	const allV1AfterInspection = { ...allV1Owner.counters };
 	await allV1Fixture.session.agent.convertToLlm([allV1Hot]);
+	const fallbackEstimatorCounters = createToolOutputEstimatorCounters();
+	estimateToolOutputTokens(allV1Hot.content, undefined, fallbackEstimatorCounters);
+	const fallbackEstimatorAllocationContract = {
+		estimatorCalls: fallbackEstimatorCounters.estimatorCalls,
+		scanStateObjectsCreated: fallbackEstimatorCounters.scanStateObjectsCreated,
+		estimateObjectsCreated: fallbackEstimatorCounters.estimateObjectsCreated,
+		exactInputObjectsCreated: fallbackEstimatorCounters.exactInputObjectsCreated,
+		exactEstimatorCalls: fallbackEstimatorCounters.exactEstimatorCalls,
+	};
 	const allV1 = {
 		candidatesEvaluated: allV1Counts.presentationCandidatesEvaluated,
 		actualDiscoveries: allV1Selected.size,
@@ -994,7 +1014,7 @@ async function measureNonAdmittingCandidateInspection(): Promise<{
 	};
 	mixedSelected.clear();
 	await mixedFixture.dispose();
-	return { allV1, mixed };
+	return { allV1, mixed, fallbackEstimatorAllocationContract };
 }
 
 async function measureSetupReplacedHistoryRebind(): Promise<{

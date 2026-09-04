@@ -6,6 +6,10 @@ import ts from "typescript";
 import type { ToolResultMessage } from "../packages/ai/src/types.ts";
 import { KeybindingsManager } from "../packages/coding-agent/src/core/keybindings.ts";
 import {
+	createToolOutputEstimatorCounters,
+	estimateToolOutputTokens,
+} from "../packages/coding-agent/src/core/tool-output-budget.ts";
+import {
 	createToolResultPresentationOwner,
 	type ToolResultPresentation,
 	type ToolResultPresentationContent,
@@ -343,4 +347,16 @@ test("UI allocation source audit executes the selected production chain and lock
 	assert.equal(audit.discoveryOwnershipSetConstructors, 0);
 	assert.equal(audit.promises, 0);
 	assert.equal(audit.abortControllers, 0);
+});
+
+test("UI candidate inspection fallback estimator has a bounded transient allocation contract", () => {
+	const counters = createToolOutputEstimatorCounters();
+	estimateToolOutputTokens([{ type: "text", text: "candidate-inspection-allocation" }], undefined, counters);
+
+	assert.equal(counters.estimatorCalls, 1);
+	assert.equal(counters.scanStateObjectsCreated, 1);
+	assert.equal(counters.estimateObjectsCreated, 1);
+	assert.equal(counters.exactInputObjectsCreated, 0);
+	assert.equal(counters.exactEstimatorCalls, 0);
+	assert.equal(counters.activeRetainedReferences, 0);
 });
