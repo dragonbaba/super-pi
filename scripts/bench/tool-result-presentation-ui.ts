@@ -31,6 +31,7 @@ import {
 	createToolResultPresentationOwner,
 	type ToolResultPresentation,
 	type ToolResultPresentationContent,
+	type ToolResultPresentationCounters,
 } from "../../packages/coding-agent/src/core/tool-result-presentation.ts";
 import {
 	ReadToolGroupComponent,
@@ -891,6 +892,91 @@ async function measureSharedOwnerUiRebuild(): Promise<{
 	return result;
 }
 
+async function measureNonAdmittingCandidateInspection(): Promise<{
+	allV1: {
+		candidatesEvaluated: number;
+		actualDiscoveries: number;
+		presentationAdmissions: number;
+		entryDelta: number;
+		evictionDelta: number;
+		retainedCodeUnitDelta: number;
+		providerFullSourceScanDelta: number;
+		providerResidentHitDelta: number;
+	};
+	mixed: {
+		candidatesEvaluated: number;
+		actualDiscoveries: number;
+		presentationAdmissions: number;
+		entryDelta: number;
+		evictionDelta: number;
+		providerFullSourceScanDelta: number;
+		providerResidentHitDelta: number;
+	};
+}> {
+	const allV1Messages: AgentMessage[] = [];
+	for (let index = 0; index < 128; index++) allV1Messages.push(toolResult(`inspect-v1-${index}`, `small-${index}`));
+	allV1Messages.push(toolResult("inspect-hot-v1", "hot-small"));
+	const allV1Fixture = await createModeFixture(allV1Messages, "enabled");
+	const allV1Owner = (allV1Fixture.session as unknown as {
+		_toolResultPresentation?: { counters: ToolResultPresentationCounters };
+	})._toolResultPresentation;
+	const allV1Hot = allV1Fixture.session.agent.state.messages.at(-1);
+	if (!allV1Owner || allV1Hot?.role !== "toolResult") throw new Error("all-V1 inspection fixture is incomplete");
+	allV1Fixture.session.getToolResultPresentationForUi(allV1Hot);
+	const allV1Before = { ...allV1Owner.counters };
+	const allV1Selected = new Map<ToolResultMessage, ToolResultPresentation>();
+	allV1Fixture.session.collectRecentToolResultPresentationsForUi(allV1Selected, 128);
+	const allV1Counts = allV1Fixture.session.getToolResultPresentationUiRebuildCounts();
+	const allV1AfterInspection = { ...allV1Owner.counters };
+	await allV1Fixture.session.agent.convertToLlm([allV1Hot]);
+	const allV1 = {
+		candidatesEvaluated: allV1Counts.presentationCandidatesEvaluated,
+		actualDiscoveries: allV1Selected.size,
+		presentationAdmissions:
+			allV1AfterInspection.presentationObjectsCreated - allV1Before.presentationObjectsCreated,
+		entryDelta: allV1AfterInspection.projectionRecordEntries - allV1Before.projectionRecordEntries,
+		evictionDelta: allV1AfterInspection.projectionRecordEvictions - allV1Before.projectionRecordEvictions,
+		retainedCodeUnitDelta:
+			allV1AfterInspection.retainedProjectionCodeUnits - allV1Before.retainedProjectionCodeUnits,
+		providerFullSourceScanDelta:
+			allV1Owner.counters.fullSourceEstimatorScans - allV1AfterInspection.fullSourceEstimatorScans,
+		providerResidentHitDelta: allV1Owner.counters.residentReadHits - allV1AfterInspection.residentReadHits,
+	};
+	allV1Selected.clear();
+	await allV1Fixture.dispose();
+
+	const selectedV2 = toolResult("inspect-selected-v2", "selected-large-".repeat(1_024));
+	const mixedMessages: AgentMessage[] = [selectedV2];
+	for (let index = 0; index < 128; index++) mixedMessages.push(toolResult(`inspect-mixed-v1-${index}`, `small-${index}`));
+	mixedMessages.push(toolResult("inspect-mixed-hot-v1", "hot-small"));
+	const mixedFixture = await createModeFixture(mixedMessages, "enabled");
+	const mixedOwner = (mixedFixture.session as unknown as {
+		_toolResultPresentation?: { counters: ToolResultPresentationCounters };
+	})._toolResultPresentation;
+	const mixedHot = mixedFixture.session.agent.state.messages.at(-1);
+	if (!mixedOwner || mixedHot?.role !== "toolResult") throw new Error("mixed inspection fixture is incomplete");
+	mixedFixture.session.getToolResultPresentationForUi(mixedHot);
+	const mixedBefore = { ...mixedOwner.counters };
+	const mixedSelected = new Map<ToolResultMessage, ToolResultPresentation>();
+	mixedFixture.session.collectRecentToolResultPresentationsForUi(mixedSelected, 128);
+	const mixedCounts = mixedFixture.session.getToolResultPresentationUiRebuildCounts();
+	const mixedAfterInspection = { ...mixedOwner.counters };
+	await mixedFixture.session.agent.convertToLlm([mixedHot]);
+	const mixed = {
+		candidatesEvaluated: mixedCounts.presentationCandidatesEvaluated,
+		actualDiscoveries: mixedSelected.size,
+		presentationAdmissions: mixedAfterInspection.presentationObjectsCreated - mixedBefore.presentationObjectsCreated,
+		entryDelta: mixedAfterInspection.projectionRecordEntries - mixedBefore.projectionRecordEntries,
+		evictionDelta: mixedAfterInspection.projectionRecordEvictions - mixedBefore.projectionRecordEvictions,
+		providerFullSourceScanDelta:
+			mixedOwner.counters.fullSourceEstimatorScans - mixedAfterInspection.fullSourceEstimatorScans,
+		providerResidentHitDelta: mixedOwner.counters.residentReadHits - mixedAfterInspection.residentReadHits,
+	};
+	mixedSelected.clear();
+	await mixedFixture.dispose();
+	return { allV1, mixed };
+}
+
 async function measureSetupReplacedHistoryRebind(): Promise<{
 	historyMessages: number;
 	firstRebindBuildProbeDelta: number;
@@ -985,6 +1071,20 @@ async function captureProductionLifecycleRefs(): Promise<{
 		releasedProjectionRecordEntries: owner.counters.projectionRecordEntries,
 		releasedProjectionCodeUnits: owner.counters.retainedProjectionCodeUnits,
 	};
+}
+
+async function captureInspectionTransientSourceRef(): Promise<WeakRef<object>> {
+	const message = toolResult("inspection-lifecycle-v1", "inspection-lifecycle-small");
+	const fixture = await createModeFixture([message], "enabled");
+	const source = fixture.session.agent.state.messages[0];
+	if (source?.role !== "toolResult") throw new Error("inspection lifecycle source is unavailable");
+	const sourceRef = new WeakRef<object>(source.content);
+	const selected = new Map<ToolResultMessage, ToolResultPresentation>();
+	fixture.session.collectRecentToolResultPresentationsForUi(selected, 128);
+	if (selected.size !== 0) throw new Error("inspection lifecycle V1 unexpectedly produced a discovery");
+	fixture.session.agent.state.messages.length = 0;
+	await fixture.dispose();
+	return sourceRef;
 }
 
 async function measureProfile(
@@ -1176,8 +1276,10 @@ const teardown128 = await measureTeardown128();
 const chronologicalEviction = await measureChronologicalEviction();
 const mixedHistoryRebuild = await measureMixedHistoryRebuild();
 const sharedOwnerUiRebuild = await measureSharedOwnerUiRebuild();
+const nonAdmittingCandidateInspection = await measureNonAdmittingCandidateInspection();
 const setupReplacedHistoryRebind = await measureSetupReplacedHistoryRebind();
 const productionLifecycleRefs = await captureProductionLifecycleRefs();
+const inspectionTransientSourceRef = await captureInspectionTransientSourceRef();
 
 const componentRefs: WeakRef<object>[] = [];
 const discoveryRefs: WeakRef<object>[] = [];
@@ -1192,6 +1294,7 @@ const liveProductionDiscoveryWeakRefs = productionLifecycleRefs.discovery.deref(
 const liveProductionRegistrationWeakRefs = productionLifecycleRefs.registration.deref() ? 1 : 0;
 const liveProductionSourceWeakRefs = productionLifecycleRefs.source.deref() ? 1 : 0;
 const liveProductionValidationWeakRefs = productionLifecycleRefs.validation.deref() ? 1 : 0;
+const liveInspectionTransientSourceWeakRefs = inspectionTransientSourceRef.deref() ? 1 : 0;
 const liveBoxCacheWeakRefs = releasedBoxCache.cacheRef.deref() ? 1 : 0;
 const releasedBoxOwnerChildCount = releasedBoxCache.owner.children.length;
 const heapSamples: number[] = [];
@@ -1243,6 +1346,7 @@ const result = {
 	chronologicalEviction,
 	mixedHistoryRebuild,
 	sharedOwnerUiRebuild,
+	nonAdmittingCandidateInspection,
 	setupReplacedHistoryRebind,
 	lifecycle: {
 		cycles: GC_CYCLES,
@@ -1254,6 +1358,7 @@ const result = {
 		liveProductionRegistrationWeakRefs,
 		liveProductionSourceWeakRefs,
 		liveProductionValidationWeakRefs,
+		liveInspectionTransientSourceWeakRefs,
 		releasedProjectionRecordEntries: productionLifecycleRefs.releasedProjectionRecordEntries,
 		releasedProjectionCodeUnits: productionLifecycleRefs.releasedProjectionCodeUnits,
 		liveBoxCacheWeakRefs,

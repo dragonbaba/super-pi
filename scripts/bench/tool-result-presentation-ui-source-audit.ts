@@ -47,6 +47,15 @@ export interface ToolResultPresentationUiSourceAudit {
 	readonly exactResidentTouchSetConstructors: number;
 	readonly exactResidentTouchPromises: number;
 	readonly exactResidentTouchAbortControllers: number;
+	readonly candidateInspectionArrayMaterializationSites: number;
+	readonly candidateInspectionInlineClosureSites: number;
+	readonly candidateInspectionCopyOperations: number;
+	readonly candidateInspectionSerializations: number;
+	readonly candidateInspectionObjectLiterals: number;
+	readonly candidateInspectionMapConstructors: number;
+	readonly candidateInspectionSetConstructors: number;
+	readonly candidateInspectionPromises: number;
+	readonly candidateInspectionAbortControllers: number;
 	readonly promises: number;
 	readonly abortControllers: number;
 }
@@ -384,6 +393,12 @@ export function auditToolResultPresentationUiSources(): ToolResultPresentationUi
 		]),
 		checker,
 	);
+	const candidateInspectionCounts = countAst(
+		selectClassMembers(toolResultPresentation, "ToolResultPresentationOwner", [
+			"inspectToolResultPresentationForUiCandidate",
+		]),
+		checker,
+	);
 	const interactiveSource = readFileSync(sourcePaths.interactive, "utf8");
 	const agentSessionSource = readFileSync(sourcePaths.agentSession, "utf8");
 	const registryHardCap = Number(interactiveSource.match(/MAX_TOOL_RESULT_DISCOVERIES\s*=\s*(\d+)/u)?.[1] ?? 0);
@@ -403,6 +418,7 @@ export function auditToolResultPresentationUiSources(): ToolResultPresentationUi
 			"interactive-mode.ts",
 			"agent-session.ts",
 			"tool-result-presentation.ts/touchExactResidentProjectionRecord",
+			"tool-result-presentation.ts/inspectToolResultPresentationForUiCandidate",
 			"tui.ts/Container",
 			"components/box.ts",
 			"components/text.ts",
@@ -464,6 +480,19 @@ export function auditToolResultPresentationUiSources(): ToolResultPresentationUi
 		exactResidentTouchSetConstructors: exactResidentTouchCounts.setConstructors,
 		exactResidentTouchPromises: exactResidentTouchCounts.promises,
 		exactResidentTouchAbortControllers: exactResidentTouchCounts.abortControllers,
+		candidateInspectionArrayMaterializationSites:
+			candidateInspectionCounts.arrayLiterals +
+			candidateInspectionCounts.arraySpreads +
+			candidateInspectionCounts.arrayProducingCalls +
+			candidateInspectionCounts.arrayConstructors,
+		candidateInspectionInlineClosureSites: candidateInspectionCounts.inlineClosures,
+		candidateInspectionCopyOperations: candidateInspectionCounts.copyOperations,
+		candidateInspectionSerializations: candidateInspectionCounts.serializations,
+		candidateInspectionObjectLiterals: candidateInspectionCounts.objectLiterals,
+		candidateInspectionMapConstructors: candidateInspectionCounts.mapConstructors,
+		candidateInspectionSetConstructors: candidateInspectionCounts.setConstructors,
+		candidateInspectionPromises: candidateInspectionCounts.promises,
+		candidateInspectionAbortControllers: candidateInspectionCounts.abortControllers,
 		promises: ownershipCounts.promises,
 		abortControllers: ownershipCounts.abortControllers,
 	};

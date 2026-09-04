@@ -515,6 +515,76 @@ test("selected resident touches preserve spare records and perform only necessar
 	fullOwner.dispose();
 });
 
+test("UI candidate inspection classifies resident and transient sources without admission or reordering", () => {
+	const counters = createToolResultPresentationCounters();
+	const owner = createToolResultPresentationOwner({ enabled: true, budgetTokens: 128, counters }, SESSION_ID)!;
+	const residentV1: ToolResultPresentationContent[] = [{ type: "text", text: "resident-small" }];
+	const residentV2: ToolResultPresentationContent[] = [{ type: "text", text: "resident-large-".repeat(2_000) }];
+	owner.create(residentV1, "inspect-resident-v1");
+	owner.release();
+	owner.create(residentV2, "inspect-resident-v2");
+	owner.release();
+	const before = { ...counters };
+
+	assert.equal(owner.inspectToolResultPresentationForUiCandidate(residentV1, "inspect-resident-v1"), "v1");
+	assert.equal(owner.inspectToolResultPresentationForUiCandidate(residentV2, "inspect-resident-v2"), "v2");
+	assert.equal(
+		owner.inspectToolResultPresentationForUiCandidate(
+			[{ type: "text", text: "resident-small" }],
+			"inspect-resident-v1",
+		),
+		"v1",
+	);
+	assert.equal(
+		owner.inspectToolResultPresentationForUiCandidate(
+			[{ type: "text", text: "transient-large-".repeat(2_000) }],
+			"inspect-transient-v2",
+		),
+		"v2",
+	);
+	assert.deepEqual(counters, before, "inspection must not mutate owner, admission, artifact, or provider counters");
+
+	const orderCounters = createToolResultPresentationCounters();
+	const orderOwner = createToolResultPresentationOwner(
+		{ enabled: true, budgetTokens: 128, counters: orderCounters },
+		`${SESSION_ID}-inspect-order`,
+	)!;
+	const oldest: ToolResultPresentationContent[] = [{ type: "text", text: "oldest" }];
+	const hot: ToolResultPresentationContent[] = [{ type: "text", text: "hot" }];
+	orderOwner.create(oldest, "inspect-order-oldest");
+	orderOwner.release();
+	orderOwner.create(hot, "inspect-order-hot");
+	orderOwner.release();
+	assert.equal(orderOwner.inspectToolResultPresentationForUiCandidate(oldest, "inspect-order-oldest"), "v1");
+	assert.equal(
+		orderOwner.inspectToolResultPresentationForUiCandidate(
+			[{ type: "text", text: "discarded" }],
+			"inspect-order-discarded",
+		),
+		"v1",
+	);
+	for (let index = 0; index < 126; index++) {
+		const filler: ToolResultPresentationContent[] = [{ type: "text", text: `inspect-order-${index}` }];
+		orderOwner.create(filler, `inspect-order-${index}`);
+		orderOwner.release();
+	}
+	const evictionsBeforeLive = orderCounters.projectionRecordEvictions;
+	const live: ToolResultPresentationContent[] = [{ type: "text", text: "inspect-order-live" }];
+	orderOwner.create(live, "inspect-order-live");
+	orderOwner.release();
+	assert.equal(orderCounters.projectionRecordEvictions, evictionsBeforeLive + 1);
+	assert.equal(orderOwner.touchExactResidentProjectionRecord(oldest, "inspect-order-oldest"), false);
+	assert.equal(orderOwner.touchExactResidentProjectionRecord(hot, "inspect-order-hot"), true);
+
+	owner.clearProjectionRecords();
+	assert.equal(owner.inspectToolResultPresentationForUiCandidate(residentV1, "inspect-resident-v1"), "v1");
+	assert.equal(counters.projectionRecordEntries, 0);
+	assert.equal(counters.retainedProjectionCodeUnits, 0);
+	owner.dispose();
+	assert.equal(owner.inspectToolResultPresentationForUiCandidate(residentV1, "inspect-resident-v1"), undefined);
+	orderOwner.dispose();
+});
+
 test("V2 public validation rejects inconsistent bounded metadata without scanning legacy content", () => {
 	const content: ToolResultPresentationContent[] = [{ type: "text", text: "validation-source-".repeat(2048) }];
 	const legacy: ToolResultPresentationContent[] = [{ type: "text", text: "legacy-full" }];
