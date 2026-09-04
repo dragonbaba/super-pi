@@ -7,7 +7,10 @@ import { performance } from "node:perf_hooks";
 import { setImmediate as yieldToEventLoop } from "node:timers/promises";
 import {
 	Box,
+	getCapabilities,
+	Image,
 	RELEASE_COMPONENT_RENDER_CACHE,
+	setCapabilities,
 	setKeybindings,
 	TuiMainScreen,
 	type Component,
@@ -303,6 +306,64 @@ function createGroupedReadFixture(): {
 			owner.dispose();
 		},
 	};
+}
+
+function measureGroupedImageSettings(): {
+	visibleImageComponents: number;
+	hiddenImageComponents: number;
+	restoredImageComponents: number;
+	unsupportedImageComponents: number;
+	restoredMaxWidthCells: number | undefined;
+} {
+	const previousCapabilities = getCapabilities();
+	setCapabilities({ images: "iterm2", trueColor: true, hyperlinks: true });
+	try {
+		const owner = createToolResultPresentationOwner({ enabled: true, budgetTokens: 128 }, "ui-grouped-image-profile")!;
+		const component = new ReadToolGroupComponent(true, 19);
+		const toolCallId = "grouped-image-profile";
+		const rowContent: ToolResultPresentationContent[] = [
+			{ type: "text", text: "grouped-image-profile-".repeat(1_024) },
+			{ type: "image", data: "QUJDREVGRw==", mimeType: "image/png" },
+		];
+		component.updateArgs(toolCallId, { path: "grouped-image.txt" });
+		component.setArgsComplete(toolCallId);
+		component.updateResult(toolCallId, { content: rowContent });
+		component.setToolResultPresentation(toolCallId, owner.create(rowContent, toolCallId)!);
+		owner.release();
+		component.setExpanded(true);
+		const visibleImageComponents = component.children.reduce(
+			(count, child) => count + (child instanceof Image ? 1 : 0),
+			0,
+		);
+		component.setShowImages(false);
+		const hiddenImageComponents = component.children.reduce(
+			(count, child) => count + (child instanceof Image ? 1 : 0),
+			0,
+		);
+		component.setImageWidthCells(37);
+		component.setShowImages(true);
+		const restored = component.children.find((child): child is Image => child instanceof Image);
+		const restoredImageComponents = restored ? 1 : 0;
+		const restoredMaxWidthCells = restored
+			? (restored as unknown as { options: { maxWidthCells?: number } }).options.maxWidthCells
+			: undefined;
+		setCapabilities({ images: null, trueColor: true, hyperlinks: true });
+		component.invalidate();
+		const unsupportedImageComponents = component.children.reduce(
+			(count, child) => count + (child instanceof Image ? 1 : 0),
+			0,
+		);
+		owner.dispose();
+		return {
+			visibleImageComponents,
+			hiddenImageComponents,
+			restoredImageComponents,
+			unsupportedImageComponents,
+			restoredMaxWidthCells,
+		};
+	} finally {
+		setCapabilities(previousCapabilities);
+	}
 }
 
 function fixtureModel(): Model<"openai-responses"> {
@@ -681,6 +742,128 @@ async function measureChronologicalEviction(): Promise<{
 	unsubscribe();
 	await fixture.dispose();
 	return result;
+}
+
+async function measureParallelCanonicalAttachmentOrder(): Promise<{
+	registrations: number;
+	canonicalOrder: boolean;
+	nextAdmissionEvictedCanonicalOldest: boolean;
+	newestContinuationReadable: boolean;
+	registrationObjectDelta: number;
+	evictionDelta: number;
+}> {
+	const fixture = await createModeFixture([], "enabled");
+	fixture.internals.isInitialized = true;
+	const messages = new Array<ToolResultMessage>(128);
+	for (let index = 0; index < messages.length; index++) {
+		const toolCallId = `parallel-profile-${index}`;
+		messages[index] = toolResult(toolCallId, `parallel-profile-${index}-`.repeat(1_024));
+		await fixture.internals.handleEvent({ type: "tool_execution_start", toolCallId, toolName: "fixture-tool", args: {} });
+	}
+	for (let index = messages.length - 1; index >= 0; index--) {
+		const message = messages[index]!;
+		await fixture.internals.handleEvent({
+			type: "tool_execution_end",
+			toolCallId: message.toolCallId,
+			toolName: message.toolName,
+			result: { content: message.content, isError: false },
+			isError: false,
+		});
+	}
+	const unsubscribe = fixture.session.subscribe((event) => fixture.internals.handleEvent(event));
+	for (let index = 0; index < messages.length; index++) {
+		const message = messages[index]!;
+		fixture.session.agent.state.messages.push(message);
+		await (fixture.session as unknown as {
+			_handleAgentEvent(event: { type: "message_end"; message: ToolResultMessage }): Promise<void>;
+		})._handleAgentEvent({ type: "message_end", message });
+	}
+	const entries = fixture.internals.toolResultDiscoveries;
+	const canonicalOrder = entries !== undefined && [...entries.keys()].every(
+		(toolCallId, index) => toolCallId === messages[index]!.toolCallId,
+	);
+	const newestComponent = fixture.internals.pendingTools.get(messages.at(-1)!.toolCallId);
+	const attachedNewest = fixture.internals.chatContainer.children.find(
+		(child): child is ToolExecutionComponent =>
+			child instanceof ToolExecutionComponent &&
+			child.getToolResultPresentationDiscovery(messages.at(-1)!.toolCallId) !== undefined,
+	);
+	const newestDiscovery = attachedNewest?.getToolResultPresentationDiscovery(messages.at(-1)!.toolCallId);
+	const before = fixture.internals.getToolResultDiscoveryLifecycleCounts();
+	const later = toolResult("parallel-profile-later", "parallel-profile-later-".repeat(1_024));
+	await fixture.internals.handleEvent({ type: "tool_execution_start", toolCallId: later.toolCallId, toolName: later.toolName, args: {} });
+	await fixture.internals.handleEvent({
+		type: "tool_execution_end",
+		toolCallId: later.toolCallId,
+		toolName: later.toolName,
+		result: { content: later.content, isError: false },
+		isError: false,
+	});
+	fixture.session.agent.state.messages.push(later);
+	await (fixture.session as unknown as {
+		_handleAgentEvent(event: { type: "message_end"; message: ToolResultMessage }): Promise<void>;
+	})._handleAgentEvent({ type: "message_end", message: later });
+	const after = fixture.internals.getToolResultDiscoveryLifecycleCounts();
+	const nextAdmissionEvictedCanonicalOldest =
+		!fixture.internals.toolResultDiscoveries?.has(messages[0]!.toolCallId) &&
+		fixture.internals.toolResultDiscoveries?.has(messages[127]!.toolCallId) === true;
+	let newestContinuationReadable = false;
+	if (newestDiscovery) {
+		newestContinuationReadable = fixture.session.readToolResultContinuation(newestDiscovery.cursor, 128).content.length > 0;
+	}
+	void newestComponent;
+	unsubscribe();
+	await fixture.dispose();
+	return {
+		registrations: after.entries,
+		canonicalOrder,
+		nextAdmissionEvictedCanonicalOldest,
+		newestContinuationReadable,
+		registrationObjectDelta: after.registrationObjectsCreated - before.registrationObjectsCreated,
+		evictionDelta: after.registrationsEvicted - before.registrationsEvicted,
+	};
+}
+
+async function measureMalformedMixedHistoryRebuild(): Promise<{
+	durationMs: number;
+	selected: number;
+	malformedAdmissions: number;
+	malformedArtifacts: number;
+	counts: ReturnType<AgentSession["getToolResultPresentationUiRebuildCounts"]>;
+}> {
+	const messages: AgentMessage[] = [];
+	for (let index = 0; index < 50_000; index++) {
+		messages.push(toolResult(
+			`malformed-mixed-${index}`,
+			index % 390 === 0 ? `malformed-mixed-large-${index}-`.repeat(1_024) : "small",
+		));
+	}
+	messages[1] = {
+		role: "toolResult",
+		toolCallId: "malformed-mixed-invalid",
+		toolName: "fixture-tool",
+		content: [{ type: "text" }],
+		isError: false,
+		timestamp: 2,
+	} as unknown as AgentMessage;
+	const fixture = await createModeFixture(messages, "enabled");
+	const ownerCounters = (fixture.session as unknown as {
+		_toolResultPresentation?: { counters: ToolResultPresentationCounters };
+	})._toolResultPresentation?.counters;
+	if (!ownerCounters) throw new Error("malformed mixed-history fixture has no presentation owner");
+	const entriesBefore = ownerCounters.projectionRecordEntries;
+	const artifactsBefore = ownerCounters.artifactDescriptorsCreated;
+	const selected = new Map<ToolResultMessage, ToolResultPresentation>();
+	const started = performance.now();
+	fixture.session.collectRecentToolResultPresentationsForUi(selected, 128);
+	const durationMs = performance.now() - started;
+	const counts = fixture.session.getToolResultPresentationUiRebuildCounts();
+	const selectedCount = selected.size;
+	const malformedAdmissions = Math.max(0, ownerCounters.projectionRecordEntries - entriesBefore - selectedCount);
+	const malformedArtifacts = Math.max(0, ownerCounters.artifactDescriptorsCreated - artifactsBefore - selectedCount);
+	selected.clear();
+	await fixture.dispose();
+	return { durationMs, selected: selectedCount, malformedAdmissions, malformedArtifacts, counts };
 }
 
 async function measureTeardown128(): Promise<{
@@ -1307,6 +1490,7 @@ profiled.dispose();
 const groupedFixture = createGroupedReadFixture();
 const groupedExpandedProfile = await measureProfile(inspector, groupedFixture.component);
 groupedFixture.dispose();
+const groupedImageSettings = measureGroupedImageSettings();
 const boxCacheHitProfile = await measureBoxCacheHitProfile(inspector);
 const exactResidentTouchProfile = await measureExactResidentTouchProfile(inspector);
 const defaultOffAbsent = await measureDefaultOffProduction("absent");
@@ -1314,7 +1498,9 @@ const defaultOffDisabled = await measureDefaultOffProduction("disabled");
 const liveRegistrationProfile = await measureLiveRegistrationProfile(inspector);
 const teardown128 = await measureTeardown128();
 const chronologicalEviction = await measureChronologicalEviction();
+const parallelCanonicalAttachment = await measureParallelCanonicalAttachmentOrder();
 const mixedHistoryRebuild = await measureMixedHistoryRebuild();
+const malformedMixedHistoryRebuild = await measureMalformedMixedHistoryRebuild();
 const sharedOwnerUiRebuild = await measureSharedOwnerUiRebuild();
 const nonAdmittingCandidateInspection = await measureNonAdmittingCandidateInspection();
 const setupReplacedHistoryRebind = await measureSetupReplacedHistoryRebind();
@@ -1384,7 +1570,10 @@ const result = {
 	},
 	teardown128,
 	chronologicalEviction,
+	parallelCanonicalAttachment,
 	mixedHistoryRebuild,
+	malformedMixedHistoryRebuild,
+	groupedImageSettings,
 	sharedOwnerUiRebuild,
 	nonAdmittingCandidateInspection,
 	setupReplacedHistoryRebind,
