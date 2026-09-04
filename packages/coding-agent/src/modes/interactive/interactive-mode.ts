@@ -4331,7 +4331,10 @@ export class InteractiveMode {
 		if (allowReadGrouping && toolName === "read" && isGroupableReadCall(args)) {
 			if (!this.lastReadToolGroup?.canAccept(args)) {
 				this.finalizeReadToolGroup();
-				this.lastReadToolGroup = new ReadToolGroupComponent();
+				this.lastReadToolGroup = new ReadToolGroupComponent(
+					this.settingsManager.getShowImages(),
+					this.settingsManager.getImageWidthCells(),
+				);
 				this.lastReadToolGroup.setExpanded(this.toolOutputExpanded);
 				if (!placeholder) this.retainActiveToolComponent(this.lastReadToolGroup, toolCallId);
 			}
@@ -4557,7 +4560,15 @@ export class InteractiveMode {
 			return;
 		}
 		this.updateTrackedToolResult(registration.component, message.toolCallId, message, false, message.isError);
-		if (!this.attachToolResultPresentation(message, registration, presentation)) entries.delete(message.toolCallId);
+		if (!this.attachToolResultPresentation(message, registration, presentation)) {
+			entries.delete(message.toolCallId);
+		} else if (
+			registration.identity !== undefined &&
+			entries.get(message.toolCallId) === registration
+		) {
+			entries.delete(message.toolCallId);
+			entries.set(message.toolCallId, registration);
+		}
 		if (entries.size === 0) this.toolResultDiscoveries = undefined;
 	}
 
@@ -4873,7 +4884,10 @@ export class InteractiveMode {
 						if (content.name === "read" && isGroupableReadCall(content.arguments)) {
 							if (!rebuildReadGroup?.canAccept(content.arguments)) {
 								finalizeRebuildReadGroup();
-								rebuildReadGroup = new ReadToolGroupComponent();
+								rebuildReadGroup = new ReadToolGroupComponent(
+									this.settingsManager.getShowImages(),
+									this.settingsManager.getImageWidthCells(),
+								);
 								rebuildReadGroup.setExpanded(this.toolOutputExpanded);
 								this.retainActiveToolComponent(rebuildReadGroup, content.id);
 							}
@@ -5761,7 +5775,7 @@ export class InteractiveMode {
 						this.settingsManager.setShowImages(enabled);
 						this.transcriptRenderContext.settingsVersion++;
 						for (const child of this.chatContainer.children) {
-							if (child instanceof ToolExecutionComponent) {
+							if (child instanceof ToolExecutionComponent || child instanceof ReadToolGroupComponent) {
 								child.setShowImages(enabled);
 							}
 						}
@@ -5771,7 +5785,7 @@ export class InteractiveMode {
 						this.settingsManager.setImageWidthCells(width);
 						this.transcriptRenderContext.settingsVersion++;
 						for (const child of this.chatContainer.children) {
-							if (child instanceof ToolExecutionComponent) {
+							if (child instanceof ToolExecutionComponent || child instanceof ReadToolGroupComponent) {
 								child.setImageWidthCells(width);
 							}
 						}

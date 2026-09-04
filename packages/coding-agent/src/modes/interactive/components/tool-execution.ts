@@ -177,6 +177,14 @@ export class ReadToolGroupComponent extends Container {
 	private readonly rows = new Map<string, ReadGroupRow>();
 	private expanded = false;
 	private finalized = false;
+	private showImages: boolean;
+	private imageWidthCells: number;
+
+	constructor(showImages = true, imageWidthCells = 60) {
+		super();
+		this.showImages = showImages;
+		this.imageWidthCells = Math.max(1, Math.floor(imageWidthCells));
+	}
 
 	canAccept(args: any): boolean { return !this.finalized && isGroupableReadCall(args); }
 	updateArgs(toolCallId: string, args: any): boolean {
@@ -201,6 +209,17 @@ export class ReadToolGroupComponent extends Container {
 		return true;
 	}
 	setExpanded(expanded: boolean): void { if (this.expanded !== expanded) { this.expanded = expanded; this.rebuild(); } }
+	setShowImages(show: boolean): void {
+		if (this.showImages === show) return;
+		this.showImages = show;
+		this.rebuild();
+	}
+	setImageWidthCells(width: number): void {
+		const nextWidth = Math.max(1, Math.floor(width));
+		if (this.imageWidthCells === nextWidth) return;
+		this.imageWidthCells = nextWidth;
+		this.rebuild();
+	}
 	override invalidate(): void { super.invalidate(); this.rebuild(); }
 	setToolResultPresentation(toolCallId: string, presentation: ToolResultPresentation): string | undefined {
 		const row = this.rows.get(toolCallId);
@@ -285,11 +304,22 @@ export class ReadToolGroupComponent extends Container {
 				if (!output || (!this.expanded && !entry.row.resultIsError)) continue;
 				const preview = this.expanded ? output : boundReadGroupPreview(output, 10);
 				this.addChild(new Text(theme.fg(entry.row.resultIsError ? "error" : "toolOutput", preview), callCount > 1 ? 4 : 2, 0));
-				if (this.expanded && entry.row.toolResultDiscovery && entry.row.result) {
+				if (
+					this.expanded &&
+					entry.row.toolResultDiscovery &&
+					entry.row.result &&
+					this.showImages &&
+					getCapabilities().images !== null
+				) {
 					for (let blockIndex = 0; blockIndex < entry.row.result.content.length; blockIndex++) {
 						const block = entry.row.result.content[blockIndex];
 						if (block?.type !== "image" || !block.data || !block.mimeType) continue;
-						this.addChild(new Image(block.data, block.mimeType, { fallbackColor: toolImageFallbackColor }));
+						this.addChild(new Image(
+							block.data,
+							block.mimeType,
+							{ fallbackColor: toolImageFallbackColor },
+							{ maxWidthCells: this.imageWidthCells },
+						));
 					}
 				}
 			}
