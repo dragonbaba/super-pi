@@ -1546,6 +1546,26 @@ export class ToolResultPresentationOwner {
 		return true;
 	}
 
+	/**
+	 * Classify one UI rebuild candidate without admitting, touching, or retaining
+	 * a projection record.
+	 *
+	 * @internal UI candidate inspection only. This is not a provider read or a
+	 * general cache policy.
+	 */
+	inspectToolResultPresentationForUiCandidate(
+		content: readonly ToolResultPresentationContent[],
+		toolCallId: string,
+	): "v1" | "v2" | undefined {
+		const budgetTokens = this.budgetTokens;
+		if (!this.accepting || budgetTokens === undefined) return undefined;
+		const resident = this.projectionRecords?.get(toolCallId);
+		const estimatedTokens = resident?.sourceContent === content
+			? resident.sourceScan.estimate.estimatedTokens
+			: estimateToolOutputTokens(content).estimatedTokens;
+		return estimatedTokens > budgetTokens ? "v2" : "v1";
+	}
+
 	create(legacyContent: readonly ToolResultPresentationContent[]): ToolResultPresentationV1 | undefined;
 	create(legacyContent: readonly ToolResultPresentationContent[], toolCallId: string): ToolResultPresentation | undefined;
 	create(legacyContent: readonly ToolResultPresentationContent[], toolCallId?: string): ToolResultPresentation | undefined {

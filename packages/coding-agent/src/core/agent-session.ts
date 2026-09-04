@@ -1582,8 +1582,8 @@ export class AgentSession {
 		this._synchronizeToolResultUiCanonicalIndex();
 		const messages = this.agent.state.messages;
 		// Keep one bounded backup candidate per possible ambiguous output slot.
-		// The shared owner is the sole V1/V2 authority; a settings-side estimate
-		// can disagree with a per-session SDK override.
+		// The shared owner is the sole V1/V2 authority; candidate inspection must
+		// remain transient so rejected history cannot perturb shared resident order.
 		const candidateLimit = Math.min(boundedLimit * 2, MAX_TOOL_RESULT_UI_REBUILD_CANDIDATES);
 		const candidatesByToolCallId = new Map<string, Extract<AgentMessage, { role: "toolResult" }>>();
 		for (let index = messages.length - 1; index >= 0 && candidatesByToolCallId.size < candidateLimit; index--) {
@@ -1593,14 +1593,8 @@ export class AgentSession {
 			if (candidatesByToolCallId.has(candidate.toolCallId)) continue;
 			this._toolResultUiPresentationCandidatesEvaluated++;
 			this._toolResultUiSourceScans++;
-			const presentation = owner.create(candidate.content, candidate.toolCallId);
-			if (!presentation) continue;
-			try {
-				if (presentation.version !== 2) continue;
-				candidatesByToolCallId.set(candidate.toolCallId, candidate);
-			} finally {
-				owner.release();
-			}
+			if (owner.inspectToolResultPresentationForUiCandidate(candidate.content, candidate.toolCallId) !== "v2") continue;
+			candidatesByToolCallId.set(candidate.toolCallId, candidate);
 		}
 		const candidateOccurrences = new Map<string, number>();
 		for (const toolCallId of candidatesByToolCallId.keys()) candidateOccurrences.set(toolCallId, 0);
