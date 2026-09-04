@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { RELEASE_COMPONENT_RENDER_CACHE, setKeybindings, type TUI } from "@super-pi/tui";
+import {
+	getCapabilities,
+	Image,
+	RELEASE_COMPONENT_RENDER_CACHE,
+	setCapabilities,
+	setKeybindings,
+	type TUI,
+} from "@super-pi/tui";
 import ts from "typescript";
 import type { ToolResultMessage } from "../packages/ai/src/types.ts";
 import { KeybindingsManager } from "../packages/coding-agent/src/core/keybindings.ts";
@@ -192,6 +199,62 @@ test("grouped read rows use the same bounded-result semantics", () => {
 	assert.doesNotMatch(plain(group.render(90)), /Model received a bounded view/);
 	owner.release();
 	owner.dispose();
+});
+
+test("grouped bounded reads honor live image visibility, capability, and width changes", () => {
+	initTheme("dark");
+	const previousCapabilities = getCapabilities();
+	setCapabilities({ images: "iterm2", trueColor: true, hyperlinks: true });
+	try {
+		const content: ToolResultPresentationContent[] = [
+			{ type: "text", text: "grouped-image-text-".repeat(1_000) },
+			{ type: "image", data: "QUJDREVGRw==", mimeType: "image/png" },
+		];
+		const message = toolResult("read-image-settings", content);
+		const owner = createToolResultPresentationOwner(
+			{ enabled: true, budgetTokens: 128 },
+			"ui-read-group-image-settings",
+		)!;
+		const presentation = owner.create(content, message.toolCallId)!;
+		assert.equal(presentation.version, 2);
+		const group = new ReadToolGroupComponent();
+		const configurable = group as unknown as {
+			setShowImages(show: boolean): void;
+			setImageWidthCells(width: number): void;
+		};
+		group.updateArgs(message.toolCallId, { path: "image.png" });
+		group.setArgsComplete(message.toolCallId);
+		group.updateResult(message.toolCallId, message);
+		assert.ok(presentationAware(group).setToolResultPresentation(message.toolCallId, presentation));
+		group.setExpanded(true);
+
+		configurable.setImageWidthCells(23);
+		configurable.setShowImages(false);
+		assert.equal(group.children.some((child) => child instanceof Image), false);
+		assert.match(plain(group.render(100)), /grouped-image-text/);
+		assert.match(plain(group.render(100)), /Model received a bounded view/);
+
+		configurable.setShowImages(true);
+		let image = group.children.find((child): child is Image => child instanceof Image);
+		assert.ok(image);
+		assert.equal((image as unknown as { options: { maxWidthCells?: number } }).options.maxWidthCells, 23);
+
+		configurable.setShowImages(false);
+		assert.equal(group.children.some((child) => child instanceof Image), false);
+		configurable.setImageWidthCells(41);
+		configurable.setShowImages(true);
+		image = group.children.find((child): child is Image => child instanceof Image);
+		assert.ok(image);
+		assert.equal((image as unknown as { options: { maxWidthCells?: number } }).options.maxWidthCells, 41);
+
+		setCapabilities({ images: null, trueColor: true, hyperlinks: true });
+		group.invalidate();
+		assert.equal(group.children.some((child) => child instanceof Image), false);
+		owner.release();
+		owner.dispose();
+	} finally {
+		setCapabilities(previousCapabilities);
+	}
 });
 
 test("expanded grouped read rows expose complete canonical text beyond preview limits", () => {

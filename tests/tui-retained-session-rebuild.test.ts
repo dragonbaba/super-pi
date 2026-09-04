@@ -3,7 +3,14 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { Text, TuiMainScreen, type TuiRenderInstrumentation } from "@super-pi/tui";
+import {
+	getCapabilities,
+	Image,
+	setCapabilities,
+	Text,
+	TuiMainScreen,
+	type TuiRenderInstrumentation,
+} from "@super-pi/tui";
 import type { AssistantMessage, Model, ToolResultMessage } from "../packages/ai/src/types.ts";
 import type { AgentMessage } from "../packages/agent/src/types.ts";
 import type { AgentSession, AgentSessionEvent } from "../packages/coding-agent/src/core/agent-session.ts";
@@ -100,6 +107,10 @@ interface InteractiveModeInternals {
 	chatContainer: RetainedContainer;
 	renderInstrumentation: TuiRenderInstrumentation;
 	pendingTools: Map<string, ToolExecutionComponent | ReadToolGroupComponent>;
+	toolResultDiscoveries?: Map<string, {
+		component: ToolExecutionComponent | ReadToolGroupComponent;
+		identity: string | undefined;
+	}>;
 	clearToolResultDiscoveries(): void;
 	getToolResultDiscoveryLifecycleCounts(): {
 		entries: number;
@@ -144,6 +155,7 @@ interface ModeFixture {
 	internals: InteractiveModeInternals;
 	session: AgentSession;
 	sessionManager: SessionManager;
+	settingsManager: SettingsManager;
 	dispose(): void;
 }
 
@@ -212,6 +224,7 @@ async function createModeFixture(
 		internals,
 		session,
 		sessionManager,
+		settingsManager,
 		dispose: () => {
 			renderer.stop({ preserveScreen: true });
 			session.dispose();
@@ -219,6 +232,167 @@ async function createModeFixture(
 		},
 	};
 }
+
+test("rebuilt grouped bounded reads use current image settings", async (t) => {
+	const previousCapabilities = getCapabilities();
+	setCapabilities({ images: "iterm2", trueColor: true, hyperlinks: true });
+	const toolCallId = "grouped-image-rebuild";
+	const imageResult = {
+		...(result(toolCallId, "read", "grouped-rebuild-text-".repeat(1_000)) as ToolResultMessage),
+		content: [
+			{ type: "text" as const, text: "grouped-rebuild-text-".repeat(1_000) },
+			{ type: "image" as const, data: "QUJDREVGRw==", mimeType: "image/png" },
+		],
+	};
+	const fixture = await createModeFixture(
+		[
+			assistant([{ type: "toolCall", id: toolCallId, name: "read", arguments: { path: "image.txt" } }]),
+			imageResult,
+		],
+		[],
+		{ enabled: true, budgetTokens: 128 },
+	);
+	t.after(() => {
+		setCapabilities(previousCapabilities);
+		fixture.dispose();
+	});
+	fixture.settingsManager.setShowImages(false);
+	fixture.settingsManager.setImageWidthCells(19);
+	fixture.mode.renderInitialMessages();
+	const group = fixture.internals.chatContainer.children.find(
+		(child): child is ReadToolGroupComponent => child instanceof ReadToolGroupComponent,
+	);
+	assert.ok(group);
+	group.setExpanded(true);
+	assert.equal(group.children.some((child) => child instanceof Image), false);
+	assert.match(group.render(100).join("\n"), /grouped-rebuild-text/);
+	assert.match(group.render(100).join("\n"), /Model received a bounded view/);
+});
+
+test("parallel live discovery attachment follows canonical message order", async (t) => {
+	const runPermutation = async (completionOrder: readonly number[]): Promise<void> => {
+		const fixture = await createModeFixture([], [], { enabled: true, budgetTokens: 128 });
+		t.after(fixture.dispose);
+		fixture.internals.isInitialized = true;
+		const messages = new Array<ToolResultMessage>(128);
+		for (let index = 0; index < 128; index++) {
+			const toolCallId = `parallel-canonical-${index}`;
+			messages[index] = result(toolCallId, "fixture-tool", `parallel-${index}-`.repeat(1_000)) as ToolResultMessage;
+			await fixture.internals.handleEvent({ type: "tool_execution_start", toolCallId, toolName: "fixture-tool", args: {} });
+		}
+		for (const index of completionOrder) {
+			const message = messages[index]!;
+			await fixture.internals.handleEvent({
+				type: "tool_execution_end",
+				toolCallId: message.toolCallId,
+				toolName: message.toolName,
+				result: { content: message.content, isError: false },
+				isError: false,
+			});
+		}
+		for (const message of messages) {
+			fixture.session.agent.state.messages.push(message);
+			await emitToolResultMessageEnd(fixture, message);
+		}
+		assert.deepEqual(
+			[...(fixture.internals.toolResultDiscoveries?.keys() ?? [])],
+			messages.map((message) => message.toolCallId),
+			"successful attachment must reorder the existing registration into canonical transcript order",
+		);
+		const oldestComponent = fixture.internals.toolResultDiscoveries?.get(messages[0]!.toolCallId)?.component;
+		const newestComponent = fixture.internals.toolResultDiscoveries?.get(messages[127]!.toolCallId)?.component;
+		assert.ok(oldestComponent);
+		assert.ok(newestComponent);
+		const newestDiscovery = newestComponent.getToolResultPresentationDiscovery(messages[127]!.toolCallId);
+		assert.ok(newestDiscovery);
+		const registrationObjectsBefore = fixture.internals.getToolResultDiscoveryLifecycleCounts().registrationObjectsCreated;
+		const later = result("parallel-canonical-later", "fixture-tool", "parallel-later-".repeat(1_000)) as ToolResultMessage;
+		await fixture.internals.handleEvent({ type: "tool_execution_start", toolCallId: later.toolCallId, toolName: later.toolName, args: {} });
+		await fixture.internals.handleEvent({
+			type: "tool_execution_end",
+			toolCallId: later.toolCallId,
+			toolName: later.toolName,
+			result: { content: later.content, isError: false },
+			isError: false,
+		});
+		fixture.session.agent.state.messages.push(later);
+		await emitToolResultMessageEnd(fixture, later);
+		assert.equal(oldestComponent.getToolResultPresentationDiscovery(messages[0]!.toolCallId), undefined);
+		assert.ok(newestComponent.getToolResultPresentationDiscovery(messages[127]!.toolCallId));
+		assert.deepEqual(
+			[...(fixture.internals.toolResultDiscoveries?.keys() ?? [])],
+			[...messages.slice(1).map((message) => message.toolCallId), later.toolCallId],
+		);
+		const lifecycle = fixture.internals.getToolResultDiscoveryLifecycleCounts();
+		assert.equal(lifecycle.registrationObjectsCreated, registrationObjectsBefore! + 1);
+		assert.equal(lifecycle.registrationsEvicted, 1);
+		const chunk = fixture.session.readToolResultContinuation(newestDiscovery.cursor, 128);
+		assert.ok(chunk.content.length > 0);
+	};
+
+	await runPermutation(Array.from({ length: 128 }, (_, index) => 127 - index));
+	const alternating: number[] = [];
+	for (let index = 0; index < 64; index++) {
+		alternating.push(64 + index, index);
+	}
+	await runPermutation(alternating);
+});
+
+test("initial UI rebuild skips malformed historical presentation candidates", async (t) => {
+	const malformedContents: unknown[] = [
+		"not-an-array",
+		[null],
+		[1, "block"],
+		[{ type: "text" }],
+		[{ type: "text", text: 1 }],
+		[{ type: "image", mimeType: "image/png" }],
+		[{ type: "image", data: "AA==" }],
+		[{ type: "image", data: 1, mimeType: false }],
+		[{ type: "unknown", text: "nope" }],
+		[{ type: "text", text: "valid-prefix" }, { type: "image", data: "AA==" }],
+	];
+	const calls: AssistantMessage["content"] = [];
+	const messages: AgentMessage[] = [];
+	for (let index = 0; index < malformedContents.length; index++) {
+		const toolCallId = `malformed-history-${index}`;
+		calls.push({ type: "toolCall", id: toolCallId, name: "fixture-tool", arguments: {} });
+		messages.push({
+			role: "toolResult",
+			toolCallId,
+			toolName: "fixture-tool",
+			content: malformedContents[index],
+			isError: false,
+			timestamp: index + 2,
+		} as unknown as AgentMessage);
+	}
+	for (let index = 0; index < 129; index++) {
+		const toolCallId = `malformed-boundary-v1-${index}`;
+		calls.push({ type: "toolCall", id: toolCallId, name: "fixture-tool", arguments: {} });
+		messages.push(result(toolCallId, "fixture-tool", "small"));
+	}
+	const validToolCallId = "malformed-control-v2";
+	calls.push({ type: "toolCall", id: validToolCallId, name: "fixture-tool", arguments: {} });
+	messages.push(result(validToolCallId, "fixture-tool", "valid-control-".repeat(1_000)));
+	messages.unshift(assistant(calls));
+	const fixture = await createModeFixture(messages, [], { enabled: true, budgetTokens: 128 });
+	t.after(fixture.dispose);
+	assert.doesNotThrow(() => fixture.mode.renderInitialMessages());
+	const lifecycle = fixture.internals.getToolResultDiscoveryLifecycleCounts();
+	assert.equal(lifecycle.entries, 1);
+	assert.equal(lifecycle.attached, 1);
+	assert.equal(lifecycle.actualV2Discoveries, 1);
+	const groups = fixture.internals.chatContainer.children.filter(
+		(child): child is ToolExecutionComponent => child instanceof ToolExecutionComponent,
+	);
+	const control = groups.find((component) => component.getToolResultPresentationDiscovery(validToolCallId) !== undefined);
+	assert.ok(control);
+	for (let index = 0; index < malformedContents.length; index++) {
+		assert.equal(
+			groups.some((component) => component.getToolResultPresentationDiscovery(`malformed-history-${index}`) !== undefined),
+			false,
+		);
+	}
+});
 
 async function emitToolResultMessageEnd(
 	fixture: ModeFixture,
