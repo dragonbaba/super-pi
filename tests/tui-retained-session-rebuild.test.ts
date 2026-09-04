@@ -111,6 +111,14 @@ interface InteractiveModeInternals {
 		component: ToolExecutionComponent | ReadToolGroupComponent;
 		identity: string | undefined;
 	}>;
+	pendingToolResultDiscoveries?: Map<string, {
+		component: ToolExecutionComponent | ReadToolGroupComponent;
+		identity: string | undefined;
+	}>;
+	attachedToolResultDiscoveries?: Map<string, {
+		component: ToolExecutionComponent | ReadToolGroupComponent;
+		identity: string | undefined;
+	}>;
 	clearToolResultDiscoveries(): void;
 	getToolResultDiscoveryLifecycleCounts(): {
 		entries: number;
@@ -138,6 +146,12 @@ interface InteractiveModeInternals {
 		toolCallId: string,
 		args: unknown,
 	): void;
+}
+
+function attachedToolResultDiscoveries(
+	internals: InteractiveModeInternals,
+): InteractiveModeInternals["attachedToolResultDiscoveries"] {
+	return internals.attachedToolResultDiscoveries ?? internals.toolResultDiscoveries;
 }
 
 function assertIndexedTailMatchesFull(internals: InteractiveModeInternals, width = 80, height = 20): void {
@@ -337,6 +351,134 @@ test("parallel live discovery attachment follows canonical message order", async
 		alternating.push(64 + index, index);
 	}
 	await runPermutation(alternating);
+});
+
+test("129 pending parallel V2 results do not evict before canonical attachment", async (t) => {
+	const fixture = await createModeFixture([], [], { enabled: true, budgetTokens: 128 });
+	t.after(fixture.dispose);
+	fixture.internals.isInitialized = true;
+	const calls: AssistantMessage["content"] = [];
+	const messages = new Array<ToolResultMessage>(129);
+	for (let index = 0; index < messages.length; index++) {
+		const toolCallId = `pending-parallel-v2-${index}`;
+		calls.push({ type: "toolCall", id: toolCallId, name: "fixture-tool", arguments: {} });
+		messages[index] = result(toolCallId, "fixture-tool", `pending-parallel-${index}-`.repeat(1_000)) as ToolResultMessage;
+		await fixture.internals.handleEvent({ type: "tool_execution_start", toolCallId, toolName: "fixture-tool", args: {} });
+	}
+	const assistantMessage = assistant(calls);
+	fixture.session.agent.state.messages.push(assistantMessage);
+	fixture.sessionManager.appendMessage(assistantMessage);
+	const before = fixture.internals.getToolResultDiscoveryLifecycleCounts();
+	for (let index = messages.length - 1; index >= 0; index--) {
+		const message = messages[index]!;
+		await fixture.internals.handleEvent({
+			type: "tool_execution_end",
+			toolCallId: message.toolCallId,
+			toolName: message.toolName,
+			result: { content: message.content, isError: false },
+			isError: false,
+		});
+	}
+	const pending = fixture.internals.getToolResultDiscoveryLifecycleCounts();
+	assert.equal(pending.pending, 129);
+	assert.equal(pending.attached, 0);
+	assert.equal(pending.registrationsEvicted, before.registrationsEvicted);
+
+	for (const message of messages) {
+		fixture.session.agent.state.messages.push(message);
+		await emitToolResultMessageEnd(fixture, message);
+	}
+	const attached = fixture.internals.getToolResultDiscoveryLifecycleCounts();
+	assert.equal(attached.pending, 0);
+	assert.equal(attached.attached, 128);
+	assert.equal(attached.registrationsEvicted, (before.registrationsEvicted ?? 0) + 1);
+	const entries = attachedToolResultDiscoveries(fixture.internals);
+	assert.deepEqual(
+		[...(entries?.keys() ?? [])],
+		messages.slice(1).map((message) => message.toolCallId),
+	);
+	assert.equal(entries?.has(messages[0]!.toolCallId), false);
+	const oldestRetained = entries?.get(messages[1]!.toolCallId)?.component;
+	const newestRetained = entries?.get(messages[128]!.toolCallId)?.component;
+	assert.ok(oldestRetained);
+	assert.ok(newestRetained);
+	for (const [component, message] of [[oldestRetained, messages[1]], [newestRetained, messages[128]]] as const) {
+		const discovery = component.getToolResultPresentationDiscovery(message!.toolCallId);
+		assert.ok(discovery);
+		assert.equal(fixture.session.readToolResultArtifact(discovery.artifactId).content, message!.content);
+		assert.ok(fixture.session.readToolResultContinuation(discovery.cursor, 128).content.length > 0);
+	}
+
+	fixture.internals.rebuildChatFromMessages();
+	assert.deepEqual(
+		[...(attachedToolResultDiscoveries(fixture.internals)?.keys() ?? [])],
+		messages.slice(1).map((message) => message.toolCallId),
+		"live and rebuild latest-128 sets must match canonical transcript order",
+	);
+});
+
+test("pending V1 results do not consume an attached V2 discovery slot", async (t) => {
+	const fixture = await createModeFixture([], [], { enabled: true, budgetTokens: 128 });
+	t.after(fixture.dispose);
+	fixture.internals.isInitialized = true;
+	const attachedMessages = new Array<ToolResultMessage>(128);
+	for (let index = 0; index < attachedMessages.length; index++) {
+		const toolCallId = `attached-before-v1-${index}`;
+		const message = result(toolCallId, "fixture-tool", `attached-before-v1-${index}-`.repeat(1_000)) as ToolResultMessage;
+		attachedMessages[index] = message;
+		await fixture.internals.handleEvent({ type: "tool_execution_start", toolCallId, toolName: message.toolName, args: {} });
+		await fixture.internals.handleEvent({
+			type: "tool_execution_end",
+			toolCallId,
+			toolName: message.toolName,
+			result: { content: message.content, isError: false },
+			isError: false,
+		});
+		fixture.session.agent.state.messages.push(message);
+		await emitToolResultMessageEnd(fixture, message);
+	}
+	const expectedOrder = attachedMessages.map((message) => message.toolCallId);
+	const before = fixture.internals.getToolResultDiscoveryLifecycleCounts();
+	assert.equal(before.attached, 128);
+	assert.deepEqual([...(attachedToolResultDiscoveries(fixture.internals)?.keys() ?? [])], expectedOrder);
+
+	const smallMessages = new Array<ToolResultMessage>(256);
+	for (let index = 0; index < smallMessages.length; index++) {
+		const toolCallId = `pending-v1-${index}`;
+		const message = result(toolCallId, "fixture-tool", index % 2 === 0 ? "small" : "small error") as ToolResultMessage;
+		message.isError = index % 2 !== 0;
+		smallMessages[index] = message;
+		await fixture.internals.handleEvent({ type: "tool_execution_start", toolCallId, toolName: message.toolName, args: {} });
+		await fixture.internals.handleEvent({
+			type: "tool_execution_end",
+			toolCallId,
+			toolName: message.toolName,
+			result: { content: message.content, isError: message.isError },
+			isError: message.isError,
+		});
+	}
+	const pending = fixture.internals.getToolResultDiscoveryLifecycleCounts();
+	assert.equal(pending.pending, 256);
+	assert.equal(pending.attached, 128);
+	assert.equal(pending.registrationsEvicted, before.registrationsEvicted);
+	assert.deepEqual([...(attachedToolResultDiscoveries(fixture.internals)?.keys() ?? [])], expectedOrder);
+
+	for (const message of smallMessages) {
+		fixture.session.agent.state.messages.push(message);
+		await emitToolResultMessageEnd(fixture, message);
+	}
+	const after = fixture.internals.getToolResultDiscoveryLifecycleCounts();
+	assert.equal(after.pending, 0);
+	assert.equal(after.attached, 128);
+	assert.equal(after.registrationsEvicted, before.registrationsEvicted);
+	assert.deepEqual([...(attachedToolResultDiscoveries(fixture.internals)?.keys() ?? [])], expectedOrder);
+	for (const message of [attachedMessages[0]!, attachedMessages[127]!]) {
+		const component = attachedToolResultDiscoveries(fixture.internals)?.get(message.toolCallId)?.component;
+		const discovery = component?.getToolResultPresentationDiscovery(message.toolCallId);
+		assert.ok(discovery);
+		assert.equal(fixture.session.readToolResultArtifact(discovery.artifactId).content, message.content);
+		assert.ok(fixture.session.readToolResultContinuation(discovery.cursor, 128).content.length > 0);
+	}
 });
 
 test("initial UI rebuild skips malformed historical presentation candidates", async (t) => {
