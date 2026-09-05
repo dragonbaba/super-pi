@@ -27,7 +27,7 @@ export function g2_raw_result_probe(mode: RawMode, index = 0): AgentToolResult<{
     text = markers[0] + '\n' + line.repeat(count) + markers[1] + '\n' + line.repeat(count) + markers[2];
   }
   const content: AgentToolResult<unknown>['content'] = [{ type: 'text', text }];
-  if (mode === 'image') content.push({ type: 'image', mimeType: 'image/png', data: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aT1cAAAAASUVORK5CYII=' });
+  if (mode === 'image') content.push({ type: 'image', mimeType: 'image/png', data: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=' });
   return { content, details: { seed: RAW_PROBE_SEED, toolCallId, sha256: createHash('sha256').update(text).digest('hex'), bytes: Buffer.byteLength(text), codeUnits: text.length, markers, upstreamTruncated: false } };
 }
 
