@@ -377,11 +377,15 @@ test("disabled shadow constructs no observer and production insertion follows fi
 	assert.equal(counters.estimatorCalls, 0);
 
 	const source = readFileSync("packages/coding-agent/src/core/agent-session.ts", "utf8");
-	const extension = source.indexOf("if (this._extensionRunner.hasHandlers(event.type)) await this._emitExtensionEvent(event);");
+	const extensionLookup = source.indexOf("const hasExtensionHandlers = this._extensionRunner.hasHandlers(event.type);");
+	const extension = source.indexOf(
+		"if (hasExtensionHandlers) messageEndReplacementReturned = await this._emitExtensionEvent(event);",
+		extensionLookup,
+	);
 	const shadow = source.indexOf("this._toolOutputShadow?.observe(");
 	const listeners = source.indexOf("// Notify all listeners.", shadow);
 	const persistence = source.indexOf("// Handle session persistence", shadow);
-	assert.ok(extension >= 0 && extension < shadow);
+	assert.ok(extensionLookup >= 0 && extensionLookup < extension && extension < shadow);
 	assert.ok(shadow < listeners && listeners < persistence);
 	assert.equal(source.includes("event.message.toolOutput"), false);
 });
