@@ -165,7 +165,15 @@ export interface Terminal {
 /**
  * Real terminal using process.stdin/stdout
  */
+/** @internal Deterministic lifecycle seams; omitted options retain process defaults. */
+export interface ProcessTerminalOptions {
+	input?: Pick<NodeJS.ReadStream, "isRaw" | "setRawMode" | "setEncoding" | "resume" | "pause" | "on" | "removeListener">;
+	resizeSource?: Pick<NodeJS.WriteStream, "on" | "removeListener" | "columns" | "rows">;
+}
+
 export class ProcessTerminal implements Terminal {
+	private readonly inputSource: NonNullable<ProcessTerminalOptions["input"]>;
+	private readonly resizeSource: NonNullable<ProcessTerminalOptions["resizeSource"]>;
 	private readonly frameOutput: Pick<NodeJS.WriteStream, "write" | "on" | "once" | "removeListener">;
 	private frameOutputFailure: Error | undefined;
 	private physicalFrameWriteActive = false;
@@ -311,8 +319,14 @@ export class ProcessTerminal implements Terminal {
 	private progressInterval?: ReturnType<typeof setInterval>;
 	private writeLogPath = resolveTerminalWriteLogPath();
 
-	constructor(frameOutput: Pick<NodeJS.WriteStream, "write" | "on" | "once" | "removeListener"> = process.stdout) {
+	constructor(
+		frameOutput: Pick<NodeJS.WriteStream, "write" | "on" | "once" | "removeListener"> = process.stdout,
+		options: ProcessTerminalOptions = {},
+	) {
 		this.frameOutput = frameOutput;
+		this.inputSource = options.input ?? process.stdin;
+		this.resizeSource = options.resizeSource ?? process.stdout;
+		this.drainInputSource = this.inputSource;
 		// Writable callback failures may be followed by an error event. Keep one
 		// process-terminal-owned observer so that late stream errors are contained
 		// after the per-write listeners have already been released.
@@ -335,22 +349,22 @@ export class ProcessTerminal implements Terminal {
 		this.resizeHandler = onResize;
 		try {
 			// Save previous state and enable raw mode
-			this.wasRaw = process.stdin.isRaw || false;
-			if (process.stdin.setRawMode) {
-				process.stdin.setRawMode(true);
+			this.wasRaw = this.inputSource.isRaw || false;
+			if (this.inputSource.setRawMode) {
+				this.inputSource.setRawMode(true);
 			}
-			process.stdin.setEncoding("utf8");
-			process.stdin.resume();
+			this.inputSource.setEncoding("utf8");
+			this.inputSource.resume();
 
 			// Enable bracketed paste mode - terminal will wrap pastes in \x1b[200~ ... \x1b[201~
 			this.writeUnawaitedControl("\x1b[?2004h");
 
 			// Set up resize handler immediately
-			process.stdout.on("resize", this.resizeHandler);
+			this.resizeSource.on("resize", this.resizeHandler);
 
 			// Refresh terminal dimensions - they may be stale after suspend/resume
 			// (SIGWINCH is lost while process is stopped). Unix only.
-			if (process.platform !== "win32") {
+			if (process.platform !== "win32" && this.resizeSource === process.stdout) {
 				process.kill(process.pid, "SIGWINCH");
 			}
 
@@ -407,7 +421,7 @@ export class ProcessTerminal implements Terminal {
 	 */
 	private queryAndEnableKittyProtocol(): void {
 		this.setupStdinBuffer();
-		process.stdin.on("data", this.onStdinData);
+		this.inputSource.on("data", this.onStdinData);
 		this.keyboardProtocolPushed = true;
 		this.clearKeyboardProtocolNegotiationBuffer();
 		this.writeUnawaitedControl(KITTY_KEYBOARD_PROTOCOL_QUERY);
@@ -525,7 +539,7 @@ export class ProcessTerminal implements Terminal {
 	 * discards modifier state and Shift+Tab arrives as plain \t.
 	 */
 	private enableWindowsVTInput(): void {
-		enableNativeWindowsVirtualTerminalInput();
+		if (this.inputSource === process.stdin) enableNativeWindowsVirtualTerminalInput();
 	}
 
 	drainInput(maxMs = 1000, idleMs = 50): Promise<void> {
@@ -652,10 +666,10 @@ export class ProcessTerminal implements Terminal {
 		}
 
 		// Remove event handlers
-		process.stdin.removeListener("data", this.onStdinData);
+		this.inputSource.removeListener("data", this.onStdinData);
 		this.inputHandler = undefined;
 		if (this.resizeHandler) {
-			process.stdout.removeListener("resize", this.resizeHandler);
+			this.resizeSource.removeListener("resize", this.resizeHandler);
 			this.resizeHandler = undefined;
 		}
 
@@ -663,15 +677,15 @@ export class ProcessTerminal implements Terminal {
 		// re-interpreted after raw mode is disabled. This fixes a race condition
 		// where Ctrl+D could close the parent shell over SSH.
 		try {
-			process.stdin.pause();
+			this.inputSource.pause();
 		} catch (error) {
 			failure ??= asTerminalError(error);
 		}
 
 		// Restore raw mode state
-		if (process.stdin.setRawMode) {
+		if (this.inputSource.setRawMode) {
 			try {
-				process.stdin.setRawMode(this.wasRaw);
+				this.inputSource.setRawMode(this.wasRaw);
 			} catch (error) {
 				failure ??= asTerminalError(error);
 			}
@@ -877,11 +891,11 @@ export class ProcessTerminal implements Terminal {
 	}
 
 	get columns(): number {
-		return process.stdout.columns || Number(process.env.COLUMNS) || 80;
+		return this.resizeSource.columns || Number(process.env.COLUMNS) || 80;
 	}
 
 	get rows(): number {
-		return process.stdout.rows || Number(process.env.LINES) || 24;
+		return this.resizeSource.rows || Number(process.env.LINES) || 24;
 	}
 
 	moveBy(lines: number): void {
