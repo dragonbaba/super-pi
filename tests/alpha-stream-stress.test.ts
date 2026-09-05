@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { Session } from 'node:inspector/promises';
 import { alphaSession } from './helpers/alpha-session.ts';
 import { alphaMessage } from './helpers/alpha-stream.ts';
 
@@ -52,7 +53,12 @@ for (const mode of ['regular', 'fullscreen'] as const) test(`100000 actual sessi
   const heap: number[] = [];
   const cycles = Number(process.env.ALPHA_GC_CYCLES ?? 5);
   assert.ok(Number.isInteger(cycles) && cycles >= 5 && cycles <= 100);
+  const profiler = process.env.ALPHA_GC_PROFILE === '1' ? new Session() : undefined;
+  const survivors: { function: string; source: string; bytes: number }[] = [];
+  profiler?.connect();
+  try {
   for (let cycle = 0; cycle < (global.gc ? cycles + 1 : 1); cycle++) {
+    if (cycle === 1 && profiler) await profiler.post('HeapProfiler.startSampling', { samplingInterval: 16384 });
     result = await stress(mode);
     if (global.gc) {
       for (let round = 0; round < 5; round++) { await new Promise<void>(resolve => setImmediate(resolve)); global.gc(); }
@@ -60,9 +66,25 @@ for (const mode of ['regular', 'fullscreen'] as const) test(`100000 actual sessi
       if (cycle > 0) heap.push(process.memoryUsage().heapUsed); // Exclude the first warm-up owner.
     }
   }
+  if (profiler && global.gc) {
+    // Default sampling excludes collected allocations. Start after warm-up and
+    // stop after the final controlled GC; this attributes surviving samples,
+    // not all transient allocation and not a complete heap-retainer graph.
+    const { profile } = await profiler.post('HeapProfiler.stopSampling');
+    const pending = [profile.head];
+    while (pending.length) {
+      const node = pending.pop()!;
+      if (node.selfSize) survivors.push({ function: node.callFrame.functionName,
+        source: node.callFrame.url.replace(/^.*[\\/](packages|scripts|tests)[\\/]/, '$1/'), bytes: node.selfSize });
+      pending.push(...node.children);
+    }
+    survivors.sort((a, b) => b.bytes - a.bytes);
+  }
+  } finally { profiler?.disconnect(); }
   assert.ok(result);
   if (heap.length) assert.ok(heap.at(-1)! <= heap[0] * 1.1, 'released owners must not accumulate more than 10% heap');
   t.diagnostic(JSON.stringify({ mode, updates: result.updates, updatePromises: result.updatePromises, metrics: result.metrics, weakReleased: global.gc ? result.weak.length : 'requires --expose-gc',
     measuredCycles: heap.length, controlledGcHeap: heap, heapAbsoluteDelta: heap.length ? heap.at(-1)! - heap[0] : null,
+    survivingSampleTopSites: profiler ? survivors.slice(0, 20) : undefined,
     coverage: 'actual AgentSession emission, InteractiveMode, AssistantMessage, Markdown, retained TUI and strict sink; provider bypassed to prevent observer coalescing' }));
 });
