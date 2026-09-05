@@ -49,6 +49,16 @@ Five controlled-GC heap readings: 16,424,432; 16,422,352; 16,403,320; 16,403,320
 
 ## Reproduction
 
+## Active retained-range investigation (G2S, before candidate acceptance)
+
+The evidence-gated retained-item change is justified by immutable red `24701c9` and the clean `1f8bf074e29f990158583ea00ba37f1b3f13d6c2` L3 profile. The red fixture dispatches 100,000 actual InteractiveMode updates, rendering every 4096 updates; ordinary provider burst delivery is separately coalesced and does not prove this count. Regular mode recorded 25 full-history fallbacks; fullscreen did not. A 200-chunk word corpus at requested 100 updates/s with 50,000 completed items recorded 89 fallbacks in 103 root renders, 4,450,154 retained cache hits and 51,249,417 terminal bytes. Sampled allocations included doRender ~857.5 MB, applyLineResets ~285 MB and retained render ~190.4 MB (sampling attribution, not exact byte counters). Root p95 was 42.07 ms in that single process; this is hotspot evidence, not five-process acceptance.
+
+Source causes: repeated invalidations of an already-dirty record overflow the fixed mutation ring before measurement; an active item's unchanged prefix is conservatively attributed as changed, causing main-screen full-history replay when that prefix is above the viewport. The proposed retained-only fix coalesces pending invalidations and keeps a bounded reference snapshot of rendered active lines to attribute exact changes. The snapshot owns its array because arbitrary Components may reuse theirs. It retains at most 4096 line references and 512 Ki code units, copies no strings, and releases on invalidation, completion, cache release and disposal. Above the cap it preserves conservative fallback. Exact attribution requires a single mutation generation and the same baseline rendered version; intermediate direct renders or stale observers fall back conservatively. It adds no pool, per-update Promise, closure, timer, Map or Set. The active reference array is allocated once per cache lifetime, not once per frame. These references are additional to completed cache accounting and must not be described as zero retained active content.
+
+Initial dirty-tree after-profile reduced active fallbacks to zero but still recorded one final-transition fallback: 113 roots, 112 active and two completed renders, 50,068 cache hits, 9,168,483 terminal bytes, root p95 7.72 ms. The full transition frame was still ~8.46 MB and remains an open item. Top allocations moved to footer render (~133 MB and ~128 MB sampled sites). These single-process before/after figures have different delivered event counts and are **not** a percentage improvement acceptance claim. The exact-head five-process comparison remains required. The additional attribution tests cover reused arrays, no-change versions, width change, hard caps, release, stale observers, and intermediate direct/full renders. Existing cursor/overlay golden tests caught an empty-range end-of-document fallback during development; it was corrected without weakening assertions.
+
+## Reproduction commands
+
 Run after `npm ci` and `npm run build:offline`, from the dedicated worktree:
 
 ```powershell
