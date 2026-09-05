@@ -15,6 +15,7 @@
 	],
 	"scripts": {
 		"alpha:g2-probe": "node ./scripts/alpha-g2-probe.mjs",
+		"alpha:g2-capture": "node ./scripts/alpha-startup-capture-run.mjs",
 		"superpi": "node ./scripts/superpi.mjs",
 		"test:unit": "node ./scripts/test.mjs --suite unit",
 		"test:hot": "node ./scripts/test.mjs --suite hot",
