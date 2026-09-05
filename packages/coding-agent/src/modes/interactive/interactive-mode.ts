@@ -4709,7 +4709,10 @@ export class InteractiveMode {
 		const affectedComponents = new Set<ToolExecutionComponent | ReadToolGroupComponent>();
 		for (const [toolCallId, registration] of entries) {
 			this.toolResultDiscoveryCanonicalHistoryResetReleases++;
-			if (registration.component.detachToolResultPresentation(toolCallId, registration.identity)) {
+			if (
+				registration.component.detachToolResultPresentation(toolCallId, registration.identity) ||
+				registration.component.detachToolResultPresentation(toolCallId)
+			) {
 				affectedComponents.add(registration.component);
 			}
 		}
