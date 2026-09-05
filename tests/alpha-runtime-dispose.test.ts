@@ -93,3 +93,21 @@ test('abort callback reentrancy sees the prepublished shared operation', async (
   assert.equal(nested, operation);
   assert.deepEqual(f.order, ['shutdown', 'invalidate', 'session']);
 });
+
+test('a non-settling active operation times out without skipping mandatory disposal', async (t) => {
+  const f = fixture();
+  Object.assign(f.session, { isIdle: false });
+  let finish!: () => void;
+  f.session.abort = () => new Promise<void>(resolve => { finish = resolve; });
+  let now = 0; t.mock.method(Date, 'now', () => now);
+  const operation = f.runtime.dispose();
+  now = 5001;
+  try {
+    await assert.rejects(operation, error => error instanceof Error && error.name === 'SessionShutdownTimeoutError');
+    assert.deepEqual(f.order, ['shutdown', 'invalidate', 'session']);
+    const state = f.runtime as unknown as Record<string, unknown>;
+    assert.equal(state.auxiliaryShutdownTimer, undefined);
+    assert.equal(state.resolveAuxiliaryShutdown, undefined);
+    assert.equal(state.rejectAuxiliaryShutdown, undefined);
+  } finally { finish(); }
+});
