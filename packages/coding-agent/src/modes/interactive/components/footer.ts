@@ -87,9 +87,14 @@ export class FooterComponent implements Component {
 		// Calculate cumulative usage from ALL session entries (not just post-compaction messages)
 		const usageTotals = createUsageTotals();
 		let latestCacheHitRate: number | undefined;
+		let sessionName: string | undefined;
 
 		for (const entry of this.session.sessionManager.getEntries()) {
-			if (entry.type === "message" && entry.message.role === "assistant") {
+			if (entry.type === "session_info") {
+				// This traversal already sees all entries in append order. Preserve
+				// the latest-name/empty-name semantics without copying history again.
+				sessionName = entry.name?.trim() || undefined;
+			} else if (entry.type === "message" && entry.message.role === "assistant") {
 				addUsageToTotals(usageTotals, entry.message.usage);
 
 				const latestPromptTokens =
@@ -121,7 +126,6 @@ export class FooterComponent implements Component {
 		}
 
 		// Add session name if set
-		const sessionName = this.session.sessionManager.getSessionName();
 		if (sessionName) {
 			pwd = `${pwd} • ${sessionName}`;
 		}
