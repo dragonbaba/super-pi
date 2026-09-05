@@ -46,6 +46,7 @@ import {
 } from "../../packages/coding-agent/src/modes/interactive/components/tool-execution.ts";
 import { InteractiveMode } from "../../packages/coding-agent/src/modes/interactive/interactive-mode.ts";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
+import type { LoadedPngConverter } from "../../packages/coding-agent/src/utils/image-convert.ts";
 import type { RetainedContainer } from "../../packages/tui/src/components/retained-item.ts";
 import { FakeTerminal } from "../../tests/helpers/runtime-instrumentation.ts";
 import { auditToolResultPresentationUiSources } from "./tool-result-presentation-ui-source-audit.ts";
@@ -369,17 +370,80 @@ function measureGroupedImageSettings(): {
 type GroupedConvertedImage = { data: string; mimeType: string };
 
 class BenchReadToolGroupComponent extends ReadToolGroupComponent {
-	readonly conversions: Array<{
-		data: string;
-		mimeType: string;
-		resolve(value: GroupedConvertedImage | null): void;
-		reject(error: Error): void;
-	}> = [];
+	readonly conversions: Array<{ data: string; mimeType: string }> = [];
+	private resolveLoader: ((value: LoadedPngConverter | null) => void) | undefined;
 
-	protected override convertImageForTerminal(data: string, mimeType: string): Promise<GroupedConvertedImage | null> {
-		return new Promise<GroupedConvertedImage | null>((resolve, reject) => {
-			this.conversions.push({ data, mimeType, resolve, reject });
+	protected override loadImageConverterForTerminal(): Promise<LoadedPngConverter | null> {
+		return new Promise<LoadedPngConverter | null>((resolve) => {
+			this.resolveLoader = resolve;
 		});
+	}
+
+	protected override convertImageWithLoadedConverter(
+		_converter: LoadedPngConverter,
+		data: string,
+		mimeType: string,
+	): GroupedConvertedImage | null {
+		this.conversions.push({ data, mimeType });
+		return { data: "converted-png", mimeType: "image/png" };
+	}
+
+	settleLoader(): void { this.resolveLoader?.({} as LoadedPngConverter); }
+}
+
+const NEVER_SETTLING_GROUPED_CONVERTER = new Promise<LoadedPngConverter | null>(() => {});
+
+class NeverSettlingBenchReadToolGroupComponent extends ReadToolGroupComponent {
+	protected override loadImageConverterForTerminal(): Promise<LoadedPngConverter | null> {
+		return NEVER_SETTLING_GROUPED_CONVERTER;
+	}
+}
+
+function captureNeverSettlingGroupedConverterRefs(): {
+	component: WeakRef<object>;
+	row: WeakRef<object>;
+	result: WeakRef<object>;
+	content: WeakRef<object>;
+	imageBlock: WeakRef<object>;
+	lifecycle: ReturnType<ReadToolGroupComponent["getGroupedImageConversionLifecycleCounts"]>;
+} {
+	const previousCapabilities = getCapabilities();
+	setCapabilities({ images: "kitty", trueColor: true, hyperlinks: true });
+	try {
+		const component = new NeverSettlingBenchReadToolGroupComponent(true, 31);
+		const imageBlock = {
+			type: "image" as const,
+			data: Buffer.alloc(512 * 1024, 0x51).toString("base64"),
+			mimeType: "image/jpeg",
+		};
+		const content: ToolResultPresentationContent[] = [
+			{ type: "text", text: "never-settling-profile-".repeat(1_024) },
+			imageBlock,
+		];
+		const result = { content };
+		const toolCallId = "never-settling-profile";
+		const owner = createToolResultPresentationOwner({ enabled: true, budgetTokens: 128 }, toolCallId)!;
+		component.updateArgs(toolCallId, { path: "never-settling.jpg" });
+		component.setArgsComplete(toolCallId);
+		component.updateResult(toolCallId, result);
+		component.setToolResultPresentation(toolCallId, owner.create(content, toolCallId)!);
+		owner.release();
+		component.setExpanded(true);
+		const row = (component as unknown as { rows: Map<string, object> }).rows.get(toolCallId)!;
+		const lifecycle = component.getGroupedImageConversionLifecycleCounts();
+		const refs = {
+			component: new WeakRef<object>(component),
+			row: new WeakRef<object>(row),
+			result: new WeakRef<object>(result),
+			content: new WeakRef<object>(content),
+			imageBlock: new WeakRef<object>(imageBlock),
+			lifecycle,
+		};
+		component[RELEASE_COMPONENT_RENDER_CACHE]();
+		owner.dispose();
+		return refs;
+	} finally {
+		setCapabilities(previousCapabilities);
 	}
 }
 
@@ -447,7 +511,7 @@ async function measureGroupedCloseoutLifecycle(): Promise<{
 		component.setExpanded(true);
 		const fullTailVisible = component.render(120).join("\n").includes("V2_FULL_BENCH_TAIL");
 		const before = component.getGroupedImageConversionLifecycleCounts();
-		component.conversions[0]!.resolve({ data: "converted-png", mimeType: "image/png" });
+		component.settleLoader();
 		await Promise.resolve();
 		await Promise.resolve();
 		const after = component.getGroupedImageConversionLifecycleCounts();
@@ -1802,6 +1866,62 @@ async function measureSetupReplacedHistoryRebind(): Promise<{
 	};
 }
 
+async function measureNonInteractiveLazyCanonicalIndex(): Promise<{
+	historyMessages: number;
+	constructorBuildProbes: number;
+	constructorRebuilds: number;
+	constructorEntries: number;
+	constructorActive: boolean;
+	providerBuildProbeDelta: number;
+	inactiveReplacementBuildProbeDelta: number;
+	inactiveReplacementRebuildDelta: number;
+	inactiveReplacementSkips: number;
+	firstUiActivationCount: number;
+	firstUiBuildProbes: number;
+	firstUiRebuilds: number;
+	firstUiEntries: number;
+	repeatedUiBuildProbeDelta: number;
+	repeatedUiRebuildDelta: number;
+}> {
+	const messages: AgentMessage[] = [];
+	for (let index = 0; index < 50_000; index++) messages.push(toolResult(`noninteractive-${index}`, "small"));
+	const fixture = await createModeFixture(messages, "enabled");
+	const before = fixture.session.getToolResultPresentationUiRebuildCounts();
+	await fixture.session.agent.convertToLlm([fixture.session.agent.state.messages.at(-1)!]);
+	const afterProvider = fixture.session.getToolResultPresentationUiRebuildCounts();
+	(fixture.session as unknown as { _rebuildToolResultUiCanonicalIndex(): void })._rebuildToolResultUiCanonicalIndex();
+	const afterInactiveReplacement = fixture.session.getToolResultPresentationUiRebuildCounts();
+	const selected = new Map<ToolResultMessage, ToolResultPresentation>();
+	fixture.session.collectRecentToolResultPresentationsForUi(selected, 128);
+	const afterFirstUi = fixture.session.getToolResultPresentationUiRebuildCounts();
+	fixture.session.collectRecentToolResultPresentationsForUi(selected, 128);
+	const afterRepeatedUi = fixture.session.getToolResultPresentationUiRebuildCounts();
+	selected.clear();
+	await fixture.dispose();
+	return {
+		historyMessages: messages.length,
+		constructorBuildProbes: before.liveCanonicalIndexBuildProbes,
+		constructorRebuilds: before.liveCanonicalIndexRebuilds,
+		constructorEntries: before.liveCanonicalIndexEntries,
+		constructorActive: before.canonicalIndexActive,
+		providerBuildProbeDelta:
+			afterProvider.liveCanonicalIndexBuildProbes - before.liveCanonicalIndexBuildProbes,
+		inactiveReplacementBuildProbeDelta:
+			afterInactiveReplacement.liveCanonicalIndexBuildProbes - afterProvider.liveCanonicalIndexBuildProbes,
+		inactiveReplacementRebuildDelta:
+			afterInactiveReplacement.liveCanonicalIndexRebuilds - afterProvider.liveCanonicalIndexRebuilds,
+		inactiveReplacementSkips: afterInactiveReplacement.canonicalIndexInactiveRebuildSkips,
+		firstUiActivationCount: afterFirstUi.canonicalIndexActivationCount,
+		firstUiBuildProbes: afterFirstUi.liveCanonicalIndexBuildProbes,
+		firstUiRebuilds: afterFirstUi.liveCanonicalIndexRebuilds,
+		firstUiEntries: afterFirstUi.liveCanonicalIndexEntries,
+		repeatedUiBuildProbeDelta:
+			afterRepeatedUi.liveCanonicalIndexBuildProbes - afterFirstUi.liveCanonicalIndexBuildProbes,
+		repeatedUiRebuildDelta:
+			afterRepeatedUi.liveCanonicalIndexRebuilds - afterFirstUi.liveCanonicalIndexRebuilds,
+	};
+}
+
 async function captureProductionLifecycleRefs(): Promise<{
 	component: WeakRef<object>;
 	discovery: WeakRef<object>;
@@ -2113,10 +2233,12 @@ const malformedMixedHistoryRebuild = await measureMalformedMixedHistoryRebuild()
 const sharedOwnerUiRebuild = await measureSharedOwnerUiRebuild();
 const nonAdmittingCandidateInspection = await measureNonAdmittingCandidateInspection();
 const setupReplacedHistoryRebind = await measureSetupReplacedHistoryRebind();
+const nonInteractiveLazyCanonicalIndex = await measureNonInteractiveLazyCanonicalIndex();
 const canonicalReplacementLifecycle = await captureCanonicalReplacementLifecycle(inspector);
 const productionLifecycleRefs = await captureProductionLifecycleRefs();
 const pendingLifecycleRefs = await capturePendingLifecycleRefs();
 const inspectionTransientSourceRef = await captureInspectionTransientSourceRef();
+const neverSettlingGroupedConverterRefs = captureNeverSettlingGroupedConverterRefs();
 
 const componentRefs: WeakRef<object>[] = [];
 const discoveryRefs: WeakRef<object>[] = [];
@@ -2135,6 +2257,11 @@ const livePendingComponentWeakRefs = pendingLifecycleRefs.component.deref() ? 1 
 const livePendingRegistrationWeakRefs = pendingLifecycleRefs.registration.deref() ? 1 : 0;
 const livePendingSourceWeakRefs = pendingLifecycleRefs.source.deref() ? 1 : 0;
 const liveInspectionTransientSourceWeakRefs = inspectionTransientSourceRef.deref() ? 1 : 0;
+const liveNeverSettlingGroupedComponentWeakRefs = neverSettlingGroupedConverterRefs.component.deref() ? 1 : 0;
+const liveNeverSettlingGroupedRowWeakRefs = neverSettlingGroupedConverterRefs.row.deref() ? 1 : 0;
+const liveNeverSettlingGroupedResultWeakRefs = neverSettlingGroupedConverterRefs.result.deref() ? 1 : 0;
+const liveNeverSettlingGroupedContentWeakRefs = neverSettlingGroupedConverterRefs.content.deref() ? 1 : 0;
+const liveNeverSettlingGroupedImageBlockWeakRefs = neverSettlingGroupedConverterRefs.imageBlock.deref() ? 1 : 0;
 const liveCanonicalReplacementComponentWeakRefs = canonicalReplacementLifecycle.component.deref() ? 1 : 0;
 const liveCanonicalReplacementDiscoveryWeakRefs = canonicalReplacementLifecycle.discovery.deref() ? 1 : 0;
 const liveCanonicalReplacementAttachedRegistrationWeakRefs = canonicalReplacementLifecycle.attachedRegistration.deref() ? 1 : 0;
@@ -2201,6 +2328,15 @@ const result = {
 	sharedOwnerUiRebuild,
 	nonAdmittingCandidateInspection,
 	setupReplacedHistoryRebind,
+	nonInteractiveLazyCanonicalIndex,
+	neverSettlingGroupedConverter: {
+		lifecycleBeforeRelease: neverSettlingGroupedConverterRefs.lifecycle,
+		liveComponentWeakRefs: liveNeverSettlingGroupedComponentWeakRefs,
+		liveRowWeakRefs: liveNeverSettlingGroupedRowWeakRefs,
+		liveResultWeakRefs: liveNeverSettlingGroupedResultWeakRefs,
+		liveContentWeakRefs: liveNeverSettlingGroupedContentWeakRefs,
+		liveImageBlockWeakRefs: liveNeverSettlingGroupedImageBlockWeakRefs,
+	},
 	canonicalReplacementLifecycle: canonicalReplacementLifecycle.evidence,
 	lifecycle: {
 		cycles: GC_CYCLES,

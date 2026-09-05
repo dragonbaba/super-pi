@@ -84,7 +84,25 @@ export interface ToolResultPresentationUiSourceAudit {
 	readonly groupedImageConversionSetConstructors: number;
 	readonly groupedImageConversionPromises: number;
 	readonly groupedImageConversionPromiseProducingCallSites: number;
+	readonly groupedImageLoaderRequestCallSites: number;
+	readonly groupedImageLoaderReactionPromiseSites: number;
 	readonly groupedImageConversionAbortControllers: number;
+	readonly groupedImageColdLoaderArrayMaterializationSites: number;
+	readonly groupedImageColdLoaderInlineClosureSites: number;
+	readonly groupedImageColdLoaderObjectLiterals: number;
+	readonly groupedImageColdLoaderPromiseSites: number;
+	readonly groupedImageColdLoaderDynamicImportSites: number;
+	readonly groupedImageWarmConversionArrayMaterializationSites: number;
+	readonly groupedImageWarmConversionInlineClosureSites: number;
+	readonly groupedImageWarmConversionObjectLiterals: number;
+	readonly groupedImageWarmConversionPromiseSites: number;
+	readonly groupedImageWarmConversionTypedArraySites: number;
+	readonly groupedImageWarmConversionBufferCallSites: number;
+	readonly groupedImageCompatibilityWrapperInlineClosureSites: number;
+	readonly groupedImageCompatibilityWrapperObjectLiterals: number;
+	readonly groupedImageCompatibilityWrapperPromiseSites: number;
+	readonly groupedImageCompatibilityWrapperTypedArraySites: number;
+	readonly groupedImageCompatibilityWrapperBufferCallSites: number;
 	readonly canonicalPayloadRefreshArrayMaterializationSites: number;
 	readonly canonicalPayloadRefreshInlineClosureSites: number;
 	readonly canonicalPayloadRefreshCopyOperations: number;
@@ -292,6 +310,40 @@ function countCallsNamed(nodes: readonly ts.Node[], name: string): number {
 	return count;
 }
 
+function countNodeKinds(nodes: readonly ts.Node[]): {
+	asyncFunctions: number;
+	dynamicImports: number;
+	typedArrayConstructors: number;
+	bufferCalls: number;
+} {
+	let asyncFunctions = 0;
+	let dynamicImports = 0;
+	let typedArrayConstructors = 0;
+	let bufferCalls = 0;
+	const visit = (node: ts.Node): void => {
+		if (
+			(ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node) || ts.isArrowFunction(node) || ts.isMethodDeclaration(node)) &&
+			node.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword)
+		) asyncFunctions++;
+		if (ts.isCallExpression(node)) {
+			if (node.expression.kind === ts.SyntaxKind.ImportKeyword) dynamicImports++;
+			if (
+				ts.isPropertyAccessExpression(node.expression) &&
+				isIdentifierNamed(node.expression.expression, "Buffer") &&
+				node.expression.name.text === "from"
+			) bufferCalls++;
+		}
+		if (
+			ts.isNewExpression(node) &&
+			ts.isIdentifier(node.expression) &&
+			(node.expression.text === "Uint8Array" || node.expression.text === "Uint8ClampedArray")
+		) typedArrayConstructors++;
+		ts.forEachChild(node, visit);
+	};
+	for (const node of nodes) visit(node);
+	return { asyncFunctions, dynamicImports, typedArrayConstructors, bufferCalls };
+}
+
 function createSourceProgram(rootNames: readonly string[]): ts.Program {
 	const configPath = fileURLToPath(new URL("../../tsconfig.json", import.meta.url));
 	const config = ts.readConfigFile(configPath, ts.sys.readFile);
@@ -314,6 +366,9 @@ export function auditToolResultPresentationUiSources(): ToolResultPresentationUi
 		toolResultPresentation: fileURLToPath(new URL("../../packages/coding-agent/src/core/tool-result-presentation.ts", import.meta.url)),
 		toolOutputBudget: fileURLToPath(new URL("../../packages/coding-agent/src/core/tool-output-budget.ts", import.meta.url)),
 		renderUtils: fileURLToPath(new URL("../../packages/coding-agent/src/core/tools/render-utils.ts", import.meta.url)),
+		imageConvert: fileURLToPath(new URL("../../packages/coding-agent/src/utils/image-convert.ts", import.meta.url)),
+		photon: fileURLToPath(new URL("../../packages/coding-agent/src/utils/photon.ts", import.meta.url)),
+		exifOrientation: fileURLToPath(new URL("../../packages/coding-agent/src/utils/exif-orientation.ts", import.meta.url)),
 		tuiContainer: fileURLToPath(new URL("../../packages/tui/src/tui.ts", import.meta.url)),
 		tuiBox: fileURLToPath(new URL("../../packages/tui/src/components/box.ts", import.meta.url)),
 		tuiText: fileURLToPath(new URL("../../packages/tui/src/components/text.ts", import.meta.url)),
@@ -328,6 +383,9 @@ export function auditToolResultPresentationUiSources(): ToolResultPresentationUi
 	const toolResultPresentation = requireSourceFile(program, sourcePaths.toolResultPresentation);
 	const toolOutputBudget = requireSourceFile(program, sourcePaths.toolOutputBudget);
 	const renderUtils = requireSourceFile(program, sourcePaths.renderUtils);
+	const imageConvert = requireSourceFile(program, sourcePaths.imageConvert);
+	const photon = requireSourceFile(program, sourcePaths.photon);
+	const exifOrientation = requireSourceFile(program, sourcePaths.exifOrientation);
 	const tuiContainer = requireSourceFile(program, sourcePaths.tuiContainer);
 	const tuiBox = requireSourceFile(program, sourcePaths.tuiBox);
 	const tuiText = requireSourceFile(program, sourcePaths.tuiText);
@@ -500,21 +558,58 @@ export function auditToolResultPresentationUiSources(): ToolResultPresentationUi
 		selectClassMembers(toolComponent, "ReadToolGroupComponent", ["rebuild"]),
 		checker,
 	);
-	const groupedImageConversionNodes = selectClassMembers(toolComponent, "ReadToolGroupComponent", [
+	const groupedImageConversionNodes = [
+		...selectNamedDeclarations(toolComponent, ["ReadGroupConverterLoaderTask"]),
+		...selectClassMembers(toolComponent, "ReadToolGroupComponent", [
 			"clearGroupedImageConversionState",
 			"clearGroupedImageConversionsForRow",
 			"clearGroupedImageConversions",
+			"ensureGroupedImageConverterLoad",
+			"hasVisibleGroupedImageConversionCandidate",
+			"completeGroupedImageConverterLoad",
+			"rejectGroupedImageConverterLoad",
+			"releaseGroupedImageConverterOwnership",
 			"getGroupedImageForKitty",
-			"isCurrentGroupedImageConversion",
-			"completeGroupedImageConversion",
-			"rejectGroupedImageConversion",
 			"pruneGroupedImageConversions",
-		]);
+		]),
+	];
 	const groupedImageConversionCounts = countAst(groupedImageConversionNodes, checker);
-	const groupedImageConversionPromiseProducingCallSites = countCallsNamed(
+	const groupedImageLoaderRequestCallSites = countCallsNamed(
 		groupedImageConversionNodes,
-		"convertImageForTerminal",
+		"loadImageConverterForTerminal",
 	);
+	const groupedImageLoaderReactionPromiseSites = countCallsNamed(groupedImageConversionNodes, "then");
+	const groupedImageConversionPromiseProducingCallSites =
+		groupedImageLoaderRequestCallSites + groupedImageLoaderReactionPromiseSites;
+	const groupedImageColdLoaderNodes = [
+		...selectNamedDeclarations(imageConvert, ["loadPngConverter"]),
+		...selectNamedDeclarations(photon, ["pathOrNull", "getFallbackWasmPaths", "patchPhotonWasmRead", "loadPhoton"]),
+	];
+	const groupedImageWarmConversionNodes = [
+		...selectNamedDeclarations(imageConvert, [
+			"convertImageBytesToPngWithLoadedConverter",
+			"convertToPngWithLoadedConverter",
+		]),
+		...selectNamedDeclarations(exifOrientation, [
+			"readOrientationFromTiff",
+			"findJpegTiffOffset",
+			"findWebpTiffOffset",
+			"hasExifHeader",
+			"getExifOrientation",
+			"rotate90",
+			"applyExifOrientation",
+		]),
+	];
+	const groupedImageCompatibilityWrapperNodes = selectNamedDeclarations(imageConvert, [
+		"convertImageBytesToPng",
+		"convertToPng",
+	]);
+	const groupedImageColdLoaderCounts = countAst(groupedImageColdLoaderNodes, checker);
+	const groupedImageWarmConversionCounts = countAst(groupedImageWarmConversionNodes, checker);
+	const groupedImageCompatibilityWrapperCounts = countAst(groupedImageCompatibilityWrapperNodes, checker);
+	const groupedImageColdLoaderKinds = countNodeKinds(groupedImageColdLoaderNodes);
+	const groupedImageWarmConversionKinds = countNodeKinds(groupedImageWarmConversionNodes);
+	const groupedImageCompatibilityWrapperKinds = countNodeKinds(groupedImageCompatibilityWrapperNodes);
 	const canonicalPayloadRefreshCounts = countAst(
 		selectClassMembers(interactive, "InteractiveMode", ["attachLiveToolResultPresentation"]),
 		checker,
@@ -534,6 +629,9 @@ export function auditToolResultPresentationUiSources(): ToolResultPresentationUi
 		canonicalIndexHardCap,
 		transitiveSourceFiles: [
 			"tool-execution.ts",
+			"image-convert.ts",
+			"photon.ts",
+			"exif-orientation.ts",
 			"render-utils.ts",
 			"interactive-mode.ts",
 			"agent-session.ts",
@@ -654,7 +752,36 @@ export function auditToolResultPresentationUiSources(): ToolResultPresentationUi
 		groupedImageConversionSetConstructors: groupedImageConversionCounts.setConstructors,
 		groupedImageConversionPromises: groupedImageConversionCounts.promises,
 		groupedImageConversionPromiseProducingCallSites,
+		groupedImageLoaderRequestCallSites,
+		groupedImageLoaderReactionPromiseSites,
 		groupedImageConversionAbortControllers: groupedImageConversionCounts.abortControllers,
+		groupedImageColdLoaderArrayMaterializationSites:
+			groupedImageColdLoaderCounts.arrayLiterals +
+			groupedImageColdLoaderCounts.arraySpreads +
+			groupedImageColdLoaderCounts.arrayProducingCalls +
+			groupedImageColdLoaderCounts.arrayConstructors,
+		groupedImageColdLoaderInlineClosureSites: groupedImageColdLoaderCounts.inlineClosures,
+		groupedImageColdLoaderObjectLiterals: groupedImageColdLoaderCounts.objectLiterals,
+		groupedImageColdLoaderPromiseSites: groupedImageColdLoaderCounts.promises + groupedImageColdLoaderKinds.asyncFunctions,
+		groupedImageColdLoaderDynamicImportSites: groupedImageColdLoaderKinds.dynamicImports,
+		groupedImageWarmConversionArrayMaterializationSites:
+			groupedImageWarmConversionCounts.arrayLiterals +
+			groupedImageWarmConversionCounts.arraySpreads +
+			groupedImageWarmConversionCounts.arrayProducingCalls +
+			groupedImageWarmConversionCounts.arrayConstructors,
+		groupedImageWarmConversionInlineClosureSites: groupedImageWarmConversionCounts.inlineClosures,
+		groupedImageWarmConversionObjectLiterals: groupedImageWarmConversionCounts.objectLiterals,
+		groupedImageWarmConversionPromiseSites:
+			groupedImageWarmConversionCounts.promises + groupedImageWarmConversionKinds.asyncFunctions,
+		groupedImageWarmConversionTypedArraySites: groupedImageWarmConversionKinds.typedArrayConstructors,
+		groupedImageWarmConversionBufferCallSites: groupedImageWarmConversionKinds.bufferCalls,
+		groupedImageCompatibilityWrapperInlineClosureSites: groupedImageCompatibilityWrapperCounts.inlineClosures,
+		groupedImageCompatibilityWrapperObjectLiterals: groupedImageCompatibilityWrapperCounts.objectLiterals,
+		groupedImageCompatibilityWrapperPromiseSites:
+			groupedImageCompatibilityWrapperCounts.promises + groupedImageCompatibilityWrapperKinds.asyncFunctions,
+		groupedImageCompatibilityWrapperTypedArraySites:
+			groupedImageCompatibilityWrapperKinds.typedArrayConstructors,
+		groupedImageCompatibilityWrapperBufferCallSites: groupedImageCompatibilityWrapperKinds.bufferCalls,
 		canonicalPayloadRefreshArrayMaterializationSites:
 			canonicalPayloadRefreshCounts.arrayLiterals +
 			canonicalPayloadRefreshCounts.arraySpreads +

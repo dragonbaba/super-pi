@@ -1163,8 +1163,20 @@ test("grouped extension dispositions compose with bounded previews, Kitty conver
 		const group = fixture.internals.createTrackedToolComponent("read", toolCallId, { path: `${label}.txt` }, undefined, true);
 		assert.ok(group instanceof ReadToolGroupComponent);
 		(group as unknown as {
-			convertImageForTerminal(data: string, mimeType: string): Promise<{ data: string; mimeType: string } | null>;
-		}).convertImageForTerminal = async () => ({ data: `${label}-png`, mimeType: "image/png" });
+			loadImageConverterForTerminal(): Promise<object>;
+			convertImageWithLoadedConverter(
+				converter: object,
+				data: string,
+				mimeType: string,
+			): { data: string; mimeType: string } | null;
+		}).loadImageConverterForTerminal = async () => ({});
+		(group as unknown as {
+			convertImageWithLoadedConverter(
+				converter: object,
+				data: string,
+				mimeType: string,
+			): { data: string; mimeType: string } | null;
+		}).convertImageWithLoadedConverter = () => ({ data: `${label}-png`, mimeType: "image/png" });
 		group.setExpanded(true);
 		const message = {
 			...(result(toolCallId, "read", `${label}-`.repeat(1_000)) as ToolResultMessage),
@@ -1182,6 +1194,8 @@ test("grouped extension dispositions compose with bounded previews, Kitty conver
 		});
 		fixture.session.agent.state.messages.push(message);
 		await emitToolResultMessageEnd(fixture, message);
+		await Promise.resolve();
+		await Promise.resolve();
 		const lifecycle = fixture.internals.getToolResultDiscoveryLifecycleCounts();
 		assert.equal(lifecycle.canonicalPayloadRefreshes, expectedRefreshes);
 		assert.equal(group.getGroupedImageConversionLifecycleCounts().scheduled, 1);
@@ -1225,8 +1239,17 @@ test("grouped extension dispositions compose with bounded previews, Kitty conver
 	);
 	assert.ok(replacementGroup instanceof ReadToolGroupComponent);
 	(replacementGroup as unknown as {
-		convertImageForTerminal(data: string, mimeType: string): Promise<{ data: string; mimeType: string } | null>;
-	}).convertImageForTerminal = () => new Promise((resolve) => { settleReplacement = resolve; });
+		loadImageConverterForTerminal(): Promise<object>;
+	}).loadImageConverterForTerminal = () => new Promise((resolve) => {
+		settleReplacement = () => resolve({});
+	});
+	(replacementGroup as unknown as {
+		convertImageWithLoadedConverter(
+			converter: object,
+			data: string,
+			mimeType: string,
+		): { data: string; mimeType: string } | null;
+	}).convertImageWithLoadedConverter = () => ({ data: "stale-converted-png", mimeType: "image/png" });
 	replacementGroup.setExpanded(true);
 	const replacementMessage = {
 		...(result(replacementId, "read", "PRE_REPLACEMENT_GROUPED_V2-".repeat(1_000)) as ToolResultMessage),
@@ -1244,7 +1267,8 @@ test("grouped extension dispositions compose with bounded previews, Kitty conver
 	});
 	replacement.session.agent.state.messages.push(replacementMessage);
 	await emitToolResultMessageEnd(replacement, replacementMessage);
-	assert.equal(replacementGroup.getGroupedImageConversionLifecycleCounts().scheduled, 1);
+	assert.equal(replacementGroup.getGroupedImageConversionLifecycleCounts().scheduled, 0);
+	assert.equal(replacementGroup.getGroupedImageConversionLifecycleCounts().loaderWaiters, 1);
 	assert.equal(replacement.internals.getToolResultDiscoveryLifecycleCounts().canonicalPayloadReplacementRefreshes, 1);
 	await replacement.internals.handleEvent({
 		type: "compaction_end",
@@ -1254,12 +1278,12 @@ test("grouped extension dispositions compose with bounded previews, Kitty conver
 		willRetry: false,
 	});
 	assert.ok(settleReplacement);
-	settleReplacement({ data: "stale-converted-png", mimeType: "image/png" });
+	settleReplacement(null);
 	await Promise.resolve();
 	await Promise.resolve();
 	const conversionAfterCompaction = replacementGroup.getGroupedImageConversionLifecycleCounts();
 	assert.equal(conversionAfterCompaction.accepted, 0);
-	assert.equal(conversionAfterCompaction.dropped, 1);
+	assert.equal(conversionAfterCompaction.loaderSourceAcquisitions, 0);
 	assert.equal(conversionAfterCompaction.sourceReferences, 0);
 	assert.equal(replacementGroup.getToolResultPresentationDiscovery(replacementId), undefined);
 	assert.equal(replacement.internals.getToolResultDiscoveryLifecycleCounts().canonicalHistoryResetUniqueComponentRefreshes, 1);
@@ -1922,6 +1946,9 @@ test("live canonical validation indexes resumed history once and performs one lo
 	const fixture = await createModeFixture(messages, [], { enabled: true, budgetTokens: 128 });
 	t.after(fixture.dispose);
 	fixture.internals.isInitialized = true;
+	const initialDiscoveries = new Map<ToolResultMessage, ToolResultPresentation>();
+	fixture.session.collectRecentToolResultPresentationsForUi(initialDiscoveries, 128);
+	initialDiscoveries.clear();
 	for (let index = 0; index < 8; index++) {
 		const toolCallId = `indexed-live-${index}`;
 		await fixture.internals.handleEvent({
@@ -2209,6 +2236,9 @@ test("128 trailing V1 results do not hide an earlier bounded V2 discovery", asyn
 			liveCanonicalIndexRebuilds: 1,
 			liveCanonicalIndexEntries: 129,
 			liveCanonicalIndexOverflowed: false,
+			canonicalIndexActive: true,
+			canonicalIndexActivationCount: 1,
+			canonicalIndexInactiveRebuildSkips: 0,
 		},
 	);
 });

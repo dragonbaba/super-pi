@@ -19,6 +19,10 @@ import {
 	estimateToolOutputTokens,
 } from "../packages/coding-agent/src/core/tool-output-budget.ts";
 import {
+	convertToPngWithLoadedConverter,
+	type LoadedPngConverter,
+} from "../packages/coding-agent/src/utils/image-convert.ts";
+import {
 	createToolResultPresentationCounters,
 	createToolResultPresentationOwner,
 	type ToolResultPresentation,
@@ -99,23 +103,49 @@ function createTui(): TUI {
 
 type ConvertedGroupedImage = { data: string; mimeType: string };
 
-interface DeferredGroupedImageConversion {
+interface GroupedImageConversionCall {
 	readonly data: string;
 	readonly mimeType: string;
-	resolve(value: ConvertedGroupedImage | null): void;
-	reject(error: Error): void;
 }
 
 class DeferredReadToolGroupComponent extends ReadToolGroupComponent {
-	readonly conversions: DeferredGroupedImageConversion[] = [];
+	readonly conversions: GroupedImageConversionCall[] = [];
+	loaderRequests = 0;
+	private resolveLoader: ((value: LoadedPngConverter | null) => void) | undefined;
+	private rejectLoader: ((error: Error) => void) | undefined;
+	private readonly conversionResults: Array<ConvertedGroupedImage | null | Error> = [];
 
-	protected override convertImageForTerminal(
+	protected override loadImageConverterForTerminal(): Promise<LoadedPngConverter | null> {
+		this.loaderRequests++;
+		return new Promise<LoadedPngConverter | null>((resolve, reject) => {
+			this.resolveLoader = resolve;
+			this.rejectLoader = reject;
+		});
+	}
+
+	protected override convertImageWithLoadedConverter(
+		_converter: LoadedPngConverter,
 		data: string,
 		mimeType: string,
-	): Promise<ConvertedGroupedImage | null> {
-		return new Promise<ConvertedGroupedImage | null>((resolve, reject) => {
-			this.conversions.push({ data, mimeType, resolve, reject });
-		});
+	): ConvertedGroupedImage | null {
+		this.conversions.push({ data, mimeType });
+		const result = this.conversionResults.length > 0
+			? this.conversionResults.shift()!
+			: { data: "Q09OVkVSVEVEX1BORw==", mimeType: "image/png" };
+		if (result instanceof Error) throw result;
+		return result;
+	}
+
+	queueConversionResult(result: ConvertedGroupedImage | null | Error): void {
+		this.conversionResults.push(result);
+	}
+
+	settleLoader(value: LoadedPngConverter | null = {} as LoadedPngConverter): void {
+		this.resolveLoader?.(value);
+	}
+
+	failLoader(error = new Error("fixture loader rejected")): void {
+		this.rejectLoader?.(error);
 	}
 }
 
@@ -383,19 +413,24 @@ test("grouped Kitty non-PNG images wait for converted PNG ownership", async (t) 
 	assert.ok(group.setToolResultPresentation(message.toolCallId, presentation));
 	owner.release();
 	group.setExpanded(true);
-	assert.equal(group.conversions.length, 1);
-	assert.equal(group.conversions[0]?.mimeType, "image/jpeg");
+	assert.equal(group.loaderRequests, 1);
+	assert.equal(group.conversions.length, 0, "source conversion must wait for converter readiness");
 	let counts = group.getGroupedImageConversionLifecycleCounts();
-	assert.equal(counts.scheduled, 1);
-	assert.equal(counts.activePending, 1);
+	assert.equal(counts.scheduled, 0);
+	assert.equal(counts.loaderWaiters, 1);
+	assert.equal(counts.loaderSourceAcquisitions, 0);
 	assert.equal(counts.accepted, 0);
 	assert.equal(counts.imageComponents, 0, "raw JPEG must not be passed to Kitty as PNG while conversion is pending");
 	group.setImageWidthCells(41);
-	assert.equal(group.conversions.length, 1, "a rebuild must reuse the in-flight source conversion");
-	group.conversions[0]!.resolve({ data: "Q09OVkVSVEVEX1BORw==", mimeType: "image/png" });
+	assert.equal(group.loaderRequests, 1, "a rebuild must reuse the source-free loader waiter");
+	assert.equal(group.conversions.length, 0);
+	group.settleLoader();
 	await settleGroupedImageConversion();
 	counts = group.getGroupedImageConversionLifecycleCounts();
-	assert.equal(counts.activePending, 0);
+	assert.equal(group.conversions.length, 1);
+	assert.equal(group.conversions[0]?.mimeType, "image/jpeg");
+	assert.equal(counts.loaderWaiters, 0);
+	assert.equal(counts.loaderSourceAcquisitions, 1);
 	assert.equal(counts.accepted, 1);
 	assert.equal(counts.scheduled, 1);
 	assert.equal(counts.imageComponents, 1);
@@ -419,7 +454,7 @@ test("grouped Kitty non-PNG images wait for converted PNG ownership", async (t) 
 	owner.dispose();
 });
 
-test("grouped image conversion rejects stale, hidden, detached, null, and rejected completions", async (t) => {
+test("grouped image conversion rejects hidden, detached, unavailable, and failed warm work", async (t) => {
 	initTheme("dark");
 	const previousCapabilities = getCapabilities();
 	setCapabilities({ images: "kitty", trueColor: true, hyperlinks: true });
@@ -443,21 +478,21 @@ test("grouped image conversion rejects stale, hidden, detached, null, and reject
 
 	attach("jpeg-stale", "image/jpeg", "SkVQRUdfU1RBTEU=");
 	group.setExpanded(true);
-	assert.equal(group.conversions.length, 1);
+	assert.equal(group.loaderRequests, 1);
+	assert.equal(group.conversions.length, 0);
 	group.setShowImages(false);
-	group.conversions[0]!.resolve({ data: "U1RBTEVfUE5H", mimeType: "image/png" });
+	group.settleLoader();
 	await settleGroupedImageConversion();
 	let counts = group.getGroupedImageConversionLifecycleCounts();
 	assert.equal(counts.accepted, 0);
-	assert.equal(counts.dropped, 1);
+	assert.equal(counts.loaderSourceAcquisitions, 0);
 	assert.equal(counts.sourceReferences, 0);
 	assert.equal(visualInvalidations, 0);
 
+	group.queueConversionResult(null);
 	group.setShowImages(true);
-	assert.equal(group.conversions.length, 2);
-	group.conversions[1]!.resolve(null);
-	await settleGroupedImageConversion();
 	counts = group.getGroupedImageConversionLifecycleCounts();
+	assert.equal(group.conversions.length, 1);
 	assert.equal(counts.rejected, 1);
 	assert.equal(counts.imageComponents, 0);
 
@@ -465,25 +500,22 @@ test("grouped image conversion rejects stale, hidden, detached, null, and reject
 	group.refreshToolResultPresentationView();
 	assert.equal(group.getGroupedImageConversionLifecycleCounts().sourceReferences, 0);
 
+	group.queueConversionResult(new Error("fixture conversion rejected"));
 	attach("webp-rejected", "image/webp", "V0VCUF9SRUpFQ1RFRA==");
-	assert.equal(group.conversions.length, 3);
-	group.conversions[2]!.reject(new Error("fixture conversion rejected"));
-	await settleGroupedImageConversion();
 	counts = group.getGroupedImageConversionLifecycleCounts();
+	assert.equal(group.conversions.length, 2);
 	assert.equal(counts.rejected, 2);
 	assert.equal(counts.imageComponents, 0);
 
 	attach("gif-release", "image/gif", "R0lGX1JFTEVBU0U=");
-	assert.equal(group.conversions.length, 4);
+	assert.equal(group.conversions.length, 3);
+	assert.equal(group.getGroupedImageConversionLifecycleCounts().accepted, 1);
 	group[RELEASE_COMPONENT_RENDER_CACHE]();
-	group.conversions[3]!.resolve({ data: "UkVMRUFTRURfUE5H", mimeType: "image/png" });
-	await settleGroupedImageConversion();
 	counts = group.getGroupedImageConversionLifecycleCounts();
-	assert.equal(counts.accepted, 0);
-	assert.equal(counts.dropped, 2);
+	assert.equal(counts.accepted, 1);
 	assert.equal(counts.activePending, 0);
+	assert.equal(counts.loaderWaiters, 0);
 	assert.equal(counts.sourceReferences, 0);
-	assert.equal(counts.imageComponents, 0);
 	assert.equal(visualInvalidations, 0);
 	owner.dispose();
 });
@@ -519,6 +551,142 @@ test("grouped PNG and non-Kitty images use the direct path without conversion", 
 		group[RELEASE_COMPONENT_RENDER_CACHE]();
 		owner.dispose();
 	}
+});
+
+test("loaded converter boundary decodes only during synchronous warm conversion", () => {
+	let decodedBytes: Uint8Array | undefined;
+	let frees = 0;
+	const output = Uint8Array.from([1, 2, 3, 4]);
+	const converter = {
+		PhotonImage: {
+			new_from_byteslice(bytes: Uint8Array) {
+				decodedBytes = bytes;
+				return {
+					free(): void { frees++; },
+					get_bytes(): Uint8Array { return output; },
+				};
+			},
+		},
+	} as unknown as LoadedPngConverter;
+	const source = Buffer.from([0xff, 0xd8, 0xff, 0xd9]).toString("base64");
+	const converted = convertToPngWithLoadedConverter(converter, source, "image/jpeg");
+	assert.deepEqual(decodedBytes, Uint8Array.from([0xff, 0xd8, 0xff, 0xd9]));
+	assert.deepEqual(converted, { data: Buffer.from(output).toString("base64"), mimeType: "image/png" });
+	assert.equal(frees, 1);
+
+	decodedBytes = undefined;
+	const png = convertToPngWithLoadedConverter(converter, "UE5H", "image/png");
+	assert.deepEqual(png, { data: "UE5H", mimeType: "image/png" });
+	assert.equal(decodedBytes, undefined, "the direct PNG path must not decode or enter Photon");
+});
+
+test("loader settlement after grouped component release cannot reacquire source", async (t) => {
+	initTheme("dark");
+	const previousCapabilities = getCapabilities();
+	setCapabilities({ images: "kitty", trueColor: true, hyperlinks: true });
+	t.after(() => setCapabilities(previousCapabilities));
+	let visualInvalidations = 0;
+	const group = new DeferredReadToolGroupComponent(true, 32, () => { visualInvalidations++; });
+	const message = toolResult("release-before-loader-reaction", [
+		{ type: "text", text: "release-before-loader-".repeat(1_000) },
+		{ type: "image", data: "UkVMRUFTRV9CRUZPUkVfTE9BREVS", mimeType: "image/webp" },
+	]);
+	const owner = createToolResultPresentationOwner({ enabled: true, budgetTokens: 128 }, "release-loader")!;
+	group.updateArgs(message.toolCallId, { path: "release.webp" });
+	group.setArgsComplete(message.toolCallId);
+	group.updateResult(message.toolCallId, message);
+	group.setToolResultPresentation(message.toolCallId, owner.create(message.content, message.toolCallId)!);
+	owner.release();
+	group.setExpanded(true);
+	assert.equal(group.getGroupedImageConversionLifecycleCounts().loaderWaiters, 1);
+	group.settleLoader();
+	group[RELEASE_COMPONENT_RENDER_CACHE]();
+	await settleGroupedImageConversion();
+	const counts = group.getGroupedImageConversionLifecycleCounts();
+	assert.equal(counts.loaderSourceAcquisitions, 0);
+	assert.equal(counts.base64Decodes, 0);
+	assert.equal(counts.typedArrays, 0);
+	assert.equal(counts.scheduled, 0);
+	assert.equal(counts.accepted, 0);
+	assert.equal(counts.loaderTasksDropped, 1);
+	assert.equal(visualInvalidations, 0);
+	owner.dispose();
+});
+
+test("one grouped loader readiness converts JPEG GIF and WebP once per current source", async (t) => {
+	initTheme("dark");
+	const previousCapabilities = getCapabilities();
+	setCapabilities({ images: "kitty", trueColor: true, hyperlinks: true });
+	t.after(() => setCapabilities(previousCapabilities));
+	const group = new DeferredReadToolGroupComponent(true, 32);
+	const message = toolResult("grouped-warm-format-matrix", [
+		{ type: "text", text: "warm-format-matrix-".repeat(1_000) },
+		{ type: "image", data: "SlBFRw==", mimeType: "image/jpeg" },
+		{ type: "image", data: "R0lG", mimeType: "image/gif" },
+		{ type: "image", data: "V0VCUA==", mimeType: "image/webp" },
+	]);
+	const owner = createToolResultPresentationOwner({ enabled: true, budgetTokens: 128 }, "warm-matrix")!;
+	group.updateArgs(message.toolCallId, { path: "formats.bin" });
+	group.setArgsComplete(message.toolCallId);
+	group.updateResult(message.toolCallId, message);
+	group.setToolResultPresentation(message.toolCallId, owner.create(message.content, message.toolCallId)!);
+	owner.release();
+	group.setExpanded(true);
+	assert.equal(group.loaderRequests, 1);
+	assert.equal(group.conversions.length, 0);
+	group.settleLoader();
+	await settleGroupedImageConversion();
+	let counts = group.getGroupedImageConversionLifecycleCounts();
+	assert.deepEqual(group.conversions.map((conversion) => conversion.mimeType), ["image/jpeg", "image/gif", "image/webp"]);
+	assert.equal(counts.loaderRequests, 1);
+	assert.equal(counts.loaderTasksCreated, 1);
+	assert.equal(counts.loaderWaiterHighWaterMark, 1);
+	assert.equal(counts.loaderSourceAcquisitions, 3);
+	assert.equal(counts.scheduled, 3);
+	assert.equal(counts.accepted, 3);
+	assert.equal(counts.base64Decodes, 3);
+	assert.equal(counts.typedArrays, 3);
+	assert.equal(counts.convertedResultObjects, 3);
+	assert.equal(counts.imageComponents, 3);
+	group.setImageWidthCells(41);
+	counts = group.getGroupedImageConversionLifecycleCounts();
+	assert.equal(group.conversions.length, 3, "warm rebuild must reuse each converted source generation");
+	assert.equal(counts.scheduled, 3);
+	group.setExpanded(false);
+	counts = group.getGroupedImageConversionLifecycleCounts();
+	assert.equal(counts.sourceReferences, 0);
+	assert.equal(counts.convertedImages, 0);
+	assert.equal(counts.imageComponents, 0);
+	owner.dispose();
+});
+
+test("unavailable grouped converter is cached without source acquisition or retry", async (t) => {
+	initTheme("dark");
+	const previousCapabilities = getCapabilities();
+	setCapabilities({ images: "kitty", trueColor: true, hyperlinks: true });
+	t.after(() => setCapabilities(previousCapabilities));
+	const group = new DeferredReadToolGroupComponent(true, 32);
+	const message = toolResult("grouped-unavailable-converter", [
+		{ type: "text", text: "unavailable-".repeat(1_000) },
+		{ type: "image", data: "VU5BVkFJTEFCTEU=", mimeType: "image/jpeg" },
+	]);
+	const owner = createToolResultPresentationOwner({ enabled: true, budgetTokens: 128 }, "unavailable")!;
+	group.updateArgs(message.toolCallId, { path: "unavailable.jpg" });
+	group.setArgsComplete(message.toolCallId);
+	group.updateResult(message.toolCallId, message);
+	group.setToolResultPresentation(message.toolCallId, owner.create(message.content, message.toolCallId)!);
+	owner.release();
+	group.setExpanded(true);
+	group.settleLoader(null);
+	await settleGroupedImageConversion();
+	group.setImageWidthCells(43);
+	const counts = group.getGroupedImageConversionLifecycleCounts();
+	assert.equal(counts.loaderRequests, 1);
+	assert.equal(counts.loaderSourceAcquisitions, 0);
+	assert.equal(counts.scheduled, 0);
+	assert.equal(counts.rejected, 1);
+	assert.equal(counts.imageComponents, 0);
+	owner.dispose();
 });
 
 test("never-settling grouped converter readiness does not retain released sources", () => {
@@ -587,6 +755,8 @@ test("interactive live and rebuild paths consume only the internal sidecar with 
 	assert.match(benchmark, /canonicalReplacementLifecycle/);
 	assert.match(benchmark, /canonicalDispositionMatrix/);
 	assert.match(benchmark, /groupedCloseoutLifecycle/);
+	assert.match(benchmark, /nonInteractiveLazyCanonicalIndex/);
+	assert.match(benchmark, /neverSettlingGroupedConverter/);
 	assert.match(benchmark, /groupedCompactionDeduplication/);
 	assert.match(benchmark, /liveProductionRegistrationWeakRefs/);
 	assert.match(benchmark, /releasedProjectionRecordEntries/);
@@ -597,6 +767,9 @@ test("UI allocation source audit executes the selected production chain and lock
 	const audit = auditToolResultPresentationUiSources();
 	assert.deepEqual(audit.transitiveSourceFiles, [
 		"tool-execution.ts",
+		"image-convert.ts",
+		"photon.ts",
+		"exif-orientation.ts",
 		"render-utils.ts",
 		"interactive-mode.ts",
 		"agent-session.ts",
@@ -699,19 +872,29 @@ test("UI allocation source audit executes the selected production chain and lock
 	assert.equal(audit.groupedImageConversionMapConstructors, 1, "one lazy instance-owned conversion registry");
 	assert.equal(audit.groupedImageConversionSetConstructors, 0);
 	assert.equal(audit.groupedImageConversionPromises, 0, "the grouped owner does not wrap the converter promise");
-	assert.equal(audit.groupedImageConversionPromiseProducingCallSites, 1);
+	assert.equal(audit.groupedImageConversionPromiseProducingCallSites, 2);
+	assert.equal(audit.groupedImageLoaderRequestCallSites, 1);
+	assert.equal(audit.groupedImageLoaderReactionPromiseSites, 1);
 	assert.equal(audit.groupedImageConversionAbortControllers, 0);
 	assert.ok(audit.transitiveSourceFiles.includes("image-convert.ts"));
 	assert.ok(audit.transitiveSourceFiles.includes("photon.ts"));
 	assert.ok(audit.transitiveSourceFiles.includes("exif-orientation.ts"));
-	const converterChain = audit as typeof audit & {
-		groupedImageColdLoaderPromiseSites?: number;
-		groupedImageWarmConversionTypedArraySites?: number;
-		groupedImageWarmConversionBufferCallSites?: number;
-	};
-	assert.ok((converterChain.groupedImageColdLoaderPromiseSites ?? 0) > 0);
-	assert.ok((converterChain.groupedImageWarmConversionTypedArraySites ?? 0) > 0);
-	assert.ok((converterChain.groupedImageWarmConversionBufferCallSites ?? 0) > 0);
+	assert.equal(audit.groupedImageColdLoaderArrayMaterializationSites, 1);
+	assert.equal(audit.groupedImageColdLoaderInlineClosureSites, 3);
+	assert.equal(audit.groupedImageColdLoaderObjectLiterals, 2);
+	assert.equal(audit.groupedImageColdLoaderPromiseSites, 2);
+	assert.equal(audit.groupedImageColdLoaderDynamicImportSites, 1);
+	assert.equal(audit.groupedImageWarmConversionArrayMaterializationSites, 0);
+	assert.equal(audit.groupedImageWarmConversionInlineClosureSites, 6);
+	assert.equal(audit.groupedImageWarmConversionObjectLiterals, 2);
+	assert.equal(audit.groupedImageWarmConversionPromiseSites, 0);
+	assert.equal(audit.groupedImageWarmConversionTypedArraySites, 3);
+	assert.equal(audit.groupedImageWarmConversionBufferCallSites, 2);
+	assert.equal(audit.groupedImageCompatibilityWrapperInlineClosureSites, 0);
+	assert.equal(audit.groupedImageCompatibilityWrapperObjectLiterals, 1);
+	assert.equal(audit.groupedImageCompatibilityWrapperPromiseSites, 2);
+	assert.equal(audit.groupedImageCompatibilityWrapperTypedArraySites, 0);
+	assert.equal(audit.groupedImageCompatibilityWrapperBufferCallSites, 0);
 	assert.equal(audit.canonicalPayloadRefreshArrayMaterializationSites, 0);
 	assert.equal(audit.canonicalPayloadRefreshInlineClosureSites, 0);
 	assert.equal(audit.canonicalPayloadRefreshCopyOperations, 0);

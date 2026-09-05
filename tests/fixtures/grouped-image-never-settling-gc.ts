@@ -10,14 +10,15 @@ import {
 } from "../../packages/coding-agent/src/core/tool-result-presentation.ts";
 import { ReadToolGroupComponent } from "../../packages/coding-agent/src/modes/interactive/components/tool-execution.ts";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
+import type { LoadedPngConverter } from "../../packages/coding-agent/src/utils/image-convert.ts";
 
 type ConvertedImage = { data: string; mimeType: string };
 
-const neverSettlingLoader = new Promise<unknown>(() => {});
+const neverSettlingLoader = new Promise<LoadedPngConverter | null>(() => {});
 
 class NeverSettlingReadToolGroupComponent extends ReadToolGroupComponent {
-	protected loadImageConverterForTerminal(): Promise<unknown | null> {
-		return neverSettlingLoader as Promise<unknown | null>;
+	protected override loadImageConverterForTerminal(): Promise<LoadedPngConverter | null> {
+		return neverSettlingLoader;
 	}
 
 	protected convertImageForTerminal(): Promise<ConvertedImage | null> {
