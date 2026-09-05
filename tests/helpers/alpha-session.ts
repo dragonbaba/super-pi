@@ -59,7 +59,7 @@ export async function alphaHeadless(runtime: ModelRuntime, messages: any[] = [])
 export async function alphaSession(options: {
   mode?: 'regular' | 'fullscreen'; sinkDelay?: number; columns?: number; rows?: number;
   runtime?: ModelRuntime; extensions?: any[]; messages?: any[]; customTools?: any[];
-  g2?: boolean; budgetTokens?: number; settings?: Record<string, unknown>;
+  g2?: boolean; budgetTokens?: number; settings?: Record<string, unknown>; allowReplacements?: boolean;
 } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'g2s-session-'));
   const agentDir = join(root, 'agent'); mkdirSync(agentDir);
@@ -72,7 +72,17 @@ export async function alphaSession(options: {
   const { session } = await createAgentSession({ cwd: root, agentDir, model: ALPHA_MODEL, modelRuntime: options.runtime ?? alphaModelRuntime(),
     settingsManager: settings, sessionManager, resourceLoader, noTools: options.customTools?.length ? 'builtin' : 'all',
     customTools: options.customTools, toolResultPresentation: { enabled: options.g2 ?? true, budgetTokens: options.budgetTokens ?? 1024 } });
-  const runtime = new AgentSessionRuntime(session, { cwd: root, agentDir } as never, async () => { throw new Error('unexpected replacement'); });
+  const runtime = new AgentSessionRuntime(session, { cwd: root, agentDir } as never, async target => {
+    if (!options.allowReplacements) throw new Error('unexpected replacement');
+    const loader = new DefaultResourceLoader({ cwd: target.cwd, agentDir: target.agentDir, settingsManager: settings, noContextFiles: true,
+      noExtensions: !options.extensions?.length, extensionFactories: options.extensions, noSkills: true, noPromptTemplates: true, noThemes: true });
+    await loader.reload();
+    const created = await createAgentSession({ cwd: target.cwd, agentDir: target.agentDir, sessionManager: target.sessionManager,
+      sessionStartEvent: target.sessionStartEvent, model: ALPHA_MODEL, modelRuntime: options.runtime ?? alphaModelRuntime(),
+      settingsManager: settings, resourceLoader: loader, noTools: options.customTools?.length ? 'builtin' : 'all',
+      customTools: options.customTools, toolResultPresentation: { enabled: options.g2 ?? true, budgetTokens: options.budgetTokens ?? 1024 } });
+    return { ...created, services: { cwd: target.cwd, agentDir: target.agentDir } as never, diagnostics: [] };
+  });
   initTheme('dark');
   const mode = new InteractiveMode(runtime, { tuiMode: options.mode ?? 'regular' });
   const internal = mode as any;
