@@ -255,10 +255,14 @@ export class AgentSessionRuntime {
 			// A synchronous dispose/abort request alone can outlive a successful quit.
 			const abort = session.abort();
 			if (pendingActivities) {
-				await Promise.all([abort.catch((error: unknown) => {
+				// Observe an early abort rejection while the bounded activity owner
+				// finishes. No Promise collection/tail is retained by the runtime.
+				void abort.catch((error: unknown) => {
 					if (!failed) { failed = true; failure = error; }
-				}), pendingActivities]);
-			} else await abort;
+				});
+				await pendingActivities;
+			}
+			await abort;
 		} catch (error) { if (!failed) { failed = true; failure = error; } }
 		// Also observe the lifecycle deadline if an abort callback threw synchronously.
 		try { await pendingActivities; }
