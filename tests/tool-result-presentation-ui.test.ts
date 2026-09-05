@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 import {
 	getCapabilities,
@@ -519,6 +521,39 @@ test("grouped PNG and non-Kitty images use the direct path without conversion", 
 	}
 });
 
+test("never-settling grouped converter readiness does not retain released sources", () => {
+	const worker = spawnSync(
+		process.execPath,
+		[
+			"--expose-gc",
+			"--experimental-strip-types",
+			fileURLToPath(new URL("./fixtures/grouped-image-never-settling-gc.ts", import.meta.url)),
+		],
+		{ encoding: "utf8" },
+	);
+	assert.equal(worker.status, 0, worker.stderr || worker.stdout);
+	const report = JSON.parse(worker.stdout) as {
+		componentRetained: boolean;
+		rowRetained: boolean;
+		resultRetained: boolean;
+		contentRetained: boolean;
+		blockRetained: boolean;
+		stateRetained: boolean;
+		loaderRequests: number;
+		sourceAcquisitions: number;
+	};
+	assert.deepEqual(report, {
+		componentRetained: false,
+		rowRetained: false,
+		resultRetained: false,
+		contentRetained: false,
+		blockRetained: false,
+		stateRetained: false,
+		loaderRequests: 1,
+		sourceAcquisitions: 0,
+	});
+});
+
 test("interactive live and rebuild paths consume only the internal sidecar with a hard cap", () => {
 	const interactive = readFileSync(
 		new URL("../packages/coding-agent/src/modes/interactive/interactive-mode.ts", import.meta.url),
@@ -666,6 +701,17 @@ test("UI allocation source audit executes the selected production chain and lock
 	assert.equal(audit.groupedImageConversionPromises, 0, "the grouped owner does not wrap the converter promise");
 	assert.equal(audit.groupedImageConversionPromiseProducingCallSites, 1);
 	assert.equal(audit.groupedImageConversionAbortControllers, 0);
+	assert.ok(audit.transitiveSourceFiles.includes("image-convert.ts"));
+	assert.ok(audit.transitiveSourceFiles.includes("photon.ts"));
+	assert.ok(audit.transitiveSourceFiles.includes("exif-orientation.ts"));
+	const converterChain = audit as typeof audit & {
+		groupedImageColdLoaderPromiseSites?: number;
+		groupedImageWarmConversionTypedArraySites?: number;
+		groupedImageWarmConversionBufferCallSites?: number;
+	};
+	assert.ok((converterChain.groupedImageColdLoaderPromiseSites ?? 0) > 0);
+	assert.ok((converterChain.groupedImageWarmConversionTypedArraySites ?? 0) > 0);
+	assert.ok((converterChain.groupedImageWarmConversionBufferCallSites ?? 0) > 0);
 	assert.equal(audit.canonicalPayloadRefreshArrayMaterializationSites, 0);
 	assert.equal(audit.canonicalPayloadRefreshInlineClosureSites, 0);
 	assert.equal(audit.canonicalPayloadRefreshCopyOperations, 0);

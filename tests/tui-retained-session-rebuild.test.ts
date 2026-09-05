@@ -2520,6 +2520,49 @@ test("UI rebind synchronizes setup-replaced history before the first live result
 	assert.equal(afterLive.liveCanonicalLookupProbes - afterRepeatedRebind.liveCanonicalLookupProbes, 1);
 });
 
+test("enabled non-interactive sessions defer the 50,000-message UI canonical index until first use", async (t) => {
+	const messages: AgentMessage[] = [];
+	for (let index = 0; index < 50_000; index++) {
+		messages.push(result(`lazy-ui-index-${index}`, "fixture-tool", "small"));
+	}
+	const fixture = await createModeFixture(messages, [], { enabled: true, budgetTokens: 128 });
+	t.after(fixture.dispose);
+	const before = fixture.session.getToolResultPresentationUiRebuildCounts() as
+		ReturnType<AgentSession["getToolResultPresentationUiRebuildCounts"]> & {
+			canonicalIndexActive?: boolean;
+			canonicalIndexActivationCount?: number;
+			canonicalIndexInactiveRebuildSkips?: number;
+		};
+	assert.equal(before.liveCanonicalIndexBuildProbes, 0);
+	assert.equal(before.liveCanonicalIndexRebuilds, 0);
+	assert.equal(before.liveCanonicalIndexEntries, 0);
+	assert.equal(before.canonicalIndexActive, false);
+	assert.equal(before.canonicalIndexActivationCount, 0);
+
+	const sessionInternals = fixture.session as unknown as { _rebuildToolResultUiCanonicalIndex(): void };
+	sessionInternals._rebuildToolResultUiCanonicalIndex();
+	const afterInactiveReplacement = fixture.session.getToolResultPresentationUiRebuildCounts() as typeof before;
+	assert.equal(afterInactiveReplacement.liveCanonicalIndexBuildProbes, 0);
+	assert.equal(afterInactiveReplacement.liveCanonicalIndexRebuilds, 0);
+	assert.equal(afterInactiveReplacement.liveCanonicalIndexEntries, 0);
+	assert.equal(afterInactiveReplacement.canonicalIndexInactiveRebuildSkips, 1);
+
+	const selected = new Map<ToolResultMessage, ToolResultPresentation>();
+	fixture.session.collectRecentToolResultPresentationsForUi(selected, 128);
+	const afterFirstUiConsumer = fixture.session.getToolResultPresentationUiRebuildCounts() as typeof before;
+	assert.equal(afterFirstUiConsumer.canonicalIndexActive, true);
+	assert.equal(afterFirstUiConsumer.canonicalIndexActivationCount, 1);
+	assert.equal(afterFirstUiConsumer.liveCanonicalIndexBuildProbes, 50_000);
+	assert.equal(afterFirstUiConsumer.liveCanonicalIndexRebuilds, 1);
+	assert.equal(afterFirstUiConsumer.liveCanonicalIndexEntries, 50_000);
+
+	fixture.session.collectRecentToolResultPresentationsForUi(selected, 128);
+	const afterRepeatedUiConsumer = fixture.session.getToolResultPresentationUiRebuildCounts() as typeof before;
+	assert.equal(afterRepeatedUiConsumer.canonicalIndexActivationCount, 1);
+	assert.equal(afterRepeatedUiConsumer.liveCanonicalIndexBuildProbes, 50_000);
+	assert.equal(afterRepeatedUiConsumer.liveCanonicalIndexRebuilds, 1);
+});
+
 test("rebuild re-admission order stays aligned with chronological UI eviction", async (t) => {
 	const counters = createToolResultPresentationCounters();
 	const calls: AssistantMessage["content"] = [];
