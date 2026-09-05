@@ -45,6 +45,17 @@ export class AlphaSink extends Writable {
   }
 }
 
+export async function alphaHeadless(runtime: ModelRuntime, messages: any[] = []) {
+  const root = mkdtempSync(join(tmpdir(), 'g2s-headless-'));
+  const settings = SettingsManager.inMemory({ compaction: { enabled: false } });
+  const resourceLoader = new DefaultResourceLoader({ cwd: root, agentDir: root, settingsManager: settings, noExtensions: true, noContextFiles: true, noSkills: true, noPromptTemplates: true, noThemes: true });
+  await resourceLoader.reload();
+  const sessionManager = SessionManager.inMemory(root);
+  for (const message of messages) sessionManager.appendMessage(message);
+  const { session } = await createAgentSession({ cwd: root, agentDir: root, settingsManager: settings, sessionManager, resourceLoader, model: ALPHA_MODEL, modelRuntime: runtime, noTools: 'all' });
+  return { session, async release() { session.dispose(); await new Promise<void>(resolve => setImmediate(resolve)); rmSync(root, { recursive: true, force: true }); } };
+}
+
 export async function alphaSession(options: {
   mode?: 'regular' | 'fullscreen'; sinkDelay?: number; columns?: number; rows?: number;
   runtime?: ModelRuntime; extensions?: any[]; messages?: any[]; customTools?: any[];
@@ -59,7 +70,7 @@ export async function alphaSession(options: {
   const sessionManager = SessionManager.inMemory(root);
   for (const message of options.messages ?? []) sessionManager.appendMessage(message);
   const { session } = await createAgentSession({ cwd: root, agentDir, model: ALPHA_MODEL, modelRuntime: options.runtime ?? alphaModelRuntime(),
-    settingsManager: settings, sessionManager, resourceLoader, noTools: options.customTools?.length ? undefined : 'all',
+    settingsManager: settings, sessionManager, resourceLoader, noTools: options.customTools?.length ? 'builtin' : 'all',
     customTools: options.customTools, toolResultPresentation: { enabled: options.g2 ?? true, budgetTokens: 1024 } });
   const runtime = new AgentSessionRuntime(session, { cwd: root, agentDir } as never, async () => { throw new Error('unexpected replacement'); });
   initTheme('dark');
