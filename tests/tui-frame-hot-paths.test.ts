@@ -354,7 +354,9 @@ test("mode switch validates renderer identity and lifecycle generation after sto
 	assert.ok(activeJoin >= 0);
 	assert.ok(initializationInvalidation > activeJoin);
 	assert.ok(lifecycleInvalidation > initializationInvalidation);
-	const shutdownMethod = methodNamed(source, "InteractiveMode", "shutdown");
+	const shutdownEntry = methodNamed(source, "InteractiveMode", "shutdown").getText(source);
+	assert.ok(shutdownEntry.indexOf("this.shutdownOperation = operation") < shutdownEntry.indexOf("this.performShutdown(options)"));
+	const shutdownMethod = methodNamed(source, "InteractiveMode", "performShutdown");
 	assert.match(
 		shutdownMethod.getText(source),
 		/this\.isShuttingDown = true;\s*this\.invalidateInitialization\(\);\s*this\.tuiLifecycleGeneration\+\+;/,
@@ -369,7 +371,7 @@ test("terminal lifecycle entry points have primitive admission or post-stop owne
 	const stopInteractive = methodNamed(source, "InteractiveMode", "stopInteractiveTui").getText(source);
 	const stop = methodNamed(source, "InteractiveMode", "stop").getText(source);
 	const performStop = methodNamed(source, "InteractiveMode", "performStop").getText(source);
-	const shutdown = methodNamed(source, "InteractiveMode", "shutdown").getText(source);
+	const shutdown = methodNamed(source, "InteractiveMode", "performShutdown").getText(source);
 
 	const ctrlZStop = ctrlZ.indexOf("await this.ui.stop();");
 	const externalEditorStop = externalEditor.indexOf("await this.ui.stop();");
