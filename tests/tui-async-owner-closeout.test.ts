@@ -884,7 +884,7 @@ test("async owner closeout remains lifecycle-only in source", () => {
 	assert.ok(
 		bashCommandSource.indexOf("this.tuiLifecycleGeneration !== lifecycleGeneration", executeBashIndex) > executeBashIndex,
 	);
-	const shutdownStart = interactiveSource.indexOf("private async shutdown");
+	const shutdownStart = interactiveSource.indexOf("private async performShutdown");
 	const shutdownEnd = interactiveSource.indexOf("\n\tprivate emergencyTerminalExit", shutdownStart);
 	const shutdownSource = interactiveSource.slice(shutdownStart, shutdownEnd);
 	assert.ok(shutdownSource.lastIndexOf("await this.runtimeHost.dispose()") > shutdownSource.lastIndexOf("await this.stop()"));
@@ -3017,6 +3017,7 @@ test("normal shutdown disposes the runtime after TUI stop rejects", async () => 
 	mode.themeController = { disableAutoSync(): void {} };
 	mode.stop = async (): Promise<void> => { throw stopError; };
 	mode.runtimeHost = { dispose: async (): Promise<void> => { runtimeDisposeCalls++; } };
+	mode.closeExtensionUiContext = (): void => {};
 
 	await assert.rejects(mode.shutdown(), (error: unknown) => error === stopError);
 	assert.equal(runtimeDisposeCalls, 1);

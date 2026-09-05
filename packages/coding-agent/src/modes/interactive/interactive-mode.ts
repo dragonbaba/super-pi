@@ -5268,16 +5268,36 @@ export class InteractiveMode {
 	 * repaint the final frame while the process is exiting.
 	 */
 	private isShuttingDown = false;
+	private shutdownOperation: Promise<void> | undefined;
 
-	private async shutdown(options?: { fromSignal?: boolean }): Promise<void> {
-		if (this.isShuttingDown) return;
+	private shutdown(options?: { fromSignal?: boolean }): Promise<void> {
+		if (this.shutdownOperation) return this.shutdownOperation;
+		let resolveOperation!: () => void;
+		let rejectOperation!: (error: unknown) => void;
+		const operation = new Promise<void>((resolve, reject) => {
+			resolveOperation = resolve;
+			rejectOperation = reject;
+		});
+		this.shutdownOperation = operation;
+		void this.performShutdown(options).then(resolveOperation, rejectOperation);
+		return operation;
+	}
+
+	private async performShutdown(options?: { fromSignal?: boolean }): Promise<void> {
 		this.isShuttingDown = true;
 		this.invalidateInitialization();
 		this.tuiLifecycleGeneration++;
+		// Final UI ownership ends before any shutdown await or terminal disposal.
+		// Session replacement keeps the normal reset callback while this mode lives.
+		this.runtimeHost.setBeforeSessionInvalidate?.(undefined);
+		this.runtimeHost.setRebindSession?.(undefined);
+		this.closeExtensionUiContext();
 		// Keep signal handlers registered until terminal cleanup has completed.
 		// `signal-exit` checks the listener list during the same SIGTERM/SIGHUP
 		// dispatch and re-sends the signal if only its own listeners remain.
 
+		let cleanupError: unknown;
+		let cleanupFailed = false;
 		if (options?.fromSignal) {
 			// Signal-triggered shutdown (SIGTERM/SIGHUP). Emit extension cleanup
 			// (session_shutdown) BEFORE touching the terminal. Extension teardown
@@ -5286,11 +5306,8 @@ export class InteractiveMode {
 			// terminal. If the terminal is gone, the restore writes below emit EIO,
 			// which the stdout/stderr error handler turns into emergencyTerminalExit;
 			// the render loop is already idle, so this cannot hot-spin (see #4144).
-			await this.runtimeHost.dispose();
-			this.themeController.disableAutoSync();
-			await this.ui.terminal.drainInput(1000);
-			await this.stop();
-			process.exit(0);
+			try { await this.runtimeHost.dispose(); }
+			catch (error) { cleanupFailed = true; cleanupError = error; }
 		}
 
 		// Interactive quit (Ctrl+D, Ctrl+C, /quit, extension shutdown()). Stop the
@@ -5298,19 +5315,19 @@ export class InteractiveMode {
 		// the final frame while the process is exiting.
 		// Drain any in-flight Kitty key release events before stopping.
 		// This prevents escape sequences from leaking to the parent shell over slow SSH.
-		this.themeController.disableAutoSync();
-		await this.ui.terminal.drainInput(1000);
-
-		let cleanupError: unknown;
-		let cleanupFailed = false;
+		try {
+			this.themeController.disableAutoSync();
+			await this.ui.terminal.drainInput(1000);
+		} catch (error) {
+			if (!cleanupFailed) { cleanupFailed = true; cleanupError = error; }
+		}
 		try {
 			await this.stop();
 		} catch (error) {
-			cleanupFailed = true;
-			cleanupError = error;
+			if (!cleanupFailed) { cleanupFailed = true; cleanupError = error; }
 		}
 		try {
-			await this.runtimeHost.dispose();
+			if (!options?.fromSignal) await this.runtimeHost.dispose();
 		} catch (error) {
 			if (!cleanupFailed) {
 				cleanupFailed = true;
@@ -5319,7 +5336,7 @@ export class InteractiveMode {
 		}
 		if (cleanupFailed) throw cleanupError;
 
-		const resumeCommand = formatResumeCommand(this.sessionManager);
+		const resumeCommand = options?.fromSignal ? undefined : formatResumeCommand(this.sessionManager);
 		if (resumeCommand) {
 			process.stdout.write(`${chalk.dim("To resume this session:")} ${resumeCommand}\n`);
 		}
@@ -8230,6 +8247,8 @@ export class InteractiveMode {
 	}
 
 	private async performStop(fullscreenExitOutput: FullscreenExitOutput): Promise<void> {
+		this.runtimeHost.setBeforeSessionInvalidate?.(undefined);
+		this.runtimeHost.setRebindSession?.(undefined);
 		this.closeExtensionUiContext();
 		this.clearToolResultDiscoveries();
 		offThemeChange(this.handleThemeChange);
