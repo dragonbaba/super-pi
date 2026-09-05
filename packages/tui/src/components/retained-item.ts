@@ -141,7 +141,11 @@ export class RetainedItem implements Component {
 		if (this.isCompleted) return;
 		this.isCompleted = true;
 		this.frozenVersion = this.logicalVersion;
-		this.clearCache();
+		this.cacheKey = undefined;
+		this.cachedLines = undefined;
+		// The next normal render compares the final output with the bounded
+		// active snapshot, then transfers ownership to the completed cache.
+		// Invalidating or releasing before that render still clears both.
 		this.onRenderStateChanged?.(this);
 	}
 
@@ -173,6 +177,12 @@ export class RetainedItem implements Component {
 		}
 
 		const lines = component.render(width);
+		if (this.activeLineSnapshot) {
+			this.captureActiveLineChanges(lines, width);
+			this.activeLineSnapshot = undefined;
+			this.activeSnapshotWidth = undefined;
+			this.activeSnapshotVersion = undefined;
+		}
 		if (key) {
 			key.width = width;
 			key.version = this.logicalVersion;
@@ -256,7 +266,7 @@ export class RetainedItem implements Component {
 			// Include the former last line on growth so the existing viewport
 			// protocol can locate appends at an otherwise empty old tail.
 			if (snapshot.length !== lines.length) first = Math.min(first, Math.max(0, snapshot.length - 1));
-			if (this.activeSnapshotVersion === this.logicalVersion) {
+			if (this.activeSnapshotVersion === this.logicalVersion && !this.isCompleted) {
 				this.activeChangedStart = Math.min(this.activeChangedStart ?? first, first);
 				this.activeChangedEnd = Math.max(this.activeChangedEnd ?? last, last);
 			} else {
