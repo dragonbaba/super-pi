@@ -40,6 +40,8 @@ async function stress(mode: 'regular' | 'fullscreen') {
     await f.internal.handleEvent({ type: 'agent_end', messages: [message] });
     await f.internal.renderer.flushTerminalFrames();
     assert.equal(f.internal.streamingMessage, undefined);
+    const final = f.internal.renderInstrumentation.snapshot();
+    assert.equal(final.fullHistoryFallbacks, 0, 'completion preserves bounded active attribution');
     return { weak, metrics: active, updates, updatePromises };
   } finally { await f.release(); }
 }
