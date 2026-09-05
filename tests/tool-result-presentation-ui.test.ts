@@ -300,6 +300,74 @@ test("expanded grouped read rows expose complete canonical text beyond preview l
 	owner.dispose();
 });
 
+test("expanded grouped rows expose full text only for an attached V2 discovery", () => {
+	initTheme("dark");
+	const longText = `${"bounded-prefix-".repeat(400)}\n${Array.from({ length: 60 }, (_, index) => `bounded-line-${index}`).join("\n")}\nNON_V2_TAIL`;
+	const v2Text = `${"discoverable-prefix-".repeat(400)}\nV2_FULL_TAIL`;
+	const group = new ReadToolGroupComponent(false);
+	group.updateArgs("read-v1", { path: "v1.txt" });
+	group.setArgsComplete("read-v1");
+	group.updateResult("read-v1", toolResult("read-v1", [{ type: "text", text: longText }]));
+	group.updateArgs("read-pending", { path: "pending.txt" });
+	group.updateResult("read-pending", toolResult("read-pending", [{ type: "text", text: longText }]), true);
+	group.updateArgs("read-v2", { path: "v2.txt" });
+	group.setArgsComplete("read-v2");
+	const v2Message = toolResult("read-v2", [{ type: "text", text: v2Text }]);
+	group.updateResult("read-v2", v2Message);
+	const owner = createToolResultPresentationOwner({ enabled: true, budgetTokens: 128 }, "grouped-qualified-full-output")!;
+	const presentation = owner.create(v2Message.content, v2Message.toolCallId)!;
+	assert.equal(presentation.version, 2);
+	assert.ok(group.setToolResultPresentation(v2Message.toolCallId, presentation));
+	owner.release();
+
+	group.setExpanded(true);
+	let rendered = plain(group.render(120));
+	assert.doesNotMatch(rendered, /NON_V2_TAIL/);
+	assert.match(rendered, /truncated/);
+	assert.match(rendered, /V2_FULL_TAIL/);
+
+	assert.equal(group.detachToolResultPresentation(v2Message.toolCallId), true);
+	group.refreshToolResultPresentationView();
+	rendered = plain(group.render(120));
+	assert.doesNotMatch(rendered, /V2_FULL_TAIL/);
+	assert.match(rendered, /truncated/);
+	owner.dispose();
+});
+
+test("grouped Kitty non-PNG images wait for converted PNG ownership", async (t) => {
+	initTheme("dark");
+	const previousCapabilities = getCapabilities();
+	setCapabilities({ images: "kitty", trueColor: true, hyperlinks: true });
+	t.after(() => setCapabilities(previousCapabilities));
+	const group = new ReadToolGroupComponent(true, 32) as ReadToolGroupComponent & {
+		getGroupedImageConversionLifecycleCounts(): {
+			scheduled: number;
+			activePending: number;
+			accepted: number;
+			imageComponents: number;
+		};
+	};
+	const message = toolResult("read-kitty-jpeg", [
+		{ type: "text", text: "grouped-kitty-text-".repeat(400) },
+		{ type: "image", data: "R1JPVVBFRF9KUEVHX1JBV19CWVRFUw==", mimeType: "image/jpeg" },
+	]);
+	const owner = createToolResultPresentationOwner({ enabled: true, budgetTokens: 128 }, "grouped-kitty-jpeg")!;
+	const presentation = owner.create(message.content, message.toolCallId)!;
+	assert.equal(presentation.version, 2);
+	group.updateArgs(message.toolCallId, { path: "grouped-kitty.txt" });
+	group.setArgsComplete(message.toolCallId);
+	group.updateResult(message.toolCallId, message);
+	assert.ok(group.setToolResultPresentation(message.toolCallId, presentation));
+	owner.release();
+	group.setExpanded(true);
+	const counts = group.getGroupedImageConversionLifecycleCounts();
+	assert.equal(counts.scheduled, 1);
+	assert.equal(counts.activePending, 1);
+	assert.equal(counts.accepted, 0);
+	assert.equal(counts.imageComponents, 0, "raw JPEG must not be passed to Kitty as PNG while conversion is pending");
+	owner.dispose();
+});
+
 test("interactive live and rebuild paths consume only the internal sidecar with a hard cap", () => {
 	const interactive = readFileSync(
 		new URL("../packages/coding-agent/src/modes/interactive/interactive-mode.ts", import.meta.url),

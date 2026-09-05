@@ -153,6 +153,12 @@ interface InteractiveModeInternals {
 		attachedMapsCreated?: number;
 		canonicalV1RetainedInvalidations?: number;
 		canonicalHistoryResetReleases?: number;
+		canonicalHistoryResetRegistrationReleases?: number;
+		canonicalHistoryResetUniqueComponentRefreshes?: number;
+		canonicalPayloadRefreshes?: number;
+		canonicalPayloadRefreshSkips?: number;
+		canonicalPayloadConservativeHandlerRefreshes?: number;
+		canonicalPayloadReplacementRefreshes?: number;
 		actualV2Discoveries?: number;
 		liveCanonicalIndexBuildProbes?: number;
 		liveCanonicalIndexAppendProbes?: number;
@@ -722,6 +728,138 @@ async function emitToolResultMessageEnd(
 		unsubscribe();
 	}
 }
+
+test("tool-result message_end disposition preserves legacy mutation and skips only zero-handler refresh", async (t) => {
+	const cases = [
+		{
+			name: "zero-handler",
+			extensions: [] as Array<(pi: any) => void>,
+			expectedDisposition: "none",
+			expectedText: "ZERO_HANDLER_ORIGINAL",
+			expectedRefreshes: 0,
+			expectedSkips: 1,
+		},
+		{
+			name: "no-op-handler",
+			extensions: [(pi: any) => pi.on("message_end", () => undefined)],
+			expectedDisposition: "handler-may-have-mutated",
+			expectedText: "NO_OP_HANDLER_ORIGINAL",
+			expectedRefreshes: 1,
+			expectedSkips: 0,
+		},
+		{
+			name: "in-place-handler",
+			extensions: [(pi: any) => pi.on("message_end", (event: { message: ToolResultMessage }) => {
+				if (event.message.role === "toolResult" && event.message.content[0]?.type === "text") {
+					event.message.content[0].text = "IN_PLACE_HANDLER_CANONICAL";
+				}
+				return undefined;
+			})],
+			expectedDisposition: "handler-may-have-mutated",
+			expectedText: "IN_PLACE_HANDLER_CANONICAL",
+			expectedRefreshes: 1,
+			expectedSkips: 0,
+		},
+		{
+			name: "replacement-handler",
+			extensions: [(pi: any) => pi.on("message_end", (event: { message: ToolResultMessage }) => ({
+				message: { ...event.message, content: [{ type: "text", text: "RETURNED_REPLACEMENT_CANONICAL" }] },
+			}))],
+			expectedDisposition: "replacement-returned",
+			expectedText: "RETURNED_REPLACEMENT_CANONICAL",
+			expectedRefreshes: 1,
+			expectedSkips: 0,
+		},
+	] as const;
+
+	for (const fixtureCase of cases) {
+		const fixture = await createModeFixture([], [], { enabled: true, budgetTokens: 128 }, [...fixtureCase.extensions]);
+		t.after(fixture.dispose);
+		fixture.internals.isInitialized = true;
+		const toolCallId = `message-end-disposition-${fixtureCase.name}`;
+		await fixture.internals.handleEvent({ type: "tool_execution_start", toolCallId, toolName: "fixture-tool", args: {} });
+		const component = fixture.internals.pendingTools.get(toolCallId);
+		assert.ok(component instanceof ToolExecutionComponent);
+		const originalText = fixtureCase.name === "zero-handler"
+			? "ZERO_HANDLER_ORIGINAL"
+			: fixtureCase.name === "no-op-handler"
+				? "NO_OP_HANDLER_ORIGINAL"
+				: "PRE_EXTENSION_ORIGINAL";
+		const message = result(toolCallId, "fixture-tool", originalText) as ToolResultMessage;
+		await fixture.internals.handleEvent({
+			type: "tool_execution_end",
+			toolCallId,
+			toolName: message.toolName,
+			result: { content: message.content, details: message.details, isError: false },
+			isError: false,
+		});
+		fixture.session.agent.state.messages.push(message);
+		let disposition: string | undefined;
+		await emitToolResultMessageEnd(fixture, message, (event) => {
+			disposition = (event as unknown as { toolResultMessageEndDisposition?: string }).toolResultMessageEndDisposition;
+		});
+		const counts = fixture.internals.getToolResultDiscoveryLifecycleCounts();
+		assert.equal(disposition, fixtureCase.expectedDisposition);
+		assert.equal(counts.canonicalPayloadRefreshes, fixtureCase.expectedRefreshes);
+		assert.equal(counts.canonicalPayloadRefreshSkips, fixtureCase.expectedSkips);
+		assert.match(component.render(100).join("\n"), new RegExp(fixtureCase.expectedText));
+		const persisted = fixture.sessionManager.getBranch().at(-1);
+		assert.equal(persisted?.type, "message");
+		assert.equal(
+			persisted?.type === "message" && persisted.message.role === "toolResult" && persisted.message.content[0]?.type === "text"
+				? persisted.message.content[0].text
+				: undefined,
+			fixtureCase.expectedText,
+		);
+	}
+});
+
+test("successful compaction refreshes a shared grouped component once", async (t) => {
+	const fixture = await createModeFixture([], [], { enabled: true, budgetTokens: 128 });
+	t.after(fixture.dispose);
+	fixture.internals.isInitialized = true;
+	const groupSize = 8;
+	let group: ReadToolGroupComponent | undefined;
+	for (let index = 0; index < groupSize; index++) {
+		const toolCallId = `compaction-unique-group-${index}`;
+		const component = fixture.internals.createTrackedToolComponent("read", toolCallId, { path: `${index}.txt` }, undefined, true);
+		assert.ok(component instanceof ReadToolGroupComponent);
+		group ??= component;
+		assert.equal(component, group);
+		const message = result(toolCallId, "read", `compaction-unique-${index}-`.repeat(1_000)) as ToolResultMessage;
+		await fixture.internals.handleEvent({
+			type: "tool_execution_end",
+			toolCallId,
+			toolName: "read",
+			result: { content: message.content, isError: false },
+			isError: false,
+		});
+		fixture.session.agent.state.messages.push(message);
+		await emitToolResultMessageEnd(fixture, message);
+	}
+	assert.ok(group);
+	const groupInternals = group as unknown as { rebuild(): void };
+	const originalRebuild = groupInternals.rebuild;
+	let rebuilds = 0;
+	groupInternals.rebuild = function (): void {
+		rebuilds++;
+		return originalRebuild.call(this);
+	};
+	t.after(() => { groupInternals.rebuild = originalRebuild; });
+	const before = fixture.internals.getToolResultDiscoveryLifecycleCounts();
+	await fixture.internals.handleEvent({
+		type: "compaction_end",
+		reason: "manual",
+		result: { summary: "UNIQUE_COMPONENT_RESET", firstKeptEntryId: "kept", tokensBefore: 8_192 },
+		aborted: false,
+		willRetry: false,
+	});
+	const after = fixture.internals.getToolResultDiscoveryLifecycleCounts();
+	assert.equal(rebuilds, 1);
+	assert.equal(after.canonicalHistoryResetRegistrationReleases, (before.canonicalHistoryResetRegistrationReleases ?? 0) + groupSize);
+	assert.equal(after.canonicalHistoryResetUniqueComponentRefreshes, (before.canonicalHistoryResetUniqueComponentRefreshes ?? 0) + 1);
+	assert.equal(after.attached, 0);
+});
 
 test("live tool completion binds the internal presentation sidecar by canonical content identity", async (t) => {
 	const fixture = await createModeFixture([], [], { enabled: true, budgetTokens: 128 });
