@@ -6,6 +6,7 @@ import { Markdown } from '@super-pi/tui';
 import { AssistantMessageComponent } from '../../packages/coding-agent/src/modes/interactive/components/assistant-message.ts';
 import { alphaSession, alphaHeadless, alphaModelRuntime } from '../../tests/helpers/alpha-session.ts';
 import { scheduledStream, alphaMessage } from '../../tests/helpers/alpha-stream.ts';
+import { ALPHA_LATENCY_BODIES } from '../../tests/helpers/alpha-latency-corpus.ts';
 import { createInteractiveTui } from '../../packages/coding-agent/src/modes/interactive/interactive-mode.ts';
 import { FakeTerminal } from '../../tests/helpers/runtime-instrumentation.ts';
 
@@ -20,7 +21,7 @@ const mode = option('mode', 'regular') as 'regular' | 'fullscreen';
 const columns = Number(option('columns', '120')); const rows = Number(option('rows', '40'));
 const corpus = option('corpus', 'plain');
 const profile = option('profile', 'off') === 'on';
-const bodies: Record<string, string> = { plain: 'stream text', cjk: '中文日志', emoji: '👩‍💻e\u0301', ansi: '\x1b[31mred\x1b[0m', word: 'x'.repeat(128), markdown: '## heading\n- item **bold**\n|a|b|\n|-|-|\n|1|2|', fence: '```ts\nconst x = 1;\n```', link: '[link](https://fixture.invalid)', latex: '$x^2$' };
+const bodies = ALPHA_LATENCY_BODIES;
 const fixture = scheduledStream(count, rate, bodies[corpus] ?? corpus, batch);
 const eventTimes = new Float64Array(count); const visibleTimes = new Float64Array(count);
 const handledTimes = new Float64Array(count); const renderedTimes = new Float64Array(count);
