@@ -85,6 +85,26 @@ export class AgentSessionRuntime {
 	private resolveDispose: (() => void) | undefined;
 	private rejectDispose: ((error: unknown) => void) | undefined;
 	private teardownOperation: Promise<void> | undefined;
+	private auxiliaryShutdownTimer: ReturnType<typeof setInterval> | undefined;
+	private auxiliaryShutdownDeadline = 0;
+	private resolveAuxiliaryShutdown: (() => void) | undefined;
+	private rejectAuxiliaryShutdown: ((error: Error) => void) | undefined;
+	private readonly pollAuxiliaryShutdown = (): void => {
+		const pending = this.session.isIdle === false || this.session.isCompacting || this.session.isBashRunning;
+		if (pending && Date.now() < this.auxiliaryShutdownDeadline) return;
+		if (this.auxiliaryShutdownTimer !== undefined) clearInterval(this.auxiliaryShutdownTimer);
+		this.auxiliaryShutdownTimer = undefined;
+		this.auxiliaryShutdownDeadline = 0;
+		const resolve = this.resolveAuxiliaryShutdown;
+		const reject = this.rejectAuxiliaryShutdown;
+		this.resolveAuxiliaryShutdown = undefined;
+		this.rejectAuxiliaryShutdown = undefined;
+		if (pending) {
+			const error = new Error("Session shutdown did not settle within 5000ms");
+			error.name = "SessionShutdownTimeoutError";
+			reject?.(error);
+		} else resolve?.();
+	};
 
 	constructor(
 		_session: AgentSession,
@@ -219,11 +239,30 @@ export class AgentSessionRuntime {
 		const session = this.session;
 		let failed = false;
 		let failure: unknown;
+		if (session.isCompacting) {
+			try { session.abortCompaction(); }
+			catch (error) { failed = true; failure = error; }
+			try { session.abortBranchSummary(); }
+			catch (error) { if (!failed) { failed = true; failure = error; } }
+		}
+		if (session.isBashRunning) {
+			try { session.abortBash(); }
+			catch (error) { if (!failed) { failed = true; failure = error; } }
+		}
+		const pendingActivities = this.waitForAuxiliaryShutdown();
 		try {
 			// Both replacement and final disposal must join cooperative active work.
 			// A synchronous dispose/abort request alone can outlive a successful quit.
-			await session.abort();
-		} catch (error) { failed = true; failure = error; }
+			const abort = session.abort();
+			if (pendingActivities) {
+				await Promise.all([abort.catch((error: unknown) => {
+					if (!failed) { failed = true; failure = error; }
+				}), pendingActivities]);
+			} else await abort;
+		} catch (error) { if (!failed) { failed = true; failure = error; } }
+		// Also observe the lifecycle deadline if an abort callback threw synchronously.
+		try { await pendingActivities; }
+		catch (error) { if (!failed) { failed = true; failure = error; } }
 		try {
 			await emitSessionShutdownEvent(session.extensionRunner, { type: "session_shutdown", reason, targetSessionFile });
 		} catch (error) { if (!failed) { failed = true; failure = error; } }
@@ -236,6 +275,20 @@ export class AgentSessionRuntime {
 		} catch (error) { if (!failed) { failed = true; failure = error; } }
 		if (failed) reject(failure);
 		else resolve();
+	}
+
+	private waitForAuxiliaryShutdown(): Promise<void> | undefined {
+		if (this.session.isIdle !== false && !this.session.isCompacting && !this.session.isBashRunning) return undefined;
+		// Manual compaction, branch summaries and shell commands have authoritative
+		// activity flags but are not part of AgentSession.waitForIdle(). Observe
+		// quiescence only at this one-owner lifecycle boundary; no delta/frame timer.
+		const operation = new Promise<void>((resolve, reject) => {
+			this.resolveAuxiliaryShutdown = resolve;
+			this.rejectAuxiliaryShutdown = reject;
+		});
+		this.auxiliaryShutdownDeadline = Date.now() + 5000;
+		this.auxiliaryShutdownTimer = setInterval(this.pollAuxiliaryShutdown, 10);
+		return operation;
 	}
 
 	private apply(result: CreateAgentSessionRuntimeResult): void {
