@@ -135,6 +135,28 @@ export class AssistantMessageComponent extends Container {
 
 	updateContent(message: AssistantMessage, isStreaming = this.isStreaming): void {
 		if (this.allocationMetrics) this.allocationMetrics.updateContentCalls++;
+		if (
+			isStreaming && this.isStreaming && !this.hasToolCalls &&
+			message.stopReason === "stop" && message.content.length === 1 &&
+			this.streamingMarkdownSlots.size === 1 && this.contentContainer.children.length === 2
+		) {
+			const block = message.content[0];
+			const slot = this.streamingMarkdownSlots.get(0);
+			if (
+				block.type === "text" && slot && this.contentContainer.children[1] === slot.markdown &&
+				slot.theme === this.markdownTheme && slot.transformers === this.markdownTransformers
+			) {
+				const text = block.text.trim();
+				if (text) {
+					// Markdown owns append/replacement safety. With the same sole visible
+					// text slot, the spacer and child structure cannot change.
+					if (this.allocationMetrics) this.allocationMetrics.contentScans++;
+					this.lastMessage = message;
+					slot.markdown.setText(text);
+					return;
+				}
+			}
+		}
 		const reusableMarkdownSlots = isStreaming && this.isStreaming
 			? this.streamingMarkdownSlots
 			: EMPTY_STREAMING_MARKDOWN_SLOTS;
