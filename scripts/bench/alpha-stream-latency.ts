@@ -28,6 +28,8 @@ let events = 0; let footerInvalidations = 0; let markdownSetTexts = 0; let markd
 const assistant = { updateContentCalls: 0, contentScans: 0, slotRecordObjects: 0, markdownInstances: 0, spacerInstances: 0, textInstances: 0, currentSpacers: 0, spacerHwm: 0 };
 const markdown = { incrementalEligibleUpdates: 0, incrementalUpdates: 0, fullFallbacks: 0, sourceCharactersReparsed: 0, sourceCharactersRewrapped: 0, parserTokensReused: 0, parserTokensRebuilt: 0, renderedPrefixLinesReused: 0, tailLinesRebuilt: 0, cachedTokenCount: 0, cachedRenderedLines: 0, cachedSourceCharacters: 0, lastFallbackReason: 'none' };
 const fallbackReasons: Record<string, number> = {};
+const fallbackPhases: Record<string, number> = {};
+let lastPhase = 'initial';
 function mark(text: string, table: Float64Array) {
   const now = performance.now(); const expression = /M(\d{6})/g; let match: RegExpExecArray | null;
   while ((match = expression.exec(text))) { const index = Number(match[1]); if (index < count && table[index] === 0) table[index] = now; }
@@ -67,14 +69,25 @@ try {
       const footer = f.internal.footer.invalidate.bind(f.internal.footer);
       f.internal.footer.invalidate = () => { footerInvalidations++; footer(); };
       const render = f.internal.renderer.doRender.bind(f.internal.renderer);
-      f.internal.renderer.doRender = () => { const start = performance.now(); render(); assert.ok(renders < renderTimes.length); renderTimes[renders++] = performance.now() - start; };
+      f.internal.renderer.doRender = () => {
+        const before = f!.internal.renderInstrumentation.snapshot().fullHistoryFallbacks;
+        const start = performance.now(); render(); assert.ok(renders < renderTimes.length); renderTimes[renders++] = performance.now() - start;
+        const change = f!.internal.renderInstrumentation.snapshot().fullHistoryFallbacks - before;
+        if (change) fallbackPhases[lastPhase] = (fallbackPhases[lastPhase] ?? 0) + change;
+      };
       AssistantMessageComponent.prototype.updateContent = function (message, streaming) { (this as any).allocationMetrics = assistant; return update.call(this, message, streaming); };
       Markdown.prototype.setText = function (text) { markdownSetTexts++; return setText.call(this, text); };
-      Markdown.prototype.render = function (width) { (this as any).incrementalMetrics = markdown; markdownRenders++; const result = renderMarkdown.call(this, width); fallbackReasons[markdown.lastFallbackReason] = (fallbackReasons[markdown.lastFallbackReason] ?? 0) + 1; return result; };
+      Markdown.prototype.render = function (width) {
+        (this as any).incrementalMetrics = markdown; markdownRenders++;
+        const before = markdown.fullFallbacks;
+        const result = renderMarkdown.call(this, width);
+        if (markdown.fullFallbacks > before) fallbackReasons[markdown.lastFallbackReason] = (fallbackReasons[markdown.lastFallbackReason] ?? 0) + markdown.fullFallbacks - before;
+        return result;
+      };
       f.internal.renderInstrumentation.reset();
     }
     let eventOffset = 0;
-    (headless?.session ?? f!.session).subscribe(event => { events++; if (event.type === 'message_update' && event.message.role === 'assistant') for (const block of event.message.content) if (block.type === 'text') { mark(block.text.substring(eventOffset), eventTimes); eventOffset = block.text.length; } });
+    (headless?.session ?? f!.session).subscribe(event => { events++; lastPhase = event.type; if (event.type === 'message_update' && event.message.role === 'assistant') for (const block of event.message.content) if (block.type === 'text') { mark(block.text.substring(eventOffset), eventTimes); eventOffset = block.text.length; } });
   }
   loop.enable();
   if (profile) await inspector.post('HeapProfiler.startSampling', { samplingInterval: 32768, includeObjectsCollectedByMajorGC: true, includeObjectsCollectedByMinorGC: true });
@@ -100,7 +113,7 @@ try {
     firstVisibleMs: layer >= 2 ? Math.min(...Array.from(visibleTimes).filter(Boolean)) - start : null,
     finalVisibleMs: visibleTimes[count - 1] ? visibleTimes[count - 1]! - start : null,
     eventLoopDelayMs: { p50: loop.percentile(50) / 1e6, p95: loop.percentile(95) / 1e6, p99: loop.percentile(99) / 1e6, max: loop.max / 1e6 },
-    events, footerInvalidations, assistant, markdownSetTexts, markdownRenders, markdown, fallbackReasons, metrics,
+    events, footerInvalidations, assistant, markdownSetTexts, markdownRenders, markdown, fallbackReasons, fallbackPhases, metrics,
     allocations: sites.sort((a, b) => b.bytes - a.bytes).slice(0, 15) }));
 } finally {
   fixture.cancel(); loop.disable(); inspector.disconnect();

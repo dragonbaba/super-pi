@@ -3196,7 +3196,11 @@ test("terminal lifecycle promises use stable observers and one-shot TUIs dispose
 	const interactiveSource = readFileSync("packages/coding-agent/src/modes/interactive/interactive-mode.ts", "utf8");
 	assert.match(interactiveSource, /private observeLifecyclePromise[\s\S]{0,180}promise\.then\(undefined, this\.handleLifecyclePromiseRejection\)/);
 	assert.match(interactiveSource, /handleSuspendAction[\s\S]{0,120}observeLifecyclePromise\(this\.handleCtrlZ\(\)\)/);
-	assert.match(interactiveSource, /disposeAfterUncaughtCrash[\s\S]{0,300}await this\.ui\.dispose\(\)/);
+	const crashCleanup = interactiveSource.match(/private async disposeAfterUncaughtCrash[\s\S]*?\n\t}/)?.[0] ?? "";
+	assert.match(crashCleanup, /await this\.stop\(\)/);
+	assert.match(crashCleanup, /await this\.runtimeHost\.dispose\(\)/);
+	assert.match(crashCleanup, /finally[\s\S]*process\.exit\(1\)/);
+	assert.doesNotMatch(crashCleanup, /await this\.ui\.dispose\(\)/);
 	assert.match(interactiveSource, /await this\.ui\.dispose\(\{ preserveScreen:/);
 	assert.doesNotMatch(interactiveSource, /void this\.(?:shutdown|handleCtrlZ|handleOpenExternalEditor)\(/);
 	assert.doesNotMatch(interactiveSource, /void this\.ui\.(?:stop|dispose)\(\)\.(?:then|finally)/);
