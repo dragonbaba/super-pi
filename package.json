@@ -14,6 +14,7 @@
 		"packages/session-backends/*"
 	],
 	"scripts": {
+		"alpha:g2-probe": "node ./scripts/alpha-g2-probe.mjs",
 		"superpi": "node ./scripts/superpi.mjs",
 		"test:unit": "node ./scripts/test.mjs --suite unit",
 		"test:hot": "node ./scripts/test.mjs --suite hot",
