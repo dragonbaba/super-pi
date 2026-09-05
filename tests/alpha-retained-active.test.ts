@@ -39,11 +39,25 @@ test("active reference snapshots are capped and released at every cache boundary
 		assert.equal(item.activeRenderChangedStart, undefined);
 		lines = ["a"];
 	}
-	for (const release of [() => item.invalidate(), () => item[RELEASE_COMPONENT_RENDER_CACHE](), () => item.complete()]) {
+	for (const release of [() => item.invalidate(), () => item[RELEASE_COMPONENT_RENDER_CACHE]()]) {
 		item.render(120);
 		assert.equal(item.activeSnapshotLineCount, 1);
 		release();
 		assert.equal(item.activeSnapshotLineCount, 0);
+	}
+	item.render(120);
+	item.complete();
+	assert.equal(item.activeSnapshotLineCount, 1, "bounded snapshot is owned until the normal final render");
+	item.render(120);
+	assert.equal(item.activeSnapshotLineCount, 0, "final completed cache replaces the active snapshot");
+	assert.equal(item.cachedLineCount, 1);
+	item.release();
+	assert.equal(item.cachedLineCount, 0);
+	for (const boundary of ['invalidate', 'release', 'cache'] as const) {
+		const pending = new RetainedItem({ render: () => ['pending'], invalidate() {} }, { id: boundary, version: 0 });
+		pending.render(120); pending.complete();
+		if (boundary === 'cache') pending[RELEASE_COMPONENT_RENDER_CACHE](); else pending[boundary]();
+		assert.equal(pending.activeSnapshotLineCount, 0, 'release does not require the final render to occur');
 	}
 });
 

@@ -59,6 +59,14 @@ Initial dirty-tree after-profile reduced active fallbacks to zero but still reco
 
 ## Reproduction commands
 
+### Completion follow-up
+
+Clean-head five-process long-word samples at `5143ecd`: regular mean root p95 8.61 ms, largest p95 9.28 ms, largest p99 11.95 ms; fullscreen 8.14 / 9.26 / 11.19 ms. Largest marker-to-write p95 37.59 / 39.00 ms, visible gaps 92.13 / 54.45 ms, provider gaps 27.99 / 27.34 ms. Regular recorded exactly one completion fallback in every run; fullscreen recorded none. Maximum within-process root CV was 0.782 / 0.317: temporal acceptance remains inconclusive, especially transition tails. These are post-change samples, not a five-process paired allocation reduction claim.
+
+Independent red `f334a05` extends the real 100k-update fixture through message_end and agent_end and reproduces the final fallback (regular 1, expected 0). Source evidence: `complete()` erased the active render comparison before the ordinary final render, attributing the whole long item again. The follow-up keeps the already-bounded snapshot through that one transition, compares at the normal final render, then releases it as the completed cache takes ownership. There is no eager render or new work inside the AgentSession final event callback. If no final render occurs, invalidate, cache release and disposal still release the snapshot. The lifecycle test now asserts this explicit pending-completion owner and its release rather than requiring premature loss of the comparison at complete(). No canonical/provider/event-order semantics change. Green real 100k fixtures retain zero fallback including completion and release both source WeakRefs after GC.
+
+Earlier clean `239135b` slow-sink matrix: 100 independent processes, five per requested 10/20/50/100/burst rate at each callback delay 5/20/50/100 ms, 20 chunks, regular 120x40. Queue HWM and pending render intent never exceeded one in these runs; every final marker was written. Largest marker-to-write p95 by delay: 48.01 / 47.18 / 66.35 / 124.45 ms. Largest visible gap: 126.26 / 126.29 / 155.30 / 114.96 ms, while provider gaps reached ~111 ms in the 10/s schedule. Thus the 155 ms slow-sink gap is not evidence of a 155 ms provider-independent CPU stall. Physical means entry into the injected Writable, not pixel visibility. Fullscreen slow-sink and failure/close measurements remain required.
+
 Run after `npm ci` and `npm run build:offline`, from the dedicated worktree:
 
 ```powershell
