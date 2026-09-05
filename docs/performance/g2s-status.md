@@ -1,9 +1,18 @@
 # G2S — Alpha Runtime Stabilization and Streaming Responsiveness
 
-Parent Program: `SUPER-PI-REMAINING-PROGRAM-PHASE5B-TO-PHASE8` (existing user-specified Program; no new top-level Goal).
+Locally authoritative Goal: `SUPER-PI-G2-ALPHA-STABILIZATION-ASTRA`.
+The prior cross-session Program is not being resumed or modified. This ledger is authoritative even while the Goal API returns null; no replacement Goal is created.
 
 Status: **G2 Alpha Manual Validation Blocked → G2S active → G3–G10 unstarted**.
-The thread Goal API returned `null`; this file records the child-stage working state, not a claim that an external Goal service was updated.
+The scope-unblock addendum authorizes bounded ANSI indexing/forward progress, runtime exactly-once disposal, and final interactive UI ownership fixes. Continue on the existing worktree and branch; preserve red baseline `ed023a6c78e0d075866195fc306cc686f511f897` without amendment or rewrite.
+
+Active findings:
+- **G2S-B0-01**: final quit reaches title reset after terminal disposal.
+- **G2S-B0-02**: three runtime dispose calls execute three session disposals.
+- **G2S-B1-01**: ANSI index overflow prevents valid continuation progress.
+- **G2S-B0-CANDIDATE-STARTUP**: reported normal-startup failure not yet reproduced.
+
+The historical stopped-baseline evidence below is preserved. Its scope restriction is superseded by the addendum; implementation is active again. Streaming optimization still requires L0–L3 baseline evidence. Final target is Draft Candidate Gate, awaiting external final review and explicit merge authorization. No Alpha manual validation is claimed.
 
 ## Baseline
 
