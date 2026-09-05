@@ -674,6 +674,7 @@ export class AgentSession {
 	private _toolResultUiCanonicalMessages:
 		| Map<string, Extract<AgentMessage, { role: "toolResult" }> | null>
 		| undefined;
+	private _toolResultUiCanonicalIndexActive = false;
 	private _toolResultUiCanonicalMessagesSource: AgentMessage[] | undefined;
 	private _toolResultUiCanonicalMessagesLength = 0;
 	private _toolResultUiCanonicalMessagesTail: AgentMessage | undefined;
@@ -682,6 +683,8 @@ export class AgentSession {
 	private _toolResultUiLiveCanonicalIndexAppendProbes = 0;
 	private _toolResultUiLiveCanonicalLookupProbes = 0;
 	private _toolResultUiLiveCanonicalIndexRebuilds = 0;
+	private _toolResultUiCanonicalIndexActivationCount = 0;
+	private _toolResultUiCanonicalIndexInactiveRebuildSkips = 0;
 	private _toolResultUiHistoryMessagesVisited = 0;
 	private _toolResultUiPresentationCandidatesEvaluated = 0;
 	private _toolResultUiActualV2Discoveries = 0;
@@ -718,7 +721,6 @@ export class AgentSession {
 		this._toolResultPresentation =
 			config.toolResultPresentationOwner ??
 			createToolResultPresentationOwner(config.toolResultPresentation, this.sessionManager.getSessionId());
-		if (this._toolResultPresentation) this._rebuildToolResultUiCanonicalIndex();
 		this._extensionRunnerRef = config.extensionRunnerRef;
 		this._extensionRunnerOptions = config.extensionRunnerOptions;
 		this._initialActiveToolNames = config.initialActiveToolNames;
@@ -1400,6 +1402,7 @@ export class AgentSession {
 		this._toolResultUiDispatchSourceContent = undefined;
 		this._toolResultUiCanonicalMessages?.clear();
 		this._toolResultUiCanonicalMessages = undefined;
+		this._toolResultUiCanonicalIndexActive = false;
 		this._toolResultUiCanonicalMessagesSource = undefined;
 		this._toolResultUiCanonicalMessagesLength = 0;
 		this._toolResultUiCanonicalMessagesTail = undefined;
@@ -1491,6 +1494,10 @@ export class AgentSession {
 
 	private _rebuildToolResultUiCanonicalIndex(): void {
 		if (!this._toolResultPresentation) return;
+		if (!this._toolResultUiCanonicalIndexActive) {
+			this._toolResultUiCanonicalIndexInactiveRebuildSkips++;
+			return;
+		}
 		const messages = this.agent.state.messages;
 		const canonicalMessages = this._toolResultUiCanonicalMessages ??= new Map();
 		canonicalMessages.clear();
@@ -1505,7 +1512,18 @@ export class AgentSession {
 		this._toolResultUiCanonicalMessagesTail = messages.at(-1);
 	}
 
+	private _ensureToolResultUiCanonicalIndexActive(): void {
+		if (!this._toolResultPresentation || this._toolResultUiCanonicalIndexActive) return;
+		this._toolResultUiCanonicalIndexActive = true;
+		this._toolResultUiCanonicalIndexActivationCount++;
+		this._rebuildToolResultUiCanonicalIndex();
+	}
+
 	private _synchronizeToolResultUiCanonicalIndex(): void {
+		if (!this._toolResultUiCanonicalIndexActive) {
+			this._ensureToolResultUiCanonicalIndexActive();
+			return;
+		}
 		const messages = this.agent.state.messages;
 		const indexedLength = this._toolResultUiCanonicalMessagesLength;
 		if (
@@ -1657,6 +1675,9 @@ export class AgentSession {
 		liveCanonicalIndexRebuilds: number;
 		liveCanonicalIndexEntries: number;
 		liveCanonicalIndexOverflowed: boolean;
+		canonicalIndexActive: boolean;
+		canonicalIndexActivationCount: number;
+		canonicalIndexInactiveRebuildSkips: number;
 	} {
 		return {
 			historyMessagesVisited: this._toolResultUiHistoryMessagesVisited,
@@ -1670,6 +1691,9 @@ export class AgentSession {
 			liveCanonicalIndexRebuilds: this._toolResultUiLiveCanonicalIndexRebuilds,
 			liveCanonicalIndexEntries: this._toolResultUiCanonicalMessages?.size ?? 0,
 			liveCanonicalIndexOverflowed: this._toolResultUiCanonicalMessagesOverflowed,
+			canonicalIndexActive: this._toolResultUiCanonicalIndexActive,
+			canonicalIndexActivationCount: this._toolResultUiCanonicalIndexActivationCount,
+			canonicalIndexInactiveRebuildSkips: this._toolResultUiCanonicalIndexInactiveRebuildSkips,
 		};
 	}
 
