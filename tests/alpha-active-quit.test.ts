@@ -12,6 +12,13 @@ for (const mode of ['regular', 'fullscreen'] as const) for (const signal of [fal
     let released = false; let settled = false; let exits = 0; let shutdowns = 0; let requests = 0;
     let releaseFixture: (() => void) | undefined;
     const runtime = alphaModelRuntime((_model, _context, options) => {
+      // The loop may invoke a stream factory with an already-aborted signal.
+      // A cooperative fixture must terminate it without starting provider work.
+      if (options?.signal?.aborted) {
+        const stream = new AssistantMessageEventStream(); const message = alphaMessage();
+        message.stopReason = 'aborted'; message.errorMessage = 'pre-aborted fixture';
+        stream.push({ type: 'error', reason: 'aborted', error: message }); return stream;
+      }
       requests++;
       if (requests > 1) return finalStream(alphaMessage([{ type: 'text', text: 'unexpected continuation' }]));
       if (active === 'tool') {
@@ -40,6 +47,17 @@ for (const mode of ['regular', 'fullscreen'] as const) for (const signal of [fal
           released = true; return { content: [{ type: 'text', text: 'aborted tool cleanup complete' }] };
         } }] });
     t.mock.method(process, 'exit', (code: number) => { assert.equal(code, 0); exits++; });
+    let terminalDisposed = false; let terminalDisposals = 0; let sessionDisposals = 0; let postDisposeWrites = 0; let postDisposeRenders = 0;
+    const disposeTerminal = f.terminal.dispose.bind(f.terminal);
+    t.mock.method(f.terminal, 'dispose', () => { terminalDisposals++; disposeTerminal(); terminalDisposed = true; });
+    const disposeSession = f.session.dispose.bind(f.session);
+    t.mock.method(f.session, 'dispose', () => { sessionDisposals++; disposeSession(); });
+    for (const method of ['setTitle', 'setProgress', 'write', 'writeFrame'] as const) {
+      const original = (f.terminal[method] as Function).bind(f.terminal);
+      t.mock.method(f.terminal as any, method, (...args: any[]) => { if (terminalDisposed) postDisposeWrites++; return original(...args); });
+    }
+    const requestRender = f.internal.renderer.requestRender.bind(f.internal.renderer);
+    t.mock.method(f.internal.renderer, 'requestRender', (...args: any[]) => { if (terminalDisposed) postDisposeRenders++; return requestRender(...args); });
     let prompt: Promise<void> | undefined;
     let timeout: ReturnType<typeof setTimeout> | undefined;
     try {
@@ -53,6 +71,9 @@ for (const mode of ['regular', 'fullscreen'] as const) for (const signal of [fal
       assert.equal(released, true, 'cooperative provider/tool cleanup completes before successful quit');
       assert.equal(settled, true, 'active prompt reaches its terminal state before successful quit');
       assert.equal(exits, 1); assert.equal(shutdowns, 1);
+      assert.equal(requests, 1, 'abort does not restart the provider');
+      assert.equal(sessionDisposals, 1); assert.equal(terminalDisposals, 1);
+      assert.equal(postDisposeWrites, 0); assert.equal(postDisposeRenders, 0);
       assert.equal(f.input.isRaw, false);
       assert.equal(f.input.listenerCount('data'), 0);
       assert.equal(f.resizeSource.listenerCount('resize'), 0);

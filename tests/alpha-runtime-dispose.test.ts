@@ -71,3 +71,25 @@ test('dispose while replacement teardown is awaiting abort shares outgoing owner
   assert.equal(result.cancelled, true);
   assert.deepEqual(f.order, ['shutdown', 'invalidate', 'session']);
 });
+
+for (let mask = 0; mask < 8; mask++) test(`quit abort failure still completes all mandatory owners: ${mask}`, async () => {
+  const f = fixture(mask);
+  const abortFailure = new Error('cooperative abort failed');
+  let aborts = 0;
+  f.session.abort = async () => { aborts++; throw abortFailure; };
+  const operations = [f.runtime.dispose(), f.runtime.dispose(), f.runtime.dispose()];
+  for (const operation of operations) assert.equal(operation, operations[0]);
+  const results = await Promise.allSettled(operations);
+  for (const result of results) { assert.equal(result.status, 'rejected'); if (result.status === 'rejected') assert.equal(result.reason, abortFailure); }
+  assert.equal(aborts, 1);
+  assert.deepEqual(f.order, ['shutdown', 'invalidate', 'session']);
+});
+
+test('abort callback reentrancy sees the prepublished shared operation', async () => {
+  const f = fixture(); let nested: Promise<void> | undefined;
+  f.session.abort = async () => { nested = f.runtime.dispose(); };
+  const operation = f.runtime.dispose();
+  await operation;
+  assert.equal(nested, operation);
+  assert.deepEqual(f.order, ['shutdown', 'invalidate', 'session']);
+});
