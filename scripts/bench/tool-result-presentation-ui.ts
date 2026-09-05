@@ -366,6 +366,116 @@ function measureGroupedImageSettings(): {
 	}
 }
 
+type GroupedConvertedImage = { data: string; mimeType: string };
+
+class BenchReadToolGroupComponent extends ReadToolGroupComponent {
+	readonly conversions: Array<{
+		data: string;
+		mimeType: string;
+		resolve(value: GroupedConvertedImage | null): void;
+		reject(error: Error): void;
+	}> = [];
+
+	protected override convertImageForTerminal(data: string, mimeType: string): Promise<GroupedConvertedImage | null> {
+		return new Promise<GroupedConvertedImage | null>((resolve, reject) => {
+			this.conversions.push({ data, mimeType, resolve, reject });
+		});
+	}
+}
+
+async function measureGroupedCloseoutLifecycle(): Promise<{
+	nonV2: {
+		tailVisible: boolean;
+		truncationVisible: boolean;
+		conversionScheduled: number;
+		renderedCodeUnits: number;
+		sourceTextCodeUnits: number;
+	};
+	v2Kitty: {
+		fullTailVisible: boolean;
+		rawImageComponentsBeforeConversion: number;
+		conversionsScheduled: number;
+		conversionsAccepted: number;
+		imageComponentsAfterConversion: number;
+		visualInvalidations: number;
+	};
+	released: {
+		activePending: number;
+		convertedImages: number;
+		sourceReferences: number;
+	};
+}> {
+	const nonV2 = new BenchReadToolGroupComponent(true, 31);
+	nonV2.updateArgs("grouped-non-v2", { path: "non-v2.txt" });
+	nonV2.setArgsComplete("grouped-non-v2");
+	const nonV2FirstText = "non-v2-prefix-".repeat(400);
+	const nonV2TailText = "NON_V2_BENCH_TAIL";
+	nonV2.updateResult("grouped-non-v2", {
+		content: [
+			{ type: "text", text: nonV2FirstText },
+			{ type: "text", text: nonV2TailText },
+			{ type: "image", data: "non-v2-jpeg", mimeType: "image/jpeg" },
+		],
+	});
+	nonV2.setExpanded(true);
+	const nonV2Rendered = nonV2.render(120).join("\n");
+	const nonV2Evidence = {
+		tailVisible: nonV2Rendered.includes("NON_V2_BENCH_TAIL"),
+		truncationVisible: nonV2Rendered.includes("truncated"),
+		conversionScheduled: nonV2.getGroupedImageConversionLifecycleCounts().scheduled,
+		renderedCodeUnits: nonV2Rendered.length,
+		sourceTextCodeUnits: nonV2FirstText.length + 1 + nonV2TailText.length,
+	};
+	nonV2[RELEASE_COMPONENT_RENDER_CACHE]();
+
+	const previousCapabilities = getCapabilities();
+	setCapabilities({ images: "kitty", trueColor: true, hyperlinks: true });
+	try {
+		let visualInvalidations = 0;
+		const component = new BenchReadToolGroupComponent(true, 31, () => { visualInvalidations++; });
+		const owner = createToolResultPresentationOwner({ enabled: true, budgetTokens: 128 }, "grouped-closeout-bench")!;
+		const toolCallId = "grouped-v2-kitty";
+		const rowContent: ToolResultPresentationContent[] = [
+			{ type: "text", text: `${"v2-full-prefix-".repeat(400)}V2_FULL_BENCH_TAIL` },
+			{ type: "image", data: "v2-jpeg", mimeType: "image/jpeg" },
+		];
+		component.updateArgs(toolCallId, { path: "v2-kitty.txt" });
+		component.setArgsComplete(toolCallId);
+		component.updateResult(toolCallId, { content: rowContent });
+		component.setToolResultPresentation(toolCallId, owner.create(rowContent, toolCallId)!);
+		owner.release();
+		component.setExpanded(true);
+		const fullTailVisible = component.render(120).join("\n").includes("V2_FULL_BENCH_TAIL");
+		const before = component.getGroupedImageConversionLifecycleCounts();
+		component.conversions[0]!.resolve({ data: "converted-png", mimeType: "image/png" });
+		await Promise.resolve();
+		await Promise.resolve();
+		const after = component.getGroupedImageConversionLifecycleCounts();
+		const v2Kitty = {
+			fullTailVisible,
+			rawImageComponentsBeforeConversion: before.imageComponents,
+			conversionsScheduled: after.scheduled,
+			conversionsAccepted: after.accepted,
+			imageComponentsAfterConversion: after.imageComponents,
+			visualInvalidations,
+		};
+		component[RELEASE_COMPONENT_RENDER_CACHE]();
+		const releasedCounts = component.getGroupedImageConversionLifecycleCounts();
+		owner.dispose();
+		return {
+			nonV2: nonV2Evidence,
+			v2Kitty,
+			released: {
+				activePending: releasedCounts.activePending,
+				convertedImages: releasedCounts.convertedImages,
+				sourceReferences: releasedCounts.sourceReferences,
+			},
+		};
+	} finally {
+		setCapabilities(previousCapabilities);
+	}
+}
+
 function fixtureModel(): Model<"openai-responses"> {
 	return {
 		id: "ui-corrective-profile",
@@ -428,6 +538,13 @@ interface InteractiveModeInternals {
 	chatContainer: RetainedContainer;
 	renderInstrumentation: TuiRenderInstrumentation;
 	pendingTools: Map<string, ToolExecutionComponent | ReadToolGroupComponent>;
+	createTrackedToolComponent(
+		toolName: string,
+		toolCallId: string,
+		args: unknown,
+		placeholder?: Component,
+		allowReadGrouping?: boolean,
+	): ToolExecutionComponent | ReadToolGroupComponent;
 	pendingToolResultDiscoveries?: Map<string, object>;
 	attachedToolResultDiscoveries?: Map<string, object>;
 	handleEvent(event: AgentSessionEvent): void | Promise<void>;
@@ -457,6 +574,12 @@ interface InteractiveModeInternals {
 		attachedMapsCreated: number;
 		canonicalV1RetainedInvalidations: number;
 		canonicalHistoryResetReleases: number;
+		canonicalHistoryResetRegistrationReleases: number;
+		canonicalHistoryResetUniqueComponentRefreshes: number;
+		canonicalPayloadRefreshes: number;
+		canonicalPayloadRefreshSkips: number;
+		canonicalPayloadConservativeHandlerRefreshes: number;
+		canonicalPayloadReplacementRefreshes: number;
 		historyMessagesVisited: number;
 		presentationCandidatesEvaluated: number;
 		actualV2Discoveries: number;
@@ -482,7 +605,7 @@ interface ModeFixture {
 async function createModeFixture(
 	messages: readonly AgentMessage[],
 	presentationMode: "absent" | "disabled" | "enabled",
-	withReplacementExtension = false,
+	messageEndExtension: false | true | "no-op" | "in-place" = false,
 	replacementText = "post-extension-profile-".repeat(1_024),
 ): Promise<ModeFixture> {
 	const root = mkdtempSync(join(tmpdir(), "super-pi-ui-corrective-bench-"));
@@ -505,11 +628,17 @@ async function createModeFixture(
 		agentDir,
 		settingsManager,
 		noContextFiles: true,
-		noExtensions: !withReplacementExtension,
-		extensionFactories: withReplacementExtension
+		noExtensions: messageEndExtension === false,
+		extensionFactories: messageEndExtension !== false
 			? [(pi: any) => {
 				pi.on("message_end", (event: { message: ToolResultMessage }) => {
 					if (event.message.role !== "toolResult") return undefined;
+					if (messageEndExtension === "no-op") return undefined;
+					if (messageEndExtension === "in-place") {
+						const block = event.message.content[0];
+						if (block?.type === "text") block.text = replacementText;
+						return undefined;
+					}
 					return {
 						message: {
 							...event.message,
@@ -633,6 +762,142 @@ async function measureDefaultOffProduction(mode: "absent" | "disabled"): Promise
 	return { iterations: LIVE_PROFILE_ITERATIONS, ...durationSummary(durations), lifecycle };
 }
 
+async function measureCanonicalDispositionMatrix(): Promise<Record<
+	"zeroHandler" | "noOpHandler" | "inPlaceMutation" | "returnedReplacement",
+	{
+		disposition: string | undefined;
+		refreshes: number;
+		skips: number;
+		conservativeRefreshes: number;
+		replacementRefreshes: number;
+		attached: number;
+	}
+>> {
+	const cases = [
+		["zeroHandler", false, "ZERO_HANDLER_PROFILE"],
+		["noOpHandler", "no-op", "NO_OP_HANDLER_PROFILE"],
+		["inPlaceMutation", "in-place", "IN_PLACE_MUTATION_PROFILE"],
+		["returnedReplacement", true, "RETURNED_REPLACEMENT_PROFILE"],
+	] as const;
+	const output = {} as Record<
+		"zeroHandler" | "noOpHandler" | "inPlaceMutation" | "returnedReplacement",
+		{
+			disposition: string | undefined;
+			refreshes: number;
+			skips: number;
+			conservativeRefreshes: number;
+			replacementRefreshes: number;
+			attached: number;
+		}
+	>;
+	for (let caseIndex = 0; caseIndex < cases.length; caseIndex++) {
+		const [label, extension, replacementText] = cases[caseIndex]!;
+		const fixture = await createModeFixture([], "enabled", extension, replacementText.repeat(1_024));
+		fixture.internals.isInitialized = true;
+		let disposition: string | undefined;
+		const unsubscribe = fixture.session.subscribe((event) => {
+			if (event.type === "message_end") disposition = event.toolResultMessageEndDisposition;
+			return fixture.internals.handleEvent(event);
+		});
+		await runLiveToolResult(fixture, 40_000 + caseIndex);
+		const lifecycle = fixture.internals.getToolResultDiscoveryLifecycleCounts();
+		output[label] = {
+			disposition,
+			refreshes: lifecycle.canonicalPayloadRefreshes,
+			skips: lifecycle.canonicalPayloadRefreshSkips,
+			conservativeRefreshes: lifecycle.canonicalPayloadConservativeHandlerRefreshes,
+			replacementRefreshes: lifecycle.canonicalPayloadReplacementRefreshes,
+			attached: lifecycle.attached,
+		};
+		unsubscribe();
+		await fixture.dispose();
+	}
+	return output;
+}
+
+async function measureGroupedCompactionDeduplication(): Promise<Array<{
+	registrations: number;
+	registrationReleases: number;
+	uniqueComponentRefreshes: number;
+	observedComponentRefreshCalls: number;
+	attachedAfter: number;
+	capacityEvictionDelta: number;
+}>> {
+	const groupSizes = [1, 32, 128] as const;
+	const output: Array<{
+		registrations: number;
+		registrationReleases: number;
+		uniqueComponentRefreshes: number;
+		observedComponentRefreshCalls: number;
+		attachedAfter: number;
+		capacityEvictionDelta: number;
+	}> = [];
+	for (const groupSize of groupSizes) {
+		const fixture = await createModeFixture([], "enabled");
+		fixture.internals.isInitialized = true;
+		const unsubscribe = fixture.session.subscribe((event) => fixture.internals.handleEvent(event));
+		let group: ReadToolGroupComponent | undefined;
+		for (let index = 0; index < groupSize; index++) {
+			const toolCallId = `grouped-reset-${groupSize}-${index}`;
+			const component = fixture.internals.createTrackedToolComponent(
+				"read",
+				toolCallId,
+				{ path: `${index}.txt` },
+				undefined,
+				true,
+			);
+			if (!(component instanceof ReadToolGroupComponent)) throw new Error("grouped compaction fixture lost grouping");
+			group ??= component;
+			if (group !== component) throw new Error("grouped compaction fixture created more than one component");
+			const message: ToolResultMessage = {
+				...toolResult(toolCallId, `grouped-reset-${groupSize}-${index}-`.repeat(1_024)),
+				toolName: "read",
+			};
+			await fixture.internals.handleEvent({
+				type: "tool_execution_end",
+				toolCallId,
+				toolName: "read",
+				result: { content: message.content, isError: false },
+				isError: false,
+			});
+			fixture.session.agent.state.messages.push(message);
+			await (fixture.session as unknown as {
+				_handleAgentEvent(event: { type: "message_end"; message: ToolResultMessage }): Promise<void>;
+			})._handleAgentEvent({ type: "message_end", message });
+		}
+		if (!group) throw new Error("grouped compaction fixture produced no component");
+		const originalRefresh = group.refreshToolResultPresentationView;
+		let observedComponentRefreshCalls = 0;
+		group.refreshToolResultPresentationView = function (): void {
+			observedComponentRefreshCalls++;
+			return originalRefresh.call(this);
+		};
+		const before = fixture.internals.getToolResultDiscoveryLifecycleCounts();
+		await fixture.internals.handleEvent({
+			type: "compaction_end",
+			reason: "manual",
+			result: { summary: "grouped reset benchmark", firstKeptEntryId: "kept", tokensBefore: 16_384 },
+			aborted: false,
+			willRetry: false,
+		});
+		const after = fixture.internals.getToolResultDiscoveryLifecycleCounts();
+		output.push({
+			registrations: groupSize,
+			registrationReleases:
+				after.canonicalHistoryResetRegistrationReleases - before.canonicalHistoryResetRegistrationReleases,
+			uniqueComponentRefreshes:
+				after.canonicalHistoryResetUniqueComponentRefreshes - before.canonicalHistoryResetUniqueComponentRefreshes,
+			observedComponentRefreshCalls,
+			attachedAfter: after.attached,
+			capacityEvictionDelta: after.attachedCapacityEvictions - before.attachedCapacityEvictions,
+		});
+		group.refreshToolResultPresentationView = originalRefresh;
+		unsubscribe();
+		await fixture.dispose();
+	}
+	return output;
+}
+
 async function measureLiveRegistrationProfile(inspector: Session): Promise<{
 	resumedHistoryMessages: number;
 	iterations: number;
@@ -718,6 +983,8 @@ async function captureCanonicalReplacementLifecycle(inspector: Session): Promise
 			oldTextVisibleAfter: boolean;
 			newTextVisibleAfter: boolean;
 			retainedInvalidationDelta: number;
+			canonicalPayloadRefreshDelta: number;
+			canonicalPayloadReplacementRefreshDelta: number;
 			pendingAfter: number;
 			attachedAfter: number;
 		};
@@ -727,6 +994,7 @@ async function captureCanonicalReplacementLifecycle(inspector: Session): Promise
 			attachedAfter: number;
 			pendingAfter: number;
 			canonicalHistoryResetReleases: number;
+			canonicalHistoryResetUniqueComponentRefreshes: number;
 			pendingTeardownReleaseDelta: number;
 			retainedInvalidations: number;
 			staleDiscoveriesAfter: number;
@@ -780,6 +1048,10 @@ async function captureCanonicalReplacementLifecycle(inspector: Session): Promise
 		newTextVisibleAfter: v1RenderedAfter.includes("POST_EXTENSION_V1"),
 		retainedInvalidationDelta:
 			v1After.canonicalV1RetainedInvalidations - v1Before.canonicalV1RetainedInvalidations,
+		canonicalPayloadRefreshDelta:
+			v1After.canonicalPayloadRefreshes - v1Before.canonicalPayloadRefreshes,
+		canonicalPayloadReplacementRefreshDelta:
+			v1After.canonicalPayloadReplacementRefreshes - v1Before.canonicalPayloadReplacementRefreshes,
 		pendingAfter: v1After.pending,
 		attachedAfter: v1After.attached,
 	};
@@ -882,6 +1154,8 @@ async function captureCanonicalReplacementLifecycle(inspector: Session): Promise
 		attachedAfter: after.attached,
 		pendingAfter: after.pending,
 		canonicalHistoryResetReleases: after.canonicalHistoryResetReleases,
+		canonicalHistoryResetUniqueComponentRefreshes:
+			after.canonicalHistoryResetUniqueComponentRefreshes - before.canonicalHistoryResetUniqueComponentRefreshes,
 		pendingTeardownReleaseDelta: after.pendingTeardownReleases - before.pendingTeardownReleases,
 		retainedInvalidations,
 		staleDiscoveriesAfter,
@@ -1822,10 +2096,13 @@ const groupedFixture = createGroupedReadFixture();
 const groupedExpandedProfile = await measureProfile(inspector, groupedFixture.component);
 groupedFixture.dispose();
 const groupedImageSettings = measureGroupedImageSettings();
+const groupedCloseoutLifecycle = await measureGroupedCloseoutLifecycle();
 const boxCacheHitProfile = await measureBoxCacheHitProfile(inspector);
 const exactResidentTouchProfile = await measureExactResidentTouchProfile(inspector);
 const defaultOffAbsent = await measureDefaultOffProduction("absent");
 const defaultOffDisabled = await measureDefaultOffProduction("disabled");
+const canonicalDispositionMatrix = await measureCanonicalDispositionMatrix();
+const groupedCompactionDeduplication = await measureGroupedCompactionDeduplication();
 const liveRegistrationProfile = await measureLiveRegistrationProfile(inspector);
 const teardown128 = await measureTeardown128();
 const chronologicalEviction = await measureChronologicalEviction();
@@ -1911,6 +2188,7 @@ const result = {
 		absent: defaultOffAbsent,
 		disabled: defaultOffDisabled,
 	},
+	canonicalDispositionMatrix,
 	teardown128,
 	chronologicalEviction,
 	parallelCanonicalAttachment,
@@ -1918,6 +2196,8 @@ const result = {
 	mixedHistoryRebuild,
 	malformedMixedHistoryRebuild,
 	groupedImageSettings,
+	groupedCloseoutLifecycle,
+	groupedCompactionDeduplication,
 	sharedOwnerUiRebuild,
 	nonAdmittingCandidateInspection,
 	setupReplacedHistoryRebind,

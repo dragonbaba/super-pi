@@ -67,6 +67,33 @@ export interface ToolResultPresentationUiSourceAudit {
 	readonly candidateInspectionSetConstructors: number;
 	readonly candidateInspectionPromises: number;
 	readonly candidateInspectionAbortControllers: number;
+	readonly groupedRebuildArrayMaterializationSites: number;
+	readonly groupedRebuildInlineClosureSites: number;
+	readonly groupedRebuildCopyOperations: number;
+	readonly groupedRebuildSerializations: number;
+	readonly groupedRebuildMapConstructors: number;
+	readonly groupedRebuildSetConstructors: number;
+	readonly groupedRebuildPromises: number;
+	readonly groupedRebuildAbortControllers: number;
+	readonly groupedImageConversionArrayMaterializationSites: number;
+	readonly groupedImageConversionInlineClosureSites: number;
+	readonly groupedImageConversionCopyOperations: number;
+	readonly groupedImageConversionSerializations: number;
+	readonly groupedImageConversionObjectLiterals: number;
+	readonly groupedImageConversionMapConstructors: number;
+	readonly groupedImageConversionSetConstructors: number;
+	readonly groupedImageConversionPromises: number;
+	readonly groupedImageConversionPromiseProducingCallSites: number;
+	readonly groupedImageConversionAbortControllers: number;
+	readonly canonicalPayloadRefreshArrayMaterializationSites: number;
+	readonly canonicalPayloadRefreshInlineClosureSites: number;
+	readonly canonicalPayloadRefreshCopyOperations: number;
+	readonly canonicalPayloadRefreshSerializations: number;
+	readonly canonicalPayloadRefreshObjectLiterals: number;
+	readonly canonicalPayloadRefreshMapConstructors: number;
+	readonly canonicalPayloadRefreshSetConstructors: number;
+	readonly canonicalPayloadRefreshPromises: number;
+	readonly canonicalPayloadRefreshAbortControllers: number;
 	readonly promises: number;
 	readonly abortControllers: number;
 }
@@ -249,6 +276,20 @@ function countAst(nodes: readonly ts.Node[], checker?: ts.TypeChecker): AstCount
 		visit(node);
 	}
 	return counts;
+}
+
+function countCallsNamed(nodes: readonly ts.Node[], name: string): number {
+	let count = 0;
+	const visit = (node: ts.Node): void => {
+		if (
+			ts.isCallExpression(node) &&
+			ts.isPropertyAccessExpression(node.expression) &&
+			node.expression.name.text === name
+		) count++;
+		ts.forEachChild(node, visit);
+	};
+	for (const node of nodes) visit(node);
+	return count;
 }
 
 function createSourceProgram(rootNames: readonly string[]): ts.Program {
@@ -455,6 +496,29 @@ export function auditToolResultPresentationUiSources(): ToolResultPresentationUi
 		],
 		checker,
 	);
+	const groupedRebuildCounts = countAst(
+		selectClassMembers(toolComponent, "ReadToolGroupComponent", ["rebuild"]),
+		checker,
+	);
+	const groupedImageConversionNodes = selectClassMembers(toolComponent, "ReadToolGroupComponent", [
+			"clearGroupedImageConversionState",
+			"clearGroupedImageConversionsForRow",
+			"clearGroupedImageConversions",
+			"getGroupedImageForKitty",
+			"isCurrentGroupedImageConversion",
+			"completeGroupedImageConversion",
+			"rejectGroupedImageConversion",
+			"pruneGroupedImageConversions",
+		]);
+	const groupedImageConversionCounts = countAst(groupedImageConversionNodes, checker);
+	const groupedImageConversionPromiseProducingCallSites = countCallsNamed(
+		groupedImageConversionNodes,
+		"convertImageForTerminal",
+	);
+	const canonicalPayloadRefreshCounts = countAst(
+		selectClassMembers(interactive, "InteractiveMode", ["attachLiveToolResultPresentation"]),
+		checker,
+	);
 	const interactiveSource = readFileSync(sourcePaths.interactive, "utf8");
 	const agentSessionSource = readFileSync(sourcePaths.agentSession, "utf8");
 	const registryHardCap = Number(interactiveSource.match(/MAX_TOOL_RESULT_DISCOVERIES\s*=\s*(\d+)/u)?.[1] ?? 0);
@@ -565,6 +629,45 @@ export function auditToolResultPresentationUiSources(): ToolResultPresentationUi
 		candidateInspectionSetConstructors: candidateInspectionCounts.setConstructors,
 		candidateInspectionPromises: candidateInspectionCounts.promises,
 		candidateInspectionAbortControllers: candidateInspectionCounts.abortControllers,
+		groupedRebuildArrayMaterializationSites:
+			groupedRebuildCounts.arrayLiterals +
+			groupedRebuildCounts.arraySpreads +
+			groupedRebuildCounts.arrayProducingCalls +
+			groupedRebuildCounts.arrayConstructors,
+		groupedRebuildInlineClosureSites: groupedRebuildCounts.inlineClosures,
+		groupedRebuildCopyOperations: groupedRebuildCounts.copyOperations,
+		groupedRebuildSerializations: groupedRebuildCounts.serializations,
+		groupedRebuildMapConstructors: groupedRebuildCounts.mapConstructors,
+		groupedRebuildSetConstructors: groupedRebuildCounts.setConstructors,
+		groupedRebuildPromises: groupedRebuildCounts.promises,
+		groupedRebuildAbortControllers: groupedRebuildCounts.abortControllers,
+		groupedImageConversionArrayMaterializationSites:
+			groupedImageConversionCounts.arrayLiterals +
+			groupedImageConversionCounts.arraySpreads +
+			groupedImageConversionCounts.arrayProducingCalls +
+			groupedImageConversionCounts.arrayConstructors,
+		groupedImageConversionInlineClosureSites: groupedImageConversionCounts.inlineClosures,
+		groupedImageConversionCopyOperations: groupedImageConversionCounts.copyOperations,
+		groupedImageConversionSerializations: groupedImageConversionCounts.serializations,
+		groupedImageConversionObjectLiterals: groupedImageConversionCounts.objectLiterals,
+		groupedImageConversionMapConstructors: groupedImageConversionCounts.mapConstructors,
+		groupedImageConversionSetConstructors: groupedImageConversionCounts.setConstructors,
+		groupedImageConversionPromises: groupedImageConversionCounts.promises,
+		groupedImageConversionPromiseProducingCallSites,
+		groupedImageConversionAbortControllers: groupedImageConversionCounts.abortControllers,
+		canonicalPayloadRefreshArrayMaterializationSites:
+			canonicalPayloadRefreshCounts.arrayLiterals +
+			canonicalPayloadRefreshCounts.arraySpreads +
+			canonicalPayloadRefreshCounts.arrayProducingCalls +
+			canonicalPayloadRefreshCounts.arrayConstructors,
+		canonicalPayloadRefreshInlineClosureSites: canonicalPayloadRefreshCounts.inlineClosures,
+		canonicalPayloadRefreshCopyOperations: canonicalPayloadRefreshCounts.copyOperations,
+		canonicalPayloadRefreshSerializations: canonicalPayloadRefreshCounts.serializations,
+		canonicalPayloadRefreshObjectLiterals: canonicalPayloadRefreshCounts.objectLiterals,
+		canonicalPayloadRefreshMapConstructors: canonicalPayloadRefreshCounts.mapConstructors,
+		canonicalPayloadRefreshSetConstructors: canonicalPayloadRefreshCounts.setConstructors,
+		canonicalPayloadRefreshPromises: canonicalPayloadRefreshCounts.promises,
+		canonicalPayloadRefreshAbortControllers: canonicalPayloadRefreshCounts.abortControllers,
 		promises: ownershipCounts.promises,
 		abortControllers: ownershipCounts.abortControllers,
 	};

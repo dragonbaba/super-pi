@@ -738,14 +738,21 @@ test("tool-result message_end disposition preserves legacy mutation and skips on
 			expectedText: "ZERO_HANDLER_ORIGINAL",
 			expectedRefreshes: 0,
 			expectedSkips: 1,
+			expectedConservativeRefreshes: 0,
+			expectedReplacementRefreshes: 0,
 		},
 		{
 			name: "no-op-handler",
-			extensions: [(pi: any) => pi.on("message_end", () => undefined)],
+			extensions: [(pi: any) => pi.on("message_end", (event: object) => {
+				assert.equal("toolResultMessageEndDisposition" in event, false, "extensions must not observe the internal sidecar");
+				return undefined;
+			})],
 			expectedDisposition: "handler-may-have-mutated",
 			expectedText: "NO_OP_HANDLER_ORIGINAL",
 			expectedRefreshes: 1,
 			expectedSkips: 0,
+			expectedConservativeRefreshes: 1,
+			expectedReplacementRefreshes: 0,
 		},
 		{
 			name: "in-place-handler",
@@ -759,6 +766,85 @@ test("tool-result message_end disposition preserves legacy mutation and skips on
 			expectedText: "IN_PLACE_HANDLER_CANONICAL",
 			expectedRefreshes: 1,
 			expectedSkips: 0,
+			expectedConservativeRefreshes: 1,
+			expectedReplacementRefreshes: 0,
+		},
+		{
+			name: "in-place-array-handler",
+			extensions: [(pi: any) => pi.on("message_end", (event: { message: ToolResultMessage }) => {
+				if (event.message.role === "toolResult") {
+					event.message.content.push({ type: "text", text: "ARRAY_PUSHED" });
+					event.message.content.splice(0, 1, { type: "text", text: "ARRAY_SPLICED" });
+					event.message.content[1] = { type: "text", text: "IN_PLACE_ARRAY_CANONICAL" };
+				}
+				return undefined;
+			})],
+			expectedDisposition: "handler-may-have-mutated",
+			expectedText: "IN_PLACE_ARRAY_CANONICAL",
+			expectedRefreshes: 1,
+			expectedSkips: 0,
+			expectedConservativeRefreshes: 1,
+			expectedReplacementRefreshes: 0,
+		},
+		{
+			name: "in-place-details-handler",
+			extensions: [(pi: any) => pi.on("message_end", (event: { message: ToolResultMessage }) => {
+				if (event.message.role === "toolResult") {
+					(event.message.details as { nested: { value: string } }).nested.value = "DETAILS_CANONICAL";
+				}
+				return undefined;
+			})],
+			expectedDisposition: "handler-may-have-mutated",
+			expectedText: "PRE_EXTENSION_ORIGINAL",
+			expectedDetails: "DETAILS_CANONICAL",
+			expectedRefreshes: 1,
+			expectedSkips: 0,
+			expectedConservativeRefreshes: 1,
+			expectedReplacementRefreshes: 0,
+		},
+		{
+			name: "in-place-is-error-handler",
+			extensions: [(pi: any) => pi.on("message_end", (event: { message: ToolResultMessage }) => {
+				if (event.message.role === "toolResult") event.message.isError = true;
+				return undefined;
+			})],
+			expectedDisposition: "handler-may-have-mutated",
+			expectedText: "PRE_EXTENSION_ORIGINAL",
+			expectedIsError: true,
+			expectedRefreshes: 1,
+			expectedSkips: 0,
+			expectedConservativeRefreshes: 1,
+			expectedReplacementRefreshes: 0,
+		},
+		{
+			name: "mutation-then-throw",
+			extensions: [(pi: any) => pi.on("message_end", (event: { message: ToolResultMessage }) => {
+				if (event.message.role === "toolResult" && event.message.content[0]?.type === "text") {
+					event.message.content[0].text = "MUTATED_BEFORE_THROW_CANONICAL";
+				}
+				throw new Error("fixture handler failure after mutation");
+			})],
+			expectedDisposition: "handler-may-have-mutated",
+			expectedText: "MUTATED_BEFORE_THROW_CANONICAL",
+			expectedRefreshes: 1,
+			expectedSkips: 0,
+			expectedConservativeRefreshes: 1,
+			expectedReplacementRefreshes: 0,
+		},
+		{
+			name: "invalid-role-after-mutation",
+			extensions: [(pi: any) => pi.on("message_end", (event: { message: ToolResultMessage }) => {
+				if (event.message.role === "toolResult" && event.message.content[0]?.type === "text") {
+					event.message.content[0].text = "INVALID_ROLE_MUTATION_CANONICAL";
+				}
+				return { message: { role: "user", content: "invalid role", timestamp: 3 } };
+			})],
+			expectedDisposition: "handler-may-have-mutated",
+			expectedText: "INVALID_ROLE_MUTATION_CANONICAL",
+			expectedRefreshes: 1,
+			expectedSkips: 0,
+			expectedConservativeRefreshes: 1,
+			expectedReplacementRefreshes: 0,
 		},
 		{
 			name: "replacement-handler",
@@ -769,6 +855,27 @@ test("tool-result message_end disposition preserves legacy mutation and skips on
 			expectedText: "RETURNED_REPLACEMENT_CANONICAL",
 			expectedRefreshes: 1,
 			expectedSkips: 0,
+			expectedConservativeRefreshes: 0,
+			expectedReplacementRefreshes: 1,
+		},
+		{
+			name: "multiple-replacement-then-mutation",
+			extensions: [(pi: any) => {
+				pi.on("message_end", (event: { message: ToolResultMessage }) => ({
+					message: { ...event.message, content: [{ type: "text", text: "MULTI_REPLACEMENT" }] },
+				}));
+				pi.on("message_end", (event: { message: ToolResultMessage }) => {
+					if (event.message.role === "toolResult" && event.message.content[0]?.type === "text") {
+						event.message.content[0].text = "MULTI_REPLACEMENT_THEN_MUTATION";
+					}
+				});
+			}],
+			expectedDisposition: "replacement-returned",
+			expectedText: "MULTI_REPLACEMENT_THEN_MUTATION",
+			expectedRefreshes: 1,
+			expectedSkips: 0,
+			expectedConservativeRefreshes: 0,
+			expectedReplacementRefreshes: 1,
 		},
 	] as const;
 
@@ -786,6 +893,7 @@ test("tool-result message_end disposition preserves legacy mutation and skips on
 				? "NO_OP_HANDLER_ORIGINAL"
 				: "PRE_EXTENSION_ORIGINAL";
 		const message = result(toolCallId, "fixture-tool", originalText) as ToolResultMessage;
+		message.details = { nested: { value: "DETAILS_ORIGINAL" } };
 		await fixture.internals.handleEvent({
 			type: "tool_execution_end",
 			toolCallId,
@@ -802,23 +910,366 @@ test("tool-result message_end disposition preserves legacy mutation and skips on
 		assert.equal(disposition, fixtureCase.expectedDisposition);
 		assert.equal(counts.canonicalPayloadRefreshes, fixtureCase.expectedRefreshes);
 		assert.equal(counts.canonicalPayloadRefreshSkips, fixtureCase.expectedSkips);
+		assert.equal(
+			counts.canonicalPayloadConservativeHandlerRefreshes,
+			fixtureCase.expectedConservativeRefreshes,
+		);
+		assert.equal(counts.canonicalPayloadReplacementRefreshes, fixtureCase.expectedReplacementRefreshes);
 		assert.match(component.render(100).join("\n"), new RegExp(fixtureCase.expectedText));
+		const componentPayload = component as unknown as {
+			result?: { details?: { nested?: { value?: string } } };
+			resultIsError: boolean;
+		};
+		if ("expectedDetails" in fixtureCase) {
+			assert.equal(componentPayload.result?.details?.nested?.value, fixtureCase.expectedDetails);
+		}
+		if ("expectedIsError" in fixtureCase) {
+			assert.equal(componentPayload.resultIsError, fixtureCase.expectedIsError);
+		}
 		const persisted = fixture.sessionManager.getBranch().at(-1);
 		assert.equal(persisted?.type, "message");
 		assert.equal(
-			persisted?.type === "message" && persisted.message.role === "toolResult" && persisted.message.content[0]?.type === "text"
-				? persisted.message.content[0].text
-				: undefined,
-			fixtureCase.expectedText,
+			persisted?.type === "message" && persisted.message.role === "toolResult"
+				? persisted.message.content.some(
+					(block) => block.type === "text" && block.text.includes(fixtureCase.expectedText),
+				)
+				: false,
+			true,
+		);
+		if ("expectedDetails" in fixtureCase) {
+			assert.equal(
+				persisted?.type === "message" && persisted.message.role === "toolResult"
+					? (persisted.message.details as { nested?: { value?: string } } | undefined)?.nested?.value
+					: undefined,
+				fixtureCase.expectedDetails,
+			);
+		}
+		if ("expectedIsError" in fixtureCase) {
+			assert.equal(
+				persisted?.type === "message" && persisted.message.role === "toolResult"
+					? persisted.message.isError
+					: undefined,
+				fixtureCase.expectedIsError,
+			);
+		}
+		const canonicalStateMessage = fixture.session.agent.state.messages.at(-1);
+		assert.equal(
+			canonicalStateMessage?.role === "toolResult"
+				? canonicalStateMessage.content.some(
+					(block) => block.type === "text" && block.text.includes(fixtureCase.expectedText),
+				)
+				: false,
+			true,
+		);
+		assert.equal(
+			persisted?.type === "message" && "toolResultMessageEndDisposition" in persisted.message,
+			false,
+			"the internal disposition must not enter session persistence",
 		);
 	}
+});
+
+test("zero-handler V2 attaches once while missing disposition fails safe", async (t) => {
+	const zeroHandler = await createModeFixture([], [], { enabled: true, budgetTokens: 128 });
+	t.after(zeroHandler.dispose);
+	zeroHandler.internals.isInitialized = true;
+	const zeroId = "zero-handler-v2";
+	await zeroHandler.internals.handleEvent({ type: "tool_execution_start", toolCallId: zeroId, toolName: "fixture-tool", args: {} });
+	const zeroComponent = zeroHandler.internals.pendingTools.get(zeroId);
+	assert.ok(zeroComponent instanceof ToolExecutionComponent);
+	const zeroMessage = result(zeroId, "fixture-tool", "zero-handler-v2-".repeat(1_000)) as ToolResultMessage;
+	await zeroHandler.internals.handleEvent({
+		type: "tool_execution_end",
+		toolCallId: zeroId,
+		toolName: zeroMessage.toolName,
+		result: { content: zeroMessage.content, isError: false },
+		isError: false,
+	});
+	zeroHandler.session.agent.state.messages.push(zeroMessage);
+	await emitToolResultMessageEnd(zeroHandler, zeroMessage);
+	let counts = zeroHandler.internals.getToolResultDiscoveryLifecycleCounts();
+	assert.equal(counts.canonicalPayloadRefreshes, 0);
+	assert.equal(counts.canonicalPayloadRefreshSkips, 1);
+	assert.ok(zeroComponent.getToolResultPresentationDiscovery(zeroId));
+	assert.equal(counts.registrationsAttached, 1);
+
+	const compatibility = await createModeFixture([], [], { enabled: true, budgetTokens: 128 });
+	t.after(compatibility.dispose);
+	compatibility.internals.isInitialized = true;
+	const compatibilityId = "missing-disposition-v1";
+	await compatibility.internals.handleEvent({
+		type: "tool_execution_start",
+		toolCallId: compatibilityId,
+		toolName: "fixture-tool",
+		args: {},
+	});
+	const compatibilityComponent = compatibility.internals.pendingTools.get(compatibilityId);
+	assert.ok(compatibilityComponent instanceof ToolExecutionComponent);
+	const compatibilityMessage = result(compatibilityId, "fixture-tool", "compatibility-original") as ToolResultMessage;
+	await compatibility.internals.handleEvent({
+		type: "tool_execution_end",
+		toolCallId: compatibilityId,
+		toolName: compatibilityMessage.toolName,
+		result: { content: compatibilityMessage.content, isError: false },
+		isError: false,
+	});
+	compatibility.session.agent.state.messages.push(compatibilityMessage);
+	let captured = false;
+	const unsubscribe = compatibility.session.subscribe((event) => {
+		if (event.type !== "message_end" || !event.toolResultPresentation) return;
+		captured = true;
+		(compatibility.internals as unknown as {
+			attachLiveToolResultPresentation(
+				message: ToolResultMessage,
+				presentation: ToolResultPresentation,
+				disposition: undefined,
+			): void;
+		}).attachLiveToolResultPresentation(
+			event.message as ToolResultMessage,
+			event.toolResultPresentation,
+			undefined,
+		);
+	});
+	await (compatibility.session as unknown as {
+		_handleAgentEvent(event: { type: "message_end"; message: ToolResultMessage }): Promise<void>;
+	})._handleAgentEvent({ type: "message_end", message: compatibilityMessage });
+	unsubscribe();
+	assert.equal(captured, true);
+	counts = compatibility.internals.getToolResultDiscoveryLifecycleCounts();
+	assert.equal(counts.canonicalPayloadRefreshes, 1);
+	assert.equal(counts.canonicalPayloadConservativeHandlerRefreshes, 1);
+	assert.equal(counts.canonicalPayloadRefreshSkips, 0);
+});
+
+test("legacy in-place details and isError mutation reaches a custom renderer once", async (t) => {
+	let resultRendererCalls = 0;
+	const customTool = {
+		name: "disposition-renderer",
+		label: "Disposition renderer",
+		description: "message_end disposition fixture",
+		parameters: {},
+		execute: async () => ({ content: [{ type: "text", text: "unused" }], details: undefined }),
+		renderResult: (
+			resultPayload: { details?: { nested?: { value?: string } } },
+			_options: unknown,
+			_theme: unknown,
+			context: ToolRenderContext,
+		) => {
+			resultRendererCalls++;
+			return new Text(`details=${resultPayload.details?.nested?.value ?? "missing"};error=${context.isError}`);
+		},
+	} as unknown as ToolDefinition;
+	const fixture = await createModeFixture(
+		[],
+		[customTool],
+		{ enabled: true, budgetTokens: 128 },
+		[(pi: any) => pi.on("message_end", (event: { message: ToolResultMessage }) => {
+			if (event.message.role === "toolResult") {
+				(event.message.details as { nested: { value: string } }).nested.value = "MUTATED_DETAILS";
+				event.message.isError = true;
+			}
+		})],
+	);
+	t.after(fixture.dispose);
+	fixture.internals.isInitialized = true;
+	const toolCallId = "disposition-custom-renderer";
+	await fixture.internals.handleEvent({
+		type: "tool_execution_start",
+		toolCallId,
+		toolName: customTool.name,
+		args: {},
+	});
+	const component = fixture.internals.pendingTools.get(toolCallId);
+	assert.ok(component instanceof ToolExecutionComponent);
+	const message = result(toolCallId, customTool.name, "custom-renderer-content") as ToolResultMessage;
+	message.details = { nested: { value: "ORIGINAL_DETAILS" } };
+	await fixture.internals.handleEvent({
+		type: "tool_execution_end",
+		toolCallId,
+		toolName: customTool.name,
+		result: { content: message.content, details: message.details, isError: false },
+		isError: false,
+	});
+	const callsAfterToolEnd = resultRendererCalls;
+	fixture.session.agent.state.messages.push(message);
+	await emitToolResultMessageEnd(fixture, message);
+	assert.equal(resultRendererCalls, callsAfterToolEnd + 1);
+	assert.match(component.render(100).join("\n"), /details=MUTATED_DETAILS;error=true/);
+	const counts = fixture.internals.getToolResultDiscoveryLifecycleCounts();
+	assert.equal(counts.canonicalPayloadRefreshes, 1);
+	assert.equal(counts.canonicalPayloadConservativeHandlerRefreshes, 1);
+	assert.equal(counts.canonicalPayloadReplacementRefreshes, 0);
+	const persisted = fixture.sessionManager.getBranch().at(-1);
+	assert.equal(
+		persisted?.type === "message" && persisted.message.role === "toolResult"
+			? (persisted.message.details as { nested?: { value?: string } }).nested?.value
+			: undefined,
+		"MUTATED_DETAILS",
+	);
+	assert.equal(
+		persisted?.type === "message" && persisted.message.role === "toolResult"
+			? persisted.message.isError
+			: undefined,
+		true,
+	);
+});
+
+test("grouped extension dispositions compose with bounded previews, Kitty conversion, and compaction reset", async (t) => {
+	const previousCapabilities = getCapabilities();
+	setCapabilities({ images: "kitty", trueColor: true, hyperlinks: true });
+	t.after(() => setCapabilities(previousCapabilities));
+
+	const noOpV1 = await createModeFixture(
+		[],
+		[],
+		{ enabled: true, budgetTokens: 10_000 },
+		[(pi: any) => pi.on("message_end", () => undefined)],
+	);
+	t.after(noOpV1.dispose);
+	noOpV1.internals.isInitialized = true;
+	const v1Id = "grouped-no-op-v1";
+	const v1Group = noOpV1.internals.createTrackedToolComponent("read", v1Id, { path: "v1.txt" }, undefined, true);
+	assert.ok(v1Group instanceof ReadToolGroupComponent);
+	v1Group.setExpanded(true);
+	const v1Message = {
+		...(result(v1Id, "read", `${"v1-prefix-".repeat(500)}V1_TAIL`) as ToolResultMessage),
+		content: [
+			{ type: "text" as const, text: `${"v1-prefix-".repeat(500)}V1_TAIL` },
+			{ type: "image" as const, data: "VjFfSlBFRw==", mimeType: "image/jpeg" },
+		],
+	};
+	await noOpV1.internals.handleEvent({
+		type: "tool_execution_end",
+		toolCallId: v1Id,
+		toolName: "read",
+		result: { content: v1Message.content, isError: false },
+		isError: false,
+	});
+	noOpV1.session.agent.state.messages.push(v1Message);
+	await emitToolResultMessageEnd(noOpV1, v1Message);
+	assert.doesNotMatch(v1Group.render(100).join("\n"), /V1_TAIL/);
+	assert.equal(v1Group.getGroupedImageConversionLifecycleCounts().scheduled, 0);
+	assert.equal(noOpV1.internals.getToolResultDiscoveryLifecycleCounts().canonicalPayloadConservativeHandlerRefreshes, 1);
+
+	const runV2 = async (
+		label: string,
+		extensions: Array<(pi: any) => void>,
+		expectedRefreshes: number,
+	): Promise<{ fixture: ModeFixture; group: ReadToolGroupComponent }> => {
+		const fixture = await createModeFixture([], [], { enabled: true, budgetTokens: 128 }, extensions);
+		t.after(fixture.dispose);
+		fixture.internals.isInitialized = true;
+		const toolCallId = `grouped-${label}-v2`;
+		const group = fixture.internals.createTrackedToolComponent("read", toolCallId, { path: `${label}.txt` }, undefined, true);
+		assert.ok(group instanceof ReadToolGroupComponent);
+		(group as unknown as {
+			convertImageForTerminal(data: string, mimeType: string): Promise<{ data: string; mimeType: string } | null>;
+		}).convertImageForTerminal = async () => ({ data: `${label}-png`, mimeType: "image/png" });
+		group.setExpanded(true);
+		const message = {
+			...(result(toolCallId, "read", `${label}-`.repeat(1_000)) as ToolResultMessage),
+			content: [
+				{ type: "text" as const, text: `${label}-`.repeat(1_000) },
+				{ type: "image" as const, data: `${label}-jpeg`, mimeType: "image/jpeg" },
+			],
+		};
+		await fixture.internals.handleEvent({
+			type: "tool_execution_end",
+			toolCallId,
+			toolName: "read",
+			result: { content: message.content, isError: false },
+			isError: false,
+		});
+		fixture.session.agent.state.messages.push(message);
+		await emitToolResultMessageEnd(fixture, message);
+		const lifecycle = fixture.internals.getToolResultDiscoveryLifecycleCounts();
+		assert.equal(lifecycle.canonicalPayloadRefreshes, expectedRefreshes);
+		assert.equal(group.getGroupedImageConversionLifecycleCounts().scheduled, 1);
+		assert.ok(group.getToolResultPresentationDiscovery(toolCallId));
+		return { fixture, group };
+	};
+
+	await runV2("zero-handler", [], 0);
+	await runV2("in-place", [
+		(pi: any) => pi.on("message_end", (event: { message: ToolResultMessage }) => {
+			if (event.message.role === "toolResult" && event.message.content[0]?.type === "text") {
+				event.message.content[0].text = "IN_PLACE_GROUPED_V2-".repeat(1_000);
+			}
+		}),
+	], 1);
+
+	let settleReplacement: ((value: { data: string; mimeType: string } | null) => void) | undefined;
+	const replacement = await createModeFixture(
+		[],
+		[],
+		{ enabled: true, budgetTokens: 128 },
+		[(pi: any) => pi.on("message_end", (event: { message: ToolResultMessage }) => ({
+			message: {
+				...event.message,
+				content: [
+					{ type: "text", text: "REPLACEMENT_GROUPED_V2-".repeat(1_000) },
+					{ type: "image", data: "replacement-jpeg", mimeType: "image/jpeg" },
+				],
+			},
+		}))],
+	);
+	t.after(replacement.dispose);
+	replacement.internals.isInitialized = true;
+	const replacementId = "grouped-replacement-compaction";
+	const replacementGroup = replacement.internals.createTrackedToolComponent(
+		"read",
+		replacementId,
+		{ path: "replacement.txt" },
+		undefined,
+		true,
+	);
+	assert.ok(replacementGroup instanceof ReadToolGroupComponent);
+	(replacementGroup as unknown as {
+		convertImageForTerminal(data: string, mimeType: string): Promise<{ data: string; mimeType: string } | null>;
+	}).convertImageForTerminal = () => new Promise((resolve) => { settleReplacement = resolve; });
+	replacementGroup.setExpanded(true);
+	const replacementMessage = {
+		...(result(replacementId, "read", "PRE_REPLACEMENT_GROUPED_V2-".repeat(1_000)) as ToolResultMessage),
+		content: [
+			{ type: "text" as const, text: "PRE_REPLACEMENT_GROUPED_V2-".repeat(1_000) },
+			{ type: "image" as const, data: "pre-replacement-jpeg", mimeType: "image/jpeg" },
+		],
+	};
+	await replacement.internals.handleEvent({
+		type: "tool_execution_end",
+		toolCallId: replacementId,
+		toolName: "read",
+		result: { content: replacementMessage.content, isError: false },
+		isError: false,
+	});
+	replacement.session.agent.state.messages.push(replacementMessage);
+	await emitToolResultMessageEnd(replacement, replacementMessage);
+	assert.equal(replacementGroup.getGroupedImageConversionLifecycleCounts().scheduled, 1);
+	assert.equal(replacement.internals.getToolResultDiscoveryLifecycleCounts().canonicalPayloadReplacementRefreshes, 1);
+	await replacement.internals.handleEvent({
+		type: "compaction_end",
+		reason: "manual",
+		result: { summary: "replacement compaction", firstKeptEntryId: "kept", tokensBefore: 8_192 },
+		aborted: false,
+		willRetry: false,
+	});
+	assert.ok(settleReplacement);
+	settleReplacement({ data: "stale-converted-png", mimeType: "image/png" });
+	await Promise.resolve();
+	await Promise.resolve();
+	const conversionAfterCompaction = replacementGroup.getGroupedImageConversionLifecycleCounts();
+	assert.equal(conversionAfterCompaction.accepted, 0);
+	assert.equal(conversionAfterCompaction.dropped, 1);
+	assert.equal(conversionAfterCompaction.sourceReferences, 0);
+	assert.equal(replacementGroup.getToolResultPresentationDiscovery(replacementId), undefined);
+	assert.equal(replacement.internals.getToolResultDiscoveryLifecycleCounts().canonicalHistoryResetUniqueComponentRefreshes, 1);
 });
 
 test("successful compaction refreshes a shared grouped component once", async (t) => {
 	const fixture = await createModeFixture([], [], { enabled: true, budgetTokens: 128 });
 	t.after(fixture.dispose);
 	fixture.internals.isInitialized = true;
-	const groupSize = 8;
+	const groupSize = 128;
 	let group: ReadToolGroupComponent | undefined;
 	for (let index = 0; index < groupSize; index++) {
 		const toolCallId = `compaction-unique-group-${index}`;
@@ -838,6 +1289,13 @@ test("successful compaction refreshes a shared grouped component once", async (t
 		await emitToolResultMessageEnd(fixture, message);
 	}
 	assert.ok(group);
+	const attachedEntries = attachedToolResultDiscoveries(fixture.internals);
+	const identityMismatch = attachedEntries?.get("compaction-unique-group-0");
+	assert.ok(identityMismatch);
+	identityMismatch.identity = "stale-registry-identity";
+	const alreadyDetached = attachedEntries?.get("compaction-unique-group-1");
+	assert.ok(alreadyDetached?.identity);
+	assert.equal(group.detachToolResultPresentation("compaction-unique-group-1", alreadyDetached.identity), true);
 	const groupInternals = group as unknown as { rebuild(): void };
 	const originalRebuild = groupInternals.rebuild;
 	let rebuilds = 0;
@@ -859,6 +1317,19 @@ test("successful compaction refreshes a shared grouped component once", async (t
 	assert.equal(after.canonicalHistoryResetRegistrationReleases, (before.canonicalHistoryResetRegistrationReleases ?? 0) + groupSize);
 	assert.equal(after.canonicalHistoryResetUniqueComponentRefreshes, (before.canonicalHistoryResetUniqueComponentRefreshes ?? 0) + 1);
 	assert.equal(after.attached, 0);
+	for (let index = 0; index < groupSize; index++) {
+		assert.equal(group.getToolResultPresentationDiscovery(`compaction-unique-group-${index}`), undefined);
+	}
+	await fixture.internals.handleEvent({
+		type: "compaction_end",
+		reason: "manual",
+		result: { summary: "REPEATED_UNIQUE_COMPONENT_RESET", firstKeptEntryId: "kept", tokensBefore: 4_096 },
+		aborted: false,
+		willRetry: false,
+	});
+	const repeated = fixture.internals.getToolResultDiscoveryLifecycleCounts();
+	assert.equal(repeated.canonicalHistoryResetRegistrationReleases, after.canonicalHistoryResetRegistrationReleases);
+	assert.equal(repeated.canonicalHistoryResetUniqueComponentRefreshes, after.canonicalHistoryResetUniqueComponentRefreshes);
 });
 
 test("live tool completion binds the internal presentation sidecar by canonical content identity", async (t) => {
@@ -1721,6 +2192,12 @@ test("128 trailing V1 results do not hide an earlier bounded V2 discovery", asyn
 			attachedMapsCreated: 1,
 			canonicalV1RetainedInvalidations: 0,
 			canonicalHistoryResetReleases: 0,
+			canonicalHistoryResetRegistrationReleases: 0,
+			canonicalHistoryResetUniqueComponentRefreshes: 0,
+			canonicalPayloadRefreshes: 0,
+			canonicalPayloadRefreshSkips: 0,
+			canonicalPayloadConservativeHandlerRefreshes: 0,
+			canonicalPayloadReplacementRefreshes: 0,
 			historyMessagesVisited: 130,
 			presentationCandidatesEvaluated: 129,
 			actualV2Discoveries: 1,

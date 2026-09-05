@@ -95,6 +95,33 @@ function createTui(): TUI {
 	return { requestRender(): void {} } as TUI;
 }
 
+type ConvertedGroupedImage = { data: string; mimeType: string };
+
+interface DeferredGroupedImageConversion {
+	readonly data: string;
+	readonly mimeType: string;
+	resolve(value: ConvertedGroupedImage | null): void;
+	reject(error: Error): void;
+}
+
+class DeferredReadToolGroupComponent extends ReadToolGroupComponent {
+	readonly conversions: DeferredGroupedImageConversion[] = [];
+
+	protected override convertImageForTerminal(
+		data: string,
+		mimeType: string,
+	): Promise<ConvertedGroupedImage | null> {
+		return new Promise<ConvertedGroupedImage | null>((resolve, reject) => {
+			this.conversions.push({ data, mimeType, resolve, reject });
+		});
+	}
+}
+
+async function settleGroupedImageConversion(): Promise<void> {
+	await Promise.resolve();
+	await Promise.resolve();
+}
+
 setKeybindings(new KeybindingsManager());
 
 function plain(lines: string[]): string {
@@ -339,14 +366,8 @@ test("grouped Kitty non-PNG images wait for converted PNG ownership", async (t) 
 	const previousCapabilities = getCapabilities();
 	setCapabilities({ images: "kitty", trueColor: true, hyperlinks: true });
 	t.after(() => setCapabilities(previousCapabilities));
-	const group = new ReadToolGroupComponent(true, 32) as ReadToolGroupComponent & {
-		getGroupedImageConversionLifecycleCounts(): {
-			scheduled: number;
-			activePending: number;
-			accepted: number;
-			imageComponents: number;
-		};
-	};
+	let visualInvalidations = 0;
+	const group = new DeferredReadToolGroupComponent(true, 32, () => { visualInvalidations++; });
 	const message = toolResult("read-kitty-jpeg", [
 		{ type: "text", text: "grouped-kitty-text-".repeat(400) },
 		{ type: "image", data: "R1JPVVBFRF9KUEVHX1JBV19CWVRFUw==", mimeType: "image/jpeg" },
@@ -360,12 +381,142 @@ test("grouped Kitty non-PNG images wait for converted PNG ownership", async (t) 
 	assert.ok(group.setToolResultPresentation(message.toolCallId, presentation));
 	owner.release();
 	group.setExpanded(true);
-	const counts = group.getGroupedImageConversionLifecycleCounts();
+	assert.equal(group.conversions.length, 1);
+	assert.equal(group.conversions[0]?.mimeType, "image/jpeg");
+	let counts = group.getGroupedImageConversionLifecycleCounts();
 	assert.equal(counts.scheduled, 1);
 	assert.equal(counts.activePending, 1);
 	assert.equal(counts.accepted, 0);
 	assert.equal(counts.imageComponents, 0, "raw JPEG must not be passed to Kitty as PNG while conversion is pending");
+	group.setImageWidthCells(41);
+	assert.equal(group.conversions.length, 1, "a rebuild must reuse the in-flight source conversion");
+	group.conversions[0]!.resolve({ data: "Q09OVkVSVEVEX1BORw==", mimeType: "image/png" });
+	await settleGroupedImageConversion();
+	counts = group.getGroupedImageConversionLifecycleCounts();
+	assert.equal(counts.activePending, 0);
+	assert.equal(counts.accepted, 1);
+	assert.equal(counts.scheduled, 1);
+	assert.equal(counts.imageComponents, 1);
+	assert.equal(visualInvalidations, 1);
+	const image = group.children.find((child): child is Image => child instanceof Image);
+	assert.ok(image);
+	const imageInternals = image as unknown as {
+		base64Data: string;
+		mimeType: string;
+		options: { maxWidthCells?: number };
+	};
+	assert.equal(imageInternals.base64Data, "Q09OVkVSVEVEX1BORw==");
+	assert.equal(imageInternals.mimeType, "image/png");
+	assert.equal(imageInternals.options.maxWidthCells, 41);
+	group.setExpanded(false);
+	counts = group.getGroupedImageConversionLifecycleCounts();
+	assert.equal(counts.activePending, 0);
+	assert.equal(counts.convertedImages, 0);
+	assert.equal(counts.sourceReferences, 0);
+	assert.equal(counts.imageComponents, 0);
 	owner.dispose();
+});
+
+test("grouped image conversion rejects stale, hidden, detached, null, and rejected completions", async (t) => {
+	initTheme("dark");
+	const previousCapabilities = getCapabilities();
+	setCapabilities({ images: "kitty", trueColor: true, hyperlinks: true });
+	t.after(() => setCapabilities(previousCapabilities));
+	let visualInvalidations = 0;
+	const group = new DeferredReadToolGroupComponent(true, 32, () => { visualInvalidations++; });
+	const owner = createToolResultPresentationOwner({ enabled: true, budgetTokens: 128 }, "grouped-kitty-lifecycle")!;
+	const attach = (toolCallId: string, mimeType: string, data: string): void => {
+		const message = toolResult(toolCallId, [
+			{ type: "text", text: `${toolCallId}-`.repeat(1_000) },
+			{ type: "image", data, mimeType },
+		]);
+		group.updateArgs(toolCallId, { path: `${toolCallId}.txt` });
+		group.setArgsComplete(toolCallId);
+		group.updateResult(toolCallId, message);
+		const presentation = owner.create(message.content, message.toolCallId)!;
+		assert.equal(presentation.version, 2);
+		assert.ok(group.setToolResultPresentation(message.toolCallId, presentation));
+		owner.release();
+	};
+
+	attach("jpeg-stale", "image/jpeg", "SkVQRUdfU1RBTEU=");
+	group.setExpanded(true);
+	assert.equal(group.conversions.length, 1);
+	group.setShowImages(false);
+	group.conversions[0]!.resolve({ data: "U1RBTEVfUE5H", mimeType: "image/png" });
+	await settleGroupedImageConversion();
+	let counts = group.getGroupedImageConversionLifecycleCounts();
+	assert.equal(counts.accepted, 0);
+	assert.equal(counts.dropped, 1);
+	assert.equal(counts.sourceReferences, 0);
+	assert.equal(visualInvalidations, 0);
+
+	group.setShowImages(true);
+	assert.equal(group.conversions.length, 2);
+	group.conversions[1]!.resolve(null);
+	await settleGroupedImageConversion();
+	counts = group.getGroupedImageConversionLifecycleCounts();
+	assert.equal(counts.rejected, 1);
+	assert.equal(counts.imageComponents, 0);
+
+	assert.equal(group.detachToolResultPresentation("jpeg-stale"), true);
+	group.refreshToolResultPresentationView();
+	assert.equal(group.getGroupedImageConversionLifecycleCounts().sourceReferences, 0);
+
+	attach("webp-rejected", "image/webp", "V0VCUF9SRUpFQ1RFRA==");
+	assert.equal(group.conversions.length, 3);
+	group.conversions[2]!.reject(new Error("fixture conversion rejected"));
+	await settleGroupedImageConversion();
+	counts = group.getGroupedImageConversionLifecycleCounts();
+	assert.equal(counts.rejected, 2);
+	assert.equal(counts.imageComponents, 0);
+
+	attach("gif-release", "image/gif", "R0lGX1JFTEVBU0U=");
+	assert.equal(group.conversions.length, 4);
+	group[RELEASE_COMPONENT_RENDER_CACHE]();
+	group.conversions[3]!.resolve({ data: "UkVMRUFTRURfUE5H", mimeType: "image/png" });
+	await settleGroupedImageConversion();
+	counts = group.getGroupedImageConversionLifecycleCounts();
+	assert.equal(counts.accepted, 0);
+	assert.equal(counts.dropped, 2);
+	assert.equal(counts.activePending, 0);
+	assert.equal(counts.sourceReferences, 0);
+	assert.equal(counts.imageComponents, 0);
+	assert.equal(visualInvalidations, 0);
+	owner.dispose();
+});
+
+test("grouped PNG and non-Kitty images use the direct path without conversion", (t) => {
+	initTheme("dark");
+	const previousCapabilities = getCapabilities();
+	t.after(() => setCapabilities(previousCapabilities));
+	const protocols = ["kitty", "iterm2"] as const;
+	for (const protocol of protocols) {
+		setCapabilities({ images: protocol, trueColor: true, hyperlinks: true });
+		const group = new DeferredReadToolGroupComponent(true, 27);
+		const message = toolResult(`direct-${protocol}`, [
+			{ type: "text", text: `direct-${protocol}-`.repeat(1_000) },
+			{
+				type: "image",
+				data: protocol === "kitty" ? "UE5HX0RJUkVDVA==" : "SlBFR19ESVJFQ1Q=",
+				mimeType: protocol === "kitty" ? "image/png" : "image/jpeg",
+			},
+		]);
+		const owner = createToolResultPresentationOwner({ enabled: true, budgetTokens: 128 }, `direct-${protocol}`)!;
+		const presentation = owner.create(message.content, message.toolCallId)!;
+		assert.equal(presentation.version, 2);
+		group.updateArgs(message.toolCallId, { path: `${protocol}.txt` });
+		group.setArgsComplete(message.toolCallId);
+		group.updateResult(message.toolCallId, message);
+		assert.ok(group.setToolResultPresentation(message.toolCallId, presentation));
+		owner.release();
+		group.setExpanded(true);
+		assert.equal(group.conversions.length, 0);
+		assert.equal(group.getGroupedImageConversionLifecycleCounts().scheduled, 0);
+		assert.equal(group.getGroupedImageConversionLifecycleCounts().imageComponents, 1);
+		group[RELEASE_COMPONENT_RENDER_CACHE]();
+		owner.dispose();
+	}
 });
 
 test("interactive live and rebuild paths consume only the internal sidecar with a hard cap", () => {
@@ -399,6 +550,9 @@ test("interactive live and rebuild paths consume only the internal sidecar with 
 	assert.match(benchmark, /measureMixedHistoryRebuild/);
 	assert.match(benchmark, /captureCanonicalReplacementLifecycle/);
 	assert.match(benchmark, /canonicalReplacementLifecycle/);
+	assert.match(benchmark, /canonicalDispositionMatrix/);
+	assert.match(benchmark, /groupedCloseoutLifecycle/);
+	assert.match(benchmark, /groupedCompactionDeduplication/);
 	assert.match(benchmark, /liveProductionRegistrationWeakRefs/);
 	assert.match(benchmark, /releasedProjectionRecordEntries/);
 	assert.doesNotMatch(benchmark, /fullResultCopies:\s*0/);
@@ -428,9 +582,9 @@ test("UI allocation source audit executes the selected production chain and lock
 	assert.equal(audit.resultRenderingArraySpreadSites, 3);
 	assert.equal(audit.resultRenderingCallSpreadSites, 3);
 	assert.equal(audit.resultRenderingArrayProducingCallSites, 5);
-	assert.equal(audit.resultRenderingStringProducingCallSites, 7);
+	assert.equal(audit.resultRenderingStringProducingCallSites, 8, "bounded grouped preview slices only its 4,001-character prefix");
 	assert.equal(audit.resultRenderingArrayConstructorSites, 0);
-	assert.equal(audit.resultRenderingStringAppendSites, 25);
+	assert.equal(audit.resultRenderingStringAppendSites, 26);
 	assert.equal(audit.resultRenderingNumericAppendSites, 16);
 	assert.equal(audit.resultRenderingUnclassifiedAppendSites, 0);
 	assert.equal(audit.resultRenderingInlineClosureSites, 0);
@@ -494,7 +648,34 @@ test("UI allocation source audit executes the selected production chain and lock
 	assert.equal(audit.candidateInspectionSetConstructors, 0);
 	assert.equal(audit.candidateInspectionPromises, 0);
 	assert.equal(audit.candidateInspectionAbortControllers, 0);
-	assert.equal(audit.discoveryOwnershipSetConstructors, 0);
+	assert.equal(audit.groupedRebuildArrayMaterializationSites, 0);
+	assert.equal(audit.groupedRebuildInlineClosureSites, 0);
+	assert.equal(audit.groupedRebuildCopyOperations, 0);
+	assert.equal(audit.groupedRebuildSerializations, 0);
+	assert.equal(audit.groupedRebuildMapConstructors, 0);
+	assert.equal(audit.groupedRebuildSetConstructors, 0);
+	assert.equal(audit.groupedRebuildPromises, 0);
+	assert.equal(audit.groupedRebuildAbortControllers, 0);
+	assert.equal(audit.groupedImageConversionArrayMaterializationSites, 1, "one lazy per-row ordinal state array");
+	assert.equal(audit.groupedImageConversionInlineClosureSites, 2, "one settle pair per real conversion");
+	assert.equal(audit.groupedImageConversionCopyOperations, 0);
+	assert.equal(audit.groupedImageConversionSerializations, 0);
+	assert.equal(audit.groupedImageConversionObjectLiterals, 1, "one state record per eligible image source generation");
+	assert.equal(audit.groupedImageConversionMapConstructors, 1, "one lazy instance-owned conversion registry");
+	assert.equal(audit.groupedImageConversionSetConstructors, 0);
+	assert.equal(audit.groupedImageConversionPromises, 0, "the grouped owner does not wrap the converter promise");
+	assert.equal(audit.groupedImageConversionPromiseProducingCallSites, 1);
+	assert.equal(audit.groupedImageConversionAbortControllers, 0);
+	assert.equal(audit.canonicalPayloadRefreshArrayMaterializationSites, 0);
+	assert.equal(audit.canonicalPayloadRefreshInlineClosureSites, 0);
+	assert.equal(audit.canonicalPayloadRefreshCopyOperations, 0);
+	assert.equal(audit.canonicalPayloadRefreshSerializations, 0);
+	assert.equal(audit.canonicalPayloadRefreshObjectLiterals, 0);
+	assert.equal(audit.canonicalPayloadRefreshMapConstructors, 0);
+	assert.equal(audit.canonicalPayloadRefreshSetConstructors, 0);
+	assert.equal(audit.canonicalPayloadRefreshPromises, 0);
+	assert.equal(audit.canonicalPayloadRefreshAbortControllers, 0);
+	assert.equal(audit.discoveryOwnershipSetConstructors, 1, "successful compaction owns one bounded low-frequency component-dedup Set");
 	assert.equal(audit.promises, 0);
 	assert.equal(audit.abortControllers, 0);
 });
