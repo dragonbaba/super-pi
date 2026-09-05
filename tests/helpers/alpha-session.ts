@@ -59,7 +59,7 @@ export async function alphaHeadless(runtime: ModelRuntime, messages: any[] = [])
 export async function alphaSession(options: {
   mode?: 'regular' | 'fullscreen'; sinkDelay?: number; columns?: number; rows?: number;
   runtime?: ModelRuntime; extensions?: any[]; messages?: any[]; customTools?: any[];
-  g2?: boolean; settings?: Record<string, unknown>;
+  g2?: boolean; budgetTokens?: number; settings?: Record<string, unknown>;
 } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'g2s-session-'));
   const agentDir = join(root, 'agent'); mkdirSync(agentDir);
@@ -71,7 +71,7 @@ export async function alphaSession(options: {
   for (const message of options.messages ?? []) sessionManager.appendMessage(message);
   const { session } = await createAgentSession({ cwd: root, agentDir, model: ALPHA_MODEL, modelRuntime: options.runtime ?? alphaModelRuntime(),
     settingsManager: settings, sessionManager, resourceLoader, noTools: options.customTools?.length ? 'builtin' : 'all',
-    customTools: options.customTools, toolResultPresentation: { enabled: options.g2 ?? true, budgetTokens: 1024 } });
+    customTools: options.customTools, toolResultPresentation: { enabled: options.g2 ?? true, budgetTokens: options.budgetTokens ?? 1024 } });
   const runtime = new AgentSessionRuntime(session, { cwd: root, agentDir } as never, async () => { throw new Error('unexpected replacement'); });
   initTheme('dark');
   const mode = new InteractiveMode(runtime, { tuiMode: options.mode ?? 'regular' });

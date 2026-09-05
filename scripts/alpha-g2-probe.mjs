@@ -12,7 +12,7 @@ mkdirSync(agent);
 mkdirSync(sessions);
 try {
   const files = process.argv.slice(2);
-  const result = spawnSync(process.execPath, ['--experimental-strip-types', '--test',
+  const result = spawnSync(process.execPath, ['--expose-gc', '--experimental-strip-types', '--test',
     ...((files.length ? files : ['tests/alpha-g2-raw.test.ts', 'tests/alpha-ansi.test.ts', 'tests/alpha-raw-session.test.ts', 'tests/alpha-raw-parallel.test.ts', 'tests/alpha-image.test.ts', 'tests/alpha-upstream-truncation.test.ts', 'tests/alpha-footer-scans.test.ts', 'tests/alpha-lifecycle.test.ts', 'tests/alpha-runtime-dispose.test.ts', 'tests/alpha-startup-quit.test.ts', 'tests/alpha-crash-cleanup.test.ts', 'tests/alpha-startup-faults.test.ts']).map(file => resolve(repository, file)))], {
     cwd: root,
     env: { ...process.env, HOME: root, USERPROFILE: root, XDG_CONFIG_HOME: root,

@@ -11,11 +11,43 @@ Active findings:
 - **G2S-B0-02**: shared disposal implemented in `d12e4b7`; 13 ownership/error/reentrancy tests pass, including 100 callers.
 - **G2S-B1-01**: bounded sparse terminal index implemented in `0a23fcb`; 35 ANSI matrix tests pass, original large ANSI fixture preserved.
 - **G2S-B0-CANDIDATE-STARTUP**: clean-HOME/no-model sentinel failure reproduced and fixed in `b09e15a`; the user's configured-copy failure remains unconfirmed. See [startup evidence](g2s-startup-evidence.md).
-- **G2S-SCOPE-02 (acceptance question pending)**: actual 129-result turn at the configured **total** 1,024-token envelope assigns 7 tokens to its first result. The existing fixed continuation notice cannot fit. Both render modes execute all 129 tools but never reach the second provider call. `0ca0f5a` preserves both red assertions; contextual-budget production code is unchanged. Clarification requested: explicitly validate this budget-too-small boundary plus a sufficient-budget positive control, or require success at 1,024 and separately decide semantics/scope. No answer is assumed.
+- **G2S-SCOPE-02 resolved by explicit contract clarification**: the former assertion requiring a second provider call for 129 results within a **total** 1,024-token envelope was contractually impossible. The documented typed budget-too-small boundary is expected. Lack of that second request was not itself a production defect. Separate 16,384-token full-chain coverage is required and now passes; contextual-budget production diff for this decision is zero.
 
 The historical stopped-baseline evidence below is preserved. Its scope restriction is superseded by the addendum; implementation is active again. Streaming optimization still requires L0–L3 baseline evidence. Final target is Draft Candidate Gate, awaiting external final review and explicit merge authorization. No Alpha manual validation is claimed.
 
 ## Current implementation and evidence checkpoint
+
+### High-fanout contract clarification
+
+The updated production-shaped parallel matrix passes **18/18**, including both independent 129-result fixtures in regular/fullscreen. No result count or 1,024 boundary budget changed. Immutable red `ed023a6` and historical contradictory assertion commit `0ca0f5a` remain in history.
+
+| Evidence per mode | 129 @ 1,024 boundary | 129 @ 16,384 full chain |
+| --- | ---: | ---: |
+| Executions / tool_execution_end | 129 / 129 | 129 / 129 |
+| Maximum simultaneous executions | 129 | 129 |
+| Provider requests | 1 | 2 |
+| Terminal assistant state / agent_end | error / 1 | stop / 1 |
+| Typed projection code | budget-too-small | none |
+| Effective first share | 7 | 127 |
+| Projected ToolResult total tokens | no request emitted | 16,384 |
+| Per-result projected token min/max | not dispatched | 58 / 163 |
+| Production-estimated notice tokens | 58 | 57–58 |
+| Message-wrapper token overhead | not dispatched | 1,407 |
+| Full request context tokens | not dispatched | 19,006 (plus 4,096 reserve < 128,000) |
+| UI artifacts / checked continuations | 129 / 129 | 0 / 129 |
+| Automatic tool replays | 0 | 0 |
+| Coordinators / presentation entries after cleanup | 0 / 0 | 0 / 0 |
+| Source WeakRefs released after controlled GC | 129 / 129 | 129 / 129 |
+
+16,384 is the first observed successful total among the explicitly tested 1,024 and 16,384 totals, not a claim of the exact mathematical minimum. It succeeds, so the conditional escalation to 32,768 is unnecessary. At the larger per-tool cap, 64 KiB canonical UI results legitimately remain V1, while the turn-wide provider projection supplies 129 usable cursors. The test reconstructs every omitted region from its own source and checks exact canonical provider ordering, combined envelope, and unchanged persisted/UI content.
+
+The error is caught at the actual owner's contextual projection boundary before AgentSession converts it into an assistant error message; its actual class and `code` are asserted, without matching the complete error string. The stable fixture reason `fixed-notice-does-not-fit` is supported by the actual share and production estimator, not a hard-coded token constant. Both paths have no active indicator or streaming session after the turn and accept later input through injected terminal stdin without tool/provider replay. No separate failure-handling defect was observed in these cases.
+
+Five controlled-GC readings in the fullscreen boundary run: 46,064,128 → 45,989,992 → 45,981,288 → 45,962,072 → 45,962,072 bytes. Full-chain: 46,097,736 → 46,022,992 → 46,014,696 → 45,995,576 → 45,995,576. These establish this fixture's release, not the outstanding 100k-update slope gate. Raw scalar evidence: `high-fanout-contract.log` in the recorded local evidence directory.
+
+**D-G2D-HIGH-FANOUT-BATCH-MANIFEST**: fitting 129 independently recoverable large results inside a 1,024-token total envelope requires a future aggregate batch artifact/manifest or equivalent protocol. Backlog only; no manifest, new setting, provider-wire change, owner redesign, silent omission or budget weakening is implemented in G2S.
+
+The earlier checkpoint below is retained as history; its pending-acceptance/red-test status is superseded by this clarification. Remaining G2S work continues automatically.
 
 Latest production commit at this checkpoint: `0e0e230` (fatal teardown), following measured footer change `d537baec10780ee8c2a37afe50f3914309ec4524`. Baseline/merge-base remains `d5516ca39bfd7940f8bce76ea6aeb63616099383`; original red `ed023a6` is unchanged. Existing branch/worktree retained. No push, PR, review request, Mark Ready or merge has occurred.
 
