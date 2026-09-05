@@ -1422,7 +1422,12 @@ export class AgentSession {
 
 	/** Current model (may be undefined if not yet selected) */
 	get model(): Model<any> | undefined {
-		return this.agent.state.model;
+		const model = this.agent.state.model;
+		// Agent uses an internal sentinel until selection. It is not a model
+		// capability manifest; preserve this accessor's documented no-model state.
+		if (model?.api === "unknown" && model.provider === "unknown" && model.id === "unknown" &&
+			model.contextWindow === 0 && model.maxTokens === 0) return undefined;
+		return model;
 	}
 
 	/** Current thinking level */
