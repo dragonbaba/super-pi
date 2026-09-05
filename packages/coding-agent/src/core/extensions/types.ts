@@ -788,7 +788,16 @@ export interface MessageUpdateEvent {
 	assistantMessageEvent: AssistantMessageEvent;
 }
 
-/** Fired when a message ends */
+/**
+ * Fired when a message ends.
+ *
+ * New extensions should return `{ message: replacement }` for deterministic
+ * replacement. For compatibility, a handler may still mutate `message` in
+ * place before it finishes; the host conservatively treats a legacy handler
+ * that returns no replacement as potentially mutating the canonical message.
+ * Do not retain and mutate this message after the handler returns, after a
+ * timeout, or across run/session boundaries.
+ */
 export interface MessageEndEvent {
 	type: "message_end";
 	message: AgentMessage;
@@ -1147,7 +1156,11 @@ export interface ToolResultEventResult {
 }
 
 export interface MessageEndEventResult {
-	/** Replace the finalized message. The replacement must keep the original message role. */
+	/**
+	 * Preferred deterministic replacement form. The replacement must keep the
+	 * original message role. In-place mutation remains legacy-compatible but is
+	 * discouraged because the host must conservatively assume it may occur.
+	 */
 	message?: AgentMessage;
 }
 

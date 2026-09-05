@@ -194,6 +194,11 @@ export type AgentSessionEvent =
 	| (Extract<AgentEvent, { type: "message_end" }> & {
 			/** Present only for enabled Phase 5B-A final tool results. Extensions never receive this sidecar. */
 			toolResultPresentation?: ToolResultPresentation;
+			/**
+			 * Internal built-in-listener signal for the final ToolResult UI refresh.
+			 * It is never exposed to extensions, providers, persistence, or telemetry.
+			 */
+			toolResultMessageEndDisposition?: "none" | "replacement-returned" | "handler-may-have-mutated";
 	  })
 	| {
 			type: "agent_end";
@@ -1038,8 +1043,9 @@ export class AgentSession {
 		const toolResultSourceContent = event.type === "message_end" && event.message.role === "toolResult"
 			? event.message.content
 			: undefined;
+		const hasExtensionHandlers = this._extensionRunner.hasHandlers(event.type);
 		if (isCoalescibleAgentEvent(event)) {
-			if (this._extensionRunner.hasHandlers(event.type)) await this._emitExtensionEvent(event);
+			if (hasExtensionHandlers) await this._emitExtensionEvent(event);
 			return;
 		}
 		if (isExtensionObserverFlushBoundary(event)) await this._extensionObserverDelivery.flushAllLatest();
@@ -1066,7 +1072,8 @@ export class AgentSession {
 			}
 		}
 
-		if (this._extensionRunner.hasHandlers(event.type)) await this._emitExtensionEvent(event);
+		let messageEndReplacementReturned = false;
+		if (hasExtensionHandlers) messageEndReplacementReturned = await this._emitExtensionEvent(event);
 		if (event.type === "message_end" && event.message.role === "toolResult") {
 			const presentationOwner = this._toolResultPresentation;
 			if (presentationOwner) {
@@ -1076,6 +1083,11 @@ export class AgentSession {
 						type: "message_end",
 						message: event.message,
 						toolResultPresentation: presentation,
+						toolResultMessageEndDisposition: !hasExtensionHandlers
+							? "none"
+							: messageEndReplacementReturned
+								? "replacement-returned"
+								: "handler-may-have-mutated",
 					};
 					const previousUiMessage = this._toolResultUiDispatchMessage;
 					const previousUiSourceContent = this._toolResultUiDispatchSourceContent;
@@ -1214,7 +1226,7 @@ export class AgentSession {
 	}
 
 	/** Emit extension events based on agent events */
-	private async _emitExtensionEvent(event: AgentEvent): Promise<void> {
+	private async _emitExtensionEvent(event: AgentEvent): Promise<boolean> {
 		if (event.type === "agent_start") {
 			this._turnIndex = 0;
 			await this._extensionRunner.emit({ type: "agent_start" });
@@ -1268,6 +1280,7 @@ export class AgentSession {
 						: replacement;
 				this._replaceMessageInPlace(event.message, normalized);
 			}
+			return replacement !== undefined;
 		} else if (event.type === "tool_execution_start") {
 			const extensionEvent: ToolExecutionStartEvent = {
 				type: "tool_execution_start",
@@ -1295,6 +1308,7 @@ export class AgentSession {
 			};
 			await this._extensionRunner.emit(extensionEvent);
 		}
+		return false;
 	}
 
 	private async _emitExtensionObserverEvent(event: CoalescibleAgentEvent): Promise<void> {

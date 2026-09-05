@@ -585,8 +585,12 @@ export class InteractiveMode {
 		settingsVersion: 0,
 	};
 	private readonly getTranscriptRenderContext = (): Readonly<RetainedRenderContext> => this.transcriptRenderContext;
-	private readonly invalidateRetainedToolVisual = (component: ToolExecutionComponent): void => {
+	private readonly invalidateRetainedToolVisual = (component: ToolExecutionComponent | ReadToolGroupComponent): void => {
 		this.chatContainer.invalidateRetainedChild(component);
+	};
+	private readonly invalidateRetainedReadGroupVisual = (component: ReadToolGroupComponent): void => {
+		this.chatContainer.invalidateRetainedChild(component);
+		this.ui.requestRender();
 	};
 	private readonly handleLifecyclePromiseRejection = (error: unknown): void => {
 		try {
@@ -643,6 +647,11 @@ export class InteractiveMode {
 	private toolResultDiscoveryAttachedTeardownReleases = 0;
 	private toolResultDiscoveryCanonicalV1RetainedInvalidations = 0;
 	private toolResultDiscoveryCanonicalHistoryResetReleases = 0;
+	private toolResultDiscoveryCanonicalHistoryResetUniqueComponentRefreshes = 0;
+	private toolResultDiscoveryCanonicalPayloadRefreshes = 0;
+	private toolResultDiscoveryCanonicalPayloadRefreshSkips = 0;
+	private toolResultDiscoveryCanonicalPayloadConservativeHandlerRefreshes = 0;
+	private toolResultDiscoveryCanonicalPayloadReplacementRefreshes = 0;
 	private lastReadToolGroup?: ReadToolGroupComponent;
 	private deferredReadPlaceholders = new Map<string, Container>();
 	private deferredReadExecutions = new Map<string, {
@@ -4001,7 +4010,11 @@ export class InteractiveMode {
 			case "message_end":
 				if (event.message.role === "user") break;
 				if (event.message.role === "toolResult" && event.toolResultPresentation) {
-					this.attachLiveToolResultPresentation(event.message, event.toolResultPresentation);
+					this.attachLiveToolResultPresentation(
+						event.message,
+						event.toolResultPresentation,
+						event.toolResultMessageEndDisposition,
+					);
 				}
 				if (this.streamingComponent && event.message.role === "assistant") {
 					this.streamingMessage = event.message;
@@ -4351,6 +4364,7 @@ export class InteractiveMode {
 				this.lastReadToolGroup = new ReadToolGroupComponent(
 					this.settingsManager.getShowImages(),
 					this.settingsManager.getImageWidthCells(),
+					this.invalidateRetainedReadGroupVisual,
 				);
 				this.lastReadToolGroup.setExpanded(this.toolOutputExpanded);
 				if (!placeholder) this.retainActiveToolComponent(this.lastReadToolGroup, toolCallId);
@@ -4622,6 +4636,7 @@ export class InteractiveMode {
 	private attachLiveToolResultPresentation(
 		message: Extract<AgentMessage, { role: "toolResult" }>,
 		presentation: ToolResultPresentation,
+		disposition: Extract<AgentSessionEvent, { type: "message_end" }>["toolResultMessageEndDisposition"],
 	): void {
 		const entries = this.pendingToolResultDiscoveries;
 		const registration = entries?.get(message.toolCallId);
@@ -4637,10 +4652,23 @@ export class InteractiveMode {
 			this.releasePendingToolResultDiscovery(message.toolCallId, registration);
 			return;
 		}
-		this.updateTrackedToolResult(registration.component, message.toolCallId, message, false, message.isError);
+		const canonicalPayloadRefreshRequired = disposition !== "none";
+		if (canonicalPayloadRefreshRequired) {
+			this.updateTrackedToolResult(registration.component, message.toolCallId, message, false, message.isError);
+			this.toolResultDiscoveryCanonicalPayloadRefreshes++;
+			if (disposition === "replacement-returned") {
+				this.toolResultDiscoveryCanonicalPayloadReplacementRefreshes++;
+			} else {
+				this.toolResultDiscoveryCanonicalPayloadConservativeHandlerRefreshes++;
+			}
+		} else {
+			this.toolResultDiscoveryCanonicalPayloadRefreshSkips++;
+		}
 		if (presentation.version !== 2) {
-			this.chatContainer.invalidateRetainedChild(registration.component);
-			this.toolResultDiscoveryCanonicalV1RetainedInvalidations++;
+			if (canonicalPayloadRefreshRequired) {
+				this.chatContainer.invalidateRetainedChild(registration.component);
+				this.toolResultDiscoveryCanonicalV1RetainedInvalidations++;
+			}
 			this.releasePendingToolResultDiscovery(message.toolCallId, registration);
 			return;
 		}
@@ -4678,13 +4706,21 @@ export class InteractiveMode {
 		this.clearPendingToolResultDiscoveries();
 		const entries = this.attachedToolResultDiscoveries;
 		if (!entries) return;
+		const affectedComponents = new Set<ToolExecutionComponent | ReadToolGroupComponent>();
 		for (const [toolCallId, registration] of entries) {
-			registration.component.clearToolResultPresentation(toolCallId, registration.identity);
-			this.chatContainer.invalidateRetainedChild(registration.component);
 			this.toolResultDiscoveryCanonicalHistoryResetReleases++;
+			if (registration.component.detachToolResultPresentation(toolCallId, registration.identity)) {
+				affectedComponents.add(registration.component);
+			}
 		}
 		entries.clear();
 		this.attachedToolResultDiscoveries = undefined;
+		for (const component of affectedComponents) {
+			component.refreshToolResultPresentationView();
+			this.chatContainer.invalidateRetainedChild(component);
+			this.toolResultDiscoveryCanonicalHistoryResetUniqueComponentRefreshes++;
+		}
+		affectedComponents.clear();
 	}
 
 	private clearToolResultDiscoveries(): void {
@@ -4717,6 +4753,12 @@ export class InteractiveMode {
 		attachedMapsCreated: number;
 		canonicalV1RetainedInvalidations: number;
 		canonicalHistoryResetReleases: number;
+		canonicalHistoryResetRegistrationReleases: number;
+		canonicalHistoryResetUniqueComponentRefreshes: number;
+		canonicalPayloadRefreshes: number;
+		canonicalPayloadRefreshSkips: number;
+		canonicalPayloadConservativeHandlerRefreshes: number;
+		canonicalPayloadReplacementRefreshes: number;
 		historyMessagesVisited: number;
 		presentationCandidatesEvaluated: number;
 		actualV2Discoveries: number;
@@ -4759,6 +4801,14 @@ export class InteractiveMode {
 			attachedMapsCreated: this.toolResultDiscoveryAttachedMapsCreated,
 			canonicalV1RetainedInvalidations: this.toolResultDiscoveryCanonicalV1RetainedInvalidations,
 			canonicalHistoryResetReleases: this.toolResultDiscoveryCanonicalHistoryResetReleases,
+			canonicalHistoryResetRegistrationReleases: this.toolResultDiscoveryCanonicalHistoryResetReleases,
+			canonicalHistoryResetUniqueComponentRefreshes:
+				this.toolResultDiscoveryCanonicalHistoryResetUniqueComponentRefreshes,
+			canonicalPayloadRefreshes: this.toolResultDiscoveryCanonicalPayloadRefreshes,
+			canonicalPayloadRefreshSkips: this.toolResultDiscoveryCanonicalPayloadRefreshSkips,
+			canonicalPayloadConservativeHandlerRefreshes:
+				this.toolResultDiscoveryCanonicalPayloadConservativeHandlerRefreshes,
+			canonicalPayloadReplacementRefreshes: this.toolResultDiscoveryCanonicalPayloadReplacementRefreshes,
 			...this.session.getToolResultPresentationUiRebuildCounts(),
 		};
 	}
@@ -5018,10 +5068,11 @@ export class InteractiveMode {
 						if (content.name === "read" && isGroupableReadCall(content.arguments)) {
 							if (!rebuildReadGroup?.canAccept(content.arguments)) {
 								finalizeRebuildReadGroup();
-								rebuildReadGroup = new ReadToolGroupComponent(
-									this.settingsManager.getShowImages(),
-									this.settingsManager.getImageWidthCells(),
-								);
+							rebuildReadGroup = new ReadToolGroupComponent(
+								this.settingsManager.getShowImages(),
+								this.settingsManager.getImageWidthCells(),
+								this.invalidateRetainedReadGroupVisual,
+							);
 								rebuildReadGroup.setExpanded(this.toolOutputExpanded);
 								this.retainActiveToolComponent(rebuildReadGroup, content.id);
 							}

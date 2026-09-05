@@ -46,6 +46,20 @@ type ToolResultLike = {
 	details?: any;
 };
 
+type ConvertedTerminalImage = { data: string; mimeType: string };
+
+type ReadGroupImageConversionState = {
+	result: ToolResultLike;
+	discoveryIdentity: string;
+	sourceData: string;
+	sourceMimeType: string;
+	generation: number;
+	passGeneration: number;
+	pending: boolean;
+	rejected: boolean;
+	converted: ConvertedTerminalImage | undefined;
+};
+
 export interface ToolResultPresentationDiscoveryState {
 	readonly identity: string;
 	readonly cursor: string;
@@ -129,14 +143,24 @@ function normalizeReadGroupPath(filePath: string): string {
 	return normalized;
 }
 
-function getReadGroupResultText(result: ToolResultLike | undefined): string {
+function getReadGroupResultText(result: ToolResultLike | undefined, maxChars?: number): string {
 	if (!Array.isArray(result?.content)) return "";
 	let text = "";
 	for (let index = 0; index < result.content.length; index++) {
 		const block = result.content[index];
 		if (block?.type !== "text" || typeof block.text !== "string") continue;
-		if (text) text += "\n";
-		text += block.text;
+		if (text) {
+			if (maxChars !== undefined && text.length >= maxChars) return text;
+			text += "\n";
+		}
+		if (maxChars === undefined) {
+			text += block.text;
+			continue;
+		}
+		const remaining = maxChars - text.length;
+		if (remaining <= 0) return text;
+		text += block.text.length <= remaining ? block.text : block.text.slice(0, remaining);
+		if (text.length >= maxChars) return text;
 	}
 	return text;
 }
@@ -179,11 +203,26 @@ export class ReadToolGroupComponent extends Container {
 	private finalized = false;
 	private showImages: boolean;
 	private imageWidthCells: number;
+	private readonly onVisualInvalidate: ((component: ReadToolGroupComponent) => void) | undefined;
+	private imageConversions: Map<ReadGroupRow, Array<ReadGroupImageConversionState | undefined>> | undefined;
+	private nextImageTaskGeneration = 0;
+	private imagePassGeneration = 0;
+	private activeImageConversions = 0;
+	private activeImageConversionsHighWaterMark = 0;
+	private imageConversionsScheduled = 0;
+	private imageConversionsAccepted = 0;
+	private imageConversionsDropped = 0;
+	private imageConversionRejections = 0;
 
-	constructor(showImages = true, imageWidthCells = 60) {
+	constructor(
+		showImages = true,
+		imageWidthCells = 60,
+		onVisualInvalidate?: (component: ReadToolGroupComponent) => void,
+	) {
 		super();
 		this.showImages = showImages;
 		this.imageWidthCells = Math.max(1, Math.floor(imageWidthCells));
+		this.onVisualInvalidate = onVisualInvalidate;
 	}
 
 	canAccept(args: any): boolean { return !this.finalized && isGroupableReadCall(args); }
@@ -208,10 +247,11 @@ export class ReadToolGroupComponent extends Container {
 		}
 		return true;
 	}
-	setExpanded(expanded: boolean): void { if (this.expanded !== expanded) { this.expanded = expanded; this.rebuild(); } }
+	setExpanded(expanded: boolean): void { if (this.expanded !== expanded) { this.expanded = expanded; if (!expanded) this.clearGroupedImageConversions(); this.rebuild(); } }
 	setShowImages(show: boolean): void {
 		if (this.showImages === show) return;
 		this.showImages = show;
+		if (!show) this.clearGroupedImageConversions();
 		this.rebuild();
 	}
 	setImageWidthCells(width: number): void {
@@ -236,10 +276,239 @@ export class ReadToolGroupComponent extends Container {
 		const row = this.rows.get(toolCallId);
 		if (!row?.toolResultDiscovery || (identity !== undefined && row.toolResultDiscovery.identity !== identity)) return false;
 		row.toolResultDiscovery = undefined;
+		this.clearGroupedImageConversionsForRow(row);
 		return true;
 	}
 	getToolResultPresentationDiscovery(toolCallId: string): ToolResultPresentationDiscoveryState | undefined {
 		return this.rows.get(toolCallId)?.toolResultDiscovery;
+	}
+
+	/** @internal Rebuild the current sidecar view exactly once after batch detach. */
+	refreshToolResultPresentationView(): void {
+		this.rebuild();
+	}
+
+	/** Deterministic grouped conversion seam; production uses Photon. */
+	protected convertImageForTerminal(data: string, mimeType: string): Promise<ConvertedTerminalImage | null> {
+		return convertToPng(data, mimeType);
+	}
+
+	private clearGroupedImageConversionState(state: ReadGroupImageConversionState): void {
+		if (state.pending) {
+			state.pending = false;
+			this.activeImageConversions--;
+		}
+		state.converted = undefined;
+	}
+
+	private clearGroupedImageConversionsForRow(row: ReadGroupRow): void {
+		const conversions = this.imageConversions;
+		const states = conversions?.get(row);
+		if (!conversions || !states) return;
+		for (let index = 0; index < states.length; index++) {
+			const state = states[index];
+			if (state) this.clearGroupedImageConversionState(state);
+		}
+		conversions.delete(row);
+		if (conversions.size === 0) this.imageConversions = undefined;
+	}
+
+	private clearGroupedImageConversions(): void {
+		const conversions = this.imageConversions;
+		if (!conversions) return;
+		for (const states of conversions.values()) {
+			for (let index = 0; index < states.length; index++) {
+				const state = states[index];
+				if (state) this.clearGroupedImageConversionState(state);
+			}
+		}
+		conversions.clear();
+		this.imageConversions = undefined;
+	}
+
+	private getGroupedImageForKitty(
+		row: ReadGroupRow,
+		imageOrdinal: number,
+		data: string,
+		mimeType: string,
+		passGeneration: number,
+	): ConvertedTerminalImage | undefined {
+		const result = row.result;
+		const discovery = row.toolResultDiscovery;
+		if (!result || !discovery) return undefined;
+		let conversions = this.imageConversions;
+		if (!conversions) {
+			conversions = new Map();
+			this.imageConversions = conversions;
+		}
+		let states = conversions.get(row);
+		if (!states) {
+			states = [];
+			conversions.set(row, states);
+		}
+		let state = states[imageOrdinal];
+		if (
+			state &&
+			state.result === result &&
+			state.discoveryIdentity === discovery.identity &&
+			state.sourceData === data &&
+			state.sourceMimeType === mimeType
+		) {
+			state.passGeneration = passGeneration;
+			return state.converted;
+		}
+		if (state) this.clearGroupedImageConversionState(state);
+		state = {
+			result,
+			discoveryIdentity: discovery.identity,
+			sourceData: data,
+			sourceMimeType: mimeType,
+			generation: ++this.nextImageTaskGeneration,
+			passGeneration,
+			pending: true,
+			rejected: false,
+			converted: undefined,
+		};
+		states[imageOrdinal] = state;
+		this.activeImageConversions++;
+		if (this.activeImageConversions > this.activeImageConversionsHighWaterMark) {
+			this.activeImageConversionsHighWaterMark = this.activeImageConversions;
+		}
+		this.imageConversionsScheduled++;
+		const taskGeneration = state.generation;
+		void this.convertImageForTerminal(data, mimeType).then(
+			(converted) => this.completeGroupedImageConversion(row, imageOrdinal, state!, taskGeneration, converted),
+			() => this.rejectGroupedImageConversion(row, imageOrdinal, state!, taskGeneration),
+		);
+		return undefined;
+	}
+
+	private isCurrentGroupedImageConversion(
+		row: ReadGroupRow,
+		imageOrdinal: number,
+		state: ReadGroupImageConversionState,
+	): boolean {
+		if (!this.expanded || !this.showImages || getCapabilities().images !== "kitty") return false;
+		if (row.result !== state.result || row.toolResultDiscovery?.identity !== state.discoveryIdentity) return false;
+		let ordinal = 0;
+		for (let index = 0; index < row.result.content.length; index++) {
+			const block = row.result.content[index];
+			if (block?.type !== "image" || !block.data || !block.mimeType) continue;
+			if (ordinal++ !== imageOrdinal) continue;
+			return block.data === state.sourceData && block.mimeType === state.sourceMimeType;
+		}
+		return false;
+	}
+
+	private completeGroupedImageConversion(
+		row: ReadGroupRow,
+		imageOrdinal: number,
+		state: ReadGroupImageConversionState,
+		generation: number,
+		converted: ConvertedTerminalImage | null,
+	): void {
+		const current = this.imageConversions?.get(row)?.[imageOrdinal];
+		if (current !== state || current.generation !== generation || !state.pending) {
+			this.imageConversionsDropped++;
+			return;
+		}
+		state.pending = false;
+		this.activeImageConversions--;
+		if (!this.isCurrentGroupedImageConversion(row, imageOrdinal, state)) {
+			this.imageConversionsDropped++;
+			return;
+		}
+		if (converted === null || converted.mimeType !== "image/png") {
+			state.rejected = true;
+			this.imageConversionRejections++;
+			return;
+		}
+		state.converted = converted;
+		this.imageConversionsAccepted++;
+		this.rebuild();
+		this.onVisualInvalidate?.(this);
+	}
+
+	private rejectGroupedImageConversion(
+		row: ReadGroupRow,
+		imageOrdinal: number,
+		state: ReadGroupImageConversionState,
+		generation: number,
+	): void {
+		const current = this.imageConversions?.get(row)?.[imageOrdinal];
+		if (current !== state || current.generation !== generation || !state.pending) {
+			this.imageConversionsDropped++;
+			return;
+		}
+		state.pending = false;
+		state.rejected = true;
+		this.activeImageConversions--;
+		this.imageConversionRejections++;
+	}
+
+	private pruneGroupedImageConversions(passGeneration: number): void {
+		const conversions = this.imageConversions;
+		if (!conversions) return;
+		for (const [row, states] of conversions) {
+			let retained = 0;
+			for (let index = 0; index < states.length; index++) {
+				const state = states[index];
+				if (!state) continue;
+				if (state.passGeneration !== passGeneration) {
+					this.clearGroupedImageConversionState(state);
+					states[index] = undefined;
+				} else {
+					retained++;
+				}
+			}
+			if (retained === 0) conversions.delete(row);
+		}
+		if (conversions.size === 0) this.imageConversions = undefined;
+	}
+
+	[RELEASE_COMPONENT_RENDER_CACHE](): void {
+		this.clearGroupedImageConversions();
+		for (const row of this.rows.values()) row.toolResultDiscovery = undefined;
+	}
+
+	/** Low-frequency lifecycle diagnostics; never called from rebuild/render. */
+	getGroupedImageConversionLifecycleCounts(): {
+		activePending: number;
+		activePendingHighWaterMark: number;
+		scheduled: number;
+		accepted: number;
+		dropped: number;
+		rejected: number;
+		convertedImages: number;
+		imageComponents: number;
+		sourceReferences: number;
+	} {
+		let convertedImages = 0;
+		let sourceReferences = 0;
+		const conversions = this.imageConversions;
+		if (conversions) for (const states of conversions.values()) {
+			for (let index = 0; index < states.length; index++) {
+				const state = states[index];
+				if (!state) continue;
+				sourceReferences += 2;
+				if (state.converted) convertedImages++;
+			}
+		}
+		let imageComponents = 0;
+		for (let index = 0; index < this.children.length; index++) {
+			if (this.children[index] instanceof Image) imageComponents++;
+		}
+		return {
+			activePending: this.activeImageConversions,
+			activePendingHighWaterMark: this.activeImageConversionsHighWaterMark,
+			scheduled: this.imageConversionsScheduled,
+			accepted: this.imageConversionsAccepted,
+			dropped: this.imageConversionsDropped,
+			rejected: this.imageConversionRejections,
+			convertedImages,
+			imageComponents,
+			sourceReferences,
+		};
 	}
 
 	private getDisplayRows(): ReadGroupDisplayRow[] {
@@ -271,6 +540,11 @@ export class ReadToolGroupComponent extends Container {
 		this.clear();
 		const callCount = this.rows.size;
 		if (callCount === 0) return;
+		const imageProtocol = getCapabilities().images;
+		const imagePassGeneration = ++this.imagePassGeneration;
+		if (!this.expanded || !this.showImages || imageProtocol !== "kitty") {
+			this.clearGroupedImageConversions();
+		}
 		this.addChild(new Spacer(1));
 		const displayRows = this.getDisplayRows();
 		if (callCount > 1) this.addChild(new Text(theme.fg("toolTitle", theme.bold(`• Read (${callCount})`)), 1, 0));
@@ -300,23 +574,46 @@ export class ReadToolGroupComponent extends Container {
 			const label = branch + icon + " " + (callCount === 1 ? theme.fg("toolTitle", theme.bold("Read")) + " " : "") + theme.fg("accent", filePath) + theme.fg("warning", selectorText);
 			this.addChild(new Text(label, callCount > 1 ? 2 : 1, 0));
 			for (const entry of group.entries) {
-				const output = getReadGroupResultText(entry.row.result);
+				const showFullCanonical = this.expanded && entry.row.toolResultDiscovery !== undefined;
+				const output = getReadGroupResultText(
+					entry.row.result,
+					showFullCanonical ? undefined : READ_GROUP_MAX_PREVIEW_CHARS + 1,
+				);
 				if (!output || (!this.expanded && !entry.row.resultIsError)) continue;
-				const preview = this.expanded ? output : boundReadGroupPreview(output, 10);
+				const preview = showFullCanonical
+					? output
+					: boundReadGroupPreview(output, this.expanded ? READ_GROUP_MAX_PREVIEW_LINES : 10);
 				this.addChild(new Text(theme.fg(entry.row.resultIsError ? "error" : "toolOutput", preview), callCount > 1 ? 4 : 2, 0));
 				if (
 					this.expanded &&
 					entry.row.toolResultDiscovery &&
 					entry.row.result &&
 					this.showImages &&
-					getCapabilities().images !== null
+					imageProtocol !== null
 				) {
+					let imageOrdinal = 0;
 					for (let blockIndex = 0; blockIndex < entry.row.result.content.length; blockIndex++) {
 						const block = entry.row.result.content[blockIndex];
 						if (block?.type !== "image" || !block.data || !block.mimeType) continue;
+						let imageData = block.data;
+						let imageMimeType = block.mimeType;
+						if (imageProtocol === "kitty" && imageMimeType !== "image/png") {
+							const converted = this.getGroupedImageForKitty(
+								entry.row,
+								imageOrdinal++,
+								imageData,
+								imageMimeType,
+								imagePassGeneration,
+							);
+							if (!converted) continue;
+							imageData = converted.data;
+							imageMimeType = converted.mimeType;
+						} else {
+							imageOrdinal++;
+						}
 						this.addChild(new Image(
-							block.data,
-							block.mimeType,
+							imageData,
+							imageMimeType,
 							{ fallbackColor: toolImageFallbackColor },
 							{ maxWidthCells: this.imageWidthCells },
 						));
@@ -329,6 +626,7 @@ export class ReadToolGroupComponent extends Container {
 				this.addChild(new Text(formatToolResultDiscovery(discovery, this.expanded), callCount > 1 ? 4 : 2, 0));
 			}
 		}
+		if (imageProtocol === "kitty") this.pruneGroupedImageConversions(imagePassGeneration);
 	}
 }
 
@@ -372,8 +670,6 @@ export interface ToolExecutionAllocationMetrics {
 	imageConversionsDropped?: number;
 	imageConversionRejections?: number;
 }
-
-type ConvertedTerminalImage = { data: string; mimeType: string };
 
 export class ToolExecutionComponent extends Container {
 	private contentBox: Box;
@@ -851,6 +1147,11 @@ export class ToolExecutionComponent extends Container {
 		) return false;
 		this.toolResultDiscovery = undefined;
 		return true;
+	}
+
+	/** @internal Rebuild the current sidecar view exactly once after batch detach. */
+	refreshToolResultPresentationView(): void {
+		this.updateDisplay();
 	}
 
 	getToolResultPresentationDiscovery(toolCallId: string): ToolResultPresentationDiscoveryState | undefined {
