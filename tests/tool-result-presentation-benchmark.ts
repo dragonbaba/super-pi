@@ -266,7 +266,7 @@ function counterDelta(
 ): ToolResultPresentationCounters {
 	const delta = createToolResultPresentationCounters();
 	for (const key of Object.keys(delta) as Array<keyof ToolResultPresentationCounters>) {
-		delta[key] = after[key] - before[key];
+		delta[key] = (after[key] ?? 0) - (before[key] ?? 0);
 	}
 	return delta;
 }

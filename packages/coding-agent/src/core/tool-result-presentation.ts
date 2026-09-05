@@ -161,6 +161,18 @@ export interface ToolResultPresentationCounters {
 	terminalBoundaryLookups: number;
 	terminalSequenceIntervals: number;
 	terminalIndexCapacityFallbacks: number;
+	/** @internal Optional diagnostics; resident index gauges exclude transient call-owned scans. */
+	terminalExactIntervalsRetained?: number;
+	terminalSparseCheckpointsRetained?: number;
+	terminalCheckpointCompactions?: number;
+	terminalOverflowSequencesObserved?: number;
+	terminalOverflowBoundaryLookups?: number;
+	terminalFallbackSequencesInspected?: number;
+	terminalFallbackCharactersInspected?: number;
+	terminalMaximumFallbackScanDistance?: number;
+	terminalNonProgressCandidatesPrevented?: number;
+	terminalIndexRetainedBytes?: number;
+	terminalIndexBytesHighWaterMark?: number;
 	graphemeBoundaryLookups: number;
 	completedDispatchPresentationScopes: number;
 	releaseWithoutActiveScope: number;
@@ -217,6 +229,9 @@ interface SourceScan {
 	terminalSequenceIntervals: Uint32Array | undefined;
 	terminalSequenceIntervalCount: number;
 	terminalIndexCapacityFallback: boolean;
+	terminalLookupBlock: number;
+	terminalLookupOffset: number;
+	terminalLookupNextEscape: number;
 }
 
 interface ProjectionBuild {
@@ -300,6 +315,17 @@ export function createToolResultPresentationCounters(): ToolResultPresentationCo
 		terminalBoundaryLookups: 0,
 		terminalSequenceIntervals: 0,
 		terminalIndexCapacityFallbacks: 0,
+		terminalExactIntervalsRetained: 0,
+		terminalSparseCheckpointsRetained: 0,
+		terminalCheckpointCompactions: 0,
+		terminalOverflowSequencesObserved: 0,
+		terminalOverflowBoundaryLookups: 0,
+		terminalFallbackSequencesInspected: 0,
+		terminalFallbackCharactersInspected: 0,
+		terminalMaximumFallbackScanDistance: 0,
+		terminalNonProgressCandidatesPrevented: 0,
+		terminalIndexRetainedBytes: 0,
+		terminalIndexBytesHighWaterMark: 0,
 		graphemeBoundaryLookups: 0,
 		completedDispatchPresentationScopes: 0,
 		releaseWithoutActiveScope: 0,
@@ -514,13 +540,12 @@ function indexedTerminalBoundaryOffset(
 	sourceScan: SourceScan,
 	blockIndex: number,
 	requested: number,
-	textLength: number,
+	text: string,
 	prefix: boolean,
 	counters: ToolResultPresentationCounters,
 ): number {
 	if (!sourceScan.hasTerminalSequences) return requested;
 	counters.terminalBoundaryLookups++;
-	if (sourceScan.terminalIndexCapacityFallback) return prefix ? 0 : textLength;
 	const intervals = sourceScan.terminalSequenceIntervals;
 	if (!intervals || sourceScan.terminalSequenceIntervalCount === 0) return requested;
 	let low = 0;
@@ -533,12 +558,47 @@ function indexedTerminalBoundaryOffset(
 		if (intervalBlock < blockIndex || (intervalBlock === blockIndex && intervalStart < requested)) low = middle + 1;
 		else high = middle;
 	}
-	if (low === 0) return requested;
-	const intervalOffset = (low - 1) * 3;
-	if (intervals[intervalOffset] !== blockIndex) return requested;
-	const start = intervals[intervalOffset + 1]!;
-	const end = intervals[intervalOffset + 2]!;
-	return requested > start && requested < end ? (prefix ? start : end) : requested;
+	let scanStart = 0;
+	if (low > 0) {
+		const intervalOffset = (low - 1) * 3;
+		if (intervals[intervalOffset] === blockIndex) {
+			const start = intervals[intervalOffset + 1]!;
+			const end = intervals[intervalOffset + 2]!;
+			if (requested > start && requested < end) return prefix ? start : end;
+			scanStart = end;
+		}
+	}
+	if (!sourceScan.terminalIndexCapacityFallback) return requested;
+	counters.terminalOverflowBoundaryLookups = (counters.terminalOverflowBoundaryLookups ?? 0) + 1;
+	// A recent lookup boundary is safe only in this block and before the request.
+	// This primitive checkpoint makes sequential reads traverse each gap once.
+	const usePrevious = sourceScan.terminalLookupBlock === blockIndex &&
+		sourceScan.terminalLookupOffset >= scanStart && sourceScan.terminalLookupOffset <= requested;
+	if (usePrevious) {
+		scanStart = Math.max(scanStart, sourceScan.terminalLookupOffset);
+	}
+	const from = scanStart;
+	let scannedEnd = requested;
+	let boundary = requested;
+	let escape = usePrevious ? sourceScan.terminalLookupNextEscape : text.indexOf("\u001b", scanStart);
+	while (escape >= 0 && escape < requested) {
+		const end = terminalSequenceEnd(text, escape);
+		counters.terminalFallbackSequencesInspected = (counters.terminalFallbackSequencesInspected ?? 0) + 1;
+		if (end > requested) {
+			boundary = prefix ? escape : end;
+			scannedEnd = end;
+			break;
+		}
+		escape = text.indexOf("\u001b", end);
+	}
+	sourceScan.terminalLookupBlock = blockIndex;
+	sourceScan.terminalLookupOffset = boundary;
+	sourceScan.terminalLookupNextEscape = boundary === scannedEnd && boundary > requested
+		? text.indexOf("\u001b", boundary) : escape;
+	const distance = scannedEnd - from;
+	counters.terminalFallbackCharactersInspected = (counters.terminalFallbackCharactersInspected ?? 0) + distance;
+	counters.terminalMaximumFallbackScanDistance = Math.max(counters.terminalMaximumFallbackScanDistance ?? 0, distance);
+	return boundary;
 }
 
 function safeIndexedPrefixOffset(
@@ -550,7 +610,7 @@ function safeIndexedPrefixOffset(
 ): number {
 	let offset = Math.max(0, Math.min(requested, text.length));
 	if (offset === 0 || offset === text.length) return offset;
-	offset = indexedTerminalBoundaryOffset(sourceScan, blockIndex, offset, text.length, true, counters);
+	offset = indexedTerminalBoundaryOffset(sourceScan, blockIndex, offset, text, true, counters);
 	if (offset === 0 || offset === text.length) return offset;
 	const previous = text.charCodeAt(offset - 1);
 	const next = text.charCodeAt(offset);
@@ -569,7 +629,7 @@ function safeIndexedSuffixOffset(
 ): number {
 	let offset = Math.max(0, Math.min(requested, text.length));
 	if (offset === 0 || offset === text.length) return offset;
-	offset = indexedTerminalBoundaryOffset(sourceScan, blockIndex, offset, text.length, false, counters);
+	offset = indexedTerminalBoundaryOffset(sourceScan, blockIndex, offset, text, false, counters);
 	if (offset === 0 || offset === text.length) return offset;
 	const previous = text.charCodeAt(offset - 1);
 	const next = text.charCodeAt(offset);
@@ -698,6 +758,8 @@ function scanSource(
 	let terminalSequenceIntervals: Uint32Array | undefined;
 	let terminalSequenceIntervalCount = 0;
 	let terminalIndexCapacityFallback = false;
+	let terminalSequenceCount = 0;
+	let terminalSamplingStride = 1;
 	for (let index = 0; index < content.length; index++) {
 		const block = content[index]!;
 		artifactBytes = appendSourceIdentityBlock(digest, block, artifactBytes);
@@ -710,18 +772,35 @@ function scanSource(
 				hasTerminalSequences = true;
 				while (terminalOffset < block.text.length) {
 					const terminalEnd = terminalSequenceEnd(block.text, terminalOffset);
-					if (terminalSequenceIntervalCount < MAX_TERMINAL_SEQUENCE_INTERVALS) {
+					if (terminalSequenceCount >= MAX_TERMINAL_SEQUENCE_INTERVALS) {
+						counters.terminalOverflowSequencesObserved = (counters.terminalOverflowSequencesObserved ?? 0) + 1;
+					}
+					if (terminalSequenceCount % terminalSamplingStride === 0) {
 						terminalSequenceIntervals ??= new Uint32Array(MAX_TERMINAL_SEQUENCE_INTERVALS * 3);
+						if (terminalSequenceIntervalCount === MAX_TERMINAL_SEQUENCE_INTERVALS) {
+							// Keep every second interval, in place. Stored starts and ends
+							// remain exact safe checkpoints; only coverage becomes sparse.
+							for (let entry = 0; entry < MAX_TERMINAL_SEQUENCE_INTERVALS / 2; entry++) {
+								const source = entry * 6;
+								const target = entry * 3;
+								terminalSequenceIntervals[target] = terminalSequenceIntervals[source]!;
+								terminalSequenceIntervals[target + 1] = terminalSequenceIntervals[source + 1]!;
+								terminalSequenceIntervals[target + 2] = terminalSequenceIntervals[source + 2]!;
+							}
+							terminalSequenceIntervalCount /= 2;
+							terminalSamplingStride *= 2;
+							if (!terminalIndexCapacityFallback) counters.terminalIndexCapacityFallbacks++;
+							terminalIndexCapacityFallback = true;
+							counters.terminalCheckpointCompactions = (counters.terminalCheckpointCompactions ?? 0) + 1;
+						}
 						const intervalOffset = terminalSequenceIntervalCount * 3;
 						terminalSequenceIntervals[intervalOffset] = index;
 						terminalSequenceIntervals[intervalOffset + 1] = terminalOffset;
 						terminalSequenceIntervals[intervalOffset + 2] = terminalEnd;
 						terminalSequenceIntervalCount++;
 						counters.terminalSequenceIntervals++;
-					} else if (!terminalIndexCapacityFallback) {
-						terminalIndexCapacityFallback = true;
-						counters.terminalIndexCapacityFallbacks++;
 					}
+					terminalSequenceCount++;
 					terminalOffset = block.text.indexOf("\u001b", Math.max(terminalOffset + 1, terminalEnd));
 					if (terminalOffset < 0) break;
 				}
@@ -745,6 +824,9 @@ function scanSource(
 		terminalSequenceIntervals,
 		terminalSequenceIntervalCount,
 		terminalIndexCapacityFallback,
+		terminalLookupBlock: -1,
+		terminalLookupOffset: 0,
+		terminalLookupNextEscape: -1,
 	};
 }
 
@@ -1044,6 +1126,7 @@ function advancePosition(
 			const requestedOffset = offset + remaining;
 			let safeOffset = safeIndexedPrefixOffset(block.text, requestedOffset, index, sourceScan, counters);
 			if (safeOffset <= offset) {
+				counters.terminalNonProgressCandidatesPrevented = (counters.terminalNonProgressCandidatesPrevented ?? 0) + 1;
 				safeOffset = Math.min(limit, safeIndexedSuffixOffset(block.text, requestedOffset, index, sourceScan, counters));
 			}
 			return {
@@ -1140,6 +1223,7 @@ export class ToolResultPresentationOwner {
 		record.validatedMessageCount = 0;
 		record.validatedSourceIndex = -1;
 		records.delete(record.toolCallId);
+		this.accountTerminalIndex(record.sourceScan, -1);
 		this.counters.projectionRecordEntries--;
 		this.counters.retainedProjectionCodeUnits -= record.retainedCodeUnits;
 		if (eviction) this.counters.projectionRecordEvictions++;
@@ -1163,6 +1247,7 @@ export class ToolResultPresentationOwner {
 		else this.projectionRecordHead = record;
 		this.projectionRecordTail = record;
 		records.set(record.toolCallId, record);
+		this.accountTerminalIndex(record.sourceScan, 1);
 		this.counters.projectionRecordEntries++;
 		this.counters.projectionRecordHighWaterMark = Math.max(
 			this.counters.projectionRecordHighWaterMark,
@@ -1170,6 +1255,19 @@ export class ToolResultPresentationOwner {
 		);
 		this.counters.retainedProjectionCodeUnits += record.retainedCodeUnits;
 		return true;
+	}
+
+	private accountTerminalIndex(scan: SourceScan, direction: number): void {
+		const bytes = scan.terminalSequenceIntervals?.byteLength ?? 0;
+		this.counters.terminalIndexRetainedBytes = (this.counters.terminalIndexRetainedBytes ?? 0) + bytes * direction;
+		this.counters.terminalIndexBytesHighWaterMark = Math.max(
+			this.counters.terminalIndexBytesHighWaterMark ?? 0, this.counters.terminalIndexRetainedBytes,
+		);
+		if (scan.terminalIndexCapacityFallback) {
+			this.counters.terminalSparseCheckpointsRetained = (this.counters.terminalSparseCheckpointsRetained ?? 0) + scan.terminalSequenceIntervalCount * direction;
+		} else {
+			this.counters.terminalExactIntervalsRetained = (this.counters.terminalExactIntervalsRetained ?? 0) + scan.terminalSequenceIntervalCount * direction;
+		}
 	}
 
 	private ensureRecordProjection(record: ProjectionRecord, issueArtifact: boolean): void {
@@ -1506,6 +1604,7 @@ export class ToolResultPresentationOwner {
 		let record = this.projectionRecordHead;
 		while (record) {
 			const next = record.next;
+			this.accountTerminalIndex(record.sourceScan, -1);
 			record.previous = undefined;
 			record.next = undefined;
 			record.validatedMessages = undefined;
@@ -2105,6 +2204,18 @@ export class ToolResultPresentationOwner {
 			chunkEstimate = estimateToolOutputTokens(chunkContent);
 		}
 		if (!chunkEstimate || chunkEstimate.estimatedTokens > budgetTokens || comparePositions(start, chunkEnd) >= 0) {
+			// Density estimates can exhaust their bounded shrink passes at a block
+			// transition. Try exactly one safe unit before declaring an atomic unit
+			// unaffordable. Never retry a zero-length candidate or relax the budget.
+			chunkEnd = advancePosition(sourceContent, start, end, 1, record.sourceScan, this.counters);
+			chunkContent = [];
+			appendRegion(chunkContent, sourceContent, start, chunkEnd, this.counters);
+			chunkEstimate = estimateToolOutputTokens(chunkContent);
+			if (chunkEstimate.estimatedTokens <= budgetTokens && comparePositions(start, chunkEnd) > 0) {
+				this.counters.terminalNonProgressCandidatesPrevented = (this.counters.terminalNonProgressCandidatesPrevented ?? 0) + 1;
+			}
+		}
+		if (chunkEstimate.estimatedTokens > budgetTokens || comparePositions(start, chunkEnd) >= 0) {
 			throw new ToolResultContinuationError("budget-too-small", `Continuation budget ${budgetTokens} cannot make forward progress.`);
 		}
 		const done = samePosition(chunkEnd, end);
