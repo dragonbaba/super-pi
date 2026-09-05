@@ -81,6 +81,10 @@ export class AgentSessionRuntime {
 	private _modelFallbackMessage?: string;
 	private replacementGeneration = 0;
 	private disposed = false;
+	private disposeOperation: Promise<void> | undefined;
+	private resolveDispose: (() => void) | undefined;
+	private rejectDispose: ((error: unknown) => void) | undefined;
+	private teardownOperation: Promise<void> | undefined;
 
 	constructor(
 		_session: AgentSession,
@@ -117,6 +121,7 @@ export class AgentSessionRuntime {
 	}
 
 	setRebindSession(rebindSession?: (session: AgentSession) => Promise<void>): void {
+		if (this.disposed && rebindSession !== undefined) return;
 		this.rebindSession = rebindSession;
 	}
 
@@ -129,6 +134,7 @@ export class AgentSessionRuntime {
 	 * context becomes stale.
 	 */
 	setBeforeSessionInvalidate(beforeSessionInvalidate?: () => void): void {
+		if (this.disposed && beforeSessionInvalidate !== undefined) return;
 		this.beforeSessionInvalidate = beforeSessionInvalidate;
 	}
 
@@ -192,20 +198,47 @@ export class AgentSessionRuntime {
 		return { cancelled: result?.cancel === true };
 	}
 
-	private async teardownCurrent(reason: SessionShutdownEvent["reason"], targetSessionFile?: string): Promise<void> {
-		// Settle any active response first so the aborted turn (including tool
-		// results) is persisted to the outgoing session before it is replaced.
-		await this.session.abort();
-		await emitSessionShutdownEvent(this.session.extensionRunner, {
-			type: "session_shutdown",
-			reason,
-			targetSessionFile,
+	private teardownCurrent(reason: SessionShutdownEvent["reason"], targetSessionFile?: string): Promise<void> {
+		if (this.teardownOperation) return this.teardownOperation;
+		let resolveOperation!: () => void;
+		let rejectOperation!: (error: unknown) => void;
+		const operation = new Promise<void>((resolve, reject) => {
+			resolveOperation = resolve;
+			rejectOperation = reject;
 		});
-		this.beforeSessionInvalidate?.();
-		this.session.dispose();
+		this.teardownOperation = operation;
+		// Publish before abort, shutdown handlers or invalidation can reenter.
+		void this.performSessionTeardown(reason, targetSessionFile, resolveOperation, rejectOperation);
+		return operation;
+	}
+
+	private async performSessionTeardown(
+		reason: SessionShutdownEvent["reason"], targetSessionFile: string | undefined,
+		resolve: () => void, reject: (error: unknown) => void,
+	): Promise<void> {
+		const session = this.session;
+		let failed = false;
+		let failure: unknown;
+		try {
+			// Replacement persists the aborted outgoing response before switching.
+			if (reason !== "quit") await session.abort();
+		} catch (error) { failed = true; failure = error; }
+		try {
+			await emitSessionShutdownEvent(session.extensionRunner, { type: "session_shutdown", reason, targetSessionFile });
+		} catch (error) { if (!failed) { failed = true; failure = error; } }
+		try {
+			// Read at invocation time: final UI detach can disarm this during an await.
+			this.beforeSessionInvalidate?.();
+		} catch (error) { if (!failed) { failed = true; failure = error; } }
+		try {
+			session.dispose();
+		} catch (error) { if (!failed) { failed = true; failure = error; } }
+		if (failed) reject(failure);
+		else resolve();
 	}
 
 	private apply(result: CreateAgentSessionRuntimeResult): void {
+		this.teardownOperation = undefined;
 		this._session = result.session;
 		this._services = result.services;
 		this._diagnostics = result.diagnostics;
@@ -429,15 +462,35 @@ export class AgentSessionRuntime {
 		return { cancelled: false };
 	}
 
-	async dispose(): Promise<void> {
-		this.disposed = true;
-		this.cancelPendingReplacements();
-		await emitSessionShutdownEvent(this.session.extensionRunner, {
-			type: "session_shutdown",
-			reason: "quit",
+	dispose(): Promise<void> {
+		if (this.disposeOperation) return this.disposeOperation;
+		const operation = new Promise<void>((resolve, reject) => {
+			this.resolveDispose = resolve;
+			this.rejectDispose = reject;
 		});
-		this.beforeSessionInvalidate?.();
-		this.session.dispose();
+		this.disposeOperation = operation;
+		this.disposed = true;
+		void this.performDispose();
+		return operation;
+	}
+
+	private async performDispose(): Promise<void> {
+		let failed = false;
+		let failure: unknown;
+		try { this.cancelPendingReplacements(); }
+		catch (error) { failed = true; failure = error; }
+		try { await this.teardownCurrent("quit"); }
+		catch (error) { if (!failed) { failed = true; failure = error; } }
+		this.beforeSessionInvalidate = undefined;
+		this.rebindSession = undefined;
+		const resolve = this.resolveDispose;
+		const reject = this.rejectDispose;
+		this.resolveDispose = undefined;
+		this.rejectDispose = undefined;
+		// Session/services remain readable for the post-TUI resume hint and existing
+		// runtime consumers. Their owned listeners/content are released by dispose.
+		if (failed) reject?.(failure);
+		else resolve?.();
 	}
 }
 
