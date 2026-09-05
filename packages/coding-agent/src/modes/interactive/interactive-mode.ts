@@ -5380,9 +5380,16 @@ export class InteractiveMode {
 
 	private async disposeAfterUncaughtCrash(error: Error): Promise<void> {
 		try {
-			await this.ui.dispose();
-		} catch {
-			// Fatal cleanup is best-effort; logging and exit must still happen.
+			// Use the final owner teardown, including UI callback detachment, even
+			// when startup failed before reaching the interactive input loop.
+			await this.stop();
+		} catch (cleanupError) {
+			console.error("Super Pi terminal cleanup failed:", cleanupError);
+		}
+		try {
+			await this.runtimeHost.dispose();
+		} catch (cleanupError) {
+			console.error("Super Pi runtime cleanup failed:", cleanupError);
 		} finally {
 			console.error("Super Pi exiting due to uncaughtException:");
 			console.error(error);
