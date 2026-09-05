@@ -457,7 +457,10 @@ test("session rebuild retains tools and reuses one visual invalidation callback"
 	assert.match(rebuild, /retainActiveToolComponent\(rebuildReadGroup, content\.id\)/);
 	assert.match(rebuild, /retainActiveToolComponent\(component, content\.id\)/);
 	assert.doesNotMatch(rebuild, /chatContainer\.addChild\((?:rebuildReadGroup|component)\)/);
-	assert.match(text, /private readonly invalidateRetainedToolVisual = \(component: ToolExecutionComponent\)/);
+	assert.match(
+		text,
+		/private readonly invalidateRetainedToolVisual = \(component: ToolExecutionComponent \| ReadToolGroupComponent\)/,
+	);
 	assert.equal(text.match(/onVisualInvalidate: this\.invalidateRetainedToolVisual/g)?.length, 1);
 	assert.equal(text.match(/chatContainer\.children\.splice/g)?.length, 1);
 	assert.match(text, /chatContainer\.children\.splice[\s\S]{0,160}chatContainer\.notifyChildrenChanged\(\)/);

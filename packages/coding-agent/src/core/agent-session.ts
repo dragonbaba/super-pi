@@ -194,6 +194,11 @@ export type AgentSessionEvent =
 	| (Extract<AgentEvent, { type: "message_end" }> & {
 			/** Present only for enabled Phase 5B-A final tool results. Extensions never receive this sidecar. */
 			toolResultPresentation?: ToolResultPresentation;
+			/**
+			 * Internal built-in-listener signal for the final ToolResult UI refresh.
+			 * It is never exposed to extensions, providers, persistence, or telemetry.
+			 */
+			toolResultMessageEndDisposition?: "none" | "replacement-returned" | "handler-may-have-mutated";
 	  })
 	| {
 			type: "agent_end";
@@ -267,6 +272,9 @@ function createEventListenerRejectionObserver(onError: ((error: unknown) => void
 }
 
 const DEFAULT_CRITICAL_AGENT_END_TIMEOUT_MS = 30_000;
+const MAX_TOOL_RESULT_UI_DISCOVERIES = 128;
+const MAX_TOOL_RESULT_UI_REBUILD_CANDIDATES = 256;
+const MAX_TOOL_RESULT_UI_CANONICAL_INDEX_ENTRIES = 65_536;
 
 const STRING_SET_POOL = new ObjectPool<Set<string>>(
 	() => new Set<string>(),
@@ -661,6 +669,27 @@ export class AgentSession {
 	private _prefixManifestRecorder?: PrefixManifestRecorder;
 	private _toolOutputShadow: ToolOutputShadowObserver | undefined;
 	private _toolResultPresentation: ToolResultPresentationOwner | undefined;
+	private _toolResultUiDispatchMessage: Extract<AgentMessage, { role: "toolResult" }> | undefined;
+	private _toolResultUiDispatchSourceContent: Extract<AgentMessage, { role: "toolResult" }>["content"] | undefined;
+	private _toolResultUiCanonicalMessages:
+		| Map<string, Extract<AgentMessage, { role: "toolResult" }> | null>
+		| undefined;
+	private _toolResultUiCanonicalIndexActive = false;
+	private _toolResultUiCanonicalMessagesSource: AgentMessage[] | undefined;
+	private _toolResultUiCanonicalMessagesLength = 0;
+	private _toolResultUiCanonicalMessagesTail: AgentMessage | undefined;
+	private _toolResultUiCanonicalMessagesOverflowed = false;
+	private _toolResultUiLiveCanonicalIndexBuildProbes = 0;
+	private _toolResultUiLiveCanonicalIndexAppendProbes = 0;
+	private _toolResultUiLiveCanonicalLookupProbes = 0;
+	private _toolResultUiLiveCanonicalIndexRebuilds = 0;
+	private _toolResultUiCanonicalIndexActivationCount = 0;
+	private _toolResultUiCanonicalIndexInactiveRebuildSkips = 0;
+	private _toolResultUiHistoryMessagesVisited = 0;
+	private _toolResultUiPresentationCandidatesEvaluated = 0;
+	private _toolResultUiActualV2Discoveries = 0;
+	private _toolResultUiCanonicalLookupProbes = 0;
+	private _toolResultUiSourceScans = 0;
 
 	// Tool registry for extension getTools/setTools
 	private _toolRegistry: Map<string, AgentTool> = new Map();
@@ -1013,8 +1042,12 @@ export class AgentSession {
 
 	/** Internal handler for agent events - shared by subscribe and reconnect */
 	private _handleAgentEvent = async (event: AgentEvent): Promise<void> => {
+		const toolResultSourceContent = event.type === "message_end" && event.message.role === "toolResult"
+			? event.message.content
+			: undefined;
+		const hasExtensionHandlers = this._extensionRunner.hasHandlers(event.type);
 		if (isCoalescibleAgentEvent(event)) {
-			if (this._extensionRunner.hasHandlers(event.type)) await this._emitExtensionEvent(event);
+			if (hasExtensionHandlers) await this._emitExtensionEvent(event);
 			return;
 		}
 		if (isExtensionObserverFlushBoundary(event)) await this._extensionObserverDelivery.flushAllLatest();
@@ -1041,7 +1074,8 @@ export class AgentSession {
 			}
 		}
 
-		if (this._extensionRunner.hasHandlers(event.type)) await this._emitExtensionEvent(event);
+		let messageEndReplacementReturned = false;
+		if (hasExtensionHandlers) messageEndReplacementReturned = await this._emitExtensionEvent(event);
 		if (event.type === "message_end" && event.message.role === "toolResult") {
 			const presentationOwner = this._toolResultPresentation;
 			if (presentationOwner) {
@@ -1051,7 +1085,16 @@ export class AgentSession {
 						type: "message_end",
 						message: event.message,
 						toolResultPresentation: presentation,
+						toolResultMessageEndDisposition: !hasExtensionHandlers
+							? "none"
+							: messageEndReplacementReturned
+								? "replacement-returned"
+								: "handler-may-have-mutated",
 					};
+					const previousUiMessage = this._toolResultUiDispatchMessage;
+					const previousUiSourceContent = this._toolResultUiDispatchSourceContent;
+					this._toolResultUiDispatchMessage = event.message;
+					this._toolResultUiDispatchSourceContent = toolResultSourceContent;
 					try {
 						const model = this.model;
 						this._toolOutputShadow?.observe(
@@ -1060,6 +1103,8 @@ export class AgentSession {
 						);
 						this._emit(sessionEvent);
 					} finally {
+						this._toolResultUiDispatchMessage = previousUiMessage;
+						this._toolResultUiDispatchSourceContent = previousUiSourceContent;
 						presentationOwner.release();
 					}
 					// This is the complete post-listener message_end tail for tool results.
@@ -1183,7 +1228,7 @@ export class AgentSession {
 	}
 
 	/** Emit extension events based on agent events */
-	private async _emitExtensionEvent(event: AgentEvent): Promise<void> {
+	private async _emitExtensionEvent(event: AgentEvent): Promise<boolean> {
 		if (event.type === "agent_start") {
 			this._turnIndex = 0;
 			await this._extensionRunner.emit({ type: "agent_start" });
@@ -1237,6 +1282,7 @@ export class AgentSession {
 						: replacement;
 				this._replaceMessageInPlace(event.message, normalized);
 			}
+			return replacement !== undefined;
 		} else if (event.type === "tool_execution_start") {
 			const extensionEvent: ToolExecutionStartEvent = {
 				type: "tool_execution_start",
@@ -1264,6 +1310,7 @@ export class AgentSession {
 			};
 			await this._extensionRunner.emit(extensionEvent);
 		}
+		return false;
 	}
 
 	private async _emitExtensionObserverEvent(event: CoalescibleAgentEvent): Promise<void> {
@@ -1351,6 +1398,15 @@ export class AgentSession {
 		this._toolOutputShadow = undefined;
 		this._toolResultPresentation?.dispose();
 		this._toolResultPresentation = undefined;
+		this._toolResultUiDispatchMessage = undefined;
+		this._toolResultUiDispatchSourceContent = undefined;
+		this._toolResultUiCanonicalMessages?.clear();
+		this._toolResultUiCanonicalMessages = undefined;
+		this._toolResultUiCanonicalIndexActive = false;
+		this._toolResultUiCanonicalMessagesSource = undefined;
+		this._toolResultUiCanonicalMessagesLength = 0;
+		this._toolResultUiCanonicalMessagesTail = undefined;
+		this._toolResultUiCanonicalMessagesOverflowed = false;
 		this._eventListeners = [];
 		cleanupSessionResources(this.sessionId);
 	}
@@ -1422,6 +1478,94 @@ export class AgentSession {
 		return this._toolResultPresentation !== undefined;
 	}
 
+	private _recordToolResultUiCanonicalMessage(message: AgentMessage): void {
+		if (message.role !== "toolResult") return;
+		const canonicalMessages = this._toolResultUiCanonicalMessages ??= new Map();
+		if (canonicalMessages.has(message.toolCallId)) {
+			canonicalMessages.set(message.toolCallId, null);
+			return;
+		}
+		if (canonicalMessages.size >= MAX_TOOL_RESULT_UI_CANONICAL_INDEX_ENTRIES) {
+			this._toolResultUiCanonicalMessagesOverflowed = true;
+			return;
+		}
+		canonicalMessages.set(message.toolCallId, message);
+	}
+
+	private _rebuildToolResultUiCanonicalIndex(): void {
+		if (!this._toolResultPresentation) return;
+		if (!this._toolResultUiCanonicalIndexActive) {
+			this._toolResultUiCanonicalIndexInactiveRebuildSkips++;
+			return;
+		}
+		const messages = this.agent.state.messages;
+		const canonicalMessages = this._toolResultUiCanonicalMessages ??= new Map();
+		canonicalMessages.clear();
+		this._toolResultUiCanonicalMessagesOverflowed = false;
+		this._toolResultUiLiveCanonicalIndexRebuilds++;
+		for (let index = 0; index < messages.length; index++) {
+			this._toolResultUiLiveCanonicalIndexBuildProbes++;
+			this._recordToolResultUiCanonicalMessage(messages[index]!);
+		}
+		this._toolResultUiCanonicalMessagesSource = messages;
+		this._toolResultUiCanonicalMessagesLength = messages.length;
+		this._toolResultUiCanonicalMessagesTail = messages.at(-1);
+	}
+
+	private _ensureToolResultUiCanonicalIndexActive(): void {
+		if (!this._toolResultPresentation || this._toolResultUiCanonicalIndexActive) return;
+		this._toolResultUiCanonicalIndexActive = true;
+		this._toolResultUiCanonicalIndexActivationCount++;
+		this._rebuildToolResultUiCanonicalIndex();
+	}
+
+	private _synchronizeToolResultUiCanonicalIndex(): void {
+		if (!this._toolResultUiCanonicalIndexActive) {
+			this._ensureToolResultUiCanonicalIndexActive();
+			return;
+		}
+		const messages = this.agent.state.messages;
+		const indexedLength = this._toolResultUiCanonicalMessagesLength;
+		if (
+			this._toolResultUiCanonicalMessagesSource !== messages ||
+			indexedLength > messages.length ||
+			(indexedLength > 0 && messages[indexedLength - 1] !== this._toolResultUiCanonicalMessagesTail)
+		) {
+			this._rebuildToolResultUiCanonicalIndex();
+			return;
+		}
+		for (let index = indexedLength; index < messages.length; index++) {
+			this._toolResultUiLiveCanonicalIndexAppendProbes++;
+			this._recordToolResultUiCanonicalMessage(messages[index]!);
+		}
+		this._toolResultUiCanonicalMessagesLength = messages.length;
+		this._toolResultUiCanonicalMessagesTail = messages.at(-1);
+	}
+
+	/** Classify the synchronous pre-extension source for the current internal UI event. */
+	getToolResultPresentationSourceStatusForUi(
+		message: Extract<AgentMessage, { role: "toolResult" }>,
+		sourceContent: readonly unknown[],
+	): "current" | "ambiguous" | "stale" {
+		if (this._toolResultUiDispatchMessage !== message || this._toolResultUiDispatchSourceContent !== sourceContent) {
+			return "stale";
+		}
+		this._synchronizeToolResultUiCanonicalIndex();
+		this._toolResultUiLiveCanonicalLookupProbes++;
+		if (this._toolResultUiCanonicalMessagesOverflowed) return "ambiguous";
+		const canonical = this._toolResultUiCanonicalMessages?.get(message.toolCallId);
+		if (canonical === message) return "current";
+		return canonical === null ? "ambiguous" : "stale";
+	}
+
+	/** Backward-compatible boolean form for existing internal callers. */
+	isCurrentToolResultPresentationSourceForUi(
+		message: Extract<AgentMessage, { role: "toolResult" }>,
+		sourceContent: readonly unknown[],
+	): boolean {
+		return this.getToolResultPresentationSourceStatusForUi(message, sourceContent) === "current";
+	}
+
 	/**
 	 * Recreate the internal UI sidecar only for an exact canonical ToolResult on
 	 * the active branch. Provider/context clones are deliberately rejected.
@@ -1431,25 +1575,126 @@ export class AgentSession {
 	): ToolResultPresentation | undefined {
 		const owner = this._toolResultPresentation;
 		if (!owner) return undefined;
-		let canonical: Extract<AgentMessage, { role: "toolResult" }> | undefined;
+		let canonical = false;
 		for (let index = 0; index < this.agent.state.messages.length; index++) {
+			this._toolResultUiCanonicalLookupProbes++;
 			const candidate = this.agent.state.messages[index];
-			if (
-				candidate?.role !== "toolResult" ||
-				candidate.toolCallId !== message.toolCallId ||
-				candidate.content !== message.content
-			) continue;
-			if (canonical) return undefined;
-			canonical = candidate;
+			if (candidate?.role !== "toolResult" || candidate.toolCallId !== message.toolCallId) continue;
+			if (candidate !== message || canonical) return undefined;
+			canonical = true;
 		}
 		if (!canonical) return undefined;
-		const presentation = owner.create(canonical.content, canonical.toolCallId);
+		const presentation = owner.create(message.content, message.toolCallId);
 		if (!presentation) return undefined;
 		try {
 			return presentation;
 		} finally {
 			owner.release();
 		}
+	}
+
+	/**
+	 * Populate a caller-owned, bounded map from canonical active-branch messages.
+	 * The reverse scan evaluates V1 messages without retaining sidecars, keeps a
+	 * bounded set of V2 candidates, then rejects ambiguous ids in one forward pass.
+	 */
+	collectRecentToolResultPresentationsForUi(
+		target: Map<Extract<AgentMessage, { role: "toolResult" }>, ToolResultPresentation>,
+		limit: number,
+	): void {
+		target.clear();
+		this._toolResultUiHistoryMessagesVisited = 0;
+		this._toolResultUiPresentationCandidatesEvaluated = 0;
+		this._toolResultUiActualV2Discoveries = 0;
+		this._toolResultUiCanonicalLookupProbes = 0;
+		this._toolResultUiSourceScans = 0;
+		const owner = this._toolResultPresentation;
+		const boundedLimit = Number.isSafeInteger(limit) ? Math.min(limit, MAX_TOOL_RESULT_UI_DISCOVERIES) : 0;
+		if (!owner || boundedLimit <= 0) return;
+		this._synchronizeToolResultUiCanonicalIndex();
+		const messages = this.agent.state.messages;
+		// Keep one bounded backup candidate per possible ambiguous output slot.
+		// The shared owner is the sole V1/V2 authority; candidate inspection must
+		// remain transient so rejected history cannot perturb shared resident order.
+		const candidateLimit = Math.min(boundedLimit * 2, MAX_TOOL_RESULT_UI_REBUILD_CANDIDATES);
+		const candidatesByToolCallId = new Map<string, Extract<AgentMessage, { role: "toolResult" }>>();
+		for (let index = messages.length - 1; index >= 0 && candidatesByToolCallId.size < candidateLimit; index--) {
+			this._toolResultUiHistoryMessagesVisited++;
+			const candidate = messages[index];
+			if (candidate?.role !== "toolResult") continue;
+			if (candidatesByToolCallId.has(candidate.toolCallId)) continue;
+			this._toolResultUiPresentationCandidatesEvaluated++;
+			this._toolResultUiSourceScans++;
+			if (owner.inspectToolResultPresentationForUiCandidate(candidate.content, candidate.toolCallId) !== "v2") continue;
+			candidatesByToolCallId.set(candidate.toolCallId, candidate);
+		}
+		const candidateOccurrences = new Map<string, number>();
+		for (const toolCallId of candidatesByToolCallId.keys()) candidateOccurrences.set(toolCallId, 0);
+		for (let index = 0; index < messages.length; index++) {
+			this._toolResultUiCanonicalLookupProbes++;
+			const candidate = messages[index];
+			if (candidate?.role !== "toolResult") continue;
+			const occurrences = candidateOccurrences.get(candidate.toolCallId);
+			if (occurrences !== undefined) candidateOccurrences.set(candidate.toolCallId, occurrences + 1);
+		}
+		const selectedCandidates: Array<Extract<AgentMessage, { role: "toolResult" }>> = [];
+		for (const [toolCallId, candidate] of candidatesByToolCallId) {
+			if (selectedCandidates.length >= boundedLimit) break;
+			if (candidateOccurrences.get(toolCallId) !== 1) continue;
+			selectedCandidates.push(candidate);
+		}
+		// Re-admit and touch oldest to newest so selected records follow unrelated
+		// residents at the eviction tail without clearing the shared owner.
+		for (let index = selectedCandidates.length - 1; index >= 0; index--) {
+			const candidate = selectedCandidates[index]!;
+			this._toolResultUiSourceScans++;
+			const presentation = owner.create(candidate.content, candidate.toolCallId);
+			if (!presentation) continue;
+			try {
+				if (presentation.version === 2) {
+					owner.touchExactResidentProjectionRecord(candidate.content, candidate.toolCallId);
+					target.set(candidate, presentation);
+				}
+			} finally {
+				owner.release();
+			}
+		}
+		this._toolResultUiActualV2Discoveries = target.size;
+	}
+
+	/** Low-frequency deterministic probes for UI rebuild tests and benchmarks. */
+	getToolResultPresentationUiRebuildCounts(): {
+		historyMessagesVisited: number;
+		presentationCandidatesEvaluated: number;
+		actualV2Discoveries: number;
+		canonicalLookupProbes: number;
+		sourceScans: number;
+		liveCanonicalIndexBuildProbes: number;
+		liveCanonicalIndexAppendProbes: number;
+		liveCanonicalLookupProbes: number;
+		liveCanonicalIndexRebuilds: number;
+		liveCanonicalIndexEntries: number;
+		liveCanonicalIndexOverflowed: boolean;
+		canonicalIndexActive: boolean;
+		canonicalIndexActivationCount: number;
+		canonicalIndexInactiveRebuildSkips: number;
+	} {
+		return {
+			historyMessagesVisited: this._toolResultUiHistoryMessagesVisited,
+			presentationCandidatesEvaluated: this._toolResultUiPresentationCandidatesEvaluated,
+			actualV2Discoveries: this._toolResultUiActualV2Discoveries,
+			canonicalLookupProbes: this._toolResultUiCanonicalLookupProbes,
+			sourceScans: this._toolResultUiSourceScans,
+			liveCanonicalIndexBuildProbes: this._toolResultUiLiveCanonicalIndexBuildProbes,
+			liveCanonicalIndexAppendProbes: this._toolResultUiLiveCanonicalIndexAppendProbes,
+			liveCanonicalLookupProbes: this._toolResultUiLiveCanonicalLookupProbes,
+			liveCanonicalIndexRebuilds: this._toolResultUiLiveCanonicalIndexRebuilds,
+			liveCanonicalIndexEntries: this._toolResultUiCanonicalMessages?.size ?? 0,
+			liveCanonicalIndexOverflowed: this._toolResultUiCanonicalMessagesOverflowed,
+			canonicalIndexActive: this._toolResultUiCanonicalIndexActive,
+			canonicalIndexActivationCount: this._toolResultUiCanonicalIndexActivationCount,
+			canonicalIndexInactiveRebuildSkips: this._toolResultUiCanonicalIndexInactiveRebuildSkips,
+		};
 	}
 
 	/** Read one bounded continuation chunk from the current active session branch. */
@@ -2571,6 +2816,7 @@ export class AgentSession {
 			const sessionContext = this.sessionManager.buildSessionContext();
 			this._toolResultPresentation?.clearProjectionRecords();
 			this.agent.state.messages = sessionContext.messages;
+			this._rebuildToolResultUiCanonicalIndex();
 			const estimatedTokensAfter = estimateMessagesTokens(sessionContext.messages);
 
 			// Get the saved compaction entry for the extension event
@@ -2727,11 +2973,15 @@ export class AgentSession {
 			let removedAssistant = false;
 			if (messages.length > 0 && messages[messages.length - 1].role === "assistant") {
 				this.agent.state.messages = messages.slice(0, -1);
+				this._rebuildToolResultUiCanonicalIndex();
 				removedAssistant = true;
 			}
 			const compacted = await this._runAutoCompaction("overflow", willRetry);
 			if (!compacted) {
-				if (removedAssistant) this.agent.state.messages = messages;
+				if (removedAssistant) {
+					this.agent.state.messages = messages;
+					this._rebuildToolResultUiCanonicalIndex();
+				}
 				return false;
 			}
 			return true;
@@ -2894,6 +3144,7 @@ export class AgentSession {
 			const sessionContext = this.sessionManager.buildSessionContext();
 			this._toolResultPresentation?.clearProjectionRecords();
 			this.agent.state.messages = sessionContext.messages;
+			this._rebuildToolResultUiCanonicalIndex();
 			const estimatedTokensAfter = estimateMessagesTokens(sessionContext.messages);
 
 			// Get the saved compaction entry for the extension event
@@ -2931,6 +3182,7 @@ export class AgentSession {
 				// the retriable error or truncated-length response again before continuing the interrupted turn.
 				if (lastMsg?.role === "assistant" && (lastMsg.stopReason === "error" || lastMsg.stopReason === "length")) {
 					this.agent.state.messages = messages.slice(0, -1);
+					this._rebuildToolResultUiCanonicalIndex();
 				}
 				return true;
 			}
@@ -3518,6 +3770,7 @@ export class AgentSession {
 		const messages = this.agent.state.messages;
 		if (messages.length > 0 && messages[messages.length - 1].role === "assistant") {
 			this.agent.state.messages = messages.slice(0, -1);
+			this._rebuildToolResultUiCanonicalIndex();
 		}
 
 		// Wait with exponential backoff (abortable)
@@ -3884,6 +4137,7 @@ export class AgentSession {
 			const sessionContext = this.sessionManager.buildSessionContext();
 			this._toolResultPresentation?.clearProjectionRecords();
 			this.agent.state.messages = sessionContext.messages;
+			this._rebuildToolResultUiCanonicalIndex();
 
 			// Emit session_tree event
 			await this._extensionRunner.emit({

@@ -329,6 +329,262 @@ test("session projection index enforces its hard entry capacity and clear releas
 	owner.dispose();
 });
 
+test("exact resident touch is link-only, exact-identity, and inert after release", () => {
+	const counters = createToolResultPresentationCounters();
+	const owner = createToolResultPresentationOwner({ enabled: true, budgetTokens: 128, counters }, SESSION_ID)!;
+	const emptyEntries = counters.projectionRecordEntries;
+	const emptyCodeUnits = counters.retainedProjectionCodeUnits;
+	assert.equal(owner.touchExactResidentProjectionRecord([], "missing"), false);
+	assert.equal(counters.projectionRecordEntries, emptyEntries);
+	assert.equal(counters.retainedProjectionCodeUnits, emptyCodeUnits);
+
+	const text = "touch-singleton-".repeat(2_000);
+	const content: ToolResultPresentationContent[] = [{ type: "text", text }];
+	owner.create(content, "touch-singleton");
+	owner.release();
+	const beforeTouch = {
+		fullSourceEstimatorScans: counters.fullSourceEstimatorScans,
+		sourceDigestConstructions: counters.sourceDigestConstructions,
+		artifactIntegrityScans: counters.artifactIntegrityScans,
+		projectionRecordEvictions: counters.projectionRecordEvictions,
+		projectionRecordEntries: counters.projectionRecordEntries,
+		retainedProjectionCodeUnits: counters.retainedProjectionCodeUnits,
+	};
+	assert.equal(owner.touchExactResidentProjectionRecord(content, "touch-singleton"), true);
+	assert.equal(owner.touchExactResidentProjectionRecord(content, "touch-singleton"), true);
+	assert.equal(owner.touchExactResidentProjectionRecord([...content], "touch-singleton"), false);
+	assert.equal(
+		owner.touchExactResidentProjectionRecord([{ type: "text", text }], "touch-singleton"),
+		false,
+	);
+	assert.equal(owner.touchExactResidentProjectionRecord(content, "missing"), false);
+	assert.deepEqual(
+		{
+			fullSourceEstimatorScans: counters.fullSourceEstimatorScans,
+			sourceDigestConstructions: counters.sourceDigestConstructions,
+			artifactIntegrityScans: counters.artifactIntegrityScans,
+			projectionRecordEvictions: counters.projectionRecordEvictions,
+			projectionRecordEntries: counters.projectionRecordEntries,
+			retainedProjectionCodeUnits: counters.retainedProjectionCodeUnits,
+		},
+		beforeTouch,
+	);
+	owner.clearProjectionRecords();
+	assert.equal(owner.touchExactResidentProjectionRecord(content, "touch-singleton"), false);
+	owner.create(content, "touch-singleton");
+	owner.release();
+	owner.dispose();
+	assert.equal(owner.touchExactResidentProjectionRecord(content, "touch-singleton"), false);
+	assert.equal(counters.projectionRecordEntries, 0);
+	assert.equal(counters.retainedProjectionCodeUnits, 0);
+});
+
+test("exact resident touch preserves continuation validation and artifact identity", () => {
+	const counters = createToolResultPresentationCounters();
+	const owner = createToolResultPresentationOwner({ enabled: true, budgetTokens: 128, counters }, SESSION_ID)!;
+	const content: ToolResultPresentationContent[] = [{ type: "text", text: "touch-validation-".repeat(10_000) }];
+	const message = toolResult(content, "touch-validation");
+	const history = [message];
+	const presentation = owner.create(content, message.toolCallId) as ToolResultPresentationV2;
+	owner.release();
+	assert.ok(presentation.artifact);
+	const firstChunk = owner.readContinuation(presentation.continuation.cursor, history, 128);
+	assert.ok(firstChunk.nextCursor);
+	const artifactBefore = owner.readArtifact(presentation.artifact.id, history);
+	assert.equal(artifactBefore.descriptor, presentation.artifact);
+	assert.equal(artifactBefore.content, content);
+	const filler: ToolResultPresentationContent[] = [{ type: "text", text: "touch-filler-".repeat(2_000) }];
+	owner.create(filler, "touch-filler");
+	owner.release();
+
+	const beforeTouch = {
+		fullSourceEstimatorScans: counters.fullSourceEstimatorScans,
+		sourceDigestConstructions: counters.sourceDigestConstructions,
+		artifactIntegrityScans: counters.artifactIntegrityScans,
+		projectionRecordEvictions: counters.projectionRecordEvictions,
+		projectionRecordEntries: counters.projectionRecordEntries,
+		retainedProjectionCodeUnits: counters.retainedProjectionCodeUnits,
+		continuationSourceLookupProbes: counters.continuationSourceLookupProbes,
+	};
+	assert.equal(owner.touchExactResidentProjectionRecord(content, message.toolCallId), true);
+	assert.deepEqual(
+		{
+			fullSourceEstimatorScans: counters.fullSourceEstimatorScans,
+			sourceDigestConstructions: counters.sourceDigestConstructions,
+			artifactIntegrityScans: counters.artifactIntegrityScans,
+			projectionRecordEvictions: counters.projectionRecordEvictions,
+			projectionRecordEntries: counters.projectionRecordEntries,
+			retainedProjectionCodeUnits: counters.retainedProjectionCodeUnits,
+			continuationSourceLookupProbes: counters.continuationSourceLookupProbes,
+		},
+		beforeTouch,
+	);
+	const continuationHitsBefore = counters.activeContinuationRecordHits;
+	const secondChunk = owner.readContinuation(firstChunk.nextCursor, history, 128);
+	assert.ok(secondChunk.content.length > 0);
+	assert.equal(counters.fullSourceEstimatorScans, beforeTouch.fullSourceEstimatorScans);
+	assert.equal(counters.continuationSourceLookupProbes, beforeTouch.continuationSourceLookupProbes);
+	assert.equal(counters.activeContinuationRecordHits, continuationHitsBefore + 1);
+	const artifactHitsBefore = counters.artifactRecordHits;
+	const artifactAfter = owner.readArtifact(presentation.artifact.id, history);
+	assert.equal(artifactAfter.descriptor, artifactBefore.descriptor);
+	assert.equal(artifactAfter.content, content);
+	assert.equal(counters.artifactRecordHits, artifactHitsBefore + 1);
+	owner.dispose();
+});
+
+test("exact resident touch preserves relative order and aligns chronological eviction", () => {
+	const counters = createToolResultPresentationCounters();
+	const owner = createToolResultPresentationOwner({ enabled: true, budgetTokens: 128, counters }, SESSION_ID)!;
+	const contents: ToolResultPresentationContent[][] = [];
+	for (let index = 0; index < 128; index++) {
+		const content: ToolResultPresentationContent[] = [{ type: "text", text: `touch-order-${index}` }];
+		contents.push(content);
+		owner.create(content, `touch-order-${index}`);
+		owner.release();
+	}
+	assert.equal(owner.touchExactResidentProjectionRecord(contents[0]!, "touch-order-0"), true);
+	assert.equal(owner.touchExactResidentProjectionRecord(contents[64]!, "touch-order-64"), true);
+	const evictionsBeforeLive = counters.projectionRecordEvictions;
+	const liveOne: ToolResultPresentationContent[] = [{ type: "text", text: "live-one" }];
+	const liveTwo: ToolResultPresentationContent[] = [{ type: "text", text: "live-two" }];
+	owner.create(liveOne, "touch-live-one");
+	owner.release();
+	owner.create(liveTwo, "touch-live-two");
+	owner.release();
+	assert.equal(counters.projectionRecordEvictions - evictionsBeforeLive, 2);
+	assert.equal(owner.touchExactResidentProjectionRecord(contents[1]!, "touch-order-1"), false);
+	assert.equal(owner.touchExactResidentProjectionRecord(contents[2]!, "touch-order-2"), false);
+	assert.equal(owner.touchExactResidentProjectionRecord(contents[3]!, "touch-order-3"), true);
+	assert.equal(owner.touchExactResidentProjectionRecord(contents[0]!, "touch-order-0"), true);
+	assert.equal(owner.touchExactResidentProjectionRecord(contents[64]!, "touch-order-64"), true);
+	owner.dispose();
+});
+
+test("selected resident touches preserve spare records and perform only necessary capacity eviction", () => {
+	const preserveCounters = createToolResultPresentationCounters();
+	const preserveOwner = createToolResultPresentationOwner(
+		{ enabled: true, budgetTokens: 128, counters: preserveCounters },
+		`${SESSION_ID}-preserve`,
+	)!;
+	const unrelated: ToolResultPresentationContent[] = [{ type: "text", text: "unrelated" }];
+	preserveOwner.create(unrelated, "unrelated");
+	preserveOwner.release();
+	const selected: ToolResultPresentationContent[][] = [];
+	for (let index = 0; index < 127; index++) {
+		const content: ToolResultPresentationContent[] = [{ type: "text", text: `selected-${index}` }];
+		selected.push(content);
+		preserveOwner.create(content, `selected-${index}`);
+		preserveOwner.release();
+	}
+	for (let index = 0; index < selected.length; index++) {
+		assert.equal(preserveOwner.touchExactResidentProjectionRecord(selected[index]!, `selected-${index}`), true);
+	}
+	assert.equal(preserveCounters.projectionRecordEntries, 128);
+	assert.equal(preserveCounters.projectionRecordEvictions, 0);
+	const live: ToolResultPresentationContent[] = [{ type: "text", text: "selected-live" }];
+	preserveOwner.create(live, "selected-live");
+	preserveOwner.release();
+	assert.equal(preserveCounters.projectionRecordEvictions, 1);
+	assert.equal(preserveOwner.touchExactResidentProjectionRecord(unrelated, "unrelated"), false);
+	assert.equal(preserveOwner.touchExactResidentProjectionRecord(selected[0]!, "selected-0"), true);
+	preserveOwner.dispose();
+
+	const fullCounters = createToolResultPresentationCounters();
+	const fullOwner = createToolResultPresentationOwner(
+		{ enabled: true, budgetTokens: 128, counters: fullCounters },
+		`${SESSION_ID}-full`,
+	)!;
+	fullOwner.create(unrelated, "full-unrelated");
+	fullOwner.release();
+	const fullSelected: ToolResultPresentationContent[][] = [];
+	for (let index = 0; index < 128; index++) {
+		const content: ToolResultPresentationContent[] = [{ type: "text", text: `full-selected-${index}` }];
+		fullSelected.push(content);
+		fullOwner.create(content, `full-selected-${index}`);
+		fullOwner.release();
+	}
+	assert.equal(fullCounters.projectionRecordEvictions, 1);
+	const evictionsBeforeTouches = fullCounters.projectionRecordEvictions;
+	for (let index = 0; index < fullSelected.length; index++) {
+		assert.equal(fullOwner.touchExactResidentProjectionRecord(fullSelected[index]!, `full-selected-${index}`), true);
+	}
+	assert.equal(fullCounters.projectionRecordEntries, 128);
+	assert.equal(fullCounters.projectionRecordEvictions, evictionsBeforeTouches);
+	assert.equal(fullOwner.touchExactResidentProjectionRecord(unrelated, "full-unrelated"), false);
+	fullOwner.dispose();
+});
+
+test("UI candidate inspection classifies resident and transient sources without admission or reordering", () => {
+	const counters = createToolResultPresentationCounters();
+	const owner = createToolResultPresentationOwner({ enabled: true, budgetTokens: 128, counters }, SESSION_ID)!;
+	const residentV1: ToolResultPresentationContent[] = [{ type: "text", text: "resident-small" }];
+	const residentV2: ToolResultPresentationContent[] = [{ type: "text", text: "resident-large-".repeat(2_000) }];
+	owner.create(residentV1, "inspect-resident-v1");
+	owner.release();
+	owner.create(residentV2, "inspect-resident-v2");
+	owner.release();
+	const before = { ...counters };
+
+	assert.equal(owner.inspectToolResultPresentationForUiCandidate(residentV1, "inspect-resident-v1"), "v1");
+	assert.equal(owner.inspectToolResultPresentationForUiCandidate(residentV2, "inspect-resident-v2"), "v2");
+	assert.equal(
+		owner.inspectToolResultPresentationForUiCandidate(
+			[{ type: "text", text: "resident-small" }],
+			"inspect-resident-v1",
+		),
+		"v1",
+	);
+	assert.equal(
+		owner.inspectToolResultPresentationForUiCandidate(
+			[{ type: "text", text: "transient-large-".repeat(2_000) }],
+			"inspect-transient-v2",
+		),
+		"v2",
+	);
+	assert.deepEqual(counters, before, "inspection must not mutate owner, admission, artifact, or provider counters");
+
+	const orderCounters = createToolResultPresentationCounters();
+	const orderOwner = createToolResultPresentationOwner(
+		{ enabled: true, budgetTokens: 128, counters: orderCounters },
+		`${SESSION_ID}-inspect-order`,
+	)!;
+	const oldest: ToolResultPresentationContent[] = [{ type: "text", text: "oldest" }];
+	const hot: ToolResultPresentationContent[] = [{ type: "text", text: "hot" }];
+	orderOwner.create(oldest, "inspect-order-oldest");
+	orderOwner.release();
+	orderOwner.create(hot, "inspect-order-hot");
+	orderOwner.release();
+	assert.equal(orderOwner.inspectToolResultPresentationForUiCandidate(oldest, "inspect-order-oldest"), "v1");
+	assert.equal(
+		orderOwner.inspectToolResultPresentationForUiCandidate(
+			[{ type: "text", text: "discarded" }],
+			"inspect-order-discarded",
+		),
+		"v1",
+	);
+	for (let index = 0; index < 126; index++) {
+		const filler: ToolResultPresentationContent[] = [{ type: "text", text: `inspect-order-${index}` }];
+		orderOwner.create(filler, `inspect-order-${index}`);
+		orderOwner.release();
+	}
+	const evictionsBeforeLive = orderCounters.projectionRecordEvictions;
+	const live: ToolResultPresentationContent[] = [{ type: "text", text: "inspect-order-live" }];
+	orderOwner.create(live, "inspect-order-live");
+	orderOwner.release();
+	assert.equal(orderCounters.projectionRecordEvictions, evictionsBeforeLive + 1);
+	assert.equal(orderOwner.touchExactResidentProjectionRecord(oldest, "inspect-order-oldest"), false);
+	assert.equal(orderOwner.touchExactResidentProjectionRecord(hot, "inspect-order-hot"), true);
+
+	owner.clearProjectionRecords();
+	assert.equal(owner.inspectToolResultPresentationForUiCandidate(residentV1, "inspect-resident-v1"), "v1");
+	assert.equal(counters.projectionRecordEntries, 0);
+	assert.equal(counters.retainedProjectionCodeUnits, 0);
+	owner.dispose();
+	assert.equal(owner.inspectToolResultPresentationForUiCandidate(residentV1, "inspect-resident-v1"), undefined);
+	orderOwner.dispose();
+});
+
 test("V2 public validation rejects inconsistent bounded metadata without scanning legacy content", () => {
 	const content: ToolResultPresentationContent[] = [{ type: "text", text: "validation-source-".repeat(2048) }];
 	const legacy: ToolResultPresentationContent[] = [{ type: "text", text: "legacy-full" }];

@@ -5,6 +5,8 @@ import ts from "typescript";
 
 export interface ToolResultPresentationUiSourceAudit {
 	readonly registryHardCap: number;
+	readonly rebuildCandidateHardCap: number;
+	readonly canonicalIndexHardCap: number;
 	readonly transitiveSourceFiles: readonly string[];
 	readonly resultRenderingArrayMaterializationSites: number;
 	readonly resultRenderingArrayLiteralSites: number;
@@ -21,6 +23,95 @@ export interface ToolResultPresentationUiSourceAudit {
 	readonly argumentSerializationSites: number;
 	readonly discoveryOwnershipCopyOperations: number;
 	readonly discoveryOwnershipSerializations: number;
+	readonly discoveryOwnershipArrayMaterializationSites: number;
+	readonly discoveryOwnershipInlineClosureSites: number;
+	readonly discoveryRegistrationObjectLiterals: number;
+	readonly discoveryOwnershipObjectLiterals: number;
+	readonly discoveryOwnershipMapConstructors: number;
+	readonly discoveryOwnershipSetConstructors: number;
+	readonly pendingRegistryMapConstructors: number;
+	readonly attachedRegistryMapConstructors: number;
+	readonly promotionArrayMaterializationSites: number;
+	readonly promotionInlineClosureSites: number;
+	readonly promotionCopyOperations: number;
+	readonly promotionSerializations: number;
+	readonly promotionObjectLiterals: number;
+	readonly promotionMapConstructors: number;
+	readonly promotionSetConstructors: number;
+	readonly promotionPromises: number;
+	readonly promotionAbortControllers: number;
+	readonly discoveryRebuildCallerArrayMaterializationSites: number;
+	readonly discoveryRebuildCallerInlineClosureSites: number;
+	readonly discoveryRebuildCallerCopyOperations: number;
+	readonly discoveryRebuildCallerSerializations: number;
+	readonly discoveryRebuildCallerObjectLiterals: number;
+	readonly discoveryRebuildCallerMapConstructors: number;
+	readonly discoveryRebuildCallerSetConstructors: number;
+	readonly discoveryRebuildCallerPromises: number;
+	readonly discoveryRebuildCallerAbortControllers: number;
+	readonly exactResidentTouchArrayMaterializationSites: number;
+	readonly exactResidentTouchInlineClosureSites: number;
+	readonly exactResidentTouchCopyOperations: number;
+	readonly exactResidentTouchSerializations: number;
+	readonly exactResidentTouchObjectLiterals: number;
+	readonly exactResidentTouchMapConstructors: number;
+	readonly exactResidentTouchSetConstructors: number;
+	readonly exactResidentTouchPromises: number;
+	readonly exactResidentTouchAbortControllers: number;
+	readonly candidateInspectionArrayMaterializationSites: number;
+	readonly candidateInspectionInlineClosureSites: number;
+	readonly candidateInspectionCopyOperations: number;
+	readonly candidateInspectionSerializations: number;
+	readonly candidateInspectionObjectLiterals: number;
+	readonly candidateInspectionMapConstructors: number;
+	readonly candidateInspectionSetConstructors: number;
+	readonly candidateInspectionPromises: number;
+	readonly candidateInspectionAbortControllers: number;
+	readonly groupedRebuildArrayMaterializationSites: number;
+	readonly groupedRebuildInlineClosureSites: number;
+	readonly groupedRebuildCopyOperations: number;
+	readonly groupedRebuildSerializations: number;
+	readonly groupedRebuildMapConstructors: number;
+	readonly groupedRebuildSetConstructors: number;
+	readonly groupedRebuildPromises: number;
+	readonly groupedRebuildAbortControllers: number;
+	readonly groupedImageConversionArrayMaterializationSites: number;
+	readonly groupedImageConversionInlineClosureSites: number;
+	readonly groupedImageConversionCopyOperations: number;
+	readonly groupedImageConversionSerializations: number;
+	readonly groupedImageConversionObjectLiterals: number;
+	readonly groupedImageConversionMapConstructors: number;
+	readonly groupedImageConversionSetConstructors: number;
+	readonly groupedImageConversionPromises: number;
+	readonly groupedImageConversionPromiseProducingCallSites: number;
+	readonly groupedImageLoaderRequestCallSites: number;
+	readonly groupedImageLoaderReactionPromiseSites: number;
+	readonly groupedImageConversionAbortControllers: number;
+	readonly groupedImageColdLoaderArrayMaterializationSites: number;
+	readonly groupedImageColdLoaderInlineClosureSites: number;
+	readonly groupedImageColdLoaderObjectLiterals: number;
+	readonly groupedImageColdLoaderPromiseSites: number;
+	readonly groupedImageColdLoaderDynamicImportSites: number;
+	readonly groupedImageWarmConversionArrayMaterializationSites: number;
+	readonly groupedImageWarmConversionInlineClosureSites: number;
+	readonly groupedImageWarmConversionObjectLiterals: number;
+	readonly groupedImageWarmConversionPromiseSites: number;
+	readonly groupedImageWarmConversionTypedArraySites: number;
+	readonly groupedImageWarmConversionBufferCallSites: number;
+	readonly groupedImageCompatibilityWrapperInlineClosureSites: number;
+	readonly groupedImageCompatibilityWrapperObjectLiterals: number;
+	readonly groupedImageCompatibilityWrapperPromiseSites: number;
+	readonly groupedImageCompatibilityWrapperTypedArraySites: number;
+	readonly groupedImageCompatibilityWrapperBufferCallSites: number;
+	readonly canonicalPayloadRefreshArrayMaterializationSites: number;
+	readonly canonicalPayloadRefreshInlineClosureSites: number;
+	readonly canonicalPayloadRefreshCopyOperations: number;
+	readonly canonicalPayloadRefreshSerializations: number;
+	readonly canonicalPayloadRefreshObjectLiterals: number;
+	readonly canonicalPayloadRefreshMapConstructors: number;
+	readonly canonicalPayloadRefreshSetConstructors: number;
+	readonly canonicalPayloadRefreshPromises: number;
+	readonly canonicalPayloadRefreshAbortControllers: number;
 	readonly promises: number;
 	readonly abortControllers: number;
 }
@@ -38,6 +129,9 @@ interface AstCounts {
 	inlineClosures: number;
 	serializations: number;
 	copyOperations: number;
+	objectLiterals: number;
+	mapConstructors: number;
+	setConstructors: number;
 	promises: number;
 	abortControllers: number;
 }
@@ -139,11 +233,16 @@ function countAst(nodes: readonly ts.Node[], checker?: ts.TypeChecker): AstCount
 		inlineClosures: 0,
 		serializations: 0,
 		copyOperations: 0,
+		objectLiterals: 0,
+		mapConstructors: 0,
+		setConstructors: 0,
 		promises: 0,
 		abortControllers: 0,
 	};
 	const visit = (node: ts.Node): void => {
-		if (ts.isArrayLiteralExpression(node)) {
+		if (ts.isObjectLiteralExpression(node)) {
+			counts.objectLiterals++;
+		} else if (ts.isArrayLiteralExpression(node)) {
 			counts.arrayLiterals++;
 		} else if (ts.isSpreadElement(node)) {
 			if (ts.isArrayLiteralExpression(node.parent)) counts.arraySpreads++;
@@ -181,6 +280,8 @@ function countAst(nodes: readonly ts.Node[], checker?: ts.TypeChecker): AstCount
 			}
 		} else if (ts.isNewExpression(node)) {
 			if (isIdentifierNamed(node.expression, "Array")) counts.arrayConstructors++;
+			if (isIdentifierNamed(node.expression, "Map")) counts.mapConstructors++;
+			if (isIdentifierNamed(node.expression, "Set")) counts.setConstructors++;
 			if (isIdentifierNamed(node.expression, "Promise")) counts.promises++;
 			if (isIdentifierNamed(node.expression, "AbortController")) counts.abortControllers++;
 		}
@@ -193,6 +294,54 @@ function countAst(nodes: readonly ts.Node[], checker?: ts.TypeChecker): AstCount
 		visit(node);
 	}
 	return counts;
+}
+
+function countCallsNamed(nodes: readonly ts.Node[], name: string): number {
+	let count = 0;
+	const visit = (node: ts.Node): void => {
+		if (
+			ts.isCallExpression(node) &&
+			ts.isPropertyAccessExpression(node.expression) &&
+			node.expression.name.text === name
+		) count++;
+		ts.forEachChild(node, visit);
+	};
+	for (const node of nodes) visit(node);
+	return count;
+}
+
+function countNodeKinds(nodes: readonly ts.Node[]): {
+	asyncFunctions: number;
+	dynamicImports: number;
+	typedArrayConstructors: number;
+	bufferCalls: number;
+} {
+	let asyncFunctions = 0;
+	let dynamicImports = 0;
+	let typedArrayConstructors = 0;
+	let bufferCalls = 0;
+	const visit = (node: ts.Node): void => {
+		if (
+			(ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node) || ts.isArrowFunction(node) || ts.isMethodDeclaration(node)) &&
+			node.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword)
+		) asyncFunctions++;
+		if (ts.isCallExpression(node)) {
+			if (node.expression.kind === ts.SyntaxKind.ImportKeyword) dynamicImports++;
+			if (
+				ts.isPropertyAccessExpression(node.expression) &&
+				isIdentifierNamed(node.expression.expression, "Buffer") &&
+				node.expression.name.text === "from"
+			) bufferCalls++;
+		}
+		if (
+			ts.isNewExpression(node) &&
+			ts.isIdentifier(node.expression) &&
+			(node.expression.text === "Uint8Array" || node.expression.text === "Uint8ClampedArray")
+		) typedArrayConstructors++;
+		ts.forEachChild(node, visit);
+	};
+	for (const node of nodes) visit(node);
+	return { asyncFunctions, dynamicImports, typedArrayConstructors, bufferCalls };
 }
 
 function createSourceProgram(rootNames: readonly string[]): ts.Program {
@@ -214,7 +363,12 @@ export function auditToolResultPresentationUiSources(): ToolResultPresentationUi
 		toolComponent: fileURLToPath(new URL("../../packages/coding-agent/src/modes/interactive/components/tool-execution.ts", import.meta.url)),
 		interactive: fileURLToPath(new URL("../../packages/coding-agent/src/modes/interactive/interactive-mode.ts", import.meta.url)),
 		agentSession: fileURLToPath(new URL("../../packages/coding-agent/src/core/agent-session.ts", import.meta.url)),
+		toolResultPresentation: fileURLToPath(new URL("../../packages/coding-agent/src/core/tool-result-presentation.ts", import.meta.url)),
+		toolOutputBudget: fileURLToPath(new URL("../../packages/coding-agent/src/core/tool-output-budget.ts", import.meta.url)),
 		renderUtils: fileURLToPath(new URL("../../packages/coding-agent/src/core/tools/render-utils.ts", import.meta.url)),
+		imageConvert: fileURLToPath(new URL("../../packages/coding-agent/src/utils/image-convert.ts", import.meta.url)),
+		photon: fileURLToPath(new URL("../../packages/coding-agent/src/utils/photon.ts", import.meta.url)),
+		exifOrientation: fileURLToPath(new URL("../../packages/coding-agent/src/utils/exif-orientation.ts", import.meta.url)),
 		tuiContainer: fileURLToPath(new URL("../../packages/tui/src/tui.ts", import.meta.url)),
 		tuiBox: fileURLToPath(new URL("../../packages/tui/src/components/box.ts", import.meta.url)),
 		tuiText: fileURLToPath(new URL("../../packages/tui/src/components/text.ts", import.meta.url)),
@@ -226,31 +380,75 @@ export function auditToolResultPresentationUiSources(): ToolResultPresentationUi
 	const toolComponent = requireSourceFile(program, sourcePaths.toolComponent);
 	const interactive = requireSourceFile(program, sourcePaths.interactive);
 	const agentSession = requireSourceFile(program, sourcePaths.agentSession);
+	const toolResultPresentation = requireSourceFile(program, sourcePaths.toolResultPresentation);
+	const toolOutputBudget = requireSourceFile(program, sourcePaths.toolOutputBudget);
 	const renderUtils = requireSourceFile(program, sourcePaths.renderUtils);
+	const imageConvert = requireSourceFile(program, sourcePaths.imageConvert);
+	const photon = requireSourceFile(program, sourcePaths.photon);
+	const exifOrientation = requireSourceFile(program, sourcePaths.exifOrientation);
 	const tuiContainer = requireSourceFile(program, sourcePaths.tuiContainer);
 	const tuiBox = requireSourceFile(program, sourcePaths.tuiBox);
 	const tuiText = requireSourceFile(program, sourcePaths.tuiText);
 	const tuiSpacer = requireSourceFile(program, sourcePaths.tuiSpacer);
 	const tuiUtils = requireSourceFile(program, sourcePaths.tuiUtils);
-	const discoveryOwnershipNodes = [
-		...selectClassMembers(toolComponent, "ReadToolGroupComponent", ["setToolResultPresentation", "clearToolResultPresentation"]),
-		...selectClassMembers(toolComponent, "ToolExecutionComponent", ["setToolResultPresentation", "clearToolResultPresentation"]),
+	const discoveryRegistrationNodes = selectClassMembers(interactive, "InteractiveMode", [
+		"createToolResultDiscoveryRegistration",
+	]);
+	const discoveryRebuildCallerNodes = selectClassMembers(interactive, "InteractiveMode", ["renderSessionItems"]);
+	const discoveryCoreOwnershipNodes = [
+		...selectClassMembers(toolComponent, "ReadToolGroupComponent", ["setToolResultPresentation", "clearToolResultPresentation", "detachToolResultPresentation"]),
+		...selectClassMembers(toolComponent, "ToolExecutionComponent", ["setToolResultPresentation", "clearToolResultPresentation", "detachToolResultPresentation"]),
 		...selectClassMembers(interactive, "InteractiveMode", [
-			"evictOldestToolResultDiscovery",
-			"addToolResultDiscovery",
+			"updateToolResultDiscoveryHighWaterMarks",
+			"evictOldestAttachedToolResultDiscovery",
+			"createToolResultDiscoveryRegistration",
+			"addPendingToolResultDiscovery",
+			"releasePendingToolResultDiscovery",
+			"removePendingToolResultDiscoveryForAmbiguity",
+			"removeAttachedToolResultDiscoveryForAmbiguity",
+			"addAttachedToolResultDiscovery",
 			"trackToolResultPresentationTarget",
 			"attachToolResultPresentation",
 			"attachLiveToolResultPresentation",
+			"clearPendingToolResultDiscoveries",
+			"clearAttachedToolResultDiscoveries",
+			"clearToolResultDiscoveriesAfterCanonicalHistoryReplacement",
 			"clearToolResultDiscoveries",
 			"getToolResultDiscoveryLifecycleCounts",
 		]),
 		...selectClassMembers(agentSession, "AgentSession", [
 			"toolResultPresentationEnabled",
+			"_recordToolResultUiCanonicalMessage",
+			"_rebuildToolResultUiCanonicalIndex",
+			"_synchronizeToolResultUiCanonicalIndex",
+			"getToolResultPresentationSourceStatusForUi",
+			"isCurrentToolResultPresentationSourceForUi",
 			"getToolResultPresentationForUi",
+			"collectRecentToolResultPresentationsForUi",
+			"getToolResultPresentationUiRebuildCounts",
 			"readToolResultContinuation",
 			"readToolResultArtifact",
 		]),
 	];
+	const discoveryOwnershipNodes = [...discoveryCoreOwnershipNodes, ...discoveryRebuildCallerNodes];
+	const pendingRegistryCounts = countAst(
+		selectClassMembers(interactive, "InteractiveMode", ["addPendingToolResultDiscovery"]),
+		checker,
+	);
+	const attachedRegistryCounts = countAst(
+		selectClassMembers(interactive, "InteractiveMode", ["addAttachedToolResultDiscovery"]),
+		checker,
+	);
+	const promotionCounts = countAst(
+		selectClassMembers(interactive, "InteractiveMode", [
+			"evictOldestAttachedToolResultDiscovery",
+			"releasePendingToolResultDiscovery",
+			"addAttachedToolResultDiscovery",
+			"attachToolResultPresentation",
+			"attachLiveToolResultPresentation",
+		]),
+		checker,
+	);
 	const toolResultRenderingNodes = [
 		...selectNamedDeclarations(toolComponent, [
 			"createToolResultDiscovery",
@@ -261,6 +459,7 @@ export function auditToolResultPresentationUiSources(): ToolResultPresentationUi
 		...selectClassMembers(toolComponent, "ReadToolGroupComponent", [
 			"setToolResultPresentation",
 			"clearToolResultPresentation",
+			"detachToolResultPresentation",
 			"getDisplayRows",
 			"rebuild",
 		]),
@@ -275,6 +474,7 @@ export function auditToolResultPresentationUiSources(): ToolResultPresentationUi
 			"getRenderContext",
 			"setToolResultPresentation",
 			"clearToolResultPresentation",
+			"detachToolResultPresentation",
 			"render",
 			"updateDisplay",
 			"getTextOutput",
@@ -315,7 +515,7 @@ export function auditToolResultPresentationUiSources(): ToolResultPresentationUi
 		]),
 	];
 	const renderingCounts = countAst(
-		[...toolResultRenderingNodes, ...tuiResultRenderingNodes, ...discoveryOwnershipNodes],
+		[...toolResultRenderingNodes, ...tuiResultRenderingNodes, ...discoveryCoreOwnershipNodes],
 		checker,
 	);
 	const argumentCounts = countAst(
@@ -323,15 +523,121 @@ export function auditToolResultPresentationUiSources(): ToolResultPresentationUi
 		checker,
 	);
 	const ownershipCounts = countAst(discoveryOwnershipNodes, checker);
+	const rebuildCallerCounts = countAst(discoveryRebuildCallerNodes, checker);
+	const registrationCounts = countAst(discoveryRegistrationNodes, checker);
+	const exactResidentTouchCounts = countAst(
+		selectClassMembers(toolResultPresentation, "ToolResultPresentationOwner", [
+			"touchExactResidentProjectionRecord",
+		]),
+		checker,
+	);
+	const candidateInspectionCounts = countAst(
+		[
+			...selectClassMembers(toolResultPresentation, "ToolResultPresentationOwner", [
+				"inspectToolResultPresentationForUiCandidate",
+			]),
+			// The UI call supplies no exact estimator. Include the complete fallback
+			// scan chain plus estimateToolOutputTokens itself; the latter deliberately
+			// makes this a conservative envelope that also exposes allocations in its
+			// dormant exact-estimator branch.
+			...selectNamedDeclarations(toolOutputBudget, [
+				"estimateToolOutputTokens",
+				"createScanState",
+				"scanText",
+				"addAsciiRunTokens",
+				"beginOrExtendAsciiRun",
+				"isAsciiHex",
+				"printableAsciiSymbolBit",
+				"isCjk",
+				"isCombiningOrJoiner",
+			]),
+		],
+		checker,
+	);
+	const groupedRebuildCounts = countAst(
+		selectClassMembers(toolComponent, "ReadToolGroupComponent", ["rebuild"]),
+		checker,
+	);
+	const groupedImageConversionNodes = [
+		...selectNamedDeclarations(toolComponent, ["ReadGroupConverterLoaderTask"]),
+		...selectClassMembers(toolComponent, "ReadToolGroupComponent", [
+			"clearGroupedImageConversionState",
+			"clearGroupedImageConversionsForRow",
+			"clearGroupedImageConversions",
+			"ensureGroupedImageConverterLoad",
+			"hasVisibleGroupedImageConversionCandidate",
+			"completeGroupedImageConverterLoad",
+			"rejectGroupedImageConverterLoad",
+			"releaseGroupedImageConverterOwnership",
+			"getGroupedImageForKitty",
+			"pruneGroupedImageConversions",
+		]),
+	];
+	const groupedImageConversionCounts = countAst(groupedImageConversionNodes, checker);
+	const groupedImageLoaderRequestCallSites = countCallsNamed(
+		groupedImageConversionNodes,
+		"loadImageConverterForTerminal",
+	);
+	const groupedImageLoaderReactionPromiseSites = countCallsNamed(groupedImageConversionNodes, "then");
+	const groupedImageConversionPromiseProducingCallSites =
+		groupedImageLoaderRequestCallSites + groupedImageLoaderReactionPromiseSites;
+	const groupedImageColdLoaderNodes = [
+		...selectNamedDeclarations(imageConvert, ["loadPngConverter"]),
+		...selectNamedDeclarations(photon, ["pathOrNull", "getFallbackWasmPaths", "patchPhotonWasmRead", "loadPhoton"]),
+	];
+	const groupedImageWarmConversionNodes = [
+		...selectNamedDeclarations(imageConvert, [
+			"convertImageBytesToPngWithLoadedConverter",
+			"convertToPngWithLoadedConverter",
+		]),
+		...selectNamedDeclarations(exifOrientation, [
+			"readOrientationFromTiff",
+			"findJpegTiffOffset",
+			"findWebpTiffOffset",
+			"hasExifHeader",
+			"getExifOrientation",
+			"rotate90",
+			"applyExifOrientation",
+		]),
+	];
+	const groupedImageCompatibilityWrapperNodes = selectNamedDeclarations(imageConvert, [
+		"convertImageBytesToPng",
+		"convertToPng",
+	]);
+	const groupedImageColdLoaderCounts = countAst(groupedImageColdLoaderNodes, checker);
+	const groupedImageWarmConversionCounts = countAst(groupedImageWarmConversionNodes, checker);
+	const groupedImageCompatibilityWrapperCounts = countAst(groupedImageCompatibilityWrapperNodes, checker);
+	const groupedImageColdLoaderKinds = countNodeKinds(groupedImageColdLoaderNodes);
+	const groupedImageWarmConversionKinds = countNodeKinds(groupedImageWarmConversionNodes);
+	const groupedImageCompatibilityWrapperKinds = countNodeKinds(groupedImageCompatibilityWrapperNodes);
+	const canonicalPayloadRefreshCounts = countAst(
+		selectClassMembers(interactive, "InteractiveMode", ["attachLiveToolResultPresentation"]),
+		checker,
+	);
 	const interactiveSource = readFileSync(sourcePaths.interactive, "utf8");
+	const agentSessionSource = readFileSync(sourcePaths.agentSession, "utf8");
 	const registryHardCap = Number(interactiveSource.match(/MAX_TOOL_RESULT_DISCOVERIES\s*=\s*(\d+)/u)?.[1] ?? 0);
+	const rebuildCandidateHardCap = Number(
+		agentSessionSource.match(/MAX_TOOL_RESULT_UI_REBUILD_CANDIDATES\s*=\s*(\d+)/u)?.[1] ?? 0,
+	);
+	const canonicalIndexHardCap = Number(
+		agentSessionSource.match(/MAX_TOOL_RESULT_UI_CANONICAL_INDEX_ENTRIES\s*=\s*(\d[\d_]*)/u)?.[1]?.replaceAll("_", "") ?? 0,
+	);
 	return {
 		registryHardCap,
+		rebuildCandidateHardCap,
+		canonicalIndexHardCap,
 		transitiveSourceFiles: [
 			"tool-execution.ts",
+			"image-convert.ts",
+			"photon.ts",
+			"exif-orientation.ts",
 			"render-utils.ts",
 			"interactive-mode.ts",
 			"agent-session.ts",
+			"tool-result-presentation.ts/touchExactResidentProjectionRecord",
+			"tool-result-presentation.ts/inspectToolResultPresentationForUiCandidate",
+			"tool-output-budget.ts/candidate-inspection-fallback-estimator-chain",
 			"tui.ts/Container",
 			"components/box.ts",
 			"components/text.ts",
@@ -357,6 +663,138 @@ export function auditToolResultPresentationUiSources(): ToolResultPresentationUi
 		argumentSerializationSites: argumentCounts.serializations,
 		discoveryOwnershipCopyOperations: ownershipCounts.copyOperations,
 		discoveryOwnershipSerializations: ownershipCounts.serializations,
+		discoveryOwnershipArrayMaterializationSites:
+			ownershipCounts.arrayLiterals +
+			ownershipCounts.arraySpreads +
+			ownershipCounts.arrayProducingCalls +
+			ownershipCounts.arrayConstructors,
+		discoveryOwnershipInlineClosureSites: ownershipCounts.inlineClosures,
+		discoveryRegistrationObjectLiterals: registrationCounts.objectLiterals,
+		discoveryOwnershipObjectLiterals: ownershipCounts.objectLiterals,
+		discoveryOwnershipMapConstructors: ownershipCounts.mapConstructors,
+		discoveryOwnershipSetConstructors: ownershipCounts.setConstructors,
+		pendingRegistryMapConstructors: pendingRegistryCounts.mapConstructors,
+		attachedRegistryMapConstructors: attachedRegistryCounts.mapConstructors,
+		promotionArrayMaterializationSites:
+			promotionCounts.arrayLiterals +
+			promotionCounts.arraySpreads +
+			promotionCounts.arrayProducingCalls +
+			promotionCounts.arrayConstructors,
+		promotionInlineClosureSites: promotionCounts.inlineClosures,
+		promotionCopyOperations: promotionCounts.copyOperations,
+		promotionSerializations: promotionCounts.serializations,
+		promotionObjectLiterals: promotionCounts.objectLiterals,
+		promotionMapConstructors: promotionCounts.mapConstructors,
+		promotionSetConstructors: promotionCounts.setConstructors,
+		promotionPromises: promotionCounts.promises,
+		promotionAbortControllers: promotionCounts.abortControllers,
+		discoveryRebuildCallerArrayMaterializationSites:
+			rebuildCallerCounts.arrayLiterals +
+			rebuildCallerCounts.arraySpreads +
+			rebuildCallerCounts.arrayProducingCalls +
+			rebuildCallerCounts.arrayConstructors,
+		discoveryRebuildCallerInlineClosureSites: rebuildCallerCounts.inlineClosures,
+		discoveryRebuildCallerCopyOperations: rebuildCallerCounts.copyOperations,
+		discoveryRebuildCallerSerializations: rebuildCallerCounts.serializations,
+		discoveryRebuildCallerObjectLiterals: rebuildCallerCounts.objectLiterals,
+		discoveryRebuildCallerMapConstructors: rebuildCallerCounts.mapConstructors,
+		discoveryRebuildCallerSetConstructors: rebuildCallerCounts.setConstructors,
+		discoveryRebuildCallerPromises: rebuildCallerCounts.promises,
+		discoveryRebuildCallerAbortControllers: rebuildCallerCounts.abortControllers,
+		exactResidentTouchArrayMaterializationSites:
+			exactResidentTouchCounts.arrayLiterals +
+			exactResidentTouchCounts.arraySpreads +
+			exactResidentTouchCounts.arrayProducingCalls +
+			exactResidentTouchCounts.arrayConstructors,
+		exactResidentTouchInlineClosureSites: exactResidentTouchCounts.inlineClosures,
+		exactResidentTouchCopyOperations: exactResidentTouchCounts.copyOperations,
+		exactResidentTouchSerializations: exactResidentTouchCounts.serializations,
+		exactResidentTouchObjectLiterals: exactResidentTouchCounts.objectLiterals,
+		exactResidentTouchMapConstructors: exactResidentTouchCounts.mapConstructors,
+		exactResidentTouchSetConstructors: exactResidentTouchCounts.setConstructors,
+		exactResidentTouchPromises: exactResidentTouchCounts.promises,
+		exactResidentTouchAbortControllers: exactResidentTouchCounts.abortControllers,
+		candidateInspectionArrayMaterializationSites:
+			candidateInspectionCounts.arrayLiterals +
+			candidateInspectionCounts.arraySpreads +
+			candidateInspectionCounts.arrayProducingCalls +
+			candidateInspectionCounts.arrayConstructors,
+		candidateInspectionInlineClosureSites: candidateInspectionCounts.inlineClosures,
+		candidateInspectionCopyOperations: candidateInspectionCounts.copyOperations,
+		candidateInspectionSerializations: candidateInspectionCounts.serializations,
+		candidateInspectionObjectLiterals: candidateInspectionCounts.objectLiterals,
+		candidateInspectionMapConstructors: candidateInspectionCounts.mapConstructors,
+		candidateInspectionSetConstructors: candidateInspectionCounts.setConstructors,
+		candidateInspectionPromises: candidateInspectionCounts.promises,
+		candidateInspectionAbortControllers: candidateInspectionCounts.abortControllers,
+		groupedRebuildArrayMaterializationSites:
+			groupedRebuildCounts.arrayLiterals +
+			groupedRebuildCounts.arraySpreads +
+			groupedRebuildCounts.arrayProducingCalls +
+			groupedRebuildCounts.arrayConstructors,
+		groupedRebuildInlineClosureSites: groupedRebuildCounts.inlineClosures,
+		groupedRebuildCopyOperations: groupedRebuildCounts.copyOperations,
+		groupedRebuildSerializations: groupedRebuildCounts.serializations,
+		groupedRebuildMapConstructors: groupedRebuildCounts.mapConstructors,
+		groupedRebuildSetConstructors: groupedRebuildCounts.setConstructors,
+		groupedRebuildPromises: groupedRebuildCounts.promises,
+		groupedRebuildAbortControllers: groupedRebuildCounts.abortControllers,
+		groupedImageConversionArrayMaterializationSites:
+			groupedImageConversionCounts.arrayLiterals +
+			groupedImageConversionCounts.arraySpreads +
+			groupedImageConversionCounts.arrayProducingCalls +
+			groupedImageConversionCounts.arrayConstructors,
+		groupedImageConversionInlineClosureSites: groupedImageConversionCounts.inlineClosures,
+		groupedImageConversionCopyOperations: groupedImageConversionCounts.copyOperations,
+		groupedImageConversionSerializations: groupedImageConversionCounts.serializations,
+		groupedImageConversionObjectLiterals: groupedImageConversionCounts.objectLiterals,
+		groupedImageConversionMapConstructors: groupedImageConversionCounts.mapConstructors,
+		groupedImageConversionSetConstructors: groupedImageConversionCounts.setConstructors,
+		groupedImageConversionPromises: groupedImageConversionCounts.promises,
+		groupedImageConversionPromiseProducingCallSites,
+		groupedImageLoaderRequestCallSites,
+		groupedImageLoaderReactionPromiseSites,
+		groupedImageConversionAbortControllers: groupedImageConversionCounts.abortControllers,
+		groupedImageColdLoaderArrayMaterializationSites:
+			groupedImageColdLoaderCounts.arrayLiterals +
+			groupedImageColdLoaderCounts.arraySpreads +
+			groupedImageColdLoaderCounts.arrayProducingCalls +
+			groupedImageColdLoaderCounts.arrayConstructors,
+		groupedImageColdLoaderInlineClosureSites: groupedImageColdLoaderCounts.inlineClosures,
+		groupedImageColdLoaderObjectLiterals: groupedImageColdLoaderCounts.objectLiterals,
+		groupedImageColdLoaderPromiseSites: groupedImageColdLoaderCounts.promises + groupedImageColdLoaderKinds.asyncFunctions,
+		groupedImageColdLoaderDynamicImportSites: groupedImageColdLoaderKinds.dynamicImports,
+		groupedImageWarmConversionArrayMaterializationSites:
+			groupedImageWarmConversionCounts.arrayLiterals +
+			groupedImageWarmConversionCounts.arraySpreads +
+			groupedImageWarmConversionCounts.arrayProducingCalls +
+			groupedImageWarmConversionCounts.arrayConstructors,
+		groupedImageWarmConversionInlineClosureSites: groupedImageWarmConversionCounts.inlineClosures,
+		groupedImageWarmConversionObjectLiterals: groupedImageWarmConversionCounts.objectLiterals,
+		groupedImageWarmConversionPromiseSites:
+			groupedImageWarmConversionCounts.promises + groupedImageWarmConversionKinds.asyncFunctions,
+		groupedImageWarmConversionTypedArraySites: groupedImageWarmConversionKinds.typedArrayConstructors,
+		groupedImageWarmConversionBufferCallSites: groupedImageWarmConversionKinds.bufferCalls,
+		groupedImageCompatibilityWrapperInlineClosureSites: groupedImageCompatibilityWrapperCounts.inlineClosures,
+		groupedImageCompatibilityWrapperObjectLiterals: groupedImageCompatibilityWrapperCounts.objectLiterals,
+		groupedImageCompatibilityWrapperPromiseSites:
+			groupedImageCompatibilityWrapperCounts.promises + groupedImageCompatibilityWrapperKinds.asyncFunctions,
+		groupedImageCompatibilityWrapperTypedArraySites:
+			groupedImageCompatibilityWrapperKinds.typedArrayConstructors,
+		groupedImageCompatibilityWrapperBufferCallSites: groupedImageCompatibilityWrapperKinds.bufferCalls,
+		canonicalPayloadRefreshArrayMaterializationSites:
+			canonicalPayloadRefreshCounts.arrayLiterals +
+			canonicalPayloadRefreshCounts.arraySpreads +
+			canonicalPayloadRefreshCounts.arrayProducingCalls +
+			canonicalPayloadRefreshCounts.arrayConstructors,
+		canonicalPayloadRefreshInlineClosureSites: canonicalPayloadRefreshCounts.inlineClosures,
+		canonicalPayloadRefreshCopyOperations: canonicalPayloadRefreshCounts.copyOperations,
+		canonicalPayloadRefreshSerializations: canonicalPayloadRefreshCounts.serializations,
+		canonicalPayloadRefreshObjectLiterals: canonicalPayloadRefreshCounts.objectLiterals,
+		canonicalPayloadRefreshMapConstructors: canonicalPayloadRefreshCounts.mapConstructors,
+		canonicalPayloadRefreshSetConstructors: canonicalPayloadRefreshCounts.setConstructors,
+		canonicalPayloadRefreshPromises: canonicalPayloadRefreshCounts.promises,
+		canonicalPayloadRefreshAbortControllers: canonicalPayloadRefreshCounts.abortControllers,
 		promises: ownershipCounts.promises,
 		abortControllers: ownershipCounts.abortControllers,
 	};

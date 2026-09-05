@@ -1520,6 +1520,69 @@ export class ToolResultPresentationOwner {
 		this.counters.retainedProjectionCodeUnits = 0;
 	}
 
+	/**
+	 * Move one exact resident record to the eviction tail without changing its
+	 * identity, validation state, retained accounting, or admission semantics.
+	 *
+	 * @internal UI rebuild ordering only. This is not a general cache-hit policy.
+	 */
+	touchExactResidentProjectionRecord(
+		content: readonly ToolResultPresentationContent[],
+		toolCallId: string,
+	): boolean {
+		if (!this.accepting) return false;
+		const record = this.projectionRecords?.get(toolCallId);
+		if (!record || record.sourceContent !== content) return false;
+		if (record === this.projectionRecordTail) return true;
+		const previous = record.previous;
+		const next = record.next;
+		if (previous) previous.next = next;
+		else this.projectionRecordHead = next;
+		if (next) next.previous = previous;
+		record.previous = this.projectionRecordTail;
+		record.next = undefined;
+		this.projectionRecordTail!.next = record;
+		this.projectionRecordTail = record;
+		return true;
+	}
+
+	/**
+	 * Classify one UI rebuild candidate without admitting, touching, or retaining
+	 * a projection record.
+	 *
+	 * @internal UI candidate inspection only. This is not a provider read or a
+	 * general cache policy.
+	 */
+	inspectToolResultPresentationForUiCandidate(
+		content: unknown,
+		toolCallId: string,
+	): "v1" | "v2" | undefined {
+		const budgetTokens = this.budgetTokens;
+		if (!this.accepting || budgetTokens === undefined) return undefined;
+		try {
+			if (!Array.isArray(content)) return undefined;
+			for (let index = 0; index < content.length; index++) {
+				const block = content[index];
+				if (typeof block !== "object" || block === null) return undefined;
+				if (block.type === "text") {
+					if (typeof block.text !== "string") return undefined;
+				} else if (block.type === "image") {
+					if (typeof block.data !== "string" || typeof block.mimeType !== "string") return undefined;
+				} else {
+					return undefined;
+				}
+			}
+			const sourceContent = content as readonly ToolResultPresentationContent[];
+			const resident = this.projectionRecords?.get(toolCallId);
+			const estimatedTokens = resident?.sourceContent === sourceContent
+				? resident.sourceScan.estimate.estimatedTokens
+				: estimateToolOutputTokens(sourceContent).estimatedTokens;
+			return estimatedTokens > budgetTokens ? "v2" : "v1";
+		} catch {
+			return undefined;
+		}
+	}
+
 	create(legacyContent: readonly ToolResultPresentationContent[]): ToolResultPresentationV1 | undefined;
 	create(legacyContent: readonly ToolResultPresentationContent[], toolCallId: string): ToolResultPresentation | undefined;
 	create(legacyContent: readonly ToolResultPresentationContent[], toolCallId?: string): ToolResultPresentation | undefined {

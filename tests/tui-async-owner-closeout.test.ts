@@ -610,7 +610,8 @@ test("async owner closeout remains lifecycle-only in source", () => {
 		"packages/coding-agent/src/modes/interactive/components/tool-execution.ts",
 		"utf8",
 	);
-	const toolRelease = toolSource.match(
+	const toolExecutionSource = toolSource.slice(toolSource.indexOf("export class ToolExecutionComponent"));
+	const toolRelease = toolExecutionSource.match(
 		/\[RELEASE_COMPONENT_RENDER_CACHE\]\(\): void \{[\s\S]*?\n\t\}/,
 	)?.[0] ?? "";
 	assert.match(toolRelease, /this\.renderLifecycleGeneration\+\+/);
