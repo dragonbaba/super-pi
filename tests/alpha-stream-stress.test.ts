@@ -8,7 +8,8 @@ async function stress(mode: 'regular' | 'fullscreen') {
   const message = alphaMessage([{ type: 'text', text: 'start ' }]);
   const text = message.content[0]; assert.ok(text?.type === 'text');
   const event = { type: 'message_update', message, assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: 'x', partial: message } };
-  const weak = [new WeakRef(message), new WeakRef(message.content)];
+  const weak: WeakRef<object>[] = [new WeakRef(message), new WeakRef(message.content), new WeakRef(f.session),
+    new WeakRef(f.runtime), new WeakRef(f.mode), new WeakRef(f.internal.renderer), new WeakRef(f.terminal)];
   let updates = 0; let updatePromises = 0;
   const handleEvent = f.internal.handleEvent.bind(f.internal);
   f.internal.handleEvent = function (event: any) {
@@ -49,7 +50,9 @@ async function stress(mode: 'regular' | 'fullscreen') {
 for (const mode of ['regular', 'fullscreen'] as const) test(`100000 actual session-to-component updates and frame ownership: ${mode}`, async (t) => {
   let result: Awaited<ReturnType<typeof stress>> | undefined;
   const heap: number[] = [];
-  for (let cycle = 0; cycle < (global.gc ? 6 : 1); cycle++) {
+  const cycles = Number(process.env.ALPHA_GC_CYCLES ?? 5);
+  assert.ok(Number.isInteger(cycles) && cycles >= 5 && cycles <= 100);
+  for (let cycle = 0; cycle < (global.gc ? cycles + 1 : 1); cycle++) {
     result = await stress(mode);
     if (global.gc) {
       for (let round = 0; round < 5; round++) { await new Promise<void>(resolve => setImmediate(resolve)); global.gc(); }
@@ -59,7 +62,7 @@ for (const mode of ['regular', 'fullscreen'] as const) test(`100000 actual sessi
   }
   assert.ok(result);
   if (heap.length) assert.ok(heap.at(-1)! <= heap[0] * 1.1, 'released owners must not accumulate more than 10% heap');
-  t.diagnostic(JSON.stringify({ mode, updates: result.updates, updatePromises: result.updatePromises, metrics: result.metrics, weakReleased: global.gc ? 2 : 'requires --expose-gc',
+  t.diagnostic(JSON.stringify({ mode, updates: result.updates, updatePromises: result.updatePromises, metrics: result.metrics, weakReleased: global.gc ? result.weak.length : 'requires --expose-gc',
     measuredCycles: heap.length, controlledGcHeap: heap, heapAbsoluteDelta: heap.length ? heap.at(-1)! - heap[0] : null,
     coverage: 'actual AgentSession emission, InteractiveMode, AssistantMessage, Markdown, retained TUI and strict sink; provider bypassed to prevent observer coalescing' }));
 });
