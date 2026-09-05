@@ -220,8 +220,9 @@ export class AgentSessionRuntime {
 		let failed = false;
 		let failure: unknown;
 		try {
-			// Replacement persists the aborted outgoing response before switching.
-			if (reason !== "quit") await session.abort();
+			// Both replacement and final disposal must join cooperative active work.
+			// A synchronous dispose/abort request alone can outlive a successful quit.
+			await session.abort();
 		} catch (error) { failed = true; failure = error; }
 		try {
 			await emitSessionShutdownEvent(session.extensionRunner, { type: "session_shutdown", reason, targetSessionFile });
