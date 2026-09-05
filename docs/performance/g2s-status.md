@@ -7,12 +7,37 @@ Status: **G2 Alpha Manual Validation Blocked → G2S active → G3–G10 unstart
 The scope-unblock addendum authorizes bounded ANSI indexing/forward progress, runtime exactly-once disposal, and final interactive UI ownership fixes. Continue on the existing worktree and branch; preserve red baseline `ed023a6c78e0d075866195fc306cc686f511f897` without amendment or rewrite.
 
 Active findings:
-- **G2S-B0-01**: final quit reaches title reset after terminal disposal.
-- **G2S-B0-02**: three runtime dispose calls execute three session disposals.
-- **G2S-B1-01**: ANSI index overflow prevents valid continuation progress.
-- **G2S-B0-CANDIDATE-STARTUP**: reported normal-startup failure not yet reproduced.
+- **G2S-B0-01**: original post-disposal title-reset red is green after `851ebe7`; broader adversarial shutdown matrix remains open.
+- **G2S-B0-02**: shared disposal implemented in `d12e4b7`; 13 ownership/error/reentrancy tests pass, including 100 callers.
+- **G2S-B1-01**: bounded sparse terminal index implemented in `0a23fcb`; 35 ANSI matrix tests pass, original large ANSI fixture preserved.
+- **G2S-B0-CANDIDATE-STARTUP**: clean-HOME/no-model sentinel failure reproduced and fixed in `b09e15a`; the user's configured-copy failure remains unconfirmed. See [startup evidence](g2s-startup-evidence.md).
+- **G2S-SCOPE-02 (acceptance question pending)**: actual 129-result turn at the configured **total** 1,024-token envelope assigns 7 tokens to its first result. The existing fixed continuation notice cannot fit. Both render modes execute all 129 tools but never reach the second provider call. `0ca0f5a` preserves both red assertions; contextual-budget production code is unchanged. Clarification requested: explicitly validate this budget-too-small boundary plus a sufficient-budget positive control, or require success at 1,024 and separately decide semantics/scope. No answer is assumed.
 
 The historical stopped-baseline evidence below is preserved. Its scope restriction is superseded by the addendum; implementation is active again. Streaming optimization still requires L0–L3 baseline evidence. Final target is Draft Candidate Gate, awaiting external final review and explicit merge authorization. No Alpha manual validation is claimed.
+
+## Current implementation and evidence checkpoint
+
+Latest production commit at this checkpoint: `0e0e230` (fatal teardown), following measured footer change `d537baec10780ee8c2a37afe50f3914309ec4524`. Baseline/merge-base remains `d5516ca39bfd7940f8bce76ea6aeb63616099383`; original red `ed023a6` is unchanged. Existing branch/worktree retained. No push, PR, review request, Mark Ready or merge has occurred.
+
+- Expanded direct probe passed **82/82** before adding the actual parallel matrix. This includes ten raw AgentSession/provider/UI modes, strict before-init and initialized quit, ANSI, runtime ownership, and upstream truncation.
+- Actual parallel matrix: **14 pass, 2 red**. G2 off: 1/4/8/129 all reach provider in regular/fullscreen. G2 on: 1/4/8 pass; 129 hits the total-envelope boundary above. Maximum simultaneous executions equals requested count, including 129. This is stronger evidence than the old direct-owner identity loop.
+- Image validity audit found an invalid IDAT CRC. Test-only red `b4d45c3`, checksum correction `72c5a10`: complete PNG chunk CRCs and decoded one-pixel scanline now pass. No ANSI fixture/budget/assertion was reduced.
+- Real PowerShell tool with injected process execution proves 256 KiB enters the real accumulator, output is truncated upstream to its 50 KiB payload limit, and the independent spill file is complete. G2's canonical/artifact content equals the already truncated tool result. No claim that G2 owns full shell output.
+- Pipe-backed actual CLI tests previously passed eight Windows ordinary-exit cases; four POSIX signal cases explicitly skipped on Windows. These are not native PTY/manual Windows Terminal evidence.
+- Clean-commit four-layer timing: **100 processes**, 5 each for L0/L1/L2/L3 × requested 10/20/50/100 updates/s and burst. Additional history/mode baseline: **30 processes**, 5 each for 0/5k/50k × regular/fullscreen. See [measurement checkpoint](g2s-measurement-checkpoint.md) for limits and remaining gates.
+- Measured footer-only optimization: red `3f1cf26` proves two full `getEntries()` copies per render; `d537bae` combines latest-name selection with the existing usage traversal, reducing copies to one. No cache, throttle, scheduler or provider change. Five-process after measurements per mode and a separate allocation sample collected.
+- ANSI exact-commit benchmark at `0ca0f5a`: one source hash and one full estimator scan per source; 65,536 sequences finish in 470 chunks; fixed index HWM 49,152 bytes, retained bytes zero after dispose; 12/12 weak references cleared after controlled GC. The same 48 KiB allocation for a one-sequence source remains a **D** item, not concealed.
+- Fatal-recovery red `7d3f877` demonstrated terminal disposal without runtime/session shutdown in both modes. `0e0e230` uses final stop ownership followed by runtime dispose, logs cleanup errors and preserves the original fatal error/nonzero exit. Both crash tests and four ordinary/signal tests pass. This is a teardown finding, not the user's startup root cause.
+- 22 added startup tests pass: six injected phase failures per mode, four quit-during-await cases per mode, and 25 complete init/quit cycles per mode. Original causes preserved, terminal/runtime disposed, raw mode restored, listeners return to baseline. Existing lifecycle/source focused tests: **74/74**.
+- `npm run check` and `npm run build:offline` pass after production changes. `npm test` ran and stopped at the two unwaived parallel-budget red assertions; later suites were not reached. It is **not green**.
+- `npm run alpha:g2-capture -- --tui-mode regular` provides isolated default-off phase capture; actual CLI capture schema/one input-ready checks pass. Capture wrapper `--version` smoke retained its scalar report at `C:/Users/ADMINI~1/AppData/Local/Temp/g2s-startup-capture-dB8YZa/startup-phases.jsonl`; temporary HOME removed. Constructor timing and configured-global-settings reproduction remain open.
+- Complete startup adversarial coverage, slow-terminal/corpus/batch matrix, stream release/100k-update gates, full source/allocation audit, native Linux/Windows exact CI, baseline clean-worktree validation, PR packet and review remain pending.
+
+The one-click probe now includes image, footer, crash, startup-fault/cycle and actual parallel tests, including both unwaived 129-result red assertions. Latest observed expanded run: **124 total, 122 pass, 2 fail**, exit 1 (~20.65 s), both failures exactly the 129-result/7-token notice boundary. Do not interpret the earlier 82-pass subset as overall Alpha acceptance.
+
+Read-only baseline check: fixed manual worktree remains clean at `d5516ca39bfd7940f8bce76ea6aeb63616099383`; it was not edited or used to run builds/tests. Benchmark processes completed naturally and their exact output directory is retained. Candidate is a work-in-progress with a pending acceptance decision, not Draft Candidate Gate. Local Goal stays authoritative and active; no Goal API registration/reset has been attempted.
+
+The detailed sections below describe **historical ed023a6 evidence only**, not current production status.
 
 ## Baseline
 
