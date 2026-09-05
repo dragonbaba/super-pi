@@ -47,11 +47,19 @@ async function stress(mode: 'regular' | 'fullscreen') {
 }
 
 for (const mode of ['regular', 'fullscreen'] as const) test(`100000 actual session-to-component updates and frame ownership: ${mode}`, async (t) => {
-  const result = await stress(mode);
-  if (global.gc) {
-    for (let round = 0; round < 5; round++) { await new Promise<void>(resolve => setImmediate(resolve)); global.gc(); }
-    assert.ok(result.weak.every(reference => reference.deref() === undefined));
+  let result: Awaited<ReturnType<typeof stress>> | undefined;
+  const heap: number[] = [];
+  for (let cycle = 0; cycle < (global.gc ? 6 : 1); cycle++) {
+    result = await stress(mode);
+    if (global.gc) {
+      for (let round = 0; round < 5; round++) { await new Promise<void>(resolve => setImmediate(resolve)); global.gc(); }
+      assert.ok(result.weak.every(reference => reference.deref() === undefined));
+      if (cycle > 0) heap.push(process.memoryUsage().heapUsed); // Exclude the first warm-up owner.
+    }
   }
+  assert.ok(result);
+  if (heap.length) assert.ok(heap.at(-1)! <= heap[0] * 1.1, 'released owners must not accumulate more than 10% heap');
   t.diagnostic(JSON.stringify({ mode, updates: result.updates, updatePromises: result.updatePromises, metrics: result.metrics, weakReleased: global.gc ? 2 : 'requires --expose-gc',
+    measuredCycles: heap.length, controlledGcHeap: heap, heapAbsoluteDelta: heap.length ? heap.at(-1)! - heap[0] : null,
     coverage: 'actual AgentSession emission, InteractiveMode, AssistantMessage, Markdown, retained TUI and strict sink; provider bypassed to prevent observer coalescing' }));
 });

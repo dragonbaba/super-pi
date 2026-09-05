@@ -23,6 +23,8 @@ const profile = option('profile', 'off') === 'on';
 const bodies: Record<string, string> = { plain: 'stream text', cjk: '中文日志', emoji: '👩‍💻e\u0301', ansi: '\x1b[31mred\x1b[0m', word: 'x'.repeat(128), markdown: '## heading\n- item **bold**\n|a|b|\n|-|-|\n|1|2|', fence: '```ts\nconst x = 1;\n```', link: '[link](https://fixture.invalid)', latex: '$x^2$' };
 const fixture = scheduledStream(count, rate, bodies[corpus] ?? corpus, batch);
 const eventTimes = new Float64Array(count); const visibleTimes = new Float64Array(count);
+const handledTimes = new Float64Array(count); const renderedTimes = new Float64Array(count);
+let highestHandled = -1; let nextRendered = 0;
 const renderTimes = new Float64Array(Math.min(200000, count * 4 + 1000)); let renders = 0;
 let events = 0; let footerInvalidations = 0; let markdownSetTexts = 0; let markdownRenders = 0;
 const assistant = { updateContentCalls: 0, contentScans: 0, slotRecordObjects: 0, markdownInstances: 0, spacerInstances: 0, textInstances: 0, currentSpacers: 0, spacerHwm: 0 };
@@ -31,8 +33,9 @@ const fallbackReasons: Record<string, number> = {};
 const fallbackPhases: Record<string, number> = {};
 let lastPhase = 'initial';
 function mark(text: string, table: Float64Array) {
-  const now = performance.now(); const expression = /M(\d{6})/g; let match: RegExpExecArray | null;
-  while ((match = expression.exec(text))) { const index = Number(match[1]); if (index < count && table[index] === 0) table[index] = now; }
+  const now = performance.now(); const expression = /M(\d{6})/g; let match: RegExpExecArray | null; let highest = -1;
+  while ((match = expression.exec(text))) { const index = Number(match[1]); if (index < count) { if (table[index] === 0) table[index] = now; highest = Math.max(highest, index); } }
+  return highest;
 }
 function stats(values: number[]) {
   if (!values.length) return null;
@@ -68,10 +71,20 @@ try {
       await f.internal.renderer.flushTerminalFrames();
       const footer = f.internal.footer.invalidate.bind(f.internal.footer);
       f.internal.footer.invalidate = () => { footerInvalidations++; footer(); };
+      const handle = f.internal.handleEvent.bind(f.internal); let handledOffset = 0;
+      f.internal.handleEvent = (event: any) => {
+        const result = handle(event);
+        if (event.type === 'message_update' && event.message.role === 'assistant') for (const block of event.message.content) if (block.type === 'text') {
+          highestHandled = Math.max(highestHandled, mark(block.text.substring(Math.max(0, handledOffset - 8)), handledTimes));
+          handledOffset = block.text.length;
+        }
+        return result;
+      };
       const render = f.internal.renderer.doRender.bind(f.internal.renderer);
       f.internal.renderer.doRender = () => {
         const before = f!.internal.renderInstrumentation.snapshot().fullHistoryFallbacks;
         const start = performance.now(); render(); assert.ok(renders < renderTimes.length); renderTimes[renders++] = performance.now() - start;
+        while (nextRendered <= highestHandled) { if (handledTimes[nextRendered]) renderedTimes[nextRendered] = start; nextRendered++; }
         const change = f!.internal.renderInstrumentation.snapshot().fullHistoryFallbacks - before;
         if (change) fallbackPhases[lastPhase] = (fallbackPhases[lastPhase] ?? 0) + change;
       };
@@ -99,10 +112,13 @@ try {
   const heap = profile ? await inspector.post('HeapProfiler.stopSampling') : undefined; loop.disable();
   const sites: { function: string; source: string; bytes: number }[] = []; const pending = heap ? [heap.profile.head] : [];
   while (pending.length) { const node = pending.pop()!; sites.push({ function: node.callFrame.functionName, source: node.callFrame.url.replace(/^.*\/(packages|scripts|tests)\//, '$1/'), bytes: node.selfSize }); pending.push(...node.children); }
-  const latency: number[] = []; const eventLatency: number[] = [];
+  const latency: number[] = []; const eventLatency: number[] = []; const eventToRender: number[] = []; const renderToWrite: number[] = []; const scheduling: number[] = [];
   for (let i = 0; i < count; i++) {
     if (visibleTimes[i]) latency.push(visibleTimes[i]! - fixture.generated[i]!);
     if (eventTimes[i]) eventLatency.push(eventTimes[i]! - fixture.generated[i]!);
+    if (renderedTimes[i] && handledTimes[i]) eventToRender.push(renderedTimes[i]! - handledTimes[i]!);
+    if (visibleTimes[i] && renderedTimes[i]) renderToWrite.push(visibleTimes[i]! - renderedTimes[i]!);
+    scheduling.push(fixture.generated[i]! - fixture.scheduled[i]!);
   }
   const metrics = layer >= 2 ? f!.internal.renderInstrumentation.snapshot() : undefined;
   if (layer >= 2) { assert.ok(visibleTimes[count - 1]! > 0, 'final marker physically written'); assert.ok(metrics.terminalFrameQueueHighWaterMark <= 2); assert.ok(metrics.pendingRenderRequestHighWaterMark <= 1); }
@@ -110,6 +126,7 @@ try {
     layer, rate, count, batch, history, mode, columns, rows, delay, corpus, profile, completionMs, updatesPerSecond: count * 1000 / completionMs,
     providerToEvent: stats(eventLatency), visibleMarkers: latency.length, generatedChunks: count,
     providerInterArrival: stats(differences(fixture.generated)), visibleInterArrival: stats(differences(visibleTimes)), providerToPhysical: stats(latency), rootRenderMs: stats(Array.from(renderTimes.subarray(0, renders))),
+    scheduledToGenerated: stats(scheduling), handledToRender: stats(eventToRender), renderStartToPhysical: stats(renderToWrite), maximumVisibleStall: stats(differences(visibleTimes))?.max ?? null,
     firstVisibleMs: layer >= 2 ? Math.min(...Array.from(visibleTimes).filter(Boolean)) - start : null,
     finalVisibleMs: visibleTimes[count - 1] ? visibleTimes[count - 1]! - start : null,
     eventLoopDelayMs: { p50: loop.percentile(50) / 1e6, p95: loop.percentile(95) / 1e6, p99: loop.percentile(99) / 1e6, max: loop.max / 1e6 },

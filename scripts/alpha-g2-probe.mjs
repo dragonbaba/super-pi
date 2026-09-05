@@ -12,8 +12,9 @@ mkdirSync(agent);
 mkdirSync(sessions);
 try {
   const files = process.argv.slice(2);
+  const streamingFiles = ['tests/alpha-stream-stress.test.ts', 'tests/alpha-stream-corpus.test.ts', 'tests/alpha-stream-endings.test.ts', 'tests/alpha-assistant-update.test.ts', 'tests/alpha-retained-active.test.ts', 'tests/alpha-cli.test.ts'];
   const result = spawnSync(process.execPath, ['--expose-gc', '--experimental-strip-types', '--test',
-    ...((files.length ? files : ['tests/alpha-g2-raw.test.ts', 'tests/alpha-ansi.test.ts', 'tests/alpha-raw-session.test.ts', 'tests/alpha-raw-parallel.test.ts', 'tests/alpha-image.test.ts', 'tests/alpha-upstream-truncation.test.ts', 'tests/alpha-footer-scans.test.ts', 'tests/alpha-lifecycle.test.ts', 'tests/alpha-runtime-dispose.test.ts', 'tests/alpha-startup-quit.test.ts', 'tests/alpha-crash-cleanup.test.ts', 'tests/alpha-startup-faults.test.ts']).map(file => resolve(repository, file)))], {
+    ...((files.length ? files : [...streamingFiles, 'tests/alpha-g2-raw.test.ts', 'tests/alpha-ansi.test.ts', 'tests/alpha-raw-session.test.ts', 'tests/alpha-raw-parallel.test.ts', 'tests/alpha-image.test.ts', 'tests/alpha-upstream-truncation.test.ts', 'tests/alpha-footer-scans.test.ts', 'tests/alpha-lifecycle.test.ts', 'tests/alpha-runtime-dispose.test.ts', 'tests/alpha-startup-quit.test.ts', 'tests/alpha-crash-cleanup.test.ts', 'tests/alpha-startup-faults.test.ts']).map(file => resolve(repository, file)))], {
     cwd: root,
     env: { ...process.env, HOME: root, USERPROFILE: root, XDG_CONFIG_HOME: root,
       SP_CODING_AGENT_DIR: agent, SP_CODING_AGENT_SESSION_DIR: sessions, SP_OFFLINE: '1', SP_TUI_WRITE_LOG: '' },
