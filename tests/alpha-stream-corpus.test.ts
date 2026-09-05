@@ -71,10 +71,12 @@ for (const layer of [0, 1, 2, 3]) for (const deltaSize of [1, 4, 16, 64]) {
           await f.internal.renderer.flushTerminalFrames();
         }
         let chunks = 0; let cases = 0;
-        for (const [name, body] of Object.entries(corpus)) {
-          // Exactly 1 Ki code units. The fixture intentionally permits a provider
+        const casesToRun: [string, string, number][] = Object.entries(corpus).map(([name, body]) => [name, body, 1024]);
+        if (deltaSize === 64) for (const size of [16 * 1024, 64 * 1024, 256 * 1024]) casesToRun.push([`english-${size}`, corpus.english, size]);
+        for (const [name, body, size] of casesToRun) {
+          // Fixed source size. The fixture intentionally permits a provider
           // delta to end inside Unicode/ANSI syntax; final canonical bytes must survive.
-          const source = body.repeat(Math.ceil(1024 / body.length)).slice(0, 1024);
+          const source = body.repeat(Math.ceil(size / body.length)).slice(0, size);
           active = streamFixture(source, deltaSize, name === 'thinking');
           try {
             if (layer === 0) { for await (const event of active.start()) if (event.type === 'done') assert.equal(event.message, active.message); }
@@ -94,7 +96,7 @@ for (const layer of [0, 1, 2, 3]) for (const deltaSize of [1, 4, 16, 64]) {
                 assert.equal(metrics.activeFrameUtf8Bytes, 0); assert.equal(metrics.pendingFrameUtf8Bytes, 0);
               }
             }
-            assert.equal(active.generated, 1024 / deltaSize); chunks += active.generated; cases++;
+            assert.equal(active.generated, size / deltaSize); chunks += active.generated; cases++;
           } finally { active.cancel(); }
         }
         assert.equal(providerCalls, layer === 0 ? 0 : cases);
