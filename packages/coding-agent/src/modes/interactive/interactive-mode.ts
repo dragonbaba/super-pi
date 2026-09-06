@@ -593,6 +593,12 @@ export class InteractiveMode {
 		this.ui.requestRender();
 	};
 	private readonly handleLifecyclePromiseRejection = (error: unknown): void => {
+		if (this.isShuttingDown || this.stopOperation !== undefined || this.stopCompleted) {
+			// Cleanup failures must remain visible without reacquiring closed UI owners.
+			process.exitCode = 1;
+			console.error(error);
+			return;
+		}
 		try {
 			this.showError(error instanceof Error ? error.message : String(error));
 		} catch {
@@ -1109,7 +1115,7 @@ export class InteractiveMode {
 		try {
 			await this.ui.dispose({ preserveScreen: this.renderer.mode === "fullscreen" });
 		} catch (error) {
-			if (!transferFailed) throw error;
+			throw transferFailed ? this.preferCleanupError(transferError, error) : error;
 		}
 		if (transferFailed) throw transferError;
 	}
@@ -5283,6 +5289,12 @@ export class InteractiveMode {
 	private shutdownOperation: Promise<void> | undefined;
 	private terminalDisconnected = false;
 
+	private preferCleanupError(first: unknown, next: unknown): unknown {
+		// An expected disconnected-output error must not mask a failed owner release.
+		if (this.terminalDisconnected && isDeadTerminalError(first) && !isDeadTerminalError(next)) return next;
+		return first;
+	}
+
 	private shutdown(options?: { fromSignal?: boolean }): Promise<void> {
 		if (this.shutdownOperation) return this.shutdownOperation;
 		let resolveOperation!: () => void;
@@ -5311,10 +5323,11 @@ export class InteractiveMode {
 
 		let cleanupError: unknown;
 		let cleanupFailed = false;
+		let runtimeFailed = false;
 		// UI handles are already closed. Finish runtime cleanup before terminal
 		// restoration for every exit, including an ordinary quit racing EPIPE.
 		try { await this.runtimeHost.dispose(); }
-		catch (error) { cleanupFailed = true; cleanupError = error; }
+		catch (error) { runtimeFailed = true; cleanupFailed = true; cleanupError = error; }
 
 		// Drain any in-flight Kitty key release events before stopping.
 		// This prevents escape sequences from leaking to the parent shell over slow SSH.
@@ -5322,14 +5335,16 @@ export class InteractiveMode {
 			this.themeController.disableAutoSync();
 			await this.ui.terminal.drainInput(1000);
 		} catch (error) {
-			if (!cleanupFailed) { cleanupFailed = true; cleanupError = error; }
+			if (!runtimeFailed) cleanupError = cleanupFailed ? this.preferCleanupError(cleanupError, error) : error;
+			cleanupFailed = true;
 		}
 		try {
 			await this.stop();
 		} catch (error) {
-			if (!cleanupFailed) { cleanupFailed = true; cleanupError = error; }
+			if (!runtimeFailed) cleanupError = cleanupFailed ? this.preferCleanupError(cleanupError, error) : error;
+			cleanupFailed = true;
 		}
-		if (cleanupFailed && !(this.terminalDisconnected && isDeadTerminalError(cleanupError))) throw cleanupError;
+		if (cleanupFailed && !(this.terminalDisconnected && !runtimeFailed && isDeadTerminalError(cleanupError))) throw cleanupError;
 		// A failed output channel cannot acknowledge cursor/paste restoration.
 		// Report terminal loss only after local owners and raw input are released.
 		if (this.terminalDisconnected) return process.exit(129);
@@ -8262,10 +8277,8 @@ export class InteractiveMode {
 			try {
 				cleanup.call(owner);
 			} catch (error) {
-				if (!cleanupFailed) {
-					cleanupFailed = true;
-					cleanupError = error;
-				}
+				cleanupError = cleanupFailed ? this.preferCleanupError(cleanupError, error) : error;
+				cleanupFailed = true;
 			}
 		};
 		this.runtimeHost.setBeforeSessionInvalidate?.(undefined);
@@ -8288,10 +8301,8 @@ export class InteractiveMode {
 		try {
 			if (this.settingsManager.getShowTerminalProgress()) this.ui.terminal.setProgress(false);
 		} catch (error) {
-			if (!cleanupFailed) {
-				cleanupFailed = true;
-				cleanupError = error;
-			}
+			cleanupError = cleanupFailed ? this.preferCleanupError(cleanupError, error) : error;
+			cleanupFailed = true;
 		}
 		release(this, this.clearStatusIndicator);
 		release(this.themeController, this.themeController.disableAutoSync);
@@ -8310,20 +8321,16 @@ export class InteractiveMode {
 				await this.ui.dispose({ preserveScreen: true });
 			}
 		} catch (error) {
-			if (!cleanupFailed) {
-				cleanupFailed = true;
-				cleanupError = error;
-			}
+			cleanupError = cleanupFailed ? this.preferCleanupError(cleanupError, error) : error;
+			cleanupFailed = true;
 		} finally {
 			this.isInitialized = false;
 		}
 		try {
 			this.unregisterSignalHandlers();
 		} catch (error) {
-			if (!cleanupFailed) {
-				cleanupFailed = true;
-				cleanupError = error;
-			}
+			cleanupError = cleanupFailed ? this.preferCleanupError(cleanupError, error) : error;
+			cleanupFailed = true;
 		}
 		if (cleanupFailed) throw cleanupError;
 	}
