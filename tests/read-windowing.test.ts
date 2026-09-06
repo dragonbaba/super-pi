@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import ts from "typescript";
-import { readWindow, createReadWindowCounters, READ_CHUNK_BYTES, READ_WINDOW_BYTES, ReadCursorError } from "../packages/coding-agent/src/core/tools/read-window.ts";
+import { readWindow, readSmallFileIfStable, createReadWindowCounters, READ_CHUNK_BYTES, READ_WINDOW_BYTES, ReadCursorError } from "../packages/coding-agent/src/core/tools/read-window.ts";
 import { createReadToolDefinition } from "../packages/coding-agent/src/core/tools/read.ts";
 import type { ExtensionContext } from "../packages/coding-agent/src/core/extensions/types.ts";
 import { createToolResultPresentationOwner } from "../packages/coding-agent/src/core/tool-result-presentation.ts";
@@ -291,3 +291,47 @@ test("same spelling resumes through NFC-to-NFD filename fallback", async () => f
 	const second = await tool.execute("fallback-next", { path: requested, cursor: first.details?.window?.cursor }, undefined, undefined, {} as ExtensionContext);
 	assert.equal(second.details?.window?.startByte, first.details?.window?.nextByte);
 }));
+
+test("bounded small snapshots read zero-sized and overreported virtual files through EOF", async (t) => fixture(async (path) => {
+	const text = "virtual content\n".repeat(500);
+	await writeFile(path, text);
+	let reportedSize = 0n;
+	let opens = 0;
+	let closes = 0;
+	const originalOpen = fsPromises.open;
+	const originalStat = fsPromises.stat;
+	const mockedOpen = t.mock.method(fsPromises, "open", async (...args: Parameters<typeof originalOpen>) => {
+		const handle = await originalOpen(...args);
+		opens++;
+		const originalHandleStat = handle.stat;
+		const originalClose = handle.close;
+		t.mock.method(handle, "stat", async (...statArgs: unknown[]) => {
+			const info = await Reflect.apply(originalHandleStat, handle, statArgs);
+			info.size = reportedSize;
+			return info;
+		});
+		t.mock.method(handle, "close", async () => { closes++; return originalClose.call(handle); });
+		return handle;
+	});
+	const mockedStat = t.mock.method(fsPromises, "stat", async (...args: unknown[]) => {
+		const info = await Reflect.apply(originalStat, fsPromises, args);
+		info.size = reportedSize;
+		return info;
+	});
+	syncBuiltinESMExports();
+	try {
+		assert.equal((await readSmallFileIfStable(path))?.toString("utf8"), text);
+		reportedSize = 16000n;
+		assert.equal((await readSmallFileIfStable(path))?.toString("utf8"), text);
+		reportedSize = 0n;
+		await writeFile(path, "x".repeat(READ_CHUNK_BYTES + 1));
+		await assert.rejects(readSmallFileIfStable(path), /Size-unreported file exceeds/);
+		assert.equal(opens, closes);
+	} finally { mockedOpen.mock.restore(); mockedStat.mock.restore(); syncBuiltinESMExports(); }
+}));
+
+test("Linux procfs zero stat size preserves readable content", { skip: process.platform !== "linux" }, async () => {
+	const expected = await readFile("/proc/version");
+	assert.ok(expected.length > 0);
+	assert.deepEqual(await readSmallFileIfStable("/proc/version"), expected);
+});

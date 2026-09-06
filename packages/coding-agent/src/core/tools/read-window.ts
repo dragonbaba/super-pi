@@ -61,7 +61,7 @@ function generation(info: BigIntStats): string {
 	return `${info.dev}:${info.ino}:${info.size}:${info.mtimeNs}:${info.ctimeNs}:${info.birthtimeNs}`;
 }
 
-/** Simple small-file snapshot: fixed-size allocation and bounded positional reads.
+/** Simple small-file snapshot: bounded allocation and positional reads through EOF.
  * A changed or large file goes back to the window scanner, never to readFile.
  */
 export async function readSmallFileIfStable(path: string, signal?: AbortSignal): Promise<Buffer | undefined> {
@@ -71,20 +71,33 @@ export async function readSmallFileIfStable(path: string, signal?: AbortSignal):
 	try {
 		const info = await handle.stat({ bigint: true });
 		if (!info.isFile() || info.size > BigInt(READ_SMALL_FILE_BYTES)) return undefined;
-		const buffer = Buffer.allocUnsafe(Number(info.size));
+		// procfs/sysfs can report zero (or an upper bound) while returning data.
+		// One extra byte distinguishes a real EOF from a filled reported-size buffer.
+		let buffer = Buffer.allocUnsafe(info.size === 0n ? 4096 : Number(info.size) + 1);
 		let position = 0;
-		while (position < buffer.length) {
+		while (true) {
 			checkAbort(signal);
 			const read = await handle.read(buffer, position, buffer.length - position, position);
-			if (read.bytesRead === 0) return undefined;
+			if (read.bytesRead === 0) break;
 			position += read.bytesRead;
+			if (position > READ_SMALL_FILE_BYTES) {
+				if (info.size === 0n && (await handle.stat({ bigint: true })).size === 0n) {
+					throw new Error("Size-unreported file exceeds the bounded 256 KiB snapshot; read a regular-file snapshot for safe continuation.");
+				}
+				return undefined;
+			}
+			if (position === buffer.length) {
+				const larger = Buffer.allocUnsafe(Math.min(READ_SMALL_FILE_BYTES + 1, buffer.length * 2));
+				buffer.copy(larger, 0, 0, position);
+				buffer = larger;
+			}
 		}
 		checkAbort(signal);
 		const identity = generation(info);
 		if (generation(await handle.stat({ bigint: true })) !== identity ||
 			await realpath(path) !== canonical || generation(await stat(canonical, { bigint: true })) !== identity) return undefined;
 		checkAbort(signal);
-		return buffer;
+		return buffer.subarray(0, position);
 	} finally {
 		await handle.close();
 	}

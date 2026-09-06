@@ -48,8 +48,9 @@ Stop: Draft Candidate Gate — awaiting external final review and explicit merge
 ## Candidate implementation and compatibility
 
 After closeout: registry/wrapper -> resolve path -> access/MIME sniff -> small
-descriptor snapshot. Small files (<=256 KiB) use one fixed-size Buffer and positional
-reads capped at the descriptor's initial size, with generation/path revalidation.
+descriptor snapshot. Ordinary small files (<=256 KiB) use one Buffer sized to the
+reported size plus one EOF-probe byte, with generation/path revalidation.
+Zero/unreliable sizes read through EOF with bounded growth, capped at 256 KiB + 1.
 They retain original decode/split/slice/truncate results; no stream/index framework.
 Images retain their original path. Large or changed local text -> canonical workspace/path -> open ->
 descriptor generation -> bounded scan -> bounded incremental UTF-8 decode ->
@@ -167,8 +168,8 @@ continuation. No index complexity is justified by these results.
 The initial production MIME sniff adds up to 4,100 read bytes, one Buffer and one
 open/read/close; cursor calls bypass sniffing. Closeout small-file admission adds
 one descriptor open/stat/close before the large scanner (no source Buffer for a
-large descriptor). Stable small files instead allocate exactly their initial size
-(<=256 KiB), one Buffer, bounded positional reads, and generation checks. If they
+large descriptor). Stable ordinary small files instead allocate their initial size
+plus one byte, one Buffer, bounded positional reads through EOF, and generation checks. If they
 change, the small Buffer is released and scanning begins afresh. The deterministic
 growth regression observes all opens/closes and caps every requested read. Cursor encoding allocates one bounded
 metadata Buffer, decoding a supplied cursor allocates one, and crypto has its own
@@ -206,7 +207,9 @@ evidence, not a promise that every runtime has identical heap values.
 
 ## Verification and review status
 
-Focused read suite: 29 pass after closeout (26 at first candidate). Existing G2 artifact and budgeted-model-view suites:
+Focused read suite: 31 tests after final correction (30 pass and one Linux-only
+procfs test skipped locally on Windows; final Linux CI executes that test).
+There were 26 at first candidate and 29 at closeout review. Existing G2 artifact and budgeted-model-view suites:
 16 pass. `npm run check` and `npm run build:offline`: pass during development.
 The single local candidate `npm test` run passed (exit 0), including memory tests.
 `git diff --check` passed; status contained exactly the five intended files.
@@ -222,6 +225,8 @@ Local self-assessment (external review pending):
 - C: small-read descriptor/generation-check cost; prefix scan for random offsets; NUL-only binary
   indication; filesystem metadata cannot detect adversarial changes that preserve
   every available generation field; remote/harness whole-file reads remain scoped out.
+  Size-unreported virtual sources over 256 KiB fail explicitly and require a regular
+  file snapshot; no stable live-file continuation is claimed for them.
 - D: D-TUI-SMOOTH-STREAMING-REVEAL remains non-blocking and unimplemented.
 
 Rollback point: d8e0e655c25628eb3aa5711cb3ea7b58cded17c9. No main modification,
@@ -250,3 +255,20 @@ scanner allocation/profile/GC evidence applies; dispatch overhead additions are
 counted above, not hidden in scanner counters. No new local npm test, profiling
 matrix, or soak was run. Focused tests/check/build passed; exact final-head CI and
 the one authorized incremental review are recorded in the PR envelope.
+
+The incremental review of a17c328 identified a further B1: procfs/sysfs can expose
+readable content while reporting zero size. The final correction probes through
+EOF, handling zero and overreported sizes without claiming an empty result.
+Ordinary small files still use one Buffer. Only inaccurate sizes or concurrent
+growth require bounded geometric Buffer growth: at most 19 allocations, maximum
+capacity 262,145 bytes, at most 524,289 bytes transiently in old/new Buffers and
+less than 524,288 copied bytes. These are deterministic source bounds for that
+fallback, not new profile claims. No complete large-file Buffer/string is created.
+Zero-size regular files that grow acquire a nonzero stat size and route to the
+scanner; size-unreported virtual sources that exceed the ceiling fail explicitly,
+since no stable generation/size contract for their continuation is available.
+
+Two tests cover zero/overreported metadata, the explicit virtual-source ceiling,
+descriptor closure, and real Linux /proc/version. Check/build and the focused
+suite pass locally. The two-review budget is consumed; no third automated review
+is requested. The final correction remains subject to external final review.
