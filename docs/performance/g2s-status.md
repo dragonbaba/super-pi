@@ -8,7 +8,9 @@ The scope-unblock addendum authorizes bounded ANSI indexing/forward progress, ru
 
 Active findings:
 - **G2S-B0-01**: original post-disposal title-reset red is green after `851ebe7`; broader adversarial shutdown matrix remains open.
-- **G2S-B0-02**: shared disposal implemented in `d12e4b7`; 13 ownership/error/reentrancy tests pass, including 100 callers.
+- **G2S-B0-02**: shared disposal implemented in `d12e4b7`; expanded 23 ownership/error/reentrancy/deadline tests pass, including 100 callers.
+- **G2S-B0-03**: ordinary quit did not join cooperative provider/tool abort completion. Separate red `644f3d4`, fix `387f7e5`; eight real active-work regular/fullscreen and normal/signal tests pass.
+- **G2S-B0-04**: manual compaction/tree/bash owners are outside the original idle wait. Red `67590e7`, fix `bc52e9f` and allocation follow-up `410ce03`; twelve real auxiliary-work shutdown tests pass. A non-settling owner produces `SessionShutdownTimeoutError` after a bounded deadline; it is not reported as successful quit.
 - **G2S-B1-01**: bounded sparse terminal index implemented in `0a23fcb`; 35 ANSI matrix tests pass, original large ANSI fixture preserved.
 - **G2S-B0-CANDIDATE-STARTUP**: clean-HOME/no-model sentinel failure reproduced and fixed in `b09e15a`; the user's configured-copy failure remains unconfirmed. See [startup evidence](g2s-startup-evidence.md).
 - **G2S-SCOPE-02 resolved by explicit contract clarification**: the former assertion requiring a second provider call for 129 results within a **total** 1,024-token envelope was contractually impossible. The documented typed budget-too-small boundary is expected. Lack of that second request was not itself a production defect. Separate 16,384-token full-chain coverage is required and now passes; contextual-budget production diff for this decision is zero.
@@ -16,6 +18,24 @@ Active findings:
 The historical stopped-baseline evidence below is preserved. Its scope restriction is superseded by the addendum; implementation is active again. Streaming optimization still requires L0–L3 baseline evidence. Final target is Draft Candidate Gate, awaiting external final review and explicit merge authorization. No Alpha manual validation is claimed.
 
 ## Current implementation and evidence checkpoint
+
+### Continuation checkpoint through `4e62937`
+
+**Evidence retention update (2026-09-06):** after the interrupted turn, the previously recorded `C:/Windows/TEMP/g2s-evidence-7628a840d93d424db9db6b946d408f59` directory was observed empty. The cause is unknown. Numbers below were observed during execution but their raw local files are no longer available for review. Final exact-head evidence must be reacquired under the persistent task-owned `D:/RMProjects/Pi-g2s-evidence` directory. Do not treat the missing temporary reports as an attached/reviewable packet. Git commits and this ledger survived unchanged.
+
+Existing branch/worktree preserved. Full local `check`, `build:offline`, expanded `alpha:g2-probe` and `npm test` passed at clean `5cb80edd297273f1f69357495387993f26583e8e`. The probe reported **208 total, 204 pass, zero fail, four Windows POSIX-signal skips**. Later commits `b4bb94f`, `9f56f91`, `4e62937` change test/benchmark infrastructure only; targeted tests and check pass. They still require final exact-head full validation. No push, PR or review request yet.
+
+Real `/new` → `/fork` → `/resume` tests pass in both modes. Four session starts, three replacement shutdowns and three UI resets occur before final quit; final shutdown adds exactly one session shutdown and no replacement UI reset. Old extension context getters throw the stale-context error; previously captured UI handles cannot write. Prior-session artifact/cursor access is rejected, and terminal raw mode/data/resize listeners are restored/released.
+
+The runtime final-dispose path now claims shared ownership before callbacks, cancels auxiliary operations, joins cooperative abort and activity flags, emits session shutdown once, invokes the remaining invalidation callback at most once, and disposes the session once. Interactive final shutdown disarms UI callbacks and closes extension UI ownership before its first await. Ordinary quit releases/stops TUI before runtime teardown; signal quit performs runtime teardown before terminal restoration. Both use the same terminal ownership boundary. Active tests record zero post-disposal control/frame/render calls. The auxiliary wait uses one instance-stable polling callback and one optional lifecycle Promise/10 ms interval with a 5 s deadline; idle disposal adds no polling timer. Resolve/reject fields and timer are cleared before settlement. The abort rejection observer captures first-failure state until that abort settles. This is lifecycle work, not a per-delta/frame allocation exemption. An externally non-cooperative Promise may retain its own reaction until settlement; no universal cancellation of third-party code is claimed.
+
+Additional clean measurements are recorded in [the measurement packet](g2s-measurement-checkpoint.md): 100 fullscreen slow-sink processes, 60 batched L0–L3 processes, 30 wide-terminal/history processes and 90 corrected visible-marker corpus processes. Timing remains inconclusive against the strict end-to-end interval gate. Root timing and bounded work pass in the measured fixtures; this is not actual-provider throughput evidence.
+
+At `b4bb94f`, 25 controlled-GC cycles per mode again release all seven owner WeakRefs every cycle. Surviving-allocation sampling starts after warm-up and excludes collected samples. Regular heap delta is -4,979,296 bytes; fullscreen +177,544 bytes. Last-five heaps remain slightly increasing in fullscreen (41,377,224 → 41,383,448). Samples include inspector internals, a 100,024-byte `trim` allocation, theme/system-prompt initialization and async internals. Sampling does not identify retaining paths; strict zero-slope/reference-retainer closure remains open. No speculative production cache rewrite follows this evidence.
+
+The initial Markdown latency corpus put its marker in an extra table cell, which a fresh renderer correctly omits. Red `9f56f91` fails only that corpus (8/9 pass). Test-only `4e62937` places the marker in a visible paragraph; 9/9 fresh-render controls and all 90 L3 corpus processes pass with the final-marker assertion retained. The original failed log remains evidence, not a claimed production frame-loss defect. No Markdown production source changed.
+
+Remaining gates include complete process-level active/startup/error adversarial coverage, explicit per-call allocation/reference attribution, surviving-retainer evidence, final exact-head verification and Linux/Windows CI, and the single cumulative Draft Candidate review. The configured manual-copy startup failure remains an investigation candidate. G2 Alpha is not manually validated; G3–G10 remain unstarted.
 
 ### Streaming/validation continuation after the contract decision
 

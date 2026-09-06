@@ -76,3 +76,26 @@ node scripts/alpha-bench.mjs ansi
 ```
 
 The runner isolates HOME/config/session and SP_OFFLINE. It removes only its exact created temporary root. Repeat separately in five processes, retain exact commit/dirty stamps, and avoid simultaneous CPU-heavy tests. No provider token/s, native PTY, actual Windows Terminal manual validation, Linux CI, or final acceptance is inferred.
+
+## Historical continuation samples; raw-file reacquisition required
+
+The following were observed at clean `5cb80ed` (slow/batched/wide) and `4e62937` (corrected corpus/profile). On 2026-09-06 the temporary evidence directory was found empty; cause unknown. These are historical scalar observations, not currently attached raw evidence. Final candidate samples will be stored outside temporary HOME under `D:/RMProjects/Pi-g2s-evidence` and repeated. No production edits occurred between these two heads.
+
+Fullscreen 120x40 slow-sink: five independent processes for each delay and 10/20/50/100/burst schedule (100 total). All final markers were written; queue HWM was 1. Physical means Writable entry, not screen pixels. Large root CV makes timing acceptance inconclusive.
+
+| Sink callback delay | Largest marker p95 ms | Largest visible gap ms | Largest provider gap ms | Largest root p95 ms |
+| --- | ---: | ---: | ---: | ---: |
+| 5 ms | 35.94 | 130.11 | 121.70 | 11.88 |
+| 20 ms | 44.82 | 133.26 | 116.75 | 12.45 |
+| 50 ms | 85.91 | 165.90 | 115.61 | 13.17 |
+| 100 ms | 130.46 | 127.59 | 116.74 | 12.52 |
+
+Column maxima can come from different samples and must not be subtracted to infer a TUI stall. Sixty batched processes cover 2/4/8 chunks per 100 ms across L0–L3, five each. For batch 8, mean completion L0/L1/L2/L3 was 905.42/908.70/912.20/914.92 ms; L3 largest marker p95 was 47.06 ms. This measures chunks, not model tokens.
+
+Thirty 200x60 processes cover regular/fullscreen and 0/5k/50k history, 200 long-word chunks at requested 100/s. No full-history fallback in any run. Regular mean active renders 89.2/92.0/89.8; fullscreen 182.6/183.6/173.2 (its two layout passes are counted separately). Completed render count at most two includes the new turn's completion, not completed offscreen history. At 50k history regular/fullscreen largest root p95 was 9.58/10.41 ms, p99 12.61/11.42 ms, marker p95 45.15/49.77 ms. Root work is bounded; end-to-end interval acceptance remains open.
+
+At `4e62937`, all 90 L3 corrected-corpus runs completed (nine corpora, two modes, five processes each). Fresh-render marker red/green is recorded in commits `9f56f91`/`4e62937`: a marker in a surplus table cell was legitimately invisible, so the fixture now places it in a paragraph and retains its physical final-marker assertion. Markdown production code is unchanged.
+
+Two sampled long-history profiles at that head recorded regular/fullscreen: 108/107 events, 109/108 footer invalidations (the current invalidate method is a no-op), 101/100 AssistantMessage updates and scans, 97/95 eligible and successful Markdown incremental updates, three full renders each, 54,552/54,415 reparsed characters and 56,298/56,125 rewrapped characters. Roots/frames/writes were 99/97, terminal bytes 679,429/258,600. The fallback label `none` for initial/full renders is an instrumentation limitation, not a claimed unsafe append fallback reason. Single-process samples are not a percentage acceptance comparison. Footer traversal and session branch/context accounting remain sampled allocation hotspots; no unproven cache/generation redesign was made.
+
+The source inventory includes existing READ_GROUP selector Set and path Map pools (four retained containers each, retention predicate at most 128 entries), synchronous acquire/finally release. They are unmodified and not re-justified by this round's profile. Static syntax counts include fallback and lifecycle branches; they cannot be reported as dynamic normal-delta counts. The measured UI observer path returns no Promise, frame counters report no per-frame Promise/AbortController/wrapper/full-size copy, and the bounded retained line-reference array is allocated once per cache lifetime. Existing agent semantic async operations and extension-status sort/map callbacks are not zero-allocation claims.
