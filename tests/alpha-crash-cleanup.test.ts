@@ -2,6 +2,30 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { alphaSession } from './helpers/alpha-session.ts';
 
+for (const mode of ['regular', 'fullscreen'] as const) test(`runtime EIO is a cleanup failure even when terminal is disconnected: ${mode}`, async (t) => {
+  const f = await alphaSession({ mode });
+  const cause = Object.assign(new Error('session storage cleanup failed'), { code: 'EIO' });
+  let exit: number | undefined;
+  t.mock.method(process, 'exit', (code: number) => { exit = code; });
+  const dispose = f.session.dispose.bind(f.session);
+  t.mock.method(f.session, 'dispose', () => { dispose(); throw cause; });
+  try {
+    await f.mode.init();
+    f.internal.terminalDisconnected = true;
+    await assert.rejects(f.internal.shutdown(), error => error === cause);
+    assert.equal(exit, undefined);
+    assert.equal(f.input.isRaw, false);
+    assert.equal(f.input.listenerCount('data'), 0); assert.equal(f.resizeSource.listenerCount('resize'), 0);
+  } finally {
+    await f.mode.stop();
+    // Repeated real runtime disposal must retain the same original failure.
+    await assert.rejects(f.runtime.dispose(), error => error === cause);
+    // The helper joins that rejected operation before removing its owned root.
+    t.mock.method(f.runtime, 'dispose', async () => {});
+    await f.release();
+  }
+});
+
 for (const mode of ['regular', 'fullscreen'] as const) for (const phase of ['progress', 'drain'] as const) test(`dead ${phase} does not hide non-output cleanup failure: ${mode}`, async (t) => {
   const f = await alphaSession({ mode, settings: { terminal: { showTerminalProgress: true } } });
   const dead = Object.assign(new Error('disconnected output'), { code: 'EIO' });
