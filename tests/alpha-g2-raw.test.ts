@@ -1,12 +1,23 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import type { ToolResultMessage } from '../packages/ai/src/types.ts';
 import { createToolResultPresentationOwner, createToolResultPresentationCounters } from '../packages/coding-agent/src/core/tool-result-presentation.ts';
 import { g2_raw_result_probe, parallelRawResults, RAW_MODES } from './fixtures/g2-raw-result-probe.ts';
 
+const rawManifest = JSON.parse(readFileSync(new URL('./fixtures/g2-raw-result-manifest.json', import.meta.url), 'utf8'));
+assert.deepEqual(Object.keys(rawManifest).sort(), [...RAW_MODES].sort());
+
 for (const mode of RAW_MODES) test(`direct raw result: ${mode}`, () => {
   const result = g2_raw_result_probe(mode);
+  assert.equal(result.details.seed, 0x473253);
+  assert.equal(result.details.bytes, rawManifest[mode].bytes);
+  assert.equal(result.details.codeUnits, rawManifest[mode].codeUnits);
+  assert.equal(result.details.sha256, rawManifest[mode].sha256, 'pinned source digest prevents silent fixture shrinking or replacement');
+  for (const block of result.content) if (block.type === 'image') {
+    assert.equal(createHash('sha256').update(Buffer.from(block.data, 'base64')).digest('hex'), rawManifest[mode].imageSha256);
+  }
   const text = result.content[0];
   assert.equal(text.type, 'text');
   if (text.type !== 'text') throw new Error('missing text');

@@ -1,0 +1,12 @@
+{
+  "small": { "bytes": 1024, "codeUnits": 1024, "sha256": "5e711adeaaa6aba3038e576c29df8aa2cb081790af5c87739c9bcaa22be6d8b0" },
+  "medium": { "bytes": 65536, "codeUnits": 65536, "sha256": "d3fafc3fa16db7efb9062db418a1de8e4e734aba0c836d64cba495d5bf7aac5e" },
+  "large": { "bytes": 262144, "codeUnits": 262144, "sha256": "5f31d2dcf264477593dfa9bbd898f735e0137ab2044468785234ccb43fdd0472" },
+  "huge": { "bytes": 1048576, "codeUnits": 1048576, "sha256": "9f1e85fd4a28732ae91280abbf5121061189882ab28706ad40ca3a85a5ecb5bb" },
+  "single-line": { "bytes": 10485760, "codeUnits": 10485760, "sha256": "02b8dc0bf4a3c7849d5f7515904211be954986c7015d646f89ff266779223565" },
+  "errors": { "bytes": 200085, "codeUnits": 200085, "sha256": "475bdbbd6198cb47ad96c4cef377cfe73a19d9f5bd4dfc5b5a432d6ba56be3ab" },
+  "json": { "bytes": 299012, "codeUnits": 299012, "sha256": "ddbb0b03f73d7896b769e4f5403f94b30033bf5760a8c5440c69e731bb47f894" },
+  "cjk": { "bytes": 430076, "codeUnits": 150076, "sha256": "579949b1be9a5d18096b5c3219ea3ee31e37b1280f455961bc9d70760068a418" },
+  "ansi": { "bytes": 230079, "codeUnits": 230079, "sha256": "091b6f007502c342c41f39191ef899a0dc7059b8b18ceb24deb07b3191cfa273" },
+  "image": { "bytes": 114, "codeUnits": 114, "sha256": "fcc28c901654e822e69a4c14612a876623e4adb0c71284775e5f3b9cc1ca01b0", "imageSha256": "5e3d382db4dd83d59aa5742793ad6b7903409e865c83bcbc54835049f043bc15" }
+}
