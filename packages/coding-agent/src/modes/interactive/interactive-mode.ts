@@ -1109,15 +1109,15 @@ export class InteractiveMode {
 				this.renderer.renderNow();
 			}
 		} catch (error) {
-			if (!(this.terminalDisconnected && isDeadTerminalError(error))) {
-				transferFailed = true;
-				transferError = error;
-			}
+			transferFailed = true;
+			transferError = error;
 		}
 		try {
 			await this.ui.dispose({ preserveScreen: this.renderer.mode === "fullscreen" });
 		} catch (error) {
-			if (!transferFailed && !(this.terminalDisconnected && isDeadTerminalError(error))) throw error;
+			// Composite disposal also releases components. Its errors cannot be
+			// classified as disconnected-output errors from an errno alone.
+			if (!transferFailed) throw error;
 		}
 		if (transferFailed) throw transferError;
 	}
@@ -8321,7 +8321,7 @@ export class InteractiveMode {
 				await this.ui.dispose({ preserveScreen: true });
 			}
 		} catch (error) {
-			if (!cleanupFailed && !(this.terminalDisconnected && isDeadTerminalError(error))) {
+			if (!cleanupFailed) {
 				cleanupFailed = true; cleanupError = error;
 			}
 		} finally {
