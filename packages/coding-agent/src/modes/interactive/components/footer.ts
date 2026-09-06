@@ -89,7 +89,9 @@ export class FooterComponent implements Component {
 		let latestCacheHitRate: number | undefined;
 		let sessionName: string | undefined;
 
-		for (const entry of this.session.sessionManager.getEntries()) {
+		const entries = this.session.sessionManager.getEntries();
+		for (let index = 0; index < entries.length; index++) {
+			const entry = entries[index]!;
 			if (entry.type === "session_info") {
 				// This traversal already sees all entries in append order. Preserve
 				// the latest-name/empty-name semantics without copying history again.
