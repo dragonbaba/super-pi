@@ -8,16 +8,16 @@ import { fileURLToPath } from 'node:url';
 import { CONFIG_DIR_NAME, getConfigDir } from '../packages/coding-agent/src/config.ts';
 import { ProjectTrustStore } from '../packages/coding-agent/src/core/trust-manager.ts';
 
-for (const mode of ['regular', 'fullscreen']) for (const scenario of ['quit', 'ctrl-d', 'double-ctrl-c', 'extension', 'SIGTERM', 'SIGHUP', 'active-stream', 'active-tool', 'active-compaction', 'settings-absent', 'settings-malformed', 'startup-quit', 'stdout-close', 'active-stream/stdout-close', 'active-tool/stdout-close', 'active-compaction/stdout-close', 'project-trusted', 'project-untrusted']) {
+for (const mode of ['regular', 'fullscreen']) for (const scenario of ['quit', 'ctrl-d', 'double-ctrl-c', 'extension', 'SIGTERM', 'SIGHUP', 'active-stream', 'active-tool', 'active-compaction', 'settings-absent', 'settings-malformed', 'startup-quit', 'stdout-close', 'active-stream/stdout-close', 'active-tool/stdout-close', 'active-compaction/stdout-close', 'project-trusted', 'project-untrusted', 'quit/progress', 'stdout-close/progress', 'active-stream/stdout-close/progress']) {
   const kind = scenario.split('/')[0]!;
-  const outputLost = scenario.endsWith('stdout-close');
+  const outputLost = scenario.split('/').includes('stdout-close');
   test(`pipe-backed real CLI ${mode}/${scenario}`, { skip: process.platform === 'win32' && kind.startsWith('SIG') ? 'Windows kill signals terminate externally; native POSIX signal CI required' : false }, async (t) => {
     const root = mkdtempSync(join(tmpdir(), 'g2s-cli-'));
     const agent = join(root, 'agent'); mkdirSync(agent);
     const config = getConfigDir(agent); mkdirSync(config);
     const projectCase = kind.startsWith('project-');
     const capture = kind === 'quit' || kind.startsWith('settings-') || kind === 'startup-quit' || projectCase ? join(root, 'startup-capture.jsonl') : '';
-    if (kind !== 'settings-absent') writeFileSync(join(config, 'settings.json'), kind === 'settings-malformed' ? '{"quietStartup":' : JSON.stringify({ quietStartup: true, theme: 'dark', compaction: { enabled: false, keepRecentTokens: 128, reserveTokens: 128 } }));
+    if (kind !== 'settings-absent') writeFileSync(join(config, 'settings.json'), kind === 'settings-malformed' ? '{"quietStartup":' : JSON.stringify({ quietStartup: true, theme: 'dark', terminal: { showTerminalProgress: scenario.endsWith('/progress') }, compaction: { enabled: false, keepRecentTokens: 128, reserveTokens: 128 } }));
     if (projectCase) {
       const extensions = join(root, CONFIG_DIR_NAME, 'extensions'); mkdirSync(extensions, { recursive: true });
       writeFileSync(join(extensions, 'alpha-project.js'), "export default function(pi) { pi.on('session_start', () => process.stderr.write('ALPHA_PROJECT_EXTENSION_LOADED\\n')); }\n");
