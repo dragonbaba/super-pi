@@ -4,6 +4,7 @@ Locally authoritative Goal: `SUPER-PI-G2-ALPHA-STABILIZATION-ASTRA`.
 The prior cross-session Program is not being resumed or modified. This ledger is authoritative even while the Goal API returns null; no replacement Goal is created.
 
 Status: **G2 Alpha Manual Validation Blocked → G2S active → G3–G10 unstarted**.
+Draft PR: [#24](https://github.com/dragonbaba/super-pi/pull/24), created under the existing authorization. Candidate is under exact-head CI verification, not Ready. Candidate Codex Review requests: **0 of 1**; closeout incremental requests: **0 of 1**. No merge/auto-merge/rebase/squash/force push. The older checkpoints below saying “no PR” are historical.
 The scope-unblock addendum authorizes bounded ANSI indexing/forward progress, runtime exactly-once disposal, and final interactive UI ownership fixes. Continue on the existing worktree and branch; preserve red baseline `ed023a6c78e0d075866195fc306cc686f511f897` without amendment or rewrite.
 
 Active findings:
@@ -19,6 +20,10 @@ Active findings:
 The historical stopped-baseline evidence below is preserved. Its scope restriction is superseded by the addendum; implementation is active again. Streaming optimization still requires L0–L3 baseline evidence. Final target is Draft Candidate Gate, awaiting external final review and explicit merge authorization. No Alpha manual validation is claimed.
 
 ## Current implementation and evidence checkpoint
+
+### Published Draft checkpoint
+
+`40b563910f2deb62949ed29f28a207c924e4ebc5` passed exact-head local check, offline build, isolated GC-enabled Alpha probe (**287 total, 283 pass, zero fail, four Windows POSIX skips**), full npm test, source audit, diff check and clean-worktree verification. Local reports are retained in `40b5639-validation` under the persistent evidence root. The branch was pushed normally and the sole Draft PR #24 created. This ledger-only follow-up does not change the tested production/test source. Linux/Windows checks explicitly validate their checkout against the PR head SHA. Results and the one Candidate Review remain pending; no external acceptance is claimed.
 
 ### Continued allocation/coverage checkpoint through `d6a21ac`
 
