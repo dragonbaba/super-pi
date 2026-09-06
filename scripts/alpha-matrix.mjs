@@ -16,14 +16,11 @@ for (let i = 0; i < args.length; i += 2) {
 }
 if (!options.output) throw new Error('--output must name a new persistent evidence directory');
 const runs = Number(options.runs ?? 5);
-if (!Number.isInteger(runs) || runs < 5 || runs > 10) throw new Error('requires 5–10 independent processes');
+if (!Number.isInteger(runs) || runs < 5 || runs > 10) throw new Error('requires 5–10 independent processes; maximum usable runs depends on selected suites and the 1500-case capacity');
 const suites = (options.suite ?? 'rates,slow,history,batch,corpus,growing,profile,ansi').split(',');
 if (suites.some(suite => !['rates', 'slow', 'history', 'batch', 'corpus', 'growing', 'profile', 'ansi'].includes(suite))) throw new Error('unknown suite');
 function git(...args) { return execFileSync('git', args, { cwd: repository, encoding: 'utf8' }).trim(); }
-const head = git('rev-parse', 'HEAD');
-if (git('status', '--porcelain')) throw new Error('benchmark requires a clean candidate');
 const output = resolve(options.output);
-mkdirSync(output); // Exclusive creation deliberately fails on an existing path.
 const cases = [];
 function add(suite, name, values, command = 'stream') {
   for (let run = 1; run <= runs; run++) cases.push({ suite, name: `${suite}-${name}-n${run}`, args: [command, ...Object.entries(values).flatMap(([key, value]) => [`--${key}`, String(value)])] });
@@ -38,7 +35,10 @@ for (const suite of suites) {
   if (suite === 'growing') for (let layer = 0; layer <= 3; layer++) for (const mode of layer < 2 ? ['regular'] : ['regular', 'fullscreen']) for (const bytes of [1024, 16384, 65536, 262144]) add(suite, `l${layer}-${mode}-b${bytes}`, { layer, mode, corpus: 'word', rate: 0, count: Math.ceil(bytes / 137) });
   if (suite === 'ansi') add(suite, 'index', {}, 'ansi');
 }
-if (cases.length > 1500) throw new Error('matrix hard capacity exceeded');
+if (cases.length > 1500) throw new Error(`matrix hard capacity exceeded: ${cases.length} > 1500; reduce --runs or selected suites (maximum usable runs depends on suite selection)`);
+const head = git('rev-parse', 'HEAD');
+if (git('status', '--porcelain')) throw new Error('benchmark requires a clean candidate');
+mkdirSync(output); // Exclusive creation only after every preflight has passed.
 const manifest = { head, node: process.version, platform: process.platform, runs, suites, planned: cases.length, results: [] };
 const manifestPath = join(output, 'manifest.json');
 writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));

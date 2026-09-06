@@ -2211,7 +2211,7 @@ export class ToolResultPresentationOwner {
 			chunkContent = [];
 			appendRegion(chunkContent, sourceContent, start, chunkEnd, this.counters);
 			chunkEstimate = estimateToolOutputTokens(chunkContent);
-			if (chunkEstimate.estimatedTokens <= budgetTokens && comparePositions(start, chunkEnd) > 0) {
+			if (chunkEstimate.estimatedTokens <= budgetTokens && comparePositions(start, chunkEnd) < 0) {
 				this.counters.terminalNonProgressCandidatesPrevented = (this.counters.terminalNonProgressCandidatesPrevented ?? 0) + 1;
 			}
 		}
