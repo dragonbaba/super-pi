@@ -3155,8 +3155,8 @@ test("frame queue source retains one string without Promise tails or pooling", (
 	)?.[0] ?? "";
 	assert.notEqual(interactiveStopCleanup, "");
 	assert.ok(
-		interactiveStopCleanup.indexOf("this.cancelExtensionDialogs()") <
-			interactiveStopCleanup.indexOf("this.disposeActiveSelector()"),
+		interactiveStopCleanup.indexOf("release(this, this.cancelExtensionDialogs)") <
+			interactiveStopCleanup.indexOf("release(this, this.disposeActiveSelector)"),
 	);
 	const showSessionSelector = interactiveSource.match(
 		/private showSessionSelector[\s\S]*?\n\t}/,

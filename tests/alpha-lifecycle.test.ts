@@ -72,7 +72,7 @@ for (const modeName of ['regular', 'fullscreen'] as const) test(`real shutdown b
   } finally {
     t.diagnostic(JSON.stringify({ modeName, events, postDisposeWrites: illegal, sinkWrites: f.sink.writes.length }));
     await f.mode.stop();
-    disposeSession();
+    await f.runtime.dispose();
     await new Promise<void>(resolve => setImmediate(resolve));
     rmSync(f.root, { recursive: true, force: true });
   }
@@ -88,7 +88,7 @@ test('real runtime concurrent dispose owns one session disposal', async (t) => {
     assert.equal(count, 1);
   } finally {
     await f.mode.stop();
-    disposeSession();
+    await f.runtime.dispose();
     await new Promise<void>(resolve => setImmediate(resolve));
     rmSync(f.root, { recursive: true, force: true });
   }
