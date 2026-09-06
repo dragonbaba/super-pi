@@ -4,7 +4,7 @@ Locally authoritative Goal: `SUPER-PI-G2-ALPHA-STABILIZATION-ASTRA`.
 The prior cross-session Program is not being resumed or modified. This ledger is authoritative even while the Goal API returns null; no replacement Goal is created.
 
 Status: **G2 Alpha Manual Validation Blocked → G2S active → G3–G10 unstarted**.
-Draft PR: [#24](https://github.com/dragonbaba/super-pi/pull/24), created under the existing authorization. Candidate is under exact-head CI verification, not Ready. Candidate Codex Review requests: **0 of 1**; closeout incremental requests: **0 of 1**. No merge/auto-merge/rebase/squash/force push. The older checkpoints below saying “no PR” are historical.
+Draft PR: [#24](https://github.com/dragonbaba/super-pi/pull/24), created under the existing authorization. Candidate Codex Review requests: **1 of 1**, [request 5557492438](https://github.com/dragonbaba/super-pi/pull/24#issuecomment-5557492438), cumulative source through `e30c19a`; result pending. Closeout incremental requests: **0 of 1**. No merge/auto-merge/rebase/squash/force push. The older checkpoints below saying “no PR” are historical.
 The scope-unblock addendum authorizes bounded ANSI indexing/forward progress, runtime exactly-once disposal, and final interactive UI ownership fixes. Continue on the existing worktree and branch; preserve red baseline `ed023a6c78e0d075866195fc306cc686f511f897` without amendment or rewrite.
 
 Active findings:
@@ -22,6 +22,12 @@ The historical stopped-baseline evidence below is preserved. Its scope restricti
 ## Current implementation and evidence checkpoint
 
 ### Published Draft checkpoint
+
+Exact `e30c19a2fc51f00b274717a37ab2c973f471e00a` passed **verify-linux and verify-windows**, including check/build/GC-enabled Alpha probe/full npm test: [run 34015915000](https://github.com/dragonbaba/super-pi/actions/runs/34015915000). Full CI metadata/logs are retained locally. Final 15-process profile/ANSI matrix hashes verify at the same clean SHA. Standalone 100 lifetimes × 100,000 updates per mode release seven owner WeakRefs each lifetime; heap deltas −4,760,856 / −4,644,480 bytes, with the documented small end-window staircase rather than a claimed universal zero slope. Isolated active completed renders remain zero; frame queue HWM 1 in these stress runs.
+
+Four current **agent-driven native Windows PTY** CLI startups/exits also pass: regular `/quit`, fullscreen Ctrl+D, each repeated with an observation-only exit hook. The two observed runs report real stdin/stdout TTY=true and raw=false at exit; all four exit 0, emit one session shutdown and one input-ready phase, and have no captured uncaught exception. Paste-disable and show-cursor controls are observed. This is not user Alpha manual validation or real-provider throughput measurement. Scalar phase captures were copied to persistent evidence; their original capture directories remain because automatic tool approval rejected a move/remove command with only `blocked by policy`. No deletion workaround was attempted.
+
+The one authorized Candidate Review has now been requested after the exact-head checks and cumulative adversarial audit. Await its complete findings before making any review-driven changes; do not send another Candidate request. This ledger update is bookkeeping only, with production/test source still identical to the reviewed e30c19a candidate.
 
 `40b563910f2deb62949ed29f28a207c924e4ebc5` passed exact-head local check, offline build, isolated GC-enabled Alpha probe (**287 total, 283 pass, zero fail, four Windows POSIX skips**), full npm test, source audit, diff check and clean-worktree verification. Local reports are retained in `40b5639-validation` under the persistent evidence root. The branch was pushed normally and the sole Draft PR #24 created. This ledger-only follow-up does not change the tested production/test source. Linux/Windows checks explicitly validate their checkout against the PR head SHA. Results and the one Candidate Review remain pending; no external acceptance is claimed.
 
