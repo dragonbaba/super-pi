@@ -22,3 +22,28 @@ test('footer reuses the existing entries traversal for latest session name', asy
     }
   } finally { await f.release(); }
 });
+
+test('footer usage traversal does not request an iterator result per history entry', async (t) => {
+  const messages = Array.from({ length: 5000 }, () => alphaMessage([{ type: 'text', text: 'completed usage fixture' }]));
+  messages[0]!.usage.input = 2500; messages[0]!.usage.cost.total = 1.25;
+  const f = await alphaSession({ messages });
+  let iteratorResults = 0; let entryCopies = 0;
+  try {
+    f.sessionManager.appendSessionInfo('retained usage semantics');
+    const expected = f.internal.footer.render(120);
+    const getEntries = f.sessionManager.getEntries.bind(f.sessionManager);
+    t.mock.method(f.sessionManager, 'getEntries', () => {
+      const entries = getEntries(); entryCopies++;
+      // Instrument only this returned copy; canonical session storage and the
+      // native Array prototype remain unchanged. Indexed reads stay ordinary.
+      Object.defineProperty(entries, Symbol.iterator, { value: function () {
+        const iterator = Array.prototype[Symbol.iterator].call(this);
+        return { next() { iteratorResults++; return iterator.next(); }, [Symbol.iterator]() { return this; } };
+      } });
+      return entries;
+    });
+    assert.deepEqual(f.internal.footer.render(120), expected);
+    assert.equal(entryCopies, 1);
+    assert.equal(iteratorResults, 0, 'avoid per-entry iterator protocol work in the measured footer loop');
+  } finally { t.diagnostic(JSON.stringify({ history: messages.length, iteratorResults, entryCopies })); await f.release(); }
+});
