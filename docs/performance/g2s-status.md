@@ -4,7 +4,7 @@ Locally authoritative Goal: `SUPER-PI-G2-ALPHA-STABILIZATION-ASTRA`.
 The prior cross-session Program is not being resumed or modified. This ledger is authoritative even while the Goal API returns null; no replacement Goal is created.
 
 Status: **G2 Alpha Manual Validation Blocked → G2S active → G3–G10 unstarted**.
-Draft PR: [#24](https://github.com/dragonbaba/super-pi/pull/24), created under the existing authorization. Candidate Codex Review requests: **1 of 1**, [request 5557492438](https://github.com/dragonbaba/super-pi/pull/24#issuecomment-5557492438), cumulative source through `e30c19a`; result pending. Closeout incremental requests: **0 of 1**. No merge/auto-merge/rebase/squash/force push. The older checkpoints below saying “no PR” are historical.
+Draft PR: [#24](https://github.com/dragonbaba/super-pi/pull/24), created under the existing authorization. Candidate Codex Review requests: **1 of 1**, [request 5557492438](https://github.com/dragonbaba/super-pi/pull/24#issuecomment-5557492438), cumulative source through `e30c19a`; completed with one P1, review `5124479477`. Closeout incremental requests: **0 of 1**. No merge/auto-merge/rebase/squash/force push. The older checkpoints below saying “no PR” are historical.
 The scope-unblock addendum authorizes bounded ANSI indexing/forward progress, runtime exactly-once disposal, and final interactive UI ownership fixes. Continue on the existing worktree and branch; preserve red baseline `ed023a6c78e0d075866195fc306cc686f511f897` without amendment or rewrite.
 
 Active findings:
@@ -20,6 +20,16 @@ Active findings:
 The historical stopped-baseline evidence below is preserved. Its scope restriction is superseded by the addendum; implementation is active again. Streaming optimization still requires L0–L3 baseline evidence. Final target is Draft Candidate Gate, awaiting external final review and explicit merge authorization. No Alpha manual validation is claimed.
 
 ## Current implementation and evidence checkpoint
+
+### Candidate Review cleanup batch
+
+[P1 3943217054](https://github.com/dragonbaba/super-pi/pull/24#discussion_r3943217054) confirms that enabled progress clearing can throw EIO before mandatory terminal disposal. Red `3f38bd5` independently reproduces ten failures (progress, selector, status, footer and unsubscribe × regular/fullscreen): terminal disposal count remains zero. `a3ede8c` adds the real installed dead-output handler and an adjacent fullscreen transcript-transfer failure. The initial handler fixture incorrectly emitted to Node's test-worker stdout error listeners too; it now invokes only the newly registered production handler, preserving the worker's reporting channel.
+
+Fix `4d35140166dce10519515198e1831b3611e7f45d` executes cleanup owners independently, preserves the first error and always reaches terminal disposal; transcript-transfer failure also cannot bypass disposal. No disposed-write contract is weakened. The synchronous collector is one closure per low-frequency stop operation, capturing first-error state until stop settles; it adds no delta/frame closure, timer, Promise, wrapper or pool. The session subscription reference is detached before invocation. Existing test cleanup now joins runtime disposal instead of bypassing the shared owner with a second direct session disposal.
+
+Focused recovery: 15/15; runtime/normal quit combined: 39/39 before the additional three recovery tests; frame queue: 85/85. Exact `4d35140` check/build/probe pass; probe 306 total, 302 pass, four Windows POSIX-signal skips. Its full test run exposed an obsolete source-order assertion matching direct cleanup calls, now updated to the collector calls without removing the ordering gate; that suite passes 62/62. Full verification must be rerun at the resulting head. CI `34018121526` targets `4d35140`; previous `5d08fbc` Linux and Windows both passed. No closeout Review has yet been requested.
+
+Persistent logs: `review-cleanup-red.log`, `review-transfer-red.log`, `review-cleanup-green.log`, `review-frame-queue.log`, `review-async-owner.log`, `4d35140-validation/`, and `4d35140-source-audit.json` under the documented evidence root. Final timing/heap limitations and the unconfirmed configured-copy startup candidate remain explicit; this batch is a lifecycle correctness repair, not a claim that those measurements passed.
 
 ### Published Draft checkpoint
 
