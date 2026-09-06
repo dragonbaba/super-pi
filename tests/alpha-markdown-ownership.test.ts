@@ -20,7 +20,7 @@ function installProbe(t: any, kind: 'success' | 'throw' | 'reentrant' | 'reentra
       if (kind === 'reentrant-throw') assert.throws(() => inner.render(120), error => error === cause);
       else inner.render(120);
       inner.invalidate();
-      assert.equal(this.lexer, outer, 'nested parsing restores the outer lexer before it continues');
+      assert.ok(this.lexer === outer, 'nested parsing restores the outer lexer before it continues');
     }
     return original.apply(this, args);
   });
@@ -47,11 +47,11 @@ for (const incremental of [false, true]) for (const kind of ['success', 'throw',
     const { state, cause } = installProbe(t, kind);
     const component = renderAndRelease(kind, incremental, cause);
     assert.ok(state.owner);
-    assert.equal(state.owner.lexer, undefined, 'the shared tokenizer must not retain the last session lexer');
-    t.mock.restoreAll(); // Mock call records are not production owners.
+    assert.ok(state.owner.lexer === undefined, 'the shared tokenizer must not retain the last session lexer');
+    t.mock.reset(); // restoreAll alone retains mock call/stack records in the tracker.
     if (global.gc) {
       for (let pass = 0; pass < 5; pass++) { await new Promise<void>(resolve => setImmediate(resolve)); global.gc(); }
-      assert.equal(component.deref(), undefined);
+      assert.ok(component.deref() === undefined, 'released component must be collectible');
       assert.ok(state.refs.every(reference => reference.deref() === undefined), 'lexer/token arrays must be collectible after render/cache release');
     }
   });
