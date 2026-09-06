@@ -21,6 +21,8 @@ const mode = option('mode', 'regular') as 'regular' | 'fullscreen';
 const columns = Number(option('columns', '120')); const rows = Number(option('rows', '40'));
 const corpus = option('corpus', 'plain');
 const profile = option('profile', 'off') === 'on';
+const statuses = Number(option('statuses', '0'));
+assert.ok(Number.isInteger(statuses) && statuses >= 0 && statuses <= 64);
 const bodies = ALPHA_LATENCY_BODIES;
 const fixture = scheduledStream(count, rate, bodies[corpus] ?? corpus, batch);
 const eventTimes = new Float64Array(count); const visibleTimes = new Float64Array(count);
@@ -70,6 +72,7 @@ try {
       await f.mode.init();
       await f.internal.loadInitializationHighlightLanguages();
       await f.internal.renderer.flushTerminalFrames();
+      for (let index = 0; index < statuses; index++) f.internal.footerDataProvider.setExtensionStatus(`g2s-status-${index}`, `fixture status ${index}`);
       const footer = f.internal.footer.invalidate.bind(f.internal.footer);
       f.internal.footer.invalidate = () => { footerInvalidations++; footer(); };
       const handle = f.internal.handleEvent.bind(f.internal); let handledOffset = 0;
@@ -111,8 +114,8 @@ try {
   if (layer >= 2) await f!.internal.renderer.flushTerminalFrames();
   const completionMs = performance.now() - start;
   const heap = profile ? await inspector.post('HeapProfiler.stopSampling') : undefined; loop.disable();
-  const sites: { function: string; source: string; bytes: number }[] = []; const pending = heap ? [heap.profile.head] : [];
-  while (pending.length) { const node = pending.pop()!; sites.push({ function: node.callFrame.functionName, source: node.callFrame.url.replace(/^.*\/(packages|scripts|tests)\//, '$1/'), bytes: node.selfSize }); pending.push(...node.children); }
+  const sites: { function: string; source: string; line: number; column: number; bytes: number }[] = []; const pending = heap ? [heap.profile.head] : [];
+  while (pending.length) { const node = pending.pop()!; sites.push({ function: node.callFrame.functionName, source: node.callFrame.url.replace(/^.*\/(packages|scripts|tests)\//, '$1/'), line: node.callFrame.lineNumber + 1, column: node.callFrame.columnNumber + 1, bytes: node.selfSize }); pending.push(...node.children); }
   const latency: number[] = []; const eventLatency: number[] = []; const eventToRender: number[] = []; const renderToWrite: number[] = []; const scheduling: number[] = [];
   for (let i = 0; i < count; i++) {
     if (visibleTimes[i]) latency.push(visibleTimes[i]! - fixture.generated[i]!);
@@ -124,7 +127,7 @@ try {
   const metrics = layer >= 2 ? f!.internal.renderInstrumentation.snapshot() : undefined;
   if (layer >= 2) { assert.ok(visibleTimes[count - 1]! > 0, 'final marker physically written'); assert.ok(metrics.terminalFrameQueueHighWaterMark <= 2); assert.ok(metrics.pendingRenderRequestHighWaterMark <= 1); }
   console.log(JSON.stringify({ head: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(), dirty: !!execFileSync('git', ['status', '--porcelain'], { encoding: 'utf8' }).trim(),
-    layer, rate, count, batch, history, mode, columns, rows, delay, corpus, profile, completionMs, updatesPerSecond: count * 1000 / completionMs,
+    layer, rate, count, batch, history, mode, columns, rows, delay, corpus, profile, statuses, completionMs, updatesPerSecond: count * 1000 / completionMs,
     sourceCodeUnits: (fixture.message.content[0] as { text: string }).text.length,
     sourceBytes: Buffer.byteLength((fixture.message.content[0] as { text: string }).text),
     providerToEvent: stats(eventLatency), visibleMarkers: latency.length, generatedChunks: count,

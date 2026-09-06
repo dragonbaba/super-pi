@@ -47,3 +47,32 @@ test('footer usage traversal does not request an iterator result per history ent
     assert.equal(iteratorResults, 0, 'avoid per-entry iterator protocol work in the measured footer loop');
   } finally { t.diagnostic(JSON.stringify({ history: messages.length, iteratorResults, entryCopies })); await f.release(); }
 });
+
+test('footer extension status callbacks have stable identities across renders', async (t) => {
+  const f = await alphaSession();
+  const comparisons = new Set<unknown>(); const transforms = new Set<unknown>();
+  const sort = Array.prototype.sort; const map = Array.prototype.map; const from = Array.from;
+  function isStatusList(value: any[]) { return Array.isArray(value[0]) && typeof value[0][0] === 'string' && value[0][0].startsWith('g2s-status-'); }
+  try {
+    f.internal.footerDataProvider.setExtensionStatus('g2s-status-z', ' second\nline ');
+    f.internal.footerDataProvider.setExtensionStatus('g2s-status-a', ' first\tline ');
+    const expected = f.internal.footer.render(120);
+    assert.ok(expected[2].includes('first line second line'));
+    t.mock.method(Array as any, 'from', function (this: any, ...args: any[]) {
+      const result = Reflect.apply(from, this, args);
+      if (isStatusList(result)) {
+        // Instrument only the copied status array, never Array.prototype.
+        Object.defineProperty(result, 'sort', { value: function (this: any[], compare: any) {
+          comparisons.add(compare); return sort.call(this, compare);
+        } });
+        Object.defineProperty(result, 'map', { value: function (this: any[], transform: any, receiver: any) {
+          transforms.add(transform); return map.call(this, transform, receiver);
+        } });
+      }
+      return result;
+    });
+    for (let render = 0; render < 3; render++) assert.deepEqual(f.internal.footer.render(120), expected);
+    assert.equal(comparisons.size, 1, 'one stable status comparator, not one closure per render');
+    assert.equal(transforms.size, 1, 'one stable sanitizer callback, not one closure per render');
+  } finally { t.mock.reset(); t.diagnostic(JSON.stringify({ renders: 3, comparators: comparisons.size, transforms: transforms.size })); await f.release(); }
+});
