@@ -18,6 +18,14 @@ function sanitizeStatusText(text: string): string {
 		.trim();
 }
 
+function compareExtensionStatusKeys(left: [string, string], right: [string, string]): number {
+	return left[0].localeCompare(right[0]);
+}
+
+function formatExtensionStatus(entry: [string, string]): string {
+	return sanitizeStatusText(entry[1]);
+}
+
 /**
  * Format token counts for compact footer display.
  */
@@ -242,8 +250,8 @@ export class FooterComponent implements Component {
 		const extensionStatuses = this.footerData.getExtensionStatuses();
 		if (extensionStatuses.size > 0) {
 			const sortedStatuses = Array.from(extensionStatuses.entries())
-				.sort(([a], [b]) => a.localeCompare(b))
-				.map(([, text]) => sanitizeStatusText(text));
+				.sort(compareExtensionStatusKeys)
+				.map(formatExtensionStatus);
 			const statusLine = sortedStatuses.join(" ");
 			// Truncate to terminal width with dim ellipsis for consistency with footer style
 			lines.push(truncateToWidth(statusLine, width, theme.fg("dim", "...")));
