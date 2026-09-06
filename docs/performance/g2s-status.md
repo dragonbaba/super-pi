@@ -20,6 +20,14 @@ The historical stopped-baseline evidence below is preserved. Its scope restricti
 
 ## Current implementation and evidence checkpoint
 
+### Continued allocation/coverage checkpoint through `d6a21ac`
+
+Production remains within the authorized nine files. Footer-only follow-ups have separate red tests and profile evidence: `deb9128` → `f62d88a` removes per-entry iterator protocol work without caching; `1dffae7` → `86cacbc` removes two per-render status closures/destructuring iterators using stable module functions. The former's 70-process CPU comparison is mixed, including a +0.607 ms fullscreen/5k p95 difference, so no universal performance gain is claimed. The latter has actual status-branch sampled source sites and five before/after processes; deterministic callback identities and output golden pass. See persistent evidence for precise attribution limits.
+
+`68dc1f1` adds actual custom-footer exactly-once/late-registration/WeakRef ownership checks. `e661968` pins every default raw fixture's bytes/code units/SHA-256 plus decoded PNG digest, without changing any generated payload. `d6a21ac` adds four actual trusted/untrusted project startup cases; all pass after correcting the test extension suffix to the production loader's supported `.js`. This was a fixture discovery error, not a production trust failure. No contextual-budget changes, provider changes or new pool.
+
+The cumulative [adversarial audit](g2s-adversarial-audit.md) records evidence and unclaimed coverage before the single Candidate Review. Final exact-head full checks/CI and review have not yet been run for these latest follow-ups. The existing branch still has no PR and no review request; all authorization ceilings are preserved.
+
 ### Full local verification at `ed2a577`
 
 Subsequent test-only startup expansion adds 36 combinations: regular/fullscreen × 0/5k/50k history × G2 off/on × no extension/no-op/UI extension. All pass, including shared concurrent quit, exact session/terminal disposal, late UI-handle inertness, raw-mode recovery and listener baseline. The complete startup fault/cancellation/cycle/matrix file is 58/58 green. This is production-shaped startup coverage, not a claim that configured-copy startup or native terminal manual testing passed.
