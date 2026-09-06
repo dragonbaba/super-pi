@@ -18,6 +18,14 @@ function sanitizeStatusText(text: string): string {
 		.trim();
 }
 
+function compareExtensionStatusKeys(left: [string, string], right: [string, string]): number {
+	return left[0].localeCompare(right[0]);
+}
+
+function formatExtensionStatus(entry: [string, string]): string {
+	return sanitizeStatusText(entry[1]);
+}
+
 /**
  * Format token counts for compact footer display.
  */
@@ -87,9 +95,16 @@ export class FooterComponent implements Component {
 		// Calculate cumulative usage from ALL session entries (not just post-compaction messages)
 		const usageTotals = createUsageTotals();
 		let latestCacheHitRate: number | undefined;
+		let sessionName: string | undefined;
 
-		for (const entry of this.session.sessionManager.getEntries()) {
-			if (entry.type === "message" && entry.message.role === "assistant") {
+		const entries = this.session.sessionManager.getEntries();
+		for (let index = 0; index < entries.length; index++) {
+			const entry = entries[index]!;
+			if (entry.type === "session_info") {
+				// This traversal already sees all entries in append order. Preserve
+				// the latest-name/empty-name semantics without copying history again.
+				sessionName = entry.name?.trim() || undefined;
+			} else if (entry.type === "message" && entry.message.role === "assistant") {
 				addUsageToTotals(usageTotals, entry.message.usage);
 
 				const latestPromptTokens =
@@ -121,7 +136,6 @@ export class FooterComponent implements Component {
 		}
 
 		// Add session name if set
-		const sessionName = this.session.sessionManager.getSessionName();
 		if (sessionName) {
 			pwd = `${pwd} • ${sessionName}`;
 		}
@@ -236,8 +250,8 @@ export class FooterComponent implements Component {
 		const extensionStatuses = this.footerData.getExtensionStatuses();
 		if (extensionStatuses.size > 0) {
 			const sortedStatuses = Array.from(extensionStatuses.entries())
-				.sort(([a], [b]) => a.localeCompare(b))
-				.map(([, text]) => sanitizeStatusText(text));
+				.sort(compareExtensionStatusKeys)
+				.map(formatExtensionStatus);
 			const statusLine = sortedStatuses.join(" ");
 			// Truncate to terminal width with dim ellipsis for consistency with footer style
 			lines.push(truncateToWidth(statusLine, width, theme.fg("dim", "...")));

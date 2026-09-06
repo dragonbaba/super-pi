@@ -25,6 +25,9 @@ const DEFAULT_CONTEXT: Readonly<RetainedRenderContext> = Object.freeze({
 	settingsVersion: 0,
 });
 
+const MAX_ACTIVE_DIFF_LINES = 4096;
+const MAX_ACTIVE_DIFF_CODE_UNITS = 512 * 1024;
+
 function getDefaultRetainedContext(): Readonly<RetainedRenderContext> {
 	return DEFAULT_CONTEXT;
 }
@@ -58,6 +61,19 @@ export class RetainedItem implements Component {
 	private cacheKey: RetainedCacheKey | undefined;
 	private cachedLines: string[] | undefined;
 	private isReleased = false;
+	private activeLineSnapshot: string[] | undefined;
+	private activeSnapshotWidth: number | undefined;
+	private activeSnapshotVersion: number | undefined;
+	private activeChangedStart: number | undefined;
+	private activeChangedEnd: number | undefined;
+	private activeChangeBaseVersion: number | undefined;
+
+	/** @internal Exact bounds for the latest measured active version, or unknown. */
+	get activeRenderChangedStart(): number | undefined { return this.activeChangedStart; }
+	get activeRenderChangedEnd(): number | undefined { return this.activeChangedEnd; }
+	get activeSnapshotLineCount(): number { return this.activeLineSnapshot?.length ?? 0; }
+	get activeRenderedVersion(): number | undefined { return this.activeSnapshotVersion; }
+	get activeRangeBaseVersion(): number | undefined { return this.activeChangeBaseVersion; }
 
 	constructor(component: Component, options: RetainedItemOptions) {
 		if (!options.id) throw new Error("Retained item id must not be empty");
@@ -125,7 +141,11 @@ export class RetainedItem implements Component {
 		if (this.isCompleted) return;
 		this.isCompleted = true;
 		this.frozenVersion = this.logicalVersion;
-		this.clearCache();
+		this.cacheKey = undefined;
+		this.cachedLines = undefined;
+		// The next normal render compares the final output with the bounded
+		// active snapshot, then transfers ownership to the completed cache.
+		// Invalidating or releasing before that render still clears both.
 		this.onRenderStateChanged?.(this);
 	}
 
@@ -134,6 +154,7 @@ export class RetainedItem implements Component {
 		if (!component || this.isReleased) throw new Error(`Cannot render released retained item ${this.id}`);
 		if (!this.isCompleted) {
 			const lines = component.render(width);
+			this.captureActiveLineChanges(lines, width);
 			this.instrumentation?.recordTranscriptItemRender(false, lines.length);
 			return lines;
 		}
@@ -156,6 +177,12 @@ export class RetainedItem implements Component {
 		}
 
 		const lines = component.render(width);
+		if (this.activeLineSnapshot) {
+			this.captureActiveLineChanges(lines, width);
+			this.activeLineSnapshot = undefined;
+			this.activeSnapshotWidth = undefined;
+			this.activeSnapshotVersion = undefined;
+		}
 		if (key) {
 			key.width = width;
 			key.version = this.logicalVersion;
@@ -214,6 +241,51 @@ export class RetainedItem implements Component {
 	private clearCache(): void {
 		this.cacheKey = undefined;
 		this.cachedLines = undefined;
+		this.activeLineSnapshot = undefined;
+		this.activeSnapshotWidth = undefined;
+		this.activeSnapshotVersion = undefined;
+		this.activeChangedStart = undefined;
+		this.activeChangedEnd = undefined;
+		this.activeChangeBaseVersion = undefined;
+	}
+
+	private captureActiveLineChanges(lines: readonly string[], width: number): void {
+		let units = 0;
+		for (let index = 0; index < lines.length && units <= MAX_ACTIVE_DIFF_CODE_UNITS; index++) units += lines[index].length;
+		if (lines.length > MAX_ACTIVE_DIFF_LINES || units > MAX_ACTIVE_DIFF_CODE_UNITS) {
+			this.clearCache();
+			return;
+		}
+		let snapshot = this.activeLineSnapshot;
+		if (snapshot && this.activeSnapshotWidth === width) {
+			let first = 0;
+			const common = Math.min(snapshot.length, lines.length);
+			while (first < common && snapshot[first] === lines[first]) first++;
+			let last = Math.max(snapshot.length, lines.length);
+			if (snapshot.length === lines.length) while (last > first && snapshot[last - 1] === lines[last - 1]) last--;
+			// Include the former last line on growth so the existing viewport
+			// protocol can locate appends at an otherwise empty old tail.
+			if (snapshot.length !== lines.length) first = Math.min(first, Math.max(0, snapshot.length - 1));
+			if (this.activeSnapshotVersion === this.logicalVersion && !this.isCompleted) {
+				this.activeChangedStart = Math.min(this.activeChangedStart ?? first, first);
+				this.activeChangedEnd = Math.max(this.activeChangedEnd ?? last, last);
+			} else {
+				this.activeChangedStart = first;
+				this.activeChangedEnd = last;
+				this.activeChangeBaseVersion = this.activeSnapshotVersion;
+			}
+		} else {
+			this.activeChangedStart = undefined;
+			this.activeChangedEnd = undefined;
+			this.activeChangeBaseVersion = undefined;
+		}
+		if (!snapshot) this.activeLineSnapshot = snapshot = [];
+		// Own the bounded reference array: arbitrary Components may reuse and
+		// mutate their returned array. Strings themselves are never copied.
+		for (let index = 0; index < lines.length; index++) snapshot[index] = lines[index];
+		snapshot.length = lines.length;
+		this.activeSnapshotWidth = width;
+		this.activeSnapshotVersion = this.logicalVersion;
 	}
 }
 
@@ -277,6 +349,7 @@ export interface RetainedViewportLifecycleReferenceCounts {
 }
 
 interface RetainedViewportRecord {
+	activeRangeBaseVersion?: number;
 	component: Component;
 	retained: RetainedItem | undefined;
 	height: number;
@@ -539,13 +612,19 @@ export class RetainedContainer extends Container implements LineViewportComponen
 			}
 			const recordHeightChanged = record.height !== this.viewportMutationEventPreviousHeights[eventIndex];
 			if (sawAppend && record.index >= appendFloorIndex) continue;
-			sawRange = true;
 			const lineStart = this.getViewportRecordLineStart(record.index);
-			earliestChangedLine = Math.min(earliestChangedLine, lineStart);
+			const exactSingleChange = this.viewportMutationEventGenerations[eventIndex] === token && token === previousToken + 1
+				&& record.activeRangeBaseVersion !== undefined
+				&& record.activeRangeBaseVersion === record.retained?.activeRangeBaseVersion;
+			const changedStart = exactSingleChange ? record.retained?.activeRenderChangedStart : undefined;
+			const changedEnd = exactSingleChange ? record.retained?.activeRenderChangedEnd : undefined;
+			if (!recordHeightChanged && changedStart !== undefined && changedStart === changedEnd) continue;
+			sawRange = true;
+			earliestChangedLine = Math.min(earliestChangedLine, lineStart + (changedStart ?? 0));
 			heightChanged ||= recordHeightChanged;
 			latestChangedLine = Math.max(
 				latestChangedLine,
-				recordHeightChanged ? this.totalViewportHeight() : lineStart + record.height,
+				recordHeightChanged ? this.totalViewportHeight() : lineStart + (changedEnd ?? record.height),
 			);
 		}
 		if (sawAppend && sawRange) {
@@ -730,7 +809,8 @@ export class RetainedContainer extends Container implements LineViewportComponen
 
 	private markViewportRecordDirty(record: RetainedViewportRecord, recordMutation: boolean): void {
 		this.clearPreparedViewportRecord(record);
-		if (recordMutation) {
+		if (recordMutation && !this.dirtyViewportRecords.has(record)) {
+			record.activeRangeBaseVersion = record.retained?.activeRenderedVersion;
 			this.recordViewportMutation(VIEWPORT_MUTATION_RECORD, record.index, record.height, -1);
 		}
 		this.dirtyViewportRecords.add(record);

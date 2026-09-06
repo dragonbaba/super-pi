@@ -593,6 +593,12 @@ export class InteractiveMode {
 		this.ui.requestRender();
 	};
 	private readonly handleLifecyclePromiseRejection = (error: unknown): void => {
+		if (this.isShuttingDown || this.stopOperation !== undefined || this.stopCompleted) {
+			// Cleanup failures must remain visible without reacquiring closed UI owners.
+			process.exitCode = 1;
+			console.error(error);
+			return;
+		}
 		try {
 			this.showError(error instanceof Error ? error.message : String(error));
 		} catch {
@@ -1094,12 +1100,26 @@ export class InteractiveMode {
 	}
 
 	private async stopInteractiveTui(fullscreenExitOutput: FullscreenExitOutput): Promise<void> {
-		if (this.renderer.mode === "fullscreen" && fullscreenExitOutput === "transcript") {
-			while (this.renderer.hasOverlayEntries) this.renderer.hideOverlay();
-			await this.switchTuiMode("regular", false, false);
-			this.renderer.renderNow();
+		let transferError: unknown;
+		let transferFailed = false;
+		try {
+			if (this.renderer.mode === "fullscreen" && fullscreenExitOutput === "transcript") {
+				while (this.renderer.hasOverlayEntries) this.renderer.hideOverlay();
+				await this.switchTuiMode("regular", false, false);
+				this.renderer.renderNow();
+			}
+		} catch (error) {
+			transferFailed = true;
+			transferError = error;
 		}
-		await this.ui.dispose({ preserveScreen: this.renderer.mode === "fullscreen" });
+		try {
+			await this.ui.dispose({ preserveScreen: this.renderer.mode === "fullscreen" });
+		} catch (error) {
+			// Composite disposal also releases components. Its errors cannot be
+			// classified as disconnected-output errors from an errno alone.
+			if (!transferFailed) throw error;
+		}
+		if (transferFailed) throw transferError;
 	}
 
 	private async switchTuiMode(mode: TuiMode, restoreProgress = true, startRenderer = true): Promise<boolean> {
@@ -5268,58 +5288,67 @@ export class InteractiveMode {
 	 * repaint the final frame while the process is exiting.
 	 */
 	private isShuttingDown = false;
+	private shutdownOperation: Promise<void> | undefined;
+	private terminalDisconnected = false;
 
-	private async shutdown(options?: { fromSignal?: boolean }): Promise<void> {
-		if (this.isShuttingDown) return;
+	private shutdown(options?: { fromSignal?: boolean }): Promise<void> {
+		if (this.shutdownOperation) return this.shutdownOperation;
+		let resolveOperation!: () => void;
+		let rejectOperation!: (error: unknown) => void;
+		const operation = new Promise<void>((resolve, reject) => {
+			resolveOperation = resolve;
+			rejectOperation = reject;
+		});
+		this.shutdownOperation = operation;
+		void this.performShutdown(options).then(resolveOperation, rejectOperation);
+		return operation;
+	}
+
+	private async performShutdown(options?: { fromSignal?: boolean }): Promise<void> {
 		this.isShuttingDown = true;
 		this.invalidateInitialization();
 		this.tuiLifecycleGeneration++;
+		// Final UI ownership ends before any shutdown await or terminal disposal.
+		// Session replacement keeps the normal reset callback while this mode lives.
+		this.runtimeHost.setBeforeSessionInvalidate?.(undefined);
+		this.runtimeHost.setRebindSession?.(undefined);
+		this.closeExtensionUiContext();
 		// Keep signal handlers registered until terminal cleanup has completed.
 		// `signal-exit` checks the listener list during the same SIGTERM/SIGHUP
 		// dispatch and re-sends the signal if only its own listeners remain.
 
-		if (options?.fromSignal) {
-			// Signal-triggered shutdown (SIGTERM/SIGHUP). Emit extension cleanup
-			// (session_shutdown) BEFORE touching the terminal. Extension teardown
-			// such as removing sockets does not write to the tty, so it must not be
-			// skipped if a later terminal-restore write fails on a dead or stalled
-			// terminal. If the terminal is gone, the restore writes below emit EIO,
-			// which the stdout/stderr error handler turns into emergencyTerminalExit;
-			// the render loop is already idle, so this cannot hot-spin (see #4144).
-			await this.runtimeHost.dispose();
-			this.themeController.disableAutoSync();
-			await this.ui.terminal.drainInput(1000);
-			await this.stop();
-			process.exit(0);
-		}
-
-		// Interactive quit (Ctrl+D, Ctrl+C, /quit, extension shutdown()). Stop the
-		// TUI before emitting shutdown events so extension UI cleanup cannot repaint
-		// the final frame while the process is exiting.
-		// Drain any in-flight Kitty key release events before stopping.
-		// This prevents escape sequences from leaking to the parent shell over slow SSH.
-		this.themeController.disableAutoSync();
-		await this.ui.terminal.drainInput(1000);
-
 		let cleanupError: unknown;
 		let cleanupFailed = false;
+		// UI handles are closed. Restore terminal ownership before waiting for
+		// extension shutdown, which may remain pending without a lifecycle timeout.
+		// Drain any in-flight Kitty key release events before stopping.
+		// This prevents escape sequences from leaking to the parent shell over slow SSH.
+		try {
+			this.themeController.disableAutoSync();
+		} catch (error) {
+			if (!cleanupFailed) { cleanupFailed = true; cleanupError = error; }
+		}
+		try {
+			await this.ui.terminal.drainInput(1000);
+		} catch (error) {
+			if (!cleanupFailed && !(this.terminalDisconnected && isDeadTerminalError(error))) {
+				cleanupFailed = true; cleanupError = error;
+			}
+		}
 		try {
 			await this.stop();
 		} catch (error) {
-			cleanupFailed = true;
-			cleanupError = error;
+			if (!cleanupFailed) { cleanupFailed = true; cleanupError = error; }
 		}
-		try {
-			await this.runtimeHost.dispose();
-		} catch (error) {
-			if (!cleanupFailed) {
-				cleanupFailed = true;
-				cleanupError = error;
-			}
-		}
+		// Runtime cleanup remains mandatory even when a terminal-local owner fails.
+		try { await this.runtimeHost.dispose(); }
+		catch (error) { if (!cleanupFailed) { cleanupFailed = true; cleanupError = error; } }
 		if (cleanupFailed) throw cleanupError;
+		// A failed output channel cannot acknowledge cursor/paste restoration.
+		// Report terminal loss only after local owners and raw input are released.
+		if (this.terminalDisconnected) return process.exit(129);
 
-		const resumeCommand = formatResumeCommand(this.sessionManager);
+		const resumeCommand = options?.fromSignal ? undefined : formatResumeCommand(this.sessionManager);
 		if (resumeCommand) {
 			process.stdout.write(`${chalk.dim("To resume this session:")} ${resumeCommand}\n`);
 		}
@@ -5327,13 +5356,14 @@ export class InteractiveMode {
 		process.exit(0);
 	}
 
-	private emergencyTerminalExit(): never {
-		this.isShuttingDown = true;
-		this.unregisterSignalHandlers();
+	private emergencyTerminalExit(): void {
+		if (this.terminalDisconnected) return;
+		this.terminalDisconnected = true;
 		killTrackedDetachedChildren();
-		// The terminal is gone. Do not run normal shutdown because TUI and
-		// extension cleanup can write restore sequences and re-trigger EIO.
-		process.exit(129);
+		// Repeated EPIPE/EIO notifications join the existing shutdown owner.
+		// ProcessTerminal still rejects writes; its stop restores local input even
+		// when restore controls fail. No recursive terminal-error hard exit.
+		this.observeLifecyclePromise(this.shutdown({ fromSignal: true }));
 	}
 
 	/**
@@ -5363,9 +5393,16 @@ export class InteractiveMode {
 
 	private async disposeAfterUncaughtCrash(error: Error): Promise<void> {
 		try {
-			await this.ui.dispose();
-		} catch {
-			// Fatal cleanup is best-effort; logging and exit must still happen.
+			// Use the final owner teardown, including UI callback detachment, even
+			// when startup failed before reaching the interactive input loop.
+			await this.stop();
+		} catch (cleanupError) {
+			console.error("Super Pi terminal cleanup failed:", cleanupError);
+		}
+		try {
+			await this.runtimeHost.dispose();
+		} catch (cleanupError) {
+			console.error("Super Pi runtime cleanup failed:", cleanupError);
 		} finally {
 			console.error("Super Pi exiting due to uncaughtException:");
 			console.error(error);
@@ -5405,6 +5442,7 @@ export class InteractiveMode {
 		const terminalErrorHandler = (error: Error) => {
 			if (isDeadTerminalError(error)) {
 				this.emergencyTerminalExit();
+				return;
 			}
 			throw error;
 		};
@@ -8230,38 +8268,51 @@ export class InteractiveMode {
 	}
 
 	private async performStop(fullscreenExitOutput: FullscreenExitOutput): Promise<void> {
-		this.closeExtensionUiContext();
-		this.clearToolResultDiscoveries();
+		let cleanupError: unknown;
+		let cleanupFailed = false;
+		// One synchronous collector per stop operation, never per render/update.
+		// A failed owner must not prevent unrelated owners or the terminal from releasing.
+		const release = <T>(owner: T, cleanup: (this: T) => void): void => {
+			try {
+				cleanup.call(owner);
+			} catch (error) {
+				cleanupError = cleanupFailed ? cleanupError : error;
+				cleanupFailed = true;
+			}
+		};
+		this.runtimeHost.setBeforeSessionInvalidate?.(undefined);
+		this.runtimeHost.setRebindSession?.(undefined);
+		release(this, this.closeExtensionUiContext);
+		release(this, this.clearToolResultDiscoveries);
 		offThemeChange(this.handleThemeChange);
 		this.runtimeHost.cancelPendingReplacements?.();
 		this.bashComponent = undefined;
-		this.cancelActiveSuspend();
-		this.cancelActiveLoginDialog();
-		this.cancelActiveProviderAuthentication();
-		this.cancelActiveStartupModelRefresh();
-		this.cancelActiveStartupDiagnostics();
-		this.cancelActiveModelLookup();
-		this.cancelActiveExtensionCustom();
-		this.cancelExtensionDialogs();
-		this.disposeActiveSelector();
-		let cleanupError: unknown;
-		let cleanupFailed = false;
+		release(this, this.cancelActiveSuspend);
+		release(this, this.cancelActiveLoginDialog);
+		release(this, this.cancelActiveProviderAuthentication);
+		release(this, this.cancelActiveStartupModelRefresh);
+		release(this, this.cancelActiveStartupDiagnostics);
+		release(this, this.cancelActiveModelLookup);
+		release(this, this.cancelActiveExtensionCustom);
+		release(this, this.cancelExtensionDialogs);
+		release(this, this.disposeActiveSelector);
+		release(this, this.releaseExtensionUiOwners);
 		try {
-			this.releaseExtensionUiOwners();
+			if (this.settingsManager.getShowTerminalProgress()) this.ui.terminal.setProgress(false);
 		} catch (error) {
-			cleanupFailed = true;
-			cleanupError = error;
+			if (!cleanupFailed && !(this.terminalDisconnected && isDeadTerminalError(error))) {
+				cleanupFailed = true; cleanupError = error;
+			}
 		}
-		if (this.settingsManager.getShowTerminalProgress()) {
-			this.ui.terminal.setProgress(false);
-		}
-		this.clearStatusIndicator();
-		this.themeController.disableAutoSync();
-		this.clearExtensionTerminalInputListeners();
-		this.footer.dispose();
-		this.footerDataProvider.dispose();
-		if (this.unsubscribe) {
-			this.unsubscribe();
+		release(this, this.clearStatusIndicator);
+		release(this.themeController, this.themeController.disableAutoSync);
+		release(this, this.clearExtensionTerminalInputListeners);
+		release(this.footer, this.footer.dispose);
+		release(this.footerDataProvider, this.footerDataProvider.dispose);
+		const unsubscribe = this.unsubscribe;
+		this.unsubscribe = undefined;
+		if (unsubscribe) {
+			release(this, unsubscribe);
 		}
 		try {
 			if (this.isInitialized) {
@@ -8271,8 +8322,7 @@ export class InteractiveMode {
 			}
 		} catch (error) {
 			if (!cleanupFailed) {
-				cleanupFailed = true;
-				cleanupError = error;
+				cleanupFailed = true; cleanupError = error;
 			}
 		} finally {
 			this.isInitialized = false;
@@ -8280,10 +8330,8 @@ export class InteractiveMode {
 		try {
 			this.unregisterSignalHandlers();
 		} catch (error) {
-			if (!cleanupFailed) {
-				cleanupFailed = true;
-				cleanupError = error;
-			}
+			cleanupError = cleanupFailed ? cleanupError : error;
+			cleanupFailed = true;
 		}
 		if (cleanupFailed) throw cleanupError;
 	}

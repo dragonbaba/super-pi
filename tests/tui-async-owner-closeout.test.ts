@@ -578,7 +578,7 @@ test("async owner closeout remains lifecycle-only in source", () => {
 		stopCoordinatorSource,
 		/const operation = Promise\.resolve\(\)\.then\(\(\) => this\.performStop\(fullscreenExitOutput\)\);\s*this\.stopOperation = operation/,
 	);
-	assert.ok(stopSource.indexOf("this.cancelActiveLoginDialog()") < stopSource.indexOf("this.stopInteractiveTui"));
+	assert.ok(stopSource.indexOf("release(this, this.cancelActiveLoginDialog)") < stopSource.indexOf("this.stopInteractiveTui"));
 	const initStart = interactiveSource.indexOf("async init(): Promise<boolean>");
 	const initEnd = interactiveSource.indexOf("\n\t/**\n\t * Update terminal title", initStart);
 	const initSource = interactiveSource.slice(initStart, initEnd);
@@ -639,12 +639,12 @@ test("async owner closeout remains lifecycle-only in source", () => {
 	assert.match(extensionReleaseSource, /this\.customFooter\?\.dispose\?\.\(\)/);
 	assert.match(extensionReleaseSource, /this\.customHeader\?\.dispose\?\.\(\)/);
 	assert.doesNotMatch(extensionReleaseSource, /requestRender|renderWidgets|new (?:Map|Set|Promise|AbortController)/);
-	assert.ok(stopSource.indexOf("this.cancelActiveModelLookup()") < stopSource.indexOf("this.stopInteractiveTui"));
+	assert.ok(stopSource.indexOf("release(this, this.cancelActiveModelLookup)") < stopSource.indexOf("this.stopInteractiveTui"));
 	assert.ok(
-		stopSource.indexOf("this.cancelActiveProviderAuthentication()") < stopSource.indexOf("this.stopInteractiveTui"),
+		stopSource.indexOf("release(this, this.cancelActiveProviderAuthentication)") < stopSource.indexOf("this.stopInteractiveTui"),
 	);
-	assert.ok(stopSource.indexOf("this.cancelActiveExtensionCustom()") < stopSource.indexOf("this.stopInteractiveTui"));
-	assert.ok(stopSource.indexOf("this.releaseExtensionUiOwners()") < stopSource.indexOf("this.stopInteractiveTui"));
+	assert.ok(stopSource.indexOf("release(this, this.cancelActiveExtensionCustom)") < stopSource.indexOf("this.stopInteractiveTui"));
+	assert.ok(stopSource.indexOf("release(this, this.releaseExtensionUiOwners)") < stopSource.indexOf("this.stopInteractiveTui"));
 	assert.match(stopSource, /finally \{\s*this\.isInitialized = false/);
 	assert.ok(stopSource.indexOf("this.unregisterSignalHandlers()") < stopSource.indexOf("if (cleanupFailed) throw cleanupError"));
 	assert.match(
@@ -745,9 +745,9 @@ test("async owner closeout remains lifecycle-only in source", () => {
 	const startupRefreshSource = interactiveSource.slice(startupRefreshStart, startupRefreshEnd);
 	assert.match(startupRefreshSource, /InteractiveMode\.handleStartupModelRefreshTimeout/);
 	assert.doesNotMatch(startupRefreshSource, /setTimeout\(\(\)|\.then\(|\.catch\(|\.finally\(/);
-	assert.ok(stopSource.indexOf("this.cancelActiveStartupModelRefresh()") < stopSource.indexOf("this.stopInteractiveTui"));
-	assert.ok(stopSource.indexOf("this.cancelActiveStartupDiagnostics()") < stopSource.indexOf("this.stopInteractiveTui"));
-	assert.ok(stopSource.indexOf("this.cancelActiveSuspend()") < stopSource.indexOf("this.stopInteractiveTui"));
+	assert.ok(stopSource.indexOf("release(this, this.cancelActiveStartupModelRefresh)") < stopSource.indexOf("this.stopInteractiveTui"));
+	assert.ok(stopSource.indexOf("release(this, this.cancelActiveStartupDiagnostics)") < stopSource.indexOf("this.stopInteractiveTui"));
+	assert.ok(stopSource.indexOf("release(this, this.cancelActiveSuspend)") < stopSource.indexOf("this.stopInteractiveTui"));
 	assert.ok(stopSource.indexOf("this.runtimeHost.cancelPendingReplacements?.()") < stopSource.indexOf("this.stopInteractiveTui"));
 	const startupDiagnosticsStart = interactiveSource.indexOf("private startStartupDiagnostics");
 	const startupDiagnosticsEnd = interactiveSource.indexOf("\n\t/**", startupDiagnosticsStart);
@@ -821,7 +821,7 @@ test("async owner closeout remains lifecycle-only in source", () => {
 	const closeExtensionUiSource = interactiveSource.slice(closeExtensionUiStart, closeExtensionUiEnd);
 	assert.match(closeExtensionUiSource, /this\.extensionUiGeneration\+\+/);
 	assert.match(closeExtensionUiSource, /setUIContext\?\.\(undefined\)/);
-	assert.ok(stopSource.indexOf("this.closeExtensionUiContext()") < stopSource.indexOf("this.releaseExtensionUiOwners()"));
+	assert.ok(stopSource.indexOf("release(this, this.closeExtensionUiContext)") < stopSource.indexOf("release(this, this.releaseExtensionUiOwners)"));
 	assert.ok(stopSource.indexOf("offThemeChange(this.handleThemeChange)") < stopSource.indexOf("this.stopInteractiveTui"));
 	assert.match(interactiveSource, /private readonly handleThemeChange = \(\): void =>/);
 	assert.match(interactiveSource, /onThemeChange\(this\.handleThemeChange\)/);
@@ -884,11 +884,14 @@ test("async owner closeout remains lifecycle-only in source", () => {
 	assert.ok(
 		bashCommandSource.indexOf("this.tuiLifecycleGeneration !== lifecycleGeneration", executeBashIndex) > executeBashIndex,
 	);
-	const shutdownStart = interactiveSource.indexOf("private async shutdown");
+	const shutdownStart = interactiveSource.indexOf("private async performShutdown");
 	const shutdownEnd = interactiveSource.indexOf("\n\tprivate emergencyTerminalExit", shutdownStart);
 	const shutdownSource = interactiveSource.slice(shutdownStart, shutdownEnd);
-	assert.ok(shutdownSource.lastIndexOf("await this.runtimeHost.dispose()") > shutdownSource.lastIndexOf("await this.stop()"));
-	assert.ok(shutdownSource.lastIndexOf("if (cleanupFailed) throw cleanupError") > shutdownSource.lastIndexOf("await this.runtimeHost.dispose()"));
+	// Final UI ownership closes before terminal restoration. Runtime cleanup
+	// remains mandatory afterwards, even if terminal-local teardown fails.
+	assert.ok(shutdownSource.indexOf("this.closeExtensionUiContext()") < shutdownSource.indexOf("await this.runtimeHost.dispose()"));
+	assert.ok(shutdownSource.indexOf("await this.stop()") < shutdownSource.indexOf("await this.runtimeHost.dispose()"));
+	assert.ok(shutdownSource.lastIndexOf("throw cleanupError") > shutdownSource.lastIndexOf("await this.runtimeHost.dispose()"));
 	const runtimeSource = readFileSync("packages/coding-agent/src/core/agent-session-runtime.ts", "utf8");
 	assert.match(runtimeSource, /cancelPendingReplacements\(\): void/);
 	assert.match(runtimeSource, /this\.replacementGeneration === generation/);
@@ -3017,6 +3020,7 @@ test("normal shutdown disposes the runtime after TUI stop rejects", async () => 
 	mode.themeController = { disableAutoSync(): void {} };
 	mode.stop = async (): Promise<void> => { throw stopError; };
 	mode.runtimeHost = { dispose: async (): Promise<void> => { runtimeDisposeCalls++; } };
+	mode.closeExtensionUiContext = (): void => {};
 
 	await assert.rejects(mode.shutdown(), (error: unknown) => error === stopError);
 	assert.equal(runtimeDisposeCalls, 1);

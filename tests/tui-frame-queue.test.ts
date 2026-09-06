@@ -2016,6 +2016,8 @@ test("shutdown admission invalidates a mode switch while terminal input is drain
 	const terminal = new GatedTerminal();
 	const previousUi = new FrameTui(terminal);
 	const mode = createModeSwitchHarness(previousUi);
+	let runtimeDisposals = 0;
+	mode.runtimeHost.dispose = async () => { runtimeDisposals++; };
 	previousUi.start();
 	previousUi.renderNow();
 	const drainFailure = new Error("controlled drain boundary");
@@ -2036,6 +2038,7 @@ test("shutdown admission invalidates a mode switch while terminal input is drain
 	assert.equal(await switching, false);
 	rejectDrain?.(drainFailure);
 	await assert.rejects(shuttingDown, drainFailure);
+	assert.equal(runtimeDisposals, 1);
 	assert.equal(mode.renderer, previousUi);
 	await previousUi.dispose();
 });
@@ -3152,8 +3155,8 @@ test("frame queue source retains one string without Promise tails or pooling", (
 	)?.[0] ?? "";
 	assert.notEqual(interactiveStopCleanup, "");
 	assert.ok(
-		interactiveStopCleanup.indexOf("this.cancelExtensionDialogs()") <
-			interactiveStopCleanup.indexOf("this.disposeActiveSelector()"),
+		interactiveStopCleanup.indexOf("release(this, this.cancelExtensionDialogs)") <
+			interactiveStopCleanup.indexOf("release(this, this.disposeActiveSelector)"),
 	);
 	const showSessionSelector = interactiveSource.match(
 		/private showSessionSelector[\s\S]*?\n\t}/,
@@ -3196,7 +3199,11 @@ test("terminal lifecycle promises use stable observers and one-shot TUIs dispose
 	const interactiveSource = readFileSync("packages/coding-agent/src/modes/interactive/interactive-mode.ts", "utf8");
 	assert.match(interactiveSource, /private observeLifecyclePromise[\s\S]{0,180}promise\.then\(undefined, this\.handleLifecyclePromiseRejection\)/);
 	assert.match(interactiveSource, /handleSuspendAction[\s\S]{0,120}observeLifecyclePromise\(this\.handleCtrlZ\(\)\)/);
-	assert.match(interactiveSource, /disposeAfterUncaughtCrash[\s\S]{0,300}await this\.ui\.dispose\(\)/);
+	const crashCleanup = interactiveSource.match(/private async disposeAfterUncaughtCrash[\s\S]*?\n\t}/)?.[0] ?? "";
+	assert.match(crashCleanup, /await this\.stop\(\)/);
+	assert.match(crashCleanup, /await this\.runtimeHost\.dispose\(\)/);
+	assert.match(crashCleanup, /finally[\s\S]*process\.exit\(1\)/);
+	assert.doesNotMatch(crashCleanup, /await this\.ui\.dispose\(\)/);
 	assert.match(interactiveSource, /await this\.ui\.dispose\(\{ preserveScreen:/);
 	assert.doesNotMatch(interactiveSource, /void this\.(?:shutdown|handleCtrlZ|handleOpenExternalEditor)\(/);
 	assert.doesNotMatch(interactiveSource, /void this\.ui\.(?:stop|dispose)\(\)\.(?:then|finally)/);
