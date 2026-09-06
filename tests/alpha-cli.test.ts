@@ -5,13 +5,15 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { getConfigDir } from '../packages/coding-agent/src/config.ts';
 
 for (const mode of ['regular', 'fullscreen']) for (const kind of ['quit', 'ctrl-d', 'double-ctrl-c', 'extension', 'SIGTERM', 'SIGHUP', 'active-stream', 'active-tool', 'settings-absent', 'settings-malformed', 'startup-quit']) {
   test(`pipe-backed real CLI ${mode}/${kind}`, { skip: process.platform === 'win32' && kind.startsWith('SIG') ? 'Windows kill signals terminate externally; native POSIX signal CI required' : false }, async (t) => {
     const root = mkdtempSync(join(tmpdir(), 'g2s-cli-'));
     const agent = join(root, 'agent'); mkdirSync(agent);
+    const config = getConfigDir(agent); mkdirSync(config);
     const capture = kind === 'quit' || kind.startsWith('settings-') || kind === 'startup-quit' ? join(root, 'startup-capture.jsonl') : '';
-    if (kind !== 'settings-absent') writeFileSync(join(agent, 'settings.json'), kind === 'settings-malformed' ? '{"quietStartup":' : JSON.stringify({ quietStartup: true, theme: 'dark' }));
+    if (kind !== 'settings-absent') writeFileSync(join(config, 'settings.json'), kind === 'settings-malformed' ? '{"quietStartup":' : JSON.stringify({ quietStartup: true, theme: 'dark' }));
     const child = spawn(process.execPath, ['--import', new URL('./fixtures/alpha-cli-preload.mjs', import.meta.url).href,
       '--import', new URL('../scripts/alpha-startup-capture.mjs', import.meta.url).href,
       fileURLToPath(new URL('../packages/coding-agent/dist/cli.js', import.meta.url)), '--no-session', '--no-extensions', kind === 'active-tool' ? '--no-builtin-tools' : '--no-tools', '--no-context-files', '--no-skills', '--no-prompt-templates', '--no-themes',
@@ -47,7 +49,7 @@ for (const mode of ['regular', 'fullscreen']) for (const kind of ['quit', 'ctrl-
       assert.match(stderr, /ALPHA_EXIT:0:RAW:false/);
       if (kind === 'settings-malformed') {
         assert.match(stdout + stderr, /Invalid settings file/);
-        assert.equal(readFileSync(join(agent, 'settings.json'), 'utf8'), '{"quietStartup":', 'fallback must not overwrite malformed user settings');
+        assert.equal(readFileSync(join(config, 'settings.json'), 'utf8'), '{"quietStartup":', 'fallback must not overwrite malformed user settings');
       }
       if (kind.startsWith('active-')) {
         assert.equal(quitSent, true);
