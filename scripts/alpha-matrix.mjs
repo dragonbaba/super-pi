@@ -11,14 +11,14 @@ const repository = fileURLToPath(new URL('../', import.meta.url));
 const args = process.argv.slice(2);
 const options = {};
 for (let i = 0; i < args.length; i += 2) {
-  if (!['--output', '--suite', '--runs'].includes(args[i]) || !args[i + 1]) throw new Error('expected --output PATH [--suite rates,slow,history,batch,corpus,profile,ansi] [--runs 5]');
+  if (!['--output', '--suite', '--runs'].includes(args[i]) || !args[i + 1]) throw new Error('expected --output PATH [--suite rates,slow,history,batch,corpus,growing,profile,ansi] [--runs 5]');
   options[args[i].slice(2)] = args[i + 1];
 }
 if (!options.output) throw new Error('--output must name a new persistent evidence directory');
 const runs = Number(options.runs ?? 5);
 if (!Number.isInteger(runs) || runs < 5 || runs > 10) throw new Error('requires 5–10 independent processes');
-const suites = (options.suite ?? 'rates,slow,history,batch,corpus,profile,ansi').split(',');
-if (suites.some(suite => !['rates', 'slow', 'history', 'batch', 'corpus', 'profile', 'ansi'].includes(suite))) throw new Error('unknown suite');
+const suites = (options.suite ?? 'rates,slow,history,batch,corpus,growing,profile,ansi').split(',');
+if (suites.some(suite => !['rates', 'slow', 'history', 'batch', 'corpus', 'growing', 'profile', 'ansi'].includes(suite))) throw new Error('unknown suite');
 function git(...args) { return execFileSync('git', args, { cwd: repository, encoding: 'utf8' }).trim(); }
 const head = git('rev-parse', 'HEAD');
 if (git('status', '--porcelain')) throw new Error('benchmark requires a clean candidate');
@@ -35,6 +35,7 @@ for (const suite of suites) {
   if (suite === 'batch') for (let layer = 0; layer <= 3; layer++) for (const batch of [2, 4, 8]) add(suite, `l${layer}-b${batch}`, { layer, rate: 10, batch, count: batch * 10 });
   if (suite === 'corpus') for (let layer = 0; layer <= 3; layer++) for (const mode of layer < 2 ? ['regular'] : ['regular', 'fullscreen']) for (const corpus of ['plain', 'cjk', 'emoji', 'ansi', 'word', 'markdown', 'fence', 'link', 'latex']) add(suite, `l${layer}-${mode}-${corpus}`, { layer, mode, corpus, rate: 100, count: 40 });
   if (suite === 'profile') for (const mode of ['regular', 'fullscreen']) add(suite, mode, { layer: 3, mode, history: 50000, corpus: 'word', rate: 100, count: 200, profile: 'on' });
+  if (suite === 'growing') for (let layer = 0; layer <= 3; layer++) for (const mode of layer < 2 ? ['regular'] : ['regular', 'fullscreen']) for (const bytes of [1024, 16384, 65536, 262144]) add(suite, `l${layer}-${mode}-b${bytes}`, { layer, mode, corpus: 'word', rate: 0, count: Math.ceil(bytes / 137) });
   if (suite === 'ansi') add(suite, 'index', {}, 'ansi');
 }
 if (cases.length > 1500) throw new Error('matrix hard capacity exceeded');

@@ -125,6 +125,8 @@ try {
   if (layer >= 2) { assert.ok(visibleTimes[count - 1]! > 0, 'final marker physically written'); assert.ok(metrics.terminalFrameQueueHighWaterMark <= 2); assert.ok(metrics.pendingRenderRequestHighWaterMark <= 1); }
   console.log(JSON.stringify({ head: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(), dirty: !!execFileSync('git', ['status', '--porcelain'], { encoding: 'utf8' }).trim(),
     layer, rate, count, batch, history, mode, columns, rows, delay, corpus, profile, completionMs, updatesPerSecond: count * 1000 / completionMs,
+    sourceCodeUnits: (fixture.message.content[0] as { text: string }).text.length,
+    sourceBytes: Buffer.byteLength((fixture.message.content[0] as { text: string }).text),
     providerToEvent: stats(eventLatency), visibleMarkers: latency.length, generatedChunks: count,
     providerInterArrival: stats(differences(fixture.generated)), visibleInterArrival: stats(differences(visibleTimes)), providerToPhysical: stats(latency), rootRenderMs: stats(Array.from(renderTimes.subarray(0, renders))),
     scheduledToGenerated: stats(scheduling), handledToRender: stats(eventToRender), renderStartToPhysical: stats(renderToWrite), maximumVisibleStall: stats(differences(visibleTimes))?.max ?? null,
