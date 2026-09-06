@@ -5269,6 +5269,7 @@ export class InteractiveMode {
 	 */
 	private isShuttingDown = false;
 	private shutdownOperation: Promise<void> | undefined;
+	private terminalDisconnected = false;
 
 	private shutdown(options?: { fromSignal?: boolean }): Promise<void> {
 		if (this.shutdownOperation) return this.shutdownOperation;
@@ -5298,21 +5299,11 @@ export class InteractiveMode {
 
 		let cleanupError: unknown;
 		let cleanupFailed = false;
-		if (options?.fromSignal) {
-			// Signal-triggered shutdown (SIGTERM/SIGHUP). Emit extension cleanup
-			// (session_shutdown) BEFORE touching the terminal. Extension teardown
-			// such as removing sockets does not write to the tty, so it must not be
-			// skipped if a later terminal-restore write fails on a dead or stalled
-			// terminal. If the terminal is gone, the restore writes below emit EIO,
-			// which the stdout/stderr error handler turns into emergencyTerminalExit;
-			// the render loop is already idle, so this cannot hot-spin (see #4144).
-			try { await this.runtimeHost.dispose(); }
-			catch (error) { cleanupFailed = true; cleanupError = error; }
-		}
+		// UI handles are already closed. Finish runtime cleanup before terminal
+		// restoration for every exit, including an ordinary quit racing EPIPE.
+		try { await this.runtimeHost.dispose(); }
+		catch (error) { cleanupFailed = true; cleanupError = error; }
 
-		// Interactive quit (Ctrl+D, Ctrl+C, /quit, extension shutdown()). Stop the
-		// TUI before emitting shutdown events so extension UI cleanup cannot repaint
-		// the final frame while the process is exiting.
 		// Drain any in-flight Kitty key release events before stopping.
 		// This prevents escape sequences from leaking to the parent shell over slow SSH.
 		try {
@@ -5326,15 +5317,10 @@ export class InteractiveMode {
 		} catch (error) {
 			if (!cleanupFailed) { cleanupFailed = true; cleanupError = error; }
 		}
-		try {
-			if (!options?.fromSignal) await this.runtimeHost.dispose();
-		} catch (error) {
-			if (!cleanupFailed) {
-				cleanupFailed = true;
-				cleanupError = error;
-			}
-		}
-		if (cleanupFailed) throw cleanupError;
+		if (cleanupFailed && !(this.terminalDisconnected && isDeadTerminalError(cleanupError))) throw cleanupError;
+		// A failed output channel cannot acknowledge cursor/paste restoration.
+		// Report terminal loss only after local owners and raw input are released.
+		if (this.terminalDisconnected) return process.exit(129);
 
 		const resumeCommand = options?.fromSignal ? undefined : formatResumeCommand(this.sessionManager);
 		if (resumeCommand) {
@@ -5344,13 +5330,14 @@ export class InteractiveMode {
 		process.exit(0);
 	}
 
-	private emergencyTerminalExit(): never {
-		this.isShuttingDown = true;
-		this.unregisterSignalHandlers();
+	private emergencyTerminalExit(): void {
+		if (this.terminalDisconnected) return;
+		this.terminalDisconnected = true;
 		killTrackedDetachedChildren();
-		// The terminal is gone. Do not run normal shutdown because TUI and
-		// extension cleanup can write restore sequences and re-trigger EIO.
-		process.exit(129);
+		// Repeated EPIPE/EIO notifications join the existing shutdown owner.
+		// ProcessTerminal still rejects writes; its stop restores local input even
+		// when restore controls fail. No recursive terminal-error hard exit.
+		this.observeLifecyclePromise(this.shutdown({ fromSignal: true }));
 	}
 
 	/**
@@ -5429,6 +5416,7 @@ export class InteractiveMode {
 		const terminalErrorHandler = (error: Error) => {
 			if (isDeadTerminalError(error)) {
 				this.emergencyTerminalExit();
+				return;
 			}
 			throw error;
 		};
