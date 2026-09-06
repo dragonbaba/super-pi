@@ -887,8 +887,11 @@ test("async owner closeout remains lifecycle-only in source", () => {
 	const shutdownStart = interactiveSource.indexOf("private async performShutdown");
 	const shutdownEnd = interactiveSource.indexOf("\n\tprivate emergencyTerminalExit", shutdownStart);
 	const shutdownSource = interactiveSource.slice(shutdownStart, shutdownEnd);
-	assert.ok(shutdownSource.lastIndexOf("await this.runtimeHost.dispose()") > shutdownSource.lastIndexOf("await this.stop()"));
-	assert.ok(shutdownSource.lastIndexOf("if (cleanupFailed) throw cleanupError") > shutdownSource.lastIndexOf("await this.runtimeHost.dispose()"));
+	// Final UI ownership is closed before runtime cleanup; both ordinary and
+	// signal exits must finish it even if terminal restoration encounters EPIPE.
+	assert.ok(shutdownSource.indexOf("this.closeExtensionUiContext()") < shutdownSource.indexOf("await this.runtimeHost.dispose()"));
+	assert.ok(shutdownSource.indexOf("await this.runtimeHost.dispose()") < shutdownSource.indexOf("await this.stop()"));
+	assert.ok(shutdownSource.lastIndexOf("throw cleanupError") > shutdownSource.lastIndexOf("await this.stop()"));
 	const runtimeSource = readFileSync("packages/coding-agent/src/core/agent-session-runtime.ts", "utf8");
 	assert.match(runtimeSource, /cancelPendingReplacements\(\): void/);
 	assert.match(runtimeSource, /this\.replacementGeneration === generation/);
