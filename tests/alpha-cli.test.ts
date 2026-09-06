@@ -7,8 +7,10 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getConfigDir } from '../packages/coding-agent/src/config.ts';
 
-for (const mode of ['regular', 'fullscreen']) for (const kind of ['quit', 'ctrl-d', 'double-ctrl-c', 'extension', 'SIGTERM', 'SIGHUP', 'active-stream', 'active-tool', 'active-compaction', 'settings-absent', 'settings-malformed', 'startup-quit', 'stdout-close']) {
-  test(`pipe-backed real CLI ${mode}/${kind}`, { skip: process.platform === 'win32' && kind.startsWith('SIG') ? 'Windows kill signals terminate externally; native POSIX signal CI required' : false }, async (t) => {
+for (const mode of ['regular', 'fullscreen']) for (const scenario of ['quit', 'ctrl-d', 'double-ctrl-c', 'extension', 'SIGTERM', 'SIGHUP', 'active-stream', 'active-tool', 'active-compaction', 'settings-absent', 'settings-malformed', 'startup-quit', 'stdout-close', 'active-stream/stdout-close', 'active-tool/stdout-close', 'active-compaction/stdout-close']) {
+  const kind = scenario.split('/')[0]!;
+  const outputLost = scenario.endsWith('stdout-close');
+  test(`pipe-backed real CLI ${mode}/${scenario}`, { skip: process.platform === 'win32' && kind.startsWith('SIG') ? 'Windows kill signals terminate externally; native POSIX signal CI required' : false }, async (t) => {
     const root = mkdtempSync(join(tmpdir(), 'g2s-cli-'));
     const agent = join(root, 'agent'); mkdirSync(agent);
     const config = getConfigDir(agent); mkdirSync(config);
@@ -38,17 +40,18 @@ for (const mode of ['regular', 'fullscreen']) for (const kind of ['quit', 'ctrl-
     child.stderr.on('data', data => {
       stderr += data.toString();
       if (kind.startsWith('active-') && !quitSent && stderr.includes('ALPHA_ACTIVE\n')) {
+        if (outputLost) child.stdout.destroy();
         quitSent = true; child.stdin.write('/quit\r');
       }
     });
     try {
       const code = await new Promise<number | null>((resolve, reject) => { child.once('error', reject); child.once('close', resolve); });
       assert.equal(ready, true, stderr.slice(-2000));
-      t.diagnostic(JSON.stringify({ mode, kind, code, shutdownEmissions: stderr.split('ALPHA_SESSION_SHUTDOWN').length - 1, exitState: stderr.match(/ALPHA_EXIT:[^\n]+/)?.[0] }));
-      assert.equal(code, kind === 'stdout-close' ? 129 : 0, stderr.slice(-2000));
+      t.diagnostic(JSON.stringify({ mode, scenario, code, shutdownEmissions: stderr.split('ALPHA_SESSION_SHUTDOWN').length - 1, exitState: stderr.match(/ALPHA_EXIT:[^\n]+/)?.[0] }));
+      assert.equal(code, outputLost ? 129 : 0, stderr.slice(-2000));
       assert.doesNotMatch(stderr, /uncaughtException|disposed ProcessTerminal|UnhandledPromiseRejection/);
       assert.equal(stderr.split('ALPHA_SESSION_SHUTDOWN').length - 1, 1);
-      assert.match(stderr, kind === 'stdout-close' ? /ALPHA_EXIT:129:RAW:false/ : /ALPHA_EXIT:0:RAW:false/);
+      assert.match(stderr, outputLost ? /ALPHA_EXIT:129:RAW:false/ : /ALPHA_EXIT:0:RAW:false/);
       if (kind === 'settings-malformed') {
         assert.match(stdout + stderr, /Invalid settings file/);
         assert.equal(readFileSync(join(config, 'settings.json'), 'utf8'), '{"quietStartup":', 'fallback must not overwrite malformed user settings');
@@ -58,7 +61,7 @@ for (const mode of ['regular', 'fullscreen']) for (const kind of ['quit', 'ctrl-
         assert.ok(stderr.includes(`ALPHA_ACTIVE_CLEANED:true:REQUESTS:${kind === 'active-compaction' ? 0 : 1}:TOOLS:${kind === 'active-tool' ? 1 : 0}`));
         if (kind === 'active-compaction') assert.match(stderr, /ALPHA_COMPACTION_SETTLED:true/);
       }
-      if (kind !== 'stdout-close') assert.ok(stdout.includes('\x1b[?2004l'));
+      if (!outputLost) assert.ok(stdout.includes('\x1b[?2004l'));
       if (capture) {
         const records = readFileSync(capture, 'utf8').trim().split('\n').map(line => JSON.parse(line));
         assert.ok(records.length < 256);
@@ -71,7 +74,7 @@ for (const mode of ['regular', 'fullscreen']) for (const kind of ['quit', 'ctrl-
           assert.match(record.phase, /^[a-z-]+$/);
         }
       }
-      t.diagnostic(JSON.stringify({ mode, kind, code, rawRestored: true, terminalRestoreDelivered: kind !== 'stdout-close', nativePty: false }));
+      t.diagnostic(JSON.stringify({ mode, scenario, code, rawRestored: true, terminalRestoreDelivered: !outputLost, nativePty: false }));
     } finally {
       clearTimeout(timeout); if (sendTimer) clearTimeout(sendTimer);
       if (child.exitCode === null && child.signalCode === null) child.kill();
