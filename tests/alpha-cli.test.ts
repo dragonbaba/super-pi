@@ -5,20 +5,27 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { getConfigDir } from '../packages/coding-agent/src/config.ts';
+import { CONFIG_DIR_NAME, getConfigDir } from '../packages/coding-agent/src/config.ts';
+import { ProjectTrustStore } from '../packages/coding-agent/src/core/trust-manager.ts';
 
-for (const mode of ['regular', 'fullscreen']) for (const scenario of ['quit', 'ctrl-d', 'double-ctrl-c', 'extension', 'SIGTERM', 'SIGHUP', 'active-stream', 'active-tool', 'active-compaction', 'settings-absent', 'settings-malformed', 'startup-quit', 'stdout-close', 'active-stream/stdout-close', 'active-tool/stdout-close', 'active-compaction/stdout-close']) {
+for (const mode of ['regular', 'fullscreen']) for (const scenario of ['quit', 'ctrl-d', 'double-ctrl-c', 'extension', 'SIGTERM', 'SIGHUP', 'active-stream', 'active-tool', 'active-compaction', 'settings-absent', 'settings-malformed', 'startup-quit', 'stdout-close', 'active-stream/stdout-close', 'active-tool/stdout-close', 'active-compaction/stdout-close', 'project-trusted', 'project-untrusted']) {
   const kind = scenario.split('/')[0]!;
   const outputLost = scenario.endsWith('stdout-close');
   test(`pipe-backed real CLI ${mode}/${scenario}`, { skip: process.platform === 'win32' && kind.startsWith('SIG') ? 'Windows kill signals terminate externally; native POSIX signal CI required' : false }, async (t) => {
     const root = mkdtempSync(join(tmpdir(), 'g2s-cli-'));
     const agent = join(root, 'agent'); mkdirSync(agent);
     const config = getConfigDir(agent); mkdirSync(config);
-    const capture = kind === 'quit' || kind.startsWith('settings-') || kind === 'startup-quit' ? join(root, 'startup-capture.jsonl') : '';
+    const projectCase = kind.startsWith('project-');
+    const capture = kind === 'quit' || kind.startsWith('settings-') || kind === 'startup-quit' || projectCase ? join(root, 'startup-capture.jsonl') : '';
     if (kind !== 'settings-absent') writeFileSync(join(config, 'settings.json'), kind === 'settings-malformed' ? '{"quietStartup":' : JSON.stringify({ quietStartup: true, theme: 'dark', compaction: { enabled: false, keepRecentTokens: 128, reserveTokens: 128 } }));
+    if (projectCase) {
+      const extensions = join(root, CONFIG_DIR_NAME, 'extensions'); mkdirSync(extensions, { recursive: true });
+      writeFileSync(join(extensions, 'alpha-project.js'), "export default function(pi) { pi.on('session_start', () => process.stderr.write('ALPHA_PROJECT_EXTENSION_LOADED\\n')); }\n");
+      new ProjectTrustStore(agent).set(root, kind === 'project-trusted');
+    }
     const child = spawn(process.execPath, ['--import', new URL('./fixtures/alpha-cli-preload.mjs', import.meta.url).href,
       '--import', new URL('../scripts/alpha-startup-capture.mjs', import.meta.url).href,
-      fileURLToPath(new URL('../packages/coding-agent/dist/cli.js', import.meta.url)), '--no-session', '--no-extensions', kind === 'active-tool' ? '--no-builtin-tools' : '--no-tools', '--no-context-files', '--no-skills', '--no-prompt-templates', '--no-themes',
+      fileURLToPath(new URL('../packages/coding-agent/dist/cli.js', import.meta.url)), '--no-session', ...(projectCase ? [] : ['--no-extensions']), kind === 'active-tool' ? '--no-builtin-tools' : '--no-tools', '--no-context-files', '--no-skills', '--no-prompt-templates', '--no-themes',
       '--tui-mode', mode, '--extension', fileURLToPath(new URL(kind.startsWith('active-') ? './fixtures/alpha-cli-active-extension.mjs' : './fixtures/alpha-cli-extension.mjs', import.meta.url))], {
       cwd: root, env: { ...process.env, HOME: root, USERPROFILE: root, XDG_CONFIG_HOME: root, SP_CODING_AGENT_DIR: agent,
         SP_CODING_AGENT_SESSION_DIR: join(root, 'sessions'), SP_OFFLINE: '1', SP_TUI_WRITE_LOG: '', SP_ALPHA_STARTUP_CAPTURE: capture, ALPHA_EXIT_KIND: kind }, stdio: 'pipe' });
@@ -52,6 +59,10 @@ for (const mode of ['regular', 'fullscreen']) for (const scenario of ['quit', 'c
       assert.doesNotMatch(stderr, /uncaughtException|disposed ProcessTerminal|UnhandledPromiseRejection/);
       assert.equal(stderr.split('ALPHA_SESSION_SHUTDOWN').length - 1, 1);
       assert.match(stderr, outputLost ? /ALPHA_EXIT:129:RAW:false/ : /ALPHA_EXIT:0:RAW:false/);
+      if (projectCase) {
+        assert.equal(stderr.split('ALPHA_PROJECT_EXTENSION_LOADED').length - 1, kind === 'project-trusted' ? 1 : 0);
+        assert.equal(new ProjectTrustStore(agent).get(root), kind === 'project-trusted', 'startup preserves the isolated trust decision');
+      }
       if (kind === 'settings-malformed') {
         assert.match(stdout + stderr, /Invalid settings file/);
         assert.equal(readFileSync(join(config, 'settings.json'), 'utf8'), '{"quietStartup":', 'fallback must not overwrite malformed user settings');
