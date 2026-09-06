@@ -6,12 +6,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-for (const mode of ['regular', 'fullscreen']) for (const kind of ['quit', 'ctrl-d', 'double-ctrl-c', 'extension', 'SIGTERM', 'SIGHUP', 'active-stream', 'active-tool']) {
+for (const mode of ['regular', 'fullscreen']) for (const kind of ['quit', 'ctrl-d', 'double-ctrl-c', 'extension', 'SIGTERM', 'SIGHUP', 'active-stream', 'active-tool', 'settings-absent', 'settings-malformed', 'startup-quit']) {
   test(`pipe-backed real CLI ${mode}/${kind}`, { skip: process.platform === 'win32' && kind.startsWith('SIG') ? 'Windows kill signals terminate externally; native POSIX signal CI required' : false }, async (t) => {
     const root = mkdtempSync(join(tmpdir(), 'g2s-cli-'));
     const agent = join(root, 'agent'); mkdirSync(agent);
-    const capture = kind === 'quit' ? join(root, 'startup-capture.jsonl') : '';
-    writeFileSync(join(agent, 'settings.json'), JSON.stringify({ quietStartup: true, theme: 'dark' }));
+    const capture = kind === 'quit' || kind.startsWith('settings-') || kind === 'startup-quit' ? join(root, 'startup-capture.jsonl') : '';
+    if (kind !== 'settings-absent') writeFileSync(join(agent, 'settings.json'), kind === 'settings-malformed' ? '{"quietStartup":' : JSON.stringify({ quietStartup: true, theme: 'dark' }));
     const child = spawn(process.execPath, ['--import', new URL('./fixtures/alpha-cli-preload.mjs', import.meta.url).href,
       '--import', new URL('../scripts/alpha-startup-capture.mjs', import.meta.url).href,
       fileURLToPath(new URL('../packages/coding-agent/dist/cli.js', import.meta.url)), '--no-session', '--no-extensions', kind === 'active-tool' ? '--no-builtin-tools' : '--no-tools', '--no-context-files', '--no-skills', '--no-prompt-templates', '--no-themes',
@@ -45,6 +45,10 @@ for (const mode of ['regular', 'fullscreen']) for (const kind of ['quit', 'ctrl-
       assert.doesNotMatch(stderr, /uncaughtException|disposed ProcessTerminal|UnhandledPromiseRejection/);
       assert.equal(stderr.split('ALPHA_SESSION_SHUTDOWN').length - 1, 1);
       assert.match(stderr, /ALPHA_EXIT:0:RAW:false/);
+      if (kind === 'settings-malformed') {
+        assert.match(stdout + stderr, /Invalid settings file/);
+        assert.equal(readFileSync(join(agent, 'settings.json'), 'utf8'), '{"quietStartup":', 'fallback must not overwrite malformed user settings');
+      }
       if (kind.startsWith('active-')) {
         assert.equal(quitSent, true);
         assert.ok(stderr.includes(`ALPHA_ACTIVE_CLEANED:true:REQUESTS:1:TOOLS:${kind === 'active-tool' ? 1 : 0}`));
@@ -53,7 +57,8 @@ for (const mode of ['regular', 'fullscreen']) for (const kind of ['quit', 'ctrl-
       if (capture) {
         const records = readFileSync(capture, 'utf8').trim().split('\n').map(line => JSON.parse(line));
         assert.ok(records.length < 256);
-        assert.equal(records.filter(record => record.phase === 'input-ready').length, 1);
+        assert.equal(records.filter(record => record.phase === 'input-ready').length, kind === 'startup-quit' ? 0 : 1);
+        if (kind === 'startup-quit') assert.equal(records.filter(record => record.phase === 'startup-cancelled').length, 1);
         assert.ok(records.some(record => record.phase === 'tui-start'));
         for (const record of records) {
           assert.deepEqual(Object.keys(record).sort(), ['duration', 'generation', 'phase']);
