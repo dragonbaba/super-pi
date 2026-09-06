@@ -1,6 +1,6 @@
 # G2S measurement checkpoint (not acceptance)
 
-Goal: `SUPER-PI-G2-ALPHA-STABILIZATION-ASTRA`. No real provider credentials or model traffic used. All results below use deterministic generated chunks, not model token throughput. Local raw numeric reports and command logs are retained at `C:/Windows/TEMP/g2s-evidence-7628a840d93d424db9db6b946d408f59`; no raw tool result/session text is included in these reports.
+Goal: `SUPER-PI-G2-ALPHA-STABILIZATION-ASTRA`. No real provider credentials or model traffic used. All results below use deterministic generated chunks, not model token throughput. The historical TEMP report directory was observed empty on 2026-09-06. Values below preserve earlier observations, but missing raw files are not attached evidence. Reacquired, hash-verified measurements are in [the persistent evidence packet](g2s-persistent-evidence.md).
 
 ## Four-layer baseline
 

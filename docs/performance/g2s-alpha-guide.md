@@ -53,4 +53,17 @@ The 100k stress fixture deliberately dispatches actual session-to-component upda
 
 ## Gate
 
+For a complete sequential, five-process measurement set, use a **new** persistent output directory from a clean candidate:
+
+```powershell
+node scripts/alpha-matrix.mjs --output D:/RMProjects/Pi-g2s-evidence/my-new-matrix --runs 5
+node scripts/alpha-matrix-summary.mjs D:/RMProjects/Pi-g2s-evidence/my-new-matrix D:/RMProjects/Pi-g2s-evidence/my-new-summary.json
+node scripts/alpha-bench.mjs stress --mode regular --cycles 100
+node scripts/alpha-bench.mjs stress --mode fullscreen --cycles 100
+```
+
+The matrix refuses an existing output directory or a dirty/changing candidate. Summary processing verifies manifest hashes. Keep controlled-GC runs separate from timed measurements. Heap snapshots, if explicitly requested for the sanitized offline stress fixture, stay private outside Git; the diagnostic RegExp control is not a production fix or a production heap-acceptance method.
+
+Normal `/quit` must exit 0. If the output pipe is disconnected, the tested contract is exit 129 **after** runtime cleanup and local raw-mode restoration. A disconnected output cannot confirm delivery of cursor/paste controls. Do not conflate that failure case with successful normal exit or claim emulator restoration from a pipe-backed test.
+
 Use [the status ledger](g2s-status.md) for unresolved findings and [the measurement packet](g2s-measurement-checkpoint.md) for evidence limitations. Full final exact-head tests, cross-platform CI, remaining adversarial coverage and cumulative Draft review are still required. Do not Mark Ready or merge, and do not claim Alpha manual validation passed.

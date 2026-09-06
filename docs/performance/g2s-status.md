@@ -11,6 +11,7 @@ Active findings:
 - **G2S-B0-02**: shared disposal implemented in `d12e4b7`; expanded 23 ownership/error/reentrancy/deadline tests pass, including 100 callers.
 - **G2S-B0-03**: ordinary quit did not join cooperative provider/tool abort completion. Separate red `644f3d4`, fix `387f7e5`; eight real active-work regular/fullscreen and normal/signal tests pass.
 - **G2S-B0-04**: manual compaction/tree/bash owners are outside the original idle wait. Red `67590e7`, fix `bc52e9f` and allocation follow-up `410ce03`; twelve real auxiliary-work shutdown tests pass. A non-settling owner produces `SessionShutdownTimeoutError` after a bounded deadline; it is not reported as successful quit.
+- **G2S-B0-05**: dead stdout bypassed runtime cleanup and raw-mode restoration. Real CLI red `174cb15` observes exit 129, zero shutdown emissions and raw=true in both modes. Fix `60a6db1` joins the shared shutdown owner instead of hard exiting on the first EPIPE/EIO. Eight real CLI idle/stream/tool/compaction disconnect cases pass with exit 129, shutdown=1 and raw=false. Delivery of cursor/paste restore controls cannot be claimed for a disconnected output. Ordinary and signal exits now both release runtime before attempting terminal restoration, after closing all extension UI handles.
 - **G2S-B1-01**: bounded sparse terminal index implemented in `0a23fcb`; 35 ANSI matrix tests pass, original large ANSI fixture preserved.
 - **G2S-B0-CANDIDATE-STARTUP**: clean-HOME/no-model sentinel failure reproduced and fixed in `b09e15a`; the user's configured-copy failure remains unconfirmed. See [startup evidence](g2s-startup-evidence.md).
 - **G2S-SCOPE-02 resolved by explicit contract clarification**: the former assertion requiring a second provider call for 129 results within a **total** 1,024-token envelope was contractually impossible. The documented typed budget-too-small boundary is expected. Lack of that second request was not itself a production defect. Separate 16,384-token full-chain coverage is required and now passes; contextual-budget production diff for this decision is zero.
@@ -18,6 +19,16 @@ Active findings:
 The historical stopped-baseline evidence below is preserved. Its scope restriction is superseded by the addendum; implementation is active again. Streaming optimization still requires L0–L3 baseline evidence. Final target is Draft Candidate Gate, awaiting external final review and explicit merge authorization. No Alpha manual validation is claimed.
 
 ## Current implementation and evidence checkpoint
+
+### Full local verification at `ed2a577`
+
+Subsequent test-only startup expansion adds 36 combinations: regular/fullscreen × 0/5k/50k history × G2 off/on × no extension/no-op/UI extension. All pass, including shared concurrent quit, exact session/terminal disposal, late UI-handle inertness, raw-mode recovery and listener baseline. The complete startup fault/cancellation/cycle/matrix file is 58/58 green. This is production-shaped startup coverage, not a claim that configured-copy startup or native terminal manual testing passed.
+
+Clean `ed2a577ea4b8b9d2cd713f064db033e763fa3cb3`: `npm run check`, `npm run build:offline`, `npm run alpha:g2-probe` (245 total, 241 passed, zero failed, four Windows POSIX skips), and full `npm test` all exit zero. Owner/frame-queue focused tests: 147/147 pass. The earlier mode-switch harness omitted `runtimeHost.dispose`; `aeca454` supplies the missing lifecycle boundary and asserts one invocation, retaining its original drain-cause assertion. The real runtime/CLI tests do not use that stub as lifecycle proof.
+
+`git fetch origin` still observes `origin/main=d5516ca39bfd7940f8bce76ea6aeb63616099383`, also the merge-base. Candidate and fixed read-only manual worktree were clean at this verification. No matching residual benchmark/test Node process was observed after the runner completed. CI now explicitly checks out and verifies PR head, rather than the synthetic merge revision. Linux/Windows CI has not yet run; the local Windows result is not substituted for it.
+
+See [persistent measurement evidence](g2s-persistent-evidence.md) for hash-verified matrices, timing limitations and remaining allocation work. Full local verification does not close the unknown configured-copy startup candidate, performance targets, native terminal manual validation or external review.
 
 ### Persistent evidence checkpoint at `67301e2` (2026-09-06)
 
