@@ -1094,12 +1094,24 @@ export class InteractiveMode {
 	}
 
 	private async stopInteractiveTui(fullscreenExitOutput: FullscreenExitOutput): Promise<void> {
-		if (this.renderer.mode === "fullscreen" && fullscreenExitOutput === "transcript") {
-			while (this.renderer.hasOverlayEntries) this.renderer.hideOverlay();
-			await this.switchTuiMode("regular", false, false);
-			this.renderer.renderNow();
+		let transferError: unknown;
+		let transferFailed = false;
+		try {
+			if (this.renderer.mode === "fullscreen" && fullscreenExitOutput === "transcript") {
+				while (this.renderer.hasOverlayEntries) this.renderer.hideOverlay();
+				await this.switchTuiMode("regular", false, false);
+				this.renderer.renderNow();
+			}
+		} catch (error) {
+			transferFailed = true;
+			transferError = error;
 		}
-		await this.ui.dispose({ preserveScreen: this.renderer.mode === "fullscreen" });
+		try {
+			await this.ui.dispose({ preserveScreen: this.renderer.mode === "fullscreen" });
+		} catch (error) {
+			if (!transferFailed) throw error;
+		}
+		if (transferFailed) throw transferError;
 	}
 
 	private async switchTuiMode(mode: TuiMode, restoreProgress = true, startRenderer = true): Promise<boolean> {
@@ -8242,40 +8254,54 @@ export class InteractiveMode {
 	}
 
 	private async performStop(fullscreenExitOutput: FullscreenExitOutput): Promise<void> {
+		let cleanupError: unknown;
+		let cleanupFailed = false;
+		// One synchronous collector per stop operation, never per render/update.
+		// A failed owner must not prevent unrelated owners or the terminal from releasing.
+		const release = <T>(owner: T, cleanup: (this: T) => void): void => {
+			try {
+				cleanup.call(owner);
+			} catch (error) {
+				if (!cleanupFailed) {
+					cleanupFailed = true;
+					cleanupError = error;
+				}
+			}
+		};
 		this.runtimeHost.setBeforeSessionInvalidate?.(undefined);
 		this.runtimeHost.setRebindSession?.(undefined);
-		this.closeExtensionUiContext();
-		this.clearToolResultDiscoveries();
+		release(this, this.closeExtensionUiContext);
+		release(this, this.clearToolResultDiscoveries);
 		offThemeChange(this.handleThemeChange);
 		this.runtimeHost.cancelPendingReplacements?.();
 		this.bashComponent = undefined;
-		this.cancelActiveSuspend();
-		this.cancelActiveLoginDialog();
-		this.cancelActiveProviderAuthentication();
-		this.cancelActiveStartupModelRefresh();
-		this.cancelActiveStartupDiagnostics();
-		this.cancelActiveModelLookup();
-		this.cancelActiveExtensionCustom();
-		this.cancelExtensionDialogs();
-		this.disposeActiveSelector();
-		let cleanupError: unknown;
-		let cleanupFailed = false;
+		release(this, this.cancelActiveSuspend);
+		release(this, this.cancelActiveLoginDialog);
+		release(this, this.cancelActiveProviderAuthentication);
+		release(this, this.cancelActiveStartupModelRefresh);
+		release(this, this.cancelActiveStartupDiagnostics);
+		release(this, this.cancelActiveModelLookup);
+		release(this, this.cancelActiveExtensionCustom);
+		release(this, this.cancelExtensionDialogs);
+		release(this, this.disposeActiveSelector);
+		release(this, this.releaseExtensionUiOwners);
 		try {
-			this.releaseExtensionUiOwners();
+			if (this.settingsManager.getShowTerminalProgress()) this.ui.terminal.setProgress(false);
 		} catch (error) {
-			cleanupFailed = true;
-			cleanupError = error;
+			if (!cleanupFailed) {
+				cleanupFailed = true;
+				cleanupError = error;
+			}
 		}
-		if (this.settingsManager.getShowTerminalProgress()) {
-			this.ui.terminal.setProgress(false);
-		}
-		this.clearStatusIndicator();
-		this.themeController.disableAutoSync();
-		this.clearExtensionTerminalInputListeners();
-		this.footer.dispose();
-		this.footerDataProvider.dispose();
-		if (this.unsubscribe) {
-			this.unsubscribe();
+		release(this, this.clearStatusIndicator);
+		release(this.themeController, this.themeController.disableAutoSync);
+		release(this, this.clearExtensionTerminalInputListeners);
+		release(this.footer, this.footer.dispose);
+		release(this.footerDataProvider, this.footerDataProvider.dispose);
+		const unsubscribe = this.unsubscribe;
+		this.unsubscribe = undefined;
+		if (unsubscribe) {
+			release(this, unsubscribe);
 		}
 		try {
 			if (this.isInitialized) {
