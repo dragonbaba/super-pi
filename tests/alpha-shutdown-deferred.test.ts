@@ -17,7 +17,12 @@ for (const mode of ['regular', 'fullscreen'] as const) {
       const runtimeError = Object.assign(new Error('runtime owner'), { code: 'EIO' });
       const f = await alphaSession({ mode, extensions: [(pi: any) => {
         pi.on('session_start', (_event: any, ctx: any) => { ui = ctx.ui; });
-        pi.on('session_shutdown', async () => { emissions++; pending = true; entered(); await held; pending = false; });
+        pi.on('session_shutdown', async () => {
+          emissions++; pending = true; entered(); await held;
+          ui.setTitle('late handler'); ui.setStatus('late', 'closed'); ui.setWidget('late', ['closed']);
+          ui.setFooter(() => { factories++; return { render: () => [], invalidate() {} }; });
+          ui.notify('late handler'); pending = false;
+        });
       }] });
       t.mock.method(process, 'exit', (code: number) => { exit = code; });
       const terminalDispose = f.terminal.dispose.bind(f.terminal);
@@ -43,16 +48,16 @@ for (const mode of ['regular', 'fullscreen'] as const) {
       }
       const render = f.internal.ui.requestRender.bind(f.internal.ui);
       t.mock.method(f.internal.ui, 'requestRender', (...args: any[]) => { if (terminalDisposals) renders++; return render(...args); });
-      let operation: Promise<void> | undefined;
       let outcome: Promise<unknown> | undefined;
       try {
         assert.equal(await f.mode.init(), true);
         if (failure === 'component' || failure === 'both') f.internal.renderer.addChild({ render: () => [], invalidate() {}, [RELEASE_COMPONENT_RENDER_CACHE]() { throw componentError; } });
         if (failure !== 'none') f.internal.terminalDisconnected = true;
-        operation = f.internal.shutdown();
+        const operation: Promise<void> = f.internal.shutdown();
         outcome = operation.then(() => undefined, error => error);
         await entry;
         assert.equal(pending, true); assert.equal(sessionDisposals, 0);
+        assert.equal(exit, undefined);
         assert.equal(terminalDisposals, 1); assert.equal(f.input.isRaw, false);
         assert.equal(f.input.listenerCount('data'), 0); assert.equal(f.resizeSource.listenerCount('resize'), 0);
         assert.equal(tuiStops, 1); assert.equal(tuiDisposals, 1);
@@ -65,7 +70,7 @@ for (const mode of ['regular', 'fullscreen'] as const) {
         assert.equal(error, failure === 'component' || failure === 'both' ? componentError : failure === 'runtime' ? runtimeError : undefined);
         assert.equal(exit, failure === 'none' ? 0 : failure === 'disconnect' ? 129 : undefined);
         assert.deepEqual([emissions, sessionDisposals, runtimeCalls], [1, 1, 1]);
-        assert.deepEqual([controls, frames, renders], [0, 0, 0]);
+        assert.deepEqual([controls, frames, renders, factories], [0, 0, 0, 0]);
         t.diagnostic(JSON.stringify({ mode, failure, terminalDisposals, tuiStops, tuiDisposals, emissions, sessionDisposals, runtimeCalls, controls, frames, renders, raw: f.input.isRaw, exit }));
       } finally {
         release(); await outcome;
