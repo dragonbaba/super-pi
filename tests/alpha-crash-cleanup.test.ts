@@ -2,6 +2,54 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { alphaSession } from './helpers/alpha-session.ts';
 
+for (const mode of ['regular', 'fullscreen'] as const) for (const phase of ['progress', 'drain'] as const) test(`dead ${phase} does not hide non-output cleanup failure: ${mode}`, async (t) => {
+  const f = await alphaSession({ mode, settings: { terminal: { showTerminalProgress: true } } });
+  const dead = Object.assign(new Error('disconnected output'), { code: 'EIO' });
+  const cleanup = new Error('footer cleanup failed');
+  let exit: number | undefined;
+  t.mock.method(process, 'exit', (code: number) => { exit = code; });
+  try {
+    await f.mode.init();
+    await new Promise<void>(resolve => setImmediate(resolve));
+    if (phase === 'progress') {
+      const write = f.sink.write.bind(f.sink);
+      t.mock.method(f.sink, 'write', (...args: any[]) => {
+        if (String(args[0]).includes('\x1b]9;4;0\x07')) throw dead;
+        return (write as any)(...args);
+      });
+    } else t.mock.method(f.terminal, 'drainInput', async () => { throw dead; });
+    const dispose = f.internal.footer.dispose.bind(f.internal.footer);
+    t.mock.method(f.internal.footer, 'dispose', () => { dispose(); throw cleanup; });
+    // The earlier test enters the installed output handler. Here isolate the
+    // joined operation so its expected rejection cannot reach the test worker UI.
+    f.internal.terminalDisconnected = true;
+    await assert.rejects(f.internal.shutdown(), error => error === cleanup);
+    assert.equal(exit, undefined, 'a non-output cleanup failure is not a successful disconnect exit');
+    assert.equal(f.input.isRaw, false);
+    assert.equal(f.input.listenerCount('data'), 0); assert.equal(f.resizeSource.listenerCount('resize'), 0);
+  } finally { await f.release(); }
+});
+
+for (const mode of ['regular', 'fullscreen'] as const) for (const action of ['stop', 'shutdown'] as const) test(`late rejection cannot reacquire UI after ${action}: ${mode}`, async (t) => {
+  const f = await alphaSession({ mode });
+  const previousExitCode = process.exitCode;
+  t.mock.method(process, 'exit', () => {});
+  const errors: unknown[] = [];
+  t.mock.method(console, 'error', (error: unknown) => { errors.push(error); });
+  let renders = 0;
+  const cause = new Error('cleanup rejected');
+  try {
+    await f.mode.init();
+    if (action === 'shutdown') await f.internal.shutdown(); else await f.mode.stop();
+    const render = f.internal.renderer.requestRender.bind(f.internal.renderer);
+    t.mock.method(f.internal.renderer, 'requestRender', (...args: any[]) => { renders++; return render(...args); });
+    f.internal.handleLifecyclePromiseRejection(cause);
+    assert.equal(renders, 0);
+    assert.deepEqual(errors, [cause]);
+    assert.equal(process.exitCode, 1);
+  } finally { process.exitCode = previousExitCode; await f.release(); }
+});
+
 for (const mode of ['regular', 'fullscreen'] as const) test(`fatal recovery releases runtime as well as terminal: ${mode}`, async (t) => {
   let shutdowns = 0;
   const f = await alphaSession({ mode, extensions: [(pi: any) => { pi.on('session_shutdown', () => { shutdowns++; }); }] });
