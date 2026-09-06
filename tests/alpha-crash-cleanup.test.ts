@@ -1,6 +1,25 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { alphaSession } from './helpers/alpha-session.ts';
+import { RELEASE_COMPONENT_RENDER_CACHE } from '@super-pi/tui';
+
+for (const mode of ['regular', 'fullscreen'] as const) for (const deadOutput of [false, true]) test(`component release EIO survives composite disposal: ${mode} dead=${deadOutput}`, async (t) => {
+  const f = await alphaSession({ mode });
+  const cause = Object.assign(new Error('mounted component release failed'), { code: 'EIO' });
+  let releases = 0; let disposals = 0; let exit: number | undefined;
+  t.mock.method(process, 'exit', (code: number) => { exit = code; });
+  const dispose = f.terminal.dispose.bind(f.terminal);
+  t.mock.method(f.terminal, 'dispose', () => { disposals++; return dispose(); });
+  try {
+    await f.mode.init();
+    f.internal.renderer.addChild({ render: () => [], invalidate() {}, [RELEASE_COMPONENT_RENDER_CACHE]() { releases++; throw cause; } });
+    f.internal.terminalDisconnected = deadOutput;
+    await assert.rejects(f.internal.shutdown(), error => error === cause);
+    assert.equal(releases, 1); assert.equal(disposals, 1); assert.equal(exit, undefined);
+    assert.equal(f.input.isRaw, false);
+    assert.equal(f.input.listenerCount('data'), 0); assert.equal(f.resizeSource.listenerCount('resize'), 0);
+  } finally { await f.release(); }
+});
 
 for (const mode of ['regular', 'fullscreen'] as const) for (const owner of ['runtime', 'footer'] as const) test(`${owner} EIO is a cleanup failure even when terminal is disconnected: ${mode}`, async (t) => {
   const f = await alphaSession({ mode });
