@@ -60,9 +60,11 @@ export async function alphaSession(options: {
   mode?: 'regular' | 'fullscreen'; sinkDelay?: number; columns?: number; rows?: number;
   runtime?: ModelRuntime; extensions?: any[]; messages?: any[]; customTools?: any[];
   g2?: boolean; budgetTokens?: number; settings?: Record<string, unknown>; allowReplacements?: boolean;
+  /** Caller-owned isolated root for repeated-path GC controls; never a real user HOME. */
+  fixtureRoot?: string;
 } = {}) {
-  const root = mkdtempSync(join(tmpdir(), 'g2s-session-'));
-  const agentDir = join(root, 'agent'); mkdirSync(agentDir);
+  const root = options.fixtureRoot ?? mkdtempSync(join(tmpdir(), 'g2s-session-'));
+  const agentDir = join(root, 'agent'); mkdirSync(agentDir, { recursive: true });
   const settings = SettingsManager.inMemory({ quietStartup: true, theme: 'dark', ...options.settings });
   const resourceLoader = new DefaultResourceLoader({ cwd: root, agentDir, settingsManager: settings, noContextFiles: true,
     noExtensions: !options.extensions?.length, extensionFactories: options.extensions, noSkills: true, noPromptTemplates: true, noThemes: true });
@@ -98,6 +100,6 @@ export async function alphaSession(options: {
       await mode.stop(); await runtime.dispose();
       await new Promise<void>(resolve => setImmediate(resolve));
       input.destroy(); sink.destroy();
-      rmSync(root, { recursive: true, force: true });
+      if (options.fixtureRoot === undefined) rmSync(root, { recursive: true, force: true });
     } };
 }

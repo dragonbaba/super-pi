@@ -1,11 +1,14 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { Session } from 'node:inspector/promises';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { alphaSession } from './helpers/alpha-session.ts';
 import { alphaMessage } from './helpers/alpha-stream.ts';
 
-async function stress(mode: 'regular' | 'fullscreen') {
-  const f = await alphaSession({ mode, sinkDelay: 5 });
+async function stress(mode: 'regular' | 'fullscreen', fixtureRoot?: string) {
+  const f = await alphaSession({ mode, sinkDelay: 5, fixtureRoot });
   const message = alphaMessage([{ type: 'text', text: 'start ' }]);
   const text = message.content[0]; assert.ok(text?.type === 'text');
   const event = { type: 'message_update', message, assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: 'x', partial: message } };
@@ -55,11 +58,12 @@ for (const mode of ['regular', 'fullscreen'] as const) test(`100000 actual sessi
   assert.ok(Number.isInteger(cycles) && cycles >= 5 && cycles <= 100);
   const profiler = process.env.ALPHA_GC_PROFILE === '1' ? new Session() : undefined;
   const survivors: { function: string; source: string; bytes: number }[] = [];
+  const fixtureRoot = process.env.ALPHA_GC_REUSE_HOME === '1' ? mkdtempSync(join(tmpdir(), 'g2s-stress-shared-')) : undefined;
   profiler?.connect();
   try {
   for (let cycle = 0; cycle < (global.gc ? cycles + 1 : 1); cycle++) {
     if (cycle === 1 && profiler) await profiler.post('HeapProfiler.startSampling', { samplingInterval: 16384 });
-    result = await stress(mode);
+    result = await stress(mode, fixtureRoot);
     if (global.gc) {
       for (let round = 0; round < 5; round++) { await new Promise<void>(resolve => setImmediate(resolve)); global.gc(); }
       assert.ok(result.weak.every(reference => reference.deref() === undefined));
@@ -80,11 +84,15 @@ for (const mode of ['regular', 'fullscreen'] as const) test(`100000 actual sessi
     }
     survivors.sort((a, b) => b.bytes - a.bytes);
   }
-  } finally { profiler?.disconnect(); }
+  } finally {
+    profiler?.disconnect();
+    if (fixtureRoot) rmSync(fixtureRoot, { recursive: true, force: true });
+  }
   assert.ok(result);
   if (heap.length) assert.ok(heap.at(-1)! <= heap[0] * 1.1, 'released owners must not accumulate more than 10% heap');
   t.diagnostic(JSON.stringify({ mode, updates: result.updates, updatePromises: result.updatePromises, metrics: result.metrics, weakReleased: global.gc ? result.weak.length : 'requires --expose-gc',
     measuredCycles: heap.length, controlledGcHeap: heap, heapAbsoluteDelta: heap.length ? heap.at(-1)! - heap[0] : null,
     survivingSampleTopSites: profiler ? survivors.slice(0, 20) : undefined,
+    homeControl: fixtureRoot ? 'same-isolated-path' : 'unique-isolated-path-per-cycle',
     coverage: 'actual AgentSession emission, InteractiveMode, AssistantMessage, Markdown, retained TUI and strict sink; provider bypassed to prevent observer coalescing' }));
 });
