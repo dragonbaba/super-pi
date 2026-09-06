@@ -6,6 +6,7 @@ export default function (pi) {
   let cleaned = false;
   let requests = 0;
   let executions = 0;
+  let compactionSettled = false;
   const provider = 'alpha-process-fixture';
   pi.registerProvider(provider, {
     baseUrl: 'https://fixture.invalid', apiKey: 'fixture-not-a-real-key', api: 'openai-responses',
@@ -48,7 +49,22 @@ export default function (pi) {
     if (!model || !await pi.setModel(model)) throw new Error('fixture model unavailable');
     ctx.ui.setTitle('ALPHA_CLI_READY');
   });
+  pi.registerCommand('alpha-compact', { description: 'isolated compaction cancellation fixture', handler: async (_args, ctx) => {
+    for (let index = 0; index < 8; index++) pi.sendMessage({ customType: 'alpha-history', content: 'history '.repeat(2048), display: false });
+    ctx.compact({ onError: () => { compactionSettled = true; }, onComplete: () => { compactionSettled = true; } });
+  } });
+  pi.on('session_before_compact', async event => {
+    if (kind !== 'active-compaction') return;
+    await new Promise(resolve => {
+      if (event.signal.aborted) setImmediate(resolve);
+      else event.signal.addEventListener('abort', () => setImmediate(resolve), { once: true });
+      process.stderr.write('ALPHA_ACTIVE\n');
+    });
+    cleaned = true;
+    return { cancel: true };
+  });
   pi.on('session_shutdown', () => {
     process.stderr.write(`ALPHA_SESSION_SHUTDOWN\nALPHA_ACTIVE_CLEANED:${cleaned}:REQUESTS:${requests}:TOOLS:${executions}\n`);
+    if (kind === 'active-compaction') process.stderr.write(`ALPHA_COMPACTION_SETTLED:${compactionSettled}\n`);
   });
 }
