@@ -58,7 +58,7 @@ Shared Markdown tokenizer lexer retention was reproduced in a heap snapshot and 
 
 ## Findings requiring explicit disposition
 
-- B0/B1 confirmed correctness findings have local red/green evidence. Final exact-head CI and Candidate Review are still required before treating the cumulative candidate as accepted.
+- B0/B1 confirmed correctness findings have local red/green evidence. Candidate Review P1 and closeout P2 are repaired with separate red commits; the last composite-disposal repair preserves component errors without changing TUI internals. The two-review allowance is exhausted. Final handoff identifies exact-head CI and retains external final review/merge authorization as the Gate; no manual Alpha acceptance is implied. See [final candidate report](g2s-final-candidate.md).
 - `G2S-B0-CANDIDATE-STARTUP`: user's configured-copy failure unconfirmed; privacy-safe capture is available. Clean-HOME sentinel failure is a separate reproduced/fixed finding.
 - C — strict provider-marker two-interval timing is not uniform; 256 KiB initial/final burst root durations exceed target; full-chain dynamic allocation counts are not universally zero. Do not reinterpret fixture token rate as real model throughput.
 - C — controlled-GC owner WeakRefs clear, but total-heap samples contain small staircase changes. No strict universal zero-slope claim.

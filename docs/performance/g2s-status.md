@@ -3,7 +3,8 @@
 Locally authoritative Goal: `SUPER-PI-G2-ALPHA-STABILIZATION-ASTRA`.
 The prior cross-session Program is not being resumed or modified. This ledger is authoritative even while the Goal API returns null; no replacement Goal is created.
 
-Status: **G2 Alpha Manual Validation Blocked → G2S active → G3–G10 unstarted**.
+Status: **G2 Alpha Manual Validation Blocked → G2S Draft Candidate Gate → G3–G10 unstarted**.
+Gate: **awaiting external final review and explicit merge authorization**. This is not a waiver of the configured-startup investigation or the C timing/heap/coverage limitations. The exact current PR-head CI must be checked before any external merge decision; no Mark Ready or merge is authorized.
 Draft PR: [#24](https://github.com/dragonbaba/super-pi/pull/24), created under the existing authorization. Candidate Codex Review requests: **1 of 1**, [request 5557492438](https://github.com/dragonbaba/super-pi/pull/24#issuecomment-5557492438), cumulative source through `e30c19a`; completed with one P1, review `5124479477`, now resolved. Closeout incremental requests: **1 of 1**, [request 5557804151](https://github.com/dragonbaba/super-pi/pull/24#issuecomment-5557804151), completed at `ea83958` with one P2, review `5124670775`. No more automated Review requests are authorized. No merge/auto-merge/rebase/squash/force push. The older checkpoints below saying “no PR” are historical.
 The scope-unblock addendum authorizes bounded ANSI indexing/forward progress, runtime exactly-once disposal, and final interactive UI ownership fixes. Continue on the existing worktree and branch; preserve red baseline `ed023a6c78e0d075866195fc306cc686f511f897` without amendment or rewrite.
 
@@ -20,6 +21,12 @@ Active findings:
 The historical stopped-baseline evidence below is preserved. Its scope restriction is superseded by the addendum; implementation is active again. Streaming optimization still requires L0–L3 baseline evidence. Final target is Draft Candidate Gate, awaiting external final review and explicit merge authorization. No Alpha manual validation is claimed.
 
 ## Current implementation and evidence checkpoint
+
+### Final candidate handoff
+
+[Final cumulative report](g2s-final-candidate.md) records the nine production files, immutable red/baseline references, raw 129-result contracts, lifecycle state machine, L0–L3 comparisons, latency/allocation/reference evidence, unresolved C/D and corrected manual guide. Implementation head `4f1f90fa43eaf12bdc7ffb59865d798a8a45d16c` passes local check/build/probe/full npm test/source audit/diff check. Alpha probe: **322 total, 318 pass, four Windows POSIX skips, zero failures**. Recovery+normal-quit focused tests: 35/35. Fifteen final independent profile/ANSI processes exit 0 with verified hashes and clean-head stamps. Both final GC fixtures release seven owner WeakRefs per lifetime. The earlier 100-lifetime tests and their exact heads remain recorded, without a universal heap-slope claim.
+
+At that implementation head, native PTY regular `/quit` and fullscreen `Ctrl+D` both exit 0, with real stdin/stdout TTY=true, raw=false, one shutdown and one input-ready. Captures and SHA-256 stamps are in `4f1f90f-native-smoke.json`; this is agent-driven smoke, never a user's Alpha manual validation. Candidate and fixed manual worktree were clean at measurement. The Gate documentation commit changes no production/test/benchmark code. [Current exact-head CI checks](https://github.com/dragonbaba/super-pi/pull/24/checks) identify the final documentation head separately from the measured implementation head; final handoff reports the observed run/SHA. No further automated Review is requested: Candidate P1 and closeout P2 have deterministic fixes, and the P2 repair awaits external final review.
 
 ### Candidate Review cleanup batch
 
