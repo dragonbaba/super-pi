@@ -4,7 +4,7 @@ import { Tokenizer } from 'marked';
 import { Markdown } from '../packages/tui/src/components/markdown.ts';
 import { getMarkdownTheme, initTheme } from '../packages/coding-agent/src/modes/interactive/theme/theme.ts';
 
-function installProbe(t: any, kind: 'success' | 'throw' | 'reentrant') {
+function installProbe(t: any, kind: 'success' | 'throw' | 'reentrant' | 'reentrant-throw') {
   const state = { owner: undefined as Tokenizer | undefined, refs: [] as WeakRef<object>[], nested: false };
   const cause = new Error('lexer fixture failure');
   const original = Tokenizer.prototype.paragraph;
@@ -12,11 +12,14 @@ function installProbe(t: any, kind: 'success' | 'throw' | 'reentrant') {
     state.owner = this;
     state.refs.push(new WeakRef(this.lexer), new WeakRef(this.lexer.tokens));
     if (kind === 'throw') throw cause;
-    if (kind === 'reentrant' && !state.nested) {
+    if (kind === 'reentrant-throw' && state.nested && args[0].startsWith('inner ')) throw cause;
+    if (kind.startsWith('reentrant') && !state.nested) {
       state.nested = true;
       const outer = this.lexer;
       const inner = new Markdown('inner ~~nested~~ paragraph', 0, 0, getMarkdownTheme());
-      inner.render(120); inner.invalidate();
+      if (kind === 'reentrant-throw') assert.throws(() => inner.render(120), error => error === cause);
+      else inner.render(120);
+      inner.invalidate();
       assert.equal(this.lexer, outer, 'nested parsing restores the outer lexer before it continues');
     }
     return original.apply(this, args);
@@ -38,7 +41,7 @@ function renderAndRelease(kind: string, incremental: boolean, cause: Error) {
   return weak;
 }
 
-for (const incremental of [false, true]) for (const kind of ['success', 'throw', 'reentrant'] as const) {
+for (const incremental of [false, true]) for (const kind of ['success', 'throw', 'reentrant', 'reentrant-throw'] as const) {
   test(`shared Markdown tokenizer releases temporary lexer: ${kind}, incremental=${incremental}`, async (t) => {
     initTheme('dark');
     const { state, cause } = installProbe(t, kind);
