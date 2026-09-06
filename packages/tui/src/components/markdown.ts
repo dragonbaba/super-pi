@@ -197,6 +197,7 @@ function trimPartialClosingFences(tokens: readonly Token[]): void {
 }
 
 const markdownParser = new Marked();
+const markdownTokenizer = new StrictStrikethroughTokenizer();
 const MAX_INCREMENTAL_MARKDOWN_TEXT_LENGTH = 256 * 1024;
 const MAX_INCREMENTAL_MARKDOWN_TOKENS = 8192;
 const MAX_INCREMENTAL_MARKDOWN_RENDERED_CHARACTERS = 4 * 1024 * 1024;
@@ -243,9 +244,21 @@ function getTokenSignature(token: unknown): string | undefined {
 	}
 }
 markdownParser.setOptions({
-	tokenizer: new StrictStrikethroughTokenizer(),
+	tokenizer: markdownTokenizer,
 });
 markdownParser.use({ extensions: [...LATEX_MARKDOWN_EXTENSIONS] });
+
+function lexMarkdown(source: string) {
+	// Marked temporarily assigns its lexer to the shared tokenizer. Retaining
+	// that assignment keeps the last token tree/source alive across components.
+	// Restore the outer owner on reentry, or the empty initial slot at top level.
+	const previousLexer = markdownTokenizer.lexer;
+	try {
+		return markdownParser.lexer(source);
+	} finally {
+		markdownTokenizer.lexer = previousLexer;
+	}
+}
 
 /**
  * Default text styling for markdown content.
@@ -497,7 +510,7 @@ export class Markdown implements Component {
 		}
 
 		// Parse markdown to HTML-like tokens
-		const tokens = markdownParser.lexer(normalizedText);
+		const tokens = lexMarkdown(normalizedText);
 		this.lastParserTokenCount = tokens.length;
 		trimPartialClosingFences(tokens);
 
