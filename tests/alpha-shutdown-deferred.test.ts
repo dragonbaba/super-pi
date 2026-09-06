@@ -27,8 +27,9 @@ for (const mode of ['regular', 'fullscreen'] as const) {
       const runtimeDispose = f.runtime.dispose.bind(f.runtime);
       t.mock.method(f.runtime, 'dispose', () => { runtimeCalls++; return runtimeDispose(); });
       for (const name of ['stop', 'dispose'] as const) {
-        const original = f.internal.renderer[name].bind(f.internal.renderer);
-        t.mock.method(f.internal.renderer, name, async (...args: any[]) => {
+        const target = name === 'stop' ? f.mode : f.internal.ui;
+        const original = target[name].bind(target);
+        t.mock.method(target, name, async (...args: any[]) => {
           try { return await original(...args); }
           finally { if (name === 'stop') tuiStops++; else tuiDisposals++; }
         });
@@ -40,8 +41,8 @@ for (const mode of ['regular', 'fullscreen'] as const) {
           return original(...args);
         });
       }
-      const render = f.internal.renderer.requestRender.bind(f.internal.renderer);
-      t.mock.method(f.internal.renderer, 'requestRender', (...args: any[]) => { if (terminalDisposals) renders++; return render(...args); });
+      const render = f.internal.ui.requestRender.bind(f.internal.ui);
+      t.mock.method(f.internal.ui, 'requestRender', (...args: any[]) => { if (terminalDisposals) renders++; return render(...args); });
       let operation: Promise<void> | undefined;
       let outcome: Promise<unknown> | undefined;
       try {

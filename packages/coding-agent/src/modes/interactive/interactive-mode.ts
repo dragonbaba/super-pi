@@ -5319,11 +5319,8 @@ export class InteractiveMode {
 
 		let cleanupError: unknown;
 		let cleanupFailed = false;
-		// UI handles are already closed. Finish runtime cleanup before terminal
-		// restoration for every exit, including an ordinary quit racing EPIPE.
-		try { await this.runtimeHost.dispose(); }
-		catch (error) { cleanupFailed = true; cleanupError = error; }
-
+		// UI handles are closed. Restore terminal ownership before waiting for
+		// extension shutdown, which may remain pending without a lifecycle timeout.
 		// Drain any in-flight Kitty key release events before stopping.
 		// This prevents escape sequences from leaking to the parent shell over slow SSH.
 		try {
@@ -5343,6 +5340,9 @@ export class InteractiveMode {
 		} catch (error) {
 			if (!cleanupFailed) { cleanupFailed = true; cleanupError = error; }
 		}
+		// Runtime cleanup remains mandatory even when a terminal-local owner fails.
+		try { await this.runtimeHost.dispose(); }
+		catch (error) { if (!cleanupFailed) { cleanupFailed = true; cleanupError = error; } }
 		if (cleanupFailed) throw cleanupError;
 		// A failed output channel cannot acknowledge cursor/paste restoration.
 		// Report terminal loss only after local owners and raw input are released.
