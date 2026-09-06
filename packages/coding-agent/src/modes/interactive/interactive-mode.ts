@@ -1109,13 +1109,15 @@ export class InteractiveMode {
 				this.renderer.renderNow();
 			}
 		} catch (error) {
-			transferFailed = true;
-			transferError = error;
+			if (!(this.terminalDisconnected && isDeadTerminalError(error))) {
+				transferFailed = true;
+				transferError = error;
+			}
 		}
 		try {
 			await this.ui.dispose({ preserveScreen: this.renderer.mode === "fullscreen" });
 		} catch (error) {
-			throw transferFailed ? this.preferCleanupError(transferError, error) : error;
+			if (!transferFailed && !(this.terminalDisconnected && isDeadTerminalError(error))) throw error;
 		}
 		if (transferFailed) throw transferError;
 	}
@@ -5289,12 +5291,6 @@ export class InteractiveMode {
 	private shutdownOperation: Promise<void> | undefined;
 	private terminalDisconnected = false;
 
-	private preferCleanupError(first: unknown, next: unknown): unknown {
-		// An expected disconnected-output error must not mask a failed owner release.
-		if (this.terminalDisconnected && isDeadTerminalError(first) && !isDeadTerminalError(next)) return next;
-		return first;
-	}
-
 	private shutdown(options?: { fromSignal?: boolean }): Promise<void> {
 		if (this.shutdownOperation) return this.shutdownOperation;
 		let resolveOperation!: () => void;
@@ -5323,28 +5319,31 @@ export class InteractiveMode {
 
 		let cleanupError: unknown;
 		let cleanupFailed = false;
-		let runtimeFailed = false;
 		// UI handles are already closed. Finish runtime cleanup before terminal
 		// restoration for every exit, including an ordinary quit racing EPIPE.
 		try { await this.runtimeHost.dispose(); }
-		catch (error) { runtimeFailed = true; cleanupFailed = true; cleanupError = error; }
+		catch (error) { cleanupFailed = true; cleanupError = error; }
 
 		// Drain any in-flight Kitty key release events before stopping.
 		// This prevents escape sequences from leaking to the parent shell over slow SSH.
 		try {
 			this.themeController.disableAutoSync();
+		} catch (error) {
+			if (!cleanupFailed) { cleanupFailed = true; cleanupError = error; }
+		}
+		try {
 			await this.ui.terminal.drainInput(1000);
 		} catch (error) {
-			if (!runtimeFailed) cleanupError = cleanupFailed ? this.preferCleanupError(cleanupError, error) : error;
-			cleanupFailed = true;
+			if (!cleanupFailed && !(this.terminalDisconnected && isDeadTerminalError(error))) {
+				cleanupFailed = true; cleanupError = error;
+			}
 		}
 		try {
 			await this.stop();
 		} catch (error) {
-			if (!runtimeFailed) cleanupError = cleanupFailed ? this.preferCleanupError(cleanupError, error) : error;
-			cleanupFailed = true;
+			if (!cleanupFailed) { cleanupFailed = true; cleanupError = error; }
 		}
-		if (cleanupFailed && !(this.terminalDisconnected && !runtimeFailed && isDeadTerminalError(cleanupError))) throw cleanupError;
+		if (cleanupFailed) throw cleanupError;
 		// A failed output channel cannot acknowledge cursor/paste restoration.
 		// Report terminal loss only after local owners and raw input are released.
 		if (this.terminalDisconnected) return process.exit(129);
@@ -8277,7 +8276,7 @@ export class InteractiveMode {
 			try {
 				cleanup.call(owner);
 			} catch (error) {
-				cleanupError = cleanupFailed ? this.preferCleanupError(cleanupError, error) : error;
+				cleanupError = cleanupFailed ? cleanupError : error;
 				cleanupFailed = true;
 			}
 		};
@@ -8301,8 +8300,9 @@ export class InteractiveMode {
 		try {
 			if (this.settingsManager.getShowTerminalProgress()) this.ui.terminal.setProgress(false);
 		} catch (error) {
-			cleanupError = cleanupFailed ? this.preferCleanupError(cleanupError, error) : error;
-			cleanupFailed = true;
+			if (!cleanupFailed && !(this.terminalDisconnected && isDeadTerminalError(error))) {
+				cleanupFailed = true; cleanupError = error;
+			}
 		}
 		release(this, this.clearStatusIndicator);
 		release(this.themeController, this.themeController.disableAutoSync);
@@ -8321,15 +8321,16 @@ export class InteractiveMode {
 				await this.ui.dispose({ preserveScreen: true });
 			}
 		} catch (error) {
-			cleanupError = cleanupFailed ? this.preferCleanupError(cleanupError, error) : error;
-			cleanupFailed = true;
+			if (!cleanupFailed && !(this.terminalDisconnected && isDeadTerminalError(error))) {
+				cleanupFailed = true; cleanupError = error;
+			}
 		} finally {
 			this.isInitialized = false;
 		}
 		try {
 			this.unregisterSignalHandlers();
 		} catch (error) {
-			cleanupError = cleanupFailed ? this.preferCleanupError(cleanupError, error) : error;
+			cleanupError = cleanupFailed ? cleanupError : error;
 			cleanupFailed = true;
 		}
 		if (cleanupFailed) throw cleanupError;
