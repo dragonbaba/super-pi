@@ -2,13 +2,14 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { alphaSession } from './helpers/alpha-session.ts';
 
-for (const mode of ['regular', 'fullscreen'] as const) test(`runtime EIO is a cleanup failure even when terminal is disconnected: ${mode}`, async (t) => {
+for (const mode of ['regular', 'fullscreen'] as const) for (const owner of ['runtime', 'footer'] as const) test(`${owner} EIO is a cleanup failure even when terminal is disconnected: ${mode}`, async (t) => {
   const f = await alphaSession({ mode });
   const cause = Object.assign(new Error('session storage cleanup failed'), { code: 'EIO' });
   let exit: number | undefined;
   t.mock.method(process, 'exit', (code: number) => { exit = code; });
-  const dispose = f.session.dispose.bind(f.session);
-  t.mock.method(f.session, 'dispose', () => { dispose(); throw cause; });
+  const target = owner === 'runtime' ? f.session : f.internal.footer;
+  const dispose = target.dispose.bind(target);
+  t.mock.method(target, 'dispose', () => { dispose(); throw cause; });
   try {
     await f.mode.init();
     f.internal.terminalDisconnected = true;
@@ -19,9 +20,9 @@ for (const mode of ['regular', 'fullscreen'] as const) test(`runtime EIO is a cl
   } finally {
     await f.mode.stop();
     // Repeated real runtime disposal must retain the same original failure.
-    await assert.rejects(f.runtime.dispose(), error => error === cause);
+    if (owner === 'runtime') await assert.rejects(f.runtime.dispose(), error => error === cause);
     // The helper joins that rejected operation before removing its owned root.
-    t.mock.method(f.runtime, 'dispose', async () => {});
+    if (owner === 'runtime') t.mock.method(f.runtime, 'dispose', async () => {});
     await f.release();
   }
 });
