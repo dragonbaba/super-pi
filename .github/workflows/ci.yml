@@ -27,6 +27,7 @@ jobs:
       - run: npm ci
       - run: npm run check
       - run: npm run build:offline
+      - run: npm run alpha:g2-probe
       - run: npm test
 
   verify-windows:
@@ -47,4 +48,5 @@ jobs:
       - run: npm ci
       - run: npm run check
       - run: npm run build:offline
+      - run: npm run alpha:g2-probe
       - run: npm test
