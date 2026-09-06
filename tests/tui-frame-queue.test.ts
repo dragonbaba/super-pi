@@ -2016,6 +2016,8 @@ test("shutdown admission invalidates a mode switch while terminal input is drain
 	const terminal = new GatedTerminal();
 	const previousUi = new FrameTui(terminal);
 	const mode = createModeSwitchHarness(previousUi);
+	let runtimeDisposals = 0;
+	mode.runtimeHost.dispose = async () => { runtimeDisposals++; };
 	previousUi.start();
 	previousUi.renderNow();
 	const drainFailure = new Error("controlled drain boundary");
@@ -2036,6 +2038,7 @@ test("shutdown admission invalidates a mode switch while terminal input is drain
 	assert.equal(await switching, false);
 	rejectDrain?.(drainFailure);
 	await assert.rejects(shuttingDown, drainFailure);
+	assert.equal(runtimeDisposals, 1);
 	assert.equal(mode.renderer, previousUi);
 	await previousUi.dispose();
 });
