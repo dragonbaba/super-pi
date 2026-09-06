@@ -47,9 +47,11 @@ Stop: Draft Candidate Gate — awaiting external final review and explicit merge
 
 ## Candidate implementation and compatibility
 
-After: registry/wrapper -> resolve path -> stat dispatch. Small files (<=256 KiB)
-and images retain the original access/MIME/read/decode/split/slice/truncate result
-path. For large local text: MIME sniff -> canonical workspace/path -> open ->
+After closeout: registry/wrapper -> resolve path -> access/MIME sniff -> small
+descriptor snapshot. Small files (<=256 KiB) use one fixed-size Buffer and positional
+reads capped at the descriptor's initial size, with generation/path revalidation.
+They retain original decode/split/slice/truncate results; no stream/index framework.
+Images retain their original path. Large or changed local text -> canonical workspace/path -> open ->
 descriptor generation -> bounded scan -> bounded incremental UTF-8 decode ->
 descriptor and path generation revalidation -> close -> bounded text/notice/details
 -> unchanged extension, G2 model projection, artifact/continuation and UI paths.
@@ -138,8 +140,10 @@ streaming path already reduces retained memory from O(file) to O(chunk+window).
 | Same fixture near end, 10 lines | 7.106 / 7.373 | 5.567 / 5.324 | 22% / 28% faster |
 | 10 MiB single line | 6.152 / 6.111 | 0.768 / 0.754 | 88% faster |
 
-Small-path timing includes the extra stat; a subsequently removed duplicate path
-resolution makes these conservative, not final timing claims. Large comparisons
+Small-path timing describes the first candidate's extra stat and duplicate path
+resolution. The closeout descriptor-snapshot fix supersedes that dispatch: no final
+small-path timing is claimed, and no additional performance processes were run.
+Large comparisons
 isolate the scanner versus a test-only full-read/decode/split/slice/truncate reader;
 they exclude both production dispatch and G2 costs. Near-end scans still inspect
 the required prefix on each offset request. Use cursors for sequential O(window)
@@ -161,7 +165,12 @@ continuation. No index complexity is justified by these results.
 | Continuations issued | 1 | 1 | 1 |
 
 The initial production MIME sniff adds up to 4,100 read bytes, one Buffer and one
-open/read/close; cursor calls bypass sniffing. Cursor encoding allocates one bounded
+open/read/close; cursor calls bypass sniffing. Closeout small-file admission adds
+one descriptor open/stat/close before the large scanner (no source Buffer for a
+large descriptor). Stable small files instead allocate exactly their initial size
+(<=256 KiB), one Buffer, bounded positional reads, and generation checks. If they
+change, the small Buffer is released and scanning begins afresh. The deterministic
+growth regression observes all opens/closes and caps every requested read. Cursor encoding allocates one bounded
 metadata Buffer, decoding a supplied cursor allocates one, and crypto has its own
 small native allocations. Counters are explicitly scanner-owned, not claims about
 all V8/Node internals. `separatorsInspected` counts LF matches used by the scan;
@@ -197,7 +206,7 @@ evidence, not a promise that every runtime has identical heap values.
 
 ## Verification and review status
 
-Focused read suite: 26 pass. Existing G2 artifact and budgeted-model-view suites:
+Focused read suite: 29 pass after closeout (26 at first candidate). Existing G2 artifact and budgeted-model-view suites:
 16 pass. `npm run check` and `npm run build:offline`: pass during development.
 The single local candidate `npm test` run passed (exit 0), including memory tests.
 `git diff --check` passed; status contained exactly the five intended files.
@@ -210,7 +219,7 @@ Local self-assessment (external review pending):
 
 - B0: none identified in this scoped candidate.
 - B1: none identified in this scoped candidate; exact CI is still a candidate gate.
-- C: extra small-read stat cost; prefix scan for random offsets; NUL-only binary
+- C: small-read descriptor/generation-check cost; prefix scan for random offsets; NUL-only binary
   indication; filesystem metadata cannot detect adversarial changes that preserve
   every available generation field; remote/harness whole-file reads remain scoped out.
 - D: D-TUI-SMOOTH-STREAMING-REVEAL remains non-blocking and unimplemented.
@@ -219,3 +228,25 @@ Rollback point: d8e0e655c25628eb3aa5711cb3ea7b58cded17c9. No main modification,
 merge, Mark Ready, rebase, reset/clean, force-push or branch deletion is authorized
 or performed. One Draft Candidate Review will be requested on the PR. Merge remains
 subject to external final review and explicit user authorization.
+
+## Candidate Review and single closeout increment
+
+The Candidate Review of 056866d45611f2f431ab8e1167fa093ad158e7f9 reported two B1s
+and one C (review 5126222305). All three are addressed in the closeout increment:
+
+- B1 growth between size classification and whole-file read: local text never
+  calls unbounded readFile. The simple small descriptor snapshot above bounds reads
+  even if a writer appends after fstat. A deterministic test appends 1 MiB during
+  the small descriptor's first read, verifies bounded window routing/read sizes,
+  and observes every descriptor closing.
+- B1 suffix presented as complete at LF/EOF: startsPartial now emits an independent
+  model-visible partial-line suffix label. Tests cover LF and final EOF.
+- C NFC/NFD filename fallback: initial and cursor reads both use resolveReadPathAsync;
+  the cursor still verifies canonical target and generation. Same-spelling resume
+  through NFC input / NFD actual filename is tested.
+
+No scanner algorithm, retention policy, or frozen area changed in closeout. Existing
+scanner allocation/profile/GC evidence applies; dispatch overhead additions are
+counted above, not hidden in scanner counters. No new local npm test, profiling
+matrix, or soak was run. Focused tests/check/build passed; exact final-head CI and
+the one authorized incremental review are recorded in the PR envelope.

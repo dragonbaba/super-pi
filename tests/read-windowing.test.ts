@@ -232,3 +232,62 @@ test("scanner AST: no inline callbacks, Promise tails, full-file materialization
 	assert.doesNotMatch(code, /\breadFile\b|\.split\(|new (?:Map|Set)|Promise\.all|console\.|telemetry\./);
 	assert.match(source, /finally\s*\{\s*await handle\.close\(\)/);
 });
+
+test("growth during a small descriptor read returns a bounded large window", async (t) => fixture(async (path, directory) => {
+	await writeFile(path, "old");
+	const originalOpen = fsPromises.open;
+	let opens = 0;
+	let closes = 0;
+	let maximumRead = 0;
+	const mocked = t.mock.method(fsPromises, "open", async (...args: Parameters<typeof originalOpen>) => {
+		const handle = await originalOpen(...args);
+		opens++;
+		const isSmallDescriptor = opens === 2; // MIME sniff, then bounded small snapshot.
+		const originalRead = handle.read;
+		const originalClose = handle.close;
+		let grew = false;
+		t.mock.method(handle, "read", async (...readArgs: unknown[]) => {
+			maximumRead = Math.max(maximumRead, Number(readArgs[2]));
+			if (isSmallDescriptor && !grew) { grew = true; await appendFile(path, "x".repeat(1024 * 1024)); }
+			return Reflect.apply(originalRead, handle, readArgs);
+		});
+		t.mock.method(handle, "close", async () => { closes++; return originalClose.call(handle); });
+		return handle;
+	});
+	syncBuiltinESMExports();
+	try {
+		const result = await createReadToolDefinition(directory).execute("growing", { path }, undefined, undefined, {} as ExtensionContext);
+		assert.equal(result.details?.window?.partial, true);
+		assert.ok(result.details!.window!.endByte <= READ_WINDOW_BYTES);
+		assert.ok(maximumRead <= READ_CHUNK_BYTES);
+		assert.equal(opens, closes);
+	} finally { mocked.mock.restore(); syncBuiltinESMExports(); }
+}));
+
+test("final continuation suffix is visibly partial at LF and EOF", async () => fixture(async (path, directory) => {
+	for (const ending of ["", "\nlast"]) {
+		await writeFile(path, "x".repeat(READ_CHUNK_BYTES + 5) + ending);
+		const tool = createReadToolDefinition(directory);
+		let cursor: string | undefined;
+		let suffixFound = false;
+		do {
+			const result = await tool.execute("partial", { path, cursor, limit: 1 }, undefined, undefined, {} as ExtensionContext);
+			if (result.details?.window?.startsPartial && !result.details.window.partial) {
+				assert.match(result.content[0].type === "text" ? result.content[0].text : "", /partial-line suffix/);
+				suffixFound = true;
+			}
+			cursor = result.details?.window?.cursor;
+		} while (cursor);
+		assert.equal(suffixFound, true);
+	}
+}));
+
+test("same spelling resumes through NFC-to-NFD filename fallback", async () => fixture(async (_path, directory) => {
+	const actual = join(directory, "cafe\u0301.txt");
+	const requested = join(directory, "caf\u00e9.txt");
+	await writeFile(actual, "x".repeat(1024 * 1024));
+	const tool = createReadToolDefinition(directory);
+	const first = await tool.execute("fallback", { path: requested }, undefined, undefined, {} as ExtensionContext);
+	const second = await tool.execute("fallback-next", { path: requested, cursor: first.details?.window?.cursor }, undefined, undefined, {} as ExtensionContext);
+	assert.equal(second.details?.window?.startByte, first.details?.window?.nextByte);
+}));

@@ -61,6 +61,35 @@ function generation(info: BigIntStats): string {
 	return `${info.dev}:${info.ino}:${info.size}:${info.mtimeNs}:${info.ctimeNs}:${info.birthtimeNs}`;
 }
 
+/** Simple small-file snapshot: fixed-size allocation and bounded positional reads.
+ * A changed or large file goes back to the window scanner, never to readFile.
+ */
+export async function readSmallFileIfStable(path: string, signal?: AbortSignal): Promise<Buffer | undefined> {
+	checkAbort(signal);
+	const canonical = await realpath(path);
+	const handle = await open(canonical, "r");
+	try {
+		const info = await handle.stat({ bigint: true });
+		if (!info.isFile() || info.size > BigInt(READ_SMALL_FILE_BYTES)) return undefined;
+		const buffer = Buffer.allocUnsafe(Number(info.size));
+		let position = 0;
+		while (position < buffer.length) {
+			checkAbort(signal);
+			const read = await handle.read(buffer, position, buffer.length - position, position);
+			if (read.bytesRead === 0) return undefined;
+			position += read.bytesRead;
+		}
+		checkAbort(signal);
+		const identity = generation(info);
+		if (generation(await handle.stat({ bigint: true })) !== identity ||
+			await realpath(path) !== canonical || generation(await stat(canonical, { bigint: true })) !== identity) return undefined;
+		checkAbort(signal);
+		return buffer;
+	} finally {
+		await handle.close();
+	}
+}
+
 function scopeKey(workspace: string, session: string): string {
 	return createHash("sha256").update(workspace).update("\0").update(session).digest("hex");
 }

@@ -4,7 +4,7 @@ import type { AgentTool } from "@super-pi/agent-core";
 import type { Api, ImageContent, Model, TextContent } from "@super-pi/ai";
 import { Text } from "@super-pi/tui";
 import { constants } from "fs";
-import { access as fsAccess, readFile as fsReadFile, stat as fsStat } from "fs/promises";
+import { access as fsAccess, readFile as fsReadFile } from "fs/promises";
 import { type Static, Type } from "typebox";
 import { getReadmePath } from "../../config.ts";
 import { keyHint, keyText } from "../../modes/interactive/components/keybinding-hints.ts";
@@ -14,7 +14,7 @@ import { detectSupportedImageMimeTypeFromFile } from "../../utils/mime.ts";
 import { formatPathRelativeToCwdOrAbsolute } from "../../utils/paths.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
 import { resolveReadPathAsync, resolveToCwd } from "./path-utils.ts";
-import { READ_SMALL_FILE_BYTES, ReadCursorError, readWindow, type ReadWindowResult } from "./read-window.ts";
+import { ReadCursorError, readSmallFileIfStable, readWindow, type ReadWindowResult } from "./read-window.ts";
 import { getTextOutput, renderToolPath, replaceTabs, str } from "./render-utils.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, type TruncationResult, truncateHead } from "./truncate.ts";
@@ -231,24 +231,22 @@ export function createReadToolDefinition(
 			ctx?,
 		) {
 			let resolvedLocalPath: string | undefined;
+			let localTextBuffer: Buffer | undefined;
+			let localMime: string | null | undefined;
 			if (cursor !== undefined && ops !== defaultReadOperations) throw new ReadCursorError("invalid-cursor");
 			if (ops === defaultReadOperations) {
 				if (signal?.aborted) throw new Error("Operation aborted");
-				const absolutePath = cursor === undefined ? await resolveReadPathAsync(path, cwd) : resolveToCwd(path, cwd);
+				const absolutePath = await resolveReadPathAsync(path, cwd);
 				resolvedLocalPath = absolutePath;
-				// Missing/special files retain the legacy error path. A cursor must always
-				// validate its original generation, even after truncation below threshold.
-				let largeFile = false;
 				if (cursor === undefined) {
-					try {
-						const info = await fsStat(absolutePath);
-						largeFile = info.isFile() && info.size > READ_SMALL_FILE_BYTES;
-					} catch { /* Preserve the legacy access/read error below. */ }
+					await ops.access(absolutePath);
+					localMime = await detectSupportedImageMimeTypeFromFile(absolutePath);
+					if (!localMime) localTextBuffer = await readSmallFileIfStable(absolutePath, signal);
 				}
-				if (cursor !== undefined || (largeFile &&
-					!await detectSupportedImageMimeTypeFromFile(absolutePath))) {
-					const window = await readWindow(absolutePath, cwd, ctx?.sessionManager?.getSessionId() ?? instanceScope, { offset, limit, cursor }, signal);
+				if (cursor !== undefined || (!localMime && localTextBuffer === undefined)) {
+					const window = await readWindow(absolutePath, cwd, ctx?.sessionManager?.getSessionId() || instanceScope, { offset, limit, cursor }, signal);
 					let output = window.text;
+					if (window.startsPartial) output = `[Continuation starts partway through line ${window.startLine}; this is a partial-line suffix.]\n${output}`;
 					if (window.binary) output += "\n\n[Binary NUL detected in this byte range; displayed as UTF-8 with replacement.]";
 					if (window.cursor) output += `\n\n[${window.partial ? `Line ${window.nextLine} is partial` : `Read through line ${window.nextLine - 1}`}; more file content remains. Continue with the same path and cursor=${window.cursor}.]`;
 					const { text: _text, ...details } = window;
@@ -273,9 +271,9 @@ export function createReadToolDefinition(
 							const absolutePath = resolvedLocalPath ?? await resolveReadPathAsync(path, cwd);
 							if (aborted) return;
 							// Check if file exists and is readable.
-							await ops.access(absolutePath);
+							if (ops !== defaultReadOperations) await ops.access(absolutePath);
 							if (aborted) return;
-							const mimeType = ops.detectImageMimeType ? await ops.detectImageMimeType(absolutePath) : undefined;
+							const mimeType = ops === defaultReadOperations ? localMime : ops.detectImageMimeType ? await ops.detectImageMimeType(absolutePath) : undefined;
 							let content: (TextContent | ImageContent)[];
 							let details: ReadToolDetails | undefined;
 							const nonVisionImageNote = getNonVisionImageNote(ctx?.model);
@@ -298,7 +296,7 @@ export function createReadToolDefinition(
 								}
 							} else {
 								// Read text content.
-								const buffer = await ops.readFile(absolutePath);
+								const buffer = localTextBuffer ?? await ops.readFile(absolutePath);
 								const textContent = buffer.toString("utf-8");
 								const allLines = textContent.split("\n");
 								const totalFileLines = allLines.length;
