@@ -1,8 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { Agent } from "../packages/agent/src/agent.ts";
+import { alphaHeadless, alphaModelRuntime } from "./helpers/alpha-session.ts";
 // @ts-expect-error JavaScript extension package.
 import { McpBridgeRuntime } from "../packages/mcp-bridge/src/bridge.js";
+
+test("session input seam preserves MCP tool-level error status", async () => {
+	const fixture = await alphaHeadless(alphaModelRuntime());
+	try {
+		const result = { content: [{ type: "text", text: "bounded failure" }], details: { mcpError: "budget-not-configured" } };
+		const outcome = await fixture.session.agent.afterToolCall!({ toolCall: { type: "toolCall", id: "mcp-fail", name: "mcp__fixture__fixture", arguments: {} }, args: {}, result, isError: false } as never);
+		assert.equal(outcome?.isError, true);
+	} finally { await fixture.release(); }
+});
 
 test("MCP progress observer rejection cannot replace the canonical final result", async () => {
 	let tool: any;
