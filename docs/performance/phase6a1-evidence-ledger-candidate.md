@@ -8,7 +8,7 @@ Actual base and merge-base: `172c52341249414d236eeb9153516bfd10087782`. Producti
 
 Phase 5A / 5B / 5C: completed, merged, accepted-area frozen. No changes to agent-loop.ts, provider wire/adapters, session JSONL, ToolResult dual views, contextual budgeting, public artifact/cursor formats, read stale-file semantics, MCP adapter/progress/ceilings/canonicalization, terminal/Markdown/TUI lifecycle. The existing read scanner only adds the authorized private metadata handoff. G2 only adds resident evidence accessors. No immutable-message mode, freeze, seal or property restrictions on canonical content.
 
-Production files: core/evidence-ledger.ts (new), core/agent-session.ts, core/settings-manager.ts, core/tool-result-presentation.ts, core/tools/read.ts, core/tools/read-window.ts. Supporting files: six evidence test suites, one fixture helper, one benchmark script, a narrowly scoped Linux development workflow, this packet and the Plan Gate. Exact changed-file list and diff stat are in the PR body.
+Production files: core/evidence-ledger.ts (new), core/agent-session.ts, core/settings-manager.ts, core/tool-result-presentation.ts, core/tools/read.ts, core/tools/read-window.ts. Supporting files: seven evidence test suites, one fixture helper, one historical benchmark script, this packet and the Plan Gate. The phase-only development workflow was removed during cumulative closeout. Exact changed-file list and diff stat are in the PR body.
 
 Rollback point: the base above. Disabling `evidenceLedger.enabled` returns to ordinary reads; a fresh disabled session creates no ledger or execution adapter. A revert would require separate authorization. No rollback operation was performed.
 
@@ -40,7 +40,7 @@ The notice contains bounded workspace-relative path, original line/byte range, m
 
 ## File and scope identity
 
-The argument key is a fixed tuple for the current schema: policy, real cwd, real canonical path, offset, limit and optional bounded cursor. Offset omission equals 1. Omitted limit stays distinct where the existing legacy continuation notice differs; no guessed default merges semantically different output. Paths use existing resolution, separators and NFC normalization; exact canonical path and file generation are also checked before reuse. Ordered values are not reordered. No recursive serializer or result serialization.
+The argument key is a fixed tuple for the current schema: policy, real cwd, normalized workspace-relative addressed path, real canonical target path, offset, limit and optional bounded cursor. Offset omission equals 1. Omitted limit stays distinct where the existing legacy continuation notice differs; no guessed default merges semantically different output. Paths use existing resolution, separators and NFC normalization; exact addressed path, canonical path and file generation are also checked before reuse. Ordered values are not reordered. No recursive serializer or result serialization. The key uses path identity, while the bounded notice uses JSON-quoted path and location fields.
 
 Scope binds session, real cwd/path, workspace/branch generations, read policy, and Phase 5C-A's dev/inode/size/mtimeNs/ctimeNs/birthtimeNs tuple. Realpath checks bind the addressed symlink target. The read descriptor's own before/after validation supplies admission identity; a post-read standalone stat cannot assign it. No descriptor, source Buffer or public cursor travels in the handoff. Empty-ledger misses derive keys from this validated identity and avoid redundant pre-read checks.
 
@@ -133,3 +133,36 @@ Both deterministic reproductions failed before the fix in separate red commit `1
 No C findings were reported. Deferred Windows native identity and other adapters remain D. This batch addresses both reported B0/B1 findings; incremental review must confirm closeout.
 
 Stop target: **SUPER-PI-PHASE6A1-EVIDENCE-LEDGER-CORE-READ — Draft Candidate Gate — awaiting external final review and explicit merge authorization.** This packet alone does not assert that pending closeout CI/review has completed.
+
+## Cumulative external last-diff closeout
+
+This section supersedes the previous stop target and no-open-findings assessment. The externally reviewed candidate `f74d177716642d1b2cf6dd509157838e999baca3` remains unchanged in history; base/merge-base remains `172c52341249414d236eeb9153516bfd10087782`. Option B, allocation/GC evidence, Windows conservative misses and previously reviewed invalidation behavior remain accepted and frozen.
+
+### Separate red evidence
+
+Test-only `4dcd13aa8ece6a3588d4bf89ff2a0778c110cb84` introduced production AgentSession/read/G2 regressions before any production correction. Its initial check stopped on a test fixture using `state.error` instead of `state.errorMessage`; test-only `4cb4cbf82afb11676d5e04bf9f5eb147ebf1319b` corrected that observation without changing production. The [semantic Linux red run 34142072622](https://github.com/dragonbaba/super-pi/actions/runs/34142072622) then passed check/build and recorded exactly six focused failures (55 pass, one Windows-only skip):
+
+- **B0-6A1-03:** original tiny read = 1 estimated token. The repeated reference = 101 tokens. Budgets 1 and 2 failed only on the second read with `Tool-result budget ... cannot contain the fixed continuation notice.` At budgets 128 and 2048 both calls completed but the repeated result amplified 1 to 101 tokens.
+- **B1-6A1-04:** after `alias-a.txt -> target.txt`, reading `alias-b.txt -> target.txt` incorrectly hit and returned a reference naming alias-a. The same wrong hit occurred after deleting alias-a. The oversized-first-line fallback explicitly embeds the addressed filename, making the semantic mismatch observable.
+
+No red commit was rewritten. The first failed type-check is disclosed separately from the semantic red evidence.
+
+### Correction and deterministic coverage
+
+`cbbdf93` adds the single `formatEvidenceReference` formatter, exact admission estimate and numeric `referenceTokens`; `3ce7305` binds both admission and lookup keys to the normalized addressed path and checks the recorded path before G2 integrity work. `8e022b1` requires an explicit admission budget, preserves early invalidation paths without allocating a reference, and adds deterministic medium/large effectiveness checks. `efd9568` removes `.github/workflows/evidence-ledger-development.yml`; no replacement phase workflow was added.
+
+The existing G2 owner exposes only `getEvidenceBudgetTokens()`. After the real artifact handle and final bounded metadata are known, admission measures the actual escaped notice and requires `referenceTokens < modelTokens` and `referenceTokens <= ownerBudget`. Existing field/byte bounds run before formatting. No minimum file-size heuristic, second owner, early projection, source copy, notice retention, second artifact or estimator ownership is introduced. Only a numeric token field is retained. Missing, invalid or inconsistent legacy/internal token metadata invalidates with `not-beneficial`, before any G2 integrity scan. Declines do not increment hit, prevented-read or avoided-token counters.
+
+Lookup keeps scope/path/file-generation/resident-artifact checks ahead of reference construction. A potentially valid reference is built once, measured with the existing estimator to check its numeric metadata, and returned only after exactly one existing G2 integrity scan. A path mismatch performs zero such scans. Both canonical target identity and generation validation are retained. `file.txt`, `./file.txt` and `dir/../file.txt` stay equivalent; distinct symlink aliases do not. JSON quoting keeps newline, ESC, quotes and delimiter-like filename characters within the structured path field; the key never uses that display encoding.
+
+The [first Linux green run 34142401539](https://github.com/dragonbaba/super-pi/actions/runs/34142401539) at `3ce7305340922a1927230c7d34e49f9916ec5e6b` recorded 69 pass, one Windows-only skip, zero failures. Tiny reads remain 1 token at budgets 1, 2, 128 and 2048 with zero hits; the final escaped candidate notice measures 105 tokens. The dynamic sweep also brackets that actual reference estimate. Both path-sensitive fallback cases now execute normal alias-b reads; these short fallback notices are themselves unprofitable to reference. A separate profitable alias fixture verifies that a later alias-b hit names alias-b and performs exactly one integrity scan.
+
+Maximum accepted path (1024 characters), location (8192), evidence ID (512) and handle (1024) fields produce an actual escaped notice of 23,121 characters / 12,524 estimated tokens in the deterministic metadata fixture. Admission rejects budget `referenceTokens - 1`, accepts an exact fitting budget only when the source estimate is larger, and rejects equal/larger reference-to-source estimates. Missing, negative, plausible-but-inconsistent and excessive internal token metadata, addressed-path mismatch, escaped filename identity, and normalized spellings have focused coverage.
+
+The [final production focused Linux run 34142587551](https://github.com/dragonbaba/super-pi/actions/runs/34142587551), exact `8e022b1a03e33e816a5c7b1cf6a271ce9327a556`, passed 72 tests with one Windows-only skip and zero failures. Each medium/large fixture records one real execution, nine hits, nine integrity scans and no reference projection/truncation. Medium: source model estimate 2046, reference 106, ten-call total 3000 versus 20,460 without reuse (85.34% reduction). Large: source 2047, reference 111, total 3046 versus 20,470 (85.12% reduction). These are deterministic token counts, not a timing campaign. The later workflow removal and this packet do not change production or tests.
+
+Local Windows focused checks pass with hit-dependent cases explicitly skipped; the existing five G2 artifact tests pass. `npm run check`, `npm run build:offline` and `git diff --check` pass. No local full-suite repeat, allocation profile, controlled-GC fixture, timing campaign, 100,000-lookup campaign or extra Phase 5/MCP/TUI matrix was run. The authorized normal exact-head Linux/Windows CI (including `npm test`) remains the final verification source.
+
+This packet is committed **before** final exact-head CI. The exact final SHA, final CI job URLs/results, clean-worktree check and unchanged origin/main ancestor check are published in PR #27's body after CI, without a later docs-only commit. No third broad automated review is requested. No local B0/B1/C remains in this correction; external last-diff review and explicit merge authorization remain outstanding.
+
+**SUPER-PI-PHASE6A1-EVIDENCE-LEDGER-CORE-READ — Corrected Draft Merge Gate — awaiting external last-diff review and explicit merge authorization.** PR #27 remains Open and Draft. No Mark Ready, merge, Phase 6A2 or Phase 6B action is authorized or performed.
