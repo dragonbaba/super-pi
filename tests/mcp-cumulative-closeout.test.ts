@@ -19,11 +19,11 @@ function pngWithMetadata(label: string): string {
 }
 const largePng=pngWithMetadata("initial"), replacementPng=pngWithMetadata("replacement");
 
-for (const hook of ["tool_result", "message_end"]) for (const kind of ["text", "image"]) for(const mode of ["in-place","returned","splice","no-op","no-handler"]) {
+for (const hook of ["tool_result", "message_end"]) for (const kind of ["text", "image"]) for(const mode of ["in-place","returned","splice","no-op","no-handler","freeze-returned","seal-splice","prevent-splice","tagged-frozen"]) {
   test(`public MCP ${kind} remains mutable through real ${hook} runner: ${mode}`, async () => {
     const fixture = await alphaHeadless(alphaModelRuntime());
     const owner = createToolResultPresentationOwner({enabled:true,budgetTokens:256},fixture.session.sessionManager.getSessionId())!;
-    let tool: any, observed = false, final: any, view: any;
+    let tool: any, observed = false, final: any, view: any, extensionBlock: any, extensionKeys: any;
     const runtime = new McpBridgeRuntime({registerTool(value: any){tool=value;}},"fixture");
     const initial = kind === "text" ? {type:"text",text:large} : {type:"image",data:largePng,mimeType:"image/png"};
     const changed=mode!=="no-op"&&mode!=="no-handler";
@@ -47,6 +47,13 @@ for (const hook of ["tool_result", "message_end"]) for (const kind of ["text", "
         observed=true;
         if(mode==="no-op")return;
         const block=kind==="text"?{type:"text",text:replacement}:{type:"image",data:replacementPng,mimeType:"image/png"};
+        if(mode==="freeze-returned"||mode==="seal-splice"||mode==="prevent-splice"||mode==="tagged-frozen"){
+          if(mode==="tagged-frozen")(block as any).mcpInput=true;
+          extensionBlock=mode==="seal-splice"?Object.seal(block):mode==="prevent-splice"?Object.preventExtensions(block):Object.freeze(block);
+          extensionKeys=Reflect.ownKeys(block);
+          if(mode==="freeze-returned")return hook==="message_end"?{message:{...event.message,content:[block,content[1]]}}:{content:[block,content[1]]};
+          content.splice(0,1,block);return;
+        }
         if(mode==="returned")return hook==="message_end"?{message:{...event.message,content:[block,content[1]]}}:{content:[block,content[1]]};
         if(mode==="splice"){content.splice(0,1,block);content.push({type:"text",text:"added"});return;}
         if(kind==="text")content[0].text=replacement;
@@ -60,6 +67,7 @@ for (const hook of ["tool_result", "message_end"]) for (const kind of ["text", "
       assert.deepEqual(errors,[]);
       assert.equal(observed,mode!=="no-handler","hook failed before mutation");
       assert.equal(final.content[0][kind==="text"?"text":"data"],expected);
+      if(extensionBlock){assert.notEqual(final.content[0],extensionBlock);assert.deepEqual(Reflect.ownKeys(extensionBlock),extensionKeys);assert.equal(Object.isExtensible(extensionBlock),false);assert.equal(extensionBlock[kind==="text"?"text":"data"],expected);}
       const saved: any=fixture.session.sessionManager.getBranch().filter((e:any)=>e.type==="message").at(-1);
       assert.equal(saved.message.content[0][kind==="text"?"text":"data"],expected);
       assert.equal(getToolResultModelContent(view,final.content),view.modelContent);
