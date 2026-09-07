@@ -5,6 +5,41 @@ import { syncBuiltinESMExports } from "node:module";
 import { join } from "node:path";
 import test from "node:test";
 import { fixture } from "./helpers/evidence-ledger-fixture.ts";
+import { createValidatedReadIdentity, readSmallFileIfStable, readWindow } from "../packages/coding-agent/src/core/tools/read-window.ts";
+
+test("evidence workspace resolution failure preserves an accessible absolute read", async () => {
+	const f = await fixture();
+	try {
+		const path = join(f.root, "absolute.txt");
+		writeFileSync(path, "accessible absolute text");
+		renameSync(f.cwd, join(f.root, "renamed-workspace"));
+		const identity = createValidatedReadIdentity();
+		const ordinary = await readSmallFileIfStable(path);
+		const enabled = await readSmallFileIfStable(path, undefined, identity, f.cwd);
+		assert.deepEqual(enabled, ordinary);
+		assert.equal(identity.precise, false);
+		assert.equal(identity.canonicalWorkspace, "");
+		const message = await f.read({ path });
+		assert.equal((message.content[0] as { text: string }).text, "accessible absolute text");
+		assert.equal(f.internals._evidenceLedger!.counters.entries, 0);
+	} finally { f.close(); }
+});
+
+test("line-limited evidence range excludes the next unread line", async () => {
+	const f = await fixture();
+	try {
+		const path = join(f.cwd, "file.txt");
+		writeFileSync(path, "one\ntwo\nthree");
+		const identity = createValidatedReadIdentity();
+		const result = await readWindow(path, f.cwd, "range-fixture", { limit: 1 }, undefined, undefined, identity);
+		assert.equal(result.text, "one");
+		assert.match(identity.location, /bytes 0-3; lines 1-1;/);
+		writeFileSync(path, "one\n" + "two\n".repeat(100000));
+		await f.read({ path, limit: 1 });
+		const next = await f.read({ path, limit: 1 });
+		if (process.platform !== "win32") assert.match((next.content[0] as { text: string }).text, /lines 1-1;/);
+	} finally { f.close(); }
+});
 
 function reused(message: { content: unknown }): boolean { return /no new disk read/i.test(JSON.stringify(message.content)); }
 
