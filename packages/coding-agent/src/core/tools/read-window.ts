@@ -118,8 +118,14 @@ function generation(info: BigIntStats): string {
 export async function readSmallFileIfStable(path: string, signal?: AbortSignal, evidenceIdentity?: ValidatedReadIdentity, workspace?: string): Promise<Buffer | undefined> {
 	checkAbort(signal);
 	if (evidenceIdentity && workspace) {
-		evidenceIdentity.canonicalWorkspace = await realpath(workspace);
-		evidenceIdentity.addressedPath = path;
+		try {
+			evidenceIdentity.canonicalWorkspace = await realpath(workspace);
+			evidenceIdentity.addressedPath = path;
+		} catch {
+			// Evidence-only identity cannot make an otherwise valid read fail.
+			// Leave the caller's fresh metadata ineligible and read normally.
+			evidenceIdentity = undefined;
+		}
 	}
 	const canonical = await realpath(path);
 	const handle = await open(canonical, "r");
@@ -372,7 +378,7 @@ export async function readWindow(
 			counters.continuationCount++;
 			counters.cursorSize = nextCursor.length;
 		}
-		if (evidenceIdentity && !binary) handoffIdentity(evidenceIdentity, canonical, info, `bytes ${startByte}-${position - (stoppedAtLine ? 1 : 0)}; lines ${startLine}-${line}; window policy v1`);
+		if (evidenceIdentity && !binary) handoffIdentity(evidenceIdentity, canonical, info, `bytes ${startByte}-${position - (stoppedAtLine ? 1 : 0)}; lines ${startLine}-${line - (stoppedAtLine ? 1 : 0)}; window policy v1`);
 		return { text, startByte, endByte: position - (stoppedAtLine ? 1 : 0), nextByte: position, startLine, nextLine: line, partial, startsPartial: cursor?.partial ?? false, done, cursor: nextCursor, binary };
 	} finally {
 		await handle.close();

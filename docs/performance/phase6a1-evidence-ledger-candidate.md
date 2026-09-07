@@ -121,4 +121,15 @@ One-pass self-audit covered built-in/custom-read/shell/MCP/network/write eligibi
 
 Classification for Candidate Review: B0 = stale/scope/permission/secret/public/cross-session error; B1 = contract/bounds/performance/lifecycle; C = narrow test/docs/diagnostic closeout; D = deferred adapter/optimization. The final 500-sample measurement closes the development miss-performance B1 using the permitted absolute-delta allowance; earlier unfavorable samples remain disclosed. Windows native identity support and grep/find/LSP/git adapters are D and outside this change. One Candidate Review and at most one incremental closeout review are authorized. No operation-id, persistence, Harness v2 or Phase 7/8 work.
 
-Stop target: **SUPER-PI-PHASE6A1-EVIDENCE-LEDGER-CORE-READ — Draft Candidate Gate — awaiting external final review and explicit merge authorization.** This packet alone does not assert that CI/review or an open B1 has been closed.
+## Candidate Review closeout batch
+
+The single Candidate Review of `317abb468facbbeee135209e800628229d97488d` followed successful exact-head Linux/Windows [CI 34133965317](https://github.com/dragonbaba/super-pi/actions/runs/34133965317). It reported two findings:
+
+- [B0 workspace compatibility](https://github.com/dragonbaba/super-pi/pull/27#discussion_r3950957698): evidence-only realpath(cwd) could fail an otherwise accessible absolute small-file read after cwd rename/removal. The metadata probe now catches its own resolution failure, leaves evidence ineligible and continues the original target read. Normal target access/read errors remain unchanged.
+- [B1 range accuracy](https://github.com/dragonbaba/super-pi/pull/27#discussion_r3950957700): a line-limit stop records the next unread line. Only the private evidence location now subtracts one when stoppedAtLine; public window fields/content/cursors remain unchanged.
+
+Both deterministic reproductions failed before the fix in separate red commit `162c41d`. Focused closeout checks then passed: 64 tests, 62 passed, two Windows/baseline skips; check and offline build passed. No allocation profile, GC fixture, benchmark process or local full-suite repeat was used. The changes affect exceptional evidence workspace resolution and metadata range formatting, with no new exact-hit allocation or integrity work. Exact closeout head CI and the single reserved incremental review are linked in the PR packet; no documentation-only commit follows that CI.
+
+No C findings were reported. Deferred Windows native identity and other adapters remain D. This batch addresses both reported B0/B1 findings; incremental review must confirm closeout.
+
+Stop target: **SUPER-PI-PHASE6A1-EVIDENCE-LEDGER-CORE-READ — Draft Candidate Gate — awaiting external final review and explicit merge authorization.** This packet alone does not assert that pending closeout CI/review has completed.
