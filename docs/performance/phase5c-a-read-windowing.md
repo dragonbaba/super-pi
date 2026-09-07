@@ -4,6 +4,11 @@ Goal: SUPER-PI-PHASE5C-A-LARGE-READ-WINDOWING.
 Baseline: origin/main d8e0e655c25628eb3aa5711cb3ea7b58cded17c9 (fetched).
 Branch: phase/5c-a-large-read-windowing.
 
+Current closeout: **Corrected Draft Merge Gate**, awaiting external incremental
+review and explicit merge authorization. The external-final-review correction
+section at the end supersedes the earlier candidate's gate/results. Exact final
+HEAD and CI links are recorded in the PR #25 review envelope.
+
 ## Previous manual gate closed
 
 G2 / G2S manually validated and accepted-area frozen. User-reported passes:
@@ -272,3 +277,128 @@ Two tests cover zero/overreported metadata, the explicit virtual-source ceiling,
 descriptor closure, and real Linux /proc/version. Check/build and the focused
 suite pass locally. The two-review budget is consumed; no third automated review
 is requested. The final correction remains subject to external final review.
+
+## External final review: B0-5C-A-01 / B1-5C-A-02
+
+Previous exact candidate: ca2a594e6c6918829c85336e003b3af6b62025d5. Its three
+commits remain intact. Test-only red commit:
+acdb993ce234f1e9e546953c9473794fe3879dd2 (`test(read): reproduce short-read stalls
+and underreported file sizes`). Production fix commit:
+10299c3b005fc631b6ce7c671055f2437d825e8f. Only `read-window.ts` changes production;
+`read.ts`, public cursor format/HMAC/scope, all prior notices/fallbacks, G2, and all
+other frozen production areas have no diff against ca2a594.
+
+The red run had 13 cases: 4 pass / 9 fail. CR/UTF-8/consecutive/boundary cases
+failed with the finite NON_PROGRESS_REPEATED_POSITION sentinel. The production
+underreported-size fixture recorded a successful result with text `x`, startByte 0,
+endByte/nextByte 1, done true and no cursor despite actual content of 262,244 bytes
+and a stable reported size of 1. No reset/amend was used to preserve this evidence.
+
+The scanner now fills its current preallocated Buffer using direct numeric
+`requested`, `count`, `bytesRead`, and `readPosition` slots. Each additional fill
+read advances both source position and Buffer offset. Positive short reads never
+reach CR/UTF trimming as incomplete chunks. EOF before the expected chunk is full
+throws stale-cursor, preserving the existing scanner snapshot contract. No async
+per-chunk helper, closure, timer, Promise tail/array, AbortController, carry array,
+queue, larger window/buffer, or index is introduced. Normal filesystem read Promises
+remain the only asynchronous fill boundary. An outer-loop progress invariant
+throws before repeating without logical progress; a non-done cursor must also
+advance from the call's startByte. Existing UTF-8 alignment across windows remains
+unchanged (up to three prefix bytes may be reread by a new window).
+
+Deterministic first-window traces are `(file position, Buffer offset, requested,
+returned)`:
+
+| Case | Trace |
+| --- | --- |
+| CRLF / four-byte UTF-8 | (0,0,16384,1), (1,1,16383,16383) |
+| Repeated ASCII one-byte reads | (0,0,16384,1), (1,1,16383,1), (2,2,16382,1), (3,3,16381,16381) |
+| Six consecutive one-byte reads | positions/offsets 0,1,2,3,4,5, then (6,6,16378,16378) |
+| Immediately before window boundary | (0,0,16384,16381), (16381,16381,3,1), (16382,16382,2,1), (16383,16383,1,1) |
+| Abort between fill reads | only (0,0,16384,1); descriptor closes before rejection |
+
+The small-snapshot ceiling now rechecks the descriptor size for **any** reported
+size, not only zero. If actual content exceeds 256 KiB and stat still reports at
+most that ceiling, `UnreliableReadSizeError` propagates with stable code
+`unreliable-size`. No successful partial content, cursor or automatic scanner retry
+is returned. Ordinary growth reflected by a stat size over 256 KiB still routes to
+the normal scanner. No `read.ts` plumbing is needed.
+
+Before returning done at reported EOF, the scanner probes exactly one byte with
+the existing source Buffer. It does not append that byte or flush the decoder
+before verifying EOF. Existing descriptor/canonical-path/generation validation
+runs first: an observed generation change is stale-cursor; an unchanged generation
+with probe data is unreliable-size. Confirmed EOF (zero returned bytes) permits
+decoder flush and the normal successful result.
+
+| Reported size / actual source | Outcome |
+| --- | --- |
+| 0 / 8,000 bytes | Complete bounded small result, unchanged |
+| 1 / 8,000 bytes | Complete bounded small result |
+| 16,000 / 8,000 bytes (overreported) | Complete bounded small result at real EOF |
+| 0 or 1 / 262,244 bytes, metadata stable | unreliable-size; exactly two production descriptors (MIME + small snapshot), both closed; no retry/cursor |
+| Ordinary file grows and stat becomes >256 KiB | Normal bounded scanner; prior growth regression passes |
+| Direct scanner, size 1 / 262,244 actual | One-byte EOF probe detects data; unreliable-size |
+| Probe detects data plus generation change | stale-cursor takes precedence |
+| Reliable EOF, including empty/CRLF/UTF-8 files | One probe returns zero; unchanged text and done=true |
+
+New internal counters: `eofProbes`, `eofProbeBytes`, `shortReadFillCalls`,
+`shortReadBytes`, `unreliableSizeDetections`, `zeroProgressPrevented`.
+`shortReadFillCalls` counts additional reads after a positive partial fill;
+`shortReadBytes` counts bytes returned by positive reads shorter than the remaining
+request. Direct unreliable EOF: bytesRead=2, readCalls=2, eofProbes=1,
+eofProbeBytes=1, unreliableSizeDetections=1, decoderFlushes=0,
+continuationCount=0, opens/closes=1/1. Reliable EOF: eofProbes=1,
+eofProbeBytes=0, source Buffer allocations=1. All progressing short-read fixtures
+have zeroProgressPrevented=0. Small-path rejection is observed through its typed
+exception and descriptor seam, not falsely included in scanner-owned counters.
+
+### Bounded closeout evidence
+
+Focused suite: 45 cases, 44 pass / one Linux-only skip locally on Windows. The
+existing 16 G2 artifact/model-budget cases pass. Check and offline build pass.
+The single local npm test run passed. Exact final-head Linux/Windows CI outcomes are
+recorded in the PR envelope. No broad automated review is requested; the original
+two-review budget remains consumed. All four prior review regressions pass and
+their thread replies/resolution are recorded on PR #25.
+
+The existing controlled-GC fixture ran **once** after the final production fix:
+14 WeakRefs, zero retained; 4 descriptors opened / 4 closed; initial heap
+19,702,880, observed peak 22,932,480, final heap 19,771,168 bytes. Four source
+Buffers/decoders, zero complete-file copies or line-array entries; one zero-byte
+EOF probe; zero non-progress detections. No HeapProfiler campaign was repeated.
+
+Exactly **three** independent timing processes were used for both requested
+checks (40 measured pairs plus five warm-up pairs per fixture, Windows Node 26.4.0).
+Small-file numbers compare the full current local tool with its legacy custom
+ReadOperations path. This measures the existing snapshot/validation cost, not a
+new short-read regression. Scanner numbers compare directly against the immutable
+ca2a594 module extracted into a test-only temporary file, removed with its fixture.
+No baseline reader enters production and no tuning was made from timing noise.
+
+All times below are milliseconds; each row lists process 1 / 2 / 3.
+
+| Fixture | Before p50 | After p50 | Absolute delta p50 | Before p95 | After p95 | Absolute delta p95 |
+| --- | --- | --- | --- | --- | --- | --- |
+| Small 1 KiB | .1808/.1801/.1895 | .3582/.3572/.3884 | +.1774/+.1771/+.1989 | .2849/.3121/.2910 | .4955/.5744/.4951 | +.2106/+.2623/+.2041 |
+| Small 8 KiB | .1783/.1974/.1867 | .3528/.3816/.3771 | +.1745/+.1842/+.1904 | .3009/.3043/.3206 | .5937/.6206/.5037 | +.2928/+.3163/+.1831 |
+| Small 32 KiB | .1925/.2002/.2059 | .3694/.3739/.3874 | +.1769/+.1737/+.1815 | .3409/.2789/.3227 | .5278/.5451/.6302 | +.1869/+.2662/+.3075 |
+| 10 MiB middle | 2.3747/2.4813/2.3257 | 2.4208/2.4248/2.4203 | +.0461/-.0565/+.0946 | 3.2292/2.8454/2.7840 | 2.9219/2.8693/2.9262 | -.3073/+.0239/+.1422 |
+| 10 MiB end | 4.2911/4.1470/4.2574 | 4.2487/4.2420/4.2921 | -.0424/+.0950/+.0347 | 4.5437/4.4543/4.5672 | 4.6573/4.6215/4.6525 | +.1136/+.1672/+.0853 |
+| 10 MiB single line | .3061/.3056/.3126 | .3118/.3160/.3020 | +.0057/+.0104/-.0106 | .4883/.4836/.5138 | .4506/.5124/.6303 | -.0377/+.0288/+.1165 |
+
+Scanner p50 changes are within about 4.1%; there is no consistent material
+regression. One single-line p95 sample increased by .1165 ms and is retained as
+noise/uncertainty evidence, not omitted. Small-path overhead versus the legacy
+reader is .174–.199 ms p50 and remains a documented C cost; correctness checks
+were not weakened to remove it.
+
+Current self-assessment: B0-5C-A-01 and B1-5C-A-02 are addressed with red/green
+evidence; no unresolved B0/B1 is identified locally, pending external incremental
+review. C: existing snapshot overhead, unreliable virtual sources fail explicitly,
+metadata-generation limits and previously scoped remote/harness behavior. D:
+Smooth Streaming Reveal remains frozen/deferred. No third broad automated review,
+Mark Ready, merge, Phase 5C-B or Phase 6 work is performed.
+
+Stop: **SUPER-PI-PHASE5C-A-LARGE-READ-WINDOWING Corrected Draft Merge Gate —
+awaiting external incremental review and explicit merge authorization.**

@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import fsPromises, { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
+import { pathToFileURL } from "node:url";
 import { Session } from "node:inspector/promises";
 import { setImmediate as immediate } from "node:timers/promises";
 import { createReadToolDefinition } from "../../packages/coding-agent/src/core/tools/read.ts";
@@ -31,7 +33,40 @@ try {
 	await writeFile(smallPath, "small file\n".repeat(32));
 	await writeFile(largePath, ("a".repeat(63) + "\n").repeat(rows));
 	await writeFile(singlePath, "x".repeat(10 * 1024 * 1024));
-	if (mode === "timing") {
+	if (mode === "corrected-timing") {
+		const previousCandidate = "ca2a594e6c6918829c85336e003b3af6b62025d5";
+		const previousPath = join(directory, "previous-read-window.ts");
+		await writeFile(previousPath, execFileSync("git", ["show", `${previousCandidate}:packages/coding-agent/src/core/tools/read-window.ts`]));
+		const previous = await import(pathToFileURL(previousPath).href) as { readWindow: typeof readWindow };
+		const local = createReadToolDefinition(directory);
+		const legacy = createReadToolDefinition(directory, { operations: { readFile, access, detectImageMimeType: detectSupportedImageMimeTypeFromFile } });
+		const timings = [];
+		for (const name of ["small-1024", "small-8192", "small-32768", "middle", "end", "single"]) {
+			const small = name.startsWith("small-");
+			if (small) await writeFile(smallPath, ("a".repeat(63) + "\n").repeat(Number(name.substring(6)) / 64));
+			const path = small ? smallPath : name === "single" ? singlePath : largePath;
+			const offset = name === "middle" ? rows / 2 : name === "end" ? rows - 10 : 1;
+			const before: number[] = [];
+			const after: number[] = [];
+			let counters = createReadWindowCounters();
+			for (let i = 0; i < 45; i++) {
+				const start = performance.now();
+				if (small) await legacy.execute("bench", { path, limit: 10 }, undefined, undefined, ctx);
+				else await previous.readWindow(path, directory, "benchmark-session", { offset, limit: 10 });
+				const middle = performance.now();
+				counters = createReadWindowCounters();
+				if (small) await local.execute("bench", { path, limit: 10 }, undefined, undefined, ctx);
+				else await readWindow(path, directory, "benchmark-session", { offset, limit: 10 }, undefined, counters);
+				const end = performance.now();
+				if (i >= 5) { before.push(middle - start); after.push(end - middle); }
+			}
+			before.sort((a, b) => a - b); after.sort((a, b) => a - b);
+			timings.push({ name, comparator: small ? "legacy-custom-operations" : previousCandidate,
+				beforeP50Ms: before[19], afterP50Ms: after[19], deltaP50Ms: after[19] - before[19],
+				beforeP95Ms: before[37], afterP95Ms: after[37], deltaP95Ms: after[37] - before[37], counters });
+		}
+		console.log(JSON.stringify({ mode, node: process.version, platform: process.platform, samples: 40, timings }));
+	} else if (mode === "timing") {
 		const local = createReadToolDefinition(directory);
 		const legacy = createReadToolDefinition(directory, { operations: { readFile, access, detectImageMimeType: detectSupportedImageMimeTypeFromFile } });
 		const timings = [];
