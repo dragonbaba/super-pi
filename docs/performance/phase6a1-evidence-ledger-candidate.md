@@ -174,3 +174,45 @@ At `8ce320c0115f1ed22057341729f1df400ddb26e7`, [CI 34142772950](https://github.c
 The diagnostic-SHA [Linux run 34144721276](https://github.com/dragonbaba/super-pi/actions/runs/34144721276) at `7db9d54` encountered the same ordinary-read-instead-of-hit symptom in the earlier new large effectiveness test, so the fail-fast full runner never reached the instrumented session test. Failure-only counters and before/after file-generation metadata are therefore also added to the new medium/large assertion. Neither assertion is weakened, and production remains unchanged while the cause is investigated.
 
 At `b6a6eb6`, [Linux CI 34145432309](https://github.com/dragonbaba/super-pi/actions/runs/34145432309/job/101816338122) passed the full suite, including both large assertions, without entering their failure diagnostics. Large source/reference/total token counts were 2044/111/3043 versus 20,440 without reuse; medium remained 2046/106/3000 versus 20,460. The earlier failures therefore remain unattributed. Static inspection identifies an existing G2 possibility to investigate: after its bounded shrink loop, G2 can fall back to a full-omission continuation notice. This could legitimately be cheaper than a reference, but the failed logs did not record the original projected estimate and do not prove that mechanism. A focused production read/G2 sweep at budgets 2044–2051 now reports each original/reference estimate and checks that admission/hits follow those measured values. Local Windows source-estimate coverage passes; Windows reuse remains unsupported. No G2 algorithm or positive-hit assertion is changed, and this test/packet update again precedes exact-head CI.
+
+## Ready-triggered correction: B1-6A1-05 / B0-6A1-06
+
+This section supersedes the earlier Draft-only stop statements. PR #27 is Open and Ready. The user authorized correction, push, exact-head CI and one narrow corrective review, **not merge**. Corrective baseline: `8316c677d7f4db3adc4e580c8a4cb7108bcdf769`; required main/merge-base: `172c52341249414d236eeb9153516bfd10087782`. Preflight confirmed both, a clean worktree, CLEAN merge state and disabled auto-merge. Review threads remain unresolved until exact corrected-head CI and the narrow review are available:
+
+- B1-6A1-05: `PRRT_kwDOUC6EIs6f_28B` ([discussion](https://github.com/dragonbaba/super-pi/pull/27#discussion_r3951872626)).
+- B0-6A1-06: `PRRT_kwDOUC6EIs6f_28F` ([discussion](https://github.com/dragonbaba/super-pi/pull/27#discussion_r3951872629)).
+
+### Deterministic red and green
+
+Test-only `6dbe37e` is preserved before production fix `bd0941bc4180c2f8b0506a6bc2e8f8ce2e961203`. The fixture accepts explicit tool-call IDs and exercises the real built-in read, agent/tool-result events, G2 owner and SessionManager history. The red run had five expected failures and one passing notice-shaped-file control. Same-ID delta: hits 1, real reads 0, prevented reads 1, avoided tokens 1940, G2 scans 1; two active source IDs and a replaced resident record were observed. All four manual/automatic compaction variants (ordinary retained entries and explicit retainedTail) removed the original source while retaining its dangling notice. Old artifact resolution failed on rebuilt and JSON-round-tripped histories.
+
+After correction the same-ID delta is hits 0, real reads 1, prevented 0, avoided 0, scans 0, with `source-call-id-reused` recorded. All four compaction variants retain the static durable fallback. Ordinary file text matching the evidence-notice syntax is preserved. Additional coverage exercises both persistence tails with unchanged content, replacement array, replacement block, in-place text edits and message_start edits: 16 focused lifecycle cases passed, with the controlled-GC case reserved for one explicit run on the final corrected head.
+
+The local host is Windows with no Linux runtime. Hit-dependent local red/green runs used a temporary external bootstrap setting `process.platform` to Linux before loading the existing fixture/test module. This is a lifecycle diagnostic, **not evidence of native Windows reuse or native Linux filesystem behavior**. No production identity policy or test assertion was relaxed. Native Windows evidence coverage passed: 92 tests, 56 pass, 36 explicit platform/GC skips, zero failures. Native Linux exact-head CI remains required.
+
+### Live-only versus durable contract and allocation
+
+A successful live reference receives private non-enumerable module-local Symbol provenance on its existing array and block. The marker records only the generated block and original bounded text identities; it does not use Symbol.for, parse notice strings, materialize another string, or retain source/artifact ownership. Generated provenance is sampled before ordinary listeners; the final array/block/text must still match. Listener replacements and edits are persisted intact, including edits before message_end.
+
+Both AgentSession persistence tails leave the live message unchanged and pass SessionManager a shallow clone only for an unchanged branded notice. Its content is a fresh one-element array with a fresh static text block:
+
+`[Prior read evidence is unavailable after a session boundary. Re-run the preceding read call before relying on exact contents.]`
+
+The clone preserves all other message fields and contains no evidence ID, handle, source ID, cursor, absolute path or marker. Compaction operates on durable history, so retainedTail, rebuilt/tree context and resume receive the fallback. No changes to SessionManager, generic compaction, agent-loop, read scanner, public artifact/cursor types or JSONL schema were needed.
+
+Exact structural allocation gate: one durable message object + one length-one array + one text block per unchanged hit; two temporary property descriptors at successful live construction; no new Map/WeakMap/Promise/AbortController/store, no copied source or notice string. Existing generated block/text identities are owned only by that live content. Ordinary misses/disabled paths allocate no fallback or provenance. The focused controlled-GC fixture requests eight hits, checks the fixed durable shape and absence of private/handle metadata, then releases history through newSession, active-message replacement and disposal. It checks 26 weak references (24 clone/array/block objects, one source message and one G2 owner). Its one final-head result is published in the PR packet with exact head/tree; no timing campaign or historical profile repeat is requested.
+
+### Commands and final gate
+
+Completed before this documentation commit:
+
+- `node --experimental-strip-types --test --test-name-pattern='source lifecycle:' C:\Windows\TEMP\super-pi-lifecycle-platform-shim.mjs`: red 5 fail/1 pass before production; green 16 pass/1 explicit GC skip.
+- `node --experimental-strip-types --test tests/evidence-ledger-{read,session,owner,core,boundaries,benefit-path,source-invariants}.test.ts` (PowerShell invocation lists the seven paths explicitly): 56 pass, 36 skips, zero failures.
+- `node --experimental-strip-types --test --test-name-pattern='truncated dual views|artifact handles lazily|artifact handles reject|resident artifact reads|artifact resume resolution' tests/tool-result-artifact.test.ts`: five pass.
+- `node --experimental-strip-types --test --test-name-pattern='compaction' tests/alpha-compaction-quit.test.ts`: four pass.
+- `node --experimental-strip-types --test tests/source-invariants.test.ts tests/tool-result-presentation-source-invariants.test.ts tests/tool-result-contextual-budget-source-invariants.test.ts`: ten pass. Evidence-specific source invariants also passed in the seven-suite run.
+- `npm run check`, `npm run build:offline`, `git diff --check`: passed.
+
+This documentation commit precedes final CI. The exact final head/tree are recorded in the PR body after creating this commit, avoiding a self-referential commit hash. Run once with `PI_EVIDENCE_LEASE_GC=1`: `node --expose-gc --experimental-strip-types --test --test-name-pattern='bounded durable clones' C:\Windows\TEMP\super-pi-lifecycle-platform-shim.mjs`. Publish the result and native exact-head verify-linux/verify-windows run IDs in that same packet. Old CI 34146583543 certifies only old head 8316c677. No documentation-only commit follows final CI.
+
+Option B resident G2 integrity validation remains unchanged: one existing bounded integrity scan per successful eligible hit. Earlier B0-6A1-03, B1-6A1-04 and C-6A1-01 remain closed. Frozen addressed-path/target keying, exact benefit/budget gate, file identity and other accepted invalidation paths are unchanged. Historical timing/GC evidence is unchanged; this bounded persistence allocation is separately accounted for. D-6A1-LINUX-IDENTITY-ELIGIBILITY remains a safe false miss observation; the exact cause of earlier intermediate Linux assertions is still unproven. No Phase 6A2/6B work or merge is authorized.
