@@ -30,8 +30,8 @@ export async function fixture(enabled = true, owner = true, extensions: InlineEx
 		toolResultPresentation: owner ? { enabled: true, budgetTokens, counters } : undefined,
 	});
 	let id = 0;
-	async function read(args: Record<string, unknown> = { path: "file.txt" }) {
-		const callId = `read-${++id}`;
+	async function read(args: Record<string, unknown> = { path: "file.txt" }, explicitCallId?: string) {
+		const callId = explicitCallId ?? `read-${++id}`;
 		const tool = session.agent.state.tools.find(t => t.name === "read")!;
 		const result = await tool.execute(callId, args, undefined, undefined);
 		const message = { role: "toolResult" as const, toolName: "read", toolCallId: callId, content: result.content, details: result.details, isError: false, timestamp: id };
@@ -40,12 +40,12 @@ export async function fixture(enabled = true, owner = true, extensions: InlineEx
 		return message;
 	}
 	const internals = session as unknown as { _evidenceLedger?: EvidenceLedger; _toolResultPresentation?: ToolResultPresentationOwner; _evidenceCompletedReads?: Map<string, unknown>; _evidenceCompletedBytes: number; _refreshToolRegistry(): void };
-	async function runCalls(calls: Array<{ name: string; arguments: Record<string, unknown> }>) {
+	async function runCalls(calls: Array<{ name: string; arguments: Record<string, unknown>; id?: string }>) {
 		const contexts: Context[] = [];
 		let dispatched = false;
 		session.agent.streamFunction = (model, context) => {
 			contexts.push(context);
-			const content: AssistantMessage["content"] = dispatched ? [] : calls.map(call => ({ type: "toolCall", id: `loop-${++id}`, ...call }));
+			const content: AssistantMessage["content"] = dispatched ? [] : calls.map(call => ({ type: "toolCall", ...call, id: call.id ?? `loop-${++id}` }));
 			dispatched = true;
 			const message: AssistantMessage = { role: "assistant", content, api: model.api, provider: model.provider, model: model.id,
 				usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },

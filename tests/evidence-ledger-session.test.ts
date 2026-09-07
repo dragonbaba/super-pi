@@ -225,3 +225,102 @@ test("built-in image reads cannot create text evidence", async () => {
 		assert.equal(f.internals._evidenceLedger!.counters.g2ArtifactIntegrityScans, 0);
 	} finally { f.close(); }
 });
+
+const lifecycleHitOptions = { skip: process.platform === "win32" ? "Windows native evidence reuse remains unsupported" : false };
+const durableEvidenceFallback = "[Prior read evidence is unavailable after a session boundary. Re-run the preceding read call before relying on exact contents.]";
+
+function lastRead(f: Awaited<ReturnType<typeof fixture>>) {
+	return f.session.agent.state.messages.filter(m => m.role === "toolResult").at(-1)!;
+}
+
+test("source lifecycle: reused source call ID rejects before integrity work", lifecycleHitOptions, async t => {
+	const f = await fixture();
+	try {
+		await f.runCalls([{ name: "read", arguments: { path: "file.txt" }, id: "same-source" }]);
+		const first = lastRead(f);
+		const owner = f.internals._toolResultPresentation!;
+		const artifact = owner.issueEvidenceArtifact(first.toolCallId, f.session.agent.state.messages, 1, (first.content[0] as { text: string }).text.length)!;
+		assert.ok(artifact, "first real read must be eligible");
+		const generation = owner.getResidentEvidenceGeneration(first.toolCallId);
+		const before = { ...f.internals._evidenceLedger!.counters };
+		const scans = f.counters.artifactIntegrityScans;
+		await f.runCalls([{ name: "read", arguments: { path: "file.txt" }, id: "same-source" }]);
+		const second = lastRead(f);
+		const after = f.internals._evidenceLedger!.counters;
+		const delta = { hits: after.hits - before.hits, realReads: after.realReadExecutions - before.realReadExecutions,
+			prevented: after.realReadExecutionsPrevented - before.realReadExecutionsPrevented,
+			avoided: after.modelVisibleTokensAvoided - before.modelVisibleTokensAvoided,
+			scans: f.counters.artifactIntegrityScans - scans };
+		t.diagnostic(JSON.stringify({ delta, duplicateSources: f.session.agent.state.messages.filter(m => m.role === "toolResult" && m.toolCallId === "same-source").length,
+			residentReplaced: owner.getResidentEvidenceGeneration(first.toolCallId) !== generation }));
+		assert.equal(f.session.agent.state.messages.filter(m => m.role === "toolResult" && m.toolCallId === "same-source").length, 2);
+		assert.throws(() => owner.readArtifact(artifact.id, f.session.agent.state.messages));
+		assert.deepEqual(delta, { hits: 0, realReads: 1, prevented: 0, avoided: 0, scans: 0 });
+		assert.deepEqual(second.content, first.content);
+		assert.equal((after.missesByReason as Record<string, number>)["source-call-id-reused"], 1);
+	} finally { f.close(); }
+});
+
+for (const mode of ["manual", "automatic"] as const) {
+	for (const tail of [false, true]) {
+		test(`source lifecycle: ${mode} compaction expires a retained hit (retainedTail=${tail})`, lifecycleHitOptions, async t => {
+			let cut = "";
+			const f = await fixture(true, true, [pi => {
+				pi.on("session_before_compact", event => {
+					const kept = event.branchEntries.slice(event.branchEntries.findIndex(e => e.id === cut));
+					return { compaction: { summary: "Earlier read summarized without exact contents.", firstKeptEntryId: cut,
+						tokensBefore: event.preparation.tokensBefore,
+						...(tail ? { retainedTail: kept.flatMap(e => e.type === "message" ? [e.message] : []) } : {}) } };
+				});
+			}]);
+			try {
+				f.settings.applyOverrides({ compaction: { keepRecentTokens: 1 } });
+				await f.runCalls([{ name: "read", arguments: { path: "file.txt" }, id: "original-source" }]);
+				const source = lastRead(f);
+				const owner = f.internals._toolResultPresentation!;
+				const artifact = owner.issueEvidenceArtifact(source.toolCallId, f.session.agent.state.messages, 1, (source.content[0] as { text: string }).text.length)!;
+				assert.ok(artifact);
+				await f.runCalls([{ name: "read", arguments: { path: "file.txt" }, id: "later-hit" }]);
+				const live = lastRead(f);
+				assert.match((live.content[0] as { text: string }).text, /Evidence reused:/);
+				cut = f.session.sessionManager.getBranch().filter(e => e.type === "message" && e.message.role === "user").at(-1)!.id;
+				let compacted = false;
+				f.session.subscribe(event => { if (event.type === "compaction_end") compacted = !event.aborted && event.result !== undefined; });
+				if (mode === "manual") await f.session.compact();
+				else assert.equal(await (f.session as unknown as { _runAutoCompaction(reason: string, retry: boolean): Promise<boolean> })._runAutoCompaction("threshold", false), false);
+				assert.equal(compacted, true);
+				const rebuilt = f.session.agent.state.messages;
+				assert.equal(rebuilt.some(m => m.role === "toolResult" && m.toolCallId === "original-source"), false);
+				const retained = rebuilt.find(m => m.role === "toolResult" && m.toolCallId === "later-hit")!;
+				assert.ok(retained?.role === "toolResult", "later assistant/tool-result pair must survive the cut");
+				assert.throws(() => owner.readArtifact(artifact.id, rebuilt));
+				const roundTrip = JSON.parse(JSON.stringify(rebuilt));
+				assert.throws(() => owner.readArtifact(artifact.id, roundTrip));
+				t.diagnostic(JSON.stringify({ mode, tail, sourceRemoved: true, retained: retained.content, oldArtifactResolvable: false }));
+				assert.deepEqual(retained.content, [{ type: "text", text: durableEvidenceFallback }]);
+				assert.equal(JSON.stringify(f.session.sessionManager.getEntries()).includes(artifact.id), false);
+				assert.equal(JSON.stringify(roundTrip).includes("Evidence reused:"), false);
+			} finally { f.close(); }
+		});
+	}
+}
+
+test("source lifecycle: real notice-shaped file content is durable without a text heuristic", async () => {
+	let cut = "";
+	const f = await fixture(true, true, [pi => {
+		pi.on("session_before_compact", event => ({ compaction: { summary: "older context", firstKeptEntryId: cut, tokensBefore: event.preparation.tokensBefore } }));
+	}]);
+	try {
+		f.settings.applyOverrides({ compaction: { keepRecentTokens: 1 } });
+		await f.runCalls([{ name: "read", arguments: { path: "file.txt" } }]);
+		const text = '[Evidence reused: "real.txt"; "bytes 0-10"; evidenceId=evidence-v1-1; artifact=literal-file-content. No new disk read occurred.]';
+		writeFileSync(join(f.cwd, "literal.txt"), text);
+		await f.runCalls([{ name: "read", arguments: { path: "literal.txt" }, id: "literal" }]);
+		const live = lastRead(f);
+		assert.deepEqual(live.content, [{ type: "text", text }]);
+		cut = f.session.sessionManager.getBranch().filter(e => e.type === "message" && e.message.role === "user").at(-1)!.id;
+		await f.session.compact();
+		assert.deepEqual(lastRead(f).content, live.content);
+		assert.ok(JSON.stringify(f.session.sessionManager.getEntries()).includes("literal-file-content"));
+	} finally { f.close(); }
+});
