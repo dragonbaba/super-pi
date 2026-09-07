@@ -138,7 +138,7 @@ test("missing file and abort cannot create evidence", async () => {
 	} finally { f.close(); }
 });
 
-test("large bounded local-text windows carry only private metadata", async () => {
+test("large bounded local-text windows carry only private metadata", async t => {
 	const f = await fixture();
 	try {
 		writeFileSync(join(f.cwd, "file.txt"), "large selected source text\n".repeat(20000));
@@ -146,7 +146,15 @@ test("large bounded local-text windows carry only private metadata", async () =>
 		assert.ok(JSON.stringify(first.content).length < 65_536);
 		for (let i = 0; i < 9; i++) {
 			const message = await f.read();
-			assert.equal(/no new disk read/i.test(JSON.stringify(message.content)), process.platform !== "win32");
+			const hit = /no new disk read/i.test(JSON.stringify(message.content));
+			if (hit !== (process.platform !== "win32")) {
+				const ledger = f.internals._evidenceLedger!;
+				t.diagnostic(JSON.stringify({ iteration: i, counters: ledger.counters,
+					precise: hasPreciseReadIdentity(statSync(join(f.cwd, "file.txt"), { bigint: true })),
+					originalTokens: f.internals._toolResultPresentation!.getResidentEvidenceModelTokens(first.toolCallId),
+					records: [...(ledger as unknown as { records: Map<string, unknown> }).records.values()] }));
+			}
+			assert.equal(hit, process.platform !== "win32");
 		}
 		assert.equal(f.internals._evidenceLedger!.counters.completeFileHashes, 0);
 		assert.equal(f.internals._evidenceLedger!.counters.retainedSourceReferences, 0);
