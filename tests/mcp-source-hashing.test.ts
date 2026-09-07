@@ -1,0 +1,31 @@
+import assert from "node:assert/strict";
+import crypto from "node:crypto";
+import { syncBuiltinESMExports } from "node:module";
+import test from "node:test";
+// @ts-expect-error JavaScript extension package.
+import { convertMcpResult } from "../packages/mcp-bridge/src/bridge.js";
+import { createToolResultPresentationOwner } from "../packages/coding-agent/src/core/tool-result-presentation.ts";
+
+test("immutable large MCP text is hashed once across artifact integrity reads", () => {
+	const text = "source ".repeat(150_000);
+	const createHash = crypto.createHash;
+	let fullHashes = 0;
+	crypto.createHash = ((...args: Parameters<typeof createHash>) => {
+		const hash = createHash(...args);
+		const update = hash.update;
+		hash.update = function (value: any, ...rest: any[]) {
+			if (value === text) fullHashes++;
+			return update.call(this, value, ...rest as [any]);
+		};
+		return hash;
+	}) as typeof createHash;
+	syncBuiltinESMExports();
+	const owner = createToolResultPresentationOwner({ enabled: true, budgetTokens: 256 }, "hash-session")!;
+	try {
+		const content = convertMcpResult({ content: [{ type: "text", text }] });
+		const view = owner.create(content, "hash-call");
+		if (view?.version !== 2 || !view.artifact) assert.fail("artifact missing");
+		for (let index = 0; index < 3; index++) owner.readArtifact(view.artifact.id, [{ role: "toolResult", toolCallId: "hash-call", content }]);
+		assert.equal(fullHashes, 1);
+	} finally { crypto.createHash = createHash; syncBuiltinESMExports(); owner.dispose(); }
+});
