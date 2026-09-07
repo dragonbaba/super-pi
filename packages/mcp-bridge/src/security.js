@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { serializeMcpStructured } from "@super-pi/coding-agent/internal/tool-result-source";
+import { createRequire } from "node:module";
 import {
   ANSI_CSI_PATTERN,
   ANSI_ESCAPE_PATTERN,
@@ -13,6 +13,7 @@ import {
 } from "./regex.js";
 
 export const MAX_CONFIG_BYTES = 256 * 1024;
+const requireHost = createRequire(import.meta.url);
 export const MAX_SERVERS = 16;
 export const MAX_SCHEMA_BYTES = 16 * 1024;
 export const MAX_ACTIVATED_SCHEMA_BYTES = 48 * 1024;
@@ -59,6 +60,8 @@ export function truncateUtf8(value, maxBytes = MAX_TEXT_BYTES) {
 }
 
 export function boundedJson(value, maxBytes = MAX_TEXT_BYTES) {
+  // Kept lazy so the extension's compatibility gate can run on older hosts.
+  const { serializeMcpStructured } = requireHost("@super-pi/coding-agent/internal/tool-result-source");
   return truncateUtf8(serializeMcpStructured(value), maxBytes);
 }
 
