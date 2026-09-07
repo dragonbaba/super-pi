@@ -441,3 +441,50 @@ commit. No timing, allocation profile or automated review is requested.
 
 Stop: Final Corrected Draft Merge Gate, awaiting external last-diff review and
 explicit merge authorization. Ready, merge and later phases remain unauthorized.
+
+## Host-finalization UI closeout after c3c00ae
+
+B0-5C-B-07 reproduced a no-handler, one-token-budget MCP final that was rewritten
+to an empty bounded error after tool_execution_end, while the component retained
+the original success. Test-only red `845580b` preserves that candidate; fix
+`2047e70` adds the internal `host-finalized` disposition and its separate numeric
+diagnostic. It does not alter any accepted MCP normalization or ownership fix.
+
+AgentSession sets a local hostCanonicalPayloadChanged boolean only in final MCP
+validation/admission rejection branches that rewrite content/isError/details.
+That disposition takes precedence over none, replacement-returned and
+handler-may-have-mutated. Value-preserving host wrappers do not set it. The signal
+exists only on the internal session event after extension hooks, never on the
+canonical message, extension event, provider payload, persistence or telemetry.
+
+InteractiveMode uses the existing non-none refresh path: one tracked component
+update, one V1 retained-child invalidation, and pending discovery release. The
+new canonicalPayloadHostFinalizationRefreshes counter is separate from extension
+replacement/conservative counters. The pre-final sourceContent identity and
+current/ambiguous/stale algorithm remain unchanged.
+
+The actual AgentSession→InteractiveMode fixture executes tool_execution_start,
+tool_execution_end, message_start and message_end. No handlers are installed in
+the primary budget rejection or final prepare rejection. Both replace the stale
+success display exactly once, match canonical/persisted error fields, deliver
+message_end once, execute MCP once, invoke no provider, and leave zero pending
+or attached discoveries. No artifact/cursor is issued for the rejected result;
+the unchanged owner can construct temporary cursor strings before budget
+rejection, which are not delivered handles. Owner clear/dispose leaves zero
+records. Successful small and host-wrapped large results keep disposition none
+and zero duplicate canonical refreshes. Existing mutable/replacement hook paths
+retain their distinct counters and semantics.
+
+69 selected focused tests passed, including all 16 G2 artifact/model-budget
+regressions and directly related UI integration/source audits. Previously
+accepted sanitizer/resource/image suites and the 100000-progress campaign were
+not rerun locally; unchanged normal CI supplies full-suite coverage. Check,
+offline build and diff checks passed. The only added retained state is a numeric
+counter; final dispatch adds one local boolean and an interned disposition value.
+No arrays, closures, Promise, timer, controller, source copy or new retained
+reference is introduced. No allocation profile, GC, timing or broad review is
+required or requested. Exact final CI is recorded in PR metadata without a later
+documentation-only commit.
+
+Stop: Host-Finalization Corrected Draft Merge Gate, awaiting external final
+incremental review and explicit merge authorization. PR remains Draft.
