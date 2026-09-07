@@ -3653,7 +3653,7 @@ export class AgentSession {
 			const normalized = canonical.normalize("NFC");
 			// Fixed current read schema, not a recursive serializer. null preserves
 			// omitted limit semantics (including the legacy continuation notice).
-			key = ledger.hashArguments(JSON.stringify(["builtin-read-v1", canonicalCwd, normalized, readOffset ?? 1, readLimit ?? null, readCursor ?? null]));
+			key = ledger.hashArguments(JSON.stringify(["builtin-read-v1", canonicalCwd, relativePath, normalized, readOffset ?? 1, readLimit ?? null, readCursor ?? null]));
 			if (!key) { ledger.miss("uncertain-identity"); return execute(callId, args, signal, onUpdate); }
 			const record = ledger.lookup(key);
 			if (record) {
@@ -3663,6 +3663,7 @@ export class AgentSession {
 				let miss: import("./evidence-ledger.ts").EvidenceMissReason | undefined;
 				if (record.sessionId !== sessionId || record.cwd !== canonicalCwd || record.branchGeneration !== branch) miss = "branch/session/cwd";
 				else if (record.workspaceGeneration !== workspace) miss = "workspace-generation";
+				else if (record.relativePath !== relativePath) miss = "args-mismatch";
 				else if (record.referenceTokens !== referenceTokens || !Number.isSafeInteger(record.modelTokens) ||
 					referenceTokens >= record.modelTokens || budgetTokens === undefined || referenceTokens > budgetTokens) miss = "not-beneficial";
 				else {
@@ -3711,7 +3712,7 @@ export class AgentSession {
 			relativePath = relative(resolveEvidencePath(this._cwd), identity.addressedPath).replaceAll(sep, "/").normalize("NFC");
 			if (isAbsolute(relativePath) || relativePath === ".." || relativePath.startsWith("../") || relativePath.length > 1024 ||
 				canonical.length > 4096 || canonicalCwd.length > 4096 || canonicalCwd.length === 0) return result;
-			key = ledger.hashArguments(JSON.stringify(["builtin-read-v1", canonicalCwd, canonical.normalize("NFC"), readOffset ?? 1, readLimit ?? null, readCursor ?? null]));
+			key = ledger.hashArguments(JSON.stringify(["builtin-read-v1", canonicalCwd, relativePath, canonical.normalize("NFC"), readOffset ?? 1, readLimit ?? null, readCursor ?? null]));
 		}
 		if (key && identity?.precise && !signal?.aborted && !this._evidenceMutableHooks() &&
 			ledger.workspaceGeneration === workspace && ledger.branchGeneration === branch &&
