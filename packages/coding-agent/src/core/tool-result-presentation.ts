@@ -2215,6 +2215,52 @@ export class ToolResultPresentationOwner {
 	}
 
 	/** Resolve a session-bound virtual artifact to the canonical content on the active branch. */
+	/** @internal Evidence never reconstructs a source or changes public artifact recovery. */
+	private residentEvidenceRecord(toolCallId: string, messages: readonly unknown[], blocks: number, chars: number): ProjectionRecord | undefined {
+		if (!this.mcpInputConfigured || messages.length > 4096 || blocks !== 1 ||
+			!Number.isSafeInteger(chars) || chars < 1 || chars > 64 * 1024) return undefined;
+		const record = this.projectionRecords?.get(toolCallId);
+		if (!record || record.sourceContent.length !== blocks || record.sourceScan.mcpInput) return undefined;
+		// Inspect data properties before the integrity algorithm can encounter a
+		// replaced giant string or accessor. Ordinary local text has one block.
+		const element = Object.getOwnPropertyDescriptor(record.sourceContent, "0");
+		const block = element?.value;
+		if (!block || Object.getOwnPropertyDescriptor(block, "type")?.value !== "text") return undefined;
+		const text = Object.getOwnPropertyDescriptor(block, "text")?.value;
+		if (typeof text !== "string" || text.length !== chars || block.mcpInput || block.mcpSource) return undefined;
+		let found = false;
+		// This is a bounded active-context validation, never a historical lookup.
+		// Rescan uniqueness even when array length is unchanged: public messages
+		// are mutable and can replace an interior entry with a duplicate call ID.
+		for (let index = 0; index < messages.length; index++) {
+			const source = messages[index];
+			if (!isSourceMessageLike(source) || source.toolCallId !== toolCallId) continue;
+			if (found || source.content !== record.sourceContent || (source as { isError?: boolean }).isError) return undefined;
+			found = true;
+		}
+		return found ? record : undefined;
+	}
+
+	/** @internal Issue only from an already admitted resident canonical source. */
+	issueEvidenceArtifact(toolCallId: string, messages: readonly unknown[], blocks: number, chars: number): ToolResultArtifactV1 | undefined {
+		const record = this.residentEvidenceRecord(toolCallId, messages, blocks, chars);
+		if (!record) return undefined;
+		const descriptor = this.ensureArtifactDescriptor(record);
+		return this.projectionRecords?.get(toolCallId) === record ? descriptor : undefined;
+	}
+
+	/** @internal One bounded existing G2 integrity scan, no content wrapper/copy. */
+	validateEvidenceArtifact(toolCallId: string, id: string, messages: readonly unknown[], blocks: number, chars: number): boolean {
+		const record = this.residentEvidenceRecord(toolCallId, messages, blocks, chars);
+		if (!record || record.artifact?.id !== id) return false;
+		return validateArtifactIdentity(record.sourceContent, record.sourceScan.sha256, record.sourceScan.artifactBytes, this.counters);
+	}
+
+	/** @internal Presence check before evidence spends any integrity work. */
+	hasResidentEvidenceArtifact(toolCallId: string, id: string): boolean {
+		return this.mcpInputConfigured && this.projectionRecords?.get(toolCallId)?.artifact?.id === id;
+	}
+
 	readArtifact(id: string, messages: readonly unknown[]): ToolResultArtifactReadV1 {
 		if (!this.accepting) {
 			throw new ToolResultArtifactError("stale-artifact", "Tool-result artifact owner is disposed.");
