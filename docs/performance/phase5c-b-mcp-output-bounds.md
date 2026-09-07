@@ -1,7 +1,9 @@
 # Phase 5C-B MCP output bounds: Plan Gate and red evidence
 
-Status: implementation incomplete; typed-source scope decision pending. This is
-not a candidate or acceptance packet. No production changes have been made.
+Status: implementation in progress; the user approved the narrow typed-source
+input adapter and no-budget fail-closed behavior. This is not yet a candidate or
+acceptance packet. The Plan Gate below records baseline observations; the
+implementation progress section records subsequent changes.
 
 Baseline fetched from origin/main:
 `946442c7cd41c77dde26d2b8fbce442211dfef7d`. One worktree and branch:
@@ -23,7 +25,7 @@ follow-ups remain deferred C items. Smooth Streaming Reveal remains deferred D.
 No Evidence Ledger, operation-id, Harness v2, Phase 8 soak or transport-library
 rewrite is in scope.
 
-## Current production paths
+## Baseline production paths (Plan Gate)
 
 1. Extension initialization: `packages/mcp-bridge/src/index.js` session_start
    creates `McpBridgeRuntime`; runtime connects SDK clients and registers remote
@@ -102,7 +104,7 @@ There is no extension-context API to admit such a source. Reclassifying audio as
 an image, dumping its base64 into text or keeping an MCP-private Map would each
 violate the requested architecture.
 
-Proposed narrow adapter, pending authorization: admit validated MCP source
+Proposed narrow adapter (subsequently authorized): admit validated MCP source
 metadata into the existing owner/session pipeline; retain canonical source
 references in the existing records and persisted session source, not a second
 registry. Existing text/image identities and behavior stay unchanged. Extend
@@ -111,7 +113,7 @@ session/branch/source checks and the existing record/admission lifecycle. Exact
 source integrity coverage must be specified before implementation; a handle
 covering only a placeholder is not sufficient integrity for a blob in details.
 
-Second pending decision: for large MCP results when the G2 owner or configured
+Second decision (subsequently authorized): for large MCP results when the G2 owner or configured
 budget is unavailable, return a bounded configuration-required failure rather
 than invent a token budget, discard data as successful output or activate a
 second owner. Tiny text compatibility remains unchanged.
@@ -143,3 +145,63 @@ audit, bounded benchmarks/GC, exact CI and the authorized Draft reviews.
 This document does not assert completion. Stop target remains the Phase 5C-B
 Draft Candidate Gate, awaiting external final review and explicit merge
 authorization. Do not Mark Ready, merge or start Phase 6–8.
+
+## Implementation progress after authorization
+
+The original red commits and Plan Gate are preserved. Production changes use
+one internal `tool-result-source.ts` input adapter, the existing owner, and
+session/extension dependency injection. There is no new artifact directory,
+registry, token estimator, cursor owner or retention policy. Small ordinary
+text remains inline and has no source digest or artifact. No-budget oversized
+text and typed content needing recovery return a fixed configuration failure.
+Existing inline image limits remain independent from the text limit.
+
+The result normalizer validates supported typed shapes, base64 length/alphabet/
+padding and basic media signatures without full decoding. Structured values
+receive a bounded text preview and an immutable canonical source descriptor.
+Cycles, non-JSON values and custom `toJSON` execution are rejected before model
+serialization. Many small fields are charged against the source ceiling.
+Opaque `_meta` is preserved locally; this does not implement server pagination.
+
+Current request path: registered execute -> `McpBridgeRuntime.callRemoteTool`
+-> pinned `McpClient.callTool` -> existing SDK request/transport. The SDK result
+schema hook substitutes string validation for its eager base64 `atob` refinement;
+the bridge performs encoding and media admission. The SDK still parses complete
+JSON and reconstructs schema objects. No zero-copy/frame-memory claim is made.
+
+Progress path: synchronous pinned-client progress dispatch -> the SDK's existing
+active-request progress Map -> `McpCall.notify` -> existing agent latest slot.
+No second progress queue is created. The client override relies on pinned SDK
+1.30.0 `_onnotification`, `_onprogress` and `_progressHandlers`; upgrades require
+the actual-client boundary regressions. Unknown/late tokens are ignored without
+serializing arbitrary notification payloads. Progress counters and messages are
+numeric only. An MCP-classified observer rejection is isolated in the existing
+agent slot; the ordinary tool critical-listener behavior remains unchanged.
+
+Final path: one parsed result -> bounded admission/normalization -> existing
+session owner admission -> canonical tool result -> existing session final hook
+and presentation/model projection. MCP tool-level failures carry a bounded error
+category through that hook. Configured server `isError` text remains canonical
+and recoverable. Protocol errors and connection stderr do not retain arbitrary
+server messages or causes. Abort/final/dispose clear request callbacks.
+
+MCP source identity extends only the newly admitted input kinds. Typed sources
+hash their immutable value once and later identity checks use that digest plus
+the canonical placeholder. Large MCP text caches one digest as a non-enumerable
+property of the immutable canonical block; no complete text is duplicated into
+a descriptor. Persisted JSON loses that cache and validates the restored source
+generation once. Existing text/image caller identity and public artifact/cursor
+formats are unchanged. Integrity tests measured four full text hash passes
+before this correction and one afterward across creation plus three artifact
+reads. Artifact access still validates session, call and active history through
+the existing owner.
+
+Development evidence: the combined MCP suites and existing 16 G2 artifact/model
+budget regressions passed 60 tests at `744abc0`. Five subsequent lifecycle tests
+cover four concurrent calls ending in success/error/abort/dispose, ignored late
+progress, same-session JSON restore, foreign session and inactive branch denial.
+The SDK boundary measured 300,000 Promise allocations for 100,000 progress
+notifications before the shim and zero afterward. The client-side media decode
+counter is zero; the in-process test server's own pre-send validation is excluded.
+Type checking and offline builds pass. These are focused development checks;
+the final candidate test, performance, GC, CI and review gates remain outstanding.
