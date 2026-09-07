@@ -257,6 +257,7 @@ interface SourceMessageLike {
 }
 
 interface ProjectionRecord {
+	evidenceGeneration: number;
 	toolCallId: string;
 	sourceKey: string;
 	sourceDigest: string;
@@ -1265,6 +1266,7 @@ function artifactRetainedCodeUnits(artifact: ToolResultArtifactV1): number {
 }
 
 export class ToolResultPresentationOwner {
+	private evidenceGeneration = 0;
 	private accepting = true;
 	private readonly budgetTokens: number | undefined;
 	private readonly sessionId: string;
@@ -1404,6 +1406,7 @@ export class ToolResultPresentationOwner {
 		const sourceScan = scanSource(content, this.counters);
 		const sourceKey = createSourceKey(this.sessionId, toolCallId, this.counters);
 		return {
+			evidenceGeneration: ++this.evidenceGeneration,
 			toolCallId,
 			sourceKey,
 			sourceDigest: sourceScan.digest,
@@ -1476,6 +1479,7 @@ export class ToolResultPresentationOwner {
 		if (projection) retainedCodeUnits += countTextCodeUnits(projection.content);
 		if (artifact) retainedCodeUnits += artifactRetainedCodeUnits(artifact);
 		const record: ProjectionRecord = {
+			evidenceGeneration: ++this.evidenceGeneration,
 			toolCallId,
 			sourceKey,
 			sourceDigest: sourceScan.digest,
@@ -2250,15 +2254,19 @@ export class ToolResultPresentationOwner {
 	}
 
 	/** @internal One bounded existing G2 integrity scan, no content wrapper/copy. */
-	validateEvidenceArtifact(toolCallId: string, id: string, messages: readonly unknown[], blocks: number, chars: number): boolean {
+	validateEvidenceArtifact(toolCallId: string, id: string, messages: readonly unknown[], blocks: number, chars: number, generation?: number): boolean {
 		const record = this.residentEvidenceRecord(toolCallId, messages, blocks, chars);
-		if (!record || record.artifact?.id !== id) return false;
+		if (!record || record.artifact?.id !== id || (generation !== undefined && record.evidenceGeneration !== generation)) return false;
 		return validateArtifactIdentity(record.sourceContent, record.sourceScan.sha256, record.sourceScan.artifactBytes, this.counters);
 	}
 
 	/** @internal Presence check before evidence spends any integrity work. */
 	hasResidentEvidenceArtifact(toolCallId: string, id: string): boolean {
 		return this.mcpInputConfigured && this.projectionRecords?.get(toolCallId)?.artifact?.id === id;
+	}
+	/** @internal A new resident record never inherits a previous evidence lease. */
+	getResidentEvidenceGeneration(toolCallId: string): number | undefined {
+		return this.projectionRecords?.get(toolCallId)?.evidenceGeneration;
 	}
 
 	readArtifact(id: string, messages: readonly unknown[]): ToolResultArtifactReadV1 {

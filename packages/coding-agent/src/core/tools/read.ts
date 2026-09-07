@@ -15,6 +15,7 @@ import { formatPathRelativeToCwdOrAbsolute } from "../../utils/paths.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
 import { resolveReadPathAsync, resolveToCwd } from "./path-utils.ts";
 import { ReadCursorError, readSmallFileIfStable, readWindow, type ReadWindowResult } from "./read-window.ts";
+import { READ_EVIDENCE_CAPTURE, attachReadIdentity, createValidatedReadIdentity } from "./read-window.ts";
 import { getTextOutput, renderToolPath, replaceTabs, str } from "./render-utils.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, type TruncationResult, truncateHead } from "./truncate.ts";
@@ -216,7 +217,7 @@ export function createReadToolDefinition(
 	const autoResizeImages = options?.autoResizeImages ?? true;
 	const ops = options?.operations ?? defaultReadOperations;
 	const instanceScope = randomUUID();
-	return {
+	const definition: ToolDefinition<typeof readSchema, ReadToolDetails | undefined> & { [READ_EVIDENCE_CAPTURE]?: () => boolean } = {
 		name: "read",
 		label: "read",
 		description: `Read the contents of a file. Supports text files and images (jpg, png, gif, webp, bmp). Images are sent as attachments. For text files, output is truncated to ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). Use offset/limit for large files. Large local files return bounded windows; use the returned cursor with the same path to continue, including partial lines.`,
@@ -230,6 +231,7 @@ export function createReadToolDefinition(
 			_onUpdate?,
 			ctx?,
 		) {
+			const evidenceIdentity = ops === defaultReadOperations && definition[READ_EVIDENCE_CAPTURE]?.() ? createValidatedReadIdentity() : undefined;
 			let resolvedLocalPath: string | undefined;
 			let localTextBuffer: Buffer | undefined;
 			let localMime: string | null | undefined;
@@ -241,16 +243,16 @@ export function createReadToolDefinition(
 				if (cursor === undefined) {
 					await ops.access(absolutePath);
 					localMime = await detectSupportedImageMimeTypeFromFile(absolutePath);
-					if (!localMime) localTextBuffer = await readSmallFileIfStable(absolutePath, signal);
+					if (!localMime) localTextBuffer = await readSmallFileIfStable(absolutePath, signal, evidenceIdentity);
 				}
 				if (cursor !== undefined || (!localMime && localTextBuffer === undefined)) {
-					const window = await readWindow(absolutePath, cwd, ctx?.sessionManager?.getSessionId() || instanceScope, { offset, limit, cursor }, signal);
+					const window = await readWindow(absolutePath, cwd, ctx?.sessionManager?.getSessionId() || instanceScope, { offset, limit, cursor }, signal, undefined, evidenceIdentity);
 					let output = window.text;
 					if (window.startsPartial) output = `[Continuation starts partway through line ${window.startLine}; this is a partial-line suffix.]\n${output}`;
 					if (window.binary) output += "\n\n[Binary NUL detected in this byte range; displayed as UTF-8 with replacement.]";
 					if (window.cursor) output += `\n\n[${window.partial ? `Line ${window.nextLine} is partial` : `Read through line ${window.nextLine - 1}`}; more file content remains. Continue with the same path and cursor=${window.cursor}.]`;
 					const { text: _text, ...details } = window;
-					return { content: [{ type: "text" as const, text: output }], details: { window: details } };
+					return attachReadIdentity({ content: [{ type: "text" as const, text: output }], details: { window: details } }, evidenceIdentity);
 				}
 			}
 			return new Promise<{ content: (TextContent | ImageContent)[]; details: ReadToolDetails | undefined }>(
@@ -298,6 +300,7 @@ export function createReadToolDefinition(
 								// Read text content.
 								const buffer = localTextBuffer ?? await ops.readFile(absolutePath);
 								const textContent = buffer.toString("utf-8");
+								if (evidenceIdentity && textContent.includes("\0")) evidenceIdentity.precise = false;
 								const allLines = textContent.split("\n");
 								const totalFileLines = allLines.length;
 								// Apply offset if specified. Convert from 1-indexed input to 0-indexed array access.
@@ -346,11 +349,12 @@ export function createReadToolDefinition(
 									outputText = truncation.content;
 								}
 								content = [{ type: "text", text: outputText }];
+								if (evidenceIdentity) evidenceIdentity.location = `lines ${startLineDisplay}-${startLineDisplay + truncation.outputLines - 1}; line policy v1`;
 							}
 
 							if (aborted) return;
 							signal?.removeEventListener("abort", onAbort);
-							resolve({ content, details });
+							resolve(attachReadIdentity({ content, details }, evidenceIdentity));
 						} catch (error: any) {
 							signal?.removeEventListener("abort", onAbort);
 							if (!aborted) reject(error);
@@ -377,6 +381,7 @@ export function createReadToolDefinition(
 			return text;
 		},
 	};
+	return definition;
 }
 
 export function createReadTool(cwd: string, options?: ReadToolOptions): AgentTool<typeof readSchema> {

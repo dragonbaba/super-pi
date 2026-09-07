@@ -4,7 +4,7 @@ import { EvidenceLedger, type EvidenceRecordV1, EVIDENCE_MAX_METADATA_BYTES } fr
 
 function record(key: string): EvidenceRecordV1 {
 	return { version: 1, evidenceId: key, toolKind: "builtin-read", canonicalArgsHash: key, scopeFingerprint: "scope",
-		resultHandle: "artifact", sourceToolCallId: key, relativePath: "file", location: "lines 1-100", createdTurn: 1,
+		resultHandle: "artifact", sourceToolCallId: key, sourceGeneration: 1, relativePath: "file", location: "lines 1-100", createdTurn: 1,
 		workspaceGeneration: 0, branchGeneration: 0, canonicalPath: "canonical", fileGeneration: "generation",
 		sessionId: "session", cwd: "cwd", blocks: 1, chars: 1024, artifactBytes: 2048, modelTokens: 512 };
 }

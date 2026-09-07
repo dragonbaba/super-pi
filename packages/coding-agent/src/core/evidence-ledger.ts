@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
 
 export const EVIDENCE_MAX_RECORDS = 128;
-export const EVIDENCE_MAX_METADATA_BYTES = 256 * 1024;
+// Leave 64 KiB of the session's 256 KiB envelope for completed read handoffs
+// awaiting message_end. Those receipts are never lookup candidates or waiters.
+export const EVIDENCE_MAX_METADATA_BYTES = 192 * 1024;
 export const EVIDENCE_MAX_ARGUMENT_BYTES = 64 * 1024;
 export const EVIDENCE_MAX_LOCATIONS = 64;
 export const EVIDENCE_MAX_LOCATION_CHARS = 8 * 1024;
@@ -18,6 +20,7 @@ export interface EvidenceRecordV1 {
 	readonly scopeFingerprint: string;
 	readonly resultHandle: string;
 	readonly sourceToolCallId: string;
+	readonly sourceGeneration: number;
 	readonly relativePath: string;
 	readonly location: string;
 	readonly createdTurn: number;
@@ -114,6 +117,7 @@ export class EvidenceLedger {
 			version: 1, evidenceId: input.evidenceId, toolKind: "builtin-read",
 			canonicalArgsHash: input.canonicalArgsHash, scopeFingerprint: input.scopeFingerprint,
 			resultHandle: input.resultHandle, sourceToolCallId: input.sourceToolCallId,
+			sourceGeneration: input.sourceGeneration,
 			relativePath: input.relativePath, location: input.location, createdTurn: input.createdTurn,
 			workspaceGeneration: input.workspaceGeneration, branchGeneration: input.branchGeneration,
 			canonicalPath: input.canonicalPath, fileGeneration: input.fileGeneration,
