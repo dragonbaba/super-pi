@@ -3,7 +3,7 @@ import fsPromises, { mkdtemp, writeFile, rm, readFile, appendFile, truncate, ren
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import ts from "typescript";
 import { readWindow, readSmallFileIfStable, createReadWindowCounters, READ_CHUNK_BYTES, READ_WINDOW_BYTES, ReadCursorError } from "../packages/coding-agent/src/core/tools/read-window.ts";
 import { createReadToolDefinition } from "../packages/coding-agent/src/core/tools/read.ts";
@@ -335,3 +335,126 @@ test("Linux procfs zero stat size preserves readable content", { skip: process.p
 	assert.ok(expected.length > 0);
 	assert.deepEqual(await readSmallFileIfStable("/proc/version"), expected);
 });
+
+// B0/B1 external-final-review seam: real descriptors, only read lengths/stat size
+// are overridden. The repeated-position sentinel makes stalls finite and red.
+async function reviewReadSeam(t: TestContext, options: {
+	size?: bigint; lengths?: number[]; abortAfterFirst?: AbortController; growAtProbe?: string;
+}, run: (state: { opens: number; closes: number; trace: number[][] }) => Promise<void>) {
+	const originalOpen = fsPromises.open;
+	const originalStat = fsPromises.stat;
+	const state = { opens: 0, closes: 0, trace: [] as number[][] };
+	const mockedOpen = t.mock.method(fsPromises, "open", async (...args: Parameters<typeof originalOpen>) => {
+		const handle = await originalOpen(...args);
+		state.opens++;
+		const originalRead = handle.read;
+		const originalHandleStat = handle.stat;
+		const originalClose = handle.close;
+		let call = 0;
+		let previousPosition = -1;
+		t.mock.method(handle, "read", async (buffer: Buffer, offset: number, length: number, position: number) => {
+			if (options.lengths && position <= previousPosition) throw new Error("NON_PROGRESS_REPEATED_POSITION");
+			previousPosition = position;
+			const requested = Math.min(length, options.lengths?.[call] ?? length);
+			if (options.growAtProbe && position === Number(options.size)) await appendFile(options.growAtProbe, "changed");
+			const result = await originalRead.call(handle, buffer, offset, requested, position);
+			state.trace.push([position, offset, length, result.bytesRead]);
+			call++;
+			if (call === 1) options.abortAfterFirst?.abort();
+			return result;
+		});
+		t.mock.method(handle, "stat", async (...statArgs: unknown[]) => {
+			const info = await Reflect.apply(originalHandleStat, handle, statArgs);
+			if (options.size !== undefined) info.size = options.size;
+			return info;
+		});
+		t.mock.method(handle, "close", async () => { state.closes++; return originalClose.call(handle); });
+		return handle;
+	});
+	const mockedStat = t.mock.method(fsPromises, "stat", async (...args: unknown[]) => {
+		const info = await Reflect.apply(originalStat, fsPromises, args);
+		if (options.size !== undefined) info.size = options.size;
+		return info;
+	});
+	syncBuiltinESMExports();
+	try { await run(state); }
+	finally {
+		mockedOpen.mock.restore(); mockedStat.mock.restore(); syncBuiltinESMExports();
+		assert.equal(state.opens, state.closes, "all descriptors close on success/error/abort");
+	}
+}
+
+for (const sample of [
+	{ name: "CRLF", prefix: "\r\n", lengths: [1] },
+	{ name: "UTF8", prefix: "😀", lengths: [1] },
+	{ name: "ASCII", prefix: "A", lengths: [1] },
+	{ name: "consecutive", prefix: "😀\r\n", lengths: [1, 1, 1, 1, 1, 1] },
+	{ name: "window boundary", prefix: "a".repeat(READ_WINDOW_BYTES - 2) + "😀\r\n", lengths: [READ_WINDOW_BYTES - 3, 1, 1, 1] },
+]) {
+	test(`B1 short-read fill ${sample.name} advances positional reads`, async (t) => fixture(async (path, directory) => {
+		const source = Buffer.from(sample.prefix + "z".repeat(READ_CHUNK_BYTES + 16));
+		await writeFile(path, source);
+		await reviewReadSeam(t, { lengths: sample.lengths }, async (state) => {
+			const result = await readWindow(path, directory, "short-read", {});
+			assert.equal(result.text, source.subarray(result.startByte, result.endByte).toString("utf8"));
+			assert.ok(result.done || result.nextByte > result.startByte);
+			assert.ok(result.cursor);
+			assert.equal(state.trace[1][0], sample.lengths[0]);
+			assert.equal(state.trace[1][1], sample.lengths[0], "fill remaining buffer space");
+			assert.equal(state.trace[1][2], READ_WINDOW_BYTES - sample.lengths[0]);
+			const next = await readWindow(path, directory, "short-read", { cursor: result.cursor });
+			assert.equal(next.startByte, result.nextByte);
+			assert.equal(next.text, source.subarray(next.startByte, next.endByte).toString("utf8"));
+			t.diagnostic(JSON.stringify({ firstFill: state.trace.slice(0, sample.lengths.length + 1) }));
+		});
+	}));
+}
+
+test("B1 abort between positive short fill reads closes descriptor", async (t) => fixture(async (path, directory) => {
+	await writeFile(path, "😀" + "z".repeat(READ_CHUNK_BYTES));
+	const controller = new AbortController();
+	await reviewReadSeam(t, { lengths: [1], abortAfterFirst: controller }, async (state) => {
+		await assert.rejects(readWindow(path, directory, "abort-fill", {}, controller.signal), /Operation aborted/);
+		assert.equal(state.trace.length, 1);
+	});
+}));
+
+for (const size of [0n, 1n, 16000n]) {
+	test(`B0 underreported-size small snapshot reported=${size} preserves complete content`, async (t) => fixture(async (path, directory) => {
+		const text = "virtual content\n".repeat(500);
+		await writeFile(path, text);
+		await reviewReadSeam(t, { size }, async () => {
+			const result = await createReadToolDefinition(directory).execute("virtual-small", { path }, undefined, undefined, {} as ExtensionContext);
+			assert.deepEqual(result.content, [{ type: "text", text }]);
+			assert.equal(result.details, undefined);
+		});
+	}));
+}
+
+for (const size of [0n, 1n]) {
+	test(`B0 underreported-size production rejects oversized actual content reported=${size}`, async (t) => fixture(async (path, directory) => {
+		await writeFile(path, "x".repeat(READ_CHUNK_BYTES + 100));
+		await reviewReadSeam(t, { size }, async (state) => {
+			const attempt = createReadToolDefinition(directory).execute("virtual-large", { path }, undefined, undefined, {} as ExtensionContext);
+			await assert.rejects(attempt.then((result) => {
+				t.diagnostic(JSON.stringify({ unexpectedSuccess: result.details?.window, returnedContent: result.content }));
+				return result;
+			}), { code: "unreliable-size" });
+			assert.equal(state.opens, 2, "MIME + small snapshot, no automatic scanner retry");
+		});
+	}));
+}
+
+test("B0 underreported-size direct scanner verifies reported EOF", async (t) => fixture(async (path, directory) => {
+	await writeFile(path, "x".repeat(READ_CHUNK_BYTES + 100));
+	await reviewReadSeam(t, { size: 1n }, async () => {
+		await assert.rejects(readWindow(path, directory, "direct-eof", {}), { code: "unreliable-size" });
+	});
+}));
+
+test("B0 reported EOF probe validates generation before unreliable-size", async (t) => fixture(async (path, directory) => {
+	await writeFile(path, "xy");
+	await reviewReadSeam(t, { size: 1n, growAtProbe: path }, async () => {
+		await assert.rejects(readWindow(path, directory, "mutated-eof", {}), { code: "stale-cursor" });
+	});
+}));
