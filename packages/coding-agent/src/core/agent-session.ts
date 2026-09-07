@@ -3570,7 +3570,7 @@ export class AgentSession {
 	}
 
 	private _captureReadEvidenceIdentity(): boolean {
-		return this._evidenceCompletedReads !== undefined && this.settingsManager.getEvidenceLedgerEnabled() &&
+		return process.platform !== "win32" && this._evidenceCompletedReads !== undefined && this.settingsManager.getEvidenceLedgerEnabled() &&
 			this._toolResultPresentation?.mcpInputConfigured === true && !this._evidenceMutableHooks();
 	}
 
@@ -3606,6 +3606,11 @@ export class AgentSession {
 		if (this._evidenceMutableHooks()) { ledger.miss("mutable-hook"); return execute(callId, args, signal, onUpdate); }
 		const owner = this._toolResultPresentation;
 		if (!owner?.mcpInputConfigured) { ledger.miss("artifact-unavailable"); return execute(callId, args, signal, onUpdate); }
+		if (process.platform === "win32") {
+			ledger.miss("uncertain-identity");
+			ledger.counters.realReadExecutions++;
+			return execute(callId, args, signal, onUpdate);
+		}
 		if (!args || typeof args.path !== "string" || args.path.length > 4096 ||
 			(args.offset !== undefined && (!Number.isSafeInteger(args.offset) || args.offset < 1)) ||
 			(args.limit !== undefined && (!Number.isSafeInteger(args.limit) || args.limit < 1)) ||

@@ -27,6 +27,12 @@ export function readFileGeneration(info: BigIntStats): string {
 	return generation(info);
 }
 export function hasPreciseReadIdentity(info: BigIntStats): boolean {
+	// Node's Windows stat tuple is not a change generation: a same-size rewrite
+	// can retain every field even though mtimeNs/ctimeNs have fractional digits.
+	// Win32 also defers last-write updates while writer handles remain open.
+	// No USN/file-change capability is available here. The v1 contract requires
+	// a miss, not an age heuristic, content hash, watcher or guessed precision.
+	if (process.platform === "win32") return false;
 	return info.isFile() && info.ino > 0n && info.size >= 0n &&
 		typeof info.mtimeNs === "bigint" && typeof info.ctimeNs === "bigint" &&
 		info.mtimeNs > 0n && info.ctimeNs > 0n &&
