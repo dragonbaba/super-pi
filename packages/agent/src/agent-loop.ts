@@ -913,6 +913,7 @@ class ToolProgressDelivery {
 		while (this.pending) {
 			const partialResult = this.pending;
 			this.pending = undefined;
+			try {
 			await this.emit({
 				type: "tool_execution_update",
 				toolCallId: this.prepared.toolCall.id,
@@ -920,6 +921,11 @@ class ToolProgressDelivery {
 				args: this.prepared.toolCall.arguments,
 				partialResult,
 			});
+			} catch (error) {
+				// MCP notifications are observational, never the canonical final.
+				// Keep the existing critical-listener contract for other tool updates.
+				if (partialResult.details?.mcpProgress !== true) throw error;
+			}
 		}
 	}
 
