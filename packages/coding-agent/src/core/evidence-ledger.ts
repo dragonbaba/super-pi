@@ -69,10 +69,13 @@ function ownMetadata(value: string): string { return Buffer.from(value, "utf16le
 
 export class EvidenceLedger {
 	readonly counters = createEvidenceCounters();
+	readonly statOptions = { bigint: true } as const;
+	private sequence = 0;
 	workspaceGeneration = 0;
 	branchGeneration = 0;
 	private records = new Map<string, EvidenceRecordV1>();
 	private disposed = false;
+	nextEvidenceId(): string { return `evidence-v1-${++this.sequence}`; }
 
 	hashArguments(material: string): string | undefined {
 		if (material.length > EVIDENCE_MAX_ARGUMENT_BYTES) return undefined;

@@ -243,7 +243,7 @@ export function createReadToolDefinition(
 				if (cursor === undefined) {
 					await ops.access(absolutePath);
 					localMime = await detectSupportedImageMimeTypeFromFile(absolutePath);
-					if (!localMime) localTextBuffer = await readSmallFileIfStable(absolutePath, signal, evidenceIdentity);
+					if (!localMime) localTextBuffer = await readSmallFileIfStable(absolutePath, signal, evidenceIdentity, evidenceIdentity ? cwd : undefined);
 				}
 				if (cursor !== undefined || (!localMime && localTextBuffer === undefined)) {
 					const window = await readWindow(absolutePath, cwd, ctx?.sessionManager?.getSessionId() || instanceScope, { offset, limit, cursor }, signal, undefined, evidenceIdentity);

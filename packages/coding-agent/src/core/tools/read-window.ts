@@ -16,12 +16,14 @@ export const READ_EVIDENCE_CAPTURE = Symbol("read-evidence-capture");
 export const READ_EVIDENCE_IDENTITY = Symbol("read-evidence-identity");
 export interface ValidatedReadIdentity {
 	canonicalPath: string;
+	canonicalWorkspace: string;
+	addressedPath: string;
 	fileGeneration: string;
 	precise: boolean;
 	location: string;
 }
 export function createValidatedReadIdentity(): ValidatedReadIdentity {
-	return { canonicalPath: "", fileGeneration: "", precise: false, location: "" };
+	return { canonicalPath: "", canonicalWorkspace: "", addressedPath: "", fileGeneration: "", precise: false, location: "" };
 }
 export function readFileGeneration(info: BigIntStats): string {
 	return generation(info);
@@ -113,8 +115,12 @@ function generation(info: BigIntStats): string {
 /** Simple small-file snapshot: bounded allocation and positional reads through EOF.
  * A changed or large file goes back to the window scanner, never to readFile.
  */
-export async function readSmallFileIfStable(path: string, signal?: AbortSignal, evidenceIdentity?: ValidatedReadIdentity): Promise<Buffer | undefined> {
+export async function readSmallFileIfStable(path: string, signal?: AbortSignal, evidenceIdentity?: ValidatedReadIdentity, workspace?: string): Promise<Buffer | undefined> {
 	checkAbort(signal);
+	if (evidenceIdentity && workspace) {
+		evidenceIdentity.canonicalWorkspace = await realpath(workspace);
+		evidenceIdentity.addressedPath = path;
+	}
 	const canonical = await realpath(path);
 	const handle = await open(canonical, "r");
 	try {
@@ -203,6 +209,10 @@ export async function readWindow(
 ): Promise<ReadWindowResult> {
 	checkAbort(signal);
 	const canonicalWorkspace = await realpath(workspace);
+	if (evidenceIdentity) {
+		evidenceIdentity.canonicalWorkspace = canonicalWorkspace;
+		evidenceIdentity.addressedPath = path;
+	}
 	const scope = scopeKey(canonicalWorkspace, session);
 	const cursor = input.cursor === undefined ? undefined : parseCursor(input.cursor, scope, canonicalWorkspace, session);
 	if (cursor && input.offset !== undefined) throw new ReadCursorError("invalid-cursor");

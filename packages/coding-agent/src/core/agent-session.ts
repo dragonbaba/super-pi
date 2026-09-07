@@ -3633,11 +3633,15 @@ export class AgentSession {
 		const readOffset = args.offset;
 		const readLimit = args.limit;
 		const readCursor = args.cursor;
-		let canonical: string;
-		let canonicalCwd: string;
+		const empty = ledger.counters.entries === 0;
+		let canonical = "";
+		let canonicalCwd = "";
 		let key: string | undefined;
-		let relativePath: string;
-		try {
+		let relativePath = "";
+		if (empty) {
+			ledger.lookup("");
+			ledger.miss("no-record");
+		} else try {
 			const addressed = await resolveReadPathAsync(readPath, this._cwd);
 			canonicalCwd = await evidenceRealpath(this._cwd);
 			canonical = await evidenceRealpath(addressed);
@@ -3658,7 +3662,7 @@ export class AgentSession {
 				else {
 					// Access policy is never cached. File mismatch precedes G2 hashing.
 					await evidenceAccess(addressed, evidenceFsConstants.R_OK);
-					const info = await evidenceStat(canonical, { bigint: true });
+					const info = await evidenceStat(canonical, ledger.statOptions);
 					const sameTarget = await evidenceRealpath(addressed) === canonical;
 					this._checkEvidenceBranch();
 					if (!hasPreciseReadIdentity(info)) miss = "uncertain-identity";
@@ -3695,7 +3699,15 @@ export class AgentSession {
 		const result = await execute(callId, args, signal, onUpdate);
 		this._checkEvidenceBranch();
 		const identity = (result as typeof result & { [READ_EVIDENCE_IDENTITY]?: ValidatedReadIdentity })[READ_EVIDENCE_IDENTITY];
-		if (identity?.precise && !signal?.aborted && !this._evidenceMutableHooks() &&
+		if (empty && identity?.precise) {
+			canonical = identity.canonicalPath;
+			canonicalCwd = identity.canonicalWorkspace;
+			relativePath = relative(resolveEvidencePath(this._cwd), identity.addressedPath).replaceAll(sep, "/").normalize("NFC");
+			if (isAbsolute(relativePath) || relativePath === ".." || relativePath.startsWith("../") || relativePath.length > 1024 ||
+				canonical.length > 4096 || canonicalCwd.length > 4096 || canonicalCwd.length === 0) return result;
+			key = ledger.hashArguments(JSON.stringify(["builtin-read-v1", canonicalCwd, canonical.normalize("NFC"), readOffset ?? 1, readLimit ?? null, readCursor ?? null]));
+		}
+		if (key && identity?.precise && !signal?.aborted && !this._evidenceMutableHooks() &&
 			ledger.workspaceGeneration === workspace && ledger.branchGeneration === branch &&
 			identity.canonicalPath === canonical && this._evidenceCompletedReads && this._evidenceCompletedReads.size < 128) {
 			const scope = ledger.hashScope(JSON.stringify([sessionId, canonicalCwd, canonical, identity.fileGeneration, workspace, branch, "read-policy-v1"]));
@@ -3707,7 +3719,7 @@ export class AgentSession {
 				return result;
 			}
 			if (scope && identity.location.length <= 8192 && this._evidenceCompletedBytes + bytes <= 64 * 1024) {
-				const receipt: EvidenceRecordV1 = { version: 1, evidenceId: `ev1-${callId}`, toolKind: "builtin-read", canonicalArgsHash: key,
+				const receipt: EvidenceRecordV1 = { version: 1, evidenceId: ledger.nextEvidenceId(), toolKind: "builtin-read", canonicalArgsHash: key,
 					sourceGeneration: 0,
 					scopeFingerprint: scope, resultHandle: "", sourceToolCallId: callId, relativePath, location: identity.location,
 					createdTurn: this.agent.state.messages.length, workspaceGeneration: workspace, branchGeneration: branch,
