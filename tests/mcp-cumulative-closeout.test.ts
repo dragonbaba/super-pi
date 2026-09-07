@@ -20,6 +20,7 @@ for (const hook of ["tool_result", "message_end"]) for (const kind of ["text", "
     try {
       (fixture.session as any)._toolResultPresentation=owner;
       const runner=(fixture.session as any)._extensionRunner;
+      runner.handlerEventTypes.add(hook);
       runner.extensions.push({path:"fixture-extension",handlers:new Map([[hook,[ (event: any) => {
         const content=hook==="message_end"?event.message.content:event.content;
         assert.equal(Object.isFrozen(content[0]),false);
