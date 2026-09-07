@@ -205,3 +205,96 @@ notifications before the shim and zero afterward. The client-side media decode
 counter is zero; the in-process test server's own pre-send validation is excluded.
 Type checking and offline builds pass. These are focused development checks;
 the final candidate test, performance, GC, CI and review gates remain outstanding.
+
+## Focused performance and allocation packet
+
+`scripts/bench/mcp-output-bounds.ts` measures three fixtures. Five independent
+timing processes total were used, including two after the media digest fix.
+Local runtime: Windows, Node v26.4.0. CI uses the unchanged Node 22.19.x workflow.
+Small-path comparison is a test-only reproduction of the baseline text
+normalization path, not a network/server benchmark. No production tuning was
+performed for sub-millisecond timing differences.
+
+| Fixture | Raw fixture JSON bytes | Final two normalization p50 / p95 ms | Model estimated tokens | Recovery |
+| --- | ---: | --- | ---: | --- |
+| Small text | 183 | 0.0005–0.0006 / 0.0010 | 56 | inline, zero artifacts/cursors |
+| 1 MiB structured object | 1,048,637 | 5.7360–5.7798 / 5.8762–6.2296 | 111 | one existing session artifact |
+| 1 MiB text + image/resource + 100 progress updates | 1,223,546 | 0.1296–0.1315 / 0.1402–0.1432 | 112 | one existing session artifact |
+
+Baseline small normalization p50/p95: 0.0006/0.0012 ms. Final absolute candidate
+deltas: p50 -0.0001 to 0 ms; p95 -0.0002 ms. Projection plus recovery p50/p95:
+small 0.0059/0.0094–0.0096 ms; structured 6.3537–6.3778/6.5584–6.6415 ms;
+mixed 7.1768–7.2407/7.5504–7.6605 ms. The large raw sources are not forwarded as
+full model text. Every measured large case reads its canonical artifact and
+checks that the existing source array is reused. Four cursor strings are built
+by the existing projection passes; this is not four independent cursor owners.
+
+One sampled allocation profile on the mixed fixture (12 iterations): initial
+heap 31,594,136, sampled peak 34,006,064, final 29,157,224 bytes. Largest site:
+`Buffer.byteLength`, 1,048,592 sampled bytes, consistent with flattening the
+synthetic repeated source string. Other leading sampled sites: benchmark run
+24,200; inspector post 16,088; existing estimator ASCII-run logic 14,320;
+projection record creation 11,672; typed-source creation 11,568 bytes. The profile
+does not prove absence of native/V8 temporary allocation or transport copies.
+
+One controlled-GC lifecycle run: 9 WeakRefs, zero retained after owner clear,
+dispose and eight event-loop/GC turns. Heap initial 31,459,888, peak 32,908,288,
+final 27,388,856 bytes. Source objects, wrappers, content arrays and owner are
+tracked; primitives cannot be WeakRef targets. Canonical access naturally lasts
+while the session still owns its messages; the fixture releases those roots.
+The benchmark itself opens no source file or remote connection. The separate
+stdio error fixture closes its SDK client/transport and child process.
+
+Evidence limitation: these timings/profile/GC were gathered at production
+`db5de9d`. The subsequent source-invariant correction replaces two `for...in`
+loops with `Object.keys` iteration; it adds one transient key array per visited
+object/pass, without changing source ownership or byte/token policy. They are
+not represented as exact-head performance measurements. The requested process,
+profile and GC budgets were not restarted after this correction.
+
+| Boundary | Explicit allocation / ownership accounting |
+| --- | --- |
+| SDK progress adapter, each accepted notification | zero inline closures, Promise executors/tails/arrays, AbortControllers, timers, Map/Set constructions; bounded outer/params envelope objects; SDK performs one bounded rest-object copy |
+| McpCall notification | zero Promise/timer/controller; one text string, one content array, result/text/details objects; no arbitrary server message reference; callback is bound once per request |
+| Existing agent latest slot | one latest pending value per executing tool; existing asynchronous drain promises are per drain cycle, not an accumulating notification queue; MCP observer failure is isolated |
+| Normalizer | no async helper, Promise, controller, spread, decode or source Buffer; one output array and bounded wrappers; two structured-key selector entries; temporary structural traversal arrays and per-property descriptors |
+| Structured source | one bounded writer; validation and integrity traversals; at most one full serialization for an inline object, zero full serialization for a partial large preview; key arrays follow repository syntax policy and are released after each traversal |
+| Typed binary | zero full base64 decodes; numeric signature inspection; canonical base64 string reference shared with the existing source owner; no artifact-source copy |
+| Integrity | one source digest per newly admitted immutable typed/text/large-image generation; later artifact checks hash bounded digests/identity framing; JSON restore validates its new generation once |
+| Existing owner | unchanged 128-record / 128 Mi-code-unit retention limits, existing eviction/admission and clear/dispose; conservative structural code-unit charges include node/key overhead |
+
+The transport still owns complete JSON parsing and schema object reconstruction.
+Post-parse admission cannot undo that allocation. The 10 MiB canonical envelope
+reuses the existing transport safety ceiling; the 50 KiB model text ceiling
+reuses the previous inline MCP allowance. These are raw safety limits, not token
+defaults. Tests span tiny, 64 KiB, 1 MiB and 10 MiB text, large nested/many-field
+objects, and mixed typed blocks; the wire JSON envelope must also fit its own
+existing transport limit.
+
+## Candidate checks and classifications
+
+The single local `npm test` run reached the source-invariant gate and failed on
+the two new `for...in` statements. Those statements were corrected in `a4d637b`;
+the affected source-invariant and structured-content checks pass. The local full
+run was not repeated. Exact-head Linux/Windows CI remains the final full-suite
+gate and must be recorded in the PR packet before candidate acceptance.
+
+Current reproducible MCP findings have deterministic red/fix commits, including
+SDK Promise history, eager media decoding, late progress payload logging,
+observer-failure final corruption, lost canonical server errors, lost failure
+status, stderr/cause retention, structured `toJSON`, media compatibility,
+immutable source digest reuse and stale extension input callbacks.
+
+No new transport, provider, TUI, read or G2 retention/cursor subsystem is added.
+The six-line existing agent progress change is justified by a deterministic MCP
+delivery failure; its ordinary-tool critical-listener regression still passes.
+Remaining D limitations: already-parsed transport frame allocation, pinned SDK
+private progress hook, and no actual tools/call pagination contract in this SDK
+integration. Standard list cursors/HTTP resumption are not tool pagination.
+The previously deferred read.ts C suggestions remain outside this PR.
+
+Rollback point is `946442c7cd41c77dde26d2b8fbce442211dfef7d`; revert this branch's
+commits through ordinary reviewed changes if needed. Do not reset main. The
+candidate worktree is dedicated. The unrelated main worktree has an existing
+untracked `SUPER_PI_CODEX_PHASED_OPTIMIZATION_PLAN.md`; it has not been modified
+or removed. The accepted Phase 5C-A worktree remains clean and untouched.
