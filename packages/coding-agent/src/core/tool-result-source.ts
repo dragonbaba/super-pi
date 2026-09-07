@@ -110,8 +110,9 @@ class SourceInspection {
 					this.visit(descriptor.value, depth + 1);
 				}
 			} else {
-				for (const key in value) {
-					if (!Object.hasOwn(value, key)) continue;
+				const keys = Object.keys(value);
+				if (keys.length > MCP_SOURCE_BYTES / 8) throw new McpSourceError("result-size-limit");
+				for (const key of keys) {
 					const descriptor = Object.getOwnPropertyDescriptor(value, key)!;
 					if (!("value" in descriptor)) throw new McpSourceError("invalid-structured-content");
 					this.string(key);
@@ -208,9 +209,8 @@ class StructuredPreview {
 				this.write(value[index], depth + 1);
 			}
 		} else {
-			for (const key in value) {
+			for (const key of Object.keys(value)) {
 				if (!this.complete) break;
-				if (!Object.hasOwn(value, key)) continue;
 				this.emit((count++ ? ",\n" : "\n") + indent);
 				this.string(key);
 				this.emit(": ");
