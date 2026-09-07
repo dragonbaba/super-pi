@@ -852,6 +852,8 @@ export class AgentSession {
 
 		this.agent.afterToolCall = async ({ toolCall, args, result, isError }) => {
 			try {
+			const mcpFailure = toolCall.name.startsWith("mcp__") && typeof result.details?.mcpError === "string";
+			const finalIsError = isError || mcpFailure;
 			const runner = this._extensionRunner;
 			const hookResult = runner.hasHandlers("tool_result")
 				? await runner.emitToolResult({
@@ -861,7 +863,7 @@ export class AgentSession {
 						input: args as Record<string, unknown>,
 						content: result.content,
 						details: result.details,
-						isError,
+						isError: finalIsError,
 						usage: result.usage,
 					})
 				: undefined;
@@ -872,14 +874,14 @@ export class AgentSession {
 				autoResizeImages: this.settingsManager.getImageAutoResize(),
 			});
 
-			if (!hookResult && normalizedContent === content) {
+			if (!hookResult && normalizedContent === content && finalIsError === isError) {
 				return undefined;
 			}
 
 			return {
 				content: normalizedContent,
 				details: hookResult?.details,
-				isError: hookResult?.isError ?? isError,
+				isError: hookResult?.isError ?? finalIsError,
 				usage: hookResult?.usage,
 			};
 			} finally {
