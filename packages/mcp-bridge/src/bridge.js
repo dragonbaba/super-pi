@@ -4,6 +4,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { ListRootsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { McpCall, McpCallError } from "./call.js";
 import {
   MAX_CONTENT_ITEMS,
   MAX_IMAGE_BYTES,
@@ -224,6 +225,7 @@ export class McpBridgeRuntime {
     this.registeredSchemaBytes = new Map();
     this.searchIndex = new Map();
     this.closed = false;
+    this.activeCalls = new Set();
   }
 
   addConfigured(config) {
@@ -266,7 +268,7 @@ export class McpBridgeRuntime {
       }));
       const transport = createTransport(config, state);
       client.onclose = () => { if (!this.closed) state.status = "disconnected"; };
-      client.onerror = (error) => { state.error = sanitizeText(error?.message ?? error, 500); };
+      client.onerror = () => { state.error = "MCP protocol error."; };
       state.client = client;
       state.transport = transport;
       const startup = timeoutSignal(signal, config.startupTimeoutMs);
@@ -316,28 +318,36 @@ export class McpBridgeRuntime {
       description: sanitizeText(remoteTool.description ?? `MCP tool ${remoteTool.name}`, 1000),
       parameters,
       executionMode: "sequential",
-      async execute(_toolCallId, args, signal) {
-        const result = await runtime.callRemoteTool(state, remoteTool.name, args, signal);
+      async execute(_toolCallId, args, signal, onUpdate) {
+        const result = await runtime.callRemoteTool(state, remoteTool.name, args, signal, onUpdate);
         if (result?.isError) throw new Error(resultText(result));
         return { content: convertMcpResult(result), details: { server: state.config.id, remoteTool: sanitizeText(remoteTool.name, 200) } };
       },
     });
   }
 
-  async callRemoteTool(state, remoteName, args, signal) {
+  async callRemoteTool(state, remoteName, args, signal, onUpdate) {
     if ((state.status === "disconnected" || state.status === "cached" || !state.client) && !this.closed) {
       await this.connect(state.config, signal);
     }
     if (state.status !== "connected" || !state.client) throw new Error(`MCP server ${state.config.id} is not connected; run /mcp-reload`);
+    const call = new McpCall(signal, onUpdate);
+    this.activeCalls.add(call);
     try {
-      return await state.client.callTool(
+      const result = await state.client.callTool(
         { name: remoteName, arguments: args },
         undefined,
-        { signal, timeout: state.config.toolTimeoutMs, maxTotalTimeout: state.config.toolTimeoutMs, resetTimeoutOnProgress: true },
+        { signal: call.controller.signal, onprogress: call.notify, timeout: state.config.toolTimeoutMs, maxTotalTimeout: state.config.toolTimeoutMs, resetTimeoutOnProgress: false },
       );
-    } catch (error) {
-      state.error = sanitizeText(error instanceof Error ? error.message : error, 500);
-      throw error;
+      if (call.controller.signal.aborted || this.closed) throw new McpCallError("aborted");
+      return result;
+    } catch {
+      const code = call.controller.signal.aborted || this.closed ? "aborted" : "protocol-error";
+      state.error = code === "aborted" ? "MCP request aborted." : "MCP protocol error.";
+      throw new McpCallError(code);
+    } finally {
+      call.finish();
+      this.activeCalls.delete(call);
     }
   }
 
@@ -384,6 +394,8 @@ export class McpBridgeRuntime {
   async close() {
     if (this.closed) return;
     this.closed = true;
+    for (const call of this.activeCalls) { call.abort(); call.finish(); }
+    this.activeCalls.clear();
     const closes = [];
     for (const state of this.states.values()) {
       state.status = "closed";
