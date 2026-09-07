@@ -287,13 +287,13 @@ export class McpBridgeRuntime {
           const result = await runtime.callRemoteTool(state, remoteTool.name, args, signal, onUpdate);
           const configured = ctx?.mcpResultInputConfigured === true;
           const content = convertMcpResult(result, configured);
-          if (signal?.aborted || runtime.closed) return mcpFailureResult("aborted");
+          if (signal?.aborted || runtime.closed) return mcpFailureResult("aborted", ctx, toolCallId);
           if (configured) ctx.admitMcpResultInput(content, toolCallId);
           const details = { server: state.config.id, remoteTool: sanitizeText(remoteTool.name, 200) };
           if (result?.isError) details.mcpError = "server-tool-error";
           return { content, details };
         } catch (error) {
-          return mcpFailureResult(error?.code);
+          return mcpFailureResult(error?.code, ctx, toolCallId);
         }
       },
     });
@@ -383,7 +383,7 @@ export class McpBridgeRuntime {
   }
 }
 
-function mcpFailureResult(code) {
+function mcpFailureResult(code, ctx, toolCallId) {
   const category = code === "budget-not-configured" || code === "budget-too-small"
     ? "budget-not-configured"
     : code === "result-size-limit" || code === "invalid-typed-content" || code === "invalid-structured-content" || code === "aborted" || code === "server-tool-error"
@@ -391,5 +391,14 @@ function mcpFailureResult(code) {
   const text = category === "budget-not-configured"
     ? "MCP result unavailable: configure tool-result presentation with a sufficient token budget for recovery."
     : `MCP result unavailable (${category}).`;
-  return { content: [{ type: "text", text }], details: { mcpError: category } };
+  const failure = { content: [{ type: "text", text }], details: { mcpError: category } };
+  try {
+    if (ctx?.mcpResultInputConfigured === true) ctx.admitMcpResultInput(failure.content, toolCallId);
+  } catch {
+    // A positive configured budget can be smaller than any explanatory text.
+    // Zero model text is admissible without overriding that budget. Canonical
+    // details still carry the explicit configuration reason and tool error.
+    return { content: [], details: { mcpError: category, configurationReason: text } };
+  }
+  return failure;
 }
