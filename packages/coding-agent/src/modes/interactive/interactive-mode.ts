@@ -658,6 +658,7 @@ export class InteractiveMode {
 	private toolResultDiscoveryCanonicalPayloadRefreshSkips = 0;
 	private toolResultDiscoveryCanonicalPayloadConservativeHandlerRefreshes = 0;
 	private toolResultDiscoveryCanonicalPayloadReplacementRefreshes = 0;
+	private toolResultDiscoveryCanonicalPayloadHostFinalizationRefreshes = 0;
 	private lastReadToolGroup?: ReadToolGroupComponent;
 	private deferredReadPlaceholders = new Map<string, Container>();
 	private deferredReadExecutions = new Map<string, {
@@ -4676,7 +4677,9 @@ export class InteractiveMode {
 		if (canonicalPayloadRefreshRequired) {
 			this.updateTrackedToolResult(registration.component, message.toolCallId, message, false, message.isError);
 			this.toolResultDiscoveryCanonicalPayloadRefreshes++;
-			if (disposition === "replacement-returned") {
+			if (disposition === "host-finalized") {
+				this.toolResultDiscoveryCanonicalPayloadHostFinalizationRefreshes++;
+			} else if (disposition === "replacement-returned") {
 				this.toolResultDiscoveryCanonicalPayloadReplacementRefreshes++;
 			} else {
 				this.toolResultDiscoveryCanonicalPayloadConservativeHandlerRefreshes++;
@@ -4782,6 +4785,7 @@ export class InteractiveMode {
 		canonicalPayloadRefreshSkips: number;
 		canonicalPayloadConservativeHandlerRefreshes: number;
 		canonicalPayloadReplacementRefreshes: number;
+		canonicalPayloadHostFinalizationRefreshes: number;
 		historyMessagesVisited: number;
 		presentationCandidatesEvaluated: number;
 		actualV2Discoveries: number;
@@ -4832,6 +4836,7 @@ export class InteractiveMode {
 			canonicalPayloadConservativeHandlerRefreshes:
 				this.toolResultDiscoveryCanonicalPayloadConservativeHandlerRefreshes,
 			canonicalPayloadReplacementRefreshes: this.toolResultDiscoveryCanonicalPayloadReplacementRefreshes,
+			canonicalPayloadHostFinalizationRefreshes: this.toolResultDiscoveryCanonicalPayloadHostFinalizationRefreshes,
 			...this.session.getToolResultPresentationUiRebuildCounts(),
 		};
 	}

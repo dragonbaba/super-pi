@@ -1,0 +1,88 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { Agent } from "../packages/agent/src/agent.ts";
+import { alphaHeadless, alphaModelRuntime } from "./helpers/alpha-session.ts";
+import { createToolResultPresentationOwner } from "../packages/coding-agent/src/core/tool-result-presentation.ts";
+// @ts-expect-error JavaScript extension package.
+import { McpBridgeRuntime } from "../packages/mcp-bridge/src/bridge.js";
+
+test("one-token MCP failure is delivered and persisted exactly once", async () => {
+	const fixture = await alphaHeadless(alphaModelRuntime());
+	const owner = createToolResultPresentationOwner({ enabled: true, budgetTokens: 1 }, fixture.session.sessionManager.getSessionId())!;
+	let tool: any;
+	let calls = 0;
+	let delivered = 0;
+	const runtime = new McpBridgeRuntime({ registerTool(value: any) { tool = value; } }, "fixture-workspace");
+	runtime.registerRemoteTool({ status: "connected", config: { id: "fixture", toolTimeoutMs: 1000 }, client: { async callTool() { calls++; return { content: [{ type: "text", text: "x".repeat(1024 * 1024) }] }; } } }, { name: "fixture", inputSchema: { type: "object", properties: {} } });
+	try {
+		(fixture.session as any)._toolResultPresentation = owner;
+		fixture.session.subscribe((event) => { if (event.type === "message_end" && event.message.role === "toolResult") delivered++; });
+		const result = await tool.execute("small-budget-call", {}, undefined, undefined, { mcpResultInputConfigured: true, admitMcpResultInput: owner.admitMcpInput.bind(owner) });
+		const after = await fixture.session.agent.afterToolCall!({ toolCall: { type: "toolCall", id: "small-budget-call", name: tool.name, arguments: {} }, args: {}, result, isError: false } as never);
+		const message = { role: "toolResult", toolCallId: "small-budget-call", toolName: tool.name, content: after?.content ?? result.content, details: after?.details ?? result.details, isError: after?.isError ?? false, timestamp: 0 };
+		await (fixture.session as any)._handleAgentEvent({ type: "message_end", message });
+		const entries = fixture.session.sessionManager.getBranch().filter((entry: any) => entry.type === "message" && entry.message.role === "toolResult");
+		assert.equal(calls, 1);
+		assert.equal(delivered, 1);
+		assert.equal(entries.length, 1);
+		assert.equal(message.isError, true);
+		assert.match(message.details.configurationReason, /configure/);
+		assert.deepEqual(message.content, []);
+	} finally { await runtime.close(); owner.dispose(); await fixture.release(); }
+});
+
+test("session input seam preserves MCP tool-level error status", async () => {
+	const fixture = await alphaHeadless(alphaModelRuntime());
+	try {
+		const result = { content: [{ type: "text", text: "bounded failure" }], details: { mcpError: "budget-not-configured" } };
+		const outcome = await fixture.session.agent.afterToolCall!({ toolCall: { type: "toolCall", id: "mcp-fail", name: "mcp__fixture__fixture", arguments: {} }, args: {}, result, isError: false } as never);
+		assert.equal(outcome?.isError, true);
+	} finally { await fixture.release(); }
+});
+
+test("invalidating an extension input seam releases MCP session dependencies", async () => {
+	const fixture = await alphaHeadless(alphaModelRuntime());
+	try {
+		const runner = (fixture.session as any)._extensionRunner;
+		assert.ok(runner.mcpResultInputActions);
+		runner.invalidate();
+		assert.equal(runner.mcpResultInputActions, undefined);
+	} finally { await fixture.release(); }
+});
+
+for (const isMcp of [true, false]) test(`progress observer rejection uses MCP tool identity: ${isMcp}`, async () => {
+	let tool: any;
+	const runtime = new McpBridgeRuntime({ registerTool(value: any) { tool = value; } }, "fixture-workspace");
+	const state = { status: "connected", config: { id: "fixture", toolTimeoutMs: 1000 }, client: {
+		async callTool(_params: any, _schema: any, options: any) {
+			options.onprogress({ progress: 1 });
+			await Promise.resolve();
+			options.onprogress({ progress: 2 });
+			return { content: [{ type: "text", text: "canonical-final" }] };
+		},
+	} };
+	runtime.registerRemoteTool(state, { name: "fixture", inputSchema: { type: "object", properties: {} } });
+	if (!isMcp) tool.name = "ordinary-tool";
+	let streams = 0;
+	const finals: any[] = [];
+	const agent = new Agent({ initialState: { tools: [tool] }, streamFn: (() => {
+		const withTool = streams++ === 0;
+		const message = { role: "assistant", content: withTool ? [{ type: "toolCall", id: "mcp-final", name: tool.name, arguments: {} }] : [{ type: "text", text: "done" }],
+			api: "fixture", provider: "fixture", model: "fixture", stopReason: withTool ? "toolUse" : "stop", timestamp: 0,
+			usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
+		return { async *[Symbol.asyncIterator]() {
+			yield { type: "start", partial: message };
+			if (withTool) { yield { type: "toolcall_start", contentIndex: 0, partial: message }; yield { type: "toolcall_end", contentIndex: 0, toolCall: message.content[0], partial: message }; }
+			yield { type: "done", reason: message.stopReason, message };
+		}, async result() { return message; } };
+	}) as never });
+	agent.subscribe(async (event) => {
+		if (event.type === "tool_execution_update") throw new Error("CANARY_OBSERVER_SECRET");
+		if (event.type === "tool_execution_end") finals.push(event);
+	});
+	await agent.prompt("fixture");
+	assert.equal(finals.length, 1);
+	assert.equal(finals[0].isError, !isMcp);
+	if (isMcp) assert.equal(finals[0].result.content[0].text, "canonical-final");
+	assert.equal(runtime.activeCalls.size, 0);
+});

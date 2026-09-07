@@ -313,6 +313,9 @@ export interface CompactOptions {
 export type ExtensionMode = "tui" | "rpc" | "json" | "print";
 
 export interface ExtensionContext {
+	/** @internal Additive source input seam; final G2 projection remains session-owned. */
+	readonly mcpResultInputConfigured?: boolean;
+	admitMcpResultInput?(content: readonly unknown[], toolCallId: string): void;
 	/** UI methods for user interaction */
 	ui: ExtensionUIContext;
 	/** Current run mode. Use "tui" to guard terminal-only UI such as custom components. */
@@ -1784,6 +1787,8 @@ export interface ExtensionActions {
  * Required by all modes.
  */
 export interface ExtensionContextActions {
+	getMcpResultInputConfigured?: () => boolean;
+	admitMcpResultInput?: (content: readonly unknown[], toolCallId: string) => void;
 	getModel: () => Model<any> | undefined;
 	getScopedModels: () => readonly ScopedModel[];
 	isIdle: () => boolean;

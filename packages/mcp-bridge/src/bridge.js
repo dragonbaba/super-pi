@@ -1,9 +1,13 @@
 import { pathToFileURL } from "node:url";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { createMcpClient } from "./client.js";
+export { createMcpClient } from "./client.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { ListRootsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { McpCall, McpCallError } from "./call.js";
+import { convertMcpResult } from "./result.js";
+export { convertMcpResult } from "./result.js";
 import {
   MAX_CONTENT_ITEMS,
   MAX_IMAGE_BYTES,
@@ -116,9 +120,8 @@ function createTransport(config, state) {
       maxBufferSize: 10 * 1024 * 1024,
     });
     transport.stderr?.on("data", (chunk) => {
-      if (state.stderrBytes >= 8192) return;
-      state.stderr = truncateUtf8(`${state.stderr}${chunk}`, 8192);
-      state.stderrBytes = Math.min(8192, Buffer.byteLength(state.stderr, "utf8"));
+      // Drain the pipe without retaining arbitrary server diagnostics/secrets.
+      state.stderrBytes = Math.min(Number.MAX_SAFE_INTEGER, state.stderrBytes + chunk.length);
     });
     return transport;
   }
@@ -170,44 +173,6 @@ function resultText(result) {
   return joined;
 }
 
-export function convertMcpResult(result) {
-  const content = [];
-  let remainingText = MAX_TEXT_BYTES;
-  let imageBytes = 0;
-  const items = Array.isArray(result?.content) ? result.content : [];
-  const count = Math.min(items.length, MAX_CONTENT_ITEMS);
-  for (let index = 0; index < count && content.length < MAX_CONTENT_ITEMS; index += 1) {
-    const item = items[index];
-    if (item?.type === "text") {
-      remainingText = appendMcpText(content, item.text, remainingText);
-      continue;
-    }
-    if (item?.type === "image") {
-      const size = decodedBase64Bytes(item.data);
-      if (size !== null && size <= MAX_IMAGE_BYTES && imageBytes + size <= MAX_IMAGE_BYTES * 2 && typeof item.mimeType === "string" && item.mimeType.startsWith("image/")) {
-        imageBytes += size;
-        content.push({ type: "image", data: item.data, mimeType: item.mimeType });
-      } else {
-        remainingText = appendMcpText(content, "[MCP image omitted: invalid format or size limit exceeded]", remainingText);
-      }
-      continue;
-    }
-    if (item?.type === "resource" && typeof item.resource?.text === "string") {
-      remainingText = appendMcpText(content, `[MCP resource ${item.resource.uri}]\n${item.resource.text}`, remainingText);
-      continue;
-    }
-    if (item?.type === "resource_link") {
-      remainingText = appendMcpText(content, `[MCP resource link: ${item.name ?? item.uri} — ${item.uri}]`, remainingText);
-      continue;
-    }
-    remainingText = appendMcpText(content, `[MCP ${sanitizeText(item?.type ?? "unknown", 40)} content omitted]`, remainingText);
-  }
-  if (result?.structuredContent !== undefined) remainingText = appendMcpText(content, boundedJson(result.structuredContent, remainingText), remainingText);
-  if (result?.toolResult !== undefined) appendMcpText(content, boundedJson(result.toolResult, remainingText), remainingText);
-  if (content.length === 0) content.push({ type: "text", text: "MCP tool completed without content." });
-  return content;
-}
-
 function mapRemoteTools(tools) {
   const mapped = new Map();
   for (const tool of tools) mapped.set(tool.name, tool);
@@ -224,6 +189,7 @@ export class McpBridgeRuntime {
     this.registeredSchemaBytes = new Map();
     this.searchIndex = new Map();
     this.closed = false;
+    this.activeCalls = new Set();
   }
 
   addConfigured(config) {
@@ -260,13 +226,13 @@ export class McpBridgeRuntime {
     try {
       await state.client?.close().catch(() => undefined);
       if (this.closed || signal?.aborted) throw signal?.reason ?? new Error("MCP startup aborted");
-      const client = new Client({ name: "@super-pi/mcp-bridge", version: "0.1.0" }, { capabilities: { roots: { listChanged: false } } });
+      const client = createMcpClient();
       client.setRequestHandler(ListRootsRequestSchema, async () => ({
         roots: [{ uri: pathToFileURL(this.workspace).href, name: sanitizeText(this.workspace, 200) }],
       }));
       const transport = createTransport(config, state);
       client.onclose = () => { if (!this.closed) state.status = "disconnected"; };
-      client.onerror = (error) => { state.error = sanitizeText(error?.message ?? error, 500); };
+      client.onerror = () => { state.error = "MCP protocol error."; };
       state.client = client;
       state.transport = transport;
       const startup = timeoutSignal(signal, config.startupTimeoutMs);
@@ -286,13 +252,13 @@ export class McpBridgeRuntime {
       for (const tool of listed.tools) this.registerRemoteTool(state, tool);
       this.schemaCache?.put(config, this.workspace, listed.tools, state.serverInfo);
       return state;
-    } catch (error) {
+    } catch {
       state.status = this.closed ? "closed" : "error";
-      state.error = sanitizeText(error instanceof Error ? error.message : error, 500);
+      state.error = "MCP connection failed (protocol-error).";
       await state.client?.close().catch(() => undefined);
       state.client = null;
       state.transport = null;
-      throw new Error(state.error || "MCP connection failed", { cause: error });
+      throw new McpCallError(signal?.aborted || this.closed ? "aborted" : "protocol-error");
     }
   }
 
@@ -316,28 +282,45 @@ export class McpBridgeRuntime {
       description: sanitizeText(remoteTool.description ?? `MCP tool ${remoteTool.name}`, 1000),
       parameters,
       executionMode: "sequential",
-      async execute(_toolCallId, args, signal) {
-        const result = await runtime.callRemoteTool(state, remoteTool.name, args, signal);
-        if (result?.isError) throw new Error(resultText(result));
-        return { content: convertMcpResult(result), details: { server: state.config.id, remoteTool: sanitizeText(remoteTool.name, 200) } };
+      async execute(toolCallId, args, signal, onUpdate, ctx) {
+        try {
+          const result = await runtime.callRemoteTool(state, remoteTool.name, args, signal, onUpdate);
+          const configured = ctx?.mcpResultInputConfigured === true;
+          const content = convertMcpResult(result, configured);
+          if (signal?.aborted || runtime.closed) return mcpFailureResult("aborted", ctx, toolCallId);
+          if (configured) ctx.admitMcpResultInput(content, toolCallId);
+          const details = { server: state.config.id, remoteTool: sanitizeText(remoteTool.name, 200) };
+          if (result?.isError) details.mcpError = "server-tool-error";
+          return { content, details };
+        } catch (error) {
+          return mcpFailureResult(error?.code, ctx, toolCallId);
+        }
       },
     });
   }
 
-  async callRemoteTool(state, remoteName, args, signal) {
+  async callRemoteTool(state, remoteName, args, signal, onUpdate) {
     if ((state.status === "disconnected" || state.status === "cached" || !state.client) && !this.closed) {
       await this.connect(state.config, signal);
     }
     if (state.status !== "connected" || !state.client) throw new Error(`MCP server ${state.config.id} is not connected; run /mcp-reload`);
+    const call = new McpCall(signal, onUpdate);
+    this.activeCalls.add(call);
     try {
-      return await state.client.callTool(
+      const result = await state.client.callTool(
         { name: remoteName, arguments: args },
         undefined,
-        { signal, timeout: state.config.toolTimeoutMs, maxTotalTimeout: state.config.toolTimeoutMs, resetTimeoutOnProgress: true },
+        { signal: call.controller.signal, onprogress: call.notify, timeout: state.config.toolTimeoutMs, maxTotalTimeout: state.config.toolTimeoutMs, resetTimeoutOnProgress: false },
       );
-    } catch (error) {
-      state.error = sanitizeText(error instanceof Error ? error.message : error, 500);
-      throw error;
+      if (call.controller.signal.aborted || this.closed) throw new McpCallError("aborted");
+      return result;
+    } catch {
+      const code = call.controller.signal.aborted || this.closed ? "aborted" : "protocol-error";
+      state.error = code === "aborted" ? "MCP request aborted." : "MCP protocol error.";
+      throw new McpCallError(code);
+    } finally {
+      call.finish();
+      this.activeCalls.delete(call);
     }
   }
 
@@ -384,6 +367,8 @@ export class McpBridgeRuntime {
   async close() {
     if (this.closed) return;
     this.closed = true;
+    for (const call of this.activeCalls) { call.abort(); call.finish(); }
+    this.activeCalls.clear();
     const closes = [];
     for (const state of this.states.values()) {
       state.status = "closed";
@@ -396,4 +381,24 @@ export class McpBridgeRuntime {
     this.registeredSchemaBytes.clear();
     this.registeredNames.clear();
   }
+}
+
+function mcpFailureResult(code, ctx, toolCallId) {
+  const category = code === "budget-not-configured" || code === "budget-too-small"
+    ? "budget-not-configured"
+    : code === "result-size-limit" || code === "invalid-typed-content" || code === "invalid-structured-content" || code === "aborted" || code === "server-tool-error"
+      ? code : "protocol-error";
+  const text = category === "budget-not-configured"
+    ? "MCP result unavailable: configure tool-result presentation with a sufficient token budget for recovery."
+    : `MCP result unavailable (${category}).`;
+  const failure = { content: [{ type: "text", text }], details: { mcpError: category } };
+  try {
+    if (ctx?.mcpResultInputConfigured === true) ctx.admitMcpResultInput(failure.content, toolCallId);
+  } catch {
+    // A positive configured budget can be smaller than any explanatory text.
+    // Zero model text is admissible without overriding that budget. Canonical
+    // details still carry the explicit configuration reason and tool error.
+    return { content: [], details: { mcpError: category, configurationReason: text } };
+  }
+  return failure;
 }

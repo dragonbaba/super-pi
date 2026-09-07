@@ -1,3 +1,5 @@
+const MCP_PROGRESS_SOURCE = Symbol.for("super-pi.mcp-progress-source.v1");
+
 /**
  * Agent loop that works with AgentMessage throughout.
  * Transforms to Message[] only at the LLM call boundary.
@@ -913,6 +915,7 @@ class ToolProgressDelivery {
 		while (this.pending) {
 			const partialResult = this.pending;
 			this.pending = undefined;
+			try {
 			await this.emit({
 				type: "tool_execution_update",
 				toolCallId: this.prepared.toolCall.id,
@@ -920,6 +923,12 @@ class ToolProgressDelivery {
 				args: this.prepared.toolCall.arguments,
 				partialResult,
 			});
+			} catch (error) {
+				// MCP notifications are observational, never the canonical final.
+				// Keep the existing critical-listener contract for other tool updates.
+				if (!this.prepared.toolCall.name.startsWith("mcp__") ||
+					(partialResult as unknown as Record<symbol, unknown>)[MCP_PROGRESS_SOURCE] !== true) throw error;
+			}
 		}
 	}
 

@@ -2225,6 +2225,7 @@ test("128 trailing V1 results do not hide an earlier bounded V2 discovery", asyn
 			canonicalPayloadRefreshSkips: 0,
 			canonicalPayloadConservativeHandlerRefreshes: 0,
 			canonicalPayloadReplacementRefreshes: 0,
+			canonicalPayloadHostFinalizationRefreshes: 0,
 			historyMessagesVisited: 130,
 			presentationCandidatesEvaluated: 129,
 			actualV2Discoveries: 1,

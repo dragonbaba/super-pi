@@ -1,6 +1,8 @@
 # @super-pi/mcp-bridge
 
-A guarded generic MCP client extension for Pi `0.84.x`. It exposes configured MCP server tools as namespaced Pi tools and supports stdio, Streamable HTTP, and legacy HTTP+SSE.
+A guarded generic MCP client extension for Pi `0.84.x` hosts that provide the internal typed-source adapter. It exposes configured MCP server tools as namespaced Pi tools and supports stdio, Streamable HTTP, and legacy HTTP+SSE. Older hosts in the same version line are detected before runtime loading and receive an upgrade warning instead of a missing-export crash.
+
+Large text and typed resource/audio results require configured ToolResult presentation and a sufficient token budget. Recovery uses the existing session artifact owner (`session.readToolResultArtifact`); it is local recovery, not server pagination. Small inline text and supported inline images retain their existing path. If a configured budget cannot contain even failure text, the final error has zero model text and preserves its explicit configuration reason in canonical ToolResult details.
 
 ## Commands
 

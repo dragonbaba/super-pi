@@ -2,6 +2,7 @@ import { createHash, type Hash } from "node:crypto";
 import type { ImageContent, Message, TextContent, ToolResultMessage } from "@super-pi/ai/compat";
 import { estimateContextTokensFromParts, estimateMessageTokens, type Tool } from "@super-pi/ai";
 import { estimateToolOutputTokens, type ToolOutputTokenEstimate } from "./tool-output-budget.ts";
+import { MCP_INLINE_BYTES, type McpTypedSource, verifiedMcpSource, mcpTextDigest, mcpImageDigest } from "./tool-result-source.ts";
 
 export const TOOL_RESULT_PRESENTATION_VERSION = 1 as const;
 export const TOOL_RESULT_PRESENTATION_V2_VERSION = 2 as const;
@@ -23,7 +24,7 @@ const NOTICE_SUFFIX = ".]";
 const ESCAPE_CODE = 0x1b;
 const GRAPHEME_SEGMENTER = new Intl.Segmenter("en", { granularity: "grapheme" });
 
-export type ToolResultPresentationContent = Readonly<TextContent> | Readonly<ImageContent>;
+export type ToolResultPresentationContent = (Readonly<TextContent> & { readonly mcpSource?: McpTypedSource; readonly mcpInput?: true }) | (Readonly<ImageContent> & { readonly mcpInput?: true });
 
 /** Phase 5B-A behavior. V1 always exposes the complete legacy result to both consumers. */
 export interface ToolResultPresentationV1 {
@@ -218,6 +219,8 @@ interface CursorState {
 }
 
 interface SourceScan {
+	mcpInput: boolean;
+	mcpArtifactRequired: boolean;
 	estimate: ToolOutputTokenEstimate;
 	digest: string;
 	sha256: string;
@@ -235,6 +238,7 @@ interface SourceScan {
 }
 
 interface ProjectionBuild {
+	artifact?: ToolResultArtifactV1;
 	content: ToolResultPresentationContent[];
 	noticeBlockIndex: number;
 	start: ContentPosition;
@@ -710,12 +714,30 @@ function appendSourceIdentityBlock(
 	artifactBytes: number,
 ): number {
 	if (block.type === "text") {
+		if (block.mcpInput && !block.mcpSource) {
+			const sourceDigest = mcpTextDigest(block);
+			const length = block.text.length.toString(36);
+			digest.update("mt").update(length).update(":").update(sourceDigest);
+			return artifactBytes + 3 + length.length + sourceDigest.length;
+		}
+		if (block.mcpSource) {
+			const source = verifiedMcpSource(block.mcpSource);
+			digest.update("m").update(source.kind).update(":").update(source.digest);
+			const length = block.text.length.toString(36);
+			digest.update(length).update(":").update(block.text, "utf16le");
+			return artifactBytes + 3 + source.kind.length + source.digest.length + length.length + block.text.length * 2;
+		}
 		const textLength = block.text.length.toString(36);
 		digest.update("t").update(textLength).update(":").update(block.text, "utf16le");
 		return artifactBytes + 1 + textLength.length + 1 + block.text.length * 2;
 	}
 	const mimeLength = block.mimeType.length.toString(36);
 	const dataLength = block.data.length.toString(36);
+	if (block.mcpInput) {
+		const sourceDigest = mcpImageDigest(block);
+		digest.update("mi").update(dataLength).update(":").update(sourceDigest);
+		return artifactBytes + 3 + dataLength.length + sourceDigest.length;
+	}
 	digest.update("i").update(mimeLength).update(":").update(block.mimeType);
 	digest.update(dataLength).update(":").update(block.data);
 	return artifactBytes + 1 + mimeLength.length + 1 + Buffer.byteLength(block.mimeType) +
@@ -754,6 +776,8 @@ function scanSource(
 	let textCodeUnits = 0;
 	let imageDataCodeUnits = 0;
 	let retainedCodeUnits = 0;
+	let mcpInput = false;
+	let mcpArtifactRequired = false;
 	let hasTerminalSequences = false;
 	let terminalSequenceIntervals: Uint32Array | undefined;
 	let terminalSequenceIntervalCount = 0;
@@ -763,7 +787,13 @@ function scanSource(
 	for (let index = 0; index < content.length; index++) {
 		const block = content[index]!;
 		artifactBytes = appendSourceIdentityBlock(digest, block, artifactBytes);
+		if (block.mcpInput) mcpInput = true;
 		if (block.type === "text") {
+			if (block.mcpInput || block.mcpSource) mcpInput = true;
+			if (block.mcpSource) {
+				retainedCodeUnits += verifiedMcpSource(block.mcpSource).codeUnits;
+				if (block.mcpSource.requiresRecovery || block.mcpSource.kind !== "structured") mcpArtifactRequired = true;
+			}
 			textCodeUnits += block.text.length;
 			retainedCodeUnits += block.text.length;
 			counters.terminalBoundaryCharactersScanned += block.text.length;
@@ -813,6 +843,8 @@ function scanSource(
 	counters.sourceDigestConstructions++;
 	const sha256 = digest.digest("hex");
 	return {
+		mcpInput,
+		mcpArtifactRequired,
 		estimate,
 		digest: sha256.substring(0, 24),
 		sha256,
@@ -963,7 +995,7 @@ function buildFullOmissionProjection(
 	};
 }
 
-function projectContent(
+function projectLegacyContent(
 	content: readonly ToolResultPresentationContent[],
 	budgetTokens: number,
 	sourceKey: string,
@@ -1001,6 +1033,47 @@ function projectContent(
 		throw new ToolResultContinuationError("budget-too-small", `Tool-result budget ${budgetTokens} cannot contain the fixed continuation notice.`);
 	}
 	return build;
+}
+
+/** MCP-only input policy delegates token projection to the unchanged G2 path. */
+function projectContent(
+	content: readonly ToolResultPresentationContent[], budgetTokens: number,
+	sourceKey: string, sourceDigest: string, sourceScan: SourceScan,
+	counters: ToolResultPresentationCounters,
+): ProjectionBuild | undefined {
+	const projection = projectLegacyContent(content, budgetTokens, sourceKey, sourceDigest, sourceScan, counters);
+	if (!sourceScan.mcpInput) return projection;
+	const candidate = projection?.content ?? content;
+	let bytes = 0;
+	for (const block of candidate) if (block.type === "text") bytes += Buffer.byteLength(block.text);
+	if (!sourceScan.mcpArtifactRequired && bytes <= MCP_INLINE_BYTES) {
+		if (projection) projection.content = stripMcpSources(projection.content) as ToolResultPresentationContent[];
+		return projection;
+	}
+	const omission = buildFullOmissionProjection(content, sourceKey, sourceDigest, sourceScan, counters);
+	omission.artifact = createArtifactDescriptor(sourceKey, sourceScan, counters);
+	omission.content.push({ type: "text", text: `[MCP content retained in local session artifact ${omission.artifact.id}.]` });
+	omission.estimate = estimateToolOutputTokens(omission.content);
+	if (omission.estimate.estimatedTokens > budgetTokens || omission.estimate.rawUtf8Bytes > MCP_INLINE_BYTES) {
+		throw new ToolResultContinuationError("budget-too-small", "Configured budget cannot contain the MCP recovery notice.");
+	}
+	return omission;
+}
+
+/** Source references belong to canonical/UI/artifact content, never model input. */
+function stripMcpSources(content: readonly ToolResultPresentationContent[]): readonly ToolResultPresentationContent[] {
+	let output: ToolResultPresentationContent[] | undefined;
+	for (let index = 0; index < content.length; index++) {
+		const block = content[index]!;
+		if (block.mcpInput || (block.type === "text" && block.mcpSource)) {
+			if (!output) {
+				output = new Array<ToolResultPresentationContent>(content.length);
+				for (let previous = 0; previous < index; previous++) output[previous] = content[previous]!;
+			}
+			output[index] = block.type === "text" ? { type: "text", text: block.text } : { type: "image", data: block.data, mimeType: block.mimeType };
+		} else if (output) output[index] = block;
+	}
+	return output ?? content;
 }
 
 function parseBase36(value: string, start: number, end: number): number {
@@ -1212,6 +1285,20 @@ export class ToolResultPresentationOwner {
 		}
 	}
 
+	/** @internal MCP input seam; never creates a second budget or recovery owner. */
+	get mcpInputConfigured(): boolean { return this.accepting && this.budgetTokens !== undefined && this.sessionId.length > 0; }
+
+	admitMcpInput(content: readonly ToolResultPresentationContent[], toolCallId: string): void {
+		if (!this.mcpInputConfigured) throw new ToolResultContinuationError("budget-too-small", "MCP recovery requires configured tool-result presentation and token budget.");
+		this.getOrCreateProjectionRecord(content, toolCallId);
+	}
+
+	/** @internal Discard provisional MCP admission before a mutable result hook. */
+	releaseMcpInputAdmission(toolCallId: string): void {
+		const record = this.projectionRecords?.get(toolCallId);
+		if (record) this.removeProjectionRecord(record, false);
+	}
+
 	private removeProjectionRecord(record: ProjectionRecord, eviction: boolean): void {
 		const records = this.projectionRecords;
 		if (!records || records.get(record.toolCallId) !== record) return;
@@ -1274,7 +1361,8 @@ export class ToolResultPresentationOwner {
 		let addedRetainedCodeUnits = 0;
 		if (
 			record.projection === undefined &&
-			record.sourceScan.estimate.estimatedTokens > this.budgetTokens!
+			(record.sourceScan.estimate.estimatedTokens > this.budgetTokens! || record.sourceScan.mcpArtifactRequired ||
+				(record.sourceScan.mcpInput && record.sourceScan.estimate.rawUtf8Bytes > MCP_INLINE_BYTES))
 		) {
 			const projection = projectContent(
 				record.sourceContent,
@@ -1290,7 +1378,7 @@ export class ToolResultPresentationOwner {
 			}
 		}
 		if (issueArtifact && record.projection && !record.artifact && this.sessionId.length > 0) {
-			record.artifact = createArtifactDescriptor(record.sourceKey, record.sourceScan, this.counters);
+			record.artifact = record.projection.artifact ?? createArtifactDescriptor(record.sourceKey, record.sourceScan, this.counters);
 			addedRetainedCodeUnits += artifactRetainedCodeUnits(record.artifact);
 		}
 		if (addedRetainedCodeUnits === 0) return;
@@ -1382,7 +1470,7 @@ export class ToolResultPresentationOwner {
 			this.counters,
 		);
 		const artifact = projection && admission === "write" && this.sessionId.length > 0
-			? createArtifactDescriptor(sourceKey, sourceScan, this.counters)
+			? projection.artifact ?? createArtifactDescriptor(sourceKey, sourceScan, this.counters)
 			: undefined;
 		let retainedCodeUnits = sourceScan.retainedCodeUnits;
 		if (projection) retainedCodeUnits += countTextCodeUnits(projection.content);
@@ -1732,7 +1820,7 @@ export class ToolResultPresentationOwner {
 				};
 				this.counters.truncatedPresentationsCreated++;
 			} else {
-				presentation = { version: TOOL_RESULT_PRESENTATION_VERSION, modelContent: legacyContent, uiContent };
+				presentation = { version: TOOL_RESULT_PRESENTATION_VERSION, modelContent: record.sourceScan.mcpInput ? stripMcpSources(legacyContent) : legacyContent, uiContent };
 				this.counters.modelOuterArraysReused++;
 			}
 		} else {
@@ -1791,7 +1879,7 @@ export class ToolResultPresentationOwner {
 			role: "toolResult",
 			toolCallId: message.toolCallId,
 			toolName: message.toolName,
-			content: content as ToolResultMessage["content"],
+			content: stripMcpSources(content) as ToolResultMessage["content"],
 			details: message.details,
 			usage: message.usage,
 			addedToolNames: message.addedToolNames,
@@ -1896,7 +1984,7 @@ export class ToolResultPresentationOwner {
 		else this.counters.providerReadMisses++;
 		const record = this.getOrCreateProjectionRecord(message.content, message.toolCallId, "provider");
 		let projection = record.projection;
-		let projected = projection ? this.createModelMessage(message, projection.content) : message;
+		let projected = projection ? this.createModelMessage(message, projection.content) : record.sourceScan.mcpInput ? this.createModelMessage(message, message.content) : message;
 		if (imagePolicy) {
 			let filtered = imagePolicy(projected);
 			if (filtered !== projected && !projection) {
@@ -1958,7 +2046,7 @@ export class ToolResultPresentationOwner {
 				this.rethrowContextualProjectionFailure(error);
 			}
 			if (projection) this.ensureArtifactDescriptor(record);
-			let projected = projection ? this.createModelMessage(message, projection.content) : message;
+			let projected = projection ? this.createModelMessage(message, projection.content) : record.sourceScan.mcpInput ? this.createModelMessage(message, message.content) : message;
 			try {
 				if (imagePolicy) {
 					let filtered = imagePolicy(projected);
@@ -2169,6 +2257,7 @@ export class ToolResultPresentationOwner {
 		this.bindValidatedContinuationRecord(record);
 		const sourceTextCodeUnits = record.sourceScan.textCodeUnits;
 		let requestedTextCodeUnits = Math.max(1, Math.floor((sourceTextCodeUnits * budgetTokens) / Math.max(estimate.estimatedTokens, budgetTokens)));
+		if (record.sourceScan.mcpInput) requestedTextCodeUnits = Math.min(requestedTextCodeUnits, Math.floor(MCP_INLINE_BYTES / 3));
 		let chunkEnd = advancePosition(
 			sourceContent,
 			start,
@@ -2230,7 +2319,7 @@ export class ToolResultPresentationOwner {
 			this.counters,
 		);
 		this.counters.continuationChunksCreated++;
-		return { version: TOOL_RESULT_CONTINUATION_VERSION, content: chunkContent, estimatedTokens: chunkEstimate.estimatedTokens, nextCursor, done };
+		return { version: TOOL_RESULT_CONTINUATION_VERSION, content: record.sourceScan.mcpInput ? stripMcpSources(chunkContent) : chunkContent, estimatedTokens: chunkEstimate.estimatedTokens, nextCursor, done };
 	}
 
 	release(): void {

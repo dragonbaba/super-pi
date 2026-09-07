@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { createRequire } from "node:module";
 import {
   ANSI_CSI_PATTERN,
   ANSI_ESCAPE_PATTERN,
@@ -12,6 +13,7 @@ import {
 } from "./regex.js";
 
 export const MAX_CONFIG_BYTES = 256 * 1024;
+const requireHost = createRequire(import.meta.url);
 export const MAX_SERVERS = 16;
 export const MAX_SCHEMA_BYTES = 16 * 1024;
 export const MAX_ACTIVATED_SCHEMA_BYTES = 48 * 1024;
@@ -41,17 +43,26 @@ export function sanitizeText(value, maxLength = 1000) {
 
 export function truncateUtf8(value, maxBytes = MAX_TEXT_BYTES) {
   const clean = sanitizeText(value, Number.MAX_SAFE_INTEGER);
-  const encoded = Buffer.from(clean, "utf8");
-  if (encoded.length <= maxBytes) return clean;
-  const clipped = encoded.subarray(0, maxBytes).toString("utf8").replace(TRAILING_REPLACEMENT_CHARACTER_PATTERN, "");
-  return `${clipped}\n\n[MCP output truncated: ${encoded.length} bytes total]`;
+  const bytes = Buffer.byteLength(clean, "utf8");
+  if (bytes <= maxBytes) return clean;
+  const notice = `\n\n[MCP output truncated: ${bytes} bytes total]`;
+  const available = maxBytes - Buffer.byteLength(notice);
+  if (available < 0) return "";
+  let low = 0;
+  let high = Math.min(clean.length, available);
+  while (low < high) {
+    const mid = Math.ceil((low + high) / 2);
+    if (Buffer.byteLength(clean.substring(0, mid), "utf8") <= available) low = mid;
+    else high = mid - 1;
+  }
+  if (low > 0 && clean.charCodeAt(low - 1) >= 0xd800 && clean.charCodeAt(low - 1) <= 0xdbff) low--;
+  return clean.substring(0, low) + notice;
 }
 
 export function boundedJson(value, maxBytes = MAX_TEXT_BYTES) {
-  let serialized;
-  try { serialized = JSON.stringify(value, null, 2); }
-  catch { serialized = "[unserializable MCP value]"; }
-  return truncateUtf8(serialized, maxBytes);
+  // Kept lazy so the extension's compatibility gate can run on older hosts.
+  const { serializeMcpStructured } = requireHost("@super-pi/coding-agent/internal/tool-result-source");
+  return truncateUtf8(serializeMcpStructured(value), maxBytes);
 }
 
 export function validateJsonShape(value, maxBytes = MAX_SCHEMA_BYTES, maxDepth = 32) {
@@ -93,5 +104,25 @@ export function piToolName(serverId, remoteName) {
 
 export function decodedBase64Bytes(value) {
   if (typeof value !== "string" || !BASE64_PATTERN.test(value) || value.length % 4 === 1) return null;
-  return Math.floor(value.length * 3 / 4) - (value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0);
+  const padding = value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0;
+  if (padding && value.length % 4 !== 0) return null;
+  const characters = value.length - padding;
+  const remainder = characters % 4;
+  if ((padding === 2 && remainder !== 2) || (padding === 1 && remainder !== 3)) return null;
+  const last = characters ? base64Digit(value.charCodeAt(characters - 1)) : 0;
+  if ((remainder === 2 && (last & 15) !== 0) || (remainder === 3 && (last & 3) !== 0)) return null;
+  return Math.floor(characters * 3 / 4);
+}
+
+function base64Digit(code) {
+  return code >= 65 && code <= 90 ? code - 65 : code >= 97 && code <= 122 ? code - 71 : code >= 48 && code <= 57 ? code + 4 : code === 43 ? 62 : 63;
+}
+
+/** Inspect one header byte after base64 validation, with no decoded allocation. */
+export function base64Byte(value, position) {
+  const group = Math.floor(position / 3) * 4;
+  const slot = position % 3;
+  const left = base64Digit(value.charCodeAt(group + slot));
+  const right = base64Digit(value.charCodeAt(group + slot + 1));
+  return slot === 0 ? (left << 2) | (right >> 4) : slot === 1 ? ((left & 15) << 4) | (right >> 2) : ((left & 3) << 6) | right;
 }
