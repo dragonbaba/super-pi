@@ -15,7 +15,8 @@
 	"exports": {
 		"./internal/tool-result-source": {
 			"types": "./dist/core/tool-result-source.d.ts",
-			"import": "./dist/core/tool-result-source.js"
+			"import": "./dist/core/tool-result-source.js",
+			"require": "./dist/core/tool-result-source.js"
 		},
 		".": {
 			"types": "./dist/index.d.ts",
