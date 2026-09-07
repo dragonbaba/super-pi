@@ -9,6 +9,7 @@ test("host version without typed-source export is rejected before runtime load",
 	assert.equal(result.compatible, false);
 	assert.match(result.reason, /adapter/i);
 	assert.equal(checkRuntimeCompatibility("0.84.1", true).compatible, true);
+	assert.equal(checkRuntimeCompatibility("0.84.1").compatible, true, "current host must pass the actual capability probe");
 });
 
 test("an older host can load the extension entry and reach the capability gate", async () => {
