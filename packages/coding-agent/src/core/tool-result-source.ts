@@ -133,9 +133,10 @@ export function inspectMcpValue(value: unknown, maxBytes = MCP_SOURCE_BYTES): nu
 
 /** Called at the input boundary, before delivery. No registry or source copy. */
 export function createMcpTypedSource(kind: McpTypedSource["kind"], value: unknown, requiresRecovery = kind !== "structured"): McpTypedSource {
+	if (typeof requiresRecovery !== "boolean") throw new McpSourceError("invalid-typed-content");
 	const inspection = new SourceInspection(true);
 	try {
-		inspection.hash!.update(`mcp-source-v1:${kind}:`);
+		inspection.hash!.update(`mcp-source-v1:${kind}:${requiresRecovery ? 1 : 0}:`);
 		inspection.visit(value);
 		for (const object of inspection.objects) Object.freeze(object);
 		const source: McpTypedSource = { version: 1, kind, value, digest: inspection.hash!.digest("hex"), bytes: inspection.bytes, codeUnits: inspection.codeUnits, requiresRecovery };
