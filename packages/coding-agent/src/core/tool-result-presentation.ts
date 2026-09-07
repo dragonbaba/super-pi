@@ -2261,12 +2261,21 @@ export class ToolResultPresentationOwner {
 	}
 
 	/** @internal Presence check before evidence spends any integrity work. */
+	evidenceSessionMatches(sessionId: string): boolean {
+		return this.mcpInputConfigured && this.sessionId === sessionId;
+	}
+
 	hasResidentEvidenceArtifact(toolCallId: string, id: string): boolean {
 		return this.mcpInputConfigured && this.projectionRecords?.get(toolCallId)?.artifact?.id === id;
 	}
 	/** @internal A new resident record never inherits a previous evidence lease. */
 	getResidentEvidenceGeneration(toolCallId: string): number | undefined {
 		return this.projectionRecords?.get(toolCallId)?.evidenceGeneration;
+	}
+	/** @internal Reuse the existing scan/projection estimate; never rescan text. */
+	getResidentEvidenceModelTokens(toolCallId: string): number | undefined {
+		const record = this.projectionRecords?.get(toolCallId);
+		return record?.projection?.estimate.estimatedTokens ?? record?.sourceScan.estimate.estimatedTokens;
 	}
 
 	readArtifact(id: string, messages: readonly unknown[]): ToolResultArtifactReadV1 {

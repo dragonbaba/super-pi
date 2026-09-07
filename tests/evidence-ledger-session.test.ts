@@ -179,3 +179,41 @@ test("missing or coarse timestamp metadata is never trusted", async () => {
 		}
 	} finally { f.close(); }
 });
+
+for (const replacement of ["new-session", "fork"] as const) {
+	test(`direct SessionManager ${replacement} cannot use the previous session owner`, async () => {
+		const f = await fixture();
+		try {
+			await f.runCalls([{ name: "read", arguments: { path: "file.txt" } }]);
+			const previousId = f.session.sessionManager.getSessionId();
+			if (replacement === "new-session") f.session.sessionManager.newSession();
+			else f.session.sessionManager.createBranchedSession(f.session.sessionManager.getLeafId()!);
+			assert.notEqual(f.session.sessionManager.getSessionId(), previousId);
+			const hashes = f.counters.artifactIntegrityScans;
+			assert.equal(/no new disk read/i.test(JSON.stringify((await f.read()).content)), false);
+			assert.equal(f.internals._evidenceLedger!.counters.entries, 0);
+			assert.equal(f.counters.artifactIntegrityScans, hashes);
+		} finally { f.close(); }
+	});
+}
+
+test("restored historical messages do not hydrate a new ledger", async () => {
+	const prior = await fixture(); const resumed = await fixture();
+	try {
+		await prior.read();
+		resumed.session.agent.state.messages = JSON.parse(JSON.stringify(prior.session.agent.state.messages));
+		assert.equal(resumed.internals._evidenceLedger!.counters.entries, 0);
+		assert.equal(/no new disk read/i.test(JSON.stringify((await resumed.read()).content)), false);
+	} finally { prior.close(); resumed.close(); }
+});
+
+test("built-in image reads cannot create text evidence", async () => {
+	const f = await fixture();
+	try {
+		writeFileSync(join(f.cwd, "image.gif"), Buffer.from("R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7", "base64"));
+		await f.read({ path: "image.gif" });
+		await f.read({ path: "image.gif" });
+		assert.equal(f.internals._evidenceLedger!.counters.entries, 0);
+		assert.equal(f.internals._evidenceLedger!.counters.g2ArtifactIntegrityScans, 0);
+	} finally { f.close(); }
+});

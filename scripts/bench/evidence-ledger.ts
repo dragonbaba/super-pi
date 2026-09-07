@@ -8,7 +8,7 @@ import { EvidenceLedger } from "../../packages/coding-agent/src/core/evidence-le
 
 const mode = process.argv[2];
 const out = process.argv[3] ?? "evidence-ledger-results";
-if (!["hit", "miss", "disabled", "profile", "gc"].includes(mode)) throw new Error("Expected hit/miss/disabled/profile/gc");
+if (!["hit", "miss", "disabled", "compare", "profile", "gc"].includes(mode)) throw new Error("Expected hit/miss/disabled/compare/profile/gc");
 mkdirSync(out, { recursive: true });
 
 function percentile(values: number[], fraction: number): number {
@@ -56,6 +56,46 @@ function post(session: Session, method: string, params: object = {}): Promise<an
 	return new Promise((resolve, reject) => session.post(method as any, params, (error, result) => error ? reject(error) : resolve(result)));
 }
 
+// The same three configurations in one process, alternating order to reduce
+// worker/JIT drift observed between the first independent-process samples.
+async function compare(large: boolean) {
+	const configs = ["hit", "miss", "disabled"] as const;
+	const fixtures = [await fixture(), await fixture(), await fixture(false)];
+	const times: number[][] = [[], [], []];
+	const integrity: number[] = [];
+	const owner = fixtures[0].internals._toolResultPresentation!;
+	const validate = owner.validateEvidenceArtifact.bind(owner);
+	owner.validateEvidenceArtifact = (...args) => {
+		const start = performance.now(); const valid = validate(...args);
+		integrity.push(performance.now() - start); return valid;
+	};
+	try {
+		for (const f of fixtures) {
+			if (large) writeFileSync(join(f.cwd, "file.txt"), "large source text with line content\n".repeat(20_000));
+			await f.read();
+		}
+		for (let i = 0; i < 110; i++) {
+			for (let n = 0; n < 3; n++) {
+				const index = i % 2 ? n : 2 - n;
+				if (index === 1) fixtures[index].internals._evidenceLedger!.mutate();
+				const start = performance.now(); await fixtures[index].read();
+				if (i >= 10) times[index].push(performance.now() - start);
+			}
+		}
+		assert.equal(fixtures[0].internals._evidenceLedger!.counters.hits, 110);
+		assert.equal(fixtures[0].internals._evidenceLedger!.counters.realReadExecutions, 1);
+		return configs.map((config, index) => {
+			const c = fixtures[index].internals._evidenceLedger?.counters;
+			return { config, corpus: large ? "large" : "medium", paired: true, samples: 100,
+				p50Ms: percentile(times[index], 0.5), p95Ms: percentile(times[index], 0.95),
+				integrityP50Ms: index === 0 ? percentile(integrity, 0.5) : 0,
+				integrityP95Ms: index === 0 ? percentile(integrity, 0.95) : 0,
+				bytesHashedPerHit: c?.hits ? c.g2ArtifactIntegrityBytes / c.hits : 0,
+				counters: c ?? null, ledgerAllocated: !!c };
+		});
+	} finally { for (const f of fixtures) f.close(); }
+}
+
 async function disposedReferences() {
 	const f = await fixture();
 	const message = await f.read();
@@ -66,7 +106,12 @@ async function disposedReferences() {
 	return { refs, ledger };
 }
 
-if (mode === "gc") {
+if (mode === "compare") {
+	assert.notEqual(process.platform, "win32");
+	const results = [...await compare(false), ...await compare(true)];
+	writeFileSync(join(out, "comparison.json"), JSON.stringify(results, null, 2));
+	console.log(JSON.stringify(results));
+} else if (mode === "gc") {
 	assert.ok(global.gc, "Use --expose-gc");
 	const { refs, ledger } = await disposedReferences();
 	let released = false;

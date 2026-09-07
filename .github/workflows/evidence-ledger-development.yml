@@ -19,11 +19,14 @@ jobs:
       - run: npm run build:offline
       - run: node --experimental-strip-types --test tests/evidence-ledger-*.test.ts
       - name: Bounded performance evidence (explicit one-run marker)
-        if: contains(github.event.head_commit.message, '[evidence-profile]') || contains(github.event.head_commit.message, '[evidence-benchmark]')
+        if: contains(github.event.head_commit.message, '[evidence-profile]')
         run: |
           node --experimental-strip-types scripts/bench/evidence-ledger.ts hit evidence-ledger-results
           node --experimental-strip-types scripts/bench/evidence-ledger.ts miss evidence-ledger-results
           node --experimental-strip-types scripts/bench/evidence-ledger.ts disabled evidence-ledger-results
+      - name: Same-process comparison of the same three configurations
+        if: contains(github.event.head_commit.message, '[evidence-benchmark]')
+        run: node --experimental-strip-types scripts/bench/evidence-ledger.ts compare evidence-ledger-results
       - name: Single allocation profile and controlled-GC fixture
         if: contains(github.event.head_commit.message, '[evidence-profile]')
         run: |

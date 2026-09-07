@@ -1176,7 +1176,7 @@ export class AgentSession {
 					}
 					// This is the complete post-listener message_end tail for tool results.
 					this.sessionManager.appendMessage(event.message);
-					if (this._evidenceLedger) this._admitCompletedReadEvidence(event.message, estimateToolOutputTokens(presentation.modelContent).estimatedTokens);
+					if (this._evidenceLedger) this._admitCompletedReadEvidence(event.message);
 					return;
 				}
 			}
@@ -3576,7 +3576,7 @@ export class AgentSession {
 
 	private _captureReadEvidenceIdentity(): boolean {
 		return process.platform !== "win32" && this._evidenceCompletedReads !== undefined && this.settingsManager.getEvidenceLedgerEnabled() &&
-			this._toolResultPresentation?.mcpInputConfigured === true && !this._evidenceMutableHooks();
+			this._toolResultPresentation?.evidenceSessionMatches(this.sessionManager.getSessionId()) === true && !this._evidenceMutableHooks();
 	}
 
 	private _checkEvidenceBranch(): void {
@@ -3613,7 +3613,7 @@ export class AgentSession {
 		}
 		if (this._evidenceMutableHooks()) { ledger.miss("mutable-hook"); return execute(callId, args, signal, onUpdate); }
 		const owner = this._toolResultPresentation;
-		if (!owner?.mcpInputConfigured) { ledger.miss("artifact-unavailable"); return execute(callId, args, signal, onUpdate); }
+		if (!owner?.evidenceSessionMatches(this.sessionManager.getSessionId())) { ledger.miss("artifact-unavailable"); return execute(callId, args, signal, onUpdate); }
 		if (process.platform === "win32") {
 			ledger.miss("uncertain-identity");
 			ledger.counters.realReadExecutions++;
@@ -3732,21 +3732,21 @@ export class AgentSession {
 		return result;
 	}
 
-	private _admitCompletedReadEvidence(message: Extract<AgentMessage, { role: "toolResult" }>, modelTokens?: number): void {
+	private _admitCompletedReadEvidence(message: Extract<AgentMessage, { role: "toolResult" }>): void {
 		const receipt = this._evidenceCompletedReads?.get(message.toolCallId);
 		if (!receipt) return;
 		this._evidenceCompletedReads!.delete(message.toolCallId);
 		this._evidenceCompletedBytes -= receipt.artifactBytes;
 		const ledger = this._evidenceLedger;
 		const owner = this._toolResultPresentation;
-		if (!ledger || !owner || message.isError || this._evidenceMutableHooks() ||
+		if (!ledger || !owner?.evidenceSessionMatches(this.sessionManager.getSessionId()) || receipt.sessionId !== this.sessionManager.getSessionId() || message.isError || this._evidenceMutableHooks() ||
 			!this.settingsManager.getEvidenceLedgerEnabled() || message.content.length !== 1) return;
 		const block = message.content[0];
 		if (block?.type !== "text" || block.text.length < 1 || block.text.length > 64 * 1024) return;
 		const descriptor = owner.issueEvidenceArtifact(message.toolCallId, this.agent.state.messages, 1, block.text.length);
 		if (!descriptor) return;
 		ledger.admit({ ...receipt, resultHandle: descriptor.id, sourceGeneration: owner.getResidentEvidenceGeneration(message.toolCallId)!, blocks: 1, chars: block.text.length,
-			artifactBytes: descriptor.bytes, modelTokens: modelTokens ?? estimateToolOutputTokens(message.content).estimatedTokens });
+			artifactBytes: descriptor.bytes, modelTokens: owner.getResidentEvidenceModelTokens(message.toolCallId) ?? 0 });
 	}
 
 	private _refreshToolRegistry(options?: { activeToolNames?: string[]; includeAllExtensionTools?: boolean }): void {
