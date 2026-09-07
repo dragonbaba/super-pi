@@ -3561,6 +3561,11 @@ export class AgentSession {
 		this._evidenceCompletedReads?.clear();
 		this._evidenceCompletedBytes = 0;
 	}
+	private _invalidateEvidenceWorkspace(): void {
+		this._evidenceLedger?.mutate();
+		this._evidenceCompletedReads?.clear();
+		this._evidenceCompletedBytes = 0;
+	}
 
 	private _evidenceMutableHooks(): boolean {
 		const runner = this._extensionRunner;
@@ -3595,11 +3600,14 @@ export class AgentSession {
 		signal: AbortSignal | undefined, onUpdate: Parameters<AgentTool["execute"]>[3],
 	): ReturnType<AgentTool["execute"]> {
 		const ledger = this._evidenceLedger;
-		if (!ledger || !this.settingsManager.getEvidenceLedgerEnabled()) return execute(callId, args, signal, onUpdate);
+		if (!ledger) return execute(callId, args, signal, onUpdate);
+		if (!this.settingsManager.getEvidenceLedgerEnabled()) {
+			if (ledger.counters.entries || this._evidenceCompletedReads?.size) this._clearEvidenceBranch();
+			return execute(callId, args, signal, onUpdate);
+		}
 		this._checkEvidenceBranch();
 		if (!trustedRead) {
-			ledger.mutate();
-			this._evidenceCompletedReads?.clear(); this._evidenceCompletedBytes = 0;
+			this._invalidateEvidenceWorkspace();
 			ledger.miss("ineligible-tool");
 			return execute(callId, args, signal, onUpdate);
 		}
@@ -3633,7 +3641,7 @@ export class AgentSession {
 			if (isAbsolute(relativePath) || relativePath === ".." || relativePath.startsWith("../") || relativePath.length > 1024 || canonical.length > 4096) {
 				ledger.miss("uncertain-identity"); return execute(callId, args, signal, onUpdate);
 			}
-			const normalized = process.platform === "win32" ? canonical.normalize("NFC").toLowerCase() : canonical.normalize("NFC");
+			const normalized = canonical.normalize("NFC");
 			// Fixed current read schema, not a recursive serializer. null preserves
 			// omitted limit semantics (including the legacy continuation notice).
 			key = ledger.hashArguments(JSON.stringify(["builtin-read-v1", canonicalCwd, normalized, args.offset ?? 1, args.limit ?? null, args.cursor ?? null]));
@@ -4104,6 +4112,7 @@ export class AgentSession {
 		onChunk?: (chunk: string) => void,
 		options?: { excludeFromContext?: boolean; id?: string; operations?: BashOperations },
 	): Promise<BashResult> {
+		if (this._evidenceLedger) this._invalidateEvidenceWorkspace();
 		const abortController = new AbortController();
 		this._bashAbortControllers.add(abortController);
 

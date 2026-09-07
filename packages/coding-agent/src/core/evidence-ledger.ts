@@ -63,6 +63,10 @@ export function evidenceMetadataBytes(r: EvidenceRecordV1): number {
 		r.canonicalPath.length + r.fileGeneration.length + r.sessionId.length + r.cwd.length);
 }
 
+// Admission is not lookup. Detach bounded strings so a short substring cannot
+// keep an unrelated, unusually large caller backing string alive after eviction.
+function ownMetadata(value: string): string { return Buffer.from(value, "utf16le").toString("utf16le"); }
+
 export class EvidenceLedger {
 	readonly counters = createEvidenceCounters();
 	workspaceGeneration = 0;
@@ -108,20 +112,23 @@ export class EvidenceLedger {
 		if (this.disposed || input.version !== 1 || input.toolKind !== "builtin-read" ||
 			input.location.length > EVIDENCE_MAX_LOCATION_CHARS || input.blocks !== 1 ||
 			!Number.isSafeInteger(input.chars) || input.chars < 1 || input.chars > 64 * 1024 ||
-			input.workspaceGeneration !== this.workspaceGeneration || input.branchGeneration !== this.branchGeneration) return false;
+			input.workspaceGeneration !== this.workspaceGeneration || input.branchGeneration !== this.branchGeneration ||
+			input.evidenceId.length > 512 || input.sourceToolCallId.length > 256 || input.canonicalArgsHash.length > 64 ||
+			input.scopeFingerprint.length > 64 || input.resultHandle.length > 1024 || input.relativePath.length > 1024 ||
+			input.canonicalPath.length > 4096 || input.cwd.length > 4096 || input.sessionId.length > 256 || input.fileGeneration.length > 512) return false;
 		const bytes = evidenceMetadataBytes(input);
 		if (bytes > EVIDENCE_MAX_METADATA_BYTES) return false;
 		// Copy only the allowlisted primitive fields. Extra runtime properties are
 		// deliberately not spread into the ledger's ownership graph.
 		const record: EvidenceRecordV1 = {
-			version: 1, evidenceId: input.evidenceId, toolKind: "builtin-read",
-			canonicalArgsHash: input.canonicalArgsHash, scopeFingerprint: input.scopeFingerprint,
-			resultHandle: input.resultHandle, sourceToolCallId: input.sourceToolCallId,
+			version: 1, evidenceId: ownMetadata(input.evidenceId), toolKind: "builtin-read",
+			canonicalArgsHash: ownMetadata(input.canonicalArgsHash), scopeFingerprint: ownMetadata(input.scopeFingerprint),
+			resultHandle: ownMetadata(input.resultHandle), sourceToolCallId: ownMetadata(input.sourceToolCallId),
 			sourceGeneration: input.sourceGeneration,
-			relativePath: input.relativePath, location: input.location, createdTurn: input.createdTurn,
+			relativePath: ownMetadata(input.relativePath), location: ownMetadata(input.location), createdTurn: input.createdTurn,
 			workspaceGeneration: input.workspaceGeneration, branchGeneration: input.branchGeneration,
-			canonicalPath: input.canonicalPath, fileGeneration: input.fileGeneration,
-			sessionId: input.sessionId, cwd: input.cwd, blocks: input.blocks, chars: input.chars,
+			canonicalPath: ownMetadata(input.canonicalPath), fileGeneration: ownMetadata(input.fileGeneration),
+			sessionId: ownMetadata(input.sessionId), cwd: ownMetadata(input.cwd), blocks: input.blocks, chars: input.chars,
 			artifactBytes: input.artifactBytes, modelTokens: input.modelTokens,
 		};
 		this.invalidate(record.canonicalArgsHash);
