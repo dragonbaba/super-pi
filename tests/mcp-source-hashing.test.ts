@@ -22,7 +22,7 @@ for (const kind of ["text", "image"]) test(`immutable large MCP ${kind} is hashe
 	syncBuiltinESMExports();
 	const owner = createToolResultPresentationOwner({ enabled: true, budgetTokens: 256 }, "hash-session")!;
 	try {
-		const content = convertMcpResult({ content: [kind === "text" ? { type: "text", text } : { type: "image", data: text, mimeType: "image/jpeg" }] });
+		const content = convertMcpResult({ content: kind === "text" ? [{ type: "text", text }] : [{ type: "text", text: "recovery ".repeat(10_000) }, { type: "image", data: text, mimeType: "image/jpeg" }] });
 		const view = owner.create(content, "hash-call");
 		if (view?.version !== 2 || !view.artifact) assert.fail("artifact missing");
 		for (let index = 0; index < 3; index++) owner.readArtifact(view.artifact.id, [{ role: "toolResult", toolCallId: "hash-call", content }]);
