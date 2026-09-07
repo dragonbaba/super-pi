@@ -118,7 +118,7 @@ export class EvidenceLedger {
 		this.counters.modelVisibleTokensAvoided += Math.max(0, tokensAvoided);
 	}
 
-	admit(input: EvidenceRecordV1, budgetTokens: number = input.modelTokens): boolean {
+	admit(input: EvidenceRecordV1, budgetTokens: number): boolean {
 		if (this.disposed || input.version !== 1 || input.toolKind !== "builtin-read" ||
 			input.location.length > EVIDENCE_MAX_LOCATION_CHARS || input.blocks !== 1 ||
 			!Number.isSafeInteger(input.chars) || input.chars < 1 || input.chars > 64 * 1024 ||

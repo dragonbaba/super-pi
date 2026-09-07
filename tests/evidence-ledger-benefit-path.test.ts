@@ -9,6 +9,35 @@ import { formatEvidenceReference, type EvidenceRecordV1 } from "../packages/codi
 const linux = { skip: process.platform === "win32" ? "Windows evidence identity conservatively misses" : false };
 const tokens = (text: string) => estimateToolOutputTokens([{ type: "text", text }]).estimatedTokens;
 
+for (const corpus of ["medium", "large"]) {
+	test(`${corpus} retains one real read, exact reference fit and over 50 percent total token reduction`, linux, async t => {
+		const f = await fixture();
+		try {
+			if (corpus === "large") writeFileSync(join(f.cwd, "file.txt"), "large selected source text\n".repeat(20000));
+			const first = await f.read();
+			const owner = f.internals._toolResultPresentation!;
+			const originalTokens = owner.getResidentEvidenceModelTokens(first.toolCallId)!;
+			const scans = f.counters.artifactIntegrityScans;
+			let totalTokens = originalTokens;
+			let referenceTokens = 0;
+			for (let i = 0; i < 9; i++) {
+				const message = await f.read();
+				assert.match(JSON.stringify(message.content), /Evidence reused/);
+				referenceTokens = estimateToolOutputTokens(message.content).estimatedTokens;
+				assert.ok(referenceTokens < originalTokens);
+				assert.ok(referenceTokens <= owner.getEvidenceBudgetTokens()!);
+				assert.equal(owner.getResidentEvidenceModelTokens(message.toolCallId), referenceTokens);
+				totalTokens += referenceTokens;
+			}
+			assert.ok(totalTokens < originalTokens * 10 / 2);
+			assert.equal(f.counters.artifactIntegrityScans - scans, 9);
+			assert.equal(f.internals._evidenceLedger!.counters.realReadExecutions, 1);
+			assert.equal(f.internals._evidenceLedger!.counters.hits, 9);
+			t.diagnostic(JSON.stringify({ corpus, originalTokens, referenceTokens, totalTokens, baselineTokens: originalTokens * 10 }));
+		} finally { f.close(); }
+	});
+}
+
 for (const budget of [tokens("x"), tokens("x") + 1, 128, 2048]) {
 	test(`tiny repeated read stays successful and unamplified at budget ${budget}`, linux, async t => {
 		const f = await fixture(true, true, [], budget);
@@ -42,7 +71,7 @@ test("tiny budget sweep brackets the actual final artifact reference estimate", 
 		writeFileSync(join(probe.cwd, "file.txt"), "x");
 		const ledger = probe.internals._evidenceLedger!;
 		const admit = ledger.admit.bind(ledger);
-		t.mock.method(ledger, "admit", (input: EvidenceRecordV1, budget?: number) => {
+		t.mock.method(ledger, "admit", (input: EvidenceRecordV1, budget: number) => {
 			referenceTokens = tokens(formatEvidenceReference(input));
 			return admit(input, budget);
 		});
@@ -66,7 +95,7 @@ test("tiny budget sweep brackets the actual final artifact reference estimate", 
 	}
 });
 
-for (const metadata of [undefined, -1, 1_000_000]) {
+for (const metadata of [undefined, -1, 1, 1_000_000]) {
 	test(`missing or inconsistent reference tokens reject before integrity: ${metadata}`, linux, async t => {
 		const f = await fixture();
 		try {

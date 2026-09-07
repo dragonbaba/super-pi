@@ -3657,14 +3657,13 @@ export class AgentSession {
 			if (!key) { ledger.miss("uncertain-identity"); return execute(callId, args, signal, onUpdate); }
 			const record = ledger.lookup(key);
 			if (record) {
-				const content: TextContent[] = [{ type: "text", text: formatEvidenceReference(record) }];
-				const referenceTokens = estimateToolOutputTokens(content).estimatedTokens;
+				const referenceTokens = record.referenceTokens;
 				const budgetTokens = owner.getEvidenceBudgetTokens();
 				let miss: import("./evidence-ledger.ts").EvidenceMissReason | undefined;
 				if (record.sessionId !== sessionId || record.cwd !== canonicalCwd || record.branchGeneration !== branch) miss = "branch/session/cwd";
 				else if (record.workspaceGeneration !== workspace) miss = "workspace-generation";
 				else if (record.relativePath !== relativePath) miss = "args-mismatch";
-				else if (record.referenceTokens !== referenceTokens || !Number.isSafeInteger(record.modelTokens) ||
+				else if (referenceTokens === undefined || !Number.isSafeInteger(referenceTokens) || referenceTokens < 1 || !Number.isSafeInteger(record.modelTokens) ||
 					referenceTokens >= record.modelTokens || budgetTokens === undefined || referenceTokens > budgetTokens) miss = "not-beneficial";
 				else {
 					// Access policy is never cached. File mismatch precedes G2 hashing.
@@ -3681,16 +3680,20 @@ export class AgentSession {
 						ledger.counters.hashSkippedNonresidentArtifactMisses++;
 					} else if (!signal?.aborted && ledger.workspaceGeneration === workspace && ledger.branchGeneration === branch && !this._evidenceMutableHooks() &&
 						args.path === readPath && args.offset === readOffset && args.limit === readLimit && args.cursor === readCursor) {
-						const scans = owner.counters.artifactIntegrityScans;
-						const valid = owner.validateEvidenceArtifact(record.sourceToolCallId, record.resultHandle, this.agent.state.messages, record.blocks, record.chars, record.sourceGeneration);
-						const added = owner.counters.artifactIntegrityScans - scans;
-						ledger.counters.g2ArtifactIntegrityScans += added;
-						ledger.counters.g2ArtifactIntegrityBytes += added * record.artifactBytes;
-						if (valid) {
-							ledger.hit(record.modelTokens - referenceTokens);
-							return { content, details: undefined };
+						const content: TextContent[] = [{ type: "text", text: formatEvidenceReference(record) }];
+						if (estimateToolOutputTokens(content).estimatedTokens !== referenceTokens) miss = "not-beneficial";
+						else {
+							const scans = owner.counters.artifactIntegrityScans;
+							const valid = owner.validateEvidenceArtifact(record.sourceToolCallId, record.resultHandle, this.agent.state.messages, record.blocks, record.chars, record.sourceGeneration);
+							const added = owner.counters.artifactIntegrityScans - scans;
+							ledger.counters.g2ArtifactIntegrityScans += added;
+							ledger.counters.g2ArtifactIntegrityBytes += added * record.artifactBytes;
+							if (valid) {
+								ledger.hit(record.modelTokens - referenceTokens);
+								return { content, details: undefined };
+							}
+							miss = added ? "source-not-active" : "artifact-unavailable";
 						}
-						miss = added ? "source-not-active" : "artifact-unavailable";
 					} else miss = "workspace-generation";
 				}
 				ledger.invalidate(key);
