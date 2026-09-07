@@ -14,6 +14,16 @@ test("session input seam preserves MCP tool-level error status", async () => {
 	} finally { await fixture.release(); }
 });
 
+test("invalidating an extension input seam releases MCP session dependencies", async () => {
+	const fixture = await alphaHeadless(alphaModelRuntime());
+	try {
+		const runner = (fixture.session as any)._extensionRunner;
+		assert.ok(runner.mcpResultInputActions);
+		runner.invalidate();
+		assert.equal(runner.mcpResultInputActions, undefined);
+	} finally { await fixture.release(); }
+});
+
 test("MCP progress observer rejection cannot replace the canonical final result", async () => {
 	let tool: any;
 	const runtime = new McpBridgeRuntime({ registerTool(value: any) { tool = value; } }, "fixture-workspace");
