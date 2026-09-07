@@ -2,6 +2,22 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { fixture } from "./helpers/evidence-ledger-fixture.ts";
 
+test("display listener cannot admit a replacement G2 source as file evidence", async () => {
+	const f = await fixture();
+	try {
+		const unsubscribe = f.session.subscribe(event => {
+			if (event.type !== "message_end" || event.message.role !== "toolResult") return;
+			event.message.content = [{ type: "text", text: "replacement display content" }];
+			f.internals._toolResultPresentation!.create(event.message.content, event.message.toolCallId);
+		});
+		await f.read();
+		assert.equal(f.internals._evidenceLedger!.counters.recordsCreated, 0);
+		unsubscribe();
+		const next = await f.read();
+		assert.match((next.content[0] as { text: string }).text, /^production-shaped/);
+	} finally { f.close(); }
+});
+
 test("ten completed built-in reads reuse bounded references with one integrity scan per hit", { skip: process.platform === "win32" ? "Windows stat is not a reliable change generation; uncertainty must miss" : false }, async () => {
 	const f = await fixture();
 	try {

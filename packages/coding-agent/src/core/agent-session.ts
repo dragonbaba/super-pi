@@ -1146,6 +1146,7 @@ export class AgentSession {
 					presentation = presentationOwner.create(event.message.content, event.message.toolCallId);
 				}
 				if (presentation) {
+					const evidenceGeneration = this._evidenceLedger ? presentationOwner.getResidentEvidenceGeneration(event.message.toolCallId) : undefined;
 					const sessionEvent: Extract<AgentSessionEvent, { type: "message_end" }> = {
 						type: "message_end",
 						message: event.message,
@@ -1176,7 +1177,7 @@ export class AgentSession {
 					}
 					// This is the complete post-listener message_end tail for tool results.
 					this.sessionManager.appendMessage(event.message);
-					if (this._evidenceLedger) this._admitCompletedReadEvidence(event.message);
+					if (this._evidenceLedger) this._admitCompletedReadEvidence(event.message, evidenceGeneration);
 					return;
 				}
 			}
@@ -1190,9 +1191,9 @@ export class AgentSession {
 		// Notify all listeners. The final boundary is awaited so prompt/abort/idle
 		// cannot overtake critical UI output; high-frequency events stay unchanged.
 		if (event.type === "agent_end") {
+			await this._emitAgentEnd({ ...event, willRetry: this._willRetryAfterAgentEnd(event) });
 			this._evidenceCompletedReads?.clear();
 			this._evidenceCompletedBytes = 0;
-			await this._emitAgentEnd({ ...event, willRetry: this._willRetryAfterAgentEnd(event) });
 		} else {
 			this._emit(event);
 		}
@@ -3691,6 +3692,7 @@ export class AgentSession {
 				ledger.miss(miss);
 			} else ledger.miss("no-record");
 		} catch {
+			if (key) ledger.invalidate(key); else ledger.clear();
 			ledger.miss("uncertain-identity");
 			return execute(callId, args, signal, onUpdate);
 		}
@@ -3732,13 +3734,14 @@ export class AgentSession {
 		return result;
 	}
 
-	private _admitCompletedReadEvidence(message: Extract<AgentMessage, { role: "toolResult" }>): void {
+	private _admitCompletedReadEvidence(message: Extract<AgentMessage, { role: "toolResult" }>, expectedGeneration?: number): void {
 		const receipt = this._evidenceCompletedReads?.get(message.toolCallId);
 		if (!receipt) return;
 		this._evidenceCompletedReads!.delete(message.toolCallId);
 		this._evidenceCompletedBytes -= receipt.artifactBytes;
 		const ledger = this._evidenceLedger;
 		const owner = this._toolResultPresentation;
+		if (expectedGeneration === undefined || owner?.getResidentEvidenceGeneration(message.toolCallId) !== expectedGeneration) return;
 		if (!ledger || !owner?.evidenceSessionMatches(this.sessionManager.getSessionId()) || receipt.sessionId !== this.sessionManager.getSessionId() || message.isError || this._evidenceMutableHooks() ||
 			!this.settingsManager.getEvidenceLedgerEnabled() || message.content.length !== 1) return;
 		const block = message.content[0];
