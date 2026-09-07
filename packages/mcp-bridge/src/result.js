@@ -81,7 +81,9 @@ export function convertMcpResult(result, allowRecovery = true) {
       const text = textBytes <= MAX_TEXT_BYTES ? sanitizeText(item.text, Number.MAX_SAFE_INTEGER) : item.text;
       if (text) content.push(textBytes > MAX_TEXT_BYTES ? { type: "text", text, mcpInput: true } : { type: "text", text });
     } else if (item.type === "image") {
-      content.push({ type: "image", data: item.data, mimeType: item.mimeType });
+      const block = { type: "image", data: item.data, mimeType: item.mimeType };
+      if (allowRecovery && item.data.length > MAX_TEXT_BYTES) block.mcpInput = true;
+      content.push(block);
     } else {
       const kind = item.type;
       const block = typedBlock(kind, item, `[MCP ${kind} retained for local session artifact recovery.]`);

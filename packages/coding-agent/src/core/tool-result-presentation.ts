@@ -2,7 +2,7 @@ import { createHash, type Hash } from "node:crypto";
 import type { ImageContent, Message, TextContent, ToolResultMessage } from "@super-pi/ai/compat";
 import { estimateContextTokensFromParts, estimateMessageTokens, type Tool } from "@super-pi/ai";
 import { estimateToolOutputTokens, type ToolOutputTokenEstimate } from "./tool-output-budget.ts";
-import { MCP_INLINE_BYTES, type McpTypedSource, verifiedMcpSource, mcpTextDigest } from "./tool-result-source.ts";
+import { MCP_INLINE_BYTES, type McpTypedSource, verifiedMcpSource, mcpTextDigest, mcpImageDigest } from "./tool-result-source.ts";
 
 export const TOOL_RESULT_PRESENTATION_VERSION = 1 as const;
 export const TOOL_RESULT_PRESENTATION_V2_VERSION = 2 as const;
@@ -24,7 +24,7 @@ const NOTICE_SUFFIX = ".]";
 const ESCAPE_CODE = 0x1b;
 const GRAPHEME_SEGMENTER = new Intl.Segmenter("en", { granularity: "grapheme" });
 
-export type ToolResultPresentationContent = (Readonly<TextContent> & { readonly mcpSource?: McpTypedSource; readonly mcpInput?: true }) | Readonly<ImageContent>;
+export type ToolResultPresentationContent = (Readonly<TextContent> & { readonly mcpSource?: McpTypedSource; readonly mcpInput?: true }) | (Readonly<ImageContent> & { readonly mcpInput?: true });
 
 /** Phase 5B-A behavior. V1 always exposes the complete legacy result to both consumers. */
 export interface ToolResultPresentationV1 {
@@ -733,6 +733,11 @@ function appendSourceIdentityBlock(
 	}
 	const mimeLength = block.mimeType.length.toString(36);
 	const dataLength = block.data.length.toString(36);
+	if (block.mcpInput) {
+		const sourceDigest = mcpImageDigest(block);
+		digest.update("mi").update(dataLength).update(":").update(sourceDigest);
+		return artifactBytes + 3 + dataLength.length + sourceDigest.length;
+	}
 	digest.update("i").update(mimeLength).update(":").update(block.mimeType);
 	digest.update(dataLength).update(":").update(block.data);
 	return artifactBytes + 1 + mimeLength.length + 1 + Buffer.byteLength(block.mimeType) +
@@ -782,6 +787,7 @@ function scanSource(
 	for (let index = 0; index < content.length; index++) {
 		const block = content[index]!;
 		artifactBytes = appendSourceIdentityBlock(digest, block, artifactBytes);
+		if (block.mcpInput) mcpInput = true;
 		if (block.type === "text") {
 			if (block.mcpInput || block.mcpSource) mcpInput = true;
 			if (block.mcpSource) {
@@ -1059,12 +1065,12 @@ function stripMcpSources(content: readonly ToolResultPresentationContent[]): rea
 	let output: ToolResultPresentationContent[] | undefined;
 	for (let index = 0; index < content.length; index++) {
 		const block = content[index]!;
-		if (block.type === "text" && (block.mcpSource || block.mcpInput)) {
+		if (block.mcpInput || (block.type === "text" && block.mcpSource)) {
 			if (!output) {
 				output = new Array<ToolResultPresentationContent>(content.length);
 				for (let previous = 0; previous < index; previous++) output[previous] = content[previous]!;
 			}
-			output[index] = { type: "text", text: block.text };
+			output[index] = block.type === "text" ? { type: "text", text: block.text } : { type: "image", data: block.data, mimeType: block.mimeType };
 		} else if (output) output[index] = block;
 	}
 	return output ?? content;
