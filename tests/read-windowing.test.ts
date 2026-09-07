@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import fsPromises, { mkdtemp, writeFile, rm, readFile, appendFile, truncate, rename, symlink, unlink } from "node:fs/promises";
+import fsPromises, { mkdtemp, writeFile, rm, readFile, appendFile, truncate, rename, symlink, unlink, utimes } from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -325,7 +325,7 @@ test("bounded small snapshots read zero-sized and overreported virtual files thr
 		assert.equal((await readSmallFileIfStable(path))?.toString("utf8"), text);
 		reportedSize = 0n;
 		await writeFile(path, "x".repeat(READ_CHUNK_BYTES + 1));
-		await assert.rejects(readSmallFileIfStable(path), /Size-unreported file exceeds/);
+		await assert.rejects(readSmallFileIfStable(path), { code: "unreliable-size" });
 		assert.equal(opens, closes);
 	} finally { mockedOpen.mock.restore(); mockedStat.mock.restore(); syncBuiltinESMExports(); }
 }));
@@ -356,8 +356,11 @@ async function reviewReadSeam(t: TestContext, options: {
 			if (options.lengths && position <= previousPosition) throw new Error("NON_PROGRESS_REPEATED_POSITION");
 			previousPosition = position;
 			const requested = Math.min(length, options.lengths?.[call] ?? length);
-			if (options.growAtProbe && position === Number(options.size)) await appendFile(options.growAtProbe, "changed");
-			const result = await originalRead.call(handle, buffer, offset, requested, position);
+			if (options.growAtProbe && position === Number(options.size)) {
+				await appendFile(options.growAtProbe, "changed");
+				await utimes(options.growAtProbe, new Date(0), new Date("2030-01-01T00:00:00Z"));
+			}
+			const result = await Reflect.apply(originalRead, handle, [buffer, offset, requested, position]);
 			state.trace.push([position, offset, length, result.bytesRead]);
 			call++;
 			if (call === 1) options.abortAfterFirst?.abort();
@@ -387,7 +390,7 @@ async function reviewReadSeam(t: TestContext, options: {
 for (const sample of [
 	{ name: "CRLF", prefix: "\r\n", lengths: [1] },
 	{ name: "UTF8", prefix: "😀", lengths: [1] },
-	{ name: "ASCII", prefix: "A", lengths: [1] },
+	{ name: "ASCII", prefix: "A", lengths: [1, 1, 1] },
 	{ name: "consecutive", prefix: "😀\r\n", lengths: [1, 1, 1, 1, 1, 1] },
 	{ name: "window boundary", prefix: "a".repeat(READ_WINDOW_BYTES - 2) + "😀\r\n", lengths: [READ_WINDOW_BYTES - 3, 1, 1, 1] },
 ]) {
@@ -395,17 +398,21 @@ for (const sample of [
 		const source = Buffer.from(sample.prefix + "z".repeat(READ_CHUNK_BYTES + 16));
 		await writeFile(path, source);
 		await reviewReadSeam(t, { lengths: sample.lengths }, async (state) => {
-			const result = await readWindow(path, directory, "short-read", {});
+			const counters = createReadWindowCounters();
+			const result = await readWindow(path, directory, "short-read", {}, undefined, counters);
 			assert.equal(result.text, source.subarray(result.startByte, result.endByte).toString("utf8"));
 			assert.ok(result.done || result.nextByte > result.startByte);
 			assert.ok(result.cursor);
 			assert.equal(state.trace[1][0], sample.lengths[0]);
 			assert.equal(state.trace[1][1], sample.lengths[0], "fill remaining buffer space");
 			assert.equal(state.trace[1][2], READ_WINDOW_BYTES - sample.lengths[0]);
+			assert.ok(counters.shortReadFillCalls > 0);
+			assert.ok(counters.shortReadBytes > 0);
+			assert.equal(counters.zeroProgressPrevented, 0);
+			t.diagnostic(JSON.stringify({ firstFill: state.trace, counters }));
 			const next = await readWindow(path, directory, "short-read", { cursor: result.cursor });
 			assert.equal(next.startByte, result.nextByte);
 			assert.equal(next.text, source.subarray(next.startByte, next.endByte).toString("utf8"));
-			t.diagnostic(JSON.stringify({ firstFill: state.trace.slice(0, sample.lengths.length + 1) }));
 		});
 	}));
 }
@@ -448,8 +455,15 @@ for (const size of [0n, 1n]) {
 test("B0 underreported-size direct scanner verifies reported EOF", async (t) => fixture(async (path, directory) => {
 	await writeFile(path, "x".repeat(READ_CHUNK_BYTES + 100));
 	await reviewReadSeam(t, { size: 1n }, async () => {
-		await assert.rejects(readWindow(path, directory, "direct-eof", {}), { code: "unreliable-size" });
-	});
+		const counters = createReadWindowCounters();
+		await assert.rejects(readWindow(path, directory, "direct-eof", {}, undefined, counters), { code: "unreliable-size" });
+		assert.equal(counters.eofProbes, 1);
+		assert.equal(counters.eofProbeBytes, 1);
+		assert.equal(counters.unreliableSizeDetections, 1);
+		assert.equal(counters.decoderFlushes, 0);
+		assert.equal(counters.continuationCount, 0);
+		t.diagnostic(JSON.stringify({ underreportedEof: counters }));
+});
 }));
 
 test("B0 reported EOF probe validates generation before unreliable-size", async (t) => fixture(async (path, directory) => {
@@ -457,4 +471,21 @@ test("B0 reported EOF probe validates generation before unreliable-size", async 
 	await reviewReadSeam(t, { size: 1n, growAtProbe: path }, async () => {
 		await assert.rejects(readWindow(path, directory, "mutated-eof", {}), { code: "stale-cursor" });
 	});
+}));
+
+test("B0 reliable EOF uses one zero-byte probe and the existing source Buffer", async () => fixture(async (path, directory) => {
+	for (const text of ["", "abc", "\r\n", "😀"]) {
+		await writeFile(path, text);
+		const counters = createReadWindowCounters();
+		const result = await readWindow(path, directory, "confirmed-eof", {}, undefined, counters);
+		assert.equal(result.text, text);
+		assert.equal(result.done, true);
+		assert.equal(result.cursor, undefined);
+		assert.equal(counters.eofProbes, 1);
+		assert.equal(counters.eofProbeBytes, 0);
+		assert.equal(counters.bufferAllocations, 1);
+		assert.equal(counters.unreliableSizeDetections, 0);
+		assert.equal(counters.bytesRead, Buffer.byteLength(text));
+		assert.equal(counters.fileOpens, counters.fileCloses);
+	}
 }));
