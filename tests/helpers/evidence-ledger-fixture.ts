@@ -13,7 +13,7 @@ import { SessionManager } from "../../packages/coding-agent/src/core/session-man
 import { createToolResultPresentationCounters } from "../../packages/coding-agent/src/core/tool-result-presentation.ts";
 import type { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.ts";
 
-export async function fixture(enabled = true, owner = true, extensions: InlineExtension[] = []) {
+export async function fixture(enabled = true, owner = true, extensions: InlineExtension[] = [], budgetTokens = 2048) {
 	const root = mkdtempSync(join(tmpdir(), "pi-evidence-"));
 	const cwd = join(root, "workspace");
 	const agentDir = join(root, "agent");
@@ -27,7 +27,7 @@ export async function fixture(enabled = true, owner = true, extensions: InlineEx
 		cwd, agentDir, settingsManager: settings, sessionManager: SessionManager.inMemory(cwd), resourceLoader: resources,
 		model: { id: "fixture", name: "fixture", api: "openai-responses", provider: "fixture", baseUrl: "https://example.test", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128_000, maxTokens: 4096 },
 		modelRuntime: { hasConfiguredAuth: () => true, checkAuth: async () => ({ type: "api_key" }), isUsingOAuth: () => false, getModel: () => undefined, getAuth: async () => undefined } as unknown as ModelRuntime,
-		toolResultPresentation: owner ? { enabled: true, budgetTokens: 2048, counters } : undefined,
+		toolResultPresentation: owner ? { enabled: true, budgetTokens, counters } : undefined,
 	});
 	let id = 0;
 	async function read(args: Record<string, unknown> = { path: "file.txt" }) {
