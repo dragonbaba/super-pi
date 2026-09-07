@@ -11,6 +11,47 @@ export const READ_WINDOW_CODE_UNITS = 16 * 1024;
 export const READ_CURSOR_MAX_CHARS = 8192;
 const VERSION = 1;
 
+/** @internal Nonserializing metadata handoff; never attached to public details. */
+export const READ_EVIDENCE_CAPTURE = Symbol("read-evidence-capture");
+export const READ_EVIDENCE_IDENTITY = Symbol("read-evidence-identity");
+export interface ValidatedReadIdentity {
+	canonicalPath: string;
+	canonicalWorkspace: string;
+	addressedPath: string;
+	fileGeneration: string;
+	precise: boolean;
+	location: string;
+}
+export function createValidatedReadIdentity(): ValidatedReadIdentity {
+	return { canonicalPath: "", canonicalWorkspace: "", addressedPath: "", fileGeneration: "", precise: false, location: "" };
+}
+export function readFileGeneration(info: BigIntStats): string {
+	return generation(info);
+}
+export function hasPreciseReadIdentity(info: BigIntStats): boolean {
+	// Node's Windows stat tuple is not a change generation: a same-size rewrite
+	// can retain every field even though mtimeNs/ctimeNs have fractional digits.
+	// Win32 also defers last-write updates while writer handles remain open.
+	// No USN/file-change capability is available here. The v1 contract requires
+	// a miss, not an age heuristic, content hash, watcher or guessed precision.
+	if (process.platform === "win32") return false;
+	return info.isFile() && info.ino > 0n && info.size >= 0n &&
+		typeof info.mtimeNs === "bigint" && typeof info.ctimeNs === "bigint" &&
+		info.mtimeNs > 0n && info.ctimeNs > 0n &&
+		info.mtimeNs % 1_000_000n !== 0n && info.ctimeNs % 1_000_000n !== 0n;
+}
+function handoffIdentity(target: ValidatedReadIdentity | undefined, canonical: string, info: BigIntStats, location: string): void {
+	if (!target) return;
+	target.canonicalPath = canonical;
+	target.fileGeneration = generation(info);
+	target.precise = hasPreciseReadIdentity(info);
+	target.location = location;
+}
+export function attachReadIdentity<T extends object>(result: T, identity: ValidatedReadIdentity | undefined): T {
+	if (identity?.precise) Object.defineProperty(result, READ_EVIDENCE_IDENTITY, { value: identity });
+	return result;
+}
+
 export class ReadCursorError extends Error {
 	readonly code: "invalid-cursor" | "stale-cursor";
 	constructor(code: "invalid-cursor" | "stale-cursor") {
@@ -74,8 +115,18 @@ function generation(info: BigIntStats): string {
 /** Simple small-file snapshot: bounded allocation and positional reads through EOF.
  * A changed or large file goes back to the window scanner, never to readFile.
  */
-export async function readSmallFileIfStable(path: string, signal?: AbortSignal): Promise<Buffer | undefined> {
+export async function readSmallFileIfStable(path: string, signal?: AbortSignal, evidenceIdentity?: ValidatedReadIdentity, workspace?: string): Promise<Buffer | undefined> {
 	checkAbort(signal);
+	if (evidenceIdentity && workspace) {
+		try {
+			evidenceIdentity.canonicalWorkspace = await realpath(workspace);
+			evidenceIdentity.addressedPath = path;
+		} catch {
+			// Evidence-only identity cannot make an otherwise valid read fail.
+			// Leave the caller's fresh metadata ineligible and read normally.
+			evidenceIdentity = undefined;
+		}
+	}
 	const canonical = await realpath(path);
 	const handle = await open(canonical, "r");
 	try {
@@ -107,6 +158,7 @@ export async function readSmallFileIfStable(path: string, signal?: AbortSignal):
 		if (generation(await handle.stat({ bigint: true })) !== identity ||
 			await realpath(path) !== canonical || generation(await stat(canonical, { bigint: true })) !== identity) return undefined;
 		checkAbort(signal);
+		if (evidenceIdentity && info.size === BigInt(position)) handoffIdentity(evidenceIdentity, canonical, info, "small-file line policy v1");
 		return buffer.subarray(0, position);
 	} finally {
 		await handle.close();
@@ -159,10 +211,14 @@ function safeEnd(bytes: Buffer, start: number, end: number): number {
 /** Bounded, call-owned scanner. No retained source, index, cursor registry or telemetry. */
 export async function readWindow(
 	path: string, workspace: string, session: string, input: ReadWindowInput,
-	signal?: AbortSignal, counters = createReadWindowCounters(),
+	signal?: AbortSignal, counters = createReadWindowCounters(), evidenceIdentity?: ValidatedReadIdentity,
 ): Promise<ReadWindowResult> {
 	checkAbort(signal);
 	const canonicalWorkspace = await realpath(workspace);
+	if (evidenceIdentity) {
+		evidenceIdentity.canonicalWorkspace = canonicalWorkspace;
+		evidenceIdentity.addressedPath = path;
+	}
 	const scope = scopeKey(canonicalWorkspace, session);
 	const cursor = input.cursor === undefined ? undefined : parseCursor(input.cursor, scope, canonicalWorkspace, session);
 	if (cursor && input.offset !== undefined) throw new ReadCursorError("invalid-cursor");
@@ -322,6 +378,7 @@ export async function readWindow(
 			counters.continuationCount++;
 			counters.cursorSize = nextCursor.length;
 		}
+		if (evidenceIdentity && !binary) handoffIdentity(evidenceIdentity, canonical, info, `bytes ${startByte}-${position - (stoppedAtLine ? 1 : 0)}; lines ${startLine}-${line - (stoppedAtLine ? 1 : 0)}; window policy v1`);
 		return { text, startByte, endByte: position - (stoppedAtLine ? 1 : 0), nextByte: position, startLine, nextLine: line, partial, startsPartial: cursor?.partial ?? false, done, cursor: nextCursor, binary };
 	} finally {
 		await handle.close();

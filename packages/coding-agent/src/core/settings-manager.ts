@@ -151,6 +151,7 @@ export interface Settings {
 	terminal?: TerminalSettings;
 	images?: ImageSettings;
 	toolResultPresentation?: ToolResultPresentationSettings;
+	evidenceLedger?: { enabled?: boolean }; // default false; built-in local text only
 	enabledModels?: string[]; // Model patterns for cycling (same format as --models CLI flag)
 	defaultTools?: string[]; // Initial built-in tool selection
 	doubleEscapeAction?: "fork" | "tree" | "none"; // Action for double-escape with empty editor (default: "tree")
@@ -1336,6 +1337,8 @@ export class SettingsManager {
 	getBlockImages(): boolean {
 		return this.settings.images?.blockImages ?? false;
 	}
+
+	getEvidenceLedgerEnabled(): boolean { return this.settings.evidenceLedger?.enabled === true; }
 
 	getToolResultPresentationOptions(): { enabled: true; budgetTokens: number } | undefined {
 		const configured = this.settings.toolResultPresentation;

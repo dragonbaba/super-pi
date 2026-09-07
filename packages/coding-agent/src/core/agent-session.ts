@@ -15,6 +15,13 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname } from "node:path";
+import { isAbsolute, relative, resolve as resolveEvidencePath, sep } from "node:path";
+import { access as evidenceAccess, realpath as evidenceRealpath, stat as evidenceStat } from "node:fs/promises";
+import { constants as evidenceFsConstants } from "node:fs";
+import { EvidenceLedger, formatEvidenceReference, type EvidenceRecordV1 } from "./evidence-ledger.ts";
+import { estimateToolOutputTokens } from "./tool-output-budget.ts";
+import { resolveReadPathAsync } from "./tools/path-utils.ts";
+import { READ_EVIDENCE_CAPTURE, READ_EVIDENCE_IDENTITY, hasPreciseReadIdentity, readFileGeneration, type ValidatedReadIdentity } from "./tools/read-window.ts";
 import {
 	Agent,
 	EventDeliveryDispatcher,
@@ -270,6 +277,25 @@ function createEventListenerRejectionObserver(onError: ((error: unknown) => void
 			// Listener diagnostics cannot fail the provider or another listener.
 		}
 	};
+}
+
+// Evidence notices are live leases, never durable artifact ownership. The marker
+// is private, non-enumerable and absent from JSON/provider serialization.
+const LIVE_READ_EVIDENCE = Symbol("live-read-evidence");
+type LiveEvidenceBlock = TextContent & { [LIVE_READ_EVIDENCE]?: string };
+const DURABLE_READ_EVIDENCE = "[Prior read evidence is unavailable after a session boundary. Re-run the preceding read call before relying on exact contents.]";
+
+function durableEvidenceMessage(
+	message: Extract<AgentMessage, { role: "toolResult" }>,
+	content: typeof message.content | undefined,
+	block: TextContent | undefined,
+	text: string | undefined,
+): typeof message {
+	// Capture precedes listeners; replacement arrays/blocks or edited text belong
+	// to the listener and must be persisted as supplied, even if notice-shaped.
+	if (!block || message.content !== content || content.length !== 1 || content[0] !== block ||
+		block.type !== "text" || block.text !== text) return message;
+	return { ...message, content: [{ type: "text", text: DURABLE_READ_EVIDENCE }] };
 }
 
 const DEFAULT_CRITICAL_AGENT_END_TIMEOUT_MS = 30_000;
@@ -693,6 +719,11 @@ export class AgentSession {
 	private _toolResultUiSourceScans = 0;
 
 	// Tool registry for extension getTools/setTools
+	private _evidenceLedger: EvidenceLedger | undefined;
+	private _evidenceCompletedReads: Map<string, EvidenceRecordV1> | undefined;
+	private _evidenceCompletedBytes = 0;
+	private _evidenceSessionId = "";
+	private _evidenceLeaf: string | null = null;
 	private _toolRegistry: Map<string, AgentTool> = new Map();
 	private _toolDefinitions: Map<string, ToolDefinitionEntry> = new Map();
 	private _toolPromptSnippets: Map<string, string> = new Map();
@@ -1061,6 +1092,10 @@ export class AgentSession {
 		const toolResultSourceContent = event.type === "message_end" && event.message.role === "toolResult"
 			? event.message.content
 			: undefined;
+		const evidenceBlock = this._evidenceLedger
+			? (toolResultSourceContent as (TextContent[] & { [LIVE_READ_EVIDENCE]?: LiveEvidenceBlock }) | undefined)?.[LIVE_READ_EVIDENCE]
+			: undefined;
+		const evidenceText = evidenceBlock?.[LIVE_READ_EVIDENCE];
 		const hasExtensionHandlers = this._extensionRunner.hasHandlers(event.type);
 		if (isCoalescibleAgentEvent(event)) {
 			if (hasExtensionHandlers) await this._emitExtensionEvent(event);
@@ -1134,6 +1169,7 @@ export class AgentSession {
 					presentation = presentationOwner.create(event.message.content, event.message.toolCallId);
 				}
 				if (presentation) {
+					const evidenceGeneration = this._evidenceLedger ? presentationOwner.getResidentEvidenceGeneration(event.message.toolCallId) : undefined;
 					const sessionEvent: Extract<AgentSessionEvent, { type: "message_end" }> = {
 						type: "message_end",
 						message: event.message,
@@ -1163,7 +1199,9 @@ export class AgentSession {
 						presentationOwner.release();
 					}
 					// This is the complete post-listener message_end tail for tool results.
-					this.sessionManager.appendMessage(event.message);
+					this.sessionManager.appendMessage(event.message.role === "toolResult" && evidenceBlock
+						? durableEvidenceMessage(event.message, toolResultSourceContent, evidenceBlock, evidenceText) : event.message);
+					if (this._evidenceLedger) this._admitCompletedReadEvidence(event.message, evidenceGeneration);
 					return;
 				}
 			}
@@ -1178,6 +1216,8 @@ export class AgentSession {
 		// cannot overtake critical UI output; high-frequency events stay unchanged.
 		if (event.type === "agent_end") {
 			await this._emitAgentEnd({ ...event, willRetry: this._willRetryAfterAgentEnd(event) });
+			this._evidenceCompletedReads?.clear();
+			this._evidenceCompletedBytes = 0;
 		} else {
 			this._emit(event);
 		}
@@ -1199,7 +1239,9 @@ export class AgentSession {
 				event.message.role === "toolResult"
 			) {
 				// Regular LLM message - persist as SessionMessageEntry
-				this.sessionManager.appendMessage(event.message);
+				this.sessionManager.appendMessage(event.message.role === "toolResult" && evidenceBlock
+						? durableEvidenceMessage(event.message, toolResultSourceContent, evidenceBlock, evidenceText) : event.message);
+				if (this._evidenceLedger && event.message.role === "toolResult") this._admitCompletedReadEvidence(event.message);
 			}
 			// Other message types (bashExecution, compactionSummary, branchSummary) are persisted elsewhere
 
@@ -1435,6 +1477,10 @@ export class AgentSession {
 	 * Call this when completely done with the session.
 	 */
 	dispose(): void {
+		this._evidenceLedger?.dispose();
+		this._evidenceCompletedReads?.clear();
+		this._evidenceCompletedReads = undefined;
+		this._evidenceCompletedBytes = 0;
 		try {
 			this.abortRetry();
 			this.abortCompaction();
@@ -2874,6 +2920,7 @@ export class AgentSession {
 			);
 			const newEntries = this.sessionManager.getEntries();
 			const sessionContext = this.sessionManager.buildSessionContext();
+			this._clearEvidenceBranch();
 			this._toolResultPresentation?.clearProjectionRecords();
 			this.agent.state.messages = sessionContext.messages;
 			this._rebuildToolResultUiCanonicalIndex();
@@ -3202,6 +3249,7 @@ export class AgentSession {
 			);
 			const newEntries = this.sessionManager.getEntries();
 			const sessionContext = this.sessionManager.buildSessionContext();
+			this._clearEvidenceBranch();
 			this._toolResultPresentation?.clearProjectionRecords();
 			this.agent.state.messages = sessionContext.messages;
 			this._rebuildToolResultUiCanonicalIndex();
@@ -3534,7 +3582,223 @@ export class AgentSession {
 		);
 	}
 
+	private _clearEvidenceBranch(): void {
+		this._evidenceLedger?.changeBranch();
+		this._evidenceCompletedReads?.clear();
+		this._evidenceCompletedBytes = 0;
+	}
+	private _invalidateEvidenceWorkspace(): void {
+		this._evidenceLedger?.mutate();
+		this._evidenceCompletedReads?.clear();
+		this._evidenceCompletedBytes = 0;
+	}
+
+	private _evidenceMutableHooks(): boolean {
+		const runner = this._extensionRunner;
+		return runner.hasHandlers("tool_result") || runner.hasHandlers("message_end") ||
+			runner.hasHandlers("context") || runner.hasHandlers("before_provider_request") ||
+			runner.hasHandlers("tool_execution_end") || runner.hasHandlers("message_start");
+	}
+
+	private _captureReadEvidenceIdentity(): boolean {
+		return process.platform !== "win32" && this._evidenceCompletedReads !== undefined && this.settingsManager.getEvidenceLedgerEnabled() &&
+			this._toolResultPresentation?.evidenceSessionMatches(this.sessionManager.getSessionId()) === true && !this._evidenceMutableHooks();
+	}
+
+	private _checkEvidenceBranch(): void {
+		const leaf = this.sessionManager.getLeafId();
+		let descendant = leaf === this._evidenceLeaf;
+		if (!descendant && this._evidenceLeaf !== null) {
+			let entry = this.sessionManager.getLeafEntry();
+			for (let i = 0; entry && i < 4096; i++) {
+				if (entry.id === this._evidenceLeaf) { descendant = true; break; }
+				entry = entry.parentId ? this.sessionManager.getEntry(entry.parentId) : undefined;
+			}
+		}
+		if ((!descendant && this._evidenceLeaf !== null) || this._evidenceSessionId !== this.sessionManager.getSessionId() ||
+			this.sessionManager.getCwd() !== this._cwd) this._clearEvidenceBranch();
+		this._evidenceSessionId = this.sessionManager.getSessionId();
+		this._evidenceLeaf = leaf;
+	}
+
+	private async _executeEvidenceTool(
+		execute: AgentTool["execute"], trustedRead: boolean, callId: string, args: any,
+		signal: AbortSignal | undefined, onUpdate: Parameters<AgentTool["execute"]>[3],
+	): ReturnType<AgentTool["execute"]> {
+		const ledger = this._evidenceLedger;
+		if (!ledger) return execute(callId, args, signal, onUpdate);
+		if (!this.settingsManager.getEvidenceLedgerEnabled()) {
+			if (ledger.counters.entries || this._evidenceCompletedReads?.size) this._clearEvidenceBranch();
+			return execute(callId, args, signal, onUpdate);
+		}
+		this._checkEvidenceBranch();
+		if (!trustedRead) {
+			this._invalidateEvidenceWorkspace();
+			ledger.miss("ineligible-tool");
+			return execute(callId, args, signal, onUpdate);
+		}
+		if (this._evidenceMutableHooks()) { ledger.miss("mutable-hook"); return execute(callId, args, signal, onUpdate); }
+		const owner = this._toolResultPresentation;
+		if (!owner?.evidenceSessionMatches(this.sessionManager.getSessionId())) { ledger.miss("artifact-unavailable"); return execute(callId, args, signal, onUpdate); }
+		if (process.platform === "win32") {
+			ledger.miss("uncertain-identity");
+			ledger.counters.realReadExecutions++;
+			return execute(callId, args, signal, onUpdate);
+		}
+		if (!args || typeof args.path !== "string" || args.path.length > 4096 ||
+			(args.offset !== undefined && (!Number.isSafeInteger(args.offset) || args.offset < 1)) ||
+			(args.limit !== undefined && (!Number.isSafeInteger(args.limit) || args.limit < 1)) ||
+			(args.cursor !== undefined && (typeof args.cursor !== "string" || args.cursor.length > 8192)) ||
+			callId.length > 256 || this._cwd.length > 4096 || this._evidenceSessionId.length > 256) {
+			ledger.miss("uncertain-identity"); return execute(callId, args, signal, onUpdate);
+		}
+		const workspace = ledger.workspaceGeneration;
+		const branch = ledger.branchGeneration;
+		const sessionId = this._evidenceSessionId;
+		const readPath = args.path;
+		const readOffset = args.offset;
+		const readLimit = args.limit;
+		const readCursor = args.cursor;
+		const empty = ledger.counters.entries === 0;
+		let canonical = "";
+		let canonicalCwd = "";
+		let key: string | undefined;
+		let relativePath = "";
+		if (empty) {
+			ledger.lookup("");
+			ledger.miss("no-record");
+		} else try {
+			const addressed = await resolveReadPathAsync(readPath, this._cwd);
+			canonicalCwd = await evidenceRealpath(this._cwd);
+			canonical = await evidenceRealpath(addressed);
+			relativePath = relative(resolveEvidencePath(this._cwd), addressed).replaceAll(sep, "/").normalize("NFC");
+			if (isAbsolute(relativePath) || relativePath === ".." || relativePath.startsWith("../") || relativePath.length > 1024 || canonical.length > 4096) {
+				ledger.miss("uncertain-identity"); return execute(callId, args, signal, onUpdate);
+			}
+			const normalized = canonical.normalize("NFC");
+			// Fixed current read schema, not a recursive serializer. null preserves
+			// omitted limit semantics (including the legacy continuation notice).
+			key = ledger.hashArguments(JSON.stringify(["builtin-read-v1", canonicalCwd, relativePath, normalized, readOffset ?? 1, readLimit ?? null, readCursor ?? null]));
+			if (!key) { ledger.miss("uncertain-identity"); return execute(callId, args, signal, onUpdate); }
+			const record = ledger.lookup(key);
+			if (record) {
+				const referenceTokens = record.referenceTokens;
+				const budgetTokens = callId === record.sourceToolCallId ? undefined : owner.getEvidenceBudgetTokens();
+				let miss: import("./evidence-ledger.ts").EvidenceMissReason | undefined;
+				if (callId === record.sourceToolCallId) miss = "source-call-id-reused";
+				else if (record.sessionId !== sessionId || record.cwd !== canonicalCwd || record.branchGeneration !== branch) miss = "branch/session/cwd";
+				else if (record.workspaceGeneration !== workspace) miss = "workspace-generation";
+				else if (record.relativePath !== relativePath) miss = "args-mismatch";
+				else if (referenceTokens === undefined || !Number.isSafeInteger(referenceTokens) || referenceTokens < 1 || !Number.isSafeInteger(record.modelTokens) ||
+					referenceTokens >= record.modelTokens || budgetTokens === undefined || referenceTokens > budgetTokens) miss = "not-beneficial";
+				else {
+					// Access policy is never cached. File mismatch precedes G2 hashing.
+					await evidenceAccess(addressed, evidenceFsConstants.R_OK);
+					const info = await evidenceStat(canonical, ledger.statOptions);
+					const sameTarget = await evidenceRealpath(addressed) === canonical;
+					this._checkEvidenceBranch();
+					if (!hasPreciseReadIdentity(info)) miss = "uncertain-identity";
+					else if (!sameTarget || record.canonicalPath !== canonical || record.fileGeneration !== readFileGeneration(info)) {
+						miss = "file-generation";
+						ledger.counters.hashSkippedFileGenerationMisses++;
+					} else if (!owner.hasResidentEvidenceArtifact(record.sourceToolCallId, record.resultHandle)) {
+						miss = "artifact-unavailable";
+						ledger.counters.hashSkippedNonresidentArtifactMisses++;
+					} else if (!signal?.aborted && ledger.workspaceGeneration === workspace && ledger.branchGeneration === branch && !this._evidenceMutableHooks() &&
+						args.path === readPath && args.offset === readOffset && args.limit === readLimit && args.cursor === readCursor) {
+						const content: TextContent[] = [{ type: "text", text: formatEvidenceReference(record) }];
+						if (estimateToolOutputTokens(content).estimatedTokens !== referenceTokens) miss = "not-beneficial";
+						else {
+							const scans = owner.counters.artifactIntegrityScans;
+							const valid = owner.validateEvidenceArtifact(record.sourceToolCallId, record.resultHandle, this.agent.state.messages, record.blocks, record.chars, record.sourceGeneration);
+							const added = owner.counters.artifactIntegrityScans - scans;
+							ledger.counters.g2ArtifactIntegrityScans += added;
+							ledger.counters.g2ArtifactIntegrityBytes += added * record.artifactBytes;
+							if (valid) {
+								// Snapshot only the generated block/text identities, not a source or owner.
+								Object.defineProperty(content[0], LIVE_READ_EVIDENCE, { value: content[0].text });
+								Object.defineProperty(content, LIVE_READ_EVIDENCE, { value: content[0] });
+								ledger.hit(record.modelTokens - referenceTokens);
+								return { content, details: undefined };
+							}
+							miss = added ? "source-not-active" : "artifact-unavailable";
+						}
+					} else miss = "workspace-generation";
+				}
+				ledger.invalidate(key);
+				ledger.miss(miss);
+			} else ledger.miss("no-record");
+		} catch {
+			if (key) ledger.invalidate(key); else ledger.clear();
+			ledger.miss("uncertain-identity");
+			return execute(callId, args, signal, onUpdate);
+		}
+		ledger.counters.realReadExecutions++;
+		if (args.path !== readPath || args.offset !== readOffset || args.limit !== readLimit || args.cursor !== readCursor) return execute(callId, args, signal, onUpdate);
+		const result = await execute(callId, args, signal, onUpdate);
+		this._checkEvidenceBranch();
+		const identity = (result as typeof result & { [READ_EVIDENCE_IDENTITY]?: ValidatedReadIdentity })[READ_EVIDENCE_IDENTITY];
+		if (empty && identity?.precise) {
+			canonical = identity.canonicalPath;
+			canonicalCwd = identity.canonicalWorkspace;
+			relativePath = relative(resolveEvidencePath(this._cwd), identity.addressedPath).replaceAll(sep, "/").normalize("NFC");
+			if (isAbsolute(relativePath) || relativePath === ".." || relativePath.startsWith("../") || relativePath.length > 1024 ||
+				canonical.length > 4096 || canonicalCwd.length > 4096 || canonicalCwd.length === 0) return result;
+			key = ledger.hashArguments(JSON.stringify(["builtin-read-v1", canonicalCwd, relativePath, canonical.normalize("NFC"), readOffset ?? 1, readLimit ?? null, readCursor ?? null]));
+		}
+		if (key && identity?.precise && !signal?.aborted && !this._evidenceMutableHooks() &&
+			ledger.workspaceGeneration === workspace && ledger.branchGeneration === branch &&
+			identity.canonicalPath === canonical && this._evidenceCompletedReads && this._evidenceCompletedReads.size < 128) {
+			const scope = ledger.hashScope(JSON.stringify([sessionId, canonicalCwd, canonical, identity.fileGeneration, workspace, branch, "read-policy-v1"]));
+			const bytes = 2048 + 2 * (canonical.length + identity.fileGeneration.length + identity.location.length + relativePath.length + canonicalCwd.length + sessionId.length);
+			const duplicate = this._evidenceCompletedReads.get(callId);
+			if (duplicate) {
+				this._evidenceCompletedReads.delete(callId);
+				this._evidenceCompletedBytes -= duplicate.artifactBytes;
+				return result;
+			}
+			if (scope && identity.location.length <= 8192 && this._evidenceCompletedBytes + bytes <= 64 * 1024) {
+				const receipt: EvidenceRecordV1 = { version: 1, evidenceId: ledger.nextEvidenceId(), toolKind: "builtin-read", canonicalArgsHash: key,
+					sourceGeneration: 0,
+					scopeFingerprint: scope, resultHandle: "", sourceToolCallId: callId, relativePath, location: identity.location,
+					createdTurn: this.agent.state.messages.length, workspaceGeneration: workspace, branchGeneration: branch,
+					canonicalPath: canonical, fileGeneration: identity.fileGeneration, sessionId, cwd: canonicalCwd,
+					blocks: 0, chars: 0, artifactBytes: bytes, modelTokens: 0 };
+				this._evidenceCompletedReads.set(callId, receipt);
+				this._evidenceCompletedBytes += bytes;
+			}
+		}
+		return result;
+	}
+
+	private _admitCompletedReadEvidence(message: Extract<AgentMessage, { role: "toolResult" }>, expectedGeneration?: number): void {
+		const receipt = this._evidenceCompletedReads?.get(message.toolCallId);
+		if (!receipt) return;
+		this._evidenceCompletedReads!.delete(message.toolCallId);
+		this._evidenceCompletedBytes -= receipt.artifactBytes;
+		const ledger = this._evidenceLedger;
+		const owner = this._toolResultPresentation;
+		if (expectedGeneration === undefined || owner?.getResidentEvidenceGeneration(message.toolCallId) !== expectedGeneration) return;
+		if (!ledger || !owner?.evidenceSessionMatches(this.sessionManager.getSessionId()) || receipt.sessionId !== this.sessionManager.getSessionId() || message.isError || this._evidenceMutableHooks() ||
+			!this.settingsManager.getEvidenceLedgerEnabled() || message.content.length !== 1) return;
+		const block = message.content[0];
+		if (block?.type !== "text" || block.text.length < 1 || block.text.length > 64 * 1024) return;
+		const descriptor = owner.issueEvidenceArtifact(message.toolCallId, this.agent.state.messages, 1, block.text.length);
+		if (!descriptor) return;
+		const budgetTokens = owner.getEvidenceBudgetTokens();
+		if (budgetTokens === undefined) return;
+		ledger.admit({ ...receipt, resultHandle: descriptor.id, sourceGeneration: owner.getResidentEvidenceGeneration(message.toolCallId)!, blocks: 1, chars: block.text.length,
+			artifactBytes: descriptor.bytes, modelTokens: owner.getResidentEvidenceModelTokens(message.toolCallId) ?? 0 }, budgetTokens);
+	}
+
 	private _refreshToolRegistry(options?: { activeToolNames?: string[]; includeAllExtensionTools?: boolean }): void {
+		this._clearEvidenceBranch();
+		if (this.settingsManager.getEvidenceLedgerEnabled() && !this._evidenceLedger) {
+			this._evidenceLedger = new EvidenceLedger();
+			this._evidenceCompletedReads = new Map();
+			this._evidenceSessionId = this.sessionManager.getSessionId();
+		this._evidenceLeaf = this.sessionManager.getLeafId();
+		}
 		const previousToolRegistry = this._toolRegistry;
 		const previousActiveToolNames = this.getActiveToolNames();
 		const allowedToolNames = this._allowedToolNames;
@@ -3599,6 +3863,19 @@ export class AgentSession {
 		for (const tool of wrappedBuiltInTools) toolRegistry.set(tool.name, tool);
 		for (const tool of wrappedExtensionTools as AgentTool[]) {
 			toolRegistry.set(tool.name, tool);
+		}
+		if (this._evidenceLedger) {
+			for (const tool of toolRegistry.values()) {
+				const definition = this._baseToolDefinitions.get(tool.name);
+				// Only a locally constructed built-in definition and its exact final
+				// registry object qualify. Overrides and custom name shadowing fail.
+				const trustedRead = !this._baseToolsOverride && tool.name === "read" &&
+					definitionRegistry.get(tool.name)?.definition === definition && wrappedBuiltInTools.includes(tool);
+				if (trustedRead && definition) (definition as typeof definition & { [READ_EVIDENCE_CAPTURE]?: () => boolean })[READ_EVIDENCE_CAPTURE] = this._captureReadEvidenceIdentity.bind(this);
+				const execute = tool.execute;
+				// Lifecycle-created adapter, never a closure created by lookup.
+				tool.execute = (callId, args, signal, onUpdate) => this._executeEvidenceTool(execute, trustedRead, callId, args, signal, onUpdate);
+			}
 		}
 		this._toolRegistry = toolRegistry;
 
@@ -3904,6 +4181,7 @@ export class AgentSession {
 		onChunk?: (chunk: string) => void,
 		options?: { excludeFromContext?: boolean; id?: string; operations?: BashOperations },
 	): Promise<BashResult> {
+		if (this._evidenceLedger) this._invalidateEvidenceWorkspace();
 		const abortController = new AbortController();
 		this._bashAbortControllers.add(abortController);
 
@@ -4202,6 +4480,7 @@ export class AgentSession {
 
 			// Update agent state
 			const sessionContext = this.sessionManager.buildSessionContext();
+			this._clearEvidenceBranch();
 			this._toolResultPresentation?.clearProjectionRecords();
 			this.agent.state.messages = sessionContext.messages;
 			this._rebuildToolResultUiCanonicalIndex();
