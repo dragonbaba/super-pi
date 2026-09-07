@@ -199,7 +199,7 @@ export type AgentSessionEvent =
 			 * Internal built-in-listener signal for the final ToolResult UI refresh.
 			 * It is never exposed to extensions, providers, persistence, or telemetry.
 			 */
-			toolResultMessageEndDisposition?: "none" | "replacement-returned" | "handler-may-have-mutated";
+			toolResultMessageEndDisposition?: "none" | "replacement-returned" | "handler-may-have-mutated" | "host-finalized";
 	  })
 	| {
 			type: "agent_end";
@@ -1095,6 +1095,7 @@ export class AgentSession {
 		if (event.type === "message_end" && event.message.role === "toolResult") {
 			const presentationOwner = this._toolResultPresentation;
 			const mcpTool = mcpFinal;
+			let hostCanonicalPayloadChanged = false;
 			if (mcpTool) {
 				try {
 					const content = prepareMcpHookContent(event.message.content, presentationOwner?.mcpInputConfigured ?? false);
@@ -1113,6 +1114,7 @@ export class AgentSession {
 					}
 					event.message.content = canonical ?? content;
 				} catch {
+					hostCanonicalPayloadChanged = true;
 					event.message.content = [];
 					event.message.isError = true;
 					event.message.details = { mcpError: "input-admission-failed", configurationReason: "MCP final output requires a valid source and a configured sufficient recovery budget." };
@@ -1124,6 +1126,7 @@ export class AgentSession {
 					presentation = presentationOwner.create(event.message.content, event.message.toolCallId);
 				} catch (error) {
 					if (!mcpTool) throw error;
+					hostCanonicalPayloadChanged = true;
 					presentationOwner.releaseMcpInputAdmission(event.message.toolCallId);
 					event.message.content = [];
 					event.message.isError = true;
@@ -1135,7 +1138,9 @@ export class AgentSession {
 						type: "message_end",
 						message: event.message,
 						toolResultPresentation: presentation,
-						toolResultMessageEndDisposition: !hasExtensionHandlers
+						toolResultMessageEndDisposition: hostCanonicalPayloadChanged
+							? "host-finalized"
+							: !hasExtensionHandlers
 							? "none"
 							: messageEndReplacementReturned
 								? "replacement-returned"
