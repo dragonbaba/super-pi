@@ -4,7 +4,18 @@ import { createHash } from "node:crypto";
 export const MCP_SOURCE_BYTES = 10 * 1024 * 1024;
 export const MCP_INLINE_BYTES = 50 * 1024;
 const SOURCE_VERIFIED = Symbol.for("super-pi.mcp-source.verified.v1");
+const TEXT_DIGEST = Symbol.for("super-pi.mcp-text.digest.v1");
 const MAX_DEPTH = 32;
+
+/** Cache only on the immutable canonical input itself; never a second store. */
+export function mcpTextDigest(block: Readonly<{ type: "text"; text: string; mcpInput?: true }>): string {
+	const cached = (block as unknown as Record<symbol, unknown>)[TEXT_DIGEST];
+	if (typeof cached === "string" && Object.isFrozen(block)) return cached;
+	const digest = createHash("sha256").update("mcp-text-v1:").update(block.text, "utf16le").digest("hex");
+	Object.defineProperty(block, TEXT_DIGEST, { value: digest });
+	Object.freeze(block);
+	return digest;
+}
 
 export class McpSourceError extends Error {
 	readonly code: string;

@@ -2,7 +2,7 @@ import { createHash, type Hash } from "node:crypto";
 import type { ImageContent, Message, TextContent, ToolResultMessage } from "@super-pi/ai/compat";
 import { estimateContextTokensFromParts, estimateMessageTokens, type Tool } from "@super-pi/ai";
 import { estimateToolOutputTokens, type ToolOutputTokenEstimate } from "./tool-output-budget.ts";
-import { MCP_INLINE_BYTES, type McpTypedSource, verifiedMcpSource } from "./tool-result-source.ts";
+import { MCP_INLINE_BYTES, type McpTypedSource, verifiedMcpSource, mcpTextDigest } from "./tool-result-source.ts";
 
 export const TOOL_RESULT_PRESENTATION_VERSION = 1 as const;
 export const TOOL_RESULT_PRESENTATION_V2_VERSION = 2 as const;
@@ -714,6 +714,12 @@ function appendSourceIdentityBlock(
 	artifactBytes: number,
 ): number {
 	if (block.type === "text") {
+		if (block.mcpInput && !block.mcpSource) {
+			const sourceDigest = mcpTextDigest(block);
+			const length = block.text.length.toString(36);
+			digest.update("mt").update(length).update(":").update(sourceDigest);
+			return artifactBytes + 3 + length.length + sourceDigest.length;
+		}
 		if (block.mcpSource) {
 			const source = verifiedMcpSource(block.mcpSource);
 			digest.update("m").update(source.kind).update(":").update(source.digest);
