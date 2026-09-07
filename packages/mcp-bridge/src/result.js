@@ -25,6 +25,7 @@ function validateMedia(data, mimeType, bytes, image) {
     else if (mimeType === "image/jpeg") valid = bytes >= 3 && headerIs(data, 0, "\xff\xd8\xff");
     else if (mimeType === "image/gif") valid = bytes >= 10 && (headerIs(data, 0, "GIF87a") || headerIs(data, 0, "GIF89a"));
     else if (mimeType === "image/webp") valid = bytes >= 16 && headerIs(data, 0, "RIFF") && headerIs(data, 8, "WEBP");
+    else valid = mimeType.startsWith("image/") && bytes > 0;
   } else if (mimeType.startsWith("audio/")) {
     valid = bytes > 0;
     if (mimeType === "audio/wav" || mimeType === "audio/x-wav") valid = bytes >= 12 && headerIs(data, 0, "RIFF") && headerIs(data, 8, "WAVE");
@@ -64,13 +65,22 @@ export function convertMcpResult(result, allowRecovery = true) {
       const resourceBytes = typeof item.resource.text === "string" ? Buffer.byteLength(item.resource.text) : item.resource.blob?.length;
       if (typeof item.resource.text !== "string") binarySize(item.resource.blob, item.resource.mimeType ?? "application/octet-stream");
       bytes += resourceBytes;
-      typedPayloadBytes += resourceBytes;
+      if (typeof item.resource.text === "string" && resourceBytes <= MAX_TEXT_BYTES) textBytes += resourceBytes;
+      else typedPayloadBytes += resourceBytes;
     } else if (item?.type === "resource_link") {
       if (typeof item.uri !== "string" || typeof item.name !== "string" ||
         (item.size !== undefined && (!Number.isSafeInteger(item.size) || item.size < 0))) throw new McpSourceError("invalid-typed-content");
+      const linkBytes = Buffer.byteLength(item.uri) + Buffer.byteLength(item.name) + 2;
+      if (linkBytes > MAX_TEXT_BYTES) throw new McpSourceError("result-size-limit");
+      let uri;
+      try { uri = new URL(item.uri); } catch { throw new McpSourceError("invalid-typed-content"); }
+      if (uri.username || uri.password || uri.search || uri.hash) throw new McpSourceError("invalid-typed-content");
+      bytes += linkBytes;
+      textBytes += linkBytes;
     } else throw new McpSourceError("invalid-typed-content");
     if (bytes > MCP_SOURCE_BYTES) throw new McpSourceError("result-size-limit");
-    if (!allowRecovery && (textBytes > MAX_TEXT_BYTES || (item.type !== "text" && item.type !== "image"))) throw new McpSourceError("budget-not-configured");
+    if (!allowRecovery && (textBytes > MAX_TEXT_BYTES || item.type === "audio" ||
+      (item.type === "resource" && (typeof item.resource.text !== "string" || Buffer.byteLength(item.resource.text) > MAX_TEXT_BYTES)))) throw new McpSourceError("budget-not-configured");
   }
   const content = [];
   let accountedSources = 0;
@@ -84,6 +94,9 @@ export function convertMcpResult(result, allowRecovery = true) {
       const block = { type: "image", data: item.data, mimeType: item.mimeType };
       if (allowRecovery && item.data.length > MAX_TEXT_BYTES) block.mcpInput = true;
       content.push(block);
+    } else if (item.type === "resource_link" || (item.type === "resource" && typeof item.resource.text === "string" && Buffer.byteLength(item.resource.text) <= MAX_TEXT_BYTES)) {
+      const text = item.type === "resource_link" ? `${sanitizeText(item.name, 200)}: ${item.uri}` : item.resource.text;
+      content.push(textBytes > MAX_TEXT_BYTES ? { type: "text", text, mcpInput: true } : { type: "text", text });
     } else {
       const kind = item.type;
       const block = typedBlock(kind, item, `[MCP ${kind} retained for local session artifact recovery.]`);
@@ -112,8 +125,7 @@ export function convertMcpResult(result, allowRecovery = true) {
     if (accountedSources + bytes - typedPayloadBytes > MCP_SOURCE_BYTES) throw new McpSourceError("result-size-limit");
     content.push({ type: "text", text: preview.text, mcpSource: source });
   }
-  if (result?._meta !== undefined) {
-    if (!allowRecovery) throw new McpSourceError("budget-not-configured");
+  if (result?._meta !== undefined && allowRecovery) {
     const block = typedBlock("metadata", result._meta, "[MCP server metadata retained opaquely; no tool pagination contract is configured. Recovery is local.]");
     accountedSources += block.mcpSource.bytes;
     if (accountedSources + bytes - typedPayloadBytes > MCP_SOURCE_BYTES) throw new McpSourceError("result-size-limit");
