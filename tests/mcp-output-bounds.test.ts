@@ -77,3 +77,50 @@ test("MCP production execution installs an isolated progress callback", async ()
 	assert.deepEqual(result.content, [{ type: "text", text: "final" }]);
 	assert.ok(updates > 0);
 });
+
+for (const kind of ["audio", "resource"] as const) {
+	test(`MCP ${kind} payload remains recoverable without base64 model text`, () => {
+		const data = kind === "audio"
+			? "UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA="
+			: "YQ==";
+		const source = kind === "audio"
+			? { type: "audio", data, mimeType: "audio/wav" }
+			: { type: "resource", resource: { uri: "fixture://binary", blob: data, mimeType: "application/octet-stream" } };
+		const content = convertMcpResult({ content: [source] });
+		const owner = createToolResultPresentationOwner({ enabled: true, budgetTokens: 256 }, "mcp-typed-session")!;
+		try {
+			const view = owner.create(content, "mcp-typed-call");
+			for (const block of content) if (block.type === "text") assert.equal(block.text.includes(data), false);
+			assert.ok(view?.version === 2 && view.artifact, "omitted typed source has no existing-owner recovery handle");
+		} finally { owner.dispose(); }
+	});
+}
+
+test("MCP mixed text blocks beyond the content cap are not silently discarded", () => {
+	const content: { type: "text"; text: string }[] = [];
+	for (let index = 0; index < 257; index++) content.push({ type: "text", text: `block-${index}` });
+	assert.throws(() => convertMcpResult({ content }), { code: "result-size-limit" });
+});
+
+test("MCP first delivery may be final without creating a progress update", async () => {
+	let registered: any;
+	let calls = 0;
+	let updates = 0;
+	const runtime = new McpBridgeRuntime({ registerTool(tool: unknown) { registered = tool; } }, "mcp-red-workspace");
+	const state = { status: "connected", config: { id: "fixture", toolTimeoutMs: 1000 }, client: {
+		async callTool() { calls++; return { content: [{ type: "text", text: "final-only" }] }; },
+	} };
+	runtime.registerRemoteTool(state, { name: "fixture", inputSchema: { type: "object", properties: {} } });
+	const result = await registered.execute("mcp-final-call", {}, undefined, () => { updates++; });
+	assert.equal(calls, 1);
+	assert.equal(updates, 0);
+	assert.deepEqual(result.content, [{ type: "text", text: "final-only" }]);
+});
+
+test("MCP list pagination is not a tools/call cursor contract", async () => {
+	const { CallToolResultSchema, ListToolsResultSchema } = await import("@modelcontextprotocol/sdk/types.js");
+	assert.equal("nextCursor" in CallToolResultSchema.shape, false);
+	assert.equal("nextCursor" in ListToolsResultSchema.shape, true);
+	const metadata = { fixtureOpaqueCursor: "opaque-fixture-token" };
+	assert.deepEqual(CallToolResultSchema.parse({ content: [], _meta: metadata })._meta, metadata);
+});
