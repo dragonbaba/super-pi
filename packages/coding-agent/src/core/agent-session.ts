@@ -1097,12 +1097,21 @@ export class AgentSession {
 			const mcpTool = mcpFinal;
 			if (mcpTool) {
 				try {
-					event.message.content = prepareMcpHookContent(event.message.content, presentationOwner?.mcpInputConfigured ?? false);
-					// Image normalization or mutable hooks may replace the original block.
-					// Tag the final generation only; keep the same base64 string reference.
-					if (presentationOwner?.mcpInputConfigured) for (const block of event.message.content) {
-						if (block.type === "image" && block.data.length > MCP_INLINE_BYTES) (block as ImageContent & { mcpInput?: true }).mcpInput = true;
+					const content = prepareMcpHookContent(event.message.content, presentationOwner?.mcpInputConfigured ?? false);
+					let canonical: typeof content | undefined;
+					// Digest symbols and final source markers belong to host wrappers,
+					// never extension-owned objects (including frozen/sealed outputs).
+					if (presentationOwner?.mcpInputConfigured) for (let index = 0; index < content.length; index++) {
+						const block = content[index]!;
+						if (block.type === "text" && block.mcpInput && !block.mcpSource) {
+							canonical ??= content.slice();
+							canonical[index] = { type: "text", text: block.text, mcpInput: true };
+						} else if (block.type === "image" && (block.mcpInput || block.data.length > MCP_INLINE_BYTES)) {
+							canonical ??= content.slice();
+							canonical[index] = { type: "image", data: block.data, mimeType: block.mimeType, mcpInput: true };
+						}
 					}
+					event.message.content = canonical ?? content;
 				} catch {
 					event.message.content = [];
 					event.message.isError = true;

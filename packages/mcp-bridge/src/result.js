@@ -18,6 +18,16 @@ function headerIs(data, offset, text) {
   return true;
 }
 
+function canonicalInlineUri(value) {
+  if (Buffer.byteLength(value) > MAX_TEXT_BYTES) throw new McpSourceError("result-size-limit");
+  let uri;
+  try { uri = new URL(value); } catch { throw new McpSourceError("invalid-typed-content"); }
+  if (uri.username || uri.password || uri.search || uri.hash) throw new McpSourceError("invalid-typed-content");
+  const text = sanitizeText(uri.href, Number.MAX_SAFE_INTEGER);
+  if (Buffer.byteLength(text) > MAX_TEXT_BYTES) throw new McpSourceError("result-size-limit");
+  return text;
+}
+
 function validateMedia(data, mimeType, bytes, image) {
   let valid = false;
   if (image) {
@@ -38,14 +48,17 @@ function validateMedia(data, mimeType, bytes, image) {
 /** Source normalization, not a registry, estimator, cursor or presentation owner. */
 export function convertMcpResult(result, allowRecovery = true) {
   const items = Array.isArray(result?.content) ? result.content : [];
-  const extras = Number(result?.structuredContent !== undefined) + Number(result?.toolResult !== undefined) + Number(result?._meta !== undefined);
+  const extras = Number(result?.structuredContent !== undefined) + Number(result?.toolResult !== undefined);
   if (items.length + extras > MAX_CONTENT_ITEMS) throw new McpSourceError("result-size-limit");
   let bytes = 0;
   let textBytes = 0;
   let imageBytes = 0;
   let typedPayloadBytes = 0;
+  let inlineText;
+  let requiresRecovery = false;
   // Size/shape preflight before allocating normalized result wrappers.
-  for (const item of items) {
+  for (let index = 0; index < items.length; index++) {
+    const item = items[index];
     if (item?.type === "text") {
       if (typeof item.text !== "string") throw new McpSourceError("invalid-typed-content");
       bytes += Buffer.byteLength(item.text);
@@ -64,27 +77,44 @@ export function convertMcpResult(result, allowRecovery = true) {
       if (typeof item.resource?.uri !== "string") throw new McpSourceError("invalid-typed-content");
       const resourceBytes = typeof item.resource.text === "string" ? Buffer.byteLength(item.resource.text) : item.resource.blob?.length;
       if (typeof item.resource.text !== "string") binarySize(item.resource.blob, item.resource.mimeType ?? "application/octet-stream");
-      bytes += resourceBytes;
-      if (typeof item.resource.text === "string" && resourceBytes <= MAX_TEXT_BYTES) textBytes += resourceBytes;
-      else typedPayloadBytes += resourceBytes;
+      let text;
+      if (typeof item.resource.text === "string" && resourceBytes <= MAX_TEXT_BYTES) {
+        const uri = canonicalInlineUri(item.resource.uri);
+        // Only bounded inline candidates are combined. Large typed resources
+        // keep the original source without a secondary complete string.
+        if (resourceBytes + Buffer.byteLength(uri) + 16 <= MAX_TEXT_BYTES) {
+          text = `[MCP resource ${uri}]\n${sanitizeText(item.resource.text, Number.MAX_SAFE_INTEGER)}`;
+        }
+      }
+      if (text !== undefined) {
+        inlineText ??= new Array(items.length);
+        inlineText[index] = text;
+        const size = Buffer.byteLength(text);
+        bytes += size; textBytes += size;
+      } else { bytes += resourceBytes; typedPayloadBytes += resourceBytes; requiresRecovery = true; }
     } else if (item?.type === "resource_link") {
       if (typeof item.uri !== "string" || typeof item.name !== "string" ||
         (item.size !== undefined && (!Number.isSafeInteger(item.size) || item.size < 0))) throw new McpSourceError("invalid-typed-content");
       const linkBytes = Buffer.byteLength(item.uri) + Buffer.byteLength(item.name) + 2;
       if (linkBytes > MAX_TEXT_BYTES) throw new McpSourceError("result-size-limit");
-      let uri;
-      try { uri = new URL(item.uri); } catch { throw new McpSourceError("invalid-typed-content"); }
-      if (uri.username || uri.password || uri.search || uri.hash) throw new McpSourceError("invalid-typed-content");
-      bytes += linkBytes;
-      textBytes += linkBytes;
+      const uri = canonicalInlineUri(item.uri);
+      const text = `[MCP resource link: ${sanitizeText(item.name, 200)} — ${uri}]`;
+      const size = Buffer.byteLength(text);
+      if (size > MAX_TEXT_BYTES) throw new McpSourceError("result-size-limit");
+      inlineText ??= new Array(items.length);
+      inlineText[index] = text;
+      bytes += size;
+      textBytes += size;
     } else throw new McpSourceError("invalid-typed-content");
     if (bytes > MCP_SOURCE_BYTES) throw new McpSourceError("result-size-limit");
     if (!allowRecovery && (textBytes > MAX_TEXT_BYTES || item.type === "audio" ||
-      (item.type === "resource" && (typeof item.resource.text !== "string" || Buffer.byteLength(item.resource.text) > MAX_TEXT_BYTES)))) throw new McpSourceError("budget-not-configured");
+      (item.type === "resource" && inlineText?.[index] === undefined))) throw new McpSourceError("budget-not-configured");
   }
   const content = [];
   let accountedSources = 0;
-  for (const item of items) {
+  requiresRecovery ||= textBytes > MAX_TEXT_BYTES;
+  for (let index = 0; index < items.length; index++) {
+    const item = items[index];
     if (item.type === "text") {
       // Preserve legacy small-text sanitization; the complete large canonical
       // string goes to G2, never through truncateUtf8 or a complete-file Buffer.
@@ -92,13 +122,14 @@ export function convertMcpResult(result, allowRecovery = true) {
       if (text) content.push(textBytes > MAX_TEXT_BYTES ? { type: "text", text, mcpInput: true } : { type: "text", text });
     } else if (item.type === "image") {
       const block = { type: "image", data: item.data, mimeType: item.mimeType };
-      if (allowRecovery && item.data.length > MAX_TEXT_BYTES) block.mcpInput = true;
+      if (allowRecovery && item.data.length > MAX_TEXT_BYTES) { block.mcpInput = true; requiresRecovery = true; }
       content.push(block);
-    } else if (item.type === "resource_link" || (item.type === "resource" && typeof item.resource.text === "string" && Buffer.byteLength(item.resource.text) <= MAX_TEXT_BYTES)) {
-      const text = item.type === "resource_link" ? `${sanitizeText(item.name, 200)}: ${item.uri}` : item.resource.text;
+    } else if (inlineText?.[index] !== undefined) {
+      const text = inlineText[index];
       content.push(textBytes > MAX_TEXT_BYTES ? { type: "text", text, mcpInput: true } : { type: "text", text });
     } else {
       const kind = item.type;
+      requiresRecovery = true;
       const block = typedBlock(kind, item, `[MCP ${kind} retained for local session artifact recovery.]`);
       accountedSources += block.mcpSource.bytes;
       if (accountedSources + bytes - typedPayloadBytes > MCP_SOURCE_BYTES) throw new McpSourceError("result-size-limit");
@@ -121,11 +152,13 @@ export function convertMcpResult(result, allowRecovery = true) {
     }
     const preview = previewMcpStructured(value);
     const source = createMcpTypedSource("structured", value, !preview.complete);
+    requiresRecovery ||= !preview.complete;
     accountedSources += source.bytes;
     if (accountedSources + bytes - typedPayloadBytes > MCP_SOURCE_BYTES) throw new McpSourceError("result-size-limit");
     content.push({ type: "text", text: preview.text, mcpSource: source });
   }
-  if (result?._meta !== undefined && allowRecovery) {
+  if (result?._meta !== undefined && allowRecovery && requiresRecovery) {
+    if (content.length >= MAX_CONTENT_ITEMS) throw new McpSourceError("result-size-limit");
     const block = typedBlock("metadata", result._meta, "[MCP server metadata retained opaquely; no tool pagination contract is configured. Recovery is local.]");
     accountedSources += block.mcpSource.bytes;
     if (accountedSources + bytes - typedPayloadBytes > MCP_SOURCE_BYTES) throw new McpSourceError("result-size-limit");
