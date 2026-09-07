@@ -2,8 +2,34 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { Agent } from "../packages/agent/src/agent.ts";
 import { alphaHeadless, alphaModelRuntime } from "./helpers/alpha-session.ts";
+import { createToolResultPresentationOwner } from "../packages/coding-agent/src/core/tool-result-presentation.ts";
 // @ts-expect-error JavaScript extension package.
 import { McpBridgeRuntime } from "../packages/mcp-bridge/src/bridge.js";
+
+test("one-token MCP failure is delivered and persisted exactly once", async () => {
+	const fixture = await alphaHeadless(alphaModelRuntime());
+	const owner = createToolResultPresentationOwner({ enabled: true, budgetTokens: 1 }, fixture.session.sessionManager.getSessionId())!;
+	let tool: any;
+	let calls = 0;
+	let delivered = 0;
+	const runtime = new McpBridgeRuntime({ registerTool(value: any) { tool = value; } }, "fixture-workspace");
+	runtime.registerRemoteTool({ status: "connected", config: { id: "fixture", toolTimeoutMs: 1000 }, client: { async callTool() { calls++; return { content: [{ type: "text", text: "x".repeat(1024 * 1024) }] }; } } }, { name: "fixture", inputSchema: { type: "object", properties: {} } });
+	try {
+		(fixture.session as any)._toolResultPresentation = owner;
+		fixture.session.subscribe((event) => { if (event.type === "message_end" && event.message.role === "toolResult") delivered++; });
+		const result = await tool.execute("small-budget-call", {}, undefined, undefined, { mcpResultInputConfigured: true, admitMcpResultInput: owner.admitMcpInput.bind(owner) });
+		const after = await fixture.session.agent.afterToolCall!({ toolCall: { type: "toolCall", id: "small-budget-call", name: tool.name, arguments: {} }, args: {}, result, isError: false } as never);
+		const message = { role: "toolResult", toolCallId: "small-budget-call", toolName: tool.name, content: after?.content ?? result.content, details: after?.details ?? result.details, isError: after?.isError ?? false, timestamp: 0 };
+		await (fixture.session as any)._handleAgentEvent({ type: "message_end", message });
+		const entries = fixture.session.sessionManager.getBranch().filter((entry: any) => entry.type === "message" && entry.message.role === "toolResult");
+		assert.equal(calls, 1);
+		assert.equal(delivered, 1);
+		assert.equal(entries.length, 1);
+		assert.equal(message.isError, true);
+		assert.match(message.details.configurationReason, /configure/);
+		assert.deepEqual(message.content, []);
+	} finally { await runtime.close(); owner.dispose(); await fixture.release(); }
+});
 
 test("session input seam preserves MCP tool-level error status", async () => {
 	const fixture = await alphaHeadless(alphaModelRuntime());

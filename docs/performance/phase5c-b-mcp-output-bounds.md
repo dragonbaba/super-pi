@@ -298,3 +298,45 @@ commits through ordinary reviewed changes if needed. Do not reset main. The
 candidate worktree is dedicated. The unrelated main worktree has an existing
 untracked `SUPER_PI_CODEX_PHASED_OPTIMIZATION_PLAN.md`; it has not been modified
 or removed. The accepted Phase 5C-A worktree remains clean and untouched.
+
+## Candidate Review and local closeout
+
+Published candidate `f1f77e8f92b89de1dfcc39ed4455473661654b7c` passed both jobs in
+[CI run 34096363452](https://github.com/dragonbaba/super-pi/actions/runs/34096363452).
+The one Candidate Review is
+[review 5129445968](https://github.com/dragonbaba/super-pi/pull/26#pullrequestreview-5129445968).
+Its four correctness findings have local fixes and deterministic regressions:
+
+| Finding / thread | Class | Correction |
+| --- | --- | --- |
+| 3947665863: invalid V2 notice | B0 | `6da8e17` retains the exact existing continuation notice and adds a separate bounded local-artifact metadata block. Both existing model/UI validators accept the resulting V2 view. No validator or public cursor format is changed. |
+| 3947665872: advertised older-host compatibility | B0 | `8869df8` feature-detects the adapter export before bridge loading and removes the eager host import from security utilities. Missing-export simulation proves the extension entry reaches its compatibility gate. |
+| 3947665860: ordinary progress listener suppression | B1 | `9de5a8f` requires both MCP tool naming and an internal symbol source marker, which cannot come from JSON result details. Ordinary-tool critical listener behavior is preserved. |
+| 3947665868: budget too small for failure text | B1 | `1ef236c` asks the existing owner to admit the bounded failure. If text cannot fit, canonical details retain the reason and the final has zero model text. An actual session message_end test proves exactly one delivery and persistence with budget 1. No token minimum/default is invented. |
+
+Self-audit corrections in the same closeout batch:
+
+- `463c053` red / `cdf4175` fix: immutable typed source integrity includes its
+  `requiresRecovery` policy. A restored flag edit fails closed.
+- `a6ed48a` red / `3434396` fix: discard provisional MCP admission before mutable
+  tool_result hooks. Recheck byte/source bounds and admit the final hook output
+  through the existing owner. A tiny result expanded in-place to 1 MiB cannot
+  reuse stale token metadata or bypass the 50 KiB model-text ceiling even with
+  a large configured token budget. No-hook small results retain their path.
+
+The source adapter now performs an additional bounded validation pass only at
+the mutable MCP hook boundary. Hook failures produce a zero-text typed final with
+a bounded configuration/admission reason. Private typed source annotations stay
+canonical; ordinary model projections strip them. Existing G2 record removal
+and admission operations are reused without a new retention policy.
+
+**Unresolved evidence B1, thread 3947665858:** the reviewer requires an exact-head
+allocation/profile/lifecycle rerun after Object.keys enumeration. The single
+authorized allocation profile, single controlled-GC run, and five timing
+processes are already consumed. None has been repeated. The review request is
+not treated as user authorization to exceed those limits. This finding remains
+open pending an explicit evidence-budget decision. The later closeout changes
+also mean the earlier metrics must not be labeled exact-head evidence.
+
+The Candidate Review budget is consumed. The one permitted closeout incremental
+Review has not been requested. No Ready, merge or later phase is authorized.
