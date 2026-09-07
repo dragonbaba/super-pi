@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { basename, dirname, isAbsolute, relative, resolve as resolvePath, sep } from "node:path";
 import type { AgentTool } from "@super-pi/agent-core";
 import type { Api, ImageContent, Model, TextContent } from "@super-pi/ai";
@@ -13,6 +14,7 @@ import { detectSupportedImageMimeTypeFromFile } from "../../utils/mime.ts";
 import { formatPathRelativeToCwdOrAbsolute } from "../../utils/paths.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
 import { resolveReadPathAsync, resolveToCwd } from "./path-utils.ts";
+import { ReadCursorError, readSmallFileIfStable, readWindow, type ReadWindowResult } from "./read-window.ts";
 import { getTextOutput, renderToolPath, replaceTabs, str } from "./render-utils.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, type TruncationResult, truncateHead } from "./truncate.ts";
@@ -21,6 +23,7 @@ const readSchema = Type.Object({
 	path: Type.String({ description: "Path to the file to read (relative or absolute)" }),
 	offset: Type.Optional(Type.Number({ description: "Line number to start reading from (1-indexed)" })),
 	limit: Type.Optional(Type.Number({ description: "Maximum number of lines to read" })),
+	cursor: Type.Optional(Type.String({ description: "Large-file continuation cursor returned by read; reuse the same path, omit offset" })),
 });
 
 export const readToolSystemPromptContribution = {
@@ -32,6 +35,7 @@ export type ReadToolInput = Static<typeof readSchema>;
 
 export interface ReadToolDetails {
 	truncation?: TruncationResult;
+	window?: Omit<ReadWindowResult, "text">;
 }
 
 interface CompactReadClassification {
@@ -211,20 +215,44 @@ export function createReadToolDefinition(
 ): ToolDefinition<typeof readSchema, ReadToolDetails | undefined> {
 	const autoResizeImages = options?.autoResizeImages ?? true;
 	const ops = options?.operations ?? defaultReadOperations;
+	const instanceScope = randomUUID();
 	return {
 		name: "read",
 		label: "read",
-		description: `Read the contents of a file. Supports text files and images (jpg, png, gif, webp, bmp). Images are sent as attachments. For text files, output is truncated to ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). Use offset/limit for large files. When you need the full file, continue with offset until complete.`,
+		description: `Read the contents of a file. Supports text files and images (jpg, png, gif, webp, bmp). Images are sent as attachments. For text files, output is truncated to ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). Use offset/limit for large files. Large local files return bounded windows; use the returned cursor with the same path to continue, including partial lines.`,
 		promptSnippet: readToolSystemPromptContribution.snippet,
 		promptGuidelines: [...readToolSystemPromptContribution.guidelines],
 		parameters: readSchema,
 		async execute(
 			_toolCallId,
-			{ path, offset, limit }: { path: string; offset?: number; limit?: number },
+			{ path, offset, limit, cursor }: ReadToolInput,
 			signal?: AbortSignal,
 			_onUpdate?,
 			ctx?,
 		) {
+			let resolvedLocalPath: string | undefined;
+			let localTextBuffer: Buffer | undefined;
+			let localMime: string | null | undefined;
+			if (cursor !== undefined && ops !== defaultReadOperations) throw new ReadCursorError("invalid-cursor");
+			if (ops === defaultReadOperations) {
+				if (signal?.aborted) throw new Error("Operation aborted");
+				const absolutePath = await resolveReadPathAsync(path, cwd);
+				resolvedLocalPath = absolutePath;
+				if (cursor === undefined) {
+					await ops.access(absolutePath);
+					localMime = await detectSupportedImageMimeTypeFromFile(absolutePath);
+					if (!localMime) localTextBuffer = await readSmallFileIfStable(absolutePath, signal);
+				}
+				if (cursor !== undefined || (!localMime && localTextBuffer === undefined)) {
+					const window = await readWindow(absolutePath, cwd, ctx?.sessionManager?.getSessionId() || instanceScope, { offset, limit, cursor }, signal);
+					let output = window.text;
+					if (window.startsPartial) output = `[Continuation starts partway through line ${window.startLine}; this is a partial-line suffix.]\n${output}`;
+					if (window.binary) output += "\n\n[Binary NUL detected in this byte range; displayed as UTF-8 with replacement.]";
+					if (window.cursor) output += `\n\n[${window.partial ? `Line ${window.nextLine} is partial` : `Read through line ${window.nextLine - 1}`}; more file content remains. Continue with the same path and cursor=${window.cursor}.]`;
+					const { text: _text, ...details } = window;
+					return { content: [{ type: "text" as const, text: output }], details: { window: details } };
+				}
+			}
 			return new Promise<{ content: (TextContent | ImageContent)[]; details: ReadToolDetails | undefined }>(
 				(resolve, reject) => {
 					if (signal?.aborted) {
@@ -240,12 +268,12 @@ export function createReadToolDefinition(
 
 					(async () => {
 						try {
-							const absolutePath = await resolveReadPathAsync(path, cwd);
+							const absolutePath = resolvedLocalPath ?? await resolveReadPathAsync(path, cwd);
 							if (aborted) return;
 							// Check if file exists and is readable.
-							await ops.access(absolutePath);
+							if (ops !== defaultReadOperations) await ops.access(absolutePath);
 							if (aborted) return;
-							const mimeType = ops.detectImageMimeType ? await ops.detectImageMimeType(absolutePath) : undefined;
+							const mimeType = ops === defaultReadOperations ? localMime : ops.detectImageMimeType ? await ops.detectImageMimeType(absolutePath) : undefined;
 							let content: (TextContent | ImageContent)[];
 							let details: ReadToolDetails | undefined;
 							const nonVisionImageNote = getNonVisionImageNote(ctx?.model);
@@ -268,7 +296,7 @@ export function createReadToolDefinition(
 								}
 							} else {
 								// Read text content.
-								const buffer = await ops.readFile(absolutePath);
+								const buffer = localTextBuffer ?? await ops.readFile(absolutePath);
 								const textContent = buffer.toString("utf-8");
 								const allLines = textContent.split("\n");
 								const totalFileLines = allLines.length;
