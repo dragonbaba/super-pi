@@ -29,3 +29,16 @@ for (const kind of ["text", "image"]) test(`immutable large MCP ${kind} is hashe
 		assert.equal(fullHashes, 1);
 	} finally { crypto.createHash = createHash; syncBuiltinESMExports(); owner.dispose(); }
 });
+
+test("restored typed source integrity includes its recovery requirement", () => {
+	const content = convertMcpResult({ content: [], structuredContent: { text: "x".repeat(1024 * 1024) } });
+	const owner = createToolResultPresentationOwner({ enabled: true, budgetTokens: 256 }, "policy-session")!;
+	try {
+		const view = owner.create(content, "policy-call");
+		if (view?.version !== 2 || !view.artifact) assert.fail("artifact missing");
+		const messages = JSON.parse(JSON.stringify([{ role: "toolResult", toolCallId: "policy-call", content }]));
+		messages[0].content[0].mcpSource.requiresRecovery = false;
+		owner.clearProjectionRecords();
+		assert.throws(() => owner.readArtifact(view.artifact!.id, messages));
+	} finally { owner.dispose(); }
+});
