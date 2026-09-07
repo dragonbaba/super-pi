@@ -120,9 +120,8 @@ function createTransport(config, state) {
       maxBufferSize: 10 * 1024 * 1024,
     });
     transport.stderr?.on("data", (chunk) => {
-      if (state.stderrBytes >= 8192) return;
-      state.stderr = truncateUtf8(`${state.stderr}${chunk}`, 8192);
-      state.stderrBytes = Math.min(8192, Buffer.byteLength(state.stderr, "utf8"));
+      // Drain the pipe without retaining arbitrary server diagnostics/secrets.
+      state.stderrBytes = Math.min(Number.MAX_SAFE_INTEGER, state.stderrBytes + chunk.length);
     });
     return transport;
   }
@@ -253,13 +252,13 @@ export class McpBridgeRuntime {
       for (const tool of listed.tools) this.registerRemoteTool(state, tool);
       this.schemaCache?.put(config, this.workspace, listed.tools, state.serverInfo);
       return state;
-    } catch (error) {
+    } catch {
       state.status = this.closed ? "closed" : "error";
-      state.error = sanitizeText(error instanceof Error ? error.message : error, 500);
+      state.error = "MCP connection failed (protocol-error).";
       await state.client?.close().catch(() => undefined);
       state.client = null;
       state.transport = null;
-      throw new Error(state.error || "MCP connection failed", { cause: error });
+      throw new McpCallError(signal?.aborted || this.closed ? "aborted" : "protocol-error");
     }
   }
 
