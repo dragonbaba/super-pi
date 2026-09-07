@@ -286,12 +286,13 @@ export class McpBridgeRuntime {
       async execute(toolCallId, args, signal, onUpdate, ctx) {
         try {
           const result = await runtime.callRemoteTool(state, remoteTool.name, args, signal, onUpdate);
-          if (result?.isError) return mcpFailureResult("server-tool-error");
           const configured = ctx?.mcpResultInputConfigured === true;
           const content = convertMcpResult(result, configured);
           if (signal?.aborted || runtime.closed) return mcpFailureResult("aborted");
           if (configured) ctx.admitMcpResultInput(content, toolCallId);
-          return { content, details: { server: state.config.id, remoteTool: sanitizeText(remoteTool.name, 200) } };
+          const details = { server: state.config.id, remoteTool: sanitizeText(remoteTool.name, 200) };
+          if (result?.isError) details.mcpError = "server-tool-error";
+          return { content, details };
         } catch (error) {
           return mcpFailureResult(error?.code);
         }
