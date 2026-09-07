@@ -6,6 +6,9 @@ import { join } from "node:path";
 import test from "node:test";
 import { Type } from "typebox";
 import { fixture } from "./helpers/evidence-ledger-fixture.ts";
+import { estimateToolOutputTokens } from "../packages/coding-agent/src/core/tool-output-budget.ts";
+import { hasPreciseReadIdentity } from "../packages/coding-agent/src/core/tools/read-window.ts";
+import { statSync } from "node:fs";
 
 test("write/edit execute only after workspace generation has invalidated evidence", async () => {
 	const f = await fixture();
@@ -147,5 +150,32 @@ test("large bounded local-text windows carry only private metadata", async () =>
 		}
 		assert.equal(f.internals._evidenceLedger!.counters.completeFileHashes, 0);
 		assert.equal(f.internals._evidenceLedger!.counters.retainedSourceReferences, 0);
+	} finally { f.close(); }
+});
+
+test("observer-only extension leaves the ledger eligible and model-visible tokens fall", { skip: process.platform === "win32" ? "Windows filesystem identity is unsupported for hits" : false }, async () => {
+	const f = await fixture(true, true, [pi => { pi.observe("tool_execution_update", () => undefined); }]);
+	try {
+		const first = await f.runCalls([{ name: "read", arguments: { path: "file.txt" } }]);
+		const second = await f.runCalls([{ name: "read", arguments: { path: "file.txt" } }]);
+		const firstResult = first.at(-1)!.messages.filter(m => m.role === "toolResult").at(-1)!;
+		const secondResult = second.at(-1)!.messages.filter(m => m.role === "toolResult").at(-1)!;
+		const before = estimateToolOutputTokens(firstResult.content).estimatedTokens;
+		const after = estimateToolOutputTokens(secondResult.content).estimatedTokens;
+		assert.ok(after < before / 2, `${before} -> ${after}`);
+		assert.equal(f.internals._evidenceLedger!.counters.hits, 1);
+		assert.ok(f.internals._evidenceLedger!.counters.modelVisibleTokensAvoided <= before);
+	} finally { f.close(); }
+});
+
+test("missing or coarse timestamp metadata is never trusted", async () => {
+	const f = await fixture();
+	try {
+		const info = statSync(join(f.cwd, "file.txt"), { bigint: true });
+		for (const value of [undefined, 0n, 1_000_000_000n]) {
+			const missing = Object.create(info);
+			Object.defineProperty(missing, "mtimeNs", { value });
+			assert.equal(hasPreciseReadIdentity(missing), false);
+		}
 	} finally { f.close(); }
 });

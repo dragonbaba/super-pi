@@ -43,6 +43,32 @@ test("same-length canonical mutation stays legal and rejects evidence", () => {
 	} finally { f.owner.dispose(); }
 });
 
+test("a replacement resident source cannot inherit an older evidence lease", () => {
+	const f = fixture();
+	try {
+		const chars = f.content[0].text.length;
+		const descriptor = f.api.issueEvidenceArtifact("source", [f.message], 1, chars)!;
+		const generation = f.owner.getResidentEvidenceGeneration("source")!;
+		f.message.content = [{ ...f.content[0] }];
+		f.owner.create(f.message.content, "source"); f.owner.release();
+		const scans = f.counters.artifactIntegrityScans;
+		assert.equal(f.owner.validateEvidenceArtifact("source", descriptor.id, [f.message], 1, chars, generation), false);
+		assert.equal(f.counters.artifactIntegrityScans, scans);
+	} finally { f.owner.dispose(); }
+});
+
+test("owner retention eviction is an evidence miss, never lazy reconstruction", () => {
+	const f = fixture();
+	try {
+		const chars = f.content[0].text.length;
+		const descriptor = f.api.issueEvidenceArtifact("source", [f.message], 1, chars)!;
+		for (let i = 0; i < 128; i++) { f.owner.create([{ type: "text", text: "resident" }], `other-${i}`); f.owner.release(); }
+		const before = f.counters.projectionRecordMisses;
+		assert.equal(f.api.validateEvidenceArtifact("source", descriptor.id, [f.message], 1, chars), false);
+		assert.equal(f.counters.projectionRecordMisses, before);
+	} finally { f.owner.dispose(); }
+});
+
 for (const mutation of ["giant", "array", "image", "duplicate", "missing", "clear", "history"] as const) {
 	test(`resident evidence rejects ${mutation} before hashing or rebuilding`, () => {
 		const f = fixture();

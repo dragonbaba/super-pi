@@ -1176,7 +1176,7 @@ export class AgentSession {
 					}
 					// This is the complete post-listener message_end tail for tool results.
 					this.sessionManager.appendMessage(event.message);
-					if (this._evidenceLedger) this._admitCompletedReadEvidence(event.message);
+					if (this._evidenceLedger) this._admitCompletedReadEvidence(event.message, estimateToolOutputTokens(presentation.modelContent).estimatedTokens);
 					return;
 				}
 			}
@@ -3629,22 +3629,26 @@ export class AgentSession {
 		const workspace = ledger.workspaceGeneration;
 		const branch = ledger.branchGeneration;
 		const sessionId = this._evidenceSessionId;
+		const readPath = args.path;
+		const readOffset = args.offset;
+		const readLimit = args.limit;
+		const readCursor = args.cursor;
 		let canonical: string;
 		let canonicalCwd: string;
 		let key: string | undefined;
 		let relativePath: string;
 		try {
-			const addressed = await resolveReadPathAsync(args.path, this._cwd);
+			const addressed = await resolveReadPathAsync(readPath, this._cwd);
 			canonicalCwd = await evidenceRealpath(this._cwd);
 			canonical = await evidenceRealpath(addressed);
-			relativePath = relative(resolveEvidencePath(this._cwd), addressed).split(sep).join("/").normalize("NFC");
+			relativePath = relative(resolveEvidencePath(this._cwd), addressed).replaceAll(sep, "/").normalize("NFC");
 			if (isAbsolute(relativePath) || relativePath === ".." || relativePath.startsWith("../") || relativePath.length > 1024 || canonical.length > 4096) {
 				ledger.miss("uncertain-identity"); return execute(callId, args, signal, onUpdate);
 			}
 			const normalized = canonical.normalize("NFC");
 			// Fixed current read schema, not a recursive serializer. null preserves
 			// omitted limit semantics (including the legacy continuation notice).
-			key = ledger.hashArguments(JSON.stringify(["builtin-read-v1", canonicalCwd, normalized, args.offset ?? 1, args.limit ?? null, args.cursor ?? null]));
+			key = ledger.hashArguments(JSON.stringify(["builtin-read-v1", canonicalCwd, normalized, readOffset ?? 1, readLimit ?? null, readCursor ?? null]));
 			if (!key) { ledger.miss("uncertain-identity"); return execute(callId, args, signal, onUpdate); }
 			const record = ledger.lookup(key);
 			if (record) {
@@ -3655,14 +3659,17 @@ export class AgentSession {
 					// Access policy is never cached. File mismatch precedes G2 hashing.
 					await evidenceAccess(addressed, evidenceFsConstants.R_OK);
 					const info = await evidenceStat(canonical, { bigint: true });
+					const sameTarget = await evidenceRealpath(addressed) === canonical;
+					this._checkEvidenceBranch();
 					if (!hasPreciseReadIdentity(info)) miss = "uncertain-identity";
-					else if (record.canonicalPath !== canonical || record.fileGeneration !== readFileGeneration(info)) {
+					else if (!sameTarget || record.canonicalPath !== canonical || record.fileGeneration !== readFileGeneration(info)) {
 						miss = "file-generation";
 						ledger.counters.hashSkippedFileGenerationMisses++;
 					} else if (!owner.hasResidentEvidenceArtifact(record.sourceToolCallId, record.resultHandle)) {
 						miss = "artifact-unavailable";
 						ledger.counters.hashSkippedNonresidentArtifactMisses++;
-					} else if (!signal?.aborted && ledger.workspaceGeneration === workspace && ledger.branchGeneration === branch && !this._evidenceMutableHooks()) {
+					} else if (!signal?.aborted && ledger.workspaceGeneration === workspace && ledger.branchGeneration === branch && !this._evidenceMutableHooks() &&
+						args.path === readPath && args.offset === readOffset && args.limit === readLimit && args.cursor === readCursor) {
 						const scans = owner.counters.artifactIntegrityScans;
 						const valid = owner.validateEvidenceArtifact(record.sourceToolCallId, record.resultHandle, this.agent.state.messages, record.blocks, record.chars, record.sourceGeneration);
 						const added = owner.counters.artifactIntegrityScans - scans;
@@ -3684,13 +3691,21 @@ export class AgentSession {
 			return execute(callId, args, signal, onUpdate);
 		}
 		ledger.counters.realReadExecutions++;
+		if (args.path !== readPath || args.offset !== readOffset || args.limit !== readLimit || args.cursor !== readCursor) return execute(callId, args, signal, onUpdate);
 		const result = await execute(callId, args, signal, onUpdate);
+		this._checkEvidenceBranch();
 		const identity = (result as typeof result & { [READ_EVIDENCE_IDENTITY]?: ValidatedReadIdentity })[READ_EVIDENCE_IDENTITY];
 		if (identity?.precise && !signal?.aborted && !this._evidenceMutableHooks() &&
 			ledger.workspaceGeneration === workspace && ledger.branchGeneration === branch &&
 			identity.canonicalPath === canonical && this._evidenceCompletedReads && this._evidenceCompletedReads.size < 128) {
 			const scope = ledger.hashScope(JSON.stringify([sessionId, canonicalCwd, canonical, identity.fileGeneration, workspace, branch, "read-policy-v1"]));
-			const bytes = 1024 + 2 * (canonical.length + identity.fileGeneration.length + identity.location.length + relativePath.length + this._cwd.length + sessionId.length);
+			const bytes = 2048 + 2 * (canonical.length + identity.fileGeneration.length + identity.location.length + relativePath.length + canonicalCwd.length + sessionId.length);
+			const duplicate = this._evidenceCompletedReads.get(callId);
+			if (duplicate) {
+				this._evidenceCompletedReads.delete(callId);
+				this._evidenceCompletedBytes -= duplicate.artifactBytes;
+				return result;
+			}
 			if (scope && identity.location.length <= 8192 && this._evidenceCompletedBytes + bytes <= 64 * 1024) {
 				const receipt: EvidenceRecordV1 = { version: 1, evidenceId: `ev1-${callId}`, toolKind: "builtin-read", canonicalArgsHash: key,
 					sourceGeneration: 0,
@@ -3705,7 +3720,7 @@ export class AgentSession {
 		return result;
 	}
 
-	private _admitCompletedReadEvidence(message: Extract<AgentMessage, { role: "toolResult" }>): void {
+	private _admitCompletedReadEvidence(message: Extract<AgentMessage, { role: "toolResult" }>, modelTokens?: number): void {
 		const receipt = this._evidenceCompletedReads?.get(message.toolCallId);
 		if (!receipt) return;
 		this._evidenceCompletedReads!.delete(message.toolCallId);
@@ -3719,7 +3734,7 @@ export class AgentSession {
 		const descriptor = owner.issueEvidenceArtifact(message.toolCallId, this.agent.state.messages, 1, block.text.length);
 		if (!descriptor) return;
 		ledger.admit({ ...receipt, resultHandle: descriptor.id, sourceGeneration: owner.getResidentEvidenceGeneration(message.toolCallId)!, blocks: 1, chars: block.text.length,
-			artifactBytes: descriptor.bytes, modelTokens: estimateToolOutputTokens(message.content).estimatedTokens });
+			artifactBytes: descriptor.bytes, modelTokens: modelTokens ?? estimateToolOutputTokens(message.content).estimatedTokens });
 	}
 
 	private _refreshToolRegistry(options?: { activeToolNames?: string[]; includeAllExtensionTools?: boolean }): void {
