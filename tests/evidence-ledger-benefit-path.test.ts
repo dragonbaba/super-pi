@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdirSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { fixture } from "./helpers/evidence-ledger-fixture.ts";
 import { estimateToolOutputTokens } from "../packages/coding-agent/src/core/tool-output-budget.ts";
 import { formatEvidenceReference, type EvidenceRecordV1 } from "../packages/coding-agent/src/core/evidence-ledger.ts";
+import { hasPreciseReadIdentity, readFileGeneration } from "../packages/coding-agent/src/core/tools/read-window.ts";
 
 const linux = { skip: process.platform === "win32" ? "Windows evidence identity conservatively misses" : false };
 const tokens = (text: string) => estimateToolOutputTokens([{ type: "text", text }]).estimatedTokens;
@@ -17,11 +18,19 @@ for (const corpus of ["medium", "large"]) {
 			const first = await f.read();
 			const owner = f.internals._toolResultPresentation!;
 			const originalTokens = owner.getResidentEvidenceModelTokens(first.toolCallId)!;
+			const firstGeneration = readFileGeneration(statSync(join(f.cwd, "file.txt"), { bigint: true }));
 			const scans = f.counters.artifactIntegrityScans;
 			let totalTokens = originalTokens;
 			let referenceTokens = 0;
 			for (let i = 0; i < 9; i++) {
 				const message = await f.read();
+				if (!/Evidence reused/.test(JSON.stringify(message.content))) {
+					const ledger = f.internals._evidenceLedger!;
+					const info = statSync(join(f.cwd, "file.txt"), { bigint: true });
+					t.diagnostic(JSON.stringify({ corpus, iteration: i, originalTokens, firstGeneration,
+						currentGeneration: readFileGeneration(info), precise: hasPreciseReadIdentity(info), counters: ledger.counters,
+						records: [...(ledger as unknown as { records: Map<string, unknown> }).records.values()] }));
+				}
 				assert.match(JSON.stringify(message.content), /Evidence reused/);
 				referenceTokens = estimateToolOutputTokens(message.content).estimatedTokens;
 				assert.ok(referenceTokens < originalTokens);
