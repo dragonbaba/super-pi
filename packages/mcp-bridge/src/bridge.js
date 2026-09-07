@@ -5,6 +5,8 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { ListRootsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { McpCall, McpCallError } from "./call.js";
+import { convertMcpResult } from "./result.js";
+export { convertMcpResult } from "./result.js";
 import {
   MAX_CONTENT_ITEMS,
   MAX_IMAGE_BYTES,
@@ -171,44 +173,6 @@ function resultText(result) {
   return joined;
 }
 
-export function convertMcpResult(result) {
-  const content = [];
-  let remainingText = MAX_TEXT_BYTES;
-  let imageBytes = 0;
-  const items = Array.isArray(result?.content) ? result.content : [];
-  const count = Math.min(items.length, MAX_CONTENT_ITEMS);
-  for (let index = 0; index < count && content.length < MAX_CONTENT_ITEMS; index += 1) {
-    const item = items[index];
-    if (item?.type === "text") {
-      remainingText = appendMcpText(content, item.text, remainingText);
-      continue;
-    }
-    if (item?.type === "image") {
-      const size = decodedBase64Bytes(item.data);
-      if (size !== null && size <= MAX_IMAGE_BYTES && imageBytes + size <= MAX_IMAGE_BYTES * 2 && typeof item.mimeType === "string" && item.mimeType.startsWith("image/")) {
-        imageBytes += size;
-        content.push({ type: "image", data: item.data, mimeType: item.mimeType });
-      } else {
-        remainingText = appendMcpText(content, "[MCP image omitted: invalid format or size limit exceeded]", remainingText);
-      }
-      continue;
-    }
-    if (item?.type === "resource" && typeof item.resource?.text === "string") {
-      remainingText = appendMcpText(content, `[MCP resource ${item.resource.uri}]\n${item.resource.text}`, remainingText);
-      continue;
-    }
-    if (item?.type === "resource_link") {
-      remainingText = appendMcpText(content, `[MCP resource link: ${item.name ?? item.uri} — ${item.uri}]`, remainingText);
-      continue;
-    }
-    remainingText = appendMcpText(content, `[MCP ${sanitizeText(item?.type ?? "unknown", 40)} content omitted]`, remainingText);
-  }
-  if (result?.structuredContent !== undefined) remainingText = appendMcpText(content, boundedJson(result.structuredContent, remainingText), remainingText);
-  if (result?.toolResult !== undefined) appendMcpText(content, boundedJson(result.toolResult, remainingText), remainingText);
-  if (content.length === 0) content.push({ type: "text", text: "MCP tool completed without content." });
-  return content;
-}
-
 function mapRemoteTools(tools) {
   const mapped = new Map();
   for (const tool of tools) mapped.set(tool.name, tool);
@@ -318,10 +282,18 @@ export class McpBridgeRuntime {
       description: sanitizeText(remoteTool.description ?? `MCP tool ${remoteTool.name}`, 1000),
       parameters,
       executionMode: "sequential",
-      async execute(_toolCallId, args, signal, onUpdate) {
-        const result = await runtime.callRemoteTool(state, remoteTool.name, args, signal, onUpdate);
-        if (result?.isError) throw new Error(resultText(result));
-        return { content: convertMcpResult(result), details: { server: state.config.id, remoteTool: sanitizeText(remoteTool.name, 200) } };
+      async execute(toolCallId, args, signal, onUpdate, ctx) {
+        try {
+          const result = await runtime.callRemoteTool(state, remoteTool.name, args, signal, onUpdate);
+          if (result?.isError) return mcpFailureResult("server-tool-error");
+          const configured = ctx?.mcpResultInputConfigured === true;
+          const content = convertMcpResult(result, configured);
+          if (signal?.aborted || runtime.closed) return mcpFailureResult("aborted");
+          if (configured) ctx.admitMcpResultInput(content, toolCallId);
+          return { content, details: { server: state.config.id, remoteTool: sanitizeText(remoteTool.name, 200) } };
+        } catch (error) {
+          return mcpFailureResult(error?.code);
+        }
       },
     });
   }
@@ -408,4 +380,15 @@ export class McpBridgeRuntime {
     this.registeredSchemaBytes.clear();
     this.registeredNames.clear();
   }
+}
+
+function mcpFailureResult(code) {
+  const category = code === "budget-not-configured" || code === "budget-too-small"
+    ? "budget-not-configured"
+    : code === "result-size-limit" || code === "invalid-typed-content" || code === "invalid-structured-content" || code === "aborted" || code === "server-tool-error"
+      ? code : "protocol-error";
+  const text = category === "budget-not-configured"
+    ? "MCP result unavailable: configure tool-result presentation with a sufficient token budget for recovery."
+    : `MCP result unavailable (${category}).`;
+  return { content: [{ type: "text", text }], details: { mcpError: category } };
 }

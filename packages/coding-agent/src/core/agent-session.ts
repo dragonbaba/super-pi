@@ -3441,6 +3441,11 @@ export class AgentSession {
 					this._extensionShutdownHandler?.();
 				},
 				getContextUsage: () => this.getContextUsage(),
+				getMcpResultInputConfigured: () => this._toolResultPresentation?.mcpInputConfigured ?? false,
+				admitMcpResultInput: (content, toolCallId) => {
+					if (!this._toolResultPresentation?.mcpInputConfigured) throw new Error("MCP recovery requires configured tool-result presentation and token budget.");
+					this._toolResultPresentation.admitMcpInput(content as readonly import("./tool-result-presentation.ts").ToolResultPresentationContent[], toolCallId);
+				},
 				compact: (options) => {
 					void (async () => {
 						try {

@@ -438,6 +438,7 @@ export class ExtensionRunner {
 	private abortFn: () => void = () => {};
 	private hasPendingMessagesFn: () => boolean = () => false;
 	private getContextUsageFn: () => ContextUsage | undefined = () => undefined;
+	private mcpResultInputActions: Pick<ExtensionContextActions, "getMcpResultInputConfigured" | "admitMcpResultInput"> | undefined;
 	private compactFn: (options?: CompactOptions) => void = () => {};
 	private getSystemPromptFn: () => string = () => "";
 	private getSystemPromptOptionsFn: () => BuildSystemPromptOptions = () => ({ cwd: this.cwd });
@@ -517,6 +518,7 @@ export class ExtensionRunner {
 		this.hasPendingMessagesFn = contextActions.hasPendingMessages;
 		this.shutdownHandler = contextActions.shutdown;
 		this.getContextUsageFn = contextActions.getContextUsage;
+		this.mcpResultInputActions = contextActions;
 		this.compactFn = contextActions.compact;
 		this.getSystemPromptFn = contextActions.getSystemPrompt;
 		this.getSystemPromptOptionsFn = contextActions.getSystemPromptOptions ?? (() => ({ cwd: this.cwd }));
@@ -944,6 +946,14 @@ export class ExtensionRunner {
 			getContextUsage: () => {
 				runner.assertActive();
 				return runner.getContextUsageFn();
+			},
+			get mcpResultInputConfigured() {
+				runner.assertActive();
+				return runner.mcpResultInputActions?.getMcpResultInputConfigured?.() ?? false;
+			},
+			admitMcpResultInput: (content, toolCallId) => {
+				runner.assertActive();
+				runner.mcpResultInputActions?.admitMcpResultInput?.(content, toolCallId);
 			},
 			compact: (options) => {
 				runner.assertActive();
