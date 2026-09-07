@@ -4,6 +4,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { fixture } from "./helpers/evidence-ledger-fixture.ts";
 import { estimateToolOutputTokens } from "../packages/coding-agent/src/core/tool-output-budget.ts";
+import { formatEvidenceReference, type EvidenceRecordV1 } from "../packages/coding-agent/src/core/evidence-ledger.ts";
 
 const linux = { skip: process.platform === "win32" ? "Windows evidence identity conservatively misses" : false };
 const tokens = (text: string) => estimateToolOutputTokens([{ type: "text", text }]).estimatedTokens;
@@ -30,6 +31,58 @@ for (const budget of [tokens("x"), tokens("x") + 1, 128, 2048]) {
 			assert.equal(c.realReadExecutionsPrevented, 0);
 			assert.equal(c.modelVisibleTokensAvoided, 0);
 			assert.ok((c.missesByReason as Record<string, number>)["not-beneficial"] > 0);
+		} finally { f.close(); }
+	});
+}
+
+test("tiny budget sweep brackets the actual final artifact reference estimate", linux, async t => {
+	let referenceTokens = 0;
+	const probe = await fixture();
+	try {
+		writeFileSync(join(probe.cwd, "file.txt"), "x");
+		const ledger = probe.internals._evidenceLedger!;
+		const admit = ledger.admit.bind(ledger);
+		t.mock.method(ledger, "admit", (input: EvidenceRecordV1, budget?: number) => {
+			referenceTokens = tokens(formatEvidenceReference(input));
+			return admit(input, budget);
+		});
+		await probe.read();
+	} finally { probe.close(); }
+	assert.ok(referenceTokens > tokens("x"));
+	t.diagnostic(JSON.stringify({ originalTokens: tokens("x"), referenceTokens }));
+	for (const budget of [referenceTokens - 1, referenceTokens, referenceTokens + 1]) {
+		const f = await fixture(true, true, [], budget);
+		try {
+			writeFileSync(join(f.cwd, "file.txt"), "x");
+			for (let i = 0; i < 2; i++) {
+				const contexts = await f.runCalls([{ name: "read", arguments: { path: "file.txt" } }]);
+				assert.equal(f.session.agent.state.errorMessage, undefined);
+				const result = contexts.at(-1)!.messages.filter(m => m.role === "toolResult").at(-1)!;
+				assert.equal(estimateToolOutputTokens(result.content).estimatedTokens, 1);
+			}
+			assert.equal(f.internals._evidenceLedger!.counters.hits, 0);
+			assert.equal(f.internals._evidenceLedger!.counters.realReadExecutions, 2);
+		} finally { f.close(); }
+	}
+});
+
+for (const metadata of [undefined, -1, 1_000_000]) {
+	test(`missing or inconsistent reference tokens reject before integrity: ${metadata}`, linux, async t => {
+		const f = await fixture();
+		try {
+			await f.read();
+			const ledger = f.internals._evidenceLedger!;
+			const lookup = ledger.lookup.bind(ledger);
+			t.mock.method(ledger, "lookup", (key: string) => {
+				const record = lookup(key);
+				return record ? { ...record, referenceTokens: metadata } : undefined;
+			});
+			const scans = f.counters.artifactIntegrityScans;
+			assert.doesNotMatch(JSON.stringify((await f.read()).content), /Evidence reused/);
+			assert.equal(f.counters.artifactIntegrityScans, scans);
+			assert.equal(ledger.counters.hits, 0);
+			assert.equal(ledger.counters.realReadExecutions, 2);
+			assert.equal(ledger.counters.missesByReason["not-beneficial"], 1);
 		} finally { f.close(); }
 	});
 }

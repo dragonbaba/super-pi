@@ -41,7 +41,8 @@ test("resident evidence APIs cannot reconstruct or serialize content", () => {
 		assert.doesNotMatch(text, /getOrCreateProjectionRecord|createArtifactResolutionRecord|scanSource\(|JSON\.stringify|\.readArtifact\(/);
 	}
 	const ledger = readFileSync(new URL("../packages/coding-agent/src/core/evidence-ledger.ts", import.meta.url), "utf8");
-	assert.doesNotMatch(ledger, /WeakRef|Promise|AbortController|setTimeout|JSON\.stringify|\.content\b|\.text\b/);
+	assert.doesNotMatch(ledger, /WeakRef|Promise|AbortController|setTimeout|\.content\b|\.text\b/);
+	assert.deepEqual(ledger.match(/JSON\.stringify\([^)]*\)/g), ["JSON.stringify(record.relativePath)", "JSON.stringify(record.location)"]);
 	const read = readFileSync(new URL("../packages/coding-agent/src/core/tools/read.ts", import.meta.url), "utf8");
 	assert.doesNotMatch(read, /Object\.(freeze|seal|preventExtensions)/);
 });

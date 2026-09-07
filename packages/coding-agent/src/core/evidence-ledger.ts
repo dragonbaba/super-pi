@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { estimateToolOutputTokens } from "./tool-output-budget.ts";
 
 export const EVIDENCE_MAX_RECORDS = 128;
 // Leave 64 KiB of the session's 256 KiB envelope for completed read handoffs
@@ -10,7 +11,7 @@ export const EVIDENCE_MAX_LOCATION_CHARS = 8 * 1024;
 
 export type EvidenceMissReason = "disabled" | "ineligible-tool" | "no-record" | "args-mismatch" |
 	"workspace-generation" | "branch/session/cwd" | "file-generation" | "source-not-active" |
-	"source-not-in-context" | "artifact-unavailable" | "mutable-hook" | "uncertain-identity";
+	"source-not-in-context" | "artifact-unavailable" | "mutable-hook" | "uncertain-identity" | "not-beneficial";
 
 export interface EvidenceRecordV1 {
 	readonly version: 1;
@@ -34,6 +35,12 @@ export interface EvidenceRecordV1 {
 	readonly chars: number;
 	readonly artifactBytes: number;
 	readonly modelTokens: number;
+	readonly referenceTokens?: number;
+}
+
+/** One bounded notice representation for admission estimates and actual hits. */
+export function formatEvidenceReference(record: Pick<EvidenceRecordV1, "relativePath" | "location" | "evidenceId" | "resultHandle">): string {
+	return `[Evidence reused: ${JSON.stringify(record.relativePath)}; ${JSON.stringify(record.location)}; evidenceId=${record.evidenceId}; artifact=${record.resultHandle}. No new disk read occurred.]`;
 }
 
 export function createEvidenceCounters() {
@@ -43,7 +50,7 @@ export function createEvidenceCounters() {
 			"disabled": 0, "ineligible-tool": 0, "no-record": 0, "args-mismatch": 0,
 			"workspace-generation": 0, "branch/session/cwd": 0, "file-generation": 0,
 			"source-not-active": 0, "source-not-in-context": 0, "artifact-unavailable": 0,
-			"mutable-hook": 0, "uncertain-identity": 0,
+			"mutable-hook": 0, "uncertain-identity": 0, "not-beneficial": 0,
 		},
 		recordsCreated: 0, recordsEvicted: 0, recordsInvalidated: 0, entries: 0, entryHighWaterMark: 0,
 		metadataBytes: 0, metadataBytesHighWaterMark: 0, realReadExecutions: 0,
@@ -111,7 +118,7 @@ export class EvidenceLedger {
 		this.counters.modelVisibleTokensAvoided += Math.max(0, tokensAvoided);
 	}
 
-	admit(input: EvidenceRecordV1): boolean {
+	admit(input: EvidenceRecordV1, budgetTokens: number = input.modelTokens): boolean {
 		if (this.disposed || input.version !== 1 || input.toolKind !== "builtin-read" ||
 			input.location.length > EVIDENCE_MAX_LOCATION_CHARS || input.blocks !== 1 ||
 			!Number.isSafeInteger(input.chars) || input.chars < 1 || input.chars > 64 * 1024 ||
@@ -121,6 +128,12 @@ export class EvidenceLedger {
 			input.canonicalPath.length > 4096 || input.cwd.length > 4096 || input.sessionId.length > 256 || input.fileGeneration.length > 512) return false;
 		const bytes = evidenceMetadataBytes(input);
 		if (bytes > EVIDENCE_MAX_METADATA_BYTES) return false;
+		const referenceTokens = estimateToolOutputTokens([{ type: "text", text: formatEvidenceReference(input) }]).estimatedTokens;
+		if (!Number.isSafeInteger(input.modelTokens) || !Number.isSafeInteger(budgetTokens) ||
+			referenceTokens >= input.modelTokens || referenceTokens > budgetTokens) {
+			this.miss("not-beneficial");
+			return false;
+		}
 		// Copy only the allowlisted primitive fields. Extra runtime properties are
 		// deliberately not spread into the ledger's ownership graph.
 		const record: EvidenceRecordV1 = {
@@ -132,7 +145,7 @@ export class EvidenceLedger {
 			workspaceGeneration: input.workspaceGeneration, branchGeneration: input.branchGeneration,
 			canonicalPath: ownMetadata(input.canonicalPath), fileGeneration: ownMetadata(input.fileGeneration),
 			sessionId: ownMetadata(input.sessionId), cwd: ownMetadata(input.cwd), blocks: input.blocks, chars: input.chars,
-			artifactBytes: input.artifactBytes, modelTokens: input.modelTokens,
+			artifactBytes: input.artifactBytes, modelTokens: input.modelTokens, referenceTokens,
 		};
 		this.invalidate(record.canonicalArgsHash);
 		while (this.records.size >= EVIDENCE_MAX_RECORDS || this.counters.metadataBytes + bytes > EVIDENCE_MAX_METADATA_BYTES) {

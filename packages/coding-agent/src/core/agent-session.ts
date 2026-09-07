@@ -18,7 +18,7 @@ import { basename, dirname } from "node:path";
 import { isAbsolute, relative, resolve as resolveEvidencePath, sep } from "node:path";
 import { access as evidenceAccess, realpath as evidenceRealpath, stat as evidenceStat } from "node:fs/promises";
 import { constants as evidenceFsConstants } from "node:fs";
-import { EvidenceLedger, type EvidenceRecordV1 } from "./evidence-ledger.ts";
+import { EvidenceLedger, formatEvidenceReference, type EvidenceRecordV1 } from "./evidence-ledger.ts";
 import { estimateToolOutputTokens } from "./tool-output-budget.ts";
 import { resolveReadPathAsync } from "./tools/path-utils.ts";
 import { READ_EVIDENCE_CAPTURE, READ_EVIDENCE_IDENTITY, hasPreciseReadIdentity, readFileGeneration, type ValidatedReadIdentity } from "./tools/read-window.ts";
@@ -3657,9 +3657,14 @@ export class AgentSession {
 			if (!key) { ledger.miss("uncertain-identity"); return execute(callId, args, signal, onUpdate); }
 			const record = ledger.lookup(key);
 			if (record) {
+				const content: TextContent[] = [{ type: "text", text: formatEvidenceReference(record) }];
+				const referenceTokens = estimateToolOutputTokens(content).estimatedTokens;
+				const budgetTokens = owner.getEvidenceBudgetTokens();
 				let miss: import("./evidence-ledger.ts").EvidenceMissReason | undefined;
 				if (record.sessionId !== sessionId || record.cwd !== canonicalCwd || record.branchGeneration !== branch) miss = "branch/session/cwd";
 				else if (record.workspaceGeneration !== workspace) miss = "workspace-generation";
+				else if (record.referenceTokens !== referenceTokens || !Number.isSafeInteger(record.modelTokens) ||
+					referenceTokens >= record.modelTokens || budgetTokens === undefined || referenceTokens > budgetTokens) miss = "not-beneficial";
 				else {
 					// Access policy is never cached. File mismatch precedes G2 hashing.
 					await evidenceAccess(addressed, evidenceFsConstants.R_OK);
@@ -3681,8 +3686,7 @@ export class AgentSession {
 						ledger.counters.g2ArtifactIntegrityScans += added;
 						ledger.counters.g2ArtifactIntegrityBytes += added * record.artifactBytes;
 						if (valid) {
-							const content: TextContent[] = [{ type: "text", text: `[Evidence reused: ${record.relativePath}; ${record.location}; evidenceId=${record.evidenceId}; artifact=${record.resultHandle}. No new disk read occurred.]` }];
-							ledger.hit(record.modelTokens - estimateToolOutputTokens(content).estimatedTokens);
+							ledger.hit(record.modelTokens - referenceTokens);
 							return { content, details: undefined };
 						}
 						miss = added ? "source-not-active" : "artifact-unavailable";
@@ -3748,8 +3752,10 @@ export class AgentSession {
 		if (block?.type !== "text" || block.text.length < 1 || block.text.length > 64 * 1024) return;
 		const descriptor = owner.issueEvidenceArtifact(message.toolCallId, this.agent.state.messages, 1, block.text.length);
 		if (!descriptor) return;
+		const budgetTokens = owner.getEvidenceBudgetTokens();
+		if (budgetTokens === undefined) return;
 		ledger.admit({ ...receipt, resultHandle: descriptor.id, sourceGeneration: owner.getResidentEvidenceGeneration(message.toolCallId)!, blocks: 1, chars: block.text.length,
-			artifactBytes: descriptor.bytes, modelTokens: owner.getResidentEvidenceModelTokens(message.toolCallId) ?? 0 });
+			artifactBytes: descriptor.bytes, modelTokens: owner.getResidentEvidenceModelTokens(message.toolCallId) ?? 0 }, budgetTokens);
 	}
 
 	private _refreshToolRegistry(options?: { activeToolNames?: string[]; includeAllExtensionTools?: boolean }): void {

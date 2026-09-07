@@ -2277,6 +2277,8 @@ export class ToolResultPresentationOwner {
 		const record = this.projectionRecords?.get(toolCallId);
 		return record?.projection?.estimate.estimatedTokens ?? record?.sourceScan.estimate.estimatedTokens;
 	}
+	/** @internal Read only the existing owner budget; no projection or allocation. */
+	getEvidenceBudgetTokens(): number | undefined { return this.budgetTokens; }
 
 	readArtifact(id: string, messages: readonly unknown[]): ToolResultArtifactReadV1 {
 		if (!this.accepting) {
