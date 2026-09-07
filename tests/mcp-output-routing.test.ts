@@ -42,6 +42,17 @@ test("no-budget tiny text preserves its baseline ToolResult", async () => {
 	assert.equal(run.calls(), 1);
 });
 
+test("configured MCP server error retains canonical text for recovery", async () => {
+	const text = "server failure detail ".repeat(10_000);
+	const run = fixture({ isError: true, content: [{ type: "text", text }] }, 256);
+	try {
+		const result = await run.execute();
+		assert.equal(result.details.mcpError, "server-tool-error");
+		assert.ok(result.content[0].text === text, "canonical server error source was lost");
+		assert.equal(run.calls(), 1);
+	} finally { run.owner!.dispose(); }
+});
+
 test("configured large text respects both model byte and token ceilings", async () => {
 	const run = fixture({ content: [{ type: "text", text: "x".repeat(1024 * 1024) }] }, 1_000_000);
 	try {
