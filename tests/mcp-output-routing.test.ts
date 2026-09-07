@@ -3,6 +3,7 @@ import test from "node:test";
 // @ts-expect-error JavaScript extension package.
 import { convertMcpResult, McpBridgeRuntime } from "../packages/mcp-bridge/src/bridge.js";
 import { createToolResultPresentationOwner } from "../packages/coding-agent/src/core/tool-result-presentation.ts";
+import { alphaHeadless, alphaModelRuntime } from "./helpers/alpha-session.ts";
 
 const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jHioAAAAASUVORK5CYII=";
 
@@ -63,6 +64,23 @@ test("configured large text respects both model byte and token ceilings", async 
 		assert.ok(Buffer.byteLength(JSON.stringify(view!.modelContent)) <= 50 * 1024);
 		assert.equal(run.calls(), 1);
 	} finally { run.owner!.dispose(); }
+});
+
+test("MCP input admission cannot cache a mutable pre-hook result as final", async () => {
+	const fixture = await alphaHeadless(alphaModelRuntime());
+	const content = convertMcpResult({ content: [{ type: "text", text: "tiny" }] });
+	const owner = createToolResultPresentationOwner({ enabled: true, budgetTokens: 256 }, "hook-session")!;
+	try {
+		(fixture.session as any)._toolResultPresentation = owner;
+		const runner = (fixture.session as any)._extensionRunner;
+		runner.hasHandlers = (name: string) => name === "tool_result";
+		runner.emitToolResult = async () => { content[0].text = "x".repeat(1024 * 1024); return undefined; };
+		owner.admitMcpInput(content, "hook-call");
+		await fixture.session.agent.afterToolCall!({ toolCall: { type: "toolCall", id: "hook-call", name: "mcp__fixture__fixture", arguments: {} }, args: {}, result: { content, details: {} }, isError: false } as never);
+		const view = owner.create(content, "hook-call");
+		assert.equal(view?.version, 2, "mutable extension output reused pre-hook budget metadata");
+		if (view?.version === 2) assert.ok(view.truncation.modelEstimatedTokens <= 256);
+	} finally { owner.dispose(); await fixture.release(); }
 });
 
 test("large structured data has a bounded serialization and canonical object recovery", () => {
