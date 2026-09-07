@@ -718,6 +718,7 @@ export class ExtensionRunner {
 	): void {
 		if (!this.staleMessage) {
 			this.staleMessage = message;
+			this.mcpResultInputActions = undefined;
 			this.runtime.invalidate(message);
 		}
 	}
