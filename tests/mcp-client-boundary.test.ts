@@ -21,7 +21,7 @@ async function connect(handler: any) {
 	const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
 	await server.connect(serverTransport);
 	await client.connect(clientTransport);
-	return { client, server, clientTransport };
+	return { client, server, clientTransport, serverTransport };
 }
 
 test("100000 actual SDK client progress deliveries allocate no Promise history", async () => {
@@ -53,7 +53,15 @@ test("actual SDK media result validation does not decode complete base64", async
 	const pair = await connect(async () => ({ content: [{ type: "image", mimeType: "image/png", data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jHioAAAAASUVORK5CYII=" }] }));
 	const original = globalThis.atob;
 	let decodes = 0;
-	globalThis.atob = (value) => { decodes++; return original(value); };
+	let responseDelivered = false;
+	const send = pair.serverTransport.send.bind(pair.serverTransport);
+	pair.serverTransport.send = async (message, options) => {
+		// The in-process server validates its own result before send. Only count
+		// decoding on the client side of the production transport boundary.
+		if ("result" in message) responseDelivered = true;
+		return send(message, options);
+	};
+	globalThis.atob = (value) => { if (responseDelivered) decodes++; return original(value); };
 	try {
 		const result = await pair.client.callTool({ name: "fixture", arguments: {} });
 		assert.equal(result.content.length, 1);

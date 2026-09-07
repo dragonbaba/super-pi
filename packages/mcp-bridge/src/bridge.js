@@ -1,5 +1,6 @@
 import { pathToFileURL } from "node:url";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { createMcpClient } from "./client.js";
+export { createMcpClient } from "./client.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
@@ -226,7 +227,7 @@ export class McpBridgeRuntime {
     try {
       await state.client?.close().catch(() => undefined);
       if (this.closed || signal?.aborted) throw signal?.reason ?? new Error("MCP startup aborted");
-      const client = new Client({ name: "@super-pi/mcp-bridge", version: "0.1.0" }, { capabilities: { roots: { listChanged: false } } });
+      const client = createMcpClient();
       client.setRequestHandler(ListRootsRequestSchema, async () => ({
         roots: [{ uri: pathToFileURL(this.workspace).href, name: sanitizeText(this.workspace, 200) }],
       }));
