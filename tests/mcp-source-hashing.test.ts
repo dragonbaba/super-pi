@@ -6,8 +6,8 @@ import test from "node:test";
 import { convertMcpResult } from "../packages/mcp-bridge/src/bridge.js";
 import { createToolResultPresentationOwner } from "../packages/coding-agent/src/core/tool-result-presentation.ts";
 
-test("immutable large MCP text is hashed once across artifact integrity reads", () => {
-	const text = "source ".repeat(150_000);
+for (const kind of ["text", "image"]) test(`immutable large MCP ${kind} is hashed once across artifact integrity reads`, () => {
+	const text = kind === "text" ? "source ".repeat(150_000) : Buffer.concat([Buffer.from("\xff\xd8\xff", "latin1"), Buffer.alloc(128 * 1024)]).toString("base64");
 	const createHash = crypto.createHash;
 	let fullHashes = 0;
 	crypto.createHash = ((...args: Parameters<typeof createHash>) => {
@@ -22,7 +22,7 @@ test("immutable large MCP text is hashed once across artifact integrity reads", 
 	syncBuiltinESMExports();
 	const owner = createToolResultPresentationOwner({ enabled: true, budgetTokens: 256 }, "hash-session")!;
 	try {
-		const content = convertMcpResult({ content: [{ type: "text", text }] });
+		const content = convertMcpResult({ content: [kind === "text" ? { type: "text", text } : { type: "image", data: text, mimeType: "image/jpeg" }] });
 		const view = owner.create(content, "hash-call");
 		if (view?.version !== 2 || !view.artifact) assert.fail("artifact missing");
 		for (let index = 0; index < 3; index++) owner.readArtifact(view.artifact.id, [{ role: "toolResult", toolCallId: "hash-call", content }]);
