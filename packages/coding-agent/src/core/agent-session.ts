@@ -279,6 +279,25 @@ function createEventListenerRejectionObserver(onError: ((error: unknown) => void
 	};
 }
 
+// Evidence notices are live leases, never durable artifact ownership. The marker
+// is private, non-enumerable and absent from JSON/provider serialization.
+const LIVE_READ_EVIDENCE = Symbol("live-read-evidence");
+type LiveEvidenceBlock = TextContent & { [LIVE_READ_EVIDENCE]?: string };
+const DURABLE_READ_EVIDENCE = "[Prior read evidence is unavailable after a session boundary. Re-run the preceding read call before relying on exact contents.]";
+
+function durableEvidenceMessage(
+	message: Extract<AgentMessage, { role: "toolResult" }>,
+	content: typeof message.content | undefined,
+	block: TextContent | undefined,
+	text: string | undefined,
+): typeof message {
+	// Capture precedes listeners; replacement arrays/blocks or edited text belong
+	// to the listener and must be persisted as supplied, even if notice-shaped.
+	if (!block || message.content !== content || content.length !== 1 || content[0] !== block ||
+		block.type !== "text" || block.text !== text) return message;
+	return { ...message, content: [{ type: "text", text: DURABLE_READ_EVIDENCE }] };
+}
+
 const DEFAULT_CRITICAL_AGENT_END_TIMEOUT_MS = 30_000;
 const MAX_TOOL_RESULT_UI_DISCOVERIES = 128;
 const MAX_TOOL_RESULT_UI_REBUILD_CANDIDATES = 256;
@@ -1073,6 +1092,10 @@ export class AgentSession {
 		const toolResultSourceContent = event.type === "message_end" && event.message.role === "toolResult"
 			? event.message.content
 			: undefined;
+		const evidenceBlock = this._evidenceLedger
+			? (toolResultSourceContent as (TextContent[] & { [LIVE_READ_EVIDENCE]?: LiveEvidenceBlock }) | undefined)?.[LIVE_READ_EVIDENCE]
+			: undefined;
+		const evidenceText = evidenceBlock?.[LIVE_READ_EVIDENCE];
 		const hasExtensionHandlers = this._extensionRunner.hasHandlers(event.type);
 		if (isCoalescibleAgentEvent(event)) {
 			if (hasExtensionHandlers) await this._emitExtensionEvent(event);
@@ -1176,7 +1199,8 @@ export class AgentSession {
 						presentationOwner.release();
 					}
 					// This is the complete post-listener message_end tail for tool results.
-					this.sessionManager.appendMessage(event.message);
+					this.sessionManager.appendMessage(event.message.role === "toolResult" && evidenceBlock
+						? durableEvidenceMessage(event.message, toolResultSourceContent, evidenceBlock, evidenceText) : event.message);
 					if (this._evidenceLedger) this._admitCompletedReadEvidence(event.message, evidenceGeneration);
 					return;
 				}
@@ -1215,7 +1239,8 @@ export class AgentSession {
 				event.message.role === "toolResult"
 			) {
 				// Regular LLM message - persist as SessionMessageEntry
-				this.sessionManager.appendMessage(event.message);
+				this.sessionManager.appendMessage(event.message.role === "toolResult" && evidenceBlock
+						? durableEvidenceMessage(event.message, toolResultSourceContent, evidenceBlock, evidenceText) : event.message);
 				if (this._evidenceLedger && event.message.role === "toolResult") this._admitCompletedReadEvidence(event.message);
 			}
 			// Other message types (bashExecution, compactionSummary, branchSummary) are persisted elsewhere
@@ -3658,9 +3683,10 @@ export class AgentSession {
 			const record = ledger.lookup(key);
 			if (record) {
 				const referenceTokens = record.referenceTokens;
-				const budgetTokens = owner.getEvidenceBudgetTokens();
+				const budgetTokens = callId === record.sourceToolCallId ? undefined : owner.getEvidenceBudgetTokens();
 				let miss: import("./evidence-ledger.ts").EvidenceMissReason | undefined;
-				if (record.sessionId !== sessionId || record.cwd !== canonicalCwd || record.branchGeneration !== branch) miss = "branch/session/cwd";
+				if (callId === record.sourceToolCallId) miss = "source-call-id-reused";
+				else if (record.sessionId !== sessionId || record.cwd !== canonicalCwd || record.branchGeneration !== branch) miss = "branch/session/cwd";
 				else if (record.workspaceGeneration !== workspace) miss = "workspace-generation";
 				else if (record.relativePath !== relativePath) miss = "args-mismatch";
 				else if (referenceTokens === undefined || !Number.isSafeInteger(referenceTokens) || referenceTokens < 1 || !Number.isSafeInteger(record.modelTokens) ||
@@ -3689,6 +3715,9 @@ export class AgentSession {
 							ledger.counters.g2ArtifactIntegrityScans += added;
 							ledger.counters.g2ArtifactIntegrityBytes += added * record.artifactBytes;
 							if (valid) {
+								// Snapshot only the generated block/text identities, not a source or owner.
+								Object.defineProperty(content[0], LIVE_READ_EVIDENCE, { value: content[0].text });
+								Object.defineProperty(content, LIVE_READ_EVIDENCE, { value: content[0] });
 								ledger.hit(record.modelTokens - referenceTokens);
 								return { content, details: undefined };
 							}

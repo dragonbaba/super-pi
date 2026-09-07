@@ -11,7 +11,7 @@ export const EVIDENCE_MAX_LOCATION_CHARS = 8 * 1024;
 
 export type EvidenceMissReason = "disabled" | "ineligible-tool" | "no-record" | "args-mismatch" |
 	"workspace-generation" | "branch/session/cwd" | "file-generation" | "source-not-active" |
-	"source-not-in-context" | "artifact-unavailable" | "mutable-hook" | "uncertain-identity" | "not-beneficial";
+	"source-not-in-context" | "artifact-unavailable" | "mutable-hook" | "uncertain-identity" | "not-beneficial" | "source-call-id-reused";
 
 export interface EvidenceRecordV1 {
 	readonly version: 1;
@@ -50,7 +50,7 @@ export function createEvidenceCounters() {
 			"disabled": 0, "ineligible-tool": 0, "no-record": 0, "args-mismatch": 0,
 			"workspace-generation": 0, "branch/session/cwd": 0, "file-generation": 0,
 			"source-not-active": 0, "source-not-in-context": 0, "artifact-unavailable": 0,
-			"mutable-hook": 0, "uncertain-identity": 0, "not-beneficial": 0,
+			"mutable-hook": 0, "uncertain-identity": 0, "not-beneficial": 0, "source-call-id-reused": 0,
 		},
 		recordsCreated: 0, recordsEvicted: 0, recordsInvalidated: 0, entries: 0, entryHighWaterMark: 0,
 		metadataBytes: 0, metadataBytesHighWaterMark: 0, realReadExecutions: 0,

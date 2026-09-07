@@ -324,3 +324,76 @@ test("source lifecycle: real notice-shaped file content is durable without a tex
 		assert.ok(JSON.stringify(f.session.sessionManager.getEntries()).includes("literal-file-content"));
 	} finally { f.close(); }
 });
+
+for (const tail of ["presentation", "ordinary"] as const) {
+	for (const mutation of ["unchanged", "array", "block", "text", "message-start"] as const) {
+		test(`source lifecycle: ${tail} persistence respects ${mutation} listener content`, lifecycleHitOptions, async t => {
+			const f = await fixture();
+			try {
+				await f.runCalls([{ name: "read", arguments: { path: "file.txt" }, id: "source" }]);
+				if (tail === "ordinary") t.mock.method(f.internals._toolResultPresentation!, "create", () => undefined);
+				const replacement = [{ type: "text" as const, text: "listener supplied final content" }];
+				f.session.subscribe(event => {
+					if (event.type !== (mutation === "message-start" ? "message_start" : "message_end") || event.message.role !== "toolResult" || event.message.toolCallId !== "hit") return;
+					if (mutation === "array") event.message.content = replacement;
+					if (mutation === "block") event.message.content[0] = replacement[0];
+					if (mutation === "text" || mutation === "message-start") (event.message.content[0] as { text: string }).text = replacement[0].text;
+				});
+				await f.runCalls([{ name: "read", arguments: { path: "file.txt" }, id: "hit" }]);
+				const live = lastRead(f);
+				const entry = f.session.sessionManager.getBranch().find(e => e.type === "message" && e.message.role === "toolResult" && e.message.toolCallId === "hit");
+				assert.ok(entry?.type === "message" && entry.message.role === "toolResult");
+				const durable = entry.message;
+				assert.deepEqual(durable.content, mutation === "unchanged" ? [{ type: "text", text: durableEvidenceFallback }] : replacement);
+				if (mutation === "unchanged") {
+					assert.notEqual(durable, live);
+					assert.notEqual(durable.content, live.content);
+					assert.match((live.content[0] as { text: string }).text, /Evidence reused:/);
+					assert.equal(Object.getOwnPropertySymbols(durable.content).length, 0);
+					assert.equal(Object.getOwnPropertySymbols(durable.content[0]).length, 0);
+					assert.deepEqual({ ...durable, content: undefined }, { ...live, content: undefined });
+				} else assert.equal(durable, live);
+			} finally { f.close(); }
+		});
+	}
+}
+
+test("source lifecycle: bounded durable clones release after session lifecycle", {
+	skip: process.env.PI_EVIDENCE_LEASE_GC !== "1" ? "one explicitly requested controlled-GC run only" : false,
+}, async t => {
+	assert.equal(typeof global.gc, "function");
+	async function released() {
+		const f = await fixture();
+		const weak: WeakRef<object>[] = [];
+		try {
+			await f.read();
+			for (let i = 0; i < 8; i++) {
+				const live = await f.read();
+				const entry = f.session.sessionManager.getBranch().at(-1)!;
+				assert.ok(entry.type === "message" && entry.message.role === "toolResult");
+				const durable = entry.message;
+				assert.notEqual(durable, live);
+				assert.deepEqual(durable.content, [{ type: "text", text: durableEvidenceFallback }]);
+				assert.equal(Object.getOwnPropertySymbols(durable).length, 0);
+				assert.equal(Object.getOwnPropertySymbols(durable.content).length, 0);
+				assert.equal(Object.getOwnPropertySymbols(durable.content[0]).length, 0);
+				assert.equal(JSON.stringify(durable).includes("artifact="), false);
+				weak.push(new WeakRef(durable), new WeakRef(durable.content), new WeakRef(durable.content[0]));
+			}
+			weak.push(new WeakRef(f.internals._toolResultPresentation!), new WeakRef(f.session.agent.state.messages[0]));
+			assert.equal(f.internals._evidenceLedger!.counters.hits, 8);
+			f.session.sessionManager.newSession();
+			f.session.agent.state.messages = [];
+		} finally { f.close(); }
+		return weak;
+	}
+	const weak = await released();
+	for (let i = 0; i < 12; i++) {
+		await new Promise<void>(resolve => setImmediate(resolve));
+		global.gc!();
+	}
+	assert.equal(weak.filter(ref => ref.deref() !== undefined).length, 0);
+	t.diagnostic(JSON.stringify({ hits: 8, durableMessageClones: 8, freshArrays: 8, freshTextBlocks: 8,
+		fallbackChars: durableEvidenceFallback.length, weakReferencesReleased: weak.length, retainedAfterLifecycle: 0,
+		newStores: 0, sourceCopies: 0, noticeStringCopies: 0 }));
+});

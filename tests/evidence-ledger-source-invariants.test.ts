@@ -46,3 +46,26 @@ test("resident evidence APIs cannot reconstruct or serialize content", () => {
 	const read = readFileSync(new URL("../packages/coding-agent/src/core/tools/read.ts", import.meta.url), "utf8");
 	assert.doesNotMatch(read, /Object\.(freeze|seal|preventExtensions)/);
 });
+
+test("live evidence persistence adds exactly one bounded clone and no retained store", () => {
+	const path = "packages/coding-agent/src/core/agent-session.ts";
+	const text = readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
+	const source = ts.createSourceFile(path, text, ts.ScriptTarget.Latest, true);
+	const helper = source.statements.find(n => ts.isFunctionDeclaration(n) && n.name?.text === "durableEvidenceMessage")!;
+	assert.ok(helper);
+	let objects = 0, arrays = 0, spreads = 0;
+	function visit(node: ts.Node) {
+		if (ts.isObjectLiteralExpression(node)) objects++;
+		if (ts.isArrayLiteralExpression(node)) { arrays++; assert.equal(node.elements.length, 1); }
+		if (ts.isSpreadAssignment(node)) spreads++;
+		assert.equal(ts.isNewExpression(node) || ts.isArrowFunction(node) || ts.isFunctionExpression(node), false);
+		ts.forEachChild(node, visit);
+	}
+	visit(helper);
+	assert.deepEqual({ objects, arrays, spreads }, { objects: 2, arrays: 1, spreads: 1 });
+	assert.doesNotMatch(helper.getText(source), /artifact|sourceToolCallId|JSON\.|Map|Promise|AbortController|\.includes\(|\.match\(/);
+	assert.equal(text.match(/durableEvidenceMessage\(event.message/g)?.length, 2);
+	assert.match(text, /const LIVE_READ_EVIDENCE = Symbol\("live-read-evidence"\)/);
+	assert.doesNotMatch(text, /Symbol\.for\("live-read-evidence"/);
+	assert.equal(text.match(/Object.defineProperty\(content(?:\[0\])?, LIVE_READ_EVIDENCE/g)?.length, 2);
+});
