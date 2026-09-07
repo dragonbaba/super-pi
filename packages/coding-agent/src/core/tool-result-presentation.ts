@@ -1293,6 +1293,12 @@ export class ToolResultPresentationOwner {
 		this.getOrCreateProjectionRecord(content, toolCallId);
 	}
 
+	/** @internal Discard provisional MCP admission before a mutable result hook. */
+	releaseMcpInputAdmission(toolCallId: string): void {
+		const record = this.projectionRecords?.get(toolCallId);
+		if (record) this.removeProjectionRecord(record, false);
+	}
+
 	private removeProjectionRecord(record: ProjectionRecord, eviction: boolean): void {
 		const records = this.projectionRecords;
 		if (!records || records.get(record.toolCallId) !== record) return;

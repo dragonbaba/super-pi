@@ -147,6 +147,7 @@ import {
 	type ToolResultPresentationOwner,
 	type ToolResultPresentation,
 } from "./tool-result-presentation.ts";
+import { prepareMcpHookContent } from "./tool-result-source.ts";
 import { addUsageToTotals, createUsageTotals, getUnboundCompactionLedgerUsages } from "./usage-totals.ts";
 
 function getBuiltinExecutionPath(name: string, cwd: string) {
@@ -852,10 +853,13 @@ export class AgentSession {
 
 		this.agent.afterToolCall = async ({ toolCall, args, result, isError }) => {
 			try {
-			const mcpFailure = toolCall.name.startsWith("mcp__") && typeof result.details?.mcpError === "string";
+			const mcpTool = toolCall.name.startsWith("mcp__");
+			const mcpFailure = mcpTool && typeof result.details?.mcpError === "string";
 			const finalIsError = isError || mcpFailure;
 			const runner = this._extensionRunner;
-			const hookResult = runner.hasHandlers("tool_result")
+			const hasResultHook = runner.hasHandlers("tool_result");
+			if (mcpTool && hasResultHook) this._toolResultPresentation?.releaseMcpInputAdmission(toolCall.id);
+			const hookResult = hasResultHook
 				? await runner.emitToolResult({
 						type: "tool_result",
 						toolName: toolCall.name,
@@ -869,8 +873,18 @@ export class AgentSession {
 				: undefined;
 
 			const content = hookResult?.content ?? result.content ?? [];
+			let finalContent: (TextContent | ImageContent)[] = content;
+			if (mcpTool && hasResultHook) {
+				try {
+					const configured = this._toolResultPresentation?.mcpInputConfigured ?? false;
+					finalContent = prepareMcpHookContent(content, configured);
+					if (configured) this._toolResultPresentation!.admitMcpInput(finalContent, toolCall.id);
+				} catch {
+					return { content: [], details: { mcpError: "input-admission-failed", configurationReason: "MCP hook output exceeds the active byte or presentation budget, or has an invalid source." }, isError: true };
+				}
+			}
 			// Runs after the extension hook so images injected or replaced by extensions are normalized too.
-			const normalizedContent = await normalizeToolResultImages(content, {
+			const normalizedContent = await normalizeToolResultImages(finalContent, {
 				autoResizeImages: this.settingsManager.getImageAutoResize(),
 			});
 

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type { ImageContent, TextContent } from "@super-pi/ai/compat";
 
 /** Existing MCP transport envelope; not a token budget or a retention policy. */
 export const MCP_SOURCE_BYTES = 10 * 1024 * 1024;
@@ -44,6 +45,37 @@ export interface McpTypedSource {
 	readonly bytes: number;
 	readonly codeUnits: number;
 	readonly requiresRecovery?: boolean;
+}
+
+type McpHookContent = (Readonly<TextContent> & { readonly mcpSource?: McpTypedSource; readonly mcpInput?: true }) | (Readonly<ImageContent> & { readonly mcpInput?: true });
+
+/** A mutable extension hook is a new input generation, before canonical delivery. */
+export function prepareMcpHookContent(content: McpHookContent[], allowRecovery: boolean): McpHookContent[] {
+	if (!Array.isArray(content) || content.length > 256) throw new McpSourceError("result-size-limit");
+	let bytes = 0;
+	let textBytes = 0;
+	for (const block of content) {
+		if (block.type === "text" && typeof block.text === "string") {
+			const size = Buffer.byteLength(block.text);
+			bytes += size; textBytes += size;
+			if (block.mcpSource) {
+				if (!allowRecovery) throw new McpSourceError("budget-not-configured");
+				bytes += verifiedMcpSource(block.mcpSource).bytes;
+			}
+		} else if (block.type === "image" && typeof block.data === "string") bytes += block.data.length;
+		else throw new McpSourceError("invalid-typed-content");
+		if (bytes > MCP_SOURCE_BYTES) throw new McpSourceError("result-size-limit");
+	}
+	if (textBytes <= MCP_INLINE_BYTES) return content;
+	if (!allowRecovery) throw new McpSourceError("budget-not-configured");
+	let output: McpHookContent[] | undefined;
+	for (let index = 0; index < content.length; index++) {
+		const block = content[index]!;
+		if (block.type !== "text" || block.mcpInput || block.mcpSource) continue;
+		output ??= content.slice();
+		output[index] = { type: "text", text: block.text, mcpInput: true };
+	}
+	return output ?? content;
 }
 
 /** Bounded structural validation before any avoidable complete serialization. */
