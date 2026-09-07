@@ -14,14 +14,14 @@ for (const budget of [tokens("x"), tokens("x") + 1, 128, 2048]) {
 		try {
 			writeFileSync(join(f.cwd, "file.txt"), "x");
 			const first = await f.runCalls([{ name: "read", arguments: { path: "file.txt" } }]);
-			assert.equal(f.session.agent.state.error, undefined);
+			assert.equal(f.session.agent.state.errorMessage, undefined);
 			const original = first.at(-1)!.messages.filter(m => m.role === "toolResult").at(-1)!;
 			const originalTokens = estimateToolOutputTokens(original.content).estimatedTokens;
 			assert.equal(originalTokens, tokens("x"));
 			const second = await f.runCalls([{ name: "read", arguments: { path: "file.txt" } }]);
 			const raw = f.session.agent.state.messages.filter(m => m.role === "toolResult").at(-1)!;
-			t.diagnostic(JSON.stringify({ budget, originalTokens, repeatedRawTokens: estimateToolOutputTokens(raw.content).estimatedTokens, error: f.session.agent.state.error }));
-			assert.equal(f.session.agent.state.error, undefined);
+			t.diagnostic(JSON.stringify({ budget, originalTokens, repeatedRawTokens: estimateToolOutputTokens(raw.content).estimatedTokens, error: f.session.agent.state.errorMessage }));
+			assert.equal(f.session.agent.state.errorMessage, undefined);
 			const repeated = second.at(-1)!.messages.filter(m => m.role === "toolResult").at(-1)!;
 			assert.equal(estimateToolOutputTokens(repeated.content).estimatedTokens, originalTokens);
 			const c = f.internals._evidenceLedger!.counters;
