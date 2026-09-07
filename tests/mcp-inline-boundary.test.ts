@@ -10,7 +10,7 @@ for(const configured of [false,true])for(const controls of [false,true])test(`re
   const text=controls?"OK\x1b]0;CANARY\x07\x1b[31mRED\x1b[0m\x1b7\0\x01\n中文😀":"SMALL-RESOURCE-OK";
   const content=convertMcpResult({content:[{type:"resource",resource:{uri:"https://example.test/small.txt",text}}]},configured);
   const expected=`[MCP resource https://example.test/small.txt]\n${sanitizeText(text,Number.MAX_SAFE_INTEGER)}`;
-  assert.deepEqual(content,[{type:"text",text:expected}]);
+  assert.deepEqual(content,[{type:"text" as const,text:expected}]);
   const owner=createToolResultPresentationOwner({enabled:true,budgetTokens:1024},"inline-session")!;
   try{const view=owner.create(content,"inline-call")!;assert.equal(view.version,1);assert.equal(view.modelContent[0].type,"text");assert.equal((view.modelContent[0] as any).text,expected);assert.equal((view.uiContent![0] as any).text,expected);assert.equal(owner.counters.artifactDescriptorsCreated,0);}finally{owner.dispose();}
 });
@@ -18,6 +18,8 @@ for(const uri of ["https://example.test/docs","https://exam\nple.test/\tdocs\x1b
   const content=convertMcpResult({content:[{type:"resource_link",name:"documentation",uri}]},true);
   assert.equal(content[0].text,`[MCP resource link: documentation — ${new URL(uri).href}]`);
   assert.doesNotMatch(content[0].text,/[\x00-\x1f]/);
+  const owner=createToolResultPresentationOwner({enabled:true,budgetTokens:1024},"link-session")!;
+  try{const view=owner.create(content,"link-call")!;assert.equal(view.version,1);assert.deepEqual(view.modelContent,content);assert.deepEqual(view.uiContent,content);assert.equal(owner.counters.artifactDescriptorsCreated,0);}finally{owner.dispose();}
 });
 for(const configured of [false,true])for(const count of [1,256])test(`optional metadata cannot force recovery ${configured}/${count}`,()=>{
   const content=convertMcpResult({content:Array.from({length:count},()=>({type:"text",text:"SMALL-META-OK"})),_meta:{implementationDetail:1}},configured);

@@ -395,3 +395,49 @@ Final GC results and exact Linux/Windows CI are recorded in PR metadata, preserv
 their head without a documentation-only commit afterward. The stop is Corrected
 Draft Merge Gate awaiting external incremental review and explicit merge
 authorization. No Ready, merge, auto-merge or later phase is authorized.
+
+## Last-diff corrections after 6285fee
+
+External findings B0-5C-B-04, B1-5C-B-05 and B0-5C-B-06 are covered by red
+commit `6528184` (19 failing cases) and production fix `0acfa1f`. Earlier
+small-resource formatting, unconditional configured metadata retention and
+in-place final image tagging descriptions are superseded below.
+
+Inline embedded resources use the baseline `[MCP resource canonical-URI]`
+header and sanitized text. Links use `[MCP resource link: name — canonical-URI]`.
+Both parse the bounded URI, reject credentials/query/fragment, use canonical
+URL.href and the existing sanitizer. OSC/CSI/ESC/prohibited controls cannot
+enter inline canonical/model/UI text. Newlines, CJK and emoji survive text
+sanitization. Final inline byte accounting charges the actual formatted string.
+Large resource payloads retain their typed source without constructing a full
+secondary string. Inline scratch exists only for resource/link results, has at
+most 256 entries, shares its strings with normalized output, and expires when
+conversion returns or throws.
+
+Optional _meta is ignored unless another source already requires recovery. It
+does not consume an item slot when ignored, force a tiny final into omission,
+or introduce an artifact merely to preserve optional metadata. Required recovery
+and retained metadata still share the existing owner and its aggregate bounds.
+
+After both mutable hooks, final text/image blocks needing digest storage receive
+host-owned wrappers. Public strings/data are assigned by reference, without
+base64 decode, deep copy, serialization or new digest framing. At most one
+additional final outer array (256 entries) and one wrapper per affected block
+are allocated; existing input validation may already produce bounded wrappers.
+No marker or digest symbol is written to extension-owned blocks, even if they
+are extensible or already tagged. Frozen/sealed/preventExtensions outputs and
+returned replacements/array splices are supported through the actual runner.
+Small unannotated blocks and private typed descriptors retain their existing
+path. Only host wrappers are frozen by final digest caching.
+
+Structured traversal, Object.keys, source digest framing/cache implementation,
+owner algorithms, progress, transport, V2/cursor/artifact formats, read and
+TUI/provider paths are unchanged. The accepted allocation profile remains
+frozen. 146 focused tests pass (100000-progress campaign excluded), including
+the 16 G2 artifact/model-budget regressions; check/build/diff checks pass. One
+replacement final-head controlled-GC process is authorized; its exact results
+and Linux/Windows CI are recorded in PR metadata, without a later docs-only
+commit. No timing, allocation profile or automated review is requested.
+
+Stop: Final Corrected Draft Merge Gate, awaiting external last-diff review and
+explicit merge authorization. Ready, merge and later phases remain unauthorized.

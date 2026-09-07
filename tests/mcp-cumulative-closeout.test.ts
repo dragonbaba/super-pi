@@ -67,7 +67,7 @@ for (const hook of ["tool_result", "message_end"]) for (const kind of ["text", "
       assert.deepEqual(errors,[]);
       assert.equal(observed,mode!=="no-handler","hook failed before mutation");
       assert.equal(final.content[0][kind==="text"?"text":"data"],expected);
-      if(extensionBlock){assert.notEqual(final.content[0],extensionBlock);assert.deepEqual(Reflect.ownKeys(extensionBlock),extensionKeys);assert.equal(Object.isExtensible(extensionBlock),false);assert.equal(extensionBlock[kind==="text"?"text":"data"],expected);}
+      if(extensionBlock){assert.notEqual(final.content[0],extensionBlock);assert.deepEqual(Reflect.ownKeys(extensionBlock),extensionKeys);assert.equal(Object.isExtensible(extensionBlock),false);assert.equal(Object.isFrozen(extensionBlock),mode==="freeze-returned"||mode==="tagged-frozen");assert.equal(extensionBlock[kind==="text"?"text":"data"],expected);}
       const saved: any=fixture.session.sessionManager.getBranch().filter((e:any)=>e.type==="message").at(-1);
       assert.equal(saved.message.content[0][kind==="text"?"text":"data"],expected);
       assert.equal(getToolResultModelContent(view,final.content),view.modelContent);
