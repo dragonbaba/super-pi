@@ -10,6 +10,34 @@ import { hasPreciseReadIdentity, readFileGeneration } from "../packages/coding-a
 const linux = { skip: process.platform === "win32" ? "Windows evidence identity conservatively misses" : false };
 const tokens = (text: string) => estimateToolOutputTokens([{ type: "text", text }]).estimatedTokens;
 
+test("large budget sweep follows the actual original G2 model estimate", async t => {
+	for (const budget of [2044, 2045, 2046, 2047, 2048, 2049, 2050, 2051]) {
+		const f = await fixture(true, true, [], budget);
+		try {
+			writeFileSync(join(f.cwd, "file.txt"), "large selected source text\n".repeat(20000));
+			const ledger = f.internals._evidenceLedger!;
+			const admit = ledger.admit.bind(ledger);
+			let referenceTokens = 0;
+			t.mock.method(ledger, "admit", (input: EvidenceRecordV1, ownerBudget: number) => {
+				referenceTokens = tokens(formatEvidenceReference(input));
+				return admit(input, ownerBudget);
+			});
+			const first = await f.read();
+			const originalTokens = f.internals._toolResultPresentation!.getResidentEvidenceModelTokens(first.toolCallId)!;
+			const firstReferenceTokens = referenceTokens;
+			t.diagnostic(JSON.stringify({ budget, originalTokens, referenceTokens }));
+			await f.read();
+			if (process.platform !== "win32") {
+				assert.ok(firstReferenceTokens > 0);
+				const beneficial = firstReferenceTokens < originalTokens && firstReferenceTokens <= budget;
+				assert.equal(ledger.counters.hits, beneficial ? 1 : 0);
+				assert.equal(ledger.counters.realReadExecutions, beneficial ? 1 : 2);
+				if (!beneficial) assert.ok(ledger.counters.missesByReason["not-beneficial"] > 0);
+			}
+		} finally { f.close(); }
+	}
+});
+
 for (const corpus of ["medium", "large"]) {
 	test(`${corpus} retains one real read, exact reference fit and over 50 percent total token reduction`, linux, async t => {
 		const f = await fixture();
