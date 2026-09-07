@@ -87,6 +87,7 @@ async function compare(large: boolean) {
 		return configs.map((config, index) => {
 			const c = fixtures[index].internals._evidenceLedger?.counters;
 			return { config, corpus: large ? "large" : "medium", paired: true, samples: 100,
+				timingsMs: times[index],
 				p50Ms: percentile(times[index], 0.5), p95Ms: percentile(times[index], 0.95),
 				integrityP50Ms: index === 0 ? percentile(integrity, 0.5) : 0,
 				integrityP95Ms: index === 0 ? percentile(integrity, 0.95) : 0,
@@ -108,7 +109,10 @@ async function disposedReferences() {
 
 if (mode === "compare") {
 	assert.notEqual(process.platform, "win32");
-	const results = [...await compare(false), ...await compare(true)];
+	// Five bounded 100-sample windows in this single process keep each resident
+	// source below G2's retention cap while exposing scheduler-tail variation.
+	const results = [];
+	for (let window = 0; window < 5; window++) results.push(...await compare(false), ...await compare(true));
 	writeFileSync(join(out, "comparison.json"), JSON.stringify(results, null, 2));
 	console.log(JSON.stringify(results));
 } else if (mode === "gc") {
