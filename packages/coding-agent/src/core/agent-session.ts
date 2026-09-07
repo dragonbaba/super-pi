@@ -147,7 +147,7 @@ import {
 	type ToolResultPresentationOwner,
 	type ToolResultPresentation,
 } from "./tool-result-presentation.ts";
-import { prepareMcpHookContent } from "./tool-result-source.ts";
+import { MCP_INLINE_BYTES, prepareMcpHookContent } from "./tool-result-source.ts";
 import { addUsageToTotals, createUsageTotals, getUnboundCompactionLedgerUsages } from "./usage-totals.ts";
 
 function getBuiltinExecutionPath(name: string, cwd: string) {
@@ -878,7 +878,6 @@ export class AgentSession {
 				try {
 					const configured = this._toolResultPresentation?.mcpInputConfigured ?? false;
 					finalContent = prepareMcpHookContent(content, configured);
-					if (configured) this._toolResultPresentation!.admitMcpInput(finalContent, toolCall.id);
 				} catch {
 					return { content: [], details: { mcpError: "input-admission-failed", configurationReason: "MCP hook output exceeds the active byte or presentation budget, or has an invalid source." }, isError: true };
 				}
@@ -1058,6 +1057,7 @@ export class AgentSession {
 
 	/** Internal handler for agent events - shared by subscribe and reconnect */
 	private _handleAgentEvent = async (event: AgentEvent): Promise<void> => {
+		const mcpFinal = event.type === "message_end" && event.message.role === "toolResult" && event.message.toolName.startsWith("mcp__");
 		const toolResultSourceContent = event.type === "message_end" && event.message.role === "toolResult"
 			? event.message.content
 			: undefined;
@@ -1094,8 +1094,33 @@ export class AgentSession {
 		if (hasExtensionHandlers) messageEndReplacementReturned = await this._emitExtensionEvent(event);
 		if (event.type === "message_end" && event.message.role === "toolResult") {
 			const presentationOwner = this._toolResultPresentation;
+			const mcpTool = mcpFinal;
+			if (mcpTool) {
+				try {
+					event.message.content = prepareMcpHookContent(event.message.content, presentationOwner?.mcpInputConfigured ?? false);
+					// Image normalization or mutable hooks may replace the original block.
+					// Tag the final generation only; keep the same base64 string reference.
+					if (presentationOwner?.mcpInputConfigured) for (const block of event.message.content) {
+						if (block.type === "image" && block.data.length > MCP_INLINE_BYTES) (block as ImageContent & { mcpInput?: true }).mcpInput = true;
+					}
+				} catch {
+					event.message.content = [];
+					event.message.isError = true;
+					event.message.details = { mcpError: "input-admission-failed", configurationReason: "MCP final output requires a valid source and a configured sufficient recovery budget." };
+				}
+			}
 			if (presentationOwner) {
-				const presentation = presentationOwner.create(event.message.content, event.message.toolCallId);
+				let presentation;
+				try {
+					presentation = presentationOwner.create(event.message.content, event.message.toolCallId);
+				} catch (error) {
+					if (!mcpTool) throw error;
+					presentationOwner.releaseMcpInputAdmission(event.message.toolCallId);
+					event.message.content = [];
+					event.message.isError = true;
+					event.message.details = { mcpError: "input-admission-failed", configurationReason: "MCP final output requires a valid source and a configured sufficient recovery budget." };
+					presentation = presentationOwner.create(event.message.content, event.message.toolCallId);
+				}
 				if (presentation) {
 					const sessionEvent: Extract<AgentSessionEvent, { type: "message_end" }> = {
 						type: "message_end",
@@ -3458,9 +3483,11 @@ export class AgentSession {
 				},
 				getContextUsage: () => this.getContextUsage(),
 				getMcpResultInputConfigured: () => this._toolResultPresentation?.mcpInputConfigured ?? false,
-				admitMcpResultInput: (content, toolCallId) => {
+				admitMcpResultInput: (content, _toolCallId) => {
 					if (!this._toolResultPresentation?.mcpInputConfigured) throw new Error("MCP recovery requires configured tool-result presentation and token budget.");
-					this._toolResultPresentation.admitMcpInput(content as readonly import("./tool-result-presentation.ts").ToolResultPresentationContent[], toolCallId);
+					// Compatibility seam is preflight only. Both mutable hooks must finish
+					// before create() owns, hashes or freezes the final public generation.
+					prepareMcpHookContent(content as import("./tool-result-presentation.ts").ToolResultPresentationContent[], true);
 				},
 				compact: (options) => {
 					void (async () => {
