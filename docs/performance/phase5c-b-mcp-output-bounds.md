@@ -330,13 +330,68 @@ a bounded configuration/admission reason. Private typed source annotations stay
 canonical; ordinary model projections strip them. Existing G2 record removal
 and admission operations are reused without a new retention policy.
 
-**Unresolved evidence B1, thread 3947665858:** the reviewer requires an exact-head
-allocation/profile/lifecycle rerun after Object.keys enumeration. The single
-authorized allocation profile, single controlled-GC run, and five timing
-processes are already consumed. None has been repeated. The review request is
-not treated as user authorization to exceed those limits. This finding remains
-open pending an explicit evidence-budget decision. The later closeout changes
-also mean the earlier metrics must not be labeled exact-head evidence.
+The Object.keys evidence finding was subsequently resolved by the explicitly
+authorized replacement profile and GC at `72002b5`. Its exact results and fixture
+are in PR #26 reply `3948196997`: 4,209 key arrays / 12,624 slots, one inspection,
+one bounded preview and one integrity construction; 20 ownership and 4,209 key
+array WeakRefs cleared. That evidence is accepted and frozen. Both automated
+review slots are consumed; no third broad review is authorized.
 
-The Candidate Review budget is consumed. The one permitted closeout incremental
-Review has not been requested. No Ready, merge or later phase is authorized.
+## Cumulative external review corrections after 72002b5
+
+The preceding provisional-admission design is superseded. External cumulative
+review reproduced premature freezing of public text/image blocks through
+tool_result and message_end, unnecessary no-budget rejection of safe resource
+wrappers/optional metadata, and rejection of unrecognized image subtypes.
+
+Red commits `ea32201` and `9e7f3a4` preserve the candidate and activate the actual
+ExtensionRunner hook dispatch. `ad1c076` fixes final ownership; `c194441` fixes
+small typed and MIME compatibility. The expanded cumulative fixture uses valid
+large PNG input and tests both hooks, in-place updates, returned replacements,
+splice/push, no-op and no-handler cases, final budget/byte rejection, and full
+source digest reuse across artifact/continuation recovery.
+
+Final production call graph:
+
+MCP conversion → session-injected non-owning byte/source preflight → tool_result
+→ existing image normalizer → message_end → final byte/source validation →
+existing owner.create → model/UI delivery and canonical persistence.
+
+The internal extension injection signature is unchanged. It validates without
+inserting an owner record, issuing artifacts, hashing public text/image blocks
+or freezing them. The post-tool_result path also performs no owning admission.
+Only the final create boundary establishes public source identity. Immutable
+private typed descriptors retain their existing normalization-time digest and
+validation behavior; their public wrapper remains mutable. Existing G2 budget,
+projection, integrity and retention algorithms are unchanged.
+
+An MCP final admission failure clears the failed record and replaces final
+content with zero model text, isError and a bounded configuration reason before
+delivery/persistence. It does not invoke the tool again or send a provider
+request. Non-MCP failures retain their previous propagation. Final large image
+blocks replaced by hooks/normalization receive the existing source marker with
+the same base64 reference, after mutable hooks have finished.
+
+Small resource text stays inline; safe bounded resource links expose bounded
+name/URI text without download. Credential/query/fragment-bearing resource links
+fail with a fixed category. No-budget mode ignores optional _meta as baseline
+did. Configured opaque metadata remains local. Blob/audio/large resource text
+and structured content still require configured recovery. Unrecognized bounded
+image/* subtypes retain typed image form; known PNG/JPEG/GIF/WebP signature
+checks, base64 and size checks remain. Downstream image support is unchanged.
+
+Allocation delta: no new owner, source registry, cursor state, Promise, timer,
+AbortController, hash cache or complete source copy. Final validation uses the
+existing bounded input helper; final image tagging adds no string/base64 copy.
+Failure only allocates the empty final and bounded metadata. Resource-link
+validation adds one transient URL and bounded inline string per link. Progress,
+structured Object.keys traversal and digest implementation are unchanged.
+
+Focused validation passed 116 tests (the 100000-progress campaign excluded),
+including the existing 16 G2 artifact/model-budget regressions; check and offline
+build passed. One exact final-head controlled-GC process is authorized; no new
+allocation profile is needed because the source implementation is unchanged.
+Final GC results and exact Linux/Windows CI are recorded in PR metadata, preserving
+their head without a documentation-only commit afterward. The stop is Corrected
+Draft Merge Gate awaiting external incremental review and explicit merge
+authorization. No Ready, merge, auto-merge or later phase is authorized.
