@@ -101,5 +101,25 @@ export function piToolName(serverId, remoteName) {
 
 export function decodedBase64Bytes(value) {
   if (typeof value !== "string" || !BASE64_PATTERN.test(value) || value.length % 4 === 1) return null;
-  return Math.floor(value.length * 3 / 4) - (value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0);
+  const padding = value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0;
+  if (padding && value.length % 4 !== 0) return null;
+  const characters = value.length - padding;
+  const remainder = characters % 4;
+  if ((padding === 2 && remainder !== 2) || (padding === 1 && remainder !== 3)) return null;
+  const last = characters ? base64Digit(value.charCodeAt(characters - 1)) : 0;
+  if ((remainder === 2 && (last & 15) !== 0) || (remainder === 3 && (last & 3) !== 0)) return null;
+  return Math.floor(characters * 3 / 4);
+}
+
+function base64Digit(code) {
+  return code >= 65 && code <= 90 ? code - 65 : code >= 97 && code <= 122 ? code - 71 : code >= 48 && code <= 57 ? code + 4 : code === 43 ? 62 : 63;
+}
+
+/** Inspect one header byte after base64 validation, with no decoded allocation. */
+export function base64Byte(value, position) {
+  const group = Math.floor(position / 3) * 4;
+  const slot = position % 3;
+  const left = base64Digit(value.charCodeAt(group + slot));
+  const right = base64Digit(value.charCodeAt(group + slot + 1));
+  return slot === 0 ? (left << 2) | (right >> 4) : slot === 1 ? ((left & 15) << 4) | (right >> 2) : ((left & 3) << 6) | right;
 }

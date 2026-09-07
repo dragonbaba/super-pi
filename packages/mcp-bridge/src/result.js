@@ -1,5 +1,5 @@
-import { createMcpTypedSource, McpSourceError, MCP_SOURCE_BYTES, serializeMcpStructured } from "@super-pi/coding-agent/internal/tool-result-source";
-import { decodedBase64Bytes, MAX_CONTENT_ITEMS, MAX_IMAGE_BYTES, MAX_TEXT_BYTES, sanitizeText } from "./security.js";
+import { createMcpTypedSource, McpSourceError, MCP_SOURCE_BYTES, serializeMcpStructured, previewMcpStructured } from "@super-pi/coding-agent/internal/tool-result-source";
+import { decodedBase64Bytes, base64Byte, MAX_CONTENT_ITEMS, MAX_IMAGE_BYTES, MAX_TEXT_BYTES, sanitizeText } from "./security.js";
 
 function typedBlock(kind, value, text) {
   return { type: "text", text, mcpSource: createMcpTypedSource(kind, value) };
@@ -11,6 +11,27 @@ function binarySize(data, mimeType) {
     throw new McpSourceError("invalid-typed-content");
   }
   return bytes;
+}
+
+function headerIs(data, offset, text) {
+  for (let index = 0; index < text.length; index++) if (base64Byte(data, offset + index) !== text.charCodeAt(index)) return false;
+  return true;
+}
+
+function validateMedia(data, mimeType, bytes, image) {
+  let valid = false;
+  if (image) {
+    if (mimeType === "image/png") valid = bytes >= 24 && headerIs(data, 0, "\x89PNG\r\n\x1a\n") && headerIs(data, 12, "IHDR");
+    else if (mimeType === "image/jpeg") valid = bytes >= 3 && headerIs(data, 0, "\xff\xd8\xff");
+    else if (mimeType === "image/gif") valid = bytes >= 10 && (headerIs(data, 0, "GIF87a") || headerIs(data, 0, "GIF89a"));
+    else if (mimeType === "image/webp") valid = bytes >= 16 && headerIs(data, 0, "RIFF") && headerIs(data, 8, "WEBP");
+  } else if (mimeType.startsWith("audio/")) {
+    valid = bytes > 0;
+    if (mimeType === "audio/wav" || mimeType === "audio/x-wav") valid = bytes >= 12 && headerIs(data, 0, "RIFF") && headerIs(data, 8, "WAVE");
+    else if (mimeType === "audio/ogg") valid = bytes >= 4 && headerIs(data, 0, "OggS");
+    else if (mimeType === "audio/flac") valid = bytes >= 4 && headerIs(data, 0, "fLaC");
+  }
+  if (!valid) throw new McpSourceError("invalid-typed-content");
 }
 
 /** Source normalization, not a registry, estimator, cursor or presentation owner. */
@@ -28,6 +49,7 @@ export function convertMcpResult(result, allowRecovery = true) {
       bytes += Buffer.byteLength(item.text);
     } else if (item?.type === "image" || item?.type === "audio") {
       const size = binarySize(item.data, item.mimeType);
+      validateMedia(item.data, item.mimeType, size, item.type === "image");
       bytes += item.data.length;
       if (item.type === "audio") typedPayloadBytes += item.data.length;
       if (item.type === "image") {
@@ -75,11 +97,11 @@ export function convertMcpResult(result, allowRecovery = true) {
       content.push({ type: "text", text });
       continue;
     }
-    const source = createMcpTypedSource("structured", value);
+    const preview = previewMcpStructured(value);
+    const source = createMcpTypedSource("structured", value, !preview.complete);
     accountedSources += source.bytes;
     if (accountedSources + bytes - typedPayloadBytes > MCP_SOURCE_BYTES) throw new McpSourceError("result-size-limit");
-    const text = serializeMcpStructured(value);
-    content.push({ type: "text", text, mcpSource: source });
+    content.push({ type: "text", text: preview.text, mcpSource: source });
   }
   if (result?._meta !== undefined) {
     if (!allowRecovery) throw new McpSourceError("budget-not-configured");

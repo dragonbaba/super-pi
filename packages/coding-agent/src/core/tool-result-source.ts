@@ -22,6 +22,7 @@ export interface McpTypedSource {
 	readonly digest: string;
 	readonly bytes: number;
 	readonly codeUnits: number;
+	readonly requiresRecovery?: boolean;
 }
 
 /** Bounded structural validation before any avoidable complete serialization. */
@@ -105,13 +106,13 @@ export function inspectMcpValue(value: unknown, maxBytes = MCP_SOURCE_BYTES): nu
 }
 
 /** Called at the input boundary, before delivery. No registry or source copy. */
-export function createMcpTypedSource(kind: McpTypedSource["kind"], value: unknown): McpTypedSource {
+export function createMcpTypedSource(kind: McpTypedSource["kind"], value: unknown, requiresRecovery = kind !== "structured"): McpTypedSource {
 	const inspection = new SourceInspection(true);
 	try {
 		inspection.hash!.update(`mcp-source-v1:${kind}:`);
 		inspection.visit(value);
 		for (const object of inspection.objects) Object.freeze(object);
-		const source: McpTypedSource = { version: 1, kind, value, digest: inspection.hash!.digest("hex"), bytes: inspection.bytes, codeUnits: inspection.codeUnits };
+		const source: McpTypedSource = { version: 1, kind, value, digest: inspection.hash!.digest("hex"), bytes: inspection.bytes, codeUnits: inspection.codeUnits, requiresRecovery };
 		Object.defineProperty(source, SOURCE_VERIFIED, { value: true });
 		return Object.freeze(source);
 	} finally { inspection.objects.length = 0; inspection.ancestors.length = 0; }
@@ -121,7 +122,7 @@ export function createMcpTypedSource(kind: McpTypedSource["kind"], value: unknow
 export function verifiedMcpSource(source: McpTypedSource): McpTypedSource {
 	if ((source as unknown as Record<symbol, unknown>)[SOURCE_VERIFIED] === true && Object.isFrozen(source)) return source;
 	if (source.version !== 1 || !["audio", "resource", "resource_link", "structured", "metadata"].includes(source.kind)) throw new McpSourceError("invalid-typed-content");
-	const restored = createMcpTypedSource(source.kind, source.value);
+	const restored = createMcpTypedSource(source.kind, source.value, source.requiresRecovery);
 	if (restored.digest !== source.digest || restored.bytes !== source.bytes || restored.codeUnits !== source.codeUnits) throw new McpSourceError("invalid-typed-content");
 	Object.defineProperty(source, SOURCE_VERIFIED, { value: true });
 	return Object.freeze(source);
@@ -132,4 +133,74 @@ export function serializeMcpStructured(value: unknown, maxBytes = MCP_SOURCE_BYT
 	inspectMcpValue(value, maxBytes);
 	try { return JSON.stringify(value, null, 2); }
 	catch { throw new McpSourceError("invalid-structured-content"); }
+}
+
+const PARTIAL_JSON_NOTICE = "\n[MCP structured result is partial; complete object is retained in the local session artifact.]";
+
+function utf8Prefix(text: string, maxBytes: number): string {
+	let bytes = 0;
+	let end = 0;
+	while (end < text.length) {
+		const code = text.codePointAt(end)!;
+		const size = code < 128 ? 1 : code < 2048 ? 2 : code < 65536 ? 3 : 4;
+		if (bytes + size > maxBytes) break;
+		bytes += size;
+		end += code > 65535 ? 2 : 1;
+	}
+	return text.substring(0, end);
+}
+
+/** Call-owned bounded writer. The validation pass already rejected accessors/cycles. */
+class StructuredPreview {
+	text = "";
+	bytes = 0;
+	complete = true;
+	readonly limit: number;
+	constructor(limit: number) { this.limit = limit; }
+	emit(text: string): void {
+		if (!this.complete) return;
+		const bytes = Buffer.byteLength(text);
+		if (bytes + this.bytes <= this.limit) { this.text += text; this.bytes += bytes; return; }
+		this.text += utf8Prefix(text, this.limit - this.bytes);
+		this.complete = false;
+	}
+	string(text: string): void {
+		const shortened = text.length > this.limit;
+		this.emit(JSON.stringify(shortened ? text.substring(0, this.limit) : text));
+		if (shortened) this.complete = false;
+	}
+	write(value: unknown, depth = 0): void {
+		if (!this.complete) return;
+		if (typeof value === "string") { this.string(value); return; }
+		if (value === null || typeof value !== "object") { this.emit(String(value)); return; }
+		const array = Array.isArray(value);
+		const indent = "  ".repeat(depth + 1);
+		this.emit(array ? "[" : "{");
+		let count = 0;
+		if (array) {
+			for (let index = 0; index < value.length && this.complete; index++) {
+				this.emit((count++ ? ",\n" : "\n") + indent);
+				this.write(value[index], depth + 1);
+			}
+		} else {
+			for (const key in value) {
+				if (!this.complete) break;
+				if (!Object.hasOwn(value, key)) continue;
+				this.emit((count++ ? ",\n" : "\n") + indent);
+				this.string(key);
+				this.emit(": ");
+				this.write((value as Record<string, unknown>)[key], depth + 1);
+			}
+		}
+		if (count) this.emit("\n" + "  ".repeat(depth));
+		this.emit(array ? "]" : "}");
+	}
+}
+
+export function previewMcpStructured(value: unknown): { text: string; complete: boolean } {
+	inspectMcpValue(value);
+	const writer = new StructuredPreview(MCP_INLINE_BYTES);
+	writer.write(value);
+	if (!writer.complete) writer.text = utf8Prefix(writer.text, MCP_INLINE_BYTES - Buffer.byteLength(PARTIAL_JSON_NOTICE)) + PARTIAL_JSON_NOTICE;
+	return { text: writer.text, complete: writer.complete };
 }

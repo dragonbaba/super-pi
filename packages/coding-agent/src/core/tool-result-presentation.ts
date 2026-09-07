@@ -717,7 +717,9 @@ function appendSourceIdentityBlock(
 		if (block.mcpSource) {
 			const source = verifiedMcpSource(block.mcpSource);
 			digest.update("m").update(source.kind).update(":").update(source.digest);
-			return artifactBytes + 2 + source.kind.length + source.digest.length + source.bytes;
+			const length = block.text.length.toString(36);
+			digest.update(length).update(":").update(block.text, "utf16le");
+			return artifactBytes + 3 + source.kind.length + source.digest.length + length.length + block.text.length * 2;
 		}
 		const textLength = block.text.length.toString(36);
 		digest.update("t").update(textLength).update(":").update(block.text, "utf16le");
@@ -778,7 +780,7 @@ function scanSource(
 			if (block.mcpInput || block.mcpSource) mcpInput = true;
 			if (block.mcpSource) {
 				retainedCodeUnits += verifiedMcpSource(block.mcpSource).codeUnits;
-				if (block.mcpSource.kind !== "structured") mcpArtifactRequired = true;
+				if (block.mcpSource.requiresRecovery || block.mcpSource.kind !== "structured") mcpArtifactRequired = true;
 			}
 			textCodeUnits += block.text.length;
 			retainedCodeUnits += block.text.length;
@@ -2237,6 +2239,7 @@ export class ToolResultPresentationOwner {
 		this.bindValidatedContinuationRecord(record);
 		const sourceTextCodeUnits = record.sourceScan.textCodeUnits;
 		let requestedTextCodeUnits = Math.max(1, Math.floor((sourceTextCodeUnits * budgetTokens) / Math.max(estimate.estimatedTokens, budgetTokens)));
+		if (record.sourceScan.mcpInput) requestedTextCodeUnits = Math.min(requestedTextCodeUnits, Math.floor(MCP_INLINE_BYTES / 3));
 		let chunkEnd = advancePosition(
 			sourceContent,
 			start,
@@ -2298,7 +2301,7 @@ export class ToolResultPresentationOwner {
 			this.counters,
 		);
 		this.counters.continuationChunksCreated++;
-		return { version: TOOL_RESULT_CONTINUATION_VERSION, content: chunkContent, estimatedTokens: chunkEstimate.estimatedTokens, nextCursor, done };
+		return { version: TOOL_RESULT_CONTINUATION_VERSION, content: record.sourceScan.mcpInput ? stripMcpSources(chunkContent) : chunkContent, estimatedTokens: chunkEstimate.estimatedTokens, nextCursor, done };
 	}
 
 	release(): void {
