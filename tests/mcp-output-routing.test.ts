@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 // @ts-expect-error JavaScript extension package.
 import { convertMcpResult, McpBridgeRuntime } from "../packages/mcp-bridge/src/bridge.js";
-import { createToolResultPresentationOwner } from "../packages/coding-agent/src/core/tool-result-presentation.ts";
+import { createToolResultPresentationOwner, getToolResultModelContent, getToolResultUiContent } from "../packages/coding-agent/src/core/tool-result-presentation.ts";
 import { alphaHeadless, alphaModelRuntime } from "./helpers/alpha-session.ts";
 
 const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jHioAAAAASUVORK5CYII=";
@@ -41,6 +41,28 @@ test("no-budget tiny text preserves its baseline ToolResult", async () => {
 	const run = fixture({ content: [{ type: "text", text: "tiny" }] });
 	assert.deepEqual(await run.execute(), { content: [{ type: "text", text: "tiny" }], details: { server: "fixture", remoteTool: "fixture" } });
 	assert.equal(run.calls(), 1);
+});
+
+test("MCP failure with a one-token budget survives final presentation", async () => {
+	const run = fixture({ content: [{ type: "text", text: "x".repeat(1024 * 1024) }] }, 1);
+	try {
+		const result = await run.execute();
+		assert.equal(result.details.mcpError, "budget-not-configured");
+		assert.doesNotThrow(() => run.owner!.create(result.content, "routing-call"));
+		assert.equal(run.calls(), 1);
+		assert.ok(JSON.stringify(result).length < 512);
+	} finally { run.owner!.dispose(); }
+});
+
+test("MCP recovery presentation passes existing V2 model and UI validation", () => {
+	const content = convertMcpResult({ content: [], structuredContent: { text: "x".repeat(1024 * 1024) } });
+	const owner = createToolResultPresentationOwner({ enabled: true, budgetTokens: 256 }, "v2-session")!;
+	try {
+		const view = owner.create(content, "v2-call");
+		assert.equal(view?.version, 2);
+		assert.equal(getToolResultModelContent(view, content), view!.modelContent);
+		assert.equal(getToolResultUiContent(view, content), view!.uiContent);
+	} finally { owner.dispose(); }
 });
 
 test("configured MCP server error retains canonical text for recovery", async () => {

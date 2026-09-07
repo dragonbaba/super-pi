@@ -24,7 +24,7 @@ test("invalidating an extension input seam releases MCP session dependencies", a
 	} finally { await fixture.release(); }
 });
 
-test("MCP progress observer rejection cannot replace the canonical final result", async () => {
+for (const isMcp of [true, false]) test(`progress observer rejection uses MCP tool identity: ${isMcp}`, async () => {
 	let tool: any;
 	const runtime = new McpBridgeRuntime({ registerTool(value: any) { tool = value; } }, "fixture-workspace");
 	const state = { status: "connected", config: { id: "fixture", toolTimeoutMs: 1000 }, client: {
@@ -36,6 +36,7 @@ test("MCP progress observer rejection cannot replace the canonical final result"
 		},
 	} };
 	runtime.registerRemoteTool(state, { name: "fixture", inputSchema: { type: "object", properties: {} } });
+	if (!isMcp) tool.name = "ordinary-tool";
 	let streams = 0;
 	const finals: any[] = [];
 	const agent = new Agent({ initialState: { tools: [tool] }, streamFn: (() => {
@@ -55,7 +56,7 @@ test("MCP progress observer rejection cannot replace the canonical final result"
 	});
 	await agent.prompt("fixture");
 	assert.equal(finals.length, 1);
-	assert.equal(finals[0].isError, false);
-	assert.equal(finals[0].result.content[0].text, "canonical-final");
+	assert.equal(finals[0].isError, !isMcp);
+	if (isMcp) assert.equal(finals[0].result.content[0].text, "canonical-final");
 	assert.equal(runtime.activeCalls.size, 0);
 });
