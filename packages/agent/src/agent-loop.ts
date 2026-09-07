@@ -1,3 +1,5 @@
+const MCP_PROGRESS_SOURCE = Symbol.for("super-pi.mcp-progress-source.v1");
+
 /**
  * Agent loop that works with AgentMessage throughout.
  * Transforms to Message[] only at the LLM call boundary.
@@ -924,7 +926,8 @@ class ToolProgressDelivery {
 			} catch (error) {
 				// MCP notifications are observational, never the canonical final.
 				// Keep the existing critical-listener contract for other tool updates.
-				if (partialResult.details?.mcpProgress !== true) throw error;
+				if (!this.prepared.toolCall.name.startsWith("mcp__") ||
+					(partialResult as unknown as Record<symbol, unknown>)[MCP_PROGRESS_SOURCE] !== true) throw error;
 			}
 		}
 	}

@@ -1,3 +1,5 @@
+const MCP_PROGRESS_SOURCE = Symbol.for("super-pi.mcp-progress-source.v1");
+
 /** Fixed public errors never retain an arbitrary server error as message/cause. */
 export class McpCallError extends Error {
   constructor(code) {
@@ -36,7 +38,7 @@ export class McpCall {
       ? `[MCP progress: ${value.progress}/${value.total}]`
       : `[MCP progress: ${value.progress}]`;
     try {
-      this.onUpdate({ content: [{ type: "text", text }], details: { mcpProgress: true } });
+      this.onUpdate({ content: [{ type: "text", text }], details: { mcpProgress: true }, [MCP_PROGRESS_SOURCE]: true });
       this.deliveries++;
     } catch {
       this.observerErrors++;
