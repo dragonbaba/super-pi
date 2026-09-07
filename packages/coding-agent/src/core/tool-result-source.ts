@@ -71,6 +71,10 @@ class SourceInspection {
 		const array = Array.isArray(value);
 		const prototype = Object.getPrototypeOf(value);
 		if (!array && prototype !== Object.prototype && prototype !== null) throw new McpSourceError("invalid-structured-content");
+		// JSON.stringify consults toJSON even when it is non-enumerable. Reject
+		// custom serialization before invocation, including accessor hooks.
+		const toJson = Object.getOwnPropertyDescriptor(value, "toJSON");
+		if (toJson && (!("value" in toJson) || typeof toJson.value === "function")) throw new McpSourceError("invalid-structured-content");
 		this.charge(2, 16);
 		this.hash?.update(array ? "[" : "{");
 		this.ancestors.push(value);

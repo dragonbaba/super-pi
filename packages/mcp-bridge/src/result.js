@@ -40,6 +40,7 @@ export function convertMcpResult(result, allowRecovery = true) {
   const extras = Number(result?.structuredContent !== undefined) + Number(result?.toolResult !== undefined) + Number(result?._meta !== undefined);
   if (items.length + extras > MAX_CONTENT_ITEMS) throw new McpSourceError("result-size-limit");
   let bytes = 0;
+  let textBytes = 0;
   let imageBytes = 0;
   let typedPayloadBytes = 0;
   // Size/shape preflight before allocating normalized result wrappers.
@@ -47,6 +48,7 @@ export function convertMcpResult(result, allowRecovery = true) {
     if (item?.type === "text") {
       if (typeof item.text !== "string") throw new McpSourceError("invalid-typed-content");
       bytes += Buffer.byteLength(item.text);
+      textBytes += Buffer.byteLength(item.text);
     } else if (item?.type === "image" || item?.type === "audio") {
       const size = binarySize(item.data, item.mimeType);
       validateMedia(item.data, item.mimeType, size, item.type === "image");
@@ -63,9 +65,12 @@ export function convertMcpResult(result, allowRecovery = true) {
       if (typeof item.resource.text !== "string") binarySize(item.resource.blob, item.resource.mimeType ?? "application/octet-stream");
       bytes += resourceBytes;
       typedPayloadBytes += resourceBytes;
-    } else if (item?.type !== "resource_link") throw new McpSourceError("invalid-typed-content");
+    } else if (item?.type === "resource_link") {
+      if (typeof item.uri !== "string" || typeof item.name !== "string" ||
+        (item.size !== undefined && (!Number.isSafeInteger(item.size) || item.size < 0))) throw new McpSourceError("invalid-typed-content");
+    } else throw new McpSourceError("invalid-typed-content");
     if (bytes > MCP_SOURCE_BYTES) throw new McpSourceError("result-size-limit");
-    if (!allowRecovery && (bytes > MAX_TEXT_BYTES || (item.type !== "text" && item.type !== "image"))) throw new McpSourceError("budget-not-configured");
+    if (!allowRecovery && (textBytes > MAX_TEXT_BYTES || (item.type !== "text" && item.type !== "image"))) throw new McpSourceError("budget-not-configured");
   }
   const content = [];
   let accountedSources = 0;
@@ -73,8 +78,8 @@ export function convertMcpResult(result, allowRecovery = true) {
     if (item.type === "text") {
       // Preserve legacy small-text sanitization; the complete large canonical
       // string goes to G2, never through truncateUtf8 or a complete-file Buffer.
-      const text = bytes <= MAX_TEXT_BYTES ? sanitizeText(item.text, Number.MAX_SAFE_INTEGER) : item.text;
-      if (text) content.push(bytes > MAX_TEXT_BYTES ? { type: "text", text, mcpInput: true } : { type: "text", text });
+      const text = textBytes <= MAX_TEXT_BYTES ? sanitizeText(item.text, Number.MAX_SAFE_INTEGER) : item.text;
+      if (text) content.push(textBytes > MAX_TEXT_BYTES ? { type: "text", text, mcpInput: true } : { type: "text", text });
     } else if (item.type === "image") {
       content.push({ type: "image", data: item.data, mimeType: item.mimeType });
     } else {
@@ -90,10 +95,12 @@ export function convertMcpResult(result, allowRecovery = true) {
     const value = result[key];
     if (!allowRecovery) {
       let text;
-      try { text = serializeMcpStructured(value, MAX_TEXT_BYTES - bytes); }
+      try { text = serializeMcpStructured(value, MAX_TEXT_BYTES - textBytes); }
       catch (error) { if (error?.code === "result-size-limit") throw new McpSourceError("budget-not-configured"); throw error; }
       bytes += Buffer.byteLength(text);
-      if (bytes > MAX_TEXT_BYTES) throw new McpSourceError("budget-not-configured");
+      textBytes += Buffer.byteLength(text);
+      if (textBytes > MAX_TEXT_BYTES) throw new McpSourceError("budget-not-configured");
+      if (bytes > MCP_SOURCE_BYTES) throw new McpSourceError("result-size-limit");
       content.push({ type: "text", text });
       continue;
     }
