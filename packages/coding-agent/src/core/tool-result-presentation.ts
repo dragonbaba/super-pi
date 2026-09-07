@@ -1052,7 +1052,7 @@ function projectContent(
 	}
 	const omission = buildFullOmissionProjection(content, sourceKey, sourceDigest, sourceScan, counters);
 	omission.artifact = createArtifactDescriptor(sourceKey, sourceScan, counters);
-	omission.content = [{ type: "text", text: `[MCP content retained in local session artifact ${omission.artifact.id}. Continue text with cursor ${omission.cursor}.]` }];
+	omission.content.push({ type: "text", text: `[MCP content retained in local session artifact ${omission.artifact.id}.]` });
 	omission.estimate = estimateToolOutputTokens(omission.content);
 	if (omission.estimate.estimatedTokens > budgetTokens || omission.estimate.rawUtf8Bytes > MCP_INLINE_BYTES) {
 		throw new ToolResultContinuationError("budget-too-small", "Configured budget cannot contain the MCP recovery notice.");
