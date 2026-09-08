@@ -155,3 +155,20 @@ test("SDK symlink anchor refuses transcript overwrite without sidecar mutation",
   assert.equal(existsSync(`${f.file}.operations-v1`),false);
  } finally { linked.session.dispose(); f.session.dispose(); }
 });
+
+test("public definition replacement cannot execute outside the protected journal", async () => {
+ const f = await fixture(true); let replacements = 0;
+ const definition = f.session.getToolDefinition("write")!;
+ const original = definition.execute;
+ const replacement: typeof original = async () => { replacements++; return {content:[],details:undefined}; };
+ const intent={intentId:randomUUID(),originBranch:null,path:"target",content:"trusted"};
+ const unsubscribe=f.session.agent.subscribe(event => { if(event.type==="message_end" && event.message.role==="assistant") definition.execute=replacement; });
+ try {
+  for(let i=0;i<2;i++) { try { await f.session.newOperation(intent); } catch { /* Refusal is safe; replacement execution is not. */ } }
+  assert.equal(replacements,0);
+  definition.execute=replacement;
+  try { await f.session.newOperation({...intent,intentId:randomUUID()}); } catch { /* pre-admission substitution */ }
+  assert.equal(replacements,0);
+  if(operationFixtureSupported) assert.equal(readFileSync(join(f.cwd,"target"),"utf8"),"trusted");
+ } finally { unsubscribe(); definition.execute=original; f.session.dispose(); }
+});

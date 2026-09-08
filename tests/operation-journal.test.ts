@@ -156,3 +156,19 @@ test("public inspection observes ownership without changing lock or journal", {s
   writeFileSync(lock,before);
  } finally { journal.dispose(); }
 });
+
+test("encoded header overflow rejects repeatedly before creating or reconciling ownership", () => {
+ const root=operationFixtureRoot("pi-header-bound-");const anchor=join(root,"session");writeFileSync(anchor,"session");
+ const expanded='"'.repeat(300);
+ for(let i=0;i<2;i++) {
+  assert.throws(()=>new OperationJournal(anchor,expanded,root),/Operation record capacity/);
+  assert.equal(existsSync(`${anchor}.operations-v1`),false);
+ }
+ mkdirSync(`${anchor}.operations-v1`,{mode:0o700});
+ const body=JSON.stringify({version:1,token:randomUUID()});
+ const lock=JSON.stringify({body,checksum:createHash("sha256").update(body).digest("hex")});
+ writeFileSync(`${anchor}.operations-v1/lock`,lock,{mode:0o600});
+ assert.throws(()=>new OperationJournal(anchor,expanded,root,JSON.parse(body).token),/Operation record capacity/);
+ assert.equal(readFileSync(`${anchor}.operations-v1/lock`,"utf8"),lock);
+ assert.equal(existsSync(`${anchor}.operations-v1/header`),false);
+});
