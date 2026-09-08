@@ -1,3 +1,6 @@
+import { execFileSync } from "node:child_process";
+import assert from "node:assert/strict";
+import { OperationJournal } from "../../packages/coding-agent/src/core/operation-journal.ts";
 import { mkdtempSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -48,6 +51,13 @@ if (process.argv[2] === "--operation-crash") {
 	const previous = JSON.parse(process.argv[3]);
 	const cutpoint = process.argv[4];
 	const intentId = process.argv[5];
+	const append = fs.appendFileSync;
+	fs.appendFileSync = (path, data, options) => {
+		if (cutpoint === "history" && String(path) === previous.file && String(data).includes("host-operation-v1")) {
+			append(path, String(data).slice(0, 80), options); process.kill(process.pid, "SIGKILL");
+		}
+		return append(path, data, options);
+	};
 	const rename = fs.renameSync;
 	fs.renameSync = (source, target) => {
 		if (String(target).includes(".operations-v1/")) {
@@ -71,4 +81,11 @@ if (process.argv[2] === "--operation-crash") {
 	const f = await fixture(true, previous);
 	await f.session.newOperation({ intentId, originBranch: null, path: "target", content: "complete intended bytes" });
 	throw new Error("Crash cutpoint was not reached");
+}
+
+
+if(process.argv[2]==="--operation-fifo") {
+ const root=operationFixtureRoot("pi-fifo-"); const file=join(root,"session");fs.writeFileSync(file,"session");fs.mkdirSync(`${file}.operations-v1`);
+ execFileSync("mkfifo",[`${file}.operations-v1/lock`]);
+ assert.throws(()=>OperationJournal.inspectWriter(file),/Corrupt or oversized/);
 }

@@ -5,13 +5,14 @@ import { randomUUID } from "node:crypto";
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { convertToLlm } from "../packages/coding-agent/src/core/messages.ts";
 import { fixture, operationFixtureSupported } from "./helpers/operation-write-fixture.ts";
 import { OperationJournal } from "../packages/coding-agent/src/core/operation-journal.ts";
 
 test("real child termination at started, partial, unpublished and completed never replays uncertain writes", { skip: !operationFixtureSupported }, async () => {
-	for (const cutpoint of ["started", "partial", "unpublished", "completed"]) {
+	for (const cutpoint of ["started", "partial", "unpublished", "completed", "history"]) {
 		const f = await fixture(true);
-		await f.session.agent.dispatchHostTool({ type: "toolCall", id: "seed", name: "missing", arguments: {} });
+		f.session.sessionManager.ensureOperationStorage();
 		f.session.dispose();
 		const intentId = randomUUID();
 		const child = spawnSync(process.execPath, [...process.execArgv.filter(arg => arg !== "--test"),
@@ -24,16 +25,26 @@ test("real child termination at started, partial, unpublished and completed neve
 		const id = `op1:${header.journal}:${intentId}`;
 		const target = join(f.cwd, "target");
 		const before = existsSync(target) ? readFileSync(target, "utf8") : undefined;
-		if (cutpoint === "completed") writeFileSync(target, "later edit");
+		if ((cutpoint === "completed" || cutpoint === "history")) writeFileSync(target, "later edit");
 		const reopened = await fixture(true, f, token);
 		try {
 			const recovery = reopened.session.resumeOperation(id, { originBranch: null, path: "target", content: "complete intended bytes" });
-			if (cutpoint === "completed") { assert.equal((await recovery).historical, true); assert.equal(readFileSync(target, "utf8"), "later edit"); }
+			if ((cutpoint === "completed" || cutpoint === "history")) { assert.equal((await recovery).historical, true); assert.equal(readFileSync(target, "utf8"), "later edit"); }
 			else {
 				await assert.rejects(recovery, /unknown|Corrupt journal/);
 				assert.equal(existsSync(target) ? readFileSync(target, "utf8") : undefined, before);
 			}
 			assert.equal(reopened.providers(), 0);
+			assert.equal(convertToLlm(reopened.session.agent.state.messages).some(m=>m.role==="toolResult" || m.role==="assistant"),false);
+			reopened.session.sessionManager.appendMessage({role:"user",content:"next ordinary message",timestamp:1});
+			const loaded = (await fixture(true, f));
+			try { assert.ok(loaded.session.agent.state.messages.some(m=>m.role==="user" && m.content==="next ordinary message")); } finally { loaded.session.dispose(); }
 		} finally { reopened.session.dispose(); }
 	}
+});
+
+
+test("FIFO metadata is rejected in a task-owned subprocess without blocking", {skip:!operationFixtureSupported}, () => {
+ const child=spawnSync(process.execPath,["--experimental-strip-types",fileURLToPath(new URL("./helpers/operation-write-fixture.ts",import.meta.url)),"--operation-fifo"],{encoding:"utf8",timeout:5000});
+ assert.equal(child.status,0,String(child.error)+child.stderr);
 });

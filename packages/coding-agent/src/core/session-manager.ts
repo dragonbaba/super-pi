@@ -905,10 +905,18 @@ export class SessionManager {
 		this._setSessionFile(sessionFile);
 	}
 
+	private _appendNeedsSeparator = false;
 	private _setSessionFile(sessionFile: string, preloadedFileEntries?: FileEntry[]): void {
+		this._appendNeedsSeparator = false;
 		this.sessionFile = resolvePath(sessionFile);
 		if (existsSync(this.sessionFile)) {
 			this.fileEntries = preloadedFileEntries ?? loadEntriesFromFile(this.sessionFile);
+			const tailFd = openSync(this.sessionFile, "r");
+			try {
+				const size = statSync(this.sessionFile).size;
+				const tail = Buffer.alloc(1);
+				this._appendNeedsSeparator = size > 0 && readSync(tailFd, tail, 0, 1, size - 1) === 1 && tail[0] !== 10;
+			} finally { closeSync(tailFd); }
 
 			// If file was empty, initialize it with a valid session header. If it was
 			// non-empty but did not parse as a Super Pi session, fail without modifying it.
@@ -941,6 +949,7 @@ export class SessionManager {
 	}
 
 	newSession(options?: NewSessionOptions): string | undefined {
+		this._appendNeedsSeparator = false;
 		if (options?.id !== undefined) {
 			assertValidSessionId(options.id);
 		}
@@ -1031,6 +1040,10 @@ export class SessionManager {
 
 	_persist(entry: SessionEntry): void {
 		if (!this.persist || !this.sessionFile) return;
+		if (this._appendNeedsSeparator) {
+			appendFileSync(this.sessionFile, "\n");
+			this._appendNeedsSeparator = false;
+		}
 
 		const hasAssistant = this.fileEntries.some((e) => e.type === "message" && e.message.role === "assistant");
 		if (!hasAssistant) {

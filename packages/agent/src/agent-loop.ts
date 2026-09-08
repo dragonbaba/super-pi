@@ -56,6 +56,7 @@ export async function runHostToolDispatch(
 		stopReason: "toolUse", timestamp: Date.now(),
 	};
 	const executionOrigin = { ...origin, content: [selectedCall] };
+	selectedContext.messages.push(executionOrigin);
 	await emit({ type: "agent_start" });
 	await emit({ type: "turn_start" });
 	await emit({ type: "message_start", message: origin });

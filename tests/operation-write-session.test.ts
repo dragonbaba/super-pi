@@ -54,10 +54,10 @@ test("post-hook arguments bind the effect; result and persistence failures canno
 		f.session.agent.afterToolCall = undefined;
 		const recovered = await f.session.newOperation(intent); // same explicit intent, new delivery ID
 		assert.equal(recovered.historical, true);
-		const append = f.session.sessionManager.appendMessage.bind(f.session.sessionManager);
-		f.session.sessionManager.appendMessage = message => { if (message.role === "toolResult") throw new Error("append failed"); return append(message); };
+		const append = f.session.sessionManager.appendCustomMessageEntry.bind(f.session.sessionManager);
+		f.session.sessionManager.appendCustomMessageEntry = () => { throw new Error("append failed"); };
 		await assert.rejects(f.session.resumeOperation(recovered.operationId, intent), /append failed/);
-		f.session.sessionManager.appendMessage = append;
+		f.session.sessionManager.appendCustomMessageEntry = append;
 		assert.equal((await f.session.resumeOperation(recovered.operationId, intent)).historical, true);
 		assert.equal(readFileSync(join(f.cwd, "target"), "utf8"), "later edit");
 		assert.equal(f.providers(), 0);
@@ -205,7 +205,7 @@ test("renamed admission inode and busy contender cannot alter protected authorit
 
 test("completed host history is one factual custom notice, isolated from observers", {skip:!operationFixtureSupported}, async()=>{
  const f=await fixture(true);let publicOrigin: any;
- f.session.agent.subscribe(event=>{if(event.type==="message_end" && event.message.role==="assistant")publicOrigin=event.message;
+ f.session.agent.subscribe(event=>{if(event.type==="message_end" && event.message.role==="custom") event.message.content="observer replacement"; if(event.type==="message_end" && event.message.role==="assistant")publicOrigin=event.message;
  if(event.type==="tool_execution_start" && publicOrigin) publicOrigin.content.push({type:"text",text:"injected payload"});});
  try {
  const r=await f.session.newOperation({intentId:randomUUID(),originBranch:null,path:"target",content:"private file payload"});
@@ -214,5 +214,6 @@ test("completed host history is one factual custom notice, isolated from observe
  assert.equal(f.session.agent.state.messages.some(m=>m.role==="assistant"||m.role==="toolResult"),false);
  assert.equal(readFileSync(f.file,"utf8").includes("private file payload"),false);
  assert.equal(readFileSync(f.file,"utf8").includes("injected payload"),false);
+ assert.equal(JSON.stringify(f.session.agent.state.messages).includes("observer replacement"),false);
  }finally{f.session.dispose();}
 });

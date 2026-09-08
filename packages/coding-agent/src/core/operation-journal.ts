@@ -22,7 +22,7 @@ function exactKeys(value: unknown, keys: string): asserts value is Record<string
 	if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join(",") !== keys.split(",").sort().join(",")) throw new Error("Corrupt operation record fields");
 }
 function boundedRead(path: string, cap: number): unknown {
-	const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+	const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
 	try {
 		const stat = fstatSync(fd);
 		if (!stat.isFile() || stat.nlink !== 1 || stat.size > cap) throw new Error("Corrupt or oversized journal file");

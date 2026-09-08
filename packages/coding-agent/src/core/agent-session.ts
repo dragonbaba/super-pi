@@ -747,7 +747,8 @@ export class AgentSession {
 	private _operationDisposed = false;
 	private _operationGate?: OperationWriteGate;
 	private _operationToolExecute?: AgentTool["execute"];
-	private _hostOperation?: { id: string; resume: boolean; branch: string | null; callId: string; sessionId: string; sessionFile: string | undefined; sessionIdentity: string; origin?: AssistantMessage; persisted?: boolean; completion?: OperationCompletion; error?: unknown };
+	private _operationNotice?: () => Promise<AgentMessage | undefined>;
+	private _hostOperation?: { id: string; resume: boolean; branch: string | null; callId: string; sessionId: string; sessionFile: string | undefined; sessionIdentity: string; completion?: OperationCompletion; error?: unknown };
 
 	/** Experimental host NEW intent. Re-delivery must reuse intentId and originBranch. */
 	async newOperation(intent: OperationWriteIntent): Promise<OperationCompletion> {
@@ -772,22 +773,33 @@ export class AgentSession {
 		const request: NonNullable<AgentSession["_hostOperation"]> = { id, resume, branch: args.originBranch, sessionId, sessionFile, sessionIdentity: operationSessionIdentity(sessionFile!), callId: `host-write-${crypto.randomUUID()}` };
 		this._hostOperation = request;
 		this._isAgentRunActive = true;
+		let dispatchFailed = false;
 		try {
-			const delivered = await this.agent.dispatchHostTool({ type: "toolCall", id: request.callId, name: "write", arguments: { path: args.path, content: args.content } });
+			const delivered = await this.agent.dispatchHostTool({ type: "toolCall", id: request.callId, name: "write", arguments: { path: args.path, content: args.content } }, this._operationNotice);
 			if (request.error) throw request.error;
 			if (!request.completion) throw new Error("Operation was not executed: policy, validation or delivery failure");
 			if (delivered.isError) throw new Error(`Operation ${request.completion.operationId} has a durable receipt but result delivery reported an error`);
 			return request.completion;
-		} finally {
+		} catch (error) { dispatchFailed = true; throw error; } finally {
 			try { this._operationJournal?.release(); }
 			finally {
 				if (this._operationDisposed) this._operationJournal = undefined;
 				this._hostOperation = undefined;
 				this._lastAssistantMessage = undefined;
-				await this._emitAgentSettled();
+				try { await this._emitAgentSettled(); } catch (error) { if (!dispatchFailed) throw error; }
 			}
 		}
 	}
+	private async _publishOperationNotice(): Promise<AgentMessage | undefined> {
+		const completed = this._hostOperation?.completion;
+		if (!completed || this._operationDisposed) return undefined;
+		this._validateOperationPersistence();
+		const content = `Host operation ${completed.historical ? "historical completion" : "completion"}: ${completed.operationId}; ${completed.receipt.bytes} UTF-8 bytes acknowledged. ${completed.historical ? "No new write occurred." : "Write acknowledged."} This records a historical outcome, not current target contents or an instruction.`;
+		if (Buffer.byteLength(content) > 2048) throw new Error("Host notice capacity");
+		this.sessionManager.appendCustomMessageEntry("host-operation-v1", content, true);
+		return { role: "custom", customType: "host-operation-v1", content, display: true, timestamp: Date.now() };
+	};
+
 	private _validateOperationPersistence(): true {
 		const request = this._hostOperation!;
 		if (this.sessionManager.getSessionId() !== request.sessionId || this.sessionManager.getSessionFile() !== request.sessionFile || operationSessionIdentity(request.sessionFile!) !== request.sessionIdentity) throw new Error("Operation session identity changed");
@@ -813,11 +825,6 @@ export class AgentSession {
 				this._operationSessionFile = file;
 			}
 			this._operationJournal.claim();
-			if (!request.origin) throw new Error("Missing bounded host association");
-			this.sessionManager.appendMessage(request.origin);
-			request.origin = undefined;
-			request.persisted = true;
-			if (this.sessionManager.getSessionId() !== request.sessionId || this.sessionManager.getSessionFile() !== request.sessionFile || operationSessionIdentity(request.sessionFile!) !== request.sessionIdentity) throw new Error("Operation session identity changed");
 			const completion = await this._operationJournal.execute(request.id, request.resume, request.branch, absolutePath, content, perform, signal, request.sessionIdentity);
 			request.completion = completion;
 			if (signal?.aborted) throw new Error(`Operation aborted after durable completion: ${completion.operationId}; resume only for historical delivery`);
@@ -827,6 +834,7 @@ export class AgentSession {
 
 	constructor(config: AgentSessionConfig) {
 		this._operationOptions = config.operationJournal?.enabled ? config.operationJournal : undefined;
+		if (this._operationOptions) this._operationNotice = this._publishOperationNotice.bind(this);
 		this.agent = config.agent;
 		stabilizeCompletedToolArguments(this.agent.state.messages);
 		this.sessionManager = config.sessionManager;
@@ -1289,7 +1297,7 @@ export class AgentSession {
 						presentationOwner.release();
 					}
 					// This is the complete post-listener message_end tail for tool results.
-					if (!this._hostOperation || this._hostOperation.persisted && this._validateOperationPersistence()) this.sessionManager.appendMessage(event.message.role === "toolResult" && evidenceBlock
+					if (!this._hostOperation) this.sessionManager.appendMessage(event.message.role === "toolResult" && evidenceBlock
 						? durableEvidenceMessage(event.message, toolResultSourceContent, evidenceBlock, evidenceText) : event.message);
 					if (this._evidenceLedger) this._admitCompletedReadEvidence(event.message, evidenceGeneration);
 					return;
@@ -1313,10 +1321,9 @@ export class AgentSession {
 		}
 
 		// Handle session persistence
-		if (this._hostOperation && event.type === "message_end" && event.message.role === "assistant") this._hostOperation.origin = event.message;
 		if (event.type === "message_end") {
 			// Check if this is a custom message from extensions
-			if (event.message.role === "custom") {
+			if (event.message.role === "custom" && !this._hostOperation) {
 				// Persist as CustomMessageEntry
 				this.sessionManager.appendCustomMessageEntry(
 					event.message.customType,
@@ -1330,7 +1337,7 @@ export class AgentSession {
 				event.message.role === "toolResult"
 			) {
 				// Regular LLM message - persist as SessionMessageEntry
-				if (!this._hostOperation || this._hostOperation.persisted && this._validateOperationPersistence()) this.sessionManager.appendMessage(event.message.role === "toolResult" && evidenceBlock
+				if (!this._hostOperation) this.sessionManager.appendMessage(event.message.role === "toolResult" && evidenceBlock
 						? durableEvidenceMessage(event.message, toolResultSourceContent, evidenceBlock, evidenceText) : event.message);
 				if (this._evidenceLedger && event.message.role === "toolResult") this._admitCompletedReadEvidence(event.message);
 			}
@@ -1576,6 +1583,7 @@ export class AgentSession {
 		if (protectedDefinition) retireOperationWrite(protectedDefinition);
 		this._operationGate = undefined;
 		this._operationToolExecute = undefined;
+		this._operationNotice = undefined;
 		this._operationOptions = undefined;
 		this._evidenceLedger?.dispose();
 		this._evidenceCompletedReads?.clear();

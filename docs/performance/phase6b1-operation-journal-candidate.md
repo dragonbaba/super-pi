@@ -209,3 +209,27 @@ The deferred association is bounded call-local metadata, released after append o
 Successful persistence still orders association before result, without rewriting prior history or altering ordinary/provider and 6A1 persistence paths.
 The narrow storage-anchor helper adds one initial atomic install for a fresh protected session; subsequent admissions perform targeted inode metadata reads.
 Fresh normal CI repeats the existing E2 set because ownership and retained payload behavior changed; previous timings are historical, not accepted for the new chain.
+
+## Approved self-contained custom host history
+
+The host-only history contract now supersedes the synthetic assistant/tool-result pairing. Ordinary model tool history is unchanged.
+
+| Owner | Data | Release / failure / recovery |
+| --- | --- | --- |
+| Dispatch-local call | Bounded final path/content and provisional lifecycle messages | Never canonical or persisted; released on success, denial, throw and abort |
+| Permission context | Existing prior-message snapshot plus private selected call | Shallow view, no transcript clone; normal policy mutations remain effective |
+| Durable journal | Validated operation state and factual receipt | Sole replay authority; failed/unknown never replay; missing/torn history cannot authorize an effect |
+| Canonical host notice | One bounded custom_message from private receipt primitives | No payload or mutable hook output; self-contained if delivered, absent/torn notice is non-authoritative |
+
+The final custom notice is persisted through appendCustomMessageEntry and converted through existing CustomMessage rules, with explicit host/historical wording.
+Its observer event container is separate from canonical admission. A listener failure cannot produce an unmatched canonical tool call.
+Cold loading continues to skip malformed JSONL lines. A one-time trailing delimiter at cold append prevents a torn final line absorbing the next valid entry; bytes are preserved, not repaired or deleted.
+Legacy experimental host tool-call histories are explicitly unsupported for model conversion; no automatic migration or effect replay is performed.
+Journal metadata uses O_NOFOLLOW|O_NONBLOCK and validates the opened regular single-link descriptor before bounded parsing.
+The frozen evidence positive fixture selects100lines with a model-token margin; its separate tiny-read control still asserts a not-beneficial miss. No6A1 production change.
+
+The narrow fixture comparison found no fixture/helper delta from accepted main. Unqualified read selected16991characters including continuation on Windows at2048 projected tokens; the failed Linux run projected56tokens and rejected two admissions as not-beneficial.
+The explicit100-line fixture returned3308characters/1364model tokens locally, below2048 and above the asserted512-token margin; Linux must retain the hit assertion and actual reference-benefit checks in CI.
+Host notice publication uses the existing custom-entry append; it is not claimed atomic/fsynced. Provisional lifecycle events never enter Agent canonical messages or SessionManager persistence.
+One enabled-session bound finalization callback and one context-array snapshot per host dispatch are added; no disabled-session callback is constructed. Notice/event containers share bounded strings.
+The existing E2 set remains the only timing/profile/GC evidence source for the changed chain; local check/build and affected Windows tests passed. Native child crash/FIFO tests remain exact-CI gates.

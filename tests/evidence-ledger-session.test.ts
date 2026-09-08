@@ -142,10 +142,11 @@ test("large bounded local-text windows carry only private metadata", async t => 
 	const f = await fixture();
 	try {
 		writeFileSync(join(f.cwd, "file.txt"), "large selected source text\n".repeat(20000));
-		const first = await f.read();
-		assert.ok(JSON.stringify(first.content).length < 65_536);
+		const first = await f.read({ path: "file.txt", limit: 100 });
+		assert.ok(JSON.stringify(first.content).length < 5000);
+		assert.ok(f.internals._toolResultPresentation!.getResidentEvidenceModelTokens(first.toolCallId)! > 512, "positive fixture must have a clear reference-benefit margin");
 		for (let i = 0; i < 9; i++) {
-			const message = await f.read();
+			const message = await f.read({ path: "file.txt", limit: 100 });
 			const hit = /no new disk read/i.test(JSON.stringify(message.content));
 			if (hit !== (process.platform !== "win32")) {
 				const ledger = f.internals._evidenceLedger!;
@@ -396,4 +397,13 @@ test("source lifecycle: bounded durable clones release after session lifecycle",
 	t.diagnostic(JSON.stringify({ hits: 8, durableMessageClones: 8, freshArrays: 8, freshTextBlocks: 8,
 		fallbackChars: durableEvidenceFallback.length, weakReferencesReleased: weak.length, retainedAfterLifecycle: 0,
 		newStores: 0, sourceCopies: 0, noticeStringCopies: 0 }));
+});
+
+
+test("tiny local read deliberately misses the unchanged benefit gate", async () => {
+ const f=await fixture();try {
+ writeFileSync(join(f.cwd,"file.txt"),"tiny");await f.read();await f.read();
+ assert.equal(f.internals._evidenceLedger!.counters.hits,0);
+ if(process.platform!=="win32") assert.ok(f.internals._evidenceLedger!.counters.missesByReason["not-beneficial"]>0);
+ }finally{f.close();}
 });

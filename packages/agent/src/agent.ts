@@ -618,11 +618,17 @@ export class Agent {
 	}
 
 	/** @internal Experimental host-only dispatch; failures propagate without model retry messages. */
-	async dispatchHostTool(call: AgentToolCall): Promise<ToolResultMessage> {
+	async dispatchHostTool(call: AgentToolCall, complete?: () => Promise<AgentMessage | undefined>): Promise<ToolResultMessage> {
 		let result!: ToolResultMessage;
 		await this.runWithLifecycle(async signal => {
-			result = await runHostToolDispatch(call, { systemPrompt: this._state.systemPrompt, messages: [], tools: this._state.tools.slice() },
-				this.createLoopConfig(), event => this.processEvents(event), signal);
+			result = await runHostToolDispatch(call, { systemPrompt: this._state.systemPrompt, messages: this._state.messages.slice(), tools: this._state.tools.slice() },
+				this.createLoopConfig(), event => this.processEvents(event, false), signal);
+			const notice = await complete?.();
+			if (notice) {
+				this._state.messages.push(notice);
+				await this.processEvents({ type: "message_start", message: { ...notice } }, false);
+				await this.processEvents({ type: "message_end", message: { ...notice } }, false);
+			}
 		}, true);
 		return result;
 	}
@@ -687,7 +693,7 @@ export class Agent {
 	 * considered idle later, after all awaited listeners for `agent_end` finish
 	 * and `finishRun()` clears runtime-owned state.
 	 */
-	private async processEvents(event: AgentEvent): Promise<void> {
+	private async processEvents(event: AgentEvent, admitMessage = true): Promise<void> {
 		switch (event.type) {
 			case "message_start":
 				this._state.streamingMessage = event.message;
@@ -699,7 +705,7 @@ export class Agent {
 
 			case "message_end":
 				this._state.streamingMessage = undefined;
-				this._state.messages.push(event.message);
+				if (admitMessage) this._state.messages.push(event.message);
 				break;
 
 			case "tool_execution_start": {
