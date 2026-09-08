@@ -174,7 +174,7 @@ test("public definition replacement cannot execute outside the protected journal
    assert.equal((f.session as unknown as {_operationJournal:OperationJournal})._operationJournal.counters.effects,2);
   }
   const wrapper=f.session.agent.state.tools.find(tool=>tool.name==="write")!;
-  const execute=wrapper.execute; wrapper.execute=replacement;
+  const execute=wrapper.execute; wrapper.execute=async () => { replacements++; return {content:[],details:undefined}; };
   try { await assert.rejects(f.session.newOperation({...intent,intentId:randomUUID()}),/Trusted built-in local write unavailable/); }
   finally { wrapper.execute=execute; }
   assert.equal(replacements,0);
