@@ -44,6 +44,8 @@ export * from "./agent.ts";
 export * from "./event-delivery.ts";
 // Loop functions
 export * from "./agent-loop.ts";
+// Experimental orchestration: not production ready; no compatibility guarantee.
+// Root visibility does not imply implemented run/restore behavior; see README.
 export * from "./harness/agent-harness.ts";
 export {
 	type BranchPreparation,
@@ -76,7 +78,7 @@ export {
 } from "./harness/compaction/compaction.ts";
 export * from "./harness/messages.ts";
 export * from "./harness/prompt-templates.ts";
-// Harness
+// Standalone Harness-related primitives; orchestration status is documented separately.
 export * from "./harness/result.ts";
 export * from "./harness/session/index.ts";
 export * from "./harness/session/search.ts";

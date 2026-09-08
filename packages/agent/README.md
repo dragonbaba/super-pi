@@ -12,6 +12,48 @@ npm install @super-pi/agent-core
 
 The SQLite session backend and the `node:sqlite` adapter live in a separate package, `@super-pi/session-backend-sqlite-node`, so the core package does not pull in runtime builtins or native SQLite dependencies by default. The backend accepts a runtime-specific SQLite factory, allowing other session backends to ship as their own packages in the future.
 
+## Experimental Harness boundary
+
+Use `Agent` for the current production execution path; coding-agent's SDK constructs
+`Agent`, not `AgentHarness`. Its classified event delivery uses the existing
+`EventDeliveryDispatcher`.
+
+`AgentHarness` orchestration and its `AgentLane`, hook/event, watch, action and
+resume contracts are **experimental, not production ready, with no compatibility
+guarantee**. Export visibility is not a readiness guarantee: the package export map
+provides `.`, `./node` and `./package.json`; the root exports `AgentHarness`,
+and `./node` re-exports the root plus `NodeExecutionEnv`. There is no dedicated
+Harness consumer subpath. This status does not remove or change existing exports.
+
+Current orchestration limits:
+
+- `AgentHarness.create()` accepts a session only when `findRecords({ limit: 1 })`
+  finds no records. It returns an empty suspended list; any record causes
+  `HarnessNotImplemented("create.restore")`. It does not restore operations.
+- Configuration getters/setters, `name`, and delegated `getLeafId()` work.
+  Configuration copies are shallow and local, not durable lane configuration.
+  `session` exposes the supplied session tree. `close()` only sets the closed flag;
+  it does not implement active-operation settlement or close the supplied storage.
+- Run, queue, compaction, navigation, resume/abort, idle/stepping, lane-management
+  and watch APIs reject with `HarnessNotImplemented`. The unavailable paths reject
+  with `HarnessClosed` after close. `hooks.on` and `events.on` throw synchronously;
+  async operation methods reject rather than returning a successful result value.
+  Declared options and result types do not establish implemented behavior.
+
+This label applies to orchestration, not every file under `src/harness/`.
+Standalone session, tool, utility and result implementations have their own
+behavior; they do not acquire durable orchestration guarantees from that directory
+or the root barrel. The server-side `createCodingAgentHarness` factory assembles
+the scaffold and tools; it does not make the unavailable runtime work.
+
+Harness run/compaction/navigation records are not the coding-agent protected-write
+journal. They confer no 6B1 replay authority. The accepted SDK local-write path
+continues to use its journal and bounded, self-contained custom host-history notice;
+a notice is presentation, not authority to execute or recover an operation.
+
+The repository's [Harness v2 design](https://github.com/dragonbaba/super-pi/blob/9e0e43ff87951a246dcaeb89e80504da6d6079e9/packages/agent/docs/harness-v2.md) describes a target and
+implementation backlog, not a claim that its run/restore examples work today.
+
 ## Quick Start
 
 ```typescript
