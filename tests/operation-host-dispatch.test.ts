@@ -1,0 +1,42 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { Type } from "typebox";
+import { Agent } from "../packages/agent/src/agent.ts";
+
+test("host dispatch uses policy and real execution, never provider or sibling calls", async () => {
+	let effects = 0;
+	let providers = 0;
+	const agent = new Agent({ streamFn: () => { providers++; throw new Error("provider forbidden"); } });
+	agent.state.tools = [{ name: "write", label: "write", description: "fixture", parameters: Type.Object({ content: Type.String() }),
+		execute: async (_id, args) => { effects++; assert.equal(args.content, "changed"); return { content: [{ type: "text", text: "receipt" }], details: undefined }; } }];
+	agent.beforeToolCall = async ({ args }) => { (args as { content: string }).content = "changed"; return undefined; };
+	const events: string[] = [];
+	agent.subscribe(event => { events.push(event.type); });
+	await agent.dispatchHostTool({ type: "toolCall", id: "host-1", name: "write", arguments: { content: "original" } });
+	assert.equal(effects, 1);
+	assert.equal(providers, 0);
+	assert.deepEqual(events, ["agent_start", "turn_start", "message_start", "message_end", "tool_execution_start", "tool_execution_end", "message_start", "message_end", "turn_end", "agent_end"]);
+	agent.beforeToolCall = async () => ({ block: true, reason: "denied" });
+	await agent.dispatchHostTool({ type: "toolCall", id: "host-2", name: "write", arguments: { content: "original" } });
+	assert.equal(effects, 1);
+	assert.equal(providers, 0);
+});
+
+test("host busy exclusion and idle include final awaited delivery; failure does not fabricate assistant error", async () => {
+	const agent = new Agent({ streamFn: () => { throw new Error("provider forbidden"); } });
+	let release!: () => void;
+	const gate = new Promise<void>(resolve => { release = resolve; });
+	let entered!: () => void;
+	const ready = new Promise<void>(resolve => { entered = resolve; });
+	agent.subscribe(async event => { if (event.type === "agent_end") { entered(); await gate; } });
+	const call = { type: "toolCall" as const, id: "host-3", name: "missing", arguments: {} };
+	const running = agent.dispatchHostTool(call);
+	await ready;
+	await assert.rejects(agent.dispatchHostTool({ ...call, id: "host-4" }), /already processing/);
+	let idle = false;
+	const waiting = agent.waitForIdle().then(() => { idle = true; });
+	await Promise.resolve(); assert.equal(idle, false);
+	release(); await running; await waiting;
+	assert.equal(idle, true);
+	assert.equal(agent.state.messages.some(m => m.role === "assistant" && m.stopReason === "error"), false);
+});
