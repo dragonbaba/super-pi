@@ -233,3 +233,6 @@ The explicit100-line fixture returned3308characters/1364model tokens locally, be
 Host notice publication uses the existing custom-entry append; it is not claimed atomic/fsynced. Provisional lifecycle events never enter Agent canonical messages or SessionManager persistence.
 One enabled-session bound finalization callback and one context-array snapshot per host dispatch are added; no disabled-session callback is constructed. Notice/event containers share bounded strings.
 The existing E2 set remains the only timing/profile/GC evidence source for the changed chain; local check/build and affected Windows tests passed. Native child crash/FIFO tests remain exact-CI gates.
+
+Review5144174692 identified completion notice events occurring after agent_end. The corrective hook now publishes the notice within runHostToolDispatch before turn_end/agent_end; active-run ownership covers it throughout.
+The enabled operation adds one bounded completion closure; ordinary prompt/continue and host calls without a notice callback gain no such closure. A focused event-order regression preserves agent_end as the final event.

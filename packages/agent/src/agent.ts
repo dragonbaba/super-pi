@@ -621,14 +621,15 @@ export class Agent {
 	async dispatchHostTool(call: AgentToolCall, complete?: () => Promise<AgentMessage | undefined>): Promise<ToolResultMessage> {
 		let result!: ToolResultMessage;
 		await this.runWithLifecycle(async signal => {
-			result = await runHostToolDispatch(call, { systemPrompt: this._state.systemPrompt, messages: this._state.messages.slice(), tools: this._state.tools.slice() },
-				this.createLoopConfig(), event => this.processEvents(event, false), signal);
-			const notice = await complete?.();
-			if (notice) {
+			const publishNotice = complete ? async () => {
+				const notice = await complete();
+				if (!notice) return;
 				this._state.messages.push(notice);
 				await this.processEvents({ type: "message_start", message: { ...notice } }, false);
 				await this.processEvents({ type: "message_end", message: { ...notice } }, false);
-			}
+			} : undefined;
+			result = await runHostToolDispatch(call, { systemPrompt: this._state.systemPrompt, messages: this._state.messages.slice(), tools: this._state.tools.slice() },
+				this.createLoopConfig(), event => this.processEvents(event, false), signal, publishNotice);
 		}, true);
 		return result;
 	}

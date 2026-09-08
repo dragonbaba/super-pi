@@ -35,7 +35,7 @@ const RESOLVED_VOID_PROMISE = Promise.resolve();
 /** @internal Experimental single-call host dispatch. Never polls a provider or prompt queue. */
 export async function runHostToolDispatch(
 	call: AgentToolCall, context: AgentContext, config: AgentLoopConfig,
-	emit: AgentEventSink, signal?: AbortSignal,
+	emit: AgentEventSink, signal?: AbortSignal, complete?: () => Promise<void>,
 ): Promise<ToolResultMessage> {
 	if (hasIncompleteToolArguments(call.arguments)) throw new Error("Incomplete host tool arguments");
 	const selectedId = call.id;
@@ -68,6 +68,7 @@ export async function runHostToolDispatch(
 	const hostEmit: AgentEventSink = event => emit(event.type === "tool_execution_start"
 		? { ...event, args: { ...event.args } } : event);
 	const batch = await executeToolCalls(selectedContext, executionOrigin, config, signal, hostEmit);
+	await complete?.();
 	await emit({ type: "turn_end", message: origin, toolResults: batch.messages });
 	await emit({ type: "agent_end", messages: [origin, ...batch.messages] });
 	return batch.messages[0];
