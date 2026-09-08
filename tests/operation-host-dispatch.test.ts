@@ -90,3 +90,16 @@ test("host start-event arguments are observational across an awaited permission 
  await agent.dispatchHostTool({type:"toolCall", id:"observational", name:"write", arguments:{content:"host"}});
  assert.equal(actual, "permission");
 });
+
+test("host dispatch keeps provisional messages local and permission sees prior context", async () => {
+ const agent=new Agent({streamFn:()=>{throw new Error("provider forbidden");}});
+ const prior={role:"user" as const,content:"deny writes",timestamp:1};agent.state.messages.push(prior);
+ agent.state.tools=[{name:"write",label:"write",description:"fixture",parameters:Type.Object({content:Type.String()}),execute:async()=>{throw new Error("effect forbidden");}}];
+ let seen=false;
+ agent.beforeToolCall=async ({context})=>{seen=context.messages.includes(prior);return {block:true,reason:"policy"};};
+ await agent.dispatchHostTool({type:"toolCall",id:"context-host",name:"write",arguments:{content:"secret"}});
+ assert.equal(seen,true);assert.deepEqual(agent.state.messages,[prior]);
+ agent.subscribe(event=>{if(event.type==="message_end")throw new Error("observer failure");});
+ await assert.rejects(agent.dispatchHostTool({type:"toolCall",id:"failed-host",name:"write",arguments:{content:"secret"}}),/observer failure/);
+ assert.deepEqual(agent.state.messages,[prior]);assert.equal(agent.state.pendingToolCalls.size,0);
+});

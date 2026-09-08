@@ -202,3 +202,17 @@ test("renamed admission inode and busy contender cannot alter protected authorit
  assert.notEqual(readFileSync(join(f.cwd,"moved"),"utf8"),"forbidden");
  } finally {f.session.dispose();}
 });
+
+test("completed host history is one factual custom notice, isolated from observers", {skip:!operationFixtureSupported}, async()=>{
+ const f=await fixture(true);let publicOrigin: any;
+ f.session.agent.subscribe(event=>{if(event.type==="message_end" && event.message.role==="assistant")publicOrigin=event.message;
+ if(event.type==="tool_execution_start" && publicOrigin) publicOrigin.content.push({type:"text",text:"injected payload"});});
+ try {
+ const r=await f.session.newOperation({intentId:randomUUID(),originBranch:null,path:"target",content:"private file payload"});
+ assert.equal(r.receipt.bytes,20);
+ assert.equal(f.session.agent.state.messages.filter(m=>m.role==="custom").length,1);
+ assert.equal(f.session.agent.state.messages.some(m=>m.role==="assistant"||m.role==="toolResult"),false);
+ assert.equal(readFileSync(f.file,"utf8").includes("private file payload"),false);
+ assert.equal(readFileSync(f.file,"utf8").includes("injected payload"),false);
+ }finally{f.session.dispose();}
+});
