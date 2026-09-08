@@ -48,8 +48,9 @@ export async function runHostToolDispatch(
 	const selectedContext = { ...context, tools: selectedTool ? [Object.freeze({ ...selectedTool })] : [] };
 	// Explicit host origin in the existing message shape; zero provider usage.
 	// Persist the association before its result, without replaying historical sibling calls.
+	const association = { type: "toolCall" as const, id: selectedId, name: selectedName, arguments: {} };
 	const origin: AssistantMessage = {
-		role: "assistant", content: [call], api: "host-operation", provider: "host", model: "local-operation",
+		role: "assistant", content: [association], api: "host-operation", provider: "host", model: "local-operation",
 		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
 		stopReason: "toolUse", timestamp: Date.now(),
@@ -59,7 +60,7 @@ export async function runHostToolDispatch(
 	await emit({ type: "turn_start" });
 	await emit({ type: "message_start", message: origin });
 	await emit({ type: "message_end", message: origin });
-	if (origin.content.length !== 1 || origin.content[0] !== call || call.id !== selectedId || call.name !== selectedName) {
+	if (origin.content.length !== 1 || origin.content[0] !== association || association.id !== selectedId || association.name !== selectedName) {
 		throw new Error("Host dispatch association changed during delivery");
 	}
 	// One callback per host operation; only start publication allocates an observer container.

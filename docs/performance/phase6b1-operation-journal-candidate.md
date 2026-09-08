@@ -192,3 +192,20 @@ Overflow rejection neither creates nor reconciles locks. Boundary and JSON-escap
 Fresh normal CI supplies the changed-chain E2 profile and weak-reference lifecycle evidence; no local duplicate measurement was run.
 The initial build exposed a generic variance declaration error; the corrected coding-agent build and check passed. Final exact CI is required.
 One automatic corrective review is reused, with spaced waiting until CI/review completion. Final findings/CI/head live in PR metadata.
+
+
+## Direct admission/persistence follow-up from review 5143442459
+
+70b6159 CI 34240425842 passed all normal Linux/Windows gates and the six corrective tests/E2 lifecycle set.
+The exact-head review then identified admission-inode replacement, payload-bearing history and pre-ownership transcript append.
+These directly related B0/B1 findings remain blockers until the replacement exact-head CI/review completes.
+Host associations now contain only ephemeral call ID, tool name and empty argument metadata; execution/policy keep the separate bounded primitive input.
+Thus default model/session history no longer carries host file payloads on first delivery or historical recovery. Public messages remain mutable.
+A narrow internal SessionManager storage-anchor helper atomically installs only an unflushed initial session before the first host await.
+Existing physical sessions are untouched. This is required to pin device/inode for a fresh session without publishing a host call before journal exclusion.
+The admission request stores the bounded device/inode fingerprint. Queue entry, pre-effect execution and result persistence reject identity changes.
+Host assistant persistence is deferred until the existing journal has claimed ownership inside the write queue; denied/busy calls persist neither association nor error result.
+The deferred association is bounded call-local metadata, released after append or on request cleanup; it is not a payload/result store.
+Successful persistence still orders association before result, without rewriting prior history or altering ordinary/provider and 6A1 persistence paths.
+The narrow storage-anchor helper adds one initial atomic install for a fresh protected session; subsequent admissions perform targeted inode metadata reads.
+Fresh normal CI repeats the existing E2 set because ownership and retained payload behavior changed; previous timings are historical, not accepted for the new chain.

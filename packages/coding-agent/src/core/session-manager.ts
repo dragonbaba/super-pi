@@ -994,6 +994,17 @@ export class SessionManager {
 		writeSessionEntriesAtomically(this.sessionFile, this.fileEntries, true);
 	}
 
+	/** @internal Establish a protected admission anchor without publishing a host call.
+	 * Existing sessions are untouched; exclusive atomic install preserves ordinary append behavior.
+	 */
+	ensureOperationStorage(): void {
+		if (!this.persist || !this.sessionFile) throw new Error("Protected write requires persisted session storage");
+		if (!this.flushed) {
+			writeSessionEntriesAtomically(this.sessionFile, this.fileEntries, false);
+			this.flushed = true;
+		}
+	}
+
 	isPersisted(): boolean {
 		return this.persist;
 	}

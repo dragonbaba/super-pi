@@ -361,7 +361,7 @@ function isExtensionObserverFlushBoundary(event: AgentEvent): boolean {
 	);
 }
 
-import { OperationJournal, type OperationJournalOptions, type OperationWriteIntent, type OperationWriteRecovery, type OperationCompletion } from "./operation-journal.ts";
+import { operationSessionIdentity, OperationJournal, type OperationJournalOptions, type OperationWriteIntent, type OperationWriteRecovery, type OperationCompletion } from "./operation-journal.ts";
 import { bindOperationWrite, retireOperationWrite, type OperationWriteGate } from "./tools/write.ts";
 
 export interface AgentSessionConfig {
@@ -747,7 +747,7 @@ export class AgentSession {
 	private _operationDisposed = false;
 	private _operationGate?: OperationWriteGate;
 	private _operationToolExecute?: AgentTool["execute"];
-	private _hostOperation?: { id: string; resume: boolean; branch: string | null; callId: string; sessionId: string; sessionFile: string | undefined; completion?: OperationCompletion; error?: unknown };
+	private _hostOperation?: { id: string; resume: boolean; branch: string | null; callId: string; sessionId: string; sessionFile: string | undefined; sessionIdentity: string; origin?: AssistantMessage; persisted?: boolean; completion?: OperationCompletion; error?: unknown };
 
 	/** Experimental host NEW intent. Re-delivery must reuse intentId and originBranch. */
 	async newOperation(intent: OperationWriteIntent): Promise<OperationCompletion> {
@@ -765,10 +765,11 @@ export class AgentSession {
 		if (!definition || this._toolDefinitions.get("write")?.definition !== definition ||
 			this.agent.state.tools.find(t => t.name === "write") !== this._toolRegistry.get("write") || !this._operationGate || this._toolRegistry.get("write")?.execute !== this._operationToolExecute) throw new Error("Trusted built-in local write unavailable");
 		if (typeof args.path !== "string" || typeof args.content !== "string" || Buffer.byteLength(args.path) > 1024 || Buffer.byteLength(args.content) > 262144) throw new Error("Operation input capacity");
+		this.sessionManager.ensureOperationStorage();
 		const sessionId = this.sessionManager.getSessionId();
 		const sessionFile = this.sessionManager.getSessionFile();
 		if (Buffer.byteLength(sessionId) > 1024 || sessionFile && Buffer.byteLength(sessionFile) > 1024) throw new Error("Operation anchor capacity");
-		const request: NonNullable<AgentSession["_hostOperation"]> = { id, resume, branch: args.originBranch, sessionId, sessionFile, callId: `host-write-${crypto.randomUUID()}` };
+		const request: NonNullable<AgentSession["_hostOperation"]> = { id, resume, branch: args.originBranch, sessionId, sessionFile, sessionIdentity: operationSessionIdentity(sessionFile!), callId: `host-write-${crypto.randomUUID()}` };
 		this._hostOperation = request;
 		this._isAgentRunActive = true;
 		try {
@@ -787,6 +788,12 @@ export class AgentSession {
 			}
 		}
 	}
+	private _validateOperationPersistence(): true {
+		const request = this._hostOperation!;
+		if (this.sessionManager.getSessionId() !== request.sessionId || this.sessionManager.getSessionFile() !== request.sessionFile || operationSessionIdentity(request.sessionFile!) !== request.sessionIdentity) throw new Error("Operation session identity changed");
+		return true;
+	}
+
 	private async _executeOperationWrite(callId: string, path: string, content: string, absolutePath: string,
 		perform: () => Promise<void>, signal?: AbortSignal): ReturnType<OperationWriteGate> {
 		const request = this._hostOperation;
@@ -797,6 +804,7 @@ export class AgentSession {
 			const sessionId = this.sessionManager.getSessionId();
 			const file = this.sessionManager.getSessionFile();
 			if (request.sessionId !== sessionId || request.sessionFile !== file) throw new Error("Operation origin session/storage anchor changed");
+			if (operationSessionIdentity(request.sessionFile!) !== request.sessionIdentity) throw new Error("Operation session identity changed");
 			if (this._operationSessionId && (this._operationSessionId !== sessionId || this._operationSessionFile !== file)) throw new Error("Operation origin session/storage anchor changed");
 			if (!this._operationJournal) {
 				if (!file || !this.sessionManager.isPersisted()) throw new Error("Protected write requires persisted session storage");
@@ -805,7 +813,12 @@ export class AgentSession {
 				this._operationSessionFile = file;
 			}
 			this._operationJournal.claim();
-			const completion = await this._operationJournal.execute(request.id, request.resume, request.branch, absolutePath, content, perform, signal);
+			if (!request.origin) throw new Error("Missing bounded host association");
+			this.sessionManager.appendMessage(request.origin);
+			request.origin = undefined;
+			request.persisted = true;
+			if (this.sessionManager.getSessionId() !== request.sessionId || this.sessionManager.getSessionFile() !== request.sessionFile || operationSessionIdentity(request.sessionFile!) !== request.sessionIdentity) throw new Error("Operation session identity changed");
+			const completion = await this._operationJournal.execute(request.id, request.resume, request.branch, absolutePath, content, perform, signal, request.sessionIdentity);
 			request.completion = completion;
 			if (signal?.aborted) throw new Error(`Operation aborted after durable completion: ${completion.operationId}; resume only for historical delivery`);
 			return { content: [{ type: "text", text: `Historical write completion: ${completion.operationId}; ${completion.receipt.bytes} UTF-8 bytes acknowledged. ${completion.historical ? "No new write occurred." : "Write completed."} This receipt does not assert current target contents.` }], details: undefined };
@@ -1276,7 +1289,7 @@ export class AgentSession {
 						presentationOwner.release();
 					}
 					// This is the complete post-listener message_end tail for tool results.
-					this.sessionManager.appendMessage(event.message.role === "toolResult" && evidenceBlock
+					if (!this._hostOperation || this._hostOperation.persisted && this._validateOperationPersistence()) this.sessionManager.appendMessage(event.message.role === "toolResult" && evidenceBlock
 						? durableEvidenceMessage(event.message, toolResultSourceContent, evidenceBlock, evidenceText) : event.message);
 					if (this._evidenceLedger) this._admitCompletedReadEvidence(event.message, evidenceGeneration);
 					return;
@@ -1300,6 +1313,7 @@ export class AgentSession {
 		}
 
 		// Handle session persistence
+		if (this._hostOperation && event.type === "message_end" && event.message.role === "assistant") this._hostOperation.origin = event.message;
 		if (event.type === "message_end") {
 			// Check if this is a custom message from extensions
 			if (event.message.role === "custom") {
@@ -1316,7 +1330,7 @@ export class AgentSession {
 				event.message.role === "toolResult"
 			) {
 				// Regular LLM message - persist as SessionMessageEntry
-				this.sessionManager.appendMessage(event.message.role === "toolResult" && evidenceBlock
+				if (!this._hostOperation || this._hostOperation.persisted && this._validateOperationPersistence()) this.sessionManager.appendMessage(event.message.role === "toolResult" && evidenceBlock
 						? durableEvidenceMessage(event.message, toolResultSourceContent, evidenceBlock, evidenceText) : event.message);
 				if (this._evidenceLedger && event.message.role === "toolResult") this._admitCompletedReadEvidence(event.message);
 			}

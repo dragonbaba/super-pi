@@ -74,6 +74,12 @@ function sessionAnchor(path: string) {
 	return stat;
 }
 
+/** @internal Bounded admission identity; never file contents or timestamps. */
+export function operationSessionIdentity(path: string): string {
+	const stat = sessionAnchor(path);
+	return `${stat.dev}:${stat.ino}`;
+}
+
 /** Experimental read-only inspection. Throws on missing, corrupt or unsupported input.
  * A token observes ownership; it does not prove termination or authorize lock stealing.
  */
@@ -245,7 +251,8 @@ export class OperationJournal {
 	}
 
 	/** Must run inside the trusted write's existing mutation queue, while claim is held. */
-	async execute(id: string, resume: boolean, branch: string | null, path: string, content: string, perform: () => Promise<void>, signal?: AbortSignal): Promise<OperationCompletion> {
+	async execute(id: string, resume: boolean, branch: string | null, path: string, content: string, perform: () => Promise<void>, signal?: AbortSignal, sessionIdentity?: string): Promise<OperationCompletion> {
+		if (sessionIdentity && operationSessionIdentity(this.directory.slice(0, -".operations-v1".length)) !== sessionIdentity) throw new Error("Operation session identity changed");
 		if (!this.counters.active || this.disposed || this.poisoned) throw new Error("Operation owner unavailable");
 		if (typeof path !== "string" || typeof content !== "string" || Buffer.byteLength(path) > 1024 || Buffer.byteLength(content) > 262144 ||
 			!(branch === null || typeof branch === "string" && Buffer.byteLength(branch) <= 128)) throw new Error("Operation input capacity");
@@ -285,6 +292,7 @@ export class OperationJournal {
 		try {
 			if (directoryIdentity(dirname(absolute)) !== parent || targetIdentity(absolute) !== before) throw new Error("Target binding changed");
 			this.rejectAuthorityTarget(absolute);
+			if (sessionIdentity && operationSessionIdentity(this.directory.slice(0, -".operations-v1".length)) !== sessionIdentity) throw new Error("Operation session identity changed");
 			this.counters.effects++;
 			await perform(); // Await settlement even if abort arrives. Never release the queue early.
 			acknowledged = true;
