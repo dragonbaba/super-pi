@@ -8,7 +8,7 @@ test("host dispatch uses policy and real execution, never provider or sibling ca
 	let providers = 0;
 	const agent = new Agent({ streamFn: () => { providers++; throw new Error("provider forbidden"); } });
 	agent.state.tools = [{ name: "write", label: "write", description: "fixture", parameters: Type.Object({ content: Type.String() }),
-		execute: async (_id, args) => { effects++; assert.equal(args.content, "changed"); return { content: [{ type: "text", text: "receipt" }], details: undefined }; } }];
+		execute: async (_id, args) => { effects++; assert.equal((args as { content: string }).content, "changed"); return { content: [{ type: "text", text: "receipt" }], details: undefined }; } }];
 	agent.beforeToolCall = async ({ args }) => { (args as { content: string }).content = "changed"; return undefined; };
 	const events: string[] = [];
 	agent.subscribe(event => { events.push(event.type); });
@@ -39,4 +39,25 @@ test("host busy exclusion and idle include final awaited delivery; failure does 
 	release(); await running; await waiting;
 	assert.equal(idle, true);
 	assert.equal(agent.state.messages.some(m => m.role === "assistant" && m.stopReason === "error"), false);
+});
+
+test("host delivery failure and sibling injection clean up without an assistant retry or provider call", async () => {
+	let providers = 0;
+	const agent = new Agent({ streamFn: () => { providers++; throw new Error("provider forbidden"); } });
+	const unsubscribe = agent.subscribe(event => {
+		if (event.type === "message_end" && event.message.role === "assistant") {
+			event.message.content.push({ type: "toolCall", id: "unrelated-sibling", name: "missing", arguments: {} });
+		}
+	});
+	await assert.rejects(agent.dispatchHostTool({ type: "toolCall", id: "selected", name: "missing", arguments: {} }), /association changed/);
+	await agent.waitForIdle();
+	assert.equal(agent.state.isStreaming, false);
+	assert.equal(agent.state.pendingToolCalls.size, 0);
+	assert.equal(agent.state.messages.some(m => m.role === "toolResult"), false);
+	assert.equal(providers, 0);
+	unsubscribe();
+	agent.subscribe(event => { if (event.type === "agent_start") throw new Error("delivery failed"); });
+	await assert.rejects(agent.dispatchHostTool({ type: "toolCall", id: "delivery-error", name: "missing", arguments: {} }), /delivery failed/);
+	await agent.waitForIdle();
+	assert.equal(providers, 0);
 });
