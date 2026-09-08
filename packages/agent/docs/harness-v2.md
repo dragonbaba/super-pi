@@ -1,6 +1,8 @@
 # Durable AgentHarness design
 
-> **Compatibility policy.** Old coding-agent v3 JSONL sessions must open and restore idle. This is the only backward-compatibility requirement. All other formats and APIs in `packages/agent/src/harness` and `packages/session-backends/sqlite-node` (and their respective tests) may break. We do not write migrations, schema versioning, or conversion paths for anything else.
+> **Status: experimental target design, not production ready; no compatibility guarantee for AgentHarness orchestration.** The runnable surface remains the limited scaffold described in the [package README](../README.md#experimental-harness-boundary). Later sections, examples and recovery guarantees are design goals unless implemented; in particular, create rejects any session with records and does not restore operations. The existing Agent remains the production execution path.
+>
+> **Compatibility boundary.** The v3 JSONL restore requirement below is a target for this design, not an implemented AgentHarness restore guarantee. Experimental status is not blanket permission to break every module under `harness/`, storage consumers or current exports. Standalone primitives must be assessed by their actual callers and contracts. The accepted coding-agent 6A1/6B1 behavior, including custom host-history notices and protected-write journal authority, is separate and unchanged; Harness operation records are not that journal.
 
 ```mermaid
 flowchart TD

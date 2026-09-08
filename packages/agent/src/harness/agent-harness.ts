@@ -1,3 +1,8 @@
+/**
+ * Experimental orchestration declarations and limited scaffold, not a production runtime.
+ * No compatibility guarantee. See the package README for the current behavior inventory;
+ * standalone primitives elsewhere under harness/ are not all subject to this limitation.
+ */
 import type {
 	Api,
 	AssistantMessage,
@@ -71,6 +76,7 @@ export class HarnessClosed extends Error {
 	}
 }
 
+/** Signals an unavailable orchestration path; async methods reject, registries throw. */
 export class HarnessNotImplemented extends Error {
 	readonly operation: string;
 
@@ -240,6 +246,7 @@ export type StreamOptions = SimpleStreamOptions;
 export type StreamOptionsPatch = Partial<SimpleStreamOptions>;
 export type EntryProjector = (entry: Entry) => AgentMessage[] | Promise<AgentMessage[]>;
 
+/** @experimental Scaffold configuration; declared options do not imply an implemented runtime. */
 export interface AgentHarnessOptions {
 	session: Session;
 	models: Models;
@@ -268,6 +275,7 @@ export interface WatchHandle<TSnapshot> {
 	unsubscribe(): void;
 }
 
+/** @experimental Lane orchestration contract; not production ready, with no compatibility guarantee. */
 export interface AgentLane {
 	readonly name: string;
 	getLeafId(): Promise<string | null>;
@@ -302,6 +310,10 @@ export interface AgentLane {
 	watch(): Promise<WatchHandle<LaneSnapshot>>;
 }
 
+/**
+ * @experimental Record-free configuration scaffold, not a replacement for Agent.
+ * Not production ready; no compatibility guarantee. See the README for unsupported paths.
+ */
 export class AgentHarness implements AgentLane {
 	readonly name = "main";
 	readonly session: SessionTree;
@@ -344,6 +356,7 @@ export class AgentHarness implements AgentLane {
 		this.followUpMode = options.followUpMode ?? "one-at-a-time";
 	}
 
+	/** Opens only record-free sessions; any record rejects with create.restore, without recovery. */
 	static async create(
 		options: AgentHarnessOptions,
 	): Promise<{ harness: AgentHarness; suspended: SuspendedOperation[] }> {
