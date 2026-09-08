@@ -43,6 +43,10 @@ function publish(path: string, value: unknown, replace: boolean, cap: number): v
 	// Same acknowledged file-fsync/atomic-install chain as SessionManager. Keep failed staging evidence.
 	writeSessionEntriesAtomically(path, [envelope], replace, true);
 }
+function requireLocalFilesystem(path: string): void {
+	const fsType = Number(statfsSync(path).type);
+	if (!(fsType === 0xef53 || fsType === 0x58465342 || fsType === 0x9123683e || fsType === 0x01021994)) throw new Error("Unsupported local filesystem identity");
+}
 function directoryIdentity(path: string): string {
 	if (process.platform !== "linux") throw new Error("Unsupported protected-write platform: native Linux required");
 	const absolute = resolve(path);
@@ -53,8 +57,8 @@ function directoryIdentity(path: string): string {
 		const st = lstatSync(current, { bigint: true });
 		if (!st.isDirectory() || st.isSymbolicLink() || st.ino === 0n) throw new Error("Unsupported directory identity");
 	}
-	const fsType = Number(statfsSync(absolute).type);
-	if (realpathSync(absolute) !== absolute || !(fsType === 0xef53 || fsType === 0x58465342 || fsType === 0x9123683e || fsType === 0x01021994)) throw new Error("Unsupported local filesystem identity");
+	if (realpathSync(absolute) !== absolute) throw new Error("Unsupported local filesystem identity");
+	requireLocalFilesystem(absolute);
 	const st = lstatSync(absolute, { bigint: true });
 	return `${absolute}:${st.dev}:${st.ino}`;
 }
@@ -62,6 +66,7 @@ function targetIdentity(path: string): string {
 	try {
 		const st = lstatSync(path, { bigint: true });
 		if (!st.isFile() || st.isSymbolicLink() || st.nlink !== 1n || st.ino === 0n) throw new Error("Unsupported target identity");
+		requireLocalFilesystem(path);
 		return `${st.dev}:${st.ino}:${st.size}:${st.mtimeNs}:${st.ctimeNs}`;
 	} catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return "missing"; throw error; }
 }

@@ -53,6 +53,19 @@ test("post-hook arguments bind the effect; result and persistence failures canno
 	} finally { f.session.dispose(); }
 });
 
+test("a copied session header cannot transfer the live journal to another storage anchor", { skip: process.platform !== "linux" }, async () => {
+	const f = await fixture(true);
+	try {
+		const intent = { intentId: randomUUID(), originBranch: null, path: "target", content: "original" };
+		const completed = await f.session.newOperation(intent);
+		const copied = join(f.cwd, "copied-session.jsonl");
+		writeFileSync(copied, readFileSync(f.file));
+		f.session.sessionManager.setSessionFile(copied);
+		await assert.rejects(f.session.resumeOperation(completed.operationId, intent), /storage anchor changed/);
+		assert.equal(f.providers(), 0);
+	} finally { f.session.dispose(); }
+});
+
 test("permission denial, hook errors and disabled SDK never create a journal or invoke a provider", async () => {
 	const f = await fixture(true);
 	try {

@@ -743,6 +743,7 @@ export class AgentSession {
 	private _operationOptions?: OperationJournalOptions;
 	private _operationJournal?: OperationJournal;
 	private _operationSessionId?: string;
+	private _operationSessionFile?: string;
 	private _operationDisposed = false;
 	private _operationGate?: OperationWriteGate;
 	private _hostOperation?: { id: string; resume: boolean; branch: string | null; callId: string; completion?: OperationCompletion; error?: unknown };
@@ -787,12 +788,13 @@ export class AgentSession {
 		try {
 			if (this._operationDisposed) throw new Error("Operation session disposed");
 			const sessionId = this.sessionManager.getSessionId();
-			if (this._operationSessionId && this._operationSessionId !== sessionId) throw new Error("Operation origin session changed");
+			const file = this.sessionManager.getSessionFile();
+			if (this._operationSessionId && (this._operationSessionId !== sessionId || this._operationSessionFile !== file)) throw new Error("Operation origin session/storage anchor changed");
 			if (!this._operationJournal) {
-				const file = this.sessionManager.getSessionFile();
 				if (!file || !this.sessionManager.isPersisted()) throw new Error("Protected write requires persisted session storage");
 				this._operationJournal = new OperationJournal(file, sessionId, this._cwd, this._operationOptions?.stoppedWriterToken, request.resume);
 				this._operationSessionId = sessionId;
+				this._operationSessionFile = file;
 			}
 			this._operationJournal.claim();
 			const completion = await this._operationJournal.execute(request.id, request.resume, request.branch, absolutePath, content, perform, signal);
