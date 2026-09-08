@@ -41,7 +41,9 @@ export async function runHostToolDispatch(
 	const selectedId = call.id;
 	const selectedName = call.name;
 	// Only this private dispatch snapshot is immutable; canonical history stays mutable.
-	const selectedCall = Object.freeze({ type: "toolCall" as const, id: selectedId, name: selectedName, arguments: call.arguments });
+	// The 6B1 caller supplies only bounded primitive path/content fields. Copy the
+	// field container without duplicating payload strings or freezing policy inputs.
+	const selectedCall = Object.freeze({ type: "toolCall" as const, id: selectedId, name: selectedName, arguments: { ...call.arguments } });
 	const selectedTool = context.tools?.find(tool => tool.name === selectedName);
 	const selectedContext = { ...context, tools: selectedTool ? [Object.freeze({ ...selectedTool })] : [] };
 	// Explicit host origin in the existing message shape; zero provider usage.

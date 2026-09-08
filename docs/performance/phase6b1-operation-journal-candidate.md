@@ -1,7 +1,7 @@
 # Phase 6B1 operation journal / local write candidate
 
 Task: `SUPER-PI-PHASE6B1-OPERATION-JOURNAL-LOCAL-WRITE`.
-State: corrective candidate after one cumulative Review; exact closeout CI and the one incremental Review pending.
+State: final corrective candidate after one cumulative and one incremental Review; final exact CI pending. No further automated review is budgeted.
 Base and merge-base: `73390a81cf2b7bcfad19f7ccc121bf36a616e890`.
 The initial fetch found no intervening main changes. PR #27 acceptance was not repeated.
 Branch: `phase/6b1-operation-journal-local-write`.
@@ -52,7 +52,7 @@ Host dispatch never polls steering/follow-up queues, prepares another provider t
 Host failures propagate instead of generating an assistant error response. Result delivery errors cannot revoke a completed receipt.
 The host association uses api `host-operation`, provider `host`, model `local-operation`, with zero provider usage.
 It selects one call and rejects association/sibling changes during initial delivery; it never replays old assistant siblings.
-A private immutable ID/name/tool snapshot prevents later canonical-message mutation from dispatching another tool. Public canonical content remains mutable.
+A private immutable ID/name/tool snapshot prevents later canonical-message mutation from dispatching another tool. A separate shallow path/content argument container isolates canonical field mutation while permission hooks retain mutable validated inputs; immutable payload strings are shared, not copied. Public canonical content remains mutable.
 Arbitrary user extensions may themselves perform network work; the host entry does not promise to prevent that.
 
 ## Storage, durability and reconciliation
@@ -134,7 +134,8 @@ CI 34218074313 passed Linux and Windows for 767f216, including native crash test
 Historical p50 ms: disabled 0.550, first protected write 3.265, recovery 0.476; owner metadata 429 bytes; 45 effects/45 recoveries; 137 file fsync acknowledgments; zero provider calls.
 The cumulative Review identified B0 late tool-selection mutation and authority inode aliases, B1 post-hook raw-path overflow, and C filesystem-aware fixtures.
 This batch closes those code paths plus post-effect abort/lock-release cleanup. Fresh exact CI/lifecycle evidence is necessary because ownership and target-validation paths changed; sampling is not repeated for nicer numbers.
-B0/B1 remain pending closeout verification; C is batched here. Final SHA, detailed measurements and review dispositions are maintained in PR metadata. D: only deferred work below.
+The incremental Review found shared argument-field mutation beneath that snapshot. A deterministic red test reproduced redirected content; the separate argument container made the focused dispatcher set green. SDK disk coverage also mutates canonical path fields while the permission hook changes its private content input.
+Final exact CI must verify this ownership correction, including the existing allocation/lifecycle set; prior values remain historical. B0/B1 disposition, final SHA and detailed evidence are maintained in PR metadata. C is batched; D is deferred as below.
 No Draft Candidate Gate claim until the required evidence is complete; one cumulative Review and at most one closeout are budgeted.
 
 ## Frozen areas, non-goals and rollback

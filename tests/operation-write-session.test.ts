@@ -38,11 +38,17 @@ test("SDK host first execution and durable historical recovery never request a p
 test("post-hook arguments bind the effect; result and persistence failures cannot revoke completed facts", { skip: !operationFixtureSupported }, async () => {
 	const f = await fixture(true);
 	const intent = { intentId: randomUUID(), originBranch: null, path: "target", content: "before hook" };
+	let canonicalArgs: Record<string, unknown> | undefined;
+	const unsubscribe = f.session.agent.subscribe(event => {
+		if (event.type === "message_end" && event.message.role === "assistant") canonicalArgs = event.message.content.find(block => block.type === "toolCall")?.arguments;
+		if (event.type === "tool_execution_start") canonicalArgs!.path = "redirected";
+	});
 	try {
 		f.session.agent.beforeToolCall = async ({ args }) => { (args as { content: string }).content = "post hook"; return undefined; };
 		f.session.agent.afterToolCall = async () => { throw new Error("result hook failed"); };
 		await assert.rejects(f.session.newOperation(intent), /durable receipt/);
 		assert.equal(readFileSync(join(f.cwd, "target"), "utf8"), "post hook");
+		assert.equal(existsSync(join(f.cwd, "redirected")), false);
 		writeFileSync(join(f.cwd, "target"), "later edit");
 		f.session.agent.afterToolCall = undefined;
 		const recovered = await f.session.newOperation(intent); // same explicit intent, new delivery ID
@@ -54,7 +60,7 @@ test("post-hook arguments bind the effect; result and persistence failures canno
 		assert.equal((await f.session.resumeOperation(recovered.operationId, intent)).historical, true);
 		assert.equal(readFileSync(join(f.cwd, "target"), "utf8"), "later edit");
 		assert.equal(f.providers(), 0);
-	} finally { f.session.dispose(); }
+	} finally { unsubscribe(); f.session.dispose(); }
 });
 
 test("a copied session header cannot transfer the live journal to another storage anchor", { skip: !operationFixtureSupported }, async () => {
