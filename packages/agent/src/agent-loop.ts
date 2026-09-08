@@ -32,6 +32,29 @@ export type AgentEventSink = (event: AgentEvent) => Promise<void> | void;
 
 const RESOLVED_VOID_PROMISE = Promise.resolve();
 
+/** @internal Experimental single-call host dispatch. Never polls a provider or prompt queue. */
+export async function runHostToolDispatch(
+	call: AgentToolCall, context: AgentContext, config: AgentLoopConfig,
+	emit: AgentEventSink, signal?: AbortSignal,
+): Promise<void> {
+	if (hasIncompleteToolArguments(call.arguments)) throw new Error("Incomplete host tool arguments");
+	// Explicit host origin in the existing message shape; zero provider usage.
+	// Persist the association before its result, without replaying historical sibling calls.
+	const origin: AssistantMessage = {
+		role: "assistant", content: [call], api: "host-operation", provider: "host", model: "local-operation",
+		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+		stopReason: "toolUse", timestamp: Date.now(),
+	};
+	await emit({ type: "agent_start" });
+	await emit({ type: "turn_start" });
+	await emit({ type: "message_start", message: origin });
+	await emit({ type: "message_end", message: origin });
+	const batch = await executeToolCalls(context, origin, config, signal, emit);
+	await emit({ type: "turn_end", message: origin, toolResults: batch.messages });
+	await emit({ type: "agent_end", messages: [origin, ...batch.messages] });
+}
+
 /**
  * Start an agent loop with a new prompt message.
  * The prompt is added to the context and events are emitted for it.

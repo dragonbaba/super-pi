@@ -15,7 +15,7 @@ import {
 	type EventDeliveryStats,
 	type EventSubscriptionOptions,
 } from "./event-delivery.ts";
-import { runAgentLoop, runAgentLoopContinue } from "./agent-loop.ts";
+import { runAgentLoop, runAgentLoopContinue, runHostToolDispatch } from "./agent-loop.ts";
 import { getDefaultStreamFn } from "./stream-fn.ts";
 import type {
 	AfterToolCallContext,
@@ -30,6 +30,7 @@ import type {
 	AgentMessage,
 	AgentState,
 	AgentTool,
+	AgentToolCall,
 	BeforeToolCallContext,
 	BeforeToolCallResult,
 	PrepareNextTurnContext,
@@ -615,7 +616,15 @@ export class Agent {
 		};
 	}
 
-	private async runWithLifecycle(executor: (signal: AbortSignal) => Promise<void>): Promise<void> {
+	/** @internal Experimental host-only dispatch; failures propagate without model retry messages. */
+	async dispatchHostTool(call: AgentToolCall): Promise<void> {
+		await this.runWithLifecycle(async signal => {
+			await runHostToolDispatch(call, { systemPrompt: this._state.systemPrompt, messages: [], tools: this._state.tools.slice() },
+				this.createLoopConfig(), event => this.processEvents(event), signal);
+		}, true);
+	}
+
+	private async runWithLifecycle(executor: (signal: AbortSignal) => Promise<void>, hostOnly = false): Promise<void> {
 		if (this.activeRun) {
 			throw new Error("Agent is already processing.");
 		}
@@ -634,6 +643,7 @@ export class Agent {
 		try {
 			await executor(abortController.signal);
 		} catch (error) {
+			if (hostOnly) throw error;
 			await this.handleRunFailure(error, abortController.signal.aborted);
 		} finally {
 			this.finishRun();
