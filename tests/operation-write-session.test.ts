@@ -180,3 +180,25 @@ test("public definition replacement cannot execute outside the protected journal
   assert.equal(replacements,0);
  } finally { unsubscribe(); definition.execute=original; f.session.dispose(); }
 });
+
+test("host association never retains primitive write payload in canonical history", async () => {
+ const f=await fixture(true); const secret="HOST_PAYLOAD_SENTINEL_".repeat(100);
+ try { try { await f.session.newOperation({intentId:randomUUID(),originBranch:null,path:"target",content:secret}); } catch { }
+ assert.equal(JSON.stringify(f.session.agent.state.messages).includes(secret),false);
+ if(existsSync(f.file)) assert.equal(readFileSync(f.file,"utf8").includes(secret),false);
+ } finally {f.session.dispose();}
+});
+
+test("renamed admission inode and busy contender cannot alter protected authority", {skip:!operationFixtureSupported}, async () => {
+ const f=await fixture(true);
+ const intent={intentId:randomUUID(),originBranch:null,path:"target",content:"first"};
+ try {
+ await f.session.newOperation(intent);
+ const contender=await fixture(true,f); const before=readFileSync(f.file,"utf8");
+ try { await assert.rejects(contender.session.newOperation({...intent,intentId:randomUUID()}),/busy/); assert.equal(readFileSync(f.file,"utf8"),before); }
+ finally {contender.session.dispose();}
+ f.session.agent.subscribe(event=>{if(event.type==="tool_execution_start"){fs.renameSync(f.file,join(f.cwd,"moved"));writeFileSync(f.file,before);}});
+ await assert.rejects(f.session.newOperation({...intent,intentId:randomUUID(),path:"moved",content:"forbidden"}),/identity changed/);
+ assert.notEqual(readFileSync(join(f.cwd,"moved"),"utf8"),"forbidden");
+ } finally {f.session.dispose();}
+});
