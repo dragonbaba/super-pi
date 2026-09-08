@@ -10,7 +10,7 @@ import { fixture as evidence } from "./helpers/evidence-ledger-fixture.ts";
 import { fixture as operation, operationFixtureSupported } from "./helpers/operation-write-fixture.ts";
 import { convertToLlm } from "../packages/coding-agent/src/core/messages.ts";
 
-test("selected Agent progress/slow-frame abort settles before next successful run", async () => {
+test("selected Agent progress/slow-frame abort settles before next successful run", {timeout:10000}, async () => {
  await stability(1);
 });
 
@@ -31,7 +31,12 @@ test("selected real read dispatch reuses then invalidates before the next provid
   assert.ok(ledger.counters.entries<=128); assert.ok(ledger.counters.metadataBytes<=256*1024);
   const hits=ledger.counters.hits;
   writeFileSync(join(f.cwd,"file.txt"),"changed integration evidence line\n".repeat(20000));
-  await f.runCalls([call]);
+  const changed=await f.runCalls([call]);
+  assert.equal(changed.length,2);
+  const delivered=changed[1].messages.filter(m=>m.role==="toolResult").at(-1)!;
+  assert.ok(delivered);
+  assert.match(JSON.stringify(delivered),/changed integration evidence/);
+  assert.doesNotMatch(JSON.stringify(delivered),/Evidence reused|No new disk read/i);
   assert.equal(ledger.counters.hits,hits);
   const result=f.session.agent.state.messages.filter(m=>m.role==="toolResult").at(-1)!;
   assert.match(JSON.stringify(result),/changed integration evidence/);

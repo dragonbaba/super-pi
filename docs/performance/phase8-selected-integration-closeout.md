@@ -79,3 +79,15 @@ Fixture correction during development: replacing streamFunction bypasses the SDK
 The new connection therefore compares actual provider-context prompt/tools, while existing prefix-production
 fixtures remain authoritative for manifest hashes. The initial undefined-manifest assertion failed and was
 replaced with a nonempty-context assertion, not an undefined-equals-undefined pass. No production defect.
+
+## Batched candidate review correction
+
+Review5145532458 identified six evidence-quality B1s and one README-link C at c725fbb.
+No production freeze exception is needed. Observer errors are asserted zero outside callbacks;
+both prepared tools must execute exactly once and observe abort before the next run.
+An explicit sink gate spans three submissions and requires pending-frame replacement.
+The changed read must appear in the actual second provider context, not just canonical history.
+Sampling now includes minor/major-GC-collected objects and reports leading sites and bytes/submission/update.
+The package README links to repository documentation because docs/ is not in the published file list.
+Prior aggregate allocation figures are superseded; replacement CI runs the same one bounded set because
+the fixture and sampling were materially corrected, not to seek nicer numbers.7A's original commit remains.

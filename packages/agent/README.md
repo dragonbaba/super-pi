@@ -51,7 +51,7 @@ journal. They confer no 6B1 replay authority. The accepted SDK local-write path
 continues to use its journal and bounded, self-contained custom host-history notice;
 a notice is presentation, not authority to execute or recover an operation.
 
-The repository's [Harness v2 design](docs/harness-v2.md) describes a target and
+The repository's [Harness v2 design](https://github.com/dragonbaba/super-pi/blob/9e0e43ff87951a246dcaeb89e80504da6d6079e9/packages/agent/docs/harness-v2.md) describes a target and
 implementation backlog, not a claim that its run/restore examples work today.
 
 ## Quick Start

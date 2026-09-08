@@ -15,12 +15,18 @@ await collect();
 assert.ok(warmWeak.every(w=>w.deref()===undefined),"warmup owner retained");
 const before=process.memoryUsage().heapUsed;
 const profiler=new Session(); profiler.connect();
-await profiler.post("HeapProfiler.startSampling",{samplingInterval:4096});
+await profiler.post("HeapProfiler.startSampling",{samplingInterval:4096,includeObjectsCollectedByMajorGC:true,includeObjectsCollectedByMinorGC:true});
 let measured=await stability(8);
 const {profile}=await profiler.post("HeapProfiler.stopSampling");
 profiler.disconnect();
 let sampledBytes=0; const pending=[profile.head];
-while(pending.length) { const n=pending.pop()!; sampledBytes+=n.selfSize; pending.push(...n.children); }
+const sites=new Map<string,number>();
+while(pending.length) {
+ const n=pending.pop()!; sampledBytes+=n.selfSize; pending.push(...n.children);
+ const site=`${n.callFrame.url}:${n.callFrame.lineNumber}:${n.callFrame.functionName}`;
+ sites.set(site,(sites.get(site)??0)+n.selfSize);
+}
+const topSites=[...sites].sort((a,b)=>b[1]-a[1]).slice(0,10).map(([site,bytes])=>({site,bytes}));
 const metrics=measured.metrics, weak=measured.weak;
 measured=undefined as never;
 const quiescent=process.memoryUsage().heapUsed;
@@ -30,7 +36,8 @@ const after=process.memoryUsage().heapUsed;
 console.log("SELECTED_INTEGRATION "+JSON.stringify({
  head:execFileSync("git",["rev-parse","HEAD"],{encoding:"utf8"}).trim(),
  fixtureHash:createHash("sha256").update(readFileSync(new URL("./selected-integration-fixture.ts",import.meta.url))).digest("hex"),
- node:process.version,platform:process.platform,warmup:2,metrics,samplingInterval:4096,sampledBytes,
+ node:process.version,platform:process.platform,warmup:2,metrics,samplingInterval:4096,sampledBytes,topSites,
+ includesCollectedObjects:true,sampledBytesPerSubmission:sampledBytes/metrics.submissions,sampledBytesPerDeliveredUpdate:sampledBytes/metrics.updates,
  heap:{releasedAfterWarmup:before,quiescentBeforeGC:quiescent,releasedAfterWorkload:after,delta:after-before},
  ownersReleased:true,interpretation:"Bounded offline workload; retained checkpoint delta is not a heap slope, sampled bytes are not total allocation; no timing or provider savings claim."
 }));
