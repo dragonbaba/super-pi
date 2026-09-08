@@ -71,9 +71,25 @@ function targetIdentity(path: string): string {
 	} catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return "missing"; throw error; }
 }
 
+/** Linux O_PATH + bounded procfs metadata; never reads target content. */
+function mountIdentity(path: string): string {
+	const target = openSync(path, 0x200000 | constants.O_NOFOLLOW);
+	try {
+		const info = openSync(`/proc/self/fdinfo/${target}`, "r");
+		try {
+			const bytes = Buffer.alloc(1025);
+			let length = 0;
+			while (length < bytes.length) { const n = readSync(info, bytes, length, bytes.length - length, null); if (!n) break; length += n; }
+			const match = length <= 1024 ? /^mnt_id:\s*(\d+)$/m.exec(bytes.toString("utf8", 0, length)) : null;
+			if (!match) throw new Error("Unsupported mount identity metadata");
+			return match[1];
+		} finally { closeSync(info); }
+	} finally { closeSync(target); }
+}
+
 export class OperationJournal {
 	readonly counters = { effects: 0, publications: 0, fsyncs: 0, attempts: 0, busyDenials: 0, replayDenials: 0,
-		entries: 0, metadataBytes: 0, metadataHighWaterMark: 0, active: 0, activeHighWaterMark: 0, payloadBytesHashed: 0, recoveries: 0 };
+		entries: 0, metadataBytes: 0, metadataHighWaterMark: 0, active: 0, activeHighWaterMark: 0, payloadBytesHashed: 0, recoveries: 0, ownershipFailures: 0 };
 	private readonly directory: string;
 	private readonly directoryBinding: string;
 	private readonly header: Header;
@@ -153,8 +169,8 @@ export class OperationJournal {
 		this.closed = true;
 		this.counters.metadataBytes = 0;
 		if (!this.poisoned) {
-			this.validateOwner();
-			unlinkSync(join(this.directory, "lock"));
+			try { this.validateOwner(); unlinkSync(join(this.directory, "lock")); }
+			catch { this.poisoned = true; this.counters.ownershipFailures++; } // Preserve the marker, but release live callbacks.
 		}
 	}
 	private validateOwner(): void {
@@ -162,6 +178,23 @@ export class OperationJournal {
 		const lock = boundedRead(join(this.directory, "lock"), 1024);
 		exactKeys(lock, "version,token");
 		if (lock.version !== 1 || lock.token !== this.token) throw new Error("Journal ownership changed");
+	}
+	private rejectAuthorityTarget(absolute: string): void {
+		const journal = lstatSync(this.directory, { bigint: true });
+		const session = lstatSync(this.directory.slice(0, -".operations-v1".length), { bigint: true });
+		let current = absolute;
+		let targetExists = false;
+		for (;;) {
+			try {
+				const node = lstatSync(current, { bigint: true });
+				if (node.dev === journal.dev && node.ino === journal.ino || current === absolute && node.dev === session.dev && node.ino === session.ino) throw new Error("Protected write aliases its own authority");
+				if (current === absolute) targetExists = true;
+			} catch (error) { if (current !== absolute || (error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+			const parent = dirname(current); if (parent === current) break; current = parent;
+		}
+		// A file bind mount can alias any old record without exposing its journal ancestor.
+		// Refuse all file mountpoints, avoiding a resident inode index or history-wide scan.
+		if (targetExists && mountIdentity(absolute) !== mountIdentity(dirname(absolute))) throw new Error("Unsupported file mount identity");
 	}
 	private read(intent: string): RecordV1 {
 		const r = boundedRead(join(this.directory, intent), MAX_RECORD);
@@ -221,11 +254,13 @@ export class OperationJournal {
 		const parent = directoryIdentity(dirname(absolute));
 		const before = targetIdentity(absolute);
 		if (hash(parent) !== record.parent || before !== record.initialTarget) throw new Error("Operation admitted path binding conflict");
+		this.rejectAuthorityTarget(absolute);
 		if (signal?.aborted) throw new Error("Operation aborted before started");
 		record.state = "started"; record.attempt = 1; this.save(intent, record, true); this.counters.attempts++;
 		let acknowledged = false;
 		try {
 			if (directoryIdentity(dirname(absolute)) !== parent || targetIdentity(absolute) !== before) throw new Error("Target binding changed");
+			this.rejectAuthorityTarget(absolute);
 			this.counters.effects++;
 			await perform(); // Await settlement even if abort arrives. Never release the queue early.
 			acknowledged = true;

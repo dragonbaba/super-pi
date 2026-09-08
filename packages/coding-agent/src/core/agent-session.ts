@@ -774,11 +774,13 @@ export class AgentSession {
 			if (delivered.isError) throw new Error(`Operation ${request.completion.operationId} has a durable receipt but result delivery reported an error`);
 			return request.completion;
 		} finally {
-			this._operationJournal?.release();
-			if (this._operationDisposed) this._operationJournal = undefined;
-			this._hostOperation = undefined;
-			this._lastAssistantMessage = undefined;
-			await this._emitAgentSettled();
+			try { this._operationJournal?.release(); }
+			finally {
+				if (this._operationDisposed) this._operationJournal = undefined;
+				this._hostOperation = undefined;
+				this._lastAssistantMessage = undefined;
+				await this._emitAgentSettled();
+			}
 		}
 	}
 	private async _executeOperationWrite(callId: string, path: string, content: string, absolutePath: string,
@@ -787,6 +789,7 @@ export class AgentSession {
 		if (!request || request.callId !== callId) throw new Error("Protected session write requires explicit host NEW intent or resumeOperation");
 		try {
 			if (this._operationDisposed) throw new Error("Operation session disposed");
+			if (typeof path !== "string" || Buffer.byteLength(path) > 1024) throw new Error("Post-hook operation path capacity");
 			const sessionId = this.sessionManager.getSessionId();
 			const file = this.sessionManager.getSessionFile();
 			if (this._operationSessionId && (this._operationSessionId !== sessionId || this._operationSessionFile !== file)) throw new Error("Operation origin session/storage anchor changed");
@@ -799,6 +802,7 @@ export class AgentSession {
 			this._operationJournal.claim();
 			const completion = await this._operationJournal.execute(request.id, request.resume, request.branch, absolutePath, content, perform, signal);
 			request.completion = completion;
+			if (signal?.aborted) throw new Error(`Operation aborted after durable completion: ${completion.operationId}; resume only for historical delivery`);
 			return { content: [{ type: "text", text: `Historical write completion: ${completion.operationId}; ${completion.receipt.bytes} UTF-8 bytes acknowledged. ${completion.historical ? "No new write occurred." : "Write completed."} This receipt does not assert current target contents.` }], details: undefined };
 		} catch (error) { request.error = error; throw error; }
 	}

@@ -10,8 +10,23 @@ import { SettingsManager } from "../../packages/coding-agent/src/core/settings-m
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.ts";
 import type { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.ts";
 
+function eligibleFixtureBase(): string | undefined {
+	if (process.platform !== "linux") return undefined;
+	if (!fs.existsSync("/proc/self/fdinfo")) return undefined;
+	for (const path of [tmpdir(), "/dev/shm"]) {
+		try {
+			const type = Number(fs.statfsSync(path).type);
+			if (type === 0xef53 || type === 0x58465342 || type === 0x9123683e || type === 0x01021994) return fs.realpathSync(path);
+		} catch { /* Candidate mount unavailable; never override production platform identity. */ }
+	}
+	return undefined;
+}
+const fixtureBase = eligibleFixtureBase();
+export const operationFixtureSupported = fixtureBase !== undefined;
+export function operationFixtureRoot(prefix: string): string { return mkdtempSync(join(fixtureBase ?? tmpdir(), prefix)); }
+
 export async function fixture(enabled: boolean, previous?: { cwd: string; agentDir: string; file: string }, stoppedWriterToken?: string) {
-	const root = previous?.cwd ?? mkdtempSync(join(tmpdir(), "pi-write-session-"));
+	const root = previous?.cwd ?? operationFixtureRoot("pi-write-session-");
 	const cwd = root, agentDir = previous?.agentDir ?? join(root, "agent");
 	if (!previous) mkdirSync(agentDir);
 	const settingsManager = SettingsManager.inMemory({ compaction: { enabled: false } });

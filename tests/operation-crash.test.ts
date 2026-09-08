@@ -5,10 +5,10 @@ import { randomUUID } from "node:crypto";
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { fixture } from "./helpers/operation-write-fixture.ts";
+import { fixture, operationFixtureSupported } from "./helpers/operation-write-fixture.ts";
 import { OperationJournal } from "../packages/coding-agent/src/core/operation-journal.ts";
 
-test("real child termination at started, partial, unpublished and completed never replays uncertain writes", { skip: process.platform !== "linux" }, async () => {
+test("real child termination at started, partial, unpublished and completed never replays uncertain writes", { skip: !operationFixtureSupported }, async () => {
 	for (const cutpoint of ["started", "partial", "unpublished", "completed"]) {
 		const f = await fixture(true);
 		await f.session.agent.dispatchHostTool({ type: "toolCall", id: "seed", name: "missing", arguments: {} });

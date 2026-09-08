@@ -2,14 +2,18 @@ import assert from "node:assert/strict";
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+import fs from "node:fs";
+import fsPromises from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
+import type { OperationJournal } from "../packages/coding-agent/src/core/operation-journal.ts";
 import test from "node:test";
-import { fixture } from './helpers/operation-write-fixture.ts';
+import { fixture, operationFixtureSupported } from './helpers/operation-write-fixture.ts';
 
 test("SDK host first execution and durable historical recovery never request a provider", async () => {
 	const f = await fixture(true);
 	const intent = { intentId: randomUUID(), originBranch: null, path: "target", content: "héllo" };
 	try {
-		if (process.platform !== "linux") {
+		if (!operationFixtureSupported) {
 			await assert.rejects(f.session.newOperation(intent), /Unsupported/);
 			assert.equal(existsSync(join(f.cwd, "target")), false);
 			assert.equal(f.providers(), 0);
@@ -31,7 +35,7 @@ test("SDK host first execution and durable historical recovery never request a p
 	} finally { f.session.dispose(); }
 });
 
-test("post-hook arguments bind the effect; result and persistence failures cannot revoke completed facts", { skip: process.platform !== "linux" }, async () => {
+test("post-hook arguments bind the effect; result and persistence failures cannot revoke completed facts", { skip: !operationFixtureSupported }, async () => {
 	const f = await fixture(true);
 	const intent = { intentId: randomUUID(), originBranch: null, path: "target", content: "before hook" };
 	try {
@@ -53,7 +57,7 @@ test("post-hook arguments bind the effect; result and persistence failures canno
 	} finally { f.session.dispose(); }
 });
 
-test("a copied session header cannot transfer the live journal to another storage anchor", { skip: process.platform !== "linux" }, async () => {
+test("a copied session header cannot transfer the live journal to another storage anchor", { skip: !operationFixtureSupported }, async () => {
 	const f = await fixture(true);
 	try {
 		const intent = { intentId: randomUUID(), originBranch: null, path: "target", content: "original" };
@@ -66,6 +70,35 @@ test("a copied session header cannot transfer the live journal to another storag
 	} finally { f.session.dispose(); }
 });
 
+test("post-effect abort preserves a receipt; failed lock release still retires live session ownership", { skip: !operationFixtureSupported }, async () => {
+	const f = await fixture(true);
+	const intent = { intentId: randomUUID(), originBranch: null, path: "target", content: "acknowledged" };
+	const originalWrite = fsPromises.writeFile;
+	try {
+		fsPromises.writeFile = async (path, data, options) => {
+			await originalWrite(path, data, options);
+			if (String(path) === join(f.cwd, "target")) f.session.agent.abort();
+		};
+		syncBuiltinESMExports();
+		await assert.rejects(f.session.newOperation(intent), /aborted after durable completion/);
+	} finally { fsPromises.writeFile = originalWrite; syncBuiltinESMExports(); }
+	try {
+		const recovered = await f.session.newOperation(intent);
+		assert.equal(recovered.historical, true); assert.equal(f.providers(), 0);
+		const internals = f.session as unknown as { _operationJournal?: OperationJournal; _hostOperation?: unknown };
+		const owner = internals._operationJournal!;
+		const originalUnlink = fs.unlinkSync;
+		try {
+			fs.unlinkSync = path => { if (String(path) === `${f.file}.operations-v1/lock`) throw new Error("injected lock-release failure"); originalUnlink(path); };
+			syncBuiltinESMExports();
+			assert.doesNotThrow(() => f.session.dispose());
+		} finally { fs.unlinkSync = originalUnlink; syncBuiltinESMExports(); }
+		assert.equal(owner.counters.effects, 1); assert.equal(owner.counters.ownershipFailures, 1);
+		assert.equal(internals._operationJournal, undefined); assert.equal(internals._hostOperation, undefined);
+		assert.equal(existsSync(`${f.file}.operations-v1/lock`), true);
+	} finally { f.session.dispose(); }
+});
+
 test("permission denial, hook errors and disabled SDK never create a journal or invoke a provider", async () => {
 	const f = await fixture(true);
 	try {
@@ -74,6 +107,8 @@ test("permission denial, hook errors and disabled SDK never create a journal or 
 		await assert.rejects(f.session.newOperation(intent), /not executed/);
 		f.session.agent.beforeToolCall = async () => { throw new Error("policy failed"); };
 		await assert.rejects(f.session.newOperation(intent), /not executed/);
+		f.session.agent.beforeToolCall = async ({ args }) => { (args as { path: string }).path = "./".repeat(600) + "target"; return undefined; };
+		await assert.rejects(f.session.newOperation(intent), /Post-hook operation path capacity/);
 		assert.equal(existsSync(`${f.file}.operations-v1`), false);
 		assert.equal(f.providers(), 0);
 	} finally { f.session.dispose(); }

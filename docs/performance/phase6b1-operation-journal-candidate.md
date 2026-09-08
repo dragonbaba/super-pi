@@ -1,7 +1,7 @@
 # Phase 6B1 operation journal / local write candidate
 
 Task: `SUPER-PI-PHASE6B1-OPERATION-JOURNAL-LOCAL-WRITE`.
-State: implementation candidate; exact native Linux evidence and Candidate Review pending.
+State: corrective candidate after one cumulative Review; exact closeout CI and the one incremental Review pending.
 Base and merge-base: `73390a81cf2b7bcfad19f7ccc121bf36a616e890`.
 The initial fetch found no intervening main changes. PR #27 acceptance was not repeated.
 Branch: `phase/6b1-operation-journal-local-write`.
@@ -26,7 +26,7 @@ A failed delivery without a returned ID can re-deliver NEW with that same UUID; 
 `operationId = op1:<journalUUID>:<intentUUID>`; `attemptId = operationId + :1` on started.
 Only one execution attempt is supported. Result delivery/recovery does not increment it.
 The binding digest covers adapter policy v1, origin session/cwd/branch, addressed absolute path and UTF-8 content digest.
-Final post-tool_call arguments are captured as primitive strings, bounded and hashed before any effect.
+Final post-tool_call arguments are captured as primitive strings, bounded and hashed before any effect; raw and resolved paths are each checked after hooks.
 Planned persists the canonical parent fingerprint and initial target generation separately from the stable binding.
 A new target inode after successful creation does not invalidate completed recovery.
 Missing, foreign, conflicting, corrupt, failed or unknown IDs never mean fresh work.
@@ -52,6 +52,7 @@ Host dispatch never polls steering/follow-up queues, prepares another provider t
 Host failures propagate instead of generating an assistant error response. Result delivery errors cannot revoke a completed receipt.
 The host association uses api `host-operation`, provider `host`, model `local-operation`, with zero provider usage.
 It selects one call and rejects association/sibling changes during initial delivery; it never replays old assistant siblings.
+A private immutable ID/name/tool snapshot prevents later canonical-message mutation from dispatching another tool. Public canonical content remains mutable.
 Arbitrary user extensions may themselves perform network work; the host entry does not promise to prevent that.
 
 ## Storage, durability and reconciliation
@@ -88,14 +89,16 @@ After explicit reconciliation, completed receipts may be delivered; started/fail
 Private symbol identity is created only by the default local write definition; custom operations cannot acquire it.
 AgentSession also requires the exact active built-in definition/registry object; a custom tool named write is not eligible.
 An unbound write in a protected session refuses and asks the host for NEW versus recovery intent.
-Native Linux support is limited to verified ext-family, XFS, Btrfs or tmpfs identities and existing nonsymlink parent directories.
+Native Linux support is limited to verified ext-family, XFS, Btrfs or tmpfs identities, existing nonsymlink parent directories, and bounded procfs fdinfo mount identity.
 Every path component must be a real directory; targets must be regular single-link files or absent. The journal must be private.
-Protected writes cannot modify their own journal or session authority file.
+Protected writes cannot modify their own journal or session authority file, including inode aliases through bind mounts.
+Target/ancestor device-inode comparisons reject session/journal aliases; O_PATH descriptors and <=1 KiB fdinfo reads refuse file mountpoints without scanning journal history.
 Native Windows and other platforms explicitly refuse; Windows CI is refusal/compatibility evidence, not protected-write support.
 External editors are not excluded. Detected identity contradictions refuse; arbitrary malicious filesystem replacement is unsupported.
 Compaction/tree movement cannot erase the sidecar. Explicit recovery retains the host-supplied original branch binding.
 Fork/session changes cannot inherit authority; a changed session ID refuses. New SDK session instances anchor their own sidecars.
 Dispose blocks admissions and preserves active ownership until underlying write/publication settles.
+Post-effect abort reports cancellation while keeping the completed receipt. Failed lock removal preserves uncertain ownership and increments ownershipFailures while live callbacks are released.
 Retired definitions retain a stable refusal gate rather than reverting to ordinary execution; session callbacks are released.
 
 ## Bounds, allocation and compatibility
@@ -120,14 +123,18 @@ Deterministic red commits precede production. Focused host tests cover policy, c
 SDK tests cover default-off ordinary write, refusal, current hooks, first execution/reopen, and receipt survival after presentation/persistence errors.
 Journal tests cover capacity, strict oversized reads, separate/conflicting intents, partial failures, symlinks and active disposal.
 One task-owned subprocess fixture cuts actual publication/effect execution at started, partial, unpublished-completed and completed.
-Only the exact exited child is reconciled. Linux-only tests are explicitly skipped on Windows.
+Only the exact exited child is reconciled. Native-success fixtures select an eligible temp mount (or /dev/shm); unsupported environments exercise refusal and skip success-only cases.
+The inode-alias regression injects primitive identity equality; it is not presented as a privileged native bind-mount test. Actual fdinfo checks run in native execution fixtures.
 One E2 fixture runs 10 warmup and 30 paired samples for disabled/first write/recovery, then one five-cycle allocation profile
 and one controlled-GC journal WeakRef release check. Its compact result is emitted as `OPERATION_JOURNAL_E2` in normal CI logs.
 No local Linux measurement has run. No WSL distribution is installed; no native support claim is inferred from overrides.
 Local check passed after a test typing correction; offline build passed. Focused Windows tests passed with Linux-only cases skipped.
 Representative existing Agent streaming tests passed unchanged. No local full npm test, historical phase campaign or manual CI rerun.
-Normal exact-candidate Linux/Windows CI, native execution/crash/performance evidence and cumulative Candidate Review remain pending.
-B0/B1: acceptance remains blocked on that evidence and any reproducible review finding. C: packet closeout. D: only deferred work below.
+CI 34218074313 passed Linux and Windows for 767f216, including native crash tests, one timing/profile/GC set and full normal gates.
+Historical p50 ms: disabled 0.550, first protected write 3.265, recovery 0.476; owner metadata 429 bytes; 45 effects/45 recoveries; 137 file fsync acknowledgments; zero provider calls.
+The cumulative Review identified B0 late tool-selection mutation and authority inode aliases, B1 post-hook raw-path overflow, and C filesystem-aware fixtures.
+This batch closes those code paths plus post-effect abort/lock-release cleanup. Fresh exact CI/lifecycle evidence is necessary because ownership and target-validation paths changed; sampling is not repeated for nicer numbers.
+B0/B1 remain pending closeout verification; C is batched here. Final SHA, detailed measurements and review dispositions are maintained in PR metadata. D: only deferred work below.
 No Draft Candidate Gate claim until the required evidence is complete; one cumulative Review and at most one closeout are budgeted.
 
 ## Frozen areas, non-goals and rollback

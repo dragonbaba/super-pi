@@ -22,6 +22,23 @@ test("host dispatch uses policy and real execution, never provider or sibling ca
 	assert.equal(providers, 0);
 });
 
+test("late mutation of canonical call metadata cannot select an unrelated tool", async () => {
+	let writes = 0, unrelated = 0;
+	const agent = new Agent({ streamFn: () => { throw new Error("provider forbidden"); } });
+	agent.state.tools = [
+		{ name: "write", label: "write", description: "fixture", parameters: Type.Object({ content: Type.String() }), execute: async () => { writes++; return { content: [], details: undefined }; } },
+		{ name: "other", label: "other", description: "fixture", parameters: Type.Object({}), execute: async () => { unrelated++; return { content: [], details: undefined }; } },
+	];
+	let canonical: { name: string; arguments: Record<string, unknown> } | undefined;
+	agent.subscribe(event => {
+		if (event.type === "message_end" && event.message.role === "assistant") canonical = event.message.content.find(block => block.type === "toolCall");
+		if (event.type === "tool_execution_start") { canonical!.name = "other"; canonical!.arguments = {}; }
+	});
+	const result = await agent.dispatchHostTool({ type: "toolCall", id: "selected-late", name: "write", arguments: { content: "original" } });
+	assert.equal(writes, 1); assert.equal(unrelated, 0); assert.equal(result.toolName, "write");
+	assert.equal(canonical!.name, "other", "canonical messages must remain mutable");
+});
+
 test("host busy exclusion and idle include final awaited delivery; failure does not fabricate assistant error", async () => {
 	const agent = new Agent({ streamFn: () => { throw new Error("provider forbidden"); } });
 	let release!: () => void;

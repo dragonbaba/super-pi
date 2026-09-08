@@ -1,15 +1,18 @@
+import { operationFixtureSupported, operationFixtureRoot } from './helpers/operation-write-fixture.ts';
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, existsSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID, createHash } from "node:crypto";
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import test from "node:test";
 import { OperationJournal } from "../packages/coding-agent/src/core/operation-journal.ts";
 
 test("journal preserves completed historical facts and rejects conflicts and missing recovery IDs", async () => {
-	const root = mkdtempSync(join(tmpdir(), "pi-op-journal-"));
+	const root = operationFixtureRoot("pi-op-journal-");
 	const anchor = join(root, "session.jsonl"); writeFileSync(anchor, "session");
-	if (process.platform !== "linux") {
+	if (!operationFixtureSupported) {
 		assert.throws(() => new OperationJournal(anchor, "session", root), /Unsupported/);
 		return;
 	}
@@ -37,13 +40,13 @@ test("journal preserves completed historical facts and rejects conflicts and mis
 });
 
 test("journal rejects symlink/unsupported identity before protected execution", () => {
-	const root = mkdtempSync(join(tmpdir(), "pi-op-identity-"));
+	const root = operationFixtureRoot("pi-op-identity-");
 	mkdirSync(join(root, "dir"));
 	assert.throws(() => new OperationJournal(join(root, "missing", "session"), "session", root));
 });
 
-test("bounded disk authority survives 1024 records without resident history or terminal eviction", { skip: process.platform !== "linux" }, async () => {
-	const root = mkdtempSync(join(tmpdir(), "pi-op-capacity-"));
+test("bounded disk authority survives 1024 records without resident history or terminal eviction", { skip: !operationFixtureSupported }, async () => {
+	const root = operationFixtureRoot("pi-op-capacity-");
 	const anchor = join(root, "session"); writeFileSync(anchor, "session");
 	const journal = new OperationJournal(anchor, "session", root);
 	const intent = randomUUID(); const target = join(root, "target");
@@ -69,8 +72,8 @@ test("bounded disk authority survives 1024 records without resident history or t
 	} finally { reopened.release(); reopened.dispose(); }
 });
 
-test("busy/dispose retain exclusion until effect settlement; oversized records poison recovery", { skip: process.platform !== "linux" }, async () => {
-	const root = mkdtempSync(join(tmpdir(), "pi-op-lifecycle-"));
+test("busy/dispose retain exclusion until effect settlement; oversized records poison recovery", { skip: !operationFixtureSupported }, async () => {
+	const root = operationFixtureRoot("pi-op-lifecycle-");
 	const anchor = join(root, "session"); writeFileSync(anchor, "session");
 	const journal = new OperationJournal(anchor, "session", root);
 	let release!: () => void;
@@ -86,8 +89,8 @@ test("busy/dispose retain exclusion until effect settlement; oversized records p
 	assert.throws(() => new OperationJournal(anchor, "session", root), /oversized/);
 });
 
-test("symlink targets, payload overflow, separate intents and failed writes do not gain replay authority", { skip: process.platform !== "linux" }, async () => {
-	const root = mkdtempSync(join(tmpdir(), "pi-op-scope-"));
+test("symlink targets, payload overflow, separate intents and failed writes do not gain replay authority", { skip: !operationFixtureSupported }, async () => {
+	const root = operationFixtureRoot("pi-op-scope-");
 	const anchor = join(root, "session"); writeFileSync(anchor, "session");
 	const journal = new OperationJournal(anchor, "session", root);
 	const path = join(root, "target"); writeFileSync(path, "old"); symlinkSync(path, join(root, "alias"));
@@ -101,4 +104,22 @@ test("symlink targets, payload overflow, separate intents and failed writes do n
 	const two = await journal.execute(randomUUID(), false, null, path, "x", async () => { writeFileSync(path, "x"); });
 	assert.notEqual(one.operationId, two.operationId);
 	journal.release(); journal.dispose();
+});
+
+test("authority inode identity refuses aliases even when addressed paths differ", { skip: !operationFixtureSupported }, async () => {
+	const root = operationFixtureRoot("pi-op-inode-");
+	const anchor = join(root, "session"); writeFileSync(anchor, "session");
+	const target = join(root, "alias"); writeFileSync(target, "untouched");
+	const journal = new OperationJournal(anchor, "session", root);
+	const lstat = fs.lstatSync;
+	const sessionIdentity = lstat(anchor, { bigint: true });
+	try {
+		// Deterministic primitive identity fault, not a claim of a privileged native bind-mount test.
+		Object.defineProperty(fs, "lstatSync", { value: ((path, options) => String(path) === target ? sessionIdentity : lstat(path, options as any)) as typeof fs.lstatSync });
+		syncBuiltinESMExports();
+		journal.claim();
+		await assert.rejects(journal.execute(randomUUID(), false, null, target, "unsafe", async () => { throw new Error("effect forbidden"); }), /aliases its own authority/);
+		assert.equal(journal.counters.attempts, 0);
+	} finally { Object.defineProperty(fs, "lstatSync", { value: lstat }); syncBuiltinESMExports(); journal.release(); journal.dispose(); }
+	assert.equal(readFileSync(target, "utf8"), "untouched");
 });

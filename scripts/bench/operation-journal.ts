@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { Session } from "node:inspector/promises";
 import { randomUUID, createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFileSync, statfsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { setImmediate as yieldTurn } from "node:timers/promises";
 import { fixture } from "../../tests/helpers/operation-write-fixture.ts";
@@ -56,6 +56,7 @@ function summary(values: number[]) {
 }
 console.log("OPERATION_JOURNAL_E2 " + JSON.stringify({
 	head: execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim(), node: process.version, platform: process.platform,
+	filesystemType: Number(statfsSync(enabled.cwd).type),
 	fixtureSha256: createHash("sha256").update(readFileSync(new URL(import.meta.url))).digest("hex"),
 	warmup: 10, timing: { disabled: summary(latencies.disabled), firstWrite: summary(latencies.firstWrite), recovery: summary(latencies.recovery) },
 	counters, allocation: { samplingInterval: 1024, cycles: 5, sampledBytes, topFrames: frames.slice(0, 15) },
