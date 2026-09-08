@@ -6,19 +6,15 @@ import {
 	closeSync,
 	createReadStream,
 	existsSync,
-	fsyncSync,
-	linkSync,
 	mkdirSync,
 	openSync,
 	readdirSync,
 	readSync,
-	renameSync,
 	statSync,
-	unlinkSync,
 	writeFileSync,
 } from "fs";
 import { readdir, stat } from "fs/promises";
-import { basename, dirname, join, resolve } from "path";
+import { dirname, join, resolve } from "path";
 import { createInterface } from "readline";
 import { StringDecoder } from "string_decoder";
 import { getAgentDir as getDefaultAgentDir, getSessionsDir } from "../config.ts";
@@ -47,42 +43,7 @@ const SESSION_TREE_TIMESTAMP_MAP_POOL = new ObjectPool(
 	(timestamps) => timestamps.size <= 4096,
 );
 
-function syncSessionDirectory(directory: string): void {
-	let fd: number | undefined;
-	try {
-		fd = openSync(directory, "r");
-		fsyncSync(fd);
-	} catch {
-		// Windows commonly refuses directory fsync; the file itself is already durable.
-	} finally {
-		if (fd !== undefined) closeSync(fd);
-	}
-}
-
-function writeSessionEntriesAtomically(sessionFile: string, entries: readonly unknown[], replace: boolean): void {
-	const directory = dirname(sessionFile);
-	const tempFile = join(directory, `.${basename(sessionFile)}.${process.pid}.${randomUUID()}.tmp`);
-	const mode = replace && existsSync(sessionFile) ? statSync(sessionFile).mode & 0o777 : 0o600;
-	let fd: number | undefined;
-	let installed = false;
-	try {
-		fd = openSync(tempFile, "wx", mode);
-		for (const entry of entries) writeFileSync(fd, `${JSON.stringify(entry)}\n`);
-		fsyncSync(fd);
-		closeSync(fd);
-		fd = undefined;
-		if (replace) renameSync(tempFile, sessionFile);
-		else {
-			linkSync(tempFile, sessionFile);
-			unlinkSync(tempFile);
-		}
-		installed = true;
-		syncSessionDirectory(directory);
-	} finally {
-		if (fd !== undefined) closeSync(fd);
-		if (!installed && existsSync(tempFile)) unlinkSync(tempFile);
-	}
-}
+import { writeSessionEntriesAtomically } from './atomic-session-file.ts';
 
 export interface SessionHeader {
 	type: "session";

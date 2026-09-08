@@ -66,6 +66,8 @@ import {
 setDefaultStreamFn(streamSimple);
 
 export interface CreateAgentSessionOptions {
+	/** Experimental default-off host-bound local write replay protection. */
+	operationJournal?: import("./operation-journal.ts").OperationJournalOptions;
 	/** Working directory for project-local discovery. Default: process.cwd() */
 	cwd?: string;
 	/** Global config directory. Default: ~/.sp/agent */
@@ -515,6 +517,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	}
 
 	const session = new AgentSession({
+		operationJournal: options.operationJournal,
 		agent,
 		sessionManager,
 		settingsManager,

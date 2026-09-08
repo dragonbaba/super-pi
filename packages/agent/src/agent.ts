@@ -8,6 +8,7 @@ import type {
 	TextContent,
 	ThinkingBudgets,
 	Transport,
+	ToolResultMessage,
 } from "@super-pi/ai";
 import {
 	EventDeliveryDispatcher,
@@ -617,11 +618,13 @@ export class Agent {
 	}
 
 	/** @internal Experimental host-only dispatch; failures propagate without model retry messages. */
-	async dispatchHostTool(call: AgentToolCall): Promise<void> {
+	async dispatchHostTool(call: AgentToolCall): Promise<ToolResultMessage> {
+		let result!: ToolResultMessage;
 		await this.runWithLifecycle(async signal => {
-			await runHostToolDispatch(call, { systemPrompt: this._state.systemPrompt, messages: [], tools: this._state.tools.slice() },
+			result = await runHostToolDispatch(call, { systemPrompt: this._state.systemPrompt, messages: [], tools: this._state.tools.slice() },
 				this.createLoopConfig(), event => this.processEvents(event), signal);
 		}, true);
+		return result;
 	}
 
 	private async runWithLifecycle(executor: (signal: AbortSignal) => Promise<void>, hostOnly = false): Promise<void> {

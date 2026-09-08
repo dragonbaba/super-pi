@@ -36,8 +36,10 @@ const RESOLVED_VOID_PROMISE = Promise.resolve();
 export async function runHostToolDispatch(
 	call: AgentToolCall, context: AgentContext, config: AgentLoopConfig,
 	emit: AgentEventSink, signal?: AbortSignal,
-): Promise<void> {
+): Promise<ToolResultMessage> {
 	if (hasIncompleteToolArguments(call.arguments)) throw new Error("Incomplete host tool arguments");
+	const selectedId = call.id;
+	const selectedName = call.name;
 	// Explicit host origin in the existing message shape; zero provider usage.
 	// Persist the association before its result, without replaying historical sibling calls.
 	const origin: AssistantMessage = {
@@ -50,9 +52,13 @@ export async function runHostToolDispatch(
 	await emit({ type: "turn_start" });
 	await emit({ type: "message_start", message: origin });
 	await emit({ type: "message_end", message: origin });
+	if (origin.content.length !== 1 || origin.content[0] !== call || call.id !== selectedId || call.name !== selectedName) {
+		throw new Error("Host dispatch association changed during delivery");
+	}
 	const batch = await executeToolCalls(context, origin, config, signal, emit);
 	await emit({ type: "turn_end", message: origin, toolResults: batch.messages });
 	await emit({ type: "agent_end", messages: [origin, ...batch.messages] });
+	return batch.messages[0];
 }
 
 /**
