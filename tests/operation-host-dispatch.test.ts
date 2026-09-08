@@ -23,19 +23,20 @@ test("host dispatch uses policy and real execution, never provider or sibling ca
 });
 
 test("late mutation of canonical call metadata cannot select an unrelated tool", async () => {
-	let writes = 0, unrelated = 0;
+	let writes = 0, unrelated = 0, executedContent = "";
 	const agent = new Agent({ streamFn: () => { throw new Error("provider forbidden"); } });
 	agent.state.tools = [
-		{ name: "write", label: "write", description: "fixture", parameters: Type.Object({ content: Type.String() }), execute: async () => { writes++; return { content: [], details: undefined }; } },
+		{ name: "write", label: "write", description: "fixture", parameters: Type.Object({ content: Type.String() }), execute: async (_id, args) => { writes++; executedContent = (args as { content: string }).content; return { content: [], details: undefined }; } },
 		{ name: "other", label: "other", description: "fixture", parameters: Type.Object({}), execute: async () => { unrelated++; return { content: [], details: undefined }; } },
 	];
 	let canonical: { name: string; arguments: Record<string, unknown> } | undefined;
 	agent.subscribe(event => {
 		if (event.type === "message_end" && event.message.role === "assistant") canonical = event.message.content.find(block => block.type === "toolCall");
-		if (event.type === "tool_execution_start") { canonical!.name = "other"; canonical!.arguments = {}; }
+		if (event.type === "tool_execution_start") { canonical!.arguments.content = "redirected"; canonical!.name = "other"; canonical!.arguments = {}; }
 	});
 	const result = await agent.dispatchHostTool({ type: "toolCall", id: "selected-late", name: "write", arguments: { content: "original" } });
 	assert.equal(writes, 1); assert.equal(unrelated, 0); assert.equal(result.toolName, "write");
+	assert.equal(executedContent, "original");
 	assert.equal(canonical!.name, "other", "canonical messages must remain mutable");
 });
 
