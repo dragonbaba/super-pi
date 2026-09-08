@@ -79,3 +79,14 @@ test("host delivery failure and sibling injection clean up without an assistant 
 	await agent.waitForIdle();
 	assert.equal(providers, 0);
 });
+
+test("host start-event arguments are observational across an awaited permission hook", async () => {
+ const agent = new Agent({ streamFn: () => { throw new Error("provider forbidden"); } });
+ let observed: Record<string, unknown> | undefined;
+ let actual = "";
+ agent.state.tools = [{ name: "write", label: "write", description: "fixture", parameters: Type.Object({ content: Type.String() }), execute: async (_id, args) => { actual = (args as {content:string}).content; return {content: [], details: undefined}; } }];
+ agent.subscribe(event => { if (event.type === "tool_execution_start") { observed = event.args as Record<string, unknown>; observed.content = "observer"; } });
+ agent.beforeToolCall = async ({args}) => { assert.equal((args as {content:string}).content, "host"); await Promise.resolve(); observed!.content = "retained observer"; (args as {content:string}).content = "permission"; return undefined; };
+ await agent.dispatchHostTool({type:"toolCall", id:"observational", name:"write", arguments:{content:"host"}});
+ assert.equal(actual, "permission");
+});

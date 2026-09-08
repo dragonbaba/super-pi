@@ -123,3 +123,19 @@ test("authority inode identity refuses aliases even when addressed paths differ"
 	} finally { Object.defineProperty(fs, "lstatSync", { value: lstat }); syncBuiltinESMExports(); journal.release(); journal.dispose(); }
 	assert.equal(readFileSync(target, "utf8"), "untouched");
 });
+
+test("symlink session anchor is rejected before creating replay authority", () => {
+ const root = operationFixtureRoot("pi-op-anchor-");
+ const real = join(root,"session"); const alias = join(root,"alias");
+ writeFileSync(real,"transcript"); symlinkSync(real,alias);
+ assert.throws(() => new OperationJournal(alias,"session",root), /Unsupported session anchor/);
+ assert.equal(existsSync(`${alias}.operations-v1`),false);
+ assert.equal(readFileSync(real,"utf8"),"transcript");
+ assert.throws(() => OperationJournal.inspectWriter(alias), /Unsupported session anchor/);
+});
+
+test("published SDK exposes only read-only writer inspection", async () => {
+ const sdk = await import("@super-pi/coding-agent");
+ assert.equal(typeof (sdk as unknown as {inspectOperationWriter?: unknown}).inspectOperationWriter,"function");
+ assert.equal("OperationJournal" in sdk,false);
+});

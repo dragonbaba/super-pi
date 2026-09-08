@@ -126,3 +126,15 @@ test("permission denial, hook errors and disabled SDK never create a journal or 
 		assert.equal(existsSync(`${off.file}.operations-v1`), false); assert.equal(off.providers(), 0);
 	} finally { off.session.dispose(); }
 });
+
+test("first admission rejects a session switch before the write gate", async () => {
+ const f = await fixture(true);
+ const copied = join(f.cwd, "replacement.jsonl");
+ f.session.agent.subscribe(event => { if (event.type === "tool_execution_start") { writeFileSync(copied, readFileSync(f.file)); f.session.sessionManager.setSessionFile(copied); } });
+ try {
+  await assert.rejects(f.session.newOperation({intentId:randomUUID(),originBranch:null,path:"target",content:"forbidden"}), /storage anchor changed/);
+  assert.equal(existsSync(join(f.cwd,"target")),false);
+  assert.equal(existsSync(`${copied}.operations-v1`),false);
+  assert.equal((f.session as unknown as {_hostOperation?:unknown})._hostOperation,undefined);
+ } finally { f.session.dispose(); }
+});
