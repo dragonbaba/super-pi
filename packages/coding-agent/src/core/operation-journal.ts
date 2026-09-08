@@ -36,10 +36,14 @@ function boundedRead(path: string, cap: number): unknown {
 		return JSON.parse(envelope.body);
 	} finally { closeSync(fd); }
 }
-function publish(path: string, value: unknown, replace: boolean, cap: number): void {
+function encodeBounded(value: unknown, cap: number): { body: string; checksum: string } {
 	const body = JSON.stringify(value);
 	const envelope = { body, checksum: hash(body) };
 	if (Buffer.byteLength(JSON.stringify(envelope)) + 1 > cap) throw new Error("Operation record capacity");
+	return envelope;
+}
+function publish(path: string, value: unknown, replace: boolean, cap: number): void {
+	const envelope = encodeBounded(value, cap);
 	// Same acknowledged file-fsync/atomic-install chain as SessionManager. Keep failed staging evidence.
 	writeSessionEntriesAtomically(path, [envelope], replace, true);
 }
@@ -115,6 +119,8 @@ export class OperationJournal {
 	private closed = false;
 
 	constructor(sessionFile: string, session: string, cwd: string, stoppedWriterToken?: string, recoveryOnly = false) {
+		const proposedHeader: Header = { version: 1, journal: randomUUID(), session, cwd: resolve(cwd) };
+		const encodedHeader = encodeBounded(proposedHeader, 1024);
 		sessionAnchor(sessionFile);
 		directoryIdentity(dirname(sessionFile)); directoryIdentity(cwd);
 		this.directory = `${sessionFile}.operations-v1`;
@@ -148,8 +154,8 @@ export class OperationJournal {
 				const existing = opendirSync(this.directory);
 				try { for (let entry = existing.readSync(); entry; entry = existing.readSync()) if (entry.name !== "lock") throw new Error("Missing header in nonempty journal"); }
 				finally { existing.closeSync(); }
-				this.header = { version: 1, journal: randomUUID(), session, cwd: resolve(cwd) };
-				publish(headerPath, this.header, false, 1024);
+				this.header = proposedHeader;
+				writeSessionEntriesAtomically(headerPath, [encodedHeader], false, true);
 				this.counters.publications++; this.counters.fsyncs++;
 			}
 			const dir = opendirSync(this.directory);

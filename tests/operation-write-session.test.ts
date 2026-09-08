@@ -169,6 +169,14 @@ test("public definition replacement cannot execute outside the protected journal
   definition.execute=replacement;
   try { await f.session.newOperation({...intent,intentId:randomUUID()}); } catch { /* pre-admission substitution */ }
   assert.equal(replacements,0);
-  if(operationFixtureSupported) assert.equal(readFileSync(join(f.cwd,"target"),"utf8"),"trusted");
+  if(operationFixtureSupported) {
+   assert.equal(readFileSync(join(f.cwd,"target"),"utf8"),"trusted");
+   assert.equal((f.session as unknown as {_operationJournal:OperationJournal})._operationJournal.counters.effects,2);
+  }
+  const wrapper=f.session.agent.state.tools.find(tool=>tool.name==="write")!;
+  const execute=wrapper.execute; wrapper.execute=replacement;
+  try { await assert.rejects(f.session.newOperation({...intent,intentId:randomUUID()}),/Trusted built-in local write unavailable/); }
+  finally { wrapper.execute=execute; }
+  assert.equal(replacements,0);
  } finally { unsubscribe(); definition.execute=original; f.session.dispose(); }
 });

@@ -39,25 +39,26 @@ const defaultWriteOperations: WriteOperations = {
 	mkdir: (dir) => fsMkdir(dir, { recursive: true }).then(() => {}),
 };
 
-const LOCAL_WRITE = Symbol("trusted-local-write");
-const WRITE_GATE = Symbol("operation-write-gate");
+// Construction-time capability, never reachable through public definition properties.
+const localWrites = new WeakMap<ToolDefinition<any, any>, { execute: ToolDefinition<any, any>["execute"]; gate?: OperationWriteGate }>();
 export type OperationWriteGate = (callId: string, path: string, content: string, absolutePath: string,
 	perform: () => Promise<void>, signal?: AbortSignal) => Promise<{ content: { type: "text"; text: string }[]; details: undefined }>;
-type LocalWriteDefinition = ToolDefinition<typeof writeSchema, undefined> & {
-	[LOCAL_WRITE]?: boolean; [WRITE_GATE]?: OperationWriteGate;
-};
-/** @internal Only definitions constructed with the default local operations can be bound. */
-export function bindOperationWrite(definition: ToolDefinition, gate: OperationWriteGate): boolean {
-	const local = definition as LocalWriteDefinition;
-	if (local[LOCAL_WRITE] !== true) return false;
-	local[WRITE_GATE] = gate;
+/** @internal Only exact definitions constructed with default operations can be bound. */
+export function bindOperationWrite(definition: ToolDefinition<any, any>, gate: OperationWriteGate): boolean {
+	const local = localWrites.get(definition);
+	if (!local) return false;
+	local.gate = gate;
 	return true;
 }
+/** @internal Snapshot only the construction-time callable of a protected definition. */
+export function getProtectedWriteExecute(definition: ToolDefinition<any, any>): ToolDefinition<any, any>["execute"] | undefined {
+	const local = localWrites.get(definition);
+	return local?.gate ? local.execute : undefined;
+}
 const inactiveOperationWrite: OperationWriteGate = async () => { throw new Error("Protected write adapter is inactive; ordinary replay is forbidden"); };
-/** @internal Release session callbacks while preserving the protected-session rollback restriction. */
-export function retireOperationWrite(definition: ToolDefinition): void {
-	const local = definition as LocalWriteDefinition;
-	if (local[WRITE_GATE]) local[WRITE_GATE] = inactiveOperationWrite;
+export function retireOperationWrite(definition: ToolDefinition<any, any>): void {
+	const local = localWrites.get(definition);
+	if (local?.gate) local.gate = inactiveOperationWrite;
 }
 
 export interface WriteToolOptions {
@@ -214,8 +215,7 @@ export function createWriteToolDefinition(
 	options?: WriteToolOptions,
 ): ToolDefinition<typeof writeSchema, undefined> {
 	const ops = options?.operations ?? defaultWriteOperations;
-	const definition: LocalWriteDefinition = {
-		[LOCAL_WRITE]: ops === defaultWriteOperations,
+	const definition: ToolDefinition<typeof writeSchema, undefined> = {
 		name: "write",
 		label: "write",
 		description:
@@ -233,7 +233,7 @@ export function createWriteToolDefinition(
 			const absolutePath = resolveToCwd(path, cwd);
 			const dir = dirname(absolutePath);
 			return withFileMutationQueue(absolutePath, async () => {
-				const gate = definition[WRITE_GATE];
+				const gate = localWrites.get(definition)?.gate;
 				if (gate) return gate(_toolCallId, path, content, absolutePath, async () => {
 					await ops.writeFile(absolutePath, content);
 				}, signal);
@@ -296,6 +296,7 @@ export function createWriteToolDefinition(
 			return text;
 		},
 	};
+	if (ops === defaultWriteOperations) localWrites.set(definition, { execute: definition.execute });
 	return definition;
 }
 

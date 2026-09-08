@@ -172,3 +172,13 @@ test("encoded header overflow rejects repeatedly before creating or reconciling 
  assert.equal(readFileSync(`${anchor}.operations-v1/lock`,"utf8"),lock);
  assert.equal(existsSync(`${anchor}.operations-v1/header`),false);
 });
+
+
+test("exact encoded header boundary fits with publisher newline", {skip:!operationFixtureSupported}, () => {
+ const root=operationFixtureRoot("pi-header-fit-"); const anchor=join(root,"session");writeFileSync(anchor,"session");
+ const size=(session:string)=>{const body=JSON.stringify({version:1,journal:"0".repeat(36),session,cwd:root});return Buffer.byteLength(JSON.stringify({body,checksum:"0".repeat(64)}))+1;};
+ const session="x".repeat(1024-size("")); assert.equal(size(session),1024);
+ const journal=new OperationJournal(anchor,session,root);
+ try { assert.equal(readFileSync(`${anchor}.operations-v1/header`).length,1024); }
+ finally { journal.dispose(); }
+});

@@ -172,3 +172,23 @@ The existing single E2 set now also counts 90 protected start snapshots and chec
 Fresh exact CI supplies native Linux timing/allocation/lifecycle evidence; older 34222120392 evidence is historical for the changed chain.
 Local offline build/check and focused Windows regressions succeeded; native success cases remain explicitly pending until exact CI.
 Final head, CI URLs, four thread dispositions and the one corrective review belong in PR metadata, avoiding a post-CI documentation commit.
+
+
+## Callable/header correction after review 5143074679
+
+c3b5e09 CI 34237661840 passed Linux/Windows, including native evidence for the previous four corrections.
+New B0 r3959012828 and B1 r3959012840 supersede that candidate's readiness; merge remains suspended.
+A focused red batch demonstrated replacement execute running twice and missing encoded-header preflight.
+Construction now records the exact local execute and gate in a private weak-key capability; public definitions remain mutable.
+Only protected wrappers capture that construction-time callable. Ordinary/custom wrappers retain dynamic definition.execute behavior.
+Registration captures the outer registered wrapper execute; host admission rejects its substitution. The existing selected snapshot isolates later mutation.
+The pinned callable is resolved before runner-context callbacks, and local write reads only the private gate before entering the unchanged queue.
+No public symbol exposes the gate or trusted implementation; retirement replaces the gate with refusal and releases session callbacks.
+One weak-map metadata entry holds callable/gate per local definition; ephemeron ownership does not keep dead definitions or sessions alive.
+Header encoding uses the same body/checksum envelope and UTF-8 byte calculation plus publisher newline, before any sidecar/lock mutation.
+The prepared header envelope is reused for publication. Existing-journal header/record validation still runs under exclusive ownership.
+Constructor-only temporary UUID/header/body/checksum/encoded strings are bounded by existing field inputs and the exact 1 KiB publication cap.
+Overflow rejection neither creates nor reconciles locks. Boundary and JSON-escaping tests preserve existing lock bytes and verify repeated rejection.
+Fresh normal CI supplies the changed-chain E2 profile and weak-reference lifecycle evidence; no local duplicate measurement was run.
+The initial build exposed a generic variance declaration error; the corrected coding-agent build and check passed. Final exact CI is required.
+One automatic corrective review is reused, with spaced waiting until CI/review completion. Final findings/CI/head live in PR metadata.

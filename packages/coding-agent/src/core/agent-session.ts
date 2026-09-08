@@ -746,6 +746,7 @@ export class AgentSession {
 	private _operationSessionFile?: string;
 	private _operationDisposed = false;
 	private _operationGate?: OperationWriteGate;
+	private _operationToolExecute?: AgentTool["execute"];
 	private _hostOperation?: { id: string; resume: boolean; branch: string | null; callId: string; sessionId: string; sessionFile: string | undefined; completion?: OperationCompletion; error?: unknown };
 
 	/** Experimental host NEW intent. Re-delivery must reuse intentId and originBranch. */
@@ -762,7 +763,7 @@ export class AgentSession {
 		if (this._hostOperation || this._isAgentRunActive || this.agent.state.isStreaming) throw new Error("Operation dispatch busy");
 		const definition = this._baseToolDefinitions.get("write");
 		if (!definition || this._toolDefinitions.get("write")?.definition !== definition ||
-			this.agent.state.tools.find(t => t.name === "write") !== this._toolRegistry.get("write") || !this._operationGate) throw new Error("Trusted built-in local write unavailable");
+			this.agent.state.tools.find(t => t.name === "write") !== this._toolRegistry.get("write") || !this._operationGate || this._toolRegistry.get("write")?.execute !== this._operationToolExecute) throw new Error("Trusted built-in local write unavailable");
 		if (typeof args.path !== "string" || typeof args.content !== "string" || Buffer.byteLength(args.path) > 1024 || Buffer.byteLength(args.content) > 262144) throw new Error("Operation input capacity");
 		const sessionId = this.sessionManager.getSessionId();
 		const sessionFile = this.sessionManager.getSessionFile();
@@ -1560,6 +1561,7 @@ export class AgentSession {
 		const protectedDefinition = this._operationOptions && this._baseToolDefinitions.get("write");
 		if (protectedDefinition) retireOperationWrite(protectedDefinition);
 		this._operationGate = undefined;
+		this._operationToolExecute = undefined;
 		this._operationOptions = undefined;
 		this._evidenceLedger?.dispose();
 		this._evidenceCompletedReads?.clear();
@@ -3945,6 +3947,7 @@ export class AgentSession {
 			});
 		}
 		const wrappedBuiltInTools = wrapRegisteredTools(registeredBuiltInTools, runner);
+		if (this._operationOptions) this._operationToolExecute = wrappedBuiltInTools.find(tool => tool.name === "write")?.execute;
 		for (const tool of wrappedBuiltInTools) {
 			const executionPath = getBuiltinExecutionPath(tool.name, this._cwd);
 			if (executionPath) tool.executionPath = executionPath;
