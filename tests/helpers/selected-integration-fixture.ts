@@ -29,12 +29,18 @@ class SlowSink implements TerminalFrameSink {
  cancelFrameWrite(_generation: number) { this.generation=undefined; }
 }
 
+function gate() {
+ let resolve!: () => void;
+ const promise=new Promise<void>(done=>{resolve=done;});
+ return {promise,resolve};
+}
+
 export async function stability(cycles: number) {
  const sink = new SlowSink();
  const queue = new TerminalFrameQueue(sink);
  let toolRound = true, abortRun = false, updates = 0, effects = 0, ended = 0, submissions = 0, observedAborts = 0;
  let started=0;
- let both=Promise.withResolvers<void>(), aborted=Promise.withResolvers<void>();
+ let both=gate(), aborted=gate();
  const executions=new Map<string,number>(), aborts=new Set<string>();
  const agent = new Agent({ toolExecution:"parallel", streamFn: (model) => {
   const tools = toolRound; toolRound = false;
@@ -80,7 +86,7 @@ export async function stability(cycles: number) {
   for(let cycle=0;cycle<cycles;cycle++) {
    for(const abort of [true,false]) {
     abortRun=abort; toolRound=true; seen.clear(); executions.clear(); aborts.clear(); started=0;
-    both=Promise.withResolvers<void>(); aborted=Promise.withResolvers<void>();
+    both=gate(); aborted=gate();
     await agent.prompt("fixed workload");
     await agent.waitForIdle(); await queue.flush();
     assert.deepEqual([...executions.entries()].sort(),[["p-0",1],["p-1",1]]);
