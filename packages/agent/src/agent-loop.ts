@@ -62,7 +62,10 @@ export async function runHostToolDispatch(
 	if (origin.content.length !== 1 || origin.content[0] !== call || call.id !== selectedId || call.name !== selectedName) {
 		throw new Error("Host dispatch association changed during delivery");
 	}
-	const batch = await executeToolCalls(selectedContext, executionOrigin, config, signal, emit);
+	// One callback per host operation; only start publication allocates an observer container.
+	const hostEmit: AgentEventSink = event => emit(event.type === "tool_execution_start"
+		? { ...event, args: { ...event.args } } : event);
+	const batch = await executeToolCalls(selectedContext, executionOrigin, config, signal, hostEmit);
 	await emit({ type: "turn_end", message: origin, toolResults: batch.messages });
 	await emit({ type: "agent_end", messages: [origin, ...batch.messages] });
 	return batch.messages[0];

@@ -12,6 +12,16 @@ if (process.platform !== "linux") throw new Error("Native Linux measurement requ
 if (!globalThis.gc) throw new Error("Use --expose-gc");
 const enabled = await fixture(true);
 const disabled = await fixture(false);
+let observerSnapshots = 0;
+let observerWeak: WeakRef<object> | undefined;
+let requestWeak: WeakRef<object> | undefined;
+const unsubscribe = enabled.session.agent.subscribe(event => {
+	if (event.type === "tool_execution_start") {
+		observerSnapshots++;
+		observerWeak = new WeakRef(event.args as object);
+		requestWeak = new WeakRef((enabled.session as unknown as {_hostOperation: object})._hostOperation);
+	}
+});
 const content = "bounded write payload\n".repeat(200);
 const latencies = { disabled: [] as number[], firstWrite: [] as number[], recovery: [] as number[] };
 let lastId = "";
@@ -46,10 +56,13 @@ const counters = { ...internals._operationJournal!.counters };
 assert.equal(counters.effects, 45); assert.equal(counters.recoveries, 45); assert.equal(counters.active, 0);
 assert.equal(internals._hostOperation, undefined);
 const weak = new WeakRef(internals._operationJournal!);
-enabled.session.dispose(); disabled.session.dispose();
+unsubscribe(); enabled.session.dispose(); disabled.session.dispose();
 assert.equal(internals._operationJournal, undefined);
 await yieldTurn(); globalThis.gc(); await yieldTurn(); globalThis.gc(); await yieldTurn();
 assert.equal(weak.deref(), undefined, "disposed session retained its journal");
+assert.equal(observerWeak?.deref(), undefined, "observer arguments retained");
+assert.equal(requestWeak?.deref(), undefined, "admission request retained");
+assert.equal(observerSnapshots, 90);
 function summary(values: number[]) {
 	values.sort((a, b) => a - b);
 	return { samples: values.length, p50Ms: values[Math.floor(values.length * 0.5)], p95Ms: values[Math.floor(values.length * 0.95)] };
@@ -60,6 +73,6 @@ console.log("OPERATION_JOURNAL_E2 " + JSON.stringify({
 	fixtureSha256: createHash("sha256").update(readFileSync(new URL(import.meta.url))).digest("hex"),
 	warmup: 10, timing: { disabled: summary(latencies.disabled), firstWrite: summary(latencies.firstWrite), recovery: summary(latencies.recovery) },
 	counters, allocation: { samplingInterval: 1024, cycles: 5, sampledBytes, topFrames: frames.slice(0, 15) },
-	lifecycle: { journalReleased: true, active: 0, retainedRequest: false }, providers: enabled.providers() + disabled.providers(),
+	lifecycle: { journalReleased: true, active: 0, retainedRequest: false, observerSnapshots, observerArgumentsReleased: true, admissionRequestReleased: true }, providers: enabled.providers() + disabled.providers(),
 	interpretation: "Operation-level durability costs; no inference of model calls or tokens saved. fsync counter counts file acknowledgments; best-effort directory sync is additional.",
 }));

@@ -136,6 +136,23 @@ test("symlink session anchor is rejected before creating replay authority", () =
 
 test("published SDK exposes only read-only writer inspection", async () => {
  const sdk = await import("@super-pi/coding-agent");
- assert.equal(typeof (sdk as unknown as {inspectOperationWriter?: unknown}).inspectOperationWriter,"function");
+ const inspect: (sessionFile: string) => string = sdk.inspectOperationWriter;
+ assert.equal(typeof inspect,"function");
+ assert.throws(() => inspect(join(operationFixtureRoot("pi-inspect-missing-"),"missing")), /ENOENT/);
  assert.equal("OperationJournal" in sdk,false);
+});
+
+
+test("public inspection observes ownership without changing lock or journal", {skip: !operationFixtureSupported}, async () => {
+ const {inspectOperationWriter} = await import("@super-pi/coding-agent");
+ const root=operationFixtureRoot("pi-inspection-"); const anchor=join(root,"session"); writeFileSync(anchor,"session");
+ const journal=new OperationJournal(anchor,"session",root);
+ const lock=`${anchor}.operations-v1/lock`; const before=readFileSync(lock,"utf8");
+ try {
+  assert.equal(inspectOperationWriter(anchor),OperationJournal.inspectWriter(anchor));
+  assert.equal(readFileSync(lock,"utf8"),before);
+  writeFileSync(lock,"corrupt"); assert.throws(() => inspectOperationWriter(anchor));
+  assert.equal(readFileSync(lock,"utf8"),"corrupt");
+  writeFileSync(lock,before);
+ } finally { journal.dispose(); }
 });

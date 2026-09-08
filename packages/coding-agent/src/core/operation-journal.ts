@@ -62,6 +62,21 @@ function directoryIdentity(path: string): string {
 	const st = lstatSync(absolute, { bigint: true });
 	return `${absolute}:${st.dev}:${st.ino}`;
 }
+// Metadata only: ordinary transcript appends do not change this authority identity.
+function sessionAnchor(path: string) {
+	if (typeof path !== "string" || Buffer.byteLength(path) > 1024) throw new Error("Unsupported session anchor");
+	const stat = lstatSync(path, { bigint: true });
+	if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1n || stat.ino === 0n) throw new Error("Unsupported session anchor");
+	return stat;
+}
+
+/** Experimental read-only inspection. Throws on missing, corrupt or unsupported input.
+ * A token observes ownership; it does not prove termination or authorize lock stealing.
+ */
+export function inspectOperationWriter(sessionFile: string): string {
+	return OperationJournal.inspectWriter(sessionFile);
+}
+
 function targetIdentity(path: string): string {
 	try {
 		const st = lstatSync(path, { bigint: true });
@@ -100,6 +115,7 @@ export class OperationJournal {
 	private closed = false;
 
 	constructor(sessionFile: string, session: string, cwd: string, stoppedWriterToken?: string, recoveryOnly = false) {
+		sessionAnchor(sessionFile);
 		directoryIdentity(dirname(sessionFile)); directoryIdentity(cwd);
 		this.directory = `${sessionFile}.operations-v1`;
 		if (recoveryOnly && !existsSync(join(this.directory, "header"))) throw new Error("Missing journal: recovery unavailable");
@@ -151,6 +167,7 @@ export class OperationJournal {
 
 	/** Read-only ownership inspection for a host that can independently establish writer termination. */
 	static inspectWriter(sessionFile: string): string {
+		sessionAnchor(sessionFile);
 		directoryIdentity(`${sessionFile}.operations-v1`);
 		const lock = boundedRead(join(`${sessionFile}.operations-v1`, "lock"), 1024);
 		exactKeys(lock, "version,token");
@@ -174,6 +191,7 @@ export class OperationJournal {
 		}
 	}
 	private validateOwner(): void {
+		sessionAnchor(this.directory.slice(0, -".operations-v1".length));
 		if (directoryIdentity(this.directory) !== this.directoryBinding) throw new Error("Journal directory identity changed");
 		const lock = boundedRead(join(this.directory, "lock"), 1024);
 		exactKeys(lock, "version,token");
@@ -181,7 +199,7 @@ export class OperationJournal {
 	}
 	private rejectAuthorityTarget(absolute: string): void {
 		const journal = lstatSync(this.directory, { bigint: true });
-		const session = lstatSync(this.directory.slice(0, -".operations-v1".length), { bigint: true });
+		const session = sessionAnchor(this.directory.slice(0, -".operations-v1".length));
 		let current = absolute;
 		let targetExists = false;
 		for (;;) {

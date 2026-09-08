@@ -145,3 +145,30 @@ No Draft Candidate Gate claim until the required evidence is complete; one cumul
 Rollback baseline is 73390a81cf2b7bcfad19f7ccc121bf36a616e890, but rollback is NOT permission to replay protected sessions with an unaware binary.
 Disable new admission, preserve the sidecar, and require explicit reconciliation before any recovery. Never delete journal facts to enable startup.
 No Ready, merge, auto-merge, force push, history rewrite, branch/worktree deletion or next-stage work is authorized.
+
+
+## Authorized four-finding corrective closeout (168cd117 baseline)
+
+The Ready-triggered review published three B0 findings and one B1 finding. Merge acceptance of 168cd117 is suspended.
+One batched red/fix closeout and one review of 168cd117...corrected head are authorized; no merge or new phase is authorized.
+The red commit reproduces event-argument exposure, first-admission scope omission and missing published inspection.
+Its symlink rejection test is a Windows rejection-order check; native Linux effect prevention remains an exact-CI requirement.
+Host dispatch now wraps only its private dispatcher sink: tool_execution_start publishes a shallow argument container sharing primitive strings.
+The ordinary provider dispatcher is unchanged. Canonical origin remains a separate mutable object; policy gets its normal validated arguments.
+Preparation, before/after hooks and progress still use the existing dispatcher. The local write captures primitive values before entering its queue.
+No observer can acquire the execution container through start publication; progress/result events occur after primitive capture.
+The host request captures session ID and storage path before dispatch's first await, with each field bounded to 1024 UTF-8 bytes.
+The queue-owned gate compares those values before journal creation/reuse. Its synchronous journal publication/effect checks have no intervening hook or await before perform().
+Journal construction and read-only inspection reject symlink/nonregular/multilink session anchors before sidecar mutation.
+Existing owner and pre-effect authority checks revalidate the anchor; inode-alias and mount protections remain unchanged.
+Validation ignores file size/time, so ordinary transcript appends do not invalidate authority. No transcript hashing or namespace migration is added.
+The published SDK exports inspectOperationWriter(sessionFile): string, not the mutable journal owner.
+Inspection throws on missing (ENOENT), corrupt or unsupported input and never creates/reconciles/removes ownership.
+The returned token is observed ownership only: independently establish termination and exclusive maintenance before supplying stoppedWriterToken.
+Incremental allocations: one host sink closure per host dispatch, one shallow argument object and one event wrapper per start; strings shared, no payload copy.
+Admission adds two bounded primitive references to the existing request. Anchor checks add lstat metadata objects/I/O at construction, owner validation and authority checks.
+No new provider-delta callbacks, timers, Promise chains, hashes, global owner or persistent schema are introduced.
+The existing single E2 set now also counts 90 protected start snapshots and checks observer-container/admission-request WeakRef release.
+Fresh exact CI supplies native Linux timing/allocation/lifecycle evidence; older 34222120392 evidence is historical for the changed chain.
+Local offline build/check and focused Windows regressions succeeded; native success cases remain explicitly pending until exact CI.
+Final head, CI URLs, four thread dispositions and the one corrective review belong in PR metadata, avoiding a post-CI documentation commit.

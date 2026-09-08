@@ -41,7 +41,7 @@ test("post-hook arguments bind the effect; result and persistence failures canno
 	let canonicalArgs: Record<string, unknown> | undefined;
 	const unsubscribe = f.session.agent.subscribe(event => {
 		if (event.type === "message_end" && event.message.role === "assistant") canonicalArgs = event.message.content.find(block => block.type === "toolCall")?.arguments;
-		if (event.type === "tool_execution_start") canonicalArgs!.path = "redirected";
+		if (event.type === "tool_execution_start") { canonicalArgs!.path = "redirected"; (event.args as {path:string}).path = "event-redirected"; }
 	});
 	try {
 		f.session.agent.beforeToolCall = async ({ args }) => { (args as { content: string }).content = "post hook"; return undefined; };
@@ -49,6 +49,7 @@ test("post-hook arguments bind the effect; result and persistence failures canno
 		await assert.rejects(f.session.newOperation(intent), /durable receipt/);
 		assert.equal(readFileSync(join(f.cwd, "target"), "utf8"), "post hook");
 		assert.equal(existsSync(join(f.cwd, "redirected")), false);
+		assert.equal(existsSync(join(f.cwd, "event-redirected")), false);
 		writeFileSync(join(f.cwd, "target"), "later edit");
 		f.session.agent.afterToolCall = undefined;
 		const recovered = await f.session.newOperation(intent); // same explicit intent, new delivery ID
@@ -137,4 +138,20 @@ test("first admission rejects a session switch before the write gate", async () 
   assert.equal(existsSync(`${copied}.operations-v1`),false);
   assert.equal((f.session as unknown as {_hostOperation?:unknown})._hostOperation,undefined);
  } finally { f.session.dispose(); }
+});
+
+
+test("SDK symlink anchor refuses transcript overwrite without sidecar mutation", {skip: !operationFixtureSupported}, async () => {
+ const f = await fixture(true);
+ // Persist a real session through ordinary host delivery, without a protected effect.
+ f.session.agent.beforeToolCall = async () => ({block:true,reason:"persist only"});
+ await assert.rejects(f.session.newOperation({intentId:randomUUID(),originBranch:null,path:"unused",content:"x"}));
+ const alias = join(f.cwd,"session-alias.jsonl"); fs.symlinkSync(f.file,alias);
+ const linked = await fixture(true,{...f,file:alias});
+ try {
+  await assert.rejects(linked.session.newOperation({intentId:randomUUID(),originBranch:null,path:f.file,content:"FORBIDDEN TRANSCRIPT REPLACEMENT"}), /Unsupported session anchor/);
+  assert.notEqual(readFileSync(f.file,"utf8"),"FORBIDDEN TRANSCRIPT REPLACEMENT");
+  assert.equal(existsSync(`${alias}.operations-v1`),false);
+  assert.equal(existsSync(`${f.file}.operations-v1`),false);
+ } finally { linked.session.dispose(); f.session.dispose(); }
 });

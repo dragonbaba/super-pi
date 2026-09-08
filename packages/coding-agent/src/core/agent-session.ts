@@ -746,7 +746,7 @@ export class AgentSession {
 	private _operationSessionFile?: string;
 	private _operationDisposed = false;
 	private _operationGate?: OperationWriteGate;
-	private _hostOperation?: { id: string; resume: boolean; branch: string | null; callId: string; completion?: OperationCompletion; error?: unknown };
+	private _hostOperation?: { id: string; resume: boolean; branch: string | null; callId: string; sessionId: string; sessionFile: string | undefined; completion?: OperationCompletion; error?: unknown };
 
 	/** Experimental host NEW intent. Re-delivery must reuse intentId and originBranch. */
 	async newOperation(intent: OperationWriteIntent): Promise<OperationCompletion> {
@@ -764,7 +764,10 @@ export class AgentSession {
 		if (!definition || this._toolDefinitions.get("write")?.definition !== definition ||
 			this.agent.state.tools.find(t => t.name === "write") !== this._toolRegistry.get("write") || !this._operationGate) throw new Error("Trusted built-in local write unavailable");
 		if (typeof args.path !== "string" || typeof args.content !== "string" || Buffer.byteLength(args.path) > 1024 || Buffer.byteLength(args.content) > 262144) throw new Error("Operation input capacity");
-		const request: NonNullable<AgentSession["_hostOperation"]> = { id, resume, branch: args.originBranch, callId: `host-write-${crypto.randomUUID()}` };
+		const sessionId = this.sessionManager.getSessionId();
+		const sessionFile = this.sessionManager.getSessionFile();
+		if (Buffer.byteLength(sessionId) > 1024 || sessionFile && Buffer.byteLength(sessionFile) > 1024) throw new Error("Operation anchor capacity");
+		const request: NonNullable<AgentSession["_hostOperation"]> = { id, resume, branch: args.originBranch, sessionId, sessionFile, callId: `host-write-${crypto.randomUUID()}` };
 		this._hostOperation = request;
 		this._isAgentRunActive = true;
 		try {
@@ -792,10 +795,11 @@ export class AgentSession {
 			if (typeof path !== "string" || Buffer.byteLength(path) > 1024) throw new Error("Post-hook operation path capacity");
 			const sessionId = this.sessionManager.getSessionId();
 			const file = this.sessionManager.getSessionFile();
+			if (request.sessionId !== sessionId || request.sessionFile !== file) throw new Error("Operation origin session/storage anchor changed");
 			if (this._operationSessionId && (this._operationSessionId !== sessionId || this._operationSessionFile !== file)) throw new Error("Operation origin session/storage anchor changed");
 			if (!this._operationJournal) {
 				if (!file || !this.sessionManager.isPersisted()) throw new Error("Protected write requires persisted session storage");
-				this._operationJournal = new OperationJournal(file, sessionId, this._cwd, this._operationOptions?.stoppedWriterToken, request.resume);
+				this._operationJournal = new OperationJournal(request.sessionFile!, request.sessionId, this._cwd, this._operationOptions?.stoppedWriterToken, request.resume);
 				this._operationSessionId = sessionId;
 				this._operationSessionFile = file;
 			}
