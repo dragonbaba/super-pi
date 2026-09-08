@@ -6,19 +6,15 @@ import {
 	closeSync,
 	createReadStream,
 	existsSync,
-	fsyncSync,
-	linkSync,
 	mkdirSync,
 	openSync,
 	readdirSync,
 	readSync,
-	renameSync,
 	statSync,
-	unlinkSync,
 	writeFileSync,
 } from "fs";
 import { readdir, stat } from "fs/promises";
-import { basename, dirname, join, resolve } from "path";
+import { dirname, join, resolve } from "path";
 import { createInterface } from "readline";
 import { StringDecoder } from "string_decoder";
 import { getAgentDir as getDefaultAgentDir, getSessionsDir } from "../config.ts";
@@ -47,42 +43,7 @@ const SESSION_TREE_TIMESTAMP_MAP_POOL = new ObjectPool(
 	(timestamps) => timestamps.size <= 4096,
 );
 
-function syncSessionDirectory(directory: string): void {
-	let fd: number | undefined;
-	try {
-		fd = openSync(directory, "r");
-		fsyncSync(fd);
-	} catch {
-		// Windows commonly refuses directory fsync; the file itself is already durable.
-	} finally {
-		if (fd !== undefined) closeSync(fd);
-	}
-}
-
-function writeSessionEntriesAtomically(sessionFile: string, entries: readonly unknown[], replace: boolean): void {
-	const directory = dirname(sessionFile);
-	const tempFile = join(directory, `.${basename(sessionFile)}.${process.pid}.${randomUUID()}.tmp`);
-	const mode = replace && existsSync(sessionFile) ? statSync(sessionFile).mode & 0o777 : 0o600;
-	let fd: number | undefined;
-	let installed = false;
-	try {
-		fd = openSync(tempFile, "wx", mode);
-		for (const entry of entries) writeFileSync(fd, `${JSON.stringify(entry)}\n`);
-		fsyncSync(fd);
-		closeSync(fd);
-		fd = undefined;
-		if (replace) renameSync(tempFile, sessionFile);
-		else {
-			linkSync(tempFile, sessionFile);
-			unlinkSync(tempFile);
-		}
-		installed = true;
-		syncSessionDirectory(directory);
-	} finally {
-		if (fd !== undefined) closeSync(fd);
-		if (!installed && existsSync(tempFile)) unlinkSync(tempFile);
-	}
-}
+import { writeSessionEntriesAtomically } from './atomic-session-file.ts';
 
 export interface SessionHeader {
 	type: "session";
@@ -944,10 +905,18 @@ export class SessionManager {
 		this._setSessionFile(sessionFile);
 	}
 
+	private _appendNeedsSeparator = false;
 	private _setSessionFile(sessionFile: string, preloadedFileEntries?: FileEntry[]): void {
+		this._appendNeedsSeparator = false;
 		this.sessionFile = resolvePath(sessionFile);
 		if (existsSync(this.sessionFile)) {
 			this.fileEntries = preloadedFileEntries ?? loadEntriesFromFile(this.sessionFile);
+			const tailFd = openSync(this.sessionFile, "r");
+			try {
+				const size = statSync(this.sessionFile).size;
+				const tail = Buffer.alloc(1);
+				this._appendNeedsSeparator = size > 0 && readSync(tailFd, tail, 0, 1, size - 1) === 1 && tail[0] !== 10;
+			} finally { closeSync(tailFd); }
 
 			// If file was empty, initialize it with a valid session header. If it was
 			// non-empty but did not parse as a Super Pi session, fail without modifying it.
@@ -980,6 +949,7 @@ export class SessionManager {
 	}
 
 	newSession(options?: NewSessionOptions): string | undefined {
+		this._appendNeedsSeparator = false;
 		if (options?.id !== undefined) {
 			assertValidSessionId(options.id);
 		}
@@ -1033,6 +1003,17 @@ export class SessionManager {
 		writeSessionEntriesAtomically(this.sessionFile, this.fileEntries, true);
 	}
 
+	/** @internal Establish a protected admission anchor without publishing a host call.
+	 * Existing sessions are untouched; exclusive atomic install preserves ordinary append behavior.
+	 */
+	ensureOperationStorage(): void {
+		if (!this.persist || !this.sessionFile) throw new Error("Protected write requires persisted session storage");
+		if (!this.flushed) {
+			writeSessionEntriesAtomically(this.sessionFile, this.fileEntries, false);
+			this.flushed = true;
+		}
+	}
+
 	isPersisted(): boolean {
 		return this.persist;
 	}
@@ -1059,6 +1040,10 @@ export class SessionManager {
 
 	_persist(entry: SessionEntry): void {
 		if (!this.persist || !this.sessionFile) return;
+		if (this._appendNeedsSeparator) {
+			appendFileSync(this.sessionFile, "\n");
+			this._appendNeedsSeparator = false;
+		}
 
 		const hasAssistant = this.fileEntries.some((e) => e.type === "message" && e.message.role === "assistant");
 		if (!hasAssistant) {

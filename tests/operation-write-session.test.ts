@@ -1,0 +1,219 @@
+import assert from "node:assert/strict";
+import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { join } from "node:path";
+import { randomUUID } from "node:crypto";
+import fs from "node:fs";
+import fsPromises from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
+import type { OperationJournal } from "../packages/coding-agent/src/core/operation-journal.ts";
+import test from "node:test";
+import { fixture, operationFixtureSupported } from './helpers/operation-write-fixture.ts';
+
+test("SDK host first execution and durable historical recovery never request a provider", async () => {
+	const f = await fixture(true);
+	const intent = { intentId: randomUUID(), originBranch: null, path: "target", content: "héllo" };
+	try {
+		if (!operationFixtureSupported) {
+			await assert.rejects(f.session.newOperation(intent), /Unsupported/);
+			assert.equal(existsSync(join(f.cwd, "target")), false);
+			assert.equal(f.providers(), 0);
+			return;
+		}
+		const first = await f.session.newOperation(intent);
+		assert.equal(first.receipt.bytes, 6); assert.equal(first.historical, false);
+		writeFileSync(join(f.cwd, "target"), "external later edit");
+		const second = await f.session.resumeOperation(first.operationId, intent);
+		assert.equal(second.historical, true);
+		assert.equal(readFileSync(join(f.cwd, "target"), "utf8"), "external later edit");
+		assert.equal(f.providers(), 0);
+		f.session.dispose();
+		const reopened = await fixture(true, f);
+		try {
+			const third = await reopened.session.resumeOperation(first.operationId, intent);
+			assert.equal(third.historical, true); assert.equal(reopened.providers(), 0);
+		} finally { reopened.session.dispose(); }
+	} finally { f.session.dispose(); }
+});
+
+test("post-hook arguments bind the effect; result and persistence failures cannot revoke completed facts", { skip: !operationFixtureSupported }, async () => {
+	const f = await fixture(true);
+	const intent = { intentId: randomUUID(), originBranch: null, path: "target", content: "before hook" };
+	let canonicalArgs: Record<string, unknown> | undefined;
+	const unsubscribe = f.session.agent.subscribe(event => {
+		if (event.type === "message_end" && event.message.role === "assistant") canonicalArgs = event.message.content.find(block => block.type === "toolCall")?.arguments;
+		if (event.type === "tool_execution_start") { canonicalArgs!.path = "redirected"; (event.args as {path:string}).path = "event-redirected"; }
+	});
+	try {
+		f.session.agent.beforeToolCall = async ({ args }) => { (args as { content: string }).content = "post hook"; return undefined; };
+		f.session.agent.afterToolCall = async () => { throw new Error("result hook failed"); };
+		await assert.rejects(f.session.newOperation(intent), /durable receipt/);
+		assert.equal(readFileSync(join(f.cwd, "target"), "utf8"), "post hook");
+		assert.equal(existsSync(join(f.cwd, "redirected")), false);
+		assert.equal(existsSync(join(f.cwd, "event-redirected")), false);
+		writeFileSync(join(f.cwd, "target"), "later edit");
+		f.session.agent.afterToolCall = undefined;
+		const recovered = await f.session.newOperation(intent); // same explicit intent, new delivery ID
+		assert.equal(recovered.historical, true);
+		const append = f.session.sessionManager.appendCustomMessageEntry.bind(f.session.sessionManager);
+		f.session.sessionManager.appendCustomMessageEntry = () => { throw new Error("append failed"); };
+		await assert.rejects(f.session.resumeOperation(recovered.operationId, intent), /append failed/);
+		f.session.sessionManager.appendCustomMessageEntry = append;
+		assert.equal((await f.session.resumeOperation(recovered.operationId, intent)).historical, true);
+		assert.equal(readFileSync(join(f.cwd, "target"), "utf8"), "later edit");
+		assert.equal(f.providers(), 0);
+	} finally { unsubscribe(); f.session.dispose(); }
+});
+
+test("a copied session header cannot transfer the live journal to another storage anchor", { skip: !operationFixtureSupported }, async () => {
+	const f = await fixture(true);
+	try {
+		const intent = { intentId: randomUUID(), originBranch: null, path: "target", content: "original" };
+		const completed = await f.session.newOperation(intent);
+		const copied = join(f.cwd, "copied-session.jsonl");
+		writeFileSync(copied, readFileSync(f.file));
+		f.session.sessionManager.setSessionFile(copied);
+		await assert.rejects(f.session.resumeOperation(completed.operationId, intent), /storage anchor changed/);
+		assert.equal(f.providers(), 0);
+	} finally { f.session.dispose(); }
+});
+
+test("post-effect abort preserves a receipt; failed lock release still retires live session ownership", { skip: !operationFixtureSupported }, async () => {
+	const f = await fixture(true);
+	const intent = { intentId: randomUUID(), originBranch: null, path: "target", content: "acknowledged" };
+	const originalWrite = fsPromises.writeFile;
+	try {
+		fsPromises.writeFile = async (path, data, options) => {
+			await originalWrite(path, data, options);
+			if (String(path) === join(f.cwd, "target")) f.session.agent.abort();
+		};
+		syncBuiltinESMExports();
+		await assert.rejects(f.session.newOperation(intent), /aborted after durable completion/);
+	} finally { fsPromises.writeFile = originalWrite; syncBuiltinESMExports(); }
+	try {
+		const recovered = await f.session.newOperation(intent);
+		assert.equal(recovered.historical, true); assert.equal(f.providers(), 0);
+		const internals = f.session as unknown as { _operationJournal?: OperationJournal; _hostOperation?: unknown };
+		const owner = internals._operationJournal!;
+		const originalUnlink = fs.unlinkSync;
+		try {
+			fs.unlinkSync = path => { if (String(path) === `${f.file}.operations-v1/lock`) throw new Error("injected lock-release failure"); originalUnlink(path); };
+			syncBuiltinESMExports();
+			assert.doesNotThrow(() => f.session.dispose());
+		} finally { fs.unlinkSync = originalUnlink; syncBuiltinESMExports(); }
+		assert.equal(owner.counters.effects, 1); assert.equal(owner.counters.ownershipFailures, 1);
+		assert.equal(internals._operationJournal, undefined); assert.equal(internals._hostOperation, undefined);
+		assert.equal(existsSync(`${f.file}.operations-v1/lock`), true);
+	} finally { f.session.dispose(); }
+});
+
+test("permission denial, hook errors and disabled SDK never create a journal or invoke a provider", async () => {
+	const f = await fixture(true);
+	try {
+		const intent = { intentId: randomUUID(), originBranch: null, path: "target", content: "data" };
+		f.session.agent.beforeToolCall = async () => ({ block: true, reason: "denied" });
+		await assert.rejects(f.session.newOperation(intent), /not executed/);
+		f.session.agent.beforeToolCall = async () => { throw new Error("policy failed"); };
+		await assert.rejects(f.session.newOperation(intent), /not executed/);
+		f.session.agent.beforeToolCall = async ({ args }) => { (args as { path: string }).path = "./".repeat(600) + "target"; return undefined; };
+		await assert.rejects(f.session.newOperation(intent), /Post-hook operation path capacity/);
+		assert.equal(existsSync(`${f.file}.operations-v1`), false);
+		assert.equal(f.providers(), 0);
+	} finally { f.session.dispose(); }
+	const off = await fixture(false);
+	try {
+		await assert.rejects(off.session.newOperation({ intentId: randomUUID(), originBranch: null, path: "target", content: "data" }), /disabled/);
+		await off.session.agent.dispatchHostTool({ type: "toolCall", id: "ordinary", name: "write", arguments: { path: "target", content: "ordinary" } });
+		assert.equal(readFileSync(join(off.cwd, "target"), "utf8"), "ordinary");
+		assert.equal(existsSync(`${off.file}.operations-v1`), false); assert.equal(off.providers(), 0);
+	} finally { off.session.dispose(); }
+});
+
+test("first admission rejects a session switch before the write gate", async () => {
+ const f = await fixture(true);
+ const copied = join(f.cwd, "replacement.jsonl");
+ f.session.agent.subscribe(event => { if (event.type === "tool_execution_start") { writeFileSync(copied, readFileSync(f.file)); f.session.sessionManager.setSessionFile(copied); } });
+ try {
+  await assert.rejects(f.session.newOperation({intentId:randomUUID(),originBranch:null,path:"target",content:"forbidden"}), /storage anchor changed/);
+  assert.equal(existsSync(join(f.cwd,"target")),false);
+  assert.equal(existsSync(`${copied}.operations-v1`),false);
+  assert.equal((f.session as unknown as {_hostOperation?:unknown})._hostOperation,undefined);
+ } finally { f.session.dispose(); }
+});
+
+
+test("SDK symlink anchor refuses transcript overwrite without sidecar mutation", {skip: !operationFixtureSupported}, async () => {
+ const f = await fixture(true);
+ // Persist a real session through ordinary host delivery, without a protected effect.
+ f.session.agent.beforeToolCall = async () => ({block:true,reason:"persist only"});
+ await assert.rejects(f.session.newOperation({intentId:randomUUID(),originBranch:null,path:"unused",content:"x"}));
+ const alias = join(f.cwd,"session-alias.jsonl"); fs.symlinkSync(f.file,alias);
+ const linked = await fixture(true,{...f,file:alias});
+ try {
+  await assert.rejects(linked.session.newOperation({intentId:randomUUID(),originBranch:null,path:f.file,content:"FORBIDDEN TRANSCRIPT REPLACEMENT"}), /Unsupported session anchor/);
+  assert.notEqual(readFileSync(f.file,"utf8"),"FORBIDDEN TRANSCRIPT REPLACEMENT");
+  assert.equal(existsSync(`${alias}.operations-v1`),false);
+  assert.equal(existsSync(`${f.file}.operations-v1`),false);
+ } finally { linked.session.dispose(); f.session.dispose(); }
+});
+
+test("public definition replacement cannot execute outside the protected journal", async () => {
+ const f = await fixture(true); let replacements = 0;
+ const definition = f.session.getToolDefinition("write")!;
+ const original = definition.execute;
+ const replacement: typeof original = async () => { replacements++; return {content:[],details:undefined}; };
+ const intent={intentId:randomUUID(),originBranch:null,path:"target",content:"trusted"};
+ const unsubscribe=f.session.agent.subscribe(event => { if(event.type==="message_end" && event.message.role==="assistant") definition.execute=replacement; });
+ try {
+  for(let i=0;i<2;i++) { try { await f.session.newOperation(intent); } catch { /* Refusal is safe; replacement execution is not. */ } }
+  assert.equal(replacements,0);
+  definition.execute=replacement;
+  try { await f.session.newOperation({...intent,intentId:randomUUID()}); } catch { /* pre-admission substitution */ }
+  assert.equal(replacements,0);
+  if(operationFixtureSupported) {
+   assert.equal(readFileSync(join(f.cwd,"target"),"utf8"),"trusted");
+   assert.equal((f.session as unknown as {_operationJournal:OperationJournal})._operationJournal.counters.effects,2);
+  }
+  const wrapper=f.session.agent.state.tools.find(tool=>tool.name==="write")!;
+  const execute=wrapper.execute; wrapper.execute=async () => { replacements++; return {content:[],details:undefined}; };
+  try { await assert.rejects(f.session.newOperation({...intent,intentId:randomUUID()}),/Trusted built-in local write unavailable/); }
+  finally { wrapper.execute=execute; }
+  assert.equal(replacements,0);
+ } finally { unsubscribe(); definition.execute=original; f.session.dispose(); }
+});
+
+test("host association never retains primitive write payload in canonical history", async () => {
+ const f=await fixture(true); const secret="HOST_PAYLOAD_SENTINEL_".repeat(100);
+ try { try { await f.session.newOperation({intentId:randomUUID(),originBranch:null,path:"target",content:secret}); } catch { }
+ assert.equal(JSON.stringify(f.session.agent.state.messages).includes(secret),false);
+ if(existsSync(f.file)) assert.equal(readFileSync(f.file,"utf8").includes(secret),false);
+ } finally {f.session.dispose();}
+});
+
+test("renamed admission inode and busy contender cannot alter protected authority", {skip:!operationFixtureSupported}, async () => {
+ const f=await fixture(true);
+ const intent={intentId:randomUUID(),originBranch:null,path:"target",content:"first"};
+ try {
+ await f.session.newOperation(intent);
+ const contender=await fixture(true,f); const before=readFileSync(f.file,"utf8");
+ try { await assert.rejects(contender.session.newOperation({...intent,intentId:randomUUID()}),/busy/); assert.equal(readFileSync(f.file,"utf8"),before); }
+ finally {contender.session.dispose();}
+ f.session.agent.subscribe(event=>{if(event.type==="tool_execution_start"){fs.renameSync(f.file,join(f.cwd,"moved"));writeFileSync(f.file,before);}});
+ await assert.rejects(f.session.newOperation({...intent,intentId:randomUUID(),path:"moved",content:"forbidden"}),/identity changed/);
+ assert.notEqual(readFileSync(join(f.cwd,"moved"),"utf8"),"forbidden");
+ } finally {f.session.dispose();}
+});
+
+test("completed host history is one factual custom notice, isolated from observers", {skip:!operationFixtureSupported}, async()=>{
+ const f=await fixture(true);let publicOrigin: any;
+ f.session.agent.subscribe(event=>{if(event.type==="message_end" && event.message.role==="custom") event.message.content="observer replacement"; if(event.type==="message_end" && event.message.role==="assistant")publicOrigin=event.message;
+ if(event.type==="tool_execution_start" && publicOrigin) publicOrigin.content.push({type:"text",text:"injected payload"});});
+ try {
+ const r=await f.session.newOperation({intentId:randomUUID(),originBranch:null,path:"target",content:"private file payload"});
+ assert.equal(r.receipt.bytes,20);
+ assert.equal(f.session.agent.state.messages.filter(m=>m.role==="custom").length,1);
+ assert.equal(f.session.agent.state.messages.some(m=>m.role==="assistant"||m.role==="toolResult"),false);
+ assert.equal(readFileSync(f.file,"utf8").includes("private file payload"),false);
+ assert.equal(readFileSync(f.file,"utf8").includes("injected payload"),false);
+ assert.equal(JSON.stringify(f.session.agent.state.messages).includes("observer replacement"),false);
+ }finally{f.session.dispose();}
+});

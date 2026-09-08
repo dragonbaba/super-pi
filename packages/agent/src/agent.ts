@@ -8,6 +8,7 @@ import type {
 	TextContent,
 	ThinkingBudgets,
 	Transport,
+	ToolResultMessage,
 } from "@super-pi/ai";
 import {
 	EventDeliveryDispatcher,
@@ -15,7 +16,7 @@ import {
 	type EventDeliveryStats,
 	type EventSubscriptionOptions,
 } from "./event-delivery.ts";
-import { runAgentLoop, runAgentLoopContinue } from "./agent-loop.ts";
+import { runAgentLoop, runAgentLoopContinue, runHostToolDispatch } from "./agent-loop.ts";
 import { getDefaultStreamFn } from "./stream-fn.ts";
 import type {
 	AfterToolCallContext,
@@ -30,6 +31,7 @@ import type {
 	AgentMessage,
 	AgentState,
 	AgentTool,
+	AgentToolCall,
 	BeforeToolCallContext,
 	BeforeToolCallResult,
 	PrepareNextTurnContext,
@@ -615,7 +617,24 @@ export class Agent {
 		};
 	}
 
-	private async runWithLifecycle(executor: (signal: AbortSignal) => Promise<void>): Promise<void> {
+	/** @internal Experimental host-only dispatch; failures propagate without model retry messages. */
+	async dispatchHostTool(call: AgentToolCall, complete?: () => Promise<AgentMessage | undefined>): Promise<ToolResultMessage> {
+		let result!: ToolResultMessage;
+		await this.runWithLifecycle(async signal => {
+			const publishNotice = complete ? async () => {
+				const notice = await complete();
+				if (!notice) return;
+				this._state.messages.push(notice);
+				await this.processEvents({ type: "message_start", message: { ...notice } }, false);
+				await this.processEvents({ type: "message_end", message: { ...notice } }, false);
+			} : undefined;
+			result = await runHostToolDispatch(call, { systemPrompt: this._state.systemPrompt, messages: this._state.messages.slice(), tools: this._state.tools.slice() },
+				this.createLoopConfig(), event => this.processEvents(event, false), signal, publishNotice);
+		}, true);
+		return result;
+	}
+
+	private async runWithLifecycle(executor: (signal: AbortSignal) => Promise<void>, hostOnly = false): Promise<void> {
 		if (this.activeRun) {
 			throw new Error("Agent is already processing.");
 		}
@@ -634,6 +653,7 @@ export class Agent {
 		try {
 			await executor(abortController.signal);
 		} catch (error) {
+			if (hostOnly) throw error;
 			await this.handleRunFailure(error, abortController.signal.aborted);
 		} finally {
 			this.finishRun();
@@ -674,7 +694,7 @@ export class Agent {
 	 * considered idle later, after all awaited listeners for `agent_end` finish
 	 * and `finishRun()` clears runtime-owned state.
 	 */
-	private async processEvents(event: AgentEvent): Promise<void> {
+	private async processEvents(event: AgentEvent, admitMessage = true): Promise<void> {
 		switch (event.type) {
 			case "message_start":
 				this._state.streamingMessage = event.message;
@@ -686,7 +706,7 @@ export class Agent {
 
 			case "message_end":
 				this._state.streamingMessage = undefined;
-				this._state.messages.push(event.message);
+				if (admitMessage) this._state.messages.push(event.message);
 				break;
 
 			case "tool_execution_start": {

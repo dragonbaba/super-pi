@@ -1,3 +1,4 @@
+import { getProtectedWriteExecute } from "./write.ts";
 import type { AgentTool } from "@super-pi/agent-core";
 import type { ExtensionContext, ToolDefinition } from "../extensions/types.ts";
 
@@ -6,6 +7,7 @@ export function wrapToolDefinition<TDetails = unknown>(
 	definition: ToolDefinition<any, TDetails>,
 	ctxFactory?: () => ExtensionContext,
 ): AgentTool<any, TDetails> {
+	const protectedExecute = getProtectedWriteExecute(definition);
 	return {
 		name: definition.name,
 		label: definition.label,
@@ -15,7 +17,7 @@ export function wrapToolDefinition<TDetails = unknown>(
 		prepareArguments: definition.prepareArguments,
 		executionMode: definition.executionMode,
 		execute: (toolCallId, params, signal, onUpdate, ctx?: ExtensionContext) =>
-			definition.execute(toolCallId, params, signal, onUpdate, ctx ?? (ctxFactory?.() as ExtensionContext)),
+			(protectedExecute ?? definition.execute).call(definition, toolCallId, params, signal, onUpdate, ctx ?? (ctxFactory?.() as ExtensionContext)),
 	};
 }
 

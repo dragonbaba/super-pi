@@ -508,3 +508,6 @@ export { formatDimensionNote, type ResizedImage, resizeImage } from "./utils/ima
 // Shell utilities
 export { getPowerShellCandidateConfig, getPowerShellConfig, getShellConfig } from "./utils/shell.ts";
 export { findUnsafePowerShellSegment } from "./utils/powershell-policy.ts";
+
+/** Experimental read-only protected-operation ownership inspection. */
+export { inspectOperationWriter } from "./core/operation-journal.ts";

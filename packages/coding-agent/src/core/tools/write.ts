@@ -39,6 +39,28 @@ const defaultWriteOperations: WriteOperations = {
 	mkdir: (dir) => fsMkdir(dir, { recursive: true }).then(() => {}),
 };
 
+// Construction-time capability, never reachable through public definition properties.
+const localWrites = new WeakMap<ToolDefinition<any, any>, { execute: ToolDefinition<any, any>["execute"]; gate?: OperationWriteGate }>();
+export type OperationWriteGate = (callId: string, path: string, content: string, absolutePath: string,
+	perform: () => Promise<void>, signal?: AbortSignal) => Promise<{ content: { type: "text"; text: string }[]; details: undefined }>;
+/** @internal Only exact definitions constructed with default operations can be bound. */
+export function bindOperationWrite(definition: ToolDefinition<any, any>, gate: OperationWriteGate): boolean {
+	const local = localWrites.get(definition);
+	if (!local) return false;
+	local.gate = gate;
+	return true;
+}
+/** @internal Snapshot only the construction-time callable of a protected definition. */
+export function getProtectedWriteExecute(definition: ToolDefinition<any, any>): ToolDefinition<any, any>["execute"] | undefined {
+	const local = localWrites.get(definition);
+	return local?.gate ? local.execute : undefined;
+}
+const inactiveOperationWrite: OperationWriteGate = async () => { throw new Error("Protected write adapter is inactive; ordinary replay is forbidden"); };
+export function retireOperationWrite(definition: ToolDefinition<any, any>): void {
+	const local = localWrites.get(definition);
+	if (local?.gate) local.gate = inactiveOperationWrite;
+}
+
 export interface WriteToolOptions {
 	/** Custom operations for file writing. Default: local filesystem */
 	operations?: WriteOperations;
@@ -193,7 +215,7 @@ export function createWriteToolDefinition(
 	options?: WriteToolOptions,
 ): ToolDefinition<typeof writeSchema, undefined> {
 	const ops = options?.operations ?? defaultWriteOperations;
-	return {
+	const definition: ToolDefinition<typeof writeSchema, undefined> = {
 		name: "write",
 		label: "write",
 		description:
@@ -211,6 +233,10 @@ export function createWriteToolDefinition(
 			const absolutePath = resolveToCwd(path, cwd);
 			const dir = dirname(absolutePath);
 			return withFileMutationQueue(absolutePath, async () => {
+				const gate = localWrites.get(definition)?.gate;
+				if (gate) return gate(_toolCallId, path, content, absolutePath, async () => {
+					await ops.writeFile(absolutePath, content);
+				}, signal);
 				// Do not reject from an abort event listener here: that would release the
 				// mutation queue while an in-flight filesystem operation may still finish.
 				// Checking signal.aborted after each await observes the same aborts while
@@ -270,6 +296,8 @@ export function createWriteToolDefinition(
 			return text;
 		},
 	};
+	if (ops === defaultWriteOperations) localWrites.set(definition, { execute: definition.execute });
+	return definition;
 }
 
 export function createWriteTool(cwd: string, options?: WriteToolOptions): AgentTool<typeof writeSchema> {

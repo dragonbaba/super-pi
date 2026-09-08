@@ -32,6 +32,48 @@ export type AgentEventSink = (event: AgentEvent) => Promise<void> | void;
 
 const RESOLVED_VOID_PROMISE = Promise.resolve();
 
+/** @internal Experimental single-call host dispatch. Never polls a provider or prompt queue. */
+export async function runHostToolDispatch(
+	call: AgentToolCall, context: AgentContext, config: AgentLoopConfig,
+	emit: AgentEventSink, signal?: AbortSignal, complete?: () => Promise<void>,
+): Promise<ToolResultMessage> {
+	if (hasIncompleteToolArguments(call.arguments)) throw new Error("Incomplete host tool arguments");
+	const selectedId = call.id;
+	const selectedName = call.name;
+	// Only this private dispatch snapshot is immutable; canonical history stays mutable.
+	// The 6B1 caller supplies only bounded primitive path/content fields. Copy the
+	// field container without duplicating payload strings or freezing policy inputs.
+	const selectedCall = Object.freeze({ type: "toolCall" as const, id: selectedId, name: selectedName, arguments: { ...call.arguments } });
+	const selectedTool = context.tools?.find(tool => tool.name === selectedName);
+	const selectedContext = { ...context, tools: selectedTool ? [Object.freeze({ ...selectedTool })] : [] };
+	// Explicit host origin in the existing message shape; zero provider usage.
+	// Persist the association before its result, without replaying historical sibling calls.
+	const association = { type: "toolCall" as const, id: selectedId, name: selectedName, arguments: {} };
+	const origin: AssistantMessage = {
+		role: "assistant", content: [association], api: "host-operation", provider: "host", model: "local-operation",
+		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+		stopReason: "toolUse", timestamp: Date.now(),
+	};
+	const executionOrigin = { ...origin, content: [selectedCall] };
+	selectedContext.messages.push(executionOrigin);
+	await emit({ type: "agent_start" });
+	await emit({ type: "turn_start" });
+	await emit({ type: "message_start", message: origin });
+	await emit({ type: "message_end", message: origin });
+	if (origin.content.length !== 1 || origin.content[0] !== association || association.id !== selectedId || association.name !== selectedName) {
+		throw new Error("Host dispatch association changed during delivery");
+	}
+	// One callback per host operation; only start publication allocates an observer container.
+	const hostEmit: AgentEventSink = event => emit(event.type === "tool_execution_start"
+		? { ...event, args: { ...event.args } } : event);
+	const batch = await executeToolCalls(selectedContext, executionOrigin, config, signal, hostEmit);
+	await complete?.();
+	await emit({ type: "turn_end", message: origin, toolResults: batch.messages });
+	await emit({ type: "agent_end", messages: [origin, ...batch.messages] });
+	return batch.messages[0];
+}
+
 /**
  * Start an agent loop with a new prompt message.
  * The prompt is added to the context and events are emitted for it.
