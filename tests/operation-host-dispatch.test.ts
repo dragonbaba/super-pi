@@ -103,3 +103,10 @@ test("host dispatch keeps provisional messages local and permission sees prior c
  await assert.rejects(agent.dispatchHostTool({type:"toolCall",id:"failed-host",name:"write",arguments:{content:"secret"}}),/observer failure/);
  assert.deepEqual(agent.state.messages,[prior]);assert.equal(agent.state.pendingToolCalls.size,0);
 });
+
+test("host completion notice precedes turn_end and final agent_end", async()=>{
+ const agent=new Agent({streamFn:()=>{throw new Error("provider forbidden");}});const events:string[]=[];
+ agent.subscribe(e=>{events.push(e.type);});
+ await agent.dispatchHostTool({type:"toolCall",id:"notice-order",name:"missing",arguments:{}},async()=>({role:"user",content:"bounded completion fixture",timestamp:1}));
+ assert.equal(events.at(-1),"agent_end");assert.equal(events.at(-2),"turn_end");
+});
