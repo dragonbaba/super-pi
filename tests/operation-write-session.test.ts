@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 import { fixture } from './helpers/operation-write-fixture.ts';
@@ -29,6 +28,28 @@ test("SDK host first execution and durable historical recovery never request a p
 			const third = await reopened.session.resumeOperation(first.operationId, intent);
 			assert.equal(third.historical, true); assert.equal(reopened.providers(), 0);
 		} finally { reopened.session.dispose(); }
+	} finally { f.session.dispose(); }
+});
+
+test("post-hook arguments bind the effect; result and persistence failures cannot revoke completed facts", { skip: process.platform !== "linux" }, async () => {
+	const f = await fixture(true);
+	const intent = { intentId: randomUUID(), originBranch: null, path: "target", content: "before hook" };
+	try {
+		f.session.agent.beforeToolCall = async ({ args }) => { (args as { content: string }).content = "post hook"; return undefined; };
+		f.session.agent.afterToolCall = async () => { throw new Error("result hook failed"); };
+		await assert.rejects(f.session.newOperation(intent), /durable receipt/);
+		assert.equal(readFileSync(join(f.cwd, "target"), "utf8"), "post hook");
+		writeFileSync(join(f.cwd, "target"), "later edit");
+		f.session.agent.afterToolCall = undefined;
+		const recovered = await f.session.newOperation(intent); // same explicit intent, new delivery ID
+		assert.equal(recovered.historical, true);
+		const append = f.session.sessionManager.appendMessage.bind(f.session.sessionManager);
+		f.session.sessionManager.appendMessage = message => { if (message.role === "toolResult") throw new Error("append failed"); return append(message); };
+		await assert.rejects(f.session.resumeOperation(recovered.operationId, intent), /append failed/);
+		f.session.sessionManager.appendMessage = append;
+		assert.equal((await f.session.resumeOperation(recovered.operationId, intent)).historical, true);
+		assert.equal(readFileSync(join(f.cwd, "target"), "utf8"), "later edit");
+		assert.equal(f.providers(), 0);
 	} finally { f.session.dispose(); }
 });
 

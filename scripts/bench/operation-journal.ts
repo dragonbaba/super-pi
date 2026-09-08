@@ -30,7 +30,7 @@ async function cycle(measured: boolean): Promise<void> {
 for (let i = 0; i < 10; i++) await cycle(false);
 for (let i = 0; i < 30; i++) await cycle(true);
 const inspector = new Session(); inspector.connect();
-await inspector.post("HeapProfiler.startSampling", { samplingInterval: 1024 });
+await inspector.post("HeapProfiler.startSampling", { samplingInterval: 1024, includeObjectsCollectedByMajorGC: true, includeObjectsCollectedByMinorGC: true });
 for (let i = 0; i < 5; i++) await cycle(false);
 const { profile } = await inspector.post("HeapProfiler.stopSampling"); inspector.disconnect();
 const frames: { name: string; url: string; bytes: number }[] = [];
