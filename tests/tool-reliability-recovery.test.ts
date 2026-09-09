@@ -87,3 +87,20 @@ test("field diagnostics stay bounded under escaped-name expansion", () => {
 test("policy recovery resolves the denial instead of changing language", async () => {
  assert.match(await failureRecoveryHint("bash", { command: "echo safe" }, "POLICY_BLOCKED", process.cwd()), /Do not evade|do not evade/);
 });
+
+
+test("review: newline comments cannot consume executable lines as heredoc data", () => {
+ assert.ok(inspectBashResourceLifecycle({ command: "echo ok\n# fake <<EOF\nnohup sleep 100\nEOF" }));
+});
+test("review: arithmetic shifts are not heredoc operators", () => {
+ assert.equal(inspectBashResourceLifecycle({ command: "echo $((1 << 2))" }), undefined);
+ assert.ok(inspectBashResourceLifecycle({ command: "echo $((1 << $(nohup sleep 1)))" }));
+});
+test("review: owned job permits bounded use and exact PID cleanup", () => {
+ assert.equal(inspectBashResourceLifecycle({ command: `server --foreground & pid=$!; trap 'kill "$pid"; wait "$pid"' EXIT; curl --fail http://127.0.0.1:8000; kill "$pid"; wait "$pid"` }), undefined);
+ assert.ok(inspectBashResourceLifecycle({ command: `server --foreground & pid=$!; trap 'kill "$pid"; wait "$pid"' EXIT; pid=99; kill "$pid"; wait "$pid"` }));
+});
+test("review: lifecycle denial has structural recovery, not permission escalation", async () => {
+ const hint = await failureRecoveryHint("bash", {}, "Blocked an unmanaged long-lived process.", process.cwd());
+ assert.match(hint, /Lifecycle recovery/); assert.match(hint, /permission change cannot/);
+});
