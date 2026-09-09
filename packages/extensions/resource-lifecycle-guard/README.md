@@ -73,3 +73,5 @@ Inherited exported functions and applicable startup/loader inputs are rejected w
 Call-owned environment metadata is bounded to 1024 entries and 256 Ki code units, then released with the existing process lifecycle. Ordinary commands without `<<` do not take this snapshot or perform the installation checks. A refused form must be resolved within the existing policy; another language or launcher is not permission to evade the refusal.
 
 Separate non-usrmerge `/bin` installations remain unsupported in this deliberately narrow slice, even if host approved. Assignment/redirection prefixes before a shell wrapper are uncertain, rather than skipping them and hiding its executable operand.
+
+Within command substitutions, timed and coprocess forms remain explicitly uncertain; quoted words are data. Case commands in braced/function contexts are rejected before pattern parentheses can terminate substitution inspection. This does not introduce general shell grammar support.

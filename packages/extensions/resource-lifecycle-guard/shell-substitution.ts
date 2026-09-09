@@ -106,9 +106,9 @@ export function extractCommandSubstitutions(command: string, heredocData = false
       }
       if (inner === 32 || inner === 9 || inner === 13) continue;
       if (inner === 10 || inner === 59 || inner === 124 || inner === 38) { commandStart = true; continue; }
+      if (inner === 123 && CASE_WORD_END.test(command[end + 1] ?? "")) { commandStart = true; continue; }
       if (commandStart) {
-        if (inner === 123 && CASE_WORD_END.test(command[end + 1] ?? "")) continue;
-        if (command.startsWith("time", end) && CASE_WORD_END.test(command[end + 4] ?? "")) return { scripts, unterminated: true };
+        if ((command.startsWith("time", end) && CASE_WORD_END.test(command[end + 4] ?? "")) || (command.startsWith("coproc", end) && CASE_WORD_END.test(command[end + 6] ?? ""))) return { scripts, unterminated: true };
         if (command.startsWith("case", end) && CASE_WORD_END.test(command[end + 4] ?? "")) return { scripts, unterminated: true };
         const keyword = COMMAND_START_KEYWORD.exec(command.slice(end, end + 7));
         if (keyword) { end += keyword[0].length - 1; continue; }

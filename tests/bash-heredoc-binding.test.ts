@@ -129,3 +129,9 @@ test("bound dispatch: unsupported assignment prefix is denied before spawn", asy
  const outcome = await dispatch(process.cwd(), "X=1 bash -c 'printf PREFIX_EXECUTED'");
  assert.equal(outcome.result.isError, true); assert.equal(outcome.processes, 0);
 });
+
+
+test("bound dispatch: coprocess case is denied before spawn", async () => {
+ const outcome = await dispatch(process.cwd(), `echo "$(coproc case x in x) : ;; esac; printf REACHED)"`);
+ assert.equal(outcome.result.isError, true); assert.equal(outcome.processes, 0);
+});
