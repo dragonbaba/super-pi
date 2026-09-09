@@ -112,6 +112,11 @@ function inspectLifecycleScript(source: string, depth: number): string | undefin
  const segments = parseShellSegments(command);
  if (segments.length > MAX_SCRIPT_SEGMENTS) return UNCERTAIN_LIFECYCLE;
  for (const tokens of segments) {
+  // The global filter is only an optimization; unrelated segments supply no
+  // shell/evaluator evidence. No closure or reconstructed segment string.
+  let shellText = false;
+  for (const token of tokens) if (SHELL_WRAPPER_TEXT.test(token)) { shellText = true; break; }
+  if (!shellText) continue;
   let index = 0; let changedLookup = false; let prefixes = 0;
   while (index < tokens.length) {
    const token = tokens[index]!;
