@@ -151,3 +151,8 @@ test("review6: wrapper options cannot bypass script identity", () => {
  for (const command of ["dash -c 'sleep 100 &'", "fish -c 'sleep 100 &'", "ksh -c 'sleep 100 &'", "bash runner.sh -c safe", "sh runner.sh -c safe"]) assert.ok(inspectBashResourceLifecycle({ command }));
  assert.equal(inspectBashResourceLifecycle({ command: "dash -c 'echo safe'" }), undefined);
 });
+
+test("review7: builtin prefixes cannot hide shell scripts", () => {
+ for (const command of ["command bash -c 'sleep 100 &'", "exec bash -c 'sleep 100 &'", "command exec dash -c 'sleep 100 &'", "env -u PATH bash -c 'sleep 100 &'"]) assert.ok(inspectBashResourceLifecycle({ command }));
+ assert.equal(inspectBashResourceLifecycle({ command: "command bash -c 'echo safe'" }), undefined);
+});
