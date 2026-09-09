@@ -182,3 +182,9 @@ test("review9: case grouping and line continuation stay uncertain", () => {
 test("review9: case inside a function cannot truncate substitution inspection", () => {
  assert.ok(inspectBashResourceLifecycle({ command: `echo "$(f(){ case x in x) sleep 100 & ;; esac; }; f)"` }));
 });
+
+
+test("review10: coproc cannot hide a case substitution suffix", () => {
+ assert.ok(inspectBashResourceLifecycle({ command: `echo "$(coproc case x in x) : ;; esac; sleep 100 >output 2>&1 & )"` }));
+ assert.equal(inspectBashResourceLifecycle({ command: `echo "$(printf 'coproc case value')"` }), undefined);
+});
