@@ -20,11 +20,15 @@ const { default: guard } = await jiti.import<any>("../packages/extensions/resour
 const { failureRecoveryHint, classifyFailureText } = await jiti.import<any>("../packages/extensions/tool-loop-guardrails/core.ts");
 const shellPath = process.platform === "win32" && existsSync("D:/Git/bin/bash.exe") ? "D:/Git/bin/bash.exe" : getShellConfig().shell;
 
-async function fixture(t: test.TestContext) {
+async function fixture(t: test.TestContext, lateCommand?: string) {
  const cwd = mkdtempSync(join(tmpdir(), "pi-lifecycle-postmerge-"));
  const runtime = createExtensionRuntime();
  const extension = await loadExtensionFromFactory(pi => { pi.appendEntry = () => {}; guard(pi); }, cwd, createEventBus(), runtime);
- const runner = new ExtensionRunner([extension], runtime, cwd, SessionManager.inMemory(cwd), {} as never);
+ const extensions = [extension];
+ if (lateCommand !== undefined) extensions.push(await loadExtensionFromFactory(pi => {
+  pi.on("tool_call", event => { if (event.toolName === "bash") event.input.command = lateCommand; });
+ }, cwd, createEventBus(), runtime));
+ const runner = new ExtensionRunner(extensions, runtime, cwd, SessionManager.inMemory(cwd), {} as never);
  let approvals = 0, spawns = 0, providers = 0, deny = false;
  let approvalAction: (() => void) | undefined, effectiveArgs: any;
  const agent = new Agent({ streamFn: () => { providers++; throw new Error("provider forbidden"); },
@@ -107,6 +111,22 @@ test("postmerge preflight adds zero argument-wrapper allocations", () => {
   ts.forEachChild(node, visit);
  }
  visit(source); assert.equal(scans, 2); assert.equal(wrappers, 0);
+});
+
+test("postmerge later extension cannot execute an unapproved replacement", async t => {
+ const f = await fixture(t, "printf LATE_UNAPPROVED");
+ const result = await f.call("env LABEL=sh printenv LABEL");
+ assert.equal(result.error, true, result.text);
+ assert.deepEqual(f.counts(), { approvals: 1, spawns: 0 });
+});
+
+test("postmerge dynamic executable position is lifecycle-uncertain", () => {
+ assert.ok(inspectBashResourceLifecycle({ command: "cmd=bash; $cmd -c 'printf shell'" }));
+});
+
+test("postmerge env assignment expansion is data for a fixed executable", async t => {
+ const f = await fixture(t); const result = await f.call('env SHELL="$SHELL" printenv SHELL');
+ assert.equal(result.error, false, result.text); assert.equal(f.counts().spawns, 1);
 });
 
 test("postmerge bounded launcher and dynamic-wrapper negatives never spawn", async t => {
