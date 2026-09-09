@@ -70,7 +70,7 @@ function hasUnquotedBackgroundOperator(command: string): boolean {
 const OWNED_FOREGROUND_JOB = /^\s*([A-Za-z0-9_./-]+)(?:[ \t]+[A-Za-z0-9_./:-]+)*[ \t]+&[ \t]*pid=\$!;[ \t]*trap 'kill "\$pid"; wait "\$pid"' EXIT;[ \t]*(?:(.{1,4096});[ \t]*kill "\$pid";[ \t]*)?wait "\$pid"\s*$/;
 const OPAQUE_JOB_LAUNCHER = /^(?:env|sudo|doas|nice|nohup|setsid|timeout|stdbuf|command|exec|busybox|xargs|sh|bash|zsh|dash|fish|ksh|powershell|pwsh|cmd)(?:\.exe)?$/i;
 const OPAQUE_JOB_INTERPRETER = /^(?:python(?:[0-9]+(?:\.[0-9]+)*)?|py|node(?:js)?)(?:\.exe)?$/i;
-const OWNED_USE_COMMAND = /^(?:curl|test|true|false|echo|printf)(?:[ \t]+[A-Za-z0-9_./:%?=,+-]+)*$/;
+const OWNED_USE_COMMAND = /^(?:curl|test|true|false|echo)(?:[ \t]+[A-Za-z0-9_./:%?=,+-]+)*$/;
 function hasBoundedOwnedUse(work: string | undefined): boolean {
  if (work === undefined) return true;
  const commands = work.split(";");
