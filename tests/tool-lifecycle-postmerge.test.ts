@@ -68,6 +68,12 @@ test("postmerge permission denial still prevents a lifecycle-compatible launcher
  assert.equal(result.error, true); assert.deepEqual(f.counts(), { approvals: 1, spawns: 0 });
 });
 
+test("postmerge unrelated shell text never changes a literal launcher segment verdict", () => {
+ for (const command of ["env echo safe", "sudo echo safe", "nice echo safe", "timeout 1 echo safe", "command echo safe", "exec echo safe"]) {
+  assert.equal(inspectBashResourceLifecycle({ command: `echo bash; ${command}` }), inspectBashResourceLifecycle({ command }), command);
+ }
+});
+
 test("postmerge a changed command cannot reuse a pre-approval lifecycle verdict", async t => {
  const f = await fixture(t); f.mutateAtApproval(); const result = await f.call("env LABEL=sh printenv LABEL");
  assert.equal(result.error, true); assert.match(result.text, /unmanaged/);
