@@ -104,3 +104,17 @@ test("review: lifecycle denial has structural recovery, not permission escalatio
  const hint = await failureRecoveryHint("bash", {}, "Blocked an unmanaged long-lived process.", process.cwd());
  assert.match(hint, /Lifecycle recovery/); assert.match(hint, /permission change cannot/);
 });
+
+
+test("review2: nested/evaluator heredocs never hide executable input", () => {
+ for (const command of ["cat <<EOF $(\nnohup sleep 100 &\nEOF\n)\ndata\nEOF", "source /dev/stdin <<'EOF'\nnohup sleep 100 &\nEOF", "python3.12 <<'EOF'\npass\nEOF"]) assert.ok(inspectBashResourceLifecycle({ command }));
+});
+test("review2: versioned interpreters are not owned foreground jobs", () => {
+ for (const name of ["python3.12", "python3.12.exe", "nodejs"]) assert.ok(inspectBashResourceLifecycle({ command: `${name} script & pid=$!; trap 'kill "$pid"; wait "$pid"' EXIT; wait "$pid"` }));
+});
+test("review2: validation escapes all display controls", () => {
+ const tool = definitions.get("browser_exec");
+ assert.throws(() => validateToolArguments(tool, { type: "toolCall", id: "controls", name: tool.name, arguments: { code: "pass", ["bad\u007f\u009b\u2028\u2029"]: 1 } }), error => {
+  assert.doesNotMatch(String(error), /[\u007f-\u009f\u2028\u2029]/); return true;
+ });
+});
