@@ -306,17 +306,22 @@ test("fullscreen dock cannot clip permission controls", { timeout: 5000 }, async
  const { Container, VStack, Text } = await import("@super-pi/tui");
  const { TuiAltScreen } = await import("../packages/tui/src/tui-alt-screen.ts");
  const { FakeTerminal } = await import("./helpers/runtime-instrumentation.ts");
- const terminal = new FakeTerminal(60, 16); const ui = new TuiAltScreen(terminal);
+ const terminal = new FakeTerminal(60, 16);
+ let input!: (data: string) => void;
+ (terminal as any).start = (onInput: (data: string) => void) => { input = onInput; };
+ const ui = new TuiAltScreen(terminal);
  const mode: any = Object.create(InteractiveMode.prototype);
  mode.ui = ui; mode.editor = new Container(); mode.editorContainer = new Container(); mode.disposeActiveSelector = () => {};
  ui.setLayoutRoot(new VStack([{ component: new Text("history\n".repeat(4)), minSize: 4, shrink: 0 },
   { component: mode.editorContainer, minSize: 3, shrink: 1 },
   { component: new Text("footer\n".repeat(7)), minSize: 7, shrink: 0 }]));
  ui.start();
- const pending = mode.showExtensionSelector("permission", ["Approve", "Deny"], { details: "LONG\n".repeat(100) });
+ const pending = mode.showExtensionSelector("permission", ["Approve", "Deny"], { details: "LONG\n".repeat(2000) });
  try {
   ui.renderNow(true); await ui.flushTerminalFrames();
   assert.match(terminal.writes.join(""), /Enter select/);
+  input("\x1b[C");
+  assert.ok(mode.extensionSelector.detailOffset > 0, "actual fullscreen input must reach the approval pager");
  } finally { mode.hideExtensionSelector(); await pending; await ui.stop(); }
 });
 
@@ -407,4 +412,26 @@ test("RPC approval title escapes controls without truncating request details", a
  assert.ok(title.includes("\\u001b")); assert.ok(title.endsWith("END"));
  assert.equal(/[\u202a-\u202e\u2066-\u2069\x1b]/.test(title), false);
  assert.equal(formatRpcApprovalTitle("ordinary", undefined), "ordinary");
+});
+
+
+test("subagent approval cannot survive a session restore", async (t) => {
+ const f = await permissionFixture(t); f.permission.state.setMode("full-access");
+ const pending = f.call("subagent", { agent: "controlled", task: "no execution", cwd: tmpdir() });
+ const outcome = pending.then(() => "allowed", () => "rejected");
+ await f.visible; const signal = f.dialogOptions()?.signal;
+ await f.permission.restore(f.runner.createContext());
+ f.choose(0);
+ assert.equal(await outcome, "rejected");
+ assert.equal(signal?.aborted, true);
+ assert.equal(f.scheduler.highWaterMark.current, 0);
+});
+
+test("busy permission does not serialize an undisplayable request", async (t) => {
+ const f = await permissionFixture(t); f.permission.state.setMode("read-only");
+ const pending = f.call(); await f.visible;
+ let serializations = 0;
+ const input = { path: join(f.cwd, "controlled.txt"), content: "payload", toJSON() { serializations++; return {}; } };
+ try { await assert.rejects(f.call("write", input), /awaiting approval/); assert.equal(serializations, 0); }
+ finally { f.choose(0); await pending; }
 });
