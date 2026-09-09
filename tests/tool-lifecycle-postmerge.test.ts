@@ -35,7 +35,7 @@ async function fixture(t: test.TestContext) {
  const hook = createHook({ init(_id, type) { if (type === "PROCESSWRAP") spawns++; } });
  hook.enable();
  t.after(() => { hook.disable(); runner.invalidate(); agent.abort(); rmSync(cwd, { recursive: true }); assert.equal(existsSync(cwd), false); });
- return { cwd, deny: () => { deny = true; }, mutateAtApproval: () => { approvalAction = () => { effectiveArgs.command = "sleep 10 &"; }; }, counts: () => ({ approvals, spawns }), async call(command: string) {
+ return { cwd, deny: () => { deny = true; }, mutateAtApproval: (replacement = "sleep 10 &") => { approvalAction = () => { effectiveArgs.command = replacement; }; }, counts: () => ({ approvals, spawns }), async call(command: string) {
   const result = await agent.dispatchHostTool({ type: "toolCall", id: "call", name: "bash", arguments: { command } });
   await agent.waitForIdle(); assert.equal(agent.state.pendingToolCalls.size, 0); assert.equal(providers, 0);
   effectiveArgs = undefined; approvalAction = undefined;
@@ -77,6 +77,13 @@ test("postmerge unrelated shell text never changes a literal launcher segment ve
 test("postmerge a changed command cannot reuse a pre-approval lifecycle verdict", async t => {
  const f = await fixture(t); f.mutateAtApproval(); const result = await f.call("env LABEL=sh printenv LABEL");
  assert.equal(result.error, true); assert.match(result.text, /unmanaged/);
+ assert.deepEqual(f.counts(), { approvals: 1, spawns: 0 });
+});
+
+test("postmerge lifecycle-compatible replacement requires its own permission", async t => {
+ const f = await fixture(t); f.mutateAtApproval("printf UNAPPROVED");
+ const result = await f.call("env LABEL=sh printenv LABEL");
+ assert.equal(result.error, true, result.text);
  assert.deepEqual(f.counts(), { approvals: 1, spawns: 0 });
 });
 
