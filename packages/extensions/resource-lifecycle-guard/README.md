@@ -44,3 +44,23 @@ A second conservative classifier distinguishes strict read-only shell commands, 
 ## Resource lifecycle
 
 Unmanaged detached/background services remain blocked unless one foreground Bash call owns cleanup and wait. Default managed Chrome screenshots and managed Chrome itself are cleaned by exact identity at `agent_settled` and `session_shutdown`.
+
+The owned-job recipe permits up to 16 literal `curl`, `test`, `true`, `false` or `echo` use commands (4096 characters total) between installing cleanup and explicitly killing/waiting on the captured PID. Expansion, PID reassignment and arbitrary runners in this interval are unsupported; do not interpret an unsupported recipe as permission to detach or switch launchers.
+
+Launcher-prefixed owned jobs (including env/sudo/nice/timeout and shell/multicall wrappers) are unsupported rather than inferring the effective executable from mutable launcher semantics. Recognizer acceptance is not proof against arbitrary executable behavior, aliases outside the inspected call or process forking. Existing permission policy still applies.
+
+`wget` is excluded from owned-job use because its options/configuration can start background work outside the captured PID. Shell comments inside command substitutions are skipped when locating the actual closing delimiter.
+
+`printf` is also excluded from the use interval: its `-v` option can overwrite the captured PID even without assignment syntax.
+
+Command substitutions containing `case` syntax are conservatively uncertain because pattern parentheses are outside this recognizer. Shell wrappers support only a direct `-c` script operand; script files, preceding option variants and later positional `-c` tokens are not inferred safe. Bash/sh/zsh/dash/ksh/fish executable names are recognized; this does not claim complete grammar support for those shells.
+
+### Heredoc exemption withdrawn
+
+The experimental heredoc data-masking exemption and its coupled consumer-binding launch machinery have been removed together. The original quoted-heredoc bitwise false positive is **deferred, not solved**. Actual heredocs are conservatively uncertain on all platforms; no consumer name, inherited function or startup environment earns a data-masking exemption.
+
+The existing bounded quote/arithmetic scanner detects heredoc operators without removing source text. Ordinary `printf` quoted text, Bash arithmetic shifts and Node expression strings no longer receive a substring-triggered launch refusal. Node remains an opaque script subject to normal permission policy. Quoted operands of supported shell wrappers are inspected as executable scripts; heredoc-looking eval operands remain uncertain. Ordinary command prefixes, spawn hooks and process ownership retain accepted-base behavior.
+
+There is no new Windows/MSYS heredoc support, non-usrmerge support or universal bare-cat support. The withdrawn environment snapshot, callable registry and installation checks add no remaining launch allocations or I/O. Their historical profile is not evidence for a retained feature, and its automatic profile fixture has been retired. This correction makes no runtime speedup or model-token claim.
+
+Current prefix/case/coprocess protections and bounded validation/recovery guidance remain. Timed/coprocess substitutions and case pattern ambiguity stay uncertain; quoted words remain data. The recognizer is policy evidence, not a shell sandbox or a proof of arbitrary program behavior. A refusal is not permission to switch language or launcher around policy.

@@ -1,23 +1,18 @@
 import { basename, resolve } from "node:path";
 import {
 	DETACH_UTILITY_PATTERN,
-	DOCKER_CLEANUP_PATTERN,
 	DOCKER_DETACHED_PATTERN,
-	EXIT_TRAP_PATTERN,
 	NODE_RECURSIVE_RM_PATTERN,
 	NODE_UNLINK_PATTERN,
 	POWERSHELL_REMOVE_RECURSIVE_PATTERN,
-	PROCESS_CLEANUP_PATTERN,
 	PYTHON_RMTREE_PATTERN,
 	PYTHON_UNLINK_PATTERN,
-	SERVICE_CLEANUP_PATTERN,
 	SERVICE_START_PATTERN,
-	SHELL_WAIT_PATTERN,
 	WINDOWS_DETACH_PATTERN,
 	WINDOWS_START_BACKGROUND_PATTERN,
 	WINDOWS_WAIT_PATTERN,
 } from "./regex.ts";
-import { extractCommandSubstitutions } from "./shell-substitution.ts";
+import { extractCommandSubstitutions, inspectHereDocuments } from "./shell-substitution.ts";
 
 const MAX_INSPECTED_COMMAND_CHARS = 128 * 1024;
 const BLOCK_REASON =
@@ -26,7 +21,7 @@ const MAX_MUTATION_PRIMITIVES = 16;
 const MAX_MUTATION_TARGETS = 16;
 const MAX_SCRIPT_SEGMENTS = 64;
 const MAX_WRAPPER_DEPTH = 4;
-const SCRIPT_WRAPPERS = new Set(["bash", "bash.exe", "sh", "zsh"]);
+const SCRIPT_WRAPPERS = new Set(["bash", "bash.exe", "sh", "sh.exe", "zsh", "zsh.exe", "dash", "dash.exe", "ksh", "ksh.exe", "fish", "fish.exe"]);
 const POWERSHELL_WRAPPERS = new Set(["powershell", "powershell.exe", "pwsh", "pwsh.exe"]);
 const NODE_COMMANDS = new Set(["node", "node.exe"]);
 const PYTHON_COMMANDS = new Set(["python", "python.exe", "python3", "python3.exe", "py", "py.exe"]);
@@ -41,11 +36,6 @@ const CMD_SCRIPT_FLAGS = new Set(["/c"]);
 const POWERSHELL_SCRIPT_FLAGS = new Set(["-command", "-c"]);
 
 function hasUnquotedBackgroundOperator(command: string): boolean {
-	const substitutions = extractCommandSubstitutions(command);
-	if (substitutions.unterminated) return true;
-	for (const script of substitutions.scripts) {
-		if (hasUnquotedBackgroundOperator(script)) return true;
-	}
 	let quote: "'" | '"' | undefined;
 	let escaped = false;
 	for (let index = 0; index < command.length; index++) {
@@ -76,28 +66,80 @@ function hasUnquotedBackgroundOperator(command: string): boolean {
 	return false;
 }
 
-function hasShellOwnedCleanup(command: string): boolean {
-	if (SHELL_WAIT_PATTERN.test(command)) return true;
-	return EXIT_TRAP_PATTERN.test(command) && PROCESS_CLEANUP_PATTERN.test(command);
+// One literal foreground job, immutable PID binding, bounded literal use, exact cleanup.
+const OWNED_FOREGROUND_JOB = /^\s*([A-Za-z0-9_./-]+)(?:[ \t]+[A-Za-z0-9_./:-]+)*[ \t]+&[ \t]*pid=\$!;[ \t]*trap 'kill "\$pid"; wait "\$pid"' EXIT;[ \t]*(?:(.{1,4096});[ \t]*kill "\$pid";[ \t]*)?wait "\$pid"\s*$/;
+const OPAQUE_JOB_LAUNCHER = /^(?:env|sudo|doas|nice|nohup|setsid|timeout|stdbuf|command|exec|busybox|xargs|sh|bash|zsh|dash|fish|ksh|powershell|pwsh|cmd)(?:\.exe)?$/i;
+const OPAQUE_JOB_INTERPRETER = /^(?:python(?:[0-9]+(?:\.[0-9]+)*)?|py|node(?:js)?)(?:\.exe)?$/i;
+const OWNED_USE_COMMAND = /^(?:curl|test|true|false|echo)(?:[ \t]+[A-Za-z0-9_./:%?=,+-]+)*$/;
+function hasBoundedOwnedUse(work: string | undefined): boolean {
+ if (work === undefined) return true;
+ const commands = work.split(";");
+ if (commands.length > 16) return false;
+ for (const command of commands) if (!OWNED_USE_COMMAND.test(command.trim())) return false;
+ return true;
 }
+const SHELL_WRAPPER_TEXT = /sh|eval/i;
+const LEADING_REDIRECTION = /^(?:[0-9]+|\{[^}]+\})?[<>]{1,2}(.*)$/;
+const LEADING_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*\+?=/;
+const EMPTY_SUBSTITUTIONS: readonly string[] = [];
+const UNCERTAIN_LIFECYCLE = "Blocked an uncertain/uninspectable shell lifecycle. Use a bounded foreground command; do not bypass this guard with another launcher.";
 
 export function inspectBashResourceLifecycle(input: unknown): string | undefined {
-	if (!input || typeof input !== "object") return undefined;
-	const command = (input as { command?: unknown }).command;
-	if (typeof command !== "string" || command.length === 0) return undefined;
-	if (command.length > MAX_INSPECTED_COMMAND_CHARS) {
-		return "Blocked an oversized bash command because its process lifecycle cannot be audited safely.";
-	}
+ if (!input || typeof input !== "object") return undefined;
+ const command = (input as { command?: unknown }).command;
+ if (typeof command !== "string" || command.length === 0) return undefined;
+ if (command.length > MAX_INSPECTED_COMMAND_CHARS) return "Blocked an oversized bash command because its process lifecycle cannot be audited safely.";
+ return inspectLifecycleScript(command, 0);
+}
 
-	if (DETACH_UTILITY_PATTERN.test(command)) return BLOCK_REASON;
-	if (
-		(WINDOWS_DETACH_PATTERN.test(command) || WINDOWS_START_BACKGROUND_PATTERN.test(command)) &&
-		!WINDOWS_WAIT_PATTERN.test(command)
-	) return BLOCK_REASON;
-	if (DOCKER_DETACHED_PATTERN.test(command) && !DOCKER_CLEANUP_PATTERN.test(command)) return BLOCK_REASON;
-	if (SERVICE_START_PATTERN.test(command) && !SERVICE_CLEANUP_PATTERN.test(command)) return BLOCK_REASON;
-	if (hasUnquotedBackgroundOperator(command) && !hasShellOwnedCleanup(command)) return BLOCK_REASON;
-	return undefined;
+function inspectLifecycleScript(source: string, depth: number): string | undefined {
+ if (depth > MAX_WRAPPER_DEPTH) return UNCERTAIN_LIFECYCLE;
+ const here = source.includes("<<") ? inspectHereDocuments(source) : undefined;
+ if (here?.uncertain) return UNCERTAIN_LIFECYCLE;
+ const command = here?.command ?? source;
+ const substitutions = extractCommandSubstitutions(command);
+ if (substitutions.unterminated) return UNCERTAIN_LIFECYCLE;
+ for (const script of here?.substitutions ?? EMPTY_SUBSTITUTIONS) { const result = inspectLifecycleScript(script, depth + 1); if (result) return result; }
+ for (const script of substitutions.scripts) { const result = inspectLifecycleScript(script, depth + 1); if (result) return result; }
+ if (DETACH_UTILITY_PATTERN.test(command)) return BLOCK_REASON;
+ if ((WINDOWS_DETACH_PATTERN.test(command) || WINDOWS_START_BACKGROUND_PATTERN.test(command)) && !WINDOWS_WAIT_PATTERN.test(command)) return BLOCK_REASON;
+ if (DOCKER_DETACHED_PATTERN.test(command) || SERVICE_START_PATTERN.test(command)) return BLOCK_REASON;
+ if (hasUnquotedBackgroundOperator(command)) {
+  const owned = OWNED_FOREGROUND_JOB.exec(command);
+  if (!owned || !hasBoundedOwnedUse(owned[2]) || OPAQUE_JOB_LAUNCHER.test(commandName(owned[1]!)) || OPAQUE_JOB_INTERPRETER.test(commandName(owned[1]!))) return BLOCK_REASON;
+ }
+ if (!SHELL_WRAPPER_TEXT.test(command)) return undefined;
+ const segments = parseShellSegments(command);
+ if (segments.length > MAX_SCRIPT_SEGMENTS) return UNCERTAIN_LIFECYCLE;
+ for (const tokens of segments) {
+  let index = 0; let changedLookup = false; let prefixes = 0;
+  while (index < tokens.length) {
+   const token = tokens[index]!;
+   if (++prefixes > MAX_SCRIPT_SEGMENTS) return UNCERTAIN_LIFECYCLE;
+   if (LEADING_ASSIGNMENT.test(token)) { changedLookup = true; index++; continue; }
+   const redirection = LEADING_REDIRECTION.exec(token);
+   if (redirection) {
+    changedLookup = true; index++;
+    if (!redirection[1]) { if (!tokens[index]) return UNCERTAIN_LIFECYCLE; index++; }
+    continue;
+   }
+   const prefix = commandName(token);
+   if (prefix !== "command" && prefix !== "exec") break;
+   if (++index > MAX_WRAPPER_DEPTH || !tokens[index] || tokens[index]!.startsWith("-")) return UNCERTAIN_LIFECYCLE;
+  }
+  const name = commandName(tokens[index] ?? "");
+  // Resolve only this segment; unrelated text in another command is not authority or uncertainty.
+  if (changedLookup && SCRIPT_WRAPPERS.has(name)) return UNCERTAIN_LIFECYCLE;
+  if (OPAQUE_JOB_LAUNCHER.test(name) && !SCRIPT_WRAPPERS.has(name)) return UNCERTAIN_LIFECYCLE;
+  if (name === "eval") for (let operand = index + 1; operand < tokens.length; operand++) {
+   if (tokens[operand]!.includes("<<")) return UNCERTAIN_LIFECYCLE;
+  }
+  if (!SCRIPT_WRAPPERS.has(name)) continue;
+  const flag = index + 1;
+  if (tokens[flag] !== "-c" || !tokens[flag + 1]) return UNCERTAIN_LIFECYCLE;
+  const result = inspectLifecycleScript(tokens[flag + 1]!, depth + 1); if (result) return result;
+ }
+ return undefined;
 }
 
 export interface HighRiskMutationScan {

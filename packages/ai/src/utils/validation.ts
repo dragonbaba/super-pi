@@ -266,19 +266,6 @@ function getValidator(schema: Tool["parameters"]): ReturnType<typeof Compile> {
 	return validator;
 }
 
-function formatValidationPath(error: TLocalizedValidationError): string {
-	if (error.keyword === "required") {
-		const requiredProperties = (error.params as { requiredProperties?: string[] }).requiredProperties;
-		const requiredProperty = requiredProperties?.[0];
-		if (requiredProperty) {
-			const basePath = dottedValidationPath(error.instancePath);
-			return basePath ? `${basePath}.${requiredProperty}` : requiredProperty;
-		}
-	}
-	const path = dottedValidationPath(error.instancePath);
-	return path || "root";
-}
-
 /**
  * Finds a tool by name and validates the tool call arguments against its TypeBox schema
  * @param tools Array of tool definitions
@@ -532,13 +519,39 @@ export function validateToolArguments(tool: Tool, toolCall: ToolCall): any {
 	const args = validation.args;
 	if (validation.valid) return args;
 
-	const errors =
-		validator
-			.Errors(args)
-			.map((error) => `  - ${formatValidationPath(error)}: ${error.message}`)
-			.join("\n") || "Unknown validation error";
-
-	const errorMessage = `Validation failed for tool "${toolCall.name}":\n${errors}\nRetry: Correct only the listed fields; received arguments are omitted.`;
+	const errors: string[] = [];
+	let errorCharacters = 0;
+	for (const error of validator.Errors(args)) {
+		if (errors.length === 8) { errors.push("  - Further field errors omitted; correct these fields first."); break; }
+		const formatted = formatBoundedValidationError(error, tool.parameters as JsonSchemaObject);
+		if (errorCharacters + formatted.length > 3200) { errors.push("  - Further field errors omitted; correct these fields first."); break; }
+		errorCharacters += formatted.length + 1;
+		errors.push(formatted);
+	}
+	const errorMessage = `Validation failed for tool ${escapedValidationName(tool.name, 80)}:\n${errors.join("\n") || "Unknown validation error"}\nRetry: Correct only the listed fields using the active tool schema; received arguments are omitted.`;
 
 	throw new Error(errorMessage);
+}
+
+
+function escapedValidationName(value: string, limit = 96): string {
+ return JSON.stringify(value.slice(0, limit) + (value.length > limit ? "…" : ""))
+  .replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, escapeValidationControl);
+}
+function escapeValidationControl(value: string): string {
+ const code = value.codePointAt(0)!;
+ return code > 0xffff ? `\\u{${code.toString(16)}}` : `\\u${code.toString(16).padStart(4, "0")}`;
+}
+function formatBoundedValidationError(error: TLocalizedValidationError, schema: JsonSchemaObject): string {
+ const path = escapedValidationName(error.instancePath || "/", 160);
+ const params = error.params as { additionalProperties?: string[]; requiredProperties?: string[] };
+ if (error.keyword === "additionalProperties" || error.keyword === "required") {
+  const names = error.keyword === "additionalProperties" ? params.additionalProperties : params.requiredProperties;
+  const fields = Array.isArray(names) ? names.slice(0, 2).filter(name => typeof name === "string").map(name => escapedValidationName(name)).join(", ") : "at this object";
+  const action = error.keyword === "additionalProperties" ? "Remove unexpected fields" : "Supply required fields";
+  return `  - ${path}: ${action} ${fields}.`;
+ }
+ const active = schemaAtPath(schema, decodeJsonPointer(error.instancePath));
+ if (error.keyword === "type" && typeof active?.type === "string") return `  - ${path}: Supply a value of type ${escapedValidationName(active.type, 24)}.`;
+ return `  - ${path}: Constraint ${escapedValidationName(error.keyword, 48)} failed; correct this field using the active tool schema.`;
 }
