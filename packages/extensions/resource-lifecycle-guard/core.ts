@@ -66,7 +66,16 @@ function hasUnquotedBackgroundOperator(command: string): boolean {
 	return false;
 }
 
-const OWNED_FOREGROUND_JOB = /^\s*([A-Za-z0-9_./-]+)(?:[ \t]+[A-Za-z0-9_./:-]+)*[ \t]+&[ \t]*pid=\$!;[ \t]*trap 'kill "\$pid"; wait "\$pid"' EXIT;[ \t]*wait "\$pid"\s*$/;
+// One literal foreground job, immutable PID binding, bounded literal use, exact cleanup.
+const OWNED_FOREGROUND_JOB = /^\s*([A-Za-z0-9_./-]+)(?:[ \t]+[A-Za-z0-9_./:-]+)*[ \t]+&[ \t]*pid=\$!;[ \t]*trap 'kill "\$pid"; wait "\$pid"' EXIT;[ \t]*(?:(.{1,4096});[ \t]*kill "\$pid";[ \t]*)?wait "\$pid"\s*$/;
+const OWNED_USE_COMMAND = /^(?:curl|wget|test|true|false|echo|printf)(?:[ \t]+[A-Za-z0-9_./:%?=,+-]+)*$/;
+function hasBoundedOwnedUse(work: string | undefined): boolean {
+ if (work === undefined) return true;
+ const commands = work.split(";");
+ if (commands.length > 16) return false;
+ for (const command of commands) if (!OWNED_USE_COMMAND.test(command.trim())) return false;
+ return true;
+}
 const SHELL_WRAPPER_TEXT = /sh/i;
 const EMPTY_SUBSTITUTIONS: readonly string[] = [];
 const UNCERTAIN_LIFECYCLE = "Blocked an uncertain/uninspectable shell lifecycle. Use a bounded foreground command; do not bypass this guard with another launcher.";
@@ -93,7 +102,7 @@ function inspectLifecycleScript(source: string, depth: number): string | undefin
  if (DOCKER_DETACHED_PATTERN.test(command) || SERVICE_START_PATTERN.test(command)) return BLOCK_REASON;
  if (hasUnquotedBackgroundOperator(command)) {
   const owned = OWNED_FOREGROUND_JOB.exec(command);
-  if (!owned || NODE_COMMANDS.has(commandName(owned[1]!)) || PYTHON_COMMANDS.has(commandName(owned[1]!))) return BLOCK_REASON;
+  if (!owned || !hasBoundedOwnedUse(owned[2]) || NODE_COMMANDS.has(commandName(owned[1]!)) || PYTHON_COMMANDS.has(commandName(owned[1]!))) return BLOCK_REASON;
  }
  if (!SHELL_WRAPPER_TEXT.test(command)) return undefined;
  const segments = parseShellSegments(command);

@@ -458,6 +458,9 @@ export async function failureRecoveryHint(
   if ((toolName === "edit" || toolName === "write") && classifyFailureText(failureText, input, toolName) === "read_required") {
     return "[Read recovery] This mutation had no qualifying prior read and made no change. Read the exact target range with the read tool in a completed tool turn, then retry against that current content; grep, Bash, LSP, and same-turn reads do not satisfy this guard.";
   }
+  if (failureText.includes("Blocked an unmanaged long-lived process")) {
+    return "[Lifecycle recovery] A permission change cannot authorize an unmanaged process. Keep bounded use and cleanup in one foreground call with the captured PID, or use an available managed capability. Do not evade this boundary with another launcher.";
+  }
   if (classifyFailureText(failureText, input, toolName) === "policy_blocked") {
     return "[Permission recovery] Resolve the permission or policy failure for this exact operation before retrying. Do not evade it by changing language, launcher, or tool; use only a registered capability allowed for the target.";
   }

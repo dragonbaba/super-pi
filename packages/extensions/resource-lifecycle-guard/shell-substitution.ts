@@ -102,7 +102,7 @@ export function extractCommandSubstitutions(command: string, heredocData = false
 }
 
 
-const COMMENT_BOUNDARY = /[ \t;|&]/;
+const COMMENT_BOUNDARY = /[ \t\r\n;|&]/;
 const LEADING_TABS = /^\t+/;
 const HEREDOC_WORD = /^(?:'([A-Za-z0-9_]{1,128})'|"([A-Za-z0-9_]{1,128})"|(\\?)([A-Za-z0-9_]{1,128}))(?=$|[ \t\r\n;&|<>])/;
 /** Bounded literal-delimiter recognition, not a Bash parser. Unsupported syntax is uncertain. */
@@ -110,7 +110,7 @@ export function inspectHereDocuments(command: string): { command: string; substi
  if (!command.includes("<<")) return { command, substitutions: [], uncertain: false };
  const pieces: string[] = []; const substitutions: string[] = [];
  const pending: Array<{ word: string; quoted: boolean; tabs: boolean }> = [];
- let quote = ""; let escaped = false; let copied = 0; let count = 0;
+ let quote = ""; let escaped = false; let copied = 0; let count = 0; let arithmeticDepth = 0;
  for (let index = 0; index < command.length; index++) {
   const c = command[index];
   if (escaped) { escaped = false; continue; }
@@ -120,6 +120,8 @@ export function inspectHereDocuments(command: string): { command: string; substi
   if (c === "#" && (index === 0 || COMMENT_BOUNDARY.test(command[index - 1]!))) {
    const end = command.indexOf("\n", index); if (end < 0) break; index = end - 1; continue;
   }
+  if (c === "$" && command[index + 1] === "(" && command[index + 2] === "(") { arithmeticDepth += 2; index += 2; continue; }
+  if (arithmeticDepth) { if (c === "(") arithmeticDepth++; else if (c === ")") arithmeticDepth--; continue; }
   if (c === "<" && command[index + 1] === "<") {
    if (command[index + 2] === "<") { index += 2; continue; }
    if (++count > 16) return { command: "", substitutions: [], uncertain: true };
@@ -155,7 +157,7 @@ export function inspectHereDocuments(command: string): { command: string; substi
   }
   pending.length = 0; copied = position; index = position - 1;
  }
- if (pending.length) return { command: "", substitutions: [], uncertain: true };
+ if (pending.length || arithmeticDepth) return { command: "", substitutions: [], uncertain: true };
  pieces.push(command.slice(copied));
  return { command: pieces.join(""), substitutions, uncertain: false };
 }
