@@ -2962,7 +2962,7 @@ export class InteractiveMode {
 		opts?: ExtensionUIDialogOptions,
 	): Promise<string | undefined> {
 		return new Promise((resolve, reject) => {
-			if (opts?.signal?.aborted || this.extensionSelector || this.extensionInput || this.extensionEditor) {
+			if (opts?.signal?.aborted || this.extensionSelector || this.extensionInput || this.extensionEditor || this.activeExtensionCustomCancel || this.activeSelectorToken) {
 				resolve(undefined);
 				return;
 			}
@@ -3046,7 +3046,7 @@ export class InteractiveMode {
 		opts?: ExtensionUIDialogOptions,
 	): Promise<string | undefined> {
 		return new Promise((resolve, reject) => {
-			if (opts?.signal?.aborted || this.extensionSelector || this.extensionInput || this.extensionEditor) {
+			if (opts?.signal?.aborted || this.extensionSelector || this.extensionInput || this.extensionEditor || this.activeExtensionCustomCancel || this.activeSelectorToken) {
 				resolve(undefined);
 				return;
 			}
@@ -3326,6 +3326,7 @@ export class InteractiveMode {
 	 * Show a multi-line editor for extensions (with Ctrl+G support).
 	 */
 	private showExtensionEditor(title: string, prefill?: string): Promise<string | undefined> {
+  if (this.extensionSelector || this.extensionInput || this.extensionEditor || this.activeExtensionCustomCancel) return Promise.resolve(undefined);
 		return new Promise((resolve) => {
 			this.extensionEditor = new ExtensionEditorComponent(
 				this.ui,
@@ -3369,6 +3370,7 @@ export class InteractiveMode {
 	 * Pass undefined to restore the default editor.
 	 */
 	private setCustomEditorComponent(factory: EditorFactory | undefined): void {
+  if (this.extensionSelector || this.extensionInput) throw new Error("Close the active approval dialog before replacing the editor");
 		this.editorComponentFactory = factory;
 
 		// Save text from current editor before switching
@@ -3465,7 +3467,8 @@ export class InteractiveMode {
 			onHandle?: (handle: OverlayHandle) => void;
 		},
 	): Promise<T> {
-		this.cancelActiveExtensionCustom();
+  if (this.extensionSelector || this.extensionInput || this.extensionEditor) throw new Error("Another dialog is active");
+  this.cancelActiveExtensionCustom();
 		const lifecycleGeneration = this.tuiLifecycleGeneration;
 		const savedText = this.editor.getText();
 		const isOverlay = options?.overlay ?? false;
@@ -5957,7 +5960,8 @@ export class InteractiveMode {
 	private showSelector(
 		create: (done: () => void) => { component: Component; focus: Component; dispose?: () => void },
 	): void {
-		const token = {};
+		this.cancelExtensionDialogs();
+  const token = {};
 		let dispose: (() => void) | undefined;
 		const done = () => {
 			dispose?.();

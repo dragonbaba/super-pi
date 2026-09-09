@@ -107,6 +107,8 @@ test("real interactive selection isolates cancellation, late clicks and disposal
 	const abort = new AbortController();
 	const first = mode.showExtensionSelector("first", ["Approve", "Deny"], { signal: abort.signal, details: "FULL-FIRST" });
 	const old = mode.extensionSelector;
+ await assert.rejects(mode.showExtensionCustom(() => new Container()), /Another dialog/);
+ assert.equal(await mode.showExtensionEditor("other"), undefined);
 	assert.equal(await mode.showExtensionSelector("second", ["Approve"]), undefined);
 	abort.abort();
 	assert.equal(await first, undefined);
