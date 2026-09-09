@@ -135,7 +135,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 	 */
 	const createExtensionUIContext = (): ExtensionUIContext => ({
 		select: (title, options, opts) =>
-			createDialogPromise(opts, undefined, { method: "select", title: opts?.details ? `${title}\n\n${opts.details}` : title, options, timeout: opts?.timeout }, (r) =>
+			createDialogPromise(opts, undefined, { method: "select", title: formatRpcApprovalTitle(title, opts?.details), options, timeout: opts?.timeout }, (r) =>
 				"cancelled" in r && r.cancelled ? undefined : "value" in r ? r.value : undefined,
 			),
 
@@ -814,4 +814,14 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 
 	// Keep process alive forever
 	return new Promise(() => {});
+}
+
+/** @internal Presentation only: preserve full request text without bidi/control execution. */
+export function formatRpcApprovalTitle(title: string, details: string | undefined): string {
+ if (details === undefined) return title;
+ return `${title}\n\n${details}`.replace(/[\x00-\x09\x0b-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/g,
+  escapeRpcApprovalControl);
+}
+function escapeRpcApprovalControl(character: string): string {
+ return `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`;
 }

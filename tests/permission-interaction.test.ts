@@ -397,3 +397,14 @@ test("permission command immediately revokes a pending prompt", async (t) => {
  finally { f.choose(0); await outcome; }
  assert.equal(f.scheduler.highWaterMark.current, 0);
 });
+
+
+test("RPC approval title escapes controls without truncating request details", async () => {
+ const { formatRpcApprovalTitle } = await import("../packages/coding-agent/src/modes/rpc/rpc-mode.ts");
+ const details = "code\u202etarget\u2066\x1b[31m\n" + "x".repeat(6000) + "END";
+ const title = formatRpcApprovalTitle("approval", details);
+ assert.ok(title.includes("\\u202e")); assert.ok(title.includes("\\u2066"));
+ assert.ok(title.includes("\\u001b")); assert.ok(title.endsWith("END"));
+ assert.equal(/[\u202a-\u202e\u2066-\u2069\x1b]/.test(title), false);
+ assert.equal(formatRpcApprovalTitle("ordinary", undefined), "ordinary");
+});

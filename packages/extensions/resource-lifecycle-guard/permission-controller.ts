@@ -439,6 +439,8 @@ export class SessionPermissionController {
     const prefixChoice = commandPrefix ? `${ALLOW_SESSION_PREFIX}：${commandPrefix} *` : undefined;
     const chosePrefix = prefixChoice !== undefined && choice === prefixChoice;
     if (choice === ALLOW_ONCE || choice === ALLOW_SESSION_EXACT || chosePrefix || choice === SWITCH_WORKSPACE || choice === SWITCH_FULL) {
+      // Selection is settled; its own approved state update must not revoke itself.
+      if (this.#pendingApproval === approval) this.#pendingApproval = undefined;
       let policyReason = "user_approved_once";
       if ((choice === ALLOW_SESSION_EXACT || chosePrefix) && request.shellCommand) {
         try {
@@ -1073,6 +1075,8 @@ export class SessionPermissionController {
   }
 
   #persist(ctx: ExtensionContext): void {
+    this.#pendingApproval?.abort(new Error("Permission request is obsolete after permission state change"));
+    this.#pendingApproval = undefined;
     const state = this.#state.serialized();
     try {
       this.#pi.appendEntry(SESSION_PERMISSION_STATE_TYPE, state);
