@@ -126,3 +126,8 @@ test("review3: bare arithmetic is not a heredoc", () => {
 test("review3: shadowed consumers and staged execution are uncertain", () => {
  for (const command of [`cat(){ eval "$(command cat)"; }\ncat <<'EOF'\nnohup sleep 100 &\nEOF`, "cat > ./runner <<'EOF'\n#!/bin/sh\nnohup sleep 100 &\nEOF\nchmod +x ./runner; ./runner"]) assert.ok(inspectBashResourceLifecycle({ command }));
 });
+
+
+test("review4: launcher prefixes do not establish owned-job identity", () => {
+ for (const prefix of ["env python3", "sudo -u root python3", "env env python3", "nice python3", "timeout 10 nodejs"]) assert.ok(inspectBashResourceLifecycle({ command: `${prefix} script & pid=$!; trap 'kill "$pid"; wait "$pid"' EXIT; wait "$pid"` }));
+});
