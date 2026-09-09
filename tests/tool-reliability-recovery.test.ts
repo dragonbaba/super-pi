@@ -156,3 +156,9 @@ test("review7: builtin prefixes cannot hide shell scripts", () => {
  for (const command of ["command bash -c 'sleep 100 &'", "exec bash -c 'sleep 100 &'", "command exec dash -c 'sleep 100 &'", "env -u PATH bash -c 'sleep 100 &'"]) assert.ok(inspectBashResourceLifecycle({ command }));
  assert.equal(inspectBashResourceLifecycle({ command: "command bash -c 'echo safe'" }), undefined);
 });
+
+
+test("review8: assignment and redirection prefixes cannot hide shell operands", () => {
+ for (const command of ["X=1 bash -c 'sleep 100 &'", "X='a b' command bash -c 'sleep 100 &'", "2>/dev/null bash -c 'sleep 100 &'", "command 2>/dev/null bash -c 'sleep 100 &'"]) assert.ok(inspectBashResourceLifecycle({ command }));
+ assert.equal(inspectBashResourceLifecycle({ command: "echo bash" }), undefined);
+});
