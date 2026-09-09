@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { createHook } from "node:async_hooks";
 import { Session } from "node:inspector/promises";
 import { performance } from "node:perf_hooks";
@@ -7,6 +8,7 @@ import { createBashTool } from "../../packages/coding-agent/src/core/tools/bash.
 import { getShellConfig } from "../../packages/coding-agent/src/utils/shell.ts";
 import { inspectBashResourceLifecycle } from "../../packages/extensions/resource-lifecycle-guard/core.ts";
 
+const sourceSha = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
 const warmup = 3, samples = 12;
 const refs: WeakRef<object>[] = [];
 let processes = 0, providers = 0, permissions = 0;
@@ -46,7 +48,7 @@ const sampledBytes = sampled(allocation.profile.head);
 for (let i = 0; i < 3; i++) { await new Promise<void>(resolve => setImmediate(resolve)); global.gc!(); }
 const retainedAliases = refs.reduce((sum, ref) => sum + Number(ref.deref() !== undefined), 0);
 assert.equal(retainedAliases, 0); assert.equal(providers, 0); assert.equal(permissions, 3 * (warmup + samples));
-console.log(JSON.stringify({ fixture: "bash-heredoc-binding-v1", sha: process.env.GITHUB_SHA ?? "local", node: process.version, platform: process.platform,
+console.log(JSON.stringify({ fixture: "bash-heredoc-binding-v1", sha: sourceSha, node: process.version, platform: process.platform,
  warmup, samples, stats, processes, permissions, providers, sampledBytes, observedAliases: refs.length, retainedAliases,
- successfulBindingApiCalls: { realpath: 2, stat: 5, environmentSnapshots: 1, configObjects: 1, argumentArrays: 1, probeProcesses: 0, contentHashes: 0 },
+ successfulBindingApiCalls: { realpath: 2, stat: 5, environmentSnapshots: 1, environmentKeyArrays: 1, configObjects: 1, argumentArrays: 1, probeProcesses: 0, contentHashes: 0 },
  scope: "sampled allocation is not total allocation or retained heap; API counts are source-derived, not syscall counts" }));

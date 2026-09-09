@@ -28,11 +28,10 @@ export function unverifiedHeredoc(reason: string): Error {
 /** Private call-owned snapshot; never publish it to hooks or rebuild it from process.env. */
 export function snapshotHeredocEnvironment(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 	const env: NodeJS.ProcessEnv = Object.create(null);
-	let entries = 0;
+	const keys = Object.keys(source);
+	if (keys.length > 1024) throw unverifiedHeredoc("environment exceeds the supported bound");
 	let characters = 0;
-	for (const key in source) {
-		if (!Object.hasOwn(source, key)) continue;
-		if (++entries > 1024) throw unverifiedHeredoc("environment exceeds the supported bound");
+	for (const key of keys) {
 		const value = source[key];
 		if (value === undefined) continue;
 		if (typeof value !== "string" || (characters += key.length + value.length) > 256 * 1024) throw unverifiedHeredoc("environment exceeds the supported bound");
@@ -74,7 +73,7 @@ export function validateHeredocLaunch(command: string, shell: ShellConfig, env: 
 		if (path !== "/usr/bin" && path !== "/bin" && !path?.startsWith("/usr/bin:") && !path?.startsWith("/bin:")) throw unverifiedHeredoc("bare cat requires the trusted system directory first in the captured PATH");
 	}
 	try {
-		if (realpathSync(shell.shell) !== "/usr/bin/bash" || realpathSync(header[1] === "cat" ? "/usr/bin/cat" : header[1]!) !== "/usr/bin/cat") throw new Error("identity");
+		if (realpathSync(shell.shell) !== "/usr/bin/bash" || realpathSync(header[1] === "cat" ? (env.PATH === "/bin" || env.PATH?.startsWith("/bin:") ? "/bin/cat" : "/usr/bin/cat") : header[1]!) !== "/usr/bin/cat") throw new Error("identity");
 		for (const path of HEREDOC_INSTALLATION_PATHS) {
 			const info = statSync(path);
 			if (info.uid !== 0 || (info.mode & 0o022) !== 0 || (path.endsWith("/bash") || path.endsWith("/cat") ? !info.isFile() || !(info.mode & 0o111) : !info.isDirectory())) throw new Error("identity");

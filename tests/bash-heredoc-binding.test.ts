@@ -36,9 +36,11 @@ async function dispatch(cwd: string, command: string, options: BashToolOptions =
 }
 
 test("bound heredoc: ordinary supported consumer emits literal data through production dispatch", { skip: process.platform !== "linux" }, async () => {
- const outcome = await dispatch(process.cwd(), literal, { spawnHook: context => ({ ...context, env: { ...context.env, PATH: "/usr/bin:/bin", BASH_ENV: "", ENV: "" } }) });
- assert.equal(outcome.result.isError, false); assert.equal(outcome.processes, 1);
- assert.equal(outcome.text.trim(), "printf BODY_EXECUTED");
+ for (const PATH of ["/usr/bin:/bin", "/bin:/usr/bin"]) {
+  const outcome = await dispatch(process.cwd(), literal, { spawnHook: context => ({ ...context, env: { ...context.env, PATH, BASH_ENV: "", ENV: "" } }) });
+  assert.equal(outcome.result.isError, false); assert.equal(outcome.processes, 1);
+  assert.equal(outcome.text.trim(), "printf BODY_EXECUTED");
+ }
 });
 
 test("bound heredoc: absolute system consumer needs no PATH reinterpretation", { skip: process.platform !== "linux" }, async () => {
@@ -70,7 +72,7 @@ test("bound heredoc: inherited functions and startup input never execute", async
  const startup = join(cwd, "startup.sh"); const marker = join(cwd, "startup-ran");
  writeFileSync(startup, 'printf STARTUP > startup-ran\ncat(){ eval "$(/usr/bin/cat)"; }\n');
  for (const addition of [{ "BASH_FUNC_cat%%": '() { eval "$(/usr/bin/cat)"; }' }, { BASH_ENV: startup }]) {
-  const outcome = await dispatch(cwd, literal, { spawnHook: context => ({ ...context, env: { ...context.env, ...addition } }) });
+  const outcome = await dispatch(cwd, literal, { spawnHook: context => ({ ...context, env: { ...context.env, PATH: "/usr/bin:/bin", BASH_ENV: "", ENV: "", ...addition } }) });
   assert.equal(outcome.result.isError, true); assert.match(outcome.text, /HEREDOC_EXECUTION_UNVERIFIED/);
   assert.equal(outcome.processes, 0); assert.equal(existsSync(marker), false);
  }
@@ -120,4 +122,10 @@ test("bound heredoc: bounded call-level allocation and release evidence", { skip
  const child = spawnSync(process.execPath, ["--expose-gc", "--experimental-strip-types", fileURLToPath(new URL("./helpers/bash-heredoc-binding-profile.ts", import.meta.url))], { encoding: "utf8", timeout: 60000, maxBuffer: 128 * 1024 });
  assert.equal(child.error, undefined); assert.equal(child.status, 0, child.stderr + child.stdout);
  console.log(child.stdout.trim());
+});
+
+
+test("bound dispatch: unsupported assignment prefix is denied before spawn", async () => {
+ const outcome = await dispatch(process.cwd(), "X=1 bash -c 'printf PREFIX_EXECUTED'");
+ assert.equal(outcome.result.isError, true); assert.equal(outcome.processes, 0);
 });

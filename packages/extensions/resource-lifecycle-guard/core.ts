@@ -79,6 +79,7 @@ function hasBoundedOwnedUse(work: string | undefined): boolean {
  return true;
 }
 const SHELL_WRAPPER_TEXT = /sh/i;
+const LEADING_REDIRECTION = /^(?:[0-9]+|\{[^}]+\})?[<>]/;
 const EMPTY_SUBSTITUTIONS: readonly string[] = [];
 const UNCERTAIN_LIFECYCLE = "Blocked an uncertain/uninspectable shell lifecycle. Use a bounded foreground command; do not bypass this guard with another launcher.";
 
@@ -115,6 +116,8 @@ function inspectLifecycleScript(source: string, depth: number): string | undefin
    if (++index > MAX_WRAPPER_DEPTH || !tokens[index] || tokens[index]!.startsWith("-")) return UNCERTAIN_LIFECYCLE;
    name = commandName(tokens[index]!);
   }
+  // Prefixes that alter command lookup are outside the direct-wrapper contract.
+  if (tokens[index]?.includes("=") || LEADING_REDIRECTION.test(tokens[index] ?? "")) return UNCERTAIN_LIFECYCLE;
   if (OPAQUE_JOB_LAUNCHER.test(name) && !SCRIPT_WRAPPERS.has(name)) return UNCERTAIN_LIFECYCLE;
   if (!SCRIPT_WRAPPERS.has(name)) continue;
   const flag = index + 1;
