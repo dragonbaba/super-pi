@@ -260,6 +260,20 @@ test("full explicit-cwd command and write payload remain inspectable", async (t)
  }
 });
 
+test("complete browser approval includes execution-affecting non-code fields", async (t) => {
+ const f = await permissionFixture(t);
+ const input = { code: "print('controlled fixture')", session: "controlled-cloud-session", timeoutMs: 12345, purpose: "review regression" };
+ const pending = f.call("browser_exec", input);
+ await f.visible;
+ try {
+  const details = f.dialogOptions().details as string;
+  assert.ok(details.includes('"session": "controlled-cloud-session"'));
+  assert.ok(details.includes('"timeoutMs": 12345'));
+  assert.deepEqual(JSON.parse(details.split("完整请求:\n")[1]!), input);
+ } finally { f.choose(0); await pending; }
+ assert.equal(f.scheduler.highWaterMark.current, 0);
+});
+
 test("details support configured paging and display their live countdown", () => {
  const { rows, columns } = { rows: 10, columns: 40 };
  const selector: any = new ExtensionSelectorComponent("permission", ["Approve", "Deny"], () => {}, () => {},
