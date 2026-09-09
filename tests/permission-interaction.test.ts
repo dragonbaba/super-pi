@@ -43,7 +43,7 @@ async function permissionFixture(t: test.TestContext) {
  await permission.restore(runner.createContext());
  const call = () => runner.emitToolCall({ type: "tool_call", toolName: "browser_exec", toolCallId: "approval-1",
   input: { code: "print('controlled fixture')", purpose: "permission regression" } } as never);
- return { runner, scheduler, permission, visible, call, abort, choose: (index: number) => choose(choices[index]),
+ return { runner, scheduler, permission, visible, call, abort, cwd, choose: (index: number) => choose(choices[index]),
   dialogOptions: () => dialogOptions };
 }
 
@@ -97,7 +97,7 @@ test("concurrent permission requests cannot replace the active selection", async
 	assert.equal(f.scheduler.highWaterMark.current, 0);
 });
 
-test("real interactive selection isolates cancellation, late clicks and disposal", async () => {
+test("real interactive selection isolates cancellation, late clicks and disposal", { timeout: 2000 }, async () => {
 	const { InteractiveMode } = await import("../packages/coding-agent/src/modes/interactive/interactive-mode.ts");
 	const { Container } = await import("@super-pi/tui");
 	const mode: any = Object.create(InteractiveMode.prototype);
@@ -116,6 +116,7 @@ test("real interactive selection isolates cancellation, late clicks and disposal
 	const current = mode.extensionSelector;
 	old.handleInput("\n");
 	assert.equal(mode.extensionSelector, current);
+	current.render(60);
 	current.handleInput("\n");
 	assert.equal(await second, "Approve");
 	const third = mode.showExtensionSelector("third", ["Approve"], { details: "FULL-THIRD" });
@@ -243,4 +244,64 @@ test("run abort revokes the real permission wait before a late approval", async 
  assert.equal(signal.aborted, true);
  assert.equal(f.permission.state.allowRules.length, 0);
  assert.equal(f.scheduler.highWaterMark.current, 0);
+});
+
+
+test("full explicit-cwd command and write payload remain inspectable", async (t) => {
+ for (const toolName of ["bash", "write"]) {
+  const f = await permissionFixture(t);
+  f.permission.state.setMode("read-only");
+  const payload = "x".repeat(6000) + "REVIEW-TAIL";
+  const input = toolName === "bash" ? { cwd: f.cwd, command: `node -e '${payload}'` }
+   : { path: join(f.cwd, "new.txt"), content: payload };
+  const pending = f.call(toolName, input);
+  await f.visible;
+  try { assert.ok(f.dialogOptions().details.includes("REVIEW-TAIL")); }
+  finally { f.choose(0); await pending; }
+ }
+});
+
+test("details support configured paging and display their live countdown", () => {
+ const { rows, columns } = { rows: 10, columns: 40 };
+ const selector: any = new ExtensionSelectorComponent("permission", ["Approve", "Deny"], () => {}, () => {},
+  { tui: { terminal: { rows, columns }, requestRender() {} } as never, timeout: 30_000, details: "ROW\n".repeat(100) });
+ try {
+  assert.match(selector.render(40).join("\n"), /30s/);
+  selector.handleInput("\x1b[6;1~");
+  assert.ok(selector.detailOffset > 0);
+  selector.countdown.onTick(29);
+  assert.match(selector.render(40).join("\n"), /29s/);
+ } finally { selector.dispose(); }
+});
+
+test("signal-aware machine hooks keep the timeout diagnosis", async () => {
+ const runtime = createExtensionRuntime(); const scheduler = new FakeScheduler();
+ const extension = await loadExtensionFromFactory(pi => pi.on("tool_call", (_event, ctx) => new Promise((_resolve, reject) => {
+  ctx.signal!.addEventListener("abort", () => reject(new Error("handler-local abort")), { once: true });
+ })), process.cwd(), createEventBus(), runtime);
+ const runner = new ExtensionRunner([extension], runtime, process.cwd(), SessionManager.inMemory(), {} as never,
+  { scheduler, hookTimeouts: { safety: { timeoutMs: 30_000 } } });
+ const run = runner.emitToolCall({ type: "tool_call", toolName: "controlled", toolCallId: "signal-aware", input: {} } as never);
+ const rejection = assert.rejects(run, /timed out/);
+ scheduler.advanceBy(30_000); await rejection;
+ assert.equal(runner.hookDeliveryStats.timeouts, 1);
+});
+
+test("fullscreen dock cannot clip permission controls", { timeout: 5000 }, async () => {
+ const { InteractiveMode } = await import("../packages/coding-agent/src/modes/interactive/interactive-mode.ts");
+ const { Container, VStack, Text } = await import("@super-pi/tui");
+ const { TuiAltScreen } = await import("../packages/tui/src/tui-alt-screen.ts");
+ const { FakeTerminal } = await import("./helpers/runtime-instrumentation.ts");
+ const terminal = new FakeTerminal(60, 16); const ui = new TuiAltScreen(terminal);
+ const mode: any = Object.create(InteractiveMode.prototype);
+ mode.ui = ui; mode.editor = new Container(); mode.editorContainer = new Container(); mode.disposeActiveSelector = () => {};
+ ui.setLayoutRoot(new VStack([{ component: new Text("history\n".repeat(4)), minSize: 4, shrink: 0 },
+  { component: mode.editorContainer, minSize: 3, shrink: 1 },
+  { component: new Text("footer\n".repeat(7)), minSize: 7, shrink: 0 }]));
+ ui.start();
+ const pending = mode.showExtensionSelector("permission", ["Approve", "Deny"], { details: "LONG\n".repeat(100) });
+ try {
+  ui.renderNow(true); await ui.flushTerminalFrames();
+  assert.match(terminal.writes.join(""), /Enter select/);
+ } finally { mode.hideExtensionSelector(); await pending; await ui.stop(); }
 });
