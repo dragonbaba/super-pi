@@ -41,8 +41,7 @@ async function permissionFixture(t: test.TestContext) {
   },
 	}, "tui");
  await permission.restore(runner.createContext());
- const call = () => runner.emitToolCall({ type: "tool_call", toolName: "browser_exec", toolCallId: "approval-1",
-  input: { code: "print('controlled fixture')", purpose: "permission regression" } } as never);
+ const call = (toolName = "browser_exec", input: object = { code: "print('controlled fixture')", purpose: "permission regression" }) => runner.emitToolCall({ type: "tool_call", toolName, toolCallId: "approval-1", input } as never);
  return { runner, scheduler, permission, visible, call, abort, cwd, choose: (index: number) => choose(choices[index]),
   dialogOptions: () => dialogOptions };
 }
