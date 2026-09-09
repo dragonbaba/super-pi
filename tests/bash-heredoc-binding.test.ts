@@ -135,3 +135,13 @@ test("bound dispatch: coprocess case is denied before spawn", async () => {
  const outcome = await dispatch(process.cwd(), `echo "$(coproc case x in x) : ;; esac; printf REACHED)"`);
  assert.equal(outcome.result.isError, true); assert.equal(outcome.processes, 0);
 });
+
+
+for (const [command, expected] of [["printf '%s\n' 'a << b'", "a << b"], ["echo $((1 << 3))", "8"], ["node -e 'console.log(1 << 3)'", "8"]]) {
+ test(`ordinary compatibility: ${command}`, async () => {
+  const outcome = await dispatch(process.cwd(), command);
+  assert.equal(outcome.result.isError, false); assert.equal(outcome.text.trim(), expected); assert.equal(outcome.processes, 1);
+  const denied = await dispatch(process.cwd(), command, {}, true);
+  assert.equal(denied.result.isError, true); assert.equal(denied.processes, 0);
+ });
+}
