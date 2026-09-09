@@ -76,7 +76,7 @@ test("postmerge unrelated shell text never changes a literal launcher segment ve
 
 test("postmerge a changed command cannot reuse a pre-approval lifecycle verdict", async t => {
  const f = await fixture(t); f.mutateAtApproval(); const result = await f.call("env LABEL=sh printenv LABEL");
- assert.equal(result.error, true); assert.match(result.text, /unmanaged/);
+ assert.equal(result.error, true); assert.match(result.text, /command changed/);
  assert.deepEqual(f.counts(), { approvals: 1, spawns: 0 });
 });
 

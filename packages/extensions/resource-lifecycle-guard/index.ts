@@ -93,9 +93,14 @@ export default function resourceLifecycleGuard(pi: ExtensionAPI): void {
     }
     const permissionBlock = await permissions.authorizeToolCall(event, ctx);
     if (permissionBlock) return permissionBlock;
-    // Do not carry a pre-await verdict across an effective command change.
-    if (event.toolName === "bash" && event.input.command === bashCommand) return undefined;
-    if (event.toolName !== "bash" && event.toolName !== "powershell") return undefined;
+    // Neither lifecycle acceptance nor the original approval authorizes a replacement.
+    if (event.toolName === "bash") {
+      return event.input.command === bashCommand ? undefined : {
+        block: true,
+        reason: "Blocked by policy: command changed during permission handling. Submit the final exact command for current authorization; no replacement was executed.",
+      };
+    }
+    if (event.toolName !== "powershell") return undefined;
     const reason = inspectBashResourceLifecycle(event.input);
     return reason ? { block: true, reason } : undefined;
   });
