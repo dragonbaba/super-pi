@@ -424,11 +424,9 @@ export class SessionPermissionController {
       ? "browser_exec Python helper runtime (not a project shell)"
       : `${request.operation}; host=${process.platform}; session cwd=${ctx.cwd}`;
     const header = `权限申请: ${request.operation} | ${requestKind}\n执行上下文: ${context}\n当前模式: ${MODE_LABELS[modeBefore]}; 审批: ${APPROVAL_LABELS[this.#state.approvalPolicy]}`;
-    const input = event.input as { code?: unknown; command?: unknown };
     // One presentation materialization per actual approval. Never use the bounded
     // summary as the authority or as a substitute for inspectable request values.
-    const fullRequest = typeof input.command === "string" ? input.command
-      : typeof input.code === "string" ? input.code : JSON.stringify(event.input, null, 2);
+    const fullRequest = JSON.stringify(event.input, null, 2);
     const details = `${header}\n模型提供的说明 (未经验证): ${request.purpose ?? "未提供"}\n目标范围:\n${request.exactTargets.join("\n") || "未确定"}\n风险依据: ${request.primitives.join(", ")}\n完整请求:\n${fullRequest}`;
     if (this.#pendingApproval) throw new Error("Another permission request is awaiting approval");
     const approval = new AbortController();
