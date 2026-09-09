@@ -177,3 +177,8 @@ test("review9: quoted case data is not case grammar", () => {
 test("review9: case grouping and line continuation stay uncertain", () => {
  for (const body of ["\\\ncase x in x) sleep 100 & ;; esac", "{ case x in x) sleep 100 & ;; esac; }", "time -p case x in x) sleep 100 & ;; esac"]) assert.ok(inspectBashResourceLifecycle({ command: `echo "${"$("}${body})"` }));
 });
+
+
+test("review9: case inside a function cannot truncate substitution inspection", () => {
+ assert.ok(inspectBashResourceLifecycle({ command: `echo "$(f(){ case x in x) sleep 100 & ;; esac; }; f)"` }));
+});
