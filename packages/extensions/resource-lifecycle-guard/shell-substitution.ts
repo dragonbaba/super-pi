@@ -1,3 +1,4 @@
+const SUBSTITUTION_COMMENT_BOUNDARY = /[ \t\r\n;|&()]/;
 export interface CommandSubstitutionScan {
   scripts: string[];
   unterminated: boolean;
@@ -88,6 +89,12 @@ export function extractCommandSubstitutions(command: string, heredocData = false
       }
       if (inner === 34 && (innerQuote === 0 || innerQuote === 34)) {
         innerQuote = innerQuote === 34 ? 0 : 34;
+        continue;
+      }
+      if (inner === 35 && (end === index + 2 || SUBSTITUTION_COMMENT_BOUNDARY.test(command[end - 1]!))) {
+        const newline = command.indexOf("\n", end);
+        if (newline < 0) return { scripts, unterminated: true };
+        end = newline;
         continue;
       }
       if (inner === 40) depth += 1;
