@@ -236,6 +236,8 @@ export type RpcResponse =
 
 /** Emitted when an extension needs user input */
 export type RpcExtensionUIRequest =
+	/** Close only the UI request with this existing id; no response is required. Late responses have no authority. */
+	| { type: "extension_ui_request"; id: string; method: "dismiss"; reason: "aborted" | "timeout" }
 	| { type: "extension_ui_request"; id: string; method: "select"; title: string; options: string[]; timeout?: number }
 	| { type: "extension_ui_request"; id: string; method: "confirm"; title: string; message: string; timeout?: number }
 	| {

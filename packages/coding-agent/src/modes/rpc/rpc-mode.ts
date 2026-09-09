@@ -807,17 +807,16 @@ export function createRpcDialogPromise<T>(
 			pendingExtensionRequests.delete(id);
 		};
 
-		const onAbort = () => {
+		const dismiss = (reason: "aborted" | "timeout") => {
 			cleanup();
-			resolve(defaultValue);
+			try { output({ type: "extension_ui_request", id, method: "dismiss", reason }); resolve(defaultValue); }
+			catch (error) { reject(error); }
 		};
+		const onAbort = () => dismiss("aborted");
 		opts?.signal?.addEventListener("abort", onAbort, { once: true });
 
 		if (opts?.timeout) {
-			timeoutId = setTimeout(() => {
-				cleanup();
-				resolve(defaultValue);
-			}, opts.timeout);
+			timeoutId = setTimeout(() => dismiss("timeout"), opts.timeout);
 		}
 
 		pendingExtensionRequests.set(id, {
@@ -827,6 +826,7 @@ export function createRpcDialogPromise<T>(
 			},
 			reject,
 		});
-		output({ type: "extension_ui_request", id, ...request } as RpcExtensionUIRequest);
+		try { output({ type: "extension_ui_request", id, ...request } as RpcExtensionUIRequest); }
+		catch (error) { cleanup(); reject(error); }
 	});
 }

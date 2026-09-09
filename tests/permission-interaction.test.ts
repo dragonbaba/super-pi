@@ -459,3 +459,16 @@ test("RPC revocation dismisses only the matching client prompt", async () => {
  assert.deepEqual(events[2], { type: "extension_ui_request", id: firstId, method: "dismiss", reason: "aborted" });
  assert.equal(pending.size, 0); assert.equal(events.length, 3);
 });
+
+
+test("RPC timeout and failed output release their existing request owner", async t => {
+ const { createRpcDialogPromise } = await import("../packages/coding-agent/src/modes/rpc/rpc-mode.ts");
+ t.mock.timers.enable({ apis: ["setTimeout"] });
+ const pending = new Map<string, any>(); const events: any[] = [];
+ const result = createRpcDialogPromise(pending, event => events.push(event), { timeout: 10 }, undefined, { method: "select" }, () => "unused");
+ t.mock.timers.tick(10); assert.equal(await result, undefined);
+ assert.equal(events[1].method, "dismiss"); assert.equal(events[1].reason, "timeout");
+ assert.equal(pending.size, 0);
+ await assert.rejects(createRpcDialogPromise(pending, () => { throw new Error("controlled output failure"); }, undefined, undefined, { method: "select" }, () => undefined), /output failure/);
+ assert.equal(pending.size, 0);
+});
