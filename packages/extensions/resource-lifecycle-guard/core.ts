@@ -68,6 +68,7 @@ function hasUnquotedBackgroundOperator(command: string): boolean {
 
 // One literal foreground job, immutable PID binding, bounded literal use, exact cleanup.
 const OWNED_FOREGROUND_JOB = /^\s*([A-Za-z0-9_./-]+)(?:[ \t]+[A-Za-z0-9_./:-]+)*[ \t]+&[ \t]*pid=\$!;[ \t]*trap 'kill "\$pid"; wait "\$pid"' EXIT;[ \t]*(?:(.{1,4096});[ \t]*kill "\$pid";[ \t]*)?wait "\$pid"\s*$/;
+const OPAQUE_JOB_LAUNCHER = /^(?:env|sudo|doas|nice|nohup|setsid|timeout|stdbuf|command|exec|busybox|xargs|sh|bash|zsh|dash|fish|ksh|powershell|pwsh|cmd)(?:\.exe)?$/i;
 const OPAQUE_JOB_INTERPRETER = /^(?:python(?:[0-9]+(?:\.[0-9]+)*)?|py|node(?:js)?)(?:\.exe)?$/i;
 const OWNED_USE_COMMAND = /^(?:curl|wget|test|true|false|echo|printf)(?:[ \t]+[A-Za-z0-9_./:%?=,+-]+)*$/;
 function hasBoundedOwnedUse(work: string | undefined): boolean {
@@ -103,7 +104,7 @@ function inspectLifecycleScript(source: string, depth: number): string | undefin
  if (DOCKER_DETACHED_PATTERN.test(command) || SERVICE_START_PATTERN.test(command)) return BLOCK_REASON;
  if (hasUnquotedBackgroundOperator(command)) {
   const owned = OWNED_FOREGROUND_JOB.exec(command);
-  if (!owned || !hasBoundedOwnedUse(owned[2]) || OPAQUE_JOB_INTERPRETER.test(commandName(owned[1]!))) return BLOCK_REASON;
+  if (!owned || !hasBoundedOwnedUse(owned[2]) || OPAQUE_JOB_LAUNCHER.test(commandName(owned[1]!)) || OPAQUE_JOB_INTERPRETER.test(commandName(owned[1]!))) return BLOCK_REASON;
  }
  if (!SHELL_WRAPPER_TEXT.test(command)) return undefined;
  const segments = parseShellSegments(command);
