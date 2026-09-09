@@ -162,3 +162,13 @@ test("review8: assignment and redirection prefixes cannot hide shell operands", 
  for (const command of ["X=1 bash -c 'sleep 100 &'", "X='a b' command bash -c 'sleep 100 &'", "2>/dev/null bash -c 'sleep 100 &'", "command 2>/dev/null bash -c 'sleep 100 &'"]) assert.ok(inspectBashResourceLifecycle({ command }));
  assert.equal(inspectBashResourceLifecycle({ command: "echo bash" }), undefined);
 });
+
+
+test("review9: unrelated shell text does not taint another command prefix", () => {
+ for (const command of ["echo bash; X=1 echo safe", "echo bash; >output echo safe", "X=1 echo bash", "echo bash; X=1 >output echo safe"]) assert.equal(inspectBashResourceLifecycle({ command }), undefined);
+ assert.ok(inspectBashResourceLifecycle({ command: "X=1 >output bash -c 'sleep 100 &'" }));
+});
+test("review9: quoted case data is not case grammar", () => {
+ for (const command of [`echo "$(printf 'case value')"`, `echo "$(echo case value)"`]) assert.equal(inspectBashResourceLifecycle({ command }), undefined);
+ assert.ok(inspectBashResourceLifecycle({ command: `echo "$(case x in x) sleep 100 & ;; esac)"` }));
+});
