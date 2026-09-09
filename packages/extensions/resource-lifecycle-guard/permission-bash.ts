@@ -312,6 +312,7 @@ function inspectScript(command: string, initialCwd: string, depth: number, build
   }
   const substitutions = extractCommandSubstitutions(command);
   if (substitutions.unterminated) markOpaque(builder, "unterminated_command_substitution");
+  if (substitutions.unsupported) markOpaque(builder, "uninspectable_command_substitution");
   for (const nested of substitutions.scripts) inspectScript(nested, initialCwd, depth + 1, builder);
   let cwd = initialCwd;
   const tokens: string[] = [];
@@ -328,6 +329,11 @@ function inspectScript(command: string, initialCwd: string, depth: number, build
       continue;
     }
     if (code === 92 && quote !== 39) {
+      const next = command.charCodeAt(index + 1);
+      if (next === 10) { index++; continue; }
+      if (quote === 34 && next !== 36 && next !== 96 && next !== 34 && next !== 92) {
+        value += "\\"; tokenStarted = true; continue;
+      }
       escaped = true;
       tokenStarted = true;
       continue;

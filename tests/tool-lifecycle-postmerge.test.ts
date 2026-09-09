@@ -24,19 +24,21 @@ async function fixture(t: test.TestContext) {
  const runtime = createExtensionRuntime();
  const extension = await loadExtensionFromFactory(pi => { pi.appendEntry = () => {}; guard(pi); }, cwd, createEventBus(), runtime);
  const runner = new ExtensionRunner([extension], runtime, cwd, SessionManager.inMemory(cwd), {} as never);
- let approvals = 0, spawns = 0, providers = 0;
+ let approvals = 0, spawns = 0, providers = 0, deny = false;
+ let approvalAction: (() => void) | undefined, effectiveArgs: any;
  const agent = new Agent({ streamFn: () => { providers++; throw new Error("provider forbidden"); },
-  beforeToolCall: ({ args }) => runner.emitToolCall({ type: "tool_call", toolName: "bash", toolCallId: "fixture", input: args } as never) });
+  beforeToolCall: ({ args }) => { effectiveArgs = args; return runner.emitToolCall({ type: "tool_call", toolName: "bash", toolCallId: "fixture", input: args } as never); } });
  runner.bindCore({} as never, { getSignal: () => undefined } as never);
- runner.setUIContext({ ...runner.getUIContext(), select: async (_title, choices) => { approvals++; return choices[0]; } }, "tui");
+ runner.setUIContext({ ...runner.getUIContext(), select: async (_title, choices) => { approvals++; await Promise.resolve(); approvalAction?.(); return deny ? choices.at(-1) : choices[0]; } }, "tui");
  await runner.emit({ type: "session_start" } as never);
  agent.state.tools = [createBashTool(cwd, { shellPath, exposeSessionEnvironment: false })];
  const hook = createHook({ init(_id, type) { if (type === "PROCESSWRAP") spawns++; } });
  hook.enable();
  t.after(() => { hook.disable(); runner.invalidate(); agent.abort(); rmSync(cwd, { recursive: true }); assert.equal(existsSync(cwd), false); });
- return { cwd, counts: () => ({ approvals, spawns }), async call(command: string) {
+ return { cwd, deny: () => { deny = true; }, mutateAtApproval: () => { approvalAction = () => { effectiveArgs.command = "sleep 10 &"; }; }, counts: () => ({ approvals, spawns }), async call(command: string) {
   const result = await agent.dispatchHostTool({ type: "toolCall", id: "call", name: "bash", arguments: { command } });
   await agent.waitForIdle(); assert.equal(agent.state.pendingToolCalls.size, 0); assert.equal(providers, 0);
+  effectiveArgs = undefined; approvalAction = undefined;
   return { error: result.isError, text: result.content.filter(c => c.type === "text").map(c => c.text).join("\n") };
  } };
 }
@@ -59,6 +61,43 @@ test("postmerge uncertainty is not a syntax fact or an approval request", async 
  const f = await fixture(t); const result = await f.call(command);
  assert.equal(result.error, true); assert.match(result.text, /uncertain\/uninspectable/);
  assert.deepEqual(f.counts(), { approvals: 0, spawns: 0 });
+});
+
+test("postmerge permission denial still prevents a lifecycle-compatible launcher", async t => {
+ const f = await fixture(t); f.deny(); const result = await f.call("env LABEL=sh printenv LABEL");
+ assert.equal(result.error, true); assert.deepEqual(f.counts(), { approvals: 1, spawns: 0 });
+});
+
+test("postmerge a changed command cannot reuse a pre-approval lifecycle verdict", async t => {
+ const f = await fixture(t); f.mutateAtApproval(); const result = await f.call("env LABEL=sh printenv LABEL");
+ assert.equal(result.error, true); assert.match(result.text, /unmanaged/);
+ assert.deepEqual(f.counts(), { approvals: 1, spawns: 0 });
+});
+
+test("postmerge bounded launcher and dynamic-wrapper negatives never spawn", async t => {
+ const f = await fixture(t);
+ for (const command of ["env -- LABEL=sh bash -c 'sleep 10 &'", "sudo LABEL=sh bash -c 'sleep 10 &'", "echo bash; timeout 1 bash -c 'sleep 10 &'", "env -S 'bash -c x'", 'bash -c "$SCRIPT"', "command bash -c 'sleep 10 &'", 'echo "$(coproc echo safe)"', 'echo "$(echo safe', "cat <<'EOF'\nx\nEOF"]) {
+  const result = await f.call(command); assert.equal(result.error, true, command);
+ }
+ assert.deepEqual(f.counts(), { approvals: 0, spawns: 0 });
+});
+
+test("postmerge one-layer escapes and line continuations preserve target consumers", async t => {
+ const f = await fixture(t);
+ const continued = await f.call('bash -c "echo sa\\\nfe"');
+ assert.equal(continued.error, false); assert.equal(continued.text.trim(), "safe");
+ for (const command of [String.raw`rm -rf "target\&name"`, 'rm -rf "target\\\nname"']) {
+  const mutation = inspectHighRiskBashMutation({ command }, f.cwd)!;
+  const scope = inspectBashPermissionScope({ command }, f.cwd)!;
+  assert.ok(mutation.primitives.includes("rm_recursive"));
+  assert.deepEqual(mutation.targets, scope.targets);
+  assert.equal(scope.kind, "known-mutation");
+ }
+ const mixed = inspectHighRiskBashMutation({ command: 'echo "$(time echo safe)"; rm -rf victim' }, f.cwd)!;
+ assert.ok(mixed.primitives.includes("rm_recursive")); assert.ok(mixed.unverifiableScope);
+ assert.ok(!mixed.primitives.includes("unterminated_command_substitution"));
+ assert.equal(extractCommandSubstitutions('echo "$(echo safe').unterminated, true);
+ assert.equal(inspectBashPermissionScope({ command: 'echo "$(time rm victim)"' }, f.cwd)?.kind, "opaque-script");
 });
 
 test("postmerge uncertain refusal has bounded policy recovery", async () => {

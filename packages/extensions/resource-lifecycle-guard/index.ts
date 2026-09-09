@@ -85,8 +85,16 @@ export default function resourceLifecycleGuard(pi: ExtensionAPI): void {
 
   pi.on("tool_call", async (event, ctx) => {
     if (event.toolName.startsWith(CHROME_TOOL_PREFIX)) resources.markChromeUsed();
+    // Side-effect-free Bash denial only; acceptance still requires current permission.
+    const bashCommand = event.toolName === "bash" ? event.input.command : undefined;
+    if (event.toolName === "bash") {
+      const reason = inspectBashResourceLifecycle({ command: bashCommand });
+      if (reason) return { block: true, reason };
+    }
     const permissionBlock = await permissions.authorizeToolCall(event, ctx);
     if (permissionBlock) return permissionBlock;
+    // Do not carry a pre-await verdict across an effective command change.
+    if (event.toolName === "bash" && event.input.command === bashCommand) return undefined;
     if (event.toolName !== "bash" && event.toolName !== "powershell") return undefined;
     const reason = inspectBashResourceLifecycle(event.input);
     return reason ? { block: true, reason } : undefined;

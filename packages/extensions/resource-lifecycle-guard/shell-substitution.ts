@@ -4,6 +4,8 @@ const SUBSTITUTION_COMMENT_BOUNDARY = /[ \t\r\n;|&()]/;
 export interface CommandSubstitutionScan {
   scripts: string[];
   unterminated: boolean;
+  /** Boundary/grammar could not be inspected; not proof of termination or safety. */
+  unsupported: boolean;
 }
 
 const MAX_SUBSTITUTIONS = 16;
@@ -55,9 +57,9 @@ export function extractCommandSubstitutions(command: string, heredocData = false
         }
         if (inner === 96) break;
       }
-      if (end >= command.length) return { scripts, unterminated: true };
+      if (end >= command.length) return { scripts, unterminated: true, unsupported: false };
       if (scripts.length < MAX_SUBSTITUTIONS) scripts.push(command.slice(index + 1, end));
-      else return { scripts, unterminated: true };
+      else return { scripts, unterminated: false, unsupported: true };
       index = end;
       continue;
     }
@@ -99,7 +101,7 @@ export function extractCommandSubstitutions(command: string, heredocData = false
       }
       if (inner === 35 && (end === index + 2 || SUBSTITUTION_COMMENT_BOUNDARY.test(command[end - 1]!))) {
         const newline = command.indexOf("\n", end);
-        if (newline < 0) return { scripts, unterminated: true };
+        if (newline < 0) return { scripts, unterminated: true, unsupported: false };
         end = newline;
         commandStart = true;
         continue;
@@ -108,8 +110,8 @@ export function extractCommandSubstitutions(command: string, heredocData = false
       if (inner === 10 || inner === 59 || inner === 124 || inner === 38) { commandStart = true; continue; }
       if (inner === 123 && CASE_WORD_END.test(command[end + 1] ?? "")) { commandStart = true; continue; }
       if (commandStart) {
-        if ((command.startsWith("time", end) && CASE_WORD_END.test(command[end + 4] ?? "")) || (command.startsWith("coproc", end) && CASE_WORD_END.test(command[end + 6] ?? ""))) return { scripts, unterminated: true };
-        if (command.startsWith("case", end) && CASE_WORD_END.test(command[end + 4] ?? "")) return { scripts, unterminated: true };
+        if ((command.startsWith("time", end) && CASE_WORD_END.test(command[end + 4] ?? "")) || (command.startsWith("coproc", end) && CASE_WORD_END.test(command[end + 6] ?? ""))) return { scripts, unterminated: false, unsupported: true };
+        if (command.startsWith("case", end) && CASE_WORD_END.test(command[end + 4] ?? "")) return { scripts, unterminated: false, unsupported: true };
         const keyword = COMMAND_START_KEYWORD.exec(command.slice(end, end + 7));
         if (keyword) { end += keyword[0].length - 1; continue; }
         commandStart = false;
@@ -117,14 +119,14 @@ export function extractCommandSubstitutions(command: string, heredocData = false
       if (inner === 40) { depth += 1; commandStart = true; }
       else if (inner === 41 && --depth === 0) break;
     }
-    if (end >= command.length) return { scripts, unterminated: true };
+    if (end >= command.length) return { scripts, unterminated: true, unsupported: false };
     const script = command.slice(index + 2, end);
     // Actual unquoted case commands are refused before pattern parentheses can truncate this body.
     if (scripts.length < MAX_SUBSTITUTIONS) scripts.push(script);
-    else return { scripts, unterminated: true };
+    else return { scripts, unterminated: false, unsupported: true };
     index = end;
   }
-  return { scripts, unterminated: false };
+  return { scripts, unterminated: false, unsupported: false };
 }
 
 

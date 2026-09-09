@@ -98,7 +98,7 @@ function inspectLifecycleScript(source: string, depth: number): string | undefin
  if (here?.uncertain) return UNCERTAIN_LIFECYCLE;
  const command = here?.command ?? source;
  const substitutions = extractCommandSubstitutions(command);
- if (substitutions.unterminated) return UNCERTAIN_LIFECYCLE;
+ if (substitutions.unterminated || substitutions.unsupported) return UNCERTAIN_LIFECYCLE;
  for (const script of here?.substitutions ?? EMPTY_SUBSTITUTIONS) { const result = inspectLifecycleScript(script, depth + 1); if (result) return result; }
  for (const script of substitutions.scripts) { const result = inspectLifecycleScript(script, depth + 1); if (result) return result; }
  if (DETACH_UTILITY_PATTERN.test(command)) return BLOCK_REASON;
@@ -127,10 +127,27 @@ function inspectLifecycleScript(source: string, depth: number): string | undefin
    if (prefix !== "command" && prefix !== "exec") break;
    if (++index > MAX_WRAPPER_DEPTH || !tokens[index] || tokens[index]!.startsWith("-")) return UNCERTAIN_LIFECYCLE;
   }
-  const name = commandName(tokens[index] ?? "");
+  let name = commandName(tokens[index] ?? "");
+  // Only literal, option-free launcher operands are resolved. env assignments are
+  // data, not executable names; split-string/options/dynamic lookup stay unknown.
+  let launchers = 0;
+  while (OPAQUE_JOB_LAUNCHER.test(name) && !SCRIPT_WRAPPERS.has(name)) {
+   if (++launchers > MAX_WRAPPER_DEPTH || tokens.dynamic) return UNCERTAIN_LIFECYCLE;
+   // Other launchers (e.g. timeout durations, xargs/busybox modes) need different
+   // operand grammars; never mistake their option/argument for the executable.
+   if (name !== "env" && name !== "sudo" && name !== "doas") return UNCERTAIN_LIFECYCLE;
+   index++;
+   if (tokens[index] === "--") index++;
+   if (name === "env" || name === "sudo") {
+    while (index < tokens.length && LEADING_ASSIGNMENT.test(tokens[index]!)) index++;
+   }
+   if (!tokens[index] || tokens[index]!.startsWith("-") || hasDynamicSyntax(tokens[index]!)) return UNCERTAIN_LIFECYCLE;
+   changedLookup = true;
+   name = commandName(tokens[index]!);
+  }
   // Resolve only this segment; unrelated text in another command is not authority or uncertainty.
   if (changedLookup && SCRIPT_WRAPPERS.has(name)) return UNCERTAIN_LIFECYCLE;
-  if (OPAQUE_JOB_LAUNCHER.test(name) && !SCRIPT_WRAPPERS.has(name)) return UNCERTAIN_LIFECYCLE;
+  if (tokens.dynamic && (SCRIPT_WRAPPERS.has(name) || name === "eval")) return UNCERTAIN_LIFECYCLE;
   if (name === "eval") for (let operand = index + 1; operand < tokens.length; operand++) {
    if (tokens[operand]!.includes("<<")) return UNCERTAIN_LIFECYCLE;
   }
@@ -151,7 +168,7 @@ export interface HighRiskMutationScan {
 	workspaceWide: boolean;
 }
 
-type ShellSegment = string[];
+type ShellSegment = string[] & { dynamic?: boolean };
 
 interface ScanBuilder {
 	primitives: string[];
@@ -234,6 +251,7 @@ function inspectShellScript(script: string, initialCwd: string, depth: number, b
 		addPrimitive(builder, "unterminated_command_substitution");
 		markUnverifiable(builder);
 	}
+	if (substitutions.unsupported) markUnverifiable(builder);
 	for (const nested of substitutions.scripts) inspectShellScript(nested, initialCwd, depth + 1, builder);
 	const segments = parseShellSegments(script);
 	let workingDirectory = initialCwd;
@@ -546,7 +564,7 @@ function markUnverifiable(builder: ScanBuilder): void {
 
 function parseShellSegments(command: string): ShellSegment[] {
 	const segments: ShellSegment[] = [];
-	let tokens: string[] = [];
+	let tokens: ShellSegment = [];
 	let value = "";
 	let tokenStarted = false;
 	let quote = 0;
@@ -561,10 +579,17 @@ function parseShellSegments(command: string): ShellSegment[] {
 			continue;
 		}
 		if (code === 92 && quote !== 39) {
+			const next = command.charCodeAt(index + 1);
+			if (next === 10) { index++; continue; }
+			// Double quotes only remove backslash before $, `, ", backslash or LF.
+			if (quote === 34 && next !== 36 && next !== 96 && next !== 34 && next !== 92) {
+				value += "\\"; tokenStarted = true; continue;
+			}
 			escaped = true;
 			tokenStarted = true;
 			continue;
 		}
+		if (quote !== 39 && (code === 36 || code === 96)) tokens.dynamic = true;
 		if (quote !== 0) {
 			if (code === quote) quote = 0;
 			else value += command[index];

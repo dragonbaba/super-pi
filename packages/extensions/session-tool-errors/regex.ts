@@ -5,7 +5,7 @@ export const EDIT_OVERLAP_RE = /edits?\[\d+\].*overlap/iu;
 export const UTF8_REJECTED_RE = /not valid utf-?8|invalid utf-?8|lossy rewrite/iu;
 export const ABORTED_RE = /\b(?:operation|request|command|tool|task|process|execution)\s+(?:was\s+)?(?:aborted|cancelled)\b|\b(?:aborted|cancelled)\s+by\b|\bcancelled\s*[:=]\s*true\b|(?:^|\n)\s*(?:aborted|cancelled)[.!]?\s*(?:$|\n)/iu;
 export const TIMEOUT_RE = /timed? out|timeout/iu;
-export const POLICY_BLOCKED_RE = /policy[_ -]?blocked|blocked by (?:policy|user)|dangerous command blocked|blocked an unmanaged long-lived process/iu;
+export const POLICY_BLOCKED_RE = /policy[_ -]?blocked|blocked by (?:policy|user)|dangerous command blocked|blocked an unmanaged long-lived process|blocked an uncertain\/uninspectable shell lifecycle/iu;
 export const DUPLICATE_CALL_RE = /duplicate[_ -]?call|\[TLG: duplicate .* call blocked/iu;
 export const WORKDIR_MISMATCH_RE = /workdir[_ -]?mismatch|working directory.*(?:mismatch|incorrect)|could not read package\.json|specified path does not exist: .*tsconfig\.json|fatal:\s*not a git repository/iu;
 export const PATH_NOT_FOUND_RE = /\benoent\b|path[_ -]?not[_ -]?found|file not found|no such file or directory|cannot find (?:module|package)|系统找不到指定的文件|\(os error 2\)/iu;
