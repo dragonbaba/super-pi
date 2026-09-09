@@ -3596,6 +3596,7 @@ export class InteractiveMode {
 					callId: toolCallId.slice(0, 256), extension: extensionPath.slice(0, 512),
 					diagnostic: (stack ?? error).slice(0, 8192),
 				} }, renderToolHookDiagnostic);
+   diagnostic.setExpanded(this.toolOutputExpanded);
 			this.chatContainer.addChild(diagnostic);
 			this.ui.requestRender();
 			return;

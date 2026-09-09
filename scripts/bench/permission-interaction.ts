@@ -20,7 +20,7 @@ const source = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).
 const scheduler = new FakeScheduler();
 const runtime = createExtensionRuntime();
 const references: WeakRef<object>[] = [];
-let prompts = 0, renders = 0, cacheBuilds = 0, maxRows = 0;
+let prompts = 0, renders = 0, cacheBuilds = 0, maxRows = 0, maxCacheLines = 0, maxCacheCodeUnits = 0;
 let permission!: SessionPermissionController;
 const extension = await loadExtensionFromFactory(pi => {
  pi.appendEntry = () => {};
@@ -51,7 +51,12 @@ runner.setUIContext({ ...runner.getUIContext(), select: async (title, choices, o
   ui.renderNow(true); await ui.flushTerminalFrames();
   renders++; maxRows = Math.max(maxRows, selector.viewportRows + 5);
   terminal.writes.length = 0;
-  if (selector.detailLines !== cached) { cacheBuilds++; cached = selector.detailLines; }
+  if (selector.detailLines !== cached) {
+   cacheBuilds++; cached = selector.detailLines;
+   maxCacheLines = Math.max(maxCacheLines, selector.detailLines.length);
+   let units = 0; for (const line of selector.detailLines) units += line.length;
+   maxCacheCodeUnits = Math.max(maxCacheCodeUnits, units);
+  }
  }
  scheduler.advanceBy(60_000);
  selector.handleInput("k"); selector.handleInput("\n");
@@ -62,7 +67,7 @@ runner.setUIContext({ ...runner.getUIContext(), select: async (title, choices, o
 }}, "tui");
 await permission.restore(runner.createContext());
 permission.state.setMode("read-only");
-const input = { path: "permission-profile-never-written.txt", content: "中 script & 255\n".repeat(1024) };
+const input = { path: "permission-profile-never-written.txt", content: "x".repeat(1024 * 1024) + "中END" };
 async function batch(count: number): Promise<void> {
  for (let index = 0; index < count; index++) await runner.emitToolCall({ type: "tool_call", toolName: "write", toolCallId: `fixture-${index}`, input } as never);
 }
@@ -88,7 +93,8 @@ assert.equal((runner as any).toolCallDeadlines, undefined);
 assert.equal((runner as any).toolCallDialogOwner, undefined);
 assert.equal(runner.hookDeliveryStats.timeouts, 0);
 assert.equal(cacheBuilds, prompts * 2); assert.ok(maxRows <= 16);
+assert.ok(maxCacheLines <= 4096); assert.ok(maxCacheCodeUnits <= 24 * 1024);
 console.log(JSON.stringify({ source, node: process.version, platform: process.platform, warmup: 10, measuredApprovals: 100,
  elapsedMs, sampledBytes, sampledBytesPerApproval: sampledBytes / 100, postGcHeapDelta: process.memoryUsage().heapUsed - before,
- prompts, renders, cacheBuilds, maxRows, timerHighWaterMark: scheduler.highWaterMark.maximum,
+ prompts, renders, cacheBuilds, maxRows, maxCacheLines, maxCacheCodeUnits, payloadCodeUnits: input.content.length, timerHighWaterMark: scheduler.highWaterMark.maximum,
  pendingTimers: scheduler.highWaterMark.current, liveReferences, activePromptOwners: 0, timeouts: 0 }));

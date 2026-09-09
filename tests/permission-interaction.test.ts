@@ -333,3 +333,20 @@ test("new hook diagnostics inherit expanded tool output", async () => {
  mode.showExtensionError("fixture", "timeout", "EXPANDED-STACK", "call-expanded");
  assert.match(mode.chatContainer.render(100).join("\n"), /EXPANDED-STACK/);
 });
+
+
+test("bounded details paging crosses windows without splitting surrogate pairs", () => {
+ const selector: any = new ExtensionSelectorComponent("permission", ["Approve", "Deny"], () => {}, () => {},
+  { tui: { terminal: { rows: 12, columns: 40 } } as never, details: "中".repeat(4094) + "😀END" });
+ let reachedEnd = false;
+ try {
+  for (let i = 0; i < 100; i++) {
+   const text = selector.render(40).join("\n");
+   if (text.includes("😀END")) { reachedEnd = true; break; }
+   selector.handleInput("\x1b[6~");
+  }
+  assert.equal(reachedEnd, true);
+  selector.handleInput("\x1b[5~"); selector.render(40);
+  assert.equal(selector.detailPage, 0);
+ } finally { selector.dispose(); }
+});
