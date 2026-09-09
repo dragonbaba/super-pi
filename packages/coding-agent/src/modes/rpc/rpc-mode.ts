@@ -87,65 +87,23 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 	let shuttingDown = false;
 	const signalCleanupHandlers: Array<() => void> = [];
 
-	/** Helper for dialog methods with signal/timeout support */
-	function createDialogPromise<T>(
-		opts: ExtensionUIDialogOptions | undefined,
-		defaultValue: T,
-		request: Record<string, unknown>,
-		parseResponse: (response: RpcExtensionUIResponse) => T,
-	): Promise<T> {
-		if (opts?.signal?.aborted) return Promise.resolve(defaultValue);
-
-		const id = crypto.randomUUID();
-		return new Promise((resolve, reject) => {
-			let timeoutId: ReturnType<typeof setTimeout> | undefined;
-
-			const cleanup = () => {
-				if (timeoutId) clearTimeout(timeoutId);
-				opts?.signal?.removeEventListener("abort", onAbort);
-				pendingExtensionRequests.delete(id);
-			};
-
-			const onAbort = () => {
-				cleanup();
-				resolve(defaultValue);
-			};
-			opts?.signal?.addEventListener("abort", onAbort, { once: true });
-
-			if (opts?.timeout) {
-				timeoutId = setTimeout(() => {
-					cleanup();
-					resolve(defaultValue);
-				}, opts.timeout);
-			}
-
-			pendingExtensionRequests.set(id, {
-				resolve: (response: RpcExtensionUIResponse) => {
-					cleanup();
-					resolve(parseResponse(response));
-				},
-				reject,
-			});
-			output({ type: "extension_ui_request", id, ...request } as RpcExtensionUIRequest);
-		});
-	}
 
 	/**
 	 * Create an extension UI context that uses the RPC protocol.
 	 */
 	const createExtensionUIContext = (): ExtensionUIContext => ({
 		select: (title, options, opts) =>
-			createDialogPromise(opts, undefined, { method: "select", title: formatRpcApprovalTitle(title, opts?.details), options, timeout: opts?.timeout }, (r) =>
+			createRpcDialogPromise(pendingExtensionRequests, output, opts, undefined, { method: "select", title: formatRpcApprovalTitle(title, opts?.details), options, timeout: opts?.timeout }, (r) =>
 				"cancelled" in r && r.cancelled ? undefined : "value" in r ? r.value : undefined,
 			),
 
 		confirm: (title, message, opts) =>
-			createDialogPromise(opts, false, { method: "confirm", title, message, timeout: opts?.timeout }, (r) =>
+			createRpcDialogPromise(pendingExtensionRequests, output, opts, false, { method: "confirm", title, message, timeout: opts?.timeout }, (r) =>
 				"cancelled" in r && r.cancelled ? false : "confirmed" in r ? r.confirmed : false,
 			),
 
 		input: (title, placeholder, opts) =>
-			createDialogPromise(opts, undefined, { method: "input", title, placeholder, timeout: opts?.timeout }, (r) =>
+			createRpcDialogPromise(pendingExtensionRequests, output, opts, undefined, { method: "input", title, placeholder, timeout: opts?.timeout }, (r) =>
 				"cancelled" in r && r.cancelled ? undefined : "value" in r ? r.value : undefined,
 			),
 
@@ -824,4 +782,51 @@ export function formatRpcApprovalTitle(title: string, details: string | undefine
 }
 function escapeRpcApprovalControl(character: string): string {
  return `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`;
+}
+
+
+/** @internal Existing RPC request owner; exported only for direct lifecycle fixtures. */
+/** Helper for dialog methods with signal/timeout support */
+export function createRpcDialogPromise<T>(
+ pendingExtensionRequests: Map<string, { resolve: (value: any) => void; reject: (error: Error) => void }>,
+ output: (value: object) => void,
+	opts: ExtensionUIDialogOptions | undefined,
+	defaultValue: T,
+	request: Record<string, unknown>,
+	parseResponse: (response: RpcExtensionUIResponse) => T,
+): Promise<T> {
+	if (opts?.signal?.aborted) return Promise.resolve(defaultValue);
+
+	const id = crypto.randomUUID();
+	return new Promise((resolve, reject) => {
+		let timeoutId: ReturnType<typeof setTimeout> | undefined;
+
+		const cleanup = () => {
+			if (timeoutId) clearTimeout(timeoutId);
+			opts?.signal?.removeEventListener("abort", onAbort);
+			pendingExtensionRequests.delete(id);
+		};
+
+		const onAbort = () => {
+			cleanup();
+			resolve(defaultValue);
+		};
+		opts?.signal?.addEventListener("abort", onAbort, { once: true });
+
+		if (opts?.timeout) {
+			timeoutId = setTimeout(() => {
+				cleanup();
+				resolve(defaultValue);
+			}, opts.timeout);
+		}
+
+		pendingExtensionRequests.set(id, {
+			resolve: (response: RpcExtensionUIResponse) => {
+				cleanup();
+				resolve(parseResponse(response));
+			},
+			reject,
+		});
+		output({ type: "extension_ui_request", id, ...request } as RpcExtensionUIRequest);
+	});
 }

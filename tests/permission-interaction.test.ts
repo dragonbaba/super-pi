@@ -445,3 +445,17 @@ test("current subagent approval completes and releases the prompt", async (t) =>
  assert.equal(signal.aborted, true);
  assert.equal(f.scheduler.highWaterMark.current, 0);
 });
+
+
+test("RPC revocation dismisses only the matching client prompt", async () => {
+ const { createRpcDialogPromise } = await import("../packages/coding-agent/src/modes/rpc/rpc-mode.ts");
+ const pending = new Map<string, any>(); const events: any[] = [];
+ const abort = new AbortController();
+ const first = createRpcDialogPromise(pending, event => events.push(event), { signal: abort.signal }, undefined, { method: "select", title: "first", options: [] }, () => "first");
+ const second = createRpcDialogPromise(pending, event => events.push(event), undefined, undefined, { method: "select", title: "second", options: [] }, () => "second");
+ const firstId = events[0].id; const secondId = events[1].id;
+ abort.abort(); assert.equal(await first, undefined);
+ const secondOwner = pending.get(secondId); secondOwner.resolve({ id: secondId }); await second;
+ assert.deepEqual(events[2], { type: "extension_ui_request", id: firstId, method: "dismiss", reason: "aborted" });
+ assert.equal(pending.size, 0); assert.equal(events.length, 3);
+});
