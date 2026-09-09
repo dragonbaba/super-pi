@@ -314,3 +314,22 @@ test("permission state restore revokes a pending selection immediately", async (
  try { assert.equal(signal.aborted, true); }
  finally { f.choose(0); await rejected; }
 });
+
+test("multi-megabyte details retain only a bounded wrapping window", () => {
+ const selector: any = new ExtensionSelectorComponent("permission", ["Approve", "Deny"], () => {}, () => {},
+  { tui: { terminal: { rows: 12, columns: 40 } } as never, details: "x".repeat(2 * 1024 * 1024) + "TAIL" });
+ try {
+  selector.render(40);
+  assert.ok(selector.detailLines.length <= 4096, "wrapped cache must not grow with the complete request");
+  assert.ok(selector.detailLines.reduce((sum: number, line: string) => sum + line.length, 0) <= 24 * 1024);
+ } finally { selector.dispose(); }
+});
+
+test("new hook diagnostics inherit expanded tool output", async () => {
+ const { InteractiveMode } = await import("../packages/coding-agent/src/modes/interactive/interactive-mode.ts");
+ const { Container } = await import("@super-pi/tui");
+ const mode: any = Object.create(InteractiveMode.prototype);
+ mode.chatContainer = new Container(); mode.ui = { requestRender() {} }; mode.toolOutputExpanded = true;
+ mode.showExtensionError("fixture", "timeout", "EXPANDED-STACK", "call-expanded");
+ assert.match(mode.chatContainer.render(100).join("\n"), /EXPANDED-STACK/);
+});
