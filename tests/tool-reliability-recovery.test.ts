@@ -139,3 +139,7 @@ test("review5: substitution comments cannot terminate executable inspection", ()
  assert.ok(inspectBashResourceLifecycle({ command: "cat <<EOF\n$(# )\nnohup sleep 100 &\n)\nEOF" }));
  assert.equal(inspectBashResourceLifecycle({ command: "cat <<EOF\n$(# )\necho safe\n)\nEOF" }), undefined);
 });
+
+test("owned use cannot replace the captured PID through printf", () => {
+ assert.ok(inspectBashResourceLifecycle({ command: `server --foreground & pid=$!; trap 'kill "$pid"; wait "$pid"' EXIT; printf -v pid 123; kill "$pid"; wait "$pid"` }));
+});
