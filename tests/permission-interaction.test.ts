@@ -487,3 +487,13 @@ test("timed tool hooks refuse uncancellable editor/custom UI before opening", as
   assert.equal(opened, 0); assert.equal(scheduler.highWaterMark.current, 0);
  }
 });
+
+
+test("RPC error serialization preserves distinct invocation identities", async () => {
+ const { formatRpcExtensionError } = await import("../packages/coding-agent/src/modes/rpc/rpc-mode.ts");
+ const common = { extensionPath: "controlled", event: "tool_call", error: "same diagnostic" };
+ const first = JSON.parse(JSON.stringify(formatRpcExtensionError({ ...common, toolCallId: "first" })));
+ const second = JSON.parse(JSON.stringify(formatRpcExtensionError({ ...common, toolCallId: "second" })));
+ assert.equal(first.toolCallId, "first"); assert.equal(second.toolCallId, "second");
+ assert.equal("toolCallId" in JSON.parse(JSON.stringify(formatRpcExtensionError(common))), false);
+});

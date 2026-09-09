@@ -1132,6 +1132,8 @@ export class ExtensionRunner {
 		(this.toolCallDeadlines ??= new Set()).add(deadline);
 		const ui = Object.create(ctx.ui) as ExtensionUIContext;
 		const originalUI = ctx.ui;
+		ui.editor = rejectUncancellableToolCallUI;
+		ui.custom = rejectUncancellableToolCallUI;
 		const descriptors = Object.getOwnPropertyDescriptors(ctx);
 		descriptors.signal = { value: deadline.controller.signal };
 		descriptors.ui = { value: ui };
@@ -1750,4 +1752,8 @@ export class ExtensionRunner {
 			? { action: "transform", text: currentText, images: currentImages }
 			: { action: "continue" };
 	}
+}
+
+function rejectUncancellableToolCallUI(): never {
+ throw new Error("editor/custom UI is not supported inside a timed tool_call hook; use select, input or confirm with invocation cancellation");
 }

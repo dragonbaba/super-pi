@@ -289,3 +289,12 @@ export type RpcExtensionUIResponse =
 // ============================================================================
 
 export type RpcCommandType = RpcCommand["type"];
+
+/** Extension diagnostics correlate with tool results when invocation identity is available. */
+export interface RpcExtensionErrorEvent {
+ type: "extension_error";
+ extensionPath: string;
+ event: string;
+ error: string;
+ toolCallId?: string;
+}

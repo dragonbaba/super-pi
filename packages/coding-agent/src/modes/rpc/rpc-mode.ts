@@ -14,6 +14,7 @@
 import * as crypto from "node:crypto";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
 import type {
+	ExtensionError,
 	ExtensionUIContext,
 	ExtensionUIDialogOptions,
 	ExtensionWidgetOptions,
@@ -31,6 +32,7 @@ import { toJsonEvent } from "../json-event.ts";
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.ts";
 import type {
 	RpcCommand,
+	RpcExtensionErrorEvent,
 	RpcExtensionUIRequest,
 	RpcExtensionUIResponse,
 	RpcResponse,
@@ -304,7 +306,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				shutdownRequested = true;
 			},
 			onError: (err) => {
-				output({ type: "extension_error", extensionPath: err.extensionPath, event: err.event, error: err.error });
+				output(formatRpcExtensionError(err));
 			},
 		});
 
@@ -829,4 +831,9 @@ export function createRpcDialogPromise<T>(
 		try { output({ type: "extension_ui_request", id, ...request } as RpcExtensionUIRequest); }
 		catch (error) { cleanup(); reject(error); }
 	});
+}
+
+/** @internal Preserve the existing error event with optional invocation identity. */
+export function formatRpcExtensionError(err: ExtensionError): RpcExtensionErrorEvent {
+ return { type: "extension_error", extensionPath: err.extensionPath, event: err.event, error: err.error, toolCallId: err.toolCallId };
 }
