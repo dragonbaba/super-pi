@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { createHook } from "node:async_hooks";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -19,7 +21,7 @@ async function dispatch(cwd: string, command: string, options: BashToolOptions =
  const hook = createHook({ init(_id, type) { if (type === "PROCESSWRAP") processes++; } });
  const agent = new Agent({ streamFn: () => { providers++; throw new Error("provider forbidden"); },
   beforeToolCall: async ({ args }) => {
-   permissions++; assert.equal(args.command, command);
+   permissions++; assert.equal((args as { command: string }).command, command);
    const reason = deny ? "permission denied" : inspectBashResourceLifecycle(args);
    return reason ? { block: true, reason } : undefined;
   } });
@@ -35,6 +37,30 @@ async function dispatch(cwd: string, command: string, options: BashToolOptions =
 
 test("bound heredoc: ordinary supported consumer emits literal data through production dispatch", { skip: process.platform !== "linux" }, async () => {
  const outcome = await dispatch(process.cwd(), literal, { spawnHook: context => ({ ...context, env: { ...context.env, PATH: "/usr/bin:/bin", BASH_ENV: "", ENV: "" } }) });
+ assert.equal(outcome.result.isError, false); assert.equal(outcome.processes, 1);
+ assert.equal(outcome.text.trim(), "printf BODY_EXECUTED");
+});
+
+test("bound heredoc: absolute system consumer needs no PATH reinterpretation", { skip: process.platform !== "linux" }, async () => {
+ const outcome = await dispatch(process.cwd(), literal.replace("cat <<", "/usr/bin/cat <<"));
+ assert.equal(outcome.result.isError, false); assert.equal(outcome.processes, 1);
+ assert.equal(outcome.text.trim(), "printf BODY_EXECUTED");
+});
+
+test("bound heredoc: changed lookup cannot execute a substitute consumer", async t => {
+ const cwd = mkdtempSync(join(tmpdir(), "pi-heredoc-lookup-")); t.after(() => rmSync(cwd, { recursive: true }));
+ writeFileSync(join(cwd, "cat"), "#!/bin/sh\nprintf LOOKUP_RAN > lookup-ran\n", { mode: 0o755 });
+ const outcome = await dispatch(cwd, literal, { spawnHook: context => ({ ...context, env: { ...context.env, PATH: cwd, Path: cwd } }) });
+ assert.equal(outcome.result.isError, true); assert.equal(outcome.processes, 0);
+ assert.equal(existsSync(join(cwd, "lookup-ran")), false);
+});
+
+test("bound heredoc: late hook aliases cannot alter the private launch snapshot", { skip: process.platform !== "linux" }, async () => {
+ const outcome = await dispatch(process.cwd(), literal, { spawnHook: context => {
+  const returned = { ...context, env: { ...context.env, PATH: "/usr/bin:/bin", BASH_ENV: "", ENV: "" } };
+  queueMicrotask(() => { returned.env.BASH_ENV = "/unapproved/startup"; returned.command = "printf REPLACED"; });
+  return returned;
+ } });
  assert.equal(outcome.result.isError, false); assert.equal(outcome.processes, 1);
  assert.equal(outcome.text.trim(), "printf BODY_EXECUTED");
 });
@@ -80,4 +106,18 @@ test("bound heredoc: denied call and ordinary non-heredoc compatibility", async 
  assert.equal(denied.result.isError, true); assert.equal(denied.processes, 0);
  const ordinary = await dispatch(process.cwd(), "printf ORDINARY");
  assert.equal(ordinary.result.isError, false); assert.equal(ordinary.text, "ORDINARY"); assert.equal(ordinary.processes, 1);
+});
+
+
+test("bound heredoc: nested shell cannot inherit standalone consumer validation", async () => {
+ const command = `bash -c "cat <<'EOF'\nprintf BODY_EXECUTED\nEOF"`;
+ const outcome = await dispatch(process.cwd(), command, { spawnHook: context => ({ ...context, env: { ...context.env, "BASH_FUNC_cat%%": '() { eval "$(/usr/bin/cat)"; }' } }) });
+ assert.equal(outcome.result.isError, true); assert.equal(outcome.processes, 0);
+});
+
+
+test("bound heredoc: bounded call-level allocation and release evidence", { skip: !process.env.CI }, () => {
+ const child = spawnSync(process.execPath, ["--expose-gc", "--experimental-strip-types", fileURLToPath(new URL("./helpers/bash-heredoc-binding-profile.ts", import.meta.url))], { encoding: "utf8", timeout: 60000, maxBuffer: 128 * 1024 });
+ assert.equal(child.error, undefined); assert.equal(child.status, 0, child.stderr + child.stdout);
+ console.log(child.stdout.trim());
 });

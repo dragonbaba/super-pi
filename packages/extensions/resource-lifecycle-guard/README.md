@@ -60,3 +60,14 @@ Launcher-prefixed owned jobs (including env/sudo/nice/timeout and shell/multical
 `printf` is also excluded from the use interval: its `-v` option can overwrite the captured PID even without assignment syntax.
 
 Command substitutions containing `case` syntax are conservatively uncertain because pattern parentheses are outside this recognizer. Shell wrappers support only a direct `-c` script operand; script files, preceding option variants and later positional `-c` tokens are not inferred safe. Bash/sh/zsh/dash/ksh/fish executable names are recognized; this does not claim complete grammar support for those shells.
+
+
+### Execution-bound heredoc limitation
+
+The recognizer's data classification is provisional. The built-in local Bash launch now checks the final command/cwd after configured prefixes and spawn hooks, pins its local execution callable, and privately snapshots the effective environment. A command containing `<<` must fit the supported launch below; nested commands, arithmetic/string lookalikes and other ambiguous forms are conservatively refused at execution, even when syntax inspection alone permits them. This restriction does not broaden permission: the full original request still goes through normal approval.
+
+The supported route is one standalone quoted literal `cat` heredoc on native Linux with standard `/bin/bash` or `/usr/bin/bash`, a direct `-c` invocation, and `/bin/cat` or `/usr/bin/cat` resolving to the trusted system installation. Bare `cat` additionally requires `/bin` or `/usr/bin` first in the captured PATH; the ordinary application-added bin directory can therefore make bare `cat` unsupported. Multiple bodies, unquoted delimiters, output redirects, extra arguments, command/cwd transformations, custom backends and Windows/MSYS nested-shell transport are refused. Existing syntax tests do not imply execution support for those forms.
+
+Inherited exported functions and applicable startup/loader inputs are rejected without opening or executing a startup file. The child receives the private validated environment, never a later reconstruction from the parent. No parent environment, global PATH or startup configuration is changed. Two targeted realpath calls and five stat calls check the root-owned, non-group/other-writable standard shell/utility installation; there is no probe process or content hash. The trust root is the host-approved installation, not executable attestation or a sandbox against compromised OS components, hostile in-process extensions or privileged concurrent replacement.
+
+Call-owned environment metadata is bounded to 1024 entries and 256 Ki code units, then released with the existing process lifecycle. Ordinary commands without `<<` do not take this snapshot or perform the installation checks. A refused form must be resolved within the existing policy; another language or launcher is not permission to evade the refusal.

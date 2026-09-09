@@ -1,4 +1,4 @@
-import { existsSync, statSync } from "node:fs";
+import { existsSync, realpathSync, statSync } from "node:fs";
 import { delimiter, isAbsolute, join, resolve, sep } from "node:path";
 import { spawn, spawnSync } from "child_process";
 import { getBinDir } from "../config.ts";
@@ -8,6 +8,78 @@ export interface ShellConfig {
 	shell: string;
 	args: readonly string[];
 	commandTransport?: "argv" | "stdin";
+}
+
+const FIRST_NONSPACE = /\S/;
+const HEREDOC_INSTALLATION_PATHS = ["/", "/usr", "/usr/bin", "/usr/bin/bash", "/usr/bin/cat"] as const;
+const BOUND_HEREDOC_HEADER = /^[ \t]*(cat|\/bin\/cat|\/usr\/bin\/cat)[ \t]+<<(-?)(?:'([A-Za-z0-9_]{1,128})'|"([A-Za-z0-9_]{1,128})")[ \t]*$/;
+const HEREDOC_STARTUP_KEYS = new Set(["BASH_ENV", "ENV", "SHELLOPTS", "BASHOPTS", "BASH_COMPAT", "BASH_LOADABLES_PATH", "BASH_XTRACEFD", "POSIXLY_CORRECT", "SSH_CLIENT", "SSH2_CLIENT", "LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT"]);
+
+/** Internal: syntax is provisional; only the captured local launch can validate this assumption. */
+export function requiresHeredocConsumerBinding(command: string): boolean {
+	// Deliberately conservative: nested/quoted lookalikes cannot inherit a standalone proof.
+	return command.includes("<<");
+}
+
+export function unverifiedHeredoc(reason: string): Error {
+	return new Error(`HEREDOC_EXECUTION_UNVERIFIED: ${reason}. No command was launched. Resolve this policy limitation; do not bypass it with another launcher.`);
+}
+
+/** Private call-owned snapshot; never publish it to hooks or rebuild it from process.env. */
+export function snapshotHeredocEnvironment(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+	const env: NodeJS.ProcessEnv = Object.create(null);
+	let entries = 0;
+	let characters = 0;
+	for (const key in source) {
+		if (!Object.hasOwn(source, key)) continue;
+		if (++entries > 1024) throw unverifiedHeredoc("environment exceeds the supported bound");
+		const value = source[key];
+		if (value === undefined) continue;
+		if (typeof value !== "string" || (characters += key.length + value.length) > 256 * 1024) throw unverifiedHeredoc("environment exceeds the supported bound");
+		if (key.startsWith("BASH_FUNC_") || (value && HEREDOC_STARTUP_KEYS.has(key))) throw unverifiedHeredoc("inherited functions or startup/loader inputs are unsupported");
+		env[key] = value;
+	}
+	return env;
+}
+
+/** Internal final check. Host-approved standard Linux installation is the explicit trust root. */
+export function validateHeredocLaunch(command: string, shell: ShellConfig, env: NodeJS.ProcessEnv): void {
+	if (process.platform !== "linux" || shell.commandTransport || shell.args.length !== 1 || shell.args[0] !== "-c" || (shell.shell !== "/bin/bash" && shell.shell !== "/usr/bin/bash")) {
+		throw unverifiedHeredoc("only the standard local Linux Bash argv route is supported");
+	}
+	if (command.length > 128 * 1024) throw unverifiedHeredoc("command exceeds the supported bound");
+	const start = command.search(FIRST_NONSPACE);
+	const newline = command.indexOf("\n", start);
+	if (newline < 0 || newline - start > 300) throw unverifiedHeredoc("a standalone literal quoted cat heredoc is required");
+	const header = BOUND_HEREDOC_HEADER.exec(command.slice(start, newline));
+	if (!header) throw unverifiedHeredoc("only one literal quoted cat heredoc without redirections or extra arguments is supported");
+	const delimiter = header[3] ?? header[4]!;
+	let position = newline + 1;
+	let closed = false;
+	while (position <= command.length) {
+		const end = command.indexOf("\n", position);
+		const lineEnd = end < 0 ? command.length : end;
+		if (header[2]) while (command[position] === "\t" && position < lineEnd) position++;
+		if (lineEnd - position === delimiter.length && command.startsWith(delimiter, position)) {
+			if (command.slice(lineEnd).trim()) throw unverifiedHeredoc("staged execution after heredoc data is unsupported");
+			closed = true;
+			break;
+		}
+		if (end < 0) break;
+		position = end + 1;
+	}
+	if (!closed) throw unverifiedHeredoc("the literal heredoc delimiter is missing");
+	if (header[1] === "cat") {
+		const path = env.PATH;
+		if (path !== "/usr/bin" && path !== "/bin" && !path?.startsWith("/usr/bin:") && !path?.startsWith("/bin:")) throw unverifiedHeredoc("bare cat requires the trusted system directory first in the captured PATH");
+	}
+	try {
+		if (realpathSync(shell.shell) !== "/usr/bin/bash" || realpathSync(header[1] === "cat" ? "/usr/bin/cat" : header[1]!) !== "/usr/bin/cat") throw new Error("identity");
+		for (const path of HEREDOC_INSTALLATION_PATHS) {
+			const info = statSync(path);
+			if (info.uid !== 0 || (info.mode & 0o022) !== 0 || (path.endsWith("/bash") || path.endsWith("/cat") ? !info.isFile() || !(info.mode & 0o111) : !info.isDirectory())) throw new Error("identity");
+		}
+	} catch { throw unverifiedHeredoc("the host-approved system shell/consumer installation could not be verified"); }
 }
 
 /**
