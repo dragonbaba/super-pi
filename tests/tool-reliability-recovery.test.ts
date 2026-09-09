@@ -118,3 +118,11 @@ test("review2: validation escapes all display controls", () => {
   assert.doesNotMatch(String(error), /[\u007f-\u009f\u2028\u2029]/); return true;
  });
 });
+
+
+test("review3: bare arithmetic is not a heredoc", () => {
+ for (const command of ["((value << 2))", "for ((i=0; i < 2; i++)); do ((value << 2)); done"]) assert.equal(inspectBashResourceLifecycle({ command }), undefined);
+});
+test("review3: shadowed consumers and staged execution are uncertain", () => {
+ for (const command of [`cat(){ eval "$(command cat)"; }\ncat <<'EOF'\nnohup sleep 100 &\nEOF`, "cat > ./runner <<'EOF'\n#!/bin/sh\nnohup sleep 100 &\nEOF\nchmod +x ./runner; ./runner"]) assert.ok(inspectBashResourceLifecycle({ command }));
+});
