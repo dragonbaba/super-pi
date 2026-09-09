@@ -100,7 +100,7 @@ test("real interactive selection isolates cancellation, late clicks and disposal
 	const { InteractiveMode } = await import("../packages/coding-agent/src/modes/interactive/interactive-mode.ts");
 	const { Container } = await import("@super-pi/tui");
 	const mode: any = Object.create(InteractiveMode.prototype);
-	mode.ui = { terminal: { rows: 12, columns: 60 }, setFocus() {}, requestRender() {} };
+	mode.ui = { terminal: { rows: 12, columns: 60 }, setFocus() {}, requestRender() {}, showOverlay() { return { hide() {} }; } };
 	mode.editor = new Container(); mode.editorContainer = new Container();
 	mode.disposeActiveSelector = () => {};
 	const abort = new AbortController();
@@ -303,4 +303,14 @@ test("fullscreen dock cannot clip permission controls", { timeout: 5000 }, async
   ui.renderNow(true); await ui.flushTerminalFrames();
   assert.match(terminal.writes.join(""), /Enter select/);
  } finally { mode.hideExtensionSelector(); await pending; await ui.stop(); }
+});
+
+
+test("permission state restore revokes a pending selection immediately", async (t) => {
+ const f = await permissionFixture(t);
+ const run = f.call(); const rejected = assert.rejects(run, /abort|obsolete/i);
+ await f.visible; const signal = f.dialogOptions().signal;
+ await f.permission.restore(f.runner.createContext());
+ try { assert.equal(signal.aborted, true); }
+ finally { f.choose(0); await rejected; }
 });
