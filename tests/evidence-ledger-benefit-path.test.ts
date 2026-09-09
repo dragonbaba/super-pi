@@ -25,8 +25,16 @@ test("large budget sweep follows the actual original G2 model estimate", async t
 			const first = await f.read();
 			const originalTokens = f.internals._toolResultPresentation!.getResidentEvidenceModelTokens(first.toolCallId)!;
 			const firstReferenceTokens = referenceTokens;
-			t.diagnostic(JSON.stringify({ budget, originalTokens, referenceTokens }));
+			const resident = (f.internals._toolResultPresentation as unknown as { projectionRecords: Map<string, { projection?: { headTextCodeUnits: number; tailTextCodeUnits: number }; sourceScan: { textCodeUnits: number } }> }).projectionRecords.get(first.toolCallId)!;
+			const projection = resident.projection;
+			t.diagnostic(JSON.stringify({ budget, args: { path: "file.txt" }, sourceBytes: 520000,
+				windowStartByte: (first.details as { window?: { startByte: number } })?.window?.startByte,
+				windowEndByte: (first.details as { window?: { endByte: number } })?.window?.endByte, returnedCodeUnits: resident.sourceScan.textCodeUnits,
+				originalTokens, referenceTokens, head: projection?.headTextCodeUnits, tail: projection?.tailTextCodeUnits,
+				noticeOnly: projection?.headTextCodeUnits === 0 && projection?.tailTextCodeUnits === 0 }));
 			await f.read();
+			t.diagnostic(JSON.stringify({ budget, realReads: ledger.counters.realReadExecutions,
+				admissions: ledger.counters.recordsCreated, hits: ledger.counters.hits, integrityScans: f.counters.artifactIntegrityScans }));
 			if (process.platform !== "win32") {
 				assert.ok(firstReferenceTokens > 0);
 				const beneficial = firstReferenceTokens < originalTokens && firstReferenceTokens <= budget;
@@ -43,15 +51,27 @@ for (const corpus of ["medium", "large"]) {
 		const f = await fixture();
 		try {
 			if (corpus === "large") writeFileSync(join(f.cwd, "file.txt"), "large selected source text\n".repeat(20000));
-			const first = await f.read();
+			const args = corpus === "large" ? { path: "file.txt", limit: 100 } : { path: "file.txt" };
+			const first = await f.read(args);
 			const owner = f.internals._toolResultPresentation!;
 			const originalTokens = owner.getResidentEvidenceModelTokens(first.toolCallId)!;
 			const firstGeneration = readFileGeneration(statSync(join(f.cwd, "file.txt"), { bigint: true }));
+			const record = [...(f.internals._evidenceLedger as unknown as { records: Map<string, EvidenceRecordV1> }).records.values()][0];
+			assert.ok(record, "positive fixture must qualify for production admission");
+			const expectedReferenceTokens = tokens(formatEvidenceReference(record));
+			assert.ok(originalTokens > 512, "positive model projection must retain a clear benefit margin");
+			assert.ok(originalTokens + 9 * expectedReferenceTokens < 5 * originalTokens, "actual first projection must support over 50 percent total reduction");
+			assert.ok(expectedReferenceTokens <= owner.getEvidenceBudgetTokens()!);
+			if (corpus === "large") {
+				assert.ok(statSync(join(f.cwd, "file.txt")).size > 256 * 1024);
+				assert.ok((first.details as { window?: unknown }).window, "must exercise native large-file window");
+			}
+			t.diagnostic(JSON.stringify({ corpus, args, originalTokens, expectedReferenceTokens, budget: owner.getEvidenceBudgetTokens() }));
 			const scans = f.counters.artifactIntegrityScans;
 			let totalTokens = originalTokens;
 			let referenceTokens = 0;
 			for (let i = 0; i < 9; i++) {
-				const message = await f.read();
+				const message = await f.read(args);
 				if (!/Evidence reused/.test(JSON.stringify(message.content))) {
 					const ledger = f.internals._evidenceLedger!;
 					const info = statSync(join(f.cwd, "file.txt"), { bigint: true });

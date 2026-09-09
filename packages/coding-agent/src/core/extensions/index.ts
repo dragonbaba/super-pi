@@ -86,6 +86,7 @@ export type {
 	ExtensionShortcut,
 	ExtensionUIContext,
 	ExtensionUIDialogOptions,
+	ExtensionUISelectOptions,
 	ExtensionWidgetOptions,
 	FindToolCallEvent,
 	FindToolResultEvent,
