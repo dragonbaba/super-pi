@@ -31,6 +31,8 @@ const extension = await loadExtensionFromFactory(pi => {
  });
 }, process.cwd(), createEventBus(), runtime);
 const terminal = new FakeTerminal(64, 16);
+let terminalInput!: (data: string) => void;
+(terminal as any).start = (onInput: (data: string) => void) => { terminalInput = onInput; };
 const ui = new TuiAltScreen(terminal);
 const mode: any = Object.create(InteractiveMode.prototype);
 mode.ui = ui; mode.editor = new Container(); mode.editorContainer = new Container(); mode.disposeActiveSelector = () => {};
@@ -46,7 +48,7 @@ runner.setUIContext({ ...runner.getUIContext(), select: async (title, choices, o
  references.push(new WeakRef(selector));
  let cached: unknown;
  for (let i = 0; i < 20; i++) {
-  selector.handleInput(i % 2 ? "j" : "k");
+  terminalInput(i % 2 ? "j" : "k");
   terminal.columns = i < 10 ? 64 : 48;
   ui.renderNow(true); await ui.flushTerminalFrames();
   renders++; maxRows = Math.max(maxRows, selector.viewportRows + 5);
@@ -59,7 +61,9 @@ runner.setUIContext({ ...runner.getUIContext(), select: async (title, choices, o
   }
  }
  scheduler.advanceBy(60_000);
- selector.handleInput("k"); selector.handleInput("\n");
+ terminalInput("\x1b[C");
+ assert.ok(selector.detailOffset > 0);
+ terminalInput("k"); terminalInput("\n");
  const result = await pending;
  assert.equal(selector.details, undefined); assert.equal(selector.detailLines.length, 0);
  assert.equal(mode.extensionSelector, undefined); assert.equal(mode.extensionSelectorOverlay, undefined);

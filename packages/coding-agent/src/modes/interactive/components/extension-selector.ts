@@ -3,7 +3,7 @@
  * Displays a list of string options with keyboard navigation.
  */
 
-import { Container, getKeybindings, RELEASE_COMPONENT_RENDER_CACHE, Spacer, Text, type TUI, wrapTextWithAnsi, truncateToWidth } from "@super-pi/tui";
+import { Container, getKeybindings, matchesKey, RELEASE_COMPONENT_RENDER_CACHE, Spacer, Text, type TUI, wrapTextWithAnsi, truncateToWidth } from "@super-pi/tui";
 import { theme } from "../theme/theme.ts";
 import { CountdownTimer } from "./countdown-timer.ts";
 import { DynamicBorder } from "./dynamic-border.ts";
@@ -122,7 +122,7 @@ export class ExtensionSelectorComponent extends Container {
 		for (let i = this.detailOffset; i < Math.min(this.detailLines.length, this.detailOffset + this.viewportRows); i++) {
 			lines.push(` ${this.detailLines[i]}`);
 		}
-		lines.push(truncateToWidth(`Details window ${this.detailPage + 1}/${Math.max(1, Math.ceil(this.details.length / DETAIL_WINDOW_STRIDE))} PgUp/PgDn`, width));
+		lines.push(truncateToWidth(`←/→ details | window ${this.detailPage + 1}/${Math.max(1, Math.ceil(this.details.length / DETAIL_WINDOW_STRIDE))}`, width));
 		lines.push(truncateToWidth(`→ ${this.detailChoices[this.selectedIndex] ?? ""} (${this.selectedIndex + 1}/${this.options.length})`, width));
 		lines.push(truncateToWidth("Enter select", width));
 		lines.push(truncateToWidth("Esc cancel | ↑↓ choice", width));
@@ -144,8 +144,8 @@ export class ExtensionSelectorComponent extends Container {
 		if (this.disposed) return;
 		if (this.details !== undefined) {
 			const kb = getKeybindings();
-   const pageUp = kb.matches(keyData, "tui.select.pageUp");
-   if (pageUp || kb.matches(keyData, "tui.select.pageDown")) {
+   const pageUp = matchesKey(keyData, "left") || kb.matches(keyData, "tui.select.pageUp");
+   if (pageUp || matchesKey(keyData, "right") || kb.matches(keyData, "tui.select.pageDown")) {
     if (pageUp) {
      if (this.detailOffset > 0) this.detailOffset = Math.max(0, this.detailOffset - Math.max(1, this.viewportRows));
      else if (this.detailPage > 0) { this.detailPage--; this.detailOffset = Number.MAX_SAFE_INTEGER; }

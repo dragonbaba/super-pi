@@ -435,3 +435,13 @@ test("busy permission does not serialize an undisplayable request", async (t) =>
  try { await assert.rejects(f.call("write", input), /awaiting approval/); assert.equal(serializations, 0); }
  finally { f.choose(0); await pending; }
 });
+
+
+test("current subagent approval completes and releases the prompt", async (t) => {
+ const f = await permissionFixture(t); f.permission.state.setMode("full-access");
+ const pending = f.call("subagent", { agent: "controlled", task: "no execution", cwd: tmpdir() });
+ await f.visible; const signal = f.dialogOptions().signal; f.choose(0);
+ assert.equal(await pending, undefined);
+ assert.equal(signal.aborted, true);
+ assert.equal(f.scheduler.highWaterMark.current, 0);
+});

@@ -318,10 +318,9 @@ export class SessionPermissionController {
   }
 
   async authorizeToolCall(event: ToolCallEventShape, ctx: ExtensionContext): Promise<ToolCallBlock | undefined> {
-    if (event.toolName === "structured_readonly_command") return this.#authorizeStructuredReadonlyDelegation(event, ctx);
-    if (event.toolName === "subagent") return this.#authorizeSubagentDelegation(event, ctx);
     if (event.toolName !== "write" && event.toolName !== "edit" && event.toolName !== "lsp_fix"
-      && event.toolName !== "bash" && event.toolName !== "powershell" && event.toolName !== "browser_exec") return undefined;
+      && event.toolName !== "bash" && event.toolName !== "powershell" && event.toolName !== "browser_exec"
+      && event.toolName !== "subagent" && event.toolName !== "structured_readonly_command") return undefined;
     let signal = ctx.signal;
     const generation = this.#authorityGeneration;
     const permissionSequence = this.#state.sequence;
@@ -333,6 +332,8 @@ export class SessionPermissionController {
       }
     };
     assertCurrent();
+    if (event.toolName === "structured_readonly_command") return this.#authorizeStructuredReadonlyDelegation(event, ctx, assertCurrent);
+    if (event.toolName === "subagent") return this.#authorizeSubagentDelegation(event, ctx, assertCurrent);
     const request = await this.#buildRequest(event, ctx);
     assertCurrent();
     if (!request) return undefined;
@@ -407,6 +408,11 @@ export class SessionPermissionController {
       };
     }
 
+    if (this.#pendingApproval) throw new Error("Another permission request is awaiting approval");
+    const approval = new AbortController();
+    this.#pendingApproval = approval;
+    signal = signal ? AbortSignal.any([signal, approval.signal]) : approval.signal;
+    try {
     const modeBefore = this.#state.mode;
     const choices = [ALLOW_ONCE];
     const commandPrefix = request.shellCommand ? simpleCommandPrefix(request.shellCommand) : undefined;
@@ -429,11 +435,6 @@ export class SessionPermissionController {
     // summary as the authority or as a substitute for inspectable request values.
     const fullRequest = JSON.stringify(event.input, null, 2);
     const details = `${header}\n模型提供的说明 (未经验证): ${request.purpose ?? "未提供"}\n目标范围:\n${request.exactTargets.join("\n") || "未确定"}\n风险依据: ${request.primitives.join(", ")}\n完整请求:\n${fullRequest}`;
-    if (this.#pendingApproval) throw new Error("Another permission request is awaiting approval");
-    const approval = new AbortController();
-    this.#pendingApproval = approval;
-    signal = signal ? AbortSignal.any([signal, approval.signal]) : approval.signal;
-    try {
     const choice = await ctx.ui.select(header, choices, { signal, details });
     assertCurrent();
     const prefixChoice = commandPrefix ? `${ALLOW_SESSION_PREFIX}：${commandPrefix} *` : undefined;
@@ -503,6 +504,7 @@ export class SessionPermissionController {
   async #authorizeStructuredReadonlyDelegation(
     event: ToolCallEventShape,
     ctx: ExtensionContext,
+    assertCurrent: () => void,
   ): Promise<ToolCallBlock | undefined> {
     if (!event.input || typeof event.input !== "object") {
       return { block: true, reason: structuredInputValidationBlock("structured_readonly_command", "Input must be an object.") };
@@ -629,6 +631,7 @@ export class SessionPermissionController {
           : "full-access-exact",
       });
     }
+    assertCurrent();
     attachStructuredReadonlyWorkspaceDelegation(event.input, {
       schemaVersion: 1,
       sequence: this.#state.sequence,
@@ -646,7 +649,7 @@ export class SessionPermissionController {
     return undefined;
   }
 
-  async #authorizeSubagentDelegation(event: ToolCallEventShape, ctx: ExtensionContext): Promise<ToolCallBlock | undefined> {
+  async #authorizeSubagentDelegation(event: ToolCallEventShape, ctx: ExtensionContext, assertCurrent: () => void): Promise<ToolCallBlock | undefined> {
     const taskRequests = subagentTaskRequests(event.input, ctx.cwd);
     if (!taskRequests) {
       return {
@@ -703,6 +706,9 @@ export class SessionPermissionController {
       });
     }
 
+    assertCurrent();
+    let approval: AbortController | undefined;
+    try {
     if (outsideWorkspace && this.#state.mode !== "full-access") {
       return {
         block: true,
@@ -720,10 +726,13 @@ export class SessionPermissionController {
           }),
         };
       }
-      const choice = await ctx.ui.select(
-        `子代理工作区委派\n\n将以下精确 canonical cwd 委派给独立 Pi 子进程；每个子进程仍只能访问自己的单一 cwd：\n${targetLines(grants.map((grant) => grant.canonicalCwd))}`,
-        [ALLOW_ONCE, REJECT],
-      );
+      if (this.#pendingApproval) throw new Error("Another permission request is awaiting approval");
+      approval = new AbortController(); this.#pendingApproval = approval;
+      const signal = ctx.signal ? AbortSignal.any([ctx.signal, approval.signal]) : approval.signal;
+      const choice = await ctx.ui.select("子代理工作区委派: subagent | 精确 cwd | 独立子进程",
+        [ALLOW_ONCE, REJECT], { signal, details: `完整请求:\n${JSON.stringify(event.input, null, 2)}\n授权范围:\n${grants.map(grant => `${grant.canonicalCwd}: ${grant.permissionMode}`).join("\n")}` });
+      signal.throwIfAborted();
+      assertCurrent();
       if (choice !== ALLOW_ONCE) {
         return {
           block: true,
@@ -734,6 +743,7 @@ export class SessionPermissionController {
       }
     }
 
+    assertCurrent();
     attachSubagentWorkspaceDelegation(event.input, {
       schemaVersion: 1,
       sequence: this.#state.sequence,
@@ -741,6 +751,12 @@ export class SessionPermissionController {
       grants,
     });
     return undefined;
+    } finally {
+      if (approval) {
+        if (this.#pendingApproval === approval) this.#pendingApproval = undefined;
+        approval.abort(new Error("Permission interaction ended"));
+      }
+    }
   }
 
   async #buildRequest(event: ToolCallEventShape, ctx: ExtensionContext): Promise<OperationRequest | undefined> {
