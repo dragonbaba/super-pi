@@ -364,3 +364,24 @@ test("bounded details paging crosses windows without splitting surrogate pairs",
   assert.equal(selector.detailPage, 0);
  } finally { selector.dispose(); }
 });
+
+
+test("detailed multiline choices occupy one physical footer row", () => {
+ const selector = new ExtensionSelectorComponent("approval", ["allow\n".repeat(100), "deny"], () => {}, () => {},
+  { tui: { terminal: { rows: 10, columns: 48 }, requestRender() {} } as never, details: "request" });
+ try { assert.ok(selector.render(48).join("\n").split("\n").length <= 10); }
+ finally { selector.dispose(); }
+});
+
+test("policy change while approval waits rejects stale session rules", async (t) => {
+ const f = await permissionFixture(t);
+ f.permission.state.setMode("read-only");
+ const pending = f.call("bash", { command: "node -e 'console.log(1)'" });
+ const outcome = pending.then(() => "allowed", () => "rejected");
+ await f.visible;
+ f.permission.state.setApprovalPolicy("never-ask");
+ f.choose(1);
+ assert.equal(await outcome, "rejected");
+ assert.equal(f.permission.state.allowRules.length, 0);
+ assert.equal(f.scheduler.highWaterMark.current, 0);
+});
