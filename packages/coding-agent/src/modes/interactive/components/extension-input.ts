@@ -92,14 +92,22 @@ export class ExtensionInputComponent extends Container implements Focusable {
 
 	dispose(): void {
 		this.countdown?.dispose();
+		this.countdown = undefined;
+		this.onSubmitCallback = ignoreClosedDialog;
+		this.onCancelCallback = ignoreClosedDialog;
+		this.titleText.setText("");
+		this.baseTitle = "";
 	}
 
 	cancel(): void {
+		const cancel = this.onCancelCallback;
 		this.dispose();
-		this.onCancelCallback();
+		cancel();
 	}
 
 	[RELEASE_COMPONENT_RENDER_CACHE](): void {
 		this.dispose();
 	}
 }
+
+function ignoreClosedDialog(): void {}

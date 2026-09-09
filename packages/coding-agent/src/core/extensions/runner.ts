@@ -407,6 +407,58 @@ const noOpUIContext: ExtensionUIContext = {
 	setToolsExpanded: () => {},
 };
 
+/** Invocation-owned machine deadline. Only actual select/input/confirm waits pause it.
+	* Cancellation revokes host authority; it cannot stop arbitrary extension JavaScript.
+	*/
+class ToolCallDeadline {
+	readonly controller = new AbortController();
+	readonly cancelled: Promise<never>;
+	private reject!: (reason: unknown) => void;
+	private handle: unknown;
+	private remaining: number;
+	private startedAt = 0;
+	private finished = false;
+	private readonly parent: AbortSignal | undefined;
+	private readonly scheduler: ExtensionRunnerScheduler;
+	private readonly timeoutError: ExtensionHookTimeoutError;
+	constructor(scheduler: ExtensionRunnerScheduler, timeoutError: ExtensionHookTimeoutError, parent?: AbortSignal) {
+		this.scheduler = scheduler;
+		this.timeoutError = timeoutError;
+		this.remaining = timeoutError.timeoutMs;
+		this.parent = parent;
+		this.cancelled = new Promise<never>((_resolve, reject) => { this.reject = reject; });
+		parent?.addEventListener("abort", this.onParentAbort, { once: true });
+		if (parent?.aborted) this.onParentAbort();
+		else this.resume();
+	}
+	private readonly onParentAbort = (): void => { this.revoke(this.parent?.reason ?? new Error("Tool approval aborted")); };
+	private readonly expire = (): void => { this.handle = undefined; this.revoke(this.timeoutError); };
+	revoke(reason: unknown = new Error("Tool approval is obsolete")): void {
+		if (this.finished) return;
+		this.pause();
+		this.controller.abort(reason);
+		this.reject(reason);
+	}
+	pause(): void {
+		if (this.handle === undefined) return;
+		this.scheduler.cancel(this.handle);
+		this.handle = undefined;
+		this.remaining = Math.max(0, this.remaining - (this.scheduler.now() - this.startedAt));
+	}
+	resume(): void {
+		if (this.finished || this.controller.signal.aborted) return;
+		this.startedAt = this.scheduler.now();
+		this.handle = this.scheduler.schedule(this.expire, this.remaining);
+	}
+	assertCurrent(): void { this.controller.signal.throwIfAborted(); }
+	dispose(): void {
+		this.pause();
+		this.finished = true;
+		this.parent?.removeEventListener("abort", this.onParentAbort);
+		this.controller.abort(new Error("Tool hook invocation ended"));
+	}
+}
+
 export class ExtensionRunner {
 	private extensions: Extension[];
 	private handlerEventTypes: Set<string>;
@@ -451,6 +503,8 @@ export class ExtensionRunner {
 	private shortcutDiagnostics: ResourceDiagnostic[] = [];
 	private commandDiagnostics: ResourceDiagnostic[] = [];
 	private staleMessage: string | undefined;
+	private toolCallDeadlines: Set<ToolCallDeadline> | undefined;
+	private toolCallDialogOwner: ToolCallDeadline | undefined;
 
 	constructor(
 		extensions: Extension[],
@@ -604,6 +658,9 @@ export class ExtensionRunner {
 	}
 
 	setUIContext(uiContext?: ExtensionUIContext, mode: ExtensionMode = "print"): void {
+		if (this.uiContext !== (uiContext ?? noOpUIContext)) {
+			for (const deadline of this.toolCallDeadlines ?? []) deadline.revoke();
+		}
 		this.uiContext = uiContext ?? noOpUIContext;
 		this.mode = mode;
 	}
@@ -718,6 +775,7 @@ export class ExtensionRunner {
 	): void {
 		if (!this.staleMessage) {
 			this.staleMessage = message;
+			for (const deadline of this.toolCallDeadlines ?? []) deadline.revoke(new Error(message));
 			this.mcpResultInputActions = undefined;
 			this.runtime.invalidate(message);
 		}
@@ -1032,6 +1090,9 @@ export class ExtensionRunner {
 		const category = this.hookCategory(eventType);
 		const configured = this.options.hookTimeouts?.[category];
 		const timeoutMs = configured?.timeoutMs ?? 0;
+		if (eventType === "tool_call" && timeoutMs > 0) {
+			return this.invokeToolCallHook(handler, event, ctx, extensionPath, timeoutMs);
+		}
 		const result = handler(event, ctx);
 		if (timeoutMs === 0 || !result || typeof (result as PromiseLike<unknown>).then !== "function") {
 			return await result;
@@ -1058,6 +1119,61 @@ export class ExtensionRunner {
 			return undefined;
 		} finally {
 			if (handle !== undefined) this.scheduler.cancel(handle);
+		}
+	}
+
+	private async invokeToolCallHook(handler: HandlerFn, event: unknown, ctx: ExtensionContext,
+		extensionPath: string, timeoutMs: number): Promise<unknown> {
+		this.assertActive();
+		ctx.signal?.throwIfAborted();
+		if ((this.toolCallDeadlines?.size ?? 0) >= 128) throw new Error("Too many active tool hooks; execution blocked");
+		const timeoutError = new ExtensionHookTimeoutError(extensionPath, "tool_call", timeoutMs);
+		const deadline = new ToolCallDeadline(this.scheduler, timeoutError, ctx.signal);
+		(this.toolCallDeadlines ??= new Set()).add(deadline);
+		const ui = Object.create(ctx.ui) as ExtensionUIContext;
+		const originalUI = ctx.ui;
+		const descriptors = Object.getOwnPropertyDescriptors(ctx);
+		descriptors.signal = { value: deadline.controller.signal };
+		descriptors.ui = { value: ui };
+		const invocationContext = Object.create(Object.getPrototypeOf(ctx), descriptors) as ExtensionContext;
+		const waitForSelection = async <T>(show: () => Promise<T>): Promise<T> => {
+			deadline.assertCurrent();
+			if (this.toolCallDialogOwner) throw new Error("Another approval dialog is active; request was not approved");
+			this.toolCallDialogOwner = deadline;
+			deadline.pause();
+			try {
+				const result = await Promise.race([show(), deadline.cancelled]);
+				deadline.assertCurrent();
+				return result;
+			} finally {
+				if (this.toolCallDialogOwner === deadline) this.toolCallDialogOwner = undefined;
+				deadline.resume();
+			}
+		};
+		// These operation-level wrappers never run on delta/progress delivery.
+		ui.select = (title, options, opts) => waitForSelection(() => originalUI.select(title, options,
+			{ ...opts, signal: opts?.signal && opts.signal !== deadline.controller.signal ? AbortSignal.any([opts.signal, deadline.controller.signal]) : deadline.controller.signal }));
+		ui.input = (title, placeholder, opts) => waitForSelection(() => originalUI.input(title, placeholder,
+			{ ...opts, signal: opts?.signal && opts.signal !== deadline.controller.signal ? AbortSignal.any([opts.signal, deadline.controller.signal]) : deadline.controller.signal }));
+		ui.confirm = (title, message, opts) => waitForSelection(() => originalUI.confirm(title, message,
+			{ ...opts, signal: opts?.signal && opts.signal !== deadline.controller.signal ? AbortSignal.any([opts.signal, deadline.controller.signal]) : deadline.controller.signal }));
+		try {
+			deadline.assertCurrent();
+			const result = await Promise.race([handler(event, invocationContext), deadline.cancelled]);
+			deadline.assertCurrent();
+			return result;
+		} catch (error) {
+			if (error === timeoutError) {
+				this.hookTimeouts++;
+				this.emitError({ extensionPath, event: "tool_call", error: timeoutError.message, stack: timeoutError.stack,
+					toolCallId: (event as ToolCallEvent).toolCallId });
+			}
+			throw error;
+		} finally {
+			deadline.dispose();
+			this.toolCallDeadlines?.delete(deadline);
+			if (this.toolCallDeadlines?.size === 0) this.toolCallDeadlines = undefined;
+			if (this.toolCallDialogOwner === deadline) this.toolCallDialogOwner = undefined;
 		}
 	}
 

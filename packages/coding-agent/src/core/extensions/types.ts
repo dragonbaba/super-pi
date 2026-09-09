@@ -98,6 +98,8 @@ export type { AppKeybinding, KeybindingsManager } from "../keybindings.ts";
 export interface ExtensionUIDialogOptions {
 	/** AbortSignal to programmatically dismiss the dialog. */
 	signal?: AbortSignal;
+	/** Full inspectable request details in a height-bounded selector viewport. */
+	details?: string;
 	/** Timeout in milliseconds. Dialog auto-dismisses with live countdown display. */
 	timeout?: number;
 }
@@ -1865,6 +1867,8 @@ export interface LoadExtensionsResult {
 // ============================================================================
 
 export interface ExtensionError {
+	/** Related failed tool call; diagnostic is an additional view, not another execution. */
+	toolCallId?: string;
 	extensionPath: string;
 	event: string;
 	error: string;

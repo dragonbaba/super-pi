@@ -275,6 +275,7 @@ export class SessionPermissionController {
   readonly #rejections = new Map<string, RejectionRecord>();
   #committedState?: PermissionStateCheckpoint;
   #auditSequence = 0;
+  #authorityGeneration = 0;
 
   constructor(pi: ExtensionAPI) {
     this.#pi = pi;
@@ -300,6 +301,7 @@ export class SessionPermissionController {
   }
 
   async restore(ctx: ExtensionContext): Promise<void> {
+    this.#authorityGeneration++;
     await this.#state.restore(ctx.cwd, ctx.sessionManager.getBranch());
     this.#committedState = this.#state.checkpoint();
     this.#rejections.clear();
@@ -315,7 +317,20 @@ export class SessionPermissionController {
   async authorizeToolCall(event: ToolCallEventShape, ctx: ExtensionContext): Promise<ToolCallBlock | undefined> {
     if (event.toolName === "structured_readonly_command") return this.#authorizeStructuredReadonlyDelegation(event, ctx);
     if (event.toolName === "subagent") return this.#authorizeSubagentDelegation(event, ctx);
+    if (event.toolName !== "write" && event.toolName !== "edit" && event.toolName !== "lsp_fix"
+      && event.toolName !== "bash" && event.toolName !== "powershell" && event.toolName !== "browser_exec") return undefined;
+    const signal = ctx.signal;
+    const generation = this.#authorityGeneration;
+    const sessionId = ctx.sessionManager.getSessionId();
+    const assertCurrent = () => {
+      signal?.throwIfAborted();
+      if (generation !== this.#authorityGeneration || sessionId !== ctx.sessionManager.getSessionId()) {
+        throw new Error("Permission request is obsolete; no approval was committed");
+      }
+    };
+    assertCurrent();
     const request = await this.#buildRequest(event, ctx);
+    assertCurrent();
     if (!request) return undefined;
     if (hasUnverifiableAssessment(request.targetAssessments)) {
       this.#appendAudit(request, "blocked", "unverifiable_target", this.#state.mode, this.#state.mode, false);
@@ -401,12 +416,16 @@ export class SessionPermissionController {
       if (modeBefore !== "full-access") choices.push(SWITCH_FULL);
     }
     choices.push(REJECT_REASON, REJECT);
-    const commandDetail = request.operation === "bash" || request.operation === "powershell" || request.operation === "browser_exec"
-      ? `\n\n脚本/命令：\n${request.summary}`
-      : `\n\n操作：${request.summary}`;
     const requestKind = request.highRisk ? "高危操作" : request.opaqueScript ? "不透明脚本" : "越权文件操作";
-    const dialogTitle = `${requestKind}权限申请\n\n当前模式：${MODE_LABELS[modeBefore]}\n审批策略：${APPROVAL_LABELS[this.#state.approvalPolicy]}\n模型说明：${request.purpose ?? "未提供；请根据结构化操作判断"}\n目标：\n${targetLines(request.exactTargets)}${commandDetail}\n\n请选择本次处理方式：`;
-    const choice = await ctx.ui.select(dialogTitle, choices);
+    const context = request.operation === "browser_exec"
+      ? "browser_exec Python helper runtime (not a project shell)"
+      : `${request.operation}; host=${process.platform}; session cwd=${ctx.cwd}`;
+    const header = `权限申请: ${request.operation} | ${requestKind}\n执行上下文: ${context}\n当前模式: ${MODE_LABELS[modeBefore]}; 审批: ${APPROVAL_LABELS[this.#state.approvalPolicy]}`;
+    const input = event.input as { code?: unknown };
+    const fullRequest = request.shellCommand ?? (typeof input.code === "string" ? input.code : request.summary);
+    const details = `${header}\n模型提供的说明 (未经验证): ${request.purpose ?? "未提供"}\n目标范围:\n${request.exactTargets.join("\n") || "未确定"}\n风险依据: ${request.primitives.join(", ")}\n完整请求:\n${fullRequest}`;
+    const choice = await ctx.ui.select(header, choices, { signal, details });
+    assertCurrent();
     const prefixChoice = commandPrefix ? `${ALLOW_SESSION_PREFIX}：${commandPrefix} *` : undefined;
     const chosePrefix = prefixChoice !== undefined && choice === prefixChoice;
     if (choice === ALLOW_ONCE || choice === ALLOW_SESSION_EXACT || chosePrefix || choice === SWITCH_WORKSPACE || choice === SWITCH_FULL) {
@@ -448,7 +467,8 @@ export class SessionPermissionController {
 
     let rejectionReason: string | undefined;
     if (choice === REJECT_REASON) {
-      const entered = await ctx.ui.input("拒绝理由（将返回给模型）", "请说明需要修改、缩小或补充的内容");
+      const entered = await ctx.ui.input("拒绝理由（将返回给模型）", "请说明需要修改、缩小或补充的内容", { signal });
+      assertCurrent();
       if (typeof entered === "string" && entered.trim()) rejectionReason = boundedText(entered, MAX_REJECTION_CHARS);
     }
     this.#rememberRejection(fingerprint, rejectionReason);
