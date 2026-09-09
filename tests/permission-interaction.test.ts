@@ -137,6 +137,8 @@ test("details cache survives navigation, escapes controls, and releases on close
 	assert.ok(cache[0].includes("\\u001b"));
 	for (let index = 0; index < 100; index++) selector.handleInput("\x1b[6~");
 	assert.ok(selector.render(40).some((line: string) => line.includes("FINAL-DETAIL")));
+	selector.render(12); selector.handleInput("\n");
+	assert.equal(selected, 0, "a clipped viewport cannot approve invisibly");
 	terminal.rows = 3;
 	selector.render(40); selector.handleInput("\n");
 	assert.equal(selected, 0);
