@@ -110,7 +110,12 @@ function inspectLifecycleScript(source: string, depth: number): string | undefin
  const segments = parseShellSegments(command);
  if (segments.length > MAX_SCRIPT_SEGMENTS) return UNCERTAIN_LIFECYCLE;
  for (const tokens of segments) {
-  const index = commandTokenIndex(tokens); const name = commandName(tokens[index] ?? "");
+  let index = 0; let name = commandName(tokens[index] ?? "");
+  while (name === "command" || name === "exec") {
+   if (++index > MAX_WRAPPER_DEPTH || !tokens[index] || tokens[index]!.startsWith("-")) return UNCERTAIN_LIFECYCLE;
+   name = commandName(tokens[index]!);
+  }
+  if (OPAQUE_JOB_LAUNCHER.test(name) && !SCRIPT_WRAPPERS.has(name)) return UNCERTAIN_LIFECYCLE;
   if (!SCRIPT_WRAPPERS.has(name)) continue;
   const flag = index + 1;
   if (tokens[flag] !== "-c" || !tokens[flag + 1]) return UNCERTAIN_LIFECYCLE;
