@@ -19,7 +19,7 @@ for (const [name, command] of [
  ["double quoted", 'cat <<"EOF"\nconst pixel = value & 255;\nEOF'],
  ["tab stripped", "cat <<-'EOF'\n\tvalue & 255\n\tEOF"],
  ["unquoted data", "cat <<EOF\nvalue & 255\nEOF"],
-]) test(`heredoc ${name} data is not a background job`, () => assert.equal(inspectBashResourceLifecycle({ command }), undefined));
+]) test(`heredoc ${name} acceptance is deferred`, () => assert.ok(inspectBashResourceLifecycle({ command })));
 
 for (const command of [
  "cat <<'EOF' &\nvalue & 255\nEOF", "cat <<EOF\n$(sleep 1 &)\nEOF",
@@ -63,8 +63,8 @@ test("browser guidance preserves helper Python and states its actual scope", () 
 
 
 test("heredoc literal substitutions, multiple bodies and conservative unsupported folding", () => {
- assert.equal(inspectBashResourceLifecycle({ command: "cat <<'EOF'\n$(nohup sleep 1)\nEOF" }), undefined);
- assert.equal(inspectBashResourceLifecycle({ command: "cat <<'A' <<'B'\nx & 255\nA\nnohup data\nB" }), undefined);
+ assert.ok(inspectBashResourceLifecycle({ command: "cat <<'EOF'\n$(nohup sleep 1)\nEOF" }));
+ assert.ok(inspectBashResourceLifecycle({ command: "cat <<'A' <<'B'\nx & 255\nA\nnohup data\nB" }));
  assert.ok(inspectBashResourceLifecycle({ command: "cat <<EOF\nx\\\nEOF\nEOF" }));
  assert.ok(inspectBashResourceLifecycle({ command: "x".repeat(128 * 1024 + 1) }));
 });
@@ -137,7 +137,7 @@ test("review5: owned work cannot detach wget", () => {
 });
 test("review5: substitution comments cannot terminate executable inspection", () => {
  assert.ok(inspectBashResourceLifecycle({ command: "cat <<EOF\n$(# )\nnohup sleep 100 &\n)\nEOF" }));
- assert.equal(inspectBashResourceLifecycle({ command: "cat <<EOF\n$(# )\necho safe\n)\nEOF" }), undefined);
+ assert.ok(inspectBashResourceLifecycle({ command: "cat <<EOF\n$(# )\necho safe\n)\nEOF" }));
 });
 
 test("owned use cannot replace the captured PID through printf", () => {

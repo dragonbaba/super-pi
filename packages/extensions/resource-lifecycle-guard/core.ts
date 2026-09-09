@@ -78,7 +78,7 @@ function hasBoundedOwnedUse(work: string | undefined): boolean {
  for (const command of commands) if (!OWNED_USE_COMMAND.test(command.trim())) return false;
  return true;
 }
-const SHELL_WRAPPER_TEXT = /sh/i;
+const SHELL_WRAPPER_TEXT = /sh|eval/i;
 const LEADING_REDIRECTION = /^(?:[0-9]+|\{[^}]+\})?[<>]{1,2}(.*)$/;
 const LEADING_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*\+?=/;
 const EMPTY_SUBSTITUTIONS: readonly string[] = [];
@@ -131,6 +131,9 @@ function inspectLifecycleScript(source: string, depth: number): string | undefin
   // Resolve only this segment; unrelated text in another command is not authority or uncertainty.
   if (changedLookup && SCRIPT_WRAPPERS.has(name)) return UNCERTAIN_LIFECYCLE;
   if (OPAQUE_JOB_LAUNCHER.test(name) && !SCRIPT_WRAPPERS.has(name)) return UNCERTAIN_LIFECYCLE;
+  if (name === "eval") for (let operand = index + 1; operand < tokens.length; operand++) {
+   if (tokens[operand]!.includes("<<")) return UNCERTAIN_LIFECYCLE;
+  }
   if (!SCRIPT_WRAPPERS.has(name)) continue;
   const flag = index + 1;
   if (tokens[flag] !== "-c" || !tokens[flag + 1]) return UNCERTAIN_LIFECYCLE;

@@ -12,10 +12,6 @@ import { setOwnProperty } from "../../utils/record.ts";
 import {
 	getShellConfig,
 	getShellEnv,
-	requiresHeredocConsumerBinding,
-	snapshotHeredocEnvironment,
-	validateHeredocLaunch,
-	unverifiedHeredoc,
 	killProcessTree,
 	type ShellConfig,
 	trackDetachedChildPid,
@@ -96,39 +92,26 @@ export interface BashOperations {
 	) => Promise<{ exitCode: number | null }>;
 }
 
-// Callable identity only; no environment, request or validation proof is retained here.
-const localBashExecutors = new WeakSet<BashOperations["exec"]>();
-
 /** Shared process execution used by the built-in shell tools. */
 export function createLocalShellOperations(shellName: string, resolveShellConfig: () => ShellConfig): BashOperations {
-	const operations: BashOperations = {
+	return {
 		exec: async (command, cwd, { onData, signal, timeout, env }) => {
 			const timeoutMs = resolveTimeoutMs(timeout);
 			if (signal?.aborted) {
 				throw new Error("aborted");
 			}
-			let shellConfig = resolveShellConfig();
-			const bindHeredoc = shellName === "bash" && requiresHeredocConsumerBinding(command);
-			let launchEnv = env;
-			if (bindHeredoc) {
-				if (shellConfig.args.length !== 1 || shellConfig.args[0] !== "-c") throw unverifiedHeredoc("unsupported shell options");
-				launchEnv = snapshotHeredocEnvironment(env ?? getShellEnv());
-				// Freeze the launch selection by private ownership, not by freezing public configuration.
-				shellConfig = { shell: shellConfig.shell, args: [...shellConfig.args], commandTransport: shellConfig.commandTransport };
-			}
+			const shellConfig = resolveShellConfig();
 			try {
 				await fsAccess(cwd, constants.F_OK);
 			} catch {
 				throw new Error(`Working directory does not exist: ${cwd}\nCannot execute ${shellName} commands.`);
 			}
 
-			if (signal?.aborted) throw new Error("aborted");
-			if (bindHeredoc) validateHeredocLaunch(command, shellConfig, launchEnv!);
 			const commandFromStdin = shellConfig.commandTransport === "stdin";
 			const child = spawn(shellConfig.shell, commandFromStdin ? shellConfig.args : [...shellConfig.args, command], {
 				cwd,
 				detached: process.platform !== "win32",
-				env: launchEnv ?? getShellEnv(),
+				env: env ?? getShellEnv(),
 				stdio: [commandFromStdin ? "pipe" : "ignore", "pipe", "pipe"],
 				windowsHide: true,
 			});
@@ -176,8 +159,6 @@ export function createLocalShellOperations(shellName: string, resolveShellConfig
 			}
 		},
 	};
-	if (shellName === "bash") localBashExecutors.add(operations.exec);
-	return operations;
 }
 
 /**
@@ -503,7 +484,6 @@ export function createShellToolDefinition(
 	options?: BashToolOptions,
 ): ToolDefinition<typeof bashSchema, BashToolDetails | undefined, BashRenderState> {
 	const ops = options?.operations ?? createLocalBashOperations({ shellPath: options?.shellPath });
-	const admittedLocalExec = localBashExecutors.has(ops.exec) ? ops.exec : undefined;
 	const commandPrefix = options?.commandPrefix;
 	const exposeSessionEnvironment = options?.exposeSessionEnvironment ?? true;
 	const spawnHook = options?.spawnHook;
@@ -523,13 +503,6 @@ export function createShellToolDefinition(
 		) {
 			const resolvedCommand = commandPrefix ? `${commandPrefix}\n${command}` : command;
 			const spawnContext = resolveSpawnContext(resolvedCommand, cwd, spawnHook, exposeSessionEnvironment, ctx);
-			const effectiveCommand = spawnContext.command;
-			const effectiveCwd = spawnContext.cwd;
-			const effectiveEnv = spawnContext.env;
-			const heredocCandidate = config.shellName === "bash" && (command.includes("<<") || (resolvedCommand !== command && resolvedCommand.includes("<<")) || (effectiveCommand !== resolvedCommand && effectiveCommand.includes("<<")));
-			if (heredocCandidate && (!admittedLocalExec || ops.exec !== admittedLocalExec || effectiveCommand !== command || effectiveCwd !== cwd)) {
-				throw unverifiedHeredoc("custom backends or command/cwd transformations cannot inherit local heredoc authority");
-			}
 			const output = new OutputAccumulator({ tempFilePrefix: config.tempFilePrefix });
 			let acceptingOutput = true;
 			let updateTimer: NodeJS.Timeout | undefined;
@@ -617,13 +590,11 @@ export function createShellToolDefinition(
 			try {
 				let exitCode: number | null;
 				try {
-					if (heredocCandidate && ops.exec !== admittedLocalExec) throw unverifiedHeredoc("the local execution callable changed");
-					const execute = heredocCandidate ? admittedLocalExec! : ops.exec;
-					const result = await execute.call(ops, heredocCandidate ? effectiveCommand : spawnContext.command, heredocCandidate ? effectiveCwd : spawnContext.cwd, {
+					const result = await ops.exec(spawnContext.command, spawnContext.cwd, {
 						onData: handleData,
 						signal,
 						timeout,
-						env: heredocCandidate ? effectiveEnv : spawnContext.env,
+						env: spawnContext.env,
 					});
 					exitCode = result.exitCode;
 				} catch (err) {

@@ -128,17 +128,10 @@ export function extractCommandSubstitutions(command: string, heredocData = false
 }
 
 
-// Only this literal data consumer may hide a body. Evaluators and compound headers are uncertain.
-const DATA_HEREDOC_HEADER = /^[ \t]*(?:\/(?:usr\/)?bin\/)?cat(?:[ \t]+|(?=<))[A-Za-z0-9_./: \t<>\'"\\-]*$/;
 const COMMENT_BOUNDARY = /[ \t\r\n;|&]/;
-const LEADING_TABS = /^\t+/;
-const HEREDOC_WORD = /^(?:'([A-Za-z0-9_]{1,128})'|"([A-Za-z0-9_]{1,128})"|(\\?)([A-Za-z0-9_]{1,128}))(?=$|[ \t\r\n;&|<>])/;
-/** Bounded literal-delimiter recognition, not a Bash parser. Unsupported syntax is uncertain. */
+/** Detection only: actual heredocs are unsupported; never remove source/body text. */
 export function inspectHereDocuments(command: string): { command: string; substitutions: string[]; uncertain: boolean } {
- if (!command.includes("<<")) return { command, substitutions: [], uncertain: false };
- const pieces: string[] = []; const substitutions: string[] = [];
- const pending: Array<{ word: string; quoted: boolean; tabs: boolean }> = [];
- let quote = ""; let escaped = false; let copied = 0; let count = 0; let arithmeticDepth = 0; let lineStart = 0;
+ let quote = ""; let escaped = false; let arithmeticDepth = 0;
  for (let index = 0; index < command.length; index++) {
   const c = command[index];
   if (escaped) { escaped = false; continue; }
@@ -153,45 +146,8 @@ export function inspectHereDocuments(command: string): { command: string; substi
   if (arithmeticDepth) { if (c === "(") arithmeticDepth++; else if (c === ")") arithmeticDepth--; continue; }
   if (c === "<" && command[index + 1] === "<") {
    if (command[index + 2] === "<") { index += 2; continue; }
-   if (++count > 16) return { command: "", substitutions: [], uncertain: true };
-   let start = index + 2; const tabs = command[start] === "-"; if (tabs) start++;
-   while (command[start] === " " || command[start] === "\t") start++;
-   const word = HEREDOC_WORD.exec(command.slice(start, start + 132));
-   if (!word) return { command: "", substitutions: [], uncertain: true };
-   pending.push({ word: word[1] ?? word[2] ?? word[4]!, quoted: !!(word[1] || word[2] || word[3]), tabs });
-   index = start + word[0].length - 1; continue;
+   return { command, substitutions: [], uncertain: true };
   }
-  if (c !== "\n") continue;
-  if (pending.length === 0) { lineStart = index + 1; continue; }
-  const header = command.slice(lineStart, index).replace(/\r$/, "");
-  if (command.slice(0, lineStart).trim() || !DATA_HEREDOC_HEADER.test(header) || header.endsWith("\\")) return { command: "", substitutions: [], uncertain: true };
-  pieces.push(command.slice(copied, index + 1));
-  let position = index + 1;
-  for (const doc of pending) {
-   const bodyStart = position; let found = false;
-   while (position <= command.length) {
-    const end = command.indexOf("\n", position); const lineEnd = end < 0 ? command.length : end;
-    let line = command.slice(position, lineEnd); if (line.endsWith("\r")) line = line.slice(0, -1);
-    if (doc.tabs) line = line.replace(LEADING_TABS, "");
-    // Backslash-newline folding changes delimiter recognition; refuse this unsupported form.
-    if (!doc.quoted && line.endsWith("\\")) return { command: "", substitutions: [], uncertain: true };
-    if (line === doc.word) {
-     if (!doc.quoted) {
-      const expanded = extractCommandSubstitutions(command.slice(bodyStart, position), true);
-      if (expanded.unterminated || substitutions.length + expanded.scripts.length > 16) return { command: "", substitutions: [], uncertain: true };
-      substitutions.push(...expanded.scripts);
-     }
-     position = end < 0 ? command.length : end + 1; found = true; break;
-    }
-    if (end < 0) break; position = end + 1;
-   }
-   if (!found) return { command: "", substitutions: [], uncertain: true };
-  }
-  pending.length = 0; copied = position; lineStart = position; index = position - 1;
  }
- // No preceding setup/override or subsequent staged execution is inferred safe.
- if (copied > 0 && command.slice(copied).trim()) return { command: "", substitutions: [], uncertain: true };
- if (pending.length || arithmeticDepth) return { command: "", substitutions: [], uncertain: true };
- pieces.push(command.slice(copied));
- return { command: pieces.join(""), substitutions, uncertain: false };
+ return { command, substitutions: [], uncertain: arithmeticDepth !== 0 };
 }
