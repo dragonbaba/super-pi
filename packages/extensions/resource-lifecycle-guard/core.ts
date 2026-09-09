@@ -21,7 +21,7 @@ const MAX_MUTATION_PRIMITIVES = 16;
 const MAX_MUTATION_TARGETS = 16;
 const MAX_SCRIPT_SEGMENTS = 64;
 const MAX_WRAPPER_DEPTH = 4;
-const SCRIPT_WRAPPERS = new Set(["bash", "bash.exe", "sh", "zsh"]);
+const SCRIPT_WRAPPERS = new Set(["bash", "bash.exe", "sh", "sh.exe", "zsh", "zsh.exe", "dash", "dash.exe", "ksh", "ksh.exe", "fish", "fish.exe"]);
 const POWERSHELL_WRAPPERS = new Set(["powershell", "powershell.exe", "pwsh", "pwsh.exe"]);
 const NODE_COMMANDS = new Set(["node", "node.exe"]);
 const PYTHON_COMMANDS = new Set(["python", "python.exe", "python3", "python3.exe", "py", "py.exe"]);
@@ -112,8 +112,8 @@ function inspectLifecycleScript(source: string, depth: number): string | undefin
  for (const tokens of segments) {
   const index = commandTokenIndex(tokens); const name = commandName(tokens[index] ?? "");
   if (!SCRIPT_WRAPPERS.has(name)) continue;
-  const flag = tokens.indexOf("-c", index + 1);
-  if (flag < 0 || !tokens[flag + 1]) return UNCERTAIN_LIFECYCLE;
+  const flag = index + 1;
+  if (tokens[flag] !== "-c" || !tokens[flag + 1]) return UNCERTAIN_LIFECYCLE;
   const result = inspectLifecycleScript(tokens[flag + 1]!, depth + 1); if (result) return result;
  }
  return undefined;

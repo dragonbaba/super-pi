@@ -58,3 +58,5 @@ Launcher-prefixed owned jobs (including env/sudo/nice/timeout and shell/multical
 `wget` is excluded from owned-job use because its options/configuration can start background work outside the captured PID. Shell comments inside command substitutions are skipped when locating the actual closing delimiter.
 
 `printf` is also excluded from the use interval: its `-v` option can overwrite the captured PID even without assignment syntax.
+
+Command substitutions containing `case` syntax are conservatively uncertain because pattern parentheses are outside this recognizer. Shell wrappers support only a direct `-c` script operand; script files, preceding option variants and later positional `-c` tokens are not inferred safe. Bash/sh/zsh/dash/ksh/fish executable names are recognized; this does not claim complete grammar support for those shells.

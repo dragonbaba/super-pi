@@ -1,3 +1,4 @@
+const UNSUPPORTED_CASE_PATTERN = /\bcase[ \t\r\n]/;
 const SUBSTITUTION_COMMENT_BOUNDARY = /[ \t\r\n;|&()]/;
 export interface CommandSubstitutionScan {
   scripts: string[];
@@ -101,7 +102,10 @@ export function extractCommandSubstitutions(command: string, heredocData = false
       else if (inner === 41 && --depth === 0) break;
     }
     if (end >= command.length) return { scripts, unterminated: true };
-    if (scripts.length < MAX_SUBSTITUTIONS) scripts.push(command.slice(index + 2, end));
+    const script = command.slice(index + 2, end);
+    // Case-pattern parentheses require shell grammar; never mask a potentially truncated body.
+    if (UNSUPPORTED_CASE_PATTERN.test(script)) return { scripts, unterminated: true };
+    if (scripts.length < MAX_SUBSTITUTIONS) scripts.push(script);
     else return { scripts, unterminated: true };
     index = end;
   }
