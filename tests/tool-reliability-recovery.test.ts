@@ -143,3 +143,11 @@ test("review5: substitution comments cannot terminate executable inspection", ()
 test("owned use cannot replace the captured PID through printf", () => {
  assert.ok(inspectBashResourceLifecycle({ command: `server --foreground & pid=$!; trap 'kill "$pid"; wait "$pid"' EXIT; printf -v pid 123; kill "$pid"; wait "$pid"` }));
 });
+
+test("review6: case patterns cannot hide executable substitution suffixes", () => {
+ assert.ok(inspectBashResourceLifecycle({ command: "cat <<EOF\n$(case x in x)\nnohup sleep 100 &\n;; esac)\nEOF" }));
+});
+test("review6: wrapper options cannot bypass script identity", () => {
+ for (const command of ["dash -c 'sleep 100 &'", "fish -c 'sleep 100 &'", "ksh -c 'sleep 100 &'", "bash runner.sh -c safe", "sh runner.sh -c safe"]) assert.ok(inspectBashResourceLifecycle({ command }));
+ assert.equal(inspectBashResourceLifecycle({ command: "dash -c 'echo safe'" }), undefined);
+});
