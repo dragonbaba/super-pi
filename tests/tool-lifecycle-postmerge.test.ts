@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { createHook } from "node:async_hooks";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { createJiti } from "jiti";
+import ts from "typescript";
 import { Agent } from "../packages/agent/src/agent.ts";
 import { createBashTool } from "../packages/coding-agent/src/core/tools/bash.ts";
 import { getShellConfig } from "../packages/coding-agent/src/utils/shell.ts";
@@ -85,6 +86,27 @@ test("postmerge lifecycle-compatible replacement requires its own permission", a
  const result = await f.call("env LABEL=sh printenv LABEL");
  assert.equal(result.error, true, result.text);
  assert.deepEqual(f.counts(), { approvals: 1, spawns: 0 });
+});
+
+for (const command of ["env foo.bar=x bash -c 'printf INNER'", "env </dev/null bash -c 'printf INNER'"]) {
+ test(`postmerge ambiguous env consumer never reaches spawn: ${command}`, async t => {
+  const f = await fixture(t); const result = await f.call(command);
+  assert.equal(result.error, true, result.text); assert.equal(f.counts().spawns, 0);
+ });
+}
+
+test("postmerge preflight adds zero argument-wrapper allocations", () => {
+ const file = new URL("../packages/extensions/resource-lifecycle-guard/index.ts", import.meta.url);
+ const source = ts.createSourceFile(file.pathname, readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true);
+ let scans = 0, wrappers = 0;
+ function visit(node: ts.Node) {
+  if (ts.isCallExpression(node) && node.expression.getText(source) === "inspectBashResourceLifecycle") {
+   scans++; if (ts.isObjectLiteralExpression(node.arguments[0]!)) wrappers++;
+   assert.equal(node.arguments[0]!.getText(source), "event.input");
+  }
+  ts.forEachChild(node, visit);
+ }
+ visit(source); assert.equal(scans, 2); assert.equal(wrappers, 0);
 });
 
 test("postmerge bounded launcher and dynamic-wrapper negatives never spawn", async t => {
