@@ -472,3 +472,18 @@ test("RPC timeout and failed output release their existing request owner", async
  await assert.rejects(createRpcDialogPromise(pending, () => { throw new Error("controlled output failure"); }, undefined, undefined, { method: "select" }, () => undefined), /output failure/);
  assert.equal(pending.size, 0);
 });
+
+
+test("timed tool hooks refuse uncancellable editor/custom UI before opening", async () => {
+ for (const method of ["editor", "custom"] as const) {
+  const runtime = createExtensionRuntime(); const scheduler = new FakeScheduler(); let opened = 0;
+  const extension = await loadExtensionFromFactory(pi => pi.on("tool_call", async (_event, ctx) => {
+   await (ctx.ui[method] as any)("controlled");
+  }), process.cwd(), createEventBus(), runtime);
+  const runner = new ExtensionRunner([extension], runtime, process.cwd(), SessionManager.inMemory(), {} as never,
+   { scheduler, hookTimeouts: { safety: { timeoutMs: 30_000 } } });
+  runner.setUIContext({ ...runner.getUIContext(), [method]: async () => { opened++; return undefined; } } as never, "tui");
+  await assert.rejects(runner.emitToolCall({ type: "tool_call", toolName: "controlled", toolCallId: method, input: {} } as never), /not supported.*timed tool_call/);
+  assert.equal(opened, 0); assert.equal(scheduler.highWaterMark.current, 0);
+ }
+});
