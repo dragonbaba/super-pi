@@ -90,7 +90,7 @@ test("concurrent permission requests cannot replace the active selection", async
 	const f = await permissionFixture(t);
 	const first = f.call();
 	await f.visible;
-	await assert.rejects(f.call(), /Another approval dialog/);
+	await assert.rejects(f.call(), /Another permission request/);
 	f.choose(0);
 	assert.equal(await first, undefined);
 	assert.equal(f.scheduler.highWaterMark.current, 0);

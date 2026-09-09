@@ -178,6 +178,7 @@ import { UserMessageSelectorComponent } from "./components/user-message-selector
 import { editInExternalEditor } from "./external-editor.ts";
 import {
 	CHANGELOG_VERSION_HEADING_PATTERN,
+ TOOL_HOOK_DIAGNOSTIC_CONTROL_PATTERN,
 	GIT_PACKAGE_PATH_PATTERN,
 	JAVASCRIPT_INDEX_SUFFIX_PATTERN,
 	NAME_COMMAND_PREFIX_PATTERN,
@@ -711,7 +712,8 @@ export class InteractiveMode {
 	private shutdownRequested = false;
 
 	// Extension UI state
-	private extensionSelectorCancel: (() => void) | undefined;
+	private extensionSelectorOverlay: OverlayHandle | undefined;
+ private extensionSelectorCancel: (() => void) | undefined;
 	private extensionInputCancel: (() => void) | undefined;
 	private extensionSelector: ExtensionSelectorComponent | undefined = undefined;
 	private extensionInput: ExtensionInputComponent | undefined = undefined;
@@ -2985,11 +2987,17 @@ export class InteractiveMode {
 					{ tui: this.ui, timeout: opts?.timeout, details: opts?.details, onToggleToolsExpanded: () => this.toggleToolOutputExpansion() });
 				this.extensionSelector = component;
 				this.extensionSelectorCancel = onAbort;
-			this.disposeActiveSelector();
-			this.editorContainer.clear();
-				this.editorContainer.addChild(component);
-				this.ui.setFocus(component);
-			this.ui.requestRender();
+    if (opts?.details !== undefined) {
+     // A full-terminal overlay is outside the shrinkable fullscreen editor dock.
+     // Its actual allocation equals the terminal dimensions used by the selector.
+     this.extensionSelectorOverlay = this.ui.showOverlay(component, { width: "100%", maxHeight: "100%", margin: 0 });
+    } else {
+     this.disposeActiveSelector();
+     this.editorContainer.clear();
+     this.editorContainer.addChild(component);
+     this.ui.setFocus(component);
+     this.ui.requestRender();
+    }
 			} catch (error) {
 				opts?.signal?.removeEventListener("abort", onAbort);
 				if (this.extensionSelector === component) {
@@ -3008,13 +3016,18 @@ export class InteractiveMode {
 	private hideExtensionSelector(): void {
 		const cancel = this.extensionSelectorCancel;
 		this.extensionSelectorCancel = undefined;
-		this.extensionSelector?.dispose();
-		this.editorContainer.clear();
-		this.editorContainer.addChild(this.editor);
-		this.extensionSelector = undefined;
-		cancel?.();
-		this.ui.setFocus(this.editor);
-		this.ui.requestRender();
+  this.extensionSelector?.dispose();
+  const overlay = this.extensionSelectorOverlay;
+  this.extensionSelectorOverlay = undefined;
+  this.extensionSelector = undefined;
+  cancel?.();
+  if (overlay) overlay.hide();
+  else {
+   this.editorContainer.clear();
+   this.editorContainer.addChild(this.editor);
+   this.ui.setFocus(this.editor);
+   this.ui.requestRender();
+  }
 	}
 
 	/**
@@ -8381,5 +8394,5 @@ function renderToolHookDiagnostic(message: CustomMessage<unknown>, options: { ex
 	const details = message.details as { callId: string; extension: string; diagnostic: string };
 	const summary = `Hook diagnostic for tool call ${details.callId} (${details.extension}); expand tools for details`;
 	const text = options.expanded ? `${summary}\n${details.diagnostic}` : summary;
-	return new Text(theme.fg("dim", text.replace(/[\x00-\x09\x0b-\x1f\x7f-\x9f]/g, "?")), 1, 0);
+	return new Text(theme.fg("dim", text.replace(TOOL_HOOK_DIAGNOSTIC_CONTROL_PATTERN, "?")), 1, 0);
 }

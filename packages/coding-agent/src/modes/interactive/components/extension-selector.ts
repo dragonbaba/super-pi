@@ -20,6 +20,7 @@ export class ExtensionSelectorComponent extends Container {
 	private options: string[];
 	private details: string | undefined;
 	private detailHeader = "";
+ private countdownSeconds: number | undefined;
 	private detailChoices: string[] = [];
 	private detailLines: string[] = [];
 	private detailWidth = -1;
@@ -68,7 +69,10 @@ export class ExtensionSelectorComponent extends Container {
 			this.countdown = new CountdownTimer(
 				opts.timeout,
 				opts.tui,
-				(s) => this.titleText.setText(theme.fg("accent", theme.bold(`${this.baseTitle} (${s}s)`))),
+				(s) => {
+     this.countdownSeconds = s;
+     this.titleText.setText(theme.fg("accent", theme.bold(`${this.baseTitle} (${s}s)`)));
+    },
 				() => this.onCancelCallback(),
 			);
 		}
@@ -106,13 +110,14 @@ export class ExtensionSelectorComponent extends Container {
 		}
 		this.viewportRows = Math.max(1, rows - 5);
 		this.detailOffset = Math.max(0, Math.min(this.detailOffset, this.detailLines.length - this.viewportRows));
-		const lines = [truncateToWidth(this.detailHeader, width)];
+		const lines = [truncateToWidth(this.countdownSeconds === undefined ? this.detailHeader : `${this.detailHeader} (${this.countdownSeconds}s)`, width)];
 		for (let i = this.detailOffset; i < Math.min(this.detailLines.length, this.detailOffset + this.viewportRows); i++) {
 			lines.push(` ${this.detailLines[i]}`);
 		}
 		lines.push(truncateToWidth(`Details ${this.detailOffset + 1}/${this.detailLines.length} PgUp/PgDn`, width));
 		lines.push(truncateToWidth(`→ ${this.detailChoices[this.selectedIndex] ?? ""} (${this.selectedIndex + 1}/${this.options.length})`, width));
-		lines.push(truncateToWidth("↑↓ choice; Enter select; Esc cancel", width));
+		lines.push(truncateToWidth("Enter select", width));
+		lines.push(truncateToWidth("Esc cancel | ↑↓ choice", width));
 		return lines;
 	}
 
@@ -130,11 +135,13 @@ export class ExtensionSelectorComponent extends Container {
 	handleInput(keyData: string): void {
 		if (this.disposed) return;
 		if (this.details !== undefined) {
-			if (keyData === "\x1b[5~" || keyData === "\x1b[6~") {
-				this.detailOffset = Math.max(0, this.detailOffset + (keyData === "\x1b[5~" ? -1 : 1) * Math.max(1, this.viewportRows));
+			const kb = getKeybindings();
+   const pageUp = kb.matches(keyData, "tui.select.pageUp");
+   if (pageUp || kb.matches(keyData, "tui.select.pageDown")) {
+    this.detailOffset = Math.max(0, this.detailOffset + (pageUp ? -1 : 1) * Math.max(1, this.viewportRows));
 				return;
 			}
-			if ((this.terminal?.rows ?? 24) < 6 || (this.terminal?.columns ?? 80) < 16) {
+			if (this.viewportRows === 0 || (this.terminal?.rows ?? 24) < 6 || (this.terminal?.columns ?? 80) < 16) {
 				if (getKeybindings().matches(keyData, "tui.select.cancel")) this.onCancelCallback();
 				return;
 			}

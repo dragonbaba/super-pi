@@ -436,8 +436,8 @@ class ToolCallDeadline {
 	revoke(reason: unknown = new Error("Tool approval is obsolete")): void {
 		if (this.finished) return;
 		this.pause();
-		this.controller.abort(reason);
 		this.reject(reason);
+		this.controller.abort(reason);
 	}
 	pause(): void {
 		if (this.handle === undefined) return;

@@ -8,7 +8,11 @@ import { createEventBus } from "../../packages/coding-agent/src/core/event-bus.t
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.ts";
 import { ExtensionSelectorComponent } from "../../packages/coding-agent/src/modes/interactive/components/extension-selector.ts";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
-import { FakeScheduler } from "../../tests/helpers/runtime-instrumentation.ts";
+import { InteractiveMode } from "../../packages/coding-agent/src/modes/interactive/interactive-mode.ts";
+import { SessionPermissionController } from "../../packages/extensions/resource-lifecycle-guard/permission-controller.ts";
+import { TuiAltScreen } from "../../packages/tui/src/tui-alt-screen.ts";
+import { Container, VStack, Text } from "@super-pi/tui";
+import { FakeScheduler, FakeTerminal } from "../../tests/helpers/runtime-instrumentation.ts";
 
 if (!global.gc) throw new Error("Run this bounded fixture with --expose-gc");
 initTheme("dark");
@@ -17,31 +21,50 @@ const scheduler = new FakeScheduler();
 const runtime = createExtensionRuntime();
 const references: WeakRef<object>[] = [];
 let prompts = 0, renders = 0, cacheBuilds = 0, maxRows = 0;
-const extension = await loadExtensionFromFactory(pi => pi.on("tool_call", async (_event, ctx) => {
- references.push(new WeakRef(ctx));
- await ctx.ui.select("controlled approval", ["Approve once", "Deny"], { signal: ctx.signal, details: "中 script & 255\n".repeat(1024) });
-}), process.cwd(), createEventBus(), runtime);
+let permission!: SessionPermissionController;
+const extension = await loadExtensionFromFactory(pi => {
+ pi.appendEntry = () => {};
+ permission = new SessionPermissionController(pi);
+ pi.on("tool_call", async (event, ctx) => {
+  references.push(new WeakRef(ctx));
+  return permission.authorizeToolCall(event, ctx);
+ });
+}, process.cwd(), createEventBus(), runtime);
+const terminal = new FakeTerminal(64, 16);
+const ui = new TuiAltScreen(terminal);
+const mode: any = Object.create(InteractiveMode.prototype);
+mode.ui = ui; mode.editor = new Container(); mode.editorContainer = new Container(); mode.disposeActiveSelector = () => {};
+ui.setLayoutRoot(new VStack([{ component: new Text("history"), minSize: 1 },
+ { component: mode.editorContainer, minSize: 3 }, { component: new Text("footer\n".repeat(7)), minSize: 7 }]));
+ui.start();
 const runner = new ExtensionRunner([extension], runtime, process.cwd(), SessionManager.inMemory(), {} as never,
  { scheduler, hookTimeouts: { safety: { timeoutMs: 30_000 } } });
 runner.setUIContext({ ...runner.getUIContext(), select: async (title, choices, opts) => {
  prompts++;
- const selector: any = new ExtensionSelectorComponent(title, choices, () => {}, () => {},
-  { details: opts?.details, tui: { terminal: { rows: 16, columns: 64 } } as never });
+ const pending = mode.showExtensionSelector(title, choices, opts);
+ const selector: any = mode.extensionSelector;
  references.push(new WeakRef(selector));
  let cached: unknown;
  for (let i = 0; i < 20; i++) {
   selector.handleInput(i % 2 ? "j" : "k");
-  const lines = selector.render(i < 10 ? 64 : 48);
-  renders++; maxRows = Math.max(maxRows, lines.length);
+  terminal.columns = i < 10 ? 64 : 48;
+  ui.renderNow(true); await ui.flushTerminalFrames();
+  renders++; maxRows = Math.max(maxRows, selector.viewportRows + 5);
+  terminal.writes.length = 0;
   if (selector.detailLines !== cached) { cacheBuilds++; cached = selector.detailLines; }
  }
  scheduler.advanceBy(60_000);
- selector.dispose();
+ selector.handleInput("k"); selector.handleInput("\n");
+ const result = await pending;
  assert.equal(selector.details, undefined); assert.equal(selector.detailLines.length, 0);
- return choices[0];
+ assert.equal(mode.extensionSelector, undefined); assert.equal(mode.extensionSelectorOverlay, undefined);
+ return result;
 }}, "tui");
+await permission.restore(runner.createContext());
+permission.state.setMode("read-only");
+const input = { path: "permission-profile-never-written.txt", content: "中 script & 255\n".repeat(1024) };
 async function batch(count: number): Promise<void> {
- for (let index = 0; index < count; index++) await runner.emitToolCall({ type: "tool_call", toolName: "controlled", toolCallId: `fixture-${index}`, input: {} } as never);
+ for (let index = 0; index < count; index++) await runner.emitToolCall({ type: "tool_call", toolName: "write", toolCallId: `fixture-${index}`, input } as never);
 }
 await batch(10); // fixed warmup
 await nextTask(); global.gc();
@@ -56,6 +79,7 @@ const sample = await post("HeapProfiler.stopSampling"); inspector.disconnect();
 let sampledBytes = 0;
 function count(node: any): void { sampledBytes += node.selfSize; for (const child of node.children) count(child); }
 count(sample.profile.head);
+await ui.stop(); terminal.writes.length = 0;
 await nextTask(); global.gc(); await nextTask(); global.gc();
 const liveReferences = references.reduce((sum, reference) => sum + Number(reference.deref() !== undefined), 0);
 assert.equal(liveReferences, 0);
