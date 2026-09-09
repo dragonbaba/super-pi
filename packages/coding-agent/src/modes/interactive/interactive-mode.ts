@@ -88,6 +88,7 @@ import type {
 	ExtensionRunner,
 	ExtensionUIContext,
 	ExtensionUIDialogOptions,
+	ExtensionUISelectOptions,
 	ExtensionWidgetOptions,
 	MarkdownTransformer,
 	ProjectTrustContext,
@@ -96,7 +97,7 @@ import type {
 import { FooterDataProvider, type ReadonlyFooterDataProvider } from "../../core/footer-data-provider.ts";
 import { configureHttpDispatcher, formatHttpIdleTimeoutMs } from "../../core/http-dispatcher.ts";
 import { type AppKeybinding, KeybindingsManager } from "../../core/keybindings.ts";
-import { createCompactionSummaryMessage } from "../../core/messages.ts";
+import { createCompactionSummaryMessage, type CustomMessage } from "../../core/messages.ts";
 import {
 	defaultModelPerProvider,
 	findExactModelReferenceMatch,
@@ -178,6 +179,7 @@ import { UserMessageSelectorComponent } from "./components/user-message-selector
 import { editInExternalEditor } from "./external-editor.ts";
 import {
 	CHANGELOG_VERSION_HEADING_PATTERN,
+ TOOL_HOOK_DIAGNOSTIC_CONTROL_PATTERN,
 	GIT_PACKAGE_PATH_PATTERN,
 	JAVASCRIPT_INDEX_SUFFIX_PATTERN,
 	NAME_COMMAND_PREFIX_PATTERN,
@@ -711,6 +713,9 @@ export class InteractiveMode {
 	private shutdownRequested = false;
 
 	// Extension UI state
+	private extensionSelectorOverlay: OverlayHandle | undefined;
+ private extensionSelectorCancel: (() => void) | undefined;
+	private extensionInputCancel: (() => void) | undefined;
 	private extensionSelector: ExtensionSelectorComponent | undefined = undefined;
 	private extensionInput: ExtensionInputComponent | undefined = undefined;
 	private extensionEditor: ExtensionEditorComponent | undefined = undefined;
@@ -2372,7 +2377,7 @@ export class InteractiveMode {
 			},
 			onError: (error) => {
 				if (this.extensionUiGeneration !== extensionUiGeneration) return;
-				this.showExtensionError(error.extensionPath, error.error, error.stack);
+				this.showExtensionError(error.extensionPath, error.error, error.stack, error.toolCallId);
 			},
 		});
 		if (lifecycleGeneration !== undefined && this.tuiLifecycleGeneration !== lifecycleGeneration) return;
@@ -2957,41 +2962,52 @@ export class InteractiveMode {
 	private showExtensionSelector(
 		title: string,
 		options: string[],
-		opts?: ExtensionUIDialogOptions,
+		opts?: ExtensionUISelectOptions,
 	): Promise<string | undefined> {
-		return new Promise((resolve) => {
-			if (opts?.signal?.aborted) {
+		return new Promise((resolve, reject) => {
+			if (opts?.signal?.aborted || this.extensionSelector || this.extensionInput || this.extensionEditor || this.activeExtensionCustomCancel || this.activeSelectorToken) {
 				resolve(undefined);
 				return;
 			}
-
-			const onAbort = () => {
+			let settled = false;
+			let component: ExtensionSelectorComponent | undefined;
+			const finish = (value?: string) => {
+				if (settled) return;
+				settled = true;
+				opts?.signal?.removeEventListener("abort", onAbort);
+				if (component && this.extensionSelector === component) {
+					this.extensionSelectorCancel = undefined;
 				this.hideExtensionSelector();
-				resolve(undefined);
+				}
+				resolve(value);
 			};
+			const onAbort = () => finish();
 			opts?.signal?.addEventListener("abort", onAbort, { once: true });
-
-			this.extensionSelector = new ExtensionSelectorComponent(
-				title,
-				options,
-				(option) => {
-					opts?.signal?.removeEventListener("abort", onAbort);
-					this.hideExtensionSelector();
-					resolve(option);
-				},
-				() => {
-					opts?.signal?.removeEventListener("abort", onAbort);
-					this.hideExtensionSelector();
-					resolve(undefined);
-				},
-				{ tui: this.ui, timeout: opts?.timeout, onToggleToolsExpanded: () => this.toggleToolOutputExpansion() },
-			);
-
-			this.disposeActiveSelector();
-			this.editorContainer.clear();
-			this.editorContainer.addChild(this.extensionSelector);
-			this.ui.setFocus(this.extensionSelector);
-			this.ui.requestRender();
+			try {
+				component = new ExtensionSelectorComponent(title, options, finish, onAbort,
+					{ tui: this.ui, timeout: opts?.timeout, details: opts?.details, onToggleToolsExpanded: () => this.toggleToolOutputExpansion() });
+				this.extensionSelector = component;
+				this.extensionSelectorCancel = onAbort;
+    if (opts?.details !== undefined) {
+     // A full-terminal overlay is outside the shrinkable fullscreen editor dock.
+     // Its actual allocation equals the terminal dimensions used by the selector.
+     this.extensionSelectorOverlay = this.ui.showOverlay(component, { width: "100%", maxHeight: "100%", margin: 0 });
+    } else {
+     this.disposeActiveSelector();
+     this.editorContainer.clear();
+     this.editorContainer.addChild(component);
+     this.ui.setFocus(component);
+     this.ui.requestRender();
+    }
+			} catch (error) {
+				opts?.signal?.removeEventListener("abort", onAbort);
+				if (this.extensionSelector === component) {
+					this.extensionSelector = undefined;
+					this.extensionSelectorCancel = undefined;
+				}
+				component?.dispose();
+				reject(error);
+			}
 		});
 	}
 
@@ -2999,12 +3015,20 @@ export class InteractiveMode {
 	 * Hide the extension selector.
 	 */
 	private hideExtensionSelector(): void {
-		this.extensionSelector?.dispose();
-		this.editorContainer.clear();
-		this.editorContainer.addChild(this.editor);
-		this.extensionSelector = undefined;
-		this.ui.setFocus(this.editor);
-		this.ui.requestRender();
+		const cancel = this.extensionSelectorCancel;
+		this.extensionSelectorCancel = undefined;
+  this.extensionSelector?.dispose();
+  const overlay = this.extensionSelectorOverlay;
+  this.extensionSelectorOverlay = undefined;
+  this.extensionSelector = undefined;
+  cancel?.();
+  if (overlay) overlay.hide();
+  else {
+   this.editorContainer.clear();
+   this.editorContainer.addChild(this.editor);
+   this.ui.setFocus(this.editor);
+   this.ui.requestRender();
+  }
 	}
 
 	/**
@@ -3035,39 +3059,44 @@ export class InteractiveMode {
 		placeholder?: string,
 		opts?: ExtensionUIDialogOptions,
 	): Promise<string | undefined> {
-		return new Promise((resolve) => {
-			if (opts?.signal?.aborted) {
+		return new Promise((resolve, reject) => {
+			if (opts?.signal?.aborted || this.extensionSelector || this.extensionInput || this.extensionEditor || this.activeExtensionCustomCancel || this.activeSelectorToken) {
 				resolve(undefined);
 				return;
 			}
-
-			const onAbort = () => {
+			let settled = false;
+			let component: ExtensionInputComponent | undefined;
+			const finish = (value?: string) => {
+				if (settled) return;
+				settled = true;
+				opts?.signal?.removeEventListener("abort", onAbort);
+				if (component && this.extensionInput === component) {
+					this.extensionInputCancel = undefined;
 				this.hideExtensionInput();
-				resolve(undefined);
+				}
+				resolve(value);
 			};
+			const onAbort = () => finish();
 			opts?.signal?.addEventListener("abort", onAbort, { once: true });
-
-			this.extensionInput = new ExtensionInputComponent(
-				title,
-				placeholder,
-				(value) => {
-					opts?.signal?.removeEventListener("abort", onAbort);
-					this.hideExtensionInput();
-					resolve(value);
-				},
-				() => {
-					opts?.signal?.removeEventListener("abort", onAbort);
-					this.hideExtensionInput();
-					resolve(undefined);
-				},
-				{ tui: this.ui, timeout: opts?.timeout },
-			);
-
+			try {
+				component = new ExtensionInputComponent(title, placeholder, finish, onAbort,
+					{ tui: this.ui, timeout: opts?.timeout });
+				this.extensionInput = component;
+				this.extensionInputCancel = onAbort;
 			this.disposeActiveSelector();
 			this.editorContainer.clear();
-			this.editorContainer.addChild(this.extensionInput);
-			this.ui.setFocus(this.extensionInput);
+				this.editorContainer.addChild(component);
+				this.ui.setFocus(component);
 			this.ui.requestRender();
+			} catch (error) {
+				opts?.signal?.removeEventListener("abort", onAbort);
+				if (this.extensionInput === component) {
+					this.extensionInput = undefined;
+					this.extensionInputCancel = undefined;
+				}
+				component?.dispose();
+				reject(error);
+			}
 		});
 	}
 
@@ -3075,10 +3104,13 @@ export class InteractiveMode {
 	 * Hide the extension input.
 	 */
 	private hideExtensionInput(): void {
+		const cancel = this.extensionInputCancel;
+		this.extensionInputCancel = undefined;
 		this.extensionInput?.dispose();
 		this.editorContainer.clear();
 		this.editorContainer.addChild(this.editor);
 		this.extensionInput = undefined;
+		cancel?.();
 		this.ui.setFocus(this.editor);
 		this.ui.requestRender();
 	}
@@ -3308,6 +3340,7 @@ export class InteractiveMode {
 	 * Show a multi-line editor for extensions (with Ctrl+G support).
 	 */
 	private showExtensionEditor(title: string, prefill?: string): Promise<string | undefined> {
+  if (this.extensionSelector || this.extensionInput || this.extensionEditor || this.activeExtensionCustomCancel) return Promise.resolve(undefined);
 		return new Promise((resolve) => {
 			this.extensionEditor = new ExtensionEditorComponent(
 				this.ui,
@@ -3351,6 +3384,7 @@ export class InteractiveMode {
 	 * Pass undefined to restore the default editor.
 	 */
 	private setCustomEditorComponent(factory: EditorFactory | undefined): void {
+  if (this.extensionSelector || this.extensionInput) throw new Error("Close the active approval dialog before replacing the editor");
 		this.editorComponentFactory = factory;
 
 		// Save text from current editor before switching
@@ -3447,7 +3481,8 @@ export class InteractiveMode {
 			onHandle?: (handle: OverlayHandle) => void;
 		},
 	): Promise<T> {
-		this.cancelActiveExtensionCustom();
+  if (this.extensionSelector || this.extensionInput || this.extensionEditor) throw new Error("Another dialog is active");
+  this.cancelActiveExtensionCustom();
 		const lifecycleGeneration = this.tuiLifecycleGeneration;
 		const savedText = this.editor.getText();
 		const isOverlay = options?.overlay ?? false;
@@ -3554,7 +3589,19 @@ export class InteractiveMode {
 	/**
 	 * Show an extension error in the UI.
 	 */
-	private showExtensionError(extensionPath: string, error: string, stack?: string): void {
+	private showExtensionError(extensionPath: string, error: string, stack?: string, toolCallId?: string): void {
+		if (toolCallId) {
+			// An associated view of the canonical tool failure, not a second execution.
+			const diagnostic = new CustomMessageComponent({ role: "custom", customType: "tool-hook-diagnostic",
+				content: "", display: true, timestamp: Date.now(), details: {
+					callId: toolCallId.slice(0, 256), extension: extensionPath.slice(0, 512),
+					diagnostic: (stack ?? error).slice(0, 8192),
+				} }, renderToolHookDiagnostic);
+   diagnostic.setExpanded(this.toolOutputExpanded);
+			this.chatContainer.addChild(diagnostic);
+			this.ui.requestRender();
+			return;
+		}
 		const errorMsg = `Extension "${extensionPath}" error: ${error}`;
 		const errorText = new Text(theme.fg("error", errorMsg), 1, 0);
 		this.chatContainer.addChild(errorText);
@@ -5928,7 +5975,8 @@ export class InteractiveMode {
 	private showSelector(
 		create: (done: () => void) => { component: Component; focus: Component; dispose?: () => void },
 	): void {
-		const token = {};
+		this.cancelExtensionDialogs();
+  const token = {};
 		let dispose: (() => void) | undefined;
 		const done = () => {
 			dispose?.();
@@ -8340,4 +8388,13 @@ export class InteractiveMode {
 		}
 		if (cleanupFailed) throw cleanupError;
 	}
+}
+
+// Only the error path constructs this bounded presentation; full diagnostics still
+// reach ExtensionRunner error subscribers. No text-based suppression or registry.
+function renderToolHookDiagnostic(message: CustomMessage<unknown>, options: { expanded: boolean }): Text {
+	const details = message.details as { callId: string; extension: string; diagnostic: string };
+	const summary = `Hook diagnostic for tool call ${details.callId} (${details.extension}); expand tools for details`;
+	const text = options.expanded ? `${summary}\n${details.diagnostic}` : summary;
+	return new Text(theme.fg("dim", text.replace(TOOL_HOOK_DIAGNOSTIC_CONTROL_PATTERN, "?")), 1, 0);
 }

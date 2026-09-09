@@ -102,6 +102,12 @@ export interface ExtensionUIDialogOptions {
 	timeout?: number;
 }
 
+/** Options only for selectors; input/confirm do not advertise hidden details. */
+export interface ExtensionUISelectOptions extends ExtensionUIDialogOptions {
+	/** Full inspectable request details in a height-bounded selector viewport. */
+	details?: string;
+}
+
 /** Placement for extension widgets. */
 export type WidgetPlacement = "aboveEditor" | "belowEditor";
 
@@ -132,7 +138,7 @@ export type EditorFactory = (tui: TUI, theme: EditorTheme, keybindings: Keybindi
  */
 export interface ExtensionUIContext {
 	/** Show a selector and return the user's choice. */
-	select(title: string, options: string[], opts?: ExtensionUIDialogOptions): Promise<string | undefined>;
+	select(title: string, options: string[], opts?: ExtensionUISelectOptions): Promise<string | undefined>;
 
 	/** Show a confirmation dialog. */
 	confirm(title: string, message: string, opts?: ExtensionUIDialogOptions): Promise<boolean>;
@@ -1865,6 +1871,8 @@ export interface LoadExtensionsResult {
 // ============================================================================
 
 export interface ExtensionError {
+	/** Related failed tool call; diagnostic is an additional view, not another execution. */
+	toolCallId?: string;
 	extensionPath: string;
 	event: string;
 	error: string;
