@@ -324,10 +324,11 @@ export class SessionPermissionController {
       && event.toolName !== "bash" && event.toolName !== "powershell" && event.toolName !== "browser_exec") return undefined;
     let signal = ctx.signal;
     const generation = this.#authorityGeneration;
+    const permissionSequence = this.#state.sequence;
     const sessionId = ctx.sessionManager.getSessionId();
     const assertCurrent = () => {
       signal?.throwIfAborted();
-      if (generation !== this.#authorityGeneration || sessionId !== ctx.sessionManager.getSessionId()) {
+      if (generation !== this.#authorityGeneration || sessionId !== ctx.sessionManager.getSessionId() || permissionSequence !== this.#state.sequence) {
         throw new Error("Permission request is obsolete; no approval was committed");
       }
     };

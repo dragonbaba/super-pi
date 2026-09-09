@@ -60,7 +60,7 @@ export class ExtensionSelectorComponent extends Container {
 		this.baseTitle = this.details === undefined ? title : sanitizeDialogText(title);
 		if (this.details !== undefined) {
 			this.detailHeader = this.baseTitle.split("\n", 1)[0]!;
-			this.detailChoices = options.map(sanitizeDialogText);
+			this.detailChoices = options.map(sanitizeDialogChoice);
 		}
 
 		this.addChild(new DynamicBorder());
@@ -227,4 +227,8 @@ function detailWindowBoundary(value: string, page: number): number {
   if (current >= 0xdc00 && current <= 0xdfff && previous >= 0xd800 && previous <= 0xdbff) offset--;
  }
  return offset;
+}
+
+function sanitizeDialogChoice(value: string): string {
+ return sanitizeDialogText(value).replace(/\n/g, "\\n");
 }

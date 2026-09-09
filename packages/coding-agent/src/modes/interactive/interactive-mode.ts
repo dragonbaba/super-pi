@@ -88,6 +88,7 @@ import type {
 	ExtensionRunner,
 	ExtensionUIContext,
 	ExtensionUIDialogOptions,
+	ExtensionUISelectOptions,
 	ExtensionWidgetOptions,
 	MarkdownTransformer,
 	ProjectTrustContext,
@@ -2961,7 +2962,7 @@ export class InteractiveMode {
 	private showExtensionSelector(
 		title: string,
 		options: string[],
-		opts?: ExtensionUIDialogOptions,
+		opts?: ExtensionUISelectOptions,
 	): Promise<string | undefined> {
 		return new Promise((resolve, reject) => {
 			if (opts?.signal?.aborted || this.extensionSelector || this.extensionInput || this.extensionEditor || this.activeExtensionCustomCancel || this.activeSelectorToken) {

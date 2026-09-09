@@ -98,10 +98,14 @@ export type { AppKeybinding, KeybindingsManager } from "../keybindings.ts";
 export interface ExtensionUIDialogOptions {
 	/** AbortSignal to programmatically dismiss the dialog. */
 	signal?: AbortSignal;
-	/** Full inspectable request details in a height-bounded selector viewport. */
-	details?: string;
 	/** Timeout in milliseconds. Dialog auto-dismisses with live countdown display. */
 	timeout?: number;
+}
+
+/** Options only for selectors; input/confirm do not advertise hidden details. */
+export interface ExtensionUISelectOptions extends ExtensionUIDialogOptions {
+	/** Full inspectable request details in a height-bounded selector viewport. */
+	details?: string;
 }
 
 /** Placement for extension widgets. */
@@ -134,7 +138,7 @@ export type EditorFactory = (tui: TUI, theme: EditorTheme, keybindings: Keybindi
  */
 export interface ExtensionUIContext {
 	/** Show a selector and return the user's choice. */
-	select(title: string, options: string[], opts?: ExtensionUIDialogOptions): Promise<string | undefined>;
+	select(title: string, options: string[], opts?: ExtensionUISelectOptions): Promise<string | undefined>;
 
 	/** Show a confirmation dialog. */
 	confirm(title: string, message: string, opts?: ExtensionUIDialogOptions): Promise<boolean>;
