@@ -458,6 +458,9 @@ export async function failureRecoveryHint(
   if ((toolName === "edit" || toolName === "write") && classifyFailureText(failureText, input, toolName) === "read_required") {
     return "[Read recovery] This mutation had no qualifying prior read and made no change. Read the exact target range with the read tool in a completed tool turn, then retry against that current content; grep, Bash, LSP, and same-turn reads do not satisfy this guard.";
   }
+  if (classifyFailureText(failureText, input, toolName) === "policy_blocked") {
+    return "[Permission recovery] Resolve the permission or policy failure for this exact operation before retrying. Do not evade it by changing language, launcher, or tool; use only a registered capability allowed for the target.";
+  }
   if (toolName === "bash" && isMsysRegexArgvFailure(input, failureText)) {
     return "[MSYS argv recovery] Windows MSYS command-line parsing likely collapsed paired backslashes before Bash parsed quotes. Use structured_readonly_command with rg argv inside the workspace, or remove the Bash argv backslash dependency before retrying.";
   }
@@ -480,8 +483,9 @@ export async function failureRecoveryHint(
   }
   if (process.platform === "win32" && input && typeof input === "object") {
     const command = (input as { command?: unknown }).command;
-    if (typeof command === "string" && UNIX_TMP_PATH_RE.test(command)) {
-      return "[Path recovery] Replace hardcoded /tmp with $TMPDIR in shell or os.tmpdir() in Node on Windows.";
+    if (typeof command === "string" && UNIX_TMP_PATH_RE.test(command)
+      && classifyFailureText(failureText, input, toolName) === "path_not_found" && UNIX_TMP_PATH_RE.test(failureText)) {
+      return "[Path recovery] The error names a /tmp path. Verify that exact path and the failing executable in this shell; spelling alone does not establish the cause. Use the actual shell temporary directory or os.tmpdir() in Node where appropriate, after resolving permissions.";
     }
   }
   if (classifyFailureText(failureText, input, toolName) !== "path_not_found" || !input || typeof input !== "object") return undefined;

@@ -42,7 +42,7 @@ test("registered guarded write still requires a completed prior read", async t =
  const cwd = mkdtempSync(join(tmpdir(), "pi-recovery-")); t.after(() => rmSync(cwd, { recursive: true }));
  writeFileSync(join(cwd, "target.txt"), "original");
  let failure = "";
- await assert.rejects(definitions.get("write").execute("blocked", { path: "target.txt", content: "replacement" }, undefined, undefined, { cwd }), error => { failure = String(error); return /READ_REQUIRED/.test(failure); });
+ await assert.rejects(definitions.get("write").execute("blocked", { path: "target.txt", content: "replacement" }, undefined, undefined, { cwd }), error => { failure = error instanceof Error ? error.message : String(error); return /READ_REQUIRED/.test(failure); });
  assert.equal(readFileSync(join(cwd, "target.txt"), "utf8"), "original");
  const hint = await failureRecoveryHint("write", {}, failure, cwd);
  assert.match(hint!, /completed tool turn/); assert.match(hint!, /same-turn reads do not satisfy/);
@@ -59,4 +59,31 @@ test("browser guidance preserves helper Python and states its actual scope", () 
  assert.match(description, /os\.getcwd/); assert.match(description, /loopback/);
  assert.ok(browserUrlSafetyError('new_tab("http://127.0.0.1:3000")'));
  assert.equal(browserUrlSafetyError('new_tab("https://example.com")'), undefined);
+});
+
+
+test("heredoc literal substitutions, multiple bodies and conservative unsupported folding", () => {
+ assert.equal(inspectBashResourceLifecycle({ command: "cat <<'EOF'\n$(nohup sleep 1)\nEOF" }), undefined);
+ assert.equal(inspectBashResourceLifecycle({ command: "cat <<'A' <<'B'\nx & 255\nA\nnohup data\nB" }), undefined);
+ assert.ok(inspectBashResourceLifecycle({ command: "cat <<EOF\nx\\\nEOF\nEOF" }));
+ assert.ok(inspectBashResourceLifecycle({ command: "x".repeat(128 * 1024 + 1) }));
+});
+
+test("cleanup must bind the actual background PID, not just mention wait", () => {
+ assert.equal(inspectBashResourceLifecycle({ command: `sleep 1 & pid=$!; trap 'kill "$pid"; wait "$pid"' EXIT; wait "$pid"` }), undefined);
+ assert.ok(inspectBashResourceLifecycle({ command: `sleep 1 & pid=42; trap 'kill "$pid"; wait "$pid"' EXIT; wait "$pid"` }));
+ assert.ok(inspectBashResourceLifecycle({ command: `node script.js & pid=$!; trap 'kill "$pid"; wait "$pid"' EXIT; wait "$pid"` }));
+});
+
+test("field diagnostics stay bounded under escaped-name expansion", () => {
+ const tool = definitions.get("browser_exec");
+ const args: Record<string, unknown> = { code: "SECRET_SCRIPT" };
+ for (let i = 0; i < 100; i++) args["\u0001".repeat(200) + i] = "SECRET_VALUE";
+ assert.throws(() => validateToolArguments(tool, { type: "toolCall", id: "bounded", name: tool.name, arguments: args }), error => {
+  const text = String(error); assert.ok(text.length < 4096); assert.doesNotMatch(text, /SECRET_SCRIPT|SECRET_VALUE/); assert.match(text, /Remove unexpected fields/); return true;
+ });
+});
+
+test("policy recovery resolves the denial instead of changing language", async () => {
+ assert.match(await failureRecoveryHint("bash", { command: "echo safe" }, "POLICY_BLOCKED", process.cwd()), /Do not evade|do not evade/);
 });

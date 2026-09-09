@@ -44,3 +44,5 @@ A second conservative classifier distinguishes strict read-only shell commands, 
 ## Resource lifecycle
 
 Unmanaged detached/background services remain blocked unless one foreground Bash call owns cleanup and wait. Default managed Chrome screenshots and managed Chrome itself are cleaned by exact identity at `agent_settled` and `session_shutdown`.
+
+Literal quoted heredoc bodies are data; unquoted bodies still expose executable substitutions to the bounded lifecycle recognizer. Unsupported delimiters, line folding and shell wrappers are explicitly uncertain. Merely mentioning `wait`, `kill` or `trap` does not establish ownership: the recognized simple background recipe binds `$!` to the same PID used by its EXIT cleanup and wait. Detached services and opaque Node/Python background wrappers remain blocked. This classifier is evidence for policy, not a process sandbox.
