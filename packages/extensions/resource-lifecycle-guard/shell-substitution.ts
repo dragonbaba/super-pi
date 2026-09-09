@@ -123,6 +123,7 @@ export function inspectHereDocuments(command: string): { command: string; substi
    const end = command.indexOf("\n", index); if (end < 0) break; index = end - 1; continue;
   }
   if (c === "$" && command[index + 1] === "(" && command[index + 2] === "(") { arithmeticDepth += 2; index += 2; continue; }
+  if (c === "(" && command[index + 1] === "(") { arithmeticDepth += 2; index++; continue; }
   if (arithmeticDepth) { if (c === "(") arithmeticDepth++; else if (c === ")") arithmeticDepth--; continue; }
   if (c === "<" && command[index + 1] === "<") {
    if (command[index + 2] === "<") { index += 2; continue; }
@@ -137,7 +138,7 @@ export function inspectHereDocuments(command: string): { command: string; substi
   if (c !== "\n") continue;
   if (pending.length === 0) { lineStart = index + 1; continue; }
   const header = command.slice(lineStart, index).replace(/\r$/, "");
-  if (!DATA_HEREDOC_HEADER.test(header) || header.endsWith("\\")) return { command: "", substitutions: [], uncertain: true };
+  if (command.slice(0, lineStart).trim() || !DATA_HEREDOC_HEADER.test(header) || header.endsWith("\\")) return { command: "", substitutions: [], uncertain: true };
   pieces.push(command.slice(copied, index + 1));
   let position = index + 1;
   for (const doc of pending) {
@@ -162,6 +163,8 @@ export function inspectHereDocuments(command: string): { command: string; substi
   }
   pending.length = 0; copied = position; lineStart = position; index = position - 1;
  }
+ // No preceding setup/override or subsequent staged execution is inferred safe.
+ if (copied > 0 && command.slice(copied).trim()) return { command: "", substitutions: [], uncertain: true };
  if (pending.length || arithmeticDepth) return { command: "", substitutions: [], uncertain: true };
  pieces.push(command.slice(copied));
  return { command: pieces.join(""), substitutions, uncertain: false };
