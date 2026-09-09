@@ -144,8 +144,12 @@ function inspectLifecycleScript(source: string, depth: number): string | undefin
    index++;
    if (tokens[index] === "--") index++;
    if (name === "env" || name === "sudo") {
-    while (index < tokens.length && LEADING_ASSIGNMENT.test(tokens[index]!)) index++;
+    // env accepts NAME=VALUE beyond Bash identifier names (e.g. foo.bar).
+    while (index < tokens.length && (name === "env" ? tokens[index]!.includes("=") : LEADING_ASSIGNMENT.test(tokens[index]!))) index++;
    }
+   // Shell redirections are removed from argv, not launcher executables. Their
+   // interleaved/quoted provenance is outside this token view: refuse, don't guess.
+   if (LEADING_REDIRECTION.test(tokens[index] ?? "")) return UNCERTAIN_LIFECYCLE;
    if (!tokens[index] || tokens[index]!.startsWith("-") || hasDynamicSyntax(tokens[index]!)) return UNCERTAIN_LIFECYCLE;
    changedLookup = true;
    name = commandName(tokens[index]!);

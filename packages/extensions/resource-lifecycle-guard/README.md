@@ -67,7 +67,7 @@ Current prefix/case/coprocess protections and bounded validation/recovery guidan
 
 ### Post-merge classification compatibility
 
-The global shell-text prefilter selects work only. Literal option-free `env`/`sudo`/`doas` operands are resolved within their own segment (`env`/`sudo` assignments and an initial `--` are recognized); ambiguous options, other launcher grammars and launcher-selected shells remain conservative refusals. Unrelated `sh` text does not turn a plain `env ... printenv` or `env echo` into a shell wrapper. This does not grant permission or validate arbitrary executable behavior.
+The global shell-text prefilter selects work only. Literal option-free `env`/`sudo`/`doas` operands are resolved within their own segment (`env` NAME=VALUE operands, including non-Bash names, `sudo` assignments and an initial `--` are recognized); ambiguous options, interleaved redirections, other launcher grammars and launcher-selected shells remain conservative refusals. Unrelated `sh` text does not turn a plain `env ... printenv` or `env echo` into a shell wrapper. This does not grant permission or validate arbitrary executable behavior.
 
 Direct wrapper operands retain one layer of Bash double-quote backslash semantics, including backslash-newline removal; the mutation and permission tokenizers use the same rule. Outer dynamic expansion of wrapper/launcher operands remains uninspectable. Substitution scans distinguish termination failure from unsupported grammar without claiming the latter is syntactically complete. Permission scope stays opaque for uninspected substitutions, and independently recognized mutations remain recorded.
 

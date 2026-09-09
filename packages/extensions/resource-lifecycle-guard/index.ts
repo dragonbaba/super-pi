@@ -88,7 +88,7 @@ export default function resourceLifecycleGuard(pi: ExtensionAPI): void {
     // Side-effect-free Bash denial only; acceptance still requires current permission.
     const bashCommand = event.toolName === "bash" ? event.input.command : undefined;
     if (event.toolName === "bash") {
-      const reason = inspectBashResourceLifecycle({ command: bashCommand });
+      const reason = inspectBashResourceLifecycle(event.input);
       if (reason) return { block: true, reason };
     }
     const permissionBlock = await permissions.authorizeToolCall(event, ctx);
