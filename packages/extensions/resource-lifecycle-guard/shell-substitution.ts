@@ -102,6 +102,8 @@ export function extractCommandSubstitutions(command: string, heredocData = false
 }
 
 
+// Only this literal data consumer may hide a body. Evaluators and compound headers are uncertain.
+const DATA_HEREDOC_HEADER = /^[ \t]*(?:\/(?:usr\/)?bin\/)?cat(?:[ \t]+|(?=<))[A-Za-z0-9_./: \t<>\'"\\-]*$/;
 const COMMENT_BOUNDARY = /[ \t\r\n;|&]/;
 const LEADING_TABS = /^\t+/;
 const HEREDOC_WORD = /^(?:'([A-Za-z0-9_]{1,128})'|"([A-Za-z0-9_]{1,128})"|(\\?)([A-Za-z0-9_]{1,128}))(?=$|[ \t\r\n;&|<>])/;
@@ -110,7 +112,7 @@ export function inspectHereDocuments(command: string): { command: string; substi
  if (!command.includes("<<")) return { command, substitutions: [], uncertain: false };
  const pieces: string[] = []; const substitutions: string[] = [];
  const pending: Array<{ word: string; quoted: boolean; tabs: boolean }> = [];
- let quote = ""; let escaped = false; let copied = 0; let count = 0; let arithmeticDepth = 0;
+ let quote = ""; let escaped = false; let copied = 0; let count = 0; let arithmeticDepth = 0; let lineStart = 0;
  for (let index = 0; index < command.length; index++) {
   const c = command[index];
   if (escaped) { escaped = false; continue; }
@@ -132,7 +134,10 @@ export function inspectHereDocuments(command: string): { command: string; substi
    pending.push({ word: word[1] ?? word[2] ?? word[4]!, quoted: !!(word[1] || word[2] || word[3]), tabs });
    index = start + word[0].length - 1; continue;
   }
-  if (c !== "\n" || pending.length === 0) continue;
+  if (c !== "\n") continue;
+  if (pending.length === 0) { lineStart = index + 1; continue; }
+  const header = command.slice(lineStart, index).replace(/\r$/, "");
+  if (!DATA_HEREDOC_HEADER.test(header) || header.endsWith("\\")) return { command: "", substitutions: [], uncertain: true };
   pieces.push(command.slice(copied, index + 1));
   let position = index + 1;
   for (const doc of pending) {
@@ -155,7 +160,7 @@ export function inspectHereDocuments(command: string): { command: string; substi
    }
    if (!found) return { command: "", substitutions: [], uncertain: true };
   }
-  pending.length = 0; copied = position; index = position - 1;
+  pending.length = 0; copied = position; lineStart = position; index = position - 1;
  }
  if (pending.length || arithmeticDepth) return { command: "", substitutions: [], uncertain: true };
  pieces.push(command.slice(copied));

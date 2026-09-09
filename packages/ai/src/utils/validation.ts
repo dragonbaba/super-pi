@@ -536,9 +536,12 @@ export function validateToolArguments(tool: Tool, toolCall: ToolCall): any {
 
 function escapedValidationName(value: string, limit = 96): string {
  return JSON.stringify(value.slice(0, limit) + (value.length > limit ? "…" : ""))
-  .replace(/[\u202a-\u202e\u2066-\u2069]/g, escapeValidationControl);
+  .replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, escapeValidationControl);
 }
-function escapeValidationControl(value: string): string { return `\\u${value.charCodeAt(0).toString(16)}`; }
+function escapeValidationControl(value: string): string {
+ const code = value.codePointAt(0)!;
+ return code > 0xffff ? `\\u{${code.toString(16)}}` : `\\u${code.toString(16).padStart(4, "0")}`;
+}
 function formatBoundedValidationError(error: TLocalizedValidationError, schema: JsonSchemaObject): string {
  const path = escapedValidationName(error.instancePath || "/", 160);
  const params = error.params as { additionalProperties?: string[]; requiredProperties?: string[] };
