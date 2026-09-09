@@ -79,7 +79,8 @@ function hasBoundedOwnedUse(work: string | undefined): boolean {
  return true;
 }
 const SHELL_WRAPPER_TEXT = /sh/i;
-const LEADING_REDIRECTION = /^(?:[0-9]+|\{[^}]+\})?[<>]/;
+const LEADING_REDIRECTION = /^(?:[0-9]+|\{[^}]+\})?[<>]{1,2}(.*)$/;
+const LEADING_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*\+?=/;
 const EMPTY_SUBSTITUTIONS: readonly string[] = [];
 const UNCERTAIN_LIFECYCLE = "Blocked an uncertain/uninspectable shell lifecycle. Use a bounded foreground command; do not bypass this guard with another launcher.";
 
@@ -111,13 +112,24 @@ function inspectLifecycleScript(source: string, depth: number): string | undefin
  const segments = parseShellSegments(command);
  if (segments.length > MAX_SCRIPT_SEGMENTS) return UNCERTAIN_LIFECYCLE;
  for (const tokens of segments) {
-  let index = 0; let name = commandName(tokens[index] ?? "");
-  while (name === "command" || name === "exec") {
+  let index = 0; let changedLookup = false; let prefixes = 0;
+  while (index < tokens.length) {
+   const token = tokens[index]!;
+   if (++prefixes > MAX_SCRIPT_SEGMENTS) return UNCERTAIN_LIFECYCLE;
+   if (LEADING_ASSIGNMENT.test(token)) { changedLookup = true; index++; continue; }
+   const redirection = LEADING_REDIRECTION.exec(token);
+   if (redirection) {
+    changedLookup = true; index++;
+    if (!redirection[1]) { if (!tokens[index]) return UNCERTAIN_LIFECYCLE; index++; }
+    continue;
+   }
+   const prefix = commandName(token);
+   if (prefix !== "command" && prefix !== "exec") break;
    if (++index > MAX_WRAPPER_DEPTH || !tokens[index] || tokens[index]!.startsWith("-")) return UNCERTAIN_LIFECYCLE;
-   name = commandName(tokens[index]!);
   }
-  // Prefixes that alter command lookup are outside the direct-wrapper contract.
-  if (tokens[index]?.includes("=") || LEADING_REDIRECTION.test(tokens[index] ?? "")) return UNCERTAIN_LIFECYCLE;
+  const name = commandName(tokens[index] ?? "");
+  // Resolve only this segment; unrelated text in another command is not authority or uncertainty.
+  if (changedLookup && SCRIPT_WRAPPERS.has(name)) return UNCERTAIN_LIFECYCLE;
   if (OPAQUE_JOB_LAUNCHER.test(name) && !SCRIPT_WRAPPERS.has(name)) return UNCERTAIN_LIFECYCLE;
   if (!SCRIPT_WRAPPERS.has(name)) continue;
   const flag = index + 1;

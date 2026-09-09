@@ -1,4 +1,5 @@
-const UNSUPPORTED_CASE_PATTERN = /\bcase[ \t\r\n]/;
+const CASE_WORD_END = /[ \t\r\n]/;
+const COMMAND_START_KEYWORD = /^(?:then|do|else|elif|if|while|until|time|!)(?=[ \t\r\n])/;
 const SUBSTITUTION_COMMENT_BOUNDARY = /[ \t\r\n;|&()]/;
 export interface CommandSubstitutionScan {
   scripts: string[];
@@ -65,6 +66,7 @@ export function extractCommandSubstitutions(command: string, heredocData = false
     let depth = 1;
     let innerQuote = 0;
     let innerEscaped = false;
+    let commandStart = true;
     let end = index + 2;
     for (; end < command.length; end++) {
       const inner = command.charCodeAt(end);
@@ -73,6 +75,7 @@ export function extractCommandSubstitutions(command: string, heredocData = false
         continue;
       }
       if (inner === 92 && innerQuote !== 39) {
+        if (command[end + 1] !== "\n") commandStart = false;
         innerEscaped = true;
         continue;
       }
@@ -85,10 +88,12 @@ export function extractCommandSubstitutions(command: string, heredocData = false
         continue;
       }
       if (inner === 39 && innerQuote === 0) {
+        commandStart = false;
         innerQuote = 39;
         continue;
       }
       if (inner === 34 && (innerQuote === 0 || innerQuote === 34)) {
+        commandStart = false;
         innerQuote = innerQuote === 34 ? 0 : 34;
         continue;
       }
@@ -96,15 +101,25 @@ export function extractCommandSubstitutions(command: string, heredocData = false
         const newline = command.indexOf("\n", end);
         if (newline < 0) return { scripts, unterminated: true };
         end = newline;
+        commandStart = true;
         continue;
       }
-      if (inner === 40) depth += 1;
+      if (inner === 32 || inner === 9 || inner === 13) continue;
+      if (inner === 10 || inner === 59 || inner === 124 || inner === 38) { commandStart = true; continue; }
+      if (commandStart) {
+        if (inner === 123 && CASE_WORD_END.test(command[end + 1] ?? "")) continue;
+        if (command.startsWith("time", end) && CASE_WORD_END.test(command[end + 4] ?? "")) return { scripts, unterminated: true };
+        if (command.startsWith("case", end) && CASE_WORD_END.test(command[end + 4] ?? "")) return { scripts, unterminated: true };
+        const keyword = COMMAND_START_KEYWORD.exec(command.slice(end, end + 7));
+        if (keyword) { end += keyword[0].length - 1; continue; }
+        commandStart = false;
+      }
+      if (inner === 40) { depth += 1; commandStart = true; }
       else if (inner === 41 && --depth === 0) break;
     }
     if (end >= command.length) return { scripts, unterminated: true };
     const script = command.slice(index + 2, end);
-    // Case-pattern parentheses require shell grammar; never mask a potentially truncated body.
-    if (UNSUPPORTED_CASE_PATTERN.test(script)) return { scripts, unterminated: true };
+    // Actual unquoted case commands are refused before pattern parentheses can truncate this body.
     if (scripts.length < MAX_SUBSTITUTIONS) scripts.push(script);
     else return { scripts, unterminated: true };
     index = end;
