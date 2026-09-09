@@ -22,6 +22,7 @@ async function permissionFixture(t: test.TestContext) {
   // Persistence is deliberately observed, not sent to the installed session.
   pi.appendEntry = () => {};
   permission = new SessionPermissionController(pi);
+  permission.registerCommands();
   pi.on("tool_call", (event, ctx) => permission.authorizeToolCall(event, ctx));
  }, cwd, createEventBus(), runtime);
  const scheduler = new FakeScheduler();
@@ -383,5 +384,16 @@ test("policy change while approval waits rejects stale session rules", async (t)
  f.choose(1);
  assert.equal(await outcome, "rejected");
  assert.equal(f.permission.state.allowRules.length, 0);
+ assert.equal(f.scheduler.highWaterMark.current, 0);
+});
+
+
+test("permission command immediately revokes a pending prompt", async (t) => {
+ const f = await permissionFixture(t);
+ const pending = f.call(); const outcome = pending.catch(() => "rejected");
+ await f.visible; const signal = f.dialogOptions().signal;
+ await f.runner.getCommand("permissions")!.handler("never-ask", f.runner.createContext() as never);
+ try { assert.equal(signal.aborted, true); }
+ finally { f.choose(0); await outcome; }
  assert.equal(f.scheduler.highWaterMark.current, 0);
 });
