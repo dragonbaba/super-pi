@@ -2,7 +2,7 @@
  * Extension runner - executes extensions and manages their lifecycle.
  */
 
-import type { AgentMessage } from "@super-pi/agent-core";
+import type { AgentMessage, ToolInvocationAuthorization } from "@super-pi/agent-core";
 import type { ImageContent, Model, Provider, ProviderHeaders } from "@super-pi/ai";
 import type { KeyId } from "@super-pi/tui";
 import { type Theme, theme } from "../../modes/interactive/theme/theme.ts";
@@ -459,6 +459,80 @@ class ToolCallDeadline {
 	}
 }
 
+/** Bounded live ownership only; no historical tool-call map or waiting queue. */
+class PendingToolAuthorization implements ToolInvocationAuthorization {
+	private checks: (ToolInvocationAuthorization | undefined)[] = [];
+	private authority: ToolInvocationAuthorization | undefined;
+	private live = true;
+	private readonly owners: Set<PendingToolAuthorization>;
+	constructor(owners: Set<PendingToolAuthorization>) { this.owners = owners; owners.add(this); }
+	add(check: ToolInvocationAuthorization): void {
+		if (!this.live || this.checks.length + (this.authority ? 1 : 0) >= 32) {
+			check.release();
+			throw new Error("Blocked by policy: final authorization capacity or lifetime exceeded");
+		}
+		if (check.finalAuthority) {
+			if (this.authority) { check.release(); throw new Error("Blocked by policy: conflicting final authority checks"); }
+			this.authority = check;
+		} else this.checks.push(check);
+	}
+	consume(args: unknown, id: string, name: string, signal?: AbortSignal): unknown {
+		try {
+			if (!this.live || signal?.aborted) throw new Error("Blocked by policy: final authorization is obsolete");
+			// Only the guarded Bash contract is supported by this internal handoff.
+			if (name !== "bash") throw new Error("Blocked by policy: unsupported final authorization tool");
+			let command: unknown, timeout: unknown, cwd: unknown, purpose: unknown;
+			for (let i = 0; i < this.checks.length; i++) {
+				const check = this.checks[i]!;
+				this.checks[i] = undefined;
+				try {
+				const approved = check.consume(args, id, name, signal);
+				if (!approved || typeof approved !== "object" || approved === args) {
+					throw new Error("Blocked by policy: final authorization did not supply private execution values");
+				}
+				const approvedCommand = Object.getOwnPropertyDescriptor(approved, "command");
+				const approvedTimeout = Object.getOwnPropertyDescriptor(approved, "timeout");
+				const approvedCwd = Object.getOwnPropertyDescriptor(approved, "cwd");
+				const approvedPurpose = Object.getOwnPropertyDescriptor(approved, "purpose");
+				if (!approvedCommand || !("value" in approvedCommand) || typeof approvedCommand.value !== "string"
+					|| (approvedTimeout && (!("value" in approvedTimeout)
+						|| (approvedTimeout.value !== undefined && typeof approvedTimeout.value !== "number")))
+					|| (approvedCwd && (!("value" in approvedCwd) || (approvedCwd.value !== undefined && typeof approvedCwd.value !== "string")))
+					|| (approvedPurpose && (!("value" in approvedPurpose) || (approvedPurpose.value !== undefined && typeof approvedPurpose.value !== "string")))) {
+					throw new Error("Blocked by policy: invalid final authorization values");
+				}
+				if (i === 0) { command = approvedCommand.value; timeout = approvedTimeout?.value; cwd = approvedCwd?.value; purpose = approvedPurpose?.value; }
+				else if (command !== approvedCommand.value || timeout !== approvedTimeout?.value || cwd !== approvedCwd?.value || purpose !== approvedPurpose?.value) {
+					throw new Error("Blocked by policy: final authorization snapshots disagree");
+				}
+				} finally { check.release(); }
+			}
+			if (!this.live || signal?.aborted || !this.authority) throw new Error("Blocked by policy: final authorization is obsolete or missing");
+			// All auxiliary consume/release callbacks have settled. The one terminal
+			// guard checks current authority, returns private values, and self-releases.
+			const authority = this.authority;
+			this.authority = undefined;
+			const approved = authority.consume(args, id, name, signal) as { command: unknown; timeout: unknown; cwd: unknown; purpose: unknown };
+			if (this.checks.length && (command !== approved.command || timeout !== approved.timeout || cwd !== approved.cwd || purpose !== approved.purpose)) {
+				throw new Error("Blocked by policy: final authorization snapshots disagree");
+			}
+			if (!this.live || signal?.aborted) throw new Error("Blocked by policy: final authorization is obsolete");
+			return approved;
+		} finally { this.release(); }
+	}
+	release(): void {
+		if (!this.live) return;
+		this.live = false;
+		this.owners.delete(this);
+		try { for (const check of this.checks) { try { check?.release(); } catch { /* Release every check. */ } } }
+		finally {
+			this.checks = [];
+			const authority = this.authority; this.authority = undefined;
+			authority?.release();
+		}
+	}
+}
+
 export class ExtensionRunner {
 	private extensions: Extension[];
 	private handlerEventTypes: Set<string>;
@@ -504,6 +578,7 @@ export class ExtensionRunner {
 	private commandDiagnostics: ResourceDiagnostic[] = [];
 	private staleMessage: string | undefined;
 	private toolCallDeadlines: Set<ToolCallDeadline> | undefined;
+	private finalAuthorizations: Set<PendingToolAuthorization> | undefined;
 	private toolCallDialogOwner: ToolCallDeadline | undefined;
 
 	constructor(
@@ -775,6 +850,8 @@ export class ExtensionRunner {
 	): void {
 		if (!this.staleMessage) {
 			this.staleMessage = message;
+			for (const authorization of this.finalAuthorizations ?? []) authorization.release();
+			this.finalAuthorizations = undefined;
 			for (const deadline of this.toolCallDeadlines ?? []) deadline.revoke(new Error(message));
 			this.mcpResultInputActions = undefined;
 			this.runtime.invalidate(message);
@@ -1434,7 +1511,9 @@ export class ExtensionRunner {
 	async emitToolCall(event: ToolCallEvent): Promise<ToolCallEventResult | undefined> {
 		const ctx = this.createContext();
 		let result: ToolCallEventResult | undefined;
-
+		let authorization: PendingToolAuthorization | undefined;
+		let handedOff = false;
+		try {
 		for (const ext of this.extensions) {
 			const handlers = ext.handlers.get("tool_call");
 			if (!handlers || handlers.length === 0) continue;
@@ -1444,6 +1523,14 @@ export class ExtensionRunner {
 
 				if (handlerResult) {
 					result = handlerResult as ToolCallEventResult;
+					if (result.finalAuthorization) {
+						if ((this.finalAuthorizations?.size ?? 0) >= 128) {
+							result.finalAuthorization.release();
+							throw new Error("Blocked by policy: too many pending authorizations");
+						}
+						authorization ??= new PendingToolAuthorization(this.finalAuthorizations ??= new Set());
+						authorization.add(result.finalAuthorization);
+					}
 					if (result.block) {
 						return result;
 					}
@@ -1451,7 +1538,12 @@ export class ExtensionRunner {
 			}
 		}
 
+		if (authorization) {
+			handedOff = true;
+			return { block: result?.block, reason: result?.reason, terminate: result?.terminate, finalAuthorization: authorization };
+		}
 		return result;
+		} finally { if (!handedOff) authorization?.release(); }
 	}
 
 	async emitUserBash(event: UserBashEvent): Promise<UserBashEventResult | undefined> {

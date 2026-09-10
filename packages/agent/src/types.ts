@@ -67,6 +67,8 @@ export type AgentToolCall = Extract<AssistantMessage["content"][number], { type:
  * `reason` becomes the text shown in that error result. If omitted, a default blocked message is used.
  */
 export interface BeforeToolCallResult {
+	/** @internal Invocation-only, deny-monotonic authorization; never a wire field. */
+	finalAuthorization?: ToolInvocationAuthorization;
 	block?: boolean;
 	reason?: string;
 	/**
@@ -74,6 +76,19 @@ export interface BeforeToolCallResult {
 	 * Early termination only happens when every finalized tool result in the batch sets this to true.
 	 */
 	terminate?: boolean;
+}
+
+/** @internal Consumed synchronously immediately before invocation, then released.
+ * Checks may only deny; successful consumption returns a bounded primitive view,
+ * never the publicly mutable input. The runner requires agreement and creates
+ * the private Bash invocation container. No hook, UI or async work is allowed.
+ */
+export interface ToolInvocationAuthorization {
+	/** @internal Exactly one guard may own the terminal authority check. It
+	 * consumes and releases itself synchronously after all auxiliary callbacks. */
+	readonly finalAuthority?: true;
+	consume(args: unknown, toolCallId: string, toolName: string, signal?: AbortSignal): unknown;
+	release(): void;
 }
 
 /**

@@ -458,6 +458,9 @@ export async function failureRecoveryHint(
   if ((toolName === "edit" || toolName === "write") && classifyFailureText(failureText, input, toolName) === "read_required") {
     return "[Read recovery] This mutation had no qualifying prior read and made no change. Read the exact target range with the read tool in a completed tool turn, then retry against that current content; grep, Bash, LSP, and same-turn reads do not satisfy this guard.";
   }
+  if (failureText.includes("Blocked an uncertain/uninspectable shell lifecycle")) {
+    return "[Lifecycle recovery] The lifecycle guard refused unsupported or uninspectable shell syntax before execution. Use a simpler inspectable foreground operation; for file work, a registered native read/write/edit tool still requires its own target permission and qualifying prior read. Broader permissions do not resolve parser limits. Do not retry unchanged or evade the guard by changing language or launcher.";
+  }
   if (failureText.includes("Blocked an unmanaged long-lived process")) {
     return "[Lifecycle recovery] A permission change cannot authorize an unmanaged process. Keep bounded use and cleanup in one foreground call with the captured PID, or use an available managed capability. Do not evade this boundary with another launcher.";
   }

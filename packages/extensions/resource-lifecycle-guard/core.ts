@@ -79,6 +79,8 @@ function hasBoundedOwnedUse(work: string | undefined): boolean {
  return true;
 }
 const SHELL_WRAPPER_TEXT = /sh|eval/i;
+const EXECUTABLE_EXPANSION_TEXT = /[$`*?\[\]{}%]/;
+const LOOKUP_ASSIGNMENT = /^(?:PATH|BASH_ENV|ENV|SHELLOPTS|BASHOPTS|CDPATH)=/;
 const LEADING_REDIRECTION = /^(?:[0-9]+|\{[^}]+\})?[<>]{1,2}(.*)$/;
 const LEADING_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*\+?=/;
 const EMPTY_SUBSTITUTIONS: readonly string[] = [];
@@ -98,7 +100,7 @@ function inspectLifecycleScript(source: string, depth: number): string | undefin
  if (here?.uncertain) return UNCERTAIN_LIFECYCLE;
  const command = here?.command ?? source;
  const substitutions = extractCommandSubstitutions(command);
- if (substitutions.unterminated) return UNCERTAIN_LIFECYCLE;
+ if (substitutions.unterminated || substitutions.unsupported) return UNCERTAIN_LIFECYCLE;
  for (const script of here?.substitutions ?? EMPTY_SUBSTITUTIONS) { const result = inspectLifecycleScript(script, depth + 1); if (result) return result; }
  for (const script of substitutions.scripts) { const result = inspectLifecycleScript(script, depth + 1); if (result) return result; }
  if (DETACH_UTILITY_PATTERN.test(command)) return BLOCK_REASON;
@@ -108,15 +110,28 @@ function inspectLifecycleScript(source: string, depth: number): string | undefin
   const owned = OWNED_FOREGROUND_JOB.exec(command);
   if (!owned || !hasBoundedOwnedUse(owned[2]) || OPAQUE_JOB_LAUNCHER.test(commandName(owned[1]!)) || OPAQUE_JOB_INTERPRETER.test(commandName(owned[1]!))) return BLOCK_REASON;
  }
- if (!SHELL_WRAPPER_TEXT.test(command)) return undefined;
+ if (!SHELL_WRAPPER_TEXT.test(command) && !EXECUTABLE_EXPANSION_TEXT.test(command)) return undefined;
  const segments = parseShellSegments(command);
  if (segments.length > MAX_SCRIPT_SEGMENTS) return UNCERTAIN_LIFECYCLE;
  for (const tokens of segments) {
+  // The global filter is only an optimization; unrelated segments supply no
+  // shell/evaluator evidence. No closure or reconstructed segment string.
+  let shellText = false;
+  let dynamicText = false;
+  for (const token of tokens) {
+   if (SHELL_WRAPPER_TEXT.test(token)) shellText = true;
+   if (EXECUTABLE_EXPANSION_TEXT.test(token)) dynamicText = true;
+  }
+  if (!shellText && !dynamicText) continue;
   let index = 0; let changedLookup = false; let prefixes = 0;
   while (index < tokens.length) {
    const token = tokens[index]!;
    if (++prefixes > MAX_SCRIPT_SEGMENTS) return UNCERTAIN_LIFECYCLE;
-   if (LEADING_ASSIGNMENT.test(token)) { changedLookup = true; index++; continue; }
+   if (LEADING_ASSIGNMENT.test(token)) {
+    // Shell assignment words do not undergo field splitting (unlike env argv).
+    if (uncertainAssignment(tokens, index, true)) return UNCERTAIN_LIFECYCLE;
+    changedLookup = true; index++; continue;
+   }
    const redirection = LEADING_REDIRECTION.exec(token);
    if (redirection) {
     changedLookup = true; index++;
@@ -127,10 +142,35 @@ function inspectLifecycleScript(source: string, depth: number): string | undefin
    if (prefix !== "command" && prefix !== "exec") break;
    if (++index > MAX_WRAPPER_DEPTH || !tokens[index] || tokens[index]!.startsWith("-")) return UNCERTAIN_LIFECYCLE;
   }
-  const name = commandName(tokens[index] ?? "");
+  if (/[<>]/.test(tokens[index] ?? "") || tokens.expansions?.[index] || hasDynamicSyntax(tokens[index] ?? "")) return UNCERTAIN_LIFECYCLE;
+  let name = commandName(tokens[index] ?? "");
+  // Only literal, option-free launcher operands are resolved. env assignments are
+  // data, not executable names; split-string/options/dynamic lookup stay unknown.
+  let launchers = 0;
+  while (OPAQUE_JOB_LAUNCHER.test(name) && !SCRIPT_WRAPPERS.has(name)) {
+   if (++launchers > MAX_WRAPPER_DEPTH) return UNCERTAIN_LIFECYCLE;
+   // Other launchers (e.g. timeout durations, xargs/busybox modes) need different
+   // operand grammars; never mistake their option/argument for the executable.
+   if (name !== "env" && name !== "sudo" && name !== "doas") return UNCERTAIN_LIFECYCLE;
+   index++;
+   if (tokens[index] === "--") index++;
+   if (name === "env" || name === "sudo") {
+    // env and sudo accept NAME=VALUE beyond Bash identifiers (e.g. foo.bar).
+    while (index < tokens.length && tokens[index]!.includes("=")) {
+     if (uncertainAssignment(tokens, index)) return UNCERTAIN_LIFECYCLE;
+     index++;
+    }
+   }
+   // Shell redirections are removed from argv, not launcher executables. Their
+   // interleaved/quoted provenance is outside this token view: refuse, don't guess.
+   if (/[<>]/.test(tokens[index] ?? "")) return UNCERTAIN_LIFECYCLE;
+   if (!tokens[index] || tokens[index]!.startsWith("-") || hasDynamicSyntax(tokens[index]!)) return UNCERTAIN_LIFECYCLE;
+   changedLookup = true;
+   name = commandName(tokens[index]!);
+  }
   // Resolve only this segment; unrelated text in another command is not authority or uncertainty.
   if (changedLookup && SCRIPT_WRAPPERS.has(name)) return UNCERTAIN_LIFECYCLE;
-  if (OPAQUE_JOB_LAUNCHER.test(name) && !SCRIPT_WRAPPERS.has(name)) return UNCERTAIN_LIFECYCLE;
+  if (tokens.dynamic && (SCRIPT_WRAPPERS.has(name) || name === "eval")) return UNCERTAIN_LIFECYCLE;
   if (name === "eval") for (let operand = index + 1; operand < tokens.length; operand++) {
    if (tokens[operand]!.includes("<<")) return UNCERTAIN_LIFECYCLE;
   }
@@ -151,7 +191,12 @@ export interface HighRiskMutationScan {
 	workspaceWide: boolean;
 }
 
-type ShellSegment = string[];
+type ShellSegment = string[] & { dynamic?: boolean; expansions?: number[] };
+
+function uncertainAssignment(tokens: ShellSegment, index: number, shellAssignment = false): boolean {
+ const expansion = tokens.expansions?.[index] ?? 0;
+ return (expansion & (shellAssignment ? 4 : 14)) !== 0 || (expansion !== 0 && LOOKUP_ASSIGNMENT.test(tokens[index]!));
+}
 
 interface ScanBuilder {
 	primitives: string[];
@@ -234,6 +279,7 @@ function inspectShellScript(script: string, initialCwd: string, depth: number, b
 		addPrimitive(builder, "unterminated_command_substitution");
 		markUnverifiable(builder);
 	}
+	if (substitutions.unsupported) markUnverifiable(builder);
 	for (const nested of substitutions.scripts) inspectShellScript(nested, initialCwd, depth + 1, builder);
 	const segments = parseShellSegments(script);
 	let workingDirectory = initialCwd;
@@ -546,7 +592,7 @@ function markUnverifiable(builder: ScanBuilder): void {
 
 function parseShellSegments(command: string): ShellSegment[] {
 	const segments: ShellSegment[] = [];
-	let tokens: string[] = [];
+	let tokens: ShellSegment = [];
 	let value = "";
 	let tokenStarted = false;
 	let quote = 0;
@@ -561,9 +607,27 @@ function parseShellSegments(command: string): ShellSegment[] {
 			continue;
 		}
 		if (code === 92 && quote !== 39) {
+			const next = command.charCodeAt(index + 1);
+			if (next === 10) { index++; continue; }
+			// Double quotes only remove backslash before $, `, ", backslash or LF.
+			if (quote === 34 && next !== 36 && next !== 96 && next !== 34 && next !== 92) {
+				value += "\\"; tokenStarted = true; continue;
+			}
 			escaped = true;
 			tokenStarted = true;
 			continue;
+		}
+		if (quote !== 39 && (code === 36 || code === 96)) {
+			tokens.dynamic = true;
+			const flags = code === 96 || command.charCodeAt(index + 1) === 40 ? 4 : quote === 34 ? 1 : 2;
+			const expansions = tokens.expansions ??= [];
+			expansions[tokens.length] = (expansions[tokens.length] ?? 0) | flags;
+		}
+		// Launcher assignment operands are ordinary argv words: unquoted braces
+		// can expand one apparent assignment into additional executable operands.
+		if (quote === 0 && (code === 123 || code === 125)) {
+			const expansions = tokens.expansions ??= [];
+			expansions[tokens.length] = (expansions[tokens.length] ?? 0) | 8;
 		}
 		if (quote !== 0) {
 			if (code === quote) quote = 0;

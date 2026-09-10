@@ -25,6 +25,7 @@ import type {
 	AgentToolCall,
 	AgentToolResult,
 	AgentToolUpdateCallback,
+	ToolInvocationAuthorization,
 	StreamFn,
 } from "./types.ts";
 
@@ -668,6 +669,8 @@ async function executeToolCallsParallel(
 	emit: AgentEventSink,
 ): Promise<ExecutedToolCallBatch> {
 	const finalizedCalls: FinalizedToolCallEntry[] = [];
+	let authorizations: ToolInvocationAuthorization[] | undefined;
+	try {
 
 	let nextIndex = 0;
 	for (; nextIndex < toolCalls.length; nextIndex++) {
@@ -695,6 +698,7 @@ async function executeToolCallsParallel(
 			continue;
 		}
 
+		if (preparation.finalAuthorization) (authorizations ??= []).push(preparation.finalAuthorization);
 		finalizedCalls.push(async () => {
 			const executed = await executePreparedToolCall(preparation, signal, emit, config.eventInstrumentation);
 			const finalized = await finalizeExecutedToolCall(
@@ -727,6 +731,7 @@ async function executeToolCallsParallel(
 		messages,
 		terminate: shouldTerminateToolBatch(orderedFinalizedCalls),
 	};
+	} finally { if (authorizations) for (const authorization of authorizations) authorization.release(); }
 }
 
 type PreparedToolCall = {
@@ -734,6 +739,8 @@ type PreparedToolCall = {
 	toolCall: AgentToolCall;
 	tool: AgentTool<any>;
 	args: unknown;
+	finalAuthorization?: ToolInvocationAuthorization;
+	authorizedExecute?: AgentTool<any>["execute"];
 };
 
 type ImmediateToolCallOutcome = {
@@ -745,6 +752,8 @@ type ImmediateToolCallOutcome = {
 type ExecutedToolCallOutcome = {
 	result: AgentToolResult<any>;
 	isError: boolean;
+	/** Invocation was refused; retain the normal pre-execution block semantics. */
+	authorizationVeto?: true;
 };
 
 type FinalizedToolCallOutcome = {
@@ -798,7 +807,10 @@ async function prepareToolCall(
 		};
 	}
 
+	let finalAuthorization: ToolInvocationAuthorization | undefined;
+	let handedOff = false;
 	try {
+		const selectedExecute = config.beforeToolCall ? tool.execute : undefined;
 		const preparedToolCall = prepareToolCallArguments(tool, toolCall);
 		const validatedArgs = validateToolArguments(tool, preparedToolCall);
 		if (config.beforeToolCall) {
@@ -811,6 +823,7 @@ async function prepareToolCall(
 				},
 				signal,
 			);
+			finalAuthorization = beforeResult?.finalAuthorization;
 			if (signal?.aborted) {
 				return {
 					kind: "immediate",
@@ -837,19 +850,25 @@ async function prepareToolCall(
 				isError: true,
 			};
 		}
-		return {
+		const prepared: PreparedToolCall = {
 			kind: "prepared",
 			toolCall,
 			tool,
 			args: validatedArgs,
 		};
+		if (finalAuthorization) {
+			prepared.finalAuthorization = finalAuthorization;
+			prepared.authorizedExecute = selectedExecute;
+		}
+		handedOff = true;
+		return prepared;
 	} catch (error) {
 		return {
 			kind: "immediate",
 			result: createErrorToolResult(error instanceof Error ? error.message : String(error)),
 			isError: true,
 		};
-	}
+	} finally { if (!handedOff) finalAuthorization?.release(); }
 }
 
 async function executePreparedToolCall(
@@ -860,6 +879,7 @@ async function executePreparedToolCall(
 ): Promise<ExecutedToolCallOutcome> {
 	const progress = new ToolProgressDelivery(prepared, emit, instrumentation);
 	let acceptingUpdates = true;
+	let checkingAuthorization = false;
 
 	try {
 		const onUpdate = ((partialResult: AgentToolResult<any>) => {
@@ -868,9 +888,22 @@ async function executePreparedToolCall(
 		}) as AgentToolUpdateCallback<any>;
 		onUpdate.awaited = (partialResult) =>
 			acceptingUpdates ? progress.publish(partialResult) : RESOLVED_VOID_PROMISE;
-		const result = await prepared.tool.execute(
-			prepared.toolCall.id,
-			prepared.args as never,
+		// Resolve the callable before the final check. The returned execution values
+		// are private to this invocation, including across wrapper context callbacks.
+		const execute = prepared.tool.execute;
+		const id = prepared.toolCall.id;
+		const name = prepared.toolCall.name;
+		checkingAuthorization = prepared.finalAuthorization !== undefined;
+		if (prepared.finalAuthorization && execute !== prepared.authorizedExecute) {
+			throw new Error("Blocked by policy: authorized tool implementation changed before invocation");
+		}
+		const args = prepared.finalAuthorization
+			? prepared.finalAuthorization.consume(prepared.args, id, name, signal)
+			: prepared.args;
+		checkingAuthorization = false;
+		const result = await execute.call(prepared.tool,
+			id,
+			args as never,
 			signal,
 			onUpdate,
 		);
@@ -879,6 +912,10 @@ async function executePreparedToolCall(
 		return { result, isError: false };
 	} catch (error) {
 		acceptingUpdates = false;
+		if (checkingAuthorization) {
+			return { result: createErrorToolResult(error instanceof Error ? error.message : String(error)),
+				isError: true, authorizationVeto: true };
+		}
 		try {
 			await progress.flush();
 		} catch {
@@ -891,6 +928,10 @@ async function executePreparedToolCall(
 		};
 	} finally {
 		acceptingUpdates = false;
+		if (prepared.finalAuthorization) {
+			prepared.finalAuthorization.release();
+			prepared.finalAuthorization = undefined;
+		}
 	}
 }
 
@@ -1033,7 +1074,7 @@ async function finalizeExecutedToolCall(
 	let result = executed.result;
 	let isError = executed.isError;
 
-	if (config.afterToolCall) {
+	if (config.afterToolCall && !executed.authorizationVeto) {
 		try {
 			const afterResult = await config.afterToolCall(
 				{

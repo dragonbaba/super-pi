@@ -967,6 +967,8 @@ export class AgentSession {
 
 			try {
 				return await runner.emitToolCall({
+					// Preserve the runner-owned finalAuthorization in the returned result;
+					// the dispatcher consumes it only at invocation, not at hook completion.
 					type: "tool_call",
 					toolName: toolCall.name,
 					toolCallId: toolCall.id,
