@@ -461,51 +461,75 @@ class ToolCallDeadline {
 
 /** Bounded live ownership only; no historical tool-call map or waiting queue. */
 class PendingToolAuthorization implements ToolInvocationAuthorization {
-	private checks: ToolInvocationAuthorization[] = [];
+	private checks: (ToolInvocationAuthorization | undefined)[] = [];
+	private authority: ToolInvocationAuthorization | undefined;
 	private live = true;
 	private readonly owners: Set<PendingToolAuthorization>;
 	constructor(owners: Set<PendingToolAuthorization>) { this.owners = owners; owners.add(this); }
 	add(check: ToolInvocationAuthorization): void {
-		if (!this.live || this.checks.length >= 32) {
+		if (!this.live || this.checks.length + (this.authority ? 1 : 0) >= 32) {
 			check.release();
 			throw new Error("Blocked by policy: final authorization capacity or lifetime exceeded");
 		}
-		this.checks.push(check);
+		if (check.finalAuthority) {
+			if (this.authority) { check.release(); throw new Error("Blocked by policy: conflicting final authority checks"); }
+			this.authority = check;
+		} else this.checks.push(check);
 	}
 	consume(args: unknown, id: string, name: string, signal?: AbortSignal): unknown {
 		try {
 			if (!this.live || signal?.aborted) throw new Error("Blocked by policy: final authorization is obsolete");
 			// Only the guarded Bash contract is supported by this internal handoff.
 			if (name !== "bash") throw new Error("Blocked by policy: unsupported final authorization tool");
-			let command: unknown, timeout: unknown;
+			let command: unknown, timeout: unknown, cwd: unknown, purpose: unknown;
 			for (let i = 0; i < this.checks.length; i++) {
-				const approved = this.checks[i]!.consume(args, id, name, signal);
+				const check = this.checks[i]!;
+				this.checks[i] = undefined;
+				try {
+				const approved = check.consume(args, id, name, signal);
 				if (!approved || typeof approved !== "object" || approved === args) {
 					throw new Error("Blocked by policy: final authorization did not supply private execution values");
 				}
 				const approvedCommand = Object.getOwnPropertyDescriptor(approved, "command");
 				const approvedTimeout = Object.getOwnPropertyDescriptor(approved, "timeout");
+				const approvedCwd = Object.getOwnPropertyDescriptor(approved, "cwd");
+				const approvedPurpose = Object.getOwnPropertyDescriptor(approved, "purpose");
 				if (!approvedCommand || !("value" in approvedCommand) || typeof approvedCommand.value !== "string"
 					|| (approvedTimeout && (!("value" in approvedTimeout)
-						|| (approvedTimeout.value !== undefined && typeof approvedTimeout.value !== "number")))) {
+						|| (approvedTimeout.value !== undefined && typeof approvedTimeout.value !== "number")))
+					|| (approvedCwd && (!("value" in approvedCwd) || (approvedCwd.value !== undefined && typeof approvedCwd.value !== "string")))
+					|| (approvedPurpose && (!("value" in approvedPurpose) || (approvedPurpose.value !== undefined && typeof approvedPurpose.value !== "string")))) {
 					throw new Error("Blocked by policy: invalid final authorization values");
 				}
-				if (i === 0) { command = approvedCommand.value; timeout = approvedTimeout?.value; }
-				else if (command !== approvedCommand.value || timeout !== approvedTimeout?.value) {
+				if (i === 0) { command = approvedCommand.value; timeout = approvedTimeout?.value; cwd = approvedCwd?.value; purpose = approvedPurpose?.value; }
+				else if (command !== approvedCommand.value || timeout !== approvedTimeout?.value || cwd !== approvedCwd?.value || purpose !== approvedPurpose?.value) {
 					throw new Error("Blocked by policy: final authorization snapshots disagree");
 				}
+				} finally { check.release(); }
+			}
+			if (!this.live || signal?.aborted || !this.authority) throw new Error("Blocked by policy: final authorization is obsolete or missing");
+			// All auxiliary consume/release callbacks have settled. The one terminal
+			// guard checks current authority, returns private values, and self-releases.
+			const authority = this.authority;
+			this.authority = undefined;
+			const approved = authority.consume(args, id, name, signal) as { command: unknown; timeout: unknown; cwd: unknown; purpose: unknown };
+			if (this.checks.length && (command !== approved.command || timeout !== approved.timeout || cwd !== approved.cwd || purpose !== approved.purpose)) {
+				throw new Error("Blocked by policy: final authorization snapshots disagree");
 			}
 			if (!this.live || signal?.aborted) throw new Error("Blocked by policy: final authorization is obsolete");
-			// No handler owns this container. Release callbacks cannot change its values.
-			return { command, timeout };
+			return approved;
 		} finally { this.release(); }
 	}
 	release(): void {
 		if (!this.live) return;
 		this.live = false;
 		this.owners.delete(this);
-		try { for (const check of this.checks) { try { check.release(); } catch { /* Release every check. */ } } }
-		finally { this.checks = []; }
+		try { for (const check of this.checks) { try { check?.release(); } catch { /* Release every check. */ } } }
+		finally {
+			this.checks = [];
+			const authority = this.authority; this.authority = undefined;
+			authority?.release();
+		}
 	}
 }
 

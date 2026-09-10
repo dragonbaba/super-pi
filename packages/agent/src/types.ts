@@ -84,6 +84,9 @@ export interface BeforeToolCallResult {
  * the private Bash invocation container. No hook, UI or async work is allowed.
  */
 export interface ToolInvocationAuthorization {
+	/** @internal Exactly one guard may own the terminal authority check. It
+	 * consumes and releases itself synchronously after all auxiliary callbacks. */
+	readonly finalAuthority?: true;
 	consume(args: unknown, toolCallId: string, toolName: string, signal?: AbortSignal): unknown;
 	release(): void;
 }

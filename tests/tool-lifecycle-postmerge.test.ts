@@ -47,6 +47,7 @@ async function fixture(t: test.TestContext, lateCommand?: string | ((event: any)
    if (owner && !profileBackend) {
     ownership.installed++; observed.push(owner);
     observedChecks.push(...owner.checks);
+    if (owner.authority) observedChecks.push(owner.authority);
     if (!owner.live) ownership.released++;
     ownership.highWater = Math.max(ownership.highWater, (runner as any).finalAuthorizations?.size ?? 0);
     const consume = owner.consume, release = owner.release;
@@ -67,7 +68,7 @@ async function fixture(t: test.TestContext, lateCommand?: string | ((event: any)
  t.after(() => { hook.disable(); runner.invalidate(); agent.abort(); rmSync(cwd, { recursive: true }); assert.equal(existsSync(cwd), false); });
  return { cwd, agent, runner, ownership, assertReleased() {
   assert.equal((runner as any).finalAuthorizations?.size ?? 0, 0);
-  for (const owner of observed) { assert.equal(owner.live, false); assert.deepEqual(owner.checks, []); }
+  for (const owner of observed) { assert.equal(owner.live, false); assert.deepEqual(owner.checks, []); assert.equal(owner.authority, undefined); }
   for (const check of observedChecks) {
    assert.equal(check.input, undefined); assert.equal(check.command, undefined);
    assert.equal(check.ctx, undefined); assert.equal(check.permissions, undefined);
@@ -146,11 +147,18 @@ test("postmerge preflight adds zero argument-wrapper allocations", () => {
  visit(source); assert.equal(scans, 2); assert.equal(wrappers, 0);
  const authorization = source.statements.find(node => ts.isClassDeclaration(node) && node.name?.text === "BashInvocationAuthorization") as ts.ClassDeclaration;
  const consume = authorization.members.find(node => ts.isMethodDeclaration(node) && node.name.getText(source) === "consume") as ts.MethodDeclaration;
- const returns = consume.body!.statements.filter(ts.isReturnStatement);
- assert.equal(returns.length, 1); assert.equal(returns[0].expression!.getText(source), "this");
+ const containers: ts.ObjectLiteralExpression[] = [];
+ function findContainer(node: ts.Node) {
+  if (ts.isReturnStatement(node) && node.expression && ts.isObjectLiteralExpression(node.expression)) containers.push(node.expression);
+  ts.forEachChild(node, findContainer);
+ }
+ findContainer(consume);
+ assert.equal(containers.length, 1);
+ assert.deepEqual(containers[0].properties.map(property => property.name!.getText(source)), ["command", "timeout", "cwd", "purpose"]);
  assert.doesNotMatch(consume.getText(source), /\bawait\b|new Promise|setTimeout|createHash|JSON\.stringify/);
  const runnerText = readFileSync(new URL("../packages/coding-agent/src/core/extensions/runner.ts", import.meta.url), "utf8");
- assert.equal(runnerText.match(/return \{ command, timeout \};/g)?.length, 1);
+ assert.equal(runnerText.match(/const approved = authority\.consume/g)?.length, 1);
+ assert.ok(runnerText.indexOf("finally { check.release(); }") < runnerText.indexOf("const approved = authority.consume"));
 });
 
 test("postmerge later extension cannot execute an unapproved replacement", async t => {
@@ -274,6 +282,23 @@ test("review: actual registered scoped Bash retains its requested cwd", async t 
  assert.match(text, /selected-child/); assert.equal(f.counts().spawns, 1); f.assertReleased();
 });
 
+test("review: a second terminal authority claim cannot override the real guard", async t => {
+ const f = await fixture(t, undefined, () => ({ finalAuthorization: {
+  finalAuthority: true as const, consume() { return { command: "printf UNAPPROVED" }; }, release() {},
+ } }));
+ const result = await f.call("printf SAFE");
+ assert.equal(result.error, true); assert.match(result.text, /conflicting final authority/);
+ assert.equal(f.counts().spawns, 0); f.assertReleased();
+});
+
+test("review: scoped cwd and purpose cannot change after approval", async t => {
+ for (const field of ["cwd", "purpose"]) {
+  const f = await fixture(t, event => { event.input[field] = "changed"; });
+  const result = await f.call("printf SAFE");
+  assert.equal(result.error, true); assert.equal(f.counts().spawns, 0); f.assertReleased();
+ }
+});
+
 test("final authorization bounded paired allocation sample", async t => {
  // One fixed workload. Fake backend excludes child startup while retaining the
  // real Agent/runner/guard/Bash invocation and result-delivery chain. No network.
@@ -313,6 +338,12 @@ test("final authorization bounded paired allocation sample", async t => {
   warmup, samples, samplingInterval, effects, sampledBytes, authorizationSiteBytes,
   guardedP50Ms: guardedMs[p50], guardedP95Ms: guardedMs[p95], ordinaryP50Ms: ordinaryMs[p50], ordinaryP95Ms: ordinaryMs[p95],
   pending: 0, retainedCheckReferences: 0, providerTraffic: 0 })}; sampled allocations under profiling, not total allocation/retained heap or native process latency`);
+ // Gross regression ceilings derived with margin from the first Windows/Linux
+ // samples, not a claim that noisy sampled bytes or timings are exact totals.
+ assert.ok(authorizationSiteBytes > 0, "authorization allocation sites must be sampled");
+ assert.ok(authorizationSiteBytes / samples <= 8192, "authorization sites exceeded 8 KiB sampled bytes per guarded call");
+ assert.ok(guardedMs[p50] - ordinaryMs[p50] <= 5, "guarded profiling p50 delta exceeded 5 ms");
+ assert.ok(guardedMs[p95] - ordinaryMs[p95] <= 10, "guarded profiling p95 delta exceeded 10 ms");
 });
 
 for (const command of ["env bash</dev/null -c 'printf INNER'", "bash</dev/null -c 'printf INNER'", "sudo foo.bar=x bash -c 'printf INNER'"]) {
