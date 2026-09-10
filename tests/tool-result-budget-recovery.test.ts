@@ -173,6 +173,7 @@ for (const presentationBudget of [1024,1]) test(`real SDK write persists across 
 test("bounded request planning allocation and release", t => {
  const child=spawnSync(process.execPath,["--expose-gc","--experimental-strip-types","--test","--test-name-pattern=^request planning measurement child$",fileURLToPath(import.meta.url)],{cwd:process.cwd(),env:{...process.env,PI_BUDGET_MEASUREMENT_CHILD:"1"},encoding:"utf8",timeout:30_000,maxBuffer:64*1024});
  assert.equal(child.error,undefined); assert.equal(child.status,0,child.stdout+child.stderr);
+ assert.match(child.stdout,/"projectionScans":40/,"measurement child must run and publish its counters; an empty successful subprocess is not evidence");
  t.diagnostic(child.stdout.trim());
 });
 
