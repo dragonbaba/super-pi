@@ -2,7 +2,7 @@
  * Extension runner - executes extensions and manages their lifecycle.
  */
 
-import type { AgentMessage } from "@super-pi/agent-core";
+import type { AgentMessage, ToolInvocationAuthorization } from "@super-pi/agent-core";
 import type { ImageContent, Model, Provider, ProviderHeaders } from "@super-pi/ai";
 import type { KeyId } from "@super-pi/tui";
 import { type Theme, theme } from "../../modes/interactive/theme/theme.ts";
@@ -459,6 +459,43 @@ class ToolCallDeadline {
 	}
 }
 
+/** Bounded live ownership only; no historical tool-call map or waiting queue. */
+class PendingToolAuthorization implements ToolInvocationAuthorization {
+	private checks: ToolInvocationAuthorization[] = [];
+	private live = true;
+	private readonly owners: Set<PendingToolAuthorization>;
+	constructor(owners: Set<PendingToolAuthorization>) { this.owners = owners; owners.add(this); }
+	add(check: ToolInvocationAuthorization): void {
+		if (!this.live || this.checks.length >= 32) {
+			check.release();
+			throw new Error("Blocked by policy: final authorization capacity or lifetime exceeded");
+		}
+		this.checks.push(check);
+	}
+	consume(args: unknown, id: string, name: string, signal?: AbortSignal): unknown {
+		try {
+			if (!this.live || signal?.aborted) throw new Error("Blocked by policy: final authorization is obsolete");
+			let executionArgs: unknown;
+			for (let i = 0; i < this.checks.length; i++) {
+				const approved = this.checks[i]!.consume(args, id, name, signal);
+				if (!approved || typeof approved !== "object" || approved === args) {
+					throw new Error("Blocked by policy: final authorization did not supply private execution values");
+				}
+				if (i === 0) executionArgs = approved;
+			}
+			if (!this.live || signal?.aborted) throw new Error("Blocked by policy: final authorization is obsolete");
+			return executionArgs;
+		} finally { this.release(); }
+	}
+	release(): void {
+		if (!this.live) return;
+		this.live = false;
+		this.owners.delete(this);
+		try { for (const check of this.checks) { try { check.release(); } catch { /* Release every check. */ } } }
+		finally { this.checks = []; }
+	}
+}
+
 export class ExtensionRunner {
 	private extensions: Extension[];
 	private handlerEventTypes: Set<string>;
@@ -504,6 +541,7 @@ export class ExtensionRunner {
 	private commandDiagnostics: ResourceDiagnostic[] = [];
 	private staleMessage: string | undefined;
 	private toolCallDeadlines: Set<ToolCallDeadline> | undefined;
+	private finalAuthorizations: Set<PendingToolAuthorization> | undefined;
 	private toolCallDialogOwner: ToolCallDeadline | undefined;
 
 	constructor(
@@ -775,6 +813,8 @@ export class ExtensionRunner {
 	): void {
 		if (!this.staleMessage) {
 			this.staleMessage = message;
+			for (const authorization of this.finalAuthorizations ?? []) authorization.release();
+			this.finalAuthorizations = undefined;
 			for (const deadline of this.toolCallDeadlines ?? []) deadline.revoke(new Error(message));
 			this.mcpResultInputActions = undefined;
 			this.runtime.invalidate(message);
@@ -1434,7 +1474,9 @@ export class ExtensionRunner {
 	async emitToolCall(event: ToolCallEvent): Promise<ToolCallEventResult | undefined> {
 		const ctx = this.createContext();
 		let result: ToolCallEventResult | undefined;
-
+		let authorization: PendingToolAuthorization | undefined;
+		let handedOff = false;
+		try {
 		for (const ext of this.extensions) {
 			const handlers = ext.handlers.get("tool_call");
 			if (!handlers || handlers.length === 0) continue;
@@ -1444,6 +1486,14 @@ export class ExtensionRunner {
 
 				if (handlerResult) {
 					result = handlerResult as ToolCallEventResult;
+					if (result.finalAuthorization) {
+						if ((this.finalAuthorizations?.size ?? 0) >= 128) {
+							result.finalAuthorization.release();
+							throw new Error("Blocked by policy: too many pending authorizations");
+						}
+						authorization ??= new PendingToolAuthorization(this.finalAuthorizations ??= new Set());
+						authorization.add(result.finalAuthorization);
+					}
 					if (result.block) {
 						return result;
 					}
@@ -1451,7 +1501,12 @@ export class ExtensionRunner {
 			}
 		}
 
+		if (authorization) {
+			handedOff = true;
+			return { block: result?.block, reason: result?.reason, terminate: result?.terminate, finalAuthorization: authorization };
+		}
 		return result;
+		} finally { if (!handedOff) authorization?.release(); }
 	}
 
 	async emitUserBash(event: UserBashEvent): Promise<UserBashEventResult | undefined> {

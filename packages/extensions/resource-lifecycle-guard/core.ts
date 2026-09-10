@@ -79,6 +79,8 @@ function hasBoundedOwnedUse(work: string | undefined): boolean {
  return true;
 }
 const SHELL_WRAPPER_TEXT = /sh|eval/i;
+const EXECUTABLE_EXPANSION_TEXT = /[$`*?\[\]{}%]/;
+const LOOKUP_ASSIGNMENT = /^(?:PATH|BASH_ENV|ENV|SHELLOPTS|BASHOPTS|CDPATH)=/;
 const LEADING_REDIRECTION = /^(?:[0-9]+|\{[^}]+\})?[<>]{1,2}(.*)$/;
 const LEADING_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*\+?=/;
 const EMPTY_SUBSTITUTIONS: readonly string[] = [];
@@ -108,20 +110,28 @@ function inspectLifecycleScript(source: string, depth: number): string | undefin
   const owned = OWNED_FOREGROUND_JOB.exec(command);
   if (!owned || !hasBoundedOwnedUse(owned[2]) || OPAQUE_JOB_LAUNCHER.test(commandName(owned[1]!)) || OPAQUE_JOB_INTERPRETER.test(commandName(owned[1]!))) return BLOCK_REASON;
  }
- if (!SHELL_WRAPPER_TEXT.test(command)) return undefined;
+ if (!SHELL_WRAPPER_TEXT.test(command) && !EXECUTABLE_EXPANSION_TEXT.test(command)) return undefined;
  const segments = parseShellSegments(command);
  if (segments.length > MAX_SCRIPT_SEGMENTS) return UNCERTAIN_LIFECYCLE;
  for (const tokens of segments) {
   // The global filter is only an optimization; unrelated segments supply no
   // shell/evaluator evidence. No closure or reconstructed segment string.
   let shellText = false;
-  for (const token of tokens) if (SHELL_WRAPPER_TEXT.test(token)) { shellText = true; break; }
-  if (!shellText) continue;
+  let dynamicText = false;
+  for (const token of tokens) {
+   if (SHELL_WRAPPER_TEXT.test(token)) shellText = true;
+   if (EXECUTABLE_EXPANSION_TEXT.test(token)) dynamicText = true;
+  }
+  if (!shellText && !dynamicText) continue;
   let index = 0; let changedLookup = false; let prefixes = 0;
   while (index < tokens.length) {
    const token = tokens[index]!;
    if (++prefixes > MAX_SCRIPT_SEGMENTS) return UNCERTAIN_LIFECYCLE;
-   if (LEADING_ASSIGNMENT.test(token)) { changedLookup = true; index++; continue; }
+   if (LEADING_ASSIGNMENT.test(token)) {
+    // Shell assignment words do not undergo field splitting (unlike env argv).
+    if (uncertainAssignment(tokens, index, true)) return UNCERTAIN_LIFECYCLE;
+    changedLookup = true; index++; continue;
+   }
    const redirection = LEADING_REDIRECTION.exec(token);
    if (redirection) {
     changedLookup = true; index++;
@@ -132,12 +142,13 @@ function inspectLifecycleScript(source: string, depth: number): string | undefin
    if (prefix !== "command" && prefix !== "exec") break;
    if (++index > MAX_WRAPPER_DEPTH || !tokens[index] || tokens[index]!.startsWith("-")) return UNCERTAIN_LIFECYCLE;
   }
+  if (tokens.expansions?.[index] || hasDynamicSyntax(tokens[index] ?? "")) return UNCERTAIN_LIFECYCLE;
   let name = commandName(tokens[index] ?? "");
   // Only literal, option-free launcher operands are resolved. env assignments are
   // data, not executable names; split-string/options/dynamic lookup stay unknown.
   let launchers = 0;
   while (OPAQUE_JOB_LAUNCHER.test(name) && !SCRIPT_WRAPPERS.has(name)) {
-   if (++launchers > MAX_WRAPPER_DEPTH || tokens.dynamic) return UNCERTAIN_LIFECYCLE;
+   if (++launchers > MAX_WRAPPER_DEPTH) return UNCERTAIN_LIFECYCLE;
    // Other launchers (e.g. timeout durations, xargs/busybox modes) need different
    // operand grammars; never mistake their option/argument for the executable.
    if (name !== "env" && name !== "sudo" && name !== "doas") return UNCERTAIN_LIFECYCLE;
@@ -145,7 +156,10 @@ function inspectLifecycleScript(source: string, depth: number): string | undefin
    if (tokens[index] === "--") index++;
    if (name === "env" || name === "sudo") {
     // env accepts NAME=VALUE beyond Bash identifier names (e.g. foo.bar).
-    while (index < tokens.length && (name === "env" ? tokens[index]!.includes("=") : LEADING_ASSIGNMENT.test(tokens[index]!))) index++;
+    while (index < tokens.length && (name === "env" ? tokens[index]!.includes("=") : LEADING_ASSIGNMENT.test(tokens[index]!))) {
+     if (uncertainAssignment(tokens, index)) return UNCERTAIN_LIFECYCLE;
+     index++;
+    }
    }
    // Shell redirections are removed from argv, not launcher executables. Their
    // interleaved/quoted provenance is outside this token view: refuse, don't guess.
@@ -177,7 +191,12 @@ export interface HighRiskMutationScan {
 	workspaceWide: boolean;
 }
 
-type ShellSegment = string[] & { dynamic?: boolean };
+type ShellSegment = string[] & { dynamic?: boolean; expansions?: number[] };
+
+function uncertainAssignment(tokens: ShellSegment, index: number, shellAssignment = false): boolean {
+ const expansion = tokens.expansions?.[index] ?? 0;
+ return (expansion & (shellAssignment ? 4 : 6)) !== 0 || (expansion !== 0 && LOOKUP_ASSIGNMENT.test(tokens[index]!));
+}
 
 interface ScanBuilder {
 	primitives: string[];
@@ -598,7 +617,12 @@ function parseShellSegments(command: string): ShellSegment[] {
 			tokenStarted = true;
 			continue;
 		}
-		if (quote !== 39 && (code === 36 || code === 96)) tokens.dynamic = true;
+		if (quote !== 39 && (code === 36 || code === 96)) {
+			tokens.dynamic = true;
+			const flags = code === 96 || command.charCodeAt(index + 1) === 40 ? 4 : quote === 34 ? 1 : 2;
+			const expansions = tokens.expansions ??= [];
+			expansions[tokens.length] = (expansions[tokens.length] ?? 0) | flags;
+		}
 		if (quote !== 0) {
 			if (code === quote) quote = 0;
 			else value += command[index];

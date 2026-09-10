@@ -286,6 +286,9 @@ export class SessionPermissionController {
     return this.#state;
   }
 
+  /** Read-only invalidation identity; does not grant permission or change policy. */
+  get authorityGeneration(): number { return this.#authorityGeneration; }
+
   registerCommands(): void {
     this.#pi.registerCommand("permissions", {
       description: "管理当前 Session 的访问范围、审批策略和指令白名单",

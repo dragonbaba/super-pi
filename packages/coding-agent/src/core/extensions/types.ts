@@ -14,6 +14,7 @@ import type {
 	AgentToolUpdateCallback,
 	ThinkingLevel,
 	ToolExecutionMode,
+	ToolInvocationAuthorization,
 } from "@super-pi/agent-core";
 import type {
 	Api,
@@ -1139,6 +1140,8 @@ export interface ContextEventResult {
 export type BeforeProviderRequestEventResult = unknown;
 
 export interface ToolCallEventResult {
+	/** @internal Guard-only final invocation handoff, accumulated by the runner. */
+	finalAuthorization?: ToolInvocationAuthorization;
 	/** Block tool execution. To modify arguments, mutate `event.input` in place instead. */
 	block?: boolean;
 	reason?: string;

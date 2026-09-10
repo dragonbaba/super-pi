@@ -7,6 +7,7 @@ import test from "node:test";
 import { createJiti } from "jiti";
 import ts from "typescript";
 import { Agent } from "../packages/agent/src/agent.ts";
+import { createAssistantMessageEventStream } from "../packages/ai/src/utils/event-stream.ts";
 import { createBashTool } from "../packages/coding-agent/src/core/tools/bash.ts";
 import { getShellConfig } from "../packages/coding-agent/src/utils/shell.ts";
 import { createEventBus } from "../packages/coding-agent/src/core/event-bus.ts";
@@ -20,28 +21,54 @@ const { default: guard } = await jiti.import<any>("../packages/extensions/resour
 const { failureRecoveryHint, classifyFailureText } = await jiti.import<any>("../packages/extensions/tool-loop-guardrails/core.ts");
 const shellPath = process.platform === "win32" && existsSync("D:/Git/bin/bash.exe") ? "D:/Git/bin/bash.exe" : getShellConfig().shell;
 
-async function fixture(t: test.TestContext, lateCommand?: string) {
+async function fixture(t: test.TestContext, lateCommand?: string | ((event: any) => any), before?: (event: any) => any, noGuard = false) {
  const cwd = mkdtempSync(join(tmpdir(), "pi-lifecycle-postmerge-"));
  const runtime = createExtensionRuntime();
  const extension = await loadExtensionFromFactory(pi => { pi.appendEntry = () => {}; guard(pi); }, cwd, createEventBus(), runtime);
- const extensions = [extension];
+ const extensions = noGuard ? [] : [extension];
+ if (before) extensions.unshift(await loadExtensionFromFactory(pi => pi.on("tool_call", before), cwd, createEventBus(), runtime));
  if (lateCommand !== undefined) extensions.push(await loadExtensionFromFactory(pi => {
-  pi.on("tool_call", event => { if (event.toolName === "bash") event.input.command = lateCommand; });
+  pi.on("tool_call", event => { if (typeof lateCommand === "function") return lateCommand(event); if (event.toolName === "bash") event.input.command = lateCommand; });
  }, cwd, createEventBus(), runtime));
  const runner = new ExtensionRunner(extensions, runtime, cwd, SessionManager.inMemory(cwd), {} as never);
  let approvals = 0, spawns = 0, providers = 0, deny = false;
  let approvalAction: (() => void) | undefined, effectiveArgs: any;
+ const ownership = { installed: 0, consumed: 0, released: 0, containers: 0, highWater: 0 };
+ const observed: any[] = [];
+ const observedChecks: any[] = [];
  const agent = new Agent({ streamFn: () => { providers++; throw new Error("provider forbidden"); },
-  beforeToolCall: ({ args }) => { effectiveArgs = args; return runner.emitToolCall({ type: "tool_call", toolName: "bash", toolCallId: "fixture", input: args } as never); } });
- runner.bindCore({} as never, { getSignal: () => undefined } as never);
+  beforeToolCall: async ({ args, toolCall }) => {
+   effectiveArgs = args;
+   const result = await runner.emitToolCall({ type: "tool_call", toolName: toolCall.name, toolCallId: toolCall.id, input: args } as never);
+   const owner: any = result?.finalAuthorization;
+   if (owner) {
+    ownership.installed++; observed.push(owner);
+    observedChecks.push(...owner.checks);
+    if (!owner.live) ownership.released++;
+    ownership.highWater = Math.max(ownership.highWater, (runner as any).finalAuthorizations?.size ?? 0);
+    const consume = owner.consume, release = owner.release;
+    owner.consume = function(...values: any[]) { ownership.consumed++; const execution = consume.apply(this, values); ownership.containers++; assert.notEqual(execution, values[0]); return execution; };
+    owner.release = function() { if (this.live) ownership.released++; return release.call(this); };
+   }
+   return result;
+  } });
+ runner.bindCore({} as never, { getSignal: () => agent.signal } as never);
  runner.setUIContext({ ...runner.getUIContext(), select: async (_title, choices) => { approvals++; await Promise.resolve(); approvalAction?.(); return deny ? choices.at(-1) : choices[0]; } }, "tui");
  await runner.emit({ type: "session_start" } as never);
  agent.state.tools = [createBashTool(cwd, { shellPath, exposeSessionEnvironment: false })];
  const hook = createHook({ init(_id, type) { if (type === "PROCESSWRAP") spawns++; } });
  hook.enable();
  t.after(() => { hook.disable(); runner.invalidate(); agent.abort(); rmSync(cwd, { recursive: true }); assert.equal(existsSync(cwd), false); });
- return { cwd, deny: () => { deny = true; }, mutateAtApproval: (replacement = "sleep 10 &") => { approvalAction = () => { effectiveArgs.command = replacement; }; }, counts: () => ({ approvals, spawns }), async call(command: string) {
-  const result = await agent.dispatchHostTool({ type: "toolCall", id: "call", name: "bash", arguments: { command } });
+ return { cwd, agent, runner, ownership, assertReleased() {
+  assert.equal((runner as any).finalAuthorizations?.size ?? 0, 0);
+  for (const owner of observed) { assert.equal(owner.live, false); assert.deepEqual(owner.checks, []); }
+  for (const check of observedChecks) {
+   assert.equal(check.input, undefined); assert.equal(check.command, undefined);
+   assert.equal(check.ctx, undefined); assert.equal(check.permissions, undefined);
+  }
+  assert.equal(ownership.released, ownership.installed);
+ }, deny: () => { deny = true; }, mutateAtApproval: (replacement = "sleep 10 &") => { approvalAction = () => { effectiveArgs.command = replacement; }; }, counts: () => ({ approvals, spawns }), async call(command: string, timeout?: number) {
+  const result = await agent.dispatchHostTool({ type: "toolCall", id: "call", name: "bash", arguments: { command, timeout } });
   await agent.waitForIdle(); assert.equal(agent.state.pendingToolCalls.size, 0); assert.equal(providers, 0);
   effectiveArgs = undefined; approvalAction = undefined;
   return { error: result.isError, text: result.content.filter(c => c.type === "text").map(c => c.text).join("\n") };
@@ -111,6 +138,14 @@ test("postmerge preflight adds zero argument-wrapper allocations", () => {
   ts.forEachChild(node, visit);
  }
  visit(source); assert.equal(scans, 2); assert.equal(wrappers, 0);
+ const authorization = source.statements.find(node => ts.isClassDeclaration(node) && node.name?.text === "BashInvocationAuthorization") as ts.ClassDeclaration;
+ const consume = authorization.members.find(node => ts.isMethodDeclaration(node) && node.name.getText(source) === "consume") as ts.MethodDeclaration;
+ const returns = consume.body!.statements.filter(ts.isReturnStatement);
+ assert.equal(returns.length, 1);
+ const container = returns[0].expression as ts.ObjectLiteralExpression;
+ assert.ok(ts.isObjectLiteralExpression(container));
+ assert.deepEqual(container.properties.map(property => property.name!.getText(source)), ["command", "timeout"]);
+ assert.doesNotMatch(consume.getText(source), /\bawait\b|new Promise|setTimeout|createHash|JSON\.stringify/);
 });
 
 test("postmerge later extension cannot execute an unapproved replacement", async t => {
@@ -118,10 +153,87 @@ test("postmerge later extension cannot execute an unapproved replacement", async
  const result = await f.call("env LABEL=sh printenv LABEL");
  assert.equal(result.error, true, result.text);
  assert.deepEqual(f.counts(), { approvals: 1, spawns: 0 });
+ f.assertReleased();
+ assert.deepEqual(f.ownership, { installed: 1, consumed: 1, released: 1, containers: 0, highWater: 1 });
+});
+
+test("final authorization preserves pre-guard transforms and detaches only guarded calls", async t => {
+ const f = await fixture(t, undefined, event => { event.input.command = "printf APPROVED"; });
+ const result = await f.call("printf ORIGINAL");
+ assert.equal(result.error, false, result.text); assert.equal(result.text.trim(), "APPROVED");
+ assert.equal(f.counts().spawns, 1); f.assertReleased();
+ assert.deepEqual(f.ownership, { installed: 1, consumed: 1, released: 1, containers: 1, highWater: 1 });
+ const plain = await fixture(t, undefined, undefined, true);
+ assert.equal((await plain.call("printf ORDINARY")).text.trim(), "ORDINARY");
+ plain.assertReleased(); assert.equal(plain.ownership.installed, 0);
+ assert.equal((plain.runner as any).finalAuthorizations, undefined);
+});
+
+test("final authorization denies timeout, authority and abort changes and releases requests", async t => {
+ for (const mode of ["timeout", "cwd", "session", "abort", "runner", "throw", "block"] as const) {
+  let f: Awaited<ReturnType<typeof fixture>>;
+  f = await fixture(t, async event => {
+   await Promise.resolve();
+   if (mode === "timeout") event.input.timeout = 2;
+   if (mode === "cwd") (f.runner as any).cwd = join(f.cwd, "other");
+   if (mode === "session") (f.runner as any).sessionManager.newSession();
+   if (mode === "abort") f.agent.abort();
+   if (mode === "runner") f.runner.invalidate();
+   if (mode === "throw") throw new Error("fixture later-hook failure");
+   if (mode === "block") return { block: true, reason: "fixture later veto" };
+  });
+  const result = await f.call("printf NEVER", 1);
+  assert.equal(result.error, true, mode); assert.equal(f.counts().spawns, 0, mode);
+  f.assertReleased(); assert.equal(f.ownership.containers, 0);
+ }
+});
+
+test("parallel sibling preparation cannot mutate an earlier approved invocation", async t => {
+ let first: any, f: Awaited<ReturnType<typeof fixture>>;
+ f = await fixture(t, async event => {
+  if (event.toolCallId === "first") first = event.input;
+  else { await Promise.resolve(); first.command = "printf UNAPPROVED"; }
+ });
+ let responses = 0;
+ f.agent.streamFunction = (() => {
+  const stream = createAssistantMessageEventStream();
+  const withTools = responses++ === 0;
+  const message: any = { role: "assistant", api: "fixture", provider: "fixture", model: "fixture", timestamp: 0,
+   usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+   stopReason: withTools ? "toolUse" : "stop", content: withTools ? ["first", "second"].map(id => ({ type: "toolCall", id, name: "bash", arguments: { command: "printf SAFE" } })) : [] };
+  stream.push({ type: "start", partial: message }); stream.push({ type: "done", reason: message.stopReason, message }); return stream;
+ }) as any;
+ await f.agent.prompt("offline dispatch fixture"); await f.agent.waitForIdle();
+ const results = f.agent.state.messages.filter(message => message.role === "toolResult");
+ assert.equal(results.length, 2); assert.equal(results[0].isError, true); assert.equal(results[1].isError, false);
+ assert.equal(f.counts().spawns, 1); assert.equal(f.agent.state.pendingToolCalls.size, 0);
+ f.assertReleased(); assert.deepEqual(f.ownership, { installed: 2, consumed: 2, released: 2, containers: 1, highWater: 2 });
+ t.diagnostic(`final-authorization ownership ${JSON.stringify(f.ownership)}; pending=0; retained check input/context/controller=0; offline fake responses=${responses}`);
+ first = undefined;
+});
+
+test("a final veto is monotonic and remaining checks release without invocation", async t => {
+ let denyConsumed = 0, allowConsumed = 0, released = 0;
+ const f = await fixture(t, () => ({ finalAuthorization: {
+  consume() { denyConsumed++; throw new Error("fixture final veto"); }, release() { released++; },
+ } }));
+ const extra = await loadExtensionFromFactory(pi => pi.on("tool_call", () => ({ finalAuthorization: {
+  consume() { allowConsumed++; return { command: "printf SAFE", timeout: undefined }; }, release() { released++; },
+ } })), f.cwd, createEventBus(), createExtensionRuntime());
+ (f.runner as any).extensions.push(extra);
+ const result = await f.call("printf SAFE");
+ assert.equal(result.error, true); assert.match(result.text, /fixture final veto/);
+ assert.equal(f.counts().spawns, 0); assert.deepEqual({ denyConsumed, allowConsumed, released }, { denyConsumed: 1, allowConsumed: 0, released: 2 });
+ f.assertReleased();
 });
 
 test("postmerge dynamic executable position is lifecycle-uncertain", () => {
  assert.ok(inspectBashResourceLifecycle({ command: "cmd=bash; $cmd -c 'printf shell'" }));
+ assert.ok(inspectBashResourceLifecycle({ command: "program=printf; $program OK" }));
+ assert.ok(inspectBashResourceLifecycle({ command: 'env LABEL="$VALUE" $program OK' }));
+ for (const command of ['env LABEL=$VALUE printenv LABEL', 'env BASH_ENV="$VALUE" printenv LABEL', 'env LABEL="$(printf safe)" printenv LABEL']) {
+  assert.ok(inspectBashResourceLifecycle({ command }), command);
+ }
 });
 
 test("postmerge env assignment expansion is data for a fixed executable", async t => {

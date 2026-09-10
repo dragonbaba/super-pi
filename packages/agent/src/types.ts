@@ -67,6 +67,8 @@ export type AgentToolCall = Extract<AssistantMessage["content"][number], { type:
  * `reason` becomes the text shown in that error result. If omitted, a default blocked message is used.
  */
 export interface BeforeToolCallResult {
+	/** @internal Invocation-only, deny-monotonic authorization; never a wire field. */
+	finalAuthorization?: ToolInvocationAuthorization;
 	block?: boolean;
 	reason?: string;
 	/**
@@ -74,6 +76,15 @@ export interface BeforeToolCallResult {
 	 * Early termination only happens when every finalized tool result in the batch sets this to true.
 	 */
 	terminate?: boolean;
+}
+
+/** @internal Consumed synchronously immediately before invocation, then released.
+ * Checks may only deny; successful consumption returns private execution values,
+ * never the publicly mutable input. No hook, UI or asynchronous work is allowed.
+ */
+export interface ToolInvocationAuthorization {
+	consume(args: unknown, toolCallId: string, toolName: string, signal?: AbortSignal): unknown;
+	release(): void;
 }
 
 /**

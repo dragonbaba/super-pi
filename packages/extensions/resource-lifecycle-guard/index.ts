@@ -1,7 +1,7 @@
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, resolve } from "node:path";
-import type { ExtensionAPI } from "@super-pi/coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@super-pi/coding-agent";
 import { shutdownManagedBrowser } from "@super-pi/chrome-devtools/browser-manager";
 import { inspectBashResourceLifecycle } from "./core.ts";
 import { SessionPermissionController } from "./permission-controller.ts";
@@ -9,6 +9,37 @@ import { SessionPermissionController } from "./permission-controller.ts";
 const CHROME_TOOL_PREFIX = "chrome_devtools_";
 const DEFAULT_SCREENSHOT_PREFIX = "sp-chrome-devtools-screenshot-";
 const DEFAULT_SCREENSHOT_SUFFIX = ".png";
+
+const INVALIDATED = "Blocked by policy: authorized Bash request or authority changed before invocation. Submit the final request for current authorization; the protected tool was not invoked.";
+
+/** One call owns this state. Bash carries no path/browser permission attachment. */
+class BashInvocationAuthorization {
+  constructor(
+    private input: Record<string, unknown> | undefined,
+    private command: unknown, private timeout: unknown,
+    private ctx: ExtensionContext | undefined,
+    private permissions: SessionPermissionController | undefined,
+    private readonly cwd: string, private readonly sessionId: string,
+    private readonly generation: number, private readonly sequence: number,
+    private readonly id: string,
+  ) {}
+  consume(args: unknown, id: string, name: string, signal?: AbortSignal): unknown {
+    const ctx = this.ctx, permissions = this.permissions;
+    if (!ctx || !permissions || signal?.aborted || args !== this.input || name !== "bash" || id !== this.id
+      || ctx.cwd !== this.cwd || ctx.sessionManager.getSessionId() !== this.sessionId
+      || permissions.authorityGeneration !== this.generation || permissions.state.sequence !== this.sequence) throw new Error(INVALIDATED);
+    // Refuse accessor substitution rather than invoking externally installed getters.
+    const command = Object.getOwnPropertyDescriptor(args, "command");
+    const timeout = Object.getOwnPropertyDescriptor(args, "timeout");
+    if (!command || !("value" in command) || command.value !== this.command
+      || (timeout && !("value" in timeout)) || timeout?.value !== this.timeout) throw new Error(INVALIDATED);
+    return { command: this.command, timeout: this.timeout };
+  }
+  release(): void {
+    this.input = undefined; this.command = undefined; this.timeout = undefined;
+    this.ctx = undefined; this.permissions = undefined;
+  }
+}
 
 function isOwnedDefaultScreenshotPath(value: unknown): value is string {
   if (typeof value !== "string") return false;
@@ -87,6 +118,12 @@ export default function resourceLifecycleGuard(pi: ExtensionAPI): void {
     if (event.toolName.startsWith(CHROME_TOOL_PREFIX)) resources.markChromeUsed();
     // Side-effect-free Bash denial only; acceptance still requires current permission.
     const bashCommand = event.toolName === "bash" ? event.input.command : undefined;
+    const bashTimeout = event.toolName === "bash" ? event.input.timeout : undefined;
+    const bash = event.toolName === "bash";
+    const id = event.toolCallId;
+    const cwd = bash ? ctx.cwd : "";
+    const sessionId = bash ? ctx.sessionManager.getSessionId() : "";
+    const generation = permissions.authorityGeneration;
     if (event.toolName === "bash") {
       const reason = inspectBashResourceLifecycle(event.input);
       if (reason) return { block: true, reason };
@@ -94,11 +131,15 @@ export default function resourceLifecycleGuard(pi: ExtensionAPI): void {
     const permissionBlock = await permissions.authorizeToolCall(event, ctx);
     if (permissionBlock) return permissionBlock;
     // Neither lifecycle acceptance nor the original approval authorizes a replacement.
-    if (event.toolName === "bash") {
-      return event.input.command === bashCommand ? undefined : {
+    if (bash) {
+      if (event.toolName !== "bash" || event.toolCallId !== id || event.input.command !== bashCommand
+        || event.input.timeout !== bashTimeout || ctx.cwd !== cwd || ctx.sessionManager.getSessionId() !== sessionId
+        || permissions.authorityGeneration !== generation) return {
         block: true,
         reason: "Blocked by policy: command changed during permission handling. Submit the final exact command for current authorization; no replacement was executed.",
       };
+      return { finalAuthorization: new BashInvocationAuthorization(event.input, bashCommand, bashTimeout,
+        ctx, permissions, cwd, sessionId, generation, permissions.state.sequence, id) };
     }
     if (event.toolName !== "powershell") return undefined;
     const reason = inspectBashResourceLifecycle(event.input);
