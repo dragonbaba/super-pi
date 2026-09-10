@@ -17,7 +17,7 @@ const jiti = createJiti(import.meta.url, { alias: {
  "@super-pi/ai/api/simple-options": resolve("packages/ai/src/api/simple-options.ts"),
 } });
 const { createToolResultPresentationOwner } = await jiti.import<any>("../packages/coding-agent/src/core/tool-result-presentation.ts");
-const model: any = { contextWindow: 1_000_000, maxTokens: 384_000 };
+const model: any = { api: "openai-completions", contextWindow: 1_000_000, maxTokens: 384_000 };
 const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: {input:0,output:0,cacheRead:0,cacheWrite:0,total:0} };
 // One bounded corpus is shared, not regenerated for every boundary case.
 const corpus = "abcd".repeat(620_000);
@@ -48,6 +48,10 @@ test("explicit output overrides and model ceilings bound the finished request", 
  assert.equal(clampMaxTokensToContext(model,context,2048),2048);
  assert.ok(clampMaxTokensToContext(model,context,900_000)<=model.maxTokens);
  assert.throws(()=>clampMaxTokensToContext(model,context,0));
+});
+
+test("unrelated APIs retain their existing clamp contract", () => {
+ assert.equal(clampMaxTokensToContext({...model,api:"openai-codex-responses",contextWindow:620_100},{messages:messages(620_000)},384_000),1);
 });
 
 test("request blocks distinguish genuine batch exhaustion from context headroom", () => {
