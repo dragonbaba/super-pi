@@ -365,6 +365,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		systemPrompt?: string,
 		tools?: AgentTool<any>[],
 		conversionModel?: Model<any>,
+		requestedMaxTokens?: number,
 	): Message[] => {
 		const converted = convertToLlm(messages);
 		// Check setting dynamically so mid-session changes take effect
@@ -375,7 +376,8 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			systemPrompt,
 			tools,
 			conversionModel?.contextWindow,
-			conversionModel?.maxTokens,
+			requestedMaxTokens === undefined ? conversionModel?.maxTokens : Math.min(requestedMaxTokens, conversionModel?.maxTokens ?? requestedMaxTokens),
+			true,
 		) ?? converted;
 		return blockImages ? replaceBlockedImagesInMessages(projected) : projected;
 	};

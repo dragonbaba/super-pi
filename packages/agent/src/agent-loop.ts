@@ -343,7 +343,7 @@ async function streamAssistantResponse(
 	}
 
 	// Convert to LLM-compatible messages (AgentMessage[] → Message[])
-	const llmMessages = await config.convertToLlm(messages, context.systemPrompt, context.tools, config.model);
+	const llmMessages = await config.convertToLlm(messages, context.systemPrompt, context.tools, config.model, config.maxTokens);
 
 	// Build LLM context
 	const llmContext: Context = {

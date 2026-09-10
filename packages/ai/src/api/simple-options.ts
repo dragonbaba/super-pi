@@ -9,13 +9,42 @@ import type {
 } from "../types.ts";
 import { estimateContextTokens } from "../utils/estimate.ts";
 
-const CONTEXT_SAFETY_TOKENS = 4096;
-const MIN_MAX_TOKENS = 1;
+export const CONTEXT_SAFETY_TOKENS = 4096;
+
+export function isRequestBudgetBlock(message: string | undefined): boolean {
+	return message?.startsWith("Request preparation blocked:") === true;
+}
+
+/** Minimum viable answer, bounded by an explicitly smaller requested ceiling. */
+export function minimumRequestOutputTokens(maxTokens: number): number {
+	return Math.min(MIN_ANSWER_TOKENS, maxTokens);
+}
+
+/** Host request preparation failed; this says nothing about prior tool effects. */
+export class RequestBudgetError extends Error {
+	readonly code = "request-budget-blocked";
+	readonly contextWindow: number;
+	readonly inputTokens: number;
+	readonly requestedOutputTokens: number;
+	readonly availableOutputTokens: number;
+	constructor(contextWindow: number, inputTokens: number, requestedOutputTokens: number, availableOutputTokens: number) {
+		super(`Request preparation blocked: insufficient response capacity (context=${contextWindow}, input=${inputTokens}, requestedOutput=${requestedOutputTokens}, availableOutput=${availableOutputTokens}, safety=${CONTEXT_SAFETY_TOKENS}). Prior tool outcomes are unchanged; reduce request context or explicitly compact before retrying the request. Do not repeat completed tools.`);
+		this.name = "RequestBudgetError";
+		this.contextWindow = contextWindow;
+		this.inputTokens = inputTokens;
+		this.requestedOutputTokens = requestedOutputTokens;
+		this.availableOutputTokens = availableOutputTokens;
+	}
+}
 
 export function clampMaxTokensToContext(model: Model<Api>, context: Context, maxTokens: number): number {
-	if (model.contextWindow <= 0) return Math.max(MIN_MAX_TOKENS, maxTokens);
-	const available = model.contextWindow - estimateContextTokens(context).tokens - CONTEXT_SAFETY_TOKENS;
-	return Math.min(maxTokens, Math.max(MIN_MAX_TOKENS, available));
+	const requested = Math.min(maxTokens, model.maxTokens);
+	if (!Number.isSafeInteger(requested) || requested <= 0) throw new RequestBudgetError(model.contextWindow, 0, requested, 0);
+	if (model.contextWindow <= 0) return requested;
+	const input = estimateContextTokens(context).tokens;
+	const available = model.contextWindow - input - CONTEXT_SAFETY_TOKENS;
+	if (available < minimumRequestOutputTokens(requested)) throw new RequestBudgetError(model.contextWindow, input, requested, available);
+	return Math.min(requested, available);
 }
 
 export function buildBaseOptions(

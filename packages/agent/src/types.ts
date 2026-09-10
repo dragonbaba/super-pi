@@ -198,8 +198,10 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	 * that the LLM can understand. AgentMessages that cannot be converted (e.g., UI-only notifications,
 	 * status messages) should be filtered out.
 	 *
-	 * Contract: must not throw or reject. Return a safe fallback value instead.
-	 * Throwing interrupts the low-level agent loop without producing a normal event sequence.
+	 * Request preparation may reject when required messages cannot fit safely.
+	 * Agent preserves prior tool outcomes and delivers a separate run failure;
+	 * low-level loop callers must handle rejection. Never discard required results
+	 * or repeat a completed tool as a conversion fallback.
 	 *
 	 * @example
 	 * ```typescript
@@ -340,6 +342,8 @@ export type AgentLlmConverter = (
 	systemPrompt?: string,
 	tools?: AgentTool<any>[],
 	model?: Model<Api>,
+	/** Effective caller output ceiling, before context clamping. */
+	maxTokens?: number,
 ) => Message[] | Promise<Message[]>;
 
 /**
