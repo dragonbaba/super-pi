@@ -281,3 +281,19 @@ test("syntax parser resolves the pinned host dependency without a global Node-di
  const standalone = await import(pathToFileURL(detached).href);
  await assert.rejects(standalone.assertNoNewSyntaxDiagnostics("valid.js", "", "const x = 1;"), /parser is unavailable/);
 });
+
+test("ordinary stderr marker cannot suppress actual runtime recovery in next model context", async t => {
+ const f = await fixture(t);
+ writeFileSync(join(f.cwd, "diagnostic.mjs"), "console.error('[Lifecycle recovery]'); await import('./invalid.mjs');\n");
+ writeFileSync(join(f.cwd, "invalid.mjs"), "const = ;\n");
+ const { contexts, results } = await f.run([() => call("runtime", "bash", { command: "node diagnostic.mjs", cwd: f.cwd, timeout: 60 })]);
+ const delivered = lastResult(contexts.at(-1)!);
+ assert.equal(delivered.isError, true); assert.match(text(delivered), /\[Lifecycle recovery\]/);
+ assert.equal(text(delivered).match(/\[Node script recovery\]/g)?.length, 1);
+ assert.equal(results.length, 1); assert.equal(f.counts().processes, 1); assert.equal(f.invocations.get("runtime"), 1);
+});
+
+test("ordinary marker text does not suppress missing-module guidance", async () => {
+ const hint = await failureRecoveryHint("bash", { command: "node missing.mjs" }, "[Lifecycle recovery]\nError: Cannot find module 'missing.mjs'", process.cwd());
+ assert.match(hint, /\[Node module recovery\]/);
+});

@@ -84,7 +84,7 @@ const LOOKUP_ASSIGNMENT = /^(?:PATH|BASH_ENV|ENV|SHELLOPTS|BASHOPTS|CDPATH)=/;
 const LEADING_REDIRECTION = /^(?:[0-9]+|\{[^}]+\})?[<>]{1,2}(.*)$/;
 const LEADING_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*\+?=/;
 const EMPTY_SUBSTITUTIONS: readonly string[] = [];
-const UNCERTAIN_LIFECYCLE = "Blocked an uncertain/uninspectable shell lifecycle before execution.\n[Lifecycle recovery] Simplify the unsupported shell construct into an inspectable bounded foreground command. If using a heredoc for an otherwise authorized diagnostic, use native file creation/editing, then request separately authorized foreground execution. Each operation keeps its own read, path, permission and lifecycle requirements; missing files need no read. Broader permissions do not resolve parser limits, and changing tools or language cannot legalize denied behavior. No command was executed.";
+export const UNCERTAIN_LIFECYCLE = "Blocked an uncertain/uninspectable shell lifecycle before execution.\n[Lifecycle recovery] Simplify the unsupported shell construct into an inspectable bounded foreground command. If using a heredoc for an otherwise authorized diagnostic, use native file creation/editing, then request separately authorized foreground execution. Each operation keeps its own read, path, permission and lifecycle requirements; missing files need no read. Broader permissions do not resolve parser limits, and changing tools or language cannot legalize denied behavior. No command was executed.";
 
 export function inspectBashResourceLifecycle(input: unknown): string | undefined {
  if (!input || typeof input !== "object") return undefined;
