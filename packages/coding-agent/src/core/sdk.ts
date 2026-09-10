@@ -12,6 +12,7 @@ import {
 	compactOpenAICodexRequest,
 } from "@super-pi/ai/api/openai-codex-responses";
 import { clampThinkingLevel, type Message, type Model, streamSimple } from "@super-pi/ai/compat";
+import { usesAdaptiveRequestBudget } from "@super-pi/ai/api/simple-options";
 import { getAgentDir, getConfigDir } from "../config.ts";
 import { resolvePath } from "../utils/paths.ts";
 import { AgentSession } from "./agent-session.ts";
@@ -57,6 +58,7 @@ import {
 import type { ToolOutputShadowOptions } from "./tool-output-budget.ts";
 import {
 	createToolResultPresentationOwner,
+	ToolResultContinuationError,
 	type ToolResultPresentationOptions,
 } from "./tool-result-presentation.ts";
 
@@ -365,19 +367,29 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		systemPrompt?: string,
 		tools?: AgentTool<any>[],
 		conversionModel?: Model<any>,
+		requestedMaxTokens?: number,
 	): Message[] => {
+		const requestPlanning = usesAdaptiveRequestBudget(conversionModel?.api);
 		const converted = convertToLlm(messages);
 		// Check setting dynamically so mid-session changes take effect
 		const blockImages = settingsManager.getBlockImages();
+		try {
 		const projected = toolResultPresentationOwner?.projectMessagesForModel(
 			converted,
 			blockImages ? replaceBlockedImages : undefined,
 			systemPrompt,
 			tools,
 			conversionModel?.contextWindow,
-			conversionModel?.maxTokens,
+			requestPlanning && requestedMaxTokens !== undefined ? Math.min(requestedMaxTokens, conversionModel?.maxTokens ?? requestedMaxTokens) : conversionModel?.maxTokens,
+			requestPlanning,
 		) ?? converted;
 		return blockImages ? replaceBlockedImagesInMessages(projected) : projected;
+		} catch (error) {
+			if (error instanceof ToolResultContinuationError && error.code === "budget-too-small" && !error.message.startsWith("Request preparation blocked:")) {
+				throw new ToolResultContinuationError("budget-too-small", `Request preparation blocked: configured result budget cannot fit a required recovery notice (minimumNotice=${error.minimumTokens ?? "unavailable"}). Prior tool outcomes are unchanged. Adjust the result budget before retrying the request; do not repeat completed tools.`, error.minimumTokens);
+			}
+			throw error;
+		}
 	};
 
 	const extensionRunnerRef: { current?: ExtensionRunner } = {};

@@ -33,6 +33,7 @@ import {
 	type ThinkingLevel,
 } from "@super-pi/agent-core";
 import { contentText, stabilizeToolArguments } from "@super-pi/ai";
+import { isRequestBudgetBlock } from "@super-pi/ai/api/simple-options";
 import type {
 	AssistantMessage,
 	AuthResult,
@@ -1260,13 +1261,19 @@ export class AgentSession {
 				try {
 					presentation = presentationOwner.create(event.message.content, event.message.toolCallId);
 				} catch (error) {
-					if (!mcpTool) throw error;
+					if (!mcpTool) {
+						if (!(error instanceof ToolResultContinuationError) || error.code !== "budget-too-small") throw error;
+						// A model-view budget cannot revoke an already completed local
+						// result. Deliver/persist its canonical status below. Conversion
+						// still enforces the budget before the next provider request.
+					} else {
 					hostCanonicalPayloadChanged = true;
 					presentationOwner.releaseMcpInputAdmission(event.message.toolCallId);
 					event.message.content = [];
 					event.message.isError = true;
 					event.message.details = { mcpError: "input-admission-failed", configurationReason: "MCP final output requires a valid source and a configured sufficient recovery budget." };
 					presentation = presentationOwner.create(event.message.content, event.message.toolCallId);
+					}
 				}
 				if (presentation) {
 					const evidenceGeneration = this._evidenceLedger ? presentationOwner.getResidentEvidenceGeneration(event.message.toolCallId) : undefined;
@@ -3124,6 +3131,9 @@ export class AgentSession {
 	 * @param skipAbortedCheck If false, include aborted messages (for pre-prompt check). Default: true
 	 */
 	private async _checkCompaction(assistantMessage: AssistantMessage, skipAbortedCheck = true): Promise<boolean> {
+		// A local preparation block is not provider overflow and never authorizes
+		// paid automatic compaction or replay of a completed tool.
+		if (isRequestBudgetBlock(assistantMessage.errorMessage)) return false;
 		const settings = this.settingsManager.getCompactionSettings();
 		if (!settings.enabled) return false;
 
@@ -4166,6 +4176,7 @@ export class AgentSession {
 	 * Context overflow errors are NOT retryable (handled by compaction instead).
 	 */
 	private _isRetryableError(message: AssistantMessage): boolean {
+		if (isRequestBudgetBlock(message.errorMessage)) return false;
 		// Context overflow is handled by compaction, not retry.
 		if (isContextOverflow(message, this.model?.contextWindow ?? 0)) return false;
 		return isRetryableAssistantError(message);

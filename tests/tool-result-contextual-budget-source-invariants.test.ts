@@ -62,10 +62,10 @@ test("contextual coordinator has no full-result copy, serialization, per-result 
 test("agent loop and SDK pass the request envelope without allocating a context wrapper", () => {
 	const loop = readFileSync(LOOP_PATH, "utf8");
 	const sdk = readFileSync(SDK_PATH, "utf8");
-	assert.match(loop, /config\.convertToLlm\(messages, context\.systemPrompt, context\.tools, config\.model\)/);
+	assert.match(loop, /config\.convertToLlm\(messages, context\.systemPrompt, context\.tools, config\.model, config\.maxTokens\)/);
 	assert.match(
 		sdk,
-		/toolResultPresentationOwner\?\.projectMessagesForModel\(\s*converted,\s*blockImages \? replaceBlockedImages : undefined,\s*systemPrompt,\s*tools,\s*conversionModel\?\.contextWindow,\s*conversionModel\?\.maxTokens/u,
+		/toolResultPresentationOwner\?\.projectMessagesForModel\(\s*converted,\s*blockImages \? replaceBlockedImages : undefined,\s*systemPrompt,\s*tools,\s*conversionModel\?\.contextWindow,\s*requestPlanning && requestedMaxTokens !== undefined/u,
 	);
 	assert.match(sdk, /convertToLlmWithBlockImages\(messages, systemPrompt, tools, model\)/);
 	assert.equal(sdk.includes("ToolResultBudgetContext"), false);

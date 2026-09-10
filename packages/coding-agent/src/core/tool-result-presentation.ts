@@ -1,6 +1,7 @@
 import { createHash, type Hash } from "node:crypto";
 import type { ImageContent, Message, TextContent, ToolResultMessage } from "@super-pi/ai/compat";
 import { estimateContextTokensFromParts, estimateMessageTokens, type Tool } from "@super-pi/ai";
+import { CONTEXT_SAFETY_TOKENS, minimumRequestOutputTokens } from "@super-pi/ai/api/simple-options";
 import { estimateToolOutputTokens, type ToolOutputTokenEstimate } from "./tool-output-budget.ts";
 import { MCP_INLINE_BYTES, type McpTypedSource, verifiedMcpSource, mcpTextDigest, mcpImageDigest } from "./tool-result-source.ts";
 
@@ -111,11 +112,13 @@ export type ToolResultContinuationErrorCode = "invalid-cursor" | "stale-cursor" 
 
 export class ToolResultContinuationError extends Error {
 	readonly code: ToolResultContinuationErrorCode;
+	readonly minimumTokens?: number;
 
-	constructor(code: ToolResultContinuationErrorCode, message: string) {
+	constructor(code: ToolResultContinuationErrorCode, message: string, minimumTokens?: number) {
 		super(message);
 		this.name = "ToolResultContinuationError";
 		this.code = code;
+		this.minimumTokens = minimumTokens;
 	}
 }
 
@@ -1011,7 +1014,7 @@ function projectLegacyContent(
 	if (totalTextCodeUnits === 0) {
 		const build = buildFullOmissionProjection(content, sourceKey, sourceDigest, sourceScan, counters);
 		if (build.estimate.estimatedTokens > budgetTokens) {
-			throw new ToolResultContinuationError("budget-too-small", `Tool-result budget ${budgetTokens} cannot contain the fixed continuation notice.`);
+			throw new ToolResultContinuationError("budget-too-small", `Tool-result budget ${budgetTokens} cannot contain the fixed continuation notice.`, build.estimate.estimatedTokens);
 		}
 		return build;
 	}
@@ -1031,7 +1034,7 @@ function projectLegacyContent(
 		build = buildProjection(content, 0, 0, sourceKey, sourceDigest, sourceScan, counters);
 	}
 	if (build.estimate.estimatedTokens > budgetTokens) {
-		throw new ToolResultContinuationError("budget-too-small", `Tool-result budget ${budgetTokens} cannot contain the fixed continuation notice.`);
+		throw new ToolResultContinuationError("budget-too-small", `Tool-result budget ${budgetTokens} cannot contain the fixed continuation notice.`, build.estimate.estimatedTokens);
 	}
 	return build;
 }
@@ -2112,6 +2115,7 @@ export class ToolResultPresentationOwner {
 		tools: readonly Tool[] | undefined,
 		contextWindow: number,
 		maxOutputTokens: number | undefined,
+		requestPlanning = false,
 	): Message[] {
 		let assistantIndex = -1;
 		for (let index = messages.length - 1; index >= 0; index--) {
@@ -2154,9 +2158,15 @@ export class ToolResultPresentationOwner {
 			const contextEstimate = estimateContextTokensFromParts(systemPrompt, messages, tools).tokens;
 			const nonCurrentContextTokens = Math.max(0, contextEstimate - currentResultContextTokens);
 			const hasContextLimit = Number.isSafeInteger(contextWindow) && contextWindow > 0;
-			const outputReserve = Number.isSafeInteger(maxOutputTokens) && maxOutputTokens! > 0
+			const requestedOutput = Number.isSafeInteger(maxOutputTokens) && maxOutputTokens! > 0
 				? maxOutputTokens!
 				: 0;
+			// Reserve a viable response before projecting results. The sender then
+			// clamps the requested ceiling against the finished input, once. Legacy
+			// callers can still supply an explicit fixed reserve without this policy.
+			const outputReserve = requestPlanning
+				? minimumRequestOutputTokens(requestedOutput) + CONTEXT_SAFETY_TOKENS
+				: requestedOutput;
 			let remainingContextTokens = hasContextLimit
 				? Math.max(0, contextWindow - outputReserve - nonCurrentContextTokens)
 				: 0;
@@ -2168,12 +2178,20 @@ export class ToolResultPresentationOwner {
 				if (index <= assistantIndex) continue;
 				const toolBudget = Math.floor(remainingToolTokens / remainingResults);
 				const contextBudget = Math.floor(remainingContextTokens / remainingResults);
-				const projected = this.projectMessageWithinContextualBudget(
-					message,
-					Math.min(this.budgetTokens!, toolBudget),
-					contextBudget,
-					imagePolicy,
-				);
+				let projected: ToolResultMessage;
+				try {
+					projected = this.projectMessageWithinContextualBudget(
+						message,
+						Math.min(this.budgetTokens!, toolBudget),
+						contextBudget,
+						imagePolicy,
+					);
+				} catch (error) {
+					if (!requestPlanning || !(error instanceof ToolResultContinuationError) || error.code !== "budget-too-small") throw error;
+					const cause = toolBudget <= contextBudget ? "result-batch-budget" : "context-headroom";
+					throw new ToolResultContinuationError("budget-too-small",
+						`Request preparation blocked: ${cause} cannot fit a required tool-result envelope (context=${contextWindow}, nonCurrentInput=${nonCurrentContextTokens}, requestedOutput=${requestedOutput}, responseFloorAndSafety=${outputReserve}, batchBudget=${this.budgetTokens}, remainingResults=${remainingResults}, toolShare=${toolBudget}, contextShare=${contextBudget}, minimumNotice=${error.minimumTokens ?? "unavailable"}). Prior tool outcomes are unchanged. Reduce request context or adjust the result budget before retrying the request; do not repeat completed tools.`, error.minimumTokens);
+				}
 				if (projected !== message) messages[index] = projected;
 				const consumedToolTokens = estimateToolOutputTokens(projected.content).estimatedTokens;
 				const consumedContextTokens = estimateMessageTokens(projected);
@@ -2197,6 +2215,7 @@ export class ToolResultPresentationOwner {
 		tools?: readonly Tool[],
 		contextWindow?: number,
 		maxOutputTokens?: number,
+		requestPlanning = false,
 	): Message[] {
 		if (!this.accepting || this.budgetTokens === undefined) return messages;
 		if (contextWindow !== undefined) {
@@ -2207,6 +2226,7 @@ export class ToolResultPresentationOwner {
 				tools,
 				contextWindow,
 				maxOutputTokens,
+				requestPlanning,
 			);
 		}
 		for (let index = 0; index < messages.length; index++) {
