@@ -316,7 +316,7 @@ export async function issueSnapshotForRead(
       type: "text",
       text: formatSnapshotReadText(displayed, firstSeenLine, lastSeenLine - firstSeenLine + 1),
     };
-    return `${SNAPSHOT_EDIT_ANNOTATION_PREFIX} snapshot=${id}; editable lines=${firstSeenLine}-${lastSeenLine}. Copy LINE#ID anchors exactly. insert={kind,start,newLines} (omit end); replace={kind,start,end?,newLines}; delete={kind,start,end?}.`;
+    return `${SNAPSHOT_EDIT_ANNOTATION_PREFIX} snapshot=${id}; editable lines=${firstSeenLine}-${lastSeenLine}. Copy LINE#ID anchors exactly. insert={kind,start,newLines} (omit end; start survives; only intended inserted lines, no copied locating context); replace={kind,start,end?,newLines}; delete={kind,start,end?}.`;
   }
   let compact: Awaited<ReturnType<typeof captureCompactSnapshot>>;
   try {
@@ -347,7 +347,7 @@ export async function issueSnapshotForRead(
     type: "text",
     text: formatSnapshotReadText(displayed, compact.firstSeenLine, compact.visibleLines.length),
   };
-  return `${SNAPSHOT_EDIT_ANNOTATION_PREFIX} snapshot=${id}; editable lines=${compact.firstSeenLine}-${compact.lastSeenLine}. Copy LINE#ID anchors exactly. insert={kind,start,newLines} (omit end); replace={kind,start,end?,newLines}; delete={kind,start,end?}.`;
+  return `${SNAPSHOT_EDIT_ANNOTATION_PREFIX} snapshot=${id}; editable lines=${compact.firstSeenLine}-${compact.lastSeenLine}. Copy LINE#ID anchors exactly. insert={kind,start,newLines} (omit end; start survives; only intended inserted lines, no copied locating context); replace={kind,start,end?,newLines}; delete={kind,start,end?}.`;
 }
 function parsePhysicalLines(bytes: Buffer): PhysicalLine[] | undefined {
   let offset = 0;
@@ -409,6 +409,15 @@ function normalizedNewLines(edit: SnapshotLineEdit, index: number): string[] {
   return stripped;
 }
 
+export function validateInsertionFields(edit: SnapshotLineEdit, index: number): void {
+  if (edit.end === undefined) return;
+  // Independent field checks only: no payload assembly or parser work on invalid input.
+  let related = "";
+  try { normalizedNewLines(edit, index); }
+  catch (error) { related = `\n${error instanceof Error ? error.message : String(error)}`; }
+  throw new Error(`[SNAPSHOT_EDIT_INVALID] edits[${index}] insertion uses one surviving start anchor; omit end. newLines must contain only intended inserted lines, not copied context used to locate insertion.${related}\nNo change; retry a corrected request with this snapshot if still current. A stale or consumed snapshot requires read.`);
+}
+
 function payloadBuffer(lines: readonly string[], eol: "\n" | "\r\n", index: number, maxBytes: number): Buffer {
   const text = lines.join(eol);
   const bytes = Buffer.byteLength(text, "utf8");
@@ -445,10 +454,10 @@ function assertNoBoundaryEcho(
   const before = snapshotLines[startLine - 2];
   const after = snapshotLines[endLine];
   if (before !== undefined && newLines[0] === before) {
-    throw new Error(`[SNAPSHOT_EDIT_BOUNDARY] edits[${index}].newLines repeats surviving line ${startLine - 1}; remove the first newLines entry.`);
+    throw new Error(`[SNAPSHOT_EDIT_BOUNDARY] edits[${index}].newLines repeats surviving line ${startLine - 1}; equal text may be intentional. If copied only as context, omit that entry. If repetition is intended, explicitly replace a covered range including the surviving line and supply the intended repeated lines. No change; this snapshot remains usable if current.`);
   }
   if (after !== undefined && newLines[newLines.length - 1] === after) {
-    throw new Error(`[SNAPSHOT_EDIT_BOUNDARY] edits[${index}].newLines repeats surviving line ${endLine + 1}; remove the last newLines entry.`);
+    throw new Error(`[SNAPSHOT_EDIT_BOUNDARY] edits[${index}].newLines repeats surviving line ${endLine + 1}; equal text may be intentional. If copied only as context, omit that entry. If repetition is intended, explicitly replace a covered range including the surviving line and supply the intended repeated lines. No change; this snapshot remains usable if current.`);
   }
 }
 
@@ -474,12 +483,10 @@ function prepareEdits(receipt: FullSnapshotReceipt, requestedEdits: readonly Sna
     const edit = edits[index];
     const startLine = validateSnapshotLineReference(edit.start, `edits[${index}].start`, snapshotLines, receipt.firstSeenLine, receipt.lastSeenLine);
     const insertion = edit.kind === "insert_before" || edit.kind === "insert_after";
+    if (insertion) validateInsertionFields(edit, index);
     const endLine = edit.end === undefined
       ? startLine
       : validateSnapshotLineReference(edit.end, `edits[${index}].end`, snapshotLines, receipt.firstSeenLine, receipt.lastSeenLine);
-    if (insertion && endLine !== startLine) {
-      throw new Error(`[SNAPSHOT_EDIT_INVALID] edits[${index}] insertion uses one start anchor; omit the differing end anchor.`);
-    }
     if (endLine < startLine) throw new Error(`[SNAPSHOT_EDIT_INVALID] edits[${index}].end precedes start.`);
     const startIndex = startLine - 1;
     const eol = preferredEol(lines, startIndex);
@@ -505,14 +512,14 @@ function prepareEdits(receipt: FullSnapshotReceipt, requestedEdits: readonly Sna
       const payload = payloadBuffer(newLines, eol, index, Math.max(0, MAX_SNAPSHOT_EDIT_BYTES - changedBytes - Buffer.byteLength(eol)));
       if (edit.kind === "insert_before") {
         if (newLines[newLines.length - 1] === snapshotLines[startIndex]) {
-          throw new Error(`[SNAPSHOT_EDIT_BOUNDARY] edits[${index}].newLines repeats its surviving anchor; remove the last newLines entry.`);
+          throw new Error(`[SNAPSHOT_EDIT_BOUNDARY] edits[${index}].newLines repeats its surviving anchor; equal text may be intentional. If copied only as context, omit that entry. If repetition is intended, explicitly replace a covered range including the surviving line and supply the intended repeated lines. No change; this snapshot remains usable if current.`);
         }
         start = line.start;
         end = line.start;
         replacement = Buffer.concat([payload, Buffer.from(eol)]);
       } else if (line.eol) {
         if (newLines[0] === snapshotLines[startIndex]) {
-          throw new Error(`[SNAPSHOT_EDIT_BOUNDARY] edits[${index}].newLines repeats its surviving anchor; remove the first newLines entry.`);
+          throw new Error(`[SNAPSHOT_EDIT_BOUNDARY] edits[${index}].newLines repeats its surviving anchor; equal text may be intentional. If copied only as context, omit that entry. If repetition is intended, explicitly replace a covered range including the surviving line and supply the intended repeated lines. No change; this snapshot remains usable if current.`);
         }
         start = line.end;
         end = line.end;
@@ -640,10 +647,10 @@ function assertNoCompactBoundaryEcho(
   const before = compactBoundaryText(receipt, startLine - 1);
   const after = compactBoundaryText(receipt, endLine + 1);
   if (before !== undefined && newLines[0] === before) {
-    throw new Error(`[SNAPSHOT_EDIT_BOUNDARY] edits[${index}].newLines repeats surviving line ${startLine - 1}; remove the first newLines entry.`);
+    throw new Error(`[SNAPSHOT_EDIT_BOUNDARY] edits[${index}].newLines repeats surviving line ${startLine - 1}; equal text may be intentional. If copied only as context, omit that entry. If repetition is intended, explicitly replace a covered range including the surviving line and supply the intended repeated lines. No change; this snapshot remains usable if current.`);
   }
   if (after !== undefined && newLines[newLines.length - 1] === after) {
-    throw new Error(`[SNAPSHOT_EDIT_BOUNDARY] edits[${index}].newLines repeats surviving line ${endLine + 1}; remove the last newLines entry.`);
+    throw new Error(`[SNAPSHOT_EDIT_BOUNDARY] edits[${index}].newLines repeats surviving line ${endLine + 1}; equal text may be intentional. If copied only as context, omit that entry. If repetition is intended, explicitly replace a covered range including the surviving line and supply the intended repeated lines. No change; this snapshot remains usable if current.`);
   }
 }
 
@@ -663,12 +670,10 @@ function prepareCompactEdits(
     const edit = edits[index];
     const startLine = validateCompactLineReference(edit.start, `edits[${index}].start`, receipt);
     const insertion = edit.kind === "insert_before" || edit.kind === "insert_after";
+    if (insertion) validateInsertionFields(edit, index);
     const endLine = edit.end === undefined
       ? startLine
       : validateCompactLineReference(edit.end, `edits[${index}].end`, receipt);
-    if (insertion && endLine.line !== startLine.line) {
-      throw new Error(`[SNAPSHOT_EDIT_INVALID] edits[${index}] insertion uses one start anchor; omit the differing end anchor.`);
-    }
     if (endLine.line < startLine.line) throw new Error(`[SNAPSHOT_EDIT_INVALID] edits[${index}].end precedes start.`);
     const eol = compactPreferredEol(receipt, startLine.line);
     const newLines = normalizedNewLines(edit, index);
@@ -691,14 +696,14 @@ function prepareCompactEdits(
       const payload = payloadBuffer(newLines, eol, index, Math.max(0, MAX_SNAPSHOT_EDIT_BYTES - changedBytes - Buffer.byteLength(eol)));
       if (edit.kind === "insert_before") {
         if (newLines[newLines.length - 1] === startLine.text) {
-          throw new Error(`[SNAPSHOT_EDIT_BOUNDARY] edits[${index}].newLines repeats its surviving anchor; remove the last newLines entry.`);
+          throw new Error(`[SNAPSHOT_EDIT_BOUNDARY] edits[${index}].newLines repeats its surviving anchor; equal text may be intentional. If copied only as context, omit that entry. If repetition is intended, explicitly replace a covered range including the surviving line and supply the intended repeated lines. No change; this snapshot remains usable if current.`);
         }
         start = startLine.start;
         end = startLine.start;
         replacement = Buffer.concat([payload, Buffer.from(eol)]);
       } else if (startLine.eol) {
         if (newLines[0] === startLine.text) {
-          throw new Error(`[SNAPSHOT_EDIT_BOUNDARY] edits[${index}].newLines repeats its surviving anchor; remove the first newLines entry.`);
+          throw new Error(`[SNAPSHOT_EDIT_BOUNDARY] edits[${index}].newLines repeats its surviving anchor; equal text may be intentional. If copied only as context, omit that entry. If repetition is intended, explicitly replace a covered range including the surviving line and supply the intended repeated lines. No change; this snapshot remains usable if current.`);
         }
         start = startLine.end;
         end = startLine.end;
@@ -801,7 +806,7 @@ export async function executeSnapshotLineEdit(
   const beforeText = strictUtf8Decoder.decode(current);
   const afterText = strictUtf8Decoder.decode(prepared.output);
   const diffResult = generateDiffString(beforeText, afterText);
-  await assertNoNewSyntaxDiagnostics(receipt.canonicalPath, beforeText, afterText);
+  await assertNoNewSyntaxDiagnostics(receipt.canonicalPath, beforeText, afterText, edits);
   const patch = generateUnifiedPatch(receipt.canonicalPath, beforeText, afterText);
   const reservationId = hooks.reserveMutation?.(prepared.changedBytes);
   if (signal?.aborted) throw new Error("Operation aborted");

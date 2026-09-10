@@ -74,7 +74,7 @@ const SNAPSHOT_EDIT_CAUSES = new Map<string, { category: string; cause: string }
   ["MISMATCH", { category: "snapshot_anchor_mismatch", cause: "LINE#ID 与不可变快照中的对应行不匹配；应复制错误上下文返回的最新锚点重试。" }],
   ["UNSEEN", { category: "snapshot_unseen_range", cause: "行操作超出 read 实际展示并授权的行范围。" }],
   ["BUDGET", { category: "mutation_budget_exceeded", cause: "快照编辑的操作、文本或结果大小超过有界预算。" }],
-  ["BOUNDARY", { category: "input_validation", cause: "替换文本重复包含未删除的相邻边界行；应从 newLines 移除该边界行。" }],
+  ["BOUNDARY", { category: "input_validation", cause: "替换文本与存活边界行相同，重复意图不明确；勿自动删除。若只是定位上下文则省略，有意重复时显式替换覆盖该行的已读范围。" }],
   ["OVERLAP", { category: "overlap", cause: "快照行操作重叠、嵌套或共享不明确的插入边界。" }],
   ["NO_OP", { category: "no_op_edit", cause: "快照行操作生成的内容与原文件完全相同。" }],
   ["INVALID", { category: "input_validation", cause: "快照行操作的 kind、LINE#ID 锚点或 newLines 组合无效。" }],
