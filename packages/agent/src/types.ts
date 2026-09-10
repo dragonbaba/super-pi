@@ -79,8 +79,9 @@ export interface BeforeToolCallResult {
 }
 
 /** @internal Consumed synchronously immediately before invocation, then released.
- * Checks may only deny; successful consumption returns private execution values,
- * never the publicly mutable input. No hook, UI or asynchronous work is allowed.
+ * Checks may only deny; successful consumption returns a bounded primitive view,
+ * never the publicly mutable input. The runner requires agreement and creates
+ * the private Bash invocation container. No hook, UI or async work is allowed.
  */
 export interface ToolInvocationAuthorization {
 	consume(args: unknown, toolCallId: string, toolName: string, signal?: AbortSignal): unknown;

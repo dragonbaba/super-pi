@@ -142,7 +142,7 @@ function inspectLifecycleScript(source: string, depth: number): string | undefin
    if (prefix !== "command" && prefix !== "exec") break;
    if (++index > MAX_WRAPPER_DEPTH || !tokens[index] || tokens[index]!.startsWith("-")) return UNCERTAIN_LIFECYCLE;
   }
-  if (tokens.expansions?.[index] || hasDynamicSyntax(tokens[index] ?? "")) return UNCERTAIN_LIFECYCLE;
+  if (/[<>]/.test(tokens[index] ?? "") || tokens.expansions?.[index] || hasDynamicSyntax(tokens[index] ?? "")) return UNCERTAIN_LIFECYCLE;
   let name = commandName(tokens[index] ?? "");
   // Only literal, option-free launcher operands are resolved. env assignments are
   // data, not executable names; split-string/options/dynamic lookup stay unknown.
@@ -155,15 +155,15 @@ function inspectLifecycleScript(source: string, depth: number): string | undefin
    index++;
    if (tokens[index] === "--") index++;
    if (name === "env" || name === "sudo") {
-    // env accepts NAME=VALUE beyond Bash identifier names (e.g. foo.bar).
-    while (index < tokens.length && (name === "env" ? tokens[index]!.includes("=") : LEADING_ASSIGNMENT.test(tokens[index]!))) {
+    // env and sudo accept NAME=VALUE beyond Bash identifiers (e.g. foo.bar).
+    while (index < tokens.length && tokens[index]!.includes("=")) {
      if (uncertainAssignment(tokens, index)) return UNCERTAIN_LIFECYCLE;
      index++;
     }
    }
    // Shell redirections are removed from argv, not launcher executables. Their
    // interleaved/quoted provenance is outside this token view: refuse, don't guess.
-   if (LEADING_REDIRECTION.test(tokens[index] ?? "")) return UNCERTAIN_LIFECYCLE;
+   if (/[<>]/.test(tokens[index] ?? "")) return UNCERTAIN_LIFECYCLE;
    if (!tokens[index] || tokens[index]!.startsWith("-") || hasDynamicSyntax(tokens[index]!)) return UNCERTAIN_LIFECYCLE;
    changedLookup = true;
    name = commandName(tokens[index]!);

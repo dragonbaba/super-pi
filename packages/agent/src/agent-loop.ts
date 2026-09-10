@@ -752,6 +752,8 @@ type ImmediateToolCallOutcome = {
 type ExecutedToolCallOutcome = {
 	result: AgentToolResult<any>;
 	isError: boolean;
+	/** Invocation was refused; retain the normal pre-execution block semantics. */
+	authorizationVeto?: true;
 };
 
 type FinalizedToolCallOutcome = {
@@ -877,6 +879,7 @@ async function executePreparedToolCall(
 ): Promise<ExecutedToolCallOutcome> {
 	const progress = new ToolProgressDelivery(prepared, emit, instrumentation);
 	let acceptingUpdates = true;
+	let checkingAuthorization = false;
 
 	try {
 		const onUpdate = ((partialResult: AgentToolResult<any>) => {
@@ -890,12 +893,14 @@ async function executePreparedToolCall(
 		const execute = prepared.tool.execute;
 		const id = prepared.toolCall.id;
 		const name = prepared.toolCall.name;
+		checkingAuthorization = prepared.finalAuthorization !== undefined;
 		if (prepared.finalAuthorization && execute !== prepared.authorizedExecute) {
 			throw new Error("Blocked by policy: authorized tool implementation changed before invocation");
 		}
 		const args = prepared.finalAuthorization
 			? prepared.finalAuthorization.consume(prepared.args, id, name, signal)
 			: prepared.args;
+		checkingAuthorization = false;
 		const result = await execute.call(prepared.tool,
 			id,
 			args as never,
@@ -907,6 +912,10 @@ async function executePreparedToolCall(
 		return { result, isError: false };
 	} catch (error) {
 		acceptingUpdates = false;
+		if (checkingAuthorization) {
+			return { result: createErrorToolResult(error instanceof Error ? error.message : String(error)),
+				isError: true, authorizationVeto: true };
+		}
 		try {
 			await progress.flush();
 		} catch {
@@ -1065,7 +1074,7 @@ async function finalizeExecutedToolCall(
 	let result = executed.result;
 	let isError = executed.isError;
 
-	if (config.afterToolCall) {
+	if (config.afterToolCall && !executed.authorizationVeto) {
 		try {
 			const afterResult = await config.afterToolCall(
 				{

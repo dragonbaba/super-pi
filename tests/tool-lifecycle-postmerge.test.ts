@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createHook } from "node:async_hooks";
+import { Session } from "node:inspector/promises";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -21,7 +22,7 @@ const { default: guard } = await jiti.import<any>("../packages/extensions/resour
 const { failureRecoveryHint, classifyFailureText } = await jiti.import<any>("../packages/extensions/tool-loop-guardrails/core.ts");
 const shellPath = process.platform === "win32" && existsSync("D:/Git/bin/bash.exe") ? "D:/Git/bin/bash.exe" : getShellConfig().shell;
 
-async function fixture(t: test.TestContext, lateCommand?: string | ((event: any) => any), before?: (event: any) => any, noGuard = false) {
+async function fixture(t: test.TestContext, lateCommand?: string | ((event: any) => any), before?: (event: any) => any, noGuard = false, profileBackend?: any) {
  const cwd = mkdtempSync(join(tmpdir(), "pi-lifecycle-postmerge-"));
  const runtime = createExtensionRuntime();
  const extension = await loadExtensionFromFactory(pi => { pi.appendEntry = () => {}; guard(pi); }, cwd, createEventBus(), runtime);
@@ -41,7 +42,7 @@ async function fixture(t: test.TestContext, lateCommand?: string | ((event: any)
    effectiveArgs = args;
    const result = await runner.emitToolCall({ type: "tool_call", toolName: toolCall.name, toolCallId: toolCall.id, input: args } as never);
    const owner: any = result?.finalAuthorization;
-   if (owner) {
+   if (owner && !profileBackend) {
     ownership.installed++; observed.push(owner);
     observedChecks.push(...owner.checks);
     if (!owner.live) ownership.released++;
@@ -55,7 +56,7 @@ async function fixture(t: test.TestContext, lateCommand?: string | ((event: any)
  runner.bindCore({} as never, { getSignal: () => agent.signal } as never);
  runner.setUIContext({ ...runner.getUIContext(), select: async (_title, choices) => { approvals++; await Promise.resolve(); approvalAction?.(); return deny ? choices.at(-1) : choices[0]; } }, "tui");
  await runner.emit({ type: "session_start" } as never);
- agent.state.tools = [createBashTool(cwd, { shellPath, exposeSessionEnvironment: false })];
+ agent.state.tools = [createBashTool(cwd, { shellPath, exposeSessionEnvironment: false, operations: profileBackend })];
  const hook = createHook({ init(_id, type) { if (type === "PROCESSWRAP") spawns++; } });
  hook.enable();
  t.after(() => { hook.disable(); runner.invalidate(); agent.abort(); rmSync(cwd, { recursive: true }); assert.equal(existsSync(cwd), false); });
@@ -141,11 +142,10 @@ test("postmerge preflight adds zero argument-wrapper allocations", () => {
  const authorization = source.statements.find(node => ts.isClassDeclaration(node) && node.name?.text === "BashInvocationAuthorization") as ts.ClassDeclaration;
  const consume = authorization.members.find(node => ts.isMethodDeclaration(node) && node.name.getText(source) === "consume") as ts.MethodDeclaration;
  const returns = consume.body!.statements.filter(ts.isReturnStatement);
- assert.equal(returns.length, 1);
- const container = returns[0].expression as ts.ObjectLiteralExpression;
- assert.ok(ts.isObjectLiteralExpression(container));
- assert.deepEqual(container.properties.map(property => property.name!.getText(source)), ["command", "timeout"]);
+ assert.equal(returns.length, 1); assert.equal(returns[0].expression!.getText(source), "this");
  assert.doesNotMatch(consume.getText(source), /\bawait\b|new Promise|setTimeout|createHash|JSON\.stringify/);
+ const runnerText = readFileSync(new URL("../packages/coding-agent/src/core/extensions/runner.ts", import.meta.url), "utf8");
+ assert.equal(runnerText.match(/return \{ command, timeout \};/g)?.length, 1);
 });
 
 test("postmerge later extension cannot execute an unapproved replacement", async t => {
@@ -236,7 +236,58 @@ test("review: every successful authorization snapshot must agree", async t => {
  f.assertReleased();
 });
 
-for (const command of ["env bash</dev/null -c 'printf INNER'", "sudo foo.bar=x bash -c 'printf INNER'"]) {
+test("review: agreeing snapshots cannot be changed by a release callback", async t => {
+ const snapshot = { command: "printf APPROVED", timeout: undefined };
+ const f = await fixture(t, undefined, () => ({ finalAuthorization: {
+  consume() { return snapshot; }, release() { snapshot.command = "printf UNAPPROVED"; },
+ } }));
+ const result = await f.call("printf APPROVED");
+ assert.equal(result.error, false, result.text); assert.equal(result.text.trim(), "APPROVED");
+ assert.equal(f.counts().spawns, 1); f.assertReleased();
+});
+
+test("final authorization bounded paired allocation sample", async t => {
+ // One fixed workload. Fake backend excludes child startup while retaining the
+ // real Agent/runner/guard/Bash invocation and result-delivery chain. No network.
+ const warmup = 16, samples = 256, samplingInterval = 1024;
+ let effects = 0;
+ const backend = { async exec() { effects++; return { exitCode: 0 }; } };
+ const guarded = await fixture(t, undefined, undefined, false, backend);
+ const ordinary = await fixture(t, undefined, undefined, true, backend);
+ for (let i = 0; i < warmup; i++) { await guarded.call("printf SAFE"); await ordinary.call("printf SAFE"); }
+ const inspector = new Session(); inspector.connect();
+ const guardedMs: number[] = [], ordinaryMs: number[] = [];
+ let profile: any;
+ try {
+  await inspector.post("HeapProfiler.enable");
+  await inspector.post("HeapProfiler.startSampling", { samplingInterval, includeObjectsCollectedByMajorGC: true, includeObjectsCollectedByMinorGC: true });
+  for (let i = 0; i < samples; i++) {
+   let started = performance.now(); assert.equal((await guarded.call("printf SAFE")).error, false); guardedMs.push(performance.now() - started);
+   started = performance.now(); assert.equal((await ordinary.call("printf SAFE")).error, false); ordinaryMs.push(performance.now() - started);
+  }
+  profile = (await inspector.post("HeapProfiler.stopSampling")).profile;
+  await inspector.post("HeapProfiler.disable");
+ } finally { inspector.disconnect(); }
+ let sampledBytes = 0, authorizationSiteBytes = 0;
+ const stack = [profile.head];
+ while (stack.length) {
+  const node = stack.pop(); sampledBytes += node.selfSize;
+  if (["BashInvocationAuthorization", "PendingToolAuthorization", "consume", "emitToolCall"].includes(node.callFrame.functionName)) authorizationSiteBytes += node.selfSize;
+  for (const child of node.children) stack.push(child);
+ }
+ profile = undefined;
+ guardedMs.sort((a,b) => a-b); ordinaryMs.sort((a,b) => a-b);
+ const p50 = Math.floor(samples * 0.5), p95 = Math.floor(samples * 0.95);
+ guarded.assertReleased(); ordinary.assertReleased();
+ assert.equal(effects, 2 * (warmup + samples)); assert.ok(sampledBytes > 0);
+ assert.equal(guarded.counts().spawns, 0); assert.equal(ordinary.counts().spawns, 0);
+ t.diagnostic(`final-authorization allocation ${JSON.stringify({ node: process.version, platform: process.platform,
+  warmup, samples, samplingInterval, effects, sampledBytes, authorizationSiteBytes,
+  guardedP50Ms: guardedMs[p50], guardedP95Ms: guardedMs[p95], ordinaryP50Ms: ordinaryMs[p50], ordinaryP95Ms: ordinaryMs[p95],
+  pending: 0, retainedCheckReferences: 0, providerTraffic: 0 })}; sampled allocations under profiling, not total allocation/retained heap or native process latency`);
+});
+
+for (const command of ["env bash</dev/null -c 'printf INNER'", "bash</dev/null -c 'printf INNER'", "sudo foo.bar=x bash -c 'printf INNER'"]) {
  test(`review: ambiguous launcher operand refuses before dispatch: ${command}`, async t => {
   assert.match(inspectBashResourceLifecycle({ command }) ?? "", /uncertain/);
   const f = await fixture(t); const result = await f.call(command);
@@ -258,6 +309,9 @@ test("review: result transforms cannot erase a final authorization veto", async 
  const result = await f.call("printf APPROVED");
  assert.equal(result.error, true, result.text); assert.equal(transforms, 0);
  assert.equal(f.counts().spawns, 0); f.assertReleased();
+ const ordinary = await f.call("printf UNAPPROVED"); // unchanged for this separate authorized call
+ assert.equal(ordinary.error, false); assert.equal(ordinary.text, "apparent success");
+ assert.equal(transforms, 1); assert.equal(f.counts().spawns, 1); f.assertReleased();
 });
 
 test("postmerge dynamic executable position is lifecycle-uncertain", () => {

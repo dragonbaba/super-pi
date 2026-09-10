@@ -33,7 +33,9 @@ class BashInvocationAuthorization {
     const timeout = Object.getOwnPropertyDescriptor(args, "timeout");
     if (!command || !("value" in command) || command.value !== this.command
       || (timeout && !("value" in timeout)) || timeout?.value !== this.timeout) throw new Error(INVALIDATED);
-    return { command: this.command, timeout: this.timeout };
+    // The runner borrows the checked primitive fields and materializes exactly
+    // one invocation container after every successful check agrees.
+    return this;
   }
   release(): void {
     this.input = undefined; this.command = undefined; this.timeout = undefined;

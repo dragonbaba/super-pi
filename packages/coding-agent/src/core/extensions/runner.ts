@@ -475,16 +475,29 @@ class PendingToolAuthorization implements ToolInvocationAuthorization {
 	consume(args: unknown, id: string, name: string, signal?: AbortSignal): unknown {
 		try {
 			if (!this.live || signal?.aborted) throw new Error("Blocked by policy: final authorization is obsolete");
-			let executionArgs: unknown;
+			// Only the guarded Bash contract is supported by this internal handoff.
+			if (name !== "bash") throw new Error("Blocked by policy: unsupported final authorization tool");
+			let command: unknown, timeout: unknown;
 			for (let i = 0; i < this.checks.length; i++) {
 				const approved = this.checks[i]!.consume(args, id, name, signal);
 				if (!approved || typeof approved !== "object" || approved === args) {
 					throw new Error("Blocked by policy: final authorization did not supply private execution values");
 				}
-				if (i === 0) executionArgs = approved;
+				const approvedCommand = Object.getOwnPropertyDescriptor(approved, "command");
+				const approvedTimeout = Object.getOwnPropertyDescriptor(approved, "timeout");
+				if (!approvedCommand || !("value" in approvedCommand) || typeof approvedCommand.value !== "string"
+					|| (approvedTimeout && (!("value" in approvedTimeout)
+						|| (approvedTimeout.value !== undefined && typeof approvedTimeout.value !== "number")))) {
+					throw new Error("Blocked by policy: invalid final authorization values");
+				}
+				if (i === 0) { command = approvedCommand.value; timeout = approvedTimeout?.value; }
+				else if (command !== approvedCommand.value || timeout !== approvedTimeout?.value) {
+					throw new Error("Blocked by policy: final authorization snapshots disagree");
+				}
 			}
 			if (!this.live || signal?.aborted) throw new Error("Blocked by policy: final authorization is obsolete");
-			return executionArgs;
+			// No handler owns this container. Release callbacks cannot change its values.
+			return { command, timeout };
 		} finally { this.release(); }
 	}
 	release(): void {
