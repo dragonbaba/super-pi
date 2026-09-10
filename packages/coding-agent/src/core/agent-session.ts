@@ -1261,13 +1261,19 @@ export class AgentSession {
 				try {
 					presentation = presentationOwner.create(event.message.content, event.message.toolCallId);
 				} catch (error) {
-					if (!mcpTool) throw error;
+					if (!mcpTool) {
+						if (!(error instanceof ToolResultContinuationError) || error.code !== "budget-too-small") throw error;
+						// A model-view budget cannot revoke an already completed local
+						// result. Deliver/persist its canonical status below. Conversion
+						// still enforces the budget before the next provider request.
+					} else {
 					hostCanonicalPayloadChanged = true;
 					presentationOwner.releaseMcpInputAdmission(event.message.toolCallId);
 					event.message.content = [];
 					event.message.isError = true;
 					event.message.details = { mcpError: "input-admission-failed", configurationReason: "MCP final output requires a valid source and a configured sufficient recovery budget." };
 					presentation = presentationOwner.create(event.message.content, event.message.toolCallId);
+					}
 				}
 				if (presentation) {
 					const evidenceGeneration = this._evidenceLedger ? presentationOwner.getResidentEvidenceGeneration(event.message.toolCallId) : undefined;

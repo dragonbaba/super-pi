@@ -57,6 +57,7 @@ import {
 import type { ToolOutputShadowOptions } from "./tool-output-budget.ts";
 import {
 	createToolResultPresentationOwner,
+	ToolResultContinuationError,
 	type ToolResultPresentationOptions,
 } from "./tool-result-presentation.ts";
 
@@ -370,6 +371,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		const converted = convertToLlm(messages);
 		// Check setting dynamically so mid-session changes take effect
 		const blockImages = settingsManager.getBlockImages();
+		try {
 		const projected = toolResultPresentationOwner?.projectMessagesForModel(
 			converted,
 			blockImages ? replaceBlockedImages : undefined,
@@ -380,6 +382,12 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			true,
 		) ?? converted;
 		return blockImages ? replaceBlockedImagesInMessages(projected) : projected;
+		} catch (error) {
+			if (error instanceof ToolResultContinuationError && error.code === "budget-too-small" && !error.message.startsWith("Request preparation blocked:")) {
+				throw new ToolResultContinuationError("budget-too-small", `Request preparation blocked: configured result budget cannot fit a required recovery notice (minimumNotice=${error.minimumTokens ?? "unavailable"}). Prior tool outcomes are unchanged. Adjust the result budget before retrying the request; do not repeat completed tools.`, error.minimumTokens);
+			}
+			throw error;
+		}
 	};
 
 	const extensionRunnerRef: { current?: ExtensionRunner } = {};

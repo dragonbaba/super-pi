@@ -112,7 +112,8 @@ for (const presentationBudget of [1024,1]) test(`real SDK write persists across 
   const execute=write.execute;
   let delay: Promise<void>|undefined, entered: (()=>void)|undefined;
   write.execute=async(...args)=>{
-   if(args[1].path==='delayed.txt'||args[1].path==='aborted.txt'){entered?.();await delay;}
+   const input=args[1] as {path:string};
+   if(input.path==='delayed.txt'||input.path==='aborted.txt'){entered?.();await delay;}
    const result=await execute(...args);effects++;return result;
   };
   const convert=session.agent.convertToLlm;
@@ -127,7 +128,12 @@ for (const presentationBudget of [1024,1]) test(`real SDK write persists across 
   const durable=SessionManager.open(manager.getSessionFile()!).buildSessionContext().messages;
   assert.equal(durable.filter((m:any)=>m.role==='toolResult'&&!m.isError).length,1);
   assert.match((session.messages.at(-1) as any).errorMessage,/Request preparation blocked/);
-  if(presentationBudget===1)return;
+  if(presentationBudget===1){
+   await session.prompt("Do not repeat the completed write; budget remains too small.");
+   assert.equal(sends,1);assert.equal(effects,1);
+   assert.match((session.messages.at(-1) as any).errorMessage,/Request preparation blocked: configured result budget/);
+   return;
+  }
   inject=false;
   await session.prompt("Use the recorded result; continue without repeating the write.");
   assert.equal(sends,2);assert.equal(effects,1);assert.ok(receivedCap>1024&&receivedCap<384_000);
