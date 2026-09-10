@@ -195,7 +195,7 @@ type ShellSegment = string[] & { dynamic?: boolean; expansions?: number[] };
 
 function uncertainAssignment(tokens: ShellSegment, index: number, shellAssignment = false): boolean {
  const expansion = tokens.expansions?.[index] ?? 0;
- return (expansion & (shellAssignment ? 4 : 6)) !== 0 || (expansion !== 0 && LOOKUP_ASSIGNMENT.test(tokens[index]!));
+ return (expansion & (shellAssignment ? 4 : 14)) !== 0 || (expansion !== 0 && LOOKUP_ASSIGNMENT.test(tokens[index]!));
 }
 
 interface ScanBuilder {
@@ -622,6 +622,12 @@ function parseShellSegments(command: string): ShellSegment[] {
 			const flags = code === 96 || command.charCodeAt(index + 1) === 40 ? 4 : quote === 34 ? 1 : 2;
 			const expansions = tokens.expansions ??= [];
 			expansions[tokens.length] = (expansions[tokens.length] ?? 0) | flags;
+		}
+		// Launcher assignment operands are ordinary argv words: unquoted braces
+		// can expand one apparent assignment into additional executable operands.
+		if (quote === 0 && (code === 123 || code === 125)) {
+			const expansions = tokens.expansions ??= [];
+			expansions[tokens.length] = (expansions[tokens.length] ?? 0) | 8;
 		}
 		if (quote !== 0) {
 			if (code === quote) quote = 0;

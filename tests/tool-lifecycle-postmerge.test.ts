@@ -333,11 +333,12 @@ test("final authorization bounded paired allocation sample", async t => {
   profile = (await inspector.post("HeapProfiler.stopSampling")).profile;
   await inspector.post("HeapProfiler.disable");
  } finally { inspector.disconnect(); }
- let sampledBytes = 0, authorizationSiteBytes = 0;
+ let sampledBytes = 0, authorizationSiteBytes = 0, parallelAuthorizationSiteBytes = 0;
  const stack = [profile.head];
  while (stack.length) {
   const node = stack.pop(); sampledBytes += node.selfSize;
-  if (["BashInvocationAuthorization", "PendingToolAuthorization", "consume", "emitToolCall"].includes(node.callFrame.functionName)) authorizationSiteBytes += node.selfSize;
+  if (["BashInvocationAuthorization", "PendingToolAuthorization", "consume", "emitToolCall", "executeToolCallsParallel"].includes(node.callFrame.functionName)) authorizationSiteBytes += node.selfSize;
+  if (node.callFrame.functionName === "executeToolCallsParallel") parallelAuthorizationSiteBytes += node.selfSize;
   for (const child of node.children) stack.push(child);
  }
  profile = undefined;
@@ -347,12 +348,13 @@ test("final authorization bounded paired allocation sample", async t => {
  assert.equal(effects, 2 * (warmup + samples)); assert.ok(sampledBytes > 0);
  assert.equal(guarded.counts().spawns, 0); assert.equal(ordinary.counts().spawns, 0);
  t.diagnostic(`final-authorization allocation ${JSON.stringify({ node: process.version, platform: process.platform,
-  warmup, samples, samplingInterval, effects, sampledBytes, authorizationSiteBytes,
+  warmup, samples, samplingInterval, effects, sampledBytes, authorizationSiteBytes, parallelAuthorizationSiteBytes,
   guardedP50Ms: guardedMs[p50], guardedP95Ms: guardedMs[p95], ordinaryP50Ms: ordinaryMs[p50], ordinaryP95Ms: ordinaryMs[p95],
   pending: 0, retainedCheckReferences: 0, providerTraffic: 0 })}; sampled allocations under profiling, not total allocation/retained heap or native process latency`);
  // Gross regression ceilings derived with margin from the first Windows/Linux
  // samples, not a claim that noisy sampled bytes or timings are exact totals.
  assert.ok(authorizationSiteBytes > 0, "authorization allocation sites must be sampled");
+ assert.ok(parallelAuthorizationSiteBytes > 0, "parallel authorization-list allocation site must be sampled");
  assert.ok(authorizationSiteBytes / samples <= 8192, "authorization sites exceeded 8 KiB sampled bytes per guarded call");
  assert.ok(guardedMs[p50] - ordinaryMs[p50] <= 5, "guarded profiling p50 delta exceeded 5 ms");
  assert.ok(guardedMs[p95] - ordinaryMs[p95] <= 10, "guarded profiling p95 delta exceeded 10 ms");
