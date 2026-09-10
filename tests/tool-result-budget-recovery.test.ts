@@ -76,7 +76,7 @@ test("multiple required results retain exact order and bounded batch envelopes",
  } finally {owner.dispose();}
 });
 
-test("real SDK write persists once across a later projection block and explicit request recovery", async t => {
+for (const presentationBudget of [1024,1]) test(`real SDK write persists across projection block and recovery: budget ${presentationBudget}`, async t => {
  const {createAgentSession}=await import("../packages/coding-agent/src/core/sdk.ts");
  const {DefaultResourceLoader}=await import("../packages/coding-agent/src/core/resource-loader.ts");
  const {SettingsManager}=await import("../packages/coding-agent/src/core/settings-manager.ts");
@@ -106,7 +106,7 @@ test("real SDK write persists once across a later projection block and explicit 
   return new Response(`data: ${JSON.stringify(event)}\n\ndata: ${JSON.stringify(end)}\n\ndata: [DONE]\n\n`,{headers:{"Content-Type":"text/event-stream"}});
  };
  const runtime:any={hasConfiguredAuth:()=>true,checkAuth:async()=>({type:"api_key"}),isUsingOAuth:()=>false,getAuth:async()=>undefined,getModel:()=>undefined,registerProvider(){},registerNativeProvider(){},unregisterProvider(){},streamSimple:(m:any,c:any,o:any)=>{expectedCap=clampMaxTokensToContext(m,c,o?.maxTokens??m.maxTokens);return streamSimple(m,c,{...o,apiKey:"offline-fixture",fetch:fakeFetch,maxRetries:0});}};
- const {session}=await createAgentSession({cwd,agentDir,model:fullModel,modelRuntime:runtime,settingsManager,sessionManager:manager,resourceLoader:loader,tools:["write"],toolResultPresentation:{enabled:true,budgetTokens:1024}});
+ const {session}=await createAgentSession({cwd,agentDir,model:fullModel,modelRuntime:runtime,settingsManager,sessionManager:manager,resourceLoader:loader,tools:["write"],toolResultPresentation:{enabled:true,budgetTokens:presentationBudget}});
  try {
   const write=session.agent.state.tools.find(tool=>tool.name==='write')!;
   const execute=write.execute;
@@ -116,7 +116,7 @@ test("real SDK write persists once across a later projection block and explicit 
    const result=await execute(...args);effects++;return result;
   };
   const convert=session.agent.convertToLlm;
-  let inject=true,blockAfterResults=1;
+  let inject=presentationBudget===1024,blockAfterResults=1;
   session.agent.convertToLlm=(m,s,tools,model,cap)=>{
    if(inject&&m.filter(x=>x.role==='toolResult'&&!x.isError).length>=blockAfterResults)throw new RequestBudgetError(1_000_000,999_000,384_000,-3096);
    return convert(m,s,tools,model,cap);
@@ -127,6 +127,7 @@ test("real SDK write persists once across a later projection block and explicit 
   const durable=SessionManager.open(manager.getSessionFile()!).buildSessionContext().messages;
   assert.equal(durable.filter((m:any)=>m.role==='toolResult'&&!m.isError).length,1);
   assert.match((session.messages.at(-1) as any).errorMessage,/Request preparation blocked/);
+  if(presentationBudget===1)return;
   inject=false;
   await session.prompt("Use the recorded result; continue without repeating the write.");
   assert.equal(sends,2);assert.equal(effects,1);assert.ok(receivedCap>1024&&receivedCap<384_000);
