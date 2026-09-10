@@ -431,8 +431,9 @@ test("postmerge uncertain refusal has bounded policy recovery", async () => {
  const reason = inspectBashResourceLifecycle({ command: "cat <<'EOF'\nSECRET_PAYLOAD\nEOF" })!;
  assert.equal(classifyFailureText(reason, {}, "bash"), "policy_blocked");
  const hint = await failureRecoveryHint("bash", { command: "SECRET_PAYLOAD" }, reason, process.cwd());
- assert.match(hint, /Lifecycle recovery/); assert.match(hint, /before execution/); assert.match(hint, /permission/i);
- assert.ok(hint.length < 700); assert.doesNotMatch(hint, /SECRET_PAYLOAD/);
+ assert.equal(hint, undefined, "producer guidance must not be appended twice");
+ assert.match(reason, /Lifecycle recovery/); assert.match(reason, /before execution/); assert.match(reason, /permission/i);
+ assert.ok(reason.length < 700); assert.doesNotMatch(reason, /SECRET_PAYLOAD/);
  assert.equal(classifyFailureText("ordinary runtime failure: blocked buffer", {}, "bash"), "runtime_error");
 });
 

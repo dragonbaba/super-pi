@@ -32,7 +32,7 @@ const FAILURE_ADVISORY_CUSTOM_TYPE = "tool-failure-advisory-v1";
 const ScopedBashParameters = Type.Object({
   command: Type.String({ description: "Bash command to execute" }),
   cwd: Type.Optional(Type.String({ description: "Working directory; defaults to the current Pi workspace", maxLength: 4096 })),
-  timeout: Type.Optional(Type.Number({ description: "Timeout in seconds (optional, no default timeout)" })),
+  timeout: Type.Optional(Type.Number({ description: "Timeout in seconds: 60 means one minute (optional, no default timeout)" })),
   purpose: Type.Optional(Type.String({ description: "Why the command is needed", maxLength: 800 })),
 });
 type ScopedBashInput = Static<typeof ScopedBashParameters>;

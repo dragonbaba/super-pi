@@ -11,6 +11,7 @@ import { Value } from "typebox/value";
 import type { GuardedEdit, MutationEditAuthorization, MutationPathApproval } from "./core.ts";
 import {
   executeSnapshotLineEdit,
+  validateInsertionFields,
   MAX_SNAPSHOT_LINE_EDITS,
   resetSnapshotLineStore,
   resolveSnapshotCanonicalTarget,
@@ -94,7 +95,7 @@ const PublicEditOperationParameters = Type.Object({
   end: Type.Optional(Type.String({ description: "Inclusive LINE#ID end for replace/delete only; omit for insert_before/insert_after." })),
   newLines: Type.Optional(Type.Array(Type.String(), {
     maxItems: 4000,
-    description: "Snapshot replacement or insertion as physical lines.",
+    description: "Snapshot replacement or insertion as physical lines. Insertion keeps start; include only intended inserted lines, not copied locating context.",
   })),
 }, { additionalProperties: false });
 
@@ -124,16 +125,24 @@ function hasSnapshotOperationFields(edit: Static<typeof PublicEditOperationParam
 }
 
 function validatePublicSnapshotAnchors(input: PublicEditInput): void {
+  let problems: string[] | undefined;
   for (let index = 0; index < input.edits.length; index++) {
     const edit = input.edits[index];
     if (typeof edit.start === "string" && !SNAPSHOT_LINE_REFERENCE_REGEX.test(edit.start)) {
-      throw new Error(`[SNAPSHOT_EDIT_INVALID] edits[${index}].start must be an exact LINE#ID copied from read, for example "33#6D08"; source text and line numbers alone are invalid.`);
+      (problems ??= []).push(`[SNAPSHOT_EDIT_INVALID] edits[${index}].start must be an exact LINE#ID copied from read, for example "33#6D08"; source text and line numbers alone are invalid.`);
     }
-    if (typeof edit.end === "string" && !SNAPSHOT_LINE_REFERENCE_REGEX.test(edit.end)) {
-      throw new Error(`[SNAPSHOT_EDIT_INVALID] edits[${index}].end must be an exact LINE#ID copied from read, for example "33#6D08"; source text and line numbers alone are invalid.`);
+    if ((problems?.length ?? 0) >= 3) break;
+    if (edit.kind === "insert_before" || edit.kind === "insert_after") {
+      try { validateInsertionFields(edit as SnapshotLineEdit, index); }
+      catch (error) { (problems ??= []).push(error instanceof Error ? error.message : String(error)); }
+    } else if (typeof edit.end === "string" && !SNAPSHOT_LINE_REFERENCE_REGEX.test(edit.end)) {
+      (problems ??= []).push(`[SNAPSHOT_EDIT_INVALID] edits[${index}].end must be an exact LINE#ID copied from read, for example "33#6D08"; source text and line numbers alone are invalid.`);
     }
+    if ((problems?.length ?? 0) >= 3) break;
   }
+  if (problems) throw new Error(problems.join("\n"));
 }
+
 const WriteParameters = Type.Object({
   path: Type.String({ description: "File path" }),
   content: Type.String({ description: "File content" }),
@@ -205,7 +214,7 @@ function conciseMutationFailure(
     }
   }
   if (category === "READ_REQUIRED") {
-    return `[${category}] No qualifying prior read covers this edit.\nRetry: read the exact target range, then retry.`;
+    return `[${category}] No qualifying prior read covers this edit.\nRetry: use dedicated read for the exact target range in an earlier completed tool turn, then edit; Bash, grep, LSP, same-turn and stale evidence do not qualify.`;
   }
   let output = `[${category}] ${cause}`;
   if (failure?.stateChanged === true) output += "\nWarning: the target may have changed; verify it before retrying.";
@@ -485,7 +494,7 @@ export default function mutationGuardWriteExtension(pi: ExtensionAPI): void {
       promptSnippet: "Edit one file by immutable LINE#ID anchors or exact replacements",
       promptGuidelines: [
         "Before editing, use dedicated read in a completed prior turn; Bash, grep, LSP, and same-turn reads do not authorize edits.",
-        "With snapshot, copy its ID and LINE#ID anchors: insert_before/insert_after={kind,start,newLines} and must omit end; replace={kind,start,end?,newLines}; delete={kind,start,end?}. Each newLines item is one physical line.",
+        "With snapshot, copy its ID and LINE#ID anchors: insert_before/insert_after={kind,start,newLines} and must omit end; replace={kind,start,end?,newLines}; delete={kind,start,end?}. The start anchor survives insertion; newLines contains only intended inserted lines, not copied context used to locate the insertion. Each item is one physical line.",
         "Without snapshot, exact oldText/newText still requires the same completed read evidence; keep oldText unique. Include purpose for protected targets.",
       ],
       parameters: PublicEditParameters,
@@ -568,7 +577,7 @@ export default function mutationGuardWriteExtension(pi: ExtensionAPI): void {
     description: "Create a file exclusively or overwrite one after a prior full read. Existing content must still match inside the mutation queue.",
     promptSnippet: "Create or overwrite a fully read file",
     promptGuidelines: [
-      "Overwrite requires a prior complete read; partial, same-turn, or stale evidence fails. Include purpose for protected targets.",
+      "For an existing whole-file overwrite, dedicated read must return complete content in an earlier tool turn and still match; truncated, partial, same-turn, Bash, grep, LSP, or stale evidence fails. Use range/snapshot edit for local changes. Missing files use exclusive creation without a read. Include purpose for protected targets.",
     ],
     parameters: WriteParameters,
     executionMode: "sequential",

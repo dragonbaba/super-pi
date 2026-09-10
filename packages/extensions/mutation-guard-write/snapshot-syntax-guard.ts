@@ -1,4 +1,5 @@
-import { dirname, extname, join } from "node:path";
+import { createRequire } from "node:module";
+import { extname } from "node:path";
 import { pathToFileURL } from "node:url";
 
 interface SyntaxDiagnostic {
@@ -19,7 +20,6 @@ interface TypeScriptModule {
   };
   flattenDiagnosticMessageText(message: unknown, newline: string): string;
 }
-const TYPESCRIPT_ENTRY = pathToFileURL(join(dirname(process.execPath), "node_modules", "typescript", "lib", "typescript.js")).href;
 const GUARDED_EXTENSIONS = new Set([".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts"]);
 let typescriptPromise: Promise<TypeScriptModule> | undefined;
 
@@ -37,7 +37,8 @@ function scriptKindFor(ts: TypeScriptModule, path: string): unknown {
 }
 
 async function typescript(): Promise<TypeScriptModule> {
-  typescriptPromise ??= import(TYPESCRIPT_ENTRY) as Promise<TypeScriptModule>;
+  // Resolve the pinned host dependency, never a parser from the target project or Node installation.
+  typescriptPromise ??= import(pathToFileURL(createRequire(import.meta.url).resolve("typescript")).href) as Promise<TypeScriptModule>;
   return typescriptPromise;
 }
 
@@ -54,14 +55,20 @@ function collectDiagnostics(ts: TypeScriptModule, path: string, text: string): S
   }));
 }
 
-function lineNumberAt(text: string, offset: number): number {
+function locationAt(text: string, offset: number): { line: number; column: number } {
   let line = 1;
+  let lineStart = 0;
   const end = Math.min(Math.max(0, offset), text.length);
-  for (let index = 0; index < end; index++) if (text.charCodeAt(index) === 10) line += 1;
-  return line;
+  for (let index = 0; index < end; index++) {
+    if (text.charCodeAt(index) === 10) { line += 1; lineStart = index + 1; }
+  }
+  return { line, column: end - lineStart + 1 };
 }
 
-export async function assertNoNewSyntaxDiagnostics(path: string, before: string, after: string): Promise<void> {
+export async function assertNoNewSyntaxDiagnostics(
+  path: string, before: string, after: string,
+  edits?: readonly { start: string; end?: string }[],
+): Promise<void> {
   if (!GUARDED_EXTENSIONS.has(extname(path).toLowerCase())) return;
   let ts: TypeScriptModule;
   try {
@@ -84,8 +91,16 @@ export async function assertNoNewSyntaxDiagnostics(path: string, before: string,
   });
   if (introduced.length === 0) return;
   const first = introduced[0];
-  const line = lineNumberAt(after, first.start);
+  const location = locationAt(after, first.start);
+  let scope = "";
+  for (let index = 0; index < Math.min(edits?.length ?? 0, 3); index++) {
+    const edit = edits![index];
+    // Only caller-supplied, validated original coordinates; never mint candidate anchors.
+    const start = parseInt(edit.start.trim().replace(/^>>> /u, ""), 10);
+    const end = edit.end === undefined ? start : parseInt(edit.end.trim().replace(/^>>> /u, ""), 10);
+    if (Number.isSafeInteger(start) && Number.isSafeInteger(end)) scope += ` edits[${index}] original lines ${start}-${end};`;
+  }
   throw new Error(
-    `[SNAPSHOT_EDIT_SYNTAX] Edit would introduce ${introduced.length} TypeScript/JavaScript syntax diagnostic(s). First at line ${line}: TS${first.code} ${first.message}`,
+    `[SNAPSHOT_EDIT_SYNTAX] Edit would introduce ${introduced.length} TypeScript/JavaScript syntax diagnostic(s). First at candidate line ${location.line}, column ${location.column}: TS${first.code} ${first.message.slice(0, 400)}\nCandidate coordinates are uncommitted, not original read anchors; diagnostics may cascade downstream from one defect.${scope}\nNo change. Correct the request using the existing snapshot if still current; stale or consumed snapshots require read.`,
   );
 }
