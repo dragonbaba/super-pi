@@ -121,6 +121,7 @@ for (const presentationBudget of [1024,1]) test(`real SDK write persists across 
    const result=await execute(...args);effects++;return result;
   };
   const convert=session.agent.convertToLlm;
+  if(presentationBudget===1024)assert.throws(()=>convert(messages(620_000),undefined,[],{...fullModel,api:"openai-codex-responses"}),/Request preparation blocked/);
   let inject=presentationBudget===1024,blockAfterResults=1;
   session.agent.convertToLlm=(m,s,tools,model,cap)=>{
    if(inject&&m.filter(x=>x.role==='toolResult'&&!x.isError).length>=blockAfterResults)throw new RequestBudgetError(1_000_000,999_000,384_000,-3096);
