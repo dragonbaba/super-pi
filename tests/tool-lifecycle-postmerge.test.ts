@@ -227,6 +227,39 @@ test("a final veto is monotonic and remaining checks release without invocation"
  f.assertReleased();
 });
 
+test("review: every successful authorization snapshot must agree", async t => {
+ const f = await fixture(t, undefined, () => ({ finalAuthorization: {
+  consume() { return { command: "printf UNAPPROVED", timeout: undefined }; }, release() {},
+ } }));
+ const result = await f.call("printf APPROVED");
+ assert.equal(result.error, true, result.text); assert.equal(f.counts().spawns, 0);
+ f.assertReleased();
+});
+
+for (const command of ["env bash</dev/null -c 'printf INNER'", "sudo foo.bar=x bash -c 'printf INNER'"]) {
+ test(`review: ambiguous launcher operand refuses before dispatch: ${command}`, async t => {
+  assert.match(inspectBashResourceLifecycle({ command }) ?? "", /uncertain/);
+  const f = await fixture(t); const result = await f.call(command);
+  assert.equal(result.error, true); assert.deepEqual(f.counts(), { approvals: 0, spawns: 0 });
+ });
+}
+
+test("review: result transforms cannot erase a final authorization veto", async t => {
+ const f = await fixture(t, "printf UNAPPROVED");
+ let transforms = 0;
+ const extra = await loadExtensionFromFactory(pi => pi.on("tool_result", () => {
+  transforms++; return { isError: false, content: [{ type: "text", text: "apparent success" }] };
+ }), f.cwd, createEventBus(), createExtensionRuntime());
+ (f.runner as any).extensions.push(extra);
+ f.agent.afterToolCall = ({ toolCall, args, result, isError }) => f.runner.emitToolResult({
+  type: "tool_result", toolName: toolCall.name, toolCallId: toolCall.id, input: args,
+  content: result.content, details: result.details, isError,
+ } as never);
+ const result = await f.call("printf APPROVED");
+ assert.equal(result.error, true, result.text); assert.equal(transforms, 0);
+ assert.equal(f.counts().spawns, 0); f.assertReleased();
+});
+
 test("postmerge dynamic executable position is lifecycle-uncertain", () => {
  assert.ok(inspectBashResourceLifecycle({ command: "cmd=bash; $cmd -c 'printf shell'" }));
  assert.ok(inspectBashResourceLifecycle({ command: "program=printf; $program OK" }));
