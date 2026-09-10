@@ -11,6 +11,11 @@ import { estimateContextTokens } from "../utils/estimate.ts";
 
 export const CONTEXT_SAFETY_TOKENS = 4096;
 
+/** Other senders retain their existing reserve/output accounting in this slice. */
+export function usesAdaptiveRequestBudget(api: Api | undefined): boolean {
+	return api === "openai-completions";
+}
+
 export function isRequestBudgetBlock(message: string | undefined): boolean {
 	return message?.startsWith("Request preparation blocked:") === true;
 }
@@ -38,13 +43,14 @@ export class RequestBudgetError extends Error {
 }
 
 export function clampMaxTokensToContext(model: Model<Api>, context: Context, maxTokens: number): number {
-	const requested = Math.min(maxTokens, model.maxTokens);
-	if (!Number.isSafeInteger(requested) || requested <= 0) throw new RequestBudgetError(model.contextWindow, 0, requested, 0);
-	if (model.contextWindow <= 0) return requested;
+	const adaptive = usesAdaptiveRequestBudget(model.api);
+	const requested = adaptive ? Math.min(maxTokens, model.maxTokens) : maxTokens;
+	if (adaptive && (!Number.isSafeInteger(requested) || requested <= 0)) throw new RequestBudgetError(model.contextWindow, 0, requested, 0);
+	if (model.contextWindow <= 0) return Math.max(1, requested);
 	const input = estimateContextTokens(context).tokens;
 	const available = model.contextWindow - input - CONTEXT_SAFETY_TOKENS;
-	if (available < minimumRequestOutputTokens(requested)) throw new RequestBudgetError(model.contextWindow, input, requested, available);
-	return Math.min(requested, available);
+	if (adaptive && available < minimumRequestOutputTokens(requested)) throw new RequestBudgetError(model.contextWindow, input, requested, available);
+	return Math.min(requested, Math.max(1, available));
 }
 
 export function buildBaseOptions(

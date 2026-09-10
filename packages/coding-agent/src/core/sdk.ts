@@ -12,6 +12,7 @@ import {
 	compactOpenAICodexRequest,
 } from "@super-pi/ai/api/openai-codex-responses";
 import { clampThinkingLevel, type Message, type Model, streamSimple } from "@super-pi/ai/compat";
+import { usesAdaptiveRequestBudget } from "@super-pi/ai/api/simple-options";
 import { getAgentDir, getConfigDir } from "../config.ts";
 import { resolvePath } from "../utils/paths.ts";
 import { AgentSession } from "./agent-session.ts";
@@ -368,6 +369,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		conversionModel?: Model<any>,
 		requestedMaxTokens?: number,
 	): Message[] => {
+		const requestPlanning = usesAdaptiveRequestBudget(conversionModel?.api);
 		const converted = convertToLlm(messages);
 		// Check setting dynamically so mid-session changes take effect
 		const blockImages = settingsManager.getBlockImages();
@@ -378,8 +380,8 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			systemPrompt,
 			tools,
 			conversionModel?.contextWindow,
-			requestedMaxTokens === undefined ? conversionModel?.maxTokens : Math.min(requestedMaxTokens, conversionModel?.maxTokens ?? requestedMaxTokens),
-			true,
+			requestPlanning && requestedMaxTokens !== undefined ? Math.min(requestedMaxTokens, conversionModel?.maxTokens ?? requestedMaxTokens) : conversionModel?.maxTokens,
+			requestPlanning,
 		) ?? converted;
 		return blockImages ? replaceBlockedImagesInMessages(projected) : projected;
 		} catch (error) {

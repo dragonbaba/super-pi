@@ -65,7 +65,7 @@ test("agent loop and SDK pass the request envelope without allocating a context 
 	assert.match(loop, /config\.convertToLlm\(messages, context\.systemPrompt, context\.tools, config\.model, config\.maxTokens\)/);
 	assert.match(
 		sdk,
-		/toolResultPresentationOwner\?\.projectMessagesForModel\(\s*converted,\s*blockImages \? replaceBlockedImages : undefined,\s*systemPrompt,\s*tools,\s*conversionModel\?\.contextWindow,\s*requestedMaxTokens === undefined/u,
+		/toolResultPresentationOwner\?\.projectMessagesForModel\(\s*converted,\s*blockImages \? replaceBlockedImages : undefined,\s*systemPrompt,\s*tools,\s*conversionModel\?\.contextWindow,\s*requestPlanning && requestedMaxTokens !== undefined/u,
 	);
 	assert.match(sdk, /convertToLlmWithBlockImages\(messages, systemPrompt, tools, model\)/);
 	assert.equal(sdk.includes("ToolResultBudgetContext"), false);
