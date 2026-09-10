@@ -299,6 +299,18 @@ test("review: scoped cwd and purpose cannot change after approval", async t => {
  }
 });
 
+test("review: brace-expanded launcher assignments cannot select an uninspected executable", async t => {
+ const f = await fixture(t);
+ const result = await f.call("env {LABEL=x,bash,-c,'printf INNER'} true");
+ assert.equal(result.error, true, result.text); assert.equal(f.counts().spawns, 0);
+ for (const command of ["env {LABEL=x,bash,-c,'sleep 10 &'} true", "sudo {LABEL=x,bash,-c,'sleep 10 &'} true"]) {
+  assert.match(inspectBashResourceLifecycle({ command }) ?? "", /uncertain/);
+ }
+ const literal = await f.call("env LABEL='{a,b}' printenv LABEL");
+ assert.equal(literal.error, false, literal.text); assert.equal(literal.text.trim(), "{a,b}");
+ assert.equal(f.counts().spawns, 1);
+});
+
 test("final authorization bounded paired allocation sample", async t => {
  // One fixed workload. Fake backend excludes child startup while retaining the
  // real Agent/runner/guard/Bash invocation and result-delivery chain. No network.
