@@ -248,3 +248,36 @@ test("boundary error classification explains ambiguous intent without mandating 
  const result = classifyToolFailure("edit", "[SNAPSHOT_EDIT_BOUNDARY] edits[0].newLines repeats its surviving anchor");
  assert.equal(result.category, "input_validation"); assert.match(result.cause, /意图不明确/); assert.doesNotMatch(result.cause, /应从 newLines 移除/);
 });
+
+for (const command of ['bash -c "$SCRIPT"', 'echo "$(time echo safe)"', 'echo $((1 << 2)']) test(`generic lifecycle uncertainty has a generic next step: ${command}`, async t => {
+ const f = await fixture(t);
+ const { contexts } = await f.run([() => call("uncertain", "bash", { command })]);
+ const failure = text(lastResult(contexts.at(-1)!));
+ assert.match(failure, /Simplify the unsupported shell construct/);
+ assert.match(failure, /If using a heredoc/);
+ assert.doesNotMatch(failure, /Actual heredocs are unsupported/);
+ assert.equal(failure.match(/\[Lifecycle recovery\]/g)?.length, 1);
+ assert.deepEqual(f.counts(), { processes: 0, transforms: 0, approvals: 0 });
+ assert.equal(f.invocations.size, 0); assert.deepEqual(readdirSync(f.cwd), []);
+});
+
+test("syntax parser resolves the pinned host dependency without a global Node-directory parser", async t => {
+ const { spawnSync } = await import("node:child_process");
+ const { fileURLToPath } = await import("node:url");
+ const cwd = mkdtempSync(join(tmpdir(), "pi-parser-resolution-")); t.after(() => rmSync(cwd, { recursive: true }));
+ const module = new URL("../packages/extensions/mutation-guard-write/snapshot-syntax-guard.ts", import.meta.url).href;
+ const child = spawnSync(process.execPath, ["--experimental-strip-types", "--input-type=module", "-e", `
+  import assert from 'node:assert/strict';
+  Object.defineProperty(process, 'execPath', {value: ${JSON.stringify(join(cwd, "missing-node", "node"))}});
+  const {assertNoNewSyntaxDiagnostics} = await import(${JSON.stringify(module)});
+  await assertNoNewSyntaxDiagnostics('valid.ts', '', 'const value: number = 1;');
+  await assert.rejects(assertNoNewSyntaxDiagnostics('invalid.js', '', 'const = ;'), /candidate line 1, column/);
+  console.log('pinned parser: valid accepted, malformed rejected');
+ `], { cwd, encoding: "utf8", timeout: 10_000 });
+ assert.equal(child.status, 0, child.stderr); assert.match(child.stdout, /valid accepted, malformed rejected/);
+ // A copy outside the host dependency tree must still fail closed; never accept unchecked edits.
+ const detached = join(cwd, "detached.mts"); writeFileSync(detached, readFileSync(fileURLToPath(module)));
+ const { pathToFileURL } = await import("node:url");
+ const standalone = await import(pathToFileURL(detached).href);
+ await assert.rejects(standalone.assertNoNewSyntaxDiagnostics("valid.js", "", "const x = 1;"), /parser is unavailable/);
+});

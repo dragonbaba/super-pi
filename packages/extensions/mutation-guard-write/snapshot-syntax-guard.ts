@@ -1,4 +1,5 @@
-import { dirname, extname, join } from "node:path";
+import { createRequire } from "node:module";
+import { extname } from "node:path";
 import { pathToFileURL } from "node:url";
 
 interface SyntaxDiagnostic {
@@ -19,7 +20,6 @@ interface TypeScriptModule {
   };
   flattenDiagnosticMessageText(message: unknown, newline: string): string;
 }
-const TYPESCRIPT_ENTRY = pathToFileURL(join(dirname(process.execPath), "node_modules", "typescript", "lib", "typescript.js")).href;
 const GUARDED_EXTENSIONS = new Set([".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts"]);
 let typescriptPromise: Promise<TypeScriptModule> | undefined;
 
@@ -37,7 +37,8 @@ function scriptKindFor(ts: TypeScriptModule, path: string): unknown {
 }
 
 async function typescript(): Promise<TypeScriptModule> {
-  typescriptPromise ??= import(TYPESCRIPT_ENTRY) as Promise<TypeScriptModule>;
+  // Resolve the pinned host dependency, never a parser from the target project or Node installation.
+  typescriptPromise ??= import(pathToFileURL(createRequire(import.meta.url).resolve("typescript")).href) as Promise<TypeScriptModule>;
   return typescriptPromise;
 }
 
