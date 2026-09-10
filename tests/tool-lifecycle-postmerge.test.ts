@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHook } from "node:async_hooks";
 import { Session } from "node:inspector/promises";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -10,6 +10,7 @@ import ts from "typescript";
 import { Agent } from "../packages/agent/src/agent.ts";
 import { createAssistantMessageEventStream } from "../packages/ai/src/utils/event-stream.ts";
 import { createBashTool } from "../packages/coding-agent/src/core/tools/bash.ts";
+import { wrapToolDefinition } from "../packages/coding-agent/src/core/tools/tool-definition-wrapper.ts";
 import { getShellConfig } from "../packages/coding-agent/src/utils/shell.ts";
 import { createEventBus } from "../packages/coding-agent/src/core/event-bus.ts";
 import { createExtensionRuntime, ExtensionRunner, loadExtensionFromFactory } from "../packages/coding-agent/src/core/extensions/index.ts";
@@ -19,6 +20,7 @@ import { inspectBashPermissionScope } from "../packages/extensions/resource-life
 import { extractCommandSubstitutions } from "../packages/extensions/resource-lifecycle-guard/shell-substitution.ts";
 const jiti = createJiti(import.meta.url);
 const { default: guard } = await jiti.import<any>("../packages/extensions/resource-lifecycle-guard/index.ts");
+const { default: loopGuardrails } = await jiti.import<any>("../packages/extensions/tool-loop-guardrails/index.ts");
 const { failureRecoveryHint, classifyFailureText } = await jiti.import<any>("../packages/extensions/tool-loop-guardrails/core.ts");
 const shellPath = process.platform === "win32" && existsSync("D:/Git/bin/bash.exe") ? "D:/Git/bin/bash.exe" : getShellConfig().shell;
 
@@ -53,7 +55,10 @@ async function fixture(t: test.TestContext, lateCommand?: string | ((event: any)
    }
    return result;
   } });
- runner.bindCore({} as never, { getSignal: () => agent.signal } as never);
+ runner.bindCore({ getThinkingLevel: () => "off" } as never, {
+  getSignal: () => agent.signal, isProjectTrusted: () => false, getModel: () => agent.state.model,
+  getScopedModels: () => [], isIdle: () => !agent.state.isStreaming, abort: () => agent.abort(), hasPendingMessages: () => false,
+ } as never);
  runner.setUIContext({ ...runner.getUIContext(), select: async (_title, choices) => { approvals++; await Promise.resolve(); approvalAction?.(); return deny ? choices.at(-1) : choices[0]; } }, "tui");
  await runner.emit({ type: "session_start" } as never);
  agent.state.tools = [createBashTool(cwd, { shellPath, exposeSessionEnvironment: false, operations: profileBackend })];
@@ -244,6 +249,29 @@ test("review: agreeing snapshots cannot be changed by a release callback", async
  const result = await f.call("printf APPROVED");
  assert.equal(result.error, false, result.text); assert.equal(result.text.trim(), "APPROVED");
  assert.equal(f.counts().spawns, 1); f.assertReleased();
+});
+
+for (const phase of ["consume", "release"]) test(`review: authority is current after every ${phase} callback`, async t => {
+ let f: Awaited<ReturnType<typeof fixture>>;
+ f = await fixture(t, () => ({ finalAuthorization: {
+  consume() { if (phase === "consume") (f.runner as any).cwd = join(f.cwd, "obsolete"); return { command: "printf SAFE", timeout: undefined }; },
+  release() { if (phase === "release") (f.runner as any).cwd = join(f.cwd, "obsolete"); },
+ } }));
+ const result = await f.call("printf SAFE");
+ assert.equal(result.error, true, result.text); assert.equal(f.counts().spawns, 0); f.assertReleased();
+});
+
+test("review: actual registered scoped Bash retains its requested cwd", async t => {
+ const f = await fixture(t);
+ const child = join(f.cwd, "selected-child"); mkdirSync(child);
+ const registered = await loadExtensionFromFactory(loopGuardrails, f.cwd, createEventBus(), createExtensionRuntime());
+ const definition = registered.tools.get("bash")!.definition;
+ f.agent.state.tools = [wrapToolDefinition(definition, () => f.runner.createContext())];
+ const result = await f.agent.dispatchHostTool({ type: "toolCall", id: "cwd-call", name: "bash",
+  arguments: { command: "pwd", cwd: child, purpose: "confirm selected directory" } });
+ const text = result.content.filter(c => c.type === "text").map(c => c.text).join("\n");
+ assert.equal(result.isError, false, text);
+ assert.match(text, /selected-child/); assert.equal(f.counts().spawns, 1); f.assertReleased();
 });
 
 test("final authorization bounded paired allocation sample", async t => {
