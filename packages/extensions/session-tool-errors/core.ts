@@ -70,8 +70,8 @@ const STRUCTURED_MUTATION_CAUSES = new Map<string, { category: string; cause: st
 const SNAPSHOT_EDIT_CAUSES = new Map<string, { category: string; cause: string }>([
   ["UNKNOWN", { category: "snapshot_unknown", cause: "快照能力不存在、已消费、已淘汰或属于另一个 Session；应重新读取目标。" }],
   ["PATH", { category: "snapshot_path_mismatch", cause: "快照与请求的规范目标路径不一致。" }],
-  ["STALE", { category: "stale_state", cause: "快照之后目标身份或内容发生变化，提交前校验拒绝旧状态编辑。" }],
-  ["MISMATCH", { category: "snapshot_anchor_mismatch", cause: "LINE#ID 与不可变快照中的对应行不匹配；应复制错误上下文返回的最新锚点重试。" }],
+  ["STALE", { category: "stale_state", cause: "快照之后目标身份或内容发生变化，提交前拒绝且未修改；重新读取所需范围，使用该次 read 的 snapshot 和 LINE#ID。" }],
+  ["MISMATCH", { category: "snapshot_anchor_mismatch", cause: "LINE#ID 与不可变快照中的对应行不匹配；更正该快照的锚点。只有快照仍有效时可重试，否则重新读取。" }],
   ["UNSEEN", { category: "snapshot_unseen_range", cause: "行操作超出 read 实际展示并授权的行范围。" }],
   ["BUDGET", { category: "mutation_budget_exceeded", cause: "快照编辑的操作、文本或结果大小超过有界预算。" }],
   ["BOUNDARY", { category: "input_validation", cause: "替换文本与存活边界行相同，重复意图不明确；勿自动删除。若只是定位上下文则省略，有意重复时显式替换覆盖该行的已读范围。" }],
