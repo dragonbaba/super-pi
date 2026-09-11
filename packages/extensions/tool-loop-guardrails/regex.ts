@@ -6,6 +6,7 @@ export const SHELL_DYNAMIC_PATH_RE = /[$`*?\[\]{}]|%[^%]+%/u;
 export const READ_OFFSET_ERROR_RE = /^Offset (\d+) is beyond end of file \((\d+) lines total\)$/u;
 export const BRACE_PATH_RE = /\{[^{}]*,[^{}]*\}/u;
 export const GUARD_BLOCK_CATEGORY_RE = /"category"\s*:\s*"(?:DUPLICATE_CALL|REPEATED_CALL_BLOCKED)"/u;
+export const SNAPSHOT_FAILURE_RE = /^\[SNAPSHOT_EDIT_[A-Z_]+\]/u;
 export const MSYS_REGEX_PARSE_FAILURE_RE = /regex parse error|unclosed character class/iu;
 export const BACKSLASH_PAIR_RE = /\\\\/u;
 export const NODE_SCRIPT_COMMAND_RE = /(?:^|&&|\|\||;)\s*(?:"[^"]*[/\\])?node(?:\.exe)?"?\s+(?:-e|--eval|[^\s]+\.(?:c|m)?[jt]s)\b/iu;

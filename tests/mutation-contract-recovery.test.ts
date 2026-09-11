@@ -14,6 +14,7 @@ import { wrapToolDefinition } from "../packages/coding-agent/src/core/tools/tool
 import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
 import { convertToLlm } from "../packages/coding-agent/src/core/messages.ts";
 import { getEncoding } from "js-tiktoken";
+import ts from "typescript";
 const jiti = createJiti(import.meta.url);
 const { default: mutation } = await jiti.import<any>("../packages/extensions/mutation-guard-write/index.ts");
 const { default: lifecycle } = await jiti.import<any>("../packages/extensions/resource-lifecycle-guard/index.ts");
@@ -23,6 +24,7 @@ const { failureRecoveryHint, callKey } = await jiti.import<any>("../packages/ext
 const { createToolResultPresentationOwner } = await jiti.import<any>("../packages/coding-agent/src/core/tool-result-presentation.ts");
 const { executeSnapshotLineEdit } = await jiti.import<any>("../packages/extensions/mutation-guard-write/snapshot-line-edit.ts");
 const { AgentSession } = await jiti.import<any>("../packages/coding-agent/src/core/agent-session.ts");
+const { SNAPSHOT_FAILURE_RE } = await jiti.import<any>("../packages/extensions/tool-loop-guardrails/regex.ts");
 const text = (r: any) => r.content.filter((c: any) => c.type === "text").map((c: any) => c.text).join("\n");
 const snapshot = (r: any) => { const match = /snapshot=(snap_[\w-]+)/.exec(text(r)); assert.ok(match, text(r)); return match[1]; };
 const anchor = (r: any, line: number) => new RegExp(`(?:^|\\n)(${line}#[A-F0-9]{4})\\|`).exec(text(r))![1];
@@ -138,6 +140,10 @@ for (const writer of ["replacement", "content"] as const) test(`registered fresh
 });
 
 test("affected recovery is concise and repeated validation emits at most one steering note per result", async t => {
+ let matcherCalls = 0;
+ const originalTest = SNAPSHOT_FAILURE_RE.test;
+ SNAPSHOT_FAILURE_RE.test = function(value: string) { matcherCalls++; return originalTest.call(this, value); };
+ t.after(() => { delete SNAPSHOT_FAILURE_RE.test; });
  const f = await fixture(t, true); const path = join(f.cwd, "concise.txt"); writeFileSync(path, "one\ntwo\n"); let read: any, bad: any;
  const { results, contexts } = await f.run([
   () => call("read", "read", { path }),
@@ -155,6 +161,7 @@ test("affected recovery is concise and repeated validation emits at most one ste
  assert.equal(results.filter(r => (r.details as any)?.stateChanged).length, 1); assert.equal(f.counts().processes, 0);
  const steering = contexts[4].filter(m => m.role === "user" && Array.isArray(m.content) && m.content.some((c: any) => c.text?.startsWith("[Tool-loop")));
  assert.equal(steering.length, 1, "one hidden steering message reaches the next provider request");
+ assert.equal(matcherCalls, 1, "the warning reuses one stateless module matcher");
  const guidance = f.registered.find(r => r.definition.name === "edit")!.definition.promptGuidelines!.join("\n");
  assert.match(guidance, /non-overlapping.*one call/); assert.match(guidance, /dependent same-file.*sibling/);
  const encoding = getEncoding("cl100k_base");
@@ -164,6 +171,25 @@ test("affected recovery is concise and repeated validation emits at most one ste
   assert.ok(after.length < before.length);
   t.diagnostic(`${name}: chars ${before.length}->${after.length}; cl100k_base fixture tokens ${encoding.encode(before).length}->${encoding.encode(after).length}; one delivered annotation/hint, not live-model savings`);
  }
+});
+
+test("snapshot warning matcher has zero per-result RegExp allocations and no retained event state", t => {
+ const source = ts.createSourceFile("index.ts", readFileSync(new URL("../packages/extensions/tool-loop-guardrails/index.ts", import.meta.url), "utf8"), ts.ScriptTarget.Latest, true);
+ let handlers = 0, literals = 0, references = 0;
+ function inspect(node: ts.Node): void {
+  if (node.kind === ts.SyntaxKind.RegularExpressionLiteral) literals++;
+  if (ts.isIdentifier(node) && node.text === "SNAPSHOT_FAILURE_RE") references++;
+  ts.forEachChild(node, inspect);
+ }
+ function find(node: ts.Node): void {
+  if (ts.isCallExpression(node) && node.arguments[0] && ts.isStringLiteral(node.arguments[0]) && node.arguments[0].text === "tool_result") { handlers++; inspect(node.arguments[1]); }
+  else ts.forEachChild(node, find);
+ }
+ find(source); assert.equal(handlers, 1); assert.equal(literals, 0); assert.equal(references, 1);
+ assert.equal(SNAPSHOT_FAILURE_RE.global, false); assert.equal(SNAPSHOT_FAILURE_RE.sticky, false);
+ for (let i = 0; i < 32; i++) { assert.equal(SNAPSHOT_FAILURE_RE.test("[SNAPSHOT_EDIT_INVALID] bad"), true); assert.equal(SNAPSHOT_FAILURE_RE.test("stderr [SNAPSHOT_EDIT_INVALID] bad"), false); }
+ assert.equal(SNAPSHOT_FAILURE_RE.lastIndex, 0); assert.deepEqual(Object.getOwnPropertyNames(SNAPSHOT_FAILURE_RE), ["lastIndex"]);
+ t.diagnostic("snapshot warning: RegExp allocations per matching result 1->0; module matcher=1; 64 stateless calls; retained event/input properties=0; Agent fixture verifies pending calls and final authorization references=0");
 });
 
 test("snapshot authority remains isolated across files and sessions; newer receipt survives unrelated rejection", async t => {
