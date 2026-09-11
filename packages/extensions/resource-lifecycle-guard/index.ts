@@ -119,7 +119,7 @@ export default function resourceLifecycleGuard(pi: ExtensionAPI): void {
     await permissions.restore(ctx);
   });
   pi.on("before_agent_start", (event) => ({
-    systemPrompt: `${event.systemPrompt}\n\n${permissions.systemGuidance()}\nBash capability: with this lifecycle guard enabled, actual heredocs are unsupported; ordinary cat reads, quoted text and arithmetic remain subject to normal inspection and permissions. Bash timeout is seconds: 60 means one minute.`,
+    systemPrompt: `${event.systemPrompt}\n\n${permissions.systemGuidance()}\nBash capability: with this guard enabled, actual heredocs are unsupported; ordinary cat reads, quoted text and arithmetic retain normal inspection and permissions. Timeout is seconds: 60 means one minute. For authorized script diagnostics, native creation/editing, foreground execution and cleanup each retain their own read, path, permission and lifecycle requirements. Changing tools or language cannot authorize forbidden behavior.`,
   }));
 
   pi.on("tool_call", async (event, ctx) => {

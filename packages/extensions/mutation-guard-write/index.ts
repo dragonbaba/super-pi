@@ -494,7 +494,8 @@ export default function mutationGuardWriteExtension(pi: ExtensionAPI): void {
       promptSnippet: "Edit one file by immutable LINE#ID anchors or exact replacements",
       promptGuidelines: [
         "Before editing, use dedicated read in a completed prior turn; Bash, grep, LSP, and same-turn reads do not authorize edits.",
-        "With snapshot, copy its ID and LINE#ID anchors: insert_before/insert_after={kind,start,newLines} and must omit end; replace={kind,start,end?,newLines}; delete={kind,start,end?}. The start anchor survives insertion; newLines contains only intended inserted lines, not copied context used to locate the insertion. Each item is one physical line.",
+        "Combine already-known, non-overlapping edits into one call when covered by the same valid snapshot. A successful mutation makes pre-mutation snapshots unusable for that file. For a subsequent dependent edit, complete a new read and use both its snapshot and LINE#ID anchors; do not issue dependent same-file edits as independent sibling requests.",
+        "Insertion keeps one start anchor: omit end; newLines contains only intended inserted lines, not copied locating context. Each item is one physical line.",
         "Without snapshot, exact oldText/newText still requires the same completed read evidence; keep oldText unique. Include purpose for protected targets.",
       ],
       parameters: PublicEditParameters,
@@ -547,7 +548,7 @@ export default function mutationGuardWriteExtension(pi: ExtensionAPI): void {
           return {
             content: [{
               type: "text" as const,
-              text: `Successfully applied ${details.replacements} snapshot LINE#ID operation(s) to ${snapshotInput.path}.`,
+              text: `Successfully applied ${details.replacements} snapshot LINE#ID operation(s) to ${snapshotInput.path}.\nFor a dependent edit, read again and use its snapshot and LINE#ID anchors; pre-mutation snapshots for this file are unusable.`,
             }],
             details: {
               ...details,

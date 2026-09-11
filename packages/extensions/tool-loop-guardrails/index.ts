@@ -23,6 +23,7 @@ import {
 } from "./core.js";
 import { createConfiguredMsysBashDefinition } from "./msys-bash.js";
 import { issueSnapshotForRead } from "../mutation-guard-write/snapshot-line-edit.ts";
+import { SNAPSHOT_FAILURE_RE } from "./regex.ts";
 
 const GUARDRAIL_CONTENT_TYPE = "text" as const;
 const MAX_PENDING_REPAIR_NOTES = 64;
@@ -199,7 +200,10 @@ export default function toolLoopGuardrails(pi: ExtensionAPI): void {
       ? await failureRecoveryHint(event.toolName, event.input, failureText, ctx.cwd)
       : undefined;
     const repairNote = pending?.repairNote;
-    if (repeatReminder) sendHiddenAdvisory(pi, LOOP_REMINDER_CUSTOM_TYPE, repeatReminder);
+    // One steering note for a snapshot failure at the repetition threshold.
+    // Keep both counters/guards; do not deduplicate content from other tools or calls.
+    const snapshotWarning = warning && event.toolName === "edit" && SNAPSHOT_FAILURE_RE.test(failureText);
+    if (repeatReminder && !snapshotWarning) sendHiddenAdvisory(pi, LOOP_REMINDER_CUSTOM_TYPE, repeatReminder);
     if (warning) sendHiddenAdvisory(pi, FAILURE_ADVISORY_CUSTOM_TYPE, warning);
     if (!repairNote && !recoveryHint) return undefined;
     const content = [...event.content];

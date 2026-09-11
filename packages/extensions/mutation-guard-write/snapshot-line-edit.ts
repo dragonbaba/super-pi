@@ -14,7 +14,7 @@ import {
 import { resolveToolPath, sha256 } from "./core.ts";
 import {
   computeSnapshotLineId,
-  formatSnapshotLine,
+  formatSnapshotLineExcerpt,
   formatSnapshotReadText,
   findUniqueSnapshotLineSuggestion,
   parseSnapshotLineReference,
@@ -316,7 +316,7 @@ export async function issueSnapshotForRead(
       type: "text",
       text: formatSnapshotReadText(displayed, firstSeenLine, lastSeenLine - firstSeenLine + 1),
     };
-    return `${SNAPSHOT_EDIT_ANNOTATION_PREFIX} snapshot=${id}; editable lines=${firstSeenLine}-${lastSeenLine}. Copy LINE#ID anchors exactly. insert={kind,start,newLines} (omit end; start survives; only intended inserted lines, no copied locating context); replace={kind,start,end?,newLines}; delete={kind,start,end?}.`;
+    return `${SNAPSHOT_EDIT_ANNOTATION_PREFIX} snapshot=${id}; editable lines=${firstSeenLine}-${lastSeenLine}. Use this snapshot and its LINE#ID anchors together.`;
   }
   let compact: Awaited<ReturnType<typeof captureCompactSnapshot>>;
   try {
@@ -347,7 +347,7 @@ export async function issueSnapshotForRead(
     type: "text",
     text: formatSnapshotReadText(displayed, compact.firstSeenLine, compact.visibleLines.length),
   };
-  return `${SNAPSHOT_EDIT_ANNOTATION_PREFIX} snapshot=${id}; editable lines=${compact.firstSeenLine}-${compact.lastSeenLine}. Copy LINE#ID anchors exactly. insert={kind,start,newLines} (omit end; start survives; only intended inserted lines, no copied locating context); replace={kind,start,end?,newLines}; delete={kind,start,end?}.`;
+  return `${SNAPSHOT_EDIT_ANNOTATION_PREFIX} snapshot=${id}; editable lines=${compact.firstSeenLine}-${compact.lastSeenLine}. Use this snapshot and its LINE#ID anchors together.`;
 }
 function parsePhysicalLines(bytes: Buffer): PhysicalLine[] | undefined {
   let offset = 0;
@@ -415,7 +415,7 @@ export function validateInsertionFields(edit: SnapshotLineEdit, index: number): 
   let related = "";
   try { normalizedNewLines(edit, index); }
   catch (error) { related = `\n${error instanceof Error ? error.message : String(error)}`; }
-  throw new Error(`[SNAPSHOT_EDIT_INVALID] edits[${index}] insertion uses one surviving start anchor; omit end. newLines must contain only intended inserted lines, not copied context used to locate insertion.${related}\nNo change; retry a corrected request with this snapshot if still current. A stale or consumed snapshot requires read.`);
+  throw new Error(`[SNAPSHOT_EDIT_INVALID] edits[${index}] insertion requires one surviving start; omit end. newLines: only intended inserted lines, no copied locating context.${related}\nNo change. Correct these fields using this snapshot if still current; otherwise read again.`);
 }
 
 function payloadBuffer(lines: readonly string[], eol: "\n" | "\r\n", index: number, maxBytes: number): Buffer {
@@ -454,10 +454,10 @@ function assertNoBoundaryEcho(
   const before = snapshotLines[startLine - 2];
   const after = snapshotLines[endLine];
   if (before !== undefined && newLines[0] === before) {
-    throw new Error(`[SNAPSHOT_EDIT_BOUNDARY] edits[${index}].newLines repeats surviving line ${startLine - 1}; equal text may be intentional. If copied only as context, omit that entry. If repetition is intended, explicitly replace a covered range including the surviving line and supply the intended repeated lines. No change; this snapshot remains usable if current.`);
+    throw new Error(`[SNAPSHOT_EDIT_BOUNDARY] edits[${index}].newLines repeats surviving line ${startLine - 1}; equal text may be intentional. No change.\nOmit accidental locating context, or explicitly replace a covered range including the surviving line for intended repetition; this snapshot remains usable if current.`);
   }
   if (after !== undefined && newLines[newLines.length - 1] === after) {
-    throw new Error(`[SNAPSHOT_EDIT_BOUNDARY] edits[${index}].newLines repeats surviving line ${endLine + 1}; equal text may be intentional. If copied only as context, omit that entry. If repetition is intended, explicitly replace a covered range including the surviving line and supply the intended repeated lines. No change; this snapshot remains usable if current.`);
+    throw new Error(`[SNAPSHOT_EDIT_BOUNDARY] edits[${index}].newLines repeats surviving line ${endLine + 1}; equal text may be intentional. No change.\nOmit accidental locating context, or explicitly replace a covered range including the surviving line for intended repetition; this snapshot remains usable if current.`);
   }
 }
 
@@ -512,14 +512,14 @@ function prepareEdits(receipt: FullSnapshotReceipt, requestedEdits: readonly Sna
       const payload = payloadBuffer(newLines, eol, index, Math.max(0, MAX_SNAPSHOT_EDIT_BYTES - changedBytes - Buffer.byteLength(eol)));
       if (edit.kind === "insert_before") {
         if (newLines[newLines.length - 1] === snapshotLines[startIndex]) {
-          throw new Error(`[SNAPSHOT_EDIT_BOUNDARY] edits[${index}].newLines repeats its surviving anchor; equal text may be intentional. If copied only as context, omit that entry. If repetition is intended, explicitly replace a covered range including the surviving line and supply the intended repeated lines. No change; this snapshot remains usable if current.`);
+          throw new Error(`[SNAPSHOT_EDIT_BOUNDARY] edits[${index}].newLines repeats its surviving anchor; equal text may be intentional. No change.\nOmit accidental locating context, or explicitly replace a covered range including the surviving line for intended repetition; this snapshot remains usable if current.`);
         }
         start = line.start;
         end = line.start;
         replacement = Buffer.concat([payload, Buffer.from(eol)]);
       } else if (line.eol) {
         if (newLines[0] === snapshotLines[startIndex]) {
-          throw new Error(`[SNAPSHOT_EDIT_BOUNDARY] edits[${index}].newLines repeats its surviving anchor; equal text may be intentional. If copied only as context, omit that entry. If repetition is intended, explicitly replace a covered range including the surviving line and supply the intended repeated lines. No change; this snapshot remains usable if current.`);
+          throw new Error(`[SNAPSHOT_EDIT_BOUNDARY] edits[${index}].newLines repeats its surviving anchor; equal text may be intentional. No change.\nOmit accidental locating context, or explicitly replace a covered range including the surviving line for intended repetition; this snapshot remains usable if current.`);
         }
         start = line.end;
         end = line.end;
@@ -579,7 +579,7 @@ function compactMismatchContext(receipt: CompactSnapshotReceipt, line: number): 
   for (let current = low; current <= high; current++) {
     const stored = compactLine(receipt, current);
     if (!stored) continue;
-    output.push(`${current === line ? ">>> " : "    "}${formatSnapshotLine(current, stored.text)}`);
+    output.push(`${current === line ? ">>> " : "    "}${formatSnapshotLineExcerpt(current, stored.text)}`);
   }
   return output.join("\n");
 }
@@ -594,10 +594,10 @@ function validateCompactLineReference(
     throw new Error(`[SNAPSHOT_EDIT_INVALID] ${field} line ${reference.line} is outside the file.`);
   }
   if (reference.line < receipt.firstSeenLine || reference.line > receipt.lastSeenLine) {
-    throw new Error(`[SNAPSHOT_EDIT_UNSEEN] ${field} line ${reference.line} is outside observed lines ${receipt.firstSeenLine}-${receipt.lastSeenLine}.`);
+    throw new Error(`[SNAPSHOT_EDIT_UNSEEN] ${field} line ${reference.line} is outside observed lines ${receipt.firstSeenLine}-${receipt.lastSeenLine}. No change.\nRead the needed range; use that read's snapshot and LINE#ID anchors.`);
   }
   const line = compactLine(receipt, reference.line);
-  if (!line) throw new Error(`[SNAPSHOT_EDIT_UNSEEN] ${field} line ${reference.line} is not retained by this compact snapshot.`);
+  if (!line) throw new Error(`[SNAPSHOT_EDIT_UNSEEN] ${field} line ${reference.line} is not retained by this compact snapshot. No change.\nRead the needed range; use that read's snapshot and LINE#ID anchors.`);
   if (computeSnapshotLineId(reference.line, line.text) !== reference.id) {
     const context = compactMismatchContext(receipt, reference.line);
     const suggestion = findUniqueSnapshotLineSuggestion(
@@ -607,7 +607,7 @@ function validateCompactLineReference(
       (candidate) => compactLine(receipt, candidate)?.text,
     );
     throw new Error(
-      `[SNAPSHOT_EDIT_MISMATCH] ${field} ${value} does not match the immutable snapshot.${suggestion ? ` Did you mean ${suggestion}?` : ""} Copy the updated LINE#ID below.${context ? `\n${context}` : ""}`,
+      `[SNAPSHOT_EDIT_MISMATCH] ${field} ${reference.line}#${reference.id} does not match the immutable snapshot. No change.\nCorrect the anchor from this snapshot's observed lines below if still current; otherwise read again.${suggestion ? ` Did you mean ${suggestion}?` : ""}${context ? `\n${context}` : ""}`,
     );
   }
   return line;
@@ -647,10 +647,10 @@ function assertNoCompactBoundaryEcho(
   const before = compactBoundaryText(receipt, startLine - 1);
   const after = compactBoundaryText(receipt, endLine + 1);
   if (before !== undefined && newLines[0] === before) {
-    throw new Error(`[SNAPSHOT_EDIT_BOUNDARY] edits[${index}].newLines repeats surviving line ${startLine - 1}; equal text may be intentional. If copied only as context, omit that entry. If repetition is intended, explicitly replace a covered range including the surviving line and supply the intended repeated lines. No change; this snapshot remains usable if current.`);
+    throw new Error(`[SNAPSHOT_EDIT_BOUNDARY] edits[${index}].newLines repeats surviving line ${startLine - 1}; equal text may be intentional. No change.\nOmit accidental locating context, or explicitly replace a covered range including the surviving line for intended repetition; this snapshot remains usable if current.`);
   }
   if (after !== undefined && newLines[newLines.length - 1] === after) {
-    throw new Error(`[SNAPSHOT_EDIT_BOUNDARY] edits[${index}].newLines repeats surviving line ${endLine + 1}; equal text may be intentional. If copied only as context, omit that entry. If repetition is intended, explicitly replace a covered range including the surviving line and supply the intended repeated lines. No change; this snapshot remains usable if current.`);
+    throw new Error(`[SNAPSHOT_EDIT_BOUNDARY] edits[${index}].newLines repeats surviving line ${endLine + 1}; equal text may be intentional. No change.\nOmit accidental locating context, or explicitly replace a covered range including the surviving line for intended repetition; this snapshot remains usable if current.`);
   }
 }
 
@@ -696,14 +696,14 @@ function prepareCompactEdits(
       const payload = payloadBuffer(newLines, eol, index, Math.max(0, MAX_SNAPSHOT_EDIT_BYTES - changedBytes - Buffer.byteLength(eol)));
       if (edit.kind === "insert_before") {
         if (newLines[newLines.length - 1] === startLine.text) {
-          throw new Error(`[SNAPSHOT_EDIT_BOUNDARY] edits[${index}].newLines repeats its surviving anchor; equal text may be intentional. If copied only as context, omit that entry. If repetition is intended, explicitly replace a covered range including the surviving line and supply the intended repeated lines. No change; this snapshot remains usable if current.`);
+          throw new Error(`[SNAPSHOT_EDIT_BOUNDARY] edits[${index}].newLines repeats its surviving anchor; equal text may be intentional. No change.\nOmit accidental locating context, or explicitly replace a covered range including the surviving line for intended repetition; this snapshot remains usable if current.`);
         }
         start = startLine.start;
         end = startLine.start;
         replacement = Buffer.concat([payload, Buffer.from(eol)]);
       } else if (startLine.eol) {
         if (newLines[0] === startLine.text) {
-          throw new Error(`[SNAPSHOT_EDIT_BOUNDARY] edits[${index}].newLines repeats its surviving anchor; equal text may be intentional. If copied only as context, omit that entry. If repetition is intended, explicitly replace a covered range including the surviving line and supply the intended repeated lines. No change; this snapshot remains usable if current.`);
+          throw new Error(`[SNAPSHOT_EDIT_BOUNDARY] edits[${index}].newLines repeats its surviving anchor; equal text may be intentional. No change.\nOmit accidental locating context, or explicitly replace a covered range including the surviving line for intended repetition; this snapshot remains usable if current.`);
         }
         start = startLine.end;
         end = startLine.end;
@@ -761,10 +761,10 @@ export async function resolveSnapshotCanonicalTarget(
   path: string,
   snapshotId: string,
 ): Promise<string> {
-  if (!SNAPSHOT_ID_PATTERN.test(snapshotId)) throw new Error("[SNAPSHOT_EDIT_UNKNOWN] Invalid snapshot identifier.");
+  if (!SNAPSHOT_ID_PATTERN.test(snapshotId)) throw new Error("[SNAPSHOT_EDIT_UNKNOWN] Invalid snapshot identifier. No change.\nRead the needed range again; use that read's snapshot and LINE#ID anchors.");
   const receipt = snapshotStore().snapshots.get(snapshotId);
   if (!receipt || receipt.sessionId !== sessionId) {
-    throw new Error("[SNAPSHOT_EDIT_UNKNOWN] Snapshot is absent, expired, consumed, or belongs to another Session. Read the target again.");
+    throw new Error("[SNAPSHOT_EDIT_UNKNOWN] Snapshot is absent, expired, consumed, or belongs to another Session. No change.\nRead the needed range again; use that read's snapshot and LINE#ID anchors.");
   }
   const requestedCanonical = await realpath(resolveToolPath(cwd, path));
   if (requestedCanonical !== receipt.canonicalPath) {
@@ -781,9 +781,9 @@ export async function executeSnapshotLineEdit(
   signal: AbortSignal | undefined,
   hooks: SnapshotLineEditHooks,
 ): Promise<SnapshotLineEditResult> {
-  if (!SNAPSHOT_ID_PATTERN.test(snapshotId)) throw new Error("[SNAPSHOT_EDIT_UNKNOWN] Invalid snapshot identifier.");
+  if (!SNAPSHOT_ID_PATTERN.test(snapshotId)) throw new Error("[SNAPSHOT_EDIT_UNKNOWN] Invalid snapshot identifier. No change.\nRead the needed range again; use that read's snapshot and LINE#ID anchors.");
   const receipt = snapshotStore().snapshots.get(snapshotId);
-  if (!receipt || receipt.sessionId !== sessionId) throw new Error("[SNAPSHOT_EDIT_UNKNOWN] Snapshot is absent, expired, consumed, or belongs to another Session. Read the target again.");
+  if (!receipt || receipt.sessionId !== sessionId) throw new Error("[SNAPSHOT_EDIT_UNKNOWN] Snapshot is absent, expired, consumed, or belongs to another Session. No change.\nRead the needed range again; use that read's snapshot and LINE#ID anchors.");
   if (signal?.aborted) throw new Error("Operation aborted");
   const approvedCanonical = await hooks.assertPathAllowed();
   const requestedCanonical = await resolveSnapshotCanonicalTarget(sessionId, cwd, path, snapshotId);
@@ -793,12 +793,12 @@ export async function executeSnapshotLineEdit(
   const identity = await currentIdentity(receipt.canonicalPath);
   if (!sameIdentity(identity, receipt.identity)) {
     forgetSnapshot(snapshotId);
-    throw new Error("[SNAPSHOT_EDIT_STALE] Target identity changed. Read the target again.");
+    throw new Error("[SNAPSHOT_EDIT_STALE] Target identity changed. No change.\nRead the needed range again; use that read's snapshot and LINE#ID anchors.");
   }
   const current = await readFile(receipt.canonicalPath);
   if (sha256(current) !== receipt.sha256) {
     forgetSnapshot(snapshotId);
-    throw new Error("[SNAPSHOT_EDIT_STALE] Target content changed. Read the target again.");
+    throw new Error("[SNAPSHOT_EDIT_STALE] Target content changed. No change.\nRead the needed range again; use that read's snapshot and LINE#ID anchors.");
   }
   const prepared = receipt.mode === "full"
     ? prepareEdits(receipt, edits)
@@ -831,7 +831,7 @@ export async function executeSnapshotLineEdit(
     const canonicalDirectory = await realpath(directory);
     if (canonicalDirectory !== directory || !sameIdentity(finalIdentity, receipt.identity) || sha256(finalBytes) !== receipt.sha256) {
       forgetSnapshot(snapshotId);
-      throw new Error("[SNAPSHOT_EDIT_STALE] Target changed before commit. Read the target again.");
+      throw new Error("[SNAPSHOT_EDIT_STALE] Target changed before commit. No change.\nRead the needed range again; use that read's snapshot and LINE#ID anchors.");
     }
     await rename(temporary, receipt.canonicalPath);
     committed = true;

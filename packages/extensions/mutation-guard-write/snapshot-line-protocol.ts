@@ -20,6 +20,11 @@ export function formatSnapshotLine(line: number, content: string): string {
   return `${line}#${computeSnapshotLineId(line, content)}|${content}`;
 }
 
+// Error context keeps the original observed anchor, not an anchor for clipped text.
+export function formatSnapshotLineExcerpt(line: number, content: string): string {
+  return `${line}#${computeSnapshotLineId(line, content)}|${content.slice(0, 160)}${content.length > 160 ? "…" : ""}`;
+}
+
 export function formatSnapshotReadText(text: string, firstLine: number, visibleLines: number): string {
   if (visibleLines <= 0) return text;
   const rows = text.split("\n");
@@ -98,7 +103,7 @@ function mismatchContext(lines: readonly string[], line: number, firstSeenLine: 
   const output: string[] = [];
   for (let current = low; current <= high; current++) {
     const marker = current === line ? ">>> " : "    ";
-    output.push(`${marker}${formatSnapshotLine(current, lineContent(lines, current))}`);
+    output.push(`${marker}${formatSnapshotLineExcerpt(current, lineContent(lines, current))}`);
   }
   return output.join("\n");
 }
@@ -115,14 +120,14 @@ export function validateSnapshotLineReference(
     throw new Error(`[SNAPSHOT_EDIT_INVALID] ${field} line ${reference.line} is outside the file.`);
   }
   if (reference.line < firstSeenLine || reference.line > lastSeenLine) {
-    throw new Error(`[SNAPSHOT_EDIT_UNSEEN] ${field} line ${reference.line} is outside observed lines ${firstSeenLine}-${lastSeenLine}.`);
+    throw new Error(`[SNAPSHOT_EDIT_UNSEEN] ${field} line ${reference.line} is outside observed lines ${firstSeenLine}-${lastSeenLine}. No change.\nRead the needed range; use that read's snapshot and LINE#ID anchors.`);
   }
   const actual = computeSnapshotLineId(reference.line, lineContent(lines, reference.line));
   if (actual !== reference.id) {
     const context = mismatchContext(lines, reference.line, firstSeenLine, lastSeenLine);
     const suggestion = findUniqueSnapshotLineSuggestion(reference.id, firstSeenLine, lastSeenLine, (line) => lineContent(lines, line));
     throw new Error(
-      `[SNAPSHOT_EDIT_MISMATCH] ${field} ${value} does not match the immutable snapshot.${suggestion ? ` Did you mean ${suggestion}?` : ""} Copy the updated LINE#ID below.${context ? `\n${context}` : ""}`,
+      `[SNAPSHOT_EDIT_MISMATCH] ${field} ${reference.line}#${reference.id} does not match the immutable snapshot. No change.\nCorrect the anchor from this snapshot's observed lines below if still current; otherwise read again.${suggestion ? ` Did you mean ${suggestion}?` : ""}${context ? `\n${context}` : ""}`,
     );
   }
   return reference.line;

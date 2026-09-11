@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHook } from "node:async_hooks";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -11,30 +12,44 @@ import { createEventBus } from "../packages/coding-agent/src/core/event-bus.ts";
 import { createExtensionRuntime, ExtensionRunner, loadExtensionFromFactory } from "../packages/coding-agent/src/core/extensions/index.ts";
 import { wrapToolDefinition } from "../packages/coding-agent/src/core/tools/tool-definition-wrapper.ts";
 import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
+import { convertToLlm } from "../packages/coding-agent/src/core/messages.ts";
+import { getEncoding } from "js-tiktoken";
+import ts from "typescript";
+import { Session as InspectorSession } from "node:inspector/promises";
 const jiti = createJiti(import.meta.url);
 const { default: mutation } = await jiti.import<any>("../packages/extensions/mutation-guard-write/index.ts");
 const { default: lifecycle } = await jiti.import<any>("../packages/extensions/resource-lifecycle-guard/index.ts");
 const { default: loop } = await jiti.import<any>("../packages/extensions/tool-loop-guardrails/index.ts");
 const { assertNoNewSyntaxDiagnostics } = await jiti.import<any>("../packages/extensions/mutation-guard-write/snapshot-syntax-guard.ts");
 const { failureRecoveryHint, callKey } = await jiti.import<any>("../packages/extensions/tool-loop-guardrails/core.ts");
+const { createToolResultPresentationOwner } = await jiti.import<any>("../packages/coding-agent/src/core/tool-result-presentation.ts");
+const { executeSnapshotLineEdit } = await jiti.import<any>("../packages/extensions/mutation-guard-write/snapshot-line-edit.ts");
+const { AgentSession } = await jiti.import<any>("../packages/coding-agent/src/core/agent-session.ts");
+const { SNAPSHOT_FAILURE_RE } = await jiti.import<any>("../packages/extensions/tool-loop-guardrails/regex.ts");
 const text = (r: any) => r.content.filter((c: any) => c.type === "text").map((c: any) => c.text).join("\n");
 const snapshot = (r: any) => { const match = /snapshot=(snap_[\w-]+)/.exec(text(r)); assert.ok(match, text(r)); return match[1]; };
 const anchor = (r: any, line: number) => new RegExp(`(?:^|\\n)(${line}#[A-F0-9]{4})\\|`).exec(text(r))![1];
 const call = (id: string, name: string, args: any) => ({ type: "toolCall", id, name, arguments: args });
 
-async function fixture(t: test.TestContext) {
+async function fixture(t: test.TestContext, project = false) {
  const cwd = mkdtempSync(join(tmpdir(), "pi-mutation-recovery-"));
  t.after(() => rmSync(cwd, { recursive: true }));
  const runtime = createExtensionRuntime();
  const extensions = [];
  const advisories: any[] = [];
  for (const factory of [mutation, lifecycle, loop]) extensions.push(await loadExtensionFromFactory(pi => {
-  pi.appendEntry = () => {}; pi.sendMessage = m => { advisories.push(m); }; factory(pi);
+  pi.appendEntry = () => {}; pi.sendMessage = (m, options) => {
+   advisories.push(m);
+   // Exercise the real streaming custom-message ingestion and Agent steering path.
+   void AgentSession.prototype.sendCustomMessage.call({ agent, isStreaming: true }, m, options);
+  }; factory(pi);
  }, cwd, createEventBus(), runtime));
  const runner = new ExtensionRunner(extensions, runtime, cwd, SessionManager.inMemory(cwd), {} as never);
  let lastAssistant: any, processes = 0, transforms = 0, approvals = 0;
  const invocations = new Map<string, number>();
- const agent = new Agent({ streamFn: () => { throw new Error("live provider forbidden"); }, beforeToolCall: async ({ assistantMessage, toolCall, args }) => {
+ const owner = project ? createToolResultPresentationOwner({ enabled: true, budgetTokens: 1024 }, runner.createContext().sessionManager.getSessionId()) : undefined;
+ t.after(() => owner?.dispose());
+ const agent = new Agent({ convertToLlm: messages => owner ? owner.projectMessagesForModel(convertToLlm(messages), undefined, undefined, undefined, 1_000_000, 384_000, true) : convertToLlm(messages), streamFn: () => { throw new Error("live provider forbidden"); }, beforeToolCall: async ({ assistantMessage, toolCall, args }) => {
   if (lastAssistant !== assistantMessage) { lastAssistant = assistantMessage; await runner.emit({ type: "turn_start" } as never); }
   return runner.emitToolCall({ type: "tool_call", toolName: toolCall.name, toolCallId: toolCall.id, input: args } as never);
  }, afterToolCall: async ({ toolCall, args, result, isError }) => {
@@ -56,7 +71,7 @@ async function fixture(t: test.TestContext) {
  });
  const hook = createHook({ init(_id, type) { if (type === "PROCESSWRAP") processes++; } }); hook.enable();
  t.after(async () => { hook.disable(); agent.abort(); runner.invalidate(); await runner.emit({ type: "session_shutdown" } as never); });
- return { cwd, registered, invocations, counts: () => ({ processes, transforms, approvals }), async run(steps: ((messages: any[]) => any)[]) {
+ return { cwd, agent, runner, owner, sessionId: runner.createContext().sessionManager.getSessionId(), registered, invocations, advisories, counts: () => ({ processes, transforms, approvals }), async run(steps: ((messages: any[]) => any)[], expectedResponses = steps.length + 1) {
   let response = 0;
   let scriptError: unknown;
   const contexts: any[][] = [];
@@ -73,7 +88,7 @@ async function fixture(t: test.TestContext) {
   await runner.emit({ type: "agent_start" } as never);
   await agent.prompt("offline recovery fixture"); await agent.waitForIdle();
   if (scriptError) throw scriptError;
-  assert.equal(response, steps.length + 1);
+  assert.equal(response, expectedResponses);
   assert.equal(agent.state.pendingToolCalls.size, 0);
   assert.equal((runner as any).finalAuthorizations?.size ?? 0, 0);
   for (const count of invocations.values()) assert.equal(count, 1, "no tool invocation replay");
@@ -81,6 +96,217 @@ async function fixture(t: test.TestContext) {
  } };
 }
 const lastResult = (messages: any[]) => messages.filter(m => m.role === "toolResult").at(-1);
+
+const baselineAnnotation = "[Snapshot edit] snapshot=snap_0000000000000000000000; editable lines=1-2. Copy LINE#ID anchors exactly. insert={kind,start,newLines} (omit end; start survives; only intended inserted lines, no copied locating context); replace={kind,start,end?,newLines}; delete={kind,start,end?}.";
+const baselineHeredoc = "Blocked an uncertain/uninspectable shell lifecycle before execution.\n[Lifecycle recovery] Simplify the unsupported shell construct into an inspectable bounded foreground command. If using a heredoc for an otherwise authorized diagnostic, use native file creation/editing, then request separately authorized foreground execution. Each operation keeps its own read, path, permission and lifecycle requirements; missing files need no read. Broader permissions do not resolve parser limits, and changing tools or language cannot legalize denied behavior. No command was executed.";
+
+test("registered snapshot lifecycle: old unused B rejects, fresh C batches once through model projection", async t => {
+ const f = await fixture(t, true); const path = join(f.cwd, "lifecycle.txt"); writeFileSync(path, "one\ntwo\nthree\n");
+ let a: any, b: any, c: any;
+ const replace = (id: string, read: any, line: number, value: string) => call(id, "edit", { path, snapshot: snapshot(read), edits: [{ kind: "replace", start: anchor(read, line), newLines: [value] }] });
+ const { results, contexts } = await f.run([
+  () => call("A", "read", { path }),
+  m => { a = lastResult(m); return call("B", "read", { path, offset: 2, limit: 1 }); },
+  m => { b = lastResult(m); assert.notEqual(snapshot(a), snapshot(b)); return replace("edit-A", a, 1, "ONE"); },
+  m => { assert.equal(lastResult(m).isError, false); assert.equal(readFileSync(path, "utf8"), "ONE\ntwo\nthree\n"); return replace("old-B", b, 2, "TWO"); },
+  m => { assert.match(text(lastResult(m)), /SNAPSHOT_EDIT_STALE/); assert.equal(readFileSync(path, "utf8"), "ONE\ntwo\nthree\n"); return call("C", "read", { path, offset: 2, limit: 2 }); },
+  m => { c = lastResult(m); assert.notEqual(snapshot(c), snapshot(b)); assert.equal(text(c).match(/\[Snapshot edit\]/g)?.length, 1); return call("edit-C-batch", "edit", { path, snapshot: snapshot(c), edits: [2, 3].map(line => ({ kind: "replace", start: anchor(c, line), newLines: [line === 2 ? "TWO" : "THREE"] })) }); },
+ ]);
+ assert.deepEqual(results.map(r => r.isError), [false, false, false, true, false, false]);
+ assert.equal(results.filter(r => (r.details as any)?.stateChanged).length, 2);
+ assert.equal((results.at(-1)!.details as any).replacements, 2);
+ assert.equal(readFileSync(path, "utf8"), "ONE\nTWO\nTHREE\n");
+ for (const id of ["A", "B", "C"]) {
+  const persisted = results.find(r => r.toolCallId === id)!;
+  const delivered = contexts.flat().find(r => r.role === "toolResult" && r.toolCallId === id);
+  assert.equal(text(delivered), text(persisted), "projection preserves this read's annotation and anchors");
+ }
+ assert.equal(f.advisories.length, 0); assert.equal(f.counts().processes, 0);
+ const before = "[SNAPSHOT_EDIT_STALE] Target identity changed. Read the target again.", after = text(results[3]);
+ const encoding = getEncoding("cl100k_base");
+ t.diagnostic(`stale: chars ${before.length}->${after.length}; cl100k_base fixture tokens ${encoding.encode(before).length}->${encoding.encode(after).length}; explicit snapshot+anchor recovery adds necessary detail`);
+ t.diagnostic(`platform=${process.platform}; successful atomic mutation receipts=2; rejected old-B commits=0; fresh-C operations=2`);
+});
+
+for (const writer of ["replacement", "content"] as const) test(`registered fresh snapshot rejects external ${writer} without commit`, async t => {
+ const f = await fixture(t, true); const path = join(f.cwd, "external.txt"); writeFileSync(path, "one\ntwo\n");
+ const { results } = await f.run([
+  () => call("read", "read", { path }),
+  m => { const r = lastResult(m); if (writer === "replacement") { const external = join(f.cwd, "replacement.txt"); writeFileSync(external, "one\ntwo\n"); renameSync(external, path); } else writeFileSync(path, "external\ntwo\n"); return call("stale", "edit", { path, snapshot: snapshot(r), edits: [{ kind: "replace", start: anchor(r, 1), newLines: ["forbidden"] }] }); },
+ ]);
+ assert.match(text(results.at(-1)), /SNAPSHOT_EDIT_STALE/);
+ assert.equal(results.filter(r => (r.details as any)?.stateChanged).length, 0);
+ assert.equal(readFileSync(path, "utf8"), writer === "replacement" ? "one\ntwo\n" : "external\ntwo\n");
+ assert.equal(f.counts().processes, 0);
+});
+
+test("affected recovery is concise and repeated validation emits at most one steering note per result", async t => {
+ let matcherCalls = 0;
+ const originalTest = SNAPSHOT_FAILURE_RE.test;
+ SNAPSHOT_FAILURE_RE.test = function(value: string) { matcherCalls++; return originalTest.call(this, value); };
+ t.after(() => { delete SNAPSHOT_FAILURE_RE.test; });
+ const f = await fixture(t, true); const path = join(f.cwd, "concise.txt"); writeFileSync(path, "one\ntwo\n"); let read: any, bad: any;
+ const { results, contexts } = await f.run([
+  () => call("read", "read", { path }),
+  m => { read = lastResult(m); const annotation = read.content.at(-1).text; assert.ok(annotation.length < 180, annotation); bad = { path, snapshot: snapshot(read), edits: [{ kind: "insert_after", start: anchor(read, 1), end: anchor(read, 2), newLines: ["inserted"] }] }; return call("bad-1", "edit", bad); },
+  () => call("bad-2", "edit", bad),
+  () => call("bad-3", "edit", bad),
+  m => { assert.ok(f.advisories.length <= 1, JSON.stringify(f.advisories)); assert.equal(readFileSync(path, "utf8"), "one\ntwo\n"); return call("fixed", "edit", { path, snapshot: snapshot(read), edits: [{ kind: "insert_after", start: anchor(read, 1), newLines: ["inserted"] }] }); },
+  m => { assert.match(text(lastResult(m)), /pre-mutation snapshots/); return call("used", "edit", { path, snapshot: snapshot(read), edits: [{ kind: "delete", start: anchor(read, 1) }] }); },
+  m => { const failure = text(lastResult(m)); assert.match(failure, /SNAPSHOT_EDIT_UNKNOWN/); assert.equal(failure.split("\n").length, 2); assert.match(failure, /snapshot.*LINE#ID/); return call("unsupported", "bash", { command: "python - <<'PY'\nprint('diagnostic')\nPY" }); },
+ ]);
+ const refusal = text(lastResult(contexts.at(-1)!)); assert.ok(refusal.length < 330, refusal); assert.equal(refusal.split("\n").length, 2);
+ assert.equal(text(results[1]), text(results[2]), "unchanged requests keep stable canonical validation failures");
+ assert.match(text(results[3]), /REPEATED_CALL_BLOCKED/); assert.equal(f.invocations.has("bad-3"), false, "existing repetition guard blocks before execution");
+ assert.equal(refusal.match(/\[Lifecycle recovery\]/g)?.length, 1); assert.equal(f.invocations.has("unsupported"), false);
+ assert.equal(results.filter(r => (r.details as any)?.stateChanged).length, 1); assert.equal(f.counts().processes, 0);
+ const steering = contexts[4].filter(m => m.role === "user" && Array.isArray(m.content) && m.content.some((c: any) => c.text?.startsWith("[Tool-loop")));
+ assert.equal(steering.length, 1, "one hidden steering message reaches the next provider request");
+ assert.equal(matcherCalls, 1, "the warning reuses one stateless module matcher");
+ const guidance = f.registered.find(r => r.definition.name === "edit")!.definition.promptGuidelines!.join("\n");
+ assert.match(guidance, /non-overlapping.*one call/); assert.match(guidance, /dependent same-file.*sibling/);
+ const encoding = getEncoding("cl100k_base");
+ const annotation = read.content.at(-1).text.replace(/snap_[\w-]+/, "snap_0000000000000000000000");
+ const baselineInvalid = "[SNAPSHOT_EDIT_INVALID] edits[0] insertion uses one surviving start anchor; omit end. newLines must contain only intended inserted lines, not copied context used to locate insertion.\nNo change; retry a corrected request with this snapshot if still current. A stale or consumed snapshot requires read.";
+ for (const [name, before, after] of [["read annotation", baselineAnnotation, annotation], ["invalid insertion", baselineInvalid, text(results[1])], ["immediate refusal", baselineHeredoc, refusal]]) {
+  assert.ok(after.length < before.length);
+  t.diagnostic(`${name}: chars ${before.length}->${after.length}; cl100k_base fixture tokens ${encoding.encode(before).length}->${encoding.encode(after).length}; one delivered annotation/hint, not live-model savings`);
+ }
+});
+
+test("snapshot warning matcher has zero per-result RegExp allocations and no retained event state", t => {
+ const source = ts.createSourceFile("index.ts", readFileSync(new URL("../packages/extensions/tool-loop-guardrails/index.ts", import.meta.url), "utf8"), ts.ScriptTarget.Latest, true);
+ let handlers = 0, literals = 0, references = 0;
+ function inspect(node: ts.Node): void {
+  if (node.kind === ts.SyntaxKind.RegularExpressionLiteral) literals++;
+  if (ts.isIdentifier(node) && node.text === "SNAPSHOT_FAILURE_RE") references++;
+  ts.forEachChild(node, inspect);
+ }
+ function find(node: ts.Node): void {
+  if (ts.isCallExpression(node) && node.arguments[0] && ts.isStringLiteral(node.arguments[0]) && node.arguments[0].text === "tool_result") { handlers++; inspect(node.arguments[1]); }
+  else ts.forEachChild(node, find);
+ }
+ find(source); assert.equal(handlers, 1); assert.equal(literals, 0); assert.equal(references, 1);
+ assert.equal(SNAPSHOT_FAILURE_RE.global, false); assert.equal(SNAPSHOT_FAILURE_RE.sticky, false);
+ for (let i = 0; i < 32; i++) { assert.equal(SNAPSHOT_FAILURE_RE.test("[SNAPSHOT_EDIT_INVALID] bad"), true); assert.equal(SNAPSHOT_FAILURE_RE.test("stderr [SNAPSHOT_EDIT_INVALID] bad"), false); }
+ assert.equal(SNAPSHOT_FAILURE_RE.lastIndex, 0); assert.deepEqual(Object.getOwnPropertyNames(SNAPSHOT_FAILURE_RE), ["lastIndex"]);
+ t.diagnostic("snapshot warning: RegExp allocations per matching result 1->0; module matcher=1; 64 stateless calls; retained event/input properties=0; Agent fixture verifies pending calls and final authorization references=0");
+});
+
+test("snapshot recovery focused production allocation and completion/failure/abort/disposal release", async t => {
+ const inspector = new InspectorSession(); inspector.connect();
+ try {
+  await inspector.post("HeapProfiler.enable");
+  async function exercise() {
+   const cleanup: (() => unknown)[] = [];
+   const f = await fixture({ after: (fn: () => unknown) => cleanup.push(fn) } as unknown as test.TestContext, true);
+   const refs = [new WeakRef(f.agent), new WeakRef(f.runner), new WeakRef(f.owner)];
+   try {
+    const path = join(f.cwd, "allocation.txt"); writeFileSync(path, "one\ntwo\n");
+    const steps: ((messages: any[]) => any)[] = [];
+    for (let cycle = 0; cycle < 8; cycle++) {
+     let r: any, bad: any;
+     steps.push(() => call(`read-${cycle}`, "read", { path }));
+     steps.push(m => { r = lastResult(m); bad = { path, snapshot: snapshot(r), edits: [{ kind: "insert_after", start: anchor(r, 1), end: anchor(r, 2), newLines: ["insert"] }] }; return call(`bad-${cycle}`, "edit", bad); });
+     steps.push(() => call(`repeat-${cycle}`, "edit", bad));
+     steps.push(() => call(`fixed-${cycle}`, "edit", { path, snapshot: snapshot(r), edits: [{ kind: "replace", start: anchor(r, 1), newLines: [`version-${cycle}`] }] }));
+    }
+    await inspector.post("HeapProfiler.startSampling", { samplingInterval: 1024, includeObjectsCollectedByMajorGC: true, includeObjectsCollectedByMinorGC: true });
+    const { results } = await f.run(steps);
+    const { profile } = await inspector.post("HeapProfiler.stopSampling");
+    const bytes = { total: 0, recovery: 0, agentAndExtensions: 0, projection: 0 };
+    const sites: { site: string; bytes: number }[] = [];
+    function sum(node: any): void {
+     bytes.total += node.selfSize;
+     const url = node.callFrame.url.replaceAll("\\", "/");
+     if (/extensions\/(?:tool-loop-guardrails|mutation-guard-write)\//u.test(url)) {
+      bytes.recovery += node.selfSize;
+      if (node.selfSize > 0) sites.push({ site: `${url.slice(url.indexOf("packages/"))}:${node.callFrame.lineNumber + 1} ${node.callFrame.functionName}`, bytes: node.selfSize });
+     }
+     if (/agent-loop|agent-session|core\/extensions\//u.test(url)) bytes.agentAndExtensions += node.selfSize;
+     if (/tool-result-presentation/u.test(url)) bytes.projection += node.selfSize;
+     for (const child of node.children ?? []) sum(child);
+    }
+    sum(profile.head);
+    // Fixed cross-platform envelopes, not a same-run adaptive threshold. The first
+    // Windows sample was 9,436,552 total / 513,720 recovery bytes for 32 calls.
+    // Allow engine/sampling variance while gating growth; the AST test separately
+    // requires exactly zero per-result RegExp creation, without sampling noise.
+    const perInvocationLimits = { total: 1024 * 1024, recovery: 64 * 1024, agentAndExtensions: 128 * 1024, projection: 64 * 1024 };
+    for (const key of Object.keys(perInvocationLimits) as (keyof typeof bytes)[]) {
+     assert.ok(bytes[key] > 0, `${key}: production allocation sample must be populated`);
+     assert.ok(bytes[key] <= 32 * perInvocationLimits[key], `${key}: ${bytes[key] / 32} sampled bytes/invocation exceeds ${perInvocationLimits[key]}`);
+    }
+    sites.sort((a, b) => b.bytes - a.bytes);
+    assert.equal(results.filter(r => (r.details as any)?.stateChanged).length, 8);
+    assert.equal(f.invocations.size, 32); assert.equal(f.advisories.length, 8);
+    assert.equal(f.counts().processes, 0); assert.equal(f.counts().transforms, 32);
+    await f.run([() => { f.agent.abort(); }], 1);
+    assert.equal(f.agent.state.pendingToolCalls.size, 0);
+    assert.equal((f.runner as any).finalAuthorizations?.size ?? 0, 0);
+    return { refs, bytes, perInvocationLimits, leadingSites: sites.slice(0, 5) };
+   } finally {
+    while (cleanup.length) await cleanup.pop()!();
+    assert.equal(f.owner.counters.activeContextualCoordinators, 0);
+   }
+  }
+  const { refs, bytes, perInvocationLimits, leadingSites } = await exercise();
+  for (let i = 0; i < 3; i++) { await new Promise<void>(resolve => setImmediate(resolve)); await inspector.post("HeapProfiler.collectGarbage"); }
+  assert.equal(refs.filter(ref => ref.deref() !== undefined).length, 0, "Agent, runner and projection owner release after abort/disposal");
+  t.diagnostic(`snapshot recovery allocation ${JSON.stringify({ platform: process.platform, samplingInterval: 1024, cycles: 8, invocations: 32, commits: 8, failureResults: 16, steeringNotes: 8, processes: 0, pending: 0, retainedOwnersAfterGC: 0, sampledBytes: bytes, perInvocationLimits, leadingSites })}; fixed budgets are regression envelopes, sampled bytes are not total allocation or a speedup claim`);
+ } finally { inspector.disconnect(); }
+});
+
+test("snapshot authority remains isolated across files and sessions; newer receipt survives unrelated rejection", async t => {
+ const f = await fixture(t, true), other = await fixture(t, true);
+ const a = join(f.cwd, "a.txt"), b = join(f.cwd, "b.txt"); writeFileSync(a, "one\n"); writeFileSync(b, "two\n");
+ let ra: any, rb: any, fresh: any;
+ const edit = (id: string, path: string, r: any) => call(id, "edit", { path, snapshot: snapshot(r), edits: [{ kind: "replace", start: anchor(r, 1), newLines: ["changed " + id] }] });
+ const first = await f.run([
+  () => call("read-a", "read", { path: a }),
+  m => { ra = lastResult(m); return call("read-b", "read", { path: b }); },
+  m => { rb = lastResult(m); return edit("wrong-file", a, rb); },
+  m => { assert.match(text(lastResult(m)), /SNAPSHOT_EDIT_PATH/); return edit("edit-a", a, ra); },
+  () => edit("edit-b", b, rb),
+  () => call("fresh-a", "read", { path: a }),
+ ]);
+ fresh = first.results.at(-1);
+ const denied = await other.run([() => edit("wrong-session", a, fresh)]);
+ assert.match(text(denied.results.at(-1)), /SNAPSHOT_EDIT_UNKNOWN/);
+ const corrected = await f.run([() => edit("newer-still-valid", a, fresh)]);
+ assert.equal(lastResult(corrected.contexts.at(-1)!).isError, false);
+ assert.equal(corrected.results.filter(r => (r.details as any)?.stateChanged).length, 3);
+ assert.equal(denied.results.filter(r => (r.details as any)?.stateChanged).length, 0);
+});
+
+test("dependent sibling snapshot calls cannot commit twice", async t => {
+ const f = await fixture(t, true); const path = join(f.cwd, "sibling.txt"); writeFileSync(path, "one\ntwo\n");
+ const { results } = await f.run([
+  () => call("read", "read", { path }),
+  m => { const r = lastResult(m); return [1, 2].map(line => call(`sibling-${line}`, "edit", { path, snapshot: snapshot(r), edits: [{ kind: "replace", start: anchor(r, line), newLines: ["changed"] }] })); },
+ ]);
+ assert.equal(results.filter(r => (r.details as any)?.stateChanged).length, 1);
+ assert.match(text(results.at(-1)), /SNAPSHOT_EDIT_UNKNOWN/); assert.equal(readFileSync(path, "utf8"), "changed\ntwo\n");
+});
+
+test("precommit external writer is still rejected and temporary staging is released", async t => {
+ const f = await fixture(t); const path = join(f.cwd, "race.txt"); writeFileSync(path, "one\ntwo\n");
+ const { results } = await f.run([() => call("read", "read", { path })]); const r = results[0]; let commits = 0;
+ await assert.rejects(executeSnapshotLineEdit(f.sessionId, f.cwd, path, snapshot(r), [{ kind: "replace", start: anchor(r, 1), newLines: ["forbidden"] }], undefined, {
+  assertPathAllowed: () => realpath(path), beforeCommit: () => writeFileSync(path, "external\ntwo\n"), afterCommit: () => { commits++; },
+ }), /SNAPSHOT_EDIT_STALE.*before commit/);
+ assert.equal(commits, 0); assert.equal(readFileSync(path, "utf8"), "external\ntwo\n"); assert.deepEqual(readdirSync(f.cwd), ["race.txt"]);
+});
+
+test("anchor mismatch excerpts are bounded observed originals and same-snapshot correction succeeds", async t => {
+ const f = await fixture(t); const path = join(f.cwd, "long.txt"); const long = "observed " + "x".repeat(8000); writeFileSync(path, `UNSEEN\n${long}\ntail\n`); let r: any;
+ const { results } = await f.run([
+  () => call("read", "read", { path, offset: 2, limit: 1 }),
+  m => { r = lastResult(m); const wrong = anchor(r, 2).endsWith("0000") ? "2#FFFF" : "2#0000"; return call("bad-anchor", "edit", { path, snapshot: snapshot(r), edits: [{ kind: "replace", start: wrong, newLines: ["changed"] }] }); },
+  m => { const failure = text(lastResult(m)); assert.match(failure, /SNAPSHOT_EDIT_MISMATCH/); assert.ok(failure.length < 600); assert.ok(failure.includes(anchor(r, 2))); assert.doesNotMatch(failure, /UNSEEN/); return call("fixed-anchor", "edit", { path, snapshot: snapshot(r), edits: [{ kind: "replace", start: anchor(r, 2), newLines: ["changed"] }] }); },
+ ]);
+ assert.equal(results.filter(r => (r.details as any)?.stateChanged).length, 1); assert.equal(readFileSync(path, "utf8"), "UNSEEN\nchanged\ntail\n");
+});
 
 test("registered insertion failure reaches fake model with complete bounded guidance; same snapshot correction commits once", async t => {
  const f = await fixture(t); const path = join(f.cwd, "note.txt"); writeFileSync(path, "heading\ntail\n");
@@ -173,7 +399,7 @@ for (const compact of [false]) test(`snapshot prerequisites and intentional blan
   m => { assert.match(text(lastResult(m)), /only intended inserted lines/); assert.equal(readFileSync(path, "utf8"), original); return call("blank-intent", "edit", { path, snapshot: snapshot(read), edits: [{ kind: "replace", start: anchor(read, 2), newLines: ["", ""] }] }); },
   m => { assert.equal(lastResult(m).isError, false); return call("consumed", "edit", { path, snapshot: snapshot(read), edits: [{ kind: "insert_after", start: anchor(read, 1), newLines: ["not-applied"] }] }); },
  ]);
- assert.deepEqual(results.map(r => r.isError), [false, true, false, true]); assert.match(text(results.at(-1)), /consumed.*Read the target again/);
+ assert.deepEqual(results.map(r => r.isError), [false, true, false, true]); assert.match(text(results.at(-1)), /consumed[\s\S]*Read the needed range again/);
  assert.equal(readFileSync(path, "utf8"), "heading\n\n\ntail\n" + (compact ? "filler\n".repeat(320_000) : ""));
 });
 
@@ -253,8 +479,8 @@ for (const command of ['bash -c "$SCRIPT"', 'echo "$(time echo safe)"', 'echo $(
  const f = await fixture(t);
  const { contexts } = await f.run([() => call("uncertain", "bash", { command })]);
  const failure = text(lastResult(contexts.at(-1)!));
- assert.match(failure, /Simplify the unsupported shell construct/);
- assert.match(failure, /If using a heredoc/);
+ assert.match(failure, /Use an inspectable foreground command/);
+ assert.match(failure, /for a heredoc diagnostic/);
  assert.doesNotMatch(failure, /Actual heredocs are unsupported/);
  assert.equal(failure.match(/\[Lifecycle recovery\]/g)?.length, 1);
  assert.deepEqual(f.counts(), { processes: 0, transforms: 0, approvals: 0 });
