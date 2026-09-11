@@ -215,31 +215,45 @@ test("snapshot recovery focused production allocation and completion/failure/abo
     const { results } = await f.run(steps);
     const { profile } = await inspector.post("HeapProfiler.stopSampling");
     const bytes = { total: 0, recovery: 0, agentAndExtensions: 0, projection: 0 };
+    const sites: { site: string; bytes: number }[] = [];
     function sum(node: any): void {
      bytes.total += node.selfSize;
      const url = node.callFrame.url.replaceAll("\\", "/");
-     if (/extensions\/(?:tool-loop-guardrails|mutation-guard-write)\//u.test(url)) bytes.recovery += node.selfSize;
+     if (/extensions\/(?:tool-loop-guardrails|mutation-guard-write)\//u.test(url)) {
+      bytes.recovery += node.selfSize;
+      if (node.selfSize > 0) sites.push({ site: `${url.slice(url.indexOf("packages/"))}:${node.callFrame.lineNumber + 1} ${node.callFrame.functionName}`, bytes: node.selfSize });
+     }
      if (/agent-loop|agent-session|core\/extensions\//u.test(url)) bytes.agentAndExtensions += node.selfSize;
      if (/tool-result-presentation/u.test(url)) bytes.projection += node.selfSize;
      for (const child of node.children ?? []) sum(child);
     }
     sum(profile.head);
+    // Fixed cross-platform envelopes, not a same-run adaptive threshold. The first
+    // Windows sample was 9,436,552 total / 513,720 recovery bytes for 32 calls.
+    // Allow engine/sampling variance while gating growth; the AST test separately
+    // requires exactly zero per-result RegExp creation, without sampling noise.
+    const perInvocationLimits = { total: 1024 * 1024, recovery: 64 * 1024, agentAndExtensions: 128 * 1024, projection: 64 * 1024 };
+    for (const key of Object.keys(perInvocationLimits) as (keyof typeof bytes)[]) {
+     assert.ok(bytes[key] > 0, `${key}: production allocation sample must be populated`);
+     assert.ok(bytes[key] <= 32 * perInvocationLimits[key], `${key}: ${bytes[key] / 32} sampled bytes/invocation exceeds ${perInvocationLimits[key]}`);
+    }
+    sites.sort((a, b) => b.bytes - a.bytes);
     assert.equal(results.filter(r => (r.details as any)?.stateChanged).length, 8);
     assert.equal(f.invocations.size, 32); assert.equal(f.advisories.length, 8);
     assert.equal(f.counts().processes, 0); assert.equal(f.counts().transforms, 32);
     await f.run([() => { f.agent.abort(); }], 1);
     assert.equal(f.agent.state.pendingToolCalls.size, 0);
     assert.equal((f.runner as any).finalAuthorizations?.size ?? 0, 0);
-    return { refs, bytes };
+    return { refs, bytes, perInvocationLimits, leadingSites: sites.slice(0, 5) };
    } finally {
     while (cleanup.length) await cleanup.pop()!();
     assert.equal(f.owner.counters.activeContextualCoordinators, 0);
    }
   }
-  const { refs, bytes } = await exercise();
+  const { refs, bytes, perInvocationLimits, leadingSites } = await exercise();
   for (let i = 0; i < 3; i++) { await new Promise<void>(resolve => setImmediate(resolve)); await inspector.post("HeapProfiler.collectGarbage"); }
   assert.equal(refs.filter(ref => ref.deref() !== undefined).length, 0, "Agent, runner and projection owner release after abort/disposal");
-  t.diagnostic(`snapshot recovery allocation ${JSON.stringify({ platform: process.platform, samplingInterval: 1024, cycles: 8, invocations: 32, commits: 8, failureResults: 16, steeringNotes: 8, processes: 0, pending: 0, retainedOwnersAfterGC: 0, sampledBytes: bytes })}; sampled bytes are not total allocation or a speedup claim`);
+  t.diagnostic(`snapshot recovery allocation ${JSON.stringify({ platform: process.platform, samplingInterval: 1024, cycles: 8, invocations: 32, commits: 8, failureResults: 16, steeringNotes: 8, processes: 0, pending: 0, retainedOwnersAfterGC: 0, sampledBytes: bytes, perInvocationLimits, leadingSites })}; fixed budgets are regression envelopes, sampled bytes are not total allocation or a speedup claim`);
  } finally { inspector.disconnect(); }
 });
 
