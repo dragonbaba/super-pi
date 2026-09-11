@@ -15,6 +15,7 @@ import { SessionManager } from "../packages/coding-agent/src/core/session-manage
 import { convertToLlm } from "../packages/coding-agent/src/core/messages.ts";
 import { getEncoding } from "js-tiktoken";
 import ts from "typescript";
+import { Session as InspectorSession } from "node:inspector/promises";
 const jiti = createJiti(import.meta.url);
 const { default: mutation } = await jiti.import<any>("../packages/extensions/mutation-guard-write/index.ts");
 const { default: lifecycle } = await jiti.import<any>("../packages/extensions/resource-lifecycle-guard/index.ts");
@@ -70,7 +71,7 @@ async function fixture(t: test.TestContext, project = false) {
  });
  const hook = createHook({ init(_id, type) { if (type === "PROCESSWRAP") processes++; } }); hook.enable();
  t.after(async () => { hook.disable(); agent.abort(); runner.invalidate(); await runner.emit({ type: "session_shutdown" } as never); });
- return { cwd, sessionId: runner.createContext().sessionManager.getSessionId(), registered, invocations, advisories, counts: () => ({ processes, transforms, approvals }), async run(steps: ((messages: any[]) => any)[]) {
+ return { cwd, agent, runner, owner, sessionId: runner.createContext().sessionManager.getSessionId(), registered, invocations, advisories, counts: () => ({ processes, transforms, approvals }), async run(steps: ((messages: any[]) => any)[], expectedResponses = steps.length + 1) {
   let response = 0;
   let scriptError: unknown;
   const contexts: any[][] = [];
@@ -87,7 +88,7 @@ async function fixture(t: test.TestContext, project = false) {
   await runner.emit({ type: "agent_start" } as never);
   await agent.prompt("offline recovery fixture"); await agent.waitForIdle();
   if (scriptError) throw scriptError;
-  assert.equal(response, steps.length + 1);
+  assert.equal(response, expectedResponses);
   assert.equal(agent.state.pendingToolCalls.size, 0);
   assert.equal((runner as any).finalAuthorizations?.size ?? 0, 0);
   for (const count of invocations.values()) assert.equal(count, 1, "no tool invocation replay");
@@ -190,6 +191,56 @@ test("snapshot warning matcher has zero per-result RegExp allocations and no ret
  for (let i = 0; i < 32; i++) { assert.equal(SNAPSHOT_FAILURE_RE.test("[SNAPSHOT_EDIT_INVALID] bad"), true); assert.equal(SNAPSHOT_FAILURE_RE.test("stderr [SNAPSHOT_EDIT_INVALID] bad"), false); }
  assert.equal(SNAPSHOT_FAILURE_RE.lastIndex, 0); assert.deepEqual(Object.getOwnPropertyNames(SNAPSHOT_FAILURE_RE), ["lastIndex"]);
  t.diagnostic("snapshot warning: RegExp allocations per matching result 1->0; module matcher=1; 64 stateless calls; retained event/input properties=0; Agent fixture verifies pending calls and final authorization references=0");
+});
+
+test("snapshot recovery focused production allocation and completion/failure/abort/disposal release", async t => {
+ const inspector = new InspectorSession(); inspector.connect();
+ try {
+  await inspector.post("HeapProfiler.enable");
+  async function exercise() {
+   const cleanup: (() => unknown)[] = [];
+   const f = await fixture({ after: (fn: () => unknown) => cleanup.push(fn) } as unknown as test.TestContext, true);
+   const refs = [new WeakRef(f.agent), new WeakRef(f.runner), new WeakRef(f.owner)];
+   try {
+    const path = join(f.cwd, "allocation.txt"); writeFileSync(path, "one\ntwo\n");
+    const steps: ((messages: any[]) => any)[] = [];
+    for (let cycle = 0; cycle < 8; cycle++) {
+     let r: any, bad: any;
+     steps.push(() => call(`read-${cycle}`, "read", { path }));
+     steps.push(m => { r = lastResult(m); bad = { path, snapshot: snapshot(r), edits: [{ kind: "insert_after", start: anchor(r, 1), end: anchor(r, 2), newLines: ["insert"] }] }; return call(`bad-${cycle}`, "edit", bad); });
+     steps.push(() => call(`repeat-${cycle}`, "edit", bad));
+     steps.push(() => call(`fixed-${cycle}`, "edit", { path, snapshot: snapshot(r), edits: [{ kind: "replace", start: anchor(r, 1), newLines: [`version-${cycle}`] }] }));
+    }
+    await inspector.post("HeapProfiler.startSampling", { samplingInterval: 1024, includeObjectsCollectedByMajorGC: true, includeObjectsCollectedByMinorGC: true });
+    const { results } = await f.run(steps);
+    const { profile } = await inspector.post("HeapProfiler.stopSampling");
+    const bytes = { total: 0, recovery: 0, agentAndExtensions: 0, projection: 0 };
+    function sum(node: any): void {
+     bytes.total += node.selfSize;
+     const url = node.callFrame.url.replaceAll("\\", "/");
+     if (/extensions\/(?:tool-loop-guardrails|mutation-guard-write)\//u.test(url)) bytes.recovery += node.selfSize;
+     if (/agent-loop|agent-session|core\/extensions\//u.test(url)) bytes.agentAndExtensions += node.selfSize;
+     if (/tool-result-presentation/u.test(url)) bytes.projection += node.selfSize;
+     for (const child of node.children ?? []) sum(child);
+    }
+    sum(profile.head);
+    assert.equal(results.filter(r => (r.details as any)?.stateChanged).length, 8);
+    assert.equal(f.invocations.size, 32); assert.equal(f.advisories.length, 8);
+    assert.equal(f.counts().processes, 0); assert.equal(f.counts().transforms, 32);
+    await f.run([() => { f.agent.abort(); }], 1);
+    assert.equal(f.agent.state.pendingToolCalls.size, 0);
+    assert.equal((f.runner as any).finalAuthorizations?.size ?? 0, 0);
+    return { refs, bytes };
+   } finally {
+    while (cleanup.length) await cleanup.pop()!();
+    assert.equal(f.owner.counters.activeContextualCoordinators, 0);
+   }
+  }
+  const { refs, bytes } = await exercise();
+  for (let i = 0; i < 3; i++) { await new Promise<void>(resolve => setImmediate(resolve)); await inspector.post("HeapProfiler.collectGarbage"); }
+  assert.equal(refs.filter(ref => ref.deref() !== undefined).length, 0, "Agent, runner and projection owner release after abort/disposal");
+  t.diagnostic(`snapshot recovery allocation ${JSON.stringify({ platform: process.platform, samplingInterval: 1024, cycles: 8, invocations: 32, commits: 8, failureResults: 16, steeringNotes: 8, processes: 0, pending: 0, retainedOwnersAfterGC: 0, sampledBytes: bytes })}; sampled bytes are not total allocation or a speedup claim`);
+ } finally { inspector.disconnect(); }
 });
 
 test("snapshot authority remains isolated across files and sessions; newer receipt survives unrelated rejection", async t => {
