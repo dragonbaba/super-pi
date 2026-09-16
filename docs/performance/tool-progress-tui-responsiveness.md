@@ -24,7 +24,7 @@ The requested outcome is **responsive input, scrolling and rendering while a tes
 - Worktree: `D:/RMProjects/Pi-tool-progress-tui-responsiveness`; existing branch `perf/tool-progress-tui-responsiveness`.
 - Fetched PR head / implementation parent: `a0ef95cf3945dbefc57ae44f3f7146a99b691a96`.
 - Baseline production revision: `ef6fe1c696e5f76fa915befd8c8dc0a4d982287f`, loaded read-only from the existing main checkout. `git diff ef6fe1c696e5f76fa915befd8c8dc0a4d982287f a0ef95cf3945dbefc57ae44f3f7146a99b691a96 -- packages` is empty.
-- Candidate source revision: implementation working tree, recorded as a commit in the final publication update. Measurements precede that commit; committing does not change the measured source.
+- Candidate implementation revision: `ce0728fd9649754758ba2e32bec64d8ceb58f2dc`. Measurements were taken in this exact working tree before committing; the publication follow-up changes only this revision record. The three production blob IDs below were rechecked after commit.
 - Measured production Git blob IDs: `bash.ts = 233a60d6b28ca4d90d03b44341cf07c63c7c818c`, `extensions/types.ts = 2557c24e565ba03a701a00f2e823c1af651af4d2`, `tool-execution.ts = 068c0ba1da335469cd0554dace83f330b61feb89`.
 - Node `v26.4.0`, Windows 11 Pro for Workstations `10.0.22631`, Intel Core i7-14700KF, 28 logical processors. PowerShell `D:\PowerShell\7\pwsh.exe`. No Git Bash was available.
 - Viewport 120 columns x 40 rows; dark theme. Renderer microbenchmark has one real built-in Bash row, a long command and 100 output lines (empty output for quiet). Live benchmark has 100 historical rows, or 5,000 for off-tail; commands are 103 / 2,424 UTF-16 code units. No extensions, online provider, Chrome, user source or user session data.
