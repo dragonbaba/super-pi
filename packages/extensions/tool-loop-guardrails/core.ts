@@ -461,7 +461,7 @@ export async function failureRecoveryHint(
       ? "[Read recovery] Existing whole-file overwrite requires qualifying complete content from dedicated read in an earlier completed tool turn, still matching the target. A truncated read(path) is not complete; grep, Bash, LSP, stale evidence and same-turn reads do not satisfy this guard. For a local change use a qualifying range/snapshot edit. Missing targets need no read and retain exclusive creation and permissions."
       : "[Read recovery] Use dedicated read for the exact edit range in an earlier completed tool turn, then edit against that current content; grep, Bash, LSP, stale evidence and same-turn reads do not satisfy this guard.";
   }
-  if ((toolName === "bash" || toolName === "powershell") && failureText === UNCERTAIN_LIFECYCLE) return undefined;
+  if ((toolName === "bash" || toolName === "powershell") && (failureText === UNCERTAIN_LIFECYCLE || (failureText.startsWith("[SHELL_") && classifyFailureText(failureText, input, toolName) === "policy_blocked"))) return undefined;
   if (failureText.includes("Blocked an uncertain/uninspectable shell lifecycle")) {
     return "[Lifecycle recovery] The lifecycle guard refused unsupported or uninspectable shell syntax before execution. Use a simpler inspectable foreground operation; for file work, a registered native read/write/edit tool still requires its own target permission and qualifying prior read. Broader permissions do not resolve parser limits. Do not retry unchanged or evade the guard by changing language or launcher.";
   }

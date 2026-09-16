@@ -83,7 +83,7 @@ export function isValidationFailure(result: unknown): boolean {
 	for (const block of content) {
 		if (!block || typeof block !== "object") continue;
 		const candidate = block as { type?: unknown; text?: unknown };
-		if (candidate.type === "text" && typeof candidate.text === "string" && candidate.text.startsWith(VALIDATION_ERROR_PREFIX)) return true;
+		if (candidate.type === "text" && typeof candidate.text === "string" && (candidate.text.startsWith(VALIDATION_ERROR_PREFIX) || candidate.text.startsWith("[TOOL_ARGS_INVALID]"))) return true;
 	}
 	return false;
 }

@@ -115,9 +115,9 @@ function formatToolResultDiscovery(
 		);
 	}
 	return (
-		theme.fg("muted", `Model received a bounded view (${budget}); full result remains available (`) +
+		theme.fg("muted", `Model received a bounded view (${budget}); `) +
 		keyHint("app.tools.expand", "to show full result") +
-		theme.fg("muted", `). ${availability}`)
+		theme.fg("muted", ".")
 	);
 }
 
@@ -776,6 +776,7 @@ export class ToolExecutionComponent extends Container {
 	private cwd: string;
 	private executionStarted = false;
 	private argsComplete = false;
+	private incompleteArguments = false;
 	private result?: {
 		content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
 		isError?: boolean;
@@ -1065,6 +1066,11 @@ export class ToolExecutionComponent extends Container {
 		this.result = result;
 		this.resultIsError = isError;
 		this.isPartial = isPartial;
+		const incompleteArguments = !isPartial && isError && result.content[0]?.text?.startsWith("[TOOL_ARGS_INCOMPLETE]") === true;
+		if (this.incompleteArguments !== incompleteArguments) {
+			this.incompleteArguments = incompleteArguments;
+			this.callRendererDirty = true;
+		}
 		this.updateDisplay();
 		this.maybeConvertImagesForKitty();
 	}
@@ -1365,7 +1371,9 @@ export class ToolExecutionComponent extends Container {
 
 			const callRenderer = this.getCallRenderer();
 			if (!this.isCallRendererArgsOnly() || this.callRendererDirty || !this.callRendererComponent) {
-				if (!callRenderer) {
+				if (this.incompleteArguments) {
+					this.callRendererComponent = new Text(theme.fg("error", `${this.toolName}: arguments incomplete / not executed`), 0, 0);
+				} else if (!callRenderer) {
 					this.callRendererComponent = this.createCallFallback();
 				} else {
 					try {

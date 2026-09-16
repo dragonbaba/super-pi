@@ -97,6 +97,215 @@ async function fixture(t: test.TestContext, project = false) {
 }
 const lastResult = (messages: any[]) => messages.filter(m => m.role === "toolResult").at(-1);
 
+test("completed read plus missing top-level snapshot recovers by adding only the field", async t => {
+ const f = await fixture(t, true); const path = join(f.cwd, "missing.txt"); writeFileSync(path, "one\ntwo\n");
+ let read: any, edits: any;
+ const { results } = await f.run([
+  () => call("read", "read", { path }),
+  m => { read = lastResult(m); edits = [{ kind: "replace", start: anchor(read, 1), newLines: ["ONE"] }]; return call("missing", "edit", { path, edits }); },
+  m => { const failure = text(lastResult(m)); assert.match(failure, /SNAPSHOT_REQUIRED.*Missing top-level "snapshot"/); assert.match(failure, /Read again only if/); assert.equal(readFileSync(path, "utf8"), "one\ntwo\n"); return call("fixed", "edit", { path, snapshot: snapshot(read), edits }); },
+ ]);
+ assert.deepEqual(results.map(r => r.isError), [false, true, false]);
+ assert.equal(results.filter(r => r.toolName === "read").length, 1);
+ assert.equal(readFileSync(path, "utf8"), "ONE\ntwo\n");
+});
+
+test("bounded final provider input contains paired metadata and only whole source lines; missing range uses a fresh read", async t => {
+ const f = await fixture(t, true); const path = join(f.cwd, "bounded.txt");
+ const lines = Array.from({ length: 150 }, (_, i) => `row ${i + 1}: 中文😀 ${"payload ".repeat(20)}`);
+ writeFileSync(path, lines.join("\r\n") + "\r\n");
+ let first: any;
+ const { contexts, results } = await f.run([
+  () => call("wide", "read", { path }),
+  m => {
+   first = lastResult(m); const body = text(first);
+   assert.match(body, /Source lines omitted/); assert.match(body, /read with offset\/limit/);
+   assert.match(body, /historical, not a fresh read/); snapshot(first);
+   assert.doesNotMatch(body, /ctrl\+o|Session artifact:|Continuation: available/i);
+   const rows = body.split("\n").filter((s: string) => /^\d+#/.test(s)); assert.ok(rows.length > 0 && rows.length < 150);
+   for (const row of rows) { const match = /^(\d+)#[A-F0-9]{4}\|(.*)\r?$/.exec(row)!; assert.equal(match[2].replace(/\r$/, ""), lines[Number(match[1]) - 1]); }
+   assert.equal(body.includes("100#"), false);
+   return call("target", "read", { path, offset: 100, limit: 2 });
+  },
+  m => { const fresh = lastResult(m); assert.notEqual(snapshot(fresh), snapshot(first)); return call("edit", "edit", { path, snapshot: snapshot(fresh), edits: [{ kind: "replace", start: anchor(fresh, 100), newLines: ["target changed"] }] }); },
+ ]);
+ const raw = results.find(r => r.toolCallId === "wide")!;
+ assert.match(text(raw), /100#[A-F0-9]{4}\|row 100/);
+ assert.equal(snapshot(raw), snapshot(first));
+ // Inspect the actual serialized Chat request, not just the TUI or host sidecar.
+ const { streamSimple } = await import("@super-pi/ai/api/openai-completions");
+ let wire: any;
+ const model: any = { id: "offline", name: "offline", api: "openai-completions", provider: "fixture", baseUrl: "https://fixture.invalid/v1", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 64000, maxTokens: 512 };
+ const stream = streamSimple(model, { messages: contexts[1] }, { apiKey: "offline", fetch: async (_url, init) => {
+  wire = JSON.parse(String(init?.body));
+  return new Response('data: {"choices":[{"index":0,"delta":{"content":"done"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n', { headers: { "content-type": "text/event-stream" } });
+ } });
+ await stream.result();
+ const sent = wire.messages.find((m: any) => m.role === "tool" && m.tool_call_id === "wide").content;
+ assert.ok(sent.includes(snapshot(raw))); assert.ok(sent.includes(anchor(first, 1))); assert.match(sent, /Source lines omitted/);
+ assert.doesNotMatch(JSON.stringify(wire), /readBoundary|ctrl\+o|Session artifact:|Continuation: available/);
+ const { estimateToolOutputTokens } = await import("../packages/coding-agent/src/core/tool-output-budget.ts");
+ for (const context of contexts) for (const result of context.filter(r => r.role === "toolResult")) assert.ok(estimateToolOutputTokens(result.content).estimatedTokens <= 1024);
+ assert.equal(results.at(-1)!.isError, false);
+});
+
+test("line-atomic projection omits unaffordable source rows and continuation never fabricates a partial anchor", async t => {
+ const f = await fixture(t); const path = join(f.cwd, "long.txt"); writeFileSync(path, "x".repeat(12000) + "\nsmall\n");
+ const { results } = await f.run([() => call("long", "read", { path })]);
+ const raw: any = results[0]; assert.ok(snapshot(raw));
+ const tiny = createToolResultPresentationOwner({ enabled: true, budgetTokens: 256 }, f.sessionId);
+ try {
+  const p = tiny.create(raw.content, "long"); assert.equal(p.version, 2);
+  assert.match(text({ content: p.modelContent }), /Read output omitted.*budget.*offset\/limit/);
+  assert.doesNotMatch(text({ content: p.modelContent }), /\d+#[A-F0-9]{4}\||snapshot=snap_/);
+  assert.equal(p.truncation.retainedTextCodeUnits, 0);
+ } finally { tiny.release(); tiny.dispose(); }
+ const full = createToolResultPresentationOwner({ enabled: true, budgetTokens: 6000 }, f.sessionId);
+ try { const p = full.create(raw.content, "long"); assert.equal(p.version, 1); }
+ finally { full.release(); full.dispose(); }
+ const path2 = join(f.cwd, "mixed.txt"); writeFileSync(path2, "short\n" + "y".repeat(12000) + "\nlast\n");
+ const next = await f.run([() => call("mixed", "read", { path: path2 })]);
+ const source: any = next.results.at(-1); const owner = createToolResultPresentationOwner({ enabled: true, budgetTokens: 256 }, f.sessionId);
+ try {
+  const p = owner.create(source.content, "mixed"); assert.equal(p.version, 2);
+  assert.match(text({ content: p.modelContent }), /1#[A-F0-9]{4}\|short/);
+  assert.throws(() => owner.readContinuation(p.continuation.cursor, next.results, 128), /budget|forward progress/i);
+  const chunk = owner.readContinuation(p.continuation.cursor, next.results, 6000);
+  assert.match(text(chunk), new RegExp(`2#[A-F0-9]{4}\\|${"y".repeat(12000)}`));
+  assert.equal(owner.readArtifact(p.artifact.id, next.results).content, source.content);
+ } finally { owner.release(); owner.dispose(); }
+});
+
+test("snapshot line boundaries also preserve multiline terminal sequences and actionable tiny-budget failures", async t => {
+ const f = await fixture(t); const path = join(f.cwd, "terminal.txt");
+ writeFileSync(path, "head\n\u001b]8;;https://fixture.invalid/\ninside\u0007\n" + "source 中文😀\n".repeat(400));
+ const { results } = await f.run([() => call("terminal-read", "read", { path })]);
+ const source = results[0].content;
+ for (const budget of [1, 128, 256, 512]) {
+  const owner = createToolResultPresentationOwner({ enabled: true, budgetTokens: budget }, f.sessionId);
+  try {
+   if (budget <= 128) { assert.throws(() => owner.create(source, "terminal-read"), /offset\/limit.*budget/); continue; }
+   const p = owner.create(source, "terminal-read"); assert.equal(p.version, 2);
+   const prefix = p.modelContent[0].text;
+   assert.ok(prefix.endsWith("\n"));
+   assert.equal(prefix.includes("\u001b]"), prefix.includes("\u0007"), "neither a line nor a terminal sequence may be split");
+   assert.ok(text(results[0]).startsWith(prefix));
+  } finally { owner.release(); owner.dispose(); }
+ }
+});
+
+test("one logical batch renames a binding and its references, label and repeated calculation atomically", async t => {
+ const { runInNewContext } = await import("node:vm");
+ const f = await fixture(t); const path = join(f.cwd, "batch.js");
+ const original = ["const rot = () => ({x: 2, y: 3});", "let calls = 0; const pedal = t => { calls++; return t; };", "let A2 = rot();", "const label = 'old';", "const result = [A2.x, A2.y, label, pedal(360), pedal(360)];", "JSON.stringify({result, calls});"].join("\n") + "\n";
+ writeFileSync(path, original); let r: any, edits: any;
+ const { results } = await f.run([
+  () => call("read", "read", { path }),
+  m => { r = lastResult(m); edits = [
+   { kind: "replace", start: anchor(r, 3), newLines: ["const ankle = rot();"] },
+   { kind: "replace", start: anchor(r, 4), newLines: ["const label = 'new';", "const pd = pedal(360);"] },
+   { kind: "replace", start: anchor(r, 5), newLines: ["const result = [ankle.x, ankle.y, label, pd, pd];"] },
+  ]; return call("invalid-batch", "edit", { path, snapshot: snapshot(r), edits: [...edits, { kind: "delete", start: anchor(r, 4) }] }); },
+  m => { assert.equal(lastResult(m).isError, true); assert.equal(readFileSync(path, "utf8"), original); return call("batch", "edit", { path, snapshot: snapshot(r), edits }); },
+  m => { assert.equal(lastResult(m).isError, false); const output = JSON.parse(runInNewContext(readFileSync(path, "utf8"))); assert.deepEqual(output, { result: [2, 3, "new", 360, 360], calls: 1 }); return call("old", "edit", { path, snapshot: snapshot(r), edits }); },
+ ]);
+ assert.deepEqual(results.map(r => r.isError), [false, true, false, true]);
+ assert.equal(results.filter(r => (r.details as any)?.stateChanged).length, 1);
+});
+
+test("snapshot projection allocation counters and source references release on success and insufficient-budget failure", async t => {
+ const f = await fixture(t); const path = join(f.cwd, "profile.txt"); writeFileSync(path, "bounded source 中文😀\n".repeat(500));
+ const { results } = await f.run([() => call("read-profile", "read", { path })]);
+ const source = results[0].content;
+ const inspector = new InspectorSession(); inspector.connect();
+ const refs: WeakRef<object>[] = [];
+ async function exercise() {
+  const owner = createToolResultPresentationOwner({ enabled: true, budgetTokens: 512 }, f.sessionId);
+  refs.push(new WeakRef(owner));
+  for (let i = 0; i < 16; i++) {
+   const p = owner.create(source, `profile-${i}`); assert.equal(p.version, 2);
+   refs.push(new WeakRef(p.modelContent)); owner.release();
+  }
+  assert.equal(owner.counters.fullSourceEstimatorScans, 16);
+  assert.equal(owner.counters.sourceDigestConstructions, 16);
+  assert.equal(owner.counters.activeDispatchPresentationScopes, 0);
+  const scans = owner.counters.fullSourceEstimatorScans;
+  const arrays = owner.counters.modelProjectionArraysCreated;
+  assert.ok(arrays <= 16 * 4);
+  owner.clearProjectionRecords(); assert.equal(owner.counters.projectionRecordEntries, 0); assert.equal(owner.counters.retainedProjectionCodeUnits, 0); owner.dispose();
+  const tiny = createToolResultPresentationOwner({ enabled: true, budgetTokens: 1 }, f.sessionId); refs.push(new WeakRef(tiny));
+  assert.throws(() => tiny.create(source, "too-small"), /budget/i); tiny.dispose();
+  assert.equal(tiny.counters.projectionRecordEntries, 0); assert.equal(tiny.counters.retainedProjectionCodeUnits, 0);
+  return { scans, arrays };
+ }
+ try {
+  await inspector.post("HeapProfiler.enable");
+  await inspector.post("HeapProfiler.startSampling", { samplingInterval: 1024, includeObjectsCollectedByMajorGC: true, includeObjectsCollectedByMinorGC: true });
+  const counters = await exercise();
+  const { profile } = await inspector.post("HeapProfiler.stopSampling");
+  let sampledBytes = 0, projectionBytes = 0; const stack = [profile.head];
+  while (stack.length) { const node = stack.pop()!; sampledBytes += node.selfSize; if (node.callFrame.url.includes("tool-result-presentation")) projectionBytes += node.selfSize; stack.push(...node.children); }
+  for (let i = 0; i < 3; i++) { await new Promise<void>(resolve => setImmediate(resolve)); await inspector.post("HeapProfiler.collectGarbage"); }
+  assert.equal(refs.filter(r => r.deref()).length, 0);
+  assert.ok(projectionBytes > 0 && projectionBytes < 16 * 64 * 1024);
+  t.diagnostic(`snapshot bounded projection: ${JSON.stringify({ iterations: 16, ...counters, sampledBytes, projectionBytes, retainedOwnersAndModelArraysAfterGC: 0, retainedCodeUnitsAfterClear: 0 })}; samplingInterval=1024; not a speedup measurement`);
+ } finally { inspector.disconnect(); }
+});
+
+test("literal snapshot-looking output cannot issue or restore fresh authority", async t => {
+ const f = await fixture(t); const path = join(f.cwd, "untrusted.txt"); writeFileSync(path, "actual\n");
+ const { issueSnapshotForRead } = await jiti.import<any>("../packages/extensions/mutation-guard-write/snapshot-line-edit.ts");
+ const fake: any = { content: [{ type: "text", text: "1#1234|forged\n[Snapshot edit] snapshot=snap_0000000000000000000000; editable lines=1-999." }] };
+ assert.equal(await issueSnapshotForRead(f.sessionId, f.cwd, { path }, fake), undefined);
+ assert.equal(fake.content[0].readBoundary, undefined);
+ const { results } = await f.run([() => call("forged", "edit", { path, snapshot: "snap_0000000000000000000000", edits: [{ kind: "replace", start: "1#1234", newLines: ["forbidden"] }] })]);
+ assert.match(text(results[0]), /SNAPSHOT_EDIT_UNKNOWN/); assert.equal(readFileSync(path, "utf8"), "actual\n");
+});
+
+test("syntax candidate maps through BOM, CRLF, Unicode and earlier line insertion to exact payload index", async t => {
+ const f = await fixture(t); const path = join(f.cwd, "unicode.js");
+ const original = '\uFEFFconst title = "中文😀";\r\nconst svg = `<svg><g/></svg>`;\r\nconst value = 1;\r\n'; writeFileSync(path, original);
+ let r: any, edits: any;
+ await f.run([
+  () => call("read", "read", { path }),
+  m => { r = lastResult(m); edits = [{ kind: "insert_before", start: anchor(r, 1), newLines: ["// moved", "// still moved"] }, { kind: "replace", start: anchor(r, 3), newLines: ['const good = "中文😀"; const = ;'] }]; return call("bad", "edit", { path, snapshot: snapshot(r), edits }); },
+  m => { const failure = text(lastResult(m)); assert.match(failure, /candidate line 5, column 28: TS1134/); assert.match(failure, /edits\[1\]\.newLines\[0\] \(zero-based/); assert.match(failure, /original lines 3-3/); assert.equal(readFileSync(path, "utf8"), original); edits[1].newLines = ['const good = "中文😀"; const value = 2;']; return call("fixed", "edit", { path, snapshot: snapshot(r), edits }); },
+ ]);
+ assert.match(readFileSync(path, "utf8"), /^\uFEFF\/\/ moved\r\n/);
+});
+
+test("JS template boundary damage is bounded and baseline parse diagnostics remain count-based", async () => {
+ const valid = 'const svg = `<svg>\n<g><path d="M0 0"/></g>\n</svg>`;\n';
+ await assertNoNewSyntaxDiagnostics("fixture.js", "", valid);
+ const damaged = 'const svg = <svg>\n' + '<g/><path d="M0 0"/>\n'.repeat(80) + '</svg>`;\n';
+ await assert.rejects(assertNoNewSyntaxDiagnostics("fixture.js", valid, damaged, [{ start: "1#1234", newLines: ["const svg = <svg>"] }]), (error: any) => {
+  assert.match(error.message, /SNAPSHOT_EDIT_SYNTAX.*No change/); assert.match(error.message, /candidate line \d+, column \d+: TS\d+/);
+  assert.match(error.message, /may cascade/); assert.doesNotMatch(error.message, /newLines\[/); assert.ok(error.message.length < 1400); return true;
+ });
+ await assertNoNewSyntaxDiagnostics("baseline.js", "const = ;\nconst good = 1;", "// shifted\nconst = ;\nconst good = 2;");
+ await assert.rejects(assertNoNewSyntaxDiagnostics("baseline.js", "const = ;", "const = ;\nconst = ;"), /new syntax diagnostic/);
+});
+
+for (const eol of ["", "\n", "\r\n"]) test(`syntax mapping distinguishes generated EOF separator from a submitted empty line: ${JSON.stringify(eol)}`, async t => {
+ const f = await fixture(t); const path = join(f.cwd, "eof.js"); const original = "const before = 1;" + eol; writeFileSync(path, original);
+ const { results } = await f.run([
+  () => call("read", "read", { path }),
+  m => { const r = lastResult(m); return call("bad", "edit", { path, snapshot: snapshot(r), edits: [{ kind: "insert_after", start: anchor(r, 1), newLines: ["", "const = ;"] }] }); },
+ ]);
+ assert.match(text(results.at(-1)), /edits\[0\]\.newLines\[1\]/); assert.equal(readFileSync(path, "utf8"), original);
+});
+
+test("snapshot modes identify actual missing nested fields and mixed requests without consuming the receipt", async t => {
+ const f = await fixture(t); const path = join(f.cwd, "modes.txt"); writeFileSync(path, "original\n"); let r: any;
+ const { results } = await f.run([
+  () => call("read", "read", { path }),
+  m => { r = lastResult(m); return call("missing-start", "edit", { path, snapshot: snapshot(r), edits: [{ kind: "replace", newLines: ["changed"] }] }); },
+  m => { assert.match(text(lastResult(m)), /Missing required field "edits\[0\]\.start"/); return call("mixed", "edit", { path, snapshot: snapshot(r), edits: [{ kind: "replace", start: anchor(r, 1), oldText: "original", newText: "changed", newLines: ["changed"] }] }); },
+  m => { assert.match(text(lastResult(m)), /mixes exact replacement fields/); assert.equal(readFileSync(path, "utf8"), "original\n"); return call("fixed", "edit", { path, snapshot: snapshot(r), edits: [{ kind: "replace", start: anchor(r, 1), newLines: ["changed"] }] }); },
+ ]);
+ assert.deepEqual(results.map(r => r.isError), [false, true, true, false]);
+});
+
 const baselineAnnotation = "[Snapshot edit] snapshot=snap_0000000000000000000000; editable lines=1-2. Copy LINE#ID anchors exactly. insert={kind,start,newLines} (omit end; start survives; only intended inserted lines, no copied locating context); replace={kind,start,end?,newLines}; delete={kind,start,end?}.";
 const baselineHeredoc = "Blocked an uncertain/uninspectable shell lifecycle before execution.\n[Lifecycle recovery] Simplify the unsupported shell construct into an inspectable bounded foreground command. If using a heredoc for an otherwise authorized diagnostic, use native file creation/editing, then request separately authorized foreground execution. Each operation keeps its own read, path, permission and lifecycle requirements; missing files need no read. Broader permissions do not resolve parser limits, and changing tools or language cannot legalize denied behavior. No command was executed.";
 
@@ -342,7 +551,7 @@ test("real preflight heredoc veto reaches next model once without result transfo
  ]);
  const delivered = lastResult(contexts.at(-1)!);
  assert.equal(delivered.isError, true); assert.equal(text(delivered).match(/\[Lifecycle recovery\]/g)?.length, 1);
- assert.match(text(delivered), /separately authorized foreground execution/);
+ assert.match(text(delivered), /resubmit foreground execution for authorization/);
  // The final fake-provider request is captured even when it returns no tools.
  assert.equal(results.length, 1); assert.match(text(results[0]), /\[Lifecycle recovery\]/);
  assert.equal(f.invocations.has("heredoc"), false); assert.deepEqual(f.counts(), { processes: 0, transforms: 0, approvals: 0 }); assert.deepEqual(readdirSync(f.cwd), []);
@@ -479,10 +688,9 @@ for (const command of ['bash -c "$SCRIPT"', 'echo "$(time echo safe)"', 'echo $(
  const f = await fixture(t);
  const { contexts } = await f.run([() => call("uncertain", "bash", { command })]);
  const failure = text(lastResult(contexts.at(-1)!));
- assert.match(failure, /Use an inspectable foreground command/);
- assert.match(failure, /for a heredoc diagnostic/);
- assert.doesNotMatch(failure, /Actual heredocs are unsupported/);
- assert.equal(failure.match(/\[Lifecycle recovery\]/g)?.length, 1);
+ assert.match(failure, /Retry:.*resubmit for authorization/);
+ assert.match(failure, /not executed/);
+ assert.doesNotMatch(failure, /heredoc/i);
  assert.deepEqual(f.counts(), { processes: 0, transforms: 0, approvals: 0 });
  assert.equal(f.invocations.size, 0); assert.deepEqual(readdirSync(f.cwd), []);
 });

@@ -528,7 +528,7 @@ export function validateToolArguments(tool: Tool, toolCall: ToolCall): any {
 		errorCharacters += formatted.length + 1;
 		errors.push(formatted);
 	}
-	const errorMessage = `Validation failed for tool ${escapedValidationName(tool.name, 80)}:\n${errors.join("\n") || "Unknown validation error"}\nRetry: Correct only the listed fields using the active tool schema; received arguments are omitted.`;
+	const errorMessage = `[TOOL_ARGS_INVALID] ${escapedValidationName(tool.name, 80)} was not executed: validation failed.\n${errors.join("\n") || "Unknown validation error"}\nRetry: correct the listed fields using the active tool schema.`;
 
 	throw new Error(errorMessage);
 }
@@ -547,11 +547,18 @@ function formatBoundedValidationError(error: TLocalizedValidationError, schema: 
  const params = error.params as { additionalProperties?: string[]; requiredProperties?: string[] };
  if (error.keyword === "additionalProperties" || error.keyword === "required") {
   const names = error.keyword === "additionalProperties" ? params.additionalProperties : params.requiredProperties;
-  const fields = Array.isArray(names) ? names.slice(0, 2).filter(name => typeof name === "string").map(name => escapedValidationName(name)).join(", ") : "at this object";
+  const fields = Array.isArray(names) ? names.slice(0, 2).filter(name => typeof name === "string").map(name => escapedValidationName(error.keyword === "required" ? validationFieldPath(error.instancePath, name) : name, 200)).join(", ") : "at this object";
   const action = error.keyword === "additionalProperties" ? "Remove unexpected fields" : "Supply required fields";
   return `  - ${path}: ${action} ${fields}.`;
  }
  const active = schemaAtPath(schema, decodeJsonPointer(error.instancePath));
  if (error.keyword === "type" && typeof active?.type === "string") return `  - ${path}: Supply a value of type ${escapedValidationName(active.type, 24)}.`;
  return `  - ${path}: Constraint ${escapedValidationName(error.keyword, 48)} failed; correct this field using the active tool schema.`;
+}
+function validationFieldPath(pointer: string, field: string): string {
+ let path = "";
+ for (const part of [...decodeJsonPointer(pointer), field]) {
+  path += /^\d+$/.test(part) ? `[${part}]` : /^[A-Za-z_$][\w$]*$/.test(part) ? `${path ? "." : ""}${part}` : `[${escapedValidationName(part)}]`;
+ }
+ return path;
 }

@@ -103,7 +103,7 @@ const PublicEditParameters = Type.Object({
   path: Type.String({ description: "Path to the existing file to edit (relative or absolute)." }),
   snapshot: Type.Optional(Type.String({
     pattern: "^snap_[A-Za-z0-9_-]{22}$",
-    description: "Snapshot ID for LINE#ID mode; omit for exact oldText mode.",
+    description: "Required at the request top level for LINE#ID mode. Copy the snapshot ID paired with these anchors from the completed read; omit for exact oldText mode.",
   })),
   edits: Type.Array(PublicEditOperationParameters, {
     minItems: 1,
@@ -128,6 +128,13 @@ function validatePublicSnapshotAnchors(input: PublicEditInput): void {
   let problems: string[] | undefined;
   for (let index = 0; index < input.edits.length; index++) {
     const edit = input.edits[index];
+    if (edit.oldText !== undefined || edit.newText !== undefined || edit.expectedLine !== undefined) {
+      (problems ??= []).push(`[SNAPSHOT_EDIT_INVALID] edits[${index}] mixes exact replacement fields with top-level snapshot. No change.\nRetry: use only kind/start/end/newLines for this snapshot.`);
+    } else if (edit.kind === undefined || edit.start === undefined || (edit.kind !== "delete" && edit.newLines === undefined)) {
+      const field = edit.kind === undefined ? "kind" : edit.start === undefined ? "start" : "newLines";
+      (problems ??= []).push(`[SNAPSHOT_EDIT_INVALID] Missing required field "edits[${index}].${field}" in snapshot mode. No change.\nRetry: complete this operation using the paired snapshot and anchors.`);
+    }
+    if ((problems?.length ?? 0) >= 3) break;
     if (typeof edit.start === "string" && !SNAPSHOT_LINE_REFERENCE_REGEX.test(edit.start)) {
       (problems ??= []).push(`[SNAPSHOT_EDIT_INVALID] edits[${index}].start must be an exact LINE#ID copied from read, for example "33#6D08"; source text and line numbers alone are invalid.`);
     }
@@ -494,7 +501,7 @@ export default function mutationGuardWriteExtension(pi: ExtensionAPI): void {
       promptSnippet: "Edit one file by immutable LINE#ID anchors or exact replacements",
       promptGuidelines: [
         "Before editing, use dedicated read in a completed prior turn; Bash, grep, LSP, and same-turn reads do not authorize edits.",
-        "Combine already-known, non-overlapping edits into one call when covered by the same valid snapshot. A successful mutation makes pre-mutation snapshots unusable for that file. For a subsequent dependent edit, complete a new read and use both its snapshot and LINE#ID anchors; do not issue dependent same-file edits as independent sibling requests.",
+        "Combine already-known, non-overlapping edits covered by the same valid snapshot into one call as a logical change, including a declaration rename and known references confirmed to belong to that binding. A successful mutation makes pre-mutation snapshots unusable for that file. For newly discovered changes, complete a new read and use its paired snapshot and LINE#ID anchors; do not issue dependent same-file edits as independent sibling requests. Keep operation and byte limits.",
         "Insertion keeps one start anchor: omit end; newLines contains only intended inserted lines, not copied locating context. Each item is one physical line.",
         "Without snapshot, exact oldText/newText still requires the same completed read evidence; keep oldText unique. Include purpose for protected targets.",
       ],
@@ -504,17 +511,21 @@ export default function mutationGuardWriteExtension(pi: ExtensionAPI): void {
         if (typeof input.snapshot !== "string") {
           for (let index = 0; index < input.edits.length; index++) {
             if (hasSnapshotOperationFields(input.edits[index])) {
-              throw new Error(`[SNAPSHOT_REQUIRED] edits[${index}] uses snapshot fields. Call read in a completed tool turn, then pass its Snapshot edit ID and LINE#ID anchors.`);
+              throw new Error(`[SNAPSHOT_REQUIRED] Missing top-level "snapshot" for LINE#ID edits (not inside edits[${index}]). No change.\nRetry: copy the snapshot ID paired with these anchors from the completed read. Read again only if that snapshot is unavailable, stale, or does not cover the target.`);
             }
           }
           if (!Value.Check(EditParameters, input)) {
-            throw new Error("Invalid edit input: exact mode requires only oldText/newText operations.");
+            for (let index = 0; index < input.edits.length; index++) {
+              const edit = input.edits[index];
+              if (edit.oldText === undefined || edit.newText === undefined) throw new Error(`[TOOL_ARGS_INVALID] Missing required field "edits[${index}].${edit.oldText === undefined ? "oldText" : "newText"}" in exact mode. No change.\nRetry: complete this replacement using qualifying read evidence.`);
+            }
+            throw new Error("[TOOL_ARGS_INVALID] Invalid exact edit fields. No change.\nRetry: supply only oldText/newText and optional expectedLine operations.");
           }
           return ordinaryEdit.execute(toolCallId, input as GuardedEditInput, signal, _onUpdate, ctx);
         }
         validatePublicSnapshotAnchors(input);
         if (!Value.Check(SnapshotEditParameters, input)) {
-          throw new Error("Invalid edit input: snapshot mode requires only kind/start/end/newLines operations.");
+          throw new Error("[SNAPSHOT_EDIT_INVALID] Invalid snapshot operation fields. No change.\nRetry: supply only kind/start/end/newLines operations.");
         }
         const snapshotInput = input as SnapshotEditInput;
         const pathApproval = consumePermissionPathApproval(snapshotInput, toolCallId, "edit") as MutationPathApproval | undefined;
