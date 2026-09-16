@@ -441,6 +441,11 @@ export interface ToolRenderContext<TState = any, TArgs = any> {
 	toolCallId: string;
 	/** Invalidate just this tool execution component for redraw. */
 	invalidate: () => void;
+	/** Refresh result presentation without dirtying an unchanged args-only call renderer.
+	 * Existing dirty state and dynamic custom call renderers are still respected.
+	 * Older hosts may omit this; use invalidate() as the fallback.
+	 */
+	refreshResult?: () => void;
 	/** Previously returned component for this render slot, if any. */
 	lastComponent: Component | undefined;
 	/** Shared renderer state for this tool row. Initialized by tool-execution.ts. */

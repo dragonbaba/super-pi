@@ -835,6 +835,12 @@ test("final disposal releases built-in Bash result sidecar caches", async () => 
 		preparedStyledOutputCodeUnits: 0,
 		expandedOutputReferences: 0,
 		derivedChildReferences: 0,
+		previewComponentReferences: 0,
+		timeComponentReferences: 0,
+		timeTextCodeUnits: 0,
+		warningComponentReferences: 0,
+		warningTextCodeUnits: 0,
+		allocationMetricsReferences: 0,
 	});
 
 	const rebuilt = definition.renderResult(
