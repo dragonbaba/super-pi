@@ -16,7 +16,7 @@ import { extractCommandSubstitutions, inspectHereDocuments } from "./shell-subst
 
 const MAX_INSPECTED_COMMAND_CHARS = 128 * 1024;
 const BLOCK_REASON =
-	"Blocked an unmanaged long-lived process. Keep setup, use, and cleanup in one foreground bash call (record the PID, install an EXIT trap, then kill and wait), or use a Pi-managed browser tool. Detached services must not survive into the final report.";
+	"Blocked an unmanaged long-lived process before execution; this Bash call was not executed.\nRetry: keep setup and bounded use in one inspectable foreground call with a recorded PID, EXIT trap, kill and wait; resubmit for authorization.";
 const MAX_MUTATION_PRIMITIVES = 16;
 const MAX_MUTATION_TARGETS = 16;
 const MAX_SCRIPT_SEGMENTS = 64;
@@ -84,23 +84,33 @@ const LOOKUP_ASSIGNMENT = /^(?:PATH|BASH_ENV|ENV|SHELLOPTS|BASHOPTS|CDPATH)=/;
 const LEADING_REDIRECTION = /^(?:[0-9]+|\{[^}]+\})?[<>]{1,2}(.*)$/;
 const LEADING_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*\+?=/;
 const EMPTY_SUBSTITUTIONS: readonly string[] = [];
-export const UNCERTAIN_LIFECYCLE = "Blocked an uncertain/uninspectable shell lifecycle before execution. No command was executed.\n[Lifecycle recovery] Use an inspectable foreground command; for a heredoc diagnostic, create/edit the script natively with its own read/path permissions, then request separately authorized foreground execution.";
+export const UNCERTAIN_LIFECYCLE = "[SHELL_UNINSPECTABLE] This Bash call was not executed: uncertain/uninspectable shell structure.\nRetry: use an inspectable foreground command and resubmit for authorization.";
+function lifecycleRefusal(code: string, reason: string, recovery: string): string {
+ return `[${code}] This Bash call was not executed: ${reason}.\nRetry: ${recovery}; resubmit for authorization.`;
+}
+function dynamicExecutable(token: string | undefined): string {
+ // Echo only a simple variable name, never command substitutions or arbitrary operands.
+ const variable = token && /^\$[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(token) ? ` (${token})` : "";
+ return lifecycleRefusal("SHELL_DYNAMIC_EXECUTABLE", `executable position uses a variable or dynamic expression${variable}`, "use the quoted literal executable path in a foreground command");
+}
 
 export function inspectBashResourceLifecycle(input: unknown): string | undefined {
  if (!input || typeof input !== "object") return undefined;
  const command = (input as { command?: unknown }).command;
  if (typeof command !== "string" || command.length === 0) return undefined;
- if (command.length > MAX_INSPECTED_COMMAND_CHARS) return "Blocked an oversized bash command because its process lifecycle cannot be audited safely.";
+ if (command.length > MAX_INSPECTED_COMMAND_CHARS) return lifecycleRefusal("SHELL_INSPECTION_LIMIT", "command exceeds the inspection size limit", "reduce this command's size");
  return inspectLifecycleScript(command, 0);
 }
 
 function inspectLifecycleScript(source: string, depth: number): string | undefined {
- if (depth > MAX_WRAPPER_DEPTH) return UNCERTAIN_LIFECYCLE;
+ if (depth > MAX_WRAPPER_DEPTH) return lifecycleRefusal("SHELL_INSPECTION_LIMIT", "wrapper/substitution nesting exceeds the inspection depth", "reduce nesting");
  const here = source.includes("<<") ? inspectHereDocuments(source) : undefined;
- if (here?.uncertain) return UNCERTAIN_LIFECYCLE;
+ if (here?.uncertain) return here.heredoc
+  ? "[SHELL_HEREDOC] This Bash call was not executed: heredoc is uncertain/uninspectable.\n[Lifecycle recovery] Create/edit the diagnostic script natively with its own read/path permissions, then resubmit foreground execution for authorization."
+  : lifecycleRefusal("SHELL_UNINSPECTABLE", "arithmetic structure could not be inspected", "correct or simplify the arithmetic expression");
  const command = here?.command ?? source;
  const substitutions = extractCommandSubstitutions(command);
- if (substitutions.unterminated || substitutions.unsupported) return UNCERTAIN_LIFECYCLE;
+ if (substitutions.unterminated || substitutions.unsupported) return lifecycleRefusal("SHELL_SUBSTITUTION", substitutions.unterminated ? "unterminated command substitution" : "uncertain/uninspectable command substitution grammar", "simplify the substitution into inspectable foreground commands");
  for (const script of here?.substitutions ?? EMPTY_SUBSTITUTIONS) { const result = inspectLifecycleScript(script, depth + 1); if (result) return result; }
  for (const script of substitutions.scripts) { const result = inspectLifecycleScript(script, depth + 1); if (result) return result; }
  if (DETACH_UTILITY_PATTERN.test(command)) return BLOCK_REASON;
@@ -112,7 +122,7 @@ function inspectLifecycleScript(source: string, depth: number): string | undefin
  }
  if (!SHELL_WRAPPER_TEXT.test(command) && !EXECUTABLE_EXPANSION_TEXT.test(command)) return undefined;
  const segments = parseShellSegments(command);
- if (segments.length > MAX_SCRIPT_SEGMENTS) return UNCERTAIN_LIFECYCLE;
+ if (segments.length > MAX_SCRIPT_SEGMENTS) return lifecycleRefusal("SHELL_INSPECTION_LIMIT", "too many command segments", "reduce the number of segments");
  for (const tokens of segments) {
   // The global filter is only an optimization; unrelated segments supply no
   // shell/evaluator evidence. No closure or reconstructed segment string.
@@ -126,10 +136,10 @@ function inspectLifecycleScript(source: string, depth: number): string | undefin
   let index = 0; let changedLookup = false; let prefixes = 0;
   while (index < tokens.length) {
    const token = tokens[index]!;
-   if (++prefixes > MAX_SCRIPT_SEGMENTS) return UNCERTAIN_LIFECYCLE;
+   if (++prefixes > MAX_SCRIPT_SEGMENTS) return lifecycleRefusal("SHELL_INSPECTION_LIMIT", "too many command prefixes", "reduce prefixes");
    if (LEADING_ASSIGNMENT.test(token)) {
     // Shell assignment words do not undergo field splitting (unlike env argv).
-    if (uncertainAssignment(tokens, index, true)) return UNCERTAIN_LIFECYCLE;
+    if (uncertainAssignment(tokens, index, true)) return lifecycleRefusal("SHELL_UNINSPECTABLE", "uncertain assignment expansion or executable lookup", "use literal assignments that do not change executable lookup");
     changedLookup = true; index++; continue;
    }
    const redirection = LEADING_REDIRECTION.exec(token);
@@ -140,43 +150,45 @@ function inspectLifecycleScript(source: string, depth: number): string | undefin
    }
    const prefix = commandName(token);
    if (prefix !== "command" && prefix !== "exec") break;
-   if (++index > MAX_WRAPPER_DEPTH || !tokens[index] || tokens[index]!.startsWith("-")) return UNCERTAIN_LIFECYCLE;
+   if (++index > MAX_WRAPPER_DEPTH || !tokens[index] || tokens[index]!.startsWith("-")) return lifecycleRefusal("SHELL_WRAPPER", "unsupported command/exec prefix depth or operand", "use a direct foreground executable");
   }
-  if (/[<>]/.test(tokens[index] ?? "") || tokens.expansions?.[index] || hasDynamicSyntax(tokens[index] ?? "")) return UNCERTAIN_LIFECYCLE;
+  if (/[<>]/.test(tokens[index] ?? "")) return UNCERTAIN_LIFECYCLE;
+  if (tokens.expansions?.[index] || hasDynamicSyntax(tokens[index] ?? "")) return dynamicExecutable(tokens[index]);
   let name = commandName(tokens[index] ?? "");
   // Only literal, option-free launcher operands are resolved. env assignments are
   // data, not executable names; split-string/options/dynamic lookup stay unknown.
   let launchers = 0;
   while (OPAQUE_JOB_LAUNCHER.test(name) && !SCRIPT_WRAPPERS.has(name)) {
-   if (++launchers > MAX_WRAPPER_DEPTH) return UNCERTAIN_LIFECYCLE;
+   if (++launchers > MAX_WRAPPER_DEPTH) return lifecycleRefusal("SHELL_INSPECTION_LIMIT", "too many nested launchers", "reduce launcher nesting");
    // Other launchers (e.g. timeout durations, xargs/busybox modes) need different
    // operand grammars; never mistake their option/argument for the executable.
-   if (name !== "env" && name !== "sudo" && name !== "doas") return UNCERTAIN_LIFECYCLE;
+   if (name !== "env" && name !== "sudo" && name !== "doas") return lifecycleRefusal("SHELL_WRAPPER", "launcher operand grammar is uncertain/uninspectable", "use a directly inspectable foreground executable");
    index++;
    if (tokens[index] === "--") index++;
    if (name === "env" || name === "sudo") {
     // env and sudo accept NAME=VALUE beyond Bash identifiers (e.g. foo.bar).
     while (index < tokens.length && tokens[index]!.includes("=")) {
-     if (uncertainAssignment(tokens, index)) return UNCERTAIN_LIFECYCLE;
+     if (uncertainAssignment(tokens, index)) return lifecycleRefusal("SHELL_UNINSPECTABLE", "uncertain launcher assignment expansion or lookup", "use literal launcher assignments");
      index++;
     }
    }
    // Shell redirections are removed from argv, not launcher executables. Their
    // interleaved/quoted provenance is outside this token view: refuse, don't guess.
    if (/[<>]/.test(tokens[index] ?? "")) return UNCERTAIN_LIFECYCLE;
-   if (!tokens[index] || tokens[index]!.startsWith("-") || hasDynamicSyntax(tokens[index]!)) return UNCERTAIN_LIFECYCLE;
+   if (!tokens[index] || tokens[index]!.startsWith("-")) return lifecycleRefusal("SHELL_WRAPPER", "missing or unsupported launcher operand", "use a directly inspectable foreground executable");
+   if (hasDynamicSyntax(tokens[index]!)) return dynamicExecutable(tokens[index]);
    changedLookup = true;
    name = commandName(tokens[index]!);
   }
   // Resolve only this segment; unrelated text in another command is not authority or uncertainty.
-  if (changedLookup && SCRIPT_WRAPPERS.has(name)) return UNCERTAIN_LIFECYCLE;
-  if (tokens.dynamic && (SCRIPT_WRAPPERS.has(name) || name === "eval")) return UNCERTAIN_LIFECYCLE;
+  if (changedLookup && SCRIPT_WRAPPERS.has(name)) return lifecycleRefusal("SHELL_WRAPPER", "shell lookup was changed by a prefix", "remove the lookup-changing prefix from the shell wrapper");
+  if (tokens.dynamic && (SCRIPT_WRAPPERS.has(name) || name === "eval")) return lifecycleRefusal("SHELL_WRAPPER", "shell/eval operand contains dynamic expansion", "supply a literal inspectable script operand");
   if (name === "eval") for (let operand = index + 1; operand < tokens.length; operand++) {
-   if (tokens[operand]!.includes("<<")) return UNCERTAIN_LIFECYCLE;
+   if (tokens[operand]!.includes("<<")) return lifecycleRefusal("SHELL_WRAPPER", "eval operand cannot be inspected as literal executable source", "use directly inspectable foreground commands");
   }
   if (!SCRIPT_WRAPPERS.has(name)) continue;
   const flag = index + 1;
-  if (tokens[flag] !== "-c" || !tokens[flag + 1]) return UNCERTAIN_LIFECYCLE;
+  if (tokens[flag] !== "-c" || !tokens[flag + 1]) return lifecycleRefusal("SHELL_WRAPPER", "shell wrapper requires a direct literal -c script operand", "use a supported direct -c operand");
   const result = inspectLifecycleScript(tokens[flag + 1]!, depth + 1); if (result) return result;
  }
  return undefined;

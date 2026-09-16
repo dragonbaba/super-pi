@@ -386,7 +386,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		return blockImages ? replaceBlockedImagesInMessages(projected) : projected;
 		} catch (error) {
 			if (error instanceof ToolResultContinuationError && error.code === "budget-too-small" && !error.message.startsWith("Request preparation blocked:")) {
-				throw new ToolResultContinuationError("budget-too-small", `Request preparation blocked: configured result budget cannot fit a required recovery notice (minimumNotice=${error.minimumTokens ?? "unavailable"}). Prior tool outcomes are unchanged. Adjust the result budget before retrying the request; do not repeat completed tools.`, error.minimumTokens);
+				throw new ToolResultContinuationError("budget-too-small", `Request preparation blocked: configured result budget cannot fit a required recovery notice (minimumNotice=${error.minimumTokens ?? "unavailable"}). ${error.message.substring(0, 600)} Prior tool outcomes are unchanged. Adjust the result budget before retrying the request; do not repeat completed tools.`, error.minimumTokens);
 			}
 			throw error;
 		}

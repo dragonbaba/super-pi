@@ -712,7 +712,7 @@ export async function processResponsesStream<TApi extends Api>(
 				slot?.type === "toolCall" &&
 				slot.block.partialJson !== undefined
 			) {
-				slot.block.arguments = parseStreamingJson(item.arguments || slot.block.partialJson || "{}");
+				slot.block.arguments = parseStreamingJson(item.arguments || slot.block.partialJson);
 				if ("namespace" in item && typeof item.namespace === "string") slot.block.namespace = item.namespace;
 				// Finalize in-place and strip the scratch buffer so replay only
 				// carries parsed arguments.

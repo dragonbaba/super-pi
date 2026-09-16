@@ -24,6 +24,17 @@ const { default: loopGuardrails } = await jiti.import<any>("../packages/extensio
 const { failureRecoveryHint, classifyFailureText } = await jiti.import<any>("../packages/extensions/tool-loop-guardrails/core.ts");
 const shellPath = process.platform === "win32" && existsSync("D:/Git/bin/bash.exe") ? "D:/Git/bin/bash.exe" : getShellConfig().shell;
 
+test("dynamic executable preflight has zero backend effects; literal correction still needs current authorization", async t => {
+ let effects = 0;
+ const f = await fixture(t, undefined, undefined, false, { async exec() { effects++; return { exitCode: 0 }; } });
+ const dynamic = await f.call('CHROME="/fixture/Program Files/chrome.exe"; "$CHROME" --headless; echo after');
+ assert.match(dynamic.text, /SHELL_DYNAMIC_EXECUTABLE/);
+ assert.deepEqual(f.counts(), { approvals: 0, spawns: 0 }); assert.equal(effects, 0);
+ f.deny();
+ const literal = await f.call('"/fixture/Program Files/chrome.exe" --headless');
+ assert.equal(literal.error, true); assert.deepEqual(f.counts(), { approvals: 1, spawns: 0 }); assert.equal(effects, 0);
+});
+
 async function fixture(t: test.TestContext, lateCommand?: string | ((event: any) => any), before?: (event: any) => any, noGuard = false, profileBackend?: any) {
  const cwd = mkdtempSync(join(tmpdir(), "pi-lifecycle-postmerge-"));
  const runtime = createExtensionRuntime();
@@ -304,7 +315,7 @@ test("review: brace-expanded launcher assignments cannot select an uninspected e
  const result = await f.call("env {LABEL=x,bash,-c,'printf INNER'} true");
  assert.equal(result.error, true, result.text); assert.equal(f.counts().spawns, 0);
  for (const command of ["env {LABEL=x,bash,-c,'sleep 10 &'} true", "sudo {LABEL=x,bash,-c,'sleep 10 &'} true"]) {
-  assert.match(inspectBashResourceLifecycle({ command }) ?? "", /uncertain/);
+  assert.match(inspectBashResourceLifecycle({ command }) ?? "", /^\[SHELL_(?:UNINSPECTABLE|WRAPPER)\]/);
  }
  const literal = await f.call("env LABEL='{a,b}' printenv LABEL");
  assert.equal(literal.error, false, literal.text); assert.equal(literal.text.trim(), "{a,b}");
@@ -362,7 +373,7 @@ test("final authorization bounded paired allocation sample", async t => {
 
 for (const command of ["env bash</dev/null -c 'printf INNER'", "bash</dev/null -c 'printf INNER'", "sudo foo.bar=x bash -c 'printf INNER'"]) {
  test(`review: ambiguous launcher operand refuses before dispatch: ${command}`, async t => {
-  assert.match(inspectBashResourceLifecycle({ command }) ?? "", /uncertain/);
+  assert.match(inspectBashResourceLifecycle({ command }) ?? "", /^\[SHELL_(?:UNINSPECTABLE|WRAPPER)\]/);
   const f = await fixture(t); const result = await f.call(command);
   assert.equal(result.error, true); assert.deepEqual(f.counts(), { approvals: 0, spawns: 0 });
  });
@@ -432,7 +443,7 @@ test("postmerge uncertain refusal has bounded policy recovery", async () => {
  assert.equal(classifyFailureText(reason, {}, "bash"), "policy_blocked");
  const hint = await failureRecoveryHint("bash", { command: "SECRET_PAYLOAD" }, reason, process.cwd());
  assert.equal(hint, undefined, "producer guidance must not be appended twice");
- assert.match(reason, /Lifecycle recovery/); assert.match(reason, /before execution/); assert.match(reason, /permission/i);
+ assert.match(reason, /Lifecycle recovery/); assert.match(reason, /not executed/); assert.match(reason, /permission/i);
  assert.ok(reason.length < 700); assert.doesNotMatch(reason, /SECRET_PAYLOAD/);
  assert.equal(classifyFailureText("ordinary runtime failure: blocked buffer", {}, "bash"), "runtime_error");
 });

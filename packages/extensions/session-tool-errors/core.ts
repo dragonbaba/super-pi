@@ -280,6 +280,7 @@ export function classifyError(tool: string, text: string, family?: VerificationF
     return { category: "input_validation", cause: "CodeGraph 调用缺少当前 action 要求的参数。" };
   }
   if (tool === "edit") {
+    if (text.startsWith("[SNAPSHOT_EDIT_SYNTAX] TypeScript parser is unavailable")) return { category: "runtime_error", cause: "宿主 TypeScript 解析器不可用；候选未检查，本次未写入。恢复宿主依赖后使用仍有效的快照重新提交。" };
     const match = SNAPSHOT_EDIT_ERROR_RE.exec(text);
     const code = match?.[1];
     if (code) {
@@ -287,6 +288,9 @@ export function classifyError(tool: string, text: string, family?: VerificationF
       if (snapshotFailure) return snapshotFailure;
     }
   }
+  if (text.startsWith("[TOOL_ARGS_INCOMPLETE]")) return { category: "input_validation", cause: "工具参数在响应结束时未完成；本次调用未执行。" };
+  if (text.startsWith("[TOOL_RESPONSE_LIMIT]")) return { category: "input_validation", cause: "响应达到输出上限，参数完整性尚不确定；本次调用未执行。" };
+  if (text.startsWith("[SNAPSHOT_REQUIRED]")) return { category: "input_validation", cause: "LINE#ID 编辑漏传顶层 snapshot；优先补入配套 ID，不代表读取证据已过期。" };
   const exactMigrationVersionError = EXACT_MIGRATION_VERSION_RE.test(text);
   if (VALIDATION_RE.test(text) || exactMigrationVersionError) {
     return {

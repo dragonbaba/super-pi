@@ -45,6 +45,21 @@ interface DiscoveryState {
 	readonly modelEstimatedTokens: number;
 }
 
+test("final incomplete edit replaces the placeholder without inventing a path, including redraw", () => {
+ initTheme("dark");
+ const component = new ToolExecutionComponent("edit", "incomplete", {}, { showImages: false }, undefined, createTui(), process.cwd());
+ assert.doesNotMatch(plain(component.render(100)), /not executed/);
+ component.setArgsComplete();
+ component.updateResult({ content: [{ type: "text", text: "[TOOL_ARGS_INCOMPLETE] edit was not executed: arguments were incomplete.\nRetry: re-issue this call." }], isError: true });
+ for (const width of [100, 80]) {
+  component.invalidate();
+  const rendered = plain(component.render(width));
+  assert.match(rendered, /edit: arguments incomplete \/ not executed/);
+  assert.doesNotMatch(rendered, /edit \.\.\.|undefined|fixture\.txt/);
+ }
+ component[RELEASE_COMPONENT_RENDER_CACHE]();
+});
+
 interface PresentationAwareComponent {
 	setToolResultPresentation(toolCallId: string, presentation: ToolResultPresentation): string | undefined;
 	clearToolResultPresentation(toolCallId: string, identity?: string): void;

@@ -67,15 +67,15 @@ function locationAt(text: string, offset: number): { line: number; column: numbe
 
 export async function assertNoNewSyntaxDiagnostics(
   path: string, before: string, after: string,
-  edits?: readonly { start: string; end?: string }[],
+  edits?: readonly { start: string; end?: string; newLines?: string[] }[],
+  byteEdits?: readonly { index: number; start: number; end: number; replacement: Buffer }[],
 ): Promise<void> {
   if (!GUARDED_EXTENSIONS.has(extname(path).toLowerCase())) return;
   let ts: TypeScriptModule;
   try {
     ts = await typescript();
-  } catch (error) {
-    const cause = error instanceof Error ? error.message : String(error);
-    throw new Error(`[SNAPSHOT_EDIT_SYNTAX] TypeScript parser is unavailable; refusing an unchecked JavaScript/TypeScript snapshot edit: ${cause}`);
+  } catch {
+    throw new Error("[SNAPSHOT_EDIT_SYNTAX] TypeScript parser is unavailable. No change; the candidate was not checked.\nRetry: restore the host TypeScript dependency, then resubmit with a still-current snapshot.");
   }
   const beforeCounts = new Map<string, number>();
   for (const diagnostic of collectDiagnostics(ts, path, before)) {
@@ -92,8 +92,10 @@ export async function assertNoNewSyntaxDiagnostics(
   if (introduced.length === 0) return;
   const first = introduced[0];
   const location = locationAt(after, first.start);
+  const payload = payloadLocation(before, after, first.start, edits, byteEdits);
   let scope = "";
-  for (let index = 0; index < Math.min(edits?.length ?? 0, 3); index++) {
+  for (let slot = 0; slot < Math.min(edits?.length ?? 0, 3); slot++) {
+    const index = slot === 2 && payload && payload.editIndex > 2 ? payload.editIndex : slot;
     const edit = edits![index];
     // Only caller-supplied, validated original coordinates; never mint candidate anchors.
     const start = parseInt(edit.start.trim().replace(/^>>> /u, ""), 10);
@@ -101,6 +103,41 @@ export async function assertNoNewSyntaxDiagnostics(
     if (Number.isSafeInteger(start) && Number.isSafeInteger(end)) scope += ` edits[${index}] original lines ${start}-${end};`;
   }
   throw new Error(
-    `[SNAPSHOT_EDIT_SYNTAX] Edit would introduce ${introduced.length} TypeScript/JavaScript syntax diagnostic(s). First at candidate line ${location.line}, column ${location.column}: TS${first.code} ${first.message.slice(0, 400)}\nCandidate coordinates are uncommitted, not original read anchors; diagnostics may cascade downstream from one defect.${scope}\nNo change. Correct the request using the existing snapshot if still current; stale or consumed snapshots require read.`,
+    `[SNAPSHOT_EDIT_SYNTAX] No change. ${introduced.length} new syntax diagnostic(s); first at candidate line ${location.line}, column ${location.column}: TS${first.code} ${first.message.slice(0, 400)}\n${payload ? `Diagnostic falls in edits[${payload.editIndex}].newLines[${payload.lineIndex}] (zero-based indices). ` : ""}Candidate coordinates are not original read anchors; later diagnostics may cascade.${scope}\nRetry: correct the request using the existing snapshot if still current; stale or consumed snapshots require read.`,
   );
+}
+
+// Failure-only mapping: TypeScript offsets are UTF-16, prepared offsets are UTF-8 bytes.
+// Reuse the validated, sorted byte edits; do not retain a second before/after source.
+function payloadLocation(
+  before: string, after: string, offset: number,
+  edits: readonly { newLines?: string[] }[] | undefined,
+  byteEdits: readonly { index: number; start: number; end: number; replacement: Buffer }[] | undefined,
+): { editIndex: number; lineIndex: number } | undefined {
+  if (!edits || !byteEdits) return undefined;
+  let byteOffset = 0;
+  for (let i = 0; i < offset; i++) {
+    const code = after.charCodeAt(i);
+    if (code < 0x80) byteOffset++;
+    else if (code < 0x800) byteOffset += 2;
+    else if (code >= 0xd800 && code <= 0xdbff && i + 1 < after.length && after.charCodeAt(i + 1) >= 0xdc00 && after.charCodeAt(i + 1) <= 0xdfff) {
+      if (i + 1 === offset) return undefined; // Never attribute an offset inside a surrogate pair.
+      byteOffset += 4; i++;
+    } else byteOffset += 3;
+  }
+  let shift = 0;
+  for (const edit of byteEdits) {
+    const start = edit.start + shift;
+    if (byteOffset >= start && byteOffset < start + edit.replacement.length) {
+      const lines = edits[edit.index]?.newLines;
+      if (!lines) return undefined;
+      let line = 0;
+      for (let i = 0; i < byteOffset - start; i++) if (edit.replacement[i] === 10) line++;
+      // insert_after at unterminated EOF adds a separator before the payload.
+      if (edit.start === edit.end && !before.endsWith("\n") && edit.start === Buffer.byteLength(before, "utf8") && (edit.replacement[0] === 10 || (edit.replacement[0] === 13 && edit.replacement[1] === 10))) line--;
+      return line >= 0 && line < lines.length ? { editIndex: edit.index, lineIndex: line } : undefined;
+    }
+    shift += edit.replacement.length - (edit.end - edit.start);
+  }
+  return undefined;
 }

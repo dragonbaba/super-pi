@@ -6,6 +6,7 @@ import test from "node:test";
 import { createJiti } from "jiti";
 import { inspectBashResourceLifecycle } from "../packages/extensions/resource-lifecycle-guard/core.ts";
 import { validateToolArguments } from "../packages/ai/src/utils/validation.ts";
+import { isValidationFailure } from "../packages/extensions/tool-input-repair-telemetry/core.ts";
 import mutationExtension from "../packages/extensions/mutation-guard-write/index.ts";
 import browserExtension from "../packages/extensions/browser-use/index.ts";
 import { browserUrlSafetyError } from "../packages/extensions/browser-use/core.ts";
@@ -13,6 +14,18 @@ const { failureRecoveryHint } = await createJiti(import.meta.url).import<any>(".
 const definitions = new Map<string, any>();
 const pi: any = { on() {}, registerCommand() {}, registerTool(tool: any) { definitions.set(tool.name, tool); } };
 mutationExtension(pi); browserExtension(pi);
+
+test("new error codes retain classification and legacy telemetry without treating incomplete JSON as schema failure", async () => {
+ const { classifyError } = await createJiti(import.meta.url).import<any>("../packages/extensions/session-tool-errors/core.ts");
+ for (const message of ['Validation failed for tool "edit":', '[TOOL_ARGS_INVALID] "edit" was not executed: validation failed.']) assert.equal(isValidationFailure({ content: [{ type: "text", text: message }] }), true);
+ const incomplete = "[TOOL_ARGS_INCOMPLETE] edit was not executed: arguments were incomplete when the response ended.";
+ assert.equal(isValidationFailure({ content: [{ type: "text", text: incomplete }] }), false);
+ assert.match(classifyError("edit", incomplete).cause, /未完成/);
+ assert.match(classifyError("edit", '[SNAPSHOT_REQUIRED] Missing top-level "snapshot".').cause, /漏传顶层/);
+ const unavailable = classifyError("edit", "[SNAPSHOT_EDIT_SYNTAX] TypeScript parser is unavailable. No change; the candidate was not checked.");
+ assert.equal(unavailable.category, "runtime_error"); assert.match(unavailable.cause, /候选未检查/); assert.doesNotMatch(unavailable.cause, /引入新的/);
+ assert.equal(classifyError("bash", "[SHELL_DYNAMIC_EXECUTABLE] This Bash call was not executed.").category, "policy_blocked");
+});
 
 for (const [name, command] of [
  ["quoted", "cat <<'EOF'\nconst pixel = value & 255; // nohup wait kill\nEOF"],

@@ -22,10 +22,15 @@ const ARTIFACT_PREFIX = "tra1.";
 const SOURCE_IDENTITY_PREFIX = "tool-result-source-v1\0";
 const NOTICE_PREFIX = "[Tool result truncated. Continue with cursor ";
 const NOTICE_SUFFIX = ".]";
+const READ_NOTICE_SUFFIX = ". Source lines omitted; the recorded snapshot range is not full model visibility. For edits needing omitted lines, read with offset/limit and use that read's paired snapshot and anchors. Continuation/artifact are historical, not a fresh read.]";
+const READ_OMITTED_SUFFIX = ". Read output omitted: budget cannot fit complete source lines and paired snapshot metadata. This view supplies neither source lines nor snapshot anchors. Read a smaller range with offset/limit, or increase the tool-result budget. Continuation/artifact are historical, not a fresh read.]";
+const READ_LAYOUT_ERROR = "Read projection requires one source-line block followed by paired metadata. Restore the read hook layout before retrying; the canonical result is unchanged.";
 const ESCAPE_CODE = 0x1b;
 const GRAPHEME_SEGMENTER = new Intl.Segmenter("en", { granularity: "grapheme" });
 
-export type ToolResultPresentationContent = (Readonly<TextContent> & { readonly mcpSource?: McpTypedSource; readonly mcpInput?: true }) | (Readonly<ImageContent> & { readonly mcpInput?: true });
+// Layout hints are stamped only after native read/snapshot verification. They are
+// not evidence or authority: receipts, identity and freshness checks remain server-owned.
+export type ToolResultPresentationContent = (Readonly<TextContent> & { readonly mcpSource?: McpTypedSource; readonly mcpInput?: true; readonly readBoundary?: "lines" | "metadata" }) | (Readonly<ImageContent> & { readonly mcpInput?: true });
 
 /** Phase 5B-A behavior. V1 always exposes the complete legacy result to both consumers. */
 export interface ToolResultPresentationV1 {
@@ -108,7 +113,7 @@ export class ToolResultArtifactError extends Error {
 	}
 }
 
-export type ToolResultContinuationErrorCode = "invalid-cursor" | "stale-cursor" | "budget-too-small";
+export type ToolResultContinuationErrorCode = "invalid-cursor" | "stale-cursor" | "budget-too-small" | "invalid-read-layout";
 
 export class ToolResultContinuationError extends Error {
 	readonly code: ToolResultContinuationErrorCode;
@@ -222,6 +227,10 @@ interface CursorState {
 }
 
 interface SourceScan {
+	readLinesBlock: number;
+	readMetadataBlock: number;
+	readPrefixTextCodeUnits: number;
+	readSuffixTextCodeUnits: number;
 	mcpInput: boolean;
 	mcpArtifactRequired: boolean;
 	estimate: ToolOutputTokenEstimate;
@@ -448,7 +457,7 @@ function isToolResultPresentationV2(value: unknown): value is ToolResultPresenta
 				truncation.originalTextCodeUnits >= truncation.retainedTextCodeUnits &&
 				truncation.omittedTextCodeUnits === truncation.originalTextCodeUnits - truncation.retainedTextCodeUnits &&
 				notice?.type === "text" &&
-				notice.text === NOTICE_PREFIX + cursor + NOTICE_SUFFIX
+				(notice.text === NOTICE_PREFIX + cursor + NOTICE_SUFFIX || notice.text === NOTICE_PREFIX + cursor + READ_NOTICE_SUFFIX || notice.text === NOTICE_PREFIX + cursor + READ_OMITTED_SUFFIX)
 			);
 		}
 		return false;
@@ -657,7 +666,7 @@ function locateHeadEnd(
 	for (let index = 0; index < content.length; index++) {
 		const block = content[index]!;
 		if (block.type !== "text") continue;
-		if (remaining < block.text.length) return { blockIndex: index, textOffset: safeIndexedPrefixOffset(block.text, remaining, index, sourceScan, counters) };
+		if (remaining < block.text.length) return { blockIndex: index, textOffset: readPrefixOffset(block, safeIndexedPrefixOffset(block.text, remaining, index, sourceScan, counters), index, sourceScan, counters) };
 		remaining -= block.text.length;
 		if (remaining === 0) return { blockIndex: index + 1, textOffset: 0 };
 	}
@@ -675,7 +684,7 @@ function locateTailStart(
 		const block = content[index]!;
 		if (block.type !== "text") continue;
 		if (remaining < block.text.length) {
-			return { blockIndex: index, textOffset: safeIndexedSuffixOffset(block.text, block.text.length - remaining, index, sourceScan, counters) };
+			return { blockIndex: index, textOffset: readSuffixOffset(block, safeIndexedSuffixOffset(block.text, block.text.length - remaining, index, sourceScan, counters), index, sourceScan, counters) };
 		}
 		remaining -= block.text.length;
 		if (remaining === 0) return { blockIndex: index, textOffset: 0 };
@@ -686,6 +695,32 @@ function locateTailStart(
 function comparePositions(left: ContentPosition, right: ContentPosition): number {
 	if (left.blockIndex !== right.blockIndex) return left.blockIndex - right.blockIndex;
 	return left.textOffset - right.textOffset;
+}
+
+function readPrefixOffset(block: Readonly<TextContent> & { readonly readBoundary?: "lines" | "metadata" }, offset: number, index: number, scan: SourceScan, counters: ToolResultPresentationCounters): number {
+	if (!block.readBoundary || offset === block.text.length || offset === 0) return offset;
+	if (block.readBoundary === "metadata") return 0;
+	// A multiline terminal sequence can span a line boundary. Move monotonically
+	// until both the complete-line and existing terminal/grapheme contracts hold.
+	while (offset > 0) {
+		const line = block.text.lastIndexOf("\n", offset - 1) + 1;
+		const safe = safeIndexedPrefixOffset(block.text, line, index, scan, counters);
+		if (safe === line) return line;
+		offset = safe;
+	}
+	return 0;
+}
+function readSuffixOffset(block: Readonly<TextContent> & { readonly readBoundary?: "lines" | "metadata" }, offset: number, index: number, scan: SourceScan, counters: ToolResultPresentationCounters): number {
+	if (!block.readBoundary || offset === 0 || offset === block.text.length) return offset;
+	if (block.readBoundary === "metadata") return block.text.length;
+	while (offset < block.text.length) {
+		const newline = block.text.charCodeAt(offset - 1) === 10 ? offset - 1 : block.text.indexOf("\n", offset);
+		const line = newline < 0 ? block.text.length : newline + 1;
+		const safe = safeIndexedSuffixOffset(block.text, line, index, scan, counters);
+		if (safe === line) return line;
+		offset = safe;
+	}
+	return block.text.length;
 }
 
 function appendIdentityHash(value: string, state: number, multiplier: number): number {
@@ -718,6 +753,10 @@ function appendSourceIdentityBlock(
 	artifactBytes: number,
 ): number {
 	if (block.type === "text") {
+		if (block.readBoundary) {
+			digest.update("r").update(block.readBoundary).update(":");
+			artifactBytes += block.readBoundary.length + 2;
+		}
 		if (block.mcpInput && !block.mcpSource) {
 			const sourceDigest = mcpTextDigest(block);
 			const length = block.text.length.toString(36);
@@ -781,6 +820,10 @@ function scanSource(
 	let imageDataCodeUnits = 0;
 	let retainedCodeUnits = 0;
 	let mcpInput = false;
+	let readLinesBlock = -1;
+	let readMetadataBlock = -1;
+	let readPrefixTextCodeUnits = 0;
+	let readSuffixTextCodeUnits = 0;
 	let mcpArtifactRequired = false;
 	let hasTerminalSequences = false;
 	let terminalSequenceIntervals: Uint32Array | undefined;
@@ -793,6 +836,15 @@ function scanSource(
 		artifactBytes = appendSourceIdentityBlock(digest, block, artifactBytes);
 		if (block.mcpInput) mcpInput = true;
 		if (block.type === "text") {
+			if (block.readBoundary === "lines") {
+				if (readLinesBlock >= 0 || readMetadataBlock >= 0) throw new ToolResultContinuationError("invalid-read-layout", READ_LAYOUT_ERROR);
+				readLinesBlock = index; readPrefixTextCodeUnits = textCodeUnits;
+			}
+			else if (readLinesBlock >= 0) readSuffixTextCodeUnits += block.text.length;
+			if (block.readBoundary === "metadata") {
+				if (readLinesBlock < 0 || readMetadataBlock >= 0) throw new ToolResultContinuationError("invalid-read-layout", READ_LAYOUT_ERROR);
+				readMetadataBlock = index;
+			}
 			if (block.mcpInput || block.mcpSource) mcpInput = true;
 			if (block.mcpSource) {
 				retainedCodeUnits += verifiedMcpSource(block.mcpSource).codeUnits;
@@ -844,10 +896,15 @@ function scanSource(
 			retainedCodeUnits += block.data.length + block.mimeType.length;
 		}
 	}
+	if (readLinesBlock >= 0 && readMetadataBlock < 0) throw new ToolResultContinuationError("invalid-read-layout", READ_LAYOUT_ERROR);
 	counters.sourceDigestConstructions++;
 	const sha256 = digest.digest("hex");
 	return {
 		mcpInput,
+		readLinesBlock,
+		readMetadataBlock,
+		readPrefixTextCodeUnits,
+		readSuffixTextCodeUnits,
 		mcpArtifactRequired,
 		estimate,
 		digest: sha256.substring(0, 24),
@@ -946,7 +1003,7 @@ function buildProjection(
 	const projected: ToolResultPresentationContent[] = [];
 	appendPrefix(projected, content, start, counters);
 	const noticeBlockIndex = projected.length;
-	projected.push({ type: "text", text: NOTICE_PREFIX + cursor + NOTICE_SUFFIX });
+	projected.push({ type: "text", text: NOTICE_PREFIX + cursor + (sourceScan.readLinesBlock >= 0 ? READ_NOTICE_SUFFIX : NOTICE_SUFFIX) });
 	appendSuffix(projected, content, end, counters);
 	counters.modelProjectionArraysCreated++;
 	return {
@@ -983,7 +1040,7 @@ function buildFullOmissionProjection(
 	);
 	const projected: ToolResultPresentationContent[] = [{
 		type: "text",
-		text: NOTICE_PREFIX + cursor + NOTICE_SUFFIX,
+		text: NOTICE_PREFIX + cursor + (sourceScan.readLinesBlock >= 0 ? READ_OMITTED_SUFFIX : NOTICE_SUFFIX),
 	}];
 	counters.modelProjectionArraysCreated++;
 	return {
@@ -1022,10 +1079,14 @@ function projectLegacyContent(
 	retainedTextCodeUnits = Math.max(0, Math.min(retainedTextCodeUnits, totalTextCodeUnits - 1));
 	let build: ProjectionBuild | undefined;
 	for (let pass = 0; pass < MAX_PROJECTION_SHRINK_PASSES; pass++) {
-		const headTextCodeUnits = Math.ceil(retainedTextCodeUnits / 2);
-		const tailTextCodeUnits = retainedTextCodeUnits - headTextCodeUnits;
+		// Keep the suffix at its actual position, including tool annotations on
+		// either side of the metadata. Character counts are from the existing scan.
+		const tailTextCodeUnits = sourceScan.readLinesBlock >= 0 ? sourceScan.readSuffixTextCodeUnits : Math.floor(retainedTextCodeUnits / 2);
+		const headTextCodeUnits = Math.max(0, retainedTextCodeUnits - tailTextCodeUnits);
 		build = buildProjection(content, headTextCodeUnits, tailTextCodeUnits, sourceKey, sourceDigest, sourceScan, counters);
-		if (build.estimate.estimatedTokens <= budgetTokens && comparePositions(build.start, build.end) < 0) return build;
+		if (build.estimate.estimatedTokens <= budgetTokens && comparePositions(build.start, build.end) < 0) {
+			return requireReadProjection(content, sourceScan, build, budgetTokens, sourceKey, sourceDigest, counters);
+		}
 		if (retainedTextCodeUnits === 0) break;
 		const next = Math.floor((retainedTextCodeUnits * Math.max(1, budgetTokens - 2)) / build.estimate.estimatedTokens);
 		retainedTextCodeUnits = Math.max(0, Math.min(retainedTextCodeUnits - 1, next));
@@ -1034,9 +1095,33 @@ function projectLegacyContent(
 		build = buildProjection(content, 0, 0, sourceKey, sourceDigest, sourceScan, counters);
 	}
 	if (build.estimate.estimatedTokens > budgetTokens) {
+		if (sourceScan.readLinesBlock >= 0) return requireReadProjection(content, sourceScan, build, budgetTokens, sourceKey, sourceDigest, counters);
 		throw new ToolResultContinuationError("budget-too-small", `Tool-result budget ${budgetTokens} cannot contain the fixed continuation notice.`, build.estimate.estimatedTokens);
 	}
-	return build;
+	return requireReadProjection(content, sourceScan, build, budgetTokens, sourceKey, sourceDigest, counters);
+}
+
+function requireReadProjection(content: readonly ToolResultPresentationContent[], scan: SourceScan, build: ProjectionBuild, budget: number, sourceKey: string, sourceDigest: string, counters: ToolResultPresentationCounters): ProjectionBuild {
+	if (scan.readLinesBlock < 0) return build;
+	const lines = content[scan.readLinesBlock];
+	const metadata = content[scan.readMetadataBlock];
+	if (lines?.type !== "text" || metadata?.type !== "text" || scan.readMetadataBlock <= scan.readLinesBlock) {
+		throw new ToolResultContinuationError("invalid-read-layout", READ_LAYOUT_ERROR);
+	}
+	// Boundary rounding changes model visibility, never the receipt range.
+	const hasLines = build.start.blockIndex > scan.readLinesBlock || (build.start.blockIndex === scan.readLinesBlock && build.start.textOffset > 0);
+	const hasSuffix = build.end.blockIndex === scan.readLinesBlock + 1 && build.end.textOffset === 0;
+	if (hasLines && hasSuffix && build.estimate.estimatedTokens <= budget) return build;
+	// Density estimates can round away an affordable first line. Test the exact
+	// prefix + whole first row + complete suffix, regardless of metadata position.
+	const newline = lines.text.indexOf("\n");
+	const minimum = buildProjection(content, scan.readPrefixTextCodeUnits + (newline < 0 ? lines.text.length : newline + 1), scan.readSuffixTextCodeUnits, sourceKey, sourceDigest, scan, counters);
+	if (minimum.estimate.estimatedTokens <= budget && (minimum.start.blockIndex > scan.readLinesBlock || (minimum.start.blockIndex === scan.readLinesBlock && minimum.start.textOffset > 0))) return minimum;
+	// Reuse the existing full-omission cursor/artifact mechanism. A historical
+	// oversized row must not prevent a later targeted read from reaching the model.
+	const omitted = buildFullOmissionProjection(content, sourceKey, sourceDigest, scan, counters);
+	if (omitted.estimate.estimatedTokens <= budget) return omitted;
+	throw new ToolResultContinuationError("budget-too-small", `Read budget ${budget} cannot retain complete source lines with paired metadata, or even the read recovery notice. Read a smaller target range with offset/limit when capacity permits; increase the tool-result budget before retrying this request.`, omitted.estimate.estimatedTokens);
 }
 
 /** MCP-only input policy delegates token projection to the unchanged G2 path. */
@@ -1069,7 +1154,7 @@ function stripMcpSources(content: readonly ToolResultPresentationContent[]): rea
 	let output: ToolResultPresentationContent[] | undefined;
 	for (let index = 0; index < content.length; index++) {
 		const block = content[index]!;
-		if (block.mcpInput || (block.type === "text" && block.mcpSource)) {
+		if (block.mcpInput || (block.type === "text" && (block.mcpSource || block.readBoundary))) {
 			if (!output) {
 				output = new Array<ToolResultPresentationContent>(content.length);
 				for (let previous = 0; previous < index; previous++) output[previous] = content[previous]!;
@@ -1201,10 +1286,10 @@ function advancePosition(
 		const available = Math.max(0, limit - offset);
 		if (remaining < available) {
 			const requestedOffset = offset + remaining;
-			let safeOffset = safeIndexedPrefixOffset(block.text, requestedOffset, index, sourceScan, counters);
+			let safeOffset = readPrefixOffset(block, safeIndexedPrefixOffset(block.text, requestedOffset, index, sourceScan, counters), index, sourceScan, counters);
 			if (safeOffset <= offset) {
 				counters.terminalNonProgressCandidatesPrevented = (counters.terminalNonProgressCandidatesPrevented ?? 0) + 1;
-				safeOffset = Math.min(limit, safeIndexedSuffixOffset(block.text, requestedOffset, index, sourceScan, counters));
+				safeOffset = Math.min(limit, readSuffixOffset(block, safeIndexedSuffixOffset(block.text, requestedOffset, index, sourceScan, counters), index, sourceScan, counters));
 			}
 			return {
 				blockIndex: index,
@@ -2190,7 +2275,7 @@ export class ToolResultPresentationOwner {
 					if (!requestPlanning || !(error instanceof ToolResultContinuationError) || error.code !== "budget-too-small") throw error;
 					const cause = toolBudget <= contextBudget ? "result-batch-budget" : "context-headroom";
 					throw new ToolResultContinuationError("budget-too-small",
-						`Request preparation blocked: ${cause} cannot fit a required tool-result envelope (context=${contextWindow}, nonCurrentInput=${nonCurrentContextTokens}, requestedOutput=${requestedOutput}, responseFloorAndSafety=${outputReserve}, batchBudget=${this.budgetTokens}, remainingResults=${remainingResults}, toolShare=${toolBudget}, contextShare=${contextBudget}, minimumNotice=${error.minimumTokens ?? "unavailable"}). Prior tool outcomes are unchanged. Reduce request context or adjust the result budget before retrying the request; do not repeat completed tools.`, error.minimumTokens);
+						`Request preparation blocked: ${cause} cannot fit a required tool-result envelope (context=${contextWindow}, nonCurrentInput=${nonCurrentContextTokens}, requestedOutput=${requestedOutput}, responseFloorAndSafety=${outputReserve}, batchBudget=${this.budgetTokens}, remainingResults=${remainingResults}, toolShare=${toolBudget}, contextShare=${contextBudget}, minimumNotice=${error.minimumTokens ?? "unavailable"}). ${error.message.substring(0, 600)} Prior tool outcomes are unchanged. Reduce request context or adjust the result budget before retrying the request; do not repeat completed tools.`, error.minimumTokens);
 				}
 				if (projected !== message) messages[index] = projected;
 				const consumedToolTokens = estimateToolOutputTokens(projected.content).estimatedTokens;
@@ -2404,7 +2489,9 @@ export class ToolResultPresentationOwner {
 			this.counters,
 		);
 		this.counters.continuationChunksCreated++;
-		return { version: TOOL_RESULT_CONTINUATION_VERSION, content: record.sourceScan.mcpInput ? stripMcpSources(chunkContent) : chunkContent, estimatedTokens: chunkEstimate.estimatedTokens, nextCursor, done };
+		// A historical chunk may contain only one side of the read layout pair.
+		// Deliver plain content, never the original canonical-read layout markers.
+		return { version: TOOL_RESULT_CONTINUATION_VERSION, content: record.sourceScan.mcpInput || record.sourceScan.readLinesBlock >= 0 ? stripMcpSources(chunkContent) : chunkContent, estimatedTokens: chunkEstimate.estimatedTokens, nextCursor, done };
 	}
 
 	release(): void {

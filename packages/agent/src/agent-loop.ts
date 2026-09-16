@@ -441,10 +441,11 @@ async function failToolCallsFromTruncatedMessage(
 			toolName: toolCall.name,
 			args: toolCall.arguments,
 		});
+		const incomplete = hasIncompleteToolArguments(toolCall.arguments);
 		const finalized: FinalizedToolCallOutcome = {
 			toolCall,
 			result: createErrorToolResult(
-				`Tool call "${toolCall.name}" was not executed: the response hit the output token limit, so its arguments may be truncated. Re-issue the tool call with complete arguments.`,
+				`[${incomplete ? "TOOL_ARGS_INCOMPLETE" : "TOOL_RESPONSE_LIMIT"}] ${toolCall.name} was not executed: the response hit the output token limit; arguments ${incomplete ? "were incomplete" : "may be truncated"}.\nRetry: re-issue this tool call with complete arguments and a smaller payload.`,
 			),
 			isError: true,
 		};
@@ -801,7 +802,7 @@ async function prepareToolCall(
 		return {
 			kind: "immediate",
 			result: createErrorToolResult(
-				"Tool arguments were incomplete at the end of the provider response; re-issue the tool call with complete JSON arguments",
+				`[TOOL_ARGS_INCOMPLETE] ${tool.name} was not executed: arguments were incomplete when the response ended.\nRetry: re-issue only this tool call with complete JSON arguments.`,
 			),
 			isError: true,
 		};

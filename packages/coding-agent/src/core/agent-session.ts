@@ -1262,8 +1262,8 @@ export class AgentSession {
 					presentation = presentationOwner.create(event.message.content, event.message.toolCallId);
 				} catch (error) {
 					if (!mcpTool) {
-						if (!(error instanceof ToolResultContinuationError) || error.code !== "budget-too-small") throw error;
-						// A model-view budget cannot revoke an already completed local
+						if (!(error instanceof ToolResultContinuationError) || (error.code !== "budget-too-small" && error.code !== "invalid-read-layout")) throw error;
+						// A model-view budget/layout cannot revoke an already completed local
 						// result. Deliver/persist its canonical status below. Conversion
 						// still enforces the budget before the next provider request.
 					} else {

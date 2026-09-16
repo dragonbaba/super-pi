@@ -155,7 +155,7 @@ export default function toolLoopGuardrails(pi: ExtensionAPI): void {
       if (!sessionId) return result;
       const annotation = await issueSnapshotForRead(sessionId, ctx.cwd, input, result);
       if (!annotation) return result;
-      return { ...result, content: [...result.content, { type: GUARDRAIL_CONTENT_TYPE, text: annotation }] };
+      return { ...result, content: [...result.content, { type: GUARDRAIL_CONTENT_TYPE, text: annotation, readBoundary: "metadata" as const }] };
     },
   });
 

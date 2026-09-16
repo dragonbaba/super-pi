@@ -97,7 +97,7 @@ interface PreparedByteEdit {
 }
 
 export interface SnapshotReadResult {
-  content: Array<{ type: string; text?: string }>;
+  content: Array<{ type: string; text?: string; readBoundary?: "lines" }>;
   details?: ReadToolDetails;
 }
 export interface SnapshotLineEditResult {
@@ -314,6 +314,7 @@ export async function issueSnapshotForRead(
     });
     result.content[0] = {
       type: "text",
+      readBoundary: "lines",
       text: formatSnapshotReadText(displayed, firstSeenLine, lastSeenLine - firstSeenLine + 1),
     };
     return `${SNAPSHOT_EDIT_ANNOTATION_PREFIX} snapshot=${id}; editable lines=${firstSeenLine}-${lastSeenLine}. Use this snapshot and its LINE#ID anchors together.`;
@@ -345,6 +346,7 @@ export async function issueSnapshotForRead(
   });
   result.content[0] = {
     type: "text",
+    readBoundary: "lines",
     text: formatSnapshotReadText(displayed, compact.firstSeenLine, compact.visibleLines.length),
   };
   return `${SNAPSHOT_EDIT_ANNOTATION_PREFIX} snapshot=${id}; editable lines=${compact.firstSeenLine}-${compact.lastSeenLine}. Use this snapshot and its LINE#ID anchors together.`;
@@ -463,6 +465,7 @@ function assertNoBoundaryEcho(
 
 interface PreparedEdits {
   output: Buffer;
+  byteEdits: PreparedByteEdit[];
   changedBytes: number;
   replacements: number;
   deduplicatedEdits: number;
@@ -533,7 +536,7 @@ function prepareEdits(receipt: FullSnapshotReceipt, requestedEdits: readonly Sna
       throw new Error(`[SNAPSHOT_EDIT_INVALID] edits[${index}].kind is unsupported.`);
     }
     changedBytes += end - start + replacement.byteLength;
-    prepared.push({ index, start, end, replacement });
+    prepared.push({ index: requestedEdits.indexOf(edit), start, end, replacement });
   }
   if (changedBytes > MAX_SNAPSHOT_EDIT_BYTES) {
     throw new Error(`[SNAPSHOT_EDIT_BUDGET] Requested ${changedBytes} scoped bytes; allowed ${MAX_SNAPSHOT_EDIT_BYTES}.`);
@@ -564,7 +567,7 @@ function prepareEdits(receipt: FullSnapshotReceipt, requestedEdits: readonly Sna
     throw new Error(`[SNAPSHOT_EDIT_BUDGET] Result exceeds ${formatSize(MAX_SNAPSHOT_FILE_BYTES)}.`);
   }
   if (output.equals(receipt.bytes)) throw new Error("[SNAPSHOT_EDIT_NO_OP] The requested operations do not change the file.");
-  return { output, changedBytes, replacements: edits.length, deduplicatedEdits: deduplicated.deduplicatedEdits };
+  return { output, byteEdits: prepared, changedBytes, replacements: edits.length, deduplicatedEdits: deduplicated.deduplicatedEdits };
 }
 
 function compactLine(receipt: CompactSnapshotReceipt, line: number): CompactCapturedLine | undefined {
@@ -717,7 +720,7 @@ function prepareCompactEdits(
       throw new Error(`[SNAPSHOT_EDIT_INVALID] edits[${index}].kind is unsupported.`);
     }
     changedBytes += end - start + replacement.byteLength;
-    prepared.push({ index, start, end, replacement });
+    prepared.push({ index: requestedEdits.indexOf(edit), start, end, replacement });
   }
   if (changedBytes > MAX_SNAPSHOT_EDIT_BYTES) {
     throw new Error(`[SNAPSHOT_EDIT_BUDGET] Requested ${changedBytes} scoped bytes; allowed ${MAX_SNAPSHOT_EDIT_BYTES}.`);
@@ -747,7 +750,7 @@ function prepareCompactEdits(
   const maximum = compactFileLimit(receipt.canonicalPath);
   if (output.byteLength > maximum) throw new Error(`[SNAPSHOT_EDIT_BUDGET] Result exceeds ${formatSize(maximum)}.`);
   if (output.equals(current)) throw new Error("[SNAPSHOT_EDIT_NO_OP] The requested operations do not change the file.");
-  return { output, changedBytes, replacements: edits.length, deduplicatedEdits: deduplicated.deduplicatedEdits };
+  return { output, byteEdits: prepared, changedBytes, replacements: edits.length, deduplicatedEdits: deduplicated.deduplicatedEdits };
 }
 async function currentIdentity(path: string): Promise<FileIdentity> {
   const info = await lstat(path, { bigint: true });
@@ -806,7 +809,11 @@ export async function executeSnapshotLineEdit(
   const beforeText = strictUtf8Decoder.decode(current);
   const afterText = strictUtf8Decoder.decode(prepared.output);
   const diffResult = generateDiffString(beforeText, afterText);
-  await assertNoNewSyntaxDiagnostics(receipt.canonicalPath, beforeText, afterText, edits);
+  try {
+    await assertNoNewSyntaxDiagnostics(receipt.canonicalPath, beforeText, afterText, edits, prepared.byteEdits);
+  } finally {
+    prepared.byteEdits.length = 0;
+  }
   const patch = generateUnifiedPatch(receipt.canonicalPath, beforeText, afterText);
   const reservationId = hooks.reserveMutation?.(prepared.changedBytes);
   if (signal?.aborted) throw new Error("Operation aborted");

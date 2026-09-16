@@ -132,7 +132,7 @@ export function extractCommandSubstitutions(command: string, heredocData = false
 
 const COMMENT_BOUNDARY = /[ \t\r\n;|&]/;
 /** Detection only: actual heredocs are unsupported; never remove source/body text. */
-export function inspectHereDocuments(command: string): { command: string; substitutions: string[]; uncertain: boolean } {
+export function inspectHereDocuments(command: string): { command: string; substitutions: string[]; uncertain: boolean; heredoc?: true } {
  let quote = ""; let escaped = false; let arithmeticDepth = 0;
  for (let index = 0; index < command.length; index++) {
   const c = command[index];
@@ -148,7 +148,7 @@ export function inspectHereDocuments(command: string): { command: string; substi
   if (arithmeticDepth) { if (c === "(") arithmeticDepth++; else if (c === ")") arithmeticDepth--; continue; }
   if (c === "<" && command[index + 1] === "<") {
    if (command[index + 2] === "<") { index += 2; continue; }
-   return { command, substitutions: [], uncertain: true };
+   return { command, substitutions: [], uncertain: true, heredoc: true };
   }
  }
  return { command, substitutions: [], uncertain: arithmeticDepth !== 0 };
