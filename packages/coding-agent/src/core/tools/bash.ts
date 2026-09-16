@@ -1,7 +1,7 @@
 import { constants } from "node:fs";
 import { access as fsAccess } from "node:fs/promises";
 import type { AgentTool } from "@super-pi/agent-core";
-import { Container, getCapabilities, RELEASE_COMPONENT_RENDER_CACHE, Text, truncateToWidth } from "@super-pi/tui";
+import { type Component, Container, getCapabilities, RELEASE_COMPONENT_RENDER_CACHE, Text, truncateToWidth } from "@super-pi/tui";
 import { spawn } from "child_process";
 import { type Static, Type } from "typebox";
 import { keyHint } from "../../modes/interactive/components/keybinding-hints.ts";
@@ -229,15 +229,65 @@ export type BashRenderState = ToolRenderLifecycleState & {
 	startedAt: number | undefined;
 	endedAt: number | undefined;
 	interval: NodeJS.Timeout | undefined;
+	elapsedTimer?: BashElapsedTimer;
 };
+
+/** One owner per active rendering lifecycle. The callback never retains a render context. */
+class BashElapsedTimer {
+	private state: BashRenderState | undefined;
+	private refresh: WeakRef<() => void> | undefined;
+	private readonly generation: number | undefined;
+	private handle: NodeJS.Timeout | undefined;
+	constructor(state: BashRenderState, refresh: () => void) {
+		this.state = state;
+		this.refresh = new WeakRef(refresh);
+		this.generation = state[TOOL_RENDER_LIFECYCLE_GENERATION];
+		this.handle = setInterval(this.tick, 1000);
+		state.interval = this.handle;
+		this.handle.unref?.();
+	}
+	private readonly tick = (): void => {
+		const state = this.state;
+		if (!state) return;
+		if (state[TOOL_RENDER_LIFECYCLE_GENERATION] !== this.generation || state.endedAt !== undefined) {
+			this.stop();
+			return;
+		}
+		const refresh = this.refresh?.deref();
+		if (refresh) refresh();
+		else this.stop();
+	};
+	stop(): void {
+		if (this.handle !== undefined) clearInterval(this.handle);
+		if (this.state && this.state.interval === this.handle) this.state.interval = undefined;
+		this.handle = undefined;
+		this.refresh = undefined;
+		this.state = undefined;
+	}
+	/** Low-frequency diagnostics, including references owned by a late timer callback. */
+	getReferenceCounts() { return { handles: Number(this.handle !== undefined), states: Number(this.state !== undefined), refreshReferences: Number(this.refresh !== undefined) }; }
+}
 
 function releaseBashRenderDerivedState(state: unknown): void {
 	const bashState = state as BashRenderState;
+	bashState.elapsedTimer?.stop();
+	bashState.elapsedTimer = undefined;
 	const interval = bashState.interval;
 	bashState.interval = undefined;
 	if (interval !== undefined) clearInterval(interval);
-	bashState.startedAt = undefined;
-	bashState.endedAt = undefined;
+	// Cache release must not erase the final duration of this execution.
+}
+
+/** Optional, instance-local counters. No output or component references are stored here. */
+export interface BashRenderAllocationMetrics {
+	previewComponentsCreated: number;
+	timeComponentsCreated: number;
+	warningComponentsCreated: number;
+	expandedComponentsCreated: number;
+	timeTextUpdates: number;
+	warningTextUpdates: number;
+	preparedOutputRecomputations: number;
+	previewLineRecomputations: number;
 }
 
 type BashResultRenderState = {
@@ -254,9 +304,42 @@ type BashResultRenderState = {
 	preparedStyledOutput: string | undefined;
 	expandedOutputComponent: Text | undefined;
 	expandedOutputText: string | undefined;
+	allocationMetrics?: BashRenderAllocationMetrics;
 };
 
+/** Reads the owner's current prepared output, never a captured prior output string. */
+class BashPreviewComponent implements Component {
+	private state: BashResultRenderState | undefined;
+	constructor(state: BashResultRenderState) { this.state = state; }
+	render(width: number): string[] {
+		const state = this.state;
+		if (!state) return [];
+		if (state.cachedLines === undefined || state.cachedWidth !== width) {
+			const preview = truncateToVisualLines(state.preparedStyledOutput ?? "", BASH_PREVIEW_LINES, width);
+			state.cachedLines = preview.visualLines;
+			state.cachedSkipped = preview.skippedCount;
+			state.cachedWidth = width;
+			if (state.allocationMetrics) state.allocationMetrics.previewLineRecomputations++;
+		}
+		const lines = [""];
+		if (state.cachedSkipped && state.cachedSkipped > 0) {
+			const hint = theme.fg("muted", `... (${state.cachedSkipped} earlier lines,`) +
+				` ${keyHint("app.tools.expand", "to expand")}${theme.fg("muted", ")")}`;
+			lines.push(truncateToWidth(hint, width, "..."));
+		}
+		for (const line of state.cachedLines) lines.push(line);
+		return lines;
+	}
+	invalidate(): void { /* Width and prepared output own cache invalidation. */ }
+	[RELEASE_COMPONENT_RENDER_CACHE](): void { this.state = undefined; }
+}
+
 class BashResultRenderComponent extends Container {
+	previewComponent: BashPreviewComponent | undefined;
+	timeComponent: Text | undefined;
+	timeText: string | undefined;
+	warningComponent: Text | undefined;
+	warningText: string | undefined;
 	state: BashResultRenderState = {
 		cachedWidth: undefined,
 		cachedLines: undefined,
@@ -280,6 +363,14 @@ class BashResultRenderComponent extends Container {
 
 	[RELEASE_COMPONENT_RENDER_CACHE](): void {
 		this.children.length = 0;
+		this.previewComponent?.[RELEASE_COMPONENT_RENDER_CACHE]();
+		this.previewComponent = undefined;
+		this.timeComponent?.setText("");
+		this.timeComponent = undefined;
+		this.timeText = undefined;
+		this.warningComponent?.setText("");
+		this.warningComponent = undefined;
+		this.warningText = undefined;
 		const state = this.state;
 		state.cachedWidth = undefined;
 		state.cachedLines = undefined;
@@ -294,7 +385,11 @@ class BashResultRenderComponent extends Container {
 		state.preparedStyledOutput = undefined;
 		state.expandedOutputComponent = undefined;
 		state.expandedOutputText = undefined;
+		state.allocationMetrics = undefined;
 	}
+
+	/** Test/benchmark instrumentation is opt-in and contains only numeric counters. */
+	setAllocationMetrics(metrics: BashRenderAllocationMetrics | undefined): void { this.state.allocationMetrics = metrics; }
 
 	/** Low-frequency final-unmount diagnostics; never called from result rendering. */
 	getBashResultRenderCacheReferenceCounts(): {
@@ -303,6 +398,12 @@ class BashResultRenderComponent extends Container {
 		preparedStyledOutputCodeUnits: number;
 		expandedOutputReferences: number;
 		derivedChildReferences: number;
+		previewComponentReferences: number;
+		timeComponentReferences: number;
+		timeTextCodeUnits: number;
+		warningComponentReferences: number;
+		warningTextCodeUnits: number;
+		allocationMetricsReferences: number;
 	} {
 		return {
 			cachedLineReferences: this.state.cachedLines?.length ?? 0,
@@ -312,6 +413,12 @@ class BashResultRenderComponent extends Container {
 				(this.state.expandedOutputComponent === undefined ? 0 : 1) +
 				(this.state.expandedOutputText === undefined ? 0 : 1),
 			derivedChildReferences: this.children.length,
+			previewComponentReferences: Number(this.previewComponent !== undefined),
+			timeComponentReferences: Number(this.timeComponent !== undefined),
+			timeTextCodeUnits: this.timeText?.length ?? 0,
+			warningComponentReferences: Number(this.warningComponent !== undefined),
+			warningTextCodeUnits: this.warningText?.length ?? 0,
+			allocationMetricsReferences: Number(this.state.allocationMetrics !== undefined),
 		};
 	}
 }
@@ -331,7 +438,12 @@ function formatShellCall(args: { command?: string; timeout?: number } | undefine
 function snapshotBashResultContent(
 	content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>,
 ): Array<{ type: string; text?: string; data?: string; mimeType?: string }> {
-	return content.map((block) => ({ type: block.type, text: block.text, data: block.data, mimeType: block.mimeType }));
+	const snapshot = new Array<{ type: string; text?: string; data?: string; mimeType?: string }>(content.length);
+	for (let index = 0; index < content.length; index++) {
+		const block = content[index]!;
+		snapshot[index] = { type: block.type, text: block.text, data: block.data, mimeType: block.mimeType };
+	}
+	return snapshot;
 }
 
 function bashResultContentMatches(
@@ -339,10 +451,12 @@ function bashResultContentMatches(
 	content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>,
 ): boolean {
 	if (!snapshot || snapshot.length !== content.length) return false;
-	return content.every((block, index) => {
+	for (let index = 0; index < content.length; index++) {
+		const block = content[index]!;
 		const previous = snapshot[index];
-		return previous.type === block.type && previous.text === block.text && previous.data === block.data && previous.mimeType === block.mimeType;
-	});
+		if (previous.type !== block.type || previous.text !== block.text || previous.data !== block.data || previous.mimeType !== block.mimeType) return false;
+	}
+	return true;
 }
 
 function getPreparedBashOutput(
@@ -371,7 +485,19 @@ function getPreparedBashOutput(
 		const footerStart = output.lastIndexOf("\n\n[");
 		if (footerStart !== -1 && output.slice(footerStart).includes(fullOutputPath)) output = output.slice(0, footerStart).trimEnd();
 	}
-	const styledOutput = output ? output.split("\n").map((line) => theme.fg("toolOutput", line)).join("\n") : "";
+	let styledOutput = "";
+	if (output) {
+		let start = 0;
+		while (start <= output.length) {
+			const newline = output.indexOf("\n", start);
+			const end = newline === -1 ? output.length : newline;
+			if (start > 0) styledOutput += "\n";
+			styledOutput += theme.fg("toolOutput", output.slice(start, end));
+			if (newline === -1) break;
+			start = newline + 1;
+		}
+	}
+	if (state.allocationMetrics) state.allocationMetrics.preparedOutputRecomputations++;
 	if (state.preparedStyledOutput !== styledOutput) {
 		state.cachedWidth = undefined;
 		state.cachedLines = undefined;
@@ -400,7 +526,8 @@ function rebuildBashResultRenderComponent(
 	endedAt: number | undefined,
 ): void {
 	const state = component.state;
-	component.clear();
+	// Reuse the bounded child list without invalidating or releasing retained children.
+	component.children.length = 0;
 
 	const styledOutput = getPreparedBashOutput(component, result, options, showImages);
 	const truncation = result.details?.truncation;
@@ -413,7 +540,11 @@ function rebuildBashResultRenderComponent(
 	if (styledOutput) {
 		if (options.expanded) {
 			const text = `\n${styledOutput}`;
-			const outputComponent = state.expandedOutputComponent ?? new Text(text, 0, 0);
+			let outputComponent = state.expandedOutputComponent;
+			if (!outputComponent) {
+				outputComponent = new Text(text, 0, 0);
+				if (state.allocationMetrics) state.allocationMetrics.expandedComponentsCreated++;
+			}
 			if (state.expandedOutputText !== text) outputComponent.setText(text);
 			state.expandedOutputComponent = outputComponent;
 			state.expandedOutputText = text;
@@ -421,50 +552,56 @@ function rebuildBashResultRenderComponent(
 		} else {
 			state.expandedOutputComponent = undefined;
 			state.expandedOutputText = undefined;
-			component.addChild({
-				render: (width: number) => {
-					if (state.cachedLines === undefined || state.cachedWidth !== width) {
-						const preview = truncateToVisualLines(styledOutput, BASH_PREVIEW_LINES, width);
-						state.cachedLines = preview.visualLines;
-						state.cachedSkipped = preview.skippedCount;
-						state.cachedWidth = width;
-					}
-					if (state.cachedSkipped && state.cachedSkipped > 0) {
-						const hint =
-							theme.fg("muted", `... (${state.cachedSkipped} earlier lines,`) +
-							` ${keyHint("app.tools.expand", "to expand")}${theme.fg("muted", ")")}`;
-						return ["", truncateToWidth(hint, width, "..."), ...(state.cachedLines ?? [])];
-					}
-					return ["", ...(state.cachedLines ?? [])];
-				},
-				invalidate: () => {
-					// Width is part of the render key; output/theme changes are handled above.
-				},
-			});
+			if (!component.previewComponent) {
+				component.previewComponent = new BashPreviewComponent(state);
+				if (state.allocationMetrics) state.allocationMetrics.previewComponentsCreated++;
+			}
+			component.addChild(component.previewComponent);
 		}
 	}
 
 	if (truncation?.truncated || fullOutputPath) {
-		const warnings: string[] = [];
+		let warning = "";
 		if (fullOutputPath) {
-			warnings.push(`Full output: ${fullOutputPath}`);
+			warning = `Full output: ${fullOutputPath}`;
 		}
 		if (truncation?.truncated) {
+			if (warning) warning += ". ";
 			if (truncation.truncatedBy === "lines") {
-				warnings.push(`Truncated: showing ${truncation.outputLines} of ${truncation.totalLines} lines`);
+				warning += `Truncated: showing ${truncation.outputLines} of ${truncation.totalLines} lines`;
 			} else {
-				warnings.push(
-					`Truncated: ${truncation.outputLines} lines shown (${formatSize(truncation.maxBytes ?? DEFAULT_MAX_BYTES)} limit)`,
-				);
+				warning += `Truncated: ${truncation.outputLines} lines shown (${formatSize(truncation.maxBytes ?? DEFAULT_MAX_BYTES)} limit)`;
 			}
 		}
-		component.addChild(new Text(`\n${theme.fg("warning", `[${warnings.join(". ")}]`)}`, 0, 0));
+		const text = `\n${theme.fg("warning", `[${warning}]`)}`;
+		if (!component.warningComponent) {
+			component.warningComponent = new Text(text, 0, 0);
+			if (state.allocationMetrics) state.allocationMetrics.warningComponentsCreated++;
+		} else if (component.warningText !== text) {
+			component.warningComponent.setText(text);
+			if (state.allocationMetrics) state.allocationMetrics.warningTextUpdates++;
+		}
+		component.warningText = text;
+		component.addChild(component.warningComponent);
+	} else {
+		component.warningComponent?.setText("");
+		component.warningComponent = undefined;
+		component.warningText = undefined;
 	}
 
 	if (startedAt !== undefined) {
-		const label = options.isPartial ? "Elapsed" : "Took";
+		const label = options.isPartial && endedAt === undefined ? "Elapsed" : "Took";
 		const endTime = endedAt ?? Date.now();
-		component.addChild(new Text(`\n${theme.fg("muted", `${label} ${formatDuration(endTime - startedAt)}`)}`, 0, 0));
+		const text = `\n${theme.fg("muted", `${label} ${formatDuration(endTime - startedAt)}`)}`;
+		if (!component.timeComponent) {
+			component.timeComponent = new Text(text, 0, 0);
+			if (state.allocationMetrics) state.allocationMetrics.timeComponentsCreated++;
+		} else if (component.timeText !== text) {
+			component.timeComponent.setText(text);
+			if (state.allocationMetrics) state.allocationMetrics.timeTextUpdates++;
+		}
+		component.timeText = text;
+		component.addChild(component.timeComponent);
 	}
 }
 
@@ -638,26 +775,11 @@ export function createShellToolDefinition(
 				state.startedAt = Date.now();
 				state.endedAt = undefined;
 			}
-			if (state.startedAt !== undefined && options.isPartial && !state.interval) {
-				const contextRef = new WeakRef(context);
-				const intervalGeneration = state[TOOL_RENDER_LIFECYCLE_GENERATION];
-				state.interval = setInterval(() => {
-					if (state[TOOL_RENDER_LIFECYCLE_GENERATION] !== intervalGeneration) return;
-					const currentContext = contextRef.deref();
-					if (currentContext) currentContext.invalidate();
-					else if (state.interval) {
-						clearInterval(state.interval);
-						state.interval = undefined;
-					}
-				}, 1000);
-				state.interval.unref?.();
-			}
 			if (!options.isPartial || context.isError) {
 				state.endedAt ??= Date.now();
-				if (state.interval) {
-					clearInterval(state.interval);
-					state.interval = undefined;
-				}
+				releaseBashRenderDerivedState(state);
+			} else if (state.startedAt !== undefined && state.endedAt === undefined && !state.interval) {
+				state.elapsedTimer = new BashElapsedTimer(state, context.refreshResult ?? context.invalidate);
 			}
 			const component =
 				(context.lastComponent as BashResultRenderComponent | undefined) ?? new BashResultRenderComponent();

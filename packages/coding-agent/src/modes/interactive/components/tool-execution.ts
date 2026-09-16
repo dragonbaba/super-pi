@@ -800,6 +800,11 @@ export class ToolExecutionComponent extends Container {
 		this.invalidate();
 		this.notifyVisualInvalidation();
 	};
+	private readonly renderContextRefreshResult = (): void => {
+		// Preserve outstanding call dirtiness; do not recursively invalidate its Text cache.
+		this.updateDisplay();
+		this.notifyVisualInvalidation();
+	};
 
 	constructor(
 		toolName: string,
@@ -890,6 +895,7 @@ export class ToolExecutionComponent extends Container {
 			args: this.args,
 			toolCallId: this.toolCallId,
 			invalidate: this.renderContextInvalidate,
+			refreshResult: this.renderContextRefreshResult,
 			lastComponent,
 			state: this.rendererState,
 			cwd: this.cwd,
