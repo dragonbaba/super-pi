@@ -11,6 +11,7 @@ import { Container, type TUI } from "../packages/tui/src/tui.ts";
 import { InteractiveMode } from "../packages/coding-agent/src/modes/interactive/interactive-mode.ts";
 import { AgentSessionRuntime } from "../packages/coding-agent/src/core/agent-session-runtime.ts";
 import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
+import type { BashRenderState } from "../packages/coding-agent/src/core/tools/bash.ts";
 import { BashExecutionComponent } from "../packages/coding-agent/src/modes/interactive/components/bash-execution.ts";
 import { LoginDialogComponent } from "../packages/coding-agent/src/modes/interactive/components/login-dialog.ts";
 import { SessionSelectorComponent } from "../packages/coding-agent/src/modes/interactive/components/session-selector.ts";
@@ -657,7 +658,13 @@ test("async owner closeout remains lifecycle-only in source", () => {
 	assert.match(cancelModelLookup, /clearTimeout\(timeout\)/);
 	const shellSource = readFileSync("packages/coding-agent/src/core/tools/bash.ts", "utf8");
 	assert.match(shellSource, /RELEASE_TOOL_RENDER_DERIVED_STATE\] = releaseBashRenderDerivedState/);
-	assert.match(shellSource, /TOOL_RENDER_LIFECYCLE_GENERATION\] !== intervalGeneration/);
+	const timerStart = shellSource.indexOf("class BashElapsedTimer {");
+	const timerEnd = shellSource.indexOf("\nfunction releaseBashRenderDerivedState", timerStart);
+	assert.ok(timerStart >= 0 && timerEnd > timerStart);
+	const timerSource = shellSource.slice(timerStart, timerEnd);
+	assert.match(timerSource, /this\.generation = state\[TOOL_RENDER_LIFECYCLE_GENERATION\]/);
+	assert.match(timerSource, /state\[TOOL_RENDER_LIFECYCLE_GENERATION\] !== this\.generation[^\n]*\{\s*this\.stop\(\);\s*return;/);
+	assert.match(timerSource, /setInterval\(this\.tick, 1000\)/);
 	assert.match(interactiveSource, /private static handleProviderAuthenticationTimeout/);
 	const providerRefreshStart = interactiveSource.indexOf("private async refreshProviderAuthenticationCatalog");
 	const providerCompletionStart = interactiveSource.indexOf("private async completeProviderAuthentication");
@@ -2929,10 +2936,13 @@ test("final shutdown rejects a late active bash error continuation", async () =>
 	assert.equal(mode.bashComponent, undefined);
 });
 
-test("cache-only release clears the built-in Bash elapsed timer and timing sidecars", () => {
+test("cache-only release drops Bash timer ownership while preserving execution duration", () => {
 	initTheme("dark");
 	const originalSetInterval = globalThis.setInterval;
 	const originalClearInterval = globalThis.clearInterval;
+	const originalNow = Date.now;
+	let now = 100_000;
+	Date.now = () => now;
 	const interval = { unref(): void {} } as unknown as ReturnType<typeof setInterval>;
 	let intervalCallback: (() => void) | undefined;
 	let clearCalls = 0;
@@ -2957,29 +2967,52 @@ test("cache-only release clears the built-in Bash elapsed timer and timing sidec
 		);
 		component.markExecutionStarted();
 		component.updateResult({ content: [{ type: "text", text: "partial" }] }, true, false);
-		const state = (component as any).rendererState as {
-			startedAt: number | undefined;
-			endedAt: number | undefined;
-			interval: ReturnType<typeof setInterval> | undefined;
-		};
+		const state = (component as any).rendererState as BashRenderState;
+		const owner = state.elapsedTimer!;
+		const oldTick = intervalCallback!;
+		assert.equal(state.startedAt, 100_000);
 		assert.equal(state.interval, interval);
 		const rendersBeforeRelease = tui.requestRenderCalls;
 		component[TOOL_RELEASE_COMPONENT_RENDER_CACHE]();
 		assert.equal(state.interval, undefined);
-		assert.equal(state.startedAt, undefined);
+		assert.equal(state.elapsedTimer, undefined);
+		assert.deepEqual(owner.getReferenceCounts(), { handles: 0, states: 0, refreshReferences: 0 });
+		assert.equal(state.startedAt, 100_000, "the execution start is not a derived cache");
 		assert.equal(state.endedAt, undefined);
 		assert.equal(clearCalls, 1);
-		intervalCallback?.();
+		oldTick();
 		assert.equal(tui.requestRenderCalls, rendersBeforeRelease);
+		now += 1_000;
 		component.updateResult({ content: [{ type: "text", text: "remounted partial" }] }, true, false);
 		assert.equal(state.interval, interval);
-		assert.notEqual(state.startedAt, undefined);
+		assert.notEqual(state.elapsedTimer, owner);
+		assert.equal(state.startedAt, 100_000);
+		assert.match(component.render(120).join("\n"), /Elapsed 1\.0s/);
+		const rendersAfterRemount = tui.requestRenderCalls;
+		oldTick();
+		assert.equal(tui.requestRenderCalls, rendersAfterRemount);
+		assert.equal(clearCalls, 1, "old callback must not stop the replacement timer");
+		const replacement = state.elapsedTimer!;
+		now += 1_000;
+		component.updateResult({ content: [{ type: "text", text: "completed" }] }, false, false);
+		assert.equal(state.endedAt, 102_000);
+		assert.match(component.render(120).join("\n"), /Took 2\.0s/);
+		assert.deepEqual(replacement.getReferenceCounts(), { handles: 0, states: 0, refreshReferences: 0 });
+		component[TOOL_RELEASE_COMPONENT_RENDER_CACHE]();
 		component[TOOL_RELEASE_COMPONENT_RENDER_CACHE]();
 		assert.equal(clearCalls, 2);
 		assert.equal(state.interval, undefined);
+		assert.equal(state.elapsedTimer, undefined);
+		now += 10_000;
+		component.invalidate();
+		assert.match(component.render(120).join("\n"), /Took 2\.0s/, "final elapsed time stays frozen after remount");
+		assert.equal(state.interval, undefined);
+		component[TOOL_RELEASE_COMPONENT_RENDER_CACHE]();
+		assert.equal(clearCalls, 2);
 	} finally {
 		globalThis.setInterval = originalSetInterval;
 		globalThis.clearInterval = originalClearInterval;
+		Date.now = originalNow;
 	}
 });
 

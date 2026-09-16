@@ -162,10 +162,27 @@ node --expose-gc --experimental-strip-types scripts/bench/tui-tool-leaf-allocati
 
 All direct benchmark commands exited zero. Paths here record the measured checkout; the harness accepts another existing baseline through `--source-root`. The existing leaf benchmark's built-in fixture is **read**, verified in createFixture; it is not Bash evidence. Its four small smoke fixtures had correct final sentinels and zero pending scheduler tasks. Its declaration-style sourceInvariant fields are not counted as new dynamic measurements. New package scripts are `bench:bash-render` and `bench:bash-responsive`; direct Node commands above avoid this host's npm/PowerShell argument-forwarding issue (one initial npm invocation rejected the flags before running the benchmark).
 
+### CI follow-up: async owner regression coverage (2026-09-16)
+
+The first published head `811c1fc6a625c8643f96e6f3aa28e65ff34aad7f` failed both Linux and Windows `npm test` in [run 35095563828](https://github.com/dragonbaba/super-pi/actions/runs/35095563828). Both platforms reached the same two failures in `tests/tui-async-owner-closeout.test.ts`; check, offline build and the alpha probe had passed. This file was omitted from the initial 208-test local selection. The full runner stops at the first failed file, so those CI runs did not validate the remaining files.
+
+The source invariant still required the former closure-local `intervalGeneration`, although generation capture/checking had moved into BashElapsedTimer. It now checks capture, rejection with stop/return, and stable 1,000 ms timer scheduling within the bounded timer class source. The cache-release regression still expected `startedAt` to disappear; it now distinguishes disposable timer ownership from primitive execution timestamps needed to preserve elapsed time. The regression adds explicit zero handle/state/callback diagnostics, old-callback isolation after remount, repeated release and a frozen `Took 2.0s` after a later remount. No production source, safety assertion, CI gate or skip condition was changed.
+
+Local reproduction before correction: 60 passed / 2 failed in the 62-test async-owner file, matching CI. After correction:
+
+```powershell
+node --experimental-strip-types --test tests/tui-async-owner-closeout.test.ts tests/bash-render-reuse.test.ts
+npm run check
+npm test
+git diff --check
+```
+
+All exited zero on local Windows / Node v26.4.0. The focused run passed 76 tests without skips. Full `npm test` ran 138 discovered test files plus the memory workspace: 1,662 tests, 1,604 passed, 58 existing conditional skips, zero failures/cancellations. Counts sum the 139 Node test-summary blocks, rather than assuming all discovered cases executed. No allocation benchmark was rerun for this test/document-only correction; the measured production blob IDs above remain unchanged. Replacement Linux/Windows CI uses Node 22.19.x and must be checked on the pushed head separately; these local results do not certify it.
+
 ### Remaining limits and follow-up
 
 - The reported long Node/inline Python commands and timing phase inform the quiet/long fixture, but the user's actual generator/source, full session and terminal were unavailable. No specific template or test-code defect is inferred.
-- No real Windows terminal/ConPTY, Linux run, complete test suite, online model replay, CPU-saturation experiment or user-extension workload was performed. Local fake-terminal responsiveness does not close the original severe-stall report. CI status must be assessed separately after publication.
+- No real Windows terminal/ConPTY, local Linux run, online model replay, CPU-saturation experiment or user-extension workload was performed. The initial batch did not run the full suite; the CI follow-up above does. Local fake-terminal responsiveness does not close the original severe-stall report. CI status must be assessed separately after publication.
 - ToolProgressDelivery/drain, the full visual-truncate algorithm, OutputAccumulator decoding/spill/persistence and general Agent/terminal scheduling were not rewritten. Existing context wrappers and whole-output/frame costs remain candidates for measured follow-up, not silently claimed zero.
 - Permissions, read projections, canonical output, execution side effects and final flush ordering are preserved by this scope; no retry/replay or output suppression was introduced. This batch does not repeat all of PR #36's unrelated projection tests.
 - Keep PR #37 Draft. Component reuse and narrow timer refresh have passed their scoped checks; the broader responsiveness investigation remains open. No model recovery-rate, batching-rate or task token-cost claim is made.
