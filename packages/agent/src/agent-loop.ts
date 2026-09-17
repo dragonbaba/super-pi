@@ -482,7 +482,6 @@ async function executeToolCalls(
 		const remaining = toolCalls.filter(tc => tc !== question);
 		const deferred = await finalizeUnexecutedToolCalls(remaining, 0, emit, "Not executed: user interaction boundary; replan with the user's answer.");
 		await emitFinalizedToolResults(deferred, emit, answered.messages);
-		answered.terminate ||= answered.messages[0]?.isError === true;
 		return answered;
 	}
 	const hasSequentialToolCall = toolCalls.some(

@@ -26,27 +26,48 @@ export interface ImageAttachment {
 }
 export interface ImageSubmission {
 	version: 1; id: string; attachments: ImageAttachment[];
+	source?: "interactive" | "rpc" | "extension";
 	/** Committed ordinary input transform; original user content remains authoritative for display. */
 	inputProjection?: { text: string; images?: ImageContent[] };
 }
 export type AttachmentMessage = UserMessage & { imageSubmission?: ImageSubmission };
+// Weak receipts retain metadata only; no global image bytes or mutable caller proof.
+const decodedImages = new WeakMap<ImageContent, ImageAttachment>();
+function rememberDecoded(image: ImageContent, metadata: ImageAttachment): void { Object.freeze(image); decodedImages.set(image, Object.freeze({ ...metadata })); }
+function copyImage(image: ImageContent): ImageContent {
+	const copy: ImageContent = { type: "image", data: image.data, mimeType: image.mimeType };
+	const receipt = decodedImages.get(image); if (receipt) rememberDecoded(copy, receipt);
+	return copy;
+}
+export function isDecodedImage(image: ImageContent): boolean { return decodedImages.has(image); }
+export async function verifySubmittedImage(image: ImageContent, signal?: AbortSignal): Promise<void> {
+	if (decodedImages.has(image)) return;
+	const bytes = Buffer.from(image.data, "base64");
+	const metadata = imageMetadata(bytes, "image", "api");
+	if (metadata.mimeType !== image.mimeType) throw new Error("Invalid image content/MIME");
+	Object.freeze(image);
+	const decoded = await decodeImageLocally(bytes, signal ?? new AbortController().signal);
+	if (decoded.width !== metadata.width || decoded.height !== metadata.height) throw new Error("图片尺寸不一致");
+	rememberDecoded(image, metadata);
+}
+
 export function snapshotImageSubmission(images: readonly ImageContent[], submission?: ImageSubmission): { images: ImageContent[]; submission: ImageSubmission } {
 	if (images.length > IMAGE_ATTACHMENT_LIMITS.count) throw new Error("最多提交 8 张图片");
 	const snapshot: ImageContent[] = [];
 	const attachments: ImageAttachment[] = [];
 	let total = 0;
 	for (let index = 0; index < images.length; index++) {
-		const image = images[index];
+		const image = copyImage(images[index]);
 		const bytes = Buffer.byteLength(image.data, "base64");
 		total += bytes;
 		if (bytes > IMAGE_ATTACHMENT_LIMITS.bytes || total > IMAGE_ATTACHMENT_LIMITS.total) throw new Error("提交的图片超出字节限制");
 		const supplied = submission?.attachments[index];
-		const metadata = supplied && supplied.mimeType === image.mimeType && supplied.bytes === bytes
-			? supplied : validateAttachment(Buffer.from(image.data, "base64"), `image-${index + 1}`, "api").metadata;
-		attachments.push({ ...metadata, contentIndex: index });
-		snapshot.push({ type: "image", data: image.data, mimeType: image.mimeType });
+		const metadata = decodedImages.get(image) ?? imageMetadata(Buffer.from(image.data, "base64"), `image-${index + 1}`, "api");
+		if (metadata.mimeType !== image.mimeType) throw new Error("Invalid image content/MIME");
+		attachments.push({ ...metadata, id: supplied?.id ?? metadata.id, name: supplied?.name ?? metadata.name, contentIndex: index });
+		snapshot.push(image);
 	}
-	return { images: snapshot, submission: { version: 1, id: submission?.id ?? randomUUID(), attachments } };
+	return { images: snapshot, submission: { version: 1, id: submission?.id ?? randomUUID(), attachments, source: submission?.source } };
 }
 export interface DraftImage {
 	id: string;
@@ -67,18 +88,22 @@ function imageMime(bytes: Uint8Array): string {
 	throw new Error("图片格式无效：仅支持 PNG、JPEG、GIF、WebP");
 }
 
-export function validateAttachment(bytes: Uint8Array, name: string, source: ImageAttachment["source"], id: string = randomUUID()): { metadata: ImageAttachment; image: ImageContent } {
+function imageMetadata(bytes: Uint8Array, name: string, source: ImageAttachment["source"], id: string = randomUUID()): ImageAttachment {
 	if (!bytes.length || bytes.length > IMAGE_ATTACHMENT_LIMITS.bytes) throw new Error("图片超过 10 MiB 或为空");
 	const mimeType = imageMime(bytes);
 	const dimensions = getImageDimensions(bytes, mimeType);
 	if (!dimensions || dimensions.widthPx < 1 || dimensions.heightPx < 1 || dimensions.widthPx * dimensions.heightPx > IMAGE_ATTACHMENT_LIMITS.pixels) throw new Error("图片尺寸无效或超过 2400 万像素");
-	const data = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("base64");
-	return { image: { type: "image", data, mimeType }, metadata: { version: 1, id, kind: "image", source, name, mimeType,
-		bytes: bytes.length, width: dimensions.widthPx, height: dimensions.heightPx, contentIndex: 0, ownership: "application-snapshot" } };
+	return { version: 1, id, kind: "image", source, name, mimeType, bytes: bytes.length, width: dimensions.widthPx,
+		height: dimensions.heightPx, contentIndex: 0, ownership: "application-snapshot" };
+}
+export function validateAttachment(bytes: Uint8Array, name: string, source: ImageAttachment["source"], id: string = randomUUID()): { metadata: ImageAttachment; image: ImageContent } {
+	const metadata = imageMetadata(bytes, name, source, id);
+	return { image: { type: "image", data: Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("base64"), mimeType: metadata.mimeType }, metadata };
 }
 
 /** Restore/request boundary verification before freezing and memoizing content. No encode round-trip. */
 export function verifyImmutableImage(image: ImageContent): void {
+	if (decodedImages.has(image)) return;
 	const data = Object.getOwnPropertyDescriptor(image, "data");
 	const mime = Object.getOwnPropertyDescriptor(image, "mimeType");
 	if (!data || !mime || typeof data.value !== "string" || typeof mime.value !== "string") throw new Error("Invalid image content properties");
@@ -191,6 +216,7 @@ export class ImageAttachmentDraft {
 				const expected = /\.(png|jpe?g|gif|webp)$/i.exec(record.name)?.[1].toLowerCase().replace("jpg", "jpeg");
 				if (expected && loaded.image.mimeType !== `image/${expected}`) throw new Error("图片扩展名与实际格式不一致");
 			}
+			rememberDecoded(loaded.image, loaded.metadata);
 			record.metadata = loaded.metadata; record.image = loaded.image; record.state = "ready";
 		} catch (error) { this.fail(record, error); return; }
 		this.changed();
@@ -221,19 +247,22 @@ export class ImageAttachmentDraft {
 		const attachments: ImageAttachment[] = [];
 		for (const record of this.records) {
 			attachments.push({ ...record.metadata!, contentIndex: images.length });
-			images.push({ ...record.image! });
+			images.push(copyImage(record.image!));
 		}
 		const submission: ImageSubmission = { version: 1, id: randomUUID(), attachments };
 		this.clear(); return { images, submission };
 	}
-	restore(images: ImageContent[], submission: ImageSubmission): void {
+	restore(images: ImageContent[], submission: ImageSubmission, prepend = false): void {
 		if (this.records.length + images.length > IMAGE_ATTACHMENT_LIMITS.count) throw new Error("草稿图片数量超过限制，先移除图片后再恢复");
 		let total = 0;
 		for (const item of this.records) total += item.metadata?.bytes ?? 0;
 		for (const metadata of submission.attachments) total += metadata.bytes;
 		if (total > IMAGE_ATTACHMENT_LIMITS.total) throw new Error("恢复后草稿图片总大小超过 40 MiB");
-		for (const metadata of submission.attachments) this.records.push({ id: metadata.id, name: metadata.name, source: metadata.source,
-			state: "ready", metadata, image: images[metadata.contentIndex] });
+		for (let i = 0; i < submission.attachments.length; i++) {
+			const metadata = submission.attachments[prepend ? submission.attachments.length - 1 - i : i];
+			const record: DraftImage = { id: metadata.id, name: metadata.name, source: metadata.source, state: "ready", metadata, image: images[metadata.contentIndex] };
+			if (prepend) this.records.unshift(record); else this.records.push(record);
+		}
 		this.changed();
 	}
 }

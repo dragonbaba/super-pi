@@ -1,4 +1,4 @@
-import { type AttachmentMessage, type ImageSubmission, snapshotImageSubmission, verifyImmutableImage } from "./image-attachments.ts";
+import { type AttachmentMessage, type ImageSubmission, snapshotImageSubmission, verifyImmutableImage, isDecodedImage, verifySubmittedImage } from "./image-attachments.ts";
 import { createHash } from "node:crypto";
 /**
  * AgentSession - Core abstraction for agent lifecycle and session management.
@@ -454,6 +454,8 @@ export interface PromptOptions {
 	submission?: ImageSubmission;
 	/** When streaming, how to queue the message: "steer" (interrupt) or "followUp" (wait). Required if streaming. */
 	streamingBehavior?: "steer" | "followUp";
+	/** Intercept a submitted input and queue it without starting a new run (compaction retry ingress). */
+	queueOnly?: boolean;
 	/** Source of input for extension input event handlers. Defaults to "interactive". */
 	source?: InputSource;
 	/** Internal hook used by RPC mode to observe prompt preflight acceptance or rejection. */
@@ -656,7 +658,7 @@ export class AgentSession {
 	/** Tracks pending steering messages for UI display. Removed when delivered. */
 	private _interactionPaused = false;
 	private _steeringMessages: string[] = [];
-	private _queuedImageMessages = new Map<string, { text: string; images: ImageContent[]; submission: ImageSubmission }>();
+	private _queuedImageMessages = new Map<string, { text: string; images: ImageContent[]; submission: ImageSubmission; mode: "steer" | "followUp" }>();
 	// Values are small digests. Keys are verified/frozen canonical content; never paths or mutable provider objects.
 	private _imageDigests = new WeakMap<ImageContent, string>();
 	private _imageRequest: { model: Model<any> | undefined; signal?: AbortSignal; sessionId: string; policyRevision: number } | undefined;
@@ -2192,18 +2194,25 @@ export class AgentSession {
 	// Prompting
 	// =========================================================================
 
-	private async _runAgentPrompt(messages: AgentMessage | AgentMessage[]): Promise<void> {
-		this._interactionPaused = false;
-		this._isAgentRunActive = true;
+	private async _runAgentPrompt(messages: AgentMessage | AgentMessage[], onAccepted?: (success: boolean) => void): Promise<void> {
+		let admitted = false;
 		try {
-			await this.agent.prompt(messages);
-			while (await this._handlePostAgentRun()) {
-				await this.agent.continue();
-			}
+			await this.agent.prompt(messages, () => {
+				admitted = true;
+				this._interactionPaused = false;
+				this._isAgentRunActive = true;
+				onAccepted?.(true);
+			});
+			while (await this._handlePostAgentRun()) await this.agent.continue();
+		} catch (error) {
+			if (!admitted) onAccepted?.(false);
+			throw error;
 		} finally {
-			this._systemPromptOverride = undefined;
-			this._flushPendingBashMessages();
-			await this._emitAgentSettled();
+			if (admitted) {
+				this._systemPromptOverride = undefined;
+				this._flushPendingBashMessages();
+				await this._emitAgentSettled();
+			}
 		}
 	}
 
@@ -2278,13 +2287,14 @@ export class AgentSession {
 			let currentText = text;
 			let currentImages = submittedImages?.images;
 			const submission = submittedImages?.submission;
+			if (submission) submission.source = options?.source ?? "interactive";
 			if (submission) { for (const image of currentImages!) Object.freeze(image); Object.freeze(currentImages); }
 			if (this._extensionRunner.hasHandlers("input") && !(submission && this.settingsManager.getBlockImages())) {
 				const inputResult = await this._extensionRunner.emitInput(
 					currentText,
 					currentImages,
 					options?.source ?? "interactive",
-					this.isStreaming ? options?.streamingBehavior : undefined,
+					this.isStreaming || options?.queueOnly ? options?.streamingBehavior : undefined,
 					submission?.id,
 				);
 				if (inputResult.action === "handled") {
@@ -2312,7 +2322,7 @@ export class AgentSession {
 			const canonicalImages = submission ? submittedImages!.images : currentImages;
 
 			// If streaming, queue via steer() or followUp() based on option
-			if (this.isStreaming) {
+			if (this.isStreaming || options?.queueOnly) {
 				if (!options?.streamingBehavior) {
 					throw new Error(
 						"Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.",
@@ -2417,8 +2427,7 @@ export class AgentSession {
 			return;
 		}
 
-		preflightResult?.(true);
-		await this._runAgentPrompt(messages);
+		await this._runAgentPrompt(messages, preflightResult);
 	}
 
 	/**
@@ -2528,7 +2537,7 @@ export class AgentSession {
 	 * Internal: Queue a steering message (already expanded, no extension command check).
 	 */
 	private async _queueSteer(text: string, images?: ImageContent[], submission?: ImageSubmission): Promise<void> {
-		this._steeringMessages.push(this._queueImageLabel(text, images, submission));
+		this._steeringMessages.push(this._queueImageLabel(text, images, submission, "steer"));
 		this._emitQueueUpdate();
 		const content: (TextContent | ImageContent)[] = [{ type: "text", text }];
 		if (images) {
@@ -2546,7 +2555,7 @@ export class AgentSession {
 	 * Internal: Queue a follow-up message (already expanded, no extension command check).
 	 */
 	private async _queueFollowUp(text: string, images?: ImageContent[], submission?: ImageSubmission): Promise<void> {
-		this._followUpMessages.push(this._queueImageLabel(text, images, submission));
+		this._followUpMessages.push(this._queueImageLabel(text, images, submission, "followUp"));
 		this._emitQueueUpdate();
 		const content: (TextContent | ImageContent)[] = [{ type: "text", text }];
 		if (images) {
@@ -2668,39 +2677,44 @@ export class AgentSession {
 	 * Useful for restoring to editor when user aborts.
 	 * @returns Object with steering and followUp arrays
 	 */
-	clearQueue(): { steering: string[]; followUp: string[]; imageMessages: { text: string; images: ImageContent[]; submission: ImageSubmission }[] } {
+	clearQueue(): { steering: string[]; followUp: string[]; imageMessages: { text: string; images: ImageContent[]; submission: ImageSubmission; mode: "steer" | "followUp" }[] } {
 		const steering = [...this._steeringMessages];
 		const followUp = [...this._followUpMessages];
 		this._steeringMessages = [];
 		this._followUpMessages = [];
 		this.agent.clearAllQueues();
-		const imageMessages = [...this._queuedImageMessages.values()];
-		for (const item of imageMessages) {
-			const label = this._imageQueueLabel(item.text, item.submission);
-			for (const queue of [steering, followUp]) { const index = queue.indexOf(label); if (index >= 0) queue[index] = item.text; }
+		const imageMessages = [];
+		for (const queue of [steering, followUp]) for (let index = 0; index < queue.length; index++) {
+			for (const item of this._queuedImageMessages.values()) if (queue[index] === this._imageQueueLabel(item.text, item.submission)) {
+				imageMessages.push(item); queue[index] = item.text; break;
+			}
 		}
 		this._queuedImageMessages.clear();
 		this._emitQueueUpdate();
 		return { steering, followUp, imageMessages };
 	}
 
-	getQueuedImageSize(): { count: number; bytes: number } {
+	getQueuedImageSize(includeProjection = true): { count: number; bytes: number } {
 		let count = 0, bytes = 0;
-		for (const item of this._queuedImageMessages.values()) for (const attachment of item.submission.attachments) { count++; bytes += attachment.bytes; }
+		for (const item of this._queuedImageMessages.values()) {
+			for (const image of item.images) { count++; bytes += Buffer.byteLength(image.data, "base64"); }
+			if (includeProjection) for (const image of item.submission.inputProjection?.images ?? []) { count++; bytes += Buffer.byteLength(image.data, "base64"); }
+		}
 		return { count, bytes };
 	}
 	private _imageQueueLabel(text: string, submission: ImageSubmission): string {
 		return `${text} [已排队 · 含 ${submission.attachments.length} 张图片 · ${submission.id}]`;
 	}
-	private _queueImageLabel(text: string, images?: ImageContent[], submission?: ImageSubmission): string {
+	private _queueImageLabel(text: string, images?: ImageContent[], submission?: ImageSubmission, mode: "steer" | "followUp" = "steer"): string {
 		if (!submission || !images) return text;
 		if (this._queuedImageMessages.has(submission.id)) throw new Error("Submission is already queued");
 		if (this._queuedImageMessages.size >= 32) throw new Error("Image queue is full");
 		const queued = this.getQueuedImageSize();
-		let bytes = queued.bytes;
-		for (const attachment of submission.attachments) bytes += attachment.bytes;
-		if (queued.count + images.length > 32 || bytes > 128 * 1024 * 1024) throw new Error("Image queue exceeds 32 images / 128 MiB");
-		this._queuedImageMessages.set(submission.id, { text, images, submission });
+		let bytes = queued.bytes, count = queued.count;
+		for (const image of images) { count++; bytes += Buffer.byteLength(image.data, "base64"); }
+		for (const image of submission.inputProjection?.images ?? []) { count++; bytes += Buffer.byteLength(image.data, "base64"); }
+		if (count > 32 || bytes > 128 * 1024 * 1024) throw new Error("Image queue exceeds 32 images / 128 MiB (including input projections)");
+		this._queuedImageMessages.set(submission.id, { text, images, submission, mode });
 		return this._imageQueueLabel(text, submission);
 	}
 	/** Runs only at an actual provider request boundary, after queue delivery. */
@@ -2718,6 +2732,11 @@ export class AgentSession {
 			this.assertImageRequestAllowed();
 			const input = message.imageSubmission.inputProjection;
 			if (input) { text = input.text; images = input.images ?? images; }
+			for (const image of images) if (!isDecodedImage(image)) {
+				try { await verifySubmittedImage(image, signal); }
+				catch (error) { throw new Error(`Image submission blocked: ${error instanceof Error ? error.message : String(error)}`, { cause: error }); }
+				this.assertImageRequestAllowed();
+			}
 			if (this.model?.input.includes("image") || images.length === 0) {
 				if (input) { projected ??= messages.slice(); projected[i] = { role: "user", content: [{ type: "text", text }, ...images], timestamp: message.timestamp }; }
 				continue;
@@ -2736,7 +2755,7 @@ export class AgentSession {
 			}
 			Object.freeze(images);
 			let result;
-			try { result = await this._extensionRunner.emitInput(text, images, "interactive", undefined, message.imageSubmission.id, contentDigest.digest("hex"), "image-processing"); }
+			try { result = await this._extensionRunner.emitInput(text, images, message.imageSubmission.source ?? "interactive", undefined, message.imageSubmission.id, contentDigest.digest("hex"), "image-processing"); }
 			catch (error) { throw new Error(`Image submission blocked: ${error instanceof Error ? error.message : String(error)}`, { cause: error }); }
 			this.assertImageRequestAllowed();
 			if (this.model !== preparedModel) throw new Error("Image submission blocked: 图片处理期间模型已切换；请重新提交或重试");

@@ -95,8 +95,8 @@ async function runCommand(command: string, args: string[], options?: { timeoutMs
 	catch (error) { if (options?.signal?.aborted) throw error; return { stdout: Buffer.alloc(0), ok: false }; }
 }
 
-async function readClipboardImageViaWlPaste(): Promise<ClipboardImage | null> {
-	const list = await runCommand("wl-paste", ["--list-types"], { timeoutMs: DEFAULT_LIST_TIMEOUT_MS });
+async function readClipboardImageViaWlPaste(signal?: AbortSignal): Promise<ClipboardImage | null> {
+	const list = await runCommand("wl-paste", ["--list-types"], { timeoutMs: DEFAULT_LIST_TIMEOUT_MS, signal });
 	if (!list.ok) {
 		return null;
 	}
@@ -112,7 +112,7 @@ async function readClipboardImageViaWlPaste(): Promise<ClipboardImage | null> {
 		return null;
 	}
 
-	const data = await runCommand("wl-paste", ["--type", selectedType, "--no-newline"]);
+	const data = await runCommand("wl-paste", ["--type", selectedType, "--no-newline"], { signal });
 	if (!data.ok || data.stdout.length === 0) {
 		return null;
 	}
@@ -147,9 +147,9 @@ async function readClipboardImageViaPowerShell(signal?: AbortSignal): Promise<Cl
 	return { bytes: Buffer.from(output.toString("ascii"), "base64"), mimeType: "image/png" };
 }
 
-async function readClipboardImageViaXclip(): Promise<ClipboardImage | null> {
+async function readClipboardImageViaXclip(signal?: AbortSignal): Promise<ClipboardImage | null> {
 	const targets = await runCommand("xclip", ["-selection", "clipboard", "-t", "TARGETS", "-o"], {
-		timeoutMs: DEFAULT_LIST_TIMEOUT_MS,
+		timeoutMs: DEFAULT_LIST_TIMEOUT_MS, signal,
 	});
 
 	let candidateTypes: string[] = [];
@@ -165,7 +165,7 @@ async function readClipboardImageViaXclip(): Promise<ClipboardImage | null> {
 	const tryTypes = preferred ? [preferred, ...SUPPORTED_IMAGE_MIME_TYPES] : [...SUPPORTED_IMAGE_MIME_TYPES];
 
 	for (const mimeType of tryTypes) {
-		const data = await runCommand("xclip", ["-selection", "clipboard", "-t", mimeType, "-o"]);
+		const data = await runCommand("xclip", ["-selection", "clipboard", "-t", mimeType, "-o"], { signal });
 		if (data.ok && data.stdout.length > 0) {
 			return { bytes: data.stdout, mimeType: baseMimeType(mimeType) };
 		}
@@ -193,6 +193,7 @@ export async function readClipboardImage(options?: {
 	platform?: NodeJS.Platform;
 	signal?: AbortSignal;
 }): Promise<ClipboardImage | null> {
+	options?.signal?.throwIfAborted();
 	const env = options?.env ?? process.env;
 	const platform = options?.platform ?? process.platform;
 
@@ -207,7 +208,7 @@ export async function readClipboardImage(options?: {
 		const wayland = isWaylandSession(env);
 
 		if (wayland || wsl) {
-			image = (await readClipboardImageViaWlPaste()) ?? (await readClipboardImageViaXclip());
+			image = (await readClipboardImageViaWlPaste(options?.signal)) ?? (await readClipboardImageViaXclip(options?.signal));
 		}
 
 		if (!image && wsl) {
@@ -215,7 +216,7 @@ export async function readClipboardImage(options?: {
 		}
 
 		if (!image && !wayland) {
-			image = (await readClipboardImageViaNativeClipboard()) ?? (await readClipboardImageViaXclip());
+			image = (await readClipboardImageViaNativeClipboard()) ?? (await readClipboardImageViaXclip(options?.signal));
 		}
 	} else if (platform === "win32") {
 		// STA helper is bounded and cannot block the TUI on native hasImage().
@@ -224,6 +225,7 @@ export async function readClipboardImage(options?: {
 		image = await readClipboardImageViaNativeClipboard();
 	}
 
+	options?.signal?.throwIfAborted();
 	if (!image) {
 		return null;
 	}

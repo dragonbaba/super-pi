@@ -401,6 +401,7 @@ docs/interactive-control-image-input.md
 docs/performance/interactive-image-closeout-measurements.json
 package.json
 packages/agent/src/agent-loop.ts
+packages/agent/src/agent.ts
 packages/agent/src/types.ts
 packages/coding-agent/src/core/agent-session.ts
 packages/coding-agent/src/core/extensions/loader.ts
@@ -439,6 +440,8 @@ scripts/bench/image-response-child.ts
 scripts/bench/image-response.ts
 scripts/bench/interactive-image-input.ts
 scripts/bench/interactive-progress.ts
+tests/alpha-cli.test.ts
+tests/github-review-regressions.test.ts
 tests/helpers/image-acceptance-fixtures.ts
 tests/helpers/offline-image-runtime.ts
 tests/image-acceptance-closeout.test.ts
@@ -448,3 +451,60 @@ tests/permission-interaction.test.ts
 tests/tui-async-owner-closeout.test.ts
 tests/visual-tail.test.ts
 ```
+
+## GitHub PR #38 review fixes (2026-09-17)
+
+This section supersedes the earlier uncommitted delivery status. Commit `80e627211cc2add89d08ddd810a0bd52bd3ffdd2` was published with user authorization. The following fixes respond to its GitHub review; historical measurements and validation above still describe their recorded candidates.
+
+| Review comment | Reproduction/root cause | Change and regression |
+| --- | --- | --- |
+| [4036989760](https://github.com/dragonbaba/super-pi/pull/38#discussion_r4036989760) | An image prompt waits in `before_agent_start`; another ordinary prompt acquires the Agent. The old preflight callback cleared TUI recovery before actual Agent admission. | Agent invokes acceptance only after acquiring its run owner. Rejected contenders retain their failed submission and do not settle the competing run. Real SDK/TUI regression gates both the extension and provider. |
+| [4036989770](https://github.com/dragonbaba/super-pi/pull/38#discussion_r4036989770) | Invalid `ask_user` schema/duplicate IDs produced an ordinary error but the batch loop converted every error into termination. | Only explicit interaction termination pauses. Validation errors return to model replanning; all stale business calls in the mixed batch remain unexecuted. Both error cases are covered. |
+| [4036989779](https://github.com/dragonbaba/super-pi/pull/38#discussion_r4036989779) | SDK metadata with matching byte count/MIME bypassed validation, especially for multimodal models. | Caller metadata is no validation proof. Headers/limits are checked on snapshot; unverified content is decoded by the existing Worker before either backend. Private weak receipts transfer only from already decoded, frozen host content. MIME forgery, oversized headers and corrupt pixels are rejected before provider calls. |
+| [4036989792](https://github.com/dragonbaba/super-pi/pull/38#discussion_r4036989792) | Ordinary input transforms retain projected images in addition to canonical images; queue accounting counted only canonical metadata. | The unchanged 32-image/128-MiB queue budget counts both retained representations. Count and byte-limit regressions preserve existing queued entries and release accounting on clear. Draft restoration counts the canonical images actually restored. |
+| [4036989803](https://github.com/dragonbaba/super-pi/pull/38#discussion_r4036989803) | Deferred processing hardcoded `interactive`, allowing extension-origin images to enter automatic auxiliary processing. | Submission persists the original input source and passes it through processing; legacy records without source retain the prior interactive default. Real auxiliary extension regression confirms extension-origin input does not invoke vision/main. |
+| [4036989810](https://github.com/dragonbaba/super-pi/pull/38#discussion_r4036989810) | Old schema-v3 readers could discard the newly scoped backend/cwd fields and widen a saved rule. | Scoped rules now serialize as schema v4, which older readers reject. Current readers preserve v1-v3 compatibility without upgrading exact to prefix. Round-trip and legacy exact regressions pass. Downgrading cannot preserve v4 approvals; users must authorize again. |
+| [4036989823](https://github.com/dragonbaba/super-pi/pull/38#discussion_r4036989823) | Linux helper list/read calls omitted cancellation. | Both `wl-paste` and `xclip` receive the signal in both phases. Four controlled child-process transport tests verify abort propagation and no later fallback; this is not native Linux clipboard acceptance. |
+| [4036989834](https://github.com/dragonbaba/super-pi/pull/38#discussion_r4036989834) | Queue images followed insertion order while restored text grouped steer before follow-up; current draft placement also diverged. | Queue mode is retained; restoration uses the same steer/follow-up/current order for text and images. Actual TUI dequeue-key regression verifies IDs and editor text together. |
+| [4036989842](https://github.com/dragonbaba/super-pi/pull/38#discussion_r4036989842) | Compaction flush bypassed ordinary input for all but the first submission using direct steer/follow-up. | Each submission enters `prompt` once, including retry queue-only admission. Ownership transfers one accepted item at a time; failed/unaccepted items remain queued. Real TUI/SDK tests cover handled, transformed and unchanged images with/without pending retry, retaining canonical history and zero queue-time model calls. |
+
+The new file `tests/github-review-regressions.test.ts` contains 17 regressions. Its first six reproduction cases all failed on the published source before repair. These are local SDK/TUI/provider-serialization regressions with offline transport. The clipboard cancellation cases isolate child-process transport, and the compaction cases explicitly control the compaction flag; neither is a native desktop claim.
+
+### CI failure
+
+[CI run 35221531720](https://github.com/dragonbaba/super-pi/actions/runs/35221531720) passed Linux but failed Windows at `fullscreen/startup-quit` with an unhandled stdin `EPIPE`. The test extension had already requested startup shutdown, but the harness scheduled Ctrl+C after its readiness marker. `tests/alpha-cli.test.ts` now sends no redundant input for that self-shutdown scenario, clears the timer on child exit and guards delayed writes after exit. Error assertions remain intact; no generic pipe error is swallowed. All 42 CLI cases remain present (38 pass / 4 POSIX-signal skips on this Windows host).
+
+### Measurement and remaining limits
+
+The existing immutable-content receipts remove a redundant base64 verification decode for locally validated images; no model work moves before submission. The repeated-work regression records one local encode, one 39,504-byte digest scan and one ordinary image hook across initial submission, main failure, retry and three text follow-ups; auxiliary calls stay at one. Opening history makes no provider call. Restored continuation verifies content once and reuses saved vision output; later text follow-up does no additional full-image scan. A necessary auxiliary configuration change invokes vision once more. The `decodes` diagnostic counts base64 conversions, not native pixel decoder invocations; restored/untrusted content additionally crosses the Worker validation boundary.
+
+Native Windows screenshot/Explorer desktop acceptance and online models remain unexecuted. The 11 directories retained after the earlier cleanup-policy rejection remain untouched; their cleanup state is separate from Worker exit/reference-release checks. The original 20.4% number remains a specific visual-tail allocation sample. The drain implementation is unchanged and receives no performance credit.
+
+### Verification of the GitHub review fixes
+
+| Command | Current local result |
+| --- | --- |
+| `npm run check` | Exit 0 (`check-github-second.log`) |
+| `npm run build:offline` | Exit 0 (`build-github-first.log`) |
+| Eight complete related test files below | 209 total / 205 passed / 4 platform skips / 0 failed or cancelled |
+| `npm run test:hot` | 31 passed / 0 failed or skipped |
+| `npm test` | 1,739 total / 1,681 passed / 58 skips / 0 failed or cancelled; exit 0 |
+| `npm run alpha:g2-probe` | 322 total / 318 passed / 4 platform skips / 0 failed or cancelled; exit 0 |
+| `git diff --check` | Passed |
+| Natural response and lifecycle benchmarks | 14 completed children with matching natural frames, all targets met; started Workers exited and final draft records zero |
+
+```powershell
+node --experimental-strip-types --test tests/github-review-regressions.test.ts tests/image-review-boundaries.test.ts tests/image-acceptance-closeout.test.ts tests/interactive-control-images.test.ts tests/permission-interaction.test.ts tests/tui-async-owner-closeout.test.ts tests/visual-tail.test.ts tests/alpha-cli.test.ts
+node --experimental-strip-types scripts/bench/image-response.ts --natural
+node --expose-gc --experimental-strip-types scripts/bench/image-draft-lifecycle.ts
+node --expose-gc --experimental-strip-types scripts/bench/interactive-image-input.ts .
+node --expose-gc --experimental-strip-types scripts/bench/interactive-image-input.ts . --sample
+node --expose-gc --experimental-strip-types scripts/bench/interactive-image-input.ts D:/RMProjects/Pi
+node --expose-gc --experimental-strip-types scripts/bench/interactive-image-input.ts D:/RMProjects/Pi --sample
+```
+
+Tests completed before running these separate sampled/unsampled benchmarks. Maximum planned-to-state-accepted/frame-write-completed latency was 13.702/37.325 ms (targets 100/150 ms); near-24MP peak process RSS was 483.8 MiB. The lifecycle probe observed 0 reads/encodes/projection changes for 1,000 ordinary edits, 2/1/2 for addition, and no further work during 1,000 attached edits/renders. Read-start cancellation was 0.442 ms, distinct from natural decode-window cancellation; both JS WeakRefs released.
+
+Unchanged visual-tail baseline/candidate p50 was 11.139/11.492 ms, p95 12.860/12.195 ms. Separate sampled allocation was 17,177,800/13,374,798 bytes/operation, with returned/skipped lines 10/9,991. This fixture is not a whole-TUI speed claim.
+
+Current source/log hashes, individual natural runs, repeated-work counts and lifecycle results are under `githubReviewRound` in the measurements JSON. Prior `reviewRound` and earlier keys remain historical. The regenerated full patch/manifest covers all 53 task files relative to the review base, including the three additional files in this review-fix round. No private sessions, ignored logs, dependencies or raw heap profiles are included. Remote CI/re-review results belong to the eventual pushed commit and must be checked on GitHub separately.

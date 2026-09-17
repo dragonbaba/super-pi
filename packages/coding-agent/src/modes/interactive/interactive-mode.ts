@@ -547,6 +547,7 @@ export class InteractiveMode {
 	private onInputCallback?: (text: string) => void;
 	private pendingUserInputs: string[] = [];
 	private clipboardPending = false;
+	private compactionQueueFlushing = false;
 	private imageSubmissionRecovery: { state: "pending" | "failed"; text: string; images: ImageContent[]; submission: ImageSubmission; error?: string } | undefined;
 	private clipboardAbort: AbortController | undefined;
 	private readonly refreshImageDraft = (): void => {
@@ -5881,11 +5882,16 @@ export class InteractiveMode {
 	 */
 	private clearAllQueues(): { steering: string[]; followUp: string[] } {
 		const { steering, followUp, imageMessages } = this.session.clearQueue();
-		for (const item of imageMessages ?? []) this.imageDraft.restore(item.images, item.submission);
-		for (const message of this.compactionQueuedMessages) {
-			if (message.images && message.submission) this.imageDraft.restore(message.images, message.submission);
-			(message.mode === "steer" ? steering : followUp).push(message.text);
+		const orderedImages = [];
+		for (const mode of ["steer", "followUp"] as const) {
+			for (const item of imageMessages ?? []) if (item.mode === mode) orderedImages.push(item);
+			for (const message of this.compactionQueuedMessages) if (message.mode === mode) {
+				if (message.images && message.submission) orderedImages.push({ images: message.images, submission: message.submission });
+				(mode === "steer" ? steering : followUp).push(message.text);
+			}
 		}
+		// Queued text precedes the existing editor text; attachments use that same order.
+		for (let i = orderedImages.length - 1; i >= 0; i--) this.imageDraft.restore(orderedImages[i].images, orderedImages[i].submission, true);
 		this.compactionQueuedMessages = [];
 		return { steering, followUp };
 	}
@@ -5910,7 +5916,7 @@ export class InteractiveMode {
 	}
 
 	private restoreQueuedMessagesToEditor(options?: { abort?: boolean; currentText?: string }): number {
-		const size = this.session.getQueuedImageSize?.() ?? { count: 0, bytes: 0 };
+		const size = this.session.getQueuedImageSize?.(false) ?? { count: 0, bytes: 0 };
 		for (const item of this.imageDraft?.items ?? []) { size.count++; size.bytes += item.metadata?.bytes ?? 0; }
 		for (const message of this.compactionQueuedMessages) for (const attachment of message.submission?.attachments ?? []) { size.count++; size.bytes += attachment.bytes; }
 		if (size.count > 8 || size.bytes > 40 * 1024 * 1024) {
@@ -5956,82 +5962,30 @@ export class InteractiveMode {
 	}
 
 	private async flushCompactionQueue(options?: { willRetry?: boolean }): Promise<void> {
-		if (this.compactionQueuedMessages.length === 0) {
-			return;
-		}
-
-		const queuedMessages = [...this.compactionQueuedMessages];
-		this.compactionQueuedMessages = [];
-		this.updatePendingMessagesDisplay();
-
-		const restoreQueue = (error: unknown) => {
-			this.session.clearQueue();
-			this.compactionQueuedMessages = queuedMessages;
-			this.updatePendingMessagesDisplay();
-			this.showError(
-				`Failed to send queued message${queuedMessages.length > 1 ? "s" : ""}: ${
-					error instanceof Error ? error.message : String(error)
-				}`,
-			);
-		};
-
+		if (this.compactionQueueFlushing || this.compactionQueuedMessages.length === 0) return;
+		this.compactionQueueFlushing = true;
+		const session = this.session;
 		try {
-			if (options?.willRetry) {
-				// When retry is pending, queue messages for the retry turn
-				for (const message of queuedMessages) {
-					if (this.isExtensionCommand(message.text)) {
-						await this.session.prompt(message.text);
-					} else if (message.mode === "followUp") {
-						await this.session.followUp(message.text, message.images, message.submission);
-					} else {
-						await this.session.steer(message.text, message.images, message.submission);
-					}
-				}
-				this.updatePendingMessagesDisplay();
-				return;
-			}
-
-			// Find first non-extension-command message to use as prompt
-			const firstPromptIndex = queuedMessages.findIndex((message) => !this.isExtensionCommand(message.text));
-			if (firstPromptIndex === -1) {
-				// All extension commands - execute them all
-				for (const message of queuedMessages) {
-					await this.session.prompt(message.text);
-				}
-				return;
-			}
-
-			// Execute any extension commands before the first prompt
-			const preCommands = queuedMessages.slice(0, firstPromptIndex);
-			const firstPrompt = queuedMessages[firstPromptIndex];
-			const rest = queuedMessages.slice(firstPromptIndex + 1);
-
-			for (const message of preCommands) {
-				await this.session.prompt(message.text);
-			}
-
-			// Start a prompt when idle, or queue it into a run still finishing compaction.
-			const promptPromise = this.session
-				.prompt(firstPrompt.text, { streamingBehavior: firstPrompt.mode, images: firstPrompt.images, submission: firstPrompt.submission })
-				.catch((error) => {
-					restoreQueue(error);
+			while (this.session === session && this.compactionQueuedMessages.length) {
+				const message = this.compactionQueuedMessages[0];
+				// Wait for admission/interception, not the entire provider run. Each TUI
+				// submission crosses ordinary input exactly once before ownership transfers.
+				const accepted = await new Promise<boolean>((resolve) => {
+					let admitted = false;
+					const operation = session.prompt(message.text, { streamingBehavior: message.mode,
+						queueOnly: options?.willRetry, images: message.images, submission: message.submission,
+						preflightResult: success => { if (success) { admitted = true; resolve(true); } },
+					});
+					void operation.then(() => resolve(admitted), error => {
+						this.showError(`Failed to send queued message: ${error instanceof Error ? error.message : String(error)}`);
+						resolve(false);
+					});
 				});
-
-			// Queue remaining messages
-			for (const message of rest) {
-				if (this.isExtensionCommand(message.text)) {
-					await this.session.prompt(message.text);
-				} else if (message.mode === "followUp") {
-					await this.session.followUp(message.text, message.images, message.submission);
-				} else {
-					await this.session.steer(message.text, message.images, message.submission);
-				}
+				if (!accepted || this.session !== session || this.compactionQueuedMessages[0] !== message) return;
+				this.compactionQueuedMessages.shift();
+				this.updatePendingMessagesDisplay();
 			}
-			this.updatePendingMessagesDisplay();
-			void promptPromise;
-		} catch (error) {
-			restoreQueue(error);
-		}
+		} finally { this.compactionQueueFlushing = false; }
 	}
 
 	/** Move pending bash components from pending area to chat */

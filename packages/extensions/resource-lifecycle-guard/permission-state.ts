@@ -20,7 +20,7 @@ export interface WorkspaceGrant {
 }
 
 interface PersistedPermissionState {
-  schemaVersion: 1 | 2 | 3;
+  schemaVersion: 1 | 2 | 3 | 4;
   mode: SessionPermissionMode;
   approvalPolicy: SessionApprovalPolicy;
   allowRules: SessionAllowRule[];
@@ -115,7 +115,7 @@ function validStoredRule(value: unknown): value is SessionAllowRule {
 function parsePersistedState(value: unknown): PersistedPermissionState | undefined {
   if (!value || typeof value !== "object") return undefined;
   const state = value as Partial<PersistedPermissionState>;
-  if ((state.schemaVersion !== 1 && state.schemaVersion !== 2 && state.schemaVersion !== 3) || !MODE_VALUES.has(state.mode as SessionPermissionMode)) return undefined;
+  if ((state.schemaVersion !== 1 && state.schemaVersion !== 2 && state.schemaVersion !== 3 && state.schemaVersion !== 4) || !MODE_VALUES.has(state.mode as SessionPermissionMode)) return undefined;
   if (!Array.isArray(state.workspaces) || state.workspaces.length > MAX_ADDITIONAL_WORKSPACES) return undefined;
   const workspaces: WorkspaceGrant[] = [];
   for (const value of state.workspaces) {
@@ -131,7 +131,7 @@ function parsePersistedState(value: unknown): PersistedPermissionState | undefin
     ? state.approvalPolicy as SessionApprovalPolicy
     : "ask";
   const allowRules: SessionAllowRule[] = [];
-  if (state.schemaVersion === 3) {
+  if (state.schemaVersion === 3 || state.schemaVersion === 4) {
     if (!Array.isArray(state.allowRules) || state.allowRules.length > MAX_ALLOW_RULES) return undefined;
     for (const value of state.allowRules) {
       if (!validStoredRule(value)) return undefined;
@@ -139,7 +139,7 @@ function parsePersistedState(value: unknown): PersistedPermissionState | undefin
     }
   }
   return {
-    schemaVersion: 3,
+    schemaVersion: 4,
     mode: state.mode as SessionPermissionMode,
     approvalPolicy,
     allowRules,
@@ -337,7 +337,7 @@ export class SessionPermissionState {
     const allowRules: SessionAllowRule[] = [];
     for (const rule of this.#allowRules) allowRules.push({ id: rule.id, kind: rule.kind, pattern: rule.pattern, label: rule.label, backend: rule.backend, cwd: rule.cwd });
     return {
-      schemaVersion: 3,
+      schemaVersion: 4,
       mode: this.#mode,
       approvalPolicy: this.#approvalPolicy,
       allowRules,

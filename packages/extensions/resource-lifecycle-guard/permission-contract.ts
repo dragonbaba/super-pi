@@ -80,7 +80,7 @@ export interface BrowserExecAuthorization {
 }
 
 export interface PermissionStateSnapshot {
-  schemaVersion: 3;
+  schemaVersion: 4;
   mode: SessionPermissionMode;
   approvalPolicy: SessionApprovalPolicy;
   allowRules: readonly SessionAllowRule[];
