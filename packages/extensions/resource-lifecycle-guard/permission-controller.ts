@@ -1142,7 +1142,7 @@ export class SessionPermissionController {
   #rulesText(): string {
     if (this.#state.allowRules.length === 0) return "当前 Session 没有指令白名单。";
     const lines = [`当前 Session 指令白名单（${this.#state.allowRules.length}）：`];
-    for (const rule of this.#state.allowRules) lines.push(`- ${displayRuleId(rule.id)} · ${rule.label} · backend=${rule.backend ?? "bash (legacy)"} · cwd=${rule.cwd ?? this.#state.primary.canonicalPath}`);
+    for (const rule of this.#state.allowRules) lines.push(`- ${displayRuleId(rule.id)} · ${rule.label} · backend=${rule.backend ?? "bash (legacy)"} · cwd=${rule.cwd ?? "unscoped (legacy)"}`);
     return lines.join("\n");
   }
 

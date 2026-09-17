@@ -262,6 +262,8 @@ const ignoreOrdinaryEventListenerRejection = (): void => {};
 export interface AgentSessionSubscriptionOptions {
 	/** Wait for this listener at agent_end. Rejection is isolated from the agent/provider run. */
 	criticalAgentEnd?: boolean;
+	/** Complete queued-input admission before an automatic compaction retry. */
+	criticalCompactionEnd?: boolean;
 	/** Stable diagnostic sink for synchronous throws and asynchronous listener rejection. */
 	onError?: (error: unknown) => void;
 }
@@ -269,6 +271,7 @@ export interface AgentSessionSubscriptionOptions {
 interface AgentSessionEventRegistration {
 	listener: AgentSessionEventListener;
 	criticalAgentEnd: boolean;
+	criticalCompactionEnd: boolean;
 	observeRejection: (error: unknown) => void;
 }
 
@@ -1115,6 +1118,20 @@ export class AgentSession {
 		}
 	}
 
+	/** Cold retry boundary: only opted-in input owners can delay continuation. */
+	private async _emitCompactionAdmission(event: Extract<AgentSessionEvent, { type: "compaction_end" }>): Promise<void> {
+		for (const registration of this._eventListeners) {
+			try {
+				const result = registration.listener(event);
+				if (registration.criticalCompactionEnd) await result;
+				else if (result) void result.then(undefined, registration.observeRejection);
+			} catch (error) {
+				registration.observeRejection(error);
+				if (registration.criticalCompactionEnd) throw error;
+			}
+		}
+	}
+
 	/** Emit the final run boundary and wait for critical listener work such as terminal frame flushes. */
 	private async _emitAgentEnd(event: Extract<AgentSessionEvent, { type: "agent_end" }>): Promise<void> {
 		const timeoutMs = this._criticalAgentEndTimeoutMs ?? DEFAULT_CRITICAL_AGENT_END_TIMEOUT_MS;
@@ -1566,6 +1583,7 @@ export class AgentSession {
 		const registration: AgentSessionEventRegistration = {
 			listener,
 			criticalAgentEnd: options.criticalAgentEnd === true,
+			criticalCompactionEnd: options.criticalCompactionEnd === true,
 			observeRejection: createEventListenerRejectionObserver(options.onError),
 		};
 		this._eventListeners.push(registration);
@@ -2194,11 +2212,15 @@ export class AgentSession {
 	// Prompting
 	// =========================================================================
 
-	private async _runAgentPrompt(messages: AgentMessage | AgentMessage[], onAccepted?: (success: boolean) => void): Promise<void> {
+	private async _runAgentPrompt(messages: AgentMessage | AgentMessage[], onAccepted?: (success: boolean) => void, promptState?: { systemPromptOverride?: string }): Promise<void> {
 		let admitted = false;
 		try {
 			await this.agent.prompt(messages, () => {
 				admitted = true;
+				if (promptState) {
+					this._systemPromptOverride = promptState.systemPromptOverride;
+					this.agent.state.systemPrompt = promptState.systemPromptOverride ?? this._baseSystemPrompt;
+				}
 				this._interactionPaused = false;
 				this._isAgentRunActive = true;
 				onAccepted?.(true);
@@ -2247,7 +2269,7 @@ export class AgentSession {
 
 		// The agent loop drains both queues before emitting agent_end. Any messages
 		// here were queued by agent_end extension handlers and need a continuation.
-		return this.agent.hasQueuedMessages();
+		return !this._interactionPaused && this.agent.hasQueuedMessages();
 	}
 
 	/**
@@ -2264,6 +2286,8 @@ export class AgentSession {
 		const expandPromptTemplates = options?.expandPromptTemplates ?? true;
 		const preflightResult = options?.preflightResult;
 		let messages: AgentMessage[] | undefined;
+		let systemPromptOverride: string | undefined;
+		const admissionSignal = options?.queueOnly ? this._autoCompactionAbortController?.signal : undefined;
 
 		try {
 			// Handle extension commands first (execute immediately, even during streaming)
@@ -2321,6 +2345,7 @@ export class AgentSession {
 			const canonicalText = submission ? text : expandedText;
 			const canonicalImages = submission ? submittedImages!.images : currentImages;
 
+			admissionSignal?.throwIfAborted();
 			// If streaming, queue via steer() or followUp() based on option
 			if (this.isStreaming || options?.queueOnly) {
 				if (!options?.streamingBehavior) {
@@ -2409,15 +2434,9 @@ export class AgentSession {
 					});
 				}
 			}
-			// Apply extension-modified system prompt, or reset to base
-			if (result?.systemPrompt !== undefined) {
-				this._systemPromptOverride = result.systemPrompt;
-				this.agent.state.systemPrompt = result.systemPrompt;
-			} else {
-				// Ensure we're using the base prompt (in case previous turn had modifications)
-				this._systemPromptOverride = undefined;
-				this.agent.state.systemPrompt = this._baseSystemPrompt;
-			}
+			// A concurrent prompt may win while the hook awaits. Do not publish this
+			// prompt's system state until Agent has granted exclusive admission.
+			systemPromptOverride = result?.systemPrompt;
 		} catch (error) {
 			preflightResult?.(false);
 			throw error;
@@ -2427,7 +2446,7 @@ export class AgentSession {
 			return;
 		}
 
-		await this._runAgentPrompt(messages, preflightResult);
+		await this._runAgentPrompt(messages, preflightResult, { systemPromptOverride });
 	}
 
 	/**
@@ -3539,7 +3558,12 @@ export class AgentSession {
 				usage,
 				details,
 			};
-			this._emit({ type: "compaction_end", reason, result, aborted: false, willRetry });
+			if (willRetry) {
+				try {
+					await this._emitCompactionAdmission({ type: "compaction_end", reason, result, aborted: false, willRetry });
+					this._autoCompactionAbortController.signal.throwIfAborted();
+				} catch (error) { this._interactionPaused = true; throw error; }
+			} else this._emit({ type: "compaction_end", reason, result, aborted: false, willRetry });
 
 			if (willRetry) {
 				const messages = this.agent.state.messages;

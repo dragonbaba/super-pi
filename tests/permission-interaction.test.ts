@@ -543,3 +543,12 @@ test("long details display every core choice; stale Enter and pasted Enter canno
  terminal.rows = 4; selector.render(60); selector.handleInput("\x1b[A"); selector.handleInput("\r"); assert.equal(approvals, 1);
  selector.dispose();
 });
+
+
+test("legacy unscoped rules are displayed without a fabricated workspace scope", async t => {
+ const f = await permissionFixture(t); let text = "";
+ f.permission.state.addAllowRule(createSessionAllowRule("exact", "ls"));
+ f.runner.setUIContext({ ...f.runner.getUIContext(), notify: message => { text = message; } }, "tui");
+ await f.runner.getCommand("permissions")!.handler("rules", f.runner.createContext() as never);
+ assert.match(text, /cwd=unscoped \(legacy\)/); assert.doesNotMatch(text, new RegExp(f.cwd.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+});

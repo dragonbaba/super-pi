@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { setImmediate as turn } from "node:timers/promises";
 import { offlineImageRuntime } from "./helpers/offline-image-runtime.ts";
 import { pngFixture, oversizedHeader } from "./helpers/image-acceptance-fixtures.ts";
-import { alphaSession, alphaModelRuntime } from "./helpers/alpha-session.ts";
+import { alphaSession, alphaModelRuntime, ALPHA_MODEL } from "./helpers/alpha-session.ts";
 import { response } from "./helpers/selected-integration-fixture.ts";
 import { snapshotImageSubmission } from "../packages/coding-agent/src/core/image-attachments.ts";
 import { SessionPermissionState } from "../packages/extensions/resource-lifecycle-guard/permission-state.ts";
@@ -167,4 +167,84 @@ for (const helper of ["wl-paste", "xclip"]) for (const phase of ["list", "read"]
   await entered.promise; assert.ok(calls.every(c => c.signal === abort.signal)); const count = calls.length;
   abort.abort(); await assert.rejects(pending, /aborted/); assert.equal(calls.length, count);
  } finally { cp.execFile = original; syncBuiltinESMExports(); }
+});
+
+
+test("rejected competing prompt cannot overwrite the admitted system prompt", async () => {
+ const entered = deferred(), resume = deferred(), provider = deferred(), finish = deferred(); const prompts: (string | undefined)[] = [];
+ const f = await alphaSession({ runtime: alphaModelRuntime((model, context) => lazyStream(model, async () => {
+  prompts.push(context.systemPrompt); provider.resolve(); await finish.promise; return response(model, prompts.length === 1 ? [{ type: "toolCall", id: "probe", name: "probe", arguments: {} }] : []);
+ })), extensions: [(pi: any) => pi.on("before_agent_start", async (e: any) => {
+  if (e.prompt === "loser") { entered.resolve(); await resume.promise; return { systemPrompt: "LOSER" }; }
+  return { systemPrompt: "WINNER" };
+ })] });
+ try {
+  f.session.agent.state.tools.push({ name: "probe", label: "probe", description: "probe", parameters: { type: "object", properties: {} } as any, execute: async () => ({ content: [], details: {} }) });
+  const losing = f.session.prompt("loser"); const rejected = assert.rejects(losing, /already processing/); await entered.promise;
+  const winner = f.session.prompt("winner"); await provider.promise; resume.resolve(); await rejected;
+  assert.equal((f.session as any)._systemPromptOverride, "WINNER"); assert.equal(f.session.agent.state.systemPrompt, "WINNER");
+  assert.deepEqual(prompts, ["WINNER"]); finish.resolve(); await winner; assert.deepEqual(prompts, ["WINNER", "WINNER"]);
+ } finally { resume.resolve(); finish.resolve(); await f.release(); }
+});
+
+for (const cancel of [false, true]) test(`real overflow retry waits for asynchronous compaction input admission (cancel=${cancel})`, async () => {
+ const compacting = deferred(), compactResume = deferred(), inputEntered = deferred(), inputResume = deferred(); let calls = 0; const requests: any[] = [];
+ const old = await response(ALPHA_MODEL, [{ type: "text", text: "old answer" }]).result();
+ const f = await alphaSession({ messages: [{ role: "user", content: "old context ".repeat(300), timestamp: 1 }, old],
+  settings: { compaction: { enabled: true, keepRecentTokens: 128, reserveTokens: 128 }, retry: { enabled: false } },
+  runtime: alphaModelRuntime((model, context) => {
+   requests.push(context.messages); calls++;
+   if (calls !== 1) return response(model, []);
+   return lazyStream(model, async () => {
+    const message = await response(model, []).result(); message.stopReason = "error"; message.errorMessage = "maximum context length exceeded"; message.timestamp = Date.now();
+    const { AssistantMessageEventStream } = await import("../packages/ai/src/utils/event-stream.ts");
+    const stream = new AssistantMessageEventStream(); stream.push({ type: "error", reason: "error", error: message }); return stream;
+   });
+  }), extensions: [(pi: any) => {
+   pi.on("session_before_compact", async (e: any) => { compacting.resolve(); await compactResume.promise; return { compaction: { summary: "old summary", firstKeptEntryId: e.preparation.firstKeptEntryId, tokensBefore: e.preparation.tokensBefore } }; });
+   pi.on("input", async (e: any) => { if (e.text === "queued image") { inputEntered.resolve(); await inputResume.promise; } });
+  }] });
+ try {
+  await f.mode.init(); f.session.agent.state.model = { ...f.session.model!, input: ["text", "image"] };
+  const run = f.session.prompt("overflow"); await compacting.promise;
+  const path = join(f.root, "queued.png"); writeFileSync(path, pngFixture(8, 8));
+  f.input.write(`\x1b[200~"${path}"\x1b[201~`); while (f.internal.imageDraft.busy) await turn(); f.input.write("queued image\r"); await turn();
+  assert.equal(f.internal.compactionQueuedMessages.length, 1); compactResume.resolve(); await inputEntered.promise;
+  await new Promise(resolve => setTimeout(resolve, 40)); assert.equal(calls, 1, "no stale retry while ordinary input is awaiting");
+  if (cancel) f.session.abortCompaction(); inputResume.resolve(); await run;
+  if (cancel) { assert.equal(calls, 1); assert.equal(f.internal.compactionQueuedMessages.length, 1); }
+  else { assert.equal(calls, 2); assert.match(JSON.stringify(requests[1]), /queued image/); assert.equal(f.internal.compactionQueuedMessages.length, 0); }
+ } finally { compactResume.resolve(); inputResume.resolve(); await f.release(); }
+});
+
+for (const failure of ["ENOENT", "EACCES", "ETIMEDOUT"]) test(`Windows image helper ${failure} permits text fallback`, async () => {
+ const cp = createRequire(import.meta.url)("node:child_process"), original = cp.execFile;
+ cp.execFile = (_command: string, _args: string[], _options: any, callback: any) => callback(Object.assign(new Error(failure), { code: failure }), Buffer.alloc(0)); syncBuiltinESMExports();
+ try { assert.equal(await readClipboardImage({ platform: "win32" }), null); }
+ finally { cp.execFile = original; syncBuiltinESMExports(); }
+});
+
+
+test("real Windows Alt+V dispatch falls back to text after image helper failure", { skip: process.platform !== "win32" }, async () => {
+ const cp = createRequire(import.meta.url)("node:child_process"), original = cp.execFile; const f = await alphaSession(); const calls: string[] = [];
+ try {
+  await f.mode.init();
+  cp.execFile = (_command: string, args: string[], _options: any, callback: any) => {
+   const script = Buffer.from(args.at(-1)!, "base64").toString("utf16le");
+   if (script.includes("GetImage")) { calls.push("image"); callback(Object.assign(new Error("image helper blocked"), { code: "EACCES" }), Buffer.alloc(0)); }
+   else { assert.match(script, /GetText/); calls.push("text"); callback(null, Buffer.from("clipboard fallback text")); }
+  }; syncBuiltinESMExports();
+  f.input.write("\x1bv"); while (f.internal.clipboardPending) await turn();
+  assert.deepEqual(calls, ["image", "text"]); assert.equal(f.internal.editor.getText(), "clipboard fallback text"); assert.equal(f.internal.imageDraft.items.length, 0);
+ } finally { cp.execFile = original; syncBuiltinESMExports(); await f.release(); }
+});
+
+for (const failure of ["abort", "quota"]) test(`Windows helper ${failure} remains a failure instead of text fallback`, async () => {
+ const cp = createRequire(import.meta.url)("node:child_process"), original = cp.execFile, abort = new AbortController(); let unavailable = 0;
+ cp.execFile = (_command: string, _args: string[], _options: any, callback: any) => {
+  if (failure === "abort") abort.abort();
+  callback(new Error(failure === "abort" ? "aborted" : `Command failed: powershell ${"encoded-script".repeat(60)}`), Buffer.alloc(0), failure === "quota" ? Buffer.from("Image exceeds pixel limit") : Buffer.alloc(0));
+ }; syncBuiltinESMExports();
+ try { await assert.rejects(readClipboardImage({ platform: "win32", signal: abort.signal, onUnavailable: () => unavailable++ })); assert.equal(unavailable, 0); }
+ finally { cp.execFile = original; syncBuiltinESMExports(); }
 });

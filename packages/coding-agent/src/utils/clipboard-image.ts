@@ -87,7 +87,7 @@ export function runClipboardCommand(command: string, args: string[], options: { 
 	return new Promise((resolve, reject) => {
 		execFile(command, args, { encoding: "buffer", windowsHide: true, timeout: options.timeoutMs ?? DEFAULT_READ_TIMEOUT_MS,
 			maxBuffer: options.maxBufferBytes ?? DEFAULT_MAX_BUFFER_BYTES, env: options.env, signal: options.signal },
-			(error, stdout) => { if (error) reject(new Error(`Clipboard helper failed (${error.code ?? "timeout/busy"}): ${error.message.slice(0, 300)}`)); else resolve(stdout); });
+			(error, stdout, stderr) => { if (error) reject(new Error(`Clipboard helper failed (${error.code ?? "timeout/busy"}): ${(stderr?.toString("utf8").trim() || error.message).slice(0, 300)}`)); else resolve(stdout); });
 	});
 }
 async function runCommand(command: string, args: string[], options?: { timeoutMs?: number; maxBufferBytes?: number; env?: NodeJS.ProcessEnv; signal?: AbortSignal }): Promise<{ stdout: Buffer; ok: boolean }> {
@@ -140,9 +140,15 @@ function isWSL(env: NodeJS.ProcessEnv = process.env): boolean {
  */
 const WINDOWS_IMAGE_SCRIPT = "$ErrorActionPreference='Stop'; Add-Type -AssemblyName System.Windows.Forms; Add-Type -AssemblyName System.Drawing; $img=[System.Windows.Forms.Clipboard]::GetImage(); if ($null -ne $img) { try { if ([long]$img.Width*$img.Height -gt 24000000) { throw 'Image exceeds pixel limit' }; $stream=[System.IO.MemoryStream]::new(); try { $img.Save($stream,[System.Drawing.Imaging.ImageFormat]::Png); if ($stream.Length -gt 10485760) { throw 'Image exceeds byte limit' }; [Console]::Out.Write([Convert]::ToBase64String($stream.ToArray())) } finally { $stream.Dispose() } } finally { $img.Dispose() } }";
 const WINDOWS_IMAGE_ENCODED_SCRIPT = Buffer.from(WINDOWS_IMAGE_SCRIPT, "utf16le").toString("base64");
-async function readClipboardImageViaPowerShell(signal?: AbortSignal): Promise<ClipboardImage | null> {
-	const output = await runClipboardCommand("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-STA", "-EncodedCommand", WINDOWS_IMAGE_ENCODED_SCRIPT],
-		{ timeoutMs: DEFAULT_POWERSHELL_TIMEOUT_MS, maxBufferBytes: 15 * 1024 * 1024, signal });
+async function readClipboardImageViaPowerShell(signal?: AbortSignal, onUnavailable?: (error: unknown) => void): Promise<ClipboardImage | null> {
+	let output: Buffer;
+	try { output = await runClipboardCommand("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-STA", "-EncodedCommand", WINDOWS_IMAGE_ENCODED_SCRIPT],
+		{ timeoutMs: DEFAULT_POWERSHELL_TIMEOUT_MS, maxBufferBytes: 15 * 1024 * 1024, signal }); }
+	catch (error) {
+		// Cancellation and actual image quota failures remain failures, not text probes.
+		if (signal?.aborted || (error instanceof Error && /Image exceeds (pixel|byte) limit/.test(error.message))) throw error;
+		onUnavailable?.(error); return null;
+	}
 	if (!output.length) return null;
 	return { bytes: Buffer.from(output.toString("ascii"), "base64"), mimeType: "image/png" };
 }
@@ -192,6 +198,7 @@ export async function readClipboardImage(options?: {
 	env?: NodeJS.ProcessEnv;
 	platform?: NodeJS.Platform;
 	signal?: AbortSignal;
+	onUnavailable?: (error: unknown) => void;
 }): Promise<ClipboardImage | null> {
 	options?.signal?.throwIfAborted();
 	const env = options?.env ?? process.env;
@@ -212,7 +219,7 @@ export async function readClipboardImage(options?: {
 		}
 
 		if (!image && wsl) {
-			image = await readClipboardImageViaPowerShell(options?.signal);
+			image = await readClipboardImageViaPowerShell(options?.signal, options?.onUnavailable);
 		}
 
 		if (!image && !wayland) {
@@ -220,7 +227,7 @@ export async function readClipboardImage(options?: {
 		}
 	} else if (platform === "win32") {
 		// STA helper is bounded and cannot block the TUI on native hasImage().
-		image = await readClipboardImageViaPowerShell(options?.signal);
+		image = await readClipboardImageViaPowerShell(options?.signal, options?.onUnavailable);
 	} else {
 		image = await readClipboardImageViaNativeClipboard();
 	}

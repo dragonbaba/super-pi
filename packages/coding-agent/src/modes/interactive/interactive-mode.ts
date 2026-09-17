@@ -3775,7 +3775,7 @@ export class InteractiveMode {
 	}
 
 	private readClipboardImageForPaste(): ReturnType<typeof readClipboardImage> {
-		return readClipboardImage({ signal: this.clipboardAbort?.signal });
+		return readClipboardImage({ signal: this.clipboardAbort?.signal, onUnavailable: this.reportImageError });
 	}
 
 	private readClipboardTextForPaste(): Promise<string | null> {
@@ -4015,6 +4015,7 @@ export class InteractiveMode {
 	private subscribeToAgent(): void {
 		this.unsubscribe = this.session.subscribe(this.handleSessionEvent, {
 			criticalAgentEnd: true,
+			criticalCompactionEnd: true,
 			onError: this.handleSessionEventRejection,
 		});
 	}
@@ -4306,8 +4307,10 @@ export class InteractiveMode {
 						this.chatContainer.addChild(new Text(theme.fg("error", event.errorMessage), 1, 0));
 					}
 				}
-				this.observeLifecyclePromise(this.flushCompactionQueue({ willRetry: event.willRetry }));
 				this.ui.requestRender();
+				if (event.aborted || event.errorMessage) break;
+				if (event.willRetry) return this.flushCompactionQueue({ willRetry: true });
+				this.observeLifecyclePromise(this.flushCompactionQueue());
 				break;
 			}
 
@@ -5981,7 +5984,10 @@ export class InteractiveMode {
 						resolve(false);
 					});
 				});
-				if (!accepted || this.session !== session || this.compactionQueuedMessages[0] !== message) return;
+				if (!accepted || this.session !== session || this.compactionQueuedMessages[0] !== message) {
+					if (options?.willRetry) throw new Error("Queued input admission failed; automatic retry paused and pending input retained");
+					return;
+				}
 				this.compactionQueuedMessages.shift();
 				this.updatePendingMessagesDisplay();
 			}

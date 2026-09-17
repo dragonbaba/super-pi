@@ -60,8 +60,10 @@ export async function readClipboardText(signal?: AbortSignal): Promise<string | 
 	}
 
 	if (platform() === "win32") {
-		const bytes = await runClipboardCommand("powershell.exe", ["-NoProfile", "-NonInteractive", "-STA", "-EncodedCommand", WINDOWS_TEXT_COMMAND], { maxBufferBytes: 1024 * 1024, signal });
-		return bytes.toString("utf8") || null;
+		try {
+			const bytes = await runClipboardCommand("powershell.exe", ["-NoProfile", "-NonInteractive", "-STA", "-EncodedCommand", WINDOWS_TEXT_COMMAND], { maxBufferBytes: 1024 * 1024, signal });
+			return bytes.toString("utf8") || null;
+		} catch (error) { if (signal?.aborted) throw error; }
 	}
 	if (!clipboard) return null;
 
