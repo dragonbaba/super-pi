@@ -13,10 +13,13 @@ import { InteractiveMode, createInteractiveTui } from "../packages/coding-agent/
 import { initTheme } from "../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 import { ProcessTerminal } from "../packages/tui/src/terminal.ts";
 import { CURSOR_MARKER } from "../packages/tui/src/tui.ts";
+import { CustomEditor } from "../packages/coding-agent/src/modes/interactive/components/custom-editor.ts";
+import { snapshotImageSubmission } from "../packages/coding-agent/src/core/image-attachments.ts";
+import { Editor } from "@super-pi/tui";
 
-async function mounted(auxiliary = false, screen: "regular" | "fullscreen" = "regular") {
+async function mounted(auxiliary = false, screen: "regular" | "fullscreen" = "regular", controls: Parameters<typeof offlineImageRuntime>[5] = {}) {
 	const root = mkdtempSync(join(tmpdir(), "sp-placeholder-"));
-	const f = await offlineImageRuntime(root, auxiliary);
+	const f = await offlineImageRuntime(root, auxiliary, undefined, undefined, undefined, controls);
 	initTheme("dark");
 	const mode = new InteractiveMode(f.host, { tuiMode: screen }); const internal = mode as any;
 	await internal.renderer.dispose({ preserveScreen: true });
@@ -146,5 +149,178 @@ test("custom deletion bindings and extension shortcuts retain precedence", async
 		f.internal.readClipboardTextForPaste = async () => "fallback";
 		f.input.write("\x16"); assert.equal(reads, 0);
 		f.input.write("\x1bp"); await settled(f); assert.equal(reads, 1); assert.equal(f.internal.editor.getText(), "fallback");
+	} finally { await f.release(); }
+});
+
+function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(yes => { resolve = yes; }); return { promise, resolve }; }
+
+for (const auxiliary of [false, true]) test(`extension CustomEditor owns visible attachment projection (auxiliary=${auxiliary})`, async () => {
+	const f = await mounted(auxiliary, "fullscreen", { extensions: [(pi: any) => {
+		pi.registerCommand("swap-editor", { handler: async (_args: string, ctx: any) => ctx.ui.setEditorComponent((ui: any, theme: any, keys: any) => new CustomEditor(ui, theme, keys)) });
+		pi.registerCommand("default-editor", { handler: async (_args: string, ctx: any) => ctx.ui.setEditorComponent(undefined) });
+	}] });
+	try {
+		const path = join(f.root, "fixture.png"); writeFileSync(path, pngFixture(8, 8));
+		f.input.write(`\x1b[200~"${path}"\x1b[201~`); await settled(f);
+		await f.session.prompt("/swap-editor");
+		assert.notEqual(f.internal.editor, f.internal.defaultEditor);
+		assert.match(f.internal.editor.render(120).join("\n"), /已添加 · 未发送/);
+		f.input.write("\x7f"); assert.equal(f.internal.imageDraft.items.length, 0);
+		f.internal.readClipboardImageForPaste = async () => ({ bytes: pngFixture(8, 8) });
+		f.input.write("\x1b[200~\x1b[201~"); await settled(f);
+		f.input.write(`\x1b[200~"${path}"\x1b[201~`); await settled(f);
+		assert.equal(f.internal.imageDraft.items.length, 2);
+		assert.match(f.internal.editor.render(120).join("\n"), /已粘贴 · 未发送/);
+		f.input.write("\x1b[D\x1b[3~"); assert.equal(f.internal.imageDraft.items.length, 1);
+		f.input.write("\x1b[<2;5;5M"); await settled(f);
+		assert.equal(f.internal.imageDraft.items.length, 2);
+		f.input.write("\x7f"); assert.equal(f.internal.imageDraft.items.length, 1);
+		await frame(f); assert.equal(f.painted.unsent, true); assert.equal(f.counts.main + f.counts.vision, 0);
+		const id = f.internal.imageDraft.items[0].id;
+		await f.session.prompt("/default-editor");
+		assert.match(await frame(f), /已粘贴 · 未发送/);
+		await f.internal.editor.onSubmit("remaining image");
+		assert.equal(f.counts.main, 1); assert.equal(f.counts.vision, auxiliary ? 1 : 0);
+		assert.equal((f.session.messages.find((m: any) => m.imageSubmission) as any).imageSubmission.attachments[0].id, id);
+	} finally { await f.release(); }
+});
+
+test("non-CustomEditor keeps the host attachment fallback through dialog restoration", async () => {
+	const f = await mounted(false, "fullscreen", { extensions: [(pi: any) => {
+		pi.registerCommand("plain-editor", { handler: async (_args: string, ctx: any) => ctx.ui.setEditorComponent((ui: any, theme: any) => new Editor(ui, theme)) });
+		pi.registerCommand("question-dialog", { handler: async (_args: string, ctx: any) => { await ctx.ui.select("Question", ["One", "Two"]); } });
+	}] });
+	let dialog: Promise<void> | undefined;
+	try {
+		await f.session.prompt("/plain-editor");
+		f.internal.readClipboardImageForPaste = async () => ({ bytes: pngFixture(8, 8) });
+		f.input.write("\x1b[<2;5;5M"); await settled(f);
+		await frame(f); assert.equal(f.painted.unsent, true);
+		assert.match(f.internal.fallbackAttachmentText.render(120).join("\n"), /已粘贴 · 未发送/);
+		dialog = f.session.prompt("/question-dialog"); await turn(); f.input.write("\x1b"); await dialog;
+		assert.equal(f.internal.renderer.getFocusedComponent(), f.internal.editor);
+		f.painted.unsent = false; await frame(f); assert.equal(f.painted.unsent, true);
+		await f.internal.editor.onSubmit("/image-remove 1"); assert.equal(f.internal.imageDraft.items.length, 0);
+		assert.equal(f.internal.fallbackAttachmentText.render(120).length, 0);
+	} finally { f.input.write("\x1b"); await dialog; await f.release(); }
+});
+
+test("clipboard text path fallback stays in its admitted operation", async () => {
+	const f = await mounted();
+	try {
+		const path = join(f.root, "fixture.png"); writeFileSync(path, pngFixture(8, 8));
+		f.internal.readClipboardImageForPaste = async () => null;
+		f.internal.readClipboardTextForPaste = async () => `"${path}"`;
+		f.input.write("\x16"); await settled(f);
+		assert.equal(f.internal.imageDraft.items.length, 1);
+		assert.equal(f.internal.imageDraft.items[0].state, "ready");
+		assert.equal(f.internal.editor.getText(), ""); assert.equal(f.counts.main + f.counts.vision, 0);
+	} finally { await f.release(); }
+});
+
+for (const withImage of [false, true]) test(`Enter during clipboard text fallback retains input (existing image=${withImage})`, async () => {
+	const f = await mounted(); const text = deferred<string>();
+	try {
+		if (withImage) {
+			const path = join(f.root, "fixture.png"); writeFileSync(path, pngFixture(8, 8));
+			f.input.write(`\x1b[200~"${path}"\x1b[201~`); await settled(f);
+		}
+		f.internal.readClipboardImageForPaste = async () => null;
+		f.internal.readClipboardTextForPaste = () => text.promise;
+		let normalRun: Promise<void> | undefined;
+		f.internal.onInputCallback = (value: string) => { normalRun = f.session.prompt(value); };
+		f.input.write("question"); f.input.write("\x16"); await turn();
+		let submitted: Promise<void> | undefined; const submit = f.internal.editor.onSubmit;
+		f.internal.editor.onSubmit = (value: string) => submitted = submit(value);
+		f.input.write("\r"); await submitted;
+		assert.equal(f.counts.main, 0); assert.equal(f.internal.editor.getText(), "question");
+		text.resolve(" clipboard text"); await settled(f);
+		assert.equal(f.internal.editor.getText(), "question clipboard text");
+		assert.equal(f.counts.main, 0);
+		f.input.write("\r"); await submitted; await normalRun; assert.equal(f.counts.main, 1);
+	} finally { text.resolve(""); await settled(f); await f.release(); }
+});
+
+for (const fallback of [false, true]) test(`right-click completion respects focus ownership (text=${fallback})`, async () => {
+	const f = await mounted(false, "fullscreen"), image = deferred<any>(), text = deferred<string>();
+	try {
+		f.internal.readClipboardImageForPaste = () => image.promise;
+		f.internal.readClipboardTextForPaste = () => text.promise;
+		f.input.write("original"); f.input.write("\x1b[<2;5;5M");
+		if (fallback) { image.resolve(null); await turn(); }
+		const selector = { render: () => ["waiting for user"], handleInput() {} };
+		f.internal.ui.setFocus(selector);
+		image.resolve({ bytes: pngFixture(8, 8) }); text.resolve("unexpected"); await settled(f);
+		assert.equal(f.internal.editor.getText(), "original");
+		assert.equal(f.internal.imageDraft.items.length, 0);
+		assert.equal(f.internal.renderer.getFocusedComponent(), selector);
+		assert.equal(f.counts.main + f.counts.vision, 0);
+	} finally { image.resolve(null); text.resolve(""); await settled(f); await f.release(); }
+});
+
+test("clipboard and local-file input share one bounded preparation admission", async () => {
+	const f = await mounted(), image = deferred<any>(); let reads = 0;
+	try {
+		const path = join(f.root, "fixture.png"); writeFileSync(path, pngFixture(8, 8));
+		f.internal.readClipboardImageForPaste = () => { reads++; return image.promise; };
+		f.input.write(`\x1b[200~"${path}"\x1b[201~`);
+		f.input.write("\x16"); assert.equal(reads, 0);
+		await settled(f); assert.equal(f.internal.imageDraft.items[0].state, "ready");
+		f.input.write("\x16"); assert.equal(reads, 1);
+		f.input.write(`\x1b[200~"${path}"\x1b[201~`);
+		await f.internal.editor.onSubmit(`/image "${path}"`);
+		assert.equal(f.internal.imageDraft.items.length, 2);
+		image.resolve({ bytes: pngFixture(8, 8) }); await settled(f);
+		assert.deepEqual(f.internal.imageDraft.items.map((item: any) => item.state), ["ready", "ready"]);
+		assert.equal(f.counts.main + f.counts.vision, 0);
+	} finally { image.resolve(null); await settled(f); await f.release(); }
+});
+
+test("legacy image-remove aborts the same clipboard operation as placeholder deletion", async () => {
+	const f = await mounted();
+	try {
+		let signal!: AbortSignal;
+		f.internal.readClipboardImageForPaste = () => new Promise(resolve => {
+			signal = f.internal.clipboardAbort.signal; signal.addEventListener("abort", () => resolve(null), { once: true });
+		});
+		f.input.write("\x16"); await f.internal.editor.onSubmit("/image-remove 1");
+		assert.equal(signal.aborted, true); await settled(f);
+		assert.equal(f.internal.imageDraft.items.length, 0);
+		f.internal.readClipboardImageForPaste = async () => ({ bytes: pngFixture(8, 8) });
+		f.input.write("\x16"); await settled(f); assert.equal(f.internal.imageDraft.items[0].state, "ready");
+	} finally { f.internal.clipboardAbort?.abort(); await settled(f); await f.release(); }
+});
+
+for (const compacting of [false, true]) test(`Alt+Enter extension command retains image draft (compacting=${compacting})`, async () => {
+	const entered = deferred<void>(), resume = deferred<void>(); let commands = 0;
+	const f = await mounted(false, "regular", { beforeWireResponse: async () => { entered.resolve(); await resume.promise; }, extensions: [(pi: any) => {
+		pi.registerCommand("draft-command", { handler: async () => { commands++; } });
+	}] });
+	let running: Promise<void> | undefined;
+	try {
+		running = f.session.prompt("running"); await entered.promise;
+		if (compacting) Object.defineProperty(f.session, "isCompacting", { configurable: true, get: () => true });
+		const path = join(f.root, "fixture.png"); writeFileSync(path, pngFixture(8, 8));
+		f.input.write(`\x1b[200~"${path}"\x1b[201~`); await settled(f);
+		const id = f.internal.imageDraft.items[0].id;
+		let followed: Promise<void> | undefined; const followUp = f.internal.handleFollowUp.bind(f.internal);
+		f.internal.handleFollowUp = () => followed = followUp();
+		f.input.write("/draft-command"); f.input.write("\x1b\r"); await followed;
+		assert.equal(commands, 1); assert.equal(f.internal.imageDraft.items[0]?.id, id);
+		assert.equal(f.session.pendingMessageCount, 0); assert.equal(f.internal.compactionQueuedMessages.length, 0);
+		assert.equal(f.internal.imageSubmissionRecovery, undefined); assert.match(await frame(f), /未发送/);
+	} finally { if (compacting) delete (f.session as any).isCompacting; resume.resolve(); await running; await f.release(); }
+});
+
+for (const id of ["", "  ", 42, null, "duplicate"]) test(`SDK rejects invalid attachment identity ${JSON.stringify(id)} before queue admission`, async () => {
+	const f = await mounted();
+	try {
+		const image = { type: "image" as const, mimeType: "image/png", data: pngFixture(8, 8).toString("base64") };
+		const submitted = snapshotImageSubmission([image, image]);
+		(submitted.submission.attachments[0] as any).id = id;
+		if (id === "duplicate") submitted.submission.attachments[1].id = id;
+		await assert.rejects(f.session.prompt("invalid IDs", submitted), /attachment ID/i);
+		assert.equal(f.counts.main + f.counts.vision, 0); assert.equal(f.session.pendingMessageCount, 0);
+		assert.equal(f.session.messages.filter(m => m.role === "user").length, 0);
 	} finally { await f.release(); }
 });

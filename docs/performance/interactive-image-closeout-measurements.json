@@ -9602,5 +9602,1018 @@
       "No paid service or private screenshot used. Eleven pre-existing policy-retained directories untouched. Drag/drop is no longer a blocking acceptance target at user request.",
       "No changes or performance credit to worker decode architecture, provider routing, visual-tail algorithm or ToolProgressDelivery drain."
     ]
+  },
+  "clipboardReviewRound": {
+    "date": "2026-09-18",
+    "baseCommit": "afc11dfecd3d886e0cfea05e62fc23646bcf4a4d",
+    "candidate": "sourceSha256 identifies the verified working tree before its review-fix commit; prior verification entries remain historical",
+    "reviewComments": [
+      4038981728,
+      4038981737,
+      4038981747,
+      4038981752,
+      4038981761,
+      4038981774,
+      4038981782
+    ],
+    "verification": {
+      "check": "passed",
+      "buildOffline": "passed",
+      "related": {
+        "tests": 179,
+        "pass": 179,
+        "fail": 0,
+        "skipped": 0,
+        "cancelled": 0
+      },
+      "hot": {
+        "tests": 31,
+        "pass": 31,
+        "fail": 0,
+        "skipped": 0,
+        "cancelled": 0
+      },
+      "full": {
+        "tests": 1785,
+        "pass": 1727,
+        "fail": 0,
+        "skipped": 58,
+        "cancelled": 0
+      },
+      "diffCheck": "passed"
+    },
+    "initialReproduction": {
+      "existingPass": 15,
+      "reproductionFail": 15,
+      "scope": "expanded placeholder file against afc11df before production edits; seven review categories",
+      "logSha256": "ccd444b9d52d996b35a042043136571905180300da3fb7dccb57b65e1517498f"
+    },
+    "initialFullAttempt": {
+      "status": "failed and stopped at tui-async-owner-closeout.test.ts; not a complete run",
+      "causes": [
+        "source gate expected duplicated inline generation comparisons rather than the combined validity predicate",
+        "method-level fixture omitted the focused renderer required by clipboard admission"
+      ],
+      "resolution": "fixture now supplies focus; source assertions verify the complete validity predicate and both post-await guards plus cleanup; controller and Promise-tail budgets unchanged",
+      "logSha256": "5eac68a6e8e42634c7486434fd91069ca0674fef695561d57faf43a9ccbb9d91"
+    },
+    "lifecycle": {
+      "ordinary": {
+        "reads": 0,
+        "encodes": 0,
+        "projections": 0
+      },
+      "receive": {
+        "reads": 2,
+        "encodes": 1,
+        "projections": 2
+      },
+      "steady": {
+        "reads": 2,
+        "encodes": 1,
+        "projections": 2
+      },
+      "cancelMs": 0.4941000000000031,
+      "recordsAfter": 0,
+      "weakReleased": 2,
+      "weakTotal": 2,
+      "inputProfiles": []
+    },
+    "sampledInput": {
+      "ordinary": {
+        "reads": 0,
+        "encodes": 0,
+        "projections": 0
+      },
+      "receive": {
+        "reads": 2,
+        "encodes": 1,
+        "projections": 2
+      },
+      "steady": {
+        "reads": 2,
+        "encodes": 1,
+        "projections": 2
+      },
+      "cancelMs": 0.5476999999999634,
+      "recordsAfter": 0,
+      "weakReleased": 2,
+      "weakTotal": 2,
+      "inputProfiles": [
+        {
+          "name": "no-images",
+          "iterations": 2000,
+          "sampledBytes": 33849112,
+          "elapsedMs": 64.47669999999994,
+          "scope": "two cursor keys and editor render; sampling enabled, not natural-frame latency"
+        },
+        {
+          "name": "one-ready-image",
+          "iterations": 2000,
+          "sampledBytes": 50437192,
+          "elapsedMs": 66.38300000000004,
+          "scope": "two cursor keys and editor render; sampling enabled, not natural-frame latency"
+        }
+      ]
+    },
+    "naturalResponse": {
+      "definition": "planned probe -> callback -> actual editor input arrival -> accepted state -> matching naturally scheduled frame write completion; simulated async Writable, not compositor paint",
+      "targets": {
+        "scheduling": "natural",
+        "targets": {
+          "inputOrCancelMs": 100,
+          "matchingFrameMs": 150
+        },
+        "fixtureBytes": {
+          "screenshot": 64955,
+          "near-24mp": 1385685,
+          "near-bytes": 10244793,
+          "multi": 10244793,
+          "over-pixels": 45,
+          "over-bytes": 10485761,
+          "corrupt": 32477
+        }
+      },
+      "runs": 14,
+      "probes": 14,
+      "maxPlannedToInputAcceptedMs": 12.63639999999998,
+      "maxPlannedToMatchingFrameMs": 28.218399999999974,
+      "plannedDuringDecode": 10,
+      "peakProcessRssMiB": 482.53125,
+      "observations": [
+        {
+          "scenario": "screenshot",
+          "cancel": false,
+          "fixtureBytes": 64955,
+          "stages": {
+            "uiProjection": {
+              "count": 3,
+              "ms": 0.03899999999998727
+            },
+            "read": {
+              "count": 2,
+              "ms": 0.09999999999990905
+            },
+            "base64Encode": {
+              "count": 1,
+              "ms": 0.038000000000010914
+            },
+            "pixelDecode": {
+              "count": 1,
+              "ms": 16.17220000000009
+            }
+          },
+          "probes": [
+            {
+              "planned": 779.0323,
+              "kind": "input",
+              "callbackAt": 780.2105,
+              "handled": 780.2105,
+              "inputArrived": 780.3215,
+              "processed": 780.4119,
+              "acceptedState": "PROBE_BASEx",
+              "dispatchReturned": 780.4388,
+              "matchedState": true,
+              "framePrepared": 780.7878,
+              "generation": 4,
+              "frame": 781.1716,
+              "delayMs": 1.1782000000000608,
+              "inputDelayMs": 1.3795999999999822,
+              "handlerMs": 0.09039999999993142,
+              "frameDelayMs": 2.1393000000000484,
+              "plannedDuringDecode": true
+            }
+          ],
+          "workerEvents": [
+            {
+              "type": "decode-start",
+              "at": 774.0323
+            },
+            {
+              "type": "decode-end",
+              "at": 790.2003,
+              "elapsed": 16.17220000000009,
+              "active": 0,
+              "wasmBytes": 27262976,
+              "rss": 229564416
+            },
+            {
+              "type": "worker-exit",
+              "at": 794.3564,
+              "active": 0
+            }
+          ],
+          "peakProcessRssKiB": 224904,
+          "recordsAfter": 0,
+          "parentNativeActiveAfter": 0,
+          "state": [
+            {
+              "state": "ready"
+            }
+          ]
+        },
+        {
+          "scenario": "screenshot",
+          "cancel": true,
+          "fixtureBytes": 64955,
+          "stages": {
+            "uiProjection": {
+              "count": 3,
+              "ms": 0.035099999999943066
+            },
+            "read": {
+              "count": 2,
+              "ms": 0.09429999999997563
+            },
+            "base64Encode": {
+              "count": 1,
+              "ms": 0.031000000000062755
+            }
+          },
+          "probes": [
+            {
+              "planned": 782.8782,
+              "kind": "cancel",
+              "callbackAt": 783.6625,
+              "handled": 783.6625,
+              "inputArrived": 783.7713,
+              "processed": 784.2468,
+              "acceptedState": "",
+              "dispatchReturned": 784.2637,
+              "matchedState": true,
+              "framePrepared": 784.5868,
+              "generation": 4,
+              "frame": 784.665,
+              "delayMs": 0.7843000000000302,
+              "inputDelayMs": 1.368600000000015,
+              "handlerMs": 0.4755000000000109,
+              "frameDelayMs": 1.786799999999971,
+              "plannedDuringDecode": true
+            }
+          ],
+          "workerEvents": [
+            {
+              "type": "decode-start",
+              "at": 777.8782
+            },
+            {
+              "type": "worker-exit",
+              "at": 786.9389,
+              "active": 0
+            }
+          ],
+          "peakProcessRssKiB": 210244,
+          "recordsAfter": 0,
+          "parentNativeActiveAfter": 0,
+          "state": []
+        },
+        {
+          "scenario": "near-24mp",
+          "cancel": false,
+          "fixtureBytes": 1385685,
+          "stages": {
+            "uiProjection": {
+              "count": 3,
+              "ms": 0.04229999999995471
+            },
+            "read": {
+              "count": 2,
+              "ms": 0.4896999999999707
+            },
+            "base64Encode": {
+              "count": 1,
+              "ms": 0.31159999999999854
+            },
+            "pixelDecode": {
+              "count": 1,
+              "ms": 145.33100000000002
+            }
+          },
+          "probes": [
+            {
+              "planned": 773.817,
+              "kind": "input",
+              "callbackAt": 774.3563,
+              "handled": 774.3563,
+              "inputArrived": 774.4658,
+              "processed": 774.5587,
+              "acceptedState": "PROBE_BASEx",
+              "dispatchReturned": 774.5858,
+              "matchedState": true,
+              "framePrepared": 774.9429,
+              "generation": 4,
+              "frame": 775.3164,
+              "delayMs": 0.5393000000000256,
+              "inputDelayMs": 0.7417000000000371,
+              "handlerMs": 0.09290000000009968,
+              "frameDelayMs": 1.499400000000037,
+              "plannedDuringDecode": true
+            }
+          ],
+          "workerEvents": [
+            {
+              "type": "decode-start",
+              "at": 768.817
+            },
+            {
+              "type": "decode-end",
+              "at": 914.1434,
+              "elapsed": 145.33100000000002,
+              "active": 0,
+              "wasmBytes": 292225024,
+              "rss": 500867072
+            },
+            {
+              "type": "worker-exit",
+              "at": 932.5364,
+              "active": 0
+            }
+          ],
+          "peakProcessRssKiB": 494112,
+          "recordsAfter": 0,
+          "parentNativeActiveAfter": 0,
+          "state": [
+            {
+              "state": "ready"
+            }
+          ]
+        },
+        {
+          "scenario": "near-24mp",
+          "cancel": true,
+          "fixtureBytes": 1385685,
+          "stages": {
+            "uiProjection": {
+              "count": 3,
+              "ms": 0.0342000000000553
+            },
+            "read": {
+              "count": 2,
+              "ms": 0.47230000000013206
+            },
+            "base64Encode": {
+              "count": 1,
+              "ms": 0.31320000000005166
+            }
+          },
+          "probes": [
+            {
+              "planned": 788.903,
+              "kind": "cancel",
+              "callbackAt": 789.5773,
+              "handled": 789.5773,
+              "inputArrived": 789.6862,
+              "processed": 790.1557,
+              "acceptedState": "",
+              "dispatchReturned": 790.1742,
+              "matchedState": true,
+              "framePrepared": 790.4927,
+              "generation": 4,
+              "frame": 790.6025,
+              "delayMs": 0.6743000000000166,
+              "inputDelayMs": 1.2527000000000044,
+              "handlerMs": 0.4695000000000391,
+              "frameDelayMs": 1.6994999999999436,
+              "plannedDuringDecode": true
+            }
+          ],
+          "workerEvents": [
+            {
+              "type": "decode-start",
+              "at": 783.903
+            },
+            {
+              "type": "worker-exit",
+              "at": 793.9714,
+              "active": 0
+            }
+          ],
+          "peakProcessRssKiB": 214800,
+          "recordsAfter": 0,
+          "parentNativeActiveAfter": 0,
+          "state": []
+        },
+        {
+          "scenario": "near-bytes",
+          "cancel": false,
+          "fixtureBytes": 10244793,
+          "stages": {
+            "uiProjection": {
+              "count": 3,
+              "ms": 0.03840000000002419
+            },
+            "read": {
+              "count": 2,
+              "ms": 2.8377000000000407
+            },
+            "base64Encode": {
+              "count": 1,
+              "ms": 2.0986999999998943
+            },
+            "pixelDecode": {
+              "count": 1,
+              "ms": 25.530599999999936
+            }
+          },
+          "probes": [
+            {
+              "planned": 856.3599,
+              "kind": "input",
+              "callbackAt": 857.1869,
+              "handled": 857.1869,
+              "inputArrived": 857.2962,
+              "processed": 857.3903,
+              "acceptedState": "PROBE_BASEx",
+              "dispatchReturned": 857.424,
+              "matchedState": true,
+              "framePrepared": 857.8369,
+              "generation": 4,
+              "frame": 858.1423,
+              "delayMs": 0.8269999999999982,
+              "inputDelayMs": 1.030399999999986,
+              "handlerMs": 0.09410000000002583,
+              "frameDelayMs": 1.7823999999999387,
+              "plannedDuringDecode": true
+            }
+          ],
+          "workerEvents": [
+            {
+              "type": "decode-start",
+              "at": 851.3599
+            },
+            {
+              "type": "decode-end",
+              "at": 876.886,
+              "elapsed": 25.530599999999936,
+              "active": 0,
+              "wasmBytes": 43319296,
+              "rss": 283492352
+            },
+            {
+              "type": "worker-exit",
+              "at": 882.7334,
+              "active": 0
+            }
+          ],
+          "peakProcessRssKiB": 277988,
+          "recordsAfter": 0,
+          "parentNativeActiveAfter": 0,
+          "state": [
+            {
+              "state": "ready"
+            }
+          ]
+        },
+        {
+          "scenario": "near-bytes",
+          "cancel": true,
+          "fixtureBytes": 10244793,
+          "stages": {
+            "uiProjection": {
+              "count": 3,
+              "ms": 0.03340000000002874
+            },
+            "read": {
+              "count": 2,
+              "ms": 2.7264999999998736
+            },
+            "base64Encode": {
+              "count": 1,
+              "ms": 2.1698000000000093
+            }
+          },
+          "probes": [
+            {
+              "planned": 774.3072,
+              "kind": "cancel",
+              "callbackAt": 775.399,
+              "handled": 775.399,
+              "inputArrived": 775.5249,
+              "processed": 776.0068,
+              "acceptedState": "",
+              "dispatchReturned": 776.0281,
+              "matchedState": true,
+              "framePrepared": 776.376,
+              "generation": 4,
+              "frame": 777.3542,
+              "delayMs": 1.0918000000000347,
+              "inputDelayMs": 1.6996000000000322,
+              "handlerMs": 0.481899999999996,
+              "frameDelayMs": 3.0470000000000255,
+              "plannedDuringDecode": true
+            }
+          ],
+          "workerEvents": [
+            {
+              "type": "decode-start",
+              "at": 769.3072
+            },
+            {
+              "type": "worker-exit",
+              "at": 780.1876,
+              "active": 0
+            }
+          ],
+          "peakProcessRssKiB": 257820,
+          "recordsAfter": 0,
+          "parentNativeActiveAfter": 0,
+          "state": []
+        },
+        {
+          "scenario": "multi",
+          "cancel": false,
+          "fixtureBytes": 10244793,
+          "stages": {
+            "uiProjection": {
+              "count": 7,
+              "ms": 0.05590000000006512
+            },
+            "read": {
+              "count": 6,
+              "ms": 8.34089999999992
+            },
+            "base64Encode": {
+              "count": 3,
+              "ms": 6.43139999999994
+            },
+            "pixelDecode": {
+              "count": 3,
+              "ms": 63.39369999999997
+            }
+          },
+          "probes": [
+            {
+              "planned": 770.5168,
+              "kind": "input",
+              "callbackAt": 771.2658,
+              "handled": 771.2658,
+              "inputArrived": 771.3938,
+              "processed": 771.4928,
+              "acceptedState": "PROBE_BASEx",
+              "dispatchReturned": 771.5207,
+              "matchedState": true,
+              "framePrepared": 771.9216,
+              "generation": 4,
+              "frame": 772.2153,
+              "delayMs": 0.7490000000000236,
+              "inputDelayMs": 0.9759999999999991,
+              "handlerMs": 0.0989999999999327,
+              "frameDelayMs": 1.6984999999999673,
+              "plannedDuringDecode": true
+            }
+          ],
+          "workerEvents": [
+            {
+              "type": "decode-start",
+              "at": 765.5168
+            },
+            {
+              "type": "decode-end",
+              "at": 791.6506,
+              "elapsed": 26.138599999999997,
+              "active": 0,
+              "wasmBytes": 43319296,
+              "rss": 281423872
+            },
+            {
+              "type": "worker-exit",
+              "at": 797.2656,
+              "active": 0
+            },
+            {
+              "type": "decode-start",
+              "at": 842.7064
+            },
+            {
+              "type": "decode-end",
+              "at": 861.2851,
+              "elapsed": 18.58330000000001,
+              "active": 0,
+              "wasmBytes": 43319296,
+              "rss": 300589056
+            },
+            {
+              "type": "worker-exit",
+              "at": 866.5458,
+              "active": 0
+            },
+            {
+              "type": "decode-start",
+              "at": 910.7075
+            },
+            {
+              "type": "decode-end",
+              "at": 929.3751,
+              "elapsed": 18.671799999999962,
+              "active": 0,
+              "wasmBytes": 43319296,
+              "rss": 315564032
+            },
+            {
+              "type": "worker-exit",
+              "at": 934.6053,
+              "active": 0
+            }
+          ],
+          "peakProcessRssKiB": 308168,
+          "recordsAfter": 0,
+          "parentNativeActiveAfter": 0,
+          "state": [
+            {
+              "state": "ready"
+            },
+            {
+              "state": "ready"
+            },
+            {
+              "state": "ready"
+            }
+          ]
+        },
+        {
+          "scenario": "multi",
+          "cancel": true,
+          "fixtureBytes": 10244793,
+          "stages": {
+            "uiProjection": {
+              "count": 3,
+              "ms": 0.046399999999948704
+            },
+            "read": {
+              "count": 2,
+              "ms": 2.774000000000001
+            },
+            "base64Encode": {
+              "count": 1,
+              "ms": 2.033800000000042
+            }
+          },
+          "probes": [
+            {
+              "planned": 788.4415,
+              "kind": "cancel",
+              "callbackAt": 789.17,
+              "handled": 789.17,
+              "inputArrived": 789.2808,
+              "processed": 789.751,
+              "acceptedState": "",
+              "dispatchReturned": 789.7692,
+              "matchedState": true,
+              "framePrepared": 790.0674,
+              "generation": 4,
+              "frame": 790.1655,
+              "delayMs": 0.72849999999994,
+              "inputDelayMs": 1.3094999999999573,
+              "handlerMs": 0.4701999999999771,
+              "frameDelayMs": 1.7239999999999327,
+              "plannedDuringDecode": true
+            }
+          ],
+          "workerEvents": [
+            {
+              "type": "decode-start",
+              "at": 783.4415
+            },
+            {
+              "type": "worker-exit",
+              "at": 793.4487,
+              "active": 0
+            }
+          ],
+          "peakProcessRssKiB": 253080,
+          "recordsAfter": 0,
+          "parentNativeActiveAfter": 0,
+          "state": []
+        },
+        {
+          "scenario": "over-pixels",
+          "cancel": false,
+          "fixtureBytes": 45,
+          "stages": {
+            "uiProjection": {
+              "count": 3,
+              "ms": 0.03669999999999618
+            },
+            "read": {
+              "count": 2,
+              "ms": 0.09379999999998745
+            }
+          },
+          "probes": [
+            {
+              "planned": 732.8257,
+              "kind": "input",
+              "callbackAt": 745.3106,
+              "handled": 745.3106,
+              "inputArrived": 745.3778,
+              "processed": 745.4621,
+              "acceptedState": "PROBE_BASEx",
+              "dispatchReturned": 745.4882,
+              "matchedState": true,
+              "framePrepared": 745.8607,
+              "generation": 4,
+              "frame": 761.0441,
+              "delayMs": 12.484900000000039,
+              "inputDelayMs": 12.63639999999998,
+              "handlerMs": 0.08429999999998472,
+              "frameDelayMs": 28.218399999999974,
+              "plannedDuringDecode": false
+            }
+          ],
+          "workerEvents": [],
+          "peakProcessRssKiB": 157808,
+          "recordsAfter": 0,
+          "parentNativeActiveAfter": 0,
+          "state": [
+            {
+              "state": "failed",
+              "error": "图片尺寸无效或超过 2400 万像素"
+            }
+          ]
+        },
+        {
+          "scenario": "over-pixels",
+          "cancel": true,
+          "fixtureBytes": 45,
+          "stages": {
+            "uiProjection": {
+              "count": 4,
+              "ms": 0.03890000000001237
+            },
+            "read": {
+              "count": 2,
+              "ms": 0.09730000000001837
+            }
+          },
+          "probes": [
+            {
+              "planned": 731.1129,
+              "kind": "cancel",
+              "callbackAt": 736.4444,
+              "handled": 736.4444,
+              "inputArrived": 736.5505,
+              "processed": 736.7972,
+              "acceptedState": "",
+              "dispatchReturned": 736.8221,
+              "matchedState": true,
+              "framePrepared": 737.0596,
+              "generation": 4,
+              "frame": 751.9174,
+              "delayMs": 5.3315000000000055,
+              "inputDelayMs": 5.6843000000000075,
+              "handlerMs": 0.24669999999991887,
+              "frameDelayMs": 20.804500000000075,
+              "plannedDuringDecode": false
+            }
+          ],
+          "workerEvents": [],
+          "peakProcessRssKiB": 157052,
+          "recordsAfter": 0,
+          "parentNativeActiveAfter": 0,
+          "state": []
+        },
+        {
+          "scenario": "over-bytes",
+          "cancel": false,
+          "fixtureBytes": 10485761,
+          "stages": {
+            "uiProjection": {
+              "count": 3,
+              "ms": 0.035799999999994725
+            }
+          },
+          "probes": [
+            {
+              "planned": 729.5396,
+              "kind": "input",
+              "callbackAt": 741.8506,
+              "handled": 741.8506,
+              "inputArrived": 741.9151,
+              "processed": 742.0093,
+              "acceptedState": "PROBE_BASEx",
+              "dispatchReturned": 742.0218,
+              "matchedState": true,
+              "framePrepared": 742.2893,
+              "generation": 5,
+              "frame": 757.2738,
+              "delayMs": 12.311000000000035,
+              "inputDelayMs": 12.469700000000103,
+              "handlerMs": 0.09420000000000073,
+              "frameDelayMs": 27.7342000000001,
+              "plannedDuringDecode": false
+            }
+          ],
+          "workerEvents": [],
+          "peakProcessRssKiB": 167472,
+          "recordsAfter": 0,
+          "parentNativeActiveAfter": 0,
+          "state": [
+            {
+              "state": "failed",
+              "error": "图片不是普通文件或超过 10 MiB"
+            }
+          ]
+        },
+        {
+          "scenario": "over-bytes",
+          "cancel": true,
+          "fixtureBytes": 10485761,
+          "stages": {
+            "uiProjection": {
+              "count": 4,
+              "ms": 0.059899999999856846
+            }
+          },
+          "probes": [
+            {
+              "planned": 732.6275,
+              "kind": "cancel",
+              "callbackAt": 744.6334,
+              "handled": 744.6334,
+              "inputArrived": 744.7458,
+              "processed": 745.0344,
+              "acceptedState": "",
+              "dispatchReturned": 745.0466,
+              "matchedState": true,
+              "framePrepared": 745.3472,
+              "generation": 5,
+              "frame": 756.1216,
+              "delayMs": 12.005899999999997,
+              "inputDelayMs": 12.40689999999995,
+              "handlerMs": 0.288599999999974,
+              "frameDelayMs": 23.49409999999989,
+              "plannedDuringDecode": false
+            }
+          ],
+          "workerEvents": [],
+          "peakProcessRssKiB": 158156,
+          "recordsAfter": 0,
+          "parentNativeActiveAfter": 0,
+          "state": []
+        },
+        {
+          "scenario": "corrupt",
+          "cancel": false,
+          "fixtureBytes": 32477,
+          "stages": {
+            "uiProjection": {
+              "count": 3,
+              "ms": 0.03660000000002128
+            },
+            "read": {
+              "count": 2,
+              "ms": 0.10329999999999018
+            },
+            "base64Encode": {
+              "count": 1,
+              "ms": 0.014200000000073487
+            },
+            "pixelDecode": {
+              "count": 1,
+              "ms": 9.615999999999985
+            }
+          },
+          "probes": [
+            {
+              "planned": 772.8825,
+              "kind": "input",
+              "callbackAt": 773.4023,
+              "handled": 773.4023,
+              "inputArrived": 773.4968,
+              "processed": 773.5878,
+              "acceptedState": "PROBE_BASEx",
+              "dispatchReturned": 773.6144,
+              "matchedState": true,
+              "framePrepared": 773.9553,
+              "generation": 4,
+              "frame": 774.2232,
+              "delayMs": 0.5197999999999183,
+              "inputDelayMs": 0.7052999999999656,
+              "handlerMs": 0.09100000000000819,
+              "frameDelayMs": 1.3406999999999698,
+              "plannedDuringDecode": true
+            }
+          ],
+          "workerEvents": [
+            {
+              "type": "decode-start",
+              "at": 767.8825
+            },
+            {
+              "type": "decode-end",
+              "at": 777.4944,
+              "elapsed": 9.615999999999985,
+              "active": 0,
+              "wasmBytes": 10616832,
+              "rss": 217153536
+            },
+            {
+              "type": "worker-exit",
+              "at": 781.7769,
+              "active": 0
+            }
+          ],
+          "peakProcessRssKiB": 217244,
+          "recordsAfter": 0,
+          "parentNativeActiveAfter": 0,
+          "state": [
+            {
+              "state": "failed",
+              "error": "图片损坏或无法解码，请重新添加"
+            }
+          ]
+        },
+        {
+          "scenario": "corrupt",
+          "cancel": true,
+          "fixtureBytes": 32477,
+          "stages": {
+            "uiProjection": {
+              "count": 3,
+              "ms": 0.03370000000006712
+            },
+            "read": {
+              "count": 2,
+              "ms": 0.1226000000001477
+            },
+            "base64Encode": {
+              "count": 1,
+              "ms": 0.012899999999945067
+            }
+          },
+          "probes": [
+            {
+              "planned": 788.3217,
+              "kind": "cancel",
+              "callbackAt": 788.584,
+              "handled": 788.584,
+              "inputArrived": 788.6931,
+              "processed": 789.1636,
+              "acceptedState": "",
+              "dispatchReturned": 789.1927,
+              "matchedState": true,
+              "framePrepared": 789.515,
+              "generation": 4,
+              "frame": 790.5582,
+              "delayMs": 0.262299999999982,
+              "inputDelayMs": 0.8419000000000096,
+              "handlerMs": 0.47050000000001546,
+              "frameDelayMs": 2.236500000000092,
+              "plannedDuringDecode": true
+            }
+          ],
+          "workerEvents": [
+            {
+              "type": "decode-start",
+              "at": 783.3217
+            },
+            {
+              "type": "worker-exit",
+              "at": 792.2177,
+              "active": 0
+            }
+          ],
+          "peakProcessRssKiB": 208192,
+          "recordsAfter": 0,
+          "parentNativeActiveAfter": 0,
+          "state": []
+        }
+      ]
+    },
+    "commands": [
+      "npm run check",
+      "npm run build:offline",
+      "node --experimental-strip-types --test tests/tui-async-owner-closeout.test.ts tests/image-placeholder-input.test.ts tests/interactive-control-images.test.ts tests/image-review-boundaries.test.ts tests/image-acceptance-closeout.test.ts tests/github-review-regressions.test.ts",
+      "npm run test:hot",
+      "npm test",
+      "git diff --check",
+      "node --expose-gc --experimental-strip-types scripts/bench/image-draft-lifecycle.ts",
+      "node --expose-gc --experimental-strip-types scripts/bench/image-draft-lifecycle.ts --sample-input",
+      "node --expose-gc --experimental-strip-types scripts/bench/image-response.ts --natural"
+    ],
+    "sourceSha256": {
+      "packages/coding-agent/src/core/image-attachments.ts": "66f8e2c032e4b0526991a5d8ced6d888ad03eb15d0b00e72b9bcc4936937ae03",
+      "packages/coding-agent/src/modes/interactive/interactive-mode.ts": "f08c50d016fe311e2e78288d2dc6d793b5a3ac56ca51182f61f46eab76828fdd",
+      "tests/image-placeholder-input.test.ts": "b9d793c45099835ddc72fc69f67a5ade2720d6fddfbe794da7f9d18a8cd70607",
+      "tests/interactive-control-images.test.ts": "d3535563df139df43a0cb13c246a5a00bdc8bd72239cd07401078a41345f1b14",
+      "tests/tui-async-owner-closeout.test.ts": "554790a729ded8cab61274ecd3adf3a534932e130b057fe2fd65656b73815094"
+    },
+    "logSha256": {
+      "clipboard-review-check.log": "97ecfd063b2a73c7d484d6c20a466b60965da8cf8a976104c80510a2a6633627",
+      "clipboard-review-build.log": "a175b75cd77e9f9d9759f12b0243f550f4601d2df34b6012f5b5a9d4102c86a7",
+      "clipboard-review-related.log": "975b2c799625a5b4723ed7e5c6236125af38c13bc05bf560b8a44ca697132eb4",
+      "clipboard-review-hot.log": "1bf451638b4e294446f2faa12c7187c7987b261411d038bd8a235eb85e7b503d",
+      "clipboard-review-full.log": "929eba274f7f883860d5b3e7b0b4366e1a7646a9fef19f665ace10dc4aad9142",
+      "clipboard-review-lifecycle.log": "441e545e686bef562b25659b575d78c9bdb025d8c4c4d8a8df66b1279a1003a9",
+      "clipboard-review-allocation.log": "58b5ddde4f4102e4b9536367d8451579ae18d189777ae6dc7e8877d9ed48ebb8",
+      "clipboard-review-natural.log": "5f2d3083f41e7ea5e31449ae5a4cde91cbc85eb93a4c1bae1e75e91df154a7c0"
+    },
+    "limits": [
+      "Native desktop and online service acceptance not performed; no paid requests or private screenshots. Eleven previously retained directories untouched.",
+      "Clipboard transport is controlled. Real ProcessTerminal, host draft, SDK, extensions and provider serialization remain in the integration tests. The new compaction branch case controls the accessor during a gated real SDK request; complete compaction is covered separately by existing tests.",
+      "Natural response has one child per scenario/cancellation combination, not production percentiles. RSS is process high-water mark, not exact native object lifetime; JS weak release does not establish native peak safety.",
+      "Sampled cursor/editor-render times include sampling. Prior rounds are historical observations, not a simultaneous controlled performance comparison. No general speedup or benefit to the unchanged drain is claimed.",
+      "One stable cached Text projection is mounted for editors without the attachment contract; new cancellation/Promise state is confined to explicit operation boundaries. Original count/byte/pixel and source-allocation budgets remain unchanged."
+    ]
   }
 }

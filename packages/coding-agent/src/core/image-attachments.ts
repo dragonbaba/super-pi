@@ -63,9 +63,14 @@ export function snapshotImageSubmission(images: readonly ImageContent[], submiss
 		total += bytes;
 		if (bytes > IMAGE_ATTACHMENT_LIMITS.bytes || total > IMAGE_ATTACHMENT_LIMITS.total) throw new Error("提交的图片超出字节限制");
 		const supplied = submission?.attachments[index];
+		if (supplied && (typeof supplied.id !== "string" || !supplied.id.trim())) throw new Error("Image attachment ID must be nonempty");
 		const metadata = decodedImages.get(image) ?? imageMetadata(Buffer.from(image.data, "base64"), `image-${index + 1}`, "api");
 		if (metadata.mimeType !== image.mimeType) throw new Error("Invalid image content/MIME");
-		attachments.push({ ...metadata, id: supplied?.id ?? metadata.id, name: supplied?.name ?? metadata.name, contentIndex: index });
+		// A decoded receipt proves content, not identity: reusing the same image in
+		// two slots without supplied metadata still creates two distinct attachments.
+		const id = supplied ? supplied.id : randomUUID();
+		for (const attachment of attachments) if (attachment.id === id) throw new Error("Image attachment IDs must be unique");
+		attachments.push({ ...metadata, id, name: supplied?.name ?? metadata.name, contentIndex: index });
 		snapshot.push(image);
 	}
 	return { images: snapshot, submission: { version: 1, id: submission?.id ?? randomUUID(), attachments, source: submission?.source } };
@@ -189,7 +194,7 @@ export class ImageAttachmentDraft {
 	private readonly decodeObserver?: ImageDecodeObserver;
 	constructor(changed: () => void, decodeObserver?: ImageDecodeObserver) { this.changed = changed; this.decodeObserver = decodeObserver; }
 	get items(): readonly DraftImage[] { return this.records; }
-	get busy(): boolean { return this.active !== undefined; }
+	get busy(): boolean { return this.active !== undefined || this.decoding !== undefined; }
 	begin(name: string, source: DraftImage["source"]): DraftImage {
 		if (this.records.length >= IMAGE_ATTACHMENT_LIMITS.count) throw new Error("最多添加 8 张图片");
 		const record: DraftImage = { id: randomUUID(), name, source, state: "preparing" };
@@ -229,7 +234,7 @@ export class ImageAttachmentDraft {
 	remove(index: number): void { if (this.records[index] === this.decodingRecord) this.decoding?.abort(); this.records.splice(index, 1); this.changed(); }
 	clear(): void { this.active?.abort(); this.decoding?.abort(); this.records = []; this.id = randomUUID(); this.changed(); }
 	async addFiles(paths: readonly string[], cwd: string): Promise<void> {
-		if (this.active) throw new Error("正在添加图片，请稍后再试");
+		if (this.busy || this.records.some(item => item.state === "preparing")) throw new Error("正在添加图片，请稍后再试");
 		if (paths.length + this.records.length > IMAGE_ATTACHMENT_LIMITS.count) throw new Error("最多添加 8 张图片");
 		const controller = new AbortController(); this.active = controller;
 		try {

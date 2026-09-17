@@ -41,6 +41,9 @@ function serializedResponse(model: any, context: any, expectedImage: boolean, an
 function interactive(session: any): any {
 	const mode: any = new InteractiveMode({ session, setBeforeSessionInvalidate() {}, setRebindSession() {} } as never);
 	mode.setupKeyHandlers(); mode.setupEditorSubmitHandler();
+	// This method-level fixture skips init(); establish its real editor focus
+	// explicitly, as init() does before accepting clipboard gestures.
+	mode.ui.setFocus(mode.editor);
 	mode.showWarning = (message: string) => { mode.warning = message; };
 	return mode;
 }

@@ -822,15 +822,19 @@ test("async owner closeout remains lifecycle-only in source", () => {
 		clipboardPasteSource.indexOf("const lifecycleGeneration = this.tuiLifecycleGeneration") <
 			clipboardPasteSource.indexOf("await this.readClipboardImageForPaste()"),
 	);
-	assert.equal(clipboardPasteSource.match(/this\.tuiLifecycleGeneration !== lifecycleGeneration/g)?.length, 2);
+	assert.match(clipboardPasteSource, /const isCurrent = .*this\.tuiLifecycleGeneration === lifecycleGeneration && !controller\.signal\.aborted && draftId === this\.imageDraft\.id && sessionId === this\.sessionManager\.getSessionId\(\) && this\.editor === target && this\.renderer\.getFocusedComponent\(\) === target/);
+	assert.equal(clipboardPasteSource.match(/if \(!isCurrent\(\)\) return/g)?.length, 2);
 	assert.ok(
-		clipboardPasteSource.indexOf("this.tuiLifecycleGeneration !== lifecycleGeneration") <
+		clipboardPasteSource.indexOf("await this.readClipboardImageForPaste()") < clipboardPasteSource.indexOf("if (!isCurrent()) return") &&
+		clipboardPasteSource.indexOf("if (!isCurrent()) return") <
 			clipboardPasteSource.indexOf("this.imageDraft.finish"),
 	);
 	assert.ok(
-		clipboardPasteSource.lastIndexOf("this.tuiLifecycleGeneration !== lifecycleGeneration") <
-			clipboardPasteSource.lastIndexOf("this.editor.handleInput"),
+		clipboardPasteSource.indexOf("await this.readClipboardTextForPaste()") < clipboardPasteSource.lastIndexOf("if (!isCurrent()) return") &&
+		clipboardPasteSource.lastIndexOf("if (!isCurrent()) return") <
+			clipboardPasteSource.lastIndexOf("target.handleInput"),
 	);
+	assert.match(clipboardPasteSource, /finally\s*\{\s*if \(record && !isCurrent\(\)\)/);
 	const closeExtensionUiStart = interactiveSource.indexOf("private closeExtensionUiContext");
 	const closeExtensionUiEnd = interactiveSource.indexOf("\n\t/**", closeExtensionUiStart);
 	const closeExtensionUiSource = interactiveSource.slice(closeExtensionUiStart, closeExtensionUiEnd);
@@ -1447,6 +1451,7 @@ test("clipboard paste completion is inert after the interactive lifecycle closes
 		mode.tuiLifecycleGeneration = 0;
 		mode.runtimeHost = { session: { sessionManager: { getSessionId: () => "fixture-session" } } };
 		mode.editor = { handleInput(): void { insertCalls++; } };
+		mode.renderer = { getFocusedComponent: () => mode.editor };
 		mode.ui = { requestRender(): void { renderCalls++; } };
 		mode.readClipboardImageForPaste = (): Promise<any> => new Promise((resolve) => { settleImage = resolve; });
 		mode.readClipboardTextForPaste = (): Promise<string | null> => new Promise((resolve) => { settleText = resolve; });

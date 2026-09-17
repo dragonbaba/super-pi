@@ -550,14 +550,22 @@ export class InteractiveMode {
 	private compactionQueueFlushing = false;
 	private imageSubmissionRecovery: { state: "pending" | "failed"; text: string; images: ImageContent[]; submission: ImageSubmission; error?: string } | undefined;
 	private clipboardAbort: AbortController | undefined;
+	private readonly fallbackAttachmentText = new Text("", 0, 0);
+	private getAttachmentEditor(): CustomEditor | undefined {
+		// Extensions can load a different module instance of CustomEditor.
+		const editor = this.editor as Partial<CustomEditor> | undefined;
+		return typeof editor?.setAttachmentIds === "function" && typeof editor.setAttachmentText === "function" ? editor as CustomEditor : undefined;
+	}
 	private readonly refreshImageDraft = (): void => {
 		const items = this.imageDraft.items;
-		this.defaultEditor?.setAttachmentIds(items);
-		let text = draftAttachmentText(items, this.defaultEditor?.selectedAttachmentId);
-		if (items.length) text += `正文开头 ${this.keybindings.getKeys("tui.editor.cursorLeft").join("/")} 选择图片 · ${this.keybindings.getKeys("tui.editor.deleteCharBackward").join("/")} / ${this.keybindings.getKeys("tui.editor.deleteCharForward").join("/")} 删除`;
+		const editor = this.getAttachmentEditor();
+		editor?.setAttachmentIds(items);
+		let text = draftAttachmentText(items, editor?.selectedAttachmentId);
+		if (items.length) text += editor ? `正文开头 ${this.keybindings.getKeys("tui.editor.cursorLeft").join("/")} 选择图片 · ${this.keybindings.getKeys("tui.editor.deleteCharBackward").join("/")} / ${this.keybindings.getKeys("tui.editor.deleteCharForward").join("/")} 删除` : "当前编辑器不支持图片选择；/image-remove 序号 删除";
 		const recovery = this.imageSubmissionRecovery;
 		if (recovery) text += `\n[上次提交 · ${recovery.submission.attachments.length} 张图片 · ${recovery.state === "pending" ? "正在预检 · 尚未接受" : `未被接受：${attachmentLabel(recovery.error ?? "")} · /image-recover 恢复到空草稿 · /image-discard 取消`}]`;
-		this.defaultEditor?.setAttachmentText(text);
+		if (editor) { editor.setAttachmentText(text); this.fallbackAttachmentText.setText(""); }
+		else this.fallbackAttachmentText.setText(text);
 		this.ui?.requestRender();
 	};
 	private readonly removeDraftAttachment = (id: string): void => {
@@ -1312,6 +1320,7 @@ export class InteractiveMode {
 			{ component: this.pendingMessagesContainer, shrink: 1, minSize: 0 },
 			{ component: this.statusContainer, shrink: 1, minSize: 0 },
 			{ component: this.widgetContainerAbove, shrink: 1, minSize: 0 },
+			{ component: this.fallbackAttachmentText, shrink: 1, minSize: 0 },
 			{ component: this.editorContainer, shrink: 1, minSize: 3 },
 			{ component: this.widgetContainerBelow, shrink: 1, minSize: 0 },
 			{ component: this.footerContainer, shrink: 1, minSize: 1 },
@@ -1325,6 +1334,7 @@ export class InteractiveMode {
 			this.pendingMessagesContainer,
 			this.statusContainer,
 			this.widgetContainerAbove,
+			this.fallbackAttachmentText,
 			this.editorContainer,
 			this.widgetContainerBelow,
 			this.footerContainer,
@@ -3408,6 +3418,9 @@ export class InteractiveMode {
 
 		// Save text from current editor before switching
 		const currentText = this.editor.getText();
+		const previousAttachmentEditor = this.getAttachmentEditor();
+		previousAttachmentEditor?.setAttachmentIds([]);
+		previousAttachmentEditor?.setAttachmentText("");
 
 		this.disposeActiveSelector();
 		this.editorContainer.clear();
@@ -3468,6 +3481,14 @@ export class InteractiveMode {
 			this.editor = this.defaultEditor;
 		}
 
+		const attachmentEditor = this.getAttachmentEditor();
+		if (attachmentEditor) {
+			attachmentEditor.onEmptyPaste = this.handleClipboardPasteAction;
+			attachmentEditor.onPaste = this.defaultEditor.onPaste;
+			attachmentEditor.onAttachmentSelectionChange = this.refreshImageDraft;
+			attachmentEditor.onRemoveAttachment = this.removeDraftAttachment;
+		}
+		this.refreshImageDraft();
 		this.editorContainer.addChild(this.editor as Component);
 		this.ui.setFocus(this.editor as Component);
 		this.ui.requestRender();
@@ -3711,7 +3732,7 @@ export class InteractiveMode {
 		this.defaultEditor.onPaste = (text) => {
 			const paths = parseImagePaths(text);
 			if (!paths) return false;
-			void this.imageDraft.addFiles(paths, this.sessionManager.getCwd()).catch(this.reportImageError);
+			void this.addDraftImageFiles(paths).catch(this.reportImageError);
 			return true;
 		};
 	}
@@ -3720,7 +3741,7 @@ export class InteractiveMode {
 		const target = this.renderer.getFocusedComponent();
 		const handleInput = target?.handleInput;
 		if (!target || !handleInput) return;
-		if (target === this.defaultEditor) { await this.handleClipboardPaste(); return; }
+		if (target === this.editor) { await this.handleClipboardPaste(); return; }
 		try {
 			const text = await readClipboardText();
 			if (!text || this.renderer.getFocusedComponent() !== target) return;
@@ -3732,13 +3753,21 @@ export class InteractiveMode {
 	}
 
 	private readonly reportImageError = (error: unknown): void => { this.showWarning(error instanceof Error ? error.message : String(error)); };
+	private async addDraftImageFiles(paths: readonly string[]): Promise<void> {
+		if (this.clipboardPending) throw new Error("正在读取剪贴板，请稍后再试");
+		await this.imageDraft.addFiles(paths, this.sessionManager.getCwd());
+	}
 	private async handleClipboardPaste(): Promise<void> {
 		const lifecycleGeneration = this.tuiLifecycleGeneration;
 		if (this.clipboardPending) { this.showWarning("正在读取剪贴板，请稍后再试"); return; }
+		if (this.imageDraft.busy) { this.showWarning("正在添加图片，请稍后再试"); return; }
+		const target = this.editor;
+		if (this.renderer.getFocusedComponent() !== target) return;
 		this.clipboardPending = true;
 		const controller = new AbortController(); this.clipboardAbort = controller;
 		const sessionId = this.sessionManager.getSessionId();
 		const draftId = this.imageDraft.id;
+		const isCurrent = (): boolean => this.tuiLifecycleGeneration === lifecycleGeneration && !controller.signal.aborted && draftId === this.imageDraft.id && sessionId === this.sessionManager.getSessionId() && this.editor === target && this.renderer.getFocusedComponent() === target;
 		let record: ReturnType<ImageAttachmentDraft["begin"]> | undefined;
 		try {
 			let capacityError: unknown;
@@ -3749,20 +3778,39 @@ export class InteractiveMode {
 			}
 			// Text remains editable at capacity; no unreserved image read is started.
 			const image = record ? await this.readClipboardImageForPaste() : null;
-			if (this.tuiLifecycleGeneration !== lifecycleGeneration || controller.signal.aborted || draftId !== this.imageDraft.id || sessionId !== this.sessionManager.getSessionId()) return;
+			if (!isCurrent()) return;
 			if (image && record) { await this.imageDraft.finish(record, image.bytes); return; }
 			const index = record ? this.imageDraft.items.indexOf(record) : -1;
 			if (index >= 0) this.imageDraft.remove(index);
 			const text = await this.readClipboardTextForPaste();
-			if (this.tuiLifecycleGeneration !== lifecycleGeneration || controller.signal.aborted || draftId !== this.imageDraft.id || sessionId !== this.sessionManager.getSessionId()) return;
-			if (text) { this.editor.handleInput?.(`\x1b[200~${text}\x1b[201~`); this.ui.requestRender(); }
+			if (!isCurrent()) return;
+			if (text) {
+				// A path returned by text fallback is part of this already admitted
+				// operation, so it must not re-enter the competing-input guard.
+				const paths = parseImagePaths(text);
+				if (paths) await this.imageDraft.addFiles(paths, this.sessionManager.getCwd());
+				else target.handleInput?.(`\x1b[200~${text}\x1b[201~`);
+				this.ui.requestRender();
+			}
 			else if (capacityError) throw capacityError;
 			else this.showWarning("剪贴板没有图片或文本");
-		} catch (error) { if (record) this.imageDraft.fail(record, error); else this.reportImageError(error); }
-		finally { this.clipboardPending = false; if (this.clipboardAbort === controller) this.clipboardAbort = undefined; }
+		} catch (error) {
+			if (isCurrent()) {
+				if (record && this.imageDraft.items.includes(record)) this.imageDraft.fail(record, error);
+				else this.reportImageError(error);
+			}
+		}
+		finally {
+			if (record && !isCurrent()) {
+				const index = this.imageDraft.items.indexOf(record);
+				if (index >= 0) this.imageDraft.remove(index);
+			}
+			this.clipboardPending = false; if (this.clipboardAbort === controller) this.clipboardAbort = undefined;
+		}
 	}
 
 	private async submitImageDraft(text: string, mode: "steer" | "followUp" = "steer"): Promise<void> {
+		if (this.blockPendingClipboardSubmit(text)) return;
 		if (this.imageSubmissionRecovery) { this.editor.setText(text); this.showWarning("上次提交尚未接受，请等待预检或使用 /image-recover、/image-discard 处理失败提交"); return; }
 		if (this.session.isCompacting) {
 			let count = 0, bytes = 0;
@@ -3803,6 +3851,12 @@ export class InteractiveMode {
 	private readClipboardTextForPaste(): Promise<string | null> {
 		return readClipboardText(this.clipboardAbort?.signal);
 	}
+	private blockPendingClipboardSubmit(text: string): boolean {
+		if (!this.clipboardPending) return false;
+		this.editor.setText(text);
+		this.showWarning("剪贴板尚未就绪，完成后请再次发送");
+		return true;
+	}
 
 	private setupEditorSubmitHandler(): void {
 		this.defaultEditor.onSubmit = async (text: string) => {
@@ -3821,16 +3875,17 @@ export class InteractiveMode {
 			if (text.startsWith("/image ")) {
 				const paths = parseImagePaths(text.slice(7), true);
 				if (!paths) { this.showWarning("用法：/image 带引号的本地图片路径"); return; }
-				try { await this.imageDraft.addFiles(paths, this.sessionManager.getCwd()); } catch (error) { this.reportImageError(error); }
+				try { await this.addDraftImageFiles(paths); } catch (error) { this.reportImageError(error); }
 				return;
 			}
 			if (text === "/image-clear") { this.clipboardAbort?.abort(); this.imageDraft.clear(); return; }
 			if (text.startsWith("/image-remove ")) {
 				const index = Number(text.slice(14)) - 1;
-				if (Number.isInteger(index) && index >= 0 && index < this.imageDraft.items.length) this.imageDraft.remove(index);
+				if (Number.isInteger(index) && index >= 0 && index < this.imageDraft.items.length) this.removeDraftAttachment(this.imageDraft.items[index].id);
 				else this.showWarning("用法：/image-remove 图片序号");
 				return;
 			}
+			if (this.blockPendingClipboardSubmit(text)) return;
 			if (this.imageDraft.items.length && !text.startsWith("/") && !text.startsWith("!")) { await this.submitImageDraft(text); return; }
 			text = text.trim();
 			if (!text) return;
@@ -5685,6 +5740,15 @@ export class InteractiveMode {
 
 	private async handleFollowUp(): Promise<void> {
 		const text = (this.editor.getExpandedText?.() ?? this.editor.getText()).trim();
+		if (this.blockPendingClipboardSubmit(text)) return;
+		// Executing an extension command is not a message. Classify it before
+		// transferring images, preserving follow-up semantics for prompt templates.
+		if (this.imageDraft.items.length && this.isExtensionCommand(text)) {
+			this.editor.addToHistory?.(text);
+			this.editor.setText("");
+			await this.session.prompt(text);
+			return;
+		}
 		if (this.imageDraft.items.length) { await this.submitImageDraft(text, "followUp"); return; }
 		if (!text) return;
 
