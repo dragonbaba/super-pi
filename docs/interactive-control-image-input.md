@@ -2,6 +2,14 @@
 
 Implementation and review-closeout record, 2026-09-17. This records source changes and observed tests, not a claim that native desktop acceptance has passed.
 
+## Unicode description review follow-up on 8635db6 (2026-09-18)
+
+Fresh review [4040828097](https://github.com/dragonbaba/super-pi/pull/38#discussion_r4040828097) found three omitted Unicode bidi controls (U+061C, U+200E, U+200F) in the new multiline description sanitizer. The full placeholder regression file reproduced the failure through the real auxiliary extension, offline provider and live rendering. The sanitizer now uses the Unicode `Bidi_Control` property in its existing filtering pass. The fixture supplies all twelve bidi controls and checks both live and disk-restored descriptions; line breaks and ordinary Arabic/CJK text remain intact. Persisted source descriptions are not rewritten. No new model call, per-key work, callback, cache, capacity change or scheduling change is introduced.
+
+Validation for this follow-up is recorded separately under `clipboardBidiReviewRound`; it is not substituted with results from 8635db6. The existing lifecycle/allocation probes are regression diagnostics only, not a speedup claim or natural desktop response measurement. Native desktop and online services remain unexecuted. No patch/manifest is generated for the committed delivery; all previously policy-retained directories remain untouched.
+
+Final local results: check/build:offline passed; six complete related files 207/207; test:hot 31/31; full npm test 1813 total, 1755 passed, 58 skipped, zero failed/cancelled. The full total includes both spec and TAP reporter summaries. Both lifecycle probe modes passed with ordinary reads/encodes/projections 0/0/0, receive/steady 2/1/2, zero remaining draft/editor IDs and 2/2 observed JS weak references released. These probes ran while the full test process was active, so sampled timings are not controlled latency comparisons. Fresh CI/review must be checked against the follow-up commit.
+
 ## CI and review follow-up on 7f2d473 (2026-09-18)
 
 Delivery follows the user's revised instruction: after committing/pushing, provide a detailed report with commit, review and CI links; do not generate a patch or independent manifest. Earlier patch artifacts are historical and were not regenerated in this round.

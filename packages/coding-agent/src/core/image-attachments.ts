@@ -290,7 +290,7 @@ export class ImageAttachmentDraft {
 export function attachmentLabel(name: string): string { return name.replace(/[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/g, "�"); }
 /** Multiline derived text: preserve line structure without terminal/bidi controls. */
 export function attachmentDescription(text: string): string {
-	return text.replace(/\r\n?/g, "\n").replace(/[\x00-\x09\x0b-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/g, "�");
+	return text.replace(/\r\n?/g, "\n").replace(/[\x00-\x09\x0b-\x1f\x7f-\x9f\p{Bidi_Control}]/gu, "�");
 }
 export function draftAttachmentText(items: readonly DraftImage[], selectedId?: string): string {
 	let text = "";

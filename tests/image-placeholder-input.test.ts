@@ -361,7 +361,8 @@ for (const change of ["focus", "editor", "clear"] as const) test(`clipboard path
 });
 
 test("real auxiliary description preserves safe line breaks live and from saved entries", async () => {
-	const f = await mounted(true, "regular", { visionText: "OCR row one\r\nOCR row two\n\x1b[2J\x9b31m\u202eunsafe" });
+	const bidiControls = "\u061c\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069";
+	const f = await mounted(true, "regular", { visionText: `OCR row one\r\nOCR row two\n\x1b[2J\x9b31m${bidiControls}unsafe\nالعربية 中文` });
 	try {
 		const path = join(f.root, "fixture.png"); writeFileSync(path, pngFixture(8, 8));
 		f.input.write(`\x1b[200~"${path}"\x1b[201~`); await settled(f);
@@ -373,7 +374,8 @@ test("real auxiliary description preserves safe line breaks live and from saved 
 			const lines: string[] = f.internal.chatContainer.render(200);
 			const first = lines.findIndex(line => line.includes("OCR row one"));
 			assert.ok(first >= 0); assert.ok(lines.findIndex(line => line.includes("OCR row two")) > first);
-			assert.doesNotMatch(lines.join("\n"), /\x1b\[2J|\x9b|\u202e/);
+			assert.doesNotMatch(lines.join("\n"), /\x1b\[2J|\x9b|\p{Bidi_Control}/u);
+			assert.ok(lines.some(line => line.includes("العربية 中文")), "ordinary RTL/CJK text remains intact");
 		}
 		assert.equal(f.counts.vision, 1); assert.equal(f.counts.main, 1);
 	} finally { await f.release(); }

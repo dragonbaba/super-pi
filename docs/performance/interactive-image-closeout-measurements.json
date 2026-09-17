@@ -10742,5 +10742,126 @@
       "Original eleven policy-retained directories untouched. Additional interrupted-fixture directory C:/Users/Administrator/AppData/Local/Temp/sp-policy-boundary-8ZAQZ6 retained after automatic cleanup rejection (blocked by policy); no alternative cleanup attempted.",
       "Native desktop and real online services unexecuted; no paid model or private screenshot used."
     ]
+  },
+  "clipboardBidiReviewRound": {
+    "date": "2026-09-18",
+    "parent": "8635db6c4a7521bfab4fe2e73fd32633f0aac5e2",
+    "review": "https://github.com/dragonbaba/super-pi/pull/38#discussion_r4040828097",
+    "reproduction": "Full placeholder test file reproduced omitted U+061C/U+200E/U+200F in live rendering; corrected full file passed 39/39.",
+    "fix": "Existing description filter now uses Unicode Bidi_Control. Real auxiliary extension/offline transport tests all twelve controls, live and saved-entry rendering, safe newlines and ordinary Arabic/CJK.",
+    "commands": [
+      "npm run check",
+      "npm run build:offline",
+      "node --experimental-strip-types --test tests/tui-async-owner-closeout.test.ts tests/image-placeholder-input.test.ts tests/interactive-control-images.test.ts tests/image-review-boundaries.test.ts tests/image-acceptance-closeout.test.ts tests/github-review-regressions.test.ts",
+      "npm run test:hot",
+      "npm test",
+      "node --expose-gc --experimental-strip-types scripts/bench/image-draft-lifecycle.ts",
+      "node --expose-gc --experimental-strip-types scripts/bench/image-draft-lifecycle.ts --sample-input",
+      "git diff --check"
+    ],
+    "staticCheck": "passed",
+    "offlineBuild": "passed",
+    "validation": {
+      "related": {
+        "tests": 207,
+        "passed": 207,
+        "failed": 0,
+        "cancelled": 0,
+        "skipped": 0
+      },
+      "hot": {
+        "tests": 31,
+        "passed": 31,
+        "failed": 0,
+        "cancelled": 0,
+        "skipped": 0
+      },
+      "full": {
+        "tests": 1813,
+        "passed": 1755,
+        "failed": 0,
+        "cancelled": 0,
+        "skipped": 58
+      }
+    },
+    "benchmarks": {
+      "lifecycle": {
+        "ordinary": {
+          "reads": 0,
+          "encodes": 0,
+          "projections": 0
+        },
+        "receive": {
+          "reads": 2,
+          "encodes": 1,
+          "projections": 2
+        },
+        "steady": {
+          "reads": 2,
+          "encodes": 1,
+          "projections": 2
+        },
+        "cancelMs": 0.4978000000000975,
+        "recordsAfter": 0,
+        "weakReleased": 2,
+        "weakTotal": 2,
+        "inputProfiles": []
+      },
+      "allocation": {
+        "ordinary": {
+          "reads": 0,
+          "encodes": 0,
+          "projections": 0
+        },
+        "receive": {
+          "reads": 2,
+          "encodes": 1,
+          "projections": 2
+        },
+        "steady": {
+          "reads": 2,
+          "encodes": 1,
+          "projections": 2
+        },
+        "cancelMs": 0.8460999999999785,
+        "recordsAfter": 0,
+        "weakReleased": 2,
+        "weakTotal": 2,
+        "inputProfiles": [
+          {
+            "name": "no-images",
+            "iterations": 2000,
+            "sampledBytes": 35701016,
+            "elapsedMs": 67.33480000000009,
+            "scope": "two cursor keys and editor render; sampling enabled, not natural-frame latency"
+          },
+          {
+            "name": "one-ready-image",
+            "iterations": 2000,
+            "sampledBytes": 51390856,
+            "elapsedMs": 67.50340000000006,
+            "scope": "two cursor keys and editor render; sampling enabled, not natural-frame latency"
+          }
+        ]
+      }
+    },
+    "logSha256": {
+      "clipboard-bidi-repro.log": "652a40a36d8310f56b19d2022893640374c99e6183b08ea816decf82a2dafcbb",
+      "clipboard-bidi-focused.log": "a27e90460a3720e61a9ec9fb5cf77e13b46113ff950853d00f07b829043f767b",
+      "clipboard-bidi-check.log": "97ecfd063b2a73c7d484d6c20a466b60965da8cf8a976104c80510a2a6633627",
+      "clipboard-bidi-build.log": "a175b75cd77e9f9d9759f12b0243f550f4601d2df34b6012f5b5a9d4102c86a7",
+      "clipboard-bidi-related.log": "042921a939691a7824c19e33727244459785777a0c149aebce0770505f9c1888",
+      "clipboard-bidi-hot.log": "f13b5e4901879cfbf9bfb2d9a8701c4b0da7e1556988875c6fbaff314ae7e2bd",
+      "clipboard-bidi-full.log": "b77ad39b328b4871502c4922a236ff4c39e4fd0a8794e818642cd4c419472a5c",
+      "clipboard-bidi-lifecycle.log": "2e6b0a87f295402b489b80414191a158a40bea5e0dbc52b152ad19f741a82916",
+      "clipboard-bidi-allocation.log": "d5bc602faa9487756cf1c755d5fa775cab803f71043b2a6e8b2a736942e4675f"
+    },
+    "limitations": [
+      "Same sanitizer passes; no new per-key/frame callbacks, promises, caches or ownership state.",
+      "Benchmarks ran alongside full tests: diagnostic counters and absolute samples, not controlled timing or improvement claims.",
+      "Native desktop and online services unexecuted.",
+      "Original eleven retained directories and sp-policy-boundary-8ZAQZ6 untouched; no alternate cleanup.",
+      "No patch or standalone manifest generated."
+    ]
   }
 }
