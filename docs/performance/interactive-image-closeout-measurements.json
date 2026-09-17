@@ -7762,5 +7762,1697 @@
       "Windows Alt+V regression uses real dispatch/TUI/owner and controlled child-process transport; skipped on other OSes.",
       "The additional awaited event is an opt-in auto-compaction retry admission boundary, not per-delta or per-frame event delivery."
     ]
+  },
+  "githubClipboardIdentityRound": {
+    "date": "2026-09-17",
+    "reviewedCommit": "3319ed454524047f12e01c4fd34a0450b2865c86",
+    "previousCandidateCI": {
+      "run": 35228929851,
+      "windows": "success",
+      "linux": "success"
+    },
+    "environment": {
+      "node": "v26.4.0",
+      "shell": "PowerShell",
+      "platform": "Windows",
+      "providers": "offline controlled transports only"
+    },
+    "reviewCommentIds": [
+      4037621350,
+      4037621361,
+      4037621370
+    ],
+    "validation": {
+      "check": "exit 0",
+      "buildOffline": "exit 0",
+      "related": {
+        "tests": 400,
+        "pass": 379,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 21
+      },
+      "hot": {
+        "tests": 31,
+        "pass": 31,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0
+      },
+      "full": {
+        "tests": 1753,
+        "pass": 1695,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 58
+      },
+      "alphaG2": {
+        "tests": 322,
+        "pass": 318,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 4
+      }
+    },
+    "naturalResponse": [
+      {
+        "scheduling": "natural",
+        "targets": {
+          "inputOrCancelMs": 100,
+          "matchingFrameMs": 150
+        },
+        "fixtureBytes": {
+          "screenshot": 64955,
+          "near-24mp": 1385685,
+          "near-bytes": 10244793,
+          "multi": 10244793,
+          "over-pixels": 45,
+          "over-bytes": 10485761,
+          "corrupt": 32477
+        }
+      },
+      {
+        "scheduling": "natural",
+        "metricDefinition": "planned/callback/input-handler arrival/state accepted/matching frame write complete",
+        "scenario": "screenshot",
+        "cancel": false,
+        "fixtureBytes": 64955,
+        "epoch": 727.5016,
+        "receivedAt": 801.5992,
+        "frameAt": 830.0883,
+        "settledAt": 801.673,
+        "stages": {
+          "uiProjection": {
+            "count": 3,
+            "ms": 0.04319999999995616
+          },
+          "read": {
+            "count": 2,
+            "ms": 0.10389999999995325
+          },
+          "base64Encode": {
+            "count": 1,
+            "ms": 0.018100000000004002
+          },
+          "pixelDecode": {
+            "count": 1,
+            "ms": 16.330900000000042
+          }
+        },
+        "probes": [
+          {
+            "planned": 785.6614,
+            "kind": "input",
+            "callbackAt": 786.0495,
+            "handled": 786.0495,
+            "inputArrived": 786.1695,
+            "processed": 786.237,
+            "acceptedState": "PROBE_BASEx",
+            "dispatchReturned": 786.2639,
+            "matchedState": true,
+            "framePrepared": 786.6209,
+            "generation": 4,
+            "frame": 786.999,
+            "delayMs": 0.38810000000000855,
+            "inputDelayMs": 0.5756000000000085,
+            "handlerMs": 0.06749999999999545,
+            "frameDelayMs": 1.3376000000000658,
+            "plannedDuringDecode": true
+          }
+        ],
+        "decodes": [
+          {
+            "start": 780.6614,
+            "end": 796.9881,
+            "terminated": false,
+            "rss": 235962368,
+            "wasmBytes": 27262976
+          }
+        ],
+        "workerEvents": [
+          {
+            "type": "decode-start",
+            "at": 780.6614
+          },
+          {
+            "type": "decode-end",
+            "at": 796.9881,
+            "elapsed": 16.330900000000042,
+            "active": 0,
+            "wasmBytes": 27262976,
+            "rss": 235962368
+          },
+          {
+            "type": "worker-exit",
+            "at": 801.2961,
+            "active": 0
+          }
+        ],
+        "before": {
+          "rss": 179728384,
+          "heapTotal": 92909568,
+          "heapUsed": 45474232,
+          "external": 10230495,
+          "arrayBuffers": 204302,
+          "maxRssKiB": 177956,
+          "wasmBytes": 1441792
+        },
+        "peak": {
+          "maxRssKiB": 231044,
+          "rss": 201105408,
+          "heapTotal": 104181760,
+          "heapUsed": 63434104,
+          "external": 8275836,
+          "arrayBuffers": 269258,
+          "wasmPeak": 27262976
+        },
+        "after": {
+          "rss": 201355264,
+          "heapTotal": 103657472,
+          "heapUsed": 45722504,
+          "external": 8210880,
+          "arrayBuffers": 204302,
+          "wasmBytes": 1441792,
+          "nativeActive": 0,
+          "records": 0
+        },
+        "parentNativeHigh": 0,
+        "state": [
+          {
+            "state": "ready"
+          }
+        ],
+        "sink": "simulated async Writable; real ProcessTerminal/TUI input dispatch, no desktop paint; terminated decode interval ends at worker exit (native function completion/Photon object count unknown)"
+      },
+      {
+        "scheduling": "natural",
+        "metricDefinition": "planned/callback/input-handler arrival/state accepted/matching frame write complete",
+        "scenario": "screenshot",
+        "cancel": true,
+        "fixtureBytes": 64955,
+        "epoch": 722.9467,
+        "settledAt": 788.0763,
+        "stages": {
+          "uiProjection": {
+            "count": 3,
+            "ms": 0.035199999999917964
+          },
+          "read": {
+            "count": 2,
+            "ms": 0.10620000000005803
+          },
+          "base64Encode": {
+            "count": 1,
+            "ms": 0.01890000000003056
+          }
+        },
+        "probes": [
+          {
+            "planned": 783.4436,
+            "kind": "cancel",
+            "callbackAt": 784.307,
+            "handled": 784.307,
+            "inputArrived": 784.4206,
+            "processed": 784.85,
+            "acceptedState": "",
+            "dispatchReturned": 784.8677,
+            "matchedState": true,
+            "framePrepared": 785.179,
+            "generation": 4,
+            "frame": 785.2695,
+            "delayMs": 0.8634000000000697,
+            "inputDelayMs": 1.406400000000076,
+            "handlerMs": 0.4293999999999869,
+            "frameDelayMs": 1.825900000000047,
+            "plannedDuringDecode": true
+          }
+        ],
+        "decodes": [
+          {
+            "start": 778.4436,
+            "end": 787.8041,
+            "terminated": true
+          }
+        ],
+        "workerEvents": [
+          {
+            "type": "decode-start",
+            "at": 778.4436
+          },
+          {
+            "type": "worker-exit",
+            "at": 787.8041,
+            "active": 0
+          }
+        ],
+        "before": {
+          "rss": 167010304,
+          "heapTotal": 79540224,
+          "heapUsed": 45399840,
+          "external": 10230495,
+          "arrayBuffers": 204302,
+          "maxRssKiB": 165536,
+          "wasmBytes": 1441792
+        },
+        "peak": {
+          "maxRssKiB": 218716,
+          "rss": 204775424,
+          "heapTotal": 105754624,
+          "heapUsed": 48518728,
+          "external": 8275836,
+          "arrayBuffers": 269258,
+          "wasmPeak": 1441792
+        },
+        "after": {
+          "rss": 202285056,
+          "heapTotal": 105492480,
+          "heapUsed": 45617400,
+          "external": 8210880,
+          "arrayBuffers": 204302,
+          "wasmBytes": 1441792,
+          "nativeActive": 0,
+          "records": 0
+        },
+        "parentNativeHigh": 0,
+        "state": [],
+        "sink": "simulated async Writable; real ProcessTerminal/TUI input dispatch, no desktop paint; terminated decode interval ends at worker exit (native function completion/Photon object count unknown)"
+      },
+      {
+        "scheduling": "natural",
+        "metricDefinition": "planned/callback/input-handler arrival/state accepted/matching frame write complete",
+        "scenario": "near-24mp",
+        "cancel": false,
+        "fixtureBytes": 1385685,
+        "epoch": 722.9932,
+        "receivedAt": 945.9975,
+        "frameAt": 953.0867,
+        "settledAt": 946.0938,
+        "stages": {
+          "uiProjection": {
+            "count": 3,
+            "ms": 0.039700000000038926
+          },
+          "read": {
+            "count": 2,
+            "ms": 0.470299999999952
+          },
+          "base64Encode": {
+            "count": 1,
+            "ms": 0.3141000000000531
+          },
+          "pixelDecode": {
+            "count": 1,
+            "ms": 147.88010000000008
+          }
+        },
+        "probes": [
+          {
+            "planned": 782.9753,
+            "kind": "input",
+            "callbackAt": 783.7138,
+            "handled": 783.7138,
+            "inputArrived": 783.8348,
+            "processed": 783.9065,
+            "acceptedState": "PROBE_BASEx",
+            "dispatchReturned": 783.9347,
+            "matchedState": true,
+            "framePrepared": 784.2883,
+            "generation": 4,
+            "frame": 784.6634,
+            "delayMs": 0.7385000000000446,
+            "inputDelayMs": 0.9312000000001035,
+            "handlerMs": 0.07170000000007803,
+            "frameDelayMs": 1.6881000000000768,
+            "plannedDuringDecode": true
+          }
+        ],
+        "decodes": [
+          {
+            "start": 777.9753,
+            "end": 925.8509,
+            "terminated": false,
+            "rss": 506372096,
+            "wasmBytes": 292225024
+          }
+        ],
+        "workerEvents": [
+          {
+            "type": "decode-start",
+            "at": 777.9753
+          },
+          {
+            "type": "decode-end",
+            "at": 925.8509,
+            "elapsed": 147.88010000000008,
+            "active": 0,
+            "wasmBytes": 292225024,
+            "rss": 506372096
+          },
+          {
+            "type": "worker-exit",
+            "at": 945.5849,
+            "active": 0
+          }
+        ],
+        "before": {
+          "rss": 166621184,
+          "heapTotal": 80064512,
+          "heapUsed": 45387528,
+          "external": 10230495,
+          "arrayBuffers": 204302,
+          "maxRssKiB": 165476,
+          "wasmBytes": 1441792
+        },
+        "peak": {
+          "maxRssKiB": 495108,
+          "rss": 204746752,
+          "heapTotal": 105754624,
+          "heapUsed": 66156712,
+          "external": 11444146,
+          "arrayBuffers": 1589988,
+          "wasmPeak": 292225024
+        },
+        "after": {
+          "rss": 201736192,
+          "heapTotal": 105492480,
+          "heapUsed": 45628408,
+          "external": 8210880,
+          "arrayBuffers": 204302,
+          "wasmBytes": 1441792,
+          "nativeActive": 0,
+          "records": 0
+        },
+        "parentNativeHigh": 0,
+        "state": [
+          {
+            "state": "ready"
+          }
+        ],
+        "sink": "simulated async Writable; real ProcessTerminal/TUI input dispatch, no desktop paint; terminated decode interval ends at worker exit (native function completion/Photon object count unknown)"
+      },
+      {
+        "scheduling": "natural",
+        "metricDefinition": "planned/callback/input-handler arrival/state accepted/matching frame write complete",
+        "scenario": "near-24mp",
+        "cancel": true,
+        "fixtureBytes": 1385685,
+        "epoch": 722.1401,
+        "settledAt": 789.1974,
+        "stages": {
+          "uiProjection": {
+            "count": 3,
+            "ms": 0.04169999999999163
+          },
+          "read": {
+            "count": 2,
+            "ms": 0.46480000000008204
+          },
+          "base64Encode": {
+            "count": 1,
+            "ms": 0.3125
+          }
+        },
+        "probes": [
+          {
+            "planned": 782.2473,
+            "kind": "cancel",
+            "callbackAt": 783.0862,
+            "handled": 783.0862,
+            "inputArrived": 783.3727,
+            "processed": 783.8177,
+            "acceptedState": "",
+            "dispatchReturned": 783.8349,
+            "matchedState": true,
+            "framePrepared": 784.1547,
+            "generation": 4,
+            "frame": 785.0507,
+            "delayMs": 0.8388999999999669,
+            "inputDelayMs": 1.5703999999999496,
+            "handlerMs": 0.44499999999993634,
+            "frameDelayMs": 2.8034000000000106,
+            "plannedDuringDecode": true
+          }
+        ],
+        "decodes": [
+          {
+            "start": 777.2473,
+            "end": 788.8751,
+            "terminated": true
+          }
+        ],
+        "workerEvents": [
+          {
+            "type": "decode-start",
+            "at": 777.2473
+          },
+          {
+            "type": "worker-exit",
+            "at": 788.8751,
+            "active": 0
+          }
+        ],
+        "before": {
+          "rss": 166752256,
+          "heapTotal": 80326656,
+          "heapUsed": 45400856,
+          "external": 10230495,
+          "arrayBuffers": 204302,
+          "maxRssKiB": 165284,
+          "wasmBytes": 1441792
+        },
+        "peak": {
+          "maxRssKiB": 230000,
+          "rss": 205922304,
+          "heapTotal": 106278912,
+          "heapUsed": 50649536,
+          "external": 11444146,
+          "arrayBuffers": 1589988,
+          "wasmPeak": 1441792
+        },
+        "after": {
+          "rss": 202924032,
+          "heapTotal": 106016768,
+          "heapUsed": 45618368,
+          "external": 8210880,
+          "arrayBuffers": 204302,
+          "wasmBytes": 1441792,
+          "nativeActive": 0,
+          "records": 0
+        },
+        "parentNativeHigh": 0,
+        "state": [],
+        "sink": "simulated async Writable; real ProcessTerminal/TUI input dispatch, no desktop paint; terminated decode interval ends at worker exit (native function completion/Photon object count unknown)"
+      },
+      {
+        "scheduling": "natural",
+        "metricDefinition": "planned/callback/input-handler arrival/state accepted/matching frame write complete",
+        "scenario": "near-bytes",
+        "cancel": false,
+        "fixtureBytes": 10244793,
+        "epoch": 718.88,
+        "receivedAt": 814.4921,
+        "frameAt": 823.5267,
+        "settledAt": 814.5648,
+        "stages": {
+          "uiProjection": {
+            "count": 3,
+            "ms": 0.04079999999999018
+          },
+          "read": {
+            "count": 2,
+            "ms": 2.8397999999999683
+          },
+          "base64Encode": {
+            "count": 1,
+            "ms": 2.0618999999999232
+          },
+          "pixelDecode": {
+            "count": 1,
+            "ms": 25.22320000000002
+          }
+        },
+        "probes": [
+          {
+            "planned": 787.7331,
+            "kind": "input",
+            "callbackAt": 788.4296,
+            "handled": 788.4296,
+            "inputArrived": 788.5621,
+            "processed": 788.6316,
+            "acceptedState": "PROBE_BASEx",
+            "dispatchReturned": 788.6606,
+            "matchedState": true,
+            "framePrepared": 789.0227,
+            "generation": 4,
+            "frame": 789.3953,
+            "delayMs": 0.6965000000000146,
+            "inputDelayMs": 0.8985000000000127,
+            "handlerMs": 0.06950000000006185,
+            "frameDelayMs": 1.6621999999999844,
+            "plannedDuringDecode": true
+          }
+        ],
+        "decodes": [
+          {
+            "start": 782.7331,
+            "end": 807.9522,
+            "terminated": false,
+            "rss": 292458496,
+            "wasmBytes": 43319296
+          }
+        ],
+        "workerEvents": [
+          {
+            "type": "decode-start",
+            "at": 782.7331
+          },
+          {
+            "type": "decode-end",
+            "at": 807.9522,
+            "elapsed": 25.22320000000002,
+            "active": 0,
+            "wasmBytes": 43319296,
+            "rss": 292458496
+          },
+          {
+            "type": "worker-exit",
+            "at": 814.1777,
+            "active": 0
+          }
+        ],
+        "before": {
+          "rss": 166768640,
+          "heapTotal": 80064512,
+          "heapUsed": 45400888,
+          "external": 10230495,
+          "arrayBuffers": 204302,
+          "maxRssKiB": 165300,
+          "wasmBytes": 1441792
+        },
+        "peak": {
+          "maxRssKiB": 286680,
+          "rss": 227225600,
+          "heapTotal": 105754624,
+          "heapUsed": 52870160,
+          "external": 32115398,
+          "arrayBuffers": 10449096,
+          "wasmPeak": 43319296
+        },
+        "after": {
+          "rss": 202338304,
+          "heapTotal": 105754624,
+          "heapUsed": 45647064,
+          "external": 8210880,
+          "arrayBuffers": 204302,
+          "wasmBytes": 1441792,
+          "nativeActive": 0,
+          "records": 0
+        },
+        "parentNativeHigh": 0,
+        "state": [
+          {
+            "state": "ready"
+          }
+        ],
+        "sink": "simulated async Writable; real ProcessTerminal/TUI input dispatch, no desktop paint; terminated decode interval ends at worker exit (native function completion/Photon object count unknown)"
+      },
+      {
+        "scheduling": "natural",
+        "metricDefinition": "planned/callback/input-handler arrival/state accepted/matching frame write complete",
+        "scenario": "near-bytes",
+        "cancel": true,
+        "fixtureBytes": 10244793,
+        "epoch": 724.4888,
+        "settledAt": 799.1381,
+        "stages": {
+          "uiProjection": {
+            "count": 3,
+            "ms": 0.0362999999999829
+          },
+          "read": {
+            "count": 2,
+            "ms": 2.8828000000000884
+          },
+          "base64Encode": {
+            "count": 1,
+            "ms": 2.025800000000004
+          }
+        },
+        "probes": [
+          {
+            "planned": 793.6236,
+            "kind": "cancel",
+            "callbackAt": 793.8734,
+            "handled": 793.8734,
+            "inputArrived": 793.9875,
+            "processed": 794.4145,
+            "acceptedState": "",
+            "dispatchReturned": 794.4315,
+            "matchedState": true,
+            "framePrepared": 794.7453,
+            "generation": 4,
+            "frame": 794.8486,
+            "delayMs": 0.24979999999993652,
+            "inputDelayMs": 0.7908999999999651,
+            "handlerMs": 0.4270000000000209,
+            "frameDelayMs": 1.2250000000000227,
+            "plannedDuringDecode": true
+          }
+        ],
+        "decodes": [
+          {
+            "start": 788.6236,
+            "end": 798.8629,
+            "terminated": true
+          }
+        ],
+        "workerEvents": [
+          {
+            "type": "decode-start",
+            "at": 788.6236
+          },
+          {
+            "type": "worker-exit",
+            "at": 798.8629,
+            "active": 0
+          }
+        ],
+        "before": {
+          "rss": 167145472,
+          "heapTotal": 80850944,
+          "heapUsed": 45464288,
+          "external": 10230495,
+          "arrayBuffers": 204302,
+          "maxRssKiB": 165668,
+          "wasmBytes": 1441792
+        },
+        "peak": {
+          "maxRssKiB": 261616,
+          "rss": 226643968,
+          "heapTotal": 106016768,
+          "heapUsed": 55803744,
+          "external": 32115398,
+          "arrayBuffers": 10449096,
+          "wasmPeak": 1441792
+        },
+        "after": {
+          "rss": 203075584,
+          "heapTotal": 106016768,
+          "heapUsed": 45681848,
+          "external": 8210880,
+          "arrayBuffers": 204302,
+          "wasmBytes": 1441792,
+          "nativeActive": 0,
+          "records": 0
+        },
+        "parentNativeHigh": 0,
+        "state": [],
+        "sink": "simulated async Writable; real ProcessTerminal/TUI input dispatch, no desktop paint; terminated decode interval ends at worker exit (native function completion/Photon object count unknown)"
+      },
+      {
+        "scheduling": "natural",
+        "metricDefinition": "planned/callback/input-handler arrival/state accepted/matching frame write complete",
+        "scenario": "multi",
+        "cancel": false,
+        "fixtureBytes": 10244793,
+        "epoch": 754.5625,
+        "receivedAt": 992.5904,
+        "frameAt": 1009.8128,
+        "settledAt": 992.673,
+        "stages": {
+          "uiProjection": {
+            "count": 7,
+            "ms": 0.058300000000031105
+          },
+          "read": {
+            "count": 6,
+            "ms": 7.895900000000211
+          },
+          "base64Encode": {
+            "count": 3,
+            "ms": 6.235299999999938
+          },
+          "pixelDecode": {
+            "count": 3,
+            "ms": 64.16700000000003
+          }
+        },
+        "probes": [
+          {
+            "planned": 824.39,
+            "kind": "input",
+            "callbackAt": 825.5987,
+            "handled": 825.5987,
+            "inputArrived": 825.7023,
+            "processed": 825.7749,
+            "acceptedState": "PROBE_BASEx",
+            "dispatchReturned": 825.8087,
+            "matchedState": true,
+            "framePrepared": 826.2089,
+            "generation": 4,
+            "frame": 826.5489,
+            "delayMs": 1.2087000000000216,
+            "inputDelayMs": 1.384900000000016,
+            "handlerMs": 0.0725999999999658,
+            "frameDelayMs": 2.158900000000017,
+            "plannedDuringDecode": true
+          }
+        ],
+        "decodes": [
+          {
+            "start": 819.39,
+            "end": 844.9264,
+            "terminated": false,
+            "rss": 286728192,
+            "wasmBytes": 43319296
+          },
+          {
+            "start": 895.9927,
+            "end": 915.3484,
+            "terminated": false,
+            "rss": 316309504,
+            "wasmBytes": 43319296
+          },
+          {
+            "start": 967.7699,
+            "end": 987.0291,
+            "terminated": false,
+            "rss": 320487424,
+            "wasmBytes": 43319296
+          }
+        ],
+        "workerEvents": [
+          {
+            "type": "decode-start",
+            "at": 819.39
+          },
+          {
+            "type": "decode-end",
+            "at": 844.9264,
+            "elapsed": 25.54320000000007,
+            "active": 0,
+            "wasmBytes": 43319296,
+            "rss": 286728192
+          },
+          {
+            "type": "worker-exit",
+            "at": 850.5378,
+            "active": 0
+          },
+          {
+            "type": "decode-start",
+            "at": 895.9927
+          },
+          {
+            "type": "decode-end",
+            "at": 915.3484,
+            "elapsed": 19.36009999999999,
+            "active": 0,
+            "wasmBytes": 43319296,
+            "rss": 316309504
+          },
+          {
+            "type": "worker-exit",
+            "at": 921.0697,
+            "active": 0
+          },
+          {
+            "type": "decode-start",
+            "at": 967.7699
+          },
+          {
+            "type": "decode-end",
+            "at": 987.0291,
+            "elapsed": 19.26369999999997,
+            "active": 0,
+            "wasmBytes": 43319296,
+            "rss": 320487424
+          },
+          {
+            "type": "worker-exit",
+            "at": 992.4992,
+            "active": 0
+          }
+        ],
+        "before": {
+          "rss": 168112128,
+          "heapTotal": 81637376,
+          "heapUsed": 45464632,
+          "external": 10959548,
+          "arrayBuffers": 204302,
+          "maxRssKiB": 168476,
+          "wasmBytes": 1441792
+        },
+        "peak": {
+          "maxRssKiB": 313132,
+          "rss": 253980672,
+          "heapTotal": 104181760,
+          "heapUsed": 52244008,
+          "external": 59434846,
+          "arrayBuffers": 10449096,
+          "wasmPeak": 43319296
+        },
+        "after": {
+          "rss": 202846208,
+          "heapTotal": 103395328,
+          "heapUsed": 45768152,
+          "external": 8210880,
+          "arrayBuffers": 204302,
+          "wasmBytes": 1441792,
+          "nativeActive": 0,
+          "records": 0
+        },
+        "parentNativeHigh": 0,
+        "state": [
+          {
+            "state": "ready"
+          },
+          {
+            "state": "ready"
+          },
+          {
+            "state": "ready"
+          }
+        ],
+        "sink": "simulated async Writable; real ProcessTerminal/TUI input dispatch, no desktop paint; terminated decode interval ends at worker exit (native function completion/Photon object count unknown)"
+      },
+      {
+        "scheduling": "natural",
+        "metricDefinition": "planned/callback/input-handler arrival/state accepted/matching frame write complete",
+        "scenario": "multi",
+        "cancel": true,
+        "fixtureBytes": 10244793,
+        "epoch": 720.0441,
+        "settledAt": 793.4351,
+        "stages": {
+          "uiProjection": {
+            "count": 3,
+            "ms": 0.035000000000081855
+          },
+          "read": {
+            "count": 2,
+            "ms": 2.6864000000000487
+          },
+          "base64Encode": {
+            "count": 1,
+            "ms": 2.123100000000022
+          }
+        },
+        "probes": [
+          {
+            "planned": 788.6516,
+            "kind": "cancel",
+            "callbackAt": 788.9309,
+            "handled": 788.9309,
+            "inputArrived": 789.0545,
+            "processed": 789.4984,
+            "acceptedState": "",
+            "dispatchReturned": 789.5163,
+            "matchedState": true,
+            "framePrepared": 789.8264,
+            "generation": 4,
+            "frame": 789.9182,
+            "delayMs": 0.27929999999992106,
+            "inputDelayMs": 0.8467999999999165,
+            "handlerMs": 0.4438999999999851,
+            "frameDelayMs": 1.2665999999999258,
+            "plannedDuringDecode": true
+          }
+        ],
+        "decodes": [
+          {
+            "start": 783.6516,
+            "end": 793.1495,
+            "terminated": true
+          }
+        ],
+        "workerEvents": [
+          {
+            "type": "decode-start",
+            "at": 783.6516
+          },
+          {
+            "type": "worker-exit",
+            "at": 793.1495,
+            "active": 0
+          }
+        ],
+        "before": {
+          "rss": 167071744,
+          "heapTotal": 80850944,
+          "heapUsed": 45393416,
+          "external": 10230495,
+          "arrayBuffers": 204302,
+          "maxRssKiB": 165596,
+          "wasmBytes": 1441792
+        },
+        "peak": {
+          "maxRssKiB": 263440,
+          "rss": 227446784,
+          "heapTotal": 106541056,
+          "heapUsed": 54441760,
+          "external": 32115398,
+          "arrayBuffers": 10449096,
+          "wasmPeak": 1441792
+        },
+        "after": {
+          "rss": 203755520,
+          "heapTotal": 106278912,
+          "heapUsed": 45617936,
+          "external": 8210880,
+          "arrayBuffers": 204302,
+          "wasmBytes": 1441792,
+          "nativeActive": 0,
+          "records": 0
+        },
+        "parentNativeHigh": 0,
+        "state": [],
+        "sink": "simulated async Writable; real ProcessTerminal/TUI input dispatch, no desktop paint; terminated decode interval ends at worker exit (native function completion/Photon object count unknown)"
+      },
+      {
+        "scheduling": "natural",
+        "metricDefinition": "planned/callback/input-handler arrival/state accepted/matching frame write complete",
+        "scenario": "over-pixels",
+        "cancel": false,
+        "fixtureBytes": 45,
+        "epoch": 725.9872,
+        "settledAt": 728.634,
+        "stages": {
+          "uiProjection": {
+            "count": 3,
+            "ms": 0.0340000000001055
+          },
+          "read": {
+            "count": 2,
+            "ms": 0.10199999999997544
+          }
+        },
+        "probes": [
+          {
+            "planned": 733.634,
+            "kind": "input",
+            "callbackAt": 740.109,
+            "handled": 740.109,
+            "inputArrived": 740.1906,
+            "processed": 740.2509,
+            "acceptedState": "PROBE_BASEx",
+            "dispatchReturned": 740.2794,
+            "matchedState": true,
+            "framePrepared": 740.6605,
+            "generation": 4,
+            "frame": 745.671,
+            "delayMs": 6.475000000000023,
+            "inputDelayMs": 6.616899999999987,
+            "handlerMs": 0.06029999999998381,
+            "frameDelayMs": 12.037000000000035,
+            "plannedDuringDecode": false
+          }
+        ],
+        "decodes": [],
+        "workerEvents": [],
+        "before": {
+          "rss": 166686720,
+          "heapTotal": 80326656,
+          "heapUsed": 45388320,
+          "external": 10230495,
+          "arrayBuffers": 204302,
+          "maxRssKiB": 165540,
+          "wasmBytes": 1441792
+        },
+        "peak": {
+          "maxRssKiB": 165540,
+          "rss": 166883328,
+          "heapTotal": 80326656,
+          "heapUsed": 46193904,
+          "external": 8212336,
+          "arrayBuffers": 205758,
+          "wasmPeak": 1441792
+        },
+        "after": {
+          "rss": 166895616,
+          "heapTotal": 80326656,
+          "heapUsed": 45487232,
+          "external": 8210880,
+          "arrayBuffers": 204302,
+          "wasmBytes": 1441792,
+          "nativeActive": 0,
+          "records": 0
+        },
+        "parentNativeHigh": 0,
+        "state": [
+          {
+            "state": "failed",
+            "error": "图片尺寸无效或超过 2400 万像素"
+          }
+        ],
+        "sink": "simulated async Writable; real ProcessTerminal/TUI input dispatch, no desktop paint; terminated decode interval ends at worker exit (native function completion/Photon object count unknown)"
+      },
+      {
+        "scheduling": "natural",
+        "metricDefinition": "planned/callback/input-handler arrival/state accepted/matching frame write complete",
+        "scenario": "over-pixels",
+        "cancel": true,
+        "fixtureBytes": 45,
+        "epoch": 718.1651,
+        "settledAt": 721.2515,
+        "stages": {
+          "uiProjection": {
+            "count": 4,
+            "ms": 0.03930000000002565
+          },
+          "read": {
+            "count": 2,
+            "ms": 0.12229999999999563
+          }
+        },
+        "probes": [
+          {
+            "planned": 726.2515,
+            "kind": "cancel",
+            "callbackAt": 729.269,
+            "handled": 729.269,
+            "inputArrived": 729.3411,
+            "processed": 729.5671,
+            "acceptedState": "",
+            "dispatchReturned": 729.601,
+            "matchedState": true,
+            "framePrepared": 729.8457,
+            "generation": 4,
+            "frame": 734.7163,
+            "delayMs": 3.017500000000041,
+            "inputDelayMs": 3.3156000000000176,
+            "handlerMs": 0.2259999999999991,
+            "frameDelayMs": 8.464800000000082,
+            "plannedDuringDecode": false
+          }
+        ],
+        "decodes": [],
+        "workerEvents": [],
+        "before": {
+          "rss": 167710720,
+          "heapTotal": 80064512,
+          "heapUsed": 45447544,
+          "external": 10230495,
+          "arrayBuffers": 204510,
+          "maxRssKiB": 165568,
+          "wasmBytes": 1441792
+        },
+        "peak": {
+          "maxRssKiB": 165568,
+          "rss": 167186432,
+          "heapTotal": 80064512,
+          "heapUsed": 46180760,
+          "external": 8212336,
+          "arrayBuffers": 205758,
+          "wasmPeak": 1441792
+        },
+        "after": {
+          "rss": 167227392,
+          "heapTotal": 80064512,
+          "heapUsed": 45537832,
+          "external": 8210880,
+          "arrayBuffers": 204302,
+          "wasmBytes": 1441792,
+          "nativeActive": 0,
+          "records": 0
+        },
+        "parentNativeHigh": 0,
+        "state": [],
+        "sink": "simulated async Writable; real ProcessTerminal/TUI input dispatch, no desktop paint; terminated decode interval ends at worker exit (native function completion/Photon object count unknown)"
+      },
+      {
+        "scheduling": "natural",
+        "metricDefinition": "planned/callback/input-handler arrival/state accepted/matching frame write complete",
+        "scenario": "over-bytes",
+        "cancel": false,
+        "fixtureBytes": 10485761,
+        "epoch": 723.89,
+        "settledAt": 726.275,
+        "stages": {
+          "uiProjection": {
+            "count": 3,
+            "ms": 0.03779999999994743
+          }
+        },
+        "probes": [
+          {
+            "planned": 731.275,
+            "kind": "input",
+            "callbackAt": 735.6958,
+            "handled": 735.6958,
+            "inputArrived": 735.7731,
+            "processed": 735.8393,
+            "acceptedState": "PROBE_BASEx",
+            "dispatchReturned": 735.8515,
+            "matchedState": true,
+            "framePrepared": 736.1162,
+            "generation": 5,
+            "frame": 750.9689,
+            "delayMs": 4.420799999999986,
+            "inputDelayMs": 4.564300000000003,
+            "handlerMs": 0.06619999999998072,
+            "frameDelayMs": 19.693899999999985,
+            "plannedDuringDecode": false
+          }
+        ],
+        "decodes": [],
+        "workerEvents": [],
+        "before": {
+          "rss": 167510016,
+          "heapTotal": 80064512,
+          "heapUsed": 45449224,
+          "external": 10230495,
+          "arrayBuffers": 204302,
+          "maxRssKiB": 166024,
+          "wasmBytes": 1441792
+        },
+        "peak": {
+          "maxRssKiB": 166024,
+          "rss": 167694336,
+          "heapTotal": 80064512,
+          "heapUsed": 46237808,
+          "external": 8211504,
+          "arrayBuffers": 204926,
+          "wasmPeak": 1441792
+        },
+        "after": {
+          "rss": 167780352,
+          "heapTotal": 80064512,
+          "heapUsed": 45558200,
+          "external": 8210880,
+          "arrayBuffers": 204302,
+          "wasmBytes": 1441792,
+          "nativeActive": 0,
+          "records": 0
+        },
+        "parentNativeHigh": 0,
+        "state": [
+          {
+            "state": "failed",
+            "error": "图片不是普通文件或超过 10 MiB"
+          }
+        ],
+        "sink": "simulated async Writable; real ProcessTerminal/TUI input dispatch, no desktop paint; terminated decode interval ends at worker exit (native function completion/Photon object count unknown)"
+      },
+      {
+        "scheduling": "natural",
+        "metricDefinition": "planned/callback/input-handler arrival/state accepted/matching frame write complete",
+        "scenario": "over-bytes",
+        "cancel": true,
+        "fixtureBytes": 10485761,
+        "epoch": 713.1287,
+        "settledAt": 716.3675,
+        "stages": {
+          "uiProjection": {
+            "count": 4,
+            "ms": 0.03939999999988686
+          }
+        },
+        "probes": [
+          {
+            "planned": 721.3675,
+            "kind": "cancel",
+            "callbackAt": 724.1045,
+            "handled": 724.1045,
+            "inputArrived": 724.1754,
+            "processed": 724.4063,
+            "acceptedState": "",
+            "dispatchReturned": 724.4278,
+            "matchedState": true,
+            "framePrepared": 724.6672,
+            "generation": 4,
+            "frame": 729.7039,
+            "delayMs": 2.73700000000008,
+            "inputDelayMs": 3.0388000000000375,
+            "handlerMs": 0.23090000000001965,
+            "frameDelayMs": 8.336400000000026,
+            "plannedDuringDecode": false
+          }
+        ],
+        "decodes": [],
+        "workerEvents": [],
+        "before": {
+          "rss": 179253248,
+          "heapTotal": 92385280,
+          "heapUsed": 45414232,
+          "external": 10230495,
+          "arrayBuffers": 204302,
+          "maxRssKiB": 177492,
+          "wasmBytes": 1441792
+        },
+        "peak": {
+          "maxRssKiB": 177492,
+          "rss": 179408896,
+          "heapTotal": 92647424,
+          "heapUsed": 46010216,
+          "external": 8211504,
+          "arrayBuffers": 204926,
+          "wasmPeak": 1441792
+        },
+        "after": {
+          "rss": 179445760,
+          "heapTotal": 92647424,
+          "heapUsed": 45493224,
+          "external": 8210880,
+          "arrayBuffers": 204302,
+          "wasmBytes": 1441792,
+          "nativeActive": 0,
+          "records": 0
+        },
+        "parentNativeHigh": 0,
+        "state": [],
+        "sink": "simulated async Writable; real ProcessTerminal/TUI input dispatch, no desktop paint; terminated decode interval ends at worker exit (native function completion/Photon object count unknown)"
+      },
+      {
+        "scheduling": "natural",
+        "metricDefinition": "planned/callback/input-handler arrival/state accepted/matching frame write complete",
+        "scenario": "corrupt",
+        "cancel": false,
+        "fixtureBytes": 32477,
+        "epoch": 719.3958,
+        "settledAt": 788.6648,
+        "stages": {
+          "uiProjection": {
+            "count": 3,
+            "ms": 0.03429999999991651
+          },
+          "read": {
+            "count": 2,
+            "ms": 0.18519999999989523
+          },
+          "base64Encode": {
+            "count": 1,
+            "ms": 0.012000000000057298
+          },
+          "pixelDecode": {
+            "count": 1,
+            "ms": 8.951000000000022
+          }
+        },
+        "probes": [
+          {
+            "planned": 779.7327,
+            "kind": "input",
+            "callbackAt": 780.8145,
+            "handled": 780.8145,
+            "inputArrived": 780.932,
+            "processed": 781.0029,
+            "acceptedState": "PROBE_BASEx",
+            "dispatchReturned": 781.031,
+            "matchedState": true,
+            "framePrepared": 781.3884,
+            "generation": 4,
+            "frame": 781.771,
+            "delayMs": 1.0817999999999302,
+            "inputDelayMs": 1.2701999999999316,
+            "handlerMs": 0.07089999999993779,
+            "frameDelayMs": 2.0382999999999356,
+            "plannedDuringDecode": true
+          }
+        ],
+        "decodes": [
+          {
+            "start": 774.7327,
+            "end": 783.6793,
+            "terminated": false,
+            "rss": 224571392,
+            "wasmBytes": 10616832
+          }
+        ],
+        "workerEvents": [
+          {
+            "type": "decode-start",
+            "at": 774.7327
+          },
+          {
+            "type": "decode-end",
+            "at": 783.6793,
+            "elapsed": 8.951000000000022,
+            "active": 0,
+            "wasmBytes": 10616832,
+            "rss": 224571392
+          },
+          {
+            "type": "worker-exit",
+            "at": 788.317,
+            "active": 0
+          }
+        ],
+        "before": {
+          "rss": 167428096,
+          "heapTotal": 80588800,
+          "heapUsed": 45401952,
+          "external": 10230495,
+          "arrayBuffers": 204302,
+          "maxRssKiB": 165944,
+          "wasmBytes": 1441792
+        },
+        "peak": {
+          "maxRssKiB": 219828,
+          "rss": 203091968,
+          "heapTotal": 105754624,
+          "heapUsed": 54390400,
+          "external": 8367570,
+          "arrayBuffers": 335558,
+          "wasmPeak": 10616832
+        },
+        "after": {
+          "rss": 203333632,
+          "heapTotal": 105754624,
+          "heapUsed": 45689720,
+          "external": 8302034,
+          "arrayBuffers": 270022,
+          "wasmBytes": 1441792,
+          "nativeActive": 0,
+          "records": 0
+        },
+        "parentNativeHigh": 0,
+        "state": [
+          {
+            "state": "failed",
+            "error": "图片损坏或无法解码，请重新添加"
+          }
+        ],
+        "sink": "simulated async Writable; real ProcessTerminal/TUI input dispatch, no desktop paint; terminated decode interval ends at worker exit (native function completion/Photon object count unknown)"
+      },
+      {
+        "scheduling": "natural",
+        "metricDefinition": "planned/callback/input-handler arrival/state accepted/matching frame write complete",
+        "scenario": "corrupt",
+        "cancel": true,
+        "fixtureBytes": 32477,
+        "epoch": 715.1986,
+        "settledAt": 778.631,
+        "stages": {
+          "uiProjection": {
+            "count": 3,
+            "ms": 0.03560000000004493
+          },
+          "read": {
+            "count": 2,
+            "ms": 0.09209999999995944
+          },
+          "base64Encode": {
+            "count": 1,
+            "ms": 0.011199999999917054
+          }
+        },
+        "probes": [
+          {
+            "planned": 774.3231,
+            "kind": "cancel",
+            "callbackAt": 774.7658,
+            "handled": 774.7658,
+            "inputArrived": 774.8849,
+            "processed": 775.3152,
+            "acceptedState": "",
+            "dispatchReturned": 775.3345,
+            "matchedState": true,
+            "framePrepared": 775.684,
+            "generation": 4,
+            "frame": 775.7521,
+            "delayMs": 0.44270000000005894,
+            "inputDelayMs": 0.9921000000000504,
+            "handlerMs": 0.43029999999998836,
+            "frameDelayMs": 1.4290000000000873,
+            "plannedDuringDecode": true
+          }
+        ],
+        "decodes": [
+          {
+            "start": 769.3231,
+            "end": 778.3556,
+            "terminated": true
+          }
+        ],
+        "workerEvents": [
+          {
+            "type": "decode-start",
+            "at": 769.3231
+          },
+          {
+            "type": "worker-exit",
+            "at": 778.3556,
+            "active": 0
+          }
+        ],
+        "before": {
+          "rss": 166543360,
+          "heapTotal": 79802368,
+          "heapUsed": 45404120,
+          "external": 10230495,
+          "arrayBuffers": 204302,
+          "maxRssKiB": 165080,
+          "wasmBytes": 1441792
+        },
+        "peak": {
+          "maxRssKiB": 219408,
+          "rss": 204201984,
+          "heapTotal": 106278912,
+          "heapUsed": 48879360,
+          "external": 8276416,
+          "arrayBuffers": 269838,
+          "wasmPeak": 1441792
+        },
+        "after": {
+          "rss": 202936320,
+          "heapTotal": 106016768,
+          "heapUsed": 45623384,
+          "external": 8276416,
+          "arrayBuffers": 269838,
+          "wasmBytes": 1441792,
+          "nativeActive": 0,
+          "records": 0
+        },
+        "parentNativeHigh": 0,
+        "state": [],
+        "sink": "simulated async Writable; real ProcessTerminal/TUI input dispatch, no desktop paint; terminated decode interval ends at worker exit (native function completion/Photon object count unknown)"
+      }
+    ],
+    "draftLifecycle": {
+      "ordinary": {
+        "reads": 0,
+        "encodes": 0,
+        "projections": 0
+      },
+      "receive": {
+        "reads": 2,
+        "encodes": 1,
+        "projections": 2
+      },
+      "steady": {
+        "reads": 2,
+        "encodes": 1,
+        "projections": 2
+      },
+      "cancelMs": 0.426900000000046,
+      "recordsAfter": 0,
+      "weakReleased": 2,
+      "weakTotal": 2
+    },
+    "imageReuse": [
+      {
+        "phase": "local-ready",
+        "scans": 0,
+        "scanBytes": 0,
+        "encodes": 1,
+        "decodes": 0,
+        "main": 0,
+        "vision": 0,
+        "imageHooks": 0,
+        "plainHooks": 0,
+        "failures": 0
+      },
+      {
+        "phase": "vision-success-main-failure",
+        "scans": 1,
+        "scanBytes": 39504,
+        "encodes": 1,
+        "decodes": 0,
+        "main": 1,
+        "vision": 1,
+        "imageHooks": 1,
+        "plainHooks": 0,
+        "failures": 1
+      },
+      {
+        "phase": "retry",
+        "scans": 1,
+        "scanBytes": 39504,
+        "encodes": 1,
+        "decodes": 0,
+        "main": 2,
+        "vision": 1,
+        "imageHooks": 1,
+        "plainHooks": 1,
+        "failures": 1
+      },
+      {
+        "phase": "three-followups",
+        "scans": 1,
+        "scanBytes": 39504,
+        "encodes": 1,
+        "decodes": 0,
+        "main": 5,
+        "vision": 1,
+        "imageHooks": 1,
+        "plainHooks": 4,
+        "failures": 1
+      },
+      {
+        "phase": "open-without-submit",
+        "scans": 1,
+        "scanBytes": 39504,
+        "encodes": 1,
+        "decodes": 0,
+        "main": 0,
+        "vision": 0,
+        "imageHooks": 0,
+        "plainHooks": 0,
+        "failures": 0
+      },
+      {
+        "phase": "restored-continue",
+        "scans": 2,
+        "scanBytes": 79008,
+        "encodes": 1,
+        "decodes": 1,
+        "main": 1,
+        "vision": 0,
+        "imageHooks": 0,
+        "plainHooks": 1,
+        "failures": 0
+      },
+      {
+        "phase": "restored-followup",
+        "scans": 2,
+        "scanBytes": 79008,
+        "encodes": 1,
+        "decodes": 1,
+        "main": 2,
+        "vision": 0,
+        "imageHooks": 0,
+        "plainHooks": 2,
+        "failures": 0
+      },
+      {
+        "phase": "config-change",
+        "scans": 2,
+        "scanBytes": 79008,
+        "encodes": 1,
+        "decodes": 1,
+        "main": 3,
+        "vision": 1,
+        "imageHooks": 0,
+        "plainHooks": 3,
+        "failures": 0
+      }
+    ],
+    "visualTail": {
+      "baselineUnsampled": {
+        "root": "D:\\RMProjects\\Pi",
+        "sampled": false,
+        "tasks": 1,
+        "retainedText": 18,
+        "skipped": 9991,
+        "returned": 10,
+        "sampledBytesPerOperation": null,
+        "p50": 10.796599999999955,
+        "p95": 13.045800000000014,
+        "heapAfterGcDelta": -9696
+      },
+      "candidateUnsampled": {
+        "root": "D:\\RMProjects\\Pi-interactive-control-image-input",
+        "sampled": false,
+        "tasks": 0,
+        "retainedText": 0,
+        "skipped": 9991,
+        "returned": 10,
+        "sampledBytesPerOperation": null,
+        "p50": 11.172899999999998,
+        "p95": 11.458200000000005,
+        "heapAfterGcDelta": 18424
+      },
+      "baselineSampled": {
+        "root": "D:\\RMProjects\\Pi",
+        "sampled": true,
+        "tasks": 1,
+        "retainedText": 18,
+        "skipped": 9991,
+        "returned": 10,
+        "sampledBytesPerOperation": 16984614.8,
+        "p50": 12.75830000000002,
+        "p95": 15.372199999999992,
+        "heapAfterGcDelta": 1121720
+      },
+      "candidateSampled": {
+        "root": "D:\\RMProjects\\Pi-interactive-control-image-input",
+        "sampled": true,
+        "tasks": 0,
+        "retainedText": 0,
+        "skipped": 9991,
+        "returned": 10,
+        "sampledBytesPerOperation": 13279236.8,
+        "p50": 12.42659999999995,
+        "p95": 13.631900000000002,
+        "heapAfterGcDelta": 913072
+      }
+    },
+    "sourceSha256": {
+      "package.json": "9d720c336e109d67c190fff1f6eaafd796c3c565c4d75211926483d7ca8ea182",
+      "packages/agent/src/agent-loop.ts": "c9a9acc8a5aec9121175f082a88458a4993430a48a61057cd893c6aa52681bf5",
+      "packages/agent/src/agent.ts": "dcf592c3d06a0d65d96e0bbe36643d826a67215b76fe06997bc4cdc25d430d37",
+      "packages/agent/src/types.ts": "76be49b821be451db871170e1208f26c29b58eb9eb1ddd95c9086b7d903bfada",
+      "packages/coding-agent/src/core/agent-session.ts": "8e167fa8b5863ca51a5068fc28f9c00cdf5dc1941b97cc17213d8be2af540da0",
+      "packages/coding-agent/src/core/extensions/loader.ts": "fa544b6ddc66ce5446155dc034ac2f95c4c25d89cb6d629ed2808e1bd7eb3218",
+      "packages/coding-agent/src/core/extensions/runner.ts": "5725c89d9caa5f126762358b7de16003ec92fa490f7d7ab661ce6925703ef47a",
+      "packages/coding-agent/src/core/extensions/types.ts": "6985a2a8878396eece6773aa9a6575006cac351e9cd1b09e2f396c751d08358f",
+      "packages/coding-agent/src/core/image-attachments.ts": "60141f7abcdae34d34075c7b770993e784bac5fdba516005da0890e4bd3d8127",
+      "packages/coding-agent/src/core/messages.ts": "18c071a7a4135c3bae395fc2504f416c36dbbdfb60ed3712ef8b477b016ef486",
+      "packages/coding-agent/src/core/sdk.ts": "a0a80701d12fdbdfd52e5a7cff69b8f7ea7077039f407ead03d586d6923ce033",
+      "packages/coding-agent/src/core/settings-manager.ts": "0df9127d920f529998de0ea9d90cbf17e917bfc8909e953c3a453ff9074a1baa",
+      "packages/coding-agent/src/core/tools/ask-user.ts": "a88618f11112342983e3f5d329c6e3c107d5a617292a0fd78dfa19b7e4886db9",
+      "packages/coding-agent/src/core/tools/index.ts": "fa5f964c88e2f19650225c0b76d903aeb5333270d781c2e9184dc27068ed6ce3",
+      "packages/coding-agent/src/core/tools/tool-definition-wrapper.ts": "a7abefa428332fc580658d4cf7e3f2664726b107191dc113805e1aaf53166a06",
+      "packages/coding-agent/src/index.ts": "bc708cbd07abaa8ca450cc45cb0cfed517acf6426660e80b0074b71a3a648c6c",
+      "packages/coding-agent/src/modes/interactive/components/custom-editor.ts": "bf7aaf1ca96d58d9a61c3437ada2e8b608481d8afc84e8c7455200b3b13bd649",
+      "packages/coding-agent/src/modes/interactive/components/extension-selector.ts": "cdd729c84964a7e534bb25b0c0ad3a4fb71ed6b21754881a8c33a034d686b818",
+      "packages/coding-agent/src/modes/interactive/components/visual-truncate.ts": "c443ff26032aafc18eef6d9e5e69f41de2399e26754d46b4db7134e68802ac7c",
+      "packages/coding-agent/src/modes/interactive/interactive-mode.ts": "c1ebf047df71c3892ae787959ec46e06399b152d29b6960c10f3a29a7b35104b",
+      "packages/coding-agent/src/utils/clipboard-image.ts": "f13c8370bb3f404d422f5150a749245df80feb4fa6a7d1e1ccae50ff55ac7e26",
+      "packages/coding-agent/src/utils/clipboard.ts": "f26e913b401245b9581940129e02a85b54a2f5e9fb9dbf971bf42d98e9e52211",
+      "packages/coding-agent/src/utils/image-decode-worker.ts": "b019b497363e4ef03349eebe8ab78b3bfdb4bc8b9521d1c925ee321701a0b00a",
+      "packages/coding-agent/src/utils/image-decode.ts": "e070bdceb487659ca7db38888af59454589f7c4172ca29f01dadd38abbeb4fd5",
+      "packages/extensions/auxiliary-vision/clipboard-lifecycle.ts": "87b286c9362354eadd384e17f004ddf81734c3e149dda264f9a6ad56cc2ea32a",
+      "packages/extensions/auxiliary-vision/core.ts": "5121037719be4a986a2bbfee10d6709e42d1fe05c01f05bf68daf5adcdf0b922",
+      "packages/extensions/auxiliary-vision/index.ts": "cdc81f18a8f454fc9bf38709ee9d39beff5d0e0c21a59c85f776c9985424af6f",
+      "packages/extensions/resource-lifecycle-guard/permission-contract.ts": "2b3240a69df07268f2366732e37236f5c5c01a145817f0230e9ebce8cb7df649",
+      "packages/extensions/resource-lifecycle-guard/permission-controller.ts": "7a1d7ad1698e2daf7ea3577e036a8326c94a5789d139431e51691b52f164838a",
+      "packages/extensions/resource-lifecycle-guard/permission-rule.ts": "b5c6715e8043fd06026ba715674ec7788e6c16bf5d23d71a0ff604e20f01dcc8",
+      "packages/extensions/resource-lifecycle-guard/permission-state.ts": "5dfb38832f971968a4ac511a2fb1efcafd0f51023608c477661b55dd003fadca",
+      "packages/tui/src/components/editor.ts": "8411492ad76ec315d47c88c6ce97c5198f2755cbb209ba3eb1f40a24fdb4f39e",
+      "packages/tui/src/index.ts": "fc8a9651de36338e4bb8cfd516bbac00a1595e9a711ba37e0a8dfb3b032a448d",
+      "packages/tui/src/terminal-image.ts": "205f3376d9c9b13f18e636e7ac5b547f37970e92ab188c3e536ba56348f7c947",
+      "packages/tui/src/utils.ts": "8e064f03fe58fd3bb75ec3b47e24f4a7b195162c80b7bf46645879d2947e7f04",
+      "scripts/acceptance/windows-image-input.mjs": "bf1ec0939244f1dabef87438cf857af39b90d2f4999ff9de2332b67f2fdd5e6a",
+      "scripts/bench/image-draft-lifecycle.ts": "188db5de4f7f20f1add1c0ddaedd2d2840a422e161df410e8d9c016f9b0721d2",
+      "scripts/bench/image-response-child.ts": "e9581618fbbec415f159e1bf04e0d701f69460c752659a47bd22a4074dfc7185",
+      "scripts/bench/image-response.ts": "a04953e327684173b99f565a7bcb3271864fb0171e3e50baf629147ac3b0f71c",
+      "scripts/bench/interactive-image-input.ts": "771980548036eba4d5534530bde70e127fda4f7ab09db466003a4326f3c9e000",
+      "scripts/bench/interactive-progress.ts": "70d51a9bd666eb50e0b057e22ca84c4aafa507dd0b519e249bb5272596b91ebf",
+      "tests/alpha-cli.test.ts": "5639bd058eb075c4827db898c13e95af36a75f8a23309367980eb7f7843c6ec1",
+      "tests/github-review-regressions.test.ts": "3b5a8548fdda05f1073416b06cee28230fca10e8e28815d377392e78eac6f967",
+      "tests/helpers/image-acceptance-fixtures.ts": "4fbdbc53e15ea4f5a7a739eac2eefcb876707f6ac0b13268cb965dd650cad9b4",
+      "tests/helpers/offline-image-runtime.ts": "52f7194a0f7102dd09b1caf01910880d4c080d35c4a97820735ecf770707720c",
+      "tests/image-acceptance-closeout.test.ts": "bb46acbd4837765ed1eeb8609a52b872b019e191b195d39492038242dc480227",
+      "tests/image-review-boundaries.test.ts": "ab2948da8b345cfa3a82668fb01bcd3f0e4a76c1e0350d058febf14ed406c25c",
+      "tests/interactive-control-images.test.ts": "c4577a4800bb4afe4f60ee58067660e64382f5ae4748818344b684e2dc5d6db8",
+      "tests/permission-interaction.test.ts": "9cf9428ad333ecd0a1f9748d0d04e727e3ebeb63c315d3833a0d2ac9c9377d82",
+      "tests/tui-async-owner-closeout.test.ts": "aa962fb66642e8b564a4b0fec0eee4d61950c237af1cdb2f10551af09606b7f1",
+      "tests/visual-tail.test.ts": "c5f886f77f7f8b49540d6b15317efa32e885e2359f6b098e94b1020c2bfd08ff"
+    },
+    "logSha256": {
+      "github-third-check-final.log": "97ecfd063b2a73c7d484d6c20a466b60965da8cf8a976104c80510a2a6633627",
+      "github-third-build-final.log": "a175b75cd77e9f9d9759f12b0243f550f4601d2df34b6012f5b5a9d4102c86a7",
+      "github-third-related-final.log": "12348ba8c9253709fd40e546078057722a044d29df9a71827b0ae7bd5cfb4d77",
+      "github-third-hot-final.log": "99101fe8028794062c56caad2bb17a48362e7535611649fa412bb7e2ff7fbc8c",
+      "github-third-full-final.log": "7b85b69d08528f6828cdf25e26b0856317a7360c899a93cec1821131f69e4336",
+      "github-third-g2-final.log": "841583aa698ab666c32faacf0cd42877123f1b8e204eb1aa9f2757ff6d192a3c",
+      "github-third-natural-final.log": "95753384e3d99da112ebb8c24318818c29ebde2e3d4127f1bf192ccb86ad0696",
+      "github-third-lifecycle-final.log": "6d78b379360fec56f9428bacc1ceda23eefce83a3bdf0d92f8a8dea3cad64305",
+      "github-third-allocation-unsampled.log": "e46b058d2f5ba6de083b1a0c82068fba8233eb0b6927975216dc224e2fa6086c",
+      "github-third-allocation-sampled.log": "0f9eab07de6fe7482beed5ec0a5a021e19c6627bc58a733c3b54e6401a913137",
+      "github-third-baseline-unsampled.log": "7001d342b7a0cb76cf8583fa484b85260f0bf53dc7b61e89d6a6ee5d6170ee80",
+      "github-third-baseline-sampled.log": "979bf5db07786b2418d29671b3574ed95c884891681112dabe4f2c61bbdda215"
+    },
+    "limits": [
+      "Natural-frame timing is simulated async sink completion, not desktop compositor paint.",
+      "Base64 decode counters do not count Worker pixel decoding. Restored and untrusted content now undergo full Worker validation once.",
+      "One child per scenario, not production percentiles. Worker exit and JS weak release do not prove exact native peak object counts.",
+      "Native desktop and online services not executed. Eleven previously policy-blocked directories untouched.",
+      "Unchanged drain receives no allocation benefit; original 20.4% applies only to its visual-tail fixture.",
+      "Headless WSL test uses an isolated child with controlled platform/environment and PowerShell transport; it is not native WSL acceptance.",
+      "Full-draft text test uses the actual TUI paste-key/draft owner with controlled text transport; no unreserved image read or model request."
+    ]
   }
 }

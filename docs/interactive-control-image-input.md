@@ -537,3 +537,27 @@ All 14 natural runs met the declared 100/150-ms state/frame targets: maximum pla
 Visual-tail baseline/candidate unsampled p50: 11.092/11.418 ms; p95: 12.650/13.035 ms. Separate sampled bytes/operation: 17,115,052/13,388,388. This unchanged-layout fixture does not attribute new performance gains to the follow-up fixes or drain.
 
 Final follow-up data and source/log SHA-256 values are under `githubFollowupRound`; older keys remain tied to their original candidate. The complete patch/manifest is regenerated for these same 53 task files. The post-push CI/review status must be read on the new commit, separately from f88a87f. Native screenshot/Explorer and online-service acceptance remain unexecuted.
+
+## Clipboard-capacity and queue-identity review (reviewed commit 3319ed4)
+
+Commit `3319ed454524047f12e01c4fd34a0450b2865c86` passed both jobs in [CI run 35228929851](https://github.com/dragonbaba/super-pi/actions/runs/35228929851). The next Codex review identified three remaining input/identity cases:
+
+| Finding | Reproduction and correction |
+| --- | --- |
+| [4037621350](https://github.com/dragonbaba/super-pi/pull/38#discussion_r4037621350): headless WSL text fallback | With Linux platform, WSL environment and no display/native clipboard provider, the text reader skipped PowerShell even though the image reader used it. The text reader now reuses the same exported WSL detector. An isolated child verifies the production native provider is null and the production text reader calls the controlled PowerShell transport. This is a simulated WSL environment, not native WSL clipboard acceptance. |
+| [4037621361](https://github.com/dragonbaba/super-pi/pull/38#discussion_r4037621361): text paste at eight-image capacity | `begin()` rejected before text fallback. The TUI now attempts text fallback at capacity while retaining all eight images and their order; it starts no unreserved image read. With no text it reports the capacity error. A production TUI paste-key regression fills the draft through file-paste input, then verifies text acceptance, unchanged image IDs, zero additional image reads and no submitted message. |
+| [4037621370](https://github.com/dragonbaba/super-pi/pull/38#discussion_r4037621370): empty SDK submission ID leaks consumed queue entries | The queue stored an empty ID but message-start cleanup tested it by truthiness, leaving stale labels/images. Snapshot ingestion now rejects empty or whitespace-only supplied IDs before any queue mutation. Omitted IDs still receive a host-generated identifier. Two real SDK/offline-provider regressions assert rejection, unchanged capacity, subsequent valid queue delivery, and zero image records after delivery/clear. |
+
+All four added regressions failed on 3319ed4 before repair. Image decode/read-slot behavior, capacity, explicit submission, canonical history, interaction waiting and permission checks are retained. The 16 findings (9 + 4 + 3) are individually documented here; review resolution is separate from approval or merge. Native Windows desktop and online service acceptance remain unexecuted, and the 11 policy-retained directories remain untouched.
+
+### Clipboard/identity candidate validation
+
+Current source passed `npm run check`, `npm run build:offline`, the same twelve complete related files (400 total / 379 passed / 21 skips), `npm run test:hot` (31 passed), `npm test` (1,753 total / 1,695 passed / 58 skips / 0 failed or cancelled), `npm run alpha:g2-probe` (318 passed / 4 skips), and `git diff --check`. There are 31 added review regressions across the three repair rounds (30 in the review regression file and one legacy-permission display regression).
+
+The natural response, lifecycle, and separate unsampled/sampled visual-tail baseline/candidate commands above were rerun after tests completed, with unchanged targets and limits.
+
+All 14 natural children met the 100/150-ms accepted-state/matching-frame targets. Maximum planned-to-accepted/frame completion: 6.617/19.694 ms. Near-24MP peak RSS: 483.5 MiB. The lifecycle probe again observed 0/0/0 ordinary-input reads/encodes/projections, 2/1/2 on addition, no further work during 1,000 attached edits/renders, and zero records after release. Read-start cancellation was 0.427 ms; both diagnostic JS WeakRefs released. Simulated sink completion, native decode peak-resource uncertainty and native desktop limitations remain as documented.
+
+Visual-tail baseline/candidate unsampled p50: 10.797/11.173 ms; p95: 13.046/11.458 ms. Separate sampled allocation: 16,984,615/13,279,237 bytes/operation. This remains a specific unchanged-layout fixture; no overall TUI or drain speedup is claimed.
+
+Final data/source/log hashes are under `githubClipboardIdentityRound`. Prior keys retain historical candidates and results. The complete 53-file patch and manifest were regenerated from this source; post-push CI/review must be checked on its new commit. Native desktop/online services remain unexecuted and the 11 policy-retained directories remain untouched.

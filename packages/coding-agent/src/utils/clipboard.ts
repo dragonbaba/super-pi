@@ -1,6 +1,6 @@
 import { type ExecFileSyncOptionsWithStringEncoding, execFileSync, execSync, spawn } from "child_process";
 import { platform } from "os";
-import { runClipboardCommand, isWaylandSession } from "./clipboard-image.ts";
+import { runClipboardCommand, isWaylandSession, isWSL } from "./clipboard-image.ts";
 import { clipboard } from "./clipboard-native.ts";
 
 type NativeClipboardExecOptions = {
@@ -59,7 +59,7 @@ export async function readClipboardText(signal?: AbortSignal): Promise<string | 
 		}
 	}
 
-	if (platform() === "win32") {
+	if (platform() === "win32" || (platform() === "linux" && isWSL())) {
 		try {
 			const bytes = await runClipboardCommand("powershell.exe", ["-NoProfile", "-NonInteractive", "-STA", "-EncodedCommand", WINDOWS_TEXT_COMMAND], { maxBufferBytes: 1024 * 1024, signal });
 			return bytes.toString("utf8") || null;

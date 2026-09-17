@@ -1,4 +1,4 @@
-import { IMAGE_VISION_RESULT_TYPE, ImageAttachmentDraft, draftAttachmentText, parseImagePaths, attachmentLabel, type AttachmentMessage, type ImageSubmission, type ImageVisionResult } from "../../core/image-attachments.ts";
+import { IMAGE_ATTACHMENT_LIMITS, IMAGE_VISION_RESULT_TYPE, ImageAttachmentDraft, draftAttachmentText, parseImagePaths, attachmentLabel, type AttachmentMessage, type ImageSubmission, type ImageVisionResult } from "../../core/image-attachments.ts";
 /**
  * Interactive mode for the coding agent.
  * Handles TUI rendering and user interaction, delegating business logic to AgentSession.
@@ -3726,15 +3726,22 @@ export class InteractiveMode {
 		const draftId = this.imageDraft.id;
 		let record: ReturnType<ImageAttachmentDraft["begin"]> | undefined;
 		try {
-			record = this.imageDraft.begin("截图.png", "clipboard");
-			const image = await this.readClipboardImageForPaste();
+			let capacityError: unknown;
+			try { record = this.imageDraft.begin("截图.png", "clipboard"); }
+			catch (error) {
+				if (this.imageDraft.items.length < IMAGE_ATTACHMENT_LIMITS.count) throw error;
+				capacityError = error;
+			}
+			// Text remains editable at capacity; no unreserved image read is started.
+			const image = record ? await this.readClipboardImageForPaste() : null;
 			if (this.tuiLifecycleGeneration !== lifecycleGeneration || controller.signal.aborted || draftId !== this.imageDraft.id || sessionId !== this.sessionManager.getSessionId()) return;
-			if (image) { await this.imageDraft.finish(record, image.bytes); return; }
-			const index = this.imageDraft.items.indexOf(record);
+			if (image && record) { await this.imageDraft.finish(record, image.bytes); return; }
+			const index = record ? this.imageDraft.items.indexOf(record) : -1;
 			if (index >= 0) this.imageDraft.remove(index);
 			const text = await this.readClipboardTextForPaste();
 			if (this.tuiLifecycleGeneration !== lifecycleGeneration || controller.signal.aborted || draftId !== this.imageDraft.id || sessionId !== this.sessionManager.getSessionId()) return;
 			if (text) { this.editor.handleInput?.(`\x1b[200~${text}\x1b[201~`); this.ui.requestRender(); }
+			else if (capacityError) throw capacityError;
 			else this.showWarning("剪贴板没有图片或文本");
 		} catch (error) { if (record) this.imageDraft.fail(record, error); else this.reportImageError(error); }
 		finally { this.clipboardPending = false; if (this.clipboardAbort === controller) this.clipboardAbort = undefined; }

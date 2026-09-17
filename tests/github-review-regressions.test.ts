@@ -248,3 +248,45 @@ for (const failure of ["abort", "quota"]) test(`Windows helper ${failure} remain
  try { await assert.rejects(readClipboardImage({ platform: "win32", signal: abort.signal, onUnavailable: () => unavailable++ })); assert.equal(unavailable, 0); }
  finally { cp.execFile = original; syncBuiltinESMExports(); }
 });
+
+
+test("headless WSL uses the Windows text clipboard with no native provider", () => {
+ const cp = createRequire(import.meta.url)("node:child_process");
+ const utility = new URL("../packages/coding-agent/src/utils/clipboard.ts", import.meta.url).href;
+ const native = new URL("../packages/coding-agent/src/utils/clipboard-native.ts", import.meta.url).href;
+ const code = `import assert from 'node:assert/strict'; import {createRequire,syncBuiltinESMExports} from 'node:module';
+  Object.defineProperty(process,'platform',{value:'linux'}); delete process.env.DISPLAY; delete process.env.WAYLAND_DISPLAY; process.env.WSL_DISTRO_NAME='offline-fixture';
+  const require=createRequire(import.meta.url); require('node:os').platform=()=> 'linux'; let calls=0;
+  require('node:child_process').execFile=(command,args,options,callback)=>{assert.equal(command,'powershell.exe');calls++;callback(null,Buffer.from('WSL text'));}; syncBuiltinESMExports();
+  assert.equal((await import(${JSON.stringify(native)})).clipboard,null);
+  const {readClipboardText}=await import(${JSON.stringify(utility)}); assert.equal(await readClipboardText(),'WSL text');assert.equal(calls,1);`;
+ cp.execFileSync(process.execPath, ["--experimental-strip-types", "--input-type=module", "-e", code], { timeout: 10000, windowsHide: true, stdio: "pipe" });
+});
+
+test("full image draft still accepts ordinary clipboard text through the paste key", async () => {
+ const f = await alphaSession(); let textReads = 0, imageReads = 0;
+ try {
+  await f.mode.init(); const path = join(f.root, "full.png"); writeFileSync(path, pngFixture(8, 8));
+  for (let i = 0; i < 8; i++) { f.input.write(`\x1b[200~"${path}"\x1b[201~`); while (f.internal.imageDraft.busy) await turn(); }
+  const ids = f.internal.imageDraft.items.map((item: any) => item.id); f.input.write("question ");
+  f.internal.readClipboardTextForPaste = async () => { textReads++; return "more text"; };
+  f.internal.readClipboardImageForPaste = async () => { imageReads++; throw new Error("unexpected unreserved image read"); };
+  f.input.write(process.platform === "win32" ? "\x1bv" : "\x16"); while (f.internal.clipboardPending) await turn();
+  assert.equal(textReads, 1); assert.equal(imageReads, 0); assert.equal(f.internal.editor.getText(), "question more text"); assert.deepEqual(f.internal.imageDraft.items.map((item: any) => item.id), ids);
+  assert.equal(f.session.messages.length, 0);
+ } finally { await f.release(); }
+});
+
+for (const id of ["", "   "]) test(`SDK rejects blank submission ID ${JSON.stringify(id)} without orphaning queue images`, async () => {
+ const root = mkdtempSync(join(tmpdir(), "sp-empty-id-")); const entered = deferred(), resume = deferred(); let first = true;
+ const f = await offlineImageRuntime(root, false, undefined, undefined, undefined, { beforeWireResponse: async () => { if (first) { first = false; entered.resolve(); await resume.promise; } } });
+ let active: Promise<void> | undefined;
+ try {
+  active = f.session.prompt("active"); await entered.promise;
+  const invalid = snapshotImageSubmission([image()]); invalid.submission.id = id;
+  await assert.rejects(f.session.prompt("invalid", { ...invalid, streamingBehavior: "followUp" }), /submission.*id/i);
+  assert.equal(f.session.pendingMessageCount, 0); assert.deepEqual(f.session.getQueuedImageSize(), { count: 0, bytes: 0 });
+  await f.session.prompt("valid", { images: [image()], streamingBehavior: "followUp" }); resume.resolve(); await active;
+  assert.equal(f.session.pendingMessageCount, 0); assert.deepEqual(f.session.getQueuedImageSize(), { count: 0, bytes: 0 }); assert.deepEqual(f.session.clearQueue().imageMessages, []);
+ } finally { resume.resolve(); await active; await f.close(); rmSync(root, { recursive: true }); }
+});

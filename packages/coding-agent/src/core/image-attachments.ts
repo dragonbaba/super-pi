@@ -52,6 +52,7 @@ export async function verifySubmittedImage(image: ImageContent, signal?: AbortSi
 }
 
 export function snapshotImageSubmission(images: readonly ImageContent[], submission?: ImageSubmission): { images: ImageContent[]; submission: ImageSubmission } {
+	if (submission?.id != null && (typeof submission.id !== "string" || !submission.id.trim())) throw new Error("Image submission ID must be nonempty");
 	if (images.length > IMAGE_ATTACHMENT_LIMITS.count) throw new Error("最多提交 8 张图片");
 	const snapshot: ImageContent[] = [];
 	const attachments: ImageAttachment[] = [];

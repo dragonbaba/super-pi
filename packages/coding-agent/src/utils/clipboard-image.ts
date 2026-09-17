@@ -120,7 +120,7 @@ async function readClipboardImageViaWlPaste(signal?: AbortSignal): Promise<Clipb
 	return { bytes: data.stdout, mimeType: baseMimeType(selectedType) };
 }
 
-function isWSL(env: NodeJS.ProcessEnv = process.env): boolean {
+export function isWSL(env: NodeJS.ProcessEnv = process.env): boolean {
 	if (env.WSL_DISTRO_NAME || env.WSLENV) {
 		return true;
 	}
