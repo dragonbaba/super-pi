@@ -6,6 +6,7 @@ import { setImmediate as turn } from "node:timers/promises";
 import { fixture } from "../../tests/helpers/evidence-ledger-fixture.ts";
 import { InteractiveMode } from "../../packages/coding-agent/src/modes/interactive/interactive-mode.ts";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
+import { Session } from "node:inspector/promises";
 
 // Deliberately separate from heap-sampled throughput benchmarks. Counters wrap
 // real I/O/encoding/projection methods; no declared or prefilled zero budgets.
@@ -22,7 +23,25 @@ proto.read = function (...args: any[]) { reads++; return originalRead.apply(this
 Buffer.prototype.toString = function (...args: any[]) { if (args[0] === "base64") encodes++; return originalString.apply(this, args as never); };
 mode.defaultEditor.setAttachmentText = function (text: string) { projections++; return originalProjection.call(this, text); };
 const refs: WeakRef<object>[] = [];
+const inputProfiles: unknown[] = [];
+async function measureInput(name: string): Promise<void> {
+	if (!process.argv.includes("--sample-input")) return;
+	mode.editor.setText("ordinary input fixture");
+	const inspector = new Session(); inspector.connect();
+	await inspector.post("HeapProfiler.startSampling", { samplingInterval: 4096, includeObjectsCollectedByMajorGC: true, includeObjectsCollectedByMinorGC: true });
+	const start = performance.now();
+	for (let i = 0; i < 2000; i++) {
+		mode.defaultEditor.handleInput("\x1b[D"); mode.defaultEditor.handleInput("\x1b[C"); mode.defaultEditor.render(80);
+	}
+	const elapsedMs = performance.now() - start;
+	const { profile } = await inspector.post("HeapProfiler.stopSampling"); inspector.disconnect();
+	let sampledBytes = 0;
+	const nodes = [profile.head];
+	while (nodes.length) { const node = nodes.pop()!; sampledBytes += node.selfSize; for (const child of node.children) nodes.push(child); }
+	inputProfiles.push({ name, iterations: 2000, sampledBytes, elapsedMs, scope: "two cursor keys and editor render; sampling enabled, not natural-frame latency" });
+}
 try {
+	await measureInput("no-images");
 	for (let i = 0; i < 1000; i++) { mode.editor.setText(`plain ${i}`); mode.defaultEditor.render(80); }
 	const ordinary = { reads, encodes, projections };
 	await mode.imageDraft.addFiles([path], f.cwd);
@@ -30,6 +49,7 @@ try {
 	const receive = { reads, encodes, projections };
 	for (let i = 0; i < 1000; i++) { mode.editor.setText(`attached ${i}`); mode.defaultEditor.render(i % 2 ? 80 : 100); }
 	const steady = { reads, encodes, projections };
+	await measureInput("one-ready-image");
 	refs.push(new WeakRef(mode.imageDraft.items[0]), new WeakRef(mode.imageDraft.items[0].image));
 	mode.imageDraft.clear();
 	const start = performance.now();
@@ -40,9 +60,10 @@ try {
 	assert.deepEqual(ordinary, { reads: 0, encodes: 0, projections: 0 });
 	assert.deepEqual(steady, receive);
 	assert.equal(mode.imageDraft.items.length, 0);
+	assert.equal(mode.defaultEditor.attachmentIds.length, 0);
 	if (global.gc) assert.equal(released, refs.length);
 	console.log(JSON.stringify({ ordinary, receive, steady, cancelMs, recordsAfter: mode.imageDraft.items.length,
-		weakReleased: global.gc ? released : "run with --expose-gc", weakTotal: refs.length }));
+		weakReleased: global.gc ? released : "run with --expose-gc", weakTotal: refs.length, inputProfiles }));
 } finally {
 	proto.read = originalRead; Buffer.prototype.toString = originalString; mode.imageDraft.clear(); f.close();
 }

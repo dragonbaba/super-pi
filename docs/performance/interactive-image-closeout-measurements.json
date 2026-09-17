@@ -9454,5 +9454,153 @@
       "Headless WSL test uses an isolated child with controlled platform/environment and PowerShell transport; it is not native WSL acceptance.",
       "Full-draft text test uses the actual TUI paste-key/draft owner with controlled text transport; no unreserved image read or model request."
     ]
+  },
+  "clipboardPlaceholderRound": {
+    "baseCommit": "4e783b297b8f68f7cd0c1723179030fa41884720",
+    "candidate": "uncommitted working tree; published CI applies only to base commit",
+    "verification": {
+      "check": "passed",
+      "buildOffline": "passed",
+      "related": {
+        "tests": 100,
+        "pass": 100,
+        "fail": 0,
+        "skipped": 0,
+        "cancelled": 0
+      },
+      "hot": {
+        "tests": 31,
+        "pass": 31,
+        "fail": 0,
+        "skipped": 0,
+        "cancelled": 0
+      },
+      "full": {
+        "tests": 1768,
+        "pass": 1710,
+        "fail": 0,
+        "skipped": 58,
+        "cancelled": 0
+      },
+      "diffCheck": "passed"
+    },
+    "baselineLifecycle": {
+      "commit": "4e783b2",
+      "observation": "tool output before edits; same unsampled lifecycle workload",
+      "ordinary": {
+        "reads": 0,
+        "encodes": 0,
+        "projections": 0
+      },
+      "receive": {
+        "reads": 2,
+        "encodes": 1,
+        "projections": 2
+      },
+      "steady": {
+        "reads": 2,
+        "encodes": 1,
+        "projections": 2
+      },
+      "cancelMs": 0.6648000000000138,
+      "recordsAfter": 0,
+      "weakReleased": 2,
+      "weakTotal": 2
+    },
+    "candidateLifecycle": {
+      "ordinary": {
+        "reads": 0,
+        "encodes": 0,
+        "projections": 0
+      },
+      "receive": {
+        "reads": 2,
+        "encodes": 1,
+        "projections": 2
+      },
+      "steady": {
+        "reads": 2,
+        "encodes": 1,
+        "projections": 2
+      },
+      "cancelMs": 0.4349000000000842,
+      "recordsAfter": 0,
+      "weakReleased": 2,
+      "weakTotal": 2,
+      "inputProfiles": []
+    },
+    "candidateSampledInput": {
+      "ordinary": {
+        "reads": 0,
+        "encodes": 0,
+        "projections": 0
+      },
+      "receive": {
+        "reads": 2,
+        "encodes": 1,
+        "projections": 2
+      },
+      "steady": {
+        "reads": 2,
+        "encodes": 1,
+        "projections": 2
+      },
+      "cancelMs": 0.9356999999999971,
+      "recordsAfter": 0,
+      "weakReleased": 2,
+      "weakTotal": 2,
+      "inputProfiles": [
+        {
+          "name": "no-images",
+          "iterations": 2000,
+          "sampledBytes": 34752864,
+          "elapsedMs": 62.505300000000034,
+          "scope": "two cursor keys and editor render; sampling enabled, not natural-frame latency"
+        },
+        {
+          "name": "one-ready-image",
+          "iterations": 2000,
+          "sampledBytes": 49312464,
+          "elapsedMs": 63.945499999999925,
+          "scope": "two cursor keys and editor render; sampling enabled, not natural-frame latency"
+        }
+      ]
+    },
+    "commands": [
+      "npm run check",
+      "npm run build:offline",
+      "node --experimental-strip-types --test tests/image-placeholder-input.test.ts tests/interactive-control-images.test.ts tests/image-review-boundaries.test.ts tests/image-acceptance-closeout.test.ts tests/github-review-regressions.test.ts",
+      "npm run test:hot",
+      "npm test",
+      "git diff --check",
+      "node --expose-gc --experimental-strip-types scripts/bench/image-draft-lifecycle.ts",
+      "node --expose-gc --experimental-strip-types scripts/bench/image-draft-lifecycle.ts --sample-input"
+    ],
+    "sourceSha256": {
+      "packages/coding-agent/src/core/image-attachments.ts": "414d978ea816da5e65f214f0c80a7f417836c4913fcc28d5eb9fcf449d33c130",
+      "packages/coding-agent/src/core/keybindings.ts": "3dbd08ced2542a8e28407d5c0c7e937e99a56e005c867f380b000bd5cef57b30",
+      "packages/coding-agent/src/modes/interactive/components/custom-editor.ts": "0117681fe091807c4fed585de1dbd2cfe94d2e9693b687601ef7e40d41b9f503",
+      "packages/coding-agent/src/modes/interactive/interactive-mode.ts": "81b277fef0425157fe885e7ae1bcc3da22b057d848ea7f7991d2cd9eeb2d47c5",
+      "packages/tui/src/components/editor.ts": "a8d4c7406e14637727d1f74eed17556526bb49decc175e23899a26e75bc30df5",
+      "scripts/bench/image-draft-lifecycle.ts": "9f3e42cebbebf94315468f7abfe1e56fd1d797626ab3470255bf237567a60b8f",
+      "tests/image-placeholder-input.test.ts": "31370d400b85c894959a92aad661e8190ef13ae2b391be4955e1485cf3857cf5"
+    },
+    "logSha256": {
+      "clipboard-ui-check.log": "97ecfd063b2a73c7d484d6c20a466b60965da8cf8a976104c80510a2a6633627",
+      "clipboard-ui-build-final.log": "a175b75cd77e9f9d9759f12b0243f550f4601d2df34b6012f5b5a9d4102c86a7",
+      "clipboard-ui-related-final.log": "6546ccfbcde9efb4811276134c1c49b6f70c71a331a058fdbeea82a770967a13",
+      "clipboard-ui-hot-final.log": "1f4dc56c7e0dbd5581a1b7562115f519aeffd777647aa60e1f8a4216a8c479a0",
+      "clipboard-ui-full-final.log": "d6f231939084571f3228eee61f3a06ef5fffbba74dc6c02b893251eb972896d4",
+      "clipboard-ui-lifecycle.log": "e199bdb30642393ecffba78ba726a48e506b8e00494d4ce071c35ed1304c7efe",
+      "clipboard-ui-allocation.log": "a44041ae7593aa39fe26fa8b23414bf2b80753f973c06015503f24f59d15d901"
+    },
+    "limits": [
+      "User screenshot confirms prior super-pi Alt+V unsent visibility only; complete native submission/history acceptance is not established.",
+      "New gesture tests drive real ProcessTerminal/helper/owner with simulated clipboard transport, not Windows desktop gestures.",
+      "Sampled candidate-only cursor/render workload has no matching sampled baseline; no allocation improvement claimed. Times include sampling and are not natural frames or desktop compositor latency.",
+      "Unsampled counters are comparable to 4e783b2; a single cancellation timing and two JS weak references do not establish native peak memory or production response percentiles.",
+      "No paid service or private screenshot used. Eleven pre-existing policy-retained directories untouched. Drag/drop is no longer a blocking acceptance target at user request.",
+      "No changes or performance credit to worker decode architecture, provider routing, visual-tail algorithm or ToolProgressDelivery drain."
+    ]
   }
 }

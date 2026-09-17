@@ -551,11 +551,23 @@ export class InteractiveMode {
 	private imageSubmissionRecovery: { state: "pending" | "failed"; text: string; images: ImageContent[]; submission: ImageSubmission; error?: string } | undefined;
 	private clipboardAbort: AbortController | undefined;
 	private readonly refreshImageDraft = (): void => {
-		let text = draftAttachmentText(this.imageDraft?.items ?? []);
+		const items = this.imageDraft.items;
+		this.defaultEditor?.setAttachmentIds(items);
+		let text = draftAttachmentText(items, this.defaultEditor?.selectedAttachmentId);
+		if (items.length) text += `正文开头 ${this.keybindings.getKeys("tui.editor.cursorLeft").join("/")} 选择图片 · ${this.keybindings.getKeys("tui.editor.deleteCharBackward").join("/")} / ${this.keybindings.getKeys("tui.editor.deleteCharForward").join("/")} 删除`;
 		const recovery = this.imageSubmissionRecovery;
 		if (recovery) text += `\n[上次提交 · ${recovery.submission.attachments.length} 张图片 · ${recovery.state === "pending" ? "正在预检 · 尚未接受" : `未被接受：${attachmentLabel(recovery.error ?? "")} · /image-recover 恢复到空草稿 · /image-discard 取消`}]`;
 		this.defaultEditor?.setAttachmentText(text);
 		this.ui?.requestRender();
+	};
+	private readonly removeDraftAttachment = (id: string): void => {
+		const items = this.imageDraft.items;
+		for (let i = 0; i < items.length; i++) {
+			if (items[i].id === id) {
+				if (items[i].source === "clipboard" && items[i].state === "preparing") this.clipboardAbort?.abort();
+				this.imageDraft.remove(i); return;
+			}
+		}
 	};
 	private readonly imageDraft = new ImageAttachmentDraft(this.refreshImageDraft);
 	private activeStatusIndicator: StatusIndicator | undefined = undefined;
@@ -3691,9 +3703,11 @@ export class InteractiveMode {
 			}
 		};
 
-		// Handle clipboard paste (triggered on Ctrl+V). Images are attached by path;
-		// otherwise, paste plain text from the system clipboard.
+		// All explicit clipboard gestures enter the same host-owned draft operation.
 		this.defaultEditor.onPasteImage = this.handleClipboardPasteAction;
+		this.defaultEditor.onEmptyPaste = this.handleClipboardPasteAction;
+		this.defaultEditor.onAttachmentSelectionChange = this.refreshImageDraft;
+		this.defaultEditor.onRemoveAttachment = this.removeDraftAttachment;
 		this.defaultEditor.onPaste = (text) => {
 			const paths = parseImagePaths(text);
 			if (!paths) return false;
@@ -3706,6 +3720,7 @@ export class InteractiveMode {
 		const target = this.renderer.getFocusedComponent();
 		const handleInput = target?.handleInput;
 		if (!target || !handleInput) return;
+		if (target === this.defaultEditor) { await this.handleClipboardPaste(); return; }
 		try {
 			const text = await readClipboardText();
 			if (!text || this.renderer.getFocusedComponent() !== target) return;

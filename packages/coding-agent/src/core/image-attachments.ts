@@ -4,7 +4,7 @@ import { open, realpath } from "node:fs/promises";
 import { basename, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ImageContent, UserMessage } from "@super-pi/ai";
-import { getImageDimensions } from "@super-pi/tui";
+import { CURSOR_MARKER, getImageDimensions } from "@super-pi/tui";
 
 export const IMAGE_ATTACHMENT_VERSION = 1;
 export const IMAGE_VISION_RESULT_TYPE = "image-vision-result-v1";
@@ -269,11 +269,11 @@ export class ImageAttachmentDraft {
 }
 
 export function attachmentLabel(name: string): string { return name.replace(/[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/g, "�"); }
-export function draftAttachmentText(items: readonly DraftImage[]): string {
+export function draftAttachmentText(items: readonly DraftImage[], selectedId?: string): string {
 	let text = "";
 	for (let i = 0; i < items.length; i++) {
 		const item = items[i];
-		text += `[图片 ${i + 1} · ${attachmentLabel(item.name)} · ${item.state === "preparing" ? "正在添加" : item.state === "failed" ? `失败：${attachmentLabel(item.error ?? "")}` : item.source === "clipboard" ? "已粘贴 · 未发送" : "已添加 · 未发送"}]\n`;
+		text += `${item.id === selectedId ? CURSOR_MARKER + "▶ " : ""}[图片 ${i + 1} · ${attachmentLabel(item.name)} · ${item.state === "preparing" ? "正在添加" : item.state === "failed" ? `失败：${attachmentLabel(item.error ?? "")}` : item.source === "clipboard" ? "已粘贴 · 未发送" : "已添加 · 未发送"}]\n`;
 	}
-	return text ? text + "移除：/image-remove 序号 · 清空：/image-clear · 添加：/image 路径" : "";
+	return text;
 }
