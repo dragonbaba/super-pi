@@ -27,3 +27,9 @@ export const GIT_RESET_HARD_PATTERN = /\bgit\s+reset\s+--hard\b/iu;
 export const PYTHON_LITERAL_TARGET_PATTERN = /(?:shutil\.rmtree|(?:pathlib\.)?Path)\s*\(\s*["']([^"']+)["']/iu;
 export const NODE_LITERAL_TARGET_PATTERN = /(?:\b(?:fs\.)?(?:rm|rmSync|unlink|unlinkSync))\s*\(\s*["']([^"']+)["']/iu;
 export const LEADING_PATH_SEPARATOR_PATTERN = /^[/\\]+/u;
+
+export const SIMPLE_COMMAND_PATTERN = /^[A-Za-z0-9._-]+$/u;
+export const DISPLAY_WHITESPACE_PATTERN = /\s+/gu;
+export const COMMAND_COMPOUND_SYNTAX_PATTERN = /[;&|<>$`\r\n(){}\\]/u;
+export const COMMAND_PREFIX_WORDS_PATTERN = /^[A-Za-z0-9._-]+(?:[ \t]+[A-Za-z0-9._-]+)*$/u;
+export const COMMAND_WORD_SEPARATOR_PATTERN = /[ \t]/u;

@@ -8,7 +8,8 @@ import { pathToFileURL } from "node:url";
 import { setImmediate as turn } from "node:timers/promises";
 import { fixture } from "./helpers/evidence-ledger-fixture.ts";
 import { response } from "./helpers/selected-integration-fixture.ts";
-import { ImageAttachmentDraft, draftAttachmentText, parseImagePaths, localImagePath } from "../packages/coding-agent/src/core/image-attachments.ts";
+import { ImageAttachmentDraft, draftAttachmentText, parseImagePaths, localImagePath, attachmentLabel, attachmentDescription } from "../packages/coding-agent/src/core/image-attachments.ts";
+import * as imagePatterns from "../packages/coding-agent/src/utils/image-input-regex.ts";
 import { InteractiveMode } from "../packages/coding-agent/src/modes/interactive/interactive-mode.ts";
 import { initTheme } from "../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 import auxiliaryVision from "../packages/extensions/auxiliary-vision/index.ts";
@@ -23,6 +24,25 @@ import { SessionManager } from "../packages/coding-agent/src/core/session-manage
 
 const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGP4DwQACfsD/fteaysAAAAASUVORK5CYII=", "base64");
 initTheme("dark");
+
+test("shared image input patterns preserve matching and replacement state across calls", () => {
+	const replacements = new Set([imagePatterns.IMAGE_LABEL_CONTROL_PATTERN, imagePatterns.IMAGE_DESCRIPTION_LINE_BREAK_PATTERN, imagePatterns.IMAGE_DESCRIPTION_CONTROL_PATTERN]);
+	for (const pattern of Object.values(imagePatterns)) {
+		assert.equal(pattern.sticky, false);
+		assert.equal(pattern.global, replacements.has(pattern));
+	}
+	try {
+		for (let iteration = 0; iteration < 3; iteration++) {
+			for (const pattern of replacements) pattern.lastIndex = 99;
+			assert.equal(attachmentDescription("one\r\ntwo\u061c"), "one\ntwo�");
+			assert.equal(attachmentLabel("name\x1b.png"), "name�.png");
+			assert.deepEqual(parseImagePaths('"C:\\safe path\\一🦖.PNG"'), ["C:\\safe path\\一🦖.PNG"]);
+			assert.equal(parseImagePaths("example.png"), undefined);
+			assert.equal(imagePatterns.IMAGE_FILE_EXTENSION_PATTERN.exec("photo.JPEG")?.[1], "JPEG");
+			for (const pattern of replacements) assert.equal(pattern.lastIndex, 0);
+		}
+	} finally { for (const pattern of replacements) pattern.lastIndex = 0; }
+});
 
 function serializedResponse(model: any, context: any, expectedImage: boolean, answer: string) {
  return responsesStream({ ...model, api: "openai-responses" }, context, { apiKey: "offline", maxRetries: 0,

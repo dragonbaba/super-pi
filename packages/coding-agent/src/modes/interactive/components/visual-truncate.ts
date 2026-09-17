@@ -4,8 +4,7 @@
  */
 
 import { visibleWidth, wrapTextWithAnsiTail } from "@super-pi/tui";
-
-const TAB_PATTERN = /\t/g;
+import { TAB_PATTERN } from "../../../utils/shell-regex.ts";
 
 export interface VisualTruncateResult {
 	/** The visual lines to display */

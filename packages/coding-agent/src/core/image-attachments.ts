@@ -5,6 +5,11 @@ import { basename, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ImageContent, UserMessage } from "@super-pi/ai";
 import { CURSOR_MARKER, getImageDimensions } from "@super-pi/tui";
+import {
+	IMAGE_ABSOLUTE_PATH_PATTERN, IMAGE_DESCRIPTION_CONTROL_PATTERN, IMAGE_DESCRIPTION_LINE_BREAK_PATTERN,
+	IMAGE_FILE_EXTENSION_PATTERN, IMAGE_FILE_URI_PATTERN, IMAGE_LABEL_CONTROL_PATTERN,
+	IMAGE_NETWORK_PATH_PATTERN, IMAGE_PATH_CONTROL_PATTERN, IMAGE_REMOTE_URL_PATTERN,
+} from "../utils/image-input-regex.ts";
 
 export const IMAGE_ATTACHMENT_VERSION = 1;
 export const IMAGE_VISION_RESULT_TYPE = "image-vision-result-v1";
@@ -123,18 +128,18 @@ export function verifyImmutableImage(image: ImageContent): void {
 
 export function localImagePath(value: string, cwd: string): string {
 	let path = value;
-	if (/^file:/i.test(path)) {
+	if (IMAGE_FILE_URI_PATTERN.test(path)) {
 		const url = new URL(path);
 		if (url.hostname && url.hostname !== "localhost") throw new Error("不支持远程 file URI");
 		path = fileURLToPath(url);
 	}
-	if (/^[\\/]{2}/.test(path) || /^[a-z][a-z0-9+.-]*:\/\//i.test(path)) throw new Error("仅支持本地单文件图片");
+	if (IMAGE_NETWORK_PATH_PATTERN.test(path) || IMAGE_REMOTE_URL_PATTERN.test(path)) throw new Error("仅支持本地单文件图片");
 	return resolve(cwd, path);
 }
 
 /** Parse one complete paste/add unit. No shell evaluation and no filesystem probes. */
 export function parseImagePaths(text: string, explicit = false): string[] | undefined {
-	if (text.length > 32768 || /[\r\n\x00]/.test(text)) return undefined;
+	if (text.length > 32768 || IMAGE_PATH_CONTROL_PATTERN.test(text)) return undefined;
 	const paths: string[] = [];
 	let offset = 0;
 	while (offset < text.length) {
@@ -153,8 +158,8 @@ export function parseImagePaths(text: string, explicit = false): string[] | unde
 			if (!quote && char === "\\" && text[offset] === " ") { value += " "; offset++; }
 			else value += char;
 		}
-		if (!closed || !/\.(png|jpe?g|webp|gif)$/i.test(value)) return undefined;
-		if (!explicit && !/^(?:[a-z]:[\\/]|\/|file:)/i.test(value)) return undefined;
+		if (!closed || !IMAGE_FILE_EXTENSION_PATTERN.test(value)) return undefined;
+		if (!explicit && !IMAGE_ABSOLUTE_PATH_PATTERN.test(value)) return undefined;
 		paths.push(value);
 		if (paths.length > IMAGE_ATTACHMENT_LIMITS.count) return undefined;
 	}
@@ -164,7 +169,7 @@ export function parseImagePaths(text: string, explicit = false): string[] | unde
 async function readLocalSnapshot(path: string, signal: AbortSignal): Promise<Buffer> {
 	signal.throwIfAborted();
 	const canonical = await realpath(path);
-	if (/^[\\/]{2}/.test(canonical)) throw new Error("图片重定向到远程路径");
+	if (IMAGE_NETWORK_PATH_PATTERN.test(canonical)) throw new Error("图片重定向到远程路径");
 	const handle = await open(canonical, "r");
 	try {
 		const before = await handle.stat();
@@ -219,7 +224,7 @@ export class ImageAttachmentDraft {
 			for (const item of this.records) total += item.metadata?.bytes ?? 0;
 			if (total > IMAGE_ATTACHMENT_LIMITS.total) throw new Error("图片总大小超过 40 MiB");
 			if (record.source === "local-file") {
-				const expected = /\.(png|jpe?g|gif|webp)$/i.exec(record.name)?.[1].toLowerCase().replace("jpg", "jpeg");
+				const expected = IMAGE_FILE_EXTENSION_PATTERN.exec(record.name)?.[1].toLowerCase().replace("jpg", "jpeg");
 				if (expected && loaded.image.mimeType !== `image/${expected}`) throw new Error("图片扩展名与实际格式不一致");
 			}
 			rememberDecoded(loaded.image, loaded.metadata);
@@ -287,10 +292,10 @@ export class ImageAttachmentDraft {
 	}
 }
 
-export function attachmentLabel(name: string): string { return name.replace(/[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/g, "�"); }
+export function attachmentLabel(name: string): string { return name.replace(IMAGE_LABEL_CONTROL_PATTERN, "�"); }
 /** Multiline derived text: preserve line structure without terminal/bidi controls. */
 export function attachmentDescription(text: string): string {
-	return text.replace(/\r\n?/g, "\n").replace(/[\x00-\x09\x0b-\x1f\x7f-\x9f\p{Bidi_Control}]/gu, "�");
+	return text.replace(IMAGE_DESCRIPTION_LINE_BREAK_PATTERN, "\n").replace(IMAGE_DESCRIPTION_CONTROL_PATTERN, "�");
 }
 export function draftAttachmentText(items: readonly DraftImage[], selectedId?: string): string {
 	let text = "";

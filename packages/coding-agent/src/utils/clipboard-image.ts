@@ -3,6 +3,7 @@ import { readFileSync } from "fs";
 
 import { clipboard } from "./clipboard-native.ts";
 import { loadPhoton } from "./photon.ts";
+import { CLIPBOARD_IMAGE_LIMIT_PATTERN, CLIPBOARD_LINE_BREAK_PATTERN, CLIPBOARD_WSL_RELEASE_PATTERN } from "./image-input-regex.ts";
 
 export type ClipboardImage = {
 	bytes: Uint8Array;
@@ -103,7 +104,7 @@ async function readClipboardImageViaWlPaste(signal?: AbortSignal): Promise<Clipb
 
 	const types = list.stdout
 		.toString("utf-8")
-		.split(/\r?\n/)
+		.split(CLIPBOARD_LINE_BREAK_PATTERN)
 		.map((t) => t.trim())
 		.filter(Boolean);
 
@@ -127,7 +128,7 @@ export function isWSL(env: NodeJS.ProcessEnv = process.env): boolean {
 
 	try {
 		const release = readFileSync("/proc/version", "utf-8");
-		return /microsoft|wsl/i.test(release);
+		return CLIPBOARD_WSL_RELEASE_PATTERN.test(release);
 	} catch {
 		return false;
 	}
@@ -146,7 +147,7 @@ async function readClipboardImageViaPowerShell(signal?: AbortSignal, onUnavailab
 		{ timeoutMs: DEFAULT_POWERSHELL_TIMEOUT_MS, maxBufferBytes: 15 * 1024 * 1024, signal }); }
 	catch (error) {
 		// Cancellation and actual image quota failures remain failures, not text probes.
-		if (signal?.aborted || (error instanceof Error && /Image exceeds (pixel|byte) limit/.test(error.message))) throw error;
+		if (signal?.aborted || (error instanceof Error && CLIPBOARD_IMAGE_LIMIT_PATTERN.test(error.message))) throw error;
 		onUnavailable?.(error); return null;
 	}
 	if (!output.length) return null;
@@ -162,7 +163,7 @@ async function readClipboardImageViaXclip(signal?: AbortSignal): Promise<Clipboa
 	if (targets.ok) {
 		candidateTypes = targets.stdout
 			.toString("utf-8")
-			.split(/\r?\n/)
+			.split(CLIPBOARD_LINE_BREAK_PATTERN)
 			.map((t) => t.trim())
 			.filter(Boolean);
 	}

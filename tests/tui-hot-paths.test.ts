@@ -33,14 +33,18 @@ const HOT_REGEX_FREE_FILES = [
 	"packages/ai/src/api/openrouter-images.ts",
 	"packages/ai/src/utils/json-parse.ts",
 	"packages/coding-agent/src/core/bash-executor.ts",
+	"packages/coding-agent/src/core/image-attachments.ts",
 	"packages/coding-agent/src/core/tools/find.ts",
 	"packages/coding-agent/src/core/tools/grep.ts",
 	"packages/coding-agent/src/core/tools/render-utils.ts",
 	"packages/coding-agent/src/modes/interactive/components/diff.ts",
+	"packages/coding-agent/src/modes/interactive/components/visual-truncate.ts",
 	"packages/coding-agent/src/modes/interactive/components/session-selector.ts",
 	"packages/coding-agent/src/modes/interactive/components/tool-execution.ts",
 	"packages/coding-agent/src/modes/interactive/components/user-message-selector.ts",
 	"packages/coding-agent/src/modes/interactive/interactive-mode.ts",
+	"packages/coding-agent/src/utils/clipboard-image.ts",
+	"packages/extensions/resource-lifecycle-guard/permission-rule.ts",
 	"packages/tui-kit/src/components/syntax-highlighting.ts",
 ];
 
@@ -190,4 +194,21 @@ test("selected hot runtime modules keep regular-expression literals in dedicated
 		visit(source);
 	}
 	assert.deepEqual(violations, []);
+});
+
+test("image and permission pattern modules initialize regexes only as module constants", () => {
+	for (const file of ["packages/coding-agent/src/utils/image-input-regex.ts", "packages/coding-agent/src/utils/shell-regex.ts", "packages/extensions/resource-lifecycle-guard/regex.ts"]) {
+		const source = ts.createSourceFile(file, readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true);
+		const visit = (node: ts.Node): void => {
+			if (ts.isRegularExpressionLiteral(node)) {
+				const declaration = node.parent;
+				assert.ok(ts.isVariableDeclaration(declaration), file);
+				const list = declaration.parent;
+				assert.ok(ts.isVariableDeclarationList(list) && (list.flags & ts.NodeFlags.Const) !== 0, file);
+				assert.ok(ts.isVariableStatement(list.parent) && ts.isSourceFile(list.parent.parent), file);
+			}
+			ts.forEachChild(node, visit);
+		};
+		visit(source);
+	}
 });

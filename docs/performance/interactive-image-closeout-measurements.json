@@ -10863,5 +10863,154 @@
       "Original eleven retained directories and sp-policy-boundary-8ZAQZ6 untouched; no alternate cleanup.",
       "No patch or standalone manifest generated."
     ]
+  },
+  "clipboardRegexModuleRound": {
+    "date": "2026-09-18",
+    "parent": "29d7385688faa852f74008f24d469092b478d220",
+    "reason": "User correction: all fixed patterns belong in dedicated regex modules as module constants.",
+    "reproduction": "Expanded existing tui-hot-paths AST gate failed on 21 literal positions in four consumers; full-feature production diff identified 16 newly introduced positions.",
+    "change": "Image/clipboard patterns use utils/image-input-regex.ts; permission rules use existing extension regex.ts; visual tail reuses existing shell-regex TAB_PATTERN. Matching and replacement semantics preserved.",
+    "sourceAudit": {
+      "newProductionPatternDeclarations": 17,
+      "violations": []
+    },
+    "commands": [
+      "npm run check",
+      "npm run build:offline",
+      "node --experimental-strip-types --test tests/tui-hot-paths.test.ts tests/interactive-control-images.test.ts tests/permission-interaction.test.ts tests/visual-tail.test.ts",
+      "node --experimental-strip-types --test tests/tui-async-owner-closeout.test.ts tests/image-placeholder-input.test.ts tests/interactive-control-images.test.ts tests/image-review-boundaries.test.ts tests/image-acceptance-closeout.test.ts tests/github-review-regressions.test.ts tests/permission-interaction.test.ts tests/visual-tail.test.ts",
+      "npm run test:hot",
+      "npm test",
+      "node --expose-gc --experimental-strip-types scripts/bench/image-draft-lifecycle.ts",
+      "node --expose-gc --experimental-strip-types scripts/bench/image-draft-lifecycle.ts --sample-input",
+      "node --expose-gc --experimental-strip-types scripts/bench/interactive-image-input.ts . --sample",
+      "git diff --check"
+    ],
+    "staticCheck": "passed",
+    "offlineBuild": "passed",
+    "validation": {
+      "focused": {
+        "tests": 60,
+        "passed": 60,
+        "failed": 0,
+        "cancelled": 0,
+        "skipped": 0
+      },
+      "related": {
+        "tests": 242,
+        "passed": 242,
+        "failed": 0,
+        "cancelled": 0,
+        "skipped": 0
+      },
+      "hot": {
+        "tests": 32,
+        "passed": 32,
+        "failed": 0,
+        "cancelled": 0,
+        "skipped": 0
+      },
+      "full": {
+        "tests": 1815,
+        "passed": 1757,
+        "failed": 0,
+        "cancelled": 0,
+        "skipped": 58
+      }
+    },
+    "benchmarks": {
+      "lifecycle": {
+        "ordinary": {
+          "reads": 0,
+          "encodes": 0,
+          "projections": 0
+        },
+        "receive": {
+          "reads": 2,
+          "encodes": 1,
+          "projections": 2
+        },
+        "steady": {
+          "reads": 2,
+          "encodes": 1,
+          "projections": 2
+        },
+        "cancelMs": 0.463799999999992,
+        "recordsAfter": 0,
+        "weakReleased": 2,
+        "weakTotal": 2,
+        "inputProfiles": []
+      },
+      "allocation": {
+        "ordinary": {
+          "reads": 0,
+          "encodes": 0,
+          "projections": 0
+        },
+        "receive": {
+          "reads": 2,
+          "encodes": 1,
+          "projections": 2
+        },
+        "steady": {
+          "reads": 2,
+          "encodes": 1,
+          "projections": 2
+        },
+        "cancelMs": 0.7858999999999696,
+        "recordsAfter": 0,
+        "weakReleased": 2,
+        "weakTotal": 2,
+        "inputProfiles": [
+          {
+            "name": "no-images",
+            "iterations": 2000,
+            "sampledBytes": 34789176,
+            "elapsedMs": 66.41949999999997,
+            "scope": "two cursor keys and editor render; sampling enabled, not natural-frame latency"
+          },
+          {
+            "name": "one-ready-image",
+            "iterations": 2000,
+            "sampledBytes": 50282424,
+            "elapsedMs": 64.2305,
+            "scope": "two cursor keys and editor render; sampling enabled, not natural-frame latency"
+          }
+        ]
+      },
+      "visual": {
+        "root": "D:\\RMProjects\\Pi-interactive-control-image-input",
+        "sampled": true,
+        "tasks": 0,
+        "retainedText": 0,
+        "skipped": 9991,
+        "returned": 10,
+        "sampledBytesPerOperation": 13190715.6,
+        "p50": 12.601800000000026,
+        "p95": 13.800399999999996,
+        "heapAfterGcDelta": 911656
+      }
+    },
+    "logSha256": {
+      "clipboard-regex-repro.log": "6b83518bf8670e341d4693bbc8bd56cf42d7120eb0e820f663c11c665401a892",
+      "clipboard-regex-focused.log": "b63f7210d8b549c71530dcc10186ed3cfa8ea2afffc10417509ec5828b3b5188",
+      "clipboard-regex-check.log": "97ecfd063b2a73c7d484d6c20a466b60965da8cf8a976104c80510a2a6633627",
+      "clipboard-regex-build.log": "a175b75cd77e9f9d9759f12b0243f550f4601d2df34b6012f5b5a9d4102c86a7",
+      "clipboard-regex-related.log": "36c6cf8b414e1e40e2f1a3348f94b2a67bc5a5b12629f2a6809aa2e64d1aa3c7",
+      "clipboard-regex-hot.log": "1a46cda68b5fdbe557dacec2120419fa86e2296cbd975232617cec8cd3b877aa",
+      "clipboard-regex-full.log": "306c5f0e16b61b255cd0341247e0374c2c27e34f5f686a19ceeb9dc83e527830",
+      "clipboard-regex-lifecycle.log": "25c3d3a1896db340eb1609fb8932c5a9c1cdfbee12e03436706606c8913ba023",
+      "clipboard-regex-allocation.log": "64d596d663acf97375e780d26f538fff4560c52c7b926a81a665625aa9a71e54",
+      "clipboard-regex-visual.log": "01220934d4375a60450b9337a97de45db7460fe59b309299c43516728d854103",
+      "clipboard-regex-audit.log": "f05556008f0b58248207f4f453262314d5df8a8965211b12e4cf25a879d05c93"
+    },
+    "limitations": [
+      "Source audit covers feature production changes including the new regex file, not an unrelated repository-wide migration.",
+      "Non-global/non-sticky predicates; global literal replacements reset lastIndex. New AST and repeated helper regressions enforce this boundary.",
+      "Benchmarks ran sequentially before full tests. Absolute sampled workloads, not a general speedup or desktop latency claim. Worker/read slots/capacity/request guards/ask_user/final permission checks unchanged.",
+      "Native desktop and online services unexecuted.",
+      "Original eleven retained directories and sp-policy-boundary-8ZAQZ6 untouched; no alternate cleanup.",
+      "No patch or standalone manifest generated."
+    ]
   }
 }
