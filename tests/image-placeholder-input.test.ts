@@ -16,6 +16,7 @@ import { CURSOR_MARKER } from "../packages/tui/src/tui.ts";
 import { CustomEditor } from "../packages/coding-agent/src/modes/interactive/components/custom-editor.ts";
 import { snapshotImageSubmission } from "../packages/coding-agent/src/core/image-attachments.ts";
 import { Editor } from "@super-pi/tui";
+import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
 
 async function mounted(auxiliary = false, screen: "regular" | "fullscreen" = "regular", controls: Parameters<typeof offlineImageRuntime>[5] = {}) {
 	const root = mkdtempSync(join(tmpdir(), "sp-placeholder-"));
@@ -152,6 +153,11 @@ test("custom deletion bindings and extension shortcuts retain precedence", async
 	} finally { await f.release(); }
 });
 
+function rightClick(f: Awaited<ReturnType<typeof mounted>>) {
+	if (process.platform === "win32") f.input.write("\x1b[<2;5;5M");
+	else f.internal.onRightClickPaste(); // host callback contract; Linux has no Windows right-click gesture
+}
+
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(yes => { resolve = yes; }); return { promise, resolve }; }
 
 for (const auxiliary of [false, true]) test(`extension CustomEditor owns visible attachment projection (auxiliary=${auxiliary})`, async () => {
@@ -172,7 +178,7 @@ for (const auxiliary of [false, true]) test(`extension CustomEditor owns visible
 		assert.equal(f.internal.imageDraft.items.length, 2);
 		assert.match(f.internal.editor.render(120).join("\n"), /已粘贴 · 未发送/);
 		f.input.write("\x1b[D\x1b[3~"); assert.equal(f.internal.imageDraft.items.length, 1);
-		f.input.write("\x1b[<2;5;5M"); await settled(f);
+		rightClick(f); await settled(f);
 		assert.equal(f.internal.imageDraft.items.length, 2);
 		f.input.write("\x7f"); assert.equal(f.internal.imageDraft.items.length, 1);
 		await frame(f); assert.equal(f.painted.unsent, true); assert.equal(f.counts.main + f.counts.vision, 0);
@@ -194,7 +200,7 @@ test("non-CustomEditor keeps the host attachment fallback through dialog restora
 	try {
 		await f.session.prompt("/plain-editor");
 		f.internal.readClipboardImageForPaste = async () => ({ bytes: pngFixture(8, 8) });
-		f.input.write("\x1b[<2;5;5M"); await settled(f);
+		rightClick(f); await settled(f);
 		await frame(f); assert.equal(f.painted.unsent, true);
 		assert.match(f.internal.fallbackAttachmentText.render(120).join("\n"), /已粘贴 · 未发送/);
 		dialog = f.session.prompt("/question-dialog"); await turn(); f.input.write("\x1b"); await dialog;
@@ -246,7 +252,7 @@ for (const fallback of [false, true]) test(`right-click completion respects focu
 	try {
 		f.internal.readClipboardImageForPaste = () => image.promise;
 		f.internal.readClipboardTextForPaste = () => text.promise;
-		f.input.write("original"); f.input.write("\x1b[<2;5;5M");
+		f.input.write("original"); rightClick(f);
 		if (fallback) { image.resolve(null); await turn(); }
 		const selector = { render: () => ["waiting for user"], handleInput() {} };
 		f.internal.ui.setFocus(selector);
@@ -322,5 +328,82 @@ for (const id of ["", "  ", 42, null, "duplicate"]) test(`SDK rejects invalid at
 		await assert.rejects(f.session.prompt("invalid IDs", submitted), /attachment ID/i);
 		assert.equal(f.counts.main + f.counts.vision, 0); assert.equal(f.session.pendingMessageCount, 0);
 		assert.equal(f.session.messages.filter(m => m.role === "user").length, 0);
+	} finally { await f.release(); }
+});
+
+for (const change of ["focus", "editor", "clear"] as const) test(`clipboard path fallback releases only its own files after ${change}`, async () => {
+	const f = await mounted(false, "fullscreen"), entered = deferred<void>(), resume = deferred<void>();
+	try {
+		const path = join(f.root, "fixture.png"); writeFileSync(path, pngFixture(8, 8));
+		f.input.write(`\x1b[200~"${path}"\x1b[201~`); await settled(f);
+		const original = f.internal.imageDraft.items[0];
+		// Gate actual file I/O, leaving the clipboard/owner/Worker chain intact.
+		const fs = createRequire(import.meta.url)("node:fs/promises"); const open = fs.open;
+		let gated = false;
+		fs.open = async (...args: any[]) => {
+			const handle = await open(...args); const read = handle.read;
+			handle.read = async function (...values: any[]) { if (!gated) { gated = true; entered.resolve(); await resume.promise; } return read.apply(this, values); };
+			return handle;
+		}; syncBuiltinESMExports();
+		try {
+			f.internal.readClipboardImageForPaste = async () => null;
+			f.internal.readClipboardTextForPaste = async () => `"${path}" "${path}"`;
+			f.input.write("keep text"); rightClick(f); await entered.promise;
+			if (change === "focus") f.internal.ui.setFocus({ render: () => ["dialog"], handleInput() {} });
+			if (change === "editor") f.internal.setCustomEditorComponent((ui: any, theme: any, keys: any) => new CustomEditor(ui, theme, keys));
+			if (change === "clear") { f.internal.clipboardAbort.abort(); f.internal.imageDraft.clear(); f.input.write(" next"); }
+			resume.resolve(); await settled(f);
+			assert.deepEqual(f.internal.imageDraft.items.map((i: any) => i.id), change === "clear" ? [] : [original.id]);
+			assert.equal(f.internal.editor.getText(), change === "clear" ? "keep text next" : "keep text");
+			assert.equal(f.counts.main + f.counts.vision, 0); assert.deepEqual(readFileSync(path), pngFixture(8, 8));
+		} finally { resume.resolve(); fs.open = open; syncBuiltinESMExports(); await settled(f); }
+	} finally { resume.resolve(); await f.release(); }
+});
+
+test("real auxiliary description preserves safe line breaks live and from saved entries", async () => {
+	const f = await mounted(true, "regular", { visionText: "OCR row one\r\nOCR row two\n\x1b[2J\x9b31m\u202eunsafe" });
+	try {
+		const path = join(f.root, "fixture.png"); writeFileSync(path, pngFixture(8, 8));
+		f.input.write(`\x1b[200~"${path}"\x1b[201~`); await settled(f);
+		await f.internal.editor.onSubmit("read rows");
+		const entry: any = f.session.sessionManager.getBranch().find((e: any) => e.customType === "image-vision-result-v1");
+		assert.match(entry.data.description, /OCR row one\r\nOCR row two/);
+		for (const saved of [entry, SessionManager.open(f.session.sessionManager.getSessionFile()!).getBranch().find((e: any) => e.customType === "image-vision-result-v1")]) {
+			f.internal.chatContainer.clear(); f.internal.addCustomEntryToChat(saved);
+			const lines: string[] = f.internal.chatContainer.render(200);
+			const first = lines.findIndex(line => line.includes("OCR row one"));
+			assert.ok(first >= 0); assert.ok(lines.findIndex(line => line.includes("OCR row two")) > first);
+			assert.doesNotMatch(lines.join("\n"), /\x1b\[2J|\x9b|\u202e/);
+		}
+		assert.equal(f.counts.vision, 1); assert.equal(f.counts.main, 1);
+	} finally { await f.release(); }
+});
+
+for (const change of ["focus", "editor", "clear"] as const) test(`clipboard path fallback rechecks ${change} across actual Worker decoding`, async () => {
+	const f = await mounted(false, "fullscreen"); let changed = false, exits = 0;
+	try {
+		const path = join(f.root, "fixture.png"); writeFileSync(path, pngFixture(1920, 1080));
+		f.input.write(`\x1b[200~"${path}"\x1b[201~`); await settled(f);
+		const original = f.internal.imageDraft.items[0];
+		const project = f.internal.imageDraft.changed;
+		f.internal.imageDraft.changed = () => {
+			if (changed) assert.ok(f.internal.imageDraft.items.every((item: any) => item === original || item.state !== "ready"), "stale attachments never publish ready state");
+			project();
+		};
+		f.internal.imageDraft.decodeObserver = (event: any) => {
+			if (event.type === "worker-exit") { assert.equal(event.active, 0); exits++; }
+			if (event.type !== "decode-start" || changed) return;
+			changed = true;
+			if (change === "focus") f.internal.ui.setFocus({ render: () => ["dialog"], handleInput() {} });
+			if (change === "editor") f.internal.setCustomEditorComponent((ui: any, theme: any, keys: any) => new CustomEditor(ui, theme, keys));
+			if (change === "clear") { f.internal.clipboardAbort.abort(); f.internal.imageDraft.clear(); f.input.write("next draft"); }
+		};
+		f.internal.readClipboardImageForPaste = async () => null;
+		f.internal.readClipboardTextForPaste = async () => `"${path}" "${path}"`;
+		rightClick(f); await settled(f);
+		assert.equal(changed, true); assert.equal(exits, 1);
+		assert.deepEqual(f.internal.imageDraft.items.map((i: any) => i.id), change === "clear" ? [] : [original.id]);
+		assert.equal(f.internal.editor.getText(), change === "clear" ? "next draft" : "");
+		assert.equal(f.counts.main + f.counts.vision, 0);
 	} finally { await f.release(); }
 });

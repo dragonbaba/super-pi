@@ -61,12 +61,12 @@ for (const auxiliary of [false, true]) for (const action of ["handled", "transfo
 	});
 }
 
-for (const stage of ["vision", "context", "payload"] as const) for (const change of ["block", "block-unblock", "override-unblock", "model", "cancel"] as const) {
+for (const stage of ["vision", "context", "headers", "payload"] as const) for (const change of ["block", "block-unblock", "override-unblock", "model", "cancel"] as const) {
 	test(`SDK image validity rechecked after ${stage} await: ${change}`, async () => {
 		const root = mkdtempSync(join(tmpdir(), "sp-policy-boundary-")); const entered = deferred(), resume = deferred();
 		const f = await offlineImageRuntime(root, true, undefined, undefined, undefined, {
 			beforeWireResponse: async vision => { if (vision && stage === "vision") { entered.resolve(); await resume.promise; } },
-			extensions: [(pi: any) => { if (stage !== "vision") pi.on(stage === "context" ? "context" : "before_provider_request", async () => { entered.resolve(); await resume.promise; }); }],
+			extensions: [(pi: any) => { if (stage !== "vision") pi.on(stage === "context" ? "context" : stage === "headers" ? "before_provider_headers" : "before_provider_request", async () => { entered.resolve(); await resume.promise; }); }],
 		});
 		try {
 			const run = f.session.prompt("image question", { images: [image()] }); await entered.promise;
@@ -77,6 +77,7 @@ for (const stage of ["vision", "context", "payload"] as const) for (const change
 			if (change === "model") f.session.agent.state.model = { ...f.session.model!, id: "changed-main" };
 			const cancelled = change === "cancel" ? f.session.abort() : undefined;
 			resume.resolve(); await run; await cancelled;
+			assert.equal((f.session as any)._imageRequest, undefined, "completed/failed/cancelled request releases its guard");
 			assert.equal(f.counts.vision, 1); assert.equal(f.counts.main, 0); assert.equal(f.session.pendingMessageCount, 1);
 			assert.ok(f.session.messages.some((m: any) => m.imageSubmission));
 			if (stage !== "vision" || change !== "cancel") assert.ok(f.session.sessionManager.getBranch().some((e: any) => e.customType === "image-vision-result-v1"));
@@ -147,5 +148,29 @@ for (const count of [0, 7, 8, "bytes"] as const) {
 				assert.equal(JSON.stringify(f.internal.imageDraft.items), next);
 			} else { assert.equal(f.internal.imageSubmissionRecovery, undefined); assert.equal(f.internal.imageDraft.items[0].id, oldId); assert.equal(f.internal.editor.getText(), "old question"); }
 		} finally { auth.resolve(undefined); process.off("unhandledRejection", rejectListener); await f.release(); }
+	});
+}
+
+for (const failMain of [false, true]) for (const auxiliary of [false, true]) for (const operation of ["compact", "branch"] as const) for (const change of ["model", "policy"] as const) {
+	test(`completed image guard cannot block ${operation}: auxiliary=${auxiliary}, change=${change}, failed=${failMain}`, async () => {
+		const root = mkdtempSync(join(tmpdir(), "sp-image-guard-")), wires: any[] = [];
+		const f = await offlineImageRuntime(root, auxiliary, undefined, undefined, undefined, { beforeWireResponse: (_vision, wire) => { wires.push(wire); } });
+		try {
+			f.session.settingsManager.applyOverrides({ compaction: { enabled: false, keepRecentTokens: 32, reserveTokens: 256 } });
+			await f.session.prompt("prior text ".repeat(512));
+			const target: any = f.session.sessionManager.getBranch().find((e: any) => e.type === "message" && e.message.role === "user");
+			if (failMain) f.failMain();
+			await f.session.prompt("image question", { images: [image()] });
+			assert.equal(f.counts.failures, failMain ? 1 : 0);
+			if (change === "model") f.session.agent.state.model = { ...f.session.model!, id: "changed-main" };
+			else { f.session.settingsManager.setBlockImages(true); f.session.settingsManager.setBlockImages(false); }
+			f.session.settingsManager.applyOverrides({ compaction: { enabled: false, keepRecentTokens: 32, reserveTokens: 256 } });
+			const before = f.counts.main;
+			if (operation === "compact") assert.ok((await f.session.compact()).summary);
+			else assert.ok((await f.session.navigateTree(target.id, { summarize: true })).summaryEntry);
+			assert.ok(f.counts.main > before);
+			assert.doesNotMatch(JSON.stringify(wires.at(-1)), /input_image|imageSubmission|policyRevision/);
+			assert.equal(f.counts.vision, auxiliary ? 1 : 0);
+		} finally { await f.close(); rmSync(root, { recursive: true }); }
 	});
 }

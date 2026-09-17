@@ -3,6 +3,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { stream } from "../../packages/ai/src/api/openai-responses.ts";
 import { registerApiProvider, unregisterApiProviders } from "@super-pi/ai/compat";
+import { lazyStream } from "@super-pi/ai";
 import { createAgentSession } from "../../packages/coding-agent/src/core/sdk.ts";
 import { AgentSessionRuntime } from "../../packages/coding-agent/src/core/agent-session-runtime.ts";
 import { DefaultResourceLoader } from "../../packages/coding-agent/src/core/resource-loader.ts";
@@ -12,7 +13,7 @@ import auxiliaryVision from "../../packages/extensions/auxiliary-vision/index.ts
 import type { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.ts";
 
 export async function offlineImageRuntime(root: string, auxiliary: boolean, savedSession?: string, onRecord?: (record: Record<string, unknown>) => void, inputTransform?: (event: any) => any,
-	controls: { extensions?: any[]; beforeWireResponse?: (vision: boolean, wire: any) => Promise<void> | void } = {}) {
+	controls: { visionText?: string; extensions?: any[]; beforeWireResponse?: (vision: boolean, wire: any) => Promise<void> | void } = {}) {
 	const cwd = join(root, "workspace"), agentDir = join(root, "agent"), sessionDir = join(root, "sessions");
 	for (const dir of [cwd, agentDir, sessionDir]) mkdirSync(dir, { recursive: true });
 	const configPath = join(root, "vision.json");
@@ -27,7 +28,10 @@ export async function offlineImageRuntime(root: string, auxiliary: boolean, save
 	const vision: any = { ...base, id: "vision", name: "Offline auxiliary vision", input: ["text", "image"], api: "offline-input-vision" };
 	function transport(target: any, context: any, options: any = {}) {
 		const isVision = target.id === "vision";
-		return stream({ ...target, api: "openai-responses" }, context, { ...options, apiKey: "offline-noncredential", maxRetries: 0,
+		return lazyStream(target, async () => {
+			// ModelRuntime normally consumes this hook before provider serialization.
+			const headers = await options.transformHeaders?.(options.headers ?? {}) ?? options.headers;
+			return stream({ ...target, api: "openai-responses" }, context, { ...options, headers, apiKey: "offline-noncredential", maxRetries: 0,
 			fetch: async (_url, init) => {
 				const wire = JSON.parse(String(init?.body)); let images = 0;
 				for (const item of wire.input ?? []) for (const block of item.content ?? []) if (block.type === "input_image") images++;
@@ -37,11 +41,12 @@ export async function offlineImageRuntime(root: string, auxiliary: boolean, save
 				record({ kind: isVision ? "vision-wire" : "main-wire", images });
 				await controls.beforeWireResponse?.(isVision, wire);
 				if (!isVision && failNextMain) { failNextMain = false; counts.failures++; return new Response("offline injected main failure", { status: 400 }); }
-				const text = isVision ? `离线视觉 fixture：按顺序接收 ${images} 张图片。未进行真实内容识别。` : `离线请求已完成；本次 wire 图片数 ${images}。main=${counts.main}, vision=${counts.vision}`;
+				const text = isVision ? controls.visionText ?? `离线视觉 fixture：按顺序接收 ${images} 张图片。未进行真实内容识别。` : `离线请求已完成；本次 wire 图片数 ${images}。main=${counts.main}, vision=${counts.vision}`;
 				const item = { type: "message", id: "offline-output", role: "assistant", content: [{ type: "output_text", text, annotations: [] }] };
 				const events = [{ type: "response.output_item.done", output_index: 0, item }, { type: "response.completed", response: { id: "offline-response", status: "completed", output: [item] } }];
 				return new Response(events.map(e => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`).join(""), { headers: { "content-type": "text/event-stream" } });
 			} });
+		});
 	}
 	const modelRuntime = { hasConfiguredAuth: () => true, checkAuth: async () => ({ type: "api_key" }),
 		getAuth: async () => ({ auth: { apiKey: "offline-noncredential" } }), isUsingOAuth: () => false, isUsingSubscription: () => false,

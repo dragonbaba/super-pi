@@ -823,7 +823,7 @@ test("async owner closeout remains lifecycle-only in source", () => {
 			clipboardPasteSource.indexOf("await this.readClipboardImageForPaste()"),
 	);
 	assert.match(clipboardPasteSource, /const isCurrent = .*this\.tuiLifecycleGeneration === lifecycleGeneration && !controller\.signal\.aborted && draftId === this\.imageDraft\.id && sessionId === this\.sessionManager\.getSessionId\(\) && this\.editor === target && this\.renderer\.getFocusedComponent\(\) === target/);
-	assert.equal(clipboardPasteSource.match(/if \(!isCurrent\(\)\) return/g)?.length, 2);
+	assert.equal(clipboardPasteSource.match(/if \(!isCurrent\(\)\) return/g)?.length, 3);
 	assert.ok(
 		clipboardPasteSource.indexOf("await this.readClipboardImageForPaste()") < clipboardPasteSource.indexOf("if (!isCurrent()) return") &&
 		clipboardPasteSource.indexOf("if (!isCurrent()) return") <
@@ -835,6 +835,7 @@ test("async owner closeout remains lifecycle-only in source", () => {
 			clipboardPasteSource.lastIndexOf("target.handleInput"),
 	);
 	assert.match(clipboardPasteSource, /finally\s*\{\s*if \(record && !isCurrent\(\)\)/);
+	assert.match(clipboardPasteSource, /await this\.imageDraft\.addFiles\(paths, this\.sessionManager\.getCwd\(\), isCurrent\);\s*if \(!isCurrent\(\)\) return/);
 	const closeExtensionUiStart = interactiveSource.indexOf("private closeExtensionUiContext");
 	const closeExtensionUiEnd = interactiveSource.indexOf("\n\t/**", closeExtensionUiStart);
 	const closeExtensionUiSource = interactiveSource.slice(closeExtensionUiStart, closeExtensionUiEnd);

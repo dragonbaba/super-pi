@@ -1,4 +1,4 @@
-import { IMAGE_ATTACHMENT_LIMITS, IMAGE_VISION_RESULT_TYPE, ImageAttachmentDraft, draftAttachmentText, parseImagePaths, attachmentLabel, type AttachmentMessage, type ImageSubmission, type ImageVisionResult } from "../../core/image-attachments.ts";
+import { IMAGE_ATTACHMENT_LIMITS, IMAGE_VISION_RESULT_TYPE, ImageAttachmentDraft, draftAttachmentText, parseImagePaths, attachmentLabel, attachmentDescription, type AttachmentMessage, type ImageSubmission, type ImageVisionResult } from "../../core/image-attachments.ts";
 /**
  * Interactive mode for the coding agent.
  * Handles TUI rendering and user interaction, delegating business logic to AgentSession.
@@ -3779,7 +3779,7 @@ export class InteractiveMode {
 			// Text remains editable at capacity; no unreserved image read is started.
 			const image = record ? await this.readClipboardImageForPaste() : null;
 			if (!isCurrent()) return;
-			if (image && record) { await this.imageDraft.finish(record, image.bytes); return; }
+			if (image && record) { await this.imageDraft.finish(record, image.bytes, isCurrent); return; }
 			const index = record ? this.imageDraft.items.indexOf(record) : -1;
 			if (index >= 0) this.imageDraft.remove(index);
 			const text = await this.readClipboardTextForPaste();
@@ -3788,7 +3788,10 @@ export class InteractiveMode {
 				// A path returned by text fallback is part of this already admitted
 				// operation, so it must not re-enter the competing-input guard.
 				const paths = parseImagePaths(text);
-				if (paths) await this.imageDraft.addFiles(paths, this.sessionManager.getCwd());
+				if (paths) {
+					await this.imageDraft.addFiles(paths, this.sessionManager.getCwd(), isCurrent);
+					if (!isCurrent()) return;
+				}
 				else target.handleInput?.(`\x1b[200~${text}\x1b[201~`);
 				this.ui.requestRender();
 			}
@@ -5085,7 +5088,7 @@ export class InteractiveMode {
 		if (entry.customType === IMAGE_VISION_RESULT_TYPE) {
 			const result = entry.data as Partial<ImageVisionResult>;
 			if (typeof result.description === "string" && typeof result.submissionId === "string") {
-				this.chatContainer.addChild(new Text(`辅助视觉结果（派生） · ${attachmentLabel(result.model ?? "")} · 提交 ${attachmentLabel(result.submissionId)}\n${attachmentLabel(result.description)}`, this.outputPad, 0));
+				this.chatContainer.addChild(new Text(`辅助视觉结果（派生） · ${attachmentLabel(result.model ?? "")} · 提交 ${attachmentLabel(result.submissionId)}\n${attachmentDescription(result.description)}`, this.outputPad, 0));
 			}
 			return;
 		}

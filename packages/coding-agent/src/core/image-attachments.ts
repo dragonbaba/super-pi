@@ -200,8 +200,8 @@ export class ImageAttachmentDraft {
 		const record: DraftImage = { id: randomUUID(), name, source, state: "preparing" };
 		this.records.push(record); this.changed(); return record;
 	}
-	async finish(record: DraftImage, bytes: Uint8Array): Promise<void> {
-		if (!this.records.includes(record) || record.state !== "preparing") return;
+	async finish(record: DraftImage, bytes: Uint8Array, isCurrent?: () => boolean): Promise<void> {
+		if (!this.records.includes(record) || record.state !== "preparing" || (isCurrent && !isCurrent())) return;
 		try {
 			if (this.decoding) throw new Error("正在校验或停止上一张图片，请稍后重新添加");
 			const loaded = validateAttachment(bytes, record.name, record.source, record.id);
@@ -213,7 +213,7 @@ export class ImageAttachmentDraft {
 				const decoded = await decodeImageLocally(bytes, controller.signal, this.decodeObserver);
 				if (decoded.width !== loaded.metadata.width || decoded.height !== loaded.metadata.height) throw new Error("图片尺寸不一致");
 			} finally { this.decoding = undefined; this.decodingRecord = undefined; }
-			if (!this.records.includes(record) || record.state !== "preparing") return;
+			if (!this.records.includes(record) || record.state !== "preparing" || (isCurrent && !isCurrent())) return;
 			// A queue restore can transfer ready records while the decoder is running.
 			total = loaded.metadata.bytes;
 			for (const item of this.records) total += item.metadata?.bytes ?? 0;
@@ -233,18 +233,32 @@ export class ImageAttachmentDraft {
 	}
 	remove(index: number): void { if (this.records[index] === this.decodingRecord) this.decoding?.abort(); this.records.splice(index, 1); this.changed(); }
 	clear(): void { this.active?.abort(); this.decoding?.abort(); this.records = []; this.id = randomUUID(); this.changed(); }
-	async addFiles(paths: readonly string[], cwd: string): Promise<void> {
+	async addFiles(paths: readonly string[], cwd: string, isCurrent?: () => boolean): Promise<void> {
 		if (this.busy || this.records.some(item => item.state === "preparing")) throw new Error("正在添加图片，请稍后再试");
 		if (paths.length + this.records.length > IMAGE_ATTACHMENT_LIMITS.count) throw new Error("最多添加 8 张图片");
 		const controller = new AbortController(); this.active = controller;
+		// Optional clipboard ownership spans the nested local read/decode. Keep
+		// only this bounded batch's records, never remove a competing draft's data.
+		const owned: DraftImage[] | undefined = isCurrent ? [] : undefined;
 		try {
 			for (const path of paths) {
-				if (controller.signal.aborted) break;
+				if (controller.signal.aborted || (isCurrent && !isCurrent())) break;
 				const record = this.begin(basename(path), "local-file");
-				try { await this.finish(record, await readLocalSnapshot(localImagePath(path, cwd), controller.signal)); }
+				owned?.push(record);
+				try {
+					const bytes = await readLocalSnapshot(localImagePath(path, cwd), controller.signal);
+					if (controller.signal.aborted || (isCurrent && !isCurrent())) break;
+					await this.finish(record, bytes, isCurrent);
+				}
 				catch (error) { this.fail(record, error); }
 			}
-		} finally { if (this.active === controller) this.active = undefined; }
+		} finally {
+			if (owned && isCurrent && !isCurrent()) for (const record of owned) {
+				const index = this.records.indexOf(record);
+				if (index >= 0) this.remove(index);
+			}
+			if (this.active === controller) this.active = undefined;
+		}
 	}
 	submit(): { images: ImageContent[]; submission: ImageSubmission } {
 		if (this.busy || this.records.some(item => item.state === "preparing")) throw new Error("图片尚未就绪，完成后请再次发送");
@@ -274,6 +288,10 @@ export class ImageAttachmentDraft {
 }
 
 export function attachmentLabel(name: string): string { return name.replace(/[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/g, "�"); }
+/** Multiline derived text: preserve line structure without terminal/bidi controls. */
+export function attachmentDescription(text: string): string {
+	return text.replace(/\r\n?/g, "\n").replace(/[\x00-\x09\x0b-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/g, "�");
+}
 export function draftAttachmentText(items: readonly DraftImage[], selectedId?: string): string {
 	let text = "";
 	for (let i = 0; i < items.length; i++) {

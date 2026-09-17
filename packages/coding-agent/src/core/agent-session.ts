@@ -1220,6 +1220,9 @@ export class AgentSession {
 
 	/** Internal handler for agent events - shared by subscribe and reconnect */
 	private _handleAgentEvent = async (event: AgentEvent): Promise<void> => {
+		// Final provider completion (including error/abort) releases its image guard
+		// before extension callbacks or compaction can issue unrelated requests.
+		if (event.type === "agent_end" || (event.type === "message_end" && event.message.role === "assistant")) this._imageRequest = undefined;
 		const mcpFinal = event.type === "message_end" && event.message.role === "toolResult" && event.message.toolName.startsWith("mcp__");
 		const toolResultSourceContent = event.type === "message_end" && event.message.role === "toolResult"
 			? event.message.content

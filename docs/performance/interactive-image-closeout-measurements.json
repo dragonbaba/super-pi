@@ -10615,5 +10615,132 @@
       "Sampled cursor/editor-render times include sampling. Prior rounds are historical observations, not a simultaneous controlled performance comparison. No general speedup or benefit to the unchanged drain is claimed.",
       "One stable cached Text projection is mounted for editors without the attachment contract; new cancellation/Promise state is confined to explicit operation boundaries. Original count/byte/pixel and source-allocation budgets remain unchanged."
     ]
+  },
+  "clipboardCiReviewRound": {
+    "date": "2026-09-18",
+    "baseCommit": "7f2d473cd9eb2a2215b1431bba428ace14e6dc82",
+    "delivery": "Detailed report for committed/pushed follow-up; no patch or standalone manifest generated.",
+    "previousCi": {
+      "run": 35257440639,
+      "linux": "failed: three tests incorrectly expected Windows right-click event handling on Linux",
+      "windows": "passed"
+    },
+    "reviewComments": [
+      4040155047,
+      4040155056,
+      4040155065
+    ],
+    "verification": {
+      "check": "passed",
+      "buildOffline": "passed",
+      "related": {
+        "tests": 207,
+        "pass": 207,
+        "fail": 0,
+        "skipped": 0,
+        "cancelled": 0
+      },
+      "hot": {
+        "tests": 31,
+        "pass": 31,
+        "fail": 0,
+        "skipped": 0,
+        "cancelled": 0
+      },
+      "full": {
+        "tests": 1813,
+        "pass": 1755,
+        "fail": 0,
+        "skipped": 58,
+        "cancelled": 0
+      },
+      "diffCheck": "passed"
+    },
+    "commands": [
+      "npm run check",
+      "npm run build:offline",
+      "node --experimental-strip-types --test tests/tui-async-owner-closeout.test.ts tests/image-placeholder-input.test.ts tests/interactive-control-images.test.ts tests/image-review-boundaries.test.ts tests/image-acceptance-closeout.test.ts tests/github-review-regressions.test.ts",
+      "npm run test:hot",
+      "npm test",
+      "git diff --check",
+      "node --expose-gc --experimental-strip-types scripts/bench/image-draft-lifecycle.ts",
+      "node --expose-gc --experimental-strip-types scripts/bench/image-draft-lifecycle.ts --sample-input"
+    ],
+    "lifecycle": {
+      "ordinary": {
+        "reads": 0,
+        "encodes": 0,
+        "projections": 0
+      },
+      "receive": {
+        "reads": 2,
+        "encodes": 1,
+        "projections": 2
+      },
+      "steady": {
+        "reads": 2,
+        "encodes": 1,
+        "projections": 2
+      },
+      "cancelMs": 0.41469999999992524,
+      "recordsAfter": 0,
+      "weakReleased": 2,
+      "weakTotal": 2,
+      "inputProfiles": []
+    },
+    "sampledInput": {
+      "ordinary": {
+        "reads": 0,
+        "encodes": 0,
+        "projections": 0
+      },
+      "receive": {
+        "reads": 2,
+        "encodes": 1,
+        "projections": 2
+      },
+      "steady": {
+        "reads": 2,
+        "encodes": 1,
+        "projections": 2
+      },
+      "cancelMs": 0.7560999999999467,
+      "recordsAfter": 0,
+      "weakReleased": 2,
+      "weakTotal": 2,
+      "inputProfiles": [
+        {
+          "name": "no-images",
+          "iterations": 2000,
+          "sampledBytes": 36274472,
+          "elapsedMs": 68.05189999999993,
+          "scope": "two cursor keys and editor render; sampling enabled, not natural-frame latency"
+        },
+        {
+          "name": "one-ready-image",
+          "iterations": 2000,
+          "sampledBytes": 51994392,
+          "elapsedMs": 68.76819999999998,
+          "scope": "two cursor keys and editor render; sampling enabled, not natural-frame latency"
+        }
+      ]
+    },
+    "logSha256": {
+      "clipboard-final-check.log": "97ecfd063b2a73c7d484d6c20a466b60965da8cf8a976104c80510a2a6633627",
+      "clipboard-final-build.log": "a175b75cd77e9f9d9759f12b0243f550f4601d2df34b6012f5b5a9d4102c86a7",
+      "clipboard-final-related.log": "a8ba544bc8685e7c2dc14fdaaca355588acaa8c6517b01e87584703259567a16",
+      "clipboard-final-hot.log": "6af14c952d698ba8e70cadb0a6b9d36d0fb72694ca3dd9aae07daf11979ffe9d",
+      "clipboard-final-full.log": "ec2a66ebedcfe52fa88acad61b41186fd24220280cb7fd8d7cc74e91e6264729",
+      "clipboard-final-lifecycle.log": "c833b37f4717daa8ed4172cefecd72284c81d65ac4bc6ca0a539b4ff48076f84",
+      "clipboard-final-allocation.log": "0c4414305af3b9b9b699da501bb53bdd35c676b69537a7cee52ddde0e22b7539",
+      "clipboard-final-ci-failure.log": "897e060c5e73e5a31a2b89aa98dbc128c95efe0946b1343b879ea0cf3f7d7a97"
+    },
+    "scope": [
+      "207 related tests include file-read and real Worker ownership invalidation, multiline live/persisted auxiliary output, summary after successful/failed main requests and active context/header/payload policy checks.",
+      "Only optional clipboard file batches retain up to eight record references; no new key/frame/delta Promise or controller. Existing read-slot and Worker exit ownership retained.",
+      "Sampling measures cursor/editor rendering, not desktop or natural-frame latency. Absolute samples are not an improvement claim; no new performance item or drain credit.",
+      "Original eleven policy-retained directories untouched. Additional interrupted-fixture directory C:/Users/Administrator/AppData/Local/Temp/sp-policy-boundary-8ZAQZ6 retained after automatic cleanup rejection (blocked by policy); no alternative cleanup attempted.",
+      "Native desktop and real online services unexecuted; no paid model or private screenshot used."
+    ]
   }
 }
