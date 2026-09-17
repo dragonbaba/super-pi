@@ -68,7 +68,7 @@ function interactive(session: any): any {
 	return mode;
 }
 
-for (const source of ["clipboard", "drop"]) for (const auxiliary of [false, true]) {
+for (const source of ["clipboard-image-paste", "path-paste"] as const) for (const auxiliary of [false, true]) {
 	test(`${source} + ${auxiliary ? "auxiliary" : "multimodal"}: same visible draft and real submission route`, async () => {
 		const events: string[] = [];
 		let auxCalls = 0, mainCalls = 0;
@@ -95,10 +95,10 @@ for (const source of ["clipboard", "drop"]) for (const auxiliary of [false, true
 			else assert.match(wire, /iVBOR/);
 			return serializedResponse(model, context, !auxiliary, "done");
 		};
-		const file = join(f.root, "外部 空格 🐉 & $().png");
+		const file = join(f.root, "本地 空格 🐉 & $().png");
 		writeFileSync(file, PNG);
 		try {
-			if (source === "clipboard") {
+			if (source === "clipboard-image-paste") {
 				mode.readClipboardImageForPaste = async () => ({ bytes: PNG, mimeType: "image/png" });
 				await mode.handleClipboardPaste();
 			} else {

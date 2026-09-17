@@ -1382,7 +1382,6 @@ export class InteractiveMode {
 				hint("app.message.followUp", "to queue follow-up"),
 				hint("app.message.dequeue", "to edit all queued messages"),
 				hint("app.clipboard.pasteImage", "to paste image (with text fallback)"),
-				rawKeyHint("drop files", "to attach"),
 			].join("\n");
 			const compactInstructions = [
 				hint("app.interrupt", "interrupt"),
