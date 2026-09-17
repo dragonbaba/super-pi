@@ -1,3 +1,4 @@
+import { createAskUserTool, createAskUserToolDefinition } from "./ask-user.ts";
 export {
 	type BashOperations,
 	type BashSpawnContext,
@@ -95,8 +96,9 @@ import { createWriteTool, createWriteToolDefinition, type WriteToolOptions } fro
 
 export type Tool = AgentTool<any>;
 export type ToolDef = ToolDefinition<any, any>;
-export type ToolName = "read" | "bash" | "powershell" | "edit" | "write" | "grep" | "find" | "ls";
+export type ToolName = "read" | "bash" | "powershell" | "edit" | "write" | "grep" | "find" | "ls" | "ask_user";
 export const allToolNames: Set<ToolName> = new Set([
+	"ask_user",
 	"read",
 	"bash",
 	"powershell",
@@ -108,7 +110,7 @@ export const allToolNames: Set<ToolName> = new Set([
 ]);
 
 export function getDefaultToolNames(platform: NodeJS.Platform = process.platform): ToolName[] {
-	return ["read", "bash", ...(platform === "win32" ? (["powershell"] as const) : []), "edit", "write"];
+	return ["read", "bash", ...(platform === "win32" ? (["powershell"] as const) : []), "edit", "write", "ask_user"];
 }
 
 export interface ToolsOptions {
@@ -124,6 +126,7 @@ export interface ToolsOptions {
 
 export function createToolDefinition(toolName: ToolName, cwd: string, options?: ToolsOptions): ToolDef {
 	switch (toolName) {
+		case "ask_user": return createAskUserToolDefinition();
 		case "read":
 			return createReadToolDefinition(cwd, options?.read);
 		case "bash":
@@ -147,6 +150,7 @@ export function createToolDefinition(toolName: ToolName, cwd: string, options?: 
 
 export function createTool(toolName: ToolName, cwd: string, options?: ToolsOptions): Tool {
 	switch (toolName) {
+		case "ask_user": return createAskUserTool();
 		case "read":
 			return createReadTool(cwd, options?.read);
 		case "bash":
@@ -188,6 +192,7 @@ export function createReadOnlyToolDefinitions(cwd: string, options?: ToolsOption
 
 export function createAllToolDefinitions(cwd: string, options?: ToolsOptions): Record<ToolName, ToolDef> {
 	return {
+		ask_user: createAskUserToolDefinition(),
 		read: createReadToolDefinition(cwd, options?.read),
 		bash: createBashToolDefinition(cwd, options?.bash),
 		powershell: createPowerShellToolDefinition(cwd, options?.powershell),
@@ -219,6 +224,7 @@ export function createReadOnlyTools(cwd: string, options?: ToolsOptions): Tool[]
 
 export function createAllTools(cwd: string, options?: ToolsOptions): Record<ToolName, Tool> {
 	return {
+		ask_user: createAskUserTool(),
 		read: createReadTool(cwd, options?.read),
 		bash: createBashTool(cwd, options?.bash),
 		powershell: createPowerShellTool(cwd, options?.powershell),

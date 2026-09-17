@@ -226,7 +226,7 @@ export class ClipboardArtifactLifecycle {
 	}
 
 	editorChanged(text: string): void {
-		if (this.closed) return;
+		if (this.closed || this.records.size === 0) { this.pendingEditorText = ""; return; }
 		this.pendingEditorText = text;
 		if (this.editorReconcileQueued) return;
 		this.editorReconcileQueued = true;
@@ -305,6 +305,7 @@ export class ClipboardArtifactLifecycle {
 		this.editorReconcileQueued = false;
 		if (this.closed) return;
 		const text = this.pendingEditorText;
+		this.pendingEditorText = "";
 		let changed = false;
 		for (const record of this.records.values()) {
 			if (text.includes(record.path)) {

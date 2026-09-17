@@ -1,4 +1,4 @@
-import { Editor, type EditorOptions, type EditorTheme, type TUI } from "@super-pi/tui";
+import { Text, Editor, type EditorOptions, type EditorTheme, type TUI } from "@super-pi/tui";
 import type { AppKeybinding, KeybindingsManager } from "../../../core/keybindings.ts";
 
 /**
@@ -6,6 +6,14 @@ import type { AppKeybinding, KeybindingsManager } from "../../../core/keybinding
  */
 export class CustomEditor extends Editor {
 	private keybindings: KeybindingsManager;
+	private readonly attachmentText = new Text("", 0, 0);
+	private hasAttachments = false;
+	setAttachmentText(text: string): void { this.hasAttachments = text.length > 0; this.attachmentText.setText(text); }
+	override render(width: number): string[] {
+		const lines = super.render(width);
+		if (!this.hasAttachments) return lines;
+		return this.attachmentText.render(width).concat(lines);
+	}
 	public actionHandlers: Map<AppKeybinding, () => void> = new Map();
 
 	// Special handlers that can be dynamically replaced
@@ -83,6 +91,10 @@ export class CustomEditor extends Editor {
 				return;
 			}
 		}
+
+		// Some terminals deliver a complete path paste without bracket markers.
+		// Single keystrokes and escape sequences never enter the attachment parser.
+		if (data.length > 1 && !data.includes("\x1b") && this.onPaste?.(data)) return;
 
 		// Pass to parent for editor handling
 		super.handleInput(data);

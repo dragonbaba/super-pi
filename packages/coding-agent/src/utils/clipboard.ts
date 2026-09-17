@@ -1,6 +1,6 @@
 import { type ExecFileSyncOptionsWithStringEncoding, execFileSync, execSync, spawn } from "child_process";
 import { platform } from "os";
-import { isWaylandSession } from "./clipboard-image.ts";
+import { runClipboardCommand, isWaylandSession } from "./clipboard-image.ts";
 import { clipboard } from "./clipboard-native.ts";
 
 type NativeClipboardExecOptions = {
@@ -18,6 +18,7 @@ function copyToX11Clipboard(options: NativeClipboardExecOptions): void {
 }
 
 const MAX_OSC52_ENCODED_LENGTH = 100_000;
+const WINDOWS_TEXT_COMMAND = Buffer.from("Add-Type -AssemblyName System.Windows.Forms; [Console]::Out.Write([System.Windows.Forms.Clipboard]::GetText())", "utf16le").toString("base64");
 
 function isRemoteSession(env: NodeJS.ProcessEnv = process.env): boolean {
 	return Boolean(env.SSH_CONNECTION || env.SSH_CLIENT || env.MOSH_CONNECTION);
@@ -50,7 +51,7 @@ function readWaylandClipboardText(): ClipboardReadResult {
 }
 
 /** Read plain text from the system clipboard. */
-export async function readClipboardText(): Promise<string | null> {
+export async function readClipboardText(signal?: AbortSignal): Promise<string | null> {
 	if (platform() === "linux" && isWaylandSession() && process.env.WAYLAND_DISPLAY) {
 		const result = readWaylandClipboardText();
 		if (result.ok) {
@@ -58,9 +59,11 @@ export async function readClipboardText(): Promise<string | null> {
 		}
 	}
 
-	if (!clipboard) {
-		return null;
+	if (platform() === "win32") {
+		const bytes = await runClipboardCommand("powershell.exe", ["-NoProfile", "-NonInteractive", "-STA", "-EncodedCommand", WINDOWS_TEXT_COMMAND], { maxBufferBytes: 1024 * 1024, signal });
+		return bytes.toString("utf8") || null;
 	}
+	if (!clipboard) return null;
 
 	try {
 		const text = await clipboard.getText();

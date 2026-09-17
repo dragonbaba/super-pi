@@ -182,6 +182,7 @@ export function convertToLlm(messages: AgentMessage[]): Message[] {
 						timestamp: m.timestamp,
 					};
 				case "user":
+					return { role: "user", content: m.content, timestamp: m.timestamp };
 				case "assistant":
 					if (m.role === "assistant" && m.api === "host-operation") throw new Error("Unsupported legacy experimental host history; preserve session and journal for explicit migration");
 				case "toolResult":

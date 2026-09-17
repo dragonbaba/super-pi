@@ -450,9 +450,9 @@ export function calculateImageRows(
 	return calculateImageCellSize(imageDimensions, targetWidthCells, undefined, cellDimensions).rows;
 }
 
-export function getPngDimensions(base64Data: string): ImageDimensions | null {
+export function getPngDimensions(base64Data: string | Uint8Array): ImageDimensions | null {
 	try {
-		const buffer = Buffer.from(base64Data, "base64");
+		const buffer = imageDimensionBytes(base64Data);
 
 		if (buffer.length < 24) {
 			return null;
@@ -471,9 +471,9 @@ export function getPngDimensions(base64Data: string): ImageDimensions | null {
 	}
 }
 
-export function getJpegDimensions(base64Data: string): ImageDimensions | null {
+export function getJpegDimensions(base64Data: string | Uint8Array): ImageDimensions | null {
 	try {
-		const buffer = Buffer.from(base64Data, "base64");
+		const buffer = imageDimensionBytes(base64Data);
 
 		if (buffer.length < 2) {
 			return null;
@@ -514,9 +514,9 @@ export function getJpegDimensions(base64Data: string): ImageDimensions | null {
 	}
 }
 
-export function getGifDimensions(base64Data: string): ImageDimensions | null {
+export function getGifDimensions(base64Data: string | Uint8Array): ImageDimensions | null {
 	try {
-		const buffer = Buffer.from(base64Data, "base64");
+		const buffer = imageDimensionBytes(base64Data);
 
 		if (buffer.length < 10) {
 			return null;
@@ -536,9 +536,9 @@ export function getGifDimensions(base64Data: string): ImageDimensions | null {
 	}
 }
 
-export function getWebpDimensions(base64Data: string): ImageDimensions | null {
+export function getWebpDimensions(base64Data: string | Uint8Array): ImageDimensions | null {
 	try {
-		const buffer = Buffer.from(base64Data, "base64");
+		const buffer = imageDimensionBytes(base64Data);
 
 		if (buffer.length < 30) {
 			return null;
@@ -575,7 +575,11 @@ export function getWebpDimensions(base64Data: string): ImageDimensions | null {
 	}
 }
 
-export function getImageDimensions(base64Data: string, mimeType: string): ImageDimensions | null {
+function imageDimensionBytes(value: string | Uint8Array): Buffer {
+	return typeof value === "string" ? Buffer.from(value, "base64") : Buffer.from(value.buffer, value.byteOffset, value.byteLength);
+}
+
+export function getImageDimensions(base64Data: string | Uint8Array, mimeType: string): ImageDimensions | null {
 	if (mimeType === "image/png") {
 		return getPngDimensions(base64Data);
 	}

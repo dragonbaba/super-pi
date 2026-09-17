@@ -378,6 +378,8 @@ export class Editor implements Component, Focusable {
 	private undoStack = new UndoStack<EditorSnapshot>();
 
 	public onSubmit?: (text: string) => void;
+	/** Complete paste-unit interception; never called for individual typed characters. */
+	public onPaste?: (text: string) => boolean;
 	public onChange?: (text: string) => void;
 	public disableSubmit: boolean = false;
 
@@ -1358,6 +1360,7 @@ export class Editor implements Component, Focusable {
 	}
 
 	private handlePaste(pastedText: string): void {
+		if (this.onPaste?.(pastedText)) return;
 		this.cancelAutocomplete();
 		this.exitHistoryBrowsing();
 		this.lastAction = null;

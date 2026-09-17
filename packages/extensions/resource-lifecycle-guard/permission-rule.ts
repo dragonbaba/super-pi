@@ -32,14 +32,18 @@ function ruleLabel(kind: SessionAllowRuleKind, pattern: string): string {
   return `${prefix}：${bounded}${suffix}`;
 }
 
-export function createSessionAllowRule(kind: SessionAllowRuleKind, value: string): SessionAllowRule {
+export function createSessionAllowRule(kind: SessionAllowRuleKind, value: string, scope?: { backend: "bash" | "powershell"; cwd: string }): SessionAllowRule {
   const pattern = normalizedPattern(kind, value);
-  return { id: ruleId(kind, pattern), kind, pattern, label: ruleLabel(kind, pattern) };
+  return { id: ruleId(kind, scope ? `${scope.backend}\0${scope.cwd}\0${pattern}` : pattern), kind, pattern, label: ruleLabel(kind, pattern), ...scope };
 }
 
-export function sessionAllowRuleMatches(rule: SessionAllowRule, command: string): boolean {
+export function sessionAllowRuleMatches(rule: SessionAllowRule, command: string, scope?: { backend: string; cwd: string }): boolean {
+  if (scope && ((rule.backend ?? "bash") !== scope.backend || (rule.cwd !== undefined && rule.cwd !== scope.cwd))) return false;
   const value = command.trim();
   if (rule.kind === "exact") return value === rule.pattern;
+  // Conservative single-command grammar. Complex shell syntax needs its own approval.
+  if (/[;&|<>$`\r\n(){}\\]/u.test(value)) return false;
+  if (!/^[A-Za-z0-9._-]+(?:[ \t]+[A-Za-z0-9._-]+)*$/u.test(rule.pattern)) return false;
   if (value === rule.pattern) return true;
   if (!value.startsWith(rule.pattern)) return false;
   const boundary = value.charCodeAt(rule.pattern.length);
@@ -55,5 +59,10 @@ export function simpleCommandPrefix(command: string): string | undefined {
     end += 1;
   }
   const executable = value.slice(0, end);
-  return SIMPLE_COMMAND_PATTERN.test(executable) ? executable : undefined;
+  if (!SIMPLE_COMMAND_PATTERN.test(executable)) return undefined;
+  if (executable === "git") {
+    const subcommand = value.slice(end).trimStart().split(/[ \t]/u, 1)[0];
+    return subcommand && SIMPLE_COMMAND_PATTERN.test(subcommand) && !subcommand.startsWith("-") ? `${executable} ${subcommand}` : undefined;
+  }
+  return executable;
 }

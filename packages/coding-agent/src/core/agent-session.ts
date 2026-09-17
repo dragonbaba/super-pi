@@ -1,3 +1,5 @@
+import { type AttachmentMessage, type ImageSubmission, snapshotImageSubmission, verifyImmutableImage } from "./image-attachments.ts";
+import { createHash } from "node:crypto";
 /**
  * AgentSession - Core abstraction for agent lifecycle and session management.
  *
@@ -213,6 +215,7 @@ export type AgentSessionEvent =
 			type: "agent_end";
 			messages: AgentMessage[];
 			willRetry: boolean;
+			requiresUserInput?: boolean;
 	  }
 	| { type: "agent_settled" }
 	| {
@@ -448,6 +451,7 @@ export interface PromptOptions {
 	expandPromptTemplates?: boolean;
 	/** Image attachments */
 	images?: ImageContent[];
+	submission?: ImageSubmission;
 	/** When streaming, how to queue the message: "steer" (interrupt) or "followUp" (wait). Required if streaming. */
 	streamingBehavior?: "steer" | "followUp";
 	/** Source of input for extension input event handlers. Defaults to "interactive". */
@@ -650,7 +654,12 @@ export class AgentSession {
 	private _resolveIdleWait: (() => void) | undefined;
 
 	/** Tracks pending steering messages for UI display. Removed when delivered. */
+	private _interactionPaused = false;
 	private _steeringMessages: string[] = [];
+	private _queuedImageMessages = new Map<string, { text: string; images: ImageContent[]; submission: ImageSubmission }>();
+	// Values are small digests. Keys are verified/frozen canonical content; never paths or mutable provider objects.
+	private _imageDigests = new WeakMap<ImageContent, string>();
+	private _imageRequest: { model: Model<any> | undefined; signal?: AbortSignal; sessionId: string; policyRevision: number } | undefined;
 	/** Tracks pending follow-up messages for UI display. Removed when delivered. */
 	private _followUpMessages: string[] = [];
 	/** Messages queued to be included with the next user prompt as context ("asides"). */
@@ -961,6 +970,9 @@ export class AgentSession {
 	 */
 	private _installAgentToolHooks(): void {
 		this.agent.beforeToolCall = async ({ toolCall, args }) => {
+			if (toolCall.name === "inspect_image" && this.settingsManager.getBlockImages()) {
+				return { block: true, reason: "图片读取/发送已被 blockImages 禁止" };
+			}
 			const runner = this._extensionRunner;
 			if (!runner.hasHandlers("tool_call")) {
 				return undefined;
@@ -1208,7 +1220,10 @@ export class AgentSession {
 		// This ensures the UI sees the updated queue state
 		if (event.type === "message_start" && event.message.role === "user") {
 			this._overflowRecoveryAttempted = false;
-			const messageText = contentText(event.message.content, "");
+			const submissionId = (event.message as AttachmentMessage).imageSubmission?.id;
+			const queued = submissionId ? this._queuedImageMessages.get(submissionId) : undefined;
+			const messageText = queued ? this._imageQueueLabel(queued.text, queued.submission) : contentText(event.message.content, "");
+			if (submissionId) this._queuedImageMessages.delete(submissionId);
 			if (messageText) {
 				// Check steering queue first
 				const steeringIndex = this._steeringMessages.indexOf(messageText);
@@ -1321,6 +1336,7 @@ export class AgentSession {
 
 		// Notify all listeners. The final boundary is awaited so prompt/abort/idle
 		// cannot overtake critical UI output; high-frequency events stay unchanged.
+		if (event.type === "agent_end" && event.requiresUserInput) this._interactionPaused = true;
 		if (event.type === "agent_end") {
 			await this._emitAgentEnd({ ...event, willRetry: this._willRetryAfterAgentEnd(event) });
 			this._evidenceCompletedReads?.clear();
@@ -1585,6 +1601,12 @@ export class AgentSession {
 	 * Call this when completely done with the session.
 	 */
 	dispose(): void {
+		this._imageDigests = new WeakMap();
+		this._imageRequest = undefined;
+		this._queuedImageMessages.clear();
+		this.agent.clearAllQueues();
+		this._steeringMessages.length = 0;
+		this._followUpMessages.length = 0;
 		this._operationDisposed = true;
 		this._operationJournal?.dispose();
 		if (!this._hostOperation) this._operationJournal = undefined;
@@ -2171,6 +2193,7 @@ export class AgentSession {
 	// =========================================================================
 
 	private async _runAgentPrompt(messages: AgentMessage | AgentMessage[]): Promise<void> {
+		this._interactionPaused = false;
 		this._isAgentRunActive = true;
 		try {
 			await this.agent.prompt(messages);
@@ -2185,11 +2208,15 @@ export class AgentSession {
 	}
 
 	private async _handlePostAgentRun(): Promise<boolean> {
+		if (this._interactionPaused) { this._lastAssistantMessage = undefined; return false; }
 		const msg = this._lastAssistantMessage;
 		this._lastAssistantMessage = undefined;
 		if (!msg) {
 			return false;
 		}
+		// A failed image submission needs an explicit user retry. Do not drain the
+		// next draft, compact, or automatically repeat a potentially billed request.
+		if (msg.errorMessage?.includes("Image submission blocked:")) return false;
 
 		if (this._isRetryableError(msg) && (await this._prepareRetry(msg))) {
 			return true;
@@ -2224,6 +2251,7 @@ export class AgentSession {
 	 * @throws Error if no model selected or no API key available (when not streaming)
 	 */
 	async prompt(text: string, options?: PromptOptions): Promise<void> {
+		const submittedImages = options?.images?.length ? snapshotImageSubmission(options.images, options.submission) : undefined;
 		const expandPromptTemplates = options?.expandPromptTemplates ?? true;
 		const preflightResult = options?.preflightResult;
 		let messages: AgentMessage[] | undefined;
@@ -2248,13 +2276,16 @@ export class AgentSession {
 
 			// Emit input event for extension interception (before skill/template expansion)
 			let currentText = text;
-			let currentImages = options?.images;
-			if (this._extensionRunner.hasHandlers("input")) {
+			let currentImages = submittedImages?.images;
+			const submission = submittedImages?.submission;
+			if (submission) { for (const image of currentImages!) Object.freeze(image); Object.freeze(currentImages); }
+			if (this._extensionRunner.hasHandlers("input") && !(submission && this.settingsManager.getBlockImages())) {
 				const inputResult = await this._extensionRunner.emitInput(
 					currentText,
 					currentImages,
 					options?.source ?? "interactive",
 					this.isStreaming ? options?.streamingBehavior : undefined,
+					submission?.id,
 				);
 				if (inputResult.action === "handled") {
 					preflightResult?.(true);
@@ -2273,6 +2304,13 @@ export class AgentSession {
 				expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
 			}
 
+			if (submission && (expandedText !== text || currentImages !== submittedImages!.images)) {
+				const transformed = currentImages !== submittedImages!.images ? snapshotImageSubmission(currentImages ?? []).images : undefined;
+				submission.inputProjection = { text: expandedText, images: transformed };
+			}
+			const canonicalText = submission ? text : expandedText;
+			const canonicalImages = submission ? submittedImages!.images : currentImages;
+
 			// If streaming, queue via steer() or followUp() based on option
 			if (this.isStreaming) {
 				if (!options?.streamingBehavior) {
@@ -2281,9 +2319,9 @@ export class AgentSession {
 					);
 				}
 				if (options.streamingBehavior === "followUp") {
-					await this._queueFollowUp(expandedText, currentImages);
+					await this._queueFollowUp(canonicalText, canonicalImages, submission);
 				} else {
-					await this._queueSteer(expandedText, currentImages);
+					await this._queueSteer(canonicalText, canonicalImages, submission);
 				}
 				preflightResult?.(true);
 				return;
@@ -2323,13 +2361,14 @@ export class AgentSession {
 			messages = [];
 
 			// Add user message
-			const userContent: (TextContent | ImageContent)[] = [{ type: "text", text: expandedText }];
-			if (currentImages) {
-				userContent.push(...currentImages);
+			const userContent: (TextContent | ImageContent)[] = [{ type: "text", text: canonicalText }];
+			if (canonicalImages) {
+				userContent.push(...canonicalImages);
 			}
 			messages.push({
 				role: "user",
 				content: userContent,
+				...(submission ? { imageSubmission: submission } : {}),
 				timestamp: Date.now(),
 			});
 
@@ -2450,7 +2489,8 @@ export class AgentSession {
 	 * @param images Optional image attachments to include with the message
 	 * @throws Error if text is an extension command
 	 */
-	async steer(text: string, images?: ImageContent[]): Promise<void> {
+	async steer(text: string, images?: ImageContent[], submission?: ImageSubmission): Promise<void> {
+		if (images?.length) { const saved = snapshotImageSubmission(images, submission); images = saved.images; submission = saved.submission; }
 		// Check for extension commands (cannot be queued)
 		if (text.startsWith("/")) {
 			this._throwIfExtensionCommand(text);
@@ -2460,7 +2500,7 @@ export class AgentSession {
 		let expandedText = this._expandSkillCommand(text);
 		expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
 
-		await this._queueSteer(expandedText, images);
+		await this._queueSteer(expandedText, images, submission);
 	}
 
 	/**
@@ -2470,7 +2510,8 @@ export class AgentSession {
 	 * @param images Optional image attachments to include with the message
 	 * @throws Error if text is an extension command
 	 */
-	async followUp(text: string, images?: ImageContent[]): Promise<void> {
+	async followUp(text: string, images?: ImageContent[], submission?: ImageSubmission): Promise<void> {
+		if (images?.length) { const saved = snapshotImageSubmission(images, submission); images = saved.images; submission = saved.submission; }
 		// Check for extension commands (cannot be queued)
 		if (text.startsWith("/")) {
 			this._throwIfExtensionCommand(text);
@@ -2480,14 +2521,14 @@ export class AgentSession {
 		let expandedText = this._expandSkillCommand(text);
 		expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
 
-		await this._queueFollowUp(expandedText, images);
+		await this._queueFollowUp(expandedText, images, submission);
 	}
 
 	/**
 	 * Internal: Queue a steering message (already expanded, no extension command check).
 	 */
-	private async _queueSteer(text: string, images?: ImageContent[]): Promise<void> {
-		this._steeringMessages.push(text);
+	private async _queueSteer(text: string, images?: ImageContent[], submission?: ImageSubmission): Promise<void> {
+		this._steeringMessages.push(this._queueImageLabel(text, images, submission));
 		this._emitQueueUpdate();
 		const content: (TextContent | ImageContent)[] = [{ type: "text", text }];
 		if (images) {
@@ -2496,6 +2537,7 @@ export class AgentSession {
 		this.agent.steer({
 			role: "user",
 			content,
+			...(submission ? { imageSubmission: submission } : {}),
 			timestamp: Date.now(),
 		});
 	}
@@ -2503,8 +2545,8 @@ export class AgentSession {
 	/**
 	 * Internal: Queue a follow-up message (already expanded, no extension command check).
 	 */
-	private async _queueFollowUp(text: string, images?: ImageContent[]): Promise<void> {
-		this._followUpMessages.push(text);
+	private async _queueFollowUp(text: string, images?: ImageContent[], submission?: ImageSubmission): Promise<void> {
+		this._followUpMessages.push(this._queueImageLabel(text, images, submission));
 		this._emitQueueUpdate();
 		const content: (TextContent | ImageContent)[] = [{ type: "text", text }];
 		if (images) {
@@ -2513,6 +2555,7 @@ export class AgentSession {
 		this.agent.followUp({
 			role: "user",
 			content,
+			...(submission ? { imageSubmission: submission } : {}),
 			timestamp: Date.now(),
 		});
 	}
@@ -2625,14 +2668,92 @@ export class AgentSession {
 	 * Useful for restoring to editor when user aborts.
 	 * @returns Object with steering and followUp arrays
 	 */
-	clearQueue(): { steering: string[]; followUp: string[] } {
+	clearQueue(): { steering: string[]; followUp: string[]; imageMessages: { text: string; images: ImageContent[]; submission: ImageSubmission }[] } {
 		const steering = [...this._steeringMessages];
 		const followUp = [...this._followUpMessages];
 		this._steeringMessages = [];
 		this._followUpMessages = [];
 		this.agent.clearAllQueues();
+		const imageMessages = [...this._queuedImageMessages.values()];
+		for (const item of imageMessages) {
+			const label = this._imageQueueLabel(item.text, item.submission);
+			for (const queue of [steering, followUp]) { const index = queue.indexOf(label); if (index >= 0) queue[index] = item.text; }
+		}
+		this._queuedImageMessages.clear();
 		this._emitQueueUpdate();
-		return { steering, followUp };
+		return { steering, followUp, imageMessages };
+	}
+
+	getQueuedImageSize(): { count: number; bytes: number } {
+		let count = 0, bytes = 0;
+		for (const item of this._queuedImageMessages.values()) for (const attachment of item.submission.attachments) { count++; bytes += attachment.bytes; }
+		return { count, bytes };
+	}
+	private _imageQueueLabel(text: string, submission: ImageSubmission): string {
+		return `${text} [已排队 · 含 ${submission.attachments.length} 张图片 · ${submission.id}]`;
+	}
+	private _queueImageLabel(text: string, images?: ImageContent[], submission?: ImageSubmission): string {
+		if (!submission || !images) return text;
+		if (this._queuedImageMessages.has(submission.id)) throw new Error("Submission is already queued");
+		if (this._queuedImageMessages.size >= 32) throw new Error("Image queue is full");
+		const queued = this.getQueuedImageSize();
+		let bytes = queued.bytes;
+		for (const attachment of submission.attachments) bytes += attachment.bytes;
+		if (queued.count + images.length > 32 || bytes > 128 * 1024 * 1024) throw new Error("Image queue exceeds 32 images / 128 MiB");
+		this._queuedImageMessages.set(submission.id, { text, images, submission });
+		return this._imageQueueLabel(text, submission);
+	}
+	/** Runs only at an actual provider request boundary, after queue delivery. */
+	async prepareSubmittedImages(messages: AgentMessage[], signal?: AbortSignal): Promise<AgentMessage[]> {
+		this._imageRequest = undefined;
+		let projected: AgentMessage[] | undefined;
+		for (let i = 0; i < messages.length; i++) {
+			const message = messages[i] as AttachmentMessage;
+			if (message.role !== "user" || !message.imageSubmission || typeof message.content === "string") continue;
+			let images: ImageContent[] = [];
+			let text = "";
+			for (const part of message.content) { if (part.type === "image") images.push(part); else text += part.text; }
+			if (!images.length) continue;
+			this._imageRequest ??= { model: this.model, signal, sessionId: this.sessionManager.getSessionId(), policyRevision: this.settingsManager.getImagePolicyRevision() };
+			this.assertImageRequestAllowed();
+			const input = message.imageSubmission.inputProjection;
+			if (input) { text = input.text; images = input.images ?? images; }
+			if (this.model?.input.includes("image") || images.length === 0) {
+				if (input) { projected ??= messages.slice(); projected[i] = { role: "user", content: [{ type: "text", text }, ...images], timestamp: message.timestamp }; }
+				continue;
+			}
+			const preparedModel = this.model;
+			const contentDigest = createHash("sha256");
+			for (const image of images) {
+				let digest = this._imageDigests.get(image);
+				if (!digest) {
+					try { verifyImmutableImage(image); }
+					catch (error) { throw new Error(`Image submission blocked: ${error instanceof Error ? error.message : String(error)}`, { cause: error }); }
+					digest = createHash("sha256").update(image.mimeType).update("\0").update(image.data).digest("hex");
+					this._imageDigests.set(image, digest);
+				}
+				contentDigest.update(digest);
+			}
+			Object.freeze(images);
+			let result;
+			try { result = await this._extensionRunner.emitInput(text, images, "interactive", undefined, message.imageSubmission.id, contentDigest.digest("hex"), "image-processing"); }
+			catch (error) { throw new Error(`Image submission blocked: ${error instanceof Error ? error.message : String(error)}`, { cause: error }); }
+			this.assertImageRequestAllowed();
+			if (this.model !== preparedModel) throw new Error("Image submission blocked: 图片处理期间模型已切换；请重新提交或重试");
+			if (result.action !== "transform" || result.images?.length !== 0) throw new Error("Image submission blocked: 图片处理后端不可用或失败；原附件已保留，请配置辅助视觉或更换模型后重试");
+			projected ??= messages.slice();
+			projected[i] = { role: "user", content: [{ type: "text", text: result.text }], timestamp: message.timestamp };
+		}
+		return projected ?? messages;
+	}
+
+	/** Rechecked after every async SDK preparation boundary; never serialized into provider payloads. */
+	assertImageRequestAllowed(model = this.model): void {
+		const request = this._imageRequest;
+		if (!request) return;
+		if (request.signal?.aborted || this._operationDisposed || request.sessionId !== this.sessionManager.getSessionId()) throw new Error("Image submission blocked: 图片请求已取消或会话失效；原附件保留");
+		if (this.settingsManager.getBlockImages() || request.policyRevision !== this.settingsManager.getImagePolicyRevision()) throw new Error("Image submission blocked: blockImages 图片策略已改变；原附件和已完成结果保留，请明确重试");
+		if (request.model !== this.model || request.model?.id !== model?.id || request.model?.provider !== model?.provider || request.model?.api !== model?.api) throw new Error("Image submission blocked: 图片处理期间模型已切换；请明确重试");
 	}
 
 	/** Number of pending messages (includes both steering and follow-up) */
@@ -4176,6 +4297,7 @@ export class AgentSession {
 	 * Context overflow errors are NOT retryable (handled by compaction instead).
 	 */
 	private _isRetryableError(message: AssistantMessage): boolean {
+		if (message.errorMessage?.includes("Image submission blocked:")) return false;
 		if (isRequestBudgetBlock(message.errorMessage)) return false;
 		// Context overflow is handled by compaction, not retry.
 		if (isContextOverflow(message, this.model?.contextWindow ?? 0)) return false;

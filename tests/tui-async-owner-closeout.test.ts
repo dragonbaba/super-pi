@@ -1,3 +1,4 @@
+import { ImageAttachmentDraft } from "../packages/coding-agent/src/core/image-attachments.ts";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { access, mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -17,6 +18,13 @@ import { LoginDialogComponent } from "../packages/coding-agent/src/modes/interac
 import { SessionSelectorComponent } from "../packages/coding-agent/src/modes/interactive/components/session-selector.ts";
 import { ToolExecutionComponent } from "../packages/coding-agent/src/modes/interactive/components/tool-execution.ts";
 import { initTheme, onThemeChange, setTheme } from "../packages/coding-agent/src/modes/interactive/theme/theme.ts";
+
+function createTestInteractiveMode(): any {
+ const mode = Object.create(InteractiveMode.prototype) as any;
+ mode.imageDraft = new ImageAttachmentDraft(() => {});
+ mode.reportImageError = () => {};
+ return mode;
+}
 
 type CountingTui = TUI & {
 	requestRenderCalls: number;
@@ -92,7 +100,7 @@ function createInitializationFixture(options: InitializationFixtureOptions = {})
 	};
 	const observed: Promise<void>[] = [];
 	const branchCallbacks: Array<() => void> = [];
-	const mode = Object.create(InteractiveMode.prototype) as any;
+	const mode = createTestInteractiveMode() as any;
 	const settingsManager = {
 		getQuietStartup: () => true,
 		getFullscreenScrollbar: () => false,
@@ -393,7 +401,7 @@ test("interactive stop cancels the active provider login and settles a manual pr
 		(error: unknown) => error,
 	);
 
-	const mode = Object.create(InteractiveMode.prototype) as any;
+	const mode = createTestInteractiveMode() as any;
 	mode.runtimeHost = {
 		session: {
 			settingsManager: {
@@ -430,7 +438,7 @@ test("provider completion and notifications are inert after final login cancella
 	let loginOptions: any;
 	let completeAuthenticationCalls = 0;
 	let errorCalls = 0;
-	const mode = Object.create(InteractiveMode.prototype) as any;
+	const mode = createTestInteractiveMode() as any;
 	mode.runtimeHost = {
 		session: {
 			model: undefined,
@@ -817,11 +825,11 @@ test("async owner closeout remains lifecycle-only in source", () => {
 	assert.equal(clipboardPasteSource.match(/this\.tuiLifecycleGeneration !== lifecycleGeneration/g)?.length, 2);
 	assert.ok(
 		clipboardPasteSource.indexOf("this.tuiLifecycleGeneration !== lifecycleGeneration") <
-			clipboardPasteSource.indexOf("fs.writeFileSync"),
+			clipboardPasteSource.indexOf("this.imageDraft.finish"),
 	);
 	assert.ok(
 		clipboardPasteSource.lastIndexOf("this.tuiLifecycleGeneration !== lifecycleGeneration") <
-			clipboardPasteSource.lastIndexOf("this.editor.insertTextAtCursor"),
+			clipboardPasteSource.lastIndexOf("this.editor.handleInput"),
 	);
 	const closeExtensionUiStart = interactiveSource.indexOf("private closeExtensionUiContext");
 	const closeExtensionUiEnd = interactiveSource.indexOf("\n\t/**", closeExtensionUiStart);
@@ -833,9 +841,11 @@ test("async owner closeout remains lifecycle-only in source", () => {
 	assert.match(interactiveSource, /private readonly handleThemeChange = \(\): void =>/);
 	assert.match(interactiveSource, /onThemeChange\(this\.handleThemeChange\)/);
 	assert.doesNotMatch(
-		`${extensionNavigateSource}\n${clipboardPasteSource}\n${closeExtensionUiSource}`,
+		`${extensionNavigateSource}\n${closeExtensionUiSource}`,
 		/Promise\.all|new AbortController|\.then\(|\.catch\(|\.finally\(/,
 	);
+	assert.equal(clipboardPasteSource.match(/new AbortController/g)?.length, 1, "one cancellable owner per explicit paste, never per key/frame");
+	assert.doesNotMatch(clipboardPasteSource, /Promise\.all|\.then\(|\.catch\(|\.finally\(/);
 	const themeSource = readFileSync("packages/coding-agent/src/modes/interactive/theme/theme.ts", "utf8");
 	assert.match(themeSource, /export function offThemeChange\(callback: \(\) => void\): void \{\s*if \(onThemeChangeCallback === callback\) onThemeChangeCallback = undefined;\s*\}/);
 	const reloadStart = interactiveSource.indexOf("private async handleReloadCommand");
@@ -956,7 +966,7 @@ test("interactive stop disposes extension widgets header and footer exactly once
 	const below = { render: () => [], dispose: () => { calls.below++; } };
 	const footer = { render: () => [], dispose: () => { calls.footer++; } };
 	const header = { render: () => [], dispose: () => { calls.header++; } };
-	const mode = Object.create(InteractiveMode.prototype) as any;
+	const mode = createTestInteractiveMode() as any;
 	mode.runtimeHost = {
 		session: {
 			settingsManager: {
@@ -1040,7 +1050,7 @@ test("interactive stop isolates extension disposal errors and releases later own
 	let laterWidgetCalls = 0;
 	let footerCalls = 0;
 	let headerCalls = 0;
-	const mode = Object.create(InteractiveMode.prototype) as any;
+	const mode = createTestInteractiveMode() as any;
 	mode.runtimeHost = {
 		session: {
 			settingsManager: {
@@ -1100,7 +1110,7 @@ test("interactive stop aborts model lookup and rejects its late catalog result",
 			});
 		},
 	};
-	const mode = Object.create(InteractiveMode.prototype) as any;
+	const mode = createTestInteractiveMode() as any;
 	mode.runtimeHost = {
 		session: {
 			modelRuntime,
@@ -1160,7 +1170,7 @@ test("model lookup cancellation clears its owned deadline before a deferred refr
 			});
 		},
 	};
-	const mode = Object.create(InteractiveMode.prototype) as any;
+	const mode = createTestInteractiveMode() as any;
 	mode.runtimeHost = { session: { modelRuntime, scopedModels: [] } };
 	mode.tuiLifecycleGeneration = 0;
 	mode.modelLookupGeneration = 0;
@@ -1215,7 +1225,7 @@ test("a superseded model lookup cannot open its stale selector", async () => {
 			});
 		},
 	};
-	const mode = Object.create(InteractiveMode.prototype) as any;
+	const mode = createTestInteractiveMode() as any;
 	mode.runtimeHost = { session: { modelRuntime, scopedModels: [] } };
 	mode.tuiLifecycleGeneration = 0;
 	mode.modelCommandGeneration = 0;
@@ -1241,7 +1251,7 @@ test("a cached model command cancels the previous uncached lookup before selecti
 	let settleRefresh: ((value: { aborted: boolean; errors: Map<string, Error> }) => void) | undefined;
 	const selectedModels: string[] = [];
 	let warningCalls = 0;
-	const mode = Object.create(InteractiveMode.prototype) as any;
+	const mode = createTestInteractiveMode() as any;
 	mode.runtimeHost = { session: {
 		scopedModels: [],
 		modelRuntime: {
@@ -1290,7 +1300,7 @@ test("clipboard completion is inert after the interactive lifecycle closes", asy
 		let rejectCopy: ((error: Error) => void) | undefined;
 		let statusCalls = 0;
 		let errorCalls = 0;
-		const mode = Object.create(InteractiveMode.prototype) as any;
+		const mode = createTestInteractiveMode() as any;
 		mode.tuiLifecycleGeneration = 0;
 		mode.runtimeHost = { session: { getLastAssistantText: () => "copy fixture" } };
 		mode.copyTextToClipboard = (): Promise<void> => new Promise((resolve, reject) => {
@@ -1318,7 +1328,7 @@ test("a stale settings mode switch is not reported as an overlay rejection", asy
 	let selectorUpdates = 0;
 	let statusCalls = 0;
 	let persistedModes = 0;
-	const mode = Object.create(InteractiveMode.prototype) as any;
+	const mode = createTestInteractiveMode() as any;
 	mode.tuiLifecycleGeneration = 0;
 	mode.ui = { mode: "regular" };
 	mode.switchTuiMode = (): Promise<boolean> => new Promise((resolve) => { settleSwitch = resolve; });
@@ -1347,7 +1357,7 @@ test("anthropic auth warning lookup is inert after the interactive lifecycle clo
 		let settleGet: ((value: { auth: { apiKey: string } } | undefined) => void) | undefined;
 		let getAuthCalls = 0;
 		let warningCalls = 0;
-		const mode = Object.create(InteractiveMode.prototype) as any;
+		const mode = createTestInteractiveMode() as any;
 		mode.tuiLifecycleGeneration = 0;
 		mode.anthropicSubscriptionWarningShown = false;
 		mode.runtimeHost = { session: {
@@ -1397,7 +1407,7 @@ test("extension tree navigation is inert after the interactive lifecycle closes"
 			getShortcutDiagnostics: () => [],
 		},
 	};
-	const mode = Object.create(InteractiveMode.prototype) as any;
+	const mode = createTestInteractiveMode() as any;
 	mode.tuiLifecycleGeneration = 0;
 	mode.runtimeHost = { session };
 	mode.chatContainer = { clear(): void { transcriptCalls++; } };
@@ -1433,26 +1443,13 @@ test("clipboard paste completion is inert after the interactive lifecycle closes
 		let settleText: ((value: string | null) => void) | undefined;
 		let insertCalls = 0;
 		let renderCalls = 0;
-		let artifactCalls = 0;
-		let artifactPath: string | undefined;
-		const mode = Object.create(InteractiveMode.prototype) as any;
+		const mode = createTestInteractiveMode() as any;
 		mode.tuiLifecycleGeneration = 0;
 		mode.runtimeHost = { session: { sessionManager: { getSessionId: () => "fixture-session" } } };
-		mode.editor = { insertTextAtCursor(): void { insertCalls++; } };
+		mode.editor = { handleInput(): void { insertCalls++; } };
 		mode.ui = { requestRender(): void { renderCalls++; } };
 		mode.readClipboardImageForPaste = (): Promise<any> => new Promise((resolve) => { settleImage = resolve; });
 		mode.readClipboardTextForPaste = (): Promise<string | null> => new Promise((resolve) => { settleText = resolve; });
-		const artifactSymbol = Symbol.for("super-pi.clipboard-artifact-lifecycle.v1");
-		const previousArtifactLifecycle = (globalThis as any)[artifactSymbol];
-		(globalThis as any)[artifactSymbol] = {
-			editorChanged(): void {},
-			created(input: { path: string }): boolean {
-				artifactCalls++;
-				artifactPath = input.path;
-				return true;
-			},
-			submitted(): void {},
-		};
 
 		try {
 			const operation = mode.handleClipboardPaste() as Promise<void>;
@@ -1468,14 +1465,12 @@ test("clipboard paste completion is inert after the interactive lifecycle closes
 			}
 			await operation;
 		} finally {
-			if (previousArtifactLifecycle === undefined) delete (globalThis as any)[artifactSymbol];
-			else (globalThis as any)[artifactSymbol] = previousArtifactLifecycle;
-			if (artifactPath) await rm(artifactPath, { force: true });
+			mode.imageDraft.clear();
 		}
 
 		assert.equal(insertCalls, 0);
 		assert.equal(renderCalls, 0);
-		assert.equal(artifactCalls, 0);
+		assert.equal(mode.imageDraft.items.length, 0);
 	}
 });
 
@@ -1499,7 +1494,7 @@ test("final stop disables extension UI and error callbacks before shutdown hooks
 			getShowTerminalProgress: () => false,
 		},
 	};
-	const mode = Object.create(InteractiveMode.prototype) as any;
+	const mode = createTestInteractiveMode() as any;
 	mode.tuiLifecycleGeneration = 0;
 	mode.extensionUiGeneration = 0;
 	mode.runtimeHost = { session, cancelPendingReplacements(): void {} };
@@ -1547,7 +1542,7 @@ test("final stop unregisters only its own global theme callback", async () => {
 	let oldThemeCalls = 0;
 	let newerThemeCalls = 0;
 	const createMode = (): any => {
-		const mode = Object.create(InteractiveMode.prototype) as any;
+		const mode = createTestInteractiveMode() as any;
 		mode.tuiLifecycleGeneration = 0;
 		mode.runtimeHost = {
 			session: {
@@ -1605,7 +1600,7 @@ test("interactive stop cancels the startup model catalog refresh and owned deadl
 	let settleRefresh: ((value: { aborted: boolean; errors: Map<string, Error> }) => void) | undefined;
 	let providerCountUpdates = 0;
 	const observed: Promise<unknown>[] = [];
-	const mode = Object.create(InteractiveMode.prototype) as any;
+	const mode = createTestInteractiveMode() as any;
 	mode.init = async (): Promise<boolean> => {
 		mode.isInitialized = true;
 		return true;
@@ -1676,7 +1671,7 @@ test("final shutdown rejects remaining startup diagnostic UI", async () => {
 	let notificationCalls = 0;
 	let warningCalls = 0;
 	const observed: Promise<unknown>[] = [];
-	const mode = Object.create(InteractiveMode.prototype) as any;
+	const mode = createTestInteractiveMode() as any;
 	mode.init = async (): Promise<boolean> => {
 		mode.isInitialized = true;
 		return true;
@@ -1717,7 +1712,7 @@ test("startup diagnostic cancellation releases both tmux process slots and deadl
 	let secondSettles = 0;
 	const firstTimer = setTimeout(() => assert.fail("first tmux timer leaked"), 60_000);
 	const secondTimer = setTimeout(() => assert.fail("second tmux timer leaked"), 60_000);
-	const mode = Object.create(InteractiveMode.prototype) as any;
+	const mode = createTestInteractiveMode() as any;
 	mode.startupDiagnosticsGeneration = 3;
 	mode.activeTmuxExtendedKeysProcess = { kill(): void { firstKills++; } };
 	mode.activeTmuxExtendedKeysTimeout = firstTimer;
@@ -1786,7 +1781,7 @@ test("final shutdown rejects new-session command completion UI", async () => {
 	let transcriptCalls = 0;
 	let renderCalls = 0;
 	let fatalCalls = 0;
-	const mode = Object.create(InteractiveMode.prototype) as any;
+	const mode = createTestInteractiveMode() as any;
 	mode.tuiLifecycleGeneration = 0;
 	mode.runtimeHost = {
 		newSession: () => new Promise((resolve) => { settleReplacement = resolve; }),
@@ -1816,7 +1811,7 @@ test("final shutdown rejects a late keyboard model-cycle continuation", async ()
 	let borderCalls = 0;
 	let statusCalls = 0;
 	let errorCalls = 0;
-	const mode = Object.create(InteractiveMode.prototype) as any;
+	const mode = createTestInteractiveMode() as any;
 	mode.tuiLifecycleGeneration = 0;
 	mode.runtimeHost = { session: {
 		cycleModel: () => new Promise((resolve) => { settleCycle = resolve; }),
@@ -1859,7 +1854,7 @@ test("final shutdown rejects a late tree-navigation continuation after selector 
 		},
 		children: [],
 	}];
-	const mode = Object.create(InteractiveMode.prototype) as any;
+	const mode = createTestInteractiveMode() as any;
 	mode.tuiLifecycleGeneration = 0;
 	mode.runtimeHost = { session: {
 		isStreaming: false,
@@ -1931,7 +1926,7 @@ test("final shutdown rejects late tree-selector clipboard UI", async () => {
 			},
 			children: [],
 		}];
-		const mode = Object.create(InteractiveMode.prototype) as any;
+		const mode = createTestInteractiveMode() as any;
 		mode.tuiLifecycleGeneration = 0;
 		mode.runtimeHost = { session: {
 			isStreaming: false,
@@ -1977,7 +1972,7 @@ test("final shutdown rejects reload callbacks and completion UI", async () => {
 	let statusCalls = 0;
 	let errorCalls = 0;
 	const editorChildren: unknown[] = [];
-	const mode = Object.create(InteractiveMode.prototype) as any;
+	const mode = createTestInteractiveMode() as any;
 	mode.tuiLifecycleGeneration = 0;
 	mode.runtimeHost = { session: {
 		isStreaming: false,
@@ -2033,7 +2028,7 @@ test("final shutdown rejects late export completion UI", async () => {
 		let rejectExport: ((error: Error) => void) | undefined;
 		let statusCalls = 0;
 		let errorCalls = 0;
-		const mode = Object.create(InteractiveMode.prototype) as any;
+		const mode = createTestInteractiveMode() as any;
 		mode.tuiLifecycleGeneration = 0;
 		mode.runtimeHost = { session: {
 			exportToHtml(): Promise<string> {
@@ -2065,7 +2060,7 @@ test("final shutdown rejects logout work after its selector closes", async () =>
 	let providerCountCalls = 0;
 	let statusCalls = 0;
 	let errorCalls = 0;
-	const mode = Object.create(InteractiveMode.prototype) as any;
+	const mode = createTestInteractiveMode() as any;
 	mode.tuiLifecycleGeneration = 0;
 	mode.getLogoutProviderOptions = async () => [{
 		id: "fixture",
@@ -2103,7 +2098,7 @@ test("final shutdown rejects logout provider-count completion UI", async () => {
 	let settleProviderCount: (() => void) | undefined;
 	let statusCalls = 0;
 	let errorCalls = 0;
-	const mode = Object.create(InteractiveMode.prototype) as any;
+	const mode = createTestInteractiveMode() as any;
 	mode.tuiLifecycleGeneration = 0;
 	mode.getLogoutProviderOptions = async () => [{ id: "fixture", name: "Fixture", authType: "oauth" }];
 	mode.runtimeHost = { session: { modelRuntime: { logout: async (): Promise<void> => {} } } };
@@ -2132,7 +2127,7 @@ test("final shutdown rejects follow-up prompt completion UI", async () => {
 		let rejectPrompt: ((error: Error) => void) | undefined;
 		let pendingDisplayCalls = 0;
 		let renderCalls = 0;
-		const mode = Object.create(InteractiveMode.prototype) as any;
+		const mode = createTestInteractiveMode() as any;
 		mode.tuiLifecycleGeneration = 0;
 		mode.editor = {
 			getText: () => "follow-up",
@@ -2172,7 +2167,7 @@ test("final shutdown cancels a pending suspend handoff", async () => {
 	let suspendCalls = 0;
 	let startCalls = 0;
 	let renderCalls = 0;
-	const mode = Object.create(InteractiveMode.prototype) as any;
+	const mode = createTestInteractiveMode() as any;
 	mode.tuiLifecycleGeneration = 0;
 	mode.suspendGeneration = 0;
 	mode.activeSuspendGeneration = 0;
@@ -2232,7 +2227,7 @@ test("interactive stop settles a pending extension custom factory and disposes i
 		render(): string[] { return []; },
 		dispose(): void { disposeCalls++; },
 	};
-	const mode = Object.create(InteractiveMode.prototype) as any;
+	const mode = createTestInteractiveMode() as any;
 	mode.runtimeHost = {
 		session: {
 			settingsManager: {
@@ -2288,7 +2283,7 @@ test("interactive custom cancellation disposes an already mounted component", as
 		dispose(): void { disposeCalls++; },
 	};
 	const editor = { getText: () => "draft", setText(): void {} };
-	const mode = Object.create(InteractiveMode.prototype) as any;
+	const mode = createTestInteractiveMode() as any;
 	mode.ui = createCountingTui();
 	mode.tuiLifecycleGeneration = 0;
 	mode.keybindings = {};
@@ -2322,7 +2317,7 @@ test("interactive custom cancellation closes an already mounted overlay", async 
 		return { hide(): void { hideOverlayCalls++; } };
 	};
 	tui.hideOverlay = (): void => assert.fail("custom overlays must close their exact handle");
-	const mode = Object.create(InteractiveMode.prototype) as any;
+	const mode = createTestInteractiveMode() as any;
 	mode.ui = tui;
 	mode.tuiLifecycleGeneration = 0;
 	mode.keybindings = {};
@@ -2362,7 +2357,7 @@ test("custom overlay cancellation hides its own entry without removing a nested 
 		hideTopCalls++;
 		stack.pop();
 	};
-	const mode = Object.create(InteractiveMode.prototype) as any;
+	const mode = createTestInteractiveMode() as any;
 	mode.ui = tui;
 	mode.tuiLifecycleGeneration = 0;
 	mode.keybindings = {};
@@ -2391,7 +2386,7 @@ test("login cancellation settles and removes an auth selector without a prompt s
 	const tui = createCountingTui();
 	const dialog = new LoginDialogComponent(tui, "fixture", () => {});
 	const children: unknown[] = [];
-	const mode = Object.create(InteractiveMode.prototype) as any;
+	const mode = createTestInteractiveMode() as any;
 	mode.ui = tui;
 	mode.editorContainer = {
 		children,
@@ -2426,7 +2421,7 @@ test("auth prompt signal cancellation releases its tracked selector and restores
 	const tui = createCountingTui();
 	const dialog = new LoginDialogComponent(tui, "fixture", () => {});
 	const children: unknown[] = [];
-	const mode = Object.create(InteractiveMode.prototype) as any;
+	const mode = createTestInteractiveMode() as any;
 	mode.ui = tui;
 	mode.editorContainer = {
 		children,
@@ -2483,7 +2478,7 @@ test("final shutdown rejects a late main external-editor completion", async () =
 	let setTextCalls = 0;
 	let startCalls = 0;
 	let renderCalls = 0;
-	const mode = Object.create(InteractiveMode.prototype) as any;
+	const mode = createTestInteractiveMode() as any;
 	mode.tuiLifecycleGeneration = 0;
 	mode.runtimeHost = {
 		session: { settingsManager: { getExternalEditorCommand: () => "fixture-editor" } },
@@ -2522,7 +2517,7 @@ test("final shutdown rejects a late model-selector selection", async () => {
 	let warningCalls = 0;
 	let easterEggCalls = 0;
 	const model = { provider: "fixture", id: "fixture-model" } as any;
-	const mode = Object.create(InteractiveMode.prototype) as any;
+	const mode = createTestInteractiveMode() as any;
 	mode.tuiLifecycleGeneration = 0;
 	mode.ui = createCountingTui();
 	mode.runtimeHost = { session: {
@@ -2580,7 +2575,7 @@ test("final shutdown rejects a late share export before mounting its loader", as
 		let focusCalls = 0;
 		let renderCalls = 0;
 		let exportedPath = "";
-		const mode = Object.create(InteractiveMode.prototype) as any;
+		const mode = createTestInteractiveMode() as any;
 		mode.tuiLifecycleGeneration = 0;
 		mode.getGitHubCliAuthStatus = () => ({ status: 0 });
 		mode.runtimeHost = { session: {
@@ -2636,7 +2631,7 @@ test("final shutdown rejects post-login model selection before catalog refresh",
 		id: "claude-opus-4-8",
 		api: "anthropic-messages",
 	} as any;
-	const mode = Object.create(InteractiveMode.prototype) as any;
+	const mode = createTestInteractiveMode() as any;
 	mode.tuiLifecycleGeneration = 0;
 	mode.providerAuthenticationGeneration = 0;
 	mode.runtimeHost = { session: {
@@ -2707,7 +2702,7 @@ test("final shutdown aborts the post-login catalog refresh and rejects its late 
 	let footerInvalidations = 0;
 	let warningCalls = 0;
 	let renderCalls = 0;
-	const mode = Object.create(InteractiveMode.prototype) as any;
+	const mode = createTestInteractiveMode() as any;
 	mode.tuiLifecycleGeneration = 0;
 	mode.providerAuthenticationGeneration = 0;
 	mode.runtimeHost = { session: {
@@ -2780,7 +2775,7 @@ test("final shutdown rejects late extension bash setup before constructing its l
 	let executeCalls = 0;
 	let mountedBashOwners = 0;
 	let renderCalls = 0;
-	const mode = Object.create(InteractiveMode.prototype) as any;
+	const mode = createTestInteractiveMode() as any;
 	mode.tuiLifecycleGeneration = 0;
 	mode.runtimeHost = { session: {
 		extensionRunner: {
@@ -2838,7 +2833,7 @@ test("final shutdown rejects late active bash chunks and completion after displa
 	let settleBash: ((result: any) => void) | undefined;
 	let mountedComponent: BashExecutionComponent | undefined;
 	let renderCalls = 0;
-	const mode = Object.create(InteractiveMode.prototype) as any;
+	const mode = createTestInteractiveMode() as any;
 	mode.tuiLifecycleGeneration = 0;
 	mode.runtimeHost = { session: {
 		extensionRunner: { emitUserBash: async () => undefined },
@@ -2892,7 +2887,7 @@ test("final shutdown rejects a late active bash error continuation", async () =>
 	let mountedComponent: BashExecutionComponent | undefined;
 	let errorCalls = 0;
 	let renderCalls = 0;
-	const mode = Object.create(InteractiveMode.prototype) as any;
+	const mode = createTestInteractiveMode() as any;
 	mode.tuiLifecycleGeneration = 0;
 	mode.runtimeHost = { session: {
 		extensionRunner: { emitUserBash: async () => undefined },
@@ -3020,7 +3015,7 @@ test("mode stop preserves its first error while finishing TUI and signal cleanup
 	const extensionError = new Error("extension release failed");
 	const terminalError = new Error("terminal dispose failed");
 	let unregisterCalls = 0;
-	const mode = Object.create(InteractiveMode.prototype) as any;
+	const mode = createTestInteractiveMode() as any;
 	mode.tuiLifecycleGeneration = 0;
 	mode.providerAuthenticationGeneration = 0;
 	mode.runtimeHost = { session: { settingsManager: {
@@ -3046,7 +3041,7 @@ test("mode stop preserves its first error while finishing TUI and signal cleanup
 test("normal shutdown disposes the runtime after TUI stop rejects", async () => {
 	const stopError = new Error("stop failed");
 	let runtimeDisposeCalls = 0;
-	const mode = Object.create(InteractiveMode.prototype) as any;
+	const mode = createTestInteractiveMode() as any;
 	mode.isShuttingDown = false;
 	mode.tuiLifecycleGeneration = 0;
 	mode.ui = { terminal: { drainInput: async (): Promise<void> => {} } };

@@ -33,6 +33,7 @@ export class ExtensionSelectorComponent extends Container {
 	private viewportRows = 0;
 	private terminal: TUI["terminal"] | undefined;
 	private disposed = false;
+	private selectionArmed = false;
 	private selectedIndex = 0;
 	private listContainer: Container;
 	private onSelectCallback: (option: string) => void;
@@ -105,9 +106,9 @@ export class ExtensionSelectorComponent extends Container {
 	render(width: number): string[] {
 		if (this.details === undefined) return super.render(width);
 		const rows = Math.max(1, this.terminal?.rows ?? 24);
-		if (rows < 6 || width < 16) {
+		if (rows < this.options.length + 5 || width < 24) {
 			this.viewportRows = 0;
-			return [truncateToWidth("Terminal too small; Esc cancels", Math.max(1, width))];
+			return [truncateToWidth("Enlarge terminal; " + keyHint("tui.select.cancel", "cancel"), Math.max(1, width))];
 		}
 		if (width !== this.detailWidth || this.detailCachePage !== this.detailPage) {
    const start = detailWindowBoundary(this.details, this.detailPage);
@@ -116,16 +117,18 @@ export class ExtensionSelectorComponent extends Container {
    this.detailWidth = width;
    this.detailCachePage = this.detailPage;
   }
-		this.viewportRows = Math.max(1, rows - 5);
+		this.viewportRows = Math.max(1, rows - this.options.length - 4);
 		this.detailOffset = Math.max(0, Math.min(this.detailOffset, this.detailLines.length - this.viewportRows));
 		const lines = [truncateToWidth(this.countdownSeconds === undefined ? this.detailHeader : `${this.detailHeader} (${this.countdownSeconds}s)`, width)];
 		for (let i = this.detailOffset; i < Math.min(this.detailLines.length, this.detailOffset + this.viewportRows); i++) {
 			lines.push(` ${this.detailLines[i]}`);
 		}
 		lines.push(truncateToWidth(`←/→ details | window ${this.detailPage + 1}/${Math.max(1, Math.ceil(this.details.length / DETAIL_WINDOW_STRIDE))}`, width));
-		lines.push(truncateToWidth(`→ ${this.detailChoices[this.selectedIndex] ?? ""} (${this.selectedIndex + 1}/${this.options.length})`, width));
-		lines.push(truncateToWidth("Enter select", width));
-		lines.push(truncateToWidth("Esc cancel | ↑↓ choice", width));
+		for (let i = 0; i < this.detailChoices.length; i++) {
+			lines.push(truncateToWidth(`${i === this.selectedIndex ? "→" : " "} ${this.detailChoices[i]}`, width));
+		}
+		lines.push(truncateToWidth(keyHint("tui.select.confirm", "select") + " | ↑↓ choose first", width));
+		lines.push(truncateToWidth(keyHint("tui.select.cancel", "cancel"), width));
 		return lines;
 	}
 
@@ -156,7 +159,7 @@ export class ExtensionSelectorComponent extends Container {
     }
     return;
 			}
-			if (this.viewportRows === 0 || (this.terminal?.rows ?? 24) < 6 || (this.terminal?.columns ?? 80) < 16) {
+			if (this.viewportRows === 0 || (this.terminal?.rows ?? 24) < this.options.length + 5 || (this.terminal?.columns ?? 80) < 24) {
 				if (getKeybindings().matches(keyData, "tui.select.cancel")) this.onCancelCallback();
 				return;
 			}
@@ -165,12 +168,16 @@ export class ExtensionSelectorComponent extends Container {
 		if (kb.matches(keyData, "app.tools.expand")) {
 			this.onToggleToolsExpanded?.();
 		} else if (kb.matches(keyData, "tui.select.up") || keyData === "k") {
+			this.selectionArmed = true;
 			this.selectedIndex = Math.max(0, this.selectedIndex - 1);
 			if (this.details === undefined) this.updateList();
 		} else if (kb.matches(keyData, "tui.select.down") || keyData === "j") {
+			this.selectionArmed = true;
 			this.selectedIndex = Math.min(this.options.length - 1, this.selectedIndex + 1);
 			if (this.details === undefined) this.updateList();
-		} else if (kb.matches(keyData, "tui.select.confirm") || keyData === "\n") {
+		} else if (kb.matches(keyData, "tui.select.confirm")) {
+			if (this.details !== undefined && !this.selectionArmed) return;
+			this.selectionArmed = false;
 			const selected = this.options[this.selectedIndex];
 			if (selected) this.onSelectCallback(selected);
 		} else if (kb.matches(keyData, "tui.select.cancel")) {

@@ -20,6 +20,8 @@ export type SessionApprovalPolicy = "ask" | "never-ask";
 export type SessionAllowRuleKind = "exact" | "prefix";
 
 export interface SessionAllowRule {
+  backend?: "bash" | "powershell";
+  cwd?: string;
   id: string;
   kind: SessionAllowRuleKind;
   pattern: string;

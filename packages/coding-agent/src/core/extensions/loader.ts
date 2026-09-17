@@ -319,8 +319,9 @@ function createExtensionAPI(
 
 	const api = {
 		// Registration methods - write to extension
-		on(event: string, handler: HandlerFn): void {
+		on(event: string, handler: HandlerFn, options?: { phase: "image-processing" }): void {
 			assertActive();
+			if (event === "input" && options?.phase === "image-processing") event = "input:image-processing";
 			const list = extension.handlers.get(event) ?? [];
 			list.push(handler);
 			extension.handlers.set(event, list);

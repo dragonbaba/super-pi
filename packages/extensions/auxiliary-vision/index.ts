@@ -1,11 +1,15 @@
+import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { complete } from "@super-pi/ai/compat";
 import type { Api, ImageContent, Model } from "@super-pi/ai";
 import {
 	getConfigDir,
+	IMAGE_VISION_RESULT_TYPE,
 	type ExtensionAPI,
 	type ExtensionContext,
+	type InputEvent,
+	type InputEventResult,
 } from "@super-pi/coding-agent";
 import { Type } from "typebox";
 import {
@@ -47,6 +51,7 @@ interface VisionCallResult {
 
 interface AuxiliaryVisionDependencies {
 	systemTempDir?: string;
+	configPath?: string;
 	clipboardLifecycle?: ReturnType<typeof installClipboardArtifactLifecycle>;
 }
 
@@ -209,8 +214,8 @@ async function callVisionModel(
 	return { text, usage: response.usage, modelRef: `${model.provider}/${model.id}` };
 }
 
-function reconcileTool(pi: ExtensionAPI, ctx: ExtensionContext): void {
-	const config = loadConfig(CONFIG_PATH);
+function reconcileTool(pi: ExtensionAPI, ctx: ExtensionContext, configPath = CONFIG_PATH): void {
+	const config = loadConfig(configPath);
 	const wanted = shouldExposeTool(config.toolMode, activeModelSupportsImages(ctx));
 	const active = pi.getActiveTools();
 	const hasTool = active.includes(TOOL_NAME);
@@ -229,10 +234,13 @@ export default function auxiliaryVisionExtension(
 	dependencies: AuxiliaryVisionDependencies = {},
 ) {
 	let sessionAutomaticOverride: boolean | undefined;
+	const configPath = dependencies.configPath ?? CONFIG_PATH;
 	const systemTempDir = dependencies.systemTempDir ?? SYSTEM_TEMP_DIR;
 	const clipboardLifecycle = dependencies.clipboardLifecycle
 		?? installClipboardArtifactLifecycle({ tempDir: systemTempDir });
 	const clipboardConsumer = new ClipboardConsumptionController(clipboardLifecycle);
+	// Compatibility for pre-digest persisted results; scalar-only, session-lifetime, bounded.
+	const legacyDigests = new Map<string, string>();
 
 	pi.registerTool({
 		name: TOOL_NAME,
@@ -243,7 +251,7 @@ export default function auxiliaryVisionExtension(
 			question: Type.String({ description: "What to inspect, transcribe, compare, or explain" }),
 		}),
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
-			const config = loadConfig(CONFIG_PATH);
+			const config = loadConfig(configPath);
 			const requestedPath = resolve(ctx.cwd, params.path.replace(LEADING_AT_PATTERN, ""));
 			onUpdate?.({
 				content: [{ type: "text", text: `Inspecting ${params.path} with ${config.model}...` }],
@@ -277,26 +285,27 @@ export default function auxiliaryVisionExtension(
 
 	pi.on("session_start", (_event, ctx) => {
 		sessionAutomaticOverride = undefined;
-		reconcileTool(pi, ctx);
+		reconcileTool(pi, ctx, configPath);
 	});
 
-	pi.on("model_select", (_event, ctx) => reconcileTool(pi, ctx));
+	pi.on("model_select", (_event, ctx) => reconcileTool(pi, ctx, configPath));
 
 	pi.on("message_start", (event) => {
 		clipboardConsumer.confirmAcceptedUserMessage(event.message.role);
 	});
 
 	pi.on("session_shutdown", () => {
+		legacyDigests.clear();
 		clipboardConsumer.shutdown();
 	});
 
-	pi.on("input", async (event, ctx) => {
+	const handleImageInput = async (event: InputEvent, ctx: ExtensionContext): Promise<InputEventResult> => {
 		if (event.source === "extension") return { action: "continue" };
 		const existingImages = event.images ?? [];
-		const hasClipboardPath = event.text.includes(CLIPBOARD_PATH_MARKER);
+		const hasClipboardPath = !event.submissionId && event.text.includes(CLIPBOARD_PATH_MARKER);
 		if (existingImages.length === 0 && !hasClipboardPath) return { action: "continue" };
 
-		const config = loadConfig(CONFIG_PATH);
+		const config = loadConfig(configPath, Boolean(event.submissionId));
 		const supportsImages = activeModelSupportsImages(ctx);
 		const automatic = sessionAutomaticOverride ?? config.automatic;
 		if (!supportsImages && !automatic) return { action: "continue" };
@@ -316,7 +325,33 @@ export default function auxiliaryVisionExtension(
 			return { action: "transform", text: materialized.text, images };
 		}
 
-		ctx.ui.setStatus("auxiliary-vision", `vision: ${config.model}`);
+		const digest = createHash("sha256").update(JSON.stringify(config)).update(materialized.text);
+		if (event.imageContentDigest) digest.update("image-digest-v2\0").update(event.imageContentDigest);
+		else for (const image of images) digest.update(image.mimeType).update(image.data);
+		const inputHash = digest.digest("hex");
+		if (event.submissionId) {
+			for (const entry of ctx.sessionManager.getBranch()) {
+				if (entry.type !== "custom" || entry.customType !== IMAGE_VISION_RESULT_TYPE) continue;
+				const saved = entry.data as { submissionId?: string; inputHash?: string; description?: string; digestVersion?: number };
+				if (saved.submissionId !== event.submissionId || !saved.description) continue;
+				let expected = inputHash;
+				if (event.imageContentDigest && saved.digestVersion !== 2) {
+					let legacy = legacyDigests.get(inputHash);
+					if (!legacy) {
+						const hash = createHash("sha256").update(JSON.stringify(config)).update(materialized.text);
+						for (const image of images) hash.update(image.mimeType).update(image.data);
+						legacy = hash.digest("hex");
+						if (legacyDigests.size >= 32) legacyDigests.clear();
+						legacyDigests.set(inputHash, legacy);
+					}
+					expected = legacy;
+				}
+				if (saved.inputHash === expected) {
+					return { action: "transform", text: `${materialized.text}\n\n${saved.description}`, images: [] };
+				}
+			}
+		}
+		ctx.ui.setStatus("auxiliary-vision", `辅助视觉处理中 · ${images.length} 张图片 · ${config.model}`);
 		try {
 			const result = await callVisionModel(
 				ctx,
@@ -325,7 +360,9 @@ export default function auxiliaryVisionExtension(
 				buildAutomaticVisionPrompt(materialized.text, images.length),
 				ctx.signal,
 			);
+			ctx.signal?.throwIfAborted();
 			const description = formatAutomaticDescription(result.modelRef, result.text);
+			if (event.submissionId) pi.appendEntry(IMAGE_VISION_RESULT_TYPE, { submissionId: event.submissionId, inputHash, digestVersion: event.imageContentDigest ? 2 : 1, description, model: result.modelRef, imageOrder: images.map((_image, index) => index + 1) });
 			return {
 				action: "transform",
 				text: materialized.text.trim() ? `${materialized.text}\n\n${description}` : description,
@@ -336,6 +373,7 @@ export default function auxiliaryVisionExtension(
 		} catch (error) {
 			const message = boundedErrorMessage(error);
 			ctx.ui.notify(`Auxiliary vision failed: ${message}`, "warning");
+			if (event.submissionId) throw new Error(`辅助视觉失败：${message}。原始附件已保留；重试前请检查配置。`);
 			return {
 				action: "transform",
 				text: `${materialized.text}\n\n<auxiliary_vision_error>${message}</auxiliary_vision_error>`,
@@ -345,7 +383,9 @@ export default function auxiliaryVisionExtension(
 		} finally {
 			ctx.ui.setStatus("auxiliary-vision", undefined);
 		}
-	});
+	};
+	pi.on("input", (event, ctx) => event.submissionId ? { action: "continue" } : handleImageInput(event, ctx));
+	pi.on("input", handleImageInput, { phase: "image-processing" });
 
 	pi.registerCommand("aux-vision", {
 		description: "Show or override auxiliary vision for this session: status|on|off|auto",
@@ -355,8 +395,8 @@ export default function auxiliaryVisionExtension(
 			else if (command === "off") sessionAutomaticOverride = false;
 			else if (command === "auto") sessionAutomaticOverride = undefined;
 			else if (command !== "status") throw new Error("Usage: /aux-vision status|on|off|auto");
-			reconcileTool(pi, ctx);
-			const config = loadConfig(CONFIG_PATH);
+			reconcileTool(pi, ctx, configPath);
+			const config = loadConfig(configPath);
 			const automatic = sessionAutomaticOverride ?? config.automatic;
 			ctx.ui.notify(
 				`Auxiliary vision: ${automatic ? "on" : "off"}; model: ${config.model}; tool mode: ${config.toolMode}; config: ${CONFIG_PATH}`,

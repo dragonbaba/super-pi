@@ -177,4 +177,5 @@ export {
 	truncateToWidth,
 	visibleWidth,
 	wrapTextWithAnsi,
+	wrapTextWithAnsiTail,
 } from "./utils.ts";

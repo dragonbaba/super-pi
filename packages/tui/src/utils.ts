@@ -891,13 +891,51 @@ export function wrapTextWithAnsi(text: string, width: number): string[] {
 	return result.length > 0 ? result : [""];
 }
 
-function wrapSingleLine(line: string, width: number): string[] {
+/** Call-owned bounded collector; returned arrays are never reused as scratch. */
+class VisualTail {
+	readonly lines: string[] = [];
+	count = 0;
+	private readonly limit: number;
+	constructor(limit: number) { this.limit = limit; }
+	push(line: string): void {
+		if (this.limit > 0) this.lines[this.count % this.limit] = line;
+		this.count++;
+	}
+	finish(): { lines: string[]; skippedCount: number } {
+		const output: string[] = [];
+		const start = Math.max(0, this.count - this.limit);
+		for (let index = start; index < this.count; index++) output.push(this.lines[index % this.limit]);
+		this.lines.length = 0;
+		return { lines: output, skippedCount: start };
+	}
+}
+
+/** Same ANSI/Unicode layout as wrapTextWithAnsi, retaining only the visual tail. */
+export function wrapTextWithAnsiTail(text: string, width: number, limit: number): { lines: string[]; skippedCount: number } {
+	const tail = new VisualTail(Math.max(0, Math.floor(limit)));
+	const tracker = new AnsiCodeTracker();
+	let start = 0;
+	while (start <= text.length) {
+		let end = start;
+		while (end < text.length && text.charCodeAt(end) !== 10 && text.charCodeAt(end) !== 13) end++;
+		const input = text.slice(start, end);
+		wrapSingleLine((tail.count ? tracker.getActiveCodes() : "") + input, Math.max(1, width), tail);
+		updateTrackerFromText(input, tracker);
+		if (end === text.length) break;
+		start = end + (text[end] === "\r" && text[end + 1] === "\n" ? 2 : 1);
+	}
+	return tail.finish();
+}
+
+function wrapSingleLine(line: string, width: number, tail?: VisualTail): string[] {
 	if (!line) {
+		if (tail) { tail.push(""); return tail.lines; }
 		return [""];
 	}
 
 	const visibleLength = visibleWidth(line);
 	if (visibleLength <= width) {
+		if (tail) { tail.push(line); return tail.lines; }
 		return [line];
 	}
 
@@ -920,13 +958,13 @@ function wrapSingleLine(line: string, width: number): string[] {
 				if (lineEndReset) {
 					currentLine += lineEndReset;
 				}
-				wrapped.push(currentLine);
+				if (tail) tail.push(currentLine.trimEnd()); else wrapped.push(currentLine);
 				currentLine = "";
 				currentVisibleLength = 0;
 			}
 
 			// Break long token - breakLongWord handles its own resets
-			const broken = breakLongWord(token, width, tracker);
+			const broken = breakLongWord(token, width, tracker, tail);
 			for (let i = 0; i < broken.length - 1; i++) {
 				wrapped.push(broken[i]!);
 			}
@@ -945,7 +983,7 @@ function wrapSingleLine(line: string, width: number): string[] {
 			if (lineEndReset) {
 				lineToWrap += lineEndReset;
 			}
-			wrapped.push(lineToWrap);
+			if (tail) tail.push(lineToWrap.trimEnd()); else wrapped.push(lineToWrap);
 			if (isWhitespace) {
 				// Don't start new line with whitespace
 				currentLine = tracker.getActiveCodes();
@@ -965,10 +1003,11 @@ function wrapSingleLine(line: string, width: number): string[] {
 
 	if (currentLine) {
 		// No reset at end of final line - let caller handle it
-		wrapped.push(currentLine);
+		if (tail) tail.push(currentLine.trimEnd()); else wrapped.push(currentLine);
 	}
 
 	// Trailing whitespace can cause lines to exceed the requested width
+	if (tail) return tail.lines;
 	if (wrapped.length === 0) return [""];
 	for (let index = 0; index < wrapped.length; index++) wrapped[index] = wrapped[index]!.trimEnd();
 	return wrapped;
@@ -1008,7 +1047,7 @@ export function isPunctuationChar(char: string): boolean {
 	return char.length === 1 && PUNCTUATION_CHARACTERS.includes(char);
 }
 
-function breakLongWord(word: string, width: number, tracker: AnsiCodeTracker): string[] {
+function breakLongWord(word: string, width: number, tracker: AnsiCodeTracker, tail?: VisualTail): string[] {
 	const lines: string[] = [];
 	let currentLine = tracker.getActiveCodes();
 	let currentWidth = 0;
@@ -1060,7 +1099,7 @@ function breakLongWord(word: string, width: number, tracker: AnsiCodeTracker): s
 			if (lineEndReset) {
 				currentLine += lineEndReset;
 			}
-			lines.push(currentLine);
+			if (tail) tail.push(currentLine.trimEnd()); else lines.push(currentLine);
 			currentLine = tracker.getActiveCodes();
 			currentWidth = 0;
 		}

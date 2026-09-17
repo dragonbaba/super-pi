@@ -105,6 +105,8 @@ function validStoredRule(value: unknown): value is SessionAllowRule {
     && rule.pattern.length > 0
     && rule.pattern.length <= MAX_RULE_PATTERN_CHARS
     && !rule.pattern.includes("\0")
+    && (rule.backend === undefined || rule.backend === "bash" || rule.backend === "powershell")
+    && (rule.cwd === undefined || (typeof rule.cwd === "string" && rule.cwd.length <= MAX_PATH_CHARS))
     && typeof rule.label === "string"
     && rule.label.length > 0
     && rule.label.length <= MAX_RULE_LABEL_CHARS;
@@ -133,7 +135,7 @@ function parsePersistedState(value: unknown): PersistedPermissionState | undefin
     if (!Array.isArray(state.allowRules) || state.allowRules.length > MAX_ALLOW_RULES) return undefined;
     for (const value of state.allowRules) {
       if (!validStoredRule(value)) return undefined;
-      allowRules.push({ id: value.id, kind: value.kind, pattern: value.pattern, label: value.label });
+      allowRules.push({ id: value.id, kind: value.kind, pattern: value.pattern, label: value.label, backend: value.backend, cwd: value.cwd });
     }
   }
   return {
@@ -249,7 +251,7 @@ export class SessionPermissionState {
     if (!validStoredRule(rule)) throw new Error("Session allow rule is invalid or exceeds its bounds.");
     for (const existing of this.#allowRules) if (existing.id === rule.id) return false;
     if (this.#allowRules.length >= MAX_ALLOW_RULES) throw new Error(`A Session can contain at most ${MAX_ALLOW_RULES} allow rules.`);
-    this.#allowRules.push({ id: rule.id, kind: rule.kind, pattern: rule.pattern, label: rule.label });
+    this.#allowRules.push({ id: rule.id, kind: rule.kind, pattern: rule.pattern, label: rule.label, backend: rule.backend, cwd: rule.cwd });
     this.#sequence += 1;
     return true;
   }
@@ -333,7 +335,7 @@ export class SessionPermissionState {
       });
     }
     const allowRules: SessionAllowRule[] = [];
-    for (const rule of this.#allowRules) allowRules.push({ id: rule.id, kind: rule.kind, pattern: rule.pattern, label: rule.label });
+    for (const rule of this.#allowRules) allowRules.push({ id: rule.id, kind: rule.kind, pattern: rule.pattern, label: rule.label, backend: rule.backend, cwd: rule.cwd });
     return {
       schemaVersion: 3,
       mode: this.#mode,

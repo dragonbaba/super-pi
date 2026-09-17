@@ -404,6 +404,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		},
 		convertToLlm: convertToLlmWithBlockImages,
 		streamFn: async (model, context, options) => {
+			session.assertImageRequestAllowed(model);
 			const providerRetrySettings = settingsManager.getProviderRetrySettings();
 			const httpIdleTimeoutMs = settingsManager.getHttpIdleTimeoutMs();
 			// SDKs treat timeout=0 as 0ms (immediate timeout), not "no timeout".
@@ -477,18 +478,20 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 						options?.sessionId,
 						requestHeaders,
 					);
-					return headerRunner?.hasHandlers("before_provider_headers")
-						? headerRunner.emitBeforeProviderHeaders(headers ?? {})
+					const transformed = headerRunner?.hasHandlers("before_provider_headers")
+						? await headerRunner.emitBeforeProviderHeaders(headers ?? {})
 						: (headers ?? {});
+					session.assertImageRequestAllowed(model);
+					return transformed;
 				},
 			});
 		},
 		onPayload: async (payload, _model) => {
 			const runner = extensionRunnerRef.current;
-			if (!runner?.hasHandlers("before_provider_request")) {
-				return payload;
-			}
-			return runner.emitBeforeProviderRequest(payload);
+			session.assertImageRequestAllowed(_model);
+			const result = runner?.hasHandlers("before_provider_request") ? await runner.emitBeforeProviderRequest(payload) : payload;
+			session.assertImageRequestAllowed(_model);
+			return result;
 		},
 		onResponse: async (response, _model) => {
 			const runner = extensionRunnerRef.current;
@@ -502,10 +505,12 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			});
 		},
 		sessionId: sessionManager.getSessionId(),
-		transformContext: async (messages) => {
+		transformContext: async (messages, signal) => {
 			const runner = extensionRunnerRef.current;
 			if (!runner) return messages;
-			return runner.emitContext(messages);
+			const result = await runner.emitContext(await session.prepareSubmittedImages(messages, signal));
+			session.assertImageRequestAllowed();
+			return result;
 		},
 		steeringMode: settingsManager.getSteeringMode(),
 		followUpMode: settingsManager.getFollowUpMode(),

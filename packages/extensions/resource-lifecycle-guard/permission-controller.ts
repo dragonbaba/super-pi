@@ -133,6 +133,7 @@ interface OperationRequest {
   primitives: string[];
   fingerprintMaterial: string;
   shellCommand?: string;
+  effectiveCwd?: string;
 }
 
 interface RejectionRecord {
@@ -356,7 +357,9 @@ export class SessionPermissionController {
     const scopeAllowed = this.#scopeAllows(request);
     if (request.shellCommand && this.#ruleScopeAllows(request)) {
       for (const rule of this.#state.allowRules) {
-        if (!sessionAllowRuleMatches(rule, request.shellCommand)) continue;
+        if (!rule.cwd && request.effectiveCwd !== ctx.cwd) continue;
+        if (rule.kind === "prefix" && (request.highRisk || request.opaqueScript)) continue;
+        if (!sessionAllowRuleMatches(rule, request.shellCommand, { backend: request.operation, cwd: request.effectiveCwd ?? ctx.cwd })) continue;
         this.#appendAudit(request, "approved", "session_rule_match", this.#state.mode, this.#state.mode, false);
         return undefined;
       }
@@ -418,7 +421,7 @@ export class SessionPermissionController {
     try {
     const modeBefore = this.#state.mode;
     const choices = [ALLOW_ONCE];
-    const commandPrefix = request.shellCommand ? simpleCommandPrefix(request.shellCommand) : undefined;
+    const commandPrefix = request.shellCommand && !request.highRisk && !request.opaqueScript ? simpleCommandPrefix(request.shellCommand) : undefined;
     if (this.#state.approvalPolicy === "ask" && request.shellCommand) {
       choices.push(ALLOW_SESSION_EXACT);
       if (commandPrefix) choices.push(`${ALLOW_SESSION_PREFIX}：${commandPrefix} *`);
@@ -437,7 +440,7 @@ export class SessionPermissionController {
     // One presentation materialization per actual approval. Never use the bounded
     // summary as the authority or as a substitute for inspectable request values.
     const fullRequest = JSON.stringify(event.input, null, 2);
-    const details = `${header}\n模型提供的说明 (未经验证): ${request.purpose ?? "未提供"}\n目标范围:\n${request.exactTargets.join("\n") || "未确定"}\n风险依据: ${request.primitives.join(", ")}\n完整请求:\n${fullRequest}`;
+    const details = `${header}\n操作尚未执行\n将保存的精确规则: ${request.shellCommand ?? "不适用"}\n将保存的前缀规则: ${commandPrefix ? `${commandPrefix} *（允许参数变化，包括无参数调用）` : "不适用"}\n本 Session 规则范围: ${request.operation}; cwd=${request.effectiveCwd ?? ctx.cwd}\n模型提供的说明 (未经验证): ${request.purpose ?? "未提供"}\n目标范围:\n${request.exactTargets.join("\n") || "未确定"}\n风险依据: ${request.primitives.join(", ")}\n完整请求:\n${fullRequest}`;
     const choice = await ctx.ui.select(header, choices, { signal, details });
     assertCurrent();
     const prefixChoice = commandPrefix ? `${ALLOW_SESSION_PREFIX}：${commandPrefix} *` : undefined;
@@ -450,7 +453,7 @@ export class SessionPermissionController {
         try {
           const kind: SessionAllowRuleKind = choice === ALLOW_SESSION_EXACT ? "exact" : "prefix";
           const value = kind === "exact" ? request.shellCommand : commandPrefix!;
-          if (this.#state.addAllowRule(createSessionAllowRule(kind, value))) {
+          if (this.#state.addAllowRule(createSessionAllowRule(kind, value, { backend: request.operation as "bash" | "powershell", cwd: request.effectiveCwd ?? ctx.cwd }))) {
             this.#persist(ctx);
             policyReason = "session_rule_added";
           }
@@ -833,6 +836,8 @@ export class SessionPermissionController {
     for (const target of targets) {
       const assessment = await this.#state.assessTarget(target, ctx.cwd);
       targetAssessments.push(assessment);
+      // cwd is an access scope, not a mutation of the directory itself.
+      if (hasExplicitCwd && target === effectiveCwd && !scope.targets.includes(target) && !high?.targets.includes(target)) continue;
       const protectedAssessment = await assessProtectedMutationPath(ctx.cwd, assessment.canonicalTarget ?? target);
       if (sensitiveProtectedRoots(protectedAssessment.violations)) protectedTarget = true;
       for (const violation of protectedAssessment.violations) appendUniqueBounded(primitives, violation);
@@ -850,7 +855,8 @@ export class SessionPermissionController {
       opaqueScript: scope.kind === "opaque-script",
       primitives,
       fingerprintMaterial: `${effectiveCwd}\u0000${command}`,
-      shellCommand: hasExplicitCwd ? undefined : command,
+      shellCommand: command,
+      effectiveCwd,
     };
   }
 
@@ -879,7 +885,8 @@ export class SessionPermissionController {
       opaqueScript: true,
       primitives,
       fingerprintMaterial: `${effectiveCwd}\u0000${command}`,
-      shellCommand: hasExplicitCwd ? undefined : command,
+      shellCommand: command,
+      effectiveCwd,
     };
   }
 
@@ -917,7 +924,7 @@ export class SessionPermissionController {
   #ruleScopeAllows(request: OperationRequest): boolean {
     if (this.#state.mode === "read-only") return false;
     if (this.#state.mode === "full-access") return true;
-    if (request.targetAssessments.length === 0) return false;
+    if (request.targetAssessments.length === 0) return true;
     for (const assessment of request.targetAssessments) if (!assessment.workspace) return false;
     return true;
   }
@@ -1048,7 +1055,7 @@ export class SessionPermissionController {
       return false;
     }
     try {
-      const rule = createSessionAllowRule(kind, value);
+      const rule = createSessionAllowRule(kind, value, { backend: "bash", cwd: ctx.cwd });
       const added = this.#state.addAllowRule(rule);
       if (added && persistChanges) this.#persist(ctx);
       ctx.ui.notify(added ? `已添加 Session 白名单：${displayRuleId(rule.id)} · ${rule.label}` : `Session 白名单已存在：${displayRuleId(rule.id)} · ${rule.label}`, "info");
@@ -1135,7 +1142,7 @@ export class SessionPermissionController {
   #rulesText(): string {
     if (this.#state.allowRules.length === 0) return "当前 Session 没有指令白名单。";
     const lines = [`当前 Session 指令白名单（${this.#state.allowRules.length}）：`];
-    for (const rule of this.#state.allowRules) lines.push(`- ${displayRuleId(rule.id)} · ${rule.label}`);
+    for (const rule of this.#state.allowRules) lines.push(`- ${displayRuleId(rule.id)} · ${rule.label} · backend=${rule.backend ?? "bash (legacy)"} · cwd=${rule.cwd ?? this.#state.primary.canonicalPath}`);
     return lines.join("\n");
   }
 

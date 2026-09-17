@@ -1806,16 +1806,21 @@ export class ExtensionRunner {
 		images: ImageContent[] | undefined,
 		source: InputSource,
 		streamingBehavior?: "steer" | "followUp",
+		submissionId?: string,
+		imageContentDigest?: string,
+		phase: "submit" | "image-processing" = "submit",
 	): Promise<InputEventResult> {
 		const ctx = this.createContext();
 		let currentText = text;
 		let currentImages = images;
 
 		for (const ext of this.extensions) {
-			for (const handler of ext.handlers.get("input") ?? []) {
+			for (const handler of ext.handlers.get(phase === "submit" ? "input" : "input:image-processing") ?? []) {
 				try {
 					const event: InputEvent = {
 						type: "input",
+						submissionId,
+						imageContentDigest: currentImages === images ? imageContentDigest : undefined,
 						text: currentText,
 						images: currentImages,
 						source,
@@ -1830,7 +1835,7 @@ export class ExtensionRunner {
 						currentImages = result.images ?? currentImages;
 					}
 				} catch (err) {
-					if (err instanceof ExtensionHookTimeoutError) throw err;
+					if (submissionId || err instanceof ExtensionHookTimeoutError) throw err;
 					this.emitError({
 						extensionPath: ext.path,
 						event: "input",
