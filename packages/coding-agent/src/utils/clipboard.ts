@@ -1,7 +1,7 @@
 import { type ExecFileSyncOptionsWithStringEncoding, execFileSync, execSync, spawn } from "child_process";
 import { platform } from "os";
 import { runClipboardCommand, isWaylandSession, isWSL } from "./clipboard-image.ts";
-import { clipboard } from "./clipboard-native.ts";
+import { clipboard, type ClipboardModule } from "./clipboard-native.ts";
 import { NativeClipboardError, readNativeClipboard } from "./clipboard-native-process.ts";
 
 type NativeClipboardExecOptions = {
@@ -36,6 +36,13 @@ function emitOsc52(text: string): boolean {
 
 type ClipboardReadResult = { ok: true; text: string | null } | { ok: false };
 
+type ClipboardTextReadOptions = {
+	platform?: NodeJS.Platform;
+	powerShellRead?: typeof runClipboardCommand;
+	nativeRead?: typeof readNativeClipboard;
+	directClipboard?: ClipboardModule | null;
+};
+
 const READ_CLIPBOARD_OPTIONS: ExecFileSyncOptionsWithStringEncoding = {
 	encoding: "utf8",
 	maxBuffer: 50 * 1024 * 1024,
@@ -52,29 +59,33 @@ function readWaylandClipboardText(): ClipboardReadResult {
 }
 
 /** Read plain text from the system clipboard. */
-export async function readClipboardText(signal?: AbortSignal): Promise<string | null> {
+export async function readClipboardText(signal?: AbortSignal, options: ClipboardTextReadOptions = {}): Promise<string | null> {
 	signal?.throwIfAborted();
-	if (platform() === "linux" && isWaylandSession() && process.env.WAYLAND_DISPLAY) {
+	const currentPlatform = options.platform ?? platform();
+	const powerShellRead = options.powerShellRead ?? runClipboardCommand;
+	const nativeRead = options.nativeRead ?? readNativeClipboard;
+	const directClipboard = options.directClipboard ?? clipboard;
+	if (currentPlatform === "linux" && isWaylandSession() && process.env.WAYLAND_DISPLAY) {
 		const result = readWaylandClipboardText();
 		if (result.ok) {
 			return result.text;
 		}
 	}
 
-	if (platform() === "win32" || (platform() === "linux" && isWSL())) {
+	if (currentPlatform === "win32" || (currentPlatform === "linux" && isWSL())) {
 		try {
-			const bytes = await runClipboardCommand("powershell.exe", ["-NoProfile", "-NonInteractive", "-STA", "-EncodedCommand", WINDOWS_TEXT_COMMAND], { maxBufferBytes: 1024 * 1024, signal });
+			const bytes = await powerShellRead("powershell.exe", ["-NoProfile", "-NonInteractive", "-STA", "-EncodedCommand", WINDOWS_TEXT_COMMAND], { maxBufferBytes: 1024 * 1024, signal });
 			return bytes.toString("utf8") || null;
 		} catch (error) { if (signal?.aborted) throw error; }
 	}
-	if (platform() === "win32") {
-		try { return (await readNativeClipboard("text", signal))?.toString("utf8") || null; }
-		catch (error) { if (signal?.aborted || (error instanceof NativeClipboardError && error.fatal)) throw error; return null; }
+	if (currentPlatform === "win32") {
+		try { return (await nativeRead("text", signal))?.toString("utf8") || null; }
+		catch (error) { if (signal?.aborted || (error instanceof NativeClipboardError && error.fatal)) throw error; }
 	}
-	if (!clipboard) return null;
+	if (!directClipboard) return null;
 
 	try {
-		const text = await clipboard.getText();
+		const text = await directClipboard.getText();
 		return text || null;
 	} catch {
 		return null;

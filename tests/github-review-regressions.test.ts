@@ -16,7 +16,8 @@ import { SESSION_PERMISSION_STATE_TYPE } from "../packages/extensions/resource-l
 import { fixture } from "./helpers/evidence-ledger-fixture.ts";
 import { createRequire, syncBuiltinESMExports } from "node:module";
 import { readClipboardImage } from "../packages/coding-agent/src/utils/clipboard-image.ts";
-import { readNativeClipboard } from "../packages/coding-agent/src/utils/clipboard-native-process.ts";
+import { NativeClipboardError, readNativeClipboard } from "../packages/coding-agent/src/utils/clipboard-native-process.ts";
+import { readClipboardText } from "../packages/coding-agent/src/utils/clipboard.ts";
 
 function deferred() { let resolve!: () => void; const promise = new Promise<void>(yes => { resolve = yes; }); return { promise, resolve }; }
 const image = () => ({ type: "image" as const, mimeType: "image/png", data: pngFixture(8, 8).toString("base64") });
@@ -332,6 +333,29 @@ test("headless WSL uses the Windows text clipboard with no native provider", () 
   assert.equal((await import(${JSON.stringify(native)})).clipboard,null);
   const {readClipboardText}=await import(${JSON.stringify(utility)}); assert.equal(await readClipboardText(),'WSL text');assert.equal(calls,1);`;
  cp.execFileSync(process.execPath, ["--experimental-strip-types", "--input-type=module", "-e", code], { timeout: 10000, windowsHide: true, stdio: "pipe" });
+});
+
+test("Windows text paste retries the loaded provider after isolated helper failure", async () => {
+	let nativeCalls = 0;
+	const text = await readClipboardText(undefined, {
+		platform: "win32",
+		powerShellRead: async () => { throw new Error("STA helper unavailable"); },
+		nativeRead: async () => { nativeCalls++; throw new Error("isolated helper unavailable"); },
+		directClipboard: { getText: async () => "clipboard text", setText: async () => {}, hasImage: () => false, getImageBinary: async () => [] },
+	});
+	assert.equal(nativeCalls, 1);
+	assert.equal(text, "clipboard text");
+});
+
+test("Windows text paste does not bypass a fatal isolated-read result", async () => {
+	let directCalls = 0;
+	await assert.rejects(readClipboardText(undefined, {
+		platform: "win32",
+		powerShellRead: async () => { throw new Error("STA helper unavailable"); },
+		nativeRead: async () => { throw new NativeClipboardError("bounded read failed", true); },
+		directClipboard: { getText: async () => { directCalls++; return "must not be used"; }, setText: async () => {}, hasImage: () => false, getImageBinary: async () => [] },
+	}), /bounded read failed/);
+	assert.equal(directCalls, 0);
 });
 
 test("full image draft still accepts ordinary clipboard text through the paste key", async () => {
