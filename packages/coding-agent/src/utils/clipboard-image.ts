@@ -181,18 +181,31 @@ async function readClipboardImageViaXclip(signal?: AbortSignal): Promise<Clipboa
 	return null;
 }
 
-async function readClipboardImageViaNativeClipboard(): Promise<ClipboardImage | null> {
-	if (!clipboard || !clipboard.hasImage()) {
+async function readClipboardImageViaNativeClipboard(signal?: AbortSignal, source = clipboard): Promise<ClipboardImage | null> {
+	signal?.throwIfAborted();
+	if (!source) {
 		return null;
 	}
 
-	const imageData = await clipboard.getImageBinary();
-	if (!imageData || imageData.length === 0) {
+	try {
+		if (!source.hasImage()) {
+			return null;
+		}
+
+		const imageData = await source.getImageBinary();
+		signal?.throwIfAborted();
+		if (!imageData || imageData.length === 0) {
+			return null;
+		}
+
+		const bytes = imageData instanceof Uint8Array ? imageData : Uint8Array.from(imageData);
+		return { bytes, mimeType: "image/png" };
+	} catch (error) {
+		if (signal?.aborted) throw error;
+		// A native clipboard provider can lose the clipboard race while another
+		// process is publishing a format. Let the bounded platform helper retry.
 		return null;
 	}
-
-	const bytes = imageData instanceof Uint8Array ? imageData : Uint8Array.from(imageData);
-	return { bytes, mimeType: "image/png" };
 }
 
 export async function readClipboardImage(options?: {
@@ -200,6 +213,8 @@ export async function readClipboardImage(options?: {
 	platform?: NodeJS.Platform;
 	signal?: AbortSignal;
 	onUnavailable?: (error: unknown) => void;
+	/** Internal deterministic seam for platform-provider tests. */
+	nativeClipboard?: typeof clipboard;
 }): Promise<ClipboardImage | null> {
 	options?.signal?.throwIfAborted();
 	const env = options?.env ?? process.env;
@@ -227,8 +242,11 @@ export async function readClipboardImage(options?: {
 			image = (await readClipboardImageViaNativeClipboard()) ?? (await readClipboardImageViaXclip(options?.signal));
 		}
 	} else if (platform === "win32") {
-		// STA helper is bounded and cannot block the TUI on native hasImage().
+		// Keep the bounded STA helper as the primary Windows path. Some sources
+		// publish a DIB/PNG format that System.Drawing does not expose through
+		// GetImage(); the native provider is the format-preserving fallback.
 		image = await readClipboardImageViaPowerShell(options?.signal, options?.onUnavailable);
+		if (!image) image = await readClipboardImageViaNativeClipboard(options?.signal, options?.nativeClipboard);
 	} else {
 		image = await readClipboardImageViaNativeClipboard();
 	}

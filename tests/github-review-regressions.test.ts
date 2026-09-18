@@ -220,8 +220,23 @@ for (const cancel of [false, true]) test(`real overflow retry waits for asynchro
 for (const failure of ["ENOENT", "EACCES", "ETIMEDOUT"]) test(`Windows image helper ${failure} permits text fallback`, async () => {
  const cp = createRequire(import.meta.url)("node:child_process"), original = cp.execFile;
  cp.execFile = (_command: string, _args: string[], _options: any, callback: any) => callback(Object.assign(new Error(failure), { code: failure }), Buffer.alloc(0)); syncBuiltinESMExports();
- try { assert.equal(await readClipboardImage({ platform: "win32" }), null); }
+ try { assert.equal(await readClipboardImage({ platform: "win32", nativeClipboard: null }), null); }
  finally { cp.execFile = original; syncBuiltinESMExports(); }
+});
+
+test("Windows image paste prefers the native clipboard bridge for PNG/DIB sources", { skip: process.platform !== "win32" }, async () => {
+ const cp = createRequire(import.meta.url)("node:child_process"), original = cp.execFile; let helperCalls = 0;
+ const bytes = pngFixture(8, 8);
+ cp.execFile = (_command: string, _args: string[], _options: any, callback: any) => { helperCalls++; callback(null, Buffer.alloc(0)); }; syncBuiltinESMExports();
+ try {
+  const image = await readClipboardImage({ platform: "win32", nativeClipboard: {
+   getText: async () => "",
+   setText: async () => {},
+   hasImage: () => true,
+   getImageBinary: async () => Array.from(bytes),
+  } });
+  assert.deepEqual(Array.from(image?.bytes ?? []), Array.from(bytes)); assert.equal(image?.mimeType, "image/png"); assert.equal(helperCalls, 1);
+ } finally { cp.execFile = original; syncBuiltinESMExports(); }
 });
 
 
@@ -229,6 +244,7 @@ test("real Windows Alt+V dispatch falls back to text after image helper failure"
  const cp = createRequire(import.meta.url)("node:child_process"), original = cp.execFile; const f = await alphaSession(); const calls: string[] = [];
  try {
   await f.mode.init();
+  f.internal.readClipboardImageForPaste = () => readClipboardImage({ platform: "win32", nativeClipboard: null });
   cp.execFile = (_command: string, args: string[], _options: any, callback: any) => {
    const script = Buffer.from(args.at(-1)!, "base64").toString("utf16le");
    if (script.includes("GetImage")) { calls.push("image"); callback(Object.assign(new Error("image helper blocked"), { code: "EACCES" }), Buffer.alloc(0)); }
@@ -245,7 +261,7 @@ for (const failure of ["abort", "quota"]) test(`Windows helper ${failure} remain
   if (failure === "abort") abort.abort();
   callback(new Error(failure === "abort" ? "aborted" : `Command failed: powershell ${"encoded-script".repeat(60)}`), Buffer.alloc(0), failure === "quota" ? Buffer.from("Image exceeds pixel limit") : Buffer.alloc(0));
  }; syncBuiltinESMExports();
- try { await assert.rejects(readClipboardImage({ platform: "win32", signal: abort.signal, onUnavailable: () => unavailable++ })); assert.equal(unavailable, 0); }
+ try { await assert.rejects(readClipboardImage({ platform: "win32", nativeClipboard: null, signal: abort.signal, onUnavailable: () => unavailable++ })); assert.equal(unavailable, 0); }
  finally { cp.execFile = original; syncBuiltinESMExports(); }
 });
 
