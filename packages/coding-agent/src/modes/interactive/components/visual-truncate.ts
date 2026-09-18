@@ -3,7 +3,8 @@
  * Used by both tool-execution.ts and bash-execution.ts for consistent behavior.
  */
 
-import { Text } from "@super-pi/tui";
+import { visibleWidth, wrapTextWithAnsiTail } from "@super-pi/tui";
+import { TAB_PATTERN } from "../../../utils/shell-regex.ts";
 
 export interface VisualTruncateResult {
 	/** The visual lines to display */
@@ -34,17 +35,12 @@ export function truncateToVisualLines(
 		return { visualLines: [], skippedCount: 0 };
 	}
 
-	// Create a temporary Text component to render and get visual lines
-	const tempText = new Text(text, paddingX, 0);
-	const allVisualLines = tempText.render(width);
-
-	if (allVisualLines.length <= maxVisualLines) {
-		return { visualLines: allVisualLines, skippedCount: 0 };
+	if (!text.trim()) return { visualLines: [], skippedCount: 0 };
+	const tail = wrapTextWithAnsiTail(text.replace(TAB_PATTERN, "   "), Math.max(1, width - paddingX * 2), maxVisualLines);
+	const margin = " ".repeat(paddingX);
+	for (let index = 0; index < tail.lines.length; index++) {
+		const line = margin + tail.lines[index] + margin;
+		tail.lines[index] = line + " ".repeat(Math.max(0, width - visibleWidth(line)));
 	}
-
-	// Take the last N visual lines
-	const truncatedLines = allVisualLines.slice(-maxVisualLines);
-	const skippedCount = allVisualLines.length - maxVisualLines;
-
-	return { visualLines: truncatedLines, skippedCount };
+	return { visualLines: tail.lines, skippedCount: tail.skippedCount };
 }

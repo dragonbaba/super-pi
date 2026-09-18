@@ -1,7 +1,8 @@
 import { type ExecFileSyncOptionsWithStringEncoding, execFileSync, execSync, spawn } from "child_process";
 import { platform } from "os";
-import { isWaylandSession } from "./clipboard-image.ts";
-import { clipboard } from "./clipboard-native.ts";
+import { DEFAULT_POWERSHELL_TIMEOUT_MS, runClipboardCommand, isWaylandSession, isWSL } from "./clipboard-image.ts";
+import { clipboard, type ClipboardModule } from "./clipboard-native.ts";
+import { NativeClipboardError, readNativeClipboard } from "./clipboard-native-process.ts";
 
 type NativeClipboardExecOptions = {
 	input: string;
@@ -18,6 +19,21 @@ function copyToX11Clipboard(options: NativeClipboardExecOptions): void {
 }
 
 const MAX_OSC52_ENCODED_LENGTH = 100_000;
+const WSL_FILE_PATH_TIMEOUT_MS = 1000;
+const WSL_FILE_PATH_MAX_BYTES = 32768;
+// Explorer's Copy stores FileDrop (CF_HDROP), often without text or bitmap data.
+// Serialize that list for the existing path-paste parser; never evaluate its contents.
+const WINDOWS_TEXT_SCRIPT = [
+	"$ErrorActionPreference='Stop'",
+	"Add-Type -AssemblyName System.Windows.Forms",
+	"[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false)",
+	"$data=[System.Windows.Forms.Clipboard]::GetDataObject()",
+	"if ($null -eq $data) { return }",
+	"$text=[string]$data.GetData([System.Windows.Forms.DataFormats]::UnicodeText)",
+	"if ($text.Length -gt 0) { [Console]::Out.Write($text); return }",
+	"if ($data.GetDataPresent([System.Windows.Forms.DataFormats]::FileDrop)) { $quote=[string][char]34; $paths=@($data.GetData([System.Windows.Forms.DataFormats]::FileDrop)); $quoted=$paths | ForEach-Object { $value=[string]$_; $quote + $value.Replace($quote, $quote + $quote) + $quote }; [Console]::Out.Write($quoted -join ' ') }",
+].join("; ");
+const WINDOWS_TEXT_COMMAND = Buffer.from(WINDOWS_TEXT_SCRIPT, "utf16le").toString("base64");
 
 function isRemoteSession(env: NodeJS.ProcessEnv = process.env): boolean {
 	return Boolean(env.SSH_CONNECTION || env.SSH_CLIENT || env.MOSH_CONNECTION);
@@ -34,6 +50,15 @@ function emitOsc52(text: string): boolean {
 
 type ClipboardReadResult = { ok: true; text: string | null } | { ok: false };
 
+type ClipboardTextReadOptions = {
+	platform?: NodeJS.Platform;
+	env?: NodeJS.ProcessEnv;
+	powerShellRead?: typeof runClipboardCommand;
+	wslPathRead?: typeof runClipboardCommand;
+	nativeRead?: typeof readNativeClipboard;
+	directClipboard?: ClipboardModule | null;
+};
+
 const READ_CLIPBOARD_OPTIONS: ExecFileSyncOptionsWithStringEncoding = {
 	encoding: "utf8",
 	maxBuffer: 50 * 1024 * 1024,
@@ -49,21 +74,89 @@ function readWaylandClipboardText(): ClipboardReadResult {
 	}
 }
 
-/** Read plain text from the system clipboard. */
-export async function readClipboardText(): Promise<string | null> {
-	if (platform() === "linux" && isWaylandSession() && process.env.WAYLAND_DISPLAY) {
+function splitQuotedFileDropPaths(text: string): string[] | null {
+	if (!text || text.length > 32768) return null;
+	const paths: string[] = [];
+	let offset = 0;
+	while (offset < text.length) {
+		while (text[offset] === " " || text[offset] === "\t") offset++;
+		if (offset === text.length || text[offset] !== '"') return null;
+		offset++;
+		let value = "";
+		let closed = false;
+		while (offset < text.length) {
+			const char = text[offset++];
+			if (char === '"') {
+				if (text[offset] === '"') { value += '"'; offset++; continue; }
+				closed = true;
+				break;
+			}
+			value += char;
+		}
+		if (!closed || !value) return null;
+		paths.push(value);
+		if (paths.length > 8) return null;
+	}
+	return paths.length ? paths : null;
+}
+
+function trimLineEnd(value: string): string {
+	let end = value.length;
+	while (end > 0 && (value[end - 1] === "\r" || value[end - 1] === "\n")) end--;
+	return value.slice(0, end);
+}
+
+async function translateWslFileDropPaths(text: string, signal: AbortSignal | undefined, readPath: typeof runClipboardCommand): Promise<string> {
+	const paths = splitQuotedFileDropPaths(text);
+	if (!paths) return text;
+	const translated: string[] = [];
+	try {
+		for (const path of paths) {
+			signal?.throwIfAborted();
+			const output = await readPath("wslpath", ["-u", path], { timeoutMs: WSL_FILE_PATH_TIMEOUT_MS, maxBufferBytes: WSL_FILE_PATH_MAX_BYTES, signal });
+			const translatedPath = trimLineEnd(output.toString("utf8"));
+			if (!translatedPath || translatedPath.includes("\r") || translatedPath.includes("\n")) return text;
+			translated.push(`"${translatedPath.replaceAll('"', '""')}"`);
+		}
+		return translated.join(" ");
+	} catch (error) {
+		if (signal?.aborted) throw error;
+		return text;
+	}
+}
+
+/** Read text, or a quoted Windows file list for the existing path-paste fallback. */
+export async function readClipboardText(signal?: AbortSignal, options: ClipboardTextReadOptions = {}): Promise<string | null> {
+	signal?.throwIfAborted();
+	const currentPlatform = options.platform ?? platform();
+	const environment = options.env ?? process.env;
+	const powerShellRead = options.powerShellRead ?? runClipboardCommand;
+	const wslPathRead = options.wslPathRead ?? runClipboardCommand;
+	const nativeRead = options.nativeRead ?? readNativeClipboard;
+	const directClipboard = options.directClipboard ?? clipboard;
+	const wsl = currentPlatform === "linux" && isWSL(environment);
+	if (currentPlatform === "linux" && isWaylandSession(environment) && environment.WAYLAND_DISPLAY) {
 		const result = readWaylandClipboardText();
 		if (result.ok) {
 			return result.text;
 		}
 	}
 
-	if (!clipboard) {
-		return null;
+	if (currentPlatform === "win32" || wsl) {
+		try {
+			const bytes = await powerShellRead("powershell.exe", ["-NoProfile", "-NonInteractive", "-STA", "-EncodedCommand", WINDOWS_TEXT_COMMAND], { timeoutMs: DEFAULT_POWERSHELL_TIMEOUT_MS, maxBufferBytes: 1024 * 1024, signal });
+			const text = bytes.toString("utf8");
+			return text ? wsl ? await translateWslFileDropPaths(text, signal, wslPathRead) : text : null;
+		} catch (error) { if (signal?.aborted) throw error; }
 	}
+	if (currentPlatform === "win32") {
+		try { return (await nativeRead("text", signal))?.toString("utf8") || null; }
+		catch (error) { if (signal?.aborted || (error instanceof NativeClipboardError && error.fatal)) throw error; }
+	}
+	if (!directClipboard) return null;
 
 	try {
-		const text = await clipboard.getText();
+		const text = await directClipboard.getText();
 		return text || null;
 	} catch {
 		return null;

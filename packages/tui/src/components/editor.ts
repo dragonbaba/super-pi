@@ -378,6 +378,10 @@ export class Editor implements Component, Focusable {
 	private undoStack = new UndoStack<EditorSnapshot>();
 
 	public onSubmit?: (text: string) => void;
+	/** Complete paste-unit interception; never called for individual typed characters. */
+	public onPaste?: (text: string) => boolean;
+	/** An explicit empty terminal paste can represent a bitmap-only clipboard. */
+	public onEmptyPaste?: () => void;
 	public onChange?: (text: string) => void;
 	public disableSubmit: boolean = false;
 
@@ -708,6 +712,8 @@ export class Editor implements Component, Focusable {
 				const pasteContent = this.pasteBuffer.substring(0, endIndex);
 				if (pasteContent.length > 0) {
 					this.handlePaste(pasteContent);
+				} else {
+					this.onEmptyPaste?.();
 				}
 				this.isInPaste = false;
 				const remaining = this.pasteBuffer.substring(endIndex + 6);
@@ -1211,6 +1217,10 @@ export class Editor implements Component, Focusable {
 		return { line: this.state.cursorLine, col: this.state.cursorCol };
 	}
 
+	isCursorAtStart(): boolean {
+		return this.state.cursorLine === 0 && this.state.cursorCol === 0;
+	}
+
 	setText(text: string): void {
 		this.cancelAutocomplete();
 		this.lastAction = null;
@@ -1358,6 +1368,7 @@ export class Editor implements Component, Focusable {
 	}
 
 	private handlePaste(pastedText: string): void {
+		if (this.onPaste?.(pastedText)) return;
 		this.cancelAutocomplete();
 		this.exitHistoryBrowsing();
 		this.lastAction = null;

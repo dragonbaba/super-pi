@@ -1,3 +1,4 @@
+import { createSessionAllowRule, sessionAllowRuleMatches, simpleCommandPrefix } from "../packages/extensions/resource-lifecycle-guard/permission-rule.ts";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -44,7 +45,7 @@ async function permissionFixture(t: test.TestContext) {
  await permission.restore(runner.createContext());
  const call = (toolName = "browser_exec", input: object = { code: "print('controlled fixture')", purpose: "permission regression" }) => runner.emitToolCall({ type: "tool_call", toolName, toolCallId: "approval-1", input } as never);
  return { runner, scheduler, permission, visible, call, abort, cwd, choose: (index: number) => choose(choices[index]),
-  dialogOptions: () => dialogOptions };
+  dialogOptions: () => dialogOptions, choices: () => choices };
 }
 
 test("real permission selection outlasts the 30-second machine budget", async (t) => {
@@ -117,7 +118,8 @@ test("real interactive selection isolates cancellation, late clicks and disposal
 	old.handleInput("\n");
 	assert.equal(mode.extensionSelector, current);
 	current.render(60);
-	current.handleInput("\n");
+	current.handleInput("\x1b[A");
+	current.handleInput("\r");
 	assert.equal(await second, "Approve");
 	const third = mode.showExtensionSelector("third", ["Approve"], { details: "FULL-THIRD" });
 	mode.hideExtensionSelector();
@@ -319,7 +321,7 @@ test("fullscreen dock cannot clip permission controls", { timeout: 5000 }, async
  const pending = mode.showExtensionSelector("permission", ["Approve", "Deny"], { details: "LONG\n".repeat(2000) });
  try {
   ui.renderNow(true); await ui.flushTerminalFrames();
-  assert.match(terminal.writes.join(""), /Enter select/);
+  assert.match(terminal.writes.join("").replace(/\x1b\[[0-9;]*m/g, ""), /enter select/);
   input("\x1b[C");
   assert.ok(mode.extensionSelector.detailOffset > 0, "actual fullscreen input must reach the approval pager");
  } finally { mode.hideExtensionSelector(); await pending; await ui.stop(); }
@@ -496,4 +498,57 @@ test("RPC error serialization preserves distinct invocation identities", async (
  const second = JSON.parse(JSON.stringify(formatRpcExtensionError({ ...common, toolCallId: "second" })));
  assert.equal(first.toolCallId, "first"); assert.equal(second.toolCallId, "second");
  assert.equal("toolCallId" in JSON.parse(JSON.stringify(formatRpcExtensionError(common))), false);
+});
+
+
+test("prefix rules preserve backend, cwd and subcommand; shell syntax cannot ride along", () => {
+ const scope = { backend: "bash" as const, cwd: process.cwd() };
+ const rule = createSessionAllowRule("prefix", "ls *", scope);
+ for (const value of ["ls", "ls -la", "ls ./src", "ls ./tests"]) assert.equal(sessionAllowRuleMatches(rule, value, scope), true);
+ for (const value of ["lsof", "lsblk", "ls ./src && touch out", "ls; pwd", 'ls "$(pwd)"', "ls > out", "ls | cat", "./ls", "/untrusted/ls"]) assert.equal(sessionAllowRuleMatches(rule, value, scope), false, value);
+ assert.equal(sessionAllowRuleMatches(rule, "ls", { ...scope, backend: "powershell" }), false);
+ assert.equal(sessionAllowRuleMatches(rule, "ls", { ...scope, cwd: join(scope.cwd, "other") }), false);
+ const exact = createSessionAllowRule("exact", "ls -la", scope);
+ assert.equal(sessionAllowRuleMatches(exact, "ls", scope), false);
+ assert.equal(sessionAllowRuleMatches(exact, "ls -la", scope), true);
+ assert.equal(simpleCommandPrefix("git status --short"), "git status");
+ assert.equal(sessionAllowRuleMatches(createSessionAllowRule("prefix", "git status", scope), "git reset --hard", scope), false);
+});
+
+test("real prefix selection persists prefix and its explicit cwd scope", async t => {
+ const f = await permissionFixture(t);
+ f.permission.state.setMode("read-only");
+ const pending = f.call("bash", { command: "touch ./new.txt", cwd: f.cwd });
+ await f.visible;
+ const index = f.choices().findIndex(value => value.includes("指令前缀"));
+ try { assert.ok(index >= 0, JSON.stringify(f.choices())); }
+ finally { f.choose(index >= 0 ? index : 0); await pending; }
+ const rule = f.permission.state.allowRules[0];
+ assert.equal(rule.kind, "prefix"); assert.equal(rule.pattern, "touch");
+ assert.equal(rule.backend, "bash"); assert.equal(rule.cwd, f.cwd);
+ assert.deepEqual(f.permission.state.serialized().allowRules[0], rule);
+ assert.equal(f.permission.state.removeAllowRule(rule.id)?.id, rule.id);
+ assert.equal(f.permission.state.allowRules.length, 0);
+});
+
+test("long details display every core choice; stale Enter and pasted Enter cannot approve", () => {
+ let approvals = 0;
+ const options = ["仅允许本次", "精确白名单", "前缀白名单", "拒绝", "拒绝并说明"];
+ const terminal = { rows: 16, columns: 60 };
+ const selector = new ExtensionSelectorComponent("操作尚未执行", options, () => approvals++, () => {}, { details: "request\n".repeat(10000), tui: { terminal } as never });
+ const lines = selector.render(60).join("\n");
+ for (const option of options) assert.ok(lines.includes(option));
+ selector.handleInput("\r"); selector.handleInput("\x1b[200~\r\x1b[201~"); assert.equal(approvals, 0);
+ selector.handleInput("\x1b[A"); selector.handleInput("\r"); selector.handleInput("\r"); assert.equal(approvals, 1);
+ terminal.rows = 4; selector.render(60); selector.handleInput("\x1b[A"); selector.handleInput("\r"); assert.equal(approvals, 1);
+ selector.dispose();
+});
+
+
+test("legacy unscoped rules are displayed without a fabricated workspace scope", async t => {
+ const f = await permissionFixture(t); let text = "";
+ f.permission.state.addAllowRule(createSessionAllowRule("exact", "ls"));
+ f.runner.setUIContext({ ...f.runner.getUIContext(), notify: message => { text = message; } }, "tui");
+ await f.runner.getCommand("permissions")!.handler("rules", f.runner.createContext() as never);
+ assert.match(text, /cwd=unscoped \(legacy\)/); assert.doesNotMatch(text, new RegExp(f.cwd.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 });

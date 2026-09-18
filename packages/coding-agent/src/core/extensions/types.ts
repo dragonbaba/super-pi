@@ -497,6 +497,8 @@ export interface ToolDefinition<TParams extends TSchema = TSchema, TDetails = un
 	 *
 	 * If omitted, the default execution mode applies.
 	 */
+	/** Requires a user answer before replanning the rest of this response. */
+	interactionBoundary?: boolean;
 	executionMode?: ToolExecutionMode;
 
 	/** Execute the tool. */
@@ -889,6 +891,10 @@ export type InputSource = "interactive" | "rpc" | "extension";
 
 /** Fired when user input is received, before agent processing */
 export interface InputEvent {
+	/** Host-assigned identity of an already submitted image message. */
+	submissionId?: string;
+	/** Host digest of verified immutable images; invalidated after any input image transform. */
+	imageContentDigest?: string;
 	type: "input";
 	/** The input text */
 	text: string;
@@ -1334,7 +1340,8 @@ export interface ExtensionAPI {
 	on(event: "tool_call", handler: ExtensionHandler<ToolCallEvent, ToolCallEventResult>): void;
 	on(event: "tool_result", handler: ExtensionHandler<ToolResultEvent, ToolResultEventResult>): void;
 	on(event: "user_bash", handler: ExtensionHandler<UserBashEvent, UserBashEventResult>): void;
-	on(event: "input", handler: ExtensionHandler<InputEvent, InputEventResult>): void;
+	/** Default: once per new submission. Image processors opt into request-time projection only. */
+	on(event: "input", handler: ExtensionHandler<InputEvent, InputEventResult>, options?: { phase: "image-processing" }): void;
 
 	/**
 	 * Observe coalesced display updates without intercepting or transforming them.

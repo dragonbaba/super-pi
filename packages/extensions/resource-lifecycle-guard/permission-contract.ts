@@ -20,6 +20,8 @@ export type SessionApprovalPolicy = "ask" | "never-ask";
 export type SessionAllowRuleKind = "exact" | "prefix";
 
 export interface SessionAllowRule {
+  backend?: "bash" | "powershell";
+  cwd?: string;
   id: string;
   kind: SessionAllowRuleKind;
   pattern: string;
@@ -78,7 +80,7 @@ export interface BrowserExecAuthorization {
 }
 
 export interface PermissionStateSnapshot {
-  schemaVersion: 3;
+  schemaVersion: 4;
   mode: SessionPermissionMode;
   approvalPolicy: SessionApprovalPolicy;
   allowRules: readonly SessionAllowRule[];

@@ -31,15 +31,17 @@ for (const mode of ['regular', 'fullscreen']) for (const scenario of ['quit', 'c
         SP_CODING_AGENT_SESSION_DIR: join(root, 'sessions'), SP_OFFLINE: '1', SP_TUI_WRITE_LOG: '', SP_ALPHA_STARTUP_CAPTURE: capture, ALPHA_EXIT_KIND: kind }, stdio: 'pipe' });
     let stdout = ''; let stderr = ''; let ready = false; let sendTimer: ReturnType<typeof setTimeout> | undefined;
     const timeout = setTimeout(() => child.kill(), 15000);
+    child.once('exit', () => { if (sendTimer) clearTimeout(sendTimer); });
     child.stdout.on('data', data => {
       stdout += data.toString(); assert.ok(stdout.length <= 1024 * 1024, 'bounded capture');
       if (!ready && stdout.includes('ALPHA_CLI_READY')) {
         ready = true;
         sendTimer = setTimeout(() => {
+          if (child.exitCode !== null || child.signalCode !== null || child.stdin.destroyed) return;
           if (kind === 'stdout-close') { child.stdout.destroy(); child.stdin.write('/quit\r'); }
           else if (kind.startsWith('active-')) child.stdin.write(kind === 'active-compaction' ? '/alpha-compact\r' : 'fixture\r');
           else if (kind.startsWith('SIG')) child.kill(kind as NodeJS.Signals);
-          else if (kind !== 'extension') child.stdin.write(kind === 'quit' ? '/quit\r' : kind === 'ctrl-d' ? '\x04' : '\x03\x03');
+          else if (kind !== 'extension' && kind !== 'startup-quit') child.stdin.write(kind === 'quit' ? '/quit\r' : kind === 'ctrl-d' ? '\x04' : '\x03\x03');
         }, 100);
       }
     });

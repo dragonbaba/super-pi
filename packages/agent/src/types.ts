@@ -469,6 +469,8 @@ export interface AgentTool<TParameters extends TSchema = TSchema, TDetails = any
 	 *
 	 * If omitted, the default execution mode applies.
 	 */
+	/** Requires a user answer before replanning the rest of this response. */
+	interactionBoundary?: boolean;
 	executionMode?: ToolExecutionMode;
 	/** Filesystem path metadata used to serialize overlapping reads and writes. */
 	executionPath?: ToolExecutionPath;
@@ -494,7 +496,7 @@ export interface AgentContext {
 export type AgentEvent =
 	// Agent lifecycle
 	| { type: "agent_start" }
-	| { type: "agent_end"; messages: AgentMessage[] }
+	| { type: "agent_end"; messages: AgentMessage[]; requiresUserInput?: boolean }
 	// Turn lifecycle - a turn is one assistant response + any tool calls/results
 	| { type: "turn_start" }
 	| { type: "turn_end"; message: AgentMessage; toolResults: ToolResultMessage[] }

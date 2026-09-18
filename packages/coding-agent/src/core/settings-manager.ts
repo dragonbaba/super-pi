@@ -325,10 +325,18 @@ export class InMemorySettingsStorage implements SettingsStorage {
 }
 
 export class SettingsManager {
+	private imagePolicyRevision = 0;
+	getImagePolicyRevision(): number { return this.imagePolicyRevision; }
 	private storage: SettingsStorage;
 	private globalSettings: Settings;
 	private projectSettings: Settings;
-	private settings: Settings;
+	private effectiveSettings!: Settings;
+	private get settings(): Settings { return this.effectiveSettings; }
+	private set settings(value: Settings) {
+		// Includes overrides, reload and trust changes, not only the interactive toggle.
+		if ((this.effectiveSettings?.images?.blockImages ?? false) !== (value.images?.blockImages ?? false)) this.imagePolicyRevision++;
+		this.effectiveSettings = value;
+	}
 	private projectTrusted: boolean;
 	private modifiedFields = new Set<keyof Settings>(); // Track global fields modified during session
 	private modifiedNestedFields = new Map<keyof Settings, Set<string>>(); // Track global nested field modifications

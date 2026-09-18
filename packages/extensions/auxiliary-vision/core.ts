@@ -37,15 +37,22 @@ function finiteInteger(value: unknown, fallback: number, minimum: number, maximu
 		: fallback;
 }
 
-export function loadConfig(path: string): AuxiliaryVisionConfig {
+export function loadConfig(path: string, requireExplicitModel = false): AuxiliaryVisionConfig {
 	let raw: unknown;
 	try {
 		raw = JSON.parse(readFileSync(path, "utf8"));
 	} catch {
+		if (requireExplicitModel) throw new Error("辅助视觉配置不存在或无效；请明确配置允许使用的模型");
 		return { ...DEFAULT_CONFIG };
 	}
-	if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { ...DEFAULT_CONFIG };
+	if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+		if (requireExplicitModel) throw new Error("辅助视觉配置必须为对象");
+		return { ...DEFAULT_CONFIG };
+	}
 	const value = raw as Record<string, unknown>;
+	if (requireExplicitModel && (typeof value.model !== "string" || !splitModelRef(value.model.trim()))) {
+		throw new Error("请明确配置辅助视觉模型 provider/model");
+	}
 	const toolMode = value.toolMode;
 	return {
 		model: typeof value.model === "string" && value.model.trim() ? value.model.trim() : DEFAULT_CONFIG.model,

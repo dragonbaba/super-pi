@@ -1,3 +1,4 @@
+import { IMAGE_ATTACHMENT_LIMITS, IMAGE_VISION_RESULT_TYPE, ImageAttachmentDraft, draftAttachmentText, parseImagePaths, attachmentLabel, attachmentDescription, type AttachmentMessage, type ImageSubmission, type ImageVisionResult } from "../../core/image-attachments.ts";
 /**
  * Interactive mode for the coding agent.
  * Handles TUI rendering and user interaction, delegating business logic to AgentSession.
@@ -117,7 +118,7 @@ import { hasTrustRequiringProjectResources, ProjectTrustStore } from "../../core
 import { getUsageCostBreakdown } from "../../core/usage-totals.ts";
 import { getChangelogPath, getNewEntries, normalizeChangelogLinks, parseChangelog } from "../../utils/changelog.ts";
 import { copyToClipboard, readClipboardText } from "../../utils/clipboard.ts";
-import { extensionForImageMimeType, readClipboardImage } from "../../utils/clipboard-image.ts";
+import { readClipboardImage } from "../../utils/clipboard-image.ts";
 import { refreshModelCatalogs } from "../../utils/abort.ts";
 import { parseGitUrl } from "../../utils/git.ts";
 import { formatLocaleInteger } from "../../utils/number-format.ts";
@@ -208,17 +209,7 @@ import {
 } from "./theme/theme.ts";
 import { InteractiveThemeController } from "./theme/theme-controller.ts";
 
-interface ClipboardArtifactLifecycle {
-	editorChanged(text: string): void;
-	created(input: { path: string; mimeType: string; sessionId: string }): boolean;
-	submitted(text: string): void;
-}
-
-const CLIPBOARD_ARTIFACT_LIFECYCLE_SYMBOL = Symbol.for("super-pi.clipboard-artifact-lifecycle.v1");
 const NOOP_EXTENSION_TERMINAL_INPUT_UNSUBSCRIBE = (): void => {};
-function clipboardArtifactLifecycle(): ClipboardArtifactLifecycle | undefined {
-	return (globalThis as any)[CLIPBOARD_ARTIFACT_LIFECYCLE_SYMBOL];
-}
 
 /** Interface for components that can be expanded/collapsed */
 interface Expandable {
@@ -261,6 +252,8 @@ class ExpandableText extends Text implements Expandable {
 }
 
 type CompactionQueuedMessage = {
+	images?: ImageContent[];
+	submission?: ImageSubmission;
 	text: string;
 	mode: "steer" | "followUp";
 };
@@ -553,6 +546,38 @@ export class InteractiveMode {
 	private stopOperation: Promise<void> | undefined;
 	private onInputCallback?: (text: string) => void;
 	private pendingUserInputs: string[] = [];
+	private clipboardPending = false;
+	private compactionQueueFlushing = false;
+	private imageSubmissionRecovery: { state: "pending" | "failed"; text: string; images: ImageContent[]; submission: ImageSubmission; error?: string } | undefined;
+	private clipboardAbort: AbortController | undefined;
+	private readonly fallbackAttachmentText = new Text("", 0, 0);
+	private getAttachmentEditor(): CustomEditor | undefined {
+		// Extensions can load a different module instance of CustomEditor.
+		const editor = this.editor as Partial<CustomEditor> | undefined;
+		return typeof editor?.setAttachmentIds === "function" && typeof editor.setAttachmentText === "function" ? editor as CustomEditor : undefined;
+	}
+	private readonly refreshImageDraft = (): void => {
+		const items = this.imageDraft.items;
+		const editor = this.getAttachmentEditor();
+		editor?.setAttachmentIds(items);
+		let text = draftAttachmentText(items, editor?.selectedAttachmentId);
+		if (items.length) text += editor ? `正文开头 ${this.keybindings.getKeys("tui.editor.cursorLeft").join("/")} 选择图片 · ${this.keybindings.getKeys("tui.editor.deleteCharBackward").join("/")} / ${this.keybindings.getKeys("tui.editor.deleteCharForward").join("/")} 删除` : "当前编辑器不支持图片选择；/image-remove 序号 删除";
+		const recovery = this.imageSubmissionRecovery;
+		if (recovery) text += `\n[上次提交 · ${recovery.submission.attachments.length} 张图片 · ${recovery.state === "pending" ? "正在预检 · 尚未接受" : `未被接受：${attachmentLabel(recovery.error ?? "")} · /image-recover 恢复到空草稿 · /image-discard 取消`}]`;
+		if (editor) { editor.setAttachmentText(text); this.fallbackAttachmentText.setText(""); }
+		else this.fallbackAttachmentText.setText(text);
+		this.ui?.requestRender();
+	};
+	private readonly removeDraftAttachment = (id: string): void => {
+		const items = this.imageDraft.items;
+		for (let i = 0; i < items.length; i++) {
+			if (items[i].id === id) {
+				if (items[i].source === "clipboard" && items[i].state === "preparing") this.clipboardAbort?.abort();
+				this.imageDraft.remove(i); return;
+			}
+		}
+	};
+	private readonly imageDraft = new ImageAttachmentDraft(this.refreshImageDraft);
 	private activeStatusIndicator: StatusIndicator | undefined = undefined;
 	private readonly idleStatus = new IdleStatus();
 	private workingMessage: string | undefined = undefined;
@@ -834,7 +859,9 @@ export class InteractiveMode {
 		this.runtimeHost.setBeforeSessionInvalidate(() => {
 			this.resetExtensionUI();
 		});
+		let draftSessionId = this.sessionManager.getSessionId();
 		this.runtimeHost.setRebindSession(async () => {
+			if (draftSessionId !== this.sessionManager.getSessionId()) { this.clipboardAbort?.abort(); this.imageSubmissionRecovery = undefined; this.imageDraft.clear(); draftSessionId = this.sessionManager.getSessionId(); }
 			const lifecycleGeneration = this.tuiLifecycleGeneration;
 			await this.rebindCurrentSession({ renderBeforeBind: true }, lifecycleGeneration);
 		});
@@ -1293,6 +1320,7 @@ export class InteractiveMode {
 			{ component: this.pendingMessagesContainer, shrink: 1, minSize: 0 },
 			{ component: this.statusContainer, shrink: 1, minSize: 0 },
 			{ component: this.widgetContainerAbove, shrink: 1, minSize: 0 },
+			{ component: this.fallbackAttachmentText, shrink: 1, minSize: 0 },
 			{ component: this.editorContainer, shrink: 1, minSize: 3 },
 			{ component: this.widgetContainerBelow, shrink: 1, minSize: 0 },
 			{ component: this.footerContainer, shrink: 1, minSize: 1 },
@@ -1306,6 +1334,7 @@ export class InteractiveMode {
 			this.pendingMessagesContainer,
 			this.statusContainer,
 			this.widgetContainerAbove,
+			this.fallbackAttachmentText,
 			this.editorContainer,
 			this.widgetContainerBelow,
 			this.footerContainer,
@@ -1353,7 +1382,6 @@ export class InteractiveMode {
 				hint("app.message.followUp", "to queue follow-up"),
 				hint("app.message.dequeue", "to edit all queued messages"),
 				hint("app.clipboard.pasteImage", "to paste image (with text fallback)"),
-				rawKeyHint("drop files", "to attach"),
 			].join("\n");
 			const compactInstructions = [
 				hint("app.interrupt", "interrupt"),
@@ -3389,6 +3417,9 @@ export class InteractiveMode {
 
 		// Save text from current editor before switching
 		const currentText = this.editor.getText();
+		const previousAttachmentEditor = this.getAttachmentEditor();
+		previousAttachmentEditor?.setAttachmentIds([]);
+		previousAttachmentEditor?.setAttachmentText("");
 
 		this.disposeActiveSelector();
 		this.editorContainer.clear();
@@ -3449,6 +3480,14 @@ export class InteractiveMode {
 			this.editor = this.defaultEditor;
 		}
 
+		const attachmentEditor = this.getAttachmentEditor();
+		if (attachmentEditor) {
+			attachmentEditor.onEmptyPaste = this.handleClipboardPasteAction;
+			attachmentEditor.onPaste = this.defaultEditor.onPaste;
+			attachmentEditor.onAttachmentSelectionChange = this.refreshImageDraft;
+			attachmentEditor.onRemoveAttachment = this.removeDraftAttachment;
+		}
+		this.refreshImageDraft();
 		this.editorContainer.addChild(this.editor as Component);
 		this.ui.setFocus(this.editor as Component);
 		this.ui.requestRender();
@@ -3677,7 +3716,6 @@ export class InteractiveMode {
 		this.defaultEditor.onAction("app.session.resume", () => this.showSessionSelector());
 
 		this.defaultEditor.onChange = (text: string) => {
-			clipboardArtifactLifecycle()?.editorChanged(text);
 			const wasBashMode = this.isBashMode;
 			this.isBashMode = text.trimStart().startsWith("!");
 			if (wasBashMode !== this.isBashMode) {
@@ -3685,15 +3723,24 @@ export class InteractiveMode {
 			}
 		};
 
-		// Handle clipboard paste (triggered on Ctrl+V). Images are attached by path;
-		// otherwise, paste plain text from the system clipboard.
+		// All explicit clipboard gestures enter the same host-owned draft operation.
 		this.defaultEditor.onPasteImage = this.handleClipboardPasteAction;
+		this.defaultEditor.onEmptyPaste = this.handleClipboardPasteAction;
+		this.defaultEditor.onAttachmentSelectionChange = this.refreshImageDraft;
+		this.defaultEditor.onRemoveAttachment = this.removeDraftAttachment;
+		this.defaultEditor.onPaste = (text) => {
+			const paths = parseImagePaths(text);
+			if (!paths) return false;
+			void this.addDraftImageFiles(paths).catch(this.reportImageError);
+			return true;
+		};
 	}
 
 	private async handleRightClickPaste(): Promise<void> {
 		const target = this.renderer.getFocusedComponent();
 		const handleInput = target?.handleInput;
 		if (!target || !handleInput) return;
+		if (target === this.editor) { await this.handleClipboardPaste(); return; }
 		try {
 			const text = await readClipboardText();
 			if (!text || this.renderer.getFocusedComponent() !== target) return;
@@ -3704,54 +3751,144 @@ export class InteractiveMode {
 		}
 	}
 
+	private readonly reportImageError = (error: unknown): void => { this.showWarning(error instanceof Error ? error.message : String(error)); };
+	private async addDraftImageFiles(paths: readonly string[]): Promise<void> {
+		if (this.clipboardPending) throw new Error("正在读取剪贴板，请稍后再试");
+		await this.imageDraft.addFiles(paths, this.sessionManager.getCwd());
+	}
 	private async handleClipboardPaste(): Promise<void> {
 		const lifecycleGeneration = this.tuiLifecycleGeneration;
+		if (this.clipboardPending) { this.showWarning("正在读取剪贴板，请稍后再试"); return; }
+		if (this.imageDraft.busy) { this.showWarning("正在添加图片，请稍后再试"); return; }
+		const target = this.editor;
+		if (this.renderer.getFocusedComponent() !== target) return;
+		this.clipboardPending = true;
+		const controller = new AbortController(); this.clipboardAbort = controller;
+		const sessionId = this.sessionManager.getSessionId();
+		const draftId = this.imageDraft.id;
+		const isCurrent = (): boolean => this.tuiLifecycleGeneration === lifecycleGeneration && !controller.signal.aborted && draftId === this.imageDraft.id && sessionId === this.sessionManager.getSessionId() && this.editor === target && this.renderer.getFocusedComponent() === target;
+		let record: ReturnType<ImageAttachmentDraft["begin"]> | undefined;
 		try {
-			const image = await this.readClipboardImageForPaste();
-			if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
-			if (image) {
-				const tmpDir = os.tmpdir();
-				const ext = extensionForImageMimeType(image.mimeType) ?? "png";
-				const fileName = `sp-clipboard-${crypto.randomUUID()}.${ext}`;
-				const filePath = path.join(tmpDir, fileName);
-				fs.writeFileSync(filePath, Buffer.from(image.bytes));
-				const lifecycle = clipboardArtifactLifecycle();
-				if (!lifecycle || lifecycle.created({
-					path: filePath,
-					mimeType: image.mimeType,
-					sessionId: this.sessionManager.getSessionId(),
-				}) !== true) {
-					try { fs.unlinkSync(filePath); } catch {}
-					return;
-				}
-
-				this.editor.insertTextAtCursor?.(filePath);
-				this.ui.requestRender();
-				return;
+			let capacityError: unknown;
+			try { record = this.imageDraft.begin("截图.png", "clipboard"); }
+			catch (error) {
+				if (this.imageDraft.items.length < IMAGE_ATTACHMENT_LIMITS.count) throw error;
+				capacityError = error;
 			}
-
+			// Text remains editable at capacity; no unreserved image read is started.
+			const image = record ? await this.readClipboardImageForPaste() : null;
+			if (!isCurrent()) return;
+			if (image && record) { await this.imageDraft.finish(record, image.bytes, isCurrent); return; }
+			const index = record ? this.imageDraft.items.indexOf(record) : -1;
+			if (index >= 0) this.imageDraft.remove(index);
 			const text = await this.readClipboardTextForPaste();
-			if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
+			if (!isCurrent()) return;
 			if (text) {
-				this.editor.insertTextAtCursor?.(text);
+				// A path returned by text fallback is part of this already admitted
+				// operation, so it must not re-enter the competing-input guard.
+				const paths = parseImagePaths(text);
+				if (paths) {
+					await this.imageDraft.addFiles(paths, this.sessionManager.getCwd(), isCurrent);
+					if (!isCurrent()) return;
+				}
+				else target.handleInput?.(`\x1b[200~${text}\x1b[201~`);
 				this.ui.requestRender();
 			}
-		} catch {
-			// Silently ignore clipboard errors (may not have permission, etc.)
+			else if (capacityError) throw capacityError;
+			else this.showWarning("剪贴板没有图片或文本");
+		} catch (error) {
+			if (isCurrent()) {
+				if (record && this.imageDraft.items.includes(record)) this.imageDraft.fail(record, error);
+				else this.reportImageError(error);
+			}
+		}
+		finally {
+			if (record && !isCurrent()) {
+				const index = this.imageDraft.items.indexOf(record);
+				if (index >= 0) this.imageDraft.remove(index);
+			}
+			this.clipboardPending = false; if (this.clipboardAbort === controller) this.clipboardAbort = undefined;
+		}
+	}
+
+	private async submitImageDraft(text: string, mode: "steer" | "followUp" = "steer"): Promise<void> {
+		if (this.blockPendingClipboardSubmit(text)) return;
+		if (this.imageSubmissionRecovery) { this.editor.setText(text); this.showWarning("上次提交尚未接受，请等待预检或使用 /image-recover、/image-discard 处理失败提交"); return; }
+		if (this.session.isCompacting) {
+			let count = 0, bytes = 0;
+			for (const queued of this.compactionQueuedMessages) for (const image of queued.submission?.attachments ?? []) { count++; bytes += image.bytes; }
+			for (const item of this.imageDraft.items) { count++; bytes += item.metadata?.bytes ?? 0; }
+			if (count > 32 || bytes > 128 * 1024 * 1024) { this.editor.setText(text); this.showWarning("图片队列已满（32 张 / 128 MiB）"); return; }
+		}
+		let submitted: ReturnType<ImageAttachmentDraft["submit"]>;
+		try { submitted = this.imageDraft.submit(); }
+		catch (error) { this.editor.setText(text); this.reportImageError(error); return; }
+		const sessionId = this.sessionManager.getSessionId();
+		this.editor.setText("");
+		if (this.session.isCompacting) {
+			this.compactionQueuedMessages.push({ text, mode, images: submitted.images, submission: submitted.submission });
+			this.updatePendingMessagesDisplay(); return;
+		}
+		const recovery = { state: "pending" as "pending" | "failed", text, ...submitted, error: undefined as string | undefined };
+		this.imageSubmissionRecovery = recovery; this.refreshImageDraft();
+		try {
+			await this.session.prompt(text, { images: submitted.images, submission: submitted.submission, streamingBehavior: mode,
+				preflightResult: accepted => {
+					if (accepted && this.imageSubmissionRecovery === recovery) { this.imageSubmissionRecovery = undefined; this.refreshImageDraft(); }
+				},
+			});
+		} catch (error) {
+			if (sessionId !== this.sessionManager.getSessionId()) return;
+			if (this.imageSubmissionRecovery === recovery) {
+				recovery.state = "failed"; recovery.error = error instanceof Error ? error.message : String(error); this.refreshImageDraft();
+			}
+			this.reportImageError(error);
 		}
 	}
 
 	private readClipboardImageForPaste(): ReturnType<typeof readClipboardImage> {
-		return readClipboardImage();
+		return readClipboardImage({ signal: this.clipboardAbort?.signal, onUnavailable: this.reportImageError });
 	}
 
 	private readClipboardTextForPaste(): Promise<string | null> {
-		return readClipboardText();
+		return readClipboardText(this.clipboardAbort?.signal);
+	}
+	private blockPendingClipboardSubmit(text: string): boolean {
+		if (!this.clipboardPending) return false;
+		this.editor.setText(text);
+		this.showWarning("剪贴板尚未就绪，完成后请再次发送");
+		return true;
 	}
 
 	private setupEditorSubmitHandler(): void {
 		this.defaultEditor.onSubmit = async (text: string) => {
-			clipboardArtifactLifecycle()?.submitted(text);
+			if (text === "/image-recover" || text === "/image-discard") {
+				const recovery = this.imageSubmissionRecovery;
+				if (!recovery) { this.showWarning("没有待恢复的图片提交"); return; }
+				if (recovery.state === "pending") { this.showWarning("提交仍在预检，请等待结果"); return; }
+				if (text === "/image-discard") { this.imageSubmissionRecovery = undefined; this.refreshImageDraft(); return; }
+				if (this.imageDraft.items.length || this.imageDraft.busy || this.editor.getText()) { this.showWarning("当前草稿非空；失败提交保持独立，请处理当前草稿后再恢复，或 /image-discard 取消上次提交"); return; }
+				try {
+					this.imageDraft.restore(recovery.images, recovery.submission); this.editor.setText(recovery.text);
+					this.imageSubmissionRecovery = undefined; this.refreshImageDraft();
+				} catch (error) { this.reportImageError(error); }
+				return;
+			}
+			if (text.startsWith("/image ")) {
+				const paths = parseImagePaths(text.slice(7), true);
+				if (!paths) { this.showWarning("用法：/image 带引号的本地图片路径"); return; }
+				try { await this.addDraftImageFiles(paths); } catch (error) { this.reportImageError(error); }
+				return;
+			}
+			if (text === "/image-clear") { this.clipboardAbort?.abort(); this.imageDraft.clear(); return; }
+			if (text.startsWith("/image-remove ")) {
+				const index = Number(text.slice(14)) - 1;
+				if (Number.isInteger(index) && index >= 0 && index < this.imageDraft.items.length) this.removeDraftAttachment(this.imageDraft.items[index].id);
+				else this.showWarning("用法：/image-remove 图片序号");
+				return;
+			}
+			if (this.blockPendingClipboardSubmit(text)) return;
+			if (this.imageDraft.items.length && !text.startsWith("/") && !text.startsWith("!")) { await this.submitImageDraft(text); return; }
 			text = text.trim();
 			if (!text) return;
 
@@ -3957,6 +4094,7 @@ export class InteractiveMode {
 	private subscribeToAgent(): void {
 		this.unsubscribe = this.session.subscribe(this.handleSessionEvent, {
 			criticalAgentEnd: true,
+			criticalCompactionEnd: true,
 			onError: this.handleSessionEventRejection,
 		});
 	}
@@ -4248,8 +4386,10 @@ export class InteractiveMode {
 						this.chatContainer.addChild(new Text(theme.fg("error", event.errorMessage), 1, 0));
 					}
 				}
-				this.observeLifecyclePromise(this.flushCompactionQueue({ willRetry: event.willRetry }));
 				this.ui.requestRender();
+				if (event.aborted || event.errorMessage) break;
+				if (event.willRetry) return this.flushCompactionQueue({ willRetry: true });
+				this.observeLifecyclePromise(this.flushCompactionQueue());
 				break;
 			}
 
@@ -4944,6 +5084,13 @@ export class InteractiveMode {
 	}
 
 	private addCustomEntryToChat(entry: Extract<SessionEntry, { type: "custom" }>): void {
+		if (entry.customType === IMAGE_VISION_RESULT_TYPE) {
+			const result = entry.data as Partial<ImageVisionResult>;
+			if (typeof result.description === "string" && typeof result.submissionId === "string") {
+				this.chatContainer.addChild(new Text(`辅助视觉结果（派生） · ${attachmentLabel(result.model ?? "")} · 提交 ${attachmentLabel(result.submissionId)}\n${attachmentDescription(result.description)}`, this.outputPad, 0));
+			}
+			return;
+		}
 		const renderer = this.session.extensionRunner.getEntryRenderer(entry.customType);
 		if (!renderer) {
 			return;
@@ -5011,7 +5158,13 @@ export class InteractiveMode {
 				break;
 			}
 			case "user": {
-				const textContent = this.getUserMessageText(message);
+				let textContent = this.getUserMessageText(message);
+				const submission = (message as AttachmentMessage).imageSubmission;
+				if (submission) for (let i = 0; i < submission.attachments.length; i++) {
+					let available = false, index = 0;
+					if (typeof message.content !== "string") for (const part of message.content) if (part.type === "image") { if (index++ === submission.attachments[i].contentIndex) available = Boolean(part.data); }
+					textContent += `\n[图片 ${i + 1} · ${attachmentLabel(submission.attachments[i].name)} · ${available ? "已提交" : "源图片不可用"}]`;
+				}
 				if (textContent) {
 					if (this.chatContainer.children.length > 0) {
 						this.chatContainer.addChild(new Spacer(1));
@@ -5360,6 +5513,9 @@ export class InteractiveMode {
 		this.isShuttingDown = true;
 		this.invalidateInitialization();
 		this.tuiLifecycleGeneration++;
+		this.clipboardAbort?.abort();
+		this.imageSubmissionRecovery = undefined;
+		this.imageDraft?.clear();
 		// Final UI ownership ends before any shutdown await or terminal disposal.
 		// Session replacement keeps the normal reset callback while this mode lives.
 		this.runtimeHost.setBeforeSessionInvalidate?.(undefined);
@@ -5586,6 +5742,16 @@ export class InteractiveMode {
 
 	private async handleFollowUp(): Promise<void> {
 		const text = (this.editor.getExpandedText?.() ?? this.editor.getText()).trim();
+		if (this.blockPendingClipboardSubmit(text)) return;
+		// Executing an extension command is not a message. Classify it before
+		// transferring images, preserving follow-up semantics for prompt templates.
+		if (this.imageDraft.items.length && this.isExtensionCommand(text)) {
+			this.editor.addToHistory?.(text);
+			this.editor.setText("");
+			await this.session.prompt(text);
+			return;
+		}
+		if (this.imageDraft.items.length) { await this.submitImageDraft(text, "followUp"); return; }
 		if (!text) return;
 
 		// Queue input during compaction (extension commands execute immediately)
@@ -5626,6 +5792,7 @@ export class InteractiveMode {
 	private handleDequeue(): void {
 		const restored = this.restoreQueuedMessagesToEditor();
 		if (restored === 0) {
+			if (this.session.pendingMessageCount || this.compactionQueuedMessages.length) return;
 			this.showStatus("No queued messages to restore");
 		} else {
 			this.showStatus(`Restored ${restored} queued message${restored > 1 ? "s" : ""} to editor`);
@@ -5751,6 +5918,8 @@ export class InteractiveMode {
 	// =========================================================================
 
 	clearEditor(): void {
+		this.clipboardAbort?.abort();
+		this.imageDraft.clear();
 		this.editor.setText("");
 		this.ui.requestRender();
 	}
@@ -5793,7 +5962,7 @@ export class InteractiveMode {
 		const steering = [...this.session.getSteeringMessages()];
 		const followUp = [...this.session.getFollowUpMessages()];
 		for (const message of this.compactionQueuedMessages) {
-			(message.mode === "steer" ? steering : followUp).push(message.text);
+			(message.mode === "steer" ? steering : followUp).push(message.images?.length ? `${message.text} [已排队 · 含 ${message.images.length} 张图片]` : message.text);
 		}
 		return { steering, followUp };
 	}
@@ -5803,10 +5972,17 @@ export class InteractiveMode {
 	 * Clears both session queue and compaction queue.
 	 */
 	private clearAllQueues(): { steering: string[]; followUp: string[] } {
-		const { steering, followUp } = this.session.clearQueue();
-		for (const message of this.compactionQueuedMessages) {
-			(message.mode === "steer" ? steering : followUp).push(message.text);
+		const { steering, followUp, imageMessages } = this.session.clearQueue();
+		const orderedImages = [];
+		for (const mode of ["steer", "followUp"] as const) {
+			for (const item of imageMessages ?? []) if (item.mode === mode) orderedImages.push(item);
+			for (const message of this.compactionQueuedMessages) if (message.mode === mode) {
+				if (message.images && message.submission) orderedImages.push({ images: message.images, submission: message.submission });
+				(mode === "steer" ? steering : followUp).push(message.text);
+			}
 		}
+		// Queued text precedes the existing editor text; attachments use that same order.
+		for (let i = orderedImages.length - 1; i >= 0; i--) this.imageDraft.restore(orderedImages[i].images, orderedImages[i].submission, true);
 		this.compactionQueuedMessages = [];
 		return { steering, followUp };
 	}
@@ -5831,6 +6007,13 @@ export class InteractiveMode {
 	}
 
 	private restoreQueuedMessagesToEditor(options?: { abort?: boolean; currentText?: string }): number {
+		const size = this.session.getQueuedImageSize?.(false) ?? { count: 0, bytes: 0 };
+		for (const item of this.imageDraft?.items ?? []) { size.count++; size.bytes += item.metadata?.bytes ?? 0; }
+		for (const message of this.compactionQueuedMessages) for (const attachment of message.submission?.attachments ?? []) { size.count++; size.bytes += attachment.bytes; }
+		if (size.count > 8 || size.bytes > 40 * 1024 * 1024) {
+			if (options?.abort) this.agent.abort();
+			this.showWarning("队列图片超出单个草稿限制，队列保持不变；可明确发送新消息继续处理，或用 /new 取消当前会话队列。清空当前草稿不会删除队列"); return 0;
+		}
 		const { steering, followUp } = this.clearAllQueues();
 		const allQueued = [...steering, ...followUp];
 		if (allQueued.length === 0) {
@@ -5870,82 +6053,33 @@ export class InteractiveMode {
 	}
 
 	private async flushCompactionQueue(options?: { willRetry?: boolean }): Promise<void> {
-		if (this.compactionQueuedMessages.length === 0) {
-			return;
-		}
-
-		const queuedMessages = [...this.compactionQueuedMessages];
-		this.compactionQueuedMessages = [];
-		this.updatePendingMessagesDisplay();
-
-		const restoreQueue = (error: unknown) => {
-			this.session.clearQueue();
-			this.compactionQueuedMessages = queuedMessages;
-			this.updatePendingMessagesDisplay();
-			this.showError(
-				`Failed to send queued message${queuedMessages.length > 1 ? "s" : ""}: ${
-					error instanceof Error ? error.message : String(error)
-				}`,
-			);
-		};
-
+		if (this.compactionQueueFlushing || this.compactionQueuedMessages.length === 0) return;
+		this.compactionQueueFlushing = true;
+		const session = this.session;
 		try {
-			if (options?.willRetry) {
-				// When retry is pending, queue messages for the retry turn
-				for (const message of queuedMessages) {
-					if (this.isExtensionCommand(message.text)) {
-						await this.session.prompt(message.text);
-					} else if (message.mode === "followUp") {
-						await this.session.followUp(message.text);
-					} else {
-						await this.session.steer(message.text);
-					}
-				}
-				this.updatePendingMessagesDisplay();
-				return;
-			}
-
-			// Find first non-extension-command message to use as prompt
-			const firstPromptIndex = queuedMessages.findIndex((message) => !this.isExtensionCommand(message.text));
-			if (firstPromptIndex === -1) {
-				// All extension commands - execute them all
-				for (const message of queuedMessages) {
-					await this.session.prompt(message.text);
-				}
-				return;
-			}
-
-			// Execute any extension commands before the first prompt
-			const preCommands = queuedMessages.slice(0, firstPromptIndex);
-			const firstPrompt = queuedMessages[firstPromptIndex];
-			const rest = queuedMessages.slice(firstPromptIndex + 1);
-
-			for (const message of preCommands) {
-				await this.session.prompt(message.text);
-			}
-
-			// Start a prompt when idle, or queue it into a run still finishing compaction.
-			const promptPromise = this.session
-				.prompt(firstPrompt.text, { streamingBehavior: firstPrompt.mode })
-				.catch((error) => {
-					restoreQueue(error);
+			while (this.session === session && this.compactionQueuedMessages.length) {
+				const message = this.compactionQueuedMessages[0];
+				// Wait for admission/interception, not the entire provider run. Each TUI
+				// submission crosses ordinary input exactly once before ownership transfers.
+				const accepted = await new Promise<boolean>((resolve) => {
+					let admitted = false;
+					const operation = session.prompt(message.text, { streamingBehavior: message.mode,
+						queueOnly: options?.willRetry, images: message.images, submission: message.submission,
+						preflightResult: success => { if (success) { admitted = true; resolve(true); } },
+					});
+					void operation.then(() => resolve(admitted), error => {
+						this.showError(`Failed to send queued message: ${error instanceof Error ? error.message : String(error)}`);
+						resolve(false);
+					});
 				});
-
-			// Queue remaining messages
-			for (const message of rest) {
-				if (this.isExtensionCommand(message.text)) {
-					await this.session.prompt(message.text);
-				} else if (message.mode === "followUp") {
-					await this.session.followUp(message.text);
-				} else {
-					await this.session.steer(message.text);
+				if (!accepted || this.session !== session || this.compactionQueuedMessages[0] !== message) {
+					if (options?.willRetry) throw new Error("Queued input admission failed; automatic retry paused and pending input retained");
+					return;
 				}
+				this.compactionQueuedMessages.shift();
+				this.updatePendingMessagesDisplay();
 			}
-			this.updatePendingMessagesDisplay();
-			void promptPromise;
-		} catch (error) {
-			restoreQueue(error);
-		}
+		} finally { this.compactionQueueFlushing = false; }
 	}
 
 	/** Move pending bash components from pending area to chat */
@@ -8104,6 +8238,7 @@ export class InteractiveMode {
 	}
 
 	private async handleClearCommand(): Promise<void> {
+		this.clipboardAbort?.abort(); this.imageSubmissionRecovery = undefined; this.imageDraft.clear();
 		const lifecycleGeneration = this.tuiLifecycleGeneration;
 		this.clearStatusIndicator();
 		try {
@@ -8310,6 +8445,9 @@ export class InteractiveMode {
 		}
 		this.invalidateInitialization();
 		this.tuiLifecycleGeneration++;
+		this.clipboardAbort?.abort();
+		this.imageSubmissionRecovery = undefined;
+		this.imageDraft?.clear();
 		const operation = Promise.resolve().then(() => this.performStop(fullscreenExitOutput));
 		this.stopOperation = operation;
 		try {

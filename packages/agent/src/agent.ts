@@ -478,16 +478,16 @@ export class Agent {
 	}
 
 	/** Start a new prompt from text, a single message, or a batch of messages. */
-	async prompt(message: AgentMessage | AgentMessage[]): Promise<void>;
+	async prompt(message: AgentMessage | AgentMessage[], onAccepted?: () => void): Promise<void>;
 	async prompt(input: string, images?: ImageContent[]): Promise<void>;
-	async prompt(input: string | AgentMessage | AgentMessage[], images?: ImageContent[]): Promise<void> {
+	async prompt(input: string | AgentMessage | AgentMessage[], imagesOrAccepted?: ImageContent[] | (() => void)): Promise<void> {
 		if (this.activeRun) {
 			throw new Error(
 				"Agent is already processing a prompt. Use steer() or followUp() to queue messages, or wait for completion.",
 			);
 		}
-		const messages = this.normalizePromptInput(input, images);
-		await this.runPromptMessages(messages);
+		const messages = this.normalizePromptInput(input, typeof imagesOrAccepted === "function" ? undefined : imagesOrAccepted);
+		await this.runPromptMessages(messages, { onAccepted: typeof imagesOrAccepted === "function" ? imagesOrAccepted : undefined });
 	}
 
 	/** Continue from the current transcript. The last message must be a user or tool-result message. */
@@ -541,7 +541,7 @@ export class Agent {
 
 	private async runPromptMessages(
 		messages: AgentMessage[],
-		options: { skipInitialSteeringPoll?: boolean } = {},
+		options: { skipInitialSteeringPoll?: boolean; onAccepted?: () => void } = {},
 	): Promise<void> {
 		await this.runWithLifecycle(async (signal) => {
 			await runAgentLoop(
@@ -552,7 +552,7 @@ export class Agent {
 				signal,
 				this.streamFunction,
 			);
-		});
+		}, false, options.onAccepted);
 	}
 
 	private async runContinuation(): Promise<void> {
@@ -634,7 +634,7 @@ export class Agent {
 		return result;
 	}
 
-	private async runWithLifecycle(executor: (signal: AbortSignal) => Promise<void>, hostOnly = false): Promise<void> {
+	private async runWithLifecycle(executor: (signal: AbortSignal) => Promise<void>, hostOnly = false, onAccepted?: () => void): Promise<void> {
 		if (this.activeRun) {
 			throw new Error("Agent is already processing.");
 		}
@@ -651,6 +651,7 @@ export class Agent {
 		this._state.errorMessage = undefined;
 
 		try {
+			onAccepted?.();
 			await executor(abortController.signal);
 		} catch (error) {
 			if (hostOnly) throw error;

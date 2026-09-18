@@ -323,6 +323,45 @@ test("fullscreen prompt navigation and selection use absolute virtual document r
 	}
 });
 
+test("internal text selection copies path-looking text and focus cancellation never enters image input", () => {
+	const text = "自然语言 image.png file:///C:/temp/a.jpg C:\\work\\b.webp 😀";
+	const transcript = new RetainedContainer();
+	transcript.addRetainedChild(new FixedLinesComponent([text]), { id: "text-selection", version: 1, completed: true });
+	const scroll = new ScrollView(transcript, { follow: "none", primary: true });
+	const terminal = new FakeTerminal(120, 10);
+	const tui = new TuiAltScreen(terminal, false, undefined, { mouse: true });
+	tui.setLayoutRoot(scroll);
+	tui.start();
+	try {
+		tui.renderNow();
+		const internals = tui as unknown as {
+			handleTerminalInput(data: string): void;
+			selectionPressActive: boolean;
+		};
+		const mouse = (button: number, x: number, y: number, release = false): string =>
+			`\x1b[<${button};${x};${y}${release ? "m" : "M"}`;
+
+		terminal.writes.length = 0;
+		internals.handleTerminalInput(mouse(0, 1, 1));
+		internals.handleTerminalInput(mouse(32, 100, 1));
+		internals.handleTerminalInput(mouse(0, 100, 1, true));
+		const copy = terminal.writes.find((write) => write.includes("\x1b]52;c;"));
+		assert.ok(copy, "internal mouse selection uses the terminal text-copy protocol");
+		const encoded = copy.slice("\x1b]52;c;".length, -1);
+		assert.equal(Buffer.from(encoded, "base64").toString(), text);
+		assert.equal(internals.selectionPressActive, false);
+
+		terminal.writes.length = 0;
+		internals.handleTerminalInput(mouse(0, 1, 1));
+		internals.handleTerminalInput(mouse(32, 40, 1));
+		internals.handleTerminalInput("\x1b[O");
+		assert.equal(internals.selectionPressActive, false);
+		assert.equal(terminal.writes.some((write) => write.includes("\x1b]52;c;")), false, "cancelled selection does not copy or attach text");
+	} finally {
+		tui.stop();
+	}
+});
+
 test("active-only fullscreen frames do not visit completed offscreen history", () => {
 	for (const itemCount of [5_000, 50_000]) {
 		const { transcript, items } = buildTranscript(itemCount);

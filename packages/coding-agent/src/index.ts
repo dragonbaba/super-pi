@@ -1,4 +1,5 @@
 // Core session management
+export { IMAGE_ATTACHMENT_VERSION, IMAGE_VISION_RESULT_TYPE, type ImageAttachment, type ImageSubmission, type ImageVisionResult } from "./core/image-attachments.ts";
 
 export { type Args, parseArgs } from "./cli/args.ts";
 

@@ -254,6 +254,7 @@ async function runLoop(
 			const toolCalls = message.content.filter((c) => c.type === "toolCall");
 
 			const toolResults: ToolResultMessage[] = [];
+			let interactionPaused = false;
 			hasMoreToolCalls = false;
 			if (toolCalls.length > 0) {
 				// A "length" stop means the output was cut off by the token limit, so
@@ -265,6 +266,7 @@ async function runLoop(
 						: await executeToolCalls(currentContext, message, config, signal, emit);
 				toolResults.push(...executedToolBatch.messages);
 				hasMoreToolCalls = !executedToolBatch.terminate;
+				interactionPaused = executedToolBatch.terminate && toolCalls.some(tc => currentContext.tools?.find(t => t.name === tc.name)?.interactionBoundary === true);
 
 				for (const result of toolResults) {
 					currentContext.messages.push(result);
@@ -273,6 +275,10 @@ async function runLoop(
 			}
 
 			await emit({ type: "turn_end", message, toolResults });
+			if (interactionPaused) {
+				await emit({ type: "agent_end", messages: newMessages, requiresUserInput: true });
+				return;
+			}
 
 			const nextTurnContext = {
 				message,
@@ -468,6 +474,16 @@ async function executeToolCalls(
 	emit: AgentEventSink,
 ): Promise<ExecutedToolCallBatch> {
 	const toolCalls = assistantMessage.content.filter((c) => c.type === "toolCall");
+	// Inspect the entire batch before starting ANY business call. Old arguments
+	// cannot cross an answer boundary, including calls preceding the question.
+	const question = toolCalls.find(tc => currentContext.tools?.find(t => t.name === tc.name)?.interactionBoundary);
+	if (question) {
+		const answered = await executeToolCallsSequential(currentContext, assistantMessage, [question], config, signal, emit);
+		const remaining = toolCalls.filter(tc => tc !== question);
+		const deferred = await finalizeUnexecutedToolCalls(remaining, 0, emit, "Not executed: user interaction boundary; replan with the user's answer.");
+		await emitFinalizedToolResults(deferred, emit, answered.messages);
+		return answered;
+	}
 	const hasSequentialToolCall = toolCalls.some(
 		(tc) => currentContext.tools?.find((t) => t.name === tc.name)?.executionMode === "sequential",
 	);
@@ -559,6 +575,7 @@ async function finalizeUnexecutedToolCalls(
 	toolCalls: AgentToolCall[],
 	startIndex: number,
 	emit: AgentEventSink,
+	reason = "Operation aborted before tool execution",
 ): Promise<FinalizedToolCallOutcome[]> {
 	const finalizedCalls: FinalizedToolCallOutcome[] = [];
 	for (let index = startIndex; index < toolCalls.length; index++) {
@@ -571,7 +588,7 @@ async function finalizeUnexecutedToolCalls(
 		});
 		const finalized: FinalizedToolCallOutcome = {
 			toolCall,
-			result: createErrorToolResult("Operation aborted before tool execution"),
+			result: createErrorToolResult(reason),
 			isError: true,
 		};
 		await emitToolExecutionEnd(finalized, emit);
