@@ -283,9 +283,17 @@ export class ImageAttachmentDraft {
 		for (const item of this.records) total += item.metadata?.bytes ?? 0;
 		for (const metadata of submission.attachments) total += metadata.bytes;
 		if (total > IMAGE_ATTACHMENT_LIMITS.total) throw new Error("恢复后草稿图片总大小超过 40 MiB");
+		const usedIds = new Set<string>();
+		for (const item of this.records) usedIds.add(item.id);
 		for (let i = 0; i < submission.attachments.length; i++) {
 			const metadata = submission.attachments[prepend ? submission.attachments.length - 1 - i : i];
-			const record: DraftImage = { id: metadata.id, name: metadata.name, source: metadata.source, state: "ready", metadata, image: images[metadata.contentIndex] };
+			let id = metadata.id;
+			if (typeof id !== "string" || !id.trim() || usedIds.has(id)) {
+				do { id = randomUUID(); } while (usedIds.has(id));
+			}
+			usedIds.add(id);
+			const restoredMetadata = id === metadata.id ? metadata : { ...metadata, id };
+			const record: DraftImage = { id, name: restoredMetadata.name, source: restoredMetadata.source, state: "ready", metadata: restoredMetadata, image: images[metadata.contentIndex] };
 			if (prepend) this.records.unshift(record); else this.records.push(record);
 		}
 		this.changed();

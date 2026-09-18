@@ -8,7 +8,7 @@ import { pathToFileURL } from "node:url";
 import { setImmediate as turn } from "node:timers/promises";
 import { fixture } from "./helpers/evidence-ledger-fixture.ts";
 import { response } from "./helpers/selected-integration-fixture.ts";
-import { ImageAttachmentDraft, draftAttachmentText, parseImagePaths, localImagePath, attachmentLabel, attachmentDescription } from "../packages/coding-agent/src/core/image-attachments.ts";
+import { ImageAttachmentDraft, draftAttachmentText, parseImagePaths, localImagePath, attachmentLabel, attachmentDescription, snapshotImageSubmission } from "../packages/coding-agent/src/core/image-attachments.ts";
 import * as imagePatterns from "../packages/coding-agent/src/utils/image-input-regex.ts";
 import { InteractiveMode } from "../packages/coding-agent/src/modes/interactive/interactive-mode.ts";
 import { initTheme } from "../packages/coding-agent/src/modes/interactive/theme/theme.ts";
@@ -219,6 +219,22 @@ test("same-text queued images retain identity and transfer back to draft without
 		for (const item of returned.imageMessages) draft.restore(item.images, item.submission);
 		assert.match(draftAttachmentText(draft.items), /图片 2/); draft.clear(); assert.equal(draft.items.length, 0);
 	} finally { f.close(); }
+});
+
+test("restoring queued submissions remaps duplicate attachment IDs for independent removal", () => {
+	const first = snapshotImageSubmission([{ type: "image", mimeType: "image/png", data: PNG.toString("base64") }]);
+	const second = snapshotImageSubmission([{ type: "image", mimeType: "image/png", data: PNG.toString("base64") }]);
+	second.submission.attachments[0].id = first.submission.attachments[0].id;
+	const draft = new ImageAttachmentDraft(() => {});
+	try {
+		draft.restore(first.images, first.submission);
+		draft.restore(second.images, second.submission);
+		assert.equal(new Set(draft.items.map(item => item.id)).size, 2);
+		const firstId = draft.items[0].id;
+		draft.remove(0);
+		assert.equal(draft.items.length, 1);
+		assert.notEqual(draft.items[0].id, firstId);
+	} finally { draft.clear(); }
 });
 
 test("no-UI question returns requires_user_input and ends the SDK run", async () => {
