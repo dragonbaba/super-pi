@@ -17,6 +17,8 @@ import { CustomEditor } from "../packages/coding-agent/src/modes/interactive/com
 import { snapshotImageSubmission } from "../packages/coding-agent/src/core/image-attachments.ts";
 import { Editor } from "@super-pi/tui";
 import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
+import { readClipboardImage } from "../packages/coding-agent/src/utils/clipboard-image.ts";
+import { readFormsClipboardFixture } from "./helpers/windows-clipboard-data.ts";
 
 async function mounted(auxiliary = false, screen: "regular" | "fullscreen" = "regular", controls: Parameters<typeof offlineImageRuntime>[5] = {}) {
 	const root = mkdtempSync(join(tmpdir(), "sp-placeholder-"));
@@ -45,6 +47,49 @@ async function frame(f: Awaited<ReturnType<typeof mounted>>) {
 	f.internal.ui.renderNow(true); await f.internal.ui.flushTerminalFrames();
 	return f.internal.defaultEditor.render(f.resize.columns).join("\n");
 }
+
+for (const auxiliary of [false, true]) test(`Windows copied image files: Alt+V through Forms file-list fallback, auxiliary=${auxiliary}`, { skip: process.platform !== "win32" }, async () => {
+	const f = await mounted(auxiliary);
+	const cp = createRequire(import.meta.url)("node:child_process"), original = cp.execFile;
+	let imageHelperCalls = 0, nativeProbes = 0;
+	try {
+		const paths = [join(f.root, "截图 中文🐉.png"), join(f.root, "second & ` $(literal).png")];
+		const bytes = pngFixture(8, 8);
+		for (const path of paths) writeFileSync(path, bytes);
+		cp.execFile = (command: string, args: string[], options: unknown, callback: any) => {
+			const script = Buffer.from(args.at(-1)!, "base64").toString("utf16le");
+			if (script.includes("[System.Windows.Forms.Clipboard]::GetImage()")) {
+				imageHelperCalls++; callback(null, Buffer.alloc(0)); return;
+			}
+			return original(command, args, options, callback);
+		}; syncBuiltinESMExports();
+		f.internal.readClipboardImageForPaste = () => readClipboardImage({ platform: "win32", signal: f.internal.clipboardAbort.signal,
+			nativeClipboard: { hasImage: () => { nativeProbes++; return false; }, getImageBinary: async () => { assert.fail("file-list clipboard has no bitmap"); }, getText: async () => "", setText: async () => {} },
+		});
+		f.internal.readClipboardTextForPaste = () => readFormsClipboardFixture(paths, undefined, f.internal.clipboardAbort.signal);
+		f.input.write("question"); f.input.write("\x1bv");
+		assert.equal(f.internal.clipboardPending, true);
+		assert.ok(f.internal.defaultEditor.render(120).join("\n").includes("正在添加"));
+		f.input.write("\r"); await turn(); // preparation does not authorize a later send
+		await settled(f);
+		assert.equal(imageHelperCalls, 1); assert.equal(nativeProbes, 1);
+		const ids = f.internal.imageDraft.items.map((item: any) => item.id);
+		assert.equal(ids.length, 2);
+		assert.match(await frame(f), /已添加 · 未发送/); assert.equal(f.painted.unsent, true);
+		assert.equal(f.internal.editor.getText(), "question");
+		f.input.write(" more"); f.resize.columns = 70; f.resize.emit("resize"); await frame(f);
+		assert.equal(f.counts.main, 0); assert.equal(f.counts.vision, 0);
+		let submitted: Promise<void> | undefined;
+		const submit = f.internal.defaultEditor.onSubmit;
+		f.internal.defaultEditor.onSubmit = (text: string) => submitted = submit(text);
+		f.input.write("\r"); await submitted;
+		assert.equal(f.counts.main, 1); assert.equal(f.counts.vision, auxiliary ? 1 : 0);
+		const user = f.session.messages.find((m: any) => m.imageSubmission) as any;
+		assert.equal(user.content[0].text, "question more");
+		assert.deepEqual(user.imageSubmission.attachments.map((item: any) => item.id), ids);
+		for (const path of paths) assert.deepEqual(readFileSync(path), bytes);
+	} finally { cp.execFile = original; syncBuiltinESMExports(); await f.release(); }
+});
 
 for (const auxiliary of [false, true]) for (const screen of ["regular", "fullscreen"] as const) {
 	test(`placeholder deletion preserves text, IDs and submit projection (${screen}, auxiliary=${auxiliary})`, async () => {

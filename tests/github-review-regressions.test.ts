@@ -9,7 +9,8 @@ import { offlineImageRuntime } from "./helpers/offline-image-runtime.ts";
 import { pngFixture, oversizedHeader } from "./helpers/image-acceptance-fixtures.ts";
 import { alphaSession, alphaModelRuntime, ALPHA_MODEL } from "./helpers/alpha-session.ts";
 import { response } from "./helpers/selected-integration-fixture.ts";
-import { snapshotImageSubmission } from "../packages/coding-agent/src/core/image-attachments.ts";
+import { parseImagePaths, snapshotImageSubmission } from "../packages/coding-agent/src/core/image-attachments.ts";
+import { readFormsClipboardFixture } from "./helpers/windows-clipboard-data.ts";
 import { SessionPermissionState } from "../packages/extensions/resource-lifecycle-guard/permission-state.ts";
 import { createSessionAllowRule } from "../packages/extensions/resource-lifecycle-guard/permission-rule.ts";
 import { SESSION_PERMISSION_STATE_TYPE } from "../packages/extensions/resource-lifecycle-guard/permission-contract.ts";
@@ -303,7 +304,7 @@ test("real Windows Alt+V dispatch falls back to text after image helper failure"
   cp.execFile = (_command: string, args: string[], _options: any, callback: any) => {
    const script = Buffer.from(args.at(-1)!, "base64").toString("utf16le");
    if (script.includes("GetImage")) { calls.push("image"); callback(Object.assign(new Error("image helper blocked"), { code: "EACCES" }), Buffer.alloc(0)); }
-   else { assert.match(script, /GetText/); calls.push("text"); callback(null, Buffer.from("clipboard fallback text")); }
+   else { assert.ok(script.includes("DataFormats]::UnicodeText")); calls.push("text"); callback(null, Buffer.from("clipboard fallback text")); }
   }; syncBuiltinESMExports();
   f.input.write("\x1bv"); while (f.internal.clipboardPending) await turn();
   assert.deepEqual(calls, ["image", "text"]); assert.equal(f.internal.editor.getText(), "clipboard fallback text"); assert.equal(f.internal.imageDraft.items.length, 0);
@@ -356,6 +357,21 @@ test("Windows text paste does not bypass a fatal isolated-read result", async ()
 		directClipboard: { getText: async () => { directCalls++; return "must not be used"; }, setText: async () => {}, hasImage: () => false, getImageBinary: async () => [] },
 	}), /bounded read failed/);
 	assert.equal(directCalls, 0);
+});
+
+test("Windows Forms file-list serialization preserves Unicode, order and literal shell characters", { skip: process.platform !== "win32" }, async () => {
+	const paths = ["D:\\outside workspace\\截图 中文🐉.png", "D:\\literal & ` $(echo nope) ' file.webp"];
+	const text = await readFormsClipboardFixture(paths);
+	assert.deepEqual(parseImagePaths(text!), paths);
+});
+
+test("Windows Forms text takes precedence over file-list data; empty and nonimage lists stay text", { skip: process.platform !== "win32" }, async () => {
+	const text = "文字 🐉\r\nnormal text";
+	assert.equal(await readFormsClipboardFixture(["D:\\image.png"], text), text);
+	assert.equal(await readFormsClipboardFixture([]), null);
+	const mixed = await readFormsClipboardFixture(["D:\\image.png", "D:\\video.mp4"]);
+	assert.equal(mixed, '"D:\\image.png" "D:\\video.mp4"');
+	assert.equal(parseImagePaths(mixed!), undefined, "do not partially import mixed file lists");
 });
 
 test("full image draft still accepts ordinary clipboard text through the paste key", async () => {

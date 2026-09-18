@@ -19,7 +19,19 @@ function copyToX11Clipboard(options: NativeClipboardExecOptions): void {
 }
 
 const MAX_OSC52_ENCODED_LENGTH = 100_000;
-const WINDOWS_TEXT_COMMAND = Buffer.from("Add-Type -AssemblyName System.Windows.Forms; [Console]::Out.Write([System.Windows.Forms.Clipboard]::GetText())", "utf16le").toString("base64");
+// Explorer's Copy stores FileDrop (CF_HDROP), often without text or bitmap data.
+// Serialize that list for the existing path-paste parser; never evaluate its contents.
+const WINDOWS_TEXT_SCRIPT = [
+	"$ErrorActionPreference='Stop'",
+	"Add-Type -AssemblyName System.Windows.Forms",
+	"[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false)",
+	"$data=[System.Windows.Forms.Clipboard]::GetDataObject()",
+	"if ($null -eq $data) { return }",
+	"$text=[string]$data.GetData([System.Windows.Forms.DataFormats]::UnicodeText)",
+	"if ($text.Length -gt 0) { [Console]::Out.Write($text); return }",
+	"if ($data.GetDataPresent([System.Windows.Forms.DataFormats]::FileDrop)) { $quote=[string][char]34; $paths=@($data.GetData([System.Windows.Forms.DataFormats]::FileDrop)); $quoted=$paths | ForEach-Object { $value=[string]$_; $quote + $value.Replace($quote, $quote + $quote) + $quote }; [Console]::Out.Write($quoted -join ' ') }",
+].join("; ");
+const WINDOWS_TEXT_COMMAND = Buffer.from(WINDOWS_TEXT_SCRIPT, "utf16le").toString("base64");
 
 function isRemoteSession(env: NodeJS.ProcessEnv = process.env): boolean {
 	return Boolean(env.SSH_CONNECTION || env.SSH_CLIENT || env.MOSH_CONNECTION);
@@ -58,7 +70,7 @@ function readWaylandClipboardText(): ClipboardReadResult {
 	}
 }
 
-/** Read plain text from the system clipboard. */
+/** Read text, or a quoted Windows file list for the existing path-paste fallback. */
 export async function readClipboardText(signal?: AbortSignal, options: ClipboardTextReadOptions = {}): Promise<string | null> {
 	signal?.throwIfAborted();
 	const currentPlatform = options.platform ?? platform();
