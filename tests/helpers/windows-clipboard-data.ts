@@ -6,7 +6,8 @@ import { NativeClipboardError } from "../../packages/coding-agent/src/utils/clip
 // A Windows Forms process can exceed the production read deadline while a hosted
 // CI runner is starting PowerShell. Keep the production deadline observable in
 // the injected seam, but give this in-memory integration fixture its own bound.
-const FIXTURE_POWERSHELL_TIMEOUT_MS = 15_000;
+// This remains finite so a broken helper cannot hang the full test suite.
+const FIXTURE_POWERSHELL_TIMEOUT_MS = 30_000;
 
 /** Run the production STA script with an in-memory Forms source; never set the system clipboard. */
 export async function readFormsClipboardFixture(paths: string[], text?: string, signal?: AbortSignal, execute: typeof runClipboardCommand = runClipboardCommand) {
