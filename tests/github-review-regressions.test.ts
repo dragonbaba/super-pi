@@ -374,6 +374,20 @@ test("Windows Forms text takes precedence over file-list data; empty and nonimag
 	assert.equal(parseImagePaths(mixed!), undefined, "do not partially import mixed file lists");
 });
 
+test("WSL translates Explorer FileDrop paths before the existing image-path pipeline", async () => {
+	const winPaths = ["C:\\Users\\me\\截图 中文🐉.png", "D:\\Pictures\\second image.webp"];
+	const wslPaths = ["/mnt/c/Users/me/截图 中文🐉.png", "/mnt/d/Pictures/second image.webp"];
+	const calls: string[] = [];
+	const text = await readClipboardText(undefined, {
+		platform: "linux",
+		env: { ...process.env, WSL_DISTRO_NAME: "offline-fixture", WAYLAND_DISPLAY: "" },
+		powerShellRead: async () => Buffer.from(winPaths.map(path => `"${path}"`).join(" "), "utf8"),
+		wslPathRead: async (_command, args) => { calls.push(args[1]!); return Buffer.from(`${wslPaths[calls.length - 1]}\n`, "utf8"); },
+	});
+	assert.deepEqual(calls, winPaths);
+	assert.deepEqual(parseImagePaths(text!), wslPaths);
+});
+
 test("full image draft still accepts ordinary clipboard text through the paste key", async () => {
  const f = await alphaSession(); let textReads = 0, imageReads = 0;
  try {
