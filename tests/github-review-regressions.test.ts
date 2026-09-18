@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { lazyStream } from "@super-pi/ai";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setImmediate as turn } from "node:timers/promises";
@@ -16,6 +16,7 @@ import { SESSION_PERMISSION_STATE_TYPE } from "../packages/extensions/resource-l
 import { fixture } from "./helpers/evidence-ledger-fixture.ts";
 import { createRequire, syncBuiltinESMExports } from "node:module";
 import { readClipboardImage } from "../packages/coding-agent/src/utils/clipboard-image.ts";
+import { readNativeClipboard } from "../packages/coding-agent/src/utils/clipboard-native-process.ts";
 
 function deferred() { let resolve!: () => void; const promise = new Promise<void>(yes => { resolve = yes; }); return { promise, resolve }; }
 const image = () => ({ type: "image" as const, mimeType: "image/png", data: pngFixture(8, 8).toString("base64") });
@@ -224,7 +225,7 @@ for (const failure of ["ENOENT", "EACCES", "ETIMEDOUT"]) test(`Windows image hel
  finally { cp.execFile = original; syncBuiltinESMExports(); }
 });
 
-test("Windows image paste prefers the native clipboard bridge for PNG/DIB sources", { skip: process.platform !== "win32" }, async () => {
+test("Windows image read uses native fallback when STA helper returns no image", { skip: process.platform !== "win32" }, async () => {
  const cp = createRequire(import.meta.url)("node:child_process"), original = cp.execFile; let helperCalls = 0;
  const bytes = pngFixture(8, 8);
  cp.execFile = (_command: string, _args: string[], _options: any, callback: any) => { helperCalls++; callback(null, Buffer.alloc(0)); }; syncBuiltinESMExports();
@@ -237,6 +238,59 @@ test("Windows image paste prefers the native clipboard bridge for PNG/DIB source
   } });
   assert.deepEqual(Array.from(image?.bytes ?? []), Array.from(bytes)); assert.equal(image?.mimeType, "image/png"); assert.equal(helperCalls, 1);
  } finally { cp.execFile = original; syncBuiltinESMExports(); }
+});
+
+test("Windows image read also reaches native fallback after an ordinary STA error", { skip: process.platform !== "win32" }, async () => {
+	const cp = createRequire(import.meta.url)("node:child_process"), original = cp.execFile; let nativeCalls = 0, unavailable = 0;
+	cp.execFile = (_command: string, _args: string[], _options: unknown, callback: any) => callback(Object.assign(new Error("clipboard busy"), { code: "EACCES" }), Buffer.alloc(0)); syncBuiltinESMExports();
+	const bytes = pngFixture(8, 8);
+	try {
+		const image = await readClipboardImage({ platform: "win32", nativeClipboard: {
+			getText: async () => "", setText: async () => {}, hasImage: () => { nativeCalls++; return true; }, getImageBinary: async () => Array.from(bytes),
+		}, onUnavailable: () => unavailable++ });
+		assert.equal(image?.bytes.length, bytes.length); assert.equal(nativeCalls, 1); assert.equal(unavailable, 0);
+	} finally { cp.execFile = original; syncBuiltinESMExports(); }
+});
+
+test("native clipboard cancellation stops the isolated child before the next read", { skip: process.platform !== "win32" }, async () => {
+	const root = mkdtempSync(join(tmpdir(), "sp-native-clipboard-"));
+	const marker = join(root, "started");
+	const fixture = join(root, "clipboard-fixture.cjs");
+	writeFileSync(fixture, `const fs = require('node:fs'); module.exports = { hasImage() { return true; }, async getImageBinary() { fs.writeFileSync(${JSON.stringify(marker)}, 'started'); await new Promise(() => {}); }, async getText() { return ''; } };`);
+	const abort = new AbortController(); const startedAt = Date.now();
+	const cp = createRequire(import.meta.url)("node:child_process"), original = cp.execFile;
+	try {
+		cp.execFile = (_command: string, _args: string[], _options: unknown, callback: any) => callback(null, Buffer.alloc(0)); syncBuiltinESMExports();
+		const pending = readClipboardImage({ platform: "win32", signal: abort.signal, nativeModulePath: fixture });
+		while (!existsSync(marker)) await turn();
+		abort.abort();
+		await assert.rejects(pending, /取消|停止/);
+		assert.ok(Date.now() - startedAt < 2500, "cancel settles after child termination");
+		const valid = join(root, "valid.cjs");
+		writeFileSync(valid, `module.exports = { hasImage() { return true; }, async getImageBinary() { return [${Array.from(pngFixture(8, 8)).join(",")}]; }, async getText() { return ''; } };`);
+		const bytes = await readNativeClipboard("image", undefined, undefined, valid);
+		assert.equal(bytes?.length, pngFixture(8, 8).length);
+	} finally { cp.execFile = original; syncBuiltinESMExports(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("native clipboard timeout kills a child that never returns from hasImage", { skip: process.platform !== "win32" }, async () => {
+	const root = mkdtempSync(join(tmpdir(), "sp-native-clipboard-timeout-"));
+	const fixture = join(root, "clipboard-fixture.cjs");
+	writeFileSync(fixture, "module.exports = { hasImage() { while (true) {} }, async getImageBinary() { return []; }, async getText() { return ''; } };");
+	try { await assert.rejects(readNativeClipboard("image", undefined, undefined, fixture), /超时|停止/); }
+	finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("native clipboard timeout is fatal before text fallback", { skip: process.platform !== "win32" }, async () => {
+	const root = mkdtempSync(join(tmpdir(), "sp-native-clipboard-timeout-image-"));
+	const fixture = join(root, "clipboard-fixture.cjs");
+	writeFileSync(fixture, "module.exports = { hasImage() { while (true) {} }, async getImageBinary() { return []; }, async getText() { return 'must not be read'; } };");
+	const cp = createRequire(import.meta.url)("node:child_process"), original = cp.execFile; let textFallbackCalls = 0;
+	try {
+		cp.execFile = (_command: string, _args: string[], _options: unknown, callback: any) => callback(null, Buffer.alloc(0)); syncBuiltinESMExports();
+		await assert.rejects(readClipboardImage({ platform: "win32", nativeModulePath: fixture, onUnavailable: () => { textFallbackCalls++; } }), /超时|停止/);
+		assert.equal(textFallbackCalls, 0);
+	} finally { cp.execFile = original; syncBuiltinESMExports(); rmSync(root, { recursive: true, force: true }); }
 });
 
 
@@ -256,12 +310,13 @@ test("real Windows Alt+V dispatch falls back to text after image helper failure"
 });
 
 for (const failure of ["abort", "quota"]) test(`Windows helper ${failure} remains a failure instead of text fallback`, async () => {
- const cp = createRequire(import.meta.url)("node:child_process"), original = cp.execFile, abort = new AbortController(); let unavailable = 0;
+ const cp = createRequire(import.meta.url)("node:child_process"), original = cp.execFile, abort = new AbortController(); let unavailable = 0, nativeCalls = 0;
  cp.execFile = (_command: string, _args: string[], _options: any, callback: any) => {
   if (failure === "abort") abort.abort();
   callback(new Error(failure === "abort" ? "aborted" : `Command failed: powershell ${"encoded-script".repeat(60)}`), Buffer.alloc(0), failure === "quota" ? Buffer.from("Image exceeds pixel limit") : Buffer.alloc(0));
  }; syncBuiltinESMExports();
- try { await assert.rejects(readClipboardImage({ platform: "win32", nativeClipboard: null, signal: abort.signal, onUnavailable: () => unavailable++ })); assert.equal(unavailable, 0); }
+ const native = { getText: async () => "", setText: async () => {}, hasImage: () => { nativeCalls++; return true; }, getImageBinary: async () => Array.from(pngFixture(8, 8)) };
+ try { await assert.rejects(readClipboardImage({ platform: "win32", nativeClipboard: native, signal: abort.signal, onUnavailable: () => unavailable++ })); assert.equal(unavailable, 0); assert.equal(nativeCalls, 0); }
  finally { cp.execFile = original; syncBuiltinESMExports(); }
 });
 

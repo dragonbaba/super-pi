@@ -15,6 +15,14 @@ const moduleRequire = createRequire(import.meta.url);
 const executableDirRequire = createRequire(pathToFileURL(join(dirname(process.execPath), "package.json")).href);
 const hasDisplay = process.platform !== "linux" || Boolean(process.env.DISPLAY || process.env.WAYLAND_DISPLAY);
 
+/** Resolve from the installed application, never from the current workspace. */
+export function resolveClipboardNative(): string | undefined {
+	for (const resolver of [moduleRequire, executableDirRequire]) {
+		try { return resolver.resolve("@mariozechner/clipboard"); } catch { /* Optional dependency. */ }
+	}
+	return undefined;
+}
+
 export function loadClipboardNative(
 	requires: readonly ClipboardRequire[] = [moduleRequire, executableDirRequire],
 ): ClipboardModule | null {

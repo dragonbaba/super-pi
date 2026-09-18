@@ -2,6 +2,7 @@ import { type ExecFileSyncOptionsWithStringEncoding, execFileSync, execSync, spa
 import { platform } from "os";
 import { runClipboardCommand, isWaylandSession, isWSL } from "./clipboard-image.ts";
 import { clipboard } from "./clipboard-native.ts";
+import { NativeClipboardError, readNativeClipboard } from "./clipboard-native-process.ts";
 
 type NativeClipboardExecOptions = {
 	input: string;
@@ -52,6 +53,7 @@ function readWaylandClipboardText(): ClipboardReadResult {
 
 /** Read plain text from the system clipboard. */
 export async function readClipboardText(signal?: AbortSignal): Promise<string | null> {
+	signal?.throwIfAborted();
 	if (platform() === "linux" && isWaylandSession() && process.env.WAYLAND_DISPLAY) {
 		const result = readWaylandClipboardText();
 		if (result.ok) {
@@ -64,6 +66,10 @@ export async function readClipboardText(signal?: AbortSignal): Promise<string | 
 			const bytes = await runClipboardCommand("powershell.exe", ["-NoProfile", "-NonInteractive", "-STA", "-EncodedCommand", WINDOWS_TEXT_COMMAND], { maxBufferBytes: 1024 * 1024, signal });
 			return bytes.toString("utf8") || null;
 		} catch (error) { if (signal?.aborted) throw error; }
+	}
+	if (platform() === "win32") {
+		try { return (await readNativeClipboard("text", signal))?.toString("utf8") || null; }
+		catch (error) { if (signal?.aborted || (error instanceof NativeClipboardError && error.fatal)) throw error; return null; }
 	}
 	if (!clipboard) return null;
 

@@ -1,7 +1,8 @@
 import { execFile } from "node:child_process";
 import { readFileSync } from "fs";
 
-import { clipboard } from "./clipboard-native.ts";
+import { clipboard, type ClipboardModule } from "./clipboard-native.ts";
+import { NativeClipboardError, readNativeClipboard } from "./clipboard-native-process.ts";
 import { loadPhoton } from "./photon.ts";
 import { CLIPBOARD_IMAGE_LIMIT_PATTERN, CLIPBOARD_LINE_BREAK_PATTERN, CLIPBOARD_WSL_RELEASE_PATTERN } from "./image-input-regex.ts";
 
@@ -181,7 +182,8 @@ async function readClipboardImageViaXclip(signal?: AbortSignal): Promise<Clipboa
 	return null;
 }
 
-async function readClipboardImageViaNativeClipboard(signal?: AbortSignal, source = clipboard): Promise<ClipboardImage | null> {
+async function readClipboardImageViaNativeClipboard(signal?: AbortSignal): Promise<ClipboardImage | null> {
+	const source = clipboard;
 	signal?.throwIfAborted();
 	if (!source) {
 		return null;
@@ -202,8 +204,7 @@ async function readClipboardImageViaNativeClipboard(signal?: AbortSignal, source
 		return { bytes, mimeType: "image/png" };
 	} catch (error) {
 		if (signal?.aborted) throw error;
-		// A native clipboard provider can lose the clipboard race while another
-		// process is publishing a format. Let the bounded platform helper retry.
+		// Non-Windows platforms retain their existing optional backend fallback.
 		return null;
 	}
 }
@@ -213,8 +214,10 @@ export async function readClipboardImage(options?: {
 	platform?: NodeJS.Platform;
 	signal?: AbortSignal;
 	onUnavailable?: (error: unknown) => void;
-	/** Internal deterministic seam for platform-provider tests. */
-	nativeClipboard?: typeof clipboard;
+	/** Test-only replacement for the bottom native provider; production omits it. */
+	nativeClipboard?: ClipboardModule | null;
+	/** Test-only isolated-child fixture; production omits it. */
+	nativeModulePath?: string;
 }): Promise<ClipboardImage | null> {
 	options?.signal?.throwIfAborted();
 	const env = options?.env ?? process.env;
@@ -242,11 +245,21 @@ export async function readClipboardImage(options?: {
 			image = (await readClipboardImageViaNativeClipboard()) ?? (await readClipboardImageViaXclip(options?.signal));
 		}
 	} else if (platform === "win32") {
-		// Keep the bounded STA helper as the primary Windows path. Some sources
-		// publish a DIB/PNG format that System.Drawing does not expose through
-		// GetImage(); the native provider is the format-preserving fallback.
-		image = await readClipboardImageViaPowerShell(options?.signal, options?.onUnavailable);
-		if (!image) image = await readClipboardImageViaNativeClipboard(options?.signal, options?.nativeClipboard);
+		// Forms may not obtain an image from every clipboard source. Native is
+		// supplemental; actual Windows format compatibility needs desktop tests.
+		let helperError: unknown;
+		image = await readClipboardImageViaPowerShell(options?.signal, error => { helperError = error; });
+		let nativeError: unknown;
+		if (!image) {
+			try {
+				const bytes = await readNativeClipboard("image", options?.signal, options?.nativeClipboard, options?.nativeModulePath);
+				if (bytes) image = { bytes, mimeType: "image/png" };
+			} catch (error) {
+				if (options?.signal?.aborted || (error instanceof NativeClipboardError && error.fatal)) throw error;
+				nativeError = error;
+			}
+		}
+		if (!image && (nativeError ?? helperError)) options?.onUnavailable?.(nativeError ?? helperError);
 	} else {
 		image = await readClipboardImageViaNativeClipboard();
 	}

@@ -11012,5 +11012,31 @@
       "Original eleven retained directories and sp-policy-boundary-8ZAQZ6 untouched; no alternate cleanup.",
       "No patch or standalone manifest generated."
     ]
+  },
+  "nativeClipboardCancellationRound": {
+    "date": "2026-09-18",
+    "candidate": "working tree follow-up to 0936b42",
+    "dependency": "@mariozechner/clipboard@0.3.9",
+    "environment": {
+      "node": "v26.4.0",
+      "platform": "Windows",
+      "providers": "offline controlled transports only"
+    },
+    "observations": {
+      "powerShellEmptyThenNativePending": "production readClipboardImage path reached isolated native child; child reached getImageBinary and was cancelled",
+      "cancelFixtureMs": 67.6,
+      "timeoutFixtureMs": 3008.6,
+      "fatalTimeoutImageFixtureMs": 3022.5,
+      "postCloseNextRead": "passed",
+      "nativeActiveHighWater": 1,
+      "transport": "bounded child stdout/stderr; no temporary image file"
+    },
+    "interpretation": [
+      "Times are deterministic fixture observations, not production percentiles or desktop input latency.",
+      "Cancellation settles after child close; the next read is admitted only after the previous child owner is released.",
+      "The dependency exposes synchronous has_image and async get_image_binary without a cancellation or deadline API; the child is required to bound both.",
+      "The child still may allocate inside the native addon before output; byte limits bound transport/materialization, not native peak memory.",
+      "Native PNG fallback is tested through an injected isolated fixture; actual Windows clipboard format coverage and Win+Shift+S remain unexecuted."
+    ]
   }
 }
