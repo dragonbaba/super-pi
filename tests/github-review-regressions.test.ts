@@ -21,6 +21,41 @@ import { NativeClipboardError, readNativeClipboard } from "../packages/coding-ag
 import { readClipboardText } from "../packages/coding-agent/src/utils/clipboard.ts";
 
 function deferred() { let resolve!: () => void; const promise = new Promise<void>(yes => { resolve = yes; }); return { promise, resolve }; }
+
+for (const platform of ["linux", "darwin"] as const) for (const phase of ["before", "hasImage", "resolve", "reject"] as const) {
+	test(`native clipboard cancellation propagates on ${platform} at ${phase}`, async () => {
+		const cp = createRequire(import.meta.url)("node:child_process"), original = cp.execFile;
+		const controller = new AbortController(), entered = deferred(), resume = deferred();
+		const reason = new Error("cancel fixture"), nativeError = new Error("native cancelled failure");
+		let probes = 0, reads = 0, fallbacks = 0, settled = false;
+		cp.execFile = (_command: string, _args: string[], _options: unknown, callback: any) => { fallbacks++; callback(null, Buffer.alloc(0)); }; syncBuiltinESMExports();
+		try {
+			if (phase === "before") controller.abort(reason);
+			const pending = readClipboardImage({ platform, env: {}, signal: controller.signal, nativeClipboard: {
+				getText: async () => "", setText: async () => {},
+				hasImage: () => { probes++; if (phase === "hasImage") controller.abort(reason); return true; },
+				getImageBinary: async () => { reads++; entered.resolve(); await resume.promise; if (phase === "reject") throw nativeError; return Array.from(pngFixture(8, 8)); },
+			} });
+			const rejection = assert.rejects(pending, error => error === (phase === "reject" ? nativeError : reason)).then(() => { settled = true; });
+			if (phase === "resolve" || phase === "reject") {
+				await entered.promise; controller.abort(reason); await turn();
+				assert.equal(settled, false, "noncancellable native work retains ownership until it settles");
+				resume.resolve();
+			}
+			await rejection;
+			assert.equal(probes, phase === "before" ? 0 : 1);
+			assert.equal(reads, phase === "resolve" || phase === "reject" ? 1 : 0);
+			assert.equal(fallbacks, 0, "cancel must not start xclip or another helper");
+		} finally { resume.resolve(); cp.execFile = original; syncBuiltinESMExports(); }
+	});
+}
+
+test("Forms fixture surfaces helper timeout instead of reading the real clipboard", async () => {
+	await assert.rejects(readFormsClipboardFixture([], undefined, undefined, async (_command, _args, options) => {
+		assert.equal(options?.timeoutMs, 5000, "Forms text shares the existing Forms image deadline");
+		throw new Error("controlled helper timeout");
+	}), error => error instanceof NativeClipboardError && error.fatal && error.message.includes("controlled helper timeout"));
+});
 const image = () => ({ type: "image" as const, mimeType: "image/png", data: pngFixture(8, 8).toString("base64") });
 
 test("TUI retains failed admission while a competing ordinary prompt is active", async () => {

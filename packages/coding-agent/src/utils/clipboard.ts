@@ -1,6 +1,6 @@
 import { type ExecFileSyncOptionsWithStringEncoding, execFileSync, execSync, spawn } from "child_process";
 import { platform } from "os";
-import { runClipboardCommand, isWaylandSession, isWSL } from "./clipboard-image.ts";
+import { DEFAULT_POWERSHELL_TIMEOUT_MS, runClipboardCommand, isWaylandSession, isWSL } from "./clipboard-image.ts";
 import { clipboard, type ClipboardModule } from "./clipboard-native.ts";
 import { NativeClipboardError, readNativeClipboard } from "./clipboard-native-process.ts";
 
@@ -144,7 +144,7 @@ export async function readClipboardText(signal?: AbortSignal, options: Clipboard
 
 	if (currentPlatform === "win32" || wsl) {
 		try {
-			const bytes = await powerShellRead("powershell.exe", ["-NoProfile", "-NonInteractive", "-STA", "-EncodedCommand", WINDOWS_TEXT_COMMAND], { maxBufferBytes: 1024 * 1024, signal });
+			const bytes = await powerShellRead("powershell.exe", ["-NoProfile", "-NonInteractive", "-STA", "-EncodedCommand", WINDOWS_TEXT_COMMAND], { timeoutMs: DEFAULT_POWERSHELL_TIMEOUT_MS, maxBufferBytes: 1024 * 1024, signal });
 			const text = bytes.toString("utf8");
 			return text ? wsl ? await translateWslFileDropPaths(text, signal, wslPathRead) : text : null;
 		} catch (error) { if (signal?.aborted) throw error; }

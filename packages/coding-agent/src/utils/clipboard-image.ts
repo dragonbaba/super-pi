@@ -15,7 +15,7 @@ const SUPPORTED_IMAGE_MIME_TYPES = ["image/png", "image/jpeg", "image/webp", "im
 
 const DEFAULT_LIST_TIMEOUT_MS = 1000;
 const DEFAULT_READ_TIMEOUT_MS = 3000;
-const DEFAULT_POWERSHELL_TIMEOUT_MS = 5000;
+export const DEFAULT_POWERSHELL_TIMEOUT_MS = 5000;
 const DEFAULT_MAX_BUFFER_BYTES = 50 * 1024 * 1024;
 
 export function isWaylandSession(env: NodeJS.ProcessEnv = process.env): boolean {
@@ -182,15 +182,16 @@ async function readClipboardImageViaXclip(signal?: AbortSignal): Promise<Clipboa
 	return null;
 }
 
-async function readClipboardImageViaNativeClipboard(signal?: AbortSignal): Promise<ClipboardImage | null> {
-	const source = clipboard;
+async function readClipboardImageViaNativeClipboard(signal?: AbortSignal, source: ClipboardModule | null = clipboard): Promise<ClipboardImage | null> {
 	signal?.throwIfAborted();
 	if (!source) {
 		return null;
 	}
 
 	try {
-		if (!source.hasImage()) {
+		const hasImage = source.hasImage();
+		signal?.throwIfAborted();
+		if (!hasImage) {
 			return null;
 		}
 
@@ -242,7 +243,7 @@ export async function readClipboardImage(options?: {
 		}
 
 		if (!image && !wayland) {
-			image = (await readClipboardImageViaNativeClipboard()) ?? (await readClipboardImageViaXclip(options?.signal));
+			image = (await readClipboardImageViaNativeClipboard(options?.signal, options?.nativeClipboard)) ?? (await readClipboardImageViaXclip(options?.signal));
 		}
 	} else if (platform === "win32") {
 		// Forms may not obtain an image from every clipboard source. Native is
@@ -261,7 +262,7 @@ export async function readClipboardImage(options?: {
 		}
 		if (!image && (nativeError ?? helperError)) options?.onUnavailable?.(nativeError ?? helperError);
 	} else {
-		image = await readClipboardImageViaNativeClipboard();
+		image = await readClipboardImageViaNativeClipboard(options?.signal, options?.nativeClipboard);
 	}
 
 	options?.signal?.throwIfAborted();
