@@ -153,3 +153,160 @@ export function inspectHereDocuments(command: string): { command: string; substi
  }
  return { command, substitutions: [], uncertain: arithmeticDepth !== 0 };
 }
+
+export interface ShellAnalysisView {
+  /** Source-shaped text with heredoc bodies blanked, preserving command newlines. */
+  command: string;
+  /** Command substitutions found in unquoted heredoc bodies. */
+  substitutions: string[];
+  /** The body or delimiter could not be bounded without executing the shell. */
+  uncertain: boolean;
+  hasHeredoc: boolean;
+}
+
+function maskShellRange(output: string[] | undefined, start: number, end: number): void {
+  if (!output) return;
+  for (let index = start; index < end; index++) {
+    if (output[index] !== "\n" && output[index] !== "\r") output[index] = " ";
+  }
+}
+
+interface HereDelimiter {
+  value: string;
+  quoted: boolean;
+}
+
+function collectHereDelimiters(command: string, start: number, end: number): HereDelimiter[] {
+  const delimiters: HereDelimiter[] = [];
+  let quote = "";
+  let escaped = false;
+  let arithmeticDepth = 0;
+  for (let index = start; index < end; index++) {
+    const c = command[index]!;
+    if (escaped) { escaped = false; continue; }
+    if (c === "\\" && quote !== "'") { escaped = true; continue; }
+    if (quote) { if (c === quote) quote = ""; continue; }
+    if (c === "'" || c === '"') { quote = c; continue; }
+    if (c === "$" && command[index + 1] === "(" && command[index + 2] === "(") {
+      arithmeticDepth = 2;
+      index += 2;
+      continue;
+    }
+    if (arithmeticDepth) {
+      if (c === "(") arithmeticDepth++;
+      else if (c === ")") arithmeticDepth--;
+      continue;
+    }
+    if (c !== "<" || command[index + 1] !== "<" || command[index + 2] === "<") continue;
+    let cursor = index + 2;
+    if (command[cursor] === "-") cursor++;
+    while (command[cursor] === " " || command[cursor] === "\t") cursor++;
+    let quoted = false;
+    let value = "";
+    if (command[cursor] === "'" || command[cursor] === '"') {
+      quoted = true;
+      const delimiterQuote = command[cursor]!;
+      cursor++;
+      const valueStart = cursor;
+      while (cursor < end && command[cursor] !== delimiterQuote) cursor++;
+      if (cursor >= end) return delimiters;
+      value = command.slice(valueStart, cursor);
+      cursor++;
+    } else {
+      const valueStart = cursor;
+      while (cursor < end && command[cursor] !== " " && command[cursor] !== "\t" && command[cursor] !== "\r") cursor++;
+      value = command.slice(valueStart, cursor);
+    }
+    if (value) delimiters.push({ value, quoted });
+    index = cursor - 1;
+  }
+  return delimiters;
+}
+
+/**
+ * Build the bounded source view used by mutation and permission analysis.
+ * Heredoc bodies are data for the current command parser; they are not argv.
+ * Unquoted bodies still expose command substitutions to the recursive scanner.
+ */
+export function prepareShellAnalysis(command: string): ShellAnalysisView {
+  if (command.indexOf("<<") < 0 && command.indexOf("((") < 0) {
+    return { command, substitutions: [], uncertain: false, hasHeredoc: false };
+  }
+  let output: string[] | undefined;
+  const substitutions: string[] = [];
+  let quote = "";
+  let escaped = false;
+  let arithmeticDepth = 0;
+  let hasHeredoc = false;
+  let uncertain = false;
+  for (let index = 0; index < command.length; index++) {
+    const c = command[index]!;
+    if (escaped) { escaped = false; continue; }
+    if (c === "\\" && quote !== "'") { escaped = true; continue; }
+    if (quote) { if (c === quote) quote = ""; continue; }
+    if (c === "'" || c === '"') { quote = c; continue; }
+    if (c === "$" && command[index + 1] === "(" && command[index + 2] === "(") {
+      arithmeticDepth = 2;
+      index += 2;
+      continue;
+    }
+    if (arithmeticDepth) {
+      if (c === "(") arithmeticDepth++;
+      else if (c === ")") arithmeticDepth--;
+      continue;
+    }
+    if (c !== "<" || command[index + 1] !== "<" || command[index + 2] === "<") continue;
+    hasHeredoc = true;
+    output ??= command.split("");
+    const operatorStart = index;
+    const lineEnd = command.indexOf("\n", index + 2);
+    const delimiters = lineEnd < 0 ? [] : collectHereDelimiters(command, operatorStart, lineEnd);
+    if (delimiters.length === 0 || lineEnd < 0) {
+      uncertain = true;
+      maskShellRange(output, operatorStart, command.length);
+      break;
+    }
+    maskShellRange(output, operatorStart, lineEnd + 1);
+    let bodyStart = lineEnd + 1;
+    for (const delimiter of delimiters) {
+      const contentStart = bodyStart;
+      let bodyEnd = bodyStart;
+      let delimiterLineStart = bodyStart;
+      let foundDelimiter = false;
+      while (bodyStart <= command.length) {
+        const lineStart = bodyStart;
+        const nextLine = command.indexOf("\n", bodyStart);
+        const end = nextLine < 0 ? command.length : nextLine;
+        const rawLine = command.slice(bodyStart, end);
+        const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
+        if (line === delimiter.value || line === `\t${delimiter.value}`) {
+          delimiterLineStart = lineStart;
+          bodyEnd = end;
+          foundDelimiter = true;
+          break;
+        }
+        bodyEnd = nextLine < 0 ? command.length : nextLine + 1;
+        bodyStart = nextLine < 0 ? command.length + 1 : nextLine + 1;
+      }
+      if (!foundDelimiter) {
+        uncertain = true;
+        maskShellRange(output, contentStart, command.length);
+        bodyStart = command.length;
+        break;
+      }
+      if (!delimiter.quoted) {
+        const body = command.slice(contentStart, delimiterLineStart);
+        const nested = extractCommandSubstitutions(body, true);
+        for (const script of nested.scripts) if (substitutions.length < MAX_SUBSTITUTIONS) substitutions.push(script);
+        if (nested.unterminated || nested.unsupported) uncertain = true;
+      }
+      maskShellRange(output, contentStart, bodyEnd);
+      const delimiterLineEnd = command.indexOf("\n", bodyEnd);
+      bodyStart = delimiterLineEnd < 0 ? command.length : delimiterLineEnd + 1;
+      maskShellRange(output, bodyEnd, bodyStart);
+    }
+    index = bodyStart - 1;
+  }
+  if (arithmeticDepth !== 0) uncertain = true;
+  return { command: output ? output.join("") : command, substitutions, uncertain, hasHeredoc };
+}

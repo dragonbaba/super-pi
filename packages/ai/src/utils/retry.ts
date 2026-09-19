@@ -5,6 +5,8 @@ function buildProviderErrorPattern(patterns: readonly string[]): RegExp {
 }
 
 const NON_RETRYABLE_PROVIDER_LIMIT_ERROR_PATTERN = buildProviderErrorPattern([
+	// Local auth migration is terminal even if a surrounding message mentions transport failures.
+	"ANTHROPIC_SUBSCRIPTION_DISABLED",
 	// OpenCode Go/free-tier limits returned as 429 JSON error types by OpenCode's
 	// Zen API. These are subscription/account limits, not transient throttles.
 	"GoUsageLimitError",

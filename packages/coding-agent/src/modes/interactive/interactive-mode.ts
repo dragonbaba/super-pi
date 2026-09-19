@@ -274,13 +274,6 @@ function isDeadTerminalError(error: unknown): boolean {
 	return code !== undefined && DEAD_TERMINAL_ERROR_CODES.has(code);
 }
 
-const ANTHROPIC_SUBSCRIPTION_AUTH_WARNING =
-	"Anthropic subscription auth is active. Third-party harness usage draws from extra usage and is billed per token, not your Claude plan limits. Manage extra usage at https://claude.ai/settings/usage. Disable this warning in /settings.";
-
-function isAnthropicSubscriptionAuthKey(apiKey: string | undefined): boolean {
-	return typeof apiKey === "string" && apiKey.startsWith("sk-ant-oat");
-}
-
 function isUnknownModel(model: Model<any> | undefined): boolean {
 	return !!model && model.provider === "unknown" && model.id === "unknown" && model.api === "unknown";
 }
@@ -591,7 +584,6 @@ export class InteractiveMode {
 	private lastEscapeTime = 0;
 	private changelogMarkdown: string | undefined = undefined;
 	private startupNoticesShown = false;
-	private anthropicSubscriptionWarningShown = false;
 
 	// Status line tracking (for mutating immediately-sequential status updates)
 	private lastStatusSpacer: Spacer | undefined = undefined;
@@ -1501,7 +1493,6 @@ export class InteractiveMode {
 			this.showWarning(modelFallbackMessage);
 		}
 
-		this.observeLifecyclePromise(this.maybeWarnAboutAnthropicSubscriptionAuth());
 
 		// Process initial messages
 		if (initialMessage) {
@@ -5834,7 +5825,6 @@ export class InteractiveMode {
 				const thinkingStr =
 					result.model.reasoning && result.thinkingLevel !== "off" ? ` (thinking: ${result.thinkingLevel})` : "";
 				this.showStatus(`Switched to ${result.model.name || result.model.id}${thinkingStr}`);
-				this.observeLifecyclePromise(this.maybeWarnAboutAnthropicSubscriptionAuth(result.model));
 			}
 		} catch (error) {
 			if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
@@ -6434,7 +6424,6 @@ export class InteractiveMode {
 				this.footer.invalidate();
 				this.updateEditorBorderColor();
 				this.showStatus(`Model: ${model.id}`);
-				this.observeLifecyclePromise(this.maybeWarnAboutAnthropicSubscriptionAuth(model));
 				this.checkDaxnutsEasterEgg(model);
 			} catch (error) {
 				if (
@@ -6517,41 +6506,6 @@ export class InteractiveMode {
 		this.footerDataProvider.setAvailableProviderCount(uniqueProviders.size);
 	}
 
-	private async maybeWarnAboutAnthropicSubscriptionAuth(
-		model: Model<any> | undefined = this.session.model,
-	): Promise<void> {
-		const lifecycleGeneration = this.tuiLifecycleGeneration;
-		if (this.settingsManager.getWarnings().anthropicExtraUsage === false) {
-			return;
-		}
-		if (this.anthropicSubscriptionWarningShown) {
-			return;
-		}
-		if (!model || model.provider !== "anthropic") {
-			return;
-		}
-
-		try {
-			const checkedAuth = await this.session.modelRuntime.checkAuth("anthropic");
-			if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
-			if (checkedAuth?.type === "oauth") {
-				this.anthropicSubscriptionWarningShown = true;
-				this.showWarning(ANTHROPIC_SUBSCRIPTION_AUTH_WARNING);
-				return;
-			}
-			const auth = await this.session.modelRuntime.getAuth(model.provider);
-			if (this.tuiLifecycleGeneration !== lifecycleGeneration) return;
-			const apiKey = auth?.auth.apiKey;
-			if (!isAnthropicSubscriptionAuthKey(apiKey)) {
-				return;
-			}
-			this.anthropicSubscriptionWarningShown = true;
-			this.showWarning(ANTHROPIC_SUBSCRIPTION_AUTH_WARNING);
-		} catch {
-			// Ignore auth lookup failures for warning-only checks.
-		}
-	}
-
 	private maybeSaveImplicitProjectTrustAfterReload(): boolean {
 		const cwd = this.sessionManager.getCwd();
 		if (this.autoTrustOnReloadCwd !== cwd) {
@@ -6614,7 +6568,6 @@ export class InteractiveMode {
 					this.updateEditorBorderColor();
 					done();
 					this.showStatus(persist ? `Default model: ${model.provider}/${model.id}` : `Model: ${model.id}`);
-					this.observeLifecyclePromise(this.maybeWarnAboutAnthropicSubscriptionAuth(model));
 					this.checkDaxnutsEasterEgg(model);
 				} catch (error) {
 					if (lifecycleGeneration !== this.tuiLifecycleGeneration) return;
@@ -7430,14 +7383,12 @@ export class InteractiveMode {
 		this.updateEditorBorderColor();
 		if (selectedModel) {
 			this.showStatus(`${actionLabel}. Selected ${selectedModel.id}. Credentials saved to ${getAuthPath()}`);
-			this.observeLifecyclePromise(this.maybeWarnAboutAnthropicSubscriptionAuth(selectedModel));
 			this.checkDaxnutsEasterEgg(selectedModel);
 		} else {
 			this.showStatus(`${actionLabel}. Credentials saved to ${getAuthPath()}`);
 			if (selectionError) {
 				this.showError(selectionError);
 			} else {
-				this.observeLifecyclePromise(this.maybeWarnAboutAnthropicSubscriptionAuth());
 			}
 		}
 

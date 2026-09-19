@@ -45,6 +45,14 @@ const HOT_REGEX_FREE_FILES = [
 	"packages/coding-agent/src/modes/interactive/interactive-mode.ts",
 	"packages/coding-agent/src/utils/clipboard-image.ts",
 	"packages/extensions/resource-lifecycle-guard/permission-rule.ts",
+	"packages/extensions/resource-lifecycle-guard/core.ts",
+	"packages/extensions/resource-lifecycle-guard/shell-redirection.ts",
+	"packages/extensions/resource-lifecycle-guard/permission-bash.ts",
+	"packages/extensions/session-memory-manager/bounded-selector.ts",
+	"packages/extensions/session-memory-manager/index.ts",
+	"packages/ai/src/auth/anthropic-subscription.ts",
+	"packages/extensions/resource-lifecycle-guard/timeout-wrapper.ts",
+	"packages/ai/src/api/anthropic-messages.ts",
 	"packages/tui-kit/src/components/syntax-highlighting.ts",
 ];
 
@@ -197,7 +205,7 @@ test("selected hot runtime modules keep regular-expression literals in dedicated
 });
 
 test("image and permission pattern modules initialize regexes only as module constants", () => {
-	for (const file of ["packages/coding-agent/src/utils/image-input-regex.ts", "packages/coding-agent/src/utils/shell-regex.ts", "packages/extensions/resource-lifecycle-guard/regex.ts"]) {
+	for (const file of ["packages/coding-agent/src/utils/image-input-regex.ts", "packages/coding-agent/src/utils/shell-regex.ts", "packages/extensions/resource-lifecycle-guard/regex.ts", "packages/extensions/session-memory-manager/regex.ts", "packages/ai/src/api/anthropic-messages-regex.ts"]) {
 		const source = ts.createSourceFile(file, readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true);
 		const visit = (node: ts.Node): void => {
 			if (ts.isRegularExpressionLiteral(node)) {

@@ -459,6 +459,7 @@ class ModelsImpl implements MutableModels {
 		if (stored?.type === "oauth") {
 			const oauth = provider.auth.oauth;
 			if (!oauth) return undefined;
+			if (oauth.disabledReason) throw new ModelsError("auth", oauth.disabledReason);
 			if (Date.now() < stored.expires) return stored;
 			if (signal.aborted) return undefined;
 			const post = await this.credentials.modify(
@@ -494,7 +495,7 @@ class ModelsImpl implements MutableModels {
 		signal: AbortSignal,
 	): Promise<AuthCheck | undefined> {
 		if (credential?.type === "oauth") {
-			return provider.auth.oauth ? { source: "OAuth", type: "oauth" } : undefined;
+			return provider.auth.oauth && !provider.auth.oauth.disabledReason ? { source: "OAuth", type: "oauth" } : undefined;
 		}
 		const apiKey = provider.auth.apiKey;
 		if (!apiKey) return undefined;
