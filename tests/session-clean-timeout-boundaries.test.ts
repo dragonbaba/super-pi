@@ -6,6 +6,7 @@ import { inspectBashPermissionScope } from "../packages/extensions/resource-life
 import { inspectBashResourceLifecycle, inspectHighRiskBashMutation } from "../packages/extensions/resource-lifecycle-guard/core.ts";
 import { parseTimeoutInvocation } from "../packages/extensions/resource-lifecycle-guard/timeout-wrapper.ts";
 import { INTEGER_SECONDS_PATTERN } from "../packages/extensions/resource-lifecycle-guard/regex.ts";
+import { prepareShellAnalysis } from "../packages/extensions/resource-lifecycle-guard/shell-substitution.ts";
 import { TOOL_CALL_ID_SANITIZE_PATTERN } from "../packages/ai/src/api/anthropic-messages-regex.ts";
 import type { Terminal } from "../packages/tui/src/terminal.ts";
 import { TuiMainScreen } from "../packages/tui/src/tui-main-screen.ts";
@@ -298,6 +299,51 @@ test("redirection analysis keeps arithmetic and heredoc data out of file targets
   const timeoutMutation = inspectHighRiskBashMutation({ command: timeoutHere }, process.cwd());
   assert.ok(timeoutMutation?.targets.some(target => target.endsWith("timeout-after.txt")));
   assert.equal(timeoutMutation?.targets.some(target => target.endsWith("victim.txt")), false);
+});
+
+test("heredoc analysis preserves real declaration-line and following-command redirections", () => {
+  const cases = [
+    ["before", "cat > before.txt <<'EOF'\npayload > body.txt\nEOF", ["before.txt"]],
+    ["after", "cat <<'EOF' > after.txt\npayload > body.txt\nEOF", ["after.txt"]],
+    ["both", "cat > before.txt <<'EOF' > after.txt\npayload >> body.txt\nEOF", ["before.txt", "after.txt"]],
+    ["sibling", "cat <<'EOF'; echo data > sibling.txt\npayload\nEOF", ["sibling.txt"]],
+    ["pipe", "cat <<'EOF' | cat > pipe.txt\npayload > body.txt\nEOF", ["pipe.txt"]],
+    ["multiple", "cat <<A > first.txt <<B > second.txt\nbody > first-body.txt\nA\nbody > second-body.txt\nB", ["first.txt", "second.txt"]],
+    ["timeout", "timeout 250 cat <<'EOF' > timeout.txt; echo data > timeout-sibling.txt\npayload\nEOF", ["timeout.txt", "timeout-sibling.txt"]],
+    ["after-delimiter", "cat <<'EOF'\npayload > body.txt\nEOF\necho data > after.txt", ["after.txt"]],
+  ] as const;
+
+  for (const [name, command, expectedTargets] of cases) {
+    const view = prepareShellAnalysis(command);
+    for (const target of expectedTargets) assert.match(view.command, new RegExp(target.replace(".", "\\.")), name);
+    const mutation = inspectHighRiskBashMutation({ command }, process.cwd());
+    const permission = inspectBashPermissionScope({ command }, process.cwd());
+    for (const target of expectedTargets) {
+      assert.ok(mutation?.targets.some(candidate => candidate.endsWith(target)), `${name}: mutation ${target}`);
+      assert.ok(permission?.targets.some(candidate => candidate.endsWith(target)), `${name}: permission ${target}`);
+    }
+    assert.ok(mutation?.primitives.includes("heredoc_uninspectable"), `${name}: mutation classification`);
+    assert.equal(permission?.kind, "opaque-script", `${name}: permission classification`);
+    assert.match(inspectBashResourceLifecycle({ command }) ?? "", /SHELL_HEREDOC/, `${name}: lifecycle classification`);
+  }
+
+  const quotedBody = "cat <<'EOF'\nliteral > fake.txt\nliteral >> fake-two.txt\nEOF";
+  assert.equal(inspectHighRiskBashMutation({ command: quotedBody }, process.cwd())?.targets.length, 0);
+  assert.equal(inspectBashPermissionScope({ command: quotedBody }, process.cwd())?.targets.length, 0);
+
+  const nested = "cat <<EOF\n$(echo nested > nested.txt)\nEOF";
+  assert.ok(inspectHighRiskBashMutation({ command: nested }, process.cwd())?.targets.some(target => target.endsWith("nested.txt")));
+  assert.ok(inspectBashPermissionScope({ command: nested }, process.cwd())?.targets.some(target => target.endsWith("nested.txt")));
+
+  const tabHere = "cat <<-EOF\n\tpayload > fake-tab.txt\n\tEOF\necho data > after-tab.txt";
+  assert.ok(inspectHighRiskBashMutation({ command: tabHere }, process.cwd())?.targets.some(target => target.endsWith("after-tab.txt")));
+  assert.equal(inspectHighRiskBashMutation({ command: tabHere }, process.cwd())?.targets.some(target => target.endsWith("fake-tab.txt")), false);
+
+  const dynamicDelimiter = "cat <<$TAG\npayload > unknown-body.txt\n$TAG\necho data > after-unknown.txt";
+  const dynamicView = prepareShellAnalysis(dynamicDelimiter);
+  assert.equal(dynamicView.uncertain, true);
+  assert.ok(inspectHighRiskBashMutation({ command: dynamicDelimiter }, process.cwd())?.unverifiableScope);
+  assert.equal(inspectBashPermissionScope({ command: dynamicDelimiter }, process.cwd())?.kind, "opaque-script");
 });
 test("timeout scan continues into dangerous inner commands and preserves command boundaries", () => {
   const cases = [

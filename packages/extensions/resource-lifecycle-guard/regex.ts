@@ -45,3 +45,10 @@ export const LEADING_REDIRECTION_PATTERN = /^(?:[0-9]+|\{[^}]+\})?[<>]{1,2}(.*)$
 export const LEADING_ASSIGNMENT_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*\+?=/u;
 export const SIMPLE_VARIABLE_PATTERN = /^\$[A-Za-z_][A-Za-z0-9_]{0,63}$/u;
 export const REDIRECTION_OPERATOR_PATTERN = /[<>]/u;
+
+// Shell-substitution scanner boundaries. These are stateless module constants;
+// the scanner never shares match state between calls.
+export const CASE_WORD_END_PATTERN = /[ \t\r\n]/u;
+export const COMMAND_START_KEYWORD_PATTERN = /^(?:then|do|else|elif|if|while|until|time|!)(?=[ \t\r\n])/u;
+export const SUBSTITUTION_COMMENT_BOUNDARY_PATTERN = /[ \t\r\n;|&()]/u;
+export const COMMENT_BOUNDARY_PATTERN = /[ \t\r\n;|&]/u;
