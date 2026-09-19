@@ -308,8 +308,11 @@ function inspectOutputRedirections(tokens: ShellSegment, cwd: string, builder: S
 		}
 		if (target === "/dev/null") continue;
 		addPrimitive(builder, "output_redirection");
-		if (target) addTarget(builder, target, cwd);
-		else markUnverifiable(builder);
+		if (!target || hasDynamicSyntax(target)) {
+			markUnverifiable(builder);
+			continue;
+		}
+		addTarget(builder, target, cwd);
 	}
 	stripShellRedirections(tokens, redirections);
 }
@@ -541,18 +544,28 @@ function inspectWindowsRmdir(tokens: readonly string[], start: number, cwd: stri
 function inspectFind(tokens: readonly string[], start: number, cwd: string, builder: ScanBuilder): void {
 	let deleteAction = false;
 	let execAction = false;
-	let target: string | undefined;
 	for (let index = start; index < tokens.length; index++) {
 		const value = tokens[index]!;
 		if (value === "-delete") deleteAction = true;
 		else if (value === "-exec" || value === "-execdir") execAction = true;
-		else if (!target && !value.startsWith("-")) target = value;
 	}
 	if (!deleteAction && !execAction) return;
 	addPrimitive(builder, deleteAction ? "find_delete" : "find_exec");
 	if (execAction) markUnverifiable(builder);
+	const target = findSearchRoot(tokens, start);
 	if (target) addTarget(builder, target, cwd);
 	else markUnverifiable(builder);
+}
+
+function findSearchRoot(tokens: readonly string[], start: number): string | undefined {
+	for (let index = start; index < tokens.length; index++) {
+		const value = tokens[index]!;
+		if (value === "--") return tokens[index + 1] && !tokens[index + 1]!.startsWith("-") ? tokens[index + 1] : undefined;
+		if (value === "-H" || value === "-L" || value === "-P") continue;
+		if (value.startsWith("-")) return undefined;
+		return value;
+	}
+	return undefined;
 }
 
 function inspectXargs(tokens: readonly string[], start: number, builder: ScanBuilder): void {
@@ -766,24 +779,32 @@ function parseShellSegments(command: string): ShellSegment[] {
 
 function commandTokenIndex(tokens: readonly string[]): number {
 	let index = 0;
-	if (commandName(tokens[index] ?? "") === "sudo") {
-		index++;
-		while (index < tokens.length && tokens[index]!.startsWith("-")) index++;
-	}
-	if (commandName(tokens[index] ?? "") === "env") {
-		index++;
-		while (index < tokens.length) {
-			const value = tokens[index]!;
-			if (value.startsWith("-") || value.includes("=")) index++;
-			else break;
+	let wrapperDepth = 0;
+	while (index < tokens.length) {
+		const name = commandName(tokens[index] ?? "");
+		if (++wrapperDepth > MAX_WRAPPER_DEPTH) return -1;
+		if (name === "sudo" || name === "doas") {
+			index++;
+			while (index < tokens.length && tokens[index]!.startsWith("-")) index++;
+			continue;
 		}
-	}
-	let timeoutDepth = 0;
-	while (commandName(tokens[index] ?? "") === "timeout" || commandName(tokens[index] ?? "") === "timeout.exe") {
-		if (++timeoutDepth > MAX_WRAPPER_DEPTH) return -1;
-		const parsed = parseTimeoutInvocation(tokens, index);
-		if (!parsed.supported) return -1;
-		index = parsed.commandIndex;
+		if (name === "env") {
+			index++;
+			if (tokens[index] === "--") index++;
+			while (index < tokens.length) {
+				const value = tokens[index]!;
+				if (value.startsWith("-") || value.includes("=")) index++;
+				else break;
+			}
+			continue;
+		}
+		if (name === "timeout" || name === "timeout.exe") {
+			const parsed = parseTimeoutInvocation(tokens, index);
+			if (!parsed.supported) return -1;
+			index = parsed.commandIndex;
+			continue;
+		}
+		break;
 	}
 	return index;
 }

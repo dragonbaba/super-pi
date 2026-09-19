@@ -263,6 +263,17 @@ test("mutation scans cover compact output redirection forms", () => {
   assert.ok(duplicatedFd?.unverifiableScope);
   assert.equal(inspectHighRiskBashMutation({ command: 'echo "literal > text"' }, process.cwd()), undefined);
   assert.equal(inspectBashPermissionScope({ command: 'echo "literal >> text"' }, process.cwd())?.kind, "read-only");
+
+  for (const command of ["echo data > $OUT", "echo data >> dir/$OUT", "echo data 1> \"$OUT\""]) {
+    const scan = inspectHighRiskBashMutation({ command }, process.cwd());
+    assert.equal(scan?.dynamicScope, true, command);
+    assert.equal(scan?.unverifiableScope, true, command);
+    assert.equal(scan?.targets.length, 0, command);
+    const scope = inspectBashPermissionScope({ command }, process.cwd());
+    assert.equal(scope?.dynamicScope, true, command);
+    assert.equal(scope?.unverifiableScope, true, command);
+    assert.equal(scope?.targets.length, 0, command);
+  }
 });
 
 test("redirection analysis keeps arithmetic and heredoc data out of file targets", () => {
@@ -391,6 +402,23 @@ test("timeout scan continues into dangerous inner commands and preserves command
     assert.ok(scan?.primitives.length || scan?.unverifiableScope, command);
   }
   assert.equal(inspectBashPermissionScope({ command: "timeout 250 find . -delete" }, process.cwd())?.kind, "known-mutation");
+
+  for (const command of ["timeout 250 sudo rm -rf ./synthetic", "timeout 250 env rm -rf ./synthetic"]) {
+    const mutation = inspectHighRiskBashMutation({ command }, process.cwd());
+    assert.ok(mutation?.primitives.includes("rm_recursive"), command);
+    assert.ok(mutation?.targets.some(target => target.endsWith("synthetic")), command);
+    const scope = inspectBashPermissionScope({ command }, process.cwd());
+    assert.equal(scope?.kind, "known-mutation", command);
+    assert.ok(scope?.primitives.includes("rm"), command);
+    assert.ok(scope?.targets.some(target => target.endsWith("synthetic")), command);
+  }
+
+  const findMutation = inspectHighRiskBashMutation({ command: "find /tmp -type f -delete" }, process.cwd());
+  assert.ok(findMutation?.targets.some(target => target.endsWith("tmp")));
+  assert.equal(findMutation?.targets.some(target => target.endsWith(`${process.cwd()}\\f`)), false);
+  const findScope = inspectBashPermissionScope({ command: "find /tmp -type f -delete" }, process.cwd());
+  assert.ok(findScope?.targets.some(target => target.endsWith("tmp")));
+  assert.equal(findScope?.targets.some(target => target.endsWith(`${process.cwd()}\\f`)), false);
 });
 
 test("timeout keeps unsupported, dynamic, nested and Windows cases conservative", () => {

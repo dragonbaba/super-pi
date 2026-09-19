@@ -122,10 +122,11 @@ function addPositionalTargets(
 
 function inspectKnownMutation(command: string, tokens: readonly string[], start: number, cwd: string, builder: ScopeBuilder): boolean {
   if (command === "find") {
+    const root = findSearchRoot(tokens, start);
     for (let index = start; index < tokens.length; index++) {
       if (tokens[index] === "-delete" || tokens[index] === "-exec" || tokens[index] === "-execdir") {
         markMutation(builder, tokens[index] === "-delete" ? "find_delete" : "find_exec");
-        addTarget(builder, tokens[index - 1] && !tokens[index - 1]!.startsWith("-") ? tokens[index - 1]! : cwd, cwd);
+        addTarget(builder, root ?? cwd, cwd);
         if (tokens[index] !== "-delete") markOpaque(builder, "find_exec_scope");
         return true;
       }
@@ -166,26 +167,45 @@ function inspectKnownMutation(command: string, tokens: readonly string[], start:
   return false;
 }
 
+function findSearchRoot(tokens: readonly string[], start: number): string | undefined {
+  for (let index = start; index < tokens.length; index++) {
+    const value = tokens[index]!;
+    if (value === "--") return tokens[index + 1] && !tokens[index + 1]!.startsWith("-") ? tokens[index + 1] : undefined;
+    if (value === "-H" || value === "-L" || value === "-P") continue;
+    if (value.startsWith("-")) return undefined;
+    return value;
+  }
+  return undefined;
+}
+
 function commandIndex(tokens: readonly string[]): number {
   let index = 0;
-  if (commandName(tokens[index] ?? "") === "sudo") {
-    index += 1;
-    while (index < tokens.length && tokens[index]!.startsWith("-")) index += 1;
-  }
-  if (commandName(tokens[index] ?? "") === "env") {
-    index += 1;
-    while (index < tokens.length) {
-      const value = tokens[index]!;
-      if (value.startsWith("-") || value.includes("=")) index += 1;
-      else break;
+  let wrapperDepth = 0;
+  while (index < tokens.length) {
+    const name = commandName(tokens[index] ?? "");
+    if (++wrapperDepth > MAX_DEPTH) return -1;
+    if (name === "sudo" || name === "doas") {
+      index += 1;
+      while (index < tokens.length && tokens[index]!.startsWith("-")) index += 1;
+      continue;
     }
-  }
-  let timeoutDepth = 0;
-  while (commandName(tokens[index] ?? "") === "timeout" || commandName(tokens[index] ?? "") === "timeout.exe") {
-    if (++timeoutDepth > MAX_DEPTH) return -1;
-    const parsed = parseTimeoutInvocation(tokens, index);
-    if (!parsed.supported) return -1;
-    index = parsed.commandIndex;
+    if (name === "env") {
+      index += 1;
+      if (tokens[index] === "--") index += 1;
+      while (index < tokens.length) {
+        const value = tokens[index]!;
+        if (value.startsWith("-") || value.includes("=")) index += 1;
+        else break;
+      }
+      continue;
+    }
+    if (name === "timeout" || name === "timeout.exe") {
+      const parsed = parseTimeoutInvocation(tokens, index);
+      if (!parsed.supported) return -1;
+      index = parsed.commandIndex;
+      continue;
+    }
+    break;
   }
   return index;
 }
