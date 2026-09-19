@@ -39,6 +39,7 @@ import { observeEffectiveDispatch, summarizeCacheMarkerMetadata } from "../utils
 import { headersToRecord } from "../utils/headers.ts";
 import { parseJsonWithRepair, parseStreamingJson } from "../utils/json-parse.ts";
 import { getPiUserAgent } from "../utils/pi-user-agent.ts";
+import { ANTHROPIC_MODEL_VERSION_PATTERN, TOOL_CALL_ID_SANITIZE_PATTERN } from "./anthropic-messages-regex.ts";
 import { getProviderEnvValue } from "../utils/provider-env.ts";
 import { retryProviderRequest } from "../utils/provider-retry.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
@@ -159,7 +160,7 @@ function getAnthropicCompat(
  */
 function defaultSupportsToolReferences(model: Model<"anthropic-messages">): boolean {
 	if (model.provider !== "anthropic" || model.id.includes("haiku")) return false;
-	const version = model.id.match(/^claude-(?:opus|sonnet|fable)-(\d+)(?:-(\d+))?(?:-|$)/);
+	const version = model.id.match(ANTHROPIC_MODEL_VERSION_PATTERN);
 	if (!version) return false;
 	const major = Number(version[1]);
 	const minor = version[2] && version[2].length < 8 ? Number(version[2]) : 0;
@@ -1108,7 +1109,7 @@ function buildParams(
 
 // Normalize tool call IDs to match Anthropic's required pattern and length
 function normalizeToolCallId(id: string): string {
-	return id.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 64);
+	return id.replace(TOOL_CALL_ID_SANITIZE_PATTERN, "_").slice(0, 64);
 }
 
 function convertToolResult(

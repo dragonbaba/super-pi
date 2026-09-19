@@ -5,6 +5,8 @@ import { BoundedMemorySelector } from "../packages/extensions/session-memory-man
 import { inspectBashPermissionScope } from "../packages/extensions/resource-lifecycle-guard/permission-bash.ts";
 import { inspectBashResourceLifecycle, inspectHighRiskBashMutation } from "../packages/extensions/resource-lifecycle-guard/core.ts";
 import { parseTimeoutInvocation } from "../packages/extensions/resource-lifecycle-guard/timeout-wrapper.ts";
+import { INTEGER_SECONDS_PATTERN } from "../packages/extensions/resource-lifecycle-guard/regex.ts";
+import { TOOL_CALL_ID_SANITIZE_PATTERN } from "../packages/ai/src/api/anthropic-messages-regex.ts";
 import type { Terminal } from "../packages/tui/src/terminal.ts";
 import { TuiMainScreen } from "../packages/tui/src/tui-main-screen.ts";
 import { TuiAltScreen } from "../packages/tui/src/tui-alt-screen.ts";
@@ -29,6 +31,7 @@ class CaptureTerminal implements Terminal {
   private readonly emulator: InstanceType<typeof HeadlessTerminal>;
   private input: ((data: string) => void) | undefined;
   private resizeHandler: (() => void) | undefined;
+  private frameCompletion: ((generation: number, error?: Error) => void) | undefined;
   private pending = 0;
 
   constructor(columns: number, rows: number) {
@@ -40,13 +43,13 @@ class CaptureTerminal implements Terminal {
   start(input: (data: string) => void, resize: () => void): void { this.input = input; this.resizeHandler = resize; }
   stop(): void { this.input = undefined; this.resizeHandler = undefined; }
   async drainInput(): Promise<void> {}
-  write(data: string): void {
+  write(data: string, completion?: () => void): void {
     this.writes.push(data);
     this.pending++;
-    this.emulator.write(data, () => this.pending--);
+    this.emulator.write(data, () => { this.pending--; completion?.(); });
   }
-  writeFrame(data: string, generation: number): void { void generation; this.write(data); }
-  setFrameWriteCompletionListener(): void {}
+  writeFrame(data: string, generation: number): void { this.write(data, () => this.frameCompletion?.(generation)); }
+  setFrameWriteCompletionListener(listener: ((generation: number, error?: Error) => void) | undefined): void { this.frameCompletion = listener; }
   cancelFrameWrite(): void {}
   moveBy(): void {}
   hideCursor(): void {}
@@ -80,6 +83,16 @@ class CaptureTerminal implements Terminal {
 const theme = { bold: (value: string) => value, fg: (_tone: string, value: string) => value };
 const keybindings = getKeybindings();
 
+test("fixed regexes remain stateless across repeated and interleaved checks", () => {
+  assert.equal(INTEGER_SECONDS_PATTERN.global, false);
+  assert.equal(INTEGER_SECONDS_PATTERN.test("250"), true);
+  assert.equal(INTEGER_SECONDS_PATTERN.test("200"), true);
+  assert.equal(TOOL_CALL_ID_SANITIZE_PATTERN.global, true);
+  assert.equal("a!b".replace(TOOL_CALL_ID_SANITIZE_PATTERN, "_"), "a_b");
+  assert.equal(TOOL_CALL_ID_SANITIZE_PATTERN.lastIndex, 0);
+  assert.equal("c?d".replace(TOOL_CALL_ID_SANITIZE_PATTERN, "_"), "c_d");
+  assert.equal(TOOL_CALL_ID_SANITIZE_PATTERN.lastIndex, 0);
+});
 function confirmationItems(): Array<{ value: boolean; label: string; selectable?: boolean; detail?: string; dangerous?: boolean }> {
   return [
     { value: false, label: "very-long-session-file-name.jsonl", selectable: false, detail: "/tmp/synthetic/" + "长路径😀e\u0301/".repeat(50) },
@@ -94,11 +107,14 @@ test("memory clean selector separates read-only browsing and defaults to cancel"
   const initial = selector.render(40).join("\n");
   assert.match(initial, /取消/);
   assert.doesNotMatch(initial, /→ 永久删除/);
+  assert.doesNotMatch(initial, /undefined/);
   selector.focused = true;
   await new Promise<void>((resolve) => setTimeout(resolve, 260));
   selector.render(40);
   selector.handleInput("\u001b[200~\n\u001b[201~");
   assert.equal(result, undefined);
+  selector.render(40);
+  await new Promise<void>((resolve) => setTimeout(resolve, 260));
   selector.handleInput("\r");
   assert.equal(result, false);
   assert.equal(selector.render(40).length, 0);
@@ -106,14 +122,17 @@ test("memory clean selector separates read-only browsing and defaults to cancel"
 
 test("memory clean selector keeps a fixed detail area and bounds narrow windows", () => {
   const selector = new BoundedMemorySelector("再次确认", confirmationItems(), theme, keybindings, () => {}, () => 24, 0);
+  selector.focused = true;
   const firstHeight = selector.render(40).length;
-  selector.handleInput("tab");
+  selector.handleInput("\t");
   const browseHeight = selector.render(40).length;
-  selector.handleInput("down");
+  selector.handleInput("\x1b[B");
   const nextHeight = selector.render(40).length;
   assert.equal(firstHeight, browseHeight);
   assert.equal(browseHeight, nextHeight);
   assert.ok(selector.render(10).every((line) => stripTerminalSequences(line).length <= 10));
+  const tight = new BoundedMemorySelector("再次确认", confirmationItems(), theme, keybindings, () => {}, () => 11, 1);
+  assert.equal(tight.render(40).length, 11);
 });
 
 test("Main and Alt frames stay bounded while toggling the clean dialog", async () => {
@@ -133,22 +152,52 @@ test("Main and Alt frames stay bounded while toggling the clean dialog", async (
   alt.renderNow(true);
   await mainTerminal.flush();
   await altTerminal.flush();
+  let browseFrames = 0;
+  let actionFrames = 0;
   for (let index = 0; index < 100; index++) {
-    mainTerminal.emit(index % 2 === 0 ? "tab" : "down");
-    altTerminal.emit(index % 2 === 0 ? "tab" : "down");
-    main.renderNow();
-    alt.renderNow();
+    mainTerminal.emit("\t");
+    altTerminal.emit("\t");
+    await new Promise<void>(resolve => setTimeout(resolve, 5));
+    main.renderNow(true);
+    alt.renderNow(true);
+    selector.render(50);
+    altSelector.render(50);
     await mainTerminal.flush();
     await altTerminal.flush();
+    const expectedBrowse = index % 2 === 0;
+    assert.equal((selector as any).focus, expectedBrowse ? "browse" : "actions");
+    assert.equal((altSelector as any).focus, expectedBrowse ? "browse" : "actions");
+    const mainFrame = mainTerminal.writes[mainTerminal.writes.length - 1] ?? "";
+    const altFrame = altTerminal.writes[altTerminal.writes.length - 1] ?? "";
+    assert.match(mainFrame, /完整路径/);
+    assert.match(altFrame, /完整路径/);
+    if (expectedBrowse) browseFrames++; else actionFrames++;
   }
+  assert.deepEqual([browseFrames, actionFrames], [50, 50]);
+  assert.ok(mainTerminal.writes.length > 1);
+  assert.ok(altTerminal.writes.length > 1);
   const mainPaths = mainTerminal.visible().join("\n").match(/synthetic/g) ?? [];
   const altPaths = altTerminal.visible().join("\n").match(/synthetic/g) ?? [];
   assert.ok(mainPaths.length <= 1);
   assert.ok(altPaths.length <= 1);
   assert.ok(mainTerminal.writes.length < 500);
   assert.ok(altTerminal.writes.length < 500);
+  mainTerminal.resizeTo(30, 14);
+  altTerminal.resizeTo(30, 14);
+  main.renderNow(true);
+  alt.renderNow(true);
+  await mainTerminal.flush();
+  await altTerminal.flush();
   main.stop();
   alt.stop();
+  selector.dispose();
+  altSelector.dispose();
+  for (const owner of [selector, altSelector]) {
+    assert.equal((owner as any).items.length, 0);
+    assert.equal((owner as any).detailLines.length, 0);
+    assert.equal((owner as any).done, undefined);
+    assert.equal((owner as any).getAvailableRows, undefined);
+  }
   mainTerminal.dispose();
   altTerminal.dispose();
 });
@@ -159,6 +208,7 @@ const commandTwo = "cd /d && timeout 250 find . -maxdepth 5 -type d -iname \"*21
 test("GNU timeout literals are recognized without probing or rewriting", () => {
   assert.deepEqual(parseTimeoutInvocation(["timeout", "250", "find", "."], 0), { supported: true, commandIndex: 2, seconds: 250 });
   assert.equal(parseTimeoutInvocation(["timeout", "0", "find"], 0).supported, false);
+  assert.equal(parseTimeoutInvocation(["timeout", "--", "250", "find"], 0).supported, false);
   assert.equal(inspectBashResourceLifecycle({ command: commandOne }), undefined);
   assert.equal(inspectBashResourceLifecycle({ command: commandTwo }), undefined);
   const scope = inspectBashPermissionScope({ command: commandOne }, process.cwd());
@@ -187,4 +237,58 @@ test("timeout keeps unsupported, dynamic, nested and Windows cases conservative"
     const lifecycle = inspectBashResourceLifecycle({ command });
     assert.match(lifecycle ?? "", /SHELL_WRAPPER|SHELL_INSPECTION_LIMIT/);
   }
+});
+
+test("fragmented paste and repeat confirmations cannot approve; navigation repeats remain usable", async () => {
+  let calls = 0;
+  let result: boolean | undefined;
+  const selector = new BoundedMemorySelector("清理", confirmationItems(), theme, keybindings,
+    value => { calls++; result = value; }, () => 22, 1);
+  selector.focused = true;
+  selector.render(40);
+  selector.handleInput("\x1b[A");
+  selector.render(40);
+  await new Promise<void>(resolve => setTimeout(resolve, 170));
+  assert.equal((selector as any).actionIndex, 0);
+  for (const fragment of ["\x1b[20", "0~", "\r", "pasted", "\x1b[20", "1~", "\r"]) selector.handleInput(fragment);
+  assert.equal(calls, 0);
+  selector.render(40);
+  assert.match(selector.render(40).join("\n"), /→ 取消/);
+  selector.handleInput("\x1b[A");
+  selector.render(40);
+  await new Promise<void>(resolve => setTimeout(resolve, 270));
+  selector.handleInput("\x1b[13;1:2u");
+  assert.equal(calls, 0);
+  selector.handleInput("\x1b[1;1:2B");
+  assert.equal((selector as any).actionIndex, 1, "repeated down navigates to cancel");
+  selector.render(40);
+  selector.handleInput("\x1b[A");
+  selector.render(40);
+  await new Promise<void>(resolve => setTimeout(resolve, 170));
+  selector.handleInput("\r");
+  selector.handleInput("\r");
+  assert.equal(calls, 1);
+  assert.equal(result, true);
+  assert.equal((selector as any).items.length, 0);
+});
+
+test("detail cache reuses same path across action focus and releases on cancellation", () => {
+  const selector = new BoundedMemorySelector("清理", confirmationItems(), theme, keybindings, () => {}, () => 22, 1);
+  selector.focused = true;
+  selector.render(40);
+  selector.handleInput("\t");
+  const first = selector.render(40);
+  const cache = (selector as any).detailLines;
+  for (let index = 0; index < 100; index++) {
+    assert.deepEqual(selector.render(40), first);
+    selector.handleInput("\t");
+    assert.doesNotMatch(selector.render(40).join("\n"), /synthetic/);
+    selector.handleInput("\t");
+    selector.render(40);
+  }
+  selector.render(30);
+  assert.notEqual((selector as any).detailLines, cache);
+  selector.handleInput("\x1b");
+  assert.equal((selector as any).done, undefined);
+  assert.equal((selector as any).detailLines.length, 0);
 });

@@ -2,12 +2,23 @@ import { basename, resolve } from "node:path";
 import {
 	DETACH_UTILITY_PATTERN,
 	DOCKER_DETACHED_PATTERN,
+	EXECUTABLE_EXPANSION_TEXT_PATTERN,
+	LEADING_ASSIGNMENT_PATTERN,
+	LEADING_REDIRECTION_PATTERN,
+	LOOKUP_ASSIGNMENT_PATTERN,
 	NODE_RECURSIVE_RM_PATTERN,
 	NODE_UNLINK_PATTERN,
+	OPAQUE_JOB_INTERPRETER_PATTERN,
+	OPAQUE_JOB_LAUNCHER_PATTERN,
+	OWNED_FOREGROUND_JOB_PATTERN,
+	OWNED_USE_COMMAND_PATTERN,
 	POWERSHELL_REMOVE_RECURSIVE_PATTERN,
 	PYTHON_RMTREE_PATTERN,
 	PYTHON_UNLINK_PATTERN,
+	REDIRECTION_OPERATOR_PATTERN,
 	SERVICE_START_PATTERN,
+	SHELL_WRAPPER_TEXT_PATTERN,
+	SIMPLE_VARIABLE_PATTERN,
 	WINDOWS_DETACH_PATTERN,
 	WINDOWS_START_BACKGROUND_PATTERN,
 	WINDOWS_WAIT_PATTERN,
@@ -68,22 +79,13 @@ function hasUnquotedBackgroundOperator(command: string): boolean {
 }
 
 // One literal foreground job, immutable PID binding, bounded literal use, exact cleanup.
-const OWNED_FOREGROUND_JOB = /^\s*([A-Za-z0-9_./-]+)(?:[ \t]+[A-Za-z0-9_./:-]+)*[ \t]+&[ \t]*pid=\$!;[ \t]*trap 'kill "\$pid"; wait "\$pid"' EXIT;[ \t]*(?:(.{1,4096});[ \t]*kill "\$pid";[ \t]*)?wait "\$pid"\s*$/;
-const OPAQUE_JOB_LAUNCHER = /^(?:env|sudo|doas|nice|nohup|setsid|timeout|stdbuf|command|exec|busybox|xargs|sh|bash|zsh|dash|fish|ksh|powershell|pwsh|cmd)(?:\.exe)?$/i;
-const OPAQUE_JOB_INTERPRETER = /^(?:python(?:[0-9]+(?:\.[0-9]+)*)?|py|node(?:js)?)(?:\.exe)?$/i;
-const OWNED_USE_COMMAND = /^(?:curl|test|true|false|echo)(?:[ \t]+[A-Za-z0-9_./:%?=,+-]+)*$/;
 function hasBoundedOwnedUse(work: string | undefined): boolean {
  if (work === undefined) return true;
  const commands = work.split(";");
  if (commands.length > 16) return false;
- for (const command of commands) if (!OWNED_USE_COMMAND.test(command.trim())) return false;
+ for (const command of commands) if (!OWNED_USE_COMMAND_PATTERN.test(command.trim())) return false;
  return true;
 }
-const SHELL_WRAPPER_TEXT = /sh|eval|timeout/i;
-const EXECUTABLE_EXPANSION_TEXT = /[$`*?\[\]{}%]/;
-const LOOKUP_ASSIGNMENT = /^(?:PATH|BASH_ENV|ENV|SHELLOPTS|BASHOPTS|CDPATH)=/;
-const LEADING_REDIRECTION = /^(?:[0-9]+|\{[^}]+\})?[<>]{1,2}(.*)$/;
-const LEADING_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*\+?=/;
 const EMPTY_SUBSTITUTIONS: readonly string[] = [];
 export const UNCERTAIN_LIFECYCLE = "[SHELL_UNINSPECTABLE] This Bash call was not executed: uncertain/uninspectable shell structure.\nRetry: use an inspectable foreground command and resubmit for authorization.";
 function lifecycleRefusal(code: string, reason: string, recovery: string): string {
@@ -91,7 +93,7 @@ function lifecycleRefusal(code: string, reason: string, recovery: string): strin
 }
 function dynamicExecutable(token: string | undefined): string {
  // Echo only a simple variable name, never command substitutions or arbitrary operands.
- const variable = token && /^\$[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(token) ? ` (${token})` : "";
+ const variable = token && SIMPLE_VARIABLE_PATTERN.test(token) ? ` (${token})` : "";
  return lifecycleRefusal("SHELL_DYNAMIC_EXECUTABLE", `executable position uses a variable or dynamic expression${variable}`, "use the quoted literal executable path in a foreground command");
 }
 
@@ -118,10 +120,10 @@ function inspectLifecycleScript(source: string, depth: number): string | undefin
  if ((WINDOWS_DETACH_PATTERN.test(command) || WINDOWS_START_BACKGROUND_PATTERN.test(command)) && !WINDOWS_WAIT_PATTERN.test(command)) return BLOCK_REASON;
  if (DOCKER_DETACHED_PATTERN.test(command) || SERVICE_START_PATTERN.test(command)) return BLOCK_REASON;
  if (hasUnquotedBackgroundOperator(command)) {
-  const owned = OWNED_FOREGROUND_JOB.exec(command);
-  if (!owned || !hasBoundedOwnedUse(owned[2]) || OPAQUE_JOB_LAUNCHER.test(commandName(owned[1]!)) || OPAQUE_JOB_INTERPRETER.test(commandName(owned[1]!))) return BLOCK_REASON;
+  const owned = OWNED_FOREGROUND_JOB_PATTERN.exec(command);
+  if (!owned || !hasBoundedOwnedUse(owned[2]) || OPAQUE_JOB_LAUNCHER_PATTERN.test(commandName(owned[1]!)) || OPAQUE_JOB_INTERPRETER_PATTERN.test(commandName(owned[1]!))) return BLOCK_REASON;
  }
- if (!SHELL_WRAPPER_TEXT.test(command) && !EXECUTABLE_EXPANSION_TEXT.test(command)) return undefined;
+ if (!SHELL_WRAPPER_TEXT_PATTERN.test(command) && !EXECUTABLE_EXPANSION_TEXT_PATTERN.test(command)) return undefined;
  const segments = parseShellSegments(command);
  if (segments.length > MAX_SCRIPT_SEGMENTS) return lifecycleRefusal("SHELL_INSPECTION_LIMIT", "too many command segments", "reduce the number of segments");
  for (const tokens of segments) {
@@ -130,20 +132,20 @@ function inspectLifecycleScript(source: string, depth: number): string | undefin
   let shellText = false;
   let dynamicText = false;
   for (const token of tokens) {
-   if (SHELL_WRAPPER_TEXT.test(token)) shellText = true;
-   if (EXECUTABLE_EXPANSION_TEXT.test(token)) dynamicText = true;
+   if (SHELL_WRAPPER_TEXT_PATTERN.test(token)) shellText = true;
+   if (EXECUTABLE_EXPANSION_TEXT_PATTERN.test(token)) dynamicText = true;
   }
   if (!shellText && !dynamicText) continue;
   let index = 0; let changedLookup = false; let prefixes = 0;
   while (index < tokens.length) {
    const token = tokens[index]!;
    if (++prefixes > MAX_SCRIPT_SEGMENTS) return lifecycleRefusal("SHELL_INSPECTION_LIMIT", "too many command prefixes", "reduce prefixes");
-   if (LEADING_ASSIGNMENT.test(token)) {
+   if (LEADING_ASSIGNMENT_PATTERN.test(token)) {
     // Shell assignment words do not undergo field splitting (unlike env argv).
     if (uncertainAssignment(tokens, index, true)) return lifecycleRefusal("SHELL_UNINSPECTABLE", "uncertain assignment expansion or executable lookup", "use literal assignments that do not change executable lookup");
     changedLookup = true; index++; continue;
    }
-   const redirection = LEADING_REDIRECTION.exec(token);
+   const redirection = LEADING_REDIRECTION_PATTERN.exec(token);
    if (redirection) {
     changedLookup = true; index++;
     if (!redirection[1]) { if (!tokens[index]) return UNCERTAIN_LIFECYCLE; index++; }
@@ -153,13 +155,13 @@ function inspectLifecycleScript(source: string, depth: number): string | undefin
    if (prefix !== "command" && prefix !== "exec") break;
    if (++index > MAX_WRAPPER_DEPTH || !tokens[index] || tokens[index]!.startsWith("-")) return lifecycleRefusal("SHELL_WRAPPER", "unsupported command/exec prefix depth or operand", "use a direct foreground executable");
   }
-  if (/[<>]/.test(tokens[index] ?? "")) return UNCERTAIN_LIFECYCLE;
+  if (REDIRECTION_OPERATOR_PATTERN.test(tokens[index] ?? "")) return UNCERTAIN_LIFECYCLE;
   if (tokens.expansions?.[index] || hasDynamicSyntax(tokens[index] ?? "")) return dynamicExecutable(tokens[index]);
   let name = commandName(tokens[index] ?? "");
   // Only literal, option-free launcher operands are resolved. env assignments are
   // data, not executable names; split-string/options/dynamic lookup stay unknown.
   let launchers = 0;
-  while (OPAQUE_JOB_LAUNCHER.test(name) && !SCRIPT_WRAPPERS.has(name)) {
+  while (OPAQUE_JOB_LAUNCHER_PATTERN.test(name) && !SCRIPT_WRAPPERS.has(name)) {
    if (++launchers > MAX_WRAPPER_DEPTH) return lifecycleRefusal("SHELL_INSPECTION_LIMIT", "too many nested launchers", "reduce launcher nesting");
    if (name === "timeout" || name === "timeout.exe") {
     const parsed = parseTimeoutInvocation(tokens, index);
@@ -183,7 +185,7 @@ function inspectLifecycleScript(source: string, depth: number): string | undefin
    }
    // Shell redirections are removed from argv, not launcher executables. Their
    // interleaved/quoted provenance is outside this token view: refuse, don't guess.
-   if (/[<>]/.test(tokens[index] ?? "")) return UNCERTAIN_LIFECYCLE;
+   if (REDIRECTION_OPERATOR_PATTERN.test(tokens[index] ?? "")) return UNCERTAIN_LIFECYCLE;
    if (!tokens[index] || tokens[index]!.startsWith("-")) return lifecycleRefusal("SHELL_WRAPPER", "missing or unsupported launcher operand", "use a directly inspectable foreground executable");
    if (hasDynamicSyntax(tokens[index]!)) return dynamicExecutable(tokens[index]);
    changedLookup = true;
@@ -216,7 +218,7 @@ type ShellSegment = string[] & { dynamic?: boolean; expansions?: number[] };
 
 function uncertainAssignment(tokens: ShellSegment, index: number, shellAssignment = false): boolean {
  const expansion = tokens.expansions?.[index] ?? 0;
- return (expansion & (shellAssignment ? 4 : 14)) !== 0 || (expansion !== 0 && LOOKUP_ASSIGNMENT.test(tokens[index]!));
+ return (expansion & (shellAssignment ? 4 : 14)) !== 0 || (expansion !== 0 && LOOKUP_ASSIGNMENT_PATTERN.test(tokens[index]!));
 }
 
 interface ScanBuilder {

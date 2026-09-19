@@ -1,8 +1,9 @@
+import { INTEGER_SECONDS_PATTERN } from "./regex.ts";
+
 export type TimeoutWrapperResult =
   | { supported: true; commandIndex: number; seconds: number }
   | { supported: false; reason: string };
 
-const INTEGER_SECONDS = /^[1-9][0-9]{0,8}$/u;
 const MAX_TIMEOUT_SECONDS = 7 * 24 * 60 * 60;
 
 /**
@@ -14,22 +15,19 @@ export function parseTimeoutInvocation(
   start: number,
 ): TimeoutWrapperResult {
   if (start >= tokens.length || tokens[start]!.toLowerCase().endsWith("timeout.exe")) {
-    return { supported: false, reason: "系统 timeout.exe 与 GNU timeout 语法不同" };
+    return { supported: false, reason: "无法确认显式 timeout.exe 的 GNU/MSYS 来源；系统同名工具语法不同" };
   }
 
-  let index = start + 1;
-  while (index < tokens.length && tokens[index]!.startsWith("-")) {
+  const index = start + 1;
+  if (index < tokens.length && tokens[index]!.startsWith("-")) {
     const option = tokens[index]!;
-    if (option === "--") {
-      index++;
-      break;
-    }
+    if (option === "--") return { supported: false, reason: "timeout 的 -- 形式暂未支持" };
     return { supported: false, reason: "timeout 选项暂未实现：" + option.slice(0, 48) };
   }
 
   const duration = tokens[index];
   if (!duration) return { supported: false, reason: "timeout 缺少时长操作数" };
-  if (!INTEGER_SECONDS.test(duration)) return { supported: false, reason: "timeout 只接受正整数秒字面量" };
+  if (!INTEGER_SECONDS_PATTERN.test(duration)) return { supported: false, reason: "timeout 只接受正整数秒字面量" };
   const seconds = Number(duration);
   if (!Number.isSafeInteger(seconds) || seconds > MAX_TIMEOUT_SECONDS) {
     return { supported: false, reason: "timeout 时长超出有界检查范围" };

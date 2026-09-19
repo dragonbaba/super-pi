@@ -16,6 +16,7 @@ export interface BoundedSelectorItem<T> {
 type SelectorKeybindings = Pick<KeybindingsManager, "matches" | "getKeys">;
 type SelectorTheme = Pick<Theme, "bold" | "fg">;
 type SelectorFocus = "browse" | "actions";
+type PreparedSelectorItem<T> = BoundedSelectorItem<T> & { display: string };
 
 /** Each instance owns its prepared records and one width/selection detail cache. */
 export class BoundedMemorySelector<T> {
@@ -25,7 +26,7 @@ export class BoundedMemorySelector<T> {
   private hasFocus = false;
   private settled = false;
   private readonly titleLines: string[];
-  private readonly items: BoundedSelectorItem<T>[] = [];
+  private readonly items: PreparedSelectorItem<T>[] = [];
   private readonly browse: number[] = [];
   private readonly actions: number[] = [];
   private readonly safeAction: number;
@@ -34,6 +35,8 @@ export class BoundedMemorySelector<T> {
   private detailWidth = 0;
   private detailLines: string[] = [];
   private detailOffset = 0;
+  private pasteActive = false;
+  private pastePrefix = "";
   private visible = 1;
   private detailRows = 1;
   private renderedWidth = 0;
@@ -61,8 +64,10 @@ export class BoundedMemorySelector<T> {
     this.titleLines = title.split(UI_LINE_BREAK_PATTERN).slice(0, 3).map(sanitizeTitle);
     for (let index = 0; index < items.length; index++) {
       const item = items[index]!;
-      this.items.push({ ...item, label: sanitizeSessionText(item.label, Infinity),
-        description: sanitizeSessionText(item.description, Infinity), detail: sanitizeSessionText(item.detail, Infinity) });
+      const label = sanitizeSessionText(item.label, Infinity);
+      const description = sanitizeSessionText(item.description, Infinity);
+      const detail = sanitizeSessionText(item.detail, Infinity);
+      this.items.push({ ...item, label, description, detail, display: description ? `${label} ${description}` : label });
       if (item.selectable === false) this.browse.push(index);
       else this.actions.push(index);
     }
@@ -110,6 +115,8 @@ export class BoundedMemorySelector<T> {
     this.done = undefined;
     this.getAvailableRows = undefined;
     this.detailLines = [];
+    this.pasteActive = false;
+    this.pastePrefix = "";
     this.items.length = 0;
     this.browse.length = 0;
     this.actions.length = 0;
@@ -128,7 +135,7 @@ export class BoundedMemorySelector<T> {
     if (width !== this.renderedWidth || rows !== this.renderedRows) this.resetAction();
     this.renderedWidth = width;
     this.renderedRows = rows;
-    const minimum = this.titleLines.length + this.actions.length + 7;
+    const minimum = this.titleLines.length + this.actions.length + this.hints.length + 3 + (this.browse.length > 0 ? 2 : 0);
     if (width < 24 || rows < minimum) {
       this.actionPainted = false;
       return rows === 0 ? [] : [this.line("放大窗口 / " + this.hint("tui.select.cancel") + " 取消", width, "error")];
@@ -146,24 +153,26 @@ export class BoundedMemorySelector<T> {
       const start = Math.max(0, Math.min(this.browseIndex - Math.floor(this.visible / 2), this.browse.length - this.visible));
       for (let position = start; position < start + this.visible; position++) {
         const item = this.items[this.browse[position]!]!;
-        lines.push(this.line((this.focus === "browse" && position === this.browseIndex ? "→ " : "  ") + item.label + " " + item.description, width));
+        lines.push(this.line((this.focus === "browse" && position === this.browseIndex ? "→ " : "  ") + item.display, width));
       }
     }
     lines.push(this.line("动作", width, "muted"));
     for (let position = 0; position < this.actions.length; position++) {
       const item = this.items[this.actions[position]!]!;
       const selected = this.focus === "actions" && position === this.actionIndex;
-      lines.push(this.line((selected ? "→ " : "  ") + item.label + " " + item.description, width, item.dangerous ? "error" : selected ? "accent" : "text"));
+      lines.push(this.line((selected ? "→ " : "  ") + item.display, width, item.dangerous ? "error" : selected ? "accent" : "text"));
     }
     const index = this.focus === "browse" ? this.browse[this.browseIndex] : this.actions[this.actionIndex];
+    const detail = index === undefined ? undefined : this.items[index]!.detail;
     if (index !== this.detailIndex || width !== this.detailWidth) {
       this.detailIndex = index;
       this.detailWidth = width;
-      this.detailLines = index === undefined || !this.items[index]!.detail ? [] : wrapTextWithAnsi(this.items[index]!.detail!, width);
+      this.detailLines = detail ? wrapTextWithAnsi(detail, width) : [];
     }
-    this.detailOffset = Math.max(0, Math.min(this.detailOffset, this.detailLines.length - this.detailRows));
-    lines.push(this.line("完整路径 " + (this.detailLines.length ? (this.detailOffset + 1) + "/" + this.detailLines.length : "—"), width, "muted"));
-    for (let row = 0; row < this.detailRows; row++) lines.push(this.line(this.detailLines[this.detailOffset + row] ?? "", width, "muted"));
+    const detailCount = detail ? this.detailLines.length : 0;
+    this.detailOffset = Math.max(0, Math.min(this.detailOffset, detailCount - this.detailRows));
+    lines.push(this.line("完整路径 " + (detailCount ? (this.detailOffset + 1) + "/" + detailCount : "—"), width, "muted"));
+    for (let row = 0; row < this.detailRows; row++) lines.push(this.line((detailCount ? this.detailLines[this.detailOffset + row] : "") ?? "", width, "muted"));
     for (const hint of this.hints) lines.push(this.line(hint, width, "dim"));
     this.actionPainted = true;
     return lines;
@@ -171,12 +180,12 @@ export class BoundedMemorySelector<T> {
 
   handleInput(data: string): void {
     if (this.settled || !this.hasFocus) return;
-    if (isKeyRelease(data) || isKeyRepeat(data) || data.includes("\x1b[200~") || data.includes("\x1b[201~")) return;
+    if (this.consumePaste(data) || isKeyRelease(data)) return;
+    const repeated = isKeyRepeat(data);
     if (this.keybindings.matches(data, "tui.select.cancel")) { this.finish(undefined); return; }
-    if (performance.now() < this.inputReadyAt) return;
     const rows = Math.max(0, Math.floor(this.getAvailableRows?.() ?? 0));
     if (rows !== this.renderedRows || !this.actionPainted) return;
-    if (this.keybindings.matches(data, "tui.input.tab") && this.browse.length > 0) {
+    if (!repeated && this.keybindings.matches(data, "tui.input.tab") && this.browse.length > 0) {
       this.focus = this.focus === "browse" ? "actions" : "browse";
       this.resetAction();
       this.detailOffset = 0;
@@ -196,17 +205,45 @@ export class BoundedMemorySelector<T> {
     }
     if (this.keybindings.matches(data, "tui.select.pageUp")) { this.detailOffset = Math.max(0, this.detailOffset - this.detailRows); return; }
     if (this.keybindings.matches(data, "tui.select.pageDown")) { this.detailOffset += this.detailRows; return; }
-    if (this.keybindings.matches(data, "tui.select.confirm") && this.focus === "actions") {
+    if (!repeated && performance.now() >= this.inputReadyAt && this.keybindings.matches(data, "tui.select.confirm") && this.focus === "actions") {
       const item = this.items[this.actions[this.actionIndex]!];
       if (item) this.finish(item.value);
     }
   }
 
+  // Input buffering normally assembles paste markers. Keep a bounded local
+  // boundary too, so fragmented extension input cannot approve an action.
+  private consumePaste(data: string): boolean {
+    const input = this.pastePrefix ? this.pastePrefix + data : data;
+    this.pastePrefix = "";
+    const marker = this.pasteActive ? "\x1b[201~" : "\x1b[200~";
+    const start = input.indexOf(marker);
+    if (start >= 0) {
+      if (!this.pasteActive) {
+        this.pasteActive = true;
+        this.consumePaste(input.slice(start + marker.length));
+      } else {
+        this.pasteActive = false;
+      }
+      this.resetAction();
+      this.inputReadyAt = performance.now() + 250;
+      return true;
+    }
+    // A standalone Esc remains cancellation. Longer incomplete marker prefixes
+    // retain at most five characters, never the pasted content.
+    for (let length = Math.min(marker.length - 1, input.length); length >= 4; length--) {
+      if (input.endsWith(marker.slice(0, length))) {
+        this.pastePrefix = marker.slice(0, length);
+        return true;
+      }
+    }
+    return this.pasteActive;
+  }
+
   private finish(value: T | undefined): void {
     if (this.settled) return;
-    this.settled = true;
     const done = this.done;
-    this.done = undefined;
+    this.dispose();
     done?.(value);
   }
 }
