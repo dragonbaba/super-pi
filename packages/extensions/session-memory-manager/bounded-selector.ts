@@ -1,4 +1,7 @@
+import { isKeyRelease, isKeyRepeat, truncateToWidth, wrapTextWithAnsi } from "@super-pi/tui";
 import type { KeybindingsManager, Theme } from "@super-pi/coding-agent";
+import { UI_LINE_BREAK_PATTERN } from "./regex.ts";
+import { sanitizeSessionText } from "./ui-text.ts";
 
 export interface BoundedSelectorItem<T> {
   value: T;
@@ -6,208 +9,206 @@ export interface BoundedSelectorItem<T> {
   description?: string;
   detail?: string;
   selectable?: boolean;
+  dangerous?: boolean;
   tone?: "normal" | "danger";
 }
 
-type SelectorKeybindings = Pick<KeybindingsManager, "matches">;
+type SelectorKeybindings = Pick<KeybindingsManager, "matches" | "getKeys">;
 type SelectorTheme = Pick<Theme, "bold" | "fg">;
+type SelectorFocus = "browse" | "actions";
 
-const COMBINING_MARK = /\p{Mark}/u;
-
-function codePointCellWidth(symbol: string): number {
-  const codePoint = symbol.codePointAt(0) ?? 0;
-  if (codePoint === 0 || codePoint < 0x20 || (codePoint >= 0x7f && codePoint < 0xa0)) return 0;
-  if (COMBINING_MARK.test(symbol) || codePoint === 0x200d || (codePoint >= 0xfe00 && codePoint <= 0xfe0f)) return 0;
-  if (
-    codePoint >= 0x1100 && (
-      codePoint <= 0x115f ||
-      codePoint === 0x2329 ||
-      codePoint === 0x232a ||
-      (codePoint >= 0x2e80 && codePoint <= 0xa4cf && codePoint !== 0x303f) ||
-      (codePoint >= 0xac00 && codePoint <= 0xd7a3) ||
-      (codePoint >= 0xf900 && codePoint <= 0xfaff) ||
-      (codePoint >= 0xfe10 && codePoint <= 0xfe19) ||
-      (codePoint >= 0xfe30 && codePoint <= 0xfe6f) ||
-      (codePoint >= 0xff00 && codePoint <= 0xff60) ||
-      (codePoint >= 0xffe0 && codePoint <= 0xffe6) ||
-      (codePoint >= 0x1f300 && codePoint <= 0x1faff) ||
-      (codePoint >= 0x20000 && codePoint <= 0x3fffd)
-    )
-  ) return 2;
-  return 1;
-}
-
-export function terminalCellWidth(text: string): number {
-  let width = 0;
-  for (const symbol of text) width += codePointCellWidth(symbol);
-  return width;
-}
-
-function takeStart(text: string, maxWidth: number): string {
-  let result = "";
-  let width = 0;
-  for (const symbol of text) {
-    const symbolWidth = codePointCellWidth(symbol);
-    if (width + symbolWidth > maxWidth) break;
-    result += symbol;
-    width += symbolWidth;
-  }
-  return result;
-}
-
-function takeEnd(text: string, maxWidth: number): string {
-  const symbols = [...text];
-  let result = "";
-  let width = 0;
-  for (let index = symbols.length - 1; index >= 0; index--) {
-    const symbol = symbols[index];
-    const symbolWidth = codePointCellWidth(symbol);
-    if (width + symbolWidth > maxWidth) break;
-    result = symbol + result;
-    width += symbolWidth;
-  }
-  return result;
-}
-
-export function truncateMiddleToTerminalWidth(text: string, maxWidth: number): string {
-  const normalized = text.replace(/[\r\n]+/gu, " ").trim();
-  if (terminalCellWidth(normalized) <= maxWidth) return normalized;
-  if (maxWidth <= 1) return maxWidth === 1 ? "…" : "";
-  const available = maxWidth - 1;
-  const leftWidth = Math.ceil(available / 2);
-  const rightWidth = Math.floor(available / 2);
-  return `${takeStart(normalized, leftWidth)}…${takeEnd(normalized, rightWidth)}`;
-}
-
-function wrapToTerminalWidth(text: string, maxWidth: number, maxLines: number): string[] {
-  const normalized = text.replace(/[\r\n]+/gu, " ").trim();
-  if (!normalized) return [];
-  const lines: string[] = [];
-  let line = "";
-  let lineWidth = 0;
-  for (const symbol of normalized) {
-    const symbolWidth = codePointCellWidth(symbol);
-    if (line && lineWidth + symbolWidth > maxWidth) {
-      lines.push(line);
-      line = "";
-      lineWidth = 0;
-      if (lines.length === maxLines) break;
-    }
-    line += symbol;
-    lineWidth += symbolWidth;
-  }
-  if (lines.length < maxLines && line) lines.push(line);
-  const consumedWidth = lines.reduce((total, item) => total + terminalCellWidth(item), 0);
-  if (consumedWidth < terminalCellWidth(normalized)) {
-    const last = lines.length - 1;
-    lines[last] = truncateMiddleToTerminalWidth(`${lines[last]}…`, maxWidth);
-  }
-  return lines;
-}
-
+/** Each instance owns its prepared records and one width/selection detail cache. */
 export class BoundedMemorySelector<T> {
-  private selectedIndex = 0;
+  private browseIndex = 0;
+  private actionIndex = 0;
+  private focus: SelectorFocus = "actions";
+  private hasFocus = false;
   private settled = false;
-  private readonly title: string;
-  private readonly items: readonly BoundedSelectorItem<T>[];
-  private readonly maxVisible: number;
+  private readonly titleLines: string[];
+  private readonly items: BoundedSelectorItem<T>[] = [];
+  private readonly browse: number[] = [];
+  private readonly actions: number[] = [];
+  private readonly safeAction: number;
+  private readonly hints: string[];
+  private detailIndex: number | undefined;
+  private detailWidth = 0;
+  private detailLines: string[] = [];
+  private detailOffset = 0;
+  private visible = 1;
+  private detailRows = 1;
+  private renderedWidth = 0;
+  private renderedRows = 0;
+  private actionPainted = false;
+  private inputReadyAt = performance.now() + 250;
   private readonly theme: SelectorTheme;
   private readonly keybindings: SelectorKeybindings;
-  private readonly done: (result: T | undefined) => void;
-  private readonly maxDetailLines: number;
+  private done: ((result: T | undefined) => void) | undefined;
+  private getAvailableRows: (() => number) | undefined;
 
   constructor(
     title: string,
     items: readonly BoundedSelectorItem<T>[],
-    maxVisible: number,
     theme: SelectorTheme,
     keybindings: SelectorKeybindings,
-    done: (result: T | undefined) => void,
-    maxDetailLines = 4,
+    done: ((result: T | undefined) => void) | undefined,
+    getAvailableRows: (() => number) | undefined,
+    initialIndex = 0,
   ) {
-    this.title = title;
-    this.items = items;
-    this.maxVisible = maxVisible;
     this.theme = theme;
     this.keybindings = keybindings;
     this.done = done;
-    this.maxDetailLines = Math.max(1, maxDetailLines);
-  }
-
-  setSelectedIndex(index: number): void {
-    this.selectedIndex = Math.max(0, Math.min(index, this.items.length - 1));
-  }
-
-  invalidate(): void {}
-
-  render(width: number): string[] {
-    const contentWidth = Math.max(8, width - 2);
-    const lines = this.title.split(/\r?\n/u).slice(0, 3).map((line) =>
-      this.theme.fg("accent", this.theme.bold(truncateMiddleToTerminalWidth(line, contentWidth)))
-    );
-    lines.push("");
-
-    const visible = Math.max(1, Math.min(this.maxVisible, this.items.length));
-    const start = Math.max(0, Math.min(this.selectedIndex - Math.floor(visible / 2), this.items.length - visible));
-    const end = Math.min(start + visible, this.items.length);
-    for (let index = start; index < end; index++) {
-      const item = this.items[index];
-      const selected = index === this.selectedIndex;
-      const prefix = selected ? "→ " : "  ";
-      const description = item.description ? `  ${item.description}` : "";
-      const text = truncateMiddleToTerminalWidth(`${prefix}${item.label}${description}`, contentWidth);
-      const color = item.tone === "danger" ? "error" : selected ? "accent" : "text";
-      lines.push(this.theme.fg(color, selected ? this.theme.bold(text) : text));
+    this.getAvailableRows = getAvailableRows;
+    this.titleLines = title.split(UI_LINE_BREAK_PATTERN).slice(0, 3).map(sanitizeTitle);
+    for (let index = 0; index < items.length; index++) {
+      const item = items[index]!;
+      this.items.push({ ...item, label: sanitizeSessionText(item.label, Infinity),
+        description: sanitizeSessionText(item.description, Infinity), detail: sanitizeSessionText(item.detail, Infinity) });
+      if (item.selectable === false) this.browse.push(index);
+      else this.actions.push(index);
     }
-    if (this.items.length > visible) {
-      lines.push(this.theme.fg(
-        "dim",
-        truncateMiddleToTerminalWidth(`  ${this.selectedIndex + 1}/${this.items.length}  PgUp/PgDn 翻页`, contentWidth),
-      ));
-    }
-
-    const selected = this.items[this.selectedIndex];
-    if (selected?.detail) {
-      lines.push("");
-      for (const detailLine of wrapToTerminalWidth(selected.detail, contentWidth, this.maxDetailLines)) {
-        lines.push(this.theme.fg("muted", detailLine));
+    const requested = this.actions.indexOf(initialIndex);
+    let safeAction = -1;
+    for (let position = this.actions.length - 1; position >= 0; position--) {
+      if (!this.items[this.actions[position]!]!.dangerous) {
+        safeAction = position;
+        break;
       }
     }
-    lines.push(
-      "",
-      this.theme.fg("dim", truncateMiddleToTerminalWidth("↑↓/j/k 滚动  Enter 选择  Esc 取消", contentWidth)),
-    );
+    this.safeAction = requested >= 0 && !this.items[initialIndex]!.dangerous ? requested : Math.max(0, safeAction);
+    this.actionIndex = this.safeAction;
+    this.hints = [
+      this.hint("tui.input.tab") + " 浏览/动作；文件只读",
+      this.hint("tui.select.up") + "/" + this.hint("tui.select.down") + " 移动；" + this.hint("tui.select.pageUp") + "/" + this.hint("tui.select.pageDown") + " 路径翻页",
+      this.hint("tui.select.confirm") + " 确认动作；" + this.hint("tui.select.cancel") + " 取消",
+    ];
+  }
+
+  get focused(): boolean { return this.hasFocus; }
+  set focused(value: boolean) {
+    if (value === this.hasFocus) return;
+    this.hasFocus = value;
+    this.resetAction();
+    this.inputReadyAt = performance.now() + 250;
+  }
+
+  private hint(key: Parameters<SelectorKeybindings["getKeys"]>[0]): string {
+    return this.keybindings.getKeys(key).join("/") || "未绑定";
+  }
+
+  private resetAction(): void {
+    this.actionIndex = this.safeAction;
+    this.actionPainted = false;
+  }
+
+  invalidate(): void {
+    this.detailWidth = 0;
+    this.resetAction();
+  }
+
+  dispose(): void {
+    this.settled = true;
+    this.done = undefined;
+    this.getAvailableRows = undefined;
+    this.detailLines = [];
+    this.items.length = 0;
+    this.browse.length = 0;
+    this.actions.length = 0;
+    this.titleLines.length = 0;
+    this.hints.length = 0;
+  }
+
+  private line(text: string, width: number, color: Parameters<SelectorTheme["fg"]>[0] = "text"): string {
+    return this.theme.fg(color, truncateToWidth(text, width, "…"));
+  }
+
+  render(width: number): string[] {
+    if (this.settled) return [];
+    const rows = Math.max(0, Math.floor(this.getAvailableRows?.() ?? 0));
+    width = Math.max(0, Math.floor(width));
+    if (width !== this.renderedWidth || rows !== this.renderedRows) this.resetAction();
+    this.renderedWidth = width;
+    this.renderedRows = rows;
+    const minimum = this.titleLines.length + this.actions.length + 7;
+    if (width < 24 || rows < minimum) {
+      this.actionPainted = false;
+      return rows === 0 ? [] : [this.line("放大窗口 / " + this.hint("tui.select.cancel") + " 取消", width, "error")];
+    }
+    // The overlay's actual available rectangle bounds every section; navigation
+    // only changes content, never the total number of returned lines.
+    const browseOverhead = this.browse.length > 0 ? 1 : 0;
+    const remaining = rows - this.titleLines.length - this.actions.length - this.hints.length - 2 - browseOverhead;
+    this.visible = this.browse.length > 0 ? Math.min(4, this.browse.length, Math.max(1, remaining - 2)) : 0;
+    this.detailRows = Math.max(1, Math.min(4, remaining - this.visible));
+    const lines: string[] = [];
+    for (const title of this.titleLines) lines.push(this.line(title, width, "accent"));
+    if (this.browse.length > 0) {
+      lines.push(this.line("只读文件 " + (this.browseIndex + 1) + "/" + this.browse.length, width, "muted"));
+      const start = Math.max(0, Math.min(this.browseIndex - Math.floor(this.visible / 2), this.browse.length - this.visible));
+      for (let position = start; position < start + this.visible; position++) {
+        const item = this.items[this.browse[position]!]!;
+        lines.push(this.line((this.focus === "browse" && position === this.browseIndex ? "→ " : "  ") + item.label + " " + item.description, width));
+      }
+    }
+    lines.push(this.line("动作", width, "muted"));
+    for (let position = 0; position < this.actions.length; position++) {
+      const item = this.items[this.actions[position]!]!;
+      const selected = this.focus === "actions" && position === this.actionIndex;
+      lines.push(this.line((selected ? "→ " : "  ") + item.label + " " + item.description, width, item.dangerous ? "error" : selected ? "accent" : "text"));
+    }
+    const index = this.focus === "browse" ? this.browse[this.browseIndex] : this.actions[this.actionIndex];
+    if (index !== this.detailIndex || width !== this.detailWidth) {
+      this.detailIndex = index;
+      this.detailWidth = width;
+      this.detailLines = index === undefined || !this.items[index]!.detail ? [] : wrapTextWithAnsi(this.items[index]!.detail!, width);
+    }
+    this.detailOffset = Math.max(0, Math.min(this.detailOffset, this.detailLines.length - this.detailRows));
+    lines.push(this.line("完整路径 " + (this.detailLines.length ? (this.detailOffset + 1) + "/" + this.detailLines.length : "—"), width, "muted"));
+    for (let row = 0; row < this.detailRows; row++) lines.push(this.line(this.detailLines[this.detailOffset + row] ?? "", width, "muted"));
+    for (const hint of this.hints) lines.push(this.line(hint, width, "dim"));
+    this.actionPainted = true;
     return lines;
   }
 
   handleInput(data: string): void {
-    if (this.settled || this.items.length === 0) return;
-    if (this.keybindings.matches(data, "tui.select.up") || data === "k") {
-      this.selectedIndex = this.selectedIndex === 0 ? this.items.length - 1 : this.selectedIndex - 1;
+    if (this.settled || !this.hasFocus) return;
+    if (isKeyRelease(data) || isKeyRepeat(data) || data.includes("\x1b[200~") || data.includes("\x1b[201~")) return;
+    if (this.keybindings.matches(data, "tui.select.cancel")) { this.finish(undefined); return; }
+    if (performance.now() < this.inputReadyAt) return;
+    const rows = Math.max(0, Math.floor(this.getAvailableRows?.() ?? 0));
+    if (rows !== this.renderedRows || !this.actionPainted) return;
+    if (this.keybindings.matches(data, "tui.input.tab") && this.browse.length > 0) {
+      this.focus = this.focus === "browse" ? "actions" : "browse";
+      this.resetAction();
+      this.detailOffset = 0;
       return;
     }
-    if (this.keybindings.matches(data, "tui.select.down") || data === "j") {
-      this.selectedIndex = this.selectedIndex === this.items.length - 1 ? 0 : this.selectedIndex + 1;
+    const up = this.keybindings.matches(data, "tui.select.up") || data === "k";
+    const down = this.keybindings.matches(data, "tui.select.down") || data === "j";
+    if (up || down) {
+      const count = this.focus === "browse" ? this.browse.length : this.actions.length;
+      if (count === 0) return;
+      const delta = up ? -1 : 1;
+      if (this.focus === "browse") this.browseIndex = (this.browseIndex + delta + count) % count;
+      else { this.actionIndex = (this.actionIndex + delta + count) % count; this.inputReadyAt = performance.now() + 150; }
+      this.actionPainted = false;
+      this.detailOffset = 0;
       return;
     }
-    if (this.keybindings.matches(data, "tui.select.pageUp")) {
-      this.selectedIndex = Math.max(0, this.selectedIndex - this.maxVisible);
-      return;
-    }
-    if (this.keybindings.matches(data, "tui.select.pageDown")) {
-      this.selectedIndex = Math.min(this.items.length - 1, this.selectedIndex + this.maxVisible);
-      return;
-    }
-    if (this.keybindings.matches(data, "tui.select.confirm") || data === "\n") {
-      const selected = this.items[this.selectedIndex];
-      if (!selected || selected.selectable === false) return;
-      this.settled = true;
-      this.done(selected.value);
-      return;
-    }
-    if (this.keybindings.matches(data, "tui.select.cancel")) {
-      this.settled = true;
-      this.done(undefined);
+    if (this.keybindings.matches(data, "tui.select.pageUp")) { this.detailOffset = Math.max(0, this.detailOffset - this.detailRows); return; }
+    if (this.keybindings.matches(data, "tui.select.pageDown")) { this.detailOffset += this.detailRows; return; }
+    if (this.keybindings.matches(data, "tui.select.confirm") && this.focus === "actions") {
+      const item = this.items[this.actions[this.actionIndex]!];
+      if (item) this.finish(item.value);
     }
   }
+
+  private finish(value: T | undefined): void {
+    if (this.settled) return;
+    this.settled = true;
+    const done = this.done;
+    this.done = undefined;
+    done?.(value);
+  }
 }
+
+function sanitizeTitle(text: string): string { return sanitizeSessionText(text, Infinity); }

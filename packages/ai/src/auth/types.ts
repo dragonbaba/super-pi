@@ -204,7 +204,10 @@ export interface ApiKeyAuth {
  * auth from whatever credential ends up stored.
  */
 export interface OAuthAuth {
-	/** Display name, e.g. "Anthropic (Claude Pro/Max)". */
+	/** Retired auth remains a local migration error; never refresh or advertise availability. */
+	disabledReason?: string;
+
+	/** Display name, e.g. "GitHub Copilot". */
 	name: string;
 
 	/** Whether access through this auth method is backed by a provider subscription. */

@@ -7,3 +7,4 @@ export const ANSI_CSI_PATTERN = /\x1B\[[0-?]*[ -/]*[@-~]/gu;
 export const ANSI_ESCAPE_PATTERN = /\x1B[@-_]/gu;
 export const CONTROL_PATTERN = /[\x00-\x1F\x7F-\x9F]/gu;
 export const WHITESPACE_PATTERN = /\s+/gu;
+export const UI_LINE_BREAK_PATTERN = /\r?\n/u;

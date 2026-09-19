@@ -13,6 +13,7 @@ import {
 	WINDOWS_WAIT_PATTERN,
 } from "./regex.ts";
 import { extractCommandSubstitutions, inspectHereDocuments } from "./shell-substitution.ts";
+import { parseTimeoutInvocation } from "./timeout-wrapper.ts";
 
 const MAX_INSPECTED_COMMAND_CHARS = 128 * 1024;
 const BLOCK_REASON =
@@ -78,7 +79,7 @@ function hasBoundedOwnedUse(work: string | undefined): boolean {
  for (const command of commands) if (!OWNED_USE_COMMAND.test(command.trim())) return false;
  return true;
 }
-const SHELL_WRAPPER_TEXT = /sh|eval/i;
+const SHELL_WRAPPER_TEXT = /sh|eval|timeout/i;
 const EXECUTABLE_EXPANSION_TEXT = /[$`*?\[\]{}%]/;
 const LOOKUP_ASSIGNMENT = /^(?:PATH|BASH_ENV|ENV|SHELLOPTS|BASHOPTS|CDPATH)=/;
 const LEADING_REDIRECTION = /^(?:[0-9]+|\{[^}]+\})?[<>]{1,2}(.*)$/;
@@ -160,6 +161,14 @@ function inspectLifecycleScript(source: string, depth: number): string | undefin
   let launchers = 0;
   while (OPAQUE_JOB_LAUNCHER.test(name) && !SCRIPT_WRAPPERS.has(name)) {
    if (++launchers > MAX_WRAPPER_DEPTH) return lifecycleRefusal("SHELL_INSPECTION_LIMIT", "too many nested launchers", "reduce launcher nesting");
+   if (name === "timeout" || name === "timeout.exe") {
+    const parsed = parseTimeoutInvocation(tokens, index);
+    if (!parsed.supported) return lifecycleRefusal("SHELL_WRAPPER", parsed.reason, "使用受支持的正整数秒字面量格式，或直接调用内部程序并设置工具超时；不同子命令的超时不能静默合并");
+    index = parsed.commandIndex;
+    if (tokens.expansions?.[index]) return dynamicExecutable(tokens[index]);
+    name = commandName(tokens[index]!);
+    continue;
+   }
    // Other launchers (e.g. timeout durations, xargs/busybox modes) need different
    // operand grammars; never mistake their option/argument for the executable.
    if (name !== "env" && name !== "sudo" && name !== "doas") return lifecycleRefusal("SHELL_WRAPPER", "launcher operand grammar is uncertain/uninspectable", "use a directly inspectable foreground executable");
@@ -304,6 +313,15 @@ function inspectShellScript(script: string, initialCwd: string, depth: number, b
 		}
 		const tokens = segment;
 		if (tokens.length === 0) continue;
+		for (let tokenIndex = 0; tokenIndex < tokens.length; tokenIndex++) {
+			if (tokens[tokenIndex] !== ">") continue;
+			const target = tokens[tokenIndex + 1];
+			if (target !== "/dev/null" && target?.toLowerCase() !== "nul") {
+				addPrimitive(builder, "output_redirection");
+				if (target) addTarget(builder, target, workingDirectory);
+				else markUnverifiable(builder);
+			}
+		}
 		const commandIndex = commandTokenIndex(tokens);
 		if (commandIndex < 0 || commandIndex >= tokens.length) continue;
 		const command = commandName(tokens[commandIndex]!);
@@ -495,14 +513,17 @@ function inspectWindowsRmdir(tokens: readonly string[], start: number, cwd: stri
 
 function inspectFind(tokens: readonly string[], start: number, cwd: string, builder: ScanBuilder): void {
 	let deleteAction = false;
+	let execAction = false;
 	let target: string | undefined;
 	for (let index = start; index < tokens.length; index++) {
 		const value = tokens[index]!;
 		if (value === "-delete") deleteAction = true;
+		else if (value === "-exec" || value === "-execdir") execAction = true;
 		else if (!target && !value.startsWith("-")) target = value;
 	}
-	if (!deleteAction) return;
-	addPrimitive(builder, "find_delete");
+	if (!deleteAction && !execAction) return;
+	addPrimitive(builder, deleteAction ? "find_delete" : "find_exec");
+	if (execAction) markUnverifiable(builder);
 	if (target) addTarget(builder, target, cwd);
 	else markUnverifiable(builder);
 }
@@ -689,6 +710,13 @@ function commandTokenIndex(tokens: readonly string[]): number {
 			if (value.startsWith("-") || value.includes("=")) index++;
 			else break;
 		}
+	}
+	let timeoutDepth = 0;
+	while (commandName(tokens[index] ?? "") === "timeout" || commandName(tokens[index] ?? "") === "timeout.exe") {
+		if (++timeoutDepth > MAX_WRAPPER_DEPTH) return -1;
+		const parsed = parseTimeoutInvocation(tokens, index);
+		if (!parsed.supported) return -1;
+		index = parsed.commandIndex;
 	}
 	return index;
 }

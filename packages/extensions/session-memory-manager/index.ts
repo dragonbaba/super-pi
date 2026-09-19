@@ -71,13 +71,11 @@ async function selectBounded<T>(
   ctx: ExtensionCommandContext,
   title: string,
   items: readonly BoundedSelectorItem<T>[],
+  initialIndex?: number,
 ): Promise<T | undefined> {
   return ctx.ui.custom<T | undefined>((tui, theme, keybindings, done) => {
-    const terminalRows = Math.max(12, tui.terminal.rows);
-    const maxDetailLines = terminalRows < 18 ? 2 : 4;
-    const maxVisible = Math.max(2, Math.min(10, terminalRows - (8 + maxDetailLines)));
-    return new BoundedMemorySelector(title, items, maxVisible, theme, keybindings, done, maxDetailLines);
-  });
+    return new BoundedMemorySelector(title, items, theme, keybindings, done, () => Math.min(24, Math.max(0, tui.terminal.rows - 2)), initialIndex);
+  }, { overlay: true, overlayOptions: { width: "100%", maxHeight: 24, margin: 1 } });
 }
 
 async function confirmTrashDeletion(
@@ -88,7 +86,7 @@ async function confirmTrashDeletion(
     value: false,
     label: `${index + 1}. ${sanitizeSessionText(basename(entry.filePath), 512)}`,
     description: formatBytes(entry.size),
-    detail: sanitizeSessionText(entry.filePath, 1024),
+    detail: sanitizeSessionText(entry.filePath, Infinity),
     selectable: false,
   }));
   items.push(
@@ -96,6 +94,7 @@ async function confirmTrashDeletion(
       value: true,
       label: `永久删除以上 ${entries.length} 个回收文件`,
       description: "不可恢复",
+      dangerous: true,
       tone: "danger",
     },
     { value: false, label: "取消，保留全部回收文件" },
@@ -104,6 +103,7 @@ async function confirmTrashDeletion(
     ctx,
     `再次确认永久删除 Session 回收文件？\n固定目录：${TRASH_DIR}\n文件清单可滚动；不会删除未列出的文件。`,
     items,
+    items.length - 1,
   )) === true;
 }
 

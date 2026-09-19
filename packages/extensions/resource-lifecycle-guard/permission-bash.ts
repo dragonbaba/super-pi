@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { basename, resolve } from "node:path";
 import { extractCommandSubstitutions } from "./shell-substitution.ts";
+import { parseTimeoutInvocation } from "./timeout-wrapper.ts";
 
 const MAX_COMMAND_CHARS = 128 * 1024;
 const MAX_SEGMENTS = 64;
@@ -119,6 +120,17 @@ function addPositionalTargets(
 }
 
 function inspectKnownMutation(command: string, tokens: readonly string[], start: number, cwd: string, builder: ScopeBuilder): boolean {
+  if (command === "find") {
+    for (let index = start; index < tokens.length; index++) {
+      if (tokens[index] === "-delete" || tokens[index] === "-exec" || tokens[index] === "-execdir") {
+        markMutation(builder, tokens[index] === "-delete" ? "find_delete" : "find_exec");
+        addTarget(builder, tokens[index - 1] && !tokens[index - 1]!.startsWith("-") ? tokens[index - 1]! : cwd, cwd);
+        if (tokens[index] !== "-delete") markOpaque(builder, "find_exec_scope");
+        return true;
+      }
+    }
+    return true;
+  }
   if (SIMPLE_MUTATIONS.has(command)) {
     markMutation(builder, command);
     addPositionalTargets(tokens, start, builder, cwd, 0, false);
@@ -166,6 +178,13 @@ function commandIndex(tokens: readonly string[]): number {
       if (value.startsWith("-") || value.includes("=")) index += 1;
       else break;
     }
+  }
+  let timeoutDepth = 0;
+  while (commandName(tokens[index] ?? "") === "timeout" || commandName(tokens[index] ?? "") === "timeout.exe") {
+    if (++timeoutDepth > MAX_DEPTH) return -1;
+    const parsed = parseTimeoutInvocation(tokens, index);
+    if (!parsed.supported) return -1;
+    index = parsed.commandIndex;
   }
   return index;
 }
@@ -229,6 +248,10 @@ function runnerClass(command: string, tokens: readonly string[], start: number):
 
 function inspectSegment(tokens: readonly string[], cwd: string, depth: number, builder: ScopeBuilder): string {
   const index = commandIndex(tokens);
+  if (index < 0) {
+    markOpaque(builder, "unsupported_timeout_wrapper");
+    return cwd;
+  }
   if (index >= tokens.length) return cwd;
   const command = commandName(tokens[index]!);
   if (command === "cd") {
@@ -295,10 +318,11 @@ function inspectTokenBuffer(tokens: string[], cwd: string, depth: number, builde
   for (let index = 0; index < tokens.length; index++) {
     if (tokens[index] !== ">") continue;
     if (firstRedirect < 0) firstRedirect = index;
-    markMutation(builder, "output_redirection");
     const target = tokens[index + 1];
-    if (target) addTarget(builder, target, cwd);
-    else markOpaque(builder, "redirection_target_unverifiable");
+    const harmlessDevice = target === "/dev/null" || target?.toLowerCase() === "nul";
+    if (!harmlessDevice) markMutation(builder, "output_redirection");
+    if (target && !harmlessDevice) addTarget(builder, target, cwd);
+    else if (!target) markOpaque(builder, "redirection_target_unverifiable");
     index += 1;
   }
   if (firstRedirect >= 0) tokens.length = firstRedirect;

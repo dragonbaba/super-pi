@@ -415,7 +415,7 @@ Built-in providers resolve these env vars (Node.js; in browsers pass `apiKey` ex
 | OpenAI | `OPENAI_API_KEY` |
 | Ant Ling | `ANT_LING_API_KEY` |
 | Azure OpenAI | `AZURE_OPENAI_API_KEY` + `AZURE_OPENAI_BASE_URL` (e.g. `https://{resource}.ai.azure.com`) or `AZURE_OPENAI_RESOURCE_NAME`. Supports `*.openai.azure.com`, `*.cognitiveservices.azure.com` and `*.ai.azure.com`; root endpoints auto-normalize to `/openai/v1`. Optional: `AZURE_OPENAI_API_VERSION` (default `v1`), `AZURE_OPENAI_DEPLOYMENT_NAME_MAP`. |
-| Anthropic | `ANTHROPIC_API_KEY` or `ANTHROPIC_OAUTH_TOKEN` |
+| Anthropic | `ANTHROPIC_API_KEY` (`ANTHROPIC_OAUTH_TOKEN` retired) |
 | DeepSeek | `DEEPSEEK_API_KEY` |
 | NVIDIA NIM | `NVIDIA_API_KEY` |
 | Google | `GEMINI_API_KEY` |
@@ -1475,12 +1475,13 @@ Use this when one process needs different provider settings per request, or when
 
 Several providers support OAuth authentication instead of static API keys:
 
-- **Anthropic** (Claude Pro/Max subscription)
 - **OpenAI Codex** (ChatGPT Plus/Pro subscription, access to GPT-5.x Codex models)
 - **GitHub Copilot** (Copilot subscription)
 - **OpenRouter** (OAuth PKCE that mints a user-controlled API key)
 
 Each of these providers carries an `OAuthAuth` on `provider.auth.oauth` with three operations: `login(interaction)` uses the provider-neutral `AuthInteraction.prompt()`/`notify()` protocol and returns a credential, `refresh(credential, signal)` refreshes expiring credentials when applicable, and `toAuth(credential)` derives request auth (GitHub Copilot's per-account base URL comes from here). Provider login interactions and refresh calls always carry a concrete abort signal. Refresh is automatic: `models.getAuth(providerId)` and request paths refresh expired tokens under a credential-store lock, so concurrent requests and processes cannot double-refresh. OpenRouter's OAuth flow instead returns a permanent API key, so its refresh operation is a no-op.
+
+Anthropic subscription OAuth is disabled. Stored credentials and session history are retained, but the old credential fails locally and cannot trigger an automatic fallback to API billing. Select API-key login explicitly or supply a request-specific API key. `ANTHROPIC_OAUTH_TOKEN` is retired; supported non-subscription proxy Bearer auth remains available. See [migration instructions](../../docs/repairs/session-clean-timeout-boundaries.md).
 
 ```typescript
 import { createModels } from '@super-pi/ai';
@@ -1489,8 +1490,9 @@ import { anthropicProvider } from '@super-pi/ai/providers/anthropic';
 const models = createModels({ credentials: myStore }); // persistent CredentialStore
 models.setProvider(anthropicProvider());
 
-// Login: Models drives the flow and persists the credential
-await models.login('anthropic', 'oauth', {
+// Anthropic now uses an explicitly configured API key (separate API billing).
+// Other supported OAuth providers continue to use the oauth login type.
+await models.login('anthropic', 'api_key', {
   prompt: async (p) => {
     // p.type: 'text' | 'secret' | 'select' | 'manual_code'
     // manual_code prompts race a local callback server; p.signal aborts them when the server wins
@@ -1508,7 +1510,7 @@ await models.login('anthropic', 'oauth', {
   },
 });
 
-// From here on, requests resolve and refresh the token automatically
+// From here on, Anthropic requests use the explicitly configured API key.
 const model = models.getModel('anthropic', 'claude-sonnet-4-5')!;
 await models.complete(model, context);
 
