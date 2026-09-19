@@ -2,17 +2,30 @@ import { basename, resolve } from "node:path";
 import {
 	DETACH_UTILITY_PATTERN,
 	DOCKER_DETACHED_PATTERN,
+	EXECUTABLE_EXPANSION_TEXT_PATTERN,
+	LEADING_ASSIGNMENT_PATTERN,
+	LEADING_REDIRECTION_PATTERN,
+	LOOKUP_ASSIGNMENT_PATTERN,
 	NODE_RECURSIVE_RM_PATTERN,
 	NODE_UNLINK_PATTERN,
+	OPAQUE_JOB_INTERPRETER_PATTERN,
+	OPAQUE_JOB_LAUNCHER_PATTERN,
+	OWNED_FOREGROUND_JOB_PATTERN,
+	OWNED_USE_COMMAND_PATTERN,
 	POWERSHELL_REMOVE_RECURSIVE_PATTERN,
 	PYTHON_RMTREE_PATTERN,
 	PYTHON_UNLINK_PATTERN,
+	REDIRECTION_OPERATOR_PATTERN,
 	SERVICE_START_PATTERN,
+	SHELL_WRAPPER_TEXT_PATTERN,
+	SIMPLE_VARIABLE_PATTERN,
 	WINDOWS_DETACH_PATTERN,
 	WINDOWS_START_BACKGROUND_PATTERN,
 	WINDOWS_WAIT_PATTERN,
 } from "./regex.ts";
-import { extractCommandSubstitutions, inspectHereDocuments } from "./shell-substitution.ts";
+import { extractCommandSubstitutions, inspectHereDocuments, prepareShellAnalysis } from "./shell-substitution.ts";
+import { parseTimeoutInvocation } from "./timeout-wrapper.ts";
+import { isShellFileDescriptor, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
 
 const MAX_INSPECTED_COMMAND_CHARS = 128 * 1024;
 const BLOCK_REASON =
@@ -67,22 +80,13 @@ function hasUnquotedBackgroundOperator(command: string): boolean {
 }
 
 // One literal foreground job, immutable PID binding, bounded literal use, exact cleanup.
-const OWNED_FOREGROUND_JOB = /^\s*([A-Za-z0-9_./-]+)(?:[ \t]+[A-Za-z0-9_./:-]+)*[ \t]+&[ \t]*pid=\$!;[ \t]*trap 'kill "\$pid"; wait "\$pid"' EXIT;[ \t]*(?:(.{1,4096});[ \t]*kill "\$pid";[ \t]*)?wait "\$pid"\s*$/;
-const OPAQUE_JOB_LAUNCHER = /^(?:env|sudo|doas|nice|nohup|setsid|timeout|stdbuf|command|exec|busybox|xargs|sh|bash|zsh|dash|fish|ksh|powershell|pwsh|cmd)(?:\.exe)?$/i;
-const OPAQUE_JOB_INTERPRETER = /^(?:python(?:[0-9]+(?:\.[0-9]+)*)?|py|node(?:js)?)(?:\.exe)?$/i;
-const OWNED_USE_COMMAND = /^(?:curl|test|true|false|echo)(?:[ \t]+[A-Za-z0-9_./:%?=,+-]+)*$/;
 function hasBoundedOwnedUse(work: string | undefined): boolean {
  if (work === undefined) return true;
  const commands = work.split(";");
  if (commands.length > 16) return false;
- for (const command of commands) if (!OWNED_USE_COMMAND.test(command.trim())) return false;
+ for (const command of commands) if (!OWNED_USE_COMMAND_PATTERN.test(command.trim())) return false;
  return true;
 }
-const SHELL_WRAPPER_TEXT = /sh|eval/i;
-const EXECUTABLE_EXPANSION_TEXT = /[$`*?\[\]{}%]/;
-const LOOKUP_ASSIGNMENT = /^(?:PATH|BASH_ENV|ENV|SHELLOPTS|BASHOPTS|CDPATH)=/;
-const LEADING_REDIRECTION = /^(?:[0-9]+|\{[^}]+\})?[<>]{1,2}(.*)$/;
-const LEADING_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*\+?=/;
 const EMPTY_SUBSTITUTIONS: readonly string[] = [];
 export const UNCERTAIN_LIFECYCLE = "[SHELL_UNINSPECTABLE] This Bash call was not executed: uncertain/uninspectable shell structure.\nRetry: use an inspectable foreground command and resubmit for authorization.";
 function lifecycleRefusal(code: string, reason: string, recovery: string): string {
@@ -90,7 +94,7 @@ function lifecycleRefusal(code: string, reason: string, recovery: string): strin
 }
 function dynamicExecutable(token: string | undefined): string {
  // Echo only a simple variable name, never command substitutions or arbitrary operands.
- const variable = token && /^\$[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(token) ? ` (${token})` : "";
+ const variable = token && SIMPLE_VARIABLE_PATTERN.test(token) ? ` (${token})` : "";
  return lifecycleRefusal("SHELL_DYNAMIC_EXECUTABLE", `executable position uses a variable or dynamic expression${variable}`, "use the quoted literal executable path in a foreground command");
 }
 
@@ -117,10 +121,10 @@ function inspectLifecycleScript(source: string, depth: number): string | undefin
  if ((WINDOWS_DETACH_PATTERN.test(command) || WINDOWS_START_BACKGROUND_PATTERN.test(command)) && !WINDOWS_WAIT_PATTERN.test(command)) return BLOCK_REASON;
  if (DOCKER_DETACHED_PATTERN.test(command) || SERVICE_START_PATTERN.test(command)) return BLOCK_REASON;
  if (hasUnquotedBackgroundOperator(command)) {
-  const owned = OWNED_FOREGROUND_JOB.exec(command);
-  if (!owned || !hasBoundedOwnedUse(owned[2]) || OPAQUE_JOB_LAUNCHER.test(commandName(owned[1]!)) || OPAQUE_JOB_INTERPRETER.test(commandName(owned[1]!))) return BLOCK_REASON;
+  const owned = OWNED_FOREGROUND_JOB_PATTERN.exec(command);
+  if (!owned || !hasBoundedOwnedUse(owned[2]) || OPAQUE_JOB_LAUNCHER_PATTERN.test(commandName(owned[1]!)) || OPAQUE_JOB_INTERPRETER_PATTERN.test(commandName(owned[1]!))) return BLOCK_REASON;
  }
- if (!SHELL_WRAPPER_TEXT.test(command) && !EXECUTABLE_EXPANSION_TEXT.test(command)) return undefined;
+ if (!SHELL_WRAPPER_TEXT_PATTERN.test(command) && !EXECUTABLE_EXPANSION_TEXT_PATTERN.test(command)) return undefined;
  const segments = parseShellSegments(command);
  if (segments.length > MAX_SCRIPT_SEGMENTS) return lifecycleRefusal("SHELL_INSPECTION_LIMIT", "too many command segments", "reduce the number of segments");
  for (const tokens of segments) {
@@ -129,20 +133,20 @@ function inspectLifecycleScript(source: string, depth: number): string | undefin
   let shellText = false;
   let dynamicText = false;
   for (const token of tokens) {
-   if (SHELL_WRAPPER_TEXT.test(token)) shellText = true;
-   if (EXECUTABLE_EXPANSION_TEXT.test(token)) dynamicText = true;
+   if (SHELL_WRAPPER_TEXT_PATTERN.test(token)) shellText = true;
+   if (EXECUTABLE_EXPANSION_TEXT_PATTERN.test(token)) dynamicText = true;
   }
   if (!shellText && !dynamicText) continue;
   let index = 0; let changedLookup = false; let prefixes = 0;
   while (index < tokens.length) {
    const token = tokens[index]!;
    if (++prefixes > MAX_SCRIPT_SEGMENTS) return lifecycleRefusal("SHELL_INSPECTION_LIMIT", "too many command prefixes", "reduce prefixes");
-   if (LEADING_ASSIGNMENT.test(token)) {
+   if (LEADING_ASSIGNMENT_PATTERN.test(token)) {
     // Shell assignment words do not undergo field splitting (unlike env argv).
     if (uncertainAssignment(tokens, index, true)) return lifecycleRefusal("SHELL_UNINSPECTABLE", "uncertain assignment expansion or executable lookup", "use literal assignments that do not change executable lookup");
     changedLookup = true; index++; continue;
    }
-   const redirection = LEADING_REDIRECTION.exec(token);
+   const redirection = LEADING_REDIRECTION_PATTERN.exec(token);
    if (redirection) {
     changedLookup = true; index++;
     if (!redirection[1]) { if (!tokens[index]) return UNCERTAIN_LIFECYCLE; index++; }
@@ -152,14 +156,22 @@ function inspectLifecycleScript(source: string, depth: number): string | undefin
    if (prefix !== "command" && prefix !== "exec") break;
    if (++index > MAX_WRAPPER_DEPTH || !tokens[index] || tokens[index]!.startsWith("-")) return lifecycleRefusal("SHELL_WRAPPER", "unsupported command/exec prefix depth or operand", "use a direct foreground executable");
   }
-  if (/[<>]/.test(tokens[index] ?? "")) return UNCERTAIN_LIFECYCLE;
+  if (REDIRECTION_OPERATOR_PATTERN.test(tokens[index] ?? "")) return UNCERTAIN_LIFECYCLE;
   if (tokens.expansions?.[index] || hasDynamicSyntax(tokens[index] ?? "")) return dynamicExecutable(tokens[index]);
   let name = commandName(tokens[index] ?? "");
   // Only literal, option-free launcher operands are resolved. env assignments are
   // data, not executable names; split-string/options/dynamic lookup stay unknown.
   let launchers = 0;
-  while (OPAQUE_JOB_LAUNCHER.test(name) && !SCRIPT_WRAPPERS.has(name)) {
+  while (OPAQUE_JOB_LAUNCHER_PATTERN.test(name) && !SCRIPT_WRAPPERS.has(name)) {
    if (++launchers > MAX_WRAPPER_DEPTH) return lifecycleRefusal("SHELL_INSPECTION_LIMIT", "too many nested launchers", "reduce launcher nesting");
+   if (name === "timeout" || name === "timeout.exe") {
+    const parsed = parseTimeoutInvocation(tokens, index);
+    if (!parsed.supported) return lifecycleRefusal("SHELL_WRAPPER", parsed.reason, "使用受支持的正整数秒字面量格式，或直接调用内部程序并设置工具超时；不同子命令的超时不能静默合并");
+    index = parsed.commandIndex;
+    if (tokens.expansions?.[index]) return dynamicExecutable(tokens[index]);
+    name = commandName(tokens[index]!);
+    continue;
+   }
    // Other launchers (e.g. timeout durations, xargs/busybox modes) need different
    // operand grammars; never mistake their option/argument for the executable.
    if (name !== "env" && name !== "sudo" && name !== "doas") return lifecycleRefusal("SHELL_WRAPPER", "launcher operand grammar is uncertain/uninspectable", "use a directly inspectable foreground executable");
@@ -174,7 +186,7 @@ function inspectLifecycleScript(source: string, depth: number): string | undefin
    }
    // Shell redirections are removed from argv, not launcher executables. Their
    // interleaved/quoted provenance is outside this token view: refuse, don't guess.
-   if (/[<>]/.test(tokens[index] ?? "")) return UNCERTAIN_LIFECYCLE;
+   if (REDIRECTION_OPERATOR_PATTERN.test(tokens[index] ?? "")) return UNCERTAIN_LIFECYCLE;
    if (!tokens[index] || tokens[index]!.startsWith("-")) return lifecycleRefusal("SHELL_WRAPPER", "missing or unsupported launcher operand", "use a directly inspectable foreground executable");
    if (hasDynamicSyntax(tokens[index]!)) return dynamicExecutable(tokens[index]);
    changedLookup = true;
@@ -203,11 +215,11 @@ export interface HighRiskMutationScan {
 	workspaceWide: boolean;
 }
 
-type ShellSegment = string[] & { dynamic?: boolean; expansions?: number[] };
+type ShellSegment = string[] & { dynamic?: boolean; expansions?: number[]; redirections?: number[] };
 
 function uncertainAssignment(tokens: ShellSegment, index: number, shellAssignment = false): boolean {
  const expansion = tokens.expansions?.[index] ?? 0;
- return (expansion & (shellAssignment ? 4 : 14)) !== 0 || (expansion !== 0 && LOOKUP_ASSIGNMENT.test(tokens[index]!));
+ return (expansion & (shellAssignment ? 4 : 14)) !== 0 || (expansion !== 0 && LOOKUP_ASSIGNMENT_PATTERN.test(tokens[index]!));
 }
 
 interface ScanBuilder {
@@ -280,20 +292,55 @@ export function structuredMutationBlock(
 	});
 }
 
+function inspectOutputRedirections(tokens: ShellSegment, cwd: string, builder: ScanBuilder): void {
+	const redirections = tokens.redirections;
+	if (!redirections) return;
+	for (let position = 0; position < redirections.length; position++) {
+		const index = redirections[position]!;
+		const operator = tokens[index]!;
+		const target = index + 1 === redirections[position + 1] ? undefined : tokens[index + 1];
+		// Input redirections and heredocs remain with the existing lifecycle parser.
+		// Duplication, here-documents and other unsupported grammar stay opaque.
+		if (operator !== ">" && operator !== ">>" && operator !== ">|" && operator !== "&>" && operator !== "&>>") {
+			addPrimitive(builder, "unverifiable_redirection");
+			markUnverifiable(builder);
+			continue;
+		}
+		if (target === "/dev/null") continue;
+		addPrimitive(builder, "output_redirection");
+		if (!target || hasDynamicSyntax(target)) {
+			markUnverifiable(builder);
+			continue;
+		}
+		addTarget(builder, target, cwd);
+	}
+	stripShellRedirections(tokens, redirections);
+}
+
 function inspectShellScript(script: string, initialCwd: string, depth: number, builder: ScanBuilder): void {
 	if (depth > MAX_WRAPPER_DEPTH) {
 		builder.dynamicScope = true;
 		builder.unverifiableScope = true;
 		return;
 	}
-	const substitutions = extractCommandSubstitutions(script);
+	const analysis = prepareShellAnalysis(script);
+	if (analysis.hasHeredoc) {
+		addPrimitive(builder, "heredoc_uninspectable");
+		markUnverifiable(builder);
+	}
+	if (analysis.uncertain) {
+		addPrimitive(builder, "shell_context_uninspectable");
+		markUnverifiable(builder);
+	}
+	for (const nested of analysis.substitutions) inspectShellScript(nested, initialCwd, depth + 1, builder);
+	const substitutions = extractCommandSubstitutions(analysis.command);
 	if (substitutions.unterminated) {
 		addPrimitive(builder, "unterminated_command_substitution");
 		markUnverifiable(builder);
 	}
 	if (substitutions.unsupported) markUnverifiable(builder);
 	for (const nested of substitutions.scripts) inspectShellScript(nested, initialCwd, depth + 1, builder);
-	const segments = parseShellSegments(script);
+	const segments = parseShellSegments(analysis.command);
 	let workingDirectory = initialCwd;
 	for (const segment of segments) {
 		builder.segmentsVisited++;
@@ -304,6 +351,7 @@ function inspectShellScript(script: string, initialCwd: string, depth: number, b
 		}
 		const tokens = segment;
 		if (tokens.length === 0) continue;
+		inspectOutputRedirections(tokens, workingDirectory, builder);
 		const commandIndex = commandTokenIndex(tokens);
 		if (commandIndex < 0 || commandIndex >= tokens.length) continue;
 		const command = commandName(tokens[commandIndex]!);
@@ -495,16 +543,29 @@ function inspectWindowsRmdir(tokens: readonly string[], start: number, cwd: stri
 
 function inspectFind(tokens: readonly string[], start: number, cwd: string, builder: ScanBuilder): void {
 	let deleteAction = false;
-	let target: string | undefined;
+	let execAction = false;
 	for (let index = start; index < tokens.length; index++) {
 		const value = tokens[index]!;
 		if (value === "-delete") deleteAction = true;
-		else if (!target && !value.startsWith("-")) target = value;
+		else if (value === "-exec" || value === "-execdir") execAction = true;
 	}
-	if (!deleteAction) return;
-	addPrimitive(builder, "find_delete");
+	if (!deleteAction && !execAction) return;
+	addPrimitive(builder, deleteAction ? "find_delete" : "find_exec");
+	if (execAction) markUnverifiable(builder);
+	const target = findSearchRoot(tokens, start);
 	if (target) addTarget(builder, target, cwd);
 	else markUnverifiable(builder);
+}
+
+function findSearchRoot(tokens: readonly string[], start: number): string | undefined {
+	for (let index = start; index < tokens.length; index++) {
+		const value = tokens[index]!;
+		if (value === "--") return tokens[index + 1] && !tokens[index + 1]!.startsWith("-") ? tokens[index + 1] : undefined;
+		if (value === "-H" || value === "-L" || value === "-P") continue;
+		if (value.startsWith("-")) return undefined;
+		return value;
+	}
+	return undefined;
 }
 
 function inspectXargs(tokens: readonly string[], start: number, builder: ScanBuilder): void {
@@ -608,11 +669,14 @@ function parseShellSegments(command: string): ShellSegment[] {
 	let value = "";
 	let tokenStarted = false;
 	let quote = 0;
+	let arithmeticDepth = 0;
 	let escaped = false;
+	let literalWord = true;
 
 	for (let index = 0; index < command.length; index++) {
 		const code = command.charCodeAt(index);
 		if (escaped) {
+			literalWord = false;
 			value += command[index];
 			tokenStarted = true;
 			escaped = false;
@@ -646,8 +710,32 @@ function parseShellSegments(command: string): ShellSegment[] {
 			else value += command[index];
 			continue;
 		}
+		if (code === 36 && command.charCodeAt(index + 1) === 40 && command.charCodeAt(index + 2) === 40) {
+			value += command.slice(index, index + 3);
+			tokenStarted = true;
+			literalWord = false;
+			arithmeticDepth = 2;
+			index += 2;
+			continue;
+		}
+		if (code === 40 && command.charCodeAt(index + 1) === 40) {
+			value += "((";
+			tokenStarted = true;
+			literalWord = false;
+			arithmeticDepth = 2;
+			index++;
+			continue;
+		}
+		if (arithmeticDepth > 0) {
+			if (code === 40) arithmeticDepth++;
+			else if (code === 41) arithmeticDepth--;
+			value += command[index];
+			tokenStarted = true;
+			continue;
+		}
 		if (code === 34 || code === 39) {
 			quote = code;
+			literalWord = false;
 			tokenStarted = true;
 			continue;
 		}
@@ -656,13 +744,26 @@ function parseShellSegments(command: string): ShellSegment[] {
 				tokens.push(value);
 				value = "";
 				tokenStarted = false;
+				literalWord = true;
 			}
+			continue;
+		}
+		const redirectionWidth = shellRedirectionLength(command, index);
+		if (redirectionWidth > 0) {
+			if (tokenStarted && !(literalWord && isShellFileDescriptor(value))) tokens.push(value);
+			(tokens.redirections ??= []).push(tokens.length);
+			tokens.push(command.slice(index, index + redirectionWidth));
+			index += redirectionWidth - 1;
+			value = "";
+			tokenStarted = false;
+			literalWord = true;
 			continue;
 		}
 		if (code === 10 || code === 13 || code === 59 || code === 38 || code === 124 || code === 40 || code === 41) {
 			if (tokenStarted) tokens.push(value);
 			if (tokens.length > 0) segments.push(tokens);
 			tokens = [];
+			literalWord = true;
 			value = "";
 			tokenStarted = false;
 			if ((code === 38 || code === 124) && command.charCodeAt(index + 1) === code) index++;
@@ -678,17 +779,32 @@ function parseShellSegments(command: string): ShellSegment[] {
 
 function commandTokenIndex(tokens: readonly string[]): number {
 	let index = 0;
-	if (commandName(tokens[index] ?? "") === "sudo") {
-		index++;
-		while (index < tokens.length && tokens[index]!.startsWith("-")) index++;
-	}
-	if (commandName(tokens[index] ?? "") === "env") {
-		index++;
-		while (index < tokens.length) {
-			const value = tokens[index]!;
-			if (value.startsWith("-") || value.includes("=")) index++;
-			else break;
+	let wrapperDepth = 0;
+	while (index < tokens.length) {
+		const name = commandName(tokens[index] ?? "");
+		if (++wrapperDepth > MAX_WRAPPER_DEPTH) return -1;
+		if (name === "sudo" || name === "doas") {
+			index++;
+			while (index < tokens.length && tokens[index]!.startsWith("-")) index++;
+			continue;
 		}
+		if (name === "env") {
+			index++;
+			if (tokens[index] === "--") index++;
+			while (index < tokens.length) {
+				const value = tokens[index]!;
+				if (value.startsWith("-") || value.includes("=")) index++;
+				else break;
+			}
+			continue;
+		}
+		if (name === "timeout" || name === "timeout.exe") {
+			const parsed = parseTimeoutInvocation(tokens, index);
+			if (!parsed.supported) return -1;
+			index = parsed.commandIndex;
+			continue;
+		}
+		break;
 	}
 	return index;
 }
@@ -705,7 +821,7 @@ function shortOptionContains(value: string, letter: string): boolean {
 function hasDynamicSyntax(value: string): boolean {
 	for (let index = 0; index < value.length; index++) {
 		const code = value.charCodeAt(index);
-		if (code === 36 || code === 37 || code === 42 || code === 63 || code === 91 || code === 93 || code === 123 || code === 125) return true;
+		if (code === 36 || code === 37 || code === 42 || code === 63 || code === 91 || code === 93 || code === 123 || code === 125 || code === 126) return true;
 	}
 	return false;
 }

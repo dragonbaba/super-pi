@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import { basename, resolve } from "node:path";
-import { extractCommandSubstitutions } from "./shell-substitution.ts";
+import { extractCommandSubstitutions, prepareShellAnalysis } from "./shell-substitution.ts";
+import { parseTimeoutInvocation } from "./timeout-wrapper.ts";
+import { isShellFileDescriptor, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
 
 const MAX_COMMAND_CHARS = 128 * 1024;
 const MAX_SEGMENTS = 64;
@@ -40,7 +42,7 @@ function commandName(value: string): string {
 function hasDynamicSyntax(value: string): boolean {
   for (let index = 0; index < value.length; index++) {
     const code = value.charCodeAt(index);
-    if (code === 36 || code === 37 || code === 42 || code === 63 || code === 91 || code === 93 || code === 123 || code === 125) return true;
+    if (code === 36 || code === 37 || code === 42 || code === 63 || code === 91 || code === 93 || code === 123 || code === 125 || code === 126) return true;
   }
   return false;
 }
@@ -119,6 +121,18 @@ function addPositionalTargets(
 }
 
 function inspectKnownMutation(command: string, tokens: readonly string[], start: number, cwd: string, builder: ScopeBuilder): boolean {
+  if (command === "find") {
+    const root = findSearchRoot(tokens, start);
+    for (let index = start; index < tokens.length; index++) {
+      if (tokens[index] === "-delete" || tokens[index] === "-exec" || tokens[index] === "-execdir") {
+        markMutation(builder, tokens[index] === "-delete" ? "find_delete" : "find_exec");
+        addTarget(builder, root ?? cwd, cwd);
+        if (tokens[index] !== "-delete") markOpaque(builder, "find_exec_scope");
+        return true;
+      }
+    }
+    return true;
+  }
   if (SIMPLE_MUTATIONS.has(command)) {
     markMutation(builder, command);
     addPositionalTargets(tokens, start, builder, cwd, 0, false);
@@ -153,19 +167,45 @@ function inspectKnownMutation(command: string, tokens: readonly string[], start:
   return false;
 }
 
+function findSearchRoot(tokens: readonly string[], start: number): string | undefined {
+  for (let index = start; index < tokens.length; index++) {
+    const value = tokens[index]!;
+    if (value === "--") return tokens[index + 1] && !tokens[index + 1]!.startsWith("-") ? tokens[index + 1] : undefined;
+    if (value === "-H" || value === "-L" || value === "-P") continue;
+    if (value.startsWith("-")) return undefined;
+    return value;
+  }
+  return undefined;
+}
+
 function commandIndex(tokens: readonly string[]): number {
   let index = 0;
-  if (commandName(tokens[index] ?? "") === "sudo") {
-    index += 1;
-    while (index < tokens.length && tokens[index]!.startsWith("-")) index += 1;
-  }
-  if (commandName(tokens[index] ?? "") === "env") {
-    index += 1;
-    while (index < tokens.length) {
-      const value = tokens[index]!;
-      if (value.startsWith("-") || value.includes("=")) index += 1;
-      else break;
+  let wrapperDepth = 0;
+  while (index < tokens.length) {
+    const name = commandName(tokens[index] ?? "");
+    if (++wrapperDepth > MAX_DEPTH) return -1;
+    if (name === "sudo" || name === "doas") {
+      index += 1;
+      while (index < tokens.length && tokens[index]!.startsWith("-")) index += 1;
+      continue;
     }
+    if (name === "env") {
+      index += 1;
+      if (tokens[index] === "--") index += 1;
+      while (index < tokens.length) {
+        const value = tokens[index]!;
+        if (value.startsWith("-") || value.includes("=")) index += 1;
+        else break;
+      }
+      continue;
+    }
+    if (name === "timeout" || name === "timeout.exe") {
+      const parsed = parseTimeoutInvocation(tokens, index);
+      if (!parsed.supported) return -1;
+      index = parsed.commandIndex;
+      continue;
+    }
+    break;
   }
   return index;
 }
@@ -229,6 +269,10 @@ function runnerClass(command: string, tokens: readonly string[], start: number):
 
 function inspectSegment(tokens: readonly string[], cwd: string, depth: number, builder: ScopeBuilder): string {
   const index = commandIndex(tokens);
+  if (index < 0) {
+    markOpaque(builder, "unsupported_timeout_wrapper");
+    return cwd;
+  }
   if (index >= tokens.length) return cwd;
   const command = commandName(tokens[index]!);
   if (command === "cd") {
@@ -284,24 +328,32 @@ function inspectSegment(tokens: readonly string[], cwd: string, depth: number, b
   return cwd;
 }
 
-function inspectTokenBuffer(tokens: string[], cwd: string, depth: number, builder: ScopeBuilder): string {
+type PermissionTokens = string[] & { redirections?: number[] };
+
+function inspectTokenBuffer(tokens: PermissionTokens, cwd: string, depth: number, builder: ScopeBuilder): string {
   if (tokens.length === 0) return cwd;
   builder.segmentCount += 1;
   if (builder.segmentCount > MAX_SEGMENTS) {
     markOpaque(builder, "too_many_segments");
     return cwd;
   }
-  let firstRedirect = -1;
-  for (let index = 0; index < tokens.length; index++) {
-    if (tokens[index] !== ">") continue;
-    if (firstRedirect < 0) firstRedirect = index;
-    markMutation(builder, "output_redirection");
-    const target = tokens[index + 1];
-    if (target) addTarget(builder, target, cwd);
-    else markOpaque(builder, "redirection_target_unverifiable");
-    index += 1;
+  const redirections = tokens.redirections;
+  if (redirections) {
+    for (let position = 0; position < redirections.length; position++) {
+      const index = redirections[position]!;
+      const operator = tokens[index]!;
+      const target = index + 1 === redirections[position + 1] ? undefined : tokens[index + 1];
+      if (operator !== ">" && operator !== ">>" && operator !== ">|" && operator !== "&>" && operator !== "&>>") {
+        markOpaque(builder, "unverifiable_redirection");
+        continue;
+      }
+      if (target === "/dev/null") continue;
+      markMutation(builder, "output_redirection");
+      if (target) addTarget(builder, target, cwd);
+      else markOpaque(builder, "redirection_target_unverifiable");
+    }
+    stripShellRedirections(tokens, redirections);
   }
-  if (firstRedirect >= 0) tokens.length = firstRedirect;
   return tokens.length > 0 ? inspectSegment(tokens, cwd, depth, builder) : cwd;
 }
 
@@ -310,19 +362,27 @@ function inspectScript(command: string, initialCwd: string, depth: number, build
     markOpaque(builder, "command_substitution_depth");
     return;
   }
-  const substitutions = extractCommandSubstitutions(command);
+  const analysis = prepareShellAnalysis(command);
+  if (analysis.hasHeredoc) markOpaque(builder, "heredoc_uninspectable");
+  if (analysis.uncertain) markOpaque(builder, "shell_context_uninspectable");
+  for (const nested of analysis.substitutions) inspectScript(nested, initialCwd, depth + 1, builder);
+  const substitutions = extractCommandSubstitutions(analysis.command);
   if (substitutions.unterminated) markOpaque(builder, "unterminated_command_substitution");
   if (substitutions.unsupported) markOpaque(builder, "uninspectable_command_substitution");
   for (const nested of substitutions.scripts) inspectScript(nested, initialCwd, depth + 1, builder);
+  command = analysis.command;
   let cwd = initialCwd;
-  const tokens: string[] = [];
+  const tokens: PermissionTokens = [];
   let value = "";
   let tokenStarted = false;
   let quote = 0;
+  let arithmeticDepth = 0;
   let escaped = false;
+  let literalWord = true;
   for (let index = 0; index < command.length; index++) {
     const code = command.charCodeAt(index);
     if (escaped) {
+      literalWord = false;
       value += command[index];
       tokenStarted = true;
       escaped = false;
@@ -343,8 +403,32 @@ function inspectScript(command: string, initialCwd: string, depth: number, build
       else value += command[index];
       continue;
     }
+    if (code === 36 && command.charCodeAt(index + 1) === 40 && command.charCodeAt(index + 2) === 40) {
+      value += command.slice(index, index + 3);
+      tokenStarted = true;
+      literalWord = false;
+      arithmeticDepth = 2;
+      index += 2;
+      continue;
+    }
+    if (code === 40 && command.charCodeAt(index + 1) === 40) {
+      value += "((";
+      tokenStarted = true;
+      literalWord = false;
+      arithmeticDepth = 2;
+      index++;
+      continue;
+    }
+    if (arithmeticDepth > 0) {
+      if (code === 40) arithmeticDepth++;
+      else if (code === 41) arithmeticDepth--;
+      value += command[index];
+      tokenStarted = true;
+      continue;
+    }
     if (code === 34 || code === 39) {
       quote = code;
+      literalWord = false;
       tokenStarted = true;
       continue;
     }
@@ -353,21 +437,27 @@ function inspectScript(command: string, initialCwd: string, depth: number, build
         tokens.push(value);
         value = "";
         tokenStarted = false;
+        literalWord = true;
       }
       continue;
     }
-    if (code === 62) {
-      if (tokenStarted) tokens.push(value);
-      tokens.push(">");
+    const redirectionWidth = shellRedirectionLength(command, index);
+    if (redirectionWidth > 0) {
+      if (tokenStarted && !(literalWord && isShellFileDescriptor(value))) tokens.push(value);
+      (tokens.redirections ??= []).push(tokens.length);
+      tokens.push(command.slice(index, index + redirectionWidth));
+      index += redirectionWidth - 1;
       value = "";
       tokenStarted = false;
-      if (command.charCodeAt(index + 1) === 62) index += 1;
+      literalWord = true;
       continue;
     }
     if (code === 10 || code === 13 || code === 59 || code === 38 || code === 124 || code === 40 || code === 41) {
       if (tokenStarted) tokens.push(value);
       cwd = inspectTokenBuffer(tokens, cwd, depth, builder);
       tokens.length = 0;
+      if (tokens.redirections) tokens.redirections.length = 0;
+      literalWord = true;
       value = "";
       tokenStarted = false;
       if ((code === 38 || code === 124) && command.charCodeAt(index + 1) === code) index += 1;

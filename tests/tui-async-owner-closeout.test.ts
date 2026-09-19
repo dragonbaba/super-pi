@@ -207,7 +207,6 @@ function createInitializationFixture(options: InitializationFixtureOptions = {})
 	mode.startStartupDiagnostics = (): void => {
 		counters.startupDiagnostics++;
 	};
-	mode.maybeWarnAboutAnthropicSubscriptionAuth = async (): Promise<void> => {};
 	mode.showWarning = (): void => {};
 	mode.showError = (): void => {};
 	mode.getUserInput = (): Promise<string> => {
@@ -788,13 +787,8 @@ test("async owner closeout remains lifecycle-only in source", () => {
 	assert.equal(treeCopySource.match(/this\.tuiLifecycleGeneration !== lifecycleGeneration/g)?.length, 2);
 	assert.ok(treeCopySource.indexOf("this.tuiLifecycleGeneration !== lifecycleGeneration") < treeCopySource.indexOf("this.showStatus"));
 	assert.ok(treeCopySource.lastIndexOf("this.tuiLifecycleGeneration !== lifecycleGeneration") < treeCopySource.lastIndexOf("this.showError"));
-	const authWarningStart = interactiveSource.indexOf("private async maybeWarnAboutAnthropicSubscriptionAuth");
-	const authWarningEnd = interactiveSource.indexOf("\n\tprivate maybeSaveImplicitProjectTrustAfterReload", authWarningStart);
-	const authWarningSource = interactiveSource.slice(authWarningStart, authWarningEnd);
-	assert.ok(authWarningSource.indexOf("const lifecycleGeneration = this.tuiLifecycleGeneration") < authWarningSource.indexOf("await this.session.modelRuntime.checkAuth"));
-	assert.ok(authWarningSource.indexOf("this.tuiLifecycleGeneration !== lifecycleGeneration") > authWarningSource.indexOf("await this.session.modelRuntime.checkAuth"));
-	assert.ok(authWarningSource.lastIndexOf("this.tuiLifecycleGeneration !== lifecycleGeneration") > authWarningSource.indexOf("await this.session.modelRuntime.getAuth"));
-	assert.ok(authWarningSource.lastIndexOf("this.tuiLifecycleGeneration !== lifecycleGeneration") < authWarningSource.lastIndexOf("this.showWarning"));
+	assert.equal(interactiveSource.includes("maybeWarnAboutAnthropicSubscriptionAuth"), false);
+	assert.equal(interactiveSource.includes("anthropicSubscriptionWarningShown"), false);
 	const bindExtensionsStart = interactiveSource.indexOf("private async bindCurrentSessionExtensions");
 	const bindExtensionsEnd = interactiveSource.indexOf("\n\tprivate applyFullscreenScrollbarSetting", bindExtensionsStart);
 	const bindExtensionsSource = interactiveSource.slice(bindExtensionsStart, bindExtensionsEnd);
@@ -1279,7 +1273,6 @@ test("a cached model command cancels the previous uncached lookup before selecti
 	mode.showModelSelector = (): void => assert.fail("exact cached model must not open the selector");
 	mode.updateEditorBorderColor = (): void => {};
 	mode.observeLifecyclePromise = (): void => {};
-	mode.maybeWarnAboutAnthropicSubscriptionAuth = async (): Promise<void> => {};
 	mode.checkDaxnutsEasterEgg = (): void => {};
 
 	const first = mode.handleModelCommand("uncached-a") as Promise<void>;
@@ -1356,44 +1349,11 @@ test("a stale settings mode switch is not reported as an overlay rejection", asy
 	assert.equal(persistedModes, 0);
 });
 
-test("anthropic auth warning lookup is inert after the interactive lifecycle closes", async () => {
-	for (const pendingStage of ["check", "get"] as const) {
-		let settleCheck: ((value: { type: string } | undefined) => void) | undefined;
-		let settleGet: ((value: { auth: { apiKey: string } } | undefined) => void) | undefined;
-		let getAuthCalls = 0;
-		let warningCalls = 0;
-		const mode = createTestInteractiveMode() as any;
-		mode.tuiLifecycleGeneration = 0;
-		mode.anthropicSubscriptionWarningShown = false;
-		mode.runtimeHost = { session: {
-			model: { provider: "anthropic" },
-			settingsManager: { getWarnings: () => ({ anthropicExtraUsage: true }) },
-			modelRuntime: {
-				checkAuth: () => pendingStage === "check"
-					? new Promise((resolve) => { settleCheck = resolve; })
-					: Promise.resolve(undefined),
-				getAuth: () => {
-					getAuthCalls++;
-					return new Promise((resolve) => { settleGet = resolve; });
-				},
-			},
-		} };
-		mode.showWarning = (): void => { warningCalls++; };
-
-		const operation = mode.maybeWarnAboutAnthropicSubscriptionAuth() as Promise<void>;
-		await Promise.resolve();
-		if (pendingStage === "get") await Promise.resolve();
-		mode.tuiLifecycleGeneration++;
-		if (pendingStage === "check") settleCheck?.({ type: "oauth" });
-		else settleGet?.({ auth: { apiKey: "sk-ant-oat01-late" } });
-		await operation;
-
-		assert.equal(warningCalls, 0);
-		assert.equal(mode.anthropicSubscriptionWarningShown, false);
-		assert.equal(getAuthCalls, pendingStage === "check" ? 0 : 1);
-	}
+test("retired Anthropic subscription warning has no interactive auth path", () => {
+	const mode = createTestInteractiveMode() as any;
+	assert.equal(mode.maybeWarnAboutAnthropicSubscriptionAuth, undefined);
+	assert.equal(mode.anthropicSubscriptionWarningShown, undefined);
 });
-
 test("extension tree navigation is inert after the interactive lifecycle closes", async () => {
 	let bindings: any;
 	let settleNavigation: ((value: { cancelled: boolean; editorText?: string }) => void) | undefined;
@@ -1631,7 +1591,6 @@ test("interactive stop cancels the startup model catalog refresh and owned deadl
 	mode.observeLifecyclePromise = (promise: Promise<unknown>): void => { observed.push(promise); };
 	mode.checkForPackageUpdates = async (): Promise<string[]> => [];
 	mode.checkTmuxKeyboardSetup = async (): Promise<undefined> => undefined;
-	mode.maybeWarnAboutAnthropicSubscriptionAuth = async (): Promise<void> => {};
 	mode.updateAvailableProviderCount = (): void => { providerCountUpdates++; };
 	mode.getUserInput = (): Promise<string> => new Promise(() => {});
 	mode.showWarning = (): void => {};
@@ -1688,7 +1647,6 @@ test("final shutdown rejects remaining startup diagnostic UI", async () => {
 	mode.observeLifecyclePromise = (promise: Promise<unknown>): void => { observed.push(promise); };
 	mode.checkForPackageUpdates = (): Promise<string[]> => new Promise((resolve) => { settleUpdates = resolve; });
 	mode.checkTmuxKeyboardSetup = async (): Promise<undefined> => undefined;
-	mode.maybeWarnAboutAnthropicSubscriptionAuth = async (): Promise<void> => {};
 	mode.showPackageUpdateNotification = (): void => { notificationCalls++; };
 	mode.showWarning = (): void => { warningCalls++; };
 	mode.showError = (): void => {};
@@ -1827,7 +1785,6 @@ test("final shutdown rejects a late keyboard model-cycle continuation", async ()
 	mode.updateEditorBorderColor = (): void => { borderCalls++; };
 	mode.showStatus = (): void => { statusCalls++; };
 	mode.showError = (): void => { errorCalls++; };
-	mode.maybeWarnAboutAnthropicSubscriptionAuth = async (): Promise<void> => {};
 	mode.observeLifecyclePromise = (): void => {};
 
 	const operation = mode.cycleModel("forward") as Promise<void>;
@@ -2545,7 +2502,6 @@ test("final shutdown rejects a late model-selector selection", async () => {
 	mode.showStatus = (): void => { statusCalls++; };
 	mode.showError = (): void => assert.fail("late model selection must not report an error");
 	mode.observeLifecyclePromise = (): void => { warningCalls++; };
-	mode.maybeWarnAboutAnthropicSubscriptionAuth = async (): Promise<void> => {};
 	mode.checkDaxnutsEasterEgg = (): void => { easterEggCalls++; };
 	mode.showSelector = (create: (done: () => void) => { component: unknown }) => {
 		selector = create(() => { doneCalls++; }).component;
@@ -2672,7 +2628,6 @@ test("final shutdown rejects post-login model selection before catalog refresh",
 	mode.showError = (): void => {};
 	mode.showWarning = (): void => {};
 	mode.observeLifecyclePromise = (): void => {};
-	mode.maybeWarnAboutAnthropicSubscriptionAuth = async (): Promise<void> => {};
 	mode.checkDaxnutsEasterEgg = (): void => {};
 	mode.themeController = { disableAutoSync(): void {} };
 	mode.isInitialized = false;
@@ -2742,7 +2697,6 @@ test("final shutdown aborts the post-login catalog refresh and rejects its late 
 	mode.showError = (): void => {};
 	mode.showWarning = (): void => { warningCalls++; };
 	mode.observeLifecyclePromise = (): void => {};
-	mode.maybeWarnAboutAnthropicSubscriptionAuth = async (): Promise<void> => {};
 	mode.themeController = { disableAutoSync(): void {} };
 	mode.isInitialized = false;
 	mode.clearStatusIndicator = (): void => {};

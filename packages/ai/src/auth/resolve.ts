@@ -87,6 +87,7 @@ async function resolveProviderAuthWithSignal(
 	const stored = await readCredential(credentials, provider.id, signal);
 	if (stored) {
 		if (stored.type === "oauth" && provider.auth.oauth) {
+			if (provider.auth.oauth.disabledReason) throw new ModelsError("auth", provider.auth.oauth.disabledReason);
 			return resolveStoredOAuth(
 				credentials,
 				provider.id,

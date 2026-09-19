@@ -1,3 +1,5 @@
+import { assertSupportedAnthropicToken, rejectAnthropicSubscription } from "./auth/anthropic-subscription.ts";
+
 // NEVER convert to top-level imports - breaks browser/Vite builds
 let _existsSync: typeof import("node:fs").existsSync | null = null;
 let _homedir: typeof import("node:os").homedir | null = null;
@@ -139,11 +141,17 @@ export function findEnvKeys(provider: string, env?: ProviderEnv): string[] | und
 /**
  * Get API key for provider from known environment variables, e.g. OPENAI_API_KEY.
  *
- * Will not return API keys for providers that require OAuth tokens.
+ * Retired Anthropic subscription OAuth is rejected by the provider-specific boundary;
+ * supported API keys and explicitly configured proxy bearer auth remain separate.
  */
 export function getEnvApiKey(provider: KnownProvider, env?: ProviderEnv): string | undefined;
 export function getEnvApiKey(provider: string, env?: ProviderEnv): string | undefined;
 export function getEnvApiKey(provider: string, env?: ProviderEnv): string | undefined {
+	if (provider === "anthropic") {
+		if (getProviderEnvValue(ANTHROPIC_OAUTH_TOKEN_ENV, env)) rejectAnthropicSubscription();
+		assertSupportedAnthropicToken(getProviderEnvValue(ANTHROPIC_AUTH_TOKEN_ENV, env));
+		assertSupportedAnthropicToken(getProviderEnvValue(ANTHROPIC_API_KEY_ENV, env));
+	}
 	const envKeys = findEnvKeys(provider, env);
 	if (envKeys?.[0]) {
 		const apiKeyEnv = provider === "anthropic" ? envKeys.find((key) => key !== ANTHROPIC_AUTH_TOKEN_ENV) : envKeys[0];

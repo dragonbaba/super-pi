@@ -1,4 +1,5 @@
 import type { OAuthAuth } from "../types.ts";
+import { anthropicOAuth } from "./anthropic.ts";
 
 /**
  * Loads an OAuth flow module through a variable specifier so bundlers cannot
@@ -29,8 +30,7 @@ export function registerBundledOAuthFlowLoaders(loaders: OAuthFlowLoaders): void
 }
 
 export const loadAnthropicOAuth = async (): Promise<OAuthAuth> => {
-	if (bundledLoaders) return bundledLoaders.anthropic();
-	return ((await importOAuthModule("./anthropic.ts")) as { anthropicOAuth: OAuthAuth }).anthropicOAuth;
+	return anthropicOAuth;
 };
 
 export const loadOpenAICodexOAuth = async (): Promise<OAuthAuth> => {

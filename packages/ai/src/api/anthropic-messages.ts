@@ -7,6 +7,7 @@ import type {
 	RawMessageStreamEvent,
 	RefusalStopDetails,
 } from "@anthropic-ai/sdk/resources/messages.js";
+import { assertSupportedAnthropicToken, assertSupportedAnthropicHeaders } from "../auth/anthropic-subscription.ts";
 import { calculateCost, clampThinkingLevel } from "../models.ts";
 import { capabilityCacheRetention, contextForModelCapabilities, getModelCapabilities } from "../model-capabilities.ts";
 import type {
@@ -38,6 +39,7 @@ import { observeEffectiveDispatch, summarizeCacheMarkerMetadata } from "../utils
 import { headersToRecord } from "../utils/headers.ts";
 import { parseJsonWithRepair, parseStreamingJson } from "../utils/json-parse.ts";
 import { getPiUserAgent } from "../utils/pi-user-agent.ts";
+import { ANTHROPIC_MODEL_VERSION_PATTERN, TOOL_CALL_ID_SANITIZE_PATTERN } from "./anthropic-messages-regex.ts";
 import { getProviderEnvValue } from "../utils/provider-env.ts";
 import { retryProviderRequest } from "../utils/provider-retry.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
@@ -76,45 +78,6 @@ function getCacheControl(
 		cacheControl: { type: "ephemeral", ...(ttl && { ttl }) },
 	};
 }
-
-// Stealth mode: Mimic Claude Code's tool naming exactly
-const claudeCodeVersion = "2.1.75";
-
-// Claude Code 2.x tool names (canonical casing)
-// Source: https://cchistory.mariozechner.at/data/prompts-2.1.11.md
-// To update: https://github.com/badlogic/cchistory
-const claudeCodeTools = [
-	"Read",
-	"Write",
-	"Edit",
-	"Bash",
-	"Grep",
-	"Glob",
-	"AskUserQuestion",
-	"EnterPlanMode",
-	"ExitPlanMode",
-	"KillShell",
-	"NotebookEdit",
-	"Skill",
-	"Task",
-	"TaskOutput",
-	"TodoWrite",
-	"WebFetch",
-	"WebSearch",
-];
-
-const ccToolLookup = new Map(claudeCodeTools.map((t) => [t.toLowerCase(), t]));
-
-// Convert tool name to CC canonical casing if it matches (case-insensitive)
-const toClaudeCodeName = (name: string) => ccToolLookup.get(name.toLowerCase()) ?? name;
-const fromClaudeCodeName = (name: string, tools?: Tool[]) => {
-	if (tools && tools.length > 0) {
-		const lowerName = name.toLowerCase();
-		const matchedTool = tools.find((tool) => tool.name.toLowerCase() === lowerName);
-		if (matchedTool) return matchedTool.name;
-	}
-	return name;
-};
 
 /**
  * Convert content blocks to Anthropic API format
@@ -197,7 +160,7 @@ function getAnthropicCompat(
  */
 function defaultSupportsToolReferences(model: Model<"anthropic-messages">): boolean {
 	if (model.provider !== "anthropic" || model.id.includes("haiku")) return false;
-	const version = model.id.match(/^claude-(?:opus|sonnet|fable)-(\d+)(?:-(\d+))?(?:-|$)/);
+	const version = model.id.match(ANTHROPIC_MODEL_VERSION_PATTERN);
 	if (!version) return false;
 	const major = Number(version[1]);
 	const minor = version[2] && version[2].length < 8 ? Number(version[2]) : 0;
@@ -521,11 +484,23 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 
 		try {
 			let client: Anthropic;
-			let isOAuth: boolean;
+			assertSupportedAnthropicToken(options?.apiKey);
+			assertSupportedAnthropicHeaders(model.headers);
+			assertSupportedAnthropicHeaders(options?.headers);
 
 			if (options?.client) {
 				client = options.client;
-				isOAuth = false;
+				assertSupportedAnthropicToken(client.apiKey);
+				assertSupportedAnthropicToken(client.authToken);
+				// The pinned Client SDK keeps constructor headers here. Inspect only auth
+				// headers, without building a request (which can resolve external auth).
+				// Covered with real SDK clients; custom transport code owns its own auth.
+				const defaults = (client as unknown as { _options?: { defaultHeaders?: ConstructorParameters<typeof Headers>[0] } })
+					._options?.defaultHeaders;
+				if (defaults) {
+					const headers = new Headers(defaults);
+					assertSupportedAnthropicHeaders(headersToRecord(headers));
+				}
 			} else {
 				const apiKey = options?.apiKey;
 				assertRequestAuth(model.provider, apiKey, options?.headers);
@@ -545,7 +520,7 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 				);
 				const cacheSessionId = cacheRetention === "none" ? undefined : options?.sessionId;
 
-				const created = createClient(
+				client = createClient(
 					model,
 					apiKey,
 					options?.interleavedThinking ?? true,
@@ -555,10 +530,8 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 					copilotDynamicHeaders,
 					cacheSessionId,
 				);
-				client = created.client;
-				isOAuth = created.isOAuthToken;
 			}
-			let params = buildParams(model, context, isOAuth, options);
+			let params = buildParams(model, context, options);
 			const nextParams = await options?.onPayload?.(params, model);
 			if (nextParams !== undefined) {
 				params = nextParams as MessageCreateParamsStreaming;
@@ -636,9 +609,7 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 						const block: Block = {
 							type: "toolCall",
 							id: event.content_block.id,
-							name: isOAuth
-								? fromClaudeCodeName(event.content_block.name, context.tools)
-								: event.content_block.name,
+							name: event.content_block.name,
 							arguments: (event.content_block.input as Record<string, any>) ?? {},
 							partialJson: "",
 							index: event.index,
@@ -950,10 +921,6 @@ export const streamSimple: StreamFunction<"anthropic-messages", SimpleStreamOpti
 	} satisfies AnthropicOptions);
 };
 
-function isOAuthToken(apiKey: string): boolean {
-	return apiKey.includes("sk-ant-oat");
-}
-
 function createClient(
 	model: Model<"anthropic-messages">,
 	apiKey: string | undefined,
@@ -963,7 +930,7 @@ function createClient(
 	fetch?: typeof globalThis.fetch,
 	dynamicHeaders?: Record<string, string>,
 	sessionId?: string,
-): { client: Anthropic; isOAuthToken: boolean } {
+): Anthropic {
 	// Adaptive thinking models have interleaved thinking built in, so skip the beta header.
 	const needsInterleavedBeta = interleavedThinking && getModelCapabilities(model).reasoning.mode !== "adaptive";
 	const betaFeatures: string[] = [];
@@ -994,31 +961,7 @@ function createClient(
 			),
 		});
 
-		return { client, isOAuthToken: false };
-	}
-
-	// OAuth: Bearer auth, Claude Code identity headers
-	if (apiKey && isOAuthToken(apiKey)) {
-		const client = new Anthropic({
-			apiKey: null,
-			authToken: apiKey,
-			baseURL: model.baseUrl,
-			dangerouslyAllowBrowser: true,
-			fetch,
-			defaultHeaders: mergeClientHeaders(
-				{
-					accept: "application/json",
-					"anthropic-dangerous-direct-browser-access": "true",
-					"anthropic-beta": ["claude-code-20250219", "oauth-2025-04-20", ...betaFeatures].join(","),
-					"user-agent": `claude-cli/${claudeCodeVersion}`,
-					"x-app": "cli",
-				},
-				model.headers,
-				optionsHeaders,
-			),
-		});
-
-		return { client, isOAuthToken: true };
+		return client;
 	}
 
 	// API key or header-owned auth.
@@ -1043,13 +986,12 @@ function createClient(
 		defaultHeaders,
 	});
 
-	return { client, isOAuthToken: false };
+	return client;
 }
 
 function buildParams(
 	model: Model<"anthropic-messages">,
 	context: Context,
-	isOAuthToken: boolean,
 	options?: AnthropicOptions,
 ): MessageCreateParamsStreaming {
 	const { cacheControl } = getCacheControl(model, options?.cacheRetention, options?.env);
@@ -1057,7 +999,7 @@ function buildParams(
 	const capabilities = getModelCapabilities(model);
 	const wireContext = contextForModelCapabilities(model, context);
 	const transformedMessages = transformMessages(wireContext.messages, model, normalizeToolCallId);
-	const normalizeToolName = isOAuthToken ? toClaudeCodeName : (name: string) => name;
+	const normalizeToolName = (name: string) => name;
 	const toolPlacement = splitDeferredTools(
 		{ ...wireContext, messages: transformedMessages },
 		compat.supportsToolReferences && capabilities.deferredTools,
@@ -1074,7 +1016,6 @@ function buildParams(
 		model: model.id,
 		messages: convertMessages(
 			transformedMessages,
-			isOAuthToken,
 			cacheControl,
 			compat.allowEmptySignature,
 			deferredToolNames,
@@ -1084,24 +1025,7 @@ function buildParams(
 		stream: true,
 	};
 
-	// For OAuth tokens, we MUST include Claude Code identity
-	if (isOAuthToken) {
-		params.system = [
-			{
-				type: "text",
-				text: "You are Claude Code, Anthropic's official CLI for Claude.",
-				...(cacheControl ? { cache_control: cacheControl } : {}),
-			},
-		];
-		if (wireContext.systemPrompt) {
-			params.system.push({
-				type: "text",
-				text: sanitizeSurrogates(wireContext.systemPrompt),
-				...(cacheControl ? { cache_control: cacheControl } : {}),
-			});
-		}
-	} else if (wireContext.systemPrompt) {
-		// Add cache control to system prompt for non-OAuth tokens
+	if (wireContext.systemPrompt) {
 		params.system = [
 			{
 				type: "text",
@@ -1120,14 +1044,12 @@ function buildParams(
 		params.tools = [
 			...convertTools(
 				immediateTools,
-				isOAuthToken,
 				compat.supportsEagerToolInputStreaming,
 				compat.supportsStrictTools && capabilities.strictToolSchema,
 				compat.supportsCacheControlOnTools ? cacheControl : undefined,
 			),
 			...convertTools(
 				deferredTools,
-				isOAuthToken,
 				compat.supportsEagerToolInputStreaming,
 				compat.supportsStrictTools && capabilities.strictToolSchema,
 				undefined,
@@ -1187,12 +1109,11 @@ function buildParams(
 
 // Normalize tool call IDs to match Anthropic's required pattern and length
 function normalizeToolCallId(id: string): string {
-	return id.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 64);
+	return id.replace(TOOL_CALL_ID_SANITIZE_PATTERN, "_").slice(0, 64);
 }
 
 function convertToolResult(
 	msg: ToolResultMessage,
-	isOAuthToken: boolean,
 	deferredToolNames: ReadonlySet<string>,
 	loadedToolNames: Set<string>,
 	normalizeToolName: (name: string) => string,
@@ -1204,7 +1125,7 @@ function convertToolResult(
 		loadedToolNames.add(normalizedName);
 		references.push({
 			type: "tool_reference",
-			tool_name: isOAuthToken ? toClaudeCodeName(name) : name,
+			tool_name: name,
 		});
 	}
 	const convertedContent = convertContentBlocks(msg.content);
@@ -1227,7 +1148,6 @@ function convertToolResult(
 
 function convertMessages(
 	transformedMessages: Message[],
-	isOAuthToken: boolean,
 	cacheControl?: CacheControlEphemeral,
 	allowEmptySignature = false,
 	deferredToolNames: ReadonlySet<string> = new Set(),
@@ -1326,7 +1246,7 @@ function convertMessages(
 					blocks.push({
 						type: "tool_use",
 						id: block.id,
-						name: isOAuthToken ? toClaudeCodeName(block.name) : block.name,
+						name: block.name,
 						input: block.arguments ?? {},
 					});
 				}
@@ -1344,7 +1264,6 @@ function convertMessages(
 			while (j < transformedMessages.length && transformedMessages[j].role === "toolResult") {
 				const converted = convertToolResult(
 					transformedMessages[j] as ToolResultMessage,
-					isOAuthToken,
 					deferredToolNames,
 					loadedToolNames,
 					normalizeToolName,
@@ -1398,7 +1317,6 @@ function shouldUseFineGrainedToolStreamingBeta(model: Model<"anthropic-messages"
 
 function convertTools(
 	tools: Tool[],
-	isOAuthToken: boolean,
 	supportsEagerToolInputStreaming: boolean,
 	supportsStrictTools: boolean,
 	cacheControl?: CacheControlEphemeral,
@@ -1424,7 +1342,7 @@ function convertTools(
 				: legacyInputSchema;
 
 		return {
-			name: isOAuthToken ? toClaudeCodeName(tool.name) : tool.name,
+			name: tool.name,
 			description: tool.description,
 			...(supportsEagerToolInputStreaming ? { eager_input_streaming: true } : {}),
 			...(strict === true ? { strict: true } : {}),
