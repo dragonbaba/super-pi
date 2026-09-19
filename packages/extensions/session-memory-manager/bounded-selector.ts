@@ -32,8 +32,11 @@ export class BoundedMemorySelector<T> {
   private readonly safeAction: number;
   private readonly hints: string[];
   private detailIndex: number | undefined;
+  private detailText: string | undefined;
   private detailWidth = 0;
   private detailLines: string[] = [];
+  /** Deterministic test/diagnostic counter for actual production wrapping calls. */
+  private detailWrapCount = 0;
   private detailOffset = 0;
   private pasteActive = false;
   private pastePrefix = "";
@@ -116,6 +119,9 @@ export class BoundedMemorySelector<T> {
     this.done = undefined;
     this.getAvailableRows = undefined;
     this.detailLines = [];
+    this.detailIndex = undefined;
+    this.detailText = undefined;
+    this.detailWidth = 0;
     this.pasteActive = false;
     this.pastePrefix = "";
     this.items.length = 0;
@@ -179,12 +185,14 @@ export class BoundedMemorySelector<T> {
     }
     const index = this.focus === "browse" ? this.browse[this.browseIndex] : this.actions[this.actionIndex];
     const detail = index === undefined ? undefined : this.items[index]!.detail;
-    if (index !== this.detailIndex || width !== this.detailWidth) {
+    if (detail && (index !== this.detailIndex || width !== this.detailWidth || detail !== this.detailText)) {
       this.detailIndex = index;
+      this.detailText = detail;
       this.detailWidth = width;
-      this.detailLines = detail ? wrapTextWithAnsi(detail, width) : [];
+      this.detailLines = wrapTextWithAnsi(detail, width);
+      this.detailWrapCount++;
     }
-    const detailCount = detail ? this.detailLines.length : 0;
+    const detailCount = detail && index === this.detailIndex && detail === this.detailText ? this.detailLines.length : 0;
     this.detailOffset = Math.max(0, Math.min(this.detailOffset, detailCount - this.detailRows));
     lines.push(this.line("完整路径 " + (detailCount ? (this.detailOffset + 1) + "/" + detailCount : "—"), width, "muted"));
     for (let row = 0; row < this.detailRows; row++) lines.push(this.line((detailCount ? this.detailLines[this.detailOffset + row] : "") ?? "", width, "muted"));

@@ -262,6 +262,43 @@ test("mutation scans cover compact output redirection forms", () => {
   assert.equal(inspectHighRiskBashMutation({ command: 'echo "literal > text"' }, process.cwd()), undefined);
   assert.equal(inspectBashPermissionScope({ command: 'echo "literal >> text"' }, process.cwd())?.kind, "read-only");
 });
+
+test("redirection analysis keeps arithmetic and heredoc data out of file targets", () => {
+  for (const arithmetic of ["printf '%s\\n' $((8 >> 1))", 'printf "%s\\n" "$((8 >> 1))"', "printf '%s\\n' $((8 << 1))"]) {
+    assert.equal(inspectBashResourceLifecycle({ command: arithmetic }), undefined);
+    assert.equal(inspectHighRiskBashMutation({ command: arithmetic }, process.cwd()), undefined);
+    assert.equal(inspectBashPermissionScope({ command: arithmetic }, process.cwd())?.kind, "read-only");
+  }
+
+  const quotedHere = "cat <<'EOF'\nliteral > victim.txt\nliteral >> other.txt\nliteral 1> third.txt\nliteral 2>> fourth.txt\nliteral => compare\nEOF";
+  assert.match(inspectBashResourceLifecycle({ command: quotedHere }) ?? "", /SHELL_HEREDOC/);
+  const hereMutation = inspectHighRiskBashMutation({ command: quotedHere }, process.cwd());
+  assert.ok(hereMutation?.primitives.includes("heredoc_uninspectable"));
+  assert.equal(hereMutation?.targets.length, 0);
+  const herePermission = inspectBashPermissionScope({ command: quotedHere }, process.cwd());
+  assert.equal(herePermission?.kind, "opaque-script");
+  assert.equal(herePermission?.targets.length, 0);
+
+  const multipleHere = "cat <<A <<B\nbody > one.txt\nA\nbody >> two.txt\nB";
+  assert.equal(inspectHighRiskBashMutation({ command: multipleHere }, process.cwd())?.targets.length, 0);
+  assert.equal(inspectBashPermissionScope({ command: multipleHere }, process.cwd())?.targets.length, 0);
+
+  const followingWrite = "cat <<'EOF'\nliteral > victim.txt\nEOF\necho x > after.txt";
+  const followingMutation = inspectHighRiskBashMutation({ command: followingWrite }, process.cwd());
+  assert.ok(followingMutation?.targets.some(target => target.endsWith("after.txt")));
+  assert.equal(followingMutation?.targets.some(target => target.endsWith("victim.txt")), false);
+  assert.ok(inspectBashPermissionScope({ command: followingWrite }, process.cwd())?.primitives.includes("output_redirection"));
+
+  const nested = "cat <<EOF\n$(echo nested > nested.txt)\nEOF";
+  const nestedMutation = inspectHighRiskBashMutation({ command: nested }, process.cwd());
+  assert.ok(nestedMutation?.targets.some(target => target.endsWith("nested.txt")));
+  assert.ok(inspectBashPermissionScope({ command: nested }, process.cwd())?.targets.some(target => target.endsWith("nested.txt")));
+
+  const timeoutHere = "timeout 250 cat <<'EOF'\nliteral > victim.txt\nEOF\necho x > timeout-after.txt";
+  const timeoutMutation = inspectHighRiskBashMutation({ command: timeoutHere }, process.cwd());
+  assert.ok(timeoutMutation?.targets.some(target => target.endsWith("timeout-after.txt")));
+  assert.equal(timeoutMutation?.targets.some(target => target.endsWith("victim.txt")), false);
+});
 test("timeout scan continues into dangerous inner commands and preserves command boundaries", () => {
   const cases = [
     "timeout 250 find . -delete",
@@ -326,16 +363,31 @@ test("detail cache reuses same path across action focus and releases on cancella
   selector.handleInput("\t");
   const first = selector.render(40);
   const cache = (selector as any).detailLines;
+  const initialWraps = (selector as any).detailWrapCount;
+  assert.ok(initialWraps > 0);
   for (let index = 0; index < 100; index++) {
     assert.deepEqual(selector.render(40), first);
+    assert.equal((selector as any).detailWrapCount, initialWraps);
     selector.handleInput("\t");
     assert.doesNotMatch(selector.render(40).join("\n"), /synthetic/);
+    assert.equal((selector as any).detailWrapCount, initialWraps);
     selector.handleInput("\t");
     selector.render(40);
+    assert.strictEqual((selector as any).detailLines, cache);
+    assert.equal((selector as any).detailWrapCount, initialWraps);
   }
   selector.render(30);
   assert.notEqual((selector as any).detailLines, cache);
+  assert.equal((selector as any).detailWrapCount, initialWraps + 1);
+  const other = new BoundedMemorySelector("清理", confirmationItems(), theme, keybindings, () => {}, () => 22, 1);
+  other.focused = true;
+  other.render(40);
+  other.handleInput("\t");
+  other.render(40);
+  assert.notStrictEqual((other as any).detailLines, (selector as any).detailLines);
+  other.dispose();
   selector.handleInput("\x1b");
   assert.equal((selector as any).done, undefined);
   assert.equal((selector as any).detailLines.length, 0);
+  assert.equal((selector as any).detailText, undefined);
 });

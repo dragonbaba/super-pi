@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { basename, resolve } from "node:path";
-import { extractCommandSubstitutions } from "./shell-substitution.ts";
+import { extractCommandSubstitutions, prepareShellAnalysis } from "./shell-substitution.ts";
 import { parseTimeoutInvocation } from "./timeout-wrapper.ts";
 import { isShellFileDescriptor, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
 
@@ -342,15 +342,21 @@ function inspectScript(command: string, initialCwd: string, depth: number, build
     markOpaque(builder, "command_substitution_depth");
     return;
   }
-  const substitutions = extractCommandSubstitutions(command);
+  const analysis = prepareShellAnalysis(command);
+  if (analysis.hasHeredoc) markOpaque(builder, "heredoc_uninspectable");
+  if (analysis.uncertain) markOpaque(builder, "shell_context_uninspectable");
+  for (const nested of analysis.substitutions) inspectScript(nested, initialCwd, depth + 1, builder);
+  const substitutions = extractCommandSubstitutions(analysis.command);
   if (substitutions.unterminated) markOpaque(builder, "unterminated_command_substitution");
   if (substitutions.unsupported) markOpaque(builder, "uninspectable_command_substitution");
   for (const nested of substitutions.scripts) inspectScript(nested, initialCwd, depth + 1, builder);
+  command = analysis.command;
   let cwd = initialCwd;
   const tokens: PermissionTokens = [];
   let value = "";
   let tokenStarted = false;
   let quote = 0;
+  let arithmeticDepth = 0;
   let escaped = false;
   let literalWord = true;
   for (let index = 0; index < command.length; index++) {
@@ -375,6 +381,29 @@ function inspectScript(command: string, initialCwd: string, depth: number, build
     if (quote !== 0) {
       if (code === quote) quote = 0;
       else value += command[index];
+      continue;
+    }
+    if (code === 36 && command.charCodeAt(index + 1) === 40 && command.charCodeAt(index + 2) === 40) {
+      value += command.slice(index, index + 3);
+      tokenStarted = true;
+      literalWord = false;
+      arithmeticDepth = 2;
+      index += 2;
+      continue;
+    }
+    if (code === 40 && command.charCodeAt(index + 1) === 40) {
+      value += "((";
+      tokenStarted = true;
+      literalWord = false;
+      arithmeticDepth = 2;
+      index++;
+      continue;
+    }
+    if (arithmeticDepth > 0) {
+      if (code === 40) arithmeticDepth++;
+      else if (code === 41) arithmeticDepth--;
+      value += command[index];
+      tokenStarted = true;
       continue;
     }
     if (code === 34 || code === 39) {

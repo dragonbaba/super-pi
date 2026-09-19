@@ -23,7 +23,7 @@ import {
 	WINDOWS_START_BACKGROUND_PATTERN,
 	WINDOWS_WAIT_PATTERN,
 } from "./regex.ts";
-import { extractCommandSubstitutions, inspectHereDocuments } from "./shell-substitution.ts";
+import { extractCommandSubstitutions, inspectHereDocuments, prepareShellAnalysis } from "./shell-substitution.ts";
 import { parseTimeoutInvocation } from "./timeout-wrapper.ts";
 import { isShellFileDescriptor, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
 
@@ -320,14 +320,24 @@ function inspectShellScript(script: string, initialCwd: string, depth: number, b
 		builder.unverifiableScope = true;
 		return;
 	}
-	const substitutions = extractCommandSubstitutions(script);
+	const analysis = prepareShellAnalysis(script);
+	if (analysis.hasHeredoc) {
+		addPrimitive(builder, "heredoc_uninspectable");
+		markUnverifiable(builder);
+	}
+	if (analysis.uncertain) {
+		addPrimitive(builder, "shell_context_uninspectable");
+		markUnverifiable(builder);
+	}
+	for (const nested of analysis.substitutions) inspectShellScript(nested, initialCwd, depth + 1, builder);
+	const substitutions = extractCommandSubstitutions(analysis.command);
 	if (substitutions.unterminated) {
 		addPrimitive(builder, "unterminated_command_substitution");
 		markUnverifiable(builder);
 	}
 	if (substitutions.unsupported) markUnverifiable(builder);
 	for (const nested of substitutions.scripts) inspectShellScript(nested, initialCwd, depth + 1, builder);
-	const segments = parseShellSegments(script);
+	const segments = parseShellSegments(analysis.command);
 	let workingDirectory = initialCwd;
 	for (const segment of segments) {
 		builder.segmentsVisited++;
@@ -646,6 +656,7 @@ function parseShellSegments(command: string): ShellSegment[] {
 	let value = "";
 	let tokenStarted = false;
 	let quote = 0;
+	let arithmeticDepth = 0;
 	let escaped = false;
 	let literalWord = true;
 
@@ -684,6 +695,29 @@ function parseShellSegments(command: string): ShellSegment[] {
 		if (quote !== 0) {
 			if (code === quote) quote = 0;
 			else value += command[index];
+			continue;
+		}
+		if (code === 36 && command.charCodeAt(index + 1) === 40 && command.charCodeAt(index + 2) === 40) {
+			value += command.slice(index, index + 3);
+			tokenStarted = true;
+			literalWord = false;
+			arithmeticDepth = 2;
+			index += 2;
+			continue;
+		}
+		if (code === 40 && command.charCodeAt(index + 1) === 40) {
+			value += "((";
+			tokenStarted = true;
+			literalWord = false;
+			arithmeticDepth = 2;
+			index++;
+			continue;
+		}
+		if (arithmeticDepth > 0) {
+			if (code === 40) arithmeticDepth++;
+			else if (code === 41) arithmeticDepth--;
+			value += command[index];
+			tokenStarted = true;
 			continue;
 		}
 		if (code === 34 || code === 39) {
