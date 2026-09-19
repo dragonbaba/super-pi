@@ -46,6 +46,7 @@ const HOT_REGEX_FREE_FILES = [
 	"packages/coding-agent/src/utils/clipboard-image.ts",
 	"packages/extensions/resource-lifecycle-guard/permission-rule.ts",
 	"packages/extensions/resource-lifecycle-guard/core.ts",
+	"packages/extensions/resource-lifecycle-guard/shell-redirection.ts",
 	"packages/extensions/resource-lifecycle-guard/permission-bash.ts",
 	"packages/extensions/session-memory-manager/bounded-selector.ts",
 	"packages/extensions/session-memory-manager/index.ts",

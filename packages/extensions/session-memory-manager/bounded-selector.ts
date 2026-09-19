@@ -38,6 +38,7 @@ export class BoundedMemorySelector<T> {
   private pasteActive = false;
   private pastePrefix = "";
   private visible = 1;
+  private actionVisible = 1;
   private detailRows = 1;
   private renderedWidth = 0;
   private renderedRows = 0;
@@ -135,17 +136,24 @@ export class BoundedMemorySelector<T> {
     if (width !== this.renderedWidth || rows !== this.renderedRows) this.resetAction();
     this.renderedWidth = width;
     this.renderedRows = rows;
-    const minimum = this.titleLines.length + this.actions.length + this.hints.length + 3 + (this.browse.length > 0 ? 2 : 0);
+    // The overlay's actual available rectangle bounds every section. Action rows
+    // are a viewport over the full action index, so a long Session history does
+    // not turn the fixed-height overlay into an unusable resize warning.
+    const browseOverhead = this.browse.length > 0 ? 1 : 0;
+    const fixedRows = this.titleLines.length + this.hints.length + browseOverhead + 2;
+    const minimum = fixedRows + (this.browse.length > 0 ? 1 : 0) + 1 + 1;
     if (width < 24 || rows < minimum) {
       this.actionPainted = false;
       return rows === 0 ? [] : [this.line("放大窗口 / " + this.hint("tui.select.cancel") + " 取消", width, "error")];
     }
-    // The overlay's actual available rectangle bounds every section; navigation
-    // only changes content, never the total number of returned lines.
-    const browseOverhead = this.browse.length > 0 ? 1 : 0;
-    const remaining = rows - this.titleLines.length - this.actions.length - this.hints.length - 2 - browseOverhead;
+    let remaining = rows - fixedRows;
     this.visible = this.browse.length > 0 ? Math.min(4, this.browse.length, Math.max(1, remaining - 2)) : 0;
-    this.detailRows = Math.max(1, Math.min(4, remaining - this.visible));
+    remaining -= this.visible;
+    this.actionVisible = this.actions.length > 0
+      ? Math.min(8, this.actions.length, Math.max(1, remaining - 1))
+      : 0;
+    remaining -= this.actionVisible;
+    this.detailRows = Math.max(1, Math.min(4, remaining));
     const lines: string[] = [];
     for (const title of this.titleLines) lines.push(this.line(title, width, "accent"));
     if (this.browse.length > 0) {
@@ -156,8 +164,15 @@ export class BoundedMemorySelector<T> {
         lines.push(this.line((this.focus === "browse" && position === this.browseIndex ? "→ " : "  ") + item.display, width));
       }
     }
-    lines.push(this.line("动作", width, "muted"));
-    for (let position = 0; position < this.actions.length; position++) {
+    const actionTotal = this.actions.length;
+    const actionStart = actionTotal === 0
+      ? 0
+      : Math.max(0, Math.min(this.actionIndex - Math.floor(this.actionVisible / 2), actionTotal - this.actionVisible));
+    const actionEnd = Math.min(actionTotal, actionStart + this.actionVisible);
+    lines.push(this.line(actionTotal > this.actionVisible
+      ? `动作 ${actionStart + 1}-${actionEnd}/${actionTotal}`
+      : "动作", width, "muted"));
+    for (let position = actionStart; position < actionEnd; position++) {
       const item = this.items[this.actions[position]!]!;
       const selected = this.focus === "actions" && position === this.actionIndex;
       lines.push(this.line((selected ? "→ " : "  ") + item.display, width, item.dangerous ? "error" : selected ? "accent" : "text"));
@@ -205,7 +220,8 @@ export class BoundedMemorySelector<T> {
     }
     if (this.keybindings.matches(data, "tui.select.pageUp")) { this.detailOffset = Math.max(0, this.detailOffset - this.detailRows); return; }
     if (this.keybindings.matches(data, "tui.select.pageDown")) { this.detailOffset += this.detailRows; return; }
-    if (!repeated && performance.now() >= this.inputReadyAt && this.keybindings.matches(data, "tui.select.confirm") && this.focus === "actions") {
+    const confirm = data === "\r" || data === "\n" || this.keybindings.matches(data, "tui.select.confirm");
+    if (!repeated && performance.now() >= this.inputReadyAt && confirm && this.focus === "actions") {
       const item = this.items[this.actions[this.actionIndex]!];
       if (item) this.finish(item.value);
     }

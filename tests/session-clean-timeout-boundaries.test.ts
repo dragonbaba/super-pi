@@ -120,6 +120,38 @@ test("memory clean selector separates read-only browsing and defaults to cancel"
   assert.equal(selector.render(40).length, 0);
 });
 
+test("memory clean selector pages long action lists inside the overlay", async () => {
+  let result: number | undefined;
+  const items = Array.from({ length: 30 }, (_, index) => ({ value: index, label: `Session ${index}`, detail: `/tmp/synthetic/session-${index}.jsonl` }));
+  const selector = new BoundedMemorySelector("选择 Session", items, theme, keybindings, value => { result = value; }, () => 24, 0);
+  selector.focused = true;
+  const first = selector.render(50).join("\n");
+  assert.match(first, /动作 1-8\/30/);
+  assert.ok(selector.render(50).length < 24);
+  for (let index = 0; index < 29; index++) {
+    selector.handleInput("\x1b[B");
+    selector.render(50);
+  }
+  assert.match(selector.render(50).join("\n"), /动作 23-30\/30/);
+  await new Promise<void>(resolve => setTimeout(resolve, 270));
+  selector.handleInput("\r");
+  assert.equal(result, 29);
+  assert.equal((selector as any).items.length, 0);
+});
+
+test("memory clean selector retains raw Enter with incomplete keybindings", async () => {
+  let result: boolean | undefined;
+  const incomplete = {
+    matches: (data: string, key: string) => key === "tui.select.cancel" && data === "\x1b",
+    getKeys: keybindings.getKeys.bind(keybindings),
+  };
+  const selector = new BoundedMemorySelector("确认", confirmationItems(), theme, incomplete, value => { result = value; }, () => 22, 2);
+  selector.focused = true;
+  selector.render(40);
+  await new Promise<void>(resolve => setTimeout(resolve, 270));
+  selector.handleInput("\r");
+  assert.equal(result, false);
+});
 test("memory clean selector keeps a fixed detail area and bounds narrow windows", () => {
   const selector = new BoundedMemorySelector("再次确认", confirmationItems(), theme, keybindings, () => {}, () => 24, 0);
   selector.focused = true;
@@ -215,6 +247,21 @@ test("GNU timeout literals are recognized without probing or rewriting", () => {
   assert.equal(scope?.kind, "read-only");
 });
 
+test("mutation scans cover compact output redirection forms", () => {
+  for (const command of ["echo data >> important.log", "echo data 1> important.log", "echo data 2>>important.log"]) {
+    const scan = inspectHighRiskBashMutation({ command }, process.cwd());
+    assert.ok(scan?.primitives.includes("output_redirection"), command);
+    assert.ok(scan?.targets.some(target => target.endsWith("important.log")), command);
+    const scope = inspectBashPermissionScope({ command }, process.cwd());
+    assert.equal(scope?.kind, "known-mutation", command);
+    assert.ok(scope?.primitives.includes("output_redirection"), command);
+  }
+  assert.equal(inspectHighRiskBashMutation({ command: "echo diagnostic 2>/dev/null" }, process.cwd()), undefined);
+  const duplicatedFd = inspectHighRiskBashMutation({ command: "echo diagnostic 2>&1" }, process.cwd());
+  assert.ok(duplicatedFd?.unverifiableScope);
+  assert.equal(inspectHighRiskBashMutation({ command: 'echo "literal > text"' }, process.cwd()), undefined);
+  assert.equal(inspectBashPermissionScope({ command: 'echo "literal >> text"' }, process.cwd())?.kind, "read-only");
+});
 test("timeout scan continues into dangerous inner commands and preserves command boundaries", () => {
   const cases = [
     "timeout 250 find . -delete",

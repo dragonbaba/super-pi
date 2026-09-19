@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { basename, resolve } from "node:path";
 import { extractCommandSubstitutions } from "./shell-substitution.ts";
 import { parseTimeoutInvocation } from "./timeout-wrapper.ts";
+import { isShellFileDescriptor, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
 
 const MAX_COMMAND_CHARS = 128 * 1024;
 const MAX_SEGMENTS = 64;
@@ -307,25 +308,32 @@ function inspectSegment(tokens: readonly string[], cwd: string, depth: number, b
   return cwd;
 }
 
-function inspectTokenBuffer(tokens: string[], cwd: string, depth: number, builder: ScopeBuilder): string {
+type PermissionTokens = string[] & { redirections?: number[] };
+
+function inspectTokenBuffer(tokens: PermissionTokens, cwd: string, depth: number, builder: ScopeBuilder): string {
   if (tokens.length === 0) return cwd;
   builder.segmentCount += 1;
   if (builder.segmentCount > MAX_SEGMENTS) {
     markOpaque(builder, "too_many_segments");
     return cwd;
   }
-  let firstRedirect = -1;
-  for (let index = 0; index < tokens.length; index++) {
-    if (tokens[index] !== ">") continue;
-    if (firstRedirect < 0) firstRedirect = index;
-    const target = tokens[index + 1];
-    const harmlessDevice = target === "/dev/null" || target?.toLowerCase() === "nul";
-    if (!harmlessDevice) markMutation(builder, "output_redirection");
-    if (target && !harmlessDevice) addTarget(builder, target, cwd);
-    else if (!target) markOpaque(builder, "redirection_target_unverifiable");
-    index += 1;
+  const redirections = tokens.redirections;
+  if (redirections) {
+    for (let position = 0; position < redirections.length; position++) {
+      const index = redirections[position]!;
+      const operator = tokens[index]!;
+      const target = index + 1 === redirections[position + 1] ? undefined : tokens[index + 1];
+      if (operator !== ">" && operator !== ">>" && operator !== ">|" && operator !== "&>" && operator !== "&>>") {
+        markOpaque(builder, "unverifiable_redirection");
+        continue;
+      }
+      if (target === "/dev/null") continue;
+      markMutation(builder, "output_redirection");
+      if (target) addTarget(builder, target, cwd);
+      else markOpaque(builder, "redirection_target_unverifiable");
+    }
+    stripShellRedirections(tokens, redirections);
   }
-  if (firstRedirect >= 0) tokens.length = firstRedirect;
   return tokens.length > 0 ? inspectSegment(tokens, cwd, depth, builder) : cwd;
 }
 
@@ -339,14 +347,16 @@ function inspectScript(command: string, initialCwd: string, depth: number, build
   if (substitutions.unsupported) markOpaque(builder, "uninspectable_command_substitution");
   for (const nested of substitutions.scripts) inspectScript(nested, initialCwd, depth + 1, builder);
   let cwd = initialCwd;
-  const tokens: string[] = [];
+  const tokens: PermissionTokens = [];
   let value = "";
   let tokenStarted = false;
   let quote = 0;
   let escaped = false;
+  let literalWord = true;
   for (let index = 0; index < command.length; index++) {
     const code = command.charCodeAt(index);
     if (escaped) {
+      literalWord = false;
       value += command[index];
       tokenStarted = true;
       escaped = false;
@@ -369,6 +379,7 @@ function inspectScript(command: string, initialCwd: string, depth: number, build
     }
     if (code === 34 || code === 39) {
       quote = code;
+      literalWord = false;
       tokenStarted = true;
       continue;
     }
@@ -377,21 +388,27 @@ function inspectScript(command: string, initialCwd: string, depth: number, build
         tokens.push(value);
         value = "";
         tokenStarted = false;
+        literalWord = true;
       }
       continue;
     }
-    if (code === 62) {
-      if (tokenStarted) tokens.push(value);
-      tokens.push(">");
+    const redirectionWidth = shellRedirectionLength(command, index);
+    if (redirectionWidth > 0) {
+      if (tokenStarted && !(literalWord && isShellFileDescriptor(value))) tokens.push(value);
+      (tokens.redirections ??= []).push(tokens.length);
+      tokens.push(command.slice(index, index + redirectionWidth));
+      index += redirectionWidth - 1;
       value = "";
       tokenStarted = false;
-      if (command.charCodeAt(index + 1) === 62) index += 1;
+      literalWord = true;
       continue;
     }
     if (code === 10 || code === 13 || code === 59 || code === 38 || code === 124 || code === 40 || code === 41) {
       if (tokenStarted) tokens.push(value);
       cwd = inspectTokenBuffer(tokens, cwd, depth, builder);
       tokens.length = 0;
+      if (tokens.redirections) tokens.redirections.length = 0;
+      literalWord = true;
       value = "";
       tokenStarted = false;
       if ((code === 38 || code === 124) && command.charCodeAt(index + 1) === code) index += 1;

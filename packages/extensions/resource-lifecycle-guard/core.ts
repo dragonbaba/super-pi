@@ -25,6 +25,7 @@ import {
 } from "./regex.ts";
 import { extractCommandSubstitutions, inspectHereDocuments } from "./shell-substitution.ts";
 import { parseTimeoutInvocation } from "./timeout-wrapper.ts";
+import { isShellFileDescriptor, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
 
 const MAX_INSPECTED_COMMAND_CHARS = 128 * 1024;
 const BLOCK_REASON =
@@ -214,7 +215,7 @@ export interface HighRiskMutationScan {
 	workspaceWide: boolean;
 }
 
-type ShellSegment = string[] & { dynamic?: boolean; expansions?: number[] };
+type ShellSegment = string[] & { dynamic?: boolean; expansions?: number[]; redirections?: number[] };
 
 function uncertainAssignment(tokens: ShellSegment, index: number, shellAssignment = false): boolean {
  const expansion = tokens.expansions?.[index] ?? 0;
@@ -291,6 +292,28 @@ export function structuredMutationBlock(
 	});
 }
 
+function inspectOutputRedirections(tokens: ShellSegment, cwd: string, builder: ScanBuilder): void {
+	const redirections = tokens.redirections;
+	if (!redirections) return;
+	for (let position = 0; position < redirections.length; position++) {
+		const index = redirections[position]!;
+		const operator = tokens[index]!;
+		const target = index + 1 === redirections[position + 1] ? undefined : tokens[index + 1];
+		// Input redirections and heredocs remain with the existing lifecycle parser.
+		// Duplication, here-documents and other unsupported grammar stay opaque.
+		if (operator !== ">" && operator !== ">>" && operator !== ">|" && operator !== "&>" && operator !== "&>>") {
+			addPrimitive(builder, "unverifiable_redirection");
+			markUnverifiable(builder);
+			continue;
+		}
+		if (target === "/dev/null") continue;
+		addPrimitive(builder, "output_redirection");
+		if (target) addTarget(builder, target, cwd);
+		else markUnverifiable(builder);
+	}
+	stripShellRedirections(tokens, redirections);
+}
+
 function inspectShellScript(script: string, initialCwd: string, depth: number, builder: ScanBuilder): void {
 	if (depth > MAX_WRAPPER_DEPTH) {
 		builder.dynamicScope = true;
@@ -315,15 +338,7 @@ function inspectShellScript(script: string, initialCwd: string, depth: number, b
 		}
 		const tokens = segment;
 		if (tokens.length === 0) continue;
-		for (let tokenIndex = 0; tokenIndex < tokens.length; tokenIndex++) {
-			if (tokens[tokenIndex] !== ">") continue;
-			const target = tokens[tokenIndex + 1];
-			if (target !== "/dev/null" && target?.toLowerCase() !== "nul") {
-				addPrimitive(builder, "output_redirection");
-				if (target) addTarget(builder, target, workingDirectory);
-				else markUnverifiable(builder);
-			}
-		}
+		inspectOutputRedirections(tokens, workingDirectory, builder);
 		const commandIndex = commandTokenIndex(tokens);
 		if (commandIndex < 0 || commandIndex >= tokens.length) continue;
 		const command = commandName(tokens[commandIndex]!);
@@ -632,10 +647,12 @@ function parseShellSegments(command: string): ShellSegment[] {
 	let tokenStarted = false;
 	let quote = 0;
 	let escaped = false;
+	let literalWord = true;
 
 	for (let index = 0; index < command.length; index++) {
 		const code = command.charCodeAt(index);
 		if (escaped) {
+			literalWord = false;
 			value += command[index];
 			tokenStarted = true;
 			escaped = false;
@@ -671,6 +688,7 @@ function parseShellSegments(command: string): ShellSegment[] {
 		}
 		if (code === 34 || code === 39) {
 			quote = code;
+			literalWord = false;
 			tokenStarted = true;
 			continue;
 		}
@@ -679,13 +697,26 @@ function parseShellSegments(command: string): ShellSegment[] {
 				tokens.push(value);
 				value = "";
 				tokenStarted = false;
+				literalWord = true;
 			}
+			continue;
+		}
+		const redirectionWidth = shellRedirectionLength(command, index);
+		if (redirectionWidth > 0) {
+			if (tokenStarted && !(literalWord && isShellFileDescriptor(value))) tokens.push(value);
+			(tokens.redirections ??= []).push(tokens.length);
+			tokens.push(command.slice(index, index + redirectionWidth));
+			index += redirectionWidth - 1;
+			value = "";
+			tokenStarted = false;
+			literalWord = true;
 			continue;
 		}
 		if (code === 10 || code === 13 || code === 59 || code === 38 || code === 124 || code === 40 || code === 41) {
 			if (tokenStarted) tokens.push(value);
 			if (tokens.length > 0) segments.push(tokens);
 			tokens = [];
+			literalWord = true;
 			value = "";
 			tokenStarted = false;
 			if ((code === 38 || code === 124) && command.charCodeAt(index + 1) === code) index++;
