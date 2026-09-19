@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
 import test from "node:test";
 import { BoundedMemorySelector } from "../packages/extensions/session-memory-manager/bounded-selector.ts";
@@ -344,6 +345,36 @@ test("heredoc analysis preserves real declaration-line and following-command red
   assert.equal(dynamicView.uncertain, true);
   assert.ok(inspectHighRiskBashMutation({ command: dynamicDelimiter }, process.cwd())?.unverifiableScope);
   assert.equal(inspectBashPermissionScope({ command: dynamicDelimiter }, process.cwd())?.kind, "opaque-script");
+});
+
+test("focused benchmark separates ordinary, sampling, and lifecycle measurement", () => {
+  const benchmark = "./scripts/bench/session-clean-timeout-boundaries.ts";
+  const runJson = (args: string[], script?: string): { metrics: Record<string, number>; observations: Record<string, unknown> } => {
+    const output = script === undefined
+      ? execFileSync(process.execPath, ["--expose-gc", "--experimental-strip-types", benchmark, ...args], { cwd: process.cwd(), encoding: "utf8", maxBuffer: 4 * 1024 * 1024 })
+      : execFileSync(process.execPath, ["--expose-gc", "--experimental-strip-types", "--input-type=module", "--eval", script], { cwd: process.cwd(), encoding: "utf8", maxBuffer: 4 * 1024 * 1024 });
+    return JSON.parse(output) as { metrics: Record<string, number>; observations: Record<string, unknown> };
+  };
+  const ordinary = runJson([], "globalThis.gc=()=>{throw new Error('ordinary benchmark called explicit gc')}; process.argv=[process.argv[0],'bench','--warmup','1','--runs','1','--iterations','1']; await import('./scripts/bench/session-clean-timeout-boundaries.ts')");
+  assert.match(String(ordinary.observations.timing), /ordinary fixture timing/);
+  assert.equal("postGcHeapDeltaBytes" in ordinary.metrics, false);
+  assert.equal("selectorWeakOwnerReleasedCount" in ordinary.metrics, false);
+  assert.ok(ordinary.metrics.selectorMaximumCacheLines >= ordinary.metrics.selectorFinalCacheLines);
+  assert.ok(ordinary.metrics.selectorMaximumVisibleDetailRows > 0);
+
+  const sampled = runJson(["--warmup", "1", "--runs", "1", "--iterations", "1", "--sample"]);
+  assert.match(String(sampled.observations.sampling), /selector and shell phases sampled separately/);
+  assert.ok(sampled.metrics.selectorSampledNodeCount > 0);
+  assert.ok(sampled.metrics.shellSampledNodeCount > 0);
+  assert.equal("postGcHeapDeltaBytes" in sampled.metrics, false);
+  assert.equal(sampled.observations.includeObjectsCollectedByMinorOrMajorGC, true);
+
+  const lifecycle = runJson(["--warmup", "1", "--runs", "1", "--iterations", "1", "--lifecycle"]);
+  assert.match(String(lifecycle.observations.lifecycle), /three bounded GC turns/);
+  assert.equal(lifecycle.metrics.selectorWeakOwnerReleasedCount, 2);
+  assert.equal(lifecycle.metrics.selectorInitialDetailCacheReleasedCount, 2);
+  assert.equal(lifecycle.metrics.selectorResizedDetailCacheReleasedCount, 2);
+  assert.equal(typeof lifecycle.metrics.postGcHeapDeltaBytes, "number");
 });
 test("timeout scan continues into dangerous inner commands and preserves command boundaries", () => {
   const cases = [
