@@ -9,17 +9,17 @@
 - [Coding-agent 说明](../packages/coding-agent/README.md)：全屏退出、Windows PowerShell、扩展观察者和运行时细节。
 - [模型能力参考](model-capabilities.md)：模型输入模态、工具调用、推理、上下文、缓存和 provider 能力。
 
-源码交付的最短路径是：在仓库根目录运行 npm ci、npm run build:offline，再通过 npm run superpi 启动。包内 README 如果保留面向独立 npm 包或上游 Pi 的安装片段，应视为包级参考；源码 checkout 的正式入口以根 README 和 scripts/superpi.mjs 为准。
+源码交付的最短路径是：在仓库根目录运行 `npm.cmd ci`、`npm.cmd run build:offline`，再通过 `npm.cmd run superpi` 启动。包内 README 如果保留面向独立 npm 包或上游 Pi 的安装片段，应视为包级参考；源码 checkout 的正式入口以根 README 和 `scripts/superpi.mjs` 为准。
 
 ## 模型、认证和 provider
 
 - [AI/provider API](../packages/ai/README.md)：provider 集合、模型目录、认证解析、工具调用、图片输入和自定义 provider。
 - [模型能力参考](model-capabilities.md)：能力字段和模型目录说明。
-- [CLI 帮助源码](../packages/coding-agent/src/cli/args.ts)：CLI 参数、--list-models、--mode、工具范围和环境变量清单。
-- [认证命令源码](../packages/coding-agent/src/cli/auth-command.ts)：auth check、auth print-api-key 和 auth print-bearer-token 的职责与参数。
+- [CLI 帮助源码](../packages/coding-agent/src/cli/args.ts)：CLI 参数、`--list-models`、`--mode`、工具范围和环境变量清单。
+- [认证命令源码](../packages/coding-agent/src/cli/auth-command.ts)：`auth check`、`auth print-api-key` 和 `auth print-bearer-token` 的职责与参数。
 - [Super Pi 配置资源](../.sp/config/README.md)：仓库随源码加载的 package 列表与个人配置边界。
 
-/login 用于交互式 provider 认证，/model 用于选择模型；auth print 命令会输出凭据，适合明确的外部集成，不应作为首次配置教程中的普通步骤。
+`/login` 用于交互式 provider 认证，`/model` 用于选择模型；`auth print` 命令会输出凭据，适合明确的外部集成，不应作为首次配置教程中的普通步骤。
 
 ## 工具、权限和项目上下文
 
@@ -30,9 +30,9 @@
 - [Goal mode](../packages/goal/README.md)：持续目标、预算、暂停/恢复和实验队列。
 - [Plan mode](../packages/plan-mode/README.md)：只读探索、结构化提问、计划确认和实现交接。
 - [MCP bridge](../packages/mcp-bridge/README.md)：stdio、Streamable HTTP、SSE、配置和可信 server 边界。
-- [Memory](../packages/memory/README.md)：项目/全局记忆、会话搜索、Skills 和人工确认的持久化流程。
+- [Memory](../packages/memory/README.md)：项目/全局记忆、会话搜索、Skills 和人工审阅的记忆提取流程；普通工具操作的确认方式取决于入口。
 
-这些包的加载和可用性由 .sp/config/settings.json、全局/项目配置、项目可信度和 CLI 选项共同决定；源码中存在不等于每次运行都启用。
+这些包的加载和可用性由 `.sp/config/settings.json`、全局/项目配置、项目可信度和 CLI 选项共同决定；源码中存在不等于每次运行都启用。
 
 ## 图片、终端和嵌入
 
@@ -48,12 +48,12 @@
 
 - [性能文档索引](performance/README.md)：性能设计、验证和历史候选。
 - [Hot-path allocation contract](performance/hot-path-allocation-contract.md)：provider、工具、交互、渲染和大结果路径的修改要求。
-- [Tool-result presentation](performance/phase5b-tool-result-presentation.md)：工具结果预算、模型投影和展示边界。
+- [Tool-result presentation](performance/phase5b-budgeted-model-view.md)：显式启用的结果展示流程；模型 Token 预算投影还需配置正整数 `budgetTokens`，没有生产默认预算。
 - [Token estimator](performance/phase5a-token-estimator.md)：估算口径与限制。
 - [TUI responsiveness](performance/tool-progress-tui-responsiveness.md)：进度、背压和取消的设计记录。
 - [源码贡献检查](../package.json)：check、build:offline、test:hot 和完整 test 脚本。
 
-生产代码贡献应先读取适用的 AGENTS.md 和性能契约。性能文档中的 benchmark 数字属于特定版本、环境和 fixture 的验证记录，不能直接当作产品承诺。
+生产代码贡献应先读取适用的 `AGENTS.md` 和性能契约。性能文档中的 benchmark 数字属于特定版本、环境和 fixture 的验证记录，不能直接当作产品承诺。
 
 ## 历史、来源和评估
 
@@ -69,8 +69,8 @@
 文档修改应保持：
 
 - 示例目录、凭据和 session 内容使用虚构或脱敏值。
-- 命令与当前 package.json、CLI parser 和正式 launcher 一致。
+- 命令与当前 `package.json`、CLI parser 和正式 launcher 一致。
 - 英文和中文首页共享同一章节结构、命令、启用状态和限制。
 - 仓库内链接使用相对路径，并在提交前检查大小写和锚点。
 
-欢迎从 README、包说明和性能契约开始，再按实际影响选择 npm run check、构建和测试范围。来源和 MIT 许可证见 [NOTICE.md](../NOTICE.md) 与仓库 [LICENSE](../LICENSE)。
+欢迎从 README、包说明和性能契约开始，再按实际影响选择 `npm.cmd run check`、构建和测试范围。来源和 MIT 许可证见 [NOTICE.md](../NOTICE.md) 与仓库 [LICENSE](../LICENSE)。
