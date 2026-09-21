@@ -71,6 +71,8 @@ export interface BeforeToolCallResult {
 	finalAuthorization?: ToolInvocationAuthorization;
 	block?: boolean;
 	reason?: string;
+	/** Machine-readable refusal metadata; kept out of the model-facing reason text. */
+	details?: unknown;
 	/**
 	 * Hint that the agent should stop after the current tool batch when this call is blocked.
 	 * Early termination only happens when every finalized tool result in the batch sets this to true.

@@ -354,6 +354,8 @@ export interface ExtensionContext {
 	abort(): void;
 	/** Whether there are queued messages waiting */
 	hasPendingMessages(): boolean;
+	/** Names of tools active for this session; read-only capability information. */
+	getActiveTools(): string[];
 	/** Gracefully shutdown pi and exit. Available in all contexts. */
 	shutdown(): void;
 	/** Get current context usage for the active model. */
@@ -1156,6 +1158,8 @@ export interface ToolCallEventResult {
 	/** Block tool execution. To modify arguments, mutate `event.input` in place instead. */
 	block?: boolean;
 	reason?: string;
+	/** Machine-readable refusal metadata; kept out of the model-facing reason text. */
+	details?: unknown;
 	/**
 	 * Hint that the agent should stop after the current tool batch when this call is blocked.
 	 * Early termination only happens when every finalized tool result in the batch sets this to true.

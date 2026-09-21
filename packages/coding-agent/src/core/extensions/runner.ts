@@ -1075,6 +1075,7 @@ export class ExtensionRunner {
 				runner.assertActive();
 				return runner.hasPendingMessagesFn();
 			},
+			getActiveTools: () => runner.getActiveTools(),
 			shutdown: () => {
 				runner.assertActive();
 				runner.shutdownHandler();
@@ -1540,7 +1541,7 @@ export class ExtensionRunner {
 
 		if (authorization) {
 			handedOff = true;
-			return { block: result?.block, reason: result?.reason, terminate: result?.terminate, finalAuthorization: authorization };
+			return { block: result?.block, reason: result?.reason, details: result?.details, terminate: result?.terminate, finalAuthorization: authorization };
 		}
 		return result;
 		} finally { if (!handedOff) authorization?.release(); }

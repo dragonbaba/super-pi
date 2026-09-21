@@ -135,7 +135,9 @@ export default function resourceLifecycleGuard(pi: ExtensionAPI): void {
     const sessionId = bash ? ctx.sessionManager.getSessionId() : "";
     const generation = permissions.authorityGeneration;
     if (event.toolName === "bash") {
-      const reason = inspectBashResourceLifecycle(event.input);
+      let nativePowerShellAvailable = false;
+      try { nativePowerShellAvailable = ctx.getActiveTools().includes("powershell"); } catch { /* offline/loading contexts fail closed */ }
+      const reason = inspectBashResourceLifecycle(event.input, nativePowerShellAvailable);
       if (reason) return { block: true, reason };
     }
     const permissionBlock = await permissions.authorizeToolCall(event, ctx);

@@ -26,6 +26,8 @@ import {
 import { extractCommandSubstitutions, inspectHereDocuments, prepareShellAnalysis } from "./shell-substitution.ts";
 import { parseTimeoutInvocation } from "./timeout-wrapper.ts";
 import { isShellFileDescriptor, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
+import { FD_DUPLICATION_PATTERN } from "./regex.ts";
+import { diagnosticForPrimitives, policyMetadata, renderPolicyDiagnostic, type PolicyDiagnosticMetadata } from "./policy-diagnostics.ts";
 
 const MAX_INSPECTED_COMMAND_CHARS = 128 * 1024;
 const BLOCK_REASON =
@@ -98,15 +100,15 @@ function dynamicExecutable(token: string | undefined): string {
  return lifecycleRefusal("SHELL_DYNAMIC_EXECUTABLE", `executable position uses a variable or dynamic expression${variable}`, "use the quoted literal executable path in a foreground command");
 }
 
-export function inspectBashResourceLifecycle(input: unknown): string | undefined {
+export function inspectBashResourceLifecycle(input: unknown, nativePowerShellAvailable = false): string | undefined {
  if (!input || typeof input !== "object") return undefined;
  const command = (input as { command?: unknown }).command;
  if (typeof command !== "string" || command.length === 0) return undefined;
  if (command.length > MAX_INSPECTED_COMMAND_CHARS) return lifecycleRefusal("SHELL_INSPECTION_LIMIT", "command exceeds the inspection size limit", "reduce this command's size");
- return inspectLifecycleScript(command, 0);
+ return inspectLifecycleScript(command, 0, nativePowerShellAvailable);
 }
 
-function inspectLifecycleScript(source: string, depth: number): string | undefined {
+function inspectLifecycleScript(source: string, depth: number, nativePowerShellAvailable = false): string | undefined {
  if (depth > MAX_WRAPPER_DEPTH) return lifecycleRefusal("SHELL_INSPECTION_LIMIT", "wrapper/substitution nesting exceeds the inspection depth", "reduce nesting");
  const here = source.includes("<<") ? inspectHereDocuments(source) : undefined;
  if (here?.uncertain) return here.heredoc
@@ -115,8 +117,8 @@ function inspectLifecycleScript(source: string, depth: number): string | undefin
  const command = here?.command ?? source;
  const substitutions = extractCommandSubstitutions(command);
  if (substitutions.unterminated || substitutions.unsupported) return lifecycleRefusal("SHELL_SUBSTITUTION", substitutions.unterminated ? "unterminated command substitution" : "uncertain/uninspectable command substitution grammar", "simplify the substitution into inspectable foreground commands");
- for (const script of here?.substitutions ?? EMPTY_SUBSTITUTIONS) { const result = inspectLifecycleScript(script, depth + 1); if (result) return result; }
- for (const script of substitutions.scripts) { const result = inspectLifecycleScript(script, depth + 1); if (result) return result; }
+ for (const script of here?.substitutions ?? EMPTY_SUBSTITUTIONS) { const result = inspectLifecycleScript(script, depth + 1, nativePowerShellAvailable); if (result) return result; }
+ for (const script of substitutions.scripts) { const result = inspectLifecycleScript(script, depth + 1, nativePowerShellAvailable); if (result) return result; }
  if (DETACH_UTILITY_PATTERN.test(command)) return BLOCK_REASON;
  if ((WINDOWS_DETACH_PATTERN.test(command) || WINDOWS_START_BACKGROUND_PATTERN.test(command)) && !WINDOWS_WAIT_PATTERN.test(command)) return BLOCK_REASON;
  if (DOCKER_DETACHED_PATTERN.test(command) || SERVICE_START_PATTERN.test(command)) return BLOCK_REASON;
@@ -174,7 +176,12 @@ function inspectLifecycleScript(source: string, depth: number): string | undefin
    }
    // Other launchers (e.g. timeout durations, xargs/busybox modes) need different
    // operand grammars; never mistake their option/argument for the executable.
-   if (name !== "env" && name !== "sudo" && name !== "doas") return lifecycleRefusal("SHELL_WRAPPER", "launcher operand grammar is uncertain/uninspectable", "use a directly inspectable foreground executable");
+   if (name !== "env" && name !== "sudo" && name !== "doas") {
+    if (POWERSHELL_WRAPPERS.has(name)) {
+     return renderPolicyDiagnostic({ code: "LAUNCHER_UNSUPPORTED", category: "SHELL_WRAPPER", launcher: name, nativeToolAvailable: nativePowerShellAvailable, retryable: false, action: "native_tool" });
+    }
+    return lifecycleRefusal("SHELL_WRAPPER", "launcher operand grammar is uncertain/uninspectable", "use a directly inspectable foreground executable");
+   }
    index++;
    if (tokens[index] === "--") index++;
    if (name === "env" || name === "sudo") {
@@ -201,7 +208,7 @@ function inspectLifecycleScript(source: string, depth: number): string | undefin
   if (!SCRIPT_WRAPPERS.has(name)) continue;
   const flag = index + 1;
   if (tokens[flag] !== "-c" || !tokens[flag + 1]) return lifecycleRefusal("SHELL_WRAPPER", "shell wrapper requires a direct literal -c script operand", "use a supported direct -c operand");
-  const result = inspectLifecycleScript(tokens[flag + 1]!, depth + 1); if (result) return result;
+  const result = inspectLifecycleScript(tokens[flag + 1]!, depth + 1, nativePowerShellAvailable); if (result) return result;
  }
  return undefined;
 }
@@ -213,9 +220,10 @@ export interface HighRiskMutationScan {
 	dynamicScope: boolean;
 	unverifiableScope: boolean;
 	workspaceWide: boolean;
+	diagnostic?: PolicyDiagnosticMetadata;
 }
 
-type ShellSegment = string[] & { dynamic?: boolean; expansions?: number[]; redirections?: number[] };
+type ShellSegment = string[] & { dynamic?: boolean; expansions?: number[]; redirections?: number[]; redirectionFds?: (string | undefined)[] };
 
 function uncertainAssignment(tokens: ShellSegment, index: number, shellAssignment = false): boolean {
  const expansion = tokens.expansions?.[index] ?? 0;
@@ -230,6 +238,7 @@ interface ScanBuilder {
 	unverifiableScope: boolean;
 	workspaceWide: boolean;
 	segmentsVisited: number;
+	diagnostic?: PolicyDiagnosticMetadata;
 }
 
 export function inspectHighRiskBashMutation(input: unknown, cwd: string): HighRiskMutationScan | undefined {
@@ -244,6 +253,7 @@ export function inspectHighRiskBashMutation(input: unknown, cwd: string): HighRi
 			dynamicScope: true,
 			unverifiableScope: true,
 			workspaceWide: false,
+			diagnostic: policyMetadata(diagnosticForPrimitives(["oversized_uninspectable"]), renderPolicyDiagnostic(diagnosticForPrimitives(["oversized_uninspectable"]))),
 		};
 	}
 
@@ -265,6 +275,7 @@ export function inspectHighRiskBashMutation(input: unknown, cwd: string): HighRi
 		dynamicScope: builder.dynamicScope,
 		unverifiableScope: builder.unverifiableScope,
 		workspaceWide: builder.workspaceWide,
+		diagnostic: builder.diagnostic,
 	};
 }
 
@@ -303,6 +314,12 @@ function inspectOutputRedirections(tokens: ShellSegment, cwd: string, builder: S
 		// Duplication, here-documents and other unsupported grammar stay opaque.
 		if (operator !== ">" && operator !== ">>" && operator !== ">|" && operator !== "&>" && operator !== "&>>") {
 			addPrimitive(builder, "unverifiable_redirection");
+			const descriptorFd = tokens.redirectionFds?.[position];
+			const descriptor = descriptorFd ? `${descriptorFd}${operator}${target ?? ""}` : `${operator}${target ?? ""}`;
+			if (FD_DUPLICATION_PATTERN.test(descriptor)) {
+				const diagnostic = diagnosticForPrimitives(builder.primitives, { syntax: descriptor });
+				builder.diagnostic = policyMetadata(diagnostic, renderPolicyDiagnostic(diagnostic));
+			}
 			markUnverifiable(builder);
 			continue;
 		}
@@ -752,6 +769,7 @@ function parseShellSegments(command: string): ShellSegment[] {
 		if (redirectionWidth > 0) {
 			if (tokenStarted && !(literalWord && isShellFileDescriptor(value))) tokens.push(value);
 			(tokens.redirections ??= []).push(tokens.length);
+			(tokens.redirectionFds ??= []).push(literalWord && isShellFileDescriptor(value) ? value : undefined);
 			tokens.push(command.slice(index, index + redirectionWidth));
 			index += redirectionWidth - 1;
 			value = "";

@@ -850,7 +850,8 @@ async function prepareToolCall(
 				};
 			}
 			if (beforeResult?.block) {
-				const result = createErrorToolResult(beforeResult.reason || "Tool execution was blocked");
+				const refusal = projectStructuredPolicyRefusal(beforeResult.reason);
+				const result = createErrorToolResult(refusal?.text ?? (beforeResult.reason ?? "Tool execution was blocked"), beforeResult.details ?? refusal?.details);
 				if (beforeResult.terminate === true) {
 					result.terminate = true;
 				}
@@ -1128,10 +1129,58 @@ async function finalizeExecutedToolCall(
 	};
 }
 
-function createErrorToolResult(message: string): AgentToolResult<any> {
+function projectStructuredPolicyRefusal(reason: string | undefined): { text: string; details: Record<string, unknown> } | undefined {
+	if (!reason || reason.charCodeAt(0) !== 123) return undefined;
+	let payload: unknown;
+	try { payload = JSON.parse(reason); } catch { return undefined; }
+	if (!payload || typeof payload !== "object") return undefined;
+	const value = payload as Record<string, unknown>;
+	if (value.category !== "POLICY_BLOCKED" || typeof value.stateChanged !== "boolean") return undefined;
+	const primitives = Array.isArray(value.primitives) ? value.primitives : [];
+	const diagnostic = value.diagnostic && typeof value.diagnostic === "object" ? value.diagnostic as Record<string, unknown> : undefined;
+	let code = "UNKNOWN";
+	let cause = "The request could not be verified by the safety policy.";
+	let next = "Submit a simpler request for authorization.";
+	if (diagnostic?.code === "FD_DUP_UNSUPPORTED") {
+		code = "FD_DUP_UNSUPPORTED";
+		const syntax = typeof diagnostic.syntax === "string" && diagnostic.syntax.length <= 32 ? diagnostic.syntax : "2>&1";
+		cause = `Bash analysis does not support \`${syntax}\`.`;
+		next = "Omit stream merging only if stderr need not pass through the pipe; resubmit for authorization.";
+	} else if (primitives.includes("opaque_shell_wrapper") || primitives.includes("unverifiable_launcher")) {
+		code = "LAUNCHER_UNSUPPORTED";
+		cause = "Bash analysis cannot inspect this launcher.";
+		next = "Use an enabled native tool only when it is available; normal authorization still applies.";
+	} else if (primitives.includes("dynamic_target") || primitives.includes("unverifiable_target") || value.policyReason === "unverifiable_target") {
+		code = "DYNAMIC_TARGET";
+		cause = "The target cannot be verified from this request.";
+		next = "Submit a literal target for authorization.";
+	} else if (value.policyReason === "protected_root") {
+		code = "PROTECTED_PATH";
+		cause = "The requested path is protected by policy.";
+		next = "Ask the user to authorize a different permitted target.";
+	} else if (value.policyReason === "user_rejected") {
+		code = "USER_REJECTED";
+		cause = "The user rejected this request.";
+		next = "Change the request only after obtaining user approval.";
+	} else if (value.policyReason === "confirmation_required" || value.policyReason === "confirmation_cancelled") {
+		code = "CONFIRMATION_REQUIRED";
+		cause = "User confirmation was required before execution.";
+		next = "Request approval for the exact unchanged operation.";
+	} else if (value.policyReason === "unchanged_rejected_request") {
+		code = "USER_REJECTED";
+		cause = "The unchanged request was already rejected.";
+		next = "Change the request before asking for authorization again.";
+	}
+	return {
+		text: `[POLICY_BLOCKED:${code}] Not executed:\n${cause}\nNext: ${next}`,
+		details: value,
+	};
+}
+
+function createErrorToolResult(message: string, details: unknown = {}): AgentToolResult<any> {
 	return {
 		content: [{ type: "text", text: message }],
-		details: {},
+		details,
 	};
 }
 
