@@ -73,6 +73,17 @@ test("Node compatibility retains opaque-script permission classification", () =>
  assert.equal(inspectBashPermissionScope({ command: "node -e 'console.log(1 << 3)'" }, process.cwd())?.kind, "opaque-script");
 });
 
+test("a longer valid node -e keeps argv content and executes under the existing policy", async () => {
+ const script = `const value = ${JSON.stringify("中文 \\\\ \\\"quoted")}; console.log(value + " ${"x".repeat(1800)}");`;
+ const command = `node -e '${script.replaceAll("'", "'\\''")}'`;
+ assert.equal(inspectBashResourceLifecycle({ command }), undefined);
+ const outcome = await dispatch(process.cwd(), command);
+ assert.equal(outcome.result.isError, false);
+ assert.match(outcome.text, /中文/);
+ assert.match(outcome.text, /quoted/);
+ assert.equal(outcome.processes, 1);
+});
+
 
 test("fallback: unrelated quoted text does not taint an eval segment", async () => {
  const outcome = await dispatch(process.cwd(), "printf '%s' 'a << b'; eval 'echo SAFE'");

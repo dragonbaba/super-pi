@@ -10,6 +10,6 @@ export const SNAPSHOT_FAILURE_RE = /^\[SNAPSHOT_EDIT_[A-Z_]+\]/u;
 export const MSYS_REGEX_PARSE_FAILURE_RE = /regex parse error|unclosed character class/iu;
 export const BACKSLASH_PAIR_RE = /\\\\/u;
 export const NODE_SCRIPT_COMMAND_RE = /(?:^|&&|\|\||;)\s*(?:"[^"]*[/\\])?node(?:\.exe)?"?\s+(?:-e|--eval|[^\s]+\.(?:c|m)?[jt]s)\b/iu;
-export const NODE_SCRIPT_SYNTAX_FAILURE_RE = /(?:^|\n)\s*(?:SyntaxError|TypeError \[ERR_INVALID_ARG_TYPE\])\b|unexpected token|unterminated (?:string|template)|missing \) after argument list/iu;
+export const NODE_SCRIPT_SYNTAX_FAILURE_RE = /(?:^|\n)\s*SyntaxError\b|unexpected token|unterminated (?:string|template)|missing \) after argument list/iu;
 export const NODE_MODULE_RESOLUTION_FAILURE_RE = /ERR_MODULE_NOT_FOUND|MODULE_NOT_FOUND|cannot find (?:module|package)/iu;
 export const SHELL_SYNTAX_FAILURE_RE = /syntax error near unexpected token|unexpected end of file|unexpected EOF while looking for matching/iu;

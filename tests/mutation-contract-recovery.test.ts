@@ -723,6 +723,8 @@ test("ordinary stderr marker cannot suppress actual runtime recovery in next mod
  const { contexts, results } = await f.run([() => call("runtime", "bash", { command: "node diagnostic.mjs", cwd: f.cwd, timeout: 60 })]);
  const delivered = lastResult(contexts.at(-1)!);
  assert.equal(delivered.isError, true); assert.match(text(delivered), /\[Lifecycle recovery\]/);
+ assert.match(text(delivered), /SyntaxError/); assert.match(text(delivered), /invalid\.mjs/);
+ assert.doesNotMatch(text(delivered), /Not executed/);
  assert.equal(text(delivered).match(/\[Node script recovery\]/g)?.length, 1);
  assert.equal(results.length, 1); assert.equal(f.counts().processes, 1); assert.equal(f.invocations.get("runtime"), 1);
 });
