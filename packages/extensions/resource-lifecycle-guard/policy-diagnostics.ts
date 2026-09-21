@@ -1,4 +1,10 @@
-import { DISPLAY_WHITESPACE_PATTERN, FD_DUPLICATION_PATTERN } from "./regex.ts";
+import {
+  DISPLAY_WHITESPACE_PATTERN,
+  FD_DUPLICATION_PATTERN,
+  POLICY_FEEDBACK_PATH_PATTERN,
+  POLICY_FEEDBACK_SECRET_PATTERN,
+  POLICY_FEEDBACK_URL_PATTERN,
+} from "./regex.ts";
 
 export type PolicyDiagnosticCode =
   | "FD_DUP_UNSUPPORTED"
@@ -43,7 +49,11 @@ function cleanFragment(value: string | undefined): string | undefined {
 /** Keep user-supplied feedback useful to the model without treating it as policy data. */
 export function sanitizePolicyFeedback(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
-  const compact = value.replace(DISPLAY_WHITESPACE_PATTERN, " ").trim();
+  const compact = value.replace(DISPLAY_WHITESPACE_PATTERN, " ").trim()
+    .replace(POLICY_FEEDBACK_URL_PATTERN, "[URL redacted]")
+    .replace(POLICY_FEEDBACK_SECRET_PATTERN, "[credential redacted]")
+    .replace(POLICY_FEEDBACK_PATH_PATTERN, "[path redacted]")
+    .trim();
   if (!compact) return undefined;
   const bounded = compact.length > MAX_FEEDBACK_CHARS
     ? `${compact.slice(0, MAX_FEEDBACK_CHARS - 1)}…`

@@ -12,6 +12,7 @@ import { getEncoding } from "js-tiktoken";
 import { streamSimple } from "../packages/ai/src/api/openai-completions.ts";
 import { convertToLlm } from "../packages/coding-agent/src/core/messages.ts";
 import { renderPolicyDiagnostic } from "../packages/extensions/resource-lifecycle-guard/policy-diagnostics.ts";
+import { sanitizePolicyFeedback } from "../packages/extensions/resource-lifecycle-guard/policy-diagnostics.ts";
 import { inspectBashResourceLifecycle, inspectHighRiskBashMutation } from "../packages/extensions/resource-lifecycle-guard/core.ts";
 import { inspectBashPermissionScope } from "../packages/extensions/resource-lifecycle-guard/permission-bash.ts";
 
@@ -91,6 +92,14 @@ test("blocked tool projection keeps the legacy empty-reason fallback and final p
   assert.match(refusalText, /User feedback:/);
   const changed = await dispatch(JSON.stringify({ category: "POLICY_BLOCKED", policyReason: "user_rejected", stateChanged: true, primitives: ["opaque_shell_wrapper"] }));
   assert.match((changed.content[0] as any).text, /\"stateChanged\":true/);
+});
+
+test("rejection feedback is bounded and redacts URLs, credentials, and long paths", () => {
+  const feedback = sanitizePolicyFeedback("拒绝 https://user:secret@example.invalid/path?q=private_token; token=abc123 C:\\private\\long\\session\\file.jsonl");
+  assert.ok(feedback);
+  assert.doesNotMatch(feedback!, /user:secret|\?q=private_token|token=abc123|C:\\private/);
+  assert.match(feedback!, /URL redacted|credential redacted|path redacted/);
+  assert.ok(feedback!.length <= 240);
 });
 
 test("production extension preflight reaches the first refusal without backend or process use", async () => {

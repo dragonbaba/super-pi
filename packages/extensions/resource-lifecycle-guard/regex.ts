@@ -30,6 +30,9 @@ export const LEADING_PATH_SEPARATOR_PATTERN = /^[/\\]+/u;
 
 export const SIMPLE_COMMAND_PATTERN = /^[A-Za-z0-9._-]+$/u;
 export const DISPLAY_WHITESPACE_PATTERN = /\s+/gu;
+export const POLICY_FEEDBACK_URL_PATTERN = /\b(?:https?|ftp):\/\/[^\s]+/giu;
+export const POLICY_FEEDBACK_SECRET_PATTERN = /\b(?:api[_-]?key|token|password|secret|authorization)\s*[:=]\s*[^\s,;]+/giu;
+export const POLICY_FEEDBACK_PATH_PATTERN = /(?<!\S)(?:[A-Za-z]:[\\/]|\/)[^\s,;)]{16,}/gu;
 export const COMMAND_COMPOUND_SYNTAX_PATTERN = /[;&|<>$`\r\n(){}\\]/u;
 export const COMMAND_PREFIX_WORDS_PATTERN = /^[A-Za-z0-9._-]+(?:[ \t]+[A-Za-z0-9._-]+)*$/u;
 export const COMMAND_WORD_SEPARATOR_PATTERN = /[ \t]/u;
