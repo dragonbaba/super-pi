@@ -1204,7 +1204,7 @@ function projectStructuredPolicyRefusal(reason: unknown): { text: string; detail
 		: undefined;
 	if (feedback) cause += ` User feedback: ${feedback}`;
 	const details: Record<string, unknown> = { ...value };
-	if (feedback) details.rejectionReason = feedback;
+	if (Object.prototype.hasOwnProperty.call(value, "rejectionReason")) details.rejectionReason = feedback;
 	return {
 		text: `[POLICY_BLOCKED:${code}] Not executed:\n${cause}\nNext: ${next}`,
 		details,

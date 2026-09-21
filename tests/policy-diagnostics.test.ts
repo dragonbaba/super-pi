@@ -90,6 +90,12 @@ test("blocked tool projection keeps the legacy empty-reason fallback and final p
   assert.doesNotMatch(refusalText, /launcher|native tool|shell bypass/i);
   assert.ok(refusalText.length < 500);
   assert.match(refusalText, /User feedback:/);
+  const unsafeFeedback = await dispatch(JSON.stringify({
+    category: "POLICY_BLOCKED", policyReason: "user_rejected", stateChanged: false,
+    rejectionReason: "password=\"correct horse battery staple\"\u0001", retryable: false,
+  }));
+  assert.equal((unsafeFeedback.details as any)?.rejectionReason, undefined);
+  assert.doesNotMatch(JSON.stringify(unsafeFeedback.details), /correct horse battery staple/);
   const changed = await dispatch(JSON.stringify({ category: "POLICY_BLOCKED", policyReason: "user_rejected", stateChanged: true, primitives: ["opaque_shell_wrapper"] }));
   assert.match((changed.content[0] as any).text, /\"stateChanged\":true/);
   const finalDecision = await dispatch(JSON.stringify({
