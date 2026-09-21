@@ -1,7 +1,7 @@
 import { constants } from "node:fs";
 import { access as fsAccess } from "node:fs/promises";
 import type { AgentTool } from "@super-pi/agent-core";
-import { type Component, Container, getCapabilities, RELEASE_COMPONENT_RENDER_CACHE, Text, truncateToWidth } from "@super-pi/tui";
+import { type Component, Container, getCapabilities, RELEASE_COMPONENT_RENDER_CACHE, Text, truncateToWidth, visibleWidth } from "@super-pi/tui";
 import { spawn } from "child_process";
 import { type Static, Type } from "typebox";
 import { keyHint } from "../../modes/interactive/components/keybinding-hints.ts";
@@ -19,6 +19,7 @@ import {
 } from "../../utils/shell.ts";
 import type { ExtensionContext, ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
 import { OutputAccumulator } from "./output-accumulator.ts";
+import { ANSI_SGR_PATTERN, NODE_PARSE_LOCATION_PATTERN } from "./bash-regex.ts";
 import { getTextOutput, invalidArgText, str } from "./render-utils.ts";
 import {
 	RELEASE_TOOL_RENDER_DERIVED_STATE,
@@ -58,7 +59,10 @@ const bashSchema = Type.Object({
 
 export const bashToolSystemPromptContribution = {
 	snippet: "Execute bash commands (ls, grep, find, etc.)",
-	guidelines: ["You can inspect SP_* environment variables for current model and session details."],
+	guidelines: [
+		"You can inspect SP_* environment variables for current model and session details.",
+		"For Node scripts, use node -e when the one-off source can be passed reliably; for complex quoting or reusable code, an explicit file or supported stdin is optional. Script length does not decide permission, and a file does not bypass approval.",
+	],
 } as const;
 
 export type BashToolInput = Static<typeof bashSchema>;
@@ -224,6 +228,125 @@ export interface BashToolOptions {
 
 const BASH_PREVIEW_LINES = 5;
 const BASH_UPDATE_THROTTLE_MS = 100;
+const MAX_FAILURE_FRAGMENT_CHARS = 2048;
+const BASH_SPECIFIC_FAILURE_MARKERS = [
+	"SyntaxError",
+	"TypeError",
+	"ReferenceError",
+	"RangeError",
+	"AssertionError",
+	"Cannot find module",
+	"ERR_",
+] as const;
+const BASH_GENERIC_FAILURE_MARKERS = [
+	"Error:",
+	"Command exited with code",
+	"Command timed out",
+	"Command aborted",
+] as const;
+
+function nextLineEnd(text: string, start: number): number {
+	const end = text.indexOf("\n", start);
+	return end === -1 ? text.length : end;
+}
+
+function lineHasSpecificFailureMarker(line: string): boolean {
+	for (const marker of BASH_SPECIFIC_FAILURE_MARKERS) if (line.includes(marker)) return true;
+	return false;
+}
+
+function lineHasGenericFailureMarker(line: string): boolean {
+	for (const marker of BASH_GENERIC_FAILURE_MARKERS) if (line.includes(marker)) return true;
+	return false;
+}
+
+function boundFailureFragment(line: string): string {
+	if (line.length <= MAX_FAILURE_FRAGMENT_CHARS) return line;
+	const tailLength = 512;
+	return line.slice(0, MAX_FAILURE_FRAGMENT_CHARS - tailLength - 1) + "…" + line.slice(-tailLength);
+}
+
+type BashFailurePreview = {
+	context: string[];
+	exception: string;
+	status: string | undefined;
+	stack: string | undefined;
+	omitted: boolean;
+};
+
+function nodeParseContext(lines: readonly string[]): string[] {
+	let locationIndex = -1;
+	for (let index = lines.length - 1; index >= 0; index--) {
+		if (NODE_PARSE_LOCATION_PATTERN.test(lines[index]!.replace(ANSI_SGR_PATTERN, "").trim())) {
+			locationIndex = index;
+			break;
+		}
+	}
+	if (locationIndex < 0) return [];
+	const context: string[] = [];
+	for (let index = locationIndex; index < lines.length && context.length < 3; index++) {
+		const line = lines[index]!;
+		if (line.trim()) context.push(line);
+	}
+	return context.map(boundFailureFragment);
+}
+
+/** Select the first useful failure and terminal status once per final result. */
+function createBashFailurePreview(output: string): BashFailurePreview | undefined {
+	let firstUseful: string | undefined;
+	let firstUsefulPrefix: string[] = [];
+	let firstUsefulEnd = -1;
+	let genericFailure: string | undefined;
+	let genericFailureEnd = -1;
+	let status: string | undefined;
+	let nonblankCharacters = 0;
+	let nextStack: string | undefined;
+	const recentLines: string[] = [];
+	for (let start = 0; start < output.length;) {
+		const end = nextLineEnd(output, start);
+		const line = output.slice(start, end);
+		if (line.trim()) nonblankCharacters += line.length;
+		if (!firstUseful) {
+			if (lineHasSpecificFailureMarker(line)) {
+				firstUseful = line;
+				firstUsefulEnd = end;
+				if (line.includes("SyntaxError")) firstUsefulPrefix = nodeParseContext(recentLines);
+			} else if (!genericFailure && lineHasGenericFailureMarker(line)) {
+				genericFailure = line;
+				genericFailureEnd = end;
+			}
+		}
+		if (line.includes("Command exited with code") || line.includes("Command timed out") || line.includes("Command aborted")) status = line;
+		recentLines.push(line);
+		if (recentLines.length > 4) recentLines.shift();
+		if (end === output.length) break;
+		start = end + 1;
+	}
+	if (!firstUseful && genericFailure) {
+		firstUseful = genericFailure;
+		firstUsefulEnd = genericFailureEnd;
+	}
+	if (!firstUseful) return undefined;
+	const nextStart = firstUsefulEnd + 1;
+	if (firstUsefulPrefix.length === 0 && nextStart < output.length) {
+		const nextEnd = nextLineEnd(output, nextStart);
+		const next = output.slice(nextStart, nextEnd);
+		if (next.includes(" at ") || next.trimStart().startsWith("at ") || next.includes(": line ")) nextStack = next;
+	}
+	const exception = boundFailureFragment(firstUseful);
+	const terminalStatus = status && status !== firstUseful ? boundFailureFragment(status) : undefined;
+	const stack = nextStack ? boundFailureFragment(nextStack) : undefined;
+	let selectedCharacters = exception.length + (terminalStatus?.length ?? 0) + (stack?.length ?? 0);
+	for (const line of firstUsefulPrefix) selectedCharacters += line.length;
+	return {
+		context: firstUsefulPrefix,
+		exception,
+		status: terminalStatus,
+		stack,
+		// Ignore blank separators; count both unselected lines and shortened fragments.
+		omitted: nonblankCharacters > selectedCharacters,
+	};
+}
 
 export type BashRenderState = ToolRenderLifecycleState & {
 	startedAt: number | undefined;
@@ -288,12 +411,14 @@ export interface BashRenderAllocationMetrics {
 	warningTextUpdates: number;
 	preparedOutputRecomputations: number;
 	previewLineRecomputations: number;
+	failureAnalyses: number;
 }
 
 type BashResultRenderState = {
 	cachedWidth: number | undefined;
 	cachedLines: string[] | undefined;
 	cachedSkipped: number | undefined;
+	cachedFailureOmitted: boolean;
 	preparedContent: Array<{ type: string; text?: string; data?: string; mimeType?: string }> | undefined;
 	preparedShowImages: boolean | undefined;
 	preparedCapabilitiesImages: ReturnType<typeof getCapabilities>["images"] | undefined;
@@ -302,10 +427,22 @@ type BashResultRenderState = {
 	preparedFullOutputPath: string | undefined;
 	preparedToolOutputStyle: string | undefined;
 	preparedStyledOutput: string | undefined;
+	preparedErrorPreview: BashFailurePreview | undefined;
+	preparedIsError: boolean | undefined;
 	expandedOutputComponent: Text | undefined;
 	expandedOutputText: string | undefined;
 	allocationMetrics?: BashRenderAllocationMetrics;
 };
+
+/** Only bounded final-failure fragments are visited during width-dependent layout. */
+function appendBashFailureLine(state: BashResultRenderState, lines: string[], text: string, width: number): void {
+	if (lines.length >= BASH_PREVIEW_LINES) {
+		state.cachedFailureOmitted = true;
+		return;
+	}
+	if (visibleWidth(text) > width) state.cachedFailureOmitted = true;
+	lines.push(truncateToWidth(theme.fg("toolOutput", text), width, "..."));
+}
 
 /** Reads the owner's current prepared output, never a captured prior output string. */
 class BashPreviewComponent implements Component {
@@ -315,14 +452,31 @@ class BashPreviewComponent implements Component {
 		const state = this.state;
 		if (!state) return [];
 		if (state.cachedLines === undefined || state.cachedWidth !== width) {
-			const preview = truncateToVisualLines(state.preparedStyledOutput ?? "", BASH_PREVIEW_LINES, width);
-			state.cachedLines = preview.visualLines;
-			state.cachedSkipped = preview.skippedCount;
+			state.cachedFailureOmitted = false;
+			if (state.preparedErrorPreview) {
+				const failure = state.preparedErrorPreview;
+				const lines: string[] = [];
+				state.cachedFailureOmitted = failure.omitted;
+				for (const contextLine of failure.context) appendBashFailureLine(state, lines, contextLine, width);
+				appendBashFailureLine(state, lines, failure.exception, width);
+				if (failure.status) appendBashFailureLine(state, lines, failure.status, width);
+				if (failure.stack) appendBashFailureLine(state, lines, failure.stack, width);
+				state.cachedLines = lines;
+				state.cachedSkipped = 0;
+			} else {
+				const preview = truncateToVisualLines(state.preparedStyledOutput ?? "", BASH_PREVIEW_LINES, width);
+				state.cachedLines = preview.visualLines;
+				state.cachedSkipped = preview.skippedCount;
+			}
 			state.cachedWidth = width;
 			if (state.allocationMetrics) state.allocationMetrics.previewLineRecomputations++;
 		}
 		const lines = [""];
-		if (state.cachedSkipped && state.cachedSkipped > 0) {
+		if (state.cachedFailureOmitted) {
+			const hint = theme.fg("muted", "... (more failure details,") +
+				` ${keyHint("app.tools.expand", "to expand")}${theme.fg("muted", ")")}`;
+			lines.push(truncateToWidth(hint, width, "..."));
+		} else if (state.cachedSkipped && state.cachedSkipped > 0) {
 			const hint = theme.fg("muted", `... (${state.cachedSkipped} earlier lines,`) +
 				` ${keyHint("app.tools.expand", "to expand")}${theme.fg("muted", ")")}`;
 			lines.push(truncateToWidth(hint, width, "..."));
@@ -344,6 +498,7 @@ class BashResultRenderComponent extends Container {
 		cachedWidth: undefined,
 		cachedLines: undefined,
 		cachedSkipped: undefined,
+		cachedFailureOmitted: false,
 		preparedContent: undefined,
 		preparedShowImages: undefined,
 		preparedCapabilitiesImages: undefined,
@@ -351,7 +506,9 @@ class BashResultRenderComponent extends Container {
 		preparedTruncated: undefined,
 		preparedFullOutputPath: undefined,
 		preparedToolOutputStyle: undefined,
-		preparedStyledOutput: undefined,
+	preparedStyledOutput: undefined,
+	preparedErrorPreview: undefined,
+	preparedIsError: undefined,
 		expandedOutputComponent: undefined,
 		expandedOutputText: undefined,
 	};
@@ -375,6 +532,7 @@ class BashResultRenderComponent extends Container {
 		state.cachedWidth = undefined;
 		state.cachedLines = undefined;
 		state.cachedSkipped = undefined;
+		state.cachedFailureOmitted = false;
 		state.preparedContent = undefined;
 		state.preparedShowImages = undefined;
 		state.preparedCapabilitiesImages = undefined;
@@ -383,6 +541,8 @@ class BashResultRenderComponent extends Container {
 		state.preparedFullOutputPath = undefined;
 		state.preparedToolOutputStyle = undefined;
 		state.preparedStyledOutput = undefined;
+		state.preparedErrorPreview = undefined;
+		state.preparedIsError = undefined;
 		state.expandedOutputComponent = undefined;
 		state.expandedOutputText = undefined;
 		state.allocationMetrics = undefined;
@@ -404,6 +564,7 @@ class BashResultRenderComponent extends Container {
 		warningComponentReferences: number;
 		warningTextCodeUnits: number;
 		allocationMetricsReferences: number;
+		preparedFailurePreviewReferences: number;
 	} {
 		return {
 			cachedLineReferences: this.state.cachedLines?.length ?? 0,
@@ -419,6 +580,7 @@ class BashResultRenderComponent extends Container {
 			warningComponentReferences: Number(this.warningComponent !== undefined),
 			warningTextCodeUnits: this.warningText?.length ?? 0,
 			allocationMetricsReferences: Number(this.state.allocationMetrics !== undefined),
+			preparedFailurePreviewReferences: Number(this.state.preparedErrorPreview !== undefined),
 		};
 	}
 }
@@ -464,6 +626,7 @@ function getPreparedBashOutput(
 	result: { content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>; details?: BashToolDetails },
 	options: ToolRenderResultOptions,
 	showImages: boolean,
+	isError: boolean,
 ): string {
 	const state = component.state;
 	const truncation = result.details?.truncation;
@@ -478,6 +641,7 @@ function getPreparedBashOutput(
 		state.preparedTruncated === truncation?.truncated &&
 		state.preparedFullOutputPath === fullOutputPath &&
 		state.preparedToolOutputStyle === toolOutputStyle
+		&& state.preparedIsError === isError
 	) return state.preparedStyledOutput ?? "";
 
 	let output = getTextOutput(result as any, showImages).trim();
@@ -498,10 +662,15 @@ function getPreparedBashOutput(
 		}
 	}
 	if (state.allocationMetrics) state.allocationMetrics.preparedOutputRecomputations++;
-	if (state.preparedStyledOutput !== styledOutput) {
+	if (
+		state.preparedStyledOutput !== styledOutput ||
+		state.preparedIsPartial !== options.isPartial ||
+		state.preparedIsError !== isError
+	) {
 		state.cachedWidth = undefined;
 		state.cachedLines = undefined;
 		state.cachedSkipped = undefined;
+		state.cachedFailureOmitted = false;
 	}
 	state.preparedContent = snapshotBashResultContent(result.content);
 	state.preparedShowImages = showImages;
@@ -511,6 +680,9 @@ function getPreparedBashOutput(
 	state.preparedFullOutputPath = fullOutputPath;
 	state.preparedToolOutputStyle = toolOutputStyle;
 	state.preparedStyledOutput = styledOutput;
+	if (state.allocationMetrics && isError && !options.isPartial) state.allocationMetrics.failureAnalyses++;
+	state.preparedErrorPreview = isError && !options.isPartial ? createBashFailurePreview(output) : undefined;
+	state.preparedIsError = isError;
 	return styledOutput;
 }
 
@@ -524,12 +696,13 @@ function rebuildBashResultRenderComponent(
 	showImages: boolean,
 	startedAt: number | undefined,
 	endedAt: number | undefined,
+	isError: boolean,
 ): void {
 	const state = component.state;
 	// Reuse the bounded child list without invalidating or releasing retained children.
 	component.children.length = 0;
 
-	const styledOutput = getPreparedBashOutput(component, result, options, showImages);
+	const styledOutput = getPreparedBashOutput(component, result, options, showImages, isError);
 	const truncation = result.details?.truncation;
 	const fullOutputPath = result.details?.fullOutputPath;
 	if (!styledOutput) {
@@ -790,6 +963,7 @@ export function createShellToolDefinition(
 				context.showImages,
 				state.startedAt,
 				state.endedAt,
+				context.isError,
 			);
 			component.invalidate();
 			return component;

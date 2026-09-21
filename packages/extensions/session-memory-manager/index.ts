@@ -1,4 +1,4 @@
-import { basename, join } from "node:path";
+import { join } from "node:path";
 import {
   getAgentDir,
   SessionManager,
@@ -18,6 +18,7 @@ import {
   sameFile,
   trashSession,
   type ManagedSession,
+  type SessionTrashEntry,
 } from "./core.ts";
 import { SUPPORTED_SP_VERSION_PATTERN } from "./regex.ts";
 import { MAX_UI_ERROR, sanitizeSessionText } from "./ui-text.ts";
@@ -30,6 +31,8 @@ const TRASH_DIR = join(AGENT_DIR, "@super-pi/memory", "session-trash");
 const LEASE_DIR = join(AGENT_DIR, "@super-pi/memory", "session-leases");
 const LEASE_STATE_KEY = Symbol.for("pi.@super-pi/session-memory-manager.lease-state");
 const BYTE_FORMATTER = new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 1 });
+const SESSION_CLEAN_OVERLAY_MARGIN = 2;
+const SESSION_CLEAN_OVERLAY_MAX_HEIGHT = 24;
 const SHORT_DATE_FORMATTER = new Intl.DateTimeFormat("zh-CN", {
   year: "numeric",
   month: "2-digit",
@@ -67,25 +70,47 @@ function sessionLabel(session: SessionInfo): string {
   return `${shortDate(session.modified)}  ${title}  [${session.messageCount}]  ID:${sanitizeSessionText(session.id, 80)}`;
 }
 
-async function selectBounded<T>(
+export function formatTrashEntryLabel(entry: Pick<SessionTrashEntry, "name" | "size" | "mtimeMs">, index: number): string {
+  const parts = entry.name.split("_");
+  const sessionId = parts.length > 1 ? sanitizeSessionText(parts[1], 12) : "";
+  const id = sessionId ? `ID:${sessionId}` : "ID:未知";
+  return `${index + 1}. ${shortDate(new Date(entry.mtimeMs))} · ${formatBytes(entry.size)} · ${id}`;
+}
+
+export async function selectBounded<T>(
   ctx: ExtensionCommandContext,
   title: string,
   items: readonly BoundedSelectorItem<T>[],
   initialIndex?: number,
 ): Promise<T | undefined> {
   return ctx.ui.custom<T | undefined>((tui, theme, keybindings, done) => {
-    return new BoundedMemorySelector(title, items, theme, keybindings, done, () => Math.min(24, Math.max(0, tui.terminal.rows - 2)), initialIndex);
-  }, { overlay: true, overlayOptions: { width: "100%", maxHeight: 24, margin: 1 } });
+    return new BoundedMemorySelector(
+      title,
+      items,
+      theme,
+      keybindings,
+      done,
+      () => Math.min(SESSION_CLEAN_OVERLAY_MAX_HEIGHT, Math.max(0, tui.terminal.rows - SESSION_CLEAN_OVERLAY_MARGIN * 2)),
+      initialIndex,
+    );
+  }, {
+    overlay: true,
+    overlayOptions: {
+      width: 96,
+      maxHeight: SESSION_CLEAN_OVERLAY_MAX_HEIGHT,
+      margin: SESSION_CLEAN_OVERLAY_MARGIN,
+    },
+  });
 }
 
 async function confirmTrashDeletion(
   ctx: ExtensionCommandContext,
-  entries: readonly { filePath: string; size: number }[],
+  entries: readonly SessionTrashEntry[],
 ): Promise<boolean> {
   const items: BoundedSelectorItem<boolean>[] = entries.map((entry, index) => ({
     value: false,
-    label: `${index + 1}. ${sanitizeSessionText(basename(entry.filePath), 512)}`,
-    description: formatBytes(entry.size),
+    label: formatTrashEntryLabel(entry, index),
+    description: "待永久删除",
     detail: sanitizeSessionText(entry.filePath, Infinity),
     selectable: false,
   }));
@@ -101,7 +126,7 @@ async function confirmTrashDeletion(
   );
   return (await selectBounded(
     ctx,
-    `再次确认永久删除 Session 回收文件？\n固定目录：${TRASH_DIR}\n文件清单可滚动；不会删除未列出的文件。`,
+    `再次确认永久删除 Session 回收文件？\n固定回收目录：${TRASH_DIR}\n候选清单可滚动；不会删除未列出的文件。`,
     items,
     items.length - 1,
   )) === true;

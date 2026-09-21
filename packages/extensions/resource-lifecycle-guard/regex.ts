@@ -45,6 +45,7 @@ export const LEADING_REDIRECTION_PATTERN = /^(?:[0-9]+|\{[^}]+\})?[<>]{1,2}(.*)$
 export const LEADING_ASSIGNMENT_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*\+?=/u;
 export const SIMPLE_VARIABLE_PATTERN = /^\$[A-Za-z_][A-Za-z0-9_]{0,63}$/u;
 export const REDIRECTION_OPERATOR_PATTERN = /[<>]/u;
+export const FD_DUPLICATION_PATTERN = /^(?:[0-9]+|\{[^}]+\})?[<>]&[0-9]+$/u;
 
 // Shell-substitution scanner boundaries. These are stateless module constants;
 // the scanner never shares match state between calls.

@@ -11,6 +11,9 @@ import {
 	EventStream,
 	hasIncompleteToolArguments,
 	type ToolResultMessage,
+	readPolicyDiagnostic,
+	renderPolicyDiagnostic,
+	sanitizePolicyFeedback,
 	validateToolArguments,
 } from "@super-pi/ai";
 import { resolve as resolvePath, sep } from "node:path";
@@ -850,7 +853,9 @@ async function prepareToolCall(
 				};
 			}
 			if (beforeResult?.block) {
-				const result = createErrorToolResult(beforeResult.reason || "Tool execution was blocked");
+				const refusal = projectStructuredPolicyRefusal(beforeResult.reason);
+				const directReason = nonEmptyReason(beforeResult.reason);
+				const result = createErrorToolResult(refusal?.text ?? (directReason ?? "Tool execution was blocked"), beforeResult.details ?? refusal?.details);
 				if (beforeResult.terminate === true) {
 					result.terminate = true;
 				}
@@ -1128,10 +1133,88 @@ async function finalizeExecutedToolCall(
 	};
 }
 
-function createErrorToolResult(message: string): AgentToolResult<any> {
+function nonEmptyReason(reason: unknown): string | undefined {
+	if (typeof reason !== "string") return undefined;
+	const trimmed = reason.trim();
+	return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function projectStructuredPolicyRefusal(reason: unknown): { text: string; details: Record<string, unknown> } | undefined {
+	const structuredReason = nonEmptyReason(reason);
+	if (!structuredReason || structuredReason.charCodeAt(0) !== 123) return undefined;
+	let payload: unknown;
+	try { payload = JSON.parse(structuredReason); } catch { return undefined; }
+	if (!payload || typeof payload !== "object") return undefined;
+	const value = payload as Record<string, unknown>;
+	if (value.category !== "POLICY_BLOCKED" || value.stateChanged !== false) return undefined;
+	const primitives = Array.isArray(value.primitives) ? value.primitives : [];
+	const diagnostic = readPolicyDiagnostic(value.diagnostic);
+	let code = "UNKNOWN";
+	let cause = "The request could not be verified by the safety policy.";
+	let next = "Submit a simpler request for authorization.";
+	const policyReason = typeof value.policyReason === "string" ? value.policyReason : undefined;
+	if (policyReason === "user_rejected") {
+		code = "USER_REJECTED";
+		cause = "The user rejected this request.";
+		next = "Change the request only after obtaining user approval; do not bypass the rejection with another tool or shell.";
+	} else if (policyReason === "unchanged_rejected_request") {
+		code = "UNCHANGED_REJECTED_REQUEST";
+		cause = "The unchanged request was already rejected.";
+		next = "Change the request only after obtaining user approval; do not replay it or bypass the rejection.";
+	} else if (policyReason === "scope_denied") {
+		code = "SCOPE_DENIED";
+		cause = "The request is outside the currently authorized scope.";
+		next = "Request authorization for this exact scope or use an already permitted target; do not bypass the scope with another tool or shell.";
+	} else if (policyReason === "protected_root") {
+		code = "PROTECTED_PATH";
+		cause = "The requested path is protected by policy.";
+		next = "Request authorization for a permitted target; do not bypass the protected path with another tool or shell.";
+	} else if (policyReason === "confirmation_cancelled") {
+		code = "CONFIRMATION_CANCELLED";
+		cause = "The required user confirmation was cancelled.";
+		next = "Ask for confirmation of the exact operation again only when the user is ready.";
+	} else if (policyReason === "confirmation_required") {
+		code = "CONFIRMATION_REQUIRED";
+		cause = "User confirmation was required before execution.";
+		next = "Request approval for the exact unchanged operation.";
+	} else if (policyReason === "authority_expired" || policyReason === "authorization_expired") {
+		code = "AUTHORITY_EXPIRED";
+		cause = "The authorization was no longer current when the request was checked.";
+		next = "Restore current authorization and resubmit the operation; do not replay it automatically.";
+	} else if (diagnostic) {
+		code = diagnostic.code;
+		const rendered = renderPolicyDiagnostic(diagnostic);
+		const firstLine = rendered.indexOf("\n");
+		const secondLine = firstLine === -1 ? rendered : rendered.slice(firstLine + 1);
+		const nextLine = secondLine.indexOf("\n");
+		cause = nextLine === -1 ? secondLine : secondLine.slice(0, nextLine);
+		const nextMarker = rendered.indexOf("Next: ");
+		if (nextMarker !== -1) next = rendered.slice(nextMarker + 6).trim();
+	} else if (primitives.includes("opaque_shell_wrapper") || primitives.includes("unverifiable_launcher")) {
+		code = "LAUNCHER_UNSUPPORTED";
+		cause = "Bash analysis cannot inspect this launcher.";
+		next = "Use an enabled native tool only when it is available; normal authorization still applies.";
+	} else if (primitives.includes("dynamic_target") || primitives.includes("unverifiable_target") || value.policyReason === "unverifiable_target") {
+		code = "DYNAMIC_TARGET";
+		cause = "The target cannot be verified from this request.";
+		next = "Submit a literal target for authorization.";
+	}
+	const feedback = (policyReason === "user_rejected" || policyReason === "unchanged_rejected_request")
+		? sanitizePolicyFeedback(value.rejectionReason)
+		: undefined;
+	if (feedback) cause += ` User feedback: ${feedback}`;
+	const details: Record<string, unknown> = { ...value };
+	if (Object.prototype.hasOwnProperty.call(value, "rejectionReason")) details.rejectionReason = feedback;
+	return {
+		text: `[POLICY_BLOCKED:${code}] Not executed:\n${cause}\nNext: ${next}`,
+		details,
+	};
+}
+
+function createErrorToolResult(message: string, details: unknown = {}): AgentToolResult<any> {
 	return {
 		content: [{ type: "text", text: message }],
-		details: {},
+		details,
 	};
 }
 

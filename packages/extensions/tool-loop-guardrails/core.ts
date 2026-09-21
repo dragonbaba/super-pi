@@ -477,10 +477,10 @@ export async function failureRecoveryHint(
   const command = toolName === "bash" && input && typeof input === "object"
     ? (input as { command?: unknown }).command
     : undefined;
-  if (typeof command === "string" && NODE_SCRIPT_COMMAND_RE.test(command)) {
-    if (NODE_SCRIPT_SYNTAX_FAILURE_RE.test(failureText)) {
-      return "[Node script recovery] Node rejected the script syntax before the intended work could be trusted. For a script file, run node --check on that exact file before execution; for node -e, reduce the snippet or move nontrivial code into a checked file. Do not retry unchanged quoting or template-string escapes.";
-    }
+	if (typeof command === "string" && NODE_SCRIPT_COMMAND_RE.test(command)) {
+		if (NODE_SCRIPT_SYNTAX_FAILURE_RE.test(failureText)) {
+			return "[Node script recovery] Node reported a script syntax/parse error; preserve the first useful error and its location. A valid long node -e is allowed when argv transfer is reliable. For complex quoting or reusable code, a checked .cjs/.mjs file or stdin is an option; run node --check on that exact source before retrying. Do not retry unchanged source.";
+		}
     if (NODE_MODULE_RESOLUTION_FAILURE_RE.test(failureText)) {
       return "[Node module recovery] Node could not resolve the requested module/package. Resolve it from a verified parent manifest or dependency tree before retrying; do not guess a top-level node_modules path.";
     }

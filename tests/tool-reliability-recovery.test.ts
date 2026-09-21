@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { createJiti } from "jiti";
+import { inspectBashPermissionScope } from "../packages/extensions/resource-lifecycle-guard/permission-bash.ts";
 import { inspectBashResourceLifecycle } from "../packages/extensions/resource-lifecycle-guard/core.ts";
 import { validateToolArguments } from "../packages/ai/src/utils/validation.ts";
 import { isValidationFailure } from "../packages/extensions/tool-input-repair-telemetry/core.ts";
@@ -11,9 +12,11 @@ import mutationExtension from "../packages/extensions/mutation-guard-write/index
 import browserExtension from "../packages/extensions/browser-use/index.ts";
 import { browserUrlSafetyError } from "../packages/extensions/browser-use/core.ts";
 const { failureRecoveryHint } = await createJiti(import.meta.url).import<any>("../packages/extensions/tool-loop-guardrails/core.ts");
+const { default: toolLoopGuardrails } = await createJiti(import.meta.url).import<any>("../packages/extensions/tool-loop-guardrails/index.ts");
 const definitions = new Map<string, any>();
 const pi: any = { on() {}, registerCommand() {}, registerTool(tool: any) { definitions.set(tool.name, tool); } };
 mutationExtension(pi); browserExtension(pi);
+toolLoopGuardrails(pi);
 
 test("new error codes retain classification and legacy telemetry without treating incomplete JSON as schema failure", async () => {
  const { classifyError } = await createJiti(import.meta.url).import<any>("../packages/extensions/session-tool-errors/core.ts");
@@ -99,6 +102,33 @@ test("field diagnostics stay bounded under escaped-name expansion", () => {
 
 test("policy recovery resolves the denial instead of changing language", async () => {
  assert.match(await failureRecoveryHint("bash", { command: "echo safe" }, "POLICY_BLOCKED", process.cwd()), /Do not evade|do not evade/);
+});
+
+test("Node recovery distinguishes parse failures from argv/runtime failures and keeps long -e optional", async () => {
+ const longScript = "const 中文 = `quote \\\\ and \\\"`; console.log(中文);" + "\nconst value = " + "1;".repeat(600);
+ assert.equal(inspectBashResourceLifecycle({ command: `node -e ${JSON.stringify(longScript)}` }), undefined);
+ const scope = inspectBashPermissionScope({ command: `node -e ${JSON.stringify(longScript)}` }, process.cwd());
+ assert.ok(scope);
+ assert.equal(scope?.primitives.includes("oversized_uninspectable"), false);
+ const syntax = await failureRecoveryHint("bash", { command: "node -e 'const = ;'" }, "SyntaxError: Unexpected token '='\n    at eval:1:7", process.cwd());
+ assert.match(syntax!, /syntax\/parse error/);
+ assert.match(syntax!, /valid long node -e is allowed/);
+ assert.match(syntax!, /\.cjs\/.mjs file or stdin is an option/);
+ assert.doesNotMatch(syntax!, /reduce the snippet|entire operation was not executed/);
+ const argv = await failureRecoveryHint("bash", { command: "node -e 'console.log(1)'" }, "TypeError [ERR_INVALID_ARG_TYPE]: The \"path\" argument must be a string", process.cwd());
+ assert.equal(argv, undefined);
+ const valid = await failureRecoveryHint("bash", { command: `node -e ${JSON.stringify(longScript)}` }, "Command exited with code 0", process.cwd());
+ assert.equal(valid, undefined);
+});
+
+test("effective guarded Bash metadata gives one short optional Node carrier guideline", () => {
+ const bash = definitions.get("bash");
+ assert.ok(Array.isArray(bash?.promptGuidelines));
+ const nodeGuidelines = bash.promptGuidelines.filter((line: string) => /node -e/.test(line));
+ assert.equal(nodeGuidelines.length, 1);
+ assert.match(nodeGuidelines[0], /file|stdin/);
+ assert.match(nodeGuidelines[0], /does not decide permission/);
+ assert.match(nodeGuidelines[0], /does not bypass approval/);
 });
 
 

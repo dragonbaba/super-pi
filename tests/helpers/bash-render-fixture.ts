@@ -73,7 +73,7 @@ export function createBashRenderFixture(clock: BashRenderClock, expanded = false
 	component.render(120);
 	const bashMetrics = { previewComponentsCreated: 0, timeComponentsCreated: 0, warningComponentsCreated: 0,
 		expandedComponentsCreated: 0, timeTextUpdates: 0, warningTextUpdates: 0,
-		preparedOutputRecomputations: 0, previewLineRecomputations: 0 };
+		preparedOutputRecomputations: 0, previewLineRecomputations: 0, failureAnalyses: 0 };
 	raw.resultRendererComponent.setAllocationMetrics?.(bashMetrics);
 	const call = raw.callRendererComponent;
 	let callSetText = 0, callLayouts = 0, callRenderCalls = 0;

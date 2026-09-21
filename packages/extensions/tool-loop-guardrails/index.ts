@@ -124,6 +124,7 @@ export default function toolLoopGuardrails(pi: ExtensionAPI): void {
     description: "Execute a Bash command in an explicit working directory. Returns bounded stdout/stderr. Prefer cwd over cd ... && ... when one package directory is intended.",
     promptGuidelines: [
       "Set bash.cwd to the verified task directory; inspect SP_* only when current model or Session details are needed.",
+      "For Node scripts, use node -e when the one-off source can be passed reliably; complex quoting or reusable code may use an explicit file or supported stdin. Script length does not decide permission, and a file does not bypass approval.",
     ],
     parameters: ScopedBashParameters,
     async execute(toolCallId, input: ScopedBashInput, signal, onUpdate, ctx) {
