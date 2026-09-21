@@ -85,8 +85,8 @@ export class BoundedMemorySelector<T> {
     }
     this.safeAction = requested >= 0 && !this.items[initialIndex]!.dangerous ? requested : Math.max(0, safeAction);
     this.actionIndex = this.safeAction;
-    this.hints = [
-      this.hint("tui.input.tab") + " 浏览/动作；文件只读",
+		this.hints = [
+			this.hint("tui.input.tab") + " 候选/操作；候选文件只读",
       this.hint("tui.select.up") + "/" + this.hint("tui.select.down") + " 移动；" + this.hint("tui.select.pageUp") + "/" + this.hint("tui.select.pageDown") + " 路径翻页",
       this.hint("tui.select.confirm") + " 确认动作；" + this.hint("tui.select.cancel") + " 取消",
     ];
@@ -163,7 +163,7 @@ export class BoundedMemorySelector<T> {
     const lines: string[] = [];
     for (const title of this.titleLines) lines.push(this.line(title, width, "accent"));
     if (this.browse.length > 0) {
-      lines.push(this.line("只读文件 " + (this.browseIndex + 1) + "/" + this.browse.length, width, "muted"));
+		lines.push(this.line("候选文件 " + (this.browseIndex + 1) + "/" + this.browse.length, width, "muted"));
       const start = Math.max(0, Math.min(this.browseIndex - Math.floor(this.visible / 2), this.browse.length - this.visible));
       for (let position = start; position < start + this.visible; position++) {
         const item = this.items[this.browse[position]!]!;
@@ -175,17 +175,18 @@ export class BoundedMemorySelector<T> {
       ? 0
       : Math.max(0, Math.min(this.actionIndex - Math.floor(this.actionVisible / 2), actionTotal - this.actionVisible));
     const actionEnd = Math.min(actionTotal, actionStart + this.actionVisible);
-    lines.push(this.line(actionTotal > this.actionVisible
-      ? `动作 ${actionStart + 1}-${actionEnd}/${actionTotal}`
-      : "动作", width, "muted"));
+		lines.push(this.line(actionTotal > this.actionVisible
+			? `操作 ${actionStart + 1}-${actionEnd}/${actionTotal}`
+			: "操作", width, "muted"));
     for (let position = actionStart; position < actionEnd; position++) {
       const item = this.items[this.actions[position]!]!;
       const selected = this.focus === "actions" && position === this.actionIndex;
       lines.push(this.line((selected ? "→ " : "  ") + item.display, width, item.dangerous ? "error" : selected ? "accent" : "text"));
     }
-    const index = this.focus === "browse" ? this.browse[this.browseIndex] : this.actions[this.actionIndex];
-    const detail = index === undefined ? undefined : this.items[index]!.detail;
-    if (detail && (index !== this.detailIndex || width !== this.detailWidth || detail !== this.detailText)) {
+		const index = this.focus === "browse" ? this.browse[this.browseIndex] : this.actions[this.actionIndex];
+		const detail = index === undefined ? undefined : this.items[index]!.detail;
+		this.detailRows = detail ? Math.max(1, Math.min(4, remaining)) : 0;
+		if (detail && (index !== this.detailIndex || width !== this.detailWidth || detail !== this.detailText)) {
       this.detailIndex = index;
       this.detailText = detail;
       this.detailWidth = width;
@@ -194,7 +195,7 @@ export class BoundedMemorySelector<T> {
     }
     const detailCount = detail && index === this.detailIndex && detail === this.detailText ? this.detailLines.length : 0;
     this.detailOffset = Math.max(0, Math.min(this.detailOffset, detailCount - this.detailRows));
-    lines.push(this.line("完整路径 " + (detailCount ? (this.detailOffset + 1) + "/" + detailCount : "—"), width, "muted"));
+		lines.push(this.line("所选文件详情 " + (detailCount ? (this.detailOffset + 1) + "/" + detailCount : "—"), width, "muted"));
     for (let row = 0; row < this.detailRows; row++) lines.push(this.line((detailCount ? this.detailLines[this.detailOffset + row] : "") ?? "", width, "muted"));
     for (const hint of this.hints) lines.push(this.line(hint, width, "dim"));
     this.actionPainted = true;

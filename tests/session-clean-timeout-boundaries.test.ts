@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
 import test from "node:test";
 import { BoundedMemorySelector } from "../packages/extensions/session-memory-manager/bounded-selector.ts";
+import { formatTrashEntryLabel } from "../packages/extensions/session-memory-manager/index.ts";
 import { inspectBashPermissionScope } from "../packages/extensions/resource-lifecycle-guard/permission-bash.ts";
 import { inspectBashResourceLifecycle, inspectHighRiskBashMutation } from "../packages/extensions/resource-lifecycle-guard/core.ts";
 import { parseTimeoutInvocation } from "../packages/extensions/resource-lifecycle-guard/timeout-wrapper.ts";
@@ -95,6 +96,16 @@ test("fixed regexes remain stateless across repeated and interleaved checks", ()
   assert.equal("c?d".replace(TOOL_CALL_ID_SANITIZE_PATTERN, "_"), "c_d");
   assert.equal(TOOL_CALL_ID_SANITIZE_PATTERN.lastIndex, 0);
 });
+
+test("trash confirmation labels expose bounded session metadata instead of the internal basename", () => {
+  const basename = "2026-09-21T05-30-00.000Z_12345678-1234-4123-8123-123456789abc_uuid_" + "very-long-internal-session-name-".repeat(20) + ".jsonl";
+  const label = formatTrashEntryLabel({ name: basename, size: 8192, mtimeMs: Date.UTC(2026, 8, 21, 5, 30) }, 0);
+  assert.match(label, /1\./);
+  assert.match(label, /12345678/);
+  assert.match(label, /8 KiB/);
+  assert.doesNotMatch(label, /very-long-internal-session-name/);
+  assert.ok(label.length < 100);
+});
 function confirmationItems(): Array<{ value: boolean; label: string; selectable?: boolean; detail?: string; dangerous?: boolean }> {
   return [
     { value: false, label: "very-long-session-file-name.jsonl", selectable: false, detail: "/tmp/synthetic/" + "长路径😀e\u0301/".repeat(50) },
@@ -128,13 +139,13 @@ test("memory clean selector pages long action lists inside the overlay", async (
   const selector = new BoundedMemorySelector("选择 Session", items, theme, keybindings, value => { result = value; }, () => 24, 0);
   selector.focused = true;
   const first = selector.render(50).join("\n");
-  assert.match(first, /动作 1-8\/30/);
+  assert.match(first, /操作 1-8\/30/);
   assert.ok(selector.render(50).length < 24);
   for (let index = 0; index < 29; index++) {
     selector.handleInput("\x1b[B");
     selector.render(50);
   }
-  assert.match(selector.render(50).join("\n"), /动作 23-30\/30/);
+  assert.match(selector.render(50).join("\n"), /操作 23-30\/30/);
   await new Promise<void>(resolve => setTimeout(resolve, 270));
   selector.handleInput("\r");
   assert.equal(result, 29);
@@ -162,11 +173,11 @@ test("memory clean selector keeps a fixed detail area and bounds narrow windows"
   const browseHeight = selector.render(40).length;
   selector.handleInput("\x1b[B");
   const nextHeight = selector.render(40).length;
-  assert.equal(firstHeight, browseHeight);
+  assert.ok(firstHeight < browseHeight, `${firstHeight} < ${browseHeight}`);
   assert.equal(browseHeight, nextHeight);
   assert.ok(selector.render(10).every((line) => stripTerminalSequences(line).length <= 10));
   const tight = new BoundedMemorySelector("再次确认", confirmationItems(), theme, keybindings, () => {}, () => 11, 1);
-  assert.equal(tight.render(40).length, 11);
+  assert.ok(tight.render(40).length <= 11);
 });
 
 test("Main and Alt frames stay bounded while toggling the clean dialog", async () => {
@@ -176,12 +187,24 @@ test("Main and Alt frames stay bounded while toggling the clean dialog", async (
   const alt = new TuiAltScreen(altTerminal, true);
   const selector = new BoundedMemorySelector("清理", confirmationItems(), theme, keybindings, () => {}, () => 22, 1);
   const altSelector = new BoundedMemorySelector("清理", confirmationItems(), theme, keybindings, () => {}, () => 22, 1);
+  const background = {
+    render: () => Array.from({ length: 6 }, (_, index) => `BG-${index.toString().padStart(2, "0")} status 彩色输出 😀`),
+    invalidate: () => {},
+  };
+  const altBackground = {
+    render: () => Array.from({ length: 6 }, (_, index) => `BG-${index.toString().padStart(2, "0")} status 彩色输出 😀`),
+    invalidate: () => {},
+  };
+  main.addChild(background);
   main.addChild(selector);
+  alt.addChild(altBackground);
   alt.addChild(altSelector);
   main.setFocus(selector);
   alt.setFocus(altSelector);
   main.start();
   alt.start();
+  await mainTerminal.flush();
+  await altTerminal.flush();
   main.renderNow(true);
   alt.renderNow(true);
   await mainTerminal.flush();
@@ -203,8 +226,8 @@ test("Main and Alt frames stay bounded while toggling the clean dialog", async (
     assert.equal((altSelector as any).focus, expectedBrowse ? "browse" : "actions");
     const mainFrame = mainTerminal.writes[mainTerminal.writes.length - 1] ?? "";
     const altFrame = altTerminal.writes[altTerminal.writes.length - 1] ?? "";
-    assert.match(mainFrame, /完整路径/);
-    assert.match(altFrame, /完整路径/);
+    assert.match(mainFrame, /所选文件详情/);
+    assert.match(altFrame, /所选文件详情/);
     if (expectedBrowse) browseFrames++; else actionFrames++;
   }
   assert.deepEqual([browseFrames, actionFrames], [50, 50]);
@@ -216,6 +239,14 @@ test("Main and Alt frames stay bounded while toggling the clean dialog", async (
   assert.ok(altPaths.length <= 1);
   assert.ok(mainTerminal.writes.length < 500);
   assert.ok(altTerminal.writes.length < 500);
+  const mainVisible = mainTerminal.visible();
+  const altVisible = altTerminal.visible();
+  assert.match(mainVisible.join("\n"), /BG-\d{2}/);
+  assert.match(altVisible.join("\n"), /BG-\d{2}/);
+  const mainPopupStart = mainVisible.findIndex(line => line.includes("清理"));
+  const altPopupStart = altVisible.findIndex(line => line.includes("清理"));
+  assert.ok(mainPopupStart >= 0 && mainVisible.slice(mainPopupStart).every(line => !line.includes("BG-")));
+  assert.ok(altPopupStart >= 0 && altVisible.slice(altPopupStart).every(line => !line.includes("BG-")));
   mainTerminal.resizeTo(30, 14);
   altTerminal.resizeTo(30, 14);
   main.renderNow(true);

@@ -1,4 +1,4 @@
-import { basename, join } from "node:path";
+import { join } from "node:path";
 import {
   getAgentDir,
   SessionManager,
@@ -18,6 +18,7 @@ import {
   sameFile,
   trashSession,
   type ManagedSession,
+  type SessionTrashEntry,
 } from "./core.ts";
 import { SUPPORTED_SP_VERSION_PATTERN } from "./regex.ts";
 import { MAX_UI_ERROR, sanitizeSessionText } from "./ui-text.ts";
@@ -67,6 +68,13 @@ function sessionLabel(session: SessionInfo): string {
   return `${shortDate(session.modified)}  ${title}  [${session.messageCount}]  ID:${sanitizeSessionText(session.id, 80)}`;
 }
 
+export function formatTrashEntryLabel(entry: Pick<SessionTrashEntry, "name" | "size" | "mtimeMs">, index: number): string {
+  const parts = entry.name.split("_");
+  const sessionId = parts.length > 1 ? sanitizeSessionText(parts[1], 12) : "";
+  const id = sessionId ? `ID:${sessionId}` : "ID:未知";
+  return `${index + 1}. ${shortDate(new Date(entry.mtimeMs))} · ${formatBytes(entry.size)} · ${id}`;
+}
+
 async function selectBounded<T>(
   ctx: ExtensionCommandContext,
   title: string,
@@ -80,12 +88,12 @@ async function selectBounded<T>(
 
 async function confirmTrashDeletion(
   ctx: ExtensionCommandContext,
-  entries: readonly { filePath: string; size: number }[],
+  entries: readonly SessionTrashEntry[],
 ): Promise<boolean> {
   const items: BoundedSelectorItem<boolean>[] = entries.map((entry, index) => ({
     value: false,
-    label: `${index + 1}. ${sanitizeSessionText(basename(entry.filePath), 512)}`,
-    description: formatBytes(entry.size),
+    label: formatTrashEntryLabel(entry, index),
+    description: "待永久删除",
     detail: sanitizeSessionText(entry.filePath, Infinity),
     selectable: false,
   }));
@@ -101,7 +109,7 @@ async function confirmTrashDeletion(
   );
   return (await selectBounded(
     ctx,
-    `再次确认永久删除 Session 回收文件？\n固定目录：${TRASH_DIR}\n文件清单可滚动；不会删除未列出的文件。`,
+    `再次确认永久删除 Session 回收文件？\n固定回收目录：${TRASH_DIR}\n候选清单可滚动；不会删除未列出的文件。`,
     items,
     items.length - 1,
   )) === true;
