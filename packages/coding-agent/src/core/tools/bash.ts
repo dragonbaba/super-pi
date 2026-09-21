@@ -1,7 +1,7 @@
 import { constants } from "node:fs";
 import { access as fsAccess } from "node:fs/promises";
 import type { AgentTool } from "@super-pi/agent-core";
-import { type Component, Container, getCapabilities, RELEASE_COMPONENT_RENDER_CACHE, Text, truncateToWidth } from "@super-pi/tui";
+import { type Component, Container, getCapabilities, RELEASE_COMPONENT_RENDER_CACHE, Text, truncateToWidth, visibleWidth } from "@super-pi/tui";
 import { spawn } from "child_process";
 import { type Static, Type } from "typebox";
 import { keyHint } from "../../modes/interactive/components/keybinding-hints.ts";
@@ -299,12 +299,13 @@ function createBashFailurePreview(output: string): BashFailurePreview | undefine
 	let genericFailure: string | undefined;
 	let genericFailureEnd = -1;
 	let status: string | undefined;
-	let recovery: string | undefined;
+	let nonblankCharacters = 0;
 	let nextStack: string | undefined;
 	const recentLines: string[] = [];
 	for (let start = 0; start < output.length;) {
 		const end = nextLineEnd(output, start);
 		const line = output.slice(start, end);
+		if (line.trim()) nonblankCharacters += line.length;
 		if (!firstUseful) {
 			if (lineHasSpecificFailureMarker(line)) {
 				firstUseful = line;
@@ -316,7 +317,6 @@ function createBashFailurePreview(output: string): BashFailurePreview | undefine
 			}
 		}
 		if (line.includes("Command exited with code") || line.includes("Command timed out") || line.includes("Command aborted")) status = line;
-		if (line.includes("[Node script recovery]")) recovery = line;
 		recentLines.push(line);
 		if (recentLines.length > 4) recentLines.shift();
 		if (end === output.length) break;
@@ -333,12 +333,18 @@ function createBashFailurePreview(output: string): BashFailurePreview | undefine
 		const next = output.slice(nextStart, nextEnd);
 		if (next.includes(" at ") || next.trimStart().startsWith("at ") || next.includes(": line ")) nextStack = next;
 	}
+	const exception = boundFailureFragment(firstUseful);
+	const terminalStatus = status && status !== firstUseful ? boundFailureFragment(status) : undefined;
+	const stack = nextStack ? boundFailureFragment(nextStack) : undefined;
+	let selectedCharacters = exception.length + (terminalStatus?.length ?? 0) + (stack?.length ?? 0);
+	for (const line of firstUsefulPrefix) selectedCharacters += line.length;
 	return {
 		context: firstUsefulPrefix,
-		exception: boundFailureFragment(firstUseful),
-		status: status && status !== firstUseful ? boundFailureFragment(status) : undefined,
-		stack: nextStack ? boundFailureFragment(nextStack) : undefined,
-		omitted: recovery !== undefined,
+		exception,
+		status: terminalStatus,
+		stack,
+		// Ignore blank separators; count both unselected lines and shortened fragments.
+		omitted: nonblankCharacters > selectedCharacters,
 	};
 }
 
@@ -412,6 +418,7 @@ type BashResultRenderState = {
 	cachedWidth: number | undefined;
 	cachedLines: string[] | undefined;
 	cachedSkipped: number | undefined;
+	cachedFailureOmitted: boolean;
 	preparedContent: Array<{ type: string; text?: string; data?: string; mimeType?: string }> | undefined;
 	preparedShowImages: boolean | undefined;
 	preparedCapabilitiesImages: ReturnType<typeof getCapabilities>["images"] | undefined;
@@ -427,6 +434,16 @@ type BashResultRenderState = {
 	allocationMetrics?: BashRenderAllocationMetrics;
 };
 
+/** Only bounded final-failure fragments are visited during width-dependent layout. */
+function appendBashFailureLine(state: BashResultRenderState, lines: string[], text: string, width: number): void {
+	if (lines.length >= BASH_PREVIEW_LINES) {
+		state.cachedFailureOmitted = true;
+		return;
+	}
+	if (visibleWidth(text) > width) state.cachedFailureOmitted = true;
+	lines.push(truncateToWidth(theme.fg("toolOutput", text), width, "..."));
+}
+
 /** Reads the owner's current prepared output, never a captured prior output string. */
 class BashPreviewComponent implements Component {
 	private state: BashResultRenderState | undefined;
@@ -435,14 +452,15 @@ class BashPreviewComponent implements Component {
 		const state = this.state;
 		if (!state) return [];
 		if (state.cachedLines === undefined || state.cachedWidth !== width) {
+			state.cachedFailureOmitted = false;
 			if (state.preparedErrorPreview) {
 				const failure = state.preparedErrorPreview;
 				const lines: string[] = [];
-				for (const contextLine of failure.context) if (lines.length < BASH_PREVIEW_LINES) lines.push(truncateToWidth(theme.fg("toolOutput", contextLine), width, "..."));
-				if (lines.length < BASH_PREVIEW_LINES) lines.push(truncateToWidth(theme.fg("toolOutput", failure.exception), width, "..."));
-				if (failure.status && lines.length < BASH_PREVIEW_LINES) lines.push(truncateToWidth(theme.fg("toolOutput", failure.status), width, "..."));
-				if (failure.stack && lines.length < BASH_PREVIEW_LINES) lines.push(truncateToWidth(theme.fg("toolOutput", failure.stack), width, "..."));
-				if (failure.omitted && lines.length < BASH_PREVIEW_LINES) lines.push(truncateToWidth(theme.fg("muted", "… additional failure details; expand to view"), width, "..."));
+				state.cachedFailureOmitted = failure.omitted;
+				for (const contextLine of failure.context) appendBashFailureLine(state, lines, contextLine, width);
+				appendBashFailureLine(state, lines, failure.exception, width);
+				if (failure.status) appendBashFailureLine(state, lines, failure.status, width);
+				if (failure.stack) appendBashFailureLine(state, lines, failure.stack, width);
 				state.cachedLines = lines;
 				state.cachedSkipped = 0;
 			} else {
@@ -454,7 +472,11 @@ class BashPreviewComponent implements Component {
 			if (state.allocationMetrics) state.allocationMetrics.previewLineRecomputations++;
 		}
 		const lines = [""];
-		if (state.cachedSkipped && state.cachedSkipped > 0) {
+		if (state.cachedFailureOmitted) {
+			const hint = theme.fg("muted", "... (more failure details,") +
+				` ${keyHint("app.tools.expand", "to expand")}${theme.fg("muted", ")")}`;
+			lines.push(truncateToWidth(hint, width, "..."));
+		} else if (state.cachedSkipped && state.cachedSkipped > 0) {
 			const hint = theme.fg("muted", `... (${state.cachedSkipped} earlier lines,`) +
 				` ${keyHint("app.tools.expand", "to expand")}${theme.fg("muted", ")")}`;
 			lines.push(truncateToWidth(hint, width, "..."));
@@ -476,6 +498,7 @@ class BashResultRenderComponent extends Container {
 		cachedWidth: undefined,
 		cachedLines: undefined,
 		cachedSkipped: undefined,
+		cachedFailureOmitted: false,
 		preparedContent: undefined,
 		preparedShowImages: undefined,
 		preparedCapabilitiesImages: undefined,
@@ -509,6 +532,7 @@ class BashResultRenderComponent extends Container {
 		state.cachedWidth = undefined;
 		state.cachedLines = undefined;
 		state.cachedSkipped = undefined;
+		state.cachedFailureOmitted = false;
 		state.preparedContent = undefined;
 		state.preparedShowImages = undefined;
 		state.preparedCapabilitiesImages = undefined;
@@ -646,6 +670,7 @@ function getPreparedBashOutput(
 		state.cachedWidth = undefined;
 		state.cachedLines = undefined;
 		state.cachedSkipped = undefined;
+		state.cachedFailureOmitted = false;
 	}
 	state.preparedContent = snapshotBashResultContent(result.content);
 	state.preparedShowImages = showImages;

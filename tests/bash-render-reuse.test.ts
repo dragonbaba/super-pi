@@ -210,7 +210,7 @@ test("older render contexts retain timer behavior through invalidate fallback", 
 });
 
 test("Bash hot helpers and narrow refresh have no inline closures or Promise construction", () => {
-	const targets = new Set(["snapshotBashResultContent", "bashResultContentMatches", "getPreparedBashOutput", "rebuildBashResultRenderComponent", "renderContextRefreshResult"]);
+	const targets = new Set(["snapshotBashResultContent", "bashResultContentMatches", "getPreparedBashOutput", "rebuildBashResultRenderComponent", "renderContextRefreshResult", "appendBashFailureLine"]);
 	const seen = new Set<string>();
 	for (const path of ["packages/coding-agent/src/core/tools/bash.ts", "packages/coding-agent/src/modes/interactive/components/tool-execution.ts"]) {
 		const source = ts.createSourceFile(path, readFileSync(path, "utf8"), ts.ScriptTarget.Latest, true);

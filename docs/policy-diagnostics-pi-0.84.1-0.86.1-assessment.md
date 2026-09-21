@@ -44,6 +44,25 @@ The final Bash error preview now separates failure selection from collapsed layo
 
 The follow-up review also closed three boundary details. Shared feedback sanitization consumes single- or double-quoted multi-word credential values and long paths after key/value separators before the bounded copy is exposed to the model. The selector’s available-row calculation reuses the same two-cell margin and max-height constants as its production overlay, so a 50×24 screen cannot render rows that the overlay later clips. For a final Node parse failure, the collapsed Bash view keeps up to three preceding module/source context lines when they belong to the same location, followed by the first exception and exit status; the full output still owns the remaining stack and recovery text. The next review pass additionally covered quoted absolute paths, authorization-scheme tokens, and an earlier generic Error log before a later structured exception; those cases remain bounded and select the structured exception.
 
+### Full error-preview expansion indicator
+
+The CI for `95ae0e5fbf2f77d20944bf03e7fb652cfc334e45` passed, but its review did raise [P2: Preserve an expansion indicator when the preview is full](https://github.com/dragonbaba/super-pi/pull/40#discussion_r4065882394). The earlier handoff claiming no new inline findings was incorrect. Its five-line parse preview retained the exception and status but hid the expansion hint when the body was full.
+
+The fix uses the existing outside hint row, independently of the unchanged five-line error body. A separate owner boolean represents hidden failure details; `cachedSkipped` retains its real success-tail count semantics. The final failure pass compares nonblank output content with retained bounded fragments, so omitted stacks/logs and fragment shortening count even without Node recovery text. Width layout adds omission only for shortened/dropped bounded fragments. Blank separators alone do not trigger a hint. The hint resolves `app.tools.expand` through the existing `keyHint` on render, follows custom bindings, appears once only while collapsed, and resets on new results and release.
+
+Real `ToolExecutionComponent` output at 80/100/120 columns (the short `.mjs` fixture preserves the same five-line body):
+
+```text
+... (more failure details, ctrl+o to expand)
+[eval]:1
+const = ;
+      ^
+SyntaxError: Unexpected token '='
+Command exited with code 1
+```
+
+The complete production recovery text and stack remain expandable and canonical content is unchanged. Short fully visible failures have no omission hint; width-only shortening loses its hint once all content fits. Tests cover default/custom binding, fold/unfold, error-to-success, partial-to-final, resize, immutable previous line arrays, and release. The existing 100-render fixture keeps zero extra analyses/layouts, two resizes cause two layouts, and release leaves zero preview references. This changes only TUI display: no provider wire, model text, schema, prompt, model request, file, or subprocess is added by the hint.
+
 ## B: pinned source and method
 
 The upstream repository was read at the real tags `v0.84.1` → `v0.86.1`:
