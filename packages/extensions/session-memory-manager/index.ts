@@ -31,6 +31,8 @@ const TRASH_DIR = join(AGENT_DIR, "@super-pi/memory", "session-trash");
 const LEASE_DIR = join(AGENT_DIR, "@super-pi/memory", "session-leases");
 const LEASE_STATE_KEY = Symbol.for("pi.@super-pi/session-memory-manager.lease-state");
 const BYTE_FORMATTER = new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 1 });
+const SESSION_CLEAN_OVERLAY_MARGIN = 2;
+const SESSION_CLEAN_OVERLAY_MAX_HEIGHT = 24;
 const SHORT_DATE_FORMATTER = new Intl.DateTimeFormat("zh-CN", {
   year: "numeric",
   month: "2-digit",
@@ -82,8 +84,23 @@ export async function selectBounded<T>(
   initialIndex?: number,
 ): Promise<T | undefined> {
   return ctx.ui.custom<T | undefined>((tui, theme, keybindings, done) => {
-    return new BoundedMemorySelector(title, items, theme, keybindings, done, () => Math.min(24, Math.max(0, tui.terminal.rows - 2)), initialIndex);
-  }, { overlay: true, overlayOptions: { width: 96, maxHeight: 24, margin: 2 } });
+    return new BoundedMemorySelector(
+      title,
+      items,
+      theme,
+      keybindings,
+      done,
+      () => Math.min(SESSION_CLEAN_OVERLAY_MAX_HEIGHT, Math.max(0, tui.terminal.rows - SESSION_CLEAN_OVERLAY_MARGIN * 2)),
+      initialIndex,
+    );
+  }, {
+    overlay: true,
+    overlayOptions: {
+      width: 96,
+      maxHeight: SESSION_CLEAN_OVERLAY_MAX_HEIGHT,
+      margin: SESSION_CLEAN_OVERLAY_MARGIN,
+    },
+  });
 }
 
 async function confirmTrashDeletion(

@@ -19,6 +19,7 @@ import {
 } from "../../utils/shell.ts";
 import type { ExtensionContext, ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
 import { OutputAccumulator } from "./output-accumulator.ts";
+import { ANSI_SGR_PATTERN, NODE_PARSE_LOCATION_PATTERN } from "./bash-regex.ts";
 import { getTextOutput, invalidArgText, str } from "./render-utils.ts";
 import {
 	RELEASE_TOOL_RENDER_DERIVED_STATE,
@@ -251,28 +252,51 @@ function lineHasFailureMarker(line: string): boolean {
 	return false;
 }
 
+function nodeParseContext(lines: readonly string[]): string[] {
+	let locationIndex = -1;
+	for (let index = lines.length - 1; index >= 0; index--) {
+		if (NODE_PARSE_LOCATION_PATTERN.test(lines[index]!.replace(ANSI_SGR_PATTERN, "").trim())) {
+			locationIndex = index;
+			break;
+		}
+	}
+	if (locationIndex < 0) return [];
+	const context: string[] = [];
+	for (let index = locationIndex; index < lines.length && context.length < 3; index++) {
+		const line = lines[index]!;
+		if (line.trim()) context.push(line);
+	}
+	return context;
+}
+
 /** Select the first useful failure and terminal status once per final result. */
 function createBashFailurePreview(output: string): string | undefined {
 	let firstUseful: string | undefined;
+	let firstUsefulPrefix: string[] = [];
 	let firstUsefulEnd = -1;
 	let status: string | undefined;
 	let recovery: string | undefined;
+	const recentLines: string[] = [];
 	for (let start = 0; start < output.length;) {
 		const end = nextLineEnd(output, start);
 		const line = output.slice(start, end);
 		if (!firstUseful && lineHasFailureMarker(line)) {
 			firstUseful = line;
 			firstUsefulEnd = end;
+			if (line.includes("SyntaxError")) firstUsefulPrefix = nodeParseContext(recentLines);
 		}
 		if (line.includes("Command exited with code") || line.includes("Command timed out") || line.includes("Command aborted")) status = line;
 		if (line.includes("[Node script recovery]")) recovery = line;
+		recentLines.push(line);
+		if (recentLines.length > 4) recentLines.shift();
 		if (end === output.length) break;
 		start = end + 1;
 	}
 	if (!firstUseful) return undefined;
-	let preview = firstUseful;
+	let preview = firstUsefulPrefix.length > 0 ? firstUsefulPrefix.join("\n") + "\n" + firstUseful : firstUseful;
+	if (firstUsefulPrefix.length > 0) recovery = undefined;
 	const nextStart = firstUsefulEnd + 1;
-	if (nextStart < output.length) {
+	if (firstUsefulPrefix.length === 0 && nextStart < output.length) {
 		const nextEnd = nextLineEnd(output, nextStart);
 		const next = output.slice(nextStart, nextEnd);
 		if (next.includes(" at ") || next.trimStart().startsWith("at ") || next.includes(": line ")) preview += `\n${next}`;

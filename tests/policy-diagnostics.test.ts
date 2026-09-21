@@ -109,6 +109,14 @@ test("rejection feedback is bounded and redacts URLs, credentials, and long path
   assert.ok(feedback!.length <= 240);
 });
 
+test("policy feedback redacts complete quoted multi-word credentials", () => {
+  const feedback = sanitizePolicyFeedback('password="correct horse battery staple" token=FAKE_TOKEN path=/synthetic/private/long/session.jsonl');
+  assert.ok(feedback);
+  assert.doesNotMatch(feedback!, /correct horse battery staple|FAKE_TOKEN|private\/long/);
+  assert.match(feedback!, /credential redacted/);
+  assert.match(feedback!, /path redacted/);
+});
+
 test("production extension preflight reaches the first refusal without backend or process use", async () => {
   const jiti = createJiti(import.meta.url);
   const { default: lifecycle } = await jiti.import<any>("../packages/extensions/resource-lifecycle-guard/index.ts");
@@ -281,16 +289,21 @@ test("Bash default error preview keeps the first useful Node exception and exit 
   component.markExecutionStarted();
   component.setArgsComplete();
   const output = [
+    "file:///tmp/synthetic/fixture.mjs:1",
+    "const = ;",
+    "      ^",
+    "",
     "SyntaxError: Unexpected token '='",
-    "    at file:///tmp/synthetic/fixture.mjs:4:7",
+    "    at compileSourceTextModule (node:internal/modules/esm/utils:346:16)",
     ...Array.from({ length: 14 }, (_, index) => `    at frame${index} (file:///tmp/synthetic/fixture.mjs:${index + 5}:1)`),
     "Command exited with code 1",
     "[Node script recovery] preserve the first useful error and location; do not retry unchanged source.",
   ].join("\n");
   component.updateResult({ content: [{ type: "text", text: output }], isError: true }, false, true);
   const collapsed = component.render(120).join("\n").replaceAll(/\x1b\[[0-9;]*m/gu, "");
+  assert.match(collapsed, /fixture\.mjs:1/);
   assert.match(collapsed, /SyntaxError: Unexpected token/);
-  assert.match(collapsed, /fixture\.mjs:4:7/);
+  assert.match(collapsed, /const = ;/);
   assert.match(collapsed, /Command exited with code 1/);
   assert.doesNotMatch(collapsed, /frame13/);
   component.setExpanded(true);
