@@ -228,6 +228,7 @@ export interface BashToolOptions {
 
 const BASH_PREVIEW_LINES = 5;
 const BASH_UPDATE_THROTTLE_MS = 100;
+const MAX_FAILURE_FRAGMENT_CHARS = 2048;
 const BASH_SPECIFIC_FAILURE_MARKERS = [
 	"SyntaxError",
 	"TypeError",
@@ -259,6 +260,20 @@ function lineHasGenericFailureMarker(line: string): boolean {
 	return false;
 }
 
+function boundFailureFragment(line: string): string {
+	if (line.length <= MAX_FAILURE_FRAGMENT_CHARS) return line;
+	const tailLength = 512;
+	return line.slice(0, MAX_FAILURE_FRAGMENT_CHARS - tailLength - 1) + "…" + line.slice(-tailLength);
+}
+
+type BashFailurePreview = {
+	context: string[];
+	exception: string;
+	status: string | undefined;
+	stack: string | undefined;
+	omitted: boolean;
+};
+
 function nodeParseContext(lines: readonly string[]): string[] {
 	let locationIndex = -1;
 	for (let index = lines.length - 1; index >= 0; index--) {
@@ -273,11 +288,11 @@ function nodeParseContext(lines: readonly string[]): string[] {
 		const line = lines[index]!;
 		if (line.trim()) context.push(line);
 	}
-	return context;
+	return context.map(boundFailureFragment);
 }
 
 /** Select the first useful failure and terminal status once per final result. */
-function createBashFailurePreview(output: string): string | undefined {
+function createBashFailurePreview(output: string): BashFailurePreview | undefined {
 	let firstUseful: string | undefined;
 	let firstUsefulPrefix: string[] = [];
 	let firstUsefulEnd = -1;
@@ -285,6 +300,7 @@ function createBashFailurePreview(output: string): string | undefined {
 	let genericFailureEnd = -1;
 	let status: string | undefined;
 	let recovery: string | undefined;
+	let nextStack: string | undefined;
 	const recentLines: string[] = [];
 	for (let start = 0; start < output.length;) {
 		const end = nextLineEnd(output, start);
@@ -311,17 +327,19 @@ function createBashFailurePreview(output: string): string | undefined {
 		firstUsefulEnd = genericFailureEnd;
 	}
 	if (!firstUseful) return undefined;
-	let preview = firstUsefulPrefix.length > 0 ? firstUsefulPrefix.join("\n") + "\n" + firstUseful : firstUseful;
-	if (firstUsefulPrefix.length > 0) recovery = undefined;
 	const nextStart = firstUsefulEnd + 1;
 	if (firstUsefulPrefix.length === 0 && nextStart < output.length) {
 		const nextEnd = nextLineEnd(output, nextStart);
 		const next = output.slice(nextStart, nextEnd);
-		if (next.includes(" at ") || next.trimStart().startsWith("at ") || next.includes(": line ")) preview += `\n${next}`;
+		if (next.includes(" at ") || next.trimStart().startsWith("at ") || next.includes(": line ")) nextStack = next;
 	}
-	if (status && status !== firstUseful && !preview.includes(status)) preview += `\n${status}`;
-	if (recovery && recovery !== firstUseful && !preview.includes(recovery)) preview += `\n${recovery}`;
-	return preview;
+	return {
+		context: firstUsefulPrefix,
+		exception: boundFailureFragment(firstUseful),
+		status: status && status !== firstUseful ? boundFailureFragment(status) : undefined,
+		stack: nextStack ? boundFailureFragment(nextStack) : undefined,
+		omitted: recovery !== undefined,
+	};
 }
 
 export type BashRenderState = ToolRenderLifecycleState & {
@@ -387,6 +405,7 @@ export interface BashRenderAllocationMetrics {
 	warningTextUpdates: number;
 	preparedOutputRecomputations: number;
 	previewLineRecomputations: number;
+	failureAnalyses: number;
 }
 
 type BashResultRenderState = {
@@ -401,7 +420,7 @@ type BashResultRenderState = {
 	preparedFullOutputPath: string | undefined;
 	preparedToolOutputStyle: string | undefined;
 	preparedStyledOutput: string | undefined;
-	preparedErrorPreview: string | undefined;
+	preparedErrorPreview: BashFailurePreview | undefined;
 	preparedIsError: boolean | undefined;
 	expandedOutputComponent: Text | undefined;
 	expandedOutputText: string | undefined;
@@ -416,9 +435,21 @@ class BashPreviewComponent implements Component {
 		const state = this.state;
 		if (!state) return [];
 		if (state.cachedLines === undefined || state.cachedWidth !== width) {
-			const preview = truncateToVisualLines(state.preparedErrorPreview ?? state.preparedStyledOutput ?? "", BASH_PREVIEW_LINES, width);
-			state.cachedLines = preview.visualLines;
-			state.cachedSkipped = preview.skippedCount;
+			if (state.preparedErrorPreview) {
+				const failure = state.preparedErrorPreview;
+				const lines: string[] = [];
+				for (const contextLine of failure.context) if (lines.length < BASH_PREVIEW_LINES) lines.push(truncateToWidth(theme.fg("toolOutput", contextLine), width, "..."));
+				if (lines.length < BASH_PREVIEW_LINES) lines.push(truncateToWidth(theme.fg("toolOutput", failure.exception), width, "..."));
+				if (failure.status && lines.length < BASH_PREVIEW_LINES) lines.push(truncateToWidth(theme.fg("toolOutput", failure.status), width, "..."));
+				if (failure.stack && lines.length < BASH_PREVIEW_LINES) lines.push(truncateToWidth(theme.fg("toolOutput", failure.stack), width, "..."));
+				if (failure.omitted && lines.length < BASH_PREVIEW_LINES) lines.push(truncateToWidth(theme.fg("muted", "… additional failure details; expand to view"), width, "..."));
+				state.cachedLines = lines;
+				state.cachedSkipped = 0;
+			} else {
+				const preview = truncateToVisualLines(state.preparedStyledOutput ?? "", BASH_PREVIEW_LINES, width);
+				state.cachedLines = preview.visualLines;
+				state.cachedSkipped = preview.skippedCount;
+			}
 			state.cachedWidth = width;
 			if (state.allocationMetrics) state.allocationMetrics.previewLineRecomputations++;
 		}
@@ -509,6 +540,7 @@ class BashResultRenderComponent extends Container {
 		warningComponentReferences: number;
 		warningTextCodeUnits: number;
 		allocationMetricsReferences: number;
+		preparedFailurePreviewReferences: number;
 	} {
 		return {
 			cachedLineReferences: this.state.cachedLines?.length ?? 0,
@@ -524,6 +556,7 @@ class BashResultRenderComponent extends Container {
 			warningComponentReferences: Number(this.warningComponent !== undefined),
 			warningTextCodeUnits: this.warningText?.length ?? 0,
 			allocationMetricsReferences: Number(this.state.allocationMetrics !== undefined),
+			preparedFailurePreviewReferences: Number(this.state.preparedErrorPreview !== undefined),
 		};
 	}
 }
@@ -605,7 +638,11 @@ function getPreparedBashOutput(
 		}
 	}
 	if (state.allocationMetrics) state.allocationMetrics.preparedOutputRecomputations++;
-	if (state.preparedStyledOutput !== styledOutput) {
+	if (
+		state.preparedStyledOutput !== styledOutput ||
+		state.preparedIsPartial !== options.isPartial ||
+		state.preparedIsError !== isError
+	) {
 		state.cachedWidth = undefined;
 		state.cachedLines = undefined;
 		state.cachedSkipped = undefined;
@@ -618,7 +655,8 @@ function getPreparedBashOutput(
 	state.preparedFullOutputPath = fullOutputPath;
 	state.preparedToolOutputStyle = toolOutputStyle;
 	state.preparedStyledOutput = styledOutput;
-	state.preparedErrorPreview = isError && !options.isPartial ? createBashFailurePreview(styledOutput) : undefined;
+	if (state.allocationMetrics && isError && !options.isPartial) state.allocationMetrics.failureAnalyses++;
+	state.preparedErrorPreview = isError && !options.isPartial ? createBashFailurePreview(output) : undefined;
 	state.preparedIsError = isError;
 	return styledOutput;
 }
