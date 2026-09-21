@@ -262,6 +262,42 @@ test("SDK tools, excludeTools and noTools keep ask_user disabled when requested"
 	} finally { f.close(); }
 });
 
+test("ask_user exposes bounded guidance and waits for a submitted text answer", async () => {
+	const f = await fixture(false, false);
+	let answer!: (value?: string) => void;
+	let shown!: () => void;
+	const visible = new Promise<void>(resolve => { shown = resolve; });
+	let calls = 0;
+	const runner = f.session.extensionRunner;
+	runner.setUIContext({ ...runner.getUIContext(), input: async () => {
+		shown();
+		return new Promise(resolve => { answer = resolve; });
+	} }, "tui");
+	const tool = f.session.agent.state.tools.find(candidate => candidate.name === "ask_user") as any;
+	assert.equal(tool?.interactionBoundary, true);
+	assert.match(f.session.agent.state.systemPrompt, /Ask one bounded question and wait for an explicit user answer/);
+	assert.match(f.session.agent.state.systemPrompt, /call ask_user and wait for its result/);
+	try {
+		f.session.agent.streamFunction = model => {
+			calls++;
+			return response(model, calls === 1
+				? [{ type: "toolCall", id: "text-q", name: "ask_user", arguments: { question: "What should the title be?" } }]
+				: [{ type: "text", text: "replanned" }]);
+		};
+		const run = f.session.prompt("need a preference");
+		await visible;
+		for (let index = 0; index < 4; index++) await new Promise<void>(resolve => setImmediate(resolve));
+		assert.equal(calls, 1);
+		assert.equal(f.session.agent.state.messages.filter(message => message.role === "toolResult").length, 0);
+		answer("Use the compact title");
+		await run;
+		assert.equal(calls, 2);
+		const result = f.session.agent.state.messages.find(message => message.role === "toolResult" && message.toolCallId === "text-q") as any;
+		assert.ok(result);
+		assert.match(result.content[0].text, /Use the compact title/);
+	} finally { f.close(); }
+});
+
 test("early Enter during clipboard preparation retains text and requires a new submit", async () => {
 	const f = await fixture(false, false);
 	const mode = interactive(f.session);
@@ -317,7 +353,8 @@ test("SDK ask_user pauses mixed batch, then replans; cancellation preserves pend
 		};
 		try {
 			const run = f.session.prompt("question"); await visible;
-			await turn(); assert.equal(calls, 1); assert.equal(effects, 0);
+			for (let index = 0; index < 4; index++) await new Promise<void>(resolve => setImmediate(resolve));
+			assert.equal(calls, 1); assert.equal(effects, 0);
 			if (cancel) await f.session.followUp("must stay queued");
 			choose(cancel ? undefined : "yes"); choose("yes"); await run;
 			assert.equal(effects, 0); assert.equal(calls, cancel ? 1 : 2);
