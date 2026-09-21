@@ -228,15 +228,17 @@ export interface BashToolOptions {
 
 const BASH_PREVIEW_LINES = 5;
 const BASH_UPDATE_THROTTLE_MS = 100;
-const BASH_FAILURE_MARKERS = [
+const BASH_SPECIFIC_FAILURE_MARKERS = [
 	"SyntaxError",
 	"TypeError",
 	"ReferenceError",
 	"RangeError",
 	"AssertionError",
-	"Error:",
 	"Cannot find module",
 	"ERR_",
+] as const;
+const BASH_GENERIC_FAILURE_MARKERS = [
+	"Error:",
 	"Command exited with code",
 	"Command timed out",
 	"Command aborted",
@@ -247,8 +249,13 @@ function nextLineEnd(text: string, start: number): number {
 	return end === -1 ? text.length : end;
 }
 
-function lineHasFailureMarker(line: string): boolean {
-	for (const marker of BASH_FAILURE_MARKERS) if (line.includes(marker)) return true;
+function lineHasSpecificFailureMarker(line: string): boolean {
+	for (const marker of BASH_SPECIFIC_FAILURE_MARKERS) if (line.includes(marker)) return true;
+	return false;
+}
+
+function lineHasGenericFailureMarker(line: string): boolean {
+	for (const marker of BASH_GENERIC_FAILURE_MARKERS) if (line.includes(marker)) return true;
 	return false;
 }
 
@@ -274,16 +281,23 @@ function createBashFailurePreview(output: string): string | undefined {
 	let firstUseful: string | undefined;
 	let firstUsefulPrefix: string[] = [];
 	let firstUsefulEnd = -1;
+	let genericFailure: string | undefined;
+	let genericFailureEnd = -1;
 	let status: string | undefined;
 	let recovery: string | undefined;
 	const recentLines: string[] = [];
 	for (let start = 0; start < output.length;) {
 		const end = nextLineEnd(output, start);
 		const line = output.slice(start, end);
-		if (!firstUseful && lineHasFailureMarker(line)) {
-			firstUseful = line;
-			firstUsefulEnd = end;
-			if (line.includes("SyntaxError")) firstUsefulPrefix = nodeParseContext(recentLines);
+		if (!firstUseful) {
+			if (lineHasSpecificFailureMarker(line)) {
+				firstUseful = line;
+				firstUsefulEnd = end;
+				if (line.includes("SyntaxError")) firstUsefulPrefix = nodeParseContext(recentLines);
+			} else if (!genericFailure && lineHasGenericFailureMarker(line)) {
+				genericFailure = line;
+				genericFailureEnd = end;
+			}
 		}
 		if (line.includes("Command exited with code") || line.includes("Command timed out") || line.includes("Command aborted")) status = line;
 		if (line.includes("[Node script recovery]")) recovery = line;
@@ -291,6 +305,10 @@ function createBashFailurePreview(output: string): string | undefined {
 		if (recentLines.length > 4) recentLines.shift();
 		if (end === output.length) break;
 		start = end + 1;
+	}
+	if (!firstUseful && genericFailure) {
+		firstUseful = genericFailure;
+		firstUsefulEnd = genericFailureEnd;
 	}
 	if (!firstUseful) return undefined;
 	let preview = firstUsefulPrefix.length > 0 ? firstUsefulPrefix.join("\n") + "\n" + firstUseful : firstUseful;

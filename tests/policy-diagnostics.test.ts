@@ -102,9 +102,9 @@ test("blocked tool projection keeps the legacy empty-reason fallback and final p
 });
 
 test("rejection feedback is bounded and redacts URLs, credentials, and long paths", () => {
-  const feedback = sanitizePolicyFeedback("拒绝 https://user:secret@example.invalid/path?q=private_token; token=abc123 C:\\private\\long\\session\\file.jsonl");
+  const feedback = sanitizePolicyFeedback("拒绝 https://user:secret@example.invalid/path?q=private_token; token=abc123 authorization: Bearer SUPER_SECRET path=\"/synthetic/private/long/session/file.jsonl\" C:\\private\\long\\session\\file.jsonl");
   assert.ok(feedback);
-  assert.doesNotMatch(feedback!, /user:secret|\?q=private_token|token=abc123|C:\\private/);
+  assert.doesNotMatch(feedback!, /user:secret|\?q=private_token|token=abc123|SUPER_SECRET|\/synthetic\/private|C:\\private/);
   assert.match(feedback!, /URL redacted|credential redacted|path redacted/);
   assert.ok(feedback!.length <= 240);
 });
@@ -289,6 +289,7 @@ test("Bash default error preview keeps the first useful Node exception and exit 
   component.markExecutionStarted();
   component.setArgsComplete();
   const output = [
+    "Error: retrying",
     "file:///tmp/synthetic/fixture.mjs:1",
     "const = ;",
     "      ^",
@@ -305,6 +306,7 @@ test("Bash default error preview keeps the first useful Node exception and exit 
   assert.match(collapsed, /SyntaxError: Unexpected token/);
   assert.match(collapsed, /const = ;/);
   assert.match(collapsed, /Command exited with code 1/);
+  assert.doesNotMatch(collapsed, /Error: retrying/);
   assert.doesNotMatch(collapsed, /frame13/);
   component.setExpanded(true);
   const expanded = component.render(120).join("\n").replaceAll(/\x1b\[[0-9;]*m/gu, "");
