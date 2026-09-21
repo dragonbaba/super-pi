@@ -58,7 +58,10 @@ const bashSchema = Type.Object({
 
 export const bashToolSystemPromptContribution = {
 	snippet: "Execute bash commands (ls, grep, find, etc.)",
-	guidelines: ["You can inspect SP_* environment variables for current model and session details."],
+	guidelines: [
+		"You can inspect SP_* environment variables for current model and session details.",
+		"For Node scripts, use node -e when the one-off source can be passed reliably; for complex quoting or reusable code, an explicit file or supported stdin is optional. Script length does not decide permission, and a file does not bypass approval.",
+	],
 } as const;
 
 export type BashToolInput = Static<typeof bashSchema>;
@@ -224,6 +227,60 @@ export interface BashToolOptions {
 
 const BASH_PREVIEW_LINES = 5;
 const BASH_UPDATE_THROTTLE_MS = 100;
+const BASH_FAILURE_MARKERS = [
+	"SyntaxError",
+	"TypeError",
+	"ReferenceError",
+	"RangeError",
+	"AssertionError",
+	"Error:",
+	"Cannot find module",
+	"ERR_",
+	"Command exited with code",
+	"Command timed out",
+	"Command aborted",
+] as const;
+
+function nextLineEnd(text: string, start: number): number {
+	const end = text.indexOf("\n", start);
+	return end === -1 ? text.length : end;
+}
+
+function lineHasFailureMarker(line: string): boolean {
+	for (const marker of BASH_FAILURE_MARKERS) if (line.includes(marker)) return true;
+	return false;
+}
+
+/** Select the first useful failure and terminal status once per final result. */
+function createBashFailurePreview(output: string): string | undefined {
+	let firstUseful: string | undefined;
+	let firstUsefulEnd = -1;
+	let status: string | undefined;
+	let recovery: string | undefined;
+	for (let start = 0; start < output.length;) {
+		const end = nextLineEnd(output, start);
+		const line = output.slice(start, end);
+		if (!firstUseful && lineHasFailureMarker(line)) {
+			firstUseful = line;
+			firstUsefulEnd = end;
+		}
+		if (line.includes("Command exited with code") || line.includes("Command timed out") || line.includes("Command aborted")) status = line;
+		if (line.includes("[Node script recovery]")) recovery = line;
+		if (end === output.length) break;
+		start = end + 1;
+	}
+	if (!firstUseful) return undefined;
+	let preview = firstUseful;
+	const nextStart = firstUsefulEnd + 1;
+	if (nextStart < output.length) {
+		const nextEnd = nextLineEnd(output, nextStart);
+		const next = output.slice(nextStart, nextEnd);
+		if (next.includes(" at ") || next.trimStart().startsWith("at ") || next.includes(": line ")) preview += `\n${next}`;
+	}
+	if (status && status !== firstUseful && !preview.includes(status)) preview += `\n${status}`;
+	if (recovery && recovery !== firstUseful && !preview.includes(recovery)) preview += `\n${recovery}`;
+	return preview;
+}
 
 export type BashRenderState = ToolRenderLifecycleState & {
 	startedAt: number | undefined;
@@ -302,6 +359,8 @@ type BashResultRenderState = {
 	preparedFullOutputPath: string | undefined;
 	preparedToolOutputStyle: string | undefined;
 	preparedStyledOutput: string | undefined;
+	preparedErrorPreview: string | undefined;
+	preparedIsError: boolean | undefined;
 	expandedOutputComponent: Text | undefined;
 	expandedOutputText: string | undefined;
 	allocationMetrics?: BashRenderAllocationMetrics;
@@ -315,7 +374,7 @@ class BashPreviewComponent implements Component {
 		const state = this.state;
 		if (!state) return [];
 		if (state.cachedLines === undefined || state.cachedWidth !== width) {
-			const preview = truncateToVisualLines(state.preparedStyledOutput ?? "", BASH_PREVIEW_LINES, width);
+			const preview = truncateToVisualLines(state.preparedErrorPreview ?? state.preparedStyledOutput ?? "", BASH_PREVIEW_LINES, width);
 			state.cachedLines = preview.visualLines;
 			state.cachedSkipped = preview.skippedCount;
 			state.cachedWidth = width;
@@ -351,7 +410,9 @@ class BashResultRenderComponent extends Container {
 		preparedTruncated: undefined,
 		preparedFullOutputPath: undefined,
 		preparedToolOutputStyle: undefined,
-		preparedStyledOutput: undefined,
+	preparedStyledOutput: undefined,
+	preparedErrorPreview: undefined,
+	preparedIsError: undefined,
 		expandedOutputComponent: undefined,
 		expandedOutputText: undefined,
 	};
@@ -383,6 +444,8 @@ class BashResultRenderComponent extends Container {
 		state.preparedFullOutputPath = undefined;
 		state.preparedToolOutputStyle = undefined;
 		state.preparedStyledOutput = undefined;
+		state.preparedErrorPreview = undefined;
+		state.preparedIsError = undefined;
 		state.expandedOutputComponent = undefined;
 		state.expandedOutputText = undefined;
 		state.allocationMetrics = undefined;
@@ -464,6 +527,7 @@ function getPreparedBashOutput(
 	result: { content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>; details?: BashToolDetails },
 	options: ToolRenderResultOptions,
 	showImages: boolean,
+	isError: boolean,
 ): string {
 	const state = component.state;
 	const truncation = result.details?.truncation;
@@ -478,6 +542,7 @@ function getPreparedBashOutput(
 		state.preparedTruncated === truncation?.truncated &&
 		state.preparedFullOutputPath === fullOutputPath &&
 		state.preparedToolOutputStyle === toolOutputStyle
+		&& state.preparedIsError === isError
 	) return state.preparedStyledOutput ?? "";
 
 	let output = getTextOutput(result as any, showImages).trim();
@@ -511,6 +576,8 @@ function getPreparedBashOutput(
 	state.preparedFullOutputPath = fullOutputPath;
 	state.preparedToolOutputStyle = toolOutputStyle;
 	state.preparedStyledOutput = styledOutput;
+	state.preparedErrorPreview = isError && !options.isPartial ? createBashFailurePreview(styledOutput) : undefined;
+	state.preparedIsError = isError;
 	return styledOutput;
 }
 
@@ -524,12 +591,13 @@ function rebuildBashResultRenderComponent(
 	showImages: boolean,
 	startedAt: number | undefined,
 	endedAt: number | undefined,
+	isError: boolean,
 ): void {
 	const state = component.state;
 	// Reuse the bounded child list without invalidating or releasing retained children.
 	component.children.length = 0;
 
-	const styledOutput = getPreparedBashOutput(component, result, options, showImages);
+	const styledOutput = getPreparedBashOutput(component, result, options, showImages, isError);
 	const truncation = result.details?.truncation;
 	const fullOutputPath = result.details?.fullOutputPath;
 	if (!styledOutput) {
@@ -790,6 +858,7 @@ export function createShellToolDefinition(
 				context.showImages,
 				state.startedAt,
 				state.endedAt,
+				context.isError,
 			);
 			component.invalidate();
 			return component;

@@ -92,6 +92,13 @@ test("blocked tool projection keeps the legacy empty-reason fallback and final p
   assert.match(refusalText, /User feedback:/);
   const changed = await dispatch(JSON.stringify({ category: "POLICY_BLOCKED", policyReason: "user_rejected", stateChanged: true, primitives: ["opaque_shell_wrapper"] }));
   assert.match((changed.content[0] as any).text, /\"stateChanged\":true/);
+  const finalDecision = await dispatch(JSON.stringify({
+    category: "POLICY_BLOCKED", policyReason: "user_rejected", stateChanged: false,
+    primitives: ["oversized_uninspectable"],
+    diagnostic: { code: "INSPECTION_LIMIT", category: "POLICY_BLOCKED", retryable: false, action: "change_arguments" },
+  }));
+  assert.match((finalDecision.content[0] as any).text, /^\[POLICY_BLOCKED:USER_REJECTED\]/);
+  assert.doesNotMatch((finalDecision.content[0] as any).text, /INSPECTION_LIMIT/);
 });
 
 test("rejection feedback is bounded and redacts URLs, credentials, and long paths", () => {
@@ -209,6 +216,55 @@ test("provider wire receives one projected refusal after real Agent preflight", 
   }
 });
 
+test("legacy structured refusal keeps a trusted inspection limit and sanitized feedback on the next provider wire", async () => {
+  const model: any = { id: "offline", name: "offline", api: "openai-completions", provider: "fixture", baseUrl: "https://fixture.invalid/v1", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 64000, maxTokens: 128 };
+  const wire: any[] = [];
+  let requests = 0;
+  const providerFetch = async (_url: string | URL, init?: RequestInit) => {
+    const payload = JSON.parse(String(init?.body));
+    wire.push(payload);
+    requests++;
+    const body = requests === 1
+      ? `data: ${JSON.stringify({ choices: [{ index: 0, delta: { role: "assistant", tool_calls: [{ index: 0, id: "legacy-call", type: "function", function: { name: "bash", arguments: JSON.stringify({ command: "echo fixture" }) } }] }, finish_reason: null }] })}\n\ndata: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] })}\n\ndata: [DONE]\n\n`
+      : `data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: "replanned" }, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`;
+    return new Response(body, { headers: { "content-type": "text/event-stream" } });
+  };
+  const legacyReason = JSON.stringify({
+    ok: false,
+    category: "POLICY_BLOCKED",
+    operation: "bash",
+    permissionMode: "workspace-write",
+    policyReason: "unverifiable_target",
+    primitives: ["oversized_uninspectable"],
+    diagnostic: { code: "INSPECTION_LIMIT", category: "POLICY_BLOCKED", retryable: false, action: "change_arguments" },
+    rejectionReason: "用户备注 token=FAKE_TOKEN https://example.invalid/query?secret=FAKE C:\\synthetic\\private\\long\\session.jsonl",
+    stateChanged: false,
+    retryable: false,
+  });
+  const agent = new Agent({
+    initialState: { model },
+    convertToLlm,
+    streamFn: (requestModel, context, options) => streamSimple(requestModel as any, context, { ...(options as any), apiKey: "offline", fetch: providerFetch }),
+    beforeToolCall: async ({ toolCall }) => ({ block: true, reason: legacyReason } as any),
+  });
+  agent.state.tools = [{ name: "bash", label: "bash", description: "fixture", parameters: { type: "object", properties: {} }, execute: async () => { throw new Error("backend must not run"); } } as any];
+  try {
+    await agent.prompt("legacy wire fixture");
+    assert.equal(requests, 2);
+    const result = agent.state.messages.find(message => message.role === "toolResult") as any;
+    const text = result.content[0].text as string;
+    assert.match(text, /^\[POLICY_BLOCKED:INSPECTION_LIMIT\]/);
+    assert.match(text, /analysis limit/);
+    assert.doesNotMatch(text, /DYNAMIC_TARGET|FAKE_TOKEN|example\.invalid|private\\long/);
+    const secondMessages = JSON.stringify(wire[1].messages);
+    assert.match(secondMessages, /POLICY_BLOCKED:INSPECTION_LIMIT/);
+    assert.doesNotMatch(secondMessages, /FAKE_TOKEN|example\.invalid|private\\long|DYNAMIC_TARGET/);
+    assert.equal((wire[1].messages as any[]).filter(message => message.role === "tool").length, 1);
+  } finally {
+    agent.abort();
+  }
+});
+
 test("default TUI keeps the diagnostic code, syntax and recovery readable", () => {
   initTheme("dark");
   const component = new ToolExecutionComponent("bash", "policy", {}, { showImages: false }, undefined, { requestRender(): void {} } as never, process.cwd());
@@ -217,6 +273,30 @@ test("default TUI keeps the diagnostic code, syntax and recovery readable", () =
   assert.match(rendered, /FD_DUP_UNSUPPORTED/);
   assert.match(rendered, /2>&1/);
   assert.match(rendered, /Next:/);
+});
+
+test("Bash default error preview keeps the first useful Node exception and exit status", () => {
+  initTheme("dark");
+  const component = new ToolExecutionComponent("bash", "node-failure", {}, { showImages: false }, undefined, { requestRender(): void {} } as never, process.cwd());
+  component.markExecutionStarted();
+  component.setArgsComplete();
+  const output = [
+    "SyntaxError: Unexpected token '='",
+    "    at file:///tmp/synthetic/fixture.mjs:4:7",
+    ...Array.from({ length: 14 }, (_, index) => `    at frame${index} (file:///tmp/synthetic/fixture.mjs:${index + 5}:1)`),
+    "Command exited with code 1",
+    "[Node script recovery] preserve the first useful error and location; do not retry unchanged source.",
+  ].join("\n");
+  component.updateResult({ content: [{ type: "text", text: output }], isError: true }, false, true);
+  const collapsed = component.render(120).join("\n").replaceAll(/\x1b\[[0-9;]*m/gu, "");
+  assert.match(collapsed, /SyntaxError: Unexpected token/);
+  assert.match(collapsed, /fixture\.mjs:4:7/);
+  assert.match(collapsed, /Command exited with code 1/);
+  assert.doesNotMatch(collapsed, /frame13/);
+  component.setExpanded(true);
+  const expanded = component.render(120).join("\n").replaceAll(/\x1b\[[0-9;]*m/gu, "");
+  assert.match(expanded, /frame13/);
+  assert.match(expanded, /\[Node script recovery\]/);
 });
 
 test("diagnostic token budget is measured through provider serialization", async () => {

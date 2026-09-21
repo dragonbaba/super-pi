@@ -1,5 +1,6 @@
 import { isKeyRelease, isKeyRepeat, truncateToWidth, wrapTextWithAnsi } from "@super-pi/tui";
 import type { KeybindingsManager, Theme } from "@super-pi/coding-agent";
+import { DynamicBorder } from "@super-pi/coding-agent";
 import { UI_LINE_BREAK_PATTERN } from "./regex.ts";
 import { sanitizeSessionText } from "./ui-text.ts";
 
@@ -38,6 +39,7 @@ export class BoundedMemorySelector<T> {
   /** Deterministic test/diagnostic counter for actual production wrapping calls. */
   private detailWrapCount = 0;
   private detailOffset = 0;
+  private detailsExpanded = true;
   private pasteActive = false;
   private pastePrefix = "";
   private visible = 1;
@@ -48,6 +50,9 @@ export class BoundedMemorySelector<T> {
   private actionPainted = false;
   private inputReadyAt = performance.now() + 250;
   private readonly theme: SelectorTheme;
+  private readonly border: DynamicBorder;
+  private borderWidth = 0;
+  private borderLine = "";
   private readonly keybindings: SelectorKeybindings;
   private done: ((result: T | undefined) => void) | undefined;
   private getAvailableRows: (() => number) | undefined;
@@ -62,6 +67,7 @@ export class BoundedMemorySelector<T> {
     initialIndex = 0,
   ) {
     this.theme = theme;
+    this.border = new DynamicBorder((value) => this.theme.fg("border", value));
     this.keybindings = keybindings;
     this.done = done;
     this.getAvailableRows = getAvailableRows;
@@ -88,7 +94,7 @@ export class BoundedMemorySelector<T> {
 		this.hints = [
 			this.hint("tui.input.tab") + " 候选/操作；候选文件只读",
       this.hint("tui.select.up") + "/" + this.hint("tui.select.down") + " 移动；" + this.hint("tui.select.pageUp") + "/" + this.hint("tui.select.pageDown") + " 路径翻页",
-      this.hint("tui.select.confirm") + " 确认动作；" + this.hint("tui.select.cancel") + " 取消",
+      this.hint("tui.editor.cursorLeft") + "/" + this.hint("tui.editor.cursorRight") + " 展开/折叠详情；" + this.hint("tui.select.confirm") + " 确认；" + this.hint("tui.select.cancel") + " 取消",
     ];
   }
 
@@ -111,6 +117,8 @@ export class BoundedMemorySelector<T> {
 
   invalidate(): void {
     this.detailWidth = 0;
+    this.borderWidth = 0;
+    this.borderLine = "";
     this.resetAction();
   }
 
@@ -122,6 +130,8 @@ export class BoundedMemorySelector<T> {
     this.detailIndex = undefined;
     this.detailText = undefined;
     this.detailWidth = 0;
+    this.borderWidth = 0;
+    this.borderLine = "";
     this.pasteActive = false;
     this.pastePrefix = "";
     this.items.length = 0;
@@ -135,6 +145,14 @@ export class BoundedMemorySelector<T> {
     return this.theme.fg(color, truncateToWidth(text, width, "…"));
   }
 
+  private separator(width: number): string {
+    if (width !== this.borderWidth) {
+      this.borderWidth = width;
+      this.borderLine = this.border.render(width)[0] ?? "";
+    }
+    return this.borderLine;
+  }
+
   render(width: number): string[] {
     if (this.settled) return [];
     const rows = Math.max(0, Math.floor(this.getAvailableRows?.() ?? 0));
@@ -146,7 +164,7 @@ export class BoundedMemorySelector<T> {
     // are a viewport over the full action index, so a long Session history does
     // not turn the fixed-height overlay into an unusable resize warning.
     const browseOverhead = this.browse.length > 0 ? 1 : 0;
-    const fixedRows = this.titleLines.length + this.hints.length + browseOverhead + 2;
+    const fixedRows = this.titleLines.length + this.hints.length + browseOverhead + 4;
     const minimum = fixedRows + (this.browse.length > 0 ? 1 : 0) + 1 + 1;
     if (width < 24 || rows < minimum) {
       this.actionPainted = false;
@@ -162,6 +180,7 @@ export class BoundedMemorySelector<T> {
     this.detailRows = Math.max(1, Math.min(4, remaining));
     const lines: string[] = [];
     for (const title of this.titleLines) lines.push(this.line(title, width, "accent"));
+    lines.push(this.separator(width));
     if (this.browse.length > 0) {
 		lines.push(this.line("候选文件 " + (this.browseIndex + 1) + "/" + this.browse.length, width, "muted"));
       const start = Math.max(0, Math.min(this.browseIndex - Math.floor(this.visible / 2), this.browse.length - this.visible));
@@ -183,9 +202,9 @@ export class BoundedMemorySelector<T> {
       const selected = this.focus === "actions" && position === this.actionIndex;
       lines.push(this.line((selected ? "→ " : "  ") + item.display, width, item.dangerous ? "error" : selected ? "accent" : "text"));
     }
-		const index = this.focus === "browse" ? this.browse[this.browseIndex] : this.actions[this.actionIndex];
-		const detail = index === undefined ? undefined : this.items[index]!.detail;
-		this.detailRows = detail ? Math.max(1, Math.min(4, remaining)) : 0;
+    const index = this.browse.length > 0 ? this.browse[this.browseIndex] : this.actions[this.actionIndex];
+    const detail = index === undefined ? undefined : this.items[index]!.detail;
+    this.detailRows = detail && this.detailsExpanded ? Math.max(1, Math.min(4, remaining)) : 0;
 		if (detail && (index !== this.detailIndex || width !== this.detailWidth || detail !== this.detailText)) {
       this.detailIndex = index;
       this.detailText = detail;
@@ -195,7 +214,8 @@ export class BoundedMemorySelector<T> {
     }
     const detailCount = detail && index === this.detailIndex && detail === this.detailText ? this.detailLines.length : 0;
     this.detailOffset = Math.max(0, Math.min(this.detailOffset, detailCount - this.detailRows));
-		lines.push(this.line("所选文件详情 " + (detailCount ? (this.detailOffset + 1) + "/" + detailCount : "—"), width, "muted"));
+		lines.push(this.separator(width));
+		lines.push(this.line("所选文件详情 " + (this.detailsExpanded ? (detailCount ? (this.detailOffset + 1) + "/" + detailCount : "—") : "已折叠"), width, "muted"));
     for (let row = 0; row < this.detailRows; row++) lines.push(this.line((detailCount ? this.detailLines[this.detailOffset + row] : "") ?? "", width, "muted"));
     for (const hint of this.hints) lines.push(this.line(hint, width, "dim"));
     this.actionPainted = true;
@@ -213,6 +233,12 @@ export class BoundedMemorySelector<T> {
       this.focus = this.focus === "browse" ? "actions" : "browse";
       this.resetAction();
       this.detailOffset = 0;
+      return;
+    }
+    if (!repeated && (this.keybindings.matches(data, "tui.editor.cursorLeft") || this.keybindings.matches(data, "tui.editor.cursorRight"))) {
+      this.detailsExpanded = !this.detailsExpanded;
+      this.detailOffset = 0;
+      this.actionPainted = false;
       return;
     }
     const up = this.keybindings.matches(data, "tui.select.up") || data === "k";

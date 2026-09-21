@@ -75,7 +75,7 @@ export function formatTrashEntryLabel(entry: Pick<SessionTrashEntry, "name" | "s
   return `${index + 1}. ${shortDate(new Date(entry.mtimeMs))} · ${formatBytes(entry.size)} · ${id}`;
 }
 
-async function selectBounded<T>(
+export async function selectBounded<T>(
   ctx: ExtensionCommandContext,
   title: string,
   items: readonly BoundedSelectorItem<T>[],
@@ -83,7 +83,7 @@ async function selectBounded<T>(
 ): Promise<T | undefined> {
   return ctx.ui.custom<T | undefined>((tui, theme, keybindings, done) => {
     return new BoundedMemorySelector(title, items, theme, keybindings, done, () => Math.min(24, Math.max(0, tui.terminal.rows - 2)), initialIndex);
-  }, { overlay: true, overlayOptions: { width: "100%", maxHeight: 24, margin: 1 } });
+  }, { overlay: true, overlayOptions: { width: 96, maxHeight: 24, margin: 2 } });
 }
 
 async function confirmTrashDeletion(

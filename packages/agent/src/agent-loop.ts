@@ -11,6 +11,9 @@ import {
 	EventStream,
 	hasIncompleteToolArguments,
 	type ToolResultMessage,
+	readPolicyDiagnostic,
+	renderPolicyDiagnostic,
+	sanitizePolicyFeedback,
 	validateToolArguments,
 } from "@super-pi/ai";
 import { resolve as resolvePath, sep } from "node:path";
@@ -1136,30 +1139,6 @@ function nonEmptyReason(reason: unknown): string | undefined {
 	return trimmed.length > 0 ? trimmed : undefined;
 }
 
-function boundedPolicyFeedback(value: unknown): string | undefined {
-	if (typeof value !== "string") return undefined;
-	let compact = "";
-	let pendingSpace = false;
-	for (let index = 0; index < value.length; index++) {
-		const code = value.charCodeAt(index);
-		if (code < 32 || code === 127) {
-			if (compact.length > 0) pendingSpace = true;
-			continue;
-		}
-		if (code === 32 || code === 9) {
-			if (compact.length > 0) pendingSpace = true;
-			continue;
-		}
-		if (pendingSpace) {
-			compact += " ";
-			pendingSpace = false;
-		}
-		compact += value[index];
-		if (compact.length >= 240) return `${compact.slice(0, 239)}…`;
-	}
-	return compact.trim() || undefined;
-}
-
 function projectStructuredPolicyRefusal(reason: unknown): { text: string; details: Record<string, unknown> } | undefined {
 	const structuredReason = nonEmptyReason(reason);
 	if (!structuredReason || structuredReason.charCodeAt(0) !== 123) return undefined;
@@ -1169,7 +1148,7 @@ function projectStructuredPolicyRefusal(reason: unknown): { text: string; detail
 	const value = payload as Record<string, unknown>;
 	if (value.category !== "POLICY_BLOCKED" || value.stateChanged !== false) return undefined;
 	const primitives = Array.isArray(value.primitives) ? value.primitives : [];
-	const diagnostic = value.diagnostic && typeof value.diagnostic === "object" ? value.diagnostic as Record<string, unknown> : undefined;
+	const diagnostic = readPolicyDiagnostic(value.diagnostic);
 	let code = "UNKNOWN";
 	let cause = "The request could not be verified by the safety policy.";
 	let next = "Submit a simpler request for authorization.";
@@ -1202,11 +1181,15 @@ function projectStructuredPolicyRefusal(reason: unknown): { text: string; detail
 		code = "AUTHORITY_EXPIRED";
 		cause = "The authorization was no longer current when the request was checked.";
 		next = "Restore current authorization and resubmit the operation; do not replay it automatically.";
-	} else if (diagnostic?.code === "FD_DUP_UNSUPPORTED") {
-		code = "FD_DUP_UNSUPPORTED";
-		const syntax = typeof diagnostic.syntax === "string" && diagnostic.syntax.length <= 32 ? diagnostic.syntax : "2>&1";
-		cause = `Bash analysis does not support \`${syntax}\`.`;
-		next = "Omit stream merging only if stderr need not pass through the pipe; resubmit for authorization.";
+	} else if (diagnostic) {
+		code = diagnostic.code;
+		const rendered = renderPolicyDiagnostic(diagnostic);
+		const firstLine = rendered.indexOf("\n");
+		const secondLine = firstLine === -1 ? rendered : rendered.slice(firstLine + 1);
+		const nextLine = secondLine.indexOf("\n");
+		cause = nextLine === -1 ? secondLine : secondLine.slice(0, nextLine);
+		const nextMarker = rendered.indexOf("Next: ");
+		if (nextMarker !== -1) next = rendered.slice(nextMarker + 6).trim();
 	} else if (primitives.includes("opaque_shell_wrapper") || primitives.includes("unverifiable_launcher")) {
 		code = "LAUNCHER_UNSUPPORTED";
 		cause = "Bash analysis cannot inspect this launcher.";
@@ -1217,12 +1200,14 @@ function projectStructuredPolicyRefusal(reason: unknown): { text: string; detail
 		next = "Submit a literal target for authorization.";
 	}
 	const feedback = (policyReason === "user_rejected" || policyReason === "unchanged_rejected_request")
-		? boundedPolicyFeedback(value.rejectionReason)
+		? sanitizePolicyFeedback(value.rejectionReason)
 		: undefined;
 	if (feedback) cause += ` User feedback: ${feedback}`;
+	const details: Record<string, unknown> = { ...value };
+	if (feedback) details.rejectionReason = feedback;
 	return {
 		text: `[POLICY_BLOCKED:${code}] Not executed:\n${cause}\nNext: ${next}`,
-		details: value,
+		details,
 	};
 }
 

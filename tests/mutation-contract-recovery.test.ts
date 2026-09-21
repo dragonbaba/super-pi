@@ -717,7 +717,7 @@ test("syntax parser resolves the pinned host dependency without a global Node-di
 });
 
 test("ordinary stderr marker cannot suppress actual runtime recovery in next model context", async t => {
- const f = await fixture(t);
+ const f = await fixture(t, true);
  writeFileSync(join(f.cwd, "diagnostic.mjs"), "console.error('[Lifecycle recovery]'); await import('./invalid.mjs');\n");
  writeFileSync(join(f.cwd, "invalid.mjs"), "const = ;\n");
  const { contexts, results } = await f.run([() => call("runtime", "bash", { command: "node diagnostic.mjs", cwd: f.cwd, timeout: 60 })]);

@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
 import test from "node:test";
-import { BoundedMemorySelector } from "../packages/extensions/session-memory-manager/bounded-selector.ts";
-import { formatTrashEntryLabel } from "../packages/extensions/session-memory-manager/index.ts";
+import { BoundedMemorySelector, type BoundedSelectorItem } from "../packages/extensions/session-memory-manager/bounded-selector.ts";
+import { formatTrashEntryLabel, selectBounded } from "../packages/extensions/session-memory-manager/index.ts";
 import { inspectBashPermissionScope } from "../packages/extensions/resource-lifecycle-guard/permission-bash.ts";
 import { inspectBashResourceLifecycle, inspectHighRiskBashMutation } from "../packages/extensions/resource-lifecycle-guard/core.ts";
 import { parseTimeoutInvocation } from "../packages/extensions/resource-lifecycle-guard/timeout-wrapper.ts";
@@ -173,14 +173,14 @@ test("memory clean selector keeps a fixed detail area and bounds narrow windows"
   const browseHeight = selector.render(40).length;
   selector.handleInput("\x1b[B");
   const nextHeight = selector.render(40).length;
-  assert.ok(firstHeight < browseHeight, `${firstHeight} < ${browseHeight}`);
+  assert.equal(firstHeight, browseHeight, "focus changes keep the overlay geometry stable");
   assert.equal(browseHeight, nextHeight);
   assert.ok(selector.render(10).every((line) => stripTerminalSequences(line).length <= 10));
   const tight = new BoundedMemorySelector("再次确认", confirmationItems(), theme, keybindings, () => {}, () => 11, 1);
   assert.ok(tight.render(40).length <= 11);
 });
 
-test("Main and Alt frames stay bounded while toggling the clean dialog", async () => {
+test("ordinary Main and Alt child frames stay bounded while toggling a selector", async () => {
   const mainTerminal = new CaptureTerminal(50, 24);
   const altTerminal = new CaptureTerminal(50, 24);
   const main = new TuiMainScreen(mainTerminal, true);
@@ -265,6 +265,113 @@ test("Main and Alt frames stay bounded while toggling the clean dialog", async (
   }
   mainTerminal.dispose();
   altTerminal.dispose();
+});
+
+async function runProductionOverlayFixture(
+  Screen: typeof TuiMainScreen | typeof TuiAltScreen,
+  columns: number,
+  rows: number,
+  count: number,
+): Promise<{ before: string[]; opened: string[]; toggled: string[]; resized: string[]; closed: string[]; writes: number }> {
+  const terminal = new CaptureTerminal(columns, rows);
+  const screen = new Screen(terminal, true);
+  const background = {
+    render: () => Array.from({ length: rows }, (_, index) => `\x1b[38;5;${index % 8 + 30}mBG-${index.toString().padStart(2, "0")} 背景中文😀e\u0301 ${"x".repeat(index % 11)}\x1b[0m`),
+    invalidate: () => {},
+  };
+  screen.addChild(background);
+  screen.start();
+  await terminal.flush();
+  screen.renderNow(true);
+  await terminal.flush();
+  const before = terminal.visible();
+  assert.match(before.join("\n"), /BG-00/);
+
+  const items: Array<BoundedSelectorItem<boolean>> = Array.from({ length: count }, (_, index) => ({
+    value: false,
+    label: `2026/09/${String(index + 1).padStart(2, "0")} · ${index + 1} KiB · ID:${String(index).padStart(4, "0")}`,
+    description: "待永久删除",
+    detail: `C:\\synthetic\\回收\\${"长路径😀e\u0301\\".repeat(12)}session-${index}.jsonl`,
+    selectable: false,
+  }));
+  items.push({ value: true, label: "永久删除以上候选", description: "不可恢复", dangerous: true });
+  items.push({ value: false, label: "取消，保留全部回收文件" });
+  const host = {
+    custom: async (factory: any, options: any): Promise<unknown> => new Promise((resolve) => {
+      let component: any;
+      let handle: { hide(): void } | undefined;
+      const done = (value: unknown) => {
+        handle?.hide();
+        component?.dispose?.();
+        resolve(value);
+      };
+      component = factory(screen, theme, keybindings, done);
+      handle = screen.showOverlay(component, options.overlayOptions);
+      screen.setFocus(component);
+      screen.requestRender();
+    }),
+  };
+  const select = selectBounded({ ui: host } as any, "清理 Session\n确认候选", items, items.length - 1);
+  await new Promise<void>(resolve => setTimeout(resolve, 0));
+  await terminal.flush();
+  screen.renderNow(true);
+  await terminal.flush();
+  const opened = terminal.visible();
+  assert.match(opened.join("\n"), /所选文件详情/);
+  assert.match(opened.join("\n"), /永久删除/);
+  const backgroundRows = opened.filter(line => /BG-\d{2}/.test(line));
+  assert.ok(backgroundRows.length > 0 && backgroundRows.length < rows, `overlay should cover a bounded screen rectangle: ${backgroundRows.length}/${rows}`);
+  const popupRow = opened.find(line => line.includes("清理 Session"));
+  assert.ok(popupRow);
+  assert.doesNotMatch(popupRow, /BG-\d{2}/);
+
+  terminal.emit("\t");
+  terminal.emit("\x1b[B");
+  terminal.emit("\x1b[6~");
+  terminal.emit("\x1b[C");
+  await new Promise<void>(resolve => setTimeout(resolve, 0));
+  screen.renderNow(true);
+  await terminal.flush();
+  const toggled = terminal.visible();
+  assert.match(toggled.join("\n"), /已折叠|所选文件详情/);
+
+  terminal.resizeTo(30, 14);
+  await new Promise<void>(resolve => setTimeout(resolve, 0));
+  screen.renderNow(true);
+  await terminal.flush();
+  const resized = terminal.visible();
+  assert.ok(resized.every(line => stripTerminalSequences(line).length <= 30));
+  terminal.emit("\x1b");
+  const result = await select;
+  assert.equal(result, undefined);
+  await new Promise<void>(resolve => setTimeout(resolve, 0));
+  screen.renderNow(true);
+  await terminal.flush();
+  const closed = terminal.visible();
+  assert.match(closed.join("\n"), /BG-\d{2}/);
+  assert.equal(closed.filter(line => /^BG-\d{2}/.test(line)).length, 14);
+  assert.doesNotMatch(closed.join("\n"), /所选文件详情|永久删除以上候选/);
+
+  const reopened = selectBounded({ ui: host } as any, "清理 Session", items, items.length - 1);
+  await new Promise<void>(resolve => setTimeout(resolve, 0));
+  await terminal.flush();
+  terminal.emit("\x1b");
+  assert.equal(await reopened, undefined);
+  await new Promise<void>(resolve => setTimeout(resolve, 0));
+  await screen.dispose();
+  return { before, opened, toggled, resized, closed, writes: terminal.writes.length };
+}
+
+test("production Main/Alt session clean uses a real bounded overlay and restores screen cells", async () => {
+  const main = await runProductionOverlayFixture(TuiMainScreen, 50, 24, 4);
+  const alt = await runProductionOverlayFixture(TuiAltScreen, 50, 24, 4);
+  const one = await runProductionOverlayFixture(TuiMainScreen, 60, 20, 1);
+  const many = await runProductionOverlayFixture(TuiAltScreen, 90, 30, 30);
+  for (const snapshot of [main, alt, one, many]) {
+    assert.ok(snapshot.writes > 4);
+    assert.equal(snapshot.closed.filter(line => line.includes("永久删除以上候选")).length, 0);
+  }
+  console.log(JSON.stringify({ screenModel: "xterm-headless", main: main.opened.slice(0, 8), alt: alt.opened.slice(0, 8) }));
 });
 
 const commandOne = "cd /d && timeout 250 find . -maxdepth 5 -type d -iname \"*封神*\" 2>/dev/null | head -20";
@@ -505,7 +612,7 @@ test("detail cache reuses same path across action focus and releases on cancella
     assert.deepEqual(selector.render(40), first);
     assert.equal((selector as any).detailWrapCount, initialWraps);
     selector.handleInput("\t");
-    assert.doesNotMatch(selector.render(40).join("\n"), /synthetic/);
+    assert.match(selector.render(40).join("\n"), /synthetic/);
     assert.equal((selector as any).detailWrapCount, initialWraps);
     selector.handleInput("\t");
     selector.render(40);

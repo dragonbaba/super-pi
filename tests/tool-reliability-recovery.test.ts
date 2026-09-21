@@ -12,9 +12,11 @@ import mutationExtension from "../packages/extensions/mutation-guard-write/index
 import browserExtension from "../packages/extensions/browser-use/index.ts";
 import { browserUrlSafetyError } from "../packages/extensions/browser-use/core.ts";
 const { failureRecoveryHint } = await createJiti(import.meta.url).import<any>("../packages/extensions/tool-loop-guardrails/core.ts");
+const { default: toolLoopGuardrails } = await createJiti(import.meta.url).import<any>("../packages/extensions/tool-loop-guardrails/index.ts");
 const definitions = new Map<string, any>();
 const pi: any = { on() {}, registerCommand() {}, registerTool(tool: any) { definitions.set(tool.name, tool); } };
 mutationExtension(pi); browserExtension(pi);
+toolLoopGuardrails(pi);
 
 test("new error codes retain classification and legacy telemetry without treating incomplete JSON as schema failure", async () => {
  const { classifyError } = await createJiti(import.meta.url).import<any>("../packages/extensions/session-tool-errors/core.ts");
@@ -117,6 +119,16 @@ test("Node recovery distinguishes parse failures from argv/runtime failures and 
  assert.equal(argv, undefined);
  const valid = await failureRecoveryHint("bash", { command: `node -e ${JSON.stringify(longScript)}` }, "Command exited with code 0", process.cwd());
  assert.equal(valid, undefined);
+});
+
+test("effective guarded Bash metadata gives one short optional Node carrier guideline", () => {
+ const bash = definitions.get("bash");
+ assert.ok(Array.isArray(bash?.promptGuidelines));
+ const nodeGuidelines = bash.promptGuidelines.filter((line: string) => /node -e/.test(line));
+ assert.equal(nodeGuidelines.length, 1);
+ assert.match(nodeGuidelines[0], /file|stdin/);
+ assert.match(nodeGuidelines[0], /does not decide permission/);
+ assert.match(nodeGuidelines[0], /does not bypass approval/);
 });
 
 

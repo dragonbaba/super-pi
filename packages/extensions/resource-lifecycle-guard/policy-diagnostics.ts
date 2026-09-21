@@ -1,31 +1,11 @@
 import {
   DISPLAY_WHITESPACE_PATTERN,
   FD_DUPLICATION_PATTERN,
-  POLICY_FEEDBACK_PATH_PATTERN,
-  POLICY_FEEDBACK_SECRET_PATTERN,
-  POLICY_FEEDBACK_URL_PATTERN,
 } from "./regex.ts";
+import type { PolicyDiagnostic, PolicyDiagnosticCode } from "@super-pi/ai";
 
-export type PolicyDiagnosticCode =
-  | "FD_DUP_UNSUPPORTED"
-  | "LAUNCHER_UNSUPPORTED"
-  | "DYNAMIC_EXECUTABLE"
-  | "DYNAMIC_TARGET"
-  | "INSPECTION_LIMIT"
-  | "PROTECTED_PATH"
-  | "USER_REJECTED"
-  | "AUTHORITY_EXPIRED"
-  | "UNKNOWN";
-
-export interface PolicyDiagnostic {
-  readonly code: PolicyDiagnosticCode;
-  readonly category: "POLICY_BLOCKED" | "SHELL_WRAPPER";
-  readonly syntax?: string;
-  readonly launcher?: string;
-  readonly retryable: boolean;
-  readonly action: "omit_syntax" | "native_tool" | "change_arguments" | "ask_user" | "stop";
-  readonly nativeToolAvailable?: boolean;
-}
+export { renderPolicyDiagnostic, sanitizePolicyFeedback } from "@super-pi/ai";
+export type { PolicyDiagnostic, PolicyDiagnosticCode } from "@super-pi/ai";
 
 export interface PolicyDiagnosticMetadata {
   readonly diagnostic: PolicyDiagnostic;
@@ -33,7 +13,6 @@ export interface PolicyDiagnosticMetadata {
 }
 
 const MAX_FRAGMENT_CHARS = 32;
-const MAX_FEEDBACK_CHARS = 240;
 
 function cleanFragment(value: string | undefined): string | undefined {
   if (!value) return undefined;
@@ -44,25 +23,6 @@ function cleanFragment(value: string | undefined): string | undefined {
     if (code < 32 || code === 127) return undefined;
   }
   return compact;
-}
-
-/** Keep user-supplied feedback useful to the model without treating it as policy data. */
-export function sanitizePolicyFeedback(value: unknown): string | undefined {
-  if (typeof value !== "string") return undefined;
-  const compact = value.replace(DISPLAY_WHITESPACE_PATTERN, " ").trim()
-    .replace(POLICY_FEEDBACK_URL_PATTERN, "[URL redacted]")
-    .replace(POLICY_FEEDBACK_SECRET_PATTERN, "[credential redacted]")
-    .replace(POLICY_FEEDBACK_PATH_PATTERN, "[path redacted]")
-    .trim();
-  if (!compact) return undefined;
-  const bounded = compact.length > MAX_FEEDBACK_CHARS
-    ? `${compact.slice(0, MAX_FEEDBACK_CHARS - 1)}…`
-    : compact;
-  for (let index = 0; index < bounded.length; index++) {
-    const code = bounded.charCodeAt(index);
-    if (code < 32 || code === 127) return undefined;
-  }
-  return bounded;
 }
 
 export function diagnosticForPrimitives(
@@ -92,28 +52,4 @@ export function policyMetadata(
   modelText: string,
 ): PolicyDiagnosticMetadata {
   return { diagnostic, modelText };
-}
-
-export function renderPolicyDiagnostic(diagnostic: PolicyDiagnostic): string {
-  const prefix = `[${diagnostic.category}:${diagnostic.code}] Not executed:`;
-  if (diagnostic.code === "FD_DUP_UNSUPPORTED") {
-    return `${prefix}\nBash analysis does not support \`${diagnostic.syntax ?? "2>&1"}\`.\nNext: omit stream merging only if stderr need not pass through the pipe; resubmit for authorization.`;
-  }
-  if (diagnostic.code === "LAUNCHER_UNSUPPORTED") {
-    const launcher = diagnostic.launcher ? `the \`${diagnostic.launcher}\` launcher` : "this launcher";
-    const next = diagnostic.nativeToolAvailable === true
-      ? "Use the enabled native PowerShell tool for this query; normal authorization still applies."
-      : "Use a directly inspectable foreground command; resubmit for authorization.";
-    return `${prefix}\nBash analysis cannot inspect ${launcher}.\nNext: ${next}`;
-  }
-  if (diagnostic.code === "DYNAMIC_EXECUTABLE") {
-    return `${prefix}\nThe executable position is dynamic and cannot be verified.\nNext: submit a literal executable for authorization.`;
-  }
-  if (diagnostic.code === "DYNAMIC_TARGET") {
-    return `${prefix}\nThe target cannot be verified from this request.\nNext: submit a literal target for authorization.`;
-  }
-  if (diagnostic.code === "INSPECTION_LIMIT") {
-    return `${prefix}\nThe Bash analysis limit was reached before the request could be verified.\nNext: submit a smaller, less nested request for authorization.`;
-  }
-  return `${prefix}\nBash analysis could not verify this request.\nNext: submit a simpler inspectable request for authorization.`;
 }
