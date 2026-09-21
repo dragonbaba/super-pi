@@ -33,7 +33,7 @@ import {
 import { protectedRootViolations } from "./mutation-policy.ts";
 import { assessProtectedMutationPath } from "../mutation-guard-write/protected-path-policy.ts";
 import { classifyStructuredReadonlyArguments, type StructuredReadonlyCommandName } from "./structured-argv.ts";
-import { diagnosticForPrimitives, policyMetadata, renderPolicyDiagnostic, type PolicyDiagnosticMetadata } from "./policy-diagnostics.ts";
+import { sanitizePolicyFeedback, type PolicyDiagnosticMetadata } from "./policy-diagnostics.ts";
 
 const STATUS_KEY = "session-permissions";
 const MAX_PURPOSE_CHARS = 800;
@@ -224,14 +224,14 @@ function structuredPermissionBlock(
     highRisk: options.highRisk === true,
     opaqueScript: options.opaqueScript === true,
     primitives,
-    rejectionReason: options.rejectionReason,
+    rejectionReason: sanitizePolicyFeedback(options.rejectionReason),
     stateChanged: false,
     retryable: options.retryable ?? true,
     ...(workspaceEscape ? { legalNextStep } : {}),
   });
 }
 
-function modelPolicyBlock(request: OperationRequest, mode: SessionPermissionMode, fallback: string): { reason: string; details: unknown } {
+function modelPolicyBlock(request: OperationRequest, mode: SessionPermissionMode): { reason: string; details: unknown } {
   const legacy = {
     ok: false,
     category: "POLICY_BLOCKED",
@@ -244,7 +244,17 @@ function modelPolicyBlock(request: OperationRequest, mode: SessionPermissionMode
     stateChanged: false,
     retryable: request.diagnostic?.diagnostic.retryable ?? false,
   };
-  if (!request.diagnostic) return { reason: fallback, details: legacy };
+  if (!request.diagnostic) {
+    return {
+      reason: structuredPermissionBlock(request.operation, mode, "unverifiable_target", {
+        highRisk: request.highRisk,
+        opaqueScript: request.opaqueScript,
+        retryable: false,
+        primitives: request.primitives,
+      }),
+      details: legacy,
+    };
+  }
   return { reason: request.diagnostic.modelText, details: {
     ...legacy,
     diagnostic: request.diagnostic.diagnostic,
@@ -366,9 +376,7 @@ export class SessionPermissionController {
     if (!request) return undefined;
     if (hasUnverifiableAssessment(request.targetAssessments)) {
       this.#appendAudit(request, "blocked", "unverifiable_target", this.#state.mode, this.#state.mode, false);
-      const block = modelPolicyBlock(request, this.#state.mode, structuredPermissionBlock(request.operation, this.#state.mode, "unverifiable_target", {
-        highRisk: request.highRisk, opaqueScript: request.opaqueScript, retryable: false, primitives: request.primitives,
-      }));
+      const block = modelPolicyBlock(request, this.#state.mode);
       return {
         block: true,
         reason: block.reason, details: block.details,
@@ -865,10 +873,7 @@ export class SessionPermissionController {
     }
     if (targetOverflow) targetAssessments.push({ unverifiableReason: "unverifiable_target" });
     const command = shellInput.command;
-    const diagnostic = high?.diagnostic ?? (scope.primitives.length > 0 ? (() => {
-      const value = diagnosticForPrimitives(scope.primitives);
-      return policyMetadata(value, renderPolicyDiagnostic(value));
-    })() : undefined);
+    const diagnostic = high?.diagnostic;
     return {
       operation: shellOperation,
       purpose,

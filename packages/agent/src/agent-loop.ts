@@ -851,7 +851,8 @@ async function prepareToolCall(
 			}
 			if (beforeResult?.block) {
 				const refusal = projectStructuredPolicyRefusal(beforeResult.reason);
-				const result = createErrorToolResult(refusal?.text ?? (beforeResult.reason ?? "Tool execution was blocked"), beforeResult.details ?? refusal?.details);
+				const directReason = nonEmptyReason(beforeResult.reason);
+				const result = createErrorToolResult(refusal?.text ?? (directReason ?? "Tool execution was blocked"), beforeResult.details ?? refusal?.details);
 				if (beforeResult.terminate === true) {
 					result.terminate = true;
 				}
@@ -1129,19 +1130,79 @@ async function finalizeExecutedToolCall(
 	};
 }
 
-function projectStructuredPolicyRefusal(reason: string | undefined): { text: string; details: Record<string, unknown> } | undefined {
-	if (!reason || reason.charCodeAt(0) !== 123) return undefined;
+function nonEmptyReason(reason: unknown): string | undefined {
+	if (typeof reason !== "string") return undefined;
+	const trimmed = reason.trim();
+	return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function boundedPolicyFeedback(value: unknown): string | undefined {
+	if (typeof value !== "string") return undefined;
+	let compact = "";
+	let pendingSpace = false;
+	for (let index = 0; index < value.length; index++) {
+		const code = value.charCodeAt(index);
+		if (code < 32 || code === 127) {
+			if (compact.length > 0) pendingSpace = true;
+			continue;
+		}
+		if (code === 32 || code === 9) {
+			if (compact.length > 0) pendingSpace = true;
+			continue;
+		}
+		if (pendingSpace) {
+			compact += " ";
+			pendingSpace = false;
+		}
+		compact += value[index];
+		if (compact.length >= 240) return `${compact.slice(0, 239)}…`;
+	}
+	return compact.trim() || undefined;
+}
+
+function projectStructuredPolicyRefusal(reason: unknown): { text: string; details: Record<string, unknown> } | undefined {
+	const structuredReason = nonEmptyReason(reason);
+	if (!structuredReason || structuredReason.charCodeAt(0) !== 123) return undefined;
 	let payload: unknown;
-	try { payload = JSON.parse(reason); } catch { return undefined; }
+	try { payload = JSON.parse(structuredReason); } catch { return undefined; }
 	if (!payload || typeof payload !== "object") return undefined;
 	const value = payload as Record<string, unknown>;
-	if (value.category !== "POLICY_BLOCKED" || typeof value.stateChanged !== "boolean") return undefined;
+	if (value.category !== "POLICY_BLOCKED" || value.stateChanged !== false) return undefined;
 	const primitives = Array.isArray(value.primitives) ? value.primitives : [];
 	const diagnostic = value.diagnostic && typeof value.diagnostic === "object" ? value.diagnostic as Record<string, unknown> : undefined;
 	let code = "UNKNOWN";
 	let cause = "The request could not be verified by the safety policy.";
 	let next = "Submit a simpler request for authorization.";
-	if (diagnostic?.code === "FD_DUP_UNSUPPORTED") {
+	const policyReason = typeof value.policyReason === "string" ? value.policyReason : undefined;
+	if (policyReason === "user_rejected") {
+		code = "USER_REJECTED";
+		cause = "The user rejected this request.";
+		next = "Change the request only after obtaining user approval; do not bypass the rejection with another tool or shell.";
+	} else if (policyReason === "unchanged_rejected_request") {
+		code = "UNCHANGED_REJECTED_REQUEST";
+		cause = "The unchanged request was already rejected.";
+		next = "Change the request only after obtaining user approval; do not replay it or bypass the rejection.";
+	} else if (policyReason === "scope_denied") {
+		code = "SCOPE_DENIED";
+		cause = "The request is outside the currently authorized scope.";
+		next = "Request authorization for this exact scope or use an already permitted target; do not bypass the scope with another tool or shell.";
+	} else if (policyReason === "protected_root") {
+		code = "PROTECTED_PATH";
+		cause = "The requested path is protected by policy.";
+		next = "Request authorization for a permitted target; do not bypass the protected path with another tool or shell.";
+	} else if (policyReason === "confirmation_cancelled") {
+		code = "CONFIRMATION_CANCELLED";
+		cause = "The required user confirmation was cancelled.";
+		next = "Ask for confirmation of the exact operation again only when the user is ready.";
+	} else if (policyReason === "confirmation_required") {
+		code = "CONFIRMATION_REQUIRED";
+		cause = "User confirmation was required before execution.";
+		next = "Request approval for the exact unchanged operation.";
+	} else if (policyReason === "authority_expired" || policyReason === "authorization_expired") {
+		code = "AUTHORITY_EXPIRED";
+		cause = "The authorization was no longer current when the request was checked.";
+		next = "Restore current authorization and resubmit the operation; do not replay it automatically.";
+	} else if (diagnostic?.code === "FD_DUP_UNSUPPORTED") {
 		code = "FD_DUP_UNSUPPORTED";
 		const syntax = typeof diagnostic.syntax === "string" && diagnostic.syntax.length <= 32 ? diagnostic.syntax : "2>&1";
 		cause = `Bash analysis does not support \`${syntax}\`.`;
@@ -1154,23 +1215,11 @@ function projectStructuredPolicyRefusal(reason: string | undefined): { text: str
 		code = "DYNAMIC_TARGET";
 		cause = "The target cannot be verified from this request.";
 		next = "Submit a literal target for authorization.";
-	} else if (value.policyReason === "protected_root") {
-		code = "PROTECTED_PATH";
-		cause = "The requested path is protected by policy.";
-		next = "Ask the user to authorize a different permitted target.";
-	} else if (value.policyReason === "user_rejected") {
-		code = "USER_REJECTED";
-		cause = "The user rejected this request.";
-		next = "Change the request only after obtaining user approval.";
-	} else if (value.policyReason === "confirmation_required" || value.policyReason === "confirmation_cancelled") {
-		code = "CONFIRMATION_REQUIRED";
-		cause = "User confirmation was required before execution.";
-		next = "Request approval for the exact unchanged operation.";
-	} else if (value.policyReason === "unchanged_rejected_request") {
-		code = "USER_REJECTED";
-		cause = "The unchanged request was already rejected.";
-		next = "Change the request before asking for authorization again.";
 	}
+	const feedback = (policyReason === "user_rejected" || policyReason === "unchanged_rejected_request")
+		? boundedPolicyFeedback(value.rejectionReason)
+		: undefined;
+	if (feedback) cause += ` User feedback: ${feedback}`;
 	return {
 		text: `[POLICY_BLOCKED:${code}] Not executed:\n${cause}\nNext: ${next}`,
 		details: value,

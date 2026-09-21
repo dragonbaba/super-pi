@@ -316,7 +316,7 @@ function inspectOutputRedirections(tokens: ShellSegment, cwd: string, builder: S
 			addPrimitive(builder, "unverifiable_redirection");
 			const descriptorFd = tokens.redirectionFds?.[position];
 			const descriptor = descriptorFd ? `${descriptorFd}${operator}${target ?? ""}` : `${operator}${target ?? ""}`;
-			if (FD_DUPLICATION_PATTERN.test(descriptor)) {
+			if (builder.diagnostic === undefined && FD_DUPLICATION_PATTERN.test(descriptor)) {
 				const diagnostic = diagnosticForPrimitives(builder.primitives, { syntax: descriptor });
 				builder.diagnostic = policyMetadata(diagnostic, renderPolicyDiagnostic(diagnostic));
 			}

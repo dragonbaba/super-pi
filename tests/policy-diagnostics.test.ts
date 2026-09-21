@@ -10,6 +10,7 @@ import { initTheme } from "../packages/coding-agent/src/modes/interactive/theme/
 import { ToolExecutionComponent } from "../packages/coding-agent/src/modes/interactive/components/tool-execution.ts";
 import { getEncoding } from "js-tiktoken";
 import { streamSimple } from "../packages/ai/src/api/openai-completions.ts";
+import { convertToLlm } from "../packages/coding-agent/src/core/messages.ts";
 import { renderPolicyDiagnostic } from "../packages/extensions/resource-lifecycle-guard/policy-diagnostics.ts";
 import { inspectBashResourceLifecycle, inspectHighRiskBashMutation } from "../packages/extensions/resource-lifecycle-guard/core.ts";
 import { inspectBashPermissionScope } from "../packages/extensions/resource-lifecycle-guard/permission-bash.ts";
@@ -49,6 +50,47 @@ test("multiple causes retain parser order and do not let full-access bypass veri
   assert.ok(scan?.primitives.includes("rm_recursive"));
   assert.equal(scan?.diagnostic?.diagnostic.code, "FD_DUP_UNSUPPORTED");
   assert.equal(scan?.diagnostic?.diagnostic.retryable, false);
+});
+
+test("the first reliable redirection diagnostic remains stable when later descriptors appear", () => {
+  const scan = inspectHighRiskBashMutation({ command: "echo x 2>&1 3>&2 | head" }, process.cwd());
+  assert.equal(scan?.diagnostic?.diagnostic.code, "FD_DUP_UNSUPPORTED");
+  assert.equal(scan?.diagnostic?.diagnostic.syntax, "2>&1");
+});
+
+test("blocked tool projection keeps the legacy empty-reason fallback and final permission decision", async () => {
+  const tool = {
+    name: "fixture", label: "fixture", description: "offline", parameters: { type: "object", properties: {} } as any,
+    execute: async () => ({ content: [{ type: "text" as const, text: "executed" }], details: {} }),
+  } as any;
+  async function dispatch(reason: unknown) {
+    const agent = new Agent({
+      streamFn: () => { throw new Error("offline provider must not be called"); },
+      beforeToolCall: async () => ({ block: true, reason } as any),
+    });
+    agent.state.tools = [tool];
+    try { return await agent.dispatchHostTool({ type: "toolCall", id: "reason", name: "fixture", arguments: {} }); }
+    finally { agent.abort(); }
+  }
+  for (const reason of [undefined, null, "", "   "]) {
+    const result = await dispatch(reason);
+    assert.equal(result.content[0]?.type, "text");
+    assert.equal((result.content[0] as any).text, "Tool execution was blocked");
+  }
+  const feedback = "用户拒绝：" + "说明 ".repeat(200);
+  const structured = JSON.stringify({
+    ok: false, category: "POLICY_BLOCKED", operation: "bash", permissionMode: "full-access",
+    policyReason: "user_rejected", primitives: ["opaque_shell_wrapper", "unverifiable_target"],
+    rejectionReason: feedback, stateChanged: false, retryable: false,
+  });
+  const refusal = await dispatch(structured);
+  const refusalText = (refusal.content[0] as any).text as string;
+  assert.match(refusalText, /^\[POLICY_BLOCKED:USER_REJECTED\]/);
+  assert.doesNotMatch(refusalText, /launcher|native tool|shell bypass/i);
+  assert.ok(refusalText.length < 500);
+  assert.match(refusalText, /User feedback:/);
+  const changed = await dispatch(JSON.stringify({ category: "POLICY_BLOCKED", policyReason: "user_rejected", stateChanged: true, primitives: ["opaque_shell_wrapper"] }));
+  assert.match((changed.content[0] as any).text, /\"stateChanged\":true/);
 });
 
 test("production extension preflight reaches the first refusal without backend or process use", async () => {
@@ -102,6 +144,59 @@ test("production extension preflight reaches the first refusal without backend o
     agent.abort();
     runner.invalidate();
     await runner.emit({ type: "session_shutdown" } as never);
+  }
+});
+
+test("provider wire receives one projected refusal after real Agent preflight", async () => {
+  const jiti = createJiti(import.meta.url);
+  const { default: lifecycle } = await jiti.import<any>("../packages/extensions/resource-lifecycle-guard/index.ts");
+  const cwd = process.cwd();
+  const runtime = createExtensionRuntime();
+  const extensions = [await loadExtensionFromFactory((pi: any) => lifecycle(pi), cwd, createEventBus(), runtime)];
+  const sessionManager = SessionManager.inMemory(cwd);
+  const runner = new ExtensionRunner(extensions, runtime, cwd, sessionManager, {} as never);
+  const model: any = { id: "offline", name: "offline", api: "openai-completions", provider: "fixture", baseUrl: "https://fixture.invalid/v1", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 64000, maxTokens: 128 };
+  const wire: any[] = [];
+  let backend = 0;
+  let requests = 0;
+  const providerFetch = async (_url: string | URL, init?: RequestInit) => {
+    const payload = JSON.parse(String(init?.body));
+    wire.push(payload);
+    requests++;
+    const body = requests === 1
+      ? `data: ${JSON.stringify({ choices: [{ index: 0, delta: { role: "assistant", tool_calls: [{ index: 0, id: "policy-call", type: "function", function: { name: "bash", arguments: JSON.stringify({ command: USER_COMMANDS[0] }) } }] }, finish_reason: null }] })}\n\ndata: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] })}\n\ndata: [DONE]\n\n`
+      : `data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: "replanned" }, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`;
+    return new Response(body, { headers: { "content-type": "text/event-stream" } });
+  };
+  const activeTools = ["bash"];
+  const agent = new Agent({
+    initialState: { model },
+    convertToLlm,
+    streamFn: (requestModel, context, options) => streamSimple(requestModel as any, context, { ...(options as any), apiKey: "offline", fetch: providerFetch }),
+    beforeToolCall: async ({ toolCall, args }) => runner.emitToolCall({ type: "tool_call", toolName: toolCall.name, toolCallId: toolCall.id, input: args as Record<string, unknown> } as never),
+  });
+  runner.bindCore({ getThinkingLevel: () => "off", getActiveTools: () => activeTools } as never, {
+    getSignal: () => agent.signal, isProjectTrusted: () => false, getModel: () => agent.state.model,
+    isIdle: () => !agent.state.isStreaming, abort: () => agent.abort(), hasPendingMessages: () => false,
+  } as never);
+  const bash = createBashTool(cwd, { exposeSessionEnvironment: false, operations: { exec: async () => { backend++; return { exitCode: 0 }; } } });
+  agent.state.tools = [{ ...bash, execute: (id: any, input: any, signal: any, update: any) => (backend++, (bash.execute as any)(id, input, signal, update)) }];
+  try {
+    await runner.emit({ type: "session_start" } as never);
+    await agent.prompt("wire fixture");
+    assert.equal(requests, 2);
+    assert.equal(backend, 0);
+    const results = agent.state.messages.filter(message => message.role === "toolResult") as any[];
+    assert.equal(results.length, 1);
+    assert.equal(results[0].toolCallId, "policy-call");
+    assert.match(results[0].content[0].text, /^\[POLICY_BLOCKED:FD_DUP_UNSUPPORTED\]/);
+    const secondMessages = JSON.stringify(wire[1].messages);
+    assert.equal((wire[1].messages as any[]).filter(message => message.role === "tool").length, 1);
+    assert.match(secondMessages, /POLICY_BLOCKED:FD_DUP_UNSUPPORTED/);
+    assert.doesNotMatch(secondMessages, /unverifiable_dynamic_scope/);
+    assert.equal((secondMessages.match(/POLICY_BLOCKED:FD_DUP_UNSUPPORTED/g) ?? []).length, 1);
+  } finally {
+    agent.abort(); runner.invalidate(); await runner.emit({ type: "session_shutdown" } as never);
   }
 });
 

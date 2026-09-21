@@ -27,6 +27,7 @@ export interface PolicyDiagnosticMetadata {
 }
 
 const MAX_FRAGMENT_CHARS = 32;
+const MAX_FEEDBACK_CHARS = 240;
 
 function cleanFragment(value: string | undefined): string | undefined {
   if (!value) return undefined;
@@ -37,6 +38,21 @@ function cleanFragment(value: string | undefined): string | undefined {
     if (code < 32 || code === 127) return undefined;
   }
   return compact;
+}
+
+/** Keep user-supplied feedback useful to the model without treating it as policy data. */
+export function sanitizePolicyFeedback(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const compact = value.replace(DISPLAY_WHITESPACE_PATTERN, " ").trim();
+  if (!compact) return undefined;
+  const bounded = compact.length > MAX_FEEDBACK_CHARS
+    ? `${compact.slice(0, MAX_FEEDBACK_CHARS - 1)}…`
+    : compact;
+  for (let index = 0; index < bounded.length; index++) {
+    const code = bounded.charCodeAt(index);
+    if (code < 32 || code === 127) return undefined;
+  }
+  return bounded;
 }
 
 export function diagnosticForPrimitives(
