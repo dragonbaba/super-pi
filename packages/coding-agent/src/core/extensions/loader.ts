@@ -7,23 +7,9 @@ import * as fs from "node:fs";
 import { createRequire } from "node:module";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import * as _bundledPiAgentCore from "@super-pi/agent-core";
 import type { Provider } from "@super-pi/ai";
-import * as _bundledPiAiCompat from "@super-pi/ai/compat";
-import * as _bundledPiAiOauth from "@super-pi/ai/oauth";
-import * as _bundledPiAiProviders from "@super-pi/ai/providers/all";
 import type { KeyId } from "@super-pi/tui";
-import * as _bundledPiTui from "@super-pi/tui";
-// Static imports of packages that extensions may use.
-// These MUST be static so Bun bundles them into the compiled binary.
-// The virtualModules option then makes them available to extensions.
-import * as _bundledTypebox from "typebox";
-import * as _bundledTypeboxCompile from "typebox/compile";
-import * as _bundledTypeboxValue from "typebox/value";
 import { CONFIG_DIR_NAME, getAgentDir, isBunBinary } from "../../config.ts";
-// NOTE: This import works because loader.ts exports are NOT re-exported from index.ts,
-// avoiding a circular dependency. Extensions can import from @super-pi/coding-agent.
-import * as _bundledPiCodingAgent from "../../index.ts";
 import { resolvePath } from "../../utils/paths.ts";
 import { createEventBus, type EventBus } from "../event-bus.ts";
 import type { ExecOptions } from "../exec.ts";
@@ -54,33 +40,6 @@ function loadCreateJiti(): Promise<CreateJiti> {
 	createJitiPromise ??= import("jiti/static").then((module) => module.createJiti);
 	return createJitiPromise;
 }
-
-/** Modules available to extensions via virtualModules (for compiled Bun binary) */
-const VIRTUAL_MODULES: Record<string, unknown> = {
-	typebox: _bundledTypebox,
-	"typebox/compile": _bundledTypeboxCompile,
-	"typebox/value": _bundledTypeboxValue,
-	"@sinclair/typebox": _bundledTypebox,
-	"@sinclair/typebox/compile": _bundledTypeboxCompile,
-	"@sinclair/typebox/value": _bundledTypeboxValue,
-	"@super-pi/agent-core": _bundledPiAgentCore,
-	"@super-pi/tui": _bundledPiTui,
-	// Extensions resolve the pi-ai root to the compat entrypoint (a strict
-	// superset of the core entrypoint): existing extensions using the old
-	// global API keep working at runtime until compat is removed.
-	"@super-pi/ai": _bundledPiAiCompat,
-	"@super-pi/ai/compat": _bundledPiAiCompat,
-	"@super-pi/ai/oauth": _bundledPiAiOauth,
-	"@super-pi/ai/providers/all": _bundledPiAiProviders,
-	"@super-pi/coding-agent": _bundledPiCodingAgent,
-	"@mariozechner/pi-agent-core": _bundledPiAgentCore,
-	"@mariozechner/pi-tui": _bundledPiTui,
-	"@mariozechner/pi-ai": _bundledPiAiCompat,
-	"@mariozechner/pi-ai/compat": _bundledPiAiCompat,
-	"@mariozechner/pi-ai/oauth": _bundledPiAiOauth,
-	"@mariozechner/pi-ai/providers/all": _bundledPiAiProviders,
-	"@mariozechner/pi-coding-agent": _bundledPiCodingAgent,
-};
 
 const require = createRequire(import.meta.url);
 
@@ -160,6 +119,13 @@ type PendingRuntimeChange =
 let extensionCacheCwd: string | undefined;
 let extensionCacheGeneration = 0;
 const extensionCache = new Map<string, ExtensionFactory>();
+let virtualModulesPromise: Promise<Record<string, unknown>> | undefined;
+
+function loadVirtualModules(): Promise<Record<string, unknown>> {
+	virtualModulesPromise ??= import(isBunBinary || isTypeScriptSourceRuntime ? "./virtual-modules.ts" : "./virtual-modules.js")
+		.then((module) => module.VIRTUAL_MODULES as Record<string, unknown>);
+	return virtualModulesPromise;
+}
 
 interface ExtensionCacheToken {
 	cwd: string;
@@ -591,14 +557,15 @@ async function loadExtensionModule(extensionPath: string, cacheToken?: Extension
 	}
 
 	const createJiti = await loadCreateJiti();
+	const virtualModules = await loadVirtualModules();
 	const jiti = createJiti(import.meta.url, {
 		moduleCache: false,
 		// Bun uses modules embedded in the executable. Source TypeScript reuses the
 		// host-resolved modules and root tsconfig paths. Built Node uses dist aliases.
 		...(isBunBinary
-			? { virtualModules: VIRTUAL_MODULES, tryNative: false }
+			? { virtualModules, tryNative: false }
 			: isTypeScriptSourceRuntime
-				? { virtualModules: VIRTUAL_MODULES, tsconfigPaths: true }
+				? { virtualModules, tsconfigPaths: true }
 				: { alias: getAliases() }),
 	});
 
