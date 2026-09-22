@@ -229,6 +229,6 @@ For documentation, start with Markdown, links, commands, and fact checks. For pr
 
 Super Pi was initially derived from [Pi](https://github.com/earendil-works/pi) v0.84.1. It is independently maintained here with the `@super-pi` package scope, the `superpi` command, and the `.sp` data root. It is not an official Pi distribution and does not inherit the upstream release channel; see [NOTICE.md](NOTICE.md) for attribution.
 
-The Pi v0.86.1 difference assessment is recorded, but it is not an overall upgrade. EventStream two-stack FIFO, provider-aware overflow classification, virtual-module lazy loading, and fuzzy-search progression are future independent slices, not current shipped performance results. No background paid cache-warming request is part of the default.
+The Pi v0.86.1 difference assessment is recorded, but it is not an overall upgrade. The bounded v0.87.0 evaluation has now landed selected independent slices: EventStream two-stack FIFO, provider-aware overflow classification, virtual-module lazy loading, and fuzzy-search progression. See the [bounded optimization evidence record](docs/performance/pi-087-bounded-optimization.md) for scope, verification and remaining boundaries. No background paid cache-warming request is part of the default.
 
 The project follows the [MIT License](LICENSE). Before contributing, read [AGENTS.md](AGENTS.md), the relevant package notes, and the performance contract.

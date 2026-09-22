@@ -334,8 +334,8 @@ function reasoningCapability(model: Model<Api>): ModelCapabilitiesV1["reasoning"
 function supportsStrictToolSchema(model: Model<Api>): boolean {
 	if (model.api === "anthropic-messages") return compatValue(model, "supportsStrictTools") === true;
 	if (model.api === "bedrock-converse-stream") return compatValue(model, "supportsStrictMode") === true;
+	if (model.api === "openai-completions") return compatValue(model, "supportsStrictMode") === true;
 	if (
-		model.api === "openai-completions" ||
 		model.api === "openai-responses" ||
 		model.api === "openai-codex-responses" ||
 		model.api === "azure-openai-responses"

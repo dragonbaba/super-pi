@@ -229,6 +229,6 @@ npm.cmd test
 
 Super Pi 最初派生自 [Pi](https://github.com/earendil-works/pi) v0.84.1，现在在本仓库独立维护，使用自己的 `@super-pi` 包作用域、`superpi` 命令和 `.sp` 数据根目录。它不是官方 Pi 发行版，也不继承上游发布通道；来源见 [NOTICE.md](NOTICE.md)。
 
-Pi v0.86.1 的差异评估已经记录，但不代表完成整体升级。EventStream 两栈 FIFO、provider-aware overflow、virtual modules 懒加载和 fuzzy search 推进属于后续独立切片，不是当前已交付的性能收益。默认不启动后台付费 cache warming。
+Pi v0.86.1 的差异评估已经记录，但不代表完成整体升级。v0.87.0 有界评估已经落地部分独立切片：EventStream 两栈 FIFO、provider-aware overflow、virtual modules 懒加载和 fuzzy search 推进。范围、验证结果和剩余边界见[有界优化证据记录](docs/performance/pi-087-bounded-optimization.md)。默认不启动后台付费 cache warming。
 
 项目遵循 [MIT License](LICENSE)。贡献前请阅读 [AGENTS.md](AGENTS.md)、相关包说明和性能契约。

@@ -133,7 +133,7 @@ import type {
 } from "./prefix-manifest.ts";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.ts";
 import type { BranchSummaryEntry, CompactionEntry, SessionEntry, SessionManager } from "./session-manager.ts";
-import { CURRENT_SESSION_VERSION, getLatestCompactionEntry, type SessionHeader } from "./session-manager.ts";
+import { CURRENT_SESSION_VERSION, getLatestCompactionEntry, sessionEntryToContextMessages, type SessionHeader } from "./session-manager.ts";
 import type { SettingsManager } from "./settings-manager.ts";
 import type { SlashCommandInfo } from "./slash-commands.ts";
 import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.ts";
@@ -498,6 +498,106 @@ interface ToolDefinitionEntry {
 	sourceInfo: SourceInfo;
 }
 
+/** Compare JSON checkpoint snapshots without materializing a serialized copy.
+ * Undefined parser scratch fields disappear on disk and do not establish identity.
+ * This is used only at the cold compaction boundary, never on provider deltas.
+ */
+function sameRecoverySnapshot(left: unknown, right: unknown): boolean {
+	if (left === right) return true;
+	if (!left || !right || typeof left !== "object" || typeof right !== "object") return false;
+	if (Array.isArray(left)) {
+		if (!Array.isArray(right) || left.length !== right.length) return false;
+		for (let index = 0; index < left.length; index++) {
+			if (!sameRecoverySnapshot(left[index], right[index])) return false;
+		}
+		return true;
+	}
+	if (Array.isArray(right)) return false;
+	const leftPrototype = Object.getPrototypeOf(left);
+	const rightPrototype = Object.getPrototypeOf(right);
+	if ((leftPrototype !== null && leftPrototype !== Object.prototype) ||
+		(rightPrototype !== null && rightPrototype !== Object.prototype)) return false;
+	const a = left as Record<string, unknown>;
+	const b = right as Record<string, unknown>;
+	for (const key of Object.keys(a)) {
+		if (a[key] !== undefined &&
+			(!Object.hasOwn(b, key) || !sameRecoverySnapshot(a[key], b[key]))) return false;
+	}
+	for (const key of Object.keys(b)) {
+		if (b[key] !== undefined && (!Object.hasOwn(a, key) || a[key] === undefined)) return false;
+	}
+	return true;
+}
+
+/** Cold checkpoint copies have no entry id. Match only the selected raw entry's
+ * exact snapshot after checking persisted metadata, including tool-call identity.
+ */
+function isLengthRecoveryMessage(message: AgentMessage, omitted: AgentMessage[]): boolean {
+	for (const original of omitted) {
+		if (message === original) return true;
+		if (message.timestamp !== original.timestamp) continue;
+		if (message.role === "assistant" && original.role === "assistant") {
+			if (message.stopReason !== "length" || message.api !== original.api || message.provider !== original.provider ||
+				message.model !== original.model || message.responseId !== original.responseId) continue;
+		} else if (message.role === "toolResult" && original.role === "toolResult") {
+			if (message.toolCallId !== original.toolCallId || message.toolName !== original.toolName) continue;
+		} else continue;
+		if (sameRecoverySnapshot(message, original)) return true;
+	}
+	return false;
+}
+
+/** Cold recovery projection. Copies only the reference array, and only if it changes. */
+function omitLengthRecoveryMessages(messages: AgentMessage[], omitted: AgentMessage[]): AgentMessage[] {
+	let projected: AgentMessage[] | undefined;
+	for (let index = 0; index < messages.length; index++) {
+		const message = messages[index];
+		if (isLengthRecoveryMessage(message, omitted)) {
+			projected ??= messages.slice(0, index);
+		} else if (projected) projected.push(message);
+	}
+	return projected ?? messages;
+}
+
+/** A length response's tool calls were not executed; keep their synthetic results paired. */
+function lengthRecoveryMessages(entries: SessionEntry[], abandonedIndex: number): AgentMessage[] | undefined {
+	const abandoned = entries[abandonedIndex];
+	if (abandoned.type !== "message" || abandoned.message.role !== "assistant") return undefined;
+	const messages: AgentMessage[] = [abandoned.message];
+	for (let index = abandonedIndex + 1; index < entries.length; index++) {
+		const entry = entries[index];
+		if (entry.type !== "message") continue;
+		const message = entry.message;
+		if (message.role === "assistant" || message.role === "user") break;
+		if (message.role !== "toolResult") continue;
+		for (const content of abandoned.message.content) {
+			if (content.type === "toolCall" && content.id === message.toolCallId) {
+				messages.push(message);
+				break;
+			}
+		}
+	}
+	return messages;
+}
+
+/** Project raw entries and older checkpoint tails without changing durable history. */
+function projectLengthRecoveryEntries(entries: SessionEntry[], omitted: AgentMessage[]): SessionEntry[] {
+	const projected: SessionEntry[] = [];
+	let parentId: string | null = null;
+	for (const entry of entries) {
+		if (entry.type === "message" && omitted.includes(entry.message)) continue;
+		let next = entry;
+		if (entry.type === "compaction" && entry.retainedTail) {
+			const retainedTail = omitLengthRecoveryMessages(entry.retainedTail, omitted);
+			if (retainedTail !== entry.retainedTail) next = { ...entry, retainedTail };
+		}
+		if (next.parentId !== parentId) next = { ...next, parentId };
+		projected.push(next);
+		parentId = next.id;
+	}
+	return projected;
+}
+
 function estimateMessagesTokens(messages: AgentMessage[]): number {
 	let tokens = 0;
 	for (const message of messages) {
@@ -674,6 +774,8 @@ export class AgentSession {
 	private _compactionAbortController: AbortController | undefined = undefined;
 	private _autoCompactionAbortController: AbortController | undefined = undefined;
 	private _overflowRecoveryAttempted = false;
+	// Only owns primitive identities during one length-recovery continuation.
+	private _pendingLengthRecovery: { sessionId: string; compactionId: string; abandonedEntryId: string } | undefined;
 
 	// Branch summarization state
 	private _branchSummaryAbortController: AbortController | undefined = undefined;
@@ -1624,6 +1726,7 @@ export class AgentSession {
 	 * Call this when completely done with the session.
 	 */
 	dispose(): void {
+		this._pendingLengthRecovery = undefined;
 		this._imageDigests = new WeakMap();
 		this._imageRequest = undefined;
 		this._queuedImageMessages.clear();
@@ -2234,6 +2337,7 @@ export class AgentSession {
 			throw error;
 		} finally {
 			if (admitted) {
+				this._settleLengthRecovery(false);
 				this._systemPromptOverride = undefined;
 				this._flushPendingBashMessages();
 				await this._emitAgentSettled();
@@ -2242,6 +2346,13 @@ export class AgentSession {
 	}
 
 	private async _handlePostAgentRun(): Promise<boolean> {
+		const recoveryStopReason = this._lastAssistantMessage?.stopReason;
+		if (
+			this._interactionPaused || recoveryStopReason === "stop" ||
+			recoveryStopReason === "length" || recoveryStopReason === "aborted"
+		) {
+			this._settleLengthRecovery(!this._interactionPaused && recoveryStopReason === "stop");
+		}
 		if (this._interactionPaused) { this._lastAssistantMessage = undefined; return false; }
 		const msg = this._lastAssistantMessage;
 		this._lastAssistantMessage = undefined;
@@ -2255,6 +2366,9 @@ export class AgentSession {
 		if (this._isRetryableError(msg) && (await this._prepareRetry(msg))) {
 			return true;
 		}
+		// A transient error may continue the same recovery. Restore its durable
+		// fallback only after retry is declined, cancelled, or exhausted.
+		if (msg.stopReason === "error") this._settleLengthRecovery(false);
 
 		if (msg.stopReason === "error" && this._retryAttempt > 0) {
 			this._emit({
@@ -2273,6 +2387,36 @@ export class AgentSession {
 		// The agent loop drains both queues before emitting agent_end. Any messages
 		// here were queued by agent_end extension handlers and need a continuation.
 		return !this._interactionPaused && this.agent.hasQueuedMessages();
+	}
+
+	/** Commit the existing retainedTail projection only after the recovery run succeeds.
+	 * The paid checkpoint retains the old attempt until then (including on disk/crash).
+	 * A local checkpoint adds no summary request or usage and never rewrites raw entries.
+	 */
+	private _settleLengthRecovery(success: boolean): void {
+		const pending = this._pendingLengthRecovery;
+		this._pendingLengthRecovery = undefined;
+		if (!pending || pending.sessionId !== this.sessionId) return;
+		const checkpoint = getLatestCompactionEntry(this.sessionManager.getBranch());
+		if (checkpoint?.id !== pending.compactionId) return;
+		const messages = this.agent.state.messages;
+		if (success && messages[0]?.role === "compactionSummary" && messages[0].summary === checkpoint.summary) {
+			const retainedTail = messages.slice(1);
+			const model = this.model;
+			const details = model
+				? withContextAccounting(
+					checkpoint.details, model, "overflow", checkpoint.summary, checkpoint.tokensBefore,
+					retainedTail, model.contextWindow, this.settingsManager.getCompactionSettings(),
+				)
+				: checkpoint.details;
+			this.sessionManager.appendCompaction(
+				checkpoint.summary, checkpoint.firstKeptEntryId, checkpoint.tokensBefore,
+				details, checkpoint.fromHook, undefined, retainedTail,
+			);
+		}
+		// Failure restores the original attempt too, keeping live and disk contexts equal.
+		this.agent.state.messages = this.sessionManager.buildSessionContext().messages;
+		this._rebuildToolResultUiCanonicalIndex();
 	}
 
 	/**
@@ -3365,7 +3509,7 @@ export class AgentSession {
 				this._rebuildToolResultUiCanonicalIndex();
 				removedAssistant = true;
 			}
-			const compacted = await this._runAutoCompaction("overflow", willRetry);
+			const compacted = await this._runAutoCompaction("overflow", willRetry, undefined, assistantMessage);
 			if (!compacted) {
 				if (removedAssistant) {
 					this.agent.state.messages = messages;
@@ -3392,25 +3536,45 @@ export class AgentSession {
 		reason: "overflow" | "threshold",
 		willRetry: boolean,
 		contextTokens?: number,
+		abandonedMessage?: AssistantMessage,
 	): Promise<boolean> {
 		const settings = this.settingsManager.getCompactionSettings();
 		let started = false;
 		let stage: "authentication" | "compaction" = "authentication";
 		let fromExtension = false;
+		let lengthRecoveryCheckpointId: string | undefined;
 
 		try {
 			const model = this.model;
 			if (!model) return false;
 			const pathEntries = this.sessionManager.getBranch();
+			const compactionSessionId = this.sessionId;
 			if (reason === "threshold" && hasPendingPaidCompactionBoundary(pathEntries, model)) return false;
+			// Exclude only the exact attempt selected by _checkCompaction from the summary.
+			// Its durable fallback tail remains until the recovery continuation succeeds.
+			const pending = this._pendingLengthRecovery;
+			const continuingRecovery = pending?.sessionId === compactionSessionId &&
+				getLatestCompactionEntry(pathEntries)?.id === pending.compactionId;
+			let abandonedLengthIndex = -1;
+			for (let index = 0; index < pathEntries.length; index++) {
+				const entry = pathEntries[index];
+				if (entry.type !== "message" || entry.message.role !== "assistant" || entry.message.stopReason !== "length") continue;
+				if ((continuingRecovery && entry.id === pending.abandonedEntryId) ||
+					(reason === "overflow" && willRetry && entry.message === abandonedMessage)) {
+					abandonedLengthIndex = index;
+					break;
+				}
+			}
+			const omitted = abandonedLengthIndex >= 0 ? lengthRecoveryMessages(pathEntries, abandonedLengthIndex) : undefined;
+			const compactionPathEntries = omitted ? projectLengthRecoveryEntries(pathEntries, omitted) : pathEntries;
 
-			const preparation = prepareCompaction(pathEntries, settings);
+			const preparation = prepareCompaction(compactionPathEntries, settings);
 			if (!preparation) {
 				return false;
 			}
 			const authoritativeTokensBefore = Number.isFinite(contextTokens)
 				? contextTokens!
-				: estimateCompactionAwareContextTokens(pathEntries, this.agent.state.messages, model).tokens;
+				: estimateCompactionAwareContextTokens(compactionPathEntries, this.agent.state.messages, model).tokens;
 			preparation.tokensBefore = authoritativeTokensBefore;
 
 			this._emit({ type: "compaction_start", reason });
@@ -3431,7 +3595,7 @@ export class AgentSession {
 				const extensionResult = (await this._extensionRunner.emit({
 					type: "session_before_compact",
 					preparation,
-					branchEntries: pathEntries,
+					branchEntries: compactionPathEntries,
 					auth,
 					customInstructions: undefined,
 					reason,
@@ -3463,7 +3627,7 @@ export class AgentSession {
 			}
 			const mechanicalCompaction =
 				!extensionCompaction && reason === "threshold"
-					? prepareToolResultPruneCheckpoint(pathEntries, contextTokens!, model.contextWindow, settings)
+					? prepareToolResultPruneCheckpoint(compactionPathEntries, contextTokens!, model.contextWindow, settings)
 					: undefined;
 			const providedCompaction = extensionCompaction ?? mechanicalCompaction;
 
@@ -3523,17 +3687,44 @@ export class AgentSession {
 			}
 
 			tokensBefore = preparation.tokensBefore;
+			if (omitted && !retainedTail) {
+				// An extension may provide a summary without retainedTail. Preserve the
+				// projected omission boundary explicitly instead of falling back to the
+				// durable path, which still contains the failed response.
+				retainedTail = [];
+				let foundFirstKept = false;
+				for (const entry of compactionPathEntries) {
+					if (entry.id === firstKeptEntryId) foundFirstKept = true;
+					if (foundFirstKept) retainedTail.push(...sessionEntryToContextMessages(entry));
+				}
+			}
+			if (omitted && retainedTail) {
+				// This copy belongs to the checkpoint; never mutate an extension's array.
+				retainedTail = [...omitLengthRecoveryMessages(retainedTail, omitted), ...omitted];
+			}
 			details = withContextAccounting(
 				details, model, reason, summary, tokensBefore, retainedTail, model.contextWindow, settings,
 			);
 			const savedCompactionId = this.sessionManager.appendCompaction(
 				summary, firstKeptEntryId, tokensBefore, details, fromExtension, usage, retainedTail,
 			);
+			if (omitted && retainedTail && this.sessionId === compactionSessionId) {
+				// Advance before post-save hooks can fail; the durable tail is still a fallback.
+				lengthRecoveryCheckpointId = savedCompactionId;
+				this._pendingLengthRecovery = {
+					sessionId: compactionSessionId, compactionId: savedCompactionId,
+					abandonedEntryId: pathEntries[abandonedLengthIndex].id,
+				};
+			}
 			const newEntries = this.sessionManager.getEntries();
 			const sessionContext = this.sessionManager.buildSessionContext();
 			this._clearEvidenceBranch();
 			this._toolResultPresentation?.clearProjectionRecords();
-			this.agent.state.messages = sessionContext.messages;
+			// A running continuation must retain its projection even if a post-save hook
+			// times out. Final success/failure still settles the newest durable fallback.
+			this.agent.state.messages = continuingRecovery && omitted
+				? omitLengthRecoveryMessages(sessionContext.messages, omitted)
+				: sessionContext.messages;
 			this._rebuildToolResultUiCanonicalIndex();
 			const estimatedTokensAfter = estimateMessagesTokens(sessionContext.messages);
 
@@ -3568,6 +3759,12 @@ export class AgentSession {
 				} catch (error) { this._interactionPaused = true; throw error; }
 			} else this._emit({ type: "compaction_end", reason, result, aborted: false, willRetry });
 
+			if (omitted && retainedTail && this.sessionId === compactionSessionId) {
+				// Each newer recovery checkpoint keeps the same failure fallback on disk.
+				// Its live projection stays omitted until final success commits the decision.
+				this.agent.state.messages = omitLengthRecoveryMessages(this.agent.state.messages, omitted);
+				this._rebuildToolResultUiCanonicalIndex();
+			}
 			if (willRetry) {
 				const messages = this.agent.state.messages;
 				const lastMsg = messages[messages.length - 1];
@@ -3586,6 +3783,11 @@ export class AgentSession {
 			// Continue once so queued messages are delivered.
 			return this.agent.hasQueuedMessages();
 		} catch (error) {
+			if (reason === "overflow" && lengthRecoveryCheckpointId &&
+				this._pendingLengthRecovery?.compactionId === lengthRecoveryCheckpointId) {
+				// An initial recovery which never reaches retry admission cannot commit omission.
+				this._settleLengthRecovery(false);
+			}
 			if (started) {
 				const aborted =
 					this._autoCompactionAbortController?.signal.aborted === true ||
