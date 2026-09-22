@@ -2348,7 +2348,7 @@ export class AgentSession {
 	private async _handlePostAgentRun(): Promise<boolean> {
 		const recoveryStopReason = this._lastAssistantMessage?.stopReason;
 		if (
-			this._interactionPaused || recoveryStopReason === "stop" || recoveryStopReason === "error" ||
+			this._interactionPaused || recoveryStopReason === "stop" ||
 			recoveryStopReason === "length" || recoveryStopReason === "aborted"
 		) {
 			this._settleLengthRecovery(!this._interactionPaused && recoveryStopReason === "stop");
@@ -2366,6 +2366,9 @@ export class AgentSession {
 		if (this._isRetryableError(msg) && (await this._prepareRetry(msg))) {
 			return true;
 		}
+		// A transient error may continue the same recovery. Restore its durable
+		// fallback only after retry is declined, cancelled, or exhausted.
+		if (msg.stopReason === "error") this._settleLengthRecovery(false);
 
 		if (msg.stopReason === "error" && this._retryAttempt > 0) {
 			this._emit({

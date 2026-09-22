@@ -15,6 +15,7 @@ import { getUsageCostBreakdown } from "../packages/coding-agent/src/core/usage-t
 
 const SENTINEL = "ABANDONED_LENGTH_SENTINEL";
 function stopAfterLength(turn: { message: AssistantMessage }): boolean { return turn.message.stopReason === "length"; }
+function cancelRetry(session: { abortRetry(): void }): void { session.abortRetry(); }
 const model: Model<"openai-completions"> = {
 	id: "offline-length", name: "Offline length", provider: "fixture", api: "openai-completions",
 	baseUrl: "https://fixture.invalid/v1", reasoning: false, input: ["text"],
@@ -48,7 +49,7 @@ function truncatedToolReply(): Response {
 		headers: { "Content-Type": "text/event-stream" },
 	});
 }
-type Scenario = "success" | "summary-error" | "summary-abort" | "retry-error" | "retry-length" | "retry-abort" | "ordinary-length" | "post-entry" | "extension-tail" | "extension-cloned-tail" | "admission-error" | "admission-abort" | "retry-tool" | "retry-tool-threshold" | "retry-tool-threshold-hook" | "truncated-tool" | "initial-hook-timeout" | "threshold-hook-retry-error" | "threshold-hook-retry-abort";
+type Scenario = "success" | "summary-error" | "summary-abort" | "retry-error" | "retry-length" | "retry-abort" | "ordinary-length" | "post-entry" | "extension-tail" | "extension-cloned-tail" | "admission-error" | "admission-abort" | "retry-tool" | "retry-tool-threshold" | "retry-tool-threshold-hook" | "truncated-tool" | "initial-hook-timeout" | "threshold-hook-retry-error" | "threshold-hook-retry-abort" | "auto-retry" | "auto-retry-truncated-tool" | "auto-retry-exhausted" | "auto-retry-cancel";
 
 async function fixture(scenario: Scenario) {
 	const root = mkdtempSync(join(tmpdir(), "pi087-length-"));
@@ -57,10 +58,14 @@ async function fixture(scenario: Scenario) {
 	let thresholdHookCalls = 0;
 	const thresholdScenario = scenario.startsWith("retry-tool-threshold") || scenario.startsWith("threshold-hook-");
 	const hookTimeoutScenario = scenario === "retry-tool-threshold-hook" || scenario.startsWith("threshold-hook-") || scenario === "initial-hook-timeout";
+	const autoRetryScenario = scenario.startsWith("auto-retry");
+	const truncatedToolScenario = scenario === "truncated-tool" || scenario === "extension-cloned-tail" || scenario === "auto-retry-truncated-tool";
 	const settings = SettingsManager.inMemory({ compaction: { enabled: true,
 		keepRecentTokens: thresholdScenario ? 2000 : 1024,
 		reserveTokens: thresholdScenario ? 125000 : 128 },
-		retry: { enabled: false } });
+		// Leave enabled unspecified for the production default; shorten only fixture backoff.
+		retry: autoRetryScenario ? { baseDelayMs: scenario === "auto-retry-cancel" ? 5000 : 1,
+			maxRetries: scenario === "auto-retry-exhausted" ? 1 : undefined } : { enabled: false } });
 	const extensionScenario = scenario === "extension-tail" || scenario === "extension-cloned-tail" || hookTimeoutScenario;
 	const resources = new DefaultResourceLoader({ cwd: root, agentDir: root, settingsManager: settings,
 		noExtensions: !extensionScenario, extensionFactories: extensionScenario ? [(pi: any) => {
@@ -146,10 +151,11 @@ async function fixture(scenario: Scenario) {
 					wires.push(wire);
 					assert.ok(wires.length <= 7, "ordinary requests remain bounded");
 					if (wires.length === 1) {
-						if (scenario === "truncated-tool" || scenario === "extension-cloned-tail") return truncatedToolReply();
+						if (truncatedToolScenario) return truncatedToolReply();
 						return reply(SENTINEL, "length", scenario === "ordinary-length" ? 1024 : 10);
 					}
 					if (wires.length === 2) {
+						if (autoRetryScenario) return reply("RETRY_FAILED_FRAGMENT", "network_error");
 						if (scenario === "retry-tool") return toolReply();
 						if (thresholdScenario) return toolReply();
 						if (scenario === "retry-error") return reply("RETRY_FAILED_FRAGMENT", "network_error");
@@ -157,6 +163,7 @@ async function fixture(scenario: Scenario) {
 						if (scenario === "retry-abort") { void session!.abort(); return reply("RETRY_ABORTED_FRAGMENT"); }
 					}
 					if (wires.length === 3 && scenario === "threshold-hook-retry-error") return reply("RETRY_FAILED_FRAGMENT", "network_error");
+					if (wires.length === 3 && scenario === "auto-retry-exhausted") return reply("RETRY_FAILED_FRAGMENT", "network_error");
 					if (wires.length === 3 && scenario === "threshold-hook-retry-abort") { void session!.abort(); return reply("RETRY_ABORTED_FRAGMENT"); }
 					return reply("Recovery complete.");
 				} });
@@ -187,7 +194,14 @@ async function fixture(scenario: Scenario) {
 		if (thresholdScenario || hookTimeoutScenario) session.subscribe(event => {
 			if (event.type === "compaction_end") sessionEvents.push(`${event.reason}:${!!event.result}:${event.errorMessage ?? ""}`);
 		});
-		if (scenario === "truncated-tool" || scenario === "extension-cloned-tail") session.agent.shouldStopAfterTurn = stopAfterLength;
+		if (truncatedToolScenario) session.agent.shouldStopAfterTurn = stopAfterLength;
+		if (autoRetryScenario) session.subscribe(event => {
+			if (event.type === "auto_retry_start") {
+				sessionEvents.push(`retry:start:${event.attempt}:${!!(session as any)._pendingLengthRecovery}`);
+				if (scenario === "auto-retry-cancel") setTimeout(cancelRetry, 0, session!);
+			}
+			if (event.type === "auto_retry_end") sessionEvents.push(`retry:end:${event.success}:${event.attempt}`);
+		});
 		if (scenario.startsWith("admission-")) session.subscribe(event => {
 			if (event.type === "compaction_end" && event.result && event.willRetry) {
 				if (scenario === "admission-abort") session!.abortCompaction();
@@ -390,6 +404,46 @@ test("length recovery advances its boundary before a threshold hook timeout", as
 		t.diagnostic("threshold hook failed after append; later continuation settled the newest checkpoint without replay");
 	} finally { f.close(); }
 });
+
+for (const scenario of ["auto-retry", "auto-retry-truncated-tool", "auto-retry-exhausted", "auto-retry-cancel"] as const) {
+	test(`length recovery automatic retry boundary: ${scenario}`, async t => {
+		const f = await fixture(scenario);
+		try {
+			assert.equal(f.session.autoRetryEnabled, true, "exercise the default enabled retry policy");
+			await f.session.prompt("Recover through a transient provider failure.");
+			const success = scenario === "auto-retry" || scenario === "auto-retry-truncated-tool";
+			const ordinary = scenario === "auto-retry-cancel" ? 2 : 3;
+			assert.equal(f.wires.length, ordinary);
+			assert.equal(f.summaries.length, 1, "automatic retry must not add summary requests");
+			for (let index = 1; index < f.wires.length; index++) {
+				f.assertWire(f.wires[index], true);
+				f.assertNoAbandonedToolResult(f.wires[index]);
+				assert.doesNotMatch(JSON.stringify(f.wires[index]), /RETRY_FAILED_FRAGMENT/);
+			}
+			assert.deepEqual(f.sessionEvents, ["retry:start:1:true", `retry:end:${success}:1`]);
+			assert.equal(f.manager.getEntries().filter(e => e.type === "compaction").length, success ? 2 : 1);
+			assert.equal((f.session as any)._pendingLengthRecovery, undefined);
+			assert.equal(f.session.isRetrying, false);
+			assert.equal(f.session.retryAttempt, 0);
+			assert.equal(f.manager.getEntries().filter(e => e.type === "message" && e.message.role === "assistant" &&
+				e.message.stopReason === "error").length, scenario === "auto-retry-exhausted" ? 2 : 1,
+				"transient failed attempts remain in raw history");
+			f.assertDurable(); f.assertUsage();
+			if (scenario === "auto-retry-truncated-tool") f.assertRawTruncatedToolResult();
+			assert.equal(f.inspections, 0);
+			await f.reopen();
+			await f.session.setModel({ ...model, id: "auto-retry-resumed-model" });
+			await f.session.prompt("Inspect the durable automatic retry outcome.");
+			assert.equal(f.wires.length, ordinary + 1);
+			assert.equal(f.summaries.length, 1);
+			f.assertWire(f.wires.at(-1), success);
+			assert.doesNotMatch(JSON.stringify(f.wires.at(-1)), /RETRY_FAILED_FRAGMENT/);
+			if (success) f.assertNoAbandonedToolResult(f.wires.at(-1));
+			f.assertDurable(); f.assertUsage();
+			t.diagnostic(`ordinary=${f.wires.length}, summary=1; one retry scheduled, success=${success}, disk outcome and release checked`);
+		} finally { f.close(); }
+	});
+}
 
 test("length recovery removes truncated tool calls and their synthetic results", async t => {
 	const f = await fixture("truncated-tool");
