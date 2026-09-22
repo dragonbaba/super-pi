@@ -3442,13 +3442,20 @@ export class AgentSession {
 			if (reason === "threshold" && hasPendingPaidCompactionBoundary(pathEntries, model)) return false;
 			// Exclude only the exact attempt selected by _checkCompaction from the summary.
 			// Its durable fallback tail remains until the recovery continuation succeeds.
-			const lastPathEntry = pathEntries[pathEntries.length - 1];
-			const abandonedLength = reason === "overflow" && willRetry &&
-				abandonedMessage?.stopReason === "length" && lastPathEntry?.type === "message" &&
-				lastPathEntry.message === abandonedMessage ? abandonedMessage : undefined;
+			const abandonedLengthIndex = reason === "overflow" && willRetry && abandonedMessage?.stopReason === "length"
+				? pathEntries.findIndex((entry) => entry.type === "message" && entry.message === abandonedMessage)
+				: -1;
+			const abandonedLength = abandonedLengthIndex >= 0 ? abandonedMessage : undefined;
 			const compactionPathEntries =
 				abandonedLength
-					? pathEntries.slice(0, -1)
+					? [
+						...pathEntries.slice(0, abandonedLengthIndex),
+						...pathEntries.slice(abandonedLengthIndex + 1).map((entry, index) =>
+							index === 0
+								? { ...entry, parentId: pathEntries[abandonedLengthIndex - 1]?.id ?? null }
+								: entry,
+						),
+					]
 					: pathEntries;
 
 			const preparation = prepareCompaction(compactionPathEntries, settings);
@@ -3570,6 +3577,12 @@ export class AgentSession {
 			}
 
 			tokensBefore = preparation.tokensBefore;
+			if (abandonedLength && !retainedTail) {
+				// An extension may provide a summary without retainedTail. Preserve the
+				// projected omission boundary explicitly instead of falling back to the
+				// durable path, which still contains the failed response.
+				retainedTail = preparation.retainedTail;
+			}
 			if (abandonedLength && retainedTail) {
 				// This copy belongs to the checkpoint; never mutate an extension's array.
 				retainedTail = [...retainedTail, abandonedLength];

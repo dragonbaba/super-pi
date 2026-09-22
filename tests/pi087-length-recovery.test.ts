@@ -27,7 +27,7 @@ function reply(text: string, finish = "stop", output = 10): Response {
 		headers: { "Content-Type": "text/event-stream" },
 	});
 }
-type Scenario = "success" | "summary-error" | "summary-abort" | "retry-error" | "retry-length" | "retry-abort" | "ordinary-length";
+type Scenario = "success" | "summary-error" | "summary-abort" | "retry-error" | "retry-length" | "retry-abort" | "ordinary-length" | "post-entry" | "extension-tail";
 
 async function fixture(scenario: Scenario) {
 	const root = mkdtempSync(join(tmpdir(), "pi087-length-"));
@@ -36,7 +36,13 @@ async function fixture(scenario: Scenario) {
 	const settings = SettingsManager.inMemory({ compaction: { enabled: true, keepRecentTokens: 1024, reserveTokens: 128 },
 		retry: { enabled: false } });
 	const resources = new DefaultResourceLoader({ cwd: root, agentDir: root, settingsManager: settings,
-		noExtensions: true, noContextFiles: true, noPromptTemplates: true, noSkills: true, noThemes: true,
+		noExtensions: scenario !== "extension-tail", extensionFactories: scenario === "extension-tail" ? [(pi: any) => {
+			pi.on("session_before_compact", (event: any) => ({ compaction: {
+				summary: "Extension checkpoint without a retained tail.",
+				firstKeptEntryId: event.preparation.firstKeptEntryId,
+				tokensBefore: event.preparation.tokensBefore,
+			} }));
+		}] : [], noContextFiles: true, noPromptTemplates: true, noSkills: true, noThemes: true,
 		systemPrompt: "Synthetic fixed length recovery policy." });
 	await resources.reload();
 	let manager: SessionManager | undefined = SessionManager.create(root, join(root, "sessions"));
@@ -95,6 +101,15 @@ async function fixture(scenario: Scenario) {
 				execute: async () => { writeFileSync(effectPath, String(Number(readFileSync(effectPath, "utf8")) + 1));
 					return { content: [{ type: "text" as const, text: "EFFECT_ALREADY_COMPLETED" }], details: {} }; },
 			}] })).session;
+		if (scenario === "post-entry") {
+			let appended = false;
+			session.subscribe(event => {
+				if (!appended && event.type === "agent_end" && wires.length === 1) {
+					manager!.appendCustomEntry("late-agent-end-marker", { synthetic: true });
+					appended = true;
+				}
+			});
+		}
 	}
 	await open();
 	return {
@@ -153,6 +168,21 @@ test("length → compaction → retry keeps omission across next wire, disk reop
 		t.diagnostic("ordinary=6, summary=1; A/B/C/D plus pre-recovery branch, raw usage and completed effect checked");
 	} finally { f.close(); }
 });
+
+for (const scenario of ["post-entry", "extension-tail"] as const) {
+	test(`length recovery persistence regression: ${scenario}`, async () => {
+		const f = await fixture(scenario);
+		try {
+			await f.session.prompt("Continue the synthetic task.");
+			assert.equal(f.wires.length, 2);
+			f.assertWire(f.wires[1], true);
+			f.assertDurable();
+			await f.reopen();
+			await f.session.prompt("Resume after the recovery checkpoint.");
+			f.assertWire(f.wires.at(-1), true);
+		} finally { f.close(); }
+	});
+}
 
 for (const scenario of ["summary-error", "summary-abort", "retry-error", "retry-length", "retry-abort", "ordinary-length"] as const) {
 	test(`length recovery negative boundary: ${scenario}`, async t => {
