@@ -18,6 +18,18 @@ import { inspectBashPermissionScope } from "../packages/extensions/resource-life
 
 const cwd = process.cwd();
 
+function findTestBash(): string | undefined {
+  if (process.env.SP_TEST_BASH) return process.env.SP_TEST_BASH;
+  if (process.platform !== "win32") return "/bin/bash";
+  const programFiles = process.env.ProgramFiles;
+  if (programFiles) {
+    const installed = join(programFiles, "Git", "bin", "bash.exe");
+    if (existsSync(installed)) return installed;
+  }
+  const local = "D:\\Git\\bin\\bash.exe";
+  return existsSync(local) ? local : undefined;
+}
+
 test("command -v/-V query names and variables without treating them as executables", () => {
   for (const command of [
     'command -v bash',
@@ -82,8 +94,12 @@ test("asynchronous spill write failure releases only its owned file", async () =
 });
 
 test("real guard, authorization, Bash and tool-result path handle three feedback command shapes", async (t) => {
-  const shellPath = process.env.SP_TEST_BASH ?? (process.platform === "win32" ? "D:\\Git\\bin\\bash.exe" : "/bin/bash");
-  if (!existsSync(shellPath)) { t.skip(`Bash unavailable at ${shellPath}`); return; }
+  const shellPath = findTestBash();
+  if (!shellPath || !existsSync(shellPath)) {
+    if (process.env.CI) assert.fail("Required Bash integration test could not find Git Bash or /bin/bash");
+    t.skip(`Bash unavailable at ${shellPath ?? "known locations"}`);
+    return;
+  }
   const fixture = mkdtempSync(join(tmpdir(), "sp-shell-compat-"));
   mkdirSync(join(fixture, ".git"));
   writeFileSync(join(fixture, "fixture.bin"), Buffer.from([0x50, 0x49, 0x01, 0x02]));
