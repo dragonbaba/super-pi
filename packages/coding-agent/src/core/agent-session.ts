@@ -498,12 +498,61 @@ interface ToolDefinitionEntry {
 	sourceInfo: SourceInfo;
 }
 
+/** Compare JSON checkpoint snapshots without materializing a serialized copy.
+ * Undefined parser scratch fields disappear on disk and do not establish identity.
+ * This is used only at the cold compaction boundary, never on provider deltas.
+ */
+function sameRecoverySnapshot(left: unknown, right: unknown): boolean {
+	if (left === right) return true;
+	if (!left || !right || typeof left !== "object" || typeof right !== "object") return false;
+	if (Array.isArray(left)) {
+		if (!Array.isArray(right) || left.length !== right.length) return false;
+		for (let index = 0; index < left.length; index++) {
+			if (!sameRecoverySnapshot(left[index], right[index])) return false;
+		}
+		return true;
+	}
+	if (Array.isArray(right)) return false;
+	const leftPrototype = Object.getPrototypeOf(left);
+	const rightPrototype = Object.getPrototypeOf(right);
+	if ((leftPrototype !== null && leftPrototype !== Object.prototype) ||
+		(rightPrototype !== null && rightPrototype !== Object.prototype)) return false;
+	const a = left as Record<string, unknown>;
+	const b = right as Record<string, unknown>;
+	for (const key of Object.keys(a)) {
+		if (a[key] !== undefined &&
+			(!Object.hasOwn(b, key) || !sameRecoverySnapshot(a[key], b[key]))) return false;
+	}
+	for (const key of Object.keys(b)) {
+		if (b[key] !== undefined && (!Object.hasOwn(a, key) || a[key] === undefined)) return false;
+	}
+	return true;
+}
+
+/** Cold checkpoint copies have no entry id. Match only the selected raw entry's
+ * exact snapshot after checking persisted metadata, including tool-call identity.
+ */
+function isLengthRecoveryMessage(message: AgentMessage, omitted: AgentMessage[]): boolean {
+	for (const original of omitted) {
+		if (message === original) return true;
+		if (message.timestamp !== original.timestamp) continue;
+		if (message.role === "assistant" && original.role === "assistant") {
+			if (message.stopReason !== "length" || message.api !== original.api || message.provider !== original.provider ||
+				message.model !== original.model || message.responseId !== original.responseId) continue;
+		} else if (message.role === "toolResult" && original.role === "toolResult") {
+			if (message.toolCallId !== original.toolCallId || message.toolName !== original.toolName) continue;
+		} else continue;
+		if (sameRecoverySnapshot(message, original)) return true;
+	}
+	return false;
+}
+
 /** Cold recovery projection. Copies only the reference array, and only if it changes. */
 function omitLengthRecoveryMessages(messages: AgentMessage[], omitted: AgentMessage[]): AgentMessage[] {
 	let projected: AgentMessage[] | undefined;
 	for (let index = 0; index < messages.length; index++) {
 		const message = messages[index];
-		if (omitted.includes(message)) {
+		if (isLengthRecoveryMessage(message, omitted)) {
 			projected ??= messages.slice(0, index);
 		} else if (projected) projected.push(message);
 	}
@@ -511,9 +560,9 @@ function omitLengthRecoveryMessages(messages: AgentMessage[], omitted: AgentMess
 }
 
 /** A length response's tool calls were not executed; keep their synthetic results paired. */
-function lengthRecoveryMessages(entries: SessionEntry[], abandonedIndex: number): AgentMessage[] {
+function lengthRecoveryMessages(entries: SessionEntry[], abandonedIndex: number): AgentMessage[] | undefined {
 	const abandoned = entries[abandonedIndex];
-	if (abandoned.type !== "message" || abandoned.message.role !== "assistant") return [];
+	if (abandoned.type !== "message" || abandoned.message.role !== "assistant") return undefined;
 	const messages: AgentMessage[] = [abandoned.message];
 	for (let index = abandonedIndex + 1; index < entries.length; index++) {
 		const entry = entries[index];
@@ -3490,6 +3539,7 @@ export class AgentSession {
 		let started = false;
 		let stage: "authentication" | "compaction" = "authentication";
 		let fromExtension = false;
+		let lengthRecoveryCheckpointId: string | undefined;
 
 		try {
 			const model = this.model;
@@ -3655,11 +3705,23 @@ export class AgentSession {
 			const savedCompactionId = this.sessionManager.appendCompaction(
 				summary, firstKeptEntryId, tokensBefore, details, fromExtension, usage, retainedTail,
 			);
+			if (omitted && retainedTail && this.sessionId === compactionSessionId) {
+				// Advance before post-save hooks can fail; the durable tail is still a fallback.
+				lengthRecoveryCheckpointId = savedCompactionId;
+				this._pendingLengthRecovery = {
+					sessionId: compactionSessionId, compactionId: savedCompactionId,
+					abandonedEntryId: pathEntries[abandonedLengthIndex].id,
+				};
+			}
 			const newEntries = this.sessionManager.getEntries();
 			const sessionContext = this.sessionManager.buildSessionContext();
 			this._clearEvidenceBranch();
 			this._toolResultPresentation?.clearProjectionRecords();
-			this.agent.state.messages = sessionContext.messages;
+			// A running continuation must retain its projection even if a post-save hook
+			// times out. Final success/failure still settles the newest durable fallback.
+			this.agent.state.messages = continuingRecovery && omitted
+				? omitLengthRecoveryMessages(sessionContext.messages, omitted)
+				: sessionContext.messages;
 			this._rebuildToolResultUiCanonicalIndex();
 			const estimatedTokensAfter = estimateMessagesTokens(sessionContext.messages);
 
@@ -3699,10 +3761,6 @@ export class AgentSession {
 				// Its live projection stays omitted until final success commits the decision.
 				this.agent.state.messages = omitLengthRecoveryMessages(this.agent.state.messages, omitted);
 				this._rebuildToolResultUiCanonicalIndex();
-				this._pendingLengthRecovery = {
-					sessionId: compactionSessionId, compactionId: savedCompactionId,
-					abandonedEntryId: pathEntries[abandonedLengthIndex].id,
-				};
 			}
 			if (willRetry) {
 				const messages = this.agent.state.messages;
@@ -3722,6 +3780,11 @@ export class AgentSession {
 			// Continue once so queued messages are delivered.
 			return this.agent.hasQueuedMessages();
 		} catch (error) {
+			if (reason === "overflow" && lengthRecoveryCheckpointId &&
+				this._pendingLengthRecovery?.compactionId === lengthRecoveryCheckpointId) {
+				// An initial recovery which never reaches retry admission cannot commit omission.
+				this._settleLengthRecovery(false);
+			}
 			if (started) {
 				const aborted =
 					this._autoCompactionAbortController?.signal.aborted === true ||

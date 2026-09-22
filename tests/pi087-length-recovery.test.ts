@@ -48,24 +48,59 @@ function truncatedToolReply(): Response {
 		headers: { "Content-Type": "text/event-stream" },
 	});
 }
-type Scenario = "success" | "summary-error" | "summary-abort" | "retry-error" | "retry-length" | "retry-abort" | "ordinary-length" | "post-entry" | "extension-tail" | "admission-error" | "admission-abort" | "retry-tool" | "retry-tool-threshold" | "truncated-tool";
+type Scenario = "success" | "summary-error" | "summary-abort" | "retry-error" | "retry-length" | "retry-abort" | "ordinary-length" | "post-entry" | "extension-tail" | "extension-cloned-tail" | "admission-error" | "admission-abort" | "retry-tool" | "retry-tool-threshold" | "retry-tool-threshold-hook" | "truncated-tool" | "initial-hook-timeout" | "threshold-hook-retry-error" | "threshold-hook-retry-abort";
 
 async function fixture(scenario: Scenario) {
 	const root = mkdtempSync(join(tmpdir(), "pi087-length-"));
 	const effectPath = join(root, "completed-effect.txt");
 	writeFileSync(effectPath, "1"); // A completed synthetic side effect recorded in the seed history.
+	let thresholdHookCalls = 0;
+	const thresholdScenario = scenario.startsWith("retry-tool-threshold") || scenario.startsWith("threshold-hook-");
+	const hookTimeoutScenario = scenario === "retry-tool-threshold-hook" || scenario.startsWith("threshold-hook-") || scenario === "initial-hook-timeout";
 	const settings = SettingsManager.inMemory({ compaction: { enabled: true,
-		keepRecentTokens: scenario === "retry-tool-threshold" ? 2000 : 1024,
-		reserveTokens: scenario === "retry-tool-threshold" ? 125000 : 128 },
+		keepRecentTokens: thresholdScenario ? 2000 : 1024,
+		reserveTokens: thresholdScenario ? 125000 : 128 },
 		retry: { enabled: false } });
+	const extensionScenario = scenario === "extension-tail" || scenario === "extension-cloned-tail" || hookTimeoutScenario;
 	const resources = new DefaultResourceLoader({ cwd: root, agentDir: root, settingsManager: settings,
-		noExtensions: scenario !== "extension-tail", extensionFactories: scenario === "extension-tail" ? [(pi: any) => {
-			pi.on("session_before_compact", (event: any) => ({ compaction: {
+		noExtensions: !extensionScenario, extensionFactories: extensionScenario ? [(pi: any) => {
+			if (scenario === "extension-tail") pi.on("session_before_compact", (event: any) => ({ compaction: {
 				summary: "Extension checkpoint without a retained tail.",
 				firstKeptEntryId: event.branchEntries.find((entry: any) => entry.type === "message" &&
 					entry.message.role === "user" && String(entry.message.content).startsWith("old history 6 ")).id,
 				tokensBefore: event.preparation.tokensBefore,
 			} }));
+			if (scenario === "extension-cloned-tail") pi.on("session_before_compact", (event: any) => {
+				let failedAssistant: any;
+				let failedToolResult: any;
+				for (const entry of manager?.getEntries() ?? []) {
+					if (entry.type !== "message") continue;
+					if (entry.message.role === "assistant" && entry.message.stopReason === "length" &&
+						JSON.stringify(entry.message.content).includes(SENTINEL)) failedAssistant = entry.message;
+					if (entry.message.role === "toolResult" && entry.message.toolCallId === "abandoned-call") failedToolResult = entry.message;
+				}
+				const firstKeptEntryId = event.branchEntries.find((entry: any) => entry.type === "message" &&
+					entry.message.role === "user" && String(entry.message.content).startsWith("old history 6 ")).id;
+				const retainedTail: any[] = [];
+				let foundFirstKept = false;
+				for (const entry of event.branchEntries) {
+					if (entry.id === firstKeptEntryId) foundFirstKept = true;
+					if (foundFirstKept && entry.type === "message") retainedTail.push(entry.message);
+				}
+				assert.ok(failedAssistant, "the fixture must inject the abandoned assistant clone");
+				assert.ok(failedToolResult, "the fixture must inject its truncated result clone");
+				retainedTail.push(JSON.parse(JSON.stringify(failedAssistant)), structuredClone(failedToolResult));
+				retainedTail.push({ ...structuredClone(failedAssistant), content: [{ type: "text", text: "LEGIT_LENGTH_SAME_METADATA" }] });
+				retainedTail.push({ role: "user", content: "Continue the admitted extension tail.", timestamp: 2 });
+				return { compaction: {
+					summary: "Extension checkpoint with cloned failed messages.",
+					firstKeptEntryId,
+					tokensBefore: event.preparation.tokensBefore, retainedTail,
+				} };
+			});
+			if (hookTimeoutScenario) pi.on("session_compact", (event: any) => {
+				if ((scenario === "initial-hook-timeout" || event.reason === "threshold") && thresholdHookCalls++ === 0) return new Promise(() => {});
+			});
 		}] : [], noContextFiles: true, noPromptTemplates: true, noSkills: true, noThemes: true,
 		systemPrompt: "Synthetic fixed length recovery policy." });
 	await resources.reload();
@@ -103,7 +138,7 @@ async function fixture(scenario: Scenario) {
 					const wire = JSON.parse(String(init?.body));
 					if (summary) {
 						summaries.push(wire);
-						assert.ok(summaries.length <= (scenario === "retry-tool-threshold" ? 3 : 2), "summary requests remain bounded");
+						assert.ok(summaries.length <= (thresholdScenario ? 3 : 2), "summary requests remain bounded");
 						if (scenario === "summary-error") return new Response('{"error":{"message":"synthetic summary failure"}}', { status: 400 });
 						if (scenario === "summary-abort") session!.abortCompaction();
 						return reply("Complete synthetic checkpoint. The recorded effect already happened.");
@@ -111,30 +146,34 @@ async function fixture(scenario: Scenario) {
 					wires.push(wire);
 					assert.ok(wires.length <= 7, "ordinary requests remain bounded");
 					if (wires.length === 1) {
-						if (scenario === "truncated-tool") return truncatedToolReply();
+						if (scenario === "truncated-tool" || scenario === "extension-cloned-tail") return truncatedToolReply();
 						return reply(SENTINEL, "length", scenario === "ordinary-length" ? 1024 : 10);
 					}
 					if (wires.length === 2) {
 						if (scenario === "retry-tool") return toolReply();
-						if (scenario === "retry-tool-threshold") return toolReply();
+						if (thresholdScenario) return toolReply();
 						if (scenario === "retry-error") return reply("RETRY_FAILED_FRAGMENT", "network_error");
 						if (scenario === "retry-length") return reply("RETRY_LENGTH_FRAGMENT", "length");
 						if (scenario === "retry-abort") { void session!.abort(); return reply("RETRY_ABORTED_FRAGMENT"); }
 					}
+					if (wires.length === 3 && scenario === "threshold-hook-retry-error") return reply("RETRY_FAILED_FRAGMENT", "network_error");
+					if (wires.length === 3 && scenario === "threshold-hook-retry-abort") { void session!.abort(); return reply("RETRY_ABORTED_FRAGMENT"); }
 					return reply("Recovery complete.");
 				} });
 		},
 	} as unknown as ModelRuntime;
 	async function open() {
 		session = (await createAgentSession({ cwd: root, agentDir: root, model, modelRuntime: runtime, settingsManager: settings,
-			sessionManager: manager!, resourceLoader: resources, tools: ["record_effect", "inspect_effect"], customTools: [{
+			sessionManager: manager!, resourceLoader: resources, extensionRunnerOptions: hookTimeoutScenario
+			? { hookTimeouts: { lifecycle: { timeoutMs: 5, onTimeout: "fail-closed" } } } : undefined,
+			tools: ["record_effect", "inspect_effect"], customTools: [{
 				name: "record_effect", label: "Effect", description: "Synthetic effect", parameters: Type.Object({}),
 				execute: async () => { writeFileSync(effectPath, String(Number(readFileSync(effectPath, "utf8")) + 1));
 					return { content: [{ type: "text" as const, text: "EFFECT_ALREADY_COMPLETED" }], details: {} }; },
 			}, {
 				name: "inspect_effect", label: "Inspect effect", description: "Read completed synthetic effect", parameters: Type.Object({}),
 				execute: async () => { inspections++; return { content: [{ type: "text" as const,
-					text: scenario === "retry-tool-threshold" ? "synthetic ".repeat(400) : readFileSync(effectPath, "utf8") }], details: {} }; },
+					text: thresholdScenario ? "synthetic ".repeat(400) : readFileSync(effectPath, "utf8") }], details: {} }; },
 			}] })).session;
 		if (scenario === "post-entry") {
 			let appended = false;
@@ -145,10 +184,10 @@ async function fixture(scenario: Scenario) {
 				}
 			});
 		}
-		if (scenario === "retry-tool-threshold") session.subscribe(event => {
+		if (thresholdScenario || hookTimeoutScenario) session.subscribe(event => {
 			if (event.type === "compaction_end") sessionEvents.push(`${event.reason}:${!!event.result}:${event.errorMessage ?? ""}`);
 		});
-		if (scenario === "truncated-tool") session.agent.shouldStopAfterTurn = stopAfterLength;
+		if (scenario === "truncated-tool" || scenario === "extension-cloned-tail") session.agent.shouldStopAfterTurn = stopAfterLength;
 		if (scenario.startsWith("admission-")) session.subscribe(event => {
 			if (event.type === "compaction_end" && event.result && event.willRetry) {
 				if (scenario === "admission-abort") session!.abortCompaction();
@@ -267,6 +306,28 @@ for (const scenario of ["post-entry", "extension-tail"] as const) {
 	});
 }
 
+test("length recovery filters cloned retained-tail copies", async t => {
+	const f = await fixture("extension-cloned-tail");
+	try {
+		await f.session.prompt("Recover with cloned failed messages in the extension tail.");
+		assert.equal(f.wires.length, 2);
+		f.assertWire(f.wires[1], true);
+		f.assertNoAbandonedToolResult(f.wires[1]);
+		assert.match(JSON.stringify(f.wires[1]), /LEGIT_LENGTH_SAME_METADATA/);
+		f.assertDurable();
+		f.assertRawTruncatedToolResult();
+		assert.equal(f.inspections, 0);
+		await f.reopen();
+		await f.session.prompt("Resume after cloned-tail recovery.");
+		f.assertWire(f.wires.at(-1), true);
+		f.assertNoAbandonedToolResult(f.wires.at(-1));
+		assert.match(JSON.stringify(f.wires.at(-1)), /LEGIT_LENGTH_SAME_METADATA/);
+		f.assertUsage();
+		assert.equal((f.session as any)._pendingLengthRecovery, undefined);
+		t.diagnostic("ordinary=3, summary=0; cloned assistant and tool-result identities omitted before and after disk reopen");
+	} finally { f.close(); }
+});
+
 test("length recovery waits for the real tool continuation before persisting omission", async t => {
 	const f = await fixture("retry-tool");
 	try {
@@ -311,6 +372,25 @@ test("length recovery keeps omission through an intervening threshold compaction
 	} finally { f.close(); }
 });
 
+test("length recovery advances its boundary before a threshold hook timeout", async t => {
+	const f = await fixture("retry-tool-threshold-hook");
+	try {
+		await f.session.prompt("Recover after a threshold hook timeout.");
+		t.diagnostic(`hook-timeout wires=${f.wires.length}, summaries=${f.summaries.length}, events=${f.sessionEvents.join("|")}`);
+		assert.ok(f.sessionEvents.some(event => event.startsWith("threshold:")));
+		assert.equal(f.wires.length, 3);
+		assert.equal(f.summaries.length, 2);
+		f.assertWire(f.wires[2], true);
+		f.assertDurable();
+		await f.reopen();
+		await f.session.prompt("Complete recovery after the hook timeout.");
+		f.assertWire(f.wires.at(-1), true);
+		f.assertUsage();
+		assert.equal((f.session as any)._pendingLengthRecovery, undefined);
+		t.diagnostic("threshold hook failed after append; later continuation settled the newest checkpoint without replay");
+	} finally { f.close(); }
+});
+
 test("length recovery removes truncated tool calls and their synthetic results", async t => {
 	const f = await fixture("truncated-tool");
 	try {
@@ -324,6 +404,32 @@ test("length recovery removes truncated tool calls and their synthetic results",
 		t.diagnostic("ordinary=2, summary=1; truncated assistant call and synthetic result removed from retry context");
 	} finally { f.close(); }
 });
+
+for (const scenario of ["initial-hook-timeout", "threshold-hook-retry-error", "threshold-hook-retry-abort"] as const) {
+	test(`length recovery post-save hook failure boundary: ${scenario}`, async t => {
+		const f = await fixture(scenario);
+		try {
+			await f.session.prompt("Recover with a post-save hook timeout.");
+			const initial = scenario === "initial-hook-timeout";
+			assert.equal(f.wires.length, initial ? 1 : 3);
+			assert.equal(f.summaries.length, initial ? 1 : 2);
+			assert.ok(f.sessionEvents.some(event => event.includes('hook "session_compact"') && event.includes("timed out")));
+			assert.equal((f.session as any)._pendingLengthRecovery, undefined);
+			assert.equal(f.manager.getEntries().filter(e => e.type === "compaction").length, initial ? 1 : 2,
+				"failed recovery must not append a successful omission checkpoint");
+			if (!initial) f.assertWire(f.wires[2], true);
+			f.assertDurable(); f.assertUsage();
+			assert.equal(f.inspections, initial ? 0 : 1);
+			await f.reopen();
+			await f.session.setModel({ ...model, id: "post-save-failure-model" });
+			await f.session.prompt("Inspect the unsuperseded fallback after disk reopen.");
+			f.assertWire(f.wires.at(-1), false);
+			assert.doesNotMatch(JSON.stringify(f.wires.at(-1)), /RETRY_FAILED_FRAGMENT|RETRY_ABORTED_FRAGMENT/);
+			f.assertDurable(); f.assertUsage();
+			t.diagnostic(`ordinary=${f.wires.length}, summary=${f.summaries.length}; no successful omission on hook/recovery failure, pending identity released`);
+		} finally { f.close(); }
+	});
+}
 
 for (const scenario of ["summary-error", "summary-abort", "retry-error", "retry-length", "retry-abort", "ordinary-length", "admission-error", "admission-abort"] as const) {
 	test(`length recovery negative boundary: ${scenario}`, async t => {
