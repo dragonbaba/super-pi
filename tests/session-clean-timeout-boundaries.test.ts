@@ -398,7 +398,8 @@ test("mutation scans cover compact output redirection forms", () => {
   }
   assert.equal(inspectHighRiskBashMutation({ command: "echo diagnostic 2>/dev/null" }, process.cwd()), undefined);
   const duplicatedFd = inspectHighRiskBashMutation({ command: "echo diagnostic 2>&1" }, process.cwd());
-  assert.ok(duplicatedFd?.unverifiableScope);
+  assert.equal(duplicatedFd, undefined);
+  assert.equal(inspectBashPermissionScope({ command: "echo diagnostic 2>&1" }, process.cwd())?.kind, "read-only");
   assert.equal(inspectHighRiskBashMutation({ command: 'echo "literal > text"' }, process.cwd()), undefined);
   assert.equal(inspectBashPermissionScope({ command: 'echo "literal >> text"' }, process.cwd())?.kind, "read-only");
 

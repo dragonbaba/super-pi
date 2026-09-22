@@ -70,6 +70,9 @@ export type BashToolInput = Static<typeof bashSchema>;
 export interface BashToolDetails {
 	truncation?: TruncationResult;
 	fullOutputPath?: string;
+	spillFileCapped?: boolean;
+	/** Producer-issued by the Agent for a refusal before the Bash tool ran. */
+	executionStatus?: "not_executed";
 }
 
 /**
@@ -736,7 +739,7 @@ function rebuildBashResultRenderComponent(
 	if (truncation?.truncated || fullOutputPath) {
 		let warning = "";
 		if (fullOutputPath) {
-			warning = `Full output: ${fullOutputPath}`;
+			warning = `${result.details?.spillFileCapped ? "Capped output file (5 MiB; later output unavailable)" : "Full output"}: ${fullOutputPath}`;
 		}
 		if (truncation?.truncated) {
 			if (warning) warning += ". ";
@@ -762,7 +765,7 @@ function rebuildBashResultRenderComponent(
 		component.warningText = undefined;
 	}
 
-	if (startedAt !== undefined) {
+	if (startedAt !== undefined && result.details?.executionStatus !== "not_executed") {
 		const label = options.isPartial && endedAt === undefined ? "Elapsed" : "Took";
 		const endTime = endedAt ?? Date.now();
 		const text = `\n${theme.fg("muted", `${label} ${formatDuration(endTime - startedAt)}`)}`;
@@ -800,7 +803,7 @@ export function createShellToolDefinition(
 	return {
 		name: config.name,
 		label: config.label,
-		description: `Execute a ${config.shellName} command in the current working directory. Returns stdout and stderr. Output is truncated to last ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). If truncated, full output is saved to a temp file. Optionally provide a timeout in seconds.`,
+		description: `Execute a ${config.shellName} command in the current working directory. Returns stdout and stderr. Output is truncated to last ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). If truncated, an output log is saved to a temp file, capped at 5 MiB. Optionally provide a timeout in seconds.`,
 		promptSnippet: config.promptSnippet,
 		promptGuidelines: exposeSessionEnvironment && config.promptGuidelines ? [...config.promptGuidelines] : undefined,
 		parameters: bashSchema,
@@ -815,22 +818,34 @@ export function createShellToolDefinition(
 			const spawnContext = resolveSpawnContext(resolvedCommand, cwd, spawnHook, exposeSessionEnvironment, ctx);
 			const output = new OutputAccumulator({ tempFilePrefix: config.tempFilePrefix });
 			let acceptingOutput = true;
+			let outputFailure: Error | undefined;
+			const outputAbort = new AbortController();
+			const executionSignal = signal ? AbortSignal.any([signal, outputAbort.signal]) : outputAbort.signal;
 			let updateTimer: NodeJS.Timeout | undefined;
 			let updateDirty = false;
 			let lastUpdateAt = 0;
+			const recordOutputFailure = (error: unknown) => {
+				if (outputFailure) return;
+				outputFailure = error instanceof Error ? error : new Error(String(error));
+				acceptingOutput = false;
+				outputAbort.abort(outputFailure);
+			};
 
 			const emitOutputUpdate = () => {
 				if (!onUpdate || !updateDirty) return;
 				updateDirty = false;
 				lastUpdateAt = Date.now();
-				const snapshot = output.snapshot({ persistIfTruncated: true });
-				onUpdate({
-					content: [{ type: "text", text: snapshot.content || "" }],
-					details: {
-						truncation: snapshot.truncation.truncated ? snapshot.truncation : undefined,
-						fullOutputPath: snapshot.fullOutputPath,
-					},
-				});
+				try {
+					const snapshot = output.snapshot({ persistIfTruncated: true });
+					onUpdate({
+						content: [{ type: "text", text: snapshot.content || "" }],
+						details: {
+							truncation: snapshot.truncation.truncated ? snapshot.truncation : undefined,
+							fullOutputPath: snapshot.fullOutputPath,
+							spillFileCapped: snapshot.spillFileCapped,
+						},
+					});
+				} catch (error) { recordOutputFailure(error); }
 			};
 
 			const clearUpdateTimer = () => {
@@ -861,18 +876,28 @@ export function createShellToolDefinition(
 
 			const handleData = (data: Buffer) => {
 				if (!acceptingOutput) return;
-				output.append(data);
-				scheduleOutputUpdate();
+				try {
+					output.append(data);
+					scheduleOutputUpdate();
+				} catch (error) { recordOutputFailure(error); }
 			};
 
 			const finishOutput = async () => {
 				acceptingOutput = false;
-				output.finish();
-				clearUpdateTimer();
-				emitOutputUpdate();
-				const snapshot = output.snapshot({ persistIfTruncated: true });
-				await output.closeTempFile();
-				return snapshot;
+				try {
+					if (outputFailure) throw outputFailure;
+					output.finish();
+					clearUpdateTimer();
+					emitOutputUpdate();
+					if (outputFailure) throw outputFailure;
+					const snapshot = output.snapshot({ persistIfTruncated: true });
+					await output.closeTempFile();
+					return snapshot;
+				} catch (error) {
+					clearUpdateTimer();
+					await output.discardTempFile();
+					throw new Error(`[SHELL_LOG_FAILED] Command output was not fully recorded: ${error instanceof Error ? error.message : String(error)}`);
+				}
 			};
 
 			const formatOutput = (snapshot: Awaited<ReturnType<typeof finishOutput>>, emptyText = "(no output)") => {
@@ -880,16 +905,17 @@ export function createShellToolDefinition(
 				let text = snapshot.content || emptyText;
 				let details: BashToolDetails | undefined;
 				if (truncation.truncated) {
-					details = { truncation, fullOutputPath: snapshot.fullOutputPath };
+					details = { truncation, fullOutputPath: snapshot.fullOutputPath, spillFileCapped: snapshot.spillFileCapped };
+					const outputLabel = snapshot.spillFileCapped ? "Capped output file (5 MiB; later output unavailable)" : "Full output";
 					const startLine = truncation.totalLines - truncation.outputLines + 1;
 					const endLine = truncation.totalLines;
 					if (truncation.lastLinePartial) {
 						const lastLineSize = formatSize(output.getLastLineBytes());
-						text += `\n\n[Showing last ${formatSize(truncation.outputBytes)} of line ${endLine} (line is ${lastLineSize}). Full output: ${snapshot.fullOutputPath}]`;
+						text += `\n\n[Showing last ${formatSize(truncation.outputBytes)} of line ${endLine} (line is ${lastLineSize}). ${outputLabel}: ${snapshot.fullOutputPath}]`;
 					} else if (truncation.truncatedBy === "lines") {
-						text += `\n\n[Showing lines ${startLine}-${endLine} of ${truncation.totalLines}. Full output: ${snapshot.fullOutputPath}]`;
+						text += `\n\n[Showing lines ${startLine}-${endLine} of ${truncation.totalLines}. ${outputLabel}: ${snapshot.fullOutputPath}]`;
 					} else {
-						text += `\n\n[Showing lines ${startLine}-${endLine} of ${truncation.totalLines} (${formatSize(DEFAULT_MAX_BYTES)} limit). Full output: ${snapshot.fullOutputPath}]`;
+						text += `\n\n[Showing lines ${startLine}-${endLine} of ${truncation.totalLines} (${formatSize(DEFAULT_MAX_BYTES)} limit). ${outputLabel}: ${snapshot.fullOutputPath}]`;
 					}
 				}
 				return { text, details };
@@ -902,7 +928,7 @@ export function createShellToolDefinition(
 				try {
 					const result = await ops.exec(spawnContext.command, spawnContext.cwd, {
 						onData: handleData,
-						signal,
+						signal: executionSignal,
 						timeout,
 						env: spawnContext.env,
 					});
@@ -911,19 +937,23 @@ export function createShellToolDefinition(
 					const snapshot = await finishOutput();
 					const { text } = formatOutput(snapshot, "");
 					if (err instanceof Error && err.message === "aborted") {
-						throw new Error(appendStatus(text, "Command aborted"));
+						throw new Error(`[SHELL_INTERRUPTED] ${appendStatus(text, "Command aborted")}`);
 					}
 					if (err instanceof Error && err.message.startsWith("timeout:")) {
 						const timeoutSecs = err.message.split(":")[1];
-						throw new Error(appendStatus(text, `Command timed out after ${timeoutSecs} seconds`));
+						throw new Error(`[SHELL_INTERRUPTED] ${appendStatus(text, `Command timed out after ${timeoutSecs} seconds`)}`);
 					}
-					throw err;
+					const launchError = err instanceof Error && (
+						"code" in err && (err.code === "ENOENT" || err.code === "EACCES" || err.code === "ENOTDIR")
+						|| err.message.startsWith("No bash shell found") || err.message.startsWith("Working directory does not exist")
+					);
+					throw new Error(`[${launchError ? "SHELL_START_FAILED" : "SHELL_EXECUTION_FAILED"}] ${appendStatus(text, err instanceof Error ? err.message : String(err))}`);
 				}
 
 				const snapshot = await finishOutput();
 				const { text: outputText, details } = formatOutput(snapshot);
 				if (exitCode !== 0 && exitCode !== null) {
-					throw new Error(appendStatus(outputText, `Command exited with code ${exitCode}`));
+					throw new Error(`[SHELL_RUNTIME_FAILED] ${appendStatus(outputText, `Command exited with code ${exitCode}`)}`);
 				}
 				return { content: [{ type: "text", text: outputText }], details };
 			} finally {

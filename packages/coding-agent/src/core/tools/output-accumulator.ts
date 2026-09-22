@@ -24,6 +24,7 @@ export interface OutputSnapshot {
 	content: string;
 	truncation: TruncationResult;
 	fullOutputPath?: string;
+	spillFileCapped: boolean;
 }
 
 function defaultTempFilePath(prefix: string): string {
@@ -86,8 +87,8 @@ function cleanupOldSpillFiles(): void {
  * Incrementally tracks streaming output with bounded memory.
  *
  * Appends decode chunks with a streaming UTF-8 decoder, keeps only a decoded
- * tail for display snapshots, and opens a temp file when the full output needs
- * to be preserved.
+ * tail for display snapshots, and opens a capped temp log when output exceeds
+ * the tool result limit.
  */
 export class OutputAccumulator {
 	private readonly maxLines: number;
@@ -112,6 +113,8 @@ export class OutputAccumulator {
 	private tempFileStream: WriteStream | undefined;
 	private tempFileBytes = 0;
 	private tempFileCapped = false;
+	private tempFileError: Error | undefined;
+	private readonly onTempFileError = (error: Error): void => { this.tempFileError = error; };
 
 	constructor(options: OutputAccumulatorOptions = {}) {
 		this.maxLines = options.maxLines ?? DEFAULT_MAX_LINES;
@@ -148,6 +151,7 @@ export class OutputAccumulator {
 	}
 
 	snapshot(options: { persistIfTruncated?: boolean } = {}): OutputSnapshot {
+		if (this.tempFileError) throw this.tempFileError;
 		const tailTruncation = truncateTail(this.getSnapshotText(), {
 			maxLines: this.maxLines,
 			maxBytes: this.maxBytes,
@@ -174,6 +178,7 @@ export class OutputAccumulator {
 			content: truncation.content,
 			truncation,
 			fullOutputPath: this.tempFilePath,
+			spillFileCapped: this.tempFileCapped,
 		};
 	}
 
@@ -183,21 +188,63 @@ export class OutputAccumulator {
 		}
 
 		const stream = this.tempFileStream;
-		this.tempFileStream = undefined;
+		if (this.tempFileError) {
+			stream.destroy();
+			throw this.tempFileError;
+		}
+		if (stream.closed) {
+			if (!stream.writableFinished) throw new Error("Output log closed before all writes finished");
+			stream.off("error", this.onTempFileError);
+			this.tempFileStream = undefined;
+			return;
+		}
 
 		await new Promise<void>((resolve, reject) => {
-			const onError = (error: Error) => {
+			let finished = stream.writableFinished;
+			const clear = () => {
+				stream.off("error", onError);
 				stream.off("finish", onFinish);
+				stream.off("close", onClose);
+			};
+			const onError = (error: Error) => {
+				this.tempFileError = error;
+				clear();
 				reject(error);
 			};
 			const onFinish = () => {
-				stream.off("error", onError);
-				resolve();
+				finished = true;
+				if (stream.closed) { clear(); resolve(); }
+			};
+			const onClose = () => {
+				clear();
+				if (finished) resolve();
+				else reject(new Error("Output log closed before all writes finished"));
 			};
 			stream.once("error", onError);
 			stream.once("finish", onFinish);
+			stream.once("close", onClose);
 			stream.end();
 		});
+		stream.off("error", this.onTempFileError);
+		this.tempFileStream = undefined;
+	}
+
+	/** Release only this accumulator's exact incomplete spill and ownership marker. */
+	async discardTempFile(): Promise<void> {
+		const stream = this.tempFileStream;
+		this.tempFileStream = undefined;
+		if (stream && !stream.closed) {
+			await new Promise<void>((resolve) => {
+				stream.once("close", resolve);
+				stream.destroy();
+			});
+		}
+		stream?.off("error", this.onTempFileError);
+		const path = this.tempFilePath;
+		this.tempFilePath = undefined;
+		if (!path) return;
+		try { unlinkSync(path); } catch {}
+		try { unlinkSync(path + SPILL_OWNER_SUFFIX); } catch {}
 	}
 
 	getLastLineBytes(): number {
@@ -275,6 +322,7 @@ export class OutputAccumulator {
 	}
 
 	private writeTempData(data: Buffer): void {
+		if (this.tempFileError) throw this.tempFileError;
 		if (!this.tempFileStream || this.tempFileCapped || data.length === 0) return;
 		const remaining = MAX_SPILL_PAYLOAD_BYTES - this.tempFileBytes;
 		if (remaining > 0) {
@@ -304,6 +352,7 @@ export class OutputAccumulator {
 			writeFileSync(ownerPath, SPILL_OWNER_MARKER, { encoding: "utf8", flag: "wx", mode: 0o600 });
 			ownerCreated = true;
 			this.tempFileStream = createWriteStream(spillPath, { fd: spillFd, autoClose: true });
+			this.tempFileStream.on("error", this.onTempFileError);
 			spillFd = undefined;
 			this.tempFilePath = spillPath;
 		} catch (error) {

@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { basename, resolve } from "node:path";
 import { extractCommandSubstitutions, prepareShellAnalysis } from "./shell-substitution.ts";
 import { parseTimeoutInvocation } from "./timeout-wrapper.ts";
-import { isShellFileDescriptor, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
+import { isShellDynamicDescriptor, isShellFileDescriptor, isShellOutputFileRedirection, isStaticDescriptorCopy, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
 
 const MAX_COMMAND_CHARS = 128 * 1024;
 const MAX_SEGMENTS = 64;
@@ -178,8 +178,8 @@ function findSearchRoot(tokens: readonly string[], start: number): string | unde
   return undefined;
 }
 
-function commandIndex(tokens: readonly string[]): number {
-  let index = 0;
+function commandIndex(tokens: readonly string[], start = 0): number {
+  let index = start;
   let wrapperDepth = 0;
   while (index < tokens.length) {
     const name = commandName(tokens[index] ?? "");
@@ -267,14 +267,27 @@ function runnerClass(command: string, tokens: readonly string[], start: number):
   return `runner:${executable}:${action}`;
 }
 
-function inspectSegment(tokens: readonly string[], cwd: string, depth: number, builder: ScopeBuilder): string {
-  const index = commandIndex(tokens);
+function inspectSegment(tokens: readonly string[], cwd: string, depth: number, builder: ScopeBuilder, start = 0): string {
+  const index = commandIndex(tokens, start);
   if (index < 0) {
     markOpaque(builder, "unsupported_timeout_wrapper");
     return cwd;
   }
   if (index >= tokens.length) return cwd;
   const command = commandName(tokens[index]!);
+  if (command === "for" || command === "done" || command === "}") return cwd;
+  if (command === "do" || command === "{") return index + 1 < tokens.length ? inspectSegment(tokens, cwd, depth + 1, builder, index + 1) : cwd;
+  if (command === "command" || command === "exec") {
+    if (command === "command" && (tokens[index + 1] === "-v" || tokens[index + 1] === "-V")) {
+      addClass(builder, "read:command-query");
+      return cwd;
+    }
+    if (depth >= MAX_DEPTH || !tokens[index + 1] || tokens[index + 1]!.startsWith("-")) {
+      markOpaque(builder, "unverifiable_launcher");
+      return cwd;
+    }
+    return inspectSegment(tokens, cwd, depth + 1, builder, index + 1);
+  }
   if (command === "cd") {
     const target = tokens[index + 1];
     if (!target || hasDynamicSyntax(target)) {
@@ -328,7 +341,7 @@ function inspectSegment(tokens: readonly string[], cwd: string, depth: number, b
   return cwd;
 }
 
-type PermissionTokens = string[] & { redirections?: number[] };
+type PermissionTokens = string[] & { redirections?: number[]; redirectionFds?: (string | undefined)[] };
 
 function inspectTokenBuffer(tokens: PermissionTokens, cwd: string, depth: number, builder: ScopeBuilder): string {
   if (tokens.length === 0) return cwd;
@@ -343,7 +356,13 @@ function inspectTokenBuffer(tokens: PermissionTokens, cwd: string, depth: number
       const index = redirections[position]!;
       const operator = tokens[index]!;
       const target = index + 1 === redirections[position + 1] ? undefined : tokens[index + 1];
-      if (operator !== ">" && operator !== ">>" && operator !== ">|" && operator !== "&>" && operator !== "&>>") {
+      const descriptorFd = tokens.redirectionFds?.[position];
+      if (isStaticDescriptorCopy(operator, target, descriptorFd)) continue;
+      if (descriptorFd && isShellDynamicDescriptor(descriptorFd)) {
+        markOpaque(builder, "unverifiable_redirection");
+        continue;
+      }
+      if (!isShellOutputFileRedirection(operator)) {
         markOpaque(builder, "unverifiable_redirection");
         continue;
       }
@@ -379,6 +398,7 @@ function inspectScript(command: string, initialCwd: string, depth: number, build
   let arithmeticDepth = 0;
   let escaped = false;
   let literalWord = true;
+  let redirectionTargetPending = false;
   for (let index = 0; index < command.length; index++) {
     const code = command.charCodeAt(index);
     if (escaped) {
@@ -435,6 +455,7 @@ function inspectScript(command: string, initialCwd: string, depth: number, build
     if (code === 32 || code === 9) {
       if (tokenStarted) {
         tokens.push(value);
+        redirectionTargetPending = false;
         value = "";
         tokenStarted = false;
         literalWord = true;
@@ -443,9 +464,12 @@ function inspectScript(command: string, initialCwd: string, depth: number, build
     }
     const redirectionWidth = shellRedirectionLength(command, index);
     if (redirectionWidth > 0) {
-      if (tokenStarted && !(literalWord && isShellFileDescriptor(value))) tokens.push(value);
+      const sourceFd = !redirectionTargetPending && literalWord && (isShellFileDescriptor(value) || isShellDynamicDescriptor(value)) ? value : undefined;
+      if (tokenStarted && !sourceFd) tokens.push(value);
       (tokens.redirections ??= []).push(tokens.length);
+      (tokens.redirectionFds ??= []).push(sourceFd);
       tokens.push(command.slice(index, index + redirectionWidth));
+      redirectionTargetPending = true;
       index += redirectionWidth - 1;
       value = "";
       tokenStarted = false;
@@ -457,9 +481,11 @@ function inspectScript(command: string, initialCwd: string, depth: number, build
       cwd = inspectTokenBuffer(tokens, cwd, depth, builder);
       tokens.length = 0;
       if (tokens.redirections) tokens.redirections.length = 0;
+      if (tokens.redirectionFds) tokens.redirectionFds.length = 0;
       literalWord = true;
       value = "";
       tokenStarted = false;
+      redirectionTargetPending = false;
       if ((code === 38 || code === 124) && command.charCodeAt(index + 1) === code) index += 1;
       continue;
     }

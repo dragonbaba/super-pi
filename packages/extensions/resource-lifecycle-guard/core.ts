@@ -25,7 +25,7 @@ import {
 } from "./regex.ts";
 import { extractCommandSubstitutions, inspectHereDocuments, prepareShellAnalysis } from "./shell-substitution.ts";
 import { parseTimeoutInvocation } from "./timeout-wrapper.ts";
-import { isShellFileDescriptor, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
+import { isShellDynamicDescriptor, isShellFileDescriptor, isShellOutputFileRedirection, isStaticDescriptorCopy, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
 import { FD_DUPLICATION_PATTERN } from "./regex.ts";
 import { diagnosticForPrimitives, policyMetadata, renderPolicyDiagnostic, type PolicyDiagnosticMetadata } from "./policy-diagnostics.ts";
 
@@ -139,7 +139,8 @@ function inspectLifecycleScript(source: string, depth: number, nativePowerShellA
    if (EXECUTABLE_EXPANSION_TEXT_PATTERN.test(token)) dynamicText = true;
   }
   if (!shellText && !dynamicText) continue;
-  let index = 0; let changedLookup = false; let prefixes = 0;
+  let index = tokens[0] === "do" || tokens[0] === "{" ? 1 : 0; let changedLookup = false; let prefixes = 0;
+  if (tokens[0] === "for" || tokens[0] === "done" || tokens[0] === "}" || index >= tokens.length) continue;
   while (index < tokens.length) {
    const token = tokens[index]!;
    if (++prefixes > MAX_SCRIPT_SEGMENTS) return lifecycleRefusal("SHELL_INSPECTION_LIMIT", "too many command prefixes", "reduce prefixes");
@@ -156,8 +157,15 @@ function inspectLifecycleScript(source: string, depth: number, nativePowerShellA
    }
    const prefix = commandName(token);
    if (prefix !== "command" && prefix !== "exec") break;
+   if (prefix === "command" && (tokens[index + 1] === "-v" || tokens[index + 1] === "-V")) {
+    // Query operands are names to inspect, never executable positions. Nested
+    // substitutions were inspected above before this branch.
+    index = tokens.length;
+    break;
+   }
    if (++index > MAX_WRAPPER_DEPTH || !tokens[index] || tokens[index]!.startsWith("-")) return lifecycleRefusal("SHELL_WRAPPER", "unsupported command/exec prefix depth or operand", "use a direct foreground executable");
   }
+  if (index >= tokens.length) continue;
   if (REDIRECTION_OPERATOR_PATTERN.test(tokens[index] ?? "")) return UNCERTAIN_LIFECYCLE;
   if (tokens.expansions?.[index] || hasDynamicSyntax(tokens[index] ?? "")) return dynamicExecutable(tokens[index]);
   let name = commandName(tokens[index] ?? "");
@@ -310,11 +318,19 @@ function inspectOutputRedirections(tokens: ShellSegment, cwd: string, builder: S
 		const index = redirections[position]!;
 		const operator = tokens[index]!;
 		const target = index + 1 === redirections[position + 1] ? undefined : tokens[index + 1];
-		// Input redirections and heredocs remain with the existing lifecycle parser.
-		// Duplication, here-documents and other unsupported grammar stay opaque.
-		if (operator !== ">" && operator !== ">>" && operator !== ">|" && operator !== "&>" && operator !== "&>>") {
+		const descriptorFd = tokens.redirectionFds?.[position];
+		if (descriptorFd && isShellDynamicDescriptor(descriptorFd)) {
 			addPrimitive(builder, "unverifiable_redirection");
-			const descriptorFd = tokens.redirectionFds?.[position];
+			markUnverifiable(builder);
+			continue;
+		}
+		// Input redirections and heredocs remain with the existing lifecycle parser.
+		// Numeric descriptor copies have no path target. Shell ordering is kept in
+		// the source sent to Bash; only analysis tokens are compacted below.
+		if (isStaticDescriptorCopy(operator, target, descriptorFd)) continue;
+		// Here-documents, descriptor moves/closures and dynamic copies stay opaque.
+		if (!isShellOutputFileRedirection(operator)) {
+			addPrimitive(builder, "unverifiable_redirection");
 			const descriptor = descriptorFd ? `${descriptorFd}${operator}${target ?? ""}` : `${operator}${target ?? ""}`;
 			if (builder.diagnostic === undefined && FD_DUPLICATION_PATTERN.test(descriptor)) {
 				const diagnostic = diagnosticForPrimitives(builder.primitives, { syntax: descriptor });
@@ -371,9 +387,12 @@ function inspectShellScript(script: string, initialCwd: string, depth: number, b
 		inspectOutputRedirections(tokens, workingDirectory, builder);
 		const commandIndex = commandTokenIndex(tokens);
 		if (commandIndex < 0 || commandIndex >= tokens.length) continue;
-		const command = commandName(tokens[commandIndex]!);
+		if (tokens[commandIndex] === "for" || tokens[commandIndex] === "done" || tokens[commandIndex] === "}") continue;
+		const executableIndex = tokens[commandIndex] === "do" || tokens[commandIndex] === "{" ? commandIndex + 1 : commandIndex;
+		if (executableIndex >= tokens.length) continue;
+		const command = commandName(tokens[executableIndex]!);
 		if (command === "cd") {
-			const target = tokens[commandIndex + 1];
+			const target = tokens[executableIndex + 1];
 			if (!target || hasDynamicSyntax(target)) {
 				builder.dynamicScope = true;
 				builder.unverifiableScope = true;
@@ -382,7 +401,7 @@ function inspectShellScript(script: string, initialCwd: string, depth: number, b
 			}
 			continue;
 		}
-		inspectCommand(tokens, commandIndex, command, workingDirectory, depth, builder);
+		inspectCommand(tokens, executableIndex, command, workingDirectory, depth, builder);
 	}
 }
 
@@ -394,6 +413,14 @@ function inspectCommand(
 	depth: number,
 	builder: ScanBuilder,
 ): void {
+	if (command === "command" || command === "exec") {
+		if (depth >= MAX_WRAPPER_DEPTH) { addPrimitive(builder, "unverifiable_launcher"); markUnverifiable(builder); return; }
+		if (command === "command" && (tokens[commandIndex + 1] === "-v" || tokens[commandIndex + 1] === "-V")) return;
+		const next = tokens[commandIndex + 1];
+		if (!next || next.startsWith("-")) { addPrimitive(builder, "unverifiable_launcher"); markUnverifiable(builder); return; }
+		inspectCommand(tokens, commandIndex + 1, commandName(next), cwd, depth + 1, builder);
+		return;
+	}
 	if (SCRIPT_WRAPPERS.has(command)) {
 		inspectScriptWrapper(tokens, commandIndex + 1, SHELL_SCRIPT_FLAGS, cwd, depth, builder);
 		return;
@@ -689,6 +716,7 @@ function parseShellSegments(command: string): ShellSegment[] {
 	let arithmeticDepth = 0;
 	let escaped = false;
 	let literalWord = true;
+	let redirectionTargetPending = false;
 
 	for (let index = 0; index < command.length; index++) {
 		const code = command.charCodeAt(index);
@@ -759,6 +787,7 @@ function parseShellSegments(command: string): ShellSegment[] {
 		if (code === 32 || code === 9) {
 			if (tokenStarted) {
 				tokens.push(value);
+				redirectionTargetPending = false;
 				value = "";
 				tokenStarted = false;
 				literalWord = true;
@@ -767,10 +796,12 @@ function parseShellSegments(command: string): ShellSegment[] {
 		}
 		const redirectionWidth = shellRedirectionLength(command, index);
 		if (redirectionWidth > 0) {
-			if (tokenStarted && !(literalWord && isShellFileDescriptor(value))) tokens.push(value);
+			const sourceFd = !redirectionTargetPending && literalWord && (isShellFileDescriptor(value) || isShellDynamicDescriptor(value)) ? value : undefined;
+			if (tokenStarted && !sourceFd) tokens.push(value);
 			(tokens.redirections ??= []).push(tokens.length);
-			(tokens.redirectionFds ??= []).push(literalWord && isShellFileDescriptor(value) ? value : undefined);
+			(tokens.redirectionFds ??= []).push(sourceFd);
 			tokens.push(command.slice(index, index + redirectionWidth));
+			redirectionTargetPending = true;
 			index += redirectionWidth - 1;
 			value = "";
 			tokenStarted = false;
@@ -784,6 +815,7 @@ function parseShellSegments(command: string): ShellSegment[] {
 			literalWord = true;
 			value = "";
 			tokenStarted = false;
+			redirectionTargetPending = false;
 			if ((code === 38 || code === 124) && command.charCodeAt(index + 1) === code) index++;
 			continue;
 		}

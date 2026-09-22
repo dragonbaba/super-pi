@@ -24,20 +24,19 @@ const USER_COMMANDS = [
   'echo "=== 模拟 Claude Code 连接，抓取源地址 ==="; curl -4 -v --max-time 15 -o /dev/null https://api.anthropic.com/ 2>&1 | grep -iE "Trying|Connected to|bound|from" | head -6',
 ] as const;
 
-test("offline user command fixtures preserve first blocking evidence", () => {
+test("offline user command fixtures distinguish descriptor copies from launcher refusals", () => {
   const first = inspectHighRiskBashMutation({ command: USER_COMMANDS[0] }, process.cwd());
-  assert.ok(first?.unverifiableScope);
-  assert.deepEqual(first?.diagnostic?.diagnostic.code, "FD_DUP_UNSUPPORTED");
+  assert.equal(first, undefined);
   assert.equal(inspectBashResourceLifecycle({ command: USER_COMMANDS[1] })?.startsWith("[SHELL_WRAPPER:LAUNCHER_UNSUPPORTED]"), true);
   const third = inspectHighRiskBashMutation({ command: USER_COMMANDS[2] }, process.cwd());
-  assert.equal(third?.diagnostic?.diagnostic.code, "FD_DUP_UNSUPPORTED");
+  assert.equal(third, undefined);
   const fourth = inspectHighRiskBashMutation({ command: USER_COMMANDS[3] }, process.cwd());
-  assert.deepEqual(fourth?.diagnostic?.diagnostic.code, "FD_DUP_UNSUPPORTED");
+  assert.equal(fourth, undefined);
 });
 
 test("redirection evidence distinguishes syntax from quoted and heredoc data", () => {
   const syntax = inspectHighRiskBashMutation({ command: "tasklist 2>&1 | head" }, process.cwd());
-  assert.equal(syntax?.diagnostic?.diagnostic.code, "FD_DUP_UNSUPPORTED");
+  assert.equal(syntax, undefined);
   assert.equal(inspectHighRiskBashMutation({ command: "printf '%s' '2>&1'" }, process.cwd()), undefined);
   const heredoc = inspectHighRiskBashMutation({ command: "cat <<'EOF'\n2>&1\nEOF" }, process.cwd());
   assert.ok(heredoc?.primitives.includes("heredoc_uninspectable"));
@@ -47,16 +46,16 @@ test("redirection evidence distinguishes syntax from quoted and heredoc data", (
 
 test("multiple causes retain parser order and do not let full-access bypass verification", () => {
   const scan = inspectHighRiskBashMutation({ command: "tasklist 2>&1 | head; rm -rf $TARGET" }, process.cwd());
-  assert.ok(scan?.primitives.includes("unverifiable_redirection"));
   assert.ok(scan?.primitives.includes("rm_recursive"));
-  assert.equal(scan?.diagnostic?.diagnostic.code, "FD_DUP_UNSUPPORTED");
-  assert.equal(scan?.diagnostic?.diagnostic.retryable, false);
+  assert.equal(scan?.unverifiableScope, true);
+  assert.notEqual(scan?.diagnostic?.diagnostic.code, "FD_DUP_UNSUPPORTED");
 });
 
-test("the first reliable redirection diagnostic remains stable when later descriptors appear", () => {
-  const scan = inspectHighRiskBashMutation({ command: "echo x 2>&1 3>&2 | head" }, process.cwd());
-  assert.equal(scan?.diagnostic?.diagnostic.code, "FD_DUP_UNSUPPORTED");
-  assert.equal(scan?.diagnostic?.diagnostic.syntax, "2>&1");
+test("unsupported descriptor syntax stays opaque after static copies", () => {
+  const scan = inspectHighRiskBashMutation({ command: "echo x 2>&1 3>&$fd | head" }, process.cwd());
+  assert.equal(scan?.unverifiableScope, true);
+  assert.ok(scan?.primitives.includes("unverifiable_redirection"));
+  assert.notEqual(scan?.diagnostic?.diagnostic.syntax, "2>&1");
 });
 
 test("blocked tool projection keeps the legacy empty-reason fallback and final permission decision", async () => {
@@ -160,15 +159,14 @@ test("production extension preflight reaches the first refusal without backend o
     const availableResult = await agent.dispatchHostTool({ type: "toolCall", id: "wrapper-available", name: "bash", arguments: { command: USER_COMMANDS[1] } });
     const availableText = availableResult.content.filter(c => c.type === "text").map(c => c.text).join("\n");
     assert.match(availableText, /Use the enabled native PowerShell tool/);
-    assert.match(mutationText, /^\[POLICY_BLOCKED:FD_DUP_UNSUPPORTED\] Not executed:/);
+    assert.match(mutationText, /^\[POLICY_BLOCKED:CONFIRMATION_CANCELLED\] Not executed:/);
     const machineDetails = mutationResult.details as any;
-    assert.equal(machineDetails.diagnostic.code, "FD_DUP_UNSUPPORTED");
+    assert.equal(machineDetails.executionStatus, "not_executed");
     assert.equal(machineDetails.operation, "bash");
     assert.equal(machineDetails.permissionMode, "workspace-write");
-    assert.equal(machineDetails.highRisk, true);
+    assert.equal(machineDetails.primitives?.includes("unverifiable_redirection"), false);
     assert.equal(machineDetails.opaqueScript, true);
     assert.equal(machineDetails.stateChanged, false);
-    assert.equal(machineDetails.retryable, false);
     assert.equal(executions, 0);
   } finally {
     agent.abort();
@@ -219,12 +217,12 @@ test("provider wire receives one projected refusal after real Agent preflight", 
     const results = agent.state.messages.filter(message => message.role === "toolResult") as any[];
     assert.equal(results.length, 1);
     assert.equal(results[0].toolCallId, "policy-call");
-    assert.match(results[0].content[0].text, /^\[POLICY_BLOCKED:FD_DUP_UNSUPPORTED\]/);
+    assert.match(results[0].content[0].text, /^\[POLICY_BLOCKED:CONFIRMATION_REQUIRED\]/);
     const secondMessages = JSON.stringify(wire[1].messages);
     assert.equal((wire[1].messages as any[]).filter(message => message.role === "tool").length, 1);
-    assert.match(secondMessages, /POLICY_BLOCKED:FD_DUP_UNSUPPORTED/);
+    assert.match(secondMessages, /POLICY_BLOCKED:CONFIRMATION_REQUIRED/);
     assert.doesNotMatch(secondMessages, /unverifiable_dynamic_scope/);
-    assert.equal((secondMessages.match(/POLICY_BLOCKED:FD_DUP_UNSUPPORTED/g) ?? []).length, 1);
+    assert.equal((secondMessages.match(/POLICY_BLOCKED:CONFIRMATION_REQUIRED/g) ?? []).length, 1);
   } finally {
     agent.abort(); runner.invalidate(); await runner.emit({ type: "session_shutdown" } as never);
   }
