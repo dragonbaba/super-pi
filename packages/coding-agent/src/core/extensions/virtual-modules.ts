@@ -6,8 +6,8 @@ import * as _bundledPiTui from "@super-pi/tui";
 import * as _bundledTypebox from "typebox";
 import * as _bundledTypeboxCompile from "typebox/compile";
 import * as _bundledTypeboxValue from "typebox/value";
-// NOTE: This import works because loader.ts exports are NOT re-exported from index.ts,
-// avoiding a circular dependency. Extensions can import @super-pi/coding-agent.
+// Loaded after loader.ts initializes, so the public entrypoint can re-export
+// extension APIs without creating an eager module initialization cycle.
 import * as _bundledPiCodingAgent from "../../index.ts";
 
 /** Modules available to extensions via virtualModules (for compiled Bun binary). */

@@ -122,8 +122,7 @@ const extensionCache = new Map<string, ExtensionFactory>();
 let virtualModulesPromise: Promise<Record<string, unknown>> | undefined;
 
 function loadVirtualModules(): Promise<Record<string, unknown>> {
-	virtualModulesPromise ??= import(isBunBinary || isTypeScriptSourceRuntime ? "./virtual-modules.ts" : "./virtual-modules.js")
-		.then((module) => module.VIRTUAL_MODULES as Record<string, unknown>);
+	virtualModulesPromise ??= import("./virtual-modules.ts").then((module) => module.VIRTUAL_MODULES);
 	return virtualModulesPromise;
 }
 
@@ -557,15 +556,14 @@ async function loadExtensionModule(extensionPath: string, cacheToken?: Extension
 	}
 
 	const createJiti = await loadCreateJiti();
-	const virtualModules = await loadVirtualModules();
 	const jiti = createJiti(import.meta.url, {
 		moduleCache: false,
 		// Bun uses modules embedded in the executable. Source TypeScript reuses the
 		// host-resolved modules and root tsconfig paths. Built Node uses dist aliases.
 		...(isBunBinary
-			? { virtualModules, tryNative: false }
+			? { virtualModules: await loadVirtualModules(), tryNative: false }
 			: isTypeScriptSourceRuntime
-				? { virtualModules, tsconfigPaths: true }
+				? { virtualModules: await loadVirtualModules(), tsconfigPaths: true }
 				: { alias: getAliases() }),
 	});
 
