@@ -1539,7 +1539,7 @@ function convertTools(
 			};
 		}
 
-		const strict = resolveJsonSchemaStrictSampling(tool, compat.supportsStrictMode !== false);
+		const strict = resolveJsonSchemaStrictSampling(tool, compat.supportsStrictMode === true);
 		return {
 			type: "function",
 			function: {
@@ -1547,7 +1547,7 @@ function convertTools(
 				description: tool.description,
 				parameters: getJsonSchemaToolParameters(tool, strict) as Record<string, unknown>,
 				// Only include strict if provider supports it. Some reject unknown fields.
-				...(compat.supportsStrictMode !== false && { strict: strict ?? false }),
+				...(compat.supportsStrictMode === true && { strict: strict ?? false }),
 			},
 		};
 	});
@@ -1702,7 +1702,9 @@ function detectCompat(model: Model<"openai-completions">): ResolvedOpenAIComplet
 		chatTemplateArgs: {},
 		zaiToolStream: false,
 		supportsThinkingTokenBudget: false,
-		supportsStrictMode: !isMoonshot && !isTogether && !isCloudflareAiGateway && !isNvidia,
+		// OpenAI-compatible endpoints do not imply strict JSON-schema support.
+		// Known built-in models carry an explicit positive compat entry.
+		supportsStrictMode: model.capabilities?.strictToolSchema ?? false,
 		supportsOpenAIGrammarTools: false,
 		cacheControlFormat,
 		sendSessionAffinityHeaders: false,

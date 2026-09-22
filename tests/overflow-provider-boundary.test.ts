@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { Type } from "typebox";
 import type { AssistantMessage, Model } from "../packages/ai/src/types.ts";
 import { isContextOverflow, isRecoverableLength } from "../packages/ai/src/utils/overflow.ts";
 import { streamSimple } from "@super-pi/ai/api/openai-completions";
@@ -68,6 +69,7 @@ for (const scenario of [
 		api: "openai-completions", baseUrl: "https://fixture.invalid/v1", reasoning: false, input: ["text"],
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 1024 };
 	let normalRequests = 0, summaryRequests = 0, compactStarts = 0;
+	const ordinaryWires: any[] = [];
 	const runtime = { hasConfiguredAuth: () => true, checkAuth: async () => ({ type: "api_key" }),
 		getAuth: async () => undefined, isUsingOAuth: () => false, getModel: () => model,
 		registerProvider() {}, registerNativeProvider() {}, unregisterProvider() {},
@@ -77,6 +79,7 @@ for (const scenario of [
 				fetch: async (_input, init) => {
 					const wire = JSON.parse(String(init?.body)); assert.ok(Array.isArray(wire.messages));
 					if (!summary) { normalRequests++; assert.ok(normalRequests <= 2, "recovery must be bounded");
+						ordinaryWires.push(wire);
 						return new Response(scenario.error ? JSON.stringify({ error: { message: scenario.error } }) : null, { status: scenario.status }); }
 					summaryRequests++;
 					const event = { id: "offline", object: "chat.completion.chunk", created: 1, model: m.id,
@@ -86,11 +89,21 @@ for (const scenario of [
 		},
 	} as unknown as ModelRuntime;
 	const { session } = await createAgentSession({ cwd: root, agentDir: root, model, modelRuntime: runtime,
-		settingsManager: settings, sessionManager: manager, resourceLoader: resources, noTools: "all" });
+		settingsManager: settings, sessionManager: manager, resourceLoader: resources, tools: ["lookup"], customTools: [{
+			name: "lookup", label: "Lookup", description: "Synthetic lookup", parameters: Type.Object({ note: Type.Optional(Type.String()) }),
+			constrainedSampling: { type: "json_schema", strict: "prefer" },
+			execute: async () => ({ content: [{ type: "text", text: "unused" }], details: {} }),
+		}] });
 	session.subscribe(event => { if (event.type === "compaction_start") compactStarts++; });
 	try {
 		await session.prompt("Synthetic request.");
-		assert.equal(compactStarts, scenario.overflow ? 1 : 0);
+		for (const wire of ordinaryWires) {
+			const declared = wire.tools?.find((tool: any) => tool.function?.name === "lookup")?.function;
+			assert.ok(declared, JSON.stringify(wire.tools));
+			assert.equal(declared.strict, undefined, "unknown endpoint never receives a strict field");
+			assert.equal(declared.parameters.required?.includes("note") ?? false, false);
+		}
+		assert.equal(compactStarts, scenario.overflow ? 1 : 0, JSON.stringify(session.messages.at(-1)));
 		assert.equal(normalRequests, scenario.overflow ? 2 : 1);
 		// This fixture splits the retained turn: history and turn-prefix summaries.
 		assert.equal(summaryRequests, scenario.overflow ? 2 : 0);
