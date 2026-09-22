@@ -119,6 +119,7 @@ function inspectLifecycleScript(source: string, depth: number, nativePowerShellA
  if (substitutions.unterminated || substitutions.unsupported) return lifecycleRefusal("SHELL_SUBSTITUTION", substitutions.unterminated ? "unterminated command substitution" : "uncertain/uninspectable command substitution grammar", "simplify the substitution into inspectable foreground commands");
  for (const script of here?.substitutions ?? EMPTY_SUBSTITUTIONS) { const result = inspectLifecycleScript(script, depth + 1, nativePowerShellAvailable); if (result) return result; }
  for (const script of substitutions.scripts) { const result = inspectLifecycleScript(script, depth + 1, nativePowerShellAvailable); if (result) return result; }
+ if (hasAmbiguousBashCwd(command)) return lifecycleRefusal("SHELL_UNINSPECTABLE", "working directory changes inside conditional or grouped shell execution", "split directory changes and later file writes into separately inspectable commands");
  if (DETACH_UTILITY_PATTERN.test(command)) return BLOCK_REASON;
  if ((WINDOWS_DETACH_PATTERN.test(command) || WINDOWS_START_BACKGROUND_PATTERN.test(command)) && !WINDOWS_WAIT_PATTERN.test(command)) return BLOCK_REASON;
  if (DOCKER_DETACHED_PATTERN.test(command) || SERVICE_START_PATTERN.test(command)) return BLOCK_REASON;
@@ -231,7 +232,7 @@ export interface HighRiskMutationScan {
 	diagnostic?: PolicyDiagnosticMetadata;
 }
 
-type ShellSegment = string[] & { dynamic?: boolean; expansions?: number[]; redirections?: number[]; redirectionFds?: (string | undefined)[] };
+type ShellSegment = string[] & { dynamic?: boolean; expansions?: number[]; redirections?: number[]; redirectionFds?: (string | undefined)[]; subshellDepth?: number; pipelineMember?: boolean; conditionalMember?: boolean };
 
 function uncertainAssignment(tokens: ShellSegment, index: number, shellAssignment = false): boolean {
  const expansion = tokens.expansions?.[index] ?? 0;
@@ -274,7 +275,10 @@ export function inspectHighRiskBashMutation(input: unknown, cwd: string): HighRi
 		workspaceWide: false,
 		segmentsVisited: 0,
 	};
-	inspectShellScript(command, resolve(cwd), 0, builder);
+	if (hasAmbiguousBashCwd(command)) {
+		addPrimitive(builder, "unverifiable_working_directory");
+		markUnverifiable(builder);
+	} else inspectShellScript(command, resolve(cwd), 0, builder);
 	if (builder.primitives.length === 0) return undefined;
 	return {
 		risk: "HIGH",
@@ -707,6 +711,32 @@ function markUnverifiable(builder: ScanBuilder): void {
 	builder.unverifiableScope = true;
 }
 
+/** A local/conditional cd cannot establish one reliable cwd for later targets. */
+export function hasAmbiguousBashCwd(command: string): boolean {
+	if (!command.includes("cd")) return false;
+	const segments = parseShellSegments(command);
+	let loopDepth = 0;
+	let conditionalDepth = 0;
+	let braceDepth = 0;
+	for (const tokens of segments) {
+		const first = tokens[0];
+		if (first === "done" && loopDepth > 0) loopDepth--;
+		if (first === "fi" && conditionalDepth > 0) conditionalDepth--;
+		if (first === "}" && braceDepth > 0) braceDepth--;
+		if (first === "for" || first === "while" || first === "until") loopDepth++;
+		if (first === "if") conditionalDepth++;
+		if (first === "{") braceDepth++;
+		if (loopDepth === 0 && conditionalDepth === 0 && braceDepth === 0 && !tokens.subshellDepth && !tokens.pipelineMember && !tokens.conditionalMember) continue;
+		let index = commandTokenIndex(tokens);
+		if (index < 0) continue;
+		if (tokens[index] === "do" || tokens[index] === "{" || tokens[index] === "then" || tokens[index] === "else") index++;
+		while (index < tokens.length && LEADING_ASSIGNMENT_PATTERN.test(tokens[index]!)) index++;
+		if (tokens[index] === "command" || tokens[index] === "builtin") index++;
+		if (commandName(tokens[index] ?? "") === "cd") return true;
+	}
+	return false;
+}
+
 function parseShellSegments(command: string): ShellSegment[] {
 	const segments: ShellSegment[] = [];
 	let tokens: ShellSegment = [];
@@ -717,6 +747,7 @@ function parseShellSegments(command: string): ShellSegment[] {
 	let escaped = false;
 	let literalWord = true;
 	let redirectionTargetPending = false;
+	let subshellDepth = 0;
 
 	for (let index = 0; index < command.length; index++) {
 		const code = command.charCodeAt(index);
@@ -810,8 +841,16 @@ function parseShellSegments(command: string): ShellSegment[] {
 		}
 		if (code === 10 || code === 13 || code === 59 || code === 38 || code === 124 || code === 40 || code === 41) {
 			if (tokenStarted) tokens.push(value);
+			const pipeline = code === 124 && command.charCodeAt(index + 1) !== 124;
+			const conditional = (code === 38 || code === 124) && command.charCodeAt(index + 1) === code;
+			if (pipeline) tokens.pipelineMember = true;
 			if (tokens.length > 0) segments.push(tokens);
+			if (code === 40) subshellDepth++;
+			else if (code === 41 && subshellDepth > 0) subshellDepth--;
 			tokens = [];
+			tokens.subshellDepth = subshellDepth;
+			tokens.pipelineMember = pipeline;
+			tokens.conditionalMember = conditional;
 			literalWord = true;
 			value = "";
 			tokenStarted = false;

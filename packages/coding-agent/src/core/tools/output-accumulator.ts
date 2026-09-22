@@ -18,6 +18,7 @@ export interface OutputAccumulatorOptions {
 	maxLines?: number;
 	maxBytes?: number;
 	tempFilePrefix?: string;
+	onSpillError?: (error: Error) => void;
 }
 
 export interface OutputSnapshot {
@@ -95,6 +96,7 @@ export class OutputAccumulator {
 	private readonly maxBytes: number;
 	private readonly maxRollingBytes: number;
 	private readonly tempFilePrefix: string;
+	private readonly onSpillError?: (error: Error) => void;
 	private readonly decoder = new TextDecoder();
 
 	private rawChunks: Buffer[] = [];
@@ -114,13 +116,17 @@ export class OutputAccumulator {
 	private tempFileBytes = 0;
 	private tempFileCapped = false;
 	private tempFileError: Error | undefined;
-	private readonly onTempFileError = (error: Error): void => { this.tempFileError = error; };
+	private readonly onTempFileError = (error: Error): void => {
+		this.tempFileError = error;
+		this.onSpillError?.(error);
+	};
 
 	constructor(options: OutputAccumulatorOptions = {}) {
 		this.maxLines = options.maxLines ?? DEFAULT_MAX_LINES;
 		this.maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
 		this.maxRollingBytes = Math.max(this.maxBytes * 2, 1);
 		this.tempFilePrefix = options.tempFilePrefix ?? "sp-output";
+		this.onSpillError = options.onSpillError;
 	}
 
 	append(data: Buffer): void {

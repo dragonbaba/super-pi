@@ -856,9 +856,13 @@ async function prepareToolCall(
 				const refusal = projectStructuredPolicyRefusal(beforeResult.reason);
 				const directReason = nonEmptyReason(beforeResult.reason);
 				const refusalDetails = beforeResult.details ?? refusal?.details;
-				const details = tool.name === "bash"
-					? { ...(refusalDetails && typeof refusalDetails === "object" ? refusalDetails : {}), executionStatus: "not_executed" }
-					: refusalDetails;
+				let details = refusalDetails;
+				if (tool.name === "bash") {
+					const prototype = refusalDetails && typeof refusalDetails === "object" ? Object.getPrototypeOf(refusalDetails) : undefined;
+					details = prototype === Object.prototype || prototype === null
+						? { ...refusalDetails, executionStatus: "not_executed" }
+						: { executionStatus: "not_executed", originalDetails: refusalDetails };
+				}
 				const result = createErrorToolResult(refusal?.text ?? (directReason ?? "Tool execution was blocked"), details);
 				if (beforeResult.terminate === true) {
 					result.terminate = true;

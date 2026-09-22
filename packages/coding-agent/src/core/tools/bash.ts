@@ -816,7 +816,6 @@ export function createShellToolDefinition(
 		) {
 			const resolvedCommand = commandPrefix ? `${commandPrefix}\n${command}` : command;
 			const spawnContext = resolveSpawnContext(resolvedCommand, cwd, spawnHook, exposeSessionEnvironment, ctx);
-			const output = new OutputAccumulator({ tempFilePrefix: config.tempFilePrefix });
 			let acceptingOutput = true;
 			let outputFailure: Error | undefined;
 			const outputAbort = new AbortController();
@@ -830,6 +829,7 @@ export function createShellToolDefinition(
 				acceptingOutput = false;
 				outputAbort.abort(outputFailure);
 			};
+			const output = new OutputAccumulator({ tempFilePrefix: config.tempFilePrefix, onSpillError: recordOutputFailure });
 
 			const emitOutputUpdate = () => {
 				if (!onUpdate || !updateDirty) return;

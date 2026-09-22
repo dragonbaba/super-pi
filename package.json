@@ -40,6 +40,7 @@
 		"bench:tui-tool-leaf-allocations": "node --expose-gc --experimental-strip-types ./scripts/bench/tui-tool-leaf-allocations.ts",
 		"bench:tui-paced-tool-leaf": "node --expose-gc --experimental-strip-types ./scripts/bench/tui-tool-leaf-allocations.ts --paced",
 		"bench:bash-render": "node --expose-gc --experimental-strip-types ./scripts/bench/bash-render-allocations.ts",
+		"bench:shell-common-compatibility": "node --expose-gc --experimental-strip-types ./scripts/bench/shell-common-compatibility.ts --allocation-gate",
 		"bench:bash-responsive": "node --experimental-strip-types ./scripts/bench/bash-running-responsiveness.ts",
 		"bench:tui-assistant-leaf-allocations": "node --expose-gc --experimental-strip-types ./scripts/bench/tui-real-leaf-allocations.ts",
 		"bench:tui-assistant-leaf-multiprocess": "node --experimental-strip-types ./scripts/bench/tui-real-leaf-multiprocess.ts",

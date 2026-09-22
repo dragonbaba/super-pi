@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { basename, resolve } from "node:path";
+import { hasAmbiguousBashCwd } from "./core.ts";
 import { extractCommandSubstitutions, prepareShellAnalysis } from "./shell-substitution.ts";
 import { parseTimeoutInvocation } from "./timeout-wrapper.ts";
 import { isShellDynamicDescriptor, isShellFileDescriptor, isShellOutputFileRedirection, isStaticDescriptorCopy, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
@@ -523,6 +524,10 @@ export function inspectBashPermissionScope(input: unknown, cwd: string): BashPer
   };
   if (command.length > MAX_COMMAND_CHARS) {
     markOpaque(builder, "oversized_command");
+    return publicScope(builder);
+  }
+  if (hasAmbiguousBashCwd(command)) {
+    markOpaque(builder, "unverifiable_working_directory");
     return publicScope(builder);
   }
   inspectScript(command, resolve(cwd), 0, builder);
