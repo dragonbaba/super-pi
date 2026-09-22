@@ -12,8 +12,8 @@ Status is **in progress**, not a release or billing claim.
 | Item | Current evidence / implementation decision | Commit | Tests / benchmark | Conclusion |
 | --- | --- | --- | --- | --- |
 | S1 overflow | Scope bodyless 400/413 to Cerebras; recognize explicit z.ai phrase | `8fc432026` | 9/9 boundary + actual SDK wire tests; AI offline build and check passed | 已实现并验证 |
-| S2 strict | Conservative Chat default; explicit compat/capability support; retain built-in support as explicit metadata | S2 commit | 68/68 related tests; all built-in Chat catalog entries through serializer; local strict=require zero sends | 已实现并验证 |
-| S3 GIF | Three-byte prefix still present | pending | pending | unverified |
+| S2 strict | Conservative Chat default; explicit compat/capability support; retain built-in support as explicit metadata | `e01aab5d4` | 68/68 related tests; all built-in Chat catalog entries through serializer; local strict=require zero sends | 已实现并验证 |
+| S3 GIF | Require full GIF87a/GIF89a signature | S3 commit | 6 red cases before; 9/9 after; image/read related suite 61 passed, 1 platform skip | 已实现并验证 |
 | S4 FIFO | Array.shift queues still present; preserve provider event semantics | pending | pending | unverified |
 | S5 virtual payload | Distinguish existing lazy jiti from static virtual payload | pending | pending | unverified |
 | S6 fuzzy | Start with indexOf; retain additional changes only on measured evidence | pending | pending | unverified |
@@ -24,6 +24,8 @@ Status is **in progress**, not a release or billing claim.
 No compile cache, paid warming, model/auth addition, telemetry, RPC/state/context platform, dependency or product version update, renderer rewrite, merge, deployment, or branch-protection change belongs to this task.
 
 ## Verification and review
+
+S3 keeps the existing image processor, size and read-identity paths. Valid one-pixel GIF87a/GIF89a files pass actual `createReadToolDefinition.execute` and CLI `processFileArguments` with default image processing enabled; 3–5 byte prefixes, wrong version, text beginning GIF and lowercase text stay text. Related `image-acceptance-closeout` and `read-windowing` tests pass; one existing platform-specific test is skipped, not counted as a pass.
 
 S2 changes only Chat Completions defaults, not Responses defaults. An explicit capability supports strict when compat is absent; either explicit compat false or capability false vetoes it. Existing built-in behavior is retained by adding positive compat metadata to the existing catalog (no refreshed model IDs/prices/limits). The generator's delta baseline is also false, so future generation emits positive support explicitly. The catalog migration was previewed, deterministic and idempotent; existing explicit false/true values were untouched and content hashes updated. Unknown endpoints preserve optional parameters for `prefer`; `require` fails locally with zero sends. The local argument validator remains active. S1's actual session-wire fixture now also declares a prefer-strict optional tool and checks the final wire before asserting bounded recovery counts.
 
