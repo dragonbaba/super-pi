@@ -25,7 +25,7 @@ import {
 } from "./regex.ts";
 import { extractCommandSubstitutions, inspectHereDocuments, prepareShellAnalysis } from "./shell-substitution.ts";
 import { parseTimeoutInvocation } from "./timeout-wrapper.ts";
-import { isShellDynamicDescriptor, isShellFileDescriptor, isShellOutputFileRedirection, isStaticDescriptorCopy, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
+import { isBashDoubleBracketCloseBoundary, isBashDoubleBracketHead, isShellDynamicDescriptor, isShellFileDescriptor, isShellOutputFileRedirection, isStaticDescriptorCopy, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
 import { FD_DUPLICATION_PATTERN } from "./regex.ts";
 import { diagnosticForPrimitives, policyMetadata, renderPolicyDiagnostic, type PolicyDiagnosticMetadata } from "./policy-diagnostics.ts";
 
@@ -156,7 +156,7 @@ function inspectLifecycleScript(source: string, depth: number, nativePowerShellA
     if (!redirection[1]) { if (!tokens[index]) return UNCERTAIN_LIFECYCLE; index++; }
     continue;
    }
-   const prefix = commandName(token);
+   const prefix = token === "command" || token === "exec" ? token : "";
    if (prefix !== "command" && prefix !== "exec") break;
    if (prefix === "command" && (tokens[index + 1] === "-v" || tokens[index + 1] === "-V")) {
     // Query operands are names to inspect, never executable positions. Nested
@@ -167,6 +167,7 @@ function inspectLifecycleScript(source: string, depth: number, nativePowerShellA
    if (++index > MAX_WRAPPER_DEPTH || !tokens[index] || tokens[index]!.startsWith("-")) return lifecycleRefusal("SHELL_WRAPPER", "unsupported command/exec prefix depth or operand", "use a direct foreground executable");
   }
   if (index >= tokens.length) continue;
+  if (tokens.bashTestOpenAt === index && tokens.bashTestClosed && tokens[index] === "[[") continue;
   if (REDIRECTION_OPERATOR_PATTERN.test(tokens[index] ?? "")) return UNCERTAIN_LIFECYCLE;
   if (tokens.expansions?.[index] || hasDynamicSyntax(tokens[index] ?? "")) return dynamicExecutable(tokens[index]);
   let name = commandName(tokens[index] ?? "");
@@ -232,7 +233,7 @@ export interface HighRiskMutationScan {
 	diagnostic?: PolicyDiagnosticMetadata;
 }
 
-type ShellSegment = string[] & { dynamic?: boolean; expansions?: number[]; redirections?: number[]; redirectionFds?: (string | undefined)[]; subshellDepth?: number; pipelineMember?: boolean; conditionalMember?: boolean };
+type ShellSegment = string[] & { dynamic?: boolean; expansions?: number[]; redirections?: number[]; redirectionFds?: (string | undefined)[]; subshellDepth?: number; pipelineMember?: boolean; conditionalMember?: boolean; bashTestOpenAt?: number; bashTestClosed?: boolean };
 
 function uncertainAssignment(tokens: ShellSegment, index: number, shellAssignment = false): boolean {
  const expansion = tokens.expansions?.[index] ?? 0;
@@ -420,6 +421,7 @@ function inspectCommand(
 	builder: ScanBuilder,
 ): void {
 	if (command === "command" || command === "exec") {
+		if (tokens[commandIndex] !== command) { addPrimitive(builder, "unverifiable_launcher"); markUnverifiable(builder); return; }
 		if (depth >= MAX_WRAPPER_DEPTH) { addPrimitive(builder, "unverifiable_launcher"); markUnverifiable(builder); return; }
 		if (command === "command" && (tokens[commandIndex + 1] === "-v" || tokens[commandIndex + 1] === "-V")) return;
 		const next = tokens[commandIndex + 1];
@@ -715,7 +717,6 @@ function markUnverifiable(builder: ScanBuilder): void {
 
 /** A local/conditional cd cannot establish one reliable cwd for later targets. */
 export function hasAmbiguousBashCwd(command: string): boolean {
-	if (!command.includes("cd")) return false;
 	const segments = parseShellSegments(command);
 	let loopDepth = 0;
 	let conditionalDepth = 0;
@@ -750,6 +751,7 @@ function parseShellSegments(command: string): ShellSegment[] {
 	let literalWord = true;
 	let redirectionTargetPending = false;
 	let subshellDepth = 0;
+	let bashDoubleBracket = false;
 
 	for (let index = 0; index < command.length; index++) {
 		const code = command.charCodeAt(index);
@@ -827,7 +829,17 @@ function parseShellSegments(command: string): ShellSegment[] {
 			}
 			continue;
 		}
-		const redirectionWidth = shellRedirectionLength(command, index);
+		if (!bashDoubleBracket && code === 91 && command.charCodeAt(index + 1) === 91 && !tokenStarted
+			&& isBashDoubleBracketHead(tokens) && (command.charCodeAt(index + 2) === 32 || command.charCodeAt(index + 2) === 9)) {
+			tokens.bashTestOpenAt = tokens.length;
+			value = "[["; tokenStarted = true; bashDoubleBracket = true; index++; continue;
+		}
+		if (bashDoubleBracket && code === 93 && command.charCodeAt(index + 1) === 93 && !tokenStarted
+			&& isBashDoubleBracketCloseBoundary(command, index + 2)) {
+			tokens.bashTestClosed = true;
+			value = "]]"; tokenStarted = true; bashDoubleBracket = false; index++; continue;
+		}
+		const redirectionWidth = bashDoubleBracket ? 0 : shellRedirectionLength(command, index);
 		if (redirectionWidth > 0) {
 			const sourceFd = !redirectionTargetPending && literalWord && (isShellFileDescriptor(value) || isShellDynamicDescriptor(value)) ? value : undefined;
 			if (tokenStarted && !sourceFd) tokens.push(value);
@@ -842,6 +854,7 @@ function parseShellSegments(command: string): ShellSegment[] {
 			continue;
 		}
 		if (code === 10 || code === 13 || code === 59 || code === 38 || code === 124 || code === 40 || code === 41) {
+			if (bashDoubleBracket) { value += command[index]; tokenStarted = true; continue; }
 			if (tokenStarted) tokens.push(value);
 			const pipeline = code === 124 && command.charCodeAt(index + 1) !== 124;
 			const conditional = (code === 38 || code === 124) && command.charCodeAt(index + 1) === code;

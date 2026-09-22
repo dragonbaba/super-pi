@@ -140,6 +140,16 @@ test("static descriptor copies preserve bounded file targets and order", () => {
   const compact = inspectHighRiskBashMutation({ command: 'printf out 2>&1>compact.log' }, cwd);
   assert.ok(compact?.targets.some(target => target.endsWith("compact.log")));
   assert.equal(inspectHighRiskBashMutation({ command: 'cat <fixture.bin' }, cwd)?.unverifiableScope, true);
+  for (const command of ["[[ a < b ]]", "[[ b > a ]]", "[[ a < b && c > d ]]"]) {
+    assert.notEqual(inspectHighRiskBashMutation({ command }, cwd)?.unverifiableScope, true, command);
+    const scope = inspectBashPermissionScope({ command }, cwd);
+    assert.equal(scope?.unverifiableScope, false, command);
+    assert.equal(scope?.kind, "read-only", command);
+  }
+  assert.ok(inspectHighRiskBashMutation({ command: "[[ a < b ]] >.git/config" }, cwd)?.targets.some(target => target.endsWith(".git\\config") || target.endsWith(".git/config")));
+  assert.equal(inspectBashPermissionScope({ command: "[[ a < b ]] >.git/config" }, cwd)?.kind, "known-mutation");
+  assert.equal(inspectBashPermissionScope({ command: "'[[' a < b ]]" }, cwd)?.unverifiableScope, true);
+  assert.equal(inspectBashPermissionScope({ command: "[[ a < b ']]'" }, cwd)?.unverifiableScope, true);
   assert.equal(inspectHighRiskBashMutation({ command: "printf '%s' '2>&1'" }, cwd), undefined);
   assert.ok(inspectHighRiskBashMutation({ command: 'printf "%s" "$(rm -rf synthetic)"' }, cwd)?.primitives.includes("rm_recursive"));
   for (const command of [
@@ -334,6 +344,8 @@ print(struct.unpack_from('<H', d, 0)[0])
     assert.equal(existsSync(join(fixture, ".git")), true);
     for (const [id, command] of [
       ["zero-iteration-cd", "for x in; do cd subdir; done; printf data >.git/config"],
+      ["escaped-cd", "for x in; do c\\d subdir; done; printf data >.git/config"],
+      ["quoted-cd", "for x in; do 'c'd subdir; done; printf data >.git/config"],
       ["select-empty-cd", "select x in; do cd subdir; done; printf data >.git/config"],
       ["conditional-cd", "if false; then cd subdir; fi; printf data >.git/config"],
       ["case-cd", "case no in yes) cd subdir;; esac; printf data >.git/config"],
@@ -342,6 +354,7 @@ print(struct.unpack_from('<H', d, 0)[0])
       ["pipeline-cd", "cd subdir | cat; printf data >.git/config"],
       ["subshell-cd", "(cd subdir); printf data >.git/config"],
       ["wrapped-loop-cd", "bash -c 'for x in; do cd subdir; done; printf data >.git/config'"],
+      ["wrapped-escaped-cd", "bash -c 'for x in; do c\\d subdir; done; printf data >.git/config'"],
     ]) {
       assert.match(inspectBashResourceLifecycle({ command }) ?? "", /SHELL_UNINSPECTABLE/);
       assert.equal(inspectHighRiskBashMutation({ command }, fixture)?.unverifiableScope, true);
@@ -425,6 +438,35 @@ print(struct.unpack_from('<H', d, 0)[0])
     assert.equal(executions, 12);
     assert.ok(approvals >= 2);
     assert.equal(readFileSync(join(fixture, "fixture.bin")).length, 4);
+
+    decision = "仅允许本次";
+    agent.state.tools = [createBashTool(fixture, { exposeSessionEnvironment: false, operations: {
+      exec: (command, executionCwd, options) => { executions++; return local.exec(command, executionCwd, options); },
+    } })];
+    const bracket = await agent.dispatchHostTool({ type: "toolCall", id: "bracket-compare", name: "bash", arguments: { command: "[[ a < b ]] && printf bracket-ok" } });
+    assert.equal(bracket.isError, false, JSON.stringify(bracket.content));
+    assert.match((bracket.content[0] as { text: string }).text, /bracket-ok/);
+    assert.equal(executions, 13);
+    decision = "拒绝";
+    const bracketWrite = await agent.dispatchHostTool({ type: "toolCall", id: "bracket-write", name: "bash", arguments: { command: "[[ a < b ]] >.git/config" } });
+    assert.equal(bracketWrite.isError, true, JSON.stringify(bracketWrite));
+    assert.equal(executions, 13);
+    assert.equal(existsSync(join(fixture, ".git", "config")), false);
+    decision = "仅允许本次";
+    for (const name of ["command", "exec"]) {
+      writeFileSync(join(fixture, name), "#!/usr/bin/env bash\nprintf synthetic >.git/config\n");
+      const command = `./${name} -v harmless`;
+      assert.equal(inspectBashResourceLifecycle({ command }), undefined);
+      assert.equal(inspectHighRiskBashMutation({ command }, fixture)?.unverifiableScope, true);
+      const scope = inspectBashPermissionScope({ command }, fixture);
+      assert.equal(scope?.unverifiableScope, true);
+      assert.notEqual(scope?.kind, "read-only");
+      const result = await agent.dispatchHostTool({ type: "toolCall", id: `external-${name}`, name: "bash", arguments: { command } });
+      assert.equal(result.isError, true);
+      assert.equal((result.details as any).executionStatus, "not_executed");
+      assert.equal(executions, 13);
+      assert.equal(existsSync(join(fixture, ".git", "config")), false);
+    }
   } finally {
     agent.abort();
     runner.invalidate();

@@ -9,6 +9,22 @@ export function shellRedirectionLength(source: string, index: number): number {
   return next === 38 || next === 124 ? 2 : 1;
 }
 
+/** `[[` is a Bash keyword only at a command/test head, not an argv word. */
+export function isBashDoubleBracketHead(tokens: readonly string[]): boolean {
+  if (tokens.length === 0) return true;
+  if (tokens.length !== 1) return false;
+  const head = tokens[0];
+  return head === "if" || head === "elif" || head === "while" || head === "until"
+    || head === "then" || head === "do" || head === "!" || head === "{";
+}
+
+export function isBashDoubleBracketCloseBoundary(source: string, index: number): boolean {
+  if (index >= source.length) return true;
+  const code = source.charCodeAt(index);
+  return code === 32 || code === 9 || code === 10 || code === 13 || code === 59
+    || code === 38 || code === 124 || code === 41 || code === 60 || code === 62;
+}
+
 /** Only a numeric, literal descriptor copy is inspectable; closure and moves remain opaque. */
 export function isStaticDescriptorCopy(operator: string, target: string | undefined, sourceFd?: string): boolean {
   return (operator === ">&" || operator === "<&") && target !== undefined && isShellFileDescriptor(target)
