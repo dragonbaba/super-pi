@@ -674,6 +674,8 @@ export class AgentSession {
 	private _compactionAbortController: AbortController | undefined = undefined;
 	private _autoCompactionAbortController: AbortController | undefined = undefined;
 	private _overflowRecoveryAttempted = false;
+	// Only owns primitive identities during one length-recovery continuation.
+	private _pendingLengthRecovery: { sessionId: string; compactionId: string } | undefined;
 
 	// Branch summarization state
 	private _branchSummaryAbortController: AbortController | undefined = undefined;
@@ -1624,6 +1626,7 @@ export class AgentSession {
 	 * Call this when completely done with the session.
 	 */
 	dispose(): void {
+		this._pendingLengthRecovery = undefined;
 		this._imageDigests = new WeakMap();
 		this._imageRequest = undefined;
 		this._queuedImageMessages.clear();
@@ -2234,6 +2237,7 @@ export class AgentSession {
 			throw error;
 		} finally {
 			if (admitted) {
+				this._settleLengthRecovery(false);
 				this._systemPromptOverride = undefined;
 				this._flushPendingBashMessages();
 				await this._emitAgentSettled();
@@ -2242,6 +2246,7 @@ export class AgentSession {
 	}
 
 	private async _handlePostAgentRun(): Promise<boolean> {
+		this._settleLengthRecovery(!this._interactionPaused && this._lastAssistantMessage?.stopReason === "stop");
 		if (this._interactionPaused) { this._lastAssistantMessage = undefined; return false; }
 		const msg = this._lastAssistantMessage;
 		this._lastAssistantMessage = undefined;
@@ -2273,6 +2278,36 @@ export class AgentSession {
 		// The agent loop drains both queues before emitting agent_end. Any messages
 		// here were queued by agent_end extension handlers and need a continuation.
 		return !this._interactionPaused && this.agent.hasQueuedMessages();
+	}
+
+	/** Commit the existing retainedTail projection only after the recovery run succeeds.
+	 * The paid checkpoint retains the old attempt until then (including on disk/crash).
+	 * A local checkpoint adds no summary request or usage and never rewrites raw entries.
+	 */
+	private _settleLengthRecovery(success: boolean): void {
+		const pending = this._pendingLengthRecovery;
+		this._pendingLengthRecovery = undefined;
+		if (!pending || pending.sessionId !== this.sessionId) return;
+		const checkpoint = getLatestCompactionEntry(this.sessionManager.getBranch());
+		if (checkpoint?.id !== pending.compactionId) return;
+		const messages = this.agent.state.messages;
+		if (success && messages[0]?.role === "compactionSummary" && messages[0].summary === checkpoint.summary) {
+			const retainedTail = messages.slice(1);
+			const model = this.model;
+			const details = model
+				? withContextAccounting(
+					checkpoint.details, model, "overflow", checkpoint.summary, checkpoint.tokensBefore,
+					retainedTail, model.contextWindow, this.settingsManager.getCompactionSettings(),
+				)
+				: checkpoint.details;
+			this.sessionManager.appendCompaction(
+				checkpoint.summary, checkpoint.firstKeptEntryId, checkpoint.tokensBefore,
+				details, checkpoint.fromHook, checkpoint.usage, retainedTail,
+			);
+		}
+		// Failure restores the original attempt too, keeping live and disk contexts equal.
+		this.agent.state.messages = this.sessionManager.buildSessionContext().messages;
+		this._rebuildToolResultUiCanonicalIndex();
 	}
 
 	/**
@@ -3365,7 +3400,7 @@ export class AgentSession {
 				this._rebuildToolResultUiCanonicalIndex();
 				removedAssistant = true;
 			}
-			const compacted = await this._runAutoCompaction("overflow", willRetry);
+			const compacted = await this._runAutoCompaction("overflow", willRetry, undefined, assistantMessage);
 			if (!compacted) {
 				if (removedAssistant) {
 					this.agent.state.messages = messages;
@@ -3392,6 +3427,7 @@ export class AgentSession {
 		reason: "overflow" | "threshold",
 		willRetry: boolean,
 		contextTokens?: number,
+		abandonedMessage?: AssistantMessage,
 	): Promise<boolean> {
 		const settings = this.settingsManager.getCompactionSettings();
 		let started = false;
@@ -3402,16 +3438,16 @@ export class AgentSession {
 			const model = this.model;
 			if (!model) return false;
 			const pathEntries = this.sessionManager.getBranch();
+			const compactionSessionId = this.sessionId;
 			if (reason === "threshold" && hasPendingPaidCompactionBoundary(pathEntries, model)) return false;
-			// The retriable overflow response is already removed from agent.state.messages
-			// by _checkCompaction(), but its message_end entry remains durable. Prepare
-			// this compaction from the same projected context as the immediate retry so
-			// retainedTail cannot resurrect the abandoned response after a disk reload.
+			// Exclude only the exact attempt selected by _checkCompaction from the summary.
+			// Its durable fallback tail remains until the recovery continuation succeeds.
 			const lastPathEntry = pathEntries[pathEntries.length - 1];
+			const abandonedLength = reason === "overflow" && willRetry &&
+				abandonedMessage?.stopReason === "length" && lastPathEntry?.type === "message" &&
+				lastPathEntry.message === abandonedMessage ? abandonedMessage : undefined;
 			const compactionPathEntries =
-				reason === "overflow" && willRetry && lastPathEntry?.type === "message" &&
-				lastPathEntry.message.role === "assistant" &&
-				(lastPathEntry.message.stopReason === "error" || lastPathEntry.message.stopReason === "length")
+				abandonedLength
 					? pathEntries.slice(0, -1)
 					: pathEntries;
 
@@ -3474,7 +3510,7 @@ export class AgentSession {
 			}
 			const mechanicalCompaction =
 				!extensionCompaction && reason === "threshold"
-					? prepareToolResultPruneCheckpoint(compactionPathEntries, contextTokens!, model.contextWindow, settings)
+					? prepareToolResultPruneCheckpoint(pathEntries, contextTokens!, model.contextWindow, settings)
 					: undefined;
 			const providedCompaction = extensionCompaction ?? mechanicalCompaction;
 
@@ -3534,6 +3570,10 @@ export class AgentSession {
 			}
 
 			tokensBefore = preparation.tokensBefore;
+			if (abandonedLength && retainedTail) {
+				// This copy belongs to the checkpoint; never mutate an extension's array.
+				retainedTail = [...retainedTail, abandonedLength];
+			}
 			details = withContextAccounting(
 				details, model, reason, summary, tokensBefore, retainedTail, model.contextWindow, settings,
 			);
@@ -3589,6 +3629,9 @@ export class AgentSession {
 				if (lastMsg?.role === "assistant" && (lastMsg.stopReason === "error" || lastMsg.stopReason === "length")) {
 					this.agent.state.messages = messages.slice(0, -1);
 					this._rebuildToolResultUiCanonicalIndex();
+				}
+				if (abandonedLength && retainedTail && this.sessionId === compactionSessionId) {
+					this._pendingLengthRecovery = { sessionId: compactionSessionId, compactionId: savedCompactionId };
 				}
 				return true;
 			}

@@ -167,7 +167,7 @@ for (const scenario of ["summary-error", "summary-abort", "retry-error", "retry-
 			// A new model avoids independently starting a new recovery of the same old attempt.
 			await f.session.setModel({ ...model, id: "negative-boundary-model" });
 			await f.session.prompt("Inspect the unsuperseded history.");
-			const omissionApplied = scenario.startsWith("retry-");
+			const omissionApplied = false;
 			const resumedWire = f.wires.at(-1);
 			f.assertWire(resumedWire, omissionApplied);
 			if (scenario === "retry-length") {
