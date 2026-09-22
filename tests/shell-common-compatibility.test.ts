@@ -268,6 +268,7 @@ test("real guard, authorization, Bash and tool-result path handle three feedback
   mkdirSync(join(fixture, ".git"));
   mkdirSync(join(fixture, "subdir"));
   writeFileSync(join(fixture, "fixture.bin"), Buffer.from([0x50, 0x49, 0x01, 0x02]));
+  writeFileSync(join(fixture, "subdir", "fixture.bin"), Buffer.from([0x50, 0x49, 0x01, 0x02]));
   const jiti = createJiti(import.meta.url);
   const { default: lifecycle } = await jiti.import<any>("../packages/extensions/resource-lifecycle-guard/index.ts");
   const runtime = createExtensionRuntime();
@@ -297,9 +298,9 @@ test("real guard, authorization, Bash and tool-result path handle three feedback
   try {
     await runner.emit({ type: "session_start" } as never);
     const commands = [
-      `cd . && f="fixture.bin" && ls -l "$f" && (command -v cat && cat "$f" | head -c 3) 2>&1 | head -20; echo "---query---"; command -v printf cat; command -V printf; command printf 'prefix-ok' 2>&1 | cat`,
+      `cd subdir && f="fixture.bin" && ls -l "$f" && (command -v cat && cat "$f" | head -c 3) 2>&1 | head -20; echo "---query---"; command -v printf cat; command -V printf; command printf 'prefix-ok' 2>&1 | cat`,
       `for t in printf cat; do printf "%-12s " "$t"; command -v $t || echo "-"; done; echo "---search---"; ls . 2>/dev/null; ls missing-synthetic 2>/dev/null`,
-      `cd . && python -c "
+      `cd subdir && python -c "
 import struct
 d=open('fixture.bin','rb').read()
 print(struct.unpack_from('<H', d, 0)[0])
@@ -350,6 +351,10 @@ print(struct.unpack_from('<H', d, 0)[0])
       ["conditional-cd", "if false; then cd subdir; fi; printf data >.git/config"],
       ["case-cd", "case no in yes) cd subdir;; esac; printf data >.git/config"],
       ["short-circuit-cd", "false && cd subdir; printf data >.git/config"],
+      ["failed-left-and-cd", "cd missing-synthetic && :; printf data >.git/config"],
+      ["failed-left-or-cd", "cd missing-synthetic || :; printf data >.git/config"],
+      ["failed-left-and-delete", "cd missing-synthetic && :; find . -delete"],
+      ["failed-left-command-write", "cd missing-synthetic && :; command printf data >.git/config"],
       ["pipeline-group-cd", "{ cd subdir; } | cat; printf data >.git/config"],
       ["pipeline-cd", "cd subdir | cat; printf data >.git/config"],
       ["subshell-cd", "(cd subdir); printf data >.git/config"],
@@ -467,6 +472,13 @@ print(struct.unpack_from('<H', d, 0)[0])
       assert.equal(executions, 13);
       assert.equal(existsSync(join(fixture, ".git", "config")), false);
     }
+    const safeChain = await agent.dispatchHostTool({ type: "toolCall", id: "safe-conditional-cd", name: "bash", arguments: {
+      command: "cd subdir && printf synthetic >local.log; echo after",
+    } });
+    assert.equal(safeChain.isError, false, JSON.stringify(safeChain.content));
+    assert.equal(readFileSync(join(fixture, "subdir", "local.log"), "utf8"), "synthetic");
+    assert.match((safeChain.content[0] as { text: string }).text, /after/);
+    assert.equal(executions, 14);
   } finally {
     agent.abort();
     runner.invalidate();

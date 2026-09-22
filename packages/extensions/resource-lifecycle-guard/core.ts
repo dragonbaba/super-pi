@@ -3,11 +3,13 @@ import {
 	DETACH_UTILITY_PATTERN,
 	DOCKER_DETACHED_PATTERN,
 	EXECUTABLE_EXPANSION_TEXT_PATTERN,
+	HEAD_COUNT_OPTION_PATTERN,
 	LEADING_ASSIGNMENT_PATTERN,
 	LEADING_REDIRECTION_PATTERN,
 	LOOKUP_ASSIGNMENT_PATTERN,
 	NODE_RECURSIVE_RM_PATTERN,
 	NODE_UNLINK_PATTERN,
+	NONNEGATIVE_INTEGER_PATTERN,
 	OPAQUE_JOB_INTERPRETER_PATTERN,
 	OPAQUE_JOB_LAUNCHER_PATTERN,
 	OWNED_FOREGROUND_JOB_PATTERN,
@@ -233,7 +235,7 @@ export interface HighRiskMutationScan {
 	diagnostic?: PolicyDiagnosticMetadata;
 }
 
-type ShellSegment = string[] & { dynamic?: boolean; expansions?: number[]; redirections?: number[]; redirectionFds?: (string | undefined)[]; subshellDepth?: number; pipelineMember?: boolean; conditionalMember?: boolean; bashTestOpenAt?: number; bashTestClosed?: boolean };
+type ShellSegment = string[] & { dynamic?: boolean; expansions?: number[]; redirections?: number[]; redirectionFds?: (string | undefined)[]; subshellDepth?: number; pipelineMember?: boolean; conditionalMember?: boolean; separatorAfter?: string; bashTestOpenAt?: number; bashTestClosed?: boolean };
 
 function uncertainAssignment(tokens: ShellSegment, index: number, shellAssignment = false): boolean {
  const expansion = tokens.expansions?.[index] ?? 0;
@@ -721,7 +723,8 @@ export function hasAmbiguousBashCwd(command: string): boolean {
 	let loopDepth = 0;
 	let conditionalDepth = 0;
 	let braceDepth = 0;
-	for (const tokens of segments) {
+	for (let segmentIndex = 0; segmentIndex < segments.length; segmentIndex++) {
+		const tokens = segments[segmentIndex]!;
 		const first = tokens[0];
 		if (first === "done" && loopDepth > 0) loopDepth--;
 		if ((first === "fi" || first === "esac") && conditionalDepth > 0) conditionalDepth--;
@@ -735,9 +738,66 @@ export function hasAmbiguousBashCwd(command: string): boolean {
 		if (tokens[index] === "do" || tokens[index] === "{" || tokens[index] === "then" || tokens[index] === "else") index++;
 		while (index < tokens.length && LEADING_ASSIGNMENT_PATTERN.test(tokens[index]!)) index++;
 		if (tokens[index] === "command" || tokens[index] === "builtin") index++;
-		if (commandName(tokens[index] ?? "") === "cd") return true;
+		if (commandName(tokens[index] ?? "") === "cd") {
+			// A literal `cd .` leaves relative targets at the same path whether it
+			// succeeds or fails; other conditional cd targets can change the cwd.
+			if (tokens[index + 1] === "." && tokens.length === index + 2) continue;
+			// The RHS of `cd path && ...` only runs after a successful cd. A later
+			// independent command is safe only when its effects are provably read-only.
+			if (tokens.separatorAfter === "&&" && hasOnlyReadOnlyConditionalTail(segments, segmentIndex)) continue;
+			return true;
+		}
 	}
 	return false;
+}
+
+function hasOnlyReadOnlyConditionalTail(segments: readonly ShellSegment[], cdIndex: number): boolean {
+	let independent = false;
+	for (let index = cdIndex + 1; index < segments.length; index++) {
+		const separator = segments[index - 1]!.separatorAfter;
+		if (separator !== "&&" && separator !== "|" && separator !== "(" && separator !== ")") independent = true;
+		if (independent && !isReadOnlyConditionalTailSegment(segments[index]!)) return false;
+	}
+	return true;
+}
+
+function isReadOnlyConditionalTailSegment(tokens: ShellSegment): boolean {
+	if (tokens.dynamic || tokens.expansions?.length) return false;
+	const redirections = tokens.redirections;
+	if (redirections) for (let position = 0; position < redirections.length; position++) {
+		const index = redirections[position]!;
+		if (isStaticDescriptorCopy(tokens[index]!, tokens[index + 1], tokens.redirectionFds?.[position])) continue;
+		if (tokens[index] !== ">" || tokens.redirectionFds?.[position] !== "2" || tokens[index + 1] !== "/dev/null") return false;
+	}
+	const argv = redirections ? tokens.slice() : tokens;
+	if (redirections) stripShellRedirections(argv, redirections);
+	if (argv.length === 0) return true;
+	const index = commandTokenIndex(argv);
+	if (index < 0 || index >= argv.length) return false;
+	const command = argv[index];
+	if (index > 0 && (index !== 2 || argv[0] !== "timeout" || command !== "find")) return false;
+	if (command === "echo" || command === ":" || command === "true" || command === "false") return true;
+	if (command === "command") return argv[index + 1] === "-v" || argv[index + 1] === "-V"
+		|| argv[index + 1] === "echo" || argv[index + 1] === "printf";
+	if (command === "cat") return argv.length === index + 1;
+	if (command === "head") {
+		for (let cursor = index + 1; cursor < argv.length; cursor++) {
+			const value = argv[cursor]!;
+			if (!HEAD_COUNT_OPTION_PATTERN.test(value) && !NONNEGATIVE_INTEGER_PATTERN.test(value)) return false;
+		}
+		return true;
+	}
+	if (command !== "find") return false;
+	if (argv[index + 1] !== ".") return false;
+	for (let cursor = index + 2; cursor < argv.length; cursor += 2) {
+		const option = argv[cursor];
+		const operand = argv[cursor + 1];
+		if (option === "-maxdepth" && operand && NONNEGATIVE_INTEGER_PATTERN.test(operand)) continue;
+		if (option === "-type" && (operand === "d" || operand === "f")) continue;
+		if ((option === "-iname" || option === "-name") && operand) continue;
+		return false;
+	}
+	return true;
 }
 
 function parseShellSegments(command: string): ShellSegment[] {
@@ -859,6 +919,8 @@ function parseShellSegments(command: string): ShellSegment[] {
 			const pipeline = code === 124 && command.charCodeAt(index + 1) !== 124;
 			const conditional = (code === 38 || code === 124) && command.charCodeAt(index + 1) === code;
 			if (pipeline) tokens.pipelineMember = true;
+			if (conditional) tokens.conditionalMember = true;
+			tokens.separatorAfter = conditional ? (code === 38 ? "&&" : "||") : command[index];
 			if (tokens.length > 0) segments.push(tokens);
 			if (code === 40) subshellDepth++;
 			else if (code === 41 && subshellDepth > 0) subshellDepth--;
