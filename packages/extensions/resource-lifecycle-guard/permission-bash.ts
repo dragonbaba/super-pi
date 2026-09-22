@@ -3,7 +3,7 @@ import { basename, resolve } from "node:path";
 import { hasAmbiguousBashCwd } from "./core.ts";
 import { extractCommandSubstitutions, prepareShellAnalysis } from "./shell-substitution.ts";
 import { parseTimeoutInvocation } from "./timeout-wrapper.ts";
-import { isBashDoubleBracketCloseBoundary, isBashDoubleBracketHead, isShellDynamicDescriptor, isShellFileDescriptor, isShellOutputFileRedirection, isStaticDescriptorCopy, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
+import { isBashDoubleBracketCloseBoundary, isBashDoubleBracketHead, isBashProcessSubstitutionStart, isBashTestWhitespace, isShellDynamicDescriptor, isShellFileDescriptor, isShellOutputFileRedirection, isStaticDescriptorCopy, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
 
 const MAX_COMMAND_CHARS = 128 * 1024;
 const MAX_SEGMENTS = 64;
@@ -351,13 +351,18 @@ function inspectSegment(tokens: PermissionTokens, cwd: string, depth: number, bu
   return cwd;
 }
 
-type PermissionTokens = string[] & { redirections?: number[]; redirectionFds?: (string | undefined)[]; bashTestOpenAt?: number; bashTestClosed?: boolean };
+type PermissionTokens = string[] & { redirections?: number[]; redirectionFds?: (string | undefined)[]; bashTestOpenAt?: number; bashTestClosed?: boolean; bashTestProcessSubstitution?: boolean };
 
 function inspectTokenBuffer(tokens: PermissionTokens, cwd: string, depth: number, builder: ScopeBuilder): string {
   if (tokens.length === 0) return cwd;
   builder.segmentCount += 1;
   if (builder.segmentCount > MAX_SEGMENTS) {
     markOpaque(builder, "too_many_segments");
+    return cwd;
+  }
+  if (tokens.bashTestProcessSubstitution) {
+    builder.dynamicScope = true;
+    markOpaque(builder, "unverifiable_process_substitution");
     return cwd;
   }
   const redirections = tokens.redirections;
@@ -467,7 +472,7 @@ function inspectScript(command: string, initialCwd: string, depth: number, build
       tokenStarted = true;
       continue;
     }
-    if (code === 32 || code === 9) {
+    if (code === 32 || code === 9 || (bashDoubleBracket && isBashTestWhitespace(code))) {
       if (tokenStarted) {
         tokens.push(value);
         redirectionTargetPending = false;
@@ -478,7 +483,7 @@ function inspectScript(command: string, initialCwd: string, depth: number, build
       continue;
     }
     if (!bashDoubleBracket && code === 91 && command.charCodeAt(index + 1) === 91 && !tokenStarted
-      && isBashDoubleBracketHead(tokens) && (command.charCodeAt(index + 2) === 32 || command.charCodeAt(index + 2) === 9)) {
+      && isBashDoubleBracketHead(tokens) && isBashTestWhitespace(command.charCodeAt(index + 2))) {
       tokens.bashTestOpenAt = tokens.length;
       value = "[["; tokenStarted = true; bashDoubleBracket = true; index++; continue;
     }
@@ -487,6 +492,7 @@ function inspectScript(command: string, initialCwd: string, depth: number, build
       tokens.bashTestClosed = true;
       value = "]]"; tokenStarted = true; bashDoubleBracket = false; index++; continue;
     }
+    if (bashDoubleBracket && isBashProcessSubstitutionStart(command, index)) tokens.bashTestProcessSubstitution = true;
     const redirectionWidth = bashDoubleBracket ? 0 : shellRedirectionLength(command, index);
     if (redirectionWidth > 0) {
       const sourceFd = !redirectionTargetPending && literalWord && (isShellFileDescriptor(value) || isShellDynamicDescriptor(value)) ? value : undefined;
@@ -510,6 +516,7 @@ function inspectScript(command: string, initialCwd: string, depth: number, build
       if (tokens.redirectionFds) tokens.redirectionFds.length = 0;
       tokens.bashTestOpenAt = undefined;
       tokens.bashTestClosed = undefined;
+      tokens.bashTestProcessSubstitution = undefined;
       literalWord = true;
       value = "";
       tokenStarted = false;

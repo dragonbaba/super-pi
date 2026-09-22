@@ -9,6 +9,17 @@ export function shellRedirectionLength(source: string, index: number): number {
   return next === 38 || next === 124 ? 2 : 1;
 }
 
+/** Bash test keyword and expression separators, including physical newlines. */
+export function isBashTestWhitespace(code: number): boolean {
+  return code === 32 || code === 9 || code === 10 || code === 13;
+}
+
+/** Unquoted `<(` and `>(` start executable process substitutions, not comparisons. */
+export function isBashProcessSubstitutionStart(source: string, index: number): boolean {
+  const code = source.charCodeAt(index);
+  return (code === 60 || code === 62) && source.charCodeAt(index + 1) === 40;
+}
+
 /** `[[` is a Bash keyword only at a command/test head, not an argv word. */
 export function isBashDoubleBracketHead(tokens: readonly string[]): boolean {
   if (tokens.length === 0) return true;

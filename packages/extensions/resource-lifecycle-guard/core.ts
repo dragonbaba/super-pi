@@ -27,7 +27,7 @@ import {
 } from "./regex.ts";
 import { extractCommandSubstitutions, inspectHereDocuments, prepareShellAnalysis } from "./shell-substitution.ts";
 import { parseTimeoutInvocation } from "./timeout-wrapper.ts";
-import { isBashDoubleBracketCloseBoundary, isBashDoubleBracketHead, isShellDynamicDescriptor, isShellFileDescriptor, isShellOutputFileRedirection, isStaticDescriptorCopy, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
+import { isBashDoubleBracketCloseBoundary, isBashDoubleBracketHead, isBashProcessSubstitutionStart, isBashTestWhitespace, isShellDynamicDescriptor, isShellFileDescriptor, isShellOutputFileRedirection, isStaticDescriptorCopy, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
 import { FD_DUPLICATION_PATTERN } from "./regex.ts";
 import { diagnosticForPrimitives, policyMetadata, renderPolicyDiagnostic, type PolicyDiagnosticMetadata } from "./policy-diagnostics.ts";
 
@@ -133,6 +133,7 @@ function inspectLifecycleScript(source: string, depth: number, nativePowerShellA
  const segments = parseShellSegments(command);
  if (segments.length > MAX_SCRIPT_SEGMENTS) return lifecycleRefusal("SHELL_INSPECTION_LIMIT", "too many command segments", "reduce the number of segments");
  for (const tokens of segments) {
+  if (tokens.bashTestProcessSubstitution) return lifecycleRefusal("SHELL_UNINSPECTABLE", "process substitution inside a Bash test cannot be safely inspected", "split the process substitution into separately inspectable commands");
   // The global filter is only an optimization; unrelated segments supply no
   // shell/evaluator evidence. No closure or reconstructed segment string.
   let shellText = false;
@@ -235,7 +236,7 @@ export interface HighRiskMutationScan {
 	diagnostic?: PolicyDiagnosticMetadata;
 }
 
-type ShellSegment = string[] & { dynamic?: boolean; expansions?: number[]; redirections?: number[]; redirectionFds?: (string | undefined)[]; subshellDepth?: number; pipelineMember?: boolean; conditionalMember?: boolean; separatorAfter?: string; bashTestOpenAt?: number; bashTestClosed?: boolean };
+type ShellSegment = string[] & { dynamic?: boolean; expansions?: number[]; redirections?: number[]; redirectionFds?: (string | undefined)[]; subshellDepth?: number; pipelineMember?: boolean; conditionalMember?: boolean; separatorAfter?: string; bashTestOpenAt?: number; bashTestClosed?: boolean; bashTestProcessSubstitution?: boolean };
 
 function uncertainAssignment(tokens: ShellSegment, index: number, shellAssignment = false): boolean {
  const expansion = tokens.expansions?.[index] ?? 0;
@@ -393,6 +394,7 @@ function inspectShellScript(script: string, initialCwd: string, depth: number, b
 		}
 		const tokens = segment;
 		if (tokens.length === 0) continue;
+		if (tokens.bashTestProcessSubstitution) { addPrimitive(builder, "unverifiable_process_substitution"); markUnverifiable(builder); continue; }
 		inspectOutputRedirections(tokens, workingDirectory, builder);
 		const commandIndex = commandTokenIndex(tokens);
 		if (commandIndex < 0 || commandIndex >= tokens.length) continue;
@@ -879,7 +881,7 @@ function parseShellSegments(command: string): ShellSegment[] {
 			tokenStarted = true;
 			continue;
 		}
-		if (code === 32 || code === 9) {
+		if (code === 32 || code === 9 || (bashDoubleBracket && isBashTestWhitespace(code))) {
 			if (tokenStarted) {
 				tokens.push(value);
 				redirectionTargetPending = false;
@@ -890,7 +892,7 @@ function parseShellSegments(command: string): ShellSegment[] {
 			continue;
 		}
 		if (!bashDoubleBracket && code === 91 && command.charCodeAt(index + 1) === 91 && !tokenStarted
-			&& isBashDoubleBracketHead(tokens) && (command.charCodeAt(index + 2) === 32 || command.charCodeAt(index + 2) === 9)) {
+			&& isBashDoubleBracketHead(tokens) && isBashTestWhitespace(command.charCodeAt(index + 2))) {
 			tokens.bashTestOpenAt = tokens.length;
 			value = "[["; tokenStarted = true; bashDoubleBracket = true; index++; continue;
 		}
@@ -899,6 +901,7 @@ function parseShellSegments(command: string): ShellSegment[] {
 			tokens.bashTestClosed = true;
 			value = "]]"; tokenStarted = true; bashDoubleBracket = false; index++; continue;
 		}
+		if (bashDoubleBracket && isBashProcessSubstitutionStart(command, index)) tokens.bashTestProcessSubstitution = true;
 		const redirectionWidth = bashDoubleBracket ? 0 : shellRedirectionLength(command, index);
 		if (redirectionWidth > 0) {
 			const sourceFd = !redirectionTargetPending && literalWord && (isShellFileDescriptor(value) || isShellDynamicDescriptor(value)) ? value : undefined;

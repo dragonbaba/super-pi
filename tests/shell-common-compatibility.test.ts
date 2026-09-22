@@ -140,7 +140,7 @@ test("static descriptor copies preserve bounded file targets and order", () => {
   const compact = inspectHighRiskBashMutation({ command: 'printf out 2>&1>compact.log' }, cwd);
   assert.ok(compact?.targets.some(target => target.endsWith("compact.log")));
   assert.equal(inspectHighRiskBashMutation({ command: 'cat <fixture.bin' }, cwd)?.unverifiableScope, true);
-  for (const command of ["[[ a < b ]]", "[[ b > a ]]", "[[ a < b && c > d ]]"]) {
+  for (const command of ["[[ a < b ]]", "[[ b > a ]]", "[[ a < b && c > d ]]", "[[\na < b\n]]", "[[\na < b\n]] && printf ok"]) {
     assert.notEqual(inspectHighRiskBashMutation({ command }, cwd)?.unverifiableScope, true, command);
     const scope = inspectBashPermissionScope({ command }, cwd);
     assert.equal(scope?.unverifiableScope, false, command);
@@ -148,8 +148,15 @@ test("static descriptor copies preserve bounded file targets and order", () => {
   }
   assert.ok(inspectHighRiskBashMutation({ command: "[[ a < b ]] >.git/config" }, cwd)?.targets.some(target => target.endsWith(".git\\config") || target.endsWith(".git/config")));
   assert.equal(inspectBashPermissionScope({ command: "[[ a < b ]] >.git/config" }, cwd)?.kind, "known-mutation");
+  assert.ok(inspectHighRiskBashMutation({ command: "[[\na < b\n]] >.git/config" }, cwd)?.targets.some(target => target.endsWith(".git\\config") || target.endsWith(".git/config")));
+  assert.equal(inspectBashPermissionScope({ command: "[[\na < b\n]] >.git/config" }, cwd)?.kind, "known-mutation");
   assert.equal(inspectBashPermissionScope({ command: "'[[' a < b ]]" }, cwd)?.unverifiableScope, true);
   assert.equal(inspectBashPermissionScope({ command: "[[ a < b ']]'" }, cwd)?.unverifiableScope, true);
+  for (const command of ["[[ '<(printf data >.git/config)' == literal ]]", '[[ "<(printf data >.git/config)" == literal ]]']) {
+    assert.equal(inspectBashResourceLifecycle({ command }), undefined);
+    assert.equal(inspectHighRiskBashMutation({ command }, cwd), undefined);
+    assert.equal(inspectBashPermissionScope({ command }, cwd)?.kind, "read-only");
+  }
   assert.equal(inspectHighRiskBashMutation({ command: "printf '%s' '2>&1'" }, cwd), undefined);
   assert.ok(inspectHighRiskBashMutation({ command: 'printf "%s" "$(rm -rf synthetic)"' }, cwd)?.primitives.includes("rm_recursive"));
   for (const command of [
@@ -479,6 +486,26 @@ print(struct.unpack_from('<H', d, 0)[0])
     assert.equal(readFileSync(join(fixture, "subdir", "local.log"), "utf8"), "synthetic");
     assert.match((safeChain.content[0] as { text: string }).text, /after/);
     assert.equal(executions, 14);
+    const multilineTest = await agent.dispatchHostTool({ type: "toolCall", id: "multiline-bracket", name: "bash", arguments: {
+      command: "[[\na < b\n]] && printf newline-ok",
+    } });
+    assert.equal(multilineTest.isError, false, JSON.stringify(multilineTest.content));
+    assert.match((multilineTest.content[0] as { text: string }).text, /newline-ok/);
+    assert.equal(executions, 15);
+    for (const [index, command] of [
+      "[[ -e <(printf data >.git/config) ]]",
+      "[[ -e >(printf data >.git/config) ]]",
+      "[[\n-e <(printf data >.git/config)\n]]",
+    ].entries()) {
+      assert.match(inspectBashResourceLifecycle({ command }) ?? "", /SHELL_UNINSPECTABLE/);
+      assert.equal(inspectHighRiskBashMutation({ command }, fixture)?.unverifiableScope, true);
+      assert.equal(inspectBashPermissionScope({ command }, fixture)?.unverifiableScope, true);
+      const result = await agent.dispatchHostTool({ type: "toolCall", id: `process-substitution-${index}`, name: "bash", arguments: { command } });
+      assert.equal(result.isError, true);
+      assert.equal((result.details as any).executionStatus, "not_executed");
+      assert.equal(executions, 15);
+      assert.equal(existsSync(join(fixture, ".git", "config")), false);
+    }
   } finally {
     agent.abort();
     runner.invalidate();
