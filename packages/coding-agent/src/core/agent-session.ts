@@ -498,6 +498,57 @@ interface ToolDefinitionEntry {
 	sourceInfo: SourceInfo;
 }
 
+/** Cold recovery projection. Copies only the reference array, and only if it changes. */
+function omitLengthRecoveryMessages(messages: AgentMessage[], omitted: AgentMessage[]): AgentMessage[] {
+	let projected: AgentMessage[] | undefined;
+	for (let index = 0; index < messages.length; index++) {
+		const message = messages[index];
+		if (omitted.includes(message)) {
+			projected ??= messages.slice(0, index);
+		} else if (projected) projected.push(message);
+	}
+	return projected ?? messages;
+}
+
+/** A length response's tool calls were not executed; keep their synthetic results paired. */
+function lengthRecoveryMessages(entries: SessionEntry[], abandonedIndex: number): AgentMessage[] {
+	const abandoned = entries[abandonedIndex];
+	if (abandoned.type !== "message" || abandoned.message.role !== "assistant") return [];
+	const messages: AgentMessage[] = [abandoned.message];
+	for (let index = abandonedIndex + 1; index < entries.length; index++) {
+		const entry = entries[index];
+		if (entry.type !== "message") continue;
+		const message = entry.message;
+		if (message.role === "assistant" || message.role === "user") break;
+		if (message.role !== "toolResult") continue;
+		for (const content of abandoned.message.content) {
+			if (content.type === "toolCall" && content.id === message.toolCallId) {
+				messages.push(message);
+				break;
+			}
+		}
+	}
+	return messages;
+}
+
+/** Project raw entries and older checkpoint tails without changing durable history. */
+function projectLengthRecoveryEntries(entries: SessionEntry[], omitted: AgentMessage[]): SessionEntry[] {
+	const projected: SessionEntry[] = [];
+	let parentId: string | null = null;
+	for (const entry of entries) {
+		if (entry.type === "message" && omitted.includes(entry.message)) continue;
+		let next = entry;
+		if (entry.type === "compaction" && entry.retainedTail) {
+			const retainedTail = omitLengthRecoveryMessages(entry.retainedTail, omitted);
+			if (retainedTail !== entry.retainedTail) next = { ...entry, retainedTail };
+		}
+		if (next.parentId !== parentId) next = { ...next, parentId };
+		projected.push(next);
+		parentId = next.id;
+	}
+	return projected;
+}
+
 function estimateMessagesTokens(messages: AgentMessage[]): number {
 	let tokens = 0;
 	for (const message of messages) {
@@ -675,7 +726,7 @@ export class AgentSession {
 	private _autoCompactionAbortController: AbortController | undefined = undefined;
 	private _overflowRecoveryAttempted = false;
 	// Only owns primitive identities during one length-recovery continuation.
-	private _pendingLengthRecovery: { sessionId: string; compactionId: string } | undefined;
+	private _pendingLengthRecovery: { sessionId: string; compactionId: string; abandonedEntryId: string } | undefined;
 
 	// Branch summarization state
 	private _branchSummaryAbortController: AbortController | undefined = undefined;
@@ -3448,21 +3499,21 @@ export class AgentSession {
 			if (reason === "threshold" && hasPendingPaidCompactionBoundary(pathEntries, model)) return false;
 			// Exclude only the exact attempt selected by _checkCompaction from the summary.
 			// Its durable fallback tail remains until the recovery continuation succeeds.
-			const abandonedLengthIndex = reason === "overflow" && willRetry && abandonedMessage?.stopReason === "length"
-				? pathEntries.findIndex((entry) => entry.type === "message" && entry.message === abandonedMessage)
-				: -1;
-			const abandonedLength = abandonedLengthIndex >= 0 ? abandonedMessage : undefined;
-			const compactionPathEntries =
-				abandonedLength
-					? [
-						...pathEntries.slice(0, abandonedLengthIndex),
-						...pathEntries.slice(abandonedLengthIndex + 1).map((entry, index) =>
-							index === 0
-								? { ...entry, parentId: pathEntries[abandonedLengthIndex - 1]?.id ?? null }
-								: entry,
-						),
-					]
-					: pathEntries;
+			const pending = this._pendingLengthRecovery;
+			const continuingRecovery = pending?.sessionId === compactionSessionId &&
+				getLatestCompactionEntry(pathEntries)?.id === pending.compactionId;
+			let abandonedLengthIndex = -1;
+			for (let index = 0; index < pathEntries.length; index++) {
+				const entry = pathEntries[index];
+				if (entry.type !== "message" || entry.message.role !== "assistant" || entry.message.stopReason !== "length") continue;
+				if ((continuingRecovery && entry.id === pending.abandonedEntryId) ||
+					(reason === "overflow" && willRetry && entry.message === abandonedMessage)) {
+					abandonedLengthIndex = index;
+					break;
+				}
+			}
+			const omitted = abandonedLengthIndex >= 0 ? lengthRecoveryMessages(pathEntries, abandonedLengthIndex) : undefined;
+			const compactionPathEntries = omitted ? projectLengthRecoveryEntries(pathEntries, omitted) : pathEntries;
 
 			const preparation = prepareCompaction(compactionPathEntries, settings);
 			if (!preparation) {
@@ -3523,7 +3574,7 @@ export class AgentSession {
 			}
 			const mechanicalCompaction =
 				!extensionCompaction && reason === "threshold"
-					? prepareToolResultPruneCheckpoint(pathEntries, contextTokens!, model.contextWindow, settings)
+					? prepareToolResultPruneCheckpoint(compactionPathEntries, contextTokens!, model.contextWindow, settings)
 					: undefined;
 			const providedCompaction = extensionCompaction ?? mechanicalCompaction;
 
@@ -3583,19 +3634,20 @@ export class AgentSession {
 			}
 
 			tokensBefore = preparation.tokensBefore;
-			if (abandonedLength && !retainedTail) {
+			if (omitted && !retainedTail) {
 				// An extension may provide a summary without retainedTail. Preserve the
 				// projected omission boundary explicitly instead of falling back to the
 				// durable path, which still contains the failed response.
 				retainedTail = [];
-				const firstKeptIndex = compactionPathEntries.findIndex((entry) => entry.id === firstKeptEntryId);
-				if (firstKeptIndex >= 0) for (let index = firstKeptIndex; index < compactionPathEntries.length; index++) {
-					retainedTail.push(...sessionEntryToContextMessages(compactionPathEntries[index]));
+				let foundFirstKept = false;
+				for (const entry of compactionPathEntries) {
+					if (entry.id === firstKeptEntryId) foundFirstKept = true;
+					if (foundFirstKept) retainedTail.push(...sessionEntryToContextMessages(entry));
 				}
 			}
-			if (abandonedLength && retainedTail) {
+			if (omitted && retainedTail) {
 				// This copy belongs to the checkpoint; never mutate an extension's array.
-				retainedTail = [...retainedTail, abandonedLength];
+				retainedTail = [...omitLengthRecoveryMessages(retainedTail, omitted), ...omitted];
 			}
 			details = withContextAccounting(
 				details, model, reason, summary, tokensBefore, retainedTail, model.contextWindow, settings,
@@ -3642,6 +3694,16 @@ export class AgentSession {
 				} catch (error) { this._interactionPaused = true; throw error; }
 			} else this._emit({ type: "compaction_end", reason, result, aborted: false, willRetry });
 
+			if (omitted && retainedTail && this.sessionId === compactionSessionId) {
+				// Each newer recovery checkpoint keeps the same failure fallback on disk.
+				// Its live projection stays omitted until final success commits the decision.
+				this.agent.state.messages = omitLengthRecoveryMessages(this.agent.state.messages, omitted);
+				this._rebuildToolResultUiCanonicalIndex();
+				this._pendingLengthRecovery = {
+					sessionId: compactionSessionId, compactionId: savedCompactionId,
+					abandonedEntryId: pathEntries[abandonedLengthIndex].id,
+				};
+			}
 			if (willRetry) {
 				const messages = this.agent.state.messages;
 				const lastMsg = messages[messages.length - 1];
@@ -3652,9 +3714,6 @@ export class AgentSession {
 				if (lastMsg?.role === "assistant" && (lastMsg.stopReason === "error" || lastMsg.stopReason === "length")) {
 					this.agent.state.messages = messages.slice(0, -1);
 					this._rebuildToolResultUiCanonicalIndex();
-				}
-				if (abandonedLength && retainedTail && this.sessionId === compactionSessionId) {
-					this._pendingLengthRecovery = { sessionId: compactionSessionId, compactionId: savedCompactionId };
 				}
 				return true;
 			}

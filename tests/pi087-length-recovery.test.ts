@@ -14,6 +14,7 @@ import { SettingsManager } from "../packages/coding-agent/src/core/settings-mana
 import { getUsageCostBreakdown } from "../packages/coding-agent/src/core/usage-totals.ts";
 
 const SENTINEL = "ABANDONED_LENGTH_SENTINEL";
+function stopAfterLength(turn: { message: AssistantMessage }): boolean { return turn.message.stopReason === "length"; }
 const model: Model<"openai-completions"> = {
 	id: "offline-length", name: "Offline length", provider: "fixture", api: "openai-completions",
 	baseUrl: "https://fixture.invalid/v1", reasoning: false, input: ["text"],
@@ -37,13 +38,25 @@ function toolReply(): Response {
 		headers: { "Content-Type": "text/event-stream" },
 	});
 }
-type Scenario = "success" | "summary-error" | "summary-abort" | "retry-error" | "retry-length" | "retry-abort" | "ordinary-length" | "post-entry" | "extension-tail" | "admission-error" | "admission-abort" | "retry-tool";
+function truncatedToolReply(): Response {
+	const chunk = { id: "offline-truncated-tool", object: "chat.completion.chunk", created: 1, model: model.id,
+		choices: [{ index: 0, delta: { content: SENTINEL, tool_calls: [{ index: 0, id: "abandoned-call", type: "function",
+			function: { name: "inspect_effect", arguments: "{}" } }] }, finish_reason: "length" }],
+		usage: { prompt_tokens: 100, completion_tokens: 10, total_tokens: 110,
+			completion_tokens_details: { reasoning_tokens: 4 } } };
+	return new Response(`data: ${JSON.stringify(chunk)}\n\ndata: [DONE]\n\n`, {
+		headers: { "Content-Type": "text/event-stream" },
+	});
+}
+type Scenario = "success" | "summary-error" | "summary-abort" | "retry-error" | "retry-length" | "retry-abort" | "ordinary-length" | "post-entry" | "extension-tail" | "admission-error" | "admission-abort" | "retry-tool" | "retry-tool-threshold" | "truncated-tool";
 
 async function fixture(scenario: Scenario) {
 	const root = mkdtempSync(join(tmpdir(), "pi087-length-"));
 	const effectPath = join(root, "completed-effect.txt");
 	writeFileSync(effectPath, "1"); // A completed synthetic side effect recorded in the seed history.
-	const settings = SettingsManager.inMemory({ compaction: { enabled: true, keepRecentTokens: 1024, reserveTokens: 128 },
+	const settings = SettingsManager.inMemory({ compaction: { enabled: true,
+		keepRecentTokens: scenario === "retry-tool-threshold" ? 2000 : 1024,
+		reserveTokens: scenario === "retry-tool-threshold" ? 125000 : 128 },
 		retry: { enabled: false } });
 	const resources = new DefaultResourceLoader({ cwd: root, agentDir: root, settingsManager: settings,
 		noExtensions: scenario !== "extension-tail", extensionFactories: scenario === "extension-tail" ? [(pi: any) => {
@@ -76,6 +89,7 @@ async function fixture(scenario: Scenario) {
 	const file = manager.getSessionFile()!;
 	const wires: any[] = [];
 	const summaries: any[] = [];
+	const sessionEvents: string[] = [];
 	let inspections = 0;
 	let session: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
 	const runtime = {
@@ -89,16 +103,20 @@ async function fixture(scenario: Scenario) {
 					const wire = JSON.parse(String(init?.body));
 					if (summary) {
 						summaries.push(wire);
-						assert.ok(summaries.length <= 2, "summary requests remain bounded");
+						assert.ok(summaries.length <= (scenario === "retry-tool-threshold" ? 3 : 2), "summary requests remain bounded");
 						if (scenario === "summary-error") return new Response('{"error":{"message":"synthetic summary failure"}}', { status: 400 });
 						if (scenario === "summary-abort") session!.abortCompaction();
 						return reply("Complete synthetic checkpoint. The recorded effect already happened.");
 					}
 					wires.push(wire);
 					assert.ok(wires.length <= 7, "ordinary requests remain bounded");
-					if (wires.length === 1) return reply(SENTINEL, "length", scenario === "ordinary-length" ? 1024 : 10);
+					if (wires.length === 1) {
+						if (scenario === "truncated-tool") return truncatedToolReply();
+						return reply(SENTINEL, "length", scenario === "ordinary-length" ? 1024 : 10);
+					}
 					if (wires.length === 2) {
 						if (scenario === "retry-tool") return toolReply();
+						if (scenario === "retry-tool-threshold") return toolReply();
 						if (scenario === "retry-error") return reply("RETRY_FAILED_FRAGMENT", "network_error");
 						if (scenario === "retry-length") return reply("RETRY_LENGTH_FRAGMENT", "length");
 						if (scenario === "retry-abort") { void session!.abort(); return reply("RETRY_ABORTED_FRAGMENT"); }
@@ -115,7 +133,8 @@ async function fixture(scenario: Scenario) {
 					return { content: [{ type: "text" as const, text: "EFFECT_ALREADY_COMPLETED" }], details: {} }; },
 			}, {
 				name: "inspect_effect", label: "Inspect effect", description: "Read completed synthetic effect", parameters: Type.Object({}),
-				execute: async () => { inspections++; return { content: [{ type: "text" as const, text: readFileSync(effectPath, "utf8") }], details: {} }; },
+				execute: async () => { inspections++; return { content: [{ type: "text" as const,
+					text: scenario === "retry-tool-threshold" ? "synthetic ".repeat(400) : readFileSync(effectPath, "utf8") }], details: {} }; },
 			}] })).session;
 		if (scenario === "post-entry") {
 			let appended = false;
@@ -126,6 +145,10 @@ async function fixture(scenario: Scenario) {
 				}
 			});
 		}
+		if (scenario === "retry-tool-threshold") session.subscribe(event => {
+			if (event.type === "compaction_end") sessionEvents.push(`${event.reason}:${!!event.result}:${event.errorMessage ?? ""}`);
+		});
+		if (scenario === "truncated-tool") session.agent.shouldStopAfterTurn = stopAfterLength;
 		if (scenario.startsWith("admission-")) session.subscribe(event => {
 			if (event.type === "compaction_end" && event.result && event.willRetry) {
 				if (scenario === "admission-abort") session!.abortCompaction();
@@ -135,7 +158,7 @@ async function fixture(scenario: Scenario) {
 	}
 	await open();
 	return {
-		get session() { return session!; }, get manager() { return manager!; }, get inspections() { return inspections; }, wires, summaries,
+		get session() { return session!; }, get manager() { return manager!; }, get inspections() { return inspections; }, wires, summaries, sessionEvents,
 		async reopen(branch?: string) {
 			session!.dispose(); session = undefined; manager = undefined;
 			manager = SessionManager.open(file); // A new manager parsed from actual JSONL; no in-memory reuse.
@@ -148,6 +171,17 @@ async function fixture(scenario: Scenario) {
 			assert.ok(wire.tools.some((tool: any) => tool.function.name === "record_effect"));
 			assert.ok(wire.messages.some((m: any) => m.tool_calls?.some((c: any) => c.id === "effect-1")));
 			assert.ok(wire.messages.some((m: any) => m.role === "tool" && m.tool_call_id === "effect-1" && m.content.includes("EFFECT_ALREADY_COMPLETED")));
+		},
+		assertNoAbandonedToolResult(wire: any) {
+			assert.equal(wire.messages.some((message: any) => message.role === "tool" && message.tool_call_id === "abandoned-call"), false,
+				"a truncated call cannot leave an orphan tool result");
+		},
+		assertRawTruncatedToolResult() {
+			const entries = readFileSync(file, "utf8").trim().split("\n").map(line => JSON.parse(line));
+			assert.ok(entries.some((entry: any) => entry.type === "message" && entry.message.role === "assistant" &&
+				entry.message.content.some((content: any) => content.type === "toolCall" && content.id === "abandoned-call")));
+			assert.ok(entries.some((entry: any) => entry.type === "message" && entry.message.role === "toolResult" &&
+				entry.message.toolCallId === "abandoned-call"));
 		},
 		assertDurable() {
 			const entries = readFileSync(file, "utf8").trim().split("\n").map(line => JSON.parse(line));
@@ -240,6 +274,7 @@ test("length recovery waits for the real tool continuation before persisting omi
 		assert.equal(f.wires.length, 3);
 		f.assertWire(f.wires[1], true);
 		f.assertWire(f.wires[2], true);
+		f.assertUsage();
 		assert.equal(f.inspections, 1);
 		assert.ok(f.manager.getBranch().some(e => e.type === "message" && e.message.role === "assistant" && e.message.stopReason === "toolUse"));
 		assert.equal(f.manager.getEntries().filter(e => e.type === "compaction").length, 2,
@@ -253,6 +288,40 @@ test("length recovery waits for the real tool continuation before persisting omi
 		f.assertDurable(); f.assertUsage();
 		assert.equal(f.wires.length, 4); assert.equal(f.summaries.length, 1);
 		t.diagnostic("ordinary=4, summary=1; toolUse, tool result, final stop, disk reopen and one inspection verified");
+	} finally { f.close(); }
+});
+
+test("length recovery keeps omission through an intervening threshold compaction", async t => {
+	const f = await fixture("retry-tool-threshold");
+	try {
+		await f.session.prompt("Recover through a threshold compaction before finishing.");
+		t.diagnostic(`threshold wires=${f.wires.length}, summaries=${f.summaries.length}, events=${f.sessionEvents.join("|")}`);
+		assert.equal(f.wires.length, 3);
+		assert.ok(f.sessionEvents.includes("threshold:true:"), "real threshold compaction ran before final stop");
+		f.assertWire(f.wires[1], true);
+		f.assertWire(f.wires[2], true);
+		f.assertUsage();
+		assert.equal(f.manager.getEntries().filter(e => e.type === "compaction").length, 3);
+		assert.equal((f.session as any)._pendingLengthRecovery, undefined);
+		await f.reopen();
+		await f.session.prompt("Disk resumed after the intervening compaction.");
+		f.assertWire(f.wires[3], true);
+		f.assertUsage();
+		t.diagnostic("ordinary=4, summary=2; pending omission followed a prepareNextTurnWithContext threshold compaction");
+	} finally { f.close(); }
+});
+
+test("length recovery removes truncated tool calls and their synthetic results", async t => {
+	const f = await fixture("truncated-tool");
+	try {
+		await f.session.prompt("Recover a truncated tool call.");
+		assert.equal(f.wires.length, 2);
+		f.assertWire(f.wires[1], true);
+		f.assertNoAbandonedToolResult(f.wires[1]);
+		assert.equal(f.inspections, 0);
+		f.assertDurable();
+		f.assertRawTruncatedToolResult();
+		t.diagnostic("ordinary=2, summary=1; truncated assistant call and synthetic result removed from retry context");
 	} finally { f.close(); }
 });
 
