@@ -11,6 +11,7 @@ import { createAgentSession } from "../packages/coding-agent/src/core/sdk.ts";
 import { DefaultResourceLoader } from "../packages/coding-agent/src/core/resource-loader.ts";
 import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
 import { SettingsManager } from "../packages/coding-agent/src/core/settings-manager.ts";
+import { getUsageCostBreakdown } from "../packages/coding-agent/src/core/usage-totals.ts";
 
 const SENTINEL = "ABANDONED_LENGTH_SENTINEL";
 const model: Model<"openai-completions"> = {
@@ -27,7 +28,16 @@ function reply(text: string, finish = "stop", output = 10): Response {
 		headers: { "Content-Type": "text/event-stream" },
 	});
 }
-type Scenario = "success" | "summary-error" | "summary-abort" | "retry-error" | "retry-length" | "retry-abort" | "ordinary-length" | "post-entry" | "extension-tail";
+function toolReply(): Response {
+	const chunk = { id: "offline-tool", object: "chat.completion.chunk", created: 1, model: model.id,
+		choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: "recovery-inspect", type: "function",
+			function: { name: "inspect_effect", arguments: "{}" } }] }, finish_reason: "tool_calls" }],
+		usage: { prompt_tokens: 100, completion_tokens: 10, total_tokens: 110 } };
+	return new Response(`data: ${JSON.stringify(chunk)}\n\ndata: [DONE]\n\n`, {
+		headers: { "Content-Type": "text/event-stream" },
+	});
+}
+type Scenario = "success" | "summary-error" | "summary-abort" | "retry-error" | "retry-length" | "retry-abort" | "ordinary-length" | "post-entry" | "extension-tail" | "admission-error" | "admission-abort" | "retry-tool";
 
 async function fixture(scenario: Scenario) {
 	const root = mkdtempSync(join(tmpdir(), "pi087-length-"));
@@ -39,7 +49,8 @@ async function fixture(scenario: Scenario) {
 		noExtensions: scenario !== "extension-tail", extensionFactories: scenario === "extension-tail" ? [(pi: any) => {
 			pi.on("session_before_compact", (event: any) => ({ compaction: {
 				summary: "Extension checkpoint without a retained tail.",
-				firstKeptEntryId: event.preparation.firstKeptEntryId,
+				firstKeptEntryId: event.branchEntries.find((entry: any) => entry.type === "message" &&
+					entry.message.role === "user" && String(entry.message.content).startsWith("old history 6 ")).id,
 				tokensBefore: event.preparation.tokensBefore,
 			} }));
 		}] : [], noContextFiles: true, noPromptTemplates: true, noSkills: true, noThemes: true,
@@ -65,6 +76,7 @@ async function fixture(scenario: Scenario) {
 	const file = manager.getSessionFile()!;
 	const wires: any[] = [];
 	const summaries: any[] = [];
+	let inspections = 0;
 	let session: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
 	const runtime = {
 		hasConfiguredAuth: () => true, checkAuth: async () => ({ type: "api_key" }),
@@ -86,6 +98,7 @@ async function fixture(scenario: Scenario) {
 					assert.ok(wires.length <= 7, "ordinary requests remain bounded");
 					if (wires.length === 1) return reply(SENTINEL, "length", scenario === "ordinary-length" ? 1024 : 10);
 					if (wires.length === 2) {
+						if (scenario === "retry-tool") return toolReply();
 						if (scenario === "retry-error") return reply("RETRY_FAILED_FRAGMENT", "network_error");
 						if (scenario === "retry-length") return reply("RETRY_LENGTH_FRAGMENT", "length");
 						if (scenario === "retry-abort") { void session!.abort(); return reply("RETRY_ABORTED_FRAGMENT"); }
@@ -96,10 +109,13 @@ async function fixture(scenario: Scenario) {
 	} as unknown as ModelRuntime;
 	async function open() {
 		session = (await createAgentSession({ cwd: root, agentDir: root, model, modelRuntime: runtime, settingsManager: settings,
-			sessionManager: manager!, resourceLoader: resources, tools: ["record_effect"], customTools: [{
+			sessionManager: manager!, resourceLoader: resources, tools: ["record_effect", "inspect_effect"], customTools: [{
 				name: "record_effect", label: "Effect", description: "Synthetic effect", parameters: Type.Object({}),
 				execute: async () => { writeFileSync(effectPath, String(Number(readFileSync(effectPath, "utf8")) + 1));
 					return { content: [{ type: "text" as const, text: "EFFECT_ALREADY_COMPLETED" }], details: {} }; },
+			}, {
+				name: "inspect_effect", label: "Inspect effect", description: "Read completed synthetic effect", parameters: Type.Object({}),
+				execute: async () => { inspections++; return { content: [{ type: "text" as const, text: readFileSync(effectPath, "utf8") }], details: {} }; },
 			}] })).session;
 		if (scenario === "post-entry") {
 			let appended = false;
@@ -110,10 +126,16 @@ async function fixture(scenario: Scenario) {
 				}
 			});
 		}
+		if (scenario.startsWith("admission-")) session.subscribe(event => {
+			if (event.type === "compaction_end" && event.result && event.willRetry) {
+				if (scenario === "admission-abort") session!.abortCompaction();
+				else throw new Error("synthetic critical admission failure");
+			}
+		}, { criticalCompactionEnd: true });
 	}
 	await open();
 	return {
-		get session() { return session!; }, get manager() { return manager!; }, wires, summaries,
+		get session() { return session!; }, get manager() { return manager!; }, get inspections() { return inspections; }, wires, summaries,
 		async reopen(branch?: string) {
 			session!.dispose(); session = undefined; manager = undefined;
 			manager = SessionManager.open(file); // A new manager parsed from actual JSONL; no in-memory reuse.
@@ -138,6 +160,21 @@ async function fixture(scenario: Scenario) {
 			assert.equal(readFileSync(effectPath, "utf8"), "1", "completed effects never replay");
 			return abandoned.id as string;
 		},
+		assertUsage() {
+			const entries = manager!.getEntries();
+			const assistants = entries.filter(e => e.type === "message" && e.message.role === "assistant");
+			const paidSummaries = entries.filter(e => e.type === "compaction" && e.usage);
+			assert.equal(paidSummaries.length, summaries.length, "each paid summary is counted once");
+			const input = assistants.reduce((sum, e: any) => sum + e.message.usage.input, 0) + summaries.length * 100;
+			const output = assistants.reduce((sum, e: any) => sum + e.message.usage.output, 0) + summaries.length * 10;
+			const stats = session!.getSessionStats();
+			assert.equal(stats.tokens.input, input);
+			assert.equal(stats.tokens.output, output);
+			assert.equal(stats.tokens.total, input + output, "reasoning already included in output is not added twice");
+			const breakdown = getUsageCostBreakdown(entries);
+			assert.equal(breakdown.reduce((sum, item) => sum + item.tokens, 0), input + output);
+			assert.ok(Math.abs(stats.cost - (input / 1e6 + output * 2 / 1e6)) < 1e-10);
+		},
 		close() { session?.dispose(); session = undefined; manager = undefined; rmSync(root, { recursive: true, force: true }); },
 	};
 }
@@ -147,6 +184,9 @@ test("length → compaction → retry keeps omission across next wire, disk reop
 	try {
 		await f.session.prompt("Continue the synthetic task.");
 		assert.equal(f.wires.length, 2); assert.equal(f.summaries.length, 1);
+		f.assertUsage();
+		assert.equal(f.manager.getEntries().filter(e => e.type === "compaction").length, 2);
+		assert.equal((f.session as any)._pendingLengthRecovery, undefined);
 		await t.test("A: immediate recovery wire", () => f.assertWire(f.wires[1], true));
 		const recoveredBranch = f.manager.getLeafId()!;
 		const abandonedEntry = f.assertDurable();
@@ -164,13 +204,14 @@ test("length → compaction → retry keeps omission across next wire, disk reop
 		await f.session.prompt("Earlier branch has no future omission decision.");
 		f.assertWire(f.wires[5], false);
 		f.assertDurable();
+		f.assertUsage();
 		assert.equal(f.wires.length, 6); assert.equal(f.summaries.length, 1);
 		t.diagnostic("ordinary=6, summary=1; A/B/C/D plus pre-recovery branch, raw usage and completed effect checked");
 	} finally { f.close(); }
 });
 
 for (const scenario of ["post-entry", "extension-tail"] as const) {
-	test(`length recovery persistence regression: ${scenario}`, async () => {
+	test(`length recovery persistence regression: ${scenario}`, async t => {
 		const f = await fixture(scenario);
 		try {
 			await f.session.prompt("Continue the synthetic task.");
@@ -180,11 +221,42 @@ for (const scenario of ["post-entry", "extension-tail"] as const) {
 			await f.reopen();
 			await f.session.prompt("Resume after the recovery checkpoint.");
 			f.assertWire(f.wires.at(-1), true);
+			if (scenario === "extension-tail") assert.match(JSON.stringify(f.wires.at(-1)), /old history 6 /,
+				"the extension's firstKeptEntryId remains authoritative");
+			f.assertUsage();
+			assert.equal(f.manager.getEntries().filter(e => e.type === "compaction").length, 2);
+			assert.equal((f.session as any)._pendingLengthRecovery, undefined);
+			assert.equal(f.wires.length, 3);
+			assert.equal(f.summaries.length, scenario === "extension-tail" ? 0 : 1);
+			t.diagnostic(`ordinary=${f.wires.length}, summary=${f.summaries.length}; exact omission and usage after disk reopen`);
 		} finally { f.close(); }
 	});
 }
 
-for (const scenario of ["summary-error", "summary-abort", "retry-error", "retry-length", "retry-abort", "ordinary-length"] as const) {
+test("length recovery waits for the real tool continuation before persisting omission", async t => {
+	const f = await fixture("retry-tool");
+	try {
+		await f.session.prompt("Recover, inspect the completed effect, then finish.");
+		assert.equal(f.wires.length, 3);
+		f.assertWire(f.wires[1], true);
+		f.assertWire(f.wires[2], true);
+		assert.equal(f.inspections, 1);
+		assert.ok(f.manager.getBranch().some(e => e.type === "message" && e.message.role === "assistant" && e.message.stopReason === "toolUse"));
+		assert.equal(f.manager.getEntries().filter(e => e.type === "compaction").length, 2,
+			"the successful final stop adds the omission checkpoint after toolUse");
+		assert.equal((f.session as any)._pendingLengthRecovery, undefined);
+		await f.reopen();
+		await f.session.prompt("Disk resumed after recovery through a tool.");
+		f.assertWire(f.wires[3], true);
+		assert.match(JSON.stringify(f.wires[3]), /recovery-inspect/);
+		assert.equal(f.inspections, 1, "neither the completed effect nor the recovery inspection replays");
+		f.assertDurable(); f.assertUsage();
+		assert.equal(f.wires.length, 4); assert.equal(f.summaries.length, 1);
+		t.diagnostic("ordinary=4, summary=1; toolUse, tool result, final stop, disk reopen and one inspection verified");
+	} finally { f.close(); }
+});
+
+for (const scenario of ["summary-error", "summary-abort", "retry-error", "retry-length", "retry-abort", "ordinary-length", "admission-error", "admission-abort"] as const) {
 	test(`length recovery negative boundary: ${scenario}`, async t => {
 		const f = await fixture(scenario);
 		try {
@@ -193,6 +265,7 @@ for (const scenario of ["summary-error", "summary-abort", "retry-error", "retry-
 			assert.equal(f.wires.length, retry ? 2 : 1);
 			assert.equal(f.summaries.length, scenario === "ordinary-length" ? 0 : 1);
 			f.assertDurable();
+			assert.equal((f.session as any)._pendingLengthRecovery, undefined, "settled failure releases recovery identity");
 			await f.reopen();
 			// A new model avoids independently starting a new recovery of the same old attempt.
 			await f.session.setModel({ ...model, id: "negative-boundary-model" });

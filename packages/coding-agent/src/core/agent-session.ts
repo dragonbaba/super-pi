@@ -133,7 +133,7 @@ import type {
 } from "./prefix-manifest.ts";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.ts";
 import type { BranchSummaryEntry, CompactionEntry, SessionEntry, SessionManager } from "./session-manager.ts";
-import { CURRENT_SESSION_VERSION, getLatestCompactionEntry, type SessionHeader } from "./session-manager.ts";
+import { CURRENT_SESSION_VERSION, getLatestCompactionEntry, sessionEntryToContextMessages, type SessionHeader } from "./session-manager.ts";
 import type { SettingsManager } from "./settings-manager.ts";
 import type { SlashCommandInfo } from "./slash-commands.ts";
 import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.ts";
@@ -2246,7 +2246,13 @@ export class AgentSession {
 	}
 
 	private async _handlePostAgentRun(): Promise<boolean> {
-		this._settleLengthRecovery(!this._interactionPaused && this._lastAssistantMessage?.stopReason === "stop");
+		const recoveryStopReason = this._lastAssistantMessage?.stopReason;
+		if (
+			this._interactionPaused || recoveryStopReason === "stop" || recoveryStopReason === "error" ||
+			recoveryStopReason === "length" || recoveryStopReason === "aborted"
+		) {
+			this._settleLengthRecovery(!this._interactionPaused && recoveryStopReason === "stop");
+		}
 		if (this._interactionPaused) { this._lastAssistantMessage = undefined; return false; }
 		const msg = this._lastAssistantMessage;
 		this._lastAssistantMessage = undefined;
@@ -2302,7 +2308,7 @@ export class AgentSession {
 				: checkpoint.details;
 			this.sessionManager.appendCompaction(
 				checkpoint.summary, checkpoint.firstKeptEntryId, checkpoint.tokensBefore,
-				details, checkpoint.fromHook, checkpoint.usage, retainedTail,
+				details, checkpoint.fromHook, undefined, retainedTail,
 			);
 		}
 		// Failure restores the original attempt too, keeping live and disk contexts equal.
@@ -3581,7 +3587,11 @@ export class AgentSession {
 				// An extension may provide a summary without retainedTail. Preserve the
 				// projected omission boundary explicitly instead of falling back to the
 				// durable path, which still contains the failed response.
-				retainedTail = preparation.retainedTail;
+				retainedTail = [];
+				const firstKeptIndex = compactionPathEntries.findIndex((entry) => entry.id === firstKeptEntryId);
+				if (firstKeptIndex >= 0) for (let index = firstKeptIndex; index < compactionPathEntries.length; index++) {
+					retainedTail.push(...sessionEntryToContextMessages(compactionPathEntries[index]));
+				}
 			}
 			if (abandonedLength && retainedTail) {
 				// This copy belongs to the checkpoint; never mutate an extension's array.
