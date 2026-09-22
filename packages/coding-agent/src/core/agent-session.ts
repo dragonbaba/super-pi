@@ -3403,14 +3403,25 @@ export class AgentSession {
 			if (!model) return false;
 			const pathEntries = this.sessionManager.getBranch();
 			if (reason === "threshold" && hasPendingPaidCompactionBoundary(pathEntries, model)) return false;
+			// The retriable overflow response is already removed from agent.state.messages
+			// by _checkCompaction(), but its message_end entry remains durable. Prepare
+			// this compaction from the same projected context as the immediate retry so
+			// retainedTail cannot resurrect the abandoned response after a disk reload.
+			const lastPathEntry = pathEntries[pathEntries.length - 1];
+			const compactionPathEntries =
+				reason === "overflow" && willRetry && lastPathEntry?.type === "message" &&
+				lastPathEntry.message.role === "assistant" &&
+				(lastPathEntry.message.stopReason === "error" || lastPathEntry.message.stopReason === "length")
+					? pathEntries.slice(0, -1)
+					: pathEntries;
 
-			const preparation = prepareCompaction(pathEntries, settings);
+			const preparation = prepareCompaction(compactionPathEntries, settings);
 			if (!preparation) {
 				return false;
 			}
 			const authoritativeTokensBefore = Number.isFinite(contextTokens)
 				? contextTokens!
-				: estimateCompactionAwareContextTokens(pathEntries, this.agent.state.messages, model).tokens;
+				: estimateCompactionAwareContextTokens(compactionPathEntries, this.agent.state.messages, model).tokens;
 			preparation.tokensBefore = authoritativeTokensBefore;
 
 			this._emit({ type: "compaction_start", reason });
@@ -3431,7 +3442,7 @@ export class AgentSession {
 				const extensionResult = (await this._extensionRunner.emit({
 					type: "session_before_compact",
 					preparation,
-					branchEntries: pathEntries,
+					branchEntries: compactionPathEntries,
 					auth,
 					customInstructions: undefined,
 					reason,
@@ -3463,7 +3474,7 @@ export class AgentSession {
 			}
 			const mechanicalCompaction =
 				!extensionCompaction && reason === "threshold"
-					? prepareToolResultPruneCheckpoint(pathEntries, contextTokens!, model.contextWindow, settings)
+					? prepareToolResultPruneCheckpoint(compactionPathEntries, contextTokens!, model.contextWindow, settings)
 					: undefined;
 			const providedCompaction = extensionCompaction ?? mechanicalCompaction;
 
