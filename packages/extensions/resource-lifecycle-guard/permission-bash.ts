@@ -382,6 +382,10 @@ function inspectScript(command: string, initialCwd: string, depth: number, build
     markOpaque(builder, "command_substitution_depth");
     return;
   }
+  if (hasAmbiguousBashCwd(command)) {
+    markOpaque(builder, "unverifiable_working_directory");
+    return;
+  }
   const analysis = prepareShellAnalysis(command);
   if (analysis.hasHeredoc) markOpaque(builder, "heredoc_uninspectable");
   if (analysis.uncertain) markOpaque(builder, "shell_context_uninspectable");
@@ -524,10 +528,6 @@ export function inspectBashPermissionScope(input: unknown, cwd: string): BashPer
   };
   if (command.length > MAX_COMMAND_CHARS) {
     markOpaque(builder, "oversized_command");
-    return publicScope(builder);
-  }
-  if (hasAmbiguousBashCwd(command)) {
-    markOpaque(builder, "unverifiable_working_directory");
     return publicScope(builder);
   }
   inspectScript(command, resolve(cwd), 0, builder);

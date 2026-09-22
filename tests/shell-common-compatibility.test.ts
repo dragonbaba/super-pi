@@ -19,6 +19,7 @@ import { ToolExecutionComponent } from "../packages/coding-agent/src/modes/inter
 import { createJiti } from "jiti";
 import { inspectBashResourceLifecycle, inspectHighRiskBashMutation } from "../packages/extensions/resource-lifecycle-guard/core.ts";
 import { inspectBashPermissionScope } from "../packages/extensions/resource-lifecycle-guard/permission-bash.ts";
+import { classifyError, collectSessionErrors } from "../packages/extensions/session-tool-errors/core.ts";
 
 const cwd = process.cwd();
 
@@ -222,6 +223,30 @@ test("blocked Bash calls preserve custom non-record refusal details", async () =
   }
 });
 
+test("a standalone ripgrep no-match stays an expected empty result after the runtime status prefix", async () => {
+  const fixture = mkdtempSync(join(tmpdir(), "sp-shell-rg-empty-"));
+  const agent = new Agent({ streamFn: () => { throw new Error("offline provider must not be called"); } });
+  agent.state.tools = [createBashTool(fixture, { operations: { async exec() { return { exitCode: 1 }; } } })];
+  try {
+    const command = "rg -n absent fixture.bin";
+    const result = await agent.dispatchHostTool({ type: "toolCall", id: "rg-empty", name: "bash", arguments: { command } });
+    assert.equal(result.isError, true);
+    const text = (result.content[0] as { text: string }).text;
+    assert.match(text, /^\[SHELL_RUNTIME_FAILED\]/);
+    assert.equal(classifyError("bash", text).category, "empty_nonzero_exit");
+    const session = SessionManager.inMemory(fixture);
+    session.appendMessage({ role: "assistant", content: [{ type: "toolCall", id: "rg-empty", name: "bash", arguments: { command } }], stopReason: "toolUse", timestamp: Date.now() } as never);
+    session.appendMessage(result);
+    assert.deepEqual(collectSessionErrors(session.getBranch()), []);
+    session.appendMessage({ role: "assistant", content: [{ type: "toolCall", id: "rg-error", name: "bash", arguments: { command } }], stopReason: "toolUse", timestamp: Date.now() } as never);
+    session.appendMessage({ ...result, toolCallId: "rg-error", content: [{ type: "text", text: "[SHELL_RUNTIME_FAILED] synthetic error\n\nCommand exited with code 1" }] });
+    assert.equal(collectSessionErrors(session.getBranch()).length, 1, "a real ripgrep error must not be suppressed as no-match");
+  } finally {
+    agent.abort();
+    rmSync(fixture, { recursive: true });
+  }
+});
+
 test("real guard, authorization, Bash and tool-result path handle three feedback command shapes", async (t) => {
   const shellPath = findTestBash();
   if (!shellPath || !existsSync(shellPath)) {
@@ -309,11 +334,14 @@ print(struct.unpack_from('<H', d, 0)[0])
     assert.equal(existsSync(join(fixture, ".git")), true);
     for (const [id, command] of [
       ["zero-iteration-cd", "for x in; do cd subdir; done; printf data >.git/config"],
+      ["select-empty-cd", "select x in; do cd subdir; done; printf data >.git/config"],
       ["conditional-cd", "if false; then cd subdir; fi; printf data >.git/config"],
+      ["case-cd", "case no in yes) cd subdir;; esac; printf data >.git/config"],
       ["short-circuit-cd", "false && cd subdir; printf data >.git/config"],
       ["pipeline-group-cd", "{ cd subdir; } | cat; printf data >.git/config"],
       ["pipeline-cd", "cd subdir | cat; printf data >.git/config"],
       ["subshell-cd", "(cd subdir); printf data >.git/config"],
+      ["wrapped-loop-cd", "bash -c 'for x in; do cd subdir; done; printf data >.git/config'"],
     ]) {
       assert.match(inspectBashResourceLifecycle({ command }) ?? "", /SHELL_UNINSPECTABLE/);
       assert.equal(inspectHighRiskBashMutation({ command }, fixture)?.unverifiableScope, true);

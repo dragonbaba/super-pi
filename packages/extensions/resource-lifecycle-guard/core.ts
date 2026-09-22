@@ -275,10 +275,7 @@ export function inspectHighRiskBashMutation(input: unknown, cwd: string): HighRi
 		workspaceWide: false,
 		segmentsVisited: 0,
 	};
-	if (hasAmbiguousBashCwd(command)) {
-		addPrimitive(builder, "unverifiable_working_directory");
-		markUnverifiable(builder);
-	} else inspectShellScript(command, resolve(cwd), 0, builder);
+	inspectShellScript(command, resolve(cwd), 0, builder);
 	if (builder.primitives.length === 0) return undefined;
 	return {
 		risk: "HIGH",
@@ -358,6 +355,11 @@ function inspectShellScript(script: string, initialCwd: string, depth: number, b
 	if (depth > MAX_WRAPPER_DEPTH) {
 		builder.dynamicScope = true;
 		builder.unverifiableScope = true;
+		return;
+	}
+	if (hasAmbiguousBashCwd(script)) {
+		addPrimitive(builder, "unverifiable_working_directory");
+		markUnverifiable(builder);
 		return;
 	}
 	const analysis = prepareShellAnalysis(script);
@@ -721,10 +723,10 @@ export function hasAmbiguousBashCwd(command: string): boolean {
 	for (const tokens of segments) {
 		const first = tokens[0];
 		if (first === "done" && loopDepth > 0) loopDepth--;
-		if (first === "fi" && conditionalDepth > 0) conditionalDepth--;
+		if ((first === "fi" || first === "esac") && conditionalDepth > 0) conditionalDepth--;
 		if (first === "}" && braceDepth > 0) braceDepth--;
-		if (first === "for" || first === "while" || first === "until") loopDepth++;
-		if (first === "if") conditionalDepth++;
+		if (first === "for" || first === "while" || first === "until" || first === "select") loopDepth++;
+		if (first === "if" || first === "case") conditionalDepth++;
 		if (first === "{") braceDepth++;
 		if (loopDepth === 0 && conditionalDepth === 0 && braceDepth === 0 && !tokens.subshellDepth && !tokens.pipelineMember && !tokens.conditionalMember) continue;
 		let index = commandTokenIndex(tokens);
