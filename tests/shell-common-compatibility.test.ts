@@ -169,7 +169,7 @@ test("path and quoted control-word names remain executable commands", () => {
 });
 
 test("printf variable assignment remains stateful through command prefix", () => {
-  for (const command of ["printf -v PATH .; cat", "command printf -v PATH .; cat", "command printf -vPATH .; cat"]) {
+  for (const command of ["printf -v PATH .; cat", "command printf -v PATH .; cat", "command printf -vPATH .; cat", "printf '%n' PATH; cat", "command printf '%1$n' PATH; cat", "printf \"$format\" PATH; cat"]) {
     assert.equal(inspectHighRiskBashMutation({ command }, cwd)?.unverifiableScope, true, command);
     assert.equal(inspectBashPermissionScope({ command }, cwd)?.unverifiableScope, true, command);
   }
@@ -492,7 +492,7 @@ print(struct.unpack_from('<H', d, 0)[0])
     assert.equal(nested.isError, true);
     assert.equal(executions, 6);
     assert.equal(existsSync(join(fixture, ".git")), true);
-    for (const [id, command] of [["path-control", "./for"], ["stateful-command", "command printf -v PATH .; cat"]]) {
+    for (const [id, command] of [["path-control", "./for"], ["stateful-command", "command printf -v PATH .; cat"], ["stateful-format", "printf '%n' PATH; cat"]]) {
       const result = await agent.dispatchHostTool({ type: "toolCall", id, name: "bash", arguments: { command } });
       assert.equal(result.isError, true, command);
       assert.equal((result.details as any).executionStatus, "not_executed", command);

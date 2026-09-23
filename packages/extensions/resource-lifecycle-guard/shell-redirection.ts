@@ -62,10 +62,29 @@ export function isShellFileDescriptor(value: string): boolean {
   return true;
 }
 
-/** Bash printf's -v option assigns a shell variable and can change later lookup. */
-export function hasBashPrintfVariableAssignment(tokens: readonly string[], commandIndex: number): boolean {
-  const option = tokens[commandIndex + 1];
-  return option !== undefined && option.startsWith("-v");
+/** Bash printf can assign variables through -v or a %n conversion. */
+export function hasStatefulBashPrintf(tokens: readonly string[] & { expansions?: readonly number[] }, commandIndex: number): boolean {
+  let formatIndex = commandIndex + 1;
+  const first = tokens[formatIndex];
+  if (first === undefined) return false;
+  if (first.startsWith("-v")) return true;
+  if (first === "--") formatIndex++;
+  const format = tokens[formatIndex];
+  if (format === undefined) return false;
+  if ((tokens.expansions?.[formatIndex] ?? 0) !== 0) return true;
+  for (let index = 0; index < format.length; index++) {
+    if (format.charCodeAt(index) !== 37) continue;
+    if (format.charCodeAt(index + 1) === 37) { index++; continue; }
+    let conversion = index + 1;
+    while (conversion < format.length) {
+      const code = format.charCodeAt(conversion);
+      if ((code >= 48 && code <= 57) || code === 36 || code === 32 || code === 35 || code === 39
+        || code === 42 || code === 43 || code === 45 || code === 46) { conversion++; continue; }
+      break;
+    }
+    if (format.charCodeAt(conversion) === 110) return true;
+  }
+  return false;
 }
 
 /** Query operands may expand simple variables, but operators can mutate Bash state. */
