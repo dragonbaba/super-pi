@@ -953,7 +953,7 @@ export function createShellToolDefinition(
 				const snapshot = await finishOutput();
 				const { text: outputText, details } = formatOutput(snapshot);
 				if (exitCode !== 0 && exitCode !== null) {
-					throw new Error(`[SHELL_RUNTIME_FAILED] ${appendStatus(outputText, `Command exited with code ${exitCode}`)}`);
+					throw new Error(`[SHELL_RUNTIME_FAILED]\n${appendStatus(outputText, `Command exited with code ${exitCode}`)}`);
 				}
 				return { content: [{ type: "text", text: outputText }], details };
 			} finally {

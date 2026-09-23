@@ -72,16 +72,33 @@ export function hasUnsafeCommandQueryOperand(tokens: readonly string[] & { expan
   return false;
 }
 
-/** `[[ -v name[subscript] ]]` evaluates the subscript as arithmetic, even when quoted. */
-export function hasBashTestArraySubscript(tokens: readonly string[] & { bashTestOpenAt?: number; bashTestClosed?: boolean; expansions?: readonly number[] }): boolean {
+/** Bash tests can evaluate arithmetic operands and parameter assignments after quote removal. */
+export function hasUnsafeBashTestOperand(tokens: readonly string[] & { bashTestOpenAt?: number; bashTestClosed?: boolean; expansions?: readonly number[] }): boolean {
   const open = tokens.bashTestOpenAt;
   if (open === undefined || !tokens.bashTestClosed) return false;
-  for (let index = open + 1; index + 1 < tokens.length; index++) {
-    if (tokens[index] !== "-v") continue;
-    const operand = tokens[index + 1]!;
-    if (operand.includes("[") || (tokens.expansions?.[index + 1] ?? 0) !== 0) return true;
+  for (let index = open + 1; index < tokens.length; index++) {
+    const value = tokens[index]!;
+    const flags = tokens.expansions?.[index] ?? 0;
+    if (flags !== 0 && ((flags & 4) !== 0 || !hasOnlySimpleQueryVariables(value))) return true;
+    if (value === "-v" && index + 1 < tokens.length) {
+      if (tokens[index + 1]!.includes("[") || (tokens.expansions?.[index + 1] ?? 0) !== 0) return true;
+    }
+    if (value === "-eq" || value === "-ne" || value === "-lt" || value === "-le" || value === "-gt" || value === "-ge") {
+      if (!isBashIntegerLiteral(tokens[index - 1]) || !isBashIntegerLiteral(tokens[index + 1])) return true;
+    }
   }
   return false;
+}
+
+function isBashIntegerLiteral(value: string | undefined): boolean {
+  if (!value) return false;
+  let index = value.charCodeAt(0) === 45 || value.charCodeAt(0) === 43 ? 1 : 0;
+  if (index === value.length) return false;
+  for (; index < value.length; index++) {
+    const code = value.charCodeAt(index);
+    if (code < 48 || code > 57) return false;
+  }
+  return true;
 }
 
 function hasOnlySimpleQueryVariables(value: string): boolean {

@@ -130,11 +130,22 @@ test("command -v/-V query names and variables without treating them as executabl
   }
 });
 
-test("Bash test array subscripts stay unverifiable even when quoted", () => {
-  const command = "[[ -v 'x[$(printf data >.git/config)]' ]]";
-  assert.match(inspectBashResourceLifecycle({ command }) ?? "", /SHELL_UNINSPECTABLE/);
-  assert.equal(inspectHighRiskBashMutation({ command }, cwd)?.unverifiableScope, true);
-  assert.equal(inspectBashPermissionScope({ command }, cwd)?.unverifiableScope, true);
+test("Bash test arithmetic and state-changing operands stay unverifiable", () => {
+  for (const command of [
+    "[[ -v 'x[$(printf data >.git/config)]' ]]",
+    "[[ -v 'x[CDPATH=1]' ]]",
+    "[[ -n ${CDPATH:=..} ]]; cd synthetic; printf data >.git/config",
+    ...["-eq", "-ne", "-lt", "-le", "-gt", "-ge"].map(operator => `[[ 0 ${operator} 'x[$(printf data >.git/config)]' ]]`),
+  ]) {
+    assert.match(inspectBashResourceLifecycle({ command }) ?? "", /SHELL_UNINSPECTABLE/, command);
+    assert.equal(inspectHighRiskBashMutation({ command }, cwd)?.unverifiableScope, true, command);
+    assert.equal(inspectBashPermissionScope({ command }, cwd)?.unverifiableScope, true, command);
+  }
+  for (const command of ["[[ 1 -eq 1 ]]", '[[ -n "$candidate" ]]']) {
+    assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
+    assert.equal(inspectHighRiskBashMutation({ command }, cwd), undefined, command);
+    assert.equal(inspectBashPermissionScope({ command }, cwd)?.kind, "read-only", command);
+  }
   const quotedData = "[[ foo == 'x[$(printf data >.git/config)]' ]]";
   assert.equal(inspectBashResourceLifecycle({ command: quotedData }), undefined);
   assert.equal(inspectHighRiskBashMutation({ command: quotedData }, cwd), undefined);
@@ -316,6 +327,19 @@ test("a standalone ripgrep no-match stays an expected empty result after the run
     agent.abort();
     rmSync(fixture, { recursive: true });
   }
+});
+
+test("runtime status keeps a leading script exception visible to error classification", async () => {
+  const agent = new Agent({ streamFn: () => { throw new Error("offline provider must not be called"); } });
+  agent.state.tools = [createBashTool(cwd, { operations: {
+    async exec(_command, _cwd, options) { options.onData(Buffer.from("TypeError: synthetic\n")); return { exitCode: 1 }; },
+  } })];
+  try {
+    const result = await agent.dispatchHostTool({ type: "toolCall", id: "script-runtime", name: "bash", arguments: { command: "printf synthetic" } });
+    assert.equal(result.isError, true);
+    assert.match((result.content[0] as { text: string }).text, /^\[SHELL_RUNTIME_FAILED\]\nTypeError: synthetic/);
+    assert.equal(classifyError("bash", (result.content[0] as { text: string }).text).category, "script_runtime_error");
+  } finally { agent.abort(); }
 });
 
 test("real guard, authorization, Bash and tool-result path handle three feedback command shapes", async (t) => {
@@ -554,6 +578,8 @@ print(struct.unpack_from('<H', d, 0)[0])
       "[[ -e >(printf data >.git/config) ]]",
       "[[\n-e <(printf data >.git/config)\n]]",
       "[[ -v 'x[$(printf data >.git/config)]' ]]",
+      "[[ 0 -eq 'x[$(printf data >.git/config)]' ]]",
+      "[[ -n ${CDPATH:=..} ]]; cd " + basename(fixture) + "; printf data >.git/config",
     ].entries()) {
       assert.match(inspectBashResourceLifecycle({ command }) ?? "", /SHELL_UNINSPECTABLE/);
       assert.equal(inspectHighRiskBashMutation({ command }, fixture)?.unverifiableScope, true);
