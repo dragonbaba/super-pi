@@ -38,6 +38,13 @@ const SESSION_ENVIRONMENT_KEYS = new Set([
 	"SP_MODEL",
 	"SP_REASONING_LEVEL",
 ]);
+// Inherited values that change `cd` resolution or run startup code invisibly
+// to command inspection. A spawn hook may still set them deliberately.
+const SHELL_SEMANTIC_ENVIRONMENT_KEYS = new Set(["CDPATH", "BASHOPTS", "SHELLOPTS", "BASH_ENV", "ENV"]);
+
+function isShellSemanticEnvironmentKey(key: string): boolean {
+	return SHELL_SEMANTIC_ENVIRONMENT_KEYS.has(key) || key.startsWith("BASH_FUNC_");
+}
 
 function resolveTimeoutMs(timeout: number | undefined): number | undefined {
 	if (timeout === undefined) return undefined;
@@ -199,7 +206,7 @@ function resolveSpawnContext(
 	const shellEnvKeys = Object.keys(shellEnv);
 	for (let index = 0; index < shellEnvKeys.length; index++) {
 		const key = shellEnvKeys[index]!;
-		if (!SESSION_ENVIRONMENT_KEYS.has(key)) setOwnProperty(env, key, shellEnv[key]);
+		if (!SESSION_ENVIRONMENT_KEYS.has(key) && !isShellSemanticEnvironmentKey(key)) setOwnProperty(env, key, shellEnv[key]);
 	}
 	if (exposeSessionEnvironment && ctx) {
 		const model = ctx.model;

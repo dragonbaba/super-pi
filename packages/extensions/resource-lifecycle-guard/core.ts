@@ -788,6 +788,11 @@ function afterLeadingRedirection(tokens: ShellSegment, index: number): number {
 	return index;
 }
 
+function skipRedirections(tokens: ShellSegment, index: number): number {
+	for (let after = afterLeadingRedirection(tokens, index); after !== index; after = afterLeadingRedirection(tokens, index)) index = after;
+	return index;
+}
+
 /** A local/conditional cd cannot establish one reliable cwd for later targets. */
 export function hasAmbiguousBashCwd(command: string): boolean {
 	const segments = parseShellSegments(command);
@@ -833,14 +838,18 @@ export function hasAmbiguousBashCwd(command: string): boolean {
 		if (name === "pushd" || name === "popd") return true;
 		if (changesBashCdSemantics(tokens, index, name)) { cdSemanticsChanged = true; continue; }
 		if (name === "cd") {
-			const target = tokens[index + 1];
+			// Redirections may surround the operand; Bash rejects a second operand
+			// (`cd: too many arguments`) and stays in the original directory.
+			const operandIndex = skipRedirections(tokens, index + 1);
+			const target = tokens[operandIndex];
 			if (leadingAssignment || builtinPrefixes > 0 || cdSemanticsChanged
-				|| !target || target.startsWith("-") || hasDynamicSyntax(target)) return true;
+				|| !target || target.startsWith("-") || hasDynamicSyntax(target)
+				|| skipRedirections(tokens, operandIndex + 1) < tokens.length) return true;
 			// A failed redirection skips cd; later commands must then depend on its success or be read-only.
 			if (simpleSegment && (!hasFallibleRedirection(tokens) || hasOnlyReadOnlyConditionalTail(segments, segmentIndex))) continue;
 			// A literal `cd .` leaves relative targets at the same path whether it
 			// succeeds or fails; other conditional cd targets can change the cwd.
-			if (tokens[index + 1] === "." && tokens.length === index + 2) continue;
+			if (target === ".") continue;
 			if (controlIndex > 0) return true;
 			// The RHS of `cd path && ...` only runs after a successful cd. A later
 			// independent command is safe only when its effects are provably read-only.

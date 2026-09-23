@@ -310,6 +310,18 @@ test("a fallible redirection on cd cannot authorize the requested cwd for an ind
   }
 });
 
+test("cd with extra operands cannot authorize the requested cwd", () => {
+  for (const command of ["cd sub extra; printf data >.git/config", "cd sub 2>/dev/null extra; printf data >.git/config", "cd sub extra && printf data >.git/config", "cd . extra; printf data >.git/config"]) {
+    assert.match(inspectBashResourceLifecycle({ command }) ?? "", /SHELL_UNINSPECTABLE/, command);
+    assert.equal(inspectHighRiskBashMutation({ command }, cwd)?.unverifiableScope, true, command);
+    assert.equal(inspectBashPermissionScope({ command }, cwd)?.unverifiableScope, true, command);
+  }
+  for (const command of ["cd 2>/dev/null sub; printf data >.git/config", "cd sub 2>/dev/null; printf data >.git/config"]) {
+    assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
+    assert.ok(inspectHighRiskBashMutation({ command }, cwd)?.targets.some(target => target.endsWith("sub\\.git\\config") || target.endsWith("sub/.git/config")), command);
+  }
+});
+
 test("prompt transformations and PS4 loop values cannot run hidden command substitutions", () => {
   for (const command of [
     "for X in '$(printf data >.git/config)'; do echo \"${X@P}\"; done",
@@ -582,6 +594,59 @@ test("an invalid timeout is classified as a start failure before shell discovery
   } finally {
     agent.abort();
     rmSync(fixture, { recursive: true });
+  }
+});
+
+test("inherited cd-semantic and startup variables do not reach the spawned shell", async () => {
+  const fixture = mkdtempSync(join(tmpdir(), "sp-shell-env-"));
+  const keys = ["CDPATH", "BASHOPTS", "SHELLOPTS", "BASH_ENV", "ENV", "BASH_FUNC_cd%%"];
+  const original = new Map(keys.map(key => [key, process.env[key]]));
+  for (const key of keys) process.env[key] = key === "BASH_FUNC_cd%%" ? "() { :; }" : "inherited";
+  const captured: NodeJS.ProcessEnv[] = [];
+  const agent = new Agent({ streamFn: () => { throw new Error("offline provider must not be called"); } });
+  const operations = { exec: async (_command: string, _cwd: string, options: { env?: NodeJS.ProcessEnv }) => { captured.push(options.env ?? {}); return { exitCode: 0 }; } };
+  try {
+    agent.state.tools = [createBashTool(fixture, { operations })];
+    await agent.dispatchHostTool({ type: "toolCall", id: "bash-env", name: "bash", arguments: { command: "printf synthetic" } });
+    for (const key of keys) assert.equal(Object.hasOwn(captured[0]!, key), false, key);
+    assert.ok(captured[0]!.PATH ?? captured[0]!.Path, "ordinary inherited variables are kept");
+    agent.state.tools = [createBashTool(fixture, { operations, spawnHook: context => ({ ...context, env: { ...context.env, CDPATH: "hooked" } }) })];
+    await agent.dispatchHostTool({ type: "toolCall", id: "bash-env-hook", name: "bash", arguments: { command: "printf synthetic" } });
+    assert.equal(captured[1]!.CDPATH, "hooked", "a spawn hook may still set the value deliberately");
+  } finally {
+    agent.abort();
+    for (const [key, value] of original) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    rmSync(fixture, { recursive: true });
+  }
+});
+
+test("an inherited CDPATH cannot move a scanned cd in real Bash", async (t) => {
+  const shellPath = findTestBash();
+  if (!shellPath || !existsSync(shellPath)) {
+    if (process.env.CI) assert.fail("Required Bash integration test could not find Git Bash or /bin/bash");
+    t.skip("Bash unavailable");
+    return;
+  }
+  const parent = mkdtempSync(join(tmpdir(), "sp-shell-inherited-cdpath-"));
+  const nested = join(parent, "workspace", "nested");
+  mkdirSync(join(nested, "workspace"), { recursive: true });
+  const originalCdpath = process.env.CDPATH;
+  process.env.CDPATH = "../..";
+  const agent = new Agent({ streamFn: () => { throw new Error("offline provider must not be called"); } });
+  agent.state.tools = [createBashTool(nested, { operations: createLocalBashOperations({ shellPath }) })];
+  try {
+    const result = await agent.dispatchHostTool({ type: "toolCall", id: "bash-cdpath", name: "bash", arguments: { command: "cd workspace && printf marker >marker.txt" } });
+    assert.equal(result.isError, false, (result.content[0] as { text: string }).text);
+    assert.equal(readFileSync(join(nested, "workspace", "marker.txt"), "utf8"), "marker");
+    assert.equal(existsSync(join(parent, "workspace", "marker.txt")), false);
+  } finally {
+    agent.abort();
+    if (originalCdpath === undefined) delete process.env.CDPATH;
+    else process.env.CDPATH = originalCdpath;
+    rmSync(parent, { recursive: true });
   }
 });
 
