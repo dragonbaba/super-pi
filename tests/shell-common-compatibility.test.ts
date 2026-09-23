@@ -336,6 +336,25 @@ test("cd guarded by || exit keeps the requested cwd for the rest of the script",
   }
 });
 
+test("only the bare unlaunched cd builtin moves the scanned cwd", () => {
+  const root = (target: string) => target.endsWith("ws\\.git\\config") || target.endsWith("ws/.git/config");
+  const workspace = "D:/ws";
+  // External programs named cd cannot change this shell's directory, so writes stay at the original cwd.
+  for (const command of ["./cd sub; printf data >.git/config", "/opt/tools/cd sub; printf data >.git/config", "CD sub; printf data >.git/config",
+    "env cd sub; printf data >.git/config", "sudo cd sub; printf data >.git/config", "timeout 5 cd sub; printf data >.git/config"]) {
+    assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
+    assert.deepEqual(inspectHighRiskBashMutation({ command }, workspace)?.targets.filter(target => target.endsWith("config")).map(root), [true], command);
+    assert.ok(inspectBashPermissionScope({ command }, workspace)?.targets.some(root), command);
+    assert.equal(inspectBashPermissionScope({ command }, workspace)?.targets.some(target => /sub[\\/]\.git/.test(target)), false, command);
+  }
+  for (const command of ["./cd subdir && printf ok", "./pushd sub; printf ok", "./enable -n cd; cd sub; printf ok"]) {
+    assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
+  }
+  for (const command of ["cd sub; printf data >.git/config", "'cd' sub; printf data >.git/config"]) {
+    assert.ok(inspectHighRiskBashMutation({ command }, workspace)?.targets.some(target => /sub[\\/]\.git[\\/]config$/.test(target)), command);
+  }
+});
+
 test("cd with extra operands cannot authorize the requested cwd", () => {
   for (const command of ["cd sub extra; printf data >.git/config", "cd sub 2>/dev/null extra; printf data >.git/config", "cd sub extra && printf data >.git/config", "cd . extra; printf data >.git/config"]) {
     assert.match(inspectBashResourceLifecycle({ command }) ?? "", /SHELL_UNINSPECTABLE/, command);
@@ -485,6 +504,43 @@ test("static descriptor and input-file redirections preserve bounded targets and
     "if true; then printf '%s' 'cd'; fi",
     "printf '%s' 'cd' | cat",
   ]) assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
+});
+
+test("stale owned Bash and PowerShell spills are reclaimed while unowned or recent files stay", () => {
+  const directory = mkdtempSync(join(tmpdir(), "sp-spill-cleanup-"));
+  const old = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
+  const write = (name: string, owned: boolean, stale: boolean) => {
+    const path = join(directory, name);
+    writeFileSync(path, "synthetic spill");
+    if (owned) writeFileSync(path + ".sp-owned", "super-pi-output-spill-v2\n");
+    if (stale) {
+      fs.utimesSync(path, old, old);
+      if (owned) fs.utimesSync(path + ".sp-owned", old, old);
+    }
+    return path;
+  };
+  const reclaimed = [write("sp-powershell-stale.log", true, true), write("sp-bash-stale.log", true, true)];
+  const kept = [write("sp-powershell-unowned.log", false, true), write("sp-powershell-recent.log", true, false), write("sp-other-stale.log", true, true)];
+  try {
+    // Cleanup runs once per process on the first spill, so use a fresh process with this temp directory.
+    const accumulator = new URL("../packages/coding-agent/src/core/tools/output-accumulator.ts", import.meta.url).href;
+    const script = `const { OutputAccumulator } = await import(${JSON.stringify(accumulator)});
+const output = new OutputAccumulator({ tempFilePrefix: "sp-spill-cleanup-trigger" });
+output.append(Buffer.alloc(64 * 1024, 0x61));
+output.snapshot({ persistIfTruncated: true });
+await output.discardTempFile();`;
+    execFileSync(process.execPath, ["--experimental-strip-types", "--input-type=module", "-e", script], {
+      env: { ...process.env, TMP: directory, TEMP: directory, TMPDIR: directory },
+      stdio: "pipe",
+    });
+    for (const path of reclaimed) {
+      assert.equal(existsSync(path), false, path);
+      assert.equal(existsSync(path + ".sp-owned"), false, path);
+    }
+    for (const path of kept) assert.equal(existsSync(path), true, path);
+  } finally {
+    rmSync(directory, { recursive: true });
+  }
 });
 
 test("asynchronous spill write failure releases only its owned file", async () => {

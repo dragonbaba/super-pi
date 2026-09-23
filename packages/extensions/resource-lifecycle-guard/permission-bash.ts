@@ -304,6 +304,8 @@ function inspectSegment(tokens: PermissionTokens, cwd: string, depth: number, bu
     }
     return inspectSegment(tokens, cwd, depth + 1, builder, index + 1);
   }
+  // A launched `cd` (`env cd`, `sudo cd`) is an external program and cannot move this shell.
+  if (command === "cd" && index !== start) return cwd;
   if (command === "cd") {
     const target = tokens[index + 1];
     if (!target || hasDynamicSyntax(target)) {

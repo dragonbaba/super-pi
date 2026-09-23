@@ -413,7 +413,8 @@ function inspectShellScript(script: string, initialCwd: string, depth: number, b
 		const executableIndex = tokens[commandIndex] === "do" || tokens[commandIndex] === "{" ? commandIndex + 1 : commandIndex;
 		if (executableIndex >= tokens.length) continue;
 		const command = commandName(tokens[executableIndex]!);
-		if (command === "cd") {
+		// Only the bare, unlaunched builtin changes this shell's cwd; `./cd` or `env cd` cannot.
+		if (tokens[executableIndex] === "cd" && commandIndex === 0) {
 			const target = tokens[executableIndex + 1];
 			if (!target || hasDynamicSyntax(target)) {
 				builder.dynamicScope = true;
@@ -827,6 +828,8 @@ export function hasAmbiguousBashCwd(command: string): boolean {
 			&& !tokens.subshellDepth && !tokens.pipelineMember && !tokens.conditionalMember && controlIndex === 0;
 		let index = commandTokenIndex(tokens);
 		if (index < 0) continue;
+		// A launcher such as `env` or `sudo` runs an external program, never a shell builtin.
+		const launched = index > 0;
 		if (tokens[index] === "do" || tokens[index] === "{" || tokens[index] === "then" || tokens[index] === "else") index++;
 		index = skipBashReservedPrefixes(tokens, index);
 		if (index < 0) return true;
@@ -845,7 +848,8 @@ export function hasAmbiguousBashCwd(command: string): boolean {
 			}
 			break;
 		}
-		const name = commandName(tokens[index] ?? "");
+		// Builtins are exact bare words: `./cd`, `/opt/cd` and `CD` are external executables.
+		const name = launched ? "" : tokens[index] ?? "";
 		// The scans track only a direct literal `cd`; directory stacks are not followed.
 		if (name === "pushd" || name === "popd") return true;
 		if (changesBashCdSemantics(tokens, index, name)) { cdSemanticsChanged = true; continue; }

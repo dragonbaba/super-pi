@@ -64,7 +64,8 @@ function cleanupOldSpillFiles(): void {
 			if (!name.endsWith(SPILL_OWNER_SUFFIX)) continue;
 			const ownerPath = join(directory, name);
 			const spillName = name.slice(0, -SPILL_OWNER_SUFFIX.length);
-			if (!(spillName.startsWith("sp-bash-") || spillName.startsWith("sp-output-")) || !spillName.endsWith(".log")) continue;
+			if (!(spillName.startsWith("sp-bash-") || spillName.startsWith("sp-powershell-") || spillName.startsWith("sp-output-"))
+				|| !spillName.endsWith(".log")) continue;
 			const spillPath = join(directory, spillName);
 			try {
 				const ownerInfo = lstatSync(ownerPath);
