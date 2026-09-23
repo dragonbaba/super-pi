@@ -3,7 +3,7 @@ import { basename, resolve } from "node:path";
 import { hasAmbiguousBashCwd } from "./core.ts";
 import { extractCommandSubstitutions, prepareShellAnalysis } from "./shell-substitution.ts";
 import { parseTimeoutInvocation } from "./timeout-wrapper.ts";
-import { hasStatefulBashPrintf, hasUnsafeBashTestOperand, hasUnsafeCommandQueryOperand, isBashDoubleBracketCloseBoundary, isBashDoubleBracketHead, isBashProcessSubstitutionStart, isBashTestWhitespace, isShellDynamicDescriptor, isShellFileDescriptor, isShellOutputFileRedirection, isSimpleBashAnsiCQuote, isStaticDescriptorCopy, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
+import { hasLookupSensitiveBashForHeader, hasStatefulBashPrintf, hasUnsafeBashTestOperand, hasUnsafeCommandQueryOperand, isBashDoubleBracketCloseBoundary, isBashDoubleBracketHead, isBashProcessSubstitutionStart, isBashTestWhitespace, isShellDynamicDescriptor, isShellFileDescriptor, isShellOutputFileRedirection, isSimpleBashAnsiCQuote, isStaticDescriptorCopy, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
 
 const MAX_COMMAND_CHARS = 128 * 1024;
 const MAX_SEGMENTS = 64;
@@ -320,6 +320,11 @@ function inspectSegment(tokens: PermissionTokens, cwd: string, depth: number, bu
     addClass(builder, "read:bash-test");
     return cwd;
   }
+  if (tokens[index] === "!" && index === 0 && !tokens.firstWordQuoted && tokens.bashTestOpenAt === index + 1
+    && tokens[index + 1] === "[[" && tokens.bashTestClosed) {
+    addClass(builder, "read:bash-test");
+    return cwd;
+  }
   if (tokens[index] === "time" && !tokens.firstWordQuoted && tokens.bashTestClosed
     && tokens.bashTestOpenAt === (tokens[index + 1] === "-p" && !tokens.secondWordQuoted ? index + 2 : index + 1)
     && tokens[tokens.bashTestOpenAt] === "[[") {
@@ -385,6 +390,7 @@ function inspectTokenBuffer(tokens: PermissionTokens, cwd: string, depth: number
     markOpaque(builder, "unverifiable_process_substitution");
     return cwd;
   }
+  if (hasLookupSensitiveBashForHeader(tokens)) markOpaque(builder, "stateful_loop_variable_assignment");
   if (hasUnsafeBashTestOperand(tokens)) markOpaque(builder, "unverifiable_bash_test_operand");
   const redirections = tokens.redirections;
   if (redirections) {

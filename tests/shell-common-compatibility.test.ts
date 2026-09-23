@@ -168,6 +168,40 @@ test("path and quoted control-word names remain executable commands", () => {
   assert.equal(inspectBashPermissionScope({ command: "for t in cat; do command -v $t; done" }, cwd)?.unverifiableScope, false);
 });
 
+test("lookup-sensitive Bash for variables cannot make later command lookup read-only", () => {
+  for (const command of [
+    "for PATH in .; do printf ok; done; cat",
+    "! for PATH in .; do printf ok; done; cat",
+    "time for PATH in .; do printf ok; done; cat",
+    "time -p for PATH in .; do printf ok; done; cat",
+    "for BASH_ENV in ./profile; do printf ok; done; bash -c 'printf ok'",
+  ]) {
+    assert.match(inspectBashResourceLifecycle({ command }) ?? "", /SHELL_UNINSPECTABLE/, command);
+    const high = inspectHighRiskBashMutation({ command }, cwd);
+    assert.equal(high?.unverifiableScope, true, command);
+    assert.ok(high?.primitives.includes("stateful_loop_variable_assignment"), command);
+    assert.equal(inspectBashPermissionScope({ command }, cwd)?.unverifiableScope, true, command);
+  }
+  const ordinary = "for candidate in printf cat; do command -v $candidate; done";
+  assert.equal(inspectBashResourceLifecycle({ command: ordinary }), undefined);
+  assert.equal(inspectHighRiskBashMutation({ command: ordinary }, cwd), undefined);
+  assert.equal(inspectBashPermissionScope({ command: ordinary }, cwd)?.kind, "read-only");
+  assert.equal(inspectHighRiskBashMutation({ command: "printf '%s' 'for PATH in .'" }, cwd), undefined);
+});
+
+test("negated Bash string comparisons remain read-only", () => {
+  for (const command of ["! [[ a < b ]]", "! [[ b > a ]]", "! [[ a < b ]] && printf ok"]) {
+    assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
+    assert.equal(inspectHighRiskBashMutation({ command }, cwd), undefined, command);
+    assert.equal(inspectBashPermissionScope({ command }, cwd)?.kind, "read-only", command);
+  }
+  const redirected = "! [[ a < b ]] >.git/config";
+  assert.ok(inspectHighRiskBashMutation({ command: redirected }, cwd)?.targets.some(target => target.endsWith("config")));
+  assert.equal(inspectBashPermissionScope({ command: redirected }, cwd)?.kind, "known-mutation");
+  assert.match(inspectBashResourceLifecycle({ command: "! [[ -v 'x[CDPATH=1]' ]]" }) ?? "", /SHELL_UNINSPECTABLE/);
+  assert.equal(inspectBashPermissionScope({ command: "! '[[' a b ]]" }, cwd)?.unverifiableScope, true);
+});
+
 test("printf variable assignment remains stateful through command prefix", () => {
   for (const command of ["printf -v PATH .; cat", "command printf -v PATH .; cat", "command printf -vPATH .; cat", "printf '%n' PATH; cat", "command printf '%1$n' PATH; cat", "printf \"$format\" PATH; cat"]) {
     assert.equal(inspectHighRiskBashMutation({ command }, cwd)?.unverifiableScope, true, command);
@@ -544,6 +578,7 @@ print(struct.unpack_from('<H', d, 0)[0])
       ["failed-left-command-write", "cd missing-synthetic && :; command printf data >.git/config"],
       ["failed-left-printf-v", "cd missing-synthetic && echo; command printf -v PATH .; cat"],
       ["failed-left-printf-n", "cd missing-synthetic && echo; command printf '%n' PATH; cat"],
+      ["loop-path-lookup", "for PATH in .; do printf ok; done; cat"],
       ["subshell-list-separator", "cd missing-synthetic && ( echo x ); printf data >.git/config"],
       ["subshell-or-separator", "cd missing-synthetic && ( echo x ) || printf data >.git/config"],
       ["query-cdpath", "command -v ${CDPATH:=..}; cd " + basename(fixture) + "; printf data >.git/config"],
@@ -649,6 +684,10 @@ print(struct.unpack_from('<H', d, 0)[0])
     assert.equal(bracketWrite.isError, true, JSON.stringify(bracketWrite));
     assert.equal(executions, 13);
     assert.equal(existsSync(join(fixture, ".git", "config")), false);
+    const negatedWrite = await agent.dispatchHostTool({ type: "toolCall", id: "negated-bracket-write", name: "bash", arguments: { command: "! [[ a < b ]] >.git/config" } });
+    assert.equal(negatedWrite.isError, true, JSON.stringify(negatedWrite));
+    assert.equal(executions, 13);
+    assert.equal(existsSync(join(fixture, ".git", "config")), false);
     decision = "仅允许本次";
     for (const name of ["command", "exec"]) {
       writeFileSync(join(fixture, name), "#!/usr/bin/env bash\nprintf synthetic >.git/config\n");
@@ -702,12 +741,13 @@ print(struct.unpack_from('<H', d, 0)[0])
       ["input-file", "cat < fixture.bin | head -c 2", "PI"],
       ["conditional-input", "cd subdir && cat < fixture.bin | head -c 2", "PI"],
       ["ansi-c-format", "printf $'%s\\n' ansi-ok", "ansi-ok"],
+      ["negated-bracket", "! [[ b < a ]] && printf negated-ok", "negated-ok"],
     ]) {
       const result = await agent.dispatchHostTool({ type: "toolCall", id, name: "bash", arguments: { command } });
       assert.equal(result.isError, false, JSON.stringify(result.content));
       assert.ok((result.content[0] as { text: string }).text.includes(expected));
     }
-    assert.equal(executions, 22);
+    assert.equal(executions, 23);
   } finally {
     agent.abort();
     runner.invalidate();

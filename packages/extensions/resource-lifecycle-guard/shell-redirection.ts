@@ -38,6 +38,26 @@ export function isBashDoubleBracketCloseBoundary(source: string, index: number):
     || code === 38 || code === 124 || code === 41 || code === 60 || code === 62;
 }
 
+/** A for variable can persist after the loop and change later shell lookup. */
+export function hasLookupSensitiveBashForHeader(tokens: readonly string[] & { firstWordQuoted?: boolean; secondWordQuoted?: boolean }): boolean {
+  let index = 0;
+  if (tokens[0] === "do" || tokens[0] === "{" || tokens[0] === "then" || tokens[0] === "else") {
+    if (tokens.firstWordQuoted) return false;
+    index++;
+  }
+  let prefixes = 0;
+  while (tokens[index] === "!" || tokens[index] === "time") {
+    if ((index === 0 && tokens.firstWordQuoted) || (index === 1 && tokens.secondWordQuoted)) return false;
+    if (++prefixes > 4) return false;
+    if (tokens[index] === "time" && tokens[index + 1] === "-p") index++;
+    index++;
+  }
+  if ((index === 0 && tokens.firstWordQuoted) || (index === 1 && tokens.secondWordQuoted) || tokens[index] !== "for") return false;
+  const variable = tokens[index + 1];
+  return variable === "PATH" || variable === "BASH_ENV" || variable === "ENV"
+    || variable === "SHELLOPTS" || variable === "BASHOPTS" || variable === "CDPATH";
+}
+
 /** Only a numeric, literal descriptor copy is inspectable; closure and moves remain opaque. */
 export function isStaticDescriptorCopy(operator: string, target: string | undefined, sourceFd?: string): boolean {
   return (operator === ">&" || operator === "<&") && target !== undefined && isShellFileDescriptor(target)
