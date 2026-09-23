@@ -335,6 +335,7 @@ function inspectOutputRedirections(tokens: ShellSegment, cwd: string, builder: S
 		// Numeric descriptor copies have no path target. Shell ordering is kept in
 		// the source sent to Bash; only analysis tokens are compacted below.
 		if (isStaticDescriptorCopy(operator, target, descriptorFd)) continue;
+		if (operator === "<" && target && !hasDynamicSyntax(target)) continue;
 		// Here-documents, descriptor moves/closures and dynamic copies stay opaque.
 		if (!isShellOutputFileRedirection(operator)) {
 			addPrimitive(builder, "unverifiable_redirection");
@@ -794,6 +795,8 @@ function isReadOnlyConditionalTailSegment(tokens: ShellSegment): boolean {
 	if (redirections) for (let position = 0; position < redirections.length; position++) {
 		const index = redirections[position]!;
 		if (isStaticDescriptorCopy(tokens[index]!, tokens[index + 1], tokens.redirectionFds?.[position])) continue;
+		if (tokens[index] === "<" && tokens[index + 1] && !isShellDynamicDescriptor(tokens.redirectionFds?.[position] ?? "")
+			&& !hasDynamicSyntax(tokens[index + 1]!)) continue;
 		if (tokens[index] !== ">" || tokens.redirectionFds?.[position] !== "2" || tokens[index + 1] !== "/dev/null") return false;
 	}
 	const argv = redirections ? tokens.slice() : tokens;

@@ -159,7 +159,7 @@ test("else introduces an inspectable Bash string comparison", () => {
   assert.equal(inspectBashPermissionScope({ command }, cwd)?.primitives.includes("unverifiable_redirection"), false);
 });
 
-test("static descriptor copies preserve bounded file targets and order", () => {
+test("static descriptor and input-file redirections preserve bounded targets and order", () => {
   for (const command of [
     'printf "%s\\n" out 2>&1 | cat',
     '(printf "%s\\n" out 1>&2) | cat',
@@ -181,7 +181,17 @@ test("static descriptor copies preserve bounded file targets and order", () => {
   }
   const compact = inspectHighRiskBashMutation({ command: 'printf out 2>&1>compact.log' }, cwd);
   assert.ok(compact?.targets.some(target => target.endsWith("compact.log")));
-  assert.equal(inspectHighRiskBashMutation({ command: 'cat <fixture.bin' }, cwd)?.unverifiableScope, true);
+  for (const command of ["cat < fixture.bin", "cat <fixture.bin", "cat 3<fixture.bin"]) {
+    assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
+    assert.equal(inspectHighRiskBashMutation({ command }, cwd), undefined, command);
+    assert.equal(inspectBashPermissionScope({ command }, cwd)?.kind, "read-only", command);
+  }
+  assert.equal(inspectHighRiskBashMutation({ command: "cd subdir && cat <fixture.bin" }, cwd), undefined);
+  for (const command of ["cat <$path", "cat <", "cat <>fixture.bin", "cat <&-"]) {
+    assert.equal(inspectHighRiskBashMutation({ command }, cwd)?.unverifiableScope, true, command);
+    assert.equal(inspectBashPermissionScope({ command }, cwd)?.unverifiableScope, true, command);
+  }
+  assert.ok(inspectHighRiskBashMutation({ command: "cat < fixture.bin >.git/config" }, cwd)?.targets.some(target => target.endsWith(".git\\config") || target.endsWith(".git/config")));
   for (const command of ["[[ a < b ]]", "[[ b > a ]]", "[[ a < b && c > d ]]", "[[\na < b\n]]", "[[\na < b\n]] && printf ok"]) {
     assert.notEqual(inspectHighRiskBashMutation({ command }, cwd)?.unverifiableScope, true, command);
     const scope = inspectBashPermissionScope({ command }, cwd);
@@ -193,9 +203,11 @@ test("static descriptor copies preserve bounded file targets and order", () => {
     assert.equal(inspectHighRiskBashMutation({ command }, cwd), undefined, command);
     assert.equal(inspectBashPermissionScope({ command }, cwd)?.kind, "read-only", command);
   }
-  assert.equal(inspectHighRiskBashMutation({ command: "printf ok#literal <fixture.bin" }, cwd)?.unverifiableScope, true);
+  assert.equal(inspectHighRiskBashMutation({ command: "printf ok#literal <fixture.bin" }, cwd), undefined);
+  assert.equal(inspectBashPermissionScope({ command: "printf ok#literal <fixture.bin" }, cwd)?.kind, "read-only");
+  assert.ok(inspectHighRiskBashMutation({ command: "printf ok#literal >.git/config" }, cwd)?.targets.some(target => target.endsWith(".git\\config") || target.endsWith(".git/config")));
   for (const command of ["'time' [[ a < b ]]", "time '-p' [[ a < b ]]"]) {
-    assert.equal(inspectHighRiskBashMutation({ command }, cwd)?.unverifiableScope, true);
+    assert.equal(inspectHighRiskBashMutation({ command }, cwd), undefined);
     assert.equal(inspectBashPermissionScope({ command }, cwd)?.unverifiableScope, true);
   }
   assert.ok(inspectHighRiskBashMutation({ command: "time [[ a < b ]] >.git/config" }, cwd)?.targets.some(target => target.endsWith(".git\\config") || target.endsWith(".git/config")));
@@ -323,6 +335,21 @@ test("unavailable PowerShell is classified as a start failure", async () => {
     assert.equal(result.isError, true);
     assert.match((result.content[0] as { text: string }).text, /^\[SHELL_START_FAILED\] PowerShell is unavailable:/);
   } finally { agent.abort(); }
+});
+
+test("a missing configured Bash executable is classified as a start failure", async () => {
+  const fixture = mkdtempSync(join(tmpdir(), "sp-shell-missing-"));
+  const missingShell = join(fixture, "missing-bash");
+  const agent = new Agent({ streamFn: () => { throw new Error("offline provider must not be called"); } });
+  agent.state.tools = [createBashTool(fixture, { operations: createLocalBashOperations({ shellPath: missingShell }) })];
+  try {
+    const result = await agent.dispatchHostTool({ type: "toolCall", id: "bash-missing", name: "bash", arguments: { command: "printf synthetic" } });
+    assert.equal(result.isError, true);
+    assert.match((result.content[0] as { text: string }).text, /^\[SHELL_START_FAILED\] Custom shell path not found:/);
+  } finally {
+    agent.abort();
+    rmSync(fixture, { recursive: true });
+  }
 });
 
 test("a standalone ripgrep no-match stays an expected empty result after the runtime status prefix", async () => {
@@ -622,12 +649,14 @@ print(struct.unpack_from('<H', d, 0)[0])
       ["comment-comparison", "printf comment-ok # compare a < b", "comment-ok"],
       ["command-prefix", "command printf 'prefix-ok' 2>&1 | cat", "prefix-ok"],
       ["else-bracket", "if false; then :; else [[ a < b ]]; fi && printf else-ok", "else-ok"],
+      ["input-file", "cat < fixture.bin | head -c 2", "PI"],
+      ["conditional-input", "cd subdir && cat < fixture.bin | head -c 2", "PI"],
     ]) {
       const result = await agent.dispatchHostTool({ type: "toolCall", id, name: "bash", arguments: { command } });
       assert.equal(result.isError, false, JSON.stringify(result.content));
       assert.ok((result.content[0] as { text: string }).text.includes(expected));
     }
-    assert.equal(executions, 19);
+    assert.equal(executions, 21);
   } finally {
     agent.abort();
     runner.invalidate();

@@ -385,6 +385,7 @@ function inspectTokenBuffer(tokens: PermissionTokens, cwd: string, depth: number
         markOpaque(builder, "unverifiable_redirection");
         continue;
       }
+      if (operator === "<" && target && !hasDynamicSyntax(target)) continue;
       if (!isShellOutputFileRedirection(operator)) {
         markOpaque(builder, "unverifiable_redirection");
         continue;

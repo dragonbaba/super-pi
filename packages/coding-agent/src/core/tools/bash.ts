@@ -945,7 +945,8 @@ export function createShellToolDefinition(
 					}
 					const launchError = err instanceof Error && (
 						"code" in err && (err.code === "ENOENT" || err.code === "EACCES" || err.code === "ENOTDIR")
-						|| err.message.startsWith("No bash shell found") || err.message.startsWith("Working directory does not exist")
+						|| err.message.startsWith("No bash shell found") || err.message.startsWith("Custom shell path not found:")
+						|| err.message.startsWith("Working directory does not exist")
 						|| (config.name === "powershell" && err.message.startsWith("PowerShell is unavailable:"))
 					);
 					throw new Error(`[${launchError ? "SHELL_START_FAILED" : "SHELL_EXECUTION_FAILED"}] ${appendStatus(text, err instanceof Error ? err.message : String(err))}`);
