@@ -211,45 +211,76 @@ export function isBashNetworkRedirectionTarget(target: string): boolean {
   return target.startsWith("/dev/tcp/") || target.startsWith("/dev/udp/");
 }
 
+/** 0: inert; 1: may assign through a referenced value; 2: assigns or runs code. */
+export type ShellExpansionRisk = 0 | 1 | 2;
+
 /**
- * Expansions that can assign shell variables in the current shell: arithmetic
- * with names or nested expansions (values evaluate recursively), `${v=...}`,
- * substring offsets, non-literal subscripts, and indirection. Command
- * substitutions run in a subshell and are inspected as nested scripts.
+ * Expansions that can assign shell variables in the current shell. Arithmetic
+ * assignment, `${v=...}`, `${v@P}` and `${ cmd; }` are definite (2); arithmetic
+ * names, non-literal subscripts and indirection may assign through a value that
+ * is evaluated recursively (1). Command substitutions run in a subshell and are
+ * inspected as nested scripts.
  */
-export function hasStatefulShellExpansion(tokens: readonly string[] & { expansions?: readonly number[] }): boolean {
+export function shellExpansionRisk(tokens: readonly string[] & { expansions?: readonly number[] }): ShellExpansionRisk {
   const expansions = tokens.expansions;
-  if (!expansions) return false;
+  if (!expansions) return 0;
+  let risk: ShellExpansionRisk = 0;
   for (let index = 0; index < tokens.length; index++) {
-    if (((expansions[index] ?? 0) & 7) !== 0 && hasStatefulExpansionText(tokens[index]!)) return true;
+    if (((expansions[index] ?? 0) & 7) === 0) continue;
+    const tokenRisk = expansionTextRisk(tokens[index]!);
+    if (tokenRisk === 2) return 2;
+    if (tokenRisk > risk) risk = tokenRisk;
   }
-  return false;
+  return risk;
 }
 
-function hasStatefulExpansionText(value: string): boolean {
+function expansionTextRisk(value: string): ShellExpansionRisk {
+  let risk: ShellExpansionRisk = 0;
   for (let index = value.indexOf("$"); index >= 0; index = value.indexOf("$", index + 1)) {
     const next = value.charCodeAt(index + 1);
-    if (next === 40 && value.charCodeAt(index + 2) === 40) {
-      if (!isLiteralArithmetic(value, index + 3, 41)) return true;
-    } else if (next === 91) {
-      if (!isLiteralArithmetic(value, index + 2, 93)) return true;
-    } else if (next === 123 && isStatefulBraceExpansion(value, index + 2)) return true;
+    const current = next === 40 && value.charCodeAt(index + 2) === 40 ? arithmeticRisk(value, index + 3, 41)
+      : next === 91 ? arithmeticRisk(value, index + 2, 93)
+      : next === 123 ? braceExpansionRisk(value, index + 2) : 0;
+    if (current === 2) return 2;
+    if (current > risk) risk = current;
   }
-  return false;
+  return risk;
 }
 
-/** Digits and operators only, up to the balanced closing delimiter (`))` for `$((`). */
-function isLiteralArithmetic(value: string, start: number, close: number): boolean {
+/** Scan to the balanced closing delimiter (`))` for `$((`); unterminated text is definite. */
+function arithmeticRisk(value: string, start: number, close: number): ShellExpansionRisk {
   let depth = 0;
+  let named = false;
+  let step = false; // `++`/`--` assign when applied to a name, before or after it
   for (let index = start; index < value.length; index++) {
     const code = value.charCodeAt(index);
     if (code === 40) { depth++; continue; }
     if (code === 41 && depth > 0) { depth--; continue; }
-    if (code === close) return close !== 41 || value.charCodeAt(index + 1) === 41;
-    if (code === 36 || code === 96 || code === 95 || code === 61 && isArithmeticAssignment(value, index)
-      || (code >= 65 && code <= 90) || (code >= 97 && code <= 122)) return false;
+    if (code === close) return close === 41 && value.charCodeAt(index + 1) !== 41 ? 2 : named ? (step ? 2 : 1) : 0;
+    if (code === 61 && isArithmeticAssignment(value, index)) return 2;
+    if ((code === 43 || code === 45) && value.charCodeAt(index + 1) === code) { step = true; index++; continue; }
+    if (isQueryVariableDigit(code)) {
+      // Numeric literals may carry letters: `0x1F`, `16#ff`.
+      while (isQueryVariablePart(value.charCodeAt(index + 1)) || value.charCodeAt(index + 1) === 35 || value.charCodeAt(index + 1) === 64) index++;
+      continue;
+    }
+    if (code === 36) {
+      const next = value.charCodeAt(index + 1);
+      if (next === 35 || next === 63 || next === 36 || next === 33) { index++; continue; }
+      if (!isQueryVariableStart(next)) { named = true; continue; }
+      index++;
+    } else if (code === 96) { named = true; continue; } else if (!isQueryVariableStart(code)) continue;
+    const nameStart = index;
+    while (isQueryVariablePart(value.charCodeAt(index + 1))) index++;
+    if (!isNumericShellVariable(value.slice(nameStart, index + 1))) named = true;
   }
-  return false;
+  return 2;
+}
+
+/** Shell-maintained variables whose value is always a number, never an expression. */
+function isNumericShellVariable(name: string): boolean {
+  return name === "RANDOM" || name === "SRANDOM" || name === "SECONDS" || name === "EPOCHSECONDS" || name === "LINENO"
+    || name === "BASHPID" || name === "PPID" || name === "UID" || name === "EUID";
 }
 
 function isArithmeticAssignment(value: string, index: number): boolean {
@@ -257,51 +288,54 @@ function isArithmeticAssignment(value: string, index: number): boolean {
   return value.charCodeAt(index + 1) !== 61 && before !== 61 && before !== 33 && before !== 60 && before !== 62;
 }
 
-function isStatefulBraceExpansion(value: string, start: number): boolean {
+function braceExpansionRisk(value: string, start: number): ShellExpansionRisk {
   let index = start;
   let code = value.charCodeAt(index);
-  if (code === 33) return value.charCodeAt(index + 1) !== 125;
+  if (code === 33) return value.charCodeAt(index + 1) === 125 ? 0 : 1;
   if (code === 35 && value.charCodeAt(index + 1) !== 125) code = value.charCodeAt(++index);
   if (isQueryVariableStart(code)) {
     while (isQueryVariablePart(value.charCodeAt(index + 1))) index++;
   } else if (isQueryVariableDigit(code)) {
     while (isQueryVariableDigit(value.charCodeAt(index + 1))) index++;
-  } else if (!isReadOnlySpecialParameter(code)) return true;
+  } else if (!isReadOnlySpecialParameter(code)) return 2; // includes Bash 5.3 `${ cmd; }`
   index++;
   code = value.charCodeAt(index);
-  if (code === 125) return false;
+  if (code === 125) return 0;
+  let risk: ShellExpansionRisk = 0;
   if (code === 91) {
     const subscript = value.charCodeAt(index + 1);
     if ((subscript === 64 || subscript === 42) && value.charCodeAt(index + 2) === 93) index += 3;
     else {
       let cursor = index + 1;
       while (isQueryVariableDigit(value.charCodeAt(cursor))) cursor++;
-      if (cursor === index + 1 || value.charCodeAt(cursor) !== 93) return true;
+      if (cursor === index + 1 || value.charCodeAt(cursor) !== 93) {
+        risk = arithmeticRisk(value, index + 1, 93);
+        if (risk === 2) return 2;
+        while (cursor < value.length && value.charCodeAt(cursor) !== 93) cursor++;
+      }
       index = cursor + 1;
     }
     code = value.charCodeAt(index);
-    if (code === 125) return false;
+    if (code === 125) return risk;
   }
-  if (code === 61) return true;
+  if (code === 61) return 2;
   // `${v@P}` expands the value as a prompt, running its command substitutions.
   if (code === 64) {
     const operator = value.charCodeAt(index + 1);
-    return value.charCodeAt(index + 2) !== 125 || !(operator === 81 || operator === 69 || operator === 65 || operator === 75
-      || operator === 97 || operator === 107 || operator === 85 || operator === 117 || operator === 76);
+    return value.charCodeAt(index + 2) === 125 && (operator === 81 || operator === 69 || operator === 65 || operator === 75
+      || operator === 97 || operator === 107 || operator === 85 || operator === 117 || operator === 76) ? risk : 2;
   }
   if (code === 58) {
     const operator = value.charCodeAt(index + 1);
-    if (operator === 61) return true;
+    if (operator === 61) return 2;
     // `${v:offset:length}` evaluates both operands arithmetically.
-    if (operator !== 45 && operator !== 43 && operator !== 63 && !isLiteralArithmetic(value, index + 1, 125)) return true;
+    if (operator !== 45 && operator !== 43 && operator !== 63) {
+      const offsetRisk = arithmeticRisk(value, index + 1, 125);
+      if (offsetRisk > risk) risk = offsetRisk;
+    }
   }
-  // Operator words may nest further expansions; keep them conservative.
-  for (let cursor = index; cursor < value.length; cursor++) {
-    const current = value.charCodeAt(cursor);
-    if (current === 125) return false;
-    if (current === 36 || current === 96) return true;
-  }
-  return true;
+  // Nested expansions inside operator words are scored at their own `$`.
+  return risk;
 }
 
 /** Query operands may expand simple variables, but operators can mutate Bash state. */

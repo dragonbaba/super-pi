@@ -222,9 +222,9 @@ test("expansions that assign shell variables cannot make later commands read-onl
     "x=(a); printf %s ${x[PATH=0]}; cat",
     "printf %s ${#x[PATH=0]}; cat",
     "printf %s ${x:PATH=0}; cat",
-    "printf %s ${!ref}; cat",
-    "v=PATH=0; printf %s $((v)); cat",
     "printf %s $((1)+PATH=0)); cat",
+    "printf %s $((++n)); cat",
+    "echo ${ cd ..; }; printf data >.git/config",
   ]) {
     assert.match(inspectBashResourceLifecycle({ command }) ?? "", /SHELL_UNINSPECTABLE/, command);
     const high = inspectHighRiskBashMutation({ command }, cwd);
@@ -232,7 +232,15 @@ test("expansions that assign shell variables cannot make later commands read-onl
     assert.ok(high?.primitives.includes("stateful_shell_expansion"), command);
     assert.equal(inspectBashPermissionScope({ command }, cwd)?.unverifiableScope, true, command);
   }
-  for (const command of ["printf %s $x ${y} $1 $@ ${#z} ${!}", "echo $((1 + (2 * 3) >= 4))", "printf %s ${HOME:-/tmp} ${f%.txt} ${g/a/b} ${h:1:2} ${arr[0]} ${arr[@]}", "printf %s '$((PATH=0))'"]) {
+  // A referenced value is evaluated recursively (`v=PATH=0; $((v))`), so these need
+  // permission review but stay executable instead of being refused outright.
+  for (const command of ["printf %s ${!ref}; cat", "for v in PATH=0; do printf %s $((v)); done; cat", "echo ${arr[$i]}", "for i in 1 2; do echo $((i*2)); done"]) {
+    assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
+    assert.ok(inspectHighRiskBashMutation({ command }, cwd)?.primitives.includes("stateful_shell_expansion"), command);
+    assert.equal(inspectBashPermissionScope({ command }, cwd)?.unverifiableScope, true, command);
+  }
+  for (const command of ["printf %s $x ${y} $1 $@ ${#z} ${!}", "echo $((1 + (2 * 3) >= 4))", "printf %s ${HOME:-/tmp} ${f%.txt} ${g/a/b} ${h:1:2} ${arr[0]} ${arr[@]}", "printf %s '$((PATH=0))'",
+    "echo $((RANDOM % 10)) $(($# - 1)) $((0x1F + 16#ff))", "echo ${var:-$HOME} ${arr[1+1]}"]) {
     assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
     assert.equal(inspectHighRiskBashMutation({ command }, cwd), undefined, command);
     assert.equal(inspectBashPermissionScope({ command }, cwd)?.kind, "read-only", command);
@@ -307,6 +315,24 @@ test("a fallible redirection on cd cannot authorize the requested cwd for an ind
   for (const command of ["9>&8 cd sub && printf data >.git/config", "cd sub 2>/dev/null; printf data >.git/config", ">/dev/null cd sub; printf data >.git/config", "9>/dev/null cd sub; printf data >.git/config", "cd sub 2>&1; printf data >.git/config"]) {
     assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
     assert.ok(inspectHighRiskBashMutation({ command }, cwd)?.targets.some(target => target.endsWith("sub\\.git\\config") || target.endsWith("sub/.git/config")), command);
+  }
+});
+
+test("cd guarded by || exit keeps the requested cwd for the rest of the script", () => {
+  for (const command of ["cd sub 2>/dev/null || exit 1; printf data >.git/config", "cd sub || exit\nprintf data >.git/config"]) {
+    assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
+    assert.ok(inspectHighRiskBashMutation({ command }, cwd)?.targets.some(target => target.endsWith("sub\\.git\\config") || target.endsWith("sub/.git/config")), command);
+  }
+  for (const command of [
+    "cd sub || echo failed; printf data >.git/config",
+    "cd sub || exit 1 && printf ok; printf data >.git/config",
+    "cd sub || (exit 1); printf data >.git/config",
+    "cd sub || exit $code; printf data >.git/config",
+    "exit() { :; }; cd sub || exit 1; printf data >.git/config",
+    "function exit { :; }; cd sub || exit 1; printf data >.git/config",
+    "(cd sub || exit 1); printf data >.git/config",
+  ]) {
+    assert.equal(inspectHighRiskBashMutation({ command }, cwd)?.unverifiableScope, true, command);
   }
 });
 

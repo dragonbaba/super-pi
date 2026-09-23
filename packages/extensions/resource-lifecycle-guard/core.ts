@@ -27,7 +27,7 @@ import {
 } from "./regex.ts";
 import { extractCommandSubstitutions, inspectHereDocuments, prepareShellAnalysis } from "./shell-substitution.ts";
 import { parseTimeoutInvocation } from "./timeout-wrapper.ts";
-import { bashArithmeticForHeader, bashLoopVariableIndex, unsafeBashForHeaderReason, hasStatefulBashPrintf, hasStatefulShellExpansion, hasUnsafeBashTestOperand, hasUnsafeBashLoopListOperand, hasUnsafeCommandQueryOperand, isBashDoubleBracketCloseBoundary, isBashNetworkRedirectionTarget, isBashDoubleBracketHead, isBashProcessSubstitutionStart, isBashTestWhitespace, isShellDynamicDescriptor, isShellFileDescriptor, isShellOutputFileRedirection, isSimpleBashAnsiCQuote, isStaticDescriptorCopy, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
+import { bashArithmeticForHeader, bashLoopVariableIndex, unsafeBashForHeaderReason, hasStatefulBashPrintf, shellExpansionRisk, hasUnsafeBashTestOperand, hasUnsafeBashLoopListOperand, hasUnsafeCommandQueryOperand, isBashDoubleBracketCloseBoundary, isBashNetworkRedirectionTarget, isBashDoubleBracketHead, isBashProcessSubstitutionStart, isBashTestWhitespace, isShellDynamicDescriptor, isShellFileDescriptor, isShellOutputFileRedirection, isSimpleBashAnsiCQuote, isStaticDescriptorCopy, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
 import { FD_DUPLICATION_PATTERN } from "./regex.ts";
 import { diagnosticForPrimitives, policyMetadata, renderPolicyDiagnostic, type PolicyDiagnosticMetadata } from "./policy-diagnostics.ts";
 
@@ -137,7 +137,8 @@ function inspectLifecycleScript(source: string, depth: number, nativePowerShellA
  for (const tokens of segments) {
   if (tokens.bashTestProcessSubstitution) return lifecycleRefusal("SHELL_UNINSPECTABLE", "process substitution inside a Bash test cannot be safely inspected", "split the process substitution into separately inspectable commands");
   if (hasUnsafeBashTestOperand(tokens)) return lifecycleRefusal("SHELL_UNINSPECTABLE", "Bash test operand may change shell state or evaluate arithmetic", "use simple variable tests or literal numeric comparisons");
-  if (hasStatefulShellExpansion(tokens)) return lifecycleRefusal("SHELL_UNINSPECTABLE", "expansion may assign shell variables used by later commands", "use literal values or simple variable references");
+  // Possible assignment through a referenced value is left to permission review.
+  if (shellExpansionRisk(tokens) === 2) return lifecycleRefusal("SHELL_UNINSPECTABLE", "expansion assigns shell variables or runs code in the current shell", "use literal values or simple variable references");
   // The global filter is only an optimization; unrelated segments supply no
   // shell/evaluator evidence. No closure or reconstructed segment string.
   let shellText = false;
@@ -404,7 +405,7 @@ function inspectShellScript(script: string, initialCwd: string, depth: number, b
 		if (tokens.length === 0) continue;
 		if (tokens.bashTestProcessSubstitution) { addPrimitive(builder, "unverifiable_process_substitution"); markUnverifiable(builder); continue; }
 		if (hasUnsafeBashTestOperand(tokens)) { addPrimitive(builder, "unverifiable_bash_test_operand"); markUnverifiable(builder); }
-		if (hasStatefulShellExpansion(tokens)) { addPrimitive(builder, "stateful_shell_expansion"); markUnverifiable(builder); }
+		if (shellExpansionRisk(tokens) !== 0) { addPrimitive(builder, "stateful_shell_expansion"); markUnverifiable(builder); }
 		inspectOutputRedirections(tokens, workingDirectory, builder);
 		const commandIndex = commandTokenIndex(tokens);
 		if (commandIndex < 0 || commandIndex >= tokens.length) continue;
@@ -788,6 +789,16 @@ function afterLeadingRedirection(tokens: ShellSegment, index: number): number {
 	return index;
 }
 
+/** The segment after `cd ... ||` is a bare parent-shell `exit [n]` ending its list. */
+function isExitOnFailure(segments: readonly ShellSegment[], cdIndex: number): boolean {
+	if (segments[cdIndex]!.separatorAfter !== "||") return false;
+	const next = segments[cdIndex + 1];
+	if (!next || next[0] !== "exit" || next.firstWordQuoted || next.subshellDepth || next.redirections || next.dynamic) return false;
+	if (next.length > 2 || (next.length === 2 && !NONNEGATIVE_INTEGER_PATTERN.test(next[1]!))) return false;
+	const separator = next.separatorAfter;
+	return separator === undefined || separator === ";" || separator === "\n" || separator === "\r";
+}
+
 function skipRedirections(tokens: ShellSegment, index: number): number {
 	for (let after = afterLeadingRedirection(tokens, index); after !== index; after = afterLeadingRedirection(tokens, index)) index = after;
 	return index;
@@ -800,6 +811,7 @@ export function hasAmbiguousBashCwd(command: string): boolean {
 	let conditionalDepth = 0;
 	let braceDepth = 0;
 	let cdSemanticsChanged = false;
+	let exitRedefined = false;
 	for (let segmentIndex = 0; segmentIndex < segments.length; segmentIndex++) {
 		const tokens = segments[segmentIndex]!;
 		const controlIndex = skipBashReservedPrefixes(tokens, 0);
@@ -837,6 +849,7 @@ export function hasAmbiguousBashCwd(command: string): boolean {
 		// The scans track only a direct literal `cd`; directory stacks are not followed.
 		if (name === "pushd" || name === "popd") return true;
 		if (changesBashCdSemantics(tokens, index, name)) { cdSemanticsChanged = true; continue; }
+		if (name === "function" ? tokens[index + 1] === "exit" : name === "exit" && tokens.separatorAfter === "(") exitRedefined = true;
 		if (name === "cd") {
 			// Redirections may surround the operand; Bash rejects a second operand
 			// (`cd: too many arguments`) and stays in the original directory.
@@ -847,6 +860,9 @@ export function hasAmbiguousBashCwd(command: string): boolean {
 				|| skipRedirections(tokens, operandIndex + 1) < tokens.length) return true;
 			// A failed redirection skips cd; later commands must then depend on its success or be read-only.
 			if (simpleSegment && (!hasFallibleRedirection(tokens) || hasOnlyReadOnlyConditionalTail(segments, segmentIndex))) continue;
+			// `cd dir || exit [n]` leaves the shell unless cd succeeded, like `&&` for the rest of the script.
+			if (!exitRedefined && loopDepth === 0 && conditionalDepth === 0 && braceDepth === 0 && controlIndex === 0
+				&& !tokens.subshellDepth && !tokens.pipelineMember && isExitOnFailure(segments, segmentIndex)) continue;
 			// A literal `cd .` leaves relative targets at the same path whether it
 			// succeeds or fails; other conditional cd targets can change the cwd.
 			if (target === ".") continue;
