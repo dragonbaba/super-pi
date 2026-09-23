@@ -861,7 +861,10 @@ export function hasAmbiguousBashCwd(command: string): boolean {
 	return false;
 }
 
-/** Only /dev/null targets and copies among the standard descriptors cannot fail. */
+/**
+ * Only /dev/null targets and copies among the standard descriptors cannot fail.
+ * The descriptor limit is a runtime ulimit, so only POSIX's 0-9 are always usable.
+ */
 function hasFallibleRedirection(tokens: ShellSegment): boolean {
 	const positions = tokens.redirections;
 	if (!positions) return false;
@@ -871,11 +874,15 @@ function hasFallibleRedirection(tokens: ShellSegment): boolean {
 		const operator = tokens[index]!;
 		const sourceFd = tokens.redirectionFds?.[position];
 		if (target === "/dev/null" && operator !== "<>" && operator !== "<<" && operator !== "<<<"
-			&& (sourceFd === undefined || isShellFileDescriptor(sourceFd))) continue;
+			&& (sourceFd === undefined || isSingleDigitDescriptor(sourceFd))) continue;
 		if ((operator === ">&" || operator === "<&") && isStandardDescriptor(target) && (sourceFd === undefined || isStandardDescriptor(sourceFd))) continue;
 		return true;
 	}
 	return false;
+}
+
+function isSingleDigitDescriptor(value: string): boolean {
+	return value.length === 1 && value.charCodeAt(0) >= 48 && value.charCodeAt(0) <= 57;
 }
 
 function isStandardDescriptor(value: string | undefined): boolean {

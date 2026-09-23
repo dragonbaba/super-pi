@@ -299,12 +299,12 @@ test("Bash network-device input redirections are not read-only file inputs", () 
 });
 
 test("a fallible redirection on cd cannot authorize the requested cwd for an independent tail", () => {
-  for (const command of ["9>&8 cd sub; printf data >.git/config", "cd sub 9>&8; printf data >.git/config", "cd sub <missing.txt; printf data >.git/config", "cd sub >out/log; printf data >.git/config", "cd sub 2>&9; printf data >.git/config"]) {
+  for (const command of ["9>&8 cd sub; printf data >.git/config", "cd sub 9>&8; printf data >.git/config", "cd sub <missing.txt; printf data >.git/config", "cd sub >out/log; printf data >.git/config", "cd sub 2>&9; printf data >.git/config", "99999>/dev/null cd sub; printf data >.git/config", "cd sub 10>/dev/null; printf data >.git/config", "01>/dev/null cd sub; printf data >.git/config"]) {
     assert.match(inspectBashResourceLifecycle({ command }) ?? "", /SHELL_UNINSPECTABLE/, command);
     assert.equal(inspectHighRiskBashMutation({ command }, cwd)?.unverifiableScope, true, command);
     assert.equal(inspectBashPermissionScope({ command }, cwd)?.unverifiableScope, true, command);
   }
-  for (const command of ["9>&8 cd sub && printf data >.git/config", "cd sub 2>/dev/null; printf data >.git/config", ">/dev/null cd sub; printf data >.git/config", "cd sub 2>&1; printf data >.git/config"]) {
+  for (const command of ["9>&8 cd sub && printf data >.git/config", "cd sub 2>/dev/null; printf data >.git/config", ">/dev/null cd sub; printf data >.git/config", "9>/dev/null cd sub; printf data >.git/config", "cd sub 2>&1; printf data >.git/config"]) {
     assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
     assert.ok(inspectHighRiskBashMutation({ command }, cwd)?.targets.some(target => target.endsWith("sub\\.git\\config") || target.endsWith("sub/.git/config")), command);
   }
