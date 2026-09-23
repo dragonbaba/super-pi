@@ -280,6 +280,56 @@ test("negated and timed prefixes before Bash tests keep comparisons out of redir
   }
 });
 
+test("length-modified printf %n conversions stay stateful", () => {
+  for (const command of ["printf '%ln' PATH; cat", "printf '%hn' PATH; cat", "printf '%zn' PATH; cat", "printf 'x%lln' PATH; cat", "printf '%-3jn' PATH; cat", "printf -- '%Ltn' PATH; cat"]) {
+    assert.equal(inspectHighRiskBashMutation({ command }, cwd)?.unverifiableScope, true, command);
+    assert.equal(inspectBashPermissionScope({ command }, cwd)?.unverifiableScope, true, command);
+  }
+  for (const command of ["printf '%ld\n' 1", "printf '%q' PATH", "printf '%%ln' PATH"]) {
+    assert.equal(inspectBashPermissionScope({ command }, cwd)?.kind, "read-only", command);
+  }
+});
+
+test("Bash network-device input redirections are not read-only file inputs", () => {
+  for (const command of ["cat </dev/tcp/127.0.0.1/1234", "cat 0</dev/udp/example.invalid/53", "cd sub && cat </dev/tcp/127.0.0.1/1234"]) {
+    assert.equal(inspectBashPermissionScope({ command }, cwd)?.unverifiableScope, true, command);
+    assert.equal(inspectHighRiskBashMutation({ command }, cwd)?.unverifiableScope, true, command);
+  }
+  assert.equal(inspectBashPermissionScope({ command: "cat <fixture.bin" }, cwd)?.kind, "read-only");
+});
+
+test("a fallible redirection on cd cannot authorize the requested cwd for an independent tail", () => {
+  for (const command of ["9>&8 cd sub; printf data >.git/config", "cd sub 9>&8; printf data >.git/config", "cd sub <missing.txt; printf data >.git/config", "cd sub >out/log; printf data >.git/config", "cd sub 2>&9; printf data >.git/config"]) {
+    assert.match(inspectBashResourceLifecycle({ command }) ?? "", /SHELL_UNINSPECTABLE/, command);
+    assert.equal(inspectHighRiskBashMutation({ command }, cwd)?.unverifiableScope, true, command);
+    assert.equal(inspectBashPermissionScope({ command }, cwd)?.unverifiableScope, true, command);
+  }
+  for (const command of ["9>&8 cd sub && printf data >.git/config", "cd sub 2>/dev/null; printf data >.git/config", ">/dev/null cd sub; printf data >.git/config", "cd sub 2>&1; printf data >.git/config"]) {
+    assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
+    assert.ok(inspectHighRiskBashMutation({ command }, cwd)?.targets.some(target => target.endsWith("sub\\.git\\config") || target.endsWith("sub/.git/config")), command);
+  }
+});
+
+test("prompt transformations and PS4 loop values cannot run hidden command substitutions", () => {
+  for (const command of [
+    "for X in '$(printf data >.git/config)'; do echo \"${X@P}\"; done",
+    "echo ${X@P}",
+    "echo ${arr[0]@P}",
+    "echo ${X@Z}",
+  ]) {
+    assert.match(inspectBashResourceLifecycle({ command }) ?? "", /SHELL_UNINSPECTABLE/, command);
+    assert.equal(inspectHighRiskBashMutation({ command }, cwd)?.unverifiableScope, true, command);
+    assert.equal(inspectBashPermissionScope({ command }, cwd)?.unverifiableScope, true, command);
+  }
+  const ps4 = "for PS4 in '$(printf data >.git/config)'; do set -x; :; done";
+  assert.match(inspectBashResourceLifecycle({ command: ps4 }) ?? "", /SHELL_UNINSPECTABLE/);
+  assert.equal(inspectBashPermissionScope({ command: ps4 }, cwd)?.unverifiableScope, true);
+  for (const command of ["echo ${X@Q} ${X@E} ${X@A} ${X@U} ${X@L} ${X@a} ${arr[@]@K}"]) {
+    assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
+    assert.equal(inspectBashPermissionScope({ command }, cwd)?.kind, "read-only", command);
+  }
+});
+
 test("negated Bash string comparisons remain read-only", () => {
   for (const command of ["! [[ a < b ]]", "! [[ b > a ]]", "! [[ a < b ]] && printf ok"]) {
     assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);

@@ -111,7 +111,7 @@ export function bashArithmeticForHeader(tokens: readonly string[] & { firstWordQ
 
 function isLookupSensitiveBashVariable(name: string | undefined): boolean {
   return name === "PATH" || name === "BASH_ENV" || name === "ENV"
-    || name === "SHELLOPTS" || name === "BASHOPTS" || name === "CDPATH";
+    || name === "SHELLOPTS" || name === "BASHOPTS" || name === "CDPATH" || name === "PS4";
 }
 
 function hasLookupSensitiveArithmeticName(expression: string): boolean {
@@ -195,9 +195,20 @@ export function hasStatefulBashPrintf(tokens: readonly string[] & { expansions?:
         || code === 42 || code === 43 || code === 45 || code === 46) { conversion++; continue; }
       break;
     }
+    // Bash skips the `hjlLtz` length modifiers before the conversion (`%ln`).
+    while (isPrintfLengthModifier(format.charCodeAt(conversion))) conversion++;
     if (format.charCodeAt(conversion) === 110) return true;
   }
   return false;
+}
+
+function isPrintfLengthModifier(code: number): boolean {
+  return code === 104 || code === 106 || code === 108 || code === 76 || code === 116 || code === 122;
+}
+
+/** Bash opens network sockets for these virtual paths instead of files. */
+export function isBashNetworkRedirectionTarget(target: string): boolean {
+  return target.startsWith("/dev/tcp/") || target.startsWith("/dev/udp/");
 }
 
 /**
@@ -272,6 +283,12 @@ function isStatefulBraceExpansion(value: string, start: number): boolean {
     if (code === 125) return false;
   }
   if (code === 61) return true;
+  // `${v@P}` expands the value as a prompt, running its command substitutions.
+  if (code === 64) {
+    const operator = value.charCodeAt(index + 1);
+    return value.charCodeAt(index + 2) !== 125 || !(operator === 81 || operator === 69 || operator === 65 || operator === 75
+      || operator === 97 || operator === 107 || operator === 85 || operator === 117 || operator === 76);
+  }
   if (code === 58) {
     const operator = value.charCodeAt(index + 1);
     if (operator === 61) return true;

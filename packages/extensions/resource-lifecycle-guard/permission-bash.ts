@@ -3,7 +3,7 @@ import { basename, resolve } from "node:path";
 import { hasAmbiguousBashCwd, unsafeBashLoopHeaderReason } from "./core.ts";
 import { extractCommandSubstitutions, prepareShellAnalysis } from "./shell-substitution.ts";
 import { parseTimeoutInvocation } from "./timeout-wrapper.ts";
-import { bashPipelinePrefixEnd, hasStatefulBashPrintf, hasStatefulShellExpansion, hasUnsafeBashTestOperand, hasUnsafeCommandQueryOperand, isBashDoubleBracketCloseBoundary, isBashDoubleBracketHead, isBashProcessSubstitutionStart, isBashTestWhitespace, isShellDynamicDescriptor, isShellFileDescriptor, isShellOutputFileRedirection, isSimpleBashAnsiCQuote, isStaticDescriptorCopy, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
+import { bashPipelinePrefixEnd, hasStatefulBashPrintf, isBashNetworkRedirectionTarget, hasStatefulShellExpansion, hasUnsafeBashTestOperand, hasUnsafeCommandQueryOperand, isBashDoubleBracketCloseBoundary, isBashDoubleBracketHead, isBashProcessSubstitutionStart, isBashTestWhitespace, isShellDynamicDescriptor, isShellFileDescriptor, isShellOutputFileRedirection, isSimpleBashAnsiCQuote, isStaticDescriptorCopy, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
 
 const MAX_COMMAND_CHARS = 128 * 1024;
 const MAX_SEGMENTS = 64;
@@ -394,7 +394,7 @@ function inspectTokenBuffer(tokens: PermissionTokens, cwd: string, depth: number
         markOpaque(builder, "unverifiable_redirection");
         continue;
       }
-      if (operator === "<" && target && !hasDynamicSyntax(target)) continue;
+      if (operator === "<" && target && !hasDynamicSyntax(target) && !isBashNetworkRedirectionTarget(target)) continue;
       if (!isShellOutputFileRedirection(operator)) {
         markOpaque(builder, "unverifiable_redirection");
         continue;

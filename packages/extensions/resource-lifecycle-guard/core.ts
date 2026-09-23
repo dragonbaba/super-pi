@@ -27,7 +27,7 @@ import {
 } from "./regex.ts";
 import { extractCommandSubstitutions, inspectHereDocuments, prepareShellAnalysis } from "./shell-substitution.ts";
 import { parseTimeoutInvocation } from "./timeout-wrapper.ts";
-import { bashArithmeticForHeader, bashLoopVariableIndex, unsafeBashForHeaderReason, hasStatefulBashPrintf, hasStatefulShellExpansion, hasUnsafeBashTestOperand, hasUnsafeBashLoopListOperand, hasUnsafeCommandQueryOperand, isBashDoubleBracketCloseBoundary, isBashDoubleBracketHead, isBashProcessSubstitutionStart, isBashTestWhitespace, isShellDynamicDescriptor, isShellFileDescriptor, isShellOutputFileRedirection, isSimpleBashAnsiCQuote, isStaticDescriptorCopy, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
+import { bashArithmeticForHeader, bashLoopVariableIndex, unsafeBashForHeaderReason, hasStatefulBashPrintf, hasStatefulShellExpansion, hasUnsafeBashTestOperand, hasUnsafeBashLoopListOperand, hasUnsafeCommandQueryOperand, isBashDoubleBracketCloseBoundary, isBashNetworkRedirectionTarget, isBashDoubleBracketHead, isBashProcessSubstitutionStart, isBashTestWhitespace, isShellDynamicDescriptor, isShellFileDescriptor, isShellOutputFileRedirection, isSimpleBashAnsiCQuote, isStaticDescriptorCopy, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
 import { FD_DUPLICATION_PATTERN } from "./regex.ts";
 import { diagnosticForPrimitives, policyMetadata, renderPolicyDiagnostic, type PolicyDiagnosticMetadata } from "./policy-diagnostics.ts";
 
@@ -338,7 +338,7 @@ function inspectOutputRedirections(tokens: ShellSegment, cwd: string, builder: S
 		// Numeric descriptor copies have no path target. Shell ordering is kept in
 		// the source sent to Bash; only analysis tokens are compacted below.
 		if (isStaticDescriptorCopy(operator, target, descriptorFd)) continue;
-		if (operator === "<" && target && !hasDynamicSyntax(target)) continue;
+		if (operator === "<" && target && !hasDynamicSyntax(target) && !isBashNetworkRedirectionTarget(target)) continue;
 		// Here-documents, descriptor moves/closures and dynamic copies stay opaque.
 		if (!isShellOutputFileRedirection(operator)) {
 			addPrimitive(builder, "unverifiable_redirection");
@@ -836,7 +836,8 @@ export function hasAmbiguousBashCwd(command: string): boolean {
 			const target = tokens[index + 1];
 			if (leadingAssignment || builtinPrefixes > 0 || cdSemanticsChanged
 				|| !target || target.startsWith("-") || hasDynamicSyntax(target)) return true;
-			if (simpleSegment) continue;
+			// A failed redirection skips cd; later commands must then depend on its success or be read-only.
+			if (simpleSegment && (!hasFallibleRedirection(tokens) || hasOnlyReadOnlyConditionalTail(segments, segmentIndex))) continue;
 			// A literal `cd .` leaves relative targets at the same path whether it
 			// succeeds or fails; other conditional cd targets can change the cwd.
 			if (tokens[index + 1] === "." && tokens.length === index + 2) continue;
@@ -849,6 +850,27 @@ export function hasAmbiguousBashCwd(command: string): boolean {
 		}
 	}
 	return false;
+}
+
+/** Only /dev/null targets and copies among the standard descriptors cannot fail. */
+function hasFallibleRedirection(tokens: ShellSegment): boolean {
+	const positions = tokens.redirections;
+	if (!positions) return false;
+	for (let position = 0; position < positions.length; position++) {
+		const index = positions[position]!;
+		const target = positions[position + 1] === index + 1 ? undefined : tokens[index + 1];
+		const operator = tokens[index]!;
+		const sourceFd = tokens.redirectionFds?.[position];
+		if (target === "/dev/null" && operator !== "<>" && operator !== "<<" && operator !== "<<<"
+			&& (sourceFd === undefined || isShellFileDescriptor(sourceFd))) continue;
+		if ((operator === ">&" || operator === "<&") && isStandardDescriptor(target) && (sourceFd === undefined || isStandardDescriptor(sourceFd))) continue;
+		return true;
+	}
+	return false;
+}
+
+function isStandardDescriptor(value: string | undefined): boolean {
+	return value === "0" || value === "1" || value === "2";
 }
 
 /**
@@ -902,7 +924,7 @@ function isReadOnlyConditionalTailSegment(tokens: ShellSegment): boolean {
 		const index = redirections[position]!;
 		if (isStaticDescriptorCopy(tokens[index]!, tokens[index + 1], tokens.redirectionFds?.[position])) continue;
 		if (tokens[index] === "<" && tokens[index + 1] && !isShellDynamicDescriptor(tokens.redirectionFds?.[position] ?? "")
-			&& !hasDynamicSyntax(tokens[index + 1]!)) continue;
+			&& !hasDynamicSyntax(tokens[index + 1]!) && !isBashNetworkRedirectionTarget(tokens[index + 1]!)) continue;
 		if (tokens[index] !== ">" || tokens.redirectionFds?.[position] !== "2" || tokens[index + 1] !== "/dev/null") return false;
 	}
 	const argv = redirections ? tokens.slice() : tokens;
