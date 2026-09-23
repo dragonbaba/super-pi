@@ -5,7 +5,7 @@ import fs from "node:fs";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import ts from "typescript";
 import { Agent } from "../packages/agent/src/agent.ts";
 import { createBashTool, createLocalBashOperations, createShellToolDefinition } from "../packages/coding-agent/src/core/tools/bash.ts";
@@ -101,6 +101,8 @@ test("command -v/-V query names and variables without treating them as executabl
   for (const command of [
     'command -v bash',
     'command -V "$candidate"',
+    'command -v 2>/dev/null "${candidate}"',
+    "command -v '${CDPATH:=..}'",
     'for candidate in printf cat; do command -v "$candidate"; done',
     'printf "%s" "$(command -v "$candidate")"',
   ]) {
@@ -115,6 +117,16 @@ test("command -v/-V query names and variables without treating them as executabl
   assert.ok(inspectHighRiskBashMutation({ command: 'command rm -rf synthetic' }, cwd)?.primitives.includes("rm_recursive"));
   assert.ok(inspectHighRiskBashMutation({ command: 'exec rm -rf synthetic' }, cwd)?.primitives.includes("rm_recursive"));
   assert.ok(inspectHighRiskBashMutation({ command: 'for t in synthetic; do rm -rf "$t"; done' }, cwd)?.primitives.includes("rm_recursive"));
+  for (const command of [
+    "command -v ${CDPATH:=..}; cd synthetic; printf data >.git/config",
+    "command -V \"$((CDPATH=1))\"; cd synthetic; printf data >.git/config",
+    "command -v 2>/dev/null ${CDPATH:=..}; cd synthetic; printf data >.git/config",
+    "command -v \"${CDPATH:=..}\"; cd synthetic; printf data >.git/config",
+  ]) {
+    assert.match(inspectBashResourceLifecycle({ command }) ?? "", /SHELL_UNINSPECTABLE/, command);
+    assert.equal(inspectHighRiskBashMutation({ command }, cwd)?.unverifiableScope, true, command);
+    assert.equal(inspectBashPermissionScope({ command }, cwd)?.unverifiableScope, true, command);
+  }
 });
 
 test("static descriptor copies preserve bounded file targets and order", () => {
@@ -376,6 +388,7 @@ print(struct.unpack_from('<H', d, 0)[0])
       ["failed-left-command-write", "cd missing-synthetic && :; command printf data >.git/config"],
       ["failed-left-printf-v", "cd missing-synthetic && echo; command printf -v PATH .; cat"],
       ["failed-left-printf-n", "cd missing-synthetic && echo; command printf '%n' PATH; cat"],
+      ["query-cdpath", "command -v ${CDPATH:=..}; cd " + basename(fixture) + "; printf data >.git/config"],
       ["pipeline-group-cd", "{ cd subdir; } | cat; printf data >.git/config"],
       ["pipeline-cd", "cd subdir | cat; printf data >.git/config"],
       ["subshell-cd", "(cd subdir); printf data >.git/config"],

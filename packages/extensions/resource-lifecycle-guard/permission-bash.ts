@@ -3,7 +3,7 @@ import { basename, resolve } from "node:path";
 import { hasAmbiguousBashCwd } from "./core.ts";
 import { extractCommandSubstitutions, prepareShellAnalysis } from "./shell-substitution.ts";
 import { parseTimeoutInvocation } from "./timeout-wrapper.ts";
-import { isBashDoubleBracketCloseBoundary, isBashDoubleBracketHead, isBashProcessSubstitutionStart, isBashTestWhitespace, isShellDynamicDescriptor, isShellFileDescriptor, isShellOutputFileRedirection, isStaticDescriptorCopy, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
+import { hasUnsafeCommandQueryOperand, isBashDoubleBracketCloseBoundary, isBashDoubleBracketHead, isBashProcessSubstitutionStart, isBashTestWhitespace, isShellDynamicDescriptor, isShellFileDescriptor, isShellOutputFileRedirection, isStaticDescriptorCopy, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
 
 const MAX_COMMAND_CHARS = 128 * 1024;
 const MAX_SEGMENTS = 64;
@@ -285,6 +285,7 @@ function inspectSegment(tokens: PermissionTokens, cwd: string, depth: number, bu
       return cwd;
     }
     if (command === "command" && (tokens[index + 1] === "-v" || tokens[index + 1] === "-V")) {
+      if (hasUnsafeCommandQueryOperand(tokens, index + 2)) { markOpaque(builder, "unverifiable_command_query"); return cwd; }
       addClass(builder, "read:command-query");
       return cwd;
     }
@@ -357,7 +358,7 @@ function inspectSegment(tokens: PermissionTokens, cwd: string, depth: number, bu
   return cwd;
 }
 
-type PermissionTokens = string[] & { redirections?: number[]; redirectionFds?: (string | undefined)[]; firstWordQuoted?: boolean; secondWordQuoted?: boolean; bashTestOpenAt?: number; bashTestClosed?: boolean; bashTestProcessSubstitution?: boolean };
+type PermissionTokens = string[] & { expansions?: number[]; redirections?: number[]; redirectionFds?: (string | undefined)[]; firstWordQuoted?: boolean; secondWordQuoted?: boolean; bashTestOpenAt?: number; bashTestClosed?: boolean; bashTestProcessSubstitution?: boolean };
 
 function inspectTokenBuffer(tokens: PermissionTokens, cwd: string, depth: number, builder: ScopeBuilder): string {
   if (tokens.length === 0) return cwd;
@@ -444,6 +445,15 @@ function inspectScript(command: string, initialCwd: string, depth: number, build
       tokenStarted = true;
       continue;
     }
+    if (quote !== 39 && (code === 36 || code === 96)) {
+      const flags = code === 96 || command.charCodeAt(index + 1) === 40 ? 4 : 1;
+      const expansions = tokens.expansions ??= [];
+      expansions[tokens.length] = (expansions[tokens.length] ?? 0) | flags;
+    }
+    if (quote === 0 && (code === 123 || code === 125)) {
+      const expansions = tokens.expansions ??= [];
+      expansions[tokens.length] = (expansions[tokens.length] ?? 0) | 8;
+    }
     if (quote !== 0) {
       if (code === quote) quote = 0;
       else value += command[index];
@@ -527,6 +537,7 @@ function inspectScript(command: string, initialCwd: string, depth: number, build
       tokens.length = 0;
       if (tokens.redirections) tokens.redirections.length = 0;
       if (tokens.redirectionFds) tokens.redirectionFds.length = 0;
+      if (tokens.expansions) tokens.expansions.length = 0;
       tokens.bashTestOpenAt = undefined;
       tokens.bashTestClosed = undefined;
       tokens.bashTestProcessSubstitution = undefined;

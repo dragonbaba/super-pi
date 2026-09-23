@@ -27,7 +27,7 @@ import {
 } from "./regex.ts";
 import { extractCommandSubstitutions, inspectHereDocuments, prepareShellAnalysis } from "./shell-substitution.ts";
 import { parseTimeoutInvocation } from "./timeout-wrapper.ts";
-import { isBashDoubleBracketCloseBoundary, isBashDoubleBracketHead, isBashProcessSubstitutionStart, isBashTestWhitespace, isShellDynamicDescriptor, isShellFileDescriptor, isShellOutputFileRedirection, isStaticDescriptorCopy, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
+import { hasUnsafeCommandQueryOperand, isBashDoubleBracketCloseBoundary, isBashDoubleBracketHead, isBashProcessSubstitutionStart, isBashTestWhitespace, isShellDynamicDescriptor, isShellFileDescriptor, isShellOutputFileRedirection, isStaticDescriptorCopy, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
 import { FD_DUPLICATION_PATTERN } from "./regex.ts";
 import { diagnosticForPrimitives, policyMetadata, renderPolicyDiagnostic, type PolicyDiagnosticMetadata } from "./policy-diagnostics.ts";
 
@@ -164,6 +164,7 @@ function inspectLifecycleScript(source: string, depth: number, nativePowerShellA
    if (prefix === "command" && (tokens[index + 1] === "-v" || tokens[index + 1] === "-V")) {
     // Query operands are names to inspect, never executable positions. Nested
     // substitutions were inspected above before this branch.
+    if (hasUnsafeCommandQueryOperand(tokens, index + 2)) return lifecycleRefusal("SHELL_UNINSPECTABLE", "command query operand has state-changing or uncertain expansion", "use literal names or simple variable references");
     index = tokens.length;
     break;
    }
@@ -417,7 +418,7 @@ function inspectShellScript(script: string, initialCwd: string, depth: number, b
 }
 
 function inspectCommand(
-	tokens: readonly string[],
+	tokens: ShellSegment,
 	commandIndex: number,
 	command: string,
 	cwd: string,
@@ -427,7 +428,10 @@ function inspectCommand(
 	if (command === "command" || command === "exec") {
 		if (tokens[commandIndex] !== command) { addPrimitive(builder, "unverifiable_launcher"); markUnverifiable(builder); return; }
 		if (depth >= MAX_WRAPPER_DEPTH) { addPrimitive(builder, "unverifiable_launcher"); markUnverifiable(builder); return; }
-		if (command === "command" && (tokens[commandIndex + 1] === "-v" || tokens[commandIndex + 1] === "-V")) return;
+		if (command === "command" && (tokens[commandIndex + 1] === "-v" || tokens[commandIndex + 1] === "-V")) {
+			if (hasUnsafeCommandQueryOperand(tokens, commandIndex + 2)) { addPrimitive(builder, "unverifiable_command_query"); markUnverifiable(builder); }
+			return;
+		}
 		const next = tokens[commandIndex + 1];
 		if (!next || next.startsWith("-")) { addPrimitive(builder, "unverifiable_launcher"); markUnverifiable(builder); return; }
 		inspectCommand(tokens, commandIndex + 1, commandName(next), cwd, depth + 1, builder);

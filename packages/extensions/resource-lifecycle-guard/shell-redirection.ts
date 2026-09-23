@@ -62,15 +62,61 @@ export function isShellFileDescriptor(value: string): boolean {
   return true;
 }
 
+/** Query operands may expand simple variables, but operators can mutate Bash state. */
+export function hasUnsafeCommandQueryOperand(tokens: readonly string[] & { expansions?: readonly number[] }, start: number): boolean {
+  for (let index = start; index < tokens.length; index++) {
+    const flags = tokens.expansions?.[index] ?? 0;
+    if (flags === 0) continue;
+    if ((flags & 4) !== 0 || !hasOnlySimpleQueryVariables(tokens[index]!)) return true;
+  }
+  return false;
+}
+
+function hasOnlySimpleQueryVariables(value: string): boolean {
+  let found = false;
+  for (let index = 0; index < value.length; index++) {
+    const code = value.charCodeAt(index);
+    if (code === 96 || code === 123 || code === 125) return false;
+    if (code !== 36) continue;
+    found = true;
+    if (value.charCodeAt(index + 1) === 123) {
+      index += 2;
+      if (!isQueryVariableStart(value.charCodeAt(index))) return false;
+      while (isQueryVariablePart(value.charCodeAt(index + 1))) index++;
+      if (value.charCodeAt(index + 1) !== 125) return false;
+      index++;
+    } else {
+      index++;
+      if (!isQueryVariableStart(value.charCodeAt(index))) return false;
+      while (isQueryVariablePart(value.charCodeAt(index + 1))) index++;
+    }
+  }
+  return found;
+}
+
+function isQueryVariableStart(code: number): boolean {
+  return code === 95 || (code >= 65 && code <= 90) || (code >= 97 && code <= 122);
+}
+
+function isQueryVariablePart(code: number): boolean {
+  return isQueryVariableStart(code) || (code >= 48 && code <= 57);
+}
+
 /** argv compaction retains operands after interleaved redirections. Call-owned. */
-export function stripShellRedirections(tokens: string[], redirections: readonly number[]): void {
+export function stripShellRedirections(tokens: string[] & { expansions?: number[] }, redirections: readonly number[]): void {
   let output = 0;
   let redirect = 0;
+  const expansions = tokens.expansions;
   for (let index = 0; index < tokens.length; index++) {
     if (index === redirections[redirect]) {
       redirect++;
       if (index + 1 < tokens.length && index + 1 !== redirections[redirect]) index++;
-    } else tokens[output++] = tokens[index]!;
+    } else {
+      tokens[output] = tokens[index]!;
+      if (expansions) expansions[output] = expansions[index] ?? 0;
+      output++;
+    }
   }
   tokens.length = output;
+  if (expansions) expansions.length = output;
 }
