@@ -46,8 +46,8 @@ export function isBashDoubleBracketCloseBoundary(source: string, index: number):
     || code === 38 || code === 124 || code === 41 || code === 60 || code === 62;
 }
 
-/** Find the binding word of an unquoted for/select header. */
-export function bashLoopVariableIndex(tokens: readonly string[] & { firstWordQuoted?: boolean; secondWordQuoted?: boolean }): number {
+/** Index of a for/select keyword after bounded control and `!`/`time` prefixes. */
+function bashLoopKeywordIndex(tokens: readonly string[] & { firstWordQuoted?: boolean; secondWordQuoted?: boolean }): number {
   let index = 0;
   if (tokens[0] === "do" || tokens[0] === "{" || tokens[0] === "then" || tokens[0] === "else") {
     if (tokens.firstWordQuoted) return -1;
@@ -63,18 +63,56 @@ export function bashLoopVariableIndex(tokens: readonly string[] & { firstWordQuo
       if (tokens[index] === "--") index++;
     } else index++;
   }
-  if ((index === 0 && tokens.firstWordQuoted) || (index === 1 && tokens.secondWordQuoted)
+  return index;
+}
+
+/** Find the binding word of an unquoted for/select header. */
+export function bashLoopVariableIndex(tokens: readonly string[] & { firstWordQuoted?: boolean; secondWordQuoted?: boolean }): number {
+  const index = bashLoopKeywordIndex(tokens);
+  if (index < 0 || (index === 0 && tokens.firstWordQuoted) || (index === 1 && tokens.secondWordQuoted)
     || (tokens[index] !== "for" && tokens[index] !== "select")) return -1;
   return index + 1;
 }
 
+/**
+ * Return the `((...))` text of a C-style for header. `for((` tokenizes as one
+ * arithmetic word, so it is recognized regardless of quote flags.
+ */
+export function bashArithmeticForHeader(tokens: readonly string[] & { firstWordQuoted?: boolean; secondWordQuoted?: boolean }): string | undefined {
+  const index = bashLoopKeywordIndex(tokens);
+  if (index < 0) return undefined;
+  const keyword = tokens[index];
+  if (keyword?.startsWith("for((")) return keyword.slice(3);
+  if (keyword !== "for" || (index === 0 && tokens.firstWordQuoted) || (index === 1 && tokens.secondWordQuoted)) return undefined;
+  const header = tokens[index + 1];
+  return header?.startsWith("((") ? header : undefined;
+}
+
+function isLookupSensitiveBashVariable(name: string | undefined): boolean {
+  return name === "PATH" || name === "BASH_ENV" || name === "ENV"
+    || name === "SHELLOPTS" || name === "BASHOPTS" || name === "CDPATH";
+}
+
+function hasLookupSensitiveArithmeticName(expression: string): boolean {
+  let start = -1;
+  for (let index = 0; index <= expression.length; index++) {
+    const code = index < expression.length ? expression.charCodeAt(index) : 0;
+    const word = code === 95 || (code >= 48 && code <= 57) || (code >= 65 && code <= 90) || (code >= 97 && code <= 122);
+    if (word) { if (start < 0) start = index; continue; }
+    if (start >= 0 && isLookupSensitiveBashVariable(expression.slice(start, index))) return true;
+    start = -1;
+  }
+  return false;
+}
+
 /** A loop binding or its in-list expansion can change later shell state. */
 export function unsafeBashForHeaderReason(tokens: readonly string[] & { firstWordQuoted?: boolean; secondWordQuoted?: boolean; expansions?: readonly number[] }): "stateful_loop_variable_assignment" | "stateful_loop_list_expansion" | undefined {
+  const arithmetic = bashArithmeticForHeader(tokens);
+  if (arithmetic !== undefined) return hasLookupSensitiveArithmeticName(arithmetic) ? "stateful_loop_variable_assignment" : undefined;
   const variableIndex = bashLoopVariableIndex(tokens);
   if (variableIndex < 0) return undefined;
   const variable = tokens[variableIndex];
-  if (variable === "PATH" || variable === "BASH_ENV" || variable === "ENV"
-    || variable === "SHELLOPTS" || variable === "BASHOPTS" || variable === "CDPATH") return "stateful_loop_variable_assignment";
+  if (isLookupSensitiveBashVariable(variable)) return "stateful_loop_variable_assignment";
   return tokens[variableIndex + 1] === "in" && hasUnsafeBashLoopListOperand(tokens, variableIndex + 2)
     ? "stateful_loop_list_expansion" : undefined;
 }

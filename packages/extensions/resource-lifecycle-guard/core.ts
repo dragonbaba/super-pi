@@ -27,7 +27,7 @@ import {
 } from "./regex.ts";
 import { extractCommandSubstitutions, inspectHereDocuments, prepareShellAnalysis } from "./shell-substitution.ts";
 import { parseTimeoutInvocation } from "./timeout-wrapper.ts";
-import { bashLoopVariableIndex, unsafeBashForHeaderReason, hasStatefulBashPrintf, hasUnsafeBashTestOperand, hasUnsafeBashLoopListOperand, hasUnsafeCommandQueryOperand, isBashDoubleBracketCloseBoundary, isBashDoubleBracketHead, isBashProcessSubstitutionStart, isBashTestWhitespace, isShellDynamicDescriptor, isShellFileDescriptor, isShellOutputFileRedirection, isSimpleBashAnsiCQuote, isStaticDescriptorCopy, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
+import { bashArithmeticForHeader, bashLoopVariableIndex, unsafeBashForHeaderReason, hasStatefulBashPrintf, hasUnsafeBashTestOperand, hasUnsafeBashLoopListOperand, hasUnsafeCommandQueryOperand, isBashDoubleBracketCloseBoundary, isBashDoubleBracketHead, isBashProcessSubstitutionStart, isBashTestWhitespace, isShellDynamicDescriptor, isShellFileDescriptor, isShellOutputFileRedirection, isSimpleBashAnsiCQuote, isStaticDescriptorCopy, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
 import { FD_DUPLICATION_PATTERN } from "./regex.ts";
 import { diagnosticForPrimitives, policyMetadata, renderPolicyDiagnostic, type PolicyDiagnosticMetadata } from "./policy-diagnostics.ts";
 
@@ -763,8 +763,18 @@ function unsafeBashLoopHeaders(segments: readonly ShellSegment[]): ReturnType<ty
 	return undefined;
 }
 
-export function unsafeBashLoopHeaderReason(command: string): ReturnType<typeof unsafeBashForHeaderReason> {
-	return unsafeBashLoopHeaders(parseShellSegments(command));
+/**
+ * Permission scope also treats every C-style for header as opaque, matching
+ * standalone `((...))`: arithmetic can assign through recursive variable values.
+ */
+export function unsafeBashLoopHeaderReason(command: string): ReturnType<typeof unsafeBashForHeaderReason> | "opaque_arithmetic_loop_header" {
+	const segments = parseShellSegments(command);
+	const reason = unsafeBashLoopHeaders(segments);
+	if (reason) return reason;
+	for (let index = 0; index < segments.length; index++) {
+		if (bashArithmeticForHeader(segments[index]!) !== undefined) return "opaque_arithmetic_loop_header";
+	}
+	return undefined;
 }
 
 function afterLeadingRedirection(tokens: ShellSegment, index: number): number {

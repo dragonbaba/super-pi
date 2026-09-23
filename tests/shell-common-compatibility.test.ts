@@ -189,6 +189,29 @@ test("lookup-sensitive Bash for variables cannot make later command lookup read-
   assert.equal(inspectHighRiskBashMutation({ command: "printf '%s' 'for PATH in .'" }, cwd), undefined);
 });
 
+test("C-style Bash for headers cannot make later command lookup read-only", () => {
+  for (const command of [
+    "for (( PATH=0; 0; )); do printf ok; done; cat",
+    "for((PATH=0;0;)); do printf ok; done; cat",
+    "time -p for (( CDPATH=1; 0; )); do printf ok; done; cd workspace",
+    "for (( i=0; i<1; BASH_ENV=1 )); do printf ok; done; bash -c 'printf ok'",
+  ]) {
+    assert.match(inspectBashResourceLifecycle({ command }) ?? "", /SHELL_UNINSPECTABLE/, command);
+    const high = inspectHighRiskBashMutation({ command }, cwd);
+    assert.equal(high?.unverifiableScope, true, command);
+    assert.ok(high?.primitives.includes("stateful_loop_variable_assignment"), command);
+    assert.equal(inspectBashPermissionScope({ command }, cwd)?.unverifiableScope, true, command);
+  }
+  // Referenced values are evaluated recursively, so permission scope cannot prove any arithmetic header read-only.
+  for (const command of ["for ((i=0; i < 2; i++)); do printf ok; done", "for((i=0;i<2;i++)); do printf ok; done", "v=PATH=0; for (( v; 0; )); do printf ok; done; cat"]) {
+    const scope = inspectBashPermissionScope({ command }, cwd);
+    assert.equal(scope?.unverifiableScope, true, command);
+    assert.ok(scope?.primitives.includes("opaque_arithmetic_loop_header"), command);
+  }
+  assert.equal(inspectBashResourceLifecycle({ command: "for ((i=0; i < 2; i++)); do printf ok; done" }), undefined);
+  assert.equal(inspectBashPermissionScope({ command: "printf '%s' 'for ((PATH=0;0;))'" }, cwd)?.kind, "read-only");
+});
+
 test("negated Bash string comparisons remain read-only", () => {
   for (const command of ["! [[ a < b ]]", "! [[ b > a ]]", "! [[ a < b ]] && printf ok"]) {
     assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
