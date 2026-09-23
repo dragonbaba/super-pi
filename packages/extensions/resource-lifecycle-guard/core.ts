@@ -27,7 +27,7 @@ import {
 } from "./regex.ts";
 import { extractCommandSubstitutions, inspectHereDocuments, prepareShellAnalysis } from "./shell-substitution.ts";
 import { parseTimeoutInvocation } from "./timeout-wrapper.ts";
-import { hasLookupSensitiveBashForHeader, hasStatefulBashPrintf, hasUnsafeBashTestOperand, hasUnsafeCommandQueryOperand, isBashDoubleBracketCloseBoundary, isBashDoubleBracketHead, isBashProcessSubstitutionStart, isBashTestWhitespace, isShellDynamicDescriptor, isShellFileDescriptor, isShellOutputFileRedirection, isSimpleBashAnsiCQuote, isStaticDescriptorCopy, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
+import { unsafeBashForHeaderReason, hasStatefulBashPrintf, hasUnsafeBashTestOperand, hasUnsafeCommandQueryOperand, isBashDoubleBracketCloseBoundary, isBashDoubleBracketHead, isBashProcessSubstitutionStart, isBashTestWhitespace, isShellDynamicDescriptor, isShellFileDescriptor, isShellOutputFileRedirection, isSimpleBashAnsiCQuote, isStaticDescriptorCopy, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
 import { FD_DUPLICATION_PATTERN } from "./regex.ts";
 import { diagnosticForPrimitives, policyMetadata, renderPolicyDiagnostic, type PolicyDiagnosticMetadata } from "./policy-diagnostics.ts";
 
@@ -133,7 +133,8 @@ function inspectLifecycleScript(source: string, depth: number, nativePowerShellA
  const segments = parseShellSegments(command);
  if (segments.length > MAX_SCRIPT_SEGMENTS) return lifecycleRefusal("SHELL_INSPECTION_LIMIT", "too many command segments", "reduce the number of segments");
  for (const tokens of segments) {
-  if (hasLookupSensitiveBashForHeader(tokens)) return lifecycleRefusal("SHELL_UNINSPECTABLE", "for loop variable can change later executable lookup", "use a loop variable that does not change shell lookup");
+  const loopReason = unsafeBashForHeaderReason(tokens);
+  if (loopReason) return lifecycleRefusal("SHELL_UNINSPECTABLE", loopReason === "stateful_loop_list_expansion" ? "for list expansion can change later shell state" : "for loop variable can change later executable lookup", "use a literal list or simple variable reference without shell-state changes");
   if (tokens.bashTestProcessSubstitution) return lifecycleRefusal("SHELL_UNINSPECTABLE", "process substitution inside a Bash test cannot be safely inspected", "split the process substitution into separately inspectable commands");
   if (hasUnsafeBashTestOperand(tokens)) return lifecycleRefusal("SHELL_UNINSPECTABLE", "Bash test operand may change shell state or evaluate arithmetic", "use simple variable tests or literal numeric comparisons");
   // The global filter is only an optimization; unrelated segments supply no
@@ -398,7 +399,8 @@ function inspectShellScript(script: string, initialCwd: string, depth: number, b
 		}
 		const tokens = segment;
 		if (tokens.length === 0) continue;
-		if (hasLookupSensitiveBashForHeader(tokens)) { addPrimitive(builder, "stateful_loop_variable_assignment"); markUnverifiable(builder); }
+		const loopReason = unsafeBashForHeaderReason(tokens);
+		if (loopReason) { addPrimitive(builder, loopReason); markUnverifiable(builder); }
 		if (tokens.bashTestProcessSubstitution) { addPrimitive(builder, "unverifiable_process_substitution"); markUnverifiable(builder); continue; }
 		if (hasUnsafeBashTestOperand(tokens)) { addPrimitive(builder, "unverifiable_bash_test_operand"); markUnverifiable(builder); }
 		inspectOutputRedirections(tokens, workingDirectory, builder);
@@ -765,7 +767,8 @@ export function hasAmbiguousBashCwd(command: string): boolean {
 			if (controlIndex > 0) return true;
 			// The RHS of `cd path && ...` only runs after a successful cd. A later
 			// independent command is safe only when its effects are provably read-only.
-			if (tokens.separatorAfter === "&&" && hasOnlyReadOnlyConditionalTail(segments, segmentIndex)) continue;
+			if (!tokens.subshellDepth && !tokens.pipelineMember && tokens.separatorAfter === "&&"
+				&& hasOnlyReadOnlyConditionalTail(segments, segmentIndex)) continue;
 			return true;
 		}
 	}

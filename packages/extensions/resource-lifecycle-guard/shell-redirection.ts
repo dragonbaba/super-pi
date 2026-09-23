@@ -38,24 +38,26 @@ export function isBashDoubleBracketCloseBoundary(source: string, index: number):
     || code === 38 || code === 124 || code === 41 || code === 60 || code === 62;
 }
 
-/** A for variable can persist after the loop and change later shell lookup. */
-export function hasLookupSensitiveBashForHeader(tokens: readonly string[] & { firstWordQuoted?: boolean; secondWordQuoted?: boolean }): boolean {
+/** A for variable or its in-list expansion can change later shell state. */
+export function unsafeBashForHeaderReason(tokens: readonly string[] & { firstWordQuoted?: boolean; secondWordQuoted?: boolean; expansions?: readonly number[] }): "stateful_loop_variable_assignment" | "stateful_loop_list_expansion" | undefined {
   let index = 0;
   if (tokens[0] === "do" || tokens[0] === "{" || tokens[0] === "then" || tokens[0] === "else") {
-    if (tokens.firstWordQuoted) return false;
+    if (tokens.firstWordQuoted) return undefined;
     index++;
   }
   let prefixes = 0;
   while (tokens[index] === "!" || tokens[index] === "time") {
-    if ((index === 0 && tokens.firstWordQuoted) || (index === 1 && tokens.secondWordQuoted)) return false;
-    if (++prefixes > 4) return false;
+    if ((index === 0 && tokens.firstWordQuoted) || (index === 1 && tokens.secondWordQuoted)) return undefined;
+    if (++prefixes > 4) return undefined;
     if (tokens[index] === "time" && tokens[index + 1] === "-p") index++;
     index++;
   }
-  if ((index === 0 && tokens.firstWordQuoted) || (index === 1 && tokens.secondWordQuoted) || tokens[index] !== "for") return false;
+  if ((index === 0 && tokens.firstWordQuoted) || (index === 1 && tokens.secondWordQuoted) || tokens[index] !== "for") return undefined;
   const variable = tokens[index + 1];
-  return variable === "PATH" || variable === "BASH_ENV" || variable === "ENV"
-    || variable === "SHELLOPTS" || variable === "BASHOPTS" || variable === "CDPATH";
+  if (variable === "PATH" || variable === "BASH_ENV" || variable === "ENV"
+    || variable === "SHELLOPTS" || variable === "BASHOPTS" || variable === "CDPATH") return "stateful_loop_variable_assignment";
+  return tokens[index + 2] === "in" && hasUnsafeCommandQueryOperand(tokens, index + 3)
+    ? "stateful_loop_list_expansion" : undefined;
 }
 
 /** Only a numeric, literal descriptor copy is inspectable; closure and moves remain opaque. */

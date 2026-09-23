@@ -465,6 +465,242 @@ test("runtime status keeps a leading script exception visible to error classific
   } finally { agent.abort(); }
 });
 
+async function guardedCwdBoundaryFixture(workspace: string, shellPath: string) {
+  const jiti = createJiti(import.meta.url);
+  const { default: lifecycle } = await jiti.import<any>("../packages/extensions/resource-lifecycle-guard/index.ts");
+  const runtime = createExtensionRuntime();
+  const sessionManager = SessionManager.inMemory(workspace);
+  const runner = new ExtensionRunner(
+    [await loadExtensionFromFactory((pi: any) => lifecycle(pi), workspace, createEventBus(), runtime)],
+    runtime, workspace, sessionManager, {} as never,
+  );
+  let executions = 0;
+  let decision = "仅允许本次";
+  const approvals: string[] = [];
+  const agent = new Agent({
+    streamFn: () => { throw new Error("offline provider must not be called"); },
+    beforeToolCall: async ({ toolCall, args }) => runner.emitToolCall({
+      type: "tool_call", toolName: toolCall.name, toolCallId: toolCall.id, input: args as Record<string, unknown>,
+    } as never),
+  });
+  runner.bindCore({ getThinkingLevel: () => "off", getActiveTools: () => ["bash"],
+    appendEntry: (type: string, data: unknown) => { sessionManager.appendCustomEntry(type, data); },
+  } as never, {
+    getSignal: () => agent.signal, isProjectTrusted: () => false, getModel: () => agent.state.model,
+    isIdle: () => !agent.state.isStreaming, abort: () => agent.abort(), hasPendingMessages: () => false,
+  } as never);
+  runner.setUIContext({ ...runner.getUIContext(), select: async (_title: any, _choices: any, options: any) => {
+    approvals.push(options?.details ?? "");
+    return decision;
+  } }, "tui");
+  const local = createLocalBashOperations({ shellPath });
+  agent.state.tools = [createBashTool(workspace, { exposeSessionEnvironment: false, operations: {
+    exec: (command, executionCwd, options) => { executions++; return local.exec(command, executionCwd, options); },
+  } })];
+  await runner.emit({ type: "session_start" } as never);
+  return {
+    agent, approvals,
+    get executions() { return executions; },
+    setDecision(choice: string) { decision = choice; },
+    async setMode(mode: "read-only" | "workspace-write") {
+      await runner.getCommand("permissions")!.handler(mode, runner.createContext() as never);
+    },
+    async close() {
+      agent.abort();
+      runner.invalidate();
+      await runner.emit({ type: "session_shutdown" } as never);
+    },
+  };
+}
+
+async function assertBoundaryRefusedBeforeSpawn(
+  fixture: Awaited<ReturnType<typeof guardedCwdBoundaryFixture>>,
+  workspace: string, id: string, command: string, paths: readonly string[],
+) {
+  const executions = fixture.executions;
+  const approvals = fixture.approvals.length;
+  const result = await fixture.agent.dispatchHostTool({ type: "toolCall", id, name: "bash", arguments: { command } });
+  assert.equal(fixture.executions, executions, JSON.stringify({ result, approvals: fixture.approvals, predicted: inspectHighRiskBashMutation({ command }, workspace) }));
+  assert.equal(fixture.approvals.length, approvals, "unsafe cwd must be refused before authorization choices");
+  assert.equal(result.isError, true);
+  assert.equal((result.details as any).executionStatus, "not_executed");
+  for (const path of paths) assert.equal(existsSync(path), false, path);
+  return result;
+}
+
+test("subshell cwd never authorizes a later parent-shell write at the child path", async (t) => {
+  const shellPath = findTestBash();
+  if (!shellPath || !existsSync(shellPath)) {
+    if (process.env.CI) assert.fail("Required Bash integration test could not find Git Bash or /bin/bash");
+    t.skip("Bash unavailable");
+    return;
+  }
+  const workspace = mkdtempSync(join(tmpdir(), "sp-shell-subshell-cwd-"));
+  mkdirSync(join(workspace, "subdir"));
+  mkdirSync(join(workspace, ".git"));
+  mkdirSync(join(workspace, "subdir", ".git"));
+  const command = "(cd subdir && printf inner) && printf marker >cwd-marker.txt";
+  const marker = join(workspace, "cwd-marker.txt");
+  const wrongMarker = join(workspace, "subdir", "cwd-marker.txt");
+  let fixture: Awaited<ReturnType<typeof guardedCwdBoundaryFixture>> | undefined;
+  try {
+    execFileSync(shellPath, ["-c", command], { cwd: workspace, encoding: "utf8" });
+    assert.equal(readFileSync(marker, "utf8"), "marker", "direct Bash writes in the parent shell cwd");
+    assert.equal(existsSync(wrongMarker), false);
+    unlinkSync(marker);
+
+    fixture = await guardedCwdBoundaryFixture(workspace, shellPath);
+    await fixture.setMode("read-only");
+    assert.match(inspectBashResourceLifecycle({ command }) ?? "", /SHELL_UNINSPECTABLE/);
+    assert.equal(inspectHighRiskBashMutation({ command }, workspace)?.unverifiableScope, true);
+    assert.equal(inspectBashPermissionScope({ command }, workspace)?.unverifiableScope, true);
+    const blocked = await assertBoundaryRefusedBeforeSpawn(fixture, workspace, "subshell-cwd", command, [marker, wrongMarker]);
+    const protectedRoot = join(workspace, ".git", "config");
+    const fakeProtected = join(workspace, "subdir", ".git", "config");
+    await assertBoundaryRefusedBeforeSpawn(fixture, workspace, "subshell-protected-read-only",
+      "(cd subdir && printf inner) && printf marker >.git/config", [protectedRoot, fakeProtected]);
+    for (const [id, nested] of [
+      ["closed-subshell", "(cd subdir); printf marker >closed-marker.txt"],
+      ["nested-subshell", "( ( cd subdir && printf inner ) ) && printf marker >nested-marker.txt"],
+      ["pipeline-subshell", "(cd subdir && printf inner) | cat && printf marker >pipeline-marker.txt"],
+      ["loop-subshell", "for candidate in one; do (cd subdir && printf inner); done; printf marker >looped-marker.txt"],
+    ]) {
+      const name = id === "closed-subshell" ? "closed-marker.txt" : id === "nested-subshell" ? "nested-marker.txt"
+        : id === "pipeline-subshell" ? "pipeline-marker.txt" : "looped-marker.txt";
+      await assertBoundaryRefusedBeforeSpawn(fixture, workspace, id, nested,
+        [join(workspace, name), join(workspace, "subdir", name)]);
+    }
+
+    fixture.setDecision("拒绝");
+    const deniedCommand = "cd subdir && printf marker >denied-same-shell.txt";
+    const beforeDenied = fixture.executions;
+    const denied = await fixture.agent.dispatchHostTool({ type: "toolCall", id: "same-shell-denied", name: "bash", arguments: { command: deniedCommand } });
+    assert.equal(denied.isError, true);
+    assert.equal(fixture.executions, beforeDenied);
+    assert.equal(existsSync(join(workspace, "subdir", "denied-same-shell.txt")), false);
+
+    fixture.setDecision("仅允许本次");
+    const allowed = await fixture.agent.dispatchHostTool({ type: "toolCall", id: "same-shell-allowed", name: "bash", arguments: { command: "cd subdir && printf marker >same-shell-marker.txt" } });
+    assert.equal(allowed.isError, false, JSON.stringify(allowed));
+    assert.equal(readFileSync(join(workspace, "subdir", "same-shell-marker.txt"), "utf8"), "marker");
+    assert.equal(existsSync(join(workspace, "same-shell-marker.txt")), false);
+    assert.match(fixture.approvals.at(-1)!, /subdir[\\/]same-shell-marker\.txt/);
+
+    await fixture.setMode("workspace-write");
+    const beforeAutoApprovals = fixture.approvals.length;
+    await assertBoundaryRefusedBeforeSpawn(fixture, workspace, "subshell-protected-workspace",
+      "(cd subdir && printf inner) && printf marker >.git/config", [protectedRoot, fakeProtected]);
+    await assertBoundaryRefusedBeforeSpawn(fixture, workspace, "subshell-marker-workspace", command, [marker, wrongMarker]);
+    const auto = await fixture.agent.dispatchHostTool({ type: "toolCall", id: "same-shell-workspace", name: "bash", arguments: { command: "cd subdir && printf marker >same-shell-auto.txt" } });
+    assert.equal(auto.isError, false, JSON.stringify(auto));
+    assert.equal(readFileSync(join(workspace, "subdir", "same-shell-auto.txt"), "utf8"), "marker");
+    assert.ok(fixture.approvals.length === beforeAutoApprovals || fixture.approvals.length === beforeAutoApprovals + 1);
+    if (fixture.approvals.length > beforeAutoApprovals) assert.match(fixture.approvals.at(-1)!, /subdir[\\/]same-shell-auto\.txt/);
+
+    const saved = SessionManager.create(workspace, join(workspace, "sessions"));
+    saved.appendMessage(blocked);
+    saved.ensureOperationStorage();
+    const beforeReopen = fixture.executions;
+    assert.equal((SessionManager.open(saved.getSessionFile()!).getBranch().find(entry => entry.type === "message") as any).message.details.executionStatus, "not_executed");
+    assert.equal(fixture.executions, beforeReopen, "session reopen must not replay a refused command");
+  } finally {
+    await fixture?.close();
+    rmSync(workspace, { recursive: true });
+  }
+});
+
+test("for-list assignment expansion cannot authorize the wrong cwd", async (t) => {
+  const shellPath = findTestBash();
+  if (!shellPath || !existsSync(shellPath)) {
+    if (process.env.CI) assert.fail("Required Bash integration test could not find Git Bash or /bin/bash");
+    t.skip("Bash unavailable");
+    return;
+  }
+  const parent = mkdtempSync(join(tmpdir(), "sp-shell-for-cwd-"));
+  const workspace = join(parent, "workspace");
+  mkdirSync(workspace);
+  mkdirSync(join(workspace, "workspace"));
+  const command = "for candidate in ${CDPATH:=..}; do printf ok; done; cd workspace; printf marker >loop-marker.txt";
+  const marker = join(workspace, "loop-marker.txt");
+  const wrongMarker = join(workspace, "workspace", "loop-marker.txt");
+  const originalCdpath = process.env.CDPATH;
+  let fixture: Awaited<ReturnType<typeof guardedCwdBoundaryFixture>> | undefined;
+  delete process.env.CDPATH;
+  try {
+    execFileSync(shellPath, ["-c", command], { cwd: workspace, encoding: "utf8" });
+    assert.equal(readFileSync(marker, "utf8"), "marker", "direct Bash resolves CDPATH to the outer workspace");
+    assert.equal(existsSync(wrongMarker), false);
+    unlinkSync(marker);
+
+    fixture = await guardedCwdBoundaryFixture(workspace, shellPath);
+    await fixture.setMode("read-only");
+    assert.match(inspectBashResourceLifecycle({ command }) ?? "", /SHELL_UNINSPECTABLE/);
+    assert.equal(inspectHighRiskBashMutation({ command }, workspace)?.unverifiableScope, true);
+    assert.equal(inspectBashPermissionScope({ command }, workspace)?.unverifiableScope, true);
+    const blocked = await assertBoundaryRefusedBeforeSpawn(fixture, workspace, "for-list-cwd", command, [marker, wrongMarker]);
+    const quoted = "for candidate in \"${CDPATH:=..}\"; do printf ok; done; cd workspace; printf marker >double-marker.txt";
+    await assertBoundaryRefusedBeforeSpawn(fixture, workspace, "for-list-double-quoted", quoted,
+      [join(workspace, "double-marker.txt"), join(workspace, "workspace", "double-marker.txt")]);
+    for (const [id, list] of [
+      ["for-list-arithmetic", "$((CDPATH=1))"],
+      ["for-list-substitution", "$(printf ..)"],
+    ]) {
+      const unsafe = `for candidate in ${list}; do printf ok; done; cd workspace; printf marker >${id}.txt`;
+      assert.equal(inspectHighRiskBashMutation({ command: unsafe }, workspace)?.unverifiableScope, true);
+      assert.equal(inspectBashPermissionScope({ command: unsafe }, workspace)?.unverifiableScope, true);
+      await assertBoundaryRefusedBeforeSpawn(fixture, workspace, id, unsafe,
+        [join(workspace, `${id}.txt`), join(workspace, "workspace", `${id}.txt`)]);
+    }
+    const protectedRoot = join(workspace, ".git", "config");
+    const fakeProtected = join(workspace, "workspace", ".git", "config");
+    mkdirSync(join(workspace, ".git"));
+    mkdirSync(join(workspace, "workspace", ".git"));
+    const protectedCommand = "for candidate in ${CDPATH:=..}; do printf ok; done; cd workspace; printf marker >.git/config";
+    await assertBoundaryRefusedBeforeSpawn(fixture, workspace, "for-list-protected-read-only", protectedCommand,
+      [protectedRoot, fakeProtected]);
+
+    const literalCommand = "for candidate in one two; do printf ok; done; cd workspace; printf marker >literal-marker.txt";
+    const literal = await fixture.agent.dispatchHostTool({ type: "toolCall", id: "for-list-literal", name: "bash", arguments: { command: literalCommand } });
+    assert.equal(literal.isError, false, JSON.stringify(literal));
+    assert.equal(readFileSync(join(workspace, "workspace", "literal-marker.txt"), "utf8"), "marker");
+    assert.equal(existsSync(join(workspace, "literal-marker.txt")), false);
+    assert.match(fixture.approvals.at(-1)!, /workspace[\\/]workspace[\\/]literal-marker\.txt/);
+
+    await fixture.setMode("workspace-write");
+    const beforeAutoApprovals = fixture.approvals.length;
+    await assertBoundaryRefusedBeforeSpawn(fixture, workspace, "for-list-workspace", command, [marker, wrongMarker]);
+    await assertBoundaryRefusedBeforeSpawn(fixture, workspace, "for-list-protected-workspace", protectedCommand,
+      [protectedRoot, fakeProtected]);
+    const singleQuoted = await fixture.agent.dispatchHostTool({ type: "toolCall", id: "for-list-single-quoted", name: "bash", arguments: {
+      command: "for candidate in '${CDPATH:=..}'; do printf ok; done; cd workspace; printf marker >single-marker.txt",
+    } });
+    assert.equal(singleQuoted.isError, false, JSON.stringify(singleQuoted));
+    assert.equal(readFileSync(join(workspace, "workspace", "single-marker.txt"), "utf8"), "marker");
+    assert.equal(existsSync(join(workspace, "single-marker.txt")), false);
+    assert.ok(fixture.approvals.length === beforeAutoApprovals || fixture.approvals.length === beforeAutoApprovals + 1);
+    if (fixture.approvals.length > beforeAutoApprovals) assert.match(fixture.approvals.at(-1)!, /workspace[\\/]workspace[\\/]single-marker\.txt/);
+    await fixture.setMode("read-only");
+    const beforeQueryApprovals = fixture.approvals.length;
+    const query = await fixture.agent.dispatchHostTool({ type: "toolCall", id: "for-list-simple-query", name: "bash", arguments: {
+      command: 'for candidate in "$HOME"; do command -v printf; done',
+    } });
+    assert.equal(query.isError, false, JSON.stringify(query));
+    assert.equal(fixture.approvals.length, beforeQueryApprovals);
+
+    const saved = SessionManager.create(workspace, join(workspace, "sessions"));
+    saved.appendMessage(blocked);
+    saved.ensureOperationStorage();
+    const beforeReopen = fixture.executions;
+    assert.equal((SessionManager.open(saved.getSessionFile()!).getBranch().find(entry => entry.type === "message") as any).message.details.executionStatus, "not_executed");
+    assert.equal(fixture.executions, beforeReopen, "session reopen must not replay a refused command");
+  } finally {
+    await fixture?.close();
+    if (originalCdpath === undefined) delete process.env.CDPATH;
+    else process.env.CDPATH = originalCdpath;
+    rmSync(parent, { recursive: true });
+  }
+});
+
 test("real guard, authorization, Bash and tool-result path handle three feedback command shapes", async (t) => {
   const shellPath = findTestBash();
   if (!shellPath || !existsSync(shellPath)) {

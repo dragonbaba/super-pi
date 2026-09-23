@@ -3,7 +3,7 @@ import { basename, resolve } from "node:path";
 import { hasAmbiguousBashCwd } from "./core.ts";
 import { extractCommandSubstitutions, prepareShellAnalysis } from "./shell-substitution.ts";
 import { parseTimeoutInvocation } from "./timeout-wrapper.ts";
-import { hasLookupSensitiveBashForHeader, hasStatefulBashPrintf, hasUnsafeBashTestOperand, hasUnsafeCommandQueryOperand, isBashDoubleBracketCloseBoundary, isBashDoubleBracketHead, isBashProcessSubstitutionStart, isBashTestWhitespace, isShellDynamicDescriptor, isShellFileDescriptor, isShellOutputFileRedirection, isSimpleBashAnsiCQuote, isStaticDescriptorCopy, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
+import { unsafeBashForHeaderReason, hasStatefulBashPrintf, hasUnsafeBashTestOperand, hasUnsafeCommandQueryOperand, isBashDoubleBracketCloseBoundary, isBashDoubleBracketHead, isBashProcessSubstitutionStart, isBashTestWhitespace, isShellDynamicDescriptor, isShellFileDescriptor, isShellOutputFileRedirection, isSimpleBashAnsiCQuote, isStaticDescriptorCopy, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
 
 const MAX_COMMAND_CHARS = 128 * 1024;
 const MAX_SEGMENTS = 64;
@@ -390,7 +390,8 @@ function inspectTokenBuffer(tokens: PermissionTokens, cwd: string, depth: number
     markOpaque(builder, "unverifiable_process_substitution");
     return cwd;
   }
-  if (hasLookupSensitiveBashForHeader(tokens)) markOpaque(builder, "stateful_loop_variable_assignment");
+  const loopReason = unsafeBashForHeaderReason(tokens);
+  if (loopReason) markOpaque(builder, loopReason);
   if (hasUnsafeBashTestOperand(tokens)) markOpaque(builder, "unverifiable_bash_test_operand");
   const redirections = tokens.redirections;
   if (redirections) {
