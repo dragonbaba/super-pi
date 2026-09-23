@@ -49,8 +49,11 @@ export function bashLoopVariableIndex(tokens: readonly string[] & { firstWordQuo
   while (tokens[index] === "!" || tokens[index] === "time") {
     if ((index === 0 && tokens.firstWordQuoted) || (index === 1 && tokens.secondWordQuoted)) return -1;
     if (++prefixes > 4) return -1;
-    if (tokens[index] === "time" && tokens[index + 1] === "-p") index++;
-    index++;
+    if (tokens[index] === "time") {
+      index++;
+      if (tokens[index] === "-p") index++;
+      if (tokens[index] === "--") index++;
+    } else index++;
   }
   if ((index === 0 && tokens.firstWordQuoted) || (index === 1 && tokens.secondWordQuoted)
     || (tokens[index] !== "for" && tokens[index] !== "select")) return -1;
@@ -64,7 +67,7 @@ export function unsafeBashForHeaderReason(tokens: readonly string[] & { firstWor
   const variable = tokens[variableIndex];
   if (variable === "PATH" || variable === "BASH_ENV" || variable === "ENV"
     || variable === "SHELLOPTS" || variable === "BASHOPTS" || variable === "CDPATH") return "stateful_loop_variable_assignment";
-  return tokens[variableIndex + 1] === "in" && hasUnsafeCommandQueryOperand(tokens, variableIndex + 2)
+  return tokens[variableIndex + 1] === "in" && hasUnsafeBashLoopListOperand(tokens, variableIndex + 2)
     ? "stateful_loop_list_expansion" : undefined;
 }
 
@@ -132,10 +135,19 @@ export function hasStatefulBashPrintf(tokens: readonly string[] & { expansions?:
 
 /** Query operands may expand simple variables, but operators can mutate Bash state. */
 export function hasUnsafeCommandQueryOperand(tokens: readonly string[] & { expansions?: readonly number[] }, start: number): boolean {
+  return hasUnsafeExpansionOperand(tokens, start, false);
+}
+
+/** Loop lists may also read positional/special parameters without changing shell state. */
+export function hasUnsafeBashLoopListOperand(tokens: readonly string[] & { expansions?: readonly number[] }, start: number): boolean {
+  return hasUnsafeExpansionOperand(tokens, start, true);
+}
+
+function hasUnsafeExpansionOperand(tokens: readonly string[] & { expansions?: readonly number[] }, start: number, allowReadOnlySpecial: boolean): boolean {
   for (let index = start; index < tokens.length; index++) {
     const flags = tokens.expansions?.[index] ?? 0;
     if (flags === 0) continue;
-    if ((flags & 4) !== 0 || !hasOnlySimpleQueryVariables(tokens[index]!)) return true;
+    if ((flags & 4) !== 0 || !hasOnlySimpleQueryVariables(tokens[index]!, allowReadOnlySpecial)) return true;
   }
   return false;
 }
@@ -169,7 +181,7 @@ function isBashIntegerLiteral(value: string | undefined): boolean {
   return true;
 }
 
-function hasOnlySimpleQueryVariables(value: string): boolean {
+function hasOnlySimpleQueryVariables(value: string, allowReadOnlySpecial = false): boolean {
   let found = false;
   for (let index = 0; index < value.length; index++) {
     const code = value.charCodeAt(index);
@@ -178,13 +190,20 @@ function hasOnlySimpleQueryVariables(value: string): boolean {
     found = true;
     if (value.charCodeAt(index + 1) === 123) {
       index += 2;
-      if (!isQueryVariableStart(value.charCodeAt(index))) return false;
-      while (isQueryVariablePart(value.charCodeAt(index + 1))) index++;
+      const first = value.charCodeAt(index);
+      if (allowReadOnlySpecial && isReadOnlySpecialParameter(first)) {
+        if (first >= 48 && first <= 57) while (isQueryVariableDigit(value.charCodeAt(index + 1))) index++;
+      } else {
+        if (!isQueryVariableStart(first)) return false;
+        while (isQueryVariablePart(value.charCodeAt(index + 1))) index++;
+      }
       if (value.charCodeAt(index + 1) !== 125) return false;
       index++;
     } else {
       index++;
-      if (!isQueryVariableStart(value.charCodeAt(index))) return false;
+      const first = value.charCodeAt(index);
+      if (allowReadOnlySpecial && isReadOnlySpecialParameter(first)) continue;
+      if (!isQueryVariableStart(first)) return false;
       while (isQueryVariablePart(value.charCodeAt(index + 1))) index++;
     }
   }
@@ -197,6 +216,15 @@ function isQueryVariableStart(code: number): boolean {
 
 function isQueryVariablePart(code: number): boolean {
   return isQueryVariableStart(code) || (code >= 48 && code <= 57);
+}
+
+function isQueryVariableDigit(code: number): boolean {
+  return code >= 48 && code <= 57;
+}
+
+function isReadOnlySpecialParameter(code: number): boolean {
+  return code === 64 || code === 42 || code === 35 || code === 63 || code === 36
+    || code === 45 || code === 33 || isQueryVariableDigit(code);
 }
 
 /** argv compaction retains operands after interleaved redirections. Call-owned. */

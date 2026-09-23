@@ -27,7 +27,7 @@ import {
 } from "./regex.ts";
 import { extractCommandSubstitutions, inspectHereDocuments, prepareShellAnalysis } from "./shell-substitution.ts";
 import { parseTimeoutInvocation } from "./timeout-wrapper.ts";
-import { bashLoopVariableIndex, unsafeBashForHeaderReason, hasStatefulBashPrintf, hasUnsafeBashTestOperand, hasUnsafeCommandQueryOperand, isBashDoubleBracketCloseBoundary, isBashDoubleBracketHead, isBashProcessSubstitutionStart, isBashTestWhitespace, isShellDynamicDescriptor, isShellFileDescriptor, isShellOutputFileRedirection, isSimpleBashAnsiCQuote, isStaticDescriptorCopy, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
+import { bashLoopVariableIndex, unsafeBashForHeaderReason, hasStatefulBashPrintf, hasUnsafeBashTestOperand, hasUnsafeBashLoopListOperand, hasUnsafeCommandQueryOperand, isBashDoubleBracketCloseBoundary, isBashDoubleBracketHead, isBashProcessSubstitutionStart, isBashTestWhitespace, isShellDynamicDescriptor, isShellFileDescriptor, isShellOutputFileRedirection, isSimpleBashAnsiCQuote, isStaticDescriptorCopy, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
 import { FD_DUPLICATION_PATTERN } from "./regex.ts";
 import { diagnosticForPrimitives, policyMetadata, renderPolicyDiagnostic, type PolicyDiagnosticMetadata } from "./policy-diagnostics.ts";
 
@@ -753,7 +753,7 @@ function unsafeBashLoopHeaders(segments: readonly ShellSegment[]): ReturnType<ty
 		} else continue;
 		for (; listSegment < segments.length; listSegment++) {
 			const list = segments[listSegment]!;
-			if (hasUnsafeCommandQueryOperand(list, listStart)) return "stateful_loop_list_expansion";
+			if (hasUnsafeBashLoopListOperand(list, listStart)) return "stateful_loop_list_expansion";
 			if (list.separatorAfter !== "\n" && list.separatorAfter !== "\r") break;
 			const next = segments[listSegment + 1];
 			if (!next || (next[0] === "do" && !next.firstWordQuoted)) break;
@@ -800,11 +800,10 @@ export function hasAmbiguousBashCwd(command: string): boolean {
 		if (tokens[index] === "do" || tokens[index] === "{" || tokens[index] === "then" || tokens[index] === "else") index++;
 		index = skipBashReservedPrefixes(tokens, index);
 		if (index < 0) return true;
-		let leadingRedirection = false;
 		let builtinPrefix = false;
 		while (index < tokens.length) {
 			const after = afterLeadingRedirection(tokens, index);
-			if (after !== index) { leadingRedirection = true; index = after; continue; }
+			if (after !== index) { index = after; continue; }
 			if (LEADING_ASSIGNMENT_PATTERN.test(tokens[index]!)) { index++; continue; }
 			if (!builtinPrefix && (tokens[index] === "command" || tokens[index] === "builtin")) {
 				builtinPrefix = true; index++; continue;
@@ -813,7 +812,7 @@ export function hasAmbiguousBashCwd(command: string): boolean {
 		}
 		if (commandName(tokens[index] ?? "") === "cd") {
 			const target = tokens[index + 1];
-			if (leadingRedirection || !target || target.startsWith("-") || hasDynamicSyntax(target)) return true;
+			if (!target || target.startsWith("-") || hasDynamicSyntax(target)) return true;
 			if (simpleSegment) continue;
 			// A literal `cd .` leaves relative targets at the same path whether it
 			// succeeds or fails; other conditional cd targets can change the cwd.
@@ -838,7 +837,10 @@ function skipBashReservedPrefixes(tokens: ShellSegment, start: number): number {
 		if (word !== "!" && word !== "time") break;
 		if (++depth > MAX_WRAPPER_DEPTH) return -1;
 		index++;
-		if (word === "time" && tokens[index] === "-p" && !(index === 1 && tokens.secondWordQuoted)) index++;
+		if (word === "time") {
+			if (tokens[index] === "-p" && !(index === 1 && tokens.secondWordQuoted)) index++;
+			if (tokens[index] === "--") index++;
+		}
 	}
 	return index;
 }

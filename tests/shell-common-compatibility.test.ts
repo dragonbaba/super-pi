@@ -749,6 +749,16 @@ test("reviewed cwd and loop-header variants refuse before authorizing a differen
       command: "select candidate\nin ${CDPATH:=..}\ndo :; done </dev/null\ncd workspace\nprintf marker >.git/config",
       actual: ".git/config", wrong: "workspace/.git/config", mode: "read-only",
     },
+    {
+      name: "timed-for-list-assignment",
+      command: "time -- for candidate in ${CDPATH:=..}; do :; done; cd workspace; printf marker >.git/config",
+      actual: ".git/config", wrong: "workspace/.git/config", mode: "read-only",
+    },
+    {
+      name: "timed-select-list-assignment",
+      command: "time -p -- select candidate in ${CDPATH:=..}; do :; done </dev/null; cd workspace; printf marker >.git/config",
+      actual: ".git/config", wrong: "workspace/.git/config", mode: "read-only",
+    },
   ] as const;
   for (const variant of variants) {
     await t.test(variant.name, async () => {
@@ -813,6 +823,8 @@ test("literal multiline for and select lists keep the actual workspace target", 
       ["multiline-single-quoted", "for candidate\nin '${CDPATH:=..}'\ndo printf ok; done\ncd workspace\nprintf marker >multiline-single-quoted.txt"],
       ["select-literal", "select candidate in one two; do :; done </dev/null; cd workspace; printf marker >select-literal.txt"],
       ["select-single-quoted", "select candidate in '${CDPATH:=..}'; do :; done </dev/null; cd workspace; printf marker >select-single-quoted.txt"],
+      ["timed-for-literal", "time -- for candidate in one two; do printf ok; done; cd workspace; printf marker >timed-for-literal.txt"],
+      ["timed-select-literal", "time -p -- select candidate in one two; do :; done </dev/null; cd workspace; printf marker >timed-select-literal.txt"],
     ] as const) {
       assert.equal(inspectBashResourceLifecycle({ command }), undefined, id);
       assert.equal(inspectHighRiskBashMutation({ command }, workspace)?.primitives.includes("stateful_loop_list_expansion"), false, id);
@@ -828,6 +840,71 @@ test("literal multiline for and select lists keep the actual workspace target", 
     if (originalCdpath === undefined) delete process.env.CDPATH;
     else process.env.CDPATH = originalCdpath;
     rmSync(parent, { recursive: true });
+  }
+});
+
+test("leading redirection before same-shell cd retains the dependent write target", async (t) => {
+  const shellPath = findTestBash();
+  if (!shellPath || !existsSync(shellPath)) {
+    if (process.env.CI) assert.fail("Required Bash integration test could not find Git Bash or /bin/bash");
+    t.skip("Bash unavailable");
+    return;
+  }
+  const workspace = mkdtempSync(join(tmpdir(), "sp-shell-leading-cd-positive-"));
+  mkdirSync(join(workspace, "subdir"));
+  const command = ">/dev/null cd subdir && printf marker >leading-marker.txt";
+  const actual = join(workspace, "subdir", "leading-marker.txt");
+  let fixture: Awaited<ReturnType<typeof guardedCwdBoundaryFixture>> | undefined;
+  try {
+    execFileSync(shellPath, ["-c", command], { cwd: workspace, encoding: "utf8" });
+    assert.equal(readFileSync(actual, "utf8"), "marker");
+    unlinkSync(actual);
+    fixture = await guardedCwdBoundaryFixture(workspace, shellPath);
+    await fixture.setMode("read-only");
+    const result = await fixture.agent.dispatchHostTool({ type: "toolCall", id: "leading-cd-same-shell", name: "bash", arguments: { command } });
+    assert.equal(result.isError, false, JSON.stringify(result));
+    assert.equal(inspectBashResourceLifecycle({ command }), undefined);
+    assert.equal(fixture.executions, 1);
+    assert.equal(readFileSync(actual, "utf8"), "marker");
+    assert.equal(existsSync(join(workspace, "leading-marker.txt")), false);
+    assert.match(fixture.approvals.at(-1)!, /subdir[\\/]leading-marker\.txt/);
+  } finally {
+    await fixture?.close();
+    rmSync(workspace, { recursive: true });
+  }
+});
+
+test("read-only positional loop lists remain executable through the guard", async (t) => {
+  const shellPath = findTestBash();
+  if (!shellPath || !existsSync(shellPath)) {
+    if (process.env.CI) assert.fail("Required Bash integration test could not find Git Bash or /bin/bash");
+    t.skip("Bash unavailable");
+    return;
+  }
+  const workspace = mkdtempSync(join(tmpdir(), "sp-shell-positional-list-"));
+  let fixture: Awaited<ReturnType<typeof guardedCwdBoundaryFixture>> | undefined;
+  try {
+    fixture = await guardedCwdBoundaryFixture(workspace, shellPath);
+    await fixture.setMode("read-only");
+    for (const [id, command] of [
+      ["for-positional-list", 'for candidate\nin "$@"\ndo command -v "$candidate"; done'],
+      ["select-positional-list", 'select candidate in "$@"; do command -v "$candidate"; done </dev/null'],
+      ["braced-positional-list", 'for candidate in "${@}"; do command -v "$candidate"; done'],
+      ["timed-positional-list", 'time -- for candidate in "$@"; do command -v "$candidate"; done'],
+    ] as const) {
+      const beforeApprovals = fixture.approvals.length;
+      const beforeExecutions: number = fixture.executions;
+      const result = await fixture.agent.dispatchHostTool({ type: "toolCall", id, name: "bash", arguments: { command } });
+      assert.equal(result.isError, false, JSON.stringify(result));
+      assert.equal(inspectBashResourceLifecycle({ command }), undefined, id);
+      assert.notEqual(inspectHighRiskBashMutation({ command }, workspace)?.unverifiableScope, true, id);
+      assert.notEqual(inspectBashPermissionScope({ command }, workspace)?.primitives.includes("stateful_loop_list_expansion"), true, id);
+      assert.equal(fixture.executions, beforeExecutions + 1);
+      assert.ok(fixture.approvals.length === beforeApprovals || fixture.approvals.length === beforeApprovals + 1);
+    }
+  } finally {
+    await fixture?.close();
+    rmSync(workspace, { recursive: true });
   }
 });
 
