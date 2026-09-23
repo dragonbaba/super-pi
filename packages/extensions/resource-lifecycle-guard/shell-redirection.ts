@@ -62,6 +62,12 @@ export function isShellFileDescriptor(value: string): boolean {
   return true;
 }
 
+/** Bash printf's -v option assigns a shell variable and can change later lookup. */
+export function hasBashPrintfVariableAssignment(tokens: readonly string[], commandIndex: number): boolean {
+  const option = tokens[commandIndex + 1];
+  return option !== undefined && option.startsWith("-v");
+}
+
 /** Query operands may expand simple variables, but operators can mutate Bash state. */
 export function hasUnsafeCommandQueryOperand(tokens: readonly string[] & { expansions?: readonly number[] }, start: number): boolean {
   for (let index = start; index < tokens.length; index++) {

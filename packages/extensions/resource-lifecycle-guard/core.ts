@@ -27,7 +27,7 @@ import {
 } from "./regex.ts";
 import { extractCommandSubstitutions, inspectHereDocuments, prepareShellAnalysis } from "./shell-substitution.ts";
 import { parseTimeoutInvocation } from "./timeout-wrapper.ts";
-import { hasUnsafeBashTestOperand, hasUnsafeCommandQueryOperand, isBashDoubleBracketCloseBoundary, isBashDoubleBracketHead, isBashProcessSubstitutionStart, isBashTestWhitespace, isShellDynamicDescriptor, isShellFileDescriptor, isShellOutputFileRedirection, isStaticDescriptorCopy, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
+import { hasBashPrintfVariableAssignment, hasUnsafeBashTestOperand, hasUnsafeCommandQueryOperand, isBashDoubleBracketCloseBoundary, isBashDoubleBracketHead, isBashProcessSubstitutionStart, isBashTestWhitespace, isShellDynamicDescriptor, isShellFileDescriptor, isShellOutputFileRedirection, isStaticDescriptorCopy, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
 import { FD_DUPLICATION_PATTERN } from "./regex.ts";
 import { diagnosticForPrimitives, policyMetadata, renderPolicyDiagnostic, type PolicyDiagnosticMetadata } from "./policy-diagnostics.ts";
 
@@ -438,6 +438,11 @@ function inspectCommand(
 		const next = tokens[commandIndex + 1];
 		if (!next || next.startsWith("-")) { addPrimitive(builder, "unverifiable_launcher"); markUnverifiable(builder); return; }
 		inspectCommand(tokens, commandIndex + 1, commandName(next), cwd, depth + 1, builder);
+		return;
+	}
+	if (command === "printf" && hasBashPrintfVariableAssignment(tokens, commandIndex)) {
+		addPrimitive(builder, "stateful_printf_variable_assignment");
+		markUnverifiable(builder);
 		return;
 	}
 	if (SCRIPT_WRAPPERS.has(command)) {
@@ -940,7 +945,11 @@ function parseShellSegments(command: string): ShellSegment[] {
 		const redirectionWidth = bashDoubleBracket ? 0 : shellRedirectionLength(command, index);
 		if (redirectionWidth > 0) {
 			const sourceFd = !redirectionTargetPending && literalWord && (isShellFileDescriptor(value) || isShellDynamicDescriptor(value)) ? value : undefined;
-			if (tokenStarted && !sourceFd) tokens.push(value);
+			if (tokenStarted && !sourceFd) {
+				if (!literalWord && tokens.length === 0) tokens.firstWordQuoted = true;
+				if (!literalWord && tokens.length === 1) tokens.secondWordQuoted = true;
+				tokens.push(value);
+			}
 			(tokens.redirections ??= []).push(tokens.length);
 			(tokens.redirectionFds ??= []).push(sourceFd);
 			tokens.push(command.slice(index, index + redirectionWidth));
@@ -953,7 +962,11 @@ function parseShellSegments(command: string): ShellSegment[] {
 		}
 		if (code === 10 || code === 13 || code === 59 || code === 38 || code === 124 || code === 40 || code === 41) {
 			if (bashDoubleBracket) { value += command[index]; tokenStarted = true; continue; }
-			if (tokenStarted) tokens.push(value);
+			if (tokenStarted) {
+				if (!literalWord && tokens.length === 0) tokens.firstWordQuoted = true;
+				if (!literalWord && tokens.length === 1) tokens.secondWordQuoted = true;
+				tokens.push(value);
+			}
 			const pipeline = code === 124 && command.charCodeAt(index + 1) !== 124;
 			const conditional = (code === 38 || code === 124) && command.charCodeAt(index + 1) === code;
 			if (pipeline) tokens.pipelineMember = true;
@@ -976,7 +989,11 @@ function parseShellSegments(command: string): ShellSegment[] {
 		value += command[index];
 		tokenStarted = true;
 	}
-	if (tokenStarted) tokens.push(value);
+	if (tokenStarted) {
+		if (!literalWord && tokens.length === 0) tokens.firstWordQuoted = true;
+		if (!literalWord && tokens.length === 1) tokens.secondWordQuoted = true;
+		tokens.push(value);
+	}
 	if (tokens.length > 0) segments.push(tokens);
 	return segments;
 }

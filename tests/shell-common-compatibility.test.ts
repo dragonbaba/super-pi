@@ -159,6 +159,23 @@ test("else introduces an inspectable Bash string comparison", () => {
   assert.equal(inspectBashPermissionScope({ command }, cwd)?.primitives.includes("unverifiable_redirection"), false);
 });
 
+test("path and quoted control-word names remain executable commands", () => {
+  for (const command of ["./for", "'for'", "'for'; cat", "'for'<fixture.bin", "./done", "'do' printf synthetic", "env for", "./cat", "./git status", "./env cat", "./timeout 5 cat", "CAT", "command ./cat", "env PATH=. cat"]) {
+    const scope = inspectBashPermissionScope({ command }, cwd);
+    assert.equal(scope?.unverifiableScope, true, command);
+    assert.equal(scope?.kind, "opaque-script", command);
+  }
+  assert.equal(inspectBashPermissionScope({ command: "for t in cat; do command -v $t; done" }, cwd)?.unverifiableScope, false);
+});
+
+test("printf variable assignment remains stateful through command prefix", () => {
+  for (const command of ["printf -v PATH .; cat", "command printf -v PATH .; cat", "command printf -vPATH .; cat"]) {
+    assert.equal(inspectHighRiskBashMutation({ command }, cwd)?.unverifiableScope, true, command);
+    assert.equal(inspectBashPermissionScope({ command }, cwd)?.unverifiableScope, true, command);
+  }
+  assert.equal(inspectBashPermissionScope({ command: "command printf '%s' synthetic" }, cwd)?.kind, "read-only");
+});
+
 test("static descriptor and input-file redirections preserve bounded targets and order", () => {
   for (const command of [
     'printf "%s\\n" out 2>&1 | cat',
@@ -475,6 +492,12 @@ print(struct.unpack_from('<H', d, 0)[0])
     assert.equal(nested.isError, true);
     assert.equal(executions, 6);
     assert.equal(existsSync(join(fixture, ".git")), true);
+    for (const [id, command] of [["path-control", "./for"], ["stateful-command", "command printf -v PATH .; cat"]]) {
+      const result = await agent.dispatchHostTool({ type: "toolCall", id, name: "bash", arguments: { command } });
+      assert.equal(result.isError, true, command);
+      assert.equal((result.details as any).executionStatus, "not_executed", command);
+      assert.equal(executions, 6, command);
+    }
     for (const [id, command] of [
       ["zero-iteration-cd", "for x in; do cd subdir; done; printf data >.git/config"],
       ["negated-loop-cd", "! for x in; do cd subdir; done; printf data >.git/config"],
