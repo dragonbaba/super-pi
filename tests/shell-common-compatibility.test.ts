@@ -874,6 +874,50 @@ test("leading redirection before same-shell cd retains the dependent write targe
   }
 });
 
+test("assignment-prefixed cd cannot authorize a different protected cwd", async (t) => {
+  const shellPath = findTestBash();
+  if (!shellPath || !existsSync(shellPath)) {
+    if (process.env.CI) assert.fail("Required Bash integration test could not find Git Bash or /bin/bash");
+    t.skip("Bash unavailable");
+    return;
+  }
+  const parent = mkdtempSync(join(tmpdir(), "sp-shell-assigned-cd-"));
+  const outer = join(parent, "workspace");
+  const workspace = join(outer, "workspace");
+  mkdirSync(join(outer, ".git"), { recursive: true });
+  mkdirSync(join(workspace, ".git"), { recursive: true });
+  mkdirSync(join(workspace, "workspace", ".git"), { recursive: true });
+  const actual = join(outer, ".git", "config");
+  const wrong = join(workspace, ".git", "config");
+  const originalCdpath = process.env.CDPATH;
+  let fixture: Awaited<ReturnType<typeof guardedCwdBoundaryFixture>> | undefined;
+  delete process.env.CDPATH;
+  try {
+    for (const [id, command] of [
+      ["redirected-assigned-cd", ">/dev/null CDPATH=../.. cd workspace && printf marker >.git/config"],
+      ["assigned-cd", "CDPATH=../.. cd workspace && printf marker >.git/config"],
+    ] as const) {
+      execFileSync(shellPath, ["-c", command], { cwd: workspace, encoding: "utf8" });
+      assert.equal(readFileSync(actual, "utf8"), "marker", `${id}: direct Bash writes the protected outer target`);
+      assert.equal(existsSync(wrong), false);
+      unlinkSync(actual);
+      fixture ??= await guardedCwdBoundaryFixture(workspace, shellPath);
+      await fixture.setMode("read-only");
+      const blocked = await assertBoundaryRefusedBeforeSpawn(fixture, workspace, id, command, [actual, wrong]);
+      assert.equal((blocked.details as any).executionStatus, "not_executed");
+      assert.equal(inspectHighRiskBashMutation({ command }, workspace)?.unverifiableScope, true);
+      assert.equal(inspectBashPermissionScope({ command }, workspace)?.unverifiableScope, true);
+      await fixture.setMode("workspace-write");
+      await assertBoundaryRefusedBeforeSpawn(fixture, workspace, `${id}-workspace`, command, [actual, wrong]);
+    }
+  } finally {
+    await fixture?.close();
+    if (originalCdpath === undefined) delete process.env.CDPATH;
+    else process.env.CDPATH = originalCdpath;
+    rmSync(parent, { recursive: true });
+  }
+});
+
 test("read-only positional loop lists remain executable through the guard", async (t) => {
   const shellPath = findTestBash();
   if (!shellPath || !existsSync(shellPath)) {

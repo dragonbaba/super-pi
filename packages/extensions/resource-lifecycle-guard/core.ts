@@ -801,10 +801,11 @@ export function hasAmbiguousBashCwd(command: string): boolean {
 		index = skipBashReservedPrefixes(tokens, index);
 		if (index < 0) return true;
 		let builtinPrefix = false;
+		let leadingAssignment = false;
 		while (index < tokens.length) {
 			const after = afterLeadingRedirection(tokens, index);
 			if (after !== index) { index = after; continue; }
-			if (LEADING_ASSIGNMENT_PATTERN.test(tokens[index]!)) { index++; continue; }
+			if (LEADING_ASSIGNMENT_PATTERN.test(tokens[index]!)) { leadingAssignment = true; index++; continue; }
 			if (!builtinPrefix && (tokens[index] === "command" || tokens[index] === "builtin")) {
 				builtinPrefix = true; index++; continue;
 			}
@@ -812,7 +813,7 @@ export function hasAmbiguousBashCwd(command: string): boolean {
 		}
 		if (commandName(tokens[index] ?? "") === "cd") {
 			const target = tokens[index + 1];
-			if (!target || target.startsWith("-") || hasDynamicSyntax(target)) return true;
+			if (leadingAssignment || !target || target.startsWith("-") || hasDynamicSyntax(target)) return true;
 			if (simpleSegment) continue;
 			// A literal `cd .` leaves relative targets at the same path whether it
 			// succeeds or fails; other conditional cd targets can change the cwd.
