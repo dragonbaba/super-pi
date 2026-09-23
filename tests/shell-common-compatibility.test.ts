@@ -569,6 +569,22 @@ test("a missing configured Bash executable is classified as a start failure", as
   }
 });
 
+test("an invalid timeout is classified as a start failure before shell discovery", async () => {
+  const fixture = mkdtempSync(join(tmpdir(), "sp-shell-timeout-"));
+  const agent = new Agent({ streamFn: () => { throw new Error("offline provider must not be called"); } });
+  agent.state.tools = [createBashTool(fixture, { operations: createLocalBashOperations({ shellPath: join(fixture, "missing-bash") }) })];
+  try {
+    for (const timeout of [0, -1, 3_000_000]) {
+      const result = await agent.dispatchHostTool({ type: "toolCall", id: `bash-timeout-${timeout}`, name: "bash", arguments: { command: "printf synthetic", timeout } });
+      assert.equal(result.isError, true, String(timeout));
+      assert.match((result.content[0] as { text: string }).text, /^\[SHELL_START_FAILED\] Invalid timeout:/, String(timeout));
+    }
+  } finally {
+    agent.abort();
+    rmSync(fixture, { recursive: true });
+  }
+});
+
 test("a standalone ripgrep no-match stays an expected empty result after the runtime status prefix", async () => {
   const fixture = mkdtempSync(join(tmpdir(), "sp-shell-rg-empty-"));
   const agent = new Agent({ streamFn: () => { throw new Error("offline provider must not be called"); } });
