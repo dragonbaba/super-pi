@@ -3,7 +3,7 @@ import { basename, resolve } from "node:path";
 import { hasAmbiguousBashCwd, unsafeBashLoopHeaderReason } from "./core.ts";
 import { extractCommandSubstitutions, prepareShellAnalysis } from "./shell-substitution.ts";
 import { parseTimeoutInvocation } from "./timeout-wrapper.ts";
-import { bashTimeOptionsEnd, hasStatefulBashPrintf, hasUnsafeBashTestOperand, hasUnsafeCommandQueryOperand, isBashDoubleBracketCloseBoundary, isBashDoubleBracketHead, isBashProcessSubstitutionStart, isBashTestWhitespace, isShellDynamicDescriptor, isShellFileDescriptor, isShellOutputFileRedirection, isSimpleBashAnsiCQuote, isStaticDescriptorCopy, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
+import { bashPipelinePrefixEnd, hasStatefulBashPrintf, hasStatefulShellExpansion, hasUnsafeBashTestOperand, hasUnsafeCommandQueryOperand, isBashDoubleBracketCloseBoundary, isBashDoubleBracketHead, isBashProcessSubstitutionStart, isBashTestWhitespace, isShellDynamicDescriptor, isShellFileDescriptor, isShellOutputFileRedirection, isSimpleBashAnsiCQuote, isStaticDescriptorCopy, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
 
 const MAX_COMMAND_CHARS = 128 * 1024;
 const MAX_SEGMENTS = 64;
@@ -316,18 +316,8 @@ function inspectSegment(tokens: PermissionTokens, cwd: string, depth: number, bu
     markOpaque(builder, "stateful_printf_variable_assignment");
     return cwd;
   }
-  if (tokens[index] === "[[" && tokens.bashTestOpenAt === index && tokens.bashTestClosed) {
-    addClass(builder, "read:bash-test");
-    return cwd;
-  }
-  if (tokens[index] === "!" && index === 0 && !tokens.firstWordQuoted && tokens.bashTestOpenAt === index + 1
-    && tokens[index + 1] === "[[" && tokens.bashTestClosed) {
-    addClass(builder, "read:bash-test");
-    return cwd;
-  }
-  if (tokens[index] === "time" && !tokens.firstWordQuoted && tokens.bashTestClosed
-    && tokens.bashTestOpenAt === bashTimeOptionsEnd(tokens, index + 1)
-    && tokens[tokens.bashTestOpenAt] === "[[") {
+  const testOpen = bashPipelinePrefixEnd(tokens, index);
+  if (testOpen >= 0 && tokens[testOpen] === "[[" && tokens.bashTestOpenAt === testOpen && tokens.bashTestClosed) {
     addClass(builder, "read:bash-test");
     return cwd;
   }
@@ -391,6 +381,7 @@ function inspectTokenBuffer(tokens: PermissionTokens, cwd: string, depth: number
     return cwd;
   }
   if (hasUnsafeBashTestOperand(tokens)) markOpaque(builder, "unverifiable_bash_test_operand");
+  if (hasStatefulShellExpansion(tokens)) markOpaque(builder, "stateful_shell_expansion");
   const redirections = tokens.redirections;
   if (redirections) {
     for (let position = 0; position < redirections.length; position++) {

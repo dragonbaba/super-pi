@@ -212,6 +212,74 @@ test("C-style Bash for headers cannot make later command lookup read-only", () =
   assert.equal(inspectBashPermissionScope({ command: "printf '%s' 'for ((PATH=0;0;))'" }, cwd)?.kind, "read-only");
 });
 
+test("expansions that assign shell variables cannot make later commands read-only", () => {
+  for (const command of [
+    "printf %s $((PATH=0)); cat",
+    "printf %s \"$((PATH=0))\"; cat",
+    ": $[CDPATH=1]; cd workspace; printf data >.git/config",
+    ": ${CDPATH:=..}; cd workspace; printf data >.git/config",
+    "echo ${CDPATH=..}; cd workspace; printf data >.git/config",
+    "x=(a); printf %s ${x[PATH=0]}; cat",
+    "printf %s ${#x[PATH=0]}; cat",
+    "printf %s ${x:PATH=0}; cat",
+    "printf %s ${!ref}; cat",
+    "v=PATH=0; printf %s $((v)); cat",
+    "printf %s $((1)+PATH=0)); cat",
+  ]) {
+    assert.match(inspectBashResourceLifecycle({ command }) ?? "", /SHELL_UNINSPECTABLE/, command);
+    const high = inspectHighRiskBashMutation({ command }, cwd);
+    assert.equal(high?.unverifiableScope, true, command);
+    assert.ok(high?.primitives.includes("stateful_shell_expansion"), command);
+    assert.equal(inspectBashPermissionScope({ command }, cwd)?.unverifiableScope, true, command);
+  }
+  for (const command of ["printf %s $x ${y} $1 $@ ${#z} ${!}", "echo $((1 + (2 * 3) >= 4))", "printf %s ${HOME:-/tmp} ${f%.txt} ${g/a/b} ${h:1:2} ${arr[0]} ${arr[@]}", "printf %s '$((PATH=0))'"]) {
+    assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
+    assert.equal(inspectHighRiskBashMutation({ command }, cwd), undefined, command);
+    assert.equal(inspectBashPermissionScope({ command }, cwd)?.kind, "read-only", command);
+  }
+});
+
+test("indirect or redefined cd cannot authorize the scanned cwd", () => {
+  for (const command of [
+    "command cd sub; printf data >.git/config",
+    "builtin cd sub; printf data >.git/config",
+    "command -p cd sub; printf data >.git/config",
+    "builtin -- cd sub; printf data >.git/config",
+    "pushd sub; printf data >.git/config",
+    "pushd sub >/dev/null && printf data >.git/config",
+    "popd; printf data >.git/config",
+    "enable -n cd; cd sub; printf data >.git/config",
+    "function cd { :; }; cd sub; printf data >.git/config",
+    "shopt -s cdable_vars; sub=..; cd sub; printf data >.git/config",
+    "shopt -s expand_aliases\nalias cd=:\ncd sub\nprintf data >.git/config",
+    "set -P; cd link/..; printf data >.git/config",
+    "set -o physical; cd link/..; printf data >.git/config",
+  ]) {
+    assert.match(inspectBashResourceLifecycle({ command }) ?? "", /SHELL_UNINSPECTABLE/, command);
+    assert.equal(inspectHighRiskBashMutation({ command }, cwd)?.unverifiableScope, true, command);
+    assert.equal(inspectBashPermissionScope({ command }, cwd)?.unverifiableScope, true, command);
+  }
+  for (const command of ["set -e; cd sub; printf data >.git/config", "set -euo pipefail; cd sub && printf data >.git/config"]) {
+    assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
+    assert.ok(inspectHighRiskBashMutation({ command }, cwd)?.targets.some(target => target.endsWith("sub\\.git\\config") ||target.endsWith("sub/.git/config")), command);
+  }
+});
+
+test("negated and timed prefixes before Bash tests keep comparisons out of redirection parsing", () => {
+  for (const command of ["time ! [[ a < b ]]", "! time [[ a < b ]]", "! time -p [[ a < b ]]"]) {
+    assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
+    assert.equal(inspectHighRiskBashMutation({ command }, cwd), undefined, command);
+    assert.equal(inspectBashPermissionScope({ command }, cwd)?.kind, "read-only", command);
+  }
+  for (const command of ["if ! [[ a < b ]]; then :; fi", "while ! [[ a < b ]]; do break; done", "if time ! [[ a < b ]]; then :; fi"]) {
+    assert.equal(inspectHighRiskBashMutation({ command }, cwd), undefined, command);
+    assert.equal(inspectBashPermissionScope({ command }, cwd)?.primitives.includes("unverifiable_redirection"), false, command);
+  }
+  for (const command of ["\\! [[ a > .git/config ]]", "if \\! [[ a > .git/config ]]; then :; fi", "time \\-p [[ a > .git/config ]]", "time ! \\time [[ a > .git/config ]]"]) {
+    assert.ok(inspectHighRiskBashMutation({ command }, cwd)?.targets.some(target => target.endsWith(".git\\config") ||target.endsWith(".git/config")), command);
+  }
+});
+
 test("negated Bash string comparisons remain read-only", () => {
   for (const command of ["! [[ a < b ]]", "! [[ b > a ]]", "! [[ a < b ]] && printf ok"]) {
     assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
@@ -921,6 +989,9 @@ test("assignment-prefixed cd cannot authorize a different protected cwd", async 
       ["assigned-cd", "CDPATH=../.. cd workspace && printf marker >.git/config"],
       ["nested-command-assigned-cd", ">/dev/null CDPATH=../.. command command cd workspace && printf marker >.git/config"],
       ["nested-builtin-assigned-cd", "CDPATH=../.. builtin command builtin cd workspace && printf marker >.git/config"],
+      ["expansion-assigned-cdpath", ": ${CDPATH:=../..}; cd workspace && printf marker >.git/config"],
+      ["assigned-pushd", "CDPATH=../.. pushd workspace >/dev/null && printf marker >.git/config"],
+      ["assigned-command-p-cd", "CDPATH=../.. command -p cd workspace && printf marker >.git/config"],
     ] as const) {
       execFileSync(shellPath, ["-c", command], { cwd: workspace, encoding: "utf8" });
       assert.equal(readFileSync(actual, "utf8"), "marker", `${id}: direct Bash writes the protected outer target`);

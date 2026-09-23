@@ -20,22 +20,43 @@ export function isBashProcessSubstitutionStart(source: string, index: number): b
   return (code === 60 || code === 62) && source.charCodeAt(index + 1) === 40;
 }
 
+type QuotedWords = readonly string[] & { firstWordQuoted?: boolean; secondWordQuoted?: boolean; thirdWordQuoted?: boolean };
+
+/** Quote flags exist only for the first three words; later words count as quoted. */
+function isQuotedBashWord(tokens: QuotedWords, index: number): boolean {
+  return index === 0 ? tokens.firstWordQuoted === true
+    : index === 1 ? tokens.secondWordQuoted === true
+    : index === 2 ? tokens.thirdWordQuoted === true : true;
+}
+
 /** `[[` is a Bash keyword only at a command/test head, not an argv word. */
-export function isBashDoubleBracketHead(tokens: readonly string[] & { firstWordQuoted?: boolean; secondWordQuoted?: boolean; thirdWordQuoted?: boolean }): boolean {
+export function isBashDoubleBracketHead(tokens: QuotedWords): boolean {
   if (tokens.length === 0) return true;
   if (tokens.firstWordQuoted) return false;
   const head = tokens[0];
-  if (tokens.length > 1) return head === "time" && bashTimeOptionsEnd(tokens, 1) === tokens.length;
-  if (tokens.length !== 1) return false;
-  return head === "time" || head === "if" || head === "elif" || head === "while" || head === "until"
-    || head === "then" || head === "else" || head === "do" || head === "!" || head === "{";
+  const start = head === "if" || head === "elif" || head === "while" || head === "until"
+    || head === "then" || head === "else" || head === "do" || head === "{" ? 1 : 0;
+  return bashPipelinePrefixEnd(tokens, start) === tokens.length;
 }
 
 /** Bash accepts only literal `time [-p] [--]`; quoted option words are argv. */
-export function bashTimeOptionsEnd(tokens: readonly string[] & { secondWordQuoted?: boolean; thirdWordQuoted?: boolean }, start: number): number {
+function bashTimeOptionsEnd(tokens: QuotedWords, start: number): number {
   let index = start;
-  if (tokens[index] === "-p" && !(index === 1 && tokens.secondWordQuoted)) index++;
-  if (tokens[index] === "--" && !(index === 1 && tokens.secondWordQuoted) && !(index === 2 && tokens.thirdWordQuoted)) index++;
+  if (tokens[index] === "-p" && !isQuotedBashWord(tokens, index)) index++;
+  if (tokens[index] === "--" && !isQuotedBashWord(tokens, index)) index++;
+  return index;
+}
+
+/** Skip bounded literal `!` and `time [-p] [--]` pipeline prefixes; -1 when unbounded. */
+export function bashPipelinePrefixEnd(tokens: QuotedWords, start: number): number {
+  let index = start;
+  let prefixes = 0;
+  while (index < tokens.length) {
+    const word = tokens[index];
+    if ((word !== "!" && word !== "time") || isQuotedBashWord(tokens, index)) break;
+    if (++prefixes > 4) return -1;
+    index = word === "time" ? bashTimeOptionsEnd(tokens, index + 1) : index + 1;
+  }
   return index;
 }
 
@@ -177,6 +198,93 @@ export function hasStatefulBashPrintf(tokens: readonly string[] & { expansions?:
     if (format.charCodeAt(conversion) === 110) return true;
   }
   return false;
+}
+
+/**
+ * Expansions that can assign shell variables in the current shell: arithmetic
+ * with names or nested expansions (values evaluate recursively), `${v=...}`,
+ * substring offsets, non-literal subscripts, and indirection. Command
+ * substitutions run in a subshell and are inspected as nested scripts.
+ */
+export function hasStatefulShellExpansion(tokens: readonly string[] & { expansions?: readonly number[] }): boolean {
+  const expansions = tokens.expansions;
+  if (!expansions) return false;
+  for (let index = 0; index < tokens.length; index++) {
+    if (((expansions[index] ?? 0) & 7) !== 0 && hasStatefulExpansionText(tokens[index]!)) return true;
+  }
+  return false;
+}
+
+function hasStatefulExpansionText(value: string): boolean {
+  for (let index = value.indexOf("$"); index >= 0; index = value.indexOf("$", index + 1)) {
+    const next = value.charCodeAt(index + 1);
+    if (next === 40 && value.charCodeAt(index + 2) === 40) {
+      if (!isLiteralArithmetic(value, index + 3, 41)) return true;
+    } else if (next === 91) {
+      if (!isLiteralArithmetic(value, index + 2, 93)) return true;
+    } else if (next === 123 && isStatefulBraceExpansion(value, index + 2)) return true;
+  }
+  return false;
+}
+
+/** Digits and operators only, up to the balanced closing delimiter (`))` for `$((`). */
+function isLiteralArithmetic(value: string, start: number, close: number): boolean {
+  let depth = 0;
+  for (let index = start; index < value.length; index++) {
+    const code = value.charCodeAt(index);
+    if (code === 40) { depth++; continue; }
+    if (code === 41 && depth > 0) { depth--; continue; }
+    if (code === close) return close !== 41 || value.charCodeAt(index + 1) === 41;
+    if (code === 36 || code === 96 || code === 95 || code === 61 && isArithmeticAssignment(value, index)
+      || (code >= 65 && code <= 90) || (code >= 97 && code <= 122)) return false;
+  }
+  return false;
+}
+
+function isArithmeticAssignment(value: string, index: number): boolean {
+  const before = value.charCodeAt(index - 1);
+  return value.charCodeAt(index + 1) !== 61 && before !== 61 && before !== 33 && before !== 60 && before !== 62;
+}
+
+function isStatefulBraceExpansion(value: string, start: number): boolean {
+  let index = start;
+  let code = value.charCodeAt(index);
+  if (code === 33) return value.charCodeAt(index + 1) !== 125;
+  if (code === 35 && value.charCodeAt(index + 1) !== 125) code = value.charCodeAt(++index);
+  if (isQueryVariableStart(code)) {
+    while (isQueryVariablePart(value.charCodeAt(index + 1))) index++;
+  } else if (isQueryVariableDigit(code)) {
+    while (isQueryVariableDigit(value.charCodeAt(index + 1))) index++;
+  } else if (!isReadOnlySpecialParameter(code)) return true;
+  index++;
+  code = value.charCodeAt(index);
+  if (code === 125) return false;
+  if (code === 91) {
+    const subscript = value.charCodeAt(index + 1);
+    if ((subscript === 64 || subscript === 42) && value.charCodeAt(index + 2) === 93) index += 3;
+    else {
+      let cursor = index + 1;
+      while (isQueryVariableDigit(value.charCodeAt(cursor))) cursor++;
+      if (cursor === index + 1 || value.charCodeAt(cursor) !== 93) return true;
+      index = cursor + 1;
+    }
+    code = value.charCodeAt(index);
+    if (code === 125) return false;
+  }
+  if (code === 61) return true;
+  if (code === 58) {
+    const operator = value.charCodeAt(index + 1);
+    if (operator === 61) return true;
+    // `${v:offset:length}` evaluates both operands arithmetically.
+    if (operator !== 45 && operator !== 43 && operator !== 63 && !isLiteralArithmetic(value, index + 1, 125)) return true;
+  }
+  // Operator words may nest further expansions; keep them conservative.
+  for (let cursor = index; cursor < value.length; cursor++) {
+    const current = value.charCodeAt(cursor);
+    if (current === 125) return false;
+    if (current === 36 || current === 96) return true;
+  }
+  return true;
 }
 
 /** Query operands may expand simple variables, but operators can mutate Bash state. */

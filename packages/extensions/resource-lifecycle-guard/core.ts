@@ -27,7 +27,7 @@ import {
 } from "./regex.ts";
 import { extractCommandSubstitutions, inspectHereDocuments, prepareShellAnalysis } from "./shell-substitution.ts";
 import { parseTimeoutInvocation } from "./timeout-wrapper.ts";
-import { bashArithmeticForHeader, bashLoopVariableIndex, unsafeBashForHeaderReason, hasStatefulBashPrintf, hasUnsafeBashTestOperand, hasUnsafeBashLoopListOperand, hasUnsafeCommandQueryOperand, isBashDoubleBracketCloseBoundary, isBashDoubleBracketHead, isBashProcessSubstitutionStart, isBashTestWhitespace, isShellDynamicDescriptor, isShellFileDescriptor, isShellOutputFileRedirection, isSimpleBashAnsiCQuote, isStaticDescriptorCopy, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
+import { bashArithmeticForHeader, bashLoopVariableIndex, unsafeBashForHeaderReason, hasStatefulBashPrintf, hasStatefulShellExpansion, hasUnsafeBashTestOperand, hasUnsafeBashLoopListOperand, hasUnsafeCommandQueryOperand, isBashDoubleBracketCloseBoundary, isBashDoubleBracketHead, isBashProcessSubstitutionStart, isBashTestWhitespace, isShellDynamicDescriptor, isShellFileDescriptor, isShellOutputFileRedirection, isSimpleBashAnsiCQuote, isStaticDescriptorCopy, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
 import { FD_DUPLICATION_PATTERN } from "./regex.ts";
 import { diagnosticForPrimitives, policyMetadata, renderPolicyDiagnostic, type PolicyDiagnosticMetadata } from "./policy-diagnostics.ts";
 
@@ -121,7 +121,7 @@ function inspectLifecycleScript(source: string, depth: number, nativePowerShellA
  if (substitutions.unterminated || substitutions.unsupported) return lifecycleRefusal("SHELL_SUBSTITUTION", substitutions.unterminated ? "unterminated command substitution" : "uncertain/uninspectable command substitution grammar", "simplify the substitution into inspectable foreground commands");
  for (const script of here?.substitutions ?? EMPTY_SUBSTITUTIONS) { const result = inspectLifecycleScript(script, depth + 1, nativePowerShellAvailable); if (result) return result; }
  for (const script of substitutions.scripts) { const result = inspectLifecycleScript(script, depth + 1, nativePowerShellAvailable); if (result) return result; }
- if (hasAmbiguousBashCwd(command)) return lifecycleRefusal("SHELL_UNINSPECTABLE", "working directory changes inside conditional or grouped shell execution", "split directory changes and later file writes into separately inspectable commands");
+ if (hasAmbiguousBashCwd(command)) return lifecycleRefusal("SHELL_UNINSPECTABLE", "working directory change cannot be tracked (conditional, grouped or indirect cd)", "split directory changes and later file writes into separately inspectable commands");
  if (DETACH_UTILITY_PATTERN.test(command)) return BLOCK_REASON;
  if ((WINDOWS_DETACH_PATTERN.test(command) || WINDOWS_START_BACKGROUND_PATTERN.test(command)) && !WINDOWS_WAIT_PATTERN.test(command)) return BLOCK_REASON;
  if (DOCKER_DETACHED_PATTERN.test(command) || SERVICE_START_PATTERN.test(command)) return BLOCK_REASON;
@@ -137,6 +137,7 @@ function inspectLifecycleScript(source: string, depth: number, nativePowerShellA
  for (const tokens of segments) {
   if (tokens.bashTestProcessSubstitution) return lifecycleRefusal("SHELL_UNINSPECTABLE", "process substitution inside a Bash test cannot be safely inspected", "split the process substitution into separately inspectable commands");
   if (hasUnsafeBashTestOperand(tokens)) return lifecycleRefusal("SHELL_UNINSPECTABLE", "Bash test operand may change shell state or evaluate arithmetic", "use simple variable tests or literal numeric comparisons");
+  if (hasStatefulShellExpansion(tokens)) return lifecycleRefusal("SHELL_UNINSPECTABLE", "expansion may assign shell variables used by later commands", "use literal values or simple variable references");
   // The global filter is only an optimization; unrelated segments supply no
   // shell/evaluator evidence. No closure or reconstructed segment string.
   let shellText = false;
@@ -403,6 +404,7 @@ function inspectShellScript(script: string, initialCwd: string, depth: number, b
 		if (tokens.length === 0) continue;
 		if (tokens.bashTestProcessSubstitution) { addPrimitive(builder, "unverifiable_process_substitution"); markUnverifiable(builder); continue; }
 		if (hasUnsafeBashTestOperand(tokens)) { addPrimitive(builder, "unverifiable_bash_test_operand"); markUnverifiable(builder); }
+		if (hasStatefulShellExpansion(tokens)) { addPrimitive(builder, "stateful_shell_expansion"); markUnverifiable(builder); }
 		inspectOutputRedirections(tokens, workingDirectory, builder);
 		const commandIndex = commandTokenIndex(tokens);
 		if (commandIndex < 0 || commandIndex >= tokens.length) continue;
@@ -792,6 +794,7 @@ export function hasAmbiguousBashCwd(command: string): boolean {
 	let loopDepth = 0;
 	let conditionalDepth = 0;
 	let braceDepth = 0;
+	let cdSemanticsChanged = false;
 	for (let segmentIndex = 0; segmentIndex < segments.length; segmentIndex++) {
 		const tokens = segments[segmentIndex]!;
 		const controlIndex = skipBashReservedPrefixes(tokens, 0);
@@ -816,16 +819,23 @@ export function hasAmbiguousBashCwd(command: string): boolean {
 			const after = afterLeadingRedirection(tokens, index);
 			if (after !== index) { index = after; continue; }
 			if (LEADING_ASSIGNMENT_PATTERN.test(tokens[index]!)) { leadingAssignment = true; index++; continue; }
-			// `command command cd` and `builtin command cd` still dispatch to cd.
+			// `command command cd`, `command -p cd` and `builtin -- cd` still dispatch to cd.
 			if (tokens[index] === "command" || tokens[index] === "builtin") {
 				if (++builtinPrefixes > MAX_WRAPPER_DEPTH) return true;
-				index++; continue;
+				index++;
+				while (tokens[index] === "-p" || tokens[index] === "--") index++;
+				continue;
 			}
 			break;
 		}
-		if (commandName(tokens[index] ?? "") === "cd") {
+		const name = commandName(tokens[index] ?? "");
+		// The scans track only a direct literal `cd`; directory stacks are not followed.
+		if (name === "pushd" || name === "popd") return true;
+		if (changesBashCdSemantics(tokens, index, name)) { cdSemanticsChanged = true; continue; }
+		if (name === "cd") {
 			const target = tokens[index + 1];
-			if (leadingAssignment || !target || target.startsWith("-") || hasDynamicSyntax(target)) return true;
+			if (leadingAssignment || builtinPrefixes > 0 || cdSemanticsChanged
+				|| !target || target.startsWith("-") || hasDynamicSyntax(target)) return true;
 			if (simpleSegment) continue;
 			// A literal `cd .` leaves relative targets at the same path whether it
 			// succeeds or fails; other conditional cd targets can change the cwd.
@@ -837,6 +847,23 @@ export function hasAmbiguousBashCwd(command: string): boolean {
 				&& hasOnlyReadOnlyConditionalTail(segments, segmentIndex)) continue;
 			return true;
 		}
+	}
+	return false;
+}
+
+/**
+ * Builtin toggles, a `cd` function, cdable_vars/expand_aliases and physical
+ * mode make a later literal `cd` resolve differently from the scanned path.
+ */
+function changesBashCdSemantics(tokens: ShellSegment, index: number, name: string): boolean {
+	if (name === "enable") return true;
+	if (name === "function") return tokens[index + 1] === "cd";
+	if (name !== "shopt" && name !== "set") return false;
+	for (let cursor = index + 1; cursor < tokens.length; cursor++) {
+		const word = tokens[cursor]!;
+		if (tokens.expansions?.[cursor]) return true;
+		if (name === "shopt" ? word === "cdable_vars" || word === "expand_aliases"
+			: word === "physical" || (word.length > 1 && (word[0] === "-" || word[0] === "+") && word[1] !== "-" && word.includes("P"))) return true;
 	}
 	return false;
 }
