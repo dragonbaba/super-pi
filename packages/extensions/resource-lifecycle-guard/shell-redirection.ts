@@ -62,6 +62,19 @@ export function isShellFileDescriptor(value: string): boolean {
   return true;
 }
 
+/** Inspect only the common literal ANSI-C quote escapes; other forms stay uncertain. */
+export function isSimpleBashAnsiCQuote(source: string, index: number): boolean {
+  if (source.charCodeAt(index) !== 36 || source.charCodeAt(index + 1) !== 39) return false;
+  for (let cursor = index + 2; cursor < source.length; cursor++) {
+    const code = source.charCodeAt(cursor);
+    if (code === 39) return true;
+    if (code !== 92) continue;
+    const escaped = source.charCodeAt(++cursor);
+    if (escaped !== 110 && escaped !== 114 && escaped !== 116) return false;
+  }
+  return false;
+}
+
 /** Bash printf can assign variables through -v or a %n conversion. */
 export function hasStatefulBashPrintf(tokens: readonly string[] & { expansions?: readonly number[] }, commandIndex: number): boolean {
   let formatIndex = commandIndex + 1;

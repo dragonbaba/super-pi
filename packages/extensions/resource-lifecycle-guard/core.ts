@@ -27,7 +27,7 @@ import {
 } from "./regex.ts";
 import { extractCommandSubstitutions, inspectHereDocuments, prepareShellAnalysis } from "./shell-substitution.ts";
 import { parseTimeoutInvocation } from "./timeout-wrapper.ts";
-import { hasStatefulBashPrintf, hasUnsafeBashTestOperand, hasUnsafeCommandQueryOperand, isBashDoubleBracketCloseBoundary, isBashDoubleBracketHead, isBashProcessSubstitutionStart, isBashTestWhitespace, isShellDynamicDescriptor, isShellFileDescriptor, isShellOutputFileRedirection, isStaticDescriptorCopy, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
+import { hasStatefulBashPrintf, hasUnsafeBashTestOperand, hasUnsafeCommandQueryOperand, isBashDoubleBracketCloseBoundary, isBashDoubleBracketHead, isBashProcessSubstitutionStart, isBashTestWhitespace, isShellDynamicDescriptor, isShellFileDescriptor, isShellOutputFileRedirection, isSimpleBashAnsiCQuote, isStaticDescriptorCopy, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
 import { FD_DUPLICATION_PATTERN } from "./regex.ts";
 import { diagnosticForPrimitives, policyMetadata, renderPolicyDiagnostic, type PolicyDiagnosticMetadata } from "./policy-diagnostics.ts";
 
@@ -868,6 +868,9 @@ function parseShellSegments(command: string): ShellSegment[] {
 			tokenStarted = true;
 			continue;
 		}
+		if (quote === 0 && code === 36 && isSimpleBashAnsiCQuote(command, index)) {
+			quote = 39; literalWord = false; tokenStarted = true; index++; continue;
+		}
 		if (quote !== 39 && (code === 36 || code === 96)) {
 			tokens.dynamic = true;
 			const flags = code === 96 || command.charCodeAt(index + 1) === 40 ? 4 : quote === 34 ? 1 : 2;
@@ -972,6 +975,12 @@ function parseShellSegments(command: string): ShellSegment[] {
 			if (pipeline) tokens.pipelineMember = true;
 			if (conditional) tokens.conditionalMember = true;
 			tokens.separatorAfter = conditional ? (code === 38 ? "&&" : "||") : command[index];
+			// A list operator after `)` belongs to the closed command, even when
+			// the current token buffer is empty. Keep its dependency edge.
+			if (tokens.length === 0 && code !== 40 && code !== 41 && segments.length > 0
+				&& segments[segments.length - 1]!.separatorAfter === ")") {
+				segments[segments.length - 1]!.separatorAfter = tokens.separatorAfter;
+			}
 			if (tokens.length > 0) segments.push(tokens);
 			if (code === 40) subshellDepth++;
 			else if (code === 41 && subshellDepth > 0) subshellDepth--;

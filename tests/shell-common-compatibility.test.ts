@@ -176,6 +176,31 @@ test("printf variable assignment remains stateful through command prefix", () =>
   assert.equal(inspectBashPermissionScope({ command: "command printf '%s' synthetic" }, cwd)?.kind, "read-only");
 });
 
+test("simple ANSI-C quoted printf formats stay literal while encoded conversions remain guarded", () => {
+  for (const command of ["printf $'%s\\n' ansi-ok", "command printf $'%s\\n' ansi-ok"]) {
+    assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
+    assert.equal(inspectHighRiskBashMutation({ command }, cwd), undefined, command);
+    assert.equal(inspectBashPermissionScope({ command }, cwd)?.kind, "read-only", command);
+  }
+  for (const command of ["printf $'%n' PATH; cat", "printf $'%\\x6e' PATH; cat"]) {
+    assert.equal(inspectHighRiskBashMutation({ command }, cwd)?.unverifiableScope, true, command);
+    assert.equal(inspectBashPermissionScope({ command }, cwd)?.unverifiableScope, true, command);
+  }
+});
+
+test("a list separator after a closed subshell ends conditional cwd dependence", () => {
+  for (const command of [
+    "cd missing-synthetic && ( echo x ); printf data >.git/config",
+    "cd missing-synthetic && ( echo x )\nprintf data >.git/config",
+    "cd missing-synthetic && ( echo x ) || printf data >.git/config",
+  ]) {
+    assert.match(inspectBashResourceLifecycle({ command }) ?? "", /SHELL_UNINSPECTABLE/, command);
+    assert.equal(inspectHighRiskBashMutation({ command }, cwd)?.unverifiableScope, true, command);
+    assert.equal(inspectBashPermissionScope({ command }, cwd)?.unverifiableScope, true, command);
+  }
+  assert.notEqual(inspectHighRiskBashMutation({ command: "cd missing-synthetic && ( echo x ) && cat" }, cwd)?.unverifiableScope, true);
+});
+
 test("static descriptor and input-file redirections preserve bounded targets and order", () => {
   for (const command of [
     'printf "%s\\n" out 2>&1 | cat',
@@ -519,6 +544,8 @@ print(struct.unpack_from('<H', d, 0)[0])
       ["failed-left-command-write", "cd missing-synthetic && :; command printf data >.git/config"],
       ["failed-left-printf-v", "cd missing-synthetic && echo; command printf -v PATH .; cat"],
       ["failed-left-printf-n", "cd missing-synthetic && echo; command printf '%n' PATH; cat"],
+      ["subshell-list-separator", "cd missing-synthetic && ( echo x ); printf data >.git/config"],
+      ["subshell-or-separator", "cd missing-synthetic && ( echo x ) || printf data >.git/config"],
       ["query-cdpath", "command -v ${CDPATH:=..}; cd " + basename(fixture) + "; printf data >.git/config"],
       ["pipeline-group-cd", "{ cd subdir; } | cat; printf data >.git/config"],
       ["pipeline-cd", "cd subdir | cat; printf data >.git/config"],
@@ -674,12 +701,13 @@ print(struct.unpack_from('<H', d, 0)[0])
       ["else-bracket", "if false; then :; else [[ a < b ]]; fi && printf else-ok", "else-ok"],
       ["input-file", "cat < fixture.bin | head -c 2", "PI"],
       ["conditional-input", "cd subdir && cat < fixture.bin | head -c 2", "PI"],
+      ["ansi-c-format", "printf $'%s\\n' ansi-ok", "ansi-ok"],
     ]) {
       const result = await agent.dispatchHostTool({ type: "toolCall", id, name: "bash", arguments: { command } });
       assert.equal(result.isError, false, JSON.stringify(result.content));
       assert.ok((result.content[0] as { text: string }).text.includes(expected));
     }
-    assert.equal(executions, 21);
+    assert.equal(executions, 22);
   } finally {
     agent.abort();
     runner.invalidate();

@@ -3,7 +3,7 @@ import { basename, resolve } from "node:path";
 import { hasAmbiguousBashCwd } from "./core.ts";
 import { extractCommandSubstitutions, prepareShellAnalysis } from "./shell-substitution.ts";
 import { parseTimeoutInvocation } from "./timeout-wrapper.ts";
-import { hasStatefulBashPrintf, hasUnsafeBashTestOperand, hasUnsafeCommandQueryOperand, isBashDoubleBracketCloseBoundary, isBashDoubleBracketHead, isBashProcessSubstitutionStart, isBashTestWhitespace, isShellDynamicDescriptor, isShellFileDescriptor, isShellOutputFileRedirection, isStaticDescriptorCopy, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
+import { hasStatefulBashPrintf, hasUnsafeBashTestOperand, hasUnsafeCommandQueryOperand, isBashDoubleBracketCloseBoundary, isBashDoubleBracketHead, isBashProcessSubstitutionStart, isBashTestWhitespace, isShellDynamicDescriptor, isShellFileDescriptor, isShellOutputFileRedirection, isSimpleBashAnsiCQuote, isStaticDescriptorCopy, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
 
 const MAX_COMMAND_CHARS = 128 * 1024;
 const MAX_SEGMENTS = 64;
@@ -459,6 +459,9 @@ function inspectScript(command: string, initialCwd: string, depth: number, build
       escaped = true;
       tokenStarted = true;
       continue;
+    }
+    if (quote === 0 && code === 36 && isSimpleBashAnsiCQuote(command, index)) {
+      quote = 39; literalWord = false; tokenStarted = true; index++; continue;
     }
     if (quote !== 39 && (code === 36 || code === 96)) {
       const flags = code === 96 || command.charCodeAt(index + 1) === 40 ? 4 : 1;
