@@ -733,23 +733,28 @@ export function hasAmbiguousBashCwd(command: string): boolean {
 	let braceDepth = 0;
 	for (let segmentIndex = 0; segmentIndex < segments.length; segmentIndex++) {
 		const tokens = segments[segmentIndex]!;
-		const first = tokens[0];
+		const controlIndex = skipBashReservedPrefixes(tokens, 0);
+		if (controlIndex < 0) return true;
+		const first = tokens[controlIndex];
 		if (first === "done" && loopDepth > 0) loopDepth--;
 		if ((first === "fi" || first === "esac") && conditionalDepth > 0) conditionalDepth--;
 		if (first === "}" && braceDepth > 0) braceDepth--;
 		if (first === "for" || first === "while" || first === "until" || first === "select") loopDepth++;
 		if (first === "if" || first === "case") conditionalDepth++;
 		if (first === "{") braceDepth++;
-		if (loopDepth === 0 && conditionalDepth === 0 && braceDepth === 0 && !tokens.subshellDepth && !tokens.pipelineMember && !tokens.conditionalMember) continue;
+		if (loopDepth === 0 && conditionalDepth === 0 && braceDepth === 0 && !tokens.subshellDepth && !tokens.pipelineMember && !tokens.conditionalMember && controlIndex === 0) continue;
 		let index = commandTokenIndex(tokens);
 		if (index < 0) continue;
 		if (tokens[index] === "do" || tokens[index] === "{" || tokens[index] === "then" || tokens[index] === "else") index++;
+		index = skipBashReservedPrefixes(tokens, index);
+		if (index < 0) return true;
 		while (index < tokens.length && LEADING_ASSIGNMENT_PATTERN.test(tokens[index]!)) index++;
 		if (tokens[index] === "command" || tokens[index] === "builtin") index++;
 		if (commandName(tokens[index] ?? "") === "cd") {
 			// A literal `cd .` leaves relative targets at the same path whether it
 			// succeeds or fails; other conditional cd targets can change the cwd.
 			if (tokens[index + 1] === "." && tokens.length === index + 2) continue;
+			if (controlIndex > 0) return true;
 			// The RHS of `cd path && ...` only runs after a successful cd. A later
 			// independent command is safe only when its effects are provably read-only.
 			if (tokens.separatorAfter === "&&" && hasOnlyReadOnlyConditionalTail(segments, segmentIndex)) continue;
@@ -757,6 +762,20 @@ export function hasAmbiguousBashCwd(command: string): boolean {
 		}
 	}
 	return false;
+}
+
+function skipBashReservedPrefixes(tokens: ShellSegment, start: number): number {
+	let index = start;
+	let depth = 0;
+	while (index < tokens.length) {
+		if ((index === 0 && tokens.firstWordQuoted) || (index === 1 && tokens.secondWordQuoted)) break;
+		const word = tokens[index];
+		if (word !== "!" && word !== "time") break;
+		if (++depth > MAX_WRAPPER_DEPTH) return -1;
+		index++;
+		if (word === "time" && tokens[index] === "-p" && !(index === 1 && tokens.secondWordQuoted)) index++;
+	}
+	return index;
 }
 
 function hasOnlyReadOnlyConditionalTail(segments: readonly ShellSegment[], cdIndex: number): boolean {

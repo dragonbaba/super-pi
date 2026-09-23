@@ -430,6 +430,13 @@ print(struct.unpack_from('<H', d, 0)[0])
     assert.equal(existsSync(join(fixture, ".git")), true);
     for (const [id, command] of [
       ["zero-iteration-cd", "for x in; do cd subdir; done; printf data >.git/config"],
+      ["negated-loop-cd", "! for x in; do cd subdir; done; printf data >.git/config"],
+      ["timed-loop-cd", "time for x in; do cd subdir; done; printf data >.git/config"],
+      ["timed-posix-loop-cd", "time -p for x in; do cd subdir; done; printf data >.git/config"],
+      ["timed-conditional-cd", "time if false; then cd subdir; fi; printf data >.git/config"],
+      ["timed-cd", "time cd subdir; printf data >.git/config"],
+      ["negated-cd", "! cd subdir; printf data >.git/config"],
+      ["loop-negated-cd", "for x in; do ! cd subdir; done; printf data >.git/config"],
       ["escaped-cd", "for x in; do c\\d subdir; done; printf data >.git/config"],
       ["quoted-cd", "for x in; do 'c'd subdir; done; printf data >.git/config"],
       ["select-empty-cd", "select x in; do cd subdir; done; printf data >.git/config"],
