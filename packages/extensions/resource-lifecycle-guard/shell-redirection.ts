@@ -28,7 +28,7 @@ export function isBashDoubleBracketHead(tokens: readonly string[] & { firstWordQ
   if (tokens.length === 2) return head === "time" && tokens[1] === "-p" && !tokens.secondWordQuoted;
   if (tokens.length !== 1) return false;
   return head === "time" || head === "if" || head === "elif" || head === "while" || head === "until"
-    || head === "then" || head === "do" || head === "!" || head === "{";
+    || head === "then" || head === "else" || head === "do" || head === "!" || head === "{";
 }
 
 export function isBashDoubleBracketCloseBoundary(source: string, index: number): boolean {

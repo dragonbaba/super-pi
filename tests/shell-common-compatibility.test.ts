@@ -9,7 +9,7 @@ import { basename, join } from "node:path";
 import ts from "typescript";
 import { Agent } from "../packages/agent/src/agent.ts";
 import { createBashTool, createLocalBashOperations, createShellToolDefinition } from "../packages/coding-agent/src/core/tools/bash.ts";
-import { createPowerShellTool } from "../packages/coding-agent/src/core/tools/powershell.ts";
+import { createLocalPowerShellOperations, createPowerShellTool } from "../packages/coding-agent/src/core/tools/powershell.ts";
 import { OutputAccumulator } from "../packages/coding-agent/src/core/tools/output-accumulator.ts";
 import { wrapToolDefinition } from "../packages/coding-agent/src/core/tools/tool-definition-wrapper.ts";
 import { createEventBus } from "../packages/coding-agent/src/core/event-bus.ts";
@@ -150,6 +150,13 @@ test("Bash test arithmetic and state-changing operands stay unverifiable", () =>
   assert.equal(inspectBashResourceLifecycle({ command: quotedData }), undefined);
   assert.equal(inspectHighRiskBashMutation({ command: quotedData }, cwd), undefined);
   assert.equal(inspectBashPermissionScope({ command: quotedData }, cwd)?.kind, "read-only");
+});
+
+test("else introduces an inspectable Bash string comparison", () => {
+  const command = "if false; then :; else [[ a < b ]]; fi";
+  assert.equal(inspectBashResourceLifecycle({ command }), undefined);
+  assert.equal(inspectHighRiskBashMutation({ command }, cwd), undefined);
+  assert.equal(inspectBashPermissionScope({ command }, cwd)?.primitives.includes("unverifiable_redirection"), false);
 });
 
 test("static descriptor copies preserve bounded file targets and order", () => {
@@ -303,6 +310,19 @@ test("caller cancellation from custom shell backends remains interrupted", async
     const tool = toolName === "bash" ? createBashTool(cwd, { operations }) : createPowerShellTool(cwd, { operations });
     await assert.rejects(tool.execute(`abort-${toolName}`, { command: "printf synthetic" }, caller.signal), /\[SHELL_INTERRUPTED\]/);
   }
+});
+
+test("unavailable PowerShell is classified as a start failure", async () => {
+  const operations = createLocalPowerShellOperations({ resolveCandidate: () => {
+    throw Object.assign(new Error("synthetic missing executable"), { code: "ENOENT" });
+  } });
+  const agent = new Agent({ streamFn: () => { throw new Error("offline provider must not be called"); } });
+  agent.state.tools = [createPowerShellTool(cwd, { operations })];
+  try {
+    const result = await agent.dispatchHostTool({ type: "toolCall", id: "powershell-missing", name: "powershell", arguments: { command: "Write-Output synthetic" } });
+    assert.equal(result.isError, true);
+    assert.match((result.content[0] as { text: string }).text, /^\[SHELL_START_FAILED\] PowerShell is unavailable:/);
+  } finally { agent.abort(); }
 });
 
 test("a standalone ripgrep no-match stays an expected empty result after the runtime status prefix", async () => {
@@ -601,12 +621,13 @@ print(struct.unpack_from('<H', d, 0)[0])
       ["time-bracket", "time -p [[ a < b ]] && printf timed-ok", "timed-ok"],
       ["comment-comparison", "printf comment-ok # compare a < b", "comment-ok"],
       ["command-prefix", "command printf 'prefix-ok' 2>&1 | cat", "prefix-ok"],
+      ["else-bracket", "if false; then :; else [[ a < b ]]; fi && printf else-ok", "else-ok"],
     ]) {
       const result = await agent.dispatchHostTool({ type: "toolCall", id, name: "bash", arguments: { command } });
       assert.equal(result.isError, false, JSON.stringify(result.content));
       assert.ok((result.content[0] as { text: string }).text.includes(expected));
     }
-    assert.equal(executions, 18);
+    assert.equal(executions, 19);
   } finally {
     agent.abort();
     runner.invalidate();
