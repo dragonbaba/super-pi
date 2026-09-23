@@ -236,7 +236,7 @@ export interface HighRiskMutationScan {
 	diagnostic?: PolicyDiagnosticMetadata;
 }
 
-type ShellSegment = string[] & { dynamic?: boolean; expansions?: number[]; redirections?: number[]; redirectionFds?: (string | undefined)[]; subshellDepth?: number; pipelineMember?: boolean; conditionalMember?: boolean; separatorAfter?: string; bashTestOpenAt?: number; bashTestClosed?: boolean; bashTestProcessSubstitution?: boolean };
+type ShellSegment = string[] & { dynamic?: boolean; expansions?: number[]; redirections?: number[]; redirectionFds?: (string | undefined)[]; subshellDepth?: number; pipelineMember?: boolean; conditionalMember?: boolean; separatorAfter?: string; firstWordQuoted?: boolean; secondWordQuoted?: boolean; bashTestOpenAt?: number; bashTestClosed?: boolean; bashTestProcessSubstitution?: boolean };
 
 function uncertainAssignment(tokens: ShellSegment, index: number, shellAssignment = false): boolean {
  const expansion = tokens.expansions?.[index] ?? 0;
@@ -780,7 +780,7 @@ function isReadOnlyConditionalTailSegment(tokens: ShellSegment): boolean {
 	if (index > 0 && (index !== 2 || argv[0] !== "timeout" || command !== "find")) return false;
 	if (command === "echo" || command === ":" || command === "true" || command === "false") return true;
 	if (command === "command") return argv[index + 1] === "-v" || argv[index + 1] === "-V"
-		|| argv[index + 1] === "echo" || argv[index + 1] === "printf";
+		|| argv[index + 1] === "echo";
 	if (command === "cat") return argv.length === index + 1;
 	if (command === "head") {
 		for (let cursor = index + 1; cursor < argv.length; cursor++) {
@@ -883,6 +883,8 @@ function parseShellSegments(command: string): ShellSegment[] {
 		}
 		if (code === 32 || code === 9 || (bashDoubleBracket && isBashTestWhitespace(code))) {
 			if (tokenStarted) {
+				if (!literalWord && tokens.length === 0) tokens.firstWordQuoted = true;
+				if (!literalWord && tokens.length === 1) tokens.secondWordQuoted = true;
 				tokens.push(value);
 				redirectionTargetPending = false;
 				value = "";
@@ -890,6 +892,11 @@ function parseShellSegments(command: string): ShellSegment[] {
 				literalWord = true;
 			}
 			continue;
+		}
+		if (code === 35 && !tokenStarted) {
+			while (index < command.length && command.charCodeAt(index) !== 10 && command.charCodeAt(index) !== 13) index++;
+			if (index >= command.length) break;
+			index--; continue;
 		}
 		if (!bashDoubleBracket && code === 91 && command.charCodeAt(index + 1) === 91 && !tokenStarted
 			&& isBashDoubleBracketHead(tokens) && isBashTestWhitespace(command.charCodeAt(index + 2))) {

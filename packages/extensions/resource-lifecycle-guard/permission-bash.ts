@@ -306,6 +306,12 @@ function inspectSegment(tokens: PermissionTokens, cwd: string, depth: number, bu
     addClass(builder, "read:bash-test");
     return cwd;
   }
+  if (tokens[index] === "time" && !tokens.firstWordQuoted && tokens.bashTestClosed
+    && tokens.bashTestOpenAt === (tokens[index + 1] === "-p" && !tokens.secondWordQuoted ? index + 2 : index + 1)
+    && tokens[tokens.bashTestOpenAt] === "[[") {
+    addClass(builder, "read:bash-test");
+    return cwd;
+  }
   if (SCRIPT_WRAPPERS.has(command)) {
     addClass(builder, `wrapper:${command}`);
     const source = wrapperScript(tokens, index + 1);
@@ -351,7 +357,7 @@ function inspectSegment(tokens: PermissionTokens, cwd: string, depth: number, bu
   return cwd;
 }
 
-type PermissionTokens = string[] & { redirections?: number[]; redirectionFds?: (string | undefined)[]; bashTestOpenAt?: number; bashTestClosed?: boolean; bashTestProcessSubstitution?: boolean };
+type PermissionTokens = string[] & { redirections?: number[]; redirectionFds?: (string | undefined)[]; firstWordQuoted?: boolean; secondWordQuoted?: boolean; bashTestOpenAt?: number; bashTestClosed?: boolean; bashTestProcessSubstitution?: boolean };
 
 function inspectTokenBuffer(tokens: PermissionTokens, cwd: string, depth: number, builder: ScopeBuilder): string {
   if (tokens.length === 0) return cwd;
@@ -474,6 +480,8 @@ function inspectScript(command: string, initialCwd: string, depth: number, build
     }
     if (code === 32 || code === 9 || (bashDoubleBracket && isBashTestWhitespace(code))) {
       if (tokenStarted) {
+        if (!literalWord && tokens.length === 0) tokens.firstWordQuoted = true;
+        if (!literalWord && tokens.length === 1) tokens.secondWordQuoted = true;
         tokens.push(value);
         redirectionTargetPending = false;
         value = "";
@@ -481,6 +489,11 @@ function inspectScript(command: string, initialCwd: string, depth: number, build
         literalWord = true;
       }
       continue;
+    }
+    if (code === 35 && !tokenStarted) {
+      while (index < command.length && command.charCodeAt(index) !== 10 && command.charCodeAt(index) !== 13) index++;
+      if (index >= command.length) break;
+      index--; continue;
     }
     if (!bashDoubleBracket && code === 91 && command.charCodeAt(index + 1) === 91 && !tokenStarted
       && isBashDoubleBracketHead(tokens) && isBashTestWhitespace(command.charCodeAt(index + 2))) {
@@ -517,6 +530,8 @@ function inspectScript(command: string, initialCwd: string, depth: number, build
       tokens.bashTestOpenAt = undefined;
       tokens.bashTestClosed = undefined;
       tokens.bashTestProcessSubstitution = undefined;
+      tokens.firstWordQuoted = undefined;
+      tokens.secondWordQuoted = undefined;
       literalWord = true;
       value = "";
       tokenStarted = false;

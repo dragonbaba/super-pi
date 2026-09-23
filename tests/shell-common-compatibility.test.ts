@@ -146,6 +146,18 @@ test("static descriptor copies preserve bounded file targets and order", () => {
     assert.equal(scope?.unverifiableScope, false, command);
     assert.equal(scope?.kind, "read-only", command);
   }
+  for (const command of ["time [[ a < b ]]", "time -p [[ a < b ]]", "printf ok # compare a < b"]) {
+    assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
+    assert.equal(inspectHighRiskBashMutation({ command }, cwd), undefined, command);
+    assert.equal(inspectBashPermissionScope({ command }, cwd)?.kind, "read-only", command);
+  }
+  assert.equal(inspectHighRiskBashMutation({ command: "printf ok#literal <fixture.bin" }, cwd)?.unverifiableScope, true);
+  for (const command of ["'time' [[ a < b ]]", "time '-p' [[ a < b ]]"]) {
+    assert.equal(inspectHighRiskBashMutation({ command }, cwd)?.unverifiableScope, true);
+    assert.equal(inspectBashPermissionScope({ command }, cwd)?.unverifiableScope, true);
+  }
+  assert.ok(inspectHighRiskBashMutation({ command: "time [[ a < b ]] >.git/config" }, cwd)?.targets.some(target => target.endsWith(".git\\config") || target.endsWith(".git/config")));
+  assert.ok(inspectHighRiskBashMutation({ command: "printf ok # comment < ignored\nprintf data >.git/config" }, cwd)?.targets.some(target => target.endsWith(".git\\config") || target.endsWith(".git/config")));
   assert.ok(inspectHighRiskBashMutation({ command: "[[ a < b ]] >.git/config" }, cwd)?.targets.some(target => target.endsWith(".git\\config") || target.endsWith(".git/config")));
   assert.equal(inspectBashPermissionScope({ command: "[[ a < b ]] >.git/config" }, cwd)?.kind, "known-mutation");
   assert.ok(inspectHighRiskBashMutation({ command: "[[\na < b\n]] >.git/config" }, cwd)?.targets.some(target => target.endsWith(".git\\config") || target.endsWith(".git/config")));
@@ -305,7 +317,7 @@ test("real guard, authorization, Bash and tool-result path handle three feedback
   try {
     await runner.emit({ type: "session_start" } as never);
     const commands = [
-      `cd subdir && f="fixture.bin" && ls -l "$f" && (command -v cat && cat "$f" | head -c 3) 2>&1 | head -20; echo "---query---"; command -v printf cat; command -V printf; command printf 'prefix-ok' 2>&1 | cat`,
+      `cd subdir && f="fixture.bin" && ls -l "$f" && (command -v cat && cat "$f" | head -c 3) 2>&1 | head -20; echo "---query---"; command -v printf cat; command -V printf`,
       `for t in printf cat; do printf "%-12s " "$t"; command -v $t || echo "-"; done; echo "---search---"; ls . 2>/dev/null; ls missing-synthetic 2>/dev/null`,
       `cd subdir && python -c "
 import struct
@@ -362,6 +374,8 @@ print(struct.unpack_from('<H', d, 0)[0])
       ["failed-left-or-cd", "cd missing-synthetic || :; printf data >.git/config"],
       ["failed-left-and-delete", "cd missing-synthetic && :; find . -delete"],
       ["failed-left-command-write", "cd missing-synthetic && :; command printf data >.git/config"],
+      ["failed-left-printf-v", "cd missing-synthetic && echo; command printf -v PATH .; cat"],
+      ["failed-left-printf-n", "cd missing-synthetic && echo; command printf '%n' PATH; cat"],
       ["pipeline-group-cd", "{ cd subdir; } | cat; printf data >.git/config"],
       ["pipeline-cd", "cd subdir | cat; printf data >.git/config"],
       ["subshell-cd", "(cd subdir); printf data >.git/config"],
@@ -506,6 +520,16 @@ print(struct.unpack_from('<H', d, 0)[0])
       assert.equal(executions, 15);
       assert.equal(existsSync(join(fixture, ".git", "config")), false);
     }
+    for (const [id, command, expected] of [
+      ["time-bracket", "time -p [[ a < b ]] && printf timed-ok", "timed-ok"],
+      ["comment-comparison", "printf comment-ok # compare a < b", "comment-ok"],
+      ["command-prefix", "command printf 'prefix-ok' 2>&1 | cat", "prefix-ok"],
+    ]) {
+      const result = await agent.dispatchHostTool({ type: "toolCall", id, name: "bash", arguments: { command } });
+      assert.equal(result.isError, false, JSON.stringify(result.content));
+      assert.ok((result.content[0] as { text: string }).text.includes(expected));
+    }
+    assert.equal(executions, 18);
   } finally {
     agent.abort();
     runner.invalidate();

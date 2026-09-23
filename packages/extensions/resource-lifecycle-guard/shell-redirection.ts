@@ -21,11 +21,13 @@ export function isBashProcessSubstitutionStart(source: string, index: number): b
 }
 
 /** `[[` is a Bash keyword only at a command/test head, not an argv word. */
-export function isBashDoubleBracketHead(tokens: readonly string[]): boolean {
+export function isBashDoubleBracketHead(tokens: readonly string[] & { firstWordQuoted?: boolean; secondWordQuoted?: boolean }): boolean {
   if (tokens.length === 0) return true;
-  if (tokens.length !== 1) return false;
+  if (tokens.firstWordQuoted) return false;
   const head = tokens[0];
-  return head === "if" || head === "elif" || head === "while" || head === "until"
+  if (tokens.length === 2) return head === "time" && tokens[1] === "-p" && !tokens.secondWordQuoted;
+  if (tokens.length !== 1) return false;
+  return head === "time" || head === "if" || head === "elif" || head === "while" || head === "until"
     || head === "then" || head === "do" || head === "!" || head === "{";
 }
 
