@@ -72,6 +72,18 @@ export function hasUnsafeCommandQueryOperand(tokens: readonly string[] & { expan
   return false;
 }
 
+/** `[[ -v name[subscript] ]]` evaluates the subscript as arithmetic, even when quoted. */
+export function hasBashTestArraySubscript(tokens: readonly string[] & { bashTestOpenAt?: number; bashTestClosed?: boolean; expansions?: readonly number[] }): boolean {
+  const open = tokens.bashTestOpenAt;
+  if (open === undefined || !tokens.bashTestClosed) return false;
+  for (let index = open + 1; index + 1 < tokens.length; index++) {
+    if (tokens[index] !== "-v") continue;
+    const operand = tokens[index + 1]!;
+    if (operand.includes("[") || (tokens.expansions?.[index + 1] ?? 0) !== 0) return true;
+  }
+  return false;
+}
+
 function hasOnlySimpleQueryVariables(value: string): boolean {
   let found = false;
   for (let index = 0; index < value.length; index++) {

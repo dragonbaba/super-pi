@@ -936,12 +936,12 @@ export function createShellToolDefinition(
 				} catch (err) {
 					const snapshot = await finishOutput();
 					const { text } = formatOutput(snapshot, "");
-					if (err instanceof Error && err.message === "aborted") {
-						throw new Error(`[SHELL_INTERRUPTED] ${appendStatus(text, "Command aborted")}`);
-					}
 					if (err instanceof Error && err.message.startsWith("timeout:")) {
 						const timeoutSecs = err.message.split(":")[1];
 						throw new Error(`[SHELL_INTERRUPTED] ${appendStatus(text, `Command timed out after ${timeoutSecs} seconds`)}`);
+					}
+					if (executionSignal.aborted || (err instanceof Error && err.message === "aborted")) {
+						throw new Error(`[SHELL_INTERRUPTED] ${appendStatus(text, "Command aborted")}`);
 					}
 					const launchError = err instanceof Error && (
 						"code" in err && (err.code === "ENOENT" || err.code === "EACCES" || err.code === "ENOTDIR")

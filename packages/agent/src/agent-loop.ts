@@ -857,7 +857,7 @@ async function prepareToolCall(
 				const directReason = nonEmptyReason(beforeResult.reason);
 				const refusalDetails = beforeResult.details ?? refusal?.details;
 				let details = refusalDetails;
-				if (tool.name === "bash") {
+				if (tool.name === "bash" || tool.name === "powershell") {
 					const prototype = refusalDetails && typeof refusalDetails === "object" ? Object.getPrototypeOf(refusalDetails) : undefined;
 					details = prototype === Object.prototype || prototype === null
 						? { ...refusalDetails, executionStatus: "not_executed" }

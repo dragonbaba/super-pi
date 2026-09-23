@@ -9,6 +9,7 @@ import { basename, join } from "node:path";
 import ts from "typescript";
 import { Agent } from "../packages/agent/src/agent.ts";
 import { createBashTool, createLocalBashOperations, createShellToolDefinition } from "../packages/coding-agent/src/core/tools/bash.ts";
+import { createPowerShellTool } from "../packages/coding-agent/src/core/tools/powershell.ts";
 import { OutputAccumulator } from "../packages/coding-agent/src/core/tools/output-accumulator.ts";
 import { wrapToolDefinition } from "../packages/coding-agent/src/core/tools/tool-definition-wrapper.ts";
 import { createEventBus } from "../packages/coding-agent/src/core/event-bus.ts";
@@ -129,6 +130,17 @@ test("command -v/-V query names and variables without treating them as executabl
   }
 });
 
+test("Bash test array subscripts stay unverifiable even when quoted", () => {
+  const command = "[[ -v 'x[$(printf data >.git/config)]' ]]";
+  assert.match(inspectBashResourceLifecycle({ command }) ?? "", /SHELL_UNINSPECTABLE/);
+  assert.equal(inspectHighRiskBashMutation({ command }, cwd)?.unverifiableScope, true);
+  assert.equal(inspectBashPermissionScope({ command }, cwd)?.unverifiableScope, true);
+  const quotedData = "[[ foo == 'x[$(printf data >.git/config)]' ]]";
+  assert.equal(inspectBashResourceLifecycle({ command: quotedData }), undefined);
+  assert.equal(inspectHighRiskBashMutation({ command: quotedData }, cwd), undefined);
+  assert.equal(inspectBashPermissionScope({ command: quotedData }, cwd)?.kind, "read-only");
+});
+
 test("static descriptor copies preserve bounded file targets and order", () => {
   for (const command of [
     'printf "%s\\n" out 2>&1 | cat',
@@ -244,23 +256,41 @@ test("an asynchronous spill stream failure aborts a quiet Bash execution", async
   }
 });
 
-test("blocked Bash calls preserve custom non-record refusal details", async () => {
-  for (const originalDetails of ["custom detail", ["custom", "detail"]]) {
+test("blocked shell calls preserve custom non-record refusal details and no elapsed time", async () => {
+  for (const toolName of ["bash", "powershell"] as const) for (const originalDetails of ["custom detail", ["custom", "detail"]]) {
     let executions = 0;
     const agent = new Agent({
       streamFn: () => { throw new Error("offline provider must not be called"); },
       beforeToolCall: async () => ({ block: true, reason: "synthetic refusal", details: originalDetails }),
     });
-    agent.state.tools = [createBashTool(cwd, { operations: {
-      async exec() { executions++; return { exitCode: 0 }; },
-    } })];
+    const operations = { async exec() { executions++; return { exitCode: 0 }; } };
+    agent.state.tools = [toolName === "bash" ? createBashTool(cwd, { operations }) : createPowerShellTool(cwd, { operations })];
     try {
-      const result = await agent.dispatchHostTool({ type: "toolCall", id: "custom-refusal", name: "bash", arguments: { command: "printf synthetic" } });
+      const result = await agent.dispatchHostTool({ type: "toolCall", id: "custom-refusal", name: toolName, arguments: { command: "printf synthetic" } });
       assert.equal(result.isError, true);
       assert.equal((result.details as any).executionStatus, "not_executed");
       assert.deepEqual((result.details as any).originalDetails, originalDetails);
       assert.equal(executions, 0);
+      initTheme("dark");
+      const component = new ToolExecutionComponent(toolName, "shell-status", { command: "printf synthetic" }, { showImages: false }, undefined, { requestRender() {} } as never, cwd);
+      component.markExecutionStarted();
+      component.setArgsComplete();
+      component.updateResult(result, false, true);
+      assert.doesNotMatch(component.render(120).join("\n").replaceAll(/\x1b\[[0-9;]*m/gu, ""), /Took 0\.0s|Took \d/);
     } finally { agent.abort(); }
+  }
+});
+
+test("caller cancellation from custom shell backends remains interrupted", async () => {
+  for (const toolName of ["bash", "powershell"] as const) {
+    const caller = new AbortController();
+    const operations = { async exec(_command: string, _cwd: string, options: { signal?: AbortSignal }) {
+      caller.abort();
+      options.signal?.throwIfAborted();
+      return { exitCode: 0 };
+    } };
+    const tool = toolName === "bash" ? createBashTool(cwd, { operations }) : createPowerShellTool(cwd, { operations });
+    await assert.rejects(tool.execute(`abort-${toolName}`, { command: "printf synthetic" }, caller.signal), /\[SHELL_INTERRUPTED\]/);
   }
 });
 
@@ -523,6 +553,7 @@ print(struct.unpack_from('<H', d, 0)[0])
       "[[ -e <(printf data >.git/config) ]]",
       "[[ -e >(printf data >.git/config) ]]",
       "[[\n-e <(printf data >.git/config)\n]]",
+      "[[ -v 'x[$(printf data >.git/config)]' ]]",
     ].entries()) {
       assert.match(inspectBashResourceLifecycle({ command }) ?? "", /SHELL_UNINSPECTABLE/);
       assert.equal(inspectHighRiskBashMutation({ command }, fixture)?.unverifiableScope, true);
