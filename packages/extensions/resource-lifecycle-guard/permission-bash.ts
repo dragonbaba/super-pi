@@ -3,7 +3,7 @@ import { basename, resolve } from "node:path";
 import { hasAmbiguousBashCwd, unsafeBashLoopHeaderReason } from "./core.ts";
 import { extractCommandSubstitutions, prepareShellAnalysis } from "./shell-substitution.ts";
 import { parseTimeoutInvocation } from "./timeout-wrapper.ts";
-import { hasStatefulBashPrintf, hasUnsafeBashTestOperand, hasUnsafeCommandQueryOperand, isBashDoubleBracketCloseBoundary, isBashDoubleBracketHead, isBashProcessSubstitutionStart, isBashTestWhitespace, isShellDynamicDescriptor, isShellFileDescriptor, isShellOutputFileRedirection, isSimpleBashAnsiCQuote, isStaticDescriptorCopy, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
+import { bashTimeOptionsEnd, hasStatefulBashPrintf, hasUnsafeBashTestOperand, hasUnsafeCommandQueryOperand, isBashDoubleBracketCloseBoundary, isBashDoubleBracketHead, isBashProcessSubstitutionStart, isBashTestWhitespace, isShellDynamicDescriptor, isShellFileDescriptor, isShellOutputFileRedirection, isSimpleBashAnsiCQuote, isStaticDescriptorCopy, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
 
 const MAX_COMMAND_CHARS = 128 * 1024;
 const MAX_SEGMENTS = 64;
@@ -326,7 +326,7 @@ function inspectSegment(tokens: PermissionTokens, cwd: string, depth: number, bu
     return cwd;
   }
   if (tokens[index] === "time" && !tokens.firstWordQuoted && tokens.bashTestClosed
-    && tokens.bashTestOpenAt === (tokens[index + 1] === "-p" && !tokens.secondWordQuoted ? index + 2 : index + 1)
+    && tokens.bashTestOpenAt === bashTimeOptionsEnd(tokens, index + 1)
     && tokens[tokens.bashTestOpenAt] === "[[") {
     addClass(builder, "read:bash-test");
     return cwd;
@@ -376,7 +376,7 @@ function inspectSegment(tokens: PermissionTokens, cwd: string, depth: number, bu
   return cwd;
 }
 
-type PermissionTokens = string[] & { expansions?: number[]; redirections?: number[]; redirectionFds?: (string | undefined)[]; firstWordQuoted?: boolean; secondWordQuoted?: boolean; bashTestOpenAt?: number; bashTestClosed?: boolean; bashTestProcessSubstitution?: boolean };
+type PermissionTokens = string[] & { expansions?: number[]; redirections?: number[]; redirectionFds?: (string | undefined)[]; firstWordQuoted?: boolean; secondWordQuoted?: boolean; thirdWordQuoted?: boolean; bashTestOpenAt?: number; bashTestClosed?: boolean; bashTestProcessSubstitution?: boolean };
 
 function inspectTokenBuffer(tokens: PermissionTokens, cwd: string, depth: number, builder: ScopeBuilder): string {
   if (tokens.length === 0) return cwd;
@@ -517,6 +517,7 @@ function inspectScript(command: string, initialCwd: string, depth: number, build
       if (tokenStarted) {
         if (!literalWord && tokens.length === 0) tokens.firstWordQuoted = true;
         if (!literalWord && tokens.length === 1) tokens.secondWordQuoted = true;
+        if (!literalWord && tokens.length === 2) tokens.thirdWordQuoted = true;
         tokens.push(value);
         redirectionTargetPending = false;
         value = "";
@@ -547,6 +548,7 @@ function inspectScript(command: string, initialCwd: string, depth: number, build
       if (tokenStarted && !sourceFd) {
         if (!literalWord && tokens.length === 0) tokens.firstWordQuoted = true;
         if (!literalWord && tokens.length === 1) tokens.secondWordQuoted = true;
+        if (!literalWord && tokens.length === 2) tokens.thirdWordQuoted = true;
         tokens.push(value);
       }
       (tokens.redirections ??= []).push(tokens.length);
@@ -564,6 +566,7 @@ function inspectScript(command: string, initialCwd: string, depth: number, build
       if (tokenStarted) {
         if (!literalWord && tokens.length === 0) tokens.firstWordQuoted = true;
         if (!literalWord && tokens.length === 1) tokens.secondWordQuoted = true;
+        if (!literalWord && tokens.length === 2) tokens.thirdWordQuoted = true;
         tokens.push(value);
       }
       cwd = inspectTokenBuffer(tokens, cwd, depth, builder);
@@ -576,6 +579,7 @@ function inspectScript(command: string, initialCwd: string, depth: number, build
       tokens.bashTestProcessSubstitution = undefined;
       tokens.firstWordQuoted = undefined;
       tokens.secondWordQuoted = undefined;
+      tokens.thirdWordQuoted = undefined;
       literalWord = true;
       value = "";
       tokenStarted = false;
@@ -589,6 +593,7 @@ function inspectScript(command: string, initialCwd: string, depth: number, build
   if (tokenStarted) {
     if (!literalWord && tokens.length === 0) tokens.firstWordQuoted = true;
     if (!literalWord && tokens.length === 1) tokens.secondWordQuoted = true;
+    if (!literalWord && tokens.length === 2) tokens.thirdWordQuoted = true;
     tokens.push(value);
   }
   inspectTokenBuffer(tokens, cwd, depth, builder);

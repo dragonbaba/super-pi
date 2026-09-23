@@ -240,7 +240,7 @@ export interface HighRiskMutationScan {
 	diagnostic?: PolicyDiagnosticMetadata;
 }
 
-type ShellSegment = string[] & { dynamic?: boolean; expansions?: number[]; redirections?: number[]; redirectionFds?: (string | undefined)[]; subshellDepth?: number; pipelineMember?: boolean; conditionalMember?: boolean; separatorAfter?: string; firstWordQuoted?: boolean; secondWordQuoted?: boolean; bashTestOpenAt?: number; bashTestClosed?: boolean; bashTestProcessSubstitution?: boolean };
+type ShellSegment = string[] & { dynamic?: boolean; expansions?: number[]; redirections?: number[]; redirectionFds?: (string | undefined)[]; subshellDepth?: number; pipelineMember?: boolean; conditionalMember?: boolean; separatorAfter?: string; firstWordQuoted?: boolean; secondWordQuoted?: boolean; thirdWordQuoted?: boolean; bashTestOpenAt?: number; bashTestClosed?: boolean; bashTestProcessSubstitution?: boolean };
 
 function uncertainAssignment(tokens: ShellSegment, index: number, shellAssignment = false): boolean {
  const expansion = tokens.expansions?.[index] ?? 0;
@@ -800,14 +800,16 @@ export function hasAmbiguousBashCwd(command: string): boolean {
 		if (tokens[index] === "do" || tokens[index] === "{" || tokens[index] === "then" || tokens[index] === "else") index++;
 		index = skipBashReservedPrefixes(tokens, index);
 		if (index < 0) return true;
-		let builtinPrefix = false;
+		let builtinPrefixes = 0;
 		let leadingAssignment = false;
 		while (index < tokens.length) {
 			const after = afterLeadingRedirection(tokens, index);
 			if (after !== index) { index = after; continue; }
 			if (LEADING_ASSIGNMENT_PATTERN.test(tokens[index]!)) { leadingAssignment = true; index++; continue; }
-			if (!builtinPrefix && (tokens[index] === "command" || tokens[index] === "builtin")) {
-				builtinPrefix = true; index++; continue;
+			// `command command cd` and `builtin command cd` still dispatch to cd.
+			if (tokens[index] === "command" || tokens[index] === "builtin") {
+				if (++builtinPrefixes > MAX_WRAPPER_DEPTH) return true;
+				index++; continue;
 			}
 			break;
 		}
@@ -983,6 +985,7 @@ function parseShellSegments(command: string): ShellSegment[] {
 			if (tokenStarted) {
 				if (!literalWord && tokens.length === 0) tokens.firstWordQuoted = true;
 				if (!literalWord && tokens.length === 1) tokens.secondWordQuoted = true;
+				if (!literalWord && tokens.length === 2) tokens.thirdWordQuoted = true;
 				tokens.push(value);
 				redirectionTargetPending = false;
 				value = "";
@@ -1013,6 +1016,7 @@ function parseShellSegments(command: string): ShellSegment[] {
 			if (tokenStarted && !sourceFd) {
 				if (!literalWord && tokens.length === 0) tokens.firstWordQuoted = true;
 				if (!literalWord && tokens.length === 1) tokens.secondWordQuoted = true;
+				if (!literalWord && tokens.length === 2) tokens.thirdWordQuoted = true;
 				tokens.push(value);
 			}
 			(tokens.redirections ??= []).push(tokens.length);
@@ -1030,6 +1034,7 @@ function parseShellSegments(command: string): ShellSegment[] {
 			if (tokenStarted) {
 				if (!literalWord && tokens.length === 0) tokens.firstWordQuoted = true;
 				if (!literalWord && tokens.length === 1) tokens.secondWordQuoted = true;
+				if (!literalWord && tokens.length === 2) tokens.thirdWordQuoted = true;
 				tokens.push(value);
 			}
 			const pipeline = code === 124 && command.charCodeAt(index + 1) !== 124;
@@ -1063,6 +1068,7 @@ function parseShellSegments(command: string): ShellSegment[] {
 	if (tokenStarted) {
 		if (!literalWord && tokens.length === 0) tokens.firstWordQuoted = true;
 		if (!literalWord && tokens.length === 1) tokens.secondWordQuoted = true;
+		if (!literalWord && tokens.length === 2) tokens.thirdWordQuoted = true;
 		tokens.push(value);
 	}
 	if (tokens.length > 0) segments.push(tokens);

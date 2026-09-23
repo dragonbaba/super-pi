@@ -274,7 +274,7 @@ test("static descriptor and input-file redirections preserve bounded targets and
     assert.equal(scope?.unverifiableScope, false, command);
     assert.equal(scope?.kind, "read-only", command);
   }
-  for (const command of ["time [[ a < b ]]", "time -p [[ a < b ]]", "printf ok # compare a < b"]) {
+  for (const command of ["time [[ a < b ]]", "time -p [[ a < b ]]", "time -- [[ a < b ]]", "time -p -- [[ a < b ]]", "printf ok # compare a < b"]) {
     assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
     assert.equal(inspectHighRiskBashMutation({ command }, cwd), undefined, command);
     assert.equal(inspectBashPermissionScope({ command }, cwd)?.kind, "read-only", command);
@@ -282,7 +282,7 @@ test("static descriptor and input-file redirections preserve bounded targets and
   assert.equal(inspectHighRiskBashMutation({ command: "printf ok#literal <fixture.bin" }, cwd), undefined);
   assert.equal(inspectBashPermissionScope({ command: "printf ok#literal <fixture.bin" }, cwd)?.kind, "read-only");
   assert.ok(inspectHighRiskBashMutation({ command: "printf ok#literal >.git/config" }, cwd)?.targets.some(target => target.endsWith(".git\\config") || target.endsWith(".git/config")));
-  for (const command of ["'time' [[ a < b ]]", "time '-p' [[ a < b ]]"]) {
+  for (const command of ["'time' [[ a < b ]]", "time '-p' [[ a < b ]]", "time '--' [[ a < b ]]", "time -p '--' [[ a < b ]]"]) {
     assert.equal(inspectHighRiskBashMutation({ command }, cwd), undefined);
     assert.equal(inspectBashPermissionScope({ command }, cwd)?.unverifiableScope, true);
   }
@@ -896,6 +896,8 @@ test("assignment-prefixed cd cannot authorize a different protected cwd", async 
     for (const [id, command] of [
       ["redirected-assigned-cd", ">/dev/null CDPATH=../.. cd workspace && printf marker >.git/config"],
       ["assigned-cd", "CDPATH=../.. cd workspace && printf marker >.git/config"],
+      ["nested-command-assigned-cd", ">/dev/null CDPATH=../.. command command cd workspace && printf marker >.git/config"],
+      ["nested-builtin-assigned-cd", "CDPATH=../.. builtin command builtin cd workspace && printf marker >.git/config"],
     ] as const) {
       execFileSync(shellPath, ["-c", command], { cwd: workspace, encoding: "utf8" });
       assert.equal(readFileSync(actual, "utf8"), "marker", `${id}: direct Bash writes the protected outer target`);

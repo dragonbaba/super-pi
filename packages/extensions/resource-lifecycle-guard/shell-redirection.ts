@@ -21,14 +21,22 @@ export function isBashProcessSubstitutionStart(source: string, index: number): b
 }
 
 /** `[[` is a Bash keyword only at a command/test head, not an argv word. */
-export function isBashDoubleBracketHead(tokens: readonly string[] & { firstWordQuoted?: boolean; secondWordQuoted?: boolean }): boolean {
+export function isBashDoubleBracketHead(tokens: readonly string[] & { firstWordQuoted?: boolean; secondWordQuoted?: boolean; thirdWordQuoted?: boolean }): boolean {
   if (tokens.length === 0) return true;
   if (tokens.firstWordQuoted) return false;
   const head = tokens[0];
-  if (tokens.length === 2) return head === "time" && tokens[1] === "-p" && !tokens.secondWordQuoted;
+  if (tokens.length > 1) return head === "time" && bashTimeOptionsEnd(tokens, 1) === tokens.length;
   if (tokens.length !== 1) return false;
   return head === "time" || head === "if" || head === "elif" || head === "while" || head === "until"
     || head === "then" || head === "else" || head === "do" || head === "!" || head === "{";
+}
+
+/** Bash accepts only literal `time [-p] [--]`; quoted option words are argv. */
+export function bashTimeOptionsEnd(tokens: readonly string[] & { secondWordQuoted?: boolean; thirdWordQuoted?: boolean }, start: number): number {
+  let index = start;
+  if (tokens[index] === "-p" && !(index === 1 && tokens.secondWordQuoted)) index++;
+  if (tokens[index] === "--" && !(index === 1 && tokens.secondWordQuoted) && !(index === 2 && tokens.thirdWordQuoted)) index++;
+  return index;
 }
 
 export function isBashDoubleBracketCloseBoundary(source: string, index: number): boolean {
