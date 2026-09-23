@@ -27,7 +27,7 @@ import {
 } from "./regex.ts";
 import { extractCommandSubstitutions, inspectHereDocuments, prepareShellAnalysis } from "./shell-substitution.ts";
 import { parseTimeoutInvocation } from "./timeout-wrapper.ts";
-import { unsafeBashForHeaderReason, hasStatefulBashPrintf, hasUnsafeBashTestOperand, hasUnsafeCommandQueryOperand, isBashDoubleBracketCloseBoundary, isBashDoubleBracketHead, isBashProcessSubstitutionStart, isBashTestWhitespace, isShellDynamicDescriptor, isShellFileDescriptor, isShellOutputFileRedirection, isSimpleBashAnsiCQuote, isStaticDescriptorCopy, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
+import { bashLoopVariableIndex, unsafeBashForHeaderReason, hasStatefulBashPrintf, hasUnsafeBashTestOperand, hasUnsafeCommandQueryOperand, isBashDoubleBracketCloseBoundary, isBashDoubleBracketHead, isBashProcessSubstitutionStart, isBashTestWhitespace, isShellDynamicDescriptor, isShellFileDescriptor, isShellOutputFileRedirection, isSimpleBashAnsiCQuote, isStaticDescriptorCopy, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
 import { FD_DUPLICATION_PATTERN } from "./regex.ts";
 import { diagnosticForPrimitives, policyMetadata, renderPolicyDiagnostic, type PolicyDiagnosticMetadata } from "./policy-diagnostics.ts";
 
@@ -129,12 +129,12 @@ function inspectLifecycleScript(source: string, depth: number, nativePowerShellA
   const owned = OWNED_FOREGROUND_JOB_PATTERN.exec(command);
   if (!owned || !hasBoundedOwnedUse(owned[2]) || OPAQUE_JOB_LAUNCHER_PATTERN.test(commandName(owned[1]!)) || OPAQUE_JOB_INTERPRETER_PATTERN.test(commandName(owned[1]!))) return BLOCK_REASON;
  }
- if (!SHELL_WRAPPER_TEXT_PATTERN.test(command) && !EXECUTABLE_EXPANSION_TEXT_PATTERN.test(command) && !command.includes("[[") && !command.includes("for")) return undefined;
+ if (!SHELL_WRAPPER_TEXT_PATTERN.test(command) && !EXECUTABLE_EXPANSION_TEXT_PATTERN.test(command) && !command.includes("[[") && !command.includes("for") && !command.includes("select")) return undefined;
  const segments = parseShellSegments(command);
  if (segments.length > MAX_SCRIPT_SEGMENTS) return lifecycleRefusal("SHELL_INSPECTION_LIMIT", "too many command segments", "reduce the number of segments");
+ const loopReason = unsafeBashLoopHeaders(segments);
+ if (loopReason) return lifecycleRefusal("SHELL_UNINSPECTABLE", loopReason === "stateful_loop_list_expansion" ? "loop list expansion can change later shell state" : "loop variable can change later executable lookup", "use a literal list or simple variable reference without shell-state changes");
  for (const tokens of segments) {
-  const loopReason = unsafeBashForHeaderReason(tokens);
-  if (loopReason) return lifecycleRefusal("SHELL_UNINSPECTABLE", loopReason === "stateful_loop_list_expansion" ? "for list expansion can change later shell state" : "for loop variable can change later executable lookup", "use a literal list or simple variable reference without shell-state changes");
   if (tokens.bashTestProcessSubstitution) return lifecycleRefusal("SHELL_UNINSPECTABLE", "process substitution inside a Bash test cannot be safely inspected", "split the process substitution into separately inspectable commands");
   if (hasUnsafeBashTestOperand(tokens)) return lifecycleRefusal("SHELL_UNINSPECTABLE", "Bash test operand may change shell state or evaluate arithmetic", "use simple variable tests or literal numeric comparisons");
   // The global filter is only an optimization; unrelated segments supply no
@@ -389,6 +389,8 @@ function inspectShellScript(script: string, initialCwd: string, depth: number, b
 	if (substitutions.unsupported) markUnverifiable(builder);
 	for (const nested of substitutions.scripts) inspectShellScript(nested, initialCwd, depth + 1, builder);
 	const segments = parseShellSegments(analysis.command);
+	const loopReason = unsafeBashLoopHeaders(segments);
+	if (loopReason) { addPrimitive(builder, loopReason); markUnverifiable(builder); }
 	let workingDirectory = initialCwd;
 	for (const segment of segments) {
 		builder.segmentsVisited++;
@@ -399,8 +401,6 @@ function inspectShellScript(script: string, initialCwd: string, depth: number, b
 		}
 		const tokens = segment;
 		if (tokens.length === 0) continue;
-		const loopReason = unsafeBashForHeaderReason(tokens);
-		if (loopReason) { addPrimitive(builder, loopReason); markUnverifiable(builder); }
 		if (tokens.bashTestProcessSubstitution) { addPrimitive(builder, "unverifiable_process_substitution"); markUnverifiable(builder); continue; }
 		if (hasUnsafeBashTestOperand(tokens)) { addPrimitive(builder, "unverifiable_bash_test_operand"); markUnverifiable(builder); }
 		inspectOutputRedirections(tokens, workingDirectory, builder);
@@ -735,6 +735,47 @@ function markUnverifiable(builder: ScanBuilder): void {
 	builder.unverifiableScope = true;
 }
 
+/** Follow only newline continuations of a for/select in-list; all other shell state remains local to its segment. */
+function unsafeBashLoopHeaders(segments: readonly ShellSegment[]): ReturnType<typeof unsafeBashForHeaderReason> {
+	for (let segmentIndex = 0; segmentIndex < segments.length; segmentIndex++) {
+		const header = segments[segmentIndex]!;
+		const immediate = unsafeBashForHeaderReason(header);
+		if (immediate) return immediate;
+		const variableIndex = bashLoopVariableIndex(header);
+		if (variableIndex < 0 || !header[variableIndex]) continue;
+		let listSegment = segmentIndex;
+		let listStart = variableIndex + 1;
+		if (header[listStart] === "in") listStart++;
+		else if (listStart === header.length && (header.separatorAfter === "\n" || header.separatorAfter === "\r")
+			&& segments[segmentIndex + 1]?.[0] === "in" && !segments[segmentIndex + 1]?.firstWordQuoted) {
+			listSegment++;
+			listStart = 1;
+		} else continue;
+		for (; listSegment < segments.length; listSegment++) {
+			const list = segments[listSegment]!;
+			if (hasUnsafeCommandQueryOperand(list, listStart)) return "stateful_loop_list_expansion";
+			if (list.separatorAfter !== "\n" && list.separatorAfter !== "\r") break;
+			const next = segments[listSegment + 1];
+			if (!next || (next[0] === "do" && !next.firstWordQuoted)) break;
+			listStart = 0;
+		}
+	}
+	return undefined;
+}
+
+export function unsafeBashLoopHeaderReason(command: string): ReturnType<typeof unsafeBashForHeaderReason> {
+	return unsafeBashLoopHeaders(parseShellSegments(command));
+}
+
+function afterLeadingRedirection(tokens: ShellSegment, index: number): number {
+	const positions = tokens.redirections;
+	if (!positions) return index;
+	for (let position = 0; position < positions.length; position++) {
+		if (positions[position] === index) return positions[position + 1] === index + 1 ? index + 1 : index + 2;
+	}
+	return index;
+}
+
 /** A local/conditional cd cannot establish one reliable cwd for later targets. */
 export function hasAmbiguousBashCwd(command: string): boolean {
 	const segments = parseShellSegments(command);
@@ -752,15 +793,28 @@ export function hasAmbiguousBashCwd(command: string): boolean {
 		if (first === "for" || first === "while" || first === "until" || first === "select") loopDepth++;
 		if (first === "if" || first === "case") conditionalDepth++;
 		if (first === "{") braceDepth++;
-		if (loopDepth === 0 && conditionalDepth === 0 && braceDepth === 0 && !tokens.subshellDepth && !tokens.pipelineMember && !tokens.conditionalMember && controlIndex === 0) continue;
+		const simpleSegment = loopDepth === 0 && conditionalDepth === 0 && braceDepth === 0
+			&& !tokens.subshellDepth && !tokens.pipelineMember && !tokens.conditionalMember && controlIndex === 0;
 		let index = commandTokenIndex(tokens);
 		if (index < 0) continue;
 		if (tokens[index] === "do" || tokens[index] === "{" || tokens[index] === "then" || tokens[index] === "else") index++;
 		index = skipBashReservedPrefixes(tokens, index);
 		if (index < 0) return true;
-		while (index < tokens.length && LEADING_ASSIGNMENT_PATTERN.test(tokens[index]!)) index++;
-		if (tokens[index] === "command" || tokens[index] === "builtin") index++;
+		let leadingRedirection = false;
+		let builtinPrefix = false;
+		while (index < tokens.length) {
+			const after = afterLeadingRedirection(tokens, index);
+			if (after !== index) { leadingRedirection = true; index = after; continue; }
+			if (LEADING_ASSIGNMENT_PATTERN.test(tokens[index]!)) { index++; continue; }
+			if (!builtinPrefix && (tokens[index] === "command" || tokens[index] === "builtin")) {
+				builtinPrefix = true; index++; continue;
+			}
+			break;
+		}
 		if (commandName(tokens[index] ?? "") === "cd") {
+			const target = tokens[index + 1];
+			if (leadingRedirection || !target || target.startsWith("-") || hasDynamicSyntax(target)) return true;
+			if (simpleSegment) continue;
 			// A literal `cd .` leaves relative targets at the same path whether it
 			// succeeds or fails; other conditional cd targets can change the cwd.
 			if (tokens[index + 1] === "." && tokens.length === index + 2) continue;

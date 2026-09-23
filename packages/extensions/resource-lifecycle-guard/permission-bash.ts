@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
 import { basename, resolve } from "node:path";
-import { hasAmbiguousBashCwd } from "./core.ts";
+import { hasAmbiguousBashCwd, unsafeBashLoopHeaderReason } from "./core.ts";
 import { extractCommandSubstitutions, prepareShellAnalysis } from "./shell-substitution.ts";
 import { parseTimeoutInvocation } from "./timeout-wrapper.ts";
-import { unsafeBashForHeaderReason, hasStatefulBashPrintf, hasUnsafeBashTestOperand, hasUnsafeCommandQueryOperand, isBashDoubleBracketCloseBoundary, isBashDoubleBracketHead, isBashProcessSubstitutionStart, isBashTestWhitespace, isShellDynamicDescriptor, isShellFileDescriptor, isShellOutputFileRedirection, isSimpleBashAnsiCQuote, isStaticDescriptorCopy, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
+import { hasStatefulBashPrintf, hasUnsafeBashTestOperand, hasUnsafeCommandQueryOperand, isBashDoubleBracketCloseBoundary, isBashDoubleBracketHead, isBashProcessSubstitutionStart, isBashTestWhitespace, isShellDynamicDescriptor, isShellFileDescriptor, isShellOutputFileRedirection, isSimpleBashAnsiCQuote, isStaticDescriptorCopy, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
 
 const MAX_COMMAND_CHARS = 128 * 1024;
 const MAX_SEGMENTS = 64;
@@ -390,8 +390,6 @@ function inspectTokenBuffer(tokens: PermissionTokens, cwd: string, depth: number
     markOpaque(builder, "unverifiable_process_substitution");
     return cwd;
   }
-  const loopReason = unsafeBashForHeaderReason(tokens);
-  if (loopReason) markOpaque(builder, loopReason);
   if (hasUnsafeBashTestOperand(tokens)) markOpaque(builder, "unverifiable_bash_test_operand");
   const redirections = tokens.redirections;
   if (redirections) {
@@ -438,6 +436,8 @@ function inspectScript(command: string, initialCwd: string, depth: number, build
   if (substitutions.unsupported) markOpaque(builder, "uninspectable_command_substitution");
   for (const nested of substitutions.scripts) inspectScript(nested, initialCwd, depth + 1, builder);
   command = analysis.command;
+  const loopReason = unsafeBashLoopHeaderReason(command);
+  if (loopReason) markOpaque(builder, loopReason);
   let cwd = initialCwd;
   const tokens: PermissionTokens = [];
   let value = "";

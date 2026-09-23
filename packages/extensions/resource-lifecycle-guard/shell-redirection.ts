@@ -38,25 +38,33 @@ export function isBashDoubleBracketCloseBoundary(source: string, index: number):
     || code === 38 || code === 124 || code === 41 || code === 60 || code === 62;
 }
 
-/** A for variable or its in-list expansion can change later shell state. */
-export function unsafeBashForHeaderReason(tokens: readonly string[] & { firstWordQuoted?: boolean; secondWordQuoted?: boolean; expansions?: readonly number[] }): "stateful_loop_variable_assignment" | "stateful_loop_list_expansion" | undefined {
+/** Find the binding word of an unquoted for/select header. */
+export function bashLoopVariableIndex(tokens: readonly string[] & { firstWordQuoted?: boolean; secondWordQuoted?: boolean }): number {
   let index = 0;
   if (tokens[0] === "do" || tokens[0] === "{" || tokens[0] === "then" || tokens[0] === "else") {
-    if (tokens.firstWordQuoted) return undefined;
+    if (tokens.firstWordQuoted) return -1;
     index++;
   }
   let prefixes = 0;
   while (tokens[index] === "!" || tokens[index] === "time") {
-    if ((index === 0 && tokens.firstWordQuoted) || (index === 1 && tokens.secondWordQuoted)) return undefined;
-    if (++prefixes > 4) return undefined;
+    if ((index === 0 && tokens.firstWordQuoted) || (index === 1 && tokens.secondWordQuoted)) return -1;
+    if (++prefixes > 4) return -1;
     if (tokens[index] === "time" && tokens[index + 1] === "-p") index++;
     index++;
   }
-  if ((index === 0 && tokens.firstWordQuoted) || (index === 1 && tokens.secondWordQuoted) || tokens[index] !== "for") return undefined;
-  const variable = tokens[index + 1];
+  if ((index === 0 && tokens.firstWordQuoted) || (index === 1 && tokens.secondWordQuoted)
+    || (tokens[index] !== "for" && tokens[index] !== "select")) return -1;
+  return index + 1;
+}
+
+/** A loop binding or its in-list expansion can change later shell state. */
+export function unsafeBashForHeaderReason(tokens: readonly string[] & { firstWordQuoted?: boolean; secondWordQuoted?: boolean; expansions?: readonly number[] }): "stateful_loop_variable_assignment" | "stateful_loop_list_expansion" | undefined {
+  const variableIndex = bashLoopVariableIndex(tokens);
+  if (variableIndex < 0) return undefined;
+  const variable = tokens[variableIndex];
   if (variable === "PATH" || variable === "BASH_ENV" || variable === "ENV"
     || variable === "SHELLOPTS" || variable === "BASHOPTS" || variable === "CDPATH") return "stateful_loop_variable_assignment";
-  return tokens[index + 2] === "in" && hasUnsafeCommandQueryOperand(tokens, index + 3)
+  return tokens[variableIndex + 1] === "in" && hasUnsafeCommandQueryOperand(tokens, variableIndex + 2)
     ? "stateful_loop_list_expansion" : undefined;
 }
 

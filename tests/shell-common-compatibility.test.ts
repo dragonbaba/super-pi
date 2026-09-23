@@ -701,6 +701,136 @@ test("for-list assignment expansion cannot authorize the wrong cwd", async (t) =
   }
 });
 
+test("reviewed cwd and loop-header variants refuse before authorizing a different path", async (t) => {
+  const shellPath = findTestBash();
+  if (!shellPath || !existsSync(shellPath)) {
+    if (process.env.CI) assert.fail("Required Bash integration test could not find Git Bash or /bin/bash");
+    t.skip("Bash unavailable");
+    return;
+  }
+  const variants = [
+    {
+      name: "multiline-for-list",
+      command: "for candidate\nin ${CDPATH:=..}\ndo :; done\ncd workspace\nprintf marker >.git/config",
+      actual: ".git/config", wrong: "workspace/.git/config", mode: "read-only",
+    },
+    {
+      name: "multiline-for-list-double-quoted",
+      command: "for candidate\nin \"${CDPATH:=..}\"\ndo :; done\ncd workspace\nprintf marker >.git/config",
+      actual: ".git/config", wrong: "workspace/.git/config", mode: "read-only",
+    },
+    {
+      name: "leading-redirection-subshell-cd",
+      command: "(>/dev/null cd subdir) && printf marker >.git/config",
+      actual: ".git/config", wrong: "subdir/.git/config", mode: "read-only",
+    },
+    {
+      name: "cd-double-dash",
+      command: "cd -- subdir && printf marker >.git/config",
+      actual: "subdir/.git/config", wrong: "--/.git/config", mode: "workspace-write",
+    },
+    {
+      name: "cd-physical-option",
+      command: "cd -P subdir && printf marker >.git/config",
+      actual: "subdir/.git/config", wrong: "-P/.git/config", mode: "workspace-write",
+    },
+    {
+      name: "select-list-assignment",
+      command: "select candidate in ${CDPATH:=..}; do :; done </dev/null; cd workspace; printf marker >.git/config",
+      actual: ".git/config", wrong: "workspace/.git/config", mode: "read-only",
+    },
+    {
+      name: "select-list-double-quoted",
+      command: "select candidate in \"${CDPATH:=..}\"; do :; done </dev/null; cd workspace; printf marker >.git/config",
+      actual: ".git/config", wrong: "workspace/.git/config", mode: "read-only",
+    },
+    {
+      name: "multiline-select-list",
+      command: "select candidate\nin ${CDPATH:=..}\ndo :; done </dev/null\ncd workspace\nprintf marker >.git/config",
+      actual: ".git/config", wrong: "workspace/.git/config", mode: "read-only",
+    },
+  ] as const;
+  for (const variant of variants) {
+    await t.test(variant.name, async () => {
+      const parent = mkdtempSync(join(tmpdir(), `sp-shell-review-${variant.name}-`));
+      const workspace = join(parent, "workspace");
+      mkdirSync(join(workspace, ".git"), { recursive: true });
+      mkdirSync(join(workspace, "workspace", ".git"), { recursive: true });
+      mkdirSync(join(workspace, "subdir", ".git"), { recursive: true });
+      mkdirSync(join(workspace, "--", ".git"), { recursive: true });
+      const actual = join(workspace, variant.actual);
+      const wrong = join(workspace, variant.wrong);
+      const originalCdpath = process.env.CDPATH;
+      let fixture: Awaited<ReturnType<typeof guardedCwdBoundaryFixture>> | undefined;
+      delete process.env.CDPATH;
+      try {
+        execFileSync(shellPath, ["-c", variant.command], { cwd: workspace, encoding: "utf8" });
+        assert.equal(readFileSync(actual, "utf8"), "marker", "direct Bash establishes the actual target");
+        assert.equal(existsSync(wrong), false);
+        unlinkSync(actual);
+
+        fixture = await guardedCwdBoundaryFixture(workspace, shellPath);
+        await fixture.setMode(variant.mode);
+        const blocked = await assertBoundaryRefusedBeforeSpawn(fixture, workspace, variant.name, variant.command, [actual, wrong]);
+        assert.equal(inspectHighRiskBashMutation({ command: variant.command }, workspace)?.unverifiableScope, true);
+        assert.equal(inspectBashPermissionScope({ command: variant.command }, workspace)?.unverifiableScope, true);
+        await fixture.setMode(variant.mode === "read-only" ? "workspace-write" : "read-only");
+        await assertBoundaryRefusedBeforeSpawn(fixture, workspace, `${variant.name}-other-mode`, variant.command, [actual, wrong]);
+        const saved = SessionManager.create(workspace, join(workspace, "sessions"));
+        saved.appendMessage(blocked);
+        saved.ensureOperationStorage();
+        const beforeReopen = fixture.executions;
+        assert.equal((SessionManager.open(saved.getSessionFile()!).getBranch().find(entry => entry.type === "message") as any).message.details.executionStatus, "not_executed");
+        assert.equal(fixture.executions, beforeReopen, "session reopen must not replay the refused command");
+      } finally {
+        await fixture?.close();
+        if (originalCdpath === undefined) delete process.env.CDPATH;
+        else process.env.CDPATH = originalCdpath;
+        rmSync(parent, { recursive: true });
+      }
+    });
+  }
+});
+
+test("literal multiline for and select lists keep the actual workspace target", async (t) => {
+  const shellPath = findTestBash();
+  if (!shellPath || !existsSync(shellPath)) {
+    if (process.env.CI) assert.fail("Required Bash integration test could not find Git Bash or /bin/bash");
+    t.skip("Bash unavailable");
+    return;
+  }
+  const parent = mkdtempSync(join(tmpdir(), "sp-shell-loop-literal-"));
+  const workspace = join(parent, "workspace");
+  mkdirSync(join(workspace, "workspace"), { recursive: true });
+  const originalCdpath = process.env.CDPATH;
+  let fixture: Awaited<ReturnType<typeof guardedCwdBoundaryFixture>> | undefined;
+  delete process.env.CDPATH;
+  try {
+    fixture = await guardedCwdBoundaryFixture(workspace, shellPath);
+    await fixture.setMode("read-only");
+    for (const [id, command] of [
+      ["multiline-literal", "for candidate\nin one two\ndo printf ok; done\ncd workspace\nprintf marker >multiline-literal.txt"],
+      ["multiline-single-quoted", "for candidate\nin '${CDPATH:=..}'\ndo printf ok; done\ncd workspace\nprintf marker >multiline-single-quoted.txt"],
+      ["select-literal", "select candidate in one two; do :; done </dev/null; cd workspace; printf marker >select-literal.txt"],
+      ["select-single-quoted", "select candidate in '${CDPATH:=..}'; do :; done </dev/null; cd workspace; printf marker >select-single-quoted.txt"],
+    ] as const) {
+      assert.equal(inspectBashResourceLifecycle({ command }), undefined, id);
+      assert.equal(inspectHighRiskBashMutation({ command }, workspace)?.primitives.includes("stateful_loop_list_expansion"), false, id);
+      assert.equal(inspectBashPermissionScope({ command }, workspace)?.primitives.includes("stateful_loop_list_expansion"), false, id);
+      const result = await fixture.agent.dispatchHostTool({ type: "toolCall", id, name: "bash", arguments: { command } });
+      assert.equal(result.isError, false, JSON.stringify(result));
+      assert.equal(readFileSync(join(workspace, "workspace", `${id}.txt`), "utf8"), "marker");
+      assert.equal(existsSync(join(workspace, `${id}.txt`)), false);
+      assert.match(fixture.approvals.at(-1)!, new RegExp(`workspace[\\\\/]workspace[\\\\/]${id}\\.txt`));
+    }
+  } finally {
+    await fixture?.close();
+    if (originalCdpath === undefined) delete process.env.CDPATH;
+    else process.env.CDPATH = originalCdpath;
+    rmSync(parent, { recursive: true });
+  }
+});
+
 test("real guard, authorization, Bash and tool-result path handle three feedback command shapes", async (t) => {
   const shellPath = findTestBash();
   if (!shellPath || !existsSync(shellPath)) {
