@@ -1003,6 +1003,7 @@ function parseShellSegments(command: string): ShellSegment[] {
 	let value = "";
 	let tokenStarted = false;
 	let quote = 0;
+	let ansiC = false;
 	let arithmeticDepth = 0;
 	let escaped = false;
 	let literalWord = true;
@@ -1031,7 +1032,7 @@ function parseShellSegments(command: string): ShellSegment[] {
 			continue;
 		}
 		if (quote === 0 && code === 36 && isSimpleBashAnsiCQuote(command, index)) {
-			quote = 39; literalWord = false; tokenStarted = true; index++; continue;
+			quote = 39; ansiC = true; literalWord = false; tokenStarted = true; index++; continue;
 		}
 		if (quote !== 39 && (code === 36 || code === 96)) {
 			tokens.dynamic = true;
@@ -1046,7 +1047,14 @@ function parseShellSegments(command: string): ShellSegment[] {
 			expansions[tokens.length] = (expansions[tokens.length] ?? 0) | 8;
 		}
 		if (quote !== 0) {
-			if (code === quote) quote = 0;
+			// Decode the \n, \r and \t escapes a simple $'...' quote may contain, as Bash does,
+			// so a path operand names the real file rather than its escaped spelling.
+			if (ansiC && code === 92) {
+				const escaped = command.charCodeAt(++index);
+				value += String.fromCharCode(escaped === 110 ? 10 : escaped === 114 ? 13 : 9);
+				continue;
+			}
+			if (code === quote) { quote = 0; ansiC = false; }
 			else value += command[index];
 			continue;
 		}

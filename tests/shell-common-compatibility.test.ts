@@ -175,6 +175,7 @@ test("lookup-sensitive Bash for variables cannot make later command lookup read-
     "time for PATH in .; do printf ok; done; cat",
     "time -p for PATH in .; do printf ok; done; cat",
     "for BASH_ENV in ./profile; do printf ok; done; bash -c 'printf ok'",
+    "for EXECIGNORE in /usr/bin/cat; do echo ok; done; cat",
   ]) {
     assert.match(inspectBashResourceLifecycle({ command }) ?? "", /SHELL_UNINSPECTABLE/, command);
     const high = inspectHighRiskBashMutation({ command }, cwd);
@@ -195,6 +196,7 @@ test("C-style Bash for headers cannot make later command lookup read-only", () =
     "for((PATH=0;0;)); do printf ok; done; cat",
     "time -p for (( CDPATH=1; 0; )); do printf ok; done; cd workspace",
     "for (( i=0; i<1; BASH_ENV=1 )); do printf ok; done; bash -c 'printf ok'",
+    "for (( EXECIGNORE=0; 0; )); do printf ok; done; cat",
   ]) {
     assert.match(inspectBashResourceLifecycle({ command }) ?? "", /SHELL_UNINSPECTABLE/, command);
     const high = inspectHighRiskBashMutation({ command }, cwd);
@@ -353,6 +355,19 @@ test("only the bare unlaunched cd builtin moves the scanned cwd", () => {
   for (const command of ["cd sub; printf data >.git/config", "'cd' sub; printf data >.git/config"]) {
     assert.ok(inspectHighRiskBashMutation({ command }, workspace)?.targets.some(target => /sub[\\/]\.git[\\/]config$/.test(target)), command);
   }
+});
+
+test("simple ANSI-C quoted path operands resolve to the decoded name", () => {
+  // Bash writes a file whose name holds a real newline or tab, not the escaped spelling.
+  for (const [command, name, spelled] of [["printf data >$'safe\\nfile'", "safe\nfile", "safe\\nfile"], ["printf data >$'t\\tx'", "t\tx", "t\\tx"], ["printf data >$'cr\\rx'", "cr\rx", "cr\\rx"]]) {
+    for (const targets of [inspectHighRiskBashMutation({ command }, cwd)?.targets, inspectBashPermissionScope({ command }, cwd)?.targets]) {
+      assert.ok(targets?.some(target => target.endsWith(name)), command);
+      assert.equal(targets?.some(target => target.endsWith(spelled)), false, command);
+    }
+  }
+  assert.ok(inspectHighRiskBashMutation({ command: "printf data >'safe\\nfile'" }, cwd)?.targets.some(target => target.endsWith("safe\\nfile")));
+  assert.equal(inspectBashPermissionScope({ command: "printf $'%s\\n' x" }, cwd)?.kind, "read-only");
+  assert.equal(inspectBashPermissionScope({ command: "printf data >$'a\\x41'" }, cwd)?.unverifiableScope, true);
 });
 
 test("cd reached through an OR edge cannot authorize dependent commands", () => {
