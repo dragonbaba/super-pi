@@ -121,7 +121,7 @@ function inspectLifecycleScript(source: string, depth: number, nativePowerShellA
  if (substitutions.unterminated || substitutions.unsupported) return lifecycleRefusal("SHELL_SUBSTITUTION", substitutions.unterminated ? "unterminated command substitution" : "uncertain/uninspectable command substitution grammar", "simplify the substitution into inspectable foreground commands");
  for (const script of here?.substitutions ?? EMPTY_SUBSTITUTIONS) { const result = inspectLifecycleScript(script, depth + 1, nativePowerShellAvailable); if (result) return result; }
  for (const script of substitutions.scripts) { const result = inspectLifecycleScript(script, depth + 1, nativePowerShellAvailable); if (result) return result; }
- if (hasAmbiguousBashCwd(command)) return lifecycleRefusal("SHELL_UNINSPECTABLE", "working directory change cannot be tracked (conditional, grouped or indirect cd)", "split directory changes and later file writes into separately inspectable commands");
+ if (hasAmbiguousBashCwd(command)) return lifecycleRefusal("SHELL_UNINSPECTABLE", "working directory for later targets cannot be established (conditional, grouped or indirect cd)", "when equivalent, keep a supported bare cd and its dependent operation in one Bash call (for example, cd sub && ls); each new call receives fresh checks");
  if (DETACH_UTILITY_PATTERN.test(command)) return BLOCK_REASON;
  if ((WINDOWS_DETACH_PATTERN.test(command) || WINDOWS_START_BACKGROUND_PATTERN.test(command)) && !WINDOWS_WAIT_PATTERN.test(command)) return BLOCK_REASON;
  if (DOCKER_DETACHED_PATTERN.test(command) || SERVICE_START_PATTERN.test(command)) return BLOCK_REASON;
@@ -405,7 +405,15 @@ function inspectShellScript(script: string, initialCwd: string, depth: number, b
 		if (tokens.length === 0) continue;
 		if (tokens.bashTestProcessSubstitution) { addPrimitive(builder, "unverifiable_process_substitution"); markUnverifiable(builder); continue; }
 		if (hasUnsafeBashTestOperand(tokens)) { addPrimitive(builder, "unverifiable_bash_test_operand"); markUnverifiable(builder); }
-		if (shellExpansionRisk(tokens) !== 0) { addPrimitive(builder, "stateful_shell_expansion"); markUnverifiable(builder); }
+		const expansionRisk = shellExpansionRisk(tokens);
+		if (expansionRisk !== 0) {
+			addPrimitive(builder, "stateful_shell_expansion");
+			// A lone bare echo with no redirection has no later cwd/lookup or file
+			// target to misattribute. Keep uncertain recursive evaluation high-risk
+			// and opaque for approval; every other state-dependent shape fails closed.
+			if (expansionRisk === 2 || segments.length !== 1 || tokens[0] !== "echo" || tokens.firstWordQuoted
+				|| tokens.redirections || tokens.subshellDepth || tokens.pipelineMember || tokens.conditionalMember) markUnverifiable(builder);
+		}
 		inspectOutputRedirections(tokens, workingDirectory, builder);
 		const commandIndex = commandTokenIndex(tokens);
 		if (commandIndex < 0 || commandIndex >= tokens.length) continue;

@@ -41,6 +41,22 @@ A second conservative classifier distinguishes strict read-only shell commands, 
 
 `session-permission-state-v1` custom entries use a schema-v3 payload containing access mode, approval policy, at most 32 bounded exact/prefix command rules, workspace grants, and sequence. In-memory mutations are checkpointed and roll back to the last committed state if Session-entry persistence fails. Schema-v1/v2 access settings still restore; legacy structural rules are dropped because their original commands cannot be reconstructed safely. `session-permission-audit-v1` entries contain bounded categories, modes, approval policy, primitive identifiers, counts and outcomes. Audit entries do not duplicate command text, model purpose, rejection text, rule IDs, or target paths; visible command patterns exist only in the Session state required to manage the allowlist. Existing high-risk metrics continue through bounded `resource-mutation-policy-v1` entries.
 
+## Bounded Bash support in PR #43
+
+This is a policy analysis boundary, not a complete Bash parser or a sandbox. The submitted source runs unchanged only after lifecycle, target, permission, and final execution checks. A refusal saying that a target or shell state cannot be established does **not** assert that a dangerous operation ran or was proven to occur.
+
+| Form | Current behavior |
+| --- | --- |
+| `command -v/-V` with literal or simple variable names, including finite literal `for` lists | Query semantics are distinct from bounded `command`/`exec` execution prefixes. Normal permission checks still apply. |
+| Static numeric descriptor copies such as `2>&1`, literal input-file redirection, groups and pipelines | Analyzed in source order without deleting or rewriting redirects. Output-file targets retain their normal path and permission checks. Dynamic/closed descriptors, Bash network-device input, and uncertain targets remain guarded. |
+| Bare, same-shell `cd sub && operation` with a dependent operation | Accepted only when the scanner can establish the target cwd and the operation passes its own checks. The real Agent/guard/permission/Bash fixture verifies `cd sub && ls` and a dependent write. A separate later tool call starts from its own configured cwd; a preceding `cd sub` call does not change it. |
+| `(cd sub && ls)` and a subshell `cd` followed by a parent-shell write | Currently refused before spawn when the cwd cannot be tracked. The child shell's cwd is never used to authorize a parent-shell target. Do not present the grouped form as a supported recovery. |
+| Literal `for`/`select` lists, simple variable queries, and single-quoted syntax text | Bounded cases remain inspectable. Assignment expansions in a list, lookup-sensitive loop variables, and loop forms whose later shell state cannot be established are refused before spawn. This does not disable all loops. |
+| Ordinary expansion data; uncertain recursive evaluation; explicit shell-state changes | Ordinary data stays in its normal class. A lone bare `echo` with no redirection can send uncertain recursive evaluation through the existing high-risk approval, without automatic execution; other state-dependent shapes still fail closed. Definite current-shell assignment or code evaluation that defeats target/lookup analysis, and unprovable cwd or target changes, are refused; the diagnostic says what could not be verified. |
+| `pushd`/`popd`, option-bearing/indirect or unresolved `cd`, and currently uninspectable loop structures | Deliberate limits for this round. They are not promises of full Bash support, and changing shell or language is not an authorization bypass. |
+
+The real-chain regressions are in `tests/shell-common-compatibility.test.ts`; they use synthetic temporary workspaces and run on Linux Bash and Windows Git Bash in required CI. Native delete/move and explicit per-call Bash/PowerShell cwd are separate future scopes, not features of PR #43.
+
 ## Resource lifecycle
 
 Unmanaged detached/background services remain blocked unless one foreground Bash call owns cleanup and wait. Default managed Chrome screenshots and managed Chrome itself are cleaned by exact identity at `agent_settled` and `session_shutdown`.

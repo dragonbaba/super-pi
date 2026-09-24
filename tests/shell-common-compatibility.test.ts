@@ -236,11 +236,16 @@ test("expansions that assign shell variables cannot make later commands read-onl
   }
   // A referenced value is evaluated recursively (`v=PATH=0; $((v))`), so these need
   // permission review but stay executable instead of being refused outright.
-  for (const command of ["printf %s ${!ref}; cat", "for v in PATH=0; do printf %s $((v)); done; cat", "echo ${arr[$i]}", "for i in 1 2; do echo $((i*2)); done"]) {
+  for (const command of ["printf %s ${!ref}; cat", "for v in PATH=0; do printf %s $((v)); done; cat", "for i in 1 2; do echo $((i*2)); done"]) {
     assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
     assert.ok(inspectHighRiskBashMutation({ command }, cwd)?.primitives.includes("stateful_shell_expansion"), command);
     assert.equal(inspectBashPermissionScope({ command }, cwd)?.unverifiableScope, true, command);
   }
+  const reviewable = "echo ${arr[$i]}";
+  assert.equal(inspectBashResourceLifecycle({ command: reviewable }), undefined);
+  assert.ok(inspectHighRiskBashMutation({ command: reviewable }, cwd)?.primitives.includes("stateful_shell_expansion"));
+  assert.equal(inspectHighRiskBashMutation({ command: reviewable }, cwd)?.unverifiableScope, false);
+  assert.equal(inspectBashPermissionScope({ command: reviewable }, cwd)?.unverifiableScope, true);
   for (const command of ["printf %s $x ${y} $1 $@ ${#z} ${!}", "echo $((1 + (2 * 3) >= 4))", "printf %s ${HOME:-/tmp} ${f%.txt} ${g/a/b} ${h:1:2} ${arr[0]} ${arr[@]}", "printf %s '$((PATH=0))'",
     "echo $((RANDOM % 10)) $(($# - 1)) $((0x1F + 16#ff))", "echo ${var:-$HOME} ${arr[1+1]}"]) {
     assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
@@ -865,6 +870,111 @@ async function assertBoundaryRefusedBeforeSpawn(
   for (const path of paths) assert.equal(existsSync(path), false, path);
   return result;
 }
+
+test("cwd recovery uses one verified same-shell call, not a grouped or later call", async (t) => {
+  const shellPath = findTestBash();
+  if (!shellPath || !existsSync(shellPath)) {
+    if (process.env.CI) assert.fail("Required Bash integration test could not find Git Bash or /bin/bash");
+    t.skip("Bash unavailable");
+    return;
+  }
+  const workspace = mkdtempSync(join(tmpdir(), "sp-shell-cwd-recovery-"));
+  mkdirSync(join(workspace, "sub"));
+  writeFileSync(join(workspace, "outer-fixture.txt"), "synthetic");
+  writeFileSync(join(workspace, "sub", "recovery-fixture.txt"), "synthetic");
+  let fixture: Awaited<ReturnType<typeof guardedCwdBoundaryFixture>> | undefined;
+  try {
+    fixture = await guardedCwdBoundaryFixture(workspace, shellPath);
+    await fixture.setMode("read-only");
+    const grouped = await assertBoundaryRefusedBeforeSpawn(fixture, workspace, "grouped-recovery",
+      "(cd sub && ls)", []);
+    assert.match((grouped.content[0] as { text: string }).text, /working directory.*cannot be (?:established|tracked)/);
+    const listed = await fixture.agent.dispatchHostTool({ type: "toolCall", id: "same-shell-recovery", name: "bash", arguments: {
+      command: "cd sub && ls",
+    } });
+    assert.equal(listed.isError, false, JSON.stringify(listed));
+    assert.match((listed.content[0] as { text: string }).text, /recovery-fixture\.txt/);
+    assert.doesNotMatch((listed.content[0] as { text: string }).text, /outer-fixture\.txt/);
+    const cdOnly = await fixture.agent.dispatchHostTool({ type: "toolCall", id: "cd-only", name: "bash", arguments: { command: "cd sub" } });
+    assert.equal(cdOnly.isError, false, JSON.stringify(cdOnly));
+    const later = await fixture.agent.dispatchHostTool({ type: "toolCall", id: "later-call", name: "bash", arguments: { command: "ls" } });
+    assert.equal(later.isError, false, JSON.stringify(later));
+    assert.match((later.content[0] as { text: string }).text, /outer-fixture\.txt/);
+    assert.doesNotMatch((later.content[0] as { text: string }).text, /recovery-fixture\.txt/);
+    assert.equal(fixture.executions, 3);
+    assert.equal(fixture.approvals.length, 0);
+    assert.doesNotMatch((grouped.content[0] as { text: string }).text, /separately inspectable commands/);
+  } finally {
+    await fixture?.close();
+    rmSync(workspace, { recursive: true });
+  }
+});
+
+test("real Bash guard keeps ordinary data, reviewable recursion and unsafe state changes distinct", async (t) => {
+  const shellPath = findTestBash();
+  if (!shellPath || !existsSync(shellPath)) {
+    if (process.env.CI) assert.fail("Required Bash integration test could not find Git Bash or /bin/bash");
+    t.skip("Bash unavailable");
+    return;
+  }
+  const workspace = mkdtempSync(join(tmpdir(), "sp-shell-expansion-tiers-"));
+  mkdirSync(join(workspace, "sub"));
+  mkdirSync(join(workspace, ".git"));
+  mkdirSync(join(workspace, "sub", ".git"));
+  const protectedTarget = join(workspace, ".git", "config");
+  const wrongTarget = join(workspace, "sub", ".git", "config");
+  const originalReviewValue = process.env.SP_TEST_ARITH_REVIEW;
+  process.env.SP_TEST_ARITH_REVIEW = "2";
+  let fixture: Awaited<ReturnType<typeof guardedCwdBoundaryFixture>> | undefined;
+  try {
+    fixture = await guardedCwdBoundaryFixture(workspace, shellPath);
+    await fixture.setMode("read-only");
+    const ordinary = await fixture.agent.dispatchHostTool({ type: "toolCall", id: "ordinary-expansion", name: "bash", arguments: {
+      command: "echo $((1+2))",
+    } });
+    assert.equal(ordinary.isError, false, JSON.stringify(ordinary));
+    assert.match((ordinary.content[0] as { text: string }).text, /3/);
+    assert.equal(fixture.approvals.length, 0);
+
+    const recursive = await fixture.agent.dispatchHostTool({ type: "toolCall", id: "reviewable-expansion", name: "bash", arguments: {
+      command: "echo $((SP_TEST_ARITH_REVIEW*2))",
+    } });
+    assert.equal(recursive.isError, false, JSON.stringify(recursive));
+    assert.match((recursive.content[0] as { text: string }).text, /4/);
+    assert.equal(fixture.approvals.length, 1, "uncertain recursive evaluation needs the existing permission decision");
+    assert.match(fixture.approvals[0]!, /操作尚未执行/);
+
+    fixture.setDecision("拒绝");
+    const denied = await fixture.agent.dispatchHostTool({ type: "toolCall", id: "denied-recursion", name: "bash", arguments: {
+      command: "echo $((SP_TEST_ARITH_REVIEW+3))",
+    } });
+    assert.equal(denied.isError, true);
+    assert.equal((denied.details as any).executionStatus, "not_executed");
+    assert.equal(fixture.executions, 2);
+    assert.equal(fixture.approvals.length, 2);
+    fixture.setDecision("仅允许本次");
+
+    for (const mode of ["read-only", "workspace-write"] as const) {
+      await fixture.setMode(mode);
+      for (const [id, unsafe] of [
+        ["recursive-before-cd", "echo $((SP_TEST_ARITH_REVIEW*2)); cd sub; printf data >.git/config"],
+        ["recursive-redirect", "echo $((SP_TEST_ARITH_REVIEW*2)) >.git/config"],
+      ]) {
+        await assertBoundaryRefusedBeforeSpawn(fixture, workspace, `${mode}-${id}`, unsafe, [protectedTarget, wrongTarget]);
+      }
+    }
+    const blocked = await assertBoundaryRefusedBeforeSpawn(fixture, workspace, "stateful-expansion",
+      ": ${CDPATH:=..}; printf ok", [protectedTarget, wrongTarget]);
+    assert.match((blocked.content[0] as { text: string }).text, /cannot|assigns|uninspectable/);
+    assert.equal(fixture.executions, 2);
+    assert.equal(fixture.approvals.length, 2);
+  } finally {
+    await fixture?.close();
+    if (originalReviewValue === undefined) delete process.env.SP_TEST_ARITH_REVIEW;
+    else process.env.SP_TEST_ARITH_REVIEW = originalReviewValue;
+    rmSync(workspace, { recursive: true });
+  }
+});
 
 test("subshell cwd never authorizes a later parent-shell write at the child path", async (t) => {
   const shellPath = findTestBash();
