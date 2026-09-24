@@ -20,7 +20,7 @@ export function isBashProcessSubstitutionStart(source: string, index: number): b
   return (code === 60 || code === 62) && source.charCodeAt(index + 1) === 40;
 }
 
-type QuotedWords = readonly string[] & { firstWordQuoted?: boolean; secondWordQuoted?: boolean; thirdWordQuoted?: boolean };
+type QuotedWords = readonly string[] & { firstWordQuoted?: boolean; secondWordQuoted?: boolean; thirdWordQuoted?: boolean; bashArithmeticCommandAt?: number };
 
 /** Quote flags exist only for the first three words; later words count as quoted. */
 function isQuotedBashWord(tokens: QuotedWords, index: number): boolean {
@@ -42,7 +42,11 @@ export function isBashDoubleBracketHead(tokens: QuotedWords): boolean {
 /** Bash accepts only literal `time [-p] [--]`; quoted option words are argv. */
 function bashTimeOptionsEnd(tokens: QuotedWords, start: number): number {
   let index = start;
+  // The lexer retains quote provenance for only three words. A later option
+  // could be literal syntax or quoted argv, so do not guess past that bound.
+  if (index >= 3 && (tokens[index] === "-p" || tokens[index] === "--")) return -1;
   if (tokens[index] === "-p" && !isQuotedBashWord(tokens, index)) index++;
+  if (index >= 3 && tokens[index] === "--") return -1;
   if (tokens[index] === "--" && !isQuotedBashWord(tokens, index)) index++;
   return index;
 }
@@ -53,11 +57,17 @@ export function bashPipelinePrefixEnd(tokens: QuotedWords, start: number): numbe
   let prefixes = 0;
   while (index < tokens.length) {
     const word = tokens[index];
+    if (index >= 3 && (word === "!" || word === "time")) return -1;
     if ((word !== "!" && word !== "time") || isQuotedBashWord(tokens, index)) break;
     if (++prefixes > 4) return -1;
     index = word === "time" ? bashTimeOptionsEnd(tokens, index + 1) : index + 1;
   }
   return index;
+}
+
+/** Bare `((...))` can assign shell variables; quoted text is an argv word. */
+export function isBashArithmeticCommandHead(tokens: QuotedWords, index: number): boolean {
+  return tokens.bashArithmeticCommandAt === index;
 }
 
 /** Bash-style `-c` accepts an optional `--` before the actual script word. */

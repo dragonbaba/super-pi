@@ -3,7 +3,7 @@ import { basename, resolve } from "node:path";
 import { hasAmbiguousBashCwd, unsafeBashLoopHeaderReason } from "./core.ts";
 import { extractCommandSubstitutions, prepareShellAnalysis } from "./shell-substitution.ts";
 import { parseTimeoutInvocation } from "./timeout-wrapper.ts";
-import { bashPipelinePrefixEnd, bashScriptOperandIndex, hasStatefulBashPrintf, isBashNetworkRedirectionTarget, shellExpansionRisk, hasUnsafeBashTestOperand, hasUnsafeCommandQueryOperand, isBashDoubleBracketCloseBoundary, isBashDoubleBracketHead, isBashProcessSubstitutionStart, isBashTestWhitespace, isShellDynamicDescriptor, isShellFileDescriptor, isShellOutputFileRedirection, isSimpleBashAnsiCQuote, isStaticDescriptorCopy, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
+import { bashPipelinePrefixEnd, bashScriptOperandIndex, hasStatefulBashPrintf, isBashArithmeticCommandHead, isBashNetworkRedirectionTarget, shellExpansionRisk, hasUnsafeBashTestOperand, hasUnsafeCommandQueryOperand, isBashDoubleBracketCloseBoundary, isBashDoubleBracketHead, isBashProcessSubstitutionStart, isBashTestWhitespace, isShellDynamicDescriptor, isShellFileDescriptor, isShellOutputFileRedirection, isSimpleBashAnsiCQuote, isStaticDescriptorCopy, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
 
 const MAX_COMMAND_CHARS = 128 * 1024;
 const MAX_SEGMENTS = 64;
@@ -285,6 +285,7 @@ function inspectSegment(tokens: PermissionTokens, cwd: string, depth: number, bu
   const bareControl = index === 0 && !tokens.firstWordQuoted && tokens[index] === command;
   if (bareControl && (command === "for" || command === "done" || command === "}")) return cwd;
   if (bareControl && (command === "do" || command === "{")) return index + 1 < tokens.length ? inspectSegment(tokens, cwd, depth + 1, builder, index + 1) : cwd;
+  if (isBashArithmeticCommandHead(tokens, index)) { markOpaque(builder, "unverifiable_arithmetic_command"); return cwd; }
   if (tokens[index] !== command && command !== "command" && command !== "exec") {
     markOpaque(builder, "explicit_or_cased_executable");
     addTarget(builder, tokens[index]!, cwd);
@@ -376,7 +377,7 @@ function inspectSegment(tokens: PermissionTokens, cwd: string, depth: number, bu
   return cwd;
 }
 
-type PermissionTokens = string[] & { expansions?: number[]; redirections?: number[]; redirectionFds?: (string | undefined)[]; firstWordQuoted?: boolean; secondWordQuoted?: boolean; thirdWordQuoted?: boolean; bashTestOpenAt?: number; bashTestClosed?: boolean; bashTestProcessSubstitution?: boolean };
+type PermissionTokens = string[] & { expansions?: number[]; redirections?: number[]; redirectionFds?: (string | undefined)[]; firstWordQuoted?: boolean; secondWordQuoted?: boolean; thirdWordQuoted?: boolean; bashTestOpenAt?: number; bashTestClosed?: boolean; bashTestProcessSubstitution?: boolean; bashArithmeticCommandAt?: number };
 
 function inspectTokenBuffer(tokens: PermissionTokens, cwd: string, depth: number, builder: ScopeBuilder): string {
   if (tokens.length === 0) return cwd;
@@ -392,6 +393,7 @@ function inspectTokenBuffer(tokens: PermissionTokens, cwd: string, depth: number
   }
   if (hasUnsafeBashTestOperand(tokens)) markOpaque(builder, "unverifiable_bash_test_operand");
   if (shellExpansionRisk(tokens) !== 0) markOpaque(builder, "stateful_shell_expansion");
+  const arithmeticHead = isBashArithmeticCommandHead(tokens, bashPipelinePrefixEnd(tokens, 0));
   const redirections = tokens.redirections;
   if (redirections) {
     for (let position = 0; position < redirections.length; position++) {
@@ -416,6 +418,7 @@ function inspectTokenBuffer(tokens: PermissionTokens, cwd: string, depth: number
     }
     stripShellRedirections(tokens, redirections);
   }
+  if (arithmeticHead) { markOpaque(builder, "unverifiable_arithmetic_command"); return cwd; }
   return tokens.length > 0 ? inspectSegment(tokens, cwd, depth, builder) : cwd;
 }
 
@@ -502,6 +505,7 @@ function inspectScript(command: string, initialCwd: string, depth: number, build
       continue;
     }
     if (code === 40 && command.charCodeAt(index + 1) === 40) {
+      if (arithmeticDepth === 0 && !tokenStarted && !redirectionTargetPending) tokens.bashArithmeticCommandAt = tokens.length;
       value += "((";
       tokenStarted = true;
       literalWord = false;
@@ -586,6 +590,7 @@ function inspectScript(command: string, initialCwd: string, depth: number, build
       tokens.bashTestOpenAt = undefined;
       tokens.bashTestClosed = undefined;
       tokens.bashTestProcessSubstitution = undefined;
+      tokens.bashArithmeticCommandAt = undefined;
       tokens.firstWordQuoted = undefined;
       tokens.secondWordQuoted = undefined;
       tokens.thirdWordQuoted = undefined;

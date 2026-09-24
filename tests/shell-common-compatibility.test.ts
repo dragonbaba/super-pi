@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -1011,7 +1011,10 @@ test("Bash wrapper and reserved prefixes cannot hide inherited recursive evaluat
     for (const [id, command] of [
       ["bash-c-separator", "bash -c -- 'echo $((SP_SHELL_RECURSIVE_VALUE))'"],
       ["timed-bash-wrapper", "time -p -- bash -c 'echo $((SP_SHELL_RECURSIVE_VALUE))'"],
+      ["combined-reserved-prefix", "! time -p -- bash -c 'echo $((SP_SHELL_RECURSIVE_VALUE))'"],
       ["negated-eval", "! eval 'echo $((SP_SHELL_RECURSIVE_VALUE))'"],
+      ["builtin-eval", "builtin eval 'echo $((SP_SHELL_RECURSIVE_VALUE))'"],
+      ["builtin-double-dash-eval", "builtin -- eval 'echo $((SP_SHELL_RECURSIVE_VALUE))'"],
     ] as const) await t.test(id, async () => {
       const workspace = mkdtempSync(join(tmpdir(), `sp-shell-recursive-${id}-`));
       mkdirSync(join(workspace, ".git"));
@@ -1055,6 +1058,9 @@ test("bounded Bash wrapper and reserved prefixes still execute literal harmless 
       ["bash-c-separator", "bash -c -- 'printf wrapper-ok'", "wrapper-ok"],
       ["timed-bash-wrapper", "time -p -- bash -c 'printf timed-wrapper-ok'", "timed-wrapper-ok"],
       ["negated-eval", "! eval 'false' && printf eval-ok", "eval-ok"],
+      ["builtin-double-dash-eval", "builtin -- eval 'printf builtin-ok'", "builtin-ok"],
+      ["quoted-arithmetic-data", "printf '%s' '(( PATH=0 ))'", "(( PATH=0 ))"],
+      ["unrelated-export", "export CANDIDATE=..; cd . && printf unrelated-ok", "unrelated-ok"],
     ] as const) {
       const executions: number = fixture.executions;
       const result = await fixture.agent.dispatchHostTool({ type: "toolCall", id, name: "bash", arguments: { command } });
@@ -1062,6 +1068,44 @@ test("bounded Bash wrapper and reserved prefixes still execute literal harmless 
       assert.match((result.content[0] as { text: string }).text, new RegExp(expected));
       assert.equal(fixture.executions, executions + 1);
       assert.notEqual(inspectHighRiskBashMutation({ command }, workspace)?.unverifiableScope, true);
+    }
+  } finally {
+    await fixture?.close();
+    rmSync(workspace, { recursive: true });
+  }
+});
+
+test("standalone Bash arithmetic cannot hide a changed executable lookup", async (t) => {
+  const shellPath = findTestBash();
+  if (!shellPath || !existsSync(shellPath)) {
+    if (process.env.CI) assert.fail("Required Bash integration test could not find Git Bash or /bin/bash");
+    t.skip("Bash unavailable");
+    return;
+  }
+  const workspace = mkdtempSync(join(tmpdir(), "sp-shell-arithmetic-lookup-"));
+  const target = join(workspace, ".git", "config");
+  mkdirSync(join(workspace, ".git"));
+  mkdirSync(join(workspace, "0"));
+  const executable = join(workspace, "0", "cat");
+  writeFileSync(executable, "#!/bin/sh\nprintf payload >.git/config\n");
+  chmodSync(executable, 0o755);
+  let fixture: Awaited<ReturnType<typeof guardedCwdBoundaryFixture>> | undefined;
+  try {
+    for (const [id, command] of [
+      ["standalone", "(( PATH=0 )); cat"],
+      ["loop-body", "for candidate in one; do (( PATH=0 )); done; cat"],
+    ] as const) {
+      execFileSync(shellPath, ["-c", command], { cwd: workspace, encoding: "utf8" });
+      assert.equal(readFileSync(target, "utf8"), "payload", `${id}: direct Bash selects the synthetic executable`);
+      unlinkSync(target);
+      assert.match(inspectBashResourceLifecycle({ command }) ?? "", /SHELL_UNINSPECTABLE/, id);
+      assert.equal(inspectHighRiskBashMutation({ command }, workspace)?.unverifiableScope, true, id);
+      assert.equal(inspectBashPermissionScope({ command }, workspace)?.unverifiableScope, true, id);
+      fixture ??= await guardedCwdBoundaryFixture(workspace, shellPath);
+      for (const mode of ["read-only", "workspace-write"] as const) {
+        await fixture.setMode(mode);
+        await assertBoundaryRefusedBeforeSpawn(fixture, workspace, `${mode}-${id}-arithmetic-lookup`, command, [target]);
+      }
     }
   } finally {
     await fixture?.close();
@@ -1500,6 +1544,10 @@ test("assignment-prefixed cd cannot authorize a different protected cwd", async 
       ["redirected-assigned-cd", ">/dev/null CDPATH=../.. cd workspace && printf marker >.git/config"],
       ["assigned-cd", "CDPATH=../.. cd workspace && printf marker >.git/config"],
       ["standalone-cdpath", "CDPATH=../..; cd workspace && printf marker >.git/config"],
+      ["export-cdpath", "export CDPATH=../..; cd workspace && printf marker >.git/config"],
+      ["declare-cdpath", "declare CDPATH=../..; cd workspace && printf marker >.git/config"],
+      ["typeset-cdpath", "typeset CDPATH=../..; cd workspace && printf marker >.git/config"],
+      ["readonly-cdpath", "readonly CDPATH=../..; cd workspace && printf marker >.git/config"],
       ["nested-command-assigned-cd", ">/dev/null CDPATH=../.. command command cd workspace && printf marker >.git/config"],
       ["nested-builtin-assigned-cd", "CDPATH=../.. builtin command builtin cd workspace && printf marker >.git/config"],
       ["expansion-assigned-cdpath", ": ${CDPATH:=../..}; cd workspace && printf marker >.git/config"],
