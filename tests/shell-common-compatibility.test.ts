@@ -5,7 +5,7 @@ import fs from "node:fs";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import ts from "typescript";
 import { Agent } from "../packages/agent/src/agent.ts";
 import { createBashTool, createLocalBashOperations, createShellToolDefinition } from "../packages/coding-agent/src/core/tools/bash.ts";
@@ -1386,6 +1386,87 @@ test("assignment-prefixed cd cannot authorize a different protected cwd", async 
     if (originalCdpath === undefined) delete process.env.CDPATH;
     else process.env.CDPATH = originalCdpath;
     rmSync(parent, { recursive: true });
+  }
+});
+
+test("bounded command prefixes and timed Bash tests retain guard and authorization checks", async (t) => {
+  const shellPath = findTestBash();
+  if (!shellPath || !existsSync(shellPath)) {
+    if (process.env.CI) assert.fail("Required Bash integration test could not find Git Bash or /bin/bash");
+    t.skip("Bash unavailable");
+    return;
+  }
+  const workspace = mkdtempSync(join(tmpdir(), "sp-shell-timed-test-"));
+  const protectedTarget = join(workspace, ".git", "config");
+  const timedTarget = join(workspace, "timed-marker.txt");
+  mkdirSync(join(workspace, ".git"));
+  function assertDisplayedTarget(approval: string, target: string) {
+    const displayPath = approval.match(/目标范围:\r?\n([^\r\n]+)/)?.[1];
+    assert.ok(displayPath, approval);
+    assert.equal(basename(displayPath), basename(target));
+    const displayedParent = statSync(dirname(displayPath));
+    const targetParent = statSync(dirname(target));
+    assert.deepEqual([displayedParent.dev, displayedParent.ino], [targetParent.dev, targetParent.ino]);
+  }
+  let fixture: Awaited<ReturnType<typeof guardedCwdBoundaryFixture>> | undefined;
+  try {
+    fixture = await guardedCwdBoundaryFixture(workspace, shellPath);
+    for (const mode of ["read-only", "workspace-write"] as const) {
+      await fixture.setMode(mode);
+      for (const [id, command, expected] of [
+        ["nested-command", "command command printf nested-command-ok", "nested-command-ok"],
+        ["nested-builtin", "builtin command builtin printf nested-builtin-ok", "nested-builtin-ok"],
+        ["time-double-bracket", "time -- [[ a < b ]] && printf timed-ok", "timed-ok"],
+        ["time-portable-double-bracket", "time -p -- [[ a < b ]] && printf portable-ok", "portable-ok"],
+      ] as const) {
+        const beforeExecutions: number = fixture.executions;
+        const beforeApprovals: number = fixture.approvals.length;
+        const distinctCommand = mode === "workspace-write" ? `${command} # workspace-write` : command;
+        const result = await fixture.agent.dispatchHostTool({ type: "toolCall", id: `${mode}-${id}`, name: "bash", arguments: { command: distinctCommand } });
+        assert.equal(result.isError, false, JSON.stringify(result));
+        assert.match((result.content[0] as { text: string }).text, new RegExp(expected));
+        assert.equal(fixture.executions, beforeExecutions + 1);
+        if (id.startsWith("time-")) assert.equal(fixture.approvals.length, beforeApprovals, `${command} is a read-only test`);
+      }
+      fixture.setDecision("拒绝");
+      for (const [id, command] of [
+        ["time-protected-output", "time -- [[ a < b ]] >.git/config"],
+        ["time-portable-protected-output", "time -p -- [[ a < b ]] >.git/config"],
+      ] as const) {
+        const beforeExecutions: number = fixture.executions;
+        const beforeApprovals: number = fixture.approvals.length;
+        const distinctCommand = mode === "workspace-write" ? `${command} # workspace-write` : command;
+        const result = await fixture.agent.dispatchHostTool({ type: "toolCall", id: `${mode}-${id}`, name: "bash", arguments: { command: distinctCommand } });
+        assert.equal(result.isError, true);
+        assert.equal((result.details as any).executionStatus, "not_executed");
+        assert.equal(fixture.executions, beforeExecutions);
+        assert.equal(fixture.approvals.length, beforeApprovals + 1, JSON.stringify({ id, mode, result, approvals: fixture.approvals }));
+        assertDisplayedTarget(fixture.approvals.at(-1)!, protectedTarget);
+        assert.equal(existsSync(protectedTarget), false);
+      }
+      fixture.setDecision("仅允许本次");
+      for (const [id, command] of [
+        ["time-process-substitution", "time -- [[ -e <(printf payload >.git/config) ]]"],
+        ["time-stateful-expansion", "time -p -- [[ -n ${CDPATH:=..} ]]"],
+      ] as const) {
+        const distinctCommand = mode === "workspace-write" ? `${command} # workspace-write` : command;
+        const blocked = await assertBoundaryRefusedBeforeSpawn(fixture, workspace, `${mode}-${id}`, distinctCommand, [protectedTarget, timedTarget]);
+        assert.doesNotMatch((blocked.content[0] as { text: string }).text, /UNCHANGED_REJECTED_REQUEST/);
+      }
+    }
+    await fixture.setMode("read-only");
+    const beforeExecutions = fixture.executions;
+    const beforeApprovals = fixture.approvals.length;
+    const command = "time -- [[ a < b ]] && printf marker >timed-marker.txt";
+    const result = await fixture.agent.dispatchHostTool({ type: "toolCall", id: "time-authorized-output", name: "bash", arguments: { command } });
+    assert.equal(result.isError, false, JSON.stringify(result));
+    assert.equal(fixture.executions, beforeExecutions + 1);
+    assert.equal(fixture.approvals.length, beforeApprovals + 1);
+    assertDisplayedTarget(fixture.approvals.at(-1)!, timedTarget);
+    assert.equal(readFileSync(timedTarget, "utf8"), "marker");
+  } finally {
+    await fixture?.close();
+    rmSync(workspace, { recursive: true });
   }
 });
 
