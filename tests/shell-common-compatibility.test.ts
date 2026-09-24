@@ -355,6 +355,21 @@ test("only the bare unlaunched cd builtin moves the scanned cwd", () => {
   }
 });
 
+test("cd reached through an OR edge cannot authorize dependent commands", () => {
+  // Bash groups left to right: `(true || cd sub) && next` skips cd but still runs next.
+  for (const command of ["true || cd sub && printf data >.git/config", "(true) || cd sub && printf data >.git/config",
+    "{ true; } || cd sub && printf data >.git/config", "true || cd sub || exit 1; printf data >.git/config"]) {
+    assert.match(inspectBashResourceLifecycle({ command }) ?? "", /SHELL_UNINSPECTABLE/, command);
+    assert.equal(inspectHighRiskBashMutation({ command }, cwd)?.unverifiableScope, true, command);
+    assert.equal(inspectBashPermissionScope({ command }, cwd)?.unverifiableScope, true, command);
+  }
+  // An incoming `&&` skips cd and its `&&` dependents together.
+  for (const command of ["true && cd sub && printf data >.git/config", "true && cd sub || exit 1; printf data >.git/config"]) {
+    assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
+    assert.ok(inspectHighRiskBashMutation({ command }, cwd)?.targets.some(target => /sub[\\/]\.git[\\/]config$/.test(target)), command);
+  }
+});
+
 test("cd with extra operands cannot authorize the requested cwd", () => {
   for (const command of ["cd sub extra; printf data >.git/config", "cd sub 2>/dev/null extra; printf data >.git/config", "cd sub extra && printf data >.git/config", "cd . extra; printf data >.git/config"]) {
     assert.match(inspectBashResourceLifecycle({ command }) ?? "", /SHELL_UNINSPECTABLE/, command);

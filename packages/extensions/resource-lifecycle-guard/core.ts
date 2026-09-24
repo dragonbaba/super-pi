@@ -864,8 +864,11 @@ export function hasAmbiguousBashCwd(command: string): boolean {
 				|| skipRedirections(tokens, operandIndex + 1) < tokens.length) return true;
 			// A failed redirection skips cd; later commands must then depend on its success or be read-only.
 			if (simpleSegment && (!hasFallibleRedirection(tokens) || hasOnlyReadOnlyConditionalTail(segments, segmentIndex))) continue;
+			// After `a || cd`, a true `a` skips cd while later `&&`/`||` commands still run:
+			// `(a || cd dir) && next`. An incoming `&&` skips both cd and its dependents.
+			const skippedByOr = segmentIndex > 0 && segments[segmentIndex - 1]!.separatorAfter === "||";
 			// `cd dir || exit [n]` leaves the shell unless cd succeeded, like `&&` for the rest of the script.
-			if (!exitRedefined && loopDepth === 0 && conditionalDepth === 0 && braceDepth === 0 && controlIndex === 0
+			if (!exitRedefined && !skippedByOr && loopDepth === 0 && conditionalDepth === 0 && braceDepth === 0 && controlIndex === 0
 				&& !tokens.subshellDepth && !tokens.pipelineMember && isExitOnFailure(segments, segmentIndex)) continue;
 			// A literal `cd .` leaves relative targets at the same path whether it
 			// succeeds or fails; other conditional cd targets can change the cwd.
@@ -873,7 +876,7 @@ export function hasAmbiguousBashCwd(command: string): boolean {
 			if (controlIndex > 0) return true;
 			// The RHS of `cd path && ...` only runs after a successful cd. A later
 			// independent command is safe only when its effects are provably read-only.
-			if (!tokens.subshellDepth && !tokens.pipelineMember && tokens.separatorAfter === "&&"
+			if (!skippedByOr && !tokens.subshellDepth && !tokens.pipelineMember && tokens.separatorAfter === "&&"
 				&& hasOnlyReadOnlyConditionalTail(segments, segmentIndex)) continue;
 			return true;
 		}
