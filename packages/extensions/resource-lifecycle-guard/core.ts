@@ -121,7 +121,7 @@ function inspectLifecycleScript(source: string, depth: number, nativePowerShellA
  if (substitutions.unterminated || substitutions.unsupported) return lifecycleRefusal("SHELL_SUBSTITUTION", substitutions.unterminated ? "unterminated command substitution" : "uncertain/uninspectable command substitution grammar", "simplify the substitution into inspectable foreground commands");
  for (const script of here?.substitutions ?? EMPTY_SUBSTITUTIONS) { const result = inspectLifecycleScript(script, depth + 1, nativePowerShellAvailable); if (result) return result; }
  for (const script of substitutions.scripts) { const result = inspectLifecycleScript(script, depth + 1, nativePowerShellAvailable); if (result) return result; }
- if (hasAmbiguousBashCwd(command)) return lifecycleRefusal("SHELL_UNINSPECTABLE", "working directory or reserved-prefix syntax cannot be established (conditional, grouped or indirect cd, or an ambiguous prefix)", "submit an inspectable foreground command; when cwd changes, keep a supported bare cd and its dependent operation in one Bash call (for example, cd sub && ls); each new call receives fresh checks");
+ if (hasAmbiguousBashCwd(command)) return lifecycleRefusal("SHELL_UNINSPECTABLE", "working directory, evaluator state, or reserved-prefix syntax cannot be established (conditional, grouped or indirect cd, source/eval, or an ambiguous prefix)", "submit an inspectable foreground command; when cwd changes, keep a supported bare cd and its dependent operation in one Bash call (for example, cd sub && ls); each new call receives fresh checks");
  if (DETACH_UTILITY_PATTERN.test(command)) return BLOCK_REASON;
  if ((WINDOWS_DETACH_PATTERN.test(command) || WINDOWS_START_BACKGROUND_PATTERN.test(command)) && !WINDOWS_WAIT_PATTERN.test(command)) return BLOCK_REASON;
  if (DOCKER_DETACHED_PATTERN.test(command) || SERVICE_START_PATTERN.test(command)) return BLOCK_REASON;
@@ -835,6 +835,14 @@ function hasBareBashArithmeticCommand(tokens: ShellSegment): boolean {
 	return isBashArithmeticCommandHead(tokens, bashPipelinePrefixEnd(tokens, index));
 }
 
+function hasLaterBashCommandSubstitution(segments: readonly ShellSegment[], start: number): boolean {
+	for (let segment = start + 1; segment < segments.length; segment++) {
+		const expansions = segments[segment]!.expansions;
+		if (expansions) for (const flags of expansions) if (flags && (flags & 4) !== 0) return true;
+	}
+	return false;
+}
+
 /** A local/conditional cd cannot establish one reliable cwd for later targets. */
 export function hasAmbiguousBashCwd(command: string): boolean {
 	const segments = parseShellSegments(command);
@@ -860,7 +868,8 @@ export function hasAmbiguousBashCwd(command: string): boolean {
 		if (index < 0) continue;
 		// A launcher such as `env` or `sudo` runs an external program, never a shell builtin.
 		const launched = index > 0;
-		if (tokens[index] === "do" || tokens[index] === "{" || tokens[index] === "then" || tokens[index] === "else") index++;
+		if (index === 0 && !tokens.firstWordQuoted && (tokens[index] === "do" || tokens[index] === "{" || tokens[index] === "then" || tokens[index] === "else"
+			|| tokens[index] === "if" || tokens[index] === "elif" || tokens[index] === "while" || tokens[index] === "until")) index++;
 		index = skipBashReservedPrefixes(tokens, index);
 		if (index < 0) return true;
 		let builtinPrefixes = 0;
@@ -903,6 +912,11 @@ export function hasAmbiguousBashCwd(command: string): boolean {
 		// The scans track only a direct literal `cd`; directory stacks are not followed.
 		if (name === "pushd" || name === "popd") return true;
 		if (changesBashCdSemantics(tokens, index, name)) { cdSemanticsChanged = true; continue; }
+		// A sourced file or evaluated source runs in this shell. Without bounded
+		// state propagation, a later command could use a different cwd or lookup.
+		if ((name === "source" || name === "." || name === "eval") && segmentIndex + 1 < segments.length
+			&& !(name === "eval" && index + 2 === tokens.length && !tokens.expansions?.[index + 1]
+				&& (tokens[index + 1] === "false" || tokens[index + 1] === "true" || tokens[index + 1] === ":"))) return true;
 		if (name === "function" ? tokens[index + 1] === "exit" : name === "exit" && tokens.separatorAfter === "(") exitRedefined = true;
 		if (name === "cd") {
 			// Redirections may surround the operand; Bash rejects a second operand
@@ -912,8 +926,10 @@ export function hasAmbiguousBashCwd(command: string): boolean {
 			if (leadingAssignment || builtinPrefixes > 0 || cdSemanticsChanged
 				|| !target || target.startsWith("-") || hasDynamicSyntax(target)
 				|| skipRedirections(tokens, operandIndex + 1) < tokens.length) return true;
-			// A failed redirection skips cd; later commands must then depend on its success or be read-only.
-			if (simpleSegment && (!hasFallibleRedirection(tokens) || hasOnlyReadOnlyConditionalTail(segments, segmentIndex))) continue;
+			// cd itself can fail even when its redirections succeed. An independent
+			// later target must therefore be read-only or gated on successful cd.
+			if (target !== "." && hasLaterBashCommandSubstitution(segments, segmentIndex)) return true;
+			if (simpleSegment && (segmentIndex + 1 === segments.length || hasOnlyReadOnlyConditionalTail(segments, segmentIndex))) continue;
 			// After `a || cd`, a true `a` skips cd while later `&&`/`||` commands still run:
 			// `(a || cd dir) && next`. An incoming `&&` skips both cd and its dependents.
 			const skippedByOr = segmentIndex > 0 && segments[segmentIndex - 1]!.separatorAfter === "||";
@@ -932,34 +948,6 @@ export function hasAmbiguousBashCwd(command: string): boolean {
 		}
 	}
 	return false;
-}
-
-/**
- * Only /dev/null targets and copies among the standard descriptors cannot fail.
- * The descriptor limit is a runtime ulimit, so only POSIX's 0-9 are always usable.
- */
-function hasFallibleRedirection(tokens: ShellSegment): boolean {
-	const positions = tokens.redirections;
-	if (!positions) return false;
-	for (let position = 0; position < positions.length; position++) {
-		const index = positions[position]!;
-		const target = positions[position + 1] === index + 1 ? undefined : tokens[index + 1];
-		const operator = tokens[index]!;
-		const sourceFd = tokens.redirectionFds?.[position];
-		if (target === "/dev/null" && operator !== "<>" && operator !== "<<" && operator !== "<<<"
-			&& (sourceFd === undefined || isSingleDigitDescriptor(sourceFd))) continue;
-		if ((operator === ">&" || operator === "<&") && isStandardDescriptor(target) && (sourceFd === undefined || isStandardDescriptor(sourceFd))) continue;
-		return true;
-	}
-	return false;
-}
-
-function isSingleDigitDescriptor(value: string): boolean {
-	return value.length === 1 && value.charCodeAt(0) >= 48 && value.charCodeAt(0) <= 57;
-}
-
-function isStandardDescriptor(value: string | undefined): boolean {
-	return value === "0" || value === "1" || value === "2";
 }
 
 /**

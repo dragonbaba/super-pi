@@ -218,9 +218,9 @@ test("expansions that assign shell variables cannot make later commands read-onl
   for (const command of [
     "printf %s $((PATH=0)); cat",
     "printf %s \"$((PATH=0))\"; cat",
-    ": $[CDPATH=1]; cd workspace; printf data >.git/config",
-    ": ${CDPATH:=..}; cd workspace; printf data >.git/config",
-    "echo ${CDPATH=..}; cd workspace; printf data >.git/config",
+    ": $[CDPATH=1]; cd workspace && printf data >.git/config",
+    ": ${CDPATH:=..}; cd workspace && printf data >.git/config",
+    "echo ${CDPATH=..}; cd workspace && printf data >.git/config",
     "x=(a); printf %s ${x[PATH=0]}; cat",
     "printf %s ${#x[PATH=0]}; cat",
     "printf %s ${x:PATH=0}; cat",
@@ -270,7 +270,7 @@ test("indirect or redefined cd cannot authorize the scanned cwd", () => {
     assert.equal(inspectHighRiskBashMutation({ command }, cwd)?.unverifiableScope, true, command);
     assert.equal(inspectBashPermissionScope({ command }, cwd)?.unverifiableScope, true, command);
   }
-  for (const command of ["set -e; cd sub; printf data >.git/config", "set -euo pipefail; cd sub && printf data >.git/config"]) {
+  for (const command of ["set -e; cd sub && printf data >.git/config", "set -euo pipefail; cd sub && printf data >.git/config"]) {
     assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
     assert.ok(inspectHighRiskBashMutation({ command }, cwd)?.targets.some(target => target.endsWith("sub\\.git\\config") ||target.endsWith("sub/.git/config")), command);
   }
@@ -309,13 +309,13 @@ test("Bash network-device input redirections are not read-only file inputs", () 
   assert.equal(inspectBashPermissionScope({ command: "cat <fixture.bin" }, cwd)?.kind, "read-only");
 });
 
-test("a fallible redirection on cd cannot authorize the requested cwd for an independent tail", () => {
-  for (const command of ["9>&8 cd sub; printf data >.git/config", "cd sub 9>&8; printf data >.git/config", "cd sub <missing.txt; printf data >.git/config", "cd sub >out/log; printf data >.git/config", "cd sub 2>&9; printf data >.git/config", "99999>/dev/null cd sub; printf data >.git/config", "cd sub 10>/dev/null; printf data >.git/config", "01>/dev/null cd sub; printf data >.git/config"]) {
+test("cd success is required before an independent target, even with an infallible redirect", () => {
+  for (const command of ["9>&8 cd sub; printf data >.git/config", "cd sub 9>&8; printf data >.git/config", "cd sub <missing.txt; printf data >.git/config", "cd sub >out/log; printf data >.git/config", "cd sub 2>&9; printf data >.git/config", "99999>/dev/null cd sub; printf data >.git/config", "cd sub 10>/dev/null; printf data >.git/config", "01>/dev/null cd sub; printf data >.git/config", "cd sub 2>/dev/null; printf data >.git/config", ">/dev/null cd sub; printf data >.git/config", "9>/dev/null cd sub; printf data >.git/config", "cd sub 2>&1; printf data >.git/config"]) {
     assert.match(inspectBashResourceLifecycle({ command }) ?? "", /SHELL_UNINSPECTABLE/, command);
     assert.equal(inspectHighRiskBashMutation({ command }, cwd)?.unverifiableScope, true, command);
     assert.equal(inspectBashPermissionScope({ command }, cwd)?.unverifiableScope, true, command);
   }
-  for (const command of ["9>&8 cd sub && printf data >.git/config", "cd sub 2>/dev/null; printf data >.git/config", ">/dev/null cd sub; printf data >.git/config", "9>/dev/null cd sub; printf data >.git/config", "cd sub 2>&1; printf data >.git/config"]) {
+  for (const command of ["9>&8 cd sub && printf data >.git/config", "cd sub 2>/dev/null && printf data >.git/config", ">/dev/null cd sub && printf data >.git/config", "9>/dev/null cd sub && printf data >.git/config", "cd sub 2>&1 && printf data >.git/config"]) {
     assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
     assert.ok(inspectHighRiskBashMutation({ command }, cwd)?.targets.some(target => target.endsWith("sub\\.git\\config") || target.endsWith("sub/.git/config")), command);
   }
@@ -350,10 +350,10 @@ test("only the bare unlaunched cd builtin moves the scanned cwd", () => {
     assert.ok(inspectBashPermissionScope({ command }, workspace)?.targets.some(root), command);
     assert.equal(inspectBashPermissionScope({ command }, workspace)?.targets.some(target => /sub[\\/]\.git/.test(target)), false, command);
   }
-  for (const command of ["./cd subdir && printf ok", "./pushd sub; printf ok", "./enable -n cd; cd sub; printf ok"]) {
+  for (const command of ["./cd subdir && printf ok", "./pushd sub; printf ok", "./enable -n cd; cd sub && printf ok"]) {
     assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
   }
-  for (const command of ["cd sub; printf data >.git/config", "'cd' sub; printf data >.git/config"]) {
+  for (const command of ["cd sub && printf data >.git/config", "'cd' sub && printf data >.git/config"]) {
     assert.ok(inspectHighRiskBashMutation({ command }, workspace)?.targets.some(target => /sub[\\/]\.git[\\/]config$/.test(target)), command);
   }
 });
@@ -392,7 +392,7 @@ test("cd with extra operands cannot authorize the requested cwd", () => {
     assert.equal(inspectHighRiskBashMutation({ command }, cwd)?.unverifiableScope, true, command);
     assert.equal(inspectBashPermissionScope({ command }, cwd)?.unverifiableScope, true, command);
   }
-  for (const command of ["cd 2>/dev/null sub; printf data >.git/config", "cd sub 2>/dev/null; printf data >.git/config"]) {
+  for (const command of ["cd 2>/dev/null sub && printf data >.git/config", "cd sub 2>/dev/null && printf data >.git/config"]) {
     assert.equal(inspectBashResourceLifecycle({ command }), undefined, command);
     assert.ok(inspectHighRiskBashMutation({ command }, cwd)?.targets.some(target => target.endsWith("sub\\.git\\config") || target.endsWith("sub/.git/config")), command);
   }
@@ -1256,6 +1256,51 @@ test("subshell cwd never authorizes a later parent-shell write at the child path
   }
 });
 
+test("reviewed cwd state changes never approve a different protected target", async (t) => {
+  const shellPath = findTestBash();
+  if (!shellPath || !existsSync(shellPath)) {
+    if (process.env.CI) assert.fail("Required Bash integration test could not find Git Bash or /bin/bash");
+    t.skip("Bash unavailable");
+    return;
+  }
+  const workspace = mkdtempSync(join(tmpdir(), "sp-shell-reviewed-cwd-"));
+  const nested = join(workspace, "nested");
+  mkdirSync(nested);
+  mkdirSync(join(workspace, ".git"));
+  mkdirSync(join(nested, ".git"));
+  mkdirSync(join(nested, "sub"));
+  writeFileSync(join(nested, "override.sh"), "cd() { builtin cd ..; }\n");
+  let fixture: Awaited<ReturnType<typeof guardedCwdBoundaryFixture>> | undefined;
+  try {
+    fixture = await guardedCwdBoundaryFixture(nested, shellPath);
+    for (const [id, command, actual, predicted] of [
+      ["failed-cd", "cd missing-synthetic; printf data >.git/config", join(nested, ".git", "config"), join(nested, "missing-synthetic", ".git", "config")],
+      ["quoted-substitution", "cd .. && echo \"$(printf data >.git/config)\"", join(workspace, ".git", "config"), join(nested, ".git", "config")],
+      ["builtin-cd", "builtin cd .. && printf data >.git/config", join(workspace, ".git", "config"), join(nested, ".git", "config")],
+      ["command-p-cd", "command -p cd .. && printf data >.git/config", join(workspace, ".git", "config"), join(nested, ".git", "config")],
+      ["conditional-cd", "if cd ..; then :; fi; printf data >.git/config", join(workspace, ".git", "config"), join(nested, ".git", "config")],
+      ["eval-redefines-cd", "eval 'cd() { builtin cd ..; }'; cd sub && printf data >.git/config", join(workspace, ".git", "config"), join(nested, "sub", ".git", "config")],
+      ["source-redefines-cd", "source ./override.sh; cd sub && printf data >.git/config", join(workspace, ".git", "config"), join(nested, "sub", ".git", "config")],
+    ] as const) await t.test(id, async () => {
+      try {
+        execFileSync(shellPath, ["-c", command], { cwd: nested, encoding: "utf8", env: { ...process.env, CDPATH: "" } });
+        assert.equal(readFileSync(actual, "utf8"), "data", `${id}: direct Bash target`);
+        assert.equal(existsSync(predicted), false, `${id}: scanner's other target`);
+        unlinkSync(actual);
+        for (const mode of ["read-only", "workspace-write"] as const) {
+          await fixture!.setMode(mode);
+          await assertBoundaryRefusedBeforeSpawn(fixture!, nested, `${mode}-${id}`, command, [actual, predicted]);
+        }
+      } finally {
+        if (existsSync(actual)) unlinkSync(actual);
+      }
+    });
+  } finally {
+    await fixture?.close();
+    rmSync(workspace, { recursive: true });
+  }
+});
+
 test("for-list assignment expansion cannot authorize the wrong cwd", async (t) => {
   const shellPath = findTestBash();
   if (!shellPath || !existsSync(shellPath)) {
@@ -1306,7 +1351,7 @@ test("for-list assignment expansion cannot authorize the wrong cwd", async (t) =
     await assertBoundaryRefusedBeforeSpawn(fixture, workspace, "for-list-protected-read-only", protectedCommand,
       [protectedRoot, fakeProtected]);
 
-    const literalCommand = "for candidate in one two; do printf ok; done; cd workspace; printf marker >literal-marker.txt";
+    const literalCommand = "for candidate in one two; do printf ok; done; cd workspace && printf marker >literal-marker.txt";
     const literal = await fixture.agent.dispatchHostTool({ type: "toolCall", id: "for-list-literal", name: "bash", arguments: { command: literalCommand } });
     assert.equal(literal.isError, false, JSON.stringify(literal));
     assert.equal(readFileSync(join(workspace, "workspace", "literal-marker.txt"), "utf8"), "marker");
@@ -1319,7 +1364,7 @@ test("for-list assignment expansion cannot authorize the wrong cwd", async (t) =
     await assertBoundaryRefusedBeforeSpawn(fixture, workspace, "for-list-protected-workspace", protectedCommand,
       [protectedRoot, fakeProtected]);
     const singleQuoted = await fixture.agent.dispatchHostTool({ type: "toolCall", id: "for-list-single-quoted", name: "bash", arguments: {
-      command: "for candidate in '${CDPATH:=..}'; do printf ok; done; cd workspace; printf marker >single-marker.txt",
+      command: "for candidate in '${CDPATH:=..}'; do printf ok; done; cd workspace && printf marker >single-marker.txt",
     } });
     assert.equal(singleQuoted.isError, false, JSON.stringify(singleQuoted));
     assert.equal(readFileSync(join(workspace, "workspace", "single-marker.txt"), "utf8"), "marker");
@@ -1466,12 +1511,12 @@ test("literal multiline for and select lists keep the actual workspace target", 
     fixture = await guardedCwdBoundaryFixture(workspace, shellPath);
     await fixture.setMode("read-only");
     for (const [id, command] of [
-      ["multiline-literal", "for candidate\nin one two\ndo printf ok; done\ncd workspace\nprintf marker >multiline-literal.txt"],
-      ["multiline-single-quoted", "for candidate\nin '${CDPATH:=..}'\ndo printf ok; done\ncd workspace\nprintf marker >multiline-single-quoted.txt"],
-      ["select-literal", "select candidate in one two; do :; done </dev/null; cd workspace; printf marker >select-literal.txt"],
-      ["select-single-quoted", "select candidate in '${CDPATH:=..}'; do :; done </dev/null; cd workspace; printf marker >select-single-quoted.txt"],
-      ["timed-for-literal", "time -- for candidate in one two; do printf ok; done; cd workspace; printf marker >timed-for-literal.txt"],
-      ["timed-select-literal", "time -p -- select candidate in one two; do :; done </dev/null; cd workspace; printf marker >timed-select-literal.txt"],
+      ["multiline-literal", "for candidate\nin one two\ndo printf ok; done\ncd workspace && printf marker >multiline-literal.txt"],
+      ["multiline-single-quoted", "for candidate\nin '${CDPATH:=..}'\ndo printf ok; done\ncd workspace && printf marker >multiline-single-quoted.txt"],
+      ["select-literal", "select candidate in one two; do :; done </dev/null; cd workspace && printf marker >select-literal.txt"],
+      ["select-single-quoted", "select candidate in '${CDPATH:=..}'; do :; done </dev/null; cd workspace && printf marker >select-single-quoted.txt"],
+      ["timed-for-literal", "time -- for candidate in one two; do printf ok; done; cd workspace && printf marker >timed-for-literal.txt"],
+      ["timed-select-literal", "time -p -- select candidate in one two; do :; done </dev/null; cd workspace && printf marker >timed-select-literal.txt"],
     ] as const) {
       assert.equal(inspectBashResourceLifecycle({ command }), undefined, id);
       assert.equal(inspectHighRiskBashMutation({ command }, workspace)?.primitives.includes("stateful_loop_list_expansion"), false, id);
