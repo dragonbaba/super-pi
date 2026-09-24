@@ -843,7 +843,7 @@ export class SessionPermissionController {
     const shellInput = event.input as { command: string; cwd?: unknown };
     const hasExplicitCwd = typeof shellInput.cwd === "string" && shellInput.cwd.length > 0;
     const effectiveCwd = hasExplicitCwd ? resolve(ctx.cwd, shellInput.cwd as string) : ctx.cwd;
-    const high = inspectHighRiskBashMutation(event.input, effectiveCwd);
+    const high = inspectHighRiskBashMutation(event.input, effectiveCwd, shellOperation);
     const scope = shellOperation === "powershell"
       ? inspectPowerShellPermissionScope(event.input, effectiveCwd)
       : inspectBashPermissionScope(event.input, effectiveCwd);

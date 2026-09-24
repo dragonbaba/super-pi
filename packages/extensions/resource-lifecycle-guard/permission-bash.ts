@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
 import { basename, resolve } from "node:path";
+import { hasUninspectableBashState, unsafeBashLoopHeaderReason } from "./core.ts";
 import { extractCommandSubstitutions, prepareShellAnalysis } from "./shell-substitution.ts";
 import { parseTimeoutInvocation } from "./timeout-wrapper.ts";
-import { isShellFileDescriptor, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
+import { bashPipelinePrefixEnd, bashScriptOperandIndex, hasStatefulBashPrintf, isBashArithmeticCommandHead, isBashNetworkRedirectionTarget, shellExpansionRisk, hasUnsafeBashTestOperand, hasUnsafeCommandQueryOperand, isBashDoubleBracketCloseBoundary, isBashDoubleBracketHead, isBashProcessSubstitutionStart, isBashTestWhitespace, isShellDynamicDescriptor, isShellFileDescriptor, isShellOutputFileRedirection, isSimpleBashAnsiCQuote, isStaticDescriptorCopy, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
 
 const MAX_COMMAND_CHARS = 128 * 1024;
 const MAX_SEGMENTS = 64;
@@ -178,11 +179,13 @@ function findSearchRoot(tokens: readonly string[], start: number): string | unde
   return undefined;
 }
 
-function commandIndex(tokens: readonly string[]): number {
-  let index = 0;
+function commandIndex(tokens: readonly string[], start = 0): number {
+  let index = start;
   let wrapperDepth = 0;
   while (index < tokens.length) {
-    const name = commandName(tokens[index] ?? "");
+    const raw = tokens[index] ?? "";
+    const name = commandName(raw);
+    if (raw !== name) break;
     if (++wrapperDepth > MAX_DEPTH) return -1;
     if (name === "sudo" || name === "doas") {
       index += 1;
@@ -194,7 +197,8 @@ function commandIndex(tokens: readonly string[]): number {
       if (tokens[index] === "--") index += 1;
       while (index < tokens.length) {
         const value = tokens[index]!;
-        if (value.startsWith("-") || value.includes("=")) index += 1;
+        if (value.includes("=")) return -1;
+        if (value.startsWith("-")) index += 1;
         else break;
       }
       continue;
@@ -210,10 +214,13 @@ function commandIndex(tokens: readonly string[]): number {
   return index;
 }
 
-function wrapperScript(tokens: readonly string[], start: number): string | undefined {
+function wrapperScript(tokens: readonly string[], start: number, bashStyle: boolean): string | undefined {
   for (let index = start; index < tokens.length; index++) {
     const token = tokens[index]!.toLowerCase();
-    if (token === "-c" || token === "/c" || token === "-command") return tokens[index + 1];
+    if (token === "-c" || token === "/c" || token === "-command") {
+      const sourceIndex = bashStyle && token === "-c" ? bashScriptOperandIndex(tokens, index) : index + 1;
+      return sourceIndex < 0 ? undefined : tokens[sourceIndex];
+    }
   }
   return undefined;
 }
@@ -267,14 +274,42 @@ function runnerClass(command: string, tokens: readonly string[], start: number):
   return `runner:${executable}:${action}`;
 }
 
-function inspectSegment(tokens: readonly string[], cwd: string, depth: number, builder: ScopeBuilder): string {
-  const index = commandIndex(tokens);
+function inspectSegment(tokens: PermissionTokens, cwd: string, depth: number, builder: ScopeBuilder, start = 0): string {
+  const index = commandIndex(tokens, start);
   if (index < 0) {
-    markOpaque(builder, "unsupported_timeout_wrapper");
+    markOpaque(builder, "unverifiable_launcher");
     return cwd;
   }
   if (index >= tokens.length) return cwd;
   const command = commandName(tokens[index]!);
+  const bareControl = index === 0 && !tokens.firstWordQuoted && tokens[index] === command;
+  if (bareControl && (command === "for" || command === "done" || command === "}")) return cwd;
+  if (bareControl && (command === "do" || command === "{")) return index + 1 < tokens.length ? inspectSegment(tokens, cwd, depth + 1, builder, index + 1) : cwd;
+  if (isBashArithmeticCommandHead(tokens, index)) { markOpaque(builder, "unverifiable_arithmetic_command"); return cwd; }
+  if (tokens[index] !== command && command !== "command" && command !== "exec") {
+    markOpaque(builder, "explicit_or_cased_executable");
+    addTarget(builder, tokens[index]!, cwd);
+    return cwd;
+  }
+  if (command === "command" || command === "exec") {
+    if (tokens[index] !== command) {
+      markOpaque(builder, "explicit_path_named_shell_builtin");
+      addTarget(builder, tokens[index]!, cwd);
+      return cwd;
+    }
+    if (command === "command" && (tokens[index + 1] === "-v" || tokens[index + 1] === "-V")) {
+      if (hasUnsafeCommandQueryOperand(tokens, index + 2)) { markOpaque(builder, "unverifiable_command_query"); return cwd; }
+      addClass(builder, "read:command-query");
+      return cwd;
+    }
+    if (depth >= MAX_DEPTH || !tokens[index + 1] || tokens[index + 1]!.startsWith("-")) {
+      markOpaque(builder, "unverifiable_launcher");
+      return cwd;
+    }
+    return inspectSegment(tokens, cwd, depth + 1, builder, index + 1);
+  }
+  // A launched `cd` (`env cd`, `sudo cd`) is an external program and cannot move this shell.
+  if (command === "cd" && index !== start) return cwd;
   if (command === "cd") {
     const target = tokens[index + 1];
     if (!target || hasDynamicSyntax(target)) {
@@ -283,9 +318,23 @@ function inspectSegment(tokens: readonly string[], cwd: string, depth: number, b
     }
     return resolve(cwd, target);
   }
+  if (command === "printf" && hasStatefulBashPrintf(tokens, index)) {
+    markOpaque(builder, "stateful_printf_variable_assignment");
+    return cwd;
+  }
+  const testOpen = bashPipelinePrefixEnd(tokens, index);
+  if (testOpen < 0) { markOpaque(builder, "unverifiable_launcher"); return cwd; }
+  if (testOpen >= 0 && tokens[testOpen] === "[[" && tokens.bashTestOpenAt === testOpen && tokens.bashTestClosed) {
+    addClass(builder, "read:bash-test");
+    return cwd;
+  }
+  if (testOpen > index && testOpen < tokens.length) {
+    if (tokens[testOpen] === "cd") { markOpaque(builder, "unverifiable_working_directory"); return cwd; }
+    return inspectSegment(tokens, cwd, depth + 1, builder, testOpen);
+  }
   if (SCRIPT_WRAPPERS.has(command)) {
     addClass(builder, `wrapper:${command}`);
-    const source = wrapperScript(tokens, index + 1);
+    const source = wrapperScript(tokens, index + 1, command === "bash" || command === "bash.exe" || command === "sh" || command === "zsh");
     if (!source || depth >= MAX_DEPTH) {
       markOpaque(builder, "opaque_shell_wrapper");
       addTarget(builder, cwd, cwd);
@@ -328,7 +377,7 @@ function inspectSegment(tokens: readonly string[], cwd: string, depth: number, b
   return cwd;
 }
 
-type PermissionTokens = string[] & { redirections?: number[] };
+type PermissionTokens = string[] & { expansions?: number[]; redirections?: number[]; redirectionFds?: (string | undefined)[]; firstWordQuoted?: boolean; secondWordQuoted?: boolean; thirdWordQuoted?: boolean; bashTestOpenAt?: number; bashTestClosed?: boolean; bashTestProcessSubstitution?: boolean; bashArithmeticCommandAt?: number };
 
 function inspectTokenBuffer(tokens: PermissionTokens, cwd: string, depth: number, builder: ScopeBuilder): string {
   if (tokens.length === 0) return cwd;
@@ -337,13 +386,28 @@ function inspectTokenBuffer(tokens: PermissionTokens, cwd: string, depth: number
     markOpaque(builder, "too_many_segments");
     return cwd;
   }
+  if (tokens.bashTestProcessSubstitution) {
+    builder.dynamicScope = true;
+    markOpaque(builder, "unverifiable_process_substitution");
+    return cwd;
+  }
+  if (hasUnsafeBashTestOperand(tokens)) markOpaque(builder, "unverifiable_bash_test_operand");
+  if (shellExpansionRisk(tokens) !== 0) markOpaque(builder, "stateful_shell_expansion");
+  const arithmeticHead = isBashArithmeticCommandHead(tokens, bashPipelinePrefixEnd(tokens, 0));
   const redirections = tokens.redirections;
   if (redirections) {
     for (let position = 0; position < redirections.length; position++) {
       const index = redirections[position]!;
       const operator = tokens[index]!;
       const target = index + 1 === redirections[position + 1] ? undefined : tokens[index + 1];
-      if (operator !== ">" && operator !== ">>" && operator !== ">|" && operator !== "&>" && operator !== "&>>") {
+      const descriptorFd = tokens.redirectionFds?.[position];
+      if (isStaticDescriptorCopy(operator, target, descriptorFd)) continue;
+      if (descriptorFd && isShellDynamicDescriptor(descriptorFd)) {
+        markOpaque(builder, "unverifiable_redirection");
+        continue;
+      }
+      if (operator === "<" && target && !hasDynamicSyntax(target) && !isBashNetworkRedirectionTarget(target)) continue;
+      if (!isShellOutputFileRedirection(operator)) {
         markOpaque(builder, "unverifiable_redirection");
         continue;
       }
@@ -354,12 +418,17 @@ function inspectTokenBuffer(tokens: PermissionTokens, cwd: string, depth: number
     }
     stripShellRedirections(tokens, redirections);
   }
+  if (arithmeticHead) { markOpaque(builder, "unverifiable_arithmetic_command"); return cwd; }
   return tokens.length > 0 ? inspectSegment(tokens, cwd, depth, builder) : cwd;
 }
 
 function inspectScript(command: string, initialCwd: string, depth: number, builder: ScopeBuilder): void {
   if (depth > MAX_DEPTH) {
     markOpaque(builder, "command_substitution_depth");
+    return;
+  }
+  if (hasUninspectableBashState(command)) {
+    markOpaque(builder, "unverifiable_shell_state");
     return;
   }
   const analysis = prepareShellAnalysis(command);
@@ -371,14 +440,19 @@ function inspectScript(command: string, initialCwd: string, depth: number, build
   if (substitutions.unsupported) markOpaque(builder, "uninspectable_command_substitution");
   for (const nested of substitutions.scripts) inspectScript(nested, initialCwd, depth + 1, builder);
   command = analysis.command;
+  const loopReason = unsafeBashLoopHeaderReason(command);
+  if (loopReason) markOpaque(builder, loopReason);
   let cwd = initialCwd;
   const tokens: PermissionTokens = [];
   let value = "";
   let tokenStarted = false;
   let quote = 0;
+  let ansiC = false;
   let arithmeticDepth = 0;
   let escaped = false;
   let literalWord = true;
+  let redirectionTargetPending = false;
+  let bashDoubleBracket = false;
   for (let index = 0; index < command.length; index++) {
     const code = command.charCodeAt(index);
     if (escaped) {
@@ -398,8 +472,27 @@ function inspectScript(command: string, initialCwd: string, depth: number, build
       tokenStarted = true;
       continue;
     }
+    if (quote === 0 && code === 36 && isSimpleBashAnsiCQuote(command, index)) {
+      quote = 39; ansiC = true; literalWord = false; tokenStarted = true; index++; continue;
+    }
+    if (quote !== 39 && (code === 36 || code === 96)) {
+      const flags = code === 96 || command.charCodeAt(index + 1) === 40 ? 4 : 1;
+      const expansions = tokens.expansions ??= [];
+      expansions[tokens.length] = (expansions[tokens.length] ?? 0) | flags;
+    }
+    if (quote === 0 && (code === 123 || code === 125)) {
+      const expansions = tokens.expansions ??= [];
+      expansions[tokens.length] = (expansions[tokens.length] ?? 0) | 8;
+    }
     if (quote !== 0) {
-      if (code === quote) quote = 0;
+      // Decode the \n, \r and \t escapes a simple $'...' quote may contain, as Bash does,
+      // so a path operand names the real file rather than its escaped spelling.
+      if (ansiC && code === 92) {
+        const escaped = command.charCodeAt(++index);
+        value += String.fromCharCode(escaped === 110 ? 10 : escaped === 114 ? 13 : 9);
+        continue;
+      }
+      if (code === quote) { quote = 0; ansiC = false; }
       else value += command[index];
       continue;
     }
@@ -412,6 +505,7 @@ function inspectScript(command: string, initialCwd: string, depth: number, build
       continue;
     }
     if (code === 40 && command.charCodeAt(index + 1) === 40) {
+      if (arithmeticDepth === 0 && !tokenStarted && !redirectionTargetPending) tokens.bashArithmeticCommandAt = tokens.length;
       value += "((";
       tokenStarted = true;
       literalWord = false;
@@ -432,20 +526,48 @@ function inspectScript(command: string, initialCwd: string, depth: number, build
       tokenStarted = true;
       continue;
     }
-    if (code === 32 || code === 9) {
+    if (code === 32 || code === 9 || (bashDoubleBracket && isBashTestWhitespace(code))) {
       if (tokenStarted) {
+        if (!literalWord && tokens.length === 0) tokens.firstWordQuoted = true;
+        if (!literalWord && tokens.length === 1) tokens.secondWordQuoted = true;
+        if (!literalWord && tokens.length === 2) tokens.thirdWordQuoted = true;
         tokens.push(value);
+        redirectionTargetPending = false;
         value = "";
         tokenStarted = false;
         literalWord = true;
       }
       continue;
     }
-    const redirectionWidth = shellRedirectionLength(command, index);
+    if (code === 35 && !tokenStarted) {
+      while (index < command.length && command.charCodeAt(index) !== 10 && command.charCodeAt(index) !== 13) index++;
+      if (index >= command.length) break;
+      index--; continue;
+    }
+    if (!bashDoubleBracket && code === 91 && command.charCodeAt(index + 1) === 91 && !tokenStarted
+      && isBashDoubleBracketHead(tokens) && isBashTestWhitespace(command.charCodeAt(index + 2))) {
+      tokens.bashTestOpenAt = tokens.length;
+      value = "[["; tokenStarted = true; bashDoubleBracket = true; index++; continue;
+    }
+    if (bashDoubleBracket && code === 93 && command.charCodeAt(index + 1) === 93 && !tokenStarted
+      && isBashDoubleBracketCloseBoundary(command, index + 2)) {
+      tokens.bashTestClosed = true;
+      value = "]]"; tokenStarted = true; bashDoubleBracket = false; index++; continue;
+    }
+    if (bashDoubleBracket && isBashProcessSubstitutionStart(command, index)) tokens.bashTestProcessSubstitution = true;
+    const redirectionWidth = bashDoubleBracket ? 0 : shellRedirectionLength(command, index);
     if (redirectionWidth > 0) {
-      if (tokenStarted && !(literalWord && isShellFileDescriptor(value))) tokens.push(value);
+      const sourceFd = !redirectionTargetPending && literalWord && (isShellFileDescriptor(value) || isShellDynamicDescriptor(value)) ? value : undefined;
+      if (tokenStarted && !sourceFd) {
+        if (!literalWord && tokens.length === 0) tokens.firstWordQuoted = true;
+        if (!literalWord && tokens.length === 1) tokens.secondWordQuoted = true;
+        if (!literalWord && tokens.length === 2) tokens.thirdWordQuoted = true;
+        tokens.push(value);
+      }
       (tokens.redirections ??= []).push(tokens.length);
+      (tokens.redirectionFds ??= []).push(sourceFd);
       tokens.push(command.slice(index, index + redirectionWidth));
+      redirectionTargetPending = true;
       index += redirectionWidth - 1;
       value = "";
       tokenStarted = false;
@@ -453,20 +575,41 @@ function inspectScript(command: string, initialCwd: string, depth: number, build
       continue;
     }
     if (code === 10 || code === 13 || code === 59 || code === 38 || code === 124 || code === 40 || code === 41) {
-      if (tokenStarted) tokens.push(value);
+      if (bashDoubleBracket) { value += command[index]; tokenStarted = true; continue; }
+      if (tokenStarted) {
+        if (!literalWord && tokens.length === 0) tokens.firstWordQuoted = true;
+        if (!literalWord && tokens.length === 1) tokens.secondWordQuoted = true;
+        if (!literalWord && tokens.length === 2) tokens.thirdWordQuoted = true;
+        tokens.push(value);
+      }
       cwd = inspectTokenBuffer(tokens, cwd, depth, builder);
       tokens.length = 0;
       if (tokens.redirections) tokens.redirections.length = 0;
+      if (tokens.redirectionFds) tokens.redirectionFds.length = 0;
+      if (tokens.expansions) tokens.expansions.length = 0;
+      tokens.bashTestOpenAt = undefined;
+      tokens.bashTestClosed = undefined;
+      tokens.bashTestProcessSubstitution = undefined;
+      tokens.bashArithmeticCommandAt = undefined;
+      tokens.firstWordQuoted = undefined;
+      tokens.secondWordQuoted = undefined;
+      tokens.thirdWordQuoted = undefined;
       literalWord = true;
       value = "";
       tokenStarted = false;
+      redirectionTargetPending = false;
       if ((code === 38 || code === 124) && command.charCodeAt(index + 1) === code) index += 1;
       continue;
     }
     value += command[index];
     tokenStarted = true;
   }
-  if (tokenStarted) tokens.push(value);
+  if (tokenStarted) {
+    if (!literalWord && tokens.length === 0) tokens.firstWordQuoted = true;
+    if (!literalWord && tokens.length === 1) tokens.secondWordQuoted = true;
+    if (!literalWord && tokens.length === 2) tokens.thirdWordQuoted = true;
+    tokens.push(value);
+  }
   inspectTokenBuffer(tokens, cwd, depth, builder);
   if (quote !== 0 || escaped) markOpaque(builder, "unterminated_shell_syntax");
 }

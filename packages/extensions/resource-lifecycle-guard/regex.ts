@@ -40,12 +40,15 @@ export const OPAQUE_JOB_INTERPRETER_PATTERN = /^(?:python(?:[0-9]+(?:\.[0-9]+)*)
 export const OWNED_USE_COMMAND_PATTERN = /^(?:curl|test|true|false|echo)(?:[ \t]+[A-Za-z0-9_./:%?=,+-]+)*$/u;
 export const SHELL_WRAPPER_TEXT_PATTERN = /sh|eval|timeout/iu;
 export const EXECUTABLE_EXPANSION_TEXT_PATTERN = /[$`*?\[\]{}%]/u;
-export const LOOKUP_ASSIGNMENT_PATTERN = /^(?:PATH|BASH_ENV|ENV|SHELLOPTS|BASHOPTS|CDPATH)=/u;
+export const LOOKUP_ASSIGNMENT_PATTERN = /^(?:PATH|EXECIGNORE|BASH_CMDS|BASH_ENV|ENV|SHELLOPTS|BASHOPTS|CDPATH|PS4)=/u;
 export const LEADING_REDIRECTION_PATTERN = /^(?:[0-9]+|\{[^}]+\})?[<>]{1,2}(.*)$/u;
 export const LEADING_ASSIGNMENT_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*\+?=/u;
 export const SIMPLE_VARIABLE_PATTERN = /^\$[A-Za-z_][A-Za-z0-9_]{0,63}$/u;
 export const REDIRECTION_OPERATOR_PATTERN = /[<>]/u;
 export const FD_DUPLICATION_PATTERN = /^(?:[0-9]+|\{[^}]+\})?[<>]&[0-9]+$/u;
+export const NONNEGATIVE_INTEGER_PATTERN = /^[0-9]+$/u;
+export const SIMPLE_BASH_LET_ASSIGNMENT_PATTERN = /^([A-Za-z_][A-Za-z_0-9]*)=-?(?:0|[1-9][0-9]*)$/u;
+export const HEAD_COUNT_OPTION_PATTERN = /^-(?:[0-9]+|n)$/u;
 
 // Shell-substitution scanner boundaries. These are stateless module constants;
 // the scanner never shares match state between calls.

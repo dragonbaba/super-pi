@@ -163,8 +163,13 @@ test("review2: validation escapes all display controls", () => {
 });
 
 
-test("review3: bare arithmetic is not a heredoc", () => {
- for (const command of ["((value << 2))", "for ((i=0; i < 2; i++)); do ((value << 2)); done"]) assert.equal(inspectBashResourceLifecycle({ command }), undefined);
+test("review3: bare arithmetic is not a heredoc but can change shell state", () => {
+ for (const command of ["((value << 2))", "for ((i=0; i < 2; i++)); do ((value << 2)); done"]) {
+  const refusal = inspectBashResourceLifecycle({ command }) ?? "";
+  assert.match(refusal, /SHELL_UNINSPECTABLE/);
+  assert.doesNotMatch(refusal, /SHELL_HEREDOC/);
+ }
+ assert.equal(inspectBashResourceLifecycle({ command: "echo $((1 << 2))" }), undefined);
 });
 test("review3: shadowed consumers and staged execution are uncertain", () => {
  for (const command of [`cat(){ eval "$(command cat)"; }\ncat <<'EOF'\nnohup sleep 100 &\nEOF`, "cat > ./runner <<'EOF'\n#!/bin/sh\nnohup sleep 100 &\nEOF\nchmod +x ./runner; ./runner"]) assert.ok(inspectBashResourceLifecycle({ command }));
