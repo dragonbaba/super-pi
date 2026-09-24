@@ -991,7 +991,8 @@ export function hasUninspectableBashState(command: string): boolean {
 			continue;
 		}
 		// Builtins are exact bare words: `./cd`, `/opt/cd` and `CD` are external executables.
-		const name = launched ? "" : tokens[index] ?? "";
+		const effectiveName = tokens[index] ?? "";
+		const name = launched ? "" : effectiveName;
 		// Functions can shadow apparently harmless builtins and run in the
 		// calling shell. A later command (including a final eval) may call one.
 		if ((name === "function" && !tokens.firstWordQuoted
@@ -1019,7 +1020,7 @@ export function hasUninspectableBashState(command: string): boolean {
 				if (changesBashExecutableLookup(tokens[operand]!) && hasLaterBashCommandInShell(segments, segmentIndex)) return true;
 			}
 		}
-		if (cdSemanticsChanged && (SCRIPT_WRAPPERS.has(commandName(name)) || name === "eval" || name === "source" || name === "." || name === "exec")) return true;
+		if (cdSemanticsChanged && (SCRIPT_WRAPPERS.has(commandName(effectiveName)) || name === "eval" || name === "source" || name === "." || name === "exec")) return true;
 		if ((name === "declare" || name === "typeset" || name === "local")
 			&& hasLaterBashCommandInShell(segments, segmentIndex)) {
 			for (let operand = index + 1; operand < tokens.length; operand++) {
@@ -1032,6 +1033,13 @@ export function hasUninspectableBashState(command: string): boolean {
 		if ((name === "read" || name === "readarray" || name === "mapfile")
 			&& hasLaterBashCommandInShell(segments, segmentIndex)
 			&& hasUninspectableBashReadDestination(tokens, index, name)) return true;
+		if (name === "getopts" && hasLaterBashCommandInShell(segments, segmentIndex)) {
+			const optionsIndex = skipRedirections(tokens, index + 1);
+			const destinationIndex = skipRedirections(tokens, optionsIndex + 1);
+			const destination = tokens[destinationIndex];
+			if (!tokens[optionsIndex] || !destination
+				|| isUncertainBashReadDestination(destination, tokens.expansions?.[destinationIndex] ?? 0)) return true;
+		}
 		// The scans track only a direct literal `cd`; directory stacks are not followed.
 		if (name === "pushd" || name === "popd") return true;
 		// hash with operands can pin or clear a lookup for a later command. A

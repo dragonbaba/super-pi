@@ -129,7 +129,7 @@ export function isLookupSensitiveBashVariable(name: string | undefined): boolean
   return name === "PATH" || name === "BASH_ENV" || name === "ENV"
     || name === "SHELLOPTS" || name === "BASHOPTS" || name === "CDPATH" || name === "PS4"
     // EXECIGNORE hides matching PATH entries, so a later lookup can reach a workspace executable.
-    || name === "EXECIGNORE";
+    || name === "EXECIGNORE" || name === "BASH_CMDS";
 }
 
 function hasLookupSensitiveArithmeticName(expression: string): boolean {

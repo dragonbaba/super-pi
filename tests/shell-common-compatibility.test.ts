@@ -176,6 +176,7 @@ test("lookup-sensitive Bash for variables cannot make later command lookup read-
     "time -p for PATH in .; do printf ok; done; cat",
     "for BASH_ENV in ./profile; do printf ok; done; bash -c 'printf ok'",
     "for EXECIGNORE in /usr/bin/cat; do echo ok; done; cat",
+    "for BASH_CMDS in 0; do echo ok; done; 0",
   ]) {
     assert.match(inspectBashResourceLifecycle({ command }) ?? "", /SHELL_UNINSPECTABLE/, command);
     const high = inspectHighRiskBashMutation({ command }, cwd);
@@ -197,6 +198,7 @@ test("C-style Bash for headers cannot make later command lookup read-only", () =
     "time -p for (( CDPATH=1; 0; )); do printf ok; done; cd workspace",
     "for (( i=0; i<1; BASH_ENV=1 )); do printf ok; done; bash -c 'printf ok'",
     "for (( EXECIGNORE=0; 0; )); do printf ok; done; cat",
+    "for (( BASH_CMDS=0; 0; )); do printf ok; done; 0",
   ]) {
     assert.match(inspectBashResourceLifecycle({ command }) ?? "", /SHELL_UNINSPECTABLE/, command);
     const high = inspectHighRiskBashMutation({ command }, cwd);
@@ -1106,6 +1108,7 @@ test("Bash stateful commands cannot hide a changed executable lookup", async (t)
       ["declare-path", "declare PATH=0; cat"],
       ["readonly-path", "readonly PATH=0; cat"],
       ["prefixed-export-path", "PATH=0 export PATH; cat"],
+      ["bash-cmds-index", "BASH_CMDS[cat]=./0/cat; cat"],
       ["lastpipe-export-path", "set +m; shopt -s lastpipe; true | export PATH=0; cat"],
       ["let-path", "let PATH=0; cat"],
       ["builtin-let-path", "builtin let PATH=0; cat"],
@@ -1114,6 +1117,9 @@ test("Bash stateful commands cannot hide a changed executable lookup", async (t)
       ["read-r-path", "read -r PATH <path.txt; cat"],
       ["builtin-read-path", "builtin read PATH <path.txt; cat"],
       ["command-read-path", "command read PATH <path.txt; cat"],
+      ["getopts-path", "getopts 0 PATH -0; cat"],
+      ["builtin-getopts-path", "builtin getopts 0 PATH -0; cat"],
+      ["command-getopts-path", "command getopts 0 PATH -0; cat"],
       ["nameref-read-path", "declare -n candidate=PATH; read candidate <path.txt; cat"],
       ["loop-body", "for candidate in one; do (( PATH=0 )); done; cat"],
       ["hash-override", "hash -p ./0/cat cat; cat"],
@@ -1129,9 +1135,12 @@ test("Bash stateful commands cannot hide a changed executable lookup", async (t)
         await fixture.setMode(mode);
         await assertBoundaryRefusedBeforeSpawn(fixture, workspace, `${mode}-${id}-arithmetic-lookup`, command, [target]);
       }
-      assert.match(inspectBashResourceLifecycle({ command }) ?? "", /SHELL_UNINSPECTABLE/, id);
-      assert.equal(inspectHighRiskBashMutation({ command }, workspace)?.unverifiableScope, true, id);
-      assert.equal(inspectBashPermissionScope({ command }, workspace)?.unverifiableScope, true, id);
+      assert.match(inspectBashResourceLifecycle({ command }) ?? "",
+        id === "bash-cmds-index" ? /SHELL_DYNAMIC_EXECUTABLE/ : /SHELL_UNINSPECTABLE/, id);
+      if (id !== "bash-cmds-index") {
+        assert.equal(inspectHighRiskBashMutation({ command }, workspace)?.unverifiableScope, true, id);
+        assert.equal(inspectBashPermissionScope({ command }, workspace)?.unverifiableScope, true, id);
+      }
     });
     for (const [id, command] of [
       ["readarray", "readarray -t PATH <path.txt; cat"],
@@ -1153,6 +1162,7 @@ test("Bash stateful commands cannot hide a changed executable lookup", async (t)
       ["ordinary-read", "read candidate <path.txt; printf 'read-%s' \"$candidate\"", "read-0"],
       ["prompt-is-data", "read -p PATH candidate <path.txt; printf prompt-ok", "prompt-ok"],
       ["ordinary-mapfile", "mapfile -t candidate <path.txt; printf mapfile-ok", "mapfile-ok"],
+      ["ordinary-getopts", "getopts 0 candidate -0; printf 'opt-%s' \"$candidate\"", "opt-0"],
       ["quoted-syntax-data", "printf '%s' 'let PATH=0; read PATH'", "let PATH=0; read PATH"],
     ] as const) await t.test(id, async () => {
       assert.equal(inspectBashResourceLifecycle({ command }), undefined, id);
@@ -1164,6 +1174,42 @@ test("Bash stateful commands cannot hide a changed executable lookup", async (t)
       assert.equal(fixture!.executions, executions + 1);
       assert.equal(existsSync(target), false);
     });
+  } finally {
+    await fixture?.close();
+    rmSync(workspace, { recursive: true });
+  }
+});
+
+test("BASH_CMDS assignments cannot hide a workspace executable", async (t) => {
+  const shellPath = findTestBash();
+  if (!shellPath || !existsSync(shellPath)) {
+    if (process.env.CI) assert.fail("Required Bash integration test could not find Git Bash or /bin/bash");
+    t.skip("Bash unavailable");
+    return;
+  }
+  const workspace = mkdtempSync(join(tmpdir(), "sp-shell-bash-cmds-"));
+  const target = join(workspace, ".git", "config");
+  mkdirSync(join(workspace, ".git"));
+  writeFileSync(join(workspace, "0"), "#!/bin/sh\nprintf payload >.git/config\n");
+  chmodSync(join(workspace, "0"), 0o755);
+  writeFileSync(join(workspace, "path.txt"), "0\n");
+  let fixture: Awaited<ReturnType<typeof guardedCwdBoundaryFixture>> | undefined;
+  try {
+    const command = "let BASH_CMDS=0; 0";
+    execFileSync(shellPath, ["-c", command], { cwd: workspace, encoding: "utf8" });
+    assert.equal(readFileSync(target, "utf8"), "payload", "direct Bash selects the synthetic hashed executable");
+    unlinkSync(target);
+    fixture = await guardedCwdBoundaryFixture(workspace, shellPath);
+    for (const [id, unsafe] of [
+      ["let", command],
+      ["read", "read BASH_CMDS <path.txt; 0"],
+    ] as const) for (const mode of ["read-only", "workspace-write"] as const) {
+      await fixture.setMode(mode);
+      await assertBoundaryRefusedBeforeSpawn(fixture, workspace, `${mode}-${id}-bash-cmds`, unsafe, [target]);
+      assert.match(inspectBashResourceLifecycle({ command: unsafe }) ?? "", /SHELL_UNINSPECTABLE/);
+      assert.equal(inspectHighRiskBashMutation({ command: unsafe }, workspace)?.unverifiableScope, true);
+      assert.equal(inspectBashPermissionScope({ command: unsafe }, workspace)?.unverifiableScope, true);
+    }
   } finally {
     await fixture?.close();
     rmSync(workspace, { recursive: true });
@@ -1215,7 +1261,7 @@ test("temporary CDPATH prefixes and closed-subshell hash stay explicit inspectio
 });
 
 test("persistent lookup assignments are stateful while ordinary assignment text remains data", () => {
-  for (const name of ["PATH", "EXECIGNORE", "BASH_ENV", "ENV", "SHELLOPTS", "BASHOPTS", "PS4"]) {
+  for (const name of ["PATH", "EXECIGNORE", "BASH_CMDS", "BASH_ENV", "ENV", "SHELLOPTS", "BASHOPTS", "PS4"]) {
     const command = `${name}=value; cat`;
     assert.match(inspectBashResourceLifecycle({ command }) ?? "", /SHELL_UNINSPECTABLE/, command);
     assert.equal(inspectHighRiskBashMutation({ command }, cwd)?.unverifiableScope, true, command);
@@ -1410,6 +1456,8 @@ test("reviewed cwd state changes never approve a different protected target", as
       ["shadowed-trap-query-parens", "trap() { builtin cd ..; }; trap -p DEBUG; printf data >.git/config", join(workspace, ".git", "config"), join(nested, ".git", "config")],
       ["alias-shadowed-trap-query", "shopt -s expand_aliases\nalias trap='builtin cd ..; :'\ntrap -p DEBUG; printf data >.git/config", join(workspace, ".git", "config"), join(nested, ".git", "config")],
       ["exported-cdpath-nested-bash", `export CDPATH=../..; bash -c 'cd ${basename(workspace)} && printf data >.git/config'`, join(workspace, ".git", "config"), join(nested, basename(workspace), ".git", "config")],
+      ["exported-cdpath-env-bash", `export CDPATH=../..; env bash -c 'cd ${basename(workspace)} && printf data >.git/config'`, join(workspace, ".git", "config"), join(nested, basename(workspace), ".git", "config")],
+      ["exported-cdpath-timeout-bash", `export CDPATH=../..; timeout 3 bash -c 'cd ${basename(workspace)} && printf data >.git/config'`, join(workspace, ".git", "config"), join(nested, basename(workspace), ".git", "config")],
       ["subshell-exported-cdpath-bash", `(export CDPATH=../..; bash -c 'cd ${basename(workspace)} && printf data >.git/config')`, join(workspace, ".git", "config"), join(nested, basename(workspace), ".git", "config")],
       ["lastpipe-cdpath-nested-bash", `set +m; shopt -s lastpipe; true | export CDPATH=../..; bash -c 'cd ${basename(workspace)} && printf data >.git/config'`, join(workspace, ".git", "config"), join(nested, basename(workspace), ".git", "config")],
       ["exported-cdpath-command-bash", `export CDPATH=../..; command bash -c 'cd ${basename(workspace)} && printf data >.git/config'`, join(workspace, ".git", "config"), join(nested, basename(workspace), ".git", "config")],
