@@ -1057,7 +1057,8 @@ test("bounded Bash wrapper and reserved prefixes still execute literal harmless 
     for (const [id, command, expected] of [
       ["bash-c-separator", "bash -c -- 'printf wrapper-ok'", "wrapper-ok"],
       ["timed-bash-wrapper", "time -p -- bash -c 'printf timed-wrapper-ok'", "timed-wrapper-ok"],
-      ["negated-eval", "! eval 'false' && printf eval-ok", "eval-ok"],
+      ["literal-eval", "eval 'printf eval-ok'", "eval-ok"],
+      ["debug-trap-query", "trap -p DEBUG; printf trap-query-ok", "trap-query-ok"],
       ["builtin-double-dash-eval", "builtin -- eval 'printf builtin-ok'", "builtin-ok"],
       ["quoted-arithmetic-data", "printf '%s' '(( PATH=0 ))'", "(( PATH=0 ))"],
       ["unrelated-export", "export CANDIDATE=..; cd . && printf unrelated-ok", "unrelated-ok"],
@@ -1273,8 +1274,10 @@ test("reviewed cwd state changes never approve a different protected target", as
   const nested = join(workspace, "nested");
   mkdirSync(nested);
   mkdirSync(join(workspace, ".git"));
+  mkdirSync(join(workspace, "sub", ".git"), { recursive: true });
   mkdirSync(join(nested, ".git"));
   mkdirSync(join(nested, "sub"));
+  mkdirSync(join(nested, "sub", ".git"));
   writeFileSync(join(nested, "override.sh"), "cd() { builtin cd ..; }\n");
   let fixture: Awaited<ReturnType<typeof guardedCwdBoundaryFixture>> | undefined;
   try {
@@ -1285,8 +1288,12 @@ test("reviewed cwd state changes never approve a different protected target", as
       ["builtin-cd", "builtin cd .. && printf data >.git/config", join(workspace, ".git", "config"), join(nested, ".git", "config")],
       ["command-p-cd", "command -p cd .. && printf data >.git/config", join(workspace, ".git", "config"), join(nested, ".git", "config")],
       ["conditional-cd", "if cd ..; then :; fi; printf data >.git/config", join(workspace, ".git", "config"), join(nested, ".git", "config")],
+      ["nested-conditional-cd", "if true; then if cd ..; then :; fi; fi; printf data >.git/config", join(workspace, ".git", "config"), join(nested, ".git", "config")],
       ["eval-redefines-cd", "eval 'cd() { builtin cd ..; }'; cd sub && printf data >.git/config", join(workspace, ".git", "config"), join(nested, "sub", ".git", "config")],
+      ["eval-shadowed-true", "function true { builtin cd ..; }; eval true && printf data >.git/config", join(workspace, ".git", "config"), join(nested, ".git", "config")],
       ["source-redefines-cd", "source ./override.sh; cd sub && printf data >.git/config", join(workspace, ".git", "config"), join(nested, "sub", ".git", "config")],
+      ["debug-trap-cd", "trap 'builtin cd ..; trap - DEBUG' DEBUG; cd sub && printf data >.git/config", join(workspace, "sub", ".git", "config"), join(nested, "sub", ".git", "config")],
+      ["err-trap-cd", "trap 'builtin cd ..' ERR; false; printf data >.git/config", join(workspace, ".git", "config"), join(nested, ".git", "config")],
     ] as const) await t.test(id, async () => {
       try {
         execFileSync(shellPath, ["-c", command], { cwd: nested, encoding: "utf8", env: { ...process.env, CDPATH: "" } });

@@ -868,8 +868,14 @@ export function hasUninspectableBashState(command: string): boolean {
 		if (index < 0) continue;
 		// A launcher such as `env` or `sudo` runs an external program, never a shell builtin.
 		const launched = index > 0;
-		if (index === 0 && !tokens.firstWordQuoted && (tokens[index] === "do" || tokens[index] === "{" || tokens[index] === "then" || tokens[index] === "else"
-			|| tokens[index] === "if" || tokens[index] === "elif" || tokens[index] === "while" || tokens[index] === "until")) index++;
+		if (index === 0) while (tokens[index] === "do" || tokens[index] === "{" || tokens[index] === "then" || tokens[index] === "else"
+			|| tokens[index] === "if" || tokens[index] === "elif" || tokens[index] === "while" || tokens[index] === "until") {
+			// Quote provenance exists for only three words. Beyond that bound a
+			// control-looking word may be data, so do not infer the later cwd.
+			if (index > 2) return true;
+			if (index === 0 ? tokens.firstWordQuoted : index === 1 ? tokens.secondWordQuoted : tokens.thirdWordQuoted) break;
+			index++;
+		}
 		index = skipBashReservedPrefixes(tokens, index);
 		if (index < 0) return true;
 		let builtinPrefixes = 0;
@@ -917,11 +923,21 @@ export function hasUninspectableBashState(command: string): boolean {
 		// bare `hash` only lists entries and does not change the table.
 		if (name === "hash" && skipRedirections(tokens, index + 1) < tokens.length && segmentIndex + 1 < segments.length) return true;
 		if (changesBashCdSemantics(tokens, index, name)) { cdSemanticsChanged = true; continue; }
+		// A non-exit trap can run before a later command and move the parent
+		// shell's cwd before a target is opened. EXIT traps run after that command.
+		if (name === "trap" && segmentIndex + 1 < segments.length && !tokens.subshellDepth && !tokens.pipelineMember) {
+			let actionIndex = skipRedirections(tokens, index + 1);
+			if (tokens[actionIndex] === "--") actionIndex = skipRedirections(tokens, actionIndex + 1);
+			const action = tokens[actionIndex];
+			if (action !== undefined && action !== "-p" && action !== "-l" && action !== "-") {
+				for (let event = skipRedirections(tokens, actionIndex + 1); event < tokens.length; event = skipRedirections(tokens, event + 1)) {
+					if (tokens.expansions?.[event] || (tokens[event] !== "EXIT" && tokens[event] !== "0")) return true;
+				}
+			}
+		}
 		// A sourced file or evaluated source runs in this shell. Without bounded
 		// state propagation, a later command could use a different cwd or lookup.
-		if ((name === "source" || name === "." || name === "eval") && segmentIndex + 1 < segments.length
-			&& !(name === "eval" && index + 2 === tokens.length && !tokens.expansions?.[index + 1]
-				&& (tokens[index + 1] === "false" || tokens[index + 1] === "true" || tokens[index + 1] === ":"))) return true;
+		if ((name === "source" || name === "." || name === "eval") && segmentIndex + 1 < segments.length) return true;
 		if (name === "function" ? tokens[index + 1] === "exit" : name === "exit" && tokens.separatorAfter === "(") exitRedefined = true;
 		if (name === "cd") {
 			// Redirections may surround the operand; Bash rejects a second operand
