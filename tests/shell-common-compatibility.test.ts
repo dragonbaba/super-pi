@@ -1096,6 +1096,13 @@ test("Bash stateful commands cannot hide a changed executable lookup", async (t)
   try {
     for (const [id, command] of [
       ["standalone", "(( PATH=0 )); cat"],
+      ["assignment-only-path", "PATH=0; cat"],
+      ["temporary-path-command", "PATH=0 cat"],
+      ["export-path", "export PATH=0; cat"],
+      ["export-cdpath-before-path", "export CDPATH=.. PATH=0; cat"],
+      ["declare-path", "declare PATH=0; cat"],
+      ["readonly-path", "readonly PATH=0; cat"],
+      ["prefixed-export-path", "PATH=0 export PATH; cat"],
       ["loop-body", "for candidate in one; do (( PATH=0 )); done; cat"],
       ["hash-override", "hash -p ./0/cat cat; cat"],
       ["builtin-hash-override", "builtin hash -p ./0/cat cat; cat"],
@@ -1118,6 +1125,61 @@ test("Bash stateful commands cannot hide a changed executable lookup", async (t)
     await fixture?.close();
     rmSync(workspace, { recursive: true });
   }
+});
+
+test("temporary CDPATH prefixes and closed-subshell hash stay explicit inspection limits", async (t) => {
+  const shellPath = findTestBash();
+  if (!shellPath || !existsSync(shellPath)) {
+    if (process.env.CI) assert.fail("Required Bash integration test could not find Git Bash or /bin/bash");
+    t.skip("Bash unavailable");
+    return;
+  }
+  const parent = mkdtempSync(join(tmpdir(), "sp-shell-temporary-state-"));
+  const workspace = join(parent, "workspace");
+  mkdirSync(join(parent, "sub"));
+  mkdirSync(join(workspace, "sub"), { recursive: true });
+  mkdirSync(join(workspace, ".git"));
+  mkdirSync(join(workspace, "0"));
+  writeFileSync(join(parent, "sub", "fixture.txt"), "outer");
+  writeFileSync(join(workspace, "sub", "fixture.txt"), "inner");
+  writeFileSync(join(workspace, "fixture.txt"), "parent-safe");
+  writeFileSync(join(workspace, "0", "cat"), "#!/bin/sh\nprintf payload >.git/config\n");
+  chmodSync(join(workspace, "0", "cat"), 0o755);
+  const target = join(workspace, ".git", "config");
+  const originalCdpath = process.env.CDPATH;
+  let fixture: Awaited<ReturnType<typeof guardedCwdBoundaryFixture>> | undefined;
+  process.env.CDPATH = "";
+  try {
+    fixture = await guardedCwdBoundaryFixture(workspace, shellPath);
+    await fixture.setMode("read-only");
+    for (const [id, command, expected] of [
+      ["temporary-declare", "CDPATH=.. declare -p CDPATH >/dev/null; cd sub && cat fixture.txt", "inner"],
+      ["temporary-typeset", "CDPATH=.. typeset -p CDPATH >/dev/null; cd sub && cat fixture.txt", "inner"],
+      ["temporary-export-n", "CDPATH=.. export -n CDPATH; cd sub && cat fixture.txt", "inner"],
+      ["closed-hash", "(hash -p ./0/cat cat); cat fixture.txt", "parent-safe"],
+    ] as const) {
+      assert.match(execFileSync(shellPath, ["-c", command], { cwd: workspace, encoding: "utf8", env: { ...process.env, CDPATH: "" } }), new RegExp(expected), id);
+      assert.equal(existsSync(target), false, `${id}: direct Bash leaves the protected target untouched`);
+      await assertBoundaryRefusedBeforeSpawn(fixture, workspace, id, command, [target]);
+      assert.equal(existsSync(target), false, `${id}: guarded Bash leaves the protected target untouched`);
+    }
+  } finally {
+    await fixture?.close();
+    if (originalCdpath === undefined) delete process.env.CDPATH;
+    else process.env.CDPATH = originalCdpath;
+    rmSync(parent, { recursive: true });
+  }
+});
+
+test("persistent lookup assignments are stateful while ordinary assignment text remains data", () => {
+  for (const name of ["PATH", "EXECIGNORE", "BASH_ENV", "ENV", "SHELLOPTS", "BASHOPTS", "PS4"]) {
+    const command = `${name}=value; cat`;
+    assert.match(inspectBashResourceLifecycle({ command }) ?? "", /SHELL_UNINSPECTABLE/, command);
+    assert.equal(inspectHighRiskBashMutation({ command }, cwd)?.unverifiableScope, true, command);
+    assert.equal(inspectBashPermissionScope({ command }, cwd)?.unverifiableScope, true, command);
+  }
+  assert.equal(inspectBashResourceLifecycle({ command: "CANDIDATE=value; printf ok" }), undefined);
+  assert.equal(inspectBashResourceLifecycle({ command: "printf '%s' 'PATH=value; cat'" }), undefined);
 });
 
 test("PowerShell high-risk scan preserves the inner Bash boundary", () => {
@@ -1288,11 +1350,18 @@ test("reviewed cwd state changes never approve a different protected target", as
       ["builtin-cd", "builtin cd .. && printf data >.git/config", join(workspace, ".git", "config"), join(nested, ".git", "config")],
       ["command-p-cd", "command -p cd .. && printf data >.git/config", join(workspace, ".git", "config"), join(nested, ".git", "config")],
       ["conditional-cd", "if cd ..; then :; fi; printf data >.git/config", join(workspace, ".git", "config"), join(nested, ".git", "config")],
+      ["negated-conditional-cd", "! if cd ..; then false; fi; printf data >.git/config", join(workspace, ".git", "config"), join(nested, ".git", "config")],
+      ["timed-conditional-cd", "time if cd ..; then :; fi; printf data >.git/config", join(workspace, ".git", "config"), join(nested, ".git", "config")],
+      ["negated-timed-conditional-cd", "! time if cd ..; then false; fi; printf data >.git/config", join(workspace, ".git", "config"), join(nested, ".git", "config")],
       ["nested-conditional-cd", "if true; then if cd ..; then :; fi; fi; printf data >.git/config", join(workspace, ".git", "config"), join(nested, ".git", "config")],
       ["eval-redefines-cd", "eval 'cd() { builtin cd ..; }'; cd sub && printf data >.git/config", join(workspace, ".git", "config"), join(nested, "sub", ".git", "config")],
       ["eval-shadowed-true", "function true { builtin cd ..; }; eval true && printf data >.git/config", join(workspace, ".git", "config"), join(nested, ".git", "config")],
+      ["final-eval-shadowed-true", "function true { builtin cd ..; }; eval 'true; printf data >.git/config'", join(workspace, ".git", "config"), join(nested, ".git", "config")],
+      ["final-eval-shadowed-true-parens", "true() { builtin cd ..; }; eval 'true; printf data >.git/config'", join(workspace, ".git", "config"), join(nested, ".git", "config")],
       ["source-redefines-cd", "source ./override.sh; cd sub && printf data >.git/config", join(workspace, ".git", "config"), join(nested, "sub", ".git", "config")],
       ["debug-trap-cd", "trap 'builtin cd ..; trap - DEBUG' DEBUG; cd sub && printf data >.git/config", join(workspace, "sub", ".git", "config"), join(nested, "sub", ".git", "config")],
+      ["shadowed-trap-query", "function trap { builtin cd ..; }; trap -p DEBUG; printf data >.git/config", join(workspace, ".git", "config"), join(nested, ".git", "config")],
+      ["shadowed-trap-query-parens", "trap() { builtin cd ..; }; trap -p DEBUG; printf data >.git/config", join(workspace, ".git", "config"), join(nested, ".git", "config")],
       ["err-trap-cd", "trap 'builtin cd ..' ERR; false; printf data >.git/config", join(workspace, ".git", "config"), join(nested, ".git", "config")],
     ] as const) await t.test(id, async () => {
       try {
@@ -1604,6 +1673,7 @@ test("assignment-prefixed cd cannot authorize a different protected cwd", async 
       ["standalone-cdpath", "CDPATH=../..; cd workspace && printf marker >.git/config"],
       ["export-cdpath", "export CDPATH=../..; cd workspace && printf marker >.git/config"],
       ["prefixed-export-cdpath", "CDPATH=../.. export CDPATH; cd workspace && printf marker >.git/config"],
+      ["prefixed-export-p-cdpath", "CDPATH=../.. export -p CDPATH >/dev/null; cd workspace && printf marker >.git/config"],
       ["prefixed-readonly-cdpath", "CDPATH=../.. readonly CDPATH; cd workspace && printf marker >.git/config"],
       ["declare-cdpath", "declare CDPATH=../..; cd workspace && printf marker >.git/config"],
       ["typeset-cdpath", "typeset CDPATH=../..; cd workspace && printf marker >.git/config"],

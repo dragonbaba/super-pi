@@ -27,7 +27,7 @@ import {
 } from "./regex.ts";
 import { extractCommandSubstitutions, inspectHereDocuments, prepareShellAnalysis } from "./shell-substitution.ts";
 import { parseTimeoutInvocation } from "./timeout-wrapper.ts";
-import { bashArithmeticForHeader, bashLoopVariableIndex, bashPipelinePrefixEnd, bashScriptOperandIndex, unsafeBashForHeaderReason, hasStatefulBashPrintf, shellExpansionRisk, hasUnsafeBashTestOperand, hasUnsafeBashLoopListOperand, hasUnsafeCommandQueryOperand, isBashArithmeticCommandHead, isBashDoubleBracketCloseBoundary, isBashNetworkRedirectionTarget, isBashDoubleBracketHead, isBashProcessSubstitutionStart, isBashTestWhitespace, isShellDynamicDescriptor, isShellFileDescriptor, isShellOutputFileRedirection, isSimpleBashAnsiCQuote, isStaticDescriptorCopy, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
+import { bashArithmeticForHeader, bashLoopVariableIndex, bashPipelinePrefixEnd, bashScriptOperandIndex, unsafeBashForHeaderReason, hasStatefulBashPrintf, shellExpansionRisk, hasUnsafeBashTestOperand, hasUnsafeBashLoopListOperand, hasUnsafeCommandQueryOperand, isBashArithmeticCommandHead, isBashDoubleBracketCloseBoundary, isBashNetworkRedirectionTarget, isBashDoubleBracketHead, isBashProcessSubstitutionStart, isBashTestWhitespace, isLookupSensitiveBashVariable, isShellDynamicDescriptor, isShellFileDescriptor, isShellOutputFileRedirection, isSimpleBashAnsiCQuote, isStaticDescriptorCopy, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
 import { FD_DUPLICATION_PATTERN } from "./regex.ts";
 import { diagnosticForPrimitives, policyMetadata, renderPolicyDiagnostic, type PolicyDiagnosticMetadata } from "./policy-diagnostics.ts";
 
@@ -121,7 +121,7 @@ function inspectLifecycleScript(source: string, depth: number, nativePowerShellA
  if (substitutions.unterminated || substitutions.unsupported) return lifecycleRefusal("SHELL_SUBSTITUTION", substitutions.unterminated ? "unterminated command substitution" : "uncertain/uninspectable command substitution grammar", "simplify the substitution into inspectable foreground commands");
  for (const script of here?.substitutions ?? EMPTY_SUBSTITUTIONS) { const result = inspectLifecycleScript(script, depth + 1, nativePowerShellAvailable); if (result) return result; }
  for (const script of substitutions.scripts) { const result = inspectLifecycleScript(script, depth + 1, nativePowerShellAvailable); if (result) return result; }
- if (hasUninspectableBashState(command)) return lifecycleRefusal("SHELL_UNINSPECTABLE", "working directory, command lookup, evaluator state, or reserved-prefix syntax cannot be established (conditional, grouped or indirect cd, source/eval, hash, or an ambiguous prefix)", "submit an inspectable foreground command; when cwd changes, keep a supported bare cd and its dependent operation in one Bash call (for example, cd sub && ls); each new call receives fresh checks");
+ if (hasUninspectableBashState(command)) return lifecycleRefusal("SHELL_UNINSPECTABLE", "working directory, command lookup, evaluator state, or reserved-prefix syntax cannot be established (conditional, grouped or indirect cd, source/eval, traps, hash, lookup-sensitive assignments, or an ambiguous prefix)", "submit an inspectable foreground command; when cwd changes, keep a supported bare cd and its dependent operation in one Bash call (for example, cd sub && ls); each new call receives fresh checks");
  if (DETACH_UTILITY_PATTERN.test(command)) return BLOCK_REASON;
  if ((WINDOWS_DETACH_PATTERN.test(command) || WINDOWS_START_BACKGROUND_PATTERN.test(command)) && !WINDOWS_WAIT_PATTERN.test(command)) return BLOCK_REASON;
  if (DOCKER_DETACHED_PATTERN.test(command) || SERVICE_START_PATTERN.test(command)) return BLOCK_REASON;
@@ -843,6 +843,19 @@ function hasLaterBashCommandSubstitution(segments: readonly ShellSegment[], star
 	return false;
 }
 
+function hasLaterBashCommandInShell(segments: readonly ShellSegment[], index: number): boolean {
+	const next = segments[index + 1];
+	return next !== undefined && (next.subshellDepth ?? 0) >= (segments[index]!.subshellDepth ?? 0);
+}
+
+function changesBashExecutableLookup(word: string): boolean {
+	const equals = word.indexOf("=");
+	if (equals < 1) return false;
+	const end = word.charCodeAt(equals - 1) === 43 ? equals - 1 : equals;
+	const name = word.slice(0, end);
+	return name !== "CDPATH" && isLookupSensitiveBashVariable(name);
+}
+
 /** Reject bounded command lists whose later cwd or executable lookup cannot be established. */
 export function hasUninspectableBashState(command: string): boolean {
 	const segments = parseShellSegments(command);
@@ -868,25 +881,33 @@ export function hasUninspectableBashState(command: string): boolean {
 		if (index < 0) continue;
 		// A launcher such as `env` or `sudo` runs an external program, never a shell builtin.
 		const launched = index > 0;
-		if (index === 0) while (tokens[index] === "do" || tokens[index] === "{" || tokens[index] === "then" || tokens[index] === "else"
-			|| tokens[index] === "if" || tokens[index] === "elif" || tokens[index] === "while" || tokens[index] === "until") {
-			// Quote provenance exists for only three words. Beyond that bound a
-			// control-looking word may be data, so do not infer the later cwd.
-			if (index > 2) return true;
-			if (index === 0 ? tokens.firstWordQuoted : index === 1 ? tokens.secondWordQuoted : tokens.thirdWordQuoted) break;
-			index++;
-		}
-		index = skipBashReservedPrefixes(tokens, index);
+		if (index === 0) {
+			let controlPrefixes = 0;
+			while (index < tokens.length) {
+				index = skipBashReservedPrefixes(tokens, index);
+				if (index < 0) return true;
+				if (tokens[index] !== "do" && tokens[index] !== "{" && tokens[index] !== "then" && tokens[index] !== "else"
+					&& tokens[index] !== "if" && tokens[index] !== "elif" && tokens[index] !== "while" && tokens[index] !== "until") break;
+				// Prefixes and control words can alternate (`! if cd ...`). Beyond
+				// the retained quote provenance, do not guess whether a word is syntax.
+				if (index > 2 || ++controlPrefixes > MAX_WRAPPER_DEPTH) return true;
+				if (index === 0 ? tokens.firstWordQuoted : index === 1 ? tokens.secondWordQuoted : tokens.thirdWordQuoted) break;
+				index++;
+			}
+		} else index = skipBashReservedPrefixes(tokens, index);
 		if (index < 0) return true;
 		let builtinPrefixes = 0;
 		let leadingAssignment = false;
 		let cdpathAssignment = false;
+		let lookupAssignment = false;
 		while (index < tokens.length) {
 			const after = afterLeadingRedirection(tokens, index);
 			if (after !== index) { index = after; continue; }
 			if (LEADING_ASSIGNMENT_PATTERN.test(tokens[index]!)) {
 				leadingAssignment = true;
 				if (tokens[index]!.startsWith("CDPATH=") || tokens[index]!.startsWith("CDPATH+=")) cdpathAssignment = true;
+				if (!(index === 0 ? tokens.firstWordQuoted : index === 1 ? tokens.secondWordQuoted : index === 2 && tokens.thirdWordQuoted)
+					&& changesBashExecutableLookup(tokens[index]!)) lookupAssignment = true;
 				index++; continue;
 			}
 			// `command command cd`, `command -p cd` and `builtin -- cd` still dispatch to cd.
@@ -902,10 +923,19 @@ export function hasUninspectableBashState(command: string): boolean {
 		// assignment before an executable is not evidence of the later shell cwd.
 		if (index >= tokens.length) {
 			if (cdpathAssignment && !tokens.subshellDepth && !tokens.pipelineMember) cdSemanticsChanged = true;
+			if (lookupAssignment && hasLaterBashCommandInShell(segments, segmentIndex)) return true;
 			continue;
 		}
 		// Builtins are exact bare words: `./cd`, `/opt/cd` and `CD` are external executables.
 		const name = launched ? "" : tokens[index] ?? "";
+		// Functions can shadow apparently harmless builtins and run in the
+		// calling shell. A later command (including a final eval) may call one.
+		if ((name === "function" && !tokens.firstWordQuoted
+			|| tokens.separatorAfter === "(" && index + 1 === tokens.length && !tokens.firstWordQuoted && !tokens.dynamic)
+			&& hasLaterBashCommandInShell(segments, segmentIndex)) return true;
+		// A temporary lookup assignment also affects the executable selected by
+		// this very command; do not authorize it using the inherited PATH.
+		if (lookupAssignment) return true;
 		if (cdpathAssignment && !tokens.subshellDepth && !tokens.pipelineMember
 			&& (name === "export" || name === "readonly" || name === "declare" || name === "typeset")) cdSemanticsChanged = true;
 		// These builtins persist an assignment in the parent shell even though the
@@ -914,7 +944,8 @@ export function hasUninspectableBashState(command: string): boolean {
 			for (let operand = index + 1; operand < tokens.length; operand++) {
 				const after = afterLeadingRedirection(tokens, operand);
 				if (after !== operand) { operand = after - 1; continue; }
-				if (tokens[operand]!.startsWith("CDPATH=") || tokens[operand]!.startsWith("CDPATH+=")) { cdSemanticsChanged = true; break; }
+				if (tokens[operand]!.startsWith("CDPATH=") || tokens[operand]!.startsWith("CDPATH+=")) cdSemanticsChanged = true;
+				if (changesBashExecutableLookup(tokens[operand]!) && hasLaterBashCommandInShell(segments, segmentIndex)) return true;
 			}
 		}
 		// The scans track only a direct literal `cd`; directory stacks are not followed.
