@@ -405,15 +405,7 @@ function inspectShellScript(script: string, initialCwd: string, depth: number, b
 		if (tokens.length === 0) continue;
 		if (tokens.bashTestProcessSubstitution) { addPrimitive(builder, "unverifiable_process_substitution"); markUnverifiable(builder); continue; }
 		if (hasUnsafeBashTestOperand(tokens)) { addPrimitive(builder, "unverifiable_bash_test_operand"); markUnverifiable(builder); }
-		const expansionRisk = shellExpansionRisk(tokens);
-		if (expansionRisk !== 0) {
-			addPrimitive(builder, "stateful_shell_expansion");
-			// A lone bare echo with no redirection has no later cwd/lookup or file
-			// target to misattribute. Keep uncertain recursive evaluation high-risk
-			// and opaque for approval; every other state-dependent shape fails closed.
-			if (expansionRisk === 2 || segments.length !== 1 || tokens[0] !== "echo" || tokens.firstWordQuoted
-				|| tokens.redirections || tokens.subshellDepth || tokens.pipelineMember || tokens.conditionalMember) markUnverifiable(builder);
-		}
+		if (shellExpansionRisk(tokens) !== 0) { addPrimitive(builder, "stateful_shell_expansion"); markUnverifiable(builder); }
 		inspectOutputRedirections(tokens, workingDirectory, builder);
 		const commandIndex = commandTokenIndex(tokens);
 		if (commandIndex < 0 || commandIndex >= tokens.length) continue;
