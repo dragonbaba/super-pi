@@ -10,6 +10,7 @@ import {
 	NODE_RECURSIVE_RM_PATTERN,
 	NODE_UNLINK_PATTERN,
 	NONNEGATIVE_INTEGER_PATTERN,
+	SIMPLE_BASH_LET_ASSIGNMENT_PATTERN,
 	OPAQUE_JOB_INTERPRETER_PATTERN,
 	OPAQUE_JOB_LAUNCHER_PATTERN,
 	OWNED_FOREGROUND_JOB_PATTERN,
@@ -856,16 +857,76 @@ function changesBashExecutableLookup(word: string): boolean {
 	return name !== "CDPATH" && isLookupSensitiveBashVariable(name);
 }
 
+function isUncertainBashReadDestination(word: string, expansion: number): boolean {
+	if (expansion || hasDynamicSyntax(word)) return true;
+	const subscript = word.indexOf("[");
+	return isLookupSensitiveBashVariable(subscript < 0 ? word : word.slice(0, subscript));
+}
+
+/** Only bounded literal read/mapfile option operands can be skipped as data. */
+function hasUninspectableBashReadDestination(tokens: ShellSegment, index: number, name: string): boolean {
+	let options = true;
+	for (let operand = index + 1; operand < tokens.length; operand++) {
+		const after = afterLeadingRedirection(tokens, operand);
+		if (after !== operand) { operand = after - 1; continue; }
+		const word = tokens[operand]!;
+		if (options && word === "--") { options = false; continue; }
+		if (options && word.startsWith("-") && word.length > 1) {
+			for (let option = 1; option < word.length; option++) {
+				const flag = word[option]!;
+				// Array origin is arithmetic, and a callback is executable source.
+				if (name !== "read" && (flag === "O" || flag === "C")) return true;
+				const arrayName = name === "read" && flag === "a";
+				const value = arrayName || (name === "read" ? "dinNptu" : "dnscu").includes(flag);
+				if (!value) {
+					if (name === "read" ? flag !== "e" && flag !== "r" && flag !== "s" : flag !== "t") return true;
+					continue;
+				}
+				const attached = word.slice(option + 1);
+				const valueIndex = attached ? operand : skipRedirections(tokens, operand + 1);
+				const argument = attached || tokens[valueIndex];
+				if (!argument || arrayName && isUncertainBashReadDestination(argument, tokens.expansions?.[valueIndex] ?? 0)) return true;
+				if ((name === "read" ? "nNtu" : "nscu").includes(flag) && !NONNEGATIVE_INTEGER_PATTERN.test(argument)) return true;
+				if (!attached) operand = valueIndex;
+				break;
+			}
+			continue;
+		}
+		options = false;
+		if (isUncertainBashReadDestination(word, tokens.expansions?.[operand] ?? 0)) return true;
+	}
+	return false;
+}
+
+function hasUninspectableBashLet(tokens: ShellSegment, index: number): boolean {
+	for (let operand = index + 1; operand < tokens.length; operand++) {
+		const after = afterLeadingRedirection(tokens, operand);
+		if (after !== operand) { operand = after - 1; continue; }
+		const simple = SIMPLE_BASH_LET_ASSIGNMENT_PATTERN.exec(tokens[operand]!);
+		if (!simple || tokens.expansions?.[operand] || isLookupSensitiveBashVariable(simple[1])) return true;
+	}
+	return false;
+}
+
 /** Reject bounded command lists whose later cwd or executable lookup cannot be established. */
 export function hasUninspectableBashState(command: string): boolean {
 	const segments = parseShellSegments(command);
 	let loopDepth = 0;
 	let conditionalDepth = 0;
 	let braceDepth = 0;
-	let cdSemanticsChanged = false;
+	// A child's lookup state is inherited from its ancestors but discarded
+	// when a closed subshell returns to its parent.
+	const cdSemanticsChanges: boolean[] = [];
 	let exitRedefined = false;
 	for (let segmentIndex = 0; segmentIndex < segments.length; segmentIndex++) {
 		const tokens = segments[segmentIndex]!;
+		const depth = tokens.subshellDepth ?? 0;
+		cdSemanticsChanges.length = depth + 1;
+		let cdSemanticsChanged = false;
+		for (let ancestor = 0; ancestor <= depth; ancestor++) if (cdSemanticsChanges[ancestor]) cdSemanticsChanged = true;
+		// An inherited or prior CDPATH change reaches a nested evaluator, and
+		// command substitutions can observe the same changed shell state.
+		if (cdSemanticsChanged && tokens.expansions) for (const flags of tokens.expansions) if ((flags & 4) !== 0) return true;
 		const controlIndex = skipBashReservedPrefixes(tokens, 0);
 		if (controlIndex < 0) return true;
 		const first = tokens[controlIndex];
@@ -919,10 +980,13 @@ export function hasUninspectableBashState(command: string): boolean {
 			}
 			break;
 		}
-		// An assignment-only simple command persists in the parent shell; a prefix
+		// Bash lastpipe may run the final pipeline member in the current shell.
+		// Earlier members still cannot persist their assignments there.
+		const mayPersist = !tokens.pipelineMember || tokens.separatorAfter !== "|";
+		// An assignment-only simple command persists in its current shell; a prefix
 		// assignment before an executable is not evidence of the later shell cwd.
 		if (index >= tokens.length) {
-			if (cdpathAssignment && !tokens.subshellDepth && !tokens.pipelineMember) cdSemanticsChanged = true;
+			if (cdpathAssignment && mayPersist) cdSemanticsChanges[depth] = true;
 			if (lookupAssignment && hasLaterBashCommandInShell(segments, segmentIndex)) return true;
 			continue;
 		}
@@ -943,24 +1007,37 @@ export function hasUninspectableBashState(command: string): boolean {
 				if (name === "unalias" || tokens[operand]!.includes("=") || tokens.expansions?.[operand]) return true;
 			}
 		}
-		if (cdpathAssignment && !tokens.subshellDepth && !tokens.pipelineMember
-			&& (name === "export" || name === "readonly" || name === "declare" || name === "typeset")) cdSemanticsChanged = true;
-		// These builtins persist an assignment in the parent shell even though the
+		if (cdpathAssignment && mayPersist
+			&& (name === "export" || name === "readonly" || name === "declare" || name === "typeset")) cdSemanticsChanges[depth] = cdSemanticsChanged = true;
+		// These builtins persist an assignment in their current shell even though the
 		// assignment word follows the command name rather than preceding it.
-		if (!tokens.subshellDepth && !tokens.pipelineMember && (name === "export" || name === "declare" || name === "typeset" || name === "readonly")) {
+		if (mayPersist && (name === "export" || name === "declare" || name === "typeset" || name === "readonly")) {
 			for (let operand = index + 1; operand < tokens.length; operand++) {
 				const after = afterLeadingRedirection(tokens, operand);
 				if (after !== operand) { operand = after - 1; continue; }
-				if (tokens[operand]!.startsWith("CDPATH=") || tokens[operand]!.startsWith("CDPATH+=")) cdSemanticsChanged = true;
+				if (tokens[operand]!.startsWith("CDPATH=") || tokens[operand]!.startsWith("CDPATH+=")) cdSemanticsChanges[depth] = cdSemanticsChanged = true;
 				if (changesBashExecutableLookup(tokens[operand]!) && hasLaterBashCommandInShell(segments, segmentIndex)) return true;
 			}
 		}
+		if (cdSemanticsChanged && (SCRIPT_WRAPPERS.has(commandName(name)) || name === "eval" || name === "source" || name === "." || name === "exec")) return true;
+		if ((name === "declare" || name === "typeset" || name === "local")
+			&& hasLaterBashCommandInShell(segments, segmentIndex)) {
+			for (let operand = index + 1; operand < tokens.length; operand++) {
+				const word = tokens[operand]!;
+				if ((word.startsWith("-") || word.startsWith("+")) && word.charCodeAt(1) !== 45 && word.includes("n")) return true;
+			}
+		}
+		if (name === "let" && hasLaterBashCommandInShell(segments, segmentIndex)
+			&& hasUninspectableBashLet(tokens, index)) return true;
+		if ((name === "read" || name === "readarray" || name === "mapfile")
+			&& hasLaterBashCommandInShell(segments, segmentIndex)
+			&& hasUninspectableBashReadDestination(tokens, index, name)) return true;
 		// The scans track only a direct literal `cd`; directory stacks are not followed.
 		if (name === "pushd" || name === "popd") return true;
 		// hash with operands can pin or clear a lookup for a later command. A
 		// bare `hash` only lists entries and does not change the table.
 		if (name === "hash" && skipRedirections(tokens, index + 1) < tokens.length && segmentIndex + 1 < segments.length) return true;
-		if (changesBashCdSemantics(tokens, index, name)) { cdSemanticsChanged = true; continue; }
+		if (changesBashCdSemantics(tokens, index, name)) { cdSemanticsChanges[depth] = true; continue; }
 		// Trap actions are executable source, including EXIT actions at shutdown.
 		// A pipeline's last member can also persist a trap under `lastpipe`.
 		if (name === "trap") {

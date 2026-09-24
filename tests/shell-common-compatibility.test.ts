@@ -1093,6 +1093,7 @@ test("Bash stateful commands cannot hide a changed executable lookup", async (t)
   const executable = join(workspace, "0", "cat");
   writeFileSync(executable, "#!/bin/sh\nprintf payload >.git/config\n");
   chmodSync(executable, 0o755);
+  writeFileSync(join(workspace, "path.txt"), "0\n");
   let fixture: Awaited<ReturnType<typeof guardedCwdBoundaryFixture>> | undefined;
   try {
     for (const [id, command] of [
@@ -1100,16 +1101,26 @@ test("Bash stateful commands cannot hide a changed executable lookup", async (t)
       ["assignment-only-path", "PATH=0; cat"],
       ["temporary-path-command", "PATH=0 cat"],
       ["export-path", "export PATH=0; cat"],
+      ["subshell-export-path", "(export PATH=0; cat)"],
       ["export-cdpath-before-path", "export CDPATH=.. PATH=0; cat"],
       ["declare-path", "declare PATH=0; cat"],
       ["readonly-path", "readonly PATH=0; cat"],
       ["prefixed-export-path", "PATH=0 export PATH; cat"],
+      ["lastpipe-export-path", "set +m; shopt -s lastpipe; true | export PATH=0; cat"],
+      ["let-path", "let PATH=0; cat"],
+      ["builtin-let-path", "builtin let PATH=0; cat"],
+      ["command-let-path", "command let PATH=0; cat"],
+      ["read-path", "read PATH <path.txt; cat"],
+      ["read-r-path", "read -r PATH <path.txt; cat"],
+      ["builtin-read-path", "builtin read PATH <path.txt; cat"],
+      ["command-read-path", "command read PATH <path.txt; cat"],
+      ["nameref-read-path", "declare -n candidate=PATH; read candidate <path.txt; cat"],
       ["loop-body", "for candidate in one; do (( PATH=0 )); done; cat"],
       ["hash-override", "hash -p ./0/cat cat; cat"],
       ["builtin-hash-override", "builtin hash -p ./0/cat cat; cat"],
       ["builtin-double-dash-hash", "builtin -- hash -p ./0/cat cat; cat"],
       ["command-hash-override", "command hash -p ./0/cat cat; cat"],
-    ] as const) {
+    ] as const) await t.test(id, async () => {
       execFileSync(shellPath, ["-c", command], { cwd: workspace, encoding: "utf8" });
       assert.equal(readFileSync(target, "utf8"), "payload", `${id}: direct Bash selects the synthetic executable`);
       unlinkSync(target);
@@ -1121,7 +1132,38 @@ test("Bash stateful commands cannot hide a changed executable lookup", async (t)
       assert.match(inspectBashResourceLifecycle({ command }) ?? "", /SHELL_UNINSPECTABLE/, id);
       assert.equal(inspectHighRiskBashMutation({ command }, workspace)?.unverifiableScope, true, id);
       assert.equal(inspectBashPermissionScope({ command }, workspace)?.unverifiableScope, true, id);
+    });
+    for (const [id, command] of [
+      ["readarray", "readarray -t PATH <path.txt; cat"],
+      ["mapfile", "mapfile -t PATH <path.txt; cat"],
+      ["mapfile-arithmetic-origin", "mapfile -O 'PATH=0' candidate <path.txt; cat"],
+    ] as const) {
+      await t.test(id, async () => {
+        for (const mode of ["read-only", "workspace-write"] as const) {
+          await fixture!.setMode(mode);
+          await assertBoundaryRefusedBeforeSpawn(fixture!, workspace, `${mode}-${id}`, command, [target]);
+        }
+        assert.match(inspectBashResourceLifecycle({ command }) ?? "", /SHELL_UNINSPECTABLE/);
+        assert.equal(inspectHighRiskBashMutation({ command }, workspace)?.unverifiableScope, true);
+        assert.equal(inspectBashPermissionScope({ command }, workspace)?.unverifiableScope, true);
+      });
     }
+    for (const [id, command, output] of [
+      ["literal-let", "let candidate=1; printf let-ok", "let-ok"],
+      ["ordinary-read", "read candidate <path.txt; printf 'read-%s' \"$candidate\"", "read-0"],
+      ["prompt-is-data", "read -p PATH candidate <path.txt; printf prompt-ok", "prompt-ok"],
+      ["ordinary-mapfile", "mapfile -t candidate <path.txt; printf mapfile-ok", "mapfile-ok"],
+      ["quoted-syntax-data", "printf '%s' 'let PATH=0; read PATH'", "let PATH=0; read PATH"],
+    ] as const) await t.test(id, async () => {
+      assert.equal(inspectBashResourceLifecycle({ command }), undefined, id);
+      await fixture!.setMode("read-only");
+      const executions = fixture!.executions;
+      const result = await fixture!.agent.dispatchHostTool({ type: "toolCall", id, name: "bash", arguments: { command } });
+      assert.equal(result.isError, false, JSON.stringify(result));
+      assert.match((result.content[0] as { text: string }).text, new RegExp(output));
+      assert.equal(fixture!.executions, executions + 1);
+      assert.equal(existsSync(target), false);
+    });
   } finally {
     await fixture?.close();
     rmSync(workspace, { recursive: true });
@@ -1341,7 +1383,9 @@ test("reviewed cwd state changes never approve a different protected target", as
   mkdirSync(join(nested, ".git"));
   mkdirSync(join(nested, "sub"));
   mkdirSync(join(nested, "sub", ".git"));
+  mkdirSync(join(nested, basename(workspace), ".git"), { recursive: true });
   writeFileSync(join(nested, "override.sh"), "cd() { builtin cd ..; }\n");
+  writeFileSync(join(nested, "cdpath.txt"), "../..\n");
   let fixture: Awaited<ReturnType<typeof guardedCwdBoundaryFixture>> | undefined;
   try {
     fixture = await guardedCwdBoundaryFixture(nested, shellPath);
@@ -1365,6 +1409,15 @@ test("reviewed cwd state changes never approve a different protected target", as
       ["shadowed-trap-query", "function trap { builtin cd ..; }; trap -p DEBUG; printf data >.git/config", join(workspace, ".git", "config"), join(nested, ".git", "config")],
       ["shadowed-trap-query-parens", "trap() { builtin cd ..; }; trap -p DEBUG; printf data >.git/config", join(workspace, ".git", "config"), join(nested, ".git", "config")],
       ["alias-shadowed-trap-query", "shopt -s expand_aliases\nalias trap='builtin cd ..; :'\ntrap -p DEBUG; printf data >.git/config", join(workspace, ".git", "config"), join(nested, ".git", "config")],
+      ["exported-cdpath-nested-bash", `export CDPATH=../..; bash -c 'cd ${basename(workspace)} && printf data >.git/config'`, join(workspace, ".git", "config"), join(nested, basename(workspace), ".git", "config")],
+      ["subshell-exported-cdpath-bash", `(export CDPATH=../..; bash -c 'cd ${basename(workspace)} && printf data >.git/config')`, join(workspace, ".git", "config"), join(nested, basename(workspace), ".git", "config")],
+      ["lastpipe-cdpath-nested-bash", `set +m; shopt -s lastpipe; true | export CDPATH=../..; bash -c 'cd ${basename(workspace)} && printf data >.git/config'`, join(workspace, ".git", "config"), join(nested, basename(workspace), ".git", "config")],
+      ["exported-cdpath-command-bash", `export CDPATH=../..; command bash -c 'cd ${basename(workspace)} && printf data >.git/config'`, join(workspace, ".git", "config"), join(nested, basename(workspace), ".git", "config")],
+      ["exported-cdpath-timed-bash", `export CDPATH=../..; time -- bash -c 'cd ${basename(workspace)} && printf data >.git/config'`, join(workspace, ".git", "config"), join(nested, basename(workspace), ".git", "config")],
+      ["exported-cdpath-final-eval", `export CDPATH=../..; eval 'cd ${basename(workspace)} && printf data >.git/config'`, join(workspace, ".git", "config"), join(nested, basename(workspace), ".git", "config")],
+      ["exported-cdpath-builtin-eval", `export CDPATH=../..; builtin eval 'cd ${basename(workspace)} && printf data >.git/config'`, join(workspace, ".git", "config"), join(nested, basename(workspace), ".git", "config")],
+      ["exported-cdpath-substitution", `export CDPATH=../..; printf '%s' "$(cd ${basename(workspace)} && printf data >.git/config)"`, join(workspace, ".git", "config"), join(nested, basename(workspace), ".git", "config")],
+      ["read-cdpath-then-cd", `read CDPATH <cdpath.txt; cd ${basename(workspace)} && printf data >.git/config`, join(workspace, ".git", "config"), join(nested, basename(workspace), ".git", "config")],
       ["err-trap-cd", "trap 'builtin cd ..' ERR; false; printf data >.git/config", join(workspace, ".git", "config"), join(nested, ".git", "config")],
     ] as const) await t.test(id, async () => {
       try {
@@ -1380,6 +1433,18 @@ test("reviewed cwd state changes never approve a different protected target", as
         if (existsSync(actual)) unlinkSync(actual);
       }
     });
+    const closedCommand = "(export CDPATH=../..); cd sub && printf marker >closed-subshell-marker.txt";
+    const closedTarget = join(nested, "sub", "closed-subshell-marker.txt");
+    execFileSync(shellPath, ["-c", closedCommand], { cwd: nested, encoding: "utf8", env: { ...process.env, CDPATH: "" } });
+    assert.equal(readFileSync(closedTarget, "utf8"), "marker");
+    unlinkSync(closedTarget);
+    await fixture.setMode("read-only");
+    const priorExecutions = fixture.executions;
+    const closed = await fixture.agent.dispatchHostTool({ type: "toolCall", id: "closed-subshell-cdpath", name: "bash", arguments: { command: closedCommand } });
+    assert.equal(closed.isError, false, JSON.stringify(closed));
+    assert.equal(fixture.executions, priorExecutions + 1);
+    assert.equal(readFileSync(closedTarget, "utf8"), "marker");
+    assert.match(fixture.approvals.at(-1)!, /sub[\\/]closed-subshell-marker\.txt/);
   } finally {
     await fixture?.close();
     rmSync(workspace, { recursive: true });
