@@ -954,17 +954,15 @@ export function hasUninspectableBashState(command: string): boolean {
 		// bare `hash` only lists entries and does not change the table.
 		if (name === "hash" && skipRedirections(tokens, index + 1) < tokens.length && segmentIndex + 1 < segments.length) return true;
 		if (changesBashCdSemantics(tokens, index, name)) { cdSemanticsChanged = true; continue; }
-		// A non-exit trap can run before a later command and move the parent
-		// shell's cwd before a target is opened. EXIT traps run after that command.
-		if (name === "trap" && segmentIndex + 1 < segments.length && !tokens.subshellDepth && !tokens.pipelineMember) {
+		// Trap actions are executable source, including EXIT actions at shutdown.
+		// A pipeline's last member can also persist a trap under `lastpipe`.
+		if (name === "trap") {
 			let actionIndex = skipRedirections(tokens, index + 1);
-			if (tokens[actionIndex] === "--") actionIndex = skipRedirections(tokens, actionIndex + 1);
+			const endOfOptions = tokens[actionIndex] === "--";
+			if (endOfOptions) actionIndex = skipRedirections(tokens, actionIndex + 1);
 			const action = tokens[actionIndex];
-			if (action !== undefined && action !== "-p" && action !== "-l" && action !== "-") {
-				for (let event = skipRedirections(tokens, actionIndex + 1); event < tokens.length; event = skipRedirections(tokens, event + 1)) {
-					if (tokens.expansions?.[event] || (tokens[event] !== "EXIT" && tokens[event] !== "0")) return true;
-				}
-			}
+			if (action !== undefined && (endOfOptions || action !== "-p" && action !== "-l") && action !== "-"
+				&& (action !== "" || tokens.expansions?.[actionIndex]) && !OWNED_FOREGROUND_JOB_PATTERN.test(command)) return true;
 		}
 		// A sourced file or evaluated source runs in this shell. Without bounded
 		// state propagation, a later command could use a different cwd or lookup.

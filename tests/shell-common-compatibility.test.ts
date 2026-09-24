@@ -1360,6 +1360,7 @@ test("reviewed cwd state changes never approve a different protected target", as
       ["final-eval-shadowed-true-parens", "true() { builtin cd ..; }; eval 'true; printf data >.git/config'", join(workspace, ".git", "config"), join(nested, ".git", "config")],
       ["source-redefines-cd", "source ./override.sh; cd sub && printf data >.git/config", join(workspace, ".git", "config"), join(nested, "sub", ".git", "config")],
       ["debug-trap-cd", "trap 'builtin cd ..; trap - DEBUG' DEBUG; cd sub && printf data >.git/config", join(workspace, "sub", ".git", "config"), join(nested, "sub", ".git", "config")],
+      ["lastpipe-debug-trap-cd", "shopt -s lastpipe; true | trap 'builtin cd ..; trap - DEBUG' DEBUG; cd sub && printf data >.git/config", join(workspace, "sub", ".git", "config"), join(nested, "sub", ".git", "config")],
       ["shadowed-trap-query", "function trap { builtin cd ..; }; trap -p DEBUG; printf data >.git/config", join(workspace, ".git", "config"), join(nested, ".git", "config")],
       ["shadowed-trap-query-parens", "trap() { builtin cd ..; }; trap -p DEBUG; printf data >.git/config", join(workspace, ".git", "config"), join(nested, ".git", "config")],
       ["err-trap-cd", "trap 'builtin cd ..' ERR; false; printf data >.git/config", join(workspace, ".git", "config"), join(nested, ".git", "config")],
@@ -1377,6 +1378,33 @@ test("reviewed cwd state changes never approve a different protected target", as
         if (existsSync(actual)) unlinkSync(actual);
       }
     });
+  } finally {
+    await fixture?.close();
+    rmSync(workspace, { recursive: true });
+  }
+});
+
+test("EXIT trap actions cannot hide a protected write at shell shutdown", async (t) => {
+  const shellPath = findTestBash();
+  if (!shellPath || !existsSync(shellPath)) {
+    if (process.env.CI) assert.fail("Required Bash integration test could not find Git Bash or /bin/bash");
+    t.skip("Bash unavailable");
+    return;
+  }
+  const workspace = mkdtempSync(join(tmpdir(), "sp-shell-exit-trap-"));
+  const target = join(workspace, ".git", "config");
+  mkdirSync(join(workspace, ".git"));
+  const command = "trap 'printf payload >.git/config' EXIT; printf ok";
+  let fixture: Awaited<ReturnType<typeof guardedCwdBoundaryFixture>> | undefined;
+  try {
+    execFileSync(shellPath, ["-c", command], { cwd: workspace, encoding: "utf8" });
+    assert.equal(readFileSync(target, "utf8"), "payload", "direct Bash runs the EXIT action");
+    unlinkSync(target);
+    fixture = await guardedCwdBoundaryFixture(workspace, shellPath);
+    for (const mode of ["read-only", "workspace-write"] as const) {
+      await fixture.setMode(mode);
+      await assertBoundaryRefusedBeforeSpawn(fixture, workspace, `${mode}-exit-action`, command, [target]);
+    }
   } finally {
     await fixture?.close();
     rmSync(workspace, { recursive: true });
