@@ -3,7 +3,7 @@ import { basename, resolve } from "node:path";
 import { hasAmbiguousBashCwd, unsafeBashLoopHeaderReason } from "./core.ts";
 import { extractCommandSubstitutions, prepareShellAnalysis } from "./shell-substitution.ts";
 import { parseTimeoutInvocation } from "./timeout-wrapper.ts";
-import { bashPipelinePrefixEnd, hasStatefulBashPrintf, isBashNetworkRedirectionTarget, shellExpansionRisk, hasUnsafeBashTestOperand, hasUnsafeCommandQueryOperand, isBashDoubleBracketCloseBoundary, isBashDoubleBracketHead, isBashProcessSubstitutionStart, isBashTestWhitespace, isShellDynamicDescriptor, isShellFileDescriptor, isShellOutputFileRedirection, isSimpleBashAnsiCQuote, isStaticDescriptorCopy, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
+import { bashPipelinePrefixEnd, bashScriptOperandIndex, hasStatefulBashPrintf, isBashNetworkRedirectionTarget, shellExpansionRisk, hasUnsafeBashTestOperand, hasUnsafeCommandQueryOperand, isBashDoubleBracketCloseBoundary, isBashDoubleBracketHead, isBashProcessSubstitutionStart, isBashTestWhitespace, isShellDynamicDescriptor, isShellFileDescriptor, isShellOutputFileRedirection, isSimpleBashAnsiCQuote, isStaticDescriptorCopy, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
 
 const MAX_COMMAND_CHARS = 128 * 1024;
 const MAX_SEGMENTS = 64;
@@ -214,10 +214,13 @@ function commandIndex(tokens: readonly string[], start = 0): number {
   return index;
 }
 
-function wrapperScript(tokens: readonly string[], start: number): string | undefined {
+function wrapperScript(tokens: readonly string[], start: number, bashStyle: boolean): string | undefined {
   for (let index = start; index < tokens.length; index++) {
     const token = tokens[index]!.toLowerCase();
-    if (token === "-c" || token === "/c" || token === "-command") return tokens[index + 1];
+    if (token === "-c" || token === "/c" || token === "-command") {
+      const sourceIndex = bashStyle && token === "-c" ? bashScriptOperandIndex(tokens, index) : index + 1;
+      return sourceIndex < 0 ? undefined : tokens[sourceIndex];
+    }
   }
   return undefined;
 }
@@ -319,13 +322,18 @@ function inspectSegment(tokens: PermissionTokens, cwd: string, depth: number, bu
     return cwd;
   }
   const testOpen = bashPipelinePrefixEnd(tokens, index);
+  if (testOpen < 0) { markOpaque(builder, "unverifiable_launcher"); return cwd; }
   if (testOpen >= 0 && tokens[testOpen] === "[[" && tokens.bashTestOpenAt === testOpen && tokens.bashTestClosed) {
     addClass(builder, "read:bash-test");
     return cwd;
   }
+  if (testOpen > index && testOpen < tokens.length) {
+    if (tokens[testOpen] === "cd") { markOpaque(builder, "unverifiable_working_directory"); return cwd; }
+    return inspectSegment(tokens, cwd, depth + 1, builder, testOpen);
+  }
   if (SCRIPT_WRAPPERS.has(command)) {
     addClass(builder, `wrapper:${command}`);
-    const source = wrapperScript(tokens, index + 1);
+    const source = wrapperScript(tokens, index + 1, command === "bash" || command === "bash.exe" || command === "sh" || command === "zsh");
     if (!source || depth >= MAX_DEPTH) {
       markOpaque(builder, "opaque_shell_wrapper");
       addTarget(builder, cwd, cwd);

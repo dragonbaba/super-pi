@@ -998,7 +998,88 @@ test("inherited recursive arithmetic cannot approve a hidden protected write", a
   }
 });
 
+test("Bash wrapper and reserved prefixes cannot hide inherited recursive evaluation", async (t) => {
+  const shellPath = findTestBash();
+  if (!shellPath || !existsSync(shellPath)) {
+    if (process.env.CI) assert.fail("Required Bash integration test could not find Git Bash or /bin/bash");
+    t.skip("Bash unavailable");
+    return;
+  }
+  const previousValue = process.env.SP_SHELL_RECURSIVE_VALUE;
+  process.env.SP_SHELL_RECURSIVE_VALUE = "a[$(printf payload >.git/config)]";
+  try {
+    for (const [id, command] of [
+      ["bash-c-separator", "bash -c -- 'echo $((SP_SHELL_RECURSIVE_VALUE))'"],
+      ["timed-bash-wrapper", "time -p -- bash -c 'echo $((SP_SHELL_RECURSIVE_VALUE))'"],
+      ["negated-eval", "! eval 'echo $((SP_SHELL_RECURSIVE_VALUE))'"],
+    ] as const) await t.test(id, async () => {
+      const workspace = mkdtempSync(join(tmpdir(), `sp-shell-recursive-${id}-`));
+      mkdirSync(join(workspace, ".git"));
+      const target = join(workspace, ".git", "config");
+      let fixture: Awaited<ReturnType<typeof guardedCwdBoundaryFixture>> | undefined;
+      try {
+        try { execFileSync(shellPath, ["-c", command], { cwd: workspace, encoding: "utf8" }); }
+        catch { /* A failed arithmetic expression or negation may return nonzero after its substitution. */ }
+        assert.equal(readFileSync(target, "utf8"), "payload", "direct Bash proves the hidden protected write");
+        unlinkSync(target);
+        fixture = await guardedCwdBoundaryFixture(workspace, shellPath);
+        for (const mode of ["read-only", "workspace-write"] as const) {
+          await fixture.setMode(mode);
+          await assertBoundaryRefusedBeforeSpawn(fixture, workspace, `${mode}-${id}`, command, [target]);
+          assert.equal(inspectHighRiskBashMutation({ command }, workspace)?.unverifiableScope, true);
+        }
+      } finally {
+        await fixture?.close();
+        rmSync(workspace, { recursive: true });
+      }
+    });
+  } finally {
+    if (previousValue === undefined) delete process.env.SP_SHELL_RECURSIVE_VALUE;
+    else process.env.SP_SHELL_RECURSIVE_VALUE = previousValue;
+  }
+});
+
+test("bounded Bash wrapper and reserved prefixes still execute literal harmless scripts", async (t) => {
+  const shellPath = findTestBash();
+  if (!shellPath || !existsSync(shellPath)) {
+    if (process.env.CI) assert.fail("Required Bash integration test could not find Git Bash or /bin/bash");
+    t.skip("Bash unavailable");
+    return;
+  }
+  const workspace = mkdtempSync(join(tmpdir(), "sp-shell-safe-wrappers-"));
+  let fixture: Awaited<ReturnType<typeof guardedCwdBoundaryFixture>> | undefined;
+  try {
+    fixture = await guardedCwdBoundaryFixture(workspace, shellPath);
+    await fixture.setMode("read-only");
+    for (const [id, command, expected] of [
+      ["bash-c-separator", "bash -c -- 'printf wrapper-ok'", "wrapper-ok"],
+      ["timed-bash-wrapper", "time -p -- bash -c 'printf timed-wrapper-ok'", "timed-wrapper-ok"],
+      ["negated-eval", "! eval 'false' && printf eval-ok", "eval-ok"],
+    ] as const) {
+      const executions: number = fixture.executions;
+      const result = await fixture.agent.dispatchHostTool({ type: "toolCall", id, name: "bash", arguments: { command } });
+      assert.equal(result.isError, false, JSON.stringify(result));
+      assert.match((result.content[0] as { text: string }).text, new RegExp(expected));
+      assert.equal(fixture.executions, executions + 1);
+      assert.notEqual(inspectHighRiskBashMutation({ command }, workspace)?.unverifiableScope, true);
+    }
+  } finally {
+    await fixture?.close();
+    rmSync(workspace, { recursive: true });
+  }
+});
+
+test("PowerShell high-risk scan preserves the inner Bash boundary", () => {
+  assert.equal(inspectHighRiskBashMutation({ command: "echo $((1 + $null))" }, cwd, "powershell"), undefined);
+  assert.equal(inspectHighRiskBashMutation({ command: "bash -c 'echo $((SP_SHELL_RECURSIVE_VALUE))'" }, cwd, "powershell")?.unverifiableScope, true);
+  assert.equal(inspectHighRiskBashMutation({ command: "bash -c -- 'echo $((SP_SHELL_RECURSIVE_VALUE))'" }, cwd, "powershell")?.unverifiableScope, true);
+});
+
 test("PowerShell arithmetic subexpressions use PowerShell approval rather than Bash expansion refusal", async (t) => {
+  if (process.platform !== "win32") {
+    t.skip("PowerShell tool execution is Windows-only");
+    return;
+  }
   try { execFileSync("pwsh", ["-NoProfile", "-Command", "echo $((1 + $null))"], { encoding: "utf8" }); }
   catch {
     if (process.env.CI && process.platform === "win32") assert.fail("Required Windows PowerShell integration test could not start pwsh");
@@ -1021,13 +1102,17 @@ test("PowerShell arithmetic subexpressions use PowerShell approval rather than B
     assert.equal(fixture.approvals.length, 1, "dynamic PowerShell syntax follows ordinary opaque-script approval");
     assert.doesNotMatch(fixture.approvals[0]!, /stateful_shell_expansion/);
 
-    const nestedBash = "bash -c 'echo $((SP_SHELL_RECURSIVE_VALUE))'";
-    assert.equal(inspectHighRiskBashMutation({ command: nestedBash }, workspace, "powershell")?.unverifiableScope, true);
-    const nested = await fixture.agent.dispatchHostTool({ type: "toolCall", id: "powershell-nested-bash", name: "powershell", arguments: { command: nestedBash } });
-    assert.equal(nested.isError, true);
-    assert.equal((nested.details as any).executionStatus, "not_executed");
-    assert.equal(fixture.executions, 1);
-    assert.equal(fixture.approvals.length, 1);
+    for (const [id, nestedBash] of [
+      ["powershell-nested-bash", "bash -c 'echo $((SP_SHELL_RECURSIVE_VALUE))'"],
+      ["powershell-nested-bash-separator", "bash -c -- 'echo $((SP_SHELL_RECURSIVE_VALUE))'"],
+    ] as const) {
+      assert.equal(inspectHighRiskBashMutation({ command: nestedBash }, workspace, "powershell")?.unverifiableScope, true);
+      const nested = await fixture.agent.dispatchHostTool({ type: "toolCall", id, name: "powershell", arguments: { command: nestedBash } });
+      assert.equal(nested.isError, true);
+      assert.equal((nested.details as any).executionStatus, "not_executed");
+      assert.equal(fixture.executions, 1);
+      assert.equal(fixture.approvals.length, 1);
+    }
 
     fixture.setDecision("拒绝");
     const beforeExecutions: number = fixture.executions;
@@ -1414,6 +1499,7 @@ test("assignment-prefixed cd cannot authorize a different protected cwd", async 
     for (const [id, command] of [
       ["redirected-assigned-cd", ">/dev/null CDPATH=../.. cd workspace && printf marker >.git/config"],
       ["assigned-cd", "CDPATH=../.. cd workspace && printf marker >.git/config"],
+      ["standalone-cdpath", "CDPATH=../..; cd workspace && printf marker >.git/config"],
       ["nested-command-assigned-cd", ">/dev/null CDPATH=../.. command command cd workspace && printf marker >.git/config"],
       ["nested-builtin-assigned-cd", "CDPATH=../.. builtin command builtin cd workspace && printf marker >.git/config"],
       ["expansion-assigned-cdpath", ": ${CDPATH:=../..}; cd workspace && printf marker >.git/config"],
@@ -1433,6 +1519,13 @@ test("assignment-prefixed cd cannot authorize a different protected cwd", async 
       await fixture.setMode("workspace-write");
       await assertBoundaryRefusedBeforeSpawn(fixture, workspace, `${id}-workspace`, command, [actual, wrong]);
     }
+    const benign = "CDPATH=../..; printf no-cd-ok";
+    assert.equal(inspectBashResourceLifecycle({ command: benign }), undefined);
+    const beforeBenign: number = fixture!.executions;
+    const allowed = await fixture!.agent.dispatchHostTool({ type: "toolCall", id: "cdpath-without-cd", name: "bash", arguments: { command: benign } });
+    assert.equal(allowed.isError, false, JSON.stringify(allowed));
+    assert.match((allowed.content[0] as { text: string }).text, /no-cd-ok/);
+    assert.equal(fixture!.executions, beforeBenign + 1);
   } finally {
     await fixture?.close();
     if (originalCdpath === undefined) delete process.env.CDPATH;

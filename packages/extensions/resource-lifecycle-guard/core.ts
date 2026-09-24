@@ -27,7 +27,7 @@ import {
 } from "./regex.ts";
 import { extractCommandSubstitutions, inspectHereDocuments, prepareShellAnalysis } from "./shell-substitution.ts";
 import { parseTimeoutInvocation } from "./timeout-wrapper.ts";
-import { bashArithmeticForHeader, bashLoopVariableIndex, unsafeBashForHeaderReason, hasStatefulBashPrintf, shellExpansionRisk, hasUnsafeBashTestOperand, hasUnsafeBashLoopListOperand, hasUnsafeCommandQueryOperand, isBashDoubleBracketCloseBoundary, isBashNetworkRedirectionTarget, isBashDoubleBracketHead, isBashProcessSubstitutionStart, isBashTestWhitespace, isShellDynamicDescriptor, isShellFileDescriptor, isShellOutputFileRedirection, isSimpleBashAnsiCQuote, isStaticDescriptorCopy, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
+import { bashArithmeticForHeader, bashLoopVariableIndex, bashPipelinePrefixEnd, bashScriptOperandIndex, unsafeBashForHeaderReason, hasStatefulBashPrintf, shellExpansionRisk, hasUnsafeBashTestOperand, hasUnsafeBashLoopListOperand, hasUnsafeCommandQueryOperand, isBashDoubleBracketCloseBoundary, isBashNetworkRedirectionTarget, isBashDoubleBracketHead, isBashProcessSubstitutionStart, isBashTestWhitespace, isShellDynamicDescriptor, isShellFileDescriptor, isShellOutputFileRedirection, isSimpleBashAnsiCQuote, isStaticDescriptorCopy, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
 import { FD_DUPLICATION_PATTERN } from "./regex.ts";
 import { diagnosticForPrimitives, policyMetadata, renderPolicyDiagnostic, type PolicyDiagnosticMetadata } from "./policy-diagnostics.ts";
 
@@ -226,8 +226,9 @@ function inspectLifecycleScript(source: string, depth: number, nativePowerShellA
   }
   if (!SCRIPT_WRAPPERS.has(name)) continue;
   const flag = index + 1;
-  if (tokens[flag] !== "-c" || !tokens[flag + 1]) return lifecycleRefusal("SHELL_WRAPPER", "shell wrapper requires a direct literal -c script operand", "use a supported direct -c operand");
-  const result = inspectLifecycleScript(tokens[flag + 1]!, depth + 1, nativePowerShellAvailable); if (result) return result;
+  const scriptIndex = tokens[flag] === "-c" ? bashScriptOperandIndex(tokens, flag) : -1;
+  if (scriptIndex < 0) return lifecycleRefusal("SHELL_WRAPPER", "shell wrapper requires a direct literal -c script operand", "use a supported direct -c operand");
+  const result = inspectLifecycleScript(tokens[scriptIndex]!, depth + 1, nativePowerShellAvailable); if (result) return result;
  }
  return undefined;
 }
@@ -412,10 +413,14 @@ function inspectShellScript(script: string, initialCwd: string, depth: number, b
 		if (tokens[commandIndex] === "for" || tokens[commandIndex] === "done" || tokens[commandIndex] === "}") continue;
 		const executableIndex = tokens[commandIndex] === "do" || tokens[commandIndex] === "{" ? commandIndex + 1 : commandIndex;
 		if (executableIndex >= tokens.length) continue;
-		const command = commandName(tokens[executableIndex]!);
+		const inspectedIndex = shellOperation === "bash" ? bashPipelinePrefixEnd(tokens, executableIndex) : executableIndex;
+		if (inspectedIndex < 0) { addPrimitive(builder, "unverifiable_launcher"); markUnverifiable(builder); continue; }
+		if (inspectedIndex >= tokens.length) continue;
+		const command = commandName(tokens[inspectedIndex]!);
 		// Only the bare, unlaunched builtin changes this shell's cwd; `./cd` or `env cd` cannot.
-		if (tokens[executableIndex] === "cd" && commandIndex === 0) {
-			const target = tokens[executableIndex + 1];
+		if (tokens[inspectedIndex] === "cd" && commandIndex === 0) {
+			if (inspectedIndex !== executableIndex) { addPrimitive(builder, "unverifiable_working_directory"); markUnverifiable(builder); continue; }
+			const target = tokens[inspectedIndex + 1];
 			if (!target || hasDynamicSyntax(target)) {
 				builder.dynamicScope = true;
 				builder.unverifiableScope = true;
@@ -424,7 +429,7 @@ function inspectShellScript(script: string, initialCwd: string, depth: number, b
 			}
 			continue;
 		}
-		inspectCommand(tokens, executableIndex, command, workingDirectory, depth, builder, shellOperation);
+		inspectCommand(tokens, inspectedIndex, command, workingDirectory, depth, builder, shellOperation);
 	}
 }
 
@@ -454,8 +459,15 @@ function inspectCommand(
 		markUnverifiable(builder);
 		return;
 	}
+	if (shellOperation === "bash" && command === "eval" && tokens[commandIndex] === "eval") {
+		const sourceIndex = commandIndex + 1;
+		if (depth >= MAX_WRAPPER_DEPTH || sourceIndex + 1 !== tokens.length || tokens.expansions?.[sourceIndex]) {
+			addPrimitive(builder, "unverifiable_eval"); markUnverifiable(builder);
+		} else inspectShellScript(tokens[sourceIndex]!, cwd, depth + 1, builder, "bash");
+		return;
+	}
 	if (SCRIPT_WRAPPERS.has(command)) {
-		inspectScriptWrapper(tokens, commandIndex + 1, SHELL_SCRIPT_FLAGS, cwd, depth, builder, "bash");
+		inspectScriptWrapper(tokens, commandIndex + 1, SHELL_SCRIPT_FLAGS, cwd, depth, builder, "bash", true);
 		return;
 	}
 	if (command === "cmd" || command === "cmd.exe") {
@@ -490,10 +502,12 @@ function inspectScriptWrapper(
 	depth: number,
 	builder: ScanBuilder,
 	shellOperation: "bash" | "powershell",
+	bashStyle = false,
 ): void {
 	for (let index = start; index < tokens.length; index++) {
 		if (!flags.has(tokens[index]!.toLowerCase())) continue;
-		const script = tokens[index + 1];
+		const scriptIndex = bashStyle ? bashScriptOperandIndex(tokens, index) : index + 1;
+		const script = scriptIndex < 0 ? undefined : tokens[scriptIndex];
 		if (!script) {
 			builder.dynamicScope = true;
 			builder.unverifiableScope = true;
@@ -837,10 +851,15 @@ export function hasAmbiguousBashCwd(command: string): boolean {
 		if (index < 0) return true;
 		let builtinPrefixes = 0;
 		let leadingAssignment = false;
+		let cdpathAssignment = false;
 		while (index < tokens.length) {
 			const after = afterLeadingRedirection(tokens, index);
 			if (after !== index) { index = after; continue; }
-			if (LEADING_ASSIGNMENT_PATTERN.test(tokens[index]!)) { leadingAssignment = true; index++; continue; }
+			if (LEADING_ASSIGNMENT_PATTERN.test(tokens[index]!)) {
+				leadingAssignment = true;
+				if (tokens[index]!.startsWith("CDPATH=") || tokens[index]!.startsWith("CDPATH+=")) cdpathAssignment = true;
+				index++; continue;
+			}
 			// `command command cd`, `command -p cd` and `builtin -- cd` still dispatch to cd.
 			if (tokens[index] === "command" || tokens[index] === "builtin") {
 				if (++builtinPrefixes > MAX_WRAPPER_DEPTH) return true;
@@ -849,6 +868,12 @@ export function hasAmbiguousBashCwd(command: string): boolean {
 				continue;
 			}
 			break;
+		}
+		// An assignment-only simple command persists in the parent shell; a prefix
+		// assignment before an executable is not evidence of the later shell cwd.
+		if (index >= tokens.length) {
+			if (cdpathAssignment && !tokens.subshellDepth && !tokens.pipelineMember) cdSemanticsChanged = true;
+			continue;
 		}
 		// Builtins are exact bare words: `./cd`, `/opt/cd` and `CD` are external executables.
 		const name = launched ? "" : tokens[index] ?? "";

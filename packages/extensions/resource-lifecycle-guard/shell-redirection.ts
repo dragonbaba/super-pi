@@ -60,6 +60,12 @@ export function bashPipelinePrefixEnd(tokens: QuotedWords, start: number): numbe
   return index;
 }
 
+/** Bash-style `-c` accepts an optional `--` before the actual script word. */
+export function bashScriptOperandIndex(tokens: readonly string[], flagIndex: number): number {
+  const index = tokens[flagIndex + 1] === "--" ? flagIndex + 2 : flagIndex + 1;
+  return index < tokens.length ? index : -1;
+}
+
 export function isBashDoubleBracketCloseBoundary(source: string, index: number): boolean {
   if (index >= source.length) return true;
   const code = source.charCodeAt(index);
