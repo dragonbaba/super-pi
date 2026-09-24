@@ -804,7 +804,7 @@ test("runtime status keeps a leading script exception visible to error classific
   } finally { agent.abort(); }
 });
 
-async function guardedCwdBoundaryFixture(workspace: string, shellPath: string) {
+async function guardedCwdBoundaryFixture(workspace: string, shellPath: string, shellOperation: "bash" | "powershell" = "bash") {
   const jiti = createJiti(import.meta.url);
   const { default: lifecycle } = await jiti.import<any>("../packages/extensions/resource-lifecycle-guard/index.ts");
   const runtime = createExtensionRuntime();
@@ -832,10 +832,14 @@ async function guardedCwdBoundaryFixture(workspace: string, shellPath: string) {
     approvals.push(options?.details ?? "");
     return decision;
   } }, "tui");
-  const local = createLocalBashOperations({ shellPath });
-  agent.state.tools = [createBashTool(workspace, { exposeSessionEnvironment: false, operations: {
-    exec: (command, executionCwd, options) => { executions++; return local.exec(command, executionCwd, options); },
-  } })];
+  const local = shellOperation === "bash" ? createLocalBashOperations({ shellPath }) : createLocalPowerShellOperations();
+  const operations = { exec: (command: string, executionCwd: string, options: Parameters<typeof local.exec>[2]) => {
+    executions++;
+    return local.exec(command, executionCwd, options);
+  } };
+  agent.state.tools = [shellOperation === "bash"
+    ? createBashTool(workspace, { exposeSessionEnvironment: false, operations })
+    : createPowerShellTool(workspace, { exposeSessionEnvironment: false, operations })];
   await runner.emit({ type: "session_start" } as never);
   return {
     agent, approvals,
@@ -990,6 +994,54 @@ test("inherited recursive arithmetic cannot approve a hidden protected write", a
     await fixture?.close();
     if (originalValue === undefined) delete process.env.SP_SHELL_RECURSIVE_VALUE;
     else process.env.SP_SHELL_RECURSIVE_VALUE = originalValue;
+    rmSync(workspace, { recursive: true });
+  }
+});
+
+test("PowerShell arithmetic subexpressions use PowerShell approval rather than Bash expansion refusal", async (t) => {
+  try { execFileSync("pwsh", ["-NoProfile", "-Command", "echo $((1 + $null))"], { encoding: "utf8" }); }
+  catch {
+    if (process.env.CI && process.platform === "win32") assert.fail("Required Windows PowerShell integration test could not start pwsh");
+    t.skip("pwsh unavailable");
+    return;
+  }
+  const workspace = mkdtempSync(join(tmpdir(), "sp-shell-powershell-arithmetic-"));
+  const protectedTarget = join(workspace, ".git", "config");
+  mkdirSync(join(workspace, ".git"));
+  writeFileSync(protectedTarget, "synthetic");
+  let fixture: Awaited<ReturnType<typeof guardedCwdBoundaryFixture>> | undefined;
+  try {
+    fixture = await guardedCwdBoundaryFixture(workspace, "", "powershell");
+    await fixture.setMode("read-only");
+    const command = "echo $((1 + $null))";
+    const result = await fixture.agent.dispatchHostTool({ type: "toolCall", id: "powershell-arithmetic", name: "powershell", arguments: { command } });
+    assert.equal(result.isError, false, JSON.stringify(result));
+    assert.match((result.content[0] as { text: string }).text, /1/);
+    assert.equal(fixture.executions, 1);
+    assert.equal(fixture.approvals.length, 1, "dynamic PowerShell syntax follows ordinary opaque-script approval");
+    assert.doesNotMatch(fixture.approvals[0]!, /stateful_shell_expansion/);
+
+    const nestedBash = "bash -c 'echo $((SP_SHELL_RECURSIVE_VALUE))'";
+    assert.equal(inspectHighRiskBashMutation({ command: nestedBash }, workspace, "powershell")?.unverifiableScope, true);
+    const nested = await fixture.agent.dispatchHostTool({ type: "toolCall", id: "powershell-nested-bash", name: "powershell", arguments: { command: nestedBash } });
+    assert.equal(nested.isError, true);
+    assert.equal((nested.details as any).executionStatus, "not_executed");
+    assert.equal(fixture.executions, 1);
+    assert.equal(fixture.approvals.length, 1);
+
+    fixture.setDecision("拒绝");
+    const beforeExecutions: number = fixture.executions;
+    const denied = await fixture.agent.dispatchHostTool({ type: "toolCall", id: "powershell-recursive-delete", name: "powershell", arguments: {
+      command: "Remove-Item -Recurse -LiteralPath .git/config",
+    } });
+    assert.equal(denied.isError, true);
+    assert.equal((denied.details as any).executionStatus, "not_executed");
+    assert.equal(fixture.executions, beforeExecutions);
+    assert.equal(fixture.approvals.length, 2);
+    assert.match(fixture.approvals[1]!, /powershell_remove_recursive/);
+    assert.equal(readFileSync(protectedTarget, "utf8"), "synthetic");
+  } finally {
+    await fixture?.close();
     rmSync(workspace, { recursive: true });
   }
 });

@@ -260,7 +260,7 @@ interface ScanBuilder {
 	diagnostic?: PolicyDiagnosticMetadata;
 }
 
-export function inspectHighRiskBashMutation(input: unknown, cwd: string): HighRiskMutationScan | undefined {
+export function inspectHighRiskBashMutation(input: unknown, cwd: string, shellOperation: "bash" | "powershell" = "bash"): HighRiskMutationScan | undefined {
 	if (!input || typeof input !== "object") return undefined;
 	const command = (input as { command?: unknown }).command;
 	if (typeof command !== "string" || command.length === 0) return undefined;
@@ -285,7 +285,7 @@ export function inspectHighRiskBashMutation(input: unknown, cwd: string): HighRi
 		workspaceWide: false,
 		segmentsVisited: 0,
 	};
-	inspectShellScript(command, resolve(cwd), 0, builder);
+	inspectShellScript(command, resolve(cwd), 0, builder, shellOperation);
 	if (builder.primitives.length === 0) return undefined;
 	return {
 		risk: "HIGH",
@@ -362,7 +362,7 @@ function inspectOutputRedirections(tokens: ShellSegment, cwd: string, builder: S
 	stripShellRedirections(tokens, redirections);
 }
 
-function inspectShellScript(script: string, initialCwd: string, depth: number, builder: ScanBuilder): void {
+function inspectShellScript(script: string, initialCwd: string, depth: number, builder: ScanBuilder, shellOperation: "bash" | "powershell"): void {
 	if (depth > MAX_WRAPPER_DEPTH) {
 		builder.dynamicScope = true;
 		builder.unverifiableScope = true;
@@ -382,14 +382,14 @@ function inspectShellScript(script: string, initialCwd: string, depth: number, b
 		addPrimitive(builder, "shell_context_uninspectable");
 		markUnverifiable(builder);
 	}
-	for (const nested of analysis.substitutions) inspectShellScript(nested, initialCwd, depth + 1, builder);
+	for (const nested of analysis.substitutions) inspectShellScript(nested, initialCwd, depth + 1, builder, shellOperation);
 	const substitutions = extractCommandSubstitutions(analysis.command);
 	if (substitutions.unterminated) {
 		addPrimitive(builder, "unterminated_command_substitution");
 		markUnverifiable(builder);
 	}
 	if (substitutions.unsupported) markUnverifiable(builder);
-	for (const nested of substitutions.scripts) inspectShellScript(nested, initialCwd, depth + 1, builder);
+	for (const nested of substitutions.scripts) inspectShellScript(nested, initialCwd, depth + 1, builder, shellOperation);
 	const segments = parseShellSegments(analysis.command);
 	const loopReason = unsafeBashLoopHeaders(segments);
 	if (loopReason) { addPrimitive(builder, loopReason); markUnverifiable(builder); }
@@ -405,7 +405,7 @@ function inspectShellScript(script: string, initialCwd: string, depth: number, b
 		if (tokens.length === 0) continue;
 		if (tokens.bashTestProcessSubstitution) { addPrimitive(builder, "unverifiable_process_substitution"); markUnverifiable(builder); continue; }
 		if (hasUnsafeBashTestOperand(tokens)) { addPrimitive(builder, "unverifiable_bash_test_operand"); markUnverifiable(builder); }
-		if (shellExpansionRisk(tokens) !== 0) { addPrimitive(builder, "stateful_shell_expansion"); markUnverifiable(builder); }
+		if (shellOperation === "bash" && shellExpansionRisk(tokens) !== 0) { addPrimitive(builder, "stateful_shell_expansion"); markUnverifiable(builder); }
 		inspectOutputRedirections(tokens, workingDirectory, builder);
 		const commandIndex = commandTokenIndex(tokens);
 		if (commandIndex < 0 || commandIndex >= tokens.length) continue;
@@ -424,7 +424,7 @@ function inspectShellScript(script: string, initialCwd: string, depth: number, b
 			}
 			continue;
 		}
-		inspectCommand(tokens, executableIndex, command, workingDirectory, depth, builder);
+		inspectCommand(tokens, executableIndex, command, workingDirectory, depth, builder, shellOperation);
 	}
 }
 
@@ -435,6 +435,7 @@ function inspectCommand(
 	cwd: string,
 	depth: number,
 	builder: ScanBuilder,
+	shellOperation: "bash" | "powershell",
 ): void {
 	if (command === "command" || command === "exec") {
 		if (tokens[commandIndex] !== command) { addPrimitive(builder, "unverifiable_launcher"); markUnverifiable(builder); return; }
@@ -445,7 +446,7 @@ function inspectCommand(
 		}
 		const next = tokens[commandIndex + 1];
 		if (!next || next.startsWith("-")) { addPrimitive(builder, "unverifiable_launcher"); markUnverifiable(builder); return; }
-		inspectCommand(tokens, commandIndex + 1, commandName(next), cwd, depth + 1, builder);
+		inspectCommand(tokens, commandIndex + 1, commandName(next), cwd, depth + 1, builder, shellOperation);
 		return;
 	}
 	if (command === "printf" && hasStatefulBashPrintf(tokens, commandIndex)) {
@@ -454,15 +455,15 @@ function inspectCommand(
 		return;
 	}
 	if (SCRIPT_WRAPPERS.has(command)) {
-		inspectScriptWrapper(tokens, commandIndex + 1, SHELL_SCRIPT_FLAGS, cwd, depth, builder);
+		inspectScriptWrapper(tokens, commandIndex + 1, SHELL_SCRIPT_FLAGS, cwd, depth, builder, "bash");
 		return;
 	}
 	if (command === "cmd" || command === "cmd.exe") {
-		inspectScriptWrapper(tokens, commandIndex + 1, CMD_SCRIPT_FLAGS, cwd, depth, builder);
+		inspectScriptWrapper(tokens, commandIndex + 1, CMD_SCRIPT_FLAGS, cwd, depth, builder, shellOperation);
 		return;
 	}
 	if (POWERSHELL_WRAPPERS.has(command)) {
-		inspectScriptWrapper(tokens, commandIndex + 1, POWERSHELL_SCRIPT_FLAGS, cwd, depth, builder);
+		inspectScriptWrapper(tokens, commandIndex + 1, POWERSHELL_SCRIPT_FLAGS, cwd, depth, builder, "powershell");
 		return;
 	}
 	if (NODE_COMMANDS.has(command)) {
@@ -488,6 +489,7 @@ function inspectScriptWrapper(
 	cwd: string,
 	depth: number,
 	builder: ScanBuilder,
+	shellOperation: "bash" | "powershell",
 ): void {
 	for (let index = start; index < tokens.length; index++) {
 		if (!flags.has(tokens[index]!.toLowerCase())) continue;
@@ -497,7 +499,7 @@ function inspectScriptWrapper(
 			builder.unverifiableScope = true;
 			return;
 		}
-		inspectShellScript(script, cwd, depth + 1, builder);
+		inspectShellScript(script, cwd, depth + 1, builder, shellOperation);
 		return;
 	}
 }
