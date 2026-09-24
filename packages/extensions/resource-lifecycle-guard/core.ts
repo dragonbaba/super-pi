@@ -936,6 +936,13 @@ export function hasUninspectableBashState(command: string): boolean {
 		// A temporary lookup assignment also affects the executable selected by
 		// this very command; do not authorize it using the inherited PATH.
 		if (lookupAssignment) return true;
+		// A definition on an earlier line can replace a later command. The
+		// bounded scanner does not propagate alias definitions or removals.
+		if ((name === "alias" || name === "unalias") && hasLaterBashCommandInShell(segments, segmentIndex)) {
+			for (let operand = skipRedirections(tokens, index + 1); operand < tokens.length; operand = skipRedirections(tokens, operand + 1)) {
+				if (name === "unalias" || tokens[operand]!.includes("=") || tokens.expansions?.[operand]) return true;
+			}
+		}
 		if (cdpathAssignment && !tokens.subshellDepth && !tokens.pipelineMember
 			&& (name === "export" || name === "readonly" || name === "declare" || name === "typeset")) cdSemanticsChanged = true;
 		// These builtins persist an assignment in the parent shell even though the

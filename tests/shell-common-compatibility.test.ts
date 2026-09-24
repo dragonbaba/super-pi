@@ -1059,6 +1059,7 @@ test("bounded Bash wrapper and reserved prefixes still execute literal harmless 
       ["timed-bash-wrapper", "time -p -- bash -c 'printf timed-wrapper-ok'", "timed-wrapper-ok"],
       ["literal-eval", "eval 'printf eval-ok'", "eval-ok"],
       ["debug-trap-query", "trap -p DEBUG; printf trap-query-ok", "trap-query-ok"],
+      ["alias-list", "alias -p; printf alias-query-ok", "alias-query-ok"],
       ["builtin-double-dash-eval", "builtin -- eval 'printf builtin-ok'", "builtin-ok"],
       ["quoted-arithmetic-data", "printf '%s' '(( PATH=0 ))'", "(( PATH=0 ))"],
       ["unrelated-export", "export CANDIDATE=..; cd . && printf unrelated-ok", "unrelated-ok"],
@@ -1363,6 +1364,7 @@ test("reviewed cwd state changes never approve a different protected target", as
       ["lastpipe-debug-trap-cd", "shopt -s lastpipe; true | trap 'builtin cd ..; trap - DEBUG' DEBUG; cd sub && printf data >.git/config", join(workspace, "sub", ".git", "config"), join(nested, "sub", ".git", "config")],
       ["shadowed-trap-query", "function trap { builtin cd ..; }; trap -p DEBUG; printf data >.git/config", join(workspace, ".git", "config"), join(nested, ".git", "config")],
       ["shadowed-trap-query-parens", "trap() { builtin cd ..; }; trap -p DEBUG; printf data >.git/config", join(workspace, ".git", "config"), join(nested, ".git", "config")],
+      ["alias-shadowed-trap-query", "shopt -s expand_aliases\nalias trap='builtin cd ..; :'\ntrap -p DEBUG; printf data >.git/config", join(workspace, ".git", "config"), join(nested, ".git", "config")],
       ["err-trap-cd", "trap 'builtin cd ..' ERR; false; printf data >.git/config", join(workspace, ".git", "config"), join(nested, ".git", "config")],
     ] as const) await t.test(id, async () => {
       try {
