@@ -695,6 +695,10 @@ test("inherited cd-semantic and startup variables do not reach the spawned shell
     agent.state.tools = [createBashTool(fixture, { operations, spawnHook: context => ({ ...context, env: { ...context.env, CDPATH: "hooked" } }) })];
     await agent.dispatchHostTool({ type: "toolCall", id: "bash-env-hook", name: "bash", arguments: { command: "printf synthetic" } });
     assert.equal(captured[1]!.CDPATH, "hooked", "a spawn hook may still set the value deliberately");
+    // The values only change Bash startup and cd; PowerShell keeps them as ordinary data.
+    agent.state.tools = [createPowerShellTool(fixture, { operations })];
+    await agent.dispatchHostTool({ type: "toolCall", id: "powershell-env", name: "powershell", arguments: { command: "Write-Output synthetic" } });
+    for (const key of keys) assert.equal(captured[2]![key], process.env[key], key);
   } finally {
     agent.abort();
     for (const [key, value] of original) {

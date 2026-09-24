@@ -38,7 +38,7 @@ const SESSION_ENVIRONMENT_KEYS = new Set([
 	"SP_MODEL",
 	"SP_REASONING_LEVEL",
 ]);
-// Inherited values that change `cd` resolution or run startup code invisibly
+// Inherited values that change Bash `cd` resolution or run Bash startup code invisibly
 // to command inspection. A spawn hook may still set them deliberately.
 const SHELL_SEMANTIC_ENVIRONMENT_KEYS = new Set(["CDPATH", "BASHOPTS", "SHELLOPTS", "BASH_ENV", "ENV"]);
 
@@ -200,13 +200,14 @@ function resolveSpawnContext(
 	spawnHook: BashSpawnHook | undefined,
 	exposeSessionEnvironment: boolean,
 	ctx: ExtensionContext | undefined,
+	filterBashSemantics: boolean,
 ): BashSpawnContext {
 	const shellEnv = getShellEnv();
 	const env: NodeJS.ProcessEnv = {};
 	const shellEnvKeys = Object.keys(shellEnv);
 	for (let index = 0; index < shellEnvKeys.length; index++) {
 		const key = shellEnvKeys[index]!;
-		if (!SESSION_ENVIRONMENT_KEYS.has(key) && !isShellSemanticEnvironmentKey(key)) setOwnProperty(env, key, shellEnv[key]);
+		if (!SESSION_ENVIRONMENT_KEYS.has(key) && !(filterBashSemantics && isShellSemanticEnvironmentKey(key))) setOwnProperty(env, key, shellEnv[key]);
 	}
 	if (exposeSessionEnvironment && ctx) {
 		const model = ctx.model;
@@ -822,7 +823,8 @@ export function createShellToolDefinition(
 			ctx?,
 		) {
 			const resolvedCommand = commandPrefix ? `${commandPrefix}\n${command}` : command;
-			const spawnContext = resolveSpawnContext(resolvedCommand, cwd, spawnHook, exposeSessionEnvironment, ctx);
+			// These variables only change Bash startup and cd; PowerShell keeps them as ordinary data.
+			const spawnContext = resolveSpawnContext(resolvedCommand, cwd, spawnHook, exposeSessionEnvironment, ctx, config.name === "bash");
 			let acceptingOutput = true;
 			let outputFailure: Error | undefined;
 			const outputAbort = new AbortController();
