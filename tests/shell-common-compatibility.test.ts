@@ -1061,6 +1061,8 @@ test("bounded Bash wrapper and reserved prefixes still execute literal harmless 
       ["builtin-double-dash-eval", "builtin -- eval 'printf builtin-ok'", "builtin-ok"],
       ["quoted-arithmetic-data", "printf '%s' '(( PATH=0 ))'", "(( PATH=0 ))"],
       ["unrelated-export", "export CANDIDATE=..; cd . && printf unrelated-ok", "unrelated-ok"],
+      ["hash-list", "hash; printf hash-list-ok", "hash-list-ok"],
+      ["hash-list-redirect", "hash >hash-list.txt; printf hash-redirect-ok", "hash-redirect-ok"],
     ] as const) {
       const executions: number = fixture.executions;
       const result = await fixture.agent.dispatchHostTool({ type: "toolCall", id, name: "bash", arguments: { command } });
@@ -1075,7 +1077,7 @@ test("bounded Bash wrapper and reserved prefixes still execute literal harmless 
   }
 });
 
-test("standalone Bash arithmetic cannot hide a changed executable lookup", async (t) => {
+test("Bash stateful commands cannot hide a changed executable lookup", async (t) => {
   const shellPath = findTestBash();
   if (!shellPath || !existsSync(shellPath)) {
     if (process.env.CI) assert.fail("Required Bash integration test could not find Git Bash or /bin/bash");
@@ -1094,18 +1096,22 @@ test("standalone Bash arithmetic cannot hide a changed executable lookup", async
     for (const [id, command] of [
       ["standalone", "(( PATH=0 )); cat"],
       ["loop-body", "for candidate in one; do (( PATH=0 )); done; cat"],
+      ["hash-override", "hash -p ./0/cat cat; cat"],
+      ["builtin-hash-override", "builtin hash -p ./0/cat cat; cat"],
+      ["builtin-double-dash-hash", "builtin -- hash -p ./0/cat cat; cat"],
+      ["command-hash-override", "command hash -p ./0/cat cat; cat"],
     ] as const) {
       execFileSync(shellPath, ["-c", command], { cwd: workspace, encoding: "utf8" });
       assert.equal(readFileSync(target, "utf8"), "payload", `${id}: direct Bash selects the synthetic executable`);
       unlinkSync(target);
-      assert.match(inspectBashResourceLifecycle({ command }) ?? "", /SHELL_UNINSPECTABLE/, id);
-      assert.equal(inspectHighRiskBashMutation({ command }, workspace)?.unverifiableScope, true, id);
-      assert.equal(inspectBashPermissionScope({ command }, workspace)?.unverifiableScope, true, id);
       fixture ??= await guardedCwdBoundaryFixture(workspace, shellPath);
       for (const mode of ["read-only", "workspace-write"] as const) {
         await fixture.setMode(mode);
         await assertBoundaryRefusedBeforeSpawn(fixture, workspace, `${mode}-${id}-arithmetic-lookup`, command, [target]);
       }
+      assert.match(inspectBashResourceLifecycle({ command }) ?? "", /SHELL_UNINSPECTABLE/, id);
+      assert.equal(inspectHighRiskBashMutation({ command }, workspace)?.unverifiableScope, true, id);
+      assert.equal(inspectBashPermissionScope({ command }, workspace)?.unverifiableScope, true, id);
     }
   } finally {
     await fixture?.close();
@@ -1590,6 +1596,8 @@ test("assignment-prefixed cd cannot authorize a different protected cwd", async 
       ["assigned-cd", "CDPATH=../.. cd workspace && printf marker >.git/config"],
       ["standalone-cdpath", "CDPATH=../..; cd workspace && printf marker >.git/config"],
       ["export-cdpath", "export CDPATH=../..; cd workspace && printf marker >.git/config"],
+      ["prefixed-export-cdpath", "CDPATH=../.. export CDPATH; cd workspace && printf marker >.git/config"],
+      ["prefixed-readonly-cdpath", "CDPATH=../.. readonly CDPATH; cd workspace && printf marker >.git/config"],
       ["declare-cdpath", "declare CDPATH=../..; cd workspace && printf marker >.git/config"],
       ["typeset-cdpath", "typeset CDPATH=../..; cd workspace && printf marker >.git/config"],
       ["readonly-cdpath", "readonly CDPATH=../..; cd workspace && printf marker >.git/config"],
@@ -1612,13 +1620,17 @@ test("assignment-prefixed cd cannot authorize a different protected cwd", async 
       await fixture.setMode("workspace-write");
       await assertBoundaryRefusedBeforeSpawn(fixture, workspace, `${id}-workspace`, command, [actual, wrong]);
     }
-    const benign = "CDPATH=../..; printf no-cd-ok";
-    assert.equal(inspectBashResourceLifecycle({ command: benign }), undefined);
-    const beforeBenign: number = fixture!.executions;
-    const allowed = await fixture!.agent.dispatchHostTool({ type: "toolCall", id: "cdpath-without-cd", name: "bash", arguments: { command: benign } });
-    assert.equal(allowed.isError, false, JSON.stringify(allowed));
-    assert.match((allowed.content[0] as { text: string }).text, /no-cd-ok/);
-    assert.equal(fixture!.executions, beforeBenign + 1);
+    for (const [id, benign, expected] of [
+      ["cdpath-without-cd", "CDPATH=../..; printf no-cd-ok", "no-cd-ok"],
+      ["prefixed-export-without-cd", "CDPATH=../.. export CDPATH; printf no-cd-export-ok", "no-cd-export-ok"],
+    ] as const) {
+      assert.equal(inspectBashResourceLifecycle({ command: benign }), undefined);
+      const beforeBenign: number = fixture!.executions;
+      const allowed = await fixture!.agent.dispatchHostTool({ type: "toolCall", id, name: "bash", arguments: { command: benign } });
+      assert.equal(allowed.isError, false, JSON.stringify(allowed));
+      assert.match((allowed.content[0] as { text: string }).text, new RegExp(expected));
+      assert.equal(fixture!.executions, beforeBenign + 1);
+    }
   } finally {
     await fixture?.close();
     if (originalCdpath === undefined) delete process.env.CDPATH;

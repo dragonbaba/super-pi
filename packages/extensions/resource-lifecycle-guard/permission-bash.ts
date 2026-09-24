@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { basename, resolve } from "node:path";
-import { hasAmbiguousBashCwd, unsafeBashLoopHeaderReason } from "./core.ts";
+import { hasUninspectableBashState, unsafeBashLoopHeaderReason } from "./core.ts";
 import { extractCommandSubstitutions, prepareShellAnalysis } from "./shell-substitution.ts";
 import { parseTimeoutInvocation } from "./timeout-wrapper.ts";
 import { bashPipelinePrefixEnd, bashScriptOperandIndex, hasStatefulBashPrintf, isBashArithmeticCommandHead, isBashNetworkRedirectionTarget, shellExpansionRisk, hasUnsafeBashTestOperand, hasUnsafeCommandQueryOperand, isBashDoubleBracketCloseBoundary, isBashDoubleBracketHead, isBashProcessSubstitutionStart, isBashTestWhitespace, isShellDynamicDescriptor, isShellFileDescriptor, isShellOutputFileRedirection, isSimpleBashAnsiCQuote, isStaticDescriptorCopy, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
@@ -427,8 +427,8 @@ function inspectScript(command: string, initialCwd: string, depth: number, build
     markOpaque(builder, "command_substitution_depth");
     return;
   }
-  if (hasAmbiguousBashCwd(command)) {
-    markOpaque(builder, "unverifiable_working_directory");
+  if (hasUninspectableBashState(command)) {
+    markOpaque(builder, "unverifiable_shell_state");
     return;
   }
   const analysis = prepareShellAnalysis(command);
