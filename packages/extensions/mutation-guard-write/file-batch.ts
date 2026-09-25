@@ -9,7 +9,7 @@ import { Text } from "@super-pi/tui";
 import type { ToolDefinition } from "@super-pi/coding-agent";
 import { Value } from "typebox/value";
 import { consumePermissionPathApproval, mutationRequestHash, type PermissionPathApproval } from "../resource-lifecycle-guard/permission-contract.ts";
-import { MutationWriteGuard, sha256, type GuardedEdit, type MutationEditAuthorization, type MutationPathApproval } from "./core.ts";
+import { MutationWriteGuard, resolveToolPath, sha256, type GuardedEdit, type MutationEditAuthorization, type MutationPathApproval } from "./core.ts";
 import { prepareFileCreation, verifyCreationAncestor, directoryKey, type FileCreationPlan } from "./file-creation.ts";
 import { capturePathIdentity, sameIdentity, prepareNativeOperation, revalidateNativePlan, executeNativePlan, type NativePlan, type PathIdentity, type MutationStatus } from "./native-file-core.ts";
 import { prepareSnapshotLineMutation, executePreparedSnapshotMutation, type PreparedSnapshotMutation, type SnapshotLineEdit } from "./snapshot-line-edit.ts";
@@ -44,6 +44,8 @@ interface Item {
   operation: Operation;
   input: BatchInput["operations"][number];
   target: string;
+  // Absolute lexical path: interpret edit/write syntax once; retain aliases for identity checks.
+  executionPath: string;
   paths: string[];
   identity?: PathIdentity;
   parent?: PathIdentity;
@@ -128,7 +130,7 @@ export class BatchInvocation {
   readonly assertItemPath = async (): Promise<string> => {
     this.assertAuthority();
     const item = this.currentItem!;
-    return this.guard.assertEditPathAllowed(this.cwd, item.input.path, item.approval);
+    return this.guard.assertEditPathAllowed(this.cwd, item.executionPath, item.approval);
   };
 
   private readonly guard: MutationWriteGuard;
@@ -149,7 +151,8 @@ export class BatchInvocation {
       for (let index = 0; index < this.input.operations.length; index++) {
         signal?.throwIfAborted();
         const input = this.input.operations[index];
-        const path = resolve(this.cwd, input.path);
+        const path = input.operation === "edit" || input.operation === "write"
+          ? resolveToolPath(this.cwd, input.path) : resolve(this.cwd, input.path);
         if (process.platform === "win32") {
           const targets = input.destination ? [path, resolve(this.cwd, input.destination)] : [path];
           for (const target of targets) for (const component of target.slice(parse(target).root.length).split(WINDOWS_PATH_SEPARATOR_PATTERN)) {
@@ -158,7 +161,7 @@ export class BatchInvocation {
         }
         const assessment = await assessProtectedMutationPath(this.cwd, path);
         if (!assessment.canonicalTarget) throw new Error("[POLICY_BLOCKED] Unverifiable batch target.");
-        const item: Item = { itemId: `${this.id}:${index}`, operation: input.operation, input, target: assessment.canonicalTarget,
+        const item: Item = { itemId: `${this.id}:${index}`, operation: input.operation, input, executionPath: path, target: assessment.canonicalTarget,
           paths: [assessment.canonicalTarget], approval: { canonicalTarget: assessment.canonicalTarget, protectedRoots: assessment.violations } };
         this.items.push(item);
         if (input.operation === "delete" || input.operation === "move") {
@@ -170,7 +173,7 @@ export class BatchInvocation {
         } else if (input.operation === "write") {
           item.creation = await prepareFileCreation(path, input.mode === "create");
           if (input.mode === "overwrite" && item.creation) throw new Error("[READ_REQUIRED] Overwrite target is missing; use an explicit create item.");
-          if (!item.creation) { item.identity = await capturePathIdentity(path); item.parent = await capturePathIdentity(resolve(path, "..")); item.previousSha256 = await this.guard.preflightOverwrite(this.cwd, input.path, this.generation, item.approval); }
+          if (!item.creation) { item.identity = await capturePathIdentity(path); item.parent = await capturePathIdentity(resolve(path, "..")); item.previousSha256 = await this.guard.preflightOverwrite(this.cwd, path, this.generation, item.approval); }
           else item.approval.creationPlan = item.creation;
           item.approval.writePreflight = true;
           item.reservation = this.guard.reserveWriteMutation(this.generation, item.target, input.content!, item.creation);
@@ -178,14 +181,14 @@ export class BatchInvocation {
           item.identity = await capturePathIdentity(path);
           item.parent = await capturePathIdentity(resolve(path, ".."));
           if (input.snapshot) {
-            item.snapshot = await prepareSnapshotLineMutation(this.ctx.sessionManager.getSessionId(), this.cwd, input.path, input.snapshot, input.edits as SnapshotLineEdit[], signal,
+            item.snapshot = await prepareSnapshotLineMutation(this.ctx.sessionManager.getSessionId(), this.cwd, path, input.snapshot, input.edits as SnapshotLineEdit[], signal,
               { assertPathAllowed: async () => item.target });
             item.reservation = this.guard.reserveSnapshotEdit(this.generation, item.target, item.snapshot.replacements, item.snapshot.changedBytes);
             item.previousSha256 = item.snapshot.receipt.sha256;
           } else {
             const bytes = await readFile(path);
             const text = decoder.decode(bytes);
-            item.exact = await this.guard.authorizeEdit(this.cwd, input.path, input.edits as GuardedEdit[], this.generation, text, item.approval);
+            item.exact = await this.guard.authorizeEdit(this.cwd, path, input.edits as GuardedEdit[], this.generation, text, item.approval);
             item.reservation = item.exact.reservationId;
             prepareExactEditContent(text, item.exact.edits, input.path);
             item.previousSha256 = sha256(bytes);
@@ -245,9 +248,9 @@ export class BatchInvocation {
               const diff = generateDiffString(candidate.baseContent, candidate.newContent);
               const patch = generateUnifiedPatch(item.input.path, candidate.baseContent, candidate.newContent);
               this.assertAuthority();
-              const previousSha256 = await this.guard.writeEditContent(this.cwd, item.input.path, before, candidate.finalContent, item.reservation, item.approval, signal);
+              const previousSha256 = await this.guard.writeEditContent(this.cwd, item.executionPath, before, candidate.finalContent, item.reservation, item.approval, signal);
               receipt = { operation: "edit", target: item.target, ok: true, stateChanged: true, previousSha256, sha256: sha256(candidate.finalContent), replacements: item.exact.replacements, diff: diff.diff, patch };
-            } else receipt = await this.guard.write(this.cwd, item.input.path, item.input.content!, this.generation, signal, item.approval, item.reservation, sharedDirectories);
+            } else receipt = await this.guard.write(this.cwd, item.executionPath, item.input.content!, this.generation, signal, item.approval, item.reservation, sharedDirectories);
             result.receipt = receipt;
             result.status = receipt.status ?? "succeeded";
             result.stateChanged = receipt.stateChanged;
@@ -295,6 +298,8 @@ export class BatchInvocation {
   private async revalidate(item: Item, signal?: AbortSignal, shared?: Map<string, PathIdentity>): Promise<void> {
     signal?.throwIfAborted(); this.assertAuthority();
     if (item.native) { await revalidateNativePlan(item.native); await this.guard.assertNativeEvidence(item.target); return; }
+    const currentTarget = await this.guard.assertEditPathAllowed(this.cwd, item.executionPath, item.approval);
+    if (directoryKey(currentTarget) !== directoryKey(item.target) || (item.creation && directoryKey(item.creation.canonicalTarget) !== directoryKey(currentTarget))) throw new Error("[STALE_STATE] Prepared execution target changed.");
     if (item.creation) {
       await verifyCreationAncestor(item.creation);
       try { await lstat(item.creation.path); throw new Error("[TARGET_APPEARED] Create target appeared after preflight."); }

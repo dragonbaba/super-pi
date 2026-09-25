@@ -197,3 +197,59 @@ the current item failed_no_change/cancelled and leave the last not_started.
 Same-turn dry-run budget probes accept 15 additional targets and reject 16,
 proving the completed target remains charged while unused reservations release.
 Session reopen collects the first receipt once and does not change any target.
+
+
+## Batch path semantics follow-up (PR #46)
+
+Formal integration has merged A into main at
+8f31b54086799359a737f6c0cdc4b2ecdecc7bbe. B was retargeted to main and
+normally updated to c7f724112b6d68f56998a2e2f42703fc4e43c8ef. Review thread
+https://github.com/dragonbaba/super-pi/pull/46#discussion_r4105310369 stopped
+its merge; the user subsequently authorized this repair and conditional B -> C
+integration. Earlier no-merge statements above describe earlier authorization.
+
+The real Agent/ExtensionRunner/guard/permission/filesystem fixture reproduces
+four distinct baseline outcomes with matching file contents and prior reads:
+
+- create `@new/file.txt`: preflight and approval name literal `@new/file.txt`;
+  mkdir actually creates `@new`, then the canonical-target check rejects before
+  opening a file. The directory remains and the result correctly reports partial.
+- overwrite and exact `@name.txt`: preflight/approval/outer receipt name
+  `@name.txt`, but the actual write changes `name.txt`; `@name.txt` stays intact.
+  Equal initial bytes avoid hiding the mismatch behind a hash failure.
+- snapshot `@name.txt`: the existing snapshot path check rejects during
+  preparation. Neither file changes and no write-side filesystem call occurs.
+  This is a rejected request, not a reproduced wrong-file snapshot commit.
+
+The minimal production change belongs entirely to B's file-batch.ts. Each
+edit/write item resolves its original syntax once with the single-file
+resolveToolPath function and retains that absolute lexical executionPath.
+All preparation and execution core calls use it. The original frozen input,
+request hash and approval binding remain unchanged. Absolute lexical paths
+cannot strip `@@` twice and retain parent aliases for identity revalidation;
+they are not substituted with canonical strings. Native delete/move retain
+literal source/destination semantics. Before execution, the resolved target,
+approval target and creation plan must agree, using the existing Windows path
+comparison rule. Existing ancestor/file identities are still rechecked.
+No shared single-file production core, parser, global cache, regex or hot-path
+callback was added. Single-file controls did not reproduce the batch mismatch.
+
+The new cross-platform suite has 86 cases: four traced reproductions plus
+single/batch create/overwrite/exact/snapshot controls for relative, absolute,
+leading @, @@, ./@, middle @scope, Chinese/space and @absolute paths; literal
+native source/destination controls; alias conflicts; refusal/dry-run/invalid
+snapshot/existing target/later preflight failure; changed request; approval-time
+junction/symlink drift; partial completion, cancellation, directory retention,
+budget release and Session reopen without duplicate receipts or replay.
+The device-path case is explicitly Windows-only; the remaining 85 execute on
+Linux too. Actual Windows drive/@drive paths are the platform absolute cases.
+Tracing wraps real mkdir/open/write/link/unlink/rename calls, captures prepared
+and approval targets, and verifies real contents, not only error strings.
+Test-process instrumentation is restored and its active owner released.
+
+At the initial repaired working tree, the combined path/batch/exact/native
+regression has 136 passes, one case-sensitive-filesystem skip on Windows,
+and zero failures; check passes. Final committed-HEAD complete tests, allocation,
+Linux/Windows CI and actual review evidence are recorded in the PR, not inferred
+from c7f724's old green checks. Existing exact final authority/signal gates and
+single-file production cores are unchanged.
