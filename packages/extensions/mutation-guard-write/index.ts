@@ -257,7 +257,7 @@ export default function mutationGuardWriteExtension(pi: ExtensionAPI): void {
     const read = observedTextRead(event);
     if (read) {
       try {
-        const source = (event.details as any)?.[MUTATION_READ_SOURCE];
+        const source = (event.content as any)?.[MUTATION_READ_SOURCE];
         if (!source || typeof source.canonicalPath !== "string" || typeof source.addressedPath !== "string" || typeof source.fileGeneration !== "string") throw new Error("Read source identity is unavailable.");
         const target = await guard.recordRead(
           ctx.cwd,

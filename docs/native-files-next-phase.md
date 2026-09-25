@@ -459,3 +459,10 @@ extension loaders. Snapshot/guard consume it before result persistence; only
 the accepted target/call/argument binding is durable. No global object map or
 source body is retained. The existing independent-session/disposal/disabled-
 ledger privacy assertion is retained unchanged and passes with the correction.
+
+The ordinary small-read compatibility assertion also requires unchanged
+`details: undefined`. Private source metadata therefore rides the existing
+content array (non-enumerable symbol) instead of allocating a new details
+object. The optional snapshot wrapper transfers that same descriptor when it
+replaces the content array; it does not copy file text or create another proof.
+Both original read-output equality and Session privacy gates remain unchanged.

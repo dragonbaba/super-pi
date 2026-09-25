@@ -279,7 +279,7 @@ function nativeReadProjection(bytes: Buffer, input: ReadToolInput): NativeReadPr
 }
 
 async function matchesReadSource(canonicalPath: string, result: SnapshotReadResult): Promise<boolean> {
-  const source = result.details?.[MUTATION_READ_SOURCE];
+  const source = (result.content as any)[MUTATION_READ_SOURCE];
   if (!source) return true;
   if (canonicalPath !== source.canonicalPath) return false;
   try { return readFileGeneration(await lstat(source.canonicalPath, { bigint: true })) === source.fileGeneration; }

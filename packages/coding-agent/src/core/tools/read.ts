@@ -35,8 +35,6 @@ export const readToolSystemPromptContribution = {
 export type ReadToolInput = Static<typeof readSchema>;
 
 export interface ReadToolDetails {
-	/** Descriptor-validated source for the local mutation guard; never grants ledger cache precision. */
-	[MUTATION_READ_SOURCE]?: Pick<ValidatedReadIdentity, "canonicalPath" | "addressedPath" | "fileGeneration">;
 	truncation?: TruncationResult;
 	window?: Omit<ReadWindowResult, "text">;
 }
@@ -212,10 +210,9 @@ function formatReadResult(
 	return text;
 }
 
-function attachMutationReadSource<T extends { details: ReadToolDetails | undefined }>(result: T, identity: ValidatedReadIdentity | undefined): T {
+function attachMutationReadSource<T extends { content: object[] }>(result: T, identity: ValidatedReadIdentity | undefined): T {
 	if (identity?.canonicalPath && identity.fileGeneration) {
-		result.details ??= {};
-		Object.defineProperty(result.details, MUTATION_READ_SOURCE, { value: { canonicalPath: identity.canonicalPath, addressedPath: identity.addressedPath, fileGeneration: identity.fileGeneration } });
+		Object.defineProperty(result.content, MUTATION_READ_SOURCE, { value: { canonicalPath: identity.canonicalPath, addressedPath: identity.addressedPath, fileGeneration: identity.fileGeneration } });
 	}
 	return result;
 }
