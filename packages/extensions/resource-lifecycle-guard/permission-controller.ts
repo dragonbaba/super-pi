@@ -1,3 +1,4 @@
+import { prepareShellCwd } from "@super-pi/coding-agent";
 import { createHash } from "node:crypto";
 import { lstat } from "node:fs/promises";
 import { dirname, isAbsolute, resolve } from "node:path";
@@ -841,8 +842,9 @@ export class SessionPermissionController {
     if (event.toolName !== "bash" && event.toolName !== "powershell") return undefined;
     const shellOperation = event.toolName;
     const shellInput = event.input as { command: string; cwd?: unknown };
-    const hasExplicitCwd = typeof shellInput.cwd === "string" && shellInput.cwd.length > 0;
-    const effectiveCwd = hasExplicitCwd ? resolve(ctx.cwd, shellInput.cwd as string) : ctx.cwd;
+    const cwdBinding = await prepareShellCwd(shellInput, ctx.cwd);
+    const hasExplicitCwd = cwdBinding !== undefined;
+    const effectiveCwd = cwdBinding?.canonical ?? ctx.cwd;
     const high = inspectHighRiskBashMutation(event.input, effectiveCwd, shellOperation);
     const scope = shellOperation === "powershell"
       ? inspectPowerShellPermissionScope(event.input, effectiveCwd)

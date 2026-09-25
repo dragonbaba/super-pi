@@ -1,3 +1,4 @@
+import { prepareShellCwd, LOCAL_CWD_BACKEND } from "./shell-cwd.ts";
 import { constants } from "node:fs";
 import { access as fsAccess } from "node:fs/promises";
 import type { AgentTool } from "@super-pi/agent-core";
@@ -60,6 +61,7 @@ function resolveTimeoutMs(timeout: number | undefined): number | undefined {
 }
 
 const bashSchema = Type.Object({
+	cwd: Type.Optional(Type.String({ minLength: 1, maxLength: 4096, description: "Literal directory for this call; relative to Session cwd. No shell or home expansion. Does not change Session cwd." })),
 	command: Type.String({ description: "Shell command to execute" }),
 	timeout: Type.Optional(Type.Number({ description: "Timeout in seconds (optional, no default timeout)" })),
 });
@@ -75,6 +77,7 @@ export const bashToolSystemPromptContribution = {
 export type BashToolInput = Static<typeof bashSchema>;
 
 export interface BashToolDetails {
+	cwd?: string;
 	truncation?: TruncationResult;
 	fullOutputPath?: string;
 	spillFileCapped?: boolean;
@@ -87,6 +90,7 @@ export interface BashToolDetails {
  * Override these to delegate command execution to remote systems (for example SSH).
  */
 export interface BashOperations {
+	readonly [LOCAL_CWD_BACKEND]?: true;
 	/**
 	 * Execute a command and stream output.
 	 * @param command The command to execute
@@ -102,6 +106,7 @@ export interface BashOperations {
 			signal?: AbortSignal;
 			timeout?: number;
 			env?: NodeJS.ProcessEnv;
+			beforeSpawn?: (cwd: string) => void;
 		},
 	) => Promise<{ exitCode: number | null }>;
 }
@@ -109,7 +114,8 @@ export interface BashOperations {
 /** Shared process execution used by the built-in shell tools. */
 export function createLocalShellOperations(shellName: string, resolveShellConfig: () => ShellConfig): BashOperations {
 	return {
-		exec: async (command, cwd, { onData, signal, timeout, env }) => {
+		[LOCAL_CWD_BACKEND]: true,
+		exec: async (command, cwd, { onData, signal, timeout, env, beforeSpawn }) => {
 			const timeoutMs = resolveTimeoutMs(timeout);
 			if (signal?.aborted) {
 				throw new Error("aborted");
@@ -122,6 +128,8 @@ export function createLocalShellOperations(shellName: string, resolveShellConfig
 			}
 
 			const commandFromStdin = shellConfig.commandTransport === "stdin";
+				signal?.throwIfAborted();
+			beforeSpawn?.(cwd);
 			const child = spawn(shellConfig.shell, commandFromStdin ? shellConfig.args : [...shellConfig.args, command], {
 				cwd,
 				detached: process.platform !== "win32",
@@ -600,12 +608,12 @@ function formatDuration(ms: number): string {
 	return `${(ms / 1000).toFixed(1)}s`;
 }
 
-function formatShellCall(args: { command?: string; timeout?: number } | undefined, prompt: string): string {
+function formatShellCall(args: { command?: string; timeout?: number; cwd?: string } | undefined, prompt: string): string {
 	const command = str(args?.command);
 	const timeout = args?.timeout as number | undefined;
 	const timeoutSuffix = timeout ? theme.fg("muted", ` (timeout ${timeout}s)`) : "";
 	const commandDisplay = command === null ? invalidArgText(theme) : command ? command : theme.fg("toolOutput", "...");
-	return theme.fg("toolTitle", theme.bold(`${prompt} ${commandDisplay}`)) + timeoutSuffix;
+	return theme.fg("toolTitle", theme.bold(`${prompt} ${commandDisplay}`)) + timeoutSuffix + (args?.cwd ? theme.fg("muted", ` [cwd=${args.cwd}]`) : "");
 }
 
 function snapshotBashResultContent(
@@ -805,6 +813,7 @@ export function createShellToolDefinition(
 	options?: BashToolOptions,
 ): ToolDefinition<typeof bashSchema, BashToolDetails | undefined, BashRenderState> {
 	const ops = options?.operations ?? createLocalBashOperations({ shellPath: options?.shellPath });
+	const backendExecute = ops.exec;
 	const commandPrefix = options?.commandPrefix;
 	const exposeSessionEnvironment = options?.exposeSessionEnvironment ?? true;
 	const spawnHook = options?.spawnHook;
@@ -815,16 +824,25 @@ export function createShellToolDefinition(
 		promptSnippet: config.promptSnippet,
 		promptGuidelines: exposeSessionEnvironment && config.promptGuidelines ? [...config.promptGuidelines] : undefined,
 		parameters: bashSchema,
+        prepareArguments(args) {
+            if (args && typeof args === "object" && (args as BashToolInput).cwd !== undefined
+              && (!ops[LOCAL_CWD_BACKEND] || commandPrefix || spawnHook || ops.exec !== backendExecute)) throw new Error("[SHELL_CWD_UNSUPPORTED] Explicit cwd requires an unchanged built-in local backend without commandPrefix or spawnHook.");
+            return args as BashToolInput;
+        },
 		async execute(
 			_toolCallId,
-			{ command, timeout }: { command: string; timeout?: number },
+			input: BashToolInput,
 			signal?: AbortSignal,
 			onUpdate?,
 			ctx?,
 		) {
+			const { command, timeout } = input;
+			if (input.cwd !== undefined && (!ops[LOCAL_CWD_BACKEND] || commandPrefix || spawnHook || ops.exec !== backendExecute)) throw new Error("[SHELL_CWD_UNSUPPORTED] Explicit cwd requires the built-in local backend without commandPrefix or spawnHook.");
+			const cwdBinding = input.cwd === undefined ? undefined : await prepareShellCwd(input, ctx?.cwd ?? cwd);
+			try {
 			const resolvedCommand = commandPrefix ? `${commandPrefix}\n${command}` : command;
 			// These variables only change Bash startup and cd; PowerShell keeps them as ordinary data.
-			const spawnContext = resolveSpawnContext(resolvedCommand, cwd, spawnHook, exposeSessionEnvironment, ctx, config.name === "bash");
+			const spawnContext = resolveSpawnContext(resolvedCommand, cwdBinding?.canonical ?? cwd, spawnHook, exposeSessionEnvironment, ctx, config.name === "bash");
 			let acceptingOutput = true;
 			let outputFailure: Error | undefined;
 			const outputAbort = new AbortController();
@@ -912,9 +930,9 @@ export function createShellToolDefinition(
 			const formatOutput = (snapshot: Awaited<ReturnType<typeof finishOutput>>, emptyText = "(no output)") => {
 				const truncation = snapshot.truncation;
 				let text = snapshot.content || emptyText;
-				let details: BashToolDetails | undefined;
+				let details: BashToolDetails | undefined = cwdBinding ? { cwd: cwdBinding.canonical } : undefined;
 				if (truncation.truncated) {
-					details = { truncation, fullOutputPath: snapshot.fullOutputPath, spillFileCapped: snapshot.spillFileCapped };
+					details = { cwd: cwdBinding?.canonical, truncation, fullOutputPath: snapshot.fullOutputPath, spillFileCapped: snapshot.spillFileCapped };
 					const outputLabel = snapshot.spillFileCapped ? "Capped output file (5 MiB; later output unavailable)" : "Full output";
 					const startLine = truncation.totalLines - truncation.outputLines + 1;
 					const endLine = truncation.totalLines;
@@ -935,11 +953,12 @@ export function createShellToolDefinition(
 			try {
 				let exitCode: number | null;
 				try {
-					const result = await ops.exec(spawnContext.command, spawnContext.cwd, {
+					const result = await backendExecute.call(ops, spawnContext.command, spawnContext.cwd, {
 						onData: handleData,
 						signal: executionSignal,
 						timeout,
 						env: spawnContext.env,
+						beforeSpawn: cwdBinding?.beforeSpawn,
 					});
 					exitCode = result.exitCode;
 				} catch (err) {
@@ -970,6 +989,7 @@ export function createShellToolDefinition(
 			} finally {
 				clearUpdateTimer();
 			}
+			} finally { cwdBinding?.release(); }
 		},
 		renderCall(args, _theme, context) {
 			const state = context.state;

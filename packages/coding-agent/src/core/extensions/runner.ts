@@ -480,7 +480,7 @@ class PendingToolAuthorization implements ToolInvocationAuthorization {
 		try {
 			if (!this.live || signal?.aborted) throw new Error("Blocked by policy: final authorization is obsolete");
 			// Only the guarded Bash contract is supported by this internal handoff.
-			if (name !== "bash") throw new Error("Blocked by policy: unsupported final authorization tool");
+			if (name !== "bash" && name !== "powershell") throw new Error("Blocked by policy: unsupported final authorization tool");
 			let command: unknown, timeout: unknown, cwd: unknown, purpose: unknown;
 			for (let i = 0; i < this.checks.length; i++) {
 				const check = this.checks[i]!;

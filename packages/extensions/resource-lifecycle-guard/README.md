@@ -101,3 +101,27 @@ Bash lifecycle refusal now occurs in a side-effect-free preflight before permiss
 Recovery guidance for unsupported shell syntax is part of the preflight refusal itself, so immediate Agent results carry it into the next model context without post-execution transforms. For otherwise authorized diagnostics, native file creation/editing and subsequent foreground execution are separate requests with their own evidence, path, permission, and lifecycle rules. Tool/language changes cannot legalize denied behavior. The capability statement is added only when this guard is loaded. Bash timeout uses seconds (`60` is one minute); documentation does not rescale supplied values or change runtime policy.
 
 Preflight errors retain the first actual refusal: `SHELL_DYNAMIC_EXECUTABLE`, `SHELL_HEREDOC`, `SHELL_WRAPPER`, `SHELL_SUBSTITUTION`, `SHELL_INSPECTION_LIMIT`, or `SHELL_UNINSPECTABLE`. In the loop and pipeline Chrome fixtures the first refusal is executable expansion at `$CHROME`; only a bounded simple variable name is echoed. A quoted literal path removes that inspectability problem and still requires normal checks and current authorization. Dynamic data arguments do not become executable-position errors. Only detected heredocs receive script-staging advice; wrapper/eval uncertainty does not imply a heredoc. No variable propagation, command evaluation or automatic retry is added. “Not executed” describes this Bash call, not sibling calls in the response.
+
+### Explicit Shell cwd
+
+Bash and PowerShell accept optional literal `cwd`, relative to the Session cwd.
+The local backend resolves one canonical directory and inode identity before scope
+analysis and permission matching, then rechecks the requested alias and that identity
+synchronously (metadata only) immediately before spawn. No `cd` text is synthesized,
+no shell expansion is performed, and Session/process cwd remains unchanged. Omission
+retains the existing execution path without new directory traversal. Directory identity
+checks do not provide a filesystem sandbox or an OS-level compare-and-swap.
+
+The first implementation supports the built-in local backend. Custom/remote operations,
+commandPrefix and spawnHook configurations reject explicit cwd before authorization;
+omitted cwd keeps their existing behavior. There is no local realpath claim for remote
+paths. Native Windows drive paths work; `/c/...` is not translated as MSYS syntax and
+`~/...` is not home expansion (a literal local directory of that spelling is allowed).
+The final PowerShell transport retains its fixed UTF-8 setup prefix. Permission changes,
+request substitution and detected symlink/junction or directory replacement invalidate
+the old approval; they never trigger automatic reauthorization or command replay.
+
+Invocation-owned directory bindings carry one stable final-spawn callback; authority
+references are released when execution finishes. Output/progress callbacks and renderer
+ownership remain unchanged. TUI shows supplied cwd and final details record the canonical
+cwd. Existing #43 CDPATH query-prefix and closed-subshell hash limitations remain.

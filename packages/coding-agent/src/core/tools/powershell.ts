@@ -1,3 +1,4 @@
+import { LOCAL_CWD_BACKEND } from "./shell-cwd.ts";
 import {
 	getPowerShellCandidateConfig,
 	getPowerShellConfig,
@@ -197,6 +198,7 @@ export function createLocalPowerShellOperations(options: LocalPowerShellOperatio
 		}
 	};
 	return {
+		[LOCAL_CWD_BACKEND]: options.execute ? undefined : true,
 		exec: async (command, cwd, executionOptions) => {
 			if (state.disabledReason) throw new Error(state.disabledReason);
 			let config: PowerShellConfig;
