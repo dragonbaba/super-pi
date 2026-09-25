@@ -227,7 +227,7 @@ function observeBatchResult(state: FalseSuccessState, observation: ToolObservati
     // still block an unqualified task-completion claim, without claiming effects.
     const status = paired ? item.status : "failed_no_change";
     const target = intent?.target ?? mutationTarget(operation.operation, operation, observation.cwd);
-    if (target) observeMutationOutcome(state, "file_batch", normalizeAbsolute(target, observation.cwd ?? process.cwd()), status);
+    observeMutationOutcome(state, "file_batch", normalizeAbsolute(target ?? observation.cwd ?? process.cwd(), observation.cwd ?? process.cwd()), status);
     const destination = intent?.destination ?? (operation.operation === "move" && typeof operation.destination === "string" ? resolve(observation.cwd ?? process.cwd(), operation.destination) : undefined);
     if (destination) observeMutationOutcome(state, "file_batch", normalizeAbsolute(destination, observation.cwd ?? process.cwd()), status);
   }

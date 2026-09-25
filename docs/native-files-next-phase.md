@@ -359,3 +359,9 @@ full/CI/review checks complete:
 The first follow-up regression run passes all 26 cases (12 previous completion
 guard controls plus 14 new cases). Original path, identity/deadline, native
 receipt, exact final-gate and shared-core tests are rerun on the final commit.
+
+A further actual default-Agent negative test confirms an invalid raw batch
+operation previously produced no target obligation. It now uses the same
+workspace fallback as other unparseable preflight failures. A null-argument
+control already blocked completion and remains unchanged. No schema or repair
+semantics were changed.

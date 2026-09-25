@@ -135,3 +135,10 @@ for (const batch of [false, true]) for (const kind of ["partial", "preflight"]) 
   assert.equal((await f.say("已完成。" )).includes("尚未验证"), true);
   assert.equal((await f.call("goal_complete", {})).isError, true);
 });
+
+for (const args of [null, { operations: [{ operation: "invalid", path: "file" }] }]) test(`R4 invalid raw arguments still block completion: ${args === null ? "null" : "operation"}`, async t => {
+  const f = await fixture(t);
+  assert.equal((await f.call("file_batch", args)).isError, true);
+  assert.equal((await f.say("已完成。" )).includes("尚未验证"), true);
+  assert.equal((await f.call("goal_complete", {})).isError, true);
+});
