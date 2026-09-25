@@ -408,8 +408,10 @@ export class MutationWriteGuard {
     toolCallId: string,
     turnGeneration: number,
     complete: boolean,
-  ): Promise<void> {
+    preparedTarget?: string,
+  ): Promise<string> {
     const canonicalPath = await canonicalExistingPath(resolveToolPath(cwd, path));
+    if (preparedTarget !== undefined && canonicalPath !== preparedTarget) throw new Error("Read evidence target changed after capture.");
     const evidence = this.#rangeEvidence.get(canonicalPath) ?? [];
     if (!this.#rangeEvidence.has(canonicalPath) && this.#rangeEvidence.size >= MAX_EVIDENCE_PATHS) {
       const oldestPath = this.#rangeEvidence.keys().next().value;
@@ -439,6 +441,7 @@ export class MutationWriteGuard {
     if (completeEvidence) {
       this.#setCompleteEvidence(canonicalPath, { sha256: sha256(text), toolCallId, turnGeneration });
     }
+    return canonicalPath;
   }
 
   async recordCompleteRead(

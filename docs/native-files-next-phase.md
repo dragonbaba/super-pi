@@ -365,3 +365,25 @@ operation previously produced no target obligation. It now uses the same
 workspace fallback as other unparseable preflight failures. A null-argument
 control already blocked completion and remains unchanged. No schema or repair
 semantics were changed.
+
+## R3 ancestor-alias read restoration follow-up
+
+Two additional real Agent/native batch/Session regressions reproduce a live vs
+reopen discrepancy: after delete/move finishes, an ancestor alias is redirected
+to an unread equal-content file. Live overwrite is rejected, but replaying the
+old read previously resolved its raw alias again and granted that other file
+read evidence. This is evidence reconstruction, not automatic tool replay.
+
+The existing read-result hook now records its accepted canonical evidence target
+with the actual call ID and path/offset/limit binding in small result metadata.
+Restore uses that bound target, with a canonical agreement check, rather than
+reinterpreting the alias. It does not create another read tool, global registry,
+cache or content copy. Ordinary legacy reads retain compatibility; legacy alias
+reads with no provable original target require a fresh read. Four explicit
+new/legacy and plain/alias controls verify this conservative compatibility rule.
+Existing mutation receipt collection and deduplication formats are unchanged.
+
+Both reproduced cases and the four compatibility controls pass. Combined native,
+read evidence and mutation-contract controls: 91/91 pass. The full retained path
+matrix and result-boundary suite also pass (130/130 in that run). Final-HEAD
+complete tests, CI and actual review remain required before merging.

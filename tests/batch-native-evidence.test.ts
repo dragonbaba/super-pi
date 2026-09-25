@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test, { after, mock } from "node:test";
 import fs from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
-import { writeFileSync, readFileSync, existsSync, realpathSync } from "node:fs";
+import { writeFileSync, readFileSync, existsSync, realpathSync, mkdirSync, symlinkSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { mutationFixture, MutationWriteGuard } from "./helpers/mutation-fixture.ts";
 import { createJiti } from "jiti";
@@ -82,4 +82,33 @@ test("R3/R4 result lookup is bounded before Session branch materialization", asy
   const tail = recentMutationEntries(f.session) as any[];
   assert.equal(lookups, 512); assert.equal(tail.length, 512);
   assert.equal(tail[0].data.index, 512); assert.equal(tail.at(-1).data.index, 1023);
+});
+
+for (const operation of ["delete", "move"]) test(`R3 alias read cannot gain evidence on reopen after ${operation}`, async t => {
+  const f = await mutationFixture(t), cwd = realpathSync.native(f.cwd), alias = join(cwd, "alias"), a = join(cwd, "one/inner/file"), b = join(cwd, "two/inner/file");
+  for (const dir of ["one", "two"]) { mkdirSync(join(cwd, dir, "inner"), { recursive: true }); writeFileSync(join(cwd, dir, "inner/file"), "same"); }
+  symlinkSync(join(cwd, "one"), alias, process.platform === "win32" ? "junction" : "dir");
+  const read = await f.call("read", { path: "alias/inner/file" }, "alias-read");
+  assert.equal(read.isError, false); assert.equal((read.details as any).mutationReadEvidence.target, a);
+  f.onRecord(data => { if (data.phase === "result") { unlinkSync(alias); symlinkSync(join(cwd, "two"), alias, process.platform === "win32" ? "junction" : "dir"); } });
+  assert.equal((await f.call("file_batch", { operations: [{ operation, path: "alias/inner/file", ...(operation === "move" ? { destination: "moved" } : {}) }] }, "alias-native")).isError, false); f.onRecord(() => {});
+  assert.equal(existsSync(a), false); assert.equal(readFileSync(b, "utf8"), "same");
+  const branch = SessionManager.open(f.session.getSessionFile()!).getBranch();
+  assert.equal((await f.call("write", { path: b, content: "forbidden" }, "live-denied")).isError, true);
+  const restored = new MutationWriteGuard(); await restoreMutationEvidenceFromBranch(restored, cwd, branch);
+  await assert.rejects(restored.write(cwd, b, "forbidden", 99));
+  assert.equal(readFileSync(b, "utf8"), "same");
+});
+
+for (const alias of [false, true]) for (const legacy of [false, true]) test(`R3 read receipt compatibility alias=${alias}, legacy=${legacy}`, async t => {
+  const f = await mutationFixture(t), cwd = realpathSync.native(f.cwd), target = join(cwd, "real/inner/file");
+  mkdirSync(join(cwd, "real/inner"), { recursive: true }); writeFileSync(target, "before");
+  if (alias) symlinkSync(join(cwd, "real"), join(cwd, "alias"), process.platform === "win32" ? "junction" : "dir");
+  const read = await f.call("read", { path: alias ? "alias/inner/file" : "real/inner/file" }, "receipt");
+  assert.equal((read.details as any).mutationReadEvidence.target, target);
+  const branch = JSON.parse(JSON.stringify(SessionManager.open(f.session.getSessionFile()!).getBranch()));
+  if (legacy) for (const entry of branch) if (entry.message?.toolName === "read") delete entry.message.details.mutationReadEvidence;
+  const restored = new MutationWriteGuard(); await restoreMutationEvidenceFromBranch(restored, cwd, branch);
+  if (alias && legacy) await assert.rejects(restored.write(cwd, target, "after", 99));
+  else assert.equal((await restored.write(cwd, target, "after", 99)).ok, true);
 });

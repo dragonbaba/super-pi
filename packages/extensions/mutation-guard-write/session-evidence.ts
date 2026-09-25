@@ -1,4 +1,7 @@
-import { isAbsolute } from "node:path";
+import { isAbsolute, relative, resolve } from "node:path";
+import { realpath } from "node:fs/promises";
+import { resolveToolPath } from "./core.ts";
+import { directoryKey } from "./file-creation.ts";
 import { mutationRequestHash } from "../resource-lifecycle-guard/permission-contract.ts";
 import type { MutationWriteGuard } from "./core.ts";
 import { READ_RESULT_ANNOTATION_PATTERN, SHA256_PATTERN, UNSAFE_RECEIPT_PATH_PATTERN } from "./regex.ts";
@@ -227,15 +230,30 @@ async function restoreRead(
   const endLine = typeof limit === "number" && Number.isFinite(limit)
     ? startLine + Math.max(0, Math.floor(limit)) - 1
     : Number.MAX_SAFE_INTEGER;
+  const binding = (message.details as any)?.mutationReadEvidence;
+  let target: string;
+  if (binding !== undefined) {
+    if (binding?.version !== 1 || binding.toolCallId !== toolCallId || binding.path !== path
+      || binding.offset !== offset || binding.limit !== limit || !safeReceiptPath(binding.target) || !isAbsolute(binding.target)) return;
+    target = binding.target;
+  } else {
+    // Legacy results do not prove an alias's original target. Preserve ordinary
+    // path reads, but require a fresh read for aliases that cannot be restored safely.
+    const lexical = resolveToolPath(cwd, path);
+    const ordinary = resolve(await realpath(cwd), relative(resolve(cwd), lexical));
+    target = await realpath(lexical);
+    if (directoryKey(target) !== directoryKey(ordinary)) return;
+  }
   await guard.recordRead(
     cwd,
-    path,
+    target,
     text,
     startLine,
     endLine,
     toolCallId,
     RESTORED_TURN_GENERATION,
     offset === undefined && limit === undefined,
+    target,
   );
 }
 

@@ -256,7 +256,7 @@ export default function mutationGuardWriteExtension(pi: ExtensionAPI): void {
     const read = observedTextRead(event);
     if (read) {
       try {
-        await guard.recordRead(
+        const target = await guard.recordRead(
           ctx.cwd,
           read.path,
           read.text,
@@ -266,6 +266,9 @@ export default function mutationGuardWriteExtension(pi: ExtensionAPI): void {
           turnGeneration,
           read.complete,
         );
+        const input = event.input as { path: string; offset?: unknown; limit?: unknown };
+        return { details: { ...(event.details as object), mutationReadEvidence: { version: 1, toolCallId: event.toolCallId,
+          path: input.path, offset: input.offset, limit: input.limit, target } } };
       } catch {
         // Guarded mutations fail closed if read evidence cannot be canonicalized.
       }
