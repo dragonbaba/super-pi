@@ -839,8 +839,8 @@ export function createShellToolDefinition(
             let cwdBinding = getShellCwdBinding(input);
             try {
 			if (input.cwd !== undefined && (!isLocalShellBackend(ops) || commandPrefix || (spawnHook && spawnHook !== withMsysStdinBridge) || ops.exec !== backendExecute)) throw new Error("[SHELL_CWD_UNSUPPORTED] Explicit cwd requires the built-in local backend without commandPrefix or spawnHook.");
-			if (input.cwd === undefined && cwdBinding) throw new Error("[SHELL_CWD_CHANGED] Bound cwd was removed before execution.");
-            cwdBinding = input.cwd === undefined ? undefined : await prepareShellCwd(input, ctx?.cwd ?? cwd);
+			if (input.cwd === undefined && cwdBinding && !cwdBinding.isReleased) throw new Error("[SHELL_CWD_CHANGED] Bound cwd was removed before execution.");
+            cwdBinding = input.cwd === undefined && !cwdBinding ? undefined : await prepareShellCwd(input, ctx?.cwd ?? cwd);
 			const resolvedCommand = commandPrefix ? `${commandPrefix}\n${command}` : command;
 			// These variables only change Bash startup and cd; PowerShell keeps them as ordinary data.
 			const spawnContext = resolveSpawnContext(resolvedCommand, cwdBinding?.canonical ?? cwd, spawnHook, exposeSessionEnvironment, ctx, config.name === "bash");

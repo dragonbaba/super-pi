@@ -141,3 +141,9 @@ function; final guarded handoff still rejects a released binding within the same
 authorized invocation. Explicit cwd compares canonical target and canonical trusted
 Session root, preserving project settings when the workspace itself is a symlink.
 Omitted cwd adds no realpath traversal. Both regressions failed before this fix.
+
+Fresh input reuse can switch explicit cwd back to omission: preparation clears only
+a previously released binding without filesystem lookup. Removing cwd from a live
+binding remains an identity violation; default shell execution keeps its existing
+no-binding fast path. Bash, PowerShell, standalone and guarded cases have regression
+coverage, including before-fail evidence.

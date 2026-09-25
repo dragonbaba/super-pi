@@ -190,6 +190,8 @@ test("review: standalone scoped wrapper canonicalizes before trusting project se
     assert.ok(result.content[0].text.includes("safe")); assert.equal(result.details.cwd, realpathSync.native(outside)); assert.equal(getShellCwdBinding(input)!.isReleased, true);
     const first = getShellCwdBinding(input); const reused = await bash.execute("standalone-reused", input, undefined, undefined, context);
     assert.ok(reused.content[0].text.includes("safe")); assert.notEqual(getShellCwdBinding(input), first); assert.equal(getShellCwdBinding(input)!.isReleased, true);
+    Reflect.deleteProperty(input, "cwd"); const omitted = await bash.execute("standalone-omitted", input, undefined, undefined, context);
+    assert.ok(omitted.content[0].text.includes("safe")); assert.equal(getShellCwdBinding(input), undefined);
   } finally { if (previous === undefined) delete process.env.SP_CODING_AGENT_DIR; else process.env.SP_CODING_AGENT_DIR = previous; }
 });
 
@@ -208,4 +210,19 @@ test("review: trusted symlinked Session root retains project shell settings", as
     const result = await bash.execute("trusted-alias", input, undefined, undefined, context);
     assert.ok(result.content[0].text.includes("trusted-root")); assert.equal(result.details.cwd, realpathSync.native(f.cwd)); assert.equal(getShellCwdBinding(input)!.isReleased, true);
   } finally { if (previous === undefined) delete process.env.SP_CODING_AGENT_DIR; else process.env.SP_CODING_AGENT_DIR = previous; }
+});
+
+
+test("review: fresh omitted-cwd reuse clears only released bindings", async t => {
+  const f = await fixture(t);
+  for (const tool of [createBashTool(f.cwd, { shellPath: bashPath }), createPowerShellTool(f.cwd)]) {
+    const input: { command: string; cwd?: string } = { command: "echo safe", cwd: f.cwd };
+    await tool.execute("explicit", input); const old = getShellCwdBinding(input)!; assert.equal(old.isReleased, true);
+    Reflect.deleteProperty(input, "cwd"); const result = await tool.execute("omitted", input);
+    assert.ok(result.content[0].type === "text" && result.content[0].text.includes("safe")); assert.equal(getShellCwdBinding(input), undefined);
+    input.cwd = f.cwd; const active = (await prepareShellCwd(input, f.cwd))!; Reflect.deleteProperty(input, "cwd");
+    await assert.rejects(prepareShellCwd(input, f.cwd), error => error instanceof Error && error.message.includes("SHELL_CWD_CHANGED")); assert.equal(getShellCwdBinding(input), active); active.release();
+    const guarded = await f.runner.emitToolCall({ type: "tool_call", toolName: tool.name, toolCallId: "fresh-omitted", input } as never);
+    assert.notEqual(guarded?.block, true); assert.equal(getShellCwdBinding(input), undefined); guarded?.finalAuthorization?.release();
+  }
 });

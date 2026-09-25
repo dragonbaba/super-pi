@@ -43,11 +43,17 @@ export function attachShellCwdBinding(input: object, binding: ShellCwdBinding): 
   Object.defineProperty(input, CWD_BINDING, { value: binding, configurable: true });
 }
 export async function prepareShellCwd(input: { cwd?: unknown }, sessionCwd: string): Promise<ShellCwdBinding | undefined> {
-  if (input.cwd === undefined) return undefined;
+  const existing = getShellCwdBinding(input);
+  if (input.cwd === undefined) {
+    if (existing) {
+      if (!existing.isReleased) throw new Error("[SHELL_CWD_CHANGED] Bound cwd was removed before execution.");
+      Object.defineProperty(input, CWD_BINDING, { value: undefined, configurable: true });
+    }
+    return undefined;
+  }
   if (typeof input.cwd !== "string" || input.cwd.length === 0 || input.cwd.length > 4096 || input.cwd.includes("\0")) throw new Error("[SHELL_CWD_INVALID] cwd must be a nonempty literal directory path.");
   // No shell/home/MSYS expansion: filesystem paths are interpreted by the local backend.
   const requested = resolve(sessionCwd, input.cwd);
-  const existing = getShellCwdBinding(input);
   if (existing && !existing.isReleased) {
     if (existing.requested !== requested) throw new Error("[SHELL_CWD_CHANGED] cwd changed after preparation.");
     return existing;
