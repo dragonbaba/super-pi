@@ -157,3 +157,31 @@ all four mutation tools available 1133.170 ms, raw TTY input accepted, exit code
 The manually delayed diagnostic input is not startup latency. The exact recorded
 synthetic root was removed after preserving timings; this is one observation,
 separate from the ten-cycle synthetic terminal benchmark above.
+
+## Exact edit final commit boundary follow-up
+
+Remote baseline rechecked: main 70e1d52c410e57fba8802df26f7c8c8b7dc16bc0;
+A 6079502889fef38cbe0e0f7c9ba6f74870f613a0; B
+2d4e59bc4890329f8450303d7418016beeccbf6f; C
+5dcf34934ef987a55c9ede614212235cf19988f3. No merge is authorized.
+
+The real Agent/ExtensionRunner/permission/mutation fixture reproduces an exact
+edit write issued after authority revocation or cancellation during the final
+hash read. A test-only filesystem barrier holds the completed read before its
+promise returns; the core and filesystem operations remain real. The baseline
+single and batch controls pass; each revoked/cancelled case issues one forbidden
+write (four expected failures). No sleeps or production fault hooks are used.
+
+The shared core now checks the current signal and approval after the final hash
+read, immediately before issuing writeFile, and records a no-change failure with
+reservation release. Ordinary exact edits also carry the existing one-call
+permission sequence/generation binding; previously it was absent for ordinary
+paths. Single edit passes its signal through the per-invocation execution owner.
+No new authorization cache, global production state, regex or per-progress
+closure is introduced. Test dispatchers are confined to the test process and
+release active barrier references at teardown. The exact-boundary tests include
+real Session persistence, receipt collection and inactive Agent/runner checks.
+Batch signal threading belongs to B after merging this actual A commit.
+
+Verification and A+B+C temporary integration results are recorded in the existing
+PRs. This follow-up does not authorize merging, deploying, or a fourth PR.
