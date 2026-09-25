@@ -48,7 +48,7 @@ async function fixture(t: test.TestContext, auxiliary?: any, aliasedTrustedRoot 
   };
 }
 
-for (const name of ["bash", "powershell"]) test(`${name}: literal relative/absolute cwd, Chinese spaces and dollars reach actual local spawn`, async t => {
+for (const name of ["bash", "powershell"]) test(`${name}: literal relative/absolute cwd, Chinese spaces and dollars reach actual local spawn`, { skip: name === "powershell" && process.platform !== "win32" ? "PowerShell backend is Windows-only" : false }, async t => {
   const f = await fixture(t); const relative = "中文 space $(literal) 'quote'"; const directory = join(f.cwd, relative); mkdirSync(directory); writeFileSync(join(directory, "marker.txt"), "correct-target");
   writeFileSync(join(f.cwd, "marker.txt"), "session-target");
   const command = name === "bash" ? "cat marker.txt" : "Get-Content -LiteralPath marker.txt";
@@ -218,9 +218,10 @@ test("review: trusted symlinked Session root retains project shell settings", as
 });
 
 
-test("review: fresh omitted-cwd reuse clears only released bindings", async t => {
+for (const name of ["bash", "powershell"]) test(`review: ${name} fresh omitted-cwd reuse clears only released bindings`, { skip: name === "powershell" && process.platform !== "win32" ? "PowerShell backend is Windows-only" : false }, async t => {
   const f = await fixture(t);
-  for (const tool of [createBashTool(f.cwd, { shellPath: bashPath }), createPowerShellTool(f.cwd)]) {
+  const tool = name === "bash" ? createBashTool(f.cwd, { shellPath: bashPath }) : createPowerShellTool(f.cwd);
+  {
     const input: { command: string; cwd?: string } = { command: "echo safe", cwd: f.cwd };
     await tool.execute("explicit", input); const old = getShellCwdBinding(input)!; assert.equal(old.isReleased, true);
     Reflect.deleteProperty(input, "cwd"); const result = await tool.execute("omitted", input);
@@ -297,4 +298,11 @@ test("review: trusted project identity survives actual Session and resource relo
   rmSync(f.cwd); symlinkSync(original, f.cwd, process.platform === "win32" ? "junction" : "dir");
   settingsManager.setProjectTrusted(true); await session.reload(); assert.ok(factories > before); assert.equal(existsSync(marker), false);
  } finally { session.dispose(); }
+});
+
+
+test("non-Windows PowerShell refuses explicit cwd without command effects", { skip: process.platform === "win32" ? "non-Windows refusal contract" : false }, async t => {
+ const f = await fixture(t); const input = { command: "Set-Content -LiteralPath marker -Value forbidden", cwd: f.cwd };
+ await assert.rejects(createPowerShellTool(f.cwd).execute("unsupported-platform", input), error => error instanceof Error && error.message.includes("only available on Windows"));
+ assert.equal(existsSync(join(f.cwd, "marker")), false); assert.equal(getShellCwdBinding(input)?.isReleased, true);
 });
