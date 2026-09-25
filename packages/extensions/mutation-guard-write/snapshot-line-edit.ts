@@ -1,3 +1,4 @@
+import { readFileGeneration } from "../../coding-agent/src/core/tools/read-window.ts";
 import { randomBytes } from "node:crypto";
 import { chmod, lstat, open, readFile, realpath, rename, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
@@ -293,6 +294,8 @@ export async function issueSnapshotForRead(
     // Files above the full-receipt ceiling may still qualify for a compact receipt.
   }
   if (fullCapture) {
+    const source = result.details?.mutationReadSource;
+    if (source && (fullCapture.canonicalPath !== source.canonicalPath || readFileGeneration(await lstat(source.canonicalPath, { bigint: true })) !== source.fileGeneration)) return undefined;
     const projection = nativeReadProjection(fullCapture.bytes, input);
     if (!projection || projection.text !== displayed) return undefined;
     const lines = parsePhysicalLines(fullCapture.bytes);
@@ -327,6 +330,8 @@ export async function issueSnapshotForRead(
     return undefined;
   }
   if (!compact) return undefined;
+  const source = result.details?.mutationReadSource;
+  if (source && (compact.canonicalPath !== source.canonicalPath || readFileGeneration(await lstat(source.canonicalPath, { bigint: true })) !== source.fileGeneration)) return undefined;
   const id = `snap_${randomBytes(16).toString("base64url")}`;
   rememberSnapshot({
     mode: "compact",

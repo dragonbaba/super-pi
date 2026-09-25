@@ -256,23 +256,27 @@ export default function mutationGuardWriteExtension(pi: ExtensionAPI): void {
     const read = observedTextRead(event);
     if (read) {
       try {
+        const source = (event.details as any)?.mutationReadSource;
+        if (!source || typeof source.canonicalPath !== "string" || typeof source.addressedPath !== "string" || typeof source.fileGeneration !== "string") throw new Error("Read source identity is unavailable.");
         const target = await guard.recordRead(
           ctx.cwd,
-          read.path,
+          source.addressedPath,
           read.text,
           read.startLine,
           read.endLine,
           event.toolCallId,
           turnGeneration,
           read.complete,
+          source.canonicalPath,
+          source.fileGeneration,
         );
         const input = event.input as { path: string; offset?: unknown; limit?: unknown };
-        return { details: { ...(event.details as object), mutationReadEvidence: { version: 1, toolCallId: event.toolCallId,
+        return { details: { ...(event.details as object), mutationReadEvidence: { version: 2, toolCallId: event.toolCallId,
           path: input.path, offset: input.offset, limit: input.limit, target } } };
       } catch {
-        // Guarded mutations fail closed if read evidence cannot be canonicalized.
+        // A rejected modern read must not fall back to legacy raw-path restoration.
+        return { details: { ...(event.details as object), mutationReadEvidence: { version: 2, toolCallId: event.toolCallId, rejected: true } } };
       }
-      return;
     }
 
     if ((event.toolName === "edit" || event.toolName === "write") && !event.isError) {

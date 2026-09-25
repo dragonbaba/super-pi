@@ -1,7 +1,6 @@
-import { isAbsolute, relative, resolve } from "node:path";
-import { realpath } from "node:fs/promises";
+import { dirname, isAbsolute, resolve } from "node:path";
+import { lstat, realpath, stat } from "node:fs/promises";
 import { resolveToolPath } from "./core.ts";
-import { directoryKey } from "./file-creation.ts";
 import { mutationRequestHash } from "../resource-lifecycle-guard/permission-contract.ts";
 import type { MutationWriteGuard } from "./core.ts";
 import { READ_RESULT_ANNOTATION_PATTERN, SHA256_PATTERN, UNSAFE_RECEIPT_PATH_PATTERN } from "./regex.ts";
@@ -211,6 +210,24 @@ export function primaryReadResultText(content: unknown, detailsValue: unknown): 
   }
   return restoreSnapshotReadText(primary.text);
 }
+async function legacyReadTarget(cwd: string, path: string): Promise<string | undefined> {
+  const lexical = resolveToolPath(cwd, path), root = resolve(cwd);
+  const target = await realpath(lexical), identity = await stat(target, { bigint: true }), workspace = await stat(root, { bigint: true });
+  let probe = lexical, checked = false;
+  for (let count = 0; count < 256; count++) {
+    if (probe === root) { checked = true; break; }
+    const info = await lstat(probe, { bigint: true });
+    if (info.isSymbolicLink()) return undefined;
+    if (info.isDirectory() && info.dev === workspace.dev && info.ino === workspace.ino) { checked = true; break; }
+    const parent = dirname(probe);
+    if (parent === probe) { checked = true; break; }
+    probe = parent;
+  }
+  if (!checked) return undefined;
+  const current = await stat(lexical, { bigint: true });
+  return identity.dev === current.dev && identity.ino === current.ino ? target : undefined;
+}
+
 async function restoreRead(
   guard: MutationWriteGuard,
   cwd: string,
@@ -218,43 +235,28 @@ async function restoreRead(
   message: ToolResultMessageShape,
   toolCallId: string,
 ): Promise<void> {
-  const path = call.input.path;
-  if (typeof path !== "string") return;
   const text = primaryReadResultText(message.content, message.details);
   if (text === undefined) return;
-  const offset = call.input.offset;
-  const limit = call.input.limit;
-  const startLine = typeof offset === "number" && Number.isFinite(offset)
-    ? Math.max(1, Math.floor(offset))
-    : 1;
-  const endLine = typeof limit === "number" && Number.isFinite(limit)
-    ? startLine + Math.max(0, Math.floor(limit)) - 1
-    : Number.MAX_SAFE_INTEGER;
   const binding = (message.details as any)?.mutationReadEvidence;
-  let target: string;
+  let target: string | undefined, offset: unknown, limit: unknown;
   if (binding !== undefined) {
-    if (binding?.version !== 1 || binding.toolCallId !== toolCallId || binding.path !== path
-      || binding.offset !== offset || binding.limit !== limit || !safeReceiptPath(binding.target) || !isAbsolute(binding.target)) return;
-    target = binding.target;
+    // The transcript retains raw provider arguments; this paired producer receipt
+    // records validated/offset-repaired arguments that actually produced the read.
+    if (binding?.version !== 2 || binding.rejected || binding.toolCallId !== toolCallId
+      || !safeReceiptPath(binding.path) || !safeReceiptPath(binding.target) || !isAbsolute(binding.target)
+      || (binding.offset !== undefined && (typeof binding.offset !== "number" || !Number.isFinite(binding.offset)))
+      || (binding.limit !== undefined && (typeof binding.limit !== "number" || !Number.isFinite(binding.limit)))) return;
+    target = binding.target; offset = binding.offset; limit = binding.limit;
   } else {
-    // Legacy results do not prove an alias's original target. Preserve ordinary
-    // path reads, but require a fresh read for aliases that cannot be restored safely.
-    const lexical = resolveToolPath(cwd, path);
-    const ordinary = resolve(await realpath(cwd), relative(resolve(cwd), lexical));
-    target = await realpath(lexical);
-    if (directoryKey(target) !== directoryKey(ordinary)) return;
+    if (typeof call.input.path !== "string") return;
+    target = await legacyReadTarget(cwd, call.input.path);
+    offset = call.input.offset; limit = call.input.limit;
   }
-  await guard.recordRead(
-    cwd,
-    target,
-    text,
-    startLine,
-    endLine,
-    toolCallId,
-    RESTORED_TURN_GENERATION,
-    offset === undefined && limit === undefined,
-    target,
-  );
+  if (!target) return;
+  const startLine = typeof offset === "number" && Number.isFinite(offset) ? Math.max(1, Math.floor(offset)) : 1;
+  const endLine = typeof limit === "number" && Number.isFinite(limit) ? startLine + Math.max(0, Math.floor(limit)) - 1 : Number.MAX_SAFE_INTEGER;
+  await guard.recordRead(cwd, target, text, startLine, endLine, toolCallId, RESTORED_TURN_GENERATION,
+    offset === undefined && limit === undefined, target);
 }
 
 async function restoreMutation(

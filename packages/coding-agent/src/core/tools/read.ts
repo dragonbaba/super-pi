@@ -15,7 +15,7 @@ import { formatPathRelativeToCwdOrAbsolute } from "../../utils/paths.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
 import { resolveReadPathAsync, resolveToCwd } from "./path-utils.ts";
 import { ReadCursorError, readSmallFileIfStable, readWindow, type ReadWindowResult } from "./read-window.ts";
-import { READ_EVIDENCE_CAPTURE, attachReadIdentity, createValidatedReadIdentity } from "./read-window.ts";
+import { READ_EVIDENCE_CAPTURE, attachReadIdentity, createValidatedReadIdentity, type ValidatedReadIdentity } from "./read-window.ts";
 import { getTextOutput, renderToolPath, replaceTabs, str } from "./render-utils.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, type TruncationResult, truncateHead } from "./truncate.ts";
@@ -35,6 +35,8 @@ export const readToolSystemPromptContribution = {
 export type ReadToolInput = Static<typeof readSchema>;
 
 export interface ReadToolDetails {
+	/** Descriptor-validated source for the local mutation guard; never grants ledger cache precision. */
+	mutationReadSource?: Pick<ValidatedReadIdentity, "canonicalPath" | "addressedPath" | "fileGeneration">;
 	truncation?: TruncationResult;
 	window?: Omit<ReadWindowResult, "text">;
 }
@@ -66,6 +68,8 @@ const defaultReadOperations: ReadOperations = {
 };
 
 export interface ReadToolOptions {
+	/** Capture the existing descriptor identity for mutation evidence, including non-cacheable Windows reads. */
+	captureMutationEvidence?: boolean;
 	/** Whether to auto-resize images to 2000x2000 max. Default: true */
 	autoResizeImages?: boolean;
 	/** Custom operations for file reading. Default: local filesystem */
@@ -210,6 +214,14 @@ function formatReadResult(
 	return text;
 }
 
+function attachMutationReadSource<T extends { details: ReadToolDetails | undefined }>(result: T, identity: ValidatedReadIdentity | undefined, enabled: boolean): T {
+	if (enabled && identity?.canonicalPath && identity.fileGeneration) {
+		result.details ??= {};
+		result.details.mutationReadSource = { canonicalPath: identity.canonicalPath, addressedPath: identity.addressedPath, fileGeneration: identity.fileGeneration };
+	}
+	return result;
+}
+
 export function createReadToolDefinition(
 	cwd: string,
 	options?: ReadToolOptions,
@@ -231,7 +243,7 @@ export function createReadToolDefinition(
 			_onUpdate?,
 			ctx?,
 		) {
-			const evidenceIdentity = ops === defaultReadOperations && definition[READ_EVIDENCE_CAPTURE]?.() ? createValidatedReadIdentity() : undefined;
+			const evidenceIdentity = ops === defaultReadOperations && (options?.captureMutationEvidence === true || definition[READ_EVIDENCE_CAPTURE]?.()) ? createValidatedReadIdentity() : undefined;
 			let resolvedLocalPath: string | undefined;
 			let localTextBuffer: Buffer | undefined;
 			let localMime: string | null | undefined;
@@ -252,7 +264,7 @@ export function createReadToolDefinition(
 					if (window.binary) output += "\n\n[Binary NUL detected in this byte range; displayed as UTF-8 with replacement.]";
 					if (window.cursor) output += `\n\n[${window.partial ? `Line ${window.nextLine} is partial` : `Read through line ${window.nextLine - 1}`}; more file content remains. Continue with the same path and cursor=${window.cursor}.]`;
 					const { text: _text, ...details } = window;
-					return attachReadIdentity({ content: [{ type: "text" as const, text: output }], details: { window: details } }, evidenceIdentity);
+					return attachMutationReadSource(attachReadIdentity({ content: [{ type: "text" as const, text: output }], details: { window: details } }, evidenceIdentity), evidenceIdentity, options?.captureMutationEvidence === true);
 				}
 			}
 			return new Promise<{ content: (TextContent | ImageContent)[]; details: ReadToolDetails | undefined }>(
@@ -354,7 +366,7 @@ export function createReadToolDefinition(
 
 							if (aborted) return;
 							signal?.removeEventListener("abort", onAbort);
-							resolve(attachReadIdentity({ content, details }, evidenceIdentity));
+							resolve(attachMutationReadSource(attachReadIdentity({ content, details }, evidenceIdentity), evidenceIdentity, options?.captureMutationEvidence === true));
 						} catch (error: any) {
 							signal?.removeEventListener("abort", onAbort);
 							if (!aborted) reject(error);

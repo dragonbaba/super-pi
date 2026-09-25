@@ -387,3 +387,36 @@ Both reproduced cases and the four compatibility controls pass. Combined native,
 read evidence and mutation-contract controls: 91/91 pass. The full retained path
 matrix and result-boundary suite also pass (130/130 in that run). Final-HEAD
 complete tests, CI and actual review remain required before merging.
+
+
+## Read producer / restoration review follow-up (4106958282, 4106958292, 4106958301)
+
+The actual Agent read-to-result barrier reproduces two equal-content identity
+errors: redirecting an ancestor alias, or replacing the addressed file after
+read completes. Binding only at the result hook accepted an object that did not
+produce the text. Read now exports a small source descriptor from the existing
+validated read-window/small-file producer. The unique read wrapper opts in;
+mutation evidence and snapshot issuance compare that source with the object
+being accepted. No new content read/copy is needed to capture the descriptor.
+Windows remains ineligible for precise Evidence Ledger cache hits; this source
+proof does not claim a filesystem CAS, cache generation or cross-process lock.
+Additional deterministic descriptor-close barriers verify both drift cases
+before snapshot annotation, including unchanged content and ordinary paths.
+
+Numeric and out-of-range-offset reads reproduce restoration failure with raw
+transcript matching. A corrected supported Markdown fixture
+`[123](https://123)` also fails against the previous restoration consumer after
+a successful real read. Version-2 read evidence retains the paired call ID and
+actual repaired execution parameters, leaving original transcript arguments
+unchanged. Rejected modern reads cannot fall back to legacy restoration.
+The unmerged version-1 hook-time binding is not accepted as producer proof.
+Mutation receipt versions and collection/deduplication are unchanged.
+
+Legacy plain reads now inspect bounded lexical ancestors with lstat and compare
+filesystem identities, rather than treating canonical spelling differences as
+links. Actual symlink/junction traversals still require a new read. The native
+Windows case-spelling control passes; NFC/NFD skips explicitly when the volume
+distinguishes those names. Native macOS execution is not available; that review
+finding is supported by the identity-based implementation and portable control,
+not claimed as a reproduced macOS run. Linux/Windows CI execute the new tests
+and report their filesystem-specific spelling skips individually.

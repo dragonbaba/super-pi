@@ -1,5 +1,6 @@
+import { readFileGeneration } from "../../coding-agent/src/core/tools/read-window.ts";
 import { createHash } from "node:crypto";
-import { lstat, readFile, realpath, writeFile } from "node:fs/promises";
+import { lstat, readFile, realpath, stat, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { assessProtectedMutationPath } from "./protected-path-policy.ts";
 import { hashNativeSource, capturePathIdentity, sameIdentity } from "./native-file-core.ts";
@@ -409,9 +410,19 @@ export class MutationWriteGuard {
     turnGeneration: number,
     complete: boolean,
     preparedTarget?: string,
+    preparedGeneration?: string,
   ): Promise<string> {
     const canonicalPath = await canonicalExistingPath(resolveToolPath(cwd, path));
     if (preparedTarget !== undefined && canonicalPath !== preparedTarget) throw new Error("Read evidence target changed after capture.");
+    let completeEvidence = complete;
+    if (!completeEvidence && startLine === 1) {
+      const textBytes = Buffer.byteLength(text, "utf8");
+      const fileInfo = await lstat(canonicalPath);
+      if (fileInfo.isFile() && fileInfo.size === textBytes) {
+        completeEvidence = sha256(await readFile(canonicalPath)) === sha256(text);
+      }
+    }
+    if (preparedGeneration !== undefined && readFileGeneration(await stat(canonicalPath, { bigint: true })) !== preparedGeneration) throw new Error("Read source identity changed before evidence acceptance.");
     const evidence = this.#rangeEvidence.get(canonicalPath) ?? [];
     if (!this.#rangeEvidence.has(canonicalPath) && this.#rangeEvidence.size >= MAX_EVIDENCE_PATHS) {
       const oldestPath = this.#rangeEvidence.keys().next().value;
@@ -430,14 +441,6 @@ export class MutationWriteGuard {
     });
     this.#rangeEvidence.delete(canonicalPath);
     this.#rangeEvidence.set(canonicalPath, evidence);
-    let completeEvidence = complete;
-    if (!completeEvidence && startLine === 1) {
-      const textBytes = Buffer.byteLength(text, "utf8");
-      const fileInfo = await lstat(canonicalPath);
-      if (fileInfo.isFile() && fileInfo.size === textBytes) {
-        completeEvidence = sha256(await readFile(canonicalPath)) === sha256(text);
-      }
-    }
     if (completeEvidence) {
       this.#setCompleteEvidence(canonicalPath, { sha256: sha256(text), toolCallId, turnGeneration });
     }
