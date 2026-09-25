@@ -196,6 +196,24 @@ function collectAssistantToolCalls(message: ToolResultMessageShape, pending: Map
   }
   return true;
 }
+export function readEvidenceRange(input: { offset?: unknown; limit?: unknown }, details: any, text: string):
+  { startLine: number; endLine: number; complete: boolean } | undefined {
+  const window = details?.window;
+  if (window !== undefined) {
+    if (!window || window.binary || !Number.isSafeInteger(window.startLine) || !Number.isSafeInteger(window.nextLine)
+      || window.startLine < 1 || window.nextLine < window.startLine || typeof window.done !== "boolean"
+      || typeof window.partial !== "boolean" || typeof window.startsPartial !== "boolean"
+      || !Number.isSafeInteger(window.startByte) || window.startByte < 0) return undefined;
+    const startLine = window.startLine + (window.startsPartial ? 1 : 0);
+    const endLine = window.nextLine - (window.partial || !window.done || text.endsWith("\n") ? 1 : 0);
+    if (endLine < startLine) return undefined;
+    return { startLine, endLine, complete: window.startByte === 0 && window.done && !window.partial && !window.startsPartial };
+  }
+  const startLine = typeof input.offset === "number" && Number.isFinite(input.offset) ? Math.max(1, Math.floor(input.offset)) : 1;
+  const endLine = typeof input.limit === "number" && Number.isFinite(input.limit) ? startLine + Math.max(0, Math.floor(input.limit)) - 1 : Number.MAX_SAFE_INTEGER;
+  return { startLine, endLine, complete: input.offset === undefined && input.limit === undefined };
+}
+
 export function primaryReadResultText(content: unknown, detailsValue: unknown): string | undefined {
   if (!Array.isArray(content) || content.length === 0) return undefined;
   const primary = content[0] as { type?: unknown; text?: unknown } | undefined;
@@ -208,7 +226,25 @@ export function primaryReadResultText(content: unknown, detailsValue: unknown): 
       || typeof annotation.text !== "string"
       || !READ_RESULT_ANNOTATION_PATTERN.test(annotation.text)) return undefined;
   }
-  return restoreSnapshotReadText(primary.text);
+  let text = restoreSnapshotReadText(primary.text);
+  const window = (detailsValue as any)?.window;
+  if (window !== undefined) {
+    if (!readEvidenceRange({}, detailsValue, text)) return undefined;
+    if (window.startsPartial) {
+      const prefix = `[Continuation starts partway through line ${window.startLine}; this is a partial-line suffix.]\n`;
+      if (!text.startsWith(prefix)) return undefined;
+      text = text.slice(prefix.length);
+    }
+    if (window.cursor !== undefined) {
+      if (typeof window.cursor !== "string" || window.cursor.length > 8192) return undefined;
+      const suffix = `\n\n[${window.partial ? `Line ${window.nextLine} is partial` : `Read through line ${window.nextLine - 1}`}; more file content remains. Continue with the same path and cursor=${window.cursor}.]`;
+      if (!text.endsWith(suffix)) return undefined;
+      text = text.slice(0, -suffix.length);
+    }
+    if (window.startsPartial) { const end = text.indexOf("\n"); if (end < 0) return undefined; text = text.slice(end + 1); }
+    if (window.partial) { const end = text.lastIndexOf("\n"); if (end < 0) return undefined; text = text.slice(0, end + 1); }
+  }
+  return text;
 }
 async function legacyReadTarget(cwd: string, path: string): Promise<string | undefined> {
   const lexical = resolveToolPath(cwd, path);
@@ -251,10 +287,8 @@ async function restoreRead(
     offset = call.input.offset; limit = call.input.limit;
   }
   if (!target) return;
-  const startLine = typeof offset === "number" && Number.isFinite(offset) ? Math.max(1, Math.floor(offset)) : 1;
-  const endLine = typeof limit === "number" && Number.isFinite(limit) ? startLine + Math.max(0, Math.floor(limit)) - 1 : Number.MAX_SAFE_INTEGER;
-  await guard.recordRead(cwd, target, text, startLine, endLine, toolCallId, RESTORED_TURN_GENERATION,
-    offset === undefined && limit === undefined, target);
+  const range = readEvidenceRange({ offset, limit }, message.details, text);
+  if (range) await guard.recordRead(cwd, target, text, range.startLine, range.endLine, toolCallId, RESTORED_TURN_GENERATION, range.complete, target);
 }
 
 async function restoreMutation(

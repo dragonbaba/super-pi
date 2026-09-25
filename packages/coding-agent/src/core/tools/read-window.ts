@@ -16,17 +16,54 @@ export const READ_EVIDENCE_CAPTURE = Symbol("read-evidence-capture");
 export const READ_EVIDENCE_IDENTITY = Symbol("read-evidence-identity");
 /** Private invocation metadata shared with extension module loaders; never serialized. */
 export const MUTATION_READ_SOURCE = Symbol.for("pi.mutation-guard.read-source.v1");
+export interface MutationReadSource {
+  canonicalPath: string;
+  addressedPath: string;
+  fileGeneration: string;
+  startByte: number;
+  endByte: number;
+  sha256: string;
+}
 export interface ValidatedReadIdentity {
 	canonicalPath: string;
 	canonicalWorkspace: string;
 	addressedPath: string;
 	fileGeneration: string;
 	precise: boolean;
+	captureMutationSource: boolean;
+	mutationSource?: MutationReadSource;
 	location: string;
 }
-export function createValidatedReadIdentity(): ValidatedReadIdentity {
-	return { canonicalPath: "", canonicalWorkspace: "", addressedPath: "", fileGeneration: "", precise: false, location: "" };
+export function createValidatedReadIdentity(captureMutationSource = false): ValidatedReadIdentity {
+	return { canonicalPath: "", canonicalWorkspace: "", addressedPath: "", fileGeneration: "", precise: false, location: "", captureMutationSource };
 }
+/** Bounded content proof; stat identity alone is not a content version on Windows. */
+export async function verifyMutationReadSource(source: MutationReadSource): Promise<boolean> {
+  const length = source.endByte - source.startByte;
+  if (!Number.isSafeInteger(source.startByte) || !Number.isSafeInteger(source.endByte)
+    || source.startByte < 0 || length < 0 || length > READ_SMALL_FILE_BYTES || typeof source.sha256 !== "string") return false;
+  const handle = await open(source.canonicalPath, "r");
+  try {
+    if (generation(await handle.stat({ bigint: true })) !== source.fileGeneration) return false;
+    const hash = createHash("sha256"), buffer = Buffer.allocUnsafe(Math.max(1, Math.min(length, 64 * 1024)));
+    let read = 0;
+    while (read < length) {
+      const count = (await handle.read(buffer, 0, Math.min(buffer.length, length - read), source.startByte + read)).bytesRead;
+      if (!count) return false;
+      hash.update(buffer.subarray(0, count)); read += count;
+    }
+    return hash.digest("hex") === source.sha256
+      && generation(await handle.stat({ bigint: true })) === source.fileGeneration
+      && await realpath(source.addressedPath) === source.canonicalPath
+      && generation(await stat(source.canonicalPath, { bigint: true })) === source.fileGeneration;
+  } finally { await handle.close(); }
+}
+
+function mutationSource(identity: ValidatedReadIdentity, startByte: number, endByte: number, sha256: string): void {
+  identity.mutationSource = { canonicalPath: identity.canonicalPath, addressedPath: identity.addressedPath,
+    fileGeneration: identity.fileGeneration, startByte, endByte, sha256 };
+}
+
 export function readFileGeneration(info: BigIntStats): string {
 	return generation(info);
 }
@@ -160,8 +197,12 @@ export async function readSmallFileIfStable(path: string, signal?: AbortSignal, 
 		if (generation(await handle.stat({ bigint: true })) !== identity ||
 			await realpath(path) !== canonical || generation(await stat(canonical, { bigint: true })) !== identity) return undefined;
 		checkAbort(signal);
-		if (evidenceIdentity && info.size === BigInt(position)) handoffIdentity(evidenceIdentity, canonical, info, "small-file line policy v1");
-		return buffer.subarray(0, position);
+		const bytes = buffer.subarray(0, position);
+		if (evidenceIdentity && info.size === BigInt(position)) {
+			handoffIdentity(evidenceIdentity, canonical, info, "small-file line policy v1");
+			if (evidenceIdentity.captureMutationSource) mutationSource(evidenceIdentity, 0, position, createHash("sha256").update(bytes).digest("hex"));
+		}
+		return bytes;
 	} finally {
 		await handle.close();
 	}
@@ -254,6 +295,7 @@ export async function readWindow(
 		let partial = false;
 		let stoppedAtLine = false;
 		let binary = false;
+		const sourceHash = evidenceIdentity?.captureMutationSource ? createHash("sha256") : undefined;
 		const buffer = Buffer.allocUnsafe(selected ? READ_WINDOW_BYTES : READ_CHUNK_BYTES);
 		const decoder = new TextDecoder("utf-8", { ignoreBOM: true });
 		const decodeOptions = { stream: true };
@@ -317,6 +359,7 @@ export async function readWindow(
 				search = newline + 1;
 			}
 			const view = buffer.subarray(begin, end);
+			sourceHash?.update(view);
 			counters.bufferViews++;
 			if (view.includes(0)) binary = true;
 			const decoded = decoder.decode(view, decodeOptions);
@@ -381,6 +424,7 @@ export async function readWindow(
 			counters.cursorSize = nextCursor.length;
 		}
 		if (evidenceIdentity && !binary) handoffIdentity(evidenceIdentity, canonical, info, `bytes ${startByte}-${position - (stoppedAtLine ? 1 : 0)}; lines ${startLine}-${line - (stoppedAtLine ? 1 : 0)}; window policy v1`);
+		if (evidenceIdentity && !binary && sourceHash) mutationSource(evidenceIdentity, startByte, position - (stoppedAtLine ? 1 : 0), sourceHash.digest("hex"));
 		return { text, startByte, endByte: position - (stoppedAtLine ? 1 : 0), nextByte: position, startLine, nextLine: line, partial, startsPartial: cursor?.partial ?? false, done, cursor: nextCursor, binary };
 	} finally {
 		await handle.close();

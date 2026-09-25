@@ -211,8 +211,8 @@ function formatReadResult(
 }
 
 function attachMutationReadSource<T extends { content: object[] }>(result: T, identity: ValidatedReadIdentity | undefined): T {
-	if (identity?.canonicalPath && identity.fileGeneration) {
-		Object.defineProperty(result.content, MUTATION_READ_SOURCE, { value: { canonicalPath: identity.canonicalPath, addressedPath: identity.addressedPath, fileGeneration: identity.fileGeneration } });
+	if (identity?.mutationSource) {
+		Object.defineProperty(result.content, MUTATION_READ_SOURCE, { value: identity.mutationSource });
 	}
 	return result;
 }
@@ -238,7 +238,7 @@ export function createReadToolDefinition(
 			_onUpdate?,
 			ctx?,
 		) {
-			const evidenceIdentity = ops === defaultReadOperations ? createValidatedReadIdentity() : undefined;
+			const evidenceIdentity = ops === defaultReadOperations ? createValidatedReadIdentity(true) : undefined;
 			const ledgerCapture = definition[READ_EVIDENCE_CAPTURE]?.() === true;
 			let resolvedLocalPath: string | undefined;
 			let localTextBuffer: Buffer | undefined;

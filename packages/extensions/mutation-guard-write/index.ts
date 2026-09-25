@@ -24,8 +24,7 @@ import {
 import { MUTATION_RECEIPT_VERSION, MutationWriteGuard, resolveToolPath, sha256 } from "./core.ts";
 import { diagnoseFailedEdit } from "./edit-diagnostics.ts";
 import { SHA256_PATTERN } from "./regex.ts";
-import { restoreSnapshotReadText } from "./snapshot-line-protocol.ts";
-import { primaryReadResultText, restoreMutationEvidenceFromBranch, recordBatchMutationEvidence, recentMutationEntries } from "./session-evidence.ts";
+import { primaryReadResultText, readEvidenceRange, restoreMutationEvidenceFromBranch, recordBatchMutationEvidence, recentMutationEntries } from "./session-evidence.ts";
 import { consumePermissionPathApproval } from "../resource-lifecycle-guard/permission-contract.ts";
 import { registerNativeTools, MUTATION_PROGRESS_ENTRY, renderFileMutationResult } from "./native-tools.ts";
 import { registerFileBatch } from "./file-batch.ts";
@@ -130,20 +129,9 @@ function observedTextRead(event: ToolResultEventShape): {
   if (typeof input.path !== "string") return undefined;
   const displayedText = primaryReadResultText(event.content, event.details);
   if (displayedText === undefined) return undefined;
-  const text = restoreSnapshotReadText(displayedText);
-  const startLine = typeof input.offset === "number" && Number.isFinite(input.offset)
-    ? Math.max(1, Math.floor(input.offset))
-    : 1;
-  const endLine = typeof input.limit === "number" && Number.isFinite(input.limit)
-    ? startLine + Math.max(0, Math.floor(input.limit)) - 1
-    : Number.MAX_SAFE_INTEGER;
-  return {
-    path: input.path,
-    text,
-    startLine,
-    endLine,
-    complete: input.offset === undefined && input.limit === undefined,
-  };
+  const text = displayedText;
+  const range = readEvidenceRange(input, event.details, text);
+  return range ? { path: input.path, text, ...range } : undefined;
 }
 
 class GuardedEditExecution {
@@ -269,7 +257,7 @@ export default function mutationGuardWriteExtension(pi: ExtensionAPI): void {
           turnGeneration,
           read.complete,
           source.canonicalPath,
-          source.fileGeneration,
+          source,
         );
         const input = event.input as { path: string; offset?: unknown; limit?: unknown };
         return { details: { ...(event.details as object), mutationReadEvidence: { version: 2, toolCallId: event.toolCallId,

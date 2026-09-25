@@ -1,4 +1,4 @@
-import { MUTATION_READ_SOURCE, readFileGeneration } from "../../coding-agent/src/core/tools/read-window.ts";
+import { MUTATION_READ_SOURCE, readFileGeneration, verifyMutationReadSource } from "../../coding-agent/src/core/tools/read-window.ts";
 import { randomBytes } from "node:crypto";
 import { chmod, lstat, open, readFile, realpath, rename, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
@@ -278,11 +278,16 @@ function nativeReadProjection(bytes: Buffer, input: ReadToolInput): NativeReadPr
   return { text, firstLine, lastLine: firstLine + outputLines - 1, outputLines };
 }
 
-async function matchesReadSource(canonicalPath: string, result: SnapshotReadResult): Promise<boolean> {
+async function matchesReadSource(canonicalPath: string, result: SnapshotReadResult, bytes?: Buffer): Promise<boolean> {
   const source = (result.content as any)[MUTATION_READ_SOURCE];
   if (!source) return true;
   if (canonicalPath !== source.canonicalPath) return false;
-  try { return readFileGeneration(await lstat(source.canonicalPath, { bigint: true })) === source.fileGeneration; }
+  try {
+    if (bytes) return source.startByte >= 0 && source.endByte <= bytes.length
+      && sha256(bytes.subarray(source.startByte, source.endByte)) === source.sha256
+      && readFileGeneration(await lstat(source.canonicalPath, { bigint: true })) === source.fileGeneration;
+    return await verifyMutationReadSource(source);
+  }
   catch { return false; } // Optional annotation must not fail a completed read.
 }
 
@@ -302,7 +307,7 @@ export async function issueSnapshotForRead(
     // Files above the full-receipt ceiling may still qualify for a compact receipt.
   }
   if (fullCapture) {
-    if (!await matchesReadSource(fullCapture.canonicalPath, result)) return undefined;
+    if (!await matchesReadSource(fullCapture.canonicalPath, result, fullCapture.bytes)) return undefined;
     const projection = nativeReadProjection(fullCapture.bytes, input);
     if (!projection || projection.text !== displayed) return undefined;
     const lines = parsePhysicalLines(fullCapture.bytes);

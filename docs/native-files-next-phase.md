@@ -466,3 +466,37 @@ content array (non-enumerable symbol) instead of allocating a new details
 object. The optional snapshot wrapper transfers that same descriptor when it
 replaces the content array; it does not copy file text or create another proof.
 Both original read-output equality and Session privacy gates remain unchanged.
+
+
+## Bounded read scope and content proof (4107367546, 4107367552)
+
+A real mutation/permission-only SDK read of a >256 KiB file, with no offset or
+limit, previously authorized editing a repeated target on unread line 3000.
+The first-window regression fails against the previous consumers, live and on
+actual Session restoration. The cursor control already failed through the old
+ambiguity defense; no successful unread cursor mutation is claimed. Shared
+live/restore range derivation now uses the returned window boundaries, excludes
+partial boundary lines and strips only matching producer notices. Positive
+controls edit the actually observed first/cursor-window occurrence successfully;
+negative controls preserve the unread occurrence and all other bytes.
+
+The real Windows held-writer control in this environment changed its generation
+fields and was already rejected. Deterministic coarse timestamp metadata fault
+injection, with actual filesystem reads/writes and real SDK/Agent hooks,
+reproduces wrong exact-edit evidence after a same-size rewrite in both optional
+loop configurations. The source proof now includes the SHA-256 and byte bounds
+of bytes the descriptor actually read (small-file <=256 KiB; window <=16 KiB).
+The guard revalidates only that bounded byte span plus object/lexical identity
+before accepting evidence. Snapshot full capture compares its existing bytes
+against the producer digest; compact capture uses bounded revalidation. The
+proof stays invocation-private, contains no source body, and is not an Evidence
+Ledger cache capability. Windows/coarse timestamps remain ineligible for cache
+hits; valid unchanged reads still authorize normal edits and overwrites.
+
+This adds a bounded verification read where content-version proof is necessary;
+no full large-file reread or context duplication is used. Descriptor ownership
+has finally-based close; producer hash state is invocation-local and updates
+existing buffer views. No parser, platform, global state/cache, new regex or
+progress/render closure was added. The read fixture's approval string encoding
+was corrected to UTF-8; production files were checked for unexpected encoding
+changes, with none found.
