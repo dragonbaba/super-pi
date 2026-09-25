@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync, symlinkSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync, symlinkSync, linkSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -335,4 +335,44 @@ test("review round 2: final creation cancellation and revoked mkdir authority fa
     else assert.equal(existsSync(path), false);
   }
   assert.equal(existsSync(join(f.cwd, "new")), false);
+});
+
+test("review round 3: authorized overwrite cannot become creation after disappearance", async t => {
+  const f = await fixture(t); const path = join(f.cwd, "existing"); writeFileSync(path, "original");
+  await f.runner.getCommand("permissions")!.handler("read-only", f.runner.createContext() as never);
+  f.onApprove(() => unlinkSync(path));
+  const result = await f.call("write", { path: "existing", content: "unapproved create" });
+  assert.equal(result.isError, true); assert.equal(existsSync(path), false);
+});
+
+test("review round 3: added hard link prevents content publication", async t => {
+  const f = await fixture(t); const path = join(f.cwd, "new"), alias = join(f.cwd, "alias");
+  const plan = (await prepareFileCreation(path, true))!;
+  await assert.rejects(executeFileCreation(plan, "private", async () => {
+    if (existsSync(path) && !existsSync(alias)) linkSync(path, alias);
+    return plan.canonicalTarget;
+  }), /PARTIAL_MUTATION/);
+  assert.equal(readFileSync(path, "utf8"), ""); assert.equal(readFileSync(alias, "utf8"), "");
+});
+
+test("review round 3: pre-execution cancellation closes intent with no-change result", async t => {
+  const f = await fixture(t); const input = { path: "cancelled/new", content: "forbidden" };
+  await f.runner.emitToolCall({ type: "tool_call", toolName: "write", toolCallId: "cancelled", input } as never);
+  const abort = new AbortController(); abort.abort();
+  const tool = f.runner.getAllRegisteredTools().find(r => r.definition.name === "write")!.definition;
+  const result = await tool.execute("cancelled", input, abort.signal, undefined, f.runner.createContext());
+  assert.equal((result.details as any).status, "cancelled");
+  const receipts = collectStructuredMutationReceipts(f.session.getBranch());
+  assert.equal((receipts[0] as any).status, "cancelled"); assert.equal(existsSync(join(f.cwd, "cancelled")), false);
+});
+
+test("review round 3: completed no-change intent preserves prior read after reopen", async t => {
+  const f = await fixture(t); const path = join(f.cwd, "a"); writeFileSync(path, "same");
+  f.session.appendMessage({ role: "assistant", content: [{ type: "toolCall", id: "r", name: "read", arguments: { path } }], timestamp: 0 } as never);
+  f.session.appendMessage({ role: "toolResult", toolCallId: "r", toolName: "read", content: [{ type: "text", text: "same" }], isError: false, timestamp: 0 } as never);
+  f.session.appendCustomEntry("file-mutation-progress-v2", { toolCallId: "d", itemId: "d:0", phase: "intent", operation: "delete", target: path });
+  f.session.appendCustomEntry("file-mutation-progress-v2", { toolCallId: "d", itemId: "d:0", phase: "result", mutationReceiptVersion: 2, operation: "delete", target: path, status: "cancelled", stateChanged: false });
+  const guard = new MutationWriteGuard(); await restoreMutationEvidenceFromBranch(guard, f.cwd, SessionManager.open(f.session.getSessionFile()!).getBranch());
+  const approval = await guard.authorizeEdit(f.cwd, "a", [{ oldText: "same", newText: "updated" }], 1, "same");
+  guard.releaseMutation(approval.reservationId);
 });

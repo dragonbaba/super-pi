@@ -1,3 +1,4 @@
+import { EDIT_INDEX_PATTERN } from "./regex.ts";
 import { constants } from "node:fs";
 import process from "node:process";
 import { access, readFile } from "node:fs/promises";
@@ -178,7 +179,7 @@ interface MutationFailureInfo {
   status?: unknown;
 }
 
-const EDIT_INDEX_PATTERN = /edits\[(\d+)\]/u;
+
 
 function mutationFailureInfo(error: unknown): MutationFailureInfo | undefined {
   if (!(error instanceof Error)) return undefined;
@@ -613,9 +614,11 @@ export default function mutationGuardWriteExtension(pi: ExtensionAPI): void {
           },
         );
       } catch (error) {
-        const failure = mutationFailureInfo(error);
+        const cause = error instanceof Error ? error.message : String(error);
+        const failure = mutationFailureInfo(error) ?? (progress && (cause === "Operation aborted" || cause.startsWith("[MUTATION_BUDGET_EXCEEDED]") || cause.startsWith("[POLICY_BLOCKED]"))
+          ? { category: signal?.aborted ? "CANCELLED" : "PRE_EXECUTION_FAILED", stateChanged: false, cause, status: signal?.aborted ? "cancelled" : "failed_no_change" } : undefined);
         if (failure && (progress || failure.stateChanged === true)) {
-          const status = failure.stateChanged === true ? "partial" : failure.status === "cancelled" ? "cancelled" : "failed_no_change";
+          const status = failure.stateChanged === true ? "partial" : (failure.status === "cancelled" || signal?.aborted) ? "cancelled" : "failed_no_change";
           const details = { ...failure, operation: "write", target: receiptTarget, mutationReceiptVersion: 2, status, ...(failure.stateChanged === true ? { requiresVerification: true } : {}) };
           if (progress) try { pi.appendEntry(MUTATION_PROGRESS_ENTRY, { ...details, toolCallId, itemId: `${toolCallId}:0`, phase: "result" }); } catch { /* Durable intent remains uncertain. */ }
           return { content: [{ type: "text" as const, text: `write: ${status}; ${path}. [${failure.category}] ${typeof failure.cause === "string" ? failure.cause.slice(0, 800) : ""}${failure.stateChanged === true ? " Verify the file and recorded directories; do not automatically retry." : ""}` }], details, isError: true };

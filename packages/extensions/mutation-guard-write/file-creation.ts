@@ -122,7 +122,7 @@ export async function executeFileCreation(
       await verifyCreationAncestor(plan);
       await verifyCreatedDirectories(created);
       const finalName = await capturePathIdentity(plan.path);
-      if (finalName.canonical !== plan.canonicalTarget || finalName.device !== String(opened.dev) || finalName.inode !== String(opened.ino)) throw new Error("[STALE_STATE] Opened file was moved or replaced during authorization.");
+      if (finalName.canonical !== plan.canonicalTarget || finalName.device !== String(opened.dev) || finalName.inode !== String(opened.ino) || finalName.links !== "1" || opened.nlink !== 1n) throw new Error("[STALE_STATE] Opened file was moved or replaced during authorization.");
       assertAuthority?.();
       signal?.throwIfAborted();
       await handle.writeFile(content, "utf8");

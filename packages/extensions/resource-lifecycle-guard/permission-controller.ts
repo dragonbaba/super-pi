@@ -851,7 +851,7 @@ export class SessionPermissionController {
         exactTargets: creationPlan ? [...exactTargets, ...creationPlan.directories] : exactTargets,
         targetAssessments: [assessment],
         classes: event.toolName === "edit" ? EDIT_CLASSES : event.toolName === "write" ? WRITE_CLASSES : LSP_FIX_CLASSES,
-        pathApproval: protectedAssessment.canonicalTarget && (protectedAssessment.violations.length > 0 || creationPlan)
+        pathApproval: protectedAssessment.canonicalTarget && (protectedAssessment.violations.length > 0 || event.toolName === "write")
           ? { canonicalTarget: protectedAssessment.canonicalTarget, protectedRoots: protectedAssessment.violations }
           : undefined,
         highRisk: sensitiveProtectedRoots(protectedAssessment.violations),
@@ -965,7 +965,8 @@ export class SessionPermissionController {
       requestHash: request.requestHash ?? mutationRequestHash(request.operation, event.input),
       nativePlan: request.nativePlan,
       creationPlan: request.creationPlan,
-      assertCurrent: request.nativePlan || request.creationPlan ? () => {
+      writePreflight: request.operation === "write",
+      assertCurrent: request.nativePlan || request.operation === "write" ? () => {
         if (sequence !== this.#state.sequence || generation !== this.#authorityGeneration) throw new Error("[POLICY_BLOCKED] Permission authority changed after approval.");
       } : undefined,
       ...request.pathApproval,
