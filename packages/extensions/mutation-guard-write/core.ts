@@ -3,6 +3,7 @@ import { lstat, readFile, realpath, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { assessProtectedMutationPath } from "./protected-path-policy.ts";
 import { hashNativeSource } from "./native-file-core.ts";
+import type { PathIdentity } from "./native-file-core.ts";
 import { executeFileCreation, prepareFileCreation, MAX_CREATED_DIRECTORIES, type FileCreationPlan, type CreationResult } from "./file-creation.ts";
 
 export type MutationGuardCategory =
@@ -525,6 +526,22 @@ export class MutationWriteGuard {
     for (const directory of directories) this.#budgetDirectoryReferences.set(directory, (this.#budgetDirectoryReferences.get(directory) ?? 0) + 1);
   }
 
+  reserveWriteMutation(turnGeneration: number, path: string, content: string, creation?: FileCreationPlan): number {
+    const reservation = this.#reserveMutation(turnGeneration, path, "write", 0, Buffer.byteLength(content, "utf8"));
+    try { if (creation) this.reserveCreationDirectories(reservation, creation.directories); }
+    catch (error) { this.releaseMutation(reservation); throw error; }
+    return reservation;
+  }
+
+  async preflightOverwrite(cwd: string, path: string, turnGeneration: number, approval?: MutationPathApproval): Promise<string> {
+    const canonical = await this.#assertMutationPathAllowed(cwd, path, "write", approval);
+    const expected = this.#evidence.get(canonical);
+    if (!expected || expected.turnGeneration >= turnGeneration) throw new Error("[READ_REQUIRED] Overwrite requires a completed prior full read.");
+    const actual = await hashNativeSource(canonical);
+    if (actual !== expected.sha256) throw new Error("[STALE_STATE] Overwrite evidence no longer matches.");
+    return actual;
+  }
+
   reserveSnapshotEdit(
     turnGeneration: number,
     canonicalPath: string,
@@ -875,11 +892,13 @@ export class MutationWriteGuard {
     turnGeneration: number,
     signal?: AbortSignal,
     pathApproval?: MutationPathApproval,
+    reservedId?: number,
+    sharedDirectories?: Map<string, PathIdentity>,
   ): Promise<MutationWriteSuccess> {
     if (signal?.aborted) throw new Error("Operation aborted");
     await this.#assertMutationPathAllowed(cwd, path, "write", pathApproval);
     const targetKey = resolveToolPath(cwd, path);
-    const reservationId = this.#reserveMutation(
+    const reservationId = reservedId ?? this.#reserveMutation(
       turnGeneration,
       targetKey,
       "write",
@@ -889,9 +908,9 @@ export class MutationWriteGuard {
     try {
       const creationPlan = pathApproval?.creationPlan ?? await prepareFileCreation(targetKey);
       if (creationPlan) {
-        this.reserveCreationDirectories(reservationId, creationPlan.directories);
+        if (reservedId === undefined) this.reserveCreationDirectories(reservationId, creationPlan.directories);
         const creation = await executeFileCreation(creationPlan, content,
-          () => this.#assertMutationPathAllowed(cwd, path, "write", pathApproval), signal, this.#options.beforeExclusiveCreate);
+          () => this.#assertMutationPathAllowed(cwd, path, "write", pathApproval), signal, this.#options.beforeExclusiveCreate, sharedDirectories);
         return { ok: true, mutationReceiptVersion: MUTATION_RECEIPT_VERSION, category: "success", operation: "write",
           target: displayPath(cwd, targetKey), stateChanged: true, created: true, sha256: sha256(content), creation };
       }

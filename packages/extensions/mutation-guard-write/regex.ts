@@ -3,3 +3,7 @@ export const READ_RESULT_ANNOTATION_PATTERN = /^(?:\[Input repair\]|\[Snapshot e
 export const UNSAFE_NATIVE_PATH_PATTERN = /[\u0000\r\n*?]/u;
 export const UNSAFE_RECEIPT_PATH_PATTERN = /[\u0000\r\n]/u;
 export const NATIVE_ERROR_CATEGORY_PATTERN = /^\[([^\]]+)\]/u;
+
+export const SNAPSHOT_LINE_REFERENCE_PATTERN = "^(?![\\s\\S]*[\\r\\n])[ \\t]*(?:[1-9]\\d*#[A-F0-9]{4}(?:\\|[^\\r\\n]*)?|>>> [1-9]\\d*#[A-F0-9]{4}\\|[^\\r\\n]*)[ \\t]*$";
+export const SNAPSHOT_LINE_REFERENCE_REGEX = new RegExp(SNAPSHOT_LINE_REFERENCE_PATTERN, "u");
+

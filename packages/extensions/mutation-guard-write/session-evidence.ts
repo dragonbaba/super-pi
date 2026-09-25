@@ -48,10 +48,10 @@ export interface NativeStructuredMutationReceipt {
   timestamp: string;
   toolCallId: string;
   itemId: string;
-  operation: "delete" | "move" | "write";
+  operation: "delete" | "move" | "write" | "edit";
   target: string;
   destination?: string;
-  status: "succeeded" | "failed_no_change" | "partial" | "cancelled" | "state_unknown";
+  status: "succeeded" | "failed_no_change" | "partial" | "cancelled" | "state_unknown" | "not_started";
   stateChanged: boolean | "unknown";
   requiresVerification?: true;
 }
@@ -61,33 +61,61 @@ function safeReceiptPath(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 && value.length <= 4096 && !UNSAFE_RECEIPT_PATH_PATTERN.test(value);
 }
 
+function appendNativeReceipt(items: Map<string, NativeStructuredMutationReceipt>, entry: any, data: any, toolCallId: unknown, itemId: unknown, intent: boolean): void {
+  if (!data || (data.operation !== "delete" && data.operation !== "move" && data.operation !== "write" && data.operation !== "edit") || !safeReceiptPath(data.target)
+    || (data.operation === "move" && !safeReceiptPath(data.destination))) return;
+  if (typeof toolCallId !== "string" || toolCallId.length > 256 || typeof itemId !== "string" || itemId.length > 280) return;
+  const status = intent ? "state_unknown" : data.status;
+  const stateChanged = intent ? "unknown" : data.stateChanged;
+  if (status !== "state_unknown" && status !== "succeeded" && status !== "partial" && status !== "failed_no_change" && status !== "cancelled" && status !== "not_started") return;
+  if ((status === "state_unknown" && stateChanged !== "unknown") || ((status === "succeeded" || status === "partial") && stateChanged !== true)
+    || ((status === "failed_no_change" || status === "cancelled" || status === "not_started") && stateChanged !== false)) return;
+  const previous = items.get(itemId);
+  if (previous && previous.toolCallId !== toolCallId) return;
+  items.set(itemId, { receiptVersion: 2, entryId: entry.id, timestamp: entry.timestamp, toolCallId, itemId,
+    operation: data.operation, target: data.target, destination: data.destination, status, stateChanged,
+    ...(status === "state_unknown" || status === "partial" ? { requiresVerification: true as const } : {}) });
+  if (items.size > MAX_STRUCTURED_MUTATION_RECEIPTS) items.delete(items.keys().next().value!);
+}
+
 function collectNativeReceipts(branch: readonly unknown[], receipts: StructuredMutationReceipt[]): Map<string, NativeStructuredMutationReceipt> {
   const items = new Map<string, NativeStructuredMutationReceipt>();
   for (let index = Math.max(0, branch.length - MAX_STRUCTURED_MUTATION_RECEIPTS); index < branch.length; index++) {
     const entry = branch[index] as any;
     if (typeof entry?.id !== "string" || typeof entry.timestamp !== "string") continue;
-    const progress = entry.type === "custom" && entry.customType === "file-mutation-progress-v2";
+    if (entry.type === "custom" && entry.customType === "file-mutation-progress-v2") {
+      const data = entry.data;
+      if (data?.phase === "intent" || data?.mutationReceiptVersion === 2) appendNativeReceipt(items, entry, data, data?.toolCallId, data?.itemId, data?.phase === "intent");
+      continue;
+    }
     const message = entry.type === "message" && entry.message?.role === "toolResult" ? entry.message : undefined;
-    const data = progress ? entry.data : message?.details;
-    if (!data || (data.operation !== "delete" && data.operation !== "move" && data.operation !== "write") || !safeReceiptPath(data.target)
-      || (data.operation === "move" && !safeReceiptPath(data.destination))) continue;
-    const toolCallId = progress ? data.toolCallId : message.toolCallId;
-    const itemId = progress ? data.itemId : `${toolCallId}:0`;
-    if (typeof toolCallId !== "string" || toolCallId.length > 256 || typeof itemId !== "string" || itemId.length > 280) continue;
-    const intent = progress && data.phase === "intent";
-    if (!intent && (data.mutationReceiptVersion !== 2 || !["succeeded", "failed_no_change", "partial", "cancelled", "state_unknown"].includes(data.status))) continue;
-    const status = intent ? "state_unknown" : data.status;
-    const stateChanged = intent ? "unknown" : data.stateChanged;
-    if ((status === "state_unknown" && stateChanged !== "unknown") || (status === "succeeded" && stateChanged !== true)
-      || (status === "partial" && stateChanged !== true) || ((status === "failed_no_change" || status === "cancelled") && stateChanged !== false)) continue;
-    const previous = items.get(itemId);
-    if (previous && previous.toolCallId !== toolCallId) continue;
-    items.set(itemId, { receiptVersion: 2, entryId: entry.id, timestamp: entry.timestamp, toolCallId, itemId,
-      operation: data.operation, target: data.target, destination: data.destination, status, stateChanged,
-      ...(status === "state_unknown" || status === "partial" ? { requiresVerification: true as const } : {}) });
+    const data = message?.details;
+    if (data?.mutationReceiptVersion !== 2) continue;
+    if (message.toolName === "file_batch" && data.operation === "file_batch" && !data.preview && Array.isArray(data.items) && data.items.length <= 16) {
+      for (let index = 0; index < data.items.length; index++) {
+        const item = data.items[index];
+        if (item?.itemId === `${message.toolCallId}:${index}`) appendNativeReceipt(items, entry, item, message.toolCallId, item.itemId, false);
+      }
+    } else appendNativeReceipt(items, entry, data, message.toolCallId, `${message.toolCallId}:0`, false);
   }
   for (const item of items.values()) receipts.push(item);
   return items;
+}
+
+export async function recordBatchMutationEvidence(guard: MutationWriteGuard, cwd: string, input: any, details: any, toolCallId: string, generation: number): Promise<void> {
+  if (!Array.isArray(input?.operations) || !Array.isArray(details?.items) || details.preview || details.items.length > 16 || input.operations.length !== details.items.length) return;
+  for (let index = 0; index < details.items.length; index++) {
+    const item = details.items[index], operation = input.operations[index];
+    if (item?.itemId !== `${toolCallId}:${index}` || item.operation !== operation?.operation || typeof operation.path !== "string") continue;
+    const receipt = item.receipt;
+    if (item.status === "succeeded" && (item.operation === "edit" || item.operation === "write") && typeof receipt?.sha256 === "string" && SHA256_PATTERN.test(receipt.sha256)) {
+      try { await guard.recordMutationSnapshot(cwd, operation.path, receipt.sha256, item.itemId, generation); }
+      catch { await guard.invalidate(cwd, operation.path); }
+    } else if (item.stateChanged !== false) {
+      await guard.invalidate(cwd, operation.path);
+      if (typeof operation.destination === "string") await guard.invalidate(cwd, operation.destination);
+    }
+  }
 }
 
 function rememberToolCall(pending: Map<string, StoredToolCall>, id: string, call: StoredToolCall): void {
@@ -194,7 +222,7 @@ export function collectStructuredMutationReceipts(branch: readonly unknown[]): S
       || typeof entry.message !== "object") continue;
     const message = entry.message as ToolResultMessageShape;
     if (message.role !== "toolResult"
-      || message.isError === true
+      || (message.isError === true && message.toolName !== "file_batch")
       || typeof message.toolCallId !== "string"
       || (message.toolName !== "edit" && message.toolName !== "write")
       || !message.details
@@ -264,6 +292,7 @@ export function collectStructuredMutationReceipts(branch: readonly unknown[]): S
       sha256,
     });
   }
+  if (receipts.length > MAX_STRUCTURED_MUTATION_RECEIPTS) receipts.splice(0, receipts.length - MAX_STRUCTURED_MUTATION_RECEIPTS);
   return receipts;
 }
 
@@ -286,14 +315,16 @@ export async function restoreMutationEvidenceFromBranch(
     const message = entry.message as ToolResultMessageShape;
     if (collectAssistantToolCalls(message, pending)) continue;
     if (message.role !== "toolResult"
-      || message.isError === true
+      || (message.isError === true && message.toolName !== "file_batch")
       || typeof message.toolCallId !== "string"
       || typeof message.toolName !== "string") continue;
     const call = pending.get(message.toolCallId);
     pending.delete(message.toolCallId);
     if (!call || call.name !== message.toolName) continue;
     try {
-      if (message.toolName === "read") {
+      if (message.toolName === "file_batch") {
+        await recordBatchMutationEvidence(guard, cwd, call.input, message.details, message.toolCallId, RESTORED_TURN_GENERATION);
+      } else if (message.toolName === "read") {
         await restoreRead(guard, cwd, call, message, message.toolCallId);
       } else if (message.toolName === "edit" || message.toolName === "write") {
         await restoreMutation(guard, cwd, call, message, message.toolCallId);

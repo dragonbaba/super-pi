@@ -9,6 +9,7 @@ import type { Theme } from "../../modes/interactive/theme/theme.ts";
 import { splitBom } from "../../utils/text.ts";
 import type { ToolDefinition } from "../extensions/types.ts";
 import {
+  prepareExactEditContent,
 	applyEditsToNormalizedContent,
 	computeEditsDiff,
 	detectLineEnding,
@@ -408,13 +409,9 @@ export function createEditToolDefinition(
 				throwIfAborted();
 
 				// Strip BOM before matching. The model will not include an invisible BOM in oldText.
-				const { bom, text: content } = splitBom(rawContent);
-				const originalEnding = detectLineEnding(content);
-				const normalizedContent = normalizeToLF(content);
-				const { baseContent, newContent } = applyEditsToNormalizedContent(normalizedContent, edits, path);
+        const { baseContent, newContent, finalContent } = prepareExactEditContent(rawContent, edits, path);
 				throwIfAborted();
 
-				const finalContent = bom + restoreLineEndings(newContent, originalEnding);
 				await ops.writeFile(absolutePath, finalContent);
 				throwIfAborted();
 

@@ -775,7 +775,19 @@ export async function resolveSnapshotCanonicalTarget(
   }
   return receipt.canonicalPath;
 }
-export async function executeSnapshotLineEdit(
+export interface PreparedSnapshotMutation {
+  snapshotId: string;
+  sessionId: string;
+  receipt: SnapshotReceipt;
+  byteEdits: PreparedByteEdit[];
+  changedBytes: number;
+  replacements: number;
+  deduplicatedEdits: number;
+  diff: string;
+  patch: string;
+  firstChangedLine?: number;
+}
+export async function prepareSnapshotLineMutation(
   sessionId: string,
   cwd: string,
   path: string,
@@ -783,7 +795,7 @@ export async function executeSnapshotLineEdit(
   edits: readonly SnapshotLineEdit[],
   signal: AbortSignal | undefined,
   hooks: SnapshotLineEditHooks,
-): Promise<SnapshotLineEditResult> {
+): Promise<PreparedSnapshotMutation> {
   if (!SNAPSHOT_ID_PATTERN.test(snapshotId)) throw new Error("[SNAPSHOT_EDIT_UNKNOWN] Invalid snapshot identifier. No change.\nRead the needed range again; use that read's snapshot and LINE#ID anchors.");
   const receipt = snapshotStore().snapshots.get(snapshotId);
   if (!receipt || receipt.sessionId !== sessionId) throw new Error("[SNAPSHOT_EDIT_UNKNOWN] Snapshot is absent, expired, consumed, or belongs to another Session. No change.\nRead the needed range again; use that read's snapshot and LINE#ID anchors.");
@@ -809,12 +821,36 @@ export async function executeSnapshotLineEdit(
   const beforeText = strictUtf8Decoder.decode(current);
   const afterText = strictUtf8Decoder.decode(prepared.output);
   const diffResult = generateDiffString(beforeText, afterText);
-  try {
-    await assertNoNewSyntaxDiagnostics(receipt.canonicalPath, beforeText, afterText, edits, prepared.byteEdits);
-  } finally {
-    prepared.byteEdits.length = 0;
-  }
+  await assertNoNewSyntaxDiagnostics(receipt.canonicalPath, beforeText, afterText, edits, prepared.byteEdits);
   const patch = generateUnifiedPatch(receipt.canonicalPath, beforeText, afterText);
+  return { snapshotId, sessionId, receipt, byteEdits: prepared.byteEdits, changedBytes: prepared.changedBytes,
+    replacements: prepared.replacements, deduplicatedEdits: prepared.deduplicatedEdits,
+    diff: diffResult.diff, patch, firstChangedLine: diffResult.firstChangedLine };
+}
+
+export async function executeSnapshotLineEdit(
+  sessionId: string, cwd: string, path: string, snapshotId: string, edits: readonly SnapshotLineEdit[],
+  signal: AbortSignal | undefined, hooks: SnapshotLineEditHooks,
+): Promise<SnapshotLineEditResult> {
+  const plan = await prepareSnapshotLineMutation(sessionId, cwd, path, snapshotId, edits, signal, hooks);
+  try { return await executePreparedSnapshotMutation(plan, signal, hooks); }
+  finally { plan.byteEdits.length = 0; }
+}
+
+export async function executePreparedSnapshotMutation(
+  plan: PreparedSnapshotMutation, signal: AbortSignal | undefined, hooks: SnapshotLineEditHooks,
+): Promise<SnapshotLineEditResult> {
+  const { receipt, snapshotId, patch } = plan;
+  if (snapshotStore().snapshots.get(snapshotId) !== receipt) throw new Error("[SNAPSHOT_EDIT_STALE] Prepared snapshot is no longer available.");
+  if (await hooks.assertPathAllowed() !== receipt.canonicalPath) throw new Error("[SNAPSHOT_EDIT_PATH] Prepared path changed.");
+  const current = await readFile(receipt.canonicalPath);
+  if (!sameIdentity(await currentIdentity(receipt.canonicalPath), receipt.identity) || sha256(current) !== receipt.sha256) throw new Error("[SNAPSHOT_EDIT_STALE] Prepared source changed.");
+  const chunks: Buffer[] = [];
+  let cursor = 0;
+  for (const edit of plan.byteEdits) { chunks.push(current.subarray(cursor, edit.start), edit.replacement); cursor = edit.end; }
+  chunks.push(current.subarray(cursor));
+  const prepared = { output: Buffer.concat(chunks), changedBytes: plan.changedBytes, replacements: plan.replacements, deduplicatedEdits: plan.deduplicatedEdits };
+  const diffResult = plan;
   const reservationId = hooks.reserveMutation?.(prepared.changedBytes);
   if (signal?.aborted) throw new Error("Operation aborted");
   const directory = dirname(receipt.canonicalPath);
