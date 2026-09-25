@@ -56,7 +56,7 @@ interface Item {
 }
 interface ItemResult { itemId: string; operation: Operation; target: string; destination?: string; status: MutationStatus; stateChanged: boolean | "unknown"; reason?: string; receipt?: unknown }
 
-function pathKey(path: string): string { return process.platform === "win32" ? path.toLowerCase() : path; }
+function pathKey(path: string): string { return path.normalize("NFC").toLowerCase(); }
 function pathConflicts(left: string, right: string): boolean {
   left = pathKey(left); right = pathKey(right);
   const path = relative(left, right);
@@ -65,6 +65,11 @@ function pathConflicts(left: string, right: string): boolean {
 function assertIndependent(items: readonly Item[]): void {
   for (let i = 0; i < items.length; i++) for (let j = 0; j < i; j++) {
     const a = items[i], b = items[j];
+    if (process.platform !== "win32" && a.creation && b.creation) {
+      for (const left of a.creation.directories) for (const right of b.creation.directories) {
+        if (left !== right && pathKey(left) === pathKey(right)) throw new Error(`[BATCH_CONFLICT] ${a.itemId} and ${b.itemId} use ambiguous spellings for a missing shared parent; use identical spelling.`);
+      }
+    }
     if (a.identity && b.identity && a.identity.device === b.identity.device && a.identity.inode === b.identity.inode) throw new Error(`[BATCH_CONFLICT] ${a.itemId} and ${b.itemId} share a file identity.`);
     for (const left of a.paths) for (const right of b.paths) if (pathConflicts(left, right) || pathConflicts(right, left)) throw new Error(`[BATCH_CONFLICT] ${a.itemId} and ${b.itemId} overlap; split dependent changes into verified stages.`);
   }

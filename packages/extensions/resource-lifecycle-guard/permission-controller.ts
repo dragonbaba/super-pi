@@ -836,6 +836,7 @@ export class SessionPermissionController {
           exactTargets.push(path.canonicalTarget);
           targetAssessments.push(await this.#state.assessTarget(path.canonicalTarget, ctx.cwd));
           if (sensitiveProtectedRoots(path.protectedRoots.filter(root => root !== "workspace_root"))) highRisk = true;
+          for (const root of path.protectedRoots) if (!primitives.includes(root)) primitives.push(root);
         }
         if (item.creation) for (const directory of item.creation.directories) {
           if (!exactTargets.includes(directory)) { exactTargets.push(directory); targetAssessments.push(await this.#state.assessTarget(directory, ctx.cwd)); }

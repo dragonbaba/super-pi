@@ -87,7 +87,7 @@ remain. No paid model experiment, automatic merge or deployment is authorized.
 ## B implementation candidate
 
 B is stacked on `feat/native-file-operations`, dependency
-`ad13a39fd9577807ee3f183764ae9f17c65919e7`. A fixes were integrated by merge;
+`6079502889fef38cbe0e0f7c9ba6f74870f613a0`. A fixes were integrated by merge;
 no source fork/cherry-picked implementation and no main merge was used.
 
 `file_batch` prepares at most 16 independent items, reserves the existing real
@@ -117,3 +117,30 @@ Exact final-HEAD test/CI/review and allocation evidence remains required.
 
 C is independent at PR #45, base `70e1d52c410e57fba8802df26f7c8c8b7dc16bc0`;
 its first real Bash/PowerShell literal-cwd fixtures pass. All PRs remain unmerged.
+
+
+B review round 1 addressed: overwrite disposition remains preflight-bound;
+prospective targets conservatively reject case/Unicode-normalization aliases on
+all filesystems (including case-sensitive volumes); ambiguous shared-parent
+spellings require identical spelling outside Windows. Protected-root reasons are
+preserved in approval/audit primitives. Missing-path queue keys resolve their
+nearest existing ancestor, so native and batch operations share aliases too.
+No case-sensitivity probe, filesystem cache or new platform abstraction is added.
+The native Node strip-mode class compatibility failure is fixed; 96 related
+batch/native/permission/recovery cases pass before final candidate publication.
+
+`native-files-lifecycle.ts` exercises actual SDK, InteractiveMode, ProcessTerminal,
+input dispatcher, extension assembly, batch execution and resource teardown with
+synthetic streams and an offline model. Ten cycles (five each regular/fullscreen)
+observed input-ready p50/p95 8.66/35.39 ms and first batch 7.85/19.52 ms. All final
+pending tool, input listener and resize listener counts were zero. Windows CPU
+accounting was coarse (p50 0, p95 16000 us); no claim of zero CPU. This fixture is
+not a manual terminal/ConPTY measurement. Peak values are observed samples, not
+an exhaustive allocation trace; existing allocation gates run separately.
+
+Default full Markdown benchmark completed (5 processes, 20000 updates/process,
+5000 warmup, 26 fixture/viewport cases). Its source/render caches returned to zero
+after invalidation. A clean exact-final-HEAD rerun is being recorded in PR #44;
+no Markdown renderer changes were made. The source/AST gates for the batch result
+renderer prohibit per-render closures, temporary arrays/objects, regexes, promises
+and abort controllers; real collapsed/expanded TUI results have regression coverage.

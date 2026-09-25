@@ -4,7 +4,7 @@ import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { assessProtectedMutationPath } from "./protected-path-policy.ts";
 import { hashNativeSource } from "./native-file-core.ts";
 import type { PathIdentity } from "./native-file-core.ts";
-import { executeFileCreation, prepareFileCreation, MAX_CREATED_DIRECTORIES, type FileCreationPlan, type CreationResult } from "./file-creation.ts";
+import { executeFileCreation, prepareFileCreation, MAX_CREATED_DIRECTORIES, directoryKey, type FileCreationPlan, type CreationResult } from "./file-creation.ts";
 
 export type MutationGuardCategory =
   | "READ_REQUIRED"
@@ -295,9 +295,9 @@ export class MutationWriteGuard {
       else this.#budgetFileReferences.set(entry.additionalTarget, references - 1);
     }
     if (entry.directories) for (const directory of entry.directories) {
-      const references = this.#budgetDirectoryReferences.get(directory) ?? 0;
-      if (references <= 1) this.#budgetDirectoryReferences.delete(directory);
-      else this.#budgetDirectoryReferences.set(directory, references - 1);
+      const references = this.#budgetDirectoryReferences.get(directoryKey(directory)) ?? 0;
+      if (references <= 1) this.#budgetDirectoryReferences.delete(directoryKey(directory));
+      else this.#budgetDirectoryReferences.set(directoryKey(directory), references - 1);
     }
   }
 
@@ -521,10 +521,10 @@ export class MutationWriteGuard {
 
   reserveCreationDirectories(reservation: number, directories: readonly string[]): void {
     let count = this.#budgetDirectoryReferences.size;
-    for (const directory of directories) if (!this.#budgetDirectoryReferences.has(directory)) count++;
+    for (const directory of directories) if (!this.#budgetDirectoryReferences.has(directoryKey(directory))) count++;
     if (count > MAX_CREATED_DIRECTORIES) throw new Error("[MUTATION_BUDGET_EXCEEDED] Cumulative created-directory budget exceeded.");
     this.#budgetEntries.get(reservation)!.directories = directories;
-    for (const directory of directories) this.#budgetDirectoryReferences.set(directory, (this.#budgetDirectoryReferences.get(directory) ?? 0) + 1);
+    for (const directory of directories) this.#budgetDirectoryReferences.set(directoryKey(directory), (this.#budgetDirectoryReferences.get(directoryKey(directory)) ?? 0) + 1);
   }
 
   reserveWriteMutation(turnGeneration: number, path: string, content: string, creation?: FileCreationPlan): number {

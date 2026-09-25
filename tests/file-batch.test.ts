@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync, linkSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync, linkSync, symlinkSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -13,6 +13,11 @@ import { collectStructuredMutationReceipts } from "../packages/extensions/mutati
 import { createAssistantMessageEventStream } from "../packages/ai/src/utils/event-stream.ts";
 import { convertToLlm } from "../packages/coding-agent/src/core/messages.ts";
 import { getEncoding } from "js-tiktoken";
+import { withFileMutationQueue } from "../packages/coding-agent/src/core/tools/file-mutation-queue.ts";
+import { ToolExecutionComponent } from "../packages/coding-agent/src/modes/interactive/components/tool-execution.ts";
+import { initTheme } from "../packages/coding-agent/src/modes/interactive/theme/theme.ts";
+import { RELEASE_COMPONENT_RENDER_CACHE } from "@super-pi/tui";
+import ts from "typescript";
 const jiti = createJiti(import.meta.url);
 const { default: mutation } = await jiti.import<any>("../packages/extensions/mutation-guard-write/index.ts");
 const { default: lifecycle } = await jiti.import<any>("../packages/extensions/resource-lifecycle-guard/index.ts");
@@ -202,6 +207,63 @@ test("failed durable result marks unknown, stops following items and never repla
   assert.equal(receipts.filter((r: any) => r.itemId === "file_batch:0").length, 1);
   assert.equal((receipts.find((r: any) => r.itemId === "file_batch:0") as any).status, "state_unknown");
   assert.equal(existsSync(join(f.cwd, "parents/b")), false);
+});
+
+test("review: overwrite removed after item revalidation never becomes creation", async t => {
+  const f = await fixture(t); const path = join(f.cwd, "existing"); writeFileSync(path, "before");
+  await f.call("read", { path }, "read");
+  f.onRecord(data => { if (data.phase === "intent") unlinkSync(path); });
+  const result = await f.call("file_batch", { operations: [{ operation: "write", mode: "overwrite", path, content: "forbidden" }] });
+  assert.equal(result.isError, true); assert.equal(existsSync(path), false);
+});
+
+test("prospective case/Unicode aliases reject before creating any target on every platform", async t => {
+  const f = await fixture(t);
+  for (const paths of [["new/Foo", "new/foo"], ["new/é", "new/é"]]) {
+    const result = await f.call("file_batch", { operations: paths.map(path => ({ operation: "write", mode: "create", path, content: "data" })) });
+    assert.equal(result.isError, true); assert.equal(existsSync(join(f.cwd, "new")), false);
+  }
+});
+
+test("queue resolves missing descendants through an existing alias and releases after failure", async t => {
+  const f = await fixture(t); const real = join(f.cwd, "real"), alias = join(f.cwd, "alias"); mkdirSync(real);
+  symlinkSync(real, alias, process.platform === "win32" ? "junction" : "dir");
+  let release!: () => void, entered!: () => void; const started = new Promise<void>(resolve => { entered = resolve; });
+  const held = new Promise<void>(resolve => { release = resolve; }); const order: number[] = [];
+  const first = withFileMutationQueue(join(real, "missing/file"), async () => { entered(); await held; order.push(1); });
+  await started;
+  const second = withFileMutationQueue(join(alias, "missing/file"), async () => { order.push(2); throw new Error("injected"); });
+  const rejected = assert.rejects(second, /injected/);
+  await new Promise<void>(resolve => setTimeout(resolve, 20)); assert.equal(order.length, 0);
+  release(); await first; await rejected; assert.equal(order.join(","), "1,2");
+  await withFileMutationQueue(join(real, "missing/file"), async () => { order.push(3); }); assert.equal(order.join(","), "1,2,3");
+});
+
+test("cancel after committed create retains its shared parent and stops later writes", async t => {
+  const f = await fixture(t);
+  f.onRecord(data => { if (data.phase === "result" && data.itemId === "file_batch:0") f.agent.abort(); });
+  const result = await f.call("file_batch", { operations: ["a", "b", "c"].map(path => ({ operation: "write", mode: "create", path: `shared/${path}`, content: path })) });
+  assert.equal(result.isError, true);
+  assert.deepEqual((result.details as any).items.map((item: any) => item.status), ["succeeded", "cancelled", "not_started"]);
+  assert.equal(readFileSync(join(f.cwd, "shared/a"), "utf8"), "a"); assert.equal(existsSync(join(f.cwd, "shared/b")), false);
+});
+
+test("batch TUI renders real counts and Added details; renderer has no hot inline allocations", async t => {
+  const f = await fixture(t); const input = { operations: [{ operation: "write", mode: "create", path: "a", content: "" }] };
+  const result = await f.call("file_batch", input); initTheme("dark");
+  const definition = f.runner.getAllRegisteredTools().find(r => r.definition.name === "file_batch")!.definition;
+  const component = new ToolExecutionComponent("file_batch", "file_batch", input, {}, definition, { requestRender() {} } as never, f.cwd);
+  component.updateResult(result); assert.ok(component.render(100).join("\n").includes("1 succeeded"));
+  component.setExpanded(true); assert.ok(component.render(100).join("\n").includes("Added")); component[RELEASE_COMPONENT_RENDER_CACHE]();
+  const source = ts.createSourceFile("batch.ts", readFileSync("packages/extensions/mutation-guard-write/file-batch.ts", "utf8"), ts.ScriptTarget.Latest, true);
+  let found = 0;
+  function inspect(node: ts.Node): void {
+    assert.equal(ts.isArrowFunction(node) || ts.isFunctionExpression(node) || ts.isArrayLiteralExpression(node) || ts.isObjectLiteralExpression(node) || ts.isRegularExpressionLiteral(node), false);
+    if (ts.isNewExpression(node)) assert.equal(["Promise", "AbortController", "Map", "Set", "RegExp"].includes(node.expression.getText(source)), false);
+    ts.forEachChild(node, inspect);
+  }
+  function find(node: ts.Node): void { if (ts.isFunctionExpression(node) && node.name?.text === "renderBatchResult") { found++; inspect(node.body); } else ts.forEachChild(node, find); }
+  find(source); assert.equal(found, 1);
 });
 
 test("offline task cost includes real Agent requests, schema and cumulative model serialization", async t => {
