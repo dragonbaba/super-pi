@@ -186,7 +186,8 @@ test("postmerge preflight adds zero argument-wrapper allocations", () => {
     assert.ok(ts.isReturnStatement(node.parent), "batch transfers its private payload directly");
    } else {
     shellConsumes++;
-    assert.ok(ts.isBinaryExpression(node.parent) && node.parent.left.getText(runnerSource) === "terminalValues",
+    const assignment = ts.isAsExpression(node.parent) ? node.parent.parent : node.parent;
+    assert.ok(ts.isBinaryExpression(assignment) && assignment.left.getText(runnerSource) === "terminalValues",
       "shell handoff must retain terminal values for failed-binding release");
     assert.ok(runnerText.indexOf("finally { check.release(); }", handoff.pos) < node.pos,
       "auxiliary shell releases precede terminal shell consume");
