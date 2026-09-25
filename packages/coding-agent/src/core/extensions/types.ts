@@ -346,8 +346,8 @@ export interface ExtensionContext {
 	thinkingLevel?: ThinkingLevel;
 	/** Whether the agent is idle (not streaming) */
 	isIdle(): boolean;
-	/** Whether project-local trust is active for this context. */
-	isProjectTrusted(): boolean;
+	/** Whether project-local trust is active. Explicit path consumers request identity revalidation before reading trusted resources. */
+	isProjectTrusted(revalidateIdentity?: boolean): boolean;
 	/** The current abort signal, or undefined when the agent is not streaming. */
 	signal: AbortSignal | undefined;
 	/** Abort the current agent operation */
@@ -490,7 +490,7 @@ export interface ToolDefinition<TParams extends TSchema = TSchema, TDetails = un
 	renderShell?: "default" | "self";
 
 	/** Optional compatibility shim to prepare raw tool call arguments before schema validation. Must return an object conforming to TParams. */
-	prepareArguments?: (args: unknown) => Static<TParams>;
+	prepareArguments?: (args: unknown, ctx?: ExtensionContext) => Static<TParams>;
 
 	/**
 	 * Per-tool execution mode override.
@@ -1817,7 +1817,7 @@ export interface ExtensionContextActions {
 	getModel: () => Model<any> | undefined;
 	getScopedModels: () => readonly ScopedModel[];
 	isIdle: () => boolean;
-	isProjectTrusted: () => boolean;
+	isProjectTrusted: (revalidateIdentity?: boolean) => boolean;
 	getSignal: () => AbortSignal | undefined;
 	abort: () => void;
 	hasPendingMessages: () => boolean;

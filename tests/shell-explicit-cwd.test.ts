@@ -22,6 +22,7 @@ const bashPath = process.platform !== "win32" ? "/bin/bash" : existsSync("D:/Git
 async function fixture(t: test.TestContext, auxiliary?: any, aliasedTrustedRoot = false) {
   const root = mkdtempSync(join(tmpdir(), "sp-shell-cwd-")); let cwd = join(root, "workspace"); mkdirSync(cwd);
   if (aliasedTrustedRoot) { const alias = join(root, "workspace-alias"); symlinkSync(cwd, alias, process.platform === "win32" ? "junction" : "dir"); cwd = alias; }
+  const trustOwner = SettingsManager.create(cwd, join(root, "trust-agent"), { projectTrusted: aliasedTrustedRoot });
   const session = SessionManager.create(cwd, join(root, "sessions"));
   const runtime = createExtensionRuntime();
   const extension = await loadExtensionFromFactory(lifecycle, cwd, createEventBus(), runtime);
@@ -34,7 +35,7 @@ async function fixture(t: test.TestContext, auxiliary?: any, aliasedTrustedRoot 
   } });
   agent.state.tools = [createBashTool(cwd, { shellPath: bashPath }), createPowerShellTool(cwd)];
   runner.bindCore({ getThinkingLevel: () => "off", getActiveTools: () => ["bash", "powershell"], appendEntry: (kind: string, data: any) => session.appendCustomEntry(kind, data) } as never,
-    { getSignal: () => agent.signal, getModel: () => agent.state.model, isProjectTrusted: () => aliasedTrustedRoot, isIdle: () => true, hasPendingMessages: () => false } as never);
+    { getSignal: () => agent.signal, getModel: () => agent.state.model, isProjectTrusted: (revalidateIdentity?: boolean) => trustOwner.isProjectTrusted(revalidateIdentity), isIdle: () => true, hasPendingMessages: () => false } as never);
   runner.setUIContext({ ...runner.getUIContext(), select: async () => { approvals++; onApproval(); return "仅允许本次"; } }, "tui");
   await runner.emit({ type: "session_start" } as never);
   t.after(async () => { agent.abort(); runner.invalidate(); await runner.emit({ type: "session_shutdown" } as never); rmSync(root, { recursive: true, force: true }); });
@@ -289,6 +290,7 @@ test("review: trusted project identity survives actual Session and resource relo
  try {
   await session.reload(); const before = factories;
   rmSync(f.cwd); symlinkSync(outside, f.cwd, process.platform === "win32" ? "junction" : "dir");
+  assert.throws(() => session.extensionRunner.createContext().isProjectTrusted(true), error => error instanceof Error && error.message.includes("SHELL_CWD_CHANGED"));
   await assert.rejects(session.reload(), error => error instanceof Error && error.message.includes("SHELL_CWD_CHANGED"));
   await assert.rejects(resourceLoader.reload(), error => error instanceof Error && error.message.includes("SHELL_CWD_CHANGED"));
   assert.equal(factories, before); assert.equal(existsSync(marker), false); assert.notEqual(settingsManager.getShellPath(), "untrusted-shell");
@@ -305,4 +307,37 @@ test("non-Windows PowerShell refuses explicit cwd without command effects", { sk
  const f = await fixture(t); const input = { command: "Set-Content -LiteralPath marker -Value forbidden", cwd: f.cwd };
  await assert.rejects(createPowerShellTool(f.cwd).execute("unsupported-platform", input), error => error instanceof Error && error.message.includes("only available on Windows"));
  assert.equal(existsSync(join(f.cwd, "marker")), false); assert.equal(getShellCwdBinding(input)?.isReleased, true);
+});
+
+
+test("review: standalone first call revalidates the original Session trust owner", async t => {
+ const f = await fixture(t, undefined, true); const outside = join(f.root, "outside"); mkdirSync(join(outside, CONFIG_DIR_NAME, "config"), { recursive: true });
+ writeFileSync(join(outside, CONFIG_DIR_NAME, "config/settings.json"), JSON.stringify({ shellPath: join(f.root, "untrusted-invalid-shell") }));
+ const { default: loop } = await createJiti(import.meta.url).import<any>("../packages/extensions/tool-loop-guardrails/index.ts");
+ const definitions: any[] = []; loop({ registerTool(tool: any) { definitions.push(tool); }, on() {} });
+ const bash = definitions.find(tool => tool.name === "bash");
+ rmSync(f.cwd); symlinkSync(outside, f.cwd, process.platform === "win32" ? "junction" : "dir");
+ const input = { command: "printf unsafe > marker", cwd: "." };
+ await assert.rejects(bash.execute("standalone-root", input, undefined, undefined, f.runner.createContext()), error => error instanceof Error && error.message.includes("SHELL_CWD_CHANGED"));
+ assert.equal(existsSync(join(outside, "marker")), false); assert.equal(getShellCwdBinding(input)?.isReleased, true);
+});
+
+test("review: initial trust approval cannot adopt a retargeted workspace alias", async t => {
+ const f = await fixture(t, undefined, true); const original = realpathSync.native(f.cwd), outside = join(f.root, "outside"), agentDir = join(f.root, "trust-prompt-agent"); mkdirSync(outside); mkdirSync(agentDir);
+ const settingsManager = SettingsManager.create(f.cwd, agentDir, { projectTrusted: false }); let prompted = false, factories = 0;
+ const resourceLoader = new DefaultResourceLoader({ cwd: f.cwd, agentDir, settingsManager, noContextFiles: true, noSkills: true, noThemes: true, noPromptTemplates: true, extensionFactories: [() => { factories++; }] });
+ await assert.rejects(resourceLoader.reload({ resolveProjectTrust: async () => { prompted = true; assert.equal(realpathSync.native(f.cwd), original); rmSync(f.cwd); symlinkSync(outside, f.cwd, process.platform === "win32" ? "junction" : "dir"); return true; } }), error => error instanceof Error && error.message.includes("SHELL_CWD_CHANGED"));
+ assert.equal(prompted, true); assert.equal(settingsManager.isProjectTrusted(), false); assert.equal(factories, 1); // only the untrusted bootstrap ran
+});
+
+test("review: project commandPrefix refuses explicit cwd before all permission hooks", async t => {
+ const f = await fixture(t, undefined, true); mkdirSync(join(f.cwd, CONFIG_DIR_NAME, "config"), { recursive: true });
+ writeFileSync(join(f.cwd, CONFIG_DIR_NAME, "config/settings.json"), JSON.stringify({ shellPath: bashPath, shellCommandPrefix: "printf prefix" }));
+ const { default: loop } = await createJiti(import.meta.url).import<any>("../packages/extensions/tool-loop-guardrails/index.ts");
+ const definitions: any[] = []; loop({ registerTool(tool: any) { definitions.push(tool); }, on() {} });
+ f.agent.state.tools = [wrapToolDefinition(definitions.find(tool => tool.name === "bash"), () => f.runner.createContext())];
+ let authorizationVisits = 0; f.afterAuthorization(() => { authorizationVisits++; });
+ const result = await f.call("bash", "printf unsafe > marker", ".");
+ assert.equal(result.isError, true); assert.ok(result.content[0].type === "text" && result.content[0].text.includes("SHELL_CWD_UNSUPPORTED"), JSON.stringify(result));
+ assert.equal(authorizationVisits, 0); assert.equal(f.approvals(), 0); assert.equal(existsSync(join(f.cwd, "marker")), false);
 });

@@ -417,7 +417,7 @@ export class SettingsManager {
 		settingsPaths: SettingsPaths = {},
 	): SettingsManager {
 		const projectTrusted = options.projectTrusted ?? true;
-		if (projectTrusted) storage.assertProjectIdentity?.();
+		storage.assertProjectIdentity?.();
 		const globalLoad = SettingsManager.tryLoadFromStorage(storage, "global");
 		const projectLoad = SettingsManager.tryLoadFromStorage(storage, "project", projectTrusted);
 		const initialErrors: SettingsError[] = [];
@@ -548,7 +548,8 @@ export class SettingsManager {
 		return structuredClone(this.projectSettings);
 	}
 
-	isProjectTrusted(): boolean {
+	isProjectTrusted(revalidateIdentity = false): boolean {
+		if (this.projectTrusted && revalidateIdentity) this.storage.assertProjectIdentity?.();
 		return this.projectTrusted;
 	}
 

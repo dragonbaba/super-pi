@@ -562,7 +562,7 @@ export class ExtensionRunner {
 	private getModel: () => Model<any> | undefined = () => undefined;
 	private getScopedModels: () => readonly ScopedModel[] = () => [];
 	private isIdleFn: () => boolean = () => true;
-	private isProjectTrustedFn: () => boolean = () => true;
+	private isProjectTrustedFn: (revalidateIdentity?: boolean) => boolean = (revalidateIdentity) => revalidateIdentity !== true;
 	private getSignalFn: () => AbortSignal | undefined = () => undefined;
 	private waitForIdleFn: () => Promise<void> = async () => {};
 	private abortFn: () => void = () => {};
@@ -1063,9 +1063,9 @@ export class ExtensionRunner {
 				runner.assertActive();
 				return runner.isIdleFn();
 			},
-			isProjectTrusted: () => {
+			isProjectTrusted: (revalidateIdentity) => {
 				runner.assertActive();
-				return runner.isProjectTrustedFn();
+				return runner.isProjectTrustedFn(revalidateIdentity);
 			},
 			get signal() {
 				runner.assertActive();

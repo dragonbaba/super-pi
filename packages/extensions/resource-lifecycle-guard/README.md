@@ -174,3 +174,13 @@ Explicit cwd validates both root and target before selecting shell settings, and
 uses an invocation-owned Bash definition so a failed call cannot poison the
 omitted-cwd definition cache. Final spawn still performs the identity check.
 These checks run at invocation/reload boundaries, not on output or render updates.
+
+
+File settings pin the root even while initially untrusted, before any trust UI wait.
+Explicit-cwd consumers request identity revalidation from the persistent Session
+trust owner via `ctx.isProjectTrusted(true)`, including standalone scoped Bash
+without the permission extension. Default boolean queries and omitted cwd retain
+their no-traversal behavior. Definition argument preparation receives the optional
+Session context before permission hooks, so project command prefixes unsupported
+with explicit cwd refuse before an approval or allow-rule change. These are bounded
+invocation/startup operations; no progress/render callback or regex was added.

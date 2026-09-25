@@ -4019,7 +4019,7 @@ export class AgentSession {
 				getModel: () => this.model,
 				getScopedModels: () => this._scopedModels,
 				isIdle: () => this.isIdle,
-				isProjectTrusted: () => this.settingsManager.isProjectTrusted(),
+				isProjectTrusted: (revalidateIdentity) => this.settingsManager.isProjectTrusted(revalidateIdentity),
 				getSignal: () => this.agent.signal,
 				abort: () => {
 					if (this._extensionAbortHandler) {

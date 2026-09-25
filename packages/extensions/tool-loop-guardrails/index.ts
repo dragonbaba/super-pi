@@ -1,4 +1,5 @@
 import process from "node:process";
+import { realpathSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
 import {
   createReadToolDefinition,
@@ -129,12 +130,26 @@ export default function toolLoopGuardrails(pi: ExtensionAPI): void {
       "For Node scripts, use node -e when the one-off source can be passed reliably; complex quoting or reusable code may use an explicit file or supported stdin. Script length does not decide permission, and a file does not bypass approval.",
     ],
     parameters: ScopedBashParameters,
+    prepareArguments(args, ctx) {
+      const input = upstreamBash.prepareArguments!(args) as ScopedBashInput;
+      if (input?.cwd === undefined) return input;
+      if (!ctx) throw new Error("[SHELL_CWD_UNSUPPORTED] Explicit scoped cwd requires a Session context for settings preflight.");
+      if (typeof input.cwd !== "string" || !input.cwd || input.cwd.length > 4096 || input.cwd.includes("\0")) return input;
+      // This synchronous metadata/settings preflight precedes every permission hook.
+      // No binding or settings definition survives this check; execution revalidates.
+      const trusted = ctx.isProjectTrusted(true);
+      const target = realpathSync.native(resolve(ctx.cwd, input.cwd));
+      const root = trusted ? realpathSync.native(ctx.cwd) : ctx.cwd;
+      const definition = createConfiguredMsysBashDefinition(target, trusted && insideProject(target, root));
+      definition.prepareArguments!(input);
+      return input;
+    },
     async execute(toolCallId, input: ScopedBashInput, signal, onUpdate, ctx) {
       const binding = await prepareShellCwd(input, ctx.cwd);
       try {
         const effectiveCwd = binding?.canonical ?? resolveBashCallCwd(input, ctx.cwd);
         binding?.beforeSpawn(binding.canonical);
-        const trusted = ctx.isProjectTrusted();
+        const trusted = ctx.isProjectTrusted(binding !== undefined);
         const projectRoot = binding?.sessionCanonical ?? ctx.cwd;
         const projectTrusted = trusted && insideProject(effectiveCwd, projectRoot);
         // Explicit directory definitions are invocation-owned: a failed identity check
