@@ -169,13 +169,35 @@ test("postmerge preflight adds zero argument-wrapper allocations", () => {
  assert.doesNotMatch(consume.getText(source), /\bawait\b|new Promise|setTimeout|createHash|JSON\.stringify/);
  const runnerText = readFileSync(new URL("../packages/coding-agent/src/core/extensions/runner.ts", import.meta.url), "utf8");
  const runnerSource = ts.createSourceFile("runner.ts", runnerText, ts.ScriptTarget.Latest, true);
- let terminalConsumes = 0;
+ const pending = runnerSource.statements.find(node => ts.isClassDeclaration(node) && node.name?.text === "PendingToolAuthorization") as ts.ClassDeclaration;
+ const handoff = pending.members.find(node => ts.isMethodDeclaration(node) && node.name.getText(runnerSource) === "consume") as ts.MethodDeclaration;
+ let shellConsumes = 0, batchConsumes = 0, batchBranches = 0;
  function countTerminalConsume(node: ts.Node): void {
-  if (ts.isCallExpression(node) && node.expression.getText(runnerSource) === "authority.consume") terminalConsumes++;
+  if (ts.isIfStatement(node) && node.expression.getText(runnerSource) === 'name === "file_batch"') batchBranches++;
+  if (ts.isCallExpression(node) && node.expression.getText(runnerSource) === "authority.consume") {
+   let parent: ts.Node | undefined = node.parent, inBatch = false;
+   while (parent && parent !== handoff) {
+    if (ts.isIfStatement(parent) && parent.expression.getText(runnerSource) === 'name === "file_batch"'
+      && node.pos >= parent.thenStatement.pos && node.end <= parent.thenStatement.end) inBatch = true;
+    parent = parent.parent;
+   }
+   if (inBatch) {
+    batchConsumes++;
+    assert.ok(ts.isReturnStatement(node.parent), "batch transfers its private payload directly");
+   } else {
+    shellConsumes++;
+    assert.ok(ts.isBinaryExpression(node.parent) && node.parent.left.getText(runnerSource) === "terminalValues",
+      "shell handoff must retain terminal values for failed-binding release");
+    assert.ok(runnerText.indexOf("finally { check.release(); }", handoff.pos) < node.pos,
+      "auxiliary shell releases precede terminal shell consume");
+   }
+  }
   ts.forEachChild(node, countTerminalConsume);
  }
- countTerminalConsume(runnerSource); assert.equal(terminalConsumes, 1);
- assert.ok(runnerText.indexOf("finally { check.release(); }") < runnerText.indexOf("authority.consume(args, id, name, signal)"));
+ countTerminalConsume(handoff);
+ assert.equal(shellConsumes, 1);
+ assert.ok(batchBranches === 0 || batchBranches === 1);
+ assert.equal(batchConsumes, batchBranches, "one terminal consume per independent batch branch");
 });
 
 test("postmerge later extension cannot execute an unapproved replacement", async t => {
