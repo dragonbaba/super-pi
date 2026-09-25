@@ -420,3 +420,33 @@ distinguishes those names. Native macOS execution is not available; that review
 finding is supported by the identity-based implementation and portable control,
 not claimed as a reproduced macOS run. Linux/Windows CI execute the new tests
 and report their filesystem-specific spelling skips individually.
+
+
+## Final read/snapshot review boundaries (4107163019/3038/3044/3053)
+
+- Legacy root and ancestor junction redirects reproduce equal-content unread
+  evidence grants on real Session restoration. Bounded lexical traversal now
+  checks the workspace root and all ancestors through the filesystem root;
+  no early workspace match skips links. Actual legacy link traversals require a
+  fresh read, including linked workspace roots. Ordinary filesystem case/Unicode
+  spelling remains identity-based. This is conservative legacy compatibility,
+  not a claim of reconstructing historical link targets.
+- Removing the source precisely when the snapshot capture descriptor closes
+  reproduces a failed otherwise-completed read. Source revalidation failure
+  now omits the optional annotation; no snapshot or mutation evidence is granted.
+- Actual SDK Sessions with only mutation + required permission extensions
+  reproduce READ_REQUIRED for both exact edit and overwrite following a valid
+  built-in read. Descriptor source capture now belongs to the built-in local
+  read itself, so the optional loop guard is not required. Its private ledger
+  attachment still follows the existing capture request and precision rules.
+  No duplicate read tool, hook-time fallback or authority registry is added.
+- A real single-file snapshot edit deterministically overwrites an in-place
+  concurrent edit made during the final asynchronous path gate. The batch
+  counterpart already rejects that exact window through prepared identity;
+  its first success/failed current/not-started tail remain intact. The shared
+  snapshot core now performs a final content hash after asynchronous path and
+  identity checks, immediately followed by synchronous authority/signal gates
+  and rename issuance. The additional bounded disk read is necessary to close
+  the demonstrated asynchronous content window, and does not enter model context.
+  Existing post-read alias/object/parent checks are retained; no OS CAS or
+  cross-process lock is claimed.

@@ -68,8 +68,6 @@ const defaultReadOperations: ReadOperations = {
 };
 
 export interface ReadToolOptions {
-	/** Capture the existing descriptor identity for mutation evidence, including non-cacheable Windows reads. */
-	captureMutationEvidence?: boolean;
 	/** Whether to auto-resize images to 2000x2000 max. Default: true */
 	autoResizeImages?: boolean;
 	/** Custom operations for file reading. Default: local filesystem */
@@ -214,8 +212,8 @@ function formatReadResult(
 	return text;
 }
 
-function attachMutationReadSource<T extends { details: ReadToolDetails | undefined }>(result: T, identity: ValidatedReadIdentity | undefined, enabled: boolean): T {
-	if (enabled && identity?.canonicalPath && identity.fileGeneration) {
+function attachMutationReadSource<T extends { details: ReadToolDetails | undefined }>(result: T, identity: ValidatedReadIdentity | undefined): T {
+	if (identity?.canonicalPath && identity.fileGeneration) {
 		result.details ??= {};
 		result.details.mutationReadSource = { canonicalPath: identity.canonicalPath, addressedPath: identity.addressedPath, fileGeneration: identity.fileGeneration };
 	}
@@ -243,7 +241,8 @@ export function createReadToolDefinition(
 			_onUpdate?,
 			ctx?,
 		) {
-			const evidenceIdentity = ops === defaultReadOperations && (options?.captureMutationEvidence === true || definition[READ_EVIDENCE_CAPTURE]?.()) ? createValidatedReadIdentity() : undefined;
+			const evidenceIdentity = ops === defaultReadOperations ? createValidatedReadIdentity() : undefined;
+			const ledgerCapture = definition[READ_EVIDENCE_CAPTURE]?.() === true;
 			let resolvedLocalPath: string | undefined;
 			let localTextBuffer: Buffer | undefined;
 			let localMime: string | null | undefined;
@@ -264,7 +263,7 @@ export function createReadToolDefinition(
 					if (window.binary) output += "\n\n[Binary NUL detected in this byte range; displayed as UTF-8 with replacement.]";
 					if (window.cursor) output += `\n\n[${window.partial ? `Line ${window.nextLine} is partial` : `Read through line ${window.nextLine - 1}`}; more file content remains. Continue with the same path and cursor=${window.cursor}.]`;
 					const { text: _text, ...details } = window;
-					return attachMutationReadSource(attachReadIdentity({ content: [{ type: "text" as const, text: output }], details: { window: details } }, evidenceIdentity), evidenceIdentity, options?.captureMutationEvidence === true);
+					return attachMutationReadSource(attachReadIdentity({ content: [{ type: "text" as const, text: output }], details: { window: details } }, ledgerCapture ? evidenceIdentity : undefined), evidenceIdentity);
 				}
 			}
 			return new Promise<{ content: (TextContent | ImageContent)[]; details: ReadToolDetails | undefined }>(
@@ -366,7 +365,7 @@ export function createReadToolDefinition(
 
 							if (aborted) return;
 							signal?.removeEventListener("abort", onAbort);
-							resolve(attachMutationReadSource(attachReadIdentity({ content, details }, evidenceIdentity), evidenceIdentity, options?.captureMutationEvidence === true));
+							resolve(attachMutationReadSource(attachReadIdentity({ content, details }, ledgerCapture ? evidenceIdentity : undefined), evidenceIdentity));
 						} catch (error: any) {
 							signal?.removeEventListener("abort", onAbort);
 							if (!aborted) reject(error);

@@ -1,4 +1,4 @@
-import { dirname, isAbsolute, resolve } from "node:path";
+import { dirname, isAbsolute } from "node:path";
 import { lstat, realpath, stat } from "node:fs/promises";
 import { resolveToolPath } from "./core.ts";
 import { mutationRequestHash } from "../resource-lifecycle-guard/permission-contract.ts";
@@ -211,14 +211,12 @@ export function primaryReadResultText(content: unknown, detailsValue: unknown): 
   return restoreSnapshotReadText(primary.text);
 }
 async function legacyReadTarget(cwd: string, path: string): Promise<string | undefined> {
-  const lexical = resolveToolPath(cwd, path), root = resolve(cwd);
-  const target = await realpath(lexical), identity = await stat(target, { bigint: true }), workspace = await stat(root, { bigint: true });
+  const lexical = resolveToolPath(cwd, path);
+  const target = await realpath(lexical), identity = await stat(target, { bigint: true });
   let probe = lexical, checked = false;
   for (let count = 0; count < 256; count++) {
-    if (probe === root) { checked = true; break; }
     const info = await lstat(probe, { bigint: true });
     if (info.isSymbolicLink()) return undefined;
-    if (info.isDirectory() && info.dev === workspace.dev && info.ino === workspace.ino) { checked = true; break; }
     const parent = dirname(probe);
     if (parent === probe) { checked = true; break; }
     probe = parent;

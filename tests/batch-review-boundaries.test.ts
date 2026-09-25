@@ -149,3 +149,23 @@ test("R5 late cleanup cannot refund a following call's successful charges", { ti
   for (let i = 0; i < 14; i++) assert.equal(readFileSync(join(cwd, `new${i}`), "utf8"), "done");
   assert.equal(scheduler.pendingTasks, 0); assert.equal(f.agent.state.pendingToolCalls.size, 0);
 });
+
+for (const batch of [false, true]) test(`snapshot content changes during final path gate, batch=${batch}`, async t => {
+  const f = await mutationFixture(t), target = join(realpathSync.native(f.cwd), "file"); writeFileSync(target, "before\n");
+  const read = await f.call("read", { path: target }); let staged = false, finalRead = false, changed = false; const effects: string[] = []; writes = effects;
+  afterIO = (kind, path) => {
+    if (kind === "open" && path.includes(".pi-snapshot-edit-")) staged = true;
+    if (staged && kind === "readFile" && path === target) finalRead = true;
+    if (finalRead && !changed && kind === "realpath" && path === target) { changed = true; writeFileSync(target, "concurrent\n"); }
+  };
+  try {
+    const item = { operation: "edit", path: target, ...anchors(read) };
+    const result = await f.call(batch ? "file_batch" : "edit", batch ? { operations: [
+      { operation: "write", mode: "create", path: "first", content: "first" }, item,
+      { operation: "write", mode: "create", path: "last", content: "last" },
+    ] } : { path: target, ...anchors(read) }, "snapshot-final-path");
+    assert.equal(changed, true); assert.equal(result.isError, true, JSON.stringify(result)); assert.equal(readFileSync(target, "utf8"), "concurrent\n");
+    assert.equal(effects.some(effect => effect.startsWith("rename:")), false);
+    if (batch) { assert.deepEqual((result.details as any).items.map((item: any) => item.status), ["succeeded", "failed_no_change", "not_started"]); assert.equal(readFileSync(join(f.cwd,"first"),"utf8"),"first");assert.equal(existsSync(join(f.cwd,"last")),false); }
+  } finally { afterIO = undefined; writes = undefined; }
+});

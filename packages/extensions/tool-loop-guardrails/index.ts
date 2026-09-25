@@ -75,7 +75,7 @@ export default function toolLoopGuardrails(pi: ExtensionAPI): void {
   const state = createGuardState();
   const pendingCalls = new Map<string, { key?: string; repairNote?: string }>();
   let nativeReadCwd = process.cwd();
-  let nativeRead = createReadToolDefinition(nativeReadCwd, { captureMutationEvidence: true });
+  let nativeRead = createReadToolDefinition(nativeReadCwd);
   const upstreamRead = nativeRead;
   let nativeBashCwd = process.cwd();
   let nativeBashProjectTrusted = false;
@@ -85,7 +85,7 @@ export default function toolLoopGuardrails(pi: ExtensionAPI): void {
   const readFor = (cwd: string): typeof nativeRead => {
     if (cwd !== nativeReadCwd) {
       nativeReadCwd = cwd;
-      nativeRead = createReadToolDefinition(cwd, { captureMutationEvidence: true });
+      nativeRead = createReadToolDefinition(cwd);
     }
     return nativeRead;
   };

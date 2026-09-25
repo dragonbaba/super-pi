@@ -278,6 +278,14 @@ function nativeReadProjection(bytes: Buffer, input: ReadToolInput): NativeReadPr
   return { text, firstLine, lastLine: firstLine + outputLines - 1, outputLines };
 }
 
+async function matchesReadSource(canonicalPath: string, result: SnapshotReadResult): Promise<boolean> {
+  const source = result.details?.mutationReadSource;
+  if (!source) return true;
+  if (canonicalPath !== source.canonicalPath) return false;
+  try { return readFileGeneration(await lstat(source.canonicalPath, { bigint: true })) === source.fileGeneration; }
+  catch { return false; } // Optional annotation must not fail a completed read.
+}
+
 export async function issueSnapshotForRead(
   sessionId: string,
   cwd: string,
@@ -294,8 +302,7 @@ export async function issueSnapshotForRead(
     // Files above the full-receipt ceiling may still qualify for a compact receipt.
   }
   if (fullCapture) {
-    const source = result.details?.mutationReadSource;
-    if (source && (fullCapture.canonicalPath !== source.canonicalPath || readFileGeneration(await lstat(source.canonicalPath, { bigint: true })) !== source.fileGeneration)) return undefined;
+    if (!await matchesReadSource(fullCapture.canonicalPath, result)) return undefined;
     const projection = nativeReadProjection(fullCapture.bytes, input);
     if (!projection || projection.text !== displayed) return undefined;
     const lines = parsePhysicalLines(fullCapture.bytes);
@@ -330,8 +337,7 @@ export async function issueSnapshotForRead(
     return undefined;
   }
   if (!compact) return undefined;
-  const source = result.details?.mutationReadSource;
-  if (source && (compact.canonicalPath !== source.canonicalPath || readFileGeneration(await lstat(source.canonicalPath, { bigint: true })) !== source.fileGeneration)) return undefined;
+  if (!await matchesReadSource(compact.canonicalPath, result)) return undefined;
   const id = `snap_${randomBytes(16).toString("base64url")}`;
   rememberSnapshot({
     mode: "compact",
@@ -883,6 +889,13 @@ export async function executePreparedSnapshotMutation(
       throw new Error("[SNAPSHOT_EDIT_STALE] Target changed before commit. No change.\nRead the needed range again; use that read's snapshot and LINE#ID anchors.");
     }
     if (await hooks.assertPathAllowed() !== receipt.canonicalPath || !sameIdentity(await currentIdentity(receipt.canonicalPath), receipt.identity)) throw new Error("[SNAPSHOT_EDIT_STALE] Prepared identity changed at commit.");
+    // The path hook can await external permission/identity checks. Its return is
+    // not content evidence: rehash once after those awaits, then commit without
+    // another asynchronous callback between verification and rename issuance.
+    if (sha256(await readFile(receipt.canonicalPath)) !== receipt.sha256) {
+      forgetSnapshot(snapshotId);
+      throw new Error("[SNAPSHOT_EDIT_STALE] Target content changed during final path validation. No change.");
+    }
     hooks.assertCurrent?.();
     signal?.throwIfAborted();
     await rename(temporary, receipt.canonicalPath);
