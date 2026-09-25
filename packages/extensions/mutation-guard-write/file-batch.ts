@@ -1,5 +1,6 @@
+import { WINDOWS_BATCH_COMPONENT_PATTERN, WINDOWS_PATH_SEPARATOR_PATTERN } from "./regex.ts";
 import { lstat, readFile } from "node:fs/promises";
-import { resolve, relative, isAbsolute, sep } from "node:path";
+import { resolve, relative, isAbsolute, sep, parse } from "node:path";
 import { TextDecoder } from "node:util";
 import type { ExtensionAPI, ExtensionContext } from "@super-pi/coding-agent";
 import { prepareExactEditContent, generateDiffString, generateUnifiedPatch } from "@super-pi/coding-agent";
@@ -146,6 +147,12 @@ export class BatchInvocation {
         signal?.throwIfAborted();
         const input = this.input.operations[index];
         const path = resolve(this.cwd, input.path);
+        if (process.platform === "win32") {
+          const targets = input.destination ? [path, resolve(this.cwd, input.destination)] : [path];
+          for (const target of targets) for (const component of target.slice(parse(target).root.length).split(WINDOWS_PATH_SEPARATOR_PATTERN)) {
+            if (WINDOWS_BATCH_COMPONENT_PATTERN.test(component)) throw new Error("[BATCH_CONFLICT] Ambiguous Windows path component (device, stream, trailing dot or space) is unsupported.");
+          }
+        }
         const assessment = await assessProtectedMutationPath(this.cwd, path);
         if (!assessment.canonicalTarget) throw new Error("[POLICY_BLOCKED] Unverifiable batch target.");
         const item: Item = { itemId: `${this.id}:${index}`, operation: input.operation, input, target: assessment.canonicalTarget,

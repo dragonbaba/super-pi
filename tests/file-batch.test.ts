@@ -294,3 +294,13 @@ test("offline task cost includes real Agent requests, schema and cumulative mode
     t.diagnostic(JSON.stringify({ benchmark: "file-task-offline", count, batch, requests, toolCalls: calls.length, preflightItems: count, approvals: f.approvals(), retries: 0, supplementalReads: 0, schemaTokens, inputTokens, outputTokens, elapsedMs, cpuUs: used.user + used.system, heapDelta: process.memoryUsage().heapUsed - heapBefore, pendingTools: f.agent.state.pendingToolCalls.size }));
   }
 });
+
+
+test("Windows prospective trailing-dot and alternate-stream aliases fail in preflight", async t => {
+  if (process.platform !== "win32") return; // Windows-only path syntax; shared tests above run on both required platforms.
+  const f = await fixture(t);
+  for (const path of ["new/a.", "new/a ", "new/a:stream", "new/NUL.txt"]) {
+    const result = await f.call("file_batch", { operations: [{ operation: "write", mode: "create", path: "must-not-exist", content: "first" }, { operation: "write", mode: "create", path, content: "second" }] });
+    assert.equal(result.isError, true); assert.equal(existsSync(join(f.cwd, "must-not-exist")), false); assert.equal(existsSync(join(f.cwd, "new")), false);
+  }
+});
