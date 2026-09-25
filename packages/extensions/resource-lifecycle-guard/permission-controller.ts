@@ -831,6 +831,7 @@ export class SessionPermissionController {
       let highRisk = false;
       for (const item of batch.items) {
         if (item.operation === "delete") { highRisk = true; primitives.push("irreversible_delete_no_backup"); }
+        if (item.operation === "move" && !primitives.includes("exclusive_link_then_unlink_non_atomic")) primitives.push("exclusive_link_then_unlink_non_atomic");
         const paths = item.native ? item.native.protectedPaths : [item.approval];
         for (const path of paths) {
           exactTargets.push(path.canonicalTarget);

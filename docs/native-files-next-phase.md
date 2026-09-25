@@ -144,3 +144,16 @@ after invalidation. A clean exact-final-HEAD rerun is being recorded in PR #44;
 no Markdown renderer changes were made. The source/AST gates for the batch result
 renderer prohibit per-render closures, temporary arrays/objects, regexes, promises
 and abort controllers; real collapsed/expanded TUI results have regression coverage.
+
+
+Review round 2 keeps conservative alias folding only for prospective paths;
+existing distinct inode targets on case-sensitive filesystems remain independent.
+Windows COM/LPT superscript digits are rejected before any mutation. Batch move
+approval/audit records now include the shared non-atomic link/unlink primitive.
+The corresponding tests cover refusal side effects and durable audit content.
+An additional actual Windows PTY CLI baseline on c0e4f4e20 used isolated synthetic
+configuration, no user credentials and no model request: input-ready 1123.567 ms,
+all four mutation tools available 1133.170 ms, raw TTY input accepted, exit code 0.
+The manually delayed diagnostic input is not startup latency. The exact recorded
+synthetic root was removed after preserving timings; this is one observation,
+separate from the ten-cycle synthetic terminal benchmark above.

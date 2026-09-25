@@ -299,8 +299,27 @@ test("offline task cost includes real Agent requests, schema and cumulative mode
 test("Windows prospective trailing-dot and alternate-stream aliases fail in preflight", async t => {
   if (process.platform !== "win32") return; // Windows-only path syntax; shared tests above run on both required platforms.
   const f = await fixture(t);
-  for (const path of ["new/a.", "new/a ", "new/a:stream", "new/NUL.txt"]) {
+  for (const path of ["new/a.", "new/a ", "new/a:stream", "new/NUL.txt", "new/COM¹", "new/LPT².txt", "new/COM³.log"]) {
     const result = await f.call("file_batch", { operations: [{ operation: "write", mode: "create", path: "must-not-exist", content: "first" }, { operation: "write", mode: "create", path, content: "second" }] });
     assert.equal(result.isError, true); assert.equal(existsSync(join(f.cwd, "must-not-exist")), false); assert.equal(existsSync(join(f.cwd, "new")), false);
   }
+});
+
+
+test("distinct existing case-sensitive files retain independent identities", async t => {
+  const f = await fixture(t); writeFileSync(join(f.cwd, "Case"), "upper");
+  try { writeFileSync(join(f.cwd, "case"), "lower", { flag: "wx" }); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "EEXIST") { t.skip("case-insensitive filesystem"); return; } throw error; }
+  const result = await f.call("file_batch", { operations: [{ operation: "delete", path: "Case" }, { operation: "delete", path: "case" }] });
+  assert.equal(result.isError, false, JSON.stringify(result)); assert.equal(existsSync(join(f.cwd, "Case")), false); assert.equal(existsSync(join(f.cwd, "case")), false);
+});
+
+
+test("batch move approval audit records non-atomic primitive and protected root", async t => {
+  const f = await fixture(t); mkdirSync(join(f.cwd, ".git")); writeFileSync(join(f.cwd, "source"), "data"); f.deny();
+  const result = await f.call("file_batch", { operations: [{ operation: "move", path: "source", destination: ".git/destination" }] });
+  assert.equal(result.isError, true); assert.equal(readFileSync(join(f.cwd, "source"), "utf8"), "data"); assert.equal(existsSync(join(f.cwd, ".git/destination")), false);
+  const audits = f.session.getBranch().filter((entry: any) => entry.type === "custom" && entry.data?.operation === "file_batch" && entry.data?.primitives);
+  assert.ok(audits.length > 0); const primitives = (audits.at(-1) as any).data.primitives;
+  assert.ok(primitives.includes("exclusive_link_then_unlink_non_atomic")); assert.ok(primitives.length > 1);
 });

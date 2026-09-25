@@ -58,8 +58,8 @@ interface Item {
 interface ItemResult { itemId: string; operation: Operation; target: string; destination?: string; status: MutationStatus; stateChanged: boolean | "unknown"; reason?: string; receipt?: unknown }
 
 function pathKey(path: string): string { return path.normalize("NFC").toLowerCase(); }
-function pathConflicts(left: string, right: string): boolean {
-  left = pathKey(left); right = pathKey(right);
+function pathConflicts(left: string, right: string, prospective: boolean): boolean {
+  if (prospective) { left = pathKey(left); right = pathKey(right); }
   const path = relative(left, right);
   return path === "" || (path !== ".." && !path.startsWith(`..${sep}`) && !isAbsolute(path));
 }
@@ -72,7 +72,10 @@ function assertIndependent(items: readonly Item[]): void {
       }
     }
     if (a.identity && b.identity && a.identity.device === b.identity.device && a.identity.inode === b.identity.inode) throw new Error(`[BATCH_CONFLICT] ${a.itemId} and ${b.itemId} share a file identity.`);
-    for (const left of a.paths) for (const right of b.paths) if (pathConflicts(left, right) || pathConflicts(right, left)) throw new Error(`[BATCH_CONFLICT] ${a.itemId} and ${b.itemId} overlap; split dependent changes into verified stages.`);
+    for (const left of a.paths) for (const right of b.paths) {
+      const prospective = !(a.identity && left === a.target && b.identity && right === b.target);
+      if (pathConflicts(left, right, prospective) || pathConflicts(right, left, prospective)) throw new Error(`[BATCH_CONFLICT] ${a.itemId} and ${b.itemId} overlap; split dependent changes into verified stages.`);
+    }
   }
 }
 function copyInput(value: unknown): BatchInput {

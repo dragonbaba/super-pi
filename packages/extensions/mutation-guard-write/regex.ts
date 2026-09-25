@@ -11,5 +11,5 @@ export const SNAPSHOT_LINE_REFERENCE_REGEX = new RegExp(SNAPSHOT_LINE_REFERENCE_
 export const SNAPSHOT_ID_PATTERN = "^snap_[A-Za-z0-9_-]{22}$";
 export const EDIT_INDEX_PATTERN = /edits\[(\d+)\]/u;
 
-export const WINDOWS_BATCH_COMPONENT_PATTERN = /(?:[. ]$|:|^(?:con|prn|aux|nul|com[0-9]|lpt[0-9])(?:\.|$))/iu;
+export const WINDOWS_BATCH_COMPONENT_PATTERN = /(?:[. ]$|:|^(?:con|prn|aux|nul|com[0-9¹²³]|lpt[0-9¹²³])(?:\.|$))/iu;
 export const WINDOWS_PATH_SEPARATOR_PATTERN = /[\\/]/u;
