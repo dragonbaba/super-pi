@@ -3,6 +3,7 @@ import { dirname, resolve, relative } from "node:path";
 import { capturePathIdentity, sameIdentity, type PathIdentity } from "./native-file-core.ts";
 
 export const MAX_CREATED_DIRECTORIES = 32;
+export function directoryKey(path: string): string { return process.platform === "win32" ? path.toLowerCase() : path; }
 export interface FileCreationPlan {
   path: string;
   canonicalTarget: string;
@@ -78,11 +79,11 @@ export async function executeFileCreation(
   let fileCreated = false;
   try {
     await verifyCreationAncestor(plan);
-    await assertPathAllowed();
+    if (directoryKey(await assertPathAllowed()) !== directoryKey(plan.canonicalTarget)) throw new Error("[STALE_STATE] Creation target changed before directory creation.");
     for (const path of plan.directories) {
       signal?.throwIfAborted();
       await verifyCreationAncestor(plan);
-      const shared = sharedDirectories?.get(path);
+      const shared = sharedDirectories?.get(directoryKey(path));
       if (shared) {
         if (!sameIdentity(shared, await capturePathIdentity(path), false)) throw new Error("[STALE_STATE] Shared created parent changed.");
         continue;
@@ -96,17 +97,17 @@ export async function executeFileCreation(
       const identity = await capturePathIdentity(path);
       record.identity = identity;
       record.status = "created";
-      sharedDirectories?.set(path, identity);
+      sharedDirectories?.set(directoryKey(path), identity);
     }
     await beforeExclusiveCreate?.(plan.path);
     signal?.throwIfAborted();
     await verifyCreationAncestor(plan);
     await verifyCreatedDirectories(created);
     if (sharedDirectories) for (const path of plan.directories) {
-      const identity = sharedDirectories.get(path);
+      const identity = sharedDirectories.get(directoryKey(path));
       if (!identity || !sameIdentity(identity, await capturePathIdentity(path), false)) throw new Error("[STALE_STATE] Shared parent identity changed before file creation.");
     }
-    if (await assertPathAllowed() !== plan.canonicalTarget) throw new Error("[STALE_STATE] Creation target changed.");
+    if (directoryKey(await assertPathAllowed()) !== directoryKey(plan.canonicalTarget)) throw new Error("[STALE_STATE] Creation target changed.");
     assertAuthority?.();
     signal?.throwIfAborted();
     const handle = await open(plan.path, "wx");
@@ -114,7 +115,7 @@ export async function executeFileCreation(
     try {
       const opened = await handle.stat({ bigint: true });
       const current = await capturePathIdentity(plan.path);
-      if (current.canonical !== plan.canonicalTarget || current.device !== String(opened.dev) || current.inode !== String(opened.ino)) throw new Error("[STALE_STATE] Created file identity changed.");
+      if (directoryKey(current.canonical) !== directoryKey(plan.canonicalTarget) || current.device !== String(opened.dev) || current.inode !== String(opened.ino)) throw new Error("[STALE_STATE] Created file identity changed.");
       await verifyCreationAncestor(plan);
       await verifyCreatedDirectories(created);
       signal?.throwIfAborted();
@@ -122,7 +123,7 @@ export async function executeFileCreation(
       await verifyCreationAncestor(plan);
       await verifyCreatedDirectories(created);
       const finalName = await capturePathIdentity(plan.path);
-      if (finalName.canonical !== plan.canonicalTarget || finalName.device !== String(opened.dev) || finalName.inode !== String(opened.ino) || finalName.links !== "1" || opened.nlink !== 1n) throw new Error("[STALE_STATE] Opened file was moved or replaced during authorization.");
+      if (directoryKey(finalName.canonical) !== directoryKey(plan.canonicalTarget) || finalName.device !== String(opened.dev) || finalName.inode !== String(opened.ino) || finalName.links !== "1" || opened.nlink !== 1n) throw new Error("[STALE_STATE] Opened file was moved or replaced during authorization.");
       assertAuthority?.();
       signal?.throwIfAborted();
       await handle.writeFile(content, "utf8");
@@ -130,7 +131,7 @@ export async function executeFileCreation(
     return { createdDirectories: created, ...addedContentSummary(content) };
   } catch (error) {
     retainUnprovenDirectories(created);
-    for (const directory of created) if (directory.status === "removed") sharedDirectories?.delete(directory.path);
+    for (const directory of created) if (directory.status === "removed") sharedDirectories?.delete(directoryKey(directory.path));
     let stateChanged = fileCreated;
     for (const directory of created) if (directory.status !== "removed") stateChanged = true;
     throw new Error(JSON.stringify({ ok: false, operation: "write", category: (error as NodeJS.ErrnoException).code === "EEXIST" ? "TARGET_APPEARED" : stateChanged ? "PARTIAL_MUTATION" : "WRITE_FAILED",

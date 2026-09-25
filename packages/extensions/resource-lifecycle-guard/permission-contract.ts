@@ -34,7 +34,7 @@ export interface PermissionPathApproval {
   schemaVersion: 1;
   sequence: number;
   toolCallId: string;
-  operation: "edit" | "write" | "lsp_fix" | "delete" | "move";
+  operation: "edit" | "write" | "lsp_fix" | "delete" | "move" | "file_batch";
   requestHash: string;
   canonicalTarget: string;
   protectedRoots: readonly string[];
@@ -104,13 +104,21 @@ interface PermissionCarryingInput {
 
 export function mutationRequestHash(operation: PermissionPathApproval["operation"], input: unknown): string {
   const value = input && typeof input === "object"
-    ? input as { path?: unknown; destination?: unknown; purpose?: unknown; content?: unknown; snapshot?: unknown; edits?: unknown; kind?: unknown; root?: unknown; server?: unknown; write?: unknown }
+    ? input as { path?: unknown; destination?: unknown; purpose?: unknown; content?: unknown; snapshot?: unknown; edits?: unknown; kind?: unknown; root?: unknown; server?: unknown; write?: unknown; operations?: unknown; dryRun?: unknown; mode?: unknown }
     : {};
   const hash = createHash("sha256");
   updateStructuredHashField(hash, operation);
   updateStructuredHashField(hash, value.path);
   updateStructuredHashField(hash, value.purpose);
-  if (operation === "move" || operation === "delete") {
+  if (operation === "file_batch") {
+    hash.update(value.dryRun === true ? "preview;" : "apply;");
+    if (!Array.isArray(value.operations)) hash.update("invalid;");
+    else for (const item of value.operations) {
+      updateStructuredHashField(hash, item?.operation);
+      updateStructuredHashField(hash, item?.mode);
+      hash.update(mutationRequestHash(item?.operation, item));
+    }
+  } else if (operation === "move" || operation === "delete") {
     updateStructuredHashField(hash, value.destination);
   } else if (operation === "write") {
     updateStructuredHashField(hash, value.content);

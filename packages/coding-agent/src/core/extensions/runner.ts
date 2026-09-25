@@ -479,7 +479,15 @@ class PendingToolAuthorization implements ToolInvocationAuthorization {
 	consume(args: unknown, id: string, name: string, signal?: AbortSignal): unknown {
 		try {
 			if (!this.live || signal?.aborted) throw new Error("Blocked by policy: final authorization is obsolete");
-			// Only the guarded Bash contract is supported by this internal handoff.
+      // A batch has one terminal authority and owns a private prepared payload.
+      if (name === "file_batch") {
+        if (this.checks.length || !this.authority) throw new Error("Blocked by policy: batch requires one terminal authority");
+        const authority = this.authority;
+        this.authority = undefined;
+        try { return authority.consume(args, id, name, signal); }
+        finally { authority.release(); }
+      }
+      // Shell snapshots continue through their existing agreement checks.
 			if (name !== "bash") throw new Error("Blocked by policy: unsupported final authorization tool");
 			let command: unknown, timeout: unknown, cwd: unknown, purpose: unknown;
 			for (let i = 0; i < this.checks.length; i++) {

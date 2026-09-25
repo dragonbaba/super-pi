@@ -1,3 +1,4 @@
+import { MUTATION_READ_SOURCE } from "../../coding-agent/src/core/tools/read-window.ts";
 import process from "node:process";
 import { isAbsolute, relative, resolve } from "node:path";
 import {
@@ -156,7 +157,10 @@ export default function toolLoopGuardrails(pi: ExtensionAPI): void {
       if (!sessionId) return result;
       const annotation = await issueSnapshotForRead(sessionId, ctx.cwd, input, result);
       if (!annotation) return result;
-      return { ...result, content: [...result.content, { type: GUARDRAIL_CONTENT_TYPE, text: annotation, readBoundary: "metadata" as const }] };
+      const content = [...result.content, { type: GUARDRAIL_CONTENT_TYPE, text: annotation, readBoundary: "metadata" as const }];
+      const source = (result.content as any)[MUTATION_READ_SOURCE];
+      if (source) Object.defineProperty(content, MUTATION_READ_SOURCE, { value: source });
+      return { ...result, content };
     },
   });
 

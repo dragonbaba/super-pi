@@ -1,3 +1,7 @@
+import { dirname, isAbsolute } from "node:path";
+import { lstat, realpath, stat } from "node:fs/promises";
+import { resolveToolPath } from "./core.ts";
+import { mutationRequestHash } from "../resource-lifecycle-guard/permission-contract.ts";
 import type { MutationWriteGuard } from "./core.ts";
 import { READ_RESULT_ANNOTATION_PATTERN, SHA256_PATTERN, UNSAFE_RECEIPT_PATH_PATTERN } from "./regex.ts";
 import { restoreSnapshotReadText } from "./snapshot-line-protocol.ts";
@@ -48,7 +52,7 @@ export interface NativeStructuredMutationReceipt {
   timestamp: string;
   toolCallId: string;
   itemId: string;
-  operation: "delete" | "move" | "write";
+  operation: "delete" | "move" | "write" | "edit";
   target: string;
   destination?: string;
   status: "succeeded" | "failed_no_change" | "partial" | "cancelled" | "state_unknown" | "not_started";
@@ -61,33 +65,110 @@ function safeReceiptPath(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 && value.length <= 4096 && !UNSAFE_RECEIPT_PATH_PATTERN.test(value);
 }
 
+export function validMutationOutcome(status: unknown, stateChanged: unknown): boolean {
+  return status === "state_unknown" ? stateChanged === "unknown"
+    : status === "succeeded" || status === "partial" ? stateChanged === true
+    : (status === "failed_no_change" || status === "cancelled" || status === "not_started") && stateChanged === false;
+}
+
+function appendNativeReceipt(items: Map<string, NativeStructuredMutationReceipt>, entry: any, data: any, toolCallId: unknown, itemId: unknown, intent: boolean): void {
+  if (!data || (data.operation !== "delete" && data.operation !== "move" && data.operation !== "write" && data.operation !== "edit") || !safeReceiptPath(data.target)
+    || (data.operation === "move" && !safeReceiptPath(data.destination))) return;
+  if (typeof toolCallId !== "string" || toolCallId.length > 256 || typeof itemId !== "string" || itemId.length > 280) return;
+  const status = intent ? "state_unknown" : data.status;
+  const stateChanged = intent ? "unknown" : data.stateChanged;
+  if (status !== "state_unknown" && status !== "succeeded" && status !== "partial" && status !== "failed_no_change" && status !== "cancelled" && status !== "not_started") return;
+  if ((status === "state_unknown" && stateChanged !== "unknown") || ((status === "succeeded" || status === "partial") && stateChanged !== true)
+    || ((status === "failed_no_change" || status === "cancelled" || status === "not_started") && stateChanged !== false)) return;
+  const previous = items.get(itemId);
+  if (previous && (previous.toolCallId !== toolCallId || previous.operation !== data.operation || previous.target !== data.target || previous.destination !== data.destination)) return;
+  items.set(itemId, { receiptVersion: 2, entryId: entry.id, timestamp: entry.timestamp, toolCallId, itemId,
+    operation: data.operation, target: data.target, destination: data.destination, status, stateChanged,
+    ...(status === "state_unknown" || status === "partial" ? { requiresVerification: true as const } : {}) });
+  if (items.size > MAX_STRUCTURED_MUTATION_RECEIPTS) items.delete(items.keys().next().value!);
+}
+
 function collectNativeReceipts(branch: readonly unknown[]): Map<string, NativeStructuredMutationReceipt> {
   const items = new Map<string, NativeStructuredMutationReceipt>();
   for (let index = Math.max(0, branch.length - MAX_STRUCTURED_MUTATION_RECEIPTS); index < branch.length; index++) {
     const entry = branch[index] as any;
     if (typeof entry?.id !== "string" || typeof entry.timestamp !== "string") continue;
-    const progress = entry.type === "custom" && entry.customType === "file-mutation-progress-v2";
+    if (entry.type === "custom" && entry.customType === "file-mutation-progress-v2") {
+      const data = entry.data;
+      if (data?.phase === "intent" || data?.mutationReceiptVersion === 2) appendNativeReceipt(items, entry, data, data?.toolCallId, data?.itemId, data?.phase === "intent");
+      continue;
+    }
     const message = entry.type === "message" && entry.message?.role === "toolResult" ? entry.message : undefined;
-    const data = progress ? entry.data : message?.details;
-    if (!progress && message?.toolName !== data?.operation) continue;
-    if (!data || (data.operation !== "delete" && data.operation !== "move" && data.operation !== "write") || !safeReceiptPath(data.target)
-      || (data.operation === "move" && !safeReceiptPath(data.destination))) continue;
-    const toolCallId = progress ? data.toolCallId : message.toolCallId;
-    const itemId = progress ? data.itemId : `${toolCallId}:0`;
-    if (typeof toolCallId !== "string" || toolCallId.length > 256 || typeof itemId !== "string" || itemId.length > 280) continue;
-    const intent = progress && data.phase === "intent";
-    if (!intent && (data.mutationReceiptVersion !== 2 || !["succeeded", "failed_no_change", "partial", "cancelled", "state_unknown", "not_started"].includes(data.status))) continue;
-    const status = intent ? "state_unknown" : data.status;
-    const stateChanged = intent ? "unknown" : data.stateChanged;
-    if ((status === "state_unknown" && stateChanged !== "unknown") || (status === "succeeded" && stateChanged !== true)
-      || (status === "partial" && stateChanged !== true) || ((status === "failed_no_change" || status === "cancelled" || status === "not_started") && stateChanged !== false)) continue;
-    const previous = items.get(itemId);
-    if (previous && (previous.toolCallId !== toolCallId || previous.operation !== data.operation || previous.target !== data.target || previous.destination !== data.destination)) continue;
-    items.set(itemId, { receiptVersion: 2, entryId: entry.id, timestamp: entry.timestamp, toolCallId, itemId,
-      operation: data.operation, target: data.target, destination: data.destination, status, stateChanged,
-      ...(status === "state_unknown" || status === "partial" ? { requiresVerification: true as const } : {}) });
+    const data = message?.details;
+    if (data?.mutationReceiptVersion !== 2 || message?.toolName !== data?.operation) continue;
+    if (message.toolName === "file_batch" && data.operation === "file_batch" && !data.preview && Array.isArray(data.items) && data.items.length <= 16) {
+      for (let index = 0; index < data.items.length; index++) {
+        const item = data.items[index];
+        if (item?.itemId === `${message.toolCallId}:${index}`) appendNativeReceipt(items, entry, item, message.toolCallId, item.itemId, false);
+      }
+    } else appendNativeReceipt(items, entry, data, message.toolCallId, `${message.toolCallId}:0`, false);
   }
   return items;
+}
+
+/** Read only the bounded tail through existing indexed entries; never materialize a whole Session branch per result. */
+export function recentMutationEntries(session: { getLeafId(): string | null; getEntry(id: string): { parentId: string | null } | undefined }): readonly unknown[] {
+  const entries: unknown[] = [];
+  let id = session.getLeafId();
+  while (id && entries.length < MAX_RESTORE_ENTRIES) {
+    const entry = session.getEntry(id);
+    if (!entry) break;
+    entries.push(entry); id = entry.parentId;
+  }
+  entries.reverse();
+  return entries;
+}
+
+/** Pair bounded durable intents with this actual call, never with arbitrary result targets. */
+export function boundBatchIntents(branch: readonly unknown[], input: any, toolCallId: string): Map<string, { operation: string; target: string; destination?: string }> {
+  const intents = new Map<string, { operation: string; target: string; destination?: string }>();
+  if (!Array.isArray(input?.operations) || input.operations.length > 16) return intents;
+  const hash = mutationRequestHash("file_batch", input);
+  for (let i = Math.max(0, branch.length - MAX_RESTORE_ENTRIES); i < branch.length; i++) {
+    const entry = branch[i] as any, data = entry?.data;
+    if (entry?.type !== "custom" || entry.customType !== "file-mutation-progress-v2" || data?.toolCallId !== toolCallId) continue;
+    if (data.phase === "prepared" && data.requestHash === hash && Array.isArray(data.items) && data.items.length === input.operations.length) {
+      for (let n = 0; n < data.items.length; n++) {
+        const item = data.items[n];
+        if (item?.itemId !== `${toolCallId}:${n}` || item.operation !== input.operations[n]?.operation || !safeReceiptPath(item.target) || !isAbsolute(item.target)
+          || (item.operation === "move" && (!safeReceiptPath(item.destination) || !isAbsolute(item.destination)))) continue;
+        intents.set(item.itemId, { operation: item.operation, target: item.target, destination: item.destination });
+      }
+      continue;
+    }
+    if (data.phase !== "intent" || (data.requestHash !== undefined && data.requestHash !== hash) || !safeReceiptPath(data.target) || !isAbsolute(data.target)) continue;
+    for (let n = 0; n < input.operations.length; n++) {
+      if (data.itemId !== `${toolCallId}:${n}` || data.operation !== input.operations[n]?.operation) continue;
+      if (data.operation === "move" && (!safeReceiptPath(data.destination) || !isAbsolute(data.destination))) continue;
+      intents.set(data.itemId, { operation: data.operation, target: data.target, destination: data.destination });
+    }
+  }
+  return intents;
+}
+
+export async function recordBatchMutationEvidence(guard: MutationWriteGuard, cwd: string, input: any, details: any, toolCallId: string, generation: number, branch: readonly unknown[] = []): Promise<void> {
+  if (!Array.isArray(input?.operations) || !Array.isArray(details?.items) || details.preview || details.items.length > 16 || input.operations.length !== details.items.length) return;
+  const intents = boundBatchIntents(branch, input, toolCallId);
+  for (let index = 0; index < details.items.length; index++) {
+    const item = details.items[index], operation = input.operations[index];
+    if (item?.itemId !== `${toolCallId}:${index}` || item.operation !== operation?.operation || typeof operation.path !== "string") continue;
+    if (!validMutationOutcome(item.status, item.stateChanged)) continue;
+    const intent = intents.get(item.itemId);
+    if (!intent || item.target !== intent.target || item.destination !== intent.destination) continue;
+    const receipt = item.receipt;
+    if (item.status === "succeeded" && (item.operation === "edit" || item.operation === "write") && typeof receipt?.sha256 === "string" && SHA256_PATTERN.test(receipt.sha256)) {
+      try { await guard.recordMutationSnapshot(cwd, intent.target, receipt.sha256, item.itemId, generation, intent.target); }
+      catch { guard.invalidateCanonicalPath(intent.target); }
+    } else if (item.stateChanged !== false) {
+      guard.invalidateCanonicalPath(intent.target);
+      if (intent.destination) guard.invalidateCanonicalPath(intent.destination);
+    }
+  }
 }
 
 function rememberToolCall(pending: Map<string, StoredToolCall>, id: string, call: StoredToolCall): void {
@@ -115,6 +196,24 @@ function collectAssistantToolCalls(message: ToolResultMessageShape, pending: Map
   }
   return true;
 }
+export function readEvidenceRange(input: { offset?: unknown; limit?: unknown }, details: any, text: string):
+  { startLine: number; endLine: number; complete: boolean } | undefined {
+  const window = details?.window;
+  if (window !== undefined) {
+    if (!window || window.binary || !Number.isSafeInteger(window.startLine) || !Number.isSafeInteger(window.nextLine)
+      || window.startLine < 1 || window.nextLine < window.startLine || typeof window.done !== "boolean"
+      || typeof window.partial !== "boolean" || typeof window.startsPartial !== "boolean"
+      || !Number.isSafeInteger(window.startByte) || window.startByte < 0) return undefined;
+    const startLine = window.startLine + (window.startsPartial ? 1 : 0);
+    const endLine = window.nextLine - (window.partial || !window.done || text.endsWith("\n") ? 1 : 0);
+    if (endLine < startLine) return undefined;
+    return { startLine, endLine, complete: window.startByte === 0 && window.done && !window.partial && !window.startsPartial };
+  }
+  const startLine = typeof input.offset === "number" && Number.isFinite(input.offset) ? Math.max(1, Math.floor(input.offset)) : 1;
+  const endLine = typeof input.limit === "number" && Number.isFinite(input.limit) ? startLine + Math.max(0, Math.floor(input.limit)) - 1 : Number.MAX_SAFE_INTEGER;
+  return { startLine, endLine, complete: input.offset === undefined && input.limit === undefined };
+}
+
 export function primaryReadResultText(content: unknown, detailsValue: unknown): string | undefined {
   if (!Array.isArray(content) || content.length === 0) return undefined;
   const primary = content[0] as { type?: unknown; text?: unknown } | undefined;
@@ -127,8 +226,42 @@ export function primaryReadResultText(content: unknown, detailsValue: unknown): 
       || typeof annotation.text !== "string"
       || !READ_RESULT_ANNOTATION_PATTERN.test(annotation.text)) return undefined;
   }
-  return restoreSnapshotReadText(primary.text);
+  let text = restoreSnapshotReadText(primary.text);
+  const window = (detailsValue as any)?.window;
+  if (window !== undefined) {
+    if (!readEvidenceRange({}, detailsValue, text)) return undefined;
+    if (window.startsPartial) {
+      const prefix = `[Continuation starts partway through line ${window.startLine}; this is a partial-line suffix.]\n`;
+      if (!text.startsWith(prefix)) return undefined;
+      text = text.slice(prefix.length);
+    }
+    if (window.cursor !== undefined) {
+      if (typeof window.cursor !== "string" || window.cursor.length > 8192) return undefined;
+      const suffix = `\n\n[${window.partial ? `Line ${window.nextLine} is partial` : `Read through line ${window.nextLine - 1}`}; more file content remains. Continue with the same path and cursor=${window.cursor}.]`;
+      if (!text.endsWith(suffix)) return undefined;
+      text = text.slice(0, -suffix.length);
+    }
+    if (window.startsPartial) { const end = text.indexOf("\n"); if (end < 0) return undefined; text = text.slice(end + 1); }
+    if (window.partial) { const end = text.lastIndexOf("\n"); if (end < 0) return undefined; text = text.slice(0, end + 1); }
+  }
+  return text;
 }
+async function legacyReadTarget(cwd: string, path: string): Promise<string | undefined> {
+  const lexical = resolveToolPath(cwd, path);
+  const target = await realpath(lexical), identity = await stat(target, { bigint: true });
+  let probe = lexical, checked = false;
+  for (let count = 0; count < 256; count++) {
+    const info = await lstat(probe, { bigint: true });
+    if (info.isSymbolicLink()) return undefined;
+    const parent = dirname(probe);
+    if (parent === probe) { checked = true; break; }
+    probe = parent;
+  }
+  if (!checked) return undefined;
+  const current = await stat(lexical, { bigint: true });
+  return identity.dev === current.dev && identity.ino === current.ino ? target : undefined;
+}
+
 async function restoreRead(
   guard: MutationWriteGuard,
   cwd: string,
@@ -136,28 +269,26 @@ async function restoreRead(
   message: ToolResultMessageShape,
   toolCallId: string,
 ): Promise<void> {
-  const path = call.input.path;
-  if (typeof path !== "string") return;
   const text = primaryReadResultText(message.content, message.details);
   if (text === undefined) return;
-  const offset = call.input.offset;
-  const limit = call.input.limit;
-  const startLine = typeof offset === "number" && Number.isFinite(offset)
-    ? Math.max(1, Math.floor(offset))
-    : 1;
-  const endLine = typeof limit === "number" && Number.isFinite(limit)
-    ? startLine + Math.max(0, Math.floor(limit)) - 1
-    : Number.MAX_SAFE_INTEGER;
-  await guard.recordRead(
-    cwd,
-    path,
-    text,
-    startLine,
-    endLine,
-    toolCallId,
-    RESTORED_TURN_GENERATION,
-    offset === undefined && limit === undefined,
-  );
+  const binding = (message.details as any)?.mutationReadEvidence;
+  let target: string | undefined, offset: unknown, limit: unknown;
+  if (binding !== undefined) {
+    // The transcript retains raw provider arguments; this paired producer receipt
+    // records validated/offset-repaired arguments that actually produced the read.
+    if (binding?.version !== 2 || binding.rejected || binding.toolCallId !== toolCallId
+      || !safeReceiptPath(binding.path) || !safeReceiptPath(binding.target) || !isAbsolute(binding.target)
+      || (binding.offset !== undefined && (typeof binding.offset !== "number" || !Number.isFinite(binding.offset)))
+      || (binding.limit !== undefined && (typeof binding.limit !== "number" || !Number.isFinite(binding.limit)))) return;
+    target = binding.target; offset = binding.offset; limit = binding.limit;
+  } else {
+    if (typeof call.input.path !== "string") return;
+    target = await legacyReadTarget(cwd, call.input.path);
+    offset = call.input.offset; limit = call.input.limit;
+  }
+  if (!target) return;
+  const range = readEvidenceRange({ offset, limit }, message.details, text);
+  if (range) await guard.recordRead(cwd, target, text, range.startLine, range.endLine, toolCallId, RESTORED_TURN_GENERATION, range.complete, target);
 }
 
 async function restoreMutation(
@@ -200,11 +331,16 @@ export function collectStructuredMutationReceipts(branch: readonly unknown[]): S
       || typeof entry.message !== "object") continue;
     const message = entry.message as ToolResultMessageShape;
     if (message.role === "toolResult" && typeof message.toolCallId === "string") {
+      const batch = message.details as any;
+      if (message.toolName === "file_batch" && Array.isArray(batch?.items) && batch.items.length <= 16) {
+        for (const item of batch.items) { const receipt = nativeReceipts.get(item?.itemId); if (receipt && receipt.entryId === entry.id) receipts.push(receipt); }
+        continue;
+      }
       const receipt = nativeReceipts.get(`${message.toolCallId}:0`);
       if (receipt?.entryId === entry.id) { receipts.push(receipt); continue; }
     }
     if (message.role !== "toolResult"
-      || message.isError === true
+      || (message.isError === true && message.toolName !== "file_batch")
       || typeof message.toolCallId !== "string"
       || (message.toolName !== "edit" && message.toolName !== "write")
       || !message.details
@@ -274,6 +410,7 @@ export function collectStructuredMutationReceipts(branch: readonly unknown[]): S
       sha256,
     });
   }
+  if (receipts.length > MAX_STRUCTURED_MUTATION_RECEIPTS) receipts.splice(0, receipts.length - MAX_STRUCTURED_MUTATION_RECEIPTS);
   return receipts;
 }
 
@@ -298,8 +435,8 @@ export async function restoreMutationEvidenceFromBranch(
       const data = custom.data;
       const completion = nativeReceipts.get(data?.itemId ?? `${data?.toolCallId}:0`);
       if (completion?.stateChanged !== false && (data?.phase === "intent" || data?.stateChanged !== false) && safeReceiptPath(data?.target)) {
-        await guard.invalidate(cwd, data.target);
-        if (safeReceiptPath(data.destination)) await guard.invalidate(cwd, data.destination);
+        guard.invalidateCanonicalPath(data.target);
+        if (safeReceiptPath(data.destination)) guard.invalidateCanonicalPath(data.destination);
       }
       continue;
     }
@@ -307,14 +444,16 @@ export async function restoreMutationEvidenceFromBranch(
     const message = entry.message as ToolResultMessageShape;
     if (collectAssistantToolCalls(message, pending)) continue;
     if (message.role !== "toolResult"
-      || message.isError === true
+      || (message.isError === true && message.toolName !== "file_batch")
       || typeof message.toolCallId !== "string"
       || typeof message.toolName !== "string") continue;
     const call = pending.get(message.toolCallId);
     pending.delete(message.toolCallId);
     if (!call || call.name !== message.toolName) continue;
     try {
-      if (message.toolName === "read") {
+      if (message.toolName === "file_batch") {
+        await recordBatchMutationEvidence(guard, cwd, call.input, message.details, message.toolCallId, RESTORED_TURN_GENERATION, branch);
+      } else if (message.toolName === "read") {
         await restoreRead(guard, cwd, call, message, message.toolCallId);
       } else if (message.toolName === "edit" || message.toolName === "write") {
         await restoreMutation(guard, cwd, call, message, message.toolCallId);

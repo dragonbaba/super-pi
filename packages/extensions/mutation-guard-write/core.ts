@@ -1,9 +1,11 @@
+import { verifyMutationReadSource, type MutationReadSource } from "../../coding-agent/src/core/tools/read-window.ts";
 import { createHash } from "node:crypto";
 import { lstat, readFile, realpath, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { assessProtectedMutationPath } from "./protected-path-policy.ts";
-import { hashNativeSource } from "./native-file-core.ts";
-import { executeFileCreation, prepareFileCreation, MAX_CREATED_DIRECTORIES, type FileCreationPlan, type CreationResult } from "./file-creation.ts";
+import { hashNativeSource, capturePathIdentity, sameIdentity } from "./native-file-core.ts";
+import type { PathIdentity } from "./native-file-core.ts";
+import { executeFileCreation, prepareFileCreation, MAX_CREATED_DIRECTORIES, directoryKey, type FileCreationPlan, type CreationResult } from "./file-creation.ts";
 
 export type MutationGuardCategory =
   | "READ_REQUIRED"
@@ -71,6 +73,8 @@ export interface MutationPathApproval {
   canonicalTarget: string;
   protectedRoots: readonly string[];
   creationPlan?: FileCreationPlan;
+  preparedIdentity?: PathIdentity;
+  preparedParent?: PathIdentity;
   assertCurrent?: () => void;
 }
 
@@ -294,9 +298,9 @@ export class MutationWriteGuard {
       else this.#budgetFileReferences.set(entry.additionalTarget, references - 1);
     }
     if (entry.directories) for (const directory of entry.directories) {
-      const references = this.#budgetDirectoryReferences.get(directory) ?? 0;
-      if (references <= 1) this.#budgetDirectoryReferences.delete(directory);
-      else this.#budgetDirectoryReferences.set(directory, references - 1);
+      const references = this.#budgetDirectoryReferences.get(directoryKey(directory)) ?? 0;
+      if (references <= 1) this.#budgetDirectoryReferences.delete(directoryKey(directory));
+      else this.#budgetDirectoryReferences.set(directoryKey(directory), references - 1);
     }
   }
 
@@ -309,6 +313,10 @@ export class MutationWriteGuard {
     approval?.assertCurrent?.();
     const absolutePath = resolveToolPath(cwd, path);
     const assessment = await assessProtectedMutationPath(cwd, absolutePath);
+    if (approval && (!assessment.canonicalTarget || directoryKey(assessment.canonicalTarget) !== directoryKey(approval.canonicalTarget))) {
+      throw new Error("[STALE_STATE] Approved mutation target changed.");
+    }
+    if (approval?.preparedIdentity || approval?.preparedParent) await this.#assertPreparedIdentity(approval, assessment.canonicalTarget!);
     if (assessment.violations.length === 0 && assessment.canonicalTarget) return assessment.canonicalTarget;
     if (approval && assessment.canonicalTarget === approval.canonicalTarget
       && sameStrings(assessment.violations, approval.protectedRoots)) return assessment.canonicalTarget;
@@ -327,6 +335,13 @@ export class MutationWriteGuard {
         ? "Mutation target cannot be canonicalized safely."
         : "Mutation target requires explicit per-call confirmation.",
     });
+  }
+
+  async #assertPreparedIdentity(approval: MutationPathApproval | undefined, canonical: string): Promise<void> {
+    if (!approval) return;
+    if (directoryKey(canonical) !== directoryKey(approval.canonicalTarget)) throw new Error("[STALE_STATE] Commit target differs from preparation.");
+    if (approval.preparedParent && !sameIdentity(approval.preparedParent, await capturePathIdentity(approval.preparedParent.path), false)) throw new Error("[STALE_STATE] Prepared parent identity changed.");
+    if (approval.preparedIdentity && !sameIdentity(approval.preparedIdentity, await capturePathIdentity(approval.preparedIdentity.path))) throw new Error("[STALE_STATE] Prepared file identity changed.");
   }
 
   #resetTurnBudget(turnGeneration: number): void {
@@ -394,8 +409,20 @@ export class MutationWriteGuard {
     toolCallId: string,
     turnGeneration: number,
     complete: boolean,
-  ): Promise<void> {
+    preparedTarget?: string,
+    preparedSource?: MutationReadSource,
+  ): Promise<string> {
     const canonicalPath = await canonicalExistingPath(resolveToolPath(cwd, path));
+    if (preparedTarget !== undefined && canonicalPath !== preparedTarget) throw new Error("Read evidence target changed after capture.");
+    let completeEvidence = complete;
+    if (!completeEvidence && startLine === 1) {
+      const textBytes = Buffer.byteLength(text, "utf8");
+      const fileInfo = await lstat(canonicalPath);
+      if (fileInfo.isFile() && fileInfo.size === textBytes) {
+        completeEvidence = sha256(await readFile(canonicalPath)) === sha256(text);
+      }
+    }
+    if (preparedSource !== undefined && !await verifyMutationReadSource(preparedSource)) throw new Error("Read source identity changed before evidence acceptance.");
     const evidence = this.#rangeEvidence.get(canonicalPath) ?? [];
     if (!this.#rangeEvidence.has(canonicalPath) && this.#rangeEvidence.size >= MAX_EVIDENCE_PATHS) {
       const oldestPath = this.#rangeEvidence.keys().next().value;
@@ -414,17 +441,10 @@ export class MutationWriteGuard {
     });
     this.#rangeEvidence.delete(canonicalPath);
     this.#rangeEvidence.set(canonicalPath, evidence);
-    let completeEvidence = complete;
-    if (!completeEvidence && startLine === 1) {
-      const textBytes = Buffer.byteLength(text, "utf8");
-      const fileInfo = await lstat(canonicalPath);
-      if (fileInfo.isFile() && fileInfo.size === textBytes) {
-        completeEvidence = sha256(await readFile(canonicalPath)) === sha256(text);
-      }
-    }
     if (completeEvidence) {
       this.#setCompleteEvidence(canonicalPath, { sha256: sha256(text), toolCallId, turnGeneration });
     }
+    return canonicalPath;
   }
 
   async recordCompleteRead(
@@ -452,8 +472,10 @@ export class MutationWriteGuard {
     expectedSha256: string,
     toolCallId: string,
     turnGeneration: number,
+    preparedTarget?: string,
   ): Promise<void> {
     const canonicalPath = await canonicalExistingPath(resolveToolPath(cwd, path));
+    if (preparedTarget !== undefined && canonicalPath !== preparedTarget) throw new Error("Mutation evidence target changed after preparation.");
     const diskContent = await readFile(canonicalPath);
     const diskSha256 = sha256(diskContent);
     if (diskSha256 !== expectedSha256) {
@@ -477,6 +499,11 @@ export class MutationWriteGuard {
         turnGeneration,
       }]);
     }
+  }
+
+  invalidateCanonicalPath(canonicalPath: string): void {
+    this.#evidence.delete(canonicalPath);
+    this.#rangeEvidence.delete(canonicalPath);
   }
 
   async invalidate(cwd: string, path: string): Promise<void> {
@@ -520,10 +547,26 @@ export class MutationWriteGuard {
 
   reserveCreationDirectories(reservation: number, directories: readonly string[]): void {
     let count = this.#budgetDirectoryReferences.size;
-    for (const directory of directories) if (!this.#budgetDirectoryReferences.has(directory)) count++;
+    for (const directory of directories) if (!this.#budgetDirectoryReferences.has(directoryKey(directory))) count++;
     if (count > MAX_CREATED_DIRECTORIES) throw new Error("[MUTATION_BUDGET_EXCEEDED] Cumulative created-directory budget exceeded.");
     this.#budgetEntries.get(reservation)!.directories = directories;
-    for (const directory of directories) this.#budgetDirectoryReferences.set(directory, (this.#budgetDirectoryReferences.get(directory) ?? 0) + 1);
+    for (const directory of directories) this.#budgetDirectoryReferences.set(directoryKey(directory), (this.#budgetDirectoryReferences.get(directoryKey(directory)) ?? 0) + 1);
+  }
+
+  reserveWriteMutation(turnGeneration: number, path: string, content: string, creation?: FileCreationPlan): number {
+    const reservation = this.#reserveMutation(turnGeneration, path, "write", 0, Buffer.byteLength(content, "utf8"));
+    try { if (creation) this.reserveCreationDirectories(reservation, creation.directories); }
+    catch (error) { this.releaseMutation(reservation); throw error; }
+    return reservation;
+  }
+
+  async preflightOverwrite(cwd: string, path: string, turnGeneration: number, approval?: MutationPathApproval): Promise<string> {
+    const canonical = await this.#assertMutationPathAllowed(cwd, path, "write", approval);
+    const expected = this.#evidence.get(canonical);
+    if (!expected || expected.turnGeneration >= turnGeneration) throw new Error("[READ_REQUIRED] Overwrite requires a completed prior full read.");
+    const actual = await hashNativeSource(canonical);
+    if (actual !== expected.sha256) throw new Error("[STALE_STATE] Overwrite evidence no longer matches.");
+    return actual;
   }
 
   reserveSnapshotEdit(
@@ -554,6 +597,7 @@ export class MutationWriteGuard {
     turnGeneration: number,
     currentText?: string,
     pathApproval?: MutationPathApproval,
+    signal?: AbortSignal,
   ): Promise<MutationEditAuthorization> {
     const absolutePath = resolveToolPath(cwd, path);
     const target = displayPath(cwd, absolutePath);
@@ -764,6 +808,7 @@ export class MutationWriteGuard {
         cause,
       });
     }
+    signal?.throwIfAborted();
     const estimatedChangedBytes = this.#assertEditBudget(target, prepared);
     const reservationId = this.#reserveMutation(
       turnGeneration,
@@ -833,6 +878,7 @@ export class MutationWriteGuard {
     // The native edit caller checked before entering this async callback; both
     // authority and cancellation can change while its final hash read awaits.
     try {
+      await this.#assertPreparedIdentity(pathApproval, absolutePath);
       signal?.throwIfAborted();
       pathApproval?.assertCurrent?.();
     } catch (error) {
@@ -890,11 +936,13 @@ export class MutationWriteGuard {
     turnGeneration: number,
     signal?: AbortSignal,
     pathApproval?: MutationPathApproval,
+    reservedId?: number,
+    sharedDirectories?: Map<string, PathIdentity>,
   ): Promise<MutationWriteSuccess> {
     if (signal?.aborted) throw guardFailure({ ok: false, operation: "write", category: "WRITE_FAILED", target: path, stateChanged: false, retryable: true, cause: "Operation aborted before mutation" });
     await this.#assertMutationPathAllowed(cwd, path, "write", pathApproval);
     const targetKey = resolveToolPath(cwd, path);
-    const reservationId = this.#reserveMutation(
+    const reservationId = reservedId ?? this.#reserveMutation(
       turnGeneration,
       targetKey,
       "write",
@@ -904,9 +952,9 @@ export class MutationWriteGuard {
     try {
       const creationPlan = pathApproval?.writePreflight ? pathApproval.creationPlan : pathApproval?.creationPlan ?? await prepareFileCreation(targetKey);
       if (creationPlan) {
-        this.reserveCreationDirectories(reservationId, creationPlan.directories);
+        if (reservedId === undefined) this.reserveCreationDirectories(reservationId, creationPlan.directories);
         const creation = await executeFileCreation(creationPlan, content,
-          () => this.#assertMutationPathAllowed(cwd, path, "write", pathApproval), signal, this.#options.beforeExclusiveCreate, undefined, pathApproval?.assertCurrent);
+          () => this.#assertMutationPathAllowed(cwd, path, "write", pathApproval), signal, this.#options.beforeExclusiveCreate, sharedDirectories, pathApproval?.assertCurrent);
         return { ok: true, mutationReceiptVersion: MUTATION_RECEIPT_VERSION, category: "success", operation: "write",
           target: displayPath(cwd, targetKey), stateChanged: true, created: true, sha256: sha256(content), creation };
       }
@@ -961,6 +1009,7 @@ export class MutationWriteGuard {
         });
       }
 
+      await this.#assertPreparedIdentity(pathApproval, canonicalPath);
       if (signal?.aborted) throw new Error("Operation aborted");
       try {
         pathApproval?.assertCurrent?.();

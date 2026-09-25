@@ -72,7 +72,7 @@ import {
 
 const STATE_ENTRY_TYPE = "plan-mode-state";
 const PROPOSED_PLAN_MESSAGE_TYPE = "proposed-plan";
-const BLOCKED_BUILTIN_TOOLS = new Set(["edit", "write", "delete", "move"]);
+const BLOCKED_BUILTIN_TOOLS = new Set(["edit", "write", "delete", "move", "file_batch"]);
 const DEFAULT_TOOLS = ["read", "bash", "edit", "write"];
 const PLAN_MODE_INSTRUCTION_MESSAGE_TYPE = "plan-mode-instructions-v1";
 type PlanModeInstructionState = "active" | "inactive";
