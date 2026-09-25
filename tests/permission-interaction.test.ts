@@ -1,6 +1,6 @@
 import { createSessionAllowRule, sessionAllowRuleMatches, simpleCommandPrefix } from "../packages/extensions/resource-lifecycle-guard/permission-rule.ts";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -525,7 +525,7 @@ test("real prefix selection persists prefix and its explicit cwd scope", async t
  finally { f.choose(index >= 0 ? index : 0); await pending; }
  const rule = f.permission.state.allowRules[0];
  assert.equal(rule.kind, "prefix"); assert.equal(rule.pattern, "touch");
- assert.equal(rule.backend, "bash"); assert.equal(rule.cwd, f.cwd);
+ assert.equal(rule.backend, "bash"); assert.equal(rule.cwd, realpathSync.native(f.cwd));
  assert.deepEqual(f.permission.state.serialized().allowRules[0], rule);
  assert.equal(f.permission.state.removeAllowRule(rule.id)?.id, rule.id);
  assert.equal(f.permission.state.allowRules.length, 0);
