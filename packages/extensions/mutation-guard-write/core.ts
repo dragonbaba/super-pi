@@ -891,7 +891,7 @@ export class MutationWriteGuard {
       if (creationPlan) {
         this.reserveCreationDirectories(reservationId, creationPlan.directories);
         const creation = await executeFileCreation(creationPlan, content,
-          () => this.#assertMutationPathAllowed(cwd, path, "write", pathApproval), signal, this.#options.beforeExclusiveCreate);
+          () => this.#assertMutationPathAllowed(cwd, path, "write", pathApproval), signal, this.#options.beforeExclusiveCreate, undefined, pathApproval?.assertCurrent);
         return { ok: true, mutationReceiptVersion: MUTATION_RECEIPT_VERSION, category: "success", operation: "write",
           target: displayPath(cwd, targetKey), stateChanged: true, created: true, sha256: sha256(content), creation };
       }

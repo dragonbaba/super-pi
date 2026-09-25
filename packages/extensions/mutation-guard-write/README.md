@@ -27,8 +27,10 @@ exclusive creation before approval; a target that appears afterward is a conflic
 never an overwrite. Up to 32 missing parent directories per turn are prepared
 without creating them, displayed in authorization, and created one level at a time.
 The nearest existing ancestor and created-directory identities are rechecked.
-Cleanup only attempts recorded, identity-matching empty directories, never a
-recursive removal; a partial file or directory residue requires verification.
+Portable mkdir does not return a creation identity, so post-mkdir observation
+cannot prove cleanup ownership against external replacement. Failed creations
+retain directories and report residues for verification; no automatic directory
+removal is attempted.
 Successful new files display `Added path (+lines -0)`, including `+0 -0` for empty
 files. Non-line text uses bytes. Existing writes display `Modified`.
 

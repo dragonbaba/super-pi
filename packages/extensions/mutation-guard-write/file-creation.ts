@@ -1,4 +1,4 @@
-import { lstat, mkdir, open, rmdir } from "node:fs/promises";
+import { lstat, mkdir, open } from "node:fs/promises";
 import { dirname, resolve, relative } from "node:path";
 import { capturePathIdentity, sameIdentity, type PathIdentity } from "./native-file-core.ts";
 
@@ -61,16 +61,10 @@ async function verifyCreatedDirectories(created: readonly CreatedDirectory[]): P
   }
 }
 
-async function cleanupCreatedDirectories(created: CreatedDirectory[]): Promise<void> {
-  for (let i = created.length - 1; i >= 0; i--) {
-    const directory = created[i];
-    directory.status = "retained";
-    try {
-      if (!directory.identity || !sameIdentity(directory.identity, await capturePathIdentity(directory.path), false)) continue;
-      await rmdir(directory.path);
-      directory.status = "removed";
-    } catch { /* Only exact owned empty directories are eligible; concurrent content stays. */ }
-  }
+function retainUnprovenDirectories(created: CreatedDirectory[]): void {
+  // mkdir returns no handle/identity. A later lstat cannot prove creation ownership
+  // against external replacement, so this portable implementation never deletes it.
+  for (const directory of created) directory.status = "retained";
 }
 
 /** Single write and file_batch share this exclusive create core. Never removes a partially written file. */
@@ -78,6 +72,7 @@ export async function executeFileCreation(
   plan: FileCreationPlan, content: string, assertPathAllowed: () => Promise<string>, signal?: AbortSignal,
   beforeExclusiveCreate?: (path: string) => void | Promise<void>,
   sharedDirectories?: Map<string, PathIdentity>,
+  assertAuthority?: () => void,
 ): Promise<CreationResult> {
   const created: CreatedDirectory[] = [];
   let fileCreated = false;
@@ -110,6 +105,7 @@ export async function executeFileCreation(
       if (!identity || !sameIdentity(identity, await capturePathIdentity(path), false)) throw new Error("[STALE_STATE] Shared parent identity changed before file creation.");
     }
     if (await assertPathAllowed() !== plan.canonicalTarget) throw new Error("[STALE_STATE] Creation target changed.");
+    assertAuthority?.();
     const handle = await open(plan.path, "wx");
     fileCreated = true;
     try {
@@ -120,11 +116,16 @@ export async function executeFileCreation(
       await verifyCreatedDirectories(created);
       signal?.throwIfAborted();
       await assertPathAllowed();
+      await verifyCreationAncestor(plan);
+      await verifyCreatedDirectories(created);
+      const finalName = await capturePathIdentity(plan.path);
+      if (finalName.canonical !== plan.canonicalTarget || finalName.device !== String(opened.dev) || finalName.inode !== String(opened.ino)) throw new Error("[STALE_STATE] Opened file was moved or replaced during authorization.");
+      assertAuthority?.();
       await handle.writeFile(content, "utf8");
     } finally { await handle.close(); }
     return { createdDirectories: created, ...addedContentSummary(content) };
   } catch (error) {
-    await cleanupCreatedDirectories(created);
+    retainUnprovenDirectories(created);
     for (const directory of created) if (directory.status === "removed") sharedDirectories?.delete(directory.path);
     let stateChanged = fileCreated;
     for (const directory of created) if (directory.status !== "removed") stateChanged = true;

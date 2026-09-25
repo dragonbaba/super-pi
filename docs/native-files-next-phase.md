@@ -61,6 +61,20 @@ behavior is not certified; unsupported operations fail without copy fallback.
 
 ## Boundaries
 
+A review round 1 (11 inline findings at `1a067894f`): final metadata revalidation
+now follows policy/authority awaits; linked names and opened creation handles are
+rebound before removal/write. Cancellation, verification flags, absolute creation
+targets, budget categories, receipt tool/intent binding, cross-version order and
+restored evidence invalidation are covered by regression tests. `not_started`
+is accepted as a no-change terminal outcome for the shared contract.
+
+Directory retention correction: portable asynchronous mkdir returns no handle
+or creation identity. Post-mkdir lstat cannot exclude an external replacement.
+This implementation therefore retains directories on failure instead of treating
+the observed identity as proof of ownership for automatic removal. Residues are
+reported as partial change. Tests verify concurrent contents and replacements
+remain intact. This is within the requested retain-when-unprovable boundary.
+
 Native moves use an exclusive destination hard link followed by source unlink
 on the same filesystem. This is non-atomic; a failed unlink leaves both names
 and reports partial completion. There is no automatic rollback, replay, recursive
