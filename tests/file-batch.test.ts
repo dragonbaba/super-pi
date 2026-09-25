@@ -10,6 +10,9 @@ import { createExtensionRuntime, ExtensionRunner, loadExtensionFromFactory } fro
 import { wrapToolDefinition } from "../packages/coding-agent/src/core/tools/tool-definition-wrapper.ts";
 import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
 import { collectStructuredMutationReceipts } from "../packages/extensions/mutation-guard-write/session-evidence.ts";
+import { createAssistantMessageEventStream } from "../packages/ai/src/utils/event-stream.ts";
+import { convertToLlm } from "../packages/coding-agent/src/core/messages.ts";
+import { getEncoding } from "js-tiktoken";
 const jiti = createJiti(import.meta.url);
 const { default: mutation } = await jiti.import<any>("../packages/extensions/mutation-guard-write/index.ts");
 const { default: lifecycle } = await jiti.import<any>("../packages/extensions/resource-lifecycle-guard/index.ts");
@@ -25,7 +28,7 @@ async function fixture(t: test.TestContext) {
   let approvals = 0, decision = "仅允许本次";
   let approvalHook = () => {};
   let recordHook = (_data: any) => {};
-  const agent = new Agent({ streamFn: () => { throw new Error("No live model"); },
+  const agent = new Agent({ convertToLlm, streamFn: () => { throw new Error("No live model"); },
     beforeToolCall: async ({ toolCall, args }) => { await runner.emit({ type: "turn_start" } as never); return runner.emitToolCall({ type: "tool_call", toolName: toolCall.name, toolCallId: toolCall.id, input: args } as never); },
     afterToolCall: ({ toolCall, args, result, isError }) => runner.emitToolResult({ type: "tool_result", toolName: toolCall.name, toolCallId: toolCall.id, input: args, content: result.content, details: result.details, isError } as never),
   });
@@ -146,5 +149,86 @@ test("1, 4, 16 file batches execute; file budget and oversized list reject befor
     const result = await f.call("file_batch", { operations }, `count-${count}`);
     assert.equal(result.isError, count > 16, JSON.stringify(result));
     assert.equal(existsSync(join(f.cwd, `n${count}`)), count <= 16);
+  }
+});
+
+test("snapshot batch preserves original coordinates across multiple edits and files", async t => {
+  const f = await fixture(t); const operations = [];
+  for (const path of ["one.txt", "two.txt"]) {
+    writeFileSync(join(f.cwd, path), "first\nsecond\nthird\n");
+    const read = await f.call("read", { path }, `read-${path}`);
+    const content = read.content.filter(block => block.type === "text").map(block => block.text).join("\n");
+    const snapshotStart = content.indexOf("snapshot=") + 9;
+    const snapshot = content.slice(snapshotStart, snapshotStart + 27);
+    const rows = content.split("\n");
+    const first = rows.find(row => row.startsWith("1#"))!.split("|")[0];
+    const third = rows.find(row => row.startsWith("3#"))!.split("|")[0];
+    operations.push({ operation: "edit", path, snapshot, edits: [{ kind: "insert_before", start: first, newLines: ["inserted"] }, { kind: "replace", start: third, newLines: ["THIRD"] }] });
+  }
+  const result = await f.call("file_batch", { operations }); assert.equal(result.isError, false, JSON.stringify({result, operations}));
+  for (const path of ["one.txt", "two.txt"]) assert.equal(readFileSync(join(f.cwd, path), "utf8"), "inserted\nfirst\nsecond\nTHIRD\n");
+});
+
+test("multi-move uses no-overwrite primitive and counts both ends before changing anything", async t => {
+  const f = await fixture(t);
+  for (let i = 0; i < 9; i++) writeFileSync(join(f.cwd, `s${i}`), Buffer.alloc(1024, i));
+  const operations = Array.from({ length: 9 }, (_, i) => ({ operation: "move", path: `s${i}`, destination: `d${i}` }));
+  assert.equal((await f.call("file_batch", { operations }, "over-budget")).isError, true);
+  for (let i = 0; i < 9; i++) { assert.equal(existsSync(join(f.cwd, `s${i}`)), true); assert.equal(existsSync(join(f.cwd, `d${i}`)), false); }
+  const result = await f.call("file_batch", { operations: operations.slice(0, 4) }); assert.equal(result.isError, false, JSON.stringify(result));
+  for (let i = 0; i < 4; i++) { assert.equal(existsSync(join(f.cwd, `s${i}`)), false); assert.deepEqual(readFileSync(join(f.cwd, `d${i}`)), Buffer.alloc(1024, i)); }
+});
+
+test("create target appearing at approval rejects whole batch and shared Chinese parents remain literal", async t => {
+  const f = await fixture(t); writeFileSync(join(f.cwd, "remove"), "old");
+  f.onApprove(() => writeFileSync(join(f.cwd, "new"), "external"));
+  const result = await f.call("file_batch", { operations: [{ operation: "delete", path: "remove" }, { operation: "write", mode: "create", path: "new", content: "forbidden" }] });
+  assert.equal(result.isError, true); assert.equal(readFileSync(join(f.cwd, "remove"), "utf8"), "old"); assert.equal(readFileSync(join(f.cwd, "new"), "utf8"), "external");
+  f.onApprove(() => {});
+  const paths = ["中文 space/New/a", process.platform === "win32" ? "中文 space/new/b" : "中文 space/New/b"];
+  const created = await f.call("file_batch", { operations: paths.map(path => ({ operation: "write", mode: "create", path, content: "" })) }, "shared");
+  assert.equal(created.isError, false, JSON.stringify(created));
+});
+
+test("failed durable result marks unknown, stops following items and never replays on reopen", async t => {
+  const f = await fixture(t); let records = 0;
+  f.onRecord(data => { if (data.phase === "result") { records++; throw new Error("injected Session append failure"); } });
+  const result = await f.call("file_batch", { operations: ["a", "b"].map(path => ({ operation: "write", mode: "create", path: `parents/${path}`, content: path })) });
+  assert.equal(result.isError, true); assert.equal((result.details as any).items[0].status, "state_unknown");
+  assert.equal((result.details as any).items[1].status, "not_started"); assert.equal(records, 1);
+  assert.equal(readFileSync(join(f.cwd, "parents/a"), "utf8"), "a"); assert.equal(existsSync(join(f.cwd, "parents/b")), false);
+  const reopened = SessionManager.open(f.session.getSessionFile()!);
+  const receipts = collectStructuredMutationReceipts(reopened.getBranch());
+  assert.equal(receipts.filter((r: any) => r.itemId === "file_batch:0").length, 1);
+  assert.equal((receipts.find((r: any) => r.itemId === "file_batch:0") as any).status, "state_unknown");
+  assert.equal(existsSync(join(f.cwd, "parents/b")), false);
+});
+
+test("offline task cost includes real Agent requests, schema and cumulative model serialization", async t => {
+  const encoding = getEncoding("o200k_base");
+  for (const count of [1, 4, 16]) for (const batch of [false, true]) {
+    const f = await fixture(t); let requests = 0, inputTokens = 0, outputTokens = 0;
+    const schema = JSON.stringify(f.agent.state.tools.map(tool => ({ name: tool.name, description: tool.description, parameters: tool.parameters })));
+    const schemaTokens = encoding.encode(schema).length;
+    const operations = Array.from({ length: count }, (_, i) => ({ operation: "write", mode: "create", path: `cost/file${i}`, content: `content ${i}\n` }));
+    const calls = batch ? [{ type: "toolCall", id: "batch-cost", name: "file_batch", arguments: { operations } }]
+      : operations.map((op, i) => ({ type: "toolCall", id: `single-${i}`, name: "write", arguments: { path: op.path, content: op.content } }));
+    f.agent.streamFunction = ((_model: any, context: any) => {
+      inputTokens += schemaTokens + encoding.encode(JSON.stringify(context.messages)).length;
+      const call = calls[requests++];
+      const message: any = { role: "assistant", api: "fixture", provider: "fixture", model: "fixture", timestamp: 0,
+        usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+        stopReason: call ? "toolUse" : "stop", content: call ? [call] : [] };
+      outputTokens += encoding.encode(JSON.stringify(message.content)).length;
+      const stream = createAssistantMessageEventStream(); stream.push({ type: "start", partial: message }); stream.push({ type: "done", reason: message.stopReason, message }); return stream;
+    }) as any;
+    const heapBefore = process.memoryUsage().heapUsed; const cpu = process.cpuUsage(); const start = performance.now();
+    await f.agent.prompt("Create the requested synthetic text files."); await f.agent.waitForIdle();
+    const elapsedMs = performance.now() - start; const used = process.cpuUsage(cpu);
+    const results = f.agent.state.messages.filter(message => message.role === "toolResult");
+    assert.equal(results.length, batch ? 1 : count); for (const result of results) assert.equal(result.isError, false, JSON.stringify(result));
+    for (let i = 0; i < count; i++) assert.equal(readFileSync(join(f.cwd, `cost/file${i}`), "utf8"), `content ${i}\n`);
+    assert.equal(requests, calls.length + 1); assert.equal(f.agent.state.pendingToolCalls.size, 0);
+    t.diagnostic(JSON.stringify({ benchmark: "file-task-offline", count, batch, requests, toolCalls: calls.length, preflightItems: count, approvals: f.approvals(), retries: 0, supplementalReads: 0, schemaTokens, inputTokens, outputTokens, elapsedMs, cpuUs: used.user + used.system, heapDelta: process.memoryUsage().heapUsed - heapBefore, pendingTools: f.agent.state.pendingToolCalls.size }));
   }
 });

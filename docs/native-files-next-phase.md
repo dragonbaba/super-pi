@@ -25,7 +25,7 @@ present plus the supplied phase specification) are preserved. Task worktree A:
 Scope addition accepted during A: existing `write` must retain its creation
 behavior while parent creation is prepared and authorized without side effects.
 Missing directories have a bounded budget and identity-bearing ownership records;
-cleanup is nonrecursive and only for recorded empty objects. B must distinguish
+cleanup requires provable ownership; the portable implementation retains directories on failure because mkdir returns no creation identity. B must distinguish
 create-only from overwrite, allow shared missing parents, and emit real Added
 summaries (including empty files). This is part of A/B, with no fourth PR.
 
@@ -83,3 +83,37 @@ locks; last-check races with uncooperative external writers remain possible.
 
 The accepted #43 limits (temporary CDPATH query prefixes and closed-subshell hash)
 remain. No paid model experiment, automatic merge or deployment is authorized.
+
+## B implementation candidate
+
+B is stacked on `feat/native-file-operations`, dependency
+`ad13a39fd9577807ee3f183764ae9f17c65919e7`. A fixes were integrated by merge;
+no source fork/cherry-picked implementation and no main merge was used.
+
+`file_batch` prepares at most 16 independent items, reserves the existing real
+operation/path/text budgets, obtains one current authorization when needed and
+executes in input order under the existing sorted mutation queues. Create mode
+is exclusive and distinct from overwrite. Shared missing parents are invocation
+owned and deduplicated (case folded on Windows); all preflight remains read-only.
+Exact and snapshot edit preparation/execution are extracted from their single-file
+cores. Snapshot byte edits retain immutable coordinates and bounded fragments.
+
+Item intents/results use the existing Session custom entries. Aggregate errors
+preserve successful receipts; unknown persistence outcomes require verification.
+No automatic replay, rollback, dependency inference or transaction is claimed.
+Collapsed TUI shows counts and first reason; expanded results show each outcome.
+
+The first 12 integration tests pass, including real Agent/permission calls,
+multiple immutable snapshot edits across files, create/overwrite/delete/move,
+shared parents/empty files, preflight zero side effects, conflicts, budget boundary,
+runtime failure and lost result persistence, and Session reopen/deduplication.
+The offline provider fixture uses actual Agent request turns and model serialization:
+for 1/4/16 new files, sequential calls take 2/5/17 requests versus 2/2/2 batch
+requests. Each request includes 1644 tokens of the same active schemas (o200k_base).
+Observed cumulative input estimates are approximately 3.8k/11.5k/65.5k sequential
+versus 3.9k/4.5k/7.0k batch. One-file batching is larger. No billing or real-model
+speed claim: these are scripted offline turns, zero retries/supplemental reads.
+Exact final-HEAD test/CI/review and allocation evidence remains required.
+
+C is independent at PR #45, base `70e1d52c410e57fba8802df26f7c8c8b7dc16bc0`;
+its first real Bash/PowerShell literal-cwd fixtures pass. All PRs remain unmerged.

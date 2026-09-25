@@ -9,7 +9,7 @@ import type { ToolDefinition } from "@super-pi/coding-agent";
 import { Value } from "typebox/value";
 import { consumePermissionPathApproval, mutationRequestHash, type PermissionPathApproval } from "../resource-lifecycle-guard/permission-contract.ts";
 import { MutationWriteGuard, sha256, type GuardedEdit, type MutationEditAuthorization, type MutationPathApproval } from "./core.ts";
-import { prepareFileCreation, verifyCreationAncestor, type FileCreationPlan } from "./file-creation.ts";
+import { prepareFileCreation, verifyCreationAncestor, directoryKey, type FileCreationPlan } from "./file-creation.ts";
 import { capturePathIdentity, sameIdentity, prepareNativeOperation, revalidateNativePlan, executeNativePlan, type NativePlan, type PathIdentity, type MutationStatus } from "./native-file-core.ts";
 import { prepareSnapshotLineMutation, executePreparedSnapshotMutation, type PreparedSnapshotMutation, type SnapshotLineEdit } from "./snapshot-line-edit.ts";
 import { PublicEditOperationParameters, PublicEditParameters, EditParameters, SnapshotEditParameters, WriteParameters, validatePublicSnapshotAnchors } from "./mutation-parameters.ts";
@@ -263,7 +263,10 @@ export class BatchInvocation {
     if (!preview) for (const result of results) {
       const receipt = result.receipt as any;
       summary += `\n${result.itemId}: ${result.status === "succeeded" && receipt?.created ? "Added" : result.operation} ${result.target}: ${result.status}`;
-      if (result.status === "succeeded" && receipt?.creation) summary += receipt.creation.addedLines === undefined ? ` (${receipt.creation.bytes} bytes)` : ` (+${receipt.creation.addedLines} -0)`;
+      if (result.status === "succeeded" && receipt?.creation) {
+        summary += receipt.creation.addedLines === undefined ? ` (${receipt.creation.bytes} bytes)` : ` (+${receipt.creation.addedLines} -0)`;
+        if (receipt.creation.createdDirectories.length) summary += `; created ${receipt.creation.createdDirectories.length} parent directories`;
+      }
     }
     return { content: [{ type: "text" as const, text: summary }], details: { mutationReceiptVersion: 2, operation: "file_batch", preview, collapsedSummary, succeeded, failed, notStarted, items: results }, isError: failed > 0 };
   }
@@ -276,7 +279,7 @@ export class BatchInvocation {
       try { await lstat(item.creation.path); throw new Error("[TARGET_APPEARED] Create target appeared after preflight."); }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
       for (const directory of item.creation.directories) {
-        if (shared?.has(directory)) continue;
+        if (shared?.has(directoryKey(directory))) continue;
         try { await lstat(directory); throw new Error("[STALE_STATE] Planned directory appeared after preflight."); }
         catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
       }

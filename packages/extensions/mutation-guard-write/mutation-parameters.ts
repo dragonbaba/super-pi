@@ -1,6 +1,6 @@
 import { Type, type Static } from "typebox";
 import { MAX_SNAPSHOT_LINE_EDITS, validateInsertionFields, type SnapshotLineEdit } from "./snapshot-line-edit.ts";
-import { SNAPSHOT_LINE_REFERENCE_PATTERN, SNAPSHOT_LINE_REFERENCE_REGEX } from "./regex.ts";
+import { SNAPSHOT_LINE_REFERENCE_PATTERN, SNAPSHOT_LINE_REFERENCE_REGEX, SNAPSHOT_ID_PATTERN } from "./regex.ts";
 export const GuardedReplaceParameters = Type.Object({
   oldText: Type.String({ description: "Exact text to replace; repeated text needs range evidence or expectedLine." }),
   newText: Type.String({ description: "Replacement text." }),
@@ -42,7 +42,7 @@ export const SnapshotLineEditParameters = Type.Object({
 export const SnapshotEditParameters = Type.Object({
   path: Type.String({ description: "Exact existing file path from the snapshot read." }),
   snapshot: Type.String({
-    pattern: "^snap_[A-Za-z0-9_-]{22}$",
+    pattern: SNAPSHOT_ID_PATTERN,
     description: "Opaque snapshot ID returned by read for this exact file version.",
   }),
   edits: Type.Array(SnapshotLineEditParameters, {
@@ -76,7 +76,7 @@ export const PublicEditOperationParameters = Type.Object({
 export const PublicEditParameters = Type.Object({
   path: Type.String({ description: "Path to the existing file to edit (relative or absolute)." }),
   snapshot: Type.Optional(Type.String({
-    pattern: "^snap_[A-Za-z0-9_-]{22}$",
+    pattern: SNAPSHOT_ID_PATTERN,
     description: "Required at the request top level for LINE#ID mode. Copy the snapshot ID paired with these anchors from the completed read; omit for exact oldText mode.",
   })),
   edits: Type.Array(PublicEditOperationParameters, {

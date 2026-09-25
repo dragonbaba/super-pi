@@ -92,3 +92,26 @@ Reproduce the bounded scan benchmark with `npm run benchmark:ledger`. The commit
 ## Scope
 
 This is the sole global `edit` override; it exposes a provider-independent union of preferred snapshot-line and guarded exact-replacement schemas. The former `edit-recovery` extension is retired outside auto-discovery. This guard covers built-in single-file `edit` and `write`; the three-mode Session permission state, additional workspaces, rejection feedback, dialogs, audits, and structured Bash protection remain centralized in `resource-lifecycle-guard`. Native delete/move and bounded creation are covered above. Shadow workspaces and multi-file atomic transactions remain outside scope; cross-file batch execution belongs to B.
+
+## Cross-file batch
+
+`file_batch` accepts an object with `operations` (1–16) and optional `dryRun` and
+`purpose`. Every item declares `operation`: edit, write, delete or move. Write
+requires `mode: "create"` or `mode: "overwrite"`; create never overwrites and needs
+no read of a missing file, while overwrite retains full prior-read requirements.
+Edit uses the same exact or snapshot fields as the unique single-file edit tool.
+
+All parameters, current versions, paths, independent-target conflicts and real
+operation budgets are checked before any mutation or parent mkdir. A needed batch
+approval covers the ordered immutable list, then execution revalidates the whole
+batch before its first item and each item at its turn. Approvals hold no file locks.
+Same-path aliases, hard links, ancestors and move chains are rejected, never reordered.
+Independent creates may share missing parents. Moves still require existing parents.
+
+Execution is serial and stops on error. Results distinguish succeeded,
+failed_no_change, partial, cancelled, not_started and state_unknown. Session
+progress preserves completed items even when the aggregate result is an error.
+Dry-run is not authorization, and reopen does not execute anything. A changed file
+with a failed receipt must be verified, never blindly retried. This is not a
+cross-file atomic transaction, and there is no automatic rollback or directory
+cleanup when ownership cannot be proved.

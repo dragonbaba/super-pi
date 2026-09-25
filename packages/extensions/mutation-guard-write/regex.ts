@@ -7,3 +7,5 @@ export const NATIVE_ERROR_CATEGORY_PATTERN = /^\[([^\]]+)\]/u;
 export const SNAPSHOT_LINE_REFERENCE_PATTERN = "^(?![\\s\\S]*[\\r\\n])[ \\t]*(?:[1-9]\\d*#[A-F0-9]{4}(?:\\|[^\\r\\n]*)?|>>> [1-9]\\d*#[A-F0-9]{4}\\|[^\\r\\n]*)[ \\t]*$";
 export const SNAPSHOT_LINE_REFERENCE_REGEX = new RegExp(SNAPSHOT_LINE_REFERENCE_PATTERN, "u");
 
+
+export const SNAPSHOT_ID_PATTERN = "^snap_[A-Za-z0-9_-]{22}$";
