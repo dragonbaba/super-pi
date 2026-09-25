@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { lstat, readFile, realpath, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { assessProtectedMutationPath } from "./protected-path-policy.ts";
-import { hashNativeSource } from "./native-file-core.ts";
+import { hashNativeSource, capturePathIdentity, sameIdentity } from "./native-file-core.ts";
 import type { PathIdentity } from "./native-file-core.ts";
 import { executeFileCreation, prepareFileCreation, MAX_CREATED_DIRECTORIES, directoryKey, type FileCreationPlan, type CreationResult } from "./file-creation.ts";
 
@@ -72,6 +72,8 @@ export interface MutationPathApproval {
   canonicalTarget: string;
   protectedRoots: readonly string[];
   creationPlan?: FileCreationPlan;
+  preparedIdentity?: PathIdentity;
+  preparedParent?: PathIdentity;
   assertCurrent?: () => void;
 }
 
@@ -310,6 +312,10 @@ export class MutationWriteGuard {
     approval?.assertCurrent?.();
     const absolutePath = resolveToolPath(cwd, path);
     const assessment = await assessProtectedMutationPath(cwd, absolutePath);
+    if (approval && (!assessment.canonicalTarget || directoryKey(assessment.canonicalTarget) !== directoryKey(approval.canonicalTarget))) {
+      throw new Error("[STALE_STATE] Approved mutation target changed.");
+    }
+    if (approval?.preparedIdentity || approval?.preparedParent) await this.#assertPreparedIdentity(approval, assessment.canonicalTarget!);
     if (assessment.violations.length === 0 && assessment.canonicalTarget) return assessment.canonicalTarget;
     if (approval && assessment.canonicalTarget === approval.canonicalTarget
       && sameStrings(assessment.violations, approval.protectedRoots)) return assessment.canonicalTarget;
@@ -328,6 +334,13 @@ export class MutationWriteGuard {
         ? "Mutation target cannot be canonicalized safely."
         : "Mutation target requires explicit per-call confirmation.",
     });
+  }
+
+  async #assertPreparedIdentity(approval: MutationPathApproval | undefined, canonical: string): Promise<void> {
+    if (!approval) return;
+    if (directoryKey(canonical) !== directoryKey(approval.canonicalTarget)) throw new Error("[STALE_STATE] Commit target differs from preparation.");
+    if (approval.preparedParent && !sameIdentity(approval.preparedParent, await capturePathIdentity(approval.preparedParent.path), false)) throw new Error("[STALE_STATE] Prepared parent identity changed.");
+    if (approval.preparedIdentity && !sameIdentity(approval.preparedIdentity, await capturePathIdentity(approval.preparedIdentity.path))) throw new Error("[STALE_STATE] Prepared file identity changed.");
   }
 
   #resetTurnBudget(turnGeneration: number): void {
@@ -480,6 +493,11 @@ export class MutationWriteGuard {
     }
   }
 
+  invalidateCanonicalPath(canonicalPath: string): void {
+    this.#evidence.delete(canonicalPath);
+    this.#rangeEvidence.delete(canonicalPath);
+  }
+
   async invalidate(cwd: string, path: string): Promise<void> {
     const absolutePath = resolveToolPath(cwd, path);
     this.#evidence.delete(absolutePath);
@@ -571,6 +589,7 @@ export class MutationWriteGuard {
     turnGeneration: number,
     currentText?: string,
     pathApproval?: MutationPathApproval,
+    signal?: AbortSignal,
   ): Promise<MutationEditAuthorization> {
     const absolutePath = resolveToolPath(cwd, path);
     const target = displayPath(cwd, absolutePath);
@@ -781,6 +800,7 @@ export class MutationWriteGuard {
         cause,
       });
     }
+    signal?.throwIfAborted();
     const estimatedChangedBytes = this.#assertEditBudget(target, prepared);
     const reservationId = this.#reserveMutation(
       turnGeneration,
@@ -850,6 +870,7 @@ export class MutationWriteGuard {
     // The native edit caller checked before entering this async callback; both
     // authority and cancellation can change while its final hash read awaits.
     try {
+      await this.#assertPreparedIdentity(pathApproval, absolutePath);
       signal?.throwIfAborted();
       pathApproval?.assertCurrent?.();
     } catch (error) {
@@ -980,6 +1001,7 @@ export class MutationWriteGuard {
         });
       }
 
+      await this.#assertPreparedIdentity(pathApproval, canonicalPath);
       if (signal?.aborted) throw new Error("Operation aborted");
       try {
         pathApproval?.assertCurrent?.();

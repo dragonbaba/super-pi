@@ -15,13 +15,13 @@ const { default: lifecycle } = await jiti.import<any>("../../packages/extensions
 const { default: loop } = await jiti.import<any>("../../packages/extensions/tool-loop-guardrails/index.ts");
 export const { MutationWriteGuard } = await jiti.import<any>("../../packages/extensions/mutation-guard-write/core.ts");
 
-export async function mutationFixture(t: test.TestContext) {
+export async function mutationFixture(t: test.TestContext, options: ConstructorParameters<typeof ExtensionRunner>[5] = {}) {
   const cwd = mkdtempSync(join(tmpdir(), "sp-file-batch-"));
   const session = SessionManager.create(cwd, join(cwd, "sessions"));
   const runtime = createExtensionRuntime();
   const extensions = [];
   for (const factory of [mutation, lifecycle, loop]) extensions.push(await loadExtensionFromFactory(factory, cwd, createEventBus(), runtime));
-  const runner = new ExtensionRunner(extensions, runtime, cwd, session, {} as never);
+  const runner = new ExtensionRunner(extensions, runtime, cwd, session, {} as never, options);
   let advanceTurn = true;
   let approvals = 0, decision = "仅允许本次";
   let approvalHook = () => {};

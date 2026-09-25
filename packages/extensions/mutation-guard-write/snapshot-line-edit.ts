@@ -115,6 +115,7 @@ export interface SnapshotLineEditHooks {
   assertPathAllowed: () => Promise<string>;
   reserveMutation?: (changedBytes: number) => number;
   beforeCommit?: () => void | Promise<void>;
+  assertCurrent?: () => void;
   afterCommit?: () => void | Promise<void>;
 }
 interface SnapshotStore {
@@ -876,6 +877,9 @@ export async function executePreparedSnapshotMutation(
       forgetSnapshot(snapshotId);
       throw new Error("[SNAPSHOT_EDIT_STALE] Target changed before commit. No change.\nRead the needed range again; use that read's snapshot and LINE#ID anchors.");
     }
+    if (await hooks.assertPathAllowed() !== receipt.canonicalPath || !sameIdentity(await currentIdentity(receipt.canonicalPath), receipt.identity)) throw new Error("[SNAPSHOT_EDIT_STALE] Prepared identity changed at commit.");
+    hooks.assertCurrent?.();
+    signal?.throwIfAborted();
     await rename(temporary, receipt.canonicalPath);
     committed = true;
     forgetSnapshot(snapshotId);

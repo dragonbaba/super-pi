@@ -79,7 +79,7 @@ export async function executeFileCreation(
   let fileCreated = false;
   try {
     await verifyCreationAncestor(plan);
-    await assertPathAllowed();
+    if (directoryKey(await assertPathAllowed()) !== directoryKey(plan.canonicalTarget)) throw new Error("[STALE_STATE] Creation target changed before directory creation.");
     for (const path of plan.directories) {
       signal?.throwIfAborted();
       await verifyCreationAncestor(plan);

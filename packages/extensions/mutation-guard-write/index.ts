@@ -250,7 +250,7 @@ export default function mutationGuardWriteExtension(pi: ExtensionAPI): void {
   pi.on("tool_result", async (rawEvent, ctx) => {
     const event = rawEvent as ToolResultEventShape;
     if (event.toolName === "file_batch") {
-      await recordBatchMutationEvidence(guard, ctx.cwd, event.input, event.details, event.toolCallId, turnGeneration);
+      await recordBatchMutationEvidence(guard, ctx.cwd, event.input, event.details, event.toolCallId, turnGeneration, ctx.sessionManager.getBranch());
       return;
     }
     const read = observedTextRead(event);
@@ -430,6 +430,7 @@ export default function mutationGuardWriteExtension(pi: ExtensionAPI): void {
                 );
                 return reservationId;
               },
+              assertCurrent: pathApproval?.assertCurrent,
               beforeCommit: async () => {
                 await guard.assertEditPathAllowed(ctx.cwd, snapshotInput.path, pathApproval);
               },

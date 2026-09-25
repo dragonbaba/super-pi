@@ -59,8 +59,8 @@ export function registerNativeTools(pi: ExtensionAPI, guard: MutationWriteGuard,
         } catch (error) { receipt = nativeFailure(plan, error, signal?.aborted ? "cancelled" : "failed_no_change"); }
         if (receipt.stateChanged === false) guard.releaseMutation(reservation);
         else {
-          await guard.invalidate(ctx.cwd, plan.source.canonical);
-          if (plan.destination) await guard.invalidate(ctx.cwd, plan.destination);
+          guard.invalidateCanonicalPath(plan.source.canonical);
+          if (plan.destination) guard.invalidateCanonicalPath(plan.destination);
         }
         try { pi.appendEntry(MUTATION_PROGRESS_ENTRY, { toolCallId, itemId: `${toolCallId}:0`, phase: "result", ...receipt }); }
         catch (error) {

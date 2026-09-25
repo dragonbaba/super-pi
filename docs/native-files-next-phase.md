@@ -253,3 +253,70 @@ and zero failures; check passes. Final committed-HEAD complete tests, allocation
 Linux/Windows CI and actual review evidence are recorded in the PR, not inferred
 from c7f724's old green checks. Existing exact final authority/signal gates and
 single-file production cores are unchanged.
+
+
+## R1–R5 review repair ledger (#46)
+
+Re-fetched main 8f31b54086799359a737f6c0cdc4b2ecdecc7bbe, B
+7f569fe62adaff5fab4bf9ee5554932492b1a7f8 and C
+1ba7fd16d337436ce937c1539e3d520045420148. SSH transport closed twice;
+HTTPS fetch confirmed the refs without changing credential/remote configuration.
+This repair is authorized to continue through same-scope feedback; merges remain
+gated on all valid findings, latest-head local checks, CI and actual review.
+
+| Finding | Real baseline evidence | Current repair / validation |
+| --- | --- | --- |
+| R1 4105911145 | intent-hook alias redirection changes the other equal-content file for exact/overwrite; snapshot/create/delete/move already reject this intent-time case | prepared identities reach the shared commit cores; final authority/signal checks retained; same-content file/parent replacement and ordinary/protected targets under deterministic tests |
+| R2 4105911157 | directory alias switched after initial assessment; actual delete/move use the second source while outer receipt names the first | require prepared source/identity to agree with initial assessment before budget/queue/permission acceptance |
+| R3 4105911170 | actual native @ delete/move invalidates unrelated unprefixed read evidence, including restore | pair original call/item with bounded durable preparation/intent targets; invalidate canonical keys directly without resolving a deleted source; preserve unrelated evidence |
+| R4 4105911183 | shipped default extension manifest + SDK Agent accepts completion and goal_complete after preflight failure, partial/unknown/cancel and native failure (six failing controls); success/preview pass | bounded item outcome consumption and existing obligations; execution-end observation covers authorization vetoes without a tool_result hook; started targets are bound to durable preparation/intent |
+| R5 4105911198 | real Runner scheduler deadline during last-item filesystem read leaves 3 items/paths and attached authority; earlier-item controls clean up | abort checks after async preparation/before reserve and attachment; preparation owns cleanup until transfer; release handles attachment failure and is idempotent |
+
+The actual default extension loader disables per-module caches. Separate loaded
+mutation and permission extensions therefore previously disagreed on the batch
+preparation Symbol despite passing inline-factory tests. The preparation key now
+uses a stable Symbol.for key, like other private cross-extension contracts; no
+new global authorization state/cache was introduced. Actual default-manifest
+success/preview now execute. Per-invocation authority remains private and bound
+to raw request hash and Session/permission state.
+
+The false-success producer chain audited is Agent tool start/result/end -> SDK
+extension bridge -> false-success consumer -> existing completion intervention;
+TUI and progress/render callbacks are unchanged. The new input references are
+bounded to 128 active native/batch calls and released on end/session reset or
+shutdown; overflow creates a conservative obligation. Bounded preparation
+metadata records at most 16 target identities, no file bodies, and is not an
+intent or proof of mutation. Dry-run records no prepared mutation metadata.
+Final committed-head tests/allocation/CI and per-thread replies remain pending;
+this working record does not claim review closure or merged B/C.
+
+The repaired working tree passes 174 targeted tests, with one explicit
+case-sensitive-filesystem skip on Windows, plus a separate late-cleanup test.
+R5 covers actual Runner deadlines and cancellation at each of three positions
+for exact and snapshot preparation: all 12 pass, with prepared items/paths,
+attachments, snapshot fragments, scheduler tasks and pending calls released.
+Attach failure, preparation error and normal handoff also pass. A following
+14-file successful call can complete while old I/O is held; late cleanup then
+preserves all 14 charges and only the two remaining file slots are available.
+
+R3 tests successful, partial (actual link then cancellation), unknown (durable
+result failure), and definite no-change native moves. Live and reopened Sessions
+invalidate changed-source evidence, retain unrelated literal-@ evidence, and
+retain source evidence for definite no-change. Recreated equal-content sources
+do not regain read authority. Unpaired result targets cannot invalidate another
+file. R4 uses the shipped default extension manifest and real SDK Agent, covers
+completion text and goal_complete, and requires both move scopes to be verified
+after a real partial move. Honest incomplete reports remain intact; unrelated
+success cannot clear obligations, and retry alone cannot clear unknown state.
+
+Working-tree check/build:offline/test:hot and allocation gates passed. The progress
+lane delivered 2 events for 20,000 updates, drain/high-water 1, final active and
+pending tools 0; sampled 198.22 B/update and controlled-GC delta 328,424 B.
+Native lifecycle ran ten SDK/InteractiveMode/ProcessTerminal cycles, all final
+pending tools/input/resize listeners zero. Four production tool-leaf allocation
+fixtures passed. These sampled values include existing allocations; no pool,
+per-progress callback, timer platform or large result-body parse was added.
+The invocation-level result consumer is bounded (16 items, 512 metadata entries),
+while streaming producer/event/TUI/render behavior remains under the existing
+AST and allocation gates. Final committed-head results and remote review/CI are
+tracked on #46; working-tree observations do not substitute for those gates.

@@ -1,3 +1,5 @@
+import { isAbsolute } from "node:path";
+import { mutationRequestHash } from "../resource-lifecycle-guard/permission-contract.ts";
 import type { MutationWriteGuard } from "./core.ts";
 import { READ_RESULT_ANNOTATION_PATTERN, SHA256_PATTERN, UNSAFE_RECEIPT_PATH_PATTERN } from "./regex.ts";
 import { restoreSnapshotReadText } from "./snapshot-line-protocol.ts";
@@ -61,6 +63,12 @@ function safeReceiptPath(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 && value.length <= 4096 && !UNSAFE_RECEIPT_PATH_PATTERN.test(value);
 }
 
+export function validMutationOutcome(status: unknown, stateChanged: unknown): boolean {
+  return status === "state_unknown" ? stateChanged === "unknown"
+    : status === "succeeded" || status === "partial" ? stateChanged === true
+    : (status === "failed_no_change" || status === "cancelled" || status === "not_started") && stateChanged === false;
+}
+
 function appendNativeReceipt(items: Map<string, NativeStructuredMutationReceipt>, entry: any, data: any, toolCallId: unknown, itemId: unknown, intent: boolean): void {
   if (!data || (data.operation !== "delete" && data.operation !== "move" && data.operation !== "write" && data.operation !== "edit") || !safeReceiptPath(data.target)
     || (data.operation === "move" && !safeReceiptPath(data.destination))) return;
@@ -101,18 +109,51 @@ function collectNativeReceipts(branch: readonly unknown[]): Map<string, NativeSt
   return items;
 }
 
-export async function recordBatchMutationEvidence(guard: MutationWriteGuard, cwd: string, input: any, details: any, toolCallId: string, generation: number): Promise<void> {
+/** Pair bounded durable intents with this actual call, never with arbitrary result targets. */
+export function boundBatchIntents(branch: readonly unknown[], input: any, toolCallId: string): Map<string, { operation: string; target: string; destination?: string }> {
+  const intents = new Map<string, { operation: string; target: string; destination?: string }>();
+  if (!Array.isArray(input?.operations) || input.operations.length > 16) return intents;
+  const hash = mutationRequestHash("file_batch", input);
+  for (let i = Math.max(0, branch.length - MAX_RESTORE_ENTRIES); i < branch.length; i++) {
+    const entry = branch[i] as any, data = entry?.data;
+    if (entry?.type !== "custom" || entry.customType !== "file-mutation-progress-v2" || data?.toolCallId !== toolCallId) continue;
+    if (data.phase === "prepared" && data.requestHash === hash && Array.isArray(data.items) && data.items.length === input.operations.length) {
+      for (let n = 0; n < data.items.length; n++) {
+        const item = data.items[n];
+        if (item?.itemId !== `${toolCallId}:${n}` || item.operation !== input.operations[n]?.operation || !safeReceiptPath(item.target) || !isAbsolute(item.target)
+          || (item.operation === "move" && (!safeReceiptPath(item.destination) || !isAbsolute(item.destination)))) continue;
+        intents.set(item.itemId, { operation: item.operation, target: item.target, destination: item.destination });
+      }
+      continue;
+    }
+    if (data.phase !== "intent" || (data.requestHash !== undefined && data.requestHash !== hash) || !safeReceiptPath(data.target) || !isAbsolute(data.target)) continue;
+    for (let n = 0; n < input.operations.length; n++) {
+      if (data.itemId !== `${toolCallId}:${n}` || data.operation !== input.operations[n]?.operation) continue;
+      if (data.operation === "move" && (!safeReceiptPath(data.destination) || !isAbsolute(data.destination))) continue;
+      intents.set(data.itemId, { operation: data.operation, target: data.target, destination: data.destination });
+    }
+  }
+  return intents;
+}
+
+export async function recordBatchMutationEvidence(guard: MutationWriteGuard, cwd: string, input: any, details: any, toolCallId: string, generation: number, branch: readonly unknown[] = []): Promise<void> {
   if (!Array.isArray(input?.operations) || !Array.isArray(details?.items) || details.preview || details.items.length > 16 || input.operations.length !== details.items.length) return;
+  const intents = boundBatchIntents(branch, input, toolCallId);
   for (let index = 0; index < details.items.length; index++) {
     const item = details.items[index], operation = input.operations[index];
     if (item?.itemId !== `${toolCallId}:${index}` || item.operation !== operation?.operation || typeof operation.path !== "string") continue;
+    if (!validMutationOutcome(item.status, item.stateChanged)) continue;
     const receipt = item.receipt;
     if (item.status === "succeeded" && (item.operation === "edit" || item.operation === "write") && typeof receipt?.sha256 === "string" && SHA256_PATTERN.test(receipt.sha256)) {
       try { await guard.recordMutationSnapshot(cwd, operation.path, receipt.sha256, item.itemId, generation); }
       catch { await guard.invalidate(cwd, operation.path); }
     } else if (item.stateChanged !== false) {
-      await guard.invalidate(cwd, operation.path);
-      if (typeof operation.destination === "string") await guard.invalidate(cwd, operation.destination);
+      if (item.operation === "delete" || item.operation === "move") {
+        const intent = intents.get(item.itemId);
+        if (!intent || item.target !== intent.target || item.destination !== intent.destination) continue;
+        guard.invalidateCanonicalPath(intent.target);
+        if (intent.destination) guard.invalidateCanonicalPath(intent.destination);
+      } else await guard.invalidate(cwd, operation.path);
     }
   }
 }
@@ -331,8 +372,8 @@ export async function restoreMutationEvidenceFromBranch(
       const data = custom.data;
       const completion = nativeReceipts.get(data?.itemId ?? `${data?.toolCallId}:0`);
       if (completion?.stateChanged !== false && (data?.phase === "intent" || data?.stateChanged !== false) && safeReceiptPath(data?.target)) {
-        await guard.invalidate(cwd, data.target);
-        if (safeReceiptPath(data.destination)) await guard.invalidate(cwd, data.destination);
+        guard.invalidateCanonicalPath(data.target);
+        if (safeReceiptPath(data.destination)) guard.invalidateCanonicalPath(data.destination);
       }
       continue;
     }
@@ -348,7 +389,7 @@ export async function restoreMutationEvidenceFromBranch(
     if (!call || call.name !== message.toolName) continue;
     try {
       if (message.toolName === "file_batch") {
-        await recordBatchMutationEvidence(guard, cwd, call.input, message.details, message.toolCallId, RESTORED_TURN_GENERATION);
+        await recordBatchMutationEvidence(guard, cwd, call.input, message.details, message.toolCallId, RESTORED_TURN_GENERATION, branch);
       } else if (message.toolName === "read") {
         await restoreRead(guard, cwd, call, message, message.toolCallId);
       } else if (message.toolName === "edit" || message.toolName === "write") {

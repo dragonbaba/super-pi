@@ -17,7 +17,8 @@ import { PublicEditOperationParameters, PublicEditParameters, EditParameters, Sn
 import { assessProtectedMutationPath } from "./protected-path-policy.ts";
 import { withMutationPaths, MUTATION_PROGRESS_ENTRY, renderFileMutationResult } from "./native-tools.ts";
 
-const PREPARATION = Symbol("file-batch-preparation");
+// Default extensions load in separate module-cache scopes; share only the private key, not authority state.
+const PREPARATION = Symbol.for("pi.mutation-guard.file-batch.preparation.v1");
 const EXECUTION = Symbol("file-batch-execution");
 const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 export const MAX_BATCH_ITEMS = 16;
@@ -159,45 +160,61 @@ export class BatchInvocation {
             if (WINDOWS_BATCH_COMPONENT_PATTERN.test(component)) throw new Error("[BATCH_CONFLICT] Ambiguous Windows path component (device, stream, trailing dot or space) is unsupported.");
           }
         }
+        const creation = input.operation === "write" ? await prepareFileCreation(path, input.mode === "create") : undefined;
+        const initialIdentity = creation ? undefined : await capturePathIdentity(path);
+        const initialParent = creation ? undefined : await capturePathIdentity(resolve(path, ".."));
         const assessment = await assessProtectedMutationPath(this.cwd, path);
         if (!assessment.canonicalTarget) throw new Error("[POLICY_BLOCKED] Unverifiable batch target.");
+        if (directoryKey(creation?.canonicalTarget ?? initialIdentity!.canonical) !== directoryKey(assessment.canonicalTarget)) throw new Error("[STALE_STATE] Target changed during assessment.");
         const item: Item = { itemId: `${this.id}:${index}`, operation: input.operation, input, executionPath: path, target: assessment.canonicalTarget,
           paths: [assessment.canonicalTarget], approval: { canonicalTarget: assessment.canonicalTarget, protectedRoots: assessment.violations } };
         this.items.push(item);
         if (input.operation === "delete" || input.operation === "move") {
           item.native = await prepareNativeOperation(this.cwd, input.operation, input.operation === "move" ? { path: input.path, destination: input.destination } : { path: input.path });
+          if (directoryKey(item.native.source.canonical) !== directoryKey(item.target)) throw new Error("[STALE_STATE] Native source changed during preparation.");
           item.identity = item.native.source;
           if (item.native.destination) item.paths.push(item.native.destination);
           await this.guard.assertNativeEvidence(item.target);
+          signal?.throwIfAborted();
           item.reservation = this.guard.reserveNativeMutation(this.generation, item.target, item.native.destination);
         } else if (input.operation === "write") {
-          item.creation = await prepareFileCreation(path, input.mode === "create");
+          item.creation = creation;
           if (input.mode === "overwrite" && item.creation) throw new Error("[READ_REQUIRED] Overwrite target is missing; use an explicit create item.");
           if (!item.creation) { item.identity = await capturePathIdentity(path); item.parent = await capturePathIdentity(resolve(path, "..")); item.previousSha256 = await this.guard.preflightOverwrite(this.cwd, path, this.generation, item.approval); }
           else item.approval.creationPlan = item.creation;
+          if (directoryKey(item.creation?.canonicalTarget ?? item.identity!.canonical) !== directoryKey(item.target)) throw new Error("[STALE_STATE] Write target changed during preparation.");
+          item.approval.preparedIdentity = item.identity; item.approval.preparedParent = item.parent;
+          signal?.throwIfAborted();
           item.approval.writePreflight = true;
           item.reservation = this.guard.reserveWriteMutation(this.generation, item.target, input.content!, item.creation);
         } else {
           item.identity = await capturePathIdentity(path);
           item.parent = await capturePathIdentity(resolve(path, ".."));
+          if (directoryKey(item.identity.canonical) !== directoryKey(item.target)) throw new Error("[STALE_STATE] Edit target changed during preparation.");
+          item.approval.preparedIdentity = item.identity; item.approval.preparedParent = item.parent;
           if (input.snapshot) {
             item.snapshot = await prepareSnapshotLineMutation(this.ctx.sessionManager.getSessionId(), this.cwd, path, input.snapshot, input.edits as SnapshotLineEdit[], signal,
               { assertPathAllowed: async () => item.target });
+            signal?.throwIfAborted();
             item.reservation = this.guard.reserveSnapshotEdit(this.generation, item.target, item.snapshot.replacements, item.snapshot.changedBytes);
             item.previousSha256 = item.snapshot.receipt.sha256;
           } else {
             const bytes = await readFile(path);
             const text = decoder.decode(bytes);
-            item.exact = await this.guard.authorizeEdit(this.cwd, path, input.edits as GuardedEdit[], this.generation, text, item.approval);
+            item.exact = await this.guard.authorizeEdit(this.cwd, path, input.edits as GuardedEdit[], this.generation, text, item.approval, signal);
             item.reservation = item.exact.reservationId;
             prepareExactEditContent(text, item.exact.edits, input.path);
             item.previousSha256 = sha256(bytes);
           }
         }
+        if (creation) await verifyCreationAncestor(creation);
+        else if (!sameIdentity(initialIdentity!, await capturePathIdentity(path)) || !sameIdentity(initialParent!, await capturePathIdentity(initialParent!.path), false)) throw new Error("[STALE_STATE] Identity changed during preparation.");
+        signal?.throwIfAborted();
         for (const path of item.paths) this.paths.push(path);
       }
+      signal?.throwIfAborted();
       assertIndependent(this.items);
-    } catch (error) { this.dispose(); throw error; }
+    } catch (error) { this.release(); throw error; }
   }
 
   attach(): void { Object.defineProperty(this.original, PREPARATION, { configurable: true, value: this }); }
@@ -212,9 +229,11 @@ export class BatchInvocation {
     return privateInput;
   }
   release(): void {
-    if (this.original && typeof this.original === "object") Object.defineProperty(this.original, PREPARATION, { configurable: true, value: undefined });
+    const original = this.original;
     this.original = undefined;
-    if (!this.transferred) this.dispose();
+    try {
+      if (getBatchPreparation(original) === this) Object.defineProperty(original, PREPARATION, { configurable: true, value: undefined });
+    } finally { if (!this.transferred) this.dispose(); }
   }
   private dispose(): void {
     this.live = false;
@@ -230,6 +249,9 @@ export class BatchInvocation {
       await withMutationPaths(this.paths, async () => {
         for (const item of this.items) { this.currentItem = item; await this.revalidate(item, signal); }
         if (this.input.dryRun) return;
+        const preparedTargets = [];
+        for (const item of this.items) preparedTargets.push({ itemId: item.itemId, operation: item.operation, target: item.target, destination: item.native?.destination });
+        pi.appendEntry(MUTATION_PROGRESS_ENTRY, { toolCallId: this.id, phase: "prepared", requestHash: this.requestHash, items: preparedTargets });
         for (let index = 0; index < this.items.length; index++) {
           const item = this.items[index], result = results[index];
           if (signal?.aborted) { result.status = "cancelled"; result.reason = "Cancelled before item start"; break; }
@@ -237,10 +259,10 @@ export class BatchInvocation {
           item.approval.assertCurrent = this.assertAuthority;
           try {
             await this.revalidate(item, signal, sharedDirectories);
-            pi.appendEntry(MUTATION_PROGRESS_ENTRY, { toolCallId: this.id, itemId: item.itemId, phase: "intent", operation: item.operation, target: item.target, destination: item.native?.destination });
+            pi.appendEntry(MUTATION_PROGRESS_ENTRY, { toolCallId: this.id, itemId: item.itemId, phase: "intent", requestHash: this.requestHash, operation: item.operation, target: item.target, destination: item.native?.destination });
             let receipt: any;
             if (item.native) receipt = await executeNativePlan(item.native, this.assertAuthority, signal);
-            else if (item.snapshot) receipt = { ...await executePreparedSnapshotMutation(item.snapshot, signal, { assertPathAllowed: this.assertItemPath, beforeCommit: this.assertAuthority }), operation: "edit", target: item.target, stateChanged: true, ok: true };
+            else if (item.snapshot) receipt = { ...await executePreparedSnapshotMutation(item.snapshot, signal, { assertPathAllowed: this.assertItemPath, beforeCommit: this.assertAuthority, assertCurrent: this.assertAuthority }), operation: "edit", target: item.target, stateChanged: true, ok: true };
             else if (item.exact) {
               const before = await readFile(item.identity!.path);
               if (sha256(before) !== item.previousSha256) throw new Error("[STALE_STATE] Prepared edit changed.");
@@ -265,8 +287,8 @@ export class BatchInvocation {
           }
           if (result.stateChanged !== false) item.reservation = undefined; // Actual changes retain their budget charge.
           if (item.native && result.stateChanged !== false) {
-            await this.guard.invalidate(this.cwd, item.target);
-            if (item.native.destination) await this.guard.invalidate(this.cwd, item.native.destination);
+            this.guard.invalidateCanonicalPath(item.target);
+            if (item.native.destination) this.guard.invalidateCanonicalPath(item.native.destination);
           }
           try { pi.appendEntry(MUTATION_PROGRESS_ENTRY, { toolCallId: this.id, phase: "result", mutationReceiptVersion: 2, ...result }); }
           catch { if (result.stateChanged !== false) { result.status = "state_unknown"; result.stateChanged = "unknown"; result.reason = "File changed but receipt recording failed; verify, never automatically retry."; } }
@@ -320,9 +342,12 @@ export function registerFileBatch(pi: ExtensionAPI, guard: MutationWriteGuard, g
   pi.on("tool_call", async (event, ctx) => {
     if (event.toolName !== "file_batch") return;
     const invocation = new BatchInvocation(guard, ctx, event.toolCallId, event.input, generation());
-    await invocation.prepare(ctx.signal);
-    invocation.attach();
-    return { finalAuthorization: invocation };
+    try {
+      await invocation.prepare(ctx.signal);
+      ctx.signal?.throwIfAborted();
+      invocation.attach();
+      return { finalAuthorization: invocation };
+    } catch (error) { invocation.release(); throw error; }
   });
   pi.registerTool({ name: "file_batch", label: "File batch", description: "Preflight then apply independent edit/write/delete/move items in fixed order. Write requires create or overwrite mode. One batch authorization when needed. Stop on error, preserve per-item outcomes; no transaction, rollback, reorder or replay.",
     parameters: FileBatchParameters, executionMode: "sequential", renderResult: renderBatchResult,
