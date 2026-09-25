@@ -1,6 +1,48 @@
-# Mutation Guard: Edit and Write
+# Mutation Guard: File operations
 
-Pi extension that overrides the built-in `edit` and `write` execution layers without adding a tool or slash command.
+Pi extension retaining the unique built-in `edit` and `write` entrypoints and adding conditional native `delete` and `move` tools through existing discovery.
+
+## Native delete, move and creation
+
+`delete` accepts an ordinary file or empty directory. Deletion is irreversible;
+there is no backup or recursive traversal. `move` accepts one ordinary file and
+an absent destination with an existing parent on the same filesystem. It uses
+exclusive `fs.link` followed by `unlink`, so destination replacement is never
+implemented as an existence check followed by overwriting rename. A failed
+unlink reports partial completion with both names retained. Unsupported filesystems
+return an error; no Shell, copy/delete fallback, replay or rollback is attempted.
+Symlinks, junctions and special files are refused by this first version.
+
+Both tools require a live one-call permission contract even on ordinary workspace
+paths. It binds the request, Session authority, canonical source/destination and
+parent identities. Preparation precedes approval and acquires no mutation locks.
+Execution uses the existing edit/write queue in a fixed source/destination order,
+rechecks identities and permissions, and reserves the existing cumulative budget
+(both move paths, no file-content byte charge). Existing full-read version evidence
+must still match; binary data otherwise needs no model read. Queues are process
+local, and last-check external races remain; this is not filesystem CAS or a sandbox.
+
+`write` retains create-or-overwrite behavior. A missing target is captured as an
+exclusive creation before approval; a target that appears afterward is a conflict,
+never an overwrite. Up to 32 missing parent directories per turn are prepared
+without creating them, displayed in authorization, and created one level at a time.
+The nearest existing ancestor and created-directory identities are rechecked.
+Portable mkdir does not return a creation identity, so post-mkdir observation
+cannot prove cleanup ownership against external replacement. Failed creations
+retain directories and report residues for verification; no automatic directory
+removal is attempted.
+Successful new files display `Added path (+lines -0)`, including `+0 -0` for empty
+files. Non-line text uses bytes. Existing writes display `Modified`.
+
+Native operations and prepared creations append bounded intent/result custom
+entries on the authoritative Session branch. Version-2 outcomes distinguish
+success, no-change failure, cancellation, partial and unknown states without fake
+postimage hashes. A missing completion is an obligation to verify, never permission
+to replay. `collectStructuredMutationReceipts` deduplicates item identities across
+progress and final results, including top-level errors. Legacy version-1 edit/write
+results remain readable. No separate database or reconciliation service is added.
+
+Implementation and evidence are tracked in [the phase record](../../../docs/native-files-next-phase.md).
 
 ## Edit policy
 
@@ -41,12 +83,12 @@ Pi extension that overrides the built-in `edit` and `write` execution layers wit
 
 Successful exact edits, snapshot edits, overwrite writes, and exclusive creates now emit a schema-v1 structured mutation receipt directly in their authoritative Session `toolResult.details`. A receipt contains only `mutationReceiptVersion`, operation, bounded target, `stateChanged`, preimage SHA-256 when a preimage exists, postimage SHA-256, and bounded replacement/create metadata. Exact edit exposes the preimage hash already computed by its stale-state gate; no additional hash, read, write, listener, closure, or custom Session entry is added.
 
-`collectStructuredMutationReceipts()` derives a read-only ledger from at most the latest 512 Session entries. It accepts only complete versioned successful `edit`/`write` receipts, requires matching operation and valid hashes, rejects unsafe targets and malformed/create-with-preimage shapes, and never copies tool content, patch/diff bodies, purpose text, or original arguments. The Session tool result remains the sole state source; there is no second ledger file, custom-entry stream, database, lifecycle owner, or resume reconciliation problem.
+`collectStructuredMutationReceipts()` derives a read-only ledger from at most the latest 512 Session entries. For legacy version-1 entries it accepts complete successful `edit`/`write` receipts, requires matching operation and valid hashes, rejects unsafe targets and malformed/create-with-preimage shapes, and never copies tool content, patch/diff bodies, purpose text, or original arguments. The Session branch remains the sole state source. Native version-2 progress entries are described above; there is no second ledger file or database.
 
-Bash, scripts, delete/move commands, LSP fixes, and subagents are intentionally excluded. Their actual write set cannot be proven from the structured mutation receipt contract, so including them would create a falsely complete ledger. Existing permission audits and tool-error telemetry remain separate and must not be presented as file mutation receipts.
+Bash, scripts, Shell delete/move commands, LSP fixes, and subagents remain excluded; only the native tools emit native receipts. Their actual write set cannot be proven from the structured mutation receipt contract, so including them would create a falsely complete ledger. Existing permission audits and tool-error telemetry remain separate and must not be presented as file mutation receipts.
 
 Reproduce the bounded scan benchmark with `npm run benchmark:ledger`. The committed 10,000-entry workload scans only the latest 512 entries and emits 32 receipts over 9脳1,000 iterations: median 0.00687 ms, p80 0.00711 ms, output hash `bdaa9c48487a5a5ae2828e3dfdeae202e99c50bd6f3ac803957e81cd0a1173dc`. The collector is on-demand and is not called by ordinary turns.
 
 ## Scope
 
-This is the sole global `edit` override; it exposes a provider-independent union of preferred snapshot-line and guarded exact-replacement schemas. The former `edit-recovery` extension is retired outside auto-discovery. This guard covers built-in single-file `edit` and `write`; the three-mode Session permission state, additional workspaces, rejection feedback, dialogs, audits, and structured Bash protection remain centralized in `resource-lifecycle-guard`. Dedicated delete/move tools, shadow workspaces, and multi-file transactions are intentionally deferred with evidence in `FOLLOW_UP_GAPS.md`.
+This is the sole global `edit` override; it exposes a provider-independent union of preferred snapshot-line and guarded exact-replacement schemas. The former `edit-recovery` extension is retired outside auto-discovery. This guard covers built-in single-file `edit` and `write`; the three-mode Session permission state, additional workspaces, rejection feedback, dialogs, audits, and structured Bash protection remain centralized in `resource-lifecycle-guard`. Native delete/move and bounded creation are covered above. Shadow workspaces and multi-file atomic transactions remain outside scope; cross-file batch execution belongs to B.

@@ -1,3 +1,4 @@
+import { EDIT_INDEX_PATTERN } from "./regex.ts";
 import { constants } from "node:fs";
 import process from "node:process";
 import { access, readFile } from "node:fs/promises";
@@ -23,6 +24,7 @@ import { SHA256_PATTERN } from "./regex.ts";
 import { restoreSnapshotReadText } from "./snapshot-line-protocol.ts";
 import { primaryReadResultText, restoreMutationEvidenceFromBranch } from "./session-evidence.ts";
 import { consumePermissionPathApproval } from "../resource-lifecycle-guard/permission-contract.ts";
+import { registerNativeTools, MUTATION_PROGRESS_ENTRY, renderFileMutationResult } from "./native-tools.ts";
 
 const GuardedReplaceParameters = Type.Object({
   oldText: Type.String({ description: "Exact text to replace; repeated text needs range evidence or expectedLine." }),
@@ -174,9 +176,10 @@ interface MutationFailureInfo {
   category?: unknown;
   stateChanged?: unknown;
   cause?: unknown;
+  status?: unknown;
 }
 
-const EDIT_INDEX_PATTERN = /edits\[(\d+)\]/u;
+
 
 function mutationFailureInfo(error: unknown): MutationFailureInfo | undefined {
   if (!(error instanceof Error)) return undefined;
@@ -284,6 +287,7 @@ class GuardedEditExecution {
   readonly #originalEdits: GuardedEdit[];
   readonly #turnGeneration: number;
   readonly #pathApproval?: MutationPathApproval;
+  readonly #signal?: AbortSignal;
   #previousContent?: Buffer;
   authorization?: MutationEditAuthorization;
   writtenSha256?: string;
@@ -296,6 +300,7 @@ class GuardedEditExecution {
     input: GuardedEditInput,
     turnGeneration: number,
     pathApproval?: MutationPathApproval,
+    signal?: AbortSignal,
   ) {
     this.#guard = guard;
     this.#cwd = cwd;
@@ -303,6 +308,7 @@ class GuardedEditExecution {
     this.#originalEdits = cloneGuardedEdits(input.edits);
     this.#turnGeneration = turnGeneration;
     this.#pathApproval = pathApproval;
+    this.#signal = signal;
     this.operations = {
       access: this.#accessFile.bind(this),
       readFile: this.#readFile.bind(this),
@@ -338,6 +344,7 @@ class GuardedEditExecution {
       content,
       this.authorization?.reservationId,
       this.#pathApproval,
+      this.#signal,
     );
     this.writtenSha256 = sha256(content);
     this.writeSucceeded = true;
@@ -348,6 +355,7 @@ export default function mutationGuardWriteExtension(pi: ExtensionAPI): void {
   const guard = new MutationWriteGuard();
   const upstreamEdit = createEditToolDefinition(process.cwd());
   let turnGeneration = 0;
+  registerNativeTools(pi, guard, () => turnGeneration);
 
   async function resetAndRestoreEvidence(ctx: {
     cwd: string;
@@ -429,7 +437,7 @@ export default function mutationGuardWriteExtension(pi: ExtensionAPI): void {
         path: input.path,
         edits: cloneGuardedEdits(input.edits),
       };
-      const execution = new GuardedEditExecution(guard, ctx.cwd, nativeInput, turnGeneration, pathApproval);
+      const execution = new GuardedEditExecution(guard, ctx.cwd, nativeInput, turnGeneration, pathApproval, signal);
       const guardedEdit = createEditToolDefinition(ctx.cwd, { operations: execution.operations });
       try {
         const result = await guardedEdit.execute(toolCallId, nativeInput, signal, onUpdate, ctx);
@@ -592,17 +600,47 @@ export default function mutationGuardWriteExtension(pi: ExtensionAPI): void {
       "For an existing whole-file overwrite, dedicated read must return complete content in an earlier tool turn and still match; truncated, partial, same-turn, Bash, grep, LSP, or stale evidence fails. Use range/snapshot edit for local changes. Missing files use exclusive creation without a read. Include purpose for protected targets.",
     ],
     parameters: WriteParameters,
+    renderResult: renderFileMutationResult,
     executionMode: "sequential",
     async execute(toolCallId, input: GuardedWriteInput, signal, _onUpdate, ctx) {
       const { path, content } = input;
       const absolutePath = resolveToolPath(ctx.cwd, path);
       const pathApproval = consumePermissionPathApproval(input, toolCallId, "write") as MutationPathApproval | undefined;
-      const details = await withFileMutationQueue(
-        absolutePath,
-        () => guard.write(ctx.cwd, path, content, turnGeneration, signal, pathApproval),
-      );
+      const progress = pathApproval?.creationPlan !== undefined;
+      const receiptTarget = pathApproval?.creationPlan?.canonicalTarget ?? absolutePath;
+      let details;
+      try {
+        details = await withFileMutationQueue(
+          absolutePath,
+          async () => {
+            if (progress) pi.appendEntry(MUTATION_PROGRESS_ENTRY, { toolCallId, itemId: `${toolCallId}:0`, phase: "intent", operation: "write", target: receiptTarget, directories: pathApproval!.creationPlan!.directories });
+            return guard.write(ctx.cwd, path, content, turnGeneration, signal, pathApproval);
+          },
+        );
+      } catch (error) {
+        const cause = error instanceof Error ? error.message : String(error);
+        const failure = mutationFailureInfo(error) ?? (progress && (cause === "Operation aborted" || cause.startsWith("[MUTATION_BUDGET_EXCEEDED]") || cause.startsWith("[POLICY_BLOCKED]"))
+          ? { category: signal?.aborted ? "CANCELLED" : "PRE_EXECUTION_FAILED", stateChanged: false, cause, status: signal?.aborted ? "cancelled" : "failed_no_change" } : undefined);
+        if (failure && (progress || failure.stateChanged === true)) {
+          const status = failure.stateChanged === true ? "partial" : (failure.status === "cancelled" || signal?.aborted) ? "cancelled" : "failed_no_change";
+          const details = { ...failure, operation: "write", target: receiptTarget, mutationReceiptVersion: 2, status, ...(failure.stateChanged === true ? { requiresVerification: true } : {}) };
+          if (progress) try { pi.appendEntry(MUTATION_PROGRESS_ENTRY, { ...details, toolCallId, itemId: `${toolCallId}:0`, phase: "result" }); } catch { /* Durable intent remains uncertain. */ }
+          return { content: [{ type: "text" as const, text: `write: ${status}; ${path}. [${failure.category}] ${typeof failure.cause === "string" ? failure.cause.slice(0, 800) : ""}${failure.stateChanged === true ? " Verify the file and recorded directories; do not automatically retry." : ""}` }], details, isError: true };
+        }
+        throw error;
+      }
+      if (progress) try {
+        pi.appendEntry(MUTATION_PROGRESS_ENTRY, { ...details, target: receiptTarget, mutationReceiptVersion: 2, toolCallId, itemId: `${toolCallId}:0`, phase: "result", status: "succeeded" });
+      } catch {
+        return { content: [{ type: "text" as const, text: `write: state_unknown; ${path}. File changed but receipt recording failed. Verify current state; do not automatically retry.` }],
+          details: { mutationReceiptVersion: 2, operation: "write", target: receiptTarget, status: "state_unknown", stateChanged: "unknown", requiresVerification: true }, isError: true };
+      }
+      const creation = details.creation;
+      const summary = details.created
+        ? `Added ${path} (${creation?.addedLines !== undefined ? `+${creation.addedLines} -0` : `${Buffer.byteLength(content, "utf8")} bytes`})${creation?.createdDirectories.length ? `\nCreated directories: ${creation.createdDirectories.length}` : ""}`
+        : `Modified ${path} (${Buffer.byteLength(content, "utf8")} bytes)`;
       return {
-        content: [{ type: "text" as const, text: `Successfully wrote ${content.length} bytes to ${path}` }],
+        content: [{ type: "text" as const, text: summary }],
         details,
       };
     },

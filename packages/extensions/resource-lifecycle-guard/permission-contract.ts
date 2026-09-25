@@ -1,4 +1,6 @@
 import { createHash, type Hash } from "node:crypto";
+import type { NativePlan } from "../mutation-guard-write/native-file-core.ts";
+import type { FileCreationPlan } from "../mutation-guard-write/file-creation.ts";
 
 export const SESSION_PERMISSION_STATE_TYPE = "session-permission-state-v1";
 export const SESSION_PERMISSION_AUDIT_TYPE = "session-permission-audit-v1";
@@ -32,10 +34,14 @@ export interface PermissionPathApproval {
   schemaVersion: 1;
   sequence: number;
   toolCallId: string;
-  operation: "edit" | "write" | "lsp_fix";
+  operation: "edit" | "write" | "lsp_fix" | "delete" | "move";
   requestHash: string;
   canonicalTarget: string;
   protectedRoots: readonly string[];
+  nativePlan?: NativePlan;
+  creationPlan?: FileCreationPlan;
+  writePreflight?: boolean;
+  assertCurrent?: () => void;
 }
 
 export interface SubagentWorkspaceGrant {
@@ -98,13 +104,15 @@ interface PermissionCarryingInput {
 
 export function mutationRequestHash(operation: PermissionPathApproval["operation"], input: unknown): string {
   const value = input && typeof input === "object"
-    ? input as { path?: unknown; purpose?: unknown; content?: unknown; snapshot?: unknown; edits?: unknown; kind?: unknown; root?: unknown; server?: unknown; write?: unknown }
+    ? input as { path?: unknown; destination?: unknown; purpose?: unknown; content?: unknown; snapshot?: unknown; edits?: unknown; kind?: unknown; root?: unknown; server?: unknown; write?: unknown }
     : {};
   const hash = createHash("sha256");
   updateStructuredHashField(hash, operation);
   updateStructuredHashField(hash, value.path);
   updateStructuredHashField(hash, value.purpose);
-  if (operation === "write") {
+  if (operation === "move" || operation === "delete") {
+    updateStructuredHashField(hash, value.destination);
+  } else if (operation === "write") {
     updateStructuredHashField(hash, value.content);
   } else if (operation === "edit") {
     updateStructuredHashField(hash, value.snapshot);
@@ -163,6 +171,7 @@ export function consumePermissionPathApproval(
   const approval = carrying[PERMISSION_PATH_APPROVAL];
   if (approval) Object.defineProperty(carrying, PERMISSION_PATH_APPROVAL, CONSUMED_ATTACHMENT_DESCRIPTOR);
   if (!approval) return undefined;
+  approval.assertCurrent?.();
   if (approval.toolCallId !== toolCallId
     || approval.operation !== operation
     || approval.requestHash !== mutationRequestHash(operation, input)) {

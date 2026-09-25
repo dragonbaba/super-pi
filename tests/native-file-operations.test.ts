@@ -1,0 +1,378 @@
+import assert from "node:assert/strict";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync, symlinkSync, linkSync, unlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test from "node:test";
+import { createJiti } from "jiti";
+import { Agent } from "../packages/agent/src/agent.ts";
+import { createEventBus } from "../packages/coding-agent/src/core/event-bus.ts";
+import { createExtensionRuntime, ExtensionRunner, loadExtensionFromFactory } from "../packages/coding-agent/src/core/extensions/index.ts";
+import { wrapToolDefinition } from "../packages/coding-agent/src/core/tools/tool-definition-wrapper.ts";
+import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
+import { prepareNativeOperation, executeNativePlan } from "../packages/extensions/mutation-guard-write/native-file-core.ts";
+import { collectStructuredMutationReceipts, restoreMutationEvidenceFromBranch } from "../packages/extensions/mutation-guard-write/session-evidence.ts";
+import { addedContentSummary, prepareFileCreation, executeFileCreation } from "../packages/extensions/mutation-guard-write/file-creation.ts";
+import { initTheme } from "../packages/coding-agent/src/modes/interactive/theme/theme.ts";
+import { ToolExecutionComponent } from "../packages/coding-agent/src/modes/interactive/components/tool-execution.ts";
+import { classifyPlanModeTool } from "../packages/plan-mode/src/tool-policy.ts";
+import ts from "typescript";
+import { RELEASE_COMPONENT_RENDER_CACHE } from "@super-pi/tui";
+const jiti = createJiti(import.meta.url);
+const { default: mutation } = await jiti.import<any>("../packages/extensions/mutation-guard-write/index.ts");
+const { default: lifecycle } = await jiti.import<any>("../packages/extensions/resource-lifecycle-guard/index.ts");
+const { MutationWriteGuard } = await jiti.import<any>("../packages/extensions/mutation-guard-write/core.ts");
+
+async function fixture(t: test.TestContext, guard = true) {
+  const cwd = mkdtempSync(join(tmpdir(), "sp-native-files-"));
+  const session = SessionManager.create(cwd, join(cwd, "sessions"));
+  const runtime = createExtensionRuntime();
+  const extensions = [];
+  for (const factory of guard ? [mutation, lifecycle] : [mutation]) extensions.push(await loadExtensionFromFactory(factory, cwd, createEventBus(), runtime));
+  const runner = new ExtensionRunner(extensions, runtime, cwd, session, {} as never);
+  let approvals = 0;
+  let approveHook = () => {};
+  let failResult = false;
+  const agent = new Agent({ streamFn: () => { throw new Error("No live model"); },
+    beforeToolCall: ({ toolCall, args }) => runner.emitToolCall({ type: "tool_call", toolName: toolCall.name, toolCallId: toolCall.id, input: args } as never) });
+  runner.bindCore({ getThinkingLevel: () => "off", getActiveTools: () => agent.state.tools.map(t => t.name),
+    appendEntry: (kind: string, data: any) => { if (failResult && data.phase === "result") throw new Error("injected persistence failure"); session.appendCustomEntry(kind, data); },
+  } as never, { getSignal: () => agent.signal, isProjectTrusted: () => false, getModel: () => agent.state.model, isIdle: () => true, abort: () => agent.abort(), hasPendingMessages: () => false } as never);
+  runner.setUIContext({ ...runner.getUIContext(), select: async (_title, choices) => { approvals++; approveHook(); return choices[0]; } }, "tui");
+  await runner.emit({ type: "session_start" } as never);
+  agent.state.tools = runner.getAllRegisteredTools().map(r => wrapToolDefinition(r.definition, () => runner.createContext()));
+  t.after(async () => { agent.abort(); runner.invalidate(); await runner.emit({ type: "session_shutdown" } as never); rmSync(cwd, { recursive: true, force: true }); });
+  return { cwd, session, runner, agent, approvals: () => approvals, onApprove(fn: () => void) { approveHook = fn; }, failRecording() { failResult = true; },
+    async call(name: string, input: any, id = name) {
+      session.appendMessage({ role: "assistant", content: [{ type: "toolCall", id, name, arguments: input }], timestamp: 0 } as never);
+      const result = await agent.dispatchHostTool({ type: "toolCall", id, name, arguments: input });
+      session.appendMessage(result);
+      return result;
+    } };
+}
+
+test("native tools through Agent, permission, Session reopen: no read needed for binary move/delete", async t => {
+  const f = await fixture(t);
+  const bytes = Buffer.alloc(4 * 1024 * 1024, 137);
+  writeFileSync(join(f.cwd, "source.bin"), bytes);
+  const moved = await f.call("move", { path: "source.bin", destination: "dest.bin" });
+  assert.equal(moved.isError, false, JSON.stringify(moved));
+  assert.deepEqual(readFileSync(join(f.cwd, "dest.bin")), bytes);
+  assert.equal(existsSync(join(f.cwd, "source.bin")), false);
+  assert.ok(JSON.stringify(moved).length < 2000);
+  const deleted = await f.call("delete", { path: "dest.bin", purpose: "delete synthetic data" });
+  assert.equal(deleted.isError, false, JSON.stringify(deleted));
+  assert.equal(existsSync(join(f.cwd, "dest.bin")), false);
+  assert.equal(f.approvals(), 1);
+  const restored = SessionManager.open(f.session.getSessionFile()!);
+  const receipts = collectStructuredMutationReceipts(restored.getBranch());
+  assert.equal(receipts.length, 2, "custom progress and final result counted once");
+  assert.deepEqual(receipts.map((r: any) => r.status), ["succeeded", "succeeded"]);
+});
+
+test("missing guard, existing destination, strict fields and non-empty directory fail without mutation", async t => {
+  const f = await fixture(t, false);
+  writeFileSync(join(f.cwd, "a"), "a");
+  assert.equal((await f.call("delete", { path: "a", approved: true })).isError, true);
+  assert.equal((await f.call("delete", { path: "a" }, "no-grant")).isError, true);
+  assert.equal(readFileSync(join(f.cwd, "a"), "utf8"), "a");
+  writeFileSync(join(f.cwd, "b"), "b");
+  await assert.rejects(prepareNativeOperation(f.cwd, "move", { path: "a", destination: "b" }), /destination_exists/);
+  mkdirSync(join(f.cwd, "nonempty")); writeFileSync(join(f.cwd, "nonempty", "data"), "safe");
+  await assert.rejects(prepareNativeOperation(f.cwd, "delete", { path: "nonempty" }), /directory_not_empty/);
+});
+
+test("empty directory delete and default no recursive traversal", async t => {
+  const f = await fixture(t);
+  mkdirSync(join(f.cwd, "empty"));
+  assert.equal((await f.call("delete", { path: "empty" })).isError, false);
+  assert.equal(existsSync(join(f.cwd, "empty")), false);
+});
+
+test("source changed during approval and revoked permission invalidate grants", async t => {
+  const f = await fixture(t);
+  writeFileSync(join(f.cwd, "a"), "before");
+  f.onApprove(() => writeFileSync(join(f.cwd, "a"), "after"));
+  const result = await f.call("delete", { path: "a" });
+  assert.equal(result.isError, true);
+  assert.match(JSON.stringify(result), /STALE_STATE/);
+  assert.equal(readFileSync(join(f.cwd, "a"), "utf8"), "after");
+  f.onApprove(() => {});
+  const input = { path: "a" };
+  await f.runner.emitToolCall({ type: "tool_call", toolName: "delete", toolCallId: "stale-permission", input } as never);
+  await f.runner.getCommand("permissions")!.handler("read-only", f.runner.createContext() as never);
+  await assert.rejects(f.agent.state.tools.find(t => t.name === "delete")!.execute("stale-permission", input), /Permission authority changed/);
+});
+
+test("no-replace race and link/unlink partial completion preserve data", async t => {
+  const f = await fixture(t);
+  writeFileSync(join(f.cwd, "a"), "source");
+  const plan = await prepareNativeOperation(f.cwd, "move", { path: "a", destination: "b" });
+  const result = await executeNativePlan(plan, () => writeFileSync(join(f.cwd, "b"), "competitor"));
+  assert.equal(result.status, "failed_no_change");
+  assert.equal(readFileSync(join(f.cwd, "b"), "utf8"), "competitor");
+  const partialPlan = await prepareNativeOperation(f.cwd, "move", { path: "a", destination: "c" });
+  const partial = await executeNativePlan(partialPlan, () => { if (existsSync(join(f.cwd, "c"))) throw new Error("revoked after link"); });
+  assert.equal(partial.status, "partial");
+  assert.equal(partial.requiresVerification, true);
+  assert.equal(readFileSync(join(f.cwd, "c"), "utf8"), "source");
+  assert.equal(readFileSync(join(f.cwd, "a"), "utf8"), "source");
+});
+
+test("recording failure after mutation leaves durable intent requiring verification", async t => {
+  const f = await fixture(t);
+  writeFileSync(join(f.cwd, "a"), "source"); f.failRecording();
+  const result = await f.call("delete", { path: "a" });
+  assert.equal((result.details as any).status, "state_unknown");
+  assert.equal(existsSync(join(f.cwd, "a")), false);
+  const receipts = collectStructuredMutationReceipts(SessionManager.open(f.session.getSessionFile()!).getBranch());
+  assert.equal(receipts.length, 1);
+  assert.equal((receipts[0] as any).requiresVerification, true);
+});
+
+test("prior read mismatch, move budget and cancellation release reservations", async t => {
+  const f = await fixture(t); const guard = new MutationWriteGuard();
+  writeFileSync(join(f.cwd, "a"), "before");
+  await guard.recordCompleteRead(f.cwd, "a", "before", "read", 1);
+  writeFileSync(join(f.cwd, "a"), "after");
+  const plan = await prepareNativeOperation(f.cwd, "delete", { path: "a" });
+  await assert.rejects(guard.assertNativeEvidence(plan.source.canonical), /STALE_STATE/);
+  for (let i = 0; i < 8; i++) guard.reserveNativeMutation(2, `a${i}`, `b${i}`);
+  assert.throws(() => guard.reserveNativeMutation(2, "overflow"), /MUTATION_BUDGET_EXCEEDED/);
+  const signal = AbortSignal.abort();
+  assert.equal((await executeNativePlan(plan, () => {}, signal)).status, "cancelled");
+  assert.equal(existsSync(join(f.cwd, "a")), true);
+});
+
+test("write creates multiple missing parents and emits actual Added and empty-file summaries", async t => {
+  const f = await fixture(t);
+  const path = "docs/新建 空格/native.md";
+  const result = await f.call("write", { path, content: "one\r\ntwo\r\n" });
+  assert.equal(result.isError, false, JSON.stringify(result));
+  assert.match(JSON.stringify(result.content), /Added.*\+2 -0/);
+  assert.equal((result.details as any).creation.createdDirectories.length, 2);
+  assert.equal(readFileSync(join(f.cwd, path), "utf8"), "one\r\ntwo\r\n");
+  const empty = await f.call("write", { path: "empty", content: "" }, "empty-write");
+  assert.match(JSON.stringify(empty.content), /\+0 -0/);
+  assert.equal((empty.details as any).creation.createdDirectories.length, 0);
+  assert.deepEqual(addedContentSummary("a\0b"), { bytes: 3 });
+  initTheme("dark");
+  const definition = f.runner.getAllRegisteredTools().find(r => r.definition.name === "write")!.definition;
+  const component = new ToolExecutionComponent("write", "write", { path, content: "one\r\ntwo\r\n" }, {}, definition, { requestRender() {} } as never, f.cwd);
+  component.updateResult(result);
+  assert.ok(component.render(100).join("\n").includes("Added"));
+  component[RELEASE_COMPONENT_RENDER_CACHE]();
+  const reopened = SessionManager.open(f.session.getSessionFile()!);
+  assert.equal(collectStructuredMutationReceipts(reopened.getBranch()).length, 2);
+});
+
+test("Plan blocks native tools even with extension metadata and discovery does not add aliases", async t => {
+  const f = await fixture(t);
+  for (const name of ["delete", "move"]) assert.equal(classifyPlanModeTool({ name, sourceInfo: { source: "extension" } } as never), "blocked");
+  const names = f.agent.state.tools.map(t => t.name);
+  assert.equal(names.filter(n => n === "write").length, 1);
+  assert.equal(names.filter(n => n === "edit").length, 1);
+  assert.equal(names.includes("create"), false);
+  const packages = JSON.parse(readFileSync("packages/extensions/package.json", "utf8"));
+  assert.ok(packages.pi.extensions.includes("./mutation-guard-write/index.ts"));
+  assert.ok(packages.pi.extensions.includes("./resource-lifecycle-guard/index.ts"));
+});
+
+test("parent replacement and junction targets refuse without deleting linked data", async t => {
+  const f = await fixture(t);
+  mkdirSync(join(f.cwd, "parent")); writeFileSync(join(f.cwd, "parent", "a"), "original");
+  const plan = await prepareNativeOperation(f.cwd, "delete", { path: "parent/a" });
+  renameSync(join(f.cwd, "parent"), join(f.cwd, "original-parent"));
+  mkdirSync(join(f.cwd, "parent")); writeFileSync(join(f.cwd, "parent", "a"), "replacement");
+  assert.equal((await executeNativePlan(plan, () => {})).status, "failed_no_change");
+  symlinkSync(join(f.cwd, "original-parent"), join(f.cwd, "linked"), process.platform === "win32" ? "junction" : "dir");
+  await assert.rejects(prepareNativeOperation(f.cwd, "delete", { path: "linked" }), /unsupported/);
+  assert.equal(readFileSync(join(f.cwd, "original-parent", "a"), "utf8"), "original");
+});
+
+test("native render and Added scan contain no per-render callbacks, arrays, promises or regex creation", () => {
+  for (const [path, functionName] of [
+    ["packages/extensions/mutation-guard-write/native-tools.ts", "renderFileMutationResult"],
+    ["packages/extensions/mutation-guard-write/file-creation.ts", "addedContentSummary"],
+  ]) {
+    const source = ts.createSourceFile(path, readFileSync(path, "utf8"), ts.ScriptTarget.Latest, true);
+    let found = 0;
+    function inspect(node: ts.Node) {
+      assert.equal(ts.isArrowFunction(node) || ts.isFunctionExpression(node) || ts.isArrayLiteralExpression(node) || ts.isRegularExpressionLiteral(node), false);
+      if (ts.isNewExpression(node)) assert.equal(["Promise", "AbortController", "Map", "Set", "RegExp"].includes(node.expression.getText(source)), false);
+      ts.forEachChild(node, inspect);
+    }
+    function find(node: ts.Node) {
+      if ((ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node)) && node.name?.text === functionName) { found++; inspect(node.body!); }
+      else ts.forEachChild(node, find);
+    }
+    find(source); assert.equal(found, 1);
+  }
+});
+
+test("create-only preflight is side-effect free and rejects existing targets and parent files", async t => {
+  const f = await fixture(t);
+  const target = join(f.cwd, "new", "deep", "file");
+  const plan = await prepareFileCreation(target, true);
+  assert.equal(plan!.directories.length, 2);
+  assert.equal(existsSync(join(f.cwd, "new")), false);
+  writeFileSync(join(f.cwd, "parent-file"), "data");
+  await assert.rejects(prepareFileCreation(join(f.cwd, "parent-file", "child"), true));
+  await assert.rejects(prepareFileCreation(join(f.cwd, "parent-file"), true), /TARGET_APPEARED/);
+});
+
+test("create target appears after approval: conflict, never converts to overwrite", async t => {
+  const f = await fixture(t);
+  await f.runner.getCommand("permissions")!.handler("read-only", f.runner.createContext() as never);
+  f.onApprove(() => writeFileSync(join(f.cwd, "new-file"), "competitor"));
+  const result = await f.call("write", { path: "new-file", content: "requested" });
+  assert.equal(result.isError, true);
+  assert.equal(readFileSync(join(f.cwd, "new-file"), "utf8"), "competitor");
+});
+
+test("cancel after mkdir retains directories without provable ownership; concurrent content is retained", async t => {
+  const f = await fixture(t);
+  const target = join(f.cwd, "new", "deep", "file");
+  const plan = (await prepareFileCreation(target, true))!;
+  const abort = new AbortController();
+  await assert.rejects(executeFileCreation(plan, "data", async () => plan.canonicalTarget, abort.signal, () => abort.abort()), /PARTIAL_MUTATION/);
+  assert.equal(existsSync(join(f.cwd, "new")), true);
+  const secondTarget = join(f.cwd, "second", "deep", "file");
+  const second = (await prepareFileCreation(secondTarget, true))!;
+  const otherAbort = new AbortController();
+  await assert.rejects(executeFileCreation(second, "data", async () => second.canonicalTarget, otherAbort.signal, () => {
+    writeFileSync(join(f.cwd, "second", "deep", "other"), "concurrent"); otherAbort.abort();
+  }), /PARTIAL_MUTATION/);
+  assert.equal(readFileSync(join(f.cwd, "second", "deep", "other"), "utf8"), "concurrent");
+  assert.equal(existsSync(target), false);
+});
+
+test("review regression: final authority phase cannot delete a replaced source", async t => {
+  const f = await fixture(t);
+  writeFileSync(join(f.cwd, "a"), "original");
+  const plan = await prepareNativeOperation(f.cwd, "delete", { path: "a" });
+  let replaced = false;
+  const result = await executeNativePlan(plan, () => {
+    if (replaced) return; replaced = true;
+    renameSync(join(f.cwd, "a"), join(f.cwd, "old")); writeFileSync(join(f.cwd, "a"), "replacement");
+  });
+  assert.equal(result.status, "failed_no_change");
+  assert.equal(readFileSync(join(f.cwd, "a"), "utf8"), "replacement");
+});
+
+test("review regression: post-link authority phase cannot unlink a replacement", async t => {
+  const f = await fixture(t); writeFileSync(join(f.cwd, "a"), "original");
+  const plan = await prepareNativeOperation(f.cwd, "move", { path: "a", destination: "b" });
+  let replaced = false;
+  const result = await executeNativePlan(plan, () => {
+    if (replaced || !existsSync(join(f.cwd, "b"))) return; replaced = true;
+    renameSync(join(f.cwd, "a"), join(f.cwd, "old")); writeFileSync(join(f.cwd, "a"), "replacement");
+  });
+  assert.equal(result.status, "partial");
+  assert.equal(readFileSync(join(f.cwd, "a"), "utf8"), "replacement");
+  assert.equal(readFileSync(join(f.cwd, "b"), "utf8"), "original");
+});
+
+test("review regression: moved open handle is never written after authorization await", async t => {
+  const f = await fixture(t);
+  const target = join(f.cwd, "new-file"); const displaced = join(f.cwd, "displaced");
+  const plan = (await prepareFileCreation(target, true))!;
+  let changed = false;
+  await assert.rejects(executeFileCreation(plan, "must-not-be-written", async () => {
+    if (!changed && existsSync(target)) { changed = true; renameSync(target, displaced); writeFileSync(target, "replacement"); }
+    return plan.canonicalTarget;
+  }), /PARTIAL_MUTATION/);
+  assert.equal(readFileSync(displaced, "utf8"), "");
+  assert.equal(readFileSync(target, "utf8"), "replacement");
+});
+
+test("review regression: receipt name/intent binding and legacy chronological order", () => {
+  const hash = "a".repeat(64);
+  const branch: any[] = [
+    { type: "message", id: "first", timestamp: "1", message: { role: "toolResult", toolCallId: "w", toolName: "write", details: { mutationReceiptVersion: 1, operation: "write", target: "a", created: true, ok: true, category: "success", stateChanged: true, sha256: hash } } },
+    { type: "custom", id: "second", timestamp: "2", customType: "file-mutation-progress-v2", data: { toolCallId: "d", itemId: "d:0", phase: "intent", operation: "delete", target: "a" } },
+    { type: "message", id: "forged", timestamp: "3", message: { role: "toolResult", toolCallId: "d", toolName: "read", details: { mutationReceiptVersion: 2, operation: "delete", target: "a", status: "succeeded", stateChanged: true } } },
+    { type: "message", id: "mismatched", timestamp: "4", message: { role: "toolResult", toolCallId: "d", toolName: "delete", details: { mutationReceiptVersion: 2, operation: "delete", target: "other", status: "succeeded", stateChanged: true } } },
+  ];
+  const receipts = collectStructuredMutationReceipts(branch);
+  assert.deepEqual(receipts.map(r => r.entryId), ["first", "second"]);
+  assert.equal((receipts[1] as any).status, "state_unknown");
+});
+
+test("review regression: delete then external identical recreation does not restore old read evidence", async t => {
+  const f = await fixture(t); writeFileSync(join(f.cwd, "a"), "same");
+  f.session.appendMessage({ role: "assistant", content: [{ type: "toolCall", id: "read", name: "read", arguments: { path: "a" } }], timestamp: 0 } as never);
+  f.session.appendMessage({ role: "toolResult", toolCallId: "read", toolName: "read", content: [{ type: "text", text: "same" }], isError: false, timestamp: 0 } as never);
+  await f.call("delete", { path: "a" }); writeFileSync(join(f.cwd, "a"), "same");
+  const guard = new MutationWriteGuard();
+  await restoreMutationEvidenceFromBranch(guard, f.cwd, SessionManager.open(f.session.getSessionFile()!).getBranch());
+  await assert.rejects(guard.authorizeEdit(f.cwd, "a", [{ oldText: "same", newText: "changed" }], 1, "same"), /READ_REQUIRED/);
+});
+
+test("review round 2: cancellation at final move phase retains source and string category", async t => {
+  const f = await fixture(t); writeFileSync(join(f.cwd, "a"), "original");
+  const plan = await prepareNativeOperation(f.cwd, "move", { path: "a", destination: "b" });
+  const abort = new AbortController();
+  const receipt = await executeNativePlan(plan, () => { if (existsSync(join(f.cwd, "b"))) abort.abort(); }, abort.signal);
+  assert.equal(receipt.status, "partial"); assert.equal(typeof receipt.category, "string");
+  assert.equal(readFileSync(join(f.cwd, "a"), "utf8"), "original");
+  assert.equal(readFileSync(join(f.cwd, "b"), "utf8"), "original");
+  const cancelled = await executeNativePlan(await prepareNativeOperation(f.cwd, "delete", { path: "a" }), () => {}, abort.signal);
+  assert.equal(cancelled.status, "cancelled"); assert.equal(cancelled.category, "cancelled");
+});
+
+test("review round 2: final creation cancellation and revoked mkdir authority fail closed", async t => {
+  const f = await fixture(t);
+  for (const phase of ["open", "write", "mkdir"]) {
+    const path = join(f.cwd, phase === "mkdir" ? "new/deep/file" : phase);
+    const plan = (await prepareFileCreation(path, true))!;
+    const abort = new AbortController(); let calls = 0, revoked = false;
+    await assert.rejects(executeFileCreation(plan, "must not write", async () => {
+      calls++; if (phase === "mkdir") revoked = true;
+      if ((phase === "open" && calls === 2) || (phase === "write" && existsSync(path))) abort.abort();
+      return plan.canonicalTarget;
+    }, abort.signal, undefined, undefined, () => { if (revoked) throw new Error("revoked"); }));
+    if (phase === "write") assert.equal(readFileSync(path, "utf8"), "");
+    else assert.equal(existsSync(path), false);
+  }
+  assert.equal(existsSync(join(f.cwd, "new")), false);
+});
+
+test("review round 3: authorized overwrite cannot become creation after disappearance", async t => {
+  const f = await fixture(t); const path = join(f.cwd, "existing"); writeFileSync(path, "original");
+  await f.runner.getCommand("permissions")!.handler("read-only", f.runner.createContext() as never);
+  f.onApprove(() => unlinkSync(path));
+  const result = await f.call("write", { path: "existing", content: "unapproved create" });
+  assert.equal(result.isError, true); assert.equal(existsSync(path), false);
+});
+
+test("review round 3: added hard link prevents content publication", async t => {
+  const f = await fixture(t); const path = join(f.cwd, "new"), alias = join(f.cwd, "alias");
+  const plan = (await prepareFileCreation(path, true))!;
+  await assert.rejects(executeFileCreation(plan, "private", async () => {
+    if (existsSync(path) && !existsSync(alias)) linkSync(path, alias);
+    return plan.canonicalTarget;
+  }), /PARTIAL_MUTATION/);
+  assert.equal(readFileSync(path, "utf8"), ""); assert.equal(readFileSync(alias, "utf8"), "");
+});
+
+test("review round 3: pre-execution cancellation closes intent with no-change result", async t => {
+  const f = await fixture(t); const input = { path: "cancelled/new", content: "forbidden" };
+  await f.runner.emitToolCall({ type: "tool_call", toolName: "write", toolCallId: "cancelled", input } as never);
+  const abort = new AbortController(); abort.abort();
+  const tool = f.runner.getAllRegisteredTools().find(r => r.definition.name === "write")!.definition;
+  const result = await tool.execute("cancelled", input, abort.signal, undefined, f.runner.createContext());
+  assert.equal((result.details as any).status, "cancelled");
+  const receipts = collectStructuredMutationReceipts(f.session.getBranch());
+  assert.equal((receipts[0] as any).status, "cancelled"); assert.equal(existsSync(join(f.cwd, "cancelled")), false);
+});
+
+test("review round 3: completed no-change intent preserves prior read after reopen", async t => {
+  const f = await fixture(t); const path = join(f.cwd, "a"); writeFileSync(path, "same");
+  f.session.appendMessage({ role: "assistant", content: [{ type: "toolCall", id: "r", name: "read", arguments: { path } }], timestamp: 0 } as never);
+  f.session.appendMessage({ role: "toolResult", toolCallId: "r", toolName: "read", content: [{ type: "text", text: "same" }], isError: false, timestamp: 0 } as never);
+  f.session.appendCustomEntry("file-mutation-progress-v2", { toolCallId: "d", itemId: "d:0", phase: "intent", operation: "delete", target: path });
+  f.session.appendCustomEntry("file-mutation-progress-v2", { toolCallId: "d", itemId: "d:0", phase: "result", mutationReceiptVersion: 2, operation: "delete", target: path, status: "cancelled", stateChanged: false });
+  const guard = new MutationWriteGuard(); await restoreMutationEvidenceFromBranch(guard, f.cwd, SessionManager.open(f.session.getSessionFile()!).getBranch());
+  const approval = await guard.authorizeEdit(f.cwd, "a", [{ oldText: "same", newText: "updated" }], 1, "same");
+  guard.releaseMutation(approval.reservationId);
+});

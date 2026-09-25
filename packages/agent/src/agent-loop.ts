@@ -940,7 +940,7 @@ async function executePreparedToolCall(
 		);
 		acceptingUpdates = false;
 		await progress.flush();
-		return { result, isError: false };
+    return { result, isError: result.isError === true };
 	} catch (error) {
 		acceptingUpdates = false;
 		if (checkingAuthorization) {

@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
-import { lstat, mkdir, open, readFile, realpath, rm, rmdir, stat, writeFile } from "node:fs/promises";
+import { lstat, readFile, realpath, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { assessProtectedMutationPath } from "./protected-path-policy.ts";
+import { hashNativeSource } from "./native-file-core.ts";
+import { executeFileCreation, prepareFileCreation, MAX_CREATED_DIRECTORIES, type FileCreationPlan, type CreationResult } from "./file-creation.ts";
 
 export type MutationGuardCategory =
   | "READ_REQUIRED"
@@ -65,8 +67,11 @@ export interface MutationGuardFailure {
 }
 
 export interface MutationPathApproval {
+  writePreflight?: boolean;
   canonicalTarget: string;
   protectedRoots: readonly string[];
+  creationPlan?: FileCreationPlan;
+  assertCurrent?: () => void;
 }
 
 export interface MutationEditAuthorization {
@@ -80,6 +85,8 @@ export interface MutationEditAuthorization {
 
 interface MutationBudgetEntry {
   target: string;
+  additionalTarget?: string;
+  directories?: readonly string[];
   replacements: number;
   bytes: number;
 }
@@ -99,6 +106,7 @@ export interface MutationWriteSuccess {
   created?: true;
   previousSha256?: string;
   sha256: string;
+  creation?: CreationResult;
 }
 
 export function normalizeToolPath(path: string): string {
@@ -130,32 +138,6 @@ async function pathExists(path: string): Promise<boolean> {
 
 async function hashFile(path: string): Promise<string> {
   return sha256(await readFile(path));
-}
-
-async function missingParentDirectories(path: string): Promise<string[]> {
-  const missing: string[] = [];
-  let current = dirname(path);
-  while (!(await pathExists(current))) {
-    missing.push(current);
-    const parent = dirname(current);
-    if (parent === current) break;
-    current = parent;
-  }
-  return missing;
-}
-
-async function rollbackEmptyDirectories(paths: readonly string[]): Promise<boolean> {
-  for (const path of paths) {
-    try {
-      await rmdir(path);
-    } catch {
-      // Never recursively remove: a concurrent writer may now own content here.
-    }
-  }
-  for (const path of paths) {
-    if (await pathExists(path)) return false;
-  }
-  return true;
 }
 
 function displayPath(cwd: string, absolutePath: string): string {
@@ -279,6 +261,7 @@ export class MutationWriteGuard {
   readonly #rangeEvidence = new Map<string, ReadRangeEvidence[]>();
   readonly #budgetEntries = new Map<number, MutationBudgetEntry>();
   readonly #budgetFileReferences = new Map<string, number>();
+  readonly #budgetDirectoryReferences = new Map<string, number>();
   #budgetGeneration = -1;
   #budgetReplacements = 0;
   #budgetBytes = 0;
@@ -305,6 +288,16 @@ export class MutationWriteGuard {
     const references = this.#budgetFileReferences.get(entry.target) ?? 0;
     if (references <= 1) this.#budgetFileReferences.delete(entry.target);
     else this.#budgetFileReferences.set(entry.target, references - 1);
+    if (entry.additionalTarget) {
+      const references = this.#budgetFileReferences.get(entry.additionalTarget) ?? 0;
+      if (references <= 1) this.#budgetFileReferences.delete(entry.additionalTarget);
+      else this.#budgetFileReferences.set(entry.additionalTarget, references - 1);
+    }
+    if (entry.directories) for (const directory of entry.directories) {
+      const references = this.#budgetDirectoryReferences.get(directory) ?? 0;
+      if (references <= 1) this.#budgetDirectoryReferences.delete(directory);
+      else this.#budgetDirectoryReferences.set(directory, references - 1);
+    }
   }
 
   async #assertMutationPathAllowed(
@@ -313,6 +306,7 @@ export class MutationWriteGuard {
     operation: "write" | "edit",
     approval?: MutationPathApproval,
   ): Promise<string> {
+    approval?.assertCurrent?.();
     const absolutePath = resolveToolPath(cwd, path);
     const assessment = await assessProtectedMutationPath(cwd, absolutePath);
     if (assessment.violations.length === 0 && assessment.canonicalTarget) return assessment.canonicalTarget;
@@ -339,6 +333,7 @@ export class MutationWriteGuard {
     this.#budgetGeneration = turnGeneration;
     this.#budgetEntries.clear();
     this.#budgetFileReferences.clear();
+    this.#budgetDirectoryReferences.clear();
     this.#budgetReplacements = 0;
     this.#budgetBytes = 0;
   }
@@ -503,6 +498,32 @@ export class MutationWriteGuard {
     pathApproval?: MutationPathApproval,
   ): Promise<string> {
     return this.#assertMutationPathAllowed(cwd, path, "edit", pathApproval);
+  }
+
+  async assertNativeEvidence(canonicalPath: string): Promise<void> {
+    const evidence = this.#evidence.get(canonicalPath);
+    if (evidence && evidence.sha256 !== await hashNativeSource(canonicalPath)) throw new Error("[STALE_STATE] Prior source version evidence no longer matches.");
+  }
+
+  reserveNativeMutation(turnGeneration: number, source: string, destination?: string): number {
+    const id = this.#reserveMutation(turnGeneration, source, "edit", 0, 0);
+    if (destination && destination !== source) {
+      if (!this.#budgetFileReferences.has(destination) && this.#budgetFileReferences.size >= MAX_TURN_MUTATION_FILES) {
+        this.releaseMutation(id);
+        throw new Error("[MUTATION_BUDGET_EXCEEDED] Move destination exceeds cumulative file budget.");
+      }
+      this.#budgetEntries.get(id)!.additionalTarget = destination;
+      this.#budgetFileReferences.set(destination, (this.#budgetFileReferences.get(destination) ?? 0) + 1);
+    }
+    return id;
+  }
+
+  reserveCreationDirectories(reservation: number, directories: readonly string[]): void {
+    let count = this.#budgetDirectoryReferences.size;
+    for (const directory of directories) if (!this.#budgetDirectoryReferences.has(directory)) count++;
+    if (count > MAX_CREATED_DIRECTORIES) throw new Error("[MUTATION_BUDGET_EXCEEDED] Cumulative created-directory budget exceeded.");
+    this.#budgetEntries.get(reservation)!.directories = directories;
+    for (const directory of directories) this.#budgetDirectoryReferences.set(directory, (this.#budgetDirectoryReferences.get(directory) ?? 0) + 1);
   }
 
   reserveSnapshotEdit(
@@ -787,6 +808,7 @@ export class MutationWriteGuard {
     content: string,
     reservationId?: number,
     pathApproval?: MutationPathApproval,
+    signal?: AbortSignal,
   ): Promise<string> {
     await this.#assertMutationPathAllowed(cwd, path, "edit", pathApproval);
     const absolutePath = await canonicalExistingPath(resolveToolPath(cwd, path));
@@ -805,6 +827,19 @@ export class MutationWriteGuard {
         stateChanged: false,
         expectedSha256: previousSha256,
         actualSha256: currentSha256,
+      });
+    }
+    // No asynchronous work may separate this gate from issuing the write.
+    // The native edit caller checked before entering this async callback; both
+    // authority and cancellation can change while its final hash read awaits.
+    try {
+      signal?.throwIfAborted();
+      pathApproval?.assertCurrent?.();
+    } catch (error) {
+      this.releaseMutation(reservationId);
+      throw guardFailure({
+        ok: false, category: "EDIT_FAILED", operation: "edit", target,
+        retryable: true, stateChanged: false, cause: errorMessage(error),
       });
     }
     try {
@@ -856,7 +891,7 @@ export class MutationWriteGuard {
     signal?: AbortSignal,
     pathApproval?: MutationPathApproval,
   ): Promise<MutationWriteSuccess> {
-    if (signal?.aborted) throw new Error("Operation aborted");
+    if (signal?.aborted) throw guardFailure({ ok: false, operation: "write", category: "WRITE_FAILED", target: path, stateChanged: false, retryable: true, cause: "Operation aborted before mutation" });
     await this.#assertMutationPathAllowed(cwd, path, "write", pathApproval);
     const targetKey = resolveToolPath(cwd, path);
     const reservationId = this.#reserveMutation(
@@ -867,6 +902,14 @@ export class MutationWriteGuard {
       Buffer.byteLength(content, "utf8"),
     );
     try {
+      const creationPlan = pathApproval?.writePreflight ? pathApproval.creationPlan : pathApproval?.creationPlan ?? await prepareFileCreation(targetKey);
+      if (creationPlan) {
+        this.reserveCreationDirectories(reservationId, creationPlan.directories);
+        const creation = await executeFileCreation(creationPlan, content,
+          () => this.#assertMutationPathAllowed(cwd, path, "write", pathApproval), signal, this.#options.beforeExclusiveCreate, undefined, pathApproval?.assertCurrent);
+        return { ok: true, mutationReceiptVersion: MUTATION_RECEIPT_VERSION, category: "success", operation: "write",
+          target: displayPath(cwd, targetKey), stateChanged: true, created: true, sha256: sha256(content), creation };
+      }
       return await this.#writeReserved(cwd, path, content, turnGeneration, signal, pathApproval);
     } catch (error) {
       if (!mutationStateChanged(error)) this.releaseMutation(reservationId);
@@ -920,6 +963,8 @@ export class MutationWriteGuard {
 
       if (signal?.aborted) throw new Error("Operation aborted");
       try {
+        pathApproval?.assertCurrent?.();
+        signal?.throwIfAborted();
         await writeFile(canonicalPath, content, "utf8");
       } catch (error) {
         let afterSha256: string | undefined;
@@ -957,121 +1002,7 @@ export class MutationWriteGuard {
     }
 
     if (signal?.aborted) throw new Error("Operation aborted");
-    const createdDirectoryCandidates = await missingParentDirectories(absolutePath);
-    await this.#assertMutationPathAllowed(cwd, path, "write", pathApproval);
-    await mkdir(dirname(absolutePath), { recursive: true });
-    let verifiedCanonicalTarget: string;
-    try {
-      verifiedCanonicalTarget = await this.#assertMutationPathAllowed(cwd, path, "write", pathApproval);
-    } catch (error) {
-      const directoriesRolledBack = await rollbackEmptyDirectories(createdDirectoryCandidates);
-      throw guardFailure({
-        ok: false,
-        category: directoriesRolledBack ? "WRITE_FAILED" : "PARTIAL_MUTATION",
-        operation: "write",
-        target,
-        retryable: directoriesRolledBack,
-        stateChanged: !directoriesRolledBack,
-        cause: `Parent path changed during creation: ${errorMessage(error)}`,
-      });
-    }
-    await this.#options.beforeExclusiveCreate?.(absolutePath);
-    let handle;
-    try {
-      handle = await open(absolutePath, "wx");
-    } catch (error) {
-      const directoriesRolledBack = await rollbackEmptyDirectories(createdDirectoryCandidates);
-      if ((error as NodeJS.ErrnoException).code === "EEXIST") {
-        throw guardFailure({
-          ok: false,
-          category: "TARGET_APPEARED",
-          operation: "write",
-          target,
-          retryable: directoriesRolledBack,
-          stateChanged: !directoriesRolledBack,
-          cause: directoriesRolledBack ? undefined : "One or more newly created parent directories could not be removed safely.",
-        });
-      }
-      throw guardFailure({
-        ok: false,
-        category: directoriesRolledBack ? "WRITE_FAILED" : "PARTIAL_MUTATION",
-        operation: "write",
-        target,
-        retryable: directoriesRolledBack,
-        stateChanged: !directoriesRolledBack,
-        cause: errorMessage(error),
-      });
-    }
+    throw new Error("[STALE_STATE] Existing write target disappeared after preparation; submit a new create request.");
 
-    const createdIdentity = await handle.stat();
-    let canonicalAfterCreate: string | undefined;
-    try { canonicalAfterCreate = await realpath(absolutePath); } catch { /* handled as identity mismatch below */ }
-    if (canonicalAfterCreate !== verifiedCanonicalTarget) {
-      await handle.close();
-      handle = undefined;
-      let fileRemoved = false;
-      try {
-        const currentIdentity = await stat(absolutePath);
-        if (currentIdentity.dev === createdIdentity.dev && currentIdentity.ino === createdIdentity.ino) {
-          await rm(absolutePath);
-          fileRemoved = true;
-        }
-      } catch {
-        // Never remove a path whose identity cannot be proven.
-      }
-      const directoriesRolledBack = await rollbackEmptyDirectories(createdDirectoryCandidates);
-      const rolledBack = fileRemoved && directoriesRolledBack;
-      throw guardFailure({
-        ok: false,
-        category: rolledBack ? "WRITE_FAILED" : "PARTIAL_MUTATION",
-        operation: "write",
-        target,
-        retryable: rolledBack,
-        stateChanged: !rolledBack,
-        cause: "Created target no longer matches the final verified canonical path.",
-      });
-    }
-
-    try {
-      if (signal?.aborted) throw new Error("Operation aborted");
-      await handle.writeFile(content, "utf8");
-    } catch (error) {
-      await handle.close().catch(() => undefined);
-      handle = undefined;
-      let fileRemoved = false;
-      try {
-        const currentIdentity = await stat(absolutePath);
-        if (currentIdentity.dev === createdIdentity.dev && currentIdentity.ino === createdIdentity.ino) {
-          await rm(absolutePath);
-          fileRemoved = true;
-        }
-      } catch {
-        // Report a residual partial file instead of deleting an unproven path.
-      }
-      const directoriesRolledBack = await rollbackEmptyDirectories(createdDirectoryCandidates);
-      const rolledBack = fileRemoved && directoriesRolledBack;
-      throw guardFailure({
-        ok: false,
-        category: rolledBack ? "WRITE_FAILED" : "PARTIAL_MUTATION",
-        operation: "write",
-        target,
-        retryable: rolledBack,
-        stateChanged: !rolledBack,
-        cause: errorMessage(error),
-      });
-    } finally {
-      await handle?.close();
-    }
-
-    return {
-      ok: true,
-      mutationReceiptVersion: MUTATION_RECEIPT_VERSION,
-      category: "success",
-      operation: "write",
-      target,
-      stateChanged: true,
-      created: true,
-      sha256: sha256(content),
-    };
   }
 }
