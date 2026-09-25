@@ -1,58 +1,17 @@
+import { mutationFixture as fixture } from "./helpers/mutation-fixture.ts";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync, linkSync, symlinkSync, unlinkSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, linkSync, symlinkSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
-import { createJiti } from "jiti";
-import { Agent } from "../packages/agent/src/agent.ts";
-import { createEventBus } from "../packages/coding-agent/src/core/event-bus.ts";
-import { createExtensionRuntime, ExtensionRunner, loadExtensionFromFactory } from "../packages/coding-agent/src/core/extensions/index.ts";
-import { wrapToolDefinition } from "../packages/coding-agent/src/core/tools/tool-definition-wrapper.ts";
 import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
 import { collectStructuredMutationReceipts } from "../packages/extensions/mutation-guard-write/session-evidence.ts";
 import { createAssistantMessageEventStream } from "../packages/ai/src/utils/event-stream.ts";
-import { convertToLlm } from "../packages/coding-agent/src/core/messages.ts";
 import { getEncoding } from "js-tiktoken";
 import { withFileMutationQueue } from "../packages/coding-agent/src/core/tools/file-mutation-queue.ts";
 import { ToolExecutionComponent } from "../packages/coding-agent/src/modes/interactive/components/tool-execution.ts";
 import { initTheme } from "../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 import { RELEASE_COMPONENT_RENDER_CACHE } from "@super-pi/tui";
 import ts from "typescript";
-const jiti = createJiti(import.meta.url);
-const { default: mutation } = await jiti.import<any>("../packages/extensions/mutation-guard-write/index.ts");
-const { default: lifecycle } = await jiti.import<any>("../packages/extensions/resource-lifecycle-guard/index.ts");
-const { default: loop } = await jiti.import<any>("../packages/extensions/tool-loop-guardrails/index.ts");
-
-async function fixture(t: test.TestContext) {
-  const cwd = mkdtempSync(join(tmpdir(), "sp-file-batch-"));
-  const session = SessionManager.create(cwd, join(cwd, "sessions"));
-  const runtime = createExtensionRuntime();
-  const extensions = [];
-  for (const factory of [mutation, lifecycle, loop]) extensions.push(await loadExtensionFromFactory(factory, cwd, createEventBus(), runtime));
-  const runner = new ExtensionRunner(extensions, runtime, cwd, session, {} as never);
-  let approvals = 0, decision = "仅允许本次";
-  let approvalHook = () => {};
-  let recordHook = (_data: any) => {};
-  const agent = new Agent({ convertToLlm, streamFn: () => { throw new Error("No live model"); },
-    beforeToolCall: async ({ toolCall, args }) => { await runner.emit({ type: "turn_start" } as never); return runner.emitToolCall({ type: "tool_call", toolName: toolCall.name, toolCallId: toolCall.id, input: args } as never); },
-    afterToolCall: ({ toolCall, args, result, isError }) => runner.emitToolResult({ type: "tool_result", toolName: toolCall.name, toolCallId: toolCall.id, input: args, content: result.content, details: result.details, isError } as never),
-  });
-  runner.bindCore({ getThinkingLevel: () => "off", getActiveTools: () => agent.state.tools.map(t => t.name),
-    appendEntry: (kind: string, data: any) => { if (kind === "file-mutation-progress-v2") recordHook(data); session.appendCustomEntry(kind, data); },
-  } as never, { getSignal: () => agent.signal, isProjectTrusted: () => false, getModel: () => agent.state.model, isIdle: () => true, abort: () => agent.abort(), hasPendingMessages: () => false } as never);
-  runner.setUIContext({ ...runner.getUIContext(), select: async () => { approvals++; approvalHook(); return decision; } }, "tui");
-  await runner.emit({ type: "session_start" } as never);
-  agent.state.tools = runner.getAllRegisteredTools().map(r => wrapToolDefinition(r.definition, () => runner.createContext()));
-  t.after(async () => { agent.abort(); runner.invalidate(); await runner.emit({ type: "session_shutdown" } as never); rmSync(cwd, { recursive: true, force: true }); });
-  return { cwd, session, runner, agent, approvals: () => approvals, deny() { decision = "拒绝"; }, onApprove(fn: () => void) { approvalHook = fn; }, onRecord(fn: (data: any) => void) { recordHook = fn; },
-    async call(name: string, input: any, id = name) {
-      session.appendMessage({ role: "assistant", content: [{ type: "toolCall", id, name, arguments: input }], timestamp: 0 } as never);
-      const result = await agent.dispatchHostTool({ type: "toolCall", id, name, arguments: input });
-      session.appendMessage(result);
-      return result;
-    } };
-}
-
 test("batch create shares missing parents, records Added and keeps one tool result", async t => {
   const f = await fixture(t);
   const result = await f.call("file_batch", { operations: [

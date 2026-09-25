@@ -245,7 +245,7 @@ export class BatchInvocation {
               const diff = generateDiffString(candidate.baseContent, candidate.newContent);
               const patch = generateUnifiedPatch(item.input.path, candidate.baseContent, candidate.newContent);
               this.assertAuthority();
-              const previousSha256 = await this.guard.writeEditContent(this.cwd, item.input.path, before, candidate.finalContent, item.reservation, item.approval);
+              const previousSha256 = await this.guard.writeEditContent(this.cwd, item.input.path, before, candidate.finalContent, item.reservation, item.approval, signal);
               receipt = { operation: "edit", target: item.target, ok: true, stateChanged: true, previousSha256, sha256: sha256(candidate.finalContent), replacements: item.exact.replacements, diff: diff.diff, patch };
             } else receipt = await this.guard.write(this.cwd, item.input.path, item.input.content!, this.generation, signal, item.approval, item.reservation, sharedDirectories);
             result.receipt = receipt;

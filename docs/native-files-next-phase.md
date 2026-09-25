@@ -185,3 +185,15 @@ Batch signal threading belongs to B after merging this actual A commit.
 
 Verification and A+B+C temporary integration results are recorded in the existing
 PRs. This follow-up does not authorize merging, deploying, or a fourth PR.
+
+
+B final-boundary follow-up merges A 5b2cb7be891169059b42aa0ae651450a6e58edca
+via merge commit 620f86823. Permission binding retains both edit and batch
+conditions. B passes its invocation signal into the same shared exact core.
+The extracted real Agent fixture now serves the existing batch suite and both
+boundary suites. Before the fix, batch authority/cancel each issued one write;
+after the fix both issue zero, preserve the first successful item/receipt, mark
+the current item failed_no_change/cancelled and leave the last not_started.
+Same-turn dry-run budget probes accept 15 additional targets and reject 16,
+proving the completed target remains charged while unused reservations release.
+Session reopen collects the first receipt once and does not change any target.
