@@ -140,7 +140,7 @@ export function nativeFailure(plan: NativePlan, error: unknown, status: Mutation
   try { const parsed = JSON.parse(cause); if (typeof parsed?.category === "string") { structuredCategory = parsed.category; cause = typeof parsed.cause === "string" ? parsed.cause : parsed.category; } } catch { /* Bracket/OS errors need no JSON payload. */ }
   return { mutationReceiptVersion: 2, operation: plan.operation, target: plan.source.canonical, destination: plan.destination,
     status, stateChanged: status === "state_unknown" ? "unknown" : status === "partial", ok: false,
-    category: structuredCategory ?? (error as NodeJS.ErrnoException)?.code ?? (NATIVE_ERROR_CATEGORY_PATTERN.exec(cause)?.[1] ?? "operation_failed"),
+    category: structuredCategory ?? (typeof (error as NodeJS.ErrnoException)?.code === "string" ? (error as NodeJS.ErrnoException).code! : status === "cancelled" ? "cancelled" : NATIVE_ERROR_CATEGORY_PATTERN.exec(cause)?.[1] ?? "operation_failed"),
     cause: cause.slice(0, 1200), ...(status === "partial" || status === "state_unknown" ? { requiresVerification: true as const } : {}) };
 }
 
@@ -168,6 +168,7 @@ export async function executeNativePlan(plan: NativePlan, assertAuthority: () =>
       if (!sameIdentity(plan.source, source, false) || source.size !== plan.source.size || source.mtime !== plan.source.mtime
         || destination.device !== source.device || destination.inode !== source.inode) throw new Error("[STALE_STATE] Verify both names: identity changed before source unlink.");
       assertAuthority();
+      signal?.throwIfAborted();
       await unlink(plan.source.path);
     } else {
       attempted = true;

@@ -88,6 +88,8 @@ export async function executeFileCreation(
         continue;
       }
       await verifyCreatedDirectories(created);
+      assertAuthority?.();
+      signal?.throwIfAborted();
       await mkdir(path); // Nonrecursive and exclusive: a competing directory invalidates this plan.
       const record: CreatedDirectory = { path, status: "retained" };
       created.push(record);
@@ -106,6 +108,7 @@ export async function executeFileCreation(
     }
     if (await assertPathAllowed() !== plan.canonicalTarget) throw new Error("[STALE_STATE] Creation target changed.");
     assertAuthority?.();
+    signal?.throwIfAborted();
     const handle = await open(plan.path, "wx");
     fileCreated = true;
     try {
@@ -121,6 +124,7 @@ export async function executeFileCreation(
       const finalName = await capturePathIdentity(plan.path);
       if (finalName.canonical !== plan.canonicalTarget || finalName.device !== String(opened.dev) || finalName.inode !== String(opened.ino)) throw new Error("[STALE_STATE] Opened file was moved or replaced during authorization.");
       assertAuthority?.();
+      signal?.throwIfAborted();
       await handle.writeFile(content, "utf8");
     } finally { await handle.close(); }
     return { createdDirectories: created, ...addedContentSummary(content) };

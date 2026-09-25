@@ -307,3 +307,32 @@ test("review regression: delete then external identical recreation does not rest
   await restoreMutationEvidenceFromBranch(guard, f.cwd, SessionManager.open(f.session.getSessionFile()!).getBranch());
   await assert.rejects(guard.authorizeEdit(f.cwd, "a", [{ oldText: "same", newText: "changed" }], 1, "same"), /READ_REQUIRED/);
 });
+
+test("review round 2: cancellation at final move phase retains source and string category", async t => {
+  const f = await fixture(t); writeFileSync(join(f.cwd, "a"), "original");
+  const plan = await prepareNativeOperation(f.cwd, "move", { path: "a", destination: "b" });
+  const abort = new AbortController();
+  const receipt = await executeNativePlan(plan, () => { if (existsSync(join(f.cwd, "b"))) abort.abort(); }, abort.signal);
+  assert.equal(receipt.status, "partial"); assert.equal(typeof receipt.category, "string");
+  assert.equal(readFileSync(join(f.cwd, "a"), "utf8"), "original");
+  assert.equal(readFileSync(join(f.cwd, "b"), "utf8"), "original");
+  const cancelled = await executeNativePlan(await prepareNativeOperation(f.cwd, "delete", { path: "a" }), () => {}, abort.signal);
+  assert.equal(cancelled.status, "cancelled"); assert.equal(cancelled.category, "cancelled");
+});
+
+test("review round 2: final creation cancellation and revoked mkdir authority fail closed", async t => {
+  const f = await fixture(t);
+  for (const phase of ["open", "write", "mkdir"]) {
+    const path = join(f.cwd, phase === "mkdir" ? "new/deep/file" : phase);
+    const plan = (await prepareFileCreation(path, true))!;
+    const abort = new AbortController(); let calls = 0, revoked = false;
+    await assert.rejects(executeFileCreation(plan, "must not write", async () => {
+      calls++; if (phase === "mkdir") revoked = true;
+      if ((phase === "open" && calls === 2) || (phase === "write" && existsSync(path))) abort.abort();
+      return plan.canonicalTarget;
+    }, abort.signal, undefined, undefined, () => { if (revoked) throw new Error("revoked"); }));
+    if (phase === "write") assert.equal(readFileSync(path, "utf8"), "");
+    else assert.equal(existsSync(path), false);
+  }
+  assert.equal(existsSync(join(f.cwd, "new")), false);
+});
