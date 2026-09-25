@@ -1,5 +1,5 @@
 import type { MutationWriteGuard } from "./core.ts";
-import { READ_RESULT_ANNOTATION_PATTERN, SHA256_PATTERN } from "./regex.ts";
+import { READ_RESULT_ANNOTATION_PATTERN, SHA256_PATTERN, UNSAFE_RECEIPT_PATH_PATTERN } from "./regex.ts";
 import { restoreSnapshotReadText } from "./snapshot-line-protocol.ts";
 
 const MAX_RESTORE_ENTRIES = 512;
@@ -28,7 +28,7 @@ interface ToolResultMessageShape {
   isError?: unknown;
 }
 
-export interface StructuredMutationReceipt {
+export interface LegacyStructuredMutationReceipt {
   receiptVersion: 1;
   entryId: string;
   timestamp: string;
@@ -40,6 +40,54 @@ export interface StructuredMutationReceipt {
   sha256: string;
   replacements?: number;
   created?: true;
+}
+
+export interface NativeStructuredMutationReceipt {
+  receiptVersion: 2;
+  entryId: string;
+  timestamp: string;
+  toolCallId: string;
+  itemId: string;
+  operation: "delete" | "move" | "write";
+  target: string;
+  destination?: string;
+  status: "succeeded" | "failed_no_change" | "partial" | "cancelled" | "state_unknown";
+  stateChanged: boolean | "unknown";
+  requiresVerification?: true;
+}
+export type StructuredMutationReceipt = LegacyStructuredMutationReceipt | NativeStructuredMutationReceipt;
+
+function safeReceiptPath(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= 4096 && !UNSAFE_RECEIPT_PATH_PATTERN.test(value);
+}
+
+function collectNativeReceipts(branch: readonly unknown[], receipts: StructuredMutationReceipt[]): Map<string, NativeStructuredMutationReceipt> {
+  const items = new Map<string, NativeStructuredMutationReceipt>();
+  for (let index = Math.max(0, branch.length - MAX_STRUCTURED_MUTATION_RECEIPTS); index < branch.length; index++) {
+    const entry = branch[index] as any;
+    if (typeof entry?.id !== "string" || typeof entry.timestamp !== "string") continue;
+    const progress = entry.type === "custom" && entry.customType === "file-mutation-progress-v2";
+    const message = entry.type === "message" && entry.message?.role === "toolResult" ? entry.message : undefined;
+    const data = progress ? entry.data : message?.details;
+    if (!data || (data.operation !== "delete" && data.operation !== "move" && data.operation !== "write") || !safeReceiptPath(data.target)
+      || (data.operation === "move" && !safeReceiptPath(data.destination))) continue;
+    const toolCallId = progress ? data.toolCallId : message.toolCallId;
+    const itemId = progress ? data.itemId : `${toolCallId}:0`;
+    if (typeof toolCallId !== "string" || toolCallId.length > 256 || typeof itemId !== "string" || itemId.length > 280) continue;
+    const intent = progress && data.phase === "intent";
+    if (!intent && (data.mutationReceiptVersion !== 2 || !["succeeded", "failed_no_change", "partial", "cancelled", "state_unknown"].includes(data.status))) continue;
+    const status = intent ? "state_unknown" : data.status;
+    const stateChanged = intent ? "unknown" : data.stateChanged;
+    if ((status === "state_unknown" && stateChanged !== "unknown") || (status === "succeeded" && stateChanged !== true)
+      || (status === "partial" && stateChanged !== true) || ((status === "failed_no_change" || status === "cancelled") && stateChanged !== false)) continue;
+    const previous = items.get(itemId);
+    if (previous && previous.toolCallId !== toolCallId) continue;
+    items.set(itemId, { receiptVersion: 2, entryId: entry.id, timestamp: entry.timestamp, toolCallId, itemId,
+      operation: data.operation, target: data.target, destination: data.destination, status, stateChanged,
+      ...(status === "state_unknown" || status === "partial" ? { requiresVerification: true as const } : {}) });
+  }
+  for (const item of items.values()) receipts.push(item);
+  return items;
 }
 
 function rememberToolCall(pending: Map<string, StoredToolCall>, id: string, call: StoredToolCall): void {
@@ -135,6 +183,7 @@ async function restoreMutation(
 
 export function collectStructuredMutationReceipts(branch: readonly unknown[]): StructuredMutationReceipt[] {
   const receipts: StructuredMutationReceipt[] = [];
+  const nativeReceipts = collectNativeReceipts(branch, receipts);
   const start = Math.max(0, branch.length - MAX_STRUCTURED_MUTATION_RECEIPTS);
   for (let index = start; index < branch.length; index++) {
     const entry = branch[index] as SessionEntryShape;
@@ -151,6 +200,7 @@ export function collectStructuredMutationReceipts(branch: readonly unknown[]): S
       || !message.details
       || typeof message.details !== "object") continue;
     const details = message.details as Record<string, unknown>;
+    if (nativeReceipts.has(`${message.toolCallId}:0`)) continue;
     const target = details.target;
     const sha256 = details.sha256;
     const previousSha256 = details.previousSha256;
@@ -162,7 +212,7 @@ export function collectStructuredMutationReceipts(branch: readonly unknown[]): S
       || typeof target !== "string"
       || target.length < 1
       || target.length > 4096
-      || /[\u0000\r\n]/u.test(target)
+      || UNSAFE_RECEIPT_PATH_PATTERN.test(target)
       || typeof sha256 !== "string"
       || !SHA256_PATTERN.test(sha256)) continue;
     if (message.toolName === "edit") {

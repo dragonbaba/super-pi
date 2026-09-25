@@ -32,6 +32,8 @@ import {
 } from "./permission-state.ts";
 import { protectedRootViolations } from "./mutation-policy.ts";
 import { assessProtectedMutationPath } from "../mutation-guard-write/protected-path-policy.ts";
+import { prepareNativeOperation, type NativePlan } from "../mutation-guard-write/native-file-core.ts";
+import { prepareFileCreation, type FileCreationPlan } from "../mutation-guard-write/file-creation.ts";
 import { classifyStructuredReadonlyArguments, type StructuredReadonlyCommandName } from "./structured-argv.ts";
 import { sanitizePolicyFeedback, type PolicyDiagnosticMetadata } from "./policy-diagnostics.ts";
 
@@ -123,7 +125,10 @@ function subagentTaskRequests(input: unknown, defaultCwd: string): SubagentTaskR
 }
 
 interface OperationRequest {
-  operation: "edit" | "write" | "lsp_fix" | "bash" | "powershell" | "browser_exec";
+  operation: "edit" | "write" | "lsp_fix" | "bash" | "powershell" | "browser_exec" | "delete" | "move";
+  nativePlan?: NativePlan;
+  creationPlan?: FileCreationPlan;
+  requestHash?: string;
   purpose?: string;
   summary: string;
   exactTargets: string[];
@@ -355,7 +360,7 @@ export class SessionPermissionController {
   }
 
   async authorizeToolCall(event: ToolCallEventShape, ctx: ExtensionContext): Promise<ToolCallBlock | undefined> {
-    if (event.toolName !== "write" && event.toolName !== "edit" && event.toolName !== "lsp_fix"
+    if (event.toolName !== "write" && event.toolName !== "edit" && event.toolName !== "lsp_fix" && event.toolName !== "delete" && event.toolName !== "move"
       && event.toolName !== "bash" && event.toolName !== "powershell" && event.toolName !== "browser_exec"
       && event.toolName !== "subagent" && event.toolName !== "structured_readonly_command") return undefined;
     let signal = ctx.signal;
@@ -814,22 +819,39 @@ export class SessionPermissionController {
         fingerprintMaterial: `${input.code}\u0000${typeof input.session === "string" ? input.session : ""}\u0000${typeof input.timeoutMs === "number" ? input.timeoutMs : ""}`,
       };
     }
+    if (event.toolName === "delete" || event.toolName === "move") {
+      const requestHash = mutationRequestHash(event.toolName, event.input);
+      const nativePlan = await prepareNativeOperation(ctx.cwd, event.toolName, event.input);
+      const targets = nativePlan.protectedPaths;
+      const targetAssessments: PermissionTargetAssessment[] = [];
+      for (const target of targets) targetAssessments.push(await this.#state.assessTarget(target.canonicalTarget, ctx.cwd));
+      const primitives = [event.toolName === "delete" ? "irreversible_delete_no_backup" : "exclusive_link_then_unlink_non_atomic"];
+      for (const target of targets) for (const root of target.protectedRoots) if (!primitives.includes(root)) primitives.push(root);
+      return { operation: event.toolName, purpose, summary: `${event.toolName} ${nativePlan.source.canonical}`,
+        nativePlan, requestHash, exactTargets: targets.map((target) => target.canonicalTarget), targetAssessments,
+        classes: [`file:${event.toolName}`], highRisk: event.toolName === "delete" || targets.some((target) => sensitiveProtectedRoots(target.protectedRoots.filter((root) => root !== "workspace_root"))),
+        opaqueScript: false, primitives, fingerprintMaterial: requestHash,
+        pathApproval: { canonicalTarget: nativePlan.source.canonical, protectedRoots: [...targets[0].protectedRoots] } };
+    }
     if (event.toolName === "edit" || event.toolName === "write" || event.toolName === "lsp_fix") {
       if (!event.input || typeof event.input !== "object" || !("path" in event.input)) return undefined;
       const rawPath = (event.input as { path?: unknown }).path;
       if (typeof rawPath !== "string") return undefined;
       const path = rawPath.startsWith("@") ? rawPath.slice(1) : rawPath;
+      const requestHash = mutationRequestHash(event.toolName, event.input);
+      const creationPlan = event.toolName === "write" ? await prepareFileCreation(resolve(ctx.cwd, path)) : undefined;
       const assessment = await this.#state.assessTarget(path, ctx.cwd);
       const protectedAssessment = await assessProtectedMutationPath(ctx.cwd, assessment.canonicalTarget ?? path);
       const exactTargets = assessment.canonicalTarget ? [assessment.canonicalTarget] : [];
       return {
         operation: event.toolName,
+        creationPlan, requestHash,
         purpose,
         summary: `${event.toolName} ${path}`,
-        exactTargets,
+        exactTargets: creationPlan ? [...exactTargets, ...creationPlan.directories] : exactTargets,
         targetAssessments: [assessment],
         classes: event.toolName === "edit" ? EDIT_CLASSES : event.toolName === "write" ? WRITE_CLASSES : LSP_FIX_CLASSES,
-        pathApproval: protectedAssessment.canonicalTarget && protectedAssessment.violations.length > 0
+        pathApproval: protectedAssessment.canonicalTarget && (protectedAssessment.violations.length > 0 || creationPlan)
           ? { canonicalTarget: protectedAssessment.canonicalTarget, protectedRoots: protectedAssessment.violations }
           : undefined,
         highRisk: sensitiveProtectedRoots(protectedAssessment.violations),
@@ -933,12 +955,19 @@ export class SessionPermissionController {
       return;
     }
     if (!request.pathApproval || request.operation === "bash" || request.operation === "powershell") return;
+    const sequence = this.#state.sequence;
+    const generation = this.#authorityGeneration;
     attachPermissionPathApproval(event.input, {
       schemaVersion: 1,
       sequence: this.#state.sequence,
       toolCallId: event.toolCallId,
       operation: request.operation,
-      requestHash: mutationRequestHash(request.operation, event.input),
+      requestHash: request.requestHash ?? mutationRequestHash(request.operation, event.input),
+      nativePlan: request.nativePlan,
+      creationPlan: request.creationPlan,
+      assertCurrent: request.nativePlan || request.creationPlan ? () => {
+        if (sequence !== this.#state.sequence || generation !== this.#authorityGeneration) throw new Error("[POLICY_BLOCKED] Permission authority changed after approval.");
+      } : undefined,
       ...request.pathApproval,
     });
   }

@@ -23,6 +23,7 @@ import { SHA256_PATTERN } from "./regex.ts";
 import { restoreSnapshotReadText } from "./snapshot-line-protocol.ts";
 import { primaryReadResultText, restoreMutationEvidenceFromBranch } from "./session-evidence.ts";
 import { consumePermissionPathApproval } from "../resource-lifecycle-guard/permission-contract.ts";
+import { registerNativeTools, MUTATION_PROGRESS_ENTRY, renderFileMutationResult } from "./native-tools.ts";
 
 const GuardedReplaceParameters = Type.Object({
   oldText: Type.String({ description: "Exact text to replace; repeated text needs range evidence or expectedLine." }),
@@ -348,6 +349,7 @@ export default function mutationGuardWriteExtension(pi: ExtensionAPI): void {
   const guard = new MutationWriteGuard();
   const upstreamEdit = createEditToolDefinition(process.cwd());
   let turnGeneration = 0;
+  registerNativeTools(pi, guard, () => turnGeneration);
 
   async function resetAndRestoreEvidence(ctx: {
     cwd: string;
@@ -592,17 +594,44 @@ export default function mutationGuardWriteExtension(pi: ExtensionAPI): void {
       "For an existing whole-file overwrite, dedicated read must return complete content in an earlier tool turn and still match; truncated, partial, same-turn, Bash, grep, LSP, or stale evidence fails. Use range/snapshot edit for local changes. Missing files use exclusive creation without a read. Include purpose for protected targets.",
     ],
     parameters: WriteParameters,
+    renderResult: renderFileMutationResult,
     executionMode: "sequential",
     async execute(toolCallId, input: GuardedWriteInput, signal, _onUpdate, ctx) {
       const { path, content } = input;
       const absolutePath = resolveToolPath(ctx.cwd, path);
       const pathApproval = consumePermissionPathApproval(input, toolCallId, "write") as MutationPathApproval | undefined;
-      const details = await withFileMutationQueue(
-        absolutePath,
-        () => guard.write(ctx.cwd, path, content, turnGeneration, signal, pathApproval),
-      );
+      const progress = pathApproval?.creationPlan !== undefined;
+      let details;
+      try {
+        details = await withFileMutationQueue(
+          absolutePath,
+          async () => {
+            if (progress) pi.appendEntry(MUTATION_PROGRESS_ENTRY, { toolCallId, itemId: `${toolCallId}:0`, phase: "intent", operation: "write", target: absolutePath, directories: pathApproval!.creationPlan!.directories });
+            return guard.write(ctx.cwd, path, content, turnGeneration, signal, pathApproval);
+          },
+        );
+      } catch (error) {
+        const failure = mutationFailureInfo(error);
+        if (failure && (progress || failure.stateChanged === true)) {
+          const status = failure.stateChanged === true ? "partial" : "failed_no_change";
+          const details = { ...failure, operation: "write", target: absolutePath, mutationReceiptVersion: 2, status };
+          if (progress) try { pi.appendEntry(MUTATION_PROGRESS_ENTRY, { ...details, toolCallId, itemId: `${toolCallId}:0`, phase: "result" }); } catch { /* Durable intent remains uncertain. */ }
+          return { content: [{ type: "text" as const, text: `write: ${status}; ${path}. [${failure.category}] ${typeof failure.cause === "string" ? failure.cause.slice(0, 800) : ""}${failure.stateChanged === true ? " Verify the file and recorded directories; do not automatically retry." : ""}` }], details, isError: true };
+        }
+        throw error;
+      }
+      if (progress) try {
+        pi.appendEntry(MUTATION_PROGRESS_ENTRY, { ...details, mutationReceiptVersion: 2, toolCallId, itemId: `${toolCallId}:0`, phase: "result", status: "succeeded" });
+      } catch {
+        return { content: [{ type: "text" as const, text: `write: state_unknown; ${path}. File changed but receipt recording failed. Verify current state; do not automatically retry.` }],
+          details: { mutationReceiptVersion: 2, operation: "write", target: absolutePath, status: "state_unknown", stateChanged: "unknown", requiresVerification: true }, isError: true };
+      }
+      const creation = details.creation;
+      const summary = details.created
+        ? `Added ${path} (${creation?.addedLines !== undefined ? `+${creation.addedLines} -0` : `${Buffer.byteLength(content, "utf8")} bytes`})${creation?.createdDirectories.length ? `\nCreated directories: ${creation.createdDirectories.length}` : ""}`
+        : `Modified ${path} (${Buffer.byteLength(content, "utf8")} bytes)`;
       return {
-        content: [{ type: "text" as const, text: `Successfully wrote ${content.length} bytes to ${path}` }],
+        content: [{ type: "text" as const, text: summary }],
         details,
       };
     },
