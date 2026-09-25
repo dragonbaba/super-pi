@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { mutationFixture, MutationWriteGuard } from "./helpers/mutation-fixture.ts";
 import { createJiti } from "jiti";
 import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
-const { restoreMutationEvidenceFromBranch, recordBatchMutationEvidence, collectStructuredMutationReceipts } = await createJiti(import.meta.url).import<any>("../packages/extensions/mutation-guard-write/session-evidence.ts");
+const { restoreMutationEvidenceFromBranch, recordBatchMutationEvidence, collectStructuredMutationReceipts, recentMutationEntries } = await createJiti(import.meta.url).import<any>("../packages/extensions/mutation-guard-write/session-evidence.ts");
 for (const operation of ["delete", "move"]) for (const path of ["@name", "@@name", "./@name", "$absolute"]) test(`R3 literal ${operation} evidence: ${path}`, async t => {
   const f = await mutationFixture(t); const cwd = realpathSync.native(f.cwd);
   const literal = path === "@@name" ? "@@name" : "@name", other = path === "@@name" ? "@name" : "name";
@@ -71,4 +71,15 @@ test("R3 malformed or unpaired native targets cannot invalidate unrelated eviden
   const input = { operations: [{ operation: "delete", path: "@name" }] };
   await recordBatchMutationEvidence(guard, cwd, input, { items: [{ itemId: "fake:0", operation: "delete", target: other, status: "succeeded", stateChanged: true }] }, "fake", 100, f.session.getBranch());
   assert.equal((await guard.write(cwd, other, "after", 101)).ok, true);
+});
+
+test("R3/R4 result lookup is bounded before Session branch materialization", async t => {
+  const f = await mutationFixture(t);
+  for (let i = 0; i < 1024; i++) f.session.appendCustomEntry("synthetic-history", { index: i });
+  let lookups = 0; const get = f.session.getEntry.bind(f.session);
+  t.mock.method(f.session, "getEntry", function(id: string) { lookups++; return get(id); });
+  t.mock.method(f.session, "getBranch", () => { throw new Error("unbounded branch allocation"); });
+  const tail = recentMutationEntries(f.session) as any[];
+  assert.equal(lookups, 512); assert.equal(tail.length, 512);
+  assert.equal(tail[0].data.index, 512); assert.equal(tail.at(-1).data.index, 1023);
 });

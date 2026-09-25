@@ -24,7 +24,7 @@ import { MUTATION_RECEIPT_VERSION, MutationWriteGuard, resolveToolPath, sha256 }
 import { diagnoseFailedEdit } from "./edit-diagnostics.ts";
 import { SHA256_PATTERN } from "./regex.ts";
 import { restoreSnapshotReadText } from "./snapshot-line-protocol.ts";
-import { primaryReadResultText, restoreMutationEvidenceFromBranch, recordBatchMutationEvidence } from "./session-evidence.ts";
+import { primaryReadResultText, restoreMutationEvidenceFromBranch, recordBatchMutationEvidence, recentMutationEntries } from "./session-evidence.ts";
 import { consumePermissionPathApproval } from "../resource-lifecycle-guard/permission-contract.ts";
 import { registerNativeTools, MUTATION_PROGRESS_ENTRY, renderFileMutationResult } from "./native-tools.ts";
 import { registerFileBatch } from "./file-batch.ts";
@@ -250,7 +250,7 @@ export default function mutationGuardWriteExtension(pi: ExtensionAPI): void {
   pi.on("tool_result", async (rawEvent, ctx) => {
     const event = rawEvent as ToolResultEventShape;
     if (event.toolName === "file_batch") {
-      await recordBatchMutationEvidence(guard, ctx.cwd, event.input, event.details, event.toolCallId, turnGeneration, ctx.sessionManager.getBranch());
+      await recordBatchMutationEvidence(guard, ctx.cwd, event.input, event.details, event.toolCallId, turnGeneration, recentMutationEntries(ctx.sessionManager));
       return;
     }
     const read = observedTextRead(event);

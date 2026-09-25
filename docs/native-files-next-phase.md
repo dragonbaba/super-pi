@@ -320,3 +320,10 @@ The invocation-level result consumer is bounded (16 items, 512 metadata entries)
 while streaming producer/event/TUI/render behavior remains under the existing
 AST and allocation gates. Final committed-head results and remote review/CI are
 tracked on #46; working-tree observations do not substitute for those gates.
+
+The complete result lookup audit found that a bounded consumer still called
+SessionManager.getBranch(), which materialized an unbounded ancestor array
+first. Result consumers now read at most 512 entries through the existing
+indexed getLeafId/getEntry API. A 1,024-entry actual Session fixture forbids
+getBranch and measures exactly 512 indexed reads in chronological order.
+This is invocation-local scratch with no cache or retained Session references.

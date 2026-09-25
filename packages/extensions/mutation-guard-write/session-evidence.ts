@@ -109,6 +109,19 @@ function collectNativeReceipts(branch: readonly unknown[]): Map<string, NativeSt
   return items;
 }
 
+/** Read only the bounded tail through existing indexed entries; never materialize a whole Session branch per result. */
+export function recentMutationEntries(session: { getLeafId(): string | null; getEntry(id: string): { parentId: string | null } | undefined }): readonly unknown[] {
+  const entries: unknown[] = [];
+  let id = session.getLeafId();
+  while (id && entries.length < MAX_RESTORE_ENTRIES) {
+    const entry = session.getEntry(id);
+    if (!entry) break;
+    entries.push(entry); id = entry.parentId;
+  }
+  entries.reverse();
+  return entries;
+}
+
 /** Pair bounded durable intents with this actual call, never with arbitrary result targets. */
 export function boundBatchIntents(branch: readonly unknown[], input: any, toolCallId: string): Map<string, { operation: string; target: string; destination?: string }> {
   const intents = new Map<string, { operation: string; target: string; destination?: string }>();

@@ -1,3 +1,4 @@
+import { recentMutationEntries } from "../mutation-guard-write/session-evidence.ts";
 import type { ExtensionAPI, ToolResultEvent } from "@super-pi/coding-agent";
 import {
   beginPromptBoundary,
@@ -67,7 +68,7 @@ export default function falseSuccessGuard(pi: ExtensionAPI): void {
     pendingMutations.delete(event.toolCallId);
     if (!pending || pending.name !== event.toolName) return;
     observeToolResult(state, { toolName: pending.name, toolCallId: event.toolCallId, input: pending.input,
-      isError: event.isError, details: event.result.details, cwd: ctx.cwd, branch: ctx.sessionManager.getBranch() });
+      isError: event.isError, details: event.result.details, cwd: ctx.cwd, branch: recentMutationEntries(ctx.sessionManager) });
   });
 
   pi.on("tool_result", (event: ToolResultEvent, ctx) => {
