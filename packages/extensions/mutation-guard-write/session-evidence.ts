@@ -315,6 +315,7 @@ export async function restoreMutationEvidenceFromBranch(
   cwd: string,
   branch: readonly unknown[],
 ): Promise<void> {
+  const nativeReceipts = collectNativeReceipts(branch);
   const pending = new Map<string, StoredToolCall>();
   const start = Math.max(0, branch.length - MAX_RESTORE_ENTRIES);
   const pairingStart = Math.max(0, start - MAX_PENDING_TOOL_CALLS);
@@ -328,7 +329,8 @@ export async function restoreMutationEvidenceFromBranch(
     const custom = entry as any;
     if (custom?.type === "custom" && custom.customType === "file-mutation-progress-v2") {
       const data = custom.data;
-      if ((data?.phase === "intent" || data?.stateChanged !== false) && safeReceiptPath(data?.target)) {
+      const completion = nativeReceipts.get(data?.itemId ?? `${data?.toolCallId}:0`);
+      if (completion?.stateChanged !== false && (data?.phase === "intent" || data?.stateChanged !== false) && safeReceiptPath(data?.target)) {
         await guard.invalidate(cwd, data.target);
         if (safeReceiptPath(data.destination)) await guard.invalidate(cwd, data.destination);
       }

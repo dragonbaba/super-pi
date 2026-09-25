@@ -122,7 +122,12 @@ export class BatchInvocation {
     return this.guard.assertEditPathAllowed(this.cwd, item.input.path, item.approval);
   };
 
-  constructor(private readonly guard: MutationWriteGuard, private readonly ctx: ExtensionContext, readonly id: string, input: unknown, readonly generation: number) {
+  private readonly guard: MutationWriteGuard;
+  private readonly ctx: ExtensionContext;
+  readonly id: string;
+  readonly generation: number;
+  constructor(guard: MutationWriteGuard, ctx: ExtensionContext, id: string, input: unknown, generation: number) {
+    this.guard = guard; this.ctx = ctx; this.id = id; this.generation = generation;
     this.original = input;
     this.cwd = ctx.cwd;
     this.sessionId = ctx.sessionManager.getSessionId();
@@ -152,6 +157,7 @@ export class BatchInvocation {
           if (input.mode === "overwrite" && item.creation) throw new Error("[READ_REQUIRED] Overwrite target is missing; use an explicit create item.");
           if (!item.creation) { item.identity = await capturePathIdentity(path); item.parent = await capturePathIdentity(resolve(path, "..")); item.previousSha256 = await this.guard.preflightOverwrite(this.cwd, input.path, this.generation, item.approval); }
           else item.approval.creationPlan = item.creation;
+          item.approval.writePreflight = true;
           item.reservation = this.guard.reserveWriteMutation(this.generation, item.target, input.content!, item.creation);
         } else {
           item.identity = await capturePathIdentity(path);

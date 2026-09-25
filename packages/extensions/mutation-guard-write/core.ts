@@ -68,6 +68,7 @@ export interface MutationGuardFailure {
 }
 
 export interface MutationPathApproval {
+  writePreflight?: boolean;
   canonicalTarget: string;
   protectedRoots: readonly string[];
   creationPlan?: FileCreationPlan;
@@ -895,7 +896,7 @@ export class MutationWriteGuard {
     reservedId?: number,
     sharedDirectories?: Map<string, PathIdentity>,
   ): Promise<MutationWriteSuccess> {
-    if (signal?.aborted) throw new Error("Operation aborted");
+    if (signal?.aborted) throw guardFailure({ ok: false, operation: "write", category: "WRITE_FAILED", target: path, stateChanged: false, retryable: true, cause: "Operation aborted before mutation" });
     await this.#assertMutationPathAllowed(cwd, path, "write", pathApproval);
     const targetKey = resolveToolPath(cwd, path);
     const reservationId = reservedId ?? this.#reserveMutation(
@@ -906,7 +907,7 @@ export class MutationWriteGuard {
       Buffer.byteLength(content, "utf8"),
     );
     try {
-      const creationPlan = pathApproval?.creationPlan ?? await prepareFileCreation(targetKey);
+      const creationPlan = pathApproval?.writePreflight ? pathApproval.creationPlan : pathApproval?.creationPlan ?? await prepareFileCreation(targetKey);
       if (creationPlan) {
         if (reservedId === undefined) this.reserveCreationDirectories(reservationId, creationPlan.directories);
         const creation = await executeFileCreation(creationPlan, content,
@@ -967,6 +968,8 @@ export class MutationWriteGuard {
 
       if (signal?.aborted) throw new Error("Operation aborted");
       try {
+        pathApproval?.assertCurrent?.();
+        signal?.throwIfAborted();
         await writeFile(canonicalPath, content, "utf8");
       } catch (error) {
         let afterSha256: string | undefined;

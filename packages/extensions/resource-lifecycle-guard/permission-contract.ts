@@ -40,6 +40,7 @@ export interface PermissionPathApproval {
   protectedRoots: readonly string[];
   nativePlan?: NativePlan;
   creationPlan?: FileCreationPlan;
+  writePreflight?: boolean;
   assertCurrent?: () => void;
 }
 
