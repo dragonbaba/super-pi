@@ -188,5 +188,24 @@ test("review: standalone scoped wrapper canonicalizes before trusting project se
     const context = f.runner.createContext(); Object.defineProperty(context, "isProjectTrusted", { value: () => true });
     const result = await bash.execute("standalone", input, undefined, undefined, context);
     assert.ok(result.content[0].text.includes("safe")); assert.equal(result.details.cwd, realpathSync.native(outside)); assert.equal(getShellCwdBinding(input)!.isReleased, true);
+    const first = getShellCwdBinding(input); const reused = await bash.execute("standalone-reused", input, undefined, undefined, context);
+    assert.ok(reused.content[0].text.includes("safe")); assert.notEqual(getShellCwdBinding(input), first); assert.equal(getShellCwdBinding(input)!.isReleased, true);
+  } finally { if (previous === undefined) delete process.env.SP_CODING_AGENT_DIR; else process.env.SP_CODING_AGENT_DIR = previous; }
+});
+
+
+test("review: trusted symlinked Session root retains project shell settings", async t => {
+  const f = await fixture(t); const alias = join(f.root, "workspace-alias"); symlinkSync(f.cwd, alias, process.platform === "win32" ? "junction" : "dir");
+  mkdirSync(join(f.cwd, CONFIG_DIR_NAME, "config"), { recursive: true });
+  writeFileSync(join(f.cwd, CONFIG_DIR_NAME, "config/settings.json"), JSON.stringify({ shellPath: bashPath }));
+  const previous = process.env.SP_CODING_AGENT_DIR; process.env.SP_CODING_AGENT_DIR = join(f.root, "agent");
+  mkdirSync(join(f.root, "agent/config"), { recursive: true }); writeFileSync(join(f.root, "agent/config/settings.json"), JSON.stringify({ shellPath: join(f.root, "global-invalid-shell") }));
+  try {
+    const { default: loop } = await createJiti(import.meta.url).import<any>("../packages/extensions/tool-loop-guardrails/index.ts");
+    const definitions: any[] = []; loop({ registerTool(tool: any) { definitions.push(tool); }, on() {} });
+    const bash = definitions.find(tool => tool.name === "bash"), input = { command: "printf trusted-root", cwd: "." };
+    const context = f.runner.createContext(); Object.defineProperty(context, "isProjectTrusted", { value: () => true }); Object.defineProperty(context, "cwd", { value: alias });
+    const result = await bash.execute("trusted-alias", input, undefined, undefined, context);
+    assert.ok(result.content[0].text.includes("trusted-root")); assert.equal(result.details.cwd, realpathSync.native(f.cwd)); assert.equal(getShellCwdBinding(input)!.isReleased, true);
   } finally { if (previous === undefined) delete process.env.SP_CODING_AGENT_DIR; else process.env.SP_CODING_AGENT_DIR = previous; }
 });

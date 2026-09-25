@@ -135,3 +135,9 @@ before project-trust/settings selection and owns cleanup even without this guard
 The authorization AST gate counts the single actual terminal consume call and its
 single approved argument container, including the pinned-binding handoff; no new
 per-progress/per-render allocations or caches were introduced.
+
+Standalone repeated calls renew released bindings through the shared preparation
+function; final guarded handoff still rejects a released binding within the same
+authorized invocation. Explicit cwd compares canonical target and canonical trusted
+Session root, preserving project settings when the workspace itself is a symlink.
+Omitted cwd adds no realpath traversal. Both regressions failed before this fix.

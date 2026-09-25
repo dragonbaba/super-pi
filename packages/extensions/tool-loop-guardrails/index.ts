@@ -1,4 +1,5 @@
 import process from "node:process";
+import { realpath } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
 import {
   createReadToolDefinition,
@@ -130,11 +131,12 @@ export default function toolLoopGuardrails(pi: ExtensionAPI): void {
     ],
     parameters: ScopedBashParameters,
     async execute(toolCallId, input: ScopedBashInput, signal, onUpdate, ctx) {
-      const binding = getShellCwdBinding(input) ?? await prepareShellCwd(input, ctx.cwd);
+      const binding = await prepareShellCwd(input, ctx.cwd);
       try {
-        if (binding?.isReleased) throw new Error("[SHELL_CWD_CHANGED] Directory authority was released.");
         const effectiveCwd = binding?.canonical ?? resolveBashCallCwd(input, ctx.cwd);
-        const projectTrusted = ctx.isProjectTrusted() && insideProject(effectiveCwd, ctx.cwd);
+        const trusted = ctx.isProjectTrusted();
+        const projectRoot = binding && trusted ? await realpath(ctx.cwd) : ctx.cwd;
+        const projectTrusted = trusted && insideProject(effectiveCwd, projectRoot);
         const bash = bashFor(effectiveCwd, projectTrusted);
         return await bash.execute(toolCallId, input, signal, onUpdate, ctx);
       } finally { binding?.release(); }
