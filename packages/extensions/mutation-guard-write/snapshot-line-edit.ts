@@ -1,4 +1,4 @@
-import { readFileGeneration } from "../../coding-agent/src/core/tools/read-window.ts";
+import { MUTATION_READ_SOURCE, readFileGeneration } from "../../coding-agent/src/core/tools/read-window.ts";
 import { randomBytes } from "node:crypto";
 import { chmod, lstat, open, readFile, realpath, rename, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
@@ -279,7 +279,7 @@ function nativeReadProjection(bytes: Buffer, input: ReadToolInput): NativeReadPr
 }
 
 async function matchesReadSource(canonicalPath: string, result: SnapshotReadResult): Promise<boolean> {
-  const source = result.details?.mutationReadSource;
+  const source = result.details?.[MUTATION_READ_SOURCE];
   if (!source) return true;
   if (canonicalPath !== source.canonicalPath) return false;
   try { return readFileGeneration(await lstat(source.canonicalPath, { bigint: true })) === source.fileGeneration; }

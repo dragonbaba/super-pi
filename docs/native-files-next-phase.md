@@ -450,3 +450,12 @@ and report their filesystem-specific spelling skips individually.
   the demonstrated asynchronous content window, and does not enter model context.
   Existing post-read alias/object/parent checks are retained; no OS CAS or
   cross-process lock is claimed.
+
+
+The complete-suite privacy gate caught serializable source-generation metadata
+when capture became built-in. The descriptor proof is now a non-enumerable
+invocation-private symbol property, shared by stable symbol identity across
+extension loaders. Snapshot/guard consume it before result persistence; only
+the accepted target/call/argument binding is durable. No global object map or
+source body is retained. The existing independent-session/disposal/disabled-
+ledger privacy assertion is retained unchanged and passes with the correction.

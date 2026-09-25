@@ -14,6 +14,8 @@ const VERSION = 1;
 /** @internal Nonserializing metadata handoff; never attached to public details. */
 export const READ_EVIDENCE_CAPTURE = Symbol("read-evidence-capture");
 export const READ_EVIDENCE_IDENTITY = Symbol("read-evidence-identity");
+/** Private invocation metadata shared with extension module loaders; never serialized. */
+export const MUTATION_READ_SOURCE = Symbol.for("pi.mutation-guard.read-source.v1");
 export interface ValidatedReadIdentity {
 	canonicalPath: string;
 	canonicalWorkspace: string;

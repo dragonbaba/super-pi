@@ -47,7 +47,7 @@ for (const spelling of ["case", "unicode"]) test(`legacy plain read follows file
   if (!existsSync(join(cwd, input))) { t.skip("filesystem distinguishes this spelling"); return; }
   await f.call("read", { path: input }, "legacy");
   const branch = JSON.parse(JSON.stringify(SessionManager.open(f.session.getSessionFile()!).getBranch()));
-  for (const entry of branch) if (entry.message?.toolName === "read") { delete entry.message.details.mutationReadEvidence; delete entry.message.details.mutationReadSource; }
+  for (const entry of branch) if (entry.message?.toolName === "read") { delete entry.message.details.mutationReadEvidence; }
   const restored = new MutationWriteGuard(); await restoreMutationEvidenceFromBranch(restored, f.cwd, branch);
   assert.equal((await restored.write(f.cwd, path, "after", 99)).ok, true);
 });
@@ -84,7 +84,7 @@ for (const linked of ["root", "ancestor"]) test(`legacy Session root ${linked} r
   const branch = JSON.parse(JSON.stringify(SessionManager.open(f.session.getSessionFile()!).getBranch()));
   for (const entry of branch) {
     for (const block of entry.message?.content ?? []) if (block.type === "toolCall" && block.name === "read") block.arguments.path = linked === "root" ? "inner/file" : "file";
-    if (entry.message?.toolName === "read") { delete entry.message.details.mutationReadEvidence; delete entry.message.details.mutationReadSource; }
+    if (entry.message?.toolName === "read") { delete entry.message.details.mutationReadEvidence; }
   }
   unlinkSync(alias); symlinkSync(join(cwd, "two"), alias, process.platform === "win32" ? "junction" : "dir");
   const restored = new MutationWriteGuard(), target = join(cwd, "two/inner/file");

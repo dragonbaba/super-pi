@@ -15,7 +15,7 @@ import { formatPathRelativeToCwdOrAbsolute } from "../../utils/paths.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
 import { resolveReadPathAsync, resolveToCwd } from "./path-utils.ts";
 import { ReadCursorError, readSmallFileIfStable, readWindow, type ReadWindowResult } from "./read-window.ts";
-import { READ_EVIDENCE_CAPTURE, attachReadIdentity, createValidatedReadIdentity, type ValidatedReadIdentity } from "./read-window.ts";
+import { READ_EVIDENCE_CAPTURE, MUTATION_READ_SOURCE, attachReadIdentity, createValidatedReadIdentity, type ValidatedReadIdentity } from "./read-window.ts";
 import { getTextOutput, renderToolPath, replaceTabs, str } from "./render-utils.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, type TruncationResult, truncateHead } from "./truncate.ts";
@@ -36,7 +36,7 @@ export type ReadToolInput = Static<typeof readSchema>;
 
 export interface ReadToolDetails {
 	/** Descriptor-validated source for the local mutation guard; never grants ledger cache precision. */
-	mutationReadSource?: Pick<ValidatedReadIdentity, "canonicalPath" | "addressedPath" | "fileGeneration">;
+	[MUTATION_READ_SOURCE]?: Pick<ValidatedReadIdentity, "canonicalPath" | "addressedPath" | "fileGeneration">;
 	truncation?: TruncationResult;
 	window?: Omit<ReadWindowResult, "text">;
 }
@@ -215,7 +215,7 @@ function formatReadResult(
 function attachMutationReadSource<T extends { details: ReadToolDetails | undefined }>(result: T, identity: ValidatedReadIdentity | undefined): T {
 	if (identity?.canonicalPath && identity.fileGeneration) {
 		result.details ??= {};
-		result.details.mutationReadSource = { canonicalPath: identity.canonicalPath, addressedPath: identity.addressedPath, fileGeneration: identity.fileGeneration };
+		Object.defineProperty(result.details, MUTATION_READ_SOURCE, { value: { canonicalPath: identity.canonicalPath, addressedPath: identity.addressedPath, fileGeneration: identity.fileGeneration } });
 	}
 	return result;
 }
