@@ -347,9 +347,9 @@ export class SessionPermissionController {
     this.#pendingApproval = undefined;
     await this.#state.restore(ctx.cwd, ctx.sessionManager.getBranch());
     this.#committedState = this.#state.checkpoint();
-    this.#restored = true;
     this.#rejections.clear();
     this.#publish(ctx);
+    this.#restored = true;
   }
 
   systemGuidance(): string {

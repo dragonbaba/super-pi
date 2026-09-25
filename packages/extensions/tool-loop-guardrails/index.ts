@@ -133,11 +133,13 @@ export default function toolLoopGuardrails(pi: ExtensionAPI): void {
       const binding = await prepareShellCwd(input, ctx.cwd);
       try {
         const effectiveCwd = binding?.canonical ?? resolveBashCallCwd(input, ctx.cwd);
-        binding?.assertSessionRoot();
+        binding?.beforeSpawn(binding.canonical);
         const trusted = ctx.isProjectTrusted();
         const projectRoot = binding?.sessionCanonical ?? ctx.cwd;
         const projectTrusted = trusted && insideProject(effectiveCwd, projectRoot);
-        const bash = bashFor(effectiveCwd, projectTrusted);
+        // Explicit directory definitions are invocation-owned: a failed identity check
+        // must never leave settings from a replacement directory in the path cache.
+        const bash = binding ? createConfiguredMsysBashDefinition(effectiveCwd, projectTrusted) : bashFor(effectiveCwd, projectTrusted);
         return await bash.execute(toolCallId, input, signal, onUpdate, ctx);
       } finally { binding?.release(); }
     },

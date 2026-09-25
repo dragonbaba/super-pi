@@ -163,3 +163,14 @@ replacing its trusted identity. If restoration fails, the controller invalidates
 current authority and refuses guarded calls until a successful identity-preserving
 restore. A caught session event error cannot silently enable the replacement root.
 Opening a different physical workspace requires a fresh permission/trust owner.
+
+
+Permission restoration becomes usable only after status publication succeeds.
+File-backed SettingsManager ownership pins the trusted project's physical identity
+across extension rebuilds; reload rejects root replacement before loading project
+settings, packages or extensions. Trust toggling on the same owner cannot replace
+that pin. Custom and in-memory settings stores retain their existing behavior.
+Explicit cwd validates both root and target before selecting shell settings, and
+uses an invocation-owned Bash definition so a failed call cannot poison the
+omitted-cwd definition cache. Final spawn still performs the identity check.
+These checks run at invocation/reload boundaries, not on output or render updates.

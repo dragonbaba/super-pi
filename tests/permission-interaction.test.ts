@@ -578,3 +578,13 @@ test("failed tree restore preserves primary identity and blocks until it is veri
  rmSync(f.cwd); symlinkSync(original.canonicalPath, f.cwd, process.platform === "win32" ? "junction" : "dir");
  await f.permission.restore(f.runner.createContext()); assert.equal(f.permission.state.primary, original); assert.equal(await f.call("bash", { command: "pwd", cwd: "." }), undefined);
 });
+
+
+test("failed permission status publication keeps restore unavailable", async t => {
+ const f = await permissionFixture(t); const ui = f.runner.getUIContext();
+ f.runner.setUIContext({ ...ui, setStatus() { throw new Error("controlled status failure"); } }, "tui");
+ await assert.rejects(f.permission.restore(f.runner.createContext()), error => error instanceof Error && error.message.includes("controlled status failure"));
+ const blocked = await f.call("bash", { command: "pwd", cwd: "." }); assert.equal(blocked?.block, true);
+ f.runner.setUIContext(ui, "tui"); await f.permission.restore(f.runner.createContext());
+ assert.equal(await f.call("bash", { command: "pwd", cwd: "." }), undefined);
+});

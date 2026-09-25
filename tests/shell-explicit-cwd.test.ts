@@ -12,6 +12,9 @@ import { getShellCwdBinding, prepareShellCwd } from "../packages/coding-agent/sr
 import { createEventBus } from "../packages/coding-agent/src/core/event-bus.ts";
 import { createExtensionRuntime, ExtensionRunner, loadExtensionFromFactory } from "../packages/coding-agent/src/core/extensions/index.ts";
 import { CONFIG_DIR_NAME } from "../packages/coding-agent/src/config.ts";
+import { SettingsManager } from "../packages/coding-agent/src/core/settings-manager.ts";
+import { DefaultResourceLoader } from "../packages/coding-agent/src/core/resource-loader.ts";
+import { createAgentSession } from "../packages/coding-agent/src/core/sdk.ts";
 import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
 const { default: lifecycle } = await createJiti(import.meta.url).import<any>("../packages/extensions/resource-lifecycle-guard/index.ts");
 const bashPath = process.platform !== "win32" ? "/bin/bash" : existsSync("D:/Git/bin/bash.exe") ? "D:/Git/bin/bash.exe" : join(process.env.ProgramFiles!, "Git/bin/bash.exe");
@@ -247,4 +250,51 @@ test("review: Session root retarget after approval cannot promote outside projec
     assert.equal(existsSync(join(outside, "marker")), false); if (!restoreTree) assert.ok(f.approvals() > 0);
   } finally { if (previous === undefined) delete process.env.SP_CODING_AGENT_DIR; else process.env.SP_CODING_AGENT_DIR = previous; }
  }
+});
+
+
+test("review: replacement target settings cannot poison the next explicit call", async t => {
+ const f = await fixture(t, undefined, true); const target = join(f.cwd, "target"), saved = join(f.cwd, "saved"), replacement = join(f.cwd, "replacement"); mkdirSync(target);
+ mkdirSync(join(replacement, CONFIG_DIR_NAME, "config"), { recursive: true });
+ writeFileSync(join(replacement, CONFIG_DIR_NAME, "config/settings.json"), JSON.stringify({ shellPath: join(f.root, "untrusted-invalid-shell") }));
+ const previous = process.env.SP_CODING_AGENT_DIR; process.env.SP_CODING_AGENT_DIR = join(f.root, "agent");
+ mkdirSync(join(f.root, "agent/config"), { recursive: true }); writeFileSync(join(f.root, "agent/config/settings.json"), JSON.stringify({ shellPath: bashPath }));
+ try {
+  const { default: loop } = await createJiti(import.meta.url).import<any>("../packages/extensions/tool-loop-guardrails/index.ts");
+  const definitions: any[] = []; loop({ registerTool(tool: any) { definitions.push(tool); }, on() {} });
+  f.agent.state.tools = [wrapToolDefinition(definitions.find(tool => tool.name === "bash"), () => f.runner.createContext())];
+  f.afterAuthorization(() => { renameSync(target, saved); renameSync(replacement, target); });
+  const first = await f.call("bash", "printf safe", target); assert.equal(first.isError, true); assert.ok(first.content[0].type === "text" && first.content[0].text.includes("SHELL_CWD_CHANGED"));
+  renameSync(target, replacement); renameSync(saved, target); f.afterAuthorization(() => {});
+  const second = await f.call("bash", "printf safe", target); assert.equal(second.isError, false, JSON.stringify(second));
+  assert.ok(second.content[0].type === "text" && second.content[0].text.includes("safe"));
+ } finally { if (previous === undefined) delete process.env.SP_CODING_AGENT_DIR; else process.env.SP_CODING_AGENT_DIR = previous; }
+});
+
+
+test("review: trusted project identity survives actual Session and resource reload", async t => {
+ const f = await fixture(t, undefined, true); const original = realpathSync.native(f.cwd), outside = join(f.root, "outside"), agentDir = join(f.root, "isolated-agent");
+ mkdirSync(join(outside, CONFIG_DIR_NAME, "config"), { recursive: true }); mkdirSync(agentDir);
+ const marker = join(f.root, "untrusted-extension-executed"), extension = join(outside, "extension.ts");
+ writeFileSync(extension, `import { writeFileSync } from "node:fs"; export default function () { writeFileSync(${JSON.stringify(marker)}, "unexpected"); }`);
+ writeFileSync(join(outside, CONFIG_DIR_NAME, "config/settings.json"), JSON.stringify({ shellPath: "untrusted-shell", extensions: [extension] }));
+ const settingsManager = SettingsManager.create(f.cwd, agentDir); let factories = 0;
+ const resourceLoader = new DefaultResourceLoader({ cwd: f.cwd, agentDir, settingsManager, noContextFiles: true, noSkills: true, noThemes: true, noPromptTemplates: true,
+  extensionFactories: [() => { factories++; }] });
+ await resourceLoader.reload();
+ const { session } = await createAgentSession({ cwd: f.cwd, agentDir, settingsManager, resourceLoader, sessionManager: SessionManager.inMemory(f.cwd), noTools: "all",
+  model: { id: "offline", name: "offline", api: "openai-responses", provider: "fixture", baseUrl: "https://example.test", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 10000, maxTokens: 100 } as never,
+  modelRuntime: { hasConfiguredAuth: () => false, streamSimple() { throw new Error("offline"); }, getModel: () => undefined, registerProvider() {}, unregisterProvider() {} } as never });
+ try {
+  await session.reload(); const before = factories;
+  rmSync(f.cwd); symlinkSync(outside, f.cwd, process.platform === "win32" ? "junction" : "dir");
+  await assert.rejects(session.reload(), error => error instanceof Error && error.message.includes("SHELL_CWD_CHANGED"));
+  await assert.rejects(resourceLoader.reload(), error => error instanceof Error && error.message.includes("SHELL_CWD_CHANGED"));
+  assert.equal(factories, before); assert.equal(existsSync(marker), false); assert.notEqual(settingsManager.getShellPath(), "untrusted-shell");
+  settingsManager.setProjectTrusted(false);
+  assert.throws(() => settingsManager.setProjectTrusted(true), error => error instanceof Error && error.message.includes("SHELL_CWD_CHANGED"));
+  assert.equal(settingsManager.isProjectTrusted(), false);
+  rmSync(f.cwd); symlinkSync(original, f.cwd, process.platform === "win32" ? "junction" : "dir");
+  settingsManager.setProjectTrusted(true); await session.reload(); assert.ok(factories > before); assert.equal(existsSync(marker), false);
+ } finally { session.dispose(); }
 });
