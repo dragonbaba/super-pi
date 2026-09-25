@@ -287,6 +287,7 @@ class GuardedEditExecution {
   readonly #originalEdits: GuardedEdit[];
   readonly #turnGeneration: number;
   readonly #pathApproval?: MutationPathApproval;
+  readonly #signal?: AbortSignal;
   #previousContent?: Buffer;
   authorization?: MutationEditAuthorization;
   writtenSha256?: string;
@@ -299,6 +300,7 @@ class GuardedEditExecution {
     input: GuardedEditInput,
     turnGeneration: number,
     pathApproval?: MutationPathApproval,
+    signal?: AbortSignal,
   ) {
     this.#guard = guard;
     this.#cwd = cwd;
@@ -306,6 +308,7 @@ class GuardedEditExecution {
     this.#originalEdits = cloneGuardedEdits(input.edits);
     this.#turnGeneration = turnGeneration;
     this.#pathApproval = pathApproval;
+    this.#signal = signal;
     this.operations = {
       access: this.#accessFile.bind(this),
       readFile: this.#readFile.bind(this),
@@ -341,6 +344,7 @@ class GuardedEditExecution {
       content,
       this.authorization?.reservationId,
       this.#pathApproval,
+      this.#signal,
     );
     this.writtenSha256 = sha256(content);
     this.writeSucceeded = true;
@@ -433,7 +437,7 @@ export default function mutationGuardWriteExtension(pi: ExtensionAPI): void {
         path: input.path,
         edits: cloneGuardedEdits(input.edits),
       };
-      const execution = new GuardedEditExecution(guard, ctx.cwd, nativeInput, turnGeneration, pathApproval);
+      const execution = new GuardedEditExecution(guard, ctx.cwd, nativeInput, turnGeneration, pathApproval, signal);
       const guardedEdit = createEditToolDefinition(ctx.cwd, { operations: execution.operations });
       try {
         const result = await guardedEdit.execute(toolCallId, nativeInput, signal, onUpdate, ctx);

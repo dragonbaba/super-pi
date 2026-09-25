@@ -808,6 +808,7 @@ export class MutationWriteGuard {
     content: string,
     reservationId?: number,
     pathApproval?: MutationPathApproval,
+    signal?: AbortSignal,
   ): Promise<string> {
     await this.#assertMutationPathAllowed(cwd, path, "edit", pathApproval);
     const absolutePath = await canonicalExistingPath(resolveToolPath(cwd, path));
@@ -826,6 +827,19 @@ export class MutationWriteGuard {
         stateChanged: false,
         expectedSha256: previousSha256,
         actualSha256: currentSha256,
+      });
+    }
+    // No asynchronous work may separate this gate from issuing the write.
+    // The native edit caller checked before entering this async callback; both
+    // authority and cancellation can change while its final hash read awaits.
+    try {
+      signal?.throwIfAborted();
+      pathApproval?.assertCurrent?.();
+    } catch (error) {
+      this.releaseMutation(reservationId);
+      throw guardFailure({
+        ok: false, category: "EDIT_FAILED", operation: "edit", target,
+        retryable: true, stateChanged: false, cause: errorMessage(error),
       });
     }
     try {
