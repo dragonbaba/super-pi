@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { createJiti } from "jiti";
 import { Agent } from "../packages/agent/src/agent.ts";
 import { createBashTool, createLocalBashOperations } from "../packages/coding-agent/src/core/tools/bash.ts";
+import { wrapToolDefinition } from "../packages/coding-agent/src/core/tools/tool-definition-wrapper.ts";
 import { createPowerShellTool } from "../packages/coding-agent/src/core/tools/powershell.ts";
 import { getShellCwdBinding, prepareShellCwd } from "../packages/coding-agent/src/core/tools/shell-cwd.ts";
 import { createEventBus } from "../packages/coding-agent/src/core/event-bus.ts";
@@ -15,8 +16,9 @@ import { SessionManager } from "../packages/coding-agent/src/core/session-manage
 const { default: lifecycle } = await createJiti(import.meta.url).import<any>("../packages/extensions/resource-lifecycle-guard/index.ts");
 const bashPath = process.platform !== "win32" ? "/bin/bash" : existsSync("D:/Git/bin/bash.exe") ? "D:/Git/bin/bash.exe" : join(process.env.ProgramFiles!, "Git/bin/bash.exe");
 
-async function fixture(t: test.TestContext, auxiliary?: any) {
-  const root = mkdtempSync(join(tmpdir(), "sp-shell-cwd-")); const cwd = join(root, "workspace"); mkdirSync(cwd);
+async function fixture(t: test.TestContext, auxiliary?: any, aliasedTrustedRoot = false) {
+  const root = mkdtempSync(join(tmpdir(), "sp-shell-cwd-")); let cwd = join(root, "workspace"); mkdirSync(cwd);
+  if (aliasedTrustedRoot) { const alias = join(root, "workspace-alias"); symlinkSync(cwd, alias, process.platform === "win32" ? "junction" : "dir"); cwd = alias; }
   const session = SessionManager.create(cwd, join(root, "sessions"));
   const runtime = createExtensionRuntime();
   const extension = await loadExtensionFromFactory(lifecycle, cwd, createEventBus(), runtime);
@@ -29,7 +31,7 @@ async function fixture(t: test.TestContext, auxiliary?: any) {
   } });
   agent.state.tools = [createBashTool(cwd, { shellPath: bashPath }), createPowerShellTool(cwd)];
   runner.bindCore({ getThinkingLevel: () => "off", getActiveTools: () => ["bash", "powershell"], appendEntry: (kind: string, data: any) => session.appendCustomEntry(kind, data) } as never,
-    { getSignal: () => agent.signal, getModel: () => agent.state.model, isProjectTrusted: () => false, isIdle: () => true, hasPendingMessages: () => false } as never);
+    { getSignal: () => agent.signal, getModel: () => agent.state.model, isProjectTrusted: () => aliasedTrustedRoot, isIdle: () => true, hasPendingMessages: () => false } as never);
   runner.setUIContext({ ...runner.getUIContext(), select: async () => { approvals++; onApproval(); return "仅允许本次"; } }, "tui");
   await runner.emit({ type: "session_start" } as never);
   t.after(async () => { agent.abort(); runner.invalidate(); await runner.emit({ type: "session_shutdown" } as never); rmSync(root, { recursive: true, force: true }); });
@@ -225,4 +227,21 @@ test("review: fresh omitted-cwd reuse clears only released bindings", async t =>
     const guarded = await f.runner.emitToolCall({ type: "tool_call", toolName: tool.name, toolCallId: "fresh-omitted", input } as never);
     assert.notEqual(guarded?.block, true); assert.equal(getShellCwdBinding(input), undefined); guarded?.finalAuthorization?.release();
   }
+});
+
+
+test("review: Session root retarget after approval cannot promote outside project settings", async t => {
+  const f = await fixture(t, undefined, true); const outside = join(f.root, "outside"); mkdirSync(join(outside, CONFIG_DIR_NAME, "config"), { recursive: true });
+  writeFileSync(join(outside, CONFIG_DIR_NAME, "config/settings.json"), JSON.stringify({ shellPath: join(f.root, "untrusted-invalid-shell") }));
+  const previous = process.env.SP_CODING_AGENT_DIR; process.env.SP_CODING_AGENT_DIR = join(f.root, "agent");
+  mkdirSync(join(f.root, "agent/config"), { recursive: true }); writeFileSync(join(f.root, "agent/config/settings.json"), JSON.stringify({ shellPath: bashPath }));
+  try {
+    const { default: loop } = await createJiti(import.meta.url).import<any>("../packages/extensions/tool-loop-guardrails/index.ts");
+    const definitions: any[] = []; loop({ registerTool(tool: any) { definitions.push(tool); }, on() {} });
+    f.agent.state.tools = [wrapToolDefinition(definitions.find(tool => tool.name === "bash"), () => f.runner.createContext())];
+    f.onApproval(() => { rmSync(f.cwd); symlinkSync(outside, f.cwd, process.platform === "win32" ? "junction" : "dir"); });
+    const result = await f.call("bash", "printf unsafe > marker", outside);
+    assert.equal(result.isError, true); assert.ok(result.content[0].type === "text" && result.content[0].text.includes("SHELL_CWD_CHANGED"), JSON.stringify(result));
+    assert.equal(existsSync(join(outside, "marker")), false); assert.ok(f.approvals() > 0);
+  } finally { if (previous === undefined) delete process.env.SP_CODING_AGENT_DIR; else process.env.SP_CODING_AGENT_DIR = previous; }
 });

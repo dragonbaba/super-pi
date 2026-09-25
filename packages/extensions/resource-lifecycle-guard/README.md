@@ -147,3 +147,13 @@ a previously released binding without filesystem lookup. Removing cwd from a liv
 binding remains an identity violation; default shell execution keeps its existing
 no-binding fast path. Bash, PowerShell, standalone and guarded cases have regression
 coverage, including before-fail evidence.
+
+Explicit-cwd preparation also pins the Session root canonical path and identity
+before permission awaits. The wrapper checks that root before project settings
+selection, uses the pinned root for containment, and rechecks it at final spawn.
+A retargeted Session alias cannot promote an outside project's shell settings.
+The permission controller also compares this root to its established primary grant.
+Omitted-cwd rule scope reuses that grant's canonical string without extra filesystem
+work, while command analysis and execution retain their previous omitted-cwd path.
+Known legacy Session-root rule spellings remain compatible; target/scope checks
+still precede rule matching. Alias regressions cover exact and prefix rule reuse.
