@@ -466,8 +466,10 @@ export class MutationWriteGuard {
     expectedSha256: string,
     toolCallId: string,
     turnGeneration: number,
+    preparedTarget?: string,
   ): Promise<void> {
     const canonicalPath = await canonicalExistingPath(resolveToolPath(cwd, path));
+    if (preparedTarget !== undefined && canonicalPath !== preparedTarget) throw new Error("Mutation evidence target changed after preparation.");
     const diskContent = await readFile(canonicalPath);
     const diskSha256 = sha256(diskContent);
     if (diskSha256 !== expectedSha256) {

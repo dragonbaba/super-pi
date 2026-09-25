@@ -290,7 +290,14 @@ export class BatchInvocation {
             this.guard.invalidateCanonicalPath(item.target);
             if (item.native.destination) this.guard.invalidateCanonicalPath(item.native.destination);
           }
-          try { pi.appendEntry(MUTATION_PROGRESS_ENTRY, { toolCallId: this.id, phase: "result", mutationReceiptVersion: 2, ...result }); }
+          try {
+            // Durable recovery metadata is bounded; diff/patch bodies belong only to the aggregate tool result.
+            const receipt = result.receipt as any;
+            pi.appendEntry(MUTATION_PROGRESS_ENTRY, { toolCallId: this.id, itemId: result.itemId, phase: "result", mutationReceiptVersion: 2,
+              operation: result.operation, target: result.target, destination: result.destination, status: result.status,
+              stateChanged: result.stateChanged, reason: result.reason,
+              createdDirectories: receipt?.creation?.createdDirectories ?? receipt?.createdDirectories });
+          }
           catch { if (result.stateChanged !== false) { result.status = "state_unknown"; result.stateChanged = "unknown"; result.reason = "File changed but receipt recording failed; verify, never automatically retry."; } }
           if (result.status !== "succeeded") break;
         }

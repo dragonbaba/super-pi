@@ -215,7 +215,10 @@ function observeBatchResult(state: FalseSuccessState, observation: ToolObservati
   const intents = boundBatchIntents(observation.branch ?? [], observation.input, observation.toolCallId ?? "");
   for (let index = 0; index < operations.length; index++) {
     const operation = operations[index];
-    if (!operation || typeof operation.path !== "string" || !operation.path || operation.path.length > 4096) continue;
+    if (!operation || typeof operation.path !== "string" || !operation.path || operation.path.length > 4096) {
+      observeMutationOutcome(state, "file_batch", normalizeAbsolute(observation.cwd ?? process.cwd(), observation.cwd ?? process.cwd()), "failed_no_change");
+      continue;
+    }
     const id = `${observation.toolCallId}:${index}`, item = Array.isArray(details?.items) && details.items.length === operations.length ? details.items[index] : undefined;
     const intent = intents.get(id);
     const paired = item?.itemId === id && item.operation === operation.operation && validMutationOutcome(item.status, item.stateChanged)
@@ -243,7 +246,7 @@ function observeNativeResult(state: FalseSuccessState, observation: ToolObservat
   const paired = intent && details?.operation === observation.toolName && details.target === intent.target && details.destination === intent.destination && validMutationOutcome(details.status, details.stateChanged);
   const status = paired ? details.status : "failed_no_change";
   const target = intent?.target ?? mutationTarget(observation.toolName, observation.input, observation.cwd);
-  if (target) observeMutationOutcome(state, observation.toolName, normalizeAbsolute(target, observation.cwd ?? process.cwd()), status);
+  observeMutationOutcome(state, observation.toolName, normalizeAbsolute(target ?? observation.cwd ?? process.cwd(), observation.cwd ?? process.cwd()), status);
   const destination = intent?.destination ?? (observation.toolName === "move" && typeof observation.input.destination === "string" ? resolve(observation.cwd ?? process.cwd(), observation.input.destination) : undefined);
   if (typeof destination === "string" && destination.length <= 4096) observeMutationOutcome(state, observation.toolName, normalizeAbsolute(destination, observation.cwd ?? process.cwd()), status);
 }

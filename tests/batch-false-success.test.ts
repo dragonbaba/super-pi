@@ -123,3 +123,15 @@ for (const batch of [false, true]) test(`R4 actual partial move requires both sc
   await f.call("run_tests", { path: destination, expected: "before" });
   assert.equal((await f.call("goal_complete", {})).isError, false);
 });
+
+for (const batch of [false, true]) for (const kind of ["partial", "preflight"]) test(`R4 repaired numeric arguments ${kind}, batch=${batch}`, async t => {
+  const f = await fixture(t), source = join(f.cwd, "123"), destination = join(f.cwd, "456");
+  if (kind === "partial") writeFileSync(source, "before");
+  afterLink = () => f.session.agent.abort(); t.after(() => { afterLink = undefined; });
+  const args = { path: 123, destination: 456 };
+  const result = await f.call(batch ? "file_batch" : "move", batch ? { operations: [{ operation: "move", ...args }] } : args); afterLink = undefined;
+  assert.equal(result.isError, true);
+  if (kind === "partial") { assert.equal(readFileSync(source, "utf8"), "before"); assert.equal(readFileSync(destination, "utf8"), "before"); }
+  assert.equal((await f.say("已完成。" )).includes("尚未验证"), true);
+  assert.equal((await f.call("goal_complete", {})).isError, true);
+});

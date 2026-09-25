@@ -48,6 +48,11 @@ export default function falseSuccessGuard(pi: ExtensionAPI): void {
   });
 
   pi.on("tool_call", (event, ctx) => {
+    if (isNativeOrBatch(event.toolName)) {
+      const pending = pendingMutations.get(event.toolCallId);
+      if (pending) pending.input = event.input;
+      return;
+    }
     if (event.toolName !== GOAL_COMPLETE_TOOL) return undefined;
     const intervention = goalCompletionIntervention(state, modelName(ctx.model));
     if (!intervention) return undefined;
@@ -72,7 +77,11 @@ export default function falseSuccessGuard(pi: ExtensionAPI): void {
   });
 
   pi.on("tool_result", (event: ToolResultEvent, ctx) => {
-    if (isNativeOrBatch(event.toolName)) return;
+    if (isNativeOrBatch(event.toolName)) {
+      const pending = pendingMutations.get(event.toolCallId);
+      if (pending) pending.input = event.input;
+      return;
+    }
     observeToolResult(state, {
       toolName: event.toolName,
       toolCallId: event.toolCallId,

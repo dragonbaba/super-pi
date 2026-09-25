@@ -156,17 +156,15 @@ export async function recordBatchMutationEvidence(guard: MutationWriteGuard, cwd
     const item = details.items[index], operation = input.operations[index];
     if (item?.itemId !== `${toolCallId}:${index}` || item.operation !== operation?.operation || typeof operation.path !== "string") continue;
     if (!validMutationOutcome(item.status, item.stateChanged)) continue;
+    const intent = intents.get(item.itemId);
+    if (!intent || item.target !== intent.target || item.destination !== intent.destination) continue;
     const receipt = item.receipt;
     if (item.status === "succeeded" && (item.operation === "edit" || item.operation === "write") && typeof receipt?.sha256 === "string" && SHA256_PATTERN.test(receipt.sha256)) {
-      try { await guard.recordMutationSnapshot(cwd, operation.path, receipt.sha256, item.itemId, generation); }
-      catch { await guard.invalidate(cwd, operation.path); }
+      try { await guard.recordMutationSnapshot(cwd, intent.target, receipt.sha256, item.itemId, generation, intent.target); }
+      catch { guard.invalidateCanonicalPath(intent.target); }
     } else if (item.stateChanged !== false) {
-      if (item.operation === "delete" || item.operation === "move") {
-        const intent = intents.get(item.itemId);
-        if (!intent || item.target !== intent.target || item.destination !== intent.destination) continue;
-        guard.invalidateCanonicalPath(intent.target);
-        if (intent.destination) guard.invalidateCanonicalPath(intent.destination);
-      } else await guard.invalidate(cwd, operation.path);
+      guard.invalidateCanonicalPath(intent.target);
+      if (intent.destination) guard.invalidateCanonicalPath(intent.destination);
     }
   }
 }

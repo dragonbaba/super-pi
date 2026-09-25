@@ -327,3 +327,35 @@ first. Result consumers now read at most 512 entries through the existing
 indexed getLeafId/getEntry API. A 1,024-entry actual Session fixture forbids
 getBranch and measures exactly 512 indexed reads in chronological order.
 This is invocation-local scratch with no cache or retained Session references.
+
+## Subsequent review of 488c21725: result boundaries
+
+Three same-scope findings remain merge gates until the follow-up candidate's
+full/CI/review checks complete:
+
+- 4106726173: eight real Agent result-hook tests (create/overwrite/exact/snapshot,
+  success/unknown) reproduce wrong evidence grants or invalidation after an
+  ancestor alias redirects. A direct symlink-parent fixture is rejected by the
+  existing native-parent defense before mutation; the supported ancestor-alias
+  fixture reproduces the finding without removing that defense. All batch
+  outcomes now require prepared call/item/target pairing. Successful evidence
+  reads the authoritative canonical target and refuses a newly redirected
+  canonical name; failures invalidate only that key. Raw request semantics and
+  transcript parameters remain unchanged. Live and reopened Sessions agree.
+- 4106726183: actual default SDK/Agent TypeBox numeric-to-string path repair
+  reproduces missing batch partial and batch/single-native preflight obligations;
+  single-native partial was already blocked by its durable intent. Tracking now
+  uses validated tool_call/tool_result arguments when available. Vetoed/invalid
+  raw paths conservatively retain a workspace obligation instead of silently
+  disappearing. The input reference is still released exactly once at end.
+- 4106726187: actual exact/snapshot batch results duplicate large diff/patch
+  strings in durable progress entries. Progress results now persist only bounded
+  identity/status/reason and created-directory metadata; aggregate tool results
+  retain their original diff/patch and TUI behavior. Both 32,000-character line
+  fixtures assert metadata under 4 KiB, full patch still available, correct
+  bytes, one recovered receipt and no replay. Directory side-effect records are
+  retained, including partial failure. No large-body stringify/parse was added.
+
+The first follow-up regression run passes all 26 cases (12 previous completion
+guard controls plus 14 new cases). Original path, identity/deadline, native
+receipt, exact final-gate and shared-core tests are rerun on the final commit.
