@@ -1,3 +1,4 @@
+import { getShellCwdBinding } from "../tools/shell-cwd.ts";
 /**
  * Extension runner - executes extensions and manages their lifecycle.
  */
@@ -477,6 +478,8 @@ class PendingToolAuthorization implements ToolInvocationAuthorization {
 		} else this.checks.push(check);
 	}
 	consume(args: unknown, id: string, name: string, signal?: AbortSignal): unknown {
+		let terminalValues: unknown;
+		let handedOff = false;
 		try {
 			if (!this.live || signal?.aborted) throw new Error("Blocked by policy: final authorization is obsolete");
       // A batch has one terminal authority and owns a private prepared payload.
@@ -488,7 +491,7 @@ class PendingToolAuthorization implements ToolInvocationAuthorization {
         finally { authority.release(); }
       }
       // Shell snapshots continue through their existing agreement checks.
-			if (name !== "bash") throw new Error("Blocked by policy: unsupported final authorization tool");
+			if (name !== "bash" && name !== "powershell") throw new Error("Blocked by policy: unsupported final authorization tool");
 			let command: unknown, timeout: unknown, cwd: unknown, purpose: unknown;
 			for (let i = 0; i < this.checks.length; i++) {
 				const check = this.checks[i]!;
@@ -520,13 +523,14 @@ class PendingToolAuthorization implements ToolInvocationAuthorization {
 			// guard checks current authority, returns private values, and self-releases.
 			const authority = this.authority;
 			this.authority = undefined;
-			const approved = authority.consume(args, id, name, signal) as { command: unknown; timeout: unknown; cwd: unknown; purpose: unknown };
+			const approved = terminalValues = authority.consume(args, id, name, signal) as { command: unknown; timeout: unknown; cwd: unknown; purpose: unknown };
 			if (this.checks.length && (command !== approved.command || timeout !== approved.timeout || cwd !== approved.cwd || purpose !== approved.purpose)) {
 				throw new Error("Blocked by policy: final authorization snapshots disagree");
 			}
 			if (!this.live || signal?.aborted) throw new Error("Blocked by policy: final authorization is obsolete");
+			handedOff = true;
 			return approved;
-		} finally { this.release(); }
+		} finally { if (!handedOff) getShellCwdBinding(terminalValues)?.release(); this.release(); }
 	}
 	release(): void {
 		if (!this.live) return;
@@ -566,7 +570,7 @@ export class ExtensionRunner {
 	private getModel: () => Model<any> | undefined = () => undefined;
 	private getScopedModels: () => readonly ScopedModel[] = () => [];
 	private isIdleFn: () => boolean = () => true;
-	private isProjectTrustedFn: () => boolean = () => true;
+	private isProjectTrustedFn: (revalidateIdentity?: boolean) => boolean = (revalidateIdentity) => revalidateIdentity !== true;
 	private getSignalFn: () => AbortSignal | undefined = () => undefined;
 	private waitForIdleFn: () => Promise<void> = async () => {};
 	private abortFn: () => void = () => {};
@@ -1067,9 +1071,9 @@ export class ExtensionRunner {
 				runner.assertActive();
 				return runner.isIdleFn();
 			},
-			isProjectTrusted: () => {
+			isProjectTrusted: (revalidateIdentity) => {
 				runner.assertActive();
-				return runner.isProjectTrustedFn();
+				return runner.isProjectTrustedFn(revalidateIdentity);
 			},
 			get signal() {
 				runner.assertActive();

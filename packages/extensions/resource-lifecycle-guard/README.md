@@ -101,3 +101,90 @@ Bash lifecycle refusal now occurs in a side-effect-free preflight before permiss
 Recovery guidance for unsupported shell syntax is part of the preflight refusal itself, so immediate Agent results carry it into the next model context without post-execution transforms. For otherwise authorized diagnostics, native file creation/editing and subsequent foreground execution are separate requests with their own evidence, path, permission, and lifecycle rules. Tool/language changes cannot legalize denied behavior. The capability statement is added only when this guard is loaded. Bash timeout uses seconds (`60` is one minute); documentation does not rescale supplied values or change runtime policy.
 
 Preflight errors retain the first actual refusal: `SHELL_DYNAMIC_EXECUTABLE`, `SHELL_HEREDOC`, `SHELL_WRAPPER`, `SHELL_SUBSTITUTION`, `SHELL_INSPECTION_LIMIT`, or `SHELL_UNINSPECTABLE`. In the loop and pipeline Chrome fixtures the first refusal is executable expansion at `$CHROME`; only a bounded simple variable name is echoed. A quoted literal path removes that inspectability problem and still requires normal checks and current authorization. Dynamic data arguments do not become executable-position errors. Only detected heredocs receive script-staging advice; wrapper/eval uncertainty does not imply a heredoc. No variable propagation, command evaluation or automatic retry is added. “Not executed” describes this Bash call, not sibling calls in the response.
+
+### Explicit Shell cwd
+
+Bash and PowerShell accept optional literal `cwd`, relative to the Session cwd.
+The local backend resolves one canonical directory and inode identity before scope
+analysis and permission matching, then rechecks the requested alias and that identity
+synchronously (metadata only) immediately before spawn. No `cd` text is synthesized,
+no shell expansion is performed, and Session/process cwd remains unchanged. Omission
+retains the existing execution path without new directory traversal. Directory identity
+checks do not provide a filesystem sandbox or an OS-level compare-and-swap.
+
+The first implementation supports the built-in local backend. Custom/remote operations,
+commandPrefix and custom spawnHook configurations reject explicit cwd before authorization;
+the existing bounded built-in MSYS stdin bridge retains its verified transport semantics and cwd;
+omitted cwd keeps their existing behavior. There is no local realpath claim for remote
+paths. Native Windows drive paths work; `/c/...` is not translated as MSYS syntax and
+`~/...` is not home expansion (a literal local directory of that spelling is allowed).
+The final PowerShell transport retains its fixed UTF-8 setup prefix. Permission changes,
+request substitution and detected symlink/junction or directory replacement invalidate
+the old approval; they never trigger automatic reauthorization or command replay.
+
+Invocation-owned directory bindings carry one stable final-spawn callback; authority
+references are released when execution finishes. Output/progress callbacks and renderer
+ownership remain unchanged. TUI shows supplied cwd and final details record the canonical
+cwd. Existing #43 CDPATH query-prefix and closed-subshell hash limitations remain.
+
+
+Review follow-up: terminal handoff rejects released bindings as well as replaced
+bindings. A transfer-aware finally releases preparation on every permission/lifecycle
+refusal or exception. Standalone tool-loop-guardrails canonicalizes explicit cwd
+before project-trust/settings selection and owns cleanup even without this guard.
+The authorization AST gate counts the single actual terminal consume call and its
+single approved argument container, including the pinned-binding handoff; no new
+per-progress/per-render allocations or caches were introduced.
+
+Standalone repeated calls renew released bindings through the shared preparation
+function; final guarded handoff still rejects a released binding within the same
+authorized invocation. Explicit cwd compares canonical target and canonical trusted
+Session root, preserving project settings when the workspace itself is a symlink.
+Omitted cwd adds no realpath traversal. Both regressions failed before this fix.
+
+Fresh input reuse can switch explicit cwd back to omission: preparation clears only
+a previously released binding without filesystem lookup. Removing cwd from a live
+binding remains an identity violation; default shell execution keeps its existing
+no-binding fast path. Bash, PowerShell, standalone and guarded cases have regression
+coverage, including before-fail evidence.
+
+Explicit-cwd preparation also pins the Session root canonical path and identity
+before permission awaits. The wrapper checks that root before project settings
+selection, uses the pinned root for containment, and rechecks it at final spawn.
+A retargeted Session alias cannot promote an outside project's shell settings.
+The permission controller also compares this root to its established primary grant.
+Omitted-cwd rule scope reuses that grant's canonical string without extra filesystem
+work, while command analysis and execution retain their previous omitted-cwd path.
+Known legacy Session-root rule spellings remain compatible; target/scope checks
+still precede rule matching. Alias regressions cover exact and prefix rule reuse.
+
+Session tree/branch restore revalidates the existing primary grant rather than
+replacing its trusted identity. If restoration fails, the controller invalidates
+current authority and refuses guarded calls until a successful identity-preserving
+restore. A caught session event error cannot silently enable the replacement root.
+Opening a different physical workspace requires a fresh permission/trust owner.
+
+
+Permission restoration becomes usable only after status publication succeeds.
+File-backed SettingsManager ownership pins the trusted project's physical identity
+across extension rebuilds; reload rejects root replacement before loading project
+settings, packages or extensions. Trust toggling on the same owner cannot replace
+that pin. Custom and in-memory settings stores retain their existing behavior.
+Explicit cwd validates both root and target before selecting shell settings, and
+uses an invocation-owned Bash definition so a failed call cannot poison the
+omitted-cwd definition cache. Final spawn still performs the identity check.
+These checks run at invocation/reload boundaries, not on output or render updates.
+
+
+File settings pin the root even while initially untrusted, before any trust UI wait.
+Explicit-cwd consumers request identity revalidation from the persistent Session
+trust owner via `ctx.isProjectTrusted(true)`, including standalone scoped Bash
+without the permission extension. Default boolean queries and omitted cwd retain
+their no-traversal behavior. Definition argument preparation receives the optional
+Session context before permission hooks, so project command prefixes unsupported
+with explicit cwd refuse before an approval or allow-rule change. These are bounded
+invocation/startup operations; no progress/render callback or regex was added.
+
+A memory/custom settings store without an identity assertion retains its ordinary
+trust boolean, but explicit identity-revalidated queries return false. Such a
+store cannot promote newly read on-disk project shell settings as trusted.

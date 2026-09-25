@@ -1,3 +1,4 @@
+import { getShellCwdBinding, attachShellCwdBinding, prepareShellCwd, type ShellCwdBinding } from "@super-pi/coding-agent";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, resolve } from "node:path";
@@ -15,6 +16,8 @@ const INVALIDATED = "Blocked by policy: authorized Bash request or authority cha
 /** One call owns this state. Bash carries no path/browser permission attachment. */
 class BashInvocationAuthorization {
   readonly finalAuthority = true as const;
+  private binding?: ShellCwdBinding;
+  private transferred = false;
   constructor(
     private input: Record<string, unknown> | undefined,
     private command: unknown, private timeout: unknown, private cwd: unknown, private purpose: unknown,
@@ -22,12 +25,12 @@ class BashInvocationAuthorization {
     private permissions: SessionPermissionController | undefined,
     private readonly sessionCwd: string, private readonly sessionId: string,
     private readonly generation: number, private readonly sequence: number,
-    private readonly id: string,
-  ) {}
+    private readonly id: string, private readonly name: string, binding?: ShellCwdBinding,
+  ) { this.binding = binding; }
   consume(args: unknown, id: string, name: string, signal?: AbortSignal): unknown {
     try {
     const ctx = this.ctx, permissions = this.permissions;
-    if (!ctx || !permissions || signal?.aborted || args !== this.input || name !== "bash" || id !== this.id
+    if (!ctx || !permissions || signal?.aborted || args !== this.input || name !== this.name || id !== this.id
       || ctx.cwd !== this.sessionCwd || ctx.sessionManager.getSessionId() !== this.sessionId
       || permissions.authorityGeneration !== this.generation || permissions.state.sequence !== this.sequence) throw new Error(INVALIDATED);
     // Refuse accessor substitution rather than invoking externally installed getters.
@@ -39,10 +42,24 @@ class BashInvocationAuthorization {
       || (timeout && !("value" in timeout)) || timeout?.value !== this.timeout
       || (cwd && !("value" in cwd)) || cwd?.value !== this.cwd
       || (purpose && !("value" in purpose)) || purpose?.value !== this.purpose) throw new Error(INVALIDATED);
-    return { command: this.command, timeout: this.timeout, cwd: this.cwd, purpose: this.purpose };
+    const approved = { command: this.command, timeout: this.timeout, cwd: this.cwd, purpose: this.purpose };
+    const binding = this.binding;
+    if (getShellCwdBinding(args) !== binding || binding?.isReleased || (this.cwd !== undefined && !binding)) throw new Error(INVALIDATED);
+    if (binding) {
+      const sessionCwd = this.sessionCwd, sessionId = this.sessionId, generation = this.generation, sequence = this.sequence;
+      binding.setAuthority(() => {
+        if (signal?.aborted || ctx.cwd !== sessionCwd || ctx.sessionManager.getSessionId() !== sessionId
+          || permissions.authorityGeneration !== generation || permissions.state.sequence !== sequence) throw new Error(INVALIDATED);
+      });
+      attachShellCwdBinding(approved, binding);
+    }
+    this.transferred = true;
+    return approved;
     } finally { this.release(); }
   }
   release(): void {
+    if (!this.transferred) this.binding?.release();
+    this.binding = undefined;
     this.input = undefined; this.command = undefined; this.timeout = undefined;
     this.cwd = undefined; this.purpose = undefined;
     this.ctx = undefined; this.permissions = undefined;
@@ -125,11 +142,13 @@ export default function resourceLifecycleGuard(pi: ExtensionAPI): void {
   pi.on("tool_call", async (event, ctx) => {
     if (event.toolName.startsWith(CHROME_TOOL_PREFIX)) resources.markChromeUsed();
     // Side-effect-free Bash denial only; acceptance still requires current permission.
-    const bashCommand = event.toolName === "bash" ? event.input.command : undefined;
-    const bashTimeout = event.toolName === "bash" ? event.input.timeout : undefined;
-    const bashCwd = event.toolName === "bash" ? (event.input as Record<string, unknown>).cwd : undefined;
-    const bashPurpose = event.toolName === "bash" ? (event.input as Record<string, unknown>).purpose : undefined;
-    const bash = event.toolName === "bash";
+    const shell = event.toolName === "bash" || event.toolName === "powershell";
+    const shellName = event.toolName;
+    const bashCommand = shell ? event.input.command : undefined;
+    const bashTimeout = shell ? event.input.timeout : undefined;
+    const bashCwd = shell ? (event.input as Record<string, unknown>).cwd : undefined;
+    const bashPurpose = shell ? (event.input as Record<string, unknown>).purpose : undefined;
+    const bash = shell;
     const id = event.toolCallId;
     const cwd = bash ? ctx.cwd : "";
     const sessionId = bash ? ctx.sessionManager.getSessionId() : "";
@@ -140,11 +159,15 @@ export default function resourceLifecycleGuard(pi: ExtensionAPI): void {
       const reason = inspectBashResourceLifecycle(event.input, nativePowerShellAvailable);
       if (reason) return { block: true, reason };
     }
+    const preparedCwd = shell ? await prepareShellCwd(event.input as { cwd?: unknown }, ctx.cwd) : undefined;
+    let transferred = false;
+    try {
     const permissionBlock = await permissions.authorizeToolCall(event, ctx);
     if (permissionBlock) return permissionBlock;
     // Neither lifecycle acceptance nor the original approval authorizes a replacement.
     if (bash) {
-      if (event.toolName !== "bash" || event.toolCallId !== id || event.input.command !== bashCommand
+      if (shellName === "powershell") { const reason = inspectBashResourceLifecycle(event.input); if (reason) return { block: true, reason }; }
+      if (getShellCwdBinding(event.input) !== preparedCwd || event.toolName !== shellName || event.toolCallId !== id || event.input.command !== bashCommand
         || event.input.timeout !== bashTimeout || (event.input as Record<string, unknown>).cwd !== bashCwd
         || (event.input as Record<string, unknown>).purpose !== bashPurpose
         || ctx.cwd !== cwd || ctx.sessionManager.getSessionId() !== sessionId
@@ -152,12 +175,13 @@ export default function resourceLifecycleGuard(pi: ExtensionAPI): void {
         block: true,
         reason: "Blocked by policy: command changed during permission handling. Submit the final exact command for current authorization; no replacement was executed.",
       };
-      return { finalAuthorization: new BashInvocationAuthorization(event.input, bashCommand, bashTimeout, bashCwd, bashPurpose,
-        ctx, permissions, cwd, sessionId, generation, permissions.state.sequence, id) };
+      const finalAuthorization = new BashInvocationAuthorization(event.input, bashCommand, bashTimeout, bashCwd, bashPurpose,
+        ctx, permissions, cwd, sessionId, generation, permissions.state.sequence, id, shellName, preparedCwd);
+      transferred = true;
+      return { finalAuthorization };
     }
-    if (event.toolName !== "powershell") return undefined;
-    const reason = inspectBashResourceLifecycle(event.input);
-    return reason ? { block: true, reason } : undefined;
+    return undefined;
+    } finally { if (!transferred) preparedCwd?.release(); }
   });
 
   pi.on("tool_result", (event) => {

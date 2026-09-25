@@ -512,3 +512,7 @@ export { findUnsafePowerShellSegment } from "./utils/powershell-policy.ts";
 
 /** Experimental read-only protected-operation ownership inspection. */
 export { inspectOperationWriter } from "./core/operation-journal.ts";
+
+export { prepareShellCwd, getShellCwdBinding, attachShellCwdBinding, type ShellCwdBinding } from "./core/tools/shell-cwd.ts";
+
+export { withMsysStdinBridge, MAX_MSYS_STDIN_COMMAND_BYTES, MAX_WINDOWS_ENVIRONMENT_CHARS, MSYS_STDIN_COMMAND_ENV } from "./core/tools/msys-stdin.ts";

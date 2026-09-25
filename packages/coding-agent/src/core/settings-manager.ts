@@ -2,7 +2,7 @@ import type { ThinkingLevel } from "@super-pi/agent-core";
 import type { Transport } from "@super-pi/ai";
 import type { TuiMode as RendererTuiMode, ScrollViewScrollbar } from "@super-pi/tui";
 import { randomUUID } from "crypto";
-import { existsSync, mkdirSync, readFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, statSync } from "fs";
 import { dirname, join } from "path";
 import lockfile from "proper-lockfile";
 import { CONFIG_DIR_NAME, getAgentDir, getConfigDir } from "../config.ts";
@@ -221,6 +221,8 @@ export interface SettingsManagerCreateOptions {
 }
 
 export interface SettingsStorage {
+	/** File-backed owners pin project identity across extension reloads. */
+	assertProjectIdentity?(): void;
 	withLock(scope: SettingsScope, fn: (current: string | undefined) => string | undefined): void;
 }
 
@@ -244,12 +246,30 @@ function toSettingsError(scope: SettingsScope, error: unknown, path?: string): S
 export class FileSettingsStorage implements SettingsStorage {
 	private globalSettingsPath: string;
 	private projectSettingsPath: string;
+	private readonly projectRoot: string;
+	private projectCanonical: string | undefined;
+	private projectDevice: bigint | undefined;
+	private projectInode: bigint | undefined;
 
 	constructor(cwd: string, agentDir: string) {
 		const resolvedCwd = resolvePath(cwd);
 		const resolvedAgentDir = resolvePath(agentDir);
+		this.projectRoot = resolvedCwd;
 		this.globalSettingsPath = join(getConfigDir(resolvedAgentDir), "settings.json");
 		this.projectSettingsPath = join(resolvedCwd, CONFIG_DIR_NAME, "config", "settings.json");
+	}
+
+	assertProjectIdentity(): void {
+		let canonical: string, directory;
+		try { canonical = realpathSync.native(this.projectRoot); directory = statSync(canonical, { bigint: true }); }
+		catch (cause) { throw new Error("[SHELL_CWD_CHANGED] Trusted project directory is unavailable; reload refused.", { cause }); }
+		if (!directory.isDirectory() || (this.projectCanonical !== undefined &&
+			(canonical !== this.projectCanonical || directory.dev !== this.projectDevice || directory.ino !== this.projectInode))) {
+			throw new Error("[SHELL_CWD_CHANGED] Trusted project directory changed; reload requires a new trust owner.");
+		}
+		if (this.projectCanonical === undefined) {
+			this.projectCanonical = canonical; this.projectDevice = directory.dev; this.projectInode = directory.ino;
+		}
 	}
 
 	private acquireLockSyncWithRetry(path: string): () => void {
@@ -277,6 +297,7 @@ export class FileSettingsStorage implements SettingsStorage {
 	}
 
 	withLock(scope: SettingsScope, fn: (current: string | undefined) => string | undefined): void {
+		if (scope === "project") this.assertProjectIdentity();
 		const path = scope === "global" ? this.globalSettingsPath : this.projectSettingsPath;
 		const dir = dirname(path);
 
@@ -396,6 +417,7 @@ export class SettingsManager {
 		settingsPaths: SettingsPaths = {},
 	): SettingsManager {
 		const projectTrusted = options.projectTrusted ?? true;
+		storage.assertProjectIdentity?.();
 		const globalLoad = SettingsManager.tryLoadFromStorage(storage, "global");
 		const projectLoad = SettingsManager.tryLoadFromStorage(storage, "project", projectTrusted);
 		const initialErrors: SettingsError[] = [];
@@ -526,11 +548,17 @@ export class SettingsManager {
 		return structuredClone(this.projectSettings);
 	}
 
-	isProjectTrusted(): boolean {
+	isProjectTrusted(revalidateIdentity = false): boolean {
+		if (this.projectTrusted && revalidateIdentity) {
+			// A non-file owner without identity evidence cannot trust newly read disk resources.
+			if (!this.storage.assertProjectIdentity) return false;
+			this.storage.assertProjectIdentity();
+		}
 		return this.projectTrusted;
 	}
 
 	setProjectTrusted(trusted: boolean): void {
+		if (trusted) this.storage.assertProjectIdentity?.();
 		if (this.projectTrusted === trusted) {
 			return;
 		}
@@ -557,6 +585,9 @@ export class SettingsManager {
 
 	async reload(): Promise<void> {
 		await this.writeQueue;
+		// Do not swallow identity failure as a recoverable JSON parse error: callers
+		// must stop before trusted packages or extensions are reloaded.
+		if (this.projectTrusted) this.storage.assertProjectIdentity?.();
 		const globalLoad = SettingsManager.tryLoadFromStorage(this.storage, "global");
 		if (!globalLoad.error) {
 			this.globalSettings = globalLoad.settings;

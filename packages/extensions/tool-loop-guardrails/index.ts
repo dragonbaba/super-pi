@@ -1,8 +1,11 @@
 import { MUTATION_READ_SOURCE } from "../../coding-agent/src/core/tools/read-window.ts";
 import process from "node:process";
+import { realpathSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
 import {
   createReadToolDefinition,
+  getShellCwdBinding,
+  prepareShellCwd,
   type ExtensionAPI,
   type ReadToolInput,
   type ToolResultEvent,
@@ -128,11 +131,33 @@ export default function toolLoopGuardrails(pi: ExtensionAPI): void {
       "For Node scripts, use node -e when the one-off source can be passed reliably; complex quoting or reusable code may use an explicit file or supported stdin. Script length does not decide permission, and a file does not bypass approval.",
     ],
     parameters: ScopedBashParameters,
+    prepareArguments(args, ctx) {
+      const input = upstreamBash.prepareArguments!(args) as ScopedBashInput;
+      if (input?.cwd === undefined) return input;
+      if (!ctx) throw new Error("[SHELL_CWD_UNSUPPORTED] Explicit scoped cwd requires a Session context for settings preflight.");
+      if (typeof input.cwd !== "string" || !input.cwd || input.cwd.length > 4096 || input.cwd.includes("\0")) return input;
+      // This synchronous metadata/settings preflight precedes every permission hook.
+      // No binding or settings definition survives this check; execution revalidates.
+      const trusted = ctx.isProjectTrusted(true);
+      const target = realpathSync.native(resolve(ctx.cwd, input.cwd));
+      const root = trusted ? realpathSync.native(ctx.cwd) : ctx.cwd;
+      const definition = createConfiguredMsysBashDefinition(target, trusted && insideProject(target, root));
+      definition.prepareArguments!(input);
+      return input;
+    },
     async execute(toolCallId, input: ScopedBashInput, signal, onUpdate, ctx) {
-      const effectiveCwd = resolveBashCallCwd(input, ctx.cwd);
-      const projectTrusted = ctx.isProjectTrusted() && insideProject(effectiveCwd, ctx.cwd);
-      const bash = bashFor(effectiveCwd, projectTrusted);
-      return bash.execute(toolCallId, { command: input.command, timeout: input.timeout }, signal, onUpdate, ctx);
+      const binding = await prepareShellCwd(input, ctx.cwd);
+      try {
+        const effectiveCwd = binding?.canonical ?? resolveBashCallCwd(input, ctx.cwd);
+        binding?.beforeSpawn(binding.canonical);
+        const trusted = ctx.isProjectTrusted(binding !== undefined);
+        const projectRoot = binding?.sessionCanonical ?? ctx.cwd;
+        const projectTrusted = trusted && insideProject(effectiveCwd, projectRoot);
+        // Explicit directory definitions are invocation-owned: a failed identity check
+        // must never leave settings from a replacement directory in the path cache.
+        const bash = binding ? createConfiguredMsysBashDefinition(effectiveCwd, projectTrusted) : bashFor(effectiveCwd, projectTrusted);
+        return await bash.execute(toolCallId, input, signal, onUpdate, ctx);
+      } finally { binding?.release(); }
     },
   });
 
@@ -202,7 +227,7 @@ export default function toolLoopGuardrails(pi: ExtensionAPI): void {
     const failureText = event.isError ? boundedFailureText(event.content) : "";
     const warning = recordResult(state, event.toolName, event.input, event.isError, failureText, key);
     const recoveryHint = event.isError
-      ? await failureRecoveryHint(event.toolName, event.input, failureText, ctx.cwd)
+      ? await failureRecoveryHint(event.toolName, event.input, failureText, getShellCwdBinding(event.input)?.canonical ?? ctx.cwd)
       : undefined;
     const repairNote = pending?.repairNote;
     // One steering note for a snapshot failure at the repetition threshold.

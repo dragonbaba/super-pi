@@ -1,3 +1,4 @@
+import { prepareShellCwd } from "@super-pi/coding-agent";
 import { createHash } from "node:crypto";
 import { lstat } from "node:fs/promises";
 import { dirname, isAbsolute, resolve } from "node:path";
@@ -317,6 +318,7 @@ export class SessionPermissionController {
   readonly #rejections = new Map<string, RejectionRecord>();
   #committedState?: PermissionStateCheckpoint;
   #auditSequence = 0;
+  #restored = false;
   #authorityGeneration = 0;
   #pendingApproval: AbortController | undefined;
 
@@ -347,6 +349,7 @@ export class SessionPermissionController {
   }
 
   async restore(ctx: ExtensionContext): Promise<void> {
+    this.#restored = false;
     this.#authorityGeneration++;
     this.#pendingApproval?.abort(new Error("Permission request is obsolete after session restore"));
     this.#pendingApproval = undefined;
@@ -354,6 +357,7 @@ export class SessionPermissionController {
     this.#committedState = this.#state.checkpoint();
     this.#rejections.clear();
     this.#publish(ctx);
+    this.#restored = true;
   }
 
   systemGuidance(): string {
@@ -366,6 +370,7 @@ export class SessionPermissionController {
     if (event.toolName !== "write" && event.toolName !== "edit" && event.toolName !== "lsp_fix" && event.toolName !== "delete" && event.toolName !== "move" && event.toolName !== "file_batch"
       && event.toolName !== "bash" && event.toolName !== "powershell" && event.toolName !== "browser_exec"
       && event.toolName !== "subagent" && event.toolName !== "structured_readonly_command") return undefined;
+    if (!this.#restored) return { block: true, reason: "[SHELL_CWD_CHANGED] Permissions are unavailable until the Session workspace identity is restored; the tool was not executed." };
     let signal = ctx.signal;
     const generation = this.#authorityGeneration;
     const permissionSequence = this.#state.sequence;
@@ -391,12 +396,13 @@ export class SessionPermissionController {
       };
     }
 
+    const ruleCwd = request.effectiveCwd === ctx.cwd ? this.#state.primary.canonicalPath : request.effectiveCwd ?? ctx.cwd;
     const scopeAllowed = this.#scopeAllows(request);
     if (request.shellCommand && this.#ruleScopeAllows(request)) {
       for (const rule of this.#state.allowRules) {
-        if (!rule.cwd && request.effectiveCwd !== ctx.cwd) continue;
+        if (!rule.cwd && ruleCwd !== this.#state.primary.canonicalPath) continue;
         if (rule.kind === "prefix" && (request.highRisk || request.opaqueScript)) continue;
-        if (!sessionAllowRuleMatches(rule, request.shellCommand, { backend: request.operation, cwd: request.effectiveCwd ?? ctx.cwd })) continue;
+        if (!sessionAllowRuleMatches(rule, request.shellCommand, { backend: request.operation, cwd: rule.cwd === ctx.cwd && ruleCwd === this.#state.primary.canonicalPath ? ctx.cwd : ruleCwd })) continue;
         this.#appendAudit(request, "approved", "session_rule_match", this.#state.mode, this.#state.mode, false);
         return undefined;
       }
@@ -477,7 +483,7 @@ export class SessionPermissionController {
     // One presentation materialization per actual approval. Never use the bounded
     // summary as the authority or as a substitute for inspectable request values.
     const fullRequest = JSON.stringify(event.input, null, 2);
-    const details = `${header}\n操作尚未执行\n将保存的精确规则: ${request.shellCommand ?? "不适用"}\n将保存的前缀规则: ${commandPrefix ? `${commandPrefix} *（允许参数变化，包括无参数调用）` : "不适用"}\n本 Session 规则范围: ${request.operation}; cwd=${request.effectiveCwd ?? ctx.cwd}\n模型提供的说明 (未经验证): ${request.purpose ?? "未提供"}\n目标范围:\n${request.exactTargets.join("\n") || "未确定"}\n风险依据: ${request.primitives.join(", ")}\n完整请求:\n${fullRequest}`;
+    const details = `${header}\n操作尚未执行\n将保存的精确规则: ${request.shellCommand ?? "不适用"}\n将保存的前缀规则: ${commandPrefix ? `${commandPrefix} *（允许参数变化，包括无参数调用）` : "不适用"}\n本 Session 规则范围: ${request.operation}; cwd=${ruleCwd}\n模型提供的说明 (未经验证): ${request.purpose ?? "未提供"}\n目标范围:\n${request.exactTargets.join("\n") || "未确定"}\n风险依据: ${request.primitives.join(", ")}\n完整请求:\n${fullRequest}`;
     const choice = await ctx.ui.select(header, choices, { signal, details });
     assertCurrent();
     const prefixChoice = commandPrefix ? `${ALLOW_SESSION_PREFIX}：${commandPrefix} *` : undefined;
@@ -490,7 +496,7 @@ export class SessionPermissionController {
         try {
           const kind: SessionAllowRuleKind = choice === ALLOW_SESSION_EXACT ? "exact" : "prefix";
           const value = kind === "exact" ? request.shellCommand : commandPrefix!;
-          if (this.#state.addAllowRule(createSessionAllowRule(kind, value, { backend: request.operation as "bash" | "powershell", cwd: request.effectiveCwd ?? ctx.cwd }))) {
+          if (this.#state.addAllowRule(createSessionAllowRule(kind, value, { backend: request.operation as "bash" | "powershell", cwd: ruleCwd }))) {
             this.#persist(ctx);
             policyReason = "session_rule_added";
           }
@@ -892,8 +898,10 @@ export class SessionPermissionController {
     if (event.toolName !== "bash" && event.toolName !== "powershell") return undefined;
     const shellOperation = event.toolName;
     const shellInput = event.input as { command: string; cwd?: unknown };
-    const hasExplicitCwd = typeof shellInput.cwd === "string" && shellInput.cwd.length > 0;
-    const effectiveCwd = hasExplicitCwd ? resolve(ctx.cwd, shellInput.cwd as string) : ctx.cwd;
+    const cwdBinding = await prepareShellCwd(shellInput, ctx.cwd);
+    const hasExplicitCwd = cwdBinding !== undefined;
+    if (cwdBinding && !cwdBinding.matchesSessionRoot(this.#state.primary.canonicalPath, this.#state.primary.device, this.#state.primary.inode)) throw new Error("[SHELL_CWD_CHANGED] Session workspace identity changed before authorization.");
+    const effectiveCwd = cwdBinding?.canonical ?? ctx.cwd;
     const high = inspectHighRiskBashMutation(event.input, effectiveCwd, shellOperation);
     const scope = shellOperation === "powershell"
       ? inspectPowerShellPermissionScope(event.input, effectiveCwd)
