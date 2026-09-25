@@ -4,31 +4,36 @@ import { resolve } from "node:path";
 
 // Private in-process handoff across source/dist extension loaders; never serialized.
 const CWD_BINDING = Symbol.for("super-pi.shell-cwd-binding");
-export const LOCAL_CWD_BACKEND = Symbol.for("super-pi.local-cwd-backend");
+// Weak backend identity registry, not an authorization/path cache. No history or scans.
+const localBackends = new WeakMap<object, Function>();
+export function registerLocalShellBackend<T extends { exec: Function }>(backend: T): T { localBackends.set(backend, backend.exec); return backend; }
+export function isLocalShellBackend(backend: { exec: Function }): boolean { return localBackends.get(backend) === backend.exec; }
 
 /** Invocation-owned directory facts. No cache, handle, timer or model-visible token. */
 export class ShellCwdBinding {
-  private authority?: () => void;
-  private released = false;
+  #authority?: () => void;
+  #released = false;
   readonly requested: string;
   readonly canonical: string;
-  private readonly device: bigint;
-  private readonly inode: bigint;
+  readonly #device: bigint;
+  readonly #inode: bigint;
   constructor(requested: string, canonical: string, device: bigint, inode: bigint) {
-    this.requested = requested; this.canonical = canonical; this.device = device; this.inode = inode;
+    this.requested = requested; this.canonical = canonical; this.#device = device; this.#inode = inode; Object.freeze(this);
   }
-  setAuthority(authority: () => void): void { this.authority = authority; }
+  get isReleased(): boolean { return this.#released; }
+  setAuthority(authority: () => void): void { this.#authority = authority; }
   readonly beforeSpawn = (cwd: string): void => {
-    if (this.released || cwd !== this.canonical) throw new Error("[SHELL_CWD_CHANGED] Execution directory changed.");
-    this.authority?.();
+    if (this.#released || cwd !== this.canonical) throw new Error("[SHELL_CWD_CHANGED] Execution directory changed.");
+    this.#authority?.();
     // Metadata only, at the actual spawn boundary; no awaited work follows this check.
-    const canonical = realpathSync.native(this.requested);
-    const directory = statSync(canonical, { bigint: true });
-    if (canonical !== this.canonical || !directory.isDirectory() || directory.dev !== this.device || directory.ino !== this.inode) {
+    let canonical: string, directory;
+    try { canonical = realpathSync.native(this.requested); directory = statSync(canonical, { bigint: true }); }
+    catch (cause) { throw new Error("[SHELL_CWD_CHANGED] Directory lookup failed after authorization; request fresh approval.", { cause }); }
+    if (canonical !== this.canonical || !directory.isDirectory() || directory.dev !== this.#device || directory.ino !== this.#inode) {
       throw new Error("[SHELL_CWD_CHANGED] Directory identity changed after authorization; request fresh approval.");
     }
   };
-  release(): void { this.released = true; this.authority = undefined; }
+  release(): void { this.#released = true; this.#authority = undefined; }
 }
 
 export function getShellCwdBinding(input: unknown): ShellCwdBinding | undefined {
@@ -43,7 +48,7 @@ export async function prepareShellCwd(input: { cwd?: unknown }, sessionCwd: stri
   // No shell/home/MSYS expansion: filesystem paths are interpreted by the local backend.
   const requested = resolve(sessionCwd, input.cwd);
   const existing = getShellCwdBinding(input);
-  if (existing) {
+  if (existing && !existing.isReleased) {
     if (existing.requested !== requested) throw new Error("[SHELL_CWD_CHANGED] cwd changed after preparation.");
     return existing;
   }

@@ -1,4 +1,5 @@
-import { prepareShellCwd, LOCAL_CWD_BACKEND } from "./shell-cwd.ts";
+import { withMsysStdinBridge } from "./msys-stdin.ts";
+import { prepareShellCwd, isLocalShellBackend, registerLocalShellBackend } from "./shell-cwd.ts";
 import { constants } from "node:fs";
 import { access as fsAccess } from "node:fs/promises";
 import type { AgentTool } from "@super-pi/agent-core";
@@ -90,7 +91,6 @@ export interface BashToolDetails {
  * Override these to delegate command execution to remote systems (for example SSH).
  */
 export interface BashOperations {
-	readonly [LOCAL_CWD_BACKEND]?: true;
 	/**
 	 * Execute a command and stream output.
 	 * @param command The command to execute
@@ -113,8 +113,7 @@ export interface BashOperations {
 
 /** Shared process execution used by the built-in shell tools. */
 export function createLocalShellOperations(shellName: string, resolveShellConfig: () => ShellConfig): BashOperations {
-	return {
-		[LOCAL_CWD_BACKEND]: true,
+	return registerLocalShellBackend({
 		exec: async (command, cwd, { onData, signal, timeout, env, beforeSpawn }) => {
 			const timeoutMs = resolveTimeoutMs(timeout);
 			if (signal?.aborted) {
@@ -180,7 +179,7 @@ export function createLocalShellOperations(shellName: string, resolveShellConfig
 				if (signal) signal.removeEventListener("abort", onAbort);
 			}
 		},
-	};
+	});
 }
 
 /**
@@ -826,7 +825,7 @@ export function createShellToolDefinition(
 		parameters: bashSchema,
         prepareArguments(args) {
             if (args && typeof args === "object" && (args as BashToolInput).cwd !== undefined
-              && (!ops[LOCAL_CWD_BACKEND] || commandPrefix || spawnHook || ops.exec !== backendExecute)) throw new Error("[SHELL_CWD_UNSUPPORTED] Explicit cwd requires an unchanged built-in local backend without commandPrefix or spawnHook.");
+              && (!isLocalShellBackend(ops) || commandPrefix || (spawnHook && spawnHook !== withMsysStdinBridge) || ops.exec !== backendExecute)) throw new Error("[SHELL_CWD_UNSUPPORTED] Explicit cwd requires an unchanged built-in local backend without commandPrefix or spawnHook.");
             return args as BashToolInput;
         },
 		async execute(
@@ -837,7 +836,7 @@ export function createShellToolDefinition(
 			ctx?,
 		) {
 			const { command, timeout } = input;
-			if (input.cwd !== undefined && (!ops[LOCAL_CWD_BACKEND] || commandPrefix || spawnHook || ops.exec !== backendExecute)) throw new Error("[SHELL_CWD_UNSUPPORTED] Explicit cwd requires the built-in local backend without commandPrefix or spawnHook.");
+			if (input.cwd !== undefined && (!isLocalShellBackend(ops) || commandPrefix || (spawnHook && spawnHook !== withMsysStdinBridge) || ops.exec !== backendExecute)) throw new Error("[SHELL_CWD_UNSUPPORTED] Explicit cwd requires the built-in local backend without commandPrefix or spawnHook.");
 			const cwdBinding = input.cwd === undefined ? undefined : await prepareShellCwd(input, ctx?.cwd ?? cwd);
 			try {
 			const resolvedCommand = commandPrefix ? `${commandPrefix}\n${command}` : command;
@@ -953,7 +952,7 @@ export function createShellToolDefinition(
 			try {
 				let exitCode: number | null;
 				try {
-					const result = await backendExecute.call(ops, spawnContext.command, spawnContext.cwd, {
+					const result = await (cwdBinding ? backendExecute : ops.exec).call(ops, spawnContext.command, spawnContext.cwd, {
 						onData: handleData,
 						signal: executionSignal,
 						timeout,

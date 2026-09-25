@@ -113,7 +113,8 @@ retains the existing execution path without new directory traversal. Directory i
 checks do not provide a filesystem sandbox or an OS-level compare-and-swap.
 
 The first implementation supports the built-in local backend. Custom/remote operations,
-commandPrefix and spawnHook configurations reject explicit cwd before authorization;
+commandPrefix and custom spawnHook configurations reject explicit cwd before authorization;
+the existing bounded built-in MSYS stdin bridge retains its verified transport semantics and cwd;
 omitted cwd keeps their existing behavior. There is no local realpath claim for remote
 paths. Native Windows drive paths work; `/c/...` is not translated as MSYS syntax and
 `~/...` is not home expansion (a literal local directory of that spelling is allowed).

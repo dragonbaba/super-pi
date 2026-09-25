@@ -1,3 +1,4 @@
+import { getShellCwdBinding } from "../tools/shell-cwd.ts";
 /**
  * Extension runner - executes extensions and manages their lifecycle.
  */
@@ -477,6 +478,8 @@ class PendingToolAuthorization implements ToolInvocationAuthorization {
 		} else this.checks.push(check);
 	}
 	consume(args: unknown, id: string, name: string, signal?: AbortSignal): unknown {
+		let terminalValues: unknown;
+		let handedOff = false;
 		try {
 			if (!this.live || signal?.aborted) throw new Error("Blocked by policy: final authorization is obsolete");
 			// Only the guarded Bash contract is supported by this internal handoff.
@@ -512,13 +515,14 @@ class PendingToolAuthorization implements ToolInvocationAuthorization {
 			// guard checks current authority, returns private values, and self-releases.
 			const authority = this.authority;
 			this.authority = undefined;
-			const approved = authority.consume(args, id, name, signal) as { command: unknown; timeout: unknown; cwd: unknown; purpose: unknown };
+			const approved = terminalValues = authority.consume(args, id, name, signal) as { command: unknown; timeout: unknown; cwd: unknown; purpose: unknown };
 			if (this.checks.length && (command !== approved.command || timeout !== approved.timeout || cwd !== approved.cwd || purpose !== approved.purpose)) {
 				throw new Error("Blocked by policy: final authorization snapshots disagree");
 			}
 			if (!this.live || signal?.aborted) throw new Error("Blocked by policy: final authorization is obsolete");
+			handedOff = true;
 			return approved;
-		} finally { this.release(); }
+		} finally { if (!handedOff) getShellCwdBinding(terminalValues)?.release(); this.release(); }
 	}
 	release(): void {
 		if (!this.live) return;

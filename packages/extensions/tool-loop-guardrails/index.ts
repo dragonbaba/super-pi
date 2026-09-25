@@ -2,6 +2,7 @@ import process from "node:process";
 import { isAbsolute, relative, resolve } from "node:path";
 import {
   createReadToolDefinition,
+  getShellCwdBinding,
   type ExtensionAPI,
   type ReadToolInput,
   type ToolResultEvent,
@@ -128,10 +129,10 @@ export default function toolLoopGuardrails(pi: ExtensionAPI): void {
     ],
     parameters: ScopedBashParameters,
     async execute(toolCallId, input: ScopedBashInput, signal, onUpdate, ctx) {
-      const effectiveCwd = resolveBashCallCwd(input, ctx.cwd);
+      const effectiveCwd = getShellCwdBinding(input)?.canonical ?? resolveBashCallCwd(input, ctx.cwd);
       const projectTrusted = ctx.isProjectTrusted() && insideProject(effectiveCwd, ctx.cwd);
       const bash = bashFor(effectiveCwd, projectTrusted);
-      return bash.execute(toolCallId, { command: input.command, timeout: input.timeout }, signal, onUpdate, ctx);
+      return bash.execute(toolCallId, input, signal, onUpdate, ctx);
     },
   });
 
@@ -198,7 +199,7 @@ export default function toolLoopGuardrails(pi: ExtensionAPI): void {
     const failureText = event.isError ? boundedFailureText(event.content) : "";
     const warning = recordResult(state, event.toolName, event.input, event.isError, failureText, key);
     const recoveryHint = event.isError
-      ? await failureRecoveryHint(event.toolName, event.input, failureText, ctx.cwd)
+      ? await failureRecoveryHint(event.toolName, event.input, failureText, getShellCwdBinding(event.input)?.canonical ?? ctx.cwd)
       : undefined;
     const repairNote = pending?.repairNote;
     // One steering note for a snapshot failure at the repetition threshold.
