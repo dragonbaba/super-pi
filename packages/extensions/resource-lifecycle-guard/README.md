@@ -184,3 +184,7 @@ their no-traversal behavior. Definition argument preparation receives the option
 Session context before permission hooks, so project command prefixes unsupported
 with explicit cwd refuse before an approval or allow-rule change. These are bounded
 invocation/startup operations; no progress/render callback or regex was added.
+
+A memory/custom settings store without an identity assertion retains its ordinary
+trust boolean, but explicit identity-revalidated queries return false. Such a
+store cannot promote newly read on-disk project shell settings as trusted.

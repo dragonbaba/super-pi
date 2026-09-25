@@ -549,7 +549,11 @@ export class SettingsManager {
 	}
 
 	isProjectTrusted(revalidateIdentity = false): boolean {
-		if (this.projectTrusted && revalidateIdentity) this.storage.assertProjectIdentity?.();
+		if (this.projectTrusted && revalidateIdentity) {
+			// A non-file owner without identity evidence cannot trust newly read disk resources.
+			if (!this.storage.assertProjectIdentity) return false;
+			this.storage.assertProjectIdentity();
+		}
 		return this.projectTrusted;
 	}
 

@@ -341,3 +341,20 @@ test("review: project commandPrefix refuses explicit cwd before all permission h
  assert.equal(result.isError, true); assert.ok(result.content[0].type === "text" && result.content[0].text.includes("SHELL_CWD_UNSUPPORTED"), JSON.stringify(result));
  assert.equal(authorizationVisits, 0); assert.equal(f.approvals(), 0); assert.equal(existsSync(join(f.cwd, "marker")), false);
 });
+
+
+test("review: memory trust cannot promote disk settings after standalone root retarget", async t => {
+ const f = await fixture(t, undefined, true), memory = SettingsManager.inMemory(); const outside = join(f.root, "outside"); mkdirSync(join(outside, CONFIG_DIR_NAME, "config"), { recursive: true });
+ writeFileSync(join(outside, CONFIG_DIR_NAME, "config/settings.json"), JSON.stringify({ shellPath: join(f.root, "untrusted-invalid-shell") }));
+ const previous = process.env.SP_CODING_AGENT_DIR; process.env.SP_CODING_AGENT_DIR = join(f.root, "agent");
+ mkdirSync(join(f.root, "agent/config"), { recursive: true }); writeFileSync(join(f.root, "agent/config/settings.json"), JSON.stringify({ shellPath: bashPath }));
+ try {
+  const { default: loop } = await createJiti(import.meta.url).import<any>("../packages/extensions/tool-loop-guardrails/index.ts");
+  const definitions: any[] = []; loop({ registerTool(tool: any) { definitions.push(tool); }, on() {} });
+  const context = f.runner.createContext(); Object.defineProperty(context, "isProjectTrusted", { value: (revalidate?: boolean) => memory.isProjectTrusted(revalidate) });
+  rmSync(f.cwd); symlinkSync(outside, f.cwd, process.platform === "win32" ? "junction" : "dir");
+  assert.equal(memory.isProjectTrusted(), true);
+  const result = await definitions.find(tool => tool.name === "bash").execute("memory-trust", { command: "printf safe", cwd: "." }, undefined, undefined, context);
+  assert.ok(result.content[0].text.includes("safe")); assert.equal(memory.isProjectTrusted(true), false);
+ } finally { if (previous === undefined) delete process.env.SP_CODING_AGENT_DIR; else process.env.SP_CODING_AGENT_DIR = previous; }
+});
