@@ -3,6 +3,7 @@ import { isAbsolute, relative, resolve } from "node:path";
 import {
   createReadToolDefinition,
   getShellCwdBinding,
+  prepareShellCwd,
   type ExtensionAPI,
   type ReadToolInput,
   type ToolResultEvent,
@@ -129,10 +130,14 @@ export default function toolLoopGuardrails(pi: ExtensionAPI): void {
     ],
     parameters: ScopedBashParameters,
     async execute(toolCallId, input: ScopedBashInput, signal, onUpdate, ctx) {
-      const effectiveCwd = getShellCwdBinding(input)?.canonical ?? resolveBashCallCwd(input, ctx.cwd);
-      const projectTrusted = ctx.isProjectTrusted() && insideProject(effectiveCwd, ctx.cwd);
-      const bash = bashFor(effectiveCwd, projectTrusted);
-      return bash.execute(toolCallId, input, signal, onUpdate, ctx);
+      const binding = getShellCwdBinding(input) ?? await prepareShellCwd(input, ctx.cwd);
+      try {
+        if (binding?.isReleased) throw new Error("[SHELL_CWD_CHANGED] Directory authority was released.");
+        const effectiveCwd = binding?.canonical ?? resolveBashCallCwd(input, ctx.cwd);
+        const projectTrusted = ctx.isProjectTrusted() && insideProject(effectiveCwd, ctx.cwd);
+        const bash = bashFor(effectiveCwd, projectTrusted);
+        return await bash.execute(toolCallId, input, signal, onUpdate, ctx);
+      } finally { binding?.release(); }
     },
   });
 

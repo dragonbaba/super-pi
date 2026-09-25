@@ -126,3 +126,12 @@ Invocation-owned directory bindings carry one stable final-spawn callback; autho
 references are released when execution finishes. Output/progress callbacks and renderer
 ownership remain unchanged. TUI shows supplied cwd and final details record the canonical
 cwd. Existing #43 CDPATH query-prefix and closed-subshell hash limitations remain.
+
+
+Review follow-up: terminal handoff rejects released bindings as well as replaced
+bindings. A transfer-aware finally releases preparation on every permission/lifecycle
+refusal or exception. Standalone tool-loop-guardrails canonicalizes explicit cwd
+before project-trust/settings selection and owns cleanup even without this guard.
+The authorization AST gate counts the single actual terminal consume call and its
+single approved argument container, including the pinned-binding handoff; no new
+per-progress/per-render allocations or caches were introduced.

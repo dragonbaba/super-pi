@@ -44,7 +44,7 @@ class BashInvocationAuthorization {
       || (purpose && !("value" in purpose)) || purpose?.value !== this.purpose) throw new Error(INVALIDATED);
     const approved = { command: this.command, timeout: this.timeout, cwd: this.cwd, purpose: this.purpose };
     const binding = this.binding;
-    if (getShellCwdBinding(args) !== binding || (this.cwd !== undefined && !binding)) throw new Error(INVALIDATED);
+    if (getShellCwdBinding(args) !== binding || binding?.isReleased || (this.cwd !== undefined && !binding)) throw new Error(INVALIDATED);
     if (binding) {
       const sessionCwd = this.sessionCwd, sessionId = this.sessionId, generation = this.generation, sequence = this.sequence;
       binding.setAuthority(() => {
@@ -160,6 +160,8 @@ export default function resourceLifecycleGuard(pi: ExtensionAPI): void {
       if (reason) return { block: true, reason };
     }
     const preparedCwd = shell ? await prepareShellCwd(event.input as { cwd?: unknown }, ctx.cwd) : undefined;
+    let transferred = false;
+    try {
     const permissionBlock = await permissions.authorizeToolCall(event, ctx);
     if (permissionBlock) return permissionBlock;
     // Neither lifecycle acceptance nor the original approval authorizes a replacement.
@@ -173,12 +175,13 @@ export default function resourceLifecycleGuard(pi: ExtensionAPI): void {
         block: true,
         reason: "Blocked by policy: command changed during permission handling. Submit the final exact command for current authorization; no replacement was executed.",
       };
-      return { finalAuthorization: new BashInvocationAuthorization(event.input, bashCommand, bashTimeout, bashCwd, bashPurpose,
-        ctx, permissions, cwd, sessionId, generation, permissions.state.sequence, id, shellName, preparedCwd) };
+      const finalAuthorization = new BashInvocationAuthorization(event.input, bashCommand, bashTimeout, bashCwd, bashPurpose,
+        ctx, permissions, cwd, sessionId, generation, permissions.state.sequence, id, shellName, preparedCwd);
+      transferred = true;
+      return { finalAuthorization };
     }
-    if (event.toolName !== "powershell") return undefined;
-    const reason = inspectBashResourceLifecycle(event.input);
-    return reason ? { block: true, reason } : undefined;
+    return undefined;
+    } finally { if (!transferred) preparedCwd?.release(); }
   });
 
   pi.on("tool_result", (event) => {

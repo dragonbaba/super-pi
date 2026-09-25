@@ -160,7 +160,7 @@ test("postmerge preflight adds zero argument-wrapper allocations", () => {
  const consume = authorization.members.find(node => ts.isMethodDeclaration(node) && node.name.getText(source) === "consume") as ts.MethodDeclaration;
  const containers: ts.ObjectLiteralExpression[] = [];
  function findContainer(node: ts.Node) {
-  if (ts.isReturnStatement(node) && node.expression && ts.isObjectLiteralExpression(node.expression)) containers.push(node.expression);
+  if (ts.isObjectLiteralExpression(node)) containers.push(node);
   ts.forEachChild(node, findContainer);
  }
  findContainer(consume);
@@ -168,8 +168,14 @@ test("postmerge preflight adds zero argument-wrapper allocations", () => {
  assert.deepEqual(containers[0].properties.map(property => property.name!.getText(source)), ["command", "timeout", "cwd", "purpose"]);
  assert.doesNotMatch(consume.getText(source), /\bawait\b|new Promise|setTimeout|createHash|JSON\.stringify/);
  const runnerText = readFileSync(new URL("../packages/coding-agent/src/core/extensions/runner.ts", import.meta.url), "utf8");
- assert.equal(runnerText.match(/const approved = authority\.consume/g)?.length, 1);
- assert.ok(runnerText.indexOf("finally { check.release(); }") < runnerText.indexOf("const approved = authority.consume"));
+ const runnerSource = ts.createSourceFile("runner.ts", runnerText, ts.ScriptTarget.Latest, true);
+ let terminalConsumes = 0;
+ function countTerminalConsume(node: ts.Node): void {
+  if (ts.isCallExpression(node) && node.expression.getText(runnerSource) === "authority.consume") terminalConsumes++;
+  ts.forEachChild(node, countTerminalConsume);
+ }
+ countTerminalConsume(runnerSource); assert.equal(terminalConsumes, 1);
+ assert.ok(runnerText.indexOf("finally { check.release(); }") < runnerText.indexOf("authority.consume(args, id, name, signal)"));
 });
 
 test("postmerge later extension cannot execute an unapproved replacement", async t => {

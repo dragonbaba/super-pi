@@ -10,6 +10,7 @@ import { createPowerShellTool } from "../packages/coding-agent/src/core/tools/po
 import { getShellCwdBinding, prepareShellCwd } from "../packages/coding-agent/src/core/tools/shell-cwd.ts";
 import { createEventBus } from "../packages/coding-agent/src/core/event-bus.ts";
 import { createExtensionRuntime, ExtensionRunner, loadExtensionFromFactory } from "../packages/coding-agent/src/core/extensions/index.ts";
+import { CONFIG_DIR_NAME } from "../packages/coding-agent/src/config.ts";
 import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
 const { default: lifecycle } = await createJiti(import.meta.url).import<any>("../packages/extensions/resource-lifecycle-guard/index.ts");
 const bashPath = process.platform !== "win32" ? "/bin/bash" : existsSync("D:/Git/bin/bash.exe") ? "D:/Git/bin/bash.exe" : join(process.env.ProgramFiles!, "Git/bin/bash.exe");
@@ -28,7 +29,7 @@ async function fixture(t: test.TestContext, auxiliary?: any) {
   } });
   agent.state.tools = [createBashTool(cwd, { shellPath: bashPath }), createPowerShellTool(cwd)];
   runner.bindCore({ getThinkingLevel: () => "off", getActiveTools: () => ["bash", "powershell"], appendEntry: (kind: string, data: any) => session.appendCustomEntry(kind, data) } as never,
-    { getSignal: () => agent.signal, isProjectTrusted: () => false, isIdle: () => true, hasPendingMessages: () => false } as never);
+    { getSignal: () => agent.signal, getModel: () => agent.state.model, isProjectTrusted: () => false, isIdle: () => true, hasPendingMessages: () => false } as never);
   runner.setUIContext({ ...runner.getUIContext(), select: async () => { approvals++; onApproval(); return "仅允许本次"; } }, "tui");
   await runner.emit({ type: "session_start" } as never);
   t.after(async () => { agent.abort(); runner.invalidate(); await runner.emit({ type: "session_shutdown" } as never); rmSync(root, { recursive: true, force: true }); });
@@ -153,4 +154,39 @@ test("changed backend rejection releases already handed-off directory authority"
   f.afterAuthorization(args => { binding = getShellCwdBinding(args); backend.exec = async () => { throw new Error("must not execute"); }; });
   const result = await f.call("bash", "printf forbidden > marker", f.cwd);
   assert.equal(result.isError, true); assert.equal(binding!.isReleased, true); assert.equal(existsSync(join(f.cwd, "marker")), false);
+});
+
+
+test("review: released attached binding cannot renew after authorization", async t => {
+  const f = await fixture(t); const a = join(f.cwd, "a"), b = join(f.cwd, "b"), alias = join(f.cwd, "alias"); mkdirSync(a); mkdirSync(b);
+  symlinkSync(a, alias, process.platform === "win32" ? "junction" : "dir");
+  f.afterAuthorization(args => { getShellCwdBinding(args)!.release(); rmSync(alias); symlinkSync(b, alias, process.platform === "win32" ? "junction" : "dir"); });
+  const result = await f.call("bash", "printf forbidden > marker", alias);
+  assert.equal(result.isError, true); assert.equal(existsSync(join(a, "marker")), false); assert.equal(existsSync(join(b, "marker")), false);
+});
+
+test("review: denied and throwing approval release prepared directory bindings", async t => {
+  const f = await fixture(t); const outside = join(f.root, "outside"); mkdirSync(outside);
+  for (const throws of [false, true]) {
+    f.runner.setUIContext({ ...f.runner.getUIContext(), select: async () => { if (throws) throw new Error("approval unavailable"); return "拒绝"; } }, "tui");
+    const input = { command: "printf forbidden > marker", cwd: outside };
+    try { await f.runner.emitToolCall({ type: "tool_call", toolName: "bash", toolCallId: `refuse-${throws}`, input } as never); } catch { /* permission refusal may propagate */ }
+    assert.equal(getShellCwdBinding(input)!.isReleased, true); assert.equal(existsSync(join(outside, "marker")), false);
+  }
+});
+
+test("review: standalone scoped wrapper canonicalizes before trusting project settings", async t => {
+  const f = await fixture(t); const outside = join(f.root, "outside"), alias = join(f.cwd, "alias"); mkdirSync(join(outside, CONFIG_DIR_NAME, "config"), { recursive: true });
+  writeFileSync(join(outside, CONFIG_DIR_NAME, "config/settings.json"), JSON.stringify({ shellPath: join(f.root, "untrusted-executable-does-not-exist") }));
+  symlinkSync(outside, alias, process.platform === "win32" ? "junction" : "dir");
+  const previous = process.env.SP_CODING_AGENT_DIR; process.env.SP_CODING_AGENT_DIR = join(f.root, "agent");
+  mkdirSync(join(f.root, "agent/config"), { recursive: true }); writeFileSync(join(f.root, "agent/config/settings.json"), JSON.stringify({ shellPath: bashPath }));
+  try {
+    const { default: loop } = await createJiti(import.meta.url).import<any>("../packages/extensions/tool-loop-guardrails/index.ts");
+    const definitions: any[] = []; loop({ registerTool(tool: any) { definitions.push(tool); }, on() {} });
+    const bash = definitions.find(tool => tool.name === "bash"); const input = { command: "printf safe", cwd: alias };
+    const context = f.runner.createContext(); Object.defineProperty(context, "isProjectTrusted", { value: () => true });
+    const result = await bash.execute("standalone", input, undefined, undefined, context);
+    assert.ok(result.content[0].text.includes("safe")); assert.equal(result.details.cwd, realpathSync.native(outside)); assert.equal(getShellCwdBinding(input)!.isReleased, true);
+  } finally { if (previous === undefined) delete process.env.SP_CODING_AGENT_DIR; else process.env.SP_CODING_AGENT_DIR = previous; }
 });
