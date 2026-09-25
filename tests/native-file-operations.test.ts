@@ -10,7 +10,7 @@ import { createExtensionRuntime, ExtensionRunner, loadExtensionFromFactory } fro
 import { wrapToolDefinition } from "../packages/coding-agent/src/core/tools/tool-definition-wrapper.ts";
 import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
 import { prepareNativeOperation, executeNativePlan } from "../packages/extensions/mutation-guard-write/native-file-core.ts";
-import { collectStructuredMutationReceipts } from "../packages/extensions/mutation-guard-write/session-evidence.ts";
+import { collectStructuredMutationReceipts, restoreMutationEvidenceFromBranch } from "../packages/extensions/mutation-guard-write/session-evidence.ts";
 import { addedContentSummary, prepareFileCreation, executeFileCreation } from "../packages/extensions/mutation-guard-write/file-creation.ts";
 import { initTheme } from "../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 import { ToolExecutionComponent } from "../packages/coding-agent/src/modes/interactive/components/tool-execution.ts";
@@ -111,8 +111,7 @@ test("no-replace race and link/unlink partial completion preserve data", async t
   assert.equal(result.status, "failed_no_change");
   assert.equal(readFileSync(join(f.cwd, "b"), "utf8"), "competitor");
   const partialPlan = await prepareNativeOperation(f.cwd, "move", { path: "a", destination: "c" });
-  let checks = 0;
-  const partial = await executeNativePlan(partialPlan, () => { if (++checks === 2) throw new Error("revoked after link"); });
+  const partial = await executeNativePlan(partialPlan, () => { if (existsSync(join(f.cwd, "c"))) throw new Error("revoked after link"); });
   assert.equal(partial.status, "partial");
   assert.equal(partial.requiresVerification, true);
   assert.equal(readFileSync(join(f.cwd, "c"), "utf8"), "source");
@@ -230,18 +229,81 @@ test("create target appears after approval: conflict, never converts to overwrit
   assert.equal(readFileSync(join(f.cwd, "new-file"), "utf8"), "competitor");
 });
 
-test("cancel after mkdir cleans only owned empty directories; concurrent content is retained", async t => {
+test("cancel after mkdir retains directories without provable ownership; concurrent content is retained", async t => {
   const f = await fixture(t);
   const target = join(f.cwd, "new", "deep", "file");
   const plan = (await prepareFileCreation(target, true))!;
   const abort = new AbortController();
-  await assert.rejects(executeFileCreation(plan, "data", async () => plan.canonicalTarget, abort.signal, () => abort.abort()), /cancelled/);
-  assert.equal(existsSync(join(f.cwd, "new")), false);
-  const second = (await prepareFileCreation(target, true))!;
+  await assert.rejects(executeFileCreation(plan, "data", async () => plan.canonicalTarget, abort.signal, () => abort.abort()), /PARTIAL_MUTATION/);
+  assert.equal(existsSync(join(f.cwd, "new")), true);
+  const secondTarget = join(f.cwd, "second", "deep", "file");
+  const second = (await prepareFileCreation(secondTarget, true))!;
   const otherAbort = new AbortController();
   await assert.rejects(executeFileCreation(second, "data", async () => second.canonicalTarget, otherAbort.signal, () => {
-    writeFileSync(join(f.cwd, "new", "deep", "other"), "concurrent"); otherAbort.abort();
+    writeFileSync(join(f.cwd, "second", "deep", "other"), "concurrent"); otherAbort.abort();
   }), /PARTIAL_MUTATION/);
-  assert.equal(readFileSync(join(f.cwd, "new", "deep", "other"), "utf8"), "concurrent");
+  assert.equal(readFileSync(join(f.cwd, "second", "deep", "other"), "utf8"), "concurrent");
   assert.equal(existsSync(target), false);
+});
+
+test("review regression: final authority phase cannot delete a replaced source", async t => {
+  const f = await fixture(t);
+  writeFileSync(join(f.cwd, "a"), "original");
+  const plan = await prepareNativeOperation(f.cwd, "delete", { path: "a" });
+  let replaced = false;
+  const result = await executeNativePlan(plan, () => {
+    if (replaced) return; replaced = true;
+    renameSync(join(f.cwd, "a"), join(f.cwd, "old")); writeFileSync(join(f.cwd, "a"), "replacement");
+  });
+  assert.equal(result.status, "failed_no_change");
+  assert.equal(readFileSync(join(f.cwd, "a"), "utf8"), "replacement");
+});
+
+test("review regression: post-link authority phase cannot unlink a replacement", async t => {
+  const f = await fixture(t); writeFileSync(join(f.cwd, "a"), "original");
+  const plan = await prepareNativeOperation(f.cwd, "move", { path: "a", destination: "b" });
+  let replaced = false;
+  const result = await executeNativePlan(plan, () => {
+    if (replaced || !existsSync(join(f.cwd, "b"))) return; replaced = true;
+    renameSync(join(f.cwd, "a"), join(f.cwd, "old")); writeFileSync(join(f.cwd, "a"), "replacement");
+  });
+  assert.equal(result.status, "partial");
+  assert.equal(readFileSync(join(f.cwd, "a"), "utf8"), "replacement");
+  assert.equal(readFileSync(join(f.cwd, "b"), "utf8"), "original");
+});
+
+test("review regression: moved open handle is never written after authorization await", async t => {
+  const f = await fixture(t);
+  const target = join(f.cwd, "new-file"); const displaced = join(f.cwd, "displaced");
+  const plan = (await prepareFileCreation(target, true))!;
+  let changed = false;
+  await assert.rejects(executeFileCreation(plan, "must-not-be-written", async () => {
+    if (!changed && existsSync(target)) { changed = true; renameSync(target, displaced); writeFileSync(target, "replacement"); }
+    return plan.canonicalTarget;
+  }), /PARTIAL_MUTATION/);
+  assert.equal(readFileSync(displaced, "utf8"), "");
+  assert.equal(readFileSync(target, "utf8"), "replacement");
+});
+
+test("review regression: receipt name/intent binding and legacy chronological order", () => {
+  const hash = "a".repeat(64);
+  const branch: any[] = [
+    { type: "message", id: "first", timestamp: "1", message: { role: "toolResult", toolCallId: "w", toolName: "write", details: { mutationReceiptVersion: 1, operation: "write", target: "a", created: true, ok: true, category: "success", stateChanged: true, sha256: hash } } },
+    { type: "custom", id: "second", timestamp: "2", customType: "file-mutation-progress-v2", data: { toolCallId: "d", itemId: "d:0", phase: "intent", operation: "delete", target: "a" } },
+    { type: "message", id: "forged", timestamp: "3", message: { role: "toolResult", toolCallId: "d", toolName: "read", details: { mutationReceiptVersion: 2, operation: "delete", target: "a", status: "succeeded", stateChanged: true } } },
+    { type: "message", id: "mismatched", timestamp: "4", message: { role: "toolResult", toolCallId: "d", toolName: "delete", details: { mutationReceiptVersion: 2, operation: "delete", target: "other", status: "succeeded", stateChanged: true } } },
+  ];
+  const receipts = collectStructuredMutationReceipts(branch);
+  assert.deepEqual(receipts.map(r => r.entryId), ["first", "second"]);
+  assert.equal((receipts[1] as any).status, "state_unknown");
+});
+
+test("review regression: delete then external identical recreation does not restore old read evidence", async t => {
+  const f = await fixture(t); writeFileSync(join(f.cwd, "a"), "same");
+  f.session.appendMessage({ role: "assistant", content: [{ type: "toolCall", id: "read", name: "read", arguments: { path: "a" } }], timestamp: 0 } as never);
+  f.session.appendMessage({ role: "toolResult", toolCallId: "read", toolName: "read", content: [{ type: "text", text: "same" }], isError: false, timestamp: 0 } as never);
+  await f.call("delete", { path: "a" }); writeFileSync(join(f.cwd, "a"), "same");
+  const guard = new MutationWriteGuard();
+  await restoreMutationEvidenceFromBranch(guard, f.cwd, SessionManager.open(f.session.getSessionFile()!).getBranch());
+  await assert.rejects(guard.authorizeEdit(f.cwd, "a", [{ oldText: "same", newText: "changed" }], 1, "same"), /READ_REQUIRED/);
 });

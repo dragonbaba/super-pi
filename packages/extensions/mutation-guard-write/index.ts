@@ -41,6 +41,7 @@ interface MutationFailureInfo {
   category?: unknown;
   stateChanged?: unknown;
   cause?: unknown;
+  status?: unknown;
 }
 
 const EDIT_INDEX_PATTERN = /edits\[(\d+)\]/u;
@@ -472,30 +473,31 @@ export default function mutationGuardWriteExtension(pi: ExtensionAPI): void {
       const absolutePath = resolveToolPath(ctx.cwd, path);
       const pathApproval = consumePermissionPathApproval(input, toolCallId, "write") as MutationPathApproval | undefined;
       const progress = pathApproval?.creationPlan !== undefined;
+      const receiptTarget = pathApproval?.creationPlan?.canonicalTarget ?? absolutePath;
       let details;
       try {
         details = await withFileMutationQueue(
           absolutePath,
           async () => {
-            if (progress) pi.appendEntry(MUTATION_PROGRESS_ENTRY, { toolCallId, itemId: `${toolCallId}:0`, phase: "intent", operation: "write", target: absolutePath, directories: pathApproval!.creationPlan!.directories });
+            if (progress) pi.appendEntry(MUTATION_PROGRESS_ENTRY, { toolCallId, itemId: `${toolCallId}:0`, phase: "intent", operation: "write", target: receiptTarget, directories: pathApproval!.creationPlan!.directories });
             return guard.write(ctx.cwd, path, content, turnGeneration, signal, pathApproval);
           },
         );
       } catch (error) {
         const failure = mutationFailureInfo(error);
         if (failure && (progress || failure.stateChanged === true)) {
-          const status = failure.stateChanged === true ? "partial" : "failed_no_change";
-          const details = { ...failure, operation: "write", target: absolutePath, mutationReceiptVersion: 2, status };
+          const status = failure.stateChanged === true ? "partial" : failure.status === "cancelled" ? "cancelled" : "failed_no_change";
+          const details = { ...failure, operation: "write", target: receiptTarget, mutationReceiptVersion: 2, status, ...(failure.stateChanged === true ? { requiresVerification: true } : {}) };
           if (progress) try { pi.appendEntry(MUTATION_PROGRESS_ENTRY, { ...details, toolCallId, itemId: `${toolCallId}:0`, phase: "result" }); } catch { /* Durable intent remains uncertain. */ }
           return { content: [{ type: "text" as const, text: `write: ${status}; ${path}. [${failure.category}] ${typeof failure.cause === "string" ? failure.cause.slice(0, 800) : ""}${failure.stateChanged === true ? " Verify the file and recorded directories; do not automatically retry." : ""}` }], details, isError: true };
         }
         throw error;
       }
       if (progress) try {
-        pi.appendEntry(MUTATION_PROGRESS_ENTRY, { ...details, mutationReceiptVersion: 2, toolCallId, itemId: `${toolCallId}:0`, phase: "result", status: "succeeded" });
+        pi.appendEntry(MUTATION_PROGRESS_ENTRY, { ...details, target: receiptTarget, mutationReceiptVersion: 2, toolCallId, itemId: `${toolCallId}:0`, phase: "result", status: "succeeded" });
       } catch {
         return { content: [{ type: "text" as const, text: `write: state_unknown; ${path}. File changed but receipt recording failed. Verify current state; do not automatically retry.` }],
-          details: { mutationReceiptVersion: 2, operation: "write", target: absolutePath, status: "state_unknown", stateChanged: "unknown", requiresVerification: true }, isError: true };
+          details: { mutationReceiptVersion: 2, operation: "write", target: receiptTarget, status: "state_unknown", stateChanged: "unknown", requiresVerification: true }, isError: true };
       }
       const creation = details.creation;
       const summary = details.created

@@ -57,9 +57,10 @@ export function validateNativeInput(operation: NativeOperation, value: unknown):
 }
 
 export async function capturePathIdentity(path: string): Promise<PathIdentity> {
+  const canonical = await realpath(path);
   const info = await lstat(path, { bigint: true });
   if (info.isSymbolicLink() || (!info.isFile() && !info.isDirectory())) throw new Error("[unsupported] Links, reparse points and special files are unsupported.");
-  return Object.freeze({ path, canonical: await realpath(path), device: String(info.dev), inode: String(info.ino),
+  return Object.freeze({ path, canonical, device: String(info.dev), inode: String(info.ino),
     size: String(info.size), mtime: String(info.mtimeNs), ctime: String(info.ctimeNs), mode: String(info.mode), links: String(info.nlink), directory: info.isDirectory() });
 }
 
@@ -105,16 +106,21 @@ export async function prepareNativeOperation(cwd: string, operation: NativeOpera
 }
 
 export async function revalidateNativePlan(plan: NativePlan): Promise<void> {
-  if (!sameIdentity(plan.sourceParent, await capturePathIdentity(plan.sourceParent.path), false)
-    || !sameIdentity(plan.source, await capturePathIdentity(plan.source.path))) throw new Error("[STALE_STATE] Source or parent identity changed after preparation.");
-  if (plan.destinationParent) {
-    if (!sameIdentity(plan.destinationParent, await capturePathIdentity(plan.destinationParent.path), false)) throw new Error("[STALE_STATE] Destination parent changed.");
-    await assertAbsent(plan.destination!);
-  }
   for (const approved of plan.protectedPaths) {
     const current = await assessProtectedMutationPath(plan.cwd, approved.canonicalTarget);
     if (current.canonicalTarget !== approved.canonicalTarget || current.violations.join("\0") !== approved.protectedRoots.join("\0")) throw new Error("[POLICY_BLOCKED] Protected path assessment changed.");
   }
+  await revalidateNativeIdentity(plan);
+}
+
+async function revalidateNativeIdentity(plan: NativePlan): Promise<void> {
+  if (!sameIdentity(plan.sourceParent, await capturePathIdentity(plan.sourceParent.path), false)
+    ) throw new Error("[STALE_STATE] Source parent changed after preparation.");
+  if (plan.destinationParent) {
+    if (!sameIdentity(plan.destinationParent, await capturePathIdentity(plan.destinationParent.path), false)) throw new Error("[STALE_STATE] Destination parent changed.");
+    await assertAbsent(plan.destination!);
+  }
+  if (!sameIdentity(plan.source, await capturePathIdentity(plan.source.path))) throw new Error("[STALE_STATE] Source changed after preparation.");
 }
 
 /** Bounded streaming hash only when prior evidence exists; metadata operations never load a file into model context. */
@@ -129,10 +135,12 @@ export async function hashNativeSource(path: string): Promise<string> {
 }
 
 export function nativeFailure(plan: NativePlan, error: unknown, status: MutationStatus = "failed_no_change"): NativeReceipt {
-  const cause = error instanceof Error ? error.message : String(error);
+  let cause = error instanceof Error ? error.message : String(error);
+  let structuredCategory: string | undefined;
+  try { const parsed = JSON.parse(cause); if (typeof parsed?.category === "string") { structuredCategory = parsed.category; cause = typeof parsed.cause === "string" ? parsed.cause : parsed.category; } } catch { /* Bracket/OS errors need no JSON payload. */ }
   return { mutationReceiptVersion: 2, operation: plan.operation, target: plan.source.canonical, destination: plan.destination,
     status, stateChanged: status === "state_unknown" ? "unknown" : status === "partial", ok: false,
-    category: (error as NodeJS.ErrnoException)?.code ?? (NATIVE_ERROR_CATEGORY_PATTERN.exec(cause)?.[1] ?? "operation_failed"),
+    category: structuredCategory ?? (error as NodeJS.ErrnoException)?.code ?? (NATIVE_ERROR_CATEGORY_PATTERN.exec(cause)?.[1] ?? "operation_failed"),
     cause: cause.slice(0, 1200), ...(status === "partial" || status === "state_unknown" ? { requiresVerification: true as const } : {}) };
 }
 
@@ -144,18 +152,21 @@ export async function executeNativePlan(plan: NativePlan, assertAuthority: () =>
     signal?.throwIfAborted();
     await revalidateNativePlan(plan);
     assertAuthority();
+    await revalidateNativeIdentity(plan);
+    assertAuthority();
     signal?.throwIfAborted();
     if (plan.operation === "move") {
       attempted = true;
       await link(plan.source.path, plan.destination!);
       linked = true;
-      const source = await capturePathIdentity(plan.source.path);
-      const destination = await capturePathIdentity(plan.destination!);
-      if (!sameIdentity(plan.source, source, false) || source.size !== plan.source.size || source.mtime !== plan.source.mtime
-        || destination.device !== source.device || destination.inode !== source.inode
-        || !sameIdentity(plan.sourceParent, await capturePathIdentity(plan.sourceParent.path), false)
+      if (!sameIdentity(plan.sourceParent, await capturePathIdentity(plan.sourceParent.path), false)
         || !sameIdentity(plan.destinationParent!, await capturePathIdentity(plan.destinationParent!.path), false)) throw new Error("[STALE_STATE] Verify both names: identity changed after exclusive link.");
       signal?.throwIfAborted();
+      assertAuthority();
+      const destination = await capturePathIdentity(plan.destination!);
+      const source = await capturePathIdentity(plan.source.path);
+      if (!sameIdentity(plan.source, source, false) || source.size !== plan.source.size || source.mtime !== plan.source.mtime
+        || destination.device !== source.device || destination.inode !== source.inode) throw new Error("[STALE_STATE] Verify both names: identity changed before source unlink.");
       assertAuthority();
       await unlink(plan.source.path);
     } else {

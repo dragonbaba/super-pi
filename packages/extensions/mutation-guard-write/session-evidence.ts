@@ -71,14 +71,14 @@ function appendNativeReceipt(items: Map<string, NativeStructuredMutationReceipt>
   if ((status === "state_unknown" && stateChanged !== "unknown") || ((status === "succeeded" || status === "partial") && stateChanged !== true)
     || ((status === "failed_no_change" || status === "cancelled" || status === "not_started") && stateChanged !== false)) return;
   const previous = items.get(itemId);
-  if (previous && previous.toolCallId !== toolCallId) return;
+  if (previous && (previous.toolCallId !== toolCallId || previous.operation !== data.operation || previous.target !== data.target || previous.destination !== data.destination)) return;
   items.set(itemId, { receiptVersion: 2, entryId: entry.id, timestamp: entry.timestamp, toolCallId, itemId,
     operation: data.operation, target: data.target, destination: data.destination, status, stateChanged,
     ...(status === "state_unknown" || status === "partial" ? { requiresVerification: true as const } : {}) });
   if (items.size > MAX_STRUCTURED_MUTATION_RECEIPTS) items.delete(items.keys().next().value!);
 }
 
-function collectNativeReceipts(branch: readonly unknown[], receipts: StructuredMutationReceipt[]): Map<string, NativeStructuredMutationReceipt> {
+function collectNativeReceipts(branch: readonly unknown[]): Map<string, NativeStructuredMutationReceipt> {
   const items = new Map<string, NativeStructuredMutationReceipt>();
   for (let index = Math.max(0, branch.length - MAX_STRUCTURED_MUTATION_RECEIPTS); index < branch.length; index++) {
     const entry = branch[index] as any;
@@ -90,7 +90,7 @@ function collectNativeReceipts(branch: readonly unknown[], receipts: StructuredM
     }
     const message = entry.type === "message" && entry.message?.role === "toolResult" ? entry.message : undefined;
     const data = message?.details;
-    if (data?.mutationReceiptVersion !== 2) continue;
+    if (data?.mutationReceiptVersion !== 2 || message?.toolName !== data?.operation) continue;
     if (message.toolName === "file_batch" && data.operation === "file_batch" && !data.preview && Array.isArray(data.items) && data.items.length <= 16) {
       for (let index = 0; index < data.items.length; index++) {
         const item = data.items[index];
@@ -98,7 +98,6 @@ function collectNativeReceipts(branch: readonly unknown[], receipts: StructuredM
       }
     } else appendNativeReceipt(items, entry, data, message.toolCallId, `${message.toolCallId}:0`, false);
   }
-  for (const item of items.values()) receipts.push(item);
   return items;
 }
 
@@ -211,16 +210,31 @@ async function restoreMutation(
 
 export function collectStructuredMutationReceipts(branch: readonly unknown[]): StructuredMutationReceipt[] {
   const receipts: StructuredMutationReceipt[] = [];
-  const nativeReceipts = collectNativeReceipts(branch, receipts);
+  const nativeReceipts = collectNativeReceipts(branch);
   const start = Math.max(0, branch.length - MAX_STRUCTURED_MUTATION_RECEIPTS);
   for (let index = start; index < branch.length; index++) {
     const entry = branch[index] as SessionEntryShape;
+    const custom = entry as any;
+    if (custom?.type === "custom" && custom.customType === "file-mutation-progress-v2") {
+      const receipt = nativeReceipts.get(custom.data?.itemId);
+      if (receipt && receipt.entryId === custom.id) receipts.push(receipt);
+      continue;
+    }
     if (entry?.type !== "message"
       || typeof entry.id !== "string"
       || typeof entry.timestamp !== "string"
       || !entry.message
       || typeof entry.message !== "object") continue;
     const message = entry.message as ToolResultMessageShape;
+    if (message.role === "toolResult" && typeof message.toolCallId === "string") {
+      const batch = message.details as any;
+      if (message.toolName === "file_batch" && Array.isArray(batch?.items) && batch.items.length <= 16) {
+        for (const item of batch.items) { const receipt = nativeReceipts.get(item?.itemId); if (receipt && receipt.entryId === entry.id) receipts.push(receipt); }
+        continue;
+      }
+      const receipt = nativeReceipts.get(`${message.toolCallId}:0`);
+      if (receipt?.entryId === entry.id) { receipts.push(receipt); continue; }
+    }
     if (message.role !== "toolResult"
       || (message.isError === true && message.toolName !== "file_batch")
       || typeof message.toolCallId !== "string"
@@ -311,6 +325,15 @@ export async function restoreMutationEvidenceFromBranch(
   }
   for (let index = start; index < branch.length; index++) {
     const entry = branch[index] as SessionEntryShape;
+    const custom = entry as any;
+    if (custom?.type === "custom" && custom.customType === "file-mutation-progress-v2") {
+      const data = custom.data;
+      if ((data?.phase === "intent" || data?.stateChanged !== false) && safeReceiptPath(data?.target)) {
+        await guard.invalidate(cwd, data.target);
+        if (safeReceiptPath(data.destination)) await guard.invalidate(cwd, data.destination);
+      }
+      continue;
+    }
     if (entry?.type !== "message" || !entry.message || typeof entry.message !== "object") continue;
     const message = entry.message as ToolResultMessageShape;
     if (collectAssistantToolCalls(message, pending)) continue;
