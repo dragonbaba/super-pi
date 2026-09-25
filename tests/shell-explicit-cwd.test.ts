@@ -145,3 +145,12 @@ test("review: removed alias produces a cwd error without an executable errno", a
   assert.throws(() => binding.beforeSpawn(binding.canonical), error => error instanceof Error && error.message.includes("SHELL_CWD_CHANGED") && !("code" in error));
   binding.release();
 });
+
+test("changed backend rejection releases already handed-off directory authority", async t => {
+  const f = await fixture(t); const backend = createLocalBashOperations({ shellPath: bashPath });
+  f.agent.state.tools = [createBashTool(f.cwd, { operations: backend })];
+  let binding: ReturnType<typeof getShellCwdBinding>;
+  f.afterAuthorization(args => { binding = getShellCwdBinding(args); backend.exec = async () => { throw new Error("must not execute"); }; });
+  const result = await f.call("bash", "printf forbidden > marker", f.cwd);
+  assert.equal(result.isError, true); assert.equal(binding!.isReleased, true); assert.equal(existsSync(join(f.cwd, "marker")), false);
+});

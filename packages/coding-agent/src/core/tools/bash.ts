@@ -1,5 +1,5 @@
 import { withMsysStdinBridge } from "./msys-stdin.ts";
-import { prepareShellCwd, isLocalShellBackend, registerLocalShellBackend } from "./shell-cwd.ts";
+import { prepareShellCwd, getShellCwdBinding, isLocalShellBackend, registerLocalShellBackend } from "./shell-cwd.ts";
 import { constants } from "node:fs";
 import { access as fsAccess } from "node:fs/promises";
 import type { AgentTool } from "@super-pi/agent-core";
@@ -836,9 +836,11 @@ export function createShellToolDefinition(
 			ctx?,
 		) {
 			const { command, timeout } = input;
+            let cwdBinding = getShellCwdBinding(input);
+            try {
 			if (input.cwd !== undefined && (!isLocalShellBackend(ops) || commandPrefix || (spawnHook && spawnHook !== withMsysStdinBridge) || ops.exec !== backendExecute)) throw new Error("[SHELL_CWD_UNSUPPORTED] Explicit cwd requires the built-in local backend without commandPrefix or spawnHook.");
-			const cwdBinding = input.cwd === undefined ? undefined : await prepareShellCwd(input, ctx?.cwd ?? cwd);
-			try {
+			if (input.cwd === undefined && cwdBinding) throw new Error("[SHELL_CWD_CHANGED] Bound cwd was removed before execution.");
+            cwdBinding = input.cwd === undefined ? undefined : await prepareShellCwd(input, ctx?.cwd ?? cwd);
 			const resolvedCommand = commandPrefix ? `${commandPrefix}\n${command}` : command;
 			// These variables only change Bash startup and cd; PowerShell keeps them as ordinary data.
 			const spawnContext = resolveSpawnContext(resolvedCommand, cwdBinding?.canonical ?? cwd, spawnHook, exposeSessionEnvironment, ctx, config.name === "bash");
