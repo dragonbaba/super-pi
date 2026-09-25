@@ -310,6 +310,7 @@ export class SessionPermissionController {
   readonly #rejections = new Map<string, RejectionRecord>();
   #committedState?: PermissionStateCheckpoint;
   #auditSequence = 0;
+  #restored = false;
   #authorityGeneration = 0;
   #pendingApproval: AbortController | undefined;
 
@@ -340,11 +341,13 @@ export class SessionPermissionController {
   }
 
   async restore(ctx: ExtensionContext): Promise<void> {
+    this.#restored = false;
     this.#authorityGeneration++;
     this.#pendingApproval?.abort(new Error("Permission request is obsolete after session restore"));
     this.#pendingApproval = undefined;
     await this.#state.restore(ctx.cwd, ctx.sessionManager.getBranch());
     this.#committedState = this.#state.checkpoint();
+    this.#restored = true;
     this.#rejections.clear();
     this.#publish(ctx);
   }
@@ -359,6 +362,7 @@ export class SessionPermissionController {
     if (event.toolName !== "write" && event.toolName !== "edit" && event.toolName !== "lsp_fix"
       && event.toolName !== "bash" && event.toolName !== "powershell" && event.toolName !== "browser_exec"
       && event.toolName !== "subagent" && event.toolName !== "structured_readonly_command") return undefined;
+    if (!this.#restored) return { block: true, reason: "[SHELL_CWD_CHANGED] Permissions are unavailable until the Session workspace identity is restored; the tool was not executed." };
     let signal = ctx.signal;
     const generation = this.#authorityGeneration;
     const permissionSequence = this.#state.sequence;

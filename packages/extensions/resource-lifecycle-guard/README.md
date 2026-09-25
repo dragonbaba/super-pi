@@ -157,3 +157,9 @@ Omitted-cwd rule scope reuses that grant's canonical string without extra filesy
 work, while command analysis and execution retain their previous omitted-cwd path.
 Known legacy Session-root rule spellings remain compatible; target/scope checks
 still precede rule matching. Alias regressions cover exact and prefix rule reuse.
+
+Session tree/branch restore revalidates the existing primary grant rather than
+replacing its trusted identity. If restoration fails, the controller invalidates
+current authority and refuses guarded calls until a successful identity-preserving
+restore. A caught session event error cannot silently enable the replacement root.
+Opening a different physical workspace requires a fresh permission/trust owner.

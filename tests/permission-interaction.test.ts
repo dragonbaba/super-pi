@@ -46,7 +46,7 @@ async function permissionFixture(t: test.TestContext, aliasedRoot = false) {
 	}, "tui");
  await permission.restore(runner.createContext());
  const call = (toolName = "browser_exec", input: object = { code: "print('controlled fixture')", purpose: "permission regression" }) => runner.emitToolCall({ type: "tool_call", toolName, toolCallId: "approval-1", input } as never);
- return { runner, scheduler, permission, visible, call, abort, cwd, audits, choose: (index: number) => choose(choices[index]),
+ return { runner, scheduler, permission, visible, call, abort, cwd, root, audits, choose: (index: number) => choose(choices[index]),
   dialogOptions: () => dialogOptions, choices: () => choices };
 }
 
@@ -566,4 +566,15 @@ test("omitted and explicit primary cwd share exact and prefix rules through alia
   let extraApprovals = 0; f.runner.setUIContext({ ...f.runner.getUIContext(), select: async () => { extraApprovals++; return undefined; } }, "tui");
   const result = await f.call("bash", { command, ...(!firstExplicit ? { cwd: "." } : {}) }); assert.equal(result, undefined); assert.equal(extraApprovals, 0); assert.equal(f.audits.at(-1)?.policyReason, "session_rule_match");
  }
+});
+
+
+test("failed tree restore preserves primary identity and blocks until it is verified again", async t => {
+ const f = await permissionFixture(t, true); const original = f.permission.state.primary; const replacement = join(f.root, "replacement"); mkdirSync(replacement);
+ rmSync(f.cwd); symlinkSync(replacement, f.cwd, process.platform === "win32" ? "junction" : "dir");
+ await assert.rejects(f.permission.restore(f.runner.createContext()), error => error instanceof Error && error.message.includes("SHELL_CWD_CHANGED"));
+ assert.equal(f.permission.state.primary, original);
+ const blocked = await f.call("bash", { command: "pwd", cwd: "." }); assert.equal(blocked?.block, true); assert.ok(blocked?.reason?.includes("SHELL_CWD_CHANGED"));
+ rmSync(f.cwd); symlinkSync(original.canonicalPath, f.cwd, process.platform === "win32" ? "junction" : "dir");
+ await f.permission.restore(f.runner.createContext()); assert.equal(f.permission.state.primary, original); assert.equal(await f.call("bash", { command: "pwd", cwd: "." }), undefined);
 });

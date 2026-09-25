@@ -231,6 +231,7 @@ test("review: fresh omitted-cwd reuse clears only released bindings", async t =>
 
 
 test("review: Session root retarget after approval cannot promote outside project settings", async t => {
+ for (const restoreTree of [false, true]) {
   const f = await fixture(t, undefined, true); const outside = join(f.root, "outside"); mkdirSync(join(outside, CONFIG_DIR_NAME, "config"), { recursive: true });
   writeFileSync(join(outside, CONFIG_DIR_NAME, "config/settings.json"), JSON.stringify({ shellPath: join(f.root, "untrusted-invalid-shell") }));
   const previous = process.env.SP_CODING_AGENT_DIR; process.env.SP_CODING_AGENT_DIR = join(f.root, "agent");
@@ -239,9 +240,11 @@ test("review: Session root retarget after approval cannot promote outside projec
     const { default: loop } = await createJiti(import.meta.url).import<any>("../packages/extensions/tool-loop-guardrails/index.ts");
     const definitions: any[] = []; loop({ registerTool(tool: any) { definitions.push(tool); }, on() {} });
     f.agent.state.tools = [wrapToolDefinition(definitions.find(tool => tool.name === "bash"), () => f.runner.createContext())];
-    f.onApproval(() => { rmSync(f.cwd); symlinkSync(outside, f.cwd, process.platform === "win32" ? "junction" : "dir"); });
+    const retarget = () => { rmSync(f.cwd); symlinkSync(outside, f.cwd, process.platform === "win32" ? "junction" : "dir"); };
+    if (restoreTree) { retarget(); await f.runner.emit({ type: "session_tree" } as never); } else f.onApproval(retarget);
     const result = await f.call("bash", "printf unsafe > marker", outside);
     assert.equal(result.isError, true); assert.ok(result.content[0].type === "text" && result.content[0].text.includes("SHELL_CWD_CHANGED"), JSON.stringify(result));
-    assert.equal(existsSync(join(outside, "marker")), false); assert.ok(f.approvals() > 0);
+    assert.equal(existsSync(join(outside, "marker")), false); if (!restoreTree) assert.ok(f.approvals() > 0);
   } finally { if (previous === undefined) delete process.env.SP_CODING_AGENT_DIR; else process.env.SP_CODING_AGENT_DIR = previous; }
+ }
 });
