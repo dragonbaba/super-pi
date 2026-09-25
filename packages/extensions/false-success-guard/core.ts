@@ -1,4 +1,6 @@
 import { extname, isAbsolute, relative, resolve } from "node:path";
+import { boundBatchIntents, validMutationOutcome } from "../mutation-guard-write/session-evidence.ts";
+import { resolveToolPath } from "../mutation-guard-write/core.ts";
 
 const MAX_OBLIGATIONS = 32;
 const MAX_AUDIT_OBLIGATIONS = 16;
@@ -27,7 +29,7 @@ const PATH_NOT_FOUND_RE = /enoent|no such file|path not found/iu;
 const COMMAND_FAILED_RE = /command exited with code|process exited with code/iu;
 const WINDOWS_ABSOLUTE_RE = /^[a-z]:[/\\]/iu;
 
-const MUTATION_TOOLS = new Set(["edit", "write", "lsp_fix"]);
+const MUTATION_TOOLS = new Set(["edit", "write", "lsp_fix", "delete", "move"]);
 const INITIAL_GOAL_MARKER = "pi-goal-prompt:";
 const GOAL_OBJECTIVE_OPEN = "<goal_objective>";
 const GOAL_ID_OPEN = "<goal_id>";
@@ -63,6 +65,8 @@ export interface ToolObservation {
   text?: string;
   details?: unknown;
   cwd?: string;
+  toolCallId?: string;
+  branch?: readonly unknown[];
 }
 
 export interface InterventionAudit {
@@ -137,6 +141,8 @@ export function beginPromptBoundary(
 }
 
 export function observeToolResult(state: FalseSuccessState, observation: ToolObservation): string | undefined {
+  if (observation.toolName === "file_batch") { observeBatchResult(state, observation); return; }
+  if (observation.toolName === "delete" || observation.toolName === "move") { observeNativeResult(state, observation); return; }
   const scope = verificationScope(observation.toolName, observation.input, observation.cwd);
   const target = mutationTarget(observation.toolName, observation.input, observation.cwd);
   const text = (observation.text ?? "").slice(0, MAX_TOOL_TEXT_CHARS);
@@ -188,6 +194,61 @@ export function observeToolResult(state: FalseSuccessState, observation: ToolObs
     // partial mutation still needs authoritative verification covering it.
   }
   return undefined;
+}
+
+function observeMutationOutcome(state: FalseSuccessState, tool: string, target: string, status: string): void {
+  if (status === "succeeded") { state.obligations.delete(`mutation:${target}`); return; }
+  const uncertain = status === "partial" || status === "state_unknown";
+  setBounded(state.obligations, makeObligation(`${uncertain ? "partial" : "mutation"}:${target}`,
+    uncertain ? "partial_mutation" : "mutation", tool, status,
+    uncertain ? `mutation requires verification for ${displayTarget(target)}` : `mutation incomplete for ${displayTarget(target)}`, "target", target, target));
+}
+
+function observeBatchResult(state: FalseSuccessState, observation: ToolObservation): void {
+  const operations = observation.input.operations;
+  if (!Array.isArray(operations) || operations.length === 0 || operations.length > 16) {
+    if (observation.isError) observeMutationOutcome(state, "file_batch", normalizeAbsolute(observation.cwd ?? process.cwd(), observation.cwd ?? process.cwd()), "failed_no_change");
+    return;
+  }
+  const details = observation.details as any;
+  if (observation.input.dryRun === true && details?.preview === true && !observation.isError) return;
+  const intents = boundBatchIntents(observation.branch ?? [], observation.input, observation.toolCallId ?? "");
+  for (let index = 0; index < operations.length; index++) {
+    const operation = operations[index];
+    if (!operation || typeof operation.path !== "string" || !operation.path || operation.path.length > 4096) {
+      observeMutationOutcome(state, "file_batch", normalizeAbsolute(observation.cwd ?? process.cwd(), observation.cwd ?? process.cwd()), "failed_no_change");
+      continue;
+    }
+    const id = `${observation.toolCallId}:${index}`, item = Array.isArray(details?.items) && details.items.length === operations.length ? details.items[index] : undefined;
+    const intent = intents.get(id);
+    const paired = item?.itemId === id && item.operation === operation.operation && validMutationOutcome(item.status, item.stateChanged)
+      && intent && item.target === intent.target && item.destination === intent.destination;
+    // A started item must match its durable intent. Unstarted/preflight failures
+    // still block an unqualified task-completion claim, without claiming effects.
+    const status = paired ? item.status : "failed_no_change";
+    const target = intent?.target ?? mutationTarget(operation.operation, operation, observation.cwd);
+    observeMutationOutcome(state, "file_batch", normalizeAbsolute(target ?? observation.cwd ?? process.cwd(), observation.cwd ?? process.cwd()), status);
+    const destination = intent?.destination ?? (operation.operation === "move" && typeof operation.destination === "string" ? resolve(observation.cwd ?? process.cwd(), operation.destination) : undefined);
+    if (destination) observeMutationOutcome(state, "file_batch", normalizeAbsolute(destination, observation.cwd ?? process.cwd()), status);
+  }
+}
+
+function observeNativeResult(state: FalseSuccessState, observation: ToolObservation): void {
+  const details = observation.details as any;
+  let intent: any;
+  const branch = observation.branch ?? [];
+  for (let i = Math.max(0, branch.length - 512); i < branch.length; i++) {
+    const entry = branch[i] as any, data = entry?.data;
+    if (entry?.type === "custom" && entry.customType === "file-mutation-progress-v2" && data?.phase === "intent"
+      && data.toolCallId === observation.toolCallId && data.itemId === `${observation.toolCallId}:0` && data.operation === observation.toolName
+      && typeof data.target === "string" && data.target.length <= 4096 && isAbsolute(data.target)) intent = data;
+  }
+  const paired = intent && details?.operation === observation.toolName && details.target === intent.target && details.destination === intent.destination && validMutationOutcome(details.status, details.stateChanged);
+  const status = paired ? details.status : "failed_no_change";
+  const target = intent?.target ?? mutationTarget(observation.toolName, observation.input, observation.cwd);
+  observeMutationOutcome(state, observation.toolName, normalizeAbsolute(target ?? observation.cwd ?? process.cwd(), observation.cwd ?? process.cwd()), status);
+  const destination = intent?.destination ?? (observation.toolName === "move" && typeof observation.input.destination === "string" ? resolve(observation.cwd ?? process.cwd(), observation.input.destination) : undefined);
+  if (typeof destination === "string" && destination.length <= 4096) observeMutationOutcome(state, observation.toolName, normalizeAbsolute(destination, observation.cwd ?? process.cwd()), status);
 }
 
 export function completionIntervention(
@@ -345,7 +406,7 @@ function mutationTarget(
 ): string | undefined {
   if (!MUTATION_TOOLS.has(toolName)) return undefined;
   const path = typeof input.path === "string" ? input.path.trim() : "";
-  return path ? normalizeAbsolute(path, cwd) : undefined;
+  return path ? normalizeAbsolute(toolName === "edit" || toolName === "write" ? resolveToolPath(cwd, path) : resolve(cwd, path), cwd) : undefined;
 }
 
 function verificationKey(scope: VerificationScope): string {

@@ -1,3 +1,4 @@
+import { MUTATION_READ_SOURCE, readFileGeneration, verifyMutationReadSource } from "../../coding-agent/src/core/tools/read-window.ts";
 import { randomBytes } from "node:crypto";
 import { chmod, lstat, open, readFile, realpath, rename, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
@@ -115,6 +116,7 @@ export interface SnapshotLineEditHooks {
   assertPathAllowed: () => Promise<string>;
   reserveMutation?: (changedBytes: number) => number;
   beforeCommit?: () => void | Promise<void>;
+  assertCurrent?: () => void;
   afterCommit?: () => void | Promise<void>;
 }
 interface SnapshotStore {
@@ -276,6 +278,19 @@ function nativeReadProjection(bytes: Buffer, input: ReadToolInput): NativeReadPr
   return { text, firstLine, lastLine: firstLine + outputLines - 1, outputLines };
 }
 
+async function matchesReadSource(canonicalPath: string, result: SnapshotReadResult, bytes?: Buffer): Promise<boolean> {
+  const source = (result.content as any)[MUTATION_READ_SOURCE];
+  if (!source) return true;
+  if (canonicalPath !== source.canonicalPath) return false;
+  try {
+    if (bytes) return source.startByte >= 0 && source.endByte <= bytes.length
+      && sha256(bytes.subarray(source.startByte, source.endByte)) === source.sha256
+      && readFileGeneration(await lstat(source.canonicalPath, { bigint: true })) === source.fileGeneration;
+    return await verifyMutationReadSource(source);
+  }
+  catch { return false; } // Optional annotation must not fail a completed read.
+}
+
 export async function issueSnapshotForRead(
   sessionId: string,
   cwd: string,
@@ -292,6 +307,7 @@ export async function issueSnapshotForRead(
     // Files above the full-receipt ceiling may still qualify for a compact receipt.
   }
   if (fullCapture) {
+    if (!await matchesReadSource(fullCapture.canonicalPath, result, fullCapture.bytes)) return undefined;
     const projection = nativeReadProjection(fullCapture.bytes, input);
     if (!projection || projection.text !== displayed) return undefined;
     const lines = parsePhysicalLines(fullCapture.bytes);
@@ -326,6 +342,7 @@ export async function issueSnapshotForRead(
     return undefined;
   }
   if (!compact) return undefined;
+  if (!await matchesReadSource(compact.canonicalPath, result)) return undefined;
   const id = `snap_${randomBytes(16).toString("base64url")}`;
   rememberSnapshot({
     mode: "compact",
@@ -775,7 +792,19 @@ export async function resolveSnapshotCanonicalTarget(
   }
   return receipt.canonicalPath;
 }
-export async function executeSnapshotLineEdit(
+export interface PreparedSnapshotMutation {
+  snapshotId: string;
+  sessionId: string;
+  receipt: SnapshotReceipt;
+  byteEdits: PreparedByteEdit[];
+  changedBytes: number;
+  replacements: number;
+  deduplicatedEdits: number;
+  diff: string;
+  patch: string;
+  firstChangedLine?: number;
+}
+export async function prepareSnapshotLineMutation(
   sessionId: string,
   cwd: string,
   path: string,
@@ -783,7 +812,7 @@ export async function executeSnapshotLineEdit(
   edits: readonly SnapshotLineEdit[],
   signal: AbortSignal | undefined,
   hooks: SnapshotLineEditHooks,
-): Promise<SnapshotLineEditResult> {
+): Promise<PreparedSnapshotMutation> {
   if (!SNAPSHOT_ID_PATTERN.test(snapshotId)) throw new Error("[SNAPSHOT_EDIT_UNKNOWN] Invalid snapshot identifier. No change.\nRead the needed range again; use that read's snapshot and LINE#ID anchors.");
   const receipt = snapshotStore().snapshots.get(snapshotId);
   if (!receipt || receipt.sessionId !== sessionId) throw new Error("[SNAPSHOT_EDIT_UNKNOWN] Snapshot is absent, expired, consumed, or belongs to another Session. No change.\nRead the needed range again; use that read's snapshot and LINE#ID anchors.");
@@ -809,12 +838,36 @@ export async function executeSnapshotLineEdit(
   const beforeText = strictUtf8Decoder.decode(current);
   const afterText = strictUtf8Decoder.decode(prepared.output);
   const diffResult = generateDiffString(beforeText, afterText);
-  try {
-    await assertNoNewSyntaxDiagnostics(receipt.canonicalPath, beforeText, afterText, edits, prepared.byteEdits);
-  } finally {
-    prepared.byteEdits.length = 0;
-  }
+  await assertNoNewSyntaxDiagnostics(receipt.canonicalPath, beforeText, afterText, edits, prepared.byteEdits);
   const patch = generateUnifiedPatch(receipt.canonicalPath, beforeText, afterText);
+  return { snapshotId, sessionId, receipt, byteEdits: prepared.byteEdits, changedBytes: prepared.changedBytes,
+    replacements: prepared.replacements, deduplicatedEdits: prepared.deduplicatedEdits,
+    diff: diffResult.diff, patch, firstChangedLine: diffResult.firstChangedLine };
+}
+
+export async function executeSnapshotLineEdit(
+  sessionId: string, cwd: string, path: string, snapshotId: string, edits: readonly SnapshotLineEdit[],
+  signal: AbortSignal | undefined, hooks: SnapshotLineEditHooks,
+): Promise<SnapshotLineEditResult> {
+  const plan = await prepareSnapshotLineMutation(sessionId, cwd, path, snapshotId, edits, signal, hooks);
+  try { return await executePreparedSnapshotMutation(plan, signal, hooks); }
+  finally { plan.byteEdits.length = 0; }
+}
+
+export async function executePreparedSnapshotMutation(
+  plan: PreparedSnapshotMutation, signal: AbortSignal | undefined, hooks: SnapshotLineEditHooks,
+): Promise<SnapshotLineEditResult> {
+  const { receipt, snapshotId, patch } = plan;
+  if (snapshotStore().snapshots.get(snapshotId) !== receipt) throw new Error("[SNAPSHOT_EDIT_STALE] Prepared snapshot is no longer available.");
+  if (await hooks.assertPathAllowed() !== receipt.canonicalPath) throw new Error("[SNAPSHOT_EDIT_PATH] Prepared path changed.");
+  const current = await readFile(receipt.canonicalPath);
+  if (!sameIdentity(await currentIdentity(receipt.canonicalPath), receipt.identity) || sha256(current) !== receipt.sha256) throw new Error("[SNAPSHOT_EDIT_STALE] Prepared source changed.");
+  const chunks: Buffer[] = [];
+  let cursor = 0;
+  for (const edit of plan.byteEdits) { chunks.push(current.subarray(cursor, edit.start), edit.replacement); cursor = edit.end; }
+  chunks.push(current.subarray(cursor));
+  const prepared = { output: Buffer.concat(chunks), changedBytes: plan.changedBytes, replacements: plan.replacements, deduplicatedEdits: plan.deduplicatedEdits };
+  const diffResult = plan;
   const reservationId = hooks.reserveMutation?.(prepared.changedBytes);
   if (signal?.aborted) throw new Error("Operation aborted");
   const directory = dirname(receipt.canonicalPath);
@@ -840,6 +893,16 @@ export async function executeSnapshotLineEdit(
       forgetSnapshot(snapshotId);
       throw new Error("[SNAPSHOT_EDIT_STALE] Target changed before commit. No change.\nRead the needed range again; use that read's snapshot and LINE#ID anchors.");
     }
+    if (await hooks.assertPathAllowed() !== receipt.canonicalPath || !sameIdentity(await currentIdentity(receipt.canonicalPath), receipt.identity)) throw new Error("[SNAPSHOT_EDIT_STALE] Prepared identity changed at commit.");
+    // The path hook can await external permission/identity checks. Its return is
+    // not content evidence: rehash once after those awaits, then commit without
+    // another asynchronous callback between verification and rename issuance.
+    if (sha256(await readFile(receipt.canonicalPath)) !== receipt.sha256) {
+      forgetSnapshot(snapshotId);
+      throw new Error("[SNAPSHOT_EDIT_STALE] Target content changed during final path validation. No change.");
+    }
+    hooks.assertCurrent?.();
+    signal?.throwIfAborted();
     await rename(temporary, receipt.canonicalPath);
     committed = true;
     forgetSnapshot(snapshotId);
