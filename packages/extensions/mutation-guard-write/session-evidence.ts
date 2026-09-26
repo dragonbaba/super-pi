@@ -92,6 +92,11 @@ function appendNativeReceipt(items: Map<string, NativeStructuredMutationReceipt>
   if (items.size > MAX_STRUCTURED_MUTATION_RECEIPTS) items.delete(items.keys().next().value!);
 }
 
+function markConflictingAggregate(items: Map<string, NativeStructuredMutationReceipt>, toolCallId: unknown): void {
+  if (typeof toolCallId !== "string") return;
+  for (const item of items.values()) if (item.toolCallId === toolCallId) item.historyConflict = true;
+}
+
 function collectNativeReceipts(branch: readonly unknown[]): Map<string, NativeStructuredMutationReceipt> {
   const items = new Map<string, NativeStructuredMutationReceipt>();
   for (let index = Math.max(0, branch.length - MAX_STRUCTURED_MUTATION_RECEIPTS); index < branch.length; index++) {
@@ -104,13 +109,16 @@ function collectNativeReceipts(branch: readonly unknown[]): Map<string, NativeSt
     }
     const message = entry.type === "message" && entry.message?.role === "toolResult" ? entry.message : undefined;
     const data = message?.details;
-    if (data?.mutationReceiptVersion !== 2 || message?.toolName !== data?.operation) continue;
+    if (data?.mutationReceiptVersion !== 2) continue;
+    if (message?.toolName !== data?.operation) { markConflictingAggregate(items, message?.toolCallId); continue; }
     if (message.toolName === "file_batch" && data.operation === "file_batch" && !data.preview && Array.isArray(data.items) && data.items.length <= 16) {
       for (let index = 0; index < data.items.length; index++) {
         const item = data.items[index];
         if (item?.itemId === `${message.toolCallId}:${index}`) appendNativeReceipt(items, entry, item, message.toolCallId, item.itemId, false);
+        else markConflictingAggregate(items, message.toolCallId);
       }
-    } else appendNativeReceipt(items, entry, data, message.toolCallId, `${message.toolCallId}:0`, false);
+    } else if (message.toolName === "file_batch") markConflictingAggregate(items, message.toolCallId);
+    else appendNativeReceipt(items, entry, data, message.toolCallId, `${message.toolCallId}:0`, false);
   }
   return items;
 }
@@ -129,8 +137,8 @@ export function recentMutationEntries(session: { getLeafId(): string | null; get
 }
 
 /** Pair bounded durable intents with this actual call, never with arbitrary result targets. */
-export function boundBatchIntents(branch: readonly unknown[], input: any, toolCallId: string): Map<string, { operation: string; target: string; destination?: string }> {
-  const intents = new Map<string, { operation: string; target: string; destination?: string }>();
+export function boundBatchIntents(branch: readonly unknown[], input: any, toolCallId: string): Map<string, { operation: string; target: string; destination?: string; directories?: unknown }> {
+  const intents = new Map<string, { operation: string; target: string; destination?: string; directories?: unknown }>();
   if (!Array.isArray(input?.operations) || input.operations.length > 16) return intents;
   const hash = mutationRequestHash("file_batch", input);
   for (let i = Math.max(0, branch.length - MAX_RESTORE_ENTRIES); i < branch.length; i++) {
@@ -141,7 +149,7 @@ export function boundBatchIntents(branch: readonly unknown[], input: any, toolCa
         const item = data.items[n];
         if (item?.itemId !== `${toolCallId}:${n}` || item.operation !== input.operations[n]?.operation || !safeReceiptPath(item.target) || !isAbsolute(item.target)
           || (item.operation === "move" && (!safeReceiptPath(item.destination) || !isAbsolute(item.destination)))) continue;
-        intents.set(item.itemId, { operation: item.operation, target: item.target, destination: item.destination });
+        intents.set(item.itemId, { operation: item.operation, target: item.target, destination: item.destination, directories: item.directories });
       }
       continue;
     }
