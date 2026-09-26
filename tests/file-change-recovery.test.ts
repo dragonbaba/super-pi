@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { createJiti } from "jiti";
-import { mutationFixture as fixture } from "./helpers/mutation-fixture.ts";
+import { mutationFixture as fixture, MutationWriteGuard } from "./helpers/mutation-fixture.ts";
 import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
 import { visibleWidth } from "../packages/tui/src/index.ts";
 const { collectChanges, collectVerifiedChanges, remainingDraft, verifyChange } = await createJiti(import.meta.url).import<any>("../packages/extensions/mutation-guard-write/changes.ts");
@@ -522,6 +522,53 @@ test("N1 partial creation verifies recorded parents even when its target is abse
   const observation = (f.session.getBranch() as any[]).find(e => e.customType === "file-change-verification-v1").data;
   assert.equal(observation.source.exists, false); assert.equal(observation.parents.length, 2);
   for (const parent of observation.parents) { assert.equal(parent.exists, true); assert.equal(parent.identity.directory, true); }
+});
+
+test("N1 successful creation retains its hash and parents when terminal persistence fails", async t => {
+  const f = await fixture(t), target = join(f.cwd, "kept/parents/created");
+  f.onRecord(data => { if (data.phase === "result") throw new Error("terminal storage failed"); });
+  const result = await f.call("write", { path: target, content: "committed content" }, "creation-record-failed");
+  assert.equal(result.isError, true); assert.equal((result.details as any).status, "state_unknown");
+  const records = collectChanges(f.session.getBranch(), f.cwd);
+  assert.equal(records.length, 1); assert.equal(records[0].unavailable, undefined); assert.ok(records[0].postimage);
+  const observed = await verifyChange(records[0], async () => {});
+  assert.equal(observed.postimageMatches, true); assert.equal(observed.parents.length, 2);
+  writeFileSync(target, "external");
+  assert.equal((await verifyChange(records[0], async () => {})).postimageMatches, false);
+});
+
+test("N1 actual partial standalone overwrite binds its ordered origin and rejects tampering", async t => {
+  const f = await fixture(t), target = join(f.cwd, "partial-overwrite"); writeFileSync(target, "before");
+  await f.call("read", { path: target }, "partial-overwrite-read");
+  const original = MutationWriteGuard.prototype.write;
+  t.mock.method(MutationWriteGuard.prototype, "write", async function(this: any, ...args: any[]) {
+    await original.apply(this, args);
+    throw new Error(JSON.stringify({ stateChanged: true, category: "PARTIAL_MUTATION", cause: "injected completion failure after real bytes" }));
+  });
+  const result = await f.call("write", { path: target, content: "desired-overwrite" }, "partial-overwrite");
+  assert.equal(result.isError, true); assert.equal(readFileSync(target, "utf8"), "desired-overwrite");
+  const records = collectChanges(f.session.getBranch(), f.cwd);
+  assert.equal(records.length, 1); assert.equal(records[0].status, "partial"); assert.equal(records[0].unavailable, undefined);
+  await verifyChange(records[0], async () => {});
+  const forged = JSON.parse(JSON.stringify(f.session.getBranch()));
+  for (const entry of forged) if (entry.data?.phase === "origin" || entry.data?.phase === "intent") entry.data.requestHash = "0".repeat(64);
+  assert.ok(collectChanges(forged, f.cwd)[0].unavailable);
+});
+
+test("N1 committed exact edit cancellation retains a verifiable terminal receipt", async t => {
+  const f = await fixture(t), target = join(f.cwd, "cancelled-edit"); writeFileSync(target, "before");
+  await f.call("read", { path: target }, "cancelled-edit-read");
+  const original = MutationWriteGuard.prototype.writeEditContent;
+  t.mock.method(MutationWriteGuard.prototype, "writeEditContent", async function(this: any, ...args: any[]) {
+    const result = await original.apply(this, args);
+    f.agent.abort();
+    return result;
+  });
+  const result = await f.call("edit", { path: target, edits: [{ oldText: "before", newText: "after" }] }, "cancelled-edit");
+  assert.equal(readFileSync(target, "utf8"), "after"); assert.equal(result.isError, true);
+  const records = collectChanges(f.session.getBranch(), f.cwd);
+  assert.equal(records.length, 1); assert.equal(records[0].status, "partial"); assert.equal(records[0].unavailable, undefined);
+  assert.equal((await verifyChange(records[0], async () => {})).postimageMatches, true);
 });
 
 test("N1 partial batch creation binds created-directory metadata across the result mirror", async t => {
