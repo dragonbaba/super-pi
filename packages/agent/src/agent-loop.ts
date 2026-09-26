@@ -1145,7 +1145,11 @@ function resultWithObservationFailure(result: AgentToolResult<any>, error: unkno
   // Completion-error boundary only. Clone once so preserved producer objects
   // stay immutable and consumers need not infer an Agent failure from stdout.
   const details = execution && typeof execution === "object"
-    ? { ...result.details, shellExecution: { ...execution, observationError: message } } : result.details;
+    ? { ...result.details, shellExecution: { ...execution,
+      observationError: execution.observationError ?? message,
+      secondaryObservationError: execution.observationError !== undefined ? execution.secondaryObservationError ?? message : undefined,
+      observationErrorsOmitted: execution.secondaryObservationError !== undefined || execution.observationErrorsOmitted === true ? true : undefined,
+    } } : result.details;
   return { ...result, content: [...result.content, { type: "text", text: `[TOOL_OBSERVATION_FAILED] ${message}` }],
     details, isError: true };
 }

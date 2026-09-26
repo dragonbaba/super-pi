@@ -35,6 +35,9 @@ export interface ShellExecutionFacts {
   inputError?: string;
   /** Completion/progress observer or executable-status persistence failure. */
   observationError?: string;
+  /** First subsequent observer failure; further failures are explicitly omitted. */
+  secondaryObservationError?: string;
+  observationErrorsOmitted?: true;
   output: {
     complete: boolean | "unknown";
     tailTruncated: boolean;
@@ -65,6 +68,8 @@ export function readShellExecution(details: unknown): ShellExecutionFacts | unde
     || !TERMINATIONS.has(value.termination)
     || value.inputError !== undefined && (typeof value.inputError !== "string" || value.inputError.length > 1000)
     || value.observationError !== undefined && (typeof value.observationError !== "string" || value.observationError.length > 1000)
+    || value.secondaryObservationError !== undefined && (value.observationError === undefined || typeof value.secondaryObservationError !== "string" || value.secondaryObservationError.length > 1000)
+    || value.observationErrorsOmitted !== undefined && (value.observationErrorsOmitted !== true || value.secondaryObservationError === undefined)
     || !value.output || value.output.complete !== true && value.output.complete !== false && value.output.complete !== "unknown"
     || typeof value.output.tailTruncated !== "boolean"
     || !LOG_STATES.has(value.output.log)

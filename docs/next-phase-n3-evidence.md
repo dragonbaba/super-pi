@@ -151,3 +151,24 @@ respectively. The command is never rediscovered or replayed. Seventy-six focused
 cases pass after check/build. Full-suite old heredoc fixtures now distinguish the
 supported quoted data form from unsupported arguments, and progress-failure
 assertions require both completed result content and the observation diagnostic.
+
+Both 6f5d1f4bc and its parent-integration f9c4510aa pass all fixed-head local gates,
+including full tests and Bash/shell/tool-leaf allocation checks. The next actual
+review found primary-observer retention, implicit alias cwd and a guidance consumer
+still using only stdout. Agent failure facts now preserve the first bounded
+observationError, record the first bounded secondaryObservationError separately,
+and explicitly flag further omissions. The facts reader validates these fields.
+Real PowerShell exit-0/23 plus persistence and subsequent Agent observer failures
+retain both errors, one actual file effect and the original process outcome.
+
+Before-execution false-success observations without a cwd binding resolve the
+implicit Session directory to the same canonical form as local producer facts.
+Missing/unreadable paths retain their unresolved obligation; this is observation,
+not execution authority. Real symlink/junction tests exercise explicit and implicit
+cwd and prove a canonical retry clears only its matching key. Tool-loop recovery
+now receives the same details as error recording. Structured shell facts prevent
+stdout-driven path/parser/policy guesses; legacy non-structured diagnostics retain
+their existing bounded hints. The actual default SDK/serializer test prints forged
+ENOENT, policy and syntax markers while exiting 23, retains command_failed facts,
+and appends no contradictory advisory. New-head complete checks/CI/review are still
+required, independently of the preceding full passes.

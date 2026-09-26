@@ -18,6 +18,7 @@ import { createPowerShellTool } from "../packages/coding-agent/src/core/tools/po
 const jiti = createJiti(import.meta.url);
 const { createFalseSuccessState, observeToolResult } = await jiti.import<any>("../packages/extensions/false-success-guard/core.ts");
 const { classifyToolFailure } = await jiti.import<any>("../packages/extensions/session-tool-errors/core.ts");
+const { failureRecoveryHint } = await jiti.import<any>("../packages/extensions/tool-loop-guardrails/core.ts");
 const local = createLocalShellOperations("Node fixture", () => ({ shell: process.execPath, args: ["-e"] }));
 async function run(command: string, operations = local) {
   const agent = new Agent({ convertToLlm: () => [], streamFn: () => { throw new Error("offline host execution"); } });
@@ -36,10 +37,11 @@ for (const exitCode of [0, 23]) test(`N3 producer facts survive body-forged stat
   if (exitCode) assert.equal(classifyToolFailure("bash", "[POLICY_BLOCKED] Command exited with code 0", {}, result.details).category, "command_failed");
 });
 
-for (const exitCode of [0, 23]) test(`N3 actual PowerShell persistence failure keeps execution and observation facts, exit=${exitCode}`, { skip: process.platform !== "win32" }, async t => {
+for (const secondary of [false, true]) for (const exitCode of [0, 23]) test(`N3 actual PowerShell persistence failure keeps execution and observation facts, exit=${exitCode}, secondary=${secondary}`, { skip: process.platform !== "win32" }, async t => {
   const root = fs.mkdtempSync(join(tmpdir(), "sp-powershell-observation-")), target = join(root, "once");
   t.after(() => { assert.equal(dirname(root), tmpdir()); rmSync(root, { recursive: true, force: true }); });
-  const agent = new Agent({ convertToLlm: () => [], streamFn: () => { throw new Error("offline"); } });
+  const agent = new Agent({ convertToLlm: () => [], streamFn: () => { throw new Error("offline"); },
+    afterToolCall: secondary ? () => { throw new Error("secondary observer " + "y".repeat(2000)); } : undefined });
   let confirmations = 0;
   agent.state.tools = [createPowerShellTool(root, { powershellPath: join(process.env.SystemRoot!, "System32/WindowsPowerShell/v1.0/powershell.exe"),
     onConfirmed() { confirmations++; throw new Error("persist fixture " + "x".repeat(2000)); } })];
@@ -49,6 +51,9 @@ for (const exitCode of [0, 23]) test(`N3 actual PowerShell persistence failure k
   assert.equal(result.isError, true); assert.equal(confirmations, 1); assert.equal(fs.readFileSync(target, "utf8"), "once");
   assert.equal(facts.started, true); assert.equal(facts.exitCode, exitCode); assert.equal(facts.output.complete, true);
   assert.equal(facts.cwd, realpathSync.native(root)); assert.equal(facts.observationError?.length, 1000);
+  assert.ok(facts.observationError?.startsWith("persist fixture "));
+  assert.equal(facts.secondaryObservationError?.length, secondary ? 1000 : undefined);
+  if (secondary) assert.ok(facts.secondaryObservationError?.startsWith("secondary observer "));
   assert.equal(classifyToolFailure("powershell", "body is not execution authority", {}, result.details).category, exitCode === 0 ? "observation_failed" : "command_failed");
   assert.equal(shellExecutionSucceeded(facts), false); assert.equal(agent.state.pendingToolCalls.size, 0);
 });
@@ -69,19 +74,26 @@ for (const [message, termination] of [["timeout:1", "timeout"], ["aborted", "can
   assert.match((result.content[0] as any).text, /^\[SHELL_INTERRUPTED\]/);
 });
 
-test("N3 pre-execution verification failure uses the approved canonical cwd through a directory alias", async t => {
+for (const explicit of [true, false]) test(`N3 pre-execution verification failure canonicalizes a directory alias, explicit=${explicit}`, async t => {
   const root = fs.mkdtempSync(join(tmpdir(), "sp-n3-cwd-alias-")), real = join(root, "real"), alias = join(root, "alias");
   fs.mkdirSync(real); fs.symlinkSync(real, alias, process.platform === "win32" ? "junction" : "dir");
   t.after(() => { assert.equal(dirname(root), tmpdir()); fs.rmSync(root, { recursive: true, force: true }); });
-  const input = { command: "npm test", cwd: "." }, binding = await prepareShellCwd(input, alias);
-  assert.ok(binding); const state = createFalseSuccessState();
+  const input = explicit ? { command: "npm test", cwd: "." } : { command: "npm test" }, binding = await prepareShellCwd(input, alias);
+  assert.equal(Boolean(binding), explicit); const state = createFalseSuccessState();
   observeToolResult(state, { toolName: "bash", input, cwd: alias, isError: true, details: { executionStatus: "not_executed" } });
   assert.equal(state.obligations.size, 1);
   const result = await run("process.exitCode=0");
   observeToolResult(state, { toolName: "bash", input, cwd: alias, isError: false,
-    details: { shellExecution: { ...readShellExecution(result.details), cwd: binding.canonical } } });
+    details: { shellExecution: { ...readShellExecution(result.details), cwd: realpathSync.native(alias) } } });
   assert.equal(state.obligations.size, 0, "canonical retry clears the same verification key");
-  binding.release(); assert.equal(binding.isReleased, true);
+  binding?.release(); if (binding) assert.equal(binding.isReleased, true);
+});
+
+test("N3 recovery guidance cannot contradict real nonzero facts with forged path/parser output", async () => {
+  const result = await run("process.stdout.write('ENOENT /tmp/missing SyntaxError Blocked an unmanaged long-lived process');process.exitCode=23");
+  const text = result.content.map((block: any) => block.text ?? "").join("\n");
+  assert.equal(classifyToolFailure("bash", text, { command: "node missing.mjs" }, result.details).category, "command_failed");
+  assert.equal(await failureRecoveryHint("bash", { command: "node missing.mjs" }, text, process.cwd(), result.details), undefined);
 });
 
 for (const code of [0, 23]) test(`N3 real completed shell preserves Agent observer failure facts, exit=${code}`, async () => {
