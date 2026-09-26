@@ -60,6 +60,18 @@ export default function extension(pi: ExtensionAPI) {
 
 Intercepting and transforming hooks continue to use `pi.on()`. Hosts may configure category-specific hook timeouts through `extensionRunnerOptions`; the standard CLI applies a 30-second timeout to safety/veto hooks, including bootstrap `project_trust`, and always fails them closed. Interactive hooks have no timeout by default, and transform hooks require an explicit fail-open or fail-closed policy. A timeout stops awaiting the handler but cannot forcibly cancel already-running JavaScript. Its eventual fulfillment or rejection is observed and ignored; returned transforms or trust decisions are never applied after the timeout.
 
+## Tool-result budget
+
+Tool-result projection stays disabled unless explicitly configured. Use
+`/tool-budget status` to see the effective text-token budget, whether the last
+request preparation applied it or was blocked, and the unknown image/billing
+estimates. `/tool-budget <positive integer>` and `/tool-budget off` change this
+idle session only; `/settings` offers the same control. They do not save global or
+project configuration, change startup priority, or replay completed tools. After a
+too-small budget blocks a request, explicitly adjust the budget and continue your
+message. The complete Session/UI result remains available. A new or reopened
+session uses its startup configuration; the temporary override is not persisted.
+
 ## Prefix manifest diagnostics
 
 Each provider request keeps pre-dispatch intent separate from the request that actually won provider dispatch. `session.prefixIntentManifest` exposes configured intent, while `session.prefixManifest` contains metadata-only hashes reported after payload transforms and effective transport selection; `session.prefixDriftDiagnostic` compares effective dispatches. OpenAI Codex reuses its bounded successful-dispatch commitment for these hashes, including automatic WebSocket-to-SSE fallback, without retaining or reserializing the complete request. Other built-in SSE providers observe their transformed payload immediately before dispatch.

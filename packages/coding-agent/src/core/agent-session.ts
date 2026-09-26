@@ -22,6 +22,7 @@ import { access as evidenceAccess, realpath as evidenceRealpath, stat as evidenc
 import { constants as evidenceFsConstants } from "node:fs";
 import { EvidenceLedger, formatEvidenceReference, type EvidenceRecordV1 } from "./evidence-ledger.ts";
 import { estimateToolOutputTokens } from "./tool-output-budget.ts";
+import type { ToolResultBudgetStatus } from "./tool-result-budget-status.ts";
 import { resolveReadPathAsync } from "./tools/path-utils.ts";
 import { READ_EVIDENCE_CAPTURE, READ_EVIDENCE_IDENTITY, hasPreciseReadIdentity, readFileGeneration, type ValidatedReadIdentity } from "./tools/read-window.ts";
 import {
@@ -40,6 +41,7 @@ import type {
 	AssistantMessage,
 	AuthResult,
 	ImageContent,
+	Message,
 	Model,
 	ProviderHeaders,
 	TextContent,
@@ -817,6 +819,8 @@ export class AgentSession {
 	private _prefixManifestRecorder?: PrefixManifestRecorder;
 	private _toolOutputShadow: ToolOutputShadowObserver | undefined;
 	private _toolResultPresentation: ToolResultPresentationOwner | undefined;
+	private _toolBudgetLastRequest: "not-observed" | "applied" | "blocked" = "not-observed";
+	private _toolBudgetSessionOverride = false;
 	private _toolResultUiDispatchMessage: Extract<AgentMessage, { role: "toolResult" }> | undefined;
 	private _toolResultUiDispatchSourceContent: Extract<AgentMessage, { role: "toolResult" }>["content"] | undefined;
 	private _toolResultUiCanonicalMessages:
@@ -1847,6 +1851,50 @@ export class AgentSession {
 	/** Whether this session owns the explicitly enabled presentation boundary. */
 	get toolResultPresentationEnabled(): boolean {
 		return this._toolResultPresentation !== undefined;
+	}
+
+	/** User-owned idle-session operation; no settings file is written. */
+	configureToolResultBudget(options: ToolResultPresentationOptions | undefined): void {
+		if (this.isStreaming || this.agent.state.pendingToolCalls.size !== 0) throw new Error("Wait until the current turn settles before changing the tool-result budget.");
+		const next = createToolResultPresentationOwner(options, this.sessionManager.getSessionId());
+		this._clearEvidenceBranch();
+		this._toolResultPresentation?.dispose();
+		this._toolResultPresentation = next;
+		this._toolBudgetLastRequest = "not-observed";
+		this._toolBudgetSessionOverride = true;
+		this._toolResultUiDispatchMessage = undefined;
+		this._toolResultUiDispatchSourceContent = undefined;
+		this._toolResultUiCanonicalMessages?.clear();
+		this._toolResultUiCanonicalMessages = undefined;
+		this._toolResultUiCanonicalIndexActive = false;
+		this._toolResultUiCanonicalMessagesSource = undefined;
+		this._toolResultUiCanonicalMessagesLength = 0;
+		this._toolResultUiCanonicalMessagesTail = undefined;
+		this._toolResultUiCanonicalMessagesOverflowed = false;
+	}
+
+	/** Snapshot only on an explicit settings/status action; no history or token scan. */
+	getToolResultBudgetStatus(): ToolResultBudgetStatus {
+		const owner = this._toolResultPresentation, budgetTokens = owner?.getEvidenceBudgetTokens();
+		return { state: !owner ? "disabled" : budgetTokens === undefined ? "enabled-unconfigured" : this._toolBudgetLastRequest === "blocked" ? "budget-too-small" : "enabled",
+			budgetTokens, lastRequest: this._toolBudgetLastRequest, scope: this._toolBudgetSessionOverride ? "session-override" : "startup-configuration",
+			imageAndBillingEstimate: "unavailable", retainedRecords: owner?.counters.projectionRecordEntries ?? 0,
+			retainedCodeUnits: owner?.counters.retainedProjectionCodeUnits ?? 0 };
+	}
+
+	/** SDK final-request conversion uses the current owner after an explicit change. */
+	projectToolResultMessagesForModel(messages: Message[], imagePolicy?: (message: Message) => Message,
+		systemPrompt?: string, tools?: readonly AgentTool<any>[], contextWindow?: number, maxOutputTokens?: number, requestPlanning = false): Message[] {
+		const owner = this._toolResultPresentation;
+		if (!owner) return messages;
+		try {
+			const projected = owner.projectMessagesForModel(messages, imagePolicy, systemPrompt, tools, contextWindow, maxOutputTokens, requestPlanning);
+			this._toolBudgetLastRequest = owner.getEvidenceBudgetTokens() === undefined ? "not-observed" : "applied";
+			return projected;
+		} catch (error) {
+			if (error instanceof ToolResultContinuationError && error.code === "budget-too-small") this._toolBudgetLastRequest = "blocked";
+			throw error;
+		}
 	}
 
 	private _recordToolResultUiCanonicalMessage(message: AgentMessage): void {

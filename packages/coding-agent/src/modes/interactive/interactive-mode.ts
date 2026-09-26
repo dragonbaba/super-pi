@@ -110,6 +110,7 @@ import type { ResourceDiagnostic } from "../../core/resource-loader.ts";
 import { formatMissingSessionCwdPrompt, MissingSessionCwdError } from "../../core/session-cwd.ts";
 import { type SessionEntry, SessionManager, sessionEntryToContextMessages } from "../../core/session-manager.ts";
 import type { FullscreenExitOutput, TuiMode } from "../../core/settings-manager.ts";
+import { formatToolResultBudgetStatus, parseToolResultBudgetCommand } from "../../core/tool-result-budget-status.ts";
 import { BUILTIN_SLASH_COMMANDS } from "../../core/slash-commands.ts";
 import type { SourceInfo } from "../../core/source-info.ts";
 import { isInstallTelemetryEnabled } from "../../core/telemetry.ts";
@@ -3885,6 +3886,11 @@ export class InteractiveMode {
 			if (!text) return;
 
 			// Handle commands
+			if (text === "/tool-budget" || text.startsWith("/tool-budget ")) {
+				this.editor.setText("");
+				this.handleToolResultBudgetCommand(text.slice(12));
+				return;
+			}
 			if (text === "/settings") {
 				this.showSettingsSelector();
 				this.editor.setText("");
@@ -6132,6 +6138,7 @@ export class InteractiveMode {
 			selector = new SettingsSelectorComponent(
 				{
 					autoCompact: this.session.autoCompactionEnabled,
+					toolResultBudget: this.session.toolResultPresentationEnabled ? String(this.session.getToolResultBudgetStatus().budgetTokens ?? "unconfigured") : "off",
 					defaultModel,
 					currentModel: this.session.model,
 					availableDefaultModels: this.session.modelRuntime.getAvailableSnapshot(),
@@ -6170,6 +6177,7 @@ export class InteractiveMode {
 					warnings: this.settingsManager.getWarnings(),
 				},
 				{
+					onToolResultBudgetChange: this.onToolResultBudgetSettingChange,
 					onAutoCompactChange: (enabled) => {
 						this.session.setAutoCompactionEnabled(enabled);
 						this.footer.setAutoCompactEnabled(enabled);
@@ -7972,6 +7980,24 @@ export class InteractiveMode {
 		this.chatContainer.addChild(new Spacer(1));
 		this.chatContainer.addChild(new Text(theme.fg("dim", `Session name set: ${sessionName ?? name}`), 1, 0));
 		this.ui.requestRender();
+	}
+
+	// One callback per InteractiveMode owner, reused by explicit settings dialogs.
+	private readonly onToolResultBudgetSettingChange = (value: string): string => {
+		this.handleToolResultBudgetCommand(value);
+		const status = this.session.getToolResultBudgetStatus();
+		return status.state === "disabled" ? "off" : String(status.budgetTokens ?? "unconfigured");
+	};
+
+	private handleToolResultBudgetCommand(value: string): void {
+		try {
+			const options = parseToolResultBudgetCommand(value);
+			if (options !== "status") {
+				this.session.configureToolResultBudget(options);
+				this.clearToolResultDiscoveriesAfterCanonicalHistoryReplacement();
+			}
+			this.showStatus(formatToolResultBudgetStatus(this.session.getToolResultBudgetStatus()));
+		} catch (error) { this.showError(error instanceof Error ? error.message : String(error)); }
 	}
 
 	private handleSessionCommand(): void {

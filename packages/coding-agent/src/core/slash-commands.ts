@@ -18,6 +18,7 @@ export interface BuiltinSlashCommand {
 
 export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 	{ name: "settings", description: "Open settings menu" },
+	{ name: "tool-budget", description: "View or explicitly change this session's tool-result text budget", argumentHint: "status | off | <positive tokens>" },
 	{ name: "model", description: "Select model (opens selector UI)", argumentHint: "<provider/model>" },
 	{ name: "thinking", description: "Set thinking level", argumentHint: "<level>" },
 	{ name: "scoped-models", description: "Enable/disable models for Ctrl+P cycling" },

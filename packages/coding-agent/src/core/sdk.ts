@@ -374,7 +374,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		// Check setting dynamically so mid-session changes take effect
 		const blockImages = settingsManager.getBlockImages();
 		try {
-		const projected = toolResultPresentationOwner?.projectMessagesForModel(
+		const projected = session.projectToolResultMessagesForModel(
 			converted,
 			blockImages ? replaceBlockedImages : undefined,
 			systemPrompt,
@@ -382,7 +382,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			conversionModel?.contextWindow,
 			requestPlanning && requestedMaxTokens !== undefined ? Math.min(requestedMaxTokens, conversionModel?.maxTokens ?? requestedMaxTokens) : conversionModel?.maxTokens,
 			requestPlanning,
-		) ?? converted;
+		);
 		return blockImages ? replaceBlockedImagesInMessages(projected) : projected;
 		} catch (error) {
 			if (error instanceof ToolResultContinuationError && error.code === "budget-too-small" && !error.message.startsWith("Request preparation blocked:")) {
