@@ -8,7 +8,7 @@ import { createJiti } from "jiti";
 import { Agent } from "../packages/agent/src/agent.ts";
 import { createBashTool, createLocalShellOperations } from "../packages/coding-agent/src/core/tools/bash.ts";
 import { OutputAccumulator } from "../packages/coding-agent/src/core/tools/output-accumulator.ts";
-import { readShellExecution, type ShellExecutionFacts } from "../packages/coding-agent/src/core/tools/shell-execution.ts";
+import { readShellExecution, shellExecutionSucceeded, type ShellExecutionFacts } from "../packages/coding-agent/src/core/tools/shell-execution.ts";
 import { BashRenderClock, createBashRenderFixture } from "./helpers/bash-render-fixture.ts";
 import { stripTerminalSequences } from "@super-pi/tui";
 import { Session as InspectorSession } from "node:inspector/promises";
@@ -64,6 +64,20 @@ test("N3 pre-execution verification failure uses the approved canonical cwd thro
     details: { shellExecution: { ...readShellExecution(result.details), cwd: binding.canonical } } });
   assert.equal(state.obligations.size, 0, "canonical retry clears the same verification key");
   binding.release(); assert.equal(binding.isReleased, true);
+});
+
+for (const code of [0, 23]) test(`N3 real completed shell preserves Agent observer failure facts, exit=${code}`, async () => {
+  const agent = new Agent({ convertToLlm: () => [], streamFn: () => { throw new Error("offline fixture"); },
+    afterToolCall() { throw new Error("observer fixture ".repeat(200)); } });
+  agent.state.tools = [createBashTool(process.cwd(), { operations: local })];
+  const result = await agent.dispatchHostTool({ type: "toolCall", name: "bash", id: "observer-failure", arguments: { command: `process.stdout.write('all passed');process.exitCode=${code}` } });
+  const facts = readShellExecution(result.details)!;
+  assert.equal(result.isError, true); assert.equal(facts.started, true); assert.equal(facts.exitCode, code); assert.equal(facts.termination, "exit");
+  assert.equal(facts.observationError?.length, 1000); assert.equal(shellExecutionSucceeded(facts), false);
+  assert.equal(classifyToolFailure("bash", "all passed", {}, result.details).category, code ? "command_failed" : "observation_failed");
+  const state = createFalseSuccessState();
+  observeToolResult(state, { toolName: "bash", input: { command: "npm test" }, cwd: process.cwd(), isError: true, text: "all passed", details: result.details });
+  assert.equal(state.obligations.size, 1); assert.equal(agent.state.pendingToolCalls.size, 0);
 });
 
 test("N3 missing executable reports attempted start failure and no process side effects", async () => {

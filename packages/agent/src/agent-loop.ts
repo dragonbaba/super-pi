@@ -942,14 +942,15 @@ async function executePreparedToolCall(
 			return { result: createPreExecutionError(prepared.tool.name, error instanceof Error ? error.message : String(error)),
 				isError: true, authorizationVeto: true };
 		}
+		let failedResult = toolResultFromError(error);
 		try {
 			await progress.flush();
-		} catch {
-			// Preserve the error that entered this path. A progress drain error is
-			// already that error when flush() detected it after tool completion.
+		} catch (observationError) {
+			// Preserve the primary tool failure and record a separate drain failure.
+			if (failedResult) failedResult = resultWithObservationFailure(failedResult, observationError);
 		}
 		return {
-			result: toolResultFromError(error) ?? (completedResult ? resultWithObservationFailure(completedResult, error)
+			result: failedResult ?? (completedResult ? resultWithObservationFailure(completedResult, error)
 				: createErrorToolResult(error instanceof Error ? error.message : String(error))),
 			isError: true,
 		};
@@ -1140,8 +1141,13 @@ async function finalizeExecutedToolCall(
 /** Once a tool has completed, observer failures cannot erase its execution facts. */
 function resultWithObservationFailure(result: AgentToolResult<any>, error: unknown): AgentToolResult<any> {
   const message = (error instanceof Error ? error.message : String(error)).slice(0, 1000);
+  const execution = result.details?.shellExecution;
+  // Completion-error boundary only. Clone once so preserved producer objects
+  // stay immutable and consumers need not infer an Agent failure from stdout.
+  const details = execution && typeof execution === "object"
+    ? { ...result.details, shellExecution: { ...execution, observationError: message } } : result.details;
   return { ...result, content: [...result.content, { type: "text", text: `[TOOL_OBSERVATION_FAILED] ${message}` }],
-    details: result.details, isError: true };
+    details, isError: true };
 }
 
 function nonEmptyReason(reason: unknown): string | undefined {

@@ -128,3 +128,16 @@ zero skips, including default SDK four compatibility positives. Earlier full
 tests revealed two old unconditional heredoc-refusal assertions; they now test
 the actual supported quoted-data form plus the still-refused operand/redirect/
 multiple/wrapper forms. No existing guard counterexample was removed.
+
+The fourth 3f23591 review finding, observer-failure identity, is also fixed.
+Agent completion failures add a bounded `observationError` to a copy of the
+preserved shell facts, retaining start/exit/cwd/output and the original immutable
+producer object. A secondary progress-drain failure is retained alongside a
+typed primary tool failure. Consumers classify a successful process followed by
+an observer failure as `observation_failed`, and keep a nonzero process outcome
+as the primary category. Such a result cannot satisfy verification. Real Node
+exit-0/23 through Agent plus post-tool observer failure are tested; focused tests
+pass 62 with two platform skips after rebuilding the package consumer. No field
+is created on normal delta/progress/render delivery. Two remaining postmerge
+fixtures now use unsupported `cat -n` heredocs for their negative assertions;
+default SDK supported bare-cat authorization continues to be tested positively.

@@ -32,6 +32,8 @@ export interface ShellExecutionFacts {
   signal: string | null;
   termination: ShellTermination;
   inputError?: string;
+  /** Agent-owned completion/progress observer failure; execution facts remain intact. */
+  observationError?: string;
   output: {
     complete: boolean | "unknown";
     tailTruncated: boolean;
@@ -61,6 +63,7 @@ export function readShellExecution(details: unknown): ShellExecutionFacts | unde
     || value.signal !== null && (typeof value.signal !== "string" || value.signal.length > 32)
     || !TERMINATIONS.has(value.termination)
     || value.inputError !== undefined && (typeof value.inputError !== "string" || value.inputError.length > 1000)
+    || value.observationError !== undefined && (typeof value.observationError !== "string" || value.observationError.length > 1000)
     || !value.output || value.output.complete !== true && value.output.complete !== false && value.output.complete !== "unknown"
     || typeof value.output.tailTruncated !== "boolean"
     || !LOG_STATES.has(value.output.log)
@@ -78,7 +81,7 @@ export function readShellExecution(details: unknown): ShellExecutionFacts | unde
 
 export function shellExecutionSucceeded(value: ShellExecutionFacts): boolean {
   return value.producer === "local-shell" && value.started === true && value.executionStatus === "exited" && typeof value.cwd === "string" && value.cwd.length > 0 && value.termination === "exit"
-    && value.exitCode === 0 && value.signal === null && value.output.complete === true && value.output.log !== "failed" && !value.inputError;
+    && value.exitCode === 0 && value.signal === null && value.output.complete === true && value.output.log !== "failed" && !value.inputError && value.observationError === undefined;
 }
 
 export function shellFailureCategory(value: ShellExecutionFacts): string {
@@ -90,5 +93,6 @@ export function shellFailureCategory(value: ShellExecutionFacts): string {
   if (value.inputError) return "input_transport_failed";
   if (value.output.log === "failed") return "output_log_failed";
   if (value.output.complete === false) return "output_incomplete";
+  if (value.observationError !== undefined) return "observation_failed";
   return "execution_unknown";
 }
