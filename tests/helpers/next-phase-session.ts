@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
-import { ALPHA_MODEL, alphaModelRuntime } from "./alpha-session.ts";
+import { ALPHA_MODEL, alphaModelRuntime } from "./next-phase-model.ts";
 
 export const costProject = resolve(process.env.SP_COST_PROJECT_ROOT ?? ".");
 export async function costModule(path: string): Promise<any> { return import(pathToFileURL(join(costProject, path)).href); }
@@ -18,13 +18,16 @@ export function costCall(id: string, name: string, args: any): any { return { ty
 export function costText(result: any): string { return result.content.filter((block: any) => block.type === "text").map((block: any) => block.text).join("\n"); }
 
 /** Isolated real default SDK and final serializer; no provider request leaves this process. */
-export async function costSession(options: { historyPairs?: number; budget?: number } = {}) {
+export async function costSession(options: { historyPairs?: number; budget?: number; extensions?: any[] } = {}) {
   const root = mkdtempSync(join(tmpdir(), "sp-n4-session-")), cwd = join(root, "work"), agentDir = join(root, "agent");
+  let session: any;
+  try {
   process.stdout.write(`# owned N4 session ${JSON.stringify({ root })}\n`);
   mkdirSync(cwd); mkdirSync(agentDir);
   const settingsManager = SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false } });
   const model = { ...ALPHA_MODEL, api: "openai-completions", compat: { maxTokensField: "max_tokens" } };
-  let manager = SessionManager.create(cwd, join(root, "sessions")), session: any, queue: any[][] = [], requestError: unknown;
+  let manager = SessionManager.create(cwd, join(root, "sessions")), queue: any[][] = [], requestError: unknown;
+  let finalText = "Fixture results recorded; no unrequested retry.";
   let beforeRecord: ((type: string, data: any) => void) | undefined, onApproval: (() => void) | undefined;
   const metrics = { requests: 0, toolCalls: 0, approvals: 0, inputTokens: 0, schemaTokens: 0, historyTokens: 0, toolTokens: 0, outputTokens: 0,
     wireBytes: 0, discoveryCalls: 0, reads: 0, compactions: 0, sampledPeakHeap: 0, estimatorCpuUs: 0, lastWire: "" };
@@ -42,11 +45,13 @@ export async function costSession(options: { historyPairs?: number; budget?: num
       for (const message of payload.messages) {
         if (message.role === "tool") metrics.toolTokens += tokens(JSON.stringify(message)); else metrics.historyTokens += tokens(JSON.stringify(message));
       }
+      const inputUsed = process.cpuUsage(cpu); metrics.estimatorCpuUs += inputUsed.user + inputUsed.system;
       const calls = queue.shift();
       if (calls) for (const call of calls) assert.ok(payload.tools.some((tool: any) => tool.function.name === call.name), `discovery missing ${call.name}`);
       const delta = calls ? { tool_calls: calls.map((call: any, index: number) => ({ index, id: call.id, type: "function", function: { name: call.name, arguments: JSON.stringify(call.arguments) } })) }
-        : { content: "Fixture results recorded; no unrequested retry." };
-      metrics.outputTokens += tokens(JSON.stringify(delta)); const used = process.cpuUsage(cpu); metrics.estimatorCpuUs += used.user + used.system;
+        : { content: finalText };
+      const outputCpu = process.cpuUsage(); metrics.outputTokens += tokens(JSON.stringify(delta));
+      const used = process.cpuUsage(outputCpu); metrics.estimatorCpuUs += used.user + used.system;
       metrics.sampledPeakHeap = Math.max(metrics.sampledPeakHeap, process.memoryUsage().heapUsed);
       const event = { id: "offline", object: "chat.completion.chunk", created: 1, model: model.id, choices: [{ index: 0, delta, finish_reason: null }] };
       const end = { ...event, choices: [{ index: 0, delta: {}, finish_reason: calls ? "tool_calls" : "stop" }] };
@@ -56,7 +61,7 @@ export async function costSession(options: { historyPairs?: number; budget?: num
   const runtime = alphaModelRuntime((m: any, c: any, o: any) => streamSimple(m, c, { ...o, apiKey: "offline-fixture", fetch: fakeFetch, maxRetries: 0 }));
   async function open() {
     const loader = new DefaultResourceLoader({ cwd, agentDir, settingsManager, noContextFiles: true, noSkills: true, noThemes: true, noPromptTemplates: true,
-      additionalExtensionPaths: [join(costProject, "packages/extensions"), join(costProject, "packages/tool-classification/src/index.ts")] });
+      additionalExtensionPaths: [join(costProject, "packages/extensions"), join(costProject, "packages/tool-classification/src/index.ts")], extensionFactories: options.extensions });
     await loader.reload();
     const append = manager.appendCustomEntry;
     manager.appendCustomEntry = function measuredRecord(type: string, data: any) { beforeRecord?.(type, data); return append.call(this, type, data); };
@@ -68,16 +73,24 @@ export async function costSession(options: { historyPairs?: number; budget?: num
       if (event.type === "auto_compaction_start") metrics.compactions++;
     });
   }
-  try { await open(); } catch (error) { session?.dispose(); assert.equal(dirname(root), tmpdir()); rmSync(root, { recursive: true, force: true }); throw error; }
+  await open();
   return {
     root, cwd, metrics, get session() { return session; }, get manager() { return manager; },
     recordHook(hook?: typeof beforeRecord) { beforeRecord = hook; }, approvalHook(hook?: typeof onApproval) { onApproval = hook; },
     async run(turns: any[][], prompt = "Perform only the specified isolated fixture operations.") {
-      assert.equal(queue.length, 0); queue = turns; requestError = undefined;
+      assert.equal(queue.length, 0); queue = turns; requestError = undefined; finalText = "Fixture results recorded; no unrequested retry.";
       await session.prompt(prompt); await session.agent.waitForIdle();
       if (requestError) throw requestError;
       assert.equal(session.agent.state.pendingToolCalls.size, 0);
       return session.messages.filter((message: any) => message.role === "toolResult");
+    },
+    async continue(turns: any[][], text: string) {
+      assert.equal(queue.length, 0); queue = turns; finalText = text; requestError = undefined;
+      await session.followUp("Continue the same fixture task; inspect the recorded results before claiming completion.");
+      await session.agent.continue(); await session.agent.waitForIdle();
+      if (requestError) throw requestError;
+      assert.equal(queue.length, 0); assert.equal(session.agent.state.pendingToolCalls.size, 0);
+      return costText(session.messages.at(-1));
     },
     result(id: string) { const result = session.messages.find((message: any) => message.role === "toolResult" && message.toolCallId === id); assert.ok(result, id); return result; },
     async reopen() { const path = manager.getSessionFile(); assert.ok(path); session.dispose(); manager = SessionManager.open(path); await open(); },
@@ -88,4 +101,8 @@ export async function costSession(options: { historyPairs?: number; budget?: num
       await new Promise<void>(resolve => setImmediate(resolve)); assert.equal(dirname(root), tmpdir()); rmSync(root, { recursive: true, force: true });
     },
   };
+  } catch (error) {
+    session?.dispose(); await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(dirname(root), tmpdir()); rmSync(root, { recursive: true, force: true }); throw error;
+  }
 }

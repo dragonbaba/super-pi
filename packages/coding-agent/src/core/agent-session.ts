@@ -822,7 +822,7 @@ export class AgentSession {
 	private _toolOutputShadow: ToolOutputShadowObserver | undefined;
 	private _toolResultPresentation: ToolResultPresentationOwner | undefined;
 	private _toolBudgetGeneration = 0;
-	private _toolBudgetLastRequest: "not-observed" | "applied" | "blocked" = "not-observed";
+	private _toolBudgetLastRequest: ToolResultBudgetStatus["lastRequest"] = "not-observed";
 	private _toolBudgetSessionOverride = false;
 	private _toolResultUiDispatchMessage: Extract<AgentMessage, { role: "toolResult" }> | undefined;
 	private _toolResultUiDispatchSourceContent: Extract<AgentMessage, { role: "toolResult" }>["content"] | undefined;
@@ -1898,7 +1898,7 @@ export class AgentSession {
 			this._toolBudgetLastRequest = owner.getEvidenceBudgetTokens() === undefined ? "not-observed" : "applied";
 			return projected;
 		} catch (error) {
-			if (error instanceof ToolResultContinuationError && error.code === "budget-too-small") this._toolBudgetLastRequest = "blocked";
+			this._toolBudgetLastRequest = error instanceof ToolResultContinuationError && error.code === "budget-too-small" ? "blocked" : "preparation-failed";
 			throw error;
 		}
 	}

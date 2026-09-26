@@ -37,7 +37,9 @@ function measureWrite(stream: fs.WriteStream, vector: boolean, chunk: any, encod
 syncBuiltinESMExports();
 try {
   for (const scenario of ["first-spill", "cap", "slow", "cancel"] as const) {
-    const f = await costSession(), ownedTemp = join(f.root, "large-temp"); fs.mkdirSync(ownedTemp); scope = ownedTemp;
+    const f = await costSession(); let delay: ReturnType<typeof monitorEventLoopDelay> | undefined;
+    try {
+    const ownedTemp = join(f.root, "large-temp"); fs.mkdirSync(ownedTemp); scope = ownedTemp;
     // The bounded old-file scan sees a deliberately large directory of harmless fixture entries.
     for (let index = 0; index < 1024; index++) fs.writeFileSync(join(ownedTemp, `entry-${index}`), "");
     process.env = { ...originalEnvironment, TMP: ownedTemp, TEMP: ownedTemp, TMPDIR: ownedTemp }; assert.equal(tmpdir(), ownedTemp);
@@ -46,9 +48,8 @@ try {
     const source = scenario === "cancel" ? "let n=0;const timer=setInterval(()=>{process.stdout.write('x'.repeat(65536));if(++n===100)clearInterval(timer)},5)"
       : `process.stdout.write('x'.repeat(${scenario === "cap" ? 6 * 1024 * 1024 : 256 * 1024})+'\\nFINAL-TAIL')`;
     const command = `node -e "${source}"`;
-    const delay = monitorEventLoopDelay({ resolution: 1 }); delay.enable(); global.gc?.();
+    delay = monitorEventLoopDelay({ resolution: 1 }); delay.enable(); global.gc?.();
     const heapBefore = process.memoryUsage().heapUsed, cpu = process.cpuUsage(); start = performance.now();
-    try {
       await f.run([[costCall("spill", "bash", { command, cwd: f.cwd })]]);
       const result = f.result("spill"), end = performance.now(), used = process.cpuUsage(cpu); delay.disable();
       assert.ok(firstOpenMs !== undefined, JSON.stringify(result)); assert.ok(writes > 0); assert.equal(pendingWrites, 0);
@@ -64,7 +65,7 @@ try {
         writes, maxQueuedBytes, fileBytes, closedStreams: streams.size, pendingWrites, heapBefore, sampledPeakHeap: f.metrics.sampledPeakHeap,
         shellFacts: result.details?.shellExecution ?? null, quality: "real default SDK process/output/cap/cancellation and settled streams" }));
     } finally {
-      delay.disable(); cancel = undefined; streams.clear(); descriptors.clear(); scope = ""; delayMs = 0;
+      delay?.disable(); cancel = undefined; streams.clear(); descriptors.clear(); scope = ""; delayMs = 0;
       process.env = originalEnvironment;
       await f.release();
     }

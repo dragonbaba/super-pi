@@ -1,6 +1,6 @@
 // Launch this harness inside a real PTY. Its child inherits that PTY and enters
 // the formal source launcher. Send "n4-probe\r", then "/quit\r" after tool-ready.
-import { mkdtempSync, mkdirSync, writeFileSync, appendFileSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, appendFileSync, readFileSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -11,6 +11,7 @@ const project = resolve(process.argv[2]), report = resolve(process.argv[3]);
 assert.equal(process.stdin.isTTY, true); assert.equal(process.stdout.isTTY, true);
 writeFileSync(report, "", { flag: "wx" });
 const root = mkdtempSync(join(tmpdir(), "sp-n4-pty-")), work = join(root, "work"), agent = join(root, "agent"), home = join(root, "home");
+try {
 appendFileSync(report, JSON.stringify({ phase: "owned-root", root }) + "\n");
 mkdirSync(work); mkdirSync(agent); mkdirSync(home);
 writeFileSync(join(work, "ready.txt"), "N4_PTY_ACTUAL_READ_中文\n");
@@ -40,6 +41,12 @@ function finish(code, signal) {
     if (stage === "cold" && process.argv[5] === "pair") { stage = "warm"; launch(); return; }
   } catch (error) { code = 1; appendFileSync(report, JSON.stringify({ phase: "verification-failed", message: error.message }) + "\n"); }
   assert.equal(dirname(resolve(root)), resolve(tmpdir())); rmSync(root, { recursive: true, force: true });
-  appendFileSync(report, JSON.stringify({ phase: "released", timestamp: Date.now(), code, signal, removedRoot: root }) + "\n"); process.exitCode = code ?? 1;
+  const removedRoot = !existsSync(root); assert.equal(removedRoot, true);
+  appendFileSync(report, JSON.stringify({ phase: "released", timestamp: Date.now(), code, signal, root, removedRoot }) + "\n"); process.exitCode = code ?? 1;
 }
 launch();
+} catch (error) {
+  assert.equal(dirname(resolve(root)), resolve(tmpdir())); rmSync(root, { recursive: true, force: true });
+  appendFileSync(report, JSON.stringify({ phase: "setup-failed", message: error.message, root, removedRoot: !existsSync(root) }) + "\n");
+  throw error;
+}

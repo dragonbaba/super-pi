@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { createAgentSession } from "../packages/coding-agent/src/core/sdk.ts";
@@ -84,6 +84,25 @@ test("N4 default SDK can adjust a blocked result budget and continue without rep
   assert.equal((session as any)._toolResultUiCanonicalMessages, undefined); assert.equal((session as any)._toolResultUiCanonicalMessagesTail, undefined);
   assert.deepEqual(settingsManager.getGlobalSettings(), initialGlobal); assert.deepEqual(settingsManager.getProjectSettings(), initialProject);
   assert.equal(session.agent.state.pendingToolCalls.size, 0); assert.equal((session.extensionRunner as any).finalAuthorizations?.size ?? 0, 0);
+});
+
+test("N4 actual read hook layout failure replaces previous applied request status", async () => {
+  const { costSession, costCall } = await import("./helpers/next-phase-session.ts");
+  const f = await costSession({ budget: 512, extensions: [(pi: any) => {
+    pi.on("tool_result", (event: any) => event.toolName === "read" ? { content: [{ type: "text", readBoundary: "lines", text: "1#1234|incomplete hook layout\n".repeat(1000) }] } : undefined);
+  }] });
+  try {
+    writeFileSync(join(f.cwd, "read-layout"), "actual source\n");
+    await f.run([], "Record the initial valid request.");
+    assert.equal(f.session.getToolResultBudgetStatus().lastRequest, "applied");
+    const before = f.metrics.requests;
+    await f.run([[costCall("invalid-layout", "read", { path: "read-layout" })]]);
+    assert.equal(f.metrics.requests, before + 1, "result projection blocks the next provider request");
+    assert.equal(f.metrics.reads, 1); assert.equal(f.result("invalid-layout").isError, false);
+    const status = f.session.getToolResultBudgetStatus(); assert.equal(status.lastRequest, "preparation-failed");
+    assert.match(formatToolResultBudgetStatus(status), /结果投影准备失败/);
+    assert.equal(status.state, "enabled"); assert.equal(readFileSync(join(f.cwd, "read-layout"), "utf8"), "actual source\n");
+  } finally { await f.release(); }
 });
 
 test("N4 real interactive budget command and settings refuse active tools without a misleading selected value", async t => {

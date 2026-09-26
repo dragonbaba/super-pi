@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { pathToFileURL } from "node:url";
 import { getEncoding } from "js-tiktoken";
-import { ALPHA_MODEL, alphaModelRuntime } from "./helpers/alpha-session.ts";
+import { ALPHA_MODEL, alphaModelRuntime } from "./helpers/next-phase-model.ts";
 import { FIXTURE_SNAPSHOT_ID_PATTERN, FIXTURE_SECOND_LINE_ANCHOR_PATTERN } from "./helpers/next-phase-fixture-regex.ts";
 
 // The same harness can run an untouched parent checkout for interleaved comparisons.
@@ -31,6 +31,8 @@ function contents(index: number): string {
 
 async function measure(t: test.TestContext, strategy: Strategy, count: number, kind: Kind) {
   const root = mkdtempSync(join(tmpdir(), "sp-n4-matrix-")), cwd = join(root, "work"), agentDir = join(root, "agent");
+  let session: any;
+  try {
   process.stdout.write(`# owned matrix fixture ${JSON.stringify({ root, strategy, count, kind })}\n`);
   mkdirSync(cwd); mkdirSync(agentDir);
   const settings = SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false } });
@@ -54,7 +56,7 @@ async function measure(t: test.TestContext, strategy: Strategy, count: number, k
   const reads = files.filter(file => file.operation !== "write").map((file, index) => call(`read-${index}`, "read", { path: file.path }));
   if (strategy === "T1") for (const read of reads) queue.push([read]);
   else if (reads.length) queue.push(reads);
-  let session: any, mutationsPlanned = false, requests = 0, approvals = 0, schemaTokens = 0, inputTokens = 0, toolTokens = 0, historyTokens = 0, outputTokens = 0, wireBytes = 0;
+  let mutationsPlanned = false, requests = 0, approvals = 0, schemaTokens = 0, inputTokens = 0, toolTokens = 0, historyTokens = 0, outputTokens = 0, wireBytes = 0;
   let peakHeap = process.memoryUsage().heapUsed;
   const fakeFetch: typeof fetch = async (_url, init) => {
     assert.equal(typeof init?.body, "string");
@@ -97,7 +99,6 @@ async function measure(t: test.TestContext, strategy: Strategy, count: number, k
   const runtime = alphaModelRuntime((m: any, c: any, o: any) => streamSimple(m, c, { ...o, apiKey: "offline-fixture", fetch: fakeFetch, maxRetries: 0 }));
   const manager = SessionManager.create(cwd, join(root, "sessions"));
   ({ session } = await createAgentSession({ cwd, agentDir, settingsManager: settings, resourceLoader, sessionManager: manager, model, modelRuntime: runtime, noTools: "builtin" }));
-  try {
     await session.bindExtensions({ mode: "tui", uiContext: { ...session.extensionRunner.getUIContext(), select: async () => { approvals++; return "仅允许本次"; } } });
     global.gc?.(); const heapBefore = process.memoryUsage().heapUsed, cpu = process.cpuUsage(), start = performance.now();
     await session.prompt("Perform the deterministic fixture task using its recorded operations."); await session.agent.waitForIdle();
@@ -118,7 +119,7 @@ async function measure(t: test.TestContext, strategy: Strategy, count: number, k
       actualSerializer: true, estimator, inputTokens, schemaTokens, toolTokens, historyTokens, outputTokens, wireBytes,
       providerUsage: null, cacheHits: null, actualCost: null, quality: "all filesystem assertions passed", elapsedMs, cpuUs: used.user + used.system,
       heapBefore, sampledPeakHeap: peakHeap, heapAfterDispose: process.memoryUsage().heapUsed, pendingCalls: 0 }));
-  } finally { session.dispose(); await new Promise<void>(resolve => setImmediate(resolve)); assert.equal(dirname(root), tmpdir()); rmSync(root, { recursive: true, force: true }); }
+  } finally { session?.dispose(); session = undefined; await new Promise<void>(resolve => setImmediate(resolve)); assert.equal(dirname(root), tmpdir()); rmSync(root, { recursive: true, force: true }); }
 }
 
 test("N4 actual serializer task matrix: equal data, real prior reads/discovery, independent same-reply T2", { timeout: 1800000 }, async t => {

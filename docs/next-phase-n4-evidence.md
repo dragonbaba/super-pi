@@ -9,6 +9,32 @@ Subsequent measurement slices now implement those fixtures; five independent
 interleaved final comparisons and final CI/review remain outstanding. Functional
 probes are deliberately separate from the final timing evidence below.
 
+The 0e287/08d56 review identified contaminated baseline imports, a mislabeled
+heap reading and incomplete measurement cleanup. The shared model/runtime fixture
+now imports no production modules. Inspector-only validation of the baseline success
+and context processes observes zero candidate-package scripts; this diagnostic
+preload is excluded from fair timing. TUI takes 122 defined heap samples (initial,
+before/after each of sixty frame flushes and after stop), reports their maximum and
+labels the separate after-stop value. This is a sampled maximum, not a true peak.
+Each comparison child now has a generous scenario deadline and its recorded PID
+is terminated on expiry (exact Windows tree / owned POSIX group). Failure/close
+records distinguish incomplete cleanup; real stalled and missing-executable tests
+settle with descriptors closed. Setup cleanup starts immediately after root/Session
+acquisition; injected loader and I/O setup failures verify exact fixture removal.
+PTY release now records a verified boolean and retains the root path separately.
+
+The actual combined Session also exercises false-success interception after partial
+completion, after a zero-effect remaining preview, and after filesystem observation
+and draft creation. None clears unfinished obligations. The functional fixture now
+records 25 requests, eleven tools and six approvals on Windows, with no replay.
+Budget status records `preparation-failed` for non-budget projection errors instead
+of leaving a stale applied/not-observed value. An actual default read hook produces
+invalid layout after a valid request; the next serialization is blocked while the
+completed read remains in the Session, and explicit status reports preparation
+failure. The failure branch updates one primitive slot, with no regex/callback or
+new scan; existing AST/ownership gates remain applicable. Final comparisons and
+all final-head gates/CI/review are still outstanding.
+
 ## Explicit budget status and session settings
 
 `/tool-budget status`, `/tool-budget <positive decimal integer>` and
@@ -201,3 +227,22 @@ six full scenarios in independent, interleaved processes: one discarded warmup p
 and five measured pairs. Raw logs remain outside the repository. Its final results,
 percentiles, regressions, parent-chain verification and current-head CI/review must
 be recorded before declaring this PR complete.
+
+Measurement corrections are now exercised: the baseline success/context processes
+report zero candidate package scripts through a separate inspector diagnostic
+(two actual test child PIDs; excluded from timed runs). Shared model fixtures have
+no production imports. Both baseline and candidate TUI/spill functional runs pass.
+The old baseline only renders a batch summary; detailPathsRendered records that
+feature difference instead of pretending both implementations draw identical text.
+Heap samples are explicitly sampled maxima, with after-stop separate. Setup-failure
+probes cover matrix/session/spill/IO cleanup; success, missing executable, deadline,
+and ledger-write-failure probes verify exact owned child release. Every comparison
+child now has a deadline and bounded termination watchdog; incomplete termination
+is reported, never counted as release. PTY reports a checked boolean removedRoot.
+
+The combined scenario executes 25 actual serialized provider requests, 11 tool
+calls and 6 approvals. False-success remains blocked after partial mutation,
+dry-run, verification and drafting, until an explicit fresh repair. Non-budget
+projection preparation failures now show preparation-failed instead of stale
+applied or budget-too-small state; actual read output and serializer tests pass.
+All final five-round comparisons, PTY pairs and latest-head CI/review remain pending.
