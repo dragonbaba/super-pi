@@ -335,7 +335,7 @@ export class SessionPermissionController {
 
   /** User-command observation reuses current Session scope; it grants no mutation/read evidence. */
   async authorizeFileObservation(ctx: ExtensionContext, paths: readonly string[]): Promise<(() => Promise<void>) & { assertCurrent(): void }> {
-    if (!this.#restored || paths.length < 1 || paths.length > 2) throw new Error("Current Session permission state is unavailable.");
+    if (!this.#restored || paths.length < 1 || paths.length > 34) throw new Error("Current Session permission state is unavailable.");
     const targets = paths.slice();
     const generation = this.#authorityGeneration, sequence = this.#state.sequence, sessionId = ctx.sessionManager.getSessionId(), cwd = ctx.cwd;
     const assertCurrent = () => {

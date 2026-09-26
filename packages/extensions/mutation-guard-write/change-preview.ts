@@ -169,7 +169,8 @@ export function batchExpandedSummary(summary: string, items: readonly DisplayIte
     if (preview?.risk) text += budget.take(`\n${preview.risk}`, MAX_PREVIEW_LINES).text;
     if (!plannedDirectories && item.status === "preview" && preview?.plannedDirectories) for (const directory of preview.plannedDirectories) text += budget.take(`\nplanned parent: ${directory}`, MAX_PREVIEW_LINES).text;
     // Completed receipts already own their actual diff. Never derive a diff in render.
-    const diff = confirmed ? receipt?.patch ?? receipt?.diff : preview?.diff;
+    const writeFallback = confirmed && item.operation === "write" && receipt?.patch == null && receipt?.diff == null;
+    const diff = confirmed ? receipt?.patch ?? receipt?.diff ?? (writeFallback ? item.preview?.diff : undefined) : preview?.diff;
     if (typeof diff === "string") {
       if (preview && item.status !== "preview" && item.status !== "succeeded") text += budget.take("\nPrepared change only; completion is not confirmed.", MAX_PREVIEW_LINES).text;
       const part = budget.take(`\n${diff}`);
@@ -177,6 +178,7 @@ export function batchExpandedSummary(summary: string, items: readonly DisplayIte
       if (part.omitted) break;
     }
     if (preview?.omitted) text += budget.take(`\n[omitted] ${preview.omitted}`, MAX_PREVIEW_LINES).text;
+    if (writeFallback && item.preview?.omitted) text += budget.take("\n[display limited] Write succeeded; the stored difference excerpt is incomplete or unavailable.", MAX_PREVIEW_LINES).text;
     const directories = receipt?.creation?.createdDirectories ?? receipt?.createdDirectories;
     if (Array.isArray(directories)) for (const directory of directories) text += budget.take(`\nparent: ${directory.path} [${directory.status}]`, MAX_PREVIEW_LINES).text;
     if (receipt?.commit) {

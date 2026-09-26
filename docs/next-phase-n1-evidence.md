@@ -142,3 +142,16 @@ and selects successful diff/provenance from the committed receipt together. Twen
 preview/recovery regressions pass, including real standalone exact/snapshot View
 and actual batch edits prepared from partial evidence. Check passes; final candidate
 gates and review remain required after this slice.
+
+`905aa43981c3246c409d28bdf1b7090d862758de` passed fixed-head local check,
+offline build, hot/full tests, allocation gates and
+[both CI platforms](https://github.com/dragonbaba/super-pi/actions/runs/36256212100).
+Its actual review identified six further recovery/display gaps. The next slice
+retains confirmed bounded write differences when receipts have no patch, displays
+standalone failure reasons, rejects later conflicting terminal outcomes that reuse
+old intents, reconstructs request-bound prepared items without later intent as
+unstarted, drafts absolute recorded targets across cwd changes, and observes up to
+32 recorded parent side effects through the same permission/identity checks.
+Twenty-five preview/recovery tests pass, including genuine partial-create failure,
+interrupted receipt recording, forged later terminal status and changed-cwd drafts.
+Display limits remain labelled independently of confirmed mutation status.

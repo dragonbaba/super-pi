@@ -121,6 +121,19 @@ test("N1 successful batch expansion uses committed patch and its confirmed prove
   assert.ok(details.expandedSummary.includes(details.items[0].receipt.patch));
 });
 
+test("N1 successful create and overwrite retain bounded confirmed write differences", async t => {
+  const f = await fixture(t); writeFileSync(join(f.cwd, "overwrite"), "before\n");
+  await f.call("read", { path: "overwrite" }, "write-preview-read");
+  const result = await f.call("file_batch", { operations: [
+    { operation: "write", mode: "create", path: "created", content: "CREATED_VISIBLE\n" },
+    { operation: "write", mode: "overwrite", path: "overwrite", content: "OVERWRITE_VISIBLE\n" },
+  ] }, "confirmed-write");
+  assert.equal(result.isError, false, JSON.stringify(result));
+  const expanded = (result.details as any).expandedSummary;
+  assert.match(expanded, /CREATED_VISIBLE/); assert.match(expanded, /OVERWRITE_VISIBLE/);
+  assert.doesNotMatch(expanded, /Prepared change only/);
+});
+
 test("N1 actual tool component expansion, 20k running updates and ten releases", async t => {
   const f = await fixture(t); initTheme("dark");
   const input = { dryRun: true, operations: [{ operation: "write", mode: "create", path: "中文.txt", content: "actual change\n" }] };
