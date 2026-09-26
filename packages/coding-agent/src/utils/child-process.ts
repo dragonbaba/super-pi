@@ -46,7 +46,16 @@ export function spawnProcessSync(
  * us reading, while a quiet inherited handle (e.g. a Windows daemonized descendant
  * that never lets `close` fire) still releases us after the grace elapses.
  */
-export function waitForChildProcess(child: ChildProcess): Promise<number | null> {
+export interface ChildProcessObservation {
+	started: boolean;
+	cwd?: string;
+	spawnAttempted?: boolean;
+	exitCode: number | null;
+	signal: NodeJS.Signals | null;
+	outputDrained: boolean;
+}
+
+export function waitForChildProcess(child: ChildProcess, observation?: ChildProcessObservation): Promise<number | null> {
 	return new Promise((resolve, reject) => {
 		let settled = false;
 		let exited = false;
@@ -61,6 +70,7 @@ export function waitForChildProcess(child: ChildProcess): Promise<number | null>
 				postExitTimer = undefined;
 			}
 			child.removeListener("error", onError);
+			child.removeListener("spawn", onSpawn);
 			child.removeListener("exit", onExit);
 			child.removeListener("close", onClose);
 			child.stdout?.removeListener("end", onStdoutEnd);
@@ -72,6 +82,11 @@ export function waitForChildProcess(child: ChildProcess): Promise<number | null>
 		const finalize = (code: number | null) => {
 			if (settled) return;
 			settled = true;
+			if (observation) {
+				observation.exitCode = code;
+				observation.signal = child.signalCode;
+				observation.outputDrained = stdoutEnded && stderrEnded;
+			}
 			cleanup();
 			child.stdout?.destroy();
 			child.stderr?.destroy();
@@ -85,9 +100,10 @@ export function waitForChildProcess(child: ChildProcess): Promise<number | null>
 			}
 		};
 
+		const onIdle = () => finalize(exitCode);
 		const armIdleTimer = () => {
-			if (postExitTimer) clearTimeout(postExitTimer);
-			postExitTimer = setTimeout(() => finalize(exitCode), EXIT_STDIO_GRACE_MS);
+			if (postExitTimer) postExitTimer.refresh();
+			else postExitTimer = setTimeout(onIdle, EXIT_STDIO_GRACE_MS);
 		};
 
 		const onData = () => {
@@ -113,9 +129,11 @@ export function waitForChildProcess(child: ChildProcess): Promise<number | null>
 			reject(err);
 		};
 
-		const onExit = (code: number | null) => {
+		const onSpawn = () => { if (observation) observation.started = true; };
+		const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
 			exited = true;
 			exitCode = code;
+			if (observation) { observation.started = true; observation.exitCode = code; observation.signal = signal; }
 			maybeFinalizeAfterExit();
 			if (!settled) {
 				armIdleTimer();
@@ -131,6 +149,7 @@ export function waitForChildProcess(child: ChildProcess): Promise<number | null>
 		child.stdout?.on("data", onData);
 		child.stderr?.on("data", onData);
 		child.once("error", onError);
+		child.once("spawn", onSpawn);
 		child.once("exit", onExit);
 		child.once("close", onClose);
 	});

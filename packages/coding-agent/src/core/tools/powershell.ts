@@ -1,4 +1,5 @@
 import { registerLocalShellBackend } from "./shell-cwd.ts";
+import { observedShellError, shellProcessResultFromError, type ShellProcessResult } from "./shell-execution.ts";
 import {
 	getPowerShellCandidateConfig,
 	getPowerShellConfig,
@@ -100,15 +101,20 @@ export interface LocalPowerShellOperationsOptions {
 		command: string,
 		cwd: string,
 		options: Parameters<PowerShellOperations["exec"]>[2],
-	) => Promise<{ exitCode: number | null }>;
+	) => Promise<ShellProcessResult>;
 }
 
 function isControlFlowError(error: unknown): boolean {
 	return error instanceof Error && (error.message === "aborted" || error.message.startsWith("timeout:"));
 }
 
+function notStarted(error: unknown): Error {
+	return observedShellError(error, { exitCode: null, termination: "not_started", observation: { started: false, exitCode: null, signal: null, outputDrained: true } });
+}
+
 function isExecutableFailure(error: unknown): boolean {
 	if (!(error instanceof Error)) return false;
+	if (shellProcessResultFromError(error)?.observation?.started) return false;
 	const code = (error as NodeJS.ErrnoException).code;
 	return code === "ENOENT" || code === "EACCES" || code === "EPERM" || code === "ENOEXEC" || code === "EINVAL";
 }
@@ -148,11 +154,11 @@ export function createLocalPowerShellOperations(options: LocalPowerShellOperatio
 			await options.onUnavailable?.(error, failedConfig);
 		} catch (persistenceError) {
 			const persistenceDetail = persistenceError instanceof Error ? persistenceError.message : String(persistenceError);
-			throw new Error(`${error.message} Failed to persist the disabled state: ${persistenceDetail}`, {
+			throw observedShellError(new Error(`${error.message} Failed to persist the disabled state: ${persistenceDetail}`, {
 				cause: persistenceError,
-			});
+			}), { exitCode: null, termination: "not_started", observation: { started: false, exitCode: null, signal: null, outputDrained: true } });
 		}
-		throw error;
+		throw observedShellError(error, { exitCode: null, termination: "not_started", observation: { started: false, exitCode: null, signal: null, outputDrained: true } });
 	};
 	const confirm = async (config: PowerShellConfig): Promise<void> => {
 		if (state.confirmed) return;
@@ -175,7 +181,7 @@ export function createLocalPowerShellOperations(options: LocalPowerShellOperatio
 		command: string,
 		cwd: string,
 		executionOptions: Parameters<PowerShellOperations["exec"]>[2],
-	): Promise<{ exitCode: number | null }> => {
+	): Promise<ShellProcessResult> => {
 		let verified: PowerShellConfig;
 		try {
 			const recovery = state.recovery ?? runPowerShellProbe(probe, options.powershellPath);
@@ -184,11 +190,11 @@ export function createLocalPowerShellOperations(options: LocalPowerShellOperatio
 			if (state.recovery === recovery) state.recovery = undefined;
 		} catch (error) {
 			state.recovery = undefined;
-			if (state.disabledReason) throw new Error(state.disabledReason);
+			if (state.disabledReason) throw notStarted(new Error(state.disabledReason));
 			return disable(error);
 		}
 		state.config = verified;
-		await confirm(verified);
+		try { await confirm(verified); } catch (error) { throw notStarted(error); }
 		try {
 			return await execute(verified, command, cwd, executionOptions);
 		} catch (error) {
@@ -199,7 +205,7 @@ export function createLocalPowerShellOperations(options: LocalPowerShellOperatio
 	};
 	const backend: PowerShellOperations = {
 		exec: async (command, cwd, executionOptions) => {
-			if (state.disabledReason) throw new Error(state.disabledReason);
+			if (state.disabledReason) throw notStarted(new Error(state.disabledReason));
 			let config: PowerShellConfig;
 			try {
 				config = state.config ?? resolveCandidate(options.powershellPath);
@@ -207,7 +213,7 @@ export function createLocalPowerShellOperations(options: LocalPowerShellOperatio
 			} catch (error) {
 				return disable(error);
 			}
-			let result: { exitCode: number | null };
+			let result: ShellProcessResult;
 			try {
 				result = await execute(config, command, cwd, executionOptions);
 			} catch (error) {
@@ -223,11 +229,11 @@ export function createLocalPowerShellOperations(options: LocalPowerShellOperatio
 				await confirm(config);
 			} catch (error) {
 				const detail = error instanceof Error ? error.message : String(error);
-				throw new Error(
+				throw observedShellError(new Error(
 					`PowerShell command completed with exit code ${result.exitCode}, but Super Pi could not persist ` +
 						`the executable status: ${detail}. The command was not retried.`,
 					{ cause: error },
-				);
+				), result);
 			}
 			return result;
 		},

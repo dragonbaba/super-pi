@@ -117,6 +117,8 @@ export class OutputAccumulator {
 	private tempFileBytes = 0;
 	private tempFileCapped = false;
 	private tempFileError: Error | undefined;
+	private setupCloseError: string | undefined;
+	private ownerMarkerCreated = false;
 	private readonly onTempFileError = (error: Error): void => {
 		this.tempFileError = error;
 		this.onSpillError?.(error);
@@ -146,19 +148,19 @@ export class OutputAccumulator {
 		}
 	}
 
-	finish(): void {
+	finish(recoverInMemory = false): void {
 		if (this.finished) {
 			return;
 		}
 		this.finished = true;
 		this.appendDecodedText(this.decoder.decode());
-		if (this.shouldUseTempFile()) {
+		if (!recoverInMemory && this.shouldUseTempFile()) {
 			this.ensureTempFile();
 		}
 	}
 
-	snapshot(options: { persistIfTruncated?: boolean } = {}): OutputSnapshot {
-		if (this.tempFileError) throw this.tempFileError;
+	snapshot(options: { persistIfTruncated?: boolean; recoverInMemoryTail?: boolean } = {}): OutputSnapshot {
+		if (this.tempFileError && !options.recoverInMemoryTail) throw this.tempFileError;
 		const tailTruncation = truncateTail(this.getSnapshotText(), {
 			maxLines: this.maxLines,
 			maxBytes: this.maxBytes,
@@ -177,14 +179,14 @@ export class OutputAccumulator {
 			maxBytes: this.maxBytes,
 		};
 
-		if (options.persistIfTruncated && truncation.truncated) {
+		if (!options.recoverInMemoryTail && options.persistIfTruncated && truncation.truncated) {
 			this.ensureTempFile();
 		}
 
 		return {
 			content: truncation.content,
 			truncation,
-			fullOutputPath: this.tempFilePath,
+			fullOutputPath: options.recoverInMemoryTail ? undefined : this.tempFilePath,
 			spillFileCapped: this.tempFileCapped,
 		};
 	}
@@ -237,7 +239,7 @@ export class OutputAccumulator {
 	}
 
 	/** Release only this accumulator's exact incomplete spill and ownership marker. */
-	async discardTempFile(): Promise<void> {
+	async discardTempFile(): Promise<"not_needed" | "removed"> {
 		const stream = this.tempFileStream;
 		this.tempFileStream = undefined;
 		if (stream && !stream.closed) {
@@ -249,9 +251,14 @@ export class OutputAccumulator {
 		stream?.off("error", this.onTempFileError);
 		const path = this.tempFilePath;
 		this.tempFilePath = undefined;
-		if (!path) return;
-		try { unlinkSync(path); } catch {}
-		try { unlinkSync(path + SPILL_OWNER_SUFFIX); } catch {}
+		if (!path) return "not_needed";
+		try { unlinkSync(path); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new Error(`Incomplete output log retained at ${path}: ${String(error)}`); }
+		if (this.ownerMarkerCreated) {
+			this.ownerMarkerCreated = false;
+			try { unlinkSync(path + SPILL_OWNER_SUFFIX); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new Error(`Output ownership marker retained at ${path + SPILL_OWNER_SUFFIX}: ${String(error)}`); }
+		}
+		if (this.setupCloseError) throw new Error(this.setupCloseError);
+		return "removed";
 	}
 
 	getLastLineBytes(): number {
@@ -351,21 +358,22 @@ export class OutputAccumulator {
 		const spillPath = defaultTempFilePath(this.tempFilePrefix);
 		const ownerPath = spillPath + SPILL_OWNER_SUFFIX;
 		let spillCreated = false;
-		let ownerCreated = false;
 		let spillFd: number | undefined;
 		try {
 			spillFd = openSync(spillPath, "wx", 0o600);
 			spillCreated = true;
+			this.tempFilePath = spillPath;
 			writeFileSync(ownerPath, SPILL_OWNER_MARKER, { encoding: "utf8", flag: "wx", mode: 0o600 });
-			ownerCreated = true;
+			this.ownerMarkerCreated = true;
 			this.tempFileStream = createWriteStream(spillPath, { fd: spillFd, autoClose: true });
 			this.tempFileStream.on("error", this.onTempFileError);
 			spillFd = undefined;
 			this.tempFilePath = spillPath;
 		} catch (error) {
-			if (spillFd !== undefined) try { closeSync(spillFd); } catch {}
-			if (ownerCreated) try { unlinkSync(ownerPath); } catch {}
-			if (spillCreated) try { unlinkSync(spillPath); } catch {}
+			if (spillFd !== undefined) try { closeSync(spillFd); } catch (failure) { this.setupCloseError = `Output descriptor close was not confirmed: ${String(failure).slice(0, 800)}`; }
+			// Keep our exact path until discardTempFile reports cleanup independently
+			// of this primary setup failure; do not silently swallow unlink errors.
+			if (!spillCreated) this.tempFilePath = undefined;
 			throw error;
 		}
 		for (const chunk of this.rawChunks) {

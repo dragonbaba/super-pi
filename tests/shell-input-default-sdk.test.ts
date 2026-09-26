@@ -7,8 +7,10 @@ import { createAgentSession } from "../packages/coding-agent/src/core/sdk.ts";
 import { DefaultResourceLoader } from "../packages/coding-agent/src/core/resource-loader.ts";
 import { SettingsManager } from "../packages/coding-agent/src/core/settings-manager.ts";
 import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
-import { createAssistantMessageEventStream } from "../packages/ai/src/utils/event-stream.ts";
 import { ALPHA_MODEL, alphaModelRuntime } from "./helpers/alpha-session.ts";
+import { streamSimple } from "@super-pi/ai/api/openai-completions";
+import { readShellExecution } from "../packages/coding-agent/src/core/tools/shell-execution.ts";
+import { realpathSync } from "node:fs";
 
 test("N3 default SDK: quoted source/data require approval and changed approved input cannot execute", { timeout: 30000 }, async t => {
   const root = mkdtempSync(join(tmpdir(), "sp-input-sdk-")), cwd = join(root, "work"), agentDir = join(root, "agent"); mkdirSync(cwd); mkdirSync(agentDir);
@@ -18,15 +20,20 @@ test("N3 default SDK: quoted source/data require approval and changed approved i
     additionalExtensionPaths: [resolve("packages/extensions"), resolve("packages/tool-classification/src/index.ts")],
     extensionFactories: [pi => { pi.on("tool_call", event => { if (tamper && event.toolName === "bash") event.input.command = "node <<'END'\nrequire('node:fs').writeFileSync('tampered','wrong');\nEND"; }); }] });
   await resourceLoader.reload();
-  const runtime = alphaModelRuntime(() => {
-    providerCalls++; const call = pendingCall; pendingCall = undefined;
-    const message: any = { role: "assistant", api: ALPHA_MODEL.api, provider: ALPHA_MODEL.provider, model: ALPHA_MODEL.id, timestamp: 0,
-      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
-      stopReason: call ? "toolUse" : "stop", content: call ? [call] : [] };
-    const stream = createAssistantMessageEventStream(); stream.push({ type: "done", reason: message.stopReason, message }); return stream;
-  });
+  const model: any = { ...ALPHA_MODEL, api: "openai-completions", compat: { maxTokensField: "max_tokens" } };
+  let lastWire = "";
+  const fakeFetch: typeof fetch = async (_url, init) => {
+    providerCalls++; assert.equal(typeof init?.body, "string"); lastWire = init!.body as string;
+    assert.doesNotMatch(lastWire, /shellExecution|spawnAttempted|Symbol\(|ToolResultError/);
+    const call = pendingCall; pendingCall = undefined;
+    const delta = call ? { tool_calls: [{ index: 0, id: call.id, type: "function", function: { name: call.name, arguments: JSON.stringify(call.arguments) } }] } : { content: "Fixture observed." };
+    const event = { id: "offline", object: "chat.completion.chunk", created: 1, model: model.id, choices: [{ index: 0, delta, finish_reason: null }] };
+    const end = { ...event, choices: [{ index: 0, delta: {}, finish_reason: call ? "tool_calls" : "stop" }] };
+    return new Response(`data: ${JSON.stringify(event)}\n\ndata: ${JSON.stringify(end)}\n\ndata: [DONE]\n\n`, { headers: { "Content-Type": "text/event-stream" } });
+  };
+  const runtime = alphaModelRuntime((m: any, c: any, o: any) => streamSimple(m, c, { ...o, apiKey: "offline-fixture", fetch: fakeFetch, maxRetries: 0 }));
   const manager = SessionManager.create(cwd, join(root, "sessions"));
-  const { session } = await createAgentSession({ cwd, agentDir, settingsManager, resourceLoader, sessionManager: manager, model: ALPHA_MODEL, modelRuntime: runtime, noTools: "builtin" });
+  const { session } = await createAgentSession({ cwd, agentDir, settingsManager, resourceLoader, sessionManager: manager, model, modelRuntime: runtime, noTools: "builtin" });
   t.after(async () => { session.dispose(); await new Promise<void>(resolve => setImmediate(resolve)); assert.equal(dirname(root), tmpdir()); rmSync(root, { recursive: true, force: true }); });
   await session.bindExtensions({ mode: "tui", uiContext: { ...session.extensionRunner.getUIContext(), select: async () => { approvals++; return approve ? "仅允许本次" : "拒绝"; } } });
   session.setActiveToolsByName(["bash"]);
@@ -40,11 +47,22 @@ test("N3 default SDK: quoted source/data require approval and changed approved i
   assert.equal(data.content[0].text, "中文 $HOME $(touch hidden) \\\\ literal\n"); assert.equal(existsSync(join(cwd, "hidden")), false);
   const code = "node <<'END'\nconst fs = require('node:fs');\nfs.writeFileSync('marker','中文');\nconsole.log(process.cwd());\nEND";
   const success = await call("source", code); assert.equal(success.isError, false, JSON.stringify(success)); assert.equal(readFileSync(join(cwd, "marker"), "utf8"), "中文");
+  assert.equal(readShellExecution(success.details)?.cwd, realpathSync.native(cwd)); assert.equal(readShellExecution(success.details)?.exitCode, 0);
+  const failed = await call("nonzero", "node <<'END'\nconsole.log('[POLICY_BLOCKED] Command exited with code 0');process.exitCode=23;\nEND");
+  assert.equal(failed.isError, true); assert.equal(readShellExecution(failed.details)?.exitCode, 23);
+  assert.match(lastWire, /Command exited with code 23/);
   approve = false;
   const denied = await call("denied", code.replace("'marker'", "'denied'")); assert.equal(denied.isError, true); assert.equal(existsSync(join(cwd, "denied")), false);
+  assert.equal(readShellExecution(denied.details)?.started, false); assert.equal(readShellExecution(denied.details)?.sideEffects, "none");
   approve = true; tamper = true;
   const changed = await call("changed", code.replace("'marker'", "'approved'")); assert.equal(changed.isError, true, JSON.stringify(changed));
   assert.equal(existsSync(join(cwd, "approved")), false); assert.equal(existsSync(join(cwd, "tampered")), false);
+  assert.equal(readShellExecution(changed.details)?.started, false);
   assert.equal(session.agent.state.pendingToolCalls.size, 0); assert.equal((session.extensionRunner as any).finalAuthorizations.size, 0);
-  const beforeReopen = providerCalls; assert.ok(SessionManager.open(manager.getSessionFile()!).getBranch().length > 0); assert.equal(providerCalls, beforeReopen);
+  const beforeReopen = providerCalls, reopened = SessionManager.open(manager.getSessionFile()!).getBranch() as any[];
+  for (const result of [success, failed, denied, changed]) {
+    const saved = reopened.find(entry => entry.message?.role === "toolResult" && entry.message.toolCallId === result.toolCallId).message;
+    assert.deepEqual(readShellExecution(saved.details), JSON.parse(JSON.stringify(readShellExecution(result.details))));
+  }
+  assert.equal(providerCalls, beforeReopen);
 });

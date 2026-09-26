@@ -38,7 +38,11 @@ test("redirection evidence distinguishes syntax from quoted and heredoc data", (
   const syntax = inspectHighRiskBashMutation({ command: "tasklist 2>&1 | head" }, process.cwd());
   assert.equal(syntax, undefined);
   assert.equal(inspectHighRiskBashMutation({ command: "printf '%s' '2>&1'" }, process.cwd()), undefined);
-  const heredoc = inspectHighRiskBashMutation({ command: "cat <<'EOF'\n2>&1\nEOF" }, process.cwd());
+  const boundedData = "cat <<'EOF'\n2>&1\nEOF";
+  assert.equal(inspectHighRiskBashMutation({ command: boundedData }, process.cwd()), undefined);
+  const inputScope = inspectBashPermissionScope({ command: boundedData }, process.cwd());
+  assert.ok(inputScope); assert.ok(inputScope.primitives.includes("stdin_data:cat")); assert.equal(inputScope.unverifiableScope, true, "literal data still needs opaque-input authorization");
+  const heredoc = inspectHighRiskBashMutation({ command: "cat -n <<'EOF'\n2>&1\nEOF" }, process.cwd());
   assert.ok(heredoc?.primitives.includes("heredoc_uninspectable"));
   assert.notEqual(heredoc?.diagnostic?.diagnostic.code, "FD_DUP_UNSUPPORTED");
   assert.equal(inspectBashPermissionScope({ command: "printf '%s' '2>&1'" }, process.cwd())?.unverifiableScope, false);

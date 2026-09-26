@@ -1,4 +1,6 @@
+import { COMPLETION_CLAIM_RE, INCOMPLETE_DISCLOSURE_RE, PARTIAL_MUTATION_RE, LEADING_CD_RE, SHELL_OPERATOR_RE, NODE_TEST_RE, TEST_COMMAND_RE, NODE_TSC_RE, TYPECHECK_COMMAND_RE, LINT_COMMAND_RE, BUILD_COMMAND_RE, PACKAGE_PREFIX_RE, POLICY_BLOCKED_RE, TIMEOUT_RE, PATH_NOT_FOUND_RE, COMMAND_FAILED_RE, WINDOWS_ABSOLUTE_RE, TRAILING_SEPARATOR_RE } from "./regex.ts";
 import { extname, isAbsolute, relative, resolve } from "node:path";
+import { readShellExecution, shellExecutionSucceeded, shellFailureCategory } from "@super-pi/coding-agent";
 import { boundBatchIntents, validMutationOutcome } from "../mutation-guard-write/session-evidence.ts";
 import { resolveToolPath } from "../mutation-guard-write/core.ts";
 
@@ -11,23 +13,7 @@ const MAX_DRAFT_CHARS = 1_000_000;
 export const FALSE_SUCCESS_GUARD_VERSION = "0.3.4-pi.84.2";
 export const FALSE_SUCCESS_AUDIT_TYPE = "false-success-intervention-v1";
 
-const COMPLETION_CLAIM_RE = /(?:已完成|完成了|已经完成|已修复|修复完成|已实现|实现完成|验证通过|测试通过|全部通过|成功完成|\bdone\b|\bcompleted\b|\bfixed\b|\bimplemented\b|all (?:tests|checks) pass(?:ed)?)/iu;
-const INCOMPLETE_DISCLOSURE_RE = /(?:未完成|尚未完成|无法完成|仍(?:然)?(?:失败|存在|需要)|尚(?:未|需)|阻塞|被阻止|需要(?:用户|外部)|\bnot complete\b|\bincomplete\b|\bstill (?:failed|failing|blocked|remaining)\b|\bblocked\b|\bremaining\b|\bcould not\b|\bunable to\b)/iu;
-const PARTIAL_MUTATION_RE = /partial[_ -]?mutation|"?statechanged"?\s*:\s*true/iu;
-const LEADING_CD_RE = /^cd\s+((?:"[^"]*"|'[^']*'|\S+))\s*&&\s*/u;
-const SHELL_OPERATOR_RE = /&&|\|\||;/u;
-const NODE_TEST_RE = /^(?:"[^"]*[/\\])?(?:node(?:\.exe)?)"?\s+--test\b/u;
-const TEST_COMMAND_RE = /^(?:npm|pnpm|yarn|bun)(?:\s+(?:--prefix|-c|--dir)\s+(?:"[^"]+"|\S+))*\s+(?:run\s+)?test\b|^(?:pytest|vitest|jest|cargo\s+test|go\s+test|dotnet\s+test|gradle\s+test|mvn\s+(?:test|verify))\b/u;
-const NODE_TSC_RE = /^(?:"[^"]*[/\\])?(?:node(?:\.exe)?)"?\s+"?[^"]*[/\\]typescript[/\\]bin[/\\]tsc"?\b/u;
-const TYPECHECK_COMMAND_RE = /^(?:tsc|typecheck|type-check|mypy|pyright|cargo\s+check|go\s+vet)\b/u;
-const LINT_COMMAND_RE = /^(?:eslint|biome\s+(?:check|lint)|ruff\s+check|golangci-lint|cargo\s+clippy)\b|^(?:npm|pnpm|yarn|bun)(?:\s+(?:--prefix|-c|--dir)\s+(?:"[^"]+"|\S+))*\s+(?:run\s+)?lint\b/u;
-const BUILD_COMMAND_RE = /^(?:npm|pnpm|yarn|bun)(?:\s+(?:--prefix|-c|--dir)\s+(?:"[^"]+"|\S+))*\s+(?:run\s+)?build\b|^(?:cargo|go|dotnet|gradle|mvnw?|cmake)\s+build\b/u;
-const PACKAGE_PREFIX_RE = /^(?:npm|pnpm|yarn|bun)\s+(?:--prefix|-c|--dir)\s+("[^"]+"|'[^']+'|\S+)/u;
-const POLICY_BLOCKED_RE = /policy[_ -]?blocked/iu;
-const TIMEOUT_RE = /timed?\s*out|timeout/iu;
-const PATH_NOT_FOUND_RE = /enoent|no such file|path not found/iu;
-const COMMAND_FAILED_RE = /command exited with code|process exited with code/iu;
-const WINDOWS_ABSOLUTE_RE = /^[a-z]:[/\\]/iu;
+
 
 const MUTATION_TOOLS = new Set(["edit", "write", "lsp_fix", "delete", "move"]);
 const INITIAL_GOAL_MARKER = "pi-goal-prompt:";
@@ -143,18 +129,21 @@ export function beginPromptBoundary(
 export function observeToolResult(state: FalseSuccessState, observation: ToolObservation): string | undefined {
   if (observation.toolName === "file_batch") { observeBatchResult(state, observation); return; }
   if (observation.toolName === "delete" || observation.toolName === "move") { observeNativeResult(state, observation); return; }
-  const scope = verificationScope(observation.toolName, observation.input, observation.cwd);
+  const shell = observation.toolName === "bash" || observation.toolName === "powershell";
+  const execution = shell ? readShellExecution(observation.details) : undefined;
+  const requestedCwd = shell && typeof observation.input.cwd === "string" ? resolve(observation.cwd ?? process.cwd(), observation.input.cwd) : observation.cwd;
+  const scope = verificationScope(observation.toolName, observation.input, execution?.cwd ?? requestedCwd);
   const target = mutationTarget(observation.toolName, observation.input, observation.cwd);
   const text = (observation.text ?? "").slice(0, MAX_TOOL_TEXT_CHARS);
 
-  if (observation.isError) {
+  if (observation.isError || shell && (!execution || !execution.cwd || !shellExecutionSucceeded(execution))) {
     if (scope) {
       const key = verificationKey(scope);
       const obligation = makeObligation(
         key,
         "verification",
         observation.toolName,
-        classifyFailure(text),
+        shell ? execution ? shellFailureCategory(execution) : "execution_unknown" : classifyFailure(text),
         `${scope.family} verification failed`,
         scope.kind,
         scope.path,
@@ -445,7 +434,7 @@ function normalizeAbsolute(value: string, cwd: string): string {
   const absolute = isAbsolute(stripped) || WINDOWS_ABSOLUTE_RE.test(stripped)
     ? resolve(stripped)
     : resolve(cwd, stripped);
-  return absolute.replaceAll("\\", "/").replace(/\/$/u, "").toLowerCase();
+  return absolute.replaceAll("\\", "/").replace(TRAILING_SEPARATOR_RE, "").toLowerCase();
 }
 
 function unquote(value: string): string {

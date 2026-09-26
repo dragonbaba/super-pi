@@ -2,15 +2,17 @@ import { withMsysStdinBridge } from "./msys-stdin.ts";
 import { boundedShellInput } from "./bounded-shell-input.ts";
 import { prepareShellCwd, getShellCwdBinding, isLocalShellBackend, registerLocalShellBackend } from "./shell-cwd.ts";
 import { constants } from "node:fs";
-import { access as fsAccess } from "node:fs/promises";
-import type { AgentTool } from "@super-pi/agent-core";
+import { access as fsAccess, realpath as fsRealpath } from "node:fs/promises";
+import { type AgentTool, ToolResultError, toolResultFromError } from "@super-pi/agent-core";
 import { type Component, Container, getCapabilities, RELEASE_COMPONENT_RENDER_CACHE, Text, truncateToWidth, visibleWidth } from "@super-pi/tui";
 import { spawn } from "child_process";
+import type { Writable } from "node:stream";
 import { type Static, Type } from "typebox";
 import { keyHint } from "../../modes/interactive/components/keybinding-hints.ts";
 import { truncateToVisualLines } from "../../modes/interactive/components/visual-truncate.ts";
 import { theme } from "../../modes/interactive/theme/theme.ts";
-import { waitForChildProcess } from "../../utils/child-process.ts";
+import { waitForChildProcess, type ChildProcessObservation } from "../../utils/child-process.ts";
+import { observedShellError, shellProcessResultFromError, readShellExecution, shellFailureCategory, type ShellExecutionFacts, type ShellProcessResult, type ShellTermination } from "./shell-execution.ts";
 import { setOwnProperty } from "../../utils/record.ts";
 import {
 	getShellConfig,
@@ -33,6 +35,7 @@ import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, type TruncationResult } from "./truncate.ts";
 
 const MAX_TIMEOUT_MS = 2_147_483_647;
+const OUTPUT_FAILURE_ABORT = Symbol("shell-output-failure-abort");
 const MAX_TIMEOUT_SECONDS = MAX_TIMEOUT_MS / 1000;
 const SESSION_ENVIRONMENT_KEYS = new Set([
 	"SP_SESSION_ID",
@@ -80,6 +83,7 @@ export type BashToolInput = Static<typeof bashSchema>;
 
 export interface BashToolDetails {
 	cwd?: string;
+	shellExecution?: ShellExecutionFacts;
 	truncation?: TruncationResult;
 	fullOutputPath?: string;
 	spillFileCapped?: boolean;
@@ -109,13 +113,38 @@ export interface BashOperations {
 			env?: NodeJS.ProcessEnv;
 			beforeSpawn?: (cwd: string) => void;
 		},
-	) => Promise<{ exitCode: number | null }>;
+	) => Promise<ShellProcessResult>;
+}
+
+/** One observer per command-input pipe, retained through close so EPIPE cannot
+ * arrive after facts are finalized or become an unhandled late stream error. */
+class ShellInputObserver {
+	private stream: Writable | undefined;
+	private resolveClosed: (() => void) | undefined;
+	private readonly closed: Promise<void>;
+	error: string | undefined;
+	private readonly onError = (error: Error): void => { this.error ??= error.message.slice(0, 1000); };
+	private readonly onClose = (): void => {
+		this.stream?.removeListener("error", this.onError);
+		this.stream = undefined;
+		const resolve = this.resolveClosed; this.resolveClosed = undefined; resolve?.();
+	};
+	constructor(stream: Writable) {
+		this.stream = stream;
+		this.closed = new Promise<void>((resolve) => { this.resolveClosed = resolve; });
+		stream.on("error", this.onError); stream.once("close", this.onClose);
+	}
+	finish(): Promise<void> { this.stream?.destroy(); return this.closed; }
 }
 
 /** Shared process execution used by the built-in shell tools. */
 export function createLocalShellOperations(shellName: string, resolveShellConfig: () => ShellConfig): BashOperations {
 	return registerLocalShellBackend({
 		exec: async (command, cwd, { onData, signal, timeout, env, beforeSpawn }) => {
+			const observation: ChildProcessObservation = { started: false, exitCode: null, signal: null, outputDrained: false };
+			let stopReason: ShellTermination | undefined;
+			let inputObserver: ShellInputObserver | undefined;
+			try {
 			const timeoutMs = resolveTimeoutMs(timeout);
 			if (signal?.aborted) {
 				throw new Error("aborted");
@@ -128,23 +157,27 @@ export function createLocalShellOperations(shellName: string, resolveShellConfig
 			}
 
 			const commandFromStdin = shellConfig.commandTransport === "stdin";
-				signal?.throwIfAborted();
-			beforeSpawn?.(cwd);
+			const actualCwd = await fsRealpath(cwd);
+			observation.cwd = actualCwd;
+			signal?.throwIfAborted();
+			beforeSpawn?.(actualCwd);
+			observation.spawnAttempted = true;
 			const child = spawn(shellConfig.shell, commandFromStdin ? shellConfig.args : [...shellConfig.args, command], {
-				cwd,
+				cwd: actualCwd,
 				detached: process.platform !== "win32",
 				env: env ?? getShellEnv(),
 				stdio: [commandFromStdin ? "pipe" : "ignore", "pipe", "pipe"],
 				windowsHide: true,
 			});
-			if (commandFromStdin) {
-				child.stdin?.on("error", () => {});
-				child.stdin?.end(command);
+			if (commandFromStdin && child.stdin) {
+				inputObserver = new ShellInputObserver(child.stdin);
+				child.stdin.end(command);
 			}
 			if (child.pid) trackDetachedChildPid(child.pid);
-			let timedOut = false;
 			let timeoutHandle: NodeJS.Timeout | undefined;
 			const onAbort = () => {
+				if (observation.exitCode !== null || observation.signal !== null) return;
+				stopReason ??= signal?.reason?.[OUTPUT_FAILURE_ABORT] ? "output_failure" : "cancelled";
 				if (child.pid) killProcessTree(child.pid);
 			};
 
@@ -152,7 +185,8 @@ export function createLocalShellOperations(shellName: string, resolveShellConfig
 				// Set timeout if provided.
 				if (timeoutMs !== undefined) {
 					timeoutHandle = setTimeout(() => {
-						timedOut = true;
+						if (observation.exitCode !== null || observation.signal !== null) return;
+						stopReason ??= "timeout";
 						if (child.pid) killProcessTree(child.pid);
 					}, timeoutMs);
 				}
@@ -166,18 +200,24 @@ export function createLocalShellOperations(shellName: string, resolveShellConfig
 				}
 				// Handle shell spawn errors and wait for the process to terminate without hanging
 				// on inherited stdio handles held by detached descendants.
-				const exitCode = await waitForChildProcess(child);
-				if (signal?.aborted) {
-					throw new Error("aborted");
-				}
-				if (timedOut) {
-					throw new Error(`timeout:${timeout}`);
-				}
-				return { exitCode };
+				const exitCode = await waitForChildProcess(child, observation);
+				await inputObserver?.finish();
+				const termination = stopReason ?? (observation.signal ? "signal" : exitCode === null ? "unknown" : "exit");
+				const result: ShellProcessResult = { exitCode, observation, termination, inputError: inputObserver?.error };
+				if (stopReason) throw observedShellError(new Error(stopReason === "timeout" ? `timeout:${timeout}` : stopReason === "output_failure" ? "output capture failed" : "aborted"), result);
+				return result;
 			} finally {
 				if (child.pid) untrackDetachedChildPid(child.pid);
 				if (timeoutHandle) clearTimeout(timeoutHandle);
 				if (signal) signal.removeEventListener("abort", onAbort);
+				child.stdout?.removeListener("data", onData); child.stderr?.removeListener("data", onData);
+				await inputObserver?.finish();
+			}
+			} catch (error) {
+				if (shellProcessResultFromError(error)) throw error;
+				if (!observation.started) observation.outputDrained = true;
+				throw observedShellError(error, { exitCode: observation.exitCode, observation,
+					termination: observation.started ? stopReason ?? "unknown" : "not_started", inputError: inputObserver?.error });
 			}
 		},
 	});
@@ -291,6 +331,7 @@ type BashFailurePreview = {
 	status: string | undefined;
 	stack: string | undefined;
 	omitted: boolean;
+	statusFirst: boolean;
 };
 
 function nodeParseContext(lines: readonly string[]): string[] {
@@ -311,7 +352,7 @@ function nodeParseContext(lines: readonly string[]): string[] {
 }
 
 /** Select the first useful failure and terminal status once per final result. */
-function createBashFailurePreview(output: string): BashFailurePreview | undefined {
+function createBashFailurePreview(output: string, execution?: ShellExecutionFacts): BashFailurePreview | undefined {
 	let firstUseful: string | undefined;
 	let firstUsefulPrefix: string[] = [];
 	let firstUsefulEnd = -1;
@@ -335,7 +376,7 @@ function createBashFailurePreview(output: string): BashFailurePreview | undefine
 				genericFailureEnd = end;
 			}
 		}
-		if (line.includes("Command exited with code") || line.includes("Command timed out") || line.includes("Command aborted")) status = line;
+		if (!execution && (line.includes("Command exited with code") || line.includes("Command timed out") || line.includes("Command aborted"))) status = line;
 		recentLines.push(line);
 		if (recentLines.length > 4) recentLines.shift();
 		if (end === output.length) break;
@@ -345,14 +386,18 @@ function createBashFailurePreview(output: string): BashFailurePreview | undefine
 		firstUseful = genericFailure;
 		firstUsefulEnd = genericFailureEnd;
 	}
-	if (!firstUseful) return undefined;
+	if (execution) status = `Shell: ${shellFailureCategory(execution)}; exit=${execution.exitCode ?? "unknown"}${execution.signal ? `; signal=${execution.signal}` : ""}`;
+	if (!firstUseful) {
+		if (!execution) return undefined;
+		return { context: [], exception: "", status, stack: undefined, omitted: output.trim().length > 0, statusFirst: true };
+	}
 	const nextStart = firstUsefulEnd + 1;
 	if (firstUsefulPrefix.length === 0 && nextStart < output.length) {
 		const nextEnd = nextLineEnd(output, nextStart);
 		const next = output.slice(nextStart, nextEnd);
 		if (next.includes(" at ") || next.trimStart().startsWith("at ") || next.includes(": line ")) nextStack = next;
 	}
-	const exception = boundFailureFragment(firstUseful);
+	const exception = execution ? `Output: ${boundFailureFragment(firstUseful)}` : boundFailureFragment(firstUseful);
 	const terminalStatus = status && status !== firstUseful ? boundFailureFragment(status) : undefined;
 	const stack = nextStack ? boundFailureFragment(nextStack) : undefined;
 	let selectedCharacters = exception.length + (terminalStatus?.length ?? 0) + (stack?.length ?? 0);
@@ -364,6 +409,7 @@ function createBashFailurePreview(output: string): BashFailurePreview | undefine
 		stack,
 		// Ignore blank separators; count both unselected lines and shortened fragments.
 		omitted: nonblankCharacters > selectedCharacters,
+		statusFirst: Boolean(execution),
 	};
 }
 
@@ -448,6 +494,9 @@ type BashResultRenderState = {
 	preparedStyledOutput: string | undefined;
 	preparedErrorPreview: BashFailurePreview | undefined;
 	preparedIsError: boolean | undefined;
+	preparedExecutionCategory: string | undefined;
+	preparedExitCode: number | null | undefined;
+	preparedSignal: string | null | undefined;
 	expandedOutputComponent: Text | undefined;
 	expandedOutputText: string | undefined;
 	allocationMetrics?: BashRenderAllocationMetrics;
@@ -476,9 +525,10 @@ class BashPreviewComponent implements Component {
 				const failure = state.preparedErrorPreview;
 				const lines: string[] = [];
 				state.cachedFailureOmitted = failure.omitted;
+				if (failure.statusFirst && failure.status) appendBashFailureLine(state, lines, failure.status, width);
 				for (const contextLine of failure.context) appendBashFailureLine(state, lines, contextLine, width);
-				appendBashFailureLine(state, lines, failure.exception, width);
-				if (failure.status) appendBashFailureLine(state, lines, failure.status, width);
+				if (failure.exception) appendBashFailureLine(state, lines, failure.exception, width);
+				if (!failure.statusFirst && failure.status) appendBashFailureLine(state, lines, failure.status, width);
 				if (failure.stack) appendBashFailureLine(state, lines, failure.stack, width);
 				state.cachedLines = lines;
 				state.cachedSkipped = 0;
@@ -528,6 +578,9 @@ class BashResultRenderComponent extends Container {
 	preparedStyledOutput: undefined,
 	preparedErrorPreview: undefined,
 	preparedIsError: undefined,
+	preparedExecutionCategory: undefined,
+	preparedExitCode: undefined,
+	preparedSignal: undefined,
 		expandedOutputComponent: undefined,
 		expandedOutputText: undefined,
 	};
@@ -562,6 +615,9 @@ class BashResultRenderComponent extends Container {
 		state.preparedStyledOutput = undefined;
 		state.preparedErrorPreview = undefined;
 		state.preparedIsError = undefined;
+		state.preparedExecutionCategory = undefined;
+		state.preparedExitCode = undefined;
+		state.preparedSignal = undefined;
 		state.expandedOutputComponent = undefined;
 		state.expandedOutputText = undefined;
 		state.allocationMetrics = undefined;
@@ -650,6 +706,8 @@ function getPreparedBashOutput(
 	const state = component.state;
 	const truncation = result.details?.truncation;
 	const fullOutputPath = result.details?.fullOutputPath;
+	const execution = readShellExecution(result.details);
+	const executionCategory = execution ? shellFailureCategory(execution) : undefined;
 	const capabilitiesImages = getCapabilities().images;
 	const toolOutputStyle = theme.fg("toolOutput", "sp-bash-style");
 	if (
@@ -661,6 +719,7 @@ function getPreparedBashOutput(
 		state.preparedFullOutputPath === fullOutputPath &&
 		state.preparedToolOutputStyle === toolOutputStyle
 		&& state.preparedIsError === isError
+		&& state.preparedExecutionCategory === executionCategory && state.preparedExitCode === execution?.exitCode && state.preparedSignal === execution?.signal
 	) return state.preparedStyledOutput ?? "";
 
 	let output = getTextOutput(result as any, showImages).trim();
@@ -684,7 +743,7 @@ function getPreparedBashOutput(
 	if (
 		state.preparedStyledOutput !== styledOutput ||
 		state.preparedIsPartial !== options.isPartial ||
-		state.preparedIsError !== isError
+		state.preparedIsError !== isError || state.preparedExecutionCategory !== executionCategory || state.preparedExitCode !== execution?.exitCode || state.preparedSignal !== execution?.signal
 	) {
 		state.cachedWidth = undefined;
 		state.cachedLines = undefined;
@@ -700,8 +759,9 @@ function getPreparedBashOutput(
 	state.preparedToolOutputStyle = toolOutputStyle;
 	state.preparedStyledOutput = styledOutput;
 	if (state.allocationMetrics && isError && !options.isPartial) state.allocationMetrics.failureAnalyses++;
-	state.preparedErrorPreview = isError && !options.isPartial ? createBashFailurePreview(output) : undefined;
+	state.preparedErrorPreview = isError && !options.isPartial ? createBashFailurePreview(output, execution) : undefined;
 	state.preparedIsError = isError;
+	state.preparedExecutionCategory = executionCategory; state.preparedExitCode = execution?.exitCode; state.preparedSignal = execution?.signal;
 	return styledOutput;
 }
 
@@ -781,7 +841,7 @@ function rebuildBashResultRenderComponent(
 		component.warningText = undefined;
 	}
 
-	if (startedAt !== undefined && result.details?.executionStatus !== "not_executed") {
+	if (startedAt !== undefined && readShellExecution(result.details)?.started !== false && result.details?.executionStatus !== "not_executed") {
 		const label = options.isPartial && endedAt === undefined ? "Elapsed" : "Took";
 		const endTime = endedAt ?? Date.now();
 		const text = `\n${theme.fg("muted", `${label} ${formatDuration(endTime - startedAt)}`)}`;
@@ -839,9 +899,10 @@ export function createShellToolDefinition(
 			ctx?,
 		) {
 			const { command, timeout } = input;
-            if (boundedShellInput(command) && (config.name !== "bash" || !isLocalShellBackend(ops) || commandPrefix || (spawnHook && spawnHook !== withMsysStdinBridge) || ops.exec !== backendExecute)) throw new Error("[SHELL_INPUT_UNSUPPORTED] Bounded heredoc backend or transport changed before execution.");
             let cwdBinding = getShellCwdBinding(input);
+            let executionEntered = false;
             try {
+            if (boundedShellInput(command) && (config.name !== "bash" || !isLocalShellBackend(ops) || commandPrefix || (spawnHook && spawnHook !== withMsysStdinBridge) || ops.exec !== backendExecute)) throw new Error("[SHELL_INPUT_UNSUPPORTED] Bounded heredoc backend or transport changed before execution.");
 			if (input.cwd !== undefined && (!isLocalShellBackend(ops) || commandPrefix || (spawnHook && spawnHook !== withMsysStdinBridge) || ops.exec !== backendExecute)) throw new Error("[SHELL_CWD_UNSUPPORTED] Explicit cwd requires the built-in local backend without commandPrefix or spawnHook.");
 			if (input.cwd === undefined && cwdBinding && !cwdBinding.isReleased) throw new Error("[SHELL_CWD_CHANGED] Bound cwd was removed before execution.");
             cwdBinding = input.cwd === undefined && !cwdBinding ? undefined : await prepareShellCwd(input, ctx?.cwd ?? cwd);
@@ -859,7 +920,7 @@ export function createShellToolDefinition(
 				if (outputFailure) return;
 				outputFailure = error instanceof Error ? error : new Error(String(error));
 				acceptingOutput = false;
-				outputAbort.abort(outputFailure);
+				outputAbort.abort({ [OUTPUT_FAILURE_ABORT]: true, cause: outputFailure });
 			};
 			const output = new OutputAccumulator({ tempFilePrefix: config.tempFilePrefix, onSpillError: recordOutputFailure });
 
@@ -887,6 +948,7 @@ export function createShellToolDefinition(
 				}
 			};
 
+			const onUpdateTimer = () => { updateTimer = undefined; emitOutputUpdate(); };
 			const scheduleOutputUpdate = () => {
 				if (!onUpdate) return;
 				updateDirty = true;
@@ -896,10 +958,7 @@ export function createShellToolDefinition(
 					emitOutputUpdate();
 					return;
 				}
-				updateTimer ??= setTimeout(() => {
-					updateTimer = undefined;
-					emitOutputUpdate();
-				}, delay);
+				updateTimer ??= setTimeout(onUpdateTimer, delay);
 			};
 
 			if (onUpdate) {
@@ -914,6 +973,8 @@ export function createShellToolDefinition(
 				} catch (error) { recordOutputFailure(error); }
 			};
 
+			let logError: string | undefined, cleanupError: string | undefined;
+			let cleanup: "not_needed" | "removed" | "failed" = "not_needed";
 			const finishOutput = async () => {
 				acceptingOutput = false;
 				try {
@@ -927,27 +988,30 @@ export function createShellToolDefinition(
 					return snapshot;
 				} catch (error) {
 					clearUpdateTimer();
-					await output.discardTempFile();
-					throw new Error(`[SHELL_LOG_FAILED] Command output was not fully recorded: ${error instanceof Error ? error.message : String(error)}`);
+					logError = (error instanceof Error ? error.message : String(error)).slice(0, 1000);
+					try { output.finish(true); } catch { /* Keep the first capture/log error. */ }
+					try { cleanup = await output.discardTempFile(); }
+					catch (failure) { cleanup = "failed"; cleanupError = (failure instanceof Error ? failure.message : String(failure)).slice(0, 1000); }
+					return output.snapshot({ recoverInMemoryTail: true });
 				}
 			};
 
 			const formatOutput = (snapshot: Awaited<ReturnType<typeof finishOutput>>, emptyText = "(no output)") => {
 				const truncation = snapshot.truncation;
 				let text = snapshot.content || emptyText;
-				let details: BashToolDetails | undefined = cwdBinding ? { cwd: cwdBinding.canonical } : undefined;
+				const details: BashToolDetails = { cwd: spawnContext.cwd };
 				if (truncation.truncated) {
-					details = { cwd: cwdBinding?.canonical, truncation, fullOutputPath: snapshot.fullOutputPath, spillFileCapped: snapshot.spillFileCapped };
-					const outputLabel = snapshot.spillFileCapped ? "Capped output file (5 MiB; later output unavailable)" : "Full output";
+					details.truncation = truncation; details.fullOutputPath = snapshot.fullOutputPath; details.spillFileCapped = snapshot.spillFileCapped;
+					const outputLabel = snapshot.fullOutputPath ? `${snapshot.spillFileCapped ? "Capped output file (5 MiB; later output unavailable)" : "Full output"}: ${snapshot.fullOutputPath}` : "Output log unavailable";
 					const startLine = truncation.totalLines - truncation.outputLines + 1;
 					const endLine = truncation.totalLines;
 					if (truncation.lastLinePartial) {
 						const lastLineSize = formatSize(output.getLastLineBytes());
-						text += `\n\n[Showing last ${formatSize(truncation.outputBytes)} of line ${endLine} (line is ${lastLineSize}). ${outputLabel}: ${snapshot.fullOutputPath}]`;
+						text += `\n\n[Showing last ${formatSize(truncation.outputBytes)} of line ${endLine} (line is ${lastLineSize}). ${outputLabel}]`;
 					} else if (truncation.truncatedBy === "lines") {
-						text += `\n\n[Showing lines ${startLine}-${endLine} of ${truncation.totalLines}. ${outputLabel}: ${snapshot.fullOutputPath}]`;
+						text += `\n\n[Showing lines ${startLine}-${endLine} of ${truncation.totalLines}. ${outputLabel}]`;
 					} else {
-						text += `\n\n[Showing lines ${startLine}-${endLine} of ${truncation.totalLines} (${formatSize(DEFAULT_MAX_BYTES)} limit). ${outputLabel}: ${snapshot.fullOutputPath}]`;
+						text += `\n\n[Showing lines ${startLine}-${endLine} of ${truncation.totalLines} (${formatSize(DEFAULT_MAX_BYTES)} limit). ${outputLabel}]`;
 					}
 				}
 				return { text, details };
@@ -956,44 +1020,66 @@ export function createShellToolDefinition(
 			const appendStatus = (text: string, status: string) => `${text ? `${text}\n\n` : ""}${status}`;
 
 			try {
-				let exitCode: number | null;
+				let processResult: ShellProcessResult | undefined, executionError: unknown;
 				try {
-					const result = await (cwdBinding ? backendExecute : ops.exec).call(ops, spawnContext.command, spawnContext.cwd, {
+					executionEntered = true;
+					processResult = await (cwdBinding ? backendExecute : ops.exec).call(ops, spawnContext.command, spawnContext.cwd, {
 						onData: handleData,
 						signal: executionSignal,
 						timeout,
 						env: spawnContext.env,
 						beforeSpawn: cwdBinding?.beforeSpawn,
 					});
-					exitCode = result.exitCode;
 				} catch (err) {
-					const snapshot = await finishOutput();
-					const { text } = formatOutput(snapshot, "");
-					if (err instanceof Error && err.message.startsWith("timeout:")) {
-						const timeoutSecs = err.message.split(":")[1];
-						throw new Error(`[SHELL_INTERRUPTED] ${appendStatus(text, `Command timed out after ${timeoutSecs} seconds`)}`);
-					}
-					if (executionSignal.aborted || (err instanceof Error && err.message === "aborted")) {
-						throw new Error(`[SHELL_INTERRUPTED] ${appendStatus(text, "Command aborted")}`);
-					}
-					const launchError = err instanceof Error && (
-						"code" in err && (err.code === "ENOENT" || err.code === "EACCES" || err.code === "ENOTDIR")
-						|| err.message.startsWith("No bash shell found") || err.message.startsWith("Custom shell path not found:")
-						|| err.message.startsWith("Working directory does not exist") || err.message.startsWith("Invalid timeout:")
-						|| (config.name === "powershell" && err.message.startsWith("PowerShell is unavailable:"))
-					);
-					throw new Error(`[${launchError ? "SHELL_START_FAILED" : "SHELL_EXECUTION_FAILED"}] ${appendStatus(text, err instanceof Error ? err.message : String(err))}`);
+					executionError = err; processResult = shellProcessResultFromError(err);
 				}
 
 				const snapshot = await finishOutput();
-				const { text: outputText, details } = formatOutput(snapshot);
-				if (exitCode !== 0 && exitCode !== null) {
-					throw new Error(`[SHELL_RUNTIME_FAILED]\n${appendStatus(outputText, `Command exited with code ${exitCode}`)}`);
-				}
+				const { text, details } = formatOutput(snapshot, executionError ? "" : "(no output)");
+				let outputText = text, failure: string | undefined;
+				const observation = processResult?.observation;
+				const local = isLocalShellBackend(ops) && ops.exec === backendExecute;
+				const started = observation?.started ?? "unknown";
+				const termination = processResult?.termination ?? (processResult && processResult.exitCode !== null ? "exit" : "unknown");
+				const facts: ShellExecutionFacts = { version: 1, producer: local ? "local-shell" : "custom-shell",
+					started, cwd: local ? observation?.cwd ?? null : null,
+					executionStatus: started === false ? observation?.spawnAttempted ? "start_failed" : "not_executed" : termination === "exit" ? "exited" : termination === "unknown" ? "unknown" : "interrupted",
+					sideEffects: started === false ? "none" : "unknown", retryGuidance: started === false ? "fresh_request" : "inspect_before_retry",
+					exitCode: processResult?.exitCode ?? null, signal: observation?.signal ?? null,
+					termination,
+					inputError: processResult?.inputError,
+					output: { complete: logError ? false : observation?.outputDrained ?? "unknown", tailTruncated: snapshot.truncation.truncated,
+						log: logError ? "failed" : snapshot.fullOutputPath ? snapshot.spillFileCapped ? "capped" : "complete" : "not_needed",
+						cleanup, logError, cleanupError } };
+				details.shellExecution = facts;
+				if (facts.started === false) details.executionStatus = "not_executed";
+				if (executionError) {
+					const message = executionError instanceof Error ? executionError.message : String(executionError);
+					if (facts.termination === "timeout" || !observation && message.startsWith("timeout:")) failure = `[SHELL_INTERRUPTED] Command timed out after ${timeout ?? "requested"} seconds`;
+					else if (facts.termination === "cancelled" || !observation && message === "aborted") failure = "[SHELL_INTERRUPTED] Command aborted";
+					else failure = `[${facts.started === false ? "SHELL_START_FAILED" : "SHELL_EXECUTION_FAILED"}] ${message}`;
+				} else if (facts.termination === "signal") failure = `[SHELL_INTERRUPTED] Command terminated by ${facts.signal ?? "an unobserved signal"}`;
+				else if (facts.exitCode === null) failure = "[SHELL_EXECUTION_FAILED] Command termination is unknown (null exit code)";
+				else if (facts.exitCode !== 0) failure = `[SHELL_RUNTIME_FAILED] Command exited with code ${facts.exitCode}`;
+				else if (facts.inputError) failure = `[SHELL_INPUT_FAILED] Command input was not fully delivered: ${facts.inputError}`;
+				else if (observation && !observation.outputDrained) failure = "[SHELL_OUTPUT_INCOMPLETE] Process exited but output streams did not finish before the drain boundary";
+				if (failure) outputText = appendStatus(outputText, failure);
+				if (logError) outputText = appendStatus(outputText, `[SHELL_LOG_FAILED] Command output was not fully recorded: ${logError}`);
+				if (cleanupError) outputText = appendStatus(outputText, `[SHELL_LOG_CLEANUP_FAILED] ${cleanupError}`);
+				if (failure || logError) throw new ToolResultError(outputText, { content: [{ type: "text", text: outputText }], details });
 				return { content: [{ type: "text", text: outputText }], details };
 			} finally {
 				clearUpdateTimer();
 			}
+			} catch (error) {
+				if (toolResultFromError(error)) throw error;
+				const message = error instanceof Error ? error.message : String(error);
+				const details: BashToolDetails = { executionStatus: executionEntered ? undefined : "not_executed",
+					shellExecution: { version: 1, producer: isLocalShellBackend(ops) && ops.exec === backendExecute ? "local-shell" : "custom-shell", started: executionEntered ? "unknown" : false, cwd: null,
+						executionStatus: executionEntered ? "unknown" : "not_executed", sideEffects: executionEntered ? "unknown" : "none", retryGuidance: executionEntered ? "inspect_before_retry" : "fresh_request",
+						exitCode: null, signal: null, termination: executionEntered ? "unknown" : "not_started",
+						output: { complete: executionEntered ? "unknown" : true, tailTruncated: false, log: "not_needed", cleanup: "not_needed" } } };
+				throw new ToolResultError(message, { content: [{ type: "text", text: message }], details }, { cause: error });
 			} finally { cwdBinding?.release(); }
 		},
 		renderCall(args, _theme, context) {

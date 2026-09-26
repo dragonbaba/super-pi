@@ -3,6 +3,7 @@ import { access, opendir, stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { UNCERTAIN_LIFECYCLE } from "../resource-lifecycle-guard/core.ts";
 import { classifyToolFailure } from "../session-tool-errors/core.ts";
+import { readShellExecution } from "@super-pi/coding-agent";
 import { classifyStructuredReadonlyArguments } from "../resource-lifecycle-guard/structured-argv.ts";
 import {
   BACKSLASH_PAIR_RE,
@@ -532,10 +533,10 @@ export function resetBatchState(state: GuardState): void {
   state.batchCalls.clear();
 }
 
-export function classifyFailureText(text: string, input?: unknown, toolName = "tool"): string {
+export function classifyFailureText(text: string, input?: unknown, toolName = "tool", details?: unknown): string {
   const boundedText = text.slice(0, MAX_ERROR_TEXT_CHARS);
-  if (isMsysRegexArgvFailure(input, boundedText)) return "platform_path_error";
-  return classifyToolFailure(toolName, boundedText, input).category;
+  if (!readShellExecution(details) && isMsysRegexArgvFailure(input, boundedText)) return "platform_path_error";
+  return classifyToolFailure(toolName, boundedText, input, details).category;
 }
 
 export function observeRepeatedCall(
@@ -600,11 +601,12 @@ export function recordResult(
   isError: boolean,
   failureText = "",
   canonicalCallKey?: string,
+  details?: unknown,
 ): string | undefined {
   if (isError) {
-    if (GUARD_BLOCK_CATEGORY_RE.test(failureText)) return undefined;
+    if (!readShellExecution(details) && GUARD_BLOCK_CATEGORY_RE.test(failureText)) return undefined;
     setBounded(state.failuresByTool, toolName, (state.failuresByTool.get(toolName) ?? 0) + 1);
-    const category = classifyFailureText(failureText, input, toolName);
+    const category = classifyFailureText(failureText, input, toolName, details);
     const key = signatureKey(canonicalCallKey ?? callKey(toolName, input), category);
     state.activeFailureCount = state.activeFailureSignature === key ? state.activeFailureCount + 1 : 1;
     state.activeFailureSignature = key;
