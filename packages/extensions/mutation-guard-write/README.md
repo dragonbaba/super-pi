@@ -115,3 +115,19 @@ Dry-run is not authorization, and reopen does not execute anything. A changed fi
 with a failed receipt must be verified, never blindly retried. This is not a
 cross-file atomic transaction, and there is no automatic rollback or directory
 cleanup when ownership cannot be proved.
+
+Dry-run items have a distinct `preview` state and bounded prepared differences.
+New text reports actual bytes/added lines (empty files add zero lines); native
+operations show the target, move destination and irreversible/non-atomic risk.
+Missing parent directories are deduplicated; existing parents are not counted.
+Preview display is limited to 80 lines per file, 400 lines/64 KiB per batch, with a
+256 KiB diff working set. Snapshot previews contain only validated edited spans.
+Exact previews without complete matching read evidence omit source differences;
+they do not read more or promote a preview into evidence. Oversized differences
+explain the omission. Execution always prepares and authorizes a new request.
+
+Tool expansion shows these per-file differences and real completion states,
+including retained directories. Prepared differences on incomplete items are
+explicitly marked unconfirmed. The model receives the compact result summary;
+expanding a row makes no provider request. Formatting happens at completion and
+the component releases its bounded derived text/cache at final unmount.
