@@ -52,7 +52,5 @@ jobs:
       - run: npm run build:offline
       - run: npm run alpha:g2-probe
       - name: Native commit resource costs (five processes)
-        env:
-          SP_NATIVE_METADATA_DIAGNOSTIC: "1"
         run: node scripts/bench/native-file-commit-multiprocess.mjs
       - run: npm test

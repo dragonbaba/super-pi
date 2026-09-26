@@ -1,6 +1,6 @@
 # N2: staged file commit evidence
 
-Status: **实现与复审中**. Parent N1 is `1914ba15e65e300a0258affe449fcd26e6f3f690`.
+Status: **实现与复审中**. Parent N1 is `d1bad1788e620810caf60914dd330b78ea26981d`.
 No claim of N2 acceptance or cross-platform metadata preservation is made yet.
 
 ## Observed baseline and capability decision
@@ -34,20 +34,21 @@ platform adapter. It provides [prebuilt Windows/Linux binaries](https://koffi.de
 and requires maintaining a native dependency, install-script allowance and packaged
 binary smoke checks. The adapter would only expose bounded metadata capability
 inspection and the required platform commit primitive; no arbitrary FFI would be
-exposed to model tools. An unavailable adapter is selected before any commit work
-as explicit protected in-place compatibility, never after a safety rejection.
+exposed to model tools. An unavailable adapter now refuses modifications before
+any commit work; unrelated reads remain available. It never triggers a retry.
 
 | Object/platform | Proposed selection and necessary evidence |
 | --- | --- |
 | Linux ordinary local single-link file | Bounded handle-based extended-attribute inspection; copy supported mode/owner metadata, sync, validate and rename; actual CI required |
 | Linux visible ACL/xattr | Preselect protected in-place compatibility and verify bounded attribute names/values plus mode/owner |
 | Linux capability/special mode | Refuse before writing: kernel writes may clear these attributes; no restoration or privilege expansion |
-| Windows local single-link ordinary file | Use documented [ReplaceFileW](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-replacefilew) metadata behavior, no ignore-ACL/merge-error flags; actual DACL/ADS/attributes tests required |
+| Windows local single-link ordinary file with modern inherited or protected DACL | Use documented [ReplaceFileW](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-replacefilew) metadata behavior, no ignore-ACL/merge-error flags; actual DACL/ADS/attributes tests required |
+| Windows legacy unprotected explicit DACL | Preselect original-object compatibility: copying/replacement normalizes ACE inheritance semantics; verify owner/group/DACL, attributes, creation time before/after |
 | Hardlink | Preserve existing object through preselected protected in-place compatibility; explicitly no staged-replacement guarantee |
 | Link/reparse/special file | Preserve existing rejection boundary; no new object capability |
 | Read-only/occupied target | No permission override; exact error/outcome testing, no fallback retry |
 | Network/unknown filesystem | No local-filesystem atomicity claim; choose compatibility before mutation or refuse precise unsupported case |
-| Adapter unavailable/unsupported platform | Explicit preselected protected in-place compatibility, visibly without staged-replacement guarantee |
+| Adapter unavailable/unsupported platform | Refuse modification explicitly before effects; reads/queries remain usable. ARM, musl and macOS are not validated |
 
 Windows ReplaceFileW can have partial failures. Its documented failure states must
 be represented as partial/unknown and observed; a failing call cannot automatically
@@ -252,3 +253,39 @@ root causes. A gated CI-only benchmark diagnostic captures only the synthetic
 fixture descriptors before/after prepare; no real workspace file or credential.
 Constraint: “不使用忽略 ACL/属性合并错误的选项来假装元数据保持成功”. The
 comparison and no-fallback behavior remain unchanged while collecting evidence.
+
+The diagnostic in `e100be64d598efa3320c9c99babe0dbc9a65330b`, Windows job
+`108452400251`, proves the distinction: original control 0x8004 with three explicit
+ACEs becomes 0x8404 with six ACEs after SetSecurityInfo (three original plus three
+inherited). This is inheritance, not padding. A local test-only legacy descriptor
+fixture reproduces the failure. A separate probe also disproved simply leaving the
+private DACL for ReplaceFileW: that API normalized the original explicit ACEs into
+inherited ACEs. Neither is accepted as exact preservation.
+
+Selection now recognizes legacy unprotected descriptors before effects and keeps
+the original object. Modern inherited and protected descriptors retain staged
+replacement. Actual legacy tests verify bytes, same inode and exact security
+fingerprint; actual modern/protected tests verify replacement plus postimage
+metadata. The benchmark and staged source-entry test explicitly construct a
+protected synthetic descriptor before measurement; they do not disguise CI's
+default legacy descriptor as staged support. The temporary CI descriptor logging
+and benchmark wrapper were removed. No production obsolete security API, ignored
+merge flag, privilege change or fallback retry was added.
+
+Review on `2003aa9078cdf4d3b3a4a75ab323282513ec5eff` also found three boundaries:
+Linux capability inspection must precede hardlink/foreign-owner compatibility;
+non-assignable groups must preselect object preservation; retained overwrite
+candidates must persist verification/no-retry even with unchanged target bytes.
+These are fixed with real Agent/Session retained-candidate regression, real
+hardlinked files plus explicitly injected capability observations, and injected
+process-group availability without changing credentials. Actual capability-bearing
+files are not claimed by that injected regression. Missing native inspection now
+refuses modifications, avoiding an unchecked capability-bearing in-place path.
+
+Local Windows Node 22.19.0: native/delivery follow-up passes 15 tests, six Linux
+skips; retained overwrite passes one further test. Current pack: 85,438 compressed /
+344,099 unpacked bytes (excluding installed dependencies; sizes vary with source).
+Earlier `e100` Linux CI measured installed platform package 2,387,558 bytes and
+five first-load times 81.32–90.14 ms, event-loop maximum 5.88–6.77 ms. Those figures
+are platform evidence for that head, not acceptance of the new candidate. Fresh
+full local gates, both CI platforms, cost runs and review remain required.

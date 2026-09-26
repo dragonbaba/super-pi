@@ -9,6 +9,7 @@ import { selectCommitMetadata } from "../../packages/extensions/mutation-guard-w
 import { commitPreparedFile } from "../../packages/extensions/mutation-guard-write/file-commit.ts";
 import { capturePathIdentity } from "../../packages/extensions/mutation-guard-write/native-file-core.ts";
 import { nativeFileDiagnostics, nativeFileRequest, disposeNativeFileWorker } from "../../packages/extensions/mutation-guard-write/native-file-client.ts";
+import { protectWindowsFixture } from "../../tests/helpers/native-metadata-fixture.ts";
 
 async function installedBytes(path: string): Promise<number> {
   let bytes = 0;
@@ -26,6 +27,7 @@ global.gc?.(); const before = process.memoryUsage();
 let content = Buffer.alloc(64 * 1024, 65);
 await writeFile(path, content);
 try {
+  await protectWindowsFixture(path);
   profiler.connect(); await profiler.post("HeapProfiler.startSampling", { samplingInterval: 1024 });
   loop.enable();
   const firstStart = performance.now();
@@ -35,19 +37,6 @@ try {
   for (let i = 0; i < 50; i++) {
     const started = performance.now(), target = await capturePathIdentity(path), parent = await capturePathIdentity(root);
     const metadata = await selectCommitMetadata(target), next = Buffer.alloc(content.length, 66 + i % 20);
-    if (process.env.SP_NATIVE_METADATA_DIAGNOSTIC === "1" && process.platform === "win32") {
-      const prepare = metadata.prepareTemporary;
-      metadata.prepareTemporary = async (handle, stage) => {
-        try { await prepare(handle, stage); }
-        catch (error) {
-          const info = await handle.stat({ bigint: true });
-          console.error(JSON.stringify({ diagnostic: "synthetic ACL copy", iteration: i,
-            original: await nativeFileRequest("inspect", { path, expected: target }),
-            staged: await nativeFileRequest("inspect", { path: stage, expected: { device: String(info.dev), inode: String(info.ino) } }) }));
-          throw error;
-        }
-      };
-    }
     const receipt = await commitPreparedFile({ target, parent, metadata, previousSha256: createHash("sha256").update(content).digest("hex") }, next, { assertPathAllowed: async () => target.canonical });
     assert.equal(receipt.outcome, "committed"); assert.deepEqual(await readFile(path), next);
     content = next; samples.push(performance.now() - started);
@@ -67,7 +56,7 @@ try {
     eventLoopP95Milliseconds: loop.percentile(95) / 1e6, eventLoopMaxMilliseconds: loop.max / 1e6,
     sampledMainThreadBytes: sampledBytes, sampledMainThreadBytesPerCommit: sampledBytes / samples.length,
     memoryBefore: before, memoryAfterRelease: process.memoryUsage(), native, diagnostics, afterRelease: nativeFileDiagnostics(),
-    scope: "One process; source entry; includes verification/readback. Main-thread sampling excludes native allocator and worker heap; no speedup or zero-allocation claim." }, null, 2));
+    scope: "One process; source entry; supported staged fixture (protected Windows DACL), includes verification/readback. Fixture setup precedes measurement. Main-thread sampling excludes native allocator and worker heap; no speedup or zero-allocation claim." }, null, 2));
 } finally {
   loop.disable(); profiler.disconnect(); await disposeNativeFileWorker();
   assert.equal(dirname(root), temporary); await rm(root, { recursive: true, force: true });

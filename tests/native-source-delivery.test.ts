@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { pathToFileURL } from "node:url";
+import { protectWindowsFixture } from "./helpers/native-metadata-fixture.ts";
 const execute = promisify(execFile);
 const offlinePreload = pathToFileURL(resolve("tests/fixtures/native-offline-preload.mjs")).href;
 
@@ -14,6 +15,7 @@ test("N2 built formal source launcher runs default exact/overwrite/snapshot nati
   t.after(async () => { assert.equal(dirname(root), temporary); await rm(root, { recursive: true, force: true }); });
   const cwd = join(root, "work"), agent = join(root, "agent"); await mkdir(cwd); await mkdir(agent);
   await writeFile(join(cwd, "中文.txt"), "before\n");
+  await protectWindowsFixture(join(cwd, "中文.txt"));
   const running = execute(process.execPath, ["--import", offlinePreload, resolve("scripts/superpi.mjs"), "--offline", "--mode", "json", "--print", "--no-session",
     "--provider", "native-source-fixture", "--model", "fixture", "--extension", resolve("tests/fixtures/native-source-entry.mjs"), "Run the isolated native delivery fixture."],
     { cwd, windowsHide: true, timeout: 55000, maxBuffer: 2 * 1024 * 1024, env: { ...process.env, SP_CODING_AGENT_DIR: agent, SP_OFFLINE: "1" } });

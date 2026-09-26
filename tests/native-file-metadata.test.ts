@@ -11,6 +11,8 @@ import { disposeNativeFileWorker, nativeFileDiagnostics, nativeFileRequest } fro
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { protectWindowsFixture } from "./helpers/native-metadata-fixture.ts";
+import { Worker } from "node:worker_threads";
 const execute = promisify(execFile);
 const sourceDirectory = fileURLToPath(new URL("../packages/extensions/mutation-guard-write/", import.meta.url));
 
@@ -29,6 +31,7 @@ async function fixture(t: any, long = false) {
   await mkdir(directory, { recursive: true });
   const target = join(directory, "测试.txt"), before = "before\r\n", after = Buffer.from("\ufeffafter\r\n中文\r\n");
   await writeFile(target, before);
+  await protectWindowsFixture(target);
   return { root, target, before, after };
 }
 
@@ -79,6 +82,33 @@ test("N2 Windows custom protected DACL survives actual replacement", { skip: pro
   assert.equal(after.trim(), before.trim()); assert.deepEqual(await readFile(f.target), f.after);
 });
 
+test("N2 Windows legacy explicit DACL preselects object preservation and keeps exact ACE semantics", { skip: process.platform !== "win32" }, async t => {
+  const f = await fixture(t), initial = await capturePathIdentity(f.target);
+  const first = await nativeFileRequest("inspect", { path: f.target, expected: initial });
+  await execute(process.execPath, [fileURLToPath(new URL("./fixtures/native-legacy-dacl.mjs", import.meta.url)), f.target, first.security], { windowsHide: true });
+  const target = await capturePathIdentity(f.target), original = await nativeFileRequest("inspect", { path: f.target, expected: target });
+  assert.equal(Buffer.from(original.security, "base64").readUInt16LE(2) & 0x1400, 0);
+  const plan = await planFor(f.target, f.before);
+  assert.equal(plan.metadata.strategy, "protected_in_place"); assert.match(plan.metadata.reason!, /Legacy unprotected Windows DACL/);
+  const receipt = await commitPreparedFile(plan, f.after, { assertPathAllowed: async () => plan.target.canonical });
+  assert.equal(receipt.outcome, "committed"); assert.deepEqual(await readFile(f.target), f.after);
+  const after = await capturePathIdentity(f.target), actual = await nativeFileRequest("inspect", { path: f.target, expected: after });
+  assert.equal(after.inode, target.inode); assert.equal(actual.securityFingerprint, original.securityFingerprint);
+  assert.equal(actual.creationTime, original.creationTime); assert.equal(actual.attributes, original.attributes);
+});
+
+test("N2 Windows modern inherited DACL keeps staged replacement and metadata", { skip: process.platform !== "win32" }, async t => {
+  const f = await fixture(t);
+  await execute(join(process.env.SystemRoot!, "System32/WindowsPowerShell/v1.0/powershell.exe"), ["-NoProfile", "-NonInteractive", "-Command",
+    "$ErrorActionPreference='Stop';$a=[IO.File]::GetAccessControl($env:N2_FIXTURE);$a.SetAccessRuleProtection($false,$true);[IO.File]::SetAccessControl($env:N2_FIXTURE,$a)"], { windowsHide: true, env: { ...process.env, N2_FIXTURE: f.target } });
+  const target = await capturePathIdentity(f.target), original = await nativeFileRequest("inspect", { path: f.target, expected: target });
+  assert.ok(Buffer.from(original.security, "base64").readUInt16LE(2) & 0x400);
+  const plan = await planFor(f.target, f.before); assert.equal(plan.metadata.strategy, "staged_replace");
+  await commitPreparedFile(plan, f.after, { assertPathAllowed: async () => plan.target.canonical });
+  assert.deepEqual(await readFile(f.target), f.after);
+  assert.notEqual((await capturePathIdentity(f.target)).inode, target.inode);
+});
+
 test("N2 occupied Windows file returns verified no-change and never retries in place", { skip: process.platform !== "win32", timeout: 15000 }, async t => {
   const f = await fixture(t), plan = await planFor(f.target, f.before);
   const child = spawn(process.execPath, [fileURLToPath(new URL("./fixtures/native-file-occupancy.mjs", import.meta.url)), f.target], { windowsHide: true, stdio: ["ignore", "ignore", "pipe", "ipc"] });
@@ -113,6 +143,30 @@ test("N2 Linux refuses special bits even on hardlinks before any content effects
   assert.equal(Number((await lstat(f.target)).mode) & 0o7777, 0o4755);
   assert.equal(await readFile(f.target, "utf8"), f.before);
   assert.equal((await readdir(f.root)).some(name => name.startsWith(".pi-file-commit-")), false);
+});
+
+test("N2 Linux hardlink capability observation is refused before compatibility selection (injected native observation)", { skip: process.platform !== "linux" }, async t => {
+  const f = await fixture(t); await link(f.target, join(f.root, "alias"));
+  const emit = Worker.prototype.emit;
+  t.mock.method(Worker.prototype, "emit", function(this: Worker, name: string, ...args: any[]) {
+    if (name === "message" && typeof args[0]?.value?.hasAttributes === "boolean") args[0].value.writeClearsAttributes = true;
+    return Reflect.apply(emit, this, [name, ...args]);
+  });
+  await assert.rejects(planFor(f.target, f.before), /File capabilities may be cleared/);
+  assert.equal(await readFile(f.target, "utf8"), f.before); assert.deepEqual(await readdir(f.root), ["alias", "测试.txt"]);
+});
+
+test("N2 Linux non-assignable group preselects object preservation (injected process groups)", { skip: process.platform !== "linux" }, async t => {
+  const f = await fixture(t), info = await lstat(f.target), foreign = info.gid === 12345 ? 12346 : 12345;
+  const credentials = process as { geteuid(): number; getegid(): number; getgroups(): number[] };
+  t.mock.method(credentials, "geteuid", () => info.uid === 0 ? foreign : info.uid);
+  // A root-owned fixture first selects foreign-owner preservation; ordinary CI
+  // owners exercise the group gate without changing process credentials.
+  t.mock.method(credentials, "getegid", () => foreign); t.mock.method(credentials, "getgroups", () => [foreign]);
+  const plan = await planFor(f.target, f.before); assert.equal(plan.metadata.strategy, "protected_in_place");
+  assert.match(plan.metadata.reason!, info.uid === 0 ? /Foreign owner/ : /Target group cannot be assigned/);
+  await commitPreparedFile(plan, f.after, { assertPathAllowed: async () => plan.target.canonical });
+  assert.equal((await lstat(f.target)).gid, info.gid); assert.equal((await lstat(f.target)).ino, info.ino); assert.deepEqual(await readFile(f.target), f.after);
 });
 
 test("N2 Linux POSIX ACL bytes and mode survive preselected in-place commit", { skip: process.platform !== "linux" }, async t => {
@@ -180,7 +234,7 @@ test("N2 candidate is private during writing and remains private after prepublic
   }
 });
 
-test("N2 missing installed platform binary leaves reads available and selects explicit compatibility", { skip: !supported }, async t => {
+test("N2 missing installed platform binary leaves reads available and explicitly refuses modification", { skip: !supported }, async t => {
   const f = await fixture(t), isolated = join(f.root, "isolated"), dependencies = join(isolated, "node_modules");
   await mkdir(dependencies, { recursive: true });
   await cp(resolve("node_modules/koffi"), join(dependencies, "koffi"), { recursive: true });
@@ -191,8 +245,7 @@ test("N2 missing installed platform binary leaves reads available and selects ex
   const client = await import(pathToFileURL(join(isolated, "native-file-client.ts")).href);
   try {
     assert.equal(client.nativeFileDiagnostics().loaded, false); assert.equal(await readFile(f.target, "utf8"), f.before);
-    const selected = await module.selectCommitMetadata(await capturePathIdentity(f.target));
-    assert.equal(selected.strategy, "protected_in_place"); assert.match(selected.reason, /Native staged capability unavailable:.*Cannot find the native Koffi module/);
+    await assert.rejects(module.selectCommitMetadata(await capturePathIdentity(f.target)), /UNSUPPORTED_COMMIT.*Native metadata capability unavailable:.*Cannot find the native Koffi module/);
     assert.equal(await readFile(f.target, "utf8"), f.before); assert.equal(client.nativeFileDiagnostics().pending, 0);
   } finally { await client.disposeNativeFileWorker(); }
 });

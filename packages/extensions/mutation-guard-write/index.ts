@@ -536,9 +536,10 @@ export default function mutationGuardWriteExtension(pi: ExtensionAPI): void {
           ? { category: signal?.aborted ? "CANCELLED" : "PRE_EXECUTION_FAILED", stateChanged: false, cause, status: signal?.aborted ? "cancelled" : "failed_no_change" } : undefined);
         if (failure && (progress || failure.stateChanged === true || failure.stateChanged === "unknown")) {
           const status = failure.stateChanged === "unknown" ? "state_unknown" : failure.stateChanged === true ? "partial" : (failure.status === "cancelled" || signal?.aborted) ? "cancelled" : "failed_no_change";
-          const details = { ...failure, ok: false, operation: "write", target: receiptTarget, mutationReceiptVersion: 2, status, ...(failure.stateChanged !== false ? { requiresVerification: true } : {}) };
+          const requiresVerification = failure.stateChanged !== false || Boolean(failure.commit?.retainedTemporary);
+          const details = { ...failure, ok: false, operation: "write", target: receiptTarget, mutationReceiptVersion: 2, status, ...(requiresVerification ? { requiresVerification: true } : {}) };
           if (progress) try { pi.appendEntry(MUTATION_PROGRESS_ENTRY, { ...details, toolCallId, itemId: `${toolCallId}:0`, phase: "result" }); } catch { /* Durable intent remains uncertain. */ }
-          return { content: [{ type: "text" as const, text: `write: ${status}; ${path}. [${failure.category}] ${typeof failure.cause === "string" ? failure.cause.slice(0, 800) : ""}${failure.stateChanged !== false ? " Verify current state; do not automatically retry." : ""}${failure.commit ? `\n${commitSummary(failure.commit)}` : ""}` }], details, isError: true };
+          return { content: [{ type: "text" as const, text: `write: ${status}; ${path}. [${failure.category}] ${typeof failure.cause === "string" ? failure.cause.slice(0, 800) : ""}${requiresVerification ? " Verify current state; do not automatically retry." : ""}${failure.commit ? `\n${commitSummary(failure.commit)}` : ""}` }], details, isError: true };
         }
         throw error;
       }

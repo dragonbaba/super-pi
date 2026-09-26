@@ -39,26 +39,27 @@ export async function selectCommitMetadata(target: PathIdentity): Promise<Commit
     if (!info.isFile() || String(info.dev) !== target.device || String(info.ino) !== target.inode) throw new Error("[STALE_STATE] Object changed during capability selection.");
     if (!(Number(info.mode) & 0o222)) throw new Error("[UNSUPPORTED_COMMIT] Read-only target; permissions are not overridden.");
     if (process.platform === "linux" && Number(info.mode) & 0o7000) throw new Error("[UNSUPPORTED_COMMIT] Special mode bits may be cleared by writing; target was not modified.");
-    if (info.nlink !== 1n) return compatibility("Multiple hardlinks: retain the existing object; no staged-replacement or full extended-metadata guarantee.", info);
-    if (process.arch !== "x64" || (process.platform !== "win32" && process.platform !== "linux")) return compatibility("Native staged capability is not validated on this platform/architecture; extended metadata is not verified.", info);
-    if (process.platform === "linux") {
-      const filesystem = await statfs(target.canonical);
-      if (!LOCAL_LINUX_FILESYSTEMS.has(filesystem.type)) return compatibility("Unknown/network filesystem: no local staged-replacement or extended-metadata guarantee.", info);
-      if (info.uid !== BigInt(process.getuid!())) return compatibility("Foreign owner: retain the original object and verify mode/owner; extended metadata is not verified.", info);
-    }
+    if (process.arch !== "x64" || (process.platform !== "win32" && process.platform !== "linux")) throw new Error("[UNSUPPORTED_COMMIT] File metadata checks are only validated on Windows/Linux x64; target was not modified.");
     let original: MetadataObservation;
     try { original = await inspect(handle, target.canonical); }
     catch (error) {
-      if ((error as { nativeUnavailable?: boolean }).nativeUnavailable) return compatibility(`Native staged capability unavailable: ${(error as Error).message.slice(0, 300)}; extended metadata is not verified.`, info);
+      if ((error as { nativeUnavailable?: boolean }).nativeUnavailable) throw new Error(`[UNSUPPORTED_COMMIT] Native metadata capability unavailable: ${(error as Error).message.slice(0, 300)}; target was not modified.`);
       throw error; // Inspection/permission failure never means absent metadata or fallback.
     }
     if (process.platform === "linux" && original.writeClearsAttributes) throw new Error("[UNSUPPORTED_COMMIT] File capabilities may be cleared by writing; target was not modified.");
     const checkAttributes = async (current: FileHandle) => {
       const next = await inspect(current, target.canonical);
-      if (next.namesFingerprint !== original.namesFingerprint || next.valuesFingerprint !== original.valuesFingerprint) throw new Error("[METADATA_CHANGED] In-place ACL/extended attributes changed.");
+      if (process.platform === "win32") {
+        if (next.securityFingerprint !== original.securityFingerprint || next.attributes !== original.attributes || next.creationTime !== original.creationTime || next.links !== original.links) throw new Error("[METADATA_CHANGED] In-place Windows metadata changed.");
+      } else if (next.namesFingerprint !== original.namesFingerprint || next.valuesFingerprint !== original.valuesFingerprint) throw new Error("[METADATA_CHANGED] In-place ACL/extended attributes changed.");
     };
+    if (info.nlink !== 1n) return compatibility("Multiple hardlinks: retain the existing object; supported mode/owner and observed metadata are verified.", info, checkAttributes);
     if (process.platform === "linux" && original.hasAttributes) return compatibility("Visible ACL/extended attributes require the original object; values are verified before and after writing.", info, checkAttributes);
     if (process.platform === "linux") {
+      const filesystem = await statfs(target.canonical);
+      if (!LOCAL_LINUX_FILESYSTEMS.has(filesystem.type)) return compatibility("Unknown/network filesystem: retain the original object; observed mode/owner and visible attributes are verified, without a local replacement guarantee.", info, checkAttributes);
+      if (info.uid !== BigInt(process.geteuid!())) return compatibility("Foreign owner: retain the original object and verify mode/owner and visible attributes.", info, checkAttributes);
+      if (process.geteuid!() !== 0 && info.gid !== BigInt(process.getegid!()) && !process.getgroups!().some(group => BigInt(group) === info.gid)) return compatibility("Target group cannot be assigned to a new file: retain the original object and verify mode/owner and visible attributes.", info, checkAttributes);
       try { await access(dirname(target.canonical), constants.W_OK | constants.X_OK); }
       catch (error) {
         if (!["EACCES", "EPERM"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
@@ -66,9 +67,13 @@ export async function selectCommitMetadata(target: PathIdentity): Promise<Commit
       }
     }
     if (process.platform === "win32") {
-      if (original.filesystem !== "NTFS") return compatibility("Only local NTFS has a validated staged capability; extended metadata is not verified.", info);
+      if (original.filesystem !== "NTFS") return compatibility("Only local NTFS has a validated staged capability; retain the original object and verify observed Windows metadata.", info, checkAttributes);
       if (original.attributes! & 1) throw new Error("[UNSUPPORTED_COMMIT] Read-only Windows target.");
-      if (original.attributes! & ~(0x20 | 0x80)) return compatibility("Special Windows attributes require the original object; advanced metadata is not verified.", info);
+      if (original.attributes! & ~(0x20 | 0x80)) return compatibility("Special Windows attributes require the original object; observed metadata is verified, advanced metadata is not verified.", info, checkAttributes);
+      // ReplaceFileW/SetSecurityInfo can normalize legacy unprotected explicit
+      // ACEs into inherited ACEs. Select object preservation BEFORE any effects.
+      const control = Buffer.from(original.security!, "base64").readUInt16LE(2);
+      if (!(control & (0x1000 | 0x0400))) return compatibility("Legacy unprotected Windows DACL: replacement can change inheritance semantics; retain the original object and verify owner/group/DACL, attributes and creation time.", info, checkAttributes);
     }
     async function assertMetadata(current: FileHandle, postimage = false): Promise<void> {
       const currentInfo = await current.stat({ bigint: true });
