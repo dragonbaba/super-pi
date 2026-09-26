@@ -91,6 +91,7 @@
 		"canvas@3.2.3": true,
 		"esbuild@0.28.1": true,
 		"protobufjs@7.6.5": true,
-		"@google/genai@1.52.0": true
+		"@google/genai@1.52.0": true,
+		"koffi@3.3.1": true
 	}
 }

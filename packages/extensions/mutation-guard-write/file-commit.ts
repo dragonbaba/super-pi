@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { lstat, open, realpath, unlink, type FileHandle } from "node:fs/promises";
+import { lstat, open, realpath, type FileHandle } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { capturePathIdentity, sameIdentity, type PathIdentity } from "./native-file-core.ts";
 
@@ -9,7 +9,9 @@ export interface CommitMetadata {
   /** These are fixed by the preselected platform capability, never fallback routes. */
   prepareTemporary(handle: FileHandle, path: string): Promise<void>;
   assertCurrent(handle: FileHandle): void | Promise<void>;
-  replace(temporary: string, target: string): Promise<void>;
+  assertPostimage?(handle: FileHandle): void | Promise<void>;
+  removeTemporary?(path: string, expected: { device: string; inode: string }): Promise<void>;
+  replace(temporary: string, target: string, validation: PublicationValidation): Promise<void>;
   replacementFailureMayChangeState: boolean;
 }
 
@@ -48,6 +50,15 @@ export class FileCommitError extends Error {
 }
 
 interface OwnedTemporary { path: string; device: string; inode: string }
+
+export interface PublicationValidation {
+  target: PathIdentity;
+  parent: PathIdentity;
+  temporary: OwnedTemporary;
+  previousSha256: string;
+  candidateSha256: string;
+  candidateBytes: number;
+}
 
 function sameObject(info: Awaited<ReturnType<FileHandle["stat"]>>, expected: { device: string; inode: string }): boolean {
   return info.isFile() && String(info.dev) === expected.device && String(info.ino) === expected.inode;
@@ -98,11 +109,17 @@ async function verifyTemporary(temporary: OwnedTemporary, plan: FileCommitPlan, 
 }
 
 async function cleanupTemporary(temporary: OwnedTemporary, plan: FileCommitPlan, receipt: FileCommitReceipt): Promise<void> {
+  let parentVerified = false;
   try {
+    if (!sameIdentity(plan.parent, await capturePathIdentity(plan.parent.path), false)) throw new Error("[STALE_STATE] Temporary parent identity changed.");
+    parentVerified = true;
     await assertTemporary(temporary, plan);
-    await unlink(temporary.path);
+    if (!plan.metadata.removeTemporary) throw new Error("Platform has no verified-object deletion primitive; retained rather than unlinking a potentially replaced name.");
+    await plan.metadata.removeTemporary(temporary.path, temporary);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    if (parentVerified && (error as NodeJS.ErrnoException).code === "ENOENT") {
+      try { if (sameIdentity(plan.parent, await capturePathIdentity(plan.parent.path), false)) return; } catch { /* Missing parent does not establish missing temporary. */ }
+    }
     receipt.retainedTemporary = temporary.path;
     receipt.cleanupReason = (error instanceof Error ? error.message : String(error)).slice(0, 400);
   }
@@ -128,20 +145,40 @@ export async function commitPreparedFile(plan: FileCommitPlan, content: Uint8Arr
       const info = await staged.stat({ bigint: true });
       temporary = { path, device: String(info.dev), inode: String(info.ino) };
       await assertTemporary(temporary, plan);
-      await staged.writeFile(content);
       await plan.metadata.prepareTemporary(staged, path);
+      await staged.writeFile(content);
       await staged.sync(); receipt.fileSynced = true;
       await staged.close(); staged = undefined;
       await hooks.beforeCommit?.();
-      await verifyTemporary(temporary, plan, content.byteLength, expectedHash);
       await assertPrepared(plan, hooks, source);
       // Windows replacement can refuse our still-open target. Close the verified
       // read handle before the final synchronous authority/signal gate; no retry.
       await source.close(); source = undefined;
+      await verifyTemporary(temporary, plan, content.byteLength, expectedHash);
       // No asynchronous callback between final authority/signal gate and publication.
       hooks.assertCurrent?.(); hooks.signal?.throwIfAborted();
-      try { await plan.metadata.replace(path, plan.target.canonical); }
-      catch (error) { if (plan.metadata.replacementFailureMayChangeState) receipt.outcome = "unknown"; throw error; }
+      try { await plan.metadata.replace(path, plan.target.canonical, { target: plan.target, parent: plan.parent,
+        temporary, previousSha256: plan.previousSha256, candidateSha256: expectedHash, candidateBytes: content.byteLength }); }
+      catch (error) {
+        if (plan.metadata.replacementFailureMayChangeState) {
+          receipt.outcome = "unknown";
+          if ((error as { commitOutcome?: string }).commitOutcome === "not_committed") {
+            // A documented error code alone cannot establish the observed state.
+            let unchanged: FileHandle | undefined;
+            try {
+              unchanged = await open(plan.target.canonical, "r");
+              if (sameIdentity(plan.target, await capturePathIdentity(plan.target.path))
+                && sameObject(await unchanged.stat({ bigint: true }), plan.target)
+                && await hashOpened(unchanged, Number(plan.target.size)) === plan.previousSha256) {
+                await plan.metadata.assertCurrent(unchanged);
+                receipt.outcome = "not_committed";
+              }
+            } catch { /* Failed observation leaves an unknown outcome. */ }
+            finally { if (unchanged) await unchanged.close(); }
+          }
+        }
+        throw error;
+      }
       receipt.outcome = "committed";
       publishedObject = temporary;
       temporary = undefined;
@@ -151,7 +188,12 @@ export async function commitPreparedFile(plan: FileCommitPlan, content: Uint8Arr
       await assertPrepared(plan, hooks, source);
       hooks.assertCurrent?.(); hooks.signal?.throwIfAborted();
       receipt.outcome = "unknown"; // The first write can partially change the pinned object.
-      await source.writeFile(content);
+      let written = 0;
+      while (written < content.byteLength) {
+        const next = await source.write(content, written, content.byteLength - written, written);
+        if (next.bytesWritten <= 0) throw new Error("In-place write made no progress.");
+        written += next.bytesWritten;
+      }
       await source.truncate(content.byteLength);
       await source.sync(); receipt.fileSynced = true;
       receipt.outcome = "committed";
@@ -163,12 +205,16 @@ export async function commitPreparedFile(plan: FileCommitPlan, content: Uint8Arr
     const post = await open(plan.target.canonical, "r");
     try {
       if (!sameObject(await post.stat({ bigint: true }), publishedObject!) || await hashOpened(post, content.byteLength) !== expectedHash) throw new Error("Postcommit object/content verification failed.");
+      await plan.metadata.assertPostimage?.(post);
     } finally { await post.close(); }
   } catch (error) { failure = error; failed = true; }
   finally {
     if (staged) try { await staged.close(); } catch (error) { failure ??= error; failed = true; }
     if (source) try { await source.close(); } catch (error) { failure ??= error; failed = true; }
-    if (temporary) await cleanupTemporary(temporary, plan, receipt);
+    if (temporary && receipt.outcome === "unknown") {
+      receipt.retainedTemporary = temporary.path;
+      receipt.cleanupReason = "Publication outcome is unknown; temporary retained for explicit recovery observation.";
+    } else if (temporary) await cleanupTemporary(temporary, plan, receipt);
     else if (createdPath) { receipt.retainedTemporary = createdPath; receipt.cleanupReason = "Created object identity was not captured; ownership could not be proved."; }
   }
   if (failed) throw new FileCommitError(failure, receipt);

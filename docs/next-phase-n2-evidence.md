@@ -1,6 +1,6 @@
 # N2: staged file commit evidence
 
-Status: **实现中**. Parent N1 is `a7b5e41c11a7d9a410f722ecc7e00c792c062c34`.
+Status: **实现中**. Parent N1 is `5986a5b4e56001491366073e98dc71d534c59a4b`.
 No claim of N2 acceptance or cross-platform metadata preservation is made yet.
 
 ## Observed baseline and capability decision
@@ -29,7 +29,7 @@ cannot copy Windows DACLs. Linux
 ACLs/capabilities beyond stat's mode/owner fields. A regular single-link stat result
 alone therefore does not establish that plain rename preserves necessary metadata.
 
-Proposed decision, pending user selection: pin Koffi 3.3.1 (MIT) for a small private
+Approved by the user on 2026-09-27: pin Koffi 3.3.1 (MIT) for a small private
 platform adapter. It provides [prebuilt Windows/Linux binaries](https://koffi.dev/)
 and requires maintaining a native dependency, install-script allowance and packaged
 binary smoke checks. The adapter would only expose bounded metadata capability
@@ -59,9 +59,9 @@ in-place path, identity-checked temporary cleanup and honest guarantee reporting
 That would improve safety but would **not** satisfy the plan's required normal-file
 staged replacement on both platforms; N2's capability delivery would remain pending.
 
-Independent work can extract the shared primitive, preserve final authority/signal
-and prepared identity/content checks, add failure classification and regression
-fixtures while this dependency decision is pending. N1 review and N3/N4 can continue.
+The dependency decision is approved; no repeat permission request is needed.
+The shared primitive and native adapter must preserve final authority/signal and
+prepared identity/content checks. N1 review and N3/N4 remain in the original scope.
 
 ## Shared core slice
 
@@ -69,7 +69,7 @@ fixtures while this dependency decision is pending. N1 review and N3/N4 can cont
 exclusive same-directory staging, sync/close handling, final authority/signal gates,
 preselected in-place compatibility, postcommit object/content checks and identity-
 checked temporary cleanup. It has not yet been connected to production mutation
-callers: metadata capability selection remains the dependency decision above.
+callers: the approved metadata adapter is being implemented and tested.
 
 Seven Windows Node 22.19.0 tests passed, including BOM/CRLF publication, failed
 staging/sync/close, target content/object drift, disappearance, cancellation,
@@ -84,3 +84,78 @@ through rename can yield EPERM. The shared core closes the verified handle befor
 the final synchronous authority/signal check and publication; it never retries a
 failed replacement. This final close and pathname syscall still leave the documented
 external-race boundary. Raw test log: `n2-shared-core.log` in the artifact directory.
+
+The current native slice pins `koffi@3.3.1` in the mutation extension's runtime
+dependencies, with exact official platform dependencies in the lockfile. Main and
+Windows/Linux x64 packages are MIT; registry manifests, signatures and SRI values
+are saved as `n2-koffi-*-metadata.json`. The downloaded main tarball's SHA-512 matches
+the registry SRI. The inspected install script loads the installed prebuild or
+attempts local compilation; its packaged header-download branches throw instead of
+downloading. The real Windows install-script run passed. Only `koffi@3.3.1` was added
+to the existing allowScripts map. Four unrelated npm10 libc-field omissions were
+restored; no unrelated package versions changed.
+
+The fixed worker bootstraps Windows' already-loaded kernel32 KnownDLL, obtains the
+system directory from GetSystemDirectoryW (not SystemRoot/cwd), and loads advapi32
+by that absolute OS path. Linux uses fixed absolute glibc paths and fixed symbols. It starts
+on first mutation capability request and reuses bindings; no provider/progress/TUI
+path loads it. Windows APIs run synchronously on that worker so GetLastError stays
+on the calling thread. Requests are bounded to 16 in flight; no cancellation kills
+a worker during an OS operation. Windows metadata scope is owner/group/DACL, normal
+file attributes, creation time and ReplaceFileW's documented named-stream behavior.
+Privileged audit SACLs and advanced attributes are not a preservation claim. Linux
+staging requires a supported local filesystem, ordinary current-user ownership/mode
+and no listed extended attributes; visible ACL/xattr/special-mode targets use
+preselected in-place compatibility. Inaccessible inspection is an error, never
+proof of absent attributes. Privileged namespaces not visible to the caller are
+outside the supported metadata claim. ARM, musl, macOS and other platforms are not
+validated by this work.
+
+Windows cleanup now uses FileDispositionInfo on the exact verified Win32 handle,
+so a subsequent pathname replacement is not the deletion target. Linux has no
+equivalent conditional-by-inode unlink in this adapter; failed staging retains and
+reports its temporary rather than performing unsafe check-then-unlink. Successful
+replacement consumes the temporary. Missing-parent cleanup is reported as uncertain.
+Protected in-place writes use explicit positional offsets, even if a metadata
+callback advanced the descriptor cursor. After final asynchronous source gates,
+the staged identity/content are checked again. The worker rechecks both objects,
+hashes and parent just before its synchronous publication call. This closes the
+reviewed asynchronous callback/dispatch gaps, but pathname APIs still leave a final
+external-race boundary; no OS compare-and-swap guarantee is asserted. Unknown
+publication retains the temporary for recovery; documented no-change native errors
+also require actual original-content/identity/metadata observation.
+
+The first draft CI passed Linux but exposed an unsafe Number conversion in the
+Windows hardlink test's inode assertion (24488322975190223 rounded to
+24488322975190224). Production identity uses bigint. The assertion now does too.
+The next Windows slice passes check and 13 tests, with one explicit POSIX-only
+skip, including final source-await drift and cleanup-primitive drift regressions.
+Raw log: `n2-publication-boundary.log`. Native slice Linux CI is still pending.
+
+## Native bridge investigation (development candidate)
+
+- Known-good control: worker startup, fixed library binding and `stats` succeed on
+  Node 22.19.0 Windows x64; seven pure shared-core tests also pass.
+- Failure: first real metadata inspection terminates its test process with
+  3221226505 (`0xc0000409`), before an ordinary test result. No production caller
+  uses the adapter yet. Artifact: `n2-native-first.log`.
+- Comparison axis: binding/startup works; invoking metadata on a Node-owned CRT
+  descriptor fails. Initial hypothesis: `_get_osfhandle` in separately loaded
+  ucrtbase does not own Node's descriptor table. This is a hypothesis until the
+  isolated call probe confirms the failing boundary.
+- Constraints: “不扩大权限或请求提权” and “异步调用必须正确处理线程相关错误信息”.
+  No global invalid-parameter handler override, ACL bypass, disabled verification
+  or suppression of the crash is an acceptable fix.
+- Next probe: child-process CRT conversion versus a Win32-owned handle opened and
+  closed in one native worker scope, using a recorded synthetic artifact path.
+
+The isolated probe confirmed the distinction: CRT conversion exits -1073740791
+immediately after its pre-call marker; Win32 CreateFile/GetFileInformation/CloseHandle
+all succeed on the same Node 22.19.0 process setup. Artifacts are `n2-native-crt.log`
+and `n2-native-win32.log`. The fix removes the CRT binding entirely and gives the
+worker its own Win32 handle, comparing volume/file identity against the prepared
+Node stat before inspection. No global error handler or safety check changed.
+Normal and >260-character Chinese-path replacements now pass with real content and
+named-stream preservation, zero active native handles and zero pending requests.
+Together with shared-core regression, 11 tests pass and one POSIX parent-rename case
+is explicitly skipped on Windows. This is development feedback, not final acceptance.
