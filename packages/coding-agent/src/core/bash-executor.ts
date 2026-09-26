@@ -14,6 +14,7 @@ import { stripAnsi } from "../utils/ansi.ts";
 import { sanitizeBinaryOutput } from "../utils/shell.ts";
 import { CARRIAGE_RETURN_PATTERN } from "../utils/shell-regex.ts";
 import type { BashOperations } from "./tools/bash.ts";
+import { observedShellError } from "./tools/shell-execution.ts";
 import { DEFAULT_MAX_BYTES, truncateTail } from "./tools/truncate.ts";
 
 // ============================================================================
@@ -113,6 +114,15 @@ export async function executeBashWithOperations(
 			onData,
 			signal: options?.signal,
 		});
+		// An observed zero exit alone does not mean the entire submitted command
+		// reached the shell. Propagate producer facts to direct Session/RPC callers
+		// before they can persist a successful BashResult; never retry the command.
+		if (result.inputError) throw observedShellError(new Error(`[SHELL_INPUT_FAILED] Command input was not fully delivered: ${result.inputError}`), result);
+		if (result.observationError) throw observedShellError(new Error(`[SHELL_OBSERVATION_FAILED] ${result.observationError}`), result);
+		if (result.observation?.outputDrained === false || result.observation?.started === false
+			|| result.termination !== undefined && result.termination !== "exit" || result.exitCode === null) {
+			throw observedShellError(new Error("[SHELL_EXECUTION_FAILED] Command completion was not fully observed; inspect state before retrying."), result);
+		}
 
 		const fullOutput = outputChunks.join("");
 		const truncationResult = truncateTail(fullOutput);

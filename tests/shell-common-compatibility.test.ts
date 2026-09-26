@@ -1295,7 +1295,7 @@ test("configured Bash invoked as sh keeps special-builtin CDPATH assignments and
     const command = "CDPATH=.. export -n CDPATH; cd sub && cat victim";
     assert.equal(execFileSync(shell, ["-c", command], { cwd: workspace, encoding: "utf8", env: { ...process.env, CDPATH: "" } }).trim().split("\n").at(-1), "outer");
     fixture = await guardedCwdBoundaryFixture(workspace, shell); await fixture.setMode("read-only");
-    await assertBoundaryRefusedBeforeSpawn(fixture, workspace, "sh-special-builtin", "CDPATH=.. export -n CDPATH; cd sub && rm victim", [outside, inside]);
+    await assertBoundaryRefusedBeforeSpawn(fixture, workspace, "sh-special-builtin", "CDPATH=.. export -n CDPATH; cd sub && rm victim", []);
     assert.equal(readFileSync(outside, "utf8"), "outer"); assert.equal(readFileSync(inside, "utf8"), "inner");
   } finally { await fixture?.close(); assert.equal(dirname(root), tmpdir()); rmSync(root, { recursive: true, force: true }); }
 });

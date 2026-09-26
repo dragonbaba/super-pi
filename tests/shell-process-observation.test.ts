@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createLocalShellOperations } from "../packages/coding-agent/src/core/tools/bash.ts";
-import { shellProcessResultFromError } from "../packages/coding-agent/src/core/tools/shell-execution.ts";
+import { observedShellError, shellProcessResultFromError } from "../packages/coding-agent/src/core/tools/shell-execution.ts";
+import { executeBashWithOperations } from "../packages/coding-agent/src/core/bash-executor.ts";
 import { Agent } from "../packages/agent/src/agent.ts";
 import { ToolResultError } from "../packages/agent/src/tool-result-error.ts";
 import { Type } from "typebox";
@@ -14,6 +15,48 @@ import { PassThrough } from "node:stream";
 import type { ChildProcess } from "node:child_process";
 
 const operations = createLocalShellOperations("fixture", () => ({ shell: process.execPath, args: ["-e"] }));
+test("N3 frozen/sealed failure reasons preserve the cause and actual process observation", async () => {
+  for (const freeze of [Object.freeze, Object.seal]) {
+    const original = freeze(new Error("immutable beforeSpawn reason"));
+    await assert.rejects(operations.exec("process.exit(0)", process.cwd(), { onData() {}, beforeSpawn() { throw original; } }), (error: any) => {
+      assert.equal(error.message, original.message); assert.equal(error.cause, original);
+      assert.equal(shellProcessResultFromError(error)?.observation?.started, false);
+      assert.equal(shellProcessResultFromError(error)?.termination, "not_started"); return true;
+    });
+  }
+  const original = new Error("existing immutable observation");
+  Object.defineProperty(original, Symbol.for("pi.shell-process-result.v1"), { value: { exitCode: 9 } });
+  const wrapped = observedShellError(original, { exitCode: 23 });
+  assert.equal(wrapped.cause, original); assert.equal(shellProcessResultFromError(wrapped)?.exitCode, 23);
+  const controller = new AbortController(), reason = Object.freeze(new Error("frozen abort during preflight"));
+  const aborted = createLocalShellOperations("frozen abort", () => { controller.abort(reason); return { shell: process.execPath, args: ["-e"] }; });
+  await assert.rejects(aborted.exec("process.exit(0)", process.cwd(), { onData() {}, signal: controller.signal }), (error: any) => {
+    assert.equal(error.cause, reason); assert.equal(error.message, reason.message);
+    assert.equal(shellProcessResultFromError(error)?.observation?.spawnAttempted, undefined);
+    assert.equal(shellProcessResultFromError(error)?.termination, "not_started"); return true;
+  });
+});
+
+test("N3 direct executor and actual Session reject incomplete stdin despite real zero exit", async () => {
+  const input = "中文 $() literal\n".repeat(100000);
+  const stdin = createLocalShellOperations("direct stdin", () => ({ shell: process.execPath, args: ["-e", "process.stdin.destroy();process.exit(0)"], commandTransport: "stdin" }));
+  const check = (error: unknown) => {
+    const result = shellProcessResultFromError(error); assert.equal(result?.exitCode, 0);
+    assert.equal(result?.observation?.started, true); assert.ok(result?.inputError);
+    assert.match((error as Error).message, /SHELL_INPUT_FAILED/); return true;
+  };
+  await assert.rejects(executeBashWithOperations(input, process.cwd(), stdin), check);
+  const { alphaHeadless, alphaModelRuntime } = await import("./helpers/alpha-session.ts");
+  const f = await alphaHeadless(alphaModelRuntime());
+  try {
+    await assert.rejects(f.session.executeBash(input, undefined, { operations: stdin }), check);
+    assert.equal(f.session.isBashRunning, false);
+    assert.equal(f.session.messages.some(message => message.role === "bashExecution"), false);
+    const clean = await f.session.executeBash("process.stdout.write('complete');process.exitCode=23", undefined, { operations });
+    assert.equal(clean.exitCode, 23); assert.equal(clean.output, "complete");
+    assert.equal(f.session.messages.filter(message => message.role === "bashExecution").length, 1);
+  } finally { await f.release(); }
+});
 for (const code of [0, 23]) test(`N3 local process observes actual start/exit/drain, exit=${code}`, async () => {
   let text = "";
   const result = await operations.exec(`process.stdout.write('中文');process.exitCode=${code}`, process.cwd(), { onData: data => { text += data; } });
