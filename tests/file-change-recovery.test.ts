@@ -612,6 +612,70 @@ test("N1 empty, incomplete and malformed aggregate item lists cannot authorize a
   assert.equal(existsSync(join(f.cwd, "later")), false); assert.equal(readFileSync(path, "utf8"), "external");
 });
 
+test("N1 malformed later custom outcomes invalidate earlier recovery and later valid mirrors", async t => {
+  const f = await fixture(t), path = join(f.cwd, "late-malformed"); writeFileSync(path, "old");
+  f.onRecord(data => { if (data.phase === "intent") writeFileSync(path, "external"); });
+  await f.call("file_batch", { operations: [{ operation: "delete", path }] }, "late-malformed");
+  const genuine = JSON.parse(JSON.stringify(f.session.getBranch()));
+  assert.equal(collectChanges(genuine, f.cwd)[0].unavailable, undefined);
+  for (const beforeMirror of [false, true]) for (const fault of ["outcome", "missing-item", "noncanonical-item", "version", "timestamp"]) {
+    const branch = structuredClone(genuine), later = structuredClone(branch.find((entry: any) => entry.data?.phase === "result"));
+    later.id = `malformed-${fault}`;
+    if (fault === "outcome") later.data.stateChanged = true;
+    if (fault === "missing-item") delete later.data.itemId;
+    if (fault === "noncanonical-item") later.data.itemId = "late-malformed:00";
+    if (fault === "version") delete later.data.mutationReceiptVersion;
+    if (fault === "timestamp") delete later.timestamp;
+    if (beforeMirror) branch.splice(branch.findIndex((entry: any) => entry.message?.role === "toolResult"), 0, later);
+    else branch.push(later);
+    const records = collectChanges(branch, f.cwd); assert.ok(records.length > 0);
+    for (const record of records) assert.ok(record.unavailable, `${fault}/${beforeMirror}`);
+    assert.throws(() => remainingDraft(records, new Set()), /unable to reconstruct/);
+  }
+  assert.equal(readFileSync(path, "utf8"), "external");
+});
+
+test("N1 imported previews cannot display a forged committed result", async t => {
+  const f = await fixture(t);
+  await f.call("file_batch", { dryRun: true, operations: [{ operation: "write", mode: "create", path: "preview-only", content: "planned" }] }, "preview-only");
+  const genuine = JSON.parse(JSON.stringify(f.session.getBranch()));
+  assert.equal(collectChanges(genuine, f.cwd)[0].item.status, "preview");
+  for (const fault of ["status", "receipt", "changed"]) {
+    const branch = structuredClone(genuine), item = branch.find((entry: any) => entry.message?.role === "toolResult").message.details.items[0];
+    if (fault === "status") item.status = "succeeded";
+    if (fault === "receipt") item.receipt = { created: true, patch: "forged committed patch" };
+    if (fault === "changed") item.stateChanged = true;
+    assert.deepEqual(collectChanges(branch, f.cwd), [], fault);
+  }
+  assert.equal(existsSync(join(f.cwd, "preview-only")), false);
+});
+
+test("N1 bounded recovery refuses oversized nested assistant content without traversing it", async t => {
+  const f = await fixture(t), path = join(f.cwd, "bounded-call"); writeFileSync(path, "old");
+  f.onRecord(data => { if (data.phase === "intent") writeFileSync(path, "external"); });
+  await f.call("file_batch", { operations: [{ operation: "delete", path }] }, "bounded-call");
+  const genuine = JSON.parse(JSON.stringify(f.session.getBranch()));
+  for (const kind of ["one-array", "total-blocks", "total-calls"]) {
+    const branch = structuredClone(genuine); let visited = 0;
+    const count = kind === "one-array" ? 1 : kind === "total-blocks" ? 33 : 5;
+    for (let index = 0; index < count; index++) {
+      const values = new Array(kind === "one-array" ? 1_000_000 : 128);
+      const content = new Proxy(values, { get(target, property, receiver) {
+        if (typeof property === "string" && Number.isInteger(Number(property))) {
+          visited++; if (kind === "one-array") assert.fail("oversized contents must not be accessed");
+          return kind === "total-calls" ? { type: "toolCall", id: `extra-${index}-${property}`, name: "read", arguments: {} } : { type: "text", text: "fixture" };
+        }
+        return Reflect.get(target, property, receiver);
+      } });
+      branch.push({ id: `bounded-${index}`, type: "message", message: { role: "assistant", content } });
+    }
+    const records = collectChanges(branch, f.cwd); assert.ok(records.length > 0);
+    assert.ok(visited <= (kind === "one-array" ? 0 : kind === "total-calls" ? 512 : 4096));
+    for (const record of records) assert.match(record.unavailable, /inspection limits/);
+    assert.throws(() => remainingDraft(records, new Set()));
+  }
+});
+
 test("N1 custom origin/preparation cannot double as a terminal receipt", async t => {
   const f = await fixture(t); await f.call("write", { path: "origin-only", content: "created once" }, "origin-only");
   const genuine = JSON.parse(JSON.stringify(f.session.getBranch()));
