@@ -460,7 +460,11 @@ export async function failureRecoveryHint(
 ): Promise<string | undefined> {
   // Structured producer facts outrank arbitrary stdout. Do not append a guessed
   // parser/path/policy advisory that contradicts the recorded shell outcome.
-  if ((toolName === "bash" || toolName === "powershell") && readShellExecution(details)) return undefined;
+  const execution = toolName === "bash" || toolName === "powershell" ? readShellExecution(details) : undefined;
+  if (execution) {
+    if (execution.started !== false) return "[Shell execution recovery] Preserve the original diagnostic and recorded exit/termination facts. Inspect the exact command and affected state before a fresh request; completed effects are not undone. Do not retry unchanged or infer the cause from output alone.";
+    return undefined;
+  }
   const category = classifyFailureText(failureText, input, toolName, details);
   if ((toolName === "edit" || toolName === "write") && category === "read_required") {
     return toolName === "write"

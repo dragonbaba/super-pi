@@ -1150,7 +1150,7 @@ function resultWithObservationFailure(result: AgentToolResult<any>, error: unkno
       secondaryObservationError: execution.observationError !== undefined ? execution.secondaryObservationError ?? message : undefined,
       observationErrorsOmitted: execution.secondaryObservationError !== undefined || execution.observationErrorsOmitted === true ? true : undefined,
     } } : result.details;
-  return { ...result, content: [...result.content, { type: "text", text: `[TOOL_OBSERVATION_FAILED] ${message}` }],
+  return { ...result, content: [...(result.content ?? []), { type: "text", text: `[TOOL_OBSERVATION_FAILED] ${message}` }],
     details, isError: true };
 }
 

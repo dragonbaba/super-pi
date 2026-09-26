@@ -734,7 +734,10 @@ test("ordinary stderr marker cannot suppress actual runtime recovery in next mod
  assert.equal(delivered.isError, true); assert.match(text(delivered), /\[Lifecycle recovery\]/);
  assert.match(text(delivered), /SyntaxError/); assert.match(text(delivered), /invalid\.mjs/);
  assert.doesNotMatch(text(delivered), /Not executed/);
- assert.equal(text(delivered).match(/\[Node script recovery\]/g)?.length, 1);
+ assert.equal(text(delivered).split("[Shell execution recovery]").length - 1, 1);
+ assert.equal(text(delivered).includes("[Node script recovery]"), false);
+ assert.equal(delivered.details.shellExecution.started, true);
+ assert.equal(delivered.details.shellExecution.exitCode, 1);
  assert.equal(results.length, 1); assert.equal(f.counts().processes, 1); assert.equal(f.invocations.get("runtime"), 1);
 });
 
