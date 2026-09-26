@@ -1,4 +1,5 @@
 import { withMsysStdinBridge } from "./msys-stdin.ts";
+import { boundedShellInput } from "./bounded-shell-input.ts";
 import { prepareShellCwd, getShellCwdBinding, isLocalShellBackend, registerLocalShellBackend } from "./shell-cwd.ts";
 import { constants } from "node:fs";
 import { access as fsAccess } from "node:fs/promises";
@@ -824,6 +825,8 @@ export function createShellToolDefinition(
 		promptGuidelines: exposeSessionEnvironment && config.promptGuidelines ? [...config.promptGuidelines] : undefined,
 		parameters: bashSchema,
         prepareArguments(args) {
+            if (args && typeof args === "object" && typeof (args as BashToolInput).command === "string" && boundedShellInput((args as BashToolInput).command)
+              && (config.name !== "bash" || !isLocalShellBackend(ops) || commandPrefix || (spawnHook && spawnHook !== withMsysStdinBridge) || ops.exec !== backendExecute)) throw new Error("[SHELL_INPUT_UNSUPPORTED] Bounded heredoc input requires the unchanged built-in Bash backend and transport.");
             if (args && typeof args === "object" && (args as BashToolInput).cwd !== undefined
               && (!isLocalShellBackend(ops) || commandPrefix || (spawnHook && spawnHook !== withMsysStdinBridge) || ops.exec !== backendExecute)) throw new Error("[SHELL_CWD_UNSUPPORTED] Explicit cwd requires an unchanged built-in local backend without commandPrefix or spawnHook.");
             return args as BashToolInput;
@@ -836,6 +839,7 @@ export function createShellToolDefinition(
 			ctx?,
 		) {
 			const { command, timeout } = input;
+            if (boundedShellInput(command) && (config.name !== "bash" || !isLocalShellBackend(ops) || commandPrefix || (spawnHook && spawnHook !== withMsysStdinBridge) || ops.exec !== backendExecute)) throw new Error("[SHELL_INPUT_UNSUPPORTED] Bounded heredoc backend or transport changed before execution.");
             let cwdBinding = getShellCwdBinding(input);
             try {
 			if (input.cwd !== undefined && (!isLocalShellBackend(ops) || commandPrefix || (spawnHook && spawnHook !== withMsysStdinBridge) || ops.exec !== backendExecute)) throw new Error("[SHELL_CWD_UNSUPPORTED] Explicit cwd requires the built-in local backend without commandPrefix or spawnHook.");
