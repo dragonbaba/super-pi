@@ -618,6 +618,16 @@ for (const batch of [false, true]) test(`N1 intent-only creation observes every 
   }
 });
 
+for (const batch of [false, true]) test(`N2 intent-only overwrite binds an explicitly empty parent plan, batch=${batch}`, async t => {
+  const f = await fixture(t), path = join(f.cwd, "overwrite-intent"); writeFileSync(path, "before");
+  await f.call("read", { path }, "overwrite-intent-read");
+  const result = await f.call(batch ? "file_batch" : "write", batch ? { operations: [{ operation: "write", mode: "overwrite", path, content: "after" }] } : { path, content: "after" }, "overwrite-intent");
+  assert.equal(result.isError, false);
+  const branch = f.session.getBranch().filter((entry: any) => entry.data?.phase !== "result" && entry.message?.role !== "toolResult");
+  const record = collectChanges(branch, f.cwd)[0]; assert.equal(record.unavailable, undefined); assert.equal(record.status, "state_unknown");
+  assert.equal((await verifyChange(record, async () => {})).parents.length, 0); assert.equal(readFileSync(path, "utf8"), "after");
+});
+
 test("N1/N2 standalone snapshot post-publication readback failure retains a partial terminal", async t => {
   const f = await fixture(t), path = join(realpathSync.native(f.cwd), "snapshot-partial"); writeFileSync(path, "one\ntwo\n");
   const read = await f.call("read", { path }, "snapshot-partial-read");
