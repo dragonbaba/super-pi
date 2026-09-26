@@ -7,6 +7,7 @@ export interface CommitMetadata {
   strategy: "staged_replace" | "protected_in_place";
   reason?: string;
   /** These are fixed by the preselected platform capability, never fallback routes. */
+  protectTemporary?(handle: FileHandle, path: string): Promise<void>;
   prepareTemporary(handle: FileHandle, path: string): Promise<void>;
   assertCurrent(handle: FileHandle): void | Promise<void>;
   assertPostimage?(handle: FileHandle): void | Promise<void>;
@@ -158,12 +159,16 @@ export async function commitPreparedFile(plan: FileCommitPlan, content: Uint8Arr
       const info = await staged.stat({ bigint: true });
       temporary = { path, device: String(info.dev), inode: String(info.ino) };
       await assertTemporary(temporary, plan);
-      await plan.metadata.prepareTemporary(staged, path);
+      await plan.metadata.protectTemporary?.(staged, path);
       await staged.writeFile(content);
       await staged.sync(); receipt.fileSynced = true;
-      await staged.close(); staged = undefined;
       await hooks.beforeCommit?.();
       await assertPrepared(plan, hooks, source);
+      // Keep candidate bytes private through writing and all source callbacks.
+      // Apply publish metadata only after those checks, then sync metadata too.
+      await plan.metadata.prepareTemporary(staged, path);
+      await staged.sync();
+      await staged.close(); staged = undefined;
       // Windows replacement can refuse our still-open target. Close the verified
       // read handle before the final synchronous authority/signal gate; no retry.
       await source.close(); source = undefined;
@@ -222,11 +227,25 @@ export async function commitPreparedFile(plan: FileCommitPlan, content: Uint8Arr
     } finally { await post.close(); }
   } catch (error) { failure = error; failed = true; }
   finally {
+    // Re-restrict only a proved owned, unpublished object. Never chmod a name
+    // that may have become the published target or someone else's replacement.
+    if (temporary && receipt.outcome === "not_committed" && plan.metadata.protectTemporary) {
+      let recovery: FileHandle | undefined;
+      try {
+        await assertTemporary(temporary, plan);
+        recovery = await open(temporary.path, "r");
+        if (!sameObject(await recovery.stat({ bigint: true }), temporary)) throw new Error("Temporary identity changed before privacy restoration.");
+        await plan.metadata.protectTemporary(recovery, temporary.path);
+      } catch (error) {
+        failure = new Error(`${failure instanceof Error ? failure.message : String(failure)}; temporary privacy not confirmed: ${error instanceof Error ? error.message : String(error)}`);
+        failed = true;
+      } finally { if (recovery) try { await recovery.close(); } catch (error) { failure ??= error; failed = true; } }
+    }
     if (staged) try { await staged.close(); } catch (error) { failure ??= error; failed = true; }
     if (source) try { await source.close(); } catch (error) { failure ??= error; failed = true; }
     if (temporary && receipt.outcome === "unknown") {
       receipt.retainedTemporary = temporary.path;
-      receipt.cleanupReason = "Publication outcome is unknown; temporary retained for explicit recovery observation.";
+      receipt.cleanupReason = "Publication outcome is unknown; temporary retained for explicit recovery observation. Its publication permissions may already be applied; privacy was not altered while object placement is uncertain.";
     } else if (temporary) await cleanupTemporary(temporary, plan, receipt);
     else if (createdPath) { receipt.retainedTemporary = createdPath; receipt.cleanupReason = "Created object identity was not captured; ownership could not be proved."; }
   }

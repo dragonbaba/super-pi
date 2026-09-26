@@ -34,7 +34,8 @@ test("N2 shared commit publishes a complete BOM/CRLF candidate and releases its 
 test("N2 failed staging/sync/close leaves original target and removes only owned temp", async t => {
   for (const stage of ["write", "sync", "close"] as const) {
     const f = await fixture(t); let injected = false;
-    f.plan.metadata.prepareTemporary = async handle => {
+    f.plan.metadata.protectTemporary = async handle => {
+      if (injected) return;
       if (stage === "write") {
         const originalWrite = handle.writeFile.bind(handle);
         handle.writeFile = async () => { await originalWrite("partial"); injected = true; throw new Error("fixture ENOSPC after partial temporary write"); };

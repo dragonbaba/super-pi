@@ -1,6 +1,6 @@
 # N2: staged file commit evidence
 
-Status: **实现中**. Parent N1 is `905aa43981c3246c409d28bdf1b7090d862758de`.
+Status: **实现与复审中**. Parent N1 is `1914ba15e65e300a0258affe449fcd26e6f3f690`.
 No claim of N2 acceptance or cross-platform metadata preservation is made yet.
 
 ## Observed baseline and capability decision
@@ -40,7 +40,8 @@ as explicit protected in-place compatibility, never after a safety rejection.
 | Object/platform | Proposed selection and necessary evidence |
 | --- | --- |
 | Linux ordinary local single-link file | Bounded handle-based extended-attribute inspection; copy supported mode/owner metadata, sync, validate and rename; actual CI required |
-| Linux ACL/xattr/capability/special mode | Preselect protected in-place compatibility unless every required attribute can be preserved and verified; no silent loss |
+| Linux visible ACL/xattr | Preselect protected in-place compatibility and verify bounded attribute names/values plus mode/owner |
+| Linux capability/special mode | Refuse before writing: kernel writes may clear these attributes; no restoration or privilege expansion |
 | Windows local single-link ordinary file | Use documented [ReplaceFileW](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-replacefilew) metadata behavior, no ignore-ACL/merge-error flags; actual DACL/ADS/attributes tests required |
 | Hardlink | Preserve existing object through preselected protected in-place compatibility; explicitly no staged-replacement guarantee |
 | Link/reparse/special file | Preserve existing rejection boundary; no new object capability |
@@ -108,8 +109,8 @@ a worker during an OS operation. Windows metadata scope is owner/group/DACL, nor
 file attributes, creation time and ReplaceFileW's documented named-stream behavior.
 Privileged audit SACLs and advanced attributes are not a preservation claim. Linux
 staging requires a supported local filesystem, ordinary current-user ownership/mode
-and no listed extended attributes; visible ACL/xattr/special-mode targets use
-preselected in-place compatibility. Inaccessible inspection is an error, never
+and no listed extended attributes; visible ACL/xattr targets use verified
+preselected in-place compatibility, and special modes/file capabilities are refused. Inaccessible inspection is an error, never
 proof of absent attributes. Privileged namespaces not visible to the caller are
 outside the supported metadata claim. ARM, musl, macOS and other platforms are not
 validated by this work.
@@ -191,3 +192,43 @@ The synthetic fault is not claimed as a naturally reproduced OS partial failure.
 Raw logs: `n2-shared-integrated.log`, `n2-native-matrix.log`, `n2-r1-shared.log`.
 Clean-install/delivery smoke, costs, final fixed-head checks, both CI platforms and
 actual final review remain required.
+
+## Integrated review follow-up
+
+Actual review on `e36436afbab29236bd6c58e0b1d2342f777f0a69` reported four more
+metadata findings. The implementation now refuses Linux special permission bits,
+preselects compatibility for a non-writable parent, rechecks both objects' supported
+metadata inside the publication worker, and writes candidate bytes under private
+permissions (0600 on Linux; protected owner-only DACL on Windows). Publish metadata
+is applied after candidate writing and final source callbacks, followed by sync.
+Verified unpublished failures restore private access before cleanup/retention;
+unknown placement is not chmodded and the receipt explicitly says privacy is not
+re-established. No automatic retries or elevated permission are involved.
+
+Linux visible attribute values have a 256 KiB inspection bound; errors and changes
+are errors, not absence. In-place mode/owner/link counts are checked before/after.
+Source/Jiti reloads share one process-owned worker without Session references; ten
+reloads and an attempted in-flight disposal verify one worker and zero pending
+calls/active handles. Idle workers are unreferenced, not unloaded during calls.
+
+Windows Node 22.19.0 targeted follow-up: 111 passed, four platform skips across
+native/shared core, final exact authority/cancel boundary, and path semantics.
+The integrated CI failures were stale instrumentation: Linux only accepted the old
+snapshot temporary name; Windows could select in-place but its positive counter
+only watched pathname writeFile/worker dispatch. Counters now also observe pinned
+handle writes; assertions still require original targets, untouched literal aliases,
+zero forbidden publication and actual successful postimages. No contract is disabled.
+Raw follow-up log: `n2-review-native.log`. Fresh Linux verification, delivery smoke,
+five-process cost results and full candidate acceptance are still pending.
+
+Formal delivery smoke now executes `scripts/superpi.mjs` after `build:offline`,
+using the default bundled assembly and an offline provider fixture. Real dedicated
+reads feed exact edit, overwrite and snapshot edit; all three native staged receipts
+and final Chinese-path bytes are checked. An explicit network-denying preload
+records zero network attempts. The actual private extension `npm pack` includes
+the `.mjs` worker and exact runtime dependency; extracted installed-runtime smoke
+loads its copied installed official platform binary with zero network attempts.
+This is source-workspace delivery plus the private extension's package contract,
+not a newly invented standalone CLI binary release. Initial Windows pack measures
+84,313 compressed / 339,309 unpacked bytes (excluding dependencies); final package
+size will vary with subsequent source changes. Both smoke tests pass on Node 22.19.0.

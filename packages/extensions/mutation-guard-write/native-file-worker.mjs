@@ -42,7 +42,8 @@ function loadBindings() {
     const library = koffi.load(realpathSync(path));
     // Supported Linux ABI is x86_64/glibc: ssize_t is signed pointer-width.
     // Koffi provides intptr_t; ssize_t is not a built-in typedef.
-    bindings = { library, list: library.func("intptr_t flistxattr(int fd, void *names, size_t size)") };
+    bindings = { library, list: library.func("intptr_t flistxattr(int fd, void *names, size_t size)"),
+      get: library.func("intptr_t fgetxattr(int fd, str name, void *value, size_t size)") };
   } else throw new Error("Native staged commits are only validated for Windows/Linux x64.");
   return bindings;
 }
@@ -145,13 +146,43 @@ function prepareWindows(b, input) {
   });
 }
 
+function protectWindows(b, input) {
+  return withWindowsHandle(b, input, 0x00060000, handle => { // READ_CONTROL | WRITE_DAC
+    const owner = descriptorParts(securityDescriptor(b, handle)).owner;
+    if (!owner) throw new Error("Cannot establish temporary owner for private DACL.");
+    // ACL_REVISION, one ACCESS_ALLOWED_ACE for the new file's owner only.
+    const acl = Buffer.alloc(16 + owner.length);
+    acl[0] = 2; acl.writeUInt16LE(acl.length, 2); acl.writeUInt16LE(1, 4);
+    acl.writeUInt16LE(8 + owner.length, 10); acl.writeUInt32LE(0x001f01ff, 12); owner.copy(acl, 16);
+    const code = b.setSecurity(handle, 1, 0x80000004, null, null, acl, null);
+    if (code) throw new Error(`SetSecurityInfo(private temporary) failed (Win32 ${code}).`);
+    const actual = descriptorParts(securityDescriptor(b, handle));
+    if (!actual.protected || !actual.dacl?.equals(acl)) throw new Error("Private temporary DACL verification failed.");
+  });
+}
+
 function inspectLinux(b, input) {
   const names = Buffer.alloc(MAX_ATTRIBUTE_NAMES);
   const length = Number(b.list(input.fd, names, names.length));
   if (length < 0) { const error = new Error(`flistxattr failed (errno ${koffi.errno()}); absence is not established.`); throw error; }
   if (length > names.length) throw new Error("Extended attribute names exceed bound.");
-  // Nonempty visible attributes select compatibility; no ACL/capability copying is guessed.
-  return { hasAttributes: length !== 0, namesFingerprint: createHash("sha256").update(names.subarray(0, length)).digest("hex") };
+  // Nonempty visible attributes select compatibility. Read actual values to
+  // detect kernel-cleared capabilities/ACL changes after an in-place write.
+  const values = createHash("sha256"); let start = 0, total = 0, writeClearsAttributes = false;
+  while (start < length) {
+    const end = names.indexOf(0, start);
+    if (end < start || end >= length) throw new Error("Invalid extended-attribute name list.");
+    const name = new TextDecoder("utf-8", { fatal: true }).decode(names.subarray(start, end));
+    if (name === "security.capability") writeClearsAttributes = true;
+    const size = Number(b.get(input.fd, name, null, 0));
+    if (size < 0) throw new Error(`fgetxattr(size) failed (errno ${koffi.errno()}); metadata absence is not established.`);
+    total += size;
+    if (total > 256 * 1024) throw new Error("Extended-attribute values exceed the 256 KiB inspection bound.");
+    const value = Buffer.alloc(size);
+    if (Number(b.get(input.fd, name, value, value.length)) !== size) throw new Error(`fgetxattr(value) failed or changed (errno ${koffi.errno()}).`);
+    values.update(String(size)); values.update(value); start = end + 1;
+  }
+  return { hasAttributes: length !== 0, writeClearsAttributes, namesFingerprint: createHash("sha256").update(names.subarray(0, length)).digest("hex"), valuesFingerprint: values.digest("hex") };
 }
 
 function verifyPath(expected, metadata) {
@@ -163,7 +194,7 @@ function verifyPath(expected, metadata) {
       || String(info.ctimeNs) !== expected.ctime || String(info.nlink) !== expected.links))) throw new Error("[STALE_STATE] Publication path identity changed.");
 }
 
-function verifyBytes(path, expected, size, hash) {
+function verifyBytes(b, input, path, expected, size, hash, staged) {
   const fd = openSync(path, "r");
   try {
     const info = fstatSync(fd, { bigint: true });
@@ -177,6 +208,16 @@ function verifyBytes(path, expected, size, hash) {
       position += count; digest.update(buffer.subarray(0, count));
     }
     if (position !== size || digest.digest("hex") !== hash) throw new Error("[STALE_STATE] Publication content changed.");
+    if (process.platform === "linux") {
+      const current = fstatSync(fd, { bigint: true }), expectedMetadata = input.metadata;
+      if (String(current.mode) !== expectedMetadata.mode || String(current.uid) !== expectedMetadata.uid || String(current.gid) !== expectedMetadata.gid) throw new Error("[STALE_STATE] Publication mode/owner changed.");
+      const attributes = inspectLinux(b, { fd });
+      if (attributes.namesFingerprint !== input.original.namesFingerprint || attributes.valuesFingerprint !== input.original.valuesFingerprint) throw new Error("[STALE_STATE] Publication extended attributes changed.");
+    } else {
+      const current = inspectWindows(b, { path, expected });
+      if (current.securityFingerprint !== input.original.securityFingerprint || current.links !== 1
+        || (staged ? current.attributes & ~(0x20 | 0x80) : current.attributes !== input.original.attributes || current.creationTime !== input.original.creationTime)) throw new Error("[STALE_STATE] Publication Windows metadata changed.");
+    }
   } finally { closeSync(fd); }
 }
 
@@ -186,10 +227,10 @@ function replaceVerified(b, input) {
     verifyPath(v.parent, false); verifyPath(v.target, true);
     // Recheck after worker dispatch, with no async user callback in this scope.
     // Pathname APIs still are NOT cross-process CAS or locks.
-    verifyBytes(input.target, v.target, Number(v.target.size), v.previousSha256);
+    verifyBytes(b, input, input.target, v.target, Number(v.target.size), v.previousSha256, false);
     const stage = lstatSync(input.temporary, { bigint: true });
     if (stage.isSymbolicLink()) throw new Error("[STALE_STATE] Staged path became a link.");
-    verifyBytes(input.temporary, v.temporary, v.candidateBytes, v.candidateSha256);
+    verifyBytes(b, input, input.temporary, v.temporary, v.candidateBytes, v.candidateSha256, true);
     verifyPath(v.parent, false); verifyPath(v.target, true);
   } catch (error) { error.commitOutcome = "not_committed"; throw error; }
   if (process.platform === "win32") {
@@ -207,6 +248,7 @@ function execute(input) {
   catch (error) { error.nativeUnavailable = true; throw error; }
   calls++;
   if (input.operation === "inspect") return process.platform === "win32" ? inspectWindows(b, input) : inspectLinux(b, input);
+  if (process.platform === "win32" && input.operation === "protect") return protectWindows(b, input);
   if (process.platform === "win32" && input.operation === "prepare") return prepareWindows(b, input);
   if (process.platform === "win32" && input.operation === "remove") {
     return withWindowsHandle(b, input, 0x00010080, handle => { // DELETE | FILE_READ_ATTRIBUTES

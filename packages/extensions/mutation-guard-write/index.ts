@@ -221,6 +221,7 @@ export default function mutationGuardWriteExtension(pi: ExtensionAPI): void {
   function finishEdit(toolCallId: string, target: string, details: any, text: string) {
     const status = details.ok ? "succeeded" : details.stateChanged === "unknown" ? "state_unknown" : details.stateChanged ? "partial" : "failed_no_change";
     const receipt = { ...details, mutationReceiptVersion: 2, operation: "edit", target, status };
+    if (status === "partial" || status === "state_unknown" || receipt.commit?.retainedTemporary) receipt.requiresVerification = true;
     try {
       pi.appendEntry(MUTATION_PROGRESS_ENTRY, { toolCallId, itemId: `${toolCallId}:0`, phase: "result", mutationReceiptVersion: 2,
         operation: "edit", target, status, stateChanged: receipt.stateChanged, sha256: receipt.sha256, commit: receipt.commit });
@@ -232,6 +233,7 @@ export default function mutationGuardWriteExtension(pi: ExtensionAPI): void {
       }
     }
     if (receipt.commit) text += `\n${commitSummary(receipt.commit)}`;
+    if (receipt.requiresVerification) text += "\nVerify current state before further action; do not automatically retry.";
     return { content: [{ type: "text" as const, text }], details: receipt, isError: !receipt.ok };
   }
 
@@ -544,7 +546,7 @@ export default function mutationGuardWriteExtension(pi: ExtensionAPI): void {
         pi.appendEntry(MUTATION_PROGRESS_ENTRY, { ...details, target: receiptTarget, mutationReceiptVersion: 2, toolCallId, itemId: `${toolCallId}:0`, phase: "result", status: "succeeded" });
       } catch {
         return { content: [{ type: "text" as const, text: `write: state_unknown; ${path}. File changed but receipt recording failed. Verify current state; do not automatically retry.` }],
-          details: { mutationReceiptVersion: 2, operation: "write", target: receiptTarget, status: "state_unknown", stateChanged: "unknown", requiresVerification: true }, isError: true };
+          details: { ...details, ok: false, mutationReceiptVersion: 2, operation: "write", target: receiptTarget, status: "state_unknown", stateChanged: "unknown", requiresVerification: true }, isError: true };
       }
       const creation = details.creation;
       const summary = details.created

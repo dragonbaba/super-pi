@@ -11,6 +11,15 @@ import { MutationWriteGuard } from "./mutation-fixture.ts";
 // each test owns its gate, and teardown drops that reference even on failure.
 let active: ReturnType<typeof createBarrier> | undefined;
 const read = fs.readFile, write = fs.writeFile;
+const open = fs.open;
+mock.method(fs, "open", async function(...args: any[]) {
+  const handle = await Reflect.apply(open, fs, args);
+  if (args[1] === "r+") {
+    const write = handle.write;
+    handle.write = function(...values: any[]) { active?.beforeWrite(String(args[0])); return Reflect.apply(write, handle, values); } as typeof handle.write;
+  }
+  return handle;
+});
 const post = Worker.prototype.postMessage;
 mock.method(Worker.prototype, "postMessage", function(this: Worker, ...args: any[]) {
   // N2 submits ordinary-file publication through the fixed worker protocol.

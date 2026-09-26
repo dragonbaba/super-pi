@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, realpath, writeFile, readFile, chmod, lstat, rm, mkdir, link, cp } from "node:fs/promises";
+import { mkdtemp, realpath, writeFile, readFile, chmod, lstat, rm, mkdir, link, cp, readdir } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
@@ -107,6 +107,79 @@ test("N2 Linux xattrs select object-preserving compatibility; inspection errors 
   await assert.rejects(nativeFileRequest("inspect", { fd: -1 }), /flistxattr failed.*errno 9/);
 });
 
+test("N2 Linux refuses special bits even on hardlinks before any content effects", { skip: process.platform !== "linux" }, async t => {
+  const f = await fixture(t); await link(f.target, join(f.root, "alias")); await chmod(f.target, 0o4755);
+  await assert.rejects(planFor(f.target, f.before), /Special mode bits/);
+  assert.equal(Number((await lstat(f.target)).mode) & 0o7777, 0o4755);
+  assert.equal(await readFile(f.target, "utf8"), f.before);
+  assert.equal((await readdir(f.root)).some(name => name.startsWith(".pi-file-commit-")), false);
+});
+
+test("N2 Linux POSIX ACL bytes and mode survive preselected in-place commit", { skip: process.platform !== "linux" }, async t => {
+  const f = await fixture(t);
+  const script = "import os,sys,struct; p=sys.argv[1]; acl=struct.pack('<I',2)+b''.join(struct.pack('<HHI',*e) for e in [(1,7,0xffffffff),(2,4,65534),(4,5,0xffffffff),(16,5,0xffffffff),(32,0,0xffffffff)]); os.setxattr(p,'system.posix_acl_access',acl); print(os.getxattr(p,'system.posix_acl_access').hex())";
+  const { stdout: before } = await execute("python3", ["-c", script, f.target]);
+  const mode = (await lstat(f.target)).mode, plan = await planFor(f.target, f.before);
+  assert.equal(plan.metadata.strategy, "protected_in_place");
+  await commitPreparedFile(plan, f.after, { assertPathAllowed: async () => plan.target.canonical });
+  const { stdout: after } = await execute("python3", ["-c", "import os,sys; print(os.getxattr(sys.argv[1],'system.posix_acl_access').hex())", f.target]);
+  assert.equal(after, before); assert.equal((await lstat(f.target)).mode, mode); assert.deepEqual(await readFile(f.target), f.after);
+});
+
+test("N2 Linux writable file under non-writable parent preselects compatibility", { skip: process.platform !== "linux" || process.getuid?.() === 0 }, async t => {
+  const f = await fixture(t); await chmod(f.root, 0o500);
+  try {
+    const plan = await planFor(f.target, f.before);
+    assert.equal(plan.metadata.strategy, "protected_in_place"); assert.match(plan.metadata.reason!, /Parent directory/);
+    const result = await commitPreparedFile(plan, f.after, { assertPathAllowed: async () => plan.target.canonical });
+    assert.equal(result.outcome, "committed"); assert.deepEqual(await readFile(f.target), f.after);
+    assert.equal((await capturePathIdentity(f.target)).inode, plan.target.inode);
+  } finally { await chmod(f.root, 0o700); }
+});
+
+test("N2 final worker rejects staged metadata drift before replacement", { skip: !supported }, async t => {
+  const f = await fixture(t), plan = await planFor(f.target, f.before), publish = plan.metadata.replace;
+  const original = await lstat(f.target, { bigint: true });
+  plan.metadata.replace = async (path, target, validation) => {
+    if (process.platform === "linux") await chmod(path, Number(original.mode) ^ 0o020);
+    else await nativeFileRequest("protect", { path, expected: validation.temporary });
+    await publish(path, target, validation);
+  };
+  await assert.rejects(commitPreparedFile(plan, f.after, { assertPathAllowed: async () => plan.target.canonical }), (error: unknown) => {
+    assert.ok(error instanceof FileCommitError); assert.equal(error.receipt.outcome, "not_committed");
+    assert.match(error.message, /Publication.*(mode|metadata).*changed/); return true;
+  });
+  assert.equal(await readFile(f.target, "utf8"), f.before); assert.equal((await lstat(f.target, { bigint: true })).mode, original.mode);
+  for (const name of await readdir(f.root)) if (name.startsWith(".pi-file-commit-")) assert.equal((await lstat(join(f.root, name))).mode & 0o777, 0o600);
+});
+
+test("N2 candidate is private during writing and remains private after prepublication failure", { skip: !supported }, async t => {
+  const f = await fixture(t), plan = await planFor(f.target, f.before), protect = plan.metadata.protectTemporary!;
+  let checkedWrite = false;
+  plan.metadata.protectTemporary = async (handle, path) => {
+    await protect(handle, path);
+    if (checkedWrite) return;
+    const write = handle.writeFile.bind(handle);
+    handle.writeFile = async (...args) => {
+      if (process.platform === "linux") assert.equal((await handle.stat()).mode & 0o777, 0o600);
+      else {
+        const stat = await handle.stat({ bigint: true });
+        const metadata = await nativeFileRequest("inspect", { path, expected: { device: String(stat.dev), inode: String(stat.ino) } });
+        const descriptor = Buffer.from(metadata.security, "base64"), acl = descriptor.readUInt32LE(16);
+        assert.ok(descriptor.readUInt16LE(2) & 0x1000); assert.equal(descriptor.readUInt16LE(acl + 4), 1);
+      }
+      checkedWrite = true; await write(...args);
+    };
+  };
+  await assert.rejects(commitPreparedFile(plan, f.after, { assertPathAllowed: async () => plan.target.canonical,
+    beforeCommit: () => { throw new Error("fixture stale authority before metadata publication"); } }), /fixture stale authority/);
+  assert.equal(checkedWrite, true); assert.equal(await readFile(f.target, "utf8"), f.before);
+  for (const name of await readdir(f.root)) if (name.startsWith(".pi-file-commit-")) {
+    assert.deepEqual(await readFile(join(f.root, name)), f.after);
+    assert.equal((await lstat(join(f.root, name))).mode & 0o777, 0o600);
+  }
+});
+
 test("N2 missing installed platform binary leaves reads available and selects explicit compatibility", { skip: !supported }, async t => {
   const f = await fixture(t), isolated = join(f.root, "isolated"), dependencies = join(isolated, "node_modules");
   await mkdir(dependencies, { recursive: true });
@@ -122,4 +195,21 @@ test("N2 missing installed platform binary leaves reads available and selects ex
     assert.equal(selected.strategy, "protected_in_place"); assert.match(selected.reason, /Native staged capability unavailable:.*Cannot find the native Koffi module/);
     assert.equal(await readFile(f.target, "utf8"), f.before); assert.equal(client.nativeFileDiagnostics().pending, 0);
   } finally { await client.disposeNativeFileWorker(); }
+});
+
+test("N2 module reloads share one worker and release all pending calls before disposal", { skip: !supported }, async () => {
+  await disposeNativeFileWorker();
+  const before = nativeFileDiagnostics().workerStarts;
+  try {
+    for (let i = 0; i < 10; i++) {
+      const client = await import(pathToFileURL(join(sourceDirectory, "native-file-client.ts")).href + `?reload=${i}`);
+      assert.equal((await client.nativeFileRequest("stats")).activeHandles, 0);
+      assert.equal(client.nativeFileDiagnostics().workerStarts, before + 1);
+      assert.equal(client.nativeFileDiagnostics().pending, 0);
+    }
+    const pending = nativeFileRequest("stats");
+    await assert.rejects(disposeNativeFileWorker(), /in flight/);
+    await pending;
+  } finally { await disposeNativeFileWorker(); }
+  assert.equal(nativeFileDiagnostics().loaded, false); assert.equal(nativeFileDiagnostics().pending, 0);
 });

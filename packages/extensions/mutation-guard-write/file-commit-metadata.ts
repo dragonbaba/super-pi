@@ -1,5 +1,6 @@
 import { access, open, statfs, type FileHandle } from "node:fs/promises";
 import { constants } from "node:fs";
+import { dirname } from "node:path";
 import type { CommitMetadata } from "./file-commit.ts";
 import type { PathIdentity } from "./native-file-core.ts";
 import { nativeFileRequest } from "./native-file-client.ts";
@@ -8,14 +9,19 @@ const LOCAL_LINUX_FILESYSTEMS = new Set([0xef53, 0x58465342, 0x9123683e, 0x01021
 
 function unsupportedPublish(): Promise<void> { return Promise.reject(new Error("Preselected compatibility cannot publish a replacement.")); }
 async function noMetadataCopy(): Promise<void> { /* In-place writes retain the object. */ }
-function compatibility(reason: string): CommitMetadata {
-  return { strategy: "protected_in_place", reason, prepareTemporary: noMetadataCopy, assertCurrent: noMetadataCopy,
+function compatibility(reason: string, original: { mode: bigint; uid: bigint; gid: bigint; nlink: bigint }, extra?: (handle: FileHandle) => Promise<void>): CommitMetadata {
+  async function assertCurrent(handle: FileHandle): Promise<void> {
+    const info = await handle.stat({ bigint: true });
+    if (info.mode !== original.mode || info.uid !== original.uid || info.gid !== original.gid || info.nlink !== original.nlink) throw new Error("[METADATA_CHANGED] In-place permission/owner/link metadata changed.");
+    await extra?.(handle);
+  }
+  return { strategy: "protected_in_place", reason, prepareTemporary: noMetadataCopy, assertCurrent, assertPostimage: assertCurrent,
     replace: unsupportedPublish, replacementFailureMayChangeState: true };
 }
 
 interface MetadataObservation {
   attributes?: number; links?: number; creationTime?: string; security?: string; securityFingerprint?: string; filesystem?: string;
-  hasAttributes?: boolean; namesFingerprint?: string;
+  hasAttributes?: boolean; namesFingerprint?: string; valuesFingerprint?: string; writeClearsAttributes?: boolean;
 }
 
 async function inspect(handle: FileHandle, path: string): Promise<MetadataObservation> {
@@ -32,24 +38,37 @@ export async function selectCommitMetadata(target: PathIdentity): Promise<Commit
     const info = await handle.stat({ bigint: true });
     if (!info.isFile() || String(info.dev) !== target.device || String(info.ino) !== target.inode) throw new Error("[STALE_STATE] Object changed during capability selection.");
     if (!(Number(info.mode) & 0o222)) throw new Error("[UNSUPPORTED_COMMIT] Read-only target; permissions are not overridden.");
-    if (info.nlink !== 1n) return compatibility("Multiple hardlinks: preserve the existing object; no staged-replacement guarantee.");
-    if (process.arch !== "x64" || (process.platform !== "win32" && process.platform !== "linux")) return compatibility("Native staged capability is not validated on this platform/architecture.");
+    if (process.platform === "linux" && Number(info.mode) & 0o7000) throw new Error("[UNSUPPORTED_COMMIT] Special mode bits may be cleared by writing; target was not modified.");
+    if (info.nlink !== 1n) return compatibility("Multiple hardlinks: retain the existing object; no staged-replacement or full extended-metadata guarantee.", info);
+    if (process.arch !== "x64" || (process.platform !== "win32" && process.platform !== "linux")) return compatibility("Native staged capability is not validated on this platform/architecture; extended metadata is not verified.", info);
     if (process.platform === "linux") {
       const filesystem = await statfs(target.canonical);
-      if (!LOCAL_LINUX_FILESYSTEMS.has(filesystem.type)) return compatibility("Unknown/network filesystem: no local staged-replacement guarantee.");
-      if (info.uid !== BigInt(process.getuid!()) || Number(info.mode) & 0o7000) return compatibility("Foreign owner or special mode bits require the original file object.");
+      if (!LOCAL_LINUX_FILESYSTEMS.has(filesystem.type)) return compatibility("Unknown/network filesystem: no local staged-replacement or extended-metadata guarantee.", info);
+      if (info.uid !== BigInt(process.getuid!())) return compatibility("Foreign owner: retain the original object and verify mode/owner; extended metadata is not verified.", info);
     }
     let original: MetadataObservation;
     try { original = await inspect(handle, target.canonical); }
     catch (error) {
-      if ((error as { nativeUnavailable?: boolean }).nativeUnavailable) return compatibility(`Native staged capability unavailable: ${(error as Error).message.slice(0, 300)}`);
+      if ((error as { nativeUnavailable?: boolean }).nativeUnavailable) return compatibility(`Native staged capability unavailable: ${(error as Error).message.slice(0, 300)}; extended metadata is not verified.`, info);
       throw error; // Inspection/permission failure never means absent metadata or fallback.
     }
-    if (process.platform === "linux" && original.hasAttributes) return compatibility("Visible ACL/extended attributes require the original object; no metadata-dropping replacement.");
+    if (process.platform === "linux" && original.writeClearsAttributes) throw new Error("[UNSUPPORTED_COMMIT] File capabilities may be cleared by writing; target was not modified.");
+    const checkAttributes = async (current: FileHandle) => {
+      const next = await inspect(current, target.canonical);
+      if (next.namesFingerprint !== original.namesFingerprint || next.valuesFingerprint !== original.valuesFingerprint) throw new Error("[METADATA_CHANGED] In-place ACL/extended attributes changed.");
+    };
+    if (process.platform === "linux" && original.hasAttributes) return compatibility("Visible ACL/extended attributes require the original object; values are verified before and after writing.", info, checkAttributes);
+    if (process.platform === "linux") {
+      try { await access(dirname(target.canonical), constants.W_OK | constants.X_OK); }
+      catch (error) {
+        if (!["EACCES", "EPERM"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
+        return compatibility("Parent directory cannot publish a sibling: preselected in-place write; mode/owner and visible extended attributes are verified.", info, checkAttributes);
+      }
+    }
     if (process.platform === "win32") {
-      if (original.filesystem !== "NTFS") return compatibility("Only local NTFS has a validated staged capability.");
+      if (original.filesystem !== "NTFS") return compatibility("Only local NTFS has a validated staged capability; extended metadata is not verified.", info);
       if (original.attributes! & 1) throw new Error("[UNSUPPORTED_COMMIT] Read-only Windows target.");
-      if (original.attributes! & ~(0x20 | 0x80)) return compatibility("Special Windows attributes require the original object.");
+      if (original.attributes! & ~(0x20 | 0x80)) return compatibility("Special Windows attributes require the original object; advanced metadata is not verified.", info);
     }
     async function assertMetadata(current: FileHandle, postimage = false): Promise<void> {
       const currentInfo = await current.stat({ bigint: true });
@@ -61,6 +80,12 @@ export async function selectCommitMetadata(target: PathIdentity): Promise<Commit
     }
     return {
       strategy: "staged_replace", replacementFailureMayChangeState: true,
+      async protectTemporary(staged, path) {
+        if (process.platform === "win32") {
+          const stagedInfo = await staged.stat({ bigint: true });
+          await nativeFileRequest("protect", { path, expected: { device: String(stagedInfo.dev), inode: String(stagedInfo.ino) } });
+        } else await staged.chmod(0o600);
+      },
       async prepareTemporary(staged, path) {
         if (process.platform === "win32") {
           const stagedInfo = await staged.stat({ bigint: true });
@@ -77,7 +102,8 @@ export async function selectCommitMetadata(target: PathIdentity): Promise<Commit
       assertPostimage: handle => assertMetadata(handle, true),
       removeTemporary: process.platform === "win32" ? async (path, expected) => { await nativeFileRequest("remove", { path, expected }); } : undefined,
       async replace(temporary, path, validation) {
-        await nativeFileRequest("replace", { temporary, target: path, validation, original });
+        await nativeFileRequest("replace", { temporary, target: path, validation, original,
+          metadata: { mode: String(info.mode), uid: String(info.uid), gid: String(info.gid) } });
       },
     };
   } finally { await handle.close(); }
