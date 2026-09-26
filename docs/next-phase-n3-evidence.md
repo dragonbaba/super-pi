@@ -230,3 +230,11 @@ execution and preserved repair markers. The same text from real child stdout
 cannot forge preflight facts. The production changes introduce no inline regex
 or callback. On Windows Node22.19: check, offline build and 180 focused tests pass,
 with one platform skip. New full gates, Linux CI and exact-head review are pending.
+
+Linux CI isolated one fixture assertion that counted Node's own socket end
+listener as a leaked wait listener. The real-child test now captures pre-existing
+listener identities before waitForChildProcess and verifies that no new end
+listener survives, while retaining full tail, one idle timer/refresh and zero
+wait-owned child/data-listener assertions. Windows targeted observations pass;
+Linux's real inherited-pipe case must run in the new CI. Runtime behavior is not
+changed by this correction.
