@@ -143,11 +143,14 @@ export function collectChanges(branch: readonly any[], cwd: string): ChangeRecor
   const callOrder = new Map<string, number>();
   const duplicate = new Set<string>();
   const entries = new Map<string, any>();
+  const duplicateEntries = new Set<string>();
   const records: ChangeRecord[] = [];
   const order = new Map<string, number>();
-  for (const entry of branch) {
+  for (let position = 0; position < branch.length; position++) {
+    const entry = branch[position];
+    if (entries.has(entry.id)) duplicateEntries.add(entry.id);
     entries.set(entry.id, entry);
-    order.set(entry.id, order.size);
+    order.set(entry.id, position);
     if (entry.type !== "message" || entry.message?.role !== "assistant" || !Array.isArray(entry.message.content)) continue;
     for (const call of entry.message.content) {
       if (call.type !== "toolCall" || typeof call.id !== "string") continue;
@@ -159,7 +162,7 @@ export function collectChanges(branch: readonly any[], cwd: string): ChangeRecor
   for (const receipt of collectStructuredMutationReceipts(branch)) {
     const receiptOrder = order.get(receipt.entryId)!;
     const precedingCall = (callOrder.get(receipt.toolCallId) ?? Infinity) < receiptOrder;
-    const call = duplicate.has(receipt.toolCallId) || !precedingCall ? undefined : calls.get(receipt.toolCallId);
+    const call = duplicateEntries.size || duplicate.has(receipt.toolCallId) || !precedingCall ? undefined : calls.get(receipt.toolCallId);
     const entry = entries.get(receipt.entryId);
     const index = receipt.receiptVersion === 2 ? Number(receipt.itemId.slice(receipt.toolCallId.length + 1)) : 0;
     const exactItemId = receipt.receiptVersion !== 2 || receipt.itemId === `${receipt.toolCallId}:${index}`;
@@ -180,6 +183,7 @@ export function collectChanges(branch: readonly any[], cwd: string): ChangeRecor
         // Reopening/forking with another cwd must not reinterpret old arguments.
         const intent = uniqueProgress(executionEntries, call.id, "intent", receipt.itemId);
         bound = index === 0 && intent?.data.operation === receipt.operation && intent?.data.target === receipt.target
+          && intent?.data.requestHash === mutationRequestHash(call.name, input)
           && intent?.data.destination === receipt.destination && (!receipt.destination || isAbsolute(receipt.destination));
         if (bound && hasEarlierTerminal(executionEntries, executionEntries.indexOf(intent), call.id, receipt.itemId, 0)) bound = false;
       } else {
@@ -217,7 +221,7 @@ export function collectChanges(branch: readonly any[], cwd: string): ChangeRecor
   for (let n = 0; n < branch.length; n++) {
     const entry = branch[n], data = entry.data, call = calls.get(data?.toolCallId);
     if (entry.type !== "custom" || entry.customType !== "file-mutation-progress-v2" || data?.phase !== "prepared"
-      || !call || duplicate.has(call.id) || call.name !== "file_batch" || (callOrder.get(call.id) ?? Infinity) >= n) continue;
+      || !call || duplicateEntries.size || duplicate.has(call.id) || call.name !== "file_batch" || (callOrder.get(call.id) ?? Infinity) >= n) continue;
     const executionEntries = branch.slice(callOrder.get(call.id)! + 1);
     const preparation = uniqueBatchPreparation(executionEntries, call);
     if (!preparation || preparation.prepared !== entry) continue;
@@ -352,6 +356,8 @@ export async function verifyChange(record: ChangeRecord, assertAllowed: (() => P
       throw new Error("Path appeared before absence observation was accepted.");
     }
   }
+  // Scope includes workspace inode/realpath checks, not only Session generation.
+  await assertAllowed();
   assertAllowed.assertCurrent?.();
   return { source, destination, temporary, parents,
     postimageMatches: record.postimage && source.sha256 ? record.postimage === source.sha256 : undefined,

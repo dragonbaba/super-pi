@@ -2,7 +2,7 @@ import type { ExtensionAPI, ToolDefinition } from "@super-pi/coding-agent";
 import { withFileMutationQueue } from "@super-pi/coding-agent";
 import { Text } from "@super-pi/tui";
 import { Type } from "typebox";
-import { consumePermissionPathApproval } from "../resource-lifecycle-guard/permission-contract.ts";
+import { consumePermissionPathApproval, mutationRequestHash } from "../resource-lifecycle-guard/permission-contract.ts";
 import type { MutationWriteGuard } from "./core.ts";
 import { executeNativePlan, nativeFailure, validateNativeInput, type NativeInput, type NativeOperation, type NativeReceipt } from "./native-file-core.ts";
 
@@ -53,7 +53,7 @@ export function registerNativeTools(pi: ExtensionAPI, guard: MutationWriteGuard,
             reservation = guard.reserveNativeMutation(generation(), plan.source.canonical, plan.destination);
             signal?.throwIfAborted();
             approval.assertCurrent!();
-            pi.appendEntry(MUTATION_PROGRESS_ENTRY, { toolCallId, itemId: `${toolCallId}:0`, phase: "intent", operation, target: plan.source.canonical, destination: plan.destination });
+            pi.appendEntry(MUTATION_PROGRESS_ENTRY, { toolCallId, itemId: `${toolCallId}:0`, phase: "intent", operation, target: plan.source.canonical, destination: plan.destination, requestHash: mutationRequestHash(operation, input) });
             return executeNativePlan(plan, approval.assertCurrent!, signal);
           });
         } catch (error) { receipt = nativeFailure(plan, error, signal?.aborted ? "cancelled" : "failed_no_change"); }
