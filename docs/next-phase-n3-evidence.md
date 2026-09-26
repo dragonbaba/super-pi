@@ -203,3 +203,17 @@ default SDK executes one of three duplicate siblings, records two refusals, then
 successfully executes a fresh identical call on the next turn. New focused and
 parent-integration tests pass. Full checks/profile, Linux sh-symlink execution,
 two-platform CI and current-head review remain required.
+
+The 724045e0 review found that direct Session/RPC Bash execution could treat exit
+zero as successful after failed stdin delivery, and frozen extension errors could
+lose their original observation. The direct completion boundary now throws a
+producer-tagged error for input/observation failure or incomplete completion before
+persisting a successful BashResult; it preserves the real exit code and does not
+retry. Ordinary observed exit 23 remains a recorded exit 23. Immutable errors are
+wrapped with their original cause/message and new process facts. Real child/Session
+tests cover early stdin close with zero exit and clean subsequent execution;
+beforeSpawn tests cover frozen/sealed errors and an immutable existing tag. No
+callback or regex is added to delivery paths. Linux's configured-sh fixture now
+correctly asserts its two pre-existing victims retain their contents, rather than
+asserting those fixtures never existed. Final gates, both CI jobs and review remain
+required on the resulting full commit.

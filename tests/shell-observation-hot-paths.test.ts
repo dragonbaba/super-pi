@@ -7,7 +7,7 @@ test("shell data/progress/drain callbacks create no callback or Promise on deliv
   const targets = new Set(["onError", "onClose", "onIdle", "armIdleTimer", "onData", "onStdoutEnd", "onStderrEnd", "onSpawn", "onExit", "maybeFinalizeAfterExit", "finalize", "cleanup",
     "recordOutputFailure", "emitOutputUpdate", "clearUpdateTimer", "onUpdateTimer", "scheduleOutputUpdate", "handleData"]);
   const seen = new Set<string>();
-  for (const file of ["packages/coding-agent/src/core/tools/bash.ts", "packages/coding-agent/src/utils/child-process.ts"]) {
+  for (const file of ["packages/coding-agent/src/core/tools/bash.ts", "packages/coding-agent/src/core/bash-executor.ts", "packages/coding-agent/src/utils/child-process.ts"]) {
     const source = ts.createSourceFile(file, readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true);
     function audit(node: ts.Node): void {
       assert.equal(ts.isArrowFunction(node) || ts.isFunctionExpression(node) || ts.isFunctionDeclaration(node), false, `per-delivery callback: ${node.getText(source)}`);
@@ -22,7 +22,7 @@ test("shell data/progress/drain callbacks create no callback or Promise on deliv
         let owner: ts.Node | undefined = node.parent;
         while (owner && !ts.isFunctionDeclaration(owner) && !ts.isClassDeclaration(owner)) owner = owner.parent;
         assert.ok(owner && (ts.isFunctionDeclaration(owner) || ts.isClassDeclaration(owner)));
-        assert.ok(["ShellInputObserver", "createLocalShellOperations", "createShellToolDefinition", "waitForChildProcess"].includes(owner.name?.getText(source) ?? ""));
+        assert.ok(["ShellInputObserver", "createLocalShellOperations", "createShellToolDefinition", "executeBashWithOperations", "waitForChildProcess"].includes(owner.name?.getText(source) ?? ""));
       }
       ts.forEachChild(node, visit);
     }

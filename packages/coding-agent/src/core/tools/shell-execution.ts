@@ -11,8 +11,14 @@ export interface ShellProcessResult {
 const PROCESS_RESULT = Symbol.for("pi.shell-process-result.v1");
 
 export function observedShellError(error: unknown, result: ShellProcessResult): Error {
-  const failure = error instanceof Error ? error : new Error(String(error));
-  Object.defineProperty(failure, PROCESS_RESULT, { value: result, configurable: true });
+  let failure = error instanceof Error ? error : new Error(String(error));
+  try { Object.defineProperty(failure, PROCESS_RESULT, { value: result, configurable: true }); }
+  catch {
+    // Extension errors and AbortSignal reasons may be frozen/sealed, or already
+    // carry a non-configurable observation. Never lose the original failure.
+    failure = new Error(failure.message, { cause: error });
+    Object.defineProperty(failure, PROCESS_RESULT, { value: result, configurable: true });
+  }
   return failure;
 }
 
