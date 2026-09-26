@@ -196,3 +196,38 @@ entire draft (including its quoted, control-free, 256-character source ID) fits
 four-ID-only verification record. These checks do not authenticate arbitrary
 externally forged Session files or grant execution authority. Final-head gates,
 CI and re-review remain required.
+
+`18aad3f9573ba36274f2fa83fc770df37b2e77b5` passed all fixed-head local
+gates and both CI platforms ([run 36263232370](https://github.com/dragonbaba/super-pi/actions/runs/36263232370)).
+Its actual review identified canonical v1 origins, silent per-file truncation and
+multiline/control metadata in summaries. New standalone exact/snapshot/overwrite
+results retain a preceding request-hashed canonical origin in the existing Session
+progress entries (no second history store or authority). Legacy records without
+that origin retain their conservative binding. Expanded patches now label per-file
+omission and continue later item headings; metadata fields are escaped single-line
+data, while source diffs retain their multiline layout. Thirty-six preview/recovery
+tests pass, including actual parent aliases and cwd reopen, a committed 120-line
+replacement followed by another success, and newline/bidi metadata. New-head full
+gates and actual re-review remain required.
+
+The user's regex/closure audit found seven consumer-side pattern sites (including
+one adjacent snapshot pattern), a per-value display replacement callback, and
+captured recovery scan callbacks. The expanded AST gate failed at those exact
+seven locations before the correction. Patterns now live in the existing
+`mutation-guard-write/regex.ts`; display escaping uses one module function.
+Recovery uses explicit bounded scans rather than captured map/filter/some/sort
+callbacks. The only function-expression exemption in the two new modules is the
+named `createChangeViewer` factory inside `showChangeViewer`, once per explicit
+user dialog. Render/input/release methods retain their zero-closure gate. The
+permission observation callbacks remain one pair per user observation authority,
+not per read chunk, render or progress event. No global mutable recovery state or
+pool was introduced. Repeated/interleaved display-pattern tests seed `lastIndex`
+and verify complete replacement/reset across independent preview owners.
+
+Focused correction run: 48 tests passed before adding the interleaved regression;
+the production ToolExecutionComponent fixture performed 20,000 running updates,
+ten completion/expansion/resize/release cycles, zero stable-render text changes and
+zero retained preview characters after release. Node 22.19 inspector sampling was
+400,880 bytes (20.044/update), controlled heap 58,878,880→59,373,224 bytes. This
+single lifecycle sample is compliance evidence, not a speedup or zero-allocation
+claim. Final correction-head gates/CI/review must still complete.

@@ -56,6 +56,10 @@ const HOT_REGEX_FREE_FILES = [
 	"packages/extensions/resource-lifecycle-guard/timeout-wrapper.ts",
 	"packages/ai/src/api/anthropic-messages.ts",
 	"packages/tui-kit/src/components/syntax-highlighting.ts",
+	"packages/extensions/mutation-guard-write/change-preview.ts",
+	"packages/extensions/mutation-guard-write/changes.ts",
+	"packages/extensions/mutation-guard-write/snapshot-line-edit.ts",
+	"packages/extensions/mutation-guard-write/native-file-worker.mjs",
 ];
 
 const identityStyle = (text: string): string => text;
@@ -207,7 +211,7 @@ test("selected hot runtime modules keep regular-expression literals in dedicated
 });
 
 test("image and permission pattern modules initialize regexes only as module constants", () => {
-	for (const file of ["packages/coding-agent/src/utils/image-input-regex.ts", "packages/coding-agent/src/utils/shell-regex.ts", "packages/coding-agent/src/core/tools/bash-regex.ts", "packages/extensions/resource-lifecycle-guard/regex.ts", "packages/extensions/session-memory-manager/regex.ts", "packages/ai/src/api/anthropic-messages-regex.ts"]) {
+	for (const file of ["packages/coding-agent/src/utils/image-input-regex.ts", "packages/coding-agent/src/utils/shell-regex.ts", "packages/coding-agent/src/core/tools/bash-regex.ts", "packages/extensions/resource-lifecycle-guard/regex.ts", "packages/extensions/session-memory-manager/regex.ts", "packages/ai/src/api/anthropic-messages-regex.ts", "packages/extensions/mutation-guard-write/regex.ts", "packages/extensions/mutation-guard-write/native-file-regex.mjs"]) {
 		const source = ts.createSourceFile(file, readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true);
 		const visit = (node: ts.Node): void => {
 			if (ts.isRegularExpressionLiteral(node)) {

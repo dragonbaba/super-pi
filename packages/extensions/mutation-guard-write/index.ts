@@ -25,7 +25,7 @@ import { MUTATION_RECEIPT_VERSION, MutationWriteGuard, resolveToolPath, sha256 }
 import { diagnoseFailedEdit } from "./edit-diagnostics.ts";
 import { SHA256_PATTERN } from "./regex.ts";
 import { primaryReadResultText, readEvidenceRange, restoreMutationEvidenceFromBranch, recordBatchMutationEvidence, recentMutationEntries } from "./session-evidence.ts";
-import { consumePermissionPathApproval } from "../resource-lifecycle-guard/permission-contract.ts";
+import { consumePermissionPathApproval, mutationRequestHash } from "../resource-lifecycle-guard/permission-contract.ts";
 import { registerNativeTools, MUTATION_PROGRESS_ENTRY, renderFileMutationResult } from "./native-tools.ts";
 import { registerFileBatch } from "./file-batch.ts";
 import { FileCommitError, commitFailure, commitSummary, type FileCommitReceipt } from "./file-commit.ts";
@@ -338,6 +338,7 @@ export default function mutationGuardWriteExtension(pi: ExtensionAPI): void {
       const execution = new GuardedEditExecution(guard, ctx.cwd, nativeInput, turnGeneration, pathApproval, signal);
       const guardedEdit = createEditToolDefinition(ctx.cwd, { operations: execution.operations });
       try {
+        if (pathApproval) pi.appendEntry(MUTATION_PROGRESS_ENTRY, { phase: "origin", toolCallId, itemId: `${toolCallId}:0`, operation: "edit", target: pathApproval.canonicalTarget, requestHash: mutationRequestHash("edit", input) });
         const result = await guardedEdit.execute(toolCallId, nativeInput, signal, onUpdate, ctx);
         if (!result.details) throw new Error("Native edit completed without diff/patch details.");
         return finishEdit(toolCallId, receiptTarget, {
@@ -439,6 +440,7 @@ export default function mutationGuardWriteExtension(pi: ExtensionAPI): void {
         const canonicalTarget = await resolveSnapshotCanonicalTarget(sessionId, ctx.cwd, snapshotInput.path, snapshotInput.snapshot);
         let reservationId: number | undefined;
         try {
+          pi.appendEntry(MUTATION_PROGRESS_ENTRY, { phase: "origin", toolCallId, itemId: `${toolCallId}:0`, operation: "edit", target: canonicalTarget, requestHash: mutationRequestHash("edit", input) });
           const details = await withFileMutationQueue(canonicalTarget, async () => executeSnapshotLineEdit(
             sessionId,
             ctx.cwd,
@@ -526,6 +528,7 @@ export default function mutationGuardWriteExtension(pi: ExtensionAPI): void {
         details = await withFileMutationQueue(
           absolutePath,
           async () => {
+            if (!progress && pathApproval) pi.appendEntry(MUTATION_PROGRESS_ENTRY, { phase: "origin", toolCallId, itemId: `${toolCallId}:0`, operation: "write", target: receiptTarget, requestHash: mutationRequestHash("write", input) });
             if (progress) pi.appendEntry(MUTATION_PROGRESS_ENTRY, { toolCallId, itemId: `${toolCallId}:0`, phase: "intent", operation: "write", target: receiptTarget, directories: pathApproval!.creationPlan!.directories });
             return guard.write(ctx.cwd, path, content, turnGeneration, signal, pathApproval);
           },

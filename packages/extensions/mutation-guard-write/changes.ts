@@ -1,18 +1,18 @@
 import { createHash } from "node:crypto";
 import { lstat, open } from "node:fs/promises";
 import { isAbsolute, resolve, relative, sep, dirname, basename } from "node:path";
-import { stripVTControlCharacters } from "node:util";
 import type { ExtensionAPI, ExtensionContext } from "@super-pi/coding-agent";
 import { Key, matchesKey, Text, type TUI } from "@super-pi/tui";
 import { resolveToolPath } from "./core.ts";
 import { capturePathIdentity, sameIdentity, type PathIdentity } from "./native-file-core.ts";
 import { boundBatchIntents, collectStructuredMutationReceipts, recentMutationEntries } from "./session-evidence.ts";
-import { batchExpandedSummary, PreviewBudget } from "./change-preview.ts";
+import { batchExpandedSummary, PreviewBudget, displayMetadata } from "./change-preview.ts";
+import { mutationRequestHash } from "../resource-lifecycle-guard/permission-contract.ts";
+import { SHA256_PATTERN as SHA256, CHANGE_ID_CONTROL_PATTERN, OBSERVATION_UNSIGNED_INTEGER_PATTERN, OBSERVATION_SIGNED_INTEGER_PATTERN, RETAINED_COMMIT_NAME_PATTERN } from "./regex.ts";
 
 export const CHANGE_VERIFICATION_ENTRY = "file-change-verification-v1";
 const MAX_CHANGES = 128;
 const MAX_VERIFY_BYTES = 32 * 1024 * 1024;
-const SHA256 = /^[a-f0-9]{64}$/;
 const OBSERVATION_SCOPE = "Filesystem observation only; not a semantic/test result, proof of earlier side effects, or permission to replay.";
 
 export interface ChangeRecord {
@@ -33,6 +33,23 @@ function terminalOutcome(entry: any, callId: string, itemId: string, index: numb
     const data = entry.message.details;
     return entry.message.toolName === "file_batch" ? data?.items?.[index] : data;
   }
+}
+
+function hasEarlierTerminal(entries: readonly any[], end: number, callId: string, itemId: string, index: number): boolean {
+  for (let n = 0; n < end; n++) if (terminalOutcome(entries[n], callId, itemId, index)) return true;
+  return false;
+}
+
+/** null means ambiguous; undefined means absent. Neither borrows another request's entry. */
+function uniqueProgress(entries: readonly any[], callId: string, phase: string, itemId?: string): any {
+  let found: any;
+  for (const entry of entries) {
+    if (entry.type !== "custom" || entry.customType !== "file-mutation-progress-v2" || entry.data?.toolCallId !== callId
+      || entry.data.phase !== phase || itemId !== undefined && entry.data.itemId !== itemId) continue;
+    if (found) return null;
+    found = entry;
+  }
+  return found;
 }
 
 function conflictingTerminal(entries: readonly any[], selected: any, callId: string, itemId: string, index: number, outcome: any): boolean {
@@ -65,8 +82,12 @@ function uniqueBatchPreparation(entries: readonly any[], call: any) {
     if (prepared) return undefined; // Even a malformed competing preparation is ambiguous.
     prepared = entry; position = index;
   }
-  if (!prepared || entries.slice(0, position).some(entry => entry.data?.toolCallId === call.id && entry.data?.itemId !== undefined
-    || entry.message?.role === "toolResult" && entry.message.toolCallId === call.id)) return undefined;
+  if (!prepared) return undefined;
+  for (let n = 0; n < position; n++) {
+    const entry = entries[n];
+    if (entry.data?.toolCallId === call.id && entry.data?.itemId !== undefined
+      || entry.message?.role === "toolResult" && entry.message.toolCallId === call.id) return undefined;
+  }
   const targets = boundBatchIntents([prepared], call.arguments, call.id);
   if (!Array.isArray(call.arguments?.operations) || targets.size !== call.arguments.operations.length) return undefined;
   return { prepared, position, targets };
@@ -93,23 +114,21 @@ function boundRecoveryItem(entries: readonly any[], call: any, index: number, st
   if (!preparation) return undefined;
   const itemId = `${call.id}:${index}`, prepared = preparation.targets.get(itemId);
   if (!prepared) return undefined;
-  const intents = entries.filter(entry => entry.type === "custom" && entry.customType === "file-mutation-progress-v2"
-    && entry.data?.toolCallId === call.id && entry.data.itemId === itemId && entry.data.phase === "intent");
-  if (intents.length > 1) return undefined;
-  if (intents.length === 1) {
-    const intent = intents[0].data;
-    if (entries.slice(0, entries.indexOf(intents[0])).some(entry => terminalOutcome(entry, call.id, itemId, index))) return undefined;
+  const intentEntry = uniqueProgress(entries, call.id, "intent", itemId);
+  if (intentEntry === null) return undefined;
+  if (intentEntry) {
+    const intent = intentEntry.data;
+    if (hasEarlierTerminal(entries, entries.indexOf(intentEntry), call.id, itemId, index)) return undefined;
     if (intent.requestHash !== preparation.prepared.data.requestHash || intent.operation !== prepared.operation
       || intent.target !== prepared.target || intent.destination !== prepared.destination || status === "not_started") return undefined;
   } else if (!["cancelled", "not_started"].includes(status)) return undefined;
-  const commits = entries.filter(entry => entry.type === "custom" && entry.customType === "file-mutation-progress-v2"
-    && entry.data?.toolCallId === call.id && entry.data.itemId === itemId && entry.data.phase === "commit_prepared");
-  if (commits.length > 1) return undefined;
-  if (commits.length) {
-    const commit = commits[0], position = entries.indexOf(commit);
-    if (intents.length !== 1 || position <= entries.indexOf(intents[0]) || commit.data.operation !== prepared.operation || commit.data.target !== prepared.target
+  const commit = uniqueProgress(entries, call.id, "commit_prepared", itemId);
+  if (commit === null) return undefined;
+  if (commit) {
+    const position = entries.indexOf(commit);
+    if (!intentEntry || position <= entries.indexOf(intentEntry) || commit.data.operation !== prepared.operation || commit.data.target !== prepared.target
       || !["staged_replace", "protected_in_place"].includes(commit.data.strategy)
-      || entries.slice(0, position).some(entry => terminalOutcome(entry, call.id, itemId, index))) return undefined;
+      || hasEarlierTerminal(entries, position, call.id, itemId, index)) return undefined;
   }
   // Entered items persist intent before revalidation. Cancellation before item
   // entry and remaining not-started items have preparation but no intent.
@@ -159,15 +178,24 @@ export function collectChanges(branch: readonly any[], cwd: string): ChangeRecor
       if (receipt.receiptVersion === 2) {
         // The ordered standalone intent records the authorized canonical target.
         // Reopening/forking with another cwd must not reinterpret old arguments.
-        const intents = executionEntries.filter(candidate => candidate.type === "custom" && candidate.customType === "file-mutation-progress-v2"
-          && candidate.data?.phase === "intent" && candidate.data.toolCallId === call.id && candidate.data.itemId === receipt.itemId);
-        const intent = intents.length === 1 ? intents[0] : undefined;
+        const intent = uniqueProgress(executionEntries, call.id, "intent", receipt.itemId);
         bound = index === 0 && intent?.data.operation === receipt.operation && intent?.data.target === receipt.target
           && intent?.data.destination === receipt.destination && (!receipt.destination || isAbsolute(receipt.destination));
-        if (bound && executionEntries.slice(0, executionEntries.indexOf(intent)).some(candidate => terminalOutcome(candidate, call.id, receipt.itemId, 0))) bound = false;
+        if (bound && hasEarlierTerminal(executionEntries, executionEntries.indexOf(intent), call.id, receipt.itemId, 0)) bound = false;
       } else {
-        bound = resolveToolPath(cwd, input.path) === target;
+        const origin = uniqueProgress(executionEntries, call.id, "origin");
+        if (origin !== undefined) {
+          bound = origin !== null && origin.data.itemId === `${call.id}:0` && origin.data.target === target && origin.data.operation === receipt.operation
+            && origin.data.requestHash === mutationRequestHash(call.name, input)
+            && !hasEarlierTerminal(executionEntries, executionEntries.indexOf(origin), call.id, `${call.id}:0`, 0);
+        } else bound = resolveToolPath(cwd, input.path) === target;
       }
+    }
+    if (bound && receipt.receiptVersion === 2 && call?.name !== "file_batch") {
+      const origin = uniqueProgress(executionEntries, call.id, "origin");
+      if (origin !== undefined) bound = origin !== null && origin.data.itemId === receipt.itemId && origin.data.target === target
+        && origin.data.operation === receipt.operation && origin.data.requestHash === mutationRequestHash(call.name, input)
+        && !hasEarlierTerminal(executionEntries, executionEntries.indexOf(origin), call.id, receipt.itemId, 0);
     }
     if (bound && receipt.receiptVersion === 2 && conflictingTerminal(executionEntries, entry, receipt.toolCallId, receipt.itemId, index, receipt)) bound = false;
     records.push({ entryId: receipt.entryId, toolCallId: receipt.toolCallId, itemId: receipt.receiptVersion === 2 ? receipt.itemId : `${receipt.toolCallId}:0`,
@@ -196,11 +224,19 @@ export function collectChanges(branch: readonly any[], cwd: string): ChangeRecor
     const intents = preparation.targets;
     for (let index = 0; index < (call.arguments?.operations?.length ?? 0) && index < 16; index++) {
       const itemId = `${call.id}:${index}`, intent = intents.get(itemId);
-      if (!intent || records.some(record => record.itemId === itemId)) continue;
+      if (!intent) continue;
+      let hasRecord = false;
+      for (const record of records) if (record.itemId === itemId) { hasRecord = true; break; }
+      if (hasRecord) continue;
       if (laterBatchActivity(executionEntries, call.id, index)) continue;
       // Any later item activity, even malformed, prevents a no-start claim.
-      if (branch.slice(n + 1).some(later => later.data?.toolCallId === call.id && (later.data?.itemId === itemId || later.data?.phase === "prepared")
-        || later.message?.role === "toolResult" && later.message.toolCallId === call.id)) continue;
+      let hasActivity = false;
+      for (let laterIndex = n + 1; laterIndex < branch.length; laterIndex++) {
+        const later = branch[laterIndex];
+        if (later.data?.toolCallId === call.id && (later.data?.itemId === itemId || later.data?.phase === "prepared")
+          || later.message?.role === "toolResult" && later.message.toolCallId === call.id) { hasActivity = true; break; }
+      }
+      if (hasActivity) continue;
       records.push({ entryId: entry.id, toolCallId: call.id, itemId, operation: intent.operation, target: intent.target,
         destination: intent.destination, status: "not_started", preview: false, original: call.arguments.operations[index], batchSize: call.arguments.operations.length });
       if (records.length > MAX_CHANGES) records.shift();
@@ -223,7 +259,14 @@ export function collectChanges(branch: readonly any[], cwd: string): ChangeRecor
     }
   }
   const combined = records.concat(previews);
-  combined.sort((left, right) => (order.get(left.entryId) ?? -1) - (order.get(right.entryId) ?? -1));
+  // At most 256 entries, only on explicit /changes. Stable insertion keeps the
+  // map call-owned without a captured comparator, wrapper records or global state.
+  for (let n = 1; n < combined.length; n++) {
+    const value = combined[n], position = order.get(value.entryId) ?? -1;
+    let at = n;
+    while (at > 0 && (order.get(combined[at - 1].entryId) ?? -1) > position) { combined[at] = combined[at - 1]; at--; }
+    combined[at] = value;
+  }
   return combined.slice(-MAX_CHANGES);
 }
 
@@ -233,7 +276,7 @@ function retainedTemporary(record: ChangeRecord): string | undefined {
   const path = record.receipt?.commit?.retainedTemporary;
   if (path === undefined) return undefined;
   if (typeof path !== "string" || path.length > 4096 || !isAbsolute(path) || dirname(path) !== dirname(record.target)
-    || !/^\.pi-file-commit-\d+-[a-f0-9]{24}\.tmp$/u.test(basename(path))) throw new Error("Retained candidate path cannot be safely reconstructed.");
+    || !RETAINED_COMMIT_NAME_PATTERN.test(basename(path))) throw new Error("Retained candidate path cannot be safely reconstructed.");
   return path;
 }
 
@@ -334,7 +377,8 @@ function draftOperation(record: ChangeRecord): unknown {
   for (const edit of input.edits) {
     if (input.snapshot) {
       if (edit.newLines !== undefined && (!Array.isArray(edit.newLines) || edit.newLines.length > 200)) throw new Error("Snapshot replacement exceeds draft bound.");
-      const newLines = edit.newLines?.map((line: unknown) => boundedString(line, "Replacement line", 2048));
+      const newLines: string[] | undefined = edit.newLines === undefined ? undefined : [];
+      if (newLines) for (const line of edit.newLines) newLines.push(boundedString(line, "Replacement line", 2048));
       // Stale snapshot IDs and LINE#ID anchors are never serialized into a new draft.
       changes.push({ kind: edit.kind, originalLineHint: Number.parseInt(edit.start, 10), originalEndLineHint: edit.end ? Number.parseInt(edit.end, 10) : undefined, newLines });
     } else changes.push({ oldText: boundedString(edit.oldText, "Old text"), newText: boundedString(edit.newText, "New text") });
@@ -343,8 +387,11 @@ function draftOperation(record: ChangeRecord): unknown {
 }
 
 export function remainingDraft(records: readonly ChangeRecord[], verifiedItems: ReadonlySet<string>): string {
-  if (records.length > 16 || records.some(record => record.batchSize !== undefined && record.batchSize !== records.length)) throw new Error("Batch history is incomplete in the bounded window; unable to reconstruct remaining work.");
-  if (records.some(record => !record.preview && (record.unavailable || !record.original))) throw new Error("Original request or matching preparation is missing/ambiguous; unable to reconstruct remaining work.");
+  if (records.length > 16) throw new Error("Batch history is incomplete in the bounded window; unable to reconstruct remaining work.");
+  for (const record of records) {
+    if (record.batchSize !== undefined && record.batchSize !== records.length) throw new Error("Batch history is incomplete in the bounded window; unable to reconstruct remaining work.");
+    if (!record.preview && (record.unavailable || !record.original)) throw new Error("Original request or matching preparation is missing/ambiguous; unable to reconstruct remaining work.");
+  }
   const parts: string[] = [];
   let bytes = 0;
   for (const record of records) {
@@ -362,7 +409,7 @@ export function remainingDraft(records: readonly ChangeRecord[], verifiedItems: 
   }
   if (!parts.length) throw new Error("No confirmed unstarted/no-change items to draft. Successful and uncertain items are excluded.");
   const id = boundedString(records[0]?.toolCallId, "Source batch identifier", 256);
-  if (/[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]/u.test(id)) throw new Error("Source batch identifier contains control characters; supply a fresh request.");
+  if (CHANGE_ID_CONTROL_PATTERN.test(id)) throw new Error("Source batch identifier contains control characters; supply a fresh request.");
   const draft = `Prepare a NEW request for the following remaining desired changes. Read current targets first and use fresh evidence, snapshots and anchors; original line hints are not evidence. Revalidate paths and request current authorization. Never replay the old batch or repeat successful items. Partial/unknown items are excluded and need separate examination.\n\nSource batch: ${JSON.stringify(id)} (reference only, no authority).\n\n${parts.join("\n\n")}\n`;
   if (Buffer.byteLength(draft) > 48 * 1024) throw new Error("Complete remaining request exceeds the 48 KiB draft bound; supply a smaller request.");
   return draft;
@@ -373,8 +420,8 @@ function validObservation(value: any, path: string): boolean {
   if (!value.exists) return value.identity === undefined && value.sha256 === undefined && value.hashOmitted === undefined;
   const identity = value.identity;
   if (!identity || identity.path !== path || identity.canonical !== path || typeof identity.directory !== "boolean") return false;
-  for (const key of ["device", "inode", "size", "mode", "links"]) if (typeof identity[key] !== "string" || !/^\d{1,30}$/u.test(identity[key])) return false;
-  for (const key of ["mtime", "ctime"]) if (typeof identity[key] !== "string" || !/^-?\d{1,30}$/u.test(identity[key])) return false;
+  for (const key of ["device", "inode", "size", "mode", "links"]) if (typeof identity[key] !== "string" || !OBSERVATION_UNSIGNED_INTEGER_PATTERN.test(identity[key])) return false;
+  for (const key of ["mtime", "ctime"]) if (typeof identity[key] !== "string" || !OBSERVATION_SIGNED_INTEGER_PATTERN.test(identity[key])) return false;
   if (value.sha256 !== undefined && (typeof value.sha256 !== "string" || !SHA256.test(value.sha256))) return false;
   if (value.hashOmitted !== undefined && (typeof value.hashOmitted !== "string" || !value.hashOmitted || value.hashOmitted.length > 256 || Number(identity.size) <= MAX_VERIFY_BYTES)) return false;
   return !(value.sha256 && value.hashOmitted);
@@ -397,7 +444,10 @@ export function collectVerifiedChanges(branch: readonly any[], records: readonly
       let temporary: string | undefined;
       try { temporary = retainedTemporary(record); } catch { continue; }
       if (temporary ? !validObservation(data.temporary, temporary) || data.temporary.exists && !data.temporary.identity.directory && !data.temporary.sha256 && !data.temporary.hashOmitted : data.temporary !== undefined) continue;
-      if (!Array.isArray(data.parents) || data.parents.length !== parents.length || parents.some((path, i) => !validObservation(data.parents[i], path))) continue;
+      if (!Array.isArray(data.parents) || data.parents.length !== parents.length) continue;
+      let parentsValid = true;
+      for (let i = 0; i < parents.length; i++) if (!validObservation(data.parents[i], parents[i])) { parentsValid = false; break; }
+      if (!parentsValid) continue;
       if (record.postimage && data.source.exists && !data.source.identity.directory && !data.source.sha256 && !data.source.hashOmitted) continue;
       const postimageMatches = record.postimage && data.source.sha256 ? record.postimage === data.source.sha256 : undefined;
       const destinationMatches = record.sourceIdentity && data.destination?.identity
@@ -439,43 +489,54 @@ class ChangeViewer {
 
 interface ObservationPermissions { authorizeFileObservation(ctx: ExtensionContext, paths: readonly string[]): Promise<(() => Promise<void>) & { assertCurrent(): void }> }
 
+function assertChangesSession(ctx: ExtensionContext, sessionId: string): void {
+  if (sessionId !== ctx.sessionManager.getSessionId() || !ctx.isIdle()) throw new Error("Session changed or became busy; reopen /changes.");
+}
+
+/** One factory for an explicit dialog lifetime; no callbacks are created by its render/input methods. */
+async function showChangeViewer(ctx: ExtensionContext, text: string): Promise<void> {
+  await ctx.ui.custom<void>(function createChangeViewer(tui, _theme, _keys, done) { return new ChangeViewer(text, tui, done); });
+}
+
 export function registerChanges(pi: ExtensionAPI, permissions: ObservationPermissions): void {
   pi.registerCommand("changes", { description: "View Session file changes, verify current state, or draft remaining work", async handler(_args, ctx) {
     if (!ctx.hasUI || !ctx.isIdle()) { ctx.ui.notify("/changes needs an idle Session with dialog UI.", "warning"); return; }
     const sessionId = ctx.sessionManager.getSessionId();
-    const assertSession = () => { if (sessionId !== ctx.sessionManager.getSessionId() || !ctx.isIdle()) throw new Error("Session changed or became busy; reopen /changes."); };
     try {
       const branch = recentMutationEntries(ctx.sessionManager);
       const records = collectChanges(branch, ctx.cwd);
       if (!records.length) { ctx.ui.notify("No reconstructable changes in the bounded Session history (512 entries). Missing history cannot be recreated.", "info"); return; }
-      const labels = records.map(record => stripVTControlCharacters(`${record.itemId} [${record.status}] ${record.operation} ${record.target}`).replace(/[\x00-\x1f\x7f]/g, "?"));
-      const selected = await ctx.ui.select("Session changes", labels); assertSession();
+      const labels: string[] = [];
+      for (const record of records) labels.push(`${displayMetadata(record.itemId)} [${displayMetadata(record.status)}] ${displayMetadata(record.operation)} ${displayMetadata(record.target)}`);
+      const selected = await ctx.ui.select("Session changes", labels); assertChangesSession(ctx, sessionId);
       const index = selected === undefined ? -1 : labels.indexOf(selected);
       if (index < 0) return;
       const record = records[index];
-      const action = await ctx.ui.select(record.itemId, ["View", "Verify current state", "Draft remaining request"]); assertSession();
+      const action = await ctx.ui.select(displayMetadata(record.itemId), ["View", "Verify current state", "Draft remaining request"]); assertChangesSession(ctx, sessionId);
       if (action === "View") {
         const item = record.item ?? record;
-        const text = batchExpandedSummary(`${record.itemId} [${record.status}]${record.unavailable ? `\n${record.unavailable}` : ""}`, [item]);
-        await ctx.ui.custom<void>((tui, _theme, _keys, done) => new ChangeViewer(text, tui, done));
+        const text = batchExpandedSummary(`${displayMetadata(record.itemId)} [${displayMetadata(record.status)}]${record.unavailable ? `\n${record.unavailable}` : ""}`, [item]);
+        await showChangeViewer(ctx, text);
       } else if (action === "Verify current state") {
         if (record.preview || record.unavailable) throw new Error(record.unavailable ?? "Preview is not a mutation receipt. Execute a newly prepared request first.");
         const paths = record.destination ? [record.target, record.destination] : [record.target];
         paths.push(...retainedParents(record));
         const temporary = retainedTemporary(record); if (temporary) paths.push(temporary);
-        const assertAllowed = await permissions.authorizeFileObservation(ctx, paths); assertSession();
-        const observation = await verifyChange(record, assertAllowed); assertSession();
+        const assertAllowed = await permissions.authorizeFileObservation(ctx, paths); assertChangesSession(ctx, sessionId);
+        const observation = await verifyChange(record, assertAllowed); assertChangesSession(ctx, sessionId);
         assertAllowed.assertCurrent();
         pi.appendEntry(CHANGE_VERIFICATION_ENTRY, { version: 1, sessionId, sourceEntryId: record.entryId, itemId: record.itemId,
           toolCallId: record.toolCallId, observedAt: new Date().toISOString(), ...observation });
         const text = new PreviewBudget().take(JSON.stringify(observation, null, 2), 400).text;
-        await ctx.ui.custom<void>((tui, _theme, _keys, done) => new ChangeViewer(text, tui, done));
+        await showChangeViewer(ctx, text);
       } else if (action === "Draft remaining request") {
         const verified = collectVerifiedChanges(recentMutationEntries(ctx.sessionManager), records, sessionId);
-        const draft = remainingDraft(records.filter(item => item.toolCallId === record.toolCallId), verified);
+        const batch: ChangeRecord[] = [];
+        for (const item of records) if (item.toolCallId === record.toolCallId) batch.push(item);
+        const draft = remainingDraft(batch, verified);
         const previous = ctx.ui.getEditorText();
         const choice = previous ? await ctx.ui.select("Keep current input or place draft", ["Append draft", "Replace editor", "Cancel"]) : "Replace editor";
-        assertSession();
+        assertChangesSession(ctx, sessionId);
         if (choice !== "Append draft" && choice !== "Replace editor") return;
         if (ctx.ui.getEditorText() !== previous) throw new Error("Editor changed while the draft was prepared; existing input was preserved.");
         ctx.ui.setEditorText(choice === "Append draft" ? `${previous}\n\n${draft}` : draft);

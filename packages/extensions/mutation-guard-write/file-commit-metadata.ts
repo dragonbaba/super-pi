@@ -1,34 +1,94 @@
 import { access, open, statfs, type FileHandle } from "node:fs/promises";
 import { constants } from "node:fs";
 import { dirname } from "node:path";
-import type { CommitMetadata } from "./file-commit.ts";
+import type { CommitMetadata, FileCommitPlan, PublicationValidation } from "./file-commit.ts";
 import type { PathIdentity } from "./native-file-core.ts";
 import { nativeFileRequest } from "./native-file-client.ts";
 
 const LOCAL_LINUX_FILESYSTEMS = new Set([0xef53, 0x58465342, 0x9123683e, 0x01021994, 0x794c7630]);
 
-function unsupportedPublish(): Promise<void> { return Promise.reject(new Error("Preselected compatibility cannot publish a replacement.")); }
-async function noMetadataCopy(): Promise<void> { /* In-place writes retain the object. */ }
-function compatibility(reason: string, original: { mode: bigint; uid: bigint; gid: bigint; nlink: bigint }, extra?: (handle: FileHandle) => Promise<void>): CommitMetadata {
-  async function assertCurrent(handle: FileHandle): Promise<void> {
-    const info = await handle.stat({ bigint: true });
-    if (info.mode !== original.mode || info.uid !== original.uid || info.gid !== original.gid || info.nlink !== original.nlink) throw new Error("[METADATA_CHANGED] In-place permission/owner/link metadata changed.");
-    await extra?.(handle);
-  }
-  return { strategy: "protected_in_place", reason, prepareTemporary: noMetadataCopy, assertCurrent, assertPostimage: assertCurrent,
-    async assertBeforeInPlace(handle, plan) { await nativeFileRequest("verify_in_place", { fd: handle.fd, target: plan.target, parent: plan.parent, previousSha256: plan.previousSha256 }); },
-    replace: unsupportedPublish, replacementFailureMayChangeState: true };
+interface ObjectMetadata { mode: bigint; uid: bigint; gid: bigint; nlink: bigint }
+
+function compatibility(reason: string, info: ObjectMetadata, target: PathIdentity, original: MetadataObservation): CommitMetadata {
+  return new NativeCommitMetadata("protected_in_place", target, info, original, reason);
+}
+
+function groupAssignable(group: bigint): boolean {
+  if (process.geteuid!() === 0 || group === BigInt(process.getegid!())) return true;
+  for (const current of process.getgroups!()) if (BigInt(current) === group) return true;
+  return false;
+}
+
+async function removeWindowsTemporary(path: string, expected: { device: string; inode: string }): Promise<void> {
+  await nativeFileRequest("remove", { path, expected });
 }
 
 interface MetadataObservation {
   attributes?: number; links?: number; creationTime?: string; security?: string; securityFingerprint?: string; filesystem?: string;
   hasAttributes?: boolean; namesFingerprint?: string; valuesFingerprint?: string; writeClearsAttributes?: boolean;
-  defaultAcl?: boolean; ownerAssignable?: boolean;
+  defaultAcl?: boolean; ownerAssignable?: boolean; mountId?: string;
 }
 
 async function inspect(handle: FileHandle, path: string, capability = false): Promise<MetadataObservation> {
   const info = await handle.stat({ bigint: true });
   return nativeFileRequest("inspect", { fd: handle.fd, path, capability, expected: { device: String(info.dev), inode: String(info.ino) } });
+}
+
+/** One prepared plan owns only bounded metadata. Methods do not capture an open
+ * handle or recreate callbacks; the mutation queue releases the plan at completion. */
+class NativeCommitMetadata implements CommitMetadata {
+  readonly strategy: CommitMetadata["strategy"];
+  readonly reason?: string;
+  readonly replacementFailureMayChangeState = true;
+  readonly removeTemporary = process.platform === "win32" ? removeWindowsTemporary : undefined;
+  private readonly target: PathIdentity;
+  private readonly info: ObjectMetadata;
+  private readonly original: MetadataObservation;
+
+  constructor(strategy: CommitMetadata["strategy"], target: PathIdentity, info: ObjectMetadata, original: MetadataObservation, reason?: string) {
+    this.strategy = strategy; this.target = target; this.info = info; this.original = original; this.reason = reason;
+  }
+  async assertCurrent(handle: FileHandle): Promise<void> { await this.assertMetadata(handle, false); }
+  async assertPostimage(handle: FileHandle): Promise<void> { await this.assertMetadata(handle, true); }
+  private async assertMetadata(handle: FileHandle, postimage: boolean): Promise<void> {
+    const current = await handle.stat({ bigint: true }), info = this.info, original = this.original;
+    const compatibility = this.strategy === "protected_in_place";
+    if ((compatibility || process.platform === "linux") && (current.mode !== info.mode || current.uid !== info.uid || current.gid !== info.gid || current.nlink !== (compatibility ? info.nlink : 1n))) throw new Error("[METADATA_CHANGED] File permission/owner/link metadata changed.");
+    const next = await inspect(handle, this.target.canonical);
+    if (process.platform === "win32") {
+      if (next.securityFingerprint !== original.securityFingerprint || next.attributes !== original.attributes || next.creationTime !== original.creationTime || next.links !== (compatibility ? original.links : 1)) throw new Error(`[${postimage ? "POSTCOMMIT" : "METADATA_CHANGED"}] Windows metadata changed.`);
+    } else if (next.namesFingerprint !== original.namesFingerprint || next.valuesFingerprint !== original.valuesFingerprint || !compatibility && next.hasAttributes) throw new Error("[METADATA_CHANGED] ACL/extended attributes changed.");
+  }
+  async assertBeforeInPlace(handle: FileHandle, plan: FileCommitPlan): Promise<void> {
+    await nativeFileRequest("verify_in_place", { fd: handle.fd, target: plan.target, parent: plan.parent, previousSha256: plan.previousSha256 });
+  }
+  async finalizeInPlace(): Promise<void> {
+    if (process.platform === "win32" && this.original.attributes === 0x80) {
+      await nativeFileRequest("restore_attributes", { path: this.target.canonical, expected: this.target, attributes: this.original.attributes });
+    }
+  }
+  async protectTemporary(staged: FileHandle, path: string): Promise<void> {
+    if (process.platform === "win32") {
+      const info = await staged.stat({ bigint: true });
+      await nativeFileRequest("protect", { path, expected: { device: String(info.dev), inode: String(info.ino) } });
+    } else await staged.chmod(0o600);
+  }
+  async prepareTemporary(staged: FileHandle, path: string): Promise<void> {
+    if (this.strategy === "protected_in_place") return;
+    const info = await staged.stat({ bigint: true });
+    if (process.platform === "win32") {
+      await nativeFileRequest("prepare", { path, security: this.original.security, attributes: this.original.attributes, expected: { device: String(info.dev), inode: String(info.ino) } });
+    } else {
+      if (info.uid !== this.info.uid || info.gid !== this.info.gid) await staged.chown(Number(this.info.uid), Number(this.info.gid));
+      await staged.chmod(Number(this.info.mode) & 0o777);
+      if ((await inspect(staged, path)).hasAttributes) throw new Error("[UNSUPPORTED_COMMIT] Temporary inherited unsupported extended attributes.");
+    }
+  }
+  async replace(temporary: string, target: string, validation: PublicationValidation): Promise<void> {
+    if (this.strategy !== "staged_replace") throw new Error("Preselected compatibility cannot publish a replacement.");
+    await nativeFileRequest("replace", { temporary, target, validation, original: this.original,
+      metadata: { mode: String(this.info.mode), uid: String(this.info.uid), gid: String(this.info.gid) } });
+  }
 }
 
 /** Called once after path authorization, before any staging/in-place write; no failure-triggered fallback. */
@@ -49,75 +109,37 @@ export async function selectCommitMetadata(target: PathIdentity): Promise<Commit
       throw error; // Inspection/permission failure never means absent metadata or fallback.
     }
     if (process.platform === "linux" && original.writeClearsAttributes) throw new Error("[UNSUPPORTED_COMMIT] File capabilities may be cleared by writing; target was not modified.");
-    const checkAttributes = async (current: FileHandle) => {
-      const next = await inspect(current, target.canonical);
-      if (process.platform === "win32") {
-        if (next.securityFingerprint !== original.securityFingerprint || next.attributes !== original.attributes || next.creationTime !== original.creationTime || next.links !== original.links) throw new Error("[METADATA_CHANGED] In-place Windows metadata changed.");
-      } else if (next.namesFingerprint !== original.namesFingerprint || next.valuesFingerprint !== original.valuesFingerprint) throw new Error("[METADATA_CHANGED] In-place ACL/extended attributes changed.");
-    };
-    if (info.nlink !== 1n) return compatibility("Multiple hardlinks: retain the existing object; supported mode/owner and observed metadata are verified.", info, checkAttributes);
-    if (process.platform === "linux" && original.hasAttributes) return compatibility("Visible ACL/extended attributes require the original object; values are verified before and after writing.", info, checkAttributes);
+    if (info.nlink !== 1n) return compatibility("Multiple hardlinks: retain the existing object; supported mode/owner and observed metadata are verified.", info, target, original);
+    if (process.platform === "linux" && original.hasAttributes) return compatibility("Visible ACL/extended attributes require the original object; values are verified before and after writing.", info, target, original);
     if (process.platform === "linux") {
       const filesystem = await statfs(target.canonical);
-      if (!LOCAL_LINUX_FILESYSTEMS.has(filesystem.type)) return compatibility("Unknown/network filesystem: retain the original object; observed mode/owner and visible attributes are verified, without a local replacement guarantee.", info, checkAttributes);
-      if (info.uid !== BigInt(process.geteuid!())) return compatibility("Foreign owner: retain the original object and verify mode/owner and visible attributes.", info, checkAttributes);
-      if (process.geteuid!() !== 0 && info.gid !== BigInt(process.getegid!()) && !process.getgroups!().some(group => BigInt(group) === info.gid)) return compatibility("Target group cannot be assigned to a new file: retain the original object and verify mode/owner and visible attributes.", info, checkAttributes);
+      if (!LOCAL_LINUX_FILESYSTEMS.has(filesystem.type)) return compatibility("Unknown/network filesystem: retain the original object; observed mode/owner and visible attributes are verified, without a local replacement guarantee.", info, target, original);
+      if (info.uid !== BigInt(process.geteuid!())) return compatibility("Foreign owner: retain the original object and verify mode/owner and visible attributes.", info, target, original);
+      if (!groupAssignable(info.gid)) return compatibility("Target group cannot be assigned to a new file: retain the original object and verify mode/owner and visible attributes.", info, target, original);
       try { await access(dirname(target.canonical), constants.W_OK | constants.X_OK); }
       catch (error) {
         if (!["EACCES", "EPERM"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
-        return compatibility("Parent directory cannot publish a sibling: preselected in-place write; mode/owner and visible extended attributes are verified.", info, checkAttributes);
+        return compatibility("Parent directory cannot publish a sibling: preselected in-place write; mode/owner and visible extended attributes are verified.", info, target, original);
       }
       const parent = await open(dirname(target.canonical), "r");
       try {
-        if ((await inspect(parent, dirname(target.canonical))).defaultAcl) return compatibility("Parent default ACL would be inherited by a new file: retain the existing object and verify its mode/owner and visible attributes.", info, checkAttributes);
+        const parentMetadata = await inspect(parent, dirname(target.canonical));
+        if (!original.mountId || !parentMetadata.mountId) throw new Error("[UNSUPPORTED_COMMIT] Mount identity is unavailable before staging.");
+        if (original.mountId !== parentMetadata.mountId) return compatibility("Target and parent have different mount identities: retain the mounted object and verify mode/owner and visible attributes.", info, target, original);
+        if (parentMetadata.defaultAcl) return compatibility("Parent default ACL would be inherited by a new file: retain the existing object and verify its mode/owner and visible attributes.", info, target, original);
       } finally { await parent.close(); }
     }
     if (process.platform === "win32") {
-      if (original.filesystem !== "NTFS") return compatibility("Only local NTFS has a validated staged capability; retain the original object and verify observed Windows metadata.", info, checkAttributes);
+      if (original.filesystem !== "NTFS") return compatibility("Only local NTFS has a validated staged capability; retain the original object and verify observed Windows metadata.", info, target, original);
       if (original.attributes! & 1) throw new Error("[UNSUPPORTED_COMMIT] Read-only Windows target.");
-      if (original.attributes! & ~(0x20 | 0x80)) return compatibility("Special Windows attributes require the original object; observed metadata is verified, advanced metadata is not verified.", info, checkAttributes);
+      if (original.attributes! & ~(0x20 | 0x80)) return compatibility("Special Windows attributes require the original object; observed metadata is verified, advanced metadata is not verified.", info, target, original);
       // ReplaceFileW/SetSecurityInfo can normalize legacy unprotected explicit
       // ACEs into inherited ACEs. Select object preservation BEFORE any effects.
       const control = Buffer.from(original.security!, "base64").readUInt16LE(2);
-      if (!(control & (0x1000 | 0x0400))) return compatibility("Legacy unprotected Windows DACL: replacement can change inheritance semantics; retain the original object and verify owner/group/DACL, attributes and creation time.", info, checkAttributes);
-      if (!original.ownerAssignable) return compatibility("Owner/group differ from the process token defaults: retain the existing object; no privilege is enabled to assign foreign ownership.", info, checkAttributes);
-      if ((control & 0x010b) || !(control & 0x0004)) return compatibility("Windows descriptor defaulted/request/presence flags require the original object; retain and verify their semantics.", info, checkAttributes);
+      if (!(control & (0x1000 | 0x0400))) return compatibility("Legacy unprotected Windows DACL: replacement can change inheritance semantics; retain the original object and verify owner/group/DACL, attributes and creation time.", info, target, original);
+      if (!original.ownerAssignable) return compatibility("Owner/group differ from the process token defaults: retain the existing object; no privilege is enabled to assign foreign ownership.", info, target, original);
+      if ((control & 0x010b) || !(control & 0x0004)) return compatibility("Windows descriptor defaulted/request/presence flags require the original object; retain and verify their semantics.", info, target, original);
     }
-    async function assertMetadata(current: FileHandle, postimage = false): Promise<void> {
-      const currentInfo = await current.stat({ bigint: true });
-      if (process.platform === "linux" && (currentInfo.mode !== info.mode || currentInfo.uid !== info.uid || currentInfo.gid !== info.gid || currentInfo.nlink !== 1n)) throw new Error("[STALE_STATE] File permission/ownership/link metadata changed.");
-      const next = await inspect(current, target.canonical);
-      if (process.platform === "win32") {
-        if (next.securityFingerprint !== original.securityFingerprint || next.attributes !== original.attributes || next.creationTime !== original.creationTime || next.links !== 1) throw new Error(`[${postimage ? "POSTCOMMIT" : "STALE_STATE"}] Windows metadata changed.`);
-      } else if (next.hasAttributes || next.namesFingerprint !== original.namesFingerprint) throw new Error("[STALE_STATE] Extended attributes changed.");
-    }
-    return {
-      strategy: "staged_replace", replacementFailureMayChangeState: true,
-      async protectTemporary(staged, path) {
-        if (process.platform === "win32") {
-          const stagedInfo = await staged.stat({ bigint: true });
-          await nativeFileRequest("protect", { path, expected: { device: String(stagedInfo.dev), inode: String(stagedInfo.ino) } });
-        } else await staged.chmod(0o600);
-      },
-      async prepareTemporary(staged, path) {
-        if (process.platform === "win32") {
-          const stagedInfo = await staged.stat({ bigint: true });
-          await nativeFileRequest("prepare", { path, security: original.security, expected: { device: String(stagedInfo.dev), inode: String(stagedInfo.ino) } });
-        } else {
-          const stagedInfo = await staged.stat({ bigint: true });
-          if (stagedInfo.uid !== info.uid || stagedInfo.gid !== info.gid) await staged.chown(Number(info.uid), Number(info.gid));
-          await staged.chmod(Number(info.mode) & 0o777);
-          const stageMetadata = await inspect(staged, path);
-          if (stageMetadata.hasAttributes) throw new Error("[UNSUPPORTED_COMMIT] Temporary inherited unsupported extended attributes.");
-        }
-      },
-      assertCurrent: assertMetadata,
-      assertPostimage: handle => assertMetadata(handle, true),
-      removeTemporary: process.platform === "win32" ? async (path, expected) => { await nativeFileRequest("remove", { path, expected }); } : undefined,
-      async replace(temporary, path, validation) {
-        await nativeFileRequest("replace", { temporary, target: path, validation, original,
-          metadata: { mode: String(info.mode), uid: String(info.uid), gid: String(info.gid) } });
-      },
-    };
+    return new NativeCommitMetadata("staged_replace", target, info, original);
   } finally { await handle.close(); }
 }
