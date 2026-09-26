@@ -182,7 +182,12 @@ export async function commitPreparedFile(plan: FileCommitPlan, content: Uint8Arr
       catch (error) {
         if (plan.metadata.replacementFailureMayChangeState) {
           receipt.outcome = "unknown";
-          if ((error as { commitOutcome?: string }).commitOutcome === "not_committed") {
+          if ((error as { commitOutcome?: string }).commitOutcome === "committed") {
+            receipt.outcome = "committed";
+            publishedObject = temporary;
+            temporary = undefined;
+            createdPath = undefined;
+          } else if ((error as { commitOutcome?: string }).commitOutcome === "not_committed") {
             // A documented error code alone cannot establish the observed state.
             let unchanged: FileHandle | undefined;
             try {

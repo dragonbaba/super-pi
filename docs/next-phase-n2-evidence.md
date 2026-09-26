@@ -387,3 +387,17 @@ candidate tests pass with check. Completion text/recovery-warning scans now avoi
 their remaining map/filter/some callbacks. Remaining request-bound queue and
 receipt callbacks are created once per prepared call/item and released with that
 owner; they are not created by native checks, provider/progress or render delivery.
+
+The 288015d2 review's ACL and post-publication findings are fixed in this PR.
+Windows capability selection opens the prepared object with FILE_WRITE_DATA,
+READ_CONTROL and FILE_READ_ATTRIBUTES; fs.access alone does not establish DACL
+write access. A real deny-WriteData fixture remains readable, rejects direct
+writing and native selection, and creates no candidate. After ReplaceFileW has
+succeeded, a metadata-finalization failure carries a committed marker through
+the worker/client/receipt: new bytes are known published, metadata still needs
+verification, and the consumed candidate is not claimed retained. An isolated
+copy of the actual worker injects a missing metadata path only after the real
+replacement, observes Win32 2, changed inode/bytes, one publication attempt,
+zero native handles/pending calls and no leftover candidate. The focused Windows
+metadata suite passes 21 tests, with nine Linux-only skips. Both fixes retain
+fixed bindings and the dedicated-regex/no-inline-callback source invariants.

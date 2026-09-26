@@ -25,6 +25,23 @@ test("N2 actual overwrite through an allowed parent alias retains canonical reco
   t.after(disposeNativeFileWorker);
 });
 
+test("N2 verified no-change overwrite draft preserves overwrite mode after candidate cleanup", { skip: process.platform !== "win32" }, async t => {
+  const f = await mutationFixture(t), path = join(f.cwd, "retry-overwrite"); writeFileSync(path, "before");
+  await protectWindowsFixture(path); await f.call("read", { path }, "read-retry");
+  const post = Worker.prototype.postMessage;
+  t.mock.method(Worker.prototype, "postMessage", function(this: Worker, ...args: any[]) {
+    if (args[0]?.operation === "replace") throw Object.assign(new Error("fixture before native publication"), { commitOutcome: "not_committed" });
+    return Reflect.apply(post, this, args);
+  });
+  t.after(disposeNativeFileWorker);
+  const result = await f.call("write", { path, content: "desired" }, "cleaned-overwrite");
+  assert.equal(result.isError, true); assert.equal((result.details as any).status, "failed_no_change");
+  assert.equal((result.details as any).commit.retainedTemporary, undefined);
+  const records = collectChanges(SessionManager.open(f.session.getSessionFile()!).getBranch(), f.cwd);
+  const draft = remainingDraft(records, new Set()); assert.match(draft, /"mode": "overwrite"/); assert.match(draft, /desired/);
+  assert.equal(readFileSync(path, "utf8"), "before");
+});
+
 for (const batch of [false, true]) test(`N2 overwrite persists verification/no-retry when a no-change failure retains the candidate, batch=${batch}`, async t => {
   const f = await mutationFixture(t), path = join(f.cwd, "overwrite"); writeFileSync(path, "before");
   await protectWindowsFixture(path);

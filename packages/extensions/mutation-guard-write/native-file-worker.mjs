@@ -165,7 +165,9 @@ function windowsFilesystem(b, path) {
 function inspectWindows(b, input) {
   // A CRT descriptor belongs to its CRT instance. Open a Win32-owned handle;
   // never pass Node's descriptor to another CRT's _get_osfhandle.
-  return withWindowsHandle(b, input, 0x00020080, inspectWindowsHandle); // READ_CONTROL | FILE_READ_ATTRIBUTES
+  // fs.access(W_OK) ignores Windows ACLs. Capability selection must obtain
+  // FILE_WRITE_DATA on the prepared object before creating any candidate.
+  return withWindowsHandle(b, input, input.capability ? 0x00020082 : 0x00020080, inspectWindowsHandle);
 }
 function inspectWindowsHandle(b, input, handle) {
     const object = windowsObject(b, handle, input.expected), security = securityDescriptor(b, handle);
@@ -302,8 +304,10 @@ function replaceVerified(b, input) {
     if (!b.replace(toNamespacedPath(input.target), toNamespacedPath(input.temporary), null, 0, null, null)) winError(b, "ReplaceFileW", true);
     // ReplaceFileW may set ARCHIVE even when the prepared candidate was NORMAL.
     // Restore only on the verified published object. Failure after publication
-    // remains unknown/possibly partial; it never triggers an in-place retry.
-    withWindowsHandle(b, { path: input.target, expected: input.validation.temporary, attributes: input.original.attributes }, 0x180, setWindowsAttributes);
+    // reports the known publication, with incomplete metadata verification.
+    // The candidate name was consumed; it must not be reported as retained.
+    try { withWindowsHandle(b, { path: input.target, expected: input.validation.temporary, attributes: input.original.attributes }, 0x180, setWindowsAttributes); }
+    catch (error) { error.commitOutcome = "committed"; throw error; }
   } else {
     try { renameSync(input.temporary, input.target); }
     catch (error) { error.commitOutcome = "not_committed"; throw error; }

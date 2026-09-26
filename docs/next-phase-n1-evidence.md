@@ -246,3 +246,13 @@ its owned workspace after the final absent-target read; it fails without the new
 scope check and passes with it. That precise builtin interception runs in an owned
 child to isolate Jiti's cached builtin namespace snapshots. No user workspace or
 external process is touched. New-head full checks and review are still required.
+
+The 85ea51676 review's remaining-draft findings are fixed: standalone create
+drafts explicitly preserve `mode: create`; mirrored aggregate results must match
+the durable custom result's bounded created-directory paths and identity fields;
+snapshot location hints use the existing validated reference parser, including
+copied `>>> LINE#ID|text` forms. No stale anchor or source text is copied into the
+draft. Real partial batch creation plus separately decoded JSON mirror corruption
+tests cover removed/path-changed/identity-changed parent metadata. The parser's
+two patterns now live in the dedicated regex module and its consumer is added to
+the AST gate. No per-event callback or persistent cache is introduced.
