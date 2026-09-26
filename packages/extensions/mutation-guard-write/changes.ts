@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { lstat, open } from "node:fs/promises";
-import { resolve } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import type { ExtensionAPI, ExtensionContext } from "@super-pi/coding-agent";
 import { Key, matchesKey, Text, type TUI } from "@super-pi/tui";
@@ -26,6 +26,7 @@ export interface ChangeRecord {
 export function collectChanges(branch: readonly any[], cwd: string): ChangeRecord[] {
   branch = branch.slice(-512);
   const calls = new Map<string, any>();
+  const callOrder = new Map<string, number>();
   const duplicate = new Set<string>();
   const entries = new Map<string, any>();
   const records: ChangeRecord[] = [];
@@ -38,24 +39,32 @@ export function collectChanges(branch: readonly any[], cwd: string): ChangeRecor
       if (call.type !== "toolCall" || typeof call.id !== "string") continue;
       if (calls.has(call.id)) duplicate.add(call.id);
       calls.set(call.id, call);
+      callOrder.set(call.id, order.get(entry.id)!);
     }
   }
   for (const receipt of collectStructuredMutationReceipts(branch)) {
-    const call = duplicate.has(receipt.toolCallId) ? undefined : calls.get(receipt.toolCallId);
+    const receiptOrder = order.get(receipt.entryId)!;
+    const precedingCall = (callOrder.get(receipt.toolCallId) ?? Infinity) < receiptOrder;
+    const call = duplicate.has(receipt.toolCallId) || !precedingCall ? undefined : calls.get(receipt.toolCallId);
     const entry = entries.get(receipt.entryId);
     const index = receipt.receiptVersion === 2 ? Number(receipt.itemId.slice(receipt.toolCallId.length + 1)) : 0;
     const input = call?.name === "file_batch" ? call.arguments?.operations?.[index] : call?.arguments;
     const item = entry?.message?.toolName === "file_batch" ? entry.message.details?.items?.[index] : undefined;
     const details = item?.receipt ?? entry?.message?.details ?? entry?.data;
-    const target = resolve(cwd, receipt.target);
+    const historicalTarget = isAbsolute(receipt.target);
+    const target = historicalTarget ? resolve(receipt.target) : receipt.target;
     const destination = receipt.receiptVersion === 2 && receipt.destination ? resolve(cwd, receipt.destination) : undefined;
     let bound = false;
-    if (call?.name === "file_batch" && input?.operation === receipt.operation) {
-      const intent = boundBatchIntents(branch, call.arguments, call.id).get(`${call.id}:${index}`);
+    const executionEntries = call ? branch.slice(callOrder.get(call.id)! + 1, receiptOrder + 1) : [];
+    if (historicalTarget && call?.name === "file_batch" && input?.operation === receipt.operation) {
+      const intent = boundBatchIntents(executionEntries, call.arguments, call.id).get(`${call.id}:${index}`);
       bound = intent?.target === receipt.target && intent?.destination === destination;
-    } else if (call?.name === receipt.operation && typeof input?.path === "string") {
+    } else if (historicalTarget && call?.name === receipt.operation && typeof input?.path === "string") {
       const expected = receipt.operation === "edit" || receipt.operation === "write" ? resolveToolPath(cwd, input.path) : resolve(cwd, input.path);
       bound = expected === target && (receipt.operation !== "move" || typeof input.destination === "string" && resolve(cwd, input.destination) === destination);
+      if (bound && receipt.receiptVersion === 2) bound = executionEntries.some(candidate => candidate.type === "custom" && candidate.customType === "file-mutation-progress-v2"
+        && candidate.data?.phase === "intent" && candidate.data.toolCallId === call.id && candidate.data.itemId === receipt.itemId
+        && candidate.data.operation === receipt.operation && candidate.data.target === receipt.target && candidate.data.destination === receipt.destination);
     }
     records.push({ entryId: receipt.entryId, toolCallId: receipt.toolCallId, itemId: `${receipt.toolCallId}:${index}`,
       operation: receipt.operation, target, destination,
@@ -64,14 +73,16 @@ export function collectChanges(branch: readonly any[], cwd: string): ChangeRecor
       batchSize: call?.name === "file_batch" ? call.arguments?.operations?.length : undefined,
       postimage: bound && typeof details?.sha256 === "string" && SHA256.test(details.sha256) ? details.sha256 : undefined,
       sourceIdentity: bound ? details?.sourceIdentity : undefined,
-      unavailable: bound ? undefined : "Original request or matching preparation is missing/ambiguous in the bounded history; unable to reconstruct." });
+      unavailable: bound ? undefined : !historicalTarget ? "Originating cwd is missing for this relative legacy receipt; unable to reconstruct its target safely."
+        : "Original request or ordered matching preparation is missing/ambiguous in the bounded history; unable to reconstruct." });
     if (records.length > MAX_CHANGES) records.shift();
   }
   const previews: ChangeRecord[] = [];
   // Previews deliberately have no durable mutation receipt. They are view-only.
   for (const entry of branch) {
     const message = entry.type === "message" ? entry.message : undefined;
-    const call = message && !duplicate.has(message.toolCallId) ? calls.get(message.toolCallId) : undefined;
+    const call = message && !duplicate.has(message.toolCallId) && (callOrder.get(message.toolCallId) ?? Infinity) < order.get(entry.id)!
+      ? calls.get(message.toolCallId) : undefined;
     if (message?.role !== "toolResult" || message.toolName !== "file_batch" || call?.name !== "file_batch"
       || call.arguments?.dryRun !== true || message.details?.preview !== true || !Array.isArray(message.details.items) || message.details.items.length > 16) continue;
     for (let index = 0; index < message.details.items.length; index++) {
@@ -131,6 +142,17 @@ export async function verifyChange(record: ChangeRecord, assertAllowed: () => Pr
   const source = await observe(record.target, Boolean(record.postimage), assertAllowed);
   const destination = record.destination ? await observe(record.destination, false, assertAllowed) : undefined;
   await assertAllowed();
+  // A second path (or a permission await) can change the first observation.
+  // Recheck all identities, including metadata-only and oversized files.
+  for (const observation of destination ? [source, destination] : [source]) {
+    if (observation.identity) {
+      if (!sameIdentity(observation.identity, await capturePathIdentity(observation.path))) throw new Error("Object changed before observation was accepted.");
+    } else {
+      try { await lstat(observation.path); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") continue; throw error; }
+      throw new Error("Path appeared before absence observation was accepted.");
+    }
+  }
   return { source, destination,
     postimageMatches: record.postimage && source.sha256 ? record.postimage === source.sha256 : undefined,
     destinationIdentityMatches: record.sourceIdentity && destination?.identity

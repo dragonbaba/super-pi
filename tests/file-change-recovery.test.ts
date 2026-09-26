@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { existsSync, readFileSync, writeFileSync, mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdtempSync, mkdirSync, rmSync, realpathSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { createJiti } from "jiti";
@@ -148,6 +148,54 @@ test("N1 bounded history drops missing/ambiguous originals and incomplete batche
     batchSize: 2, original: { path: "p", mode: "create", content: "wanted" } };
   assert.throws(() => remainingDraft([record], new Set()), /history is incomplete/);
   assert.deepEqual(collectChanges(Array.from({ length: 2000 }, (_, i) => ({ id: String(i), type: "custom", data: {} })), "/"), []);
+});
+
+test("N1 recovery requires an ordered call/intention/result and does not borrow future history", async t => {
+  const f = await fixture(t); writeFileSync(join(f.cwd, "single"), "delete me");
+  const single = realpathSync.native(join(f.cwd, "single"));
+  await f.call("read", { path: single }, "ordered-read");
+  await f.call("delete", { path: single }, "ordered-single");
+  await f.call("file_batch", { operations: [{ operation: "write", mode: "create", path: "batch", content: "new" }] }, "ordered-batch");
+  const branch = f.session.getBranch() as any[];
+  assert.ok(collectChanges(branch, f.cwd).every((r: any) => !r.unavailable));
+  const noIntents = branch.filter(e => e.customType !== "file-mutation-progress-v2");
+  assert.ok(collectChanges(noIntents, f.cwd).every((r: any) => r.unavailable));
+  const futureCalls = branch.filter(e => e.message?.role !== "assistant").concat(branch.filter(e => e.message?.role === "assistant"));
+  assert.ok(collectChanges(futureCalls, f.cwd).every((r: any) => r.unavailable));
+  const futurePreparation = branch.filter(e => e.customType !== "file-mutation-progress-v2").concat(branch.filter(e => e.customType === "file-mutation-progress-v2" && e.data.phase === "prepared"));
+  const oldResults = collectChanges(futurePreparation, f.cwd).filter((r: any) => r.status === "succeeded");
+  // Later progress may supersede the result, but cannot retroactively bind that earlier result.
+  for (const record of oldResults) {
+    const entry = branch.find(e => e.id === record.entryId);
+    if (entry.type === "message") assert.ok(record.unavailable);
+  }
+});
+
+test("N1 relative legacy receipts never retarget a different Session cwd", async t => {
+  const f = await fixture(t);
+  await f.call("write", { path: "original", content: "written" }, "legacy");
+  const branch = structuredClone(f.session.getBranch()) as any[];
+  const result = branch.find(e => e.message?.toolCallId === "legacy" && e.message.role === "toolResult");
+  assert.equal(result.message.details.target, realpathSync.native(join(f.cwd, "original")));
+  result.message.details.target = "original";
+  const records = collectChanges(branch.filter(e => e.customType !== "file-mutation-progress-v2"), join(f.cwd, "other-workspace"));
+  assert.equal(records.length, 1);
+  assert.match(records[0].unavailable, /Originating cwd/);
+  assert.equal(records[0].target, "original");
+  await assert.rejects(verifyChange(records[0], async () => { assert.fail("must not access reinterpreted path"); }), /cannot authorize/);
+});
+
+test("N1 metadata-only verification rejects replacement during the final permission await", async t => {
+  const f = await fixture(t); const source = join(f.cwd, "source"), destination = join(f.cwd, "destination");
+  writeFileSync(source, "content");
+  await f.call("read", { path: realpathSync.native(source) }, "metadata-read");
+  await f.call("move", { path: realpathSync.native(source), destination: join(realpathSync.native(f.cwd), "destination") }, "metadata");
+  const record = collectChanges(f.session.getBranch(), f.cwd)[0];
+  let assertions = 0;
+  await assert.rejects(verifyChange(record, async () => {
+    if (++assertions === 4) writeFileSync(destination, "external replacement content");
+  }), /Object changed/);
+  assert.equal(assertions, 4);
 });
 
 test("N1 actual default SDK Session: view/verify/draft do not trigger provider calls or replay on reopen", { timeout: 60000 }, async t => {

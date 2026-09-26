@@ -119,3 +119,15 @@ Draft PR: [#47](https://github.com/dragonbaba/super-pi/pull/47). Initial candida
 The second slice's six targeted suites passed 99 tests, with one Windows
 case-sensitivity skip. Check, offline build and hot-path gates passed locally.
 This older CI does not validate the added recovery command.
+
+The completed second slice `a7b5e41c11a7d9a410f722ecc7e00c792c062c34` then passed
+Windows Node 22.19.0 check, offline build, hot gates and the full suite with the
+worktree fixed at that commit. Its exact-head preview profile/tool-leaf gate and
+[Linux/Windows CI](https://github.com/dragonbaba/super-pi/actions/runs/36253075251)
+also passed. Actual review found three further P2 issues in recovery pairing and
+observation. The follow-up requires a unique preceding call and ordered intervening
+v2 intent/preparation, rechecks all observed identities/absence before accepting
+verification, and refuses relative legacy receipts with unknown originating cwd.
+New single-file results record canonical targets. Six regression suites now pass
+102 tests with one Windows case-sensitivity skip; final-head gates and review are
+pending for this follow-up. No completed review with findings is counted as approval.

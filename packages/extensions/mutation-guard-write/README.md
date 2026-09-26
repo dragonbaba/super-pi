@@ -150,3 +150,8 @@ or replace choice, and a concurrent edit cancels placement. There is no backgrou
 execution, retry, undo, second receipt database, or automatic clearing of unrelated
 false-success obligations. Host-only calls with redacted arguments and legacy alias
 paths lacking sufficient pairing must be inspected with a fresh request.
+New single-file receipts store canonical targets. Older relative receipts without
+an originating cwd remain view-only, so Session forks/cwd overrides cannot retarget
+them. Pairing requires a unique preceding call and, for v2 results, an intervening
+matching intent/preparation. Both paths of an observation are checked again before
+acceptance; these bounded observations are not an atomic filesystem snapshot.

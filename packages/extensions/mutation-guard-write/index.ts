@@ -317,7 +317,7 @@ export default function mutationGuardWriteExtension(pi: ExtensionAPI): void {
             mutationReceiptVersion: MUTATION_RECEIPT_VERSION,
             category: "success",
             operation: "edit",
-            target: execution.authorization?.target ?? input.path,
+            target: pathApproval?.canonicalTarget ?? execution.authorization?.target ?? input.path,
             stateChanged: true,
             previousSha256: execution.previousSha256,
             sha256: execution.writtenSha256,
@@ -443,7 +443,7 @@ export default function mutationGuardWriteExtension(pi: ExtensionAPI): void {
               mutationReceiptVersion: MUTATION_RECEIPT_VERSION,
               category: "success",
               operation: "edit",
-              target: snapshotInput.path,
+              target: canonicalTarget,
               stateChanged: true,
             },
           };
@@ -475,7 +475,7 @@ export default function mutationGuardWriteExtension(pi: ExtensionAPI): void {
       const absolutePath = resolveToolPath(ctx.cwd, path);
       const pathApproval = consumePermissionPathApproval(input, toolCallId, "write") as MutationPathApproval | undefined;
       const progress = pathApproval?.creationPlan !== undefined;
-      const receiptTarget = pathApproval?.creationPlan?.canonicalTarget ?? absolutePath;
+      const receiptTarget = pathApproval?.canonicalTarget ?? absolutePath;
       let details;
       try {
         details = await withFileMutationQueue(
@@ -509,7 +509,7 @@ export default function mutationGuardWriteExtension(pi: ExtensionAPI): void {
         : `Modified ${path} (${Buffer.byteLength(content, "utf8")} bytes)`;
       return {
         content: [{ type: "text" as const, text: summary }],
-        details,
+        details: { ...details, target: receiptTarget },
       };
     },
   });
