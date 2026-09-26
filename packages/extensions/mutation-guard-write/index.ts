@@ -484,7 +484,7 @@ export default function mutationGuardWriteExtension(pi: ExtensionAPI): void {
           absolutePath,
           async () => {
             if (!progress && pathApproval) pi.appendEntry(MUTATION_PROGRESS_ENTRY, { phase: "origin", toolCallId, itemId: `${toolCallId}:0`, operation: "write", target: receiptTarget, requestHash: mutationRequestHash("write", input) });
-            if (progress) pi.appendEntry(MUTATION_PROGRESS_ENTRY, { toolCallId, itemId: `${toolCallId}:0`, phase: "intent", operation: "write", target: receiptTarget, directories: pathApproval!.creationPlan!.directories });
+            if (progress) pi.appendEntry(MUTATION_PROGRESS_ENTRY, { toolCallId, itemId: `${toolCallId}:0`, phase: "intent", operation: "write", target: receiptTarget, requestHash: mutationRequestHash("write", input), directories: pathApproval!.creationPlan!.directories });
             return guard.write(ctx.cwd, path, content, turnGeneration, signal, pathApproval);
           },
         );
