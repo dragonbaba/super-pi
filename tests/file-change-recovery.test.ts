@@ -792,6 +792,30 @@ test("N1 partial batch creation binds created-directory metadata across the resu
   }
 });
 
+for (const batch of [false, true]) test(`N2 retained exact-edit candidate consumes read evidence, batch=${batch}`, async t => {
+  const f = await fixture(t), target = join(realpathSync.native(f.cwd), "retained-exact"); writeFileSync(target, "before");
+  await protectWindowsFixture(target); await f.call("read", { path: target }, "retained-read");
+  const probe = await open(target, "r"), prototype = Object.getPrototypeOf(probe); await probe.close();
+  const post = Worker.prototype.postMessage;
+  t.mock.method(prototype, "sync", async function() { throw new Error("fixture retained exact staging sync failure"); });
+  t.mock.method(Worker.prototype, "postMessage", function(this: Worker, input: any) {
+    if (input.operation === "remove") input.expected = { ...input.expected, inode: "0" };
+    return post.call(this, input);
+  });
+  const args = { path: target, edits: [{ oldText: "before", newText: "after" }] };
+  const first = await f.call(batch ? "file_batch" : "edit", batch ? { operations: [{ operation: "edit", ...args }] } : args, "retained-first");
+  t.mock.restoreAll(); assert.equal(first.isError, true);
+  const retained = (await fsPromises.readdir(dirname(target))).filter(name => name.startsWith(".pi-file-commit-"));
+  assert.equal(retained.length, 1); assert.equal(readFileSync(join(dirname(target), retained[0]!), "utf8"), "after");
+  const retry = await f.call("edit", args, "retained-retry");
+  assert.equal(retry.isError, true); assert.ok(JSON.stringify(retry).includes("READ_REQUIRED"), JSON.stringify(retry));
+  assert.deepEqual((await fsPromises.readdir(dirname(target))).filter(name => name.startsWith(".pi-file-commit-")), retained);
+  assert.equal(readFileSync(target, "utf8"), "before");
+  await f.call("read", { path: target }, "retained-fresh-read");
+  const fresh = await f.call("edit", args, "retained-fresh-edit");
+  assert.equal(fresh.isError, false, JSON.stringify(fresh)); assert.equal(readFileSync(target, "utf8"), "after");
+});
+
 test("N2 mirrored terminals bind commit outcome, strategy and retained candidate", async t => {
   const f = await fixture(t), target = join(realpathSync.native(f.cwd), "commit-mirror"); writeFileSync(target, "before");
   await protectWindowsFixture(target); await f.call("read", { path: target }, "commit-mirror-read");
