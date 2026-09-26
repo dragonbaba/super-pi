@@ -321,7 +321,7 @@ async function runCriticalProgressFailure(delayedCompletion: boolean) {
 	assert.ok(endEvent);
 	return {
 		isError: endEvent.isError,
-		text: endEvent.result.content.map(part => part.type === "text" ? part.text : "").join("\n"),
+		text: endEvent.result.content.map((part: { type: string; text?: string }) => part.type === "text" ? part.text : "").join("\n"),
 	};
 }
 
