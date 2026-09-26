@@ -182,3 +182,17 @@ actual standalone write/delete/move, disk reopen with cwd override, a no-change
 remaining draft, and malformed imported histories. Legacy v1 receipts still need
 their older binding; no origin cwd is guessed. New-head full gates/CI/re-review are
 required and not inferred from the preceding candidate.
+
+`d1bad1788e620810caf60914dd330b78ea26981d` passed local check, offline
+build, hot/full tests, allocation gates and both CI platforms
+([run 36260785338](https://github.com/dragonbaba/super-pi/actions/runs/36260785338)).
+The next actual review found malformed progress without item IDs, a terminal before
+intent, incomplete/out-of-order verification records, and an unbounded draft ID.
+Recovery now rejects malformed phase identities, requires intent before every
+terminal mirror, and accepts only complete ordered observations bound to the exact
+receipt/session, paths, identities, parents and derived comparison results. The
+entire draft (including its quoted, control-free, 256-character source ID) fits
+48 KiB. All 26 focused recovery tests pass, including actual command refusal of a
+four-ID-only verification record. These checks do not authenticate arbitrary
+externally forged Session files or grant execution authority. Final-head gates,
+CI and re-review remain required.
