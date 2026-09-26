@@ -613,9 +613,12 @@ export function recordResult(
   details?: unknown,
 ): string | undefined {
   if (isError) {
-    if (!readShellExecution(details) && GUARD_BLOCK_CATEGORY_RE.test(failureText)) return undefined;
-    setBounded(state.failuresByTool, toolName, (state.failuresByTool.get(toolName) ?? 0) + 1);
+    const execution = readShellExecution(details);
+    if (!execution && GUARD_BLOCK_CATEGORY_RE.test(failureText)) return undefined;
     const category = classifyFailureText(failureText, input, toolName, details);
+    if (execution?.producer === "agent" && execution.started === false
+      && (category === "duplicate_call" || category === "repeated_call_blocked")) return undefined;
+    setBounded(state.failuresByTool, toolName, (state.failuresByTool.get(toolName) ?? 0) + 1);
     const key = signatureKey(canonicalCallKey ?? callKey(toolName, input), category);
     state.activeFailureCount = state.activeFailureSignature === key ? state.activeFailureCount + 1 : 1;
     state.activeFailureSignature = key;

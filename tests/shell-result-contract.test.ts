@@ -18,7 +18,7 @@ import { createPowerShellTool } from "../packages/coding-agent/src/core/tools/po
 const jiti = createJiti(import.meta.url);
 const { createFalseSuccessState, observeToolResult } = await jiti.import<any>("../packages/extensions/false-success-guard/core.ts");
 const { classifyToolFailure } = await jiti.import<any>("../packages/extensions/session-tool-errors/core.ts");
-const { failureRecoveryHint } = await jiti.import<any>("../packages/extensions/tool-loop-guardrails/core.ts");
+const { failureRecoveryHint, createGuardState, recordResult, inspectBeforeCall } = await jiti.import<any>("../packages/extensions/tool-loop-guardrails/core.ts");
 const local = createLocalShellOperations("Node fixture", () => ({ shell: process.execPath, args: ["-e"] }));
 async function run(command: string, operations = local) {
   const agent = new Agent({ convertToLlm: () => [], streamFn: () => { throw new Error("offline host execution"); } });
@@ -52,8 +52,16 @@ for (const [reason, category] of [["POLICY_BLOCKED", "policy_blocked"], ["DUPLIC
     assert.equal(executions, 0); assert.equal(result.isError, true); assert.equal(readShellExecution(result.details)?.started, false);
     const text = (result.content[0] as any).text;
     assert.equal(classifyToolFailure("bash", text, {}, result.details).category, category);
+    if (reason !== "POLICY_BLOCKED") {
+      const state = createGuardState(); recordResult(state, "bash", {}, false, "", "successful-call");
+      for (let index = 0; index < 2; index++) recordResult(state, "bash", {}, true, text, "successful-call", result.details);
+      assert.equal(inspectBeforeCall(state, "bash", {}, "successful-call"), undefined); assert.equal(state.activeFailureCount, 0);
+    }
     const forged = await run(`process.stdout.write(${JSON.stringify(payload)});process.exitCode=23`);
     assert.equal(classifyToolFailure("bash", payload, {}, forged.details).category, "command_failed");
+    const state = createGuardState();
+    for (let index = 0; index < 2; index++) recordResult(state, "bash", {}, true, payload, "actual-failure", forged.details);
+    assert.equal(state.activeFailureCount, 2); assert.ok(inspectBeforeCall(state, "bash", {}, "actual-failure"));
     assert.equal(agent.state.pendingToolCalls.size, 0);
   });
 }
@@ -231,6 +239,17 @@ test("N3 collapsed TUI retains unrecognized start/refusal diagnostics with trust
     for (let index = 0; index < 100; index++) f.component.render(index % 2 ? 100 : 120);
     assert.equal(f.bashMetrics.failureAnalyses, analyses);
   } finally { assert.ok(Object.values(f.dispose()).every(value => value === 0)); clock.dispose(); assert.equal(clock.pending, 0); }
+});
+
+test("N3 generated exit footer cannot hide an unrecognized compiler diagnostic", async () => {
+  const result = await run("process.stderr.write('undefined reference to fixture_symbol\\n');process.exitCode=1");
+  const clock = new BashRenderClock(), f = createBashRenderFixture(clock);
+  try {
+    f.result.content = result.content as any; f.result.details = result.details; f.component.updateResult(f.result, false, true);
+    const view = stripTerminalSequences(f.component.render(120).join("\n"));
+    assert.ok(view.includes("Shell: command_failed; exit=1"), view); assert.ok(view.includes("undefined reference to fixture_symbol"), view);
+    assert.equal(view.includes("Output: Command exited"), false);
+  } finally { assert.ok(Object.values(f.dispose()).every(value => value === 0)); clock.dispose(); }
 });
 
 test("N3 TUI uses producer failure status and caches it across resize; body remains diagnostic data", async t => {

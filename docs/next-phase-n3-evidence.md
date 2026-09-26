@@ -100,7 +100,7 @@ slice's final two-platform CI and actual review have not yet completed.
 
 ## Bounded compatibility and result review corrections
 
-The three literal temporary CDPATH query forms now execute through actual Bash,
+The literal temporary `declare -p CDPATH` and `typeset -p CDPATH` queries execute through actual Bash,
 Agent/permission/lifecycle and default SDK/provider/Session paths. A hash change
 as the final command of a closed child no longer taints its parent. Same/nested
 child lookup, lastpipe, persistent assignments, added operands, dynamic/append
@@ -109,8 +109,12 @@ lives in the dedicated regex module; the recognizer is a module function with no
 callback. No command rewriting, generic evaluation or authority exemption is used.
 GNU Bash documents different assignment persistence for [POSIX special builtins](https://www.gnu.org/s/bash/manual/html_node/Special-Builtins.html)
 and [subshell environments](https://www.gnu.org/s/bash/manual/html_node/Command-Execution-Environment.html).
-Consequently export-n is limited to the outer sanitized Bash; nested evaluators
-do not inherit that exception. Ambient POSIXLY_CORRECT is removed alongside the
+The initial outer-shell export-n exception was removed after review demonstrated
+that configured Bash invoked as `sh` enters POSIX mode. Its assignment can persist
+despite environment filtering, so export-n prefixes before dependent operations
+are refused on every backend. Actual Linux sh-symlink regression proves the changed
+cwd directly and no guarded spawn/effects. The two regular-builtin queries remain
+implemented and tested. Ambient POSIXLY_CORRECT is removed alongside the
 already filtered Bash startup variables; explicit changes remain inspected.
 
 Review 3f23591 findings are fixed: pre-execution verification uses an attached
@@ -187,3 +191,15 @@ syntax/location text; the legacy no-facts Node advisory remains tested separatel
 Check, offline build and focused Agent/default-SDK/serializer/TUI/recovery tests pass.
 Latest N2 3bac07bf1 and N1 197f5ff0c are normal ancestors. Full gates, allocation
 profile, current-head CI and actual re-review remain necessary.
+
+The next review identified a configured-sh POSIX variant, producer status text
+hiding an unrecognized compiler diagnostic, and guard refusals poisoning the
+failure chain. The export-n exception is removed as described above; regular-builtin
+queries and closed-child hash remain supported. A final preview skips standalone
+producer markers and exit footers when selecting its first bounded diagnostic.
+Agent-produced duplicate/repeated refusals do not count as execution failures;
+real stdout with the same JSON still counts by recorded exit facts. The actual
+default SDK executes one of three duplicate siblings, records two refusals, then
+successfully executes a fresh identical call on the next turn. New focused and
+parent-integration tests pass. Full checks/profile, Linux sh-symlink execution,
+two-platform CI and current-head review remain required.

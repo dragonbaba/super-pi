@@ -354,6 +354,11 @@ function nodeParseContext(lines: readonly string[]): string[] {
 	return context.map(boundFailureFragment);
 }
 
+function isShellStatusFooter(line: string): boolean {
+	return line === "[SHELL_RUNTIME_FAILED]" || line === "[SHELL_INTERRUPTED]" || line === "[SHELL_START_FAILED]" || line === "[SHELL_OUTPUT_FAILED]"
+		|| line.startsWith("Command exited with code ") || line.startsWith("Command timed out") || line.startsWith("Command aborted");
+}
+
 /** Select the first useful failure and terminal status once per final result. */
 function createBashFailurePreview(output: string, execution?: ShellExecutionFacts): BashFailurePreview | undefined {
 	let firstUseful: string | undefined;
@@ -371,14 +376,14 @@ function createBashFailurePreview(output: string, execution?: ShellExecutionFact
 		const line = output.slice(start, end);
 		if (line.trim()) {
 			nonblankCharacters += line.length;
-			if (execution && firstDiagnostic === undefined) firstDiagnostic = boundFailureFragment(line);
+			if (execution && firstDiagnostic === undefined && !isShellStatusFooter(line)) firstDiagnostic = boundFailureFragment(line);
 		}
 		if (!firstUseful) {
 			if (lineHasSpecificFailureMarker(line)) {
 				firstUseful = line;
 				firstUsefulEnd = end;
 				if (line.includes("SyntaxError")) firstUsefulPrefix = nodeParseContext(recentLines);
-			} else if (!genericFailure && lineHasGenericFailureMarker(line)) {
+			} else if (!genericFailure && lineHasGenericFailureMarker(line) && (!execution || !isShellStatusFooter(line))) {
 				genericFailure = line;
 				genericFailureEnd = end;
 			}

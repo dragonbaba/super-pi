@@ -595,6 +595,36 @@ test("N1 later changed-target, destination or operation terminals make earlier o
   }
 });
 
+test("N1 empty, incomplete and malformed aggregate item lists cannot authorize a remaining draft", async t => {
+  const f = await fixture(t), path = join(f.cwd, "aggregate-source"); writeFileSync(path, "old");
+  f.onRecord(data => { if (data.phase === "intent") writeFileSync(path, "external"); });
+  await f.call("file_batch", { operations: [{ operation: "delete", path }, { operation: "write", mode: "create", path: "later", content: "desired" }] }, "aggregate-shape");
+  const genuine = JSON.parse(JSON.stringify(f.session.getBranch()));
+  for (const fault of ["empty", "missing", "incomplete", "invalid-outcome"]) {
+    const branch = structuredClone(genuine), aggregate = branch.find((entry: any) => entry.message?.toolCallId === "aggregate-shape" && entry.message?.role === "toolResult").message.details;
+    if (fault === "empty") aggregate.items = [];
+    else if (fault === "missing") delete aggregate.items;
+    else if (fault === "incomplete") aggregate.items.pop();
+    else aggregate.items[0].status = "not-an-outcome";
+    const records = collectChanges(branch, f.cwd); assert.ok(records.length > 0);
+    assert.throws(() => remainingDraft(records, new Set()), fault);
+  }
+  assert.equal(existsSync(join(f.cwd, "later")), false); assert.equal(readFileSync(path, "utf8"), "external");
+});
+
+test("N1 custom origin/preparation cannot double as a terminal receipt", async t => {
+  const f = await fixture(t); await f.call("write", { path: "origin-only", content: "created once" }, "origin-only");
+  const genuine = JSON.parse(JSON.stringify(f.session.getBranch()));
+  for (const phase of ["origin", "prepared", "unknown-phase"]) {
+    const branch = genuine.filter((entry: any) => entry.message?.role !== "toolResult" && entry.data?.phase !== "intent" && entry.data?.phase !== "result");
+    const origin = structuredClone(branch.find((entry: any) => entry.data?.phase === "origin")); assert.ok(origin);
+    origin.data = { ...origin.data, phase, mutationReceiptVersion: 2, status: "failed_no_change", stateChanged: false };
+    const forged = branch.map((entry: any) => entry.id === origin.id ? origin : entry);
+    assert.deepEqual(collectChanges(forged, f.cwd), [], phase);
+  }
+  assert.equal(readFileSync(join(f.cwd, "origin-only"), "utf8"), "created once");
+});
+
 for (const batch of [false, true]) test(`N1 intent-only creation observes every bounded planned parent, batch=${batch}`, async t => {
   const f = await fixture(t), path = join(f.cwd, "intent/parents/file");
   await f.call(batch ? "file_batch" : "write", batch ? { operations: [{ operation: "write", mode: "create", path, content: "written" }] } : { path, content: "written" }, "intent-only");
