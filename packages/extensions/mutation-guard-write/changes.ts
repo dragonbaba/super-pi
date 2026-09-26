@@ -84,6 +84,15 @@ function sameCreatedDirectories(left: any, right: any): boolean {
   return true;
 }
 
+function samePlannedDirectories(left: unknown, right: unknown): boolean {
+  if (!Array.isArray(left) || !Array.isArray(right) || left.length > 32 || left.length !== right.length) return false;
+  for (let index = 0; index < left.length; index++) {
+    const path = left[index];
+    if (typeof path !== "string" || path.length > 4096 || !isAbsolute(path) || path.includes("\0") || path !== right[index]) return false;
+  }
+  return true;
+}
+
 function conflictingTerminal(entries: readonly any[], selected: any, callId: string, itemId: string, index: number, outcome: any, details: any): boolean {
   let previous = false;
   for (const entry of entries) {
@@ -239,6 +248,13 @@ export function collectChanges(branch: readonly any[], cwd: string): ChangeRecor
         && !hasEarlierTerminal(executionEntries, executionEntries.indexOf(origin), call.id, receipt.itemId, 0);
     }
     if (bound && receipt.receiptVersion === 2 && conflictingTerminal(executionEntries, entry, receipt.toolCallId, receipt.itemId, index, receipt, details)) bound = false;
+    if (bound && entry?.data?.phase === "intent" && receipt.operation === "write") {
+      const prepared = call?.name === "file_batch" ? uniqueBatchPreparation(executionEntries, call)?.targets.get(`${call.id}:${index}`)
+        : uniqueProgress(executionEntries, call.id, "origin")?.data;
+      // An interrupted create has no completed directory receipt. Its intent
+      // list must match the earlier bound plan; missing old metadata is not [] .
+      bound = samePlannedDirectories(prepared?.directories, entry.data.directories);
+    }
     if (receipt.receiptVersion === 2 && receipt.historyConflict) bound = false;
     records.push({ entryId: receipt.entryId, toolCallId: receipt.toolCallId, itemId: receipt.receiptVersion === 2 ? receipt.itemId : `${receipt.toolCallId}:0`,
       operation: receipt.operation, target, destination,

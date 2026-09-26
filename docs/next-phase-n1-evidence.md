@@ -288,3 +288,17 @@ and reconstructs/verifies the resulting partial receipt. Intent-only regressions
 cover actual standalone and batch creation, including canonical Windows parent
 aliases. Final-head whole-project gates, Linux newline execution and actual review
 remain required; earlier-head results are not substituted.
+
+The 25be592c6 candidate passed all local gates and both platform CI jobs
+([run 36272899767](https://github.com/dragonbaba/super-pi/actions/runs/36272899767)).
+Its next review found an aggregate prefilter bypass and an unbound planned-parent
+list. Same-call v2 aggregate operation/tool-name mismatches now mark prior receipts
+ambiguous before filtering; malformed batch aggregate shapes/item IDs do likewise.
+Standalone creation records a request-bound canonical origin with its planned
+parents, and batch preparation includes the same list. Intent-only write recovery
+requires bounded exact equality with that earlier plan; absent metadata is not an
+empty list. Actual single/batch histories test omitted, empty, substituted, reordered
+and missing-preparation lists and refuse verification/drafts. These consistency
+checks do not authenticate arbitrarily forged Session files. Windows Node22.19:
+check passes, 53 focused/source tests pass and one POSIX-only test skips. Fresh
+whole-project gates, both CI jobs and actual review remain required.

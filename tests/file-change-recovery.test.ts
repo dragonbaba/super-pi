@@ -587,6 +587,12 @@ test("N1 later changed-target, destination or operation terminals make earlier o
     const records = collectChanges(branch, f.cwd); assert.equal(records.length, 1); assert.ok(records[0].unavailable, field);
     assert.throws(() => remainingDraft(records, new Set()), /missing|ambiguous/);
   }
+  for (const field of ["toolName", "operation"]) {
+    const branch = JSON.parse(JSON.stringify(genuine)), aggregate = branch.find((entry: any) => entry.message?.toolCallId === "later-conflict" && entry.message?.role === "toolResult");
+    if (field === "toolName") aggregate.message.toolName = "write"; else aggregate.message.details.operation = "write";
+    const records = collectChanges(branch, f.cwd); assert.equal(records.length, 1); assert.ok(records[0].unavailable, field);
+    assert.throws(() => remainingDraft(records, new Set()));
+  }
 });
 
 for (const batch of [false, true]) test(`N1 intent-only creation observes every bounded planned parent, batch=${batch}`, async t => {
@@ -596,6 +602,30 @@ for (const batch of [false, true]) test(`N1 intent-only creation observes every 
   const records = collectChanges(branch, f.cwd); assert.equal(records.length, 1); assert.equal(records[0].status, "state_unknown");
   const observation = await verifyChange(records[0], async () => {});
   assert.equal(observation.parents.length, 2); assert.ok(observation.parents.every((parent: any) => parent.exists && parent.identity.directory));
+  for (const fault of ["omit", "empty", "substitute", "reorder", "preparation"]) {
+    const corrupted = JSON.parse(JSON.stringify(branch)), intent = corrupted.find((entry: any) => entry.data?.phase === "intent").data;
+    if (fault === "omit") delete intent.directories;
+    if (fault === "empty") intent.directories = [];
+    if (fault === "substitute") intent.directories[0] = dirname(path);
+    if (fault === "reorder") intent.directories.reverse();
+    if (fault === "preparation") {
+      const prepared = corrupted.find((entry: any) => entry.data?.phase === (batch ? "prepared" : "origin")).data;
+      delete (batch ? prepared.items[0] : prepared).directories;
+    }
+    const invalid = collectChanges(corrupted, f.cwd); assert.ok(invalid[0].unavailable, fault);
+    await assert.rejects(verifyChange(invalid[0], async () => {}));
+    assert.throws(() => remainingDraft(invalid, new Set([invalid[0].itemId])));
+  }
+});
+
+for (const batch of [false, true]) test(`N2 intent-only overwrite binds an explicitly empty parent plan, batch=${batch}`, async t => {
+  const f = await fixture(t), path = join(f.cwd, "overwrite-intent"); writeFileSync(path, "before");
+  await f.call("read", { path }, "overwrite-intent-read");
+  const result = await f.call(batch ? "file_batch" : "write", batch ? { operations: [{ operation: "write", mode: "overwrite", path, content: "after" }] } : { path, content: "after" }, "overwrite-intent");
+  assert.equal(result.isError, false);
+  const branch = f.session.getBranch().filter((entry: any) => entry.data?.phase !== "result" && entry.message?.role !== "toolResult");
+  const record = collectChanges(branch, f.cwd)[0]; assert.equal(record.unavailable, undefined); assert.equal(record.status, "state_unknown");
+  assert.equal((await verifyChange(record, async () => {})).parents.length, 0); assert.equal(readFileSync(path, "utf8"), "after");
 });
 
 test("N1/N2 standalone snapshot post-publication readback failure retains a partial terminal", async t => {
