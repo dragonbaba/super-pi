@@ -9,7 +9,8 @@ import { initTheme } from "../packages/coding-agent/src/modes/interactive/theme/
 import { RELEASE_COMPONENT_RENDER_CACHE } from "@super-pi/tui";
 import { Session as InspectorSession } from "node:inspector/promises";
 import { syncBuiltinESMExports } from "node:module";
-import { batchExpandedSummary, displayMetadata } from "../packages/extensions/mutation-guard-write/change-preview.ts";
+import { batchExpandedSummary, displayMetadata, PreviewBudget } from "../packages/extensions/mutation-guard-write/change-preview.ts";
+import { DISPLAY_METADATA_CONTROL_PATTERN, PREVIEW_CONTROL_PATTERN } from "../packages/extensions/mutation-guard-write/regex.ts";
 
 test("N1 preview has real mixed changes and no filesystem mutation", async t => {
   const f = await fixture(t);
@@ -152,6 +153,19 @@ test("N1 metadata fields cannot introduce new headings or bidi controls into exp
     receipt: { createdDirectories: [{ path: unsafe, status: unsafe }] } }], [unsafe]);
   assert.doesNotMatch(summary, /\nfake:|\u202e|\u001b/); assert.ok(summary.includes(displayMetadata(unsafe)));
   assert.match(summary, /\\nfake: succeeded\\u202e/);
+});
+
+test("N1 shared display patterns reset across interleaved preview owners", () => {
+  for (let n = 0; n < 20; n++) {
+    DISPLAY_METADATA_CONTROL_PATTERN.lastIndex = 999;
+    PREVIEW_CONTROL_PATTERN.lastIndex = 999;
+    assert.equal(displayMetadata("中\u202e\u0080\n文"), "中\\u202e\\u0080\\n文");
+    assert.equal(new PreviewBudget().take("A\0B\u007f\nC").text, "AB\nC");
+    assert.equal(displayMetadata("plain"), "plain");
+    assert.equal(new PreviewBudget().take("D\u0001E").text, "DE");
+    assert.equal(DISPLAY_METADATA_CONTROL_PATTERN.lastIndex, 0);
+    assert.equal(PREVIEW_CONTROL_PATTERN.lastIndex, 0);
+  }
 });
 
 test("N1 actual tool component expansion, 20k running updates and ten releases", async t => {

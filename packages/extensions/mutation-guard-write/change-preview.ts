@@ -3,6 +3,7 @@ import { open } from "node:fs/promises";
 import { generateUnifiedPatch } from "@super-pi/coding-agent";
 import { addedContentSummary } from "./file-creation.ts";
 import { Text } from "@super-pi/tui";
+import { PREVIEW_CONTROL_PATTERN, DISPLAY_METADATA_CONTROL_PATTERN } from "./regex.ts";
 
 export const MAX_PREVIEW_FILE_LINES = 80;
 export const MAX_PREVIEW_LINES = 400;
@@ -62,7 +63,7 @@ export class PreviewBudget {
     this.bytes -= bytes;
     this.lines -= end ? lines : 0;
     // Only the bounded prefix is inspected/sanitized, including giant single lines.
-    return { text: stripVTControlCharacters(source.slice(0, end)).replace(/[\x00-\x08\x0b-\x1f\x7f]/g, ""), omitted: end < source.length };
+    return { text: stripVTControlCharacters(source.slice(0, end)).replace(PREVIEW_CONTROL_PATTERN, ""), omitted: end < source.length };
   }
 
   diff(preview: ChangePreview, source: string): ChangePreview {
@@ -149,8 +150,12 @@ interface DisplayItem {
 }
 
 /** Metadata is single-line data; source diff text keeps its own multiline layout. */
+function escapeDisplayControl(character: string): string {
+  return `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`;
+}
+
 export function displayMetadata(value: unknown): string {
-  return JSON.stringify(String(value).slice(0, 4096)).slice(1, -1).replace(/[\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]/gu, character => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`);
+  return JSON.stringify(String(value).slice(0, 4096)).slice(1, -1).replace(DISPLAY_METADATA_CONTROL_PATTERN, escapeDisplayControl);
 }
 
 /** One bounded presentation at completion. The renderer only selects a string. */
