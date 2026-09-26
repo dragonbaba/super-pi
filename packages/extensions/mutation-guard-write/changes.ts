@@ -1,13 +1,13 @@
 import { createHash } from "node:crypto";
 import { lstat, open } from "node:fs/promises";
 import { isAbsolute, resolve, relative, sep } from "node:path";
-import { stripVTControlCharacters } from "node:util";
 import type { ExtensionAPI, ExtensionContext } from "@super-pi/coding-agent";
 import { Key, matchesKey, Text, type TUI } from "@super-pi/tui";
 import { resolveToolPath } from "./core.ts";
 import { capturePathIdentity, sameIdentity, type PathIdentity } from "./native-file-core.ts";
 import { boundBatchIntents, collectStructuredMutationReceipts, recentMutationEntries } from "./session-evidence.ts";
-import { batchExpandedSummary, PreviewBudget } from "./change-preview.ts";
+import { batchExpandedSummary, PreviewBudget, displayMetadata } from "./change-preview.ts";
+import { mutationRequestHash } from "../resource-lifecycle-guard/permission-contract.ts";
 
 export const CHANGE_VERIFICATION_ENTRY = "file-change-verification-v1";
 const MAX_CHANGES = 128;
@@ -156,7 +156,14 @@ export function collectChanges(branch: readonly any[], cwd: string): ChangeRecor
           && intent?.data.destination === receipt.destination && (!receipt.destination || isAbsolute(receipt.destination));
         if (bound && executionEntries.slice(0, executionEntries.indexOf(intent)).some(candidate => terminalOutcome(candidate, call.id, receipt.itemId, 0))) bound = false;
       } else {
-        bound = resolveToolPath(cwd, input.path) === target;
+        const origins = executionEntries.filter(candidate => candidate.type === "custom" && candidate.customType === "file-mutation-progress-v2"
+          && candidate.data?.phase === "origin" && candidate.data.toolCallId === call.id);
+        if (origins.length) {
+          const origin = origins[0];
+          bound = origins.length === 1 && origin.data.itemId === `${call.id}:0` && origin.data.target === target && origin.data.operation === receipt.operation
+            && origin.data.requestHash === mutationRequestHash(call.name, input)
+            && !executionEntries.slice(0, executionEntries.indexOf(origin)).some(candidate => terminalOutcome(candidate, call.id, `${call.id}:0`, 0));
+        } else bound = resolveToolPath(cwd, input.path) === target;
       }
     }
     if (bound && receipt.receiptVersion === 2 && conflictingTerminal(executionEntries, entry, receipt.toolCallId, receipt.itemId, index, receipt)) bound = false;
@@ -424,15 +431,15 @@ export function registerChanges(pi: ExtensionAPI, permissions: ObservationPermis
       const branch = recentMutationEntries(ctx.sessionManager);
       const records = collectChanges(branch, ctx.cwd);
       if (!records.length) { ctx.ui.notify("No reconstructable changes in the bounded Session history (512 entries). Missing history cannot be recreated.", "info"); return; }
-      const labels = records.map(record => stripVTControlCharacters(`${record.itemId} [${record.status}] ${record.operation} ${record.target}`).replace(/[\x00-\x1f\x7f]/g, "?"));
+      const labels = records.map(record => `${displayMetadata(record.itemId)} [${displayMetadata(record.status)}] ${displayMetadata(record.operation)} ${displayMetadata(record.target)}`);
       const selected = await ctx.ui.select("Session changes", labels); assertSession();
       const index = selected === undefined ? -1 : labels.indexOf(selected);
       if (index < 0) return;
       const record = records[index];
-      const action = await ctx.ui.select(record.itemId, ["View", "Verify current state", "Draft remaining request"]); assertSession();
+      const action = await ctx.ui.select(displayMetadata(record.itemId), ["View", "Verify current state", "Draft remaining request"]); assertSession();
       if (action === "View") {
         const item = record.item ?? record;
-        const text = batchExpandedSummary(`${record.itemId} [${record.status}]${record.unavailable ? `\n${record.unavailable}` : ""}`, [item]);
+        const text = batchExpandedSummary(`${displayMetadata(record.itemId)} [${displayMetadata(record.status)}]${record.unavailable ? `\n${record.unavailable}` : ""}`, [item]);
         await ctx.ui.custom<void>((tui, _theme, _keys, done) => new ChangeViewer(text, tui, done));
       } else if (action === "Verify current state") {
         if (record.preview || record.unavailable) throw new Error(record.unavailable ?? "Preview is not a mutation receipt. Execute a newly prepared request first.");

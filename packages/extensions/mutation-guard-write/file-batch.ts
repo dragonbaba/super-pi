@@ -15,7 +15,7 @@ import { prepareSnapshotLineMutation, executePreparedSnapshotMutation, type Prep
 import { PublicEditOperationParameters, PublicEditParameters, EditParameters, SnapshotEditParameters, WriteParameters, validatePublicSnapshotAnchors } from "./mutation-parameters.ts";
 import { assessProtectedMutationPath } from "./protected-path-policy.ts";
 import { withMutationPaths, MUTATION_PROGRESS_ENTRY } from "./native-tools.ts";
-import { PreviewBudget, addedPreview, modifiedPreview, batchExpandedSummary, BatchResultText, releaseBatchRenderState, readPreviewSource, MAX_PREVIEW_SOURCE_BYTES, type ChangePreview } from "./change-preview.ts";
+import { PreviewBudget, addedPreview, modifiedPreview, batchExpandedSummary, BatchResultText, releaseBatchRenderState, readPreviewSource, MAX_PREVIEW_SOURCE_BYTES, displayMetadata, type ChangePreview } from "./change-preview.ts";
 import { RELEASE_TOOL_RENDER_DERIVED_STATE } from "../../coding-agent/src/core/tools/tool-render-lifecycle.ts";
 
 // Default extensions load in separate module-cache scopes; share only the private key, not authority state.
@@ -337,11 +337,11 @@ export class BatchInvocation {
     let firstReason: string | undefined;
     for (const result of results) { if (result.status === "succeeded") succeeded++; else if (result.status === "not_started") notStarted++; else if (result.status !== "preview") { failed++; firstReason ??= result.reason; } }
     const preview = this.input.dryRun && failed === 0;
-    let summary = preview ? `Preflight passed for ${results.length} items. No changes; apply revalidates and requires current authorization.` : `file_batch: ${succeeded} succeeded, ${failed} failed, ${notStarted} not started.${firstReason ? `\n${firstReason}` : ""}`;
+    let summary = preview ? `Preflight passed for ${results.length} items. No changes; apply revalidates and requires current authorization.` : `file_batch: ${succeeded} succeeded, ${failed} failed, ${notStarted} not started.${firstReason ? `\n${displayMetadata(firstReason)}` : ""}`;
     const collapsedSummary = summary;
     if (!preview) for (const result of results) {
       const receipt = result.receipt as any;
-      summary += `\n${result.itemId}: ${result.status === "succeeded" && receipt?.created ? "Added" : result.operation} ${result.target}: ${result.status}`;
+      summary += `\n${displayMetadata(result.itemId)}: ${result.status === "succeeded" && receipt?.created ? "Added" : result.operation} ${displayMetadata(result.target)}: ${result.status}`;
       if (result.status === "succeeded" && receipt?.creation) {
         summary += receipt.creation.addedLines === undefined ? ` (${receipt.creation.bytes} bytes)` : ` (+${receipt.creation.addedLines} -0)`;
         if (receipt.creation.createdDirectories.length) summary += `; created ${receipt.creation.createdDirectories.length} parent directories`;

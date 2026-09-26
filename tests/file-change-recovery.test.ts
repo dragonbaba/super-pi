@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { existsSync, readFileSync, writeFileSync, mkdtempSync, mkdirSync, rmSync, realpathSync, unlinkSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdtempSync, mkdirSync, rmSync, realpathSync, unlinkSync, symlinkSync } from "node:fs";
 import { open } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
@@ -222,6 +222,26 @@ test("N1 recovery never normalizes a malformed v2 item identifier into another i
   const malformed = collectChanges(branch, f.cwd).find((record: any) => record.itemId === "item-id:00");
   assert.ok(malformed); assert.ok(malformed.unavailable); assert.equal(malformed.original, undefined);
   await assert.rejects(verifyChange(malformed, async () => { assert.fail("unbound receipt must not observe files"); }), /cannot authorize/);
+});
+
+test("N1 new standalone v1 exact/snapshot/overwrite origins bind canonical aliases across cwd reopen", async t => {
+  const f = await fixture(t), real = join(f.cwd, "real"); mkdirSync(real);
+  symlinkSync(real, join(f.cwd, "alias"), process.platform === "win32" ? "junction" : "dir");
+  for (const kind of ["exact", "snapshot", "overwrite"]) {
+    writeFileSync(join(real, kind), "one\ntwo\nthree\n");
+    const path = `alias/${kind}`, read = await f.call("read", { path }, `origin-read-${kind}`);
+    const body = read.content.filter(block => block.type === "text").map(block => block.text).join("\n");
+    const snapshot = body.slice(body.indexOf("snapshot=") + 9, body.indexOf("snapshot=") + 36), anchor = body.split("\n").find(line => line.startsWith("2#"))!.split("|")[0];
+    const args = kind === "overwrite" ? { path, content: "after" } : kind === "exact" ? { path, edits: [{ oldText: "two", newText: "TWO" }] } : { path, snapshot, edits: [{ kind: "replace", start: anchor, newLines: ["TWO"] }] };
+    assert.equal((await f.call(kind === "overwrite" ? "write" : "edit", args, `origin-${kind}`)).isError, false);
+  }
+  const reopened = SessionManager.open(f.session.getSessionFile()!, undefined, join(f.cwd, "different"));
+  const records = collectChanges(reopened.getBranch(), join(f.cwd, "different"));
+  assert.equal(records.length, 3);
+  for (const record of records) { assert.equal(record.unavailable, undefined, JSON.stringify(record)); assert.equal(dirname(record.target), realpathSync.native(real)); await verifyChange(record, async () => {}); }
+  const branch = structuredClone(reopened.getBranch()) as any[], origin = branch.find(entry => entry.data?.phase === "origin");
+  origin.data.requestHash = "0".repeat(64);
+  assert.ok(collectChanges(branch, f.cwd).find((record: any) => record.toolCallId === origin.data.toolCallId).unavailable);
 });
 
 test("N1 verification checks captured authority synchronously after final filesystem reads", async t => {
