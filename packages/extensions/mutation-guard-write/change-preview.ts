@@ -148,26 +148,31 @@ interface DisplayItem {
   reason?: string; preview?: ChangePreview; receipt?: any;
 }
 
+/** Metadata is single-line data; source diff text keeps its own multiline layout. */
+export function displayMetadata(value: unknown): string {
+  return JSON.stringify(String(value).slice(0, 4096)).slice(1, -1).replace(/[\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]/gu, character => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`);
+}
+
 /** One bounded presentation at completion. The renderer only selects a string. */
 export function batchExpandedSummary(summary: string, items: readonly DisplayItem[], plannedDirectories?: readonly string[]): string {
   const budget = new PreviewBudget();
   let text = budget.take(summary, MAX_PREVIEW_LINES).text;
-  if (plannedDirectories) for (const directory of plannedDirectories) text += budget.take(`\nplanned parent: ${directory}`, MAX_PREVIEW_LINES).text;
+  if (plannedDirectories) for (const directory of plannedDirectories) text += budget.take(`\nplanned parent: ${displayMetadata(directory)}`, MAX_PREVIEW_LINES).text;
   for (const item of items) {
     const receipt = item.receipt;
     // Select content and provenance together: succeeded output is confirmed receipt
     // data; preparation warnings/omissions belong only to an unconfirmed preview.
     const confirmed = item.status === "succeeded";
     const preview = confirmed ? undefined : item.preview;
-    let heading = `\n${item.itemId}: ${preview?.kind ?? (receipt?.created ? "Added" : item.operation)} ${item.target}`;
-    if (item.destination) heading += ` → ${item.destination}`;
-    heading += ` [${item.status}]`;
+    let heading = `\n${displayMetadata(item.itemId)}: ${displayMetadata(preview?.kind ?? (receipt?.created ? "Added" : item.operation))} ${displayMetadata(item.target)}`;
+    if (item.destination) heading += ` → ${displayMetadata(item.destination)}`;
+    heading += ` [${displayMetadata(item.status)}]`;
     const creation = preview?.kind === "Added" ? preview : receipt?.creation;
     if (creation) heading += creation.addedLines === undefined ? ` (${creation.bytes} bytes)` : ` (+${creation.addedLines} -0)`;
     text += budget.take(heading, MAX_PREVIEW_LINES).text;
-    if (item.reason) text += budget.take(`\n${item.reason}`, MAX_PREVIEW_LINES).text;
+    if (item.reason) text += budget.take(`\n${displayMetadata(item.reason)}`, MAX_PREVIEW_LINES).text;
     if (preview?.risk) text += budget.take(`\n${preview.risk}`, MAX_PREVIEW_LINES).text;
-    if (!plannedDirectories && item.status === "preview" && preview?.plannedDirectories) for (const directory of preview.plannedDirectories) text += budget.take(`\nplanned parent: ${directory}`, MAX_PREVIEW_LINES).text;
+    if (!plannedDirectories && item.status === "preview" && preview?.plannedDirectories) for (const directory of preview.plannedDirectories) text += budget.take(`\nplanned parent: ${displayMetadata(directory)}`, MAX_PREVIEW_LINES).text;
     // Completed receipts already own their actual diff. Never derive a diff in render.
     const writeFallback = confirmed && item.operation === "write" && receipt?.patch == null && receipt?.diff == null;
     const diff = confirmed ? receipt?.patch ?? receipt?.diff ?? (writeFallback ? item.preview?.diff : undefined) : preview?.diff;
@@ -175,15 +180,15 @@ export function batchExpandedSummary(summary: string, items: readonly DisplayIte
       if (preview && item.status !== "preview" && item.status !== "succeeded") text += budget.take("\nPrepared change only; completion is not confirmed.", MAX_PREVIEW_LINES).text;
       const part = budget.take(`\n${diff}`);
       text += part.text;
-      if (part.omitted) break;
+      if (part.omitted) text += budget.take("\n[display limited] Difference excerpt omitted; later item outcomes follow when space remains.", MAX_PREVIEW_LINES).text;
     }
     if (preview?.omitted) text += budget.take(`\n[omitted] ${preview.omitted}`, MAX_PREVIEW_LINES).text;
     if (writeFallback && item.preview?.omitted) text += budget.take("\n[display limited] Write succeeded; the stored difference excerpt is incomplete or unavailable.", MAX_PREVIEW_LINES).text;
     const directories = receipt?.creation?.createdDirectories ?? receipt?.createdDirectories;
-    if (Array.isArray(directories)) for (const directory of directories) text += budget.take(`\nparent: ${directory.path} [${directory.status}]`, MAX_PREVIEW_LINES).text;
+    if (Array.isArray(directories)) for (const directory of directories) text += budget.take(`\nparent: ${displayMetadata(directory.path)} [${displayMetadata(directory.status)}]`, MAX_PREVIEW_LINES).text;
     if (receipt?.commit) {
-      text += budget.take(`\ncommit: ${receipt.commit.strategy} [${receipt.commit.outcome}]${receipt.commit.compatibilityReason ? `; ${receipt.commit.compatibilityReason}` : ""}`, MAX_PREVIEW_LINES).text;
-      if (receipt.commit.retainedTemporary) text += budget.take(`\nretained temporary: ${receipt.commit.retainedTemporary}; ${receipt.commit.cleanupReason}`, MAX_PREVIEW_LINES).text;
+      text += budget.take(`\ncommit: ${displayMetadata(receipt.commit.strategy)} [${displayMetadata(receipt.commit.outcome)}]${receipt.commit.compatibilityReason ? `; ${displayMetadata(receipt.commit.compatibilityReason)}` : ""}`, MAX_PREVIEW_LINES).text;
+      if (receipt.commit.retainedTemporary) text += budget.take(`\nretained temporary: ${displayMetadata(receipt.commit.retainedTemporary)}; ${displayMetadata(receipt.commit.cleanupReason)}`, MAX_PREVIEW_LINES).text;
     }
   }
   if (budget.bytes <= 0 || budget.lines <= 0) text = text.slice(0, Math.max(0, text.length - 80)) + "\n[remaining display omitted; use /changes to select one file]";

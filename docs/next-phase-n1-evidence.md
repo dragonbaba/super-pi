@@ -196,3 +196,16 @@ entire draft (including its quoted, control-free, 256-character source ID) fits
 four-ID-only verification record. These checks do not authenticate arbitrary
 externally forged Session files or grant execution authority. Final-head gates,
 CI and re-review remain required.
+
+`18aad3f9573ba36274f2fa83fc770df37b2e77b5` passed all fixed-head local
+gates and both CI platforms ([run 36263232370](https://github.com/dragonbaba/super-pi/actions/runs/36263232370)).
+Its actual review identified canonical v1 origins, silent per-file truncation and
+multiline/control metadata in summaries. New standalone exact/snapshot/overwrite
+results retain a preceding request-hashed canonical origin in the existing Session
+progress entries (no second history store or authority). Legacy records without
+that origin retain their conservative binding. Expanded patches now label per-file
+omission and continue later item headings; metadata fields are escaped single-line
+data, while source diffs retain their multiline layout. Thirty-six preview/recovery
+tests pass, including actual parent aliases and cwd reopen, a committed 120-line
+replacement followed by another success, and newline/bidi metadata. New-head full
+gates and actual re-review remain required.

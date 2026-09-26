@@ -9,6 +9,7 @@ import { initTheme } from "../packages/coding-agent/src/modes/interactive/theme/
 import { RELEASE_COMPONENT_RENDER_CACHE } from "@super-pi/tui";
 import { Session as InspectorSession } from "node:inspector/promises";
 import { syncBuiltinESMExports } from "node:module";
+import { batchExpandedSummary, displayMetadata } from "../packages/extensions/mutation-guard-write/change-preview.ts";
 
 test("N1 preview has real mixed changes and no filesystem mutation", async t => {
   const f = await fixture(t);
@@ -132,6 +133,25 @@ test("N1 successful create and overwrite retain bounded confirmed write differen
   const expanded = (result.details as any).expandedSummary;
   assert.match(expanded, /CREATED_VISIBLE/); assert.match(expanded, /OVERWRITE_VISIBLE/);
   assert.doesNotMatch(expanded, /Prepared change only/);
+});
+
+test("N1 oversized committed patches disclose omission and retain later outcomes", async t => {
+  const f = await fixture(t), before = Array.from({ length: 120 }, (_, i) => `old-${i}`).join("\n"), after = before.replaceAll("old-", "new-");
+  writeFileSync(join(f.cwd, "large-patch"), before); await f.call("read", { path: "large-patch" }, "large-read");
+  const result = await f.call("file_batch", { operations: [{ operation: "edit", path: "large-patch", edits: [{ oldText: before, newText: after }] },
+    { operation: "write", mode: "create", path: "following", content: "later-outcome" }] }, "large-committed");
+  assert.equal(result.isError, false, JSON.stringify(result));
+  const summary = (result.details as any).expandedSummary;
+  assert.match(summary, /display limited/); assert.match(summary, /large-committed:1: Added .*following \[succeeded\]/);
+  assert.equal(readFileSync(join(f.cwd, "large-patch"), "utf8"), after); assert.equal(readFileSync(join(f.cwd, "following"), "utf8"), "later-outcome");
+});
+
+test("N1 metadata fields cannot introduce new headings or bidi controls into expanded views", () => {
+  const unsafe = "path\nfake: succeeded\u202e\u001b[31m";
+  const summary = batchExpandedSummary("one result", [{ itemId: unsafe, operation: "move", status: "succeeded", target: unsafe, destination: unsafe,
+    receipt: { createdDirectories: [{ path: unsafe, status: unsafe }] } }], [unsafe]);
+  assert.doesNotMatch(summary, /\nfake:|\u202e|\u001b/); assert.ok(summary.includes(displayMetadata(unsafe)));
+  assert.match(summary, /\\nfake: succeeded\\u202e/);
 });
 
 test("N1 actual tool component expansion, 20k running updates and ten releases", async t => {
