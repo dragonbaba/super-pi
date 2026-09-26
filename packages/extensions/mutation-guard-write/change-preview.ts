@@ -181,6 +181,10 @@ export function batchExpandedSummary(summary: string, items: readonly DisplayIte
     if (writeFallback && item.preview?.omitted) text += budget.take("\n[display limited] Write succeeded; the stored difference excerpt is incomplete or unavailable.", MAX_PREVIEW_LINES).text;
     const directories = receipt?.creation?.createdDirectories ?? receipt?.createdDirectories;
     if (Array.isArray(directories)) for (const directory of directories) text += budget.take(`\nparent: ${directory.path} [${directory.status}]`, MAX_PREVIEW_LINES).text;
+    if (receipt?.commit) {
+      text += budget.take(`\ncommit: ${receipt.commit.strategy} [${receipt.commit.outcome}]${receipt.commit.compatibilityReason ? `; ${receipt.commit.compatibilityReason}` : ""}`, MAX_PREVIEW_LINES).text;
+      if (receipt.commit.retainedTemporary) text += budget.take(`\nretained temporary: ${receipt.commit.retainedTemporary}; ${receipt.commit.cleanupReason}`, MAX_PREVIEW_LINES).text;
+    }
   }
   if (budget.bytes <= 0 || budget.lines <= 0) text = text.slice(0, Math.max(0, text.length - 80)) + "\n[remaining display omitted; use /changes to select one file]";
   return text;

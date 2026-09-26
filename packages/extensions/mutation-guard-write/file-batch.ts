@@ -17,6 +17,7 @@ import { assessProtectedMutationPath } from "./protected-path-policy.ts";
 import { withMutationPaths, MUTATION_PROGRESS_ENTRY } from "./native-tools.ts";
 import { PreviewBudget, addedPreview, modifiedPreview, batchExpandedSummary, BatchResultText, releaseBatchRenderState, readPreviewSource, MAX_PREVIEW_SOURCE_BYTES, type ChangePreview } from "./change-preview.ts";
 import { RELEASE_TOOL_RENDER_DERIVED_STATE } from "../../coding-agent/src/core/tools/tool-render-lifecycle.ts";
+import { FileCommitError, commitFailure, commitSummary } from "./file-commit.ts";
 
 // Default extensions load in separate module-cache scopes; share only the private key, not authority state.
 const PREPARATION = Symbol.for("pi.mutation-guard.file-batch.preparation.v1");
@@ -60,7 +61,7 @@ interface Item {
   reservation?: number;
   preview?: ChangePreview;
 }
-interface ItemResult { itemId: string; operation: Operation; target: string; destination?: string; status: MutationStatus | "preview"; stateChanged: boolean | "unknown"; reason?: string; receipt?: unknown; preview?: ChangePreview }
+interface ItemResult { itemId: string; operation: Operation; target: string; destination?: string; status: MutationStatus | "preview"; stateChanged: boolean | "unknown"; requiresVerification?: true; reason?: string; receipt?: unknown; preview?: ChangePreview }
 
 function pathKey(path: string): string { return path.normalize("NFC").toLowerCase(); }
 function pathConflicts(left: string, right: string, prospective: boolean): boolean {
@@ -209,7 +210,7 @@ export class BatchInvocation {
           item.approval.preparedIdentity = item.identity; item.approval.preparedParent = item.parent;
           if (input.snapshot) {
             item.snapshot = await prepareSnapshotLineMutation(this.ctx.sessionManager.getSessionId(), this.cwd, path, input.snapshot, input.edits as SnapshotLineEdit[], signal,
-              { assertPathAllowed: async () => item.target, previewBudget, previewOnly: this.input.dryRun === true });
+              { assertPathAllowed: async () => item.target, preparedTarget: item.identity, preparedParent: item.parent, previewBudget, previewOnly: this.input.dryRun === true });
             signal?.throwIfAborted();
             item.reservation = this.guard.reserveSnapshotEdit(this.generation, item.target, item.snapshot.replacements, item.snapshot.changedBytes);
             item.previousSha256 = item.snapshot.receipt.sha256;
@@ -283,12 +284,14 @@ export class BatchInvocation {
           if (signal?.aborted) { result.status = "cancelled"; result.reason = "Cancelled before item start"; break; }
           this.currentItem = item;
           item.approval.assertCurrent = this.assertAuthority;
+          item.approval.commitSelected = metadata => { pi.appendEntry(MUTATION_PROGRESS_ENTRY, { toolCallId: this.id, itemId: item.itemId,
+            phase: "commit_prepared", operation: item.operation, target: item.target, strategy: metadata.strategy, compatibilityReason: metadata.reason }); };
           try {
             pi.appendEntry(MUTATION_PROGRESS_ENTRY, { toolCallId: this.id, itemId: item.itemId, phase: "intent", requestHash: this.requestHash, operation: item.operation, target: item.target, destination: item.native?.destination });
             await this.revalidate(item, signal, sharedDirectories);
             let receipt: any;
             if (item.native) receipt = await executeNativePlan(item.native, this.assertAuthority, signal);
-            else if (item.snapshot) receipt = { ...await executePreparedSnapshotMutation(item.snapshot, signal, { assertPathAllowed: this.assertItemPath, beforeCommit: this.assertAuthority, assertCurrent: this.assertAuthority }), operation: "edit", target: item.target, stateChanged: true, ok: true };
+            else if (item.snapshot) receipt = { ...await executePreparedSnapshotMutation(item.snapshot, signal, { assertPathAllowed: this.assertItemPath, beforeCommit: this.assertAuthority, assertCurrent: this.assertAuthority, commitSelected: item.approval.commitSelected }), operation: "edit", target: item.target, stateChanged: true, ok: true };
             else if (item.exact) {
               const before = await readFile(item.identity!.path);
               if (sha256(before) !== item.previousSha256) throw new Error("[STALE_STATE] Prepared edit changed.");
@@ -296,8 +299,8 @@ export class BatchInvocation {
               const diff = generateDiffString(candidate.baseContent, candidate.newContent);
               const patch = generateUnifiedPatch(item.input.path, candidate.baseContent, candidate.newContent);
               this.assertAuthority();
-              const previousSha256 = await this.guard.writeEditContent(this.cwd, item.executionPath, before, candidate.finalContent, item.reservation, item.approval, signal);
-              receipt = { operation: "edit", target: item.target, ok: true, stateChanged: true, previousSha256, sha256: sha256(candidate.finalContent), replacements: item.exact.replacements, diff: diff.diff, patch };
+              const committed = await this.guard.writeEditContent(this.cwd, item.executionPath, before, candidate.finalContent, item.reservation, item.approval, signal);
+              receipt = { operation: "edit", target: item.target, ok: true, stateChanged: true, ...committed, sha256: sha256(candidate.finalContent), replacements: item.exact.replacements, diff: diff.diff, patch };
             } else receipt = await this.guard.write(this.cwd, item.executionPath, item.input.content!, this.generation, signal, item.approval, item.reservation, sharedDirectories);
             result.receipt = receipt;
             result.status = receipt.status ?? "succeeded";
@@ -305,12 +308,15 @@ export class BatchInvocation {
             if (!receipt.ok) result.reason = receipt.cause;
           } catch (error) {
             let detail: any;
-            try { detail = JSON.parse(error instanceof Error ? error.message : ""); } catch { /* Non-JSON failure remains bounded below. */ }
-            result.status = detail?.stateChanged === true || (error instanceof Error && error.message.includes("[SNAPSHOT_EDIT_PARTIAL]")) ? "partial" : signal?.aborted ? "cancelled" : "failed_no_change";
-            result.stateChanged = result.status === "partial";
+            if (error instanceof FileCommitError) detail = commitFailure(error);
+            else try { detail = JSON.parse(error instanceof Error ? error.message : ""); } catch { /* Non-JSON failure remains bounded below. */ }
+            result.status = detail?.stateChanged === "unknown" ? "state_unknown" : detail?.stateChanged === true || (error instanceof Error && error.message.includes("[SNAPSHOT_EDIT_PARTIAL]")) ? "partial" : signal?.aborted ? "cancelled" : "failed_no_change";
+            result.stateChanged = result.status === "state_unknown" ? "unknown" : result.status === "partial";
             result.receipt = detail;
             result.reason = (detail?.cause ?? (error instanceof Error ? error.message : String(error))).slice(0, 800);
           }
+          const itemReceipt = result.receipt as any;
+          if (result.status === "partial" || result.status === "state_unknown" || itemReceipt?.requiresVerification || itemReceipt?.commit?.retainedTemporary) result.requiresVerification = true;
           if (result.stateChanged !== false) item.reservation = undefined; // Actual changes retain their budget charge.
           if (item.native && result.stateChanged !== false) {
             this.guard.invalidateCanonicalPath(item.target);
@@ -322,6 +328,8 @@ export class BatchInvocation {
             pi.appendEntry(MUTATION_PROGRESS_ENTRY, { toolCallId: this.id, itemId: result.itemId, phase: "result", mutationReceiptVersion: 2,
               operation: result.operation, target: result.target, destination: result.destination, status: result.status,
               stateChanged: result.stateChanged, reason: result.reason,
+              requiresVerification: result.requiresVerification,
+              commit: receipt?.commit,
               createdDirectories: receipt?.creation?.createdDirectories ?? receipt?.createdDirectories });
           }
           catch { if (result.stateChanged !== false) { result.status = "state_unknown"; result.stateChanged = "unknown"; result.reason = "File changed but receipt recording failed; verify, never automatically retry."; } }
@@ -338,10 +346,12 @@ export class BatchInvocation {
     for (const result of results) { if (result.status === "succeeded") succeeded++; else if (result.status === "not_started") notStarted++; else if (result.status !== "preview") { failed++; firstReason ??= result.reason; } }
     const preview = this.input.dryRun && failed === 0;
     let summary = preview ? `Preflight passed for ${results.length} items. No changes; apply revalidates and requires current authorization.` : `file_batch: ${succeeded} succeeded, ${failed} failed, ${notStarted} not started.${firstReason ? `\n${firstReason}` : ""}`;
+    if (results.some(result => result.requiresVerification)) summary += "\nVerify current state and any retained candidate; do not automatically retry uncertain items.";
     const collapsedSummary = summary;
     if (!preview) for (const result of results) {
       const receipt = result.receipt as any;
       summary += `\n${result.itemId}: ${result.status === "succeeded" && receipt?.created ? "Added" : result.operation} ${result.target}: ${result.status}`;
+      if (receipt?.commit) summary += `\n${commitSummary(receipt.commit)}`;
       if (result.status === "succeeded" && receipt?.creation) {
         summary += receipt.creation.addedLines === undefined ? ` (${receipt.creation.bytes} bytes)` : ` (+${receipt.creation.addedLines} -0)`;
         if (receipt.creation.createdDirectories.length) summary += `; created ${receipt.creation.createdDirectories.length} parent directories`;

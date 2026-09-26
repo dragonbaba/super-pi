@@ -4,12 +4,29 @@ import { realpathSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { resolve } from "node:path";
 import { after, mock, type TestContext } from "node:test";
+import { Worker } from "node:worker_threads";
 import { MutationWriteGuard } from "./mutation-fixture.ts";
 
 // Jiti retains builtin function references. Install one test-process dispatcher;
 // each test owns its gate, and teardown drops that reference even on failure.
 let active: ReturnType<typeof createBarrier> | undefined;
 const read = fs.readFile, write = fs.writeFile;
+const open = fs.open;
+mock.method(fs, "open", async function(...args: any[]) {
+  const handle = await Reflect.apply(open, fs, args);
+  if (args[1] === "r+") {
+    const write = handle.write;
+    handle.write = function(...values: any[]) { active?.beforeWrite(String(args[0])); return Reflect.apply(write, handle, values); } as typeof handle.write;
+  }
+  return handle;
+});
+const post = Worker.prototype.postMessage;
+mock.method(Worker.prototype, "postMessage", function(this: Worker, ...args: any[]) {
+  // N2 submits ordinary-file publication through the fixed worker protocol.
+  // The successful control also verifies the actual postimage, not just dispatch.
+  if (args[0]?.operation === "replace") active?.beforeWrite(args[0].target);
+  return Reflect.apply(post, this, args);
+});
 mock.method(fs, "readFile", async function(...args: any[]) {
   const bytes = await Reflect.apply(read, fs, args);
   await active?.afterRead(String(args[0]));
