@@ -1077,8 +1077,11 @@ export function createShellToolDefinition(
 				} else if (facts.termination === "signal") failure = `[SHELL_INTERRUPTED] Command terminated by ${facts.signal ?? "an unobserved signal"}`;
 				else if (facts.exitCode === null) failure = "[SHELL_EXECUTION_FAILED] Command termination is unknown (null exit code)";
 				else if (facts.exitCode !== 0) { failure = "[SHELL_RUNTIME_FAILED]"; outputText = appendShellStatus(outputText, `Command exited with code ${facts.exitCode}`); }
-				else if (facts.inputError) failure = `[SHELL_INPUT_FAILED] Command input was not fully delivered: ${facts.inputError}`;
 				else if (observation && !observation.outputDrained) failure = "[SHELL_OUTPUT_INCOMPLETE] Process exited but output streams did not finish before the drain boundary";
+				if (facts.inputError) {
+					const inputFailure = `[SHELL_INPUT_FAILED] Command input was not fully delivered: ${facts.inputError}`;
+					failure = failure ? `${inputFailure}\n${failure}` : inputFailure;
+				}
 				if (failure) outputText = `${failure}${outputText ? `\n${outputText}` : ""}`;
 				if (logError) {
 					const status = `[SHELL_LOG_FAILED] Command output was not fully recorded: ${logError}`;

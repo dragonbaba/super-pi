@@ -1118,11 +1118,25 @@ function changesBashCdSemantics(tokens: ShellSegment, index: number, name: strin
 	if (name === "enable") return true;
 	if (name === "function") return tokens[index + 1] === "cd";
 	if (name !== "shopt" && name !== "set") return false;
+	if (name === "set") {
+		for (let cursor = skipRedirections(tokens, index + 1); cursor < tokens.length; cursor = skipRedirections(tokens, cursor + 1)) {
+			const word = tokens[cursor]!;
+			if (tokens.expansions?.[cursor]) return true;
+			// Options stop at -- or the first positional parameter. A literal
+			// positional "posix"/"physical" never changes shell mode.
+			if (word === "--" || word.length < 2 || word[0] !== "-" && word[0] !== "+") return false;
+			if (word.includes("P")) return true;
+			if (word.includes("o")) {
+				cursor = skipRedirections(tokens, cursor + 1);
+				if (tokens.expansions?.[cursor] || tokens[cursor] === "physical" || tokens[cursor] === "posix") return true;
+			}
+		}
+		return false;
+	}
 	for (let cursor = index + 1; cursor < tokens.length; cursor++) {
 		const word = tokens[cursor]!;
 		if (tokens.expansions?.[cursor]) return true;
-		if (name === "shopt" ? word === "cdable_vars" || word === "expand_aliases"
-			: word === "physical" || word === "posix" || (word.length > 1 && (word[0] === "-" || word[0] === "+") && word[1] !== "-" && word.includes("P"))) return true;
+		if (word === "cdable_vars" || word === "expand_aliases") return true;
 	}
 	return false;
 }

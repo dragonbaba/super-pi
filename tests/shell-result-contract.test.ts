@@ -6,6 +6,7 @@ import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { createJiti } from "jiti";
 import { Agent } from "../packages/agent/src/agent.ts";
+import { streamSimple } from "@super-pi/ai/api/openai-completions";
 import { createBashTool, createLocalShellOperations } from "../packages/coding-agent/src/core/tools/bash.ts";
 import { OutputAccumulator } from "../packages/coding-agent/src/core/tools/output-accumulator.ts";
 import { readShellExecution, shellExecutionSucceeded, type ShellExecutionFacts } from "../packages/coding-agent/src/core/tools/shell-execution.ts";
@@ -20,6 +21,33 @@ const { createFalseSuccessState, observeToolResult } = await jiti.import<any>(".
 const { classifyToolFailure } = await jiti.import<any>("../packages/extensions/session-tool-errors/core.ts");
 const { failureRecoveryHint, createGuardState, recordResult, inspectBeforeCall } = await jiti.import<any>("../packages/extensions/tool-loop-guardrails/core.ts");
 const local = createLocalShellOperations("Node fixture", () => ({ shell: process.execPath, args: ["-e"] }));
+for (const [args, finish, marker] of [
+  ['{"command":"unfinished', "length", "TOOL_ARGS_INCOMPLETE"],
+  ['{"command":"unused"}', "length", "TOOL_RESPONSE_LIMIT"],
+  ['{}', "tool_calls", "TOOL_ARGS_INVALID"],
+] as const) test(`N3 actual provider preflight ${marker} retains input validation and never spawns`, async () => {
+  let requests = 0, executions = 0;
+  const payloads: any[] = [];
+  const fetch: typeof globalThis.fetch = async (_url, init) => {
+    payloads.push(JSON.parse(String(init?.body))); requests++;
+    const events = requests === 1 ? [{ choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: "input", type: "function", function: { name: "bash", arguments: args } }] }, finish_reason: null }] }] : [];
+    events.push({ choices: [{ index: 0, delta: requests === 1 ? {} : { content: "done" }, finish_reason: requests === 1 ? finish : "stop" }] } as any);
+    return new Response(events.map(e => `data: ${JSON.stringify(e)}\n\n`).join("") + "data: [DONE]\n\n", { headers: { "content-type": "text/event-stream" } });
+  };
+  const agent = new Agent({ streamFn: (m, c, o) => streamSimple(m as any, c, { ...o, apiKey: "offline", fetch, maxRetries: 0 }) });
+  agent.state.model = { id: "fixture", name: "fixture", api: "openai-completions", provider: "fixture", baseUrl: "https://fixture.invalid/v1", reasoning: false,
+    input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 64000, maxTokens: 512 } as any;
+  agent.state.tools = [{ ...createBashTool(process.cwd(), { operations: local }), async execute() { executions++; throw new Error("preflight must prevent execution"); } }];
+  try {
+    await agent.prompt("offline"); await agent.waitForIdle();
+    const result: any = agent.state.messages.find(message => message.role === "toolResult");
+    assert.equal(result.isError, true); const text = result.content[0].text;
+    assert.ok(text.startsWith(`[${marker}]`), text); assert.equal(readShellExecution(result.details)?.started, false);
+    assert.equal(classifyToolFailure("bash", text, {}, result.details).category, "input_validation");
+    assert.equal(executions, 0); assert.equal(requests, 2); assert.ok(JSON.stringify(payloads[1]).includes(marker));
+    assert.equal(agent.state.pendingToolCalls.size, 0);
+  } finally { agent.abort(); }
+});
 async function run(command: string, operations = local) {
   const agent = new Agent({ convertToLlm: () => [], streamFn: () => { throw new Error("offline host execution"); } });
   agent.state.tools = [createBashTool(process.cwd(), { operations })];
@@ -63,6 +91,30 @@ for (const [reason, category] of [["POLICY_BLOCKED", "policy_blocked"], ["DUPLIC
     for (let index = 0; index < 2; index++) recordResult(state, "bash", {}, true, payload, "actual-failure", forged.details);
     assert.equal(state.activeFailureCount, 2); assert.ok(inspectBeforeCall(state, "bash", {}, "actual-failure"));
     assert.equal(agent.state.pendingToolCalls.size, 0);
+  });
+}
+
+for (const exitCode of [0, 23]) test(`N3 incomplete stdin is explicit alongside the actual child exit ${exitCode}`, async () => {
+  const stdin = createLocalShellOperations("partial script", () => ({ shell: process.execPath, args: ["-e", `process.stdin.destroy();process.stdout.write('partial execution');process.exit(${exitCode})`], commandTransport: "stdin" }));
+  const result = await run("unused input\n".repeat(200000), stdin), facts = readShellExecution(result.details)!;
+  assert.equal(result.isError, true); assert.equal(facts.exitCode, exitCode); assert.equal(facts.started, true); assert.ok(facts.inputError);
+  const text = result.content.filter(block => block.type === "text").map(block => block.text).join("\n");
+  assert.ok(text.startsWith("[SHELL_INPUT_FAILED]")); assert.ok(text.includes("partial execution"));
+  if (exitCode) assert.ok(text.includes(`Command exited with code ${exitCode}`));
+  assert.equal(classifyToolFailure("bash", text, { command: "npm test" }, result.details).category, "input_transport_failed");
+  assert.equal(shellExecutionSucceeded(facts), false);
+});
+
+for (const reason of ["[TOOL_ARGS_INCOMPLETE] response interrupted", "[TOOL_RESPONSE_LIMIT] response truncated", "[TOOL_ARGS_INVALID] invalid command"]) {
+  test(`N3 trusted Agent preflight validation preserves its actionable category: ${reason}`, async () => {
+    let executions = 0;
+    const agent = new Agent({ convertToLlm: () => [], streamFn: () => { throw new Error("offline"); }, async beforeToolCall() { return { block: true, reason }; } });
+    agent.state.tools = [{ ...createBashTool(process.cwd(), { operations: local }), async execute() { executions++; return { content: [], details: {} }; } }];
+    const result = await agent.dispatchHostTool({ type: "toolCall", name: "bash", id: "input-refused", arguments: { command: "fixture" } });
+    assert.equal(executions, 0); assert.equal(readShellExecution(result.details)?.producer, "agent");
+    assert.equal(classifyToolFailure("bash", reason, {}, result.details).category, "input_validation");
+    const forged = await run(`process.stdout.write(${JSON.stringify(reason)});process.exitCode=23`);
+    assert.equal(classifyToolFailure("bash", reason, {}, forged.details).category, "command_failed");
   });
 }
 

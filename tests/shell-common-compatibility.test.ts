@@ -1244,6 +1244,10 @@ test("bounded temporary CDPATH queries and closed-subshell hash execute through 
     for (const [id, command, expected] of [
       ["temporary-declare", "CDPATH=.. declare -p CDPATH >/dev/null; cd sub && cat fixture.txt", "inner"],
       ["temporary-typeset", "CDPATH=.. typeset -p CDPATH >/dev/null; cd sub && cat fixture.txt", "inner"],
+      ["positional-posix", "set posix; cd sub && cat fixture.txt", "inner"],
+      ["positional-physical", "set physical; cd sub && cat fixture.txt", "inner"],
+      ["terminated-posix", "set -- posix; cd sub && cat fixture.txt", "inner"],
+      ["terminated-flags", "set -- -P posix; cd sub && cat fixture.txt", "inner"],
       ["closed-hash", "(hash -p ./0/cat cat); cat fixture.txt", "parent-safe"],
       ["nested-closed-hash", "( (hash -p ./0/cat cat) ); cat fixture.txt", "parent-safe"],
     ] as const) {
@@ -1260,6 +1264,9 @@ test("bounded temporary CDPATH queries and closed-subshell hash execute through 
     }
     for (const [id, command] of [
       ["temporary-export-n", "CDPATH=.. export -n CDPATH; cd sub && cat fixture.txt"],
+      ["actual-set-posix", "set -o posix; cd sub && cat fixture.txt"],
+      ["actual-set-physical", "set -o physical; cd sub && cat fixture.txt"],
+      ["actual-set-P", "set -P; cd sub && cat fixture.txt"],
       ["same-child-hash", "(hash -p ./0/cat cat; cat)"],
       ["nested-child-hash", "(hash -p ./0/cat cat; (cat))"],
       ["lastpipe-hash", "set +m; shopt -s lastpipe; true | hash -p ./0/cat cat; cat"],
