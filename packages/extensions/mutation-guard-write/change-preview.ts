@@ -45,6 +45,7 @@ export async function readPreviewSource(path: string, limit: number, expected: {
 export class PreviewBudget {
   lines = MAX_PREVIEW_LINES;
   bytes = MAX_PREVIEW_BYTES;
+  omitted = false;
 
   take(source: string, maxLines = MAX_PREVIEW_FILE_LINES): { text: string; omitted: boolean } {
     const lineLimit = Math.min(maxLines, this.lines);
@@ -63,7 +64,9 @@ export class PreviewBudget {
     this.bytes -= bytes;
     this.lines -= end ? lines : 0;
     // Only the bounded prefix is inspected/sanitized, including giant single lines.
-    return { text: stripVTControlCharacters(source.slice(0, end)).replace(PREVIEW_CONTROL_PATTERN, ""), omitted: end < source.length };
+    const omitted = end < source.length;
+    this.omitted ||= omitted;
+    return { text: stripVTControlCharacters(source.slice(0, end)).replace(PREVIEW_CONTROL_PATTERN, ""), omitted };
   }
 
   diff(preview: ChangePreview, source: string): ChangePreview {
@@ -158,12 +161,38 @@ export function displayMetadata(value: unknown): string {
   return JSON.stringify(String(value).slice(0, 4096)).slice(1, -1).replace(DISPLAY_METADATA_CONTROL_PATTERN, escapeDisplayControl);
 }
 
+function displayCreationCount(value: unknown): string {
+  return Number.isSafeInteger(value) && (value as number) >= 0 ? String(value) : "[invalid count]";
+}
+
+function directorySummary(budget: PreviewBudget, directories: unknown, planned: boolean): string {
+  if (!Array.isArray(directories)) return "";
+  let text = "";
+  if (directories.length > 32) budget.omitted = true;
+  for (let index = 0; index < Math.min(directories.length, 32); index++) {
+    if (budget.bytes <= 0 || budget.lines <= 0) { budget.omitted = true; break; }
+    const directory = directories[index];
+    text += budget.take(planned ? `\nplanned parent: ${displayMetadata(directory)}`
+      : `\nparent: ${displayMetadata(directory?.path)} [${displayMetadata(directory?.status)}]`, MAX_PREVIEW_LINES).text;
+  }
+  return text;
+}
+
+export function verificationSummary(observation: unknown): string {
+  const budget = new PreviewBudget();
+  budget.bytes -= 128; budget.lines -= 2;
+  const part = budget.take(JSON.stringify(observation, null, 2), MAX_PREVIEW_LINES);
+  return part.text + (part.omitted ? "\n[verification display truncated; complete observation is retained in the Session entry]" : "");
+}
+
 /** One bounded presentation at completion. The renderer only selects a string. */
 export function batchExpandedSummary(summary: string, items: readonly DisplayItem[], plannedDirectories?: readonly string[]): string {
   const budget = new PreviewBudget();
+  budget.bytes -= 128; budget.lines -= 2;
   let text = budget.take(summary, MAX_PREVIEW_LINES).text;
-  if (plannedDirectories) for (const directory of plannedDirectories) text += budget.take(`\nplanned parent: ${displayMetadata(directory)}`, MAX_PREVIEW_LINES).text;
+  text += directorySummary(budget, plannedDirectories, true);
   for (const item of items) {
+    if (budget.bytes <= 0 || budget.lines <= 0) { budget.omitted = true; break; }
     const receipt = item.receipt;
     // Select content and provenance together: succeeded output is confirmed receipt
     // data; preparation warnings/omissions belong only to an unconfirmed preview.
@@ -173,11 +202,11 @@ export function batchExpandedSummary(summary: string, items: readonly DisplayIte
     if (item.destination) heading += ` → ${displayMetadata(item.destination)}`;
     heading += ` [${displayMetadata(item.status)}]`;
     const creation = preview?.kind === "Added" ? preview : receipt?.creation;
-    if (creation) heading += creation.addedLines === undefined ? ` (${creation.bytes} bytes)` : ` (+${creation.addedLines} -0)`;
+    if (creation) heading += creation.addedLines === undefined ? ` (${displayCreationCount(creation.bytes)} bytes)` : ` (+${displayCreationCount(creation.addedLines)} -0)`;
     text += budget.take(heading, MAX_PREVIEW_LINES).text;
     if (item.reason) text += budget.take(`\n${displayMetadata(item.reason)}`, MAX_PREVIEW_LINES).text;
     if (preview?.risk) text += budget.take(`\n${preview.risk}`, MAX_PREVIEW_LINES).text;
-    if (!plannedDirectories && item.status === "preview" && preview?.plannedDirectories) for (const directory of preview.plannedDirectories) text += budget.take(`\nplanned parent: ${displayMetadata(directory)}`, MAX_PREVIEW_LINES).text;
+    if (!plannedDirectories && item.status === "preview") text += directorySummary(budget, preview?.plannedDirectories, true);
     // Completed receipts already own their actual diff. Never derive a diff in render.
     const writeFallback = confirmed && item.operation === "write" && receipt?.patch == null && receipt?.diff == null;
     const diff = confirmed ? receipt?.patch ?? receipt?.diff ?? (writeFallback ? item.preview?.diff : undefined) : preview?.diff;
@@ -190,12 +219,12 @@ export function batchExpandedSummary(summary: string, items: readonly DisplayIte
     if (preview?.omitted) text += budget.take(`\n[omitted] ${preview.omitted}`, MAX_PREVIEW_LINES).text;
     if (writeFallback && item.preview?.omitted) text += budget.take("\n[display limited] Write succeeded; the stored difference excerpt is incomplete or unavailable.", MAX_PREVIEW_LINES).text;
     const directories = receipt?.creation?.createdDirectories ?? receipt?.createdDirectories;
-    if (Array.isArray(directories)) for (const directory of directories) text += budget.take(`\nparent: ${displayMetadata(directory.path)} [${displayMetadata(directory.status)}]`, MAX_PREVIEW_LINES).text;
+    text += directorySummary(budget, directories, false);
     if (receipt?.commit) {
       text += budget.take(`\ncommit: ${displayMetadata(receipt.commit.strategy)} [${displayMetadata(receipt.commit.outcome)}]${receipt.commit.compatibilityReason ? `; ${displayMetadata(receipt.commit.compatibilityReason)}` : ""}`, MAX_PREVIEW_LINES).text;
       if (receipt.commit.retainedTemporary) text += budget.take(`\nretained temporary: ${displayMetadata(receipt.commit.retainedTemporary)}; ${displayMetadata(receipt.commit.cleanupReason)}`, MAX_PREVIEW_LINES).text;
     }
   }
-  if (budget.bytes <= 0 || budget.lines <= 0) text = text.slice(0, Math.max(0, text.length - 80)) + "\n[remaining display omitted; use /changes to select one file]";
+  if (budget.omitted) text += "\n[remaining display omitted; use /changes to select one file]";
   return text;
 }

@@ -401,3 +401,16 @@ replacement, observes Win32 2, changed inode/bytes, one publication attempt,
 zero native handles/pending calls and no leftover candidate. The focused Windows
 metadata suite passes 21 tests, with nine Linux-only skips. Both fixes retain
 fixed bindings and the dedicated-regex/no-inline-callback source invariants.
+
+The afab/cffd review adds a publication-specific access probe. Before a candidate
+exists, the worker opens the prepared target using the documented ReplaceFileW
+GENERIC_READ | DELETE | SYNCHRONIZE rights and existing sharing mode, validates
+its identity and closes the handle. Only explicit ERROR_ACCESS_DENIED preselects
+object preservation; all other native failures propagate. This does not authorize
+fallback after validation/publication failure. The real Windows fixture denies
+DELETE on the target and DELETE_CHILD on its parent, proves r+ still works, then
+checks preserved inode, bytes, complete security fingerprint, attributes and creation
+time, no candidate/publication, and zero active handles/pending calls. The metadata
+suite passes 22 Windows tests with nine Linux-specific skips; check and four focused
+boundary/source tests pass. API rights source:
+https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-replacefilew

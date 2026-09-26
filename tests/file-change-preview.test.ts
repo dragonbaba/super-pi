@@ -9,7 +9,7 @@ import { initTheme } from "../packages/coding-agent/src/modes/interactive/theme/
 import { RELEASE_COMPONENT_RENDER_CACHE } from "@super-pi/tui";
 import { Session as InspectorSession } from "node:inspector/promises";
 import { syncBuiltinESMExports } from "node:module";
-import { batchExpandedSummary, displayMetadata, PreviewBudget } from "../packages/extensions/mutation-guard-write/change-preview.ts";
+import { batchExpandedSummary, displayMetadata, PreviewBudget, verificationSummary } from "../packages/extensions/mutation-guard-write/change-preview.ts";
 import { DISPLAY_METADATA_CONTROL_PATTERN, PREVIEW_CONTROL_PATTERN } from "../packages/extensions/mutation-guard-write/regex.ts";
 
 test("N1 preview has real mixed changes and no filesystem mutation", async t => {
@@ -153,6 +153,24 @@ test("N1 metadata fields cannot introduce new headings or bidi controls into exp
     receipt: { createdDirectories: [{ path: unsafe, status: unsafe }] } }], [unsafe]);
   assert.doesNotMatch(summary, /\nfake:|\u202e|\u001b/); assert.ok(summary.includes(displayMetadata(unsafe)));
   assert.match(summary, /\\nfake: succeeded\\u202e/);
+});
+
+test("N1 imported counts and oversized directory arrays stay bounded single-line metadata", () => {
+  for (const field of ["bytes", "addedLines"]) {
+    const summary = batchExpandedSummary("result", [{ itemId: "one", operation: "write", target: "target", status: "succeeded",
+      receipt: { creation: { [field]: "1\nfake: succeeded\u202e" } } }]);
+    assert.match(summary, /invalid count/); assert.doesNotMatch(summary, /fake|\u202e/);
+  }
+  let visits = 0;
+  const directories = new Array(100000);
+  for (let n = 0; n < 33; n++) Object.defineProperty(directories, n, { get() { visits++; assert.ok(n < 32); return { path: "p", status: "created" }; } });
+  const summary = batchExpandedSummary("result", [{ itemId: "one", operation: "write", target: "target", status: "partial", receipt: { createdDirectories: directories } }]);
+  assert.equal(visits, 32); assert.match(summary, /remaining display omitted/);
+  visits = 0;
+  const planned = batchExpandedSummary("line\n".repeat(500), [], directories);
+  assert.equal(visits, 0); assert.match(planned, /remaining display omitted/); assert.ok(Buffer.byteLength(planned) <= 65536);
+  const view = verificationSummary({ parents: Array.from({ length: 32 }, (_, n) => ({ path: `p${n}`, identity: Object.fromEntries(Array.from({ length: 15 }, (_, k) => [`field${k}`, "observed"])) })) });
+  assert.match(view, /verification display truncated/); assert.ok(Buffer.byteLength(view) <= 65536); assert.ok(view.split("\n").length <= 400);
 });
 
 test("N1 shared display patterns reset across interleaved preview owners", () => {

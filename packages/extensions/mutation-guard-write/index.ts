@@ -365,9 +365,10 @@ export default function mutationGuardWriteExtension(pi: ExtensionAPI): void {
           guard.releaseMutation(execution.authorization?.reservationId);
         }
         if (failure?.commit) return finishEdit(toolCallId, receiptTarget, { ...failure, ok: false }, conciseMutationFailure(message, failure, undefined, undefined));
-        if (execution.writeSucceeded) {
+        if (execution.writeSucceeded || failure?.stateChanged === true) {
           guard.invalidateCanonicalPath(receiptTarget);
-          return finishEdit(toolCallId, receiptTarget, { ok: false, stateChanged: true, requiresVerification: true, commit: execution.commit }, `Edit committed but completion failed: ${message}`);
+          return finishEdit(toolCallId, receiptTarget, { ...failure, ok: false, stateChanged: true, requiresVerification: true, commit: execution.commit,
+            previousSha256: execution.previousSha256, sha256: execution.writtenSha256 }, `Edit committed but completion failed: ${message.slice(0, 800)}`);
         }
         const editIndex = failedEditIndex(failure);
         let recovery;
@@ -543,7 +544,7 @@ export default function mutationGuardWriteExtension(pi: ExtensionAPI): void {
           const status = failure.stateChanged === "unknown" ? "state_unknown" : failure.stateChanged === true ? "partial" : (failure.status === "cancelled" || signal?.aborted) ? "cancelled" : "failed_no_change";
           const requiresVerification = failure.stateChanged !== false || Boolean(failure.commit?.retainedTemporary);
           const details = { ...failure, ok: false, operation: "write", target: receiptTarget, mutationReceiptVersion: 2, status, ...(requiresVerification ? { requiresVerification: true } : {}) };
-          if (progress) try { pi.appendEntry(MUTATION_PROGRESS_ENTRY, { ...details, toolCallId, itemId: `${toolCallId}:0`, phase: "result" }); } catch { /* Durable intent remains uncertain. */ }
+          if (pathApproval) try { pi.appendEntry(MUTATION_PROGRESS_ENTRY, { ...details, toolCallId, itemId: `${toolCallId}:0`, phase: "result" }); } catch { /* The aggregate retains the observed outcome. */ }
           return { content: [{ type: "text" as const, text: `write: ${status}; ${path}. [${failure.category}] ${typeof failure.cause === "string" ? failure.cause.slice(0, 800) : ""}${requiresVerification ? " Verify current state; do not automatically retry." : ""}${failure.commit ? `\n${commitSummary(failure.commit)}` : ""}` }], details, isError: true };
         }
         throw error;
