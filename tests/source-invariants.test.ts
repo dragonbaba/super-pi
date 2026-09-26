@@ -64,7 +64,7 @@ test("project source avoids V8-hostile and locale-dependent syntax", () => {
 test("file-change renderer and viewport helpers retain bounded primitive hot state", () => {
   const targets = [
     { path: "packages/extensions/mutation-guard-write/change-preview.ts", owner: "BatchResultText", methods: ["setBatchText", "releasePreview"] },
-    { path: "packages/extensions/mutation-guard-write/changes.ts", owner: "ChangeViewer", methods: ["render", "handleInput", "invalidate", "dispose"] },
+    { path: "packages/extensions/mutation-guard-write/changes.ts", owner: "ChangeViewer", methods: ["render", "nextRow", "previousRow", "handleInput", "invalidate", "dispose"] },
   ];
   for (const target of targets) {
     const source = ts.createSourceFile(target.path, readFileSync(target.path, "utf8"), ts.ScriptTarget.Latest, true);
