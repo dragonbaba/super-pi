@@ -186,6 +186,33 @@ test("N1 relative legacy receipts never retarget a different Session cwd", async
   await assert.rejects(verifyChange(records[0], async () => { assert.fail("must not access reinterpreted path"); }), /cannot authorize/);
 });
 
+test("N1 standalone v2 canonical intents survive cwd override without retargeting", async t => {
+  const f = await fixture(t), directory = join(f.cwd, "real"); mkdirSync(directory);
+  const written = await f.call("write", { path: "real/written", content: "kept" }, "canonical-write");
+  assert.equal(written.isError, false, JSON.stringify(written));
+  for (const operation of ["delete", "move"]) {
+    const path = `real/${operation}`; writeFileSync(join(f.cwd, path), "source");
+    await f.call("read", { path }, `read-${operation}`);
+    const result = await f.call(operation, { path, ...(operation === "move" ? { destination: "real/moved" } : {}) }, `canonical-${operation}`);
+    assert.equal(result.isError, false, JSON.stringify(result));
+  }
+  const reopened = SessionManager.open(f.session.getSessionFile()!, undefined, join(f.cwd, "other"));
+  const records = collectChanges(reopened.getBranch(), join(f.cwd, "other"));
+  assert.equal(records.length, 3);
+  for (const record of records) {
+    assert.equal(record.unavailable, undefined, JSON.stringify(record));
+    assert.equal(dirname(record.target), realpathSync.native(directory));
+    await verifyChange(record, async () => {});
+  }
+  const target = join(directory, "failed"); writeFileSync(target, "before");
+  await f.call("read", { path: "real/failed" }, "read-failed");
+  f.onRecord(data => { if (data.toolCallId === "canonical-failure" && data.phase === "intent") writeFileSync(target, "changed"); });
+  assert.equal((await f.call("delete", { path: "real/failed" }, "canonical-failure")).isError, true);
+  const failure = collectChanges(f.session.getBranch(), join(f.cwd, "other")).filter((record: any) => record.toolCallId === "canonical-failure");
+  assert.equal(failure[0].status, "failed_no_change");
+  assert.ok(remainingDraft(failure, new Set()).includes(JSON.stringify(realpathSync.native(target))));
+});
+
 test("N1 recovery never normalizes a malformed v2 item identifier into another item", async t => {
   const f = await fixture(t);
   await f.call("file_batch", { operations: [{ operation: "write", mode: "create", path: "id-file", content: "new" }] }, "item-id");
@@ -278,6 +305,21 @@ test("N1 missing middle receipt with later activity cannot become unstarted", as
   assert.equal(records.some((record: any) => record.itemId === "missing-middle:1"), false);
   assert.throws(() => remainingDraft(records, new Set()), /history is incomplete/);
   assert.equal(readFileSync(join(f.cwd, "middle"), "utf8"), "middle");
+});
+
+test("N1 negative item activity and aggregate-before-preparation never reconstruct unstarted work", async t => {
+  const f = await fixture(t);
+  await f.call("file_batch", { operations: [{ operation: "write", mode: "create", path: "executed", content: "actual" }] }, "ambiguous-order");
+  const original = structuredClone(f.session.getBranch()) as any[];
+  for (const fault of ["negative-index", "early-empty-aggregate", "early-malformed-aggregate"]) {
+    const branch = original.filter(entry => entry.data?.phase === "prepared" || entry.message?.role === "assistant");
+    const position = branch.findIndex(entry => entry.data?.phase === "prepared");
+    if (fault === "negative-index") branch.push({ id: fault, type: "custom", customType: "file-mutation-progress-v2", data: { toolCallId: "ambiguous-order", itemId: "ambiguous-order:-1", phase: "invalid" } });
+    else branch.splice(position, 0, { id: fault, type: "message", message: { role: "toolResult", toolName: "file_batch", toolCallId: "ambiguous-order", details: { items: fault === "early-empty-aggregate" ? [] : "invalid" } } });
+    const records = collectChanges(branch, f.cwd);
+    assert.equal(records.length, 0, fault); assert.throws(() => remainingDraft(records, new Set()), /No confirmed/);
+  }
+  assert.equal(readFileSync(join(f.cwd, "executed"), "utf8"), "actual");
 });
 
 test("N1 interrupted preparation retains unstarted items and drafts original absolute targets across cwd changes", async t => {
