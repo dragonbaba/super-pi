@@ -146,6 +146,7 @@ function laterBatchActivity(entries: readonly any[], callId: string, index: numb
     }
     const message = entry.message;
     if (message?.role === "toolResult" && message.toolCallId === callId && Array.isArray(message.details?.items)) {
+      if (message.details.items.length > 16) return true;
       for (let n = index + 1; n < message.details.items.length; n++) if (message.details.items[n]?.status !== "not_started") return true;
     }
   }
@@ -189,14 +190,20 @@ export function collectChanges(branch: readonly any[], cwd: string): ChangeRecor
   const duplicateEntries = new Set<string>();
   const records: ChangeRecord[] = [];
   const order = new Map<string, number>();
+  let scannedBlocks = 0, callsOverflow = false;
   for (let position = 0; position < branch.length; position++) {
     const entry = branch[position];
     if (entries.has(entry.id)) duplicateEntries.add(entry.id);
     entries.set(entry.id, entry);
     order.set(entry.id, position);
-    if (entry.type !== "message" || entry.message?.role !== "assistant" || !Array.isArray(entry.message.content)) continue;
+    if (callsOverflow || entry.type !== "message" || entry.message?.role !== "assistant" || !Array.isArray(entry.message.content)) continue;
+    scannedBlocks += entry.message.content.length;
+    if (entry.message.content.length > 128 || scannedBlocks > 4096) {
+      callsOverflow = true; calls.clear(); callOrder.clear(); duplicate.clear(); continue;
+    }
     for (const call of entry.message.content) {
-      if (call.type !== "toolCall" || typeof call.id !== "string") continue;
+      if (call?.type !== "toolCall" || typeof call.id !== "string" || call.id.length > 256) continue;
+      if (calls.size >= 512 && !calls.has(call.id)) { callsOverflow = true; calls.clear(); callOrder.clear(); duplicate.clear(); break; }
       if (calls.has(call.id)) duplicate.add(call.id);
       calls.set(call.id, call);
       callOrder.set(call.id, order.get(entry.id)!);
@@ -268,7 +275,8 @@ export function collectChanges(branch: readonly any[], cwd: string): ChangeRecor
       batchSize: call?.name === "file_batch" ? call.arguments?.operations?.length : undefined,
       postimage: bound && typeof details?.sha256 === "string" && SHA256.test(details.sha256) ? details.sha256 : undefined,
       sourceIdentity: bound ? details?.sourceIdentity : undefined,
-      unavailable: bound ? undefined : !historicalTarget ? "Originating cwd is missing for this relative legacy receipt; unable to reconstruct its target safely."
+      unavailable: bound ? undefined : callsOverflow ? "Assistant content exceeds bounded history inspection limits; unable to reconstruct safely."
+        : !historicalTarget ? "Originating cwd is missing for this relative legacy receipt; unable to reconstruct its target safely."
         : "Original request or ordered matching preparation is missing/ambiguous in the bounded history; unable to reconstruct." });
     if (records.length > MAX_CHANGES) records.shift();
   }
@@ -312,7 +320,8 @@ export function collectChanges(branch: readonly any[], cwd: string): ChangeRecor
       || call.arguments?.dryRun !== true || message.details?.preview !== true || !Array.isArray(message.details.items) || message.details.items.length > 16) continue;
     for (let index = 0; index < message.details.items.length; index++) {
       const item = message.details.items[index];
-      if (item?.itemId !== `${call.id}:${index}` || typeof item.target !== "string" || item.target.length > 4096 || item.operation !== call.arguments.operations?.[index]?.operation) continue;
+      if (item?.itemId !== `${call.id}:${index}` || item.status !== "preview" || item.stateChanged !== false || item.receipt !== undefined
+        || typeof item.target !== "string" || item.target.length > 4096 || item.operation !== call.arguments.operations?.[index]?.operation) continue;
       previews.push({ entryId: entry.id, toolCallId: call.id, itemId: item.itemId, operation: item.operation,
         target: item.target, destination: item.destination, status: "preview", preview: true, item });
       if (previews.length > MAX_CHANGES) previews.shift();

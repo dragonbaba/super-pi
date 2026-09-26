@@ -312,3 +312,15 @@ distinct from its terminal. Actual histories test empty/missing/truncated/invali
 aggregate lists and origin/prepared/unknown-phase records carrying forged outcome
 fields; none can authorize a remaining draft. Targeted recovery tests pass; new
 full checks and actual review are still required.
+
+The 2f9b2d010 review found malformed later custom outcomes, forged preview item
+status/receipts and unbounded nested assistant content. A call-owned conflict set
+(bounded by the 512-entry scan) now retains ambiguity before and after valid
+mirrors, including malformed item IDs/version/outcomes and missing timestamps.
+Preview items must retain preview status, false stateChanged and no receipt.
+Recovery scans at most 128 content blocks per assistant entry, 4096 blocks total
+and 512 unique calls; overflow clears request bindings and refuses reconstruction.
+Later aggregate activity checks also enforce the existing 16-item bound. Actual
+histories and a million-element Proxy array test refusal without accessing its
+elements. These are explicit-command/cold bounded collectors, with module-level
+helpers and no new regex or callback. Current-head full gates/CI/review remain due.

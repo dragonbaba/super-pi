@@ -72,60 +72,73 @@ export function validMutationOutcome(status: unknown, stateChanged: unknown): bo
     : (status === "failed_no_change" || status === "cancelled" || status === "not_started") && stateChanged === false;
 }
 
-function appendNativeReceipt(items: Map<string, NativeStructuredMutationReceipt>, entry: any, data: any, toolCallId: unknown, itemId: unknown, intent: boolean): void {
+function appendNativeReceipt(items: Map<string, NativeStructuredMutationReceipt>, entry: any, data: any, toolCallId: unknown, itemId: unknown, intent: boolean): boolean {
   const previous = typeof itemId === "string" ? items.get(itemId) : undefined;
   if (previous && data && (previous.toolCallId !== toolCallId || previous.operation !== data.operation || previous.target !== data.target || previous.destination !== data.destination)) {
     previous.historyConflict = true;
-    return;
+    return false;
   }
   if (!data || (data.operation !== "delete" && data.operation !== "move" && data.operation !== "write" && data.operation !== "edit") || !safeReceiptPath(data.target)
-    || (data.operation === "move" && !safeReceiptPath(data.destination))) return;
-  if (typeof toolCallId !== "string" || toolCallId.length > 256 || typeof itemId !== "string" || itemId.length > 280) return;
+    || (data.operation === "move" && !safeReceiptPath(data.destination))) return false;
+  if (typeof toolCallId !== "string" || !toolCallId.length || toolCallId.length > 256 || typeof itemId !== "string" || itemId.length > 280) return false;
   const status = intent ? "state_unknown" : data.status;
   const stateChanged = intent ? "unknown" : data.stateChanged;
-  if (status !== "state_unknown" && status !== "succeeded" && status !== "partial" && status !== "failed_no_change" && status !== "cancelled" && status !== "not_started") return;
+  if (status !== "state_unknown" && status !== "succeeded" && status !== "partial" && status !== "failed_no_change" && status !== "cancelled" && status !== "not_started") return false;
   if ((status === "state_unknown" && stateChanged !== "unknown") || ((status === "succeeded" || status === "partial") && stateChanged !== true)
-    || ((status === "failed_no_change" || status === "cancelled" || status === "not_started") && stateChanged !== false)) return;
+    || ((status === "failed_no_change" || status === "cancelled" || status === "not_started") && stateChanged !== false)) return false;
   items.set(itemId, { receiptVersion: 2, entryId: entry.id, timestamp: entry.timestamp, toolCallId, itemId,
     operation: data.operation, target: data.target, destination: data.destination, status, stateChanged, historyConflict: previous?.historyConflict,
     ...(status === "state_unknown" || status === "partial" || data.requiresVerification === true || data.commit?.retainedTemporary || data.receipt?.commit?.retainedTemporary ? { requiresVerification: true as const } : {}) });
   if (items.size > MAX_STRUCTURED_MUTATION_RECEIPTS) items.delete(items.keys().next().value!);
+  const index = Number(itemId.slice(toolCallId.length + 1));
+  return Number.isInteger(index) && index >= 0 && index < 16 && itemId === `${toolCallId}:${index}`;
 }
 
-function markConflictingAggregate(items: Map<string, NativeStructuredMutationReceipt>, toolCallId: unknown): void {
-  if (typeof toolCallId !== "string") return;
-  for (const item of items.values()) if (item.toolCallId === toolCallId) item.historyConflict = true;
+function markConflictingAggregate(conflicts: Set<string>, toolCallId: unknown): void {
+  if (typeof toolCallId === "string" && toolCallId.length <= 256) conflicts.add(toolCallId);
 }
 
 function collectNativeReceipts(branch: readonly unknown[]): Map<string, NativeStructuredMutationReceipt> {
   const items = new Map<string, NativeStructuredMutationReceipt>();
+  // At most one call per bounded entry. Retain ambiguity across later valid
+  // mirrors as well as earlier outcomes; malformed records are never evidence.
+  const conflicts = new Set<string>();
   for (let index = Math.max(0, branch.length - MAX_STRUCTURED_MUTATION_RECEIPTS); index < branch.length; index++) {
     const entry = branch[index] as any;
-    if (typeof entry?.id !== "string" || typeof entry.timestamp !== "string") continue;
+    if (typeof entry?.id !== "string" || typeof entry.timestamp !== "string") {
+      if (entry?.type === "custom" && entry.customType === "file-mutation-progress-v2" && (entry.data?.phase === "intent" || entry.data?.phase === "result")) markConflictingAggregate(conflicts, entry.data.toolCallId);
+      if (entry?.message?.role === "toolResult") markConflictingAggregate(conflicts, entry.message.toolCallId);
+      continue;
+    }
     if (entry.type === "custom" && entry.customType === "file-mutation-progress-v2") {
       const data = entry.data;
-      if (data?.phase === "intent" || data?.phase === "result" && data?.mutationReceiptVersion === 2) appendNativeReceipt(items, entry, data, data?.toolCallId, data?.itemId, data?.phase === "intent");
+      if (data?.phase === "intent" || data?.phase === "result") {
+        if (data.phase === "result" && data.mutationReceiptVersion !== 2
+          || !appendNativeReceipt(items, entry, data, data.toolCallId, data.itemId, data.phase === "intent")) markConflictingAggregate(conflicts, data.toolCallId);
+      }
       continue;
     }
     const message = entry.type === "message" && entry.message?.role === "toolResult" ? entry.message : undefined;
     const data = message?.details;
     if (data?.mutationReceiptVersion !== 2) continue;
-    if (message?.toolName !== data?.operation) { markConflictingAggregate(items, message?.toolCallId); continue; }
+    if (message?.toolName !== data?.operation) { markConflictingAggregate(conflicts, message?.toolCallId); continue; }
     if (message.toolName === "file_batch" && data.operation === "file_batch" && !data.preview && Array.isArray(data.items) && data.items.length > 0 && data.items.length <= 16) {
       for (const previous of items.values()) if (previous.toolCallId === message.toolCallId) {
         const position = Number(previous.itemId.slice(message.toolCallId.length + 1));
-        if (data.items[position]?.itemId !== previous.itemId) { markConflictingAggregate(items, message.toolCallId); break; }
+        if (data.items[position]?.itemId !== previous.itemId) { markConflictingAggregate(conflicts, message.toolCallId); break; }
       }
       for (let index = 0; index < data.items.length; index++) {
         const item = data.items[index];
         if (item?.itemId === `${message.toolCallId}:${index}` && validMutationOutcome(item.status, item.stateChanged)
           && (item.operation === "write" || item.operation === "edit" || item.operation === "delete" || item.operation === "move")
-          && safeReceiptPath(item.target) && (item.operation !== "move" || safeReceiptPath(item.destination))) appendNativeReceipt(items, entry, item, message.toolCallId, item.itemId, false);
-        else markConflictingAggregate(items, message.toolCallId);
+          && safeReceiptPath(item.target) && (item.operation !== "move" || safeReceiptPath(item.destination))) {
+          if (!appendNativeReceipt(items, entry, item, message.toolCallId, item.itemId, false)) markConflictingAggregate(conflicts, message.toolCallId);
+        } else markConflictingAggregate(conflicts, message.toolCallId);
       }
-    } else if (message.toolName === "file_batch") markConflictingAggregate(items, message.toolCallId);
-    else appendNativeReceipt(items, entry, data, message.toolCallId, `${message.toolCallId}:0`, false);
+    } else if (message.toolName === "file_batch") markConflictingAggregate(conflicts, message.toolCallId);
+    else if (!appendNativeReceipt(items, entry, data, message.toolCallId, `${message.toolCallId}:0`, false)) markConflictingAggregate(conflicts, message.toolCallId);
   }
+  for (const item of items.values()) if (conflicts.has(item.toolCallId)) item.historyConflict = true;
   return items;
 }
 
