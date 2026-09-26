@@ -269,3 +269,22 @@ diagnostic. Actual filesystem/Agent regressions cover creation, overwrite comple
 failure, exact-edit cancellation and altered origin hashes. Forty-five focused tests,
 twelve AST/source cases and check pass on Windows Node 22.19.0. Full checks and a
 fresh actual review are required on the resulting commit; no pass is inferred.
+
+The 34b46bed3 candidate passed all local gates and both platform CI jobs. Its next
+actual review found six additional reconstruction/presentation boundaries. A later
+conflicting terminal now marks the earlier collected item ambiguous; it cannot
+silently retain a usable remaining draft. Snapshot post-publication readback failure
+retains a verifiable partial terminal. Intent-only creation records preserve bounded
+canonical planned parents for both standalone and batch operations. Imported risk
+and omission labels are escaped as single-line metadata. Exact-edit drafts preserve
+positive expectedLine values only as non-authoritative originalLineHint. Receipt
+paths permit real POSIX newline filenames while still rejecting NUL; display remains
+escaped and no execution-path restriction is relaxed.
+
+Windows Node 22.19.0 focused validation: 50 pass, one POSIX-only skip; check and all
+twelve relevant AST/source cases pass. The actual snapshot failure fixture isolates
+its post-rename filesystem interception in an owned child, confirms changed bytes,
+and reconstructs/verifies the resulting partial receipt. Intent-only regressions
+cover actual standalone and batch creation, including canonical Windows parent
+aliases. Final-head whole-project gates, Linux newline execution and actual review
+remain required; earlier-head results are not substituted.

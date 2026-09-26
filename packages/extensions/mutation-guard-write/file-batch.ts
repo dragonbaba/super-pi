@@ -9,7 +9,7 @@ import type { ToolDefinition } from "@super-pi/coding-agent";
 import { Value } from "typebox/value";
 import { consumePermissionPathApproval, mutationRequestHash, type PermissionPathApproval } from "../resource-lifecycle-guard/permission-contract.ts";
 import { MutationWriteGuard, resolveToolPath, sha256, type GuardedEdit, type MutationEditAuthorization, type MutationPathApproval } from "./core.ts";
-import { prepareFileCreation, verifyCreationAncestor, directoryKey, type FileCreationPlan } from "./file-creation.ts";
+import { prepareFileCreation, verifyCreationAncestor, directoryKey, canonicalCreationDirectories, type FileCreationPlan } from "./file-creation.ts";
 import { capturePathIdentity, sameIdentity, prepareNativeOperation, revalidateNativePlan, executeNativePlan, type NativePlan, type PathIdentity, type MutationStatus } from "./native-file-core.ts";
 import { prepareSnapshotLineMutation, executePreparedSnapshotMutation, type PreparedSnapshotMutation, type SnapshotLineEdit } from "./snapshot-line-edit.ts";
 import { PublicEditOperationParameters, PublicEditParameters, EditParameters, SnapshotEditParameters, WriteParameters, validatePublicSnapshotAnchors } from "./mutation-parameters.ts";
@@ -287,7 +287,8 @@ export class BatchInvocation {
           item.approval.commitSelected = metadata => { pi.appendEntry(MUTATION_PROGRESS_ENTRY, { toolCallId: this.id, itemId: item.itemId,
             phase: "commit_prepared", operation: item.operation, target: item.target, strategy: metadata.strategy, compatibilityReason: metadata.reason }); };
           try {
-            pi.appendEntry(MUTATION_PROGRESS_ENTRY, { toolCallId: this.id, itemId: item.itemId, phase: "intent", requestHash: this.requestHash, operation: item.operation, target: item.target, destination: item.native?.destination });
+            pi.appendEntry(MUTATION_PROGRESS_ENTRY, { toolCallId: this.id, itemId: item.itemId, phase: "intent", requestHash: this.requestHash, operation: item.operation, target: item.target, destination: item.native?.destination,
+              directories: item.creation ? canonicalCreationDirectories(item.creation) : undefined });
             await this.revalidate(item, signal, sharedDirectories);
             let receipt: any;
             if (item.native) receipt = await executeNativePlan(item.native, this.assertAuthority, signal);

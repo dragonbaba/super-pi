@@ -205,7 +205,7 @@ export function batchExpandedSummary(summary: string, items: readonly DisplayIte
     if (creation) heading += creation.addedLines === undefined ? ` (${displayCreationCount(creation.bytes)} bytes)` : ` (+${displayCreationCount(creation.addedLines)} -0)`;
     text += budget.take(heading, MAX_PREVIEW_LINES).text;
     if (item.reason) text += budget.take(`\n${displayMetadata(item.reason)}`, MAX_PREVIEW_LINES).text;
-    if (preview?.risk) text += budget.take(`\n${preview.risk}`, MAX_PREVIEW_LINES).text;
+    if (preview?.risk) text += budget.take(`\n${displayMetadata(preview.risk)}`, MAX_PREVIEW_LINES).text;
     if (!plannedDirectories && item.status === "preview") text += directorySummary(budget, preview?.plannedDirectories, true);
     // Completed receipts already own their actual diff. Never derive a diff in render.
     const writeFallback = confirmed && item.operation === "write" && receipt?.patch == null && receipt?.diff == null;
@@ -216,7 +216,7 @@ export function batchExpandedSummary(summary: string, items: readonly DisplayIte
       text += part.text;
       if (part.omitted) text += budget.take("\n[display limited] Difference excerpt omitted; later item outcomes follow when space remains.", MAX_PREVIEW_LINES).text;
     }
-    if (preview?.omitted) text += budget.take(`\n[omitted] ${preview.omitted}`, MAX_PREVIEW_LINES).text;
+    if (preview?.omitted) text += budget.take(`\n[omitted] ${displayMetadata(preview.omitted)}`, MAX_PREVIEW_LINES).text;
     if (writeFallback && item.preview?.omitted) text += budget.take("\n[display limited] Write succeeded; the stored difference excerpt is incomplete or unavailable.", MAX_PREVIEW_LINES).text;
     const directories = receipt?.creation?.createdDirectories ?? receipt?.createdDirectories;
     text += directorySummary(budget, directories, false);

@@ -54,6 +54,20 @@ function uniqueProgress(entries: readonly any[], callId: string, phase: string, 
 }
 
 const DIRECTORY_IDENTITY_FIELDS = ["path", "canonical", "device", "inode", "size", "mtime", "ctime", "mode", "links", "directory"] as const;
+const COMMIT_RECEIPT_FIELDS = ["strategy", "outcome", "compatibilityReason", "fileSynced", "directorySynced", "retainedTemporary", "cleanupReason"] as const;
+
+function sameCommitReceipt(left: any, right: any): boolean {
+  if (left === undefined || right === undefined) return left === right;
+  if (!left || !right || typeof left !== "object" || typeof right !== "object") return false;
+  for (const field of COMMIT_RECEIPT_FIELDS) {
+    const value = left[field];
+    if (value !== right[field] || typeof value === "string" && value.length > (field === "retainedTemporary" ? 4096 : 1024)
+      || value !== undefined && typeof value !== "string" && typeof value !== "boolean") return false;
+  }
+  return (left.strategy === "staged_replace" || left.strategy === "protected_in_place")
+    && (left.outcome === "not_committed" || left.outcome === "committed" || left.outcome === "unknown")
+    && typeof left.fileSynced === "boolean" && left.directorySynced === false;
+}
 
 function sameCreatedDirectories(left: any, right: any): boolean {
   if (left === undefined || right === undefined) return left === right;
@@ -81,6 +95,7 @@ function conflictingTerminal(entries: readonly any[], selected: any, callId: str
     if (previous || entry.type !== "custom" || selected.type !== "message"
       || terminal.status !== outcome.status || terminal.stateChanged !== outcome.stateChanged
       || terminal.operation !== outcome.operation || terminal.target !== outcome.target || terminal.destination !== outcome.destination
+      || !sameCommitReceipt(terminal.commit ?? terminal.receipt?.commit, details?.commit)
       || !sameCreatedDirectories(terminal.creation?.createdDirectories ?? terminal.createdDirectories, details?.creation?.createdDirectories ?? details?.createdDirectories)) return true;
     previous = true;
   }
@@ -224,6 +239,7 @@ export function collectChanges(branch: readonly any[], cwd: string): ChangeRecor
         && !hasEarlierTerminal(executionEntries, executionEntries.indexOf(origin), call.id, receipt.itemId, 0);
     }
     if (bound && receipt.receiptVersion === 2 && conflictingTerminal(executionEntries, entry, receipt.toolCallId, receipt.itemId, index, receipt, details)) bound = false;
+    if (receipt.receiptVersion === 2 && receipt.historyConflict) bound = false;
     records.push({ entryId: receipt.entryId, toolCallId: receipt.toolCallId, itemId: receipt.receiptVersion === 2 ? receipt.itemId : `${receipt.toolCallId}:0`,
       operation: receipt.operation, target, destination,
       status: receipt.receiptVersion === 1 ? "succeeded" : receipt.status, preview: false,
@@ -307,12 +323,13 @@ function retainedTemporary(record: ChangeRecord): string | undefined {
 }
 
 function retainedParents(record: ChangeRecord): string[] {
-  const directories = record.receipt?.creation?.createdDirectories ?? record.receipt?.createdDirectories;
+  const directories = record.receipt?.creation?.createdDirectories ?? record.receipt?.createdDirectories
+    ?? (record.receipt?.phase === "intent" ? record.receipt.directories : undefined);
   if (directories === undefined) return [];
   if (!Array.isArray(directories) || directories.length > 32) throw new Error("Recorded parent side effects exceed verification bounds.");
   const paths: string[] = [];
   for (const directory of directories) {
-    const path = directory?.identity?.canonical ?? directory?.path;
+    const path = typeof directory === "string" ? directory : directory?.identity?.canonical ?? directory?.path;
     if (typeof path !== "string" || path.length > 4096 || !isAbsolute(path)) throw new Error("Recorded parent side effect cannot be reconstructed.");
     const tail = relative(path, record.target);
     if (!tail || tail === ".." || tail.startsWith(`..${sep}`) || isAbsolute(tail)) throw new Error("Recorded side effect is not a parent of the bound target.");
@@ -412,7 +429,10 @@ function draftOperation(record: ChangeRecord): unknown {
       // Stale snapshot IDs and LINE#ID anchors are never serialized into a new draft.
       changes.push({ kind: edit.kind, originalLineHint: parseSnapshotLineReference(edit.start, "start").line,
         originalEndLineHint: edit.end ? parseSnapshotLineReference(edit.end, "end").line : undefined, newLines });
-    } else changes.push({ oldText: boundedString(edit.oldText, "Old text"), newText: boundedString(edit.newText, "New text") });
+    } else {
+      if (edit.expectedLine !== undefined && (!Number.isSafeInteger(edit.expectedLine) || edit.expectedLine < 1)) throw new Error("Original exact-edit location hint is invalid.");
+      changes.push({ oldText: boundedString(edit.oldText, "Old text"), newText: boundedString(edit.newText, "New text"), originalLineHint: edit.expectedLine });
+    }
   }
   return { operation: "edit", path, desiredChanges: changes };
 }
