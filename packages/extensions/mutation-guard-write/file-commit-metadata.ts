@@ -30,6 +30,7 @@ interface MetadataObservation {
   attributes?: number; links?: number; creationTime?: string; security?: string; securityFingerprint?: string; filesystem?: string;
   hasAttributes?: boolean; namesFingerprint?: string; valuesFingerprint?: string; writeClearsAttributes?: boolean;
   defaultAcl?: boolean; ownerAssignable?: boolean; replacementAccess?: boolean; mountId?: string;
+  inodeFlags?: number; xflags?: number; extentSize?: number; projectId?: number; cowExtentSize?: number; fileFlagsFingerprint?: string;
 }
 
 async function inspect(handle: FileHandle, path: string, capability = false): Promise<MetadataObservation> {
@@ -61,7 +62,8 @@ class NativeCommitMetadata implements CommitMetadata {
     const next = await inspect(handle, this.target.canonical);
     if (process.platform === "win32") {
       if (next.securityFingerprint !== original.securityFingerprint || next.attributes !== original.attributes || next.creationTime !== original.creationTime || next.links !== (compatibility ? original.links : 1)) throw new Error(`[${postimage ? "POSTCOMMIT" : "METADATA_CHANGED"}] Windows metadata changed.`);
-    } else if (next.namesFingerprint !== original.namesFingerprint || next.valuesFingerprint !== original.valuesFingerprint || !compatibility && next.hasAttributes) throw new Error("[METADATA_CHANGED] ACL/extended attributes changed.");
+    } else if (next.namesFingerprint !== original.namesFingerprint || next.valuesFingerprint !== original.valuesFingerprint
+      || next.fileFlagsFingerprint !== original.fileFlagsFingerprint || !compatibility && next.hasAttributes) throw new Error("[METADATA_CHANGED] ACL/extended attributes/file flags changed.");
   }
   async assertBeforeInPlace(handle: FileHandle, plan: FileCommitPlan): Promise<void> {
     await nativeFileRequest("verify_in_place", { fd: handle.fd, target: plan.target, parent: plan.parent, previousSha256: plan.previousSha256 });
@@ -85,7 +87,8 @@ class NativeCommitMetadata implements CommitMetadata {
     } else {
       if (info.uid !== this.info.uid || info.gid !== this.info.gid) await staged.chown(Number(this.info.uid), Number(this.info.gid));
       await staged.chmod(Number(this.info.mode) & 0o777);
-      if ((await inspect(staged, path)).hasAttributes) throw new Error("[UNSUPPORTED_COMMIT] Temporary inherited unsupported extended attributes.");
+      const next = await inspect(staged, path);
+      if (next.hasAttributes || next.fileFlagsFingerprint !== this.original.fileFlagsFingerprint) throw new Error("[UNSUPPORTED_COMMIT] Temporary inherited unsupported extended attributes/file flags.");
     }
   }
   async replace(temporary: string, target: string, validation: PublicationValidation): Promise<void> {
@@ -113,6 +116,14 @@ export async function selectCommitMetadata(target: PathIdentity): Promise<Commit
       throw error; // Inspection/permission failure never means absent metadata or fallback.
     }
     if (process.platform === "linux" && original.writeClearsAttributes) throw new Error("[UNSUPPORTED_COMMIT] File capabilities may be cleared by writing; target was not modified.");
+    if (process.platform === "linux" && (original.inodeFlags === undefined || original.xflags === undefined
+      || (original.inodeFlags & ~0x80000) !== 0 || (original.xflags & ~0x80000000) !== 0
+      || original.extentSize !== 0 || original.projectId !== 0 || original.cowExtentSize !== 0)) {
+      throw new Error("[UNSUPPORTED_COMMIT] Special Linux inode flags/project/extent policy are not supported; target was not modified.");
+    }
+    if (process.platform === "win32" && original.attributes !== 0x80 && !(original.attributes! & 0x20)) {
+      throw new Error("[UNSUPPORTED_COMMIT] Archive-cleared special Windows attributes may change on write; target was not modified.");
+    }
     if (info.nlink !== 1n) return compatibility("Multiple hardlinks: retain the existing object; supported mode/owner and observed metadata are verified.", info, target, original);
     if (process.platform === "linux" && original.hasAttributes) return compatibility("Visible ACL/extended attributes require the original object; values are verified before and after writing.", info, target, original);
     if (process.platform === "linux") {

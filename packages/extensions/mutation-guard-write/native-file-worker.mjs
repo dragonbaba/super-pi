@@ -52,7 +52,8 @@ function loadBindings() {
     // Supported Linux ABI is x86_64/glibc: ssize_t is signed pointer-width.
     // Koffi provides intptr_t; ssize_t is not a built-in typedef.
     bindings = { library, list: library.func("intptr_t flistxattr(int fd, void *names, size_t size)"),
-      get: library.func("intptr_t fgetxattr(int fd, const void *name, void *value, size_t size)") };
+      get: library.func("intptr_t fgetxattr(int fd, const void *name, void *value, size_t size)"),
+      ioctl: library.func("int ioctl(int fd, unsigned long request, ...)") };
   } else throw new Error("Native staged commits are only validated for Windows/Linux x64.");
   return bindings;
 }
@@ -263,6 +264,25 @@ function protectWindowsHandle(b, input, handle) {
     if (!actual.protected || !actual.dacl?.equals(acl)) throw new Error("Private temporary DACL verification failed.");
 }
 
+function linuxFileFlags(b, fd) {
+  // Linux x86_64 UAPI: GETFLAGS encodes sizeof(long), but writes an int.
+  // fsxattr is 28 bytes. Only fixed requests and an owned output buffer enter FFI.
+  const flags = Buffer.alloc(8), extended = Buffer.alloc(28);
+  if (b.ioctl(fd, 0x80086601, "void *", flags) !== 0) {
+    const code = koffi.errno();
+    throw new Error(`[UNSUPPORTED_COMMIT] FS_IOC_GETFLAGS failed (errno ${code}); file flags are unknown.`);
+  }
+  if (b.ioctl(fd, 0x801c581f, "void *", extended) !== 0) {
+    const code = koffi.errno();
+    throw new Error(`[UNSUPPORTED_COMMIT] FS_IOC_FSGETXATTR failed (errno ${code}); extended file flags are unknown.`);
+  }
+  const inodeFlags = flags.readUInt32LE(0), xflags = extended.readUInt32LE(0);
+  const extentSize = extended.readUInt32LE(4), projectId = extended.readUInt32LE(12), cowExtentSize = extended.readUInt32LE(16);
+  // nextents describes physical allocation, not a preservation promise.
+  return { inodeFlags, xflags, extentSize, projectId, cowExtentSize,
+    fileFlagsFingerprint: `${inodeFlags}:${xflags}:${extentSize}:${projectId}:${cowExtentSize}` };
+}
+
 function inspectLinux(b, input) {
   const names = Buffer.alloc(MAX_ATTRIBUTE_NAMES);
   const length = Number(b.list(input.fd, names, names.length));
@@ -286,7 +306,7 @@ function inspectLinux(b, input) {
     frame.writeUInt32LE(end - start, 0); frame.writeUInt32LE(size, 4);
     values.update(frame); values.update(names.subarray(start, end)); values.update(value); start = end + 1;
   }
-  return { hasAttributes: length !== 0, writeClearsAttributes, defaultAcl, mountId: linuxMountId(input.fd), namesFingerprint: createHash("sha256").update(names.subarray(0, length)).digest("hex"), valuesFingerprint: values.digest("hex") };
+  return { ...linuxFileFlags(b, input.fd), hasAttributes: length !== 0, writeClearsAttributes, defaultAcl, mountId: linuxMountId(input.fd), namesFingerprint: createHash("sha256").update(names.subarray(0, length)).digest("hex"), valuesFingerprint: values.digest("hex") };
 }
 
 function linuxMountId(fd) {
@@ -329,7 +349,8 @@ function verifyBytes(b, input, path, expected, size, hash, staged) {
       const current = fstatSync(fd, { bigint: true }), expectedMetadata = input.metadata;
       if (String(current.mode) !== expectedMetadata.mode || String(current.uid) !== expectedMetadata.uid || String(current.gid) !== expectedMetadata.gid) throw new Error("[STALE_STATE] Publication mode/owner changed.");
       const attributes = inspectLinux(b, { fd });
-      if (attributes.namesFingerprint !== input.original.namesFingerprint || attributes.valuesFingerprint !== input.original.valuesFingerprint) throw new Error("[STALE_STATE] Publication extended attributes changed.");
+      if (attributes.namesFingerprint !== input.original.namesFingerprint || attributes.valuesFingerprint !== input.original.valuesFingerprint
+        || attributes.fileFlagsFingerprint !== input.original.fileFlagsFingerprint) throw new Error("[STALE_STATE] Publication extended attributes/file flags changed.");
     } else {
       const current = inspectWindows(b, { path, expected });
       if (current.securityFingerprint !== input.original.securityFingerprint || current.links !== 1
