@@ -5,6 +5,10 @@ tool-result budget visible and adjustable. It does not establish a performance w
 the full task matrix, I/O counters, five-process comparisons, formal PTY startup
 and combined N1–N4 Session acceptance are still required.
 
+Subsequent measurement slices now implement those fixtures; five independent
+interleaved final comparisons and final CI/review remain outstanding. Functional
+probes are deliberately separate from the final timing evidence below.
+
 ## Explicit budget status and session settings
 
 `/tool-budget status`, `/tool-budget <positive decimal integer>` and
@@ -118,3 +122,82 @@ estimates, requests, calls, approvals, actual reads, CPU/wall and sampled heaps 
 reported separately; provider usage/cache hits/bills remain null. Five independent
 interleaved processes, additional failure/history dimensions and full N4 measurements
 are outstanding; this success slice is not final acceptance.
+
+## Recovery, context and combined Session fixtures
+
+`next-phase-recovery-matrix.test.ts` adds fifteen equal four-file exact rows across
+T1/T2/T3 and short/100-pair history, durable reopen, model switch and warm activation.
+The actual serializer accounts for initial discovery, warm reads and reopening's
+setup request. Overlimit 17-path and invalid-preflight batches leave every target
+unchanged; an explicit bounded corrected request creates only its chosen target.
+Baseline and candidate functional context/success matrices pass. No usage/cache or
+bill is fabricated; the existing conservative estimator and its CPU cost are labelled.
+
+One actual default SDK Session now performs: real batch preview with zero effects,
+snapshot/create/move/delete commit, external drift after a committed first item,
+structured partial completion, user-invoked changes verification/draft without calls,
+new approval and remaining request, real multiline Bash exit 23, Windows PowerShell
+exit 7, actual 5MiB log cap with final tail, too-small budget refusal, explicit budget
+change/continuation and durable reopen without replay. Initial candidate passes with
+21 serialized requests, ten tools, six approvals and zero pending calls; these are
+fixture observations, not a production cost estimate. Current-parent reruns remain required.
+
+## File I/O measurement boundaries
+
+`next-phase-file-io.ts` traces actual default SDK read → read-window proof → guard
+preparation → queued revalidation → shared commit → receipt. Files are 4KiB, 256KiB,
+2MiB minus one byte (the edit adds one byte), and 8MiB, for 1/4/16 paths, exact/snapshot.
+At most three full snapshots are grouped under the existing 8MiB resident limit;
+the task does not suppress required read/prepare/queue/commit rechecks. Explicit
+FileHandle opens/closes and bytes read are instrumented; path-based readFile calls
+with implicit opens are reported separately, not mislabelled complete syscall counts.
+Hashes include content/proof/request hashing. Windows canonical and short Temp aliases
+share the same measured scope. V8 precise counts are used only for synchronous named
+candidate/diff constructors; async resumptions are not counted as function invocations.
+
+Default local window reads currently do not issue snapshots for the larger rows.
+Those rows record unavailable snapshots and unchanged bytes, without falling back
+after failure. A separately labelled existing custom-I/O read/compact-snapshot
+subsystem fixture measures real read-issued 8MiB snapshots and verified postimages
+for 1/4/16 files, with fixture path hooks; it is not represented as default SDK
+authorization support. Initial candidate rows pass. Observed retained snapshots,
+full-file parsing/diff and mandatory hashing have measurable costs; no cache, pool,
+generation shortcut or pure speed optimization is added on this evidence.
+
+## Output, TUI and formal PTY probes
+
+`next-phase-output-spill.ts` uses actual default SDK Bash processes and a recorded
+owned temporary directory containing 1,024 entries. It measures first spill, actual
+5MiB cap, an injected 8ms open/write delay and cancellation during delayed writes.
+Both WriteStream scalar and vector writes are counted even when created by fd.
+All four functional rows verify final content/cap or cancellation, settled stream
+closure and zero pending writes. Slow filesystem injection is a controlled scenario,
+not a claim about a particular disk. CPU granularity can yield zero in short Windows
+samples; event-loop measurements and wall time remain separate.
+
+`next-phase-tui-boundaries.ts` uses the actual built Alt/ScrollView/retained assistant
+and tool components, 5,000 history entries, a 188,455-code-unit Markdown/code message,
+and a 16-file bounded preview. It starts the TUI and asserts actual renders/writes,
+then measures 60 resize/history-jump/expand transitions and a gated terminal boundary.
+Initial valid execution writes 66 frames; the sampled render loop has zero deliberate
+full-frame copies and zero frame Promise/AbortController/wrapper objects. It still
+does real width-change work and bounded layout allocations. Final flush/stop releases
+queue data and transcript children; the deliberately never-completing sink exercises
+the terminal error/deadline path. The earlier zero-render prototype is invalid
+measurement and excluded. Existing full Markdown work belongs to the previous phase;
+the unchanged full-replay benchmark is reused, not claimed as newly completed.
+
+The formal PTY harness launches Node22.19 `scripts/superpi.mjs --offline` with isolated
+HOME/settings, default bundled resources and an offline fixture provider. Actual
+editor input triggers the real default read and verifies its bytes. Network entry
+points are blocked and counted. Functional candidate and baseline cold/warm probes
+finish with two fixture requests, one read and zero network attempts. Cold means a
+fresh process/settings; warm is another process sharing those settings, not a
+flushed OS cache. Five interleaved process pairs are still required. npm ci is an
+online dependency installation; post-install build/runtime probes do not download.
+
+`next-phase-compare.mjs` records clean exact baseline/candidate coordinates and runs
+six full scenarios in independent, interleaved processes: one discarded warmup pair
+and five measured pairs. Raw logs remain outside the repository. Its final results,
+percentiles, regressions, parent-chain verification and current-head CI/review must
+be recorded before declaring this PR complete.
