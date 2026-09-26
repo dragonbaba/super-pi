@@ -6,7 +6,7 @@ import { Key, matchesKey, Text, type TUI } from "@super-pi/tui";
 import { resolveToolPath } from "./core.ts";
 import { capturePathIdentity, sameIdentity, type PathIdentity } from "./native-file-core.ts";
 import { boundBatchIntents, collectStructuredMutationReceipts, recentMutationEntries } from "./session-evidence.ts";
-import { batchExpandedSummary, PreviewBudget, displayMetadata } from "./change-preview.ts";
+import { batchExpandedSummary, verificationSummary, displayMetadata } from "./change-preview.ts";
 import { mutationRequestHash } from "../resource-lifecycle-guard/permission-contract.ts";
 import { parseSnapshotLineReference } from "./snapshot-line-protocol.ts";
 import { SHA256_PATTERN as SHA256, CHANGE_ID_CONTROL_PATTERN, OBSERVATION_UNSIGNED_INTEGER_PATTERN, OBSERVATION_SIGNED_INTEGER_PATTERN } from "./regex.ts";
@@ -80,7 +80,7 @@ function conflictingTerminal(entries: readonly any[], selected: any, callId: str
     if (previous || entry.type !== "custom" || selected.type !== "message"
       || terminal.status !== outcome.status || terminal.stateChanged !== outcome.stateChanged
       || terminal.operation !== outcome.operation || terminal.target !== outcome.target || terminal.destination !== outcome.destination
-      || !sameCreatedDirectories(terminal.createdDirectories, details?.creation?.createdDirectories ?? details?.createdDirectories)) return true;
+      || !sameCreatedDirectories(terminal.creation?.createdDirectories ?? terminal.createdDirectories, details?.creation?.createdDirectories ?? details?.createdDirectories)) return true;
     previous = true;
   }
   return false;
@@ -191,7 +191,10 @@ export function collectChanges(branch: readonly any[], cwd: string): ChangeRecor
       if (receipt.receiptVersion === 2) {
         // The ordered standalone intent records the authorized canonical target.
         // Reopening/forking with another cwd must not reinterpret old arguments.
-        const intent = uniqueProgress(executionEntries, call.id, "intent", receipt.itemId);
+        const intentEntry = uniqueProgress(executionEntries, call.id, "intent", receipt.itemId);
+        // Existing-file v1 success producers already persist a request-hashed
+        // origin before issuing I/O; it also binds their v2 partial outcome.
+        const intent = intentEntry === undefined ? uniqueProgress(executionEntries, call.id, "origin", receipt.itemId) : intentEntry;
         bound = index === 0 && intent?.data.operation === receipt.operation && intent?.data.target === receipt.target
           && intent?.data.requestHash === mutationRequestHash(call.name, input)
           && intent?.data.destination === receipt.destination && (!receipt.destination || isAbsolute(receipt.destination));
@@ -523,7 +526,7 @@ export function registerChanges(pi: ExtensionAPI, permissions: ObservationPermis
         assertAllowed.assertCurrent();
         pi.appendEntry(CHANGE_VERIFICATION_ENTRY, { version: 1, sessionId, sourceEntryId: record.entryId, itemId: record.itemId,
           toolCallId: record.toolCallId, observedAt: new Date().toISOString(), ...observation });
-        const text = new PreviewBudget().take(JSON.stringify(observation, null, 2), 400).text;
+        const text = verificationSummary(observation);
         await showChangeViewer(ctx, text);
       } else if (action === "Draft remaining request") {
         const verified = collectVerifiedChanges(recentMutationEntries(ctx.sessionManager), records, sessionId);

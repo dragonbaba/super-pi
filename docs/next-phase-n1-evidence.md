@@ -256,3 +256,16 @@ draft. Real partial batch creation plus separately decoded JSON mirror corruptio
 tests cover removed/path-changed/identity-changed parent metadata. The parser's
 two patterns now live in the dedicated regex module and its consumer is added to
 the AST gate. No per-event callback or persistent cache is introduced.
+
+The f044d73 review adds six bounded-history regressions. Imported creation counts
+must be nonnegative safe integers. Display directory lists visit at most 32 entries
+and stop at the remaining presentation budget; verification reports explicitly mark
+truncation while the full bounded observation stays in the Session. A failed terminal
+append after real creation retains the successful hash and parent identities. A
+unique ordered request-hashed standalone origin also binds its v2 partial outcome.
+Exact-edit cancellation after real committed bytes now retains a partial terminal
+receipt, including the known postimage, instead of losing the result in a thrown
+diagnostic. Actual filesystem/Agent regressions cover creation, overwrite completion
+failure, exact-edit cancellation and altered origin hashes. Forty-five focused tests,
+twelve AST/source cases and check pass on Windows Node 22.19.0. Full checks and a
+fresh actual review are required on the resulting commit; no pass is inferred.
