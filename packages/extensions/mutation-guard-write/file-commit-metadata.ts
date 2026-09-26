@@ -16,17 +16,19 @@ function compatibility(reason: string, original: { mode: bigint; uid: bigint; gi
     await extra?.(handle);
   }
   return { strategy: "protected_in_place", reason, prepareTemporary: noMetadataCopy, assertCurrent, assertPostimage: assertCurrent,
+    async assertBeforeInPlace(handle, plan) { await nativeFileRequest("verify_in_place", { fd: handle.fd, target: plan.target, parent: plan.parent, previousSha256: plan.previousSha256 }); },
     replace: unsupportedPublish, replacementFailureMayChangeState: true };
 }
 
 interface MetadataObservation {
   attributes?: number; links?: number; creationTime?: string; security?: string; securityFingerprint?: string; filesystem?: string;
   hasAttributes?: boolean; namesFingerprint?: string; valuesFingerprint?: string; writeClearsAttributes?: boolean;
+  defaultAcl?: boolean; ownerAssignable?: boolean;
 }
 
-async function inspect(handle: FileHandle, path: string): Promise<MetadataObservation> {
+async function inspect(handle: FileHandle, path: string, capability = false): Promise<MetadataObservation> {
   const info = await handle.stat({ bigint: true });
-  return nativeFileRequest("inspect", { fd: handle.fd, path, expected: { device: String(info.dev), inode: String(info.ino) } });
+  return nativeFileRequest("inspect", { fd: handle.fd, path, capability, expected: { device: String(info.dev), inode: String(info.ino) } });
 }
 
 /** Called once after path authorization, before any staging/in-place write; no failure-triggered fallback. */
@@ -41,7 +43,7 @@ export async function selectCommitMetadata(target: PathIdentity): Promise<Commit
     if (process.platform === "linux" && Number(info.mode) & 0o7000) throw new Error("[UNSUPPORTED_COMMIT] Special mode bits may be cleared by writing; target was not modified.");
     if (process.arch !== "x64" || (process.platform !== "win32" && process.platform !== "linux")) throw new Error("[UNSUPPORTED_COMMIT] File metadata checks are only validated on Windows/Linux x64; target was not modified.");
     let original: MetadataObservation;
-    try { original = await inspect(handle, target.canonical); }
+    try { original = await inspect(handle, target.canonical, true); }
     catch (error) {
       if ((error as { nativeUnavailable?: boolean }).nativeUnavailable) throw new Error(`[UNSUPPORTED_COMMIT] Native metadata capability unavailable: ${(error as Error).message.slice(0, 300)}; target was not modified.`);
       throw error; // Inspection/permission failure never means absent metadata or fallback.
@@ -65,6 +67,10 @@ export async function selectCommitMetadata(target: PathIdentity): Promise<Commit
         if (!["EACCES", "EPERM"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
         return compatibility("Parent directory cannot publish a sibling: preselected in-place write; mode/owner and visible extended attributes are verified.", info, checkAttributes);
       }
+      const parent = await open(dirname(target.canonical), "r");
+      try {
+        if ((await inspect(parent, dirname(target.canonical))).defaultAcl) return compatibility("Parent default ACL would be inherited by a new file: retain the existing object and verify its mode/owner and visible attributes.", info, checkAttributes);
+      } finally { await parent.close(); }
     }
     if (process.platform === "win32") {
       if (original.filesystem !== "NTFS") return compatibility("Only local NTFS has a validated staged capability; retain the original object and verify observed Windows metadata.", info, checkAttributes);
@@ -74,6 +80,8 @@ export async function selectCommitMetadata(target: PathIdentity): Promise<Commit
       // ACEs into inherited ACEs. Select object preservation BEFORE any effects.
       const control = Buffer.from(original.security!, "base64").readUInt16LE(2);
       if (!(control & (0x1000 | 0x0400))) return compatibility("Legacy unprotected Windows DACL: replacement can change inheritance semantics; retain the original object and verify owner/group/DACL, attributes and creation time.", info, checkAttributes);
+      if (!original.ownerAssignable) return compatibility("Owner/group differ from the process token defaults: retain the existing object; no privilege is enabled to assign foreign ownership.", info, checkAttributes);
+      if ((control & 0x010b) || !(control & 0x0004)) return compatibility("Windows descriptor defaulted/request/presence flags require the original object; retain and verify their semantics.", info, checkAttributes);
     }
     async function assertMetadata(current: FileHandle, postimage = false): Promise<void> {
       const currentInfo = await current.stat({ bigint: true });

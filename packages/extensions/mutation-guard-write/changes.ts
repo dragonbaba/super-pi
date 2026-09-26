@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { lstat, open } from "node:fs/promises";
-import { isAbsolute, resolve, relative, sep } from "node:path";
+import { isAbsolute, resolve, relative, sep, dirname, basename } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import type { ExtensionAPI, ExtensionContext } from "@super-pi/coding-agent";
 import { Key, matchesKey, Text, type TUI } from "@super-pi/tui";
@@ -23,6 +23,7 @@ export interface ChangeRecord {
   reason?: string;
   unavailable?: string;
   batchSize?: number;
+  requiresVerification?: true;
 }
 
 function terminalOutcome(entry: any, callId: string, itemId: string, index: number): any {
@@ -57,7 +58,7 @@ function uniqueBatchPreparation(entries: readonly any[], call: any) {
     if (entry.type !== "custom" || entry.customType !== "file-mutation-progress-v2" || entry.data?.toolCallId !== call.id) continue;
     if (entry.data.phase !== "prepared") {
       const item = entry.data.itemId, number = typeof item === "string" ? Number(item.slice(call.id.length + 1)) : -1;
-      if (!["intent", "result"].includes(entry.data.phase) || !Number.isSafeInteger(number) || number < 0
+      if (!["intent", "commit_prepared", "result"].includes(entry.data.phase) || !Number.isSafeInteger(number) || number < 0
         || number >= (call.arguments?.operations?.length ?? 0) || item !== `${call.id}:${number}`) return undefined;
       continue;
     }
@@ -101,6 +102,15 @@ function boundRecoveryItem(entries: readonly any[], call: any, index: number, st
     if (intent.requestHash !== preparation.prepared.data.requestHash || intent.operation !== prepared.operation
       || intent.target !== prepared.target || intent.destination !== prepared.destination || status === "not_started") return undefined;
   } else if (!["cancelled", "not_started"].includes(status)) return undefined;
+  const commits = entries.filter(entry => entry.type === "custom" && entry.customType === "file-mutation-progress-v2"
+    && entry.data?.toolCallId === call.id && entry.data.itemId === itemId && entry.data.phase === "commit_prepared");
+  if (commits.length > 1) return undefined;
+  if (commits.length) {
+    const commit = commits[0], position = entries.indexOf(commit);
+    if (intents.length !== 1 || position <= entries.indexOf(intents[0]) || commit.data.operation !== prepared.operation || commit.data.target !== prepared.target
+      || !["staged_replace", "protected_in_place"].includes(commit.data.strategy)
+      || entries.slice(0, position).some(entry => terminalOutcome(entry, call.id, itemId, index))) return undefined;
+  }
   // Entered items persist intent before revalidation. Cancellation before item
   // entry and remaining not-started items have preparation but no intent.
   if (status !== "succeeded" && laterBatchActivity(entries, call.id, index)) return undefined;
@@ -165,6 +175,7 @@ export function collectChanges(branch: readonly any[], cwd: string): ChangeRecor
       status: receipt.receiptVersion === 1 ? "succeeded" : receipt.status, preview: false,
       original: bound ? input : undefined, item: bound ? item : undefined,
       receipt: details,
+      requiresVerification: receipt.receiptVersion === 2 ? receipt.requiresVerification : undefined,
       reason: typeof (item?.reason ?? details?.cause ?? details?.reason) === "string" ? (item?.reason ?? details.cause ?? details.reason).slice(0, 800) : undefined,
       batchSize: call?.name === "file_batch" ? call.arguments?.operations?.length : undefined,
       postimage: bound && typeof details?.sha256 === "string" && SHA256.test(details.sha256) ? details.sha256 : undefined,
@@ -217,6 +228,14 @@ export function collectChanges(branch: readonly any[], cwd: string): ChangeRecor
 }
 
 export interface ChangeObservation { path: string; exists: boolean; identity?: PathIdentity; sha256?: string; hashOmitted?: string }
+
+function retainedTemporary(record: ChangeRecord): string | undefined {
+  const path = record.receipt?.commit?.retainedTemporary;
+  if (path === undefined) return undefined;
+  if (typeof path !== "string" || path.length > 4096 || !isAbsolute(path) || dirname(path) !== dirname(record.target)
+    || !/^\.pi-file-commit-\d+-[a-f0-9]{24}\.tmp$/u.test(basename(path))) throw new Error("Retained candidate path cannot be safely reconstructed.");
+  return path;
+}
 
 function retainedParents(record: ChangeRecord): string[] {
   const directories = record.receipt?.creation?.createdDirectories ?? record.receipt?.createdDirectories;
@@ -274,12 +293,14 @@ export async function verifyChange(record: ChangeRecord, assertAllowed: (() => P
   if (record.preview || record.unavailable || !record.original) throw new Error("This record cannot authorize verification; no change was replayed.");
   const source = await observe(record.target, Boolean(record.postimage), assertAllowed);
   const destination = record.destination ? await observe(record.destination, false, assertAllowed) : undefined;
+  const retained = retainedTemporary(record);
+  const temporary = retained ? await observe(retained, true, assertAllowed) : undefined;
   const parents: ChangeObservation[] = [];
   for (const path of retainedParents(record)) parents.push(await observe(path, false, assertAllowed));
   await assertAllowed();
   // A second path (or a permission await) can change the first observation.
   // Recheck all identities, including metadata-only and oversized files.
-  for (const observation of destination ? [source, destination, ...parents] : [source, ...parents]) {
+  for (const observation of [source, ...(destination ? [destination] : []), ...(temporary ? [temporary] : []), ...parents]) {
     if (observation.identity) {
       if (!sameIdentity(observation.identity, await capturePathIdentity(observation.path))) throw new Error("Object changed before observation was accepted.");
     } else {
@@ -289,7 +310,7 @@ export async function verifyChange(record: ChangeRecord, assertAllowed: (() => P
     }
   }
   assertAllowed.assertCurrent?.();
-  return { source, destination, parents,
+  return { source, destination, temporary, parents,
     postimageMatches: record.postimage && source.sha256 ? record.postimage === source.sha256 : undefined,
     destinationIdentityMatches: record.sourceIdentity && destination?.identity
       ? record.sourceIdentity.device === destination.identity.device && record.sourceIdentity.inode === destination.identity.inode : undefined,
@@ -328,7 +349,7 @@ export function remainingDraft(records: readonly ChangeRecord[], verifiedItems: 
   let bytes = 0;
   for (const record of records) {
     if (record.preview || record.status === "succeeded") continue;
-    if (record.status === "partial" || record.status === "state_unknown") {
+    if (record.status === "partial" || record.status === "state_unknown" || record.requiresVerification) {
       if (!verifiedItems.has(record.itemId)) throw new Error(`${record.itemId}: verify partial/unknown state before preparing remaining work.`);
       continue; // Observation never turns an uncertain old mutation into an automatic retry.
     }
@@ -373,6 +394,9 @@ export function collectVerifiedChanges(branch: readonly any[], records: readonly
         || (record.destination ? !validObservation(data.destination, record.destination) : data.destination !== undefined)) continue;
       let parents: string[];
       try { parents = retainedParents(record); } catch { continue; }
+      let temporary: string | undefined;
+      try { temporary = retainedTemporary(record); } catch { continue; }
+      if (temporary ? !validObservation(data.temporary, temporary) || data.temporary.exists && !data.temporary.identity.directory && !data.temporary.sha256 && !data.temporary.hashOmitted : data.temporary !== undefined) continue;
       if (!Array.isArray(data.parents) || data.parents.length !== parents.length || parents.some((path, i) => !validObservation(data.parents[i], path))) continue;
       if (record.postimage && data.source.exists && !data.source.identity.directory && !data.source.sha256 && !data.source.hashOmitted) continue;
       const postimageMatches = record.postimage && data.source.sha256 ? record.postimage === data.source.sha256 : undefined;
@@ -438,6 +462,7 @@ export function registerChanges(pi: ExtensionAPI, permissions: ObservationPermis
         if (record.preview || record.unavailable) throw new Error(record.unavailable ?? "Preview is not a mutation receipt. Execute a newly prepared request first.");
         const paths = record.destination ? [record.target, record.destination] : [record.target];
         paths.push(...retainedParents(record));
+        const temporary = retainedTemporary(record); if (temporary) paths.push(temporary);
         const assertAllowed = await permissions.authorizeFileObservation(ctx, paths); assertSession();
         const observation = await verifyChange(record, assertAllowed); assertSession();
         assertAllowed.assertCurrent();

@@ -61,7 +61,7 @@ interface Item {
   reservation?: number;
   preview?: ChangePreview;
 }
-interface ItemResult { itemId: string; operation: Operation; target: string; destination?: string; status: MutationStatus | "preview"; stateChanged: boolean | "unknown"; reason?: string; receipt?: unknown; preview?: ChangePreview }
+interface ItemResult { itemId: string; operation: Operation; target: string; destination?: string; status: MutationStatus | "preview"; stateChanged: boolean | "unknown"; requiresVerification?: true; reason?: string; receipt?: unknown; preview?: ChangePreview }
 
 function pathKey(path: string): string { return path.normalize("NFC").toLowerCase(); }
 function pathConflicts(left: string, right: string, prospective: boolean): boolean {
@@ -315,6 +315,8 @@ export class BatchInvocation {
             result.receipt = detail;
             result.reason = (detail?.cause ?? (error instanceof Error ? error.message : String(error))).slice(0, 800);
           }
+          const itemReceipt = result.receipt as any;
+          if (result.status === "partial" || result.status === "state_unknown" || itemReceipt?.requiresVerification || itemReceipt?.commit?.retainedTemporary) result.requiresVerification = true;
           if (result.stateChanged !== false) item.reservation = undefined; // Actual changes retain their budget charge.
           if (item.native && result.stateChanged !== false) {
             this.guard.invalidateCanonicalPath(item.target);
@@ -326,6 +328,7 @@ export class BatchInvocation {
             pi.appendEntry(MUTATION_PROGRESS_ENTRY, { toolCallId: this.id, itemId: result.itemId, phase: "result", mutationReceiptVersion: 2,
               operation: result.operation, target: result.target, destination: result.destination, status: result.status,
               stateChanged: result.stateChanged, reason: result.reason,
+              requiresVerification: result.requiresVerification,
               commit: receipt?.commit,
               createdDirectories: receipt?.creation?.createdDirectories ?? receipt?.createdDirectories });
           }
@@ -343,6 +346,7 @@ export class BatchInvocation {
     for (const result of results) { if (result.status === "succeeded") succeeded++; else if (result.status === "not_started") notStarted++; else if (result.status !== "preview") { failed++; firstReason ??= result.reason; } }
     const preview = this.input.dryRun && failed === 0;
     let summary = preview ? `Preflight passed for ${results.length} items. No changes; apply revalidates and requires current authorization.` : `file_batch: ${succeeded} succeeded, ${failed} failed, ${notStarted} not started.${firstReason ? `\n${firstReason}` : ""}`;
+    if (results.some(result => result.requiresVerification)) summary += "\nVerify current state and any retained candidate; do not automatically retry uncertain items.";
     const collapsedSummary = summary;
     if (!preview) for (const result of results) {
       const receipt = result.receipt as any;

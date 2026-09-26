@@ -84,7 +84,7 @@ function appendNativeReceipt(items: Map<string, NativeStructuredMutationReceipt>
   if (previous && (previous.toolCallId !== toolCallId || previous.operation !== data.operation || previous.target !== data.target || previous.destination !== data.destination)) return;
   items.set(itemId, { receiptVersion: 2, entryId: entry.id, timestamp: entry.timestamp, toolCallId, itemId,
     operation: data.operation, target: data.target, destination: data.destination, status, stateChanged,
-    ...(status === "state_unknown" || status === "partial" ? { requiresVerification: true as const } : {}) });
+    ...(status === "state_unknown" || status === "partial" || data.requiresVerification === true || data.commit?.retainedTemporary || data.receipt?.commit?.retainedTemporary ? { requiresVerification: true as const } : {}) });
   if (items.size > MAX_STRUCTURED_MUTATION_RECEIPTS) items.delete(items.keys().next().value!);
 }
 

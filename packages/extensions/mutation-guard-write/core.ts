@@ -62,6 +62,7 @@ export interface MutationGuardFailure {
   target: string;
   retryable: boolean;
   stateChanged: boolean | "unknown";
+  requiresVerification?: boolean;
   commit?: FileCommitReceipt;
   expectedSha256?: string;
   actualSha256?: string;
@@ -898,8 +899,9 @@ export class MutationWriteGuard {
         category: stateChanged ? "PARTIAL_MUTATION" : "EDIT_FAILED",
         operation: "edit",
         target,
-        retryable: !stateChanged,
+        retryable: !stateChanged && !commit?.retainedTemporary,
         stateChanged,
+        requiresVerification: stateChanged !== false || Boolean(commit?.retainedTemporary),
         expectedSha256: previousSha256,
         commit,
         cause: errorMessage(error),
@@ -1026,8 +1028,9 @@ export class MutationWriteGuard {
           category: stateChanged ? "PARTIAL_MUTATION" : "WRITE_FAILED",
           operation: "write",
           target,
-          retryable: !stateChanged,
+          retryable: !stateChanged && !commit?.retainedTemporary,
           stateChanged,
+          requiresVerification: stateChanged !== false || Boolean(commit?.retainedTemporary),
           expectedSha256: actualSha256,
           commit,
           cause: errorMessage(error),

@@ -41,7 +41,7 @@ function exited(code: number): void {
 }
 
 /** Only internal file commit callers use this fixed protocol. No tool exposes native symbols or pointers. */
-export async function nativeFileRequest(operation: "inspect" | "protect" | "prepare" | "replace" | "remove" | "stats", input: Record<string, unknown> = {}): Promise<any> {
+export async function nativeFileRequest(operation: "inspect" | "protect" | "prepare" | "replace" | "verify_in_place" | "remove" | "stats", input: Record<string, unknown> = {}): Promise<any> {
   if (owner.loadFailure) throw owner.loadFailure;
   if (owner.releasing) throw new Error("Native file worker release is in progress; no operation was submitted.");
   if (pending.size >= 16) throw new Error("Native file operation queue is full; no operation was submitted.");

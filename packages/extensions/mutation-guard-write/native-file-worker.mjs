@@ -8,7 +8,7 @@ import koffi from "koffi";
 const MAX_SECURITY_BYTES = 64 * 1024;
 const MAX_ATTRIBUTE_NAMES = 64 * 1024;
 let bindings;
-let activeHandles = 0, calls = 0;
+let activeHandles = 0, calls = 0, publicationAttempts = 0;
 
 function loadBindings() {
   if (bindings) return bindings;
@@ -27,6 +27,11 @@ function loadBindings() {
       fileInfo: kernel.func("int __stdcall GetFileInformationByHandle(void *handle, void *info)"),
       open: kernel.func("void * __stdcall CreateFileW(str16 path, uint32_t access, uint32_t sharing, void *security, uint32_t disposition, uint32_t flags, void *templateFile)"),
       close: kernel.func("int __stdcall CloseHandle(void *handle)"),
+      currentProcess: kernel.func("void * __stdcall GetCurrentProcess(void)"),
+      openToken: security.func("int __stdcall OpenProcessToken(void *process, uint32_t access, void *token)"),
+      tokenInfo: security.func("int __stdcall GetTokenInformation(void *token, int informationClass, void *information, uint32_t size, void *needed)"),
+      sidLength: security.func("uint32_t __stdcall GetLengthSid(void *sid)"),
+      copySid: security.func("int __stdcall CopySid(uint32_t size, void *destination, void *source)"),
       setFileInfo: kernel.func("int __stdcall SetFileInformationByHandle(void *handle, int informationClass, void *information, uint32_t size)"),
       getSecurity: security.func("int __stdcall GetKernelObjectSecurity(void *handle, uint32_t information, void *descriptor, uint32_t size, void *needed)"),
       setSecurity: security.func("uint32_t __stdcall SetSecurityInfo(void *handle, int objectType, uint32_t information, void *owner, void *group, void *dacl, void *sacl)"),
@@ -82,10 +87,38 @@ function securityDescriptor(b, handle) {
 }
 
 function securityFingerprint(bytes) {
-  const parts = descriptorParts(bytes), hash = createHash("sha256");
-  hash.update(parts.protected ? "protected" : "inherited");
-  for (const value of [parts.owner, parts.group, parts.dacl]) { hash.update(String(value?.length ?? -1)); if (value) hash.update(value); }
+  const parts = descriptorParts(bytes), hash = createHash("sha256"), frame = Buffer.alloc(4);
+  // Owner/group defaulted; DACL present/defaulted, auto-inherit requested,
+  // auto-inherited and protected. SELF_RELATIVE is a storage representation.
+  frame.writeUInt32LE(bytes.readUInt16LE(2) & 0x150f); hash.update(frame);
+  for (const value of [parts.owner, parts.group, parts.dacl]) { frame.writeInt32LE(value?.length ?? -1); hash.update(frame); if (value) hash.update(value); }
   return hash.digest("hex");
+}
+
+function assignableWindowsOwner(b, descriptor) {
+  // Read-only TOKEN_QUERY of our own process, no privilege adjustment. Restrict
+  // staged copies to the default owner/group a newly created file will have.
+  const tokenBytes = Buffer.alloc(8);
+  if (!b.openToken(b.currentProcess(), 8, tokenBytes)) winError(b, "OpenProcessToken");
+  const token = tokenBytes.readBigUInt64LE(); activeHandles++;
+  let value, failure;
+  try {
+    const parts = descriptorParts(descriptor), needed = Buffer.alloc(4), info = Buffer.alloc(MAX_SECURITY_BYTES);
+    function tokenSid(kind) {
+      if (!b.tokenInfo(token, kind, info, info.length, needed)) winError(b, "GetTokenInformation");
+      if (needed.readUInt32LE() < 8 || needed.readUInt32LE() > info.length) throw new Error("Token SID exceeds supported bound.");
+      const pointer = info.readBigUInt64LE(), size = b.sidLength(pointer);
+      if (size < 8 || size > 68) throw new Error("Unsupported token SID size.");
+      const sid = Buffer.alloc(size);
+      if (!b.copySid(size, sid, pointer)) winError(b, "CopySid");
+      return sid;
+    }
+    value = Boolean(parts.owner?.equals(tokenSid(4)) && parts.group?.equals(tokenSid(5)));
+  } catch (error) { failure = error; }
+  if (b.close(token)) activeHandles--;
+  else { const code = b.lastError(); if (failure) failure.message += `; secondary CloseHandle(token) failure ${code}`; else failure = new Error(`CloseHandle(token) failed (Win32 ${code}).`); }
+  if (failure) throw failure;
+  return value;
 }
 
 function windowsObject(b, handle, expected) {
@@ -131,7 +164,8 @@ function inspectWindows(b, input) {
   // never pass Node's descriptor to another CRT's _get_osfhandle.
   return withWindowsHandle(b, input, 0x00020080, handle => { // READ_CONTROL | FILE_READ_ATTRIBUTES
     const object = windowsObject(b, handle, input.expected), security = securityDescriptor(b, handle);
-    return { ...object, security: security.toString("base64"), securityFingerprint: securityFingerprint(security), filesystem: windowsFilesystem(b, input.path) };
+    return { ...object, security: security.toString("base64"), securityFingerprint: securityFingerprint(security), filesystem: windowsFilesystem(b, input.path),
+      ownerAssignable: input.capability ? assignableWindowsOwner(b, security) : undefined };
   });
 }
 
@@ -168,21 +202,23 @@ function inspectLinux(b, input) {
   if (length > names.length) throw new Error("Extended attribute names exceed bound.");
   // Nonempty visible attributes select compatibility. Read actual values to
   // detect kernel-cleared capabilities/ACL changes after an in-place write.
-  const values = createHash("sha256"); let start = 0, total = 0, writeClearsAttributes = false;
+  const values = createHash("sha256"), frame = Buffer.alloc(8); let start = 0, total = 0, writeClearsAttributes = false, defaultAcl = false;
   while (start < length) {
     const end = names.indexOf(0, start);
     if (end < start || end >= length) throw new Error("Invalid extended-attribute name list.");
     const name = new TextDecoder("utf-8", { fatal: true }).decode(names.subarray(start, end));
     if (name === "security.capability") writeClearsAttributes = true;
+    if (name === "system.posix_acl_default") defaultAcl = true;
     const size = Number(b.get(input.fd, name, null, 0));
     if (size < 0) throw new Error(`fgetxattr(size) failed (errno ${koffi.errno()}); metadata absence is not established.`);
     total += size;
     if (total > 256 * 1024) throw new Error("Extended-attribute values exceed the 256 KiB inspection bound.");
     const value = Buffer.alloc(size);
     if (Number(b.get(input.fd, name, value, value.length)) !== size) throw new Error(`fgetxattr(value) failed or changed (errno ${koffi.errno()}).`);
-    values.update(String(size)); values.update(value); start = end + 1;
+    frame.writeUInt32LE(end - start, 0); frame.writeUInt32LE(size, 4);
+    values.update(frame); values.update(names.subarray(start, end)); values.update(value); start = end + 1;
   }
-  return { hasAttributes: length !== 0, writeClearsAttributes, namesFingerprint: createHash("sha256").update(names.subarray(0, length)).digest("hex"), valuesFingerprint: values.digest("hex") };
+  return { hasAttributes: length !== 0, writeClearsAttributes, defaultAcl, namesFingerprint: createHash("sha256").update(names.subarray(0, length)).digest("hex"), valuesFingerprint: values.digest("hex") };
 }
 
 function verifyPath(expected, metadata) {
@@ -233,6 +269,7 @@ function replaceVerified(b, input) {
     verifyBytes(b, input, input.temporary, v.temporary, v.candidateBytes, v.candidateSha256, true);
     verifyPath(v.parent, false); verifyPath(v.target, true);
   } catch (error) { error.commitOutcome = "not_committed"; throw error; }
+  publicationAttempts++;
   if (process.platform === "win32") {
     if (!b.replace(toNamespacedPath(input.target), toNamespacedPath(input.temporary), null, 0, null, null)) winError(b, "ReplaceFileW", true);
   } else {
@@ -240,6 +277,26 @@ function replaceVerified(b, input) {
     catch (error) { error.commitOutcome = "not_committed"; throw error; }
   }
   return { committed: true };
+}
+
+function verifyInPlace(input) {
+  // Final bounded observation after all main-thread async reads/callbacks.
+  // The owning FileHandle remains alive until this request settles. This is
+  // still not an OS CAS: another process can race a following write syscall.
+  verifyPath(input.parent, false); verifyPath(input.target, true);
+  const info = fstatSync(input.fd, { bigint: true }), expected = input.target;
+  if (!info.isFile() || String(info.dev) !== expected.device || String(info.ino) !== expected.inode) throw new Error("[STALE_STATE] In-place handle changed.");
+  const size = Number(expected.size);
+  if (!Number.isSafeInteger(size) || size < 0) throw new Error("Unsupported in-place size.");
+  const hash = createHash("sha256"), bytes = Buffer.allocUnsafe(64 * 1024);
+  let position = 0;
+  while (position <= size) {
+    const count = readSync(input.fd, bytes, 0, Math.min(bytes.length, size + 1 - position), position);
+    if (!count) break;
+    position += count; hash.update(bytes.subarray(0, count));
+  }
+  if (position !== size || hash.digest("hex") !== input.previousSha256) throw new Error("[STALE_STATE] In-place content changed.");
+  verifyPath(input.parent, false); verifyPath(input.target, true);
 }
 
 function execute(input) {
@@ -259,7 +316,8 @@ function execute(input) {
     });
   }
   if (input.operation === "replace") return replaceVerified(b, input);
-  if (input.operation === "stats") return { calls, activeHandles, platform: process.platform, arch: process.arch };
+  if (input.operation === "verify_in_place") return verifyInPlace(input);
+  if (input.operation === "stats") return { calls, activeHandles, publicationAttempts, platform: process.platform, arch: process.arch };
   throw new Error("Unsupported private native file operation.");
 }
 
