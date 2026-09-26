@@ -302,3 +302,13 @@ and missing-preparation lists and refuse verification/drafts. These consistency
 checks do not authenticate arbitrarily forged Session files. Windows Node22.19:
 check passes, 53 focused/source tests pass and one POSIX-only test skips. Fresh
 whole-project gates, both CI jobs and actual review remain required.
+
+The 197f5ff0c full local gates and Windows/Linux CI passed (run 36274583276).
+Its review found empty/incomplete aggregate lists and an origin masquerading as a
+terminal receipt. Collection now admits only intent or phase-result v2 custom
+receipts, validates nonempty bounded aggregate items and outcomes, and marks prior
+same-call receipts conflicting when they are omitted. A standalone origin must be
+distinct from its terminal. Actual histories test empty/missing/truncated/invalid
+aggregate lists and origin/prepared/unknown-phase records carrying forged outcome
+fields; none can authorize a remaining draft. Targeted recovery tests pass; new
+full checks and actual review are still required.

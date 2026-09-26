@@ -206,13 +206,15 @@ export function collectChanges(branch: readonly any[], cwd: string): ChangeRecor
         const intent = intentEntry === undefined ? uniqueProgress(executionEntries, call.id, "origin", receipt.itemId) : intentEntry;
         bound = index === 0 && intent?.data.operation === receipt.operation && intent?.data.target === receipt.target
           && intent?.data.requestHash === mutationRequestHash(call.name, input)
-          && intent?.data.destination === receipt.destination && (!receipt.destination || isAbsolute(receipt.destination));
+          && intent?.data.destination === receipt.destination && (!receipt.destination || isAbsolute(receipt.destination))
+          && (intent !== entry || entry?.data?.phase === "intent");
         if (bound && hasEarlierTerminal(executionEntries, executionEntries.indexOf(intent), call.id, receipt.itemId, 0)) bound = false;
       } else {
         const origin = uniqueProgress(executionEntries, call.id, "origin");
         if (origin !== undefined) {
           bound = origin !== null && origin.data.itemId === `${call.id}:0` && origin.data.target === target && origin.data.operation === receipt.operation
             && origin.data.requestHash === mutationRequestHash(call.name, input)
+            && origin !== entry
             && !hasEarlierTerminal(executionEntries, executionEntries.indexOf(origin), call.id, `${call.id}:0`, 0);
         } else bound = resolveToolPath(cwd, input.path) === target;
       }

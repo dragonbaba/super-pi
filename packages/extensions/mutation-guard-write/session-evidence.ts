@@ -104,17 +104,23 @@ function collectNativeReceipts(branch: readonly unknown[]): Map<string, NativeSt
     if (typeof entry?.id !== "string" || typeof entry.timestamp !== "string") continue;
     if (entry.type === "custom" && entry.customType === "file-mutation-progress-v2") {
       const data = entry.data;
-      if (data?.phase === "intent" || data?.mutationReceiptVersion === 2) appendNativeReceipt(items, entry, data, data?.toolCallId, data?.itemId, data?.phase === "intent");
+      if (data?.phase === "intent" || data?.phase === "result" && data?.mutationReceiptVersion === 2) appendNativeReceipt(items, entry, data, data?.toolCallId, data?.itemId, data?.phase === "intent");
       continue;
     }
     const message = entry.type === "message" && entry.message?.role === "toolResult" ? entry.message : undefined;
     const data = message?.details;
     if (data?.mutationReceiptVersion !== 2) continue;
     if (message?.toolName !== data?.operation) { markConflictingAggregate(items, message?.toolCallId); continue; }
-    if (message.toolName === "file_batch" && data.operation === "file_batch" && !data.preview && Array.isArray(data.items) && data.items.length <= 16) {
+    if (message.toolName === "file_batch" && data.operation === "file_batch" && !data.preview && Array.isArray(data.items) && data.items.length > 0 && data.items.length <= 16) {
+      for (const previous of items.values()) if (previous.toolCallId === message.toolCallId) {
+        const position = Number(previous.itemId.slice(message.toolCallId.length + 1));
+        if (data.items[position]?.itemId !== previous.itemId) { markConflictingAggregate(items, message.toolCallId); break; }
+      }
       for (let index = 0; index < data.items.length; index++) {
         const item = data.items[index];
-        if (item?.itemId === `${message.toolCallId}:${index}`) appendNativeReceipt(items, entry, item, message.toolCallId, item.itemId, false);
+        if (item?.itemId === `${message.toolCallId}:${index}` && validMutationOutcome(item.status, item.stateChanged)
+          && (item.operation === "write" || item.operation === "edit" || item.operation === "delete" || item.operation === "move")
+          && safeReceiptPath(item.target) && (item.operation !== "move" || safeReceiptPath(item.destination))) appendNativeReceipt(items, entry, item, message.toolCallId, item.itemId, false);
         else markConflictingAggregate(items, message.toolCallId);
       }
     } else if (message.toolName === "file_batch") markConflictingAggregate(items, message.toolCallId);
