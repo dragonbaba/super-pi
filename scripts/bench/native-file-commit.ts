@@ -35,6 +35,19 @@ try {
   for (let i = 0; i < 50; i++) {
     const started = performance.now(), target = await capturePathIdentity(path), parent = await capturePathIdentity(root);
     const metadata = await selectCommitMetadata(target), next = Buffer.alloc(content.length, 66 + i % 20);
+    if (process.env.SP_NATIVE_METADATA_DIAGNOSTIC === "1" && process.platform === "win32") {
+      const prepare = metadata.prepareTemporary;
+      metadata.prepareTemporary = async (handle, stage) => {
+        try { await prepare(handle, stage); }
+        catch (error) {
+          const info = await handle.stat({ bigint: true });
+          console.error(JSON.stringify({ diagnostic: "synthetic ACL copy", iteration: i,
+            original: await nativeFileRequest("inspect", { path, expected: target }),
+            staged: await nativeFileRequest("inspect", { path: stage, expected: { device: String(info.dev), inode: String(info.ino) } }) }));
+          throw error;
+        }
+      };
+    }
     const receipt = await commitPreparedFile({ target, parent, metadata, previousSha256: createHash("sha256").update(content).digest("hex") }, next, { assertPathAllowed: async () => target.canonical });
     assert.equal(receipt.outcome, "committed"); assert.deepEqual(await readFile(path), next);
     content = next; samples.push(performance.now() - started);

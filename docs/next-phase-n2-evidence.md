@@ -213,10 +213,11 @@ calls/active handles. Idle workers are unreferenced, not unloaded during calls.
 
 Windows Node 22.19.0 targeted follow-up: 111 passed, four platform skips across
 native/shared core, final exact authority/cancel boundary, and path semantics.
-The integrated CI failures were stale instrumentation: Linux only accepted the old
-snapshot temporary name; Windows could select in-place but its positive counter
-only watched pathname writeFile/worker dispatch. Counters now also observe pinned
-handle writes; assertions still require original targets, untouched literal aliases,
+The integrated Linux CI failure was stale instrumentation accepting only the old
+snapshot temporary name. Windows initially stopped at a zero-publication counter;
+the subsequent native benchmark exposed a real DACL preparation failure (see below),
+so that earlier Windows result cannot be attributed solely to instrumentation.
+Counters now also observe pinned handle writes; assertions still require original targets, untouched literal aliases,
 zero forbidden publication and actual successful postimages. No contract is disabled.
 Raw follow-up log: `n2-review-native.log`. Fresh Linux verification, delivery smoke,
 five-process cost results and full candidate acceptance are still pending.
@@ -232,3 +233,22 @@ This is source-workspace delivery plus the private extension's package contract,
 not a newly invented standalone CLI binary release. Initial Windows pack measures
 84,313 compressed / 339,309 unpacked bytes (excluding dependencies); final package
 size will vary with subsequent source changes. Both smoke tests pass on Node 22.19.0.
+
+## Windows CI ACL investigation
+
+Known-good: `2003aa9078cdf4d3b3a4a75ab323282513ec5eff` passes clean npm ci,
+check, a network-denying installed build:offline, hot/full tests, five native cost
+processes and the tool-leaf allocation gate on local Windows Node 22.19.0.
+CI Windows run `36258866606`, job `108450723002`, fails before full tests in
+native cost process 0: SetSecurityInfo returns but exact owner/group/DACL verification
+fails, with a not-committed receipt and unchanged target. Log:
+`n2-2003-windows-job.log`. Local four-parent-ACL probes (owner, CREATOR_OWNER,
+Users and Administrators variants) all pass: `n2-acl-probe.log`.
+
+Comparison axis: synthetic inherited descriptor semantics on CI versus local
+Windows; native loading and fixed signatures already work in both. Hypotheses are
+inheritance normalization, owner/group differences or ACL unused bytes, not proved
+root causes. A gated CI-only benchmark diagnostic captures only the synthetic
+fixture descriptors before/after prepare; no real workspace file or credential.
+Constraint: “不使用忽略 ACL/属性合并错误的选项来假装元数据保持成功”. The
+comparison and no-fallback behavior remain unchanged while collecting evidence.
