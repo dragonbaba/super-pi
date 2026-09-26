@@ -605,7 +605,7 @@ test("N1 empty, incomplete and malformed aggregate item lists cannot authorize a
     else if (fault === "incomplete") aggregate.items.pop();
     else aggregate.items[0].status = "not-an-outcome";
     const records = collectChanges(branch, f.cwd); assert.ok(records.length > 0);
-    assert.throws(() => remainingDraft(records, new Set()), undefined, fault);
+    assert.throws(() => remainingDraft(records, new Set()), fault);
   }
   assert.equal(existsSync(join(f.cwd, "later")), false); assert.equal(readFileSync(path, "utf8"), "external");
 });
