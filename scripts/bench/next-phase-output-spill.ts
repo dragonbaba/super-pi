@@ -8,7 +8,7 @@ import { monitorEventLoopDelay } from "node:perf_hooks";
 import { costSession, costCall, costText } from "../../tests/helpers/next-phase-session.ts";
 
 const originalOpen = fs.openSync, originalCreate = fs.createWriteStream, originalWrite = (fs.WriteStream.prototype as any)._write, originalWritev = (fs.WriteStream.prototype as any)._writev;
-const originalTmp = process.env.TMP, originalTemp = process.env.TEMP, originalTmpdir = process.env.TMPDIR;
+const originalEnvironment = process.env;
 let scope = "", firstOpenMs: number | undefined, start = 0, writes = 0, maxQueuedBytes = 0, pendingWrites = 0, delayMs = 0;
 let cancel: (() => void) | undefined, cancelledAt: number | undefined;
 const streams = new Set<fs.WriteStream>();
@@ -40,7 +40,7 @@ try {
     const f = await costSession(), ownedTemp = join(f.root, "large-temp"); fs.mkdirSync(ownedTemp); scope = ownedTemp;
     // The bounded old-file scan sees a deliberately large directory of harmless fixture entries.
     for (let index = 0; index < 1024; index++) fs.writeFileSync(join(ownedTemp, `entry-${index}`), "");
-    process.env.TMP = process.env.TEMP = process.env.TMPDIR = ownedTemp; assert.equal(tmpdir(), ownedTemp);
+    process.env = { ...originalEnvironment, TMP: ownedTemp, TEMP: ownedTemp, TMPDIR: ownedTemp }; assert.equal(tmpdir(), ownedTemp);
     firstOpenMs = undefined; writes = 0; maxQueuedBytes = 0; pendingWrites = 0; cancelledAt = undefined; streams.clear(); descriptors.clear();
     delayMs = scenario === "slow" || scenario === "cancel" ? 8 : 0; cancel = scenario === "cancel" ? () => f.session.agent.abort() : undefined;
     const source = scenario === "cancel" ? "let n=0;const timer=setInterval(()=>{process.stdout.write('x'.repeat(65536));if(++n===100)clearInterval(timer)},5)"
@@ -65,9 +65,7 @@ try {
         shellFacts: result.details?.shellExecution ?? null, quality: "real default SDK process/output/cap/cancellation and settled streams" }));
     } finally {
       delay.disable(); cancel = undefined; streams.clear(); descriptors.clear(); scope = ""; delayMs = 0;
-      if (originalTmp === undefined) delete process.env.TMP; else process.env.TMP = originalTmp;
-      if (originalTemp === undefined) delete process.env.TEMP; else process.env.TEMP = originalTemp;
-      if (originalTmpdir === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = originalTmpdir;
+      process.env = originalEnvironment;
       await f.release();
     }
     global.gc?.(); console.log(JSON.stringify({ release: "N4-output-spill", scenario, heapAfterRelease: process.memoryUsage().heapUsed, removedRoot: !fs.existsSync(f.root), pendingWrites }));
