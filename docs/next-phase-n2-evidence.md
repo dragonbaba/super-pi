@@ -378,3 +378,12 @@ a cross-process lock or a cross-file transaction. Synchronous final identity/byt
 metadata checks reduce the observation gap but do not exclude a concurrent writer
 between observation and the system call. This is an accepted documented limitation,
 not a claim of eliminated races; no lock/transaction architecture was added.
+
+`288015d2fbb14f3c373779365903b07ec3e2cb88` completed all local gates
+and five-process costs. The next integration incorporates N1's physical-index,
+duplicate-history and final-workspace checks, with the same full-request hash on
+N2 exact/snapshot/overwrite intents. Thirty-three targeted recovery/retained-
+candidate tests pass with check. Completion text/recovery-warning scans now avoid
+their remaining map/filter/some callbacks. Remaining request-bound queue and
+receipt callbacks are created once per prepared call/item and released with that
+owner; they are not created by native checks, provider/progress or render delivery.

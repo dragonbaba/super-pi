@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { existsSync, readFileSync, writeFileSync, mkdtempSync, mkdirSync, rmSync, realpathSync, unlinkSync, symlinkSync } from "node:fs";
-import { open } from "node:fs/promises";
+import { existsSync, readFileSync, writeFileSync, mkdtempSync, mkdirSync, rmSync, realpathSync, unlinkSync, symlinkSync, renameSync } from "node:fs";
+import fsPromises, { open } from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
+import { execFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { createJiti } from "jiti";
@@ -222,6 +225,72 @@ test("N1 recovery never normalizes a malformed v2 item identifier into another i
   const malformed = collectChanges(branch, f.cwd).find((record: any) => record.itemId === "item-id:00");
   assert.ok(malformed); assert.ok(malformed.unavailable); assert.equal(malformed.original, undefined);
   await assert.rejects(verifyChange(malformed, async () => { assert.fail("unbound receipt must not observe files"); }), /cannot authorize/);
+});
+
+test("N1 standalone create failure binds every original request field before drafting", async t => {
+  const f = await fixture(t), path = join(f.cwd, "conflict");
+  f.onRecord(data => { if (data.toolCallId === "create-bind" && data.phase === "intent") writeFileSync(path, "external"); });
+  assert.equal((await f.call("write", { path: "conflict", content: "original" }, "create-bind")).isError, true);
+  const genuine = structuredClone(f.session.getBranch()) as any[];
+  const records = collectChanges(genuine, f.cwd); assert.equal(records[0].unavailable, undefined);
+  assert.match(remainingDraft(records, new Set()), /original/);
+  for (const missingHash of [false, true]) {
+    const branch = structuredClone(genuine), call = branch.find(entry => entry.message?.role === "assistant").message.content[0];
+    if (missingHash) branch.find(entry => entry.data?.phase === "intent").data.requestHash = undefined;
+    else call.arguments.content = "forged replacement instruction";
+    const invalid = collectChanges(branch, f.cwd); assert.ok(invalid[0].unavailable);
+    assert.throws(() => remainingDraft(invalid, new Set()), /missing|ambiguous/);
+  }
+  assert.equal(readFileSync(path, "utf8"), "external");
+});
+
+test("N1 duplicate history entry IDs cannot authenticate progress that precedes its call", async t => {
+  const f = await fixture(t);
+  await f.call("write", { path: "ordered", content: "real" }, "duplicate-history");
+  const original = structuredClone(f.session.getBranch()) as any[], call = original.find(entry => entry.message?.role === "assistant");
+  const intent = original.find(entry => entry.data?.phase === "intent"), result = original.find(entry => entry.message?.role === "toolResult");
+  assert.ok(call && intent && result);
+  const branch = Array.from({ length: 12 }, () => ({ id: "duplicate", type: "custom", customType: "unrelated", data: {} }));
+  branch.push(intent, { id: "separator", type: "custom", customType: "unrelated", data: {} } as any, call, result);
+  const records = collectChanges(branch, f.cwd); assert.equal(records.length, 1); assert.ok(records[0].unavailable);
+  await assert.rejects(verifyChange(records[0], async () => { assert.fail("ambiguous history cannot authorize an observation"); }), /cannot authorize/);
+});
+
+test("N1 command verifies workspace identity again after a final absent-target observation", async t => {
+  // Jiti caches builtin namespace snapshots after the first command. Isolate
+  // this precise filesystem interception from other commands in the test file.
+  if (process.env.SP_N1_WORKSPACE_OBSERVATION_FIXTURE !== "1") {
+    execFileSync(process.execPath, ["--experimental-strip-types", "--test", "--test-name-pattern", "workspace identity again", fileURLToPath(import.meta.url)], {
+      windowsHide: true, timeout: 30000, env: { ...process.env, SP_N1_WORKSPACE_OBSERVATION_FIXTURE: "1" }, stdio: "pipe",
+    });
+    return;
+  }
+  const f = await fixture(t), path = join(realpathSync.native(f.cwd), "removed"); writeFileSync(path, "original");
+  await f.call("read", { path: "removed" }, "workspace-read");
+  assert.equal((await f.call("delete", { path: "removed" }, "workspace-delete")).isError, false);
+  const originalLstat = fsPromises.lstat, displaced = `${f.cwd}-observation-owned`;
+  let absentReads = 0, replaced = false;
+  t.mock.method(fsPromises, "lstat", async (...args: Parameters<typeof fsPromises.lstat>) => {
+    try { return await Reflect.apply(originalLstat, fsPromises, args); }
+    catch (error) {
+      // capturePathIdentity fails at realpath first. The first absent lstat is
+      // the dangling-link check; the second is verifyChange's final read.
+      if (String(args[0]) === path && (error as NodeJS.ErrnoException).code === "ENOENT" && ++absentReads === 2) {
+        renameSync(f.cwd, displaced); mkdirSync(f.cwd); replaced = true;
+      }
+      throw error;
+    }
+  });
+  syncBuiltinESMExports();
+  try {
+    const ui = commandUI(f, "workspace-delete:0", "Verify current state");
+    await f.runner.getCommand("changes")!.handler("", f.runner.createContext() as never);
+    assert.equal(replaced, true, JSON.stringify({ absentReads, notices: ui.notices() })); assert.ok(ui.notices().length > 0);
+    assert.equal(f.session.getBranch().some((entry: any) => entry.customType === "file-change-verification-v1"), false);
+  } finally {
+    t.mock.restoreAll(); syncBuiltinESMExports();
+    if (replaced) { rmSync(f.cwd, { recursive: true }); renameSync(displaced, f.cwd); }
+  }
 });
 
 test("N1 new standalone v1 exact/snapshot/overwrite origins bind canonical aliases across cwd reopen", async t => {

@@ -231,3 +231,18 @@ zero retained preview characters after release. Node 22.19 inspector sampling wa
 400,880 bytes (20.044/update), controlled heap 58,878,880→59,373,224 bytes. This
 single lifecycle sample is compliance evidence, not a speedup or zero-allocation
 claim. Final correction-head gates/CI/review must still complete.
+
+`8ecd98981c231c12814488ee5847a17d27c46a5b` passed all local gates and
+both platform jobs in [run 36265266005](https://github.com/dragonbaba/super-pi/actions/runs/36265266005).
+Its actual review found three additional provenance/observation edges. New
+standalone v2 write/delete/move intents now carry the full request hash, and
+reconstruction requires it; older hashless v2 histories are view-only. Branch
+slices use physical indexes, and duplicate entry IDs make recovery ambiguous
+rather than authenticating earlier progress. Verification repeats the complete
+asynchronous workspace scope/inode/realpath check after the final observations,
+then checks synchronous Session/signal authority. This is still not an atomic
+filesystem observation. Fifty-two focused tests pass. A real command test swaps
+its owned workspace after the final absent-target read; it fails without the new
+scope check and passes with it. That precise builtin interception runs in an owned
+child to isolate Jiti's cached builtin namespace snapshots. No user workspace or
+external process is touched. New-head full checks and review are still required.
