@@ -24,6 +24,7 @@ import {
 } from "./snapshot-line-protocol.ts";
 import { assertNoNewSyntaxDiagnostics } from "./snapshot-syntax-guard.ts";
 import { snapshotPreview, type PreviewBudget, type ChangePreview } from "./change-preview.ts";
+import { SNAPSHOT_ID_REGEX as SNAPSHOT_ID_PATTERN } from "./regex.ts";
 import {
   captureCompactSnapshot,
   compactFileLimit,
@@ -35,7 +36,6 @@ const MAX_SNAPSHOT_FILE_BYTES = 2 * 1024 * 1024;
 const MAX_SNAPSHOT_TOTAL_BYTES = 8 * 1024 * 1024;
 const MAX_SNAPSHOT_RECEIPTS = 128;
 const MAX_SNAPSHOT_EDIT_BYTES = 256 * 1024;
-const SNAPSHOT_ID_PATTERN = /^snap_[A-Za-z0-9_-]{22}$/u;
 const strictUtf8Decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
 export type SnapshotLineEditKind = "replace" | "delete" | "insert_before" | "insert_after";

@@ -85,3 +85,25 @@ test("file-change renderer and viewport helpers retain bounded primitive hot sta
     }
   }
 });
+
+test("file-change preparation and recovery avoid captured scan/format callbacks", () => {
+  for (const file of ["packages/extensions/mutation-guard-write/change-preview.ts", "packages/extensions/mutation-guard-write/changes.ts"]) {
+    const source = ts.createSourceFile(file, readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true);
+    let dialogFactories = 0;
+    function inspect(node: ts.Node): void {
+      if (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) {
+        // Exact cold exemption: one factory passed to the explicit user dialog.
+        // It retains the bounded body until the dialog closes, never per frame.
+        assert.ok(ts.isFunctionExpression(node) && node.name?.text === "createChangeViewer", `${file}: ${node.getText(source)}`);
+        assert.ok(ts.isCallExpression(node.parent) && node.parent.expression.getText(source) === "ctx.ui.custom");
+        let owner: ts.Node | undefined = node.parent;
+        while (owner && !ts.isFunctionDeclaration(owner)) owner = owner.parent;
+        assert.ok(owner && ts.isFunctionDeclaration(owner) && owner.name?.text === "showChangeViewer");
+        dialogFactories++;
+      }
+      ts.forEachChild(node, inspect);
+    }
+    inspect(source);
+    assert.equal(dialogFactories, file.endsWith("/changes.ts") ? 1 : 0);
+  }
+});
