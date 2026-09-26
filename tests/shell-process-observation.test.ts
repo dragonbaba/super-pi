@@ -119,6 +119,7 @@ for (const real of [false, true]) test(`N3 inherited output pipe refreshes one i
   t.mock.method(globalThis, "clearTimeout", function(timer: any) { timers.delete(timer); return nativeClear(timer); });
   const observation: ChildProcessObservation = { started: false, exitCode: null, signal: null, outputDrained: false };
   t.after(() => { child.stdout!.removeListener("data", onData); if (real && child.exitCode === null && child.signalCode === null) child.kill(); });
+  const originalStdoutEnd = child.stdout!.listeners("end"), originalStderrEnd = child.stderr!.listeners("end");
   const pending = waitForChildProcess(child as ChildProcess, observation);
   if (!real) {
     child.emit("spawn"); child.emit("exit", 0, null);
@@ -130,7 +131,10 @@ for (const real of [false, true]) test(`N3 inherited output pipe refreshes one i
   assert.equal(allocations, 1); assert.ok(refreshes >= 10); assert.equal(timers.size, 0);
   for (const event of ["error", "spawn", "exit", "close"]) assert.equal(child.listenerCount(event), 0, event);
   assert.equal(child.stdout!.listenerCount("data"), 1); assert.equal(child.stderr!.listenerCount("data"), 0);
-  assert.equal(child.stdout!.listenerCount("end"), 0); assert.equal(child.stderr!.listenerCount("end"), 0);
+  // Real Node pipe sockets own an internal end listener. Check that the wait
+  // releases its own listeners without requiring Node's listener to disappear.
+  for (const listener of child.stdout!.listeners("end")) assert.ok(originalStdoutEnd.includes(listener));
+  for (const listener of child.stderr!.listeners("end")) assert.ok(originalStderrEnd.includes(listener));
   t.diagnostic(`idleTimerAllocations=${allocations}; refreshes=${refreshes}; pendingTimers=${timers.size}; waitListeners=0`);
 });
 
