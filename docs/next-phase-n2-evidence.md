@@ -1,6 +1,6 @@
 # N2: staged file commit evidence
 
-Status: **实现中**. Parent N1 is `5986a5b4e56001491366073e98dc71d534c59a4b`.
+Status: **实现中**. Parent N1 is `905aa43981c3246c409d28bdf1b7090d862758de`.
 No claim of N2 acceptance or cross-platform metadata preservation is made yet.
 
 ## Observed baseline and capability decision
@@ -68,8 +68,11 @@ prepared identity/content checks. N1 review and N3/N4 remain in the original sco
 `file-commit.ts` implements bounded handle hashing, verified source/parent identity,
 exclusive same-directory staging, sync/close handling, final authority/signal gates,
 preselected in-place compatibility, postcommit object/content checks and identity-
-checked temporary cleanup. It has not yet been connected to production mutation
-callers: the approved metadata adapter is being implemented and tested.
+checked temporary cleanup. Snapshot, exact and overwrite now use it in production;
+exclusive creation remains the separate existing creation primitive. Commit strategy
+is recorded before staging, receipts preserve committed/unknown outcomes through
+single and batch tools, and compatibility/retained temporary state is displayed.
+Receipt persistence failure does not report a successful/no-change operation.
 
 Seven Windows Node 22.19.0 tests passed, including BOM/CRLF publication, failed
 staging/sync/close, target content/object drift, disappearance, cancellation,
@@ -159,3 +162,32 @@ Normal and >260-character Chinese-path replacements now pass with real content a
 named-stream preservation, zero active native handles and zero pending requests.
 Together with shared-core regression, 11 tests pass and one POSIX parent-rename case
 is explicitly skipped on Windows. This is development feedback, not final acceptance.
+
+## Integrated development candidate
+
+The first native slice `e2b97d6b426f63e11f07366b0c87a0c06d708239` reached real Linux
+CI. Its loader refused `ssize_t` because that typedef is not built into Koffi. The
+adapter now binds `intptr_t`, the signed pointer-width return for the supported
+Linux x64 glibc ABI (both intptr_t and size_t confirmed as eight bytes). This fix
+requires a fresh Linux CI run; the earlier run is not counted as passing.
+
+Windows Node 22.19.0 check and ten targeted suites now pass 155 cases, with three
+explicit platform skips. These include real default SDK mixed-tool assembly,
+snapshot/exact/overwrite, R1 alias/file/parent drift, final permission/cancel gates,
+Session receipt/reopen, bounded preview and recovery. Existing injection/counters
+were moved to actual bounded handle reads and worker publication dispatch, retaining
+successful positive controls and the original before/after filesystem assertions.
+Linux failed-stage tests now require an explicit retained-temp receipt and actual
+candidate bytes, rather than unsafe unlink or silently ignored leftovers.
+
+Native Windows tests additionally compare an actual protected DACL's SDDL before
+and after publication, preserve named streams and creation metadata, exercise a
+separate process holding a non-delete-sharing handle (Win32 32, verified original
+bytes/identity, no retry), and verify hardlink/readonly selection. A copied official
+Koffi package without its platform subpackage exercises the real missing-binary
+diagnostic while ordinary reads remain usable. Synthetic partial-publication fault
+1176 confirms candidate recovery data is retained when the original name disappears.
+The synthetic fault is not claimed as a naturally reproduced OS partial failure.
+Raw logs: `n2-shared-integrated.log`, `n2-native-matrix.log`, `n2-r1-shared.log`.
+Clean-install/delivery smoke, costs, final fixed-head checks, both CI platforms and
+actual final review remain required.

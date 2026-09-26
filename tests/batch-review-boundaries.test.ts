@@ -14,7 +14,14 @@ for (const kind of ["realpath", "lstat", "readFile", "mkdir", "writeFile", "link
   const original = fs[kind];
   mock.method(fs, kind, async function(...args: any[]) {
     if (["mkdir", "writeFile", "link", "unlink", "rename"].includes(kind) || kind === "open" && args[1] === "wx") writes?.push(`${kind}:${args[0]}`);
-    const result = await Reflect.apply(original, fs, args); await afterIO?.(kind, String(args[0])); return result;
+    const result = await Reflect.apply(original, fs, args);
+    // N2 hashes through bounded FileHandle reads. Keep the original I/O fault
+    // matrix at that actual production boundary instead of a removed readFile.
+    if (kind === "open" && args[1] === "r") {
+      const read = result.read.bind(result);
+      result.read = async (...readArgs: any[]) => { const value = await read(...readArgs); await afterIO?.("readFile", String(args[0])); return value; };
+    }
+    await afterIO?.(kind, String(args[0])); return result;
   });
 }
 syncBuiltinESMExports();
@@ -101,7 +108,7 @@ for (const kind of ["exact", "overwrite", "snapshot"]) for (const change of ["al
     t.mock.method(MutationWriteGuard.prototype, method, async function(this: any, ...args: any[]) { inside = true; try { return await originalMethod.apply(this, args); } finally { inside = false; } });
   }
   afterIO = (operation, target) => {
-    if (operation === "open" && target.includes(".pi-snapshot-edit-")) staged = true;
+    if (operation === "open" && target.includes(".pi-file-commit-")) staged = true;
     if (changed || operation !== "readFile" || target !== original || !(kind === "snapshot" ? staged : inside)) return;
     changed = true;
     if (change === "alias" && !protectedPath) f.drift();
@@ -152,11 +159,12 @@ test("R5 late cleanup cannot refund a following call's successful charges", { ti
 
 for (const batch of [false, true]) test(`snapshot content changes during final path gate, batch=${batch}`, async t => {
   const f = await mutationFixture(t), target = join(realpathSync.native(f.cwd), "file"); writeFileSync(target, "before\n");
-  const read = await f.call("read", { path: target }); let staged = false, finalRead = false, changed = false; const effects: string[] = []; writes = effects;
+  const read = await f.call("read", { path: target }); let staged = false, changed = false; const effects: string[] = []; writes = effects;
   afterIO = (kind, path) => {
-    if (kind === "open" && path.includes(".pi-snapshot-edit-")) staged = true;
-    if (staged && kind === "readFile" && path === target) finalRead = true;
-    if (finalRead && !changed && kind === "realpath" && path === target) { changed = true; writeFileSync(target, "concurrent\n"); }
+    if (kind === "open" && path.includes(".pi-file-commit-")) staged = true;
+    // Shared commit validates this final permission/path gate before its bounded
+    // source hash. Inject here, never in later mutation-evidence observation.
+    if (staged && !changed && kind === "realpath" && path === target) { changed = true; writeFileSync(target, "concurrent\n"); }
   };
   try {
     const item = { operation: "edit", path: target, ...anchors(read) };

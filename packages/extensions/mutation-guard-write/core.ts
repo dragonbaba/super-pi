@@ -1,11 +1,13 @@
 import { verifyMutationReadSource, type MutationReadSource } from "../../coding-agent/src/core/tools/read-window.ts";
 import { createHash } from "node:crypto";
-import { lstat, readFile, realpath, writeFile } from "node:fs/promises";
+import { lstat, readFile, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { assessProtectedMutationPath } from "./protected-path-policy.ts";
 import { hashNativeSource, capturePathIdentity, sameIdentity } from "./native-file-core.ts";
 import type { PathIdentity } from "./native-file-core.ts";
 import { executeFileCreation, prepareFileCreation, MAX_CREATED_DIRECTORIES, directoryKey, type FileCreationPlan, type CreationResult } from "./file-creation.ts";
+import { commitPreparedFile, FileCommitError, type FileCommitReceipt, type CommitMetadata } from "./file-commit.ts";
+import { selectCommitMetadata } from "./file-commit-metadata.ts";
 
 export type MutationGuardCategory =
   | "READ_REQUIRED"
@@ -59,7 +61,8 @@ export interface MutationGuardFailure {
   operation: "write" | "edit";
   target: string;
   retryable: boolean;
-  stateChanged: boolean;
+  stateChanged: boolean | "unknown";
+  commit?: FileCommitReceipt;
   expectedSha256?: string;
   actualSha256?: string;
   cause?: string;
@@ -76,6 +79,7 @@ export interface MutationPathApproval {
   preparedIdentity?: PathIdentity;
   preparedParent?: PathIdentity;
   assertCurrent?: () => void;
+  commitSelected?: (metadata: Pick<CommitMetadata, "strategy" | "reason">) => void;
 }
 
 export interface MutationEditAuthorization {
@@ -111,6 +115,7 @@ export interface MutationWriteSuccess {
   previousSha256?: string;
   sha256: string;
   creation?: CreationResult;
+  commit?: FileCommitReceipt;
 }
 
 export function normalizeToolPath(path: string): string {
@@ -246,7 +251,7 @@ function mutationStateChanged(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
   try {
     const payload = JSON.parse(error.message) as { stateChanged?: unknown };
-    return payload.stateChanged === true;
+    return payload.stateChanged === true || payload.stateChanged === "unknown";
   } catch {
     return false;
   }
@@ -860,7 +865,7 @@ export class MutationWriteGuard {
     reservationId?: number,
     pathApproval?: MutationPathApproval,
     signal?: AbortSignal,
-  ): Promise<string> {
+  ): Promise<{ previousSha256: string; commit: FileCommitReceipt }> {
     await this.#assertMutationPathAllowed(cwd, path, "edit", pathApproval);
     const absolutePath = await canonicalExistingPath(resolveToolPath(cwd, path));
     const target = displayPath(cwd, absolutePath);
@@ -880,31 +885,13 @@ export class MutationWriteGuard {
         actualSha256: currentSha256,
       });
     }
-    // No asynchronous work may separate this gate from issuing the write.
-    // The native edit caller checked before entering this async callback; both
-    // authority and cancellation can change while its final hash read awaits.
     try {
-      await this.#assertPreparedIdentity(pathApproval, absolutePath);
-      signal?.throwIfAborted();
-      pathApproval?.assertCurrent?.();
+      const commit = await this.#commitExisting(cwd, path, "edit", absolutePath, previousSha256, content, pathApproval, signal);
+      return { previousSha256, commit };
     } catch (error) {
-      this.releaseMutation(reservationId);
-      throw guardFailure({
-        ok: false, category: "EDIT_FAILED", operation: "edit", target,
-        retryable: true, stateChanged: false, cause: errorMessage(error),
-      });
-    }
-    try {
-      await writeFile(absolutePath, content, "utf8");
-    } catch (error) {
-      let afterSha256: string | undefined;
-      try {
-        afterSha256 = await hashFile(absolutePath);
-      } catch {
-        // Preserve the original failure if post-state inspection also fails.
-      }
-      const stateChanged = afterSha256 === undefined || afterSha256 !== previousSha256;
-      if (stateChanged) await this.invalidate(cwd, path);
+      const commit = error instanceof FileCommitError ? error.receipt : undefined;
+      const stateChanged = commit?.outcome === "unknown" ? "unknown" : commit?.outcome === "committed";
+      if (stateChanged !== false) this.invalidateCanonicalPath(absolutePath);
       else this.releaseMutation(reservationId);
       throw guardFailure({
         ok: false,
@@ -914,11 +901,24 @@ export class MutationWriteGuard {
         retryable: !stateChanged,
         stateChanged,
         expectedSha256: previousSha256,
-        actualSha256: afterSha256,
+        commit,
         cause: errorMessage(error),
       });
     }
-    return previousSha256;
+  }
+
+  async #commitExisting(cwd: string, path: string, operation: "edit" | "write", canonical: string,
+    previousSha256: string, content: string, approval?: MutationPathApproval, signal?: AbortSignal): Promise<FileCommitReceipt> {
+    await this.#assertPreparedIdentity(approval, canonical);
+    const target = approval?.preparedIdentity ?? await capturePathIdentity(canonical);
+    const parent = approval?.preparedParent ?? await capturePathIdentity(dirname(canonical));
+    const metadata = await selectCommitMetadata(target);
+    signal?.throwIfAborted(); approval?.assertCurrent?.();
+    approval?.commitSelected?.(metadata);
+    return commitPreparedFile({ target, parent, previousSha256, metadata }, Buffer.from(content, "utf8"), {
+      assertPathAllowed: () => this.#assertMutationPathAllowed(cwd, path, operation, approval),
+      assertCurrent: approval?.assertCurrent, signal,
+    });
   }
 
   async partialEditFailure(cwd: string, path: string, cause: string): Promise<never> {
@@ -1015,20 +1015,12 @@ export class MutationWriteGuard {
         });
       }
 
-      await this.#assertPreparedIdentity(pathApproval, canonicalPath);
-      if (signal?.aborted) throw new Error("Operation aborted");
+      let commit: FileCommitReceipt;
       try {
-        pathApproval?.assertCurrent?.();
-        signal?.throwIfAborted();
-        await writeFile(canonicalPath, content, "utf8");
+        commit = await this.#commitExisting(cwd, path, "write", canonicalPath, actualSha256, content, pathApproval, signal);
       } catch (error) {
-        let afterSha256: string | undefined;
-        try {
-          afterSha256 = await hashFile(canonicalPath);
-        } catch {
-          // Preserve the original write failure if post-state inspection also fails.
-        }
-        const stateChanged = afterSha256 === undefined || afterSha256 !== actualSha256;
+        const commit = error instanceof FileCommitError ? error.receipt : undefined;
+        const stateChanged = commit?.outcome === "unknown" ? "unknown" : commit?.outcome === "committed";
         throw guardFailure({
           ok: false,
           category: stateChanged ? "PARTIAL_MUTATION" : "WRITE_FAILED",
@@ -1037,7 +1029,7 @@ export class MutationWriteGuard {
           retryable: !stateChanged,
           stateChanged,
           expectedSha256: actualSha256,
-          actualSha256: afterSha256,
+          commit,
           cause: errorMessage(error),
         });
       } finally {
@@ -1052,6 +1044,7 @@ export class MutationWriteGuard {
         target,
         stateChanged: true,
         previousSha256: actualSha256,
+        commit,
         sha256: sha256(content),
       };
     }

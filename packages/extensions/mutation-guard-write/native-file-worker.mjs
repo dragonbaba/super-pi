@@ -40,7 +40,9 @@ function loadBindings() {
     const path = candidates.find(existsSync);
     if (!path) throw new Error("No supported fixed glibc path; musl is not validated.");
     const library = koffi.load(realpathSync(path));
-    bindings = { library, list: library.func("ssize_t flistxattr(int fd, void *names, size_t size)") };
+    // Supported Linux ABI is x86_64/glibc: ssize_t is signed pointer-width.
+    // Koffi provides intptr_t; ssize_t is not a built-in typedef.
+    bindings = { library, list: library.func("intptr_t flistxattr(int fd, void *names, size_t size)") };
   } else throw new Error("Native staged commits are only validated for Windows/Linux x64.");
   return bindings;
 }

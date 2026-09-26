@@ -49,6 +49,19 @@ export class FileCommitError extends Error {
   }
 }
 
+/** Completion formatting only; no filesystem/native work in render or progress loops. */
+export function commitSummary(receipt: FileCommitReceipt): string {
+  const strategy = receipt.strategy === "staged_replace" ? "Staged replacement" : `Protected in-place compatibility: ${receipt.compatibilityReason}`;
+  return `${strategy}; ${receipt.outcome}; file sync ${receipt.fileSynced ? "completed" : "not confirmed"}; directory durability not confirmed.${receipt.retainedTemporary ? ` Retained temporary: ${receipt.retainedTemporary} (${receipt.cleanupReason}).` : ""}`;
+}
+
+export function commitFailure(error: FileCommitError) {
+  const stateChanged = error.receipt.outcome === "unknown" ? "unknown" as const : error.receipt.outcome === "committed";
+  return { ok: false, category: stateChanged === false ? "COMMIT_FAILED" : "PARTIAL_MUTATION", stateChanged,
+    status: stateChanged === "unknown" ? "state_unknown" : stateChanged ? "partial" : "failed_no_change",
+    requiresVerification: stateChanged !== false || Boolean(error.receipt.retainedTemporary), commit: error.receipt, cause: error.message };
+}
+
 interface OwnedTemporary { path: string; device: string; inode: string }
 
 export interface PublicationValidation {

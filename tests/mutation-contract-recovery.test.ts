@@ -498,13 +498,22 @@ test("dependent sibling snapshot calls cannot commit twice", async t => {
  assert.match(text(results.at(-1)), /SNAPSHOT_EDIT_UNKNOWN/); assert.equal(readFileSync(path, "utf8"), "changed\ntwo\n");
 });
 
-test("precommit external writer is still rejected and temporary staging is released", async t => {
+test("precommit external writer is rejected and temporary cleanup is accurately reported", async t => {
  const f = await fixture(t); const path = join(f.cwd, "race.txt"); writeFileSync(path, "one\ntwo\n");
  const { results } = await f.run([() => call("read", "read", { path })]); const r = results[0]; let commits = 0;
  await assert.rejects(executeSnapshotLineEdit(f.sessionId, f.cwd, path, snapshot(r), [{ kind: "replace", start: anchor(r, 1), newLines: ["forbidden"] }], undefined, {
   assertPathAllowed: () => realpath(path), beforeCommit: () => writeFileSync(path, "external\ntwo\n"), afterCommit: () => { commits++; },
- }), /SNAPSHOT_EDIT_STALE.*before commit/);
- assert.equal(commits, 0); assert.equal(readFileSync(path, "utf8"), "external\ntwo\n"); assert.deepEqual(readdirSync(f.cwd), ["race.txt"]);
+ }), (error: any) => {
+  assert.match(error.message, /SNAPSHOT_EDIT_STALE.*before commit/);
+  assert.equal(error.receipt.outcome, "not_committed");
+  if (process.platform === "linux") {
+   assert.ok(error.receipt.retainedTemporary); assert.match(error.receipt.cleanupReason, /no verified-object deletion primitive/);
+   assert.equal(readFileSync(error.receipt.retainedTemporary, "utf8"), "forbidden\ntwo\n");
+   assert.deepEqual(readdirSync(f.cwd).filter(name => name !== "race.txt"), [error.receipt.retainedTemporary.slice(error.receipt.retainedTemporary.lastIndexOf("/") + 1)]);
+  } else if (process.platform === "win32") assert.deepEqual(readdirSync(f.cwd), ["race.txt"]);
+  return true;
+ });
+ assert.equal(commits, 0); assert.equal(readFileSync(path, "utf8"), "external\ntwo\n");
 });
 
 test("anchor mismatch excerpts are bounded observed originals and same-snapshot correction succeeds", async t => {

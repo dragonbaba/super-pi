@@ -157,6 +157,23 @@ test("N2 preselected compatibility preserves a hardlink and reports its weaker g
   assert.equal(await readFile(alias, "utf8"), "");
 });
 
+test("N2 partial native publication retains the candidate instead of deleting recovery data", async t => {
+  const f = await fixture(t), detached = join(f.root, "old-detached");
+  f.plan.metadata.replacementFailureMayChangeState = true;
+  f.plan.metadata.replace = async () => {
+    await rename(f.target, detached);
+    throw Object.assign(new Error("fixture ReplaceFileW Win32 1176"), { nativeCode: 1176, commitOutcome: "unknown" });
+  };
+  await assert.rejects(commitPreparedFile(f.plan, Buffer.from("new"), f.hooks), (error: unknown) => {
+    assert.ok(error instanceof FileCommitError); assert.equal(error.receipt.outcome, "unknown");
+    assert.ok(error.receipt.retainedTemporary); assert.match(error.receipt.cleanupReason!, /Publication outcome is unknown/); return true;
+  });
+  const name = (await readdir(f.root)).find(name => name.startsWith(".pi-file-commit-"));
+  assert.ok(name); assert.equal(await readFile(join(f.root, name), "utf8"), "new");
+  assert.equal(await readFile(detached, "utf8"), f.content);
+  await assert.rejects(readFile(f.target), { code: "ENOENT" });
+});
+
 test("N2 in-place commit starts at byte zero even when metadata inspection advances the cursor", async t => {
   const f = await fixture(t);
   f.plan.metadata.strategy = "protected_in_place";
