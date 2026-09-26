@@ -15,7 +15,7 @@ import { prepareSnapshotLineMutation, executePreparedSnapshotMutation, type Prep
 import { PublicEditOperationParameters, PublicEditParameters, EditParameters, SnapshotEditParameters, WriteParameters, validatePublicSnapshotAnchors } from "./mutation-parameters.ts";
 import { assessProtectedMutationPath } from "./protected-path-policy.ts";
 import { withMutationPaths, MUTATION_PROGRESS_ENTRY } from "./native-tools.ts";
-import { PreviewBudget, addedPreview, modifiedPreview, batchExpandedSummary, BatchResultText, releaseBatchRenderState, MAX_PREVIEW_SOURCE_BYTES, type ChangePreview } from "./change-preview.ts";
+import { PreviewBudget, addedPreview, modifiedPreview, batchExpandedSummary, BatchResultText, releaseBatchRenderState, readPreviewSource, MAX_PREVIEW_SOURCE_BYTES, type ChangePreview } from "./change-preview.ts";
 import { RELEASE_TOOL_RENDER_DERIVED_STATE } from "../../coding-agent/src/core/tools/tool-render-lifecycle.ts";
 
 // Default extensions load in separate module-cache scopes; share only the private key, not authority state.
@@ -195,9 +195,9 @@ export class BatchInvocation {
           item.approval.writePreflight = true;
           item.reservation = this.guard.reserveWriteMutation(this.generation, item.target, input.content!, item.creation);
           if (previewBudget) {
-            if (item.creation) item.preview = addedPreview(input.content!, previewBudget);
+            if (item.creation) { item.preview = addedPreview(input.content!, previewBudget); item.preview.plannedDirectories = item.creation.directories; }
             else if (Number(item.identity!.size) + Buffer.byteLength(input.content!) <= MAX_PREVIEW_SOURCE_BYTES) {
-              const before = await readFile(path);
+              const before = await readPreviewSource(path, MAX_PREVIEW_SOURCE_BYTES - Buffer.byteLength(input.content!), item.identity!);
               if (sha256(before) !== item.previousSha256) throw new Error("[STALE_STATE] Overwrite changed during preview.");
               item.preview = modifiedPreview(decoder.decode(before), input.content!, previewBudget, true);
             } else item.preview = { kind: "Modified", omitted: "Candidate exceeds preview working set; inspect a bounded range with read." };
@@ -347,7 +347,7 @@ export class BatchInvocation {
         if (receipt.creation.createdDirectories.length) summary += `; created ${receipt.creation.createdDirectories.length} parent directories`;
       }
     }
-    const expandedSummary = batchExpandedSummary(collapsedSummary, results);
+    const expandedSummary = batchExpandedSummary(collapsedSummary, results, plannedDirectories);
     return { content: [{ type: "text" as const, text: summary }], details: { mutationReceiptVersion: 2, operation: "file_batch", preview, collapsedSummary, expandedSummary, plannedDirectories, succeeded, failed, notStarted, items: results }, isError: failed > 0 };
   }
 

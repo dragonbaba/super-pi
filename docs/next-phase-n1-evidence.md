@@ -32,11 +32,11 @@ render; component caches must release derived references on final unmount.
 
 | Requirement | Implementation | Verification |
 | --- | --- | --- |
-| Actual bounded dryRun previews; no effects/evidence | 已实现待验证 | Four new fixtures failed on baseline; now pass locally |
+| Actual bounded dryRun previews; no effects/evidence | 已实现待验证 | Four new fixtures failed on baseline; five current cases pass locally |
 | Per-file TUI expansion and bounded retained references | 已实现待验证 | 20k updates, ten releases, zero stable-render text changes |
-| `/changes` Session pairing, verification and remaining draft | 未开始 | Not run |
+| `/changes` Session pairing, verification and remaining draft | 已实现待验证 | Eight targeted cases, including real default SDK Session/reopen |
 | Full Windows checks, minimum Node, allocation gates | 实现中 | Targeted tests/check/hot passed; full candidate checks pending |
-| Linux checks and latest-head review | 未开始 | Not run |
+| Linux checks and latest-head review | 实现中 | Initial slice CI passed both platforms; two P2 findings fixed; final-head rerun pending |
 
 ## Task-cost baseline fixture
 
@@ -78,8 +78,44 @@ cleanup, never authorization. The stable render path allocates no inline closure
 Promise, AbortController, result wrapper, array, hash or diff. Width changes use
 the existing Text layout cache. No pool or terminal-frame change was introduced.
 
-Remaining N1 work: `/changes` navigation, bounded Session pairing, permission-bound
-active verification, remaining-request draft, missing-history behavior, and the
-corresponding full-platform/false-success/fault cases. This first slice is not N1
-completion. Partial-read exact diffs currently use an explicit bounded-summary
-fallback; this limitation is visible, not fabricated as a full diff.
+Five independent Node 22.19.0 preview profile processes then passed. Sampled
+bytes/update were 22.6984, 23.6732, 21.0092, 22.4976 and 20.9216 (median 22.4976).
+Every run delivered 20,000 updates across ten owners, with zero stable-render text
+changes and zero retained derived characters after release. Controlled-GC process
+heap increased by 0.55–0.56 MiB including profiler/JIT/test lifetime. This is release
+evidence for the measured owners, not a whole-process leak or speedup claim. The
+existing full tool-leaf allocation benchmark and the added AST gate also passed.
+These profiles measure the working candidate before its final commit.
+
+The second slice adds `/changes` through the existing permission extension. Its
+list is capped at 128 items from 512 Session entries. Viewing, verification and
+drafting do not call a provider or execute a mutation. Verification checks current
+scope/identity, hashes at most 32 MiB with a 64 KiB buffer, and persists a small
+versioned Session entry. Partial/unknown outcomes require observation but never
+become automatically replayable. Draft placement preserves concurrent user input.
+The actual default SDK Session regression uses genuine offline Agent messages;
+host-only dispatch deliberately redacts arguments and cannot serve as reconstruction
+evidence. Missing or ambiguous original requests are refused.
+
+Review of `7704a6e33c69389729fa165b261f912802c4f4b1` found two valid P2 issues:
+overwrite preview growth could bypass the pre-stat bound, and planned parents were
+not displayed. The candidate now opens a bounded handle, verifies its object/size,
+reads at most initial size plus one sentinel byte, and renders deduplicated planned
+parents. A deterministic handle-stat growth fault verifies rejection before any
+post-growth read. The zero-mutation counter fixture now includes a real-create
+positive control and synchronizes native module bindings so a detached mock cannot
+falsely prove zero effects.
+
+The initial full local suite passed, but source work continued while it ran, so it
+is development feedback rather than final-head acceptance. Final N1 checks, both
+platforms and review must be rerun against the completed candidate. Partial-read
+exact diffs currently use an explicit bounded-summary fallback. Host-redacted
+arguments and legacy alias paths without pairing remain unreconstructable; these
+limitations are visible rather than guessed.
+
+Draft PR: [#47](https://github.com/dragonbaba/super-pi/pull/47). Initial candidate
+`7704a6e33c69389729fa165b261f912802c4f4b1` received an actual Codex review and
+[successful Linux/Windows CI](https://github.com/dragonbaba/super-pi/actions/runs/36251336745).
+The second slice's six targeted suites passed 99 tests, with one Windows
+case-sensitivity skip. Check, offline build and hot-path gates passed locally.
+This older CI does not validate the added recovery command.

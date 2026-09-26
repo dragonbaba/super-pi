@@ -6,6 +6,7 @@ import type { ExtensionAPI, ExtensionContext } from "@super-pi/coding-agent";
 import { shutdownManagedBrowser } from "@super-pi/chrome-devtools/browser-manager";
 import { inspectBashResourceLifecycle } from "./core.ts";
 import { SessionPermissionController } from "./permission-controller.ts";
+import { registerChanges } from "../mutation-guard-write/changes.ts";
 
 const CHROME_TOOL_PREFIX = "chrome_devtools_";
 const DEFAULT_SCREENSHOT_PREFIX = "sp-chrome-devtools-screenshot-";
@@ -128,6 +129,7 @@ export default function resourceLifecycleGuard(pi: ExtensionAPI): void {
   const permissions = new SessionPermissionController(pi);
   const resources = new OwnedResourceCleaner();
   permissions.registerCommands();
+  registerChanges(pi, permissions);
 
   pi.on("session_start", async (_event, ctx) => {
     await permissions.restore(ctx);

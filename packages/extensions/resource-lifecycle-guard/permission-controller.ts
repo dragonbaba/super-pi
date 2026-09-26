@@ -1,6 +1,6 @@
 import { prepareShellCwd } from "@super-pi/coding-agent";
 import { createHash } from "node:crypto";
-import { lstat } from "node:fs/promises";
+import { lstat, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@super-pi/coding-agent";
 import { inspectHighRiskBashMutation, type HighRiskMutationScan } from "./core.ts";
@@ -332,6 +332,31 @@ export class SessionPermissionController {
 
   /** Read-only invalidation identity; does not grant permission or change policy. */
   get authorityGeneration(): number { return this.#authorityGeneration; }
+
+  /** User-command observation reuses current Session scope; it grants no mutation/read evidence. */
+  async authorizeFileObservation(ctx: ExtensionContext, paths: readonly string[]): Promise<() => Promise<void>> {
+    if (!this.#restored || paths.length < 1 || paths.length > 2) throw new Error("Current Session permission state is unavailable.");
+    const targets = paths.slice();
+    const generation = this.#authorityGeneration, sequence = this.#state.sequence, sessionId = ctx.sessionManager.getSessionId(), cwd = ctx.cwd;
+    const assertCurrent = async () => {
+      ctx.signal?.throwIfAborted();
+      if (!this.#restored || generation !== this.#authorityGeneration || sequence !== this.#state.sequence || sessionId !== ctx.sessionManager.getSessionId() || cwd !== ctx.cwd) throw new Error("Verification permission became obsolete; reopen /changes.");
+      for (const path of targets) {
+        if (!isAbsolute(path) || path.length > 4096) throw new Error("Verification requires a recorded canonical target.");
+        const assessment = await this.#state.assessTarget(path, cwd);
+        if (assessment.unverifiableReason || assessment.canonicalTarget !== path || (!assessment.workspace && this.#state.mode !== "full-access")) throw new Error("Verification target is outside the current authorized scope or has changed. Use /add_workspace or /permissions explicitly.");
+        const workspace = assessment.workspace;
+        if (workspace) {
+          const info = await lstat(workspace.canonicalPath);
+          if (!info.isDirectory() || info.isSymbolicLink() || info.dev !== workspace.device || info.ino !== workspace.inode || await realpath(workspace.requestedPath) !== workspace.canonicalPath) throw new Error("Verification workspace identity changed.");
+        }
+      }
+      ctx.signal?.throwIfAborted();
+      if (generation !== this.#authorityGeneration || sequence !== this.#state.sequence || sessionId !== ctx.sessionManager.getSessionId()) throw new Error("Verification permission became obsolete.");
+    };
+    await assertCurrent();
+    return assertCurrent;
+  }
 
   registerCommands(): void {
     this.#pi.registerCommand("permissions", {

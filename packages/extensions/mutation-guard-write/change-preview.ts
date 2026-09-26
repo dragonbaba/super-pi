@@ -1,4 +1,5 @@
 import { stripVTControlCharacters } from "node:util";
+import { open } from "node:fs/promises";
 import { generateUnifiedPatch } from "@super-pi/coding-agent";
 import { addedContentSummary } from "./file-creation.ts";
 import { Text } from "@super-pi/tui";
@@ -15,6 +16,28 @@ export interface ChangePreview {
   diff?: string;
   omitted?: string;
   risk?: string;
+  plannedDirectories?: readonly string[];
+}
+
+/** Enforce the preview bound on the open object, including growth after preflight stat. */
+export async function readPreviewSource(path: string, limit: number, expected: { device: string; inode: string }): Promise<Buffer> {
+  if (!Number.isSafeInteger(limit) || limit < 0 || limit > MAX_PREVIEW_SOURCE_BYTES) throw new Error("Invalid preview read bound.");
+  const handle = await open(path, "r");
+  try {
+    const info = await handle.stat({ bigint: true });
+    if (!info.isFile() || info.size > BigInt(limit)) throw new Error("[STALE_STATE] Source exceeds the preview working-set limit.");
+    if (String(info.dev) !== expected.device || String(info.ino) !== expected.inode) throw new Error("[STALE_STATE] Opened preview object differs from preparation.");
+    const size = Number(info.size);
+    const bytes = Buffer.allocUnsafe(size + 1);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const next = await handle.read(bytes, offset, bytes.length - offset, null);
+      if (!next.bytesRead) break;
+      offset += next.bytesRead;
+    }
+    if (offset !== size || (await handle.stat({ bigint: true })).size !== info.size) throw new Error("[STALE_STATE] Source changed during bounded preview read.");
+    return bytes.subarray(0, offset);
+  } finally { await handle.close(); }
 }
 
 /** Low-frequency preparation/finalization only; never called from a render or progress update. */
@@ -66,6 +89,11 @@ export function modifiedPreview(before: string, after: string, budget: PreviewBu
   if (!visible) { preview.omitted = "Source is outside the completed read range; no additional content was disclosed."; return preview; }
   if (Buffer.byteLength(before) + Buffer.byteLength(after) > MAX_PREVIEW_SOURCE_BYTES) {
     preview.omitted = "Candidate exceeds preview working set; inspect a bounded range with read.";
+    return preview;
+  }
+  if (addedContentSummary(before).addedLines === undefined || addedContentSummary(after).addedLines === undefined) {
+    preview.bytes = Buffer.byteLength(after);
+    preview.omitted = "Non-text content; byte summary only.";
     return preview;
   }
   return budget.diff(preview, generateUnifiedPatch("prepared", before, after, 0));
@@ -121,9 +149,10 @@ interface DisplayItem {
 }
 
 /** One bounded presentation at completion. The renderer only selects a string. */
-export function batchExpandedSummary(summary: string, items: readonly DisplayItem[]): string {
+export function batchExpandedSummary(summary: string, items: readonly DisplayItem[], plannedDirectories?: readonly string[]): string {
   const budget = new PreviewBudget();
   let text = budget.take(summary, MAX_PREVIEW_LINES).text;
+  if (plannedDirectories) for (const directory of plannedDirectories) text += budget.take(`\nplanned parent: ${directory}`, MAX_PREVIEW_LINES).text;
   for (const item of items) {
     const preview = item.preview;
     const receipt = item.receipt;
@@ -135,6 +164,7 @@ export function batchExpandedSummary(summary: string, items: readonly DisplayIte
     text += budget.take(heading, MAX_PREVIEW_LINES).text;
     if (item.reason) text += budget.take(`\n${item.reason}`, MAX_PREVIEW_LINES).text;
     if (preview?.risk) text += budget.take(`\n${preview.risk}`, MAX_PREVIEW_LINES).text;
+    if (!plannedDirectories && item.status === "preview" && preview?.plannedDirectories) for (const directory of preview.plannedDirectories) text += budget.take(`\nplanned parent: ${directory}`, MAX_PREVIEW_LINES).text;
     // Completed receipts already own their actual diff. Never derive a diff in render.
     const diff = preview ? preview.diff : receipt?.patch ?? receipt?.diff;
     if (typeof diff === "string") {

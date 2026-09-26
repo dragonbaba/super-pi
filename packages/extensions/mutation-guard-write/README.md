@@ -131,3 +131,22 @@ including retained directories. Prepared differences on incomplete items are
 explicitly marked unconfirmed. The model receives the compact result summary;
 expanding a row makes no provider request. Formatting happens at completion and
 the component releases its bounded derived text/cache at final unmount.
+
+`/changes` opens the most recent 128 file items from the last 512 Session entries.
+It can view a file's prepared difference/result, observe current filesystem state,
+or place a new remaining-work draft in the input editor. Viewing and observation
+make no model request. Original requests must pair with the actual item and durable
+preparation; missing, ambiguous or trimmed history is explicitly unreconstructable.
+Observation reuses current Session workspace/full-access scope, rechecks permissions
+and object identity, and hashes at most 32 MiB through a bounded buffer. It records
+only small versioned Session metadata, not file contents or new edit evidence.
+Hash equality describes content, not executable correctness or an unchanged inode.
+
+Drafts include only `failed_no_change` and `not_started` items. Successful items are
+excluded; partial/unknown items first require observation and remain excluded from
+automatic retry. Old snapshot IDs/anchors are removed. Submission goes through the
+normal Agent and permission chain. Existing editor input needs an explicit append
+or replace choice, and a concurrent edit cancels placement. There is no background
+execution, retry, undo, second receipt database, or automatic clearing of unrelated
+false-success obligations. Host-only calls with redacted arguments and legacy alias
+paths lacking sufficient pairing must be inspected with a fresh request.

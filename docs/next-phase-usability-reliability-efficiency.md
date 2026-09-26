@@ -8,7 +8,7 @@ unmerged.
 
 | Theme | Branch / parent | Status | Evidence |
 | --- | --- | --- | --- |
-| N1: previews and recovery | `feat/file-change-preview-recovery` / main | 实现中 | [N1](next-phase-n1-evidence.md) |
+| N1: previews and recovery | `feat/file-change-preview-recovery` / main | 已实现待验证 | [N1](next-phase-n1-evidence.md), [Draft #47](https://github.com/dragonbaba/super-pi/pull/47) |
 | N2: staged single-file commit | `feat/staged-file-commit-reliability` / N1 | 未开始 | Pending |
 | N3: shell input and results | `feat/shell-input-result-contract` / N2 | 未开始 | Pending |
 | N4: measured task cost and bounded work | `perf/task-cost-and-bounded-hotspots` / N3 | 未开始 | Baseline collection only |

@@ -8,6 +8,7 @@ import { ToolExecutionComponent } from "../packages/coding-agent/src/modes/inter
 import { initTheme } from "../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 import { RELEASE_COMPONENT_RENDER_CACHE } from "@super-pi/tui";
 import { Session as InspectorSession } from "node:inspector/promises";
+import { syncBuiltinESMExports } from "node:module";
 
 test("N1 preview has real mixed changes and no filesystem mutation", async t => {
   const f = await fixture(t);
@@ -24,6 +25,8 @@ test("N1 preview has real mixed changes and no filesystem mutation", async t => 
   }
   const originalOpen = fs.open;
   t.mock.method(fs, "open", (...args: Parameters<typeof fs.open>) => { if (args[1] !== "r") mutations++; return originalOpen(...args); });
+  syncBuiltinESMExports();
+  t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
   const result = await f.call("file_batch", { dryRun: true, operations: [
     { operation: "write", mode: "create", path: "中文/new/empty", content: "" },
     { operation: "write", mode: "create", path: "中文/new/text", content: "新行\n" },
@@ -38,6 +41,7 @@ test("N1 preview has real mixed changes and no filesystem mutation", async t => 
   assert.equal(details.preview, true);
   assert.deepEqual(details.items.map((item: any) => item.status), Array(6).fill("preview"));
   assert.equal(details.plannedDirectories.length, 2);
+  assert.equal(details.expandedSummary.match(/planned parent:/g)?.length, 2);
   assert.equal(details.items[0].preview.addedLines, 0);
   assert.equal(details.items[1].preview.addedLines, 1);
   assert.match(details.items[2].preview.diff, /-.*two[\s\S]*\+.*TWO/);
@@ -49,6 +53,31 @@ test("N1 preview has real mixed changes and no filesystem mutation", async t => 
   assert.equal(readFileSync(join(f.cwd, "edit"), "utf8"), "one\ntwo\nthree\n");
   assert.ok(result.content.every(block => block.type !== "text" || !block.text.includes("SECOND")), "model summary does not repeat patch");
   assert.ok(!f.session.getBranch().some((e: any) => e.customType === "file-mutation-progress-v2" && e.data.toolCallId === "mixed-preview"));
+  const control = await f.call("file_batch", { operations: [{ operation: "write", mode: "create", path: "counter-control/file", content: "control" }] }, "counter-control");
+  assert.equal(control.isError, false);
+  assert.ok(mutations > 0, "positive control proves filesystem mutation counters reach production bindings");
+});
+
+test("N1 review: overwrite growth after metadata capture never causes a full preview read", async t => {
+  const f = await fixture(t); const path = join(f.cwd, "growing"); writeFileSync(path, "before");
+  await f.call("read", { path }, "read-growing");
+  // Jiti imports keep their native bindings. Gate the opened handle's methods,
+  // rather than a module-property mock that never reaches production imports.
+  const probe = await fs.open(path, "r"), prototype = Object.getPrototypeOf(probe);
+  await probe.close();
+  const originalStat = prototype.stat, originalRead = prototype.read;
+  let grown = false, readsAfterGrowth = 0;
+  t.mock.method(prototype, "stat", async function(this: any, ...args: any[]) {
+    if (!grown) { writeFileSync(path, Buffer.alloc(2 * 1024 * 1024, 65)); grown = true; }
+    return originalStat.apply(this, args);
+  });
+  t.mock.method(prototype, "read", function(this: any, ...args: any[]) { if (grown) readsAfterGrowth++; return originalRead.apply(this, args); });
+  const result = await f.call("file_batch", { dryRun: true, operations: [{ operation: "write", mode: "overwrite", path, content: "after" }] }, "growth-preview");
+  assert.equal(result.isError, true);
+  assert.match(JSON.stringify(result), /preview working-set limit/);
+  assert.equal(grown, true);
+  assert.equal(readsAfterGrowth, 0);
+  assert.equal(readFileSync(path).length, 2 * 1024 * 1024);
 });
 
 test("N1 preview line/UTF-8 budgets, empty/binary content, and new authorization", async t => {
