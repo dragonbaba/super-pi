@@ -529,7 +529,7 @@ export default function mutationGuardWriteExtension(pi: ExtensionAPI): void {
       const receiptTarget = pathApproval?.canonicalTarget ?? absolutePath;
       if (pathApproval) pathApproval.commitSelected = metadata => {
         pi.appendEntry(MUTATION_PROGRESS_ENTRY, { toolCallId, itemId: `${toolCallId}:0`, phase: "intent", operation: "write", target: receiptTarget,
-          requestHash: mutationRequestHash("write", input), strategy: metadata.strategy, compatibilityReason: metadata.reason });
+          requestHash: mutationRequestHash("write", input), strategy: metadata.strategy, compatibilityReason: metadata.reason, directories: [] });
         progress = true;
         if (metadata.reason) _onUpdate?.({ content: [{ type: "text", text: `Commit selected: ${metadata.reason}` }], details: {} });
       };
@@ -538,8 +538,12 @@ export default function mutationGuardWriteExtension(pi: ExtensionAPI): void {
         details = await withFileMutationQueue(
           absolutePath,
           async () => {
-            if (!progress && pathApproval) pi.appendEntry(MUTATION_PROGRESS_ENTRY, { phase: "origin", toolCallId, itemId: `${toolCallId}:0`, operation: "write", target: receiptTarget, requestHash: mutationRequestHash("write", input) });
-            if (progress) pi.appendEntry(MUTATION_PROGRESS_ENTRY, { toolCallId, itemId: `${toolCallId}:0`, phase: "intent", operation: "write", target: receiptTarget, requestHash: mutationRequestHash("write", input), directories: canonicalCreationDirectories(pathApproval!.creationPlan!) });
+            if (!progress && pathApproval) pi.appendEntry(MUTATION_PROGRESS_ENTRY, { phase: "origin", toolCallId, itemId: `${toolCallId}:0`, operation: "write", target: receiptTarget, requestHash: mutationRequestHash("write", input), directories: [] });
+            if (progress) {
+              const directories = canonicalCreationDirectories(pathApproval!.creationPlan!);
+              pi.appendEntry(MUTATION_PROGRESS_ENTRY, { toolCallId, itemId: `${toolCallId}:0`, phase: "origin", operation: "write", target: receiptTarget, requestHash: mutationRequestHash("write", input), directories });
+              pi.appendEntry(MUTATION_PROGRESS_ENTRY, { toolCallId, itemId: `${toolCallId}:0`, phase: "intent", operation: "write", target: receiptTarget, requestHash: mutationRequestHash("write", input), directories });
+            }
             return guard.write(ctx.cwd, path, content, turnGeneration, signal, pathApproval);
           },
         );

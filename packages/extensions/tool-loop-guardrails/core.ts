@@ -456,20 +456,29 @@ export async function failureRecoveryHint(
   input: unknown,
   failureText: string,
   cwd: string,
+  details?: unknown,
 ): Promise<string | undefined> {
-  if ((toolName === "edit" || toolName === "write") && classifyFailureText(failureText, input, toolName) === "read_required") {
+  // Structured producer facts outrank arbitrary stdout. Do not append a guessed
+  // parser/path/policy advisory that contradicts the recorded shell outcome.
+  const execution = toolName === "bash" || toolName === "powershell" ? readShellExecution(details) : undefined;
+  if (execution) {
+    if (execution.started !== false) return "[Shell execution recovery] Preserve the original diagnostic and recorded exit/termination facts. Inspect the exact command and affected state before a fresh request; completed effects are not undone. Do not retry unchanged or infer the cause from output alone.";
+    return undefined;
+  }
+  const category = classifyFailureText(failureText, input, toolName, details);
+  if ((toolName === "edit" || toolName === "write") && category === "read_required") {
     return toolName === "write"
       ? "[Read recovery] Existing whole-file overwrite requires qualifying complete content from dedicated read in an earlier completed tool turn, still matching the target. A truncated read(path) is not complete; grep, Bash, LSP, stale evidence and same-turn reads do not satisfy this guard. For a local change use a qualifying range/snapshot edit. Missing targets need no read and retain exclusive creation and permissions."
       : "[Read recovery] Use dedicated read for the exact edit range in an earlier completed tool turn, then edit against that current content; grep, Bash, LSP, stale evidence and same-turn reads do not satisfy this guard.";
   }
-  if ((toolName === "bash" || toolName === "powershell") && (failureText === UNCERTAIN_LIFECYCLE || (failureText.startsWith("[SHELL_") && classifyFailureText(failureText, input, toolName) === "policy_blocked"))) return undefined;
+  if ((toolName === "bash" || toolName === "powershell") && (failureText === UNCERTAIN_LIFECYCLE || (failureText.startsWith("[SHELL_") && category === "policy_blocked"))) return undefined;
   if (failureText.includes("Blocked an uncertain/uninspectable shell lifecycle")) {
     return "[Lifecycle recovery] The lifecycle guard refused unsupported or uninspectable shell syntax before execution. Use a simpler inspectable foreground operation; for file work, a registered native read/write/edit tool still requires its own target permission and qualifying prior read. Broader permissions do not resolve parser limits. Do not retry unchanged or evade the guard by changing language or launcher.";
   }
   if (failureText.includes("Blocked an unmanaged long-lived process")) {
     return "[Lifecycle recovery] A permission change cannot authorize an unmanaged process. Keep bounded use and cleanup in one foreground call with the captured PID, or use an available managed capability. Do not evade this boundary with another launcher.";
   }
-  if (classifyFailureText(failureText, input, toolName) === "policy_blocked") {
+  if (category === "policy_blocked") {
     return "[Permission recovery] Resolve the permission or policy failure for this exact operation before retrying. Do not evade it by changing language, launcher, or tool; use only a registered capability allowed for the target.";
   }
   if (toolName === "bash" && isMsysRegexArgvFailure(input, failureText)) {
@@ -495,11 +504,11 @@ export async function failureRecoveryHint(
   if (process.platform === "win32" && input && typeof input === "object") {
     const command = (input as { command?: unknown }).command;
     if (typeof command === "string" && UNIX_TMP_PATH_RE.test(command)
-      && classifyFailureText(failureText, input, toolName) === "path_not_found" && UNIX_TMP_PATH_RE.test(failureText)) {
+      && category === "path_not_found" && UNIX_TMP_PATH_RE.test(failureText)) {
       return "[Path recovery] The error names a /tmp path. Verify that exact path and the failing executable in this shell; spelling alone does not establish the cause. Use the actual shell temporary directory or os.tmpdir() in Node where appropriate, after resolving permissions.";
     }
   }
-  if (classifyFailureText(failureText, input, toolName) !== "path_not_found" || !input || typeof input !== "object") return undefined;
+  if (category !== "path_not_found" || !input || typeof input !== "object") return undefined;
   const nearby = await nearestFailurePath(input as Record<PropertyKey, unknown>, cwd);
   return nearby
     ? `[Path recovery] The requested path does not exist. Nearest existing candidate: ${nearby}`

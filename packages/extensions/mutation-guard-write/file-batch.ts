@@ -277,7 +277,8 @@ export class BatchInvocation {
         for (const item of this.items) { this.currentItem = item; await this.revalidate(item, signal); }
         if (this.input.dryRun) { for (const result of results) result.status = "preview"; return; }
         const preparedTargets = [];
-        for (const item of this.items) preparedTargets.push({ itemId: item.itemId, operation: item.operation, target: item.target, destination: item.native?.destination });
+        for (const item of this.items) preparedTargets.push({ itemId: item.itemId, operation: item.operation, target: item.target, destination: item.native?.destination,
+          directories: item.creation ? canonicalCreationDirectories(item.creation) : item.operation === "write" ? [] : undefined });
         pi.appendEntry(MUTATION_PROGRESS_ENTRY, { toolCallId: this.id, phase: "prepared", requestHash: this.requestHash, items: preparedTargets });
         for (let index = 0; index < this.items.length; index++) {
           const item = this.items[index], result = results[index];
@@ -288,7 +289,7 @@ export class BatchInvocation {
             phase: "commit_prepared", operation: item.operation, target: item.target, strategy: metadata.strategy, compatibilityReason: metadata.reason }); };
           try {
             pi.appendEntry(MUTATION_PROGRESS_ENTRY, { toolCallId: this.id, itemId: item.itemId, phase: "intent", requestHash: this.requestHash, operation: item.operation, target: item.target, destination: item.native?.destination,
-              directories: item.creation ? canonicalCreationDirectories(item.creation) : undefined });
+              directories: item.creation ? canonicalCreationDirectories(item.creation) : item.operation === "write" ? [] : undefined });
             await this.revalidate(item, signal, sharedDirectories);
             let receipt: any;
             if (item.native) receipt = await executeNativePlan(item.native, this.assertAuthority, signal);

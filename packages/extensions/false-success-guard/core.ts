@@ -1,5 +1,6 @@
 import { COMPLETION_CLAIM_RE, INCOMPLETE_DISCLOSURE_RE, PARTIAL_MUTATION_RE, LEADING_CD_RE, SHELL_OPERATOR_RE, NODE_TEST_RE, TEST_COMMAND_RE, NODE_TSC_RE, TYPECHECK_COMMAND_RE, LINT_COMMAND_RE, BUILD_COMMAND_RE, PACKAGE_PREFIX_RE, POLICY_BLOCKED_RE, TIMEOUT_RE, PATH_NOT_FOUND_RE, COMMAND_FAILED_RE, WINDOWS_ABSOLUTE_RE, TRAILING_SEPARATOR_RE } from "./regex.ts";
 import { extname, isAbsolute, relative, resolve } from "node:path";
+import { realpathSync } from "node:fs";
 import { getShellCwdBinding, readShellExecution, shellExecutionSucceeded, shellFailureCategory } from "@super-pi/coding-agent";
 import { boundBatchIntents, validMutationOutcome } from "../mutation-guard-write/session-evidence.ts";
 import { resolveToolPath } from "../mutation-guard-write/core.ts";
@@ -126,13 +127,20 @@ export function beginPromptBoundary(
   return true;
 }
 
+function fallbackShellVerificationCwd(input: Record<string, unknown>, cwd: string | undefined): string {
+  const binding = getShellCwdBinding(input);
+  if (binding) return binding.canonical;
+  const requested = typeof input.cwd === "string" ? resolve(cwd ?? process.cwd(), input.cwd) : cwd ?? process.cwd();
+  try { return realpathSync.native(requested); }
+  catch { return requested; } // Unobserved paths retain an obligation; this grants no execution authority.
+}
+
 export function observeToolResult(state: FalseSuccessState, observation: ToolObservation): string | undefined {
   if (observation.toolName === "file_batch") { observeBatchResult(state, observation); return; }
   if (observation.toolName === "delete" || observation.toolName === "move") { observeNativeResult(state, observation); return; }
   const shell = observation.toolName === "bash" || observation.toolName === "powershell";
   const execution = shell ? readShellExecution(observation.details) : undefined;
-  const requestedCwd = shell && typeof observation.input.cwd === "string" ? resolve(observation.cwd ?? process.cwd(), observation.input.cwd) : observation.cwd;
-  const scope = verificationScope(observation.toolName, observation.input, execution?.cwd ?? (shell ? getShellCwdBinding(observation.input)?.canonical : undefined) ?? requestedCwd);
+  const scope = verificationScope(observation.toolName, observation.input, execution?.cwd ?? (shell ? fallbackShellVerificationCwd(observation.input, observation.cwd) : observation.cwd));
   const target = mutationTarget(observation.toolName, observation.input, observation.cwd);
   const text = (observation.text ?? "").slice(0, MAX_TOOL_TEXT_CHARS);
 

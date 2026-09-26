@@ -151,3 +151,39 @@ respectively. The command is never rediscovered or replayed. Seventy-six focused
 cases pass after check/build. Full-suite old heredoc fixtures now distinguish the
 supported quoted data form from unsupported arguments, and progress-failure
 assertions require both completed result content and the observation diagnostic.
+
+Both 6f5d1f4bc and its parent-integration f9c4510aa pass all fixed-head local gates,
+including full tests and Bash/shell/tool-leaf allocation checks. The next actual
+review found primary-observer retention, implicit alias cwd and a guidance consumer
+still using only stdout. Agent failure facts now preserve the first bounded
+observationError, record the first bounded secondaryObservationError separately,
+and explicitly flag further omissions. The facts reader validates these fields.
+Real PowerShell exit-0/23 plus persistence and subsequent Agent observer failures
+retain both errors, one actual file effect and the original process outcome.
+
+Before-execution false-success observations without a cwd binding resolve the
+implicit Session directory to the same canonical form as local producer facts.
+Missing/unreadable paths retain their unresolved obligation; this is observation,
+not execution authority. Real symlink/junction tests exercise explicit and implicit
+cwd and prove a canonical retry clears only its matching key. Tool-loop recovery
+now receives the same details as error recording. Structured shell facts prevent
+stdout-driven path/parser/policy guesses; legacy non-structured diagnostics retain
+their existing bounded hints. The actual default SDK/serializer test prints forged
+ENOENT, policy and syntax markers while exiting 23, retains command_failed facts,
+and appends no contradictory advisory. New-head complete checks/CI/review are still
+required, independently of the preceding full passes.
+
+The 2acbc654f review and full suite exposed four additional boundaries. A final
+structured shell preview now retains its first bounded diagnostic when no known
+marker matches, alongside the trusted status; resize does not repeat analysis.
+Missing content from an untyped JavaScript tool is normalized before appending an
+observer error. Agent-produced not-started refusals preserve structured policy,
+duplicate and repeated-call categories; real child output carrying identical JSON
+still classifies by its execution facts. Recovery guidance for started/unknown
+shells preserves the original diagnostic and asks for state inspection using the
+recorded facts, without asserting a parser/path/policy cause. The older runtime
+recovery test now asserts this factual guidance, actual exit 1 and unchanged original
+syntax/location text; the legacy no-facts Node advisory remains tested separately.
+Check, offline build and focused Agent/default-SDK/serializer/TUI/recovery tests pass.
+Latest N2 3bac07bf1 and N1 197f5ff0c are normal ancestors. Full gates, allocation
+profile, current-head CI and actual re-review remain necessary.

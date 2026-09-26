@@ -451,3 +451,12 @@ failure after actual N2 publication through the owning read handle, retaining th
 same changed-byte/partial-receipt assertions. Windows Node22.19 check passes;
 91 focused tests: 80 pass and eleven explicit platform skips. Final whole-project
 gates, both platforms and actual new-head review remain required.
+
+13e2dee95 passes full local gates and both platforms in
+[run 36273482841](https://github.com/dragonbaba/super-pi/actions/runs/36273482841),
+including actual non-UTF-8 Linux attribute preservation. N1 197f5ff0c is integrated
+normally. Its strict intent-parent binding also applies to N2 overwrite: both the
+bound origin/batch preparation and intent now explicitly record an empty parent
+plan for existing-file writes. Actual standalone/batch overwrite with terminal
+history removed stays verifiable and observes zero created parents. No missing
+metadata is silently converted to an empty plan during reconstruction.

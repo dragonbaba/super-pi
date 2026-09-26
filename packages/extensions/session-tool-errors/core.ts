@@ -270,6 +270,17 @@ export function classifyToolFailure(tool: string, text: string, input?: unknown,
 export function classifyError(tool: string, text: string, family?: VerificationFamily, details?: unknown): { category: string; cause: string } {
   const execution = tool === "bash" || tool === "powershell" ? readShellExecution(details) : undefined;
   if (execution) {
+    // Only the Agent's not-started result can carry a trusted refusal. A child
+    // process printing the same JSON/markers must never select this branch.
+    if (execution.producer === "agent" && execution.started === false && execution.executionStatus === "not_executed") {
+      const refusal = parseStructuredFailure(text);
+      const preflight = classifyStructuredPreflightError(refusal);
+      if (preflight) return preflight;
+      const policy = details && typeof details === "object" ? details as Record<string, unknown> : undefined;
+      if (policy?.category === "POLICY_BLOCKED" && policy.stateChanged === false || POLICY_BLOCKED_RE.test(text)) {
+        return { category: "policy_blocked", cause: "调用被安全策略或用户确认门禁阻止。" };
+      }
+    }
     const category = shellFailureCategory(execution);
     if (category === "command_failed" && family) return verificationFailure(family);
     return { category, cause: `Shell 运行记录：started=${execution.started}, termination=${execution.termination}, exitCode=${execution.exitCode}, signal=${execution.signal}, output=${execution.output.complete}, log=${execution.output.log}。原始输出仅用于诊断。` };

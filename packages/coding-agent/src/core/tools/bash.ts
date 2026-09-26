@@ -363,12 +363,16 @@ function createBashFailurePreview(output: string, execution?: ShellExecutionFact
 	let genericFailureEnd = -1;
 	let status: string | undefined;
 	let nonblankCharacters = 0;
+	let firstDiagnostic: string | undefined;
 	let nextStack: string | undefined;
 	const recentLines: string[] = [];
 	for (let start = 0; start < output.length;) {
 		const end = nextLineEnd(output, start);
 		const line = output.slice(start, end);
-		if (line.trim()) nonblankCharacters += line.length;
+		if (line.trim()) {
+			nonblankCharacters += line.length;
+			if (execution && firstDiagnostic === undefined) firstDiagnostic = boundFailureFragment(line);
+		}
 		if (!firstUseful) {
 			if (lineHasSpecificFailureMarker(line)) {
 				firstUseful = line;
@@ -392,7 +396,8 @@ function createBashFailurePreview(output: string, execution?: ShellExecutionFact
 	if (execution) status = `Shell: ${shellFailureCategory(execution)}; exit=${execution.exitCode ?? "unknown"}${execution.signal ? `; signal=${execution.signal}` : ""}`;
 	if (!firstUseful) {
 		if (!execution) return undefined;
-		return { context: [], exception: "", status, stack: undefined, omitted: output.trim().length > 0, statusFirst: true };
+		return { context: [], exception: firstDiagnostic ? `Output: ${firstDiagnostic}` : "", status, stack: undefined,
+			omitted: nonblankCharacters > (firstDiagnostic?.length ?? 0), statusFirst: true };
 	}
 	const nextStart = firstUsefulEnd + 1;
 	if (firstUsefulPrefix.length === 0 && nextStart < output.length) {
