@@ -12,6 +12,7 @@ export interface CommitMetadata {
   assertCurrent(handle: FileHandle): void | Promise<void>;
   assertPostimage?(handle: FileHandle): void | Promise<void>;
   assertBeforeInPlace?(handle: FileHandle, plan: FileCommitPlan): Promise<void>;
+  finalizeInPlace?(): Promise<void>;
   removeTemporary?(path: string, expected: { device: string; inode: string }): Promise<void>;
   replace(temporary: string, target: string, validation: PublicationValidation): Promise<void>;
   replacementFailureMayChangeState: boolean;
@@ -216,6 +217,9 @@ export async function commitPreparedFile(plan: FileCommitPlan, content: Uint8Arr
       }
       await source.truncate(content.byteLength);
       await source.sync(); receipt.fileSynced = true;
+      // Closing the writing handle may finalize OS attributes. The selected
+      // adapter restores supported attributes only after that handle closes.
+      if (plan.metadata.finalizeInPlace) { await source.close(); source = undefined; await plan.metadata.finalizeInPlace(); }
       receipt.outcome = "committed";
       publishedObject = plan.target;
     }

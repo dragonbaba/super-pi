@@ -122,6 +122,19 @@ test("N2 Windows control-only DACL drift is observed before any content effects"
   assert.equal(await readFile(f.target, "utf8"), f.before);
 });
 
+for (const hardlink of [false, true]) test(`N2 Windows normal attributes with archive cleared survive writing, hardlink=${hardlink}`, { skip: process.platform !== "win32" }, async t => {
+  const f = await fixture(t);
+  if (hardlink) await link(f.target, join(f.root, "attribute-alias"));
+  await execute(join(process.env.SystemRoot!, "System32/WindowsPowerShell/v1.0/powershell.exe"), ["-NoProfile", "-NonInteractive", "-Command", "$ErrorActionPreference='Stop';[IO.File]::SetAttributes($env:N2_FIXTURE,[IO.FileAttributes]::Normal)"], { windowsHide: true, env: { ...process.env, N2_FIXTURE: f.target } });
+  const plan = await planFor(f.target, f.before); assert.equal(plan.metadata.strategy, hardlink ? "protected_in_place" : "staged_replace");
+  const before = await nativeFileRequest("inspect", { path: f.target, expected: plan.target }); assert.equal(before.attributes, 0x80);
+  const result = await commitPreparedFile(plan, f.after, { assertPathAllowed: async () => plan.target.canonical });
+  assert.equal(result.outcome, "committed"); const target = await capturePathIdentity(f.target);
+  assert.equal(target.inode === plan.target.inode, hardlink); assert.deepEqual(await readFile(f.target), f.after);
+  if (hardlink) assert.deepEqual(await readFile(join(f.root, "attribute-alias")), f.after);
+  assert.equal((await nativeFileRequest("inspect", { path: f.target, expected: target })).attributes, 0x80);
+});
+
 test("N2 occupied Windows file returns verified no-change and never retries in place", { skip: process.platform !== "win32", timeout: 15000 }, async t => {
   const f = await fixture(t), plan = await planFor(f.target, f.before);
   const child = spawn(process.execPath, [fileURLToPath(new URL("./fixtures/native-file-occupancy.mjs", import.meta.url)), f.target], { windowsHide: true, stdio: ["ignore", "ignore", "pipe", "ipc"] });
@@ -137,6 +150,24 @@ test("N2 occupied Windows file returns verified no-change and never retries in p
     assert.equal((await capturePathIdentity(f.target)).inode, plan.target.inode);
   } finally { if (child.connected) child.send("release"); await exited; }
   assert.equal((await nativeFileRequest("stats")).activeHandles, 0);
+});
+
+test("N2 Windows failed attribute finalization cannot report unchanged after a real hardlink write", { skip: process.platform !== "win32" }, async t => {
+  const f = await fixture(t), alias = join(f.root, "attribute-failure-alias"); await link(f.target, alias);
+  await execute(join(process.env.SystemRoot!, "System32/WindowsPowerShell/v1.0/powershell.exe"), ["-NoProfile", "-NonInteractive", "-Command", "$ErrorActionPreference='Stop';[IO.File]::SetAttributes($env:N2_FIXTURE,[IO.FileAttributes]::Normal)"], { windowsHide: true, env: { ...process.env, N2_FIXTURE: f.target } });
+  const plan = await planFor(f.target, f.before), post = Worker.prototype.postMessage;
+  let attempts = 0;
+  t.mock.method(Worker.prototype, "postMessage", function(this: Worker, input: any) {
+    if (input.operation === "restore_attributes") { attempts++; input.path = join(f.root, "missing-finalization-target"); }
+    return post.call(this, input);
+  });
+  await assert.rejects(commitPreparedFile(plan, f.after, { assertPathAllowed: async () => plan.target.canonical }), (error: unknown) => {
+    assert.ok(error instanceof FileCommitError); assert.equal(error.receipt.outcome, "unknown"); assert.match(error.message, /CreateFileW.*Win32 2/); return true;
+  });
+  assert.equal(attempts, 1); assert.deepEqual(await readFile(f.target), f.after); assert.deepEqual(await readFile(alias), f.after);
+  const current = await capturePathIdentity(f.target); assert.equal(current.inode, plan.target.inode);
+  assert.equal((await nativeFileRequest("inspect", { path: f.target, expected: current })).attributes, 0x20);
+  assert.equal((await nativeFileRequest("stats")).activeHandles, 0); assert.equal(nativeFileDiagnostics().pending, 0);
 });
 
 test("N2 Linux xattrs select object-preserving compatibility; inspection errors never mean absence", { skip: process.platform !== "linux" }, async t => {
@@ -169,6 +200,23 @@ test("N2 Linux default parent ACL preselects compatibility for an ACL-free exist
   const actual = await lstat(f.target); assert.equal(actual.ino, original.ino); assert.equal(actual.mode, original.mode);
   const { stdout } = await execute("python3", ["-c", "import os,sys; assert not os.listxattr(sys.argv[2]); print(os.getxattr(sys.argv[1],'system.posix_acl_default').hex())", f.root, f.target]);
   assert.equal(stdout, acl); assert.deepEqual(await readFile(f.target), f.after);
+});
+
+test("N2 Linux mount identity is observed and a different target mount preselects preservation", { skip: process.platform !== "linux" }, async t => {
+  const f = await fixture(t), handle = await open(f.target, "r");
+  const observed = await nativeFileRequest("inspect", { fd: handle.fd });
+  const actual = /^mnt_id:\s+(\d+)$/m.exec(await readFile(`/proc/self/fdinfo/${handle.fd}`, "utf8"))![1];
+  assert.equal(observed.mountId, actual); await handle.close();
+  const emit = Worker.prototype.emit; let observations = 0;
+  t.mock.method(Worker.prototype, "emit", function(this: Worker, name: string, ...args: any[]) {
+    if (name === "message" && args[0]?.value?.mountId && ++observations === 1) args[0].value.mountId = String(BigInt(actual) + 1n);
+    return Reflect.apply(emit, this, [name, ...args]);
+  });
+  const plan = await planFor(f.target, f.before);
+  assert.equal(plan.metadata.strategy, "protected_in_place"); assert.match(plan.metadata.reason!, /different mount identities/);
+  assert.deepEqual(await readdir(f.root), ["测试.txt"]);
+  await commitPreparedFile(plan, f.after, { assertPathAllowed: async () => plan.target.canonical });
+  assert.equal((await capturePathIdentity(f.target)).inode, plan.target.inode); assert.deepEqual(await readFile(f.target), f.after);
 });
 
 test("N2 Linux value fingerprints frame names and lengths despite ambiguous decimal concatenations", { skip: process.platform !== "linux" }, async t => {
@@ -265,7 +313,7 @@ test("N2 final worker rejects staged metadata drift before replacement", { skip:
   plan.metadata.replace = async (path, target, validation) => {
     if (process.platform === "linux") await chmod(path, Number(original.mode) ^ 0o020);
     else await nativeFileRequest("protect", { path, expected: validation.temporary });
-    await publish(path, target, validation);
+    await publish.call(plan.metadata, path, target, validation);
   };
   await assert.rejects(commitPreparedFile(plan, f.after, { assertPathAllowed: async () => plan.target.canonical }), (error: unknown) => {
     assert.ok(error instanceof FileCommitError); assert.equal(error.receipt.outcome, "not_committed");
@@ -279,7 +327,7 @@ test("N2 candidate is private during writing and remains private after prepublic
   const f = await fixture(t), plan = await planFor(f.target, f.before), protect = plan.metadata.protectTemporary!;
   let checkedWrite = false;
   plan.metadata.protectTemporary = async (handle, path) => {
-    await protect(handle, path);
+    await protect.call(plan.metadata, handle, path);
     if (checkedWrite) return;
     const write = handle.writeFile.bind(handle);
     handle.writeFile = async (...args) => {
@@ -307,7 +355,7 @@ test("N2 missing installed platform binary leaves reads available and explicitly
   await mkdir(dependencies, { recursive: true });
   await cp(resolve("node_modules/koffi"), join(dependencies, "koffi"), { recursive: true });
   // No @koromix platform subpackage is copied; this exercises the real loader diagnostic.
-  for (const name of ["file-commit-metadata.ts", "native-file-client.ts", "native-file-worker.mjs"]) await cp(join(sourceDirectory, name), join(isolated, name));
+  for (const name of ["file-commit-metadata.ts", "native-file-client.ts", "native-file-worker.mjs", "native-file-regex.mjs"]) await cp(join(sourceDirectory, name), join(isolated, name));
   await writeFile(join(isolated, "package.json"), '{"type":"module"}');
   const module = await import(pathToFileURL(join(isolated, "file-commit-metadata.ts")).href);
   const client = await import(pathToFileURL(join(isolated, "native-file-client.ts")).href);

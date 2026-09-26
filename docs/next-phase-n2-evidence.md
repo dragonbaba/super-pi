@@ -330,3 +330,51 @@ ambiguous-value fixtures await Linux CI for this candidate. Fixed-head full loca
 gates, five-process costs, two-platform CI and re-review remain pending. Native
 inspection still occurs only in the fixed private worker, with handles/buffers
 held until completion; ordinary startup, deltas, progress and render do not load it.
+
+The preceding `98f2c580397994ba517a1adb5c532b4496133d8e` candidate completed
+all local gates/five-process costs and both Node 22.19 CI jobs in
+[run 36263238718](https://github.com/dragonbaba/super-pi/actions/runs/36263238718).
+That includes actual Linux ACL/xattr checks and source/installed/build/package
+delivery, not merely Windows helper tests. Subsequent review found archive-cleared
+Windows files and Linux file-mount capability selection; the next candidate fixes
+these and incorporates N1 `8ecd98981c231c12814488ee5847a17d27c46a5b`.
+
+Windows NORMAL/ARCHIVE attributes are copied to the completed candidate using
+[FILE_BASIC_INFO](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_basic_info).
+Real tests showed that [ReplaceFileW](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-replacefilew)
+and an in-place write can set ARCHIVE again. Supported attributes are therefore
+restored on an identity-checked published object after data handles close, then
+verified with bytes, owner/group/DACL and creation time. Flags remain zero; this
+is a multi-step metadata completion, not an atomic metadata transaction. A failed
+restoration after writing reports unknown/possibly partial and never retries.
+Real NORMAL-file tests cover replacement and both hardlink names; injected native
+finalization failure observes changed bytes, unchanged inode, remaining ARCHIVE,
+one restoration attempt and zero retained worker handles/pending calls.
+
+Linux inspection reads a bounded 4 KiB `/proc/self/fdinfo/<owned-fd>` record and
+requires its [mount identity](https://man7.org/linux/man-pages/man5/proc_pid_fdinfo.5.html).
+Different target/parent mount identities select object preservation before staging;
+missing/unreadable mount identity is an explicit capability failure. The regression
+cross-checks real fdinfo and injects the differing-mount observation, then verifies
+the actual in-place write/inode. It does not claim an actual writable bind-mount
+fixture or enable mount privileges. Linux execution awaits this candidate's CI.
+
+The user's regex/closure correction is applied across N2: the plain-ESM worker's
+fixed pattern is in `native-file-regex.mjs`; recovery patterns use `regex.ts`.
+Worker actions/token/descriptor helpers and dispatch are module functions with
+explicit arguments. A prepared metadata owner uses shared prototype methods,
+without captured per-check callbacks or retained open handles. The native client
+uses Node 22's deferred primitive; per-request Promises, resolver functions and
+payload allocation remain necessary and are not called zero-allocation. AST
+gates reject inline/nested callback definitions in all three adapter modules.
+The missing-binary isolation fixture now copies the worker's pattern dependency,
+so it still tests the actual Koffi missing-binary diagnostic. Windows focused
+validation: check passes; 83 tests, 73 pass, ten explicit platform skips. Final
+new-head full gates, costs, CI and actual review remain required.
+
+Review 4112386161 requests eliminating the final external-process pathname race.
+The user's approved scope explicitly says native replacement is not OS CAS,
+a cross-process lock or a cross-file transaction. Synchronous final identity/byte/
+metadata checks reduce the observation gap but do not exclude a concurrent writer
+between observation and the system call. This is an accepted documented limitation,
+not a claim of eliminated races; no lock/transaction architecture was added.

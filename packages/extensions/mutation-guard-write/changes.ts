@@ -8,7 +8,7 @@ import { capturePathIdentity, sameIdentity, type PathIdentity } from "./native-f
 import { boundBatchIntents, collectStructuredMutationReceipts, recentMutationEntries } from "./session-evidence.ts";
 import { batchExpandedSummary, PreviewBudget, displayMetadata } from "./change-preview.ts";
 import { mutationRequestHash } from "../resource-lifecycle-guard/permission-contract.ts";
-import { SHA256_PATTERN as SHA256, CHANGE_ID_CONTROL_PATTERN, OBSERVATION_UNSIGNED_INTEGER_PATTERN, OBSERVATION_SIGNED_INTEGER_PATTERN } from "./regex.ts";
+import { SHA256_PATTERN as SHA256, CHANGE_ID_CONTROL_PATTERN, OBSERVATION_UNSIGNED_INTEGER_PATTERN, OBSERVATION_SIGNED_INTEGER_PATTERN, RETAINED_COMMIT_NAME_PATTERN } from "./regex.ts";
 
 export const CHANGE_VERIFICATION_ENTRY = "file-change-verification-v1";
 const MAX_CHANGES = 128;
@@ -191,6 +191,12 @@ export function collectChanges(branch: readonly any[], cwd: string): ChangeRecor
         } else bound = resolveToolPath(cwd, input.path) === target;
       }
     }
+    if (bound && receipt.receiptVersion === 2 && call?.name !== "file_batch") {
+      const origin = uniqueProgress(executionEntries, call.id, "origin");
+      if (origin !== undefined) bound = origin !== null && origin.data.itemId === receipt.itemId && origin.data.target === target
+        && origin.data.operation === receipt.operation && origin.data.requestHash === mutationRequestHash(call.name, input)
+        && !hasEarlierTerminal(executionEntries, executionEntries.indexOf(origin), call.id, receipt.itemId, 0);
+    }
     if (bound && receipt.receiptVersion === 2 && conflictingTerminal(executionEntries, entry, receipt.toolCallId, receipt.itemId, index, receipt)) bound = false;
     records.push({ entryId: receipt.entryId, toolCallId: receipt.toolCallId, itemId: receipt.receiptVersion === 2 ? receipt.itemId : `${receipt.toolCallId}:0`,
       operation: receipt.operation, target, destination,
@@ -270,7 +276,7 @@ function retainedTemporary(record: ChangeRecord): string | undefined {
   const path = record.receipt?.commit?.retainedTemporary;
   if (path === undefined) return undefined;
   if (typeof path !== "string" || path.length > 4096 || !isAbsolute(path) || dirname(path) !== dirname(record.target)
-    || !/^\.pi-file-commit-\d+-[a-f0-9]{24}\.tmp$/u.test(basename(path))) throw new Error("Retained candidate path cannot be safely reconstructed.");
+    || !RETAINED_COMMIT_NAME_PATTERN.test(basename(path))) throw new Error("Retained candidate path cannot be safely reconstructed.");
   return path;
 }
 

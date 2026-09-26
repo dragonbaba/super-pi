@@ -4,6 +4,7 @@ import { existsSync, realpathSync, lstatSync, openSync, fstatSync, readSync, clo
 import { join, toNamespacedPath } from "node:path";
 import { createHash } from "node:crypto";
 import koffi from "koffi";
+import { LINUX_MOUNT_ID_PATTERN } from "./native-file-regex.mjs";
 
 const MAX_SECURITY_BYTES = 64 * 1024;
 const MAX_ATTRIBUTE_NAMES = 64 * 1024;
@@ -62,17 +63,18 @@ function winError(b, operation, outcome) {
   throw error;
 }
 
-function descriptorParts(bytes) {
-  if (bytes.length < 20 || !(bytes.readUInt16LE(2) & 0x8000)) throw new Error("Unsupported security descriptor layout.");
-  function part(field, acl) {
+function descriptorPart(bytes, field, acl) {
     const offset = bytes.readUInt32LE(field);
     if (!offset) return null;
     if (offset < 20 || offset + 8 > bytes.length) throw new Error("Invalid descriptor component.");
     const length = acl ? bytes.readUInt16LE(offset + 2) : 8 + bytes[offset + 1] * 4;
     if (length < 8 || offset + length > bytes.length) throw new Error("Descriptor component exceeds bound.");
     return bytes.subarray(offset, offset + length);
-  }
-  return { owner: part(4, false), group: part(8, false), dacl: part(16, true), protected: Boolean(bytes.readUInt16LE(2) & 0x1000) };
+}
+
+function descriptorParts(bytes) {
+  if (bytes.length < 20 || !(bytes.readUInt16LE(2) & 0x8000)) throw new Error("Unsupported security descriptor layout.");
+  return { owner: descriptorPart(bytes, 4, false), group: descriptorPart(bytes, 8, false), dacl: descriptorPart(bytes, 16, true), protected: Boolean(bytes.readUInt16LE(2) & 0x1000) };
 }
 
 function securityDescriptor(b, handle) {
@@ -104,21 +106,22 @@ function assignableWindowsOwner(b, descriptor) {
   let value, failure;
   try {
     const parts = descriptorParts(descriptor), needed = Buffer.alloc(4), info = Buffer.alloc(MAX_SECURITY_BYTES);
-    function tokenSid(kind) {
-      if (!b.tokenInfo(token, kind, info, info.length, needed)) winError(b, "GetTokenInformation");
-      if (needed.readUInt32LE() < 8 || needed.readUInt32LE() > info.length) throw new Error("Token SID exceeds supported bound.");
-      const pointer = info.readBigUInt64LE(), size = b.sidLength(pointer);
-      if (size < 8 || size > 68) throw new Error("Unsupported token SID size.");
-      const sid = Buffer.alloc(size);
-      if (!b.copySid(size, sid, pointer)) winError(b, "CopySid");
-      return sid;
-    }
-    value = Boolean(parts.owner?.equals(tokenSid(4)) && parts.group?.equals(tokenSid(5)));
+    value = Boolean(parts.owner?.equals(tokenSid(b, token, info, needed, 4)) && parts.group?.equals(tokenSid(b, token, info, needed, 5)));
   } catch (error) { failure = error; }
   if (b.close(token)) activeHandles--;
   else { const code = b.lastError(); if (failure) failure.message += `; secondary CloseHandle(token) failure ${code}`; else failure = new Error(`CloseHandle(token) failed (Win32 ${code}).`); }
   if (failure) throw failure;
   return value;
+}
+
+function tokenSid(b, token, info, needed, kind) {
+  if (!b.tokenInfo(token, kind, info, info.length, needed)) winError(b, "GetTokenInformation");
+  if (needed.readUInt32LE() < 8 || needed.readUInt32LE() > info.length) throw new Error("Token SID exceeds supported bound.");
+  const pointer = info.readBigUInt64LE(), size = b.sidLength(pointer);
+  if (size < 8 || size > 68) throw new Error("Unsupported token SID size.");
+  const sid = Buffer.alloc(size);
+  if (!b.copySid(size, sid, pointer)) winError(b, "CopySid");
+  return sid;
 }
 
 function windowsObject(b, handle, expected) {
@@ -136,7 +139,7 @@ function withWindowsHandle(b, input, access, action) {
   if (handle === 0xffffffffffffffffn || handle === -1n) winError(b, "CreateFileW(metadata)");
   activeHandles++;
   let value, failure;
-  try { windowsObject(b, handle, input.expected); value = action(handle); }
+  try { windowsObject(b, handle, input.expected); value = action(b, input, handle); }
   catch (error) { failure = error; }
   const closed = b.close(handle);
   if (closed) activeHandles--;
@@ -162,26 +165,39 @@ function windowsFilesystem(b, path) {
 function inspectWindows(b, input) {
   // A CRT descriptor belongs to its CRT instance. Open a Win32-owned handle;
   // never pass Node's descriptor to another CRT's _get_osfhandle.
-  return withWindowsHandle(b, input, 0x00020080, handle => { // READ_CONTROL | FILE_READ_ATTRIBUTES
+  return withWindowsHandle(b, input, 0x00020080, inspectWindowsHandle); // READ_CONTROL | FILE_READ_ATTRIBUTES
+}
+function inspectWindowsHandle(b, input, handle) {
     const object = windowsObject(b, handle, input.expected), security = securityDescriptor(b, handle);
     return { ...object, security: security.toString("base64"), securityFingerprint: securityFingerprint(security), filesystem: windowsFilesystem(b, input.path),
       ownerAssignable: input.capability ? assignableWindowsOwner(b, security) : undefined };
-  });
 }
 
 function prepareWindows(b, input) {
-  return withWindowsHandle(b, input, 0x000e0000, handle => { // READ_CONTROL | WRITE_DAC | WRITE_OWNER
+  return withWindowsHandle(b, input, 0x000e0100, prepareWindowsHandle); // READ_CONTROL | WRITE_DAC | WRITE_OWNER | FILE_WRITE_ATTRIBUTES
+}
+function prepareWindowsHandle(b, input, handle) {
     if (typeof input.security !== "string" || input.security.length > MAX_SECURITY_BYTES * 2) throw new Error("Metadata payload exceeds bound.");
     const security = Buffer.from(input.security, "base64"), parts = descriptorParts(security);
     const flags = (7 | (parts.protected ? 0x80000000 : 0x20000000)) >>> 0;
     const code = b.setSecurity(handle, 1, flags, parts.owner, parts.group, parts.dacl, null);
     if (code) { const error = new Error(`SetSecurityInfo failed (Win32 ${code}).`); error.nativeCode = code; throw error; }
     if (securityFingerprint(securityDescriptor(b, handle)) !== securityFingerprint(security)) throw new Error("Temporary owner/group/DACL verification failed.");
-  });
+    setWindowsAttributes(b, input, handle);
+}
+function setWindowsAttributes(b, input, handle) {
+    if (input.attributes !== 0x20 && input.attributes !== 0x80) throw new Error("Unsupported replacement attributes.");
+    // FILE_BASIC_INFO x64: four 64-bit timestamps (zero = unchanged), DWORD
+    // attributes at byte 32, eight-byte struct alignment. Set after all writes.
+    const basic = Buffer.alloc(40); basic.writeUInt32LE(input.attributes, 32);
+    if (!b.setFileInfo(handle, 0, basic, basic.length)) winError(b, "SetFileInformationByHandle(attributes)");
+    if (windowsObject(b, handle, input.expected).attributes !== input.attributes) throw new Error("Temporary attributes verification failed.");
 }
 
 function protectWindows(b, input) {
-  return withWindowsHandle(b, input, 0x00060000, handle => { // READ_CONTROL | WRITE_DAC
+  return withWindowsHandle(b, input, 0x00060000, protectWindowsHandle); // READ_CONTROL | WRITE_DAC
+}
+function protectWindowsHandle(b, input, handle) {
     const owner = descriptorParts(securityDescriptor(b, handle)).owner;
     if (!owner) throw new Error("Cannot establish temporary owner for private DACL.");
     // ACL_REVISION, one ACCESS_ALLOWED_ACE for the new file's owner only.
@@ -192,7 +208,6 @@ function protectWindows(b, input) {
     if (code) throw new Error(`SetSecurityInfo(private temporary) failed (Win32 ${code}).`);
     const actual = descriptorParts(securityDescriptor(b, handle));
     if (!actual.protected || !actual.dacl?.equals(acl)) throw new Error("Private temporary DACL verification failed.");
-  });
 }
 
 function inspectLinux(b, input) {
@@ -218,7 +233,20 @@ function inspectLinux(b, input) {
     frame.writeUInt32LE(end - start, 0); frame.writeUInt32LE(size, 4);
     values.update(frame); values.update(names.subarray(start, end)); values.update(value); start = end + 1;
   }
-  return { hasAttributes: length !== 0, writeClearsAttributes, defaultAcl, namesFingerprint: createHash("sha256").update(names.subarray(0, length)).digest("hex"), valuesFingerprint: values.digest("hex") };
+  return { hasAttributes: length !== 0, writeClearsAttributes, defaultAcl, mountId: linuxMountId(input.fd), namesFingerprint: createHash("sha256").update(names.subarray(0, length)).digest("hex"), valuesFingerprint: values.digest("hex") };
+}
+
+function linuxMountId(fd) {
+  if (!Number.isSafeInteger(fd) || fd < 0) throw new Error("Invalid owned metadata descriptor.");
+  const info = openSync(`/proc/self/fdinfo/${fd}`, "r"), bytes = Buffer.alloc(4097);
+  try {
+    let length = 0;
+    while (length < bytes.length) { const count = readSync(info, bytes, length, bytes.length - length, null); if (!count) break; length += count; }
+    if (length > 4096) throw new Error("Owned descriptor information exceeds 4 KiB.");
+    const match = LINUX_MOUNT_ID_PATTERN.exec(bytes.toString("utf8", 0, length));
+    if (!match) throw new Error("[UNSUPPORTED_COMMIT] Mount identity is unavailable; it is not assumed equal to the parent mount.");
+    return match[1];
+  } finally { closeSync(info); }
 }
 
 function verifyPath(expected, metadata) {
@@ -252,7 +280,7 @@ function verifyBytes(b, input, path, expected, size, hash, staged) {
     } else {
       const current = inspectWindows(b, { path, expected });
       if (current.securityFingerprint !== input.original.securityFingerprint || current.links !== 1
-        || (staged ? current.attributes & ~(0x20 | 0x80) : current.attributes !== input.original.attributes || current.creationTime !== input.original.creationTime)) throw new Error("[STALE_STATE] Publication Windows metadata changed.");
+        || current.attributes !== input.original.attributes || (!staged && current.creationTime !== input.original.creationTime)) throw new Error("[STALE_STATE] Publication Windows metadata changed.");
     }
   } finally { closeSync(fd); }
 }
@@ -272,6 +300,10 @@ function replaceVerified(b, input) {
   publicationAttempts++;
   if (process.platform === "win32") {
     if (!b.replace(toNamespacedPath(input.target), toNamespacedPath(input.temporary), null, 0, null, null)) winError(b, "ReplaceFileW", true);
+    // ReplaceFileW may set ARCHIVE even when the prepared candidate was NORMAL.
+    // Restore only on the verified published object. Failure after publication
+    // remains unknown/possibly partial; it never triggers an in-place retry.
+    withWindowsHandle(b, { path: input.target, expected: input.validation.temporary, attributes: input.original.attributes }, 0x180, setWindowsAttributes);
   } else {
     try { renameSync(input.temporary, input.target); }
     catch (error) { error.commitOutcome = "not_committed"; throw error; }
@@ -307,22 +339,24 @@ function execute(input) {
   if (input.operation === "inspect") return process.platform === "win32" ? inspectWindows(b, input) : inspectLinux(b, input);
   if (process.platform === "win32" && input.operation === "protect") return protectWindows(b, input);
   if (process.platform === "win32" && input.operation === "prepare") return prepareWindows(b, input);
-  if (process.platform === "win32" && input.operation === "remove") {
-    return withWindowsHandle(b, input, 0x00010080, handle => { // DELETE | FILE_READ_ATTRIBUTES
-      const information = Buffer.alloc(4); information.writeUInt32LE(1);
-      // FileDispositionInfo marks this verified handle, never a subsequently swapped pathname.
-      if (!b.setFileInfo(handle, 4, information, 4)) winError(b, "SetFileInformationByHandle(disposition)");
-      return { removed: true };
-    });
-  }
+  if (process.platform === "win32" && input.operation === "restore_attributes") return withWindowsHandle(b, input, 0x180, setWindowsAttributes);
+  if (process.platform === "win32" && input.operation === "remove") return withWindowsHandle(b, input, 0x00010080, removeWindowsHandle);
   if (input.operation === "replace") return replaceVerified(b, input);
   if (input.operation === "verify_in_place") return verifyInPlace(input);
   if (input.operation === "stats") return { calls, activeHandles, publicationAttempts, platform: process.platform, arch: process.arch };
   throw new Error("Unsupported private native file operation.");
 }
 
-parentPort.on("message", input => {
+function removeWindowsHandle(b, _input, handle) {
+  const information = Buffer.alloc(4); information.writeUInt32LE(1);
+  // FileDispositionInfo marks this verified handle, never a subsequently swapped pathname.
+  if (!b.setFileInfo(handle, 4, information, 4)) winError(b, "SetFileInformationByHandle(disposition)");
+  return { removed: true };
+}
+
+function onMessage(input) {
   const started = performance.now();
   try { parentPort.postMessage({ id: input.id, value: execute(input), milliseconds: performance.now() - started }); }
   catch (error) { parentPort.postMessage({ id: input.id, error: { message: String(error.message).slice(0, 1000), nativeCode: error.nativeCode, commitOutcome: error.commitOutcome, nativeUnavailable: error.nativeUnavailable }, milliseconds: performance.now() - started }); }
-});
+}
+parentPort.on("message", onMessage);

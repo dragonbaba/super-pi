@@ -2,6 +2,9 @@ import { Worker } from "node:worker_threads";
 
 interface Reply { id: number; value?: any; error?: { message: string; nativeCode?: number; commitOutcome?: string; nativeUnavailable?: boolean }; milliseconds: number }
 interface Pending { resolve(value: any): void; reject(error: Error): void }
+// Runtime minimum is Node 22.19; keep the repository's older TypeScript lib
+// target while using its native deferred without a request-capturing executor.
+const NATIVE_PROMISE = Promise as PromiseConstructor & { withResolvers(): Pending & { promise: Promise<any> } };
 interface NativeOwner {
   worker?: Worker; sequence: number; loadFailure?: Error; releasing: boolean; workerCalls: number; workerStarts: number;
   pending: Map<number, Pending>;
@@ -41,7 +44,7 @@ function exited(code: number): void {
 }
 
 /** Only internal file commit callers use this fixed protocol. No tool exposes native symbols or pointers. */
-export async function nativeFileRequest(operation: "inspect" | "protect" | "prepare" | "replace" | "verify_in_place" | "remove" | "stats", input: Record<string, unknown> = {}): Promise<any> {
+export async function nativeFileRequest(operation: "inspect" | "protect" | "prepare" | "replace" | "verify_in_place" | "restore_attributes" | "remove" | "stats", input: Record<string, unknown> = {}): Promise<any> {
   if (owner.loadFailure) throw owner.loadFailure;
   if (owner.releasing) throw new Error("Native file worker release is in progress; no operation was submitted.");
   if (pending.size >= 16) throw new Error("Native file operation queue is full; no operation was submitted.");
@@ -52,12 +55,12 @@ export async function nativeFileRequest(operation: "inspect" | "protect" | "prep
     owner.worker.unref();
   }
   const id = ++owner.sequence;
-  return new Promise((resolve, reject) => {
-    pending.set(id, { resolve, reject }); owner.worker!.ref();
-    timings.pendingHighWaterMark = Math.max(timings.pendingHighWaterMark, pending.size);
-    try { owner.worker!.postMessage({ ...input, id, operation }); }
-    catch (error) { pending.delete(id); if (!pending.size) owner.worker!.unref(); reject(error); }
-  });
+  const completion = NATIVE_PROMISE.withResolvers();
+  pending.set(id, completion); owner.worker.ref();
+  timings.pendingHighWaterMark = Math.max(timings.pendingHighWaterMark, pending.size);
+  try { owner.worker.postMessage({ ...input, id, operation }); }
+  catch (error) { pending.delete(id); if (!pending.size) owner.worker.unref(); completion.reject(error instanceof Error ? error : new Error(String(error))); }
+  return completion.promise;
 }
 
 export function nativeFileDiagnostics() { return { loaded: owner.worker !== undefined, pending: pending.size, failed: owner.loadFailure !== undefined, releasing: owner.releasing, workerStarts: owner.workerStarts, ...timings }; }
