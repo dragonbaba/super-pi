@@ -90,6 +90,23 @@ test("N2 Windows denied content-write ACL refuses before creating any candidate"
   }
 });
 
+test("N2 Windows denied candidate GENERIC_WRITE rights preselect before staging", { skip: process.platform !== "win32" }, async t => {
+  const f = await fixture(t), powershell = join(process.env.SystemRoot!, "System32/WindowsPowerShell/v1.0/powershell.exe");
+  const setup = "$ErrorActionPreference='Stop';$a=[IO.File]::GetAccessControl($env:N2_FIXTURE);$u=[Security.Principal.WindowsIdentity]::GetCurrent().User;$r=New-Object Security.AccessControl.FileSystemAccessRule($u,[Security.AccessControl.FileSystemRights]::AppendData,[Security.AccessControl.AccessControlType]::Deny);";
+  const options = { windowsHide: true, env: { ...process.env, N2_FIXTURE: f.target } };
+  await execute(powershell, ["-NoProfile", "-NonInteractive", "-Command", setup + "$a.AddAccessRule($r);[IO.File]::SetAccessControl($env:N2_FIXTURE,$a)"], options);
+  try {
+    const plan = await planFor(f.target, f.before);
+    assert.equal(plan.metadata.strategy, "protected_in_place"); assert.ok(plan.metadata.reason?.includes("replacement access is denied"));
+    // Node's r+ also requests GENERIC_WRITE. Refuse that actual capability;
+    // neither the native probe nor commit may grant FILE_APPEND_DATA.
+    await assert.rejects(commitPreparedFile(plan, f.after, { assertPathAllowed: async () => plan.target.canonical }), (error: any) => error instanceof FileCommitError && error.receipt.outcome === "not_committed");
+    assert.deepEqual(await readdir(f.root), ["测试.txt"]); assert.equal(await readFile(f.target, "utf8"), f.before);
+    assert.equal((await capturePathIdentity(f.target)).inode, plan.target.inode);
+    const stats = await nativeFileRequest("stats"); assert.equal(stats.publicationAttempts, 0); assert.equal(stats.activeHandles, 0);
+  } finally { await execute(powershell, ["-NoProfile", "-NonInteractive", "-Command", setup + "$a.RemoveAccessRuleSpecific($r);[IO.File]::SetAccessControl($env:N2_FIXTURE,$a)"], options); }
+});
+
 test("N2 Windows denied replacement rights preselect object preservation before staging", { skip: process.platform !== "win32" }, async t => {
   const f = await fixture(t), initial = await capturePathIdentity(f.target);
   const powershell = join(process.env.SystemRoot!, "System32/WindowsPowerShell/v1.0/powershell.exe");
@@ -243,15 +260,43 @@ test("N2 Windows failed attribute finalization cannot report unchanged after a r
   assert.equal((await nativeFileRequest("stats")).activeHandles, 0); assert.equal(nativeFileDiagnostics().pending, 0);
 });
 
-test("N2 Linux xattrs select object-preserving compatibility; inspection errors never mean absence", { skip: process.platform !== "linux" }, async t => {
+for (const nonUtf8 of [false, true]) test(`N2 Linux xattrs preserve actual name/value bytes, nonUtf8=${nonUtf8}`, { skip: process.platform !== "linux" }, async t => {
   const f = await fixture(t);
-  await execute("python3", ["-c", "import os,sys; os.setxattr(sys.argv[1], 'user.n2', b'keep')", f.target]);
+  const name = nonUtf8 ? "b'user.\\xff'" : "b'user.n2'";
+  await execute("python3", ["-c", `import os,sys; os.setxattr(sys.argv[1], ${name}, b'keep')`, f.target]);
   const plan = await planFor(f.target, f.before);
   assert.equal(plan.metadata.strategy, "protected_in_place"); assert.match(plan.metadata.reason!, /extended attributes/);
   await commitPreparedFile(plan, f.after, { assertPathAllowed: async () => plan.target.canonical });
-  const { stdout } = await execute("python3", ["-c", "import os,sys; print(os.getxattr(sys.argv[1], 'user.n2').decode())", f.target]);
+  const { stdout } = await execute("python3", ["-c", `import os,sys; assert ${name} in [os.fsencode(n) for n in os.listxattr(sys.argv[1])]; print(os.getxattr(sys.argv[1], ${name}).decode())`, f.target]);
   assert.equal(stdout.trim(), "keep"); assert.deepEqual(await readFile(f.target), f.after);
   await assert.rejects(nativeFileRequest("inspect", { fd: -1 }), /flistxattr failed.*errno 9/);
+});
+
+test("N2 Windows candidate is private at CREATE_NEW, before any later protection operation", { skip: process.platform !== "win32" }, async t => {
+  const f = await fixture(t), path = join(f.root, ".pi-file-commit-123-0123456789abcdef01234567.tmp");
+  const shell = join(process.env.SystemRoot!, "System32/WindowsPowerShell/v1.0/powershell.exe");
+  await execute(shell, ["-NoProfile", "-NonInteractive", "-Command", "$ErrorActionPreference='Stop';$a=[IO.Directory]::GetAccessControl($env:N2_FIXTURE);$sid=New-Object Security.Principal.SecurityIdentifier('S-1-1-0');$r=New-Object Security.AccessControl.FileSystemAccessRule($sid,'FullControl','ContainerInherit,ObjectInherit','None','Allow');$a.AddAccessRule($r);[IO.Directory]::SetAccessControl($env:N2_FIXTURE,$a)"], { windowsHide: true, env: { ...process.env, N2_FIXTURE: f.root } });
+  const created = await nativeFileRequest("create_private", { path }); assert.equal(created.created, true); assert.equal(created.failure, undefined);
+  const observed = await nativeFileRequest("inspect", { path, expected: created });
+  const descriptor = Buffer.from(observed.security, "base64"), acl = descriptor.readUInt32LE(16);
+  assert.ok(descriptor.readUInt16LE(2) & 0x1000); assert.equal(descriptor.readUInt16LE(acl + 4), 1);
+  assert.equal((await lstat(path)).size, 0);
+  await writeFile(path, "owned candidate");
+  await assert.rejects(nativeFileRequest("create_private", { path }), (error: any) => error.nativeCode === 80 || error.nativeCode === 183);
+  assert.equal(await readFile(path, "utf8"), "owned candidate"); assert.equal((await capturePathIdentity(path)).inode, created.inode);
+  assert.equal((await nativeFileRequest("stats")).activeHandles, 0); assert.equal(nativeFileDiagnostics().pending, 0);
+});
+
+test("N2 Windows lost creation response reports the possible candidate without deleting it", { skip: process.platform !== "win32" }, async t => {
+  const f = await fixture(t), plan = await planFor(f.target, f.before), create = plan.metadata.createTemporary!;
+  let path: string | undefined;
+  plan.metadata.createTemporary = async candidate => { path = candidate; await create(candidate); throw new Error("fixture lost creation response"); };
+  await assert.rejects(commitPreparedFile(plan, f.after, { assertPathAllowed: async () => plan.target.canonical }), (error: unknown) => {
+    assert.ok(error instanceof FileCommitError); assert.equal(error.receipt.outcome, "not_committed");
+    assert.equal(error.receipt.retainedTemporary, path); assert.ok(error.receipt.cleanupReason?.includes("may have completed")); return true;
+  });
+  assert.equal(await readFile(f.target, "utf8"), f.before); assert.equal((await lstat(path!)).size, 0);
+  assert.equal((await nativeFileRequest("stats")).activeHandles, 0); assert.equal(nativeFileDiagnostics().pending, 0);
 });
 
 test("N2 Linux refuses special bits even on hardlinks before any content effects", { skip: process.platform !== "linux" }, async t => {

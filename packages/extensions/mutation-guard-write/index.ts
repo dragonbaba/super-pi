@@ -29,6 +29,7 @@ import { consumePermissionPathApproval, mutationRequestHash } from "../resource-
 import { registerNativeTools, MUTATION_PROGRESS_ENTRY, renderFileMutationResult } from "./native-tools.ts";
 import { registerFileBatch } from "./file-batch.ts";
 import { FileCommitError, commitFailure, commitSummary, type FileCommitReceipt } from "./file-commit.ts";
+import { canonicalCreationDirectories } from "./file-creation.ts";
 
 interface ToolResultEventShape {
   toolName: string;
@@ -493,7 +494,13 @@ export default function mutationGuardWriteExtension(pi: ExtensionAPI): void {
           }
           const message = error instanceof Error ? error.message : String(error);
           if (!message.includes("[SNAPSHOT_EDIT_PARTIAL]")) guard.releaseMutation(reservationId);
-          else await guard.invalidate(ctx.cwd, snapshotInput.path);
+          else {
+            await guard.invalidate(ctx.cwd, snapshotInput.path);
+            const details = { mutationReceiptVersion: 2, operation: "edit", target: canonicalTarget, status: "partial", stateChanged: true,
+              requiresVerification: true, cause: message.slice(0, 800) };
+            try { pi.appendEntry(MUTATION_PROGRESS_ENTRY, { ...details, toolCallId, itemId: `${toolCallId}:0`, phase: "result" }); } catch { /* The aggregate retains the known effect. */ }
+            return { content: [{ type: "text" as const, text: details.cause }], details, isError: true };
+          }
           throw error;
         }
       },
@@ -532,7 +539,7 @@ export default function mutationGuardWriteExtension(pi: ExtensionAPI): void {
           absolutePath,
           async () => {
             if (!progress && pathApproval) pi.appendEntry(MUTATION_PROGRESS_ENTRY, { phase: "origin", toolCallId, itemId: `${toolCallId}:0`, operation: "write", target: receiptTarget, requestHash: mutationRequestHash("write", input) });
-            if (progress) pi.appendEntry(MUTATION_PROGRESS_ENTRY, { toolCallId, itemId: `${toolCallId}:0`, phase: "intent", operation: "write", target: receiptTarget, requestHash: mutationRequestHash("write", input), directories: pathApproval!.creationPlan!.directories });
+            if (progress) pi.appendEntry(MUTATION_PROGRESS_ENTRY, { toolCallId, itemId: `${toolCallId}:0`, phase: "intent", operation: "write", target: receiptTarget, requestHash: mutationRequestHash("write", input), directories: canonicalCreationDirectories(pathApproval!.creationPlan!) });
             return guard.write(ctx.cwd, path, content, turnGeneration, signal, pathApproval);
           },
         );

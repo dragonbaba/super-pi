@@ -5,6 +5,8 @@ import fsPromises, { open } from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { Worker } from "node:worker_threads";
+import { protectWindowsFixture } from "./helpers/native-metadata-fixture.ts";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { createJiti } from "jiti";
@@ -571,6 +573,72 @@ test("N1 committed exact edit cancellation retains a verifiable terminal receipt
   assert.equal((await verifyChange(records[0], async () => {})).postimageMatches, true);
 });
 
+test("N1 later changed-target, destination or operation terminals make earlier outcomes unavailable", async t => {
+  const f = await fixture(t), path = join(f.cwd, "conflict"); writeFileSync(path, "old");
+  f.onRecord(data => { if (data.phase === "intent") writeFileSync(path, "external"); });
+  await f.call("delete", { path }, "later-conflict");
+  const genuine = JSON.parse(JSON.stringify(f.session.getBranch()));
+  assert.equal(collectChanges(genuine, f.cwd)[0].status, "failed_no_change");
+  for (const field of ["target", "destination", "operation"]) {
+    const branch = JSON.parse(JSON.stringify(genuine));
+    const terminal = branch.find((entry: any) => entry.data?.phase === "result");
+    const later = structuredClone(terminal); later.id = "later-invalid-mirror";
+    later.data[field] = field === "operation" ? "write" : join(f.cwd, "other"); branch.push(later);
+    const records = collectChanges(branch, f.cwd); assert.equal(records.length, 1); assert.ok(records[0].unavailable, field);
+    assert.throws(() => remainingDraft(records, new Set()), /missing|ambiguous/);
+  }
+});
+
+for (const batch of [false, true]) test(`N1 intent-only creation observes every bounded planned parent, batch=${batch}`, async t => {
+  const f = await fixture(t), path = join(f.cwd, "intent/parents/file");
+  await f.call(batch ? "file_batch" : "write", batch ? { operations: [{ operation: "write", mode: "create", path, content: "written" }] } : { path, content: "written" }, "intent-only");
+  const branch = f.session.getBranch().filter((entry: any) => entry.data?.phase !== "result" && entry.message?.role !== "toolResult");
+  const records = collectChanges(branch, f.cwd); assert.equal(records.length, 1); assert.equal(records[0].status, "state_unknown");
+  const observation = await verifyChange(records[0], async () => {});
+  assert.equal(observation.parents.length, 2); assert.ok(observation.parents.every((parent: any) => parent.exists && parent.identity.directory));
+});
+
+test("N1/N2 standalone snapshot post-publication readback failure retains a partial terminal", async t => {
+  const f = await fixture(t), path = join(realpathSync.native(f.cwd), "snapshot-partial"); writeFileSync(path, "one\ntwo\n");
+  const read = await f.call("read", { path }, "snapshot-partial-read");
+  const body = read.content.filter(block => block.type === "text").map(block => block.text).join("\n");
+  const snapshot = /snapshot=([A-Za-z0-9_-]+)/.exec(body)![1], anchor = /^2#[A-Fa-f0-9]+/m.exec(body)![0];
+  const probe = await open(path, "r"), prototype = Object.getPrototypeOf(probe); await probe.close();
+  const original = prototype.read; let replaced = false;
+  t.mock.method(prototype, "read", async function(this: any, ...args: any[]) {
+    if (!replaced && readFileSync(path, "utf8") === "one\nTWO\n") {
+      replaced = true; throw new Error("fixture readback failure after actual publication");
+    }
+    return original.apply(this, args);
+  });
+  try {
+    const result = await f.call("edit", { path, snapshot, edits: [{ kind: "replace", start: anchor, newLines: ["TWO"] }] }, "snapshot-partial");
+    assert.equal(replaced, true); assert.equal(result.isError, true); assert.equal((result.details as any).status, "partial");
+    const records = collectChanges(f.session.getBranch(), f.cwd); assert.equal(records.length, 1); assert.equal(records[0].unavailable, undefined);
+    await verifyChange(records[0], async () => {}); assert.equal(readFileSync(path, "utf8"), "one\nTWO\n");
+  } finally { t.mock.restoreAll(); }
+});
+
+test("N1 exact remaining drafts preserve occurrence hints as non-evidence", async t => {
+  const f = await fixture(t); writeFileSync(join(f.cwd, "repeated"), "same\nsame\n");
+  await f.call("read", { path: "repeated" }, "repeated-read");
+  f.onRecord(data => { if (data.phase === "intent") writeFileSync(join(f.cwd, "repeated"), "external\nsame\n"); });
+  const result = await f.call("file_batch", { operations: [{ operation: "edit", path: "repeated", edits: [{ oldText: "same", newText: "changed", expectedLine: 2 }] }] }, "occurrence");
+  assert.equal(result.isError, true);
+  const draft = remainingDraft(collectChanges(f.session.getBranch(), f.cwd), new Set());
+  assert.match(draft, /"originalLineHint":\s*2/); assert.match(draft, /line hints are not evidence/); assert.doesNotMatch(draft, /"expectedLine"/);
+});
+
+test("N1 POSIX newline paths keep real write and edit receipts reconstructable", { skip: process.platform === "win32" }, async t => {
+  const f = await fixture(t), path = "multi\nline\rfile";
+  assert.equal((await f.call("write", { path, content: "before" }, "newline-write")).isError, false);
+  await f.call("read", { path }, "newline-read");
+  assert.equal((await f.call("edit", { path, edits: [{ oldText: "before", newText: "after" }] }, "newline-edit")).isError, false);
+  const records = collectChanges(f.session.getBranch(), f.cwd); assert.equal(records.length, 2);
+  for (const record of records) assert.equal(record.unavailable, undefined);
+  assert.equal((await verifyChange(records[1], async () => {})).postimageMatches, true);
+});
+
 test("N1 partial batch creation binds created-directory metadata across the result mirror", async t => {
   const f = await fixture(t), target = join(realpathSync.native(f.cwd), "mirror-parent/child/file");
   const probe = await open(join(f.cwd, "probe"), "w"), prototype = Object.getPrototypeOf(probe); await probe.close();
@@ -598,6 +666,35 @@ test("N1 partial batch creation binds created-directory metadata across the resu
     await assert.rejects(verifyChange(invalid[0], async () => { assert.fail("unbound side effects cannot authorize verification"); }), /cannot authorize/);
     assert.throws(() => remainingDraft(invalid, new Set([invalid[0].itemId])), /missing|ambiguous/);
   }
+});
+
+test("N2 mirrored terminals bind commit outcome, strategy and retained candidate", async t => {
+  const f = await fixture(t), target = join(realpathSync.native(f.cwd), "commit-mirror"); writeFileSync(target, "before");
+  await protectWindowsFixture(target); await f.call("read", { path: target }, "commit-mirror-read");
+  const probe = await open(target, "r"), prototype = Object.getPrototypeOf(probe); await probe.close();
+  const post = Worker.prototype.postMessage; let failed = false;
+  t.mock.method(prototype, "sync", async function() { failed = true; throw new Error("fixture staging sync failure"); });
+  t.mock.method(Worker.prototype, "postMessage", function(this: Worker, input: any) {
+    if (input.operation === "remove") input.expected = { ...input.expected, inode: "0" };
+    return post.call(this, input);
+  });
+  const result = await f.call("file_batch", { operations: [{ operation: "write", mode: "overwrite", path: target, content: "after" }] }, "commit-mirror");
+  t.mock.restoreAll(); assert.equal(failed, true); assert.equal(result.isError, true);
+  const genuine = JSON.parse(JSON.stringify(f.session.getBranch())), record = collectChanges(genuine, f.cwd)[0];
+  assert.equal(record.unavailable, undefined); assert.ok(record.receipt.commit.retainedTemporary);
+  assert.equal(readFileSync(record.receipt.commit.retainedTemporary, "utf8"), "after");
+  await verifyChange(record, async () => {});
+  for (const field of ["retainedTemporary", "outcome", "strategy", "cleanupReason", "omit"]) {
+    const branch = JSON.parse(JSON.stringify(genuine));
+    const receipt = branch.find((entry: any) => entry.message?.toolCallId === "commit-mirror" && entry.message?.role === "toolResult").message.details.items[0].receipt;
+    if (field === "omit") delete receipt.commit;
+    else receipt.commit[field] = field === "retainedTemporary" ? join(dirname(target), ".pi-file-commit-123-0123456789abcdef01234567.tmp")
+      : field === "outcome" ? "unknown" : field === "strategy" ? "protected_in_place" : "different cleanup";
+    const invalid = collectChanges(branch, f.cwd); assert.ok(invalid[0].unavailable, field);
+    await assert.rejects(verifyChange(invalid[0], async () => { assert.fail("unbound commit cannot authorize verification"); }));
+    assert.throws(() => remainingDraft(invalid, new Set([invalid[0].itemId])));
+  }
+  assert.equal(readFileSync(target, "utf8"), "before");
 });
 
 test("N1 metadata-only verification rejects replacement during the final permission await", async t => {

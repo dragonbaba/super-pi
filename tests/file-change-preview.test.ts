@@ -153,6 +153,8 @@ test("N1 metadata fields cannot introduce new headings or bidi controls into exp
     receipt: { createdDirectories: [{ path: unsafe, status: unsafe }] } }], [unsafe]);
   assert.doesNotMatch(summary, /\nfake:|\u202e|\u001b/); assert.ok(summary.includes(displayMetadata(unsafe)));
   assert.match(summary, /\\nfake: succeeded\\u202e/);
+  const preview = batchExpandedSummary("preview", [{ itemId: "preview", operation: "write", status: "preview", target: "target", preview: { kind: "Added", risk: unsafe, omitted: unsafe } }]);
+  assert.doesNotMatch(preview, /\nfake:|\u202e|\u001b/); assert.ok(preview.includes(displayMetadata(unsafe)));
 });
 
 test("N1 imported counts and oversized directory arrays stay bounded single-line metadata", () => {
