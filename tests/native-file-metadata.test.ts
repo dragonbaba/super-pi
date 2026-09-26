@@ -71,6 +71,52 @@ test("N2 read-only metadata is refused before staging without permission overrid
   finally { await chmod(f.target, 0o600); }
 });
 
+test("N2 Windows denied content-write ACL refuses before creating any candidate", { skip: process.platform !== "win32" }, async t => {
+  const f = await fixture(t), identity = await capturePathIdentity(f.target);
+  const powershell = join(process.env.SystemRoot!, "System32/WindowsPowerShell/v1.0/powershell.exe");
+  const rule = "$r=New-Object Security.AccessControl.FileSystemAccessRule([Security.Principal.WindowsIdentity]::GetCurrent().User,[Security.AccessControl.FileSystemRights]::WriteData,[Security.AccessControl.AccessControlType]::Deny);";
+  const start = "$ErrorActionPreference='Stop';$a=[IO.File]::GetAccessControl($env:N2_FIXTURE);" + rule;
+  const options = { windowsHide: true, env: { ...process.env, N2_FIXTURE: f.target } };
+  await execute(powershell, ["-NoProfile", "-NonInteractive", "-Command", start + "$a.AddAccessRule($r);[IO.File]::SetAccessControl($env:N2_FIXTURE,$a)"], options);
+  try {
+    await assert.rejects(open(f.target, "r+"), /EACCES|EPERM/, "the original direct-write access is actually denied");
+    await assert.rejects(planFor(f.target, f.before), /CreateFileW.*Win32 5/);
+    assert.equal(await readFile(f.target, "utf8"), f.before);
+    assert.equal((await capturePathIdentity(f.target)).inode, identity.inode);
+    assert.deepEqual(await readdir(f.root), ["测试.txt"]);
+    assert.equal((await nativeFileRequest("stats")).activeHandles, 0);
+  } finally {
+    await execute(powershell, ["-NoProfile", "-NonInteractive", "-Command", start + "$a.RemoveAccessRuleSpecific($r);[IO.File]::SetAccessControl($env:N2_FIXTURE,$a)"], options);
+  }
+});
+
+test("N2 Windows post-publication native failure reports committed bytes and no retained candidate", { skip: process.platform !== "win32" }, async t => {
+  const f = await fixture(t), isolated = join(f.root, "post-publication-adapter");
+  await mkdir(isolated);
+  for (const name of ["file-commit-metadata.ts", "native-file-client.ts", "native-file-regex.mjs"]) await cp(join(sourceDirectory, name), join(isolated, name));
+  await writeFile(join(isolated, "package.json"), '{"type":"module"}');
+  const source = await readFile(join(sourceDirectory, "native-file-worker.mjs"), "utf8");
+  const point = "{ path: input.target, expected: input.validation.temporary, attributes: input.original.attributes }";
+  assert.equal(source.split(point).length, 2, "one exact post-publication fault site");
+  // Keep the actual native replacement. Only its following metadata handle open
+  // uses an absent owned path, producing real Win32 2 after publication.
+  await writeFile(join(isolated, "native-file-worker.mjs"), source.replace('from "koffi"', `from ${JSON.stringify(import.meta.resolve("koffi"))}`)
+    .replace(point, '{ path: input.target + ".post-publication-missing", expected: input.validation.temporary, attributes: input.original.attributes }'));
+  const module = await import(pathToFileURL(join(isolated, "file-commit-metadata.ts")).href);
+  const target = await capturePathIdentity(f.target);
+  const plan = { target, parent: await capturePathIdentity(f.root), metadata: await module.selectCommitMetadata(target), previousSha256: createHash("sha256").update(f.before).digest("hex") };
+  assert.equal(plan.metadata.strategy, "staged_replace");
+  await assert.rejects(commitPreparedFile(plan, f.after, { assertPathAllowed: async () => target.canonical }), (error: unknown) => {
+    assert.ok(error instanceof FileCommitError); assert.match(error.message, /CreateFileW.*Win32 2/);
+    assert.equal(error.receipt.outcome, "committed"); assert.equal(error.receipt.retainedTemporary, undefined); return true;
+  });
+  assert.deepEqual(await readFile(f.target), f.after);
+  assert.notEqual((await capturePathIdentity(f.target)).inode, target.inode);
+  assert.deepEqual((await readdir(f.root)).sort(), ["post-publication-adapter", "测试.txt"].sort());
+  const stats = await nativeFileRequest("stats"); assert.equal(stats.publicationAttempts, 1); assert.equal(stats.activeHandles, 0);
+  assert.equal(nativeFileDiagnostics().pending, 0);
+});
+
 test("N2 Windows custom protected DACL survives actual replacement", { skip: process.platform !== "win32" }, async t => {
   const f = await fixture(t);
   const powershell = join(process.env.SystemRoot!, "System32/WindowsPowerShell/v1.0/powershell.exe");
