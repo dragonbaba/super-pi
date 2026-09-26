@@ -5,7 +5,6 @@ import { TextDecoder } from "node:util";
 import type { ExtensionAPI, ExtensionContext } from "@super-pi/coding-agent";
 import { prepareExactEditContent, generateDiffString, generateUnifiedPatch } from "@super-pi/coding-agent";
 import { Type } from "typebox";
-import { Text } from "@super-pi/tui";
 import type { ToolDefinition } from "@super-pi/coding-agent";
 import { Value } from "typebox/value";
 import { consumePermissionPathApproval, mutationRequestHash, type PermissionPathApproval } from "../resource-lifecycle-guard/permission-contract.ts";
@@ -15,7 +14,9 @@ import { capturePathIdentity, sameIdentity, prepareNativeOperation, revalidateNa
 import { prepareSnapshotLineMutation, executePreparedSnapshotMutation, type PreparedSnapshotMutation, type SnapshotLineEdit } from "./snapshot-line-edit.ts";
 import { PublicEditOperationParameters, PublicEditParameters, EditParameters, SnapshotEditParameters, WriteParameters, validatePublicSnapshotAnchors } from "./mutation-parameters.ts";
 import { assessProtectedMutationPath } from "./protected-path-policy.ts";
-import { withMutationPaths, MUTATION_PROGRESS_ENTRY, renderFileMutationResult } from "./native-tools.ts";
+import { withMutationPaths, MUTATION_PROGRESS_ENTRY } from "./native-tools.ts";
+import { PreviewBudget, addedPreview, modifiedPreview, batchExpandedSummary, BatchResultText, releaseBatchRenderState, readPreviewSource, MAX_PREVIEW_SOURCE_BYTES, type ChangePreview } from "./change-preview.ts";
+import { RELEASE_TOOL_RENDER_DERIVED_STATE } from "../../coding-agent/src/core/tools/tool-render-lifecycle.ts";
 
 // Default extensions load in separate module-cache scopes; share only the private key, not authority state.
 const PREPARATION = Symbol.for("pi.mutation-guard.file-batch.preparation.v1");
@@ -57,8 +58,9 @@ interface Item {
   previousSha256?: string;
   approval: MutationPathApproval;
   reservation?: number;
+  preview?: ChangePreview;
 }
-interface ItemResult { itemId: string; operation: Operation; target: string; destination?: string; status: MutationStatus; stateChanged: boolean | "unknown"; reason?: string; receipt?: unknown }
+interface ItemResult { itemId: string; operation: Operation; target: string; destination?: string; status: MutationStatus | "preview"; stateChanged: boolean | "unknown"; reason?: string; receipt?: unknown; preview?: ChangePreview }
 
 function pathKey(path: string): string { return path.normalize("NFC").toLowerCase(); }
 function pathConflicts(left: string, right: string, prospective: boolean): boolean {
@@ -148,8 +150,11 @@ export class BatchInvocation {
   }
 
   async prepare(signal?: AbortSignal): Promise<void> {
+    let preparingIndex = 0;
+    const previewBudget = new PreviewBudget();
     try {
       for (let index = 0; index < this.input.operations.length; index++) {
+        preparingIndex = index;
         signal?.throwIfAborted();
         const input = this.input.operations[index];
         const path = input.operation === "edit" || input.operation === "write"
@@ -177,6 +182,8 @@ export class BatchInvocation {
           await this.guard.assertNativeEvidence(item.target);
           signal?.throwIfAborted();
           item.reservation = this.guard.reserveNativeMutation(this.generation, item.target, item.native.destination);
+          if (previewBudget) item.preview = { kind: input.operation === "delete" ? "Deleted" : "Moved", bytes: item.native.source.directory ? undefined : Number(item.native.source.size),
+            risk: input.operation === "delete" ? `${item.native.source.directory ? "Empty directory" : "File"} deletion is irreversible; no backup.` : "No replacement; exclusive link then unlink is non-atomic and can leave both names." };
         } else if (input.operation === "write") {
           item.creation = creation;
           if (input.mode === "overwrite" && item.creation) throw new Error("[READ_REQUIRED] Overwrite target is missing; use an explicit create item.");
@@ -187,6 +194,14 @@ export class BatchInvocation {
           signal?.throwIfAborted();
           item.approval.writePreflight = true;
           item.reservation = this.guard.reserveWriteMutation(this.generation, item.target, input.content!, item.creation);
+          if (previewBudget) {
+            if (item.creation) { item.preview = addedPreview(input.content!, previewBudget); item.preview.plannedDirectories = item.creation.directories; }
+            else if (Number(item.identity!.size) + Buffer.byteLength(input.content!) <= MAX_PREVIEW_SOURCE_BYTES) {
+              const before = await readPreviewSource(path, MAX_PREVIEW_SOURCE_BYTES - Buffer.byteLength(input.content!), item.identity!);
+              if (sha256(before) !== item.previousSha256) throw new Error("[STALE_STATE] Overwrite changed during preview.");
+              item.preview = modifiedPreview(decoder.decode(before), input.content!, previewBudget, true);
+            } else item.preview = { kind: "Modified", omitted: "Candidate exceeds preview working set; inspect a bounded range with read." };
+          }
         } else {
           item.identity = await capturePathIdentity(path);
           item.parent = await capturePathIdentity(resolve(path, ".."));
@@ -194,17 +209,20 @@ export class BatchInvocation {
           item.approval.preparedIdentity = item.identity; item.approval.preparedParent = item.parent;
           if (input.snapshot) {
             item.snapshot = await prepareSnapshotLineMutation(this.ctx.sessionManager.getSessionId(), this.cwd, path, input.snapshot, input.edits as SnapshotLineEdit[], signal,
-              { assertPathAllowed: async () => item.target });
+              { assertPathAllowed: async () => item.target, previewBudget, previewOnly: this.input.dryRun === true });
             signal?.throwIfAborted();
             item.reservation = this.guard.reserveSnapshotEdit(this.generation, item.target, item.snapshot.replacements, item.snapshot.changedBytes);
             item.previousSha256 = item.snapshot.receipt.sha256;
+            item.preview = item.snapshot.preview;
           } else {
             const bytes = await readFile(path);
             const text = decoder.decode(bytes);
             item.exact = await this.guard.authorizeEdit(this.cwd, path, input.edits as GuardedEdit[], this.generation, text, item.approval, signal);
             item.reservation = item.exact.reservationId;
-            prepareExactEditContent(text, item.exact.edits, input.path);
+            const candidate = prepareExactEditContent(text, item.exact.edits, input.path);
             item.previousSha256 = sha256(bytes);
+            if (previewBudget) item.preview = modifiedPreview(candidate.baseContent, candidate.newContent, previewBudget,
+              this.guard.hasFullPreviewEvidence(item.target, item.previousSha256, this.generation));
           }
         }
         if (creation) await verifyCreationAncestor(creation);
@@ -214,7 +232,7 @@ export class BatchInvocation {
       }
       signal?.throwIfAborted();
       assertIndependent(this.items);
-    } catch (error) { this.release(); throw error; }
+    } catch (error) { this.release(); throw new Error(`${this.id}:${preparingIndex}: ${error instanceof Error ? error.message : String(error)}\nPreflight failed; no batch item executed.`, { cause: error }); }
   }
 
   attach(): void { Object.defineProperty(this.original, PREPARATION, { configurable: true, value: this }); }
@@ -243,12 +261,20 @@ export class BatchInvocation {
 
   async execute(pi: ExtensionAPI, signal?: AbortSignal) {
     const results: ItemResult[] = [];
-    for (const item of this.items) results.push({ itemId: item.itemId, operation: item.operation, target: item.target, destination: item.native?.destination, status: "not_started", stateChanged: false });
+    const plannedDirectories: string[] = [];
+    const plannedDirectoryKeys = new Set<string>();
+    for (const item of this.items) {
+      results.push({ itemId: item.itemId, operation: item.operation, target: item.target, destination: item.native?.destination, status: "not_started", stateChanged: false, preview: item.preview });
+      if (this.input.dryRun && item.creation) for (const path of item.creation.directories) {
+        const key = directoryKey(path);
+        if (!plannedDirectoryKeys.has(key)) { plannedDirectoryKeys.add(key); plannedDirectories.push(path); }
+      }
+    }
     const sharedDirectories = new Map<string, PathIdentity>();
     try {
       await withMutationPaths(this.paths, async () => {
         for (const item of this.items) { this.currentItem = item; await this.revalidate(item, signal); }
-        if (this.input.dryRun) return;
+        if (this.input.dryRun) { for (const result of results) result.status = "preview"; return; }
         const preparedTargets = [];
         for (const item of this.items) preparedTargets.push({ itemId: item.itemId, operation: item.operation, target: item.target, destination: item.native?.destination });
         pi.appendEntry(MUTATION_PROGRESS_ENTRY, { toolCallId: this.id, phase: "prepared", requestHash: this.requestHash, items: preparedTargets });
@@ -258,8 +284,8 @@ export class BatchInvocation {
           this.currentItem = item;
           item.approval.assertCurrent = this.assertAuthority;
           try {
-            await this.revalidate(item, signal, sharedDirectories);
             pi.appendEntry(MUTATION_PROGRESS_ENTRY, { toolCallId: this.id, itemId: item.itemId, phase: "intent", requestHash: this.requestHash, operation: item.operation, target: item.target, destination: item.native?.destination });
+            await this.revalidate(item, signal, sharedDirectories);
             let receipt: any;
             if (item.native) receipt = await executeNativePlan(item.native, this.assertAuthority, signal);
             else if (item.snapshot) receipt = { ...await executePreparedSnapshotMutation(item.snapshot, signal, { assertPathAllowed: this.assertItemPath, beforeCommit: this.assertAuthority, assertCurrent: this.assertAuthority }), operation: "edit", target: item.target, stateChanged: true, ok: true };
@@ -309,7 +335,7 @@ export class BatchInvocation {
     } finally { sharedDirectories.clear(); this.dispose(); }
     let succeeded = 0, failed = 0, notStarted = 0;
     let firstReason: string | undefined;
-    for (const result of results) { if (result.status === "succeeded") succeeded++; else if (result.status === "not_started") notStarted++; else { failed++; firstReason ??= result.reason; } }
+    for (const result of results) { if (result.status === "succeeded") succeeded++; else if (result.status === "not_started") notStarted++; else if (result.status !== "preview") { failed++; firstReason ??= result.reason; } }
     const preview = this.input.dryRun && failed === 0;
     let summary = preview ? `Preflight passed for ${results.length} items. No changes; apply revalidates and requires current authorization.` : `file_batch: ${succeeded} succeeded, ${failed} failed, ${notStarted} not started.${firstReason ? `\n${firstReason}` : ""}`;
     const collapsedSummary = summary;
@@ -321,7 +347,8 @@ export class BatchInvocation {
         if (receipt.creation.createdDirectories.length) summary += `; created ${receipt.creation.createdDirectories.length} parent directories`;
       }
     }
-    return { content: [{ type: "text" as const, text: summary }], details: { mutationReceiptVersion: 2, operation: "file_batch", preview, collapsedSummary, succeeded, failed, notStarted, items: results }, isError: failed > 0 };
+    const expandedSummary = batchExpandedSummary(collapsedSummary, results, plannedDirectories);
+    return { content: [{ type: "text" as const, text: summary }], details: { mutationReceiptVersion: 2, operation: "file_batch", preview, collapsedSummary, expandedSummary, plannedDirectories, succeeded, failed, notStarted, items: results }, isError: failed > 0 };
   }
 
   private async revalidate(item: Item, signal?: AbortSignal, shared?: Map<string, PathIdentity>): Promise<void> {
@@ -366,9 +393,11 @@ export function registerFileBatch(pi: ExtensionAPI, guard: MutationWriteGuard, g
 }
 
 export const renderBatchResult: NonNullable<ToolDefinition<any, any>["renderResult"]> = function renderBatchResult(result, options, _theme, context) {
-  const component = context.lastComponent instanceof Text ? context.lastComponent : new Text("", 0, 0);
+  const component = context.lastComponent instanceof BatchResultText ? context.lastComponent : new BatchResultText("", 0, 0);
+  context.state.batchComponent = component;
+  context.state[RELEASE_TOOL_RENDER_DERIVED_STATE] = releaseBatchRenderState;
   const primary = result.content[0];
   const full = primary?.type === "text" ? primary.text : "";
-  component.setText(options.isPartial ? "File batch running" : options.expanded ? full : result.details?.collapsedSummary ?? full);
+  component.setBatchText(options.isPartial ? "File batch running" : options.expanded ? result.details?.expandedSummary ?? full : result.details?.collapsedSummary ?? full);
   return component;
 };

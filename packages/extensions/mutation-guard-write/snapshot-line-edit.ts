@@ -23,6 +23,7 @@ import {
   validateSnapshotLineReference,
 } from "./snapshot-line-protocol.ts";
 import { assertNoNewSyntaxDiagnostics } from "./snapshot-syntax-guard.ts";
+import { snapshotPreview, type PreviewBudget, type ChangePreview } from "./change-preview.ts";
 import {
   captureCompactSnapshot,
   compactFileLimit,
@@ -118,6 +119,8 @@ export interface SnapshotLineEditHooks {
   beforeCommit?: () => void | Promise<void>;
   assertCurrent?: () => void;
   afterCommit?: () => void | Promise<void>;
+  previewBudget?: PreviewBudget;
+  previewOnly?: boolean;
 }
 interface SnapshotStore {
   schemaVersion: 2;
@@ -803,6 +806,7 @@ export interface PreparedSnapshotMutation {
   diff: string;
   patch: string;
   firstChangedLine?: number;
+  preview?: ChangePreview;
 }
 export async function prepareSnapshotLineMutation(
   sessionId: string,
@@ -837,12 +841,13 @@ export async function prepareSnapshotLineMutation(
     : prepareCompactEdits(receipt, current, edits);
   const beforeText = strictUtf8Decoder.decode(current);
   const afterText = strictUtf8Decoder.decode(prepared.output);
-  const diffResult = generateDiffString(beforeText, afterText);
+  const preview = hooks.previewBudget ? snapshotPreview(current, prepared.byteEdits, hooks.previewBudget) : undefined;
+  const diffResult = hooks.previewOnly ? { diff: "", firstChangedLine: undefined } : generateDiffString(beforeText, afterText);
   await assertNoNewSyntaxDiagnostics(receipt.canonicalPath, beforeText, afterText, edits, prepared.byteEdits);
-  const patch = generateUnifiedPatch(receipt.canonicalPath, beforeText, afterText);
+  const patch = hooks.previewOnly ? "" : generateUnifiedPatch(receipt.canonicalPath, beforeText, afterText);
   return { snapshotId, sessionId, receipt, byteEdits: prepared.byteEdits, changedBytes: prepared.changedBytes,
     replacements: prepared.replacements, deduplicatedEdits: prepared.deduplicatedEdits,
-    diff: diffResult.diff, patch, firstChangedLine: diffResult.firstChangedLine };
+    diff: diffResult.diff, patch, firstChangedLine: diffResult.firstChangedLine, preview };
 }
 
 export async function executeSnapshotLineEdit(
