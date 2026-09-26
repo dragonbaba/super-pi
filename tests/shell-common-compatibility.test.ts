@@ -1244,7 +1244,6 @@ test("bounded temporary CDPATH queries and closed-subshell hash execute through 
     for (const [id, command, expected] of [
       ["temporary-declare", "CDPATH=.. declare -p CDPATH >/dev/null; cd sub && cat fixture.txt", "inner"],
       ["temporary-typeset", "CDPATH=.. typeset -p CDPATH >/dev/null; cd sub && cat fixture.txt", "inner"],
-      ["temporary-export-n", "CDPATH=.. export -n CDPATH; cd sub && cat fixture.txt", "inner"],
       ["closed-hash", "(hash -p ./0/cat cat); cat fixture.txt", "parent-safe"],
       ["nested-closed-hash", "( (hash -p ./0/cat cat) ); cat fixture.txt", "parent-safe"],
     ] as const) {
@@ -1260,6 +1259,7 @@ test("bounded temporary CDPATH queries and closed-subshell hash execute through 
       assert.equal(existsSync(target), false, `${id}: guarded Bash leaves the protected target untouched`);
     }
     for (const [id, command] of [
+      ["temporary-export-n", "CDPATH=.. export -n CDPATH; cd sub && cat fixture.txt"],
       ["same-child-hash", "(hash -p ./0/cat cat; cat)"],
       ["nested-child-hash", "(hash -p ./0/cat cat; (cat))"],
       ["lastpipe-hash", "set +m; shopt -s lastpipe; true | hash -p ./0/cat cat; cat"],
@@ -1283,6 +1283,21 @@ test("bounded temporary CDPATH queries and closed-subshell hash execute through 
     else process.env.CDPATH = originalCdpath;
     rmSync(parent, { recursive: true });
   }
+});
+
+test("configured Bash invoked as sh keeps special-builtin CDPATH assignments and is refused before execution", { skip: process.platform === "win32" }, async () => {
+  const bash = findTestBash(); assert.ok(bash);
+  const root = mkdtempSync(join(tmpdir(), "sp-bash-as-sh-")), shell = join(root, "sh"), workspace = join(root, "workspace");
+  fs.symlinkSync(bash, shell); mkdirSync(join(workspace, "sub"), { recursive: true }); mkdirSync(join(root, "sub"));
+  const outside = join(root, "sub", "victim"), inside = join(workspace, "sub", "victim"); writeFileSync(outside, "outer"); writeFileSync(inside, "inner");
+  let fixture: Awaited<ReturnType<typeof guardedCwdBoundaryFixture>> | undefined;
+  try {
+    const command = "CDPATH=.. export -n CDPATH; cd sub && cat victim";
+    assert.equal(execFileSync(shell, ["-c", command], { cwd: workspace, encoding: "utf8", env: { ...process.env, CDPATH: "" } }).trim().split("\n").at(-1), "outer");
+    fixture = await guardedCwdBoundaryFixture(workspace, shell); await fixture.setMode("read-only");
+    await assertBoundaryRefusedBeforeSpawn(fixture, workspace, "sh-special-builtin", "CDPATH=.. export -n CDPATH; cd sub && rm victim", [outside, inside]);
+    assert.equal(readFileSync(outside, "utf8"), "outer"); assert.equal(readFileSync(inside, "utf8"), "inner");
+  } finally { await fixture?.close(); assert.equal(dirname(root), tmpdir()); rmSync(root, { recursive: true, force: true }); }
 });
 
 test("persistent lookup assignments are stateful while ordinary assignment text remains data", () => {

@@ -126,7 +126,7 @@ function inspectLifecycleScript(source: string, depth: number, nativePowerShellA
  if (substitutions.unterminated || substitutions.unsupported) return lifecycleRefusal("SHELL_SUBSTITUTION", substitutions.unterminated ? "unterminated command substitution" : "uncertain/uninspectable command substitution grammar", "simplify the substitution into inspectable foreground commands");
  for (const script of here?.substitutions ?? EMPTY_SUBSTITUTIONS) { const result = inspectLifecycleScript(script, depth + 1, nativePowerShellAvailable); if (result) return result; }
  for (const script of substitutions.scripts) { const result = inspectLifecycleScript(script, depth + 1, nativePowerShellAvailable); if (result) return result; }
- if (hasUninspectableBashState(command, depth === 0)) return lifecycleRefusal("SHELL_UNINSPECTABLE", "working directory, command lookup, evaluator state, or reserved-prefix syntax cannot be established (conditional, grouped or indirect cd, source/eval, traps, hash, lookup-sensitive assignments, or an ambiguous prefix)", "submit an inspectable foreground command; when cwd changes, keep a supported bare cd and its dependent operation in one Bash call (for example, cd sub && ls); each new call receives fresh checks");
+ if (hasUninspectableBashState(command)) return lifecycleRefusal("SHELL_UNINSPECTABLE", "working directory, command lookup, evaluator state, or reserved-prefix syntax cannot be established (conditional, grouped or indirect cd, source/eval, traps, hash, lookup-sensitive assignments, or an ambiguous prefix)", "submit an inspectable foreground command; when cwd changes, keep a supported bare cd and its dependent operation in one Bash call (for example, cd sub && ls); each new call receives fresh checks");
  if (DETACH_UTILITY_PATTERN.test(command)) return BLOCK_REASON;
  if ((WINDOWS_DETACH_PATTERN.test(command) || WINDOWS_START_BACKGROUND_PATTERN.test(command)) && !WINDOWS_WAIT_PATTERN.test(command)) return BLOCK_REASON;
  if (DOCKER_DETACHED_PATTERN.test(command) || SERVICE_START_PATTERN.test(command)) return BLOCK_REASON;
@@ -376,7 +376,7 @@ function inspectShellScript(script: string, initialCwd: string, depth: number, b
 		builder.unverifiableScope = true;
 		return;
 	}
-	if (hasUninspectableBashState(script, depth === 0)) {
+	if (hasUninspectableBashState(script)) {
 		addPrimitive(builder, "unverifiable_shell_state");
 		markUnverifiable(builder);
 		return;
@@ -913,23 +913,21 @@ function hasUninspectableBashLet(tokens: ShellSegment, index: number): boolean {
 	return false;
 }
 
-/** Only a single literal prefix and exact query operands have temporary semantics.
- * export -n is admitted only in the outer default Bash, whose startup environment
- * is sanitized; nested interpreters may use POSIX special-builtin semantics. */
-function isTemporaryCdpathQuery(tokens: ShellSegment, index: number, allowExport: boolean): boolean {
+/** Only regular-builtin queries have portable temporary assignment semantics.
+ * export is a POSIX special builtin: Bash invoked as sh can persist its prefix. */
+function isTemporaryCdpathQuery(tokens: ShellSegment, index: number): boolean {
 	if (index !== 1 || tokens.firstWordQuoted || tokens.expansions?.[0]
 		|| !TEMPORARY_CDPATH_QUERY_PATTERN.test(tokens[0]!)) return false;
 	const name = tokens[index];
 	const option = skipRedirections(tokens, index + 1);
-	if (name === "declare" || name === "typeset") { if (tokens[option] !== "-p") return false; }
-	else if (!allowExport || name !== "export" || tokens[option] !== "-n") return false;
+	if ((name !== "declare" && name !== "typeset") || tokens[option] !== "-p") return false;
 	const variable = skipRedirections(tokens, option + 1);
 	return tokens[variable] === "CDPATH" && !tokens.expansions?.[variable]
 		&& skipRedirections(tokens, variable + 1) === tokens.length;
 }
 
 /** Reject bounded command lists whose later cwd or executable lookup cannot be established. */
-export function hasUninspectableBashState(command: string, allowTemporaryExport = true): boolean {
+export function hasUninspectableBashState(command: string): boolean {
 	const segments = parseShellSegments(command);
 	let loopDepth = 0;
 	let conditionalDepth = 0;
@@ -1028,7 +1026,7 @@ export function hasUninspectableBashState(command: string, allowTemporaryExport 
 				if (name === "unalias" || tokens[operand]!.includes("=") || tokens.expansions?.[operand]) return true;
 			}
 		}
-		if (cdpathAssignment && mayPersist && !isTemporaryCdpathQuery(tokens, index, allowTemporaryExport)
+		if (cdpathAssignment && mayPersist && !isTemporaryCdpathQuery(tokens, index)
 			&& (name === "export" || name === "readonly" || name === "declare" || name === "typeset")) cdSemanticsChanges[depth] = cdSemanticsChanged = true;
 		// These builtins persist an assignment in their current shell even though the
 		// assignment word follows the command name rather than preceding it.

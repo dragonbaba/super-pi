@@ -26,7 +26,8 @@ test("N3 default SDK: quoted source/data require approval and changed approved i
     providerCalls++; assert.equal(typeof init?.body, "string"); lastWire = init!.body as string;
     assert.doesNotMatch(lastWire, /shellExecution|spawnAttempted|Symbol\(|ToolResultError/);
     const call = pendingCall; pendingCall = undefined;
-    const delta = call ? { tool_calls: [{ index: 0, id: call.id, type: "function", function: { name: call.name, arguments: JSON.stringify(call.arguments) } }] } : { content: "Fixture observed." };
+    const calls = Array.isArray(call) ? call : call ? [call] : undefined;
+    const delta = calls ? { tool_calls: calls.map((item: any, index: number) => ({ index, id: item.id, type: "function", function: { name: item.name, arguments: JSON.stringify(item.arguments) } })) } : { content: "Fixture observed." };
     const event = { id: "offline", object: "chat.completion.chunk", created: 1, model: model.id, choices: [{ index: 0, delta, finish_reason: null }] };
     const end = { ...event, choices: [{ index: 0, delta: {}, finish_reason: call ? "tool_calls" : "stop" }] };
     return new Response(`data: ${JSON.stringify(event)}\n\ndata: ${JSON.stringify(end)}\n\ndata: [DONE]\n\n`, { headers: { "Content-Type": "text/event-stream" } });
@@ -60,13 +61,22 @@ test("N3 default SDK: quoted source/data require approval and changed approved i
   for (const [id, command, expected] of [
     ["declare-query", "CDPATH=.. declare -p CDPATH >/dev/null; cd sub && cat query.txt", "inner-query"],
     ["typeset-query", "CDPATH=.. typeset -p CDPATH >/dev/null; cd sub && cat query.txt", "inner-query"],
-    ["export-query", "CDPATH=.. export -n CDPATH; cd sub && cat query.txt", "inner-query"],
     ["closed-hash", "(hash -p /missing-owned-fixture/cat cat); cat query.txt", "parent-query"],
   ]) {
     const result = await call(id, command); assert.equal(result.isError, false, JSON.stringify(result));
     assert.equal(result.content[0].text, expected); assert.equal(readShellExecution(result.details)?.started, true);
     assert.equal(readShellExecution(result.details)?.cwd, realpathSync.native(cwd));
   }
+  const unsafeExport = await call("export-query", "CDPATH=.. export -n CDPATH; cd sub && cat query.txt");
+  assert.equal(unsafeExport.isError, true); assert.equal(readShellExecution(unsafeExport.details)?.started, false);
+  const repeatedCommand = "printf duplicate-fixture";
+  pendingCall = [0, 1, 2].map(index => ({ type: "toolCall", id: `duplicate-${index}`, name: "bash", arguments: { command: repeatedCommand, cwd } }));
+  await session.prompt("Exercise duplicate siblings once."); await session.agent.waitForIdle();
+  const siblingResults = session.messages.filter((message: any) => message.role === "toolResult" && message.toolCallId.startsWith("duplicate-")) as any[];
+  assert.equal(siblingResults.length, 3); assert.equal(siblingResults.filter(result => readShellExecution(result.details)?.started === true).length, 1);
+  assert.equal(siblingResults.filter(result => result.isError).length, 2);
+  const freshIdentical = await call("after-duplicates", repeatedCommand); assert.equal(freshIdentical.isError, false, JSON.stringify(freshIdentical));
+  assert.equal(readShellExecution(freshIdentical.details)?.started, true);
   approve = false;
   const denied = await call("denied", code.replace("'marker'", "'denied'")); assert.equal(denied.isError, true); assert.equal(existsSync(join(cwd, "denied")), false);
   assert.equal(readShellExecution(denied.details)?.started, false); assert.equal(readShellExecution(denied.details)?.sideEffects, "none");
