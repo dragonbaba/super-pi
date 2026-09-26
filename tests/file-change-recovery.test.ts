@@ -635,6 +635,65 @@ test("N1 malformed later custom outcomes invalidate earlier recovery and later v
   assert.equal(readFileSync(path, "utf8"), "external");
 });
 
+test("N1 later preparation/origin/unversioned aggregate invalidate recovered call history", async t => {
+  const f = await fixture(t), path = join(f.cwd, "late-activity"); writeFileSync(path, "old");
+  f.onRecord(data => { if (data.phase === "intent") writeFileSync(path, "external"); });
+  await f.call("file_batch", { operations: [{ operation: "delete", path }] }, "late-activity");
+  const genuine = JSON.parse(JSON.stringify(f.session.getBranch()));
+  assert.equal(collectChanges(genuine, f.cwd)[0].unavailable, undefined);
+  for (const phase of ["prepared", "origin", "unversioned-result"]) {
+    const branch = structuredClone(genuine);
+    const later = structuredClone(branch.find((entry: any) => phase === "unversioned-result" ? entry.message?.role === "toolResult" : entry.data?.phase === "prepared"));
+    later.id = `later-${phase}`;
+    if (phase === "unversioned-result") delete later.message.details.mutationReceiptVersion;
+    else later.data.phase = phase;
+    branch.push(later);
+    const records = collectChanges(branch, f.cwd); assert.ok(records.length);
+    for (const record of records) assert.ok(record.unavailable, phase);
+    assert.throws(() => remainingDraft(records, new Set()));
+  }
+  assert.equal(readFileSync(path, "utf8"), "external");
+});
+
+test("N1 oversized imported item IDs are rejected before suffix materialization", async t => {
+  const f = await fixture(t), path = join(f.cwd, "oversized-id"); writeFileSync(path, "old");
+  f.onRecord(data => { if (data.phase === "intent") writeFileSync(path, "external"); });
+  await f.call("file_batch", { operations: [{ operation: "delete", path }] }, "oversized-id");
+  const branch = JSON.parse(JSON.stringify(f.session.getBranch()));
+  const later = structuredClone(branch.find((entry: any) => entry.data?.phase === "intent"));
+  later.id = "oversized-item"; later.data.itemId = "oversized-id:" + "1".repeat(2_000_000); branch.push(later);
+  const slice = String.prototype.slice; let oversizedSlices = 0;
+  t.mock.method(String.prototype, "slice", function(this: string, ...args: any[]) {
+    if (this.length > 1_000_000) { oversizedSlices++; assert.fail("oversized suffix must not be materialized"); }
+    return Reflect.apply(slice, this, args);
+  });
+  const records = collectChanges(branch, f.cwd); assert.ok(records.length);
+  for (const record of records) assert.ok(record.unavailable);
+  assert.throws(() => remainingDraft(records, new Set())); assert.equal(oversizedSlices, 0);
+});
+
+test("N1 standalone legacy creation permits one exact mirror and rejects any subsequent call-owned activity", async t => {
+  const f = await fixture(t); await f.call("write", { path: "legacy-create", content: "created" }, "legacy-create");
+  const genuine = JSON.parse(JSON.stringify(f.session.getBranch()));
+  assert.equal(collectChanges(genuine, f.cwd)[0].unavailable, undefined);
+  for (const fault of ["unknown-phase", "missing-item", "unversioned", "duplicate-mirror", "changed-mirror"]) {
+    const branch = structuredClone(genuine);
+    const result = branch.find((entry: any) => entry.message?.role === "toolResult");
+    if (fault === "changed-mirror") result.message.details.creation.bytes++;
+    else if (fault === "duplicate-mirror" || fault === "unversioned") {
+      const later = structuredClone(result); later.id = "extra-result";
+      if (fault === "unversioned") delete later.message.details.mutationReceiptVersion;
+      branch.push(later);
+    } else {
+      const later = structuredClone(branch.find((entry: any) => entry.data?.phase === "result")); later.id = "extra-custom";
+      if (fault === "unknown-phase") later.data.phase = "future-phase";
+      delete later.data.itemId; branch.push(later);
+    }
+    for (const record of collectChanges(branch, f.cwd)) assert.ok(record.unavailable, fault);
+  }
+  assert.equal(readFileSync(join(f.cwd, "legacy-create"), "utf8"), "created");
+});
+
 test("N1 imported previews cannot display a forged committed result", async t => {
   const f = await fixture(t);
   await f.call("file_batch", { dryRun: true, operations: [{ operation: "write", mode: "create", path: "preview-only", content: "planned" }] }, "preview-only");

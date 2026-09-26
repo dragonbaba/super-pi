@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { lstat, open } from "node:fs/promises";
 import { isAbsolute, resolve, relative, sep, dirname, basename } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@super-pi/coding-agent";
-import { Key, matchesKey, Text, type TUI } from "@super-pi/tui";
+import { Key, matchesKey, truncateToWidth, visibleWidth, type TUI } from "@super-pi/tui";
 import { resolveToolPath } from "./core.ts";
 import { capturePathIdentity, sameIdentity, type PathIdentity } from "./native-file-core.ts";
 import { boundBatchIntents, collectStructuredMutationReceipts, recentMutationEntries } from "./session-evidence.ts";
@@ -14,6 +14,7 @@ import { SHA256_PATTERN as SHA256, CHANGE_ID_CONTROL_PATTERN, OBSERVATION_UNSIGN
 export const CHANGE_VERIFICATION_ENTRY = "file-change-verification-v1";
 const MAX_CHANGES = 128;
 const MAX_VERIFY_BYTES = 32 * 1024 * 1024;
+const CHANGE_GRAPHEMES = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 const OBSERVATION_SCOPE = "Filesystem observation only; not a semantic/test result, proof of earlier side effects, or permission to replay.";
 
 export interface ChangeRecord {
@@ -117,7 +118,9 @@ function uniqueBatchPreparation(entries: readonly any[], call: any) {
     const entry = entries[index];
     if (entry.type !== "custom" || entry.customType !== "file-mutation-progress-v2" || entry.data?.toolCallId !== call.id) continue;
     if (entry.data.phase !== "prepared") {
-      const item = entry.data.itemId, number = typeof item === "string" ? Number(item.slice(call.id.length + 1)) : -1;
+      const item = entry.data.itemId;
+      if (typeof item !== "string" || item.length > 280) return undefined;
+      const number = Number(item.slice(call.id.length + 1));
       if (!["intent", "commit_prepared", "result"].includes(entry.data.phase) || !Number.isSafeInteger(number) || number < 0
         || number >= (call.arguments?.operations?.length ?? 0) || item !== `${call.id}:${number}`) return undefined;
       continue;
@@ -140,7 +143,8 @@ function laterBatchActivity(entries: readonly any[], callId: string, index: numb
   for (const entry of entries) {
     const data = entry.data;
     if (data?.toolCallId === callId && data.itemId !== undefined) {
-      const suffix = typeof data.itemId === "string" ? data.itemId.slice(callId.length + 1) : "";
+      if (typeof data.itemId !== "string" || data.itemId.length > 280) return true;
+      const suffix = data.itemId.slice(callId.length + 1);
       const number = Number(suffix);
       if (!Number.isSafeInteger(number) || number < 0 || data.itemId !== `${callId}:${number}` || number > index) return true;
     }
@@ -178,6 +182,40 @@ function boundRecoveryItem(entries: readonly any[], call: any, index: number, st
   // entry and remaining not-started items have preparation but no intent.
   if (status !== "succeeded" && laterBatchActivity(entries, call.id, index)) return undefined;
   return prepared;
+}
+
+function sameLegacyWriteMirror(selected: any, entry: any): boolean {
+  const source = selected?.data, message = entry.message, data = message?.details;
+  return selected?.type === "custom" && source?.phase === "result" && source.status === "succeeded" && source.stateChanged === true
+    && source.operation === "write"
+    && message.toolName === "write" && message.isError !== true && data?.mutationReceiptVersion === 1 && data.ok === true
+    && data.category === "success" && data.operation === "write" && data.stateChanged === true && data.created === source.created
+    && data.target === source.target && typeof data.sha256 === "string" && SHA256.test(data.sha256) && data.sha256 === source.sha256
+    && (source.created === true && source.commit === undefined && data.commit === undefined
+      || source.created === undefined && typeof source.previousSha256 === "string" && SHA256.test(source.previousSha256)
+      && source.previousSha256 === data.previousSha256 && source.commit?.outcome === "committed" && sameCommitReceipt(source.commit, data.commit))
+    && data.creation?.bytes === source.creation?.bytes && data.creation?.addedLines === source.creation?.addedLines
+    && sameCreatedDirectories(data.creation?.createdDirectories, source.creation?.createdDirectories);
+}
+
+function hasLaterMutationActivity(branch: readonly any[], start: number, callId: string, itemId: string, selected: any, batch: boolean): boolean {
+  let legacyMirror = false;
+  for (let index = start; index < branch.length; index++) {
+    const entry = branch[index];
+    if (entry.type === "message" && entry.message?.role === "toolResult" && entry.message.toolCallId === callId) {
+      // The existing write producer emits one v2 durable result plus one v1
+      // aggregate. Its exact successful mirror includes commit metadata on N2.
+      if (legacyMirror || !sameLegacyWriteMirror(selected, entry)) return true;
+      legacyMirror = true;
+    }
+    if (entry.type === "custom" && entry.customType === "file-mutation-progress-v2" && entry.data?.toolCallId === callId) {
+      // Intent-only recovery may have the one subsequently validated commit
+      // preparation. This is not a terminal and never enables an automatic retry.
+      if (batch && selected.data?.phase === "intent" && entry.data.phase === "commit_prepared" && entry.data.itemId === itemId) continue;
+      if (!batch || entry.data.phase !== "intent" && entry.data.phase !== "commit_prepared" && entry.data.phase !== "result" || entry.data.itemId === itemId) return true;
+    }
+  }
+  return false;
 }
 
 /** Reconstruct from bounded Session entries. No disk observation, replay or second history store. */
@@ -223,7 +261,7 @@ export function collectChanges(branch: readonly any[], cwd: string): ChangeRecor
     const target = historicalTarget ? resolve(receipt.target) : receipt.target;
     const destination = receipt.receiptVersion === 2 && receipt.destination ? resolve(cwd, receipt.destination) : undefined;
     let bound = false;
-    const executionEntries = call ? branch.slice(callOrder.get(call.id)! + 1, receiptOrder + 1) : [];
+    const executionEntries = call ? branch.slice(callOrder.get(call.id)! + 1) : [];
     if (exactItemId && historicalTarget && call?.name === "file_batch" && input?.operation === receipt.operation) {
       const intent = boundRecoveryItem(executionEntries, call, index, receipt.receiptVersion === 2 ? receipt.status : "succeeded");
       bound = intent?.target === receipt.target && intent?.destination === destination;
@@ -265,6 +303,7 @@ export function collectChanges(branch: readonly any[], cwd: string): ChangeRecor
       bound = samePlannedDirectories(prepared?.directories, entry.data.directories);
     }
     if (receipt.receiptVersion === 2 && receipt.historyConflict) bound = false;
+    if (bound && hasLaterMutationActivity(branch, receiptOrder + 1, receipt.toolCallId, receipt.receiptVersion === 2 ? receipt.itemId : `${receipt.toolCallId}:0`, entry, call.name === "file_batch")) bound = false;
     records.push({ entryId: receipt.entryId, toolCallId: receipt.toolCallId, itemId: receipt.receiptVersion === 2 ? receipt.itemId : `${receipt.toolCallId}:0`,
       operation: receipt.operation, target, destination,
       status: receipt.receiptVersion === 1 ? "succeeded" : receipt.status, preview: false,
@@ -537,32 +576,78 @@ export function collectVerifiedChanges(branch: readonly any[], records: readonly
   return verified;
 }
 
-class ChangeViewer {
-  private text: Text;
+export class ChangeViewer {
+  private body: string;
+  private positions?: Uint32Array;
+  private widths?: Uint8Array;
+  private count = 0;
   private offset = 0;
-  private total = 0;
+  private cached?: string[];
+  private cachedWidth = -1;
+  private cachedHeight = -1;
+  private cachedOffset = -1;
+  private rowsMaterialized = 0;
+  private graphemesVisited = 0;
   private tui?: TUI;
   private done?: (value: void) => void;
-  constructor(body: string, tui: TUI, done: (value: void) => void) { this.text = new Text(body, 0, 0); this.tui = tui; this.done = done; }
+  constructor(body: string, tui: TUI, done: (value: void) => void) {
+    this.body = body.slice(0, 65536); this.tui = tui; this.done = done;
+    // Cold dialog preparation: at most 327,685 bytes of numeric scroll metadata.
+    // No wrapped lines or grapheme strings survive this loop.
+    this.positions = new Uint32Array(this.body.length + 1); this.widths = new Uint8Array(this.body.length + 1);
+    for (const part of CHANGE_GRAPHEMES.segment(this.body)) {
+      this.positions[this.count] = part.index;
+      this.widths[this.count++] = part.segment.includes("\n") || part.segment === "\r" ? 255 : visibleWidth(part.segment);
+    }
+    this.positions[this.count] = this.body.length;
+  }
+  private nextRow(start: number, width: number): number {
+    let end = start, columns = 0;
+    while (end < this.count) {
+      const size = this.widths![end]; this.graphemesVisited++;
+      if (size === 255) return end + 1;
+      if (columns + size > width && end > start) break;
+      columns += size; end++;
+    }
+    return end;
+  }
+  private previousRow(start: number, width: number): number {
+    if (!start) return 0;
+    let cursor = start - 1;
+    while (cursor > 0 && this.widths![cursor - 1] !== 255) cursor--;
+    let previous = cursor;
+    while (cursor < start) { previous = cursor; cursor = this.nextRow(cursor, width); }
+    return previous;
+  }
   render(width: number): string[] {
-    const lines = this.text.render(width), height = Math.max(1, (this.tui?.terminal.rows ?? 24) - 2);
-    this.total = lines.length;
-    this.offset = Math.max(0, Math.min(this.offset, this.total - height));
+    width = Math.max(1, Math.floor(width));
+    const height = Math.max(1, Math.min(1000, (this.tui?.terminal.rows ?? 24) - 2));
+    if (this.cached && this.cachedWidth === width && this.cachedHeight === height && this.cachedOffset === this.offset) return this.cached;
     const output = [];
-    for (let i = this.offset; i < Math.min(this.total, this.offset + height); i++) output.push(lines[i]);
+    let cursor = this.offset;
+    while (cursor < this.count && output.length < height) {
+      const next = this.nextRow(cursor, width), end = this.widths![next - 1] === 255 ? next - 1 : next;
+      output.push(truncateToWidth(this.body.substring(this.positions![cursor], this.positions![end]), width, ""));
+      this.rowsMaterialized++; cursor = next;
+    }
     output.push(width >= 21 ? "↑↓ scroll · Esc close" : width >= 9 ? "Esc close" : width >= 3 ? "Esc" : "");
+    this.cached = output; this.cachedWidth = width; this.cachedHeight = height; this.cachedOffset = this.offset;
     return output;
   }
   handleInput(data: string): void {
     if (matchesKey(data, Key.escape)) { const done = this.done; this.dispose(); done?.(); return; }
-    if (matchesKey(data, Key.up)) this.offset = Math.max(0, this.offset - 1);
-    if (matchesKey(data, Key.down)) this.offset = Math.min(this.total - 1, this.offset + 1);
-    if (matchesKey(data, Key.pageUp)) this.offset = Math.max(0, this.offset - 10);
-    if (matchesKey(data, Key.pageDown)) this.offset = Math.min(this.total - 1, this.offset + 10);
+    const width = Math.max(1, this.cachedWidth);
+    let steps = matchesKey(data, Key.pageUp) || matchesKey(data, Key.pageDown) ? 10 : 1;
+    if (matchesKey(data, Key.up) || matchesKey(data, Key.pageUp)) while (steps-- > 0) this.offset = this.previousRow(this.offset, width);
+    if (matchesKey(data, Key.down) || matchesKey(data, Key.pageDown)) while (steps-- > 0) {
+      const next = this.nextRow(this.offset, width); if (next >= this.count) break; this.offset = next;
+    }
     this.tui?.requestRender();
   }
-  invalidate(): void { this.text.invalidate(); }
-  dispose(): void { this.text.setText(""); this.tui = undefined; this.done = undefined; }
+  invalidate(): void { this.cached = undefined; }
+  dispose(): void { this.body = ""; this.positions = undefined; this.widths = undefined; this.cached = undefined; this.count = 0; this.offset = 0; this.tui = undefined; this.done = undefined; }
+  getDiagnostics() { return { bodyCodeUnits: this.body.length, scrollBytes: (this.positions?.byteLength ?? 0) + (this.widths?.byteLength ?? 0), cachedRows: this.cached?.length ?? 0,
+    rowsMaterialized: this.rowsMaterialized, graphemesVisited: this.graphemesVisited, lifecycleReferences: Number(Boolean(this.tui)) + Number(Boolean(this.done)) }; }
 }
 
 interface ObservationPermissions { authorizeFileObservation(ctx: ExtensionContext, paths: readonly string[]): Promise<(() => Promise<void>) & { assertCurrent(): void }> }
