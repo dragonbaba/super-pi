@@ -154,8 +154,11 @@ export function batchExpandedSummary(summary: string, items: readonly DisplayIte
   let text = budget.take(summary, MAX_PREVIEW_LINES).text;
   if (plannedDirectories) for (const directory of plannedDirectories) text += budget.take(`\nplanned parent: ${directory}`, MAX_PREVIEW_LINES).text;
   for (const item of items) {
-    const preview = item.preview;
     const receipt = item.receipt;
+    // Select content and provenance together: succeeded output is confirmed receipt
+    // data; preparation warnings/omissions belong only to an unconfirmed preview.
+    const confirmed = item.status === "succeeded";
+    const preview = confirmed ? undefined : item.preview;
     let heading = `\n${item.itemId}: ${preview?.kind ?? (receipt?.created ? "Added" : item.operation)} ${item.target}`;
     if (item.destination) heading += ` → ${item.destination}`;
     heading += ` [${item.status}]`;
@@ -166,7 +169,7 @@ export function batchExpandedSummary(summary: string, items: readonly DisplayIte
     if (preview?.risk) text += budget.take(`\n${preview.risk}`, MAX_PREVIEW_LINES).text;
     if (!plannedDirectories && item.status === "preview" && preview?.plannedDirectories) for (const directory of preview.plannedDirectories) text += budget.take(`\nplanned parent: ${directory}`, MAX_PREVIEW_LINES).text;
     // Completed receipts already own their actual diff. Never derive a diff in render.
-    const diff = preview ? preview.diff : receipt?.patch ?? receipt?.diff;
+    const diff = confirmed ? receipt?.patch ?? receipt?.diff : preview?.diff;
     if (typeof diff === "string") {
       if (preview && item.status !== "preview" && item.status !== "succeeded") text += budget.take("\nPrepared change only; completion is not confirmed.", MAX_PREVIEW_LINES).text;
       const part = budget.take(`\n${diff}`);
