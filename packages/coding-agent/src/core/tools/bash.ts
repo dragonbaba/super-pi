@@ -36,6 +36,9 @@ import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, type TruncationResult
 
 const MAX_TIMEOUT_MS = 2_147_483_647;
 const OUTPUT_FAILURE_ABORT = Symbol("shell-output-failure-abort");
+const SHELL_START_ERROR_CODES = new Set(["ENOENT", "EACCES", "EPERM", "ENOEXEC", "EINVAL"]);
+
+function appendShellStatus(text: string, status: string): string { return `${text ? `${text}\n\n` : ""}${status}`; }
 const MAX_TIMEOUT_SECONDS = MAX_TIMEOUT_MS / 1000;
 const SESSION_ENVIRONMENT_KEYS = new Set([
 	"SP_SESSION_ID",
@@ -46,7 +49,7 @@ const SESSION_ENVIRONMENT_KEYS = new Set([
 ]);
 // Inherited values that change Bash `cd` resolution or run Bash startup code invisibly
 // to command inspection. A spawn hook may still set them deliberately.
-const SHELL_SEMANTIC_ENVIRONMENT_KEYS = new Set(["CDPATH", "BASHOPTS", "SHELLOPTS", "BASH_ENV", "ENV"]);
+const SHELL_SEMANTIC_ENVIRONMENT_KEYS = new Set(["CDPATH", "BASHOPTS", "SHELLOPTS", "BASH_ENV", "ENV", "POSIXLY_CORRECT"]);
 
 function isShellSemanticEnvironmentKey(key: string): boolean {
 	return SHELL_SEMANTIC_ENVIRONMENT_KEYS.has(key) || key.startsWith("BASH_FUNC_");
@@ -1017,8 +1020,6 @@ export function createShellToolDefinition(
 				return { text, details };
 			};
 
-			const appendStatus = (text: string, status: string) => `${text ? `${text}\n\n` : ""}${status}`;
-
 			try {
 				let processResult: ShellProcessResult | undefined, executionError: unknown;
 				try {
@@ -1040,7 +1041,12 @@ export function createShellToolDefinition(
 				const observation = processResult?.observation;
 				const local = isLocalShellBackend(ops) && ops.exec === backendExecute;
 				const started = observation?.started ?? "unknown";
-				const termination = processResult?.termination ?? (processResult && processResult.exitCode !== null ? "exit" : "unknown");
+				const errorMessage = executionError instanceof Error ? executionError.message : executionError === undefined ? "" : String(executionError);
+				// Legacy custom backends report control-flow failure through their
+				// rejected operation, never through stdout. Keep start/effects unknown.
+				const termination = processResult?.termination ?? (processResult && processResult.exitCode !== null ? "exit"
+					: executionError && errorMessage.startsWith("timeout:") ? "timeout"
+					: executionError && (signal?.aborted || errorMessage === "aborted") ? "cancelled" : "unknown");
 				const facts: ShellExecutionFacts = { version: 1, producer: local ? "local-shell" : "custom-shell",
 					started, cwd: local ? observation?.cwd ?? null : null,
 					executionStatus: started === false ? observation?.spawnAttempted ? "start_failed" : "not_executed" : termination === "exit" ? "exited" : termination === "unknown" ? "unknown" : "interrupted",
@@ -1054,18 +1060,20 @@ export function createShellToolDefinition(
 				details.shellExecution = facts;
 				if (facts.started === false) details.executionStatus = "not_executed";
 				if (executionError) {
-					const message = executionError instanceof Error ? executionError.message : String(executionError);
-					if (facts.termination === "timeout" || !observation && message.startsWith("timeout:")) failure = `[SHELL_INTERRUPTED] Command timed out after ${timeout ?? "requested"} seconds`;
-					else if (facts.termination === "cancelled" || !observation && message === "aborted") failure = "[SHELL_INTERRUPTED] Command aborted";
-					else failure = `[${facts.started === false ? "SHELL_START_FAILED" : "SHELL_EXECUTION_FAILED"}] ${message}`;
+					if (facts.termination === "timeout") failure = `[SHELL_INTERRUPTED] Command timed out after ${timeout ?? "requested"} seconds`;
+					else if (facts.termination === "cancelled") failure = "[SHELL_INTERRUPTED] Command aborted";
+					else failure = `[${facts.started === false || !observation && SHELL_START_ERROR_CODES.has((executionError as NodeJS.ErrnoException).code ?? "") ? "SHELL_START_FAILED" : "SHELL_EXECUTION_FAILED"}] ${errorMessage}`;
 				} else if (facts.termination === "signal") failure = `[SHELL_INTERRUPTED] Command terminated by ${facts.signal ?? "an unobserved signal"}`;
 				else if (facts.exitCode === null) failure = "[SHELL_EXECUTION_FAILED] Command termination is unknown (null exit code)";
-				else if (facts.exitCode !== 0) failure = `[SHELL_RUNTIME_FAILED] Command exited with code ${facts.exitCode}`;
+				else if (facts.exitCode !== 0) { failure = "[SHELL_RUNTIME_FAILED]"; outputText = appendShellStatus(outputText, `Command exited with code ${facts.exitCode}`); }
 				else if (facts.inputError) failure = `[SHELL_INPUT_FAILED] Command input was not fully delivered: ${facts.inputError}`;
 				else if (observation && !observation.outputDrained) failure = "[SHELL_OUTPUT_INCOMPLETE] Process exited but output streams did not finish before the drain boundary";
-				if (failure) outputText = appendStatus(outputText, failure);
-				if (logError) outputText = appendStatus(outputText, `[SHELL_LOG_FAILED] Command output was not fully recorded: ${logError}`);
-				if (cleanupError) outputText = appendStatus(outputText, `[SHELL_LOG_CLEANUP_FAILED] ${cleanupError}`);
+				if (failure) outputText = `${failure}${outputText ? `\n${outputText}` : ""}`;
+				if (logError) {
+					const status = `[SHELL_LOG_FAILED] Command output was not fully recorded: ${logError}`;
+					outputText = failure ? appendShellStatus(outputText, status) : `${status}\n${outputText}`;
+				}
+				if (cleanupError) outputText = appendShellStatus(outputText, `[SHELL_LOG_CLEANUP_FAILED] ${cleanupError}`);
 				if (failure || logError) throw new ToolResultError(outputText, { content: [{ type: "text", text: outputText }], details });
 				return { content: [{ type: "text", text: outputText }], details };
 			} finally {

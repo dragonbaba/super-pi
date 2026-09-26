@@ -1,8 +1,8 @@
 # N3 shell input and result evidence
 
-Status: **实现中**. Current incorporated parent N2: `106e6ba21abe85195f6777c89ad429c46be09018`,
-including N1 `85ea51676` (resolve the branch for its full SHA). Input and structured
-result slices are implemented locally; complete gates and CDPATH/hash work remain.
+Status: **实现中，完整候选验证中**. Incorporated parent N2: `cffd2dbd1390b1fe73d16a74430a32f56af06b1c`,
+including N1 `f044d73c27912528a3655bfea8a10b60881f6b56`. Input, structured
+results and bounded CDPATH/hash are implemented locally; complete gates remain.
 No complete N3 acceptance yet.
 
 ## Input capability decision
@@ -97,3 +97,34 @@ reference counters and pending timers were zero after release. This one sample
 does not establish a speedup or flat lifetime heap. Full local checks/build/hot/
 tests and the existing Bash/shell/tool-leaf allocation gates are running; this
 slice's final two-platform CI and actual review have not yet completed.
+
+## Bounded compatibility and result review corrections
+
+The three literal temporary CDPATH query forms now execute through actual Bash,
+Agent/permission/lifecycle and default SDK/provider/Session paths. A hash change
+as the final command of a closed child no longer taints its parent. Same/nested
+child lookup, lastpipe, persistent assignments, added operands, dynamic/append
+prefixes and POSIX mode remain refused before authorization/spawn. The new pattern
+lives in the dedicated regex module; the recognizer is a module function with no
+callback. No command rewriting, generic evaluation or authority exemption is used.
+GNU Bash documents different assignment persistence for [POSIX special builtins](https://www.gnu.org/s/bash/manual/html_node/Special-Builtins.html)
+and [subshell environments](https://www.gnu.org/s/bash/manual/html_node/Command-Execution-Environment.html).
+Consequently export-n is limited to the outer sanitized Bash; nested evaluators
+do not inherit that exception. Ambient POSIXLY_CORRECT is removed alongside the
+already filtered Bash startup variables; explicit changes remain inspected.
+
+Review 3f23591 findings are fixed: pre-execution verification uses an attached
+canonical cwd binding, including an aliased Session root with explicit `cwd: .`;
+legacy SHELL status prefixes remain first and runtime exit text stays visible;
+custom backend rejected timeout/abort conventions populate termination facts
+without pretending the process was unstarted or had no effects. Existing custom
+rg no-match classification is retained for its exact empty-result shape, while
+unknown/custom facts still cannot clear false-success obligations. Log failure
+prefixes remain first when no earlier process failure exists. Structured facts
+continue to take precedence over stdout that imitates control messages.
+
+Windows Node22 targeted result/input/compatibility/callback regression: 158 pass,
+zero skips, including default SDK four compatibility positives. Earlier full
+tests revealed two old unconditional heredoc-refusal assertions; they now test
+the actual supported quoted-data form plus the still-refused operand/redirect/
+multiple/wrapper forms. No existing guard counterexample was removed.

@@ -428,7 +428,7 @@ function inspectScript(command: string, initialCwd: string, depth: number, build
     markOpaque(builder, "command_substitution_depth");
     return;
   }
-  if (hasUninspectableBashState(command)) {
+  if (hasUninspectableBashState(command, depth === 0)) {
     markOpaque(builder, "unverifiable_shell_state");
     return;
   }

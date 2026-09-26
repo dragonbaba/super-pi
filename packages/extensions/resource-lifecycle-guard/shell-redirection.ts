@@ -127,7 +127,7 @@ export function bashArithmeticForHeader(tokens: readonly string[] & { firstWordQ
 
 export function isLookupSensitiveBashVariable(name: string | undefined): boolean {
   return name === "PATH" || name === "BASH_ENV" || name === "ENV"
-    || name === "SHELLOPTS" || name === "BASHOPTS" || name === "CDPATH" || name === "PS4"
+    || name === "SHELLOPTS" || name === "BASHOPTS" || name === "CDPATH" || name === "PS4" || name === "POSIXLY_CORRECT"
     // EXECIGNORE hides matching PATH entries, so a later lookup can reach a workspace executable.
     || name === "EXECIGNORE" || name === "BASH_CMDS";
 }

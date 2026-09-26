@@ -1,6 +1,6 @@
 import { COMPLETION_CLAIM_RE, INCOMPLETE_DISCLOSURE_RE, PARTIAL_MUTATION_RE, LEADING_CD_RE, SHELL_OPERATOR_RE, NODE_TEST_RE, TEST_COMMAND_RE, NODE_TSC_RE, TYPECHECK_COMMAND_RE, LINT_COMMAND_RE, BUILD_COMMAND_RE, PACKAGE_PREFIX_RE, POLICY_BLOCKED_RE, TIMEOUT_RE, PATH_NOT_FOUND_RE, COMMAND_FAILED_RE, WINDOWS_ABSOLUTE_RE, TRAILING_SEPARATOR_RE } from "./regex.ts";
 import { extname, isAbsolute, relative, resolve } from "node:path";
-import { readShellExecution, shellExecutionSucceeded, shellFailureCategory } from "@super-pi/coding-agent";
+import { getShellCwdBinding, readShellExecution, shellExecutionSucceeded, shellFailureCategory } from "@super-pi/coding-agent";
 import { boundBatchIntents, validMutationOutcome } from "../mutation-guard-write/session-evidence.ts";
 import { resolveToolPath } from "../mutation-guard-write/core.ts";
 
@@ -132,7 +132,7 @@ export function observeToolResult(state: FalseSuccessState, observation: ToolObs
   const shell = observation.toolName === "bash" || observation.toolName === "powershell";
   const execution = shell ? readShellExecution(observation.details) : undefined;
   const requestedCwd = shell && typeof observation.input.cwd === "string" ? resolve(observation.cwd ?? process.cwd(), observation.input.cwd) : observation.cwd;
-  const scope = verificationScope(observation.toolName, observation.input, execution?.cwd ?? requestedCwd);
+  const scope = verificationScope(observation.toolName, observation.input, execution?.cwd ?? (shell ? getShellCwdBinding(observation.input)?.canonical : undefined) ?? requestedCwd);
   const target = mutationTarget(observation.toolName, observation.input, observation.cwd);
   const text = (observation.text ?? "").slice(0, MAX_TOOL_TEXT_CHARS);
 

@@ -714,7 +714,7 @@ test("an invalid timeout is classified as a start failure before shell discovery
 
 test("inherited cd-semantic and startup variables do not reach the spawned shell", async () => {
   const fixture = mkdtempSync(join(tmpdir(), "sp-shell-env-"));
-  const keys = ["CDPATH", "BASHOPTS", "SHELLOPTS", "BASH_ENV", "ENV", "BASH_FUNC_cd%%"];
+  const keys = ["CDPATH", "BASHOPTS", "SHELLOPTS", "BASH_ENV", "ENV", "POSIXLY_CORRECT", "BASH_FUNC_cd%%"];
   const original = new Map(keys.map(key => [key, process.env[key]]));
   for (const key of keys) process.env[key] = key === "BASH_FUNC_cd%%" ? "() { :; }" : "inherited";
   const captured: NodeJS.ProcessEnv[] = [];
@@ -1216,7 +1216,7 @@ test("BASH_CMDS assignments cannot hide a workspace executable", async (t) => {
   }
 });
 
-test("temporary CDPATH prefixes and closed-subshell hash stay explicit inspection limits", async (t) => {
+test("bounded temporary CDPATH queries and closed-subshell hash execute through actual guards", async (t) => {
   const shellPath = findTestBash();
   if (!shellPath || !existsSync(shellPath)) {
     if (process.env.CI) assert.fail("Required Bash integration test could not find Git Bash or /bin/bash");
@@ -1246,11 +1246,36 @@ test("temporary CDPATH prefixes and closed-subshell hash stay explicit inspectio
       ["temporary-typeset", "CDPATH=.. typeset -p CDPATH >/dev/null; cd sub && cat fixture.txt", "inner"],
       ["temporary-export-n", "CDPATH=.. export -n CDPATH; cd sub && cat fixture.txt", "inner"],
       ["closed-hash", "(hash -p ./0/cat cat); cat fixture.txt", "parent-safe"],
+      ["nested-closed-hash", "( (hash -p ./0/cat cat) ); cat fixture.txt", "parent-safe"],
     ] as const) {
       assert.match(execFileSync(shellPath, ["-c", command], { cwd: workspace, encoding: "utf8", env: { ...process.env, CDPATH: "" } }), new RegExp(expected), id);
       assert.equal(existsSync(target), false, `${id}: direct Bash leaves the protected target untouched`);
-      await assertBoundaryRefusedBeforeSpawn(fixture, workspace, id, command, [target]);
+      assert.equal(inspectBashResourceLifecycle({ command }), undefined, id);
+      assert.notEqual(inspectHighRiskBashMutation({ command }, workspace)?.unverifiableScope, true, id);
+      const executions: number = fixture.executions;
+      const result: Awaited<ReturnType<Agent["dispatchHostTool"]>> = await fixture.agent.dispatchHostTool({ type: "toolCall", id, name: "bash", arguments: { command } });
+      assert.equal(result.isError, false, JSON.stringify(result));
+      assert.ok((result.content[0] as { text: string }).text.includes(expected), id);
+      assert.equal(fixture.executions, executions + 1);
       assert.equal(existsSync(target), false, `${id}: guarded Bash leaves the protected target untouched`);
+    }
+    for (const [id, command] of [
+      ["same-child-hash", "(hash -p ./0/cat cat; cat)"],
+      ["nested-child-hash", "(hash -p ./0/cat cat; (cat))"],
+      ["lastpipe-hash", "set +m; shopt -s lastpipe; true | hash -p ./0/cat cat; cat"],
+      ["query-extra-operand", "CDPATH=.. declare -p CDPATH PATH; cd sub && cat fixture.txt"],
+      ["query-append", "CDPATH+=.. declare -p CDPATH; cd sub && cat fixture.txt"],
+      ["query-dynamic", "CDPATH=$VALUE declare -p CDPATH; cd sub && cat fixture.txt"],
+      ["persistent-export", "CDPATH=.. export CDPATH; cd sub && cat fixture.txt"],
+      ["posix-query", "set -o posix; CDPATH=.. export -n CDPATH; cd sub && cat fixture.txt"],
+      ["posix-variable", "POSIXLY_CORRECT=1; CDPATH=.. export -n CDPATH; cd sub && cat fixture.txt"],
+      ["sh-query", "sh -c 'CDPATH=.. export -n CDPATH; cd sub && cat fixture.txt'"],
+      ["bash-posix-query", "bash --posix -c 'CDPATH=.. export -n CDPATH; cd sub && cat fixture.txt'"],
+    ] as const) {
+      assert.ok(inspectBashResourceLifecycle({ command }), id);
+      assert.equal(inspectHighRiskBashMutation({ command }, workspace)?.unverifiableScope, true, id);
+      assert.equal(inspectBashPermissionScope({ command }, workspace)?.unverifiableScope, true, id);
+      await assertBoundaryRefusedBeforeSpawn(fixture, workspace, id, command, [target]);
     }
   } finally {
     await fixture?.close();

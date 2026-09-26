@@ -579,7 +579,9 @@ export function collectSessionErrors(entries: readonly SessionEntry[]): ErrorObs
       const owner = owners.get(message.toolCallId);
       const execution = readShellExecution(message.details);
       if (message.toolName === "bash" && owner?.simpleRipgrepCommand && (execution
-        ? execution.started === true && execution.termination === "exit" && execution.exitCode === 1 && execution.output.complete === true && execution.output.log !== "failed" && !execution.inputError && EMPTY_NONZERO_EXIT_RE.test(text)
+        ? (execution.started === true && execution.output.complete === true
+          || execution.producer === "custom-shell" && execution.started === "unknown" && execution.output.complete === "unknown")
+          && execution.termination === "exit" && execution.exitCode === 1 && execution.output.log !== "failed" && !execution.inputError && EMPTY_NONZERO_EXIT_RE.test(text)
         : RG_NO_MATCH_RESULT_RE.test(text))) {
         continue;
       }

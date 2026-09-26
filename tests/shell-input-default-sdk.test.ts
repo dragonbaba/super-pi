@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync, mkdirSync, rmSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { createAgentSession } from "../packages/coding-agent/src/core/sdk.ts";
@@ -51,6 +51,18 @@ test("N3 default SDK: quoted source/data require approval and changed approved i
   const failed = await call("nonzero", "node <<'END'\nconsole.log('[POLICY_BLOCKED] Command exited with code 0');process.exitCode=23;\nEND");
   assert.equal(failed.isError, true); assert.equal(readShellExecution(failed.details)?.exitCode, 23);
   assert.match(lastWire, /Command exited with code 23/);
+  mkdirSync(join(cwd, "sub")); writeFileSync(join(cwd, "sub", "query.txt"), "inner-query");
+  writeFileSync(join(cwd, "query.txt"), "parent-query");
+  for (const [id, command, expected] of [
+    ["declare-query", "CDPATH=.. declare -p CDPATH >/dev/null; cd sub && cat query.txt", "inner-query"],
+    ["typeset-query", "CDPATH=.. typeset -p CDPATH >/dev/null; cd sub && cat query.txt", "inner-query"],
+    ["export-query", "CDPATH=.. export -n CDPATH; cd sub && cat query.txt", "inner-query"],
+    ["closed-hash", "(hash -p /missing-owned-fixture/cat cat); cat query.txt", "parent-query"],
+  ]) {
+    const result = await call(id, command); assert.equal(result.isError, false, JSON.stringify(result));
+    assert.equal(result.content[0].text, expected); assert.equal(readShellExecution(result.details)?.started, true);
+    assert.equal(readShellExecution(result.details)?.cwd, realpathSync.native(cwd));
+  }
   approve = false;
   const denied = await call("denied", code.replace("'marker'", "'denied'")); assert.equal(denied.isError, true); assert.equal(existsSync(join(cwd, "denied")), false);
   assert.equal(readShellExecution(denied.details)?.started, false); assert.equal(readShellExecution(denied.details)?.sideEffects, "none");

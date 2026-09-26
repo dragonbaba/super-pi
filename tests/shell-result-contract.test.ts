@@ -12,6 +12,7 @@ import { readShellExecution, type ShellExecutionFacts } from "../packages/coding
 import { BashRenderClock, createBashRenderFixture } from "./helpers/bash-render-fixture.ts";
 import { stripTerminalSequences } from "@super-pi/tui";
 import { Session as InspectorSession } from "node:inspector/promises";
+import { prepareShellCwd } from "../packages/coding-agent/src/core/tools/shell-cwd.ts";
 
 const jiti = createJiti(import.meta.url);
 const { createFalseSuccessState, observeToolResult } = await jiti.import<any>("../packages/extensions/false-success-guard/core.ts");
@@ -39,6 +40,30 @@ test("N3 null custom exit is unknown, never success or absence of side effects",
   assert.equal(result.isError, true);
   const facts = readShellExecution(result.details)!; assert.equal(facts.started, "unknown"); assert.equal(facts.sideEffects, "unknown");
   assert.equal(facts.termination, "unknown"); assert.equal(facts.producer, "custom-shell");
+});
+
+for (const [message, termination] of [["timeout:1", "timeout"], ["aborted", "cancelled"]] as const) test(`N3 legacy custom ${termination} keeps facts without claiming no effects`, async () => {
+  const result = await run("fixture", { async exec() { throw new Error(message); } });
+  const facts = readShellExecution(result.details)!;
+  assert.equal(result.isError, true); assert.equal(facts.started, "unknown"); assert.equal(facts.sideEffects, "unknown");
+  assert.equal(facts.termination, termination); assert.equal(facts.executionStatus, "interrupted");
+  assert.equal(classifyToolFailure("bash", (result.content[0] as any).text, {}, result.details).category, "timeout_or_aborted");
+  assert.match((result.content[0] as any).text, /^\[SHELL_INTERRUPTED\]/);
+});
+
+test("N3 pre-execution verification failure uses the approved canonical cwd through a directory alias", async t => {
+  const root = fs.mkdtempSync(join(tmpdir(), "sp-n3-cwd-alias-")), real = join(root, "real"), alias = join(root, "alias");
+  fs.mkdirSync(real); fs.symlinkSync(real, alias, process.platform === "win32" ? "junction" : "dir");
+  t.after(() => { assert.equal(dirname(root), tmpdir()); fs.rmSync(root, { recursive: true, force: true }); });
+  const input = { command: "npm test", cwd: "." }, binding = await prepareShellCwd(input, alias);
+  assert.ok(binding); const state = createFalseSuccessState();
+  observeToolResult(state, { toolName: "bash", input, cwd: alias, isError: true, details: { executionStatus: "not_executed" } });
+  assert.equal(state.obligations.size, 1);
+  const result = await run("process.exitCode=0");
+  observeToolResult(state, { toolName: "bash", input, cwd: alias, isError: false,
+    details: { shellExecution: { ...readShellExecution(result.details), cwd: binding.canonical } } });
+  assert.equal(state.obligations.size, 0, "canonical retry clears the same verification key");
+  binding.release(); assert.equal(binding.isReleased, true);
 });
 
 test("N3 missing executable reports attempted start failure and no process side effects", async () => {

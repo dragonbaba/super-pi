@@ -423,13 +423,15 @@ test("redirection analysis keeps arithmetic and heredoc data out of file targets
   }
 
   const quotedHere = "cat <<'EOF'\nliteral > victim.txt\nliteral >> other.txt\nliteral 1> third.txt\nliteral 2>> fourth.txt\nliteral => compare\nEOF";
-  assert.match(inspectBashResourceLifecycle({ command: quotedHere }) ?? "", /SHELL_HEREDOC/);
+  assert.equal(inspectBashResourceLifecycle({ command: quotedHere }), undefined);
   const hereMutation = inspectHighRiskBashMutation({ command: quotedHere }, process.cwd());
-  assert.ok(hereMutation?.primitives.includes("heredoc_uninspectable"));
-  assert.equal(hereMutation?.targets.length, 0);
+  assert.equal(hereMutation, undefined, "bounded cat input is literal data, not shell redirection");
   const herePermission = inspectBashPermissionScope({ command: quotedHere }, process.cwd());
   assert.equal(herePermission?.kind, "opaque-script");
   assert.equal(herePermission?.targets.length, 0);
+  assert.ok(herePermission?.primitives.includes("stdin_data:cat"));
+  assert.equal(herePermission?.unverifiableScope, true, "data still needs opaque authorization");
+  assert.match(inspectBashResourceLifecycle({ command: quotedHere.replace("cat <<", "cat -n <<") }) ?? "", /SHELL_HEREDOC/);
 
   const multipleHere = "cat <<A <<B\nbody > one.txt\nA\nbody >> two.txt\nB";
   assert.equal(inspectHighRiskBashMutation({ command: multipleHere }, process.cwd())?.targets.length, 0);
@@ -479,7 +481,7 @@ test("heredoc analysis preserves real declaration-line and following-command red
   }
 
   const quotedBody = "cat <<'EOF'\nliteral > fake.txt\nliteral >> fake-two.txt\nEOF";
-  assert.equal(inspectHighRiskBashMutation({ command: quotedBody }, process.cwd())?.targets.length, 0);
+  assert.equal(inspectHighRiskBashMutation({ command: quotedBody }, process.cwd()), undefined);
   assert.equal(inspectBashPermissionScope({ command: quotedBody }, process.cwd())?.targets.length, 0);
 
   const nested = "cat <<EOF\n$(echo nested > nested.txt)\nEOF";

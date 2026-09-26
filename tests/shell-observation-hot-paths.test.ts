@@ -30,3 +30,19 @@ test("shell data/progress/drain callbacks create no callback or Promise on deliv
   }
   assert.deepEqual(seen, targets);
 });
+
+test("N3 completion and CDPATH helpers use module functions without nested callbacks or regexes", () => {
+  const targets = new Set(["appendShellStatus", "isTemporaryCdpathQuery"]), seen = new Set<string>();
+  for (const file of ["packages/coding-agent/src/core/tools/bash.ts", "packages/extensions/resource-lifecycle-guard/core.ts"]) {
+    const source = ts.createSourceFile(file, readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true);
+    for (const node of source.statements) if (ts.isFunctionDeclaration(node) && node.name && targets.has(node.name.text)) {
+      seen.add(node.name.text);
+      function audit(child: ts.Node): void {
+        assert.equal(ts.isArrowFunction(child) || ts.isFunctionExpression(child) || ts.isFunctionDeclaration(child) || ts.isRegularExpressionLiteral(child), false);
+        ts.forEachChild(child, audit);
+      }
+      if (node.body) ts.forEachChild(node.body, audit);
+    }
+  }
+  assert.deepEqual(seen, targets);
+});
