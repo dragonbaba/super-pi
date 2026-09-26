@@ -99,7 +99,8 @@ for (const hookFailure of [false, true]) test(`N3 Agent retains producer result 
     async execute() { throw new ToolResultError("short runtime failure", { content: [{ type: "text", text: "captured tail" }], details }); } }];
   const result = await agent.dispatchHostTool({ type: "toolCall", name: "fixture", id: "observed", arguments: {} });
   assert.equal(result.isError, true);
-  assert.deepEqual(result.details, hookFailure ? { ...details, shellExecution: { ...details.shellExecution, observationError: "fixture observer failed" } } : details);
+  assert.deepEqual(result.details, hookFailure ? { ...details, shellExecution: { ...details.shellExecution, observationError: "fixture observer failed",
+    secondaryObservationError: undefined, observationErrorsOmitted: undefined } } : details);
   assert.equal((details.shellExecution as any).observationError, undefined, "producer details are not mutated");
   assert.equal(result.content[0]?.type, "text");
   assert.equal((result.content[0] as any).text, "captured tail");
