@@ -11,6 +11,7 @@ export interface CommitMetadata {
   prepareTemporary(handle: FileHandle, path: string): Promise<void>;
   assertCurrent(handle: FileHandle): void | Promise<void>;
   assertPostimage?(handle: FileHandle): void | Promise<void>;
+  assertBeforeInPlace?(handle: FileHandle, plan: FileCommitPlan): Promise<void>;
   removeTemporary?(path: string, expected: { device: string; inode: string }): Promise<void>;
   replace(temporary: string, target: string, validation: PublicationValidation): Promise<void>;
   replacementFailureMayChangeState: boolean;
@@ -204,6 +205,7 @@ export async function commitPreparedFile(plan: FileCommitPlan, content: Uint8Arr
     } else {
       await hooks.beforeCommit?.();
       await assertPrepared(plan, hooks, source);
+      await plan.metadata.assertBeforeInPlace?.(source, plan);
       hooks.assertCurrent?.(); hooks.signal?.throwIfAborted();
       receipt.outcome = "unknown"; // The first write can partially change the pinned object.
       let written = 0;

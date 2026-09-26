@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, realpath, writeFile, readFile, chmod, lstat, rm, mkdir, link, cp, readdir } from "node:fs/promises";
+import { mkdtemp, realpath, writeFile, readFile, chmod, lstat, rm, mkdir, link, cp, readdir, open } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
@@ -109,6 +109,19 @@ test("N2 Windows modern inherited DACL keeps staged replacement and metadata", {
   assert.notEqual((await capturePathIdentity(f.target)).inode, target.inode);
 });
 
+test("N2 Windows control-only DACL drift is observed before any content effects", { skip: process.platform !== "win32" }, async t => {
+  const f = await fixture(t), plan = await planFor(f.target, f.before);
+  const before = await nativeFileRequest("inspect", { path: f.target, expected: plan.target });
+  await execute(process.execPath, [fileURLToPath(new URL("./fixtures/native-legacy-dacl.mjs", import.meta.url)), f.target, before.security, "control-only"], { windowsHide: true });
+  const after = await nativeFileRequest("inspect", { path: f.target, expected: plan.target });
+  const left = Buffer.from(before.security, "base64"), right = Buffer.from(after.security, "base64");
+  assert.equal(left.readUInt16LE(2) ^ right.readUInt16LE(2), 0x400);
+  left.writeUInt16LE(right.readUInt16LE(2), 2); assert.deepEqual(left, right, "ACE bytes/owner/group unchanged");
+  assert.notEqual(before.securityFingerprint, after.securityFingerprint);
+  await assert.rejects(commitPreparedFile(plan, f.after, { assertPathAllowed: async () => plan.target.canonical }), /changed/);
+  assert.equal(await readFile(f.target, "utf8"), f.before);
+});
+
 test("N2 occupied Windows file returns verified no-change and never retries in place", { skip: process.platform !== "win32", timeout: 15000 }, async t => {
   const f = await fixture(t), plan = await planFor(f.target, f.before);
   const child = spawn(process.execPath, [fileURLToPath(new URL("./fixtures/native-file-occupancy.mjs", import.meta.url)), f.target], { windowsHide: true, stdio: ["ignore", "ignore", "pipe", "ipc"] });
@@ -143,6 +156,61 @@ test("N2 Linux refuses special bits even on hardlinks before any content effects
   assert.equal(Number((await lstat(f.target)).mode) & 0o7777, 0o4755);
   assert.equal(await readFile(f.target, "utf8"), f.before);
   assert.equal((await readdir(f.root)).some(name => name.startsWith(".pi-file-commit-")), false);
+});
+
+test("N2 Linux default parent ACL preselects compatibility for an ACL-free existing target", { skip: process.platform !== "linux" }, async t => {
+  const f = await fixture(t);
+  const script = "import os,sys,struct; acl=struct.pack('<I',2)+b''.join(struct.pack('<HHI',*e) for e in [(1,7,0xffffffff),(2,4,65534),(4,5,0xffffffff),(16,5,0xffffffff),(32,0,0xffffffff)]); os.setxattr(sys.argv[1],'system.posix_acl_default',acl); assert not os.listxattr(sys.argv[2]); print(acl.hex())";
+  const { stdout: acl } = await execute("python3", ["-c", script, f.root, f.target]);
+  const original = await lstat(f.target), plan = await planFor(f.target, f.before);
+  assert.equal(plan.metadata.strategy, "protected_in_place"); assert.match(plan.metadata.reason!, /Parent default ACL/);
+  assert.deepEqual(await readdir(f.root), ["测试.txt"]);
+  await commitPreparedFile(plan, f.after, { assertPathAllowed: async () => plan.target.canonical });
+  const actual = await lstat(f.target); assert.equal(actual.ino, original.ino); assert.equal(actual.mode, original.mode);
+  const { stdout } = await execute("python3", ["-c", "import os,sys; assert not os.listxattr(sys.argv[2]); print(os.getxattr(sys.argv[1],'system.posix_acl_default').hex())", f.root, f.target]);
+  assert.equal(stdout, acl); assert.deepEqual(await readFile(f.target), f.after);
+});
+
+test("N2 Linux value fingerprints frame names and lengths despite ambiguous decimal concatenations", { skip: process.platform !== "linux" }, async t => {
+  const f = await fixture(t), handle = await open(f.target, "r"); t.after(() => handle.close());
+  // Both old unframed encodings are byte-identical: 1|2|30|aaaa...18bbbb... and 12|30aaaa...|18|bbbb...
+  assert.equal("1" + "2" + "30" + "a".repeat(10) + "18" + "b".repeat(18), "12" + "30" + "a".repeat(10) + "18" + "b".repeat(18));
+  await execute("python3", ["-c", "import os,sys; p=sys.argv[1]; os.setxattr(p,'user.a',b''); os.setxattr(p,'user.b',b''); a,b=os.listxattr(p); os.setxattr(p,a,b'2'); os.setxattr(p,b,b'a'*10+b'18'+b'b'*18)", f.target]);
+  const before = await nativeFileRequest("inspect", { fd: handle.fd });
+  await execute("python3", ["-c", "import os,sys; p=sys.argv[1]; a,b=os.listxattr(p); os.setxattr(p,a,b'30'+b'a'*10); os.setxattr(p,b,b'b'*18)", f.target]);
+  const after = await nativeFileRequest("inspect", { fd: handle.fd });
+  assert.equal(after.namesFingerprint, before.namesFingerprint); assert.notEqual(after.valuesFingerprint, before.valuesFingerprint);
+});
+
+test("N2 Windows non-default token ownership preselects preservation without staging (injected capability)", { skip: process.platform !== "win32" }, async t => {
+  const f = await fixture(t), before = await lstat(f.target), emit = Worker.prototype.emit;
+  t.mock.method(Worker.prototype, "emit", function(this: Worker, name: string, ...args: any[]) {
+    if (name === "message" && args[0]?.value?.ownerAssignable !== undefined) args[0].value.ownerAssignable = false;
+    return Reflect.apply(emit, this, [name, ...args]);
+  });
+  const plan = await planFor(f.target, f.before);
+  assert.equal(plan.metadata.strategy, "protected_in_place"); assert.match(plan.metadata.reason!, /Owner\/group differ/);
+  assert.deepEqual(await readdir(f.root), ["测试.txt"]);
+  await commitPreparedFile(plan, f.after, { assertPathAllowed: async () => plan.target.canonical });
+  assert.equal((await lstat(f.target)).ino, before.ino); assert.deepEqual(await readFile(f.target), f.after);
+  assert.equal((await nativeFileRequest("stats")).activeHandles, 0);
+});
+
+test("N2 Windows actual non-default current-user owner is preserved without privilege adjustment", { skip: process.platform !== "win32" }, async t => {
+  const f = await fixture(t), identity = await capturePathIdentity(f.target);
+  const initial = await nativeFileRequest("inspect", { path: f.target, expected: identity, capability: true });
+  assert.equal(initial.ownerAssignable, true);
+  const script = "$ErrorActionPreference='Stop';$p=$env:N2_FIXTURE;$a=[IO.File]::GetAccessControl($p);$u=[Security.Principal.WindowsIdentity]::GetCurrent().User;if($a.GetOwner([Security.Principal.SecurityIdentifier]).Value -eq $u.Value){'same-default';exit};$a.SetOwner($u);[IO.File]::SetAccessControl($p,$a);'owner-changed'";
+  const { stdout } = await execute(join(process.env.SystemRoot!, "System32/WindowsPowerShell/v1.0/powershell.exe"), ["-NoProfile", "-NonInteractive", "-Command", script], { windowsHide: true, env: { ...process.env, N2_FIXTURE: f.target } });
+  if (stdout.trim() === "same-default") { t.skip("Token default owner already is TokenUser; no different assignable owner fixture without privileges."); return; }
+  assert.equal(stdout.trim(), "owner-changed");
+  const before = await nativeFileRequest("inspect", { path: f.target, expected: identity, capability: true });
+  assert.equal(before.ownerAssignable, false);
+  const plan = await planFor(f.target, f.before); assert.equal(plan.metadata.strategy, "protected_in_place");
+  assert.match(plan.metadata.reason!, /Owner\/group differ/);
+  await commitPreparedFile(plan, f.after, { assertPathAllowed: async () => plan.target.canonical });
+  const after = await nativeFileRequest("inspect", { path: f.target, expected: identity });
+  assert.equal(after.securityFingerprint, before.securityFingerprint); assert.deepEqual(await readFile(f.target), f.after);
 });
 
 test("N2 Linux hardlink capability observation is refused before compatibility selection (injected native observation)", { skip: process.platform !== "linux" }, async t => {

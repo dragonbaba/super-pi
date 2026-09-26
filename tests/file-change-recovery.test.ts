@@ -8,7 +8,7 @@ import { createJiti } from "jiti";
 import { mutationFixture as fixture } from "./helpers/mutation-fixture.ts";
 import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
 import { visibleWidth } from "../packages/tui/src/index.ts";
-const { collectChanges, remainingDraft, verifyChange } = await createJiti(import.meta.url).import<any>("../packages/extensions/mutation-guard-write/changes.ts");
+const { collectChanges, collectVerifiedChanges, remainingDraft, verifyChange } = await createJiti(import.meta.url).import<any>("../packages/extensions/mutation-guard-write/changes.ts");
 
 function commandUI(f: any, item: string, action: string, editor = "") {
   let input = editor, view = "", notices: string[] = [];
@@ -320,6 +320,70 @@ test("N1 negative item activity and aggregate-before-preparation never reconstru
     assert.equal(records.length, 0, fault); assert.throws(() => remainingDraft(records, new Set()), /No confirmed/);
   }
   assert.equal(readFileSync(join(f.cwd, "executed"), "utf8"), "actual");
+});
+
+test("N1 malformed progress never implies unstarted and late intent cannot authenticate an earlier terminal", async t => {
+  const f = await fixture(t);
+  await f.call("file_batch", { operations: [{ operation: "write", mode: "create", path: "ran", content: "real" }] }, "ordering");
+  const original = structuredClone(f.session.getBranch()) as any[];
+  for (const phase of ["intent", "result", "unknown"]) for (const itemId of [undefined, null, "ordering:01", "ordering:1", "ordering:-1"]) {
+    const branch = original.filter(e => e.message?.role === "assistant" || e.data?.phase === "prepared");
+    branch.push({ id: "malformed", type: "custom", customType: "file-mutation-progress-v2", data: { phase, toolCallId: "ordering", itemId } });
+    assert.deepEqual(collectChanges(branch, f.cwd), [], `${phase}/${itemId}`);
+  }
+  const intent = original.find(e => e.data?.phase === "intent");
+  const reordered = original.filter(e => e !== intent);
+  reordered.splice(reordered.findIndex(e => e.message?.role === "toolResult"), 0, intent);
+  const records = collectChanges(reordered, f.cwd);
+  assert.equal(records.length, 1); assert.ok(records[0].unavailable);
+  assert.throws(() => remainingDraft(records, new Set()), /missing|ambiguous/);
+  assert.equal(readFileSync(join(f.cwd, "ran"), "utf8"), "real");
+});
+
+test("N1 verification history requires complete ordered bound observations, not just matching identifiers", async t => {
+  const f = await fixture(t);
+  f.onRecord(data => { if (data.phase === "result") throw new Error("interrupted receipt"); });
+  await f.call("file_batch", { operations: ["uncertain", "later"].map(path => ({ operation: "write", mode: "create", path, content: path })) }, "observation");
+  const branch = structuredClone(f.session.getBranch()) as any[], records = collectChanges(branch, f.cwd);
+  const record = records.find((r: any) => r.status === "state_unknown");
+  const data = { version: 1, sessionId: f.session.getSessionId(), sourceEntryId: record.entryId, itemId: record.itemId,
+    toolCallId: record.toolCallId, observedAt: new Date().toISOString(), ...await verifyChange(record, async () => {}) };
+  const entry = { id: "observed", type: "custom", customType: "file-change-verification-v1", data };
+  assert.deepEqual([...collectVerifiedChanges([...branch, entry], records, data.sessionId)], [record.itemId]);
+  for (const fault of ["before-source", "source-id", "session-id", "time", "no-source", "path", "identity", "parents", "hash", "negative-size", "match", "scope", "duplicate-source", "duplicate-observation"]) {
+    const changed = structuredClone(entry), entries = [...branch];
+    if (fault === "source-id") changed.data.sourceEntryId = "missing";
+    if (fault === "session-id") changed.data.sessionId = "different";
+    if (fault === "time") changed.data.observedAt = "invalid";
+    if (fault === "no-source") delete changed.data.source;
+    if (fault === "path") changed.data.source.path = join(f.cwd, "other");
+    if (fault === "identity") delete changed.data.source.identity;
+    if (fault === "parents") delete changed.data.parents;
+    if (fault === "hash") changed.data.source.sha256 = "not-a-hash";
+    if (fault === "negative-size") changed.data.source.identity.size = "-1";
+    if (fault === "match") changed.data.postimageMatches = !data.postimageMatches;
+    if (fault === "scope") delete changed.data.scope;
+    if (fault === "duplicate-source") entries.push(branch.find(e => e.id === record.entryId));
+    if (fault === "duplicate-observation") entries.push(changed);
+    if (fault === "before-source") entries.unshift(changed); else entries.push(changed);
+    assert.equal(collectVerifiedChanges(entries, records, data.sessionId).size, 0, fault);
+  }
+  // Actual command must not let a four-ID-only persisted entry unlock a draft.
+  f.session.appendCustomEntry("file-change-verification-v1", { version: 1, sessionId: data.sessionId, sourceEntryId: record.entryId, itemId: record.itemId, toolCallId: record.toolCallId });
+  const ui = commandUI(f, "observation:1", "Draft remaining request");
+  await f.runner.getCommand("changes")!.handler("", f.runner.createContext() as never);
+  assert.equal(ui.input(), ""); assert.match(ui.notices().join("\n"), /verify partial\/unknown/);
+});
+
+test("N1 draft bounds include the source identifier, header and separators", () => {
+  const record = { entryId: "e", toolCallId: 'quoted"id', itemId: "draft:0", operation: "write", status: "not_started", preview: false,
+    target: resolve("draft"), original: { mode: "create", content: "desired" } };
+  assert.ok(remainingDraft([record], new Set()).includes(JSON.stringify(record.toolCallId)));
+  for (const toolCallId of ["a".repeat(257), "id\nnew instruction", "id\u202e", "id\u001b"]) {
+    assert.throws(() => remainingDraft([{ ...record, toolCallId }], new Set()), /identifier|control/);
+  }
+  const records = Array.from({ length: 6 }, (_, i) => ({ ...record, itemId: `draft:${i}`, original: { mode: "create", content: "x".repeat(8100) } }));
+  assert.throws(() => remainingDraft(records, new Set()), /draft bound/);
 });
 
 test("N1 interrupted preparation retains unstarted items and drafts original absolute targets across cwd changes", async t => {

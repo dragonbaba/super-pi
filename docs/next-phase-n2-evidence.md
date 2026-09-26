@@ -289,3 +289,44 @@ Earlier `e100` Linux CI measured installed platform package 2,387,558 bytes and
 five first-load times 81.32–90.14 ms, event-loop maximum 5.88–6.77 ms. Those figures
 are platform evidence for that head, not acceptance of the new candidate. Fresh
 full local gates, both CI platforms, cost runs and review remain required.
+
+## Final boundary follow-up
+
+`fb0c0f1fbf21acbb6a416b0e4504dab7513bb099` passed local check, offline
+build, hot/full tests and five native cost processes. Its Linux CI passed; Windows
+CI `36260905896` exposed eight snapshot fault-injection cases whose default legacy
+DACL selected compatibility before their staged-only injection. Tests now exercise
+both explicitly staged and hardlinked in-place paths. This exposed a genuine final
+async-read identity gap in in-place writes: the old handle could survive a renamed
+target. A final worker check now rechecks the handle, source bytes, parent, aliases
+and pathname identity before returning to the synchronous authority/signal gate.
+It is still not an OS CAS. Real publication-attempt counters distinguish dispatch
+from entering ReplaceFileW/rename; positive controls also prove those counters.
+
+The actual review's six findings are covered by this follow-up:
+
+- Retained candidates propagate verification/no-retry through core, batch results,
+  durable Session entries and recovery. Verification also observes the bounded
+  recorded sibling candidate. Observation excludes the old failed item from any
+  new remaining draft; it does not authorize retry or cleanup.
+- Linux parent default ACLs are inspected before staging and preselect preservation
+  of the existing ACL-free object. Attribute values are hashed with fixed-width
+  name/value lengths and names, eliminating ambiguous decimal concatenation.
+- Windows replacement selection requires owner/group matching the process token's
+  defaults, queried read-only with [OpenProcessToken](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-openprocesstoken)
+  and [GetTokenInformation](https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-gettokeninformation).
+  Other owners/groups select in-place preservation. No privilege is enabled.
+- The security fingerprint includes owner/group defaulted and DACL presence,
+  defaulted, inheritance-request, auto-inherited and protected
+  [control flags](https://learn.microsoft.com/en-us/windows/win32/secauthz/security-descriptor-control),
+  with framed component lengths. Unsupported defaulted/request/presence layouts
+  select preservation before effects.
+
+Windows Node 22.19.0 targeted checks: 110 pass / eight Linux-only skips across
+118 tests, plus one actual non-default-owner regression passes (no privilege
+adjustment). Actual control-only DACL drift changes the fingerprint with identical
+owner/group/ACE bytes and is rejected before content effects. The Linux ACL and
+ambiguous-value fixtures await Linux CI for this candidate. Fixed-head full local
+gates, five-process costs, two-platform CI and re-review remain pending. Native
+inspection still occurs only in the fixed private worker, with handles/buffers
+held until completion; ordinary startup, deltas, progress and render do not load it.
