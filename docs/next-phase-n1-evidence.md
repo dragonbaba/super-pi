@@ -169,3 +169,16 @@ The recovery-only binding does not change the Evidence Ledger or grant authority
 Seventy-five focused tests pass, including six corrupted phase variants, an
 unavailable purported success and a missing middle receipt after real execution.
 Latest-head full gates/CI/re-review remain pending for this follow-up.
+
+`b80f4752de35194e9fad97302b6d714b23c36a75` passed local check, offline
+build, hot/full tests, allocation gates and both CI platforms
+([run 36259129420](https://github.com/dragonbaba/super-pi/actions/runs/36259129420)).
+Its actual review identified canonical standalone-intent binding and two malformed
+history boundaries. V2 standalone recovery now uses one ordered canonical intent
+instead of resolving old relative arguments in the reopened Session cwd. Negative
+item indices and any same-call terminal aggregate preceding preparation invalidate
+unstarted reconstruction. Twenty-three focused recovery tests pass, including
+actual standalone write/delete/move, disk reopen with cwd override, a no-change
+remaining draft, and malformed imported histories. Legacy v1 receipts still need
+their older binding; no origin cwd is guessed. New-head full gates/CI/re-review are
+required and not inferred from the preceding candidate.

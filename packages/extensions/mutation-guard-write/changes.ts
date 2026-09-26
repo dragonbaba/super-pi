@@ -57,7 +57,8 @@ function uniqueBatchPreparation(entries: readonly any[], call: any) {
     if (prepared) return undefined; // Even a malformed competing preparation is ambiguous.
     prepared = entry; position = index;
   }
-  if (!prepared || entries.slice(0, position).some(entry => entry.data?.toolCallId === call.id && entry.data?.itemId !== undefined)) return undefined;
+  if (!prepared || entries.slice(0, position).some(entry => entry.data?.toolCallId === call.id && entry.data?.itemId !== undefined
+    || entry.message?.role === "toolResult" && entry.message.toolCallId === call.id)) return undefined;
   const targets = boundBatchIntents([prepared], call.arguments, call.id);
   if (!Array.isArray(call.arguments?.operations) || targets.size !== call.arguments.operations.length) return undefined;
   return { prepared, position, targets };
@@ -69,7 +70,7 @@ function laterBatchActivity(entries: readonly any[], callId: string, index: numb
     if (data?.toolCallId === callId && data.itemId !== undefined) {
       const suffix = typeof data.itemId === "string" ? data.itemId.slice(callId.length + 1) : "";
       const number = Number(suffix);
-      if (!Number.isInteger(number) || data.itemId !== `${callId}:${number}` || number > index) return true;
+      if (!Number.isSafeInteger(number) || number < 0 || data.itemId !== `${callId}:${number}` || number > index) return true;
     }
     const message = entry.message;
     if (message?.role === "toolResult" && message.toolCallId === callId && Array.isArray(message.details?.items)) {
@@ -137,11 +138,18 @@ export function collectChanges(branch: readonly any[], cwd: string): ChangeRecor
       const intent = boundRecoveryItem(executionEntries, call, index, receipt.receiptVersion === 2 ? receipt.status : "succeeded");
       bound = intent?.target === receipt.target && intent?.destination === destination;
     } else if (exactItemId && historicalTarget && call?.name === receipt.operation && typeof input?.path === "string") {
-      const expected = receipt.operation === "edit" || receipt.operation === "write" ? resolveToolPath(cwd, input.path) : resolve(cwd, input.path);
-      bound = expected === target && (receipt.operation !== "move" || typeof input.destination === "string" && resolve(cwd, input.destination) === destination);
-      if (bound && receipt.receiptVersion === 2) bound = executionEntries.some(candidate => candidate.type === "custom" && candidate.customType === "file-mutation-progress-v2"
-        && candidate.data?.phase === "intent" && candidate.data.toolCallId === call.id && candidate.data.itemId === receipt.itemId
-        && candidate.data.operation === receipt.operation && candidate.data.target === receipt.target && candidate.data.destination === receipt.destination);
+      if (receipt.receiptVersion === 2) {
+        // The ordered standalone intent records the authorized canonical target.
+        // Reopening/forking with another cwd must not reinterpret old arguments.
+        const intents = executionEntries.filter(candidate => candidate.type === "custom" && candidate.customType === "file-mutation-progress-v2"
+          && candidate.data?.phase === "intent" && candidate.data.toolCallId === call.id && candidate.data.itemId === receipt.itemId);
+        const intent = intents.length === 1 ? intents[0] : undefined;
+        bound = index === 0 && intent?.data.operation === receipt.operation && intent?.data.target === receipt.target
+          && intent?.data.destination === receipt.destination && (!receipt.destination || isAbsolute(receipt.destination));
+        if (bound && executionEntries.slice(0, executionEntries.indexOf(intent)).some(candidate => terminalOutcome(candidate, call.id, receipt.itemId, 0))) bound = false;
+      } else {
+        bound = resolveToolPath(cwd, input.path) === target;
+      }
     }
     if (bound && receipt.receiptVersion === 2 && conflictingTerminal(executionEntries, entry, receipt.toolCallId, receipt.itemId, index, receipt)) bound = false;
     records.push({ entryId: receipt.entryId, toolCallId: receipt.toolCallId, itemId: receipt.receiptVersion === 2 ? receipt.itemId : `${receipt.toolCallId}:0`,
