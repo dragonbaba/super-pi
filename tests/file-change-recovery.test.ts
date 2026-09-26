@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { existsSync, readFileSync, writeFileSync, mkdtempSync, mkdirSync, rmSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdtempSync, mkdirSync, rmSync, realpathSync, unlinkSync } from "node:fs";
+import { open } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { createJiti } from "jiti";
@@ -107,7 +108,7 @@ test("N1 preview is view-only and snapshot draft removes old evidence", async t 
   await f.runner.getCommand("changes")!.handler("", f.runner.createContext() as never);
   assert.match(ui.notices().join("\n"), /not a mutation receipt/);
   assert.equal(existsSync(join(f.cwd, "new")), false);
-  const draft = remainingDraft([{ entryId: "e", toolCallId: "old", itemId: "old:0", operation: "edit", status: "not_started", preview: false,
+  const draft = remainingDraft([{ entryId: "e", toolCallId: "old", itemId: "old:0", operation: "edit", status: "not_started", preview: false, target: join(f.cwd, "a"),
     original: { path: "a", snapshot: "OLD_SNAPSHOT", edits: [{ kind: "replace", start: "3#OLDHASH", newLines: ["desired"] }] } }], new Set());
   assert.doesNotMatch(draft, /OLD_SNAPSHOT|OLDHASH/); assert.match(draft, /originalLineHint/);
 });
@@ -221,6 +222,65 @@ test("N1 standalone exact and snapshot View retain their actual committed patche
     await f.runner.getCommand("changes")!.handler("", f.runner.createContext() as never);
     assert.deepEqual(ui.notices(), []); assert.match(ui.view(), /VISIBLE_PATCH/);
   }
+});
+
+test("N1 later terminal outcomes cannot reuse a completed item's intent", async t => {
+  const f = await fixture(t);
+  await f.call("file_batch", { operations: [{ operation: "write", mode: "create", path: "done", content: "committed" }] }, "terminal");
+  const branch = structuredClone(f.session.getBranch()) as any[];
+  const result = branch.find(e => e.customType === "file-mutation-progress-v2" && e.data.phase === "result");
+  branch.push({ ...result, id: "forged-later-terminal", data: { ...result.data, status: "failed_no_change", stateChanged: false } });
+  const records = collectChanges(branch, f.cwd);
+  assert.equal(records.length, 1); assert.ok(records[0].unavailable);
+  assert.throws(() => remainingDraft(records, new Set()), /missing|ambiguous/);
+  assert.equal(readFileSync(join(f.cwd, "done"), "utf8"), "committed");
+});
+
+test("N1 interrupted preparation retains unstarted items and drafts original absolute targets across cwd changes", async t => {
+  const f = await fixture(t);
+  f.onRecord(data => { if (data.phase === "result") throw new Error("fixture interruption after first mutation"); });
+  await f.call("file_batch", { operations: ["first", "second", "third"].map(path => ({ operation: "write", mode: "create", path, content: path })) }, "interrupted");
+  const branch = (f.session.getBranch() as any[]).filter(e => !(e.message?.role === "toolResult" && e.message.toolCallId === "interrupted"));
+  const records = collectChanges(branch, join(f.cwd, "other-cwd"));
+  assert.deepEqual(records.map((record: any) => record.status).sort(), ["not_started", "not_started", "state_unknown"]);
+  const uncertain = records.find((record: any) => record.status === "state_unknown");
+  await verifyChange(uncertain, async () => {});
+  const draft = remainingDraft(records, new Set([uncertain.itemId]));
+  const original = realpathSync.native(f.cwd);
+  assert.ok(draft.includes(JSON.stringify(join(original, "second"))));
+  assert.ok(draft.includes(JSON.stringify(join(original, "third"))));
+  assert.doesNotMatch(draft, /other-cwd/);
+  assert.equal(existsSync(join(f.cwd, "second")), false); assert.equal(existsSync(join(f.cwd, "third")), false);
+});
+
+test("N1 standalone failure View retains the cause", async t => {
+  const f = await fixture(t), target = join(realpathSync.native(f.cwd), "failure-view"); writeFileSync(target, "before");
+  await f.call("read", { path: target }, "failure-read");
+  f.onRecord(data => { if (data.phase === "intent") writeFileSync(target, "external change"); });
+  const result = await f.call("delete", { path: target }, "failed-delete");
+  assert.equal(result.isError, true);
+  const ui = commandUI(f, "failed-delete:0", "View");
+  await f.runner.getCommand("changes")!.handler("", f.runner.createContext() as never);
+  assert.deepEqual(ui.notices(), []); assert.match(ui.view(), /changed|stale/i);
+});
+
+test("N1 partial creation verifies recorded parents even when its target is absent", async t => {
+  const f = await fixture(t), target = join(realpathSync.native(f.cwd), "parent/child/file");
+  const probe = await open(join(f.cwd, "probe"), "w"), prototype = Object.getPrototypeOf(probe); await probe.close();
+  const original = prototype.writeFile; let injected = false;
+  t.mock.method(prototype, "writeFile", async function(this: any, value: any, ...args: any[]) {
+    if (value === "partial-create-fixture") { injected = true; throw new Error("fixture ENOSPC after parent creation"); }
+    return original.call(this, value, ...args);
+  });
+  const result = await f.call("write", { path: target, content: "partial-create-fixture" }, "parent-effects");
+  assert.equal(injected, true); assert.equal(result.isError, true); assert.equal((result.details as any).status, "partial");
+  unlinkSync(target);
+  const ui = commandUI(f, "parent-effects:0", "Verify current state");
+  await f.runner.getCommand("changes")!.handler("", f.runner.createContext() as never);
+  assert.deepEqual(ui.notices(), []);
+  const observation = (f.session.getBranch() as any[]).find(e => e.customType === "file-change-verification-v1").data;
+  assert.equal(observation.source.exists, false); assert.equal(observation.parents.length, 2);
+  for (const parent of observation.parents) { assert.equal(parent.exists, true); assert.equal(parent.identity.directory, true); }
 });
 
 test("N1 metadata-only verification rejects replacement during the final permission await", async t => {

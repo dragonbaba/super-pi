@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { lstat, open } from "node:fs/promises";
-import { isAbsolute, resolve } from "node:path";
+import { isAbsolute, resolve, relative, sep } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import type { ExtensionAPI, ExtensionContext } from "@super-pi/coding-agent";
 import { Key, matchesKey, Text, type TUI } from "@super-pi/tui";
@@ -19,8 +19,34 @@ export interface ChangeRecord {
   target: string; destination?: string; status: string; preview: boolean;
   original?: any; item?: any; postimage?: string; sourceIdentity?: { device: string; inode: string };
   receipt?: any;
+  reason?: string;
   unavailable?: string;
   batchSize?: number;
+}
+
+function terminalOutcome(entry: any, callId: string, itemId: string, index: number): any {
+  if (entry.type === "custom" && entry.customType === "file-mutation-progress-v2" && entry.data?.toolCallId === callId
+    && entry.data.itemId === itemId && entry.data.phase === "result") return entry.data;
+  if (entry.type === "message" && entry.message?.role === "toolResult" && entry.message.toolCallId === callId) {
+    const data = entry.message.details;
+    return entry.message.toolName === "file_batch" ? data?.items?.[index] : data;
+  }
+}
+
+function conflictingTerminal(entries: readonly any[], selected: any, callId: string, itemId: string, index: number, outcome: any): boolean {
+  let previous = false;
+  for (const entry of entries) {
+    if (entry.id === selected.id) break;
+    const terminal = terminalOutcome(entry, callId, itemId, index);
+    if (!terminal) continue;
+    // The one normal mirror is a durable custom result followed by the matching
+    // aggregate tool result. A later custom terminal cannot borrow an old intent.
+    if (previous || entry.type !== "custom" || selected.type !== "message"
+      || terminal.status !== outcome.status || terminal.stateChanged !== outcome.stateChanged
+      || terminal.operation !== outcome.operation || terminal.target !== outcome.target || terminal.destination !== outcome.destination) return true;
+    previous = true;
+  }
+  return false;
 }
 
 /** Reconstruct from bounded Session entries. No disk observation, replay or second history store. */
@@ -68,17 +94,37 @@ export function collectChanges(branch: readonly any[], cwd: string): ChangeRecor
         && candidate.data?.phase === "intent" && candidate.data.toolCallId === call.id && candidate.data.itemId === receipt.itemId
         && candidate.data.operation === receipt.operation && candidate.data.target === receipt.target && candidate.data.destination === receipt.destination);
     }
+    if (bound && receipt.receiptVersion === 2 && conflictingTerminal(executionEntries, entry, receipt.toolCallId, receipt.itemId, index, receipt)) bound = false;
     records.push({ entryId: receipt.entryId, toolCallId: receipt.toolCallId, itemId: receipt.receiptVersion === 2 ? receipt.itemId : `${receipt.toolCallId}:0`,
       operation: receipt.operation, target, destination,
       status: receipt.receiptVersion === 1 ? "succeeded" : receipt.status, preview: false,
       original: bound ? input : undefined, item: bound ? item : undefined,
       receipt: details,
+      reason: typeof (item?.reason ?? details?.cause ?? details?.reason) === "string" ? (item?.reason ?? details.cause ?? details.reason).slice(0, 800) : undefined,
       batchSize: call?.name === "file_batch" ? call.arguments?.operations?.length : undefined,
       postimage: bound && typeof details?.sha256 === "string" && SHA256.test(details.sha256) ? details.sha256 : undefined,
       sourceIdentity: bound ? details?.sourceIdentity : undefined,
       unavailable: bound ? undefined : !historicalTarget ? "Originating cwd is missing for this relative legacy receipt; unable to reconstruct its target safely."
         : "Original request or ordered matching preparation is missing/ambiguous in the bounded history; unable to reconstruct." });
     if (records.length > MAX_CHANGES) records.shift();
+  }
+  // A persisted, request-bound preparation precedes every per-item intent.
+  // After interruption, items with no later intent/outcome are safely unstarted.
+  for (let n = 0; n < branch.length; n++) {
+    const entry = branch[n], data = entry.data, call = calls.get(data?.toolCallId);
+    if (entry.type !== "custom" || entry.customType !== "file-mutation-progress-v2" || data?.phase !== "prepared"
+      || !call || duplicate.has(call.id) || call.name !== "file_batch" || (callOrder.get(call.id) ?? Infinity) >= n) continue;
+    const intents = boundBatchIntents([entry], call.arguments, call.id);
+    for (let index = 0; index < (call.arguments?.operations?.length ?? 0) && index < 16; index++) {
+      const itemId = `${call.id}:${index}`, intent = intents.get(itemId);
+      if (!intent || records.some(record => record.itemId === itemId)) continue;
+      // Any later item activity, even malformed, prevents a no-start claim.
+      if (branch.slice(n + 1).some(later => later.data?.toolCallId === call.id && (later.data?.itemId === itemId || later.data?.phase === "prepared")
+        || later.message?.role === "toolResult" && later.message.toolCallId === call.id)) continue;
+      records.push({ entryId: entry.id, toolCallId: call.id, itemId, operation: intent.operation, target: intent.target,
+        destination: intent.destination, status: "not_started", preview: false, original: call.arguments.operations[index], batchSize: call.arguments.operations.length });
+      if (records.length > MAX_CHANGES) records.shift();
+    }
   }
   const previews: ChangeRecord[] = [];
   // Previews deliberately have no durable mutation receipt. They are view-only.
@@ -102,6 +148,21 @@ export function collectChanges(branch: readonly any[], cwd: string): ChangeRecor
 }
 
 export interface ChangeObservation { path: string; exists: boolean; identity?: PathIdentity; sha256?: string; hashOmitted?: string }
+
+function retainedParents(record: ChangeRecord): string[] {
+  const directories = record.receipt?.creation?.createdDirectories ?? record.receipt?.createdDirectories;
+  if (directories === undefined) return [];
+  if (!Array.isArray(directories) || directories.length > 32) throw new Error("Recorded parent side effects exceed verification bounds.");
+  const paths: string[] = [];
+  for (const directory of directories) {
+    const path = directory?.identity?.canonical ?? directory?.path;
+    if (typeof path !== "string" || path.length > 4096 || !isAbsolute(path)) throw new Error("Recorded parent side effect cannot be reconstructed.");
+    const tail = relative(path, record.target);
+    if (!tail || tail === ".." || tail.startsWith(`..${sep}`) || isAbsolute(tail)) throw new Error("Recorded side effect is not a parent of the bound target.");
+    if (!paths.includes(path)) paths.push(path);
+  }
+  return paths;
+}
 
 async function observe(path: string, hash: boolean, assertAllowed: () => Promise<void>): Promise<ChangeObservation> {
   await assertAllowed();
@@ -144,10 +205,12 @@ export async function verifyChange(record: ChangeRecord, assertAllowed: (() => P
   if (record.preview || record.unavailable || !record.original) throw new Error("This record cannot authorize verification; no change was replayed.");
   const source = await observe(record.target, Boolean(record.postimage), assertAllowed);
   const destination = record.destination ? await observe(record.destination, false, assertAllowed) : undefined;
+  const parents: ChangeObservation[] = [];
+  for (const path of retainedParents(record)) parents.push(await observe(path, false, assertAllowed));
   await assertAllowed();
   // A second path (or a permission await) can change the first observation.
   // Recheck all identities, including metadata-only and oversized files.
-  for (const observation of destination ? [source, destination] : [source]) {
+  for (const observation of destination ? [source, destination, ...parents] : [source, ...parents]) {
     if (observation.identity) {
       if (!sameIdentity(observation.identity, await capturePathIdentity(observation.path))) throw new Error("Object changed before observation was accepted.");
     } else {
@@ -157,7 +220,7 @@ export async function verifyChange(record: ChangeRecord, assertAllowed: (() => P
     }
   }
   assertAllowed.assertCurrent?.();
-  return { source, destination,
+  return { source, destination, parents,
     postimageMatches: record.postimage && source.sha256 ? record.postimage === source.sha256 : undefined,
     destinationIdentityMatches: record.sourceIdentity && destination?.identity
       ? record.sourceIdentity.device === destination.identity.device && record.sourceIdentity.inode === destination.identity.inode : undefined,
@@ -171,10 +234,11 @@ function boundedString(value: unknown, label: string, max = 8192): string {
 
 function draftOperation(record: ChangeRecord): unknown {
   const input = record.original;
-  const path = boundedString(input.path, "Path", 4096);
+  const path = boundedString(record.target, "Recorded target", 4096);
+  if (!isAbsolute(path)) throw new Error("Draft needs a recorded absolute target; originating cwd cannot be guessed.");
   if (record.operation === "write") return { operation: "write", path, mode: input.mode, content: boundedString(input.content, "Content") };
   if (record.operation === "delete") return { operation: "delete", path };
-  if (record.operation === "move") return { operation: "move", path, destination: boundedString(input.destination, "Destination", 4096) };
+  if (record.operation === "move") return { operation: "move", path, destination: boundedString(record.destination, "Recorded destination", 4096) };
   if (!Array.isArray(input.edits) || input.edits.length > 20) throw new Error("Original edit parameters cannot be reconstructed.");
   const changes = [];
   for (const edit of input.edits) {
@@ -261,6 +325,7 @@ export function registerChanges(pi: ExtensionAPI, permissions: ObservationPermis
       } else if (action === "Verify current state") {
         if (record.preview || record.unavailable) throw new Error(record.unavailable ?? "Preview is not a mutation receipt. Execute a newly prepared request first.");
         const paths = record.destination ? [record.target, record.destination] : [record.target];
+        paths.push(...retainedParents(record));
         const assertAllowed = await permissions.authorizeFileObservation(ctx, paths); assertSession();
         const observation = await verifyChange(record, assertAllowed); assertSession();
         assertAllowed.assertCurrent();
