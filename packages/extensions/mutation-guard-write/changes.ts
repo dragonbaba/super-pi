@@ -18,6 +18,7 @@ export interface ChangeRecord {
   entryId: string; toolCallId: string; itemId: string; operation: string;
   target: string; destination?: string; status: string; preview: boolean;
   original?: any; item?: any; postimage?: string; sourceIdentity?: { device: string; inode: string };
+  receipt?: any;
   unavailable?: string;
   batchSize?: number;
 }
@@ -48,6 +49,7 @@ export function collectChanges(branch: readonly any[], cwd: string): ChangeRecor
     const call = duplicate.has(receipt.toolCallId) || !precedingCall ? undefined : calls.get(receipt.toolCallId);
     const entry = entries.get(receipt.entryId);
     const index = receipt.receiptVersion === 2 ? Number(receipt.itemId.slice(receipt.toolCallId.length + 1)) : 0;
+    const exactItemId = receipt.receiptVersion !== 2 || receipt.itemId === `${receipt.toolCallId}:${index}`;
     const input = call?.name === "file_batch" ? call.arguments?.operations?.[index] : call?.arguments;
     const item = entry?.message?.toolName === "file_batch" ? entry.message.details?.items?.[index] : undefined;
     const details = item?.receipt ?? entry?.message?.details ?? entry?.data;
@@ -56,20 +58,21 @@ export function collectChanges(branch: readonly any[], cwd: string): ChangeRecor
     const destination = receipt.receiptVersion === 2 && receipt.destination ? resolve(cwd, receipt.destination) : undefined;
     let bound = false;
     const executionEntries = call ? branch.slice(callOrder.get(call.id)! + 1, receiptOrder + 1) : [];
-    if (historicalTarget && call?.name === "file_batch" && input?.operation === receipt.operation) {
+    if (exactItemId && historicalTarget && call?.name === "file_batch" && input?.operation === receipt.operation) {
       const intent = boundBatchIntents(executionEntries, call.arguments, call.id).get(`${call.id}:${index}`);
       bound = intent?.target === receipt.target && intent?.destination === destination;
-    } else if (historicalTarget && call?.name === receipt.operation && typeof input?.path === "string") {
+    } else if (exactItemId && historicalTarget && call?.name === receipt.operation && typeof input?.path === "string") {
       const expected = receipt.operation === "edit" || receipt.operation === "write" ? resolveToolPath(cwd, input.path) : resolve(cwd, input.path);
       bound = expected === target && (receipt.operation !== "move" || typeof input.destination === "string" && resolve(cwd, input.destination) === destination);
       if (bound && receipt.receiptVersion === 2) bound = executionEntries.some(candidate => candidate.type === "custom" && candidate.customType === "file-mutation-progress-v2"
         && candidate.data?.phase === "intent" && candidate.data.toolCallId === call.id && candidate.data.itemId === receipt.itemId
         && candidate.data.operation === receipt.operation && candidate.data.target === receipt.target && candidate.data.destination === receipt.destination);
     }
-    records.push({ entryId: receipt.entryId, toolCallId: receipt.toolCallId, itemId: `${receipt.toolCallId}:${index}`,
+    records.push({ entryId: receipt.entryId, toolCallId: receipt.toolCallId, itemId: receipt.receiptVersion === 2 ? receipt.itemId : `${receipt.toolCallId}:0`,
       operation: receipt.operation, target, destination,
       status: receipt.receiptVersion === 1 ? "succeeded" : receipt.status, preview: false,
       original: bound ? input : undefined, item: bound ? item : undefined,
+      receipt: details,
       batchSize: call?.name === "file_batch" ? call.arguments?.operations?.length : undefined,
       postimage: bound && typeof details?.sha256 === "string" && SHA256.test(details.sha256) ? details.sha256 : undefined,
       sourceIdentity: bound ? details?.sourceIdentity : undefined,
@@ -137,7 +140,7 @@ async function observe(path: string, hash: boolean, assertAllowed: () => Promise
   return observation;
 }
 
-export async function verifyChange(record: ChangeRecord, assertAllowed: () => Promise<void>) {
+export async function verifyChange(record: ChangeRecord, assertAllowed: (() => Promise<void>) & { assertCurrent?: () => void }) {
   if (record.preview || record.unavailable || !record.original) throw new Error("This record cannot authorize verification; no change was replayed.");
   const source = await observe(record.target, Boolean(record.postimage), assertAllowed);
   const destination = record.destination ? await observe(record.destination, false, assertAllowed) : undefined;
@@ -153,6 +156,7 @@ export async function verifyChange(record: ChangeRecord, assertAllowed: () => Pr
       throw new Error("Path appeared before absence observation was accepted.");
     }
   }
+  assertAllowed.assertCurrent?.();
   return { source, destination,
     postimageMatches: record.postimage && source.sha256 ? record.postimage === source.sha256 : undefined,
     destinationIdentityMatches: record.sourceIdentity && destination?.identity
@@ -233,7 +237,7 @@ class ChangeViewer {
   dispose(): void { this.text.setText(""); this.tui = undefined; this.done = undefined; }
 }
 
-interface ObservationPermissions { authorizeFileObservation(ctx: ExtensionContext, paths: readonly string[]): Promise<() => Promise<void>> }
+interface ObservationPermissions { authorizeFileObservation(ctx: ExtensionContext, paths: readonly string[]): Promise<(() => Promise<void>) & { assertCurrent(): void }> }
 
 export function registerChanges(pi: ExtensionAPI, permissions: ObservationPermissions): void {
   pi.registerCommand("changes", { description: "View Session file changes, verify current state, or draft remaining work", async handler(_args, ctx) {
@@ -259,6 +263,7 @@ export function registerChanges(pi: ExtensionAPI, permissions: ObservationPermis
         const paths = record.destination ? [record.target, record.destination] : [record.target];
         const assertAllowed = await permissions.authorizeFileObservation(ctx, paths); assertSession();
         const observation = await verifyChange(record, assertAllowed); assertSession();
+        assertAllowed.assertCurrent();
         pi.appendEntry(CHANGE_VERIFICATION_ENTRY, { version: 1, sessionId, sourceEntryId: record.entryId, itemId: record.itemId,
           toolCallId: record.toolCallId, observedAt: new Date().toISOString(), ...observation });
         const text = new PreviewBudget().take(JSON.stringify(observation, null, 2), 400).text;

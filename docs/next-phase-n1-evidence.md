@@ -131,3 +131,14 @@ verification, and refuses relative legacy receipts with unknown originating cwd.
 New single-file results record canonical targets. Six regression suites now pass
 102 tests with one Windows case-sensitivity skip; final-head gates and review are
 pending for this follow-up. No completed review with findings is counted as approval.
+
+`5986a5b4e56001491366073e98dc71d534c59a4b` passed fixed-head local check,
+offline build, hot/full tests, preview profile and tool-leaf allocation gates. Its
+next actual review found exact v2 item-ID coercion, a missing synchronous authority
+gate after final observations, and missing/mislabelled committed patches in View.
+The follow-up retains exact IDs, exposes the captured permission generation check
+for final synchronous acceptance/persistence, retains standalone receipts for View,
+and selects successful diff/provenance from the committed receipt together. Twenty
+preview/recovery regressions pass, including real standalone exact/snapshot View
+and actual batch edits prepared from partial evidence. Check passes; final candidate
+gates and review remain required after this slice.

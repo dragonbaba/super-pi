@@ -109,6 +109,18 @@ test("N1 unread neighbors stay out of exact preview and failed preview identifie
   assert.equal(existsSync(join(f.cwd, "first")), false);
 });
 
+test("N1 successful batch expansion uses committed patch and its confirmed provenance", async t => {
+  const f = await fixture(t); writeFileSync(join(f.cwd, "committed-diff"), "one\ntwo\nthree\n");
+  await f.call("read", { path: "committed-diff", offset: 2, limit: 1 }, "committed-read");
+  const result = await f.call("file_batch", { operations: [{ operation: "edit", path: "committed-diff", edits: [{ oldText: "two", newText: "CONFIRMED_PATCH" }] }] }, "committed-batch");
+  assert.equal(result.isError, false, JSON.stringify(result));
+  const details = result.details as any;
+  assert.ok(details.items[0].preview.omitted);
+  assert.match(details.expandedSummary, /CONFIRMED_PATCH/);
+  assert.doesNotMatch(details.expandedSummary, /Prepared change only|\[omitted\]/);
+  assert.ok(details.expandedSummary.includes(details.items[0].receipt.patch));
+});
+
 test("N1 actual tool component expansion, 20k running updates and ten releases", async t => {
   const f = await fixture(t); initTheme("dark");
   const input = { dryRun: true, operations: [{ operation: "write", mode: "create", path: "中文.txt", content: "actual change\n" }] };

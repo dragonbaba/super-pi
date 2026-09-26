@@ -185,6 +185,44 @@ test("N1 relative legacy receipts never retarget a different Session cwd", async
   await assert.rejects(verifyChange(records[0], async () => { assert.fail("must not access reinterpreted path"); }), /cannot authorize/);
 });
 
+test("N1 recovery never normalizes a malformed v2 item identifier into another item", async t => {
+  const f = await fixture(t);
+  await f.call("file_batch", { operations: [{ operation: "write", mode: "create", path: "id-file", content: "new" }] }, "item-id");
+  const branch = structuredClone(f.session.getBranch()) as any[];
+  const result = branch.find(e => e.customType === "file-mutation-progress-v2" && e.data.phase === "result" && e.data.toolCallId === "item-id");
+  result.data.itemId = "item-id:00";
+  const malformed = collectChanges(branch, f.cwd).find((record: any) => record.itemId === "item-id:00");
+  assert.ok(malformed); assert.ok(malformed.unavailable); assert.equal(malformed.original, undefined);
+  await assert.rejects(verifyChange(malformed, async () => { assert.fail("unbound receipt must not observe files"); }), /cannot authorize/);
+});
+
+test("N1 verification checks captured authority synchronously after final filesystem reads", async t => {
+  const f = await fixture(t);
+  await f.call("file_batch", { operations: [{ operation: "write", mode: "create", path: "authority-file", content: "postimage" }] }, "final-authority");
+  const record = collectChanges(f.session.getBranch(), f.cwd)[0];
+  let checks = 0;
+  const assertAllowed = Object.assign(async () => {}, { assertCurrent() { checks++; throw new Error("final authority obsolete"); } });
+  await assert.rejects(verifyChange(record, assertAllowed), /final authority obsolete/);
+  assert.equal(checks, 1);
+});
+
+test("N1 standalone exact and snapshot View retain their actual committed patches", async t => {
+  const f = await fixture(t);
+  for (const snapshot of [false, true]) {
+    const path = snapshot ? "snapshot-view" : "exact-view", id = `${path}-call`;
+    writeFileSync(join(f.cwd, path), "one\ntwo\nthree\n");
+    const read = await f.call("read", { path }, `${id}-read`);
+    const body = read.content.filter(b => b.type === "text").map(b => b.text).join("\n");
+    const key = body.slice(body.indexOf("snapshot=") + 9, body.indexOf("snapshot=") + 36), anchor = body.split("\n").find(line => line.startsWith("2#"))?.split("|")[0];
+    const args = snapshot ? { path, snapshot: key, edits: [{ kind: "replace", start: anchor, newLines: ["VISIBLE_PATCH"] }] }
+      : { path, edits: [{ oldText: "two", newText: "VISIBLE_PATCH" }] };
+    const result = await f.call("edit", args, id); assert.equal(result.isError, false, JSON.stringify(result));
+    const ui = commandUI(f, `${id}:0`, "View");
+    await f.runner.getCommand("changes")!.handler("", f.runner.createContext() as never);
+    assert.deepEqual(ui.notices(), []); assert.match(ui.view(), /VISIBLE_PATCH/);
+  }
+});
+
 test("N1 metadata-only verification rejects replacement during the final permission await", async t => {
   const f = await fixture(t); const source = join(f.cwd, "source"), destination = join(f.cwd, "destination");
   writeFileSync(source, "content");
