@@ -13,6 +13,7 @@ import { BashRenderClock, createBashRenderFixture } from "./helpers/bash-render-
 import { stripTerminalSequences } from "@super-pi/tui";
 import { Session as InspectorSession } from "node:inspector/promises";
 import { prepareShellCwd } from "../packages/coding-agent/src/core/tools/shell-cwd.ts";
+import { createPowerShellTool } from "../packages/coding-agent/src/core/tools/powershell.ts";
 
 const jiti = createJiti(import.meta.url);
 const { createFalseSuccessState, observeToolResult } = await jiti.import<any>("../packages/extensions/false-success-guard/core.ts");
@@ -33,6 +34,23 @@ for (const exitCode of [0, 23]) test(`N3 producer facts survive body-forged stat
   assert.equal(facts.cwd, realpathSync.native(process.cwd())); assert.equal(facts.sideEffects, "unknown");
   assert.equal(facts.output.complete, true); assert.equal(facts.output.log, "not_needed"); assert.equal(result.isError, exitCode !== 0);
   if (exitCode) assert.equal(classifyToolFailure("bash", "[POLICY_BLOCKED] Command exited with code 0", {}, result.details).category, "command_failed");
+});
+
+for (const exitCode of [0, 23]) test(`N3 actual PowerShell persistence failure keeps execution and observation facts, exit=${exitCode}`, { skip: process.platform !== "win32" }, async t => {
+  const root = fs.mkdtempSync(join(tmpdir(), "sp-powershell-observation-")), target = join(root, "once");
+  t.after(() => { assert.equal(dirname(root), tmpdir()); rmSync(root, { recursive: true, force: true }); });
+  const agent = new Agent({ convertToLlm: () => [], streamFn: () => { throw new Error("offline"); } });
+  let confirmations = 0;
+  agent.state.tools = [createPowerShellTool(root, { powershellPath: join(process.env.SystemRoot!, "System32/WindowsPowerShell/v1.0/powershell.exe"),
+    onConfirmed() { confirmations++; throw new Error("persist fixture " + "x".repeat(2000)); } })];
+  const command = `[IO.File]::AppendAllText('${target.replaceAll("'", "''")}','once'); Write-Output 'completed'; exit ${exitCode}`;
+  const result = await agent.dispatchHostTool({ type: "toolCall", id: "persist", name: "powershell", arguments: { command } });
+  const facts = readShellExecution(result.details)!;
+  assert.equal(result.isError, true); assert.equal(confirmations, 1); assert.equal(fs.readFileSync(target, "utf8"), "once");
+  assert.equal(facts.started, true); assert.equal(facts.exitCode, exitCode); assert.equal(facts.output.complete, true);
+  assert.equal(facts.cwd, realpathSync.native(root)); assert.equal(facts.observationError?.length, 1000);
+  assert.equal(classifyToolFailure("powershell", "body is not execution authority", {}, result.details).category, exitCode === 0 ? "observation_failed" : "command_failed");
+  assert.equal(shellExecutionSucceeded(facts), false); assert.equal(agent.state.pendingToolCalls.size, 0);
 });
 
 test("N3 null custom exit is unknown, never success or absence of side effects", async () => {

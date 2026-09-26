@@ -1054,6 +1054,7 @@ export function createShellToolDefinition(
 					exitCode: processResult?.exitCode ?? null, signal: observation?.signal ?? null,
 					termination,
 					inputError: processResult?.inputError,
+					observationError: processResult?.observationError,
 					output: { complete: logError ? false : observation?.outputDrained ?? "unknown", tailTruncated: snapshot.truncation.truncated,
 						log: logError ? "failed" : snapshot.fullOutputPath ? snapshot.spillFileCapped ? "capped" : "complete" : "not_needed",
 						cleanup, logError, cleanupError } };

@@ -233,7 +233,7 @@ export function createLocalPowerShellOperations(options: LocalPowerShellOperatio
 					`PowerShell command completed with exit code ${result.exitCode}, but Super Pi could not persist ` +
 						`the executable status: ${detail}. The command was not retried.`,
 					{ cause: error },
-				), result);
+				), { ...result, observationError: detail.slice(0, 1000) });
 			}
 			return result;
 		},

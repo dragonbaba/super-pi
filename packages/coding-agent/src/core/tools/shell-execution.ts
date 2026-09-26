@@ -6,6 +6,7 @@ export interface ShellProcessResult {
   observation?: ChildProcessObservation;
   termination?: ShellTermination;
   inputError?: string;
+  observationError?: string;
 }
 const PROCESS_RESULT = Symbol.for("pi.shell-process-result.v1");
 
@@ -32,7 +33,7 @@ export interface ShellExecutionFacts {
   signal: string | null;
   termination: ShellTermination;
   inputError?: string;
-  /** Agent-owned completion/progress observer failure; execution facts remain intact. */
+  /** Completion/progress observer or executable-status persistence failure. */
   observationError?: string;
   output: {
     complete: boolean | "unknown";
