@@ -10,6 +10,7 @@ import {
 } from "../packages/coding-agent/src/core/tools/powershell.ts";
 import type { SettingsManager } from "../packages/coding-agent/src/core/settings-manager.ts";
 import type { PowerShellConfig } from "../packages/coding-agent/src/utils/shell.ts";
+import { shellProcessResultFromError } from "../packages/coding-agent/src/core/tools/shell-execution.ts";
 
 const INITIAL_CONFIG: PowerShellConfig = {
 	shell: "C:\\PowerShell\\pwsh.exe",
@@ -91,10 +92,11 @@ test("a confirmation persistence failure never replays a completed command", asy
 
 	await assert.rejects(
 		operations.exec("Write-Output stateful", process.cwd(), EXEC_OPTIONS),
-		(error: unknown) =>
-			error instanceof Error &&
-			error.message.toLowerCase().includes("command completed") &&
-			error.message.toLowerCase().includes("not retried"),
+		(error: unknown) => {
+			assert.equal(shellProcessResultFromError(error)?.observationError, "settings denied");
+			assert.equal(shellProcessResultFromError(error)?.exitCode, 0);
+			return error instanceof Error && error.message.toLowerCase().includes("command completed") && error.message.toLowerCase().includes("not retried");
+		},
 	);
 	assert.equal(executions, 1);
 	assert.equal(probes, 0);

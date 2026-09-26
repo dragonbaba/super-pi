@@ -141,3 +141,13 @@ pass 62 with two platform skips after rebuilding the package consumer. No field
 is created on normal delta/progress/render delivery. Two remaining postmerge
 fixtures now use unsupported `cat -n` heredocs for their negative assertions;
 default SDK supported bare-cat authorization continues to be tested positively.
+
+The 0c9af9 review found the analogous PowerShell executable-status persistence
+boundary. A rejected onConfirmed callback now adds a bounded observationError to
+the preserved process result, and the common shell producer copies it to structured
+facts. Real Windows PowerShell exit-0/23 tests append exactly once to an owned file,
+retain started/cwd/exit/output facts and classify observation_failed/command_failed
+respectively. The command is never rediscovered or replayed. Seventy-six focused
+cases pass after check/build. Full-suite old heredoc fixtures now distinguish the
+supported quoted data form from unsupported arguments, and progress-failure
+assertions require both completed result content and the observation diagnostic.
