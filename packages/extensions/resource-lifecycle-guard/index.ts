@@ -138,7 +138,7 @@ export default function resourceLifecycleGuard(pi: ExtensionAPI): void {
     await permissions.restore(ctx);
   });
   pi.on("before_agent_start", (event) => ({
-    systemPrompt: `${event.systemPrompt}\n\n${permissions.systemGuidance()}\nBash capability: with this guard enabled, actual heredocs are unsupported; ordinary cat reads, quoted text and arithmetic retain normal inspection and permissions. Timeout is seconds: 60 means one minute. For authorized script diagnostics, native creation/editing, foreground execution and cleanup each retain their own read, path, permission and lifecycle requirements. Changing tools or language cannot authorize forbidden behavior.`,
+    systemPrompt: `${event.systemPrompt}\n\n${permissions.systemGuidance()}\nBash input: one standalone cat or node command with a single-quoted heredoc delimiter is supported, up to 12 KiB UTF-8 for the complete command. No extra arguments, redirects, pipelines or surrounding commands; other heredoc forms remain unsupported. Node source receives the existing script checks; both code and data require the normal opaque-input authorization. The original command and body are executed unchanged. Timeout is seconds: 60 means one minute. For authorized script diagnostics, native creation/editing, foreground execution and cleanup each retain their own read, path, permission and lifecycle requirements. Changing tools or language cannot authorize forbidden behavior.`,
   }));
 
   pi.on("tool_call", async (event, ctx) => {

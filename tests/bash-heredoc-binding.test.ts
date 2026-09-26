@@ -9,11 +9,13 @@ import { createBashTool, type BashToolOptions } from "../packages/coding-agent/s
 import { getShellConfig } from "../packages/coding-agent/src/utils/shell.ts";
 import { inspectBashPermissionScope } from "../packages/extensions/resource-lifecycle-guard/permission-bash.ts";
 import { inspectBashResourceLifecycle } from "../packages/extensions/resource-lifecycle-guard/core.ts";
+import { boundedShellInput, MAX_BOUND_SHELL_INPUT_BYTES } from "../packages/coding-agent/src/core/tools/bounded-shell-input.ts";
+import { withMsysStdinBridge } from "../packages/coding-agent/src/core/tools/msys-stdin.ts";
 
 const shellPath = process.platform === "win32" && existsSync("D:/Git/bin/bash.exe") ? "D:/Git/bin/bash.exe" : getShellConfig().shell;
 const literal = "cat <<'EOF'\nprintf BODY_EXECUTED\nEOF";
 
-async function dispatch(cwd: string, command: string, options: BashToolOptions = {}, deny = false) {
+async function dispatch(cwd: string, command: string, options: BashToolOptions = {}, deny = false, expectedPermissions = 1) {
  let processes = 0; let permissions = 0; let providers = 0;
  const hook = createHook({ init(_id, type) { if (type === "PROCESSWRAP") processes++; } });
  const agent = new Agent({ streamFn: () => { providers++; throw new Error("provider forbidden"); },
@@ -27,7 +29,7 @@ async function dispatch(cwd: string, command: string, options: BashToolOptions =
  try {
   const result = await agent.dispatchHostTool({ type: "toolCall", id: "heredoc", name: "bash", arguments: { command } });
   await agent.waitForIdle();
-  assert.equal(agent.state.pendingToolCalls.size, 0); assert.equal(providers, 0); assert.equal(permissions, 1);
+  assert.equal(agent.state.pendingToolCalls.size, 0); assert.equal(providers, 0); assert.equal(permissions, expectedPermissions);
   return { result, processes, text: result.content.filter(c => c.type === "text").map(c => c.text).join("\n") };
  } finally { hook.disable(); agent.abort(); }
 }
@@ -42,15 +44,42 @@ for (const [command, expected] of [["printf '%s\n' 'a << b'", "a << b"], ["echo 
 }
 
 
-test("fallback: actual heredocs are rejected before hooks/backend/spawn on every platform", async t => {
+test("bounded input refuses custom hooks/backend/prefix before execution on every platform", async t => {
  const cwd = mkdtempSync(join(tmpdir(), "pi-heredoc-fallback-")); t.after(() => rmSync(cwd, { recursive: true }));
  const startup = join(cwd, "startup.sh"); writeFileSync(startup, 'printf UNWANTED > marker\n');
  let hooks = 0, backends = 0;
- for (const options of [{}, { spawnHook: (context: any) => { hooks++; return { ...context, env: { ...context.env, BASH_ENV: startup, "BASH_FUNC_cat%%": '() { eval "$(/usr/bin/cat)"; }' } }; } }, { operations: { exec: async () => { backends++; return { exitCode: 0 }; } } }]) {
-  const outcome = await dispatch(cwd, literal, options);
-  assert.equal(outcome.result.isError, true); assert.equal(outcome.processes, 0); assert.match(outcome.text, /uncertain\/uninspectable/);
+ for (const options of [{ commandPrefix: "printf PREFIX" }, { spawnHook: (context: any) => { hooks++; return { ...context, env: { ...context.env, BASH_ENV: startup, "BASH_FUNC_cat%%": '() { eval "$(/usr/bin/cat)"; }' } }; } }, { operations: { exec: async () => { backends++; return { exitCode: 0 }; } } }]) {
+  const outcome = await dispatch(cwd, literal, options, false, 0);
+  assert.equal(outcome.result.isError, true); assert.equal(outcome.processes, 0); assert.match(outcome.text, /SHELL_INPUT_UNSUPPORTED/);
  }
  assert.equal(hooks, 0); assert.equal(backends, 0); assert.equal(existsSync(join(cwd, "marker")), false);
+});
+
+test("bounded quoted data and Node source execute original UTF-8 bytes through real Bash", async t => {
+ const cwd = mkdtempSync(join(tmpdir(), "pi-bounded-input-")); t.after(() => rmSync(cwd, { recursive: true }));
+ const data = '中文 "quotes" $HOME $(touch forbidden) `false` \\\\ tail\n';
+ for (const command of [`cat <<'END'\n${data}END`, "cat <<'END'\nEND", `node <<'END'\nconst text = ${JSON.stringify(data)};\nprocess.stdout.write(text);\nEND`]) {
+  assert.ok(boundedShellInput(command));
+  assert.equal(inspectBashResourceLifecycle({ command }), undefined);
+  assert.equal(inspectBashPermissionScope({ command }, process.cwd())?.kind, "opaque-script");
+  const result = await dispatch(cwd, command, { spawnHook: withMsysStdinBridge });
+  assert.equal(result.result.isError, false, result.text); assert.equal(result.processes, 1);
+  assert.equal(result.text, command === "cat <<'END'\nEND" ? "(no output)" : data);
+  const denied = await dispatch(cwd, command, { spawnHook: withMsysStdinBridge }, true);
+  assert.equal(denied.result.isError, true); assert.equal(denied.processes, 0);
+ }
+ assert.equal(existsSync(join(cwd, "forbidden")), false);
+});
+
+test("bounded input preserves limits and rejects extra executable framing", () => {
+ const overhead = Buffer.byteLength("cat <<'END'\n\nEND");
+ assert.ok(boundedShellInput(`cat <<'END'\n${"x".repeat(MAX_BOUND_SHELL_INPUT_BYTES - overhead)}\nEND`));
+ for (const command of [
+  `cat <<'END'\n${"x".repeat(MAX_BOUND_SHELL_INPUT_BYTES - overhead + 1)}\nEND`,
+  "cat <<END\nx\nEND", "cat <<'END' > file\nx\nEND", "cat <<'END'\nx\nEND\necho later",
+  "cat <<'END'\nEND\necho hidden\nEND", "node <<'END'\r\nconsole.log(1)\r\nEND", "cat file <<'END'\nx\nEND",
+  "cat <<'END' | node\nx\nEND", "cat <<'ONE' <<'TWO'\nx\nONE\nx\nTWO",
+ ]) { assert.equal(boundedShellInput(command), undefined); assert.match(inspectBashResourceLifecycle({ command })!, /SHELL_HEREDOC/); }
 });
 
 test("fallback: executable quoted operands are not accepted as inert data", async () => {

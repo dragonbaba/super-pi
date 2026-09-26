@@ -27,6 +27,7 @@ import {
 	WINDOWS_WAIT_PATTERN,
 } from "./regex.ts";
 import { extractCommandSubstitutions, inspectHereDocuments, prepareShellAnalysis } from "./shell-substitution.ts";
+import { boundedShellInput } from "@super-pi/coding-agent";
 import { parseTimeoutInvocation } from "./timeout-wrapper.ts";
 import { bashArithmeticForHeader, bashLoopVariableIndex, bashPipelinePrefixEnd, bashScriptOperandIndex, unsafeBashForHeaderReason, hasStatefulBashPrintf, shellExpansionRisk, hasUnsafeBashTestOperand, hasUnsafeBashLoopListOperand, hasUnsafeCommandQueryOperand, isBashArithmeticCommandHead, isBashDoubleBracketCloseBoundary, isBashNetworkRedirectionTarget, isBashDoubleBracketHead, isBashProcessSubstitutionStart, isBashTestWhitespace, isLookupSensitiveBashVariable, isShellDynamicDescriptor, isShellFileDescriptor, isShellOutputFileRedirection, isSimpleBashAnsiCQuote, isStaticDescriptorCopy, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
 import { FD_DUPLICATION_PATTERN } from "./regex.ts";
@@ -113,6 +114,8 @@ export function inspectBashResourceLifecycle(input: unknown, nativePowerShellAva
 
 function inspectLifecycleScript(source: string, depth: number, nativePowerShellAvailable = false): string | undefined {
  if (depth > MAX_WRAPPER_DEPTH) return lifecycleRefusal("SHELL_INSPECTION_LIMIT", "wrapper/substitution nesting exceeds the inspection depth", "reduce nesting");
+ const input = depth === 0 && source.includes("<<") ? boundedShellInput(source) : undefined;
+ if (input) return inspectLifecycleScript(input.analysisCommand, depth + 1, nativePowerShellAvailable);
  const here = source.includes("<<") ? inspectHereDocuments(source) : undefined;
  if (here?.uncertain) return here.heredoc
   ? "[SHELL_HEREDOC] This Bash call was not executed: heredoc is uncertain/uninspectable.\n[Lifecycle recovery] Create/edit the diagnostic script natively with its own read/path permissions, then resubmit foreground execution for authorization."
@@ -288,7 +291,8 @@ export function inspectHighRiskBashMutation(input: unknown, cwd: string, shellOp
 		workspaceWide: false,
 		segmentsVisited: 0,
 	};
-	inspectShellScript(command, resolve(cwd), 0, builder, shellOperation);
+	const stdin = shellOperation === "bash" && command.includes("<<") ? boundedShellInput(command) : undefined;
+	inspectShellScript(stdin?.analysisCommand ?? command, resolve(cwd), 0, builder, shellOperation);
 	if (builder.primitives.length === 0) return undefined;
 	return {
 		risk: "HIGH",
