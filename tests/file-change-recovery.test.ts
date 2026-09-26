@@ -585,6 +585,12 @@ test("N1 later changed-target, destination or operation terminals make earlier o
     const records = collectChanges(branch, f.cwd); assert.equal(records.length, 1); assert.ok(records[0].unavailable, field);
     assert.throws(() => remainingDraft(records, new Set()), /missing|ambiguous/);
   }
+  for (const field of ["toolName", "operation"]) {
+    const branch = JSON.parse(JSON.stringify(genuine)), aggregate = branch.find((entry: any) => entry.message?.toolCallId === "later-conflict" && entry.message?.role === "toolResult");
+    if (field === "toolName") aggregate.message.toolName = "write"; else aggregate.message.details.operation = "write";
+    const records = collectChanges(branch, f.cwd); assert.equal(records.length, 1); assert.ok(records[0].unavailable, field);
+    assert.throws(() => remainingDraft(records, new Set()));
+  }
 });
 
 for (const batch of [false, true]) test(`N1 intent-only creation observes every bounded planned parent, batch=${batch}`, async t => {
@@ -594,6 +600,20 @@ for (const batch of [false, true]) test(`N1 intent-only creation observes every 
   const records = collectChanges(branch, f.cwd); assert.equal(records.length, 1); assert.equal(records[0].status, "state_unknown");
   const observation = await verifyChange(records[0], async () => {});
   assert.equal(observation.parents.length, 2); assert.ok(observation.parents.every((parent: any) => parent.exists && parent.identity.directory));
+  for (const fault of ["omit", "empty", "substitute", "reorder", "preparation"]) {
+    const corrupted = JSON.parse(JSON.stringify(branch)), intent = corrupted.find((entry: any) => entry.data?.phase === "intent").data;
+    if (fault === "omit") delete intent.directories;
+    if (fault === "empty") intent.directories = [];
+    if (fault === "substitute") intent.directories[0] = dirname(path);
+    if (fault === "reorder") intent.directories.reverse();
+    if (fault === "preparation") {
+      const prepared = corrupted.find((entry: any) => entry.data?.phase === (batch ? "prepared" : "origin")).data;
+      delete (batch ? prepared.items[0] : prepared).directories;
+    }
+    const invalid = collectChanges(corrupted, f.cwd); assert.ok(invalid[0].unavailable, fault);
+    await assert.rejects(verifyChange(invalid[0], async () => {}));
+    assert.throws(() => remainingDraft(invalid, new Set([invalid[0].itemId])));
+  }
 });
 
 test("N1 standalone snapshot post-rename readback failure retains a partial terminal", async t => {

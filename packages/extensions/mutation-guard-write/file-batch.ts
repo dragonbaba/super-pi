@@ -276,7 +276,8 @@ export class BatchInvocation {
         for (const item of this.items) { this.currentItem = item; await this.revalidate(item, signal); }
         if (this.input.dryRun) { for (const result of results) result.status = "preview"; return; }
         const preparedTargets = [];
-        for (const item of this.items) preparedTargets.push({ itemId: item.itemId, operation: item.operation, target: item.target, destination: item.native?.destination });
+        for (const item of this.items) preparedTargets.push({ itemId: item.itemId, operation: item.operation, target: item.target, destination: item.native?.destination,
+          directories: item.creation ? canonicalCreationDirectories(item.creation) : undefined });
         pi.appendEntry(MUTATION_PROGRESS_ENTRY, { toolCallId: this.id, phase: "prepared", requestHash: this.requestHash, items: preparedTargets });
         for (let index = 0; index < this.items.length; index++) {
           const item = this.items[index], result = results[index];
