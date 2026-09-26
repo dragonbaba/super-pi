@@ -8,6 +8,7 @@ import { capturePathIdentity, sameIdentity, type PathIdentity } from "./native-f
 import { boundBatchIntents, collectStructuredMutationReceipts, recentMutationEntries } from "./session-evidence.ts";
 import { batchExpandedSummary, PreviewBudget, displayMetadata } from "./change-preview.ts";
 import { mutationRequestHash } from "../resource-lifecycle-guard/permission-contract.ts";
+import { parseSnapshotLineReference } from "./snapshot-line-protocol.ts";
 import { SHA256_PATTERN as SHA256, CHANGE_ID_CONTROL_PATTERN, OBSERVATION_UNSIGNED_INTEGER_PATTERN, OBSERVATION_SIGNED_INTEGER_PATTERN } from "./regex.ts";
 
 export const CHANGE_VERIFICATION_ENTRY = "file-change-verification-v1";
@@ -51,7 +52,24 @@ function uniqueProgress(entries: readonly any[], callId: string, phase: string, 
   return found;
 }
 
-function conflictingTerminal(entries: readonly any[], selected: any, callId: string, itemId: string, index: number, outcome: any): boolean {
+const DIRECTORY_IDENTITY_FIELDS = ["path", "canonical", "device", "inode", "size", "mtime", "ctime", "mode", "links", "directory"] as const;
+
+function sameCreatedDirectories(left: any, right: any): boolean {
+  if (left === undefined || right === undefined) return left === right;
+  if (!Array.isArray(left) || !Array.isArray(right) || left.length > 32 || left.length !== right.length) return false;
+  for (let index = 0; index < left.length; index++) {
+    const a = left[index], b = right[index];
+    if (!a || !b || typeof a.path !== "string" || a.path.length > 4096 || a.path !== b.path || !a.identity || !b.identity) return false;
+    for (const field of DIRECTORY_IDENTITY_FIELDS) {
+      const value = a.identity[field];
+      if (value !== b.identity[field] || typeof value === "string" && value.length > 4096
+        || value !== undefined && typeof value !== "string" && typeof value !== "boolean") return false;
+    }
+  }
+  return true;
+}
+
+function conflictingTerminal(entries: readonly any[], selected: any, callId: string, itemId: string, index: number, outcome: any, details: any): boolean {
   let previous = false;
   for (const entry of entries) {
     if (entry.id === selected.id) break;
@@ -61,7 +79,8 @@ function conflictingTerminal(entries: readonly any[], selected: any, callId: str
     // aggregate tool result. A later custom terminal cannot borrow an old intent.
     if (previous || entry.type !== "custom" || selected.type !== "message"
       || terminal.status !== outcome.status || terminal.stateChanged !== outcome.stateChanged
-      || terminal.operation !== outcome.operation || terminal.target !== outcome.target || terminal.destination !== outcome.destination) return true;
+      || terminal.operation !== outcome.operation || terminal.target !== outcome.target || terminal.destination !== outcome.destination
+      || !sameCreatedDirectories(terminal.createdDirectories, details?.creation?.createdDirectories ?? details?.createdDirectories)) return true;
     previous = true;
   }
   return false;
@@ -186,7 +205,7 @@ export function collectChanges(branch: readonly any[], cwd: string): ChangeRecor
         } else bound = resolveToolPath(cwd, input.path) === target;
       }
     }
-    if (bound && receipt.receiptVersion === 2 && conflictingTerminal(executionEntries, entry, receipt.toolCallId, receipt.itemId, index, receipt)) bound = false;
+    if (bound && receipt.receiptVersion === 2 && conflictingTerminal(executionEntries, entry, receipt.toolCallId, receipt.itemId, index, receipt, details)) bound = false;
     records.push({ entryId: receipt.entryId, toolCallId: receipt.toolCallId, itemId: receipt.receiptVersion === 2 ? receipt.itemId : `${receipt.toolCallId}:0`,
       operation: receipt.operation, target, destination,
       status: receipt.receiptVersion === 1 ? "succeeded" : receipt.status, preview: false,
@@ -349,7 +368,7 @@ function draftOperation(record: ChangeRecord): unknown {
   const input = record.original;
   const path = boundedString(record.target, "Recorded target", 4096);
   if (!isAbsolute(path)) throw new Error("Draft needs a recorded absolute target; originating cwd cannot be guessed.");
-  if (record.operation === "write") return { operation: "write", path, mode: input.mode, content: boundedString(input.content, "Content") };
+  if (record.operation === "write") return { operation: "write", path, mode: record.batchSize === undefined ? "create" : input.mode, content: boundedString(input.content, "Content") };
   if (record.operation === "delete") return { operation: "delete", path };
   if (record.operation === "move") return { operation: "move", path, destination: boundedString(record.destination, "Recorded destination", 4096) };
   if (!Array.isArray(input.edits) || input.edits.length > 20) throw new Error("Original edit parameters cannot be reconstructed.");
@@ -360,7 +379,8 @@ function draftOperation(record: ChangeRecord): unknown {
       const newLines: string[] | undefined = edit.newLines === undefined ? undefined : [];
       if (newLines) for (const line of edit.newLines) newLines.push(boundedString(line, "Replacement line", 2048));
       // Stale snapshot IDs and LINE#ID anchors are never serialized into a new draft.
-      changes.push({ kind: edit.kind, originalLineHint: Number.parseInt(edit.start, 10), originalEndLineHint: edit.end ? Number.parseInt(edit.end, 10) : undefined, newLines });
+      changes.push({ kind: edit.kind, originalLineHint: parseSnapshotLineReference(edit.start, "start").line,
+        originalEndLineHint: edit.end ? parseSnapshotLineReference(edit.end, "end").line : undefined, newLines });
     } else changes.push({ oldText: boundedString(edit.oldText, "Old text"), newText: boundedString(edit.newText, "New text") });
   }
   return { operation: "edit", path, desiredChanges: changes };

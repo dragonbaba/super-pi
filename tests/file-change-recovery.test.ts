@@ -112,8 +112,9 @@ test("N1 preview is view-only and snapshot draft removes old evidence", async t 
   assert.match(ui.notices().join("\n"), /not a mutation receipt/);
   assert.equal(existsSync(join(f.cwd, "new")), false);
   const draft = remainingDraft([{ entryId: "e", toolCallId: "old", itemId: "old:0", operation: "edit", status: "not_started", preview: false, target: join(f.cwd, "a"),
-    original: { path: "a", snapshot: "OLD_SNAPSHOT", edits: [{ kind: "replace", start: "3#OLDHASH", newLines: ["desired"] }] } }], new Set());
-  assert.doesNotMatch(draft, /OLD_SNAPSHOT|OLDHASH/); assert.match(draft, /originalLineHint/);
+    original: { path: "a", snapshot: "OLD_SNAPSHOT", edits: [{ kind: "replace", start: ">>> 3#6D08|old secret", end: ">>> 5#ABCD|end secret", newLines: ["desired"] }] } }], new Set());
+  assert.doesNotMatch(draft, /OLD_SNAPSHOT|6D08|ABCD|old secret|end secret/);
+  assert.match(draft, /"originalLineHint": 3/); assert.match(draft, /"originalEndLineHint": 5/); assert.doesNotMatch(draft, /null/);
 });
 
 test("N1 actual command preserves editor changes made while choosing draft placement", async t => {
@@ -234,6 +235,7 @@ test("N1 standalone create failure binds every original request field before dra
   const genuine = structuredClone(f.session.getBranch()) as any[];
   const records = collectChanges(genuine, f.cwd); assert.equal(records[0].unavailable, undefined);
   assert.match(remainingDraft(records, new Set()), /original/);
+  assert.match(remainingDraft(records, new Set()), /"mode": "create"/);
   for (const missingHash of [false, true]) {
     const branch = structuredClone(genuine), call = branch.find(entry => entry.message?.role === "assistant").message.content[0];
     if (missingHash) branch.find(entry => entry.data?.phase === "intent").data.requestHash = undefined;
@@ -520,6 +522,35 @@ test("N1 partial creation verifies recorded parents even when its target is abse
   const observation = (f.session.getBranch() as any[]).find(e => e.customType === "file-change-verification-v1").data;
   assert.equal(observation.source.exists, false); assert.equal(observation.parents.length, 2);
   for (const parent of observation.parents) { assert.equal(parent.exists, true); assert.equal(parent.identity.directory, true); }
+});
+
+test("N1 partial batch creation binds created-directory metadata across the result mirror", async t => {
+  const f = await fixture(t), target = join(realpathSync.native(f.cwd), "mirror-parent/child/file");
+  const probe = await open(join(f.cwd, "probe"), "w"), prototype = Object.getPrototypeOf(probe); await probe.close();
+  const original = prototype.writeFile;
+  t.mock.method(prototype, "writeFile", async function(this: any, value: any, ...args: any[]) {
+    if (value === "mirror-create-fixture") throw new Error("fixture write failure after parents");
+    return original.call(this, value, ...args);
+  });
+  const result = await f.call("file_batch", { operations: [{ operation: "write", mode: "create", path: target, content: "mirror-create-fixture" }] }, "parent-mirror");
+  assert.equal(result.isError, true);
+  const genuine = structuredClone(f.session.getBranch()) as any[];
+  const records = collectChanges(genuine, f.cwd); assert.equal(records[0].status, "partial"); assert.equal(records[0].unavailable, undefined);
+  const observation = await verifyChange(records[0], async (path: string) => path);
+  assert.equal(observation.parents.length, 2);
+  for (const fault of ["omit", "path", "identity"]) {
+    // Disk/imported JSON has independent mirrored objects, not the live Session's
+    // shared directory array references retained by structuredClone.
+    const branch = JSON.parse(JSON.stringify(genuine)), receipt = branch.find((entry: any) => entry.message?.role === "toolResult" && entry.message.toolCallId === "parent-mirror").message.details.items[0].receipt;
+    const owner = receipt.creation ?? receipt;
+    assert.equal(owner.createdDirectories.length, 2);
+    if (fault === "omit") delete owner.createdDirectories;
+    if (fault === "path") owner.createdDirectories[0].path = join(f.cwd, "wrong-parent");
+    if (fault === "identity") owner.createdDirectories[0].identity.inode = "999999";
+    const invalid = collectChanges(branch, f.cwd); assert.ok(invalid[0].unavailable, fault);
+    await assert.rejects(verifyChange(invalid[0], async () => { assert.fail("unbound side effects cannot authorize verification"); }), /cannot authorize/);
+    assert.throws(() => remainingDraft(invalid, new Set([invalid[0].itemId])), /missing|ambiguous/);
+  }
 });
 
 test("N1 metadata-only verification rejects replacement during the final permission await", async t => {

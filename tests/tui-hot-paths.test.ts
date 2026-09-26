@@ -58,6 +58,7 @@ const HOT_REGEX_FREE_FILES = [
 	"packages/tui-kit/src/components/syntax-highlighting.ts",
 	"packages/extensions/mutation-guard-write/change-preview.ts",
 	"packages/extensions/mutation-guard-write/changes.ts",
+	"packages/extensions/mutation-guard-write/snapshot-line-protocol.ts",
 	"packages/extensions/mutation-guard-write/snapshot-line-edit.ts",
 ];
 

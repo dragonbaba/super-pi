@@ -20,3 +20,5 @@ export const DISPLAY_METADATA_CONTROL_PATTERN = /[\u007f-\u009f\u2028\u2029\u202
 export const CHANGE_ID_CONTROL_PATTERN = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]/u;
 export const OBSERVATION_UNSIGNED_INTEGER_PATTERN = /^\d{1,30}$/u;
 export const OBSERVATION_SIGNED_INTEGER_PATTERN = /^-?\d{1,30}$/u;
+export const LINE_ID_PATTERN = /^([1-9]\d*)#([A-F0-9]{4})$/u;
+export const DISPLAYED_LINE_PATTERN = /^([1-9]\d*)#[A-F0-9]{4}\|(.*?)(\r?)$/u;
