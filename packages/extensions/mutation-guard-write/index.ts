@@ -328,7 +328,7 @@ export default function mutationGuardWriteExtension(pi: ExtensionAPI): void {
       const receiptTarget = pathApproval?.canonicalTarget ?? resolveToolPath(ctx.cwd, input.path);
       if (pathApproval) pathApproval.commitSelected = metadata => {
         pi.appendEntry(MUTATION_PROGRESS_ENTRY, { toolCallId, itemId: `${toolCallId}:0`, phase: "intent", operation: "edit", target: receiptTarget,
-          strategy: metadata.strategy, compatibilityReason: metadata.reason });
+          requestHash: mutationRequestHash("edit", input), strategy: metadata.strategy, compatibilityReason: metadata.reason });
         if (metadata.reason) onUpdate?.({ content: [{ type: "text", text: `Commit selected: ${metadata.reason}` }], details: { diff: "", patch: "" } });
       };
       const nativeInput: GuardedEditInput = {
@@ -341,6 +341,8 @@ export default function mutationGuardWriteExtension(pi: ExtensionAPI): void {
         if (pathApproval) pi.appendEntry(MUTATION_PROGRESS_ENTRY, { phase: "origin", toolCallId, itemId: `${toolCallId}:0`, operation: "edit", target: pathApproval.canonicalTarget, requestHash: mutationRequestHash("edit", input) });
         const result = await guardedEdit.execute(toolCallId, nativeInput, signal, onUpdate, ctx);
         if (!result.details) throw new Error("Native edit completed without diff/patch details.");
+        let resultText: string | undefined;
+        for (const block of result.content) if (block.type === "text") resultText = resultText === undefined ? block.text : `${resultText}\n${block.text}`;
         return finishEdit(toolCallId, receiptTarget, {
             ...result.details,
             ok: true,
@@ -355,7 +357,7 @@ export default function mutationGuardWriteExtension(pi: ExtensionAPI): void {
             omittedNoOpEdits: execution.authorization?.omittedNoOpEdits ?? 0,
             estimatedChangedBytes: execution.authorization?.estimatedChangedBytes,
             commit: execution.commit,
-          }, result.content.filter(block => block.type === "text").map(block => block.text).join("\n"));
+          }, resultText ?? "");
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         const failure = mutationFailureInfo(error);
@@ -453,7 +455,7 @@ export default function mutationGuardWriteExtension(pi: ExtensionAPI): void {
               preparedParent: pathApproval?.preparedParent,
               commitSelected: metadata => {
                 pi.appendEntry(MUTATION_PROGRESS_ENTRY, { toolCallId, itemId: `${toolCallId}:0`, phase: "intent", operation: "edit", target: canonicalTarget,
-                  strategy: metadata.strategy, compatibilityReason: metadata.reason });
+                  requestHash: mutationRequestHash("edit", input), strategy: metadata.strategy, compatibilityReason: metadata.reason });
                 if (metadata.reason) _onUpdate?.({ content: [{ type: "text", text: `Commit selected: ${metadata.reason}` }], details: {} });
               },
               assertPathAllowed: () => guard.assertEditPathAllowed(ctx.cwd, snapshotInput.path, pathApproval),
@@ -519,7 +521,7 @@ export default function mutationGuardWriteExtension(pi: ExtensionAPI): void {
       const receiptTarget = pathApproval?.canonicalTarget ?? absolutePath;
       if (pathApproval) pathApproval.commitSelected = metadata => {
         pi.appendEntry(MUTATION_PROGRESS_ENTRY, { toolCallId, itemId: `${toolCallId}:0`, phase: "intent", operation: "write", target: receiptTarget,
-          strategy: metadata.strategy, compatibilityReason: metadata.reason });
+          requestHash: mutationRequestHash("write", input), strategy: metadata.strategy, compatibilityReason: metadata.reason });
         progress = true;
         if (metadata.reason) _onUpdate?.({ content: [{ type: "text", text: `Commit selected: ${metadata.reason}` }], details: {} });
       };

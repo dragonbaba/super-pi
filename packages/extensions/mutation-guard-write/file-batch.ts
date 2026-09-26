@@ -342,11 +342,12 @@ export class BatchInvocation {
       results[failedIndex].reason = (error instanceof Error ? error.message : String(error)).slice(0, 800);
     } finally { sharedDirectories.clear(); this.dispose(); }
     let succeeded = 0, failed = 0, notStarted = 0;
+    let requiresVerification = false;
     let firstReason: string | undefined;
-    for (const result of results) { if (result.status === "succeeded") succeeded++; else if (result.status === "not_started") notStarted++; else if (result.status !== "preview") { failed++; firstReason ??= result.reason; } }
+    for (const result of results) { requiresVerification ||= Boolean(result.requiresVerification); if (result.status === "succeeded") succeeded++; else if (result.status === "not_started") notStarted++; else if (result.status !== "preview") { failed++; firstReason ??= result.reason; } }
     const preview = this.input.dryRun && failed === 0;
     let summary = preview ? `Preflight passed for ${results.length} items. No changes; apply revalidates and requires current authorization.` : `file_batch: ${succeeded} succeeded, ${failed} failed, ${notStarted} not started.${firstReason ? `\n${displayMetadata(firstReason)}` : ""}`;
-    if (results.some(result => result.requiresVerification)) summary += "\nVerify current state and any retained candidate; do not automatically retry uncertain items.";
+    if (requiresVerification) summary += "\nVerify current state and any retained candidate; do not automatically retry uncertain items.";
     const collapsedSummary = summary;
     if (!preview) for (const result of results) {
       const receipt = result.receipt as any;
