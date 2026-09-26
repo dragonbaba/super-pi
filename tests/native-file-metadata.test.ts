@@ -90,6 +90,33 @@ test("N2 Windows denied content-write ACL refuses before creating any candidate"
   }
 });
 
+test("N2 Windows denied replacement rights preselect object preservation before staging", { skip: process.platform !== "win32" }, async t => {
+  const f = await fixture(t), initial = await capturePathIdentity(f.target);
+  const powershell = join(process.env.SystemRoot!, "System32/WindowsPowerShell/v1.0/powershell.exe");
+  const setup = "$ErrorActionPreference='Stop';$u=[Security.Principal.WindowsIdentity]::GetCurrent().User;"
+    + "$file=[IO.File]::GetAccessControl($env:N2_FIXTURE);$parent=[IO.Directory]::GetAccessControl($env:N2_PARENT);"
+    + "$f=New-Object Security.AccessControl.FileSystemAccessRule($u,[Security.AccessControl.FileSystemRights]::Delete,[Security.AccessControl.AccessControlType]::Deny);"
+    + "$p=New-Object Security.AccessControl.FileSystemAccessRule($u,[Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles,[Security.AccessControl.AccessControlType]::Deny);";
+  const options = { windowsHide: true, env: { ...process.env, N2_FIXTURE: f.target, N2_PARENT: f.root } };
+  await execute(powershell, ["-NoProfile", "-NonInteractive", "-Command", setup + "$file.AddAccessRule($f);$parent.AddAccessRule($p);[IO.File]::SetAccessControl($env:N2_FIXTURE,$file);[IO.Directory]::SetAccessControl($env:N2_PARENT,$parent)"], options);
+  try {
+    const writeHandle = await open(f.target, "r+"); await writeHandle.close();
+    const original = await nativeFileRequest("inspect", { path: f.target, expected: initial });
+    const plan = await planFor(f.target, f.before);
+    assert.equal(plan.metadata.strategy, "protected_in_place"); assert.match(plan.metadata.reason!, /replacement access is denied/);
+    assert.deepEqual(await readdir(f.root), ["测试.txt"]);
+    const receipt = await commitPreparedFile(plan, f.after, { assertPathAllowed: async () => plan.target.canonical });
+    assert.equal(receipt.outcome, "committed"); assert.deepEqual(await readFile(f.target), f.after);
+    const after = await capturePathIdentity(f.target), metadata = await nativeFileRequest("inspect", { path: f.target, expected: after });
+    assert.equal(after.inode, initial.inode); assert.equal(metadata.securityFingerprint, original.securityFingerprint);
+    assert.equal(metadata.attributes, original.attributes); assert.equal(metadata.creationTime, original.creationTime);
+    const stats = await nativeFileRequest("stats"); assert.equal(stats.publicationAttempts, 0); assert.equal(stats.activeHandles, 0);
+    assert.equal(nativeFileDiagnostics().pending, 0); assert.deepEqual(await readdir(f.root), ["测试.txt"]);
+  } finally {
+    await execute(powershell, ["-NoProfile", "-NonInteractive", "-Command", setup + "$file.RemoveAccessRuleSpecific($f);$parent.RemoveAccessRuleSpecific($p);[IO.File]::SetAccessControl($env:N2_FIXTURE,$file);[IO.Directory]::SetAccessControl($env:N2_PARENT,$parent)"], options);
+  }
+});
+
 test("N2 Windows post-publication native failure reports committed bytes and no retained candidate", { skip: process.platform !== "win32" }, async t => {
   const f = await fixture(t), isolated = join(f.root, "post-publication-adapter");
   await mkdir(isolated);

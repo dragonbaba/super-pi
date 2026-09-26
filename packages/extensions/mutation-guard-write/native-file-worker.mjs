@@ -167,8 +167,17 @@ function inspectWindows(b, input) {
   // never pass Node's descriptor to another CRT's _get_osfhandle.
   // fs.access(W_OK) ignores Windows ACLs. Capability selection must obtain
   // FILE_WRITE_DATA on the prepared object before creating any candidate.
-  return withWindowsHandle(b, input, input.capability ? 0x00020082 : 0x00020080, inspectWindowsHandle);
+  const observed = withWindowsHandle(b, input, input.capability ? 0x00020082 : 0x00020080, inspectWindowsHandle);
+  if (input.capability) {
+    // ReplaceFileW opens the replaced object with GENERIC_READ | DELETE |
+    // SYNCHRONIZE. Probe that exact access before candidate creation. Only an
+    // explicit access denial selects compatibility; other failures propagate.
+    try { withWindowsHandle(b, input, 0x80110000, observeWindowsReplacementAccess); observed.replacementAccess = true; }
+    catch (error) { if (error.nativeCode !== 5) throw error; observed.replacementAccess = false; }
+  }
+  return observed;
 }
+function observeWindowsReplacementAccess() { return true; }
 function inspectWindowsHandle(b, input, handle) {
     const object = windowsObject(b, handle, input.expected), security = securityDescriptor(b, handle);
     return { ...object, security: security.toString("base64"), securityFingerprint: securityFingerprint(security), filesystem: windowsFilesystem(b, input.path),
