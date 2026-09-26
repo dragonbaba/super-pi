@@ -1,7 +1,5 @@
 import { createHash } from "node:crypto";
-
-const LINE_ID_PATTERN = /^([1-9]\d*)#([A-F0-9]{4})$/u;
-const DISPLAYED_LINE_PATTERN = /^([1-9]\d*)#[A-F0-9]{4}\|(.*?)(\r?)$/u;
+import { LINE_ID_PATTERN, DISPLAYED_LINE_PATTERN } from "./regex.ts";
 const MISMATCH_CONTEXT_LINES = 2;
 
 export interface SnapshotLineReference {
