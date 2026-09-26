@@ -58,6 +58,7 @@ export interface NativeStructuredMutationReceipt {
   status: "succeeded" | "failed_no_change" | "partial" | "cancelled" | "state_unknown" | "not_started";
   stateChanged: boolean | "unknown";
   requiresVerification?: true;
+  historyConflict?: true;
 }
 export type StructuredMutationReceipt = LegacyStructuredMutationReceipt | NativeStructuredMutationReceipt;
 
@@ -72,6 +73,11 @@ export function validMutationOutcome(status: unknown, stateChanged: unknown): bo
 }
 
 function appendNativeReceipt(items: Map<string, NativeStructuredMutationReceipt>, entry: any, data: any, toolCallId: unknown, itemId: unknown, intent: boolean): void {
+  const previous = typeof itemId === "string" ? items.get(itemId) : undefined;
+  if (previous && data && (previous.toolCallId !== toolCallId || previous.operation !== data.operation || previous.target !== data.target || previous.destination !== data.destination)) {
+    previous.historyConflict = true;
+    return;
+  }
   if (!data || (data.operation !== "delete" && data.operation !== "move" && data.operation !== "write" && data.operation !== "edit") || !safeReceiptPath(data.target)
     || (data.operation === "move" && !safeReceiptPath(data.destination))) return;
   if (typeof toolCallId !== "string" || toolCallId.length > 256 || typeof itemId !== "string" || itemId.length > 280) return;
@@ -80,10 +86,8 @@ function appendNativeReceipt(items: Map<string, NativeStructuredMutationReceipt>
   if (status !== "state_unknown" && status !== "succeeded" && status !== "partial" && status !== "failed_no_change" && status !== "cancelled" && status !== "not_started") return;
   if ((status === "state_unknown" && stateChanged !== "unknown") || ((status === "succeeded" || status === "partial") && stateChanged !== true)
     || ((status === "failed_no_change" || status === "cancelled" || status === "not_started") && stateChanged !== false)) return;
-  const previous = items.get(itemId);
-  if (previous && (previous.toolCallId !== toolCallId || previous.operation !== data.operation || previous.target !== data.target || previous.destination !== data.destination)) return;
   items.set(itemId, { receiptVersion: 2, entryId: entry.id, timestamp: entry.timestamp, toolCallId, itemId,
-    operation: data.operation, target: data.target, destination: data.destination, status, stateChanged,
+    operation: data.operation, target: data.target, destination: data.destination, status, stateChanged, historyConflict: previous?.historyConflict,
     ...(status === "state_unknown" || status === "partial" ? { requiresVerification: true as const } : {}) });
   if (items.size > MAX_STRUCTURED_MUTATION_RECEIPTS) items.delete(items.keys().next().value!);
 }

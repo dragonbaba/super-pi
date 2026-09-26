@@ -13,6 +13,13 @@ export interface FileCreationPlan {
 export interface CreatedDirectory { path: string; identity?: PathIdentity; status: "created" | "removed" | "retained" }
 export interface CreationResult { createdDirectories: CreatedDirectory[]; bytes: number; addedLines?: number }
 
+/** Preparation-owned canonical paths, including Windows short-name aliases. */
+export function canonicalCreationDirectories(plan: FileCreationPlan): string[] {
+  const directories: string[] = [];
+  for (const path of plan.directories) directories.push(resolve(plan.ancestor.canonical, relative(plan.ancestor.path, path)));
+  return directories;
+}
+
 export async function prepareFileCreation(path: string, createOnly = false): Promise<FileCreationPlan | undefined> {
   try {
     await lstat(path);

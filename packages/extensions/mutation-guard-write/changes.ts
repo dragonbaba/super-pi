@@ -209,6 +209,7 @@ export function collectChanges(branch: readonly any[], cwd: string): ChangeRecor
       }
     }
     if (bound && receipt.receiptVersion === 2 && conflictingTerminal(executionEntries, entry, receipt.toolCallId, receipt.itemId, index, receipt, details)) bound = false;
+    if (receipt.receiptVersion === 2 && receipt.historyConflict) bound = false;
     records.push({ entryId: receipt.entryId, toolCallId: receipt.toolCallId, itemId: receipt.receiptVersion === 2 ? receipt.itemId : `${receipt.toolCallId}:0`,
       operation: receipt.operation, target, destination,
       status: receipt.receiptVersion === 1 ? "succeeded" : receipt.status, preview: false,
@@ -283,12 +284,13 @@ export function collectChanges(branch: readonly any[], cwd: string): ChangeRecor
 export interface ChangeObservation { path: string; exists: boolean; identity?: PathIdentity; sha256?: string; hashOmitted?: string }
 
 function retainedParents(record: ChangeRecord): string[] {
-  const directories = record.receipt?.creation?.createdDirectories ?? record.receipt?.createdDirectories;
+  const directories = record.receipt?.creation?.createdDirectories ?? record.receipt?.createdDirectories
+    ?? (record.receipt?.phase === "intent" ? record.receipt.directories : undefined);
   if (directories === undefined) return [];
   if (!Array.isArray(directories) || directories.length > 32) throw new Error("Recorded parent side effects exceed verification bounds.");
   const paths: string[] = [];
   for (const directory of directories) {
-    const path = directory?.identity?.canonical ?? directory?.path;
+    const path = typeof directory === "string" ? directory : directory?.identity?.canonical ?? directory?.path;
     if (typeof path !== "string" || path.length > 4096 || !isAbsolute(path)) throw new Error("Recorded parent side effect cannot be reconstructed.");
     const tail = relative(path, record.target);
     if (!tail || tail === ".." || tail.startsWith(`..${sep}`) || isAbsolute(tail)) throw new Error("Recorded side effect is not a parent of the bound target.");
@@ -384,7 +386,10 @@ function draftOperation(record: ChangeRecord): unknown {
       // Stale snapshot IDs and LINE#ID anchors are never serialized into a new draft.
       changes.push({ kind: edit.kind, originalLineHint: parseSnapshotLineReference(edit.start, "start").line,
         originalEndLineHint: edit.end ? parseSnapshotLineReference(edit.end, "end").line : undefined, newLines });
-    } else changes.push({ oldText: boundedString(edit.oldText, "Old text"), newText: boundedString(edit.newText, "New text") });
+    } else {
+      if (edit.expectedLine !== undefined && (!Number.isSafeInteger(edit.expectedLine) || edit.expectedLine < 1)) throw new Error("Original exact-edit location hint is invalid.");
+      changes.push({ oldText: boundedString(edit.oldText, "Old text"), newText: boundedString(edit.newText, "New text"), originalLineHint: edit.expectedLine });
+    }
   }
   return { operation: "edit", path, desiredChanges: changes };
 }
