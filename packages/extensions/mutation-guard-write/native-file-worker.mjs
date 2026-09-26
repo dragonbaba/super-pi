@@ -8,6 +8,8 @@ import { LINUX_MOUNT_ID_PATTERN } from "./native-file-regex.mjs";
 
 const MAX_SECURITY_BYTES = 64 * 1024;
 const MAX_ATTRIBUTE_NAMES = 64 * 1024;
+const CAPABILITY_ATTRIBUTE_NAME = Buffer.from("security.capability\0");
+const DEFAULT_ACL_ATTRIBUTE_NAME = Buffer.from("system.posix_acl_default\0");
 let bindings;
 let activeHandles = 0, calls = 0, publicationAttempts = 0;
 
@@ -23,10 +25,11 @@ function loadBindings() {
     if (!directoryLength || directoryLength >= 32768) throw new Error("Cannot obtain the OS system directory.");
     const directory = realpathSync(directoryBytes.toString("utf16le", 0, directoryLength * 2));
     const security = koffi.load(join(directory, "advapi32.dll"));
+    koffi.struct("SP_FILE_SECURITY_ATTRIBUTES", { length: "uint32_t", descriptor: "void *", inherit: "int32_t" });
     bindings = { kernel, security,
       lastError: kernel.func("uint32_t __stdcall GetLastError(void)"),
       fileInfo: kernel.func("int __stdcall GetFileInformationByHandle(void *handle, void *info)"),
-      open: kernel.func("void * __stdcall CreateFileW(str16 path, uint32_t access, uint32_t sharing, void *security, uint32_t disposition, uint32_t flags, void *templateFile)"),
+      open: kernel.func("void * __stdcall CreateFileW(str16 path, uint32_t access, uint32_t sharing, SP_FILE_SECURITY_ATTRIBUTES *security, uint32_t disposition, uint32_t flags, void *templateFile)"),
       close: kernel.func("int __stdcall CloseHandle(void *handle)"),
       currentProcess: kernel.func("void * __stdcall GetCurrentProcess(void)"),
       openToken: security.func("int __stdcall OpenProcessToken(void *process, uint32_t access, void *token)"),
@@ -49,7 +52,7 @@ function loadBindings() {
     // Supported Linux ABI is x86_64/glibc: ssize_t is signed pointer-width.
     // Koffi provides intptr_t; ssize_t is not a built-in typedef.
     bindings = { library, list: library.func("intptr_t flistxattr(int fd, void *names, size_t size)"),
-      get: library.func("intptr_t fgetxattr(int fd, str name, void *value, size_t size)") };
+      get: library.func("intptr_t fgetxattr(int fd, const void *name, void *value, size_t size)") };
   } else throw new Error("Native staged commits are only validated for Windows/Linux x64.");
   return bindings;
 }
@@ -130,8 +133,49 @@ function windowsObject(b, handle, expected) {
   const device = String(bytes.readUInt32LE(28));
   const inode = String((BigInt(bytes.readUInt32LE(44)) << 32n) | BigInt(bytes.readUInt32LE(48)));
   const attributes = bytes.readUInt32LE(0), links = bytes.readUInt32LE(40);
-  if (device !== expected.device || inode !== expected.inode || attributes & (0x10 | 0x400)) throw new Error("[STALE_STATE] Native handle is not the prepared regular file.");
-  return { attributes, links, creationTime: bytes.subarray(4, 12).toString("hex") };
+  if (expected && (device !== expected.device || inode !== expected.inode) || attributes & (0x10 | 0x400)) throw new Error("[STALE_STATE] Native handle is not the prepared regular file.");
+  return { device, inode, attributes, links, creationTime: bytes.subarray(4, 12).toString("hex") };
+}
+
+function privateWindowsAcl(user) {
+  // ACL_REVISION, one ACCESS_ALLOWED_ACE for the process user only.
+  const acl = Buffer.alloc(16 + user.length);
+  acl[0] = 2; acl.writeUInt16LE(acl.length, 2); acl.writeUInt16LE(1, 4);
+  acl.writeUInt16LE(8 + user.length, 10); acl.writeUInt32LE(0x001f01ff, 12); user.copy(acl, 16);
+  return acl;
+}
+
+function createPrivateWindows(b, input) {
+  const tokenBytes = Buffer.alloc(8);
+  if (!b.openToken(b.currentProcess(), 8, tokenBytes)) winError(b, "OpenProcessToken(create)");
+  const token = tokenBytes.readBigUInt64LE(); activeHandles++;
+  let user, failure;
+  try { user = tokenSid(b, token, Buffer.alloc(MAX_SECURITY_BYTES), Buffer.alloc(4), 1); }
+  catch (error) { failure = error; }
+  if (b.close(token)) activeHandles--;
+  else { const code = b.lastError(); failure ??= new Error(`CloseHandle(create token) failed (Win32 ${code}).`); }
+  if (failure) throw failure;
+  const acl = privateWindowsAcl(user), descriptor = Buffer.alloc(20 + acl.length);
+  descriptor[0] = 1; descriptor.writeUInt16LE(0x9004, 2); // SELF_RELATIVE | DACL_PROTECTED | DACL_PRESENT
+  descriptor.writeUInt32LE(20, 16); acl.copy(descriptor, 20);
+  // Fixed x64 SECURITY_ATTRIBUTES: sizeof=24, pointer aligned at 8. Koffi
+  // retains descriptor/argument buffers for this synchronous worker call.
+  const security = { length: 24, descriptor, inherit: 0 };
+  const handle = b.open(toNamespacedPath(input.path), 0xc0010000, 0, security, 1, 0x80, null); // CREATE_NEW, no inherited handle
+  if (handle === 0xffffffffffffffffn || handle === -1n) winError(b, "CreateFileW(private candidate)");
+  activeHandles++;
+  const result = { created: true };
+  try {
+    const object = windowsObject(b, handle);
+    result.device = object.device; result.inode = object.inode;
+    const actual = descriptorParts(securityDescriptor(b, handle));
+    if (!actual.protected || !actual.dacl?.equals(acl)) throw new Error("Creation-time private DACL verification failed.");
+  } catch (error) { result.failure = String(error.message).slice(0, 400); }
+  if (b.close(handle)) activeHandles--;
+  else { const code = b.lastError(); result.failure = `${result.failure ?? ""}; CloseHandle(private candidate) failed (Win32 ${code}).`; }
+  // Once CREATE_NEW succeeds, keep the creation fact even if inspection/close
+  // fails. Main-thread cleanup must not mistake this for zero side effects.
+  return result;
 }
 
 function withWindowsHandle(b, input, access, action) {
@@ -169,10 +213,10 @@ function inspectWindows(b, input) {
   // FILE_WRITE_DATA on the prepared object before creating any candidate.
   const observed = withWindowsHandle(b, input, input.capability ? 0x00020082 : 0x00020080, inspectWindowsHandle);
   if (input.capability) {
-    // ReplaceFileW opens the replaced object with GENERIC_READ | DELETE |
-    // SYNCHRONIZE. Probe that exact access before candidate creation. Only an
+    // ReplaceFileW also opens the candidate with GENERIC_WRITE. It receives the
+    // target DACL, so probe the full union on that DACL before creation. Only an
     // explicit access denial selects compatibility; other failures propagate.
-    try { withWindowsHandle(b, input, 0x80110000, observeWindowsReplacementAccess); observed.replacementAccess = true; }
+    try { withWindowsHandle(b, input, 0xc0110000, observeWindowsReplacementAccess); observed.replacementAccess = true; }
     catch (error) { if (error.nativeCode !== 5) throw error; observed.replacementAccess = false; }
   }
   return observed;
@@ -212,9 +256,7 @@ function protectWindowsHandle(b, input, handle) {
     const owner = descriptorParts(securityDescriptor(b, handle)).owner;
     if (!owner) throw new Error("Cannot establish temporary owner for private DACL.");
     // ACL_REVISION, one ACCESS_ALLOWED_ACE for the new file's owner only.
-    const acl = Buffer.alloc(16 + owner.length);
-    acl[0] = 2; acl.writeUInt16LE(acl.length, 2); acl.writeUInt16LE(1, 4);
-    acl.writeUInt16LE(8 + owner.length, 10); acl.writeUInt32LE(0x001f01ff, 12); owner.copy(acl, 16);
+    const acl = privateWindowsAcl(owner);
     const code = b.setSecurity(handle, 1, 0x80000004, null, null, acl, null);
     if (code) throw new Error(`SetSecurityInfo(private temporary) failed (Win32 ${code}).`);
     const actual = descriptorParts(securityDescriptor(b, handle));
@@ -232,9 +274,9 @@ function inspectLinux(b, input) {
   while (start < length) {
     const end = names.indexOf(0, start);
     if (end < start || end >= length) throw new Error("Invalid extended-attribute name list.");
-    const name = new TextDecoder("utf-8", { fatal: true }).decode(names.subarray(start, end));
-    if (name === "security.capability") writeClearsAttributes = true;
-    if (name === "system.posix_acl_default") defaultAcl = true;
+    const name = names.subarray(start, end + 1); // Preserve arbitrary name bytes, including its NUL terminator.
+    if (name.equals(CAPABILITY_ATTRIBUTE_NAME)) writeClearsAttributes = true;
+    if (name.equals(DEFAULT_ACL_ATTRIBUTE_NAME)) defaultAcl = true;
     const size = Number(b.get(input.fd, name, null, 0));
     if (size < 0) throw new Error(`fgetxattr(size) failed (errno ${koffi.errno()}); metadata absence is not established.`);
     total += size;
@@ -349,6 +391,7 @@ function execute(input) {
   try { b = loadBindings(); }
   catch (error) { error.nativeUnavailable = true; throw error; }
   calls++;
+  if (process.platform === "win32" && input.operation === "create_private") return createPrivateWindows(b, input);
   if (input.operation === "inspect") return process.platform === "win32" ? inspectWindows(b, input) : inspectLinux(b, input);
   if (process.platform === "win32" && input.operation === "protect") return protectWindows(b, input);
   if (process.platform === "win32" && input.operation === "prepare") return prepareWindows(b, input);

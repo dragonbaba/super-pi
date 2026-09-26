@@ -414,3 +414,40 @@ time, no candidate/publication, and zero active handles/pending calls. The metad
 suite passes 22 Windows tests with nine Linux-specific skips; check and four focused
 boundary/source tests pass. API rights source:
 https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-replacefilew
+
+The d314616ce candidate passed all local gates and both platform CI jobs
+([run 36270884960](https://github.com/dragonbaba/super-pi/actions/runs/36270884960)).
+Its next review exposed four remaining boundaries. Windows now creates the empty
+candidate with a protected process-user-only DACL in CREATE_NEW itself, using a
+fixed x64 SECURITY_ATTRIBUTES binding. No broadly inherited handle-opening window
+precedes later protection. Owner/group defaults remain assigned by Windows; the
+descriptor and ACL buffers live through the synchronous worker call. Created
+identity and post-create failures are returned together; a lost response reports
+the possible candidate without deleting an unproved name. Actual broad-parent and
+exclusive-name tests check the initial descriptor before any protect operation,
+unchanged existing bytes on CREATE_NEW collision and zero native handles/pending
+calls. The API accepts the descriptor at creation:
+[Windows file security](https://learn.microsoft.com/en-us/windows/win32/fileio/file-security-and-access-rights).
+
+The publication access probe now includes GENERIC_WRITE because the replacement
+file receives the same target DACL and ReplaceFileW requests that access too. An
+actual deny-AppendData ACL preselects compatibility before staging; Node r+ also
+requires GENERIC_WRITE, so this case explicitly refuses without creating a candidate
+or changing the target. The earlier deny-DELETE writable compatibility case still
+passes. No permission is expanded and no failed operation is replayed.
+
+Linux xattr names now reach fgetxattr as bounded raw NUL-terminated bytes; reserved
+ASCII names are compared bytewise. A real user.0xff name regression verifies the
+name and value survive object-preserving writing. It is Linux-only and requires
+new-head CI; Windows does not claim that execution. This follows the native name
+contract in [fgetxattr(2)](https://www.man7.org/linux/man-pages/man2/fgetxattr.2.html).
+
+Recovery requires bounded equality of commit strategy, outcome, sync facts and
+retained-candidate/cleanup fields across the durable terminal and aggregate mirror.
+A real failed staging sync with retained candidate verifies the genuine receipt;
+five independently decoded mirror corruptions refuse verification/drafting.
+N1 25be592c6 is integrated normally; its snapshot readback regression now injects
+failure after actual N2 publication through the owning read handle, retaining the
+same changed-byte/partial-receipt assertions. Windows Node22.19 check passes;
+91 focused tests: 80 pass and eleven explicit platform skips. Final whole-project
+gates, both platforms and actual new-head review remain required.

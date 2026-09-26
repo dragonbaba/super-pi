@@ -22,6 +22,9 @@ function groupAssignable(group: bigint): boolean {
 async function removeWindowsTemporary(path: string, expected: { device: string; inode: string }): Promise<void> {
   await nativeFileRequest("remove", { path, expected });
 }
+async function createWindowsTemporary(path: string): Promise<{ created: true; device?: string; inode?: string; failure?: string }> {
+  return nativeFileRequest("create_private", { path });
+}
 
 interface MetadataObservation {
   attributes?: number; links?: number; creationTime?: string; security?: string; securityFingerprint?: string; filesystem?: string;
@@ -41,6 +44,7 @@ class NativeCommitMetadata implements CommitMetadata {
   readonly reason?: string;
   readonly replacementFailureMayChangeState = true;
   readonly removeTemporary = process.platform === "win32" ? removeWindowsTemporary : undefined;
+  readonly createTemporary = process.platform === "win32" ? createWindowsTemporary : undefined;
   private readonly target: PathIdentity;
   private readonly info: ObjectMetadata;
   private readonly original: MetadataObservation;

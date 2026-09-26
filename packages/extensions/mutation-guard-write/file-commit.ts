@@ -7,6 +7,7 @@ export interface CommitMetadata {
   strategy: "staged_replace" | "protected_in_place";
   reason?: string;
   /** These are fixed by the preselected platform capability, never fallback routes. */
+  createTemporary?(path: string): Promise<{ created: true; device?: string; inode?: string; failure?: string }>;
   protectTemporary?(handle: FileHandle, path: string): Promise<void>;
   prepareTemporary(handle: FileHandle, path: string): Promise<void>;
   assertCurrent(handle: FileHandle): void | Promise<void>;
@@ -156,9 +157,23 @@ export async function commitPreparedFile(plan: FileCommitPlan, content: Uint8Arr
     await assertPrepared(plan, hooks, source);
     if (plan.metadata.strategy === "staged_replace") {
       const path = join(plan.parent.canonical, `.pi-file-commit-${process.pid}-${randomBytes(12).toString("hex")}.tmp`);
-      staged = await open(path, "wx", 0o600);
-      createdPath = path;
+      if (plan.metadata.createTemporary) {
+        let created;
+        try { created = await plan.metadata.createTemporary(path); }
+        catch (error) {
+          // A lost worker response may follow CREATE_NEW. Do not guess that the
+          // candidate is absent, or attempt name-based deletion without identity.
+          const native = error as { nativeCode?: number; nativeUnavailable?: boolean };
+          if (native.nativeCode === undefined && !native.nativeUnavailable) createdPath = path;
+          throw error;
+        }
+        createdPath = path;
+        if (created.device && created.inode) temporary = { path, device: created.device, inode: created.inode };
+        if (created.failure || !temporary) throw new Error(created.failure ?? "Created candidate identity is unavailable.");
+        staged = await open(path, "r+");
+      } else { staged = await open(path, "wx", 0o600); createdPath = path; }
       const info = await staged.stat({ bigint: true });
+      if (temporary && !sameObject(info, temporary)) throw new Error("[STALE_STATE] Private candidate changed before data access.");
       temporary = { path, device: String(info.dev), inode: String(info.ino) };
       await assertTemporary(temporary, plan);
       await plan.metadata.protectTemporary?.(staged, path);
@@ -258,7 +273,7 @@ export async function commitPreparedFile(plan: FileCommitPlan, content: Uint8Arr
       receipt.retainedTemporary = temporary.path;
       receipt.cleanupReason = "Publication outcome is unknown; temporary retained for explicit recovery observation. Its publication permissions may already be applied; privacy was not altered while object placement is uncertain.";
     } else if (temporary) await cleanupTemporary(temporary, plan, receipt);
-    else if (createdPath) { receipt.retainedTemporary = createdPath; receipt.cleanupReason = "Created object identity was not captured; ownership could not be proved."; }
+    else if (createdPath) { receipt.retainedTemporary = createdPath; receipt.cleanupReason = "Candidate creation may have completed, but identity was not captured; existence/ownership could not be proved."; }
   }
   if (failed) throw new FileCommitError(failure, receipt);
   return receipt;

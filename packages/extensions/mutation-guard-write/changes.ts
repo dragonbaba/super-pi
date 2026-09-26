@@ -54,6 +54,20 @@ function uniqueProgress(entries: readonly any[], callId: string, phase: string, 
 }
 
 const DIRECTORY_IDENTITY_FIELDS = ["path", "canonical", "device", "inode", "size", "mtime", "ctime", "mode", "links", "directory"] as const;
+const COMMIT_RECEIPT_FIELDS = ["strategy", "outcome", "compatibilityReason", "fileSynced", "directorySynced", "retainedTemporary", "cleanupReason"] as const;
+
+function sameCommitReceipt(left: any, right: any): boolean {
+  if (left === undefined || right === undefined) return left === right;
+  if (!left || !right || typeof left !== "object" || typeof right !== "object") return false;
+  for (const field of COMMIT_RECEIPT_FIELDS) {
+    const value = left[field];
+    if (value !== right[field] || typeof value === "string" && value.length > (field === "retainedTemporary" ? 4096 : 1024)
+      || value !== undefined && typeof value !== "string" && typeof value !== "boolean") return false;
+  }
+  return (left.strategy === "staged_replace" || left.strategy === "protected_in_place")
+    && (left.outcome === "not_committed" || left.outcome === "committed" || left.outcome === "unknown")
+    && typeof left.fileSynced === "boolean" && left.directorySynced === false;
+}
 
 function sameCreatedDirectories(left: any, right: any): boolean {
   if (left === undefined || right === undefined) return left === right;
@@ -81,6 +95,7 @@ function conflictingTerminal(entries: readonly any[], selected: any, callId: str
     if (previous || entry.type !== "custom" || selected.type !== "message"
       || terminal.status !== outcome.status || terminal.stateChanged !== outcome.stateChanged
       || terminal.operation !== outcome.operation || terminal.target !== outcome.target || terminal.destination !== outcome.destination
+      || !sameCommitReceipt(terminal.commit ?? terminal.receipt?.commit, details?.commit)
       || !sameCreatedDirectories(terminal.creation?.createdDirectories ?? terminal.createdDirectories, details?.creation?.createdDirectories ?? details?.createdDirectories)) return true;
     previous = true;
   }

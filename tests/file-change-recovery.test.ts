@@ -5,6 +5,8 @@ import fsPromises, { open } from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { Worker } from "node:worker_threads";
+import { protectWindowsFixture } from "./helpers/native-metadata-fixture.ts";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { createJiti } from "jiti";
@@ -664,6 +666,35 @@ test("N1 partial batch creation binds created-directory metadata across the resu
     await assert.rejects(verifyChange(invalid[0], async () => { assert.fail("unbound side effects cannot authorize verification"); }), /cannot authorize/);
     assert.throws(() => remainingDraft(invalid, new Set([invalid[0].itemId])), /missing|ambiguous/);
   }
+});
+
+test("N2 mirrored terminals bind commit outcome, strategy and retained candidate", async t => {
+  const f = await fixture(t), target = join(realpathSync.native(f.cwd), "commit-mirror"); writeFileSync(target, "before");
+  await protectWindowsFixture(target); await f.call("read", { path: target }, "commit-mirror-read");
+  const probe = await open(target, "r"), prototype = Object.getPrototypeOf(probe); await probe.close();
+  const post = Worker.prototype.postMessage; let failed = false;
+  t.mock.method(prototype, "sync", async function() { failed = true; throw new Error("fixture staging sync failure"); });
+  t.mock.method(Worker.prototype, "postMessage", function(this: Worker, input: any) {
+    if (input.operation === "remove") input.expected = { ...input.expected, inode: "0" };
+    return post.call(this, input);
+  });
+  const result = await f.call("file_batch", { operations: [{ operation: "write", mode: "overwrite", path: target, content: "after" }] }, "commit-mirror");
+  t.mock.restoreAll(); assert.equal(failed, true); assert.equal(result.isError, true);
+  const genuine = JSON.parse(JSON.stringify(f.session.getBranch())), record = collectChanges(genuine, f.cwd)[0];
+  assert.equal(record.unavailable, undefined); assert.ok(record.receipt.commit.retainedTemporary);
+  assert.equal(readFileSync(record.receipt.commit.retainedTemporary, "utf8"), "after");
+  await verifyChange(record, async () => {});
+  for (const field of ["retainedTemporary", "outcome", "strategy", "cleanupReason", "omit"]) {
+    const branch = JSON.parse(JSON.stringify(genuine));
+    const receipt = branch.find((entry: any) => entry.message?.toolCallId === "commit-mirror" && entry.message?.role === "toolResult").message.details.items[0].receipt;
+    if (field === "omit") delete receipt.commit;
+    else receipt.commit[field] = field === "retainedTemporary" ? join(dirname(target), ".pi-file-commit-123-0123456789abcdef01234567.tmp")
+      : field === "outcome" ? "unknown" : field === "strategy" ? "protected_in_place" : "different cleanup";
+    const invalid = collectChanges(branch, f.cwd); assert.ok(invalid[0].unavailable, field);
+    await assert.rejects(verifyChange(invalid[0], async () => { assert.fail("unbound commit cannot authorize verification"); }));
+    assert.throws(() => remainingDraft(invalid, new Set([invalid[0].itemId])));
+  }
+  assert.equal(readFileSync(target, "utf8"), "before");
 });
 
 test("N1 metadata-only verification rejects replacement during the final permission await", async t => {
