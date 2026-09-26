@@ -217,3 +217,16 @@ callback or regex is added to delivery paths. Linux's configured-sh fixture now
 correctly asserts its two pre-existing victims retain their contents, rather than
 asserting those fixtures never existed. Final gates, both CI jobs and review remain
 required on the resulting full commit.
+
+Current corrections preserve stdin delivery failure ahead of nonzero-exit command
+classification while retaining real exit diagnostics and partial output. Actual
+children closing stdin at exits 0 and 23 both report input_transport_failed.
+Bash set parsing stops at -- or the first positional operand: literal posix or
+physical arguments remain usable, while actual -P/-o physical/-o posix changes
+remain conservatively refused by real guarded execution tests. Trusted Agent
+preflight schema/incomplete-argument/output-limit results retain input_validation;
+actual provider SSE -> Agent -> next serialized request tests prove zero tool
+execution and preserved repair markers. The same text from real child stdout
+cannot forge preflight facts. The production changes introduce no inline regex
+or callback. On Windows Node22.19: check, offline build and 180 focused tests pass,
+with one platform skip. New full gates, Linux CI and exact-head review are pending.

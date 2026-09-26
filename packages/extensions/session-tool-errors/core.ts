@@ -280,6 +280,9 @@ export function classifyError(tool: string, text: string, family?: VerificationF
       if (policy?.category === "POLICY_BLOCKED" && policy.stateChanged === false || POLICY_BLOCKED_RE.test(text)) {
         return { category: "policy_blocked", cause: "调用被安全策略或用户确认门禁阻止。" };
       }
+      if (text.startsWith("[TOOL_ARGS_INCOMPLETE]")) return { category: "input_validation", cause: "工具参数在响应结束时未完成；本次调用未执行。" };
+      if (text.startsWith("[TOOL_RESPONSE_LIMIT]")) return { category: "input_validation", cause: "响应达到输出上限，参数完整性尚不确定；本次调用未执行。" };
+      if (VALIDATION_RE.test(text)) return { category: "input_validation", cause: "工具参数未通过 schema 或工具自身输入校验。" };
     }
     const category = shellFailureCategory(execution);
     if (category === "command_failed" && family) return verificationFailure(family);

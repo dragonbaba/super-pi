@@ -13,6 +13,7 @@ import { promisify } from "node:util";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { protectWindowsFixture } from "./helpers/native-metadata-fixture.ts";
 import { Worker } from "node:worker_threads";
+import { once } from "node:events";
 const execute = promisify(execFile);
 const sourceDirectory = fileURLToPath(new URL("../packages/extensions/mutation-guard-write/", import.meta.url));
 
@@ -23,6 +24,64 @@ async function planFor(target: string, before: string) {
 }
 
 const supported = process.arch === "x64" && (process.platform === "win32" || process.platform === "linux");
+for (const attributes of [2, 4, 6]) for (const hardlink of [false, true]) test(`N2 Windows archive-cleared special attributes refuse unchanged: ${attributes}, hardlink=${hardlink}`, { skip: process.platform !== "win32" }, async t => {
+  const f = await fixture(t), initial = await capturePathIdentity(f.target);
+  if (hardlink) await link(f.target, join(f.root, "alias"));
+  const powershell = join(process.env.SystemRoot!, "System32/WindowsPowerShell/v1.0/powershell.exe");
+  const options = { windowsHide: true, env: { ...process.env, N2_FIXTURE: f.target, N2_ATTRIBUTES: String(attributes) } };
+  await execute(powershell, ["-NoProfile", "-NonInteractive", "-Command", "$ErrorActionPreference='Stop';[IO.File]::SetAttributes($env:N2_FIXTURE,[IO.FileAttributes][int]$env:N2_ATTRIBUTES)"], options);
+  try {
+    await assert.rejects(planFor(f.target, f.before), /UNSUPPORTED_COMMIT.*Archive-cleared/);
+    assert.equal(await readFile(f.target, "utf8"), f.before);
+    const current = await capturePathIdentity(f.target), metadata = await nativeFileRequest("inspect", { path: f.target, expected: current });
+    assert.equal(current.inode, initial.inode); assert.equal(metadata.attributes, attributes);
+    assert.equal((await readdir(f.root)).length, hardlink ? 2 : 1);
+    const stats = await nativeFileRequest("stats"); assert.equal(stats.activeHandles, 0); assert.equal(stats.publicationAttempts, 0);
+  } finally { await execute(powershell, ["-NoProfile", "-NonInteractive", "-Command", "$ErrorActionPreference='Stop';[IO.File]::SetAttributes($env:N2_FIXTURE,[IO.FileAttributes]::Archive)"], options); }
+});
+
+for (const hardlink of [false, true]) test(`N2 Linux actual nodump refuses before any effects, hardlink=${hardlink}`, { skip: process.platform !== "linux" }, async t => {
+  const f = await fixture(t), initial = await capturePathIdentity(f.target);
+  if (hardlink) await link(f.target, join(f.root, "alias"));
+  const program = "import os,sys,fcntl,array; fd=os.open(sys.argv[1],os.O_RDONLY); flags=array.array('i',[0]); fcntl.ioctl(fd,0x80086601,flags,True); flags[0]|=0x40; fcntl.ioctl(fd,0x40086602,flags,True); os.close(fd)";
+  await execute("python3", ["-c", program, f.target]);
+  const handle = await open(f.target, "r");
+  try {
+    const before = await nativeFileRequest("inspect", { fd: handle.fd }); assert.ok(before.inodeFlags & 0x40);
+    await assert.rejects(planFor(f.target, f.before), /UNSUPPORTED_COMMIT.*Special Linux inode flags/);
+    assert.equal(await readFile(f.target, "utf8"), f.before); assert.equal((await capturePathIdentity(f.target)).inode, initial.inode);
+    assert.equal((await nativeFileRequest("inspect", { fd: handle.fd })).fileFlagsFingerprint, before.fileFlagsFingerprint);
+    assert.equal((await readdir(f.root)).length, hardlink ? 2 : 1);
+    assert.equal((await nativeFileRequest("stats")).publicationAttempts, 0);
+  } finally { await handle.close(); }
+});
+
+for (const fault of ["bad-descriptor", "unsupported-request"]) test(`N2 Linux failed ioctl never means absent file flags: ${fault}`, { skip: process.platform !== "linux" }, async t => {
+  const f = await fixture(t), isolated = join(f.root, "ioctl-fault"); await mkdir(isolated);
+  await cp(join(sourceDirectory, "native-file-regex.mjs"), join(isolated, "native-file-regex.mjs"));
+  const source = await readFile(join(sourceDirectory, "native-file-worker.mjs"), "utf8");
+  const point = 'b.ioctl(fd, 0x80086601, "void *", flags)'; assert.equal(source.split(point).length, 2);
+  const workerPath = join(isolated, "worker.mjs");
+  await writeFile(workerPath, source.replace('from "koffi"', `from ${JSON.stringify(import.meta.resolve("koffi"))}`)
+    .replace(point, fault === "bad-descriptor" ? 'b.ioctl(-1, 0x80086601, "void *", flags)' : 'b.ioctl(fd, 0, "void *", flags)'));
+  const handle = await open(f.target, "r"); let worker: Worker | undefined;
+  try {
+    worker = new Worker(pathToFileURL(workerPath)); const response = once(worker, "message");
+    worker.postMessage({ id: 1, operation: "inspect", fd: handle.fd }); const [message] = await response;
+    assert.equal(message.value, undefined); assert.ok(message.error.message.includes("FS_IOC_GETFLAGS failed"));
+    assert.ok(message.error.message.includes(`errno ${fault === "bad-descriptor" ? 9 : 25}`));
+    assert.equal(await readFile(f.target, "utf8"), f.before);
+  } finally { await worker?.terminate(); await handle.close(); }
+});
+
+test("N2 Linux inode flags drift after preparation refuses unchanged content", { skip: process.platform !== "linux" }, async t => {
+  const f = await fixture(t), plan = await planFor(f.target, f.before);
+  await execute("python3", ["-c", "import os,sys,fcntl,array; fd=os.open(sys.argv[1],os.O_RDONLY); a=array.array('i',[0]); fcntl.ioctl(fd,0x80086601,a,True); a[0]|=0x40; fcntl.ioctl(fd,0x40086602,a,True); os.close(fd)", f.target]);
+  await assert.rejects(commitPreparedFile(plan, f.after, { assertPathAllowed: async () => plan.target.canonical }), /STALE_STATE|METADATA_CHANGED/);
+  assert.equal(await readFile(f.target, "utf8"), f.before); assert.equal((await capturePathIdentity(f.target)).inode, plan.target.inode);
+  assert.equal((await nativeFileRequest("stats")).publicationAttempts, 0);
+});
+
 async function fixture(t: any, long = false) {
   const temporary = await realpath(tmpdir()), root = await mkdtemp(join(temporary, "sp-n2-native-"));
   t.diagnostic(`ownedFixture=${root}`);

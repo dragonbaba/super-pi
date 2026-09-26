@@ -460,3 +460,28 @@ bound origin/batch preparation and intent now explicitly record an empty parent
 plan for existing-file writes. Actual standalone/batch overwrite with terminal
 history removed stays verifiable and observes zero created parents. No missing
 metadata is silently converted to an empty plan during reconstruction.
+
+Review corrections on the next candidate: exact-edit failures with an owned retained
+candidate now consume read evidence while releasing the no-change reservation.
+Actual standalone and batch failures leave one candidate; another edit without a
+fresh read is rejected, and an explicit fresh read permits repair. Windows HIDDEN,
+SYSTEM and combined attributes with ARCHIVE cleared refuse before any effects,
+including hardlinks. Six actual attribute fixtures verify bytes, identity and flags.
+
+Linux additionally inspects fixed FS_IOC_GETFLAGS and FS_IOC_FSGETXATTR on the owned
+fd in the existing worker. The validated ABI is x86_64/glibc: GETFLAGS encodes an
+8-byte long but writes a 4-byte int; fsxattr is 28 bytes. Both calls use a fixed
+request and a retained Buffer, synchronous worker-thread errno, and one cached
+variadic ioctl binding. Normal extent-format and HASATTR flags are accepted;
+other inode flags (including nodump/noatime), project IDs and extent policy refuse
+before staging or compatibility selection. Unknown/failed ioctl observations are
+explicitly unsupported, never zero-valued metadata. Physical extent counts are
+not a preservation claim. Flags are checked again during staging, publication and
+postimage verification. Actual Linux nodump, hardlink, drift and ioctl-failure
+fixtures require Linux CI; they are explicit skips locally on Windows.
+ABI references: [Linux UAPI fs.h](https://raw.githubusercontent.com/torvalds/linux/master/include/uapi/linux/fs.h),
+[ioctl file flags](https://man7.org/linux/man-pages/man2/fs_ioc_setflags.2const.html),
+[Koffi variadic binding](https://koffi.dev/load).
+Windows Node 22.19 focused regressions currently pass (80 passed, 14 platform
+skips before the two additional Linux-only failure probes); no Linux execution or
+final-head CI success is inferred from the Windows run.

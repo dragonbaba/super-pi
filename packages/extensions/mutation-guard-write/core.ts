@@ -892,8 +892,8 @@ export class MutationWriteGuard {
     } catch (error) {
       const commit = error instanceof FileCommitError ? error.receipt : undefined;
       const stateChanged = commit?.outcome === "unknown" ? "unknown" : commit?.outcome === "committed";
-      if (stateChanged !== false) this.invalidateCanonicalPath(absolutePath);
-      else this.releaseMutation(reservationId);
+      if (stateChanged !== false || commit?.retainedTemporary) this.invalidateCanonicalPath(absolutePath);
+      if (stateChanged === false) this.releaseMutation(reservationId);
       throw guardFailure({
         ok: false,
         category: stateChanged ? "PARTIAL_MUTATION" : "EDIT_FAILED",
