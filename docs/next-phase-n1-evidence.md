@@ -155,3 +155,17 @@ unstarted, drafts absolute recorded targets across cwd changes, and observes up 
 Twenty-five preview/recovery tests pass, including genuine partial-create failure,
 interrupted receipt recording, forged later terminal status and changed-cwd drafts.
 Display limits remain labelled independently of confirmed mutation status.
+
+`1914ba15e65e300a0258affe449fcd26e6f3f690` passed all fixed-head local
+gates, preview/tool-leaf allocation checks and both CI platforms
+([run 36257817098](https://github.com/dragonbaba/super-pi/actions/runs/36257817098)).
+Actual review identified three more bounded-history ambiguities. Recovery now
+requires unique ordered request-hashed preparation plus matching per-item intent
+for entered outcomes, refuses the entire draft when any receipt is unavailable,
+and never invents a missing middle item as unstarted after later activity. Intent
+is recorded before per-item revalidation, so genuine no-change failures retain
+both phases; cancellation before entry and not-started items use unique preparation.
+The recovery-only binding does not change the Evidence Ledger or grant authority.
+Seventy-five focused tests pass, including six corrupted phase variants, an
+unavailable purported success and a missing middle receipt after real execution.
+Latest-head full gates/CI/re-review remain pending for this follow-up.

@@ -236,6 +236,50 @@ test("N1 later terminal outcomes cannot reuse a completed item's intent", async 
   assert.equal(readFileSync(join(f.cwd, "done"), "utf8"), "committed");
 });
 
+test("N1 batch recovery requires unique ordered matching preparation and intent", async t => {
+  const f = await fixture(t);
+  await f.call("file_batch", { operations: [{ operation: "write", mode: "create", path: "bound-target", content: "real" }] }, "phases");
+  const original = structuredClone(f.session.getBranch()) as any[];
+  for (const fault of ["no-preparation", "no-intent", "duplicate-preparation", "duplicate-intent", "retarget-intent", "wrong-hash"] as const) {
+    let branch = structuredClone(original);
+    const prepared = branch.find(e => e.data?.phase === "prepared"), intent = branch.find(e => e.data?.phase === "intent");
+    if (fault === "no-preparation") branch = branch.filter(e => e !== prepared);
+    if (fault === "no-intent") branch = branch.filter(e => e !== intent);
+    if (fault === "duplicate-preparation") branch.splice(branch.indexOf(prepared) + 1, 0, { ...prepared, id: "duplicate-preparation" });
+    if (fault === "duplicate-intent") branch.splice(branch.indexOf(intent) + 1, 0, { ...intent, id: "duplicate-intent" });
+    if (fault === "retarget-intent") intent.data.target = join(f.cwd, "forged");
+    if (fault === "wrong-hash") intent.data.requestHash = "0".repeat(64);
+    const records = collectChanges(branch, f.cwd);
+    assert.equal(records.length, 1, fault); assert.ok(records[0].unavailable, fault);
+    await assert.rejects(verifyChange(records[0], async () => { assert.fail("ambiguous binding must not touch disk"); }), /cannot authorize/);
+    assert.throws(() => remainingDraft(records, new Set()), /missing|ambiguous/, fault);
+  }
+  assert.equal(readFileSync(join(f.cwd, "bound-target"), "utf8"), "real");
+});
+
+test("N1 unavailable success invalidates the whole remaining batch draft", async t => {
+  const f = await fixture(t); f.onRecord(data => { if (data.phase === "result") throw new Error("interrupt"); });
+  await f.call("file_batch", { operations: ["first", "later"].map(path => ({ operation: "write", mode: "create", path, content: path })) }, "ambiguous-success");
+  const branch = structuredClone(f.session.getBranch()) as any[];
+  const aggregate = branch.find(e => e.message?.role === "toolResult" && e.message.toolCallId === "ambiguous-success");
+  aggregate.message.details.items[0].status = "succeeded"; aggregate.message.details.items[0].stateChanged = true;
+  const noIntent = branch.filter(e => e.data?.phase !== "intent"), records = collectChanges(noIntent, f.cwd);
+  assert.equal(records.length, 2); assert.equal(records[0].status, "succeeded"); assert.ok(records[0].unavailable);
+  assert.throws(() => remainingDraft(records, new Set()), /missing|ambiguous/);
+  assert.equal(existsSync(join(f.cwd, "later")), false);
+});
+
+test("N1 missing middle receipt with later activity cannot become unstarted", async t => {
+  const f = await fixture(t);
+  await f.call("file_batch", { operations: ["first", "middle", "last"].map(path => ({ operation: "write", mode: "create", path, content: path })) }, "missing-middle");
+  const branch = (structuredClone(f.session.getBranch()) as any[]).filter(e => e.data?.itemId !== "missing-middle:1"
+    && !(e.message?.role === "toolResult" && e.message.toolCallId === "missing-middle"));
+  const records = collectChanges(branch, f.cwd);
+  assert.equal(records.some((record: any) => record.itemId === "missing-middle:1"), false);
+  assert.throws(() => remainingDraft(records, new Set()), /history is incomplete/);
+  assert.equal(readFileSync(join(f.cwd, "middle"), "utf8"), "middle");
+});
+
 test("N1 interrupted preparation retains unstarted items and drafts original absolute targets across cwd changes", async t => {
   const f = await fixture(t);
   f.onRecord(data => { if (data.phase === "result") throw new Error("fixture interruption after first mutation"); });

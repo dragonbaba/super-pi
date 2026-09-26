@@ -284,8 +284,8 @@ export class BatchInvocation {
           this.currentItem = item;
           item.approval.assertCurrent = this.assertAuthority;
           try {
-            await this.revalidate(item, signal, sharedDirectories);
             pi.appendEntry(MUTATION_PROGRESS_ENTRY, { toolCallId: this.id, itemId: item.itemId, phase: "intent", requestHash: this.requestHash, operation: item.operation, target: item.target, destination: item.native?.destination });
+            await this.revalidate(item, signal, sharedDirectories);
             let receipt: any;
             if (item.native) receipt = await executeNativePlan(item.native, this.assertAuthority, signal);
             else if (item.snapshot) receipt = { ...await executePreparedSnapshotMutation(item.snapshot, signal, { assertPathAllowed: this.assertItemPath, beforeCommit: this.assertAuthority, assertCurrent: this.assertAuthority }), operation: "edit", target: item.target, stateChanged: true, ok: true };

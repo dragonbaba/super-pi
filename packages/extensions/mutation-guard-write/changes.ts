@@ -49,6 +49,55 @@ function conflictingTerminal(entries: readonly any[], selected: any, callId: str
   return false;
 }
 
+function uniqueBatchPreparation(entries: readonly any[], call: any) {
+  let prepared: any, position = -1;
+  for (let index = 0; index < entries.length; index++) {
+    const entry = entries[index];
+    if (entry.type !== "custom" || entry.customType !== "file-mutation-progress-v2" || entry.data?.toolCallId !== call.id || entry.data.phase !== "prepared") continue;
+    if (prepared) return undefined; // Even a malformed competing preparation is ambiguous.
+    prepared = entry; position = index;
+  }
+  if (!prepared || entries.slice(0, position).some(entry => entry.data?.toolCallId === call.id && entry.data?.itemId !== undefined)) return undefined;
+  const targets = boundBatchIntents([prepared], call.arguments, call.id);
+  if (!Array.isArray(call.arguments?.operations) || targets.size !== call.arguments.operations.length) return undefined;
+  return { prepared, position, targets };
+}
+
+function laterBatchActivity(entries: readonly any[], callId: string, index: number): boolean {
+  for (const entry of entries) {
+    const data = entry.data;
+    if (data?.toolCallId === callId && data.itemId !== undefined) {
+      const suffix = typeof data.itemId === "string" ? data.itemId.slice(callId.length + 1) : "";
+      const number = Number(suffix);
+      if (!Number.isInteger(number) || data.itemId !== `${callId}:${number}` || number > index) return true;
+    }
+    const message = entry.message;
+    if (message?.role === "toolResult" && message.toolCallId === callId && Array.isArray(message.details?.items)) {
+      for (let n = index + 1; n < message.details.items.length; n++) if (message.details.items[n]?.status !== "not_started") return true;
+    }
+  }
+  return false;
+}
+
+function boundRecoveryItem(entries: readonly any[], call: any, index: number, status: string) {
+  const preparation = uniqueBatchPreparation(entries, call);
+  if (!preparation) return undefined;
+  const itemId = `${call.id}:${index}`, prepared = preparation.targets.get(itemId);
+  if (!prepared) return undefined;
+  const intents = entries.filter(entry => entry.type === "custom" && entry.customType === "file-mutation-progress-v2"
+    && entry.data?.toolCallId === call.id && entry.data.itemId === itemId && entry.data.phase === "intent");
+  if (intents.length > 1) return undefined;
+  if (intents.length === 1) {
+    const intent = intents[0].data;
+    if (intent.requestHash !== preparation.prepared.data.requestHash || intent.operation !== prepared.operation
+      || intent.target !== prepared.target || intent.destination !== prepared.destination || status === "not_started") return undefined;
+  } else if (!["cancelled", "not_started"].includes(status)) return undefined;
+  // Entered items persist intent before revalidation. Cancellation before item
+  // entry and remaining not-started items have preparation but no intent.
+  if (status !== "succeeded" && laterBatchActivity(entries, call.id, index)) return undefined;
+  return prepared;
+}
+
 /** Reconstruct from bounded Session entries. No disk observation, replay or second history store. */
 export function collectChanges(branch: readonly any[], cwd: string): ChangeRecord[] {
   branch = branch.slice(-512);
@@ -85,7 +134,7 @@ export function collectChanges(branch: readonly any[], cwd: string): ChangeRecor
     let bound = false;
     const executionEntries = call ? branch.slice(callOrder.get(call.id)! + 1, receiptOrder + 1) : [];
     if (exactItemId && historicalTarget && call?.name === "file_batch" && input?.operation === receipt.operation) {
-      const intent = boundBatchIntents(executionEntries, call.arguments, call.id).get(`${call.id}:${index}`);
+      const intent = boundRecoveryItem(executionEntries, call, index, receipt.receiptVersion === 2 ? receipt.status : "succeeded");
       bound = intent?.target === receipt.target && intent?.destination === destination;
     } else if (exactItemId && historicalTarget && call?.name === receipt.operation && typeof input?.path === "string") {
       const expected = receipt.operation === "edit" || receipt.operation === "write" ? resolveToolPath(cwd, input.path) : resolve(cwd, input.path);
@@ -114,10 +163,14 @@ export function collectChanges(branch: readonly any[], cwd: string): ChangeRecor
     const entry = branch[n], data = entry.data, call = calls.get(data?.toolCallId);
     if (entry.type !== "custom" || entry.customType !== "file-mutation-progress-v2" || data?.phase !== "prepared"
       || !call || duplicate.has(call.id) || call.name !== "file_batch" || (callOrder.get(call.id) ?? Infinity) >= n) continue;
-    const intents = boundBatchIntents([entry], call.arguments, call.id);
+    const executionEntries = branch.slice(callOrder.get(call.id)! + 1);
+    const preparation = uniqueBatchPreparation(executionEntries, call);
+    if (!preparation || preparation.prepared !== entry) continue;
+    const intents = preparation.targets;
     for (let index = 0; index < (call.arguments?.operations?.length ?? 0) && index < 16; index++) {
       const itemId = `${call.id}:${index}`, intent = intents.get(itemId);
       if (!intent || records.some(record => record.itemId === itemId)) continue;
+      if (laterBatchActivity(executionEntries, call.id, index)) continue;
       // Any later item activity, even malformed, prevents a no-start claim.
       if (branch.slice(n + 1).some(later => later.data?.toolCallId === call.id && (later.data?.itemId === itemId || later.data?.phase === "prepared")
         || later.message?.role === "toolResult" && later.message.toolCallId === call.id)) continue;
@@ -254,6 +307,7 @@ function draftOperation(record: ChangeRecord): unknown {
 
 export function remainingDraft(records: readonly ChangeRecord[], verifiedItems: ReadonlySet<string>): string {
   if (records.length > 16 || records.some(record => record.batchSize !== undefined && record.batchSize !== records.length)) throw new Error("Batch history is incomplete in the bounded window; unable to reconstruct remaining work.");
+  if (records.some(record => !record.preview && (record.unavailable || !record.original))) throw new Error("Original request or matching preparation is missing/ambiguous; unable to reconstruct remaining work.");
   const parts: string[] = [];
   let bytes = 0;
   for (const record of records) {
