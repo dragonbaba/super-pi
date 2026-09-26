@@ -23,6 +23,8 @@ import { constants as evidenceFsConstants } from "node:fs";
 import { EvidenceLedger, formatEvidenceReference, type EvidenceRecordV1 } from "./evidence-ledger.ts";
 import { estimateToolOutputTokens } from "./tool-output-budget.ts";
 import type { ToolResultBudgetStatus } from "./tool-result-budget-status.ts";
+import { SKILL_BLOCK_PATTERN, COMPACTION_ERROR_NEWLINE_PATTERN, PROMPT_SNIPPET_NEWLINE_PATTERN, PROMPT_SNIPPET_WHITESPACE_PATTERN,
+	EXTENSION_LABEL_BRACKET_PATTERN, EXTENSION_SOURCE_SUFFIX_PATTERN, SESSION_EXPORT_TIMESTAMP_PATTERN } from "./agent-session-regex.ts";
 import { resolveReadPathAsync } from "./tools/path-utils.ts";
 import { READ_EVIDENCE_CAPTURE, READ_EVIDENCE_IDENTITY, hasPreciseReadIdentity, readFileGeneration, type ValidatedReadIdentity } from "./tools/read-window.ts";
 import {
@@ -191,7 +193,7 @@ export interface ParsedSkillBlock {
  * Returns null if the text doesn't contain a skill block.
  */
 export function parseSkillBlock(text: string): ParsedSkillBlock | null {
-	const match = text.match(/^<skill name="([^"]+)" location="([^"]+)">\n([\s\S]*?)\n<\/skill>(?:\n\n([\s\S]+))?$/);
+	const match = text.match(SKILL_BLOCK_PATTERN);
 	if (!match) return null;
 	return {
 		name: match[1],
@@ -351,7 +353,7 @@ function withoutDeletedHeaders(headers: ProviderHeaders | undefined): Record<str
 }
 
 function boundedAutoCompactionError(prefix: string, error: unknown): string {
-	const detail = (error instanceof Error ? error.message : "compaction failed").replace(/[\r\n]+/gu, " ").trim();
+	const detail = (error instanceof Error ? error.message : "compaction failed").replace(COMPACTION_ERROR_NEWLINE_PATTERN, " ").trim();
 	return `${prefix}: ${detail || "compaction failed"}`.slice(0, 512);
 }
 
@@ -819,6 +821,7 @@ export class AgentSession {
 	private _prefixManifestRecorder?: PrefixManifestRecorder;
 	private _toolOutputShadow: ToolOutputShadowObserver | undefined;
 	private _toolResultPresentation: ToolResultPresentationOwner | undefined;
+	private _toolBudgetGeneration = 0;
 	private _toolBudgetLastRequest: "not-observed" | "applied" | "blocked" = "not-observed";
 	private _toolBudgetSessionOverride = false;
 	private _toolResultUiDispatchMessage: Extract<AgentMessage, { role: "toolResult" }> | undefined;
@@ -1855,13 +1858,14 @@ export class AgentSession {
 
 	/** User-owned idle-session operation; no settings file is written. */
 	configureToolResultBudget(options: ToolResultPresentationOptions | undefined): void {
-		if (this.isStreaming || this.agent.state.pendingToolCalls.size !== 0) throw new Error("Wait until the current turn settles before changing the tool-result budget.");
+		if (this.isStreaming || this.isCompacting || this.agent.state.pendingToolCalls.size !== 0) throw new Error("Wait until the current turn settles before changing the tool-result budget.");
 		const next = createToolResultPresentationOwner(options, this.sessionManager.getSessionId());
 		this._clearEvidenceBranch();
 		this._toolResultPresentation?.dispose();
 		this._toolResultPresentation = next;
 		this._toolBudgetLastRequest = "not-observed";
 		this._toolBudgetSessionOverride = true;
+		this._toolBudgetGeneration++;
 		this._toolResultUiDispatchMessage = undefined;
 		this._toolResultUiDispatchSourceContent = undefined;
 		this._toolResultUiCanonicalMessages?.clear();
@@ -1872,6 +1876,8 @@ export class AgentSession {
 		this._toolResultUiCanonicalMessagesTail = undefined;
 		this._toolResultUiCanonicalMessagesOverflowed = false;
 	}
+	/** Primitive revision for once-per-explicit-change UI rediscovery. */
+	get toolResultBudgetGeneration(): number { return this._toolBudgetGeneration; }
 
 	/** Snapshot only on an explicit settings/status action; no history or token scan. */
 	getToolResultBudgetStatus(): ToolResultBudgetStatus {
@@ -2301,8 +2307,8 @@ export class AgentSession {
 	private _normalizePromptSnippet(text: string | undefined): string | undefined {
 		if (!text) return undefined;
 		const oneLine = text
-			.replace(/[\r\n]+/g, " ")
-			.replace(/\s+/g, " ")
+			.replace(PROMPT_SNIPPET_NEWLINE_PATTERN, " ")
+			.replace(PROMPT_SNIPPET_WHITESPACE_PATTERN, " ")
 			.trim();
 		return oneLine.length > 0 ? oneLine : undefined;
 	}
@@ -3954,10 +3960,10 @@ export class AgentSession {
 
 	private getExtensionSourceLabel(extensionPath: string): string {
 		if (extensionPath.startsWith("<")) {
-			return `extension:${extensionPath.replace(/[<>]/g, "")}`;
+			return `extension:${extensionPath.replace(EXTENSION_LABEL_BRACKET_PATTERN, "")}`;
 		}
 		const base = basename(extensionPath);
-		const name = base.replace(/\.(ts|js)$/, "");
+		const name = base.replace(EXTENSION_SOURCE_SUFFIX_PATTERN, "");
 		return `extension:${name}`;
 	}
 
@@ -5182,7 +5188,7 @@ export class AgentSession {
 	 */
 	exportToJsonl(outputPath?: string): string {
 		const filePath = resolvePath(
-			outputPath ?? `session-${new Date().toISOString().replace(/[:.]/g, "-")}.jsonl`,
+			outputPath ?? `session-${new Date().toISOString().replace(SESSION_EXPORT_TIMESTAMP_PATTERN, "-")}.jsonl`,
 			process.cwd(),
 		);
 		const dir = dirname(filePath);

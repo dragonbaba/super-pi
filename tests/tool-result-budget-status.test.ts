@@ -10,6 +10,22 @@ import { SessionManager } from "../packages/coding-agent/src/core/session-manage
 import { parseToolResultBudgetCommand, formatToolResultBudgetStatus } from "../packages/coding-agent/src/core/tool-result-budget-status.ts";
 import { ALPHA_MODEL, alphaModelRuntime, alphaSession } from "./helpers/alpha-session.ts";
 import { streamSimple } from "@super-pi/ai/api/openai-completions";
+import { AgentSession, parseSkillBlock } from "../packages/coding-agent/src/core/agent-session.ts";
+import * as sessionPatterns from "../packages/coding-agent/src/core/agent-session-regex.ts";
+import { alphaMessage } from "./helpers/alpha-stream.ts";
+import { Session as InspectorSession } from "node:inspector/promises";
+
+test("N4 Session parsing patterns are reusable module constants with unchanged flags", () => {
+  const methods = AgentSession.prototype as any;
+  for (let n = 0; n < 20; n++) {
+    for (const pattern of Object.values(sessionPatterns)) pattern.lastIndex = 99;
+    assert.deepEqual(parseSkillBlock('<skill name="中文" location="/tmp/source">\nbody\n</skill>\n\nuser'), { name: "中文", location: "/tmp/source", content: "body", userMessage: "user" });
+    assert.equal(parseSkillBlock("plain text"), null);
+    assert.equal(methods._normalizePromptSnippet(" \r\n中文\t  text\r\n"), "中文 text");
+    assert.equal(methods.getExtensionSourceLabel("<fixture>"), "extension:fixture");
+    assert.equal(methods.getExtensionSourceLabel("fixture.ts"), "extension:fixture");
+  }
+});
 
 test("N4 explicit budget command validates positive decimal safe integers without a default", () => {
   assert.equal(parseToolResultBudgetCommand(""), "status"); assert.equal(parseToolResultBudgetCommand("status"), "status");
@@ -98,4 +114,88 @@ test("N4 real interactive budget command and settings refuse active tools withou
   list.handleInput("\r"); assert.equal(item.currentValue, "1024"); assert.equal(f.session.getToolResultBudgetStatus().budgetTokens, 1024);
   assert.equal(f.internal.onToolResultBudgetSettingChange, stableCallback);
   assert.equal(f.internal.getToolResultDiscoveryLifecycleCounts().totalEntries, 0);
+});
+
+for (const activity of ["compact", "branch"] as const) test(`N4 budget changes refuse real in-flight ${activity} atomically`, async () => {
+  let entered!: () => void, release!: () => void;
+  const begun = new Promise<void>(resolve => { entered = resolve; }), gate = new Promise<void>(resolve => { release = resolve; });
+  const f = await alphaSession({ messages: Array.from({ length: 8 }, () => alphaMessage([{ type: "text", text: "history ".repeat(2048) }])),
+    settings: { compaction: { enabled: false, keepRecentTokens: 128, reserveTokens: 128 } },
+    extensions: [(pi: any) => {
+      const hold = async () => { entered(); await gate; return { cancel: true }; };
+      pi.on("session_before_compact", hold); pi.on("session_before_tree", hold);
+    }] });
+  let operation: Promise<unknown> | undefined;
+  try {
+    assert.equal(await f.mode.init(), true);
+    const owner = (f.session as any)._toolResultPresentation, generation = f.session.toolResultBudgetGeneration;
+    operation = activity === "compact" ? f.session.compact("fixture") : f.session.navigateTree(f.sessionManager.getEntries()[0].id, { summarize: true });
+    await begun; assert.equal(f.session.isCompacting, true); assert.equal(f.session.isStreaming, false);
+    assert.throws(() => f.session.configureToolResultBudget({ enabled: true, budgetTokens: 2048 }));
+    assert.equal((f.session as any)._toolResultPresentation, owner); assert.equal(f.session.toolResultBudgetGeneration, generation);
+    assert.equal(owner.counters.ownerDisposeCalls, 0);
+    release();
+    if (activity === "compact") await assert.rejects(operation, (error: any) => error.message === "Compaction cancelled");
+    else await operation;
+    operation = undefined; assert.equal(f.session.isCompacting, false);
+    f.session.configureToolResultBudget({ enabled: true, budgetTokens: 2048 }); assert.equal(owner.counters.ownerDisposeCalls, 1);
+  } finally { release(); await operation?.catch(() => {}); await f.release(); }
+});
+
+test("N4 changed budget reattaches actual next-request provenance to the same retained component", async t => {
+  let requests = 0, executions = 0, wire = "";
+  const fetchFixture: typeof fetch = async (_url, init) => {
+    wire = init!.body as string; requests++;
+    const delta = requests === 1 ? { tool_calls: [{ index: 0, id: "budget-history", type: "function", function: { name: "inspect_budget", arguments: "{}" } }] } : { content: "Observed result." };
+    const event = { id: "offline", object: "chat.completion.chunk", created: 1, model: "fixture", choices: [{ index: 0, delta, finish_reason: null }] };
+    const end = { ...event, choices: [{ index: 0, delta: {}, finish_reason: requests === 1 ? "tool_calls" : "stop" }] };
+    return new Response(`data: ${JSON.stringify(event)}\n\ndata: ${JSON.stringify(end)}\n\ndata: [DONE]\n\n`, { headers: { "Content-Type": "text/event-stream" } });
+  };
+  const runtime = alphaModelRuntime((model: any, context: any, options: any) => streamSimple({ ...model, api: "openai-completions" }, context, { ...options, apiKey: "offline", fetch: fetchFixture, maxRetries: 0 }));
+  const f = await alphaSession({ runtime, budgetTokens: 1024, customTools: [{ name: "inspect_budget", label: "Inspect", description: "budget provenance fixture",
+    parameters: { type: "object", properties: {}, additionalProperties: false }, execute: async () => { executions++; return { content: [{ type: "text", text: "完整中文 evidence\n".repeat(10000) }], details: {} }; } }] });
+  const profiler = process.env.SP_BUDGET_REDISCOVERY_PROFILE === "1" ? new InspectorSession() : undefined;
+  const cycles = profiler ? 20 : 3;
+  let heapBefore = 0, sampledBytes = 0;
+  try {
+    assert.equal(await f.mode.init(), true);
+    await f.session.prompt("Inspect once."); await f.session.agent.waitForIdle();
+    assert.equal(requests, 2); assert.equal(executions, 1);
+    const first = f.internal.attachedToolResultDiscoveries.get("budget-history"), component = first.component;
+    let previous = component.getToolResultPresentationDiscovery("budget-history"); assert.ok(previous?.cursor);
+    global.gc?.(); heapBefore = process.memoryUsage().heapUsed;
+    if (profiler) { profiler.connect(); await profiler.post("HeapProfiler.startSampling", { samplingInterval: 1024, includeObjectsCollectedByMajorGC: true, includeObjectsCollectedByMinorGC: true }); }
+    for (let cycle = 0; cycle < cycles; cycle++) {
+    const oldOwner = (f.session as any)._toolResultPresentation;
+    await f.internal.editor.onSubmit(`/tool-budget ${cycle % 2 ? 1024 : 2048}`);
+    assert.equal(component.getToolResultPresentationDiscovery("budget-history"), undefined); assert.equal(oldOwner.counters.retainedProjectionCodeUnits, 0);
+    await f.session.prompt("Continue without executing the tool again."); await f.session.agent.waitForIdle();
+    assert.equal(requests, cycle + 3); assert.equal(executions, 1); assert.ok(wire.includes("budget-history"));
+    const next = f.internal.attachedToolResultDiscoveries.get("budget-history"); assert.equal(next.component, component);
+    const current = component.getToolResultPresentationDiscovery("budget-history"); assert.ok(current?.cursor); assert.notEqual(current.cursor, previous.cursor);
+    assert.equal(f.internal.toolResultBudgetRediscoveryPasses, cycle + 1);
+    const probes = f.internal.toolResultBudgetRediscoveryComponentProbes;
+    for (let n = 0; n < 100; n++) f.internal.rediscoverToolResultsAfterBudgetChange();
+    assert.equal(f.internal.toolResultBudgetRediscoveryComponentProbes, probes);
+    previous = current;
+    }
+    await f.internal.editor.onSubmit("/tool-budget off"); assert.equal(component.getToolResultPresentationDiscovery("budget-history"), undefined);
+    assert.equal(f.internal.getToolResultDiscoveryLifecycleCounts().totalEntries, 0);
+    assert.ok(formatToolResultBudgetStatus(f.session.getToolResultBudgetStatus()).includes("MCP 输入接收失败"));
+  } finally {
+    await f.release();
+    if (profiler) {
+      try {
+        const { profile } = await profiler.post("HeapProfiler.stopSampling");
+        const stack = [profile.head];
+        while (stack.length) { const node = stack.pop()!; sampledBytes += node.selfSize; for (const child of node.children) stack.push(child); }
+      } finally { profiler.disconnect(); }
+    }
+  }
+  assert.equal(f.internal.getToolResultDiscoveryLifecycleCounts().totalEntries, 0);
+  global.gc?.();
+  t.diagnostic(JSON.stringify({ benchmark: "explicit-budget-rediscovery", node: process.version, cycles, requests, executions,
+    rediscoveryPasses: f.internal.toolResultBudgetRediscoveryPasses, componentProbes: f.internal.toolResultBudgetRediscoveryComponentProbes,
+    unchangedGenerationAdditionalProbes: 0, retainedRegistrationsAfterRelease: 0, sampledBytes: profiler ? sampledBytes : null,
+    heapBefore, heapAfterRelease: process.memoryUsage().heapUsed, note: "Explicit command/whole request cost; not per-delta cost or a speedup claim." }));
 });

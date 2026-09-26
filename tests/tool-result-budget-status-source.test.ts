@@ -4,7 +4,7 @@ import test from "node:test";
 import ts from "typescript";
 
 test("N4 explicit budget helpers and request bridge create no callbacks or regexes", () => {
-  const patternFile = "packages/coding-agent/src/core/tool-result-budget-regex.ts";
+  for (const patternFile of ["packages/coding-agent/src/core/tool-result-budget-regex.ts", "packages/coding-agent/src/core/agent-session-regex.ts"]) {
   const patterns = ts.createSourceFile(patternFile, readFileSync(patternFile, "utf8"), ts.ScriptTarget.Latest, true);
   let patternCount = 0;
   function pattern(node: ts.Node): void {
@@ -16,11 +16,13 @@ test("N4 explicit budget helpers and request bridge create no callbacks or regex
     }
     ts.forEachChild(node, pattern);
   }
-  pattern(patterns); assert.equal(patternCount, 1);
+  pattern(patterns); assert.equal(patternCount, patternFile.endsWith("agent-session-regex.ts") ? 7 : 1);
+  }
   const targets = [
     { file: "packages/coding-agent/src/core/tool-result-budget-status.ts", names: [] },
     { file: "packages/coding-agent/src/core/agent-session.ts", names: ["configureToolResultBudget", "getToolResultBudgetStatus", "projectToolResultMessagesForModel"] },
-    { file: "packages/coding-agent/src/modes/interactive/interactive-mode.ts", names: ["handleToolResultBudgetCommand"] },
+    { file: "packages/coding-agent/src/modes/interactive/interactive-mode.ts", names: ["handleToolResultBudgetCommand", "rediscoverToolResultsAfterBudgetChange"] },
+    { file: "packages/coding-agent/src/modes/interactive/components/tool-execution.ts", names: ["hasToolResultSourceForUi", "hasToolResultSourceForUi"] },
   ];
   for (const target of targets) {
     const source = ts.createSourceFile(target.file, readFileSync(target.file, "utf8"), ts.ScriptTarget.Latest, true);

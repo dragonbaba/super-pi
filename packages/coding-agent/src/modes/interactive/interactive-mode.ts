@@ -659,6 +659,9 @@ export class InteractiveMode {
 	private pendingTools = new Map<string, ToolExecutionComponent | ReadToolGroupComponent>();
 	private pendingToolResultDiscoveries: Map<string, ToolResultDiscoveryRegistration> | undefined;
 	private attachedToolResultDiscoveries: Map<string, ToolResultDiscoveryRegistration> | undefined;
+	private toolResultBudgetUiGeneration = 0;
+	private toolResultBudgetRediscoveryPasses = 0;
+	private toolResultBudgetRediscoveryComponentProbes = 0;
 	private toolResultDiscoveryRegistrationObjectsCreated = 0;
 	private toolResultDiscoveryPendingMapsCreated = 0;
 	private toolResultDiscoveryAttachedMapsCreated = 0;
@@ -4165,6 +4168,7 @@ export class InteractiveMode {
 					this.updatePendingMessagesDisplay();
 					this.ui.requestRender();
 				} else if (event.message.role === "assistant") {
+					this.rediscoverToolResultsAfterBudgetChange();
 					this.streamingComponent = new AssistantMessageComponent(
 						undefined,
 						this.hideThinkingBlock,
@@ -4939,6 +4943,34 @@ export class InteractiveMode {
 		this.clearAttachedToolResultDiscoveries();
 	}
 
+	/** One deferred cold refresh after an explicit budget change and successful
+	 * request preparation. It updates matching retained leaves, never replays the
+	 * transcript or runs from provider deltas/progress/render/layout. */
+	private rediscoverToolResultsAfterBudgetChange(): void {
+		const generation = this.session.toolResultBudgetGeneration;
+		if (this.toolResultBudgetUiGeneration === generation) return;
+		if (this.session.toolResultPresentationEnabled && this.session.getToolResultBudgetStatus().lastRequest !== "applied") return;
+		this.clearToolResultDiscoveriesAfterCanonicalHistoryReplacement();
+		this.toolResultBudgetUiGeneration = generation;
+		if (!this.session.toolResultPresentationEnabled) return;
+		const presentations = new Map<Extract<AgentMessage, { role: "toolResult" }>, ToolResultPresentation>();
+		this.toolResultBudgetRediscoveryPasses++;
+		try {
+			this.session.collectRecentToolResultPresentationsForUi(presentations, MAX_TOOL_RESULT_DISCOVERIES);
+			for (const component of this.chatContainer.children) {
+				if (presentations.size === 0) break;
+				if (!(component instanceof ToolExecutionComponent) && !(component instanceof ReadToolGroupComponent)) continue;
+				for (const [message, presentation] of presentations) {
+					this.toolResultBudgetRediscoveryComponentProbes++;
+					if (!component.hasToolResultSourceForUi(message.toolCallId, message.content)) continue;
+					const registration = this.createToolResultDiscoveryRegistration(component, message.content);
+					if (this.attachToolResultPresentation(message, registration, presentation)) this.addAttachedToolResultDiscovery(message.toolCallId, registration);
+					presentations.delete(message);
+				}
+			}
+		} finally { presentations.clear(); }
+	}
+
 	/** Low-frequency lifecycle diagnostics for tests and allocation evidence. */
 	getToolResultDiscoveryLifecycleCounts(): {
 		entries: number;
@@ -5251,6 +5283,7 @@ export class InteractiveMode {
 		options: { updateFooter?: boolean; populateHistory?: boolean } = {},
 	): void {
 		this.clearToolResultDiscoveries();
+		this.toolResultBudgetUiGeneration = this.session.toolResultBudgetGeneration;
 		this.finalizeReadToolGroup();
 		this.clearDeferredReadArtifacts();
 		this.pendingTools.clear();

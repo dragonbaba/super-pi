@@ -313,6 +313,10 @@ export class ReadToolGroupComponent extends Container {
 	getToolResultPresentationDiscovery(toolCallId: string): ToolResultPresentationDiscoveryState | undefined {
 		return this.rows.get(toolCallId)?.toolResultDiscovery;
 	}
+	/** Explicit budget-change rediscovery; exact canonical source identity only. */
+	hasToolResultSourceForUi(toolCallId: string, content: readonly unknown[]): boolean {
+		return this.rows.get(toolCallId)?.result?.content === content;
+	}
 
 	/** @internal Rebuild the current sidecar view exactly once after batch detach. */
 	refreshToolResultPresentationView(): void {
@@ -1235,6 +1239,10 @@ export class ToolExecutionComponent extends Container {
 
 	getToolResultPresentationDiscovery(toolCallId: string): ToolResultPresentationDiscoveryState | undefined {
 		return toolCallId === this.toolCallId ? this.toolResultDiscovery : undefined;
+	}
+	/** Explicit budget-change rediscovery; exact canonical source identity only. */
+	hasToolResultSourceForUi(toolCallId: string, content: readonly unknown[]): boolean {
+		return toolCallId === this.toolCallId && this.result?.content === content;
 	}
 
 	setShowImages(show: boolean): void {
