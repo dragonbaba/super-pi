@@ -373,3 +373,12 @@ validated even when optional observation is absent. Fourteen new cases failed
 before the fix; focused PowerShell, actual Session/direct executor, contract and
 source regressions now pass (133 pass, five platform skips). Type check passes.
 No production regex or callback was added. Final combined gates and review remain.
+
+Review r35: a canonical `termination:not_started` with omitted optional observation
+now yields `started:false`, no side effects and fresh-request guidance in both
+actual Agent shell adapters. The normalized termination already authorizes only
+this unstarted interpretation in PowerShell recovery; result classification now
+agrees. Two real adapter regressions plus contract/source tests pass (80 tests),
+and check passes. No callback or regex was added. The prior r34 code candidate
+46f3e4f8b2e61bef1b02a98604ba06fb1bf4aeb9 passed all four local gates; this final
+classification correction still needs combined final gates and actual review.
