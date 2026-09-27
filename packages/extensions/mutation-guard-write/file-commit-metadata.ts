@@ -142,6 +142,11 @@ export async function selectCommitMetadata(target: PathIdentity): Promise<Commit
         if (!original.mountId || !parentMetadata.mountId) throw new Error("[UNSUPPORTED_COMMIT] Mount identity is unavailable before staging.");
         if (original.mountId !== parentMetadata.mountId) return compatibility("Target and parent have different mount identities: retain the mounted object and verify mode/owner and visible attributes.", info, target, original);
         if (parentMetadata.defaultAcl) return compatibility("Parent default ACL would be inherited by a new file: retain the existing object and verify its mode/owner and visible attributes.", info, target, original);
+        if (parentMetadata.inodeFlags === undefined || parentMetadata.xflags === undefined
+          || (parentMetadata.inodeFlags & ~(0x80000 | 0x1000)) !== 0 || (parentMetadata.xflags & ~0x80000000) !== 0
+          || parentMetadata.projectId !== 0 || parentMetadata.extentSize !== 0 || parentMetadata.cowExtentSize !== 0) {
+          return compatibility("Parent file flags/project/extent policy may be inherited: retain the original object; target metadata is verified before and after writing.", info, target, original);
+        }
       } finally { await parent.close(); }
     }
     if (process.platform === "win32") {

@@ -485,3 +485,27 @@ ABI references: [Linux UAPI fs.h](https://raw.githubusercontent.com/torvalds/lin
 Windows Node 22.19 focused regressions currently pass (80 passed, 14 platform
 skips before the two additional Linux-only failure probes); no Linux execution or
 final-head CI success is inferred from the Windows run.
+
+Native flag candidate d4f7deefa passed both Node22.19 platform jobs in
+[CI 36280329226](https://github.com/dragonbaba/super-pi/actions/runs/36280329226),
+including actual Linux nodump, drift and ioctl-failure tests. This does not replace
+validation of later integrated heads.
+
+Follow-up corrections inspect the already-read parent's file flags/project/extent
+policy before staging. Non-default policy selects object preservation, retaining
+and verifying the ordinary target instead of creating an inheriting sibling first.
+The parent mask permits only normal extent format/directory indexing; Linux UAPI
+constants are checked against the linked fs.h. An injected parent observation
+exercises nonzero project inheritance without privilege changes, with actual
+unchanged inode and updated bytes, zero candidate and zero publication attempts.
+It is not presented as an actual privileged project-policy configuration test.
+
+Retained-candidate invalidation now also covers standalone and batch snapshot
+editing. Four exact/snapshot x standalone/batch failures verify the real retained
+candidate, refusal of both exact-edit and overwrite reuse, unchanged target, and
+successful repair only after a fresh read. A batch now reuses one invocation-owned
+commit-selection callback across items; it no longer allocates that closure in the
+item loop. A real four-file batch observes one callback identity and release of
+its progress API/current-item references; invoking it after release is refused.
+Windows targeted/source-relevant cases: 152 pass, 17 explicit skips; check passes.
+New whole-project gates and both-platform CI/review are still required.
