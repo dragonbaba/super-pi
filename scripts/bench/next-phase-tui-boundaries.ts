@@ -71,6 +71,9 @@ try {
   const elapsedMs = performance.now() - start, used = process.cpuUsage(cpu), profileStart = performance.now(), profileCpu = process.cpuUsage();
   const { profile } = await profiler.post("HeapProfiler.stopSampling"); let sampledBytes = 0; const nodes = [profile.head];
   while (nodes.length) { const node = nodes.pop()!; sampledBytes += node.selfSize; for (const child of node.children) nodes.push(child); }
+  profile.head.children.length = 0;
+  const samples = (profile as typeof profile & { samples?: unknown[] }).samples;
+  if (samples) samples.length = 0;
   const profileOverheadMs = performance.now() - profileStart, profileUsed = process.cpuUsage(profileCpu); timings.sort((a, b) => a - b);
   console.log(JSON.stringify({ benchmark: "N4-tui-boundaries", implementation: process.env.SP_COST_LABEL ?? "candidate", node: process.version,
     historyItems: 5000, markdownCodeUnits: content.length, batchPaths: 16, detailPathsRendered: expanded.includes("file0"), frames: timings.length, elapsedMs, cpuUs: used.user + used.system,

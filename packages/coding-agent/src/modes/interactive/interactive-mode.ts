@@ -4947,15 +4947,16 @@ export class InteractiveMode {
 	}
 
 	/** One deferred cold refresh after an explicit budget change and successful
-	 * request preparation. It updates matching retained leaves, never replays the
+	 * provider dispatch. It updates matching retained leaves, never replays the
 	 * transcript or runs from provider deltas/progress/render/layout. */
 	private rediscoverToolResultsAfterBudgetChange(): void {
 		const generation = this.session.toolResultBudgetGeneration;
 		if (this.toolResultBudgetUiGeneration === generation) return;
-		if (this.session.toolResultPresentationEnabled && this.session.getToolResultBudgetStatus().lastRequest !== "applied") return;
+		const rediscovery = this.session.toolResultBudgetRediscoveryState;
+		if (rediscovery === "waiting") return;
 		this.clearToolResultDiscoveriesAfterCanonicalHistoryReplacement();
 		this.toolResultBudgetUiGeneration = generation;
-		if (!this.session.toolResultPresentationEnabled) return;
+		if (rediscovery !== "ready") return;
 		const presentations = new Map<Extract<AgentMessage, { role: "toolResult" }>, ToolResultPresentation>();
 		this.toolResultBudgetRediscoveryPasses++;
 		try {
@@ -5288,15 +5289,16 @@ export class InteractiveMode {
 		this.clearToolResultDiscoveries();
 		const budgetGeneration = this.session.toolResultBudgetGeneration;
 		const budgetRefreshPending = this.toolResultBudgetUiGeneration !== budgetGeneration;
+		const budgetRediscovery = this.session.toolResultBudgetRediscoveryState;
 		// A settings/history rebuild cannot acknowledge a budget whose next request
 		// has not been projected yet. Consume its provenance only after success.
-		if (!this.session.toolResultPresentationEnabled) this.toolResultBudgetUiGeneration = budgetGeneration;
+		if (budgetRediscovery !== "waiting") this.toolResultBudgetUiGeneration = budgetGeneration;
 		this.finalizeReadToolGroup();
 		this.clearDeferredReadArtifacts();
 		this.pendingTools.clear();
 		const renderedPendingTools = new Map<string, ToolExecutionComponent | ReadToolGroupComponent>();
 		let discoverableMessages: Map<Extract<AgentMessage, { role: "toolResult" }>, ToolResultPresentation> | undefined;
-		if (this.session.toolResultPresentationEnabled && (!budgetRefreshPending || this.session.getToolResultBudgetStatus().lastRequest === "applied")) {
+		if (this.session.toolResultPresentationEnabled && (!budgetRefreshPending || budgetRediscovery === "ready")) {
 			discoverableMessages = new Map();
 			this.session.collectRecentToolResultPresentationsForUi(discoverableMessages, MAX_TOOL_RESULT_DISCOVERIES, budgetRefreshPending);
 			this.toolResultBudgetUiGeneration = budgetGeneration;

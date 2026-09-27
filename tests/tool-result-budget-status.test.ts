@@ -15,6 +15,7 @@ import * as sessionPatterns from "../packages/coding-agent/src/core/agent-sessio
 import { alphaMessage } from "./helpers/alpha-stream.ts";
 import { Session as InspectorSession } from "node:inspector/promises";
 import { AssistantMessageEventStream } from "../packages/ai/src/utils/event-stream.ts";
+import { ExtensionHookTimeoutError } from "../packages/coding-agent/src/core/extensions/runner.ts";
 
 for (const action of ["prompt", "continue"]) test(`N4 budget replacement refuses a direct public Agent ${action} before any tool is pending`, async () => {
   const stream = new AssistantMessageEventStream(); let entered!: () => void, finished = false, pending: Promise<void> | undefined;
@@ -272,6 +273,9 @@ for (const rebuild of [false, true]) for (const transform of ["identity", "filte
         const { profile } = await profiler.post("HeapProfiler.stopSampling");
         const stack = [profile.head];
         while (stack.length) { const node = stack.pop()!; sampledBytes += node.selfSize; for (const child of node.children) stack.push(child); }
+        profile.head.children.length = 0;
+        const samples = (profile as typeof profile & { samples?: unknown[] }).samples;
+        if (samples) samples.length = 0;
       } finally { profiler.disconnect(); }
     }
   }
@@ -281,4 +285,60 @@ for (const rebuild of [false, true]) for (const transform of ["identity", "filte
     rediscoveryPasses: f.internal.toolResultBudgetRediscoveryPasses, componentProbes: f.internal.toolResultBudgetRediscoveryComponentProbes,
     unchangedGenerationAdditionalProbes: 0, retainedRegistrationsAfterRelease: 0, sampledBytes: profiler ? sampledBytes : null,
     heapBefore, heapAfterRelease: process.memoryUsage().heapUsed, note: "Explicit command/whole request cost; not per-delta cost or a speedup claim." }));
+});
+
+for (const failure of ["payload-hook", "runtime"]) test(`N4 budget provenance waits for effective dispatch after ${failure} rejection`, async () => {
+  let requests = 0, executions = 0, rejectRequest = false;
+  const fetchFixture: typeof fetch = async () => {
+    const first = ++requests === 1;
+    const delta = first ? { tool_calls: [{ index: 0, id: "dispatch-history", type: "function", function: { name: "inspect_dispatch", arguments: "{}" } }] } : { content: "Observed." };
+    const event = { id: "offline", object: "chat.completion.chunk", created: 1, model: "fixture", choices: [{ index: 0, delta, finish_reason: null }] };
+    const end = { ...event, choices: [{ index: 0, delta: {}, finish_reason: first ? "tool_calls" : "stop" }] };
+    return new Response(`data: ${JSON.stringify(event)}\n\ndata: ${JSON.stringify(end)}\n\ndata: [DONE]\n\n`, { headers: { "Content-Type": "text/event-stream" } });
+  };
+  const runtime = alphaModelRuntime((model: any, context: any, options: any) => {
+    if (rejectRequest && failure === "runtime") throw new Error("fixture before-dispatch runtime failure");
+    return streamSimple({ ...model, api: "openai-completions" }, context, { ...options, apiKey: "offline", fetch: fetchFixture, maxRetries: 0 });
+  });
+  const f = await alphaSession({ runtime, settings: { retry: { enabled: false } }, extensions: failure === "payload-hook" ? [(pi: any) => {
+    pi.on("before_provider_request", () => { if (rejectRequest) throw new ExtensionHookTimeoutError("fixture", "before_provider_request", 1); });
+  }] : undefined, customTools: [{ name: "inspect_dispatch", label: "Inspect", description: "dispatch fixture", parameters: { type: "object", properties: {} },
+    execute: async () => { executions++; return { content: [{ type: "text", text: "完整证据\n".repeat(10000) }] }; } }] });
+  try {
+    assert.equal(await f.mode.init(), true); await f.session.prompt("Inspect once."); await f.session.agent.waitForIdle();
+    const component = f.internal.attachedToolResultDiscoveries.get("dispatch-history").component;
+    assert.equal(requests, 2); assert.equal(executions, 1);
+    await f.internal.editor.onSubmit("/tool-budget 2048"); rejectRequest = true;
+    await f.session.prompt("Continue."); await f.session.agent.waitForIdle();
+    assert.equal(requests, 2); assert.equal(component.getToolResultPresentationDiscovery("dispatch-history"), undefined);
+    assert.equal(f.session.toolResultBudgetRediscoveryState, "waiting"); assert.equal((f.session as any)._toolBudgetProjectedSources, undefined);
+    assert.notEqual(f.internal.toolResultBudgetUiGeneration, f.session.toolResultBudgetGeneration);
+    assert.equal((f.session as any)._toolBudgetSourceCapturePasses, 1);
+    f.internal.toggleThinkingBlockVisibility(); assert.equal(f.internal.getToolResultDiscoveryLifecycleCounts().totalEntries, 0);
+    rejectRequest = false; await f.session.prompt("Retry preparation, keep the completed tool."); await f.session.agent.waitForIdle();
+    assert.equal(requests, 3); assert.equal(executions, 1); assert.equal((f.session as any)._toolBudgetSourceCapturePasses, 2);
+    assert.equal(f.internal.toolResultBudgetUiGeneration, f.session.toolResultBudgetGeneration);
+    assert.equal(f.session.toolResultBudgetRediscoveryState, "none");
+    const attached = f.internal.attachedToolResultDiscoveries?.get("dispatch-history");
+    if (failure === "runtime") assert.ok(attached?.component.getToolResultPresentationDiscovery("dispatch-history")?.cursor);
+    else assert.equal(attached, undefined, "arbitrary payload hooks cannot establish canonical source provenance");
+  } finally { await f.release(); }
+  assert.equal(f.internal.getToolResultDiscoveryLifecycleCounts().totalEntries, 0);
+});
+
+test("N4 unconfigured budget generation settles without per-response status snapshots", async t => {
+  let requests = 0;
+  const runtime = alphaModelRuntime(() => { requests++; const stream = new AssistantMessageEventStream();
+    stream.push({ type: "done", reason: "stop", message: alphaMessage([{ type: "text", text: "done" }]) }); return stream; });
+  const f = await alphaSession({ runtime });
+  try {
+    assert.equal(await f.mode.init(), true); f.session.configureToolResultBudget({ enabled: true });
+    const status = f.session.getToolResultBudgetStatus.bind(f.session); let snapshots = 0;
+    t.mock.method(f.session, "getToolResultBudgetStatus", () => { snapshots++; return status(); });
+    for (let request = 0; request < 5; request++) { await f.session.prompt("fixture"); await f.session.agent.waitForIdle(); }
+    assert.equal(requests, 5); assert.equal(f.internal.toolResultBudgetUiGeneration, f.session.toolResultBudgetGeneration);
+    for (let probe = 0; probe < 1000; probe++) f.internal.rediscoverToolResultsAfterBudgetChange();
+    assert.equal(snapshots, 0); assert.equal((f.session as any)._toolBudgetSourceCapturePasses, 0);
+    assert.equal(f.internal.toolResultBudgetRediscoveryPasses, 0); assert.equal(f.internal.getToolResultDiscoveryLifecycleCounts().totalEntries, 0);
+  } finally { await f.release(); }
 });

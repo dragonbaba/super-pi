@@ -444,6 +444,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				// Prefix intent diagnostics are observational and must never block a provider request.
 			}
 			const recordEffectiveDispatch = (observation: Readonly<EffectiveDispatchObservation>, observedModel: Model<any>) => {
+				session.recordToolResultBudgetDispatch();
 				try {
 					prefixManifestRecorder.record(buildPrefixManifest({
 						...manifestInput,
@@ -489,6 +490,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		onPayload: async (payload, _model) => {
 			const runner = extensionRunnerRef.current;
 			session.assertImageRequestAllowed(_model);
+			if (runner?.hasHandlers("before_provider_request")) session.discardPendingToolResultBudgetSources();
 			const result = runner?.hasHandlers("before_provider_request") ? await runner.emitBeforeProviderRequest(payload) : payload;
 			session.assertImageRequestAllowed(_model);
 			return result;

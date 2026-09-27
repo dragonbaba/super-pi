@@ -1472,6 +1472,7 @@ export class AgentSession {
 		// cannot overtake critical UI output; high-frequency events stay unchanged.
 		if (event.type === "agent_end" && event.requiresUserInput) this._interactionPaused = true;
 		if (event.type === "agent_end") {
+			this.discardPendingToolResultBudgetSources();
 			await this._emitAgentEnd({ ...event, willRetry: this._willRetryAfterAgentEnd(event) });
 			this._evidenceCompletedReads?.clear();
 			this._evidenceCompletedBytes = 0;
@@ -1886,6 +1887,21 @@ export class AgentSession {
 	/** Primitive revision for once-per-explicit-change UI rediscovery. */
 	get toolResultBudgetGeneration(): number { return this._toolBudgetGeneration; }
 
+	/** Primitive request boundary; normal assistant starts do not allocate a status snapshot. */
+	get toolResultBudgetRediscoveryState(): "waiting" | "ready" | "none" {
+		return this._toolBudgetProjectionPending ? "waiting" : this._toolBudgetProjectedSources ? "ready" : "none";
+	}
+
+	/** Called by the existing provider dispatch observer, never by conversion. */
+	recordToolResultBudgetDispatch(): void {
+		this._toolBudgetProjectionPending = false;
+	}
+
+	/** A payload hook cannot prove source identity; failures must permit recapture. */
+	discardPendingToolResultBudgetSources(): void {
+		if (this._toolBudgetProjectionPending) this._toolBudgetProjectedSources = undefined;
+	}
+
 	/** Snapshot only on an explicit settings/status action; no history or token scan. */
 	getToolResultBudgetStatus(): ToolResultBudgetStatus {
 		const owner = this._toolResultPresentation, budgetTokens = owner?.getEvidenceBudgetTokens();
@@ -1900,11 +1916,12 @@ export class AgentSession {
 		systemPrompt?: string, tools?: readonly AgentTool<any>[], contextWindow?: number, maxOutputTokens?: number, requestPlanning = false): Message[] {
 		const owner = this._toolResultPresentation;
 		if (!owner) return messages;
+		this.discardPendingToolResultBudgetSources();
 		const sources = this._toolBudgetProjectionPending ? this._captureBudgetProjectionSources(messages) : undefined;
 		try {
 			const projected = owner.projectMessagesForModel(messages, imagePolicy, systemPrompt, tools, contextWindow, maxOutputTokens, requestPlanning);
 			this._toolBudgetLastRequest = owner.getEvidenceBudgetTokens() === undefined ? "not-observed" : "applied";
-			if (sources) { this._toolBudgetProjectedSources = sources; this._toolBudgetProjectionPending = false; }
+			if (sources) this._toolBudgetProjectedSources = sources;
 			return projected;
 		} catch (error) {
 			this._toolBudgetLastRequest = error instanceof ToolResultContinuationError && error.code === "budget-too-small" ? "blocked" : "preparation-failed";

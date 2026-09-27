@@ -353,3 +353,24 @@ builds are preparation, followed by 12 discarded warmup and 60 measured children
 No install-time download is included in product timing. The current Windows tree
 contains 422 lock records and 22,397 dependency files/links; these counts must be
 refreshed by the final clean-install comparison.
+
+Review r28: budget source provenance remains pending after model conversion and
+is consumed only after the existing effective-provider-dispatch observer fires.
+A pre-dispatch failure releases the weak map at agent_end while keeping the
+generation pending for retry. UI rebuilds cannot attach those untransmitted
+sources. A before_provider_request payload hook invalidates the pending source
+proof because arbitrary wire transformations cannot preserve canonical identity;
+such a request acknowledges dispatch without attaching historical cursors for
+that changed generation. This conservative limitation also applies to hooks that
+return an unchanged payload. Ordinary identity/filter/clone contexts retain their
+tested behavior.
+
+The UI reads a primitive waiting/ready/none state rather than allocating a status
+snapshot. Enabled presentation without a configured budget acknowledges each
+generation without repeated rediscovery. Actual runtime failure/retry, an injected
+ExtensionHookTimeoutError before fetch, rebuild, payload-hook retry and five real
+unconfigured responses plus 1,000 probes verify these boundaries. The latter
+records zero status snapshots, captures, rediscovery passes and retained entries.
+Existing owner callbacks are reused; no production regex or callback was added.
+Budget and source gates: 28 passed; Node22.19 check passed. Updated profiling and
+the final serial comparison are still required.
