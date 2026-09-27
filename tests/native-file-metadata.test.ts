@@ -149,19 +149,18 @@ test("N2 Windows denied content-write ACL refuses before creating any candidate"
   }
 });
 
-test("N2 Windows denied candidate GENERIC_WRITE rights preselect before staging", { skip: process.platform !== "win32" }, async t => {
+test("N2 Windows denied GENERIC_WRITE rights refuse during selection before staging", { skip: process.platform !== "win32" }, async t => {
   const f = await fixture(t), powershell = join(process.env.SystemRoot!, "System32/WindowsPowerShell/v1.0/powershell.exe");
   const setup = "$ErrorActionPreference='Stop';$a=[IO.File]::GetAccessControl($env:N2_FIXTURE);$u=[Security.Principal.WindowsIdentity]::GetCurrent().User;$r=New-Object Security.AccessControl.FileSystemAccessRule($u,[Security.AccessControl.FileSystemRights]::AppendData,[Security.AccessControl.AccessControlType]::Deny);";
   const options = { windowsHide: true, env: { ...process.env, N2_FIXTURE: f.target } };
   await execute(powershell, ["-NoProfile", "-NonInteractive", "-Command", setup + "$a.AddAccessRule($r);[IO.File]::SetAccessControl($env:N2_FIXTURE,$a)"], options);
   try {
-    const plan = await planFor(f.target, f.before);
-    assert.equal(plan.metadata.strategy, "protected_in_place"); assert.ok(plan.metadata.reason?.includes("replacement access is denied"));
+    const identity = await capturePathIdentity(f.target);
     // Node's r+ also requests GENERIC_WRITE. Refuse that actual capability;
     // neither the native probe nor commit may grant FILE_APPEND_DATA.
-    await assert.rejects(commitPreparedFile(plan, f.after, { assertPathAllowed: async () => plan.target.canonical }), (error: any) => error instanceof FileCommitError && error.receipt.outcome === "not_committed");
+    await assert.rejects(planFor(f.target, f.before), /UNSUPPORTED_COMMIT.*read\/write open rights/);
     assert.deepEqual(await readdir(f.root), ["测试.txt"]); assert.equal(await readFile(f.target, "utf8"), f.before);
-    assert.equal((await capturePathIdentity(f.target)).inode, plan.target.inode);
+    assert.equal((await capturePathIdentity(f.target)).inode, identity.inode);
     const stats = await nativeFileRequest("stats"); assert.equal(stats.publicationAttempts, 0); assert.equal(stats.activeHandles, 0);
   } finally { await execute(powershell, ["-NoProfile", "-NonInteractive", "-Command", setup + "$a.RemoveAccessRuleSpecific($r);[IO.File]::SetAccessControl($env:N2_FIXTURE,$a)"], options); }
 });

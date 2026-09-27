@@ -31,7 +31,7 @@ async function createWindowsTemporary(path: string): Promise<{ created: true; de
 interface MetadataObservation {
   attributes?: number; links?: number; creationTime?: string; security?: string; securityFingerprint?: string; filesystem?: string;
   hasAttributes?: boolean; namesFingerprint?: string; valuesFingerprint?: string; writeClearsAttributes?: boolean;
-  defaultAcl?: boolean; ownerAssignable?: boolean; replacementAccess?: boolean; parentCreationAccess?: boolean; inheritanceReproducible?: boolean; mountId?: string;
+  defaultAcl?: boolean; ownerAssignable?: boolean; replacementAccess?: boolean; inPlaceAccess?: boolean; parentCreationAccess?: boolean; inheritanceReproducible?: boolean; mountId?: string;
   inodeFlags?: number; xflags?: number; extentSize?: number; projectId?: number; cowExtentSize?: number; fileFlagsFingerprint?: string;
 }
 
@@ -114,6 +114,7 @@ export async function selectCommitMetadata(target: PathIdentity): Promise<Commit
       if ((error as { nativeUnavailable?: boolean }).nativeUnavailable) throw new Error(`[UNSUPPORTED_COMMIT] Native metadata capability unavailable: ${(error as Error).message.slice(0, 300)}; target was not modified.`);
       throw error; // Inspection/permission failure never means absent metadata or fallback.
     }
+    if (process.platform === "win32" && original.inPlaceAccess !== true) throw new Error("[UNSUPPORTED_COMMIT] Windows read/write open rights are unavailable for replacement or object preservation; target was not modified.");
     if (process.platform === "linux" && original.writeClearsAttributes) throw new Error("[UNSUPPORTED_COMMIT] File capabilities or integrity attributes may be invalidated by writing; target was not modified.");
     if (process.platform === "linux" && (original.inodeFlags === undefined || original.xflags === undefined
       || (original.inodeFlags & ~0x80000) !== 0 || (original.xflags & ~0x80000000) !== 0

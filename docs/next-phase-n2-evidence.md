@@ -598,3 +598,17 @@ regression verifies preserved inode/GID and new bytes; a separate injected
 UID-zero/owner regression verifies selection and unchanged file/directory state.
 These tests do not change process credentials or claim an actual capability-drop
 environment. Linux execution is verified by CI; Windows skips these Linux cases.
+
+Review r26: overwrite failures invalidate both whole-file and range evidence when
+the commit is completed, unknown, or retains a temporary. Six actual single/batch
+cases exercise the same live Session, then reject an exact edit with READ_REQUIRED
+without another publication attempt; committed cases replace the actual file
+before injecting the failure. Restoration and retained-candidate checks still run.
+Windows compatibility selection now separately probes GENERIC_READ|GENERIC_WRITE
+with the existing fixed CreateFileW binding, matching Node r+. A DACL denying only
+AppendData fails before staging; six exact/snapshot/overwrite × dryRun cases prove
+the first batch item is absent and the second item's bytes/security/attributes are
+unchanged. No fallback, new binding, regex or callback was added. Focused Windows
+Node22: 123 pass, 21 explicit platform skips. Final CI/review still required.
+Linux UID 0 is deliberately not treated as proof of CAP_CHOWN; capabilities are
+independently enabled privileges ([Linux capabilities](https://man7.org/linux/man-pages/man7/capabilities.7.html)).
