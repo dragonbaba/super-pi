@@ -338,8 +338,10 @@ export class BatchInvocation {
     let succeeded = 0, failed = 0, notStarted = 0;
     let firstReason: string | undefined;
     for (const result of results) { if (result.status === "succeeded") succeeded++; else if (result.status === "not_started") notStarted++; else if (result.status !== "preview") { failed++; firstReason ??= result.reason; } }
-    const preview = this.input.dryRun && failed === 0;
-    let summary = preview ? `Preflight passed for ${results.length} items. No changes; apply revalidates and requires current authorization.` : `file_batch: ${succeeded} succeeded, ${failed} failed, ${notStarted} not started.${firstReason ? `\n${displayMetadata(firstReason)}` : ""}`;
+    const preview = this.input.dryRun === true;
+    let summary = preview ? failed === 0 ? `Preflight passed for ${results.length} items. No changes; apply revalidates and requires current authorization.`
+      : `Preflight failed. No changes; ${failed} failed, ${notStarted} not started.${firstReason ? `\n${displayMetadata(firstReason)}` : ""}`
+      : `file_batch: ${succeeded} succeeded, ${failed} failed, ${notStarted} not started.${firstReason ? `\n${displayMetadata(firstReason)}` : ""}`;
     const collapsedSummary = summary;
     if (!preview) for (const result of results) {
       const receipt = result.receipt as any;

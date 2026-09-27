@@ -399,3 +399,21 @@ Windows short-name aliases do not prevent the actual changes command from
 observing the retained parent. Older unproven noncanonical parent paths remain
 explicitly unverifiable. Current Windows focused/source checks: 66 pass, one
 platform skip; type check passes. Full gates, CI and actual review remain due.
+
+Recovery spends its fixed argument budget newest-first, preserving the four newest
+of five actual near-limit writes while explicitly declining the oldest. Legacy
+and native receipt IDs are bounded before derived identifiers or lookup keys are
+constructed. Failed or cancelled execution-time dry runs remain preview results:
+their failed/unstarted items are view-only, emit no mutation progress receipts and
+cannot authorize verification or drafting. Actual drift/cancellation fixtures
+check unchanged/absent targets and the displayed failed-preflight status.
+
+Hash verification uses the already captured synchronous authority/signal gate per
+64 KiB read, retaining full path/workspace checks at observation boundaries and
+final acceptance. An actual controller + 32 MiB file + 32 parents regression
+performs fewer than 1,300 complete path assessments (rather than one full path set
+per chunk), preserves all chunk/final synchronous checks and refuses obsolete
+authority. Identity/hash and post-await acceptance checks remain intact. The
+post-mkdir capture failure now runs in an isolated test process because Jiti
+captures native bindings on first use; its positive injection control is required.
+Focused/source tests and type check pass; full final-head gates remain required.

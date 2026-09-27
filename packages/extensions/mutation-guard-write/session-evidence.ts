@@ -120,6 +120,7 @@ function collectNativeReceipts(branch: readonly unknown[]): Map<string, NativeSt
     }
     const message = entry.type === "message" && entry.message?.role === "toolResult" ? entry.message : undefined;
     const data = message?.details;
+    if (typeof message?.toolCallId !== "string" || message.toolCallId.length < 1 || message.toolCallId.length > 256) continue;
     if (data?.mutationReceiptVersion !== 2) continue;
     if (message?.toolName !== data?.operation) { markConflictingAggregate(conflicts, message?.toolCallId); continue; }
     if (message.toolName === "file_batch" && data.operation === "file_batch" && !data.preview && Array.isArray(data.items) && data.items.length > 0 && data.items.length <= 16) {
@@ -361,6 +362,7 @@ export function collectStructuredMutationReceipts(branch: readonly unknown[]): S
       || !entry.message
       || typeof entry.message !== "object") continue;
     const message = entry.message as ToolResultMessageShape;
+    if (typeof message.toolCallId !== "string" || message.toolCallId.length < 1 || message.toolCallId.length > 256) continue;
     if (message.role === "toolResult" && typeof message.toolCallId === "string") {
       const batch = message.details as any;
       if (message.toolName === "file_batch" && Array.isArray(batch?.items) && batch.items.length <= 16) {

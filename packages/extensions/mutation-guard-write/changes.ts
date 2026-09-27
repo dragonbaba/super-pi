@@ -271,7 +271,9 @@ export function collectChanges(branch: readonly any[], cwd: string): ChangeRecor
   const records: ChangeRecord[] = [];
   const order = new Map<string, number>();
   let scannedBlocks = 0, callsOverflow = false;
-  for (let position = 0; position < branch.length; position++) {
+  // Spend bounded recovery work on the newest requests first. Old large calls
+  // cannot make the latest receipt unavailable merely by exhausting the budget.
+  for (let position = branch.length - 1; position >= 0; position--) {
     const entry = branch[position];
     if (entries.has(entry.id)) duplicateEntries.add(entry.id);
     entries.set(entry.id, entry);
@@ -281,9 +283,10 @@ export function collectChanges(branch: readonly any[], cwd: string): ChangeRecor
     if (entry.message.content.length > 128 || scannedBlocks > 4096) {
       callsOverflow = true; calls.clear(); callOrder.clear(); duplicate.clear(); continue;
     }
-    for (const call of entry.message.content) {
+    for (let callIndex = entry.message.content.length - 1; callIndex >= 0; callIndex--) {
+      if (calls.size >= 512) { callsOverflow = true; calls.clear(); callOrder.clear(); duplicate.clear(); break; }
+      const call = entry.message.content[callIndex];
       if (call?.type !== "toolCall" || typeof call.id !== "string" || call.id.length > 256) continue;
-      if (calls.size >= 512 && !calls.has(call.id)) { callsOverflow = true; calls.clear(); callOrder.clear(); duplicate.clear(); break; }
       if (calls.has(call.id)) duplicate.add(call.id);
       const bounded = boundedRecoveryArguments(call, argumentBudget);
       calls.set(call.id, { id: call.id, name: call.name, arguments: bounded ? call.arguments : undefined,
@@ -292,6 +295,7 @@ export function collectChanges(branch: readonly any[], cwd: string): ChangeRecor
     }
   }
   for (const receipt of collectStructuredMutationReceipts(branch)) {
+    if (typeof receipt.toolCallId !== "string" || receipt.toolCallId.length < 1 || receipt.toolCallId.length > 256) continue;
     const receiptOrder = order.get(receipt.entryId)!;
     const precedingCall = (callOrder.get(receipt.toolCallId) ?? Infinity) < receiptOrder;
     const call = duplicateEntries.size || duplicate.has(receipt.toolCallId) || !precedingCall ? undefined : calls.get(receipt.toolCallId);
@@ -391,16 +395,17 @@ export function collectChanges(branch: readonly any[], cwd: string): ChangeRecor
   // Previews deliberately have no durable mutation receipt. They are view-only.
   for (const entry of branch) {
     const message = entry.type === "message" ? entry.message : undefined;
+    if (typeof message?.toolCallId !== "string" || message.toolCallId.length < 1 || message.toolCallId.length > 256) continue;
     const call = message && !duplicate.has(message.toolCallId) && (callOrder.get(message.toolCallId) ?? Infinity) < order.get(entry.id)!
       ? calls.get(message.toolCallId) : undefined;
     if (message?.role !== "toolResult" || message.toolName !== "file_batch" || call?.name !== "file_batch"
       || call.arguments?.dryRun !== true || message.details?.preview !== true || !Array.isArray(message.details.items) || message.details.items.length > 16) continue;
     for (let index = 0; index < message.details.items.length; index++) {
       const item = message.details.items[index];
-      if (item?.itemId !== `${call.id}:${index}` || item.status !== "preview" || item.stateChanged !== false || item.receipt !== undefined
+      if (item?.itemId !== `${call.id}:${index}` || (item.status !== "preview" && item.status !== "failed_no_change" && item.status !== "cancelled" && item.status !== "not_started") || item.stateChanged !== false || item.receipt !== undefined
         || typeof item.target !== "string" || item.target.length > 4096 || item.operation !== call.arguments.operations?.[index]?.operation) continue;
       previews.push({ entryId: entry.id, toolCallId: call.id, itemId: item.itemId, operation: item.operation,
-        target: item.target, destination: item.destination, status: "preview", preview: true, item });
+        target: item.target, destination: item.destination, status: item.status, preview: true, item });
       if (previews.length > MAX_CHANGES) previews.shift();
     }
   }
@@ -434,7 +439,7 @@ function retainedParents(record: ChangeRecord): string[] {
   return paths;
 }
 
-async function observe(path: string, hash: boolean, assertAllowed: () => Promise<void>): Promise<ChangeObservation> {
+async function observe(path: string, hash: boolean, assertAllowed: (() => Promise<void>) & { assertCurrent?: () => void }): Promise<ChangeObservation> {
   await assertAllowed();
   let identity: PathIdentity;
   try { identity = await capturePathIdentity(path); }
@@ -457,7 +462,8 @@ async function observe(path: string, hash: boolean, assertAllowed: () => Promise
     const digest = createHash("sha256"), buffer = Buffer.allocUnsafe(64 * 1024);
     let bytes = 0;
     for (;;) {
-      await assertAllowed();
+      if (assertAllowed.assertCurrent) assertAllowed.assertCurrent();
+      else await assertAllowed();
       const read = await handle.read(buffer, 0, Math.min(buffer.length, MAX_VERIFY_BYTES + 1 - bytes), null);
       if (!read.bytesRead) break;
       bytes += read.bytesRead;
