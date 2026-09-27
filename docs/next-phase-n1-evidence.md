@@ -417,3 +417,24 @@ authority. Identity/hash and post-await acceptance checks remain intact. The
 post-mkdir capture failure now runs in an isolated test process because Jiti
 captures native bindings on first use; its positive injection control is required.
 Focused/source tests and type check pass; full final-head gates remain required.
+
+### Review follow-up: imported keys, ordering and reverse navigation
+
+All custom/batch item IDs are length-checked before receipt-map access, including
+evidence restoration; oversized keys cannot be hashed before rejection. The
+two-million-character regression checks both suffix creation and Map.get calls,
+and still invalidates the affected target conservatively on restoration.
+The 128-record cap now evicts by Session position across receipt collection and
+synthesized preparation, rather than by collection phase. Nine actual 16-item
+preparations plus five newer completed writes retain all five latest mutations.
+
+Reverse navigation reuses a bounded numeric row-start index. Down/render extends
+it; after resize the missing prefix is indexed once. 5,000 Up plus 500 PageUp
+operations near the end of a 65,536-grapheme line add zero grapheme visits. Numeric
+metadata now has an explicit 786,444-byte maximum, released on close (superseding
+the earlier 524,296-byte bound). No row strings or per-key closures are retained.
+Serial Node22.19 profile: 20,000 stable renders add zero rows, 200 changed views
+materialize 4,422 rows; sampled allocation 138,768 bytes, controlled-GC heap
+41,354,376 to 41,535,288 bytes, references 2 to 0 and scroll bytes to 0.
+Focused tests: 76 passed, one Windows filesystem skip; type check passed.
+Final combined gates, CI and actual review remain required.

@@ -73,14 +73,14 @@ export function validMutationOutcome(status: unknown, stateChanged: unknown): bo
 }
 
 function appendNativeReceipt(items: Map<string, NativeStructuredMutationReceipt>, entry: any, data: any, toolCallId: unknown, itemId: unknown, intent: boolean): boolean {
-  const previous = typeof itemId === "string" ? items.get(itemId) : undefined;
+  if (typeof toolCallId !== "string" || !toolCallId.length || toolCallId.length > 256 || typeof itemId !== "string" || !itemId.length || itemId.length > 280) return false;
+  const previous = items.get(itemId);
   if (previous && data && (previous.toolCallId !== toolCallId || previous.operation !== data.operation || previous.target !== data.target || previous.destination !== data.destination)) {
     previous.historyConflict = true;
     return false;
   }
   if (!data || (data.operation !== "delete" && data.operation !== "move" && data.operation !== "write" && data.operation !== "edit") || !safeReceiptPath(data.target)
     || (data.operation === "move" && !safeReceiptPath(data.destination))) return false;
-  if (typeof toolCallId !== "string" || !toolCallId.length || toolCallId.length > 256 || typeof itemId !== "string" || itemId.length > 280) return false;
   const status = intent ? "state_unknown" : data.status;
   const stateChanged = intent ? "unknown" : data.stateChanged;
   if (status !== "state_unknown" && status !== "succeeded" && status !== "partial" && status !== "failed_no_change" && status !== "cancelled" && status !== "not_started") return false;
@@ -352,7 +352,8 @@ export function collectStructuredMutationReceipts(branch: readonly unknown[]): S
     const entry = branch[index] as SessionEntryShape;
     const custom = entry as any;
     if (custom?.type === "custom" && custom.customType === "file-mutation-progress-v2") {
-      const receipt = nativeReceipts.get(custom.data?.itemId);
+      const itemId = custom.data?.itemId;
+      const receipt = typeof itemId === "string" && itemId.length <= 280 ? nativeReceipts.get(itemId) : undefined;
       if (receipt && receipt.entryId === custom.id) receipts.push(receipt);
       continue;
     }
@@ -366,7 +367,11 @@ export function collectStructuredMutationReceipts(branch: readonly unknown[]): S
     if (message.role === "toolResult" && typeof message.toolCallId === "string") {
       const batch = message.details as any;
       if (message.toolName === "file_batch" && Array.isArray(batch?.items) && batch.items.length <= 16) {
-        for (const item of batch.items) { const receipt = nativeReceipts.get(item?.itemId); if (receipt && receipt.entryId === entry.id) receipts.push(receipt); }
+        for (const item of batch.items) {
+          const itemId = item?.itemId;
+          const receipt = typeof itemId === "string" && itemId.length <= 280 ? nativeReceipts.get(itemId) : undefined;
+          if (receipt && receipt.entryId === entry.id) receipts.push(receipt);
+        }
         continue;
       }
       const receipt = nativeReceipts.get(`${message.toolCallId}:0`);
@@ -466,7 +471,8 @@ export async function restoreMutationEvidenceFromBranch(
     const custom = entry as any;
     if (custom?.type === "custom" && custom.customType === "file-mutation-progress-v2") {
       const data = custom.data;
-      const completion = nativeReceipts.get(data?.itemId ?? `${data?.toolCallId}:0`);
+      const itemId = data?.itemId ?? (typeof data?.toolCallId === "string" && data.toolCallId.length <= 256 ? `${data.toolCallId}:0` : undefined);
+      const completion = typeof itemId === "string" && itemId.length <= 280 ? nativeReceipts.get(itemId) : undefined;
       if ((completion?.stateChanged !== false || completion.requiresVerification === true)
         && (data?.phase === "intent" || data?.stateChanged !== false || completion?.requiresVerification === true) && safeReceiptPath(data?.target)) {
         guard.invalidateCanonicalPath(data.target);
@@ -480,6 +486,7 @@ export async function restoreMutationEvidenceFromBranch(
     if (message.role !== "toolResult"
       || (message.isError === true && message.toolName !== "file_batch")
       || typeof message.toolCallId !== "string"
+      || message.toolCallId.length < 1 || message.toolCallId.length > 256
       || typeof message.toolName !== "string") continue;
     const call = pending.get(message.toolCallId);
     pending.delete(message.toolCallId);

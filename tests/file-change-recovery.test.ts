@@ -58,6 +58,28 @@ test("N1 oversized legacy receipt IDs refuse before map keys or recovery IDs", a
   assert.deepEqual(collectChanges([entry], f.cwd), []); assert.equal(oversized, 0);
 });
 
+test("N1 older synthesized preparations cannot evict newer completed changes", async t => {
+  const f = await fixture(t);
+  for (let batch = 0; batch < 9; batch++) {
+    const operations = Array.from({ length: 16 }, (_, index) => ({ operation: "write", mode: "create", path: `old-${batch}-${index}`, content: "old" }));
+    assert.equal((await f.call("file_batch", { operations }, `old-${batch}`)).isError, false);
+  }
+  // Imported interruption snapshots retain actual request-bound preparation only.
+  const branch = f.session.getBranch().filter((entry: any) => entry.message?.role === "assistant" || entry.data?.phase === "prepared");
+  for (let index = 0; index < 5; index++) {
+    const before = f.session.getBranch().length;
+    assert.equal((await f.call("write", { path: `new-${index}`, content: "new" }, `new-${index}`)).isError, false);
+    branch.push(...f.session.getBranch().slice(before));
+  }
+  const records = collectChanges(branch, f.cwd);
+  assert.equal(records.length, 128);
+  assert.deepEqual(records.slice(-5).map((record: any) => record.toolCallId), ["new-0", "new-1", "new-2", "new-3", "new-4"]);
+  for (const record of records.slice(-5)) {
+    assert.equal(record.status, "succeeded"); assert.equal(record.unavailable, undefined);
+    assert.equal((await verifyChange(record, async () => {})).postimageMatches, true);
+  }
+});
+
 test("N1 real observation authority checks stay bounded across 32 MiB hashing and 32 parents", async t => {
   const f = await fixture(t), parents: string[] = []; let target = realpathSync.native(f.cwd);
   for (let index = 0; index < 32; index++) { target = join(target, `p${index}`); mkdirSync(target); parents.push(target); }
@@ -801,6 +823,11 @@ test("N1 oversized imported item IDs are rejected before suffix materialization"
   const later = structuredClone(branch.find((entry: any) => entry.data?.phase === "intent"));
   later.id = "oversized-item"; later.data.itemId = "oversized-id:" + "1".repeat(2_000_000); branch.push(later);
   const slice = String.prototype.slice; let oversizedSlices = 0;
+  const get = Map.prototype.get; let oversizedKeys = 0;
+  t.mock.method(Map.prototype, "get", function(this: Map<unknown, unknown>, key: unknown) {
+    if (typeof key === "string" && key.length > 512) { oversizedKeys++; assert.fail("oversized IDs must not be hashed"); }
+    return get.call(this, key);
+  });
   t.mock.method(String.prototype, "slice", function(this: string, ...args: any[]) {
     if (this.length > 1_000_000) { oversizedSlices++; assert.fail("oversized suffix must not be materialized"); }
     return Reflect.apply(slice, this, args);
@@ -808,6 +835,12 @@ test("N1 oversized imported item IDs are rejected before suffix materialization"
   const records = collectChanges(branch, f.cwd); assert.ok(records.length);
   for (const record of records) assert.ok(record.unavailable);
   assert.throws(() => remainingDraft(records, new Set())); assert.equal(oversizedSlices, 0);
+  const { collectStructuredMutationReceipts, restoreMutationEvidenceFromBranch } = await createJiti(import.meta.url).import<any>("../packages/extensions/mutation-guard-write/session-evidence.ts");
+  const invalidResult = { id: "invalid-result", timestamp: "0", type: "message", message: { role: "toolResult", toolName: "file_batch", toolCallId: "oversized-id", details: { items: [{ itemId: later.data.itemId }] } } };
+  assert.deepEqual(collectStructuredMutationReceipts([later, invalidResult]), []);
+  const invalidated: string[] = [];
+  await restoreMutationEvidenceFromBranch({ invalidateCanonicalPath(value: string) { invalidated.push(value); } }, f.cwd, [later]);
+  assert.deepEqual(invalidated, [later.data.target]); assert.equal(oversizedKeys, 0);
 });
 
 test("N1 standalone legacy creation permits one exact mirror and rejects any subsequent call-owned activity", async t => {
