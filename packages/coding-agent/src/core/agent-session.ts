@@ -1246,6 +1246,7 @@ export class AgentSession {
 
 	/** Emit the final run boundary and wait for critical listener work such as terminal frame flushes. */
 	private async _emitAgentEnd(event: Extract<AgentSessionEvent, { type: "agent_end" }>): Promise<void> {
+		this.discardPendingToolResultBudgetSources();
 		const timeoutMs = this._criticalAgentEndTimeoutMs ?? DEFAULT_CRITICAL_AGENT_END_TIMEOUT_MS;
 		let deadlineReached = false;
 		let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
@@ -1472,7 +1473,6 @@ export class AgentSession {
 		// cannot overtake critical UI output; high-frequency events stay unchanged.
 		if (event.type === "agent_end" && event.requiresUserInput) this._interactionPaused = true;
 		if (event.type === "agent_end") {
-			this.discardPendingToolResultBudgetSources();
 			await this._emitAgentEnd({ ...event, willRetry: this._willRetryAfterAgentEnd(event) });
 			this._evidenceCompletedReads?.clear();
 			this._evidenceCompletedBytes = 0;

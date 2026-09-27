@@ -4220,6 +4220,8 @@ export class InteractiveMode {
 
 			case "message_end":
 				if (event.message.role === "user") break;
+				// Codex acknowledges successful dispatch after streaming, before done.
+				if (event.message.role === "assistant") this.rediscoverToolResultsAfterBudgetChange();
 				if (event.message.role === "toolResult" && event.toolResultPresentation) {
 					this.attachLiveToolResultPresentation(
 						event.message,

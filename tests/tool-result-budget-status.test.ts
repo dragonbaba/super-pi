@@ -10,6 +10,7 @@ import { SessionManager } from "../packages/coding-agent/src/core/session-manage
 import { parseToolResultBudgetCommand, formatToolResultBudgetStatus } from "../packages/coding-agent/src/core/tool-result-budget-status.ts";
 import { ALPHA_MODEL, alphaModelRuntime, alphaSession } from "./helpers/alpha-session.ts";
 import { streamSimple } from "@super-pi/ai/api/openai-completions";
+import { stream as streamCodex } from "@super-pi/ai/api/openai-codex-responses";
 import { AgentSession, parseSkillBlock } from "../packages/coding-agent/src/core/agent-session.ts";
 import * as sessionPatterns from "../packages/coding-agent/src/core/agent-session-regex.ts";
 import { alphaMessage } from "./helpers/alpha-stream.ts";
@@ -285,6 +286,40 @@ for (const rebuild of [false, true]) for (const transform of ["identity", "filte
     rediscoveryPasses: f.internal.toolResultBudgetRediscoveryPasses, componentProbes: f.internal.toolResultBudgetRediscoveryComponentProbes,
     unchangedGenerationAdditionalProbes: 0, retainedRegistrationsAfterRelease: 0, sampledBytes: profiler ? sampledBytes : null,
     heapBefore, heapAfterRelease: process.memoryUsage().heapUsed, note: "Explicit command/whole request cost; not per-delta cost or a speedup claim." }));
+});
+
+test("N4 actual Codex SSE late dispatch refreshes retained provenance on the same response", async () => {
+  let requests = 0, executions = 0, startsWaiting = 0;
+  const fetchFixture: typeof fetch = async () => {
+    requests++;
+    const item = requests === 1 ? { type: "function_call", id: "fc_budget", call_id: "late-budget", name: "inspect_budget", arguments: "{}" }
+      : { type: "message", id: `message-${requests}`, role: "assistant", content: [{ type: "output_text", text: "done", annotations: [] }] };
+    const events = [{ type: "response.output_item.added", output_index: 0, item: requests === 1 ? { ...item, arguments: "" } : item },
+      { type: "response.output_item.done", output_index: 0, item },
+      { type: "response.completed", response: { id: `response-${requests}`, status: "completed", output: [item] } }];
+    return new Response(events.map(event => `data: ${JSON.stringify(event)}\n\n`).join(""), { headers: { "content-type": "text/event-stream" } });
+  };
+  const token = `header.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "offline-fixture" } })).toString("base64url")}.signature`;
+  const runtime = alphaModelRuntime((model: any, context: any, options: any) => streamCodex({ ...model, api: "openai-codex-responses" }, context,
+    { ...options, apiKey: token, transport: "sse", fetch: fetchFixture, maxRetries: 0 }));
+  const f = await alphaSession({ runtime, budgetTokens: 1024, customTools: [{ name: "inspect_budget", label: "Inspect", description: "late dispatch fixture",
+    parameters: { type: "object", properties: {}, additionalProperties: false }, execute: async () => { executions++; return { content: [{ type: "text", text: "historical evidence\n".repeat(10000) }], details: {} }; } }] });
+  const unsubscribe = f.session.subscribe(event => { if (event.type === "message_start" && event.message.role === "assistant" && requests >= 3) {
+    assert.equal(f.session.toolResultBudgetRediscoveryState, "waiting"); startsWaiting++;
+  } });
+  try {
+    assert.equal(await f.mode.init(), true); await f.session.prompt("Inspect once."); await f.session.agent.waitForIdle();
+    assert.equal(requests, 2); assert.equal(executions, 1);
+    const result = f.session.messages.find(message => message.role === "toolResult"); assert.ok(result?.role === "toolResult");
+    const id = result.toolCallId, component = f.internal.attachedToolResultDiscoveries.get(id).component;
+    const previous = component.getToolResultPresentationDiscovery(id); assert.ok(previous?.cursor);
+    await f.internal.editor.onSubmit("/tool-budget 2048"); assert.equal(component.getToolResultPresentationDiscovery(id), undefined);
+    await f.session.prompt("Continue without another tool."); await f.session.agent.waitForIdle();
+    assert.equal(requests, 3); assert.equal(executions, 1); assert.equal(startsWaiting, 1);
+    const next = component.getToolResultPresentationDiscovery(id); assert.ok(next?.cursor); assert.notEqual(next.cursor, previous.cursor);
+    assert.equal(f.internal.toolResultBudgetUiGeneration, f.session.toolResultBudgetGeneration);
+    assert.equal(f.internal.toolResultBudgetRediscoveryPasses, 1); assert.equal((f.session as any)._toolBudgetProjectedSources, undefined);
+  } finally { unsubscribe(); await f.release(); }
 });
 
 for (const failure of ["payload-hook", "runtime"]) test(`N4 budget provenance waits for effective dispatch after ${failure} rejection`, async () => {

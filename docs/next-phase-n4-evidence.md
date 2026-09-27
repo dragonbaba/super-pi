@@ -374,3 +374,14 @@ records zero status snapshots, captures, rediscovery passes and retained entries
 Existing owner callbacks are reused; no production regex or callback was added.
 Budget and source gates: 28 passed; Node22.19 check passed. Updated profiling and
 the final serial comparison are still required.
+
+Review r29: successful Codex dispatch acknowledgement occurs after streaming.
+The existing assistant message_end lifecycle now also probes the primitive
+generation and refreshes once if acknowledged; unchanged generations return
+without status snapshots, callbacks or scans. Actual Codex SSE adapter + SDK +
+InteractiveMode execution records waiting at assistant start and a fresh retained
+cursor at that same response's end, with three requests and only one tool run.
+Undispatched provenance release moved into _emitAgentEnd before listeners, keeping
+the existing awaited terminal-flush source invariant unchanged. Budget/source
+tests: 20 pass; lifecycle/budget/frame-queue tests: 104 pass before the late-Codex
+addition; Node22.19 check pass. Final combined gates, profiles and review remain.
