@@ -513,3 +513,24 @@ are dropped on dispatch completion, failure, replacement, payload invalidation
 or disposal. Normal requests without pending explicit budget changes allocate no
 capture records. No production callback or regex was added. Allocation/lifecycle
 profiles and the complete final comparison remain required before completion.
+
+Review r37 closes final-view ownership at the assistant response boundary in all
+runtime modes, with agent-end finally cleanup for failure/abort paths. The actual
+headless SDK tests retain canonical history keys yet observe captured views during
+request preparation and no pending capture after success, provider error or abort.
+An explicit Session budget-change event now invalidates active InteractiveMode
+registrations for SDK callers as well as slash/settings callers, without forcing
+initialization, adding a callback or running work on deltas/progress. A direct SDK
+regression checks immediate removal of old cursors and zero UI registrations.
+Budget/contextual/source regressions: 50 pass; check and test:hot pass.
+
+Capacity clarification for r34: resident projection caching and pending explicit-
+change final views have TWO separate 128 Mi-code-unit accounting allowances, each
+with at most 128 entries. Their combined accounted allowance is at most 256 Mi
+units; shared content may be counted in both. Pending accounting includes string
+references and block slots. This is not a byte-exact heap cap, and canonical
+Session history, source data, V8 overhead and temporary construction are excluded.
+The separate capture constant and lifecycle above make the scope explicit rather
+than claiming one shared 128 Mi allowance. No new import limit or general cache
+platform was introduced. Final integrated profiles/comparison/PTY and full gates
+remain required; the numerical costs below earlier checkpoints are historical.

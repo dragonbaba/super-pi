@@ -232,6 +232,7 @@ export type AgentSessionEvent =
 	| { type: "entry_appended"; entry: SessionEntry }
 	| { type: "session_info_changed"; name: string | undefined }
 	| { type: "thinking_level_changed"; level: ThinkingLevel }
+	| { type: "tool_result_budget_changed" }
 	| {
 			type: "compaction_end";
 			reason: "manual" | "threshold" | "overflow";
@@ -1475,11 +1476,15 @@ export class AgentSession {
 		// cannot overtake critical UI output; high-frequency events stay unchanged.
 		if (event.type === "agent_end" && event.requiresUserInput) this._interactionPaused = true;
 		if (event.type === "agent_end") {
-			await this._emitAgentEnd({ ...event, willRetry: this._willRetryAfterAgentEnd(event) });
+			try { await this._emitAgentEnd({ ...event, willRetry: this._willRetryAfterAgentEnd(event) }); }
+			finally { this._toolBudgetProjectedSources = undefined; }
 			this._evidenceCompletedReads?.clear();
 			this._evidenceCompletedBytes = 0;
 		} else {
 			this._emit(event);
+			// Built-in UI consumes synchronously at assistant start/end. Headless,
+			// print and RPC owners must release the same temporary final views.
+			if (event.type === "message_end" && event.message.role === "assistant") this._toolBudgetProjectedSources = undefined;
 		}
 
 		// Handle session persistence
@@ -1885,6 +1890,7 @@ export class AgentSession {
 		this._toolResultUiCanonicalMessagesLength = 0;
 		this._toolResultUiCanonicalMessagesTail = undefined;
 		this._toolResultUiCanonicalMessagesOverflowed = false;
+		this._emit({ type: "tool_result_budget_changed" });
 	}
 	/** Primitive revision for once-per-explicit-change UI rediscovery. */
 	get toolResultBudgetGeneration(): number { return this._toolBudgetGeneration; }

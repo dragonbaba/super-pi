@@ -4104,6 +4104,11 @@ export class InteractiveMode {
 	}
 
 	private handleEvent(event: AgentSessionEvent): void | Promise<void> {
+		if (event.type === "tool_result_budget_changed") {
+			this.clearToolResultDiscoveriesAfterCanonicalHistoryReplacement();
+			if (this.isInitialized) this.ui.requestRender();
+			return;
+		}
 		if (!this.isInitialized) return this.initializeAndHandleEvent(event);
 
 		this.footer.invalidate();
@@ -8039,7 +8044,6 @@ export class InteractiveMode {
 			const options = parseToolResultBudgetCommand(value);
 			if (options !== "status") {
 				this.session.configureToolResultBudget(options);
-				this.clearToolResultDiscoveriesAfterCanonicalHistoryReplacement();
 			}
 			this.showStatus(formatToolResultBudgetStatus(this.session.getToolResultBudgetStatus()));
 		} catch (error) { this.showError(error instanceof Error ? error.message : String(error)); }

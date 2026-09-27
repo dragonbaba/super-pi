@@ -16,6 +16,9 @@ const MAX_CONTINUATION_SHRINK_PASSES = 8;
 const MAX_CONTINUATION_BLOCKS = 256;
 const MAX_PROJECTION_RECORD_ENTRIES = 128;
 const MAX_RETAINED_PROJECTION_CODE_UNITS = 128 * 1024 * 1024;
+// Separate, short-lived explicit-change allowance; combined accounted projection
+// references are at most 256 Mi units, excluding canonical Session source data.
+const MAX_PROJECTED_UI_CAPTURE_CODE_UNITS = 128 * 1024 * 1024;
 const MAX_TERMINAL_SEQUENCE_INTERVALS = 4096;
 const CURSOR_PREFIX = "tr1.";
 const ARTIFACT_PREFIX = "tra1.";
@@ -2239,8 +2242,8 @@ export class ToolResultPresentationOwner {
 		throw error;
 	}
 
-	/** Explicit-change provenance owns at most 128 final views and the existing
-	 * 128 Mi-code-unit projection allowance. No content arrays/strings are copied.
+	/** Explicit-change provenance owns at most 128 final views in its separate
+	 * 128 Mi-code-unit allowance. No content arrays/strings are copied.
 	 * The Session clears pending provenance on dispatch, failure, change or disposal. */
 	private recordProjectedUiSource(message: ToolResultMessage, projected: ToolResultMessage, capture: ToolResultProjectedUiSource, sources: Map<object, ToolResultProjectedUiSource | null>): void {
 		const projection = capture.projection;
@@ -2253,11 +2256,11 @@ export class ToolResultPresentationOwner {
 			retainedCodeUnits += block.type === "text" ? block.text.length : block.data.length;
 			if (block.type === "text" && notice?.type === "text" && block.text === notice.text) noticeBlockIndex = index;
 		}
-		if (noticeBlockIndex < 0 || retainedCodeUnits > MAX_RETAINED_PROJECTION_CODE_UNITS) return;
+		if (noticeBlockIndex < 0 || retainedCodeUnits > MAX_PROJECTED_UI_CAPTURE_CODE_UNITS) return;
 		capture.retainedCodeUnits = retainedCodeUnits;
 		capture.projection = projected.content === projection.content ? projection : { ...projection, content: projected.content as ToolResultPresentationContent[], noticeBlockIndex, estimate: estimateToolOutputTokens(projected.content) };
 		for (const source of sources.values()) retainedCodeUnits += source?.retainedCodeUnits ?? 0;
-		while (sources.size >= MAX_PROJECTION_RECORD_ENTRIES || retainedCodeUnits > MAX_RETAINED_PROJECTION_CODE_UNITS) {
+		while (sources.size >= MAX_PROJECTION_RECORD_ENTRIES || retainedCodeUnits > MAX_PROJECTED_UI_CAPTURE_CODE_UNITS) {
 			const key = sources.keys().next().value!;
 			retainedCodeUnits -= sources.get(key)?.retainedCodeUnits ?? 0;
 			sources.delete(key);

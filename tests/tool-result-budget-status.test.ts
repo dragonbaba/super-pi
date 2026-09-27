@@ -8,7 +8,7 @@ import { DefaultResourceLoader } from "../packages/coding-agent/src/core/resourc
 import { SettingsManager } from "../packages/coding-agent/src/core/settings-manager.ts";
 import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
 import { parseToolResultBudgetCommand, formatToolResultBudgetStatus } from "../packages/coding-agent/src/core/tool-result-budget-status.ts";
-import { ALPHA_MODEL, alphaModelRuntime, alphaSession } from "./helpers/alpha-session.ts";
+import { ALPHA_MODEL, alphaHeadless, alphaModelRuntime, alphaSession } from "./helpers/alpha-session.ts";
 import { streamSimple } from "@super-pi/ai/api/openai-completions";
 import { stream as streamCodex } from "@super-pi/ai/api/openai-codex-responses";
 import { AgentSession, parseSkillBlock } from "../packages/coding-agent/src/core/agent-session.ts";
@@ -24,6 +24,47 @@ import { estimateToolOutputTokens } from "../packages/coding-agent/src/core/tool
 import { estimateContextTokensFromParts } from "@super-pi/ai";
 import { CONTEXT_SAFETY_TOKENS } from "@super-pi/ai/api/simple-options";
 const WAV_FIXTURE = "UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=";
+
+for (const outcome of ["stop", "error", "abort"] as const) test(`N4 headless actual response releases captured final views: ${outcome}`, async () => {
+  let requests = 0, captured = false;
+  const assistant = alphaMessage([{ type: "toolCall", name: "fixture", id: "headless-view", arguments: {} }]); assistant.stopReason = "toolUse";
+  const result = { role: "toolResult" as const, toolName: "fixture", toolCallId: "headless-view",
+    content: [{ type: "text" as const, text: "evidence ".repeat(4000) }], isError: false, timestamp: 2 };
+  const runtime = alphaModelRuntime((model: any, context: any, options: any) => {
+    captured = Boolean((f.session as any)._toolBudgetProjectedSources);
+    return streamSimple({ ...model, api: "openai-completions" }, context, { ...options, apiKey: "offline", maxRetries: 0,
+      fetch: async () => { requests++; if (outcome === "abort") f.session.agent.abort();
+        if (outcome !== "stop") throw new Error(outcome);
+        return new Response(`data: ${JSON.stringify({ id: "fixture", object: "chat.completion.chunk", created: 1, model: "fixture", choices: [{ index: 0, delta: { content: "done" }, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`, { headers: { "Content-Type": "text/event-stream" } }); } });
+  });
+  const f = await alphaHeadless(runtime, [assistant, result]);
+  try {
+    f.session.configureToolResultBudget({ enabled: true, budgetTokens: 512 });
+    await f.session.agent.continue(); await f.session.agent.waitForIdle();
+    assert.equal(requests, 1); assert.equal(captured, true);
+    assert.equal((f.session as any)._toolBudgetProjectedSources, undefined);
+    assert.ok(f.session.messages.some(message => message.role === "toolResult" && message.toolCallId === result.toolCallId));
+    assert.equal(f.session.agent.state.pendingToolCalls.size, 0);
+  } finally { await f.release(); }
+});
+
+test("N4 direct SDK budget replacement immediately invalidates an active TUI's old cursors", async () => {
+  const assistant = alphaMessage([{ type: "toolCall", name: "fixture", id: "sdk-budget-view", arguments: {} }]); assistant.stopReason = "toolUse";
+  const result = { role: "toolResult" as const, toolName: "fixture", toolCallId: "sdk-budget-view",
+    content: [{ type: "text" as const, text: "evidence ".repeat(4000) }], isError: false, timestamp: 2 };
+  const f = await alphaSession({ messages: [assistant, result] });
+  try {
+    assert.equal(await f.mode.init(), true);
+    const entry = f.internal.attachedToolResultDiscoveries.get(result.toolCallId), component = entry.component;
+    assert.ok(component.getToolResultPresentationDiscovery(result.toolCallId)?.cursor);
+    const owner = (f.session as any)._toolResultPresentation;
+    f.session.configureToolResultBudget({ enabled: true, budgetTokens: 512 });
+    assert.equal(owner.counters.ownerDisposeCalls, 1);
+    assert.equal(component.getToolResultPresentationDiscovery(result.toolCallId), undefined);
+    assert.equal(f.internal.getToolResultDiscoveryLifecycleCounts().totalEntries, 0);
+    assert.equal(f.session.toolResultBudgetRediscoveryState, "waiting");
+  } finally { await f.release(); }
+});
 
 for (const contextual of [false, true]) for (const kind of ["omission", "shrink"] as const) test(`N4 actual SDK/TUI keeps final image-policy ${kind}, contextual=${contextual}`, async () => {
   let requests = 0, finalContent: any[] = [];
