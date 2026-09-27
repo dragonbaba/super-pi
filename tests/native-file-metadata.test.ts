@@ -396,6 +396,23 @@ test("N2 Linux mount identity is observed and a different target mount preselect
   assert.equal((await capturePathIdentity(f.target)).inode, plan.target.inode); assert.deepEqual(await readFile(f.target), f.after);
 });
 
+test("N2 Linux inherited parent project policy preselects before candidate creation (injected parent observation)", { skip: process.platform !== "linux" }, async t => {
+  const f = await fixture(t), emit = Worker.prototype.emit; let inspections = 0;
+  t.mock.method(Worker.prototype, "emit", function(this: Worker, name: string, ...args: any[]) {
+    if (name === "message" && args[0]?.value?.fileFlagsFingerprint && ++inspections === 2) {
+      args[0].value.inodeFlags |= 0x20000000; args[0].value.xflags |= 0x200; args[0].value.projectId = 123;
+    }
+    return Reflect.apply(emit, this, [name, ...args]);
+  });
+  const plan = await planFor(f.target, f.before); t.mock.restoreAll();
+  assert.equal(inspections, 2); assert.equal(plan.metadata.strategy, "protected_in_place");
+  assert.ok(plan.metadata.reason?.includes("Parent file flags/project/extent policy"));
+  assert.deepEqual(await readdir(f.root), ["测试.txt"]);
+  await commitPreparedFile(plan, f.after, { assertPathAllowed: async () => plan.target.canonical });
+  assert.equal((await capturePathIdentity(f.target)).inode, plan.target.inode); assert.deepEqual(await readFile(f.target), f.after);
+  assert.deepEqual(await readdir(f.root), ["测试.txt"]); assert.equal((await nativeFileRequest("stats")).publicationAttempts, 0);
+});
+
 test("N2 Linux value fingerprints frame names and lengths despite ambiguous decimal concatenations", { skip: process.platform !== "linux" }, async t => {
   const f = await fixture(t), handle = await open(f.target, "r"); t.after(() => handle.close());
   // Both old unframed encodings are byte-identical: 1|2|30|aaaa...18bbbb... and 12|30aaaa...|18|bbbb...

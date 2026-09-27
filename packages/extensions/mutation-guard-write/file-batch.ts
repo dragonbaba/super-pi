@@ -17,7 +17,7 @@ import { assessProtectedMutationPath } from "./protected-path-policy.ts";
 import { withMutationPaths, MUTATION_PROGRESS_ENTRY } from "./native-tools.ts";
 import { PreviewBudget, addedPreview, modifiedPreview, batchExpandedSummary, BatchResultText, releaseBatchRenderState, readPreviewSource, MAX_PREVIEW_SOURCE_BYTES, displayMetadata, type ChangePreview } from "./change-preview.ts";
 import { RELEASE_TOOL_RENDER_DERIVED_STATE } from "../../coding-agent/src/core/tools/tool-render-lifecycle.ts";
-import { FileCommitError, commitFailure, commitSummary } from "./file-commit.ts";
+import { FileCommitError, commitFailure, commitSummary, type CommitMetadata } from "./file-commit.ts";
 
 // Default extensions load in separate module-cache scopes; share only the private key, not authority state.
 const PREPARATION = Symbol.for("pi.mutation-guard.file-batch.preparation.v1");
@@ -130,6 +130,13 @@ export class BatchInvocation {
   private live = true;
   private permission?: PermissionPathApproval;
   private currentItem?: Item;
+  private progressPi?: ExtensionAPI;
+  private readonly recordCommitSelection = (metadata: Pick<CommitMetadata, "strategy" | "reason">): void => {
+    const item = this.currentItem, pi = this.progressPi;
+    if (!this.live || !item || !pi) throw new Error("Batch commit selection owner is no longer active.");
+    pi.appendEntry(MUTATION_PROGRESS_ENTRY, { toolCallId: this.id, itemId: item.itemId,
+      phase: "commit_prepared", operation: item.operation, target: item.target, strategy: metadata.strategy, compatibilityReason: metadata.reason });
+  };
   readonly assertAuthority = (): void => { if (!this.live || !this.permission?.assertCurrent || this.ctx.cwd !== this.cwd || this.ctx.sessionManager.getSessionId() !== this.sessionId) throw new Error("[POLICY_BLOCKED] Batch authority is unavailable."); this.permission.assertCurrent(); };
   readonly assertItemPath = async (): Promise<string> => {
     this.assertAuthority();
@@ -257,7 +264,7 @@ export class BatchInvocation {
   private dispose(): void {
     this.live = false;
     for (const item of this.items) { this.guard.releaseMutation(item.reservation); item.reservation = undefined; if (item.snapshot) item.snapshot.byteEdits.length = 0; }
-    this.items.length = 0; this.paths.length = 0; this.currentItem = undefined; this.permission = undefined;
+    this.items.length = 0; this.paths.length = 0; this.currentItem = undefined; this.permission = undefined; this.progressPi = undefined;
   }
 
   async execute(pi: ExtensionAPI, signal?: AbortSignal) {
@@ -273,6 +280,7 @@ export class BatchInvocation {
     }
     const sharedDirectories = new Map<string, PathIdentity>();
     try {
+      this.progressPi = pi;
       await withMutationPaths(this.paths, async () => {
         for (const item of this.items) { this.currentItem = item; await this.revalidate(item, signal); }
         if (this.input.dryRun) { for (const result of results) result.status = "preview"; return; }
@@ -285,8 +293,7 @@ export class BatchInvocation {
           if (signal?.aborted) { result.status = "cancelled"; result.reason = "Cancelled before item start"; break; }
           this.currentItem = item;
           item.approval.assertCurrent = this.assertAuthority;
-          item.approval.commitSelected = metadata => { pi.appendEntry(MUTATION_PROGRESS_ENTRY, { toolCallId: this.id, itemId: item.itemId,
-            phase: "commit_prepared", operation: item.operation, target: item.target, strategy: metadata.strategy, compatibilityReason: metadata.reason }); };
+          item.approval.commitSelected = this.recordCommitSelection;
           try {
             pi.appendEntry(MUTATION_PROGRESS_ENTRY, { toolCallId: this.id, itemId: item.itemId, phase: "intent", requestHash: this.requestHash, operation: item.operation, target: item.target, destination: item.native?.destination,
               directories: item.creation ? canonicalCreationDirectories(item.creation) : item.operation === "write" ? [] : undefined });
@@ -320,6 +327,7 @@ export class BatchInvocation {
           const itemReceipt = result.receipt as any;
           if (result.status === "partial" || result.status === "state_unknown" || itemReceipt?.requiresVerification || itemReceipt?.commit?.retainedTemporary) result.requiresVerification = true;
           if (result.stateChanged !== false) item.reservation = undefined; // Actual changes retain their budget charge.
+          if (itemReceipt?.commit?.retainedTemporary) this.guard.invalidateCanonicalPath(item.target);
           if (item.native && result.stateChanged !== false) {
             this.guard.invalidateCanonicalPath(item.target);
             if (item.native.destination) this.guard.invalidateCanonicalPath(item.native.destination);

@@ -52,6 +52,20 @@ async function aliasFixture(t: test.TestContext) {
   function drift() { unlinkSync(alias); symlinkSync(join(cwd, "two"), alias, process.platform === "win32" ? "junction" : "dir"); }
   return { ...f, cwd, alias, hits, read, drift };
 }
+
+test("N2 batch commit selection reuses one invocation callback and releases its progress owner", async t => {
+  const f = await mutationFixture(t), execute = BatchInvocation.prototype.execute; let invocation: any;
+  const callbacks: unknown[] = [];
+  t.mock.method(BatchInvocation.prototype, "execute", async function(this: any, ...args: any[]) { invocation = this; return Reflect.apply(execute, this, args); });
+  for (let i = 0; i < 4; i++) { writeFileSync(join(f.cwd, `callback${i}`), "before"); await f.call("read", { path: `callback${i}` }, `callback-read${i}`); }
+  f.onRecord(data => { if (data.phase === "commit_prepared") callbacks.push(invocation.currentItem.approval.commitSelected); });
+  const result = await f.call("file_batch", { operations: Array.from({ length: 4 }, (_, i) => ({ operation: "edit", path: `callback${i}`, edits: [{ oldText: "before", newText: "after" }] })) }, "stable-commit-selection");
+  assert.equal(result.isError, false, JSON.stringify(result)); assert.equal(callbacks.length, 4);
+  assert.equal(new Set(callbacks).size, 1); assert.equal(callbacks[0], invocation.recordCommitSelection);
+  assert.equal(invocation.progressPi, undefined); assert.equal(invocation.currentItem, undefined); assert.equal(invocation.items.length, 0);
+  assert.throws(() => invocation.recordCommitSelection({ strategy: "staged_replace" }), /no longer active/);
+  for (let i = 0; i < 4; i++) assert.equal(readFileSync(join(f.cwd, `callback${i}`), "utf8"), "after");
+});
 for (const kind of ["exact", "overwrite", "snapshot", "create", "delete", "move"]) test(`R1 intent alias drift: ${kind}`, async t => {
   const f = await aliasFixture(t);
   f.onRecord(data => { if (data.phase === "intent" && data.itemId === "batch:1") f.drift(); });
