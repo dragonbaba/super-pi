@@ -183,7 +183,7 @@ function privateWindowsAcl(user) {
   return acl;
 }
 
-function createPrivateWindows(b, input) {
+function windowsProcessUserSid(b) {
   const tokenBytes = Buffer.alloc(8);
   if (!b.openToken(b.currentProcess(), 8, tokenBytes)) winError(b, "OpenProcessToken(create)");
   const token = tokenBytes.readBigUInt64LE(); activeHandles++;
@@ -193,6 +193,11 @@ function createPrivateWindows(b, input) {
   if (b.close(token)) activeHandles--;
   else { const code = b.lastError(); failure ??= new Error(`CloseHandle(create token) failed (Win32 ${code}).`); }
   if (failure) throw failure;
+  return user;
+}
+
+function createPrivateWindows(b, input) {
+  const user = windowsProcessUserSid(b);
   const acl = privateWindowsAcl(user), descriptor = Buffer.alloc(20 + acl.length);
   descriptor[0] = 1; descriptor.writeUInt16LE(0x9004, 2); // SELF_RELATIVE | DACL_PROTECTED | DACL_PRESENT
   descriptor.writeUInt32LE(20, 16); acl.copy(descriptor, 20);
@@ -313,10 +318,9 @@ function protectWindows(b, input) {
   return withWindowsHandle(b, input, 0x00060000, protectWindowsHandle); // READ_CONTROL | WRITE_DAC
 }
 function protectWindowsHandle(b, input, handle) {
-    const owner = descriptorParts(securityDescriptor(b, handle)).owner;
-    if (!owner) throw new Error("Cannot establish temporary owner for private DACL.");
-    // ACL_REVISION, one ACCESS_ALLOWED_ACE for the new file's owner only.
-    const acl = privateWindowsAcl(owner);
+    // TokenOwner can be a group. Keep the same TokenUser-only DACL used at
+    // CREATE_NEW throughout writing, including reprotection after a failure.
+    const acl = privateWindowsAcl(windowsProcessUserSid(b));
     const code = b.setSecurity(handle, 1, 0x80000004, null, null, acl, null);
     if (code) throw new Error(`SetSecurityInfo(private temporary) failed (Win32 ${code}).`);
     const actual = descriptorParts(securityDescriptor(b, handle));
@@ -429,7 +433,7 @@ function verifyBytes(b, input, path, expected, size, hash, staged) {
       if (staged) {
         const parts = descriptorParts(Buffer.from(current.security, "base64"));
         const original = descriptorParts(Buffer.from(input.original.security, "base64"));
-        if (!parts.protected || !parts.owner?.equals(original.owner) || !parts.dacl?.equals(privateWindowsAcl(parts.owner))
+        if (!parts.protected || !parts.owner?.equals(original.owner) || !parts.dacl?.equals(privateWindowsAcl(windowsProcessUserSid(b)))
           || current.links !== 1 || current.attributes !== 0x20 && current.attributes !== 0x80) throw new Error("[STALE_STATE] Publication Windows private metadata changed.");
       } else if (current.securityFingerprint !== input.original.securityFingerprint || current.links !== 1
         || current.attributes !== input.original.attributes || current.creationTime !== input.original.creationTime

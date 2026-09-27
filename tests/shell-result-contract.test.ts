@@ -321,10 +321,11 @@ test("N3 TUI uses producer failure status and caches it across resize; body rema
   const clock = new BashRenderClock(), f = createBashRenderFixture(clock);
   const profiler = process.env.SP_SHELL_FACTS_PROFILE === "1" ? new InspectorSession() : undefined;
   let heapBefore = 0, sampledBytes = 0;
+  const allocationSites: { bytes: number; function: string; url: string; line: number }[] = [];
   try {
     f.result.content = result.content as any; f.result.details = result.details; f.component.updateResult(f.result, false, true);
     const analyses = f.bashMetrics.failureAnalyses;
-    if (profiler) { global.gc?.(); heapBefore = process.memoryUsage().heapUsed; profiler.connect(); await profiler.post("HeapProfiler.startSampling", { samplingInterval: 8192 }); }
+    if (profiler) { global.gc?.(); heapBefore = process.memoryUsage().heapUsed; profiler.connect(); await profiler.post("HeapProfiler.startSampling", { samplingInterval: 8192, includeObjectsCollectedByMajorGC: true, includeObjectsCollectedByMinorGC: true }); }
     for (const width of [80, 100, 120, 80]) {
       const view = stripTerminalSequences(f.component.render(width).join("\n"));
       assert.match(view, /Shell: command_failed; exit=23/); assert.match(view, /Output: TypeError/); assert.doesNotMatch(view, /Command exited with code 0/);
@@ -333,7 +334,15 @@ test("N3 TUI uses producer failure status and caches it across resize; body rema
       for (let n = 0; n < 20000; n++) f.component.render(n % 4 === 0 ? 80 : n % 4 === 1 ? 100 : 120);
       const { profile } = await profiler.post("HeapProfiler.stopSampling");
       const nodes = [profile.head];
-      while (nodes.length) { const node = nodes.pop()!; sampledBytes += node.selfSize; for (const child of node.children) nodes.push(child); }
+      while (nodes.length) {
+        const node = nodes.pop()!; sampledBytes += node.selfSize;
+        if (node.selfSize) allocationSites.push({ bytes: node.selfSize, function: node.callFrame.functionName, url: node.callFrame.url, line: node.callFrame.lineNumber + 1 });
+        for (const child of node.children) nodes.push(child);
+      }
+      allocationSites.sort((left, right) => right.bytes - left.bytes);
+      profile.head.children.length = 0;
+      const samples = (profile as typeof profile & { samples?: unknown[] }).samples;
+      if (samples) samples.length = 0;
     }
     assert.equal(f.bashMetrics.failureAnalyses, analyses);
     const facts = f.result.details.shellExecution as ShellExecutionFacts;
@@ -344,9 +353,9 @@ test("N3 TUI uses producer failure status and caches it across resize; body rema
   } finally {
     const released = f.dispose(); assert.ok(Object.values(released).every(value => value === 0)); clock.dispose();
     if (profiler) {
-      profiler.disconnect(); global.gc?.();
+      profiler.disconnect(); await new Promise<void>(resolve => setImmediate(resolve)); global.gc?.();
       t.diagnostic(JSON.stringify({ benchmark: "shell-facts-real-result-render", node: process.version, renders: 20000, sampledBytes,
-        sampledBytesPerRender: sampledBytes / 20000, heapBefore, heapAfterRelease: process.memoryUsage().heapUsed, repeatedFailureAnalyses: 0, released, pendingTimers: clock.pending }));
+        sampledBytesPerRender: sampledBytes / 20000, allocationSites: allocationSites.slice(0, 8), heapBefore, heapAfterRelease: process.memoryUsage().heapUsed, repeatedFailureAnalyses: 0, released, pendingTimers: clock.pending }));
     }
   }
 });

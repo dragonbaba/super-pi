@@ -88,6 +88,25 @@ test("N1 oversized legacy receipt IDs refuse before map keys or recovery IDs", a
   assert.deepEqual(collectChanges([entry], f.cwd), []); assert.equal(oversized, 0);
 });
 
+test("N1 malformed Session IDs refuse verification and the actual changes command before history access", async t => {
+  const f = await fixture(t); await f.call("write", { path: "session-bound", content: "actual" }, "session-bound");
+  const branch = f.session.getBranch(), records = collectChanges(branch, f.cwd), actualId = f.session.getSessionId();
+  const oversized = "s".repeat(2_000_000), notices: string[] = [];
+  f.runner.setUIContext({ ...f.runner.getUIContext(), notify(message: string) { notices.push(message); } }, "tui");
+  for (const sessionId of [oversized, "", 42, undefined]) {
+    assert.throws(() => collectVerifiedChanges(branch, records, sessionId), /Session ID exceeds recovery bounds/);
+    const imported = [...branch, { id: "bounded", type: "custom", customType: "file-change-verification-v1", data: { version: 1, sessionId,
+      get sourceEntryId() { return assert.fail("malformed verification Session ID reached receipt comparisons"); } } }];
+    assert.equal(collectVerifiedChanges(imported, records, actualId).size, 0);
+    t.mock.method(f.session, "getSessionId", () => sessionId);
+    t.mock.method(f.session, "getLeafId", () => { assert.fail("invalid Session header reached history access"); });
+    await f.runner.getCommand("changes")!.handler("", f.runner.createContext() as never);
+    assert.ok(notices.pop()?.includes("Session ID exceeds recovery bounds"));
+    t.mock.restoreAll();
+  }
+  assert.equal(readFileSync(join(f.cwd, "session-bound"), "utf8"), "actual");
+});
+
 for (const fault of ["malformed-tail", "aggregate-limit", "invalid-mode", "missing-exact-text", "invalid-snapshot"]) test(`N1 rejected imported arguments cannot spend genuine recovery budget: ${fault}`, async t => {
   const f = await fixture(t);
   assert.equal((await f.call("write", { path: "genuine", content: "g".repeat(512 * 1024) }, "genuine")).isError, false);
