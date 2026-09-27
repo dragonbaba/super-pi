@@ -22,6 +22,9 @@ import { access as evidenceAccess, realpath as evidenceRealpath, stat as evidenc
 import { constants as evidenceFsConstants } from "node:fs";
 import { EvidenceLedger, formatEvidenceReference, type EvidenceRecordV1 } from "./evidence-ledger.ts";
 import { estimateToolOutputTokens } from "./tool-output-budget.ts";
+import type { ToolResultBudgetStatus } from "./tool-result-budget-status.ts";
+import { SKILL_BLOCK_PATTERN, COMPACTION_ERROR_NEWLINE_PATTERN, PROMPT_SNIPPET_NEWLINE_PATTERN, PROMPT_SNIPPET_WHITESPACE_PATTERN,
+	EXTENSION_LABEL_BRACKET_PATTERN, EXTENSION_SOURCE_SUFFIX_PATTERN, SESSION_EXPORT_TIMESTAMP_PATTERN } from "./agent-session-regex.ts";
 import { resolveReadPathAsync } from "./tools/path-utils.ts";
 import { READ_EVIDENCE_CAPTURE, READ_EVIDENCE_IDENTITY, hasPreciseReadIdentity, readFileGeneration, type ValidatedReadIdentity } from "./tools/read-window.ts";
 import {
@@ -40,6 +43,7 @@ import type {
 	AssistantMessage,
 	AuthResult,
 	ImageContent,
+	Message,
 	Model,
 	ProviderHeaders,
 	TextContent,
@@ -155,6 +159,7 @@ import {
 	type ToolResultContinuationChunkV1,
 	type ToolResultPresentationOptions,
 	type ToolResultPresentationOwner,
+	type ToolResultProjectedUiSource,
 	type ToolResultPresentation,
 } from "./tool-result-presentation.ts";
 import { MCP_INLINE_BYTES, prepareMcpHookContent } from "./tool-result-source.ts";
@@ -189,7 +194,7 @@ export interface ParsedSkillBlock {
  * Returns null if the text doesn't contain a skill block.
  */
 export function parseSkillBlock(text: string): ParsedSkillBlock | null {
-	const match = text.match(/^<skill name="([^"]+)" location="([^"]+)">\n([\s\S]*?)\n<\/skill>(?:\n\n([\s\S]+))?$/);
+	const match = text.match(SKILL_BLOCK_PATTERN);
 	if (!match) return null;
 	return {
 		name: match[1],
@@ -227,6 +232,7 @@ export type AgentSessionEvent =
 	| { type: "entry_appended"; entry: SessionEntry }
 	| { type: "session_info_changed"; name: string | undefined }
 	| { type: "thinking_level_changed"; level: ThinkingLevel }
+	| { type: "tool_result_budget_changed" }
 	| {
 			type: "compaction_end";
 			reason: "manual" | "threshold" | "overflow";
@@ -349,7 +355,7 @@ function withoutDeletedHeaders(headers: ProviderHeaders | undefined): Record<str
 }
 
 function boundedAutoCompactionError(prefix: string, error: unknown): string {
-	const detail = (error instanceof Error ? error.message : "compaction failed").replace(/[\r\n]+/gu, " ").trim();
+	const detail = (error instanceof Error ? error.message : "compaction failed").replace(COMPACTION_ERROR_NEWLINE_PATTERN, " ").trim();
 	return `${prefix}: ${detail || "compaction failed"}`.slice(0, 512);
 }
 
@@ -817,6 +823,15 @@ export class AgentSession {
 	private _prefixManifestRecorder?: PrefixManifestRecorder;
 	private _toolOutputShadow: ToolOutputShadowObserver | undefined;
 	private _toolResultPresentation: ToolResultPresentationOwner | undefined;
+	private _toolBudgetGeneration = 0;
+	private _toolBudgetLastRequest: ToolResultBudgetStatus["lastRequest"] = "not-observed";
+	private _toolBudgetPayloadPreviewDepth = 0;
+	private _toolBudgetSessionOverride = false;
+	private _toolBudgetProjectionPending = false;
+	private _toolBudgetProjectedSources: WeakMap<object, ToolResultProjectedUiSource | null> | undefined;
+	private _toolBudgetProjectedIds: string[] | undefined;
+	private _toolBudgetCanonicalRediscoveryBlocked = false;
+	private _toolBudgetSourceCapturePasses = 0;
 	private _toolResultUiDispatchMessage: Extract<AgentMessage, { role: "toolResult" }> | undefined;
 	private _toolResultUiDispatchSourceContent: Extract<AgentMessage, { role: "toolResult" }>["content"] | undefined;
 	private _toolResultUiCanonicalMessages:
@@ -1236,6 +1251,7 @@ export class AgentSession {
 
 	/** Emit the final run boundary and wait for critical listener work such as terminal frame flushes. */
 	private async _emitAgentEnd(event: Extract<AgentSessionEvent, { type: "agent_end" }>): Promise<void> {
+		this.discardPendingToolResultBudgetSources();
 		const timeoutMs = this._criticalAgentEndTimeoutMs ?? DEFAULT_CRITICAL_AGENT_END_TIMEOUT_MS;
 		let deadlineReached = false;
 		let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
@@ -1271,6 +1287,7 @@ export class AgentSession {
 			}
 		} finally {
 			if (deadlineTimer) clearTimeout(deadlineTimer);
+			this._clearToolBudgetProjectedSources();
 		}
 	}
 
@@ -1467,6 +1484,9 @@ export class AgentSession {
 			this._evidenceCompletedBytes = 0;
 		} else {
 			this._emit(event);
+			// Built-in UI consumes synchronously at assistant start/end. Headless,
+			// print and RPC owners must release the same temporary final views.
+			if (event.type === "message_end" && event.message.role === "assistant") this._clearToolBudgetProjectedSources();
 		}
 
 		// Handle session persistence
@@ -1764,6 +1784,8 @@ export class AgentSession {
 		this._toolOutputShadow = undefined;
 		this._toolResultPresentation?.dispose();
 		this._toolResultPresentation = undefined;
+		this._clearToolBudgetProjectedSources();
+		this._toolBudgetProjectionPending = false;
 		this._toolResultUiDispatchMessage = undefined;
 		this._toolResultUiDispatchSourceContent = undefined;
 		this._toolResultUiCanonicalMessages?.clear();
@@ -1847,6 +1869,100 @@ export class AgentSession {
 	/** Whether this session owns the explicitly enabled presentation boundary. */
 	get toolResultPresentationEnabled(): boolean {
 		return this._toolResultPresentation !== undefined;
+	}
+
+	/** User-owned idle-session operation; no settings file is written. */
+	configureToolResultBudget(options: ToolResultPresentationOptions | undefined): void {
+		if (this.isStreaming || this.agent.state.isStreaming || this.isCompacting || this.agent.state.pendingToolCalls.size !== 0) throw new Error("Wait until the current turn settles before changing the tool-result budget.");
+		const next = createToolResultPresentationOwner(options, this.sessionManager.getSessionId());
+		this._clearEvidenceBranch();
+		this._toolResultPresentation?.dispose();
+		this._toolResultPresentation = next;
+		this._clearToolBudgetProjectedSources();
+		this._toolBudgetProjectionPending = next?.getEvidenceBudgetTokens() !== undefined;
+		this._toolBudgetCanonicalRediscoveryBlocked = this._toolBudgetProjectionPending;
+		this._toolBudgetLastRequest = "not-observed";
+		this._toolBudgetSessionOverride = true;
+		this._toolBudgetGeneration++;
+		this._toolResultUiDispatchMessage = undefined;
+		this._toolResultUiDispatchSourceContent = undefined;
+		this._toolResultUiCanonicalMessages?.clear();
+		this._toolResultUiCanonicalMessages = undefined;
+		this._toolResultUiCanonicalIndexActive = false;
+		this._toolResultUiCanonicalMessagesSource = undefined;
+		this._toolResultUiCanonicalMessagesLength = 0;
+		this._toolResultUiCanonicalMessagesTail = undefined;
+		this._toolResultUiCanonicalMessagesOverflowed = false;
+		this._emit({ type: "tool_result_budget_changed" });
+	}
+	/** Primitive revision for once-per-explicit-change UI rediscovery. */
+	get toolResultBudgetGeneration(): number { return this._toolBudgetGeneration; }
+
+	/** Primitive request boundary; normal assistant starts do not allocate a status snapshot. */
+	get toolResultBudgetRediscoveryState(): "waiting" | "ready" | "none" {
+		return this._toolBudgetProjectionPending ? "waiting" : this._toolBudgetProjectedSources ? "ready" : "none";
+	}
+
+	/** Called by the existing provider dispatch observer, never by conversion. */
+	recordToolResultBudgetDispatch(): void {
+		this._toolBudgetProjectionPending = false;
+	}
+
+	/** A payload hook cannot prove source identity; failures must permit recapture. */
+	discardPendingToolResultBudgetSources(): void {
+		if (!this._toolBudgetProjectionPending) return;
+		this._clearToolBudgetProjectedSources();
+		this._toolBudgetCanonicalRediscoveryBlocked = true;
+	}
+
+	private _clearToolBudgetProjectedSources(): void {
+		this._toolBudgetProjectedSources = undefined;
+		if (this._toolBudgetProjectedIds) this._toolBudgetProjectedIds.length = 0;
+		this._toolBudgetProjectedIds = undefined;
+	}
+
+	/** Snapshot only on an explicit settings/status action; no history or token scan. */
+	getToolResultBudgetStatus(): ToolResultBudgetStatus {
+		const owner = this._toolResultPresentation, budgetTokens = owner?.getEvidenceBudgetTokens();
+		return { state: !owner ? "disabled" : budgetTokens === undefined ? "enabled-unconfigured" : this._toolBudgetLastRequest === "blocked" ? "budget-too-small" : "enabled",
+			budgetTokens, lastRequest: this._toolBudgetLastRequest, scope: this._toolBudgetSessionOverride ? "session-override" : "startup-configuration",
+			imageAndBillingEstimate: "unavailable", retainedRecords: owner?.counters.projectionRecordEntries ?? 0,
+			retainedCodeUnits: owner?.counters.retainedProjectionCodeUnits ?? 0 };
+	}
+
+	/** SDK final-request conversion uses the current owner after an explicit change. */
+	projectToolResultMessagesForModel(messages: Message[], imagePolicy?: (message: Message) => Message,
+		systemPrompt?: string, tools?: readonly AgentTool<any>[], contextWindow?: number, maxOutputTokens?: number, requestPlanning = false): Message[] {
+		const owner = this._toolResultPresentation;
+		if (!owner) return messages;
+		if (this._toolBudgetPayloadPreviewDepth !== 0) return owner.projectMessagesForModel(messages, imagePolicy, systemPrompt, tools, contextWindow, maxOutputTokens, requestPlanning);
+		this.discardPendingToolResultBudgetSources();
+		const sources = this._toolBudgetProjectionPending ? this._captureBudgetProjectionSources() : undefined;
+		try {
+			const projected = owner.projectMessagesForModel(messages, imagePolicy, systemPrompt, tools, contextWindow, maxOutputTokens, requestPlanning, sources);
+			this._toolBudgetLastRequest = owner.getEvidenceBudgetTokens() === undefined ? "not-observed" : "applied";
+			if (sources) {
+				// Request preparation is the existing cold history boundary. Do not
+				// activate/rebuild the canonical index at assistant response delivery.
+				if (sources.size !== 0) this._synchronizeToolResultUiCanonicalIndex();
+				const ids: string[] = [];
+				for (const source of sources.values()) if (source) ids.push(source.toolCallId);
+				this._toolBudgetProjectedIds = ids;
+				this._toolBudgetProjectedSources = new WeakMap(sources);
+				this._toolBudgetCanonicalRediscoveryBlocked = false;
+			}
+			return projected;
+		} catch (error) {
+			this._toolBudgetLastRequest = error instanceof ToolResultContinuationError && error.code === "budget-too-small" ? "blocked" : "preparation-failed";
+			throw error;
+		} finally { sources?.clear(); }
+	}
+
+	/** Explicit-change scratch only; the projection owner populates at most 128
+	 * identities during its existing scan of the actual transformed request. */
+	private _captureBudgetProjectionSources(): Map<object, ToolResultProjectedUiSource | null> {
+		this._toolBudgetSourceCapturePasses++;
+		return new Map<object, ToolResultProjectedUiSource | null>();
 	}
 
 	private _recordToolResultUiCanonicalMessage(message: AgentMessage): void {
@@ -1972,8 +2088,11 @@ export class AgentSession {
 	collectRecentToolResultPresentationsForUi(
 		target: Map<Extract<AgentMessage, { role: "toolResult" }>, ToolResultPresentation>,
 		limit: number,
+		projectedOnly = false,
 	): void {
 		target.clear();
+		const projectedSources = projectedOnly ? this._toolBudgetProjectedSources : undefined;
+		const projectedIds = projectedOnly ? this._toolBudgetProjectedIds : undefined;
 		this._toolResultUiHistoryMessagesVisited = 0;
 		this._toolResultUiPresentationCandidatesEvaluated = 0;
 		this._toolResultUiActualV2Discoveries = 0;
@@ -1981,7 +2100,39 @@ export class AgentSession {
 		this._toolResultUiSourceScans = 0;
 		const owner = this._toolResultPresentation;
 		const boundedLimit = Number.isSafeInteger(limit) ? Math.min(limit, MAX_TOOL_RESULT_UI_DISCOVERIES) : 0;
-		if (!owner || boundedLimit <= 0) return;
+		if (projectedOnly) {
+			try {
+				if (!owner || boundedLimit <= 0 || !projectedSources || !projectedIds?.length) return;
+				const messages = this.agent.state.messages;
+				const indexedLength = this._toolResultUiCanonicalMessagesLength;
+				// Fail closed on replacement or an unbounded append. The response may
+				// append its one assistant message; it cannot alter tool identities.
+				if (this._toolResultUiCanonicalMessagesSource !== messages || this._toolResultUiCanonicalMessagesOverflowed ||
+					indexedLength > messages.length || messages.length - indexedLength > 1 ||
+					(indexedLength > 0 && messages[indexedLength - 1] !== this._toolResultUiCanonicalMessagesTail) ||
+					(messages.length > indexedLength && messages[indexedLength]?.role !== "assistant")) return;
+				for (const toolCallId of projectedIds) {
+					if (target.size >= boundedLimit) break;
+					this._toolResultUiCanonicalLookupProbes++;
+					const candidate = this._toolResultUiCanonicalMessages?.get(toolCallId);
+					if (!candidate) continue;
+					const source = projectedSources.get(candidate.content);
+					if (source?.toolCallId !== toolCallId) continue;
+					this._toolResultUiPresentationCandidatesEvaluated++;
+					this._toolResultUiSourceScans++;
+					const presentation = owner.create(candidate.content, toolCallId, source);
+					try {
+						if (presentation?.version === 2) {
+							owner.touchExactResidentProjectionRecord(candidate.content, toolCallId);
+							target.set(candidate, presentation);
+						}
+					} finally { owner.release(); }
+				}
+				this._toolResultUiActualV2Discoveries = target.size;
+			} finally { this._clearToolBudgetProjectedSources(); }
+			return;
+		}
+		if (!owner || boundedLimit <= 0 || this._toolBudgetCanonicalRediscoveryBlocked) return;
 		this._synchronizeToolResultUiCanonicalIndex();
 		const messages = this.agent.state.messages;
 		// Keep one bounded backup candidate per possible ambiguous output slot.
@@ -2114,14 +2265,20 @@ export class AgentSession {
 		const messages = this._extensionRunner.hasHandlers("context")
 			? await this._extensionRunner.emitContext(input.messages, true)
 			: input.messages;
-		const payload = builder({
-			model,
-			systemPrompt: input.systemPrompt,
-			messages,
-			tools: this.agent.state.tools,
-			thinkingLevel: this.thinkingLevel,
-			sessionId: this.sessionManager.getSessionId(),
-		});
+		let payload: Record<string, unknown> | undefined;
+		// Only this synchronous builder is a preview conversion. Keep the flag out
+		// of awaited context/payload hooks so another request cannot inherit it.
+		this._toolBudgetPayloadPreviewDepth++;
+		try {
+			payload = builder({
+				model,
+				systemPrompt: input.systemPrompt,
+				messages,
+				tools: this.agent.state.tools,
+				thinkingLevel: this.thinkingLevel,
+				sessionId: this.sessionManager.getSessionId(),
+			});
+		} finally { this._toolBudgetPayloadPreviewDepth--; }
 		if (!payload || !this._extensionRunner.hasHandlers("before_provider_request")) return payload;
 		const finalPayload = await this._extensionRunner.emitBeforeProviderRequest(payload, true);
 		return finalPayload !== null && typeof finalPayload === "object" && !Array.isArray(finalPayload)
@@ -2253,8 +2410,8 @@ export class AgentSession {
 	private _normalizePromptSnippet(text: string | undefined): string | undefined {
 		if (!text) return undefined;
 		const oneLine = text
-			.replace(/[\r\n]+/g, " ")
-			.replace(/\s+/g, " ")
+			.replace(PROMPT_SNIPPET_NEWLINE_PATTERN, " ")
+			.replace(PROMPT_SNIPPET_WHITESPACE_PATTERN, " ")
 			.trim();
 		return oneLine.length > 0 ? oneLine : undefined;
 	}
@@ -3906,10 +4063,10 @@ export class AgentSession {
 
 	private getExtensionSourceLabel(extensionPath: string): string {
 		if (extensionPath.startsWith("<")) {
-			return `extension:${extensionPath.replace(/[<>]/g, "")}`;
+			return `extension:${extensionPath.replace(EXTENSION_LABEL_BRACKET_PATTERN, "")}`;
 		}
 		const base = basename(extensionPath);
-		const name = base.replace(/\.(ts|js)$/, "");
+		const name = base.replace(EXTENSION_SOURCE_SUFFIX_PATTERN, "");
 		return `extension:${name}`;
 	}
 
@@ -5134,7 +5291,7 @@ export class AgentSession {
 	 */
 	exportToJsonl(outputPath?: string): string {
 		const filePath = resolvePath(
-			outputPath ?? `session-${new Date().toISOString().replace(/[:.]/g, "-")}.jsonl`,
+			outputPath ?? `session-${new Date().toISOString().replace(SESSION_EXPORT_TIMESTAMP_PATTERN, "-")}.jsonl`,
 			process.cwd(),
 		);
 		const dir = dirname(filePath);

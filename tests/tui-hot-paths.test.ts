@@ -33,6 +33,8 @@ const HOT_REGEX_FREE_FILES = [
 	"packages/ai/src/api/openrouter-images.ts",
 	"packages/ai/src/utils/json-parse.ts",
 	"packages/coding-agent/src/core/bash-executor.ts",
+	"packages/coding-agent/src/core/agent-session.ts",
+	"packages/coding-agent/src/core/tool-result-budget-status.ts",
 	"packages/coding-agent/src/core/tools/bash.ts",
 	"packages/coding-agent/src/core/image-attachments.ts",
 	"packages/coding-agent/src/core/tools/find.ts",

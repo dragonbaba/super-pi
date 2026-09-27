@@ -63,10 +63,17 @@ test("agent loop and SDK pass the request envelope without allocating a context 
 	const loop = readFileSync(LOOP_PATH, "utf8");
 	const sdk = readFileSync(SDK_PATH, "utf8");
 	assert.match(loop, /config\.convertToLlm\(messages, context\.systemPrompt, context\.tools, config\.model, config\.maxTokens\)/);
-	assert.match(
-		sdk,
-		/toolResultPresentationOwner\?\.projectMessagesForModel\(\s*converted,\s*blockImages \? replaceBlockedImages : undefined,\s*systemPrompt,\s*tools,\s*conversionModel\?\.contextWindow,\s*requestPlanning && requestedMaxTokens !== undefined/u,
-	);
+	const ast = ts.createSourceFile(SDK_PATH, sdk, ts.ScriptTarget.Latest, true);
+	let projections = 0;
+	function inspect(node: ts.Node): void {
+		if (ts.isCallExpression(node) && node.expression.getText(ast) === "session.projectToolResultMessagesForModel") {
+			assert.deepEqual(node.arguments.map(argument => argument.getText(ast)), ["converted", "blockImages ? replaceBlockedImages : undefined", "systemPrompt", "tools", "conversionModel?.contextWindow",
+				"requestPlanning && requestedMaxTokens !== undefined ? Math.min(requestedMaxTokens, conversionModel?.maxTokens ?? requestedMaxTokens) : conversionModel?.maxTokens", "requestPlanning"]);
+			projections++;
+		}
+		ts.forEachChild(node, inspect);
+	}
+	inspect(ast); assert.equal(projections, 1);
 	assert.match(sdk, /convertToLlmWithBlockImages\(messages, systemPrompt, tools, model\)/);
 	assert.equal(sdk.includes("ToolResultBudgetContext"), false);
 	assert.equal(sdk.includes("LlmConversionContext"), false);

@@ -110,6 +110,7 @@ import type { ResourceDiagnostic } from "../../core/resource-loader.ts";
 import { formatMissingSessionCwdPrompt, MissingSessionCwdError } from "../../core/session-cwd.ts";
 import { type SessionEntry, SessionManager, sessionEntryToContextMessages } from "../../core/session-manager.ts";
 import type { FullscreenExitOutput, TuiMode } from "../../core/settings-manager.ts";
+import { formatToolResultBudgetStatus, parseToolResultBudgetCommand } from "../../core/tool-result-budget-status.ts";
 import { BUILTIN_SLASH_COMMANDS } from "../../core/slash-commands.ts";
 import type { SourceInfo } from "../../core/source-info.ts";
 import { isInstallTelemetryEnabled } from "../../core/telemetry.ts";
@@ -658,6 +659,9 @@ export class InteractiveMode {
 	private pendingTools = new Map<string, ToolExecutionComponent | ReadToolGroupComponent>();
 	private pendingToolResultDiscoveries: Map<string, ToolResultDiscoveryRegistration> | undefined;
 	private attachedToolResultDiscoveries: Map<string, ToolResultDiscoveryRegistration> | undefined;
+	private toolResultBudgetUiGeneration = 0;
+	private toolResultBudgetRediscoveryPasses = 0;
+	private toolResultBudgetRediscoveryComponentProbes = 0;
 	private toolResultDiscoveryRegistrationObjectsCreated = 0;
 	private toolResultDiscoveryPendingMapsCreated = 0;
 	private toolResultDiscoveryAttachedMapsCreated = 0;
@@ -853,6 +857,9 @@ export class InteractiveMode {
 		});
 		let draftSessionId = this.sessionManager.getSessionId();
 		this.runtimeHost.setRebindSession(async () => {
+			// Budget revisions belong to one AgentSession. A replacement starts at
+			// zero; explicit configuration made by its factory stays pending (> 0).
+			this.toolResultBudgetUiGeneration = 0;
 			if (draftSessionId !== this.sessionManager.getSessionId()) { this.clipboardAbort?.abort(); this.imageSubmissionRecovery = undefined; this.imageDraft.clear(); draftSessionId = this.sessionManager.getSessionId(); }
 			const lifecycleGeneration = this.tuiLifecycleGeneration;
 			await this.rebindCurrentSession({ renderBeforeBind: true }, lifecycleGeneration);
@@ -3885,6 +3892,11 @@ export class InteractiveMode {
 			if (!text) return;
 
 			// Handle commands
+			if (text === "/tool-budget" || text.startsWith("/tool-budget ")) {
+				this.editor.setText("");
+				this.handleToolResultBudgetCommand(text.slice(12));
+				return;
+			}
 			if (text === "/settings") {
 				this.showSettingsSelector();
 				this.editor.setText("");
@@ -4092,6 +4104,11 @@ export class InteractiveMode {
 	}
 
 	private handleEvent(event: AgentSessionEvent): void | Promise<void> {
+		if (event.type === "tool_result_budget_changed") {
+			this.clearToolResultDiscoveriesAfterCanonicalHistoryReplacement();
+			if (this.isInitialized) this.ui.requestRender();
+			return;
+		}
 		if (!this.isInitialized) return this.initializeAndHandleEvent(event);
 
 		this.footer.invalidate();
@@ -4159,6 +4176,7 @@ export class InteractiveMode {
 					this.updatePendingMessagesDisplay();
 					this.ui.requestRender();
 				} else if (event.message.role === "assistant") {
+					this.rediscoverToolResultsAfterBudgetChange();
 					this.streamingComponent = new AssistantMessageComponent(
 						undefined,
 						this.hideThinkingBlock,
@@ -4207,6 +4225,8 @@ export class InteractiveMode {
 
 			case "message_end":
 				if (event.message.role === "user") break;
+				// Codex acknowledges successful dispatch after streaming, before done.
+				if (event.message.role === "assistant") this.rediscoverToolResultsAfterBudgetChange();
 				if (event.message.role === "toolResult" && event.toolResultPresentation) {
 					this.attachLiveToolResultPresentation(
 						event.message,
@@ -4933,6 +4953,35 @@ export class InteractiveMode {
 		this.clearAttachedToolResultDiscoveries();
 	}
 
+	/** One deferred cold refresh after an explicit budget change and successful
+	 * provider dispatch. It updates matching retained leaves, never replays the
+	 * transcript or runs from provider deltas/progress/render/layout. */
+	private rediscoverToolResultsAfterBudgetChange(): void {
+		const generation = this.session.toolResultBudgetGeneration;
+		if (this.toolResultBudgetUiGeneration === generation) return;
+		const rediscovery = this.session.toolResultBudgetRediscoveryState;
+		if (rediscovery === "waiting") return;
+		this.clearToolResultDiscoveriesAfterCanonicalHistoryReplacement();
+		this.toolResultBudgetUiGeneration = generation;
+		if (rediscovery !== "ready") return;
+		const presentations = new Map<Extract<AgentMessage, { role: "toolResult" }>, ToolResultPresentation>();
+		this.toolResultBudgetRediscoveryPasses++;
+		try {
+			this.session.collectRecentToolResultPresentationsForUi(presentations, MAX_TOOL_RESULT_DISCOVERIES, true);
+			for (const component of this.chatContainer.children) {
+				if (presentations.size === 0) break;
+				if (!(component instanceof ToolExecutionComponent) && !(component instanceof ReadToolGroupComponent)) continue;
+				for (const [message, presentation] of presentations) {
+					this.toolResultBudgetRediscoveryComponentProbes++;
+					if (!component.hasToolResultSourceForUi(message.toolCallId, message.content)) continue;
+					const registration = this.createToolResultDiscoveryRegistration(component, message.content);
+					if (this.attachToolResultPresentation(message, registration, presentation)) this.addAttachedToolResultDiscovery(message.toolCallId, registration);
+					presentations.delete(message);
+				}
+			}
+		} finally { presentations.clear(); }
+	}
+
 	/** Low-frequency lifecycle diagnostics for tests and allocation evidence. */
 	getToolResultDiscoveryLifecycleCounts(): {
 		entries: number;
@@ -5245,14 +5294,21 @@ export class InteractiveMode {
 		options: { updateFooter?: boolean; populateHistory?: boolean } = {},
 	): void {
 		this.clearToolResultDiscoveries();
+		const budgetGeneration = this.session.toolResultBudgetGeneration;
+		const budgetRefreshPending = this.toolResultBudgetUiGeneration !== budgetGeneration;
+		const budgetRediscovery = this.session.toolResultBudgetRediscoveryState;
+		// A settings/history rebuild cannot acknowledge a budget whose next request
+		// has not been projected yet. Consume its provenance only after success.
+		if (budgetRediscovery !== "waiting") this.toolResultBudgetUiGeneration = budgetGeneration;
 		this.finalizeReadToolGroup();
 		this.clearDeferredReadArtifacts();
 		this.pendingTools.clear();
 		const renderedPendingTools = new Map<string, ToolExecutionComponent | ReadToolGroupComponent>();
 		let discoverableMessages: Map<Extract<AgentMessage, { role: "toolResult" }>, ToolResultPresentation> | undefined;
-		if (this.session.toolResultPresentationEnabled) {
+		if (this.session.toolResultPresentationEnabled && (!budgetRefreshPending || budgetRediscovery === "ready")) {
 			discoverableMessages = new Map();
-			this.session.collectRecentToolResultPresentationsForUi(discoverableMessages, MAX_TOOL_RESULT_DISCOVERIES);
+			this.session.collectRecentToolResultPresentationsForUi(discoverableMessages, MAX_TOOL_RESULT_DISCOVERIES, budgetRefreshPending);
+			this.toolResultBudgetUiGeneration = budgetGeneration;
 		}
 		let rebuildReadGroup: ReadToolGroupComponent | undefined;
 		const finalizeRebuildReadGroup = () => {
@@ -6132,6 +6188,7 @@ export class InteractiveMode {
 			selector = new SettingsSelectorComponent(
 				{
 					autoCompact: this.session.autoCompactionEnabled,
+					toolResultBudget: this.session.toolResultPresentationEnabled ? String(this.session.getToolResultBudgetStatus().budgetTokens ?? "unconfigured") : "off",
 					defaultModel,
 					currentModel: this.session.model,
 					availableDefaultModels: this.session.modelRuntime.getAvailableSnapshot(),
@@ -6170,6 +6227,7 @@ export class InteractiveMode {
 					warnings: this.settingsManager.getWarnings(),
 				},
 				{
+					onToolResultBudgetChange: this.onToolResultBudgetSettingChange,
 					onAutoCompactChange: (enabled) => {
 						this.session.setAutoCompactionEnabled(enabled);
 						this.footer.setAutoCompactEnabled(enabled);
@@ -7972,6 +8030,23 @@ export class InteractiveMode {
 		this.chatContainer.addChild(new Spacer(1));
 		this.chatContainer.addChild(new Text(theme.fg("dim", `Session name set: ${sessionName ?? name}`), 1, 0));
 		this.ui.requestRender();
+	}
+
+	// One callback per InteractiveMode owner, reused by explicit settings dialogs.
+	private readonly onToolResultBudgetSettingChange = (value: string): string => {
+		this.handleToolResultBudgetCommand(value);
+		const status = this.session.getToolResultBudgetStatus();
+		return status.state === "disabled" ? "off" : String(status.budgetTokens ?? "unconfigured");
+	};
+
+	private handleToolResultBudgetCommand(value: string): void {
+		try {
+			const options = parseToolResultBudgetCommand(value);
+			if (options !== "status") {
+				this.session.configureToolResultBudget(options);
+			}
+			this.showStatus(formatToolResultBudgetStatus(this.session.getToolResultBudgetStatus()));
+		} catch (error) { this.showError(error instanceof Error ? error.message : String(error)); }
 	}
 
 	private handleSessionCommand(): void {

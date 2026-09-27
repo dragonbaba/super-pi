@@ -96,6 +96,20 @@ async function fixture(t: any, long = false) {
 
 test("N2 importing commit metadata does not load a native worker", () => { assert.equal(nativeFileDiagnostics().loaded, false); });
 
+test("N4 worker counters include real staged target/candidate reads and SHA256 work", { skip: !supported }, async t => {
+  const f = await fixture(t), plan = await planFor(f.target, f.before);
+  const before = await nativeFileRequest("stats");
+  await commitPreparedFile(plan, f.after, { assertPathAllowed: async () => plan.target.canonical });
+  assert.deepEqual(await readFile(f.target), f.after);
+  const after = await nativeFileRequest("stats");
+  const readBytes = after.fileBytesRead - before.fileBytesRead, hashedBytes = after.hashBytes - before.hashBytes;
+  assert.ok(readBytes >= Buffer.byteLength(f.before) + f.after.byteLength);
+  assert.ok(hashedBytes >= readBytes); assert.ok(after.hashUpdates > before.hashUpdates);
+  assert.ok(after.metadataBytesRead >= before.metadataBytesRead);
+  assert.equal(after.activeHandles, 0); assert.equal(after.activeDescriptors, 0);
+  await disposeNativeFileWorker(); assert.equal(nativeFileDiagnostics().pending, 0); assert.equal(nativeFileDiagnostics().loaded, false);
+});
+
 for (const long of [false, true]) test(`N2 actual native normal-file replacement preserves observed metadata, long=${long}`, { skip: !supported }, async t => {
   const f = await fixture(t, long);
   if (process.platform === "win32") await writeFile(f.target + ":n2-fixture", "named stream retained");

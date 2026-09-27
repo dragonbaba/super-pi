@@ -16,6 +16,9 @@ const MAX_CONTINUATION_SHRINK_PASSES = 8;
 const MAX_CONTINUATION_BLOCKS = 256;
 const MAX_PROJECTION_RECORD_ENTRIES = 128;
 const MAX_RETAINED_PROJECTION_CODE_UNITS = 128 * 1024 * 1024;
+// Separate, short-lived explicit-change allowance; combined accounted projection
+// references are at most 256 Mi units, excluding canonical Session source data.
+const MAX_PROJECTED_UI_CAPTURE_CODE_UNITS = 128 * 1024 * 1024;
 const MAX_TERMINAL_SEQUENCE_INTERVALS = 4096;
 const CURSOR_PREFIX = "tr1.";
 const ARTIFACT_PREFIX = "tra1.";
@@ -266,6 +269,13 @@ interface SourceMessageLike {
 	role: "toolResult";
 	toolCallId: string;
 	content: readonly ToolResultPresentationContent[];
+}
+
+export interface ToolResultProjectedUiSource {
+	toolCallId: string;
+	budgetTokens: number;
+	projection?: ProjectionBuild;
+	retainedCodeUnits: number;
 }
 
 interface ProjectionRecord {
@@ -1149,6 +1159,10 @@ function projectContent(
 	return omission;
 }
 
+function requiresV2Projection(estimatedTokens: number, budgetTokens: number, mcpArtifactRequired: boolean, mcpInput: boolean, rawUtf8Bytes: number): boolean {
+	return estimatedTokens > budgetTokens || mcpArtifactRequired || mcpInput && rawUtf8Bytes > MCP_INLINE_BYTES;
+}
+
 /** Source references belong to canonical/UI/artifact content, never model input. */
 function stripMcpSources(content: readonly ToolResultPresentationContent[]): readonly ToolResultPresentationContent[] {
 	let output: ToolResultPresentationContent[] | undefined;
@@ -1451,8 +1465,8 @@ export class ToolResultPresentationOwner {
 		let addedRetainedCodeUnits = 0;
 		if (
 			record.projection === undefined &&
-			(record.sourceScan.estimate.estimatedTokens > this.budgetTokens! || record.sourceScan.mcpArtifactRequired ||
-				(record.sourceScan.mcpInput && record.sourceScan.estimate.rawUtf8Bytes > MCP_INLINE_BYTES))
+			requiresV2Projection(record.sourceScan.estimate.estimatedTokens, this.budgetTokens!, record.sourceScan.mcpArtifactRequired,
+				record.sourceScan.mcpInput, record.sourceScan.estimate.rawUtf8Bytes)
 		) {
 			const projection = projectContent(
 				record.sourceContent,
@@ -1835,6 +1849,7 @@ export class ToolResultPresentationOwner {
 	inspectToolResultPresentationForUiCandidate(
 		content: unknown,
 		toolCallId: string,
+		projectedBudgetTokens?: number,
 	): "v1" | "v2" | undefined {
 		const budgetTokens = this.budgetTokens;
 		if (!this.accepting || budgetTokens === undefined) return undefined;
@@ -1852,20 +1867,33 @@ export class ToolResultPresentationOwner {
 				}
 			}
 			const sourceContent = content as readonly ToolResultPresentationContent[];
+			if (projectedBudgetTokens !== undefined && Number.isSafeInteger(projectedBudgetTokens) && projectedBudgetTokens > 0 && projectedBudgetTokens <= budgetTokens) return "v2";
 			const resident = this.projectionRecords?.get(toolCallId);
-			const estimatedTokens = resident?.sourceContent === sourceContent
-				? resident.sourceScan.estimate.estimatedTokens
-				: estimateToolOutputTokens(sourceContent).estimatedTokens;
-			return estimatedTokens > budgetTokens ? "v2" : "v1";
+			let estimate, mcpInput = false, mcpArtifactRequired = false;
+			if (resident?.sourceContent === sourceContent) {
+				estimate = resident.sourceScan.estimate; mcpInput = resident.sourceScan.mcpInput; mcpArtifactRequired = resident.sourceScan.mcpArtifactRequired;
+			} else {
+				estimate = estimateToolOutputTokens(sourceContent);
+				for (const block of sourceContent) {
+					if (block.mcpInput) mcpInput = true;
+					if (block.type === "text" && block.mcpSource) {
+						verifiedMcpSource(block.mcpSource); mcpInput = true;
+						if (block.mcpSource.requiresRecovery || block.mcpSource.kind !== "structured") mcpArtifactRequired = true;
+					}
+				}
+			}
+			return requiresV2Projection(estimate.estimatedTokens, budgetTokens, mcpArtifactRequired, mcpInput, estimate.rawUtf8Bytes) ? "v2" : "v1";
 		} catch {
 			return undefined;
 		}
 	}
 
 	create(legacyContent: readonly ToolResultPresentationContent[]): ToolResultPresentationV1 | undefined;
-	create(legacyContent: readonly ToolResultPresentationContent[], toolCallId: string): ToolResultPresentation | undefined;
-	create(legacyContent: readonly ToolResultPresentationContent[], toolCallId?: string): ToolResultPresentation | undefined {
+	create(legacyContent: readonly ToolResultPresentationContent[], toolCallId: string, projectedSource?: ToolResultProjectedUiSource): ToolResultPresentation | undefined;
+	create(legacyContent: readonly ToolResultPresentationContent[], toolCallId?: string, projectedSource?: ToolResultProjectedUiSource): ToolResultPresentation | undefined {
 		if (!this.accepting) return undefined;
+		const projectedBudgetTokens = projectedSource?.budgetTokens;
+		if (projectedSource && (projectedSource.toolCallId !== toolCallId || !projectedSource.projection || !Number.isSafeInteger(projectedBudgetTokens) || projectedBudgetTokens! <= 0 || this.budgetTokens === undefined || projectedBudgetTokens! > this.budgetTokens)) throw new RangeError("Invalid projected UI source");
 		const uiContent = new Array<ToolResultPresentationContent>(legacyContent.length);
 		let textCodeUnits = 0;
 		let imageDataCodeUnits = 0;
@@ -1884,7 +1912,9 @@ export class ToolResultPresentationOwner {
 		if (this.budgetTokens !== undefined) {
 			if (!toolCallId) throw new TypeError("A toolCallId is required for budgeted tool-result presentation");
 			const record = this.getOrCreateProjectionRecord(legacyContent, toolCallId);
-			const projection = record.projection;
+			const budgetTokens = projectedBudgetTokens ?? this.budgetTokens;
+			const projection = projectedSource?.projection ?? record.projection;
+			if (projection && projectedBudgetTokens !== undefined) this.ensureArtifactDescriptor(record);
 			if (projection) {
 				const artifact = record.artifact;
 				const originalTextCodeUnits = record.sourceScan.textCodeUnits;
@@ -1898,7 +1928,7 @@ export class ToolResultPresentationOwner {
 					truncation: {
 						version: 1,
 						strategy: "text-head-tail",
-						budgetTokens: this.budgetTokens,
+						budgetTokens,
 						originalEstimatedTokens: projection.fullEstimate.estimatedTokens,
 						modelEstimatedTokens: projection.estimate.estimatedTokens,
 						originalTextCodeUnits,
@@ -1987,6 +2017,7 @@ export class ToolResultPresentationOwner {
 		filtered: ToolResultMessage,
 		imagePolicy: (message: Message) => Message,
 		budgetTokens = this.budgetTokens!,
+		capture?: ToolResultProjectedUiSource,
 	): ToolResultMessage {
 		this.counters.postImagePolicyEstimatorScans++;
 		let estimate = estimateToolOutputTokens(filtered.content);
@@ -2018,7 +2049,10 @@ export class ToolResultPresentationOwner {
 			this.counters.postImagePolicyShrinkPasses++;
 			this.counters.postImagePolicyEstimatorScans++;
 			estimate = estimateToolOutputTokens(candidate.content);
-			if (estimate.estimatedTokens <= budgetTokens) return candidate;
+			if (estimate.estimatedTokens <= budgetTokens) {
+				if (capture) capture.projection = candidateProjection;
+				return candidate;
+			}
 		}
 		const omission = this.getImagePolicyProjection(record, budgetTokens);
 		let candidate = imagePolicy(this.createModelMessage(message, omission.content)) as ToolResultMessage;
@@ -2064,18 +2098,21 @@ export class ToolResultPresentationOwner {
 				`Tool-result budget ${budgetTokens} cannot contain the fixed continuation notice.`,
 			);
 		}
+		if (capture) capture.projection = omission;
 		return candidate;
 	}
 
 	private projectMessageForConfiguredBudget(
 		message: ToolResultMessage,
 		imagePolicy?: (message: Message) => Message,
+		sources?: Map<object, ToolResultProjectedUiSource | null>,
 	): ToolResultMessage {
 		const resident = this.projectionRecords?.get(message.toolCallId);
 		if (resident?.sourceContent === message.content) this.counters.residentReadHits++;
 		else this.counters.providerReadMisses++;
 		const record = this.getOrCreateProjectionRecord(message.content, message.toolCallId, "provider");
 		let projection = record.projection;
+		const capture: ToolResultProjectedUiSource | undefined = sources && (projection || imagePolicy) ? { toolCallId: message.toolCallId, budgetTokens: this.budgetTokens!, projection, retainedCodeUnits: 0 } : undefined;
 		let projected = projection ? this.createModelMessage(message, projection.content) : record.sourceScan.mcpInput ? this.createModelMessage(message, message.content) : message;
 		if (imagePolicy) {
 			let filtered = imagePolicy(projected);
@@ -2084,6 +2121,7 @@ export class ToolResultPresentationOwner {
 				const filteredEstimate = estimateToolOutputTokens((filtered as ToolResultMessage).content);
 				if (filteredEstimate.estimatedTokens > this.budgetTokens!) {
 					projection = this.getImagePolicyProjection(record);
+					if (capture) capture.projection = projection;
 					projected = this.createModelMessage(message, projection.content);
 					filtered = imagePolicy(projected);
 				}
@@ -2095,10 +2133,13 @@ export class ToolResultPresentationOwner {
 					projection,
 					filtered as ToolResultMessage,
 					imagePolicy,
+					this.budgetTokens!,
+					capture,
 				);
 			}
 			projected = filtered as ToolResultMessage;
 		}
+		if (capture) this.recordProjectedUiSource(message, projected, capture, sources!);
 		return projected;
 	}
 
@@ -2107,6 +2148,7 @@ export class ToolResultPresentationOwner {
 		toolBudgetTokens: number,
 		contextBudgetTokens: number,
 		imagePolicy?: (message: Message) => Message,
+		sources?: Map<object, ToolResultProjectedUiSource | null>,
 	): ToolResultMessage {
 		let candidateBudget = Math.min(toolBudgetTokens, contextBudgetTokens);
 		if (!Number.isSafeInteger(candidateBudget) || candidateBudget <= 0) {
@@ -2120,6 +2162,7 @@ export class ToolResultPresentationOwner {
 		if (resident?.sourceContent === message.content) this.counters.residentReadHits++;
 		else this.counters.providerReadMisses++;
 		const record = this.getOrCreateProjectionRecord(message.content, message.toolCallId, "provider");
+		const capture: ToolResultProjectedUiSource | undefined = sources ? { toolCallId: message.toolCallId, budgetTokens: candidateBudget, projection: undefined, retainedCodeUnits: 0 } : undefined;
 		for (let pass = 0; pass <= MAX_PROJECTION_SHRINK_PASSES; pass++) {
 			this.counters.contextualProjectionPasses++;
 			let projection: ProjectionBuild | undefined;
@@ -2138,6 +2181,7 @@ export class ToolResultPresentationOwner {
 				this.rethrowContextualProjectionFailure(error);
 			}
 			if (projection) this.ensureArtifactDescriptor(record);
+			if (capture) { capture.projection = projection; capture.budgetTokens = candidateBudget; }
 			let projected = projection ? this.createModelMessage(message, projection.content) : record.sourceScan.mcpInput ? this.createModelMessage(message, message.content) : message;
 			try {
 				if (imagePolicy) {
@@ -2147,6 +2191,7 @@ export class ToolResultPresentationOwner {
 						const filteredEstimate = estimateToolOutputTokens((filtered as ToolResultMessage).content);
 						if (filteredEstimate.estimatedTokens > candidateBudget) {
 							const omission = this.getImagePolicyProjection(record, candidateBudget);
+							if (capture) capture.projection = omission;
 							projected = this.createModelMessage(message, omission.content);
 							filtered = imagePolicy(projected);
 						}
@@ -2159,6 +2204,7 @@ export class ToolResultPresentationOwner {
 							filtered as ToolResultMessage,
 							imagePolicy,
 							candidateBudget,
+							capture,
 						);
 					}
 					projected = filtered as ToolResultMessage;
@@ -2168,7 +2214,10 @@ export class ToolResultPresentationOwner {
 			}
 			const toolEstimate = estimateToolOutputTokens(projected.content).estimatedTokens;
 			const contextEstimate = estimateMessageTokens(projected);
-			if (toolEstimate <= toolBudgetTokens && contextEstimate <= contextBudgetTokens) return projected;
+			if (toolEstimate <= toolBudgetTokens && contextEstimate <= contextBudgetTokens) {
+				if (capture) this.recordProjectedUiSource(message, projected, capture, sources!);
+				return projected;
+			}
 			if (candidateBudget === 1) break;
 			let nextBudget = candidateBudget - 1;
 			if (toolEstimate > toolBudgetTokens) {
@@ -2193,6 +2242,43 @@ export class ToolResultPresentationOwner {
 		throw error;
 	}
 
+	/** Explicit-change provenance owns at most 128 final views in its separate
+	 * 128 Mi-code-unit allowance. No content arrays/strings are copied.
+	 * The Session clears pending provenance on dispatch, failure, change or disposal. */
+	private recordProjectedUiSource(message: ToolResultMessage, projected: ToolResultMessage, capture: ToolResultProjectedUiSource, sources: Map<object, ToolResultProjectedUiSource | null>): void {
+		const projection = capture.projection;
+		if (!projection) return;
+		if (sources.has(message.content)) { sources.set(message.content, null); return; }
+		const notice = projection.content[projection.noticeBlockIndex];
+		let noticeBlockIndex = -1, retainedCodeUnits = projected.content.length;
+		for (let index = 0; index < projected.content.length; index++) {
+			const block = projected.content[index]!;
+			retainedCodeUnits += block.type === "text" ? block.text.length : block.data.length;
+			if (block.type === "text" && notice?.type === "text" && block.text === notice.text) noticeBlockIndex = index;
+		}
+		if (noticeBlockIndex < 0 || retainedCodeUnits > MAX_PROJECTED_UI_CAPTURE_CODE_UNITS) return;
+		capture.retainedCodeUnits = retainedCodeUnits;
+		capture.projection = projected.content === projection.content ? projection : {
+			artifact: projection.artifact,
+			content: projected.content as ToolResultPresentationContent[],
+			noticeBlockIndex,
+			start: projection.start,
+			end: projection.end,
+			headTextCodeUnits: projection.headTextCodeUnits,
+			tailTextCodeUnits: projection.tailTextCodeUnits,
+			cursor: projection.cursor,
+			estimate: estimateToolOutputTokens(projected.content),
+			fullEstimate: projection.fullEstimate,
+		};
+		for (const source of sources.values()) retainedCodeUnits += source?.retainedCodeUnits ?? 0;
+		while (sources.size >= MAX_PROJECTION_RECORD_ENTRIES || retainedCodeUnits > MAX_PROJECTED_UI_CAPTURE_CODE_UNITS) {
+			const key = sources.keys().next().value!;
+			retainedCodeUnits -= sources.get(key)?.retainedCodeUnits ?? 0;
+			sources.delete(key);
+		}
+		sources.set(message.content, capture);
+	}
+
 	private projectMessagesWithinContextualBudget(
 		messages: Message[],
 		imagePolicy: ((message: Message) => Message) | undefined,
@@ -2201,6 +2287,7 @@ export class ToolResultPresentationOwner {
 		contextWindow: number,
 		maxOutputTokens: number | undefined,
 		requestPlanning = false,
+		sources?: Map<object, ToolResultProjectedUiSource | null>,
 	): Message[] {
 		let assistantIndex = -1;
 		for (let index = messages.length - 1; index >= 0; index--) {
@@ -2223,7 +2310,7 @@ export class ToolResultPresentationOwner {
 				currentResultContextTokens += estimateMessageTokens(message);
 			}
 		}
-		if (currentResultCount === 0) return this.projectMessagesForModel(messages, imagePolicy);
+		if (currentResultCount === 0) return this.projectMessagesForModel(messages, imagePolicy, undefined, undefined, undefined, undefined, false, sources);
 
 		this.counters.contextualBudgetCalls++;
 		this.counters.contextualContextScans++;
@@ -2237,7 +2324,7 @@ export class ToolResultPresentationOwner {
 			for (let index = 0; index <= assistantIndex; index++) {
 				const message = messages[index]!;
 				if (message.role !== "toolResult") continue;
-				const projected = this.projectMessageForConfiguredBudget(message, imagePolicy);
+				const projected = this.projectMessageForConfiguredBudget(message, imagePolicy, sources);
 				if (projected !== message) messages[index] = projected;
 			}
 			const contextEstimate = estimateContextTokensFromParts(systemPrompt, messages, tools).tokens;
@@ -2270,6 +2357,7 @@ export class ToolResultPresentationOwner {
 						Math.min(this.budgetTokens!, toolBudget),
 						contextBudget,
 						imagePolicy,
+						sources,
 					);
 				} catch (error) {
 					if (!requestPlanning || !(error instanceof ToolResultContinuationError) || error.code !== "budget-too-small") throw error;
@@ -2301,6 +2389,7 @@ export class ToolResultPresentationOwner {
 		contextWindow?: number,
 		maxOutputTokens?: number,
 		requestPlanning = false,
+		sources?: Map<object, ToolResultProjectedUiSource | null>,
 	): Message[] {
 		if (!this.accepting || this.budgetTokens === undefined) return messages;
 		if (contextWindow !== undefined) {
@@ -2312,12 +2401,13 @@ export class ToolResultPresentationOwner {
 				contextWindow,
 				maxOutputTokens,
 				requestPlanning,
+				sources,
 			);
 		}
 		for (let index = 0; index < messages.length; index++) {
 			const message = messages[index]!;
 			if (message.role !== "toolResult") continue;
-			const projected = this.projectMessageForConfiguredBudget(message, imagePolicy);
+			const projected = this.projectMessageForConfiguredBudget(message, imagePolicy, sources);
 			if (projected !== message) messages[index] = projected;
 		}
 		return messages;

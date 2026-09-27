@@ -1,0 +1,669 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { createAgentSession } from "../packages/coding-agent/src/core/sdk.ts";
+import { DefaultResourceLoader } from "../packages/coding-agent/src/core/resource-loader.ts";
+import { SettingsManager } from "../packages/coding-agent/src/core/settings-manager.ts";
+import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
+import { parseToolResultBudgetCommand, formatToolResultBudgetStatus } from "../packages/coding-agent/src/core/tool-result-budget-status.ts";
+import { ALPHA_MODEL, alphaHeadless, alphaModelRuntime, alphaSession } from "./helpers/alpha-session.ts";
+import { streamSimple } from "@super-pi/ai/api/openai-completions";
+import { stream as streamCodex } from "@super-pi/ai/api/openai-codex-responses";
+import { AgentSession, parseSkillBlock } from "../packages/coding-agent/src/core/agent-session.ts";
+import * as sessionPatterns from "../packages/coding-agent/src/core/agent-session-regex.ts";
+import { alphaMessage } from "./helpers/alpha-stream.ts";
+import { Session as InspectorSession } from "node:inspector/promises";
+import { AssistantMessageEventStream } from "../packages/ai/src/utils/event-stream.ts";
+import { ExtensionHookTimeoutError } from "../packages/coding-agent/src/core/extensions/runner.ts";
+import { ToolResultPresentationOwner, type ToolResultProjectedUiSource } from "../packages/coding-agent/src/core/tool-result-presentation.ts";
+// @ts-expect-error JavaScript extension package.
+import { convertMcpResult } from "../packages/mcp-bridge/src/bridge.js";
+import { estimateToolOutputTokens } from "../packages/coding-agent/src/core/tool-output-budget.ts";
+import { estimateContextTokensFromParts } from "@super-pi/ai";
+import { CONTEXT_SAFETY_TOKENS } from "@super-pi/ai/api/simple-options";
+const WAV_FIXTURE = "UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=";
+
+for (const outcome of ["stop", "error", "abort"] as const) test(`N4 headless actual response releases captured final views: ${outcome}`, async () => {
+  let requests = 0, captured = false;
+  const assistant = alphaMessage([{ type: "toolCall", name: "fixture", id: "headless-view", arguments: {} }]); assistant.stopReason = "toolUse";
+  const result = { role: "toolResult" as const, toolName: "fixture", toolCallId: "headless-view",
+    content: [{ type: "text" as const, text: "evidence ".repeat(4000) }], isError: false, timestamp: 2 };
+  const runtime = alphaModelRuntime((model: any, context: any, options: any) => {
+    captured = Boolean((f.session as any)._toolBudgetProjectedSources);
+    return streamSimple({ ...model, api: "openai-completions" }, context, { ...options, apiKey: "offline", maxRetries: 0,
+      fetch: async () => { requests++; if (outcome === "abort") f.session.agent.abort();
+        if (outcome !== "stop") throw new Error(outcome);
+        return new Response(`data: ${JSON.stringify({ id: "fixture", object: "chat.completion.chunk", created: 1, model: "fixture", choices: [{ index: 0, delta: { content: "done" }, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`, { headers: { "Content-Type": "text/event-stream" } }); } });
+  });
+  const f = await alphaHeadless(runtime, [assistant, result]);
+  try {
+    f.session.configureToolResultBudget({ enabled: true, budgetTokens: 512 });
+    await f.session.agent.continue(); await f.session.agent.waitForIdle();
+    assert.equal(requests, 1); assert.equal(captured, true);
+    assert.equal((f.session as any)._toolBudgetProjectedSources, undefined);
+    assert.equal((f.session as any)._toolBudgetProjectedIds, undefined);
+    assert.ok(f.session.messages.some(message => message.role === "toolResult" && message.toolCallId === result.toolCallId));
+    assert.equal(f.session.agent.state.pendingToolCalls.size, 0);
+  } finally { await f.release(); }
+});
+
+test("N4 direct SDK budget replacement immediately invalidates an active TUI's old cursors", async () => {
+  const assistant = alphaMessage([{ type: "toolCall", name: "fixture", id: "sdk-budget-view", arguments: {} }]); assistant.stopReason = "toolUse";
+  const result = { role: "toolResult" as const, toolName: "fixture", toolCallId: "sdk-budget-view",
+    content: [{ type: "text" as const, text: "evidence ".repeat(4000) }], isError: false, timestamp: 2 };
+  const f = await alphaSession({ messages: [assistant, result] });
+  try {
+    assert.equal(await f.mode.init(), true);
+    const entry = f.internal.attachedToolResultDiscoveries.get(result.toolCallId), component = entry.component;
+    assert.ok(component.getToolResultPresentationDiscovery(result.toolCallId)?.cursor);
+    const owner = (f.session as any)._toolResultPresentation;
+    f.session.configureToolResultBudget({ enabled: true, budgetTokens: 512 });
+    assert.equal(owner.counters.ownerDisposeCalls, 1);
+    assert.equal(component.getToolResultPresentationDiscovery(result.toolCallId), undefined);
+    assert.equal(f.internal.getToolResultDiscoveryLifecycleCounts().totalEntries, 0);
+    assert.equal(f.session.toolResultBudgetRediscoveryState, "waiting");
+  } finally { await f.release(); }
+});
+
+for (const contextual of [false, true]) for (const kind of ["omission", "shrink"] as const) test(`N4 actual SDK/TUI keeps final image-policy ${kind}, contextual=${contextual}`, async () => {
+  let requests = 0, finalContent: any[] = [];
+  const runtime = alphaModelRuntime((model: any, context: any, options: any) => {
+    finalContent = context.messages.find((message: any) => message.role === "toolResult")?.content ?? [];
+    return streamSimple({ ...model, api: "openai-completions" }, context, { ...options, apiKey: "offline", maxRetries: 0,
+      fetch: async () => { requests++; return new Response(`data: ${JSON.stringify({ id: "fixture", object: "chat.completion.chunk", created: 1, model: "fixture", choices: [{ index: 0, delta: { content: "done" }, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`, { headers: { "Content-Type": "text/event-stream" } }); } });
+  });
+  const content: any[] = [];
+  for (let index = 0; index < (kind === "omission" ? 100 : 600); index++) {
+    content.push({ type: "text", text: kind === "omission" ? "x" : "abcdefgh " });
+    content.push({ type: "image", data: "AQ==", mimeType: "image/png" });
+  }
+  const assistant = alphaMessage([{ type: "toolCall", name: "fixture", id: "image-policy-result", arguments: {} }]); assistant.stopReason = "toolUse";
+  const result = { role: "toolResult" as const, toolName: "fixture", toolCallId: "image-policy-result", content, isError: false, timestamp: 2 };
+  const messages: any[] = [assistant, result];
+  if (!contextual) messages.push(alphaMessage([{ type: "text", text: "previous answer" }]), { role: "user", content: "continue", timestamp: 3 });
+  assert.equal(estimateToolOutputTokens(content).estimatedTokens < 512, kind === "omission");
+  const f = await alphaSession({ runtime, budgetTokens: 8192, messages, settings: { images: { blockImages: true } } });
+  try {
+    assert.equal(await f.mode.init(), true); await f.internal.editor.onSubmit("/tool-budget 512");
+    await f.session.agent.continue(); await f.session.agent.waitForIdle();
+    assert.equal(requests, 1, JSON.stringify(f.session.messages.at(-1))); assert.ok(finalContent.length > 0);
+    const entry = f.internal.attachedToolResultDiscoveries.get(result.toolCallId);
+    const discovery = entry?.component.getToolResultPresentationDiscovery(result.toolCallId); assert.ok(discovery?.cursor);
+    assert.ok(finalContent.some(block => block.type === "text" && block.text.includes(discovery.cursor)), "UI cursor must occur in the actual provider view");
+    assert.equal(finalContent.some(block => block.type === "image"), false);
+    assert.equal(discovery.modelEstimatedTokens, estimateToolOutputTokens(finalContent).estimatedTokens);
+    const recovered = f.session.readToolResultContinuation(discovery.cursor, 2048); assert.ok(recovered.content.length > 0);
+    assert.equal(f.session.readToolResultArtifact(discovery.artifactId).content, f.session.messages.find(message => message.role === "toolResult")?.content);
+    if (kind === "shrink") assert.ok((f.session as any)._toolResultPresentation.counters.postImagePolicyShrinkPasses > 0);
+    assert.equal((f.session as any)._toolBudgetProjectedSources, undefined);
+  } finally { await f.release(); }
+  assert.equal(f.internal.getToolResultDiscoveryLifecycleCounts().totalEntries, 0);
+});
+
+for (const boundary of ["turn-share", "context"] as const) test(`N4 actual SDK/TUI restores a projection required only by ${boundary}`, async () => {
+  let requests = 0, wire = "";
+  const runtime = alphaModelRuntime((model: any, context: any, options: any) => streamSimple({ ...model, api: "openai-completions" }, context,
+    { ...options, apiKey: "offline", maxRetries: 0, fetch: async (_url: any, init: any) => {
+      requests++; wire = String(init.body);
+      const event = { id: "fixture", object: "chat.completion.chunk", created: 1, model: "fixture", choices: [{ index: 0, delta: { content: "done" }, finish_reason: "stop" }] };
+      return new Response(`data: ${JSON.stringify(event)}\n\ndata: [DONE]\n\n`, { headers: { "Content-Type": "text/event-stream" } });
+    } }));
+  const calls = Array.from({ length: boundary === "turn-share" ? 2 : 1 }, (_, index) => ({ type: "toolCall" as const, name: "fixture", id: `context-source-${index}`, arguments: {} }));
+  const assistant = alphaMessage(calls); assistant.stopReason = "toolUse";
+  const results = calls.map(call => ({ role: "toolResult" as const, toolName: call.name, toolCallId: call.id,
+    content: [{ type: "text" as const, text: "abcdefgh ".repeat(900) }], isError: false, timestamp: 2 }));
+  const estimate = estimateToolOutputTokens(results[0].content).estimatedTokens;
+  assert.ok(estimate < 6144 && estimate > 3072, String(estimate));
+  const f = await alphaSession({ runtime, budgetTokens: 8192, messages: [assistant, ...results] });
+  try {
+    if (boundary === "context") f.session.agent.state.model = { ...ALPHA_MODEL, api: "openai-completions", maxTokens: 256,
+      contextWindow: estimateContextTokensFromParts(f.session.agent.state.systemPrompt, [assistant], []).tokens + CONTEXT_SAFETY_TOKENS + 1000 };
+    assert.equal(await f.mode.init(), true);
+    await f.internal.editor.onSubmit("/tool-budget 6144");
+    await f.session.agent.continue(); await f.session.agent.waitForIdle();
+    assert.equal(requests, 1, JSON.stringify(f.session.messages.at(-1))); assert.ok(!wire.includes(results[0].content[0].text));
+    for (const result of results) {
+      const discovery = f.internal.attachedToolResultDiscoveries.get(result.toolCallId);
+      assert.ok(discovery?.component.getToolResultPresentationDiscovery(result.toolCallId)?.cursor, result.toolCallId);
+      assert.ok(discovery.component.getToolResultPresentationDiscovery(result.toolCallId)?.artifactId);
+    }
+    assert.equal(f.internal.toolResultBudgetRediscoveryPasses, 1); assert.equal((f.session as any)._toolBudgetProjectedSources, undefined);
+    assert.equal(f.session.messages.filter(message => message.role === "toolResult").length, results.length);
+  } finally { await f.release(); }
+  assert.equal(f.internal.getToolResultDiscoveryLifecycleCounts().totalEntries, 0);
+});
+
+for (const action of ["prompt", "continue"]) test(`N4 budget replacement refuses a direct public Agent ${action} before any tool is pending`, async () => {
+  const stream = new AssistantMessageEventStream(); let entered!: () => void, finished = false, pending: Promise<void> | undefined;
+  const begun = new Promise<void>(resolve => { entered = resolve; });
+  const f = await alphaSession({ runtime: alphaModelRuntime(() => { entered(); return stream; }),
+    messages: action === "continue" ? [{ role: "user", content: [{ type: "text", text: "fixture" }], timestamp: 1 }] : [] });
+  function complete() { if (!finished) { finished = true; stream.push({ type: "done", reason: "stop", message: alphaMessage([{ type: "text", text: "done" }]) }); } }
+  try {
+    f.session.configureToolResultBudget({ enabled: true, budgetTokens: 4096 });
+    const owner = (f.session as any)._toolResultPresentation, generation = f.session.toolResultBudgetGeneration;
+    pending = action === "prompt" ? f.session.agent.prompt("fixture") : f.session.agent.continue();
+    await begun; assert.equal(f.session.isStreaming, false); assert.equal(f.session.agent.state.isStreaming, true);
+    assert.equal(f.session.agent.state.pendingToolCalls.size, 0);
+    const status = f.session.getToolResultBudgetStatus();
+    assert.throws(() => f.session.configureToolResultBudget({ enabled: true, budgetTokens: 2048 }), /current turn settles/);
+    assert.equal((f.session as any)._toolResultPresentation, owner); assert.equal(f.session.toolResultBudgetGeneration, generation);
+    assert.deepEqual(f.session.getToolResultBudgetStatus(), status); assert.equal(owner.counters.ownerDisposeCalls, 0);
+    complete(); await pending; pending = undefined;
+    f.session.configureToolResultBudget({ enabled: true, budgetTokens: 2048 }); assert.equal(owner.counters.ownerDisposeCalls, 1);
+  } finally { complete(); await pending; await f.release(); }
+});
+
+test("N4 Session parsing patterns are reusable module constants with unchanged flags", () => {
+  const methods = AgentSession.prototype as any;
+  for (let n = 0; n < 20; n++) {
+    for (const pattern of Object.values(sessionPatterns)) pattern.lastIndex = 99;
+    assert.deepEqual(parseSkillBlock('<skill name="中文" location="/tmp/source">\nbody\n</skill>\n\nuser'), { name: "中文", location: "/tmp/source", content: "body", userMessage: "user" });
+    assert.equal(parseSkillBlock("plain text"), null);
+    assert.equal(methods._normalizePromptSnippet(" \r\n中文\t  text\r\n"), "中文 text");
+    assert.equal(methods.getExtensionSourceLabel("<fixture>"), "extension:fixture");
+    assert.equal(methods.getExtensionSourceLabel("fixture.ts"), "extension:fixture");
+  }
+});
+
+test("N4 explicit budget command validates positive decimal safe integers without a default", () => {
+  assert.equal(parseToolResultBudgetCommand(""), "status"); assert.equal(parseToolResultBudgetCommand("status"), "status");
+  assert.equal(parseToolResultBudgetCommand("off"), undefined);
+  assert.deepEqual(parseToolResultBudgetCommand(" 4096 "), { enabled: true, budgetTokens: 4096 });
+  for (const value of ["on", "0", "-1", "1.2", "NaN", "Infinity", "1e3", "0x10", "9007199254740992", "01", "1 2"]) assert.throws(() => parseToolResultBudgetCommand(value), /正整数/);
+});
+
+test("N4 default SDK can adjust a blocked result budget and continue without replay or config writes", { timeout: 30000 }, async t => {
+  const root = mkdtempSync(join(tmpdir(), "sp-budget-status-")), cwd = join(root, "work"), agentDir = join(root, "agent"); mkdirSync(cwd); mkdirSync(agentDir);
+  const settingsManager = SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false } });
+  const initialGlobal = settingsManager.getGlobalSettings(), initialProject = settingsManager.getProjectSettings();
+  const resourceLoader = new DefaultResourceLoader({ cwd, agentDir, settingsManager, noContextFiles: true, noSkills: true, noThemes: true, noPromptTemplates: true,
+    additionalExtensionPaths: [resolve("packages/extensions"), resolve("packages/tool-classification/src/index.ts")] });
+  await resourceLoader.reload();
+  const model: any = { ...ALPHA_MODEL, api: "openai-completions", compat: { maxTokensField: "max_tokens" } };
+  let requests = 0, writePlanned = true, lastWire = "";
+  const fakeFetch: typeof fetch = async (_url, init) => {
+    requests++; assert.equal(typeof init?.body, "string"); lastWire = init!.body as string;
+    const call = writePlanned; writePlanned = false;
+    const delta = call ? { tool_calls: [{ index: 0, id: "created-once", type: "function", function: { name: "write", arguments: JSON.stringify({ path: "created.txt", content: "完成 exactly once" }) } }] }
+      : { content: "Recorded result acknowledged without another tool call." };
+    const event = { id: "offline", object: "chat.completion.chunk", created: 1, model: model.id, choices: [{ index: 0, delta, finish_reason: null }] };
+    const end = { ...event, choices: [{ index: 0, delta: {}, finish_reason: call ? "tool_calls" : "stop" }] };
+    return new Response(`data: ${JSON.stringify(event)}\n\ndata: ${JSON.stringify(end)}\n\ndata: [DONE]\n\n`, { headers: { "Content-Type": "text/event-stream" } });
+  };
+  const runtime = alphaModelRuntime((m: any, c: any, o: any) => streamSimple(m, c, { ...o, apiKey: "offline-fixture", fetch: fakeFetch, maxRetries: 0 }));
+  const manager = SessionManager.create(cwd, join(root, "sessions"));
+  const { session } = await createAgentSession({ cwd, agentDir, settingsManager, resourceLoader, sessionManager: manager, model, modelRuntime: runtime,
+    noTools: "builtin", toolResultPresentation: { enabled: true, budgetTokens: 1 } });
+  t.after(async () => { session.dispose(); await new Promise<void>(resolve => setImmediate(resolve)); assert.equal(dirname(root), tmpdir()); rmSync(root, { recursive: true, force: true }); });
+  await session.bindExtensions({ mode: "tui", uiContext: { ...session.extensionRunner.getUIContext(), select: async () => "仅允许本次" } });
+  assert.equal(session.getToolResultBudgetStatus().state, "enabled");
+  await session.prompt("Create the specified isolated fixture file."); await session.agent.waitForIdle();
+  assert.equal(readFileSync(join(cwd, "created.txt"), "utf8"), "完成 exactly once");
+  assert.equal(requests, 1, "too-small blocks the next serialized request, after the real file effect");
+  assert.equal(session.getToolResultBudgetStatus().state, "budget-too-small");
+  assert.match(formatToolResultBudgetStatus(session.getToolResultBudgetStatus()), /预算过小/);
+  const oldOwner = (session as any)._toolResultPresentation, scans = oldOwner.counters.fullSourceEstimatorScans;
+  for (let n = 0; n < 1000; n++) session.getToolResultBudgetStatus();
+  assert.equal(oldOwner.counters.fullSourceEstimatorScans, scans, "status snapshots never scan history/results");
+  assert.throws(() => session.configureToolResultBudget({ enabled: true, budgetTokens: 0 }), /positive safe integer/);
+  assert.equal((session as any)._toolResultPresentation, oldOwner, "invalid configuration is atomic");
+  session.configureToolResultBudget({ enabled: true, budgetTokens: 4096 });
+  assert.equal(oldOwner.counters.ownerDisposeCalls, 1); assert.equal(oldOwner.counters.projectionRecordEntries, 0); assert.equal(oldOwner.counters.retainedProjectionCodeUnits, 0);
+  assert.equal(session.getToolResultBudgetStatus().scope, "session-override");
+  await session.prompt("Continue using the completed write. Do not repeat it."); await session.agent.waitForIdle();
+  assert.equal(requests, 2); assert.equal(session.getToolResultBudgetStatus().lastRequest, "applied");
+  assert.match(lastWire, /created-once/);
+  assert.equal(session.messages.filter((message: any) => message.role === "toolResult" && message.toolCallId === "created-once").length, 1);
+  assert.equal(SessionManager.open(manager.getSessionFile()!).getBranch().filter((entry: any) => entry.message?.toolCallId === "created-once").length, 1);
+  assert.equal(readFileSync(join(cwd, "created.txt"), "utf8"), "完成 exactly once");
+  session.configureToolResultBudget({ enabled: true }); assert.equal(session.getToolResultBudgetStatus().state, "enabled-unconfigured");
+  session.configureToolResultBudget(undefined); assert.equal(session.getToolResultBudgetStatus().state, "disabled");
+  assert.equal(session.getToolResultBudgetStatus().retainedRecords, 0); assert.equal(session.getToolResultBudgetStatus().retainedCodeUnits, 0);
+  assert.equal((session as any)._toolResultUiCanonicalMessages, undefined); assert.equal((session as any)._toolResultUiCanonicalMessagesTail, undefined);
+  assert.deepEqual(settingsManager.getGlobalSettings(), initialGlobal); assert.deepEqual(settingsManager.getProjectSettings(), initialProject);
+  assert.equal(session.agent.state.pendingToolCalls.size, 0); assert.equal((session.extensionRunner as any).finalAuthorizations?.size ?? 0, 0);
+});
+
+test("N4 actual read hook layout failure replaces previous applied request status", async () => {
+  const { costSession, costCall } = await import("./helpers/next-phase-session.ts");
+  const f = await costSession({ budget: 512, extensions: [(pi: any) => {
+    pi.on("tool_result", (event: any) => event.toolName === "read" ? { content: [{ type: "text", readBoundary: "lines", text: "1#1234|incomplete hook layout\n".repeat(1000) }] } : undefined);
+  }] });
+  try {
+    writeFileSync(join(f.cwd, "read-layout"), "actual source\n");
+    await f.run([], "Record the initial valid request.");
+    assert.equal(f.session.getToolResultBudgetStatus().lastRequest, "applied");
+    const before = f.metrics.requests;
+    await f.run([[costCall("invalid-layout", "read", { path: "read-layout" })]]);
+    assert.equal(f.metrics.requests, before + 1, "result projection blocks the next provider request");
+    assert.equal(f.metrics.reads, 1); assert.equal(f.result("invalid-layout").isError, false);
+    const status = f.session.getToolResultBudgetStatus(); assert.equal(status.lastRequest, "preparation-failed");
+    assert.match(formatToolResultBudgetStatus(status), /结果投影准备失败/);
+    assert.equal(status.state, "enabled"); assert.equal(readFileSync(join(f.cwd, "read-layout"), "utf8"), "actual source\n");
+  } finally { await f.release(); }
+});
+
+test("N4 real interactive budget command and settings refuse active tools without a misleading selected value", async t => {
+  let release = () => {}, started = () => {};
+  const gate = new Promise<void>(resolve => { release = resolve; }), begun = new Promise<void>(resolve => { started = resolve; });
+  const f = await alphaSession({ g2: false, customTools: [{ name: "wait_budget", label: "Wait", description: "owned budget UI fixture",
+    parameters: { type: "object", properties: {}, additionalProperties: false }, execute: async () => { started(); await gate; return { content: [{ type: "text", text: "complete" }], details: {} }; } }] });
+  t.after(async () => { release(); await f.session.agent.waitForIdle(); await f.release(); });
+  const state: string[] = [], errors: string[] = [];
+  f.internal.showStatus = (value: string) => state.push(value); f.internal.showError = (value: string) => errors.push(value);
+  f.internal.setupEditorSubmitHandler();
+  await f.internal.editor.onSubmit("/tool-budget 2048");
+  assert.equal(f.session.getToolResultBudgetStatus().budgetTokens, 2048); assert.match(state.at(-1)!, /2048/);
+  await f.internal.editor.onSubmit("/tool-budget status"); assert.match(state.at(-1)!, /数值未知/);
+  const stableCallback = f.internal.onToolResultBudgetSettingChange;
+  f.internal.showSettingsSelector();
+  const selector = f.internal.editorContainer.children[0], list = selector.getSettingsList();
+  list.handleInput("Tool-result budget");
+  const item = list.items.find((item: any) => item.id === "tool-result-budget");
+  assert.equal(item.currentValue, "2048");
+  const pending = f.session.agent.dispatchHostTool({ type: "toolCall", id: "held-budget-tool", name: "wait_budget", arguments: {} });
+  await begun;
+  list.handleInput("\r"); // 2048 is not a preset: the proposed next value is off.
+  assert.equal(f.session.getToolResultBudgetStatus().budgetTokens, 2048);
+  assert.equal(item.currentValue, "2048"); assert.match(errors.at(-1)!, /current turn settles/);
+  release(); await pending;
+  list.handleInput("\r"); assert.equal(item.currentValue, "off"); assert.equal(f.session.getToolResultBudgetStatus().state, "disabled");
+  list.handleInput("\r"); assert.equal(item.currentValue, "1024"); assert.equal(f.session.getToolResultBudgetStatus().budgetTokens, 1024);
+  assert.equal(f.internal.onToolResultBudgetSettingChange, stableCallback);
+  assert.equal(f.internal.getToolResultDiscoveryLifecycleCounts().totalEntries, 0);
+});
+
+for (const activity of ["compact", "branch"] as const) test(`N4 budget changes refuse real in-flight ${activity} atomically`, async () => {
+  let entered!: () => void, release!: () => void;
+  const begun = new Promise<void>(resolve => { entered = resolve; }), gate = new Promise<void>(resolve => { release = resolve; });
+  const f = await alphaSession({ messages: Array.from({ length: 8 }, () => alphaMessage([{ type: "text", text: "history ".repeat(2048) }])),
+    settings: { compaction: { enabled: false, keepRecentTokens: 128, reserveTokens: 128 } },
+    extensions: [(pi: any) => {
+      const hold = async () => { entered(); await gate; return { cancel: true }; };
+      pi.on("session_before_compact", hold); pi.on("session_before_tree", hold);
+    }] });
+  let operation: Promise<unknown> | undefined;
+  try {
+    assert.equal(await f.mode.init(), true);
+    const owner = (f.session as any)._toolResultPresentation, generation = f.session.toolResultBudgetGeneration;
+    operation = activity === "compact" ? f.session.compact("fixture") : f.session.navigateTree(f.sessionManager.getEntries()[0].id, { summarize: true });
+    await begun; assert.equal(f.session.isCompacting, true); assert.equal(f.session.isStreaming, false);
+    assert.throws(() => f.session.configureToolResultBudget({ enabled: true, budgetTokens: 2048 }));
+    assert.equal((f.session as any)._toolResultPresentation, owner); assert.equal(f.session.toolResultBudgetGeneration, generation);
+    assert.equal(owner.counters.ownerDisposeCalls, 0);
+    release();
+    if (activity === "compact") await assert.rejects(operation, (error: any) => error.message === "Compaction cancelled");
+    else await operation;
+    operation = undefined; assert.equal(f.session.isCompacting, false);
+    f.session.configureToolResultBudget({ enabled: true, budgetTokens: 2048 }); assert.equal(owner.counters.ownerDisposeCalls, 1);
+  } finally { release(); await operation?.catch(() => {}); await f.release(); }
+});
+
+for (const rebuild of [false, true]) for (const transform of ["identity", "filter", "clone"] as const) test(`N4 changed budget uses actual next-request provenance: ${transform}, rebuild=${rebuild}`, async t => {
+  let requests = 0, executions = 0, wire = "";
+  let transformEnabled = false;
+  const fetchFixture: typeof fetch = async (_url, init) => {
+    wire = init!.body as string; requests++;
+    const delta = requests === 1 ? { tool_calls: [{ index: 0, id: "budget-history", type: "function", function: { name: "inspect_budget", arguments: "{}" } }] } : { content: "Observed result." };
+    const event = { id: "offline", object: "chat.completion.chunk", created: 1, model: "fixture", choices: [{ index: 0, delta, finish_reason: null }] };
+    const end = { ...event, choices: [{ index: 0, delta: {}, finish_reason: requests === 1 ? "tool_calls" : "stop" }] };
+    return new Response(`data: ${JSON.stringify(event)}\n\ndata: ${JSON.stringify(end)}\n\ndata: [DONE]\n\n`, { headers: { "Content-Type": "text/event-stream" } });
+  };
+  const runtime = alphaModelRuntime((model: any, context: any, options: any) => streamSimple({ ...model, api: "openai-completions" }, context, { ...options, apiKey: "offline", fetch: fetchFixture, maxRetries: 0 }));
+  // The extension runner defensively clones context before invoking any handler.
+  // The identity control therefore has no context hook at all.
+  const f = await alphaSession({ runtime, budgetTokens: 1024, allowReplacements: true, extensions: transform === "identity" ? undefined : [(pi: any) => pi.on("context", (event: any) => {
+    if (!transformEnabled) return;
+    return { messages: transform === "filter" ? event.messages.filter((message: any) => message.role !== "toolResult")
+      : event.messages.map((message: any) => message.role === "toolResult" ? { ...message, content: message.content.map((block: any) => ({ ...block })) } : message) };
+  })], customTools: [{ name: "inspect_budget", label: "Inspect", description: "budget provenance fixture",
+    parameters: { type: "object", properties: {}, additionalProperties: false }, execute: async () => { executions++; return { content: [{ type: "text", text: "完整中文 evidence\n".repeat(10000) }], details: {} }; } }] });
+  const profiler = process.env.SP_BUDGET_REDISCOVERY_PROFILE === "1" && transform === "identity" ? new InspectorSession() : undefined;
+  const cycles = profiler ? 20 : 3;
+  let heapBefore = 0, sampledBytes = 0;
+  try {
+    assert.equal(await f.mode.init(), true);
+    await f.session.prompt("Inspect once."); await f.session.agent.waitForIdle();
+    assert.equal(requests, 2); assert.equal(executions, 1);
+    const first = f.internal.attachedToolResultDiscoveries.get("budget-history"); let component = first.component;
+    let previous = component.getToolResultPresentationDiscovery("budget-history"); assert.ok(previous?.cursor);
+    transformEnabled = true;
+    global.gc?.(); heapBefore = process.memoryUsage().heapUsed;
+    if (profiler) { profiler.connect(); await profiler.post("HeapProfiler.startSampling", { samplingInterval: 1024, includeObjectsCollectedByMajorGC: true, includeObjectsCollectedByMinorGC: true }); }
+    for (let cycle = 0; cycle < cycles; cycle++) {
+    const oldOwner = (f.session as any)._toolResultPresentation;
+    await f.internal.editor.onSubmit(`/tool-budget ${cycle % 2 ? 1024 : 2048}`);
+    assert.equal(component.getToolResultPresentationDiscovery("budget-history"), undefined); assert.equal(oldOwner.counters.retainedProjectionCodeUnits, 0);
+    if (rebuild) {
+      const oldComponent = component, pendingGeneration = f.internal.toolResultBudgetUiGeneration;
+      f.internal.toggleThinkingBlockVisibility();
+      assert.equal(f.internal.toolResultBudgetUiGeneration, pendingGeneration);
+      assert.notEqual(pendingGeneration, f.session.toolResultBudgetGeneration);
+      assert.equal(f.internal.getToolResultDiscoveryLifecycleCounts().totalEntries, 0);
+      const canonical = f.session.messages.find((message: any) => message.role === "toolResult" && message.toolCallId === "budget-history");
+      assert.ok(canonical?.role === "toolResult");
+      component = f.internal.chatContainer.children.find((child: any) => child.hasToolResultSourceForUi?.("budget-history", canonical.content));
+      assert.ok(component); assert.notEqual(component, oldComponent);
+    }
+    await f.session.prompt("Continue without executing the tool again."); await f.session.agent.waitForIdle();
+    assert.equal(requests, cycle + 3); assert.equal(executions, 1); assert.ok(wire.includes("budget-history"));
+    const next = f.internal.attachedToolResultDiscoveries?.get("budget-history"), current = component.getToolResultPresentationDiscovery("budget-history");
+    if (transform === "identity") { assert.equal(next.component, component); assert.ok(current?.cursor); assert.notEqual(current.cursor, previous.cursor); previous = current; }
+    else { assert.equal(next, undefined); assert.equal(current, undefined); }
+    const toolMessages = JSON.parse(wire).messages.filter((message: any) => message.role === "tool" && message.tool_call_id === "budget-history");
+    assert.equal(toolMessages.length, 1);
+    // The real OpenAI adapter repairs an orphaned call with this synthetic error.
+    // It must never serialize the filtered canonical result or claim its cursor.
+    if (transform === "filter") assert.equal(toolMessages[0].content, "No result provided");
+    else assert.ok(JSON.stringify(toolMessages[0].content).includes("完整中文 evidence"));
+    assert.equal((f.session as any)._toolBudgetSourceCapturePasses, cycle + 1);
+    assert.equal((f.session as any)._toolBudgetProjectedSources, undefined);
+    assert.equal(f.internal.toolResultBudgetRediscoveryPasses, cycle + 1);
+    assert.equal((f.session as any)._toolBudgetProjectedIds, undefined);
+    const probes = f.internal.toolResultBudgetRediscoveryComponentProbes;
+    for (let n = 0; n < 100; n++) f.internal.rediscoverToolResultsAfterBudgetChange();
+    assert.equal(f.internal.toolResultBudgetRediscoveryComponentProbes, probes);
+    }
+    if (transform === "identity" && !profiler) {
+      const messages = f.session.messages;
+      const replaced = await f.runtime.newSession({ setup: async manager => {
+        for (const message of messages) {
+          assert.ok(message.role === "user" || message.role === "assistant" || message.role === "toolResult");
+          manager.appendMessage(message);
+        }
+      } });
+      assert.equal(replaced.cancelled, false);
+      assert.equal(f.internal.toolResultBudgetUiGeneration, f.runtime.session.toolResultBudgetGeneration);
+      await f.runtime.session.prompt("Continue in the replacement Session."); await f.runtime.session.agent.waitForIdle();
+      const attached = f.internal.attachedToolResultDiscoveries?.get("budget-history");
+      assert.ok(attached?.component.getToolResultPresentationDiscovery("budget-history")?.cursor);
+      component = attached.component; assert.equal(executions, 1);
+    }
+    await f.internal.editor.onSubmit("/tool-budget off"); assert.equal(component.getToolResultPresentationDiscovery("budget-history"), undefined);
+    assert.equal(f.internal.getToolResultDiscoveryLifecycleCounts().totalEntries, 0);
+    assert.ok(formatToolResultBudgetStatus(f.session.getToolResultBudgetStatus()).includes("MCP 输入接收失败"));
+  } finally {
+    await f.release();
+    if (profiler) {
+      try {
+        const { profile } = await profiler.post("HeapProfiler.stopSampling");
+        const stack = [profile.head];
+        while (stack.length) { const node = stack.pop()!; sampledBytes += node.selfSize; for (const child of node.children) stack.push(child); }
+        profile.head.children.length = 0;
+        const samples = (profile as typeof profile & { samples?: unknown[] }).samples;
+        if (samples) samples.length = 0;
+      } finally { profiler.disconnect(); }
+    }
+  }
+  assert.equal(f.internal.getToolResultDiscoveryLifecycleCounts().totalEntries, 0);
+  global.gc?.();
+  t.diagnostic(JSON.stringify({ benchmark: "explicit-budget-rediscovery", transform, rebuild, node: process.version, cycles, requests, executions,
+    rediscoveryPasses: f.internal.toolResultBudgetRediscoveryPasses, componentProbes: f.internal.toolResultBudgetRediscoveryComponentProbes,
+    unchangedGenerationAdditionalProbes: 0, retainedRegistrationsAfterRelease: 0, sampledBytes: profiler ? sampledBytes : null,
+    heapBefore, heapAfterRelease: process.memoryUsage().heapUsed, note: "Explicit command/whole request cost; not per-delta cost or a speedup claim." }));
+});
+
+for (const sourceKind of ["text", "audio", "resource"] as const) test(`N4 one retained ${sourceKind} V2 result survives 128 later V1 results through a budget change`, async t => {
+  let requests = 0, executions = 0, wire = "";
+  const fetchFixture: typeof fetch = async (_url, init) => {
+    wire = String(init?.body); requests++;
+    const toolCalls = requests === 1 ? [{ index: 0, id: "older-v2", type: "function", function: { name: "inspect_budget", arguments: "{}" } }]
+      : requests === 3 ? Array.from({ length: 128 }, (_, index) => ({ index, id: `small-${index}`, type: "function", function: { name: "tiny_budget", arguments: "{}" } })) : undefined;
+    const event = { id: "fixture", object: "chat.completion.chunk", created: 1, model: "fixture", choices: [{ index: 0, delta: toolCalls ? { tool_calls: toolCalls } : { content: "done" }, finish_reason: null }] };
+    const end = { ...event, choices: [{ index: 0, delta: {}, finish_reason: toolCalls ? "tool_calls" : "stop" }] };
+    return new Response(`data: ${JSON.stringify(event)}\n\ndata: ${JSON.stringify(end)}\n\ndata: [DONE]\n\n`, { headers: { "Content-Type": "text/event-stream" } });
+  };
+  const runtime = alphaModelRuntime((model: any, context: any, options: any) => streamSimple({ ...model, api: "openai-completions" }, context,
+    { ...options, apiKey: "offline", fetch: fetchFixture, maxRetries: 0 }));
+  const source = sourceKind === "text" ? [{ type: "text" as const, text: "large evidence\n".repeat(10000) }]
+    : convertMcpResult({ content: sourceKind === "audio" ? [{ type: "audio", data: WAV_FIXTURE, mimeType: "audio/wav" }]
+      : [{ type: "resource", resource: { uri: "fixture://blob", blob: "YQ==", mimeType: "application/octet-stream" } }] }, true);
+  const tools = ["inspect_budget", "tiny_budget"].map(name => ({ name, label: name, description: "bounded discovery fixture",
+    parameters: { type: "object", properties: {}, additionalProperties: false }, execute: async () => { executions++; return { content: name === "inspect_budget" ? source : [{ type: "text" as const, text: "small" }], details: {} }; } }));
+  const f = await alphaSession({ runtime, budgetTokens: 1024, customTools: tools });
+  try {
+    assert.equal(await f.mode.init(), true); await f.session.prompt("Inspect once."); await f.session.agent.waitForIdle();
+    const component = f.internal.attachedToolResultDiscoveries.get("older-v2").component;
+    const previous = component.getToolResultPresentationDiscovery("older-v2"); assert.ok(previous?.cursor);
+    await f.session.prompt("Run the small results."); await f.session.agent.waitForIdle();
+    assert.equal(requests, 4); assert.equal(executions, 129); assert.ok(component.getToolResultPresentationDiscovery("older-v2")?.cursor);
+    assert.equal(f.session.messages.filter(message => message.role === "toolResult").length, 129);
+    await f.internal.editor.onSubmit("/tool-budget 2048"); assert.equal(component.getToolResultPresentationDiscovery("older-v2"), undefined);
+    const owner = (f.session as any)._toolResultPresentation, inspect = owner.inspectToolResultPresentationForUiCandidate;
+    let preDispatchInspections = 0, capturedScratch: Map<object, ToolResultProjectedUiSource | null> | undefined;
+    t.mock.method(owner, "inspectToolResultPresentationForUiCandidate", function(this: any, ...args: any[]) {
+      if (requests === 4) preDispatchInspections++; return inspect.apply(this, args);
+    });
+    const project = owner.projectMessagesForModel;
+    t.mock.method(owner, "projectMessagesForModel", function(this: any, ...args: any[]) { capturedScratch = args[7]; return project.apply(this, args); });
+    await f.session.prompt("Continue without tools."); await f.session.agent.waitForIdle();
+    assert.equal(requests, 5); assert.equal(executions, 129); assert.ok(wire.includes("older-v2"));
+    assert.equal(preDispatchInspections, 0); assert.ok(capturedScratch); assert.equal(capturedScratch.size, 0);
+    const next = component.getToolResultPresentationDiscovery("older-v2"); assert.ok(next?.cursor);
+    if (sourceKind === "text") assert.notEqual(next.cursor, previous.cursor);
+    assert.equal(f.internal.toolResultBudgetRediscoveryPasses, 1); assert.equal((f.session as any)._toolBudgetProjectedSources, undefined);
+  } finally { await f.release(); }
+});
+
+for (const kind of ["audio", "resource", "bytes"] as const) test(`N4 capture and cold/resident UI inspection include MCP ${kind} below token limit`, () => {
+  const content = convertMcpResult({ content: kind === "audio" ? [{ type: "audio", data: WAV_FIXTURE, mimeType: "audio/wav" }]
+    : kind === "resource" ? [{ type: "resource", resource: { uri: "fixture://blob", blob: "YQ==" } }]
+    : [{ type: "text", text: "x".repeat(100000) }] }, true);
+  const owner = new ToolResultPresentationOwner({ enabled: true, budgetTokens: 1000000 }, "mcp-capture");
+  const sources = new Map<object, ToolResultProjectedUiSource | null>();
+  try {
+    assert.equal(owner.inspectToolResultPresentationForUiCandidate(content, "mcp-result"), "v2");
+    const message = { role: "toolResult" as const, toolName: "fixture", toolCallId: "mcp-result", content, isError: false, timestamp: 0 };
+    const projected = owner.projectMessagesForModel([message], undefined, undefined, undefined, undefined, undefined, false, sources);
+    assert.notEqual(projected[0].content, content); assert.equal(sources.get(content)?.toolCallId, "mcp-result");
+    assert.equal(owner.inspectToolResultPresentationForUiCandidate(content, "mcp-result"), "v2");
+    assert.equal(owner.counters.fullSourceEstimatorScans, 1);
+  } finally { sources.clear(); owner.dispose(); }
+  assert.equal(owner.counters.retainedProjectionCodeUnits, 0); assert.equal(sources.size, 0);
+});
+
+test("N4 projection capture reuses source scans and retains only 128 V2 identities", () => {
+  const messages = [];
+  for (let index = 0; index < 2130; index++) messages.push({ role: "toolResult" as const, toolName: "fixture", toolCallId: `capture-${index}`,
+    content: [{ type: "text" as const, text: index < 130 ? "evidence ".repeat(2000) : "small" }], isError: false, timestamp: 0 });
+  const control = new ToolResultPresentationOwner({ enabled: true, budgetTokens: 1024 }, "capture-session");
+  const captured = new ToolResultPresentationOwner({ enabled: true, budgetTokens: 1024 }, "capture-session");
+  const sources = new Map<object, ToolResultProjectedUiSource | null>();
+  try {
+    control.projectMessagesForModel(messages.slice());
+    captured.projectMessagesForModel(messages.slice(), undefined, undefined, undefined, undefined, undefined, false, sources);
+    assert.equal(sources.size, 128); assert.equal(sources.has(messages[0].content), false); assert.equal(sources.has(messages[1].content), false);
+    assert.equal(sources.get(messages[2].content)?.toolCallId, "capture-2"); assert.equal(sources.get(messages[129].content)?.toolCallId, "capture-129");
+    assert.equal(captured.counters.fullSourceEstimatorScans, 2130); assert.deepEqual(captured.counters, control.counters);
+    captured.projectMessagesForModel([{ ...messages[129], toolCallId: "ambiguous" }], undefined, undefined, undefined, undefined, undefined, false, sources);
+    assert.equal(sources.get(messages[129].content), null); assert.equal(sources.size, 128);
+  } finally { sources.clear(); control.dispose(); captured.dispose(); }
+  assert.equal(sources.size, 0); assert.equal(captured.counters.retainedProjectionCodeUnits, 0); assert.equal(captured.counters.projectionRecordEntries, 0);
+});
+
+for (const budgetTokens of [1, 1024]) test(`N4 actual SDK payload preview leaves request state and provenance unchanged, budget=${budgetTokens}`, async () => {
+  let requests = 0;
+  const f = await alphaSession({ runtime: alphaModelRuntime(() => { requests++; throw new Error("preview must not dispatch"); }), budgetTokens });
+  try {
+    f.session.agent.state.model = { ...ALPHA_MODEL, api: "openai-codex-responses", provider: "openai-codex" };
+    f.session.configureToolResultBudget({ enabled: true, budgetTokens });
+    const content = [{ type: "text" as const, text: "preview evidence\n".repeat(10000) }];
+    const messages = [alphaMessage([{ type: "toolCall", id: "preview-large", name: "inspect", arguments: {} }]),
+      { role: "toolResult" as const, toolCallId: "preview-large", toolName: "inspect", content, isError: false, timestamp: 0 }];
+    const status = f.session.getToolResultBudgetStatus(), generation = f.session.toolResultBudgetGeneration, internal = f.session as any;
+    const capturePasses = internal._toolBudgetSourceCapturePasses;
+    if (budgetTokens === 1) await assert.rejects(f.session.buildProviderRequestPayload({ systemPrompt: "fixture", messages }), /budget|preparation blocked/i);
+    else {
+      const payload = await f.session.buildProviderRequestPayload({ systemPrompt: "fixture", messages }); assert.ok(payload);
+      assert.ok(JSON.stringify(payload).includes("preview-large"));
+    }
+    assert.deepEqual(f.session.getToolResultBudgetStatus(), status); assert.equal(f.session.toolResultBudgetGeneration, generation);
+    assert.equal(f.session.toolResultBudgetRediscoveryState, "waiting"); assert.equal(internal._toolBudgetProjectedSources, undefined);
+    assert.equal(internal._toolBudgetSourceCapturePasses, capturePasses); assert.equal(requests, 0);
+    assert.equal(internal._toolBudgetPayloadPreviewDepth, 0);
+    assert.equal(content[0].text.length, "preview evidence\n".length * 10000);
+  } finally { await f.release(); }
+});
+
+test("N4 actual Codex SSE late dispatch refreshes retained provenance on the same response", async () => {
+  let requests = 0, executions = 0, startsWaiting = 0;
+  const fetchFixture: typeof fetch = async () => {
+    requests++;
+    const item = requests === 1 ? { type: "function_call", id: "fc_budget", call_id: "late-budget", name: "inspect_budget", arguments: "{}" }
+      : { type: "message", id: `message-${requests}`, role: "assistant", content: [{ type: "output_text", text: "done", annotations: [] }] };
+    const events = [{ type: "response.output_item.added", output_index: 0, item: requests === 1 ? { ...item, arguments: "" } : item },
+      { type: "response.output_item.done", output_index: 0, item },
+      { type: "response.completed", response: { id: `response-${requests}`, status: "completed", output: [item] } }];
+    return new Response(events.map(event => `data: ${JSON.stringify(event)}\n\n`).join(""), { headers: { "content-type": "text/event-stream" } });
+  };
+  const token = `header.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "offline-fixture" } })).toString("base64url")}.signature`;
+  const runtime = alphaModelRuntime((model: any, context: any, options: any) => streamCodex({ ...model, api: "openai-codex-responses" }, context,
+    { ...options, apiKey: token, transport: "sse", fetch: fetchFixture, maxRetries: 0 }));
+  const f = await alphaSession({ runtime, budgetTokens: 1024, customTools: [{ name: "inspect_budget", label: "Inspect", description: "late dispatch fixture",
+    parameters: { type: "object", properties: {}, additionalProperties: false }, execute: async () => { executions++; return { content: [{ type: "text", text: "historical evidence\n".repeat(10000) }], details: {} }; } }] });
+  const unsubscribe = f.session.subscribe(event => { if (event.type === "message_start" && event.message.role === "assistant" && requests >= 3) {
+    assert.equal(f.session.toolResultBudgetRediscoveryState, "waiting"); startsWaiting++;
+  } });
+  try {
+    assert.equal(await f.mode.init(), true); await f.session.prompt("Inspect once."); await f.session.agent.waitForIdle();
+    assert.equal(requests, 2); assert.equal(executions, 1);
+    const result = f.session.messages.find(message => message.role === "toolResult"); assert.ok(result?.role === "toolResult");
+    const id = result.toolCallId, component = f.internal.attachedToolResultDiscoveries.get(id).component;
+    const previous = component.getToolResultPresentationDiscovery(id); assert.ok(previous?.cursor);
+    await f.internal.editor.onSubmit("/tool-budget 2048"); assert.equal(component.getToolResultPresentationDiscovery(id), undefined);
+    await f.session.prompt("Continue without another tool."); await f.session.agent.waitForIdle();
+    assert.equal(requests, 3); assert.equal(executions, 1); assert.equal(startsWaiting, 1);
+    const next = component.getToolResultPresentationDiscovery(id); assert.ok(next?.cursor); assert.notEqual(next.cursor, previous.cursor);
+    assert.equal(f.internal.toolResultBudgetUiGeneration, f.session.toolResultBudgetGeneration);
+    assert.equal(f.internal.toolResultBudgetRediscoveryPasses, 1); assert.equal((f.session as any)._toolBudgetProjectedSources, undefined);
+  } finally { unsubscribe(); await f.release(); }
+});
+
+for (const failure of ["payload-hook", "runtime"]) test(`N4 budget provenance waits for effective dispatch after ${failure} rejection`, async () => {
+  let requests = 0, executions = 0, rejectRequest = false, rewritePayload = false, wire = "";
+  const fetchFixture: typeof fetch = async (_url, init) => {
+    wire = String(init?.body);
+    const first = ++requests === 1;
+    const delta = first ? { tool_calls: [{ index: 0, id: "dispatch-history", type: "function", function: { name: "inspect_dispatch", arguments: "{}" } }] } : { content: "Observed." };
+    const event = { id: "offline", object: "chat.completion.chunk", created: 1, model: "fixture", choices: [{ index: 0, delta, finish_reason: null }] };
+    const end = { ...event, choices: [{ index: 0, delta: {}, finish_reason: first ? "tool_calls" : "stop" }] };
+    return new Response(`data: ${JSON.stringify(event)}\n\ndata: ${JSON.stringify(end)}\n\ndata: [DONE]\n\n`, { headers: { "Content-Type": "text/event-stream" } });
+  };
+  const runtime = alphaModelRuntime((model: any, context: any, options: any) => {
+    if (rejectRequest && failure === "runtime") throw new Error("fixture before-dispatch runtime failure");
+    return streamSimple({ ...model, api: "openai-completions" }, context, { ...options, apiKey: "offline", fetch: fetchFixture, maxRetries: 0 });
+  });
+  const f = await alphaSession({ runtime, settings: { retry: { enabled: false } }, extensions: failure === "payload-hook" ? [(pi: any) => {
+    pi.on("before_provider_request", (event: any) => {
+      if (rejectRequest) throw new ExtensionHookTimeoutError("fixture", "before_provider_request", 1);
+      if (rewritePayload) return { ...event.payload, messages: event.payload.messages.map((message: any) =>
+        message.role === "tool" ? { ...message, content: "hook replacement" } : message) };
+    });
+  }] : undefined, customTools: [{ name: "inspect_dispatch", label: "Inspect", description: "dispatch fixture", parameters: { type: "object", properties: {} },
+    execute: async () => { executions++; return { content: [{ type: "text", text: "完整证据\n".repeat(10000) }] }; } }] });
+  try {
+    assert.equal(await f.mode.init(), true); await f.session.prompt("Inspect once."); await f.session.agent.waitForIdle();
+    const component = f.internal.attachedToolResultDiscoveries.get("dispatch-history").component;
+    assert.equal(requests, 2); assert.equal(executions, 1);
+    await f.internal.editor.onSubmit("/tool-budget 2048"); rejectRequest = true;
+    await f.session.prompt("Continue."); await f.session.agent.waitForIdle();
+    assert.equal(requests, 2); assert.equal(component.getToolResultPresentationDiscovery("dispatch-history"), undefined);
+    assert.equal(f.session.toolResultBudgetRediscoveryState, "waiting"); assert.equal((f.session as any)._toolBudgetProjectedSources, undefined);
+    assert.notEqual(f.internal.toolResultBudgetUiGeneration, f.session.toolResultBudgetGeneration);
+    assert.equal((f.session as any)._toolBudgetSourceCapturePasses, 1);
+    f.internal.toggleThinkingBlockVisibility(); assert.equal(f.internal.getToolResultDiscoveryLifecycleCounts().totalEntries, 0);
+    rejectRequest = false; rewritePayload = true; await f.session.prompt("Retry preparation, keep the completed tool."); await f.session.agent.waitForIdle();
+    assert.equal(requests, 3); assert.equal(executions, 1); assert.equal((f.session as any)._toolBudgetSourceCapturePasses, 2);
+    assert.equal(f.internal.toolResultBudgetUiGeneration, f.session.toolResultBudgetGeneration);
+    assert.equal(f.session.toolResultBudgetRediscoveryState, "none");
+    const attached = f.internal.attachedToolResultDiscoveries?.get("dispatch-history");
+    if (failure === "runtime") assert.ok(attached?.component.getToolResultPresentationDiscovery("dispatch-history")?.cursor);
+    else assert.equal(attached, undefined, "arbitrary payload hooks cannot establish canonical source provenance");
+    if (failure === "payload-hook") {
+      assert.ok(wire.includes("hook replacement"));
+      assert.equal(wire.includes("完整证据"), false);
+      for (let rebuild = 0; rebuild < 3; rebuild++) {
+        f.internal.toggleThinkingBlockVisibility();
+        assert.equal(f.internal.attachedToolResultDiscoveries?.get("dispatch-history"), undefined,
+          "acknowledging the generation must not restore unverified payload provenance");
+      }
+    }
+  } finally { await f.release(); }
+  assert.equal(f.internal.getToolResultDiscoveryLifecycleCounts().totalEntries, 0);
+});
+
+for (const captured of [false, true]) test(`N4 projected rediscovery does not walk unrelated history, captured=${captured}`, async t => {
+  const result = { role: "toolResult" as const, toolName: "fixture", toolCallId: "bounded-capture",
+    content: [{ type: "text" as const, text: "evidence ".repeat(4000) }], isError: false, timestamp: 1 };
+  const messages: any[] = [result];
+  for (let index = 0; index < 10000; index++) messages.push({ role: "user", content: "unrelated", timestamp: index + 2 });
+  const f = await alphaSession({ messages });
+  try {
+    f.session.configureToolResultBudget({ enabled: true, budgetTokens: 512 });
+    const canonical = f.session.messages[0] as typeof result;
+    f.session.projectToolResultMessagesForModel(captured ? [canonical] : []);
+    f.session.recordToolResultBudgetDispatch();
+    const before = f.session.getToolResultPresentationUiRebuildCounts();
+    const presentations = new Map();
+    f.session.collectRecentToolResultPresentationsForUi(presentations, 128, true);
+    const after = f.session.getToolResultPresentationUiRebuildCounts();
+    assert.equal(presentations.size, captured ? 1 : 0);
+    t.diagnostic(JSON.stringify({ captured, before, after }));
+    assert.equal(after.historyMessagesVisited, 0);
+    assert.ok(after.canonicalLookupProbes <= 128);
+    assert.equal(after.liveCanonicalIndexBuildProbes, before.liveCanonicalIndexBuildProbes);
+    assert.equal((f.session as any)._toolBudgetProjectedSources, undefined);
+    assert.equal((f.session as any)._toolBudgetProjectedIds, undefined);
+    presentations.clear();
+  } finally { await f.release(); }
+});
+
+for (const mutation of ["duplicate", "replacement", "append", "content", "normal"] as const)
+test(`N4 bounded projection discovery preserves canonical identity checks: ${mutation}`, async () => {
+  const messages: any[] = [];
+  for (let index = 0; index < 130; index++) messages.push({ role: "toolResult", toolName: "fixture", toolCallId: `bounded-${index}`,
+    content: [{ type: "text", text: "evidence ".repeat(2000) }], isError: false, timestamp: index });
+  const f = await alphaSession({ messages });
+  try {
+    f.session.configureToolResultBudget({ enabled: true, budgetTokens: 512 });
+    const canonical = f.session.messages as any[];
+    if (mutation === "duplicate") canonical.push({ ...canonical[129], content: [{ type: "text", text: "other" }] });
+    f.session.projectToolResultMessagesForModel(canonical.slice());
+    const ids = (f.session as any)._toolBudgetProjectedIds as string[];
+    assert.equal(ids.length, 128);
+    if (mutation === "replacement") f.session.agent.state.messages = canonical.slice();
+    if (mutation === "append") canonical.push({ ...canonical[129] });
+    if (mutation === "content") canonical[129].content = [{ type: "text", text: "replacement" }];
+    f.session.recordToolResultBudgetDispatch();
+    const presentations = new Map();
+    f.session.collectRecentToolResultPresentationsForUi(presentations, 128, true);
+    assert.equal(presentations.size, mutation === "normal" ? 128 : mutation === "duplicate" || mutation === "content" ? 127 : 0);
+    if (mutation !== "normal") assert.equal(presentations.has(canonical[129]), false);
+    assert.equal(f.session.getToolResultPresentationUiRebuildCounts().historyMessagesVisited, 0);
+    assert.ok(f.session.getToolResultPresentationUiRebuildCounts().canonicalLookupProbes <= 128);
+    assert.equal(ids.length, 0);
+    assert.equal((f.session as any)._toolBudgetProjectedIds, undefined);
+    assert.equal((f.session as any)._toolBudgetProjectedSources, undefined);
+    presentations.clear();
+  } finally { await f.release(); }
+});
+
+test("N4 unconfigured budget generation settles without per-response status snapshots", async t => {
+  let requests = 0;
+  const runtime = alphaModelRuntime(() => { requests++; const stream = new AssistantMessageEventStream();
+    stream.push({ type: "done", reason: "stop", message: alphaMessage([{ type: "text", text: "done" }]) }); return stream; });
+  const f = await alphaSession({ runtime });
+  try {
+    assert.equal(await f.mode.init(), true); f.session.configureToolResultBudget({ enabled: true });
+    const status = f.session.getToolResultBudgetStatus.bind(f.session); let snapshots = 0;
+    t.mock.method(f.session, "getToolResultBudgetStatus", () => { snapshots++; return status(); });
+    for (let request = 0; request < 5; request++) { await f.session.prompt("fixture"); await f.session.agent.waitForIdle(); }
+    assert.equal(requests, 5); assert.equal(f.internal.toolResultBudgetUiGeneration, f.session.toolResultBudgetGeneration);
+    for (let probe = 0; probe < 1000; probe++) f.internal.rediscoverToolResultsAfterBudgetChange();
+    assert.equal(snapshots, 0); assert.equal((f.session as any)._toolBudgetSourceCapturePasses, 0);
+    assert.equal(f.internal.toolResultBudgetRediscoveryPasses, 0); assert.equal(f.internal.getToolResultDiscoveryLifecycleCounts().totalEntries, 0);
+  } finally { await f.release(); }
+});

@@ -90,7 +90,9 @@ test("AgentSession isolates the session event and pairs release with a stable ow
 
 test("SDK binds projection to full source before applying image policy without exposing UI sidecars", () => {
 	const source = readFileSync(SDK_SOURCE_PATH, "utf8");
-	assert.equal(source.includes("toolResultPresentationOwner?.projectMessagesForModel("), true);
+	assert.equal(source.includes("session.projectToolResultMessagesForModel("), true);
+	const session = readFileSync("packages/coding-agent/src/core/agent-session.ts", "utf8");
+	assert.equal(session.includes("owner.projectMessagesForModel(messages, imagePolicy, systemPrompt, tools, contextWindow, maxOutputTokens, requestPlanning)"), true);
 	assert.equal(source.includes("blockImages ? replaceBlockedImages : undefined"), true);
 	assert.equal(source.includes("replaceBlockedImagesInMessages(projected)"), true);
 	assert.equal(source.includes("enforcePostImagePolicyBudgets"), false);
