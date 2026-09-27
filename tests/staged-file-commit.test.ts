@@ -158,6 +158,25 @@ test("N2 preselected compatibility preserves a hardlink and reports its weaker g
   assert.equal(await readFile(alias, "utf8"), "");
 });
 
+for (const fault of ["close", "finalize"] as const) test(`N2 synced in-place content stays committed after ${fault} failure`, async t => {
+  const f = await fixture(t), alias = join(f.root, "alias"); await link(f.target, alias);
+  f.plan.target = await capturePathIdentity(f.target); f.plan.metadata.strategy = "protected_in_place";
+  let closes = 0, finalizations = 0;
+  f.plan.metadata.assertBeforeInPlace = async handle => {
+    const close = handle.close.bind(handle);
+    handle.close = async () => { await close(); if (++closes === 1 && fault === "close") throw new Error("fixture close after sync"); };
+  };
+  f.plan.metadata.finalizeInPlace = async () => { finalizations++; if (fault === "finalize") throw new Error("fixture metadata restoration after sync"); };
+  const candidate = Buffer.from("complete new bytes");
+  await assert.rejects(commitPreparedFile(f.plan, candidate, f.hooks), (error: unknown) => {
+    assert.ok(error instanceof FileCommitError); assert.equal(error.receipt.outcome, "committed");
+    assert.equal(error.receipt.fileSynced, true); assert.equal(error.receipt.retainedTemporary, undefined); return true;
+  });
+  assert.deepEqual(await readFile(f.target), candidate); assert.deepEqual(await readFile(alias), candidate);
+  assert.equal((await capturePathIdentity(f.target)).inode, f.plan.target.inode);
+  assert.equal(finalizations, fault === "close" ? 0 : 1); assert.ok(closes >= 1 && closes <= 2);
+});
+
 test("N2 partial native publication retains the candidate instead of deleting recovery data", async t => {
   const f = await fixture(t), detached = join(f.root, "old-detached");
   f.plan.metadata.replacementFailureMayChangeState = true;

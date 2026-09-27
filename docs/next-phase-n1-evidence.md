@@ -479,3 +479,15 @@ with both flags and profiler storage released before controlled GC reports:
 
 These are complete fixture allocation samples, not exact allocations, speedup
 claims or evidence that the existing rendering framework allocates nothing.
+
+Review r29: directory identity strings on both mirrors are type/length checked
+before equality. Nine two-million-character identity fields are refused before
+the opposing field getter is accessed, using a real partial-creation receipt.
+Recovery now matches the producer's allowed key sets for standalone calls, batch
+arguments/items and exact/snapshot edits. Invalid delete content/edits/mode and
+other foreign fields are rejected without reading their values, releasing their
+argument references and spending no shared content budget. The explicit history
+command enumerates own keys for shape validation; it does not recursively inspect
+unknown field values or claim a constant-cost parse of arbitrary imported JSON.
+Actual producer refusals and recovery/draft refusal preserve the target bytes.
+Focused recovery/source checks: 70 pass, one filesystem skip; Node22.19 check pass.

@@ -627,3 +627,17 @@ Native allocation sampling now includes objects collected by major and minor GC
 and drops profiler storage before the release heap sample. Earlier survivor-only
 figures are superseded for allocation conclusions. Main-thread sampling excludes
 worker heap and native allocator; the final cost run must use this TokenUser fix.
+
+Review r29: in-place commit records committed immediately after successful full
+write/truncate/sync, before fallible handle closure or attribute restoration.
+Actual-file failures at both later boundaries retain committed/fileSynced, new
+bytes through both hardlinks, original object identity and no temporary. Recovery
+checks commit shape and bounds before mirror equality, then binds the outcome to
+terminal state. A retained candidate requires staged replacement and a
+not-committed/unknown outcome. Eight consistent-but-impossible mirrored imports
+cannot authorize observation or a draft. Recording failures after known committed
+exact/snapshot/overwrite writes now preserve partial/changed rather than changing
+the content outcome to unknown; all six standalone/batch real-file cases remain
+explicitly verifiable. Unknown content placement remains unknown. Native commit
+and recovery tests: 93 pass, two platform skips; check pass. No binding, regex,
+callback, permission expansion or fallback retry was added.
