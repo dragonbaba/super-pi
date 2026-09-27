@@ -273,6 +273,7 @@ export function classifyError(tool: string, text: string, family?: VerificationF
     // Only the Agent's not-started result can carry a trusted refusal. A child
     // process printing the same JSON/markers must never select this branch.
     if (execution.producer === "agent" && execution.started === false && execution.executionStatus === "not_executed") {
+      if (text === "Operation aborted before tool execution") return { category: "aborted", cause: "同一批次已取消，此工具尚未开始执行。" };
       const refusal = parseStructuredFailure(text);
       const preflight = classifyStructuredPreflightError(refusal);
       if (preflight) return preflight;
