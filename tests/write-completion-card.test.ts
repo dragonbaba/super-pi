@@ -2,15 +2,17 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { stripVTControlCharacters } from "node:util";
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { RELEASE_COMPONENT_RENDER_CACHE, type TUI } from "@super-pi/tui";
-import { releaseComponentRenderCaches } from "../packages/tui/dist/tui.js";
 import type { ToolDefinition } from "../packages/coding-agent/src/core/extensions/types.ts";
 import { createWriteToolDefinition } from "../packages/coding-agent/src/core/tools/write.ts";
 import { ToolExecutionComponent } from "../packages/coding-agent/src/modes/interactive/components/tool-execution.ts";
 import { initTheme } from "../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 import { renderWriteResult } from "../packages/extensions/mutation-guard-write/write-renderer.ts";
 import { costCall, costSession } from "./helpers/next-phase-session.ts";
+
+const { releaseComponentRenderCaches } = await import(pathToFileURL(resolve("packages/tui/dist/tui.js")).href) as typeof import("../packages/tui/src/tui.ts");
 
 initTheme("dark");
 const definition = { ...createWriteToolDefinition(process.cwd()), collapseCallOnResult: true, renderResult: renderWriteResult };

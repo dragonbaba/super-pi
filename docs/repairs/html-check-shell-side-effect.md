@@ -106,6 +106,8 @@ auto-runtime replacement, or auto-removal of suspicious files is introduced.
 
 ## B/C and final candidate status
 
-Implementation and verification in progress. No CI or review success is claimed
-until it corresponds to the final PR HEAD. Global command links remain unchanged;
-the PR candidate is built and launched from its separate checkout.
+The companion changes implement [write completion cards](write-completion-card.md)
+and [LSP scope accuracy](lsp-validation-scope.md). CI/review outcomes are attached to
+the PR's exact candidate HEAD, separately from the historical global 8/8 result.
+Global command links remain unchanged; the PR candidate is built and launched from
+its separate checkout using `node scripts/superpi.mjs`.

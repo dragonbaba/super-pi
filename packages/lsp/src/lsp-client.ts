@@ -204,6 +204,7 @@ export class LspClient {
 							afterVersion: 0,
 							diagnostics: EMPTY_READONLY_ARRAY,
 							waitMs: this.#adapter.pushDiagnosticsGraceMs,
+							requirePublication: true,
 						}
 					: undefined,
 			);
@@ -217,7 +218,10 @@ export class LspClient {
 			textDocument: { uri },
 		});
 		const result = response.result as { items?: LspDiagnostic[] } | undefined;
-		const diagnostics = result?.items ?? EMPTY_READONLY_ARRAY;
+		if (!Array.isArray(result?.items)) {
+			throw new Error(`${this.#adapter.name} LSP returned no full diagnostic report for ${uri}; validation is unconfirmed.`);
+		}
+		const diagnostics = result.items;
 		if (diagnostics.length > 0 || !this.#adapter.pullDiagnosticsGraceMs) return diagnostics;
 		return this.#waitForPublishedDiagnostics(uri, {
 			afterVersion,
@@ -462,7 +466,7 @@ export class LspClient {
 
 	#waitForPublishedDiagnostics(
 		uri: string,
-		fallback?: { afterVersion: number; diagnostics: readonly LspDiagnostic[]; waitMs: number },
+		fallback?: { afterVersion: number; diagnostics: readonly LspDiagnostic[]; waitMs: number; requirePublication?: boolean },
 	) {
 		// See PUBLISHED_DIAGNOSTICS_SETTLE_MS. Bounded by #timeoutMs.
 		return new Promise<readonly LspDiagnostic[]>((resolve, reject) => {
@@ -492,7 +496,7 @@ export class LspClient {
 			};
 			const onPublish = (publication: { version: number; diagnostics: readonly LspDiagnostic[] }) => {
 				if (publication.version <= afterVersion) return;
-				if (fallback && publication.diagnostics.length === 0 && !sawNonEmptyPublication) return;
+				if (fallback && !fallback.requirePublication && publication.diagnostics.length === 0 && !sawNonEmptyPublication) return;
 				sawNonEmptyPublication ||= publication.diagnostics.length > 0;
 				latestPublication = publication;
 				if (fallbackTimer) clearTimeout(fallbackTimer);
@@ -511,7 +515,9 @@ export class LspClient {
 			if (fallback) {
 				fallbackTimer = setTimeout(
 					() => {
-						settleWith(latestPublication?.diagnostics ?? fallback.diagnostics);
+						if (fallback.requirePublication && !latestPublication) {
+							fail(new Error(`${this.#adapter.name} LSP did not publish diagnostics for ${uri}; validation is unconfirmed.`));
+						} else settleWith(latestPublication?.diagnostics ?? fallback.diagnostics);
 					},
 					Math.min(fallback.waitMs, this.#timeoutMs),
 				);
@@ -519,7 +525,7 @@ export class LspClient {
 			overallTimer = setTimeout(() => {
 				if (latestPublication) {
 					settleWith(latestPublication.diagnostics);
-				} else if (fallback) {
+				} else if (fallback && !fallback.requirePublication) {
 					settleWith(fallback.diagnostics);
 				} else {
 					fail(

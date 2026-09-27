@@ -1,0 +1,26 @@
+# LSP scope and the HTML incident
+
+Read-only inspection of the effective configuration in both the incident workspace
+and the candidate checkout found configured TypeScript, rust-analyzer and gopls
+commands. All three commands resolved locally; none routed `.html`. This establishes
+an absent HTML route, not a failed or unavailable server. No user configuration or
+installed service was changed and no private configuration/environment dump is committed.
+
+The tool now distinguishes zero submitted files from received diagnostics, reports
+the submitted count and file limit, and states scope limitations. Default roots use
+the session cwd instead of the host process cwd. `/lsp` describes command availability
+without asserting verified server coverage. Push silence, missing pull reports and
+server errors cannot turn into an empty successful diagnostic list. Actual empty
+reports remain supported. Existing authoritative project checks retain their role;
+tool guidance does not guarantee every future model tool choice.
+
+`tests/lsp-validation-scope.test.ts` tests configuration/routing and status handling
+with a private protocol process, including empty reports, silence, malformed reports,
+errors, zero files and unavailable defaults. Those fixtures do not analyze languages.
+A separate real-service test uses the repository's already-installed Biome 2.5.7 in
+a synthetic workspace. On the local Windows run, `const broken = ;` produced two
+diagnostics as standalone JS and inside `<script>` in HTML: a syntax error and an
+unused variable. This is evidence for those samples with that server/version/config,
+not proof of all HTML/JS, asset consistency or browser behavior. The original incident
+workspace did not have this Biome HTML route. CI exercises the same real-service test
+without installing a new global server or altering runner configuration.

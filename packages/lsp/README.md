@@ -44,6 +44,22 @@ A server entry contains `command`, `extensions`, and optional `env`, `initializa
 
 `/lsp` reports configured commands and availability. `lsp_diagnostics` accepts only one `server` string and starts at most one server per call. If requested paths match multiple routes, split the request or choose one server explicitly. LSP results are targeted development feedback; repository-native typechecks, builds, and tests remain authoritative.
 
+Command availability is not proof of service startup or language coverage. Diagnostics
+default to the session workspace, report the number of submitted files and the file
+limit, and label zero submitted files `not_checked`. A missing route, unavailable
+service, missing pull report, or push server that publishes nothing does not establish
+a validation pass. `pushDiagnosticsGraceMs` bounds the wait for a publication; silence
+now returns an unconfirmed-diagnostics error. An actual empty report is still valid
+diagnostic feedback. Since requests do not send a previous result ID, a pull response
+must contain a full `items` report.
+
+Prefer existing project checks and an already known applicable LSP route. Use focused
+checks only to fill specific gaps, such as self-contained assets or reference
+consistency. State actual match/file counts and untested scope; zero script matches
+cannot validate JavaScript. A registered HTML route does not prove embedded JavaScript
+coverage, and finite regex checks cannot establish complete HTML/JS or browser behavior.
+No service is automatically installed or started after each write.
+
 ## Verification
 
 ```bash
