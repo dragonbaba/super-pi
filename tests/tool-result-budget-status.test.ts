@@ -288,6 +288,36 @@ for (const rebuild of [false, true]) for (const transform of ["identity", "filte
     heapBefore, heapAfterRelease: process.memoryUsage().heapUsed, note: "Explicit command/whole request cost; not per-delta cost or a speedup claim." }));
 });
 
+test("N4 one retained V2 result survives 128 later V1 results through a budget change", async () => {
+  let requests = 0, executions = 0, wire = "";
+  const fetchFixture: typeof fetch = async (_url, init) => {
+    wire = String(init?.body); requests++;
+    const toolCalls = requests === 1 ? [{ index: 0, id: "older-v2", type: "function", function: { name: "inspect_budget", arguments: "{}" } }]
+      : requests === 3 ? Array.from({ length: 128 }, (_, index) => ({ index, id: `small-${index}`, type: "function", function: { name: "tiny_budget", arguments: "{}" } })) : undefined;
+    const event = { id: "fixture", object: "chat.completion.chunk", created: 1, model: "fixture", choices: [{ index: 0, delta: toolCalls ? { tool_calls: toolCalls } : { content: "done" }, finish_reason: null }] };
+    const end = { ...event, choices: [{ index: 0, delta: {}, finish_reason: toolCalls ? "tool_calls" : "stop" }] };
+    return new Response(`data: ${JSON.stringify(event)}\n\ndata: ${JSON.stringify(end)}\n\ndata: [DONE]\n\n`, { headers: { "Content-Type": "text/event-stream" } });
+  };
+  const runtime = alphaModelRuntime((model: any, context: any, options: any) => streamSimple({ ...model, api: "openai-completions" }, context,
+    { ...options, apiKey: "offline", fetch: fetchFixture, maxRetries: 0 }));
+  const tools = ["inspect_budget", "tiny_budget"].map(name => ({ name, label: name, description: "bounded discovery fixture",
+    parameters: { type: "object", properties: {}, additionalProperties: false }, execute: async () => { executions++; return { content: [{ type: "text" as const, text: name === "inspect_budget" ? "large evidence\n".repeat(10000) : "small" }], details: {} }; } }));
+  const f = await alphaSession({ runtime, budgetTokens: 1024, customTools: tools });
+  try {
+    assert.equal(await f.mode.init(), true); await f.session.prompt("Inspect once."); await f.session.agent.waitForIdle();
+    const component = f.internal.attachedToolResultDiscoveries.get("older-v2").component;
+    const previous = component.getToolResultPresentationDiscovery("older-v2"); assert.ok(previous?.cursor);
+    await f.session.prompt("Run the small results."); await f.session.agent.waitForIdle();
+    assert.equal(requests, 4); assert.equal(executions, 129); assert.ok(component.getToolResultPresentationDiscovery("older-v2")?.cursor);
+    assert.equal(f.session.messages.filter(message => message.role === "toolResult").length, 129);
+    await f.internal.editor.onSubmit("/tool-budget 2048"); assert.equal(component.getToolResultPresentationDiscovery("older-v2"), undefined);
+    await f.session.prompt("Continue without tools."); await f.session.agent.waitForIdle();
+    assert.equal(requests, 5); assert.equal(executions, 129); assert.ok(wire.includes("older-v2"));
+    const next = component.getToolResultPresentationDiscovery("older-v2"); assert.ok(next?.cursor); assert.notEqual(next.cursor, previous.cursor);
+    assert.equal(f.internal.toolResultBudgetRediscoveryPasses, 1); assert.equal((f.session as any)._toolBudgetProjectedSources, undefined);
+  } finally { await f.release(); }
+});
+
 test("N4 actual Codex SSE late dispatch refreshes retained provenance on the same response", async () => {
   let requests = 0, executions = 0, startsWaiting = 0;
   const fetchFixture: typeof fetch = async () => {

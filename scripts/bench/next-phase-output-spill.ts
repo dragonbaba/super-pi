@@ -10,6 +10,8 @@ import { costSession, costCall, costText, startCostMeasurement, finishCostMeasur
 const originalOpen = fs.openSync, originalCreate = fs.createWriteStream, originalWrite = (fs.WriteStream.prototype as any)._write, originalWritev = (fs.WriteStream.prototype as any)._writev;
 const originalEnvironment = process.env;
 let scope = "", firstOpenMs: number | undefined, start = 0, writes = 0, maxQueuedBytes = 0, pendingWrites = 0, delayMs = 0;
+let spillPeakHeap = 0, spillHeapSamples = 0;
+function sampleSpillHeap(): void { spillHeapSamples++; spillPeakHeap = Math.max(spillPeakHeap, process.memoryUsage().heapUsed); }
 let cancel: (() => void) | undefined, cancelledAt: number | undefined;
 const streams = new Set<fs.WriteStream>();
 const descriptors = new Set<number>();
@@ -26,9 +28,10 @@ function ownedPath(path: unknown): boolean { return typeof path === "string" && 
 function measureWrite(stream: fs.WriteStream, vector: boolean, chunk: any, encoding: any, callback: any) {
   if (!streams.has(stream)) return vector ? originalWritev.call(stream, chunk, callback) : originalWrite.call(stream, chunk, encoding, callback);
   writes++; pendingWrites++;
+  sampleSpillHeap();
   maxQueuedBytes = Math.max(maxQueuedBytes, stream.writableLength);
   if (cancel && cancelledAt === undefined) { cancelledAt = performance.now(); cancel(); }
-  const done = (error?: Error | null) => { pendingWrites--; callback(error); };
+  const done = (error?: Error | null) => { sampleSpillHeap(); pendingWrites--; callback(error); };
   const write = () => vector ? originalWritev.call(stream, chunk, done) : originalWrite.call(stream, chunk, encoding, done);
   if (delayMs) setTimeout(write, delayMs); else write();
 }
@@ -44,15 +47,19 @@ try {
     for (let index = 0; index < 1024; index++) fs.writeFileSync(join(ownedTemp, `entry-${index}`), "");
     process.env = { ...originalEnvironment, TMP: ownedTemp, TEMP: ownedTemp, TMPDIR: ownedTemp }; assert.equal(tmpdir(), ownedTemp);
     firstOpenMs = undefined; writes = 0; maxQueuedBytes = 0; pendingWrites = 0; cancelledAt = undefined; streams.clear(); descriptors.clear();
+    spillPeakHeap = 0; spillHeapSamples = 0;
     delayMs = scenario === "slow" || scenario === "cancel" ? 8 : 0; cancel = scenario === "cancel" ? () => f.session.agent.abort() : undefined;
     const source = scenario === "cancel" ? "let n=0;const timer=setInterval(()=>{process.stdout.write('x'.repeat(65536));if(++n===100)clearInterval(timer)},5)"
       : `process.stdout.write('x'.repeat(${scenario === "cap" ? 6 * 1024 * 1024 : 256 * 1024})+'\\nFINAL-TAIL')`;
     const command = `node -e "${source}"`;
     delay = monitorEventLoopDelay({ resolution: 1 }); delay.enable(); global.gc?.();
+    sampleSpillHeap();
     const heapBefore = process.memoryUsage().heapUsed, measurement = startCostMeasurement(f.metrics); start = measurement.start;
       await f.run([[costCall("spill", "bash", { command, cwd: f.cwd })]]);
+      sampleSpillHeap();
       const result = f.result("spill"), end = performance.now(), timing = finishCostMeasurement(f.metrics, measurement); delay.disable();
       assert.ok(firstOpenMs !== undefined, JSON.stringify(result)); assert.ok(writes > 0); assert.equal(pendingWrites, 0);
+      assert.equal(spillHeapSamples, 2 * writes + 2);
       for (const stream of streams) assert.equal(stream.closed, true);
       const path = result.details?.fullOutputPath; let fileBytes: number | undefined;
       if (path) { assert.equal(dirname(path), ownedTemp); fileBytes = fs.statSync(path).size; assert.ok(fileBytes <= 5 * 1024 * 1024); }
@@ -62,7 +69,8 @@ try {
       console.log(JSON.stringify({ benchmark: "N4-output-spill", implementation: process.env.SP_COST_LABEL ?? "candidate", scenario, node: process.version,
         injectedOpenAndWriteDelayMs: delayMs, temporaryEntries: 1024, firstOpenMs, ...timing, cancelSettlementMs: cancelledAt === undefined ? null : end - cancelledAt,
         eventLoopP95Ms: delay.percentile(95) / 1e6, eventLoopP99Ms: delay.percentile(99) / 1e6, eventLoopMaxMs: delay.max / 1e6,
-        writes, maxQueuedBytes, fileBytes, closedStreams: streams.size, pendingWrites, heapBefore, sampledPeakHeap: f.metrics.sampledPeakHeap,
+        writes, maxQueuedBytes, fileBytes, closedStreams: streams.size, pendingWrites, heapBefore, sampledPeakHeap: Math.max(spillPeakHeap, f.metrics.sampledPeakHeap),
+        spillPeakHeap, spillHeapSamples, heapSamplingScope: "before/after tool workload plus every measured write entry/completion and provider boundaries; sampled maximum, not true peak; probe overhead remains in timing",
         shellFacts: result.details?.shellExecution ?? null, quality: "real default SDK process/output/cap/cancellation and settled streams" }));
     } finally {
       delay?.disable(); cancel = undefined; streams.clear(); descriptors.clear(); scope = ""; delayMs = 0;

@@ -1935,11 +1935,14 @@ export class AgentSession {
 	private _captureBudgetProjectionSources(messages: readonly Message[]): WeakMap<object, string | null> {
 		const sources = new WeakMap<object, string | null>();
 		this._toolBudgetSourceCapturePasses++;
+		const owner = this._toolResultPresentation;
+		if (!owner) return sources;
 		let count = 0;
 		for (let index = messages.length - 1; index >= 0 && count < MAX_TOOL_RESULT_UI_DISCOVERIES; index--) {
 			const message = messages[index]!;
 			if (message.role !== "toolResult") continue;
-			count++;
+			if (owner.inspectToolResultPresentationForUiCandidate(message.content, message.toolCallId) !== "v2") continue;
+			if (!sources.has(message.content)) count++;
 			sources.set(message.content, sources.has(message.content) ? null : message.toolCallId);
 		}
 		return sources;

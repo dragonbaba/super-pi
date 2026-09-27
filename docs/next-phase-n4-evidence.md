@@ -385,3 +385,21 @@ Undispatched provenance release moved into _emitAgentEnd before listeners, keepi
 the existing awaited terminal-flush source invariant unchanged. Budget/source
 tests: 20 pass; lifecycle/budget/frame-queue tests: 104 pass before the late-Codex
 addition; Node22.19 check pass. Final combined gates, profiles and review remain.
+
+Review r30: projection provenance uses the existing UI owner's V2 eligibility
+check before consuming a bounded source slot. Small results no longer evict an
+older projected result merely by count. An actual SDK/InteractiveMode scenario
+runs 129 tools across five requests: one large result followed by 128 small ones
+retains a renewed continuation after an explicit budget change. Budget/source
+tests: 21 pass; check pass on Windows Node22.19. The owner/helper chain reuses
+existing source scans; no production regex or callback was added. Final profiling
+and combined CI/review remain required.
+
+Spill heap measurement now samples immediately before/after the workload and at
+every observed write entry/completion, with an exact 2*writes+2 sample invariant.
+The reported maximum includes these in-workload samples and identifies their
+scope/probe overhead; it is not a claim about the true unsampled peak. Serial
+baseline and candidate functional runs pass all four scenarios, release owned
+roots and report zero pending writes. These single functional runs are excluded
+from final fair timing conclusions. The alternating five-pair comparison remains
+outstanding.
