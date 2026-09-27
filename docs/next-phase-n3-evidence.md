@@ -296,3 +296,10 @@ solely to N3. Repeated failure analyses are zero, twelve derived references retu
 to zero, and pending timers are zero. After releasing profiler storage, controlled
 GC heap is 46,292,312 to 46,739,768 bytes. No whole-chain zero-allocation or speedup
 claim is made; check passes and final comparative timing remains pending.
+
+Review r29: the Session error classifier preserves structured cancellation as
+aborted, while timeout keeps its distinct classification. A real parallel Agent
+turn runs the Bash/PowerShell tool adapters through isolated Node child processes;
+both cancelled results collapse into one Session event with cascadeCount two.
+Two actual timeouts remain two observations. No output-body inference, callback
+or regex was added. All 46 shell-result contract cases pass on Windows Node22.19.

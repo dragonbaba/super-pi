@@ -284,7 +284,8 @@ export function classifyError(tool: string, text: string, family?: VerificationF
       if (text.startsWith("[TOOL_RESPONSE_LIMIT]")) return { category: "input_validation", cause: "响应达到输出上限，参数完整性尚不确定；本次调用未执行。" };
       if (VALIDATION_RE.test(text)) return { category: "input_validation", cause: "工具参数未通过 schema 或工具自身输入校验。" };
     }
-    const category = shellFailureCategory(execution);
+    const failure = shellFailureCategory(execution);
+    const category = failure === "timeout_or_aborted" && execution.termination === "cancelled" ? "aborted" : failure;
     if (category === "command_failed" && family) return verificationFailure(family);
     return { category, cause: `Shell 运行记录：started=${execution.started}, termination=${execution.termination}, exitCode=${execution.exitCode}, signal=${execution.signal}, output=${execution.output.complete}, log=${execution.output.log}。原始输出仅用于诊断。` };
   }
