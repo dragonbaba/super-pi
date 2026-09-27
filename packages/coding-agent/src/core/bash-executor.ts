@@ -144,8 +144,10 @@ export async function executeBashWithOperations(
 			fullOutputPath: tempFilePath,
 		};
 	} catch (err) {
-		// Check if it was an abort
-		if (options?.signal?.aborted) {
+		// Cancellation cannot erase an already observed delivery/completion failure.
+		const observed = shellProcessResultFromError(err);
+		if (options?.signal?.aborted && (!observed || (!observed.inputError && observed.observationError === undefined
+			&& observed.observation?.outputDrained !== false && observed.termination === "cancelled"))) {
 			const fullOutput = outputChunks.join("");
 			const truncationResult = truncateTail(fullOutput);
 			if (truncationResult.truncated) {

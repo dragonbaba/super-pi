@@ -26,6 +26,26 @@ const RECOVERED_CONFIG: PowerShellConfig = {
 };
 const EXEC_OPTIONS = { onData: (_data: Buffer): void => {} };
 
+for (const persistenceFailure of [false, true]) test(`N3 PowerShell real attempted spawn survives failed recovery, persistence=${persistenceFailure}`, async () => {
+  const operations = createLocalPowerShellOperations({ resolveCandidate: () => INITIAL_CONFIG,
+    probe() { throw new Error("No recovery executable"); }, onUnavailable() { if (persistenceFailure) throw new Error("persist unavailable failed"); } });
+  await assert.rejects(operations.exec("unused", process.cwd(), EXEC_OPTIONS), (error: any) => {
+    const result = shellProcessResultFromError(error); assert.ok(result); assert.equal(result.observation?.started, false);
+    assert.equal(result.observation?.spawnAttempted, true); assert.equal(result.termination, "not_started"); return true;
+  });
+});
+
+for (const secondary of [false, true]) test(`N3 PowerShell confirmation preserves existing observation diagnostics, secondary=${secondary}`, async () => {
+  const operations = createLocalPowerShellOperations({ resolveCandidate: () => INITIAL_CONFIG,
+    execute: async () => ({ exitCode: 0, termination: "exit", observationError: "completion " + "x".repeat(2000), secondaryObservationError: secondary ? "existing secondary" : undefined }),
+    onConfirmed() { throw new Error("confirmation " + "y".repeat(2000)); } });
+  await assert.rejects(operations.exec("unused", process.cwd(), EXEC_OPTIONS), (error: any) => {
+    const result = shellProcessResultFromError(error)!; assert.equal(result.exitCode, 0); assert.equal(result.observationError?.length, 1000);
+    assert.ok(result.observationError?.startsWith("completion ")); assert.ok(result.secondaryObservationError?.startsWith(secondary ? "existing secondary" : "confirmation "));
+    assert.equal(result.observationErrorsOmitted, secondary ? true : undefined); return true;
+  });
+});
+
 test("a non-zero command exit confirms PowerShell without probing or replaying", async () => {
 	let executions = 0;
 	let probes = 0;

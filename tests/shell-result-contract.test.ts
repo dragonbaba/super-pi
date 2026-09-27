@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import fs, { realpathSync, rmSync, existsSync } from "node:fs";
+import fsPromises from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
@@ -23,6 +24,28 @@ const { createFalseSuccessState, observeToolResult } = await jiti.import<any>(".
 const { classifyToolFailure, collectSessionErrors } = await jiti.import<any>("../packages/extensions/session-tool-errors/core.ts");
 const { failureRecoveryHint, createGuardState, recordResult, inspectBeforeCall } = await jiti.import<any>("../packages/extensions/tool-loop-guardrails/core.ts");
 const local = createLocalShellOperations("Node fixture", () => ({ shell: process.execPath, args: ["-e"] }));
+
+test("N3 local cwd preflight cancellation preserves unstarted facts and collapses its Agent cascade", async t => {
+  let requests = 0, backendEntered = false, resolutions = 0;
+  const calls = ["bash", "powershell"].map(name => ({ type: "toolCall" as const, name, id: `local-preflight-${name}`, arguments: { command: "unused" } }));
+  const agent = new Agent({ toolExecution: "sequential", convertToLlm: () => [], streamFn: () => {
+    const message = alphaMessage(++requests === 1 ? calls : [{ type: "text", text: "done" }]); message.stopReason = requests === 1 ? "toolUse" : "stop"; return finalStream(message);
+  } });
+  const realpath = fsPromises.realpath;
+  t.mock.method(fsPromises, "realpath", async function(...args: any[]) {
+    const result = await Reflect.apply(realpath, fsPromises, args); if (backendEntered) { resolutions++; agent.abort(); } return result;
+  }); syncBuiltinESMExports();
+  t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); agent.abort(); });
+  const backend = createLocalShellOperations("preflight", () => { backendEntered = true; return { shell: process.execPath, args: ["-e"] }; });
+  agent.state.tools = [createBashTool(process.cwd(), { operations: backend }), createPowerShellTool(process.cwd(), { operations: backend })];
+  await agent.prompt("Cancel during the local realpath preflight."); await agent.waitForIdle();
+  const results = agent.state.messages.filter(message => message.role === "toolResult"); assert.equal(results.length, 2); assert.equal(resolutions, 1);
+  const facts = readShellExecution(results[0].details)!; assert.ok(facts); assert.equal(facts.producer, "local-shell");
+  assert.equal(facts.started, false); assert.equal(facts.termination, "cancelled"); assert.equal(facts.executionStatus, "not_executed"); assert.equal(facts.sideEffects, "none");
+  const session = SessionManager.inMemory(process.cwd()); for (const message of agent.state.messages) session.appendMessage(message as never);
+  const errors = collectSessionErrors(session.getBranch()); assert.equal(errors.length, 1); assert.equal(errors[0].category, "aborted"); assert.equal(errors[0].cascadeCount, 2);
+  assert.equal(agent.state.pendingToolCalls.size, 0);
+});
 for (const [args, finish, marker] of [
   ['{"command":"unfinished', "length", "TOOL_ARGS_INCOMPLETE"],
   ['{"command":"unused"}', "length", "TOOL_RESPONSE_LIMIT"],
