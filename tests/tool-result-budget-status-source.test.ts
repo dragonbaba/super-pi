@@ -21,7 +21,7 @@ test("N4 explicit budget helpers and request bridge create no callbacks or regex
   const targets = [
     { file: "packages/coding-agent/src/core/tool-result-budget-status.ts", names: [] },
     { file: "packages/coding-agent/src/core/agent-session.ts", names: ["configureToolResultBudget", "getToolResultBudgetStatus", "projectToolResultMessagesForModel", "_captureBudgetProjectionSources", "recordToolResultBudgetDispatch", "discardPendingToolResultBudgetSources"] },
-    { file: "packages/coding-agent/src/core/tool-result-presentation.ts", names: ["recordProjectedUiSource", "projectMessageForConfiguredBudget", "projectMessageWithinContextualBudget", "projectMessagesWithinContextualBudget", "projectMessagesForModel"] },
+    { file: "packages/coding-agent/src/core/tool-result-presentation.ts", names: ["requiresV2Projection", "inspectToolResultPresentationForUiCandidate", "recordProjectedUiSource", "projectMessageForConfiguredBudget", "projectMessageWithinContextualBudget", "projectMessagesWithinContextualBudget", "projectMessagesForModel"] },
     { file: "packages/coding-agent/src/modes/interactive/interactive-mode.ts", names: ["handleToolResultBudgetCommand", "rediscoverToolResultsAfterBudgetChange"] },
     { file: "packages/coding-agent/src/modes/interactive/components/tool-execution.ts", names: ["hasToolResultSourceForUi", "hasToolResultSourceForUi"] },
   ];
@@ -36,7 +36,7 @@ test("N4 explicit budget helpers and request bridge create no callbacks or regex
     else {
       const seen: string[] = [];
       function visit(node: ts.Node): void {
-        if (ts.isMethodDeclaration(node) && target.names.includes(node.name.getText(source))) {
+        if ((ts.isMethodDeclaration(node) || ts.isFunctionDeclaration(node)) && node.name && target.names.includes(node.name.getText(source))) {
           seen.push(node.name.getText(source)); inspect(node.body!);
           if (node.name.getText(source) === "rediscoverToolResultsAfterBudgetChange") assert.equal(node.body!.getText(source).includes("getToolResultBudgetStatus"), false);
         }

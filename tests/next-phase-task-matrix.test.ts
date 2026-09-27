@@ -31,7 +31,7 @@ function contents(index: number): string {
 
 async function measure(t: test.TestContext, strategy: Strategy, count: number, kind: Kind) {
   const root = mkdtempSync(join(tmpdir(), "sp-n4-matrix-")), cwd = join(root, "work"), agentDir = join(root, "agent");
-  let session: any;
+  let session: any, unsubscribe: (() => void) | undefined;
   try {
   process.stdout.write(`# owned matrix fixture ${JSON.stringify({ root, strategy, count, kind })}\n`);
   mkdirSync(cwd); mkdirSync(agentDir);
@@ -58,6 +58,7 @@ async function measure(t: test.TestContext, strategy: Strategy, count: number, k
   else if (reads.length) queue.push(reads);
   let mutationsPlanned = false, requests = 0, approvals = 0, schemaTokens = 0, inputTokens = 0, toolTokens = 0, historyTokens = 0, outputTokens = 0, wireBytes = 0;
   let peakHeap = process.memoryUsage().heapUsed, estimatorCpuUs = 0, estimatorElapsedMs = 0, estimatorPasses = 0;
+  let toolStartSamples = 0, toolEndSamples = 0, toolProgressSamples = 0, verificationSamples = 0;
   const fakeFetch: typeof fetch = async (_url, init) => {
     assert.equal(typeof init?.body, "string");
     const wire = init!.body as string, payload = JSON.parse(wire); requests++;
@@ -107,21 +108,31 @@ async function measure(t: test.TestContext, strategy: Strategy, count: number, k
   const manager = SessionManager.create(cwd, join(root, "sessions"));
   ({ session } = await createAgentSession({ cwd, agentDir, settingsManager: settings, resourceLoader, sessionManager: manager, model, modelRuntime: runtime, noTools: "builtin" }));
     await session.bindExtensions({ mode: "tui", uiContext: { ...session.extensionRunner.getUIContext(), select: async () => { approvals++; return "仅允许本次"; } } });
+    unsubscribe = session.agent.subscribe((event: any) => {
+      if (event.type === "tool_execution_start") toolStartSamples++;
+      else if (event.type === "tool_execution_end") toolEndSamples++;
+      else if (event.type === "tool_execution_update") toolProgressSamples++;
+      else return;
+      peakHeap = Math.max(peakHeap, process.memoryUsage().heapUsed);
+    });
     global.gc?.(); const heapBefore = process.memoryUsage().heapUsed; peakHeap = heapBefore;
     const cpu = process.cpuUsage(), start = performance.now();
     await session.prompt("Perform the deterministic fixture task using its recorded operations."); await session.agent.waitForIdle();
     const elapsedMs = performance.now() - start, used = process.cpuUsage(cpu);
     assert.equal(estimatorPasses, requests * 2); assert.ok(estimatorElapsedMs >= 0 && estimatorElapsedMs < elapsedMs);
     const results = session.messages.filter((message: any) => message.role === "toolResult");
+    assert.equal(toolStartSamples, results.length); assert.equal(toolEndSamples, results.length);
     for (const message of session.messages) if (message.role === "assistant") assert.notEqual(message.stopReason, "error", JSON.stringify({ strategy, count, kind, error: message.errorMessage, discovery: results.filter((item: any) => item.toolName === "tool_search") }));
     for (const result of results) assert.equal(result.isError, false, JSON.stringify({ strategy, count, kind, result }));
     for (const file of files) {
+      peakHeap = Math.max(peakHeap, process.memoryUsage().heapUsed); verificationSamples++;
       if (file.operation === "delete") assert.equal(existsSync(join(cwd, file.path)), false);
       else if (file.operation === "move") { assert.equal(existsSync(join(cwd, file.path)), false); assert.equal(readFileSync(join(cwd, file.destination), "utf8"), file.before); }
       else assert.equal(readFileSync(join(cwd, file.path), "utf8"), file.after);
+      peakHeap = Math.max(peakHeap, process.memoryUsage().heapUsed); verificationSamples++;
     }
     assert.equal(session.agent.state.pendingToolCalls.size, 0); assert.equal(session.extensionRunner.finalAuthorizations?.size ?? 0, 0);
-    session.dispose(); global.gc?.();
+    assert.ok(unsubscribe); unsubscribe(); unsubscribe = undefined; session.dispose(); global.gc?.();
     t.diagnostic(JSON.stringify({ matrix: "N4-success", implementation: process.env.SP_COST_LABEL ?? "candidate", count, kind, strategy,
       fileOperations: files.length, addressedPaths: files.length + files.filter(file => file.operation === "move").length,
       requests, toolCalls: results.length, approvals, discoveryCalls: discovered.length, priorReads: reads.length, supplementalReads: 0, retries: 0, compactions: 0,
@@ -130,8 +141,10 @@ async function measure(t: test.TestContext, strategy: Strategy, count: number, k
       elapsedMs: elapsedMs - estimatorElapsedMs, cpuUs: used.user + used.system - estimatorCpuUs,
       inclusiveElapsedMs: elapsedMs, inclusiveCpuUs: used.user + used.system, estimatorElapsedMs, estimatorCpuUs, estimatorPasses,
       measurementScope: "elapsedMs/cpuUs subtract synchronous diagnostic estimation and its JSON serialization; inclusive totals are retained. CPU timer quantization and later GC are not isolated; heap samples include estimator allocations. Fixture/provider scheduling remains included.",
-      heapBefore, sampledPeakHeap: peakHeap, heapAfterDispose: process.memoryUsage().heapUsed, pendingCalls: 0 }));
-  } finally { session?.dispose(); session = undefined; await new Promise<void>(resolve => setImmediate(resolve)); assert.equal(dirname(root), tmpdir()); rmSync(root, { recursive: true, force: true }); }
+      heapBefore, sampledPeakHeap: peakHeap, heapAfterDispose: process.memoryUsage().heapUsed, pendingCalls: 0,
+      toolStartSamples, toolEndSamples, toolProgressSamples, verificationSamples,
+      heapSampleScope: "Provider boundaries, every tool start/progress/end, and before/after each final filesystem assertion. Sampled maximum, not total allocation or an exact transient peak. Tool probe overhead is included in timing; final verification is outside timing." }));
+  } finally { unsubscribe?.(); session?.dispose(); session = undefined; await new Promise<void>(resolve => setImmediate(resolve)); assert.equal(dirname(root), tmpdir()); rmSync(root, { recursive: true, force: true }); }
 }
 
 test("N4 actual serializer task matrix: equal data, real prior reads/discovery, independent same-reply T2", { timeout: 1800000 }, async t => {

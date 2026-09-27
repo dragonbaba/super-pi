@@ -1149,6 +1149,10 @@ function projectContent(
 	return omission;
 }
 
+function requiresV2Projection(estimatedTokens: number, budgetTokens: number, mcpArtifactRequired: boolean, mcpInput: boolean, rawUtf8Bytes: number): boolean {
+	return estimatedTokens > budgetTokens || mcpArtifactRequired || mcpInput && rawUtf8Bytes > MCP_INLINE_BYTES;
+}
+
 /** Source references belong to canonical/UI/artifact content, never model input. */
 function stripMcpSources(content: readonly ToolResultPresentationContent[]): readonly ToolResultPresentationContent[] {
 	let output: ToolResultPresentationContent[] | undefined;
@@ -1451,8 +1455,8 @@ export class ToolResultPresentationOwner {
 		let addedRetainedCodeUnits = 0;
 		if (
 			record.projection === undefined &&
-			(record.sourceScan.estimate.estimatedTokens > this.budgetTokens! || record.sourceScan.mcpArtifactRequired ||
-				(record.sourceScan.mcpInput && record.sourceScan.estimate.rawUtf8Bytes > MCP_INLINE_BYTES))
+			requiresV2Projection(record.sourceScan.estimate.estimatedTokens, this.budgetTokens!, record.sourceScan.mcpArtifactRequired,
+				record.sourceScan.mcpInput, record.sourceScan.estimate.rawUtf8Bytes)
 		) {
 			const projection = projectContent(
 				record.sourceContent,
@@ -1853,10 +1857,20 @@ export class ToolResultPresentationOwner {
 			}
 			const sourceContent = content as readonly ToolResultPresentationContent[];
 			const resident = this.projectionRecords?.get(toolCallId);
-			const estimatedTokens = resident?.sourceContent === sourceContent
-				? resident.sourceScan.estimate.estimatedTokens
-				: estimateToolOutputTokens(sourceContent).estimatedTokens;
-			return estimatedTokens > budgetTokens ? "v2" : "v1";
+			let estimate, mcpInput = false, mcpArtifactRequired = false;
+			if (resident?.sourceContent === sourceContent) {
+				estimate = resident.sourceScan.estimate; mcpInput = resident.sourceScan.mcpInput; mcpArtifactRequired = resident.sourceScan.mcpArtifactRequired;
+			} else {
+				estimate = estimateToolOutputTokens(sourceContent);
+				for (const block of sourceContent) {
+					if (block.mcpInput) mcpInput = true;
+					if (block.type === "text" && block.mcpSource) {
+						verifiedMcpSource(block.mcpSource); mcpInput = true;
+						if (block.mcpSource.requiresRecovery || block.mcpSource.kind !== "structured") mcpArtifactRequired = true;
+					}
+				}
+			}
+			return requiresV2Projection(estimate.estimatedTokens, budgetTokens, mcpArtifactRequired, mcpInput, estimate.rawUtf8Bytes) ? "v2" : "v1";
 		} catch {
 			return undefined;
 		}
@@ -2200,7 +2214,8 @@ export class ToolResultPresentationOwner {
 	/** Reuse the required projection scan, with only 128 source identities retained.
 	 * The caller owns and clears this explicit-change scratch map on every exit. */
 	private recordProjectedUiSource(message: ToolResultMessage, record: ProjectionRecord, sources?: Map<object, string | null>): void {
-		if (!sources || record.sourceScan.estimate.estimatedTokens <= this.budgetTokens!) return;
+		if (!sources || !requiresV2Projection(record.sourceScan.estimate.estimatedTokens, this.budgetTokens!, record.sourceScan.mcpArtifactRequired,
+			record.sourceScan.mcpInput, record.sourceScan.estimate.rawUtf8Bytes)) return;
 		if (sources.has(message.content)) { sources.set(message.content, null); return; }
 		if (sources.size >= MAX_PROJECTION_RECORD_ENTRIES) sources.delete(sources.keys().next().value!);
 		sources.set(message.content, message.toolCallId);

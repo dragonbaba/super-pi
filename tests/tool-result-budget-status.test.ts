@@ -18,6 +18,9 @@ import { Session as InspectorSession } from "node:inspector/promises";
 import { AssistantMessageEventStream } from "../packages/ai/src/utils/event-stream.ts";
 import { ExtensionHookTimeoutError } from "../packages/coding-agent/src/core/extensions/runner.ts";
 import { ToolResultPresentationOwner } from "../packages/coding-agent/src/core/tool-result-presentation.ts";
+// @ts-expect-error JavaScript extension package.
+import { convertMcpResult } from "../packages/mcp-bridge/src/bridge.js";
+const WAV_FIXTURE = "UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=";
 
 for (const action of ["prompt", "continue"]) test(`N4 budget replacement refuses a direct public Agent ${action} before any tool is pending`, async () => {
   const stream = new AssistantMessageEventStream(); let entered!: () => void, finished = false, pending: Promise<void> | undefined;
@@ -289,7 +292,7 @@ for (const rebuild of [false, true]) for (const transform of ["identity", "filte
     heapBefore, heapAfterRelease: process.memoryUsage().heapUsed, note: "Explicit command/whole request cost; not per-delta cost or a speedup claim." }));
 });
 
-test("N4 one retained V2 result survives 128 later V1 results through a budget change", async t => {
+for (const sourceKind of ["text", "audio", "resource"] as const) test(`N4 one retained ${sourceKind} V2 result survives 128 later V1 results through a budget change`, async t => {
   let requests = 0, executions = 0, wire = "";
   const fetchFixture: typeof fetch = async (_url, init) => {
     wire = String(init?.body); requests++;
@@ -301,8 +304,11 @@ test("N4 one retained V2 result survives 128 later V1 results through a budget c
   };
   const runtime = alphaModelRuntime((model: any, context: any, options: any) => streamSimple({ ...model, api: "openai-completions" }, context,
     { ...options, apiKey: "offline", fetch: fetchFixture, maxRetries: 0 }));
+  const source = sourceKind === "text" ? [{ type: "text" as const, text: "large evidence\n".repeat(10000) }]
+    : convertMcpResult({ content: sourceKind === "audio" ? [{ type: "audio", data: WAV_FIXTURE, mimeType: "audio/wav" }]
+      : [{ type: "resource", resource: { uri: "fixture://blob", blob: "YQ==", mimeType: "application/octet-stream" } }] }, true);
   const tools = ["inspect_budget", "tiny_budget"].map(name => ({ name, label: name, description: "bounded discovery fixture",
-    parameters: { type: "object", properties: {}, additionalProperties: false }, execute: async () => { executions++; return { content: [{ type: "text" as const, text: name === "inspect_budget" ? "large evidence\n".repeat(10000) : "small" }], details: {} }; } }));
+    parameters: { type: "object", properties: {}, additionalProperties: false }, execute: async () => { executions++; return { content: name === "inspect_budget" ? source : [{ type: "text" as const, text: "small" }], details: {} }; } }));
   const f = await alphaSession({ runtime, budgetTokens: 1024, customTools: tools });
   try {
     assert.equal(await f.mode.init(), true); await f.session.prompt("Inspect once."); await f.session.agent.waitForIdle();
@@ -322,9 +328,27 @@ test("N4 one retained V2 result survives 128 later V1 results through a budget c
     await f.session.prompt("Continue without tools."); await f.session.agent.waitForIdle();
     assert.equal(requests, 5); assert.equal(executions, 129); assert.ok(wire.includes("older-v2"));
     assert.equal(preDispatchInspections, 0); assert.ok(capturedScratch); assert.equal(capturedScratch.size, 0);
-    const next = component.getToolResultPresentationDiscovery("older-v2"); assert.ok(next?.cursor); assert.notEqual(next.cursor, previous.cursor);
+    const next = component.getToolResultPresentationDiscovery("older-v2"); assert.ok(next?.cursor);
+    if (sourceKind === "text") assert.notEqual(next.cursor, previous.cursor);
     assert.equal(f.internal.toolResultBudgetRediscoveryPasses, 1); assert.equal((f.session as any)._toolBudgetProjectedSources, undefined);
   } finally { await f.release(); }
+});
+
+for (const kind of ["audio", "resource", "bytes"] as const) test(`N4 capture and cold/resident UI inspection include MCP ${kind} below token limit`, () => {
+  const content = convertMcpResult({ content: kind === "audio" ? [{ type: "audio", data: WAV_FIXTURE, mimeType: "audio/wav" }]
+    : kind === "resource" ? [{ type: "resource", resource: { uri: "fixture://blob", blob: "YQ==" } }]
+    : [{ type: "text", text: "x".repeat(100000) }] }, true);
+  const owner = new ToolResultPresentationOwner({ enabled: true, budgetTokens: 1000000 }, "mcp-capture");
+  const sources = new Map<object, string | null>();
+  try {
+    assert.equal(owner.inspectToolResultPresentationForUiCandidate(content, "mcp-result"), "v2");
+    const message = { role: "toolResult" as const, toolName: "fixture", toolCallId: "mcp-result", content, isError: false, timestamp: 0 };
+    const projected = owner.projectMessagesForModel([message], undefined, undefined, undefined, undefined, undefined, false, sources);
+    assert.notEqual(projected[0].content, content); assert.equal(sources.get(content), "mcp-result");
+    assert.equal(owner.inspectToolResultPresentationForUiCandidate(content, "mcp-result"), "v2");
+    assert.equal(owner.counters.fullSourceEstimatorScans, 1);
+  } finally { sources.clear(); owner.dispose(); }
+  assert.equal(owner.counters.retainedProjectionCodeUnits, 0); assert.equal(sources.size, 0);
 });
 
 test("N4 projection capture reuses source scans and retains only 128 V2 identities", () => {

@@ -14,6 +14,12 @@ const EVM_ATTRIBUTE_NAME = Buffer.from("security.evm\0");
 const DEFAULT_ACL_ATTRIBUTE_NAME = Buffer.from("system.posix_acl_default\0");
 let bindings;
 let activeHandles = 0, activeDescriptors = 0, calls = 0, publicationAttempts = 0;
+let fileBytesRead = 0, metadataBytesRead = 0, hashBytes = 0, hashUpdates = 0;
+
+// Worker-owned primitive counters include work invisible to main-isolate probes.
+function updateHash(hash, bytes) {
+  hashBytes += bytes.byteLength; hashUpdates++; hash.update(bytes);
+}
 
 function loadBindings() {
   if (bindings) return bindings;
@@ -101,8 +107,8 @@ function securityFingerprint(bytes) {
   const parts = descriptorParts(bytes), hash = createHash("sha256"), frame = Buffer.alloc(4);
   // Owner/group defaulted; DACL present/defaulted, auto-inherit requested,
   // auto-inherited and protected. SELF_RELATIVE is a storage representation.
-  frame.writeUInt32LE(bytes.readUInt16LE(2) & 0x150f); hash.update(frame);
-  for (const value of [parts.owner, parts.group, parts.dacl]) { frame.writeInt32LE(value?.length ?? -1); hash.update(frame); if (value) hash.update(value); }
+  frame.writeUInt32LE(bytes.readUInt16LE(2) & 0x150f); updateHash(hash, frame);
+  for (const value of [parts.owner, parts.group, parts.dacl]) { frame.writeInt32LE(value?.length ?? -1); updateHash(hash, frame); if (value) updateHash(hash, value); }
   return hash.digest("hex");
 }
 
@@ -379,8 +385,8 @@ function inspectLinux(b, input) {
     if (previous && previous.equals(attribute.name)) throw new Error("Duplicate extended-attribute name.");
     const name = attribute.name.subarray(0, attribute.name.length - 1);
     frame.writeUInt32LE(name.length, 0); frame.writeUInt32LE(attribute.value.length, 4);
-    nameHash.update(frame.subarray(0, 4)); nameHash.update(name);
-    values.update(frame); values.update(name); values.update(attribute.value); previous = attribute.name;
+    updateHash(nameHash, frame.subarray(0, 4)); updateHash(nameHash, name);
+    updateHash(values, frame); updateHash(values, name); updateHash(values, attribute.value); previous = attribute.name;
   }
   return { ...linuxFileFlags(b, input.fd), hasAttributes: length !== 0, writeClearsAttributes, defaultAcl, mountId: linuxMountId(input.fd), namesFingerprint: nameHash.digest("hex"), valuesFingerprint: values.digest("hex") };
 }
@@ -390,7 +396,7 @@ function linuxMountId(fd) {
   const info = openSync(`/proc/self/fdinfo/${fd}`, "r"), bytes = Buffer.alloc(4097);
   try {
     let length = 0;
-    while (length < bytes.length) { const count = readSync(info, bytes, length, bytes.length - length, null); if (!count) break; length += count; }
+    while (length < bytes.length) { const count = readSync(info, bytes, length, bytes.length - length, null); metadataBytesRead += count; if (!count) break; length += count; }
     if (length > 4096) throw new Error("Owned descriptor information exceeds 4 KiB.");
     const match = LINUX_MOUNT_ID_PATTERN.exec(bytes.toString("utf8", 0, length));
     if (!match) throw new Error("[UNSUPPORTED_COMMIT] Mount identity is unavailable; it is not assumed equal to the parent mount.");
@@ -417,8 +423,9 @@ function verifyBytes(b, input, path, expected, size, hash, staged) {
     let position = 0;
     while (position <= size) {
       const count = readSync(fd, buffer, 0, Math.min(buffer.length, size + 1 - position), position);
+      fileBytesRead += count;
       if (!count) break;
-      position += count; digest.update(buffer.subarray(0, count));
+      position += count; updateHash(digest, buffer.subarray(0, count));
     }
     if (position !== size || digest.digest("hex") !== hash) throw new Error("[STALE_STATE] Publication content changed.");
     if (process.platform === "linux") {
@@ -498,8 +505,9 @@ function verifyInPlace(input) {
   let position = 0;
   while (position <= size) {
     const count = readSync(input.fd, bytes, 0, Math.min(bytes.length, size + 1 - position), position);
+    fileBytesRead += count;
     if (!count) break;
-    position += count; hash.update(bytes.subarray(0, count));
+    position += count; updateHash(hash, bytes.subarray(0, count));
   }
   if (position !== size || hash.digest("hex") !== input.previousSha256) throw new Error("[STALE_STATE] In-place content changed.");
   verifyPath(input.parent, false); verifyPath(input.target, true);
@@ -518,7 +526,7 @@ function execute(input) {
   if (process.platform === "win32" && input.operation === "remove") return withWindowsHandle(b, input, 0x00010080, removeWindowsHandle);
   if (input.operation === "replace") return replaceVerified(b, input);
   if (input.operation === "verify_in_place") return verifyInPlace(input);
-  if (input.operation === "stats") return { calls, activeHandles, activeDescriptors, publicationAttempts, platform: process.platform, arch: process.arch };
+  if (input.operation === "stats") return { calls, activeHandles, activeDescriptors, publicationAttempts, fileBytesRead, metadataBytesRead, hashBytes, hashUpdates, platform: process.platform, arch: process.arch };
   throw new Error("Unsupported private native file operation.");
 }
 

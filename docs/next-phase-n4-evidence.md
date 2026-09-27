@@ -430,3 +430,30 @@ projection -> bounded identity collection -> successful-dispatch UI rediscovery
 90 skips), five allocation gates, explicit-command profiles, five isolated
 native-cost processes and both-platform CI 36297004716. These profiles must be
 refreshed for the changed capture chain before final conclusions.
+
+Review r32: projection creation, bounded source capture and projected-only UI
+inspection share the complete token/artifact/MCP-byte-cap predicate. Actual
+SDK/TUI audio and resource results survive a budget change after 128 later small
+results; cold and resident inspection also cover the MCP byte cap below the
+token limit. The fixed module predicate and inspection are included in the AST
+callback/regex gate. Budget/presentation/contextual tests: 38 pass; check pass.
+The production path still reuses its required source scan and bounds the capture
+map at 128, with no production callback or regex added.
+
+The success matrix now samples at every tool start, progress and end plus both
+sides of each final filesystem assertion. All 36 actual task rows verify exact
+start/end sample counts and final file contents. This is a sampled maximum, not
+total allocation or the true transient peak; tool-probe overhead is included in
+timing and final verification remains outside timing.
+
+Native Worker primitive counters account for file readSync bytes and every
+SHA256 update, including metadata framing. File I/O reports show main/worker
+components and combined totals; proc metadata read bytes remain separate. These
+are API byte counts, not physical storage I/O or OS-internal metadata reads.
+Diagnostic snapshots never load an unused worker and occur outside timing.
+Real staged commits test counter growth and exact bytes, with zero handles,
+descriptors and pending calls after release. All 24 file-I/O and three compact
+snapshot functional cases passed, including worker counters and root removal.
+Those functional timings ran alongside other validation and are not comparative
+performance evidence. Final serial comparisons/profiles and current-head full
+local, two-platform CI and actual review remain outstanding.
