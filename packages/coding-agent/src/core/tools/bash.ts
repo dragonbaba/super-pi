@@ -178,19 +178,22 @@ export function createLocalShellOperations(shellName: string, resolveShellConfig
 			}
 			if (child.pid) trackDetachedChildPid(child.pid);
 			let timeoutHandle: NodeJS.Timeout | undefined;
+			let outputSettled = false;
 			const onAbort = () => {
-				if (observation.exitCode !== null || observation.signal !== null) return;
+				if (outputSettled) return;
 				stopReason ??= signal?.reason?.[OUTPUT_FAILURE_ABORT] ? "output_failure" : "cancelled";
 				if (child.pid) killProcessTree(child.pid);
+				if (observation.exitCode !== null || observation.signal !== null) { child.stdout?.destroy(); child.stderr?.destroy(); }
 			};
 
 			try {
 				// Set timeout if provided.
 				if (timeoutMs !== undefined) {
 					timeoutHandle = setTimeout(() => {
-						if (observation.exitCode !== null || observation.signal !== null) return;
+						if (outputSettled) return;
 						stopReason ??= "timeout";
 						if (child.pid) killProcessTree(child.pid);
+						if (observation.exitCode !== null || observation.signal !== null) { child.stdout?.destroy(); child.stderr?.destroy(); }
 					}, timeoutMs);
 				}
 				// Stream stdout and stderr.
@@ -204,6 +207,7 @@ export function createLocalShellOperations(shellName: string, resolveShellConfig
 				// Handle shell spawn errors and wait for the process to terminate without hanging
 				// on inherited stdio handles held by detached descendants.
 				const exitCode = await waitForChildProcess(child, observation);
+				outputSettled = true;
 				await inputObserver?.finish();
 				const termination = stopReason ?? (observation.signal ? "signal" : exitCode === null ? "unknown" : "exit");
 				const result: ShellProcessResult = { exitCode, observation, termination, inputError: inputObserver?.error };
