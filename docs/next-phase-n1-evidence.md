@@ -544,8 +544,10 @@ N3 candidate, based on main `501895c7d001563f002727d7c1cce047723df93c`, rather t
 directly pushing main or starting another topic. The approved N1 tree and its
 original validation remain historical coordinates.
 
-Standalone and batch result mirrors now require the same bounded unsigned
-device/inode pair when source identity is present. Batch completion persists
+Standalone and batch successful move result mirrors now require the same bounded
+unsigned device/inode pair, including durable-only success records; both missing
+is not a valid successful move. Other outcomes compare any supplied identity.
+Batch completion persists
 that existing pair alongside its other bounded durable fields. A missing,
 changed or malformed mirror is unrecoverable; a partial result with no identity
 in either mirror stays verifiable without claiming an identity match. Imported

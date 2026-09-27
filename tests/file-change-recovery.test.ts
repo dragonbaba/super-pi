@@ -471,13 +471,17 @@ for (const batch of [false, true]) test(`N1 merge regression: move identity mirr
   const genuine = JSON.parse(JSON.stringify(SessionManager.open(f.session.getSessionFile()!).getBranch()));
   const record = collectChanges(genuine, f.cwd)[0]; assert.equal(record.unavailable, undefined);
   assert.equal((await verifyChange(record, async () => {})).destinationIdentityMatches, true);
-  for (const fault of ["changed", "aggregate-absent", "durable-absent", "oversized", "negative", "malformed", "null"]) {
+  for (const fault of ["changed", "aggregate-absent", "durable-absent", "both-absent", "durable-only-absent", "oversized", "negative", "malformed", "null"]) {
     const branch = structuredClone(genuine);
     const durable = branch.find((entry: any) => entry.data?.toolCallId === "identity-move" && entry.data?.phase === "result").data;
     const aggregate = branch.find((entry: any) => entry.message?.toolCallId === "identity-move" && entry.message?.role === "toolResult").message.details;
     const receipt = batch ? aggregate.items[0].receipt : aggregate;
     if (fault === "aggregate-absent") delete receipt.sourceIdentity;
     else if (fault === "durable-absent") delete durable.sourceIdentity;
+    else if (fault === "both-absent" || fault === "durable-only-absent") {
+      delete receipt.sourceIdentity; delete durable.sourceIdentity;
+      if (fault === "durable-only-absent") branch.splice(branch.findIndex((entry: any) => entry.message?.toolCallId === "identity-move" && entry.message?.role === "toolResult"), 1);
+    }
     else receipt.sourceIdentity = fault === "null" ? null : fault === "malformed" ? [] : { device: record.sourceIdentity.device,
       inode: fault === "oversized" ? "9".repeat(1000000) : fault === "negative" ? "-1" : "0" };
     const invalid = collectChanges(branch, f.cwd)[0]; assert.ok(invalid.unavailable, fault); assert.equal(invalid.sourceIdentity, undefined);

@@ -489,7 +489,8 @@ export function collectChanges(branch: readonly any[], cwd: string): ChangeRecor
     }
     if (bound && call.name !== "file_batch" && !validStandalonePrefix(executionEntries, entry, call, receipt.target, receipt.receiptVersion === 2 ? receipt.destination : undefined)) bound = false;
     if (bound && receipt.receiptVersion === 2 && conflictingTerminal(executionEntries, entry, receipt.toolCallId, receipt.itemId, index, receipt, details)) bound = false;
-    if (bound && details?.sourceIdentity !== undefined && !validSourceIdentity(details.sourceIdentity)) bound = false;
+    if (bound && (receipt.operation === "move" && receipt.receiptVersion === 2 && receipt.status === "succeeded"
+      || details?.sourceIdentity !== undefined) && !validSourceIdentity(details?.sourceIdentity)) bound = false;
     if (bound && !commitMatchesTerminal(details?.commit, receipt.receiptVersion === 1 ? "succeeded" : receipt.status, receipt.stateChanged,
       entry?.data?.phase === "intent" ? undefined : selectedStrategy, details?.sha256)) bound = false;
     if (bound && entry?.data?.phase === "intent" && receipt.operation === "write") {
