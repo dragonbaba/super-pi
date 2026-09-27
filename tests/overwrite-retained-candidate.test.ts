@@ -43,13 +43,44 @@ test("N2 verified no-change overwrite draft preserves overwrite mode after candi
   assert.equal(readFileSync(path, "utf8"), "before");
 });
 
+for (const outcome of ["unknown", "committed"]) for (const batch of [false, true]) test(`N2 live overwrite ${outcome} failure clears range evidence, batch=${batch}`, async t => {
+  const f = await mutationFixture(t), path = join(f.cwd, "overwrite-outcome"); writeFileSync(path, "before");
+  await protectWindowsFixture(path); assert.equal((await f.call("read", { path }, "read-outcome")).isError, false);
+  const post = Worker.prototype.postMessage, emit = Worker.prototype.emit;
+  let publicationId = 0, publications = 0, publicationWorker: Worker | undefined;
+  t.mock.method(Worker.prototype, "postMessage", function(this: Worker, ...args: any[]) {
+    if (args[0]?.operation === "replace") {
+      publications++;
+      if (outcome === "unknown") throw Object.assign(new Error("fixture unconfirmed publication"), { commitOutcome: "unknown" });
+      publicationId = args[0].id; publicationWorker = this;
+    }
+    return Reflect.apply(post, this, args);
+  });
+  t.mock.method(Worker.prototype, "emit", function(this: Worker, event: string, ...args: any[]) {
+    if (event === "message" && this === publicationWorker && args[0]?.id === publicationId) {
+      assert.equal(args[0].error, undefined, JSON.stringify(args[0]));
+      args[0].error = { message: "fixture failure after actual native publication", commitOutcome: "committed" };
+    }
+    return Reflect.apply(emit, this, [event, ...args]);
+  });
+  t.after(disposeNativeFileWorker);
+  const result = await f.call(batch ? "file_batch" : "write", batch ? { operations: [{ operation: "write", mode: "overwrite", path, content: "candidate" }] } : { path, content: "candidate" }, "outcome-write");
+  assert.equal(result.isError, true); const receipt = batch ? (result.details as any).items[0] : result.details as any;
+  assert.equal(receipt.stateChanged, outcome === "unknown" ? "unknown" : true); assert.equal(receipt.requiresVerification, true);
+  const expected = outcome === "unknown" ? "before" : "candidate";
+  assert.equal(readFileSync(path, "utf8"), expected);
+  const exact = await f.call("edit", { path, edits: [{ oldText: "before", newText: "forbidden" }] }, "live-exact-after-outcome");
+  assert.equal(exact.isError, true); assert.ok(JSON.stringify(exact).includes("READ_REQUIRED"), JSON.stringify(exact));
+  assert.equal(publications, 1); assert.equal(readFileSync(path, "utf8"), expected);
+});
+
 for (const batch of [false, true]) test(`N2 overwrite persists verification/no-retry when a no-change failure retains the candidate, batch=${batch}`, async t => {
   const f = await mutationFixture(t), path = join(f.cwd, "overwrite"); writeFileSync(path, "before");
   await protectWindowsFixture(path);
   assert.equal((await f.call("read", { path }, "read-before")).isError, false);
-  const post = Worker.prototype.postMessage;
+  const post = Worker.prototype.postMessage; let publications = 0;
   t.mock.method(Worker.prototype, "postMessage", function(this: Worker, ...args: any[]) {
-    if (args[0]?.operation === "replace") throw Object.assign(new Error("fixture verified native no-change failure"), { commitOutcome: "not_committed" });
+    if (args[0]?.operation === "replace") { publications++; throw Object.assign(new Error("fixture verified native no-change failure"), { commitOutcome: "not_committed" }); }
     if (args[0]?.operation === "remove") throw new Error("fixture deletion unavailable; retain candidate");
     return Reflect.apply(post, this, args);
   });
@@ -63,6 +94,9 @@ for (const batch of [false, true]) test(`N2 overwrite persists verification/no-r
   assert.equal(outcome.status, "failed_no_change"); assert.equal(outcome.stateChanged, false);
   assert.equal(outcome.requiresVerification, true); assert.ok(details.commit.retainedTemporary);
   assert.equal(readFileSync(path, "utf8"), "before"); assert.equal(readFileSync(details.commit.retainedTemporary, "utf8"), "candidate");
+  const exact = await f.call("edit", { path, edits: [{ oldText: "before", newText: "forbidden" }] }, "live-exact-after-retained");
+  assert.equal(exact.isError, true); assert.ok(JSON.stringify(exact).includes("READ_REQUIRED"), JSON.stringify(exact));
+  assert.equal(publications, 1); assert.equal(readFileSync(path, "utf8"), "before");
   const restored = new MutationWriteGuard();
   await restoreMutationEvidenceFromBranch(restored, f.cwd, SessionManager.open(f.session.getSessionFile()!).getBranch());
   await assert.rejects(restored.write(f.cwd, path, "restored forbidden", 99), /READ_REQUIRED/);

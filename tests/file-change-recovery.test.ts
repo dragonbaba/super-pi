@@ -58,6 +58,24 @@ test("N1 oversized legacy receipt IDs refuse before map keys or recovery IDs", a
   assert.deepEqual(collectChanges([entry], f.cwd), []); assert.equal(oversized, 0);
 });
 
+for (const fault of ["malformed-tail", "aggregate-limit", "invalid-mode", "missing-exact-text", "invalid-snapshot"]) test(`N1 rejected imported arguments cannot spend genuine recovery budget: ${fault}`, async t => {
+  const f = await fixture(t);
+  assert.equal((await f.call("write", { path: "genuine", content: "g".repeat(512 * 1024) }, "genuine")).isError, false);
+  const prefix = { operation: "write", mode: "create", path: "never-created", content: "x".repeat(1024 * 1024 - 1000) };
+  for (let index = 0; index < 5; index++) {
+    const operations = fault === "malformed-tail" ? [prefix, null]
+      : fault === "invalid-mode" ? [{ ...prefix, mode: "invalid" }]
+      : fault === "missing-exact-text" ? [prefix, { operation: "edit", path: "absent", edits: [{ newText: "x" }] }]
+      : fault === "invalid-snapshot" ? [prefix, { operation: "edit", path: "absent", snapshot: "invalid", edits: [{ kind: "delete", start: "1#ABCD" }] }]
+      : [prefix, { ...prefix, path: "also-absent", content: "y".repeat(2000) }];
+    assert.equal((await f.call("file_batch", { operations }, `rejected-${index}`)).isError, true);
+  }
+  const record = collectChanges(f.session.getBranch(), f.cwd).find((item: any) => item.toolCallId === "genuine");
+  assert.ok(record); assert.equal(record.unavailable, undefined);
+  assert.equal((await verifyChange(record, async () => {})).postimageMatches, true);
+  assert.equal(existsSync(join(f.cwd, "never-created")), false); assert.equal(existsSync(join(f.cwd, "also-absent")), false);
+});
+
 test("N1 older synthesized preparations cannot evict newer completed changes", async t => {
   const f = await fixture(t);
   for (let batch = 0; batch < 9; batch++) {

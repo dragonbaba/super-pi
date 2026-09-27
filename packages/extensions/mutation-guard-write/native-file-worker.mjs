@@ -256,6 +256,13 @@ function inspectWindows(b, input) {
     // explicit access denial selects compatibility; other failures propagate.
     try { withWindowsHandle(b, input, 0xc0110000, observeWindowsReplacementAccess); observed.replacementAccess = true; }
     catch (error) { if (error.nativeCode !== 5) throw error; observed.replacementAccess = false; }
+    observed.inPlaceAccess = observed.replacementAccess;
+    if (!observed.inPlaceAccess) {
+      // Node r+ requests GENERIC_READ | GENERIC_WRITE. FILE_WRITE_DATA alone
+      // does not establish that the compatibility path can open this object.
+      try { withWindowsHandle(b, input, 0xc0000000, observeWindowsReplacementAccess); observed.inPlaceAccess = true; }
+      catch (error) { if (error.nativeCode !== 5) throw error; }
+    }
     // FILE_ADD_FILE on the already existing canonical parent, without creating
     // a probe file. Directory handles require BACKUP_SEMANTICS; no token
     // privilege is enabled or adjusted. Other failures do not select fallback.
