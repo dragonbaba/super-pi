@@ -534,3 +534,14 @@ The separate capture constant and lifecycle above make the scope explicit rather
 than claiming one shared 128 Mi allowance. No new import limit or general cache
 platform was introduced. Final integrated profiles/comparison/PTY and full gates
 remain required; the numerical costs below earlier checkpoints are historical.
+
+Review r38 / CI closure: both e29ffea platforms and the local integrated 6d57e316
+run reproduced the unchanged presentation source gate's object-spread assertion
+(1 versus required 0). The final-view wrapper now spells out its fixed fields;
+no invariant or test was relaxed. The full presentation/contextual source checks
+were added to the focused command: 59 tests pass and check passes. This also
+includes the real SDK/TUI image-policy, headless release and SDK invalidation
+regressions from r34/r37. The combined code now includes stable N3 parent
+b50844cc8e201b9aeecc4576b81f149380804ffc, which passed all local gates, both CI
+platforms and actual Codex review. Final N4 measurements and final-candidate full
+validation remain outstanding; prior failed runs are not counted as passes.

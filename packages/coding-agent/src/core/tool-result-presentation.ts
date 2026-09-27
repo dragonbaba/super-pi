@@ -2258,7 +2258,18 @@ export class ToolResultPresentationOwner {
 		}
 		if (noticeBlockIndex < 0 || retainedCodeUnits > MAX_PROJECTED_UI_CAPTURE_CODE_UNITS) return;
 		capture.retainedCodeUnits = retainedCodeUnits;
-		capture.projection = projected.content === projection.content ? projection : { ...projection, content: projected.content as ToolResultPresentationContent[], noticeBlockIndex, estimate: estimateToolOutputTokens(projected.content) };
+		capture.projection = projected.content === projection.content ? projection : {
+			artifact: projection.artifact,
+			content: projected.content as ToolResultPresentationContent[],
+			noticeBlockIndex,
+			start: projection.start,
+			end: projection.end,
+			headTextCodeUnits: projection.headTextCodeUnits,
+			tailTextCodeUnits: projection.tailTextCodeUnits,
+			cursor: projection.cursor,
+			estimate: estimateToolOutputTokens(projected.content),
+			fullEstimate: projection.fullEstimate,
+		};
 		for (const source of sources.values()) retainedCodeUnits += source?.retainedCodeUnits ?? 0;
 		while (sources.size >= MAX_PROJECTION_RECORD_ENTRIES || retainedCodeUnits > MAX_PROJECTED_UI_CAPTURE_CODE_UNITS) {
 			const key = sources.keys().next().value!;
