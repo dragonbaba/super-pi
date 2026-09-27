@@ -851,9 +851,10 @@ test("N1 partial batch creation binds created-directory metadata across the resu
   }
 });
 
-for (const batch of [false, true]) test(`N2 retained exact-edit candidate consumes read evidence, batch=${batch}`, async t => {
+for (const batch of [false, true]) for (const kind of ["exact", "snapshot"]) test(`N2 retained ${kind}-edit candidate consumes read evidence, batch=${batch}`, async t => {
   const f = await fixture(t), target = join(realpathSync.native(f.cwd), "retained-exact"); writeFileSync(target, "before");
-  await protectWindowsFixture(target); await f.call("read", { path: target }, "retained-read");
+  await protectWindowsFixture(target); const read = await f.call("read", { path: target }, "retained-read");
+  const body = read.content.filter(block => block.type === "text").map(block => block.text).join("\n");
   const probe = await open(target, "r"), prototype = Object.getPrototypeOf(probe); await probe.close();
   const post = Worker.prototype.postMessage;
   t.mock.method(prototype, "sync", async function() { throw new Error("fixture retained exact staging sync failure"); });
@@ -862,12 +863,16 @@ for (const batch of [false, true]) test(`N2 retained exact-edit candidate consum
     return post.call(this, input);
   });
   const args = { path: target, edits: [{ oldText: "before", newText: "after" }] };
-  const first = await f.call(batch ? "file_batch" : "edit", batch ? { operations: [{ operation: "edit", ...args }] } : args, "retained-first");
+  const firstArgs = kind === "exact" ? args : { path: target, snapshot: body.slice(body.indexOf("snapshot=") + 9, body.indexOf("snapshot=") + 36),
+    edits: [{ kind: "replace", start: body.split("\n").find(line => line.startsWith("1#"))!.split("|")[0], newLines: ["after"] }] };
+  const first = await f.call(batch ? "file_batch" : "edit", batch ? { operations: [{ operation: "edit", ...firstArgs }] } : firstArgs, "retained-first");
   t.mock.restoreAll(); assert.equal(first.isError, true);
   const retained = (await fsPromises.readdir(dirname(target))).filter(name => name.startsWith(".pi-file-commit-"));
   assert.equal(retained.length, 1); assert.equal(readFileSync(join(dirname(target), retained[0]!), "utf8"), "after");
   const retry = await f.call("edit", args, "retained-retry");
   assert.equal(retry.isError, true); assert.ok(JSON.stringify(retry).includes("READ_REQUIRED"), JSON.stringify(retry));
+  const overwrite = await f.call("write", { path: target, content: "other" }, "retained-overwrite");
+  assert.equal(overwrite.isError, true); assert.ok(JSON.stringify(overwrite).includes("READ_REQUIRED"), JSON.stringify(overwrite));
   assert.deepEqual((await fsPromises.readdir(dirname(target))).filter(name => name.startsWith(".pi-file-commit-")), retained);
   assert.equal(readFileSync(target, "utf8"), "before");
   await f.call("read", { path: target }, "retained-fresh-read");

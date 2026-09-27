@@ -489,7 +489,7 @@ export default function mutationGuardWriteExtension(pi: ExtensionAPI): void {
           if (error instanceof FileCommitError) {
             const failure = commitFailure(error);
             if (failure.stateChanged === false) guard.releaseMutation(reservationId);
-            else guard.invalidateCanonicalPath(canonicalTarget);
+            if (failure.stateChanged !== false || failure.commit?.retainedTemporary) guard.invalidateCanonicalPath(canonicalTarget);
             return finishEdit(toolCallId, canonicalTarget, failure, error.message);
           }
           const message = error instanceof Error ? error.message : String(error);
