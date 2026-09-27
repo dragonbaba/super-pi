@@ -739,3 +739,50 @@ regressions from r34/r37. The combined code now includes stable N3 parent
 b50844cc8e201b9aeecc4576b81f149380804ffc, which passed all local gates, both CI
 platforms and actual Codex review. Final N4 measurements and final-candidate full
 validation remain outstanding; prior failed runs are not counted as passes.
+
+Merge-closeout Ready feedback on dd796f23 (2026-09-27): two regressions were
+reproduced before the fix (three focused assertions failed). A successful
+before_provider_request hook could replace the wire result, yet a later ordinary
+transcript rebuild restored a canonical "model received" discovery. Pending
+provenance invalidation now also blocks that generation's canonical fallback;
+rebuilds do not erase it. The SDK test verifies the replacement wire payload and
+three subsequent thinking-visibility rebuilds.
+
+Projected-only rediscovery now enumerates at most 128 captured tool-call IDs,
+using the existing weak content provenance and canonical index. The index is
+prepared during the explicit change's next request preparation, not activated or
+rebuilt during assistant response delivery. Empty captures activate no index.
+Replacement, overflow, unexpected append, duplicate IDs and content mismatch
+fail closed. The bounded ID array is emptied and discarded with provenance on
+consumption (including early return/throw), response, failure/abort, replacement
+and disposal. It holds strings only, no canonical result arrays or components.
+No callback, regex, Promise, AbortController, source copy or pool was added; AST
+coverage also includes the new release helper and collector. Normal unchanged
+responses keep the primitive generation early return.
+
+Focused check/source/SDK suite: 51 pass on Node 22.19.0 Windows x64. With 10,001
+canonical messages, response discovery visits zero history entries, makes 0 or 1
+canonical probes, and performs zero additional index builds. A 130-result case
+keeps at most 128 IDs and tests duplicate, replacement, append and changed-content
+rejection. Existing full-source ambiguity checks remain for cold ordinary
+transcript reconstruction. Request preparation can still scan canonical history;
+existing once-per-change matching of retained UI leaves and ordinary transcript
+reconstruction are not claimed constant-cost. No history/import limit changed.
+
+Production chain audited: SDK conversion/payload hook/effective dispatch ->
+AgentSession event delivery -> InteractiveMode budget rediscovery -> presentation
+owner create/release -> retained leaf attachment/invalidation -> response/end and
+Session disposal. The existing captured-view WeakMap, bounded presentation map,
+owner projection work and retained-leaf matching remain. The new allocation is
+one <=128-reference ID array per explicit-change capture, never per delta/frame.
+Controlled-GC HeapProfiler runs of the existing real SDK/TUI fixture (20 changes,
+22 requests, one tool execution each): without/with pending transcript rebuild,
+21,791,760 / 22,211,296 sampled bytes for the whole fixture; heap before/after
+release 60,456,192 / 63,142,368 and 63,203,336 / 63,806,944 bytes. Both report 20
+rediscovery passes, 20 component probes, zero unchanged-generation probes, zero
+retained registrations after release, and released capture/ID references. These
+are whole-command/request costs including runtime warmup, not a zero-allocation
+claim or new 85-group speed comparison. The original measurement source
+32fca50f1caa7eff66d1fed8e5d91a8e811fc903 and approved candidate
+06255a085391195411f12a8bc8ac73861ecf61ee retain their historical labels; these
+merge-feedback fixes require their own final-candidate gates, CI and review.

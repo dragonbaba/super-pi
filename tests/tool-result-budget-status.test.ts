@@ -43,6 +43,7 @@ for (const outcome of ["stop", "error", "abort"] as const) test(`N4 headless act
     await f.session.agent.continue(); await f.session.agent.waitForIdle();
     assert.equal(requests, 1); assert.equal(captured, true);
     assert.equal((f.session as any)._toolBudgetProjectedSources, undefined);
+    assert.equal((f.session as any)._toolBudgetProjectedIds, undefined);
     assert.ok(f.session.messages.some(message => message.role === "toolResult" && message.toolCallId === result.toolCallId));
     assert.equal(f.session.agent.state.pendingToolCalls.size, 0);
   } finally { await f.release(); }
@@ -361,6 +362,7 @@ for (const rebuild of [false, true]) for (const transform of ["identity", "filte
     assert.equal((f.session as any)._toolBudgetSourceCapturePasses, cycle + 1);
     assert.equal((f.session as any)._toolBudgetProjectedSources, undefined);
     assert.equal(f.internal.toolResultBudgetRediscoveryPasses, cycle + 1);
+    assert.equal((f.session as any)._toolBudgetProjectedIds, undefined);
     const probes = f.internal.toolResultBudgetRediscoveryComponentProbes;
     for (let n = 0; n < 100; n++) f.internal.rediscoverToolResultsAfterBudgetChange();
     assert.equal(f.internal.toolResultBudgetRediscoveryComponentProbes, probes);
@@ -541,8 +543,9 @@ test("N4 actual Codex SSE late dispatch refreshes retained provenance on the sam
 });
 
 for (const failure of ["payload-hook", "runtime"]) test(`N4 budget provenance waits for effective dispatch after ${failure} rejection`, async () => {
-  let requests = 0, executions = 0, rejectRequest = false;
-  const fetchFixture: typeof fetch = async () => {
+  let requests = 0, executions = 0, rejectRequest = false, rewritePayload = false, wire = "";
+  const fetchFixture: typeof fetch = async (_url, init) => {
+    wire = String(init?.body);
     const first = ++requests === 1;
     const delta = first ? { tool_calls: [{ index: 0, id: "dispatch-history", type: "function", function: { name: "inspect_dispatch", arguments: "{}" } }] } : { content: "Observed." };
     const event = { id: "offline", object: "chat.completion.chunk", created: 1, model: "fixture", choices: [{ index: 0, delta, finish_reason: null }] };
@@ -554,7 +557,11 @@ for (const failure of ["payload-hook", "runtime"]) test(`N4 budget provenance wa
     return streamSimple({ ...model, api: "openai-completions" }, context, { ...options, apiKey: "offline", fetch: fetchFixture, maxRetries: 0 });
   });
   const f = await alphaSession({ runtime, settings: { retry: { enabled: false } }, extensions: failure === "payload-hook" ? [(pi: any) => {
-    pi.on("before_provider_request", () => { if (rejectRequest) throw new ExtensionHookTimeoutError("fixture", "before_provider_request", 1); });
+    pi.on("before_provider_request", (event: any) => {
+      if (rejectRequest) throw new ExtensionHookTimeoutError("fixture", "before_provider_request", 1);
+      if (rewritePayload) return { ...event.payload, messages: event.payload.messages.map((message: any) =>
+        message.role === "tool" ? { ...message, content: "hook replacement" } : message) };
+    });
   }] : undefined, customTools: [{ name: "inspect_dispatch", label: "Inspect", description: "dispatch fixture", parameters: { type: "object", properties: {} },
     execute: async () => { executions++; return { content: [{ type: "text", text: "完整证据\n".repeat(10000) }] }; } }] });
   try {
@@ -568,15 +575,80 @@ for (const failure of ["payload-hook", "runtime"]) test(`N4 budget provenance wa
     assert.notEqual(f.internal.toolResultBudgetUiGeneration, f.session.toolResultBudgetGeneration);
     assert.equal((f.session as any)._toolBudgetSourceCapturePasses, 1);
     f.internal.toggleThinkingBlockVisibility(); assert.equal(f.internal.getToolResultDiscoveryLifecycleCounts().totalEntries, 0);
-    rejectRequest = false; await f.session.prompt("Retry preparation, keep the completed tool."); await f.session.agent.waitForIdle();
+    rejectRequest = false; rewritePayload = true; await f.session.prompt("Retry preparation, keep the completed tool."); await f.session.agent.waitForIdle();
     assert.equal(requests, 3); assert.equal(executions, 1); assert.equal((f.session as any)._toolBudgetSourceCapturePasses, 2);
     assert.equal(f.internal.toolResultBudgetUiGeneration, f.session.toolResultBudgetGeneration);
     assert.equal(f.session.toolResultBudgetRediscoveryState, "none");
     const attached = f.internal.attachedToolResultDiscoveries?.get("dispatch-history");
     if (failure === "runtime") assert.ok(attached?.component.getToolResultPresentationDiscovery("dispatch-history")?.cursor);
     else assert.equal(attached, undefined, "arbitrary payload hooks cannot establish canonical source provenance");
+    if (failure === "payload-hook") {
+      assert.ok(wire.includes("hook replacement"));
+      assert.equal(wire.includes("完整证据"), false);
+      for (let rebuild = 0; rebuild < 3; rebuild++) {
+        f.internal.toggleThinkingBlockVisibility();
+        assert.equal(f.internal.attachedToolResultDiscoveries?.get("dispatch-history"), undefined,
+          "acknowledging the generation must not restore unverified payload provenance");
+      }
+    }
   } finally { await f.release(); }
   assert.equal(f.internal.getToolResultDiscoveryLifecycleCounts().totalEntries, 0);
+});
+
+for (const captured of [false, true]) test(`N4 projected rediscovery does not walk unrelated history, captured=${captured}`, async t => {
+  const result = { role: "toolResult" as const, toolName: "fixture", toolCallId: "bounded-capture",
+    content: [{ type: "text" as const, text: "evidence ".repeat(4000) }], isError: false, timestamp: 1 };
+  const messages: any[] = [result];
+  for (let index = 0; index < 10000; index++) messages.push({ role: "user", content: "unrelated", timestamp: index + 2 });
+  const f = await alphaSession({ messages });
+  try {
+    f.session.configureToolResultBudget({ enabled: true, budgetTokens: 512 });
+    const canonical = f.session.messages[0] as typeof result;
+    f.session.projectToolResultMessagesForModel(captured ? [canonical] : []);
+    f.session.recordToolResultBudgetDispatch();
+    const before = f.session.getToolResultPresentationUiRebuildCounts();
+    const presentations = new Map();
+    f.session.collectRecentToolResultPresentationsForUi(presentations, 128, true);
+    const after = f.session.getToolResultPresentationUiRebuildCounts();
+    assert.equal(presentations.size, captured ? 1 : 0);
+    t.diagnostic(JSON.stringify({ captured, before, after }));
+    assert.equal(after.historyMessagesVisited, 0);
+    assert.ok(after.canonicalLookupProbes <= 128);
+    assert.equal(after.liveCanonicalIndexBuildProbes, before.liveCanonicalIndexBuildProbes);
+    assert.equal((f.session as any)._toolBudgetProjectedSources, undefined);
+    assert.equal((f.session as any)._toolBudgetProjectedIds, undefined);
+    presentations.clear();
+  } finally { await f.release(); }
+});
+
+for (const mutation of ["duplicate", "replacement", "append", "content", "normal"] as const)
+test(`N4 bounded projection discovery preserves canonical identity checks: ${mutation}`, async () => {
+  const messages: any[] = [];
+  for (let index = 0; index < 130; index++) messages.push({ role: "toolResult", toolName: "fixture", toolCallId: `bounded-${index}`,
+    content: [{ type: "text", text: "evidence ".repeat(2000) }], isError: false, timestamp: index });
+  const f = await alphaSession({ messages });
+  try {
+    f.session.configureToolResultBudget({ enabled: true, budgetTokens: 512 });
+    const canonical = f.session.messages as any[];
+    if (mutation === "duplicate") canonical.push({ ...canonical[129], content: [{ type: "text", text: "other" }] });
+    f.session.projectToolResultMessagesForModel(canonical.slice());
+    const ids = (f.session as any)._toolBudgetProjectedIds as string[];
+    assert.equal(ids.length, 128);
+    if (mutation === "replacement") f.session.agent.state.messages = canonical.slice();
+    if (mutation === "append") canonical.push({ ...canonical[129] });
+    if (mutation === "content") canonical[129].content = [{ type: "text", text: "replacement" }];
+    f.session.recordToolResultBudgetDispatch();
+    const presentations = new Map();
+    f.session.collectRecentToolResultPresentationsForUi(presentations, 128, true);
+    assert.equal(presentations.size, mutation === "normal" ? 128 : mutation === "duplicate" || mutation === "content" ? 127 : 0);
+    if (mutation !== "normal") assert.equal(presentations.has(canonical[129]), false);
+    assert.equal(f.session.getToolResultPresentationUiRebuildCounts().historyMessagesVisited, 0);
+    assert.ok(f.session.getToolResultPresentationUiRebuildCounts().canonicalLookupProbes <= 128);
+    assert.equal(ids.length, 0);
+    assert.equal((f.session as any)._toolBudgetProjectedIds, undefined);
+    assert.equal((f.session as any)._toolBudgetProjectedSources, undefined);
+    presentations.clear();
+  } finally { await f.release(); }
 });
 
 test("N4 unconfigured budget generation settles without per-response status snapshots", async t => {

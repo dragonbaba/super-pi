@@ -829,6 +829,8 @@ export class AgentSession {
 	private _toolBudgetSessionOverride = false;
 	private _toolBudgetProjectionPending = false;
 	private _toolBudgetProjectedSources: WeakMap<object, ToolResultProjectedUiSource | null> | undefined;
+	private _toolBudgetProjectedIds: string[] | undefined;
+	private _toolBudgetCanonicalRediscoveryBlocked = false;
 	private _toolBudgetSourceCapturePasses = 0;
 	private _toolResultUiDispatchMessage: Extract<AgentMessage, { role: "toolResult" }> | undefined;
 	private _toolResultUiDispatchSourceContent: Extract<AgentMessage, { role: "toolResult" }>["content"] | undefined;
@@ -1285,7 +1287,7 @@ export class AgentSession {
 			}
 		} finally {
 			if (deadlineTimer) clearTimeout(deadlineTimer);
-			this._toolBudgetProjectedSources = undefined;
+			this._clearToolBudgetProjectedSources();
 		}
 	}
 
@@ -1484,7 +1486,7 @@ export class AgentSession {
 			this._emit(event);
 			// Built-in UI consumes synchronously at assistant start/end. Headless,
 			// print and RPC owners must release the same temporary final views.
-			if (event.type === "message_end" && event.message.role === "assistant") this._toolBudgetProjectedSources = undefined;
+			if (event.type === "message_end" && event.message.role === "assistant") this._clearToolBudgetProjectedSources();
 		}
 
 		// Handle session persistence
@@ -1782,7 +1784,7 @@ export class AgentSession {
 		this._toolOutputShadow = undefined;
 		this._toolResultPresentation?.dispose();
 		this._toolResultPresentation = undefined;
-		this._toolBudgetProjectedSources = undefined;
+		this._clearToolBudgetProjectedSources();
 		this._toolBudgetProjectionPending = false;
 		this._toolResultUiDispatchMessage = undefined;
 		this._toolResultUiDispatchSourceContent = undefined;
@@ -1876,8 +1878,9 @@ export class AgentSession {
 		this._clearEvidenceBranch();
 		this._toolResultPresentation?.dispose();
 		this._toolResultPresentation = next;
-		this._toolBudgetProjectedSources = undefined;
+		this._clearToolBudgetProjectedSources();
 		this._toolBudgetProjectionPending = next?.getEvidenceBudgetTokens() !== undefined;
+		this._toolBudgetCanonicalRediscoveryBlocked = this._toolBudgetProjectionPending;
 		this._toolBudgetLastRequest = "not-observed";
 		this._toolBudgetSessionOverride = true;
 		this._toolBudgetGeneration++;
@@ -1907,7 +1910,15 @@ export class AgentSession {
 
 	/** A payload hook cannot prove source identity; failures must permit recapture. */
 	discardPendingToolResultBudgetSources(): void {
-		if (this._toolBudgetProjectionPending) this._toolBudgetProjectedSources = undefined;
+		if (!this._toolBudgetProjectionPending) return;
+		this._clearToolBudgetProjectedSources();
+		this._toolBudgetCanonicalRediscoveryBlocked = true;
+	}
+
+	private _clearToolBudgetProjectedSources(): void {
+		this._toolBudgetProjectedSources = undefined;
+		if (this._toolBudgetProjectedIds) this._toolBudgetProjectedIds.length = 0;
+		this._toolBudgetProjectedIds = undefined;
 	}
 
 	/** Snapshot only on an explicit settings/status action; no history or token scan. */
@@ -1930,7 +1941,16 @@ export class AgentSession {
 		try {
 			const projected = owner.projectMessagesForModel(messages, imagePolicy, systemPrompt, tools, contextWindow, maxOutputTokens, requestPlanning, sources);
 			this._toolBudgetLastRequest = owner.getEvidenceBudgetTokens() === undefined ? "not-observed" : "applied";
-			if (sources) this._toolBudgetProjectedSources = new WeakMap(sources);
+			if (sources) {
+				// Request preparation is the existing cold history boundary. Do not
+				// activate/rebuild the canonical index at assistant response delivery.
+				if (sources.size !== 0) this._synchronizeToolResultUiCanonicalIndex();
+				const ids: string[] = [];
+				for (const source of sources.values()) if (source) ids.push(source.toolCallId);
+				this._toolBudgetProjectedIds = ids;
+				this._toolBudgetProjectedSources = new WeakMap(sources);
+				this._toolBudgetCanonicalRediscoveryBlocked = false;
+			}
 			return projected;
 		} catch (error) {
 			this._toolBudgetLastRequest = error instanceof ToolResultContinuationError && error.code === "budget-too-small" ? "blocked" : "preparation-failed";
@@ -2072,7 +2092,7 @@ export class AgentSession {
 	): void {
 		target.clear();
 		const projectedSources = projectedOnly ? this._toolBudgetProjectedSources : undefined;
-		if (projectedOnly) this._toolBudgetProjectedSources = undefined;
+		const projectedIds = projectedOnly ? this._toolBudgetProjectedIds : undefined;
 		this._toolResultUiHistoryMessagesVisited = 0;
 		this._toolResultUiPresentationCandidatesEvaluated = 0;
 		this._toolResultUiActualV2Discoveries = 0;
@@ -2080,7 +2100,39 @@ export class AgentSession {
 		this._toolResultUiSourceScans = 0;
 		const owner = this._toolResultPresentation;
 		const boundedLimit = Number.isSafeInteger(limit) ? Math.min(limit, MAX_TOOL_RESULT_UI_DISCOVERIES) : 0;
-		if (!owner || boundedLimit <= 0) return;
+		if (projectedOnly) {
+			try {
+				if (!owner || boundedLimit <= 0 || !projectedSources || !projectedIds?.length) return;
+				const messages = this.agent.state.messages;
+				const indexedLength = this._toolResultUiCanonicalMessagesLength;
+				// Fail closed on replacement or an unbounded append. The response may
+				// append its one assistant message; it cannot alter tool identities.
+				if (this._toolResultUiCanonicalMessagesSource !== messages || this._toolResultUiCanonicalMessagesOverflowed ||
+					indexedLength > messages.length || messages.length - indexedLength > 1 ||
+					(indexedLength > 0 && messages[indexedLength - 1] !== this._toolResultUiCanonicalMessagesTail) ||
+					(messages.length > indexedLength && messages[indexedLength]?.role !== "assistant")) return;
+				for (const toolCallId of projectedIds) {
+					if (target.size >= boundedLimit) break;
+					this._toolResultUiCanonicalLookupProbes++;
+					const candidate = this._toolResultUiCanonicalMessages?.get(toolCallId);
+					if (!candidate) continue;
+					const source = projectedSources.get(candidate.content);
+					if (source?.toolCallId !== toolCallId) continue;
+					this._toolResultUiPresentationCandidatesEvaluated++;
+					this._toolResultUiSourceScans++;
+					const presentation = owner.create(candidate.content, toolCallId, source);
+					try {
+						if (presentation?.version === 2) {
+							owner.touchExactResidentProjectionRecord(candidate.content, toolCallId);
+							target.set(candidate, presentation);
+						}
+					} finally { owner.release(); }
+				}
+				this._toolResultUiActualV2Discoveries = target.size;
+			} finally { this._clearToolBudgetProjectedSources(); }
+			return;
+		}
+		if (!owner || boundedLimit <= 0 || this._toolBudgetCanonicalRediscoveryBlocked) return;
 		this._synchronizeToolResultUiCanonicalIndex();
 		const messages = this.agent.state.messages;
 		// Keep one bounded backup candidate per possible ambiguous output slot.
@@ -2092,12 +2144,10 @@ export class AgentSession {
 			this._toolResultUiHistoryMessagesVisited++;
 			const candidate = messages[index];
 			if (candidate?.role !== "toolResult") continue;
-			const projectedSource = projectedSources?.get(candidate.content);
-			if (projectedOnly && projectedSource?.toolCallId !== candidate.toolCallId) continue;
 			if (candidatesByToolCallId.has(candidate.toolCallId)) continue;
 			this._toolResultUiPresentationCandidatesEvaluated++;
 			this._toolResultUiSourceScans++;
-			if (owner.inspectToolResultPresentationForUiCandidate(candidate.content, candidate.toolCallId, projectedSource?.budgetTokens) !== "v2") continue;
+			if (owner.inspectToolResultPresentationForUiCandidate(candidate.content, candidate.toolCallId) !== "v2") continue;
 			candidatesByToolCallId.set(candidate.toolCallId, candidate);
 		}
 		const candidateOccurrences = new Map<string, number>();
@@ -2120,7 +2170,7 @@ export class AgentSession {
 		for (let index = selectedCandidates.length - 1; index >= 0; index--) {
 			const candidate = selectedCandidates[index]!;
 			this._toolResultUiSourceScans++;
-			const presentation = owner.create(candidate.content, candidate.toolCallId, projectedSources?.get(candidate.content) ?? undefined);
+			const presentation = owner.create(candidate.content, candidate.toolCallId);
 			if (!presentation) continue;
 			try {
 				if (presentation.version === 2) {
