@@ -17,6 +17,37 @@ const MAX_VERIFY_BYTES = 32 * 1024 * 1024;
 const CHANGE_GRAPHEMES = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 const OBSERVATION_SCOPE = "Filesystem observation only; not a semantic/test result, proof of earlier side effects, or permission to replay.";
 const MAX_RECOVERY_ARGUMENT_BYTES = 4 * 1024 * 1024;
+const RECOVERY_BATCH_FIELDS = ["operations", "dryRun", "purpose"] as const;
+const RECOVERY_WRITE_FIELDS = ["path", "content", "purpose"] as const;
+const RECOVERY_EDIT_FIELDS = ["path", "snapshot", "edits", "purpose"] as const;
+const RECOVERY_DELETE_FIELDS = ["path", "purpose"] as const;
+const RECOVERY_MOVE_FIELDS = ["path", "destination", "purpose"] as const;
+const RECOVERY_BATCH_WRITE_FIELDS = ["operation", "path", "mode", "content"] as const;
+const RECOVERY_BATCH_EDIT_FIELDS = ["operation", "path", "snapshot", "edits"] as const;
+const RECOVERY_BATCH_DELETE_FIELDS = ["operation", "path"] as const;
+const RECOVERY_BATCH_MOVE_FIELDS = ["operation", "path", "destination"] as const;
+const RECOVERY_EXACT_FIELDS = ["oldText", "newText", "expectedLine"] as const;
+const RECOVERY_SNAPSHOT_FIELDS = ["kind", "start", "end", "newLines"] as const;
+
+/** Match producer key sets without walking or retaining rejected field values. */
+function hasOnlyRecoveryFields(value: unknown, allowed: readonly string[]): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const keys = Object.keys(value);
+  if (keys.length > allowed.length) return false;
+  for (const key of keys) {
+    if (!allowed.includes(key)) return false;
+  }
+  return true;
+}
+
+function recoveryOperationFields(name: string, batch: boolean): readonly string[] | undefined {
+  switch (name) {
+    case "write": return batch ? RECOVERY_BATCH_WRITE_FIELDS : RECOVERY_WRITE_FIELDS;
+    case "edit": return batch ? RECOVERY_BATCH_EDIT_FIELDS : RECOVERY_EDIT_FIELDS;
+    case "delete": return batch ? RECOVERY_BATCH_DELETE_FIELDS : RECOVERY_DELETE_FIELDS;
+    case "move": return batch ? RECOVERY_BATCH_MOVE_FIELDS : RECOVERY_MOVE_FIELDS;
+  }
+}
 
 /** Fixed fields only: no recursive traversal of arbitrary imported objects. */
 interface RecoveryArgumentBudget { bytes: number; mutationBytes: number }
@@ -33,19 +64,21 @@ function takeRecoveryString(budget: RecoveryArgumentBudget, value: unknown, limi
   return true;
 }
 
-function boundedRecoveryOperation(name: string, input: any, budget: RecoveryArgumentBudget): boolean {
-  if (!input || typeof input !== "object" || typeof input.path !== "string" || !input.path.length
+function boundedRecoveryOperation(name: string, input: any, budget: RecoveryArgumentBudget, batch = false): boolean {
+  const fields = recoveryOperationFields(name, batch);
+  if (!fields || !hasOnlyRecoveryFields(input, fields) || typeof input.path !== "string" || !input.path.length
     || !takeRecoveryString(budget, input.path, 4096) || !takeRecoveryString(budget, input.purpose, 800)) return false;
   if (name === "delete") return true;
   if (name === "move") return typeof input.destination === "string" && input.destination.length > 0 && takeRecoveryString(budget, input.destination, 4096);
-  if (name === "write") return typeof input.content === "string" && takeRecoveryString(budget, input.content, MAX_TURN_MUTATION_BYTES, true);
+  if (name === "write") return (!batch || input.mode === "create" || input.mode === "overwrite")
+    && typeof input.content === "string" && takeRecoveryString(budget, input.content, MAX_TURN_MUTATION_BYTES, true);
   if (name !== "edit" || !takeRecoveryString(budget, input.snapshot, 128) || !Array.isArray(input.edits)
     || input.edits.length < 1 || input.edits.length > MAX_EDIT_REPLACEMENTS) return false;
   const snapshot = input.snapshot !== undefined;
   if (snapshot && !SNAPSHOT_ID_REGEX.test(input.snapshot)) return false;
   const before = budget.bytes;
   for (const edit of input.edits) {
-    if (!edit || typeof edit !== "object" || !takeRecoveryString(budget, edit.oldText, MAX_EDIT_SCOPE_BYTES, true)
+    if (!hasOnlyRecoveryFields(edit, snapshot ? RECOVERY_SNAPSHOT_FIELDS : RECOVERY_EXACT_FIELDS) || !takeRecoveryString(budget, edit.oldText, MAX_EDIT_SCOPE_BYTES, true)
       || !takeRecoveryString(budget, edit.newText, MAX_EDIT_SCOPE_BYTES, true) || !takeRecoveryString(budget, edit.kind, 32)
       || !takeRecoveryString(budget, edit.start, MAX_EDIT_SCOPE_BYTES) || !takeRecoveryString(budget, edit.end, MAX_EDIT_SCOPE_BYTES)
       || edit.expectedLine !== undefined && (!Number.isSafeInteger(edit.expectedLine) || edit.expectedLine <= 0)) return false;
@@ -79,14 +112,12 @@ function boundedRecoveryArguments(call: any, budget: { bytes: number }): boolean
 function validateRecoveryArguments(call: any, budget: RecoveryArgumentBudget): boolean {
   if (call.name !== "file_batch") return boundedRecoveryOperation(call.name, call.arguments, budget);
   const input = call.arguments;
-  if (!input || typeof input !== "object" || !takeRecoveryString(budget, input.path, 4096)
+  if (!hasOnlyRecoveryFields(input, RECOVERY_BATCH_FIELDS)
     || !takeRecoveryString(budget, input.purpose, 800) || !Array.isArray(input.operations)
     || input.operations.length < 1 || input.operations.length > 16
     || input.dryRun !== undefined && typeof input.dryRun !== "boolean") return false;
   for (const item of input.operations) {
-    if (!item || typeof item !== "object" || !takeRecoveryString(budget, item.mode, 32)
-      || item.operation === "write" && item.mode !== "create" && item.mode !== "overwrite"
-      || !boundedRecoveryOperation(item.operation, item, budget)) return false;
+    if (!item || typeof item !== "object" || !boundedRecoveryOperation(item.operation, item, budget, true)) return false;
   }
   return true;
 }
@@ -134,12 +165,16 @@ function sameCreatedDirectories(left: any, right: any): boolean {
   if (!Array.isArray(left) || !Array.isArray(right) || left.length > 32 || left.length !== right.length) return false;
   for (let index = 0; index < left.length; index++) {
     const a = left[index], b = right[index];
-    if (!a || !b || typeof a.path !== "string" || a.path.length > 4096 || a.path !== b.path || a.status !== b.status) return false;
+    if (!a || !b || typeof a.path !== "string" || a.path.length > 4096 || typeof b.path !== "string" || b.path.length > 4096
+      || a.path !== b.path || a.status !== "created" && a.status !== "removed" && a.status !== "retained" || a.status !== b.status) return false;
     if (a.identity === undefined && b.identity === undefined && a.status === "retained") continue;
     if (!a.identity || !b.identity || typeof a.identity !== "object" || typeof b.identity !== "object") return false;
     for (const field of DIRECTORY_IDENTITY_FIELDS) {
       const value = a.identity[field];
-      if (value !== b.identity[field] || (field === "directory" ? typeof value !== "boolean" : typeof value !== "string" || value.length === 0 || value.length > 4096)) return false;
+      if (field === "directory" ? typeof value !== "boolean" : typeof value !== "string" || value.length === 0 || value.length > 4096) return false;
+      const other = b.identity[field];
+      if (field === "directory" ? typeof other !== "boolean" : typeof other !== "string" || other.length === 0 || other.length > 4096) return false;
+      if (value !== other) return false;
     }
   }
   return true;
