@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { lstat, open } from "node:fs/promises";
 import { isAbsolute, resolve, relative, sep } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@super-pi/coding-agent";
-import { Key, matchesKey, truncateToWidth, visibleWidth, type TUI } from "@super-pi/tui";
+import { Key, matchesKey, truncateToWidth, graphemeWidth, type TUI } from "@super-pi/tui";
 import { resolveToolPath } from "./core.ts";
 import { capturePathIdentity, sameIdentity, type PathIdentity } from "./native-file-core.ts";
 import { boundBatchIntents, collectStructuredMutationReceipts, recentMutationEntries } from "./session-evidence.ts";
@@ -187,6 +187,29 @@ function hasLaterMutationActivity(branch: readonly any[], start: number, callId:
   return false;
 }
 
+/** Inspect the complete standalone prefix, including progress before its selected intent. */
+function validStandalonePrefix(entries: readonly any[], selected: any, call: any, target: string, destination?: string): boolean {
+  let phase = 0;
+  const requestHash = mutationRequestHash(call.name, call.arguments);
+  for (const entry of entries) {
+    if (entry === selected) return true;
+    if (entry.type !== "custom" || entry.customType !== "file-mutation-progress-v2" || entry.data?.toolCallId !== call.id) continue;
+    const data = entry.data;
+    if (data.itemId !== `${call.id}:0` || data.operation !== call.name || data.target !== target || data.destination !== destination) return false;
+    if (data.phase === "origin") {
+      if (phase !== 0 || call.name !== "write" && call.name !== "edit" || data.requestHash !== requestHash) return false;
+      phase = 1;
+    } else if (data.phase === "intent") {
+      if (phase > 1 || call.name === "edit" || call.name === "write" && phase !== 1 || data.requestHash !== requestHash) return false;
+      phase = 2;
+    } else if (data.phase === "result") {
+      if (phase < 1 || phase > 2) return false;
+      phase = 3;
+    } else return false;
+  }
+  return false;
+}
+
 /** Reconstruct from bounded Session entries. No disk observation, replay or second history store. */
 export function collectChanges(branch: readonly any[], cwd: string): ChangeRecord[] {
   branch = branch.slice(-512);
@@ -257,6 +280,7 @@ export function collectChanges(branch: readonly any[], cwd: string): ChangeRecor
         } else bound = resolveToolPath(cwd, input.path) === target;
       }
     }
+    if (bound && call.name !== "file_batch" && !validStandalonePrefix(executionEntries, entry, call, receipt.target, receipt.receiptVersion === 2 ? receipt.destination : undefined)) bound = false;
     if (bound && receipt.receiptVersion === 2 && conflictingTerminal(executionEntries, entry, receipt.toolCallId, receipt.itemId, index, receipt, details)) bound = false;
     if (bound && entry?.data?.phase === "intent" && receipt.operation === "write") {
       const prepared = call?.name === "file_batch" ? uniqueBatchPreparation(executionEntries, call)?.targets.get(`${call.id}:${index}`)
@@ -526,7 +550,7 @@ export function collectVerifiedChanges(branch: readonly any[], records: readonly
 export class ChangeViewer {
   private body: string;
   private positions?: Uint32Array;
-  private widths?: Uint8Array;
+  private widths?: Int32Array;
   private count = 0;
   private offset = 0;
   private cached?: string[];
@@ -538,13 +562,13 @@ export class ChangeViewer {
   private tui?: TUI;
   private done?: (value: void) => void;
   constructor(body: string, tui: TUI, done: (value: void) => void) {
-    this.body = body.slice(0, 65536); this.tui = tui; this.done = done;
-    // Cold dialog preparation: at most 327,685 bytes of numeric scroll metadata.
+    this.body = body.slice(0, 65536).replaceAll("\t", "   ").slice(0, 65536); this.tui = tui; this.done = done;
+    // Cold dialog preparation: at most 524,296 bytes of numeric scroll metadata.
     // No wrapped lines or grapheme strings survive this loop.
-    this.positions = new Uint32Array(this.body.length + 1); this.widths = new Uint8Array(this.body.length + 1);
+    this.positions = new Uint32Array(this.body.length + 1); this.widths = new Int32Array(this.body.length + 1);
     for (const part of CHANGE_GRAPHEMES.segment(this.body)) {
       this.positions[this.count] = part.index;
-      this.widths[this.count++] = part.segment.includes("\n") || part.segment === "\r" ? 255 : visibleWidth(part.segment);
+      this.widths[this.count++] = part.segment.includes("\n") || part.segment === "\r" ? -1 : graphemeWidth(part.segment);
     }
     this.positions[this.count] = this.body.length;
   }
@@ -552,7 +576,7 @@ export class ChangeViewer {
     let end = start, columns = 0;
     while (end < this.count) {
       const size = this.widths![end]; this.graphemesVisited++;
-      if (size === 255) return end + 1;
+      if (size === -1) return end + 1;
       if (columns + size > width && end > start) break;
       columns += size; end++;
     }
@@ -561,7 +585,7 @@ export class ChangeViewer {
   private previousRow(start: number, width: number): number {
     if (!start) return 0;
     let cursor = start - 1;
-    while (cursor > 0 && this.widths![cursor - 1] !== 255) cursor--;
+    while (cursor > 0 && this.widths![cursor - 1] !== -1) cursor--;
     let previous = cursor;
     while (cursor < start) { previous = cursor; cursor = this.nextRow(cursor, width); }
     return previous;
@@ -573,7 +597,7 @@ export class ChangeViewer {
     const output = [];
     let cursor = this.offset;
     while (cursor < this.count && output.length < height) {
-      const next = this.nextRow(cursor, width), end = this.widths![next - 1] === 255 ? next - 1 : next;
+      const next = this.nextRow(cursor, width), end = this.widths![next - 1] === -1 ? next - 1 : next;
       output.push(truncateToWidth(this.body.substring(this.positions![cursor], this.positions![end]), width, ""));
       this.rowsMaterialized++; cursor = next;
     }

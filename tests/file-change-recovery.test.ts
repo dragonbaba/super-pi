@@ -342,6 +342,24 @@ test("N1 standalone exact and snapshot View retain their actual committed patche
   }
 });
 
+test("N1 standalone progress prefix refuses unexpected phases before the terminal", async t => {
+  const f = await fixture(t), path = join(f.cwd, "prefix-conflict"); writeFileSync(path, "old");
+  f.onRecord(data => { if (data.phase === "intent") writeFileSync(path, "external"); });
+  await f.call("delete", { path }, "prefix-conflict");
+  const genuine = JSON.parse(JSON.stringify(f.session.getBranch()));
+  assert.equal(collectChanges(genuine, f.cwd)[0].unavailable, undefined);
+  for (const phase of ["origin", "prepared", "future-phase", "intent"]) for (const beforeIntent of [false, true]) {
+    const branch = structuredClone(genuine), extra = structuredClone(branch.find((entry: any) => entry.data?.phase === "intent"));
+    extra.id = `extra-${phase}`; extra.data.phase = phase;
+    const at = branch.findIndex((entry: any) => entry.data?.phase === (beforeIntent ? "intent" : "result"));
+    assert.ok(at >= 0); branch.splice(at, 0, extra);
+    const records = collectChanges(branch, f.cwd); assert.ok(records.length > 0);
+    for (const record of records) assert.ok(record.unavailable, `${phase}:${beforeIntent}`);
+    assert.throws(() => remainingDraft(records, new Set()), /missing|ambiguous/);
+  }
+  assert.equal(readFileSync(path, "utf8"), "external");
+});
+
 test("N1 later terminal outcomes cannot reuse a completed item's intent", async t => {
   const f = await fixture(t);
   await f.call("file_batch", { operations: [{ operation: "write", mode: "create", path: "done", content: "committed" }] }, "terminal");
