@@ -159,6 +159,7 @@ import {
 	type ToolResultContinuationChunkV1,
 	type ToolResultPresentationOptions,
 	type ToolResultPresentationOwner,
+	type ToolResultProjectedUiSource,
 	type ToolResultPresentation,
 } from "./tool-result-presentation.ts";
 import { MCP_INLINE_BYTES, prepareMcpHookContent } from "./tool-result-source.ts";
@@ -826,7 +827,7 @@ export class AgentSession {
 	private _toolBudgetPayloadPreviewDepth = 0;
 	private _toolBudgetSessionOverride = false;
 	private _toolBudgetProjectionPending = false;
-	private _toolBudgetProjectedSources: WeakMap<object, string | null> | undefined;
+	private _toolBudgetProjectedSources: WeakMap<object, ToolResultProjectedUiSource | null> | undefined;
 	private _toolBudgetSourceCapturePasses = 0;
 	private _toolResultUiDispatchMessage: Extract<AgentMessage, { role: "toolResult" }> | undefined;
 	private _toolResultUiDispatchSourceContent: Extract<AgentMessage, { role: "toolResult" }>["content"] | undefined;
@@ -1933,9 +1934,9 @@ export class AgentSession {
 
 	/** Explicit-change scratch only; the projection owner populates at most 128
 	 * identities during its existing scan of the actual transformed request. */
-	private _captureBudgetProjectionSources(): Map<object, string | null> {
+	private _captureBudgetProjectionSources(): Map<object, ToolResultProjectedUiSource | null> {
 		this._toolBudgetSourceCapturePasses++;
-		return new Map<object, string | null>();
+		return new Map<object, ToolResultProjectedUiSource | null>();
 	}
 
 	private _recordToolResultUiCanonicalMessage(message: AgentMessage): void {
@@ -2085,11 +2086,12 @@ export class AgentSession {
 			this._toolResultUiHistoryMessagesVisited++;
 			const candidate = messages[index];
 			if (candidate?.role !== "toolResult") continue;
-			if (projectedOnly && projectedSources?.get(candidate.content) !== candidate.toolCallId) continue;
+			const projectedSource = projectedSources?.get(candidate.content);
+			if (projectedOnly && projectedSource?.toolCallId !== candidate.toolCallId) continue;
 			if (candidatesByToolCallId.has(candidate.toolCallId)) continue;
 			this._toolResultUiPresentationCandidatesEvaluated++;
 			this._toolResultUiSourceScans++;
-			if (owner.inspectToolResultPresentationForUiCandidate(candidate.content, candidate.toolCallId) !== "v2") continue;
+			if (owner.inspectToolResultPresentationForUiCandidate(candidate.content, candidate.toolCallId, projectedSource?.budgetTokens) !== "v2") continue;
 			candidatesByToolCallId.set(candidate.toolCallId, candidate);
 		}
 		const candidateOccurrences = new Map<string, number>();
@@ -2112,7 +2114,7 @@ export class AgentSession {
 		for (let index = selectedCandidates.length - 1; index >= 0; index--) {
 			const candidate = selectedCandidates[index]!;
 			this._toolResultUiSourceScans++;
-			const presentation = owner.create(candidate.content, candidate.toolCallId);
+			const presentation = owner.create(candidate.content, candidate.toolCallId, projectedSources?.get(candidate.content)?.budgetTokens);
 			if (!presentation) continue;
 			try {
 				if (presentation.version === 2) {

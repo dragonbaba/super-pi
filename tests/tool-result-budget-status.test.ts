@@ -17,10 +17,46 @@ import { alphaMessage } from "./helpers/alpha-stream.ts";
 import { Session as InspectorSession } from "node:inspector/promises";
 import { AssistantMessageEventStream } from "../packages/ai/src/utils/event-stream.ts";
 import { ExtensionHookTimeoutError } from "../packages/coding-agent/src/core/extensions/runner.ts";
-import { ToolResultPresentationOwner } from "../packages/coding-agent/src/core/tool-result-presentation.ts";
+import { ToolResultPresentationOwner, type ToolResultProjectedUiSource } from "../packages/coding-agent/src/core/tool-result-presentation.ts";
 // @ts-expect-error JavaScript extension package.
 import { convertMcpResult } from "../packages/mcp-bridge/src/bridge.js";
+import { estimateToolOutputTokens } from "../packages/coding-agent/src/core/tool-output-budget.ts";
+import { estimateContextTokensFromParts } from "@super-pi/ai";
+import { CONTEXT_SAFETY_TOKENS } from "@super-pi/ai/api/simple-options";
 const WAV_FIXTURE = "UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=";
+
+for (const boundary of ["turn-share", "context"] as const) test(`N4 actual SDK/TUI restores a projection required only by ${boundary}`, async () => {
+  let requests = 0, wire = "";
+  const runtime = alphaModelRuntime((model: any, context: any, options: any) => streamSimple({ ...model, api: "openai-completions" }, context,
+    { ...options, apiKey: "offline", maxRetries: 0, fetch: async (_url: any, init: any) => {
+      requests++; wire = String(init.body);
+      const event = { id: "fixture", object: "chat.completion.chunk", created: 1, model: "fixture", choices: [{ index: 0, delta: { content: "done" }, finish_reason: "stop" }] };
+      return new Response(`data: ${JSON.stringify(event)}\n\ndata: [DONE]\n\n`, { headers: { "Content-Type": "text/event-stream" } });
+    } }));
+  const calls = Array.from({ length: boundary === "turn-share" ? 2 : 1 }, (_, index) => ({ type: "toolCall" as const, name: "fixture", id: `context-source-${index}`, arguments: {} }));
+  const assistant = alphaMessage(calls); assistant.stopReason = "toolUse";
+  const results = calls.map(call => ({ role: "toolResult" as const, toolName: call.name, toolCallId: call.id,
+    content: [{ type: "text" as const, text: "abcdefgh ".repeat(900) }], isError: false, timestamp: 2 }));
+  const estimate = estimateToolOutputTokens(results[0].content).estimatedTokens;
+  assert.ok(estimate < 6144 && estimate > 3072, String(estimate));
+  const f = await alphaSession({ runtime, budgetTokens: 8192, messages: [assistant, ...results] });
+  try {
+    if (boundary === "context") f.session.agent.state.model = { ...ALPHA_MODEL, api: "openai-completions", maxTokens: 256,
+      contextWindow: estimateContextTokensFromParts(f.session.agent.state.systemPrompt, [assistant], []).tokens + CONTEXT_SAFETY_TOKENS + 1000 };
+    assert.equal(await f.mode.init(), true);
+    await f.internal.editor.onSubmit("/tool-budget 6144");
+    await f.session.agent.continue(); await f.session.agent.waitForIdle();
+    assert.equal(requests, 1, JSON.stringify(f.session.messages.at(-1))); assert.ok(!wire.includes(results[0].content[0].text));
+    for (const result of results) {
+      const discovery = f.internal.attachedToolResultDiscoveries.get(result.toolCallId);
+      assert.ok(discovery?.component.getToolResultPresentationDiscovery(result.toolCallId)?.cursor, result.toolCallId);
+      assert.ok(discovery.component.getToolResultPresentationDiscovery(result.toolCallId)?.artifactId);
+    }
+    assert.equal(f.internal.toolResultBudgetRediscoveryPasses, 1); assert.equal((f.session as any)._toolBudgetProjectedSources, undefined);
+    assert.equal(f.session.messages.filter(message => message.role === "toolResult").length, results.length);
+  } finally { await f.release(); }
+  assert.equal(f.internal.getToolResultDiscoveryLifecycleCounts().totalEntries, 0);
+});
 
 for (const action of ["prompt", "continue"]) test(`N4 budget replacement refuses a direct public Agent ${action} before any tool is pending`, async () => {
   const stream = new AssistantMessageEventStream(); let entered!: () => void, finished = false, pending: Promise<void> | undefined;
@@ -319,7 +355,7 @@ for (const sourceKind of ["text", "audio", "resource"] as const) test(`N4 one re
     assert.equal(f.session.messages.filter(message => message.role === "toolResult").length, 129);
     await f.internal.editor.onSubmit("/tool-budget 2048"); assert.equal(component.getToolResultPresentationDiscovery("older-v2"), undefined);
     const owner = (f.session as any)._toolResultPresentation, inspect = owner.inspectToolResultPresentationForUiCandidate;
-    let preDispatchInspections = 0, capturedScratch: Map<object, string | null> | undefined;
+    let preDispatchInspections = 0, capturedScratch: Map<object, ToolResultProjectedUiSource | null> | undefined;
     t.mock.method(owner, "inspectToolResultPresentationForUiCandidate", function(this: any, ...args: any[]) {
       if (requests === 4) preDispatchInspections++; return inspect.apply(this, args);
     });
@@ -339,12 +375,12 @@ for (const kind of ["audio", "resource", "bytes"] as const) test(`N4 capture and
     : kind === "resource" ? [{ type: "resource", resource: { uri: "fixture://blob", blob: "YQ==" } }]
     : [{ type: "text", text: "x".repeat(100000) }] }, true);
   const owner = new ToolResultPresentationOwner({ enabled: true, budgetTokens: 1000000 }, "mcp-capture");
-  const sources = new Map<object, string | null>();
+  const sources = new Map<object, ToolResultProjectedUiSource | null>();
   try {
     assert.equal(owner.inspectToolResultPresentationForUiCandidate(content, "mcp-result"), "v2");
     const message = { role: "toolResult" as const, toolName: "fixture", toolCallId: "mcp-result", content, isError: false, timestamp: 0 };
     const projected = owner.projectMessagesForModel([message], undefined, undefined, undefined, undefined, undefined, false, sources);
-    assert.notEqual(projected[0].content, content); assert.equal(sources.get(content), "mcp-result");
+    assert.notEqual(projected[0].content, content); assert.equal(sources.get(content)?.toolCallId, "mcp-result");
     assert.equal(owner.inspectToolResultPresentationForUiCandidate(content, "mcp-result"), "v2");
     assert.equal(owner.counters.fullSourceEstimatorScans, 1);
   } finally { sources.clear(); owner.dispose(); }
@@ -357,12 +393,12 @@ test("N4 projection capture reuses source scans and retains only 128 V2 identiti
     content: [{ type: "text" as const, text: index < 130 ? "evidence ".repeat(2000) : "small" }], isError: false, timestamp: 0 });
   const control = new ToolResultPresentationOwner({ enabled: true, budgetTokens: 1024 }, "capture-session");
   const captured = new ToolResultPresentationOwner({ enabled: true, budgetTokens: 1024 }, "capture-session");
-  const sources = new Map<object, string | null>();
+  const sources = new Map<object, ToolResultProjectedUiSource | null>();
   try {
     control.projectMessagesForModel(messages.slice());
     captured.projectMessagesForModel(messages.slice(), undefined, undefined, undefined, undefined, undefined, false, sources);
     assert.equal(sources.size, 128); assert.equal(sources.has(messages[0].content), false); assert.equal(sources.has(messages[1].content), false);
-    assert.equal(sources.get(messages[2].content), "capture-2"); assert.equal(sources.get(messages[129].content), "capture-129");
+    assert.equal(sources.get(messages[2].content)?.toolCallId, "capture-2"); assert.equal(sources.get(messages[129].content)?.toolCallId, "capture-129");
     assert.equal(captured.counters.fullSourceEstimatorScans, 2130); assert.deepEqual(captured.counters, control.counters);
     captured.projectMessagesForModel([{ ...messages[129], toolCallId: "ambiguous" }], undefined, undefined, undefined, undefined, undefined, false, sources);
     assert.equal(sources.get(messages[129].content), null); assert.equal(sources.size, 128);

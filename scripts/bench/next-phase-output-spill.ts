@@ -52,7 +52,7 @@ try {
     const source = scenario === "cancel" ? "let n=0;const timer=setInterval(()=>{process.stdout.write('x'.repeat(65536));if(++n===100)clearInterval(timer)},5)"
       : `process.stdout.write('x'.repeat(${scenario === "cap" ? 6 * 1024 * 1024 : 256 * 1024})+'\\nFINAL-TAIL')`;
     const command = `node -e "${source}"`;
-    delay = monitorEventLoopDelay({ resolution: 1 }); delay.enable(); global.gc?.();
+    global.gc?.(); delay = monitorEventLoopDelay({ resolution: 1 }); delay.enable();
     sampleSpillHeap();
     const heapBefore = process.memoryUsage().heapUsed, measurement = startCostMeasurement(f.metrics); start = measurement.start;
       await f.run([[costCall("spill", "bash", { command, cwd: f.cwd })]]);

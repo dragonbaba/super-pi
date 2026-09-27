@@ -45,9 +45,9 @@ test("N4 estimator timing subtracts only requests inside each measured workload"
 test("N4 context matrix: fair T1/T2/T3 short/long/reopen/model-switch/warm activation", { timeout: 180000 }, async t => {
   for (const context of ["short", "long", "reopen", "model-switch", "warm"]) for (const strategy of ["T1", "T2", "T3"]) {
     const f = await costSession({ historyPairs: context === "long" ? 100 : 0 });
-    const start = startCostMeasurement(f.metrics);
     try {
       for (let index = 0; index < 4; index++) writeFileSync(join(f.cwd, `file${index}`), `FIRST-${index}\r\n中文 SECOND-${index}\r\n`);
+      const start = startCostMeasurement(f.metrics);
       if (context === "reopen") {
         await f.run([], "Record this session before reopening."); const requests = f.metrics.requests;
         await f.reopen(); assert.equal(f.metrics.requests, requests, "reopening cannot call provider or replay tools");

@@ -6,11 +6,14 @@ import crypto from "node:crypto";
 import { syncBuiltinESMExports } from "node:module";
 import { join, sep } from "node:path";
 import { Session } from "node:inspector/promises";
+import { getHeapStatistics } from "node:v8";
 import { costSession, costCall, costText, costModule, costProject, startCostMeasurement, finishCostMeasurement } from "../../tests/helpers/next-phase-session.ts";
 import { FIXTURE_SNAPSHOT_ID_PATTERN, FIXTURE_SECOND_LINE_ANCHOR_PATTERN } from "../../tests/helpers/next-phase-fixture-regex.ts";
 
 const originalOpen = fsp.open, originalReadFile = fsp.readFile, originalReadSync = fs.readFileSync, originalUpdate = crypto.Hash.prototype.update;
 let scope = "", scopeAlias = "", active = false;
+let mainHeapSamples = 0, sampledMainHeap = 0;
+function sampleMainHeap(): void { if (active) { mainHeapSamples++; sampledMainHeap = Math.max(sampledMainHeap, getHeapStatistics().used_heap_size); } }
 let counters = { bytesRead: 0, hashBytes: 0, hashUpdates: 0, explicitOpens: 0, explicitCloses: 0, implicitReadFiles: 0, activeHandles: 0, peakHandles: 0 };
 function scoped(path: unknown): boolean { return active && typeof path === "string" && (path.startsWith(scope) || path.startsWith(scopeAlias)); }
 function byteLength(value: any): number { return typeof value === "string" ? Buffer.byteLength(value) : value.byteLength; }
@@ -18,14 +21,14 @@ function byteLength(value: any): number { return typeof value === "string" ? Buf
   const handle = await (originalOpen as any)(path, ...args); if (!scoped(path)) return handle;
   counters.explicitOpens++; counters.activeHandles++; counters.peakHandles = Math.max(counters.peakHandles, counters.activeHandles);
   const read = handle.read, readFile = handle.readFile, close = handle.close; let closed = false, wholeRead = false;
-  handle.read = async function measuredRead(...readArgs: any[]) { const result = await read.apply(this, readArgs); if (!wholeRead) counters.bytesRead += result.bytesRead; return result; };
-  handle.readFile = async function measuredHandleReadFile(...readArgs: any[]) { wholeRead = true; try { const result = await readFile.apply(this, readArgs); counters.bytesRead += byteLength(result); return result; } finally { wholeRead = false; } };
+  handle.read = async function measuredRead(...readArgs: any[]) { sampleMainHeap(); const result = await read.apply(this, readArgs); sampleMainHeap(); if (!wholeRead) counters.bytesRead += result.bytesRead; return result; };
+  handle.readFile = async function measuredHandleReadFile(...readArgs: any[]) { wholeRead = true; sampleMainHeap(); try { const result = await readFile.apply(this, readArgs); counters.bytesRead += byteLength(result); return result; } finally { sampleMainHeap(); wholeRead = false; } };
   handle.close = async function measuredClose() { await close.call(this); if (!closed) { closed = true; counters.explicitCloses++; counters.activeHandles--; } };
   return handle;
 };
-(fsp as any).readFile = async function measuredReadFile(path: any, ...args: any[]) { const result = await (originalReadFile as any)(path, ...args); if (scoped(path)) { counters.implicitReadFiles++; counters.bytesRead += byteLength(result); } return result; };
-(fs as any).readFileSync = function measuredReadFileSync(path: any, ...args: any[]) { const result = (originalReadSync as any)(path, ...args); if (scoped(path)) { counters.implicitReadFiles++; counters.bytesRead += byteLength(result); } return result; };
-crypto.Hash.prototype.update = function measuredUpdate(value: any, encoding?: any): any { if (active) { counters.hashUpdates++; counters.hashBytes += typeof value === "string" ? Buffer.byteLength(value, encoding) : value.byteLength; } return originalUpdate.call(this, value, encoding); };
+(fsp as any).readFile = async function measuredReadFile(path: any, ...args: any[]) { const measured = scoped(path); if (measured) sampleMainHeap(); const result = await (originalReadFile as any)(path, ...args); if (measured) { sampleMainHeap(); counters.implicitReadFiles++; counters.bytesRead += byteLength(result); } return result; };
+(fs as any).readFileSync = function measuredReadFileSync(path: any, ...args: any[]) { const measured = scoped(path); if (measured) sampleMainHeap(); const result = (originalReadSync as any)(path, ...args); if (measured) { sampleMainHeap(); counters.implicitReadFiles++; counters.bytesRead += byteLength(result); } return result; };
+crypto.Hash.prototype.update = function measuredUpdate(value: any, encoding?: any): any { sampleMainHeap(); if (active) { counters.hashUpdates++; counters.hashBytes += typeof value === "string" ? Buffer.byteLength(value, encoding) : value.byteLength; } const result = originalUpdate.call(this, value, encoding); sampleMainHeap(); return result; };
 syncBuiltinESMExports();
 const profiler = new Session(); profiler.connect(); await profiler.post("Profiler.enable");
 const tracked = new Set(["prepareExactEditContent", "prepareEdits", "prepareCompactEdits", "generateDiffString", "generateUnifiedPatch"]);
@@ -35,15 +38,19 @@ async function workerSnapshot() {
   if (!native?.nativeFileDiagnostics().loaded) return { fileBytesRead: 0, metadataBytesRead: 0, hashBytes: 0, hashUpdates: 0 };
   const stats = await native.nativeFileRequest("stats");
   assert.equal(stats.activeHandles, 0); assert.equal(stats.activeDescriptors, 0);
-  for (const key of ["fileBytesRead", "metadataBytesRead", "hashBytes", "hashUpdates"]) assert.ok(Number.isSafeInteger(stats[key]), `Missing worker counter ${key}`);
+  // The agreed 4f547535 baseline predates this native worker. Other revisions
+  // with a pre-counter worker cannot silently report its unobserved work as zero.
+  for (const key of ["fileBytesRead", "metadataBytesRead", "hashBytes", "hashUpdates"]) assert.ok(Number.isSafeInteger(stats[key]), `Selected revision has unsupported pre-counter native statistics: ${key}`);
   return stats;
 }
 function combinedCounters(before: any, after: any) {
+  assert.ok(mainHeapSamples >= counters.hashUpdates * 2);
   const workerFileBytesRead = after.fileBytesRead - before.fileBytesRead, workerMetadataBytesRead = after.metadataBytesRead - before.metadataBytesRead;
   const workerHashBytes = after.hashBytes - before.hashBytes, workerHashUpdates = after.hashUpdates - before.hashUpdates;
   assert.ok(workerFileBytesRead >= 0 && workerMetadataBytesRead >= 0 && workerHashBytes >= 0 && workerHashUpdates >= 0);
   return { ...counters, mainFileBytesRead: counters.bytesRead, mainHashBytes: counters.hashBytes, mainHashUpdates: counters.hashUpdates,
-    workerFileBytesRead, workerMetadataBytesRead, workerHashBytes, workerHashUpdates,
+    workerFileBytesRead, workerMetadataBytesRead, workerHashBytes, workerHashUpdates, mainHeapSamples,
+    heapSamplingScope: "Main-isolate V8 heap sampled before/after measured read and hash APIs inside tool work, plus provider boundaries. Not total allocation or a true transient peak; excludes Worker heap, native allocation and external Buffer storage. Probe overhead is included in timing; no whole-process memory conclusion follows.",
     bytesRead: counters.bytesRead + workerFileBytesRead, hashBytes: counters.hashBytes + workerHashBytes, hashUpdates: counters.hashUpdates + workerHashUpdates,
     workerCounterScope: "Worker readSync file bytes plus separate proc metadata bytes; all worker SHA256 updates include metadata framing. API bytes, not physical storage I/O or OS-internal metadata reads. Diagnostic stats do not load an unused worker; snapshots are outside timing." };
 }
@@ -61,6 +68,7 @@ async function run(count: number, size: number, kind: "exact" | "snapshot") {
   await profiler.post("Profiler.startPreciseCoverage", { callCount: true, detailed: true });
   global.gc?.(); const heapBefore = process.memoryUsage().heapUsed, start = startCostMeasurement(f.metrics);
   f.metrics.sampledPeakHeap = heapBefore;
+  mainHeapSamples = 0; sampledMainHeap = heapBefore;
   active = true;
   let unavailableSnapshots = 0;
     // At most three 2MiB snapshots coexist under the unchanged 8MiB resident bound.
@@ -90,7 +98,7 @@ async function run(count: number, size: number, kind: "exact" | "snapshot") {
     for (let index = 0; index < count; index++) assert.equal(fs.readFileSync(join(f.cwd, `file${index}`), "utf8"), unavailableSnapshots ? before : after);
     assert.equal(counters.activeHandles, 0); assert.equal(counters.explicitOpens, counters.explicitCloses);
     console.log(JSON.stringify({ benchmark: "N4-file-io", implementation: process.env.SP_COST_LABEL ?? "candidate", node: process.version, count, size, kind, grouping: 3,
-      ...combinedCounters(workerBefore, workerAfter), calls, ...timing, heapBefore, sampledPeakHeap: f.metrics.sampledPeakHeap,
+      ...combinedCounters(workerBefore, workerAfter), calls, ...timing, heapBefore, sampledPeakHeap: Math.max(f.metrics.sampledPeakHeap, sampledMainHeap),
       unavailableSnapshots, measuredScope: "fixture file bytes/API explicit handles; hash updates include request/proof/commit; readFile implicit opens are separate; precise counts only synchronous named constructors",
       quality: unavailableSnapshots ? "default window read issued no snapshot; no edit/fallback; all bytes unchanged" : "exact final bytes and no active explicit handles" }));
   } finally { active = false; try { await profiler.post("Profiler.stopPreciseCoverage"); } finally { await f.release(); } }
@@ -109,6 +117,7 @@ async function runLegacyCompact(count: number) {
   const workerBefore = await workerSnapshot();
   await profiler.post("Profiler.startPreciseCoverage", { callCount: true, detailed: true });
   global.gc?.(); const heapBefore = process.memoryUsage().heapUsed, start = startCostMeasurement(f.metrics); let commits = 0, peakHeap = heapBefore;
+  mainHeapSamples = 0; sampledMainHeap = heapBefore;
   active = true;
     for (let index = 0; index < count; index++) {
       const path = join(f.cwd, `legacy${index}.txt`), input = { path, offset: 1, limit: 2 };
@@ -126,7 +135,7 @@ async function runLegacyCompact(count: number) {
     for (let index = 0; index < count; index++) assert.equal(fs.readFileSync(join(f.cwd, `legacy${index}.txt`), "utf8"), original.replace("SECOND", "CHANGED"));
     assert.equal(commits, count); assert.equal(counters.activeHandles, 0);
     console.log(JSON.stringify({ benchmark: "N4-file-io-legacy-compact", implementation: process.env.SP_COST_LABEL ?? "candidate", count, size: Buffer.byteLength(original),
-      ...combinedCounters(workerBefore, workerAfter), calls, commits, ...timing, heapBefore, sampledPeakHeap: peakHeap,
+      ...combinedCounters(workerBefore, workerAfter), calls, commits, ...timing, heapBefore, sampledPeakHeap: Math.max(peakHeap, sampledMainHeap),
       measuredScope: "existing custom-I/O read projection and compact snapshot subsystem; explicit fixture path hooks, not default SDK authorization", quality: "real read-issued compact snapshots and exact postimages" }));
   } finally { active = false; try { await profiler.post("Profiler.stopPreciseCoverage"); } finally { resetSnapshotLineStore(); await f.release(); } }
   global.gc?.(); console.log(JSON.stringify({ release: "N4-file-io-legacy-compact", count, heapAfterFixtureRelease: process.memoryUsage().heapUsed, removedRoot: !fs.existsSync(f.root) }));

@@ -268,6 +268,11 @@ interface SourceMessageLike {
 	content: readonly ToolResultPresentationContent[];
 }
 
+export interface ToolResultProjectedUiSource {
+	toolCallId: string;
+	budgetTokens: number;
+}
+
 interface ProjectionRecord {
 	evidenceGeneration: number;
 	toolCallId: string;
@@ -1839,6 +1844,7 @@ export class ToolResultPresentationOwner {
 	inspectToolResultPresentationForUiCandidate(
 		content: unknown,
 		toolCallId: string,
+		projectedBudgetTokens?: number,
 	): "v1" | "v2" | undefined {
 		const budgetTokens = this.budgetTokens;
 		if (!this.accepting || budgetTokens === undefined) return undefined;
@@ -1856,6 +1862,7 @@ export class ToolResultPresentationOwner {
 				}
 			}
 			const sourceContent = content as readonly ToolResultPresentationContent[];
+			if (projectedBudgetTokens !== undefined && Number.isSafeInteger(projectedBudgetTokens) && projectedBudgetTokens > 0 && projectedBudgetTokens <= budgetTokens) return "v2";
 			const resident = this.projectionRecords?.get(toolCallId);
 			let estimate, mcpInput = false, mcpArtifactRequired = false;
 			if (resident?.sourceContent === sourceContent) {
@@ -1877,9 +1884,10 @@ export class ToolResultPresentationOwner {
 	}
 
 	create(legacyContent: readonly ToolResultPresentationContent[]): ToolResultPresentationV1 | undefined;
-	create(legacyContent: readonly ToolResultPresentationContent[], toolCallId: string): ToolResultPresentation | undefined;
-	create(legacyContent: readonly ToolResultPresentationContent[], toolCallId?: string): ToolResultPresentation | undefined {
+	create(legacyContent: readonly ToolResultPresentationContent[], toolCallId: string, projectedBudgetTokens?: number): ToolResultPresentation | undefined;
+	create(legacyContent: readonly ToolResultPresentationContent[], toolCallId?: string, projectedBudgetTokens?: number): ToolResultPresentation | undefined {
 		if (!this.accepting) return undefined;
+		if (projectedBudgetTokens !== undefined && (!Number.isSafeInteger(projectedBudgetTokens) || projectedBudgetTokens <= 0 || this.budgetTokens === undefined || projectedBudgetTokens > this.budgetTokens)) throw new RangeError("Invalid projected UI budget");
 		const uiContent = new Array<ToolResultPresentationContent>(legacyContent.length);
 		let textCodeUnits = 0;
 		let imageDataCodeUnits = 0;
@@ -1898,7 +1906,13 @@ export class ToolResultPresentationOwner {
 		if (this.budgetTokens !== undefined) {
 			if (!toolCallId) throw new TypeError("A toolCallId is required for budgeted tool-result presentation");
 			const record = this.getOrCreateProjectionRecord(legacyContent, toolCallId);
-			const projection = record.projection;
+			const budgetTokens = projectedBudgetTokens ?? this.budgetTokens;
+			let projection = record.projection;
+			if (projectedBudgetTokens !== undefined) {
+				if (budgetTokens !== this.budgetTokens) projection = projectContent(record.sourceContent, budgetTokens, record.sourceKey, record.sourceDigest, record.sourceScan, this.counters);
+				projection ??= this.getImagePolicyProjection(record, budgetTokens);
+			}
+			if (projection && projectedBudgetTokens !== undefined) this.ensureArtifactDescriptor(record);
 			if (projection) {
 				const artifact = record.artifact;
 				const originalTextCodeUnits = record.sourceScan.textCodeUnits;
@@ -1912,7 +1926,7 @@ export class ToolResultPresentationOwner {
 					truncation: {
 						version: 1,
 						strategy: "text-head-tail",
-						budgetTokens: this.budgetTokens,
+						budgetTokens,
 						originalEstimatedTokens: projection.fullEstimate.estimatedTokens,
 						modelEstimatedTokens: projection.estimate.estimatedTokens,
 						originalTextCodeUnits,
@@ -2084,13 +2098,13 @@ export class ToolResultPresentationOwner {
 	private projectMessageForConfiguredBudget(
 		message: ToolResultMessage,
 		imagePolicy?: (message: Message) => Message,
-		sources?: Map<object, string | null>,
+		sources?: Map<object, ToolResultProjectedUiSource | null>,
 	): ToolResultMessage {
 		const resident = this.projectionRecords?.get(message.toolCallId);
 		if (resident?.sourceContent === message.content) this.counters.residentReadHits++;
 		else this.counters.providerReadMisses++;
 		const record = this.getOrCreateProjectionRecord(message.content, message.toolCallId, "provider");
-		this.recordProjectedUiSource(message, record, sources);
+		if (record.projection) this.recordProjectedUiSource(message, this.budgetTokens!, sources);
 		let projection = record.projection;
 		let projected = projection ? this.createModelMessage(message, projection.content) : record.sourceScan.mcpInput ? this.createModelMessage(message, message.content) : message;
 		if (imagePolicy) {
@@ -2123,7 +2137,7 @@ export class ToolResultPresentationOwner {
 		toolBudgetTokens: number,
 		contextBudgetTokens: number,
 		imagePolicy?: (message: Message) => Message,
-		sources?: Map<object, string | null>,
+		sources?: Map<object, ToolResultProjectedUiSource | null>,
 	): ToolResultMessage {
 		let candidateBudget = Math.min(toolBudgetTokens, contextBudgetTokens);
 		if (!Number.isSafeInteger(candidateBudget) || candidateBudget <= 0) {
@@ -2137,7 +2151,6 @@ export class ToolResultPresentationOwner {
 		if (resident?.sourceContent === message.content) this.counters.residentReadHits++;
 		else this.counters.providerReadMisses++;
 		const record = this.getOrCreateProjectionRecord(message.content, message.toolCallId, "provider");
-		this.recordProjectedUiSource(message, record, sources);
 		for (let pass = 0; pass <= MAX_PROJECTION_SHRINK_PASSES; pass++) {
 			this.counters.contextualProjectionPasses++;
 			let projection: ProjectionBuild | undefined;
@@ -2156,6 +2169,7 @@ export class ToolResultPresentationOwner {
 				this.rethrowContextualProjectionFailure(error);
 			}
 			if (projection) this.ensureArtifactDescriptor(record);
+			let projectedV2 = projection !== undefined;
 			let projected = projection ? this.createModelMessage(message, projection.content) : record.sourceScan.mcpInput ? this.createModelMessage(message, message.content) : message;
 			try {
 				if (imagePolicy) {
@@ -2165,6 +2179,7 @@ export class ToolResultPresentationOwner {
 						const filteredEstimate = estimateToolOutputTokens((filtered as ToolResultMessage).content);
 						if (filteredEstimate.estimatedTokens > candidateBudget) {
 							const omission = this.getImagePolicyProjection(record, candidateBudget);
+							projectedV2 = true;
 							projected = this.createModelMessage(message, omission.content);
 							filtered = imagePolicy(projected);
 						}
@@ -2186,7 +2201,10 @@ export class ToolResultPresentationOwner {
 			}
 			const toolEstimate = estimateToolOutputTokens(projected.content).estimatedTokens;
 			const contextEstimate = estimateMessageTokens(projected);
-			if (toolEstimate <= toolBudgetTokens && contextEstimate <= contextBudgetTokens) return projected;
+			if (toolEstimate <= toolBudgetTokens && contextEstimate <= contextBudgetTokens) {
+				if (projectedV2) this.recordProjectedUiSource(message, candidateBudget, sources);
+				return projected;
+			}
 			if (candidateBudget === 1) break;
 			let nextBudget = candidateBudget - 1;
 			if (toolEstimate > toolBudgetTokens) {
@@ -2213,12 +2231,11 @@ export class ToolResultPresentationOwner {
 
 	/** Reuse the required projection scan, with only 128 source identities retained.
 	 * The caller owns and clears this explicit-change scratch map on every exit. */
-	private recordProjectedUiSource(message: ToolResultMessage, record: ProjectionRecord, sources?: Map<object, string | null>): void {
-		if (!sources || !requiresV2Projection(record.sourceScan.estimate.estimatedTokens, this.budgetTokens!, record.sourceScan.mcpArtifactRequired,
-			record.sourceScan.mcpInput, record.sourceScan.estimate.rawUtf8Bytes)) return;
+	private recordProjectedUiSource(message: ToolResultMessage, budgetTokens: number, sources?: Map<object, ToolResultProjectedUiSource | null>): void {
+		if (!sources) return;
 		if (sources.has(message.content)) { sources.set(message.content, null); return; }
 		if (sources.size >= MAX_PROJECTION_RECORD_ENTRIES) sources.delete(sources.keys().next().value!);
-		sources.set(message.content, message.toolCallId);
+		sources.set(message.content, { toolCallId: message.toolCallId, budgetTokens });
 	}
 
 	private projectMessagesWithinContextualBudget(
@@ -2229,7 +2246,7 @@ export class ToolResultPresentationOwner {
 		contextWindow: number,
 		maxOutputTokens: number | undefined,
 		requestPlanning = false,
-		sources?: Map<object, string | null>,
+		sources?: Map<object, ToolResultProjectedUiSource | null>,
 	): Message[] {
 		let assistantIndex = -1;
 		for (let index = messages.length - 1; index >= 0; index--) {
@@ -2331,7 +2348,7 @@ export class ToolResultPresentationOwner {
 		contextWindow?: number,
 		maxOutputTokens?: number,
 		requestPlanning = false,
-		sources?: Map<object, string | null>,
+		sources?: Map<object, ToolResultProjectedUiSource | null>,
 	): Message[] {
 		if (!this.accepting || this.budgetTokens === undefined) return messages;
 		if (contextWindow !== undefined) {

@@ -457,3 +457,38 @@ snapshot functional cases passed, including worker counters and root removal.
 Those functional timings ran alongside other validation and are not comparative
 performance evidence. Final serial comparisons/profiles and current-head full
 local, two-platform CI and actual review remain outstanding.
+
+Review r33: capture occurs only after an actual V2 projection succeeds, including
+per-result turn shares, contextual headroom and image-policy omission. The
+bounded explicit-change map carries only tool-call ID and effective budget;
+projected-only UI reconstruction uses that budget without changing the global
+model projector or retaining request projection arrays. Actual SDK/TUI tests
+restore both continuation and artifact when the original result fits the global
+budget but its turn/context share does not. Budget/contextual/source tests: 51
+pass; check pass. The whole changed chain is projection -> bounded provenance ->
+successful dispatch -> canonical UI selection -> reconstruction -> release.
+The explicit cold map retains at most 128 small metadata values; this is not a
+zero-allocation claim. Production callbacks and regexes were not added.
+
+The agreed comparison baseline is main 4f547535b830c15d3a9605574c229a0641f94923,
+not the N3 parent. That baseline predates the native worker and correctly reports
+zero worker I/O. All 24 ordinary and three compact cases passed on both this
+baseline and the corrected candidate harness, with exact bytes, handle counts,
+sample counts and removed fixture roots. Arbitrary intermediate native revisions
+with pre-counter stats are explicitly unsupported; their unobserved bytes are
+never silently reported as zero. General old-revision compatibility is outside
+the user's frozen scope.
+
+Main-isolate heap probes now surround measured read/hash APIs inside tool work,
+in addition to provider boundaries. Reports label the sampled scope and exclude
+Worker heap, native allocator and external Buffer storage; they support no whole-
+process allocation or precise peak claim. Probe/coverage overhead is included
+in instrumented timings. Hash counters include all main Hash.update calls during
+the active task (including source/resource loading and request/proof/commit),
+plus Worker SHA256 updates, not only file-content hashing. Spill event-loop
+monitoring starts after controlled GC. Context clocks start after fixture file
+creation while discovery, warm reads, reopening and model switching remain in
+the measured task. Both revisions passed the complete context and spill
+functional cases. Those concurrent-validation timings remain excluded from the
+final serial comparison. Final combined full gates, profiles/comparison/PTY and
+actual current-head review remain required.
