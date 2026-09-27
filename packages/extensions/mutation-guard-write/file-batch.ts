@@ -359,8 +359,10 @@ export class BatchInvocation {
     let requiresVerification = false;
     let firstReason: string | undefined;
     for (const result of results) { requiresVerification ||= Boolean(result.requiresVerification); if (result.status === "succeeded") succeeded++; else if (result.status === "not_started") notStarted++; else if (result.status !== "preview") { failed++; firstReason ??= result.reason; } }
-    const preview = this.input.dryRun && failed === 0;
-    let summary = preview ? `Preflight passed for ${results.length} items. No changes; apply revalidates and requires current authorization.` : `file_batch: ${succeeded} succeeded, ${failed} failed, ${notStarted} not started.${firstReason ? `\n${displayMetadata(firstReason)}` : ""}`;
+    const preview = this.input.dryRun === true;
+    let summary = preview ? failed === 0 ? `Preflight passed for ${results.length} items. No changes; apply revalidates and requires current authorization.`
+      : `Preflight failed. No changes; ${failed} failed, ${notStarted} not started.${firstReason ? `\n${displayMetadata(firstReason)}` : ""}`
+      : `file_batch: ${succeeded} succeeded, ${failed} failed, ${notStarted} not started.${firstReason ? `\n${displayMetadata(firstReason)}` : ""}`;
     if (requiresVerification) summary += "\nVerify current state and any retained candidate; do not automatically retry uncertain items.";
     const collapsedSummary = summary;
     if (!preview) for (const result of results) {

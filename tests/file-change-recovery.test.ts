@@ -37,8 +37,74 @@ function commandUI(f: any, item: string, action: string, editor = "") {
   return { input: () => input, view: () => view, notices: () => notices };
 }
 
+test("N1 recovery argument budget preserves newest real near-limit writes", async t => {
+  const f = await fixture(t);
+  for (let index = 0; index < 5; index++) {
+    const result = await f.call("write", { path: `large-${index}`, content: String(index).repeat(1024 * 1024 - 1000) }, `large-${index}`);
+    assert.equal(result.isError, false);
+  }
+  const records = collectChanges(f.session.getBranch(), f.cwd);
+  assert.equal(records.length, 5); assert.ok(records[0].unavailable);
+  for (const record of records.slice(1)) assert.equal(record.unavailable, undefined);
+  assert.equal((await verifyChange(records[4], async () => {})).postimageMatches, true);
+});
+
+test("N1 oversized legacy receipt IDs refuse before map keys or recovery IDs", async t => {
+  const f = await fixture(t); await f.call("write", { path: "legacy", content: "written" }, "legacy");
+  const entry = JSON.parse(JSON.stringify(f.session.getBranch().find((e: any) => e.message?.role === "toolResult")));
+  assert.equal(entry.message.details.mutationReceiptVersion, 1); entry.message.toolCallId = "x".repeat(2_000_000);
+  const get = Map.prototype.get; let oversized = 0;
+  t.mock.method(Map.prototype, "get", function(this: Map<unknown, unknown>, key: unknown) { if (typeof key === "string" && key.length > 512) oversized++; return get.call(this, key); });
+  assert.deepEqual(collectChanges([entry], f.cwd), []); assert.equal(oversized, 0);
+});
+
+test("N1 real observation authority checks stay bounded across 32 MiB hashing and 32 parents", async t => {
+  const f = await fixture(t), parents: string[] = []; let target = realpathSync.native(f.cwd);
+  for (let index = 0; index < 32; index++) { target = join(target, `p${index}`); mkdirSync(target); parents.push(target); }
+  target = join(target, "file"); const content = Buffer.alloc(32 * 1024 * 1024, 65); writeFileSync(target, content);
+  const { SessionPermissionController } = await createJiti(import.meta.url).import<any>("../packages/extensions/resource-lifecycle-guard/permission-controller.ts");
+  const controller = new SessionPermissionController({ events: { emit() {} }, appendEntry() {} }), ctx = f.runner.createContext(); await controller.restore(ctx);
+  let assessments = 0; const assess = controller.state.assessTarget;
+  t.mock.method(controller.state, "assessTarget", function(this: any, ...args: any[]) { assessments++; return assess.apply(this, args); });
+  const allowed = await controller.authorizeFileObservation(ctx, [target, ...parents]);
+  let synchronousChecks = 0; const current = allowed.assertCurrent;
+  t.mock.method(allowed, "assertCurrent", () => { synchronousChecks++; current(); });
+  const record = { target, original: { path: target }, preview: false, postimage: createHash("sha256").update(content).digest("hex"), receipt: { createdDirectories: parents.map(path => ({ path, status: "retained" })) } };
+  assert.equal((await verifyChange(record, allowed)).postimageMatches, true);
+  assert.ok(assessments > 33 && assessments < 1300, `full path assessments=${assessments}`);
+  assert.ok(synchronousChecks >= 513); t.diagnostic(JSON.stringify({ verificationBytes: content.length, parents: parents.length, fullPathAssessments: assessments, synchronousChecks }));
+  controller.state.setMode("read-only"); await assert.rejects(verifyChange(record, allowed), /obsolete/);
+});
+
+for (const cancelled of [false, true]) test(`N1 failed execution-time dry run remains a view-only preview, cancelled=${cancelled}`, async t => {
+  const f = await fixture(t), { BatchInvocation } = await createJiti(import.meta.url).import<any>("../packages/extensions/mutation-guard-write/file-batch.ts");
+  const execute = BatchInvocation.prototype.execute; let injected = false;
+  t.mock.method(BatchInvocation.prototype, "execute", function(this: any, pi: any, signal: AbortSignal) {
+    injected = true;
+    if (cancelled) { const controller = new AbortController(); controller.abort(); signal = controller.signal; }
+    else writeFileSync(join(f.cwd, "first"), "external");
+    return execute.call(this, pi, signal);
+  });
+  const result = await f.call("file_batch", { dryRun: true, operations: [{ operation: "write", mode: "create", path: "first", content: "planned" }, { operation: "write", mode: "create", path: "second", content: "planned" }] }, "failed-preview");
+  assert.equal(injected, true); assert.equal(result.isError, true); assert.equal((result.details as any).preview, true); assert.match(JSON.stringify(result.content), /Preflight failed.*No changes/);
+  assert.equal(existsSync(join(f.cwd, "second")), false); assert.equal(existsSync(join(f.cwd, "first")), !cancelled);
+  assert.ok(!f.session.getBranch().some((e: any) => e.customType === "file-mutation-progress-v2"));
+  const records = collectChanges(f.session.getBranch(), f.cwd); assert.equal(records.length, 2); assert.ok(records.every((r: any) => r.preview && !r.unavailable));
+  await assert.rejects(verifyChange(records[0], async () => assert.fail("preview must not observe")), /cannot authorize/);
+  assert.throws(() => remainingDraft(records, new Set()), /No confirmed/);
+});
+
 test("N1 partial directory creation without captured identity stays verifiable across exact mirrors", async t => {
+  // Jiti captures builtin bindings on first mutation. Isolate this failure
+  // injection so earlier tests cannot hide it behind an already-loaded binding.
+  if (process.env.SP_N1_CAPTURE_FAILURE_CHILD !== "1") {
+    const env: NodeJS.ProcessEnv = { ...process.env, SP_N1_CAPTURE_FAILURE_CHILD: "1" }; delete env.NODE_TEST_CONTEXT;
+    const output = execFileSync(process.execPath, ["--experimental-strip-types", "--test", "--test-reporter=tap", "--test-name-pattern=partial directory creation without captured identity", fileURLToPath(import.meta.url)],
+      { encoding: "utf8", timeout: 60000, windowsHide: true, env });
+    assert.ok(output.includes("# pass 1") && output.includes("# fail 0"), output); return;
+  }
   const f = await fixture(t), parent = join(f.cwd, "retained-parent"), path = join(parent, "file"), original = fsPromises.lstat;
+  t.diagnostic(`captureFailureFixture=${f.cwd}`);
   let injected = false;
   t.mock.method(fsPromises, "lstat", async function(...args: any[]) {
     if (!injected && resolve(String(args[0])) === resolve(parent) && existsSync(parent)) { injected = true; throw new Error("fixture identity capture failure after mkdir"); }
