@@ -223,7 +223,7 @@ function validStandalonePrefix(entries: readonly any[], selected: any, call: any
   let phase = 0;
   const requestHash = mutationRequestHash(call.name, call.arguments);
   for (const entry of entries) {
-    if (entry === selected) return true;
+    if (entry === selected && entry.data?.phase !== "intent") return true;
     if (entry.type !== "custom" || entry.customType !== "file-mutation-progress-v2" || entry.data?.toolCallId !== call.id) continue;
     const data = entry.data;
     if (data.itemId !== `${call.id}:0` || data.operation !== call.name || data.target !== target || data.destination !== destination) return false;
@@ -232,12 +232,13 @@ function validStandalonePrefix(entries: readonly any[], selected: any, call: any
       phase = 1;
     } else if (data.phase === "intent") {
       if (phase > 1 || (call.name === "write" || call.name === "edit") && phase !== 1 || data.requestHash !== requestHash) return false;
-      if (call.name === "edit" && data.strategy !== "staged_replace" && data.strategy !== "protected_in_place") return false;
+      if ((call.name === "edit" || data.strategy !== undefined) && data.strategy !== "staged_replace" && data.strategy !== "protected_in_place") return false;
       phase = 2;
     } else if (data.phase === "result") {
       if (phase < 1 || phase > 2) return false;
       phase = 3;
     } else return false;
+    if (entry === selected) return true;
   }
   return false;
 }

@@ -903,6 +903,22 @@ for (const batch of [false, true]) for (const kind of ["exact", "snapshot"]) tes
   assert.equal(fresh.isError, false, JSON.stringify(fresh)); assert.equal(readFileSync(target, "utf8"), "after");
 });
 
+test("N2 standalone overwrite intents accept only fixed supplied strategies, including intent-only history", async t => {
+  const f = await fixture(t), target = join(f.cwd, "strategy-write"); writeFileSync(target, "before");
+  await f.call("read", { path: target }, "strategy-read");
+  await f.call("write", { path: target, content: "after" }, "strategy-write");
+  const genuine = JSON.parse(JSON.stringify(f.session.getBranch()));
+  assert.equal(collectChanges(genuine, f.cwd)[0].unavailable, undefined);
+  for (const intentOnly of [false, true]) for (const value of ["unknown", null, 7]) {
+    const branch = structuredClone(genuine).filter((entry: any) => !intentOnly || entry.data?.phase !== "result" && entry.message?.role !== "toolResult");
+    const intent = branch.find((entry: any) => entry.data?.phase === "intent"); intent.data.strategy = value;
+    const records = collectChanges(branch, f.cwd); assert.ok(records.length > 0);
+    for (const record of records) assert.ok(record.unavailable, `${intentOnly}:${value}`);
+    assert.throws(() => remainingDraft(records, new Set(records.map((record: any) => record.itemId))));
+  }
+  assert.equal(readFileSync(target, "utf8"), "after");
+});
+
 test("N2 mirrored terminals bind commit outcome, strategy and retained candidate", async t => {
   const f = await fixture(t), target = join(realpathSync.native(f.cwd), "commit-mirror"); writeFileSync(target, "before");
   await protectWindowsFixture(target); await f.call("read", { path: target }, "commit-mirror-read");
