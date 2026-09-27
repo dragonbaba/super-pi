@@ -195,7 +195,7 @@ export async function recordBatchMutationEvidence(guard: MutationWriteGuard, cwd
     if (item.status === "succeeded" && (item.operation === "edit" || item.operation === "write") && typeof receipt?.sha256 === "string" && SHA256_PATTERN.test(receipt.sha256)) {
       try { await guard.recordMutationSnapshot(cwd, intent.target, receipt.sha256, item.itemId, generation, intent.target); }
       catch { guard.invalidateCanonicalPath(intent.target); }
-    } else if (item.stateChanged !== false) {
+    } else if (item.stateChanged !== false || item.requiresVerification === true || receipt?.requiresVerification === true || receipt?.commit?.retainedTemporary) {
       guard.invalidateCanonicalPath(intent.target);
       if (intent.destination) guard.invalidateCanonicalPath(intent.destination);
     }
@@ -465,7 +465,8 @@ export async function restoreMutationEvidenceFromBranch(
     if (custom?.type === "custom" && custom.customType === "file-mutation-progress-v2") {
       const data = custom.data;
       const completion = nativeReceipts.get(data?.itemId ?? `${data?.toolCallId}:0`);
-      if (completion?.stateChanged !== false && (data?.phase === "intent" || data?.stateChanged !== false) && safeReceiptPath(data?.target)) {
+      if ((completion?.stateChanged !== false || completion.requiresVerification === true)
+        && (data?.phase === "intent" || data?.stateChanged !== false || completion?.requiresVerification === true) && safeReceiptPath(data?.target)) {
         guard.invalidateCanonicalPath(data.target);
         if (safeReceiptPath(data.destination)) guard.invalidateCanonicalPath(data.destination);
       }

@@ -9,8 +9,32 @@ import { mutationFixture, MutationWriteGuard } from "./helpers/mutation-fixture.
 import { FakeScheduler } from "./helpers/runtime-instrumentation.ts";
 import { protectWindowsFixture } from "./helpers/native-metadata-fixture.ts";
 import { Worker } from "node:worker_threads";
+import { execFileSync } from "node:child_process";
 import { nativeFileRequest } from "../packages/extensions/mutation-guard-write/native-file-client.ts";
 const { BatchInvocation, getBatchPreparation } = await createJiti(import.meta.url).import<any>("../packages/extensions/mutation-guard-write/file-batch.ts");
+
+for (const dryRun of [false, true]) for (const kind of ["exact", "snapshot", "overwrite"]) test(`N2 all-item preflight refuses unsupported ${kind} before first item, dryRun=${dryRun}`, { skip: process.platform !== "win32" && process.platform !== "linux" }, async t => {
+  const f = await mutationFixture(t), target = join(f.cwd, "unsupported"), first = join(f.cwd, "would-create");
+  writeFileSync(target, "before");
+  const powershell = process.platform === "win32" ? join(process.env.SystemRoot!, "System32/WindowsPowerShell/v1.0/powershell.exe") : undefined;
+  const options = { windowsHide: true, env: { ...process.env, N2_TARGET: target } };
+  if (powershell) execFileSync(powershell, ["-NoProfile", "-NonInteractive", "-Command", "$ErrorActionPreference='Stop';[IO.File]::SetAttributes($env:N2_TARGET,[IO.FileAttributes]::Hidden)"], options);
+  else await fs.chmod(target, 0o4755);
+  try {
+    const read = await f.call("read", { path: target }, "capability-read"); assert.equal(read.isError, false);
+    const entries = await fs.readdir(f.cwd);
+    const operation = kind === "overwrite" ? { operation: "write", mode: "overwrite", path: target, content: "after" }
+      : kind === "snapshot" ? { operation: "edit", path: target, ...anchors(read) }
+      : { operation: "edit", path: target, edits: [{ oldText: "before", newText: "after" }] };
+    const result = await f.call("file_batch", { dryRun, operations: [{ operation: "write", mode: "create", path: first, content: "first" }, operation] }, "capability-batch");
+    assert.equal(result.isError, true); assert.match(JSON.stringify(result), /UNSUPPORTED_COMMIT/);
+    assert.equal(existsSync(first), false); assert.equal(readFileSync(target, "utf8"), "before");
+    assert.deepEqual(await fs.readdir(f.cwd), entries);
+  } finally {
+    if (powershell) execFileSync(powershell, ["-NoProfile", "-NonInteractive", "-Command", "$ErrorActionPreference='Stop';[IO.File]::SetAttributes($env:N2_TARGET,[IO.FileAttributes]::Archive)"], options);
+    else await fs.chmod(target, 0o755);
+  }
+});
 let afterIO: ((kind: string, path: string, flags?: string) => void | Promise<void>) | undefined;
 let writes: string[] | undefined;
 for (const kind of ["realpath", "lstat", "readFile", "mkdir", "writeFile", "link", "unlink", "rename", "open"] as const) {

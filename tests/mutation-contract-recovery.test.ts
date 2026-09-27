@@ -231,7 +231,7 @@ test("snapshot projection allocation counters and source references release on s
   assert.equal(owner.counters.activeDispatchPresentationScopes, 0);
   const scans = owner.counters.fullSourceEstimatorScans;
   const arrays = owner.counters.modelProjectionArraysCreated;
-  assert.ok(arrays <= 16 * 4);
+  assert.ok(arrays <= 16 * 4, JSON.stringify({ arrays, source }));
   owner.clearProjectionRecords(); assert.equal(owner.counters.projectionRecordEntries, 0); assert.equal(owner.counters.retainedProjectionCodeUnits, 0); owner.dispose();
   const tiny = createToolResultPresentationOwner({ enabled: true, budgetTokens: 1 }, f.sessionId); refs.push(new WeakRef(tiny));
   assert.throws(() => tiny.create(source, "too-small"), /budget/i); tiny.dispose();
