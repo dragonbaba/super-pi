@@ -231,7 +231,8 @@ function validStandalonePrefix(entries: readonly any[], selected: any, call: any
       if (phase !== 0 || call.name !== "write" && call.name !== "edit" || data.requestHash !== requestHash) return false;
       phase = 1;
     } else if (data.phase === "intent") {
-      if (phase > 1 || call.name === "edit" || call.name === "write" && phase !== 1 || data.requestHash !== requestHash) return false;
+      if (phase > 1 || (call.name === "write" || call.name === "edit") && phase !== 1 || data.requestHash !== requestHash) return false;
+      if (call.name === "edit" && data.strategy !== "staged_replace" && data.strategy !== "protected_in_place") return false;
       phase = 2;
     } else if (data.phase === "result") {
       if (phase < 1 || phase > 2) return false;
