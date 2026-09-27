@@ -824,6 +824,9 @@ export class AgentSession {
 	private _toolBudgetGeneration = 0;
 	private _toolBudgetLastRequest: ToolResultBudgetStatus["lastRequest"] = "not-observed";
 	private _toolBudgetSessionOverride = false;
+	private _toolBudgetProjectionPending = false;
+	private _toolBudgetProjectedSources: WeakMap<object, string | null> | undefined;
+	private _toolBudgetSourceCapturePasses = 0;
 	private _toolResultUiDispatchMessage: Extract<AgentMessage, { role: "toolResult" }> | undefined;
 	private _toolResultUiDispatchSourceContent: Extract<AgentMessage, { role: "toolResult" }>["content"] | undefined;
 	private _toolResultUiCanonicalMessages:
@@ -1771,6 +1774,8 @@ export class AgentSession {
 		this._toolOutputShadow = undefined;
 		this._toolResultPresentation?.dispose();
 		this._toolResultPresentation = undefined;
+		this._toolBudgetProjectedSources = undefined;
+		this._toolBudgetProjectionPending = false;
 		this._toolResultUiDispatchMessage = undefined;
 		this._toolResultUiDispatchSourceContent = undefined;
 		this._toolResultUiCanonicalMessages?.clear();
@@ -1863,6 +1868,8 @@ export class AgentSession {
 		this._clearEvidenceBranch();
 		this._toolResultPresentation?.dispose();
 		this._toolResultPresentation = next;
+		this._toolBudgetProjectedSources = undefined;
+		this._toolBudgetProjectionPending = next?.getEvidenceBudgetTokens() !== undefined;
 		this._toolBudgetLastRequest = "not-observed";
 		this._toolBudgetSessionOverride = true;
 		this._toolBudgetGeneration++;
@@ -1893,14 +1900,32 @@ export class AgentSession {
 		systemPrompt?: string, tools?: readonly AgentTool<any>[], contextWindow?: number, maxOutputTokens?: number, requestPlanning = false): Message[] {
 		const owner = this._toolResultPresentation;
 		if (!owner) return messages;
+		const sources = this._toolBudgetProjectionPending ? this._captureBudgetProjectionSources(messages) : undefined;
 		try {
 			const projected = owner.projectMessagesForModel(messages, imagePolicy, systemPrompt, tools, contextWindow, maxOutputTokens, requestPlanning);
 			this._toolBudgetLastRequest = owner.getEvidenceBudgetTokens() === undefined ? "not-observed" : "applied";
+			if (sources) { this._toolBudgetProjectedSources = sources; this._toolBudgetProjectionPending = false; }
 			return projected;
 		} catch (error) {
 			this._toolBudgetLastRequest = error instanceof ToolResultContinuationError && error.code === "budget-too-small" ? "blocked" : "preparation-failed";
 			throw error;
 		}
+	}
+
+	/** One bounded weak identity set after an explicit configuration change. Input
+	 * is the actual post-context-transform request, before projection mutates it.
+	 * Weak keys never retain omitted/cloned extension content after the request. */
+	private _captureBudgetProjectionSources(messages: readonly Message[]): WeakMap<object, string | null> {
+		const sources = new WeakMap<object, string | null>();
+		this._toolBudgetSourceCapturePasses++;
+		let count = 0;
+		for (let index = messages.length - 1; index >= 0 && count < MAX_TOOL_RESULT_UI_DISCOVERIES; index--) {
+			const message = messages[index]!;
+			if (message.role !== "toolResult") continue;
+			count++;
+			sources.set(message.content, sources.has(message.content) ? null : message.toolCallId);
+		}
+		return sources;
 	}
 
 	private _recordToolResultUiCanonicalMessage(message: AgentMessage): void {
@@ -2026,8 +2051,11 @@ export class AgentSession {
 	collectRecentToolResultPresentationsForUi(
 		target: Map<Extract<AgentMessage, { role: "toolResult" }>, ToolResultPresentation>,
 		limit: number,
+		projectedOnly = false,
 	): void {
 		target.clear();
+		const projectedSources = projectedOnly ? this._toolBudgetProjectedSources : undefined;
+		if (projectedOnly) this._toolBudgetProjectedSources = undefined;
 		this._toolResultUiHistoryMessagesVisited = 0;
 		this._toolResultUiPresentationCandidatesEvaluated = 0;
 		this._toolResultUiActualV2Discoveries = 0;
@@ -2047,6 +2075,7 @@ export class AgentSession {
 			this._toolResultUiHistoryMessagesVisited++;
 			const candidate = messages[index];
 			if (candidate?.role !== "toolResult") continue;
+			if (projectedOnly && projectedSources?.get(candidate.content) !== candidate.toolCallId) continue;
 			if (candidatesByToolCallId.has(candidate.toolCallId)) continue;
 			this._toolResultUiPresentationCandidatesEvaluated++;
 			this._toolResultUiSourceScans++;

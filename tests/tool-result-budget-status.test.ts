@@ -183,8 +183,9 @@ for (const activity of ["compact", "branch"] as const) test(`N4 budget changes r
   } finally { release(); await operation?.catch(() => {}); await f.release(); }
 });
 
-test("N4 changed budget reattaches actual next-request provenance to the same retained component", async t => {
+for (const transform of ["identity", "filter", "clone"] as const) test(`N4 changed budget uses actual next-request provenance: ${transform}`, async t => {
   let requests = 0, executions = 0, wire = "";
+  let transformEnabled = false;
   const fetchFixture: typeof fetch = async (_url, init) => {
     wire = init!.body as string; requests++;
     const delta = requests === 1 ? { tool_calls: [{ index: 0, id: "budget-history", type: "function", function: { name: "inspect_budget", arguments: "{}" } }] } : { content: "Observed result." };
@@ -193,9 +194,15 @@ test("N4 changed budget reattaches actual next-request provenance to the same re
     return new Response(`data: ${JSON.stringify(event)}\n\ndata: ${JSON.stringify(end)}\n\ndata: [DONE]\n\n`, { headers: { "Content-Type": "text/event-stream" } });
   };
   const runtime = alphaModelRuntime((model: any, context: any, options: any) => streamSimple({ ...model, api: "openai-completions" }, context, { ...options, apiKey: "offline", fetch: fetchFixture, maxRetries: 0 }));
-  const f = await alphaSession({ runtime, budgetTokens: 1024, customTools: [{ name: "inspect_budget", label: "Inspect", description: "budget provenance fixture",
+  // The extension runner defensively clones context before invoking any handler.
+  // The identity control therefore has no context hook at all.
+  const f = await alphaSession({ runtime, budgetTokens: 1024, extensions: transform === "identity" ? undefined : [(pi: any) => pi.on("context", (event: any) => {
+    if (!transformEnabled) return;
+    return { messages: transform === "filter" ? event.messages.filter((message: any) => message.role !== "toolResult")
+      : event.messages.map((message: any) => message.role === "toolResult" ? { ...message, content: message.content.map((block: any) => ({ ...block })) } : message) };
+  })], customTools: [{ name: "inspect_budget", label: "Inspect", description: "budget provenance fixture",
     parameters: { type: "object", properties: {}, additionalProperties: false }, execute: async () => { executions++; return { content: [{ type: "text", text: "完整中文 evidence\n".repeat(10000) }], details: {} }; } }] });
-  const profiler = process.env.SP_BUDGET_REDISCOVERY_PROFILE === "1" ? new InspectorSession() : undefined;
+  const profiler = process.env.SP_BUDGET_REDISCOVERY_PROFILE === "1" && transform === "identity" ? new InspectorSession() : undefined;
   const cycles = profiler ? 20 : 3;
   let heapBefore = 0, sampledBytes = 0;
   try {
@@ -204,6 +211,7 @@ test("N4 changed budget reattaches actual next-request provenance to the same re
     assert.equal(requests, 2); assert.equal(executions, 1);
     const first = f.internal.attachedToolResultDiscoveries.get("budget-history"), component = first.component;
     let previous = component.getToolResultPresentationDiscovery("budget-history"); assert.ok(previous?.cursor);
+    transformEnabled = true;
     global.gc?.(); heapBefore = process.memoryUsage().heapUsed;
     if (profiler) { profiler.connect(); await profiler.post("HeapProfiler.startSampling", { samplingInterval: 1024, includeObjectsCollectedByMajorGC: true, includeObjectsCollectedByMinorGC: true }); }
     for (let cycle = 0; cycle < cycles; cycle++) {
@@ -212,13 +220,21 @@ test("N4 changed budget reattaches actual next-request provenance to the same re
     assert.equal(component.getToolResultPresentationDiscovery("budget-history"), undefined); assert.equal(oldOwner.counters.retainedProjectionCodeUnits, 0);
     await f.session.prompt("Continue without executing the tool again."); await f.session.agent.waitForIdle();
     assert.equal(requests, cycle + 3); assert.equal(executions, 1); assert.ok(wire.includes("budget-history"));
-    const next = f.internal.attachedToolResultDiscoveries.get("budget-history"); assert.equal(next.component, component);
-    const current = component.getToolResultPresentationDiscovery("budget-history"); assert.ok(current?.cursor); assert.notEqual(current.cursor, previous.cursor);
+    const next = f.internal.attachedToolResultDiscoveries?.get("budget-history"), current = component.getToolResultPresentationDiscovery("budget-history");
+    if (transform === "identity") { assert.equal(next.component, component); assert.ok(current?.cursor); assert.notEqual(current.cursor, previous.cursor); previous = current; }
+    else { assert.equal(next, undefined); assert.equal(current, undefined); }
+    const toolMessages = JSON.parse(wire).messages.filter((message: any) => message.role === "tool" && message.tool_call_id === "budget-history");
+    assert.equal(toolMessages.length, 1);
+    // The real OpenAI adapter repairs an orphaned call with this synthetic error.
+    // It must never serialize the filtered canonical result or claim its cursor.
+    if (transform === "filter") assert.equal(toolMessages[0].content, "No result provided");
+    else assert.ok(JSON.stringify(toolMessages[0].content).includes("完整中文 evidence"));
+    assert.equal((f.session as any)._toolBudgetSourceCapturePasses, cycle + 1);
+    assert.equal((f.session as any)._toolBudgetProjectedSources, undefined);
     assert.equal(f.internal.toolResultBudgetRediscoveryPasses, cycle + 1);
     const probes = f.internal.toolResultBudgetRediscoveryComponentProbes;
     for (let n = 0; n < 100; n++) f.internal.rediscoverToolResultsAfterBudgetChange();
     assert.equal(f.internal.toolResultBudgetRediscoveryComponentProbes, probes);
-    previous = current;
     }
     await f.internal.editor.onSubmit("/tool-budget off"); assert.equal(component.getToolResultPresentationDiscovery("budget-history"), undefined);
     assert.equal(f.internal.getToolResultDiscoveryLifecycleCounts().totalEntries, 0);
@@ -235,7 +251,7 @@ test("N4 changed budget reattaches actual next-request provenance to the same re
   }
   assert.equal(f.internal.getToolResultDiscoveryLifecycleCounts().totalEntries, 0);
   global.gc?.();
-  t.diagnostic(JSON.stringify({ benchmark: "explicit-budget-rediscovery", node: process.version, cycles, requests, executions,
+  t.diagnostic(JSON.stringify({ benchmark: "explicit-budget-rediscovery", transform, node: process.version, cycles, requests, executions,
     rediscoveryPasses: f.internal.toolResultBudgetRediscoveryPasses, componentProbes: f.internal.toolResultBudgetRediscoveryComponentProbes,
     unchangedGenerationAdditionalProbes: 0, retainedRegistrationsAfterRelease: 0, sampledBytes: profiler ? sampledBytes : null,
     heapBefore, heapAfterRelease: process.memoryUsage().heapUsed, note: "Explicit command/whole request cost; not per-delta cost or a speedup claim." }));

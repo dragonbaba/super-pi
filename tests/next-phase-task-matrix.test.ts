@@ -100,7 +100,8 @@ async function measure(t: test.TestContext, strategy: Strategy, count: number, k
   const manager = SessionManager.create(cwd, join(root, "sessions"));
   ({ session } = await createAgentSession({ cwd, agentDir, settingsManager: settings, resourceLoader, sessionManager: manager, model, modelRuntime: runtime, noTools: "builtin" }));
     await session.bindExtensions({ mode: "tui", uiContext: { ...session.extensionRunner.getUIContext(), select: async () => { approvals++; return "仅允许本次"; } } });
-    global.gc?.(); const heapBefore = process.memoryUsage().heapUsed, cpu = process.cpuUsage(), start = performance.now();
+    global.gc?.(); const heapBefore = process.memoryUsage().heapUsed; peakHeap = heapBefore;
+    const cpu = process.cpuUsage(), start = performance.now();
     await session.prompt("Perform the deterministic fixture task using its recorded operations."); await session.agent.waitForIdle();
     const elapsedMs = performance.now() - start, used = process.cpuUsage(cpu);
     const results = session.messages.filter((message: any) => message.role === "toolResult");

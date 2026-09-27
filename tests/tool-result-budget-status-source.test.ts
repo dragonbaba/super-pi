@@ -20,7 +20,7 @@ test("N4 explicit budget helpers and request bridge create no callbacks or regex
   }
   const targets = [
     { file: "packages/coding-agent/src/core/tool-result-budget-status.ts", names: [] },
-    { file: "packages/coding-agent/src/core/agent-session.ts", names: ["configureToolResultBudget", "getToolResultBudgetStatus", "projectToolResultMessagesForModel"] },
+    { file: "packages/coding-agent/src/core/agent-session.ts", names: ["configureToolResultBudget", "getToolResultBudgetStatus", "projectToolResultMessagesForModel", "_captureBudgetProjectionSources"] },
     { file: "packages/coding-agent/src/modes/interactive/interactive-mode.ts", names: ["handleToolResultBudgetCommand", "rediscoverToolResultsAfterBudgetChange"] },
     { file: "packages/coding-agent/src/modes/interactive/components/tool-execution.ts", names: ["hasToolResultSourceForUi", "hasToolResultSourceForUi"] },
   ];

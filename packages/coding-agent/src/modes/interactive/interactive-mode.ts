@@ -4956,7 +4956,7 @@ export class InteractiveMode {
 		const presentations = new Map<Extract<AgentMessage, { role: "toolResult" }>, ToolResultPresentation>();
 		this.toolResultBudgetRediscoveryPasses++;
 		try {
-			this.session.collectRecentToolResultPresentationsForUi(presentations, MAX_TOOL_RESULT_DISCOVERIES);
+			this.session.collectRecentToolResultPresentationsForUi(presentations, MAX_TOOL_RESULT_DISCOVERIES, true);
 			for (const component of this.chatContainer.children) {
 				if (presentations.size === 0) break;
 				if (!(component instanceof ToolExecutionComponent) && !(component instanceof ReadToolGroupComponent)) continue;

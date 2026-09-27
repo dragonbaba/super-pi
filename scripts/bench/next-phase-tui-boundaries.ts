@@ -48,9 +48,10 @@ try {
   for (let index = 0; index < 3; index++) { tui.renderNow(); await tui.flushTerminalFrames(); }
   assert.ok(terminal.writes > 0); assert.ok(metrics.snapshot().rootRenders > 0);
   const setupStart = performance.now(), setupCpu = process.cpuUsage();
-  await profiler.post("HeapProfiler.startSampling", { samplingInterval: 32768 }); metrics.reset();
-  global.gc?.(); const heapBefore = process.memoryUsage().heapUsed, timings: number[] = [];
+  const timings: number[] = []; metrics.reset(); global.gc?.();
+  const heapBefore = process.memoryUsage().heapUsed;
   let sampledPeakHeap = heapBefore;
+  await profiler.post("HeapProfiler.startSampling", { samplingInterval: 32768 });
   const profileSetupMs = performance.now() - setupStart, setupUsed = process.cpuUsage(setupCpu);
   const cpu = process.cpuUsage(), start = performance.now();
   for (let index = 0; index < 60; index++) {

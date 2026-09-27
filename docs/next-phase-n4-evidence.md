@@ -286,9 +286,28 @@ state. The coding-agent README now matches the status screen's MCP admission
 caveat: rejected remote output can leave only an error, without continuation,
 even after execution. These fixes do not change the production budget pipeline.
 
-Inspector startup is also outside the workload clocks: TUI starts sampling and
-resets instrumentation before controlled GC and its wall/CPU boundary; setup
+Inspector startup is also outside the workload clocks: TUI allocates timing state,
+resets instrumentation and performs controlled GC before starting sampling; setup
 wall/CPU is reported separately from workload and profile-analysis overhead.
 Both main and legacy-compact I/O start precise coverage before controlled GC and
 workload clocks. Updated complete I/O and TUI functional runs pass. Fair timings
 still require the serial alternating baseline/candidate run on the final tree.
+
+The success-matrix peak starts at the same post-GC heap baseline as its workload,
+so setup's peak cannot contaminate peakHeapDelta. Both measurement changes need
+a fresh final comparison; the interrupted r23 warmup contains no measured rounds
+and is excluded.
+
+After explicit budget changes, a bounded weak source-identity map captures the
+actual context-transformed input of the successful projection. UI rediscovery
+requires that exact content identity and tool-call ID, consumes the weak map and
+never creates it on unchanged-generation provider deltas/progress/render paths.
+No callback or regex was added to these methods. Actual SDK/OpenAI-serializer/TUI
+tests cover canonical identity, context filtering and cloning. The latter two
+cannot attach canonical cursors; a filtered result is serialized as the existing
+adapter's synthetic missing-result error. Failed projection does not publish a
+source map; configuration/disposal clears it, and weak keys retain no source.
+Serial Node22.19 sampling over 20 changes: 22 requests, one tool execution,
+20 rediscovery passes/probes, zero extra unchanged-generation probes, zero
+registrations retained after release, 21,819,792 sampled bytes for the complete
+request/command fixture (not per-delta allocation or a speedup claim).
