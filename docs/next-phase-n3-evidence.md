@@ -238,3 +238,21 @@ listener survives, while retaining full tail, one idle timer/refresh and zero
 wait-owned child/data-listener assertions. Windows targeted observations pass;
 Linux's real inherited-pipe case must run in the new CI. Runtime behavior is not
 changed by this correction.
+
+### Review follow-up: resolved failures, typed observers and rejected spills
+
+Public Bash/PowerShell backends resolving exitCode=0 with non-exit termination or
+an observation error now produce a failed tool result while preserving the facts.
+Eight actual Agent dispatch regressions cover both tools and timeout/output
+failure/unknown/observation outcomes. A completed tool result also takes precedence
+over a ToolResultError thrown by an awaited progress observer: its real content
+and execution facts survive, with a separately appended observation failure.
+
+Direct Session/RPC post-execution rejection closes and removes the exact owned
+spill before rethrowing. If unlink fails, the error preserves the original process
+facts/cause and exposes fullOutputPath plus a cleanup message, so the retained log
+is reachable. Six actual stream/file regressions cover three rejection reasons
+with successful cleanup and injected unlink denial, checking real bytes and closed
+streams. No new progress-time callback or regex was introduced. Focused tests:
+65 passed, two platform skips; the hot-path source gate passes. Final combined
+checks, both CI platforms and review still apply.

@@ -6,7 +6,9 @@ import { executeBashWithOperations } from "../packages/coding-agent/src/core/bas
 import { Agent } from "../packages/agent/src/agent.ts";
 import { ToolResultError } from "../packages/agent/src/tool-result-error.ts";
 import { Type } from "typebox";
-import { realpathSync } from "node:fs";
+import fs, { realpathSync, existsSync, rmSync } from "node:fs";
+import fsPromises from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { waitForChildProcess, type ChildProcessObservation } from "../packages/coding-agent/src/utils/child-process.ts";
@@ -15,6 +17,51 @@ import { PassThrough } from "node:stream";
 import type { ChildProcess } from "node:child_process";
 
 const operations = createLocalShellOperations("fixture", () => ({ shell: process.execPath, args: ["-e"] }));
+
+for (const reason of ["input", "observation", "termination"]) for (const cleanupFailure of [false, true]) test(`N3 direct rejected completion closes its exact spill: ${reason}, cleanupFailure=${cleanupFailure}`, async t => {
+  const create = fs.createWriteStream, streams: fs.WriteStream[] = [];
+  t.mock.method(fs, "createWriteStream", function(...args: any[]) {
+    const stream = Reflect.apply(create, fs, args); streams.push(stream); return stream;
+  });
+  const unlink = fsPromises.unlink;
+  if (cleanupFailure) t.mock.method(fsPromises, "unlink", async function(path: any) {
+    if (streams.some(stream => stream.path === path)) throw Object.assign(new Error("owned unlink denied"), { code: "EACCES" });
+    return unlink(path);
+  });
+  syncBuiltinESMExports();
+  t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); for (const stream of streams) if (existsSync(stream.path)) rmSync(stream.path); });
+  await assert.rejects(executeBashWithOperations("fixture", process.cwd(), { async exec(_command, _cwd, options) {
+    options.onData(Buffer.from("real-spill\n".repeat(20000)));
+    return { exitCode: 0, inputError: reason === "input" ? "incomplete stdin" : undefined,
+      observationError: reason === "observation" ? "incomplete observation" : undefined, termination: reason === "termination" ? "unknown" : "exit" };
+  } }), (error: any) => {
+    assert.equal(shellProcessResultFromError(error)?.exitCode, 0);
+    if (cleanupFailure) { assert.equal(error.fullOutputPath, streams[0].path); assert.ok(error.message.includes(String(streams[0].path))); assert.ok(error.cause); }
+    return true;
+  });
+  assert.equal(streams.length, 1); assert.equal(streams[0].closed, true); assert.equal(existsSync(streams[0].path), cleanupFailure);
+  if (cleanupFailure) assert.equal(fs.readFileSync(streams[0].path, "utf8"), "real-spill\n".repeat(20000));
+});
+
+test("N3 a typed progress observer failure cannot replace a completed producer result", async () => {
+  const details = { shellExecution: { version: 1, started: true, exitCode: 0 }, marker: "completed producer" };
+  let completed = false, updates = 0;
+  const agent = new Agent({ convertToLlm: () => [], streamFn: () => { throw new Error("offline"); } });
+  agent.state.tools = [{ name: "fixture", label: "fixture", description: "fixture", parameters: Type.Object({}),
+    async execute(_id, _args, _signal, update) { update?.({ content: [{ type: "text", text: "progress" }], details: {} }); completed = true; return { content: [{ type: "text", text: "real completed output" }], details }; } }];
+  const unsubscribe = agent.subscribe(async event => {
+    if (event.type !== "tool_execution_update") return;
+    updates++; await new Promise<void>(resolve => setImmediate(resolve)); assert.equal(completed, true);
+    throw new ToolResultError("typed observer failure", { content: [{ type: "text", text: "forged replacement" }], details: { marker: "forged" } });
+  });
+  try {
+    const result = await agent.dispatchHostTool({ type: "toolCall", name: "fixture", id: "completed", arguments: {} });
+    assert.equal(updates, 1); assert.equal(result.isError, true); assert.equal(result.details.marker, "completed producer");
+    assert.equal(result.details.shellExecution.exitCode, 0); assert.equal(result.details.shellExecution.observationError, "typed observer failure");
+    assert.equal((result.content[0] as any).text, "real completed output"); assert.ok(!JSON.stringify(result).includes("forged replacement"));
+    assert.equal(agent.state.pendingToolCalls.size, 0);
+  } finally { unsubscribe(); agent.abort(); }
+});
 test("N3 frozen/sealed failure reasons preserve the cause and actual process observation", async () => {
   for (const freeze of [Object.freeze, Object.seal]) {
     const original = freeze(new Error("immutable beforeSpawn reason"));

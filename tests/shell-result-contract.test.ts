@@ -56,6 +56,18 @@ async function run(command: string, operations = local) {
   return result;
 }
 
+for (const name of ["bash", "powershell"] as const) for (const reason of ["timeout", "output_failure", "unknown", "observation"] as const) test(`N3 ${name} rejects resolved zero-exit non-clean facts: ${reason}`, async () => {
+  const backend = { async exec() { return { exitCode: 0, termination: reason === "observation" ? "exit" as const : reason,
+    observationError: reason === "observation" ? "fixture observation failure" : undefined }; } };
+  const agent = new Agent({ convertToLlm: () => [], streamFn: () => { throw new Error("offline"); } });
+  agent.state.tools = [name === "bash" ? createBashTool(process.cwd(), { operations: backend }) : createPowerShellTool(process.cwd(), { operations: backend })];
+  const result = await agent.dispatchHostTool({ type: "toolCall", name, id: "resolved-failure", arguments: { command: "fixture" } });
+  assert.equal(result.isError, true); const facts = readShellExecution(result.details)!;
+  assert.equal(facts.exitCode, 0); assert.equal(facts.termination, reason === "observation" ? "exit" : reason);
+  assert.equal(facts.observationError, reason === "observation" ? "fixture observation failure" : undefined);
+  assert.equal(shellExecutionSucceeded(facts), false); assert.equal(agent.state.pendingToolCalls.size, 0);
+});
+
 test("N3 missing JS tool content remains a failed normalized result after an observer throws", async () => {
   let executions = 0;
   const agent = new Agent({ convertToLlm: () => [], streamFn: () => { throw new Error("offline"); },
