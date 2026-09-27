@@ -28,6 +28,7 @@ import { primaryReadResultText, readEvidenceRange, restoreMutationEvidenceFromBr
 import { consumePermissionPathApproval, mutationRequestHash } from "../resource-lifecycle-guard/permission-contract.ts";
 import { registerNativeTools, MUTATION_PROGRESS_ENTRY, renderFileMutationResult } from "./native-tools.ts";
 import { registerFileBatch } from "./file-batch.ts";
+import { FileCommitError, commitFailure, commitSummary, type FileCommitReceipt } from "./file-commit.ts";
 import { canonicalCreationDirectories } from "./file-creation.ts";
 
 interface ToolResultEventShape {
@@ -44,6 +45,7 @@ interface MutationFailureInfo {
   stateChanged?: unknown;
   cause?: unknown;
   status?: unknown;
+  commit?: FileCommitReceipt;
 }
 
 
@@ -148,6 +150,7 @@ class GuardedEditExecution {
   authorization?: MutationEditAuthorization;
   writtenSha256?: string;
   previousSha256?: string;
+  commit?: FileCommitReceipt;
   writeSucceeded = false;
 
   constructor(
@@ -193,7 +196,7 @@ class GuardedEditExecution {
 
   async #writeFile(_absolutePath: string, content: string): Promise<void> {
     if (!this.#previousContent) throw new Error("Edit guard lost the original file state.");
-    this.previousSha256 = await this.#guard.writeEditContent(
+    const committed = await this.#guard.writeEditContent(
       this.#cwd,
       this.#input.path,
       this.#previousContent,
@@ -202,6 +205,8 @@ class GuardedEditExecution {
       this.#pathApproval,
       this.#signal,
     );
+    this.previousSha256 = committed.previousSha256;
+    this.commit = committed.commit;
     this.writtenSha256 = sha256(content);
     this.writeSucceeded = true;
   }
@@ -213,6 +218,26 @@ export default function mutationGuardWriteExtension(pi: ExtensionAPI): void {
   let turnGeneration = 0;
   registerNativeTools(pi, guard, () => turnGeneration);
   registerFileBatch(pi, guard, () => turnGeneration);
+
+  function finishEdit(toolCallId: string, target: string, details: any, text: string) {
+    const status = details.ok ? "succeeded" : details.stateChanged === "unknown" ? "state_unknown" : details.stateChanged ? "partial" : "failed_no_change";
+    const receipt = { ...details, mutationReceiptVersion: 2, operation: "edit", target, status };
+    if (status === "partial" || status === "state_unknown" || receipt.commit?.retainedTemporary) receipt.requiresVerification = true;
+    try {
+      pi.appendEntry(MUTATION_PROGRESS_ENTRY, { toolCallId, itemId: `${toolCallId}:0`, phase: "result", mutationReceiptVersion: 2,
+        operation: "edit", target, status, stateChanged: receipt.stateChanged, sha256: receipt.sha256, commit: receipt.commit });
+    } catch {
+      if (receipt.stateChanged !== false) {
+        const committed = receipt.commit?.outcome === "committed";
+        receipt.status = committed ? "partial" : "state_unknown"; receipt.stateChanged = committed ? true : "unknown"; receipt.ok = false; receipt.requiresVerification = true;
+        guard.invalidateCanonicalPath(target);
+        text = `${committed ? "Edit committed" : "Edit may have committed"} but receipt recording failed. Verify current state; do not automatically retry.`;
+      }
+    }
+    if (receipt.commit) text += `\n${commitSummary(receipt.commit)}`;
+    if (receipt.requiresVerification) text += "\nVerify current state before further action; do not automatically retry.";
+    return { content: [{ type: "text" as const, text }], details: receipt, isError: !receipt.ok };
+  }
 
   async function resetAndRestoreEvidence(ctx: {
     cwd: string;
@@ -300,7 +325,14 @@ export default function mutationGuardWriteExtension(pi: ExtensionAPI): void {
     ],
     executionMode: "sequential",
     async execute(toolCallId, input: GuardedEditInput, signal, onUpdate, ctx) {
-      const pathApproval = consumePermissionPathApproval(input, toolCallId, "edit") as MutationPathApproval | undefined;
+      const granted = consumePermissionPathApproval(input, toolCallId, "edit") as MutationPathApproval | undefined;
+      const pathApproval = granted ? { ...granted } : undefined;
+      const receiptTarget = pathApproval?.canonicalTarget ?? resolveToolPath(ctx.cwd, input.path);
+      if (pathApproval) pathApproval.commitSelected = metadata => {
+        pi.appendEntry(MUTATION_PROGRESS_ENTRY, { toolCallId, itemId: `${toolCallId}:0`, phase: "intent", operation: "edit", target: receiptTarget,
+          requestHash: mutationRequestHash("edit", input), strategy: metadata.strategy, compatibilityReason: metadata.reason });
+        if (metadata.reason) onUpdate?.({ content: [{ type: "text", text: `Commit selected: ${metadata.reason}` }], details: { diff: "", patch: "" } });
+      };
       const nativeInput: GuardedEditInput = {
         path: input.path,
         edits: cloneGuardedEdits(input.edits),
@@ -311,9 +343,9 @@ export default function mutationGuardWriteExtension(pi: ExtensionAPI): void {
         if (pathApproval) pi.appendEntry(MUTATION_PROGRESS_ENTRY, { phase: "origin", toolCallId, itemId: `${toolCallId}:0`, operation: "edit", target: pathApproval.canonicalTarget, requestHash: mutationRequestHash("edit", input) });
         const result = await guardedEdit.execute(toolCallId, nativeInput, signal, onUpdate, ctx);
         if (!result.details) throw new Error("Native edit completed without diff/patch details.");
-        return {
-          ...result,
-          details: {
+        let resultText: string | undefined;
+        for (const block of result.content) if (block.type === "text") resultText = resultText === undefined ? block.text : `${resultText}\n${block.text}`;
+        return finishEdit(toolCallId, receiptTarget, {
             ...result.details,
             ok: true,
             mutationReceiptVersion: MUTATION_RECEIPT_VERSION,
@@ -326,21 +358,19 @@ export default function mutationGuardWriteExtension(pi: ExtensionAPI): void {
             replacements: execution.authorization?.replacements ?? input.edits.length,
             omittedNoOpEdits: execution.authorization?.omittedNoOpEdits ?? 0,
             estimatedChangedBytes: execution.authorization?.estimatedChangedBytes,
-          },
-        };
+            commit: execution.commit,
+          }, resultText ?? "");
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         const failure = mutationFailureInfo(error);
-        if (!execution.writeSucceeded && failure?.stateChanged !== true) {
+        if (!execution.writeSucceeded && failure?.stateChanged !== true && failure?.stateChanged !== "unknown") {
           guard.releaseMutation(execution.authorization?.reservationId);
         }
+        if (failure?.commit) return finishEdit(toolCallId, receiptTarget, { ...failure, ok: false }, conciseMutationFailure(message, failure, undefined, undefined));
         if (execution.writeSucceeded || failure?.stateChanged === true) {
-          await guard.invalidate(ctx.cwd, input.path);
-          const details = { ...failure, diff: "", patch: "", mutationReceiptVersion: 2, operation: "edit", status: "partial", stateChanged: true,
-            target: pathApproval?.canonicalTarget ?? execution.authorization?.target ?? resolveToolPath(ctx.cwd, input.path),
-            previousSha256: execution.previousSha256, sha256: execution.writtenSha256, cause: message.slice(0, 800), requiresVerification: true };
-          try { pi.appendEntry(MUTATION_PROGRESS_ENTRY, { ...details, toolCallId, itemId: `${toolCallId}:0`, phase: "result" }); } catch { /* The aggregate retains the observed outcome. */ }
-          return { content: [{ type: "text" as const, text: `edit: partial; ${input.path}. Verify current state; do not automatically retry. ${details.cause}` }], details, isError: true };
+          guard.invalidateCanonicalPath(receiptTarget);
+          return finishEdit(toolCallId, receiptTarget, { ...failure, ok: false, stateChanged: true, requiresVerification: true, commit: execution.commit,
+            previousSha256: execution.previousSha256, sha256: execution.writtenSha256 }, `Edit committed but completion failed: ${message.slice(0, 800)}`);
         }
         const editIndex = failedEditIndex(failure);
         let recovery;
@@ -424,6 +454,13 @@ export default function mutationGuardWriteExtension(pi: ExtensionAPI): void {
             snapshotInput.edits as SnapshotLineEdit[],
             signal,
             {
+              preparedTarget: pathApproval?.preparedIdentity,
+              preparedParent: pathApproval?.preparedParent,
+              commitSelected: metadata => {
+                pi.appendEntry(MUTATION_PROGRESS_ENTRY, { toolCallId, itemId: `${toolCallId}:0`, phase: "intent", operation: "edit", target: canonicalTarget,
+                  requestHash: mutationRequestHash("edit", input), strategy: metadata.strategy, compatibilityReason: metadata.reason });
+                if (metadata.reason) _onUpdate?.({ content: [{ type: "text", text: `Commit selected: ${metadata.reason}` }], details: {} });
+              },
               assertPathAllowed: () => guard.assertEditPathAllowed(ctx.cwd, snapshotInput.path, pathApproval),
               reserveMutation: (changedBytes) => {
                 reservationId = guard.reserveSnapshotEdit(
@@ -440,12 +477,7 @@ export default function mutationGuardWriteExtension(pi: ExtensionAPI): void {
               },
             },
           ));
-          return {
-            content: [{
-              type: "text" as const,
-              text: `Successfully applied ${details.replacements} snapshot LINE#ID operation(s) to ${snapshotInput.path}.\nFor a dependent edit, read again and use its snapshot and LINE#ID anchors; pre-mutation snapshots for this file are unusable.`,
-            }],
-            details: {
+          return finishEdit(toolCallId, canonicalTarget, {
               ...details,
               ok: true,
               mutationReceiptVersion: MUTATION_RECEIPT_VERSION,
@@ -453,9 +485,14 @@ export default function mutationGuardWriteExtension(pi: ExtensionAPI): void {
               operation: "edit",
               target: canonicalTarget,
               stateChanged: true,
-            },
-          };
+            }, `Successfully applied ${details.replacements} snapshot LINE#ID operation(s) to ${snapshotInput.path}.\nFor a dependent edit, read again and use its snapshot and LINE#ID anchors; pre-mutation snapshots for this file are unusable.`);
         } catch (error) {
+          if (error instanceof FileCommitError) {
+            const failure = commitFailure(error);
+            if (failure.stateChanged === false) guard.releaseMutation(reservationId);
+            if (failure.stateChanged !== false || failure.commit?.retainedTemporary) guard.invalidateCanonicalPath(canonicalTarget);
+            return finishEdit(toolCallId, canonicalTarget, failure, error.message);
+          }
           const message = error instanceof Error ? error.message : String(error);
           if (!message.includes("[SNAPSHOT_EDIT_PARTIAL]")) guard.releaseMutation(reservationId);
           else {
@@ -487,15 +524,22 @@ export default function mutationGuardWriteExtension(pi: ExtensionAPI): void {
     async execute(toolCallId, input: GuardedWriteInput, signal, _onUpdate, ctx) {
       const { path, content } = input;
       const absolutePath = resolveToolPath(ctx.cwd, path);
-      const pathApproval = consumePermissionPathApproval(input, toolCallId, "write") as MutationPathApproval | undefined;
-      const progress = pathApproval?.creationPlan !== undefined;
+      const granted = consumePermissionPathApproval(input, toolCallId, "write") as MutationPathApproval | undefined;
+      const pathApproval = granted ? { ...granted } : undefined;
+      let progress = pathApproval?.creationPlan !== undefined;
       const receiptTarget = pathApproval?.canonicalTarget ?? absolutePath;
+      if (pathApproval) pathApproval.commitSelected = metadata => {
+        pi.appendEntry(MUTATION_PROGRESS_ENTRY, { toolCallId, itemId: `${toolCallId}:0`, phase: "intent", operation: "write", target: receiptTarget,
+          requestHash: mutationRequestHash("write", input), strategy: metadata.strategy, compatibilityReason: metadata.reason, directories: [] });
+        progress = true;
+        if (metadata.reason) _onUpdate?.({ content: [{ type: "text", text: `Commit selected: ${metadata.reason}` }], details: {} });
+      };
       let details;
       try {
         details = await withFileMutationQueue(
           absolutePath,
           async () => {
-            if (!progress && pathApproval) pi.appendEntry(MUTATION_PROGRESS_ENTRY, { phase: "origin", toolCallId, itemId: `${toolCallId}:0`, operation: "write", target: receiptTarget, requestHash: mutationRequestHash("write", input) });
+            if (!progress && pathApproval) pi.appendEntry(MUTATION_PROGRESS_ENTRY, { phase: "origin", toolCallId, itemId: `${toolCallId}:0`, operation: "write", target: receiptTarget, requestHash: mutationRequestHash("write", input), directories: [] });
             if (progress) {
               const directories = canonicalCreationDirectories(pathApproval!.creationPlan!);
               pi.appendEntry(MUTATION_PROGRESS_ENTRY, { toolCallId, itemId: `${toolCallId}:0`, phase: "origin", operation: "write", target: receiptTarget, requestHash: mutationRequestHash("write", input), directories });
@@ -508,24 +552,27 @@ export default function mutationGuardWriteExtension(pi: ExtensionAPI): void {
         const cause = error instanceof Error ? error.message : String(error);
         const failure = mutationFailureInfo(error) ?? (progress && (cause === "Operation aborted" || cause.startsWith("[MUTATION_BUDGET_EXCEEDED]") || cause.startsWith("[POLICY_BLOCKED]"))
           ? { category: signal?.aborted ? "CANCELLED" : "PRE_EXECUTION_FAILED", stateChanged: false, cause, status: signal?.aborted ? "cancelled" : "failed_no_change" } : undefined);
-        if (failure && (progress || failure.stateChanged === true)) {
-          const status = failure.stateChanged === true ? "partial" : (failure.status === "cancelled" || signal?.aborted) ? "cancelled" : "failed_no_change";
-          const details = { ...failure, operation: "write", target: receiptTarget, mutationReceiptVersion: 2, status, ...(failure.stateChanged === true ? { requiresVerification: true } : {}) };
+        if (failure && (progress || failure.stateChanged === true || failure.stateChanged === "unknown")) {
+          const status = failure.stateChanged === "unknown" ? "state_unknown" : failure.stateChanged === true ? "partial" : (failure.status === "cancelled" || signal?.aborted) ? "cancelled" : "failed_no_change";
+          const requiresVerification = failure.stateChanged !== false || Boolean(failure.commit?.retainedTemporary);
+          const details = { ...failure, ok: false, operation: "write", target: receiptTarget, mutationReceiptVersion: 2, status, ...(requiresVerification ? { requiresVerification: true } : {}) };
           if (pathApproval) try { pi.appendEntry(MUTATION_PROGRESS_ENTRY, { ...details, toolCallId, itemId: `${toolCallId}:0`, phase: "result" }); } catch { /* The aggregate retains the observed outcome. */ }
-          return { content: [{ type: "text" as const, text: `write: ${status}; ${path}. [${failure.category}] ${typeof failure.cause === "string" ? failure.cause.slice(0, 800) : ""}${failure.stateChanged === true ? " Verify the file and recorded directories; do not automatically retry." : ""}` }], details, isError: true };
+          return { content: [{ type: "text" as const, text: `write: ${status}; ${path}. [${failure.category}] ${typeof failure.cause === "string" ? failure.cause.slice(0, 800) : ""}${requiresVerification ? " Verify current state; do not automatically retry." : ""}${failure.commit ? `\n${commitSummary(failure.commit)}` : ""}` }], details, isError: true };
         }
         throw error;
       }
       if (progress) try {
         pi.appendEntry(MUTATION_PROGRESS_ENTRY, { ...details, target: receiptTarget, mutationReceiptVersion: 2, toolCallId, itemId: `${toolCallId}:0`, phase: "result", status: "succeeded" });
       } catch {
-        return { content: [{ type: "text" as const, text: `write: state_unknown; ${path}. File changed but receipt recording failed. Verify current state; do not automatically retry.` }],
-          details: { ...details, mutationReceiptVersion: 2, operation: "write", target: receiptTarget, status: "state_unknown", stateChanged: "unknown", requiresVerification: true }, isError: true };
+        const committed = details.commit?.outcome === "committed", status = committed ? "partial" : "state_unknown";
+        guard.invalidateCanonicalPath(receiptTarget);
+        return { content: [{ type: "text" as const, text: `write: ${status}; ${path}. File changed but receipt recording failed. Verify current state; do not automatically retry.` }],
+          details: { ...details, ok: false, mutationReceiptVersion: 2, operation: "write", target: receiptTarget, status, stateChanged: committed ? true : "unknown", requiresVerification: true }, isError: true };
       }
       const creation = details.creation;
       const summary = details.created
         ? `Added ${path} (${creation?.addedLines !== undefined ? `+${creation.addedLines} -0` : `${Buffer.byteLength(content, "utf8")} bytes`})${creation?.createdDirectories.length ? `\nCreated directories: ${creation.createdDirectories.length}` : ""}`
-        : `Modified ${path} (${Buffer.byteLength(content, "utf8")} bytes)`;
+        : `Modified ${path} (${Buffer.byteLength(content, "utf8")} bytes)${details.commit ? `\n${commitSummary(details.commit)}` : ""}`;
       return {
         content: [{ type: "text" as const, text: summary }],
         details: { ...details, target: receiptTarget },

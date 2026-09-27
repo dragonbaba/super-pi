@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { lstat, open } from "node:fs/promises";
-import { isAbsolute, resolve, relative, sep } from "node:path";
+import { isAbsolute, resolve, relative, sep, dirname, basename } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@super-pi/coding-agent";
 import { Key, matchesKey, truncateToWidth, graphemeWidth, type TUI } from "@super-pi/tui";
 import { resolveToolPath, MAX_EDIT_REPLACEMENTS, MAX_EDIT_SCOPE_BYTES, MAX_TURN_MUTATION_BYTES } from "./core.ts";
@@ -9,7 +9,7 @@ import { boundBatchIntents, collectStructuredMutationReceipts, recentMutationEnt
 import { batchExpandedSummary, verificationSummary, displayMetadata } from "./change-preview.ts";
 import { mutationRequestHash } from "../resource-lifecycle-guard/permission-contract.ts";
 import { parseSnapshotLineReference } from "./snapshot-line-protocol.ts";
-import { SHA256_PATTERN as SHA256, CHANGE_ID_CONTROL_PATTERN, OBSERVATION_UNSIGNED_INTEGER_PATTERN, OBSERVATION_SIGNED_INTEGER_PATTERN, SNAPSHOT_ID_REGEX, SNAPSHOT_LINE_REFERENCE_REGEX } from "./regex.ts";
+import { SHA256_PATTERN as SHA256, CHANGE_ID_CONTROL_PATTERN, OBSERVATION_UNSIGNED_INTEGER_PATTERN, OBSERVATION_SIGNED_INTEGER_PATTERN, RETAINED_COMMIT_NAME_PATTERN, SNAPSHOT_ID_REGEX, SNAPSHOT_LINE_REFERENCE_REGEX } from "./regex.ts";
 
 export const CHANGE_VERIFICATION_ENTRY = "file-change-verification-v1";
 const MAX_CHANGES = 128;
@@ -130,6 +130,7 @@ export interface ChangeRecord {
   reason?: string;
   unavailable?: string;
   batchSize?: number;
+  requiresVerification?: true;
 }
 
 function terminalOutcome(entry: any, callId: string, itemId: string, index: number): any {
@@ -159,6 +160,38 @@ function uniqueProgress(entries: readonly any[], callId: string, phase: string, 
 }
 
 const DIRECTORY_IDENTITY_FIELDS = ["path", "canonical", "device", "inode", "size", "mtime", "ctime", "mode", "links", "directory"] as const;
+const COMMIT_RECEIPT_FIELDS = ["strategy", "outcome", "compatibilityReason", "fileSynced", "directorySynced", "retainedTemporary", "cleanupReason"] as const;
+
+function validCommitReceipt(value: any): boolean {
+  if (!value || typeof value !== "object") return false;
+  for (const field of COMMIT_RECEIPT_FIELDS) {
+    const item = value[field];
+    if (field === "fileSynced" || field === "directorySynced") { if (typeof item !== "boolean") return false; }
+    else if (item !== undefined && (typeof item !== "string" || item.length > (field === "retainedTemporary" ? 4096 : 1024))) return false;
+  }
+  return (value.strategy === "staged_replace" || value.strategy === "protected_in_place")
+    && (value.outcome === "not_committed" || value.outcome === "committed" || value.outcome === "unknown")
+    && value.directorySynced === false && (value.outcome !== "committed" || value.fileSynced)
+    && (value.retainedTemporary === undefined || value.retainedTemporary.length > 0
+      && value.strategy === "staged_replace" && value.outcome !== "committed");
+}
+
+function sameCommitReceipt(left: any, right: any): boolean {
+  if (left === undefined || right === undefined) return left === right;
+  if (!validCommitReceipt(left) || !validCommitReceipt(right)) return false;
+  for (const field of COMMIT_RECEIPT_FIELDS) if (left[field] !== right[field]) return false;
+  return true;
+}
+
+function commitMatchesTerminal(commit: any, status: string, stateChanged: boolean | "unknown", selectedStrategy?: string, postimage?: unknown): boolean {
+  if (commit === undefined) return selectedStrategy === undefined;
+  if (!validCommitReceipt(commit)) return false;
+  if (commit.strategy !== selectedStrategy) return false;
+  if (commit.outcome === "committed" && (typeof postimage !== "string" || postimage.length !== 64 || !SHA256.test(postimage))) return false;
+  if (status === "succeeded" || status === "partial") return stateChanged === true && commit.outcome === "committed";
+  if (status === "state_unknown") return stateChanged === "unknown" && commit.outcome === "unknown";
+  return (status === "failed_no_change" || status === "cancelled") && stateChanged === false && commit.outcome === "not_committed";
+}
 
 function sameCreatedDirectories(left: any, right: any): boolean {
   if (left === undefined || right === undefined) return left === right;
@@ -200,6 +233,9 @@ function conflictingTerminal(entries: readonly any[], selected: any, callId: str
     if (previous || entry.type !== "custom" || selected.type !== "message"
       || terminal.status !== outcome.status || terminal.stateChanged !== outcome.stateChanged
       || terminal.operation !== outcome.operation || terminal.target !== outcome.target || terminal.destination !== outcome.destination
+      || !sameCommitReceipt(terminal.commit ?? terminal.receipt?.commit, details?.commit)
+      || details?.commit?.outcome === "committed" && terminal.sha256 === undefined
+      || terminal.sha256 !== undefined && (typeof terminal.sha256 !== "string" || terminal.sha256.length !== 64 || !SHA256.test(terminal.sha256) || terminal.sha256 !== details?.sha256)
       || !sameCreatedDirectories(terminal.creation?.createdDirectories ?? terminal.createdDirectories, details?.creation?.createdDirectories ?? details?.createdDirectories)) return true;
     previous = true;
   }
@@ -215,7 +251,7 @@ function uniqueBatchPreparation(entries: readonly any[], call: any) {
       const item = entry.data.itemId;
       if (typeof item !== "string" || item.length > 280) return undefined;
       const number = Number(item.slice(call.id.length + 1));
-      if (!["intent", "result"].includes(entry.data.phase) || !Number.isSafeInteger(number) || number < 0
+      if (!["intent", "commit_prepared", "result"].includes(entry.data.phase) || !Number.isSafeInteger(number) || number < 0
         || number >= (call.arguments?.operations?.length ?? 0) || item !== `${call.id}:${number}`) return undefined;
       continue;
     }
@@ -264,19 +300,30 @@ function boundRecoveryItem(entries: readonly any[], call: any, index: number, st
     if (intent.requestHash !== preparation.prepared.data.requestHash || intent.operation !== prepared.operation
       || intent.target !== prepared.target || intent.destination !== prepared.destination || status === "not_started") return undefined;
   } else if (!["cancelled", "not_started"].includes(status)) return undefined;
+  const commit = uniqueProgress(entries, call.id, "commit_prepared", itemId);
+  if (commit === null) return undefined;
+  if (commit) {
+    const position = entries.indexOf(commit);
+    if (!intentEntry || position <= entries.indexOf(intentEntry) || commit.data.operation !== prepared.operation || commit.data.target !== prepared.target
+      || !["staged_replace", "protected_in_place"].includes(commit.data.strategy)
+      || hasEarlierTerminal(entries, position, call.id, itemId, index)) return undefined;
+  }
   // Entered items persist intent before revalidation. Cancellation before item
   // entry and remaining not-started items have preparation but no intent.
   if (status !== "succeeded" && laterBatchActivity(entries, call.id, index)) return undefined;
-  return prepared;
+  return { target: prepared.target, destination: prepared.destination, strategy: commit?.data.strategy };
 }
 
-function sameLegacyCreateMirror(selected: any, entry: any): boolean {
+function sameLegacyWriteMirror(selected: any, entry: any): boolean {
   const source = selected?.data, message = entry.message, data = message?.details;
   return selected?.type === "custom" && source?.phase === "result" && source.status === "succeeded" && source.stateChanged === true
-    && source.operation === "write" && source.created === true && source.commit === undefined
+    && source.operation === "write"
     && message.toolName === "write" && message.isError !== true && data?.mutationReceiptVersion === 1 && data.ok === true
-    && data.category === "success" && data.operation === "write" && data.stateChanged === true && data.created === true && data.commit === undefined
+    && data.category === "success" && data.operation === "write" && data.stateChanged === true && data.created === source.created
     && data.target === source.target && typeof data.sha256 === "string" && SHA256.test(data.sha256) && data.sha256 === source.sha256
+    && (source.created === true && source.commit === undefined && data.commit === undefined
+      || source.created === undefined && typeof source.previousSha256 === "string" && SHA256.test(source.previousSha256)
+      && source.previousSha256 === data.previousSha256 && source.commit?.outcome === "committed" && sameCommitReceipt(source.commit, data.commit))
     && data.creation?.bytes === source.creation?.bytes && data.creation?.addedLines === source.creation?.addedLines
     && sameCreatedDirectories(data.creation?.createdDirectories, source.creation?.createdDirectories);
 }
@@ -286,13 +333,17 @@ function hasLaterMutationActivity(branch: readonly any[], start: number, callId:
   for (let index = start; index < branch.length; index++) {
     const entry = branch[index];
     if (entry.type === "message" && entry.message?.role === "toolResult" && entry.message.toolCallId === callId) {
-      // The existing create producer emits one v2 durable result plus one v1
-      // aggregate. Only this exact successful creation mirror is compatible.
-      if (legacyMirror || !sameLegacyCreateMirror(selected, entry)) return true;
+      // The existing write producer emits one v2 durable result plus one v1
+      // aggregate. Its exact successful mirror includes commit metadata on N2.
+      if (legacyMirror || !sameLegacyWriteMirror(selected, entry)) return true;
       legacyMirror = true;
     }
-    if (entry.type === "custom" && entry.customType === "file-mutation-progress-v2" && entry.data?.toolCallId === callId
-      && (!batch || entry.data.phase !== "intent" && entry.data.phase !== "result" || entry.data.itemId === itemId)) return true;
+    if (entry.type === "custom" && entry.customType === "file-mutation-progress-v2" && entry.data?.toolCallId === callId) {
+      // Intent-only recovery may have the one subsequently validated commit
+      // preparation. This is not a terminal and never enables an automatic retry.
+      if (batch && selected.data?.phase === "intent" && entry.data.phase === "commit_prepared" && entry.data.itemId === itemId) continue;
+      if (!batch || entry.data.phase !== "intent" && entry.data.phase !== "commit_prepared" && entry.data.phase !== "result" || entry.data.itemId === itemId) return true;
+    }
   }
   return false;
 }
@@ -302,7 +353,7 @@ function validStandalonePrefix(entries: readonly any[], selected: any, call: any
   let phase = 0;
   const requestHash = call.requestHash;
   for (const entry of entries) {
-    if (entry === selected) return true;
+    if (entry === selected && entry.data?.phase !== "intent") return true;
     if (entry.type !== "custom" || entry.customType !== "file-mutation-progress-v2" || entry.data?.toolCallId !== call.id) continue;
     const data = entry.data;
     if (data.itemId !== `${call.id}:0` || data.operation !== call.name || data.target !== target || data.destination !== destination) return false;
@@ -310,12 +361,14 @@ function validStandalonePrefix(entries: readonly any[], selected: any, call: any
       if (phase !== 0 || call.name !== "write" && call.name !== "edit" || data.requestHash !== requestHash) return false;
       phase = 1;
     } else if (data.phase === "intent") {
-      if (phase > 1 || call.name === "edit" || call.name === "write" && phase !== 1 || data.requestHash !== requestHash) return false;
+      if (phase > 1 || (call.name === "write" || call.name === "edit") && phase !== 1 || data.requestHash !== requestHash) return false;
+      if ((call.name === "edit" || data.strategy !== undefined) && data.strategy !== "staged_replace" && data.strategy !== "protected_in_place") return false;
       phase = 2;
     } else if (data.phase === "result") {
       if (phase < 1 || phase > 2) return false;
       phase = 3;
     } else return false;
+    if (entry === selected) return true;
   }
   return false;
 }
@@ -385,10 +438,12 @@ export function collectChanges(branch: readonly any[], cwd: string): ChangeRecor
     const target = historicalTarget ? resolve(receipt.target) : receipt.target;
     const destination = receipt.receiptVersion === 2 && receipt.destination ? resolve(cwd, receipt.destination) : undefined;
     let bound = false;
+    let selectedStrategy: string | undefined;
     const executionEntries = call ? branch.slice(callOrder.get(call.id)! + 1) : [];
     if (exactItemId && historicalTarget && call?.name === "file_batch" && input?.operation === receipt.operation) {
       const intent = boundRecoveryItem(executionEntries, call, index, receipt.receiptVersion === 2 ? receipt.status : "succeeded");
       bound = intent?.target === receipt.target && intent?.destination === destination;
+      selectedStrategy = intent?.strategy;
     } else if (exactItemId && historicalTarget && call?.name === receipt.operation && typeof input?.path === "string") {
       if (receipt.receiptVersion === 2) {
         // The ordered standalone intent records the authorized canonical target.
@@ -397,12 +452,14 @@ export function collectChanges(branch: readonly any[], cwd: string): ChangeRecor
         // Existing-file v1 success producers already persist a request-hashed
         // origin before issuing I/O; it also binds their v2 partial outcome.
         const intent = intentEntry === undefined ? uniqueProgress(executionEntries, call.id, "origin", receipt.itemId) : intentEntry;
+        selectedStrategy = intent?.data.strategy;
         bound = index === 0 && intent?.data.operation === receipt.operation && intent?.data.target === receipt.target
           && intent?.data.requestHash === call.requestHash
           && intent?.data.destination === receipt.destination && (!receipt.destination || isAbsolute(receipt.destination))
           && (intent !== entry || entry?.data?.phase === "intent");
         if (bound && hasEarlierTerminal(executionEntries, executionEntries.indexOf(intent), call.id, receipt.itemId, 0)) bound = false;
       } else {
+        selectedStrategy = uniqueProgress(executionEntries, call.id, "intent", `${call.id}:0`)?.data.strategy;
         const origin = uniqueProgress(executionEntries, call.id, "origin");
         if (origin !== undefined) {
           bound = origin !== null && origin.data.itemId === `${call.id}:0` && origin.data.target === target && origin.data.operation === receipt.operation
@@ -412,8 +469,16 @@ export function collectChanges(branch: readonly any[], cwd: string): ChangeRecor
         } else bound = resolveToolPath(cwd, input.path) === target;
       }
     }
+    if (bound && receipt.receiptVersion === 2 && call?.name !== "file_batch") {
+      const origin = uniqueProgress(executionEntries, call.id, "origin");
+      if (origin !== undefined) bound = origin !== null && origin.data.itemId === receipt.itemId && origin.data.target === target
+        && origin.data.operation === receipt.operation && origin.data.requestHash === mutationRequestHash(call.name, input)
+        && !hasEarlierTerminal(executionEntries, executionEntries.indexOf(origin), call.id, receipt.itemId, 0);
+    }
     if (bound && call.name !== "file_batch" && !validStandalonePrefix(executionEntries, entry, call, receipt.target, receipt.receiptVersion === 2 ? receipt.destination : undefined)) bound = false;
     if (bound && receipt.receiptVersion === 2 && conflictingTerminal(executionEntries, entry, receipt.toolCallId, receipt.itemId, index, receipt, details)) bound = false;
+    if (bound && !commitMatchesTerminal(details?.commit, receipt.receiptVersion === 1 ? "succeeded" : receipt.status, receipt.stateChanged,
+      entry?.data?.phase === "intent" ? undefined : selectedStrategy, details?.sha256)) bound = false;
     if (bound && entry?.data?.phase === "intent" && receipt.operation === "write") {
       const prepared = call?.name === "file_batch" ? uniqueBatchPreparation(executionEntries, call)?.targets.get(`${call.id}:${index}`)
         : uniqueProgress(executionEntries, call.id, "origin")?.data;
@@ -428,6 +493,7 @@ export function collectChanges(branch: readonly any[], cwd: string): ChangeRecor
       status: receipt.receiptVersion === 1 ? "succeeded" : receipt.status, preview: false,
       original: bound ? input : undefined, item: bound ? item : undefined,
       receipt: details,
+      requiresVerification: receipt.receiptVersion === 2 ? receipt.requiresVerification : undefined,
       reason: typeof (item?.reason ?? details?.cause ?? details?.reason) === "string" ? (item?.reason ?? details.cause ?? details.reason).slice(0, 800) : undefined,
       batchSize: call?.name === "file_batch" ? call.arguments?.operations?.length : undefined,
       postimage: bound && typeof details?.sha256 === "string" && SHA256.test(details.sha256) ? details.sha256 : undefined,
@@ -500,6 +566,14 @@ export function collectChanges(branch: readonly any[], cwd: string): ChangeRecor
 
 export interface ChangeObservation { path: string; exists: boolean; identity?: PathIdentity; sha256?: string; hashOmitted?: string }
 
+function retainedTemporary(record: ChangeRecord): string | undefined {
+  const path = record.receipt?.commit?.retainedTemporary;
+  if (path === undefined) return undefined;
+  if (typeof path !== "string" || path.length > 4096 || !isAbsolute(path) || dirname(path) !== dirname(record.target)
+    || !RETAINED_COMMIT_NAME_PATTERN.test(basename(path))) throw new Error("Retained candidate path cannot be safely reconstructed.");
+  return path;
+}
+
 function retainedParents(record: ChangeRecord): string[] {
   const directories = record.receipt?.creation?.createdDirectories ?? record.receipt?.createdDirectories
     ?? (record.receipt?.phase === "intent" ? record.receipt.directories : undefined);
@@ -558,12 +632,14 @@ export async function verifyChange(record: ChangeRecord, assertAllowed: (() => P
   if (record.preview || record.unavailable || !record.original) throw new Error("This record cannot authorize verification; no change was replayed.");
   const source = await observe(record.target, Boolean(record.postimage), assertAllowed);
   const destination = record.destination ? await observe(record.destination, false, assertAllowed) : undefined;
+  const retained = retainedTemporary(record);
+  const temporary = retained ? await observe(retained, true, assertAllowed) : undefined;
   const parents: ChangeObservation[] = [];
   for (const path of retainedParents(record)) parents.push(await observe(path, false, assertAllowed));
   await assertAllowed();
   // A second path (or a permission await) can change the first observation.
   // Recheck all identities, including metadata-only and oversized files.
-  for (const observation of destination ? [source, destination, ...parents] : [source, ...parents]) {
+  for (const observation of [source, ...(destination ? [destination] : []), ...(temporary ? [temporary] : []), ...parents]) {
     if (observation.identity) {
       if (!sameIdentity(observation.identity, await capturePathIdentity(observation.path))) throw new Error("Object changed before observation was accepted.");
     } else {
@@ -575,7 +651,7 @@ export async function verifyChange(record: ChangeRecord, assertAllowed: (() => P
   // Scope includes workspace inode/realpath checks, not only Session generation.
   await assertAllowed();
   assertAllowed.assertCurrent?.();
-  return { source, destination, parents,
+  return { source, destination, temporary, parents,
     postimageMatches: record.postimage && source.sha256 ? record.postimage === source.sha256 : undefined,
     destinationIdentityMatches: record.sourceIdentity && destination?.identity
       ? record.sourceIdentity.device === destination.identity.device && record.sourceIdentity.inode === destination.identity.inode : undefined,
@@ -591,7 +667,9 @@ function draftOperation(record: ChangeRecord): unknown {
   const input = record.original;
   const path = boundedString(record.target, "Recorded target", 4096);
   if (!isAbsolute(path)) throw new Error("Draft needs a recorded absolute target; originating cwd cannot be guessed.");
-  if (record.operation === "write") return { operation: "write", path, mode: record.batchSize === undefined ? "create" : input.mode, content: boundedString(input.content, "Content") };
+  if (record.operation === "write") return { operation: "write", path,
+    mode: record.batchSize === undefined ? record.receipt?.commit ? "overwrite" : "create" : input.mode,
+    content: boundedString(input.content, "Content") };
   if (record.operation === "delete") return { operation: "delete", path };
   if (record.operation === "move") return { operation: "move", path, destination: boundedString(record.destination, "Recorded destination", 4096) };
   if (!Array.isArray(input.edits) || input.edits.length > 20) throw new Error("Original edit parameters cannot be reconstructed.");
@@ -622,7 +700,7 @@ export function remainingDraft(records: readonly ChangeRecord[], verifiedItems: 
   let bytes = 0;
   for (const record of records) {
     if (record.preview || record.status === "succeeded") continue;
-    if (record.status === "partial" || record.status === "state_unknown") {
+    if (record.status === "partial" || record.status === "state_unknown" || record.requiresVerification) {
       if (!verifiedItems.has(record.itemId)) throw new Error(`${record.itemId}: verify partial/unknown state before preparing remaining work.`);
       continue; // Observation never turns an uncertain old mutation into an automatic retry.
     }
@@ -671,6 +749,9 @@ export function collectVerifiedChanges(branch: readonly any[], records: readonly
         || (record.destination ? !validObservation(data.destination, record.destination) : data.destination !== undefined)) continue;
       let parents: string[];
       try { parents = retainedParents(record); } catch { continue; }
+      let temporary: string | undefined;
+      try { temporary = retainedTemporary(record); } catch { continue; }
+      if (temporary ? !validObservation(data.temporary, temporary) || data.temporary.exists && !data.temporary.identity.directory && !data.temporary.sha256 && !data.temporary.hashOmitted : data.temporary !== undefined) continue;
       if (!Array.isArray(data.parents) || data.parents.length !== parents.length) continue;
       let parentsValid = true;
       for (let i = 0; i < parents.length; i++) if (!validObservation(data.parents[i], parents[i])) { parentsValid = false; break; }
@@ -811,6 +892,7 @@ export function registerChanges(pi: ExtensionAPI, permissions: ObservationPermis
         if (record.preview || record.unavailable) throw new Error(record.unavailable ?? "Preview is not a mutation receipt. Execute a newly prepared request first.");
         const paths = record.destination ? [record.target, record.destination] : [record.target];
         paths.push(...retainedParents(record));
+        const temporary = retainedTemporary(record); if (temporary) paths.push(temporary);
         const assertAllowed = await permissions.authorizeFileObservation(ctx, paths); assertChangesSession(ctx, sessionId);
         const observation = await verifyChange(record, assertAllowed); assertChangesSession(ctx, sessionId);
         assertAllowed.assertCurrent();

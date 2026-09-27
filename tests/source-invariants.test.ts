@@ -107,3 +107,15 @@ test("file-change preparation and recovery avoid captured scan/format callbacks"
     assert.equal(dialogFactories, file.endsWith("/changes.ts") ? 1 : 0);
   }
 });
+
+test("native worker actions and message dispatch use module functions with explicit inputs", () => {
+  for (const file of ["packages/extensions/mutation-guard-write/native-file-worker.mjs", "packages/extensions/mutation-guard-write/file-commit-metadata.ts", "packages/extensions/mutation-guard-write/native-file-client.ts"]) {
+  const source = ts.createSourceFile(file, readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true);
+  function inspect(node: ts.Node): void {
+    assert.equal(ts.isArrowFunction(node) || ts.isFunctionExpression(node), false, node.getText(source));
+    if (ts.isFunctionDeclaration(node)) assert.ok(ts.isSourceFile(node.parent), "no per-operation nested function captures");
+    ts.forEachChild(node, inspect);
+  }
+  inspect(source);
+  }
+});

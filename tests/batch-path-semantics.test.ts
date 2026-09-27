@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import { existsSync, readFileSync, writeFileSync, mkdirSync, symlinkSync, unlinkSync, realpathSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
-import { join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import test, { after, mock, type TestContext } from "node:test";
 import { createJiti } from "jiti";
 import { mutationFixture } from "./helpers/mutation-fixture.ts";
@@ -95,7 +95,12 @@ for (const kind of ["create", "overwrite", "exact", "snapshot"] as const) test(`
   if (kind === "snapshot") assert.equal(f.plans[0].snapshot, target);
   if (kind === "create") { assert.equal(f.plans[0].creation, target); assert.deepEqual(f.plans[0].directories, [join(f.cwd, "new")]); }
   assert.ok(f.dialogs.some(text => text.includes(target)), "real approval dialog names the execution target");
-  for (const hit of effects(f.hits)) assert.ok(hit.path === target || hit.path.startsWith(join(f.cwd, "new")) || kind === "snapshot" && (hit.path.startsWith(join(f.cwd, ".pi-snapshot-edit-")) && (!hit.destination || hit.destination === target)), JSON.stringify(hit));
+  for (const hit of effects(f.hits)) {
+    const staged = kind !== "create" && dirname(hit.path) === dirname(target)
+      && /^\.pi-file-commit-\d+-[a-f0-9]{24}\.tmp$/u.test(basename(hit.path));
+    assert.ok((hit.path === target || hit.path === join(f.cwd, "new") || staged)
+      && (!hit.destination || hit.destination === target), JSON.stringify(hit));
+  }
   assert.equal(JSON.stringify(input), raw, "raw request/transcript unchanged");
   const receipts = collectStructuredMutationReceipts(SessionManager.open(f.session.getSessionFile()!).getBranch());
   assert.equal(receipts.filter((r: any) => r.toolCallId === "file_batch").length, 1);

@@ -5,6 +5,8 @@ import fsPromises, { open } from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { Worker } from "node:worker_threads";
+import { protectWindowsFixture } from "./helpers/native-metadata-fixture.ts";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { createJiti } from "jiti";
@@ -13,7 +15,7 @@ import { mutationFixture as fixture, MutationWriteGuard } from "./helpers/mutati
 import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
 import { visibleWidth } from "../packages/tui/src/index.ts";
 const { collectChanges, collectVerifiedChanges, remainingDraft, verifyChange } = await createJiti(import.meta.url).import<any>("../packages/extensions/mutation-guard-write/changes.ts");
-const { recentMutationEntries } = await createJiti(import.meta.url).import<any>("../packages/extensions/mutation-guard-write/session-evidence.ts");
+const { restoreMutationEvidenceFromBranch, recentMutationEntries } = await createJiti(import.meta.url).import<any>("../packages/extensions/mutation-guard-write/session-evidence.ts");
 
 function commandUI(f: any, item: string, action: string, editor = "") {
   let input = editor, view = "", notices: string[] = [];
@@ -792,8 +794,8 @@ test("N1 actual partial standalone overwrite binds its ordered origin and reject
   await f.call("read", { path: target }, "partial-overwrite-read");
   const original = MutationWriteGuard.prototype.write;
   t.mock.method(MutationWriteGuard.prototype, "write", async function(this: any, ...args: any[]) {
-    await original.apply(this, args);
-    throw new Error(JSON.stringify({ stateChanged: true, category: "PARTIAL_MUTATION", cause: "injected completion failure after real bytes" }));
+    const result = await original.apply(this, args);
+    throw new Error(JSON.stringify({ ...result, stateChanged: true, category: "PARTIAL_MUTATION", cause: "injected completion failure after real bytes" }));
   });
   const result = await f.call("write", { path: target, content: "desired-overwrite" }, "partial-overwrite");
   assert.equal(result.isError, true); assert.equal(readFileSync(target, "utf8"), "desired-overwrite");
@@ -801,7 +803,7 @@ test("N1 actual partial standalone overwrite binds its ordered origin and reject
   assert.equal(records.length, 1); assert.equal(records[0].status, "partial"); assert.equal(records[0].unavailable, undefined);
   await verifyChange(records[0], async () => {});
   const forged = JSON.parse(JSON.stringify(f.session.getBranch()));
-  forged.find((entry: any) => entry.data?.phase === "origin").data.requestHash = "0".repeat(64);
+  for (const entry of forged) if (entry.data?.phase === "origin" || entry.data?.phase === "intent") entry.data.requestHash = "0".repeat(64);
   assert.ok(collectChanges(forged, f.cwd)[0].unavailable);
 });
 
@@ -1030,27 +1032,35 @@ for (const batch of [false, true]) test(`N1 intent-only creation observes every 
   }
 });
 
-test("N1 standalone snapshot post-rename readback failure retains a partial terminal", async t => {
-  if (process.env.SP_N1_SNAPSHOT_READBACK_FIXTURE !== "1") {
-    execFileSync(process.execPath, ["--experimental-strip-types", "--test", "--test-name-pattern", "snapshot post-rename readback", fileURLToPath(import.meta.url)], {
-      windowsHide: true, timeout: 30000, env: { ...process.env, SP_N1_SNAPSHOT_READBACK_FIXTURE: "1" }, stdio: "pipe",
-    }); return;
-  }
+for (const batch of [false, true]) test(`N2 intent-only overwrite binds an explicitly empty parent plan, batch=${batch}`, async t => {
+  const f = await fixture(t), path = join(f.cwd, "overwrite-intent"); writeFileSync(path, "before");
+  await f.call("read", { path }, "overwrite-intent-read");
+  const result = await f.call(batch ? "file_batch" : "write", batch ? { operations: [{ operation: "write", mode: "overwrite", path, content: "after" }] } : { path, content: "after" }, "overwrite-intent");
+  assert.equal(result.isError, false);
+  const branch = f.session.getBranch().filter((entry: any) => entry.data?.phase !== "result" && entry.message?.role !== "toolResult");
+  const record = collectChanges(branch, f.cwd)[0]; assert.equal(record.unavailable, undefined); assert.equal(record.status, "state_unknown");
+  assert.equal((await verifyChange(record, async () => {})).parents.length, 0); assert.equal(readFileSync(path, "utf8"), "after");
+});
+
+test("N1/N2 standalone snapshot post-publication readback failure retains a partial terminal", async t => {
   const f = await fixture(t), path = join(realpathSync.native(f.cwd), "snapshot-partial"); writeFileSync(path, "one\ntwo\n");
   const read = await f.call("read", { path }, "snapshot-partial-read");
   const body = read.content.filter(block => block.type === "text").map(block => block.text).join("\n");
   const snapshot = /snapshot=([A-Za-z0-9_-]+)/.exec(body)![1], anchor = /^2#[A-Fa-f0-9]+/m.exec(body)![0];
-  const original = fsPromises.rename; let replaced = false;
-  t.mock.method(fsPromises, "rename", async (...args: Parameters<typeof fsPromises.rename>) => {
-    await original(...args);
-    if (String(args[1]) === path) { replaced = true; writeFileSync(path, "external after snapshot publication"); }
-  }); syncBuiltinESMExports();
+  const probe = await open(path, "r"), prototype = Object.getPrototypeOf(probe); await probe.close();
+  const original = prototype.read; let replaced = false;
+  t.mock.method(prototype, "read", async function(this: any, ...args: any[]) {
+    if (!replaced && readFileSync(path, "utf8") === "one\nTWO\n") {
+      replaced = true; throw new Error("fixture readback failure after actual publication");
+    }
+    return original.apply(this, args);
+  });
   try {
     const result = await f.call("edit", { path, snapshot, edits: [{ kind: "replace", start: anchor, newLines: ["TWO"] }] }, "snapshot-partial");
     assert.equal(replaced, true); assert.equal(result.isError, true); assert.equal((result.details as any).status, "partial");
     const records = collectChanges(f.session.getBranch(), f.cwd); assert.equal(records.length, 1); assert.equal(records[0].unavailable, undefined);
-    await verifyChange(records[0], async () => {}); assert.equal(readFileSync(path, "utf8"), "external after snapshot publication");
-  } finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+    await verifyChange(records[0], async () => {}); assert.equal(readFileSync(path, "utf8"), "one\nTWO\n");
+  } finally { t.mock.restoreAll(); }
 });
 
 test("N1 exact remaining drafts preserve occurrence hints as non-evidence", async t => {
@@ -1111,6 +1121,208 @@ test("N1 partial batch creation binds created-directory metadata across the resu
     await assert.rejects(verifyChange(invalid[0], async () => { assert.fail("unbound side effects cannot authorize verification"); }), /cannot authorize/);
     assert.throws(() => remainingDraft(invalid, new Set([invalid[0].itemId])), /missing|ambiguous/);
   }
+});
+
+for (const batch of [false, true]) for (const kind of ["exact", "snapshot"]) test(`N2 retained ${kind}-edit candidate consumes read evidence, batch=${batch}`, async t => {
+  const f = await fixture(t), target = join(realpathSync.native(f.cwd), "retained-exact"); writeFileSync(target, "before");
+  await protectWindowsFixture(target); const read = await f.call("read", { path: target }, "retained-read");
+  const body = read.content.filter(block => block.type === "text").map(block => block.text).join("\n");
+  const probe = await open(target, "r"), prototype = Object.getPrototypeOf(probe); await probe.close();
+  const post = Worker.prototype.postMessage;
+  t.mock.method(prototype, "sync", async function() { throw new Error("fixture retained exact staging sync failure"); });
+  t.mock.method(Worker.prototype, "postMessage", function(this: Worker, input: any) {
+    if (input.operation === "remove") input.expected = { ...input.expected, inode: "0" };
+    return post.call(this, input);
+  });
+  const args = { path: target, edits: [{ oldText: "before", newText: "after" }] };
+  const firstArgs = kind === "exact" ? args : { path: target, snapshot: body.slice(body.indexOf("snapshot=") + 9, body.indexOf("snapshot=") + 36),
+    edits: [{ kind: "replace", start: body.split("\n").find(line => line.startsWith("1#"))!.split("|")[0], newLines: ["after"] }] };
+  const first = await f.call(batch ? "file_batch" : "edit", batch ? { operations: [{ operation: "edit", ...firstArgs }] } : firstArgs, "retained-first");
+  t.mock.restoreAll(); assert.equal(first.isError, true);
+  const retained = (await fsPromises.readdir(dirname(target))).filter(name => name.startsWith(".pi-file-commit-"));
+  assert.equal(retained.length, 1); assert.equal(readFileSync(join(dirname(target), retained[0]!), "utf8"), "after");
+  const restored = new MutationWriteGuard();
+  await restoreMutationEvidenceFromBranch(restored, f.cwd, SessionManager.open(f.session.getSessionFile()!).getBranch());
+  await assert.rejects(restored.write(f.cwd, target, "restored forbidden", 99), /READ_REQUIRED/);
+  await assert.rejects(restored.authorizeEdit(f.cwd, target, args.edits, 99, "before"), /READ_REQUIRED/);
+  const retry = await f.call("edit", args, "retained-retry");
+  assert.equal(retry.isError, true); assert.ok(JSON.stringify(retry).includes("READ_REQUIRED"), JSON.stringify(retry));
+  const overwrite = await f.call("write", { path: target, content: "other" }, "retained-overwrite");
+  assert.equal(overwrite.isError, true); assert.ok(JSON.stringify(overwrite).includes("READ_REQUIRED"), JSON.stringify(overwrite));
+  assert.deepEqual((await fsPromises.readdir(dirname(target))).filter(name => name.startsWith(".pi-file-commit-")), retained);
+  assert.equal(readFileSync(target, "utf8"), "before");
+  await f.call("read", { path: target }, "retained-fresh-read");
+  const fresh = await f.call("edit", args, "retained-fresh-edit");
+  assert.equal(fresh.isError, false, JSON.stringify(fresh)); assert.equal(readFileSync(target, "utf8"), "after");
+});
+
+test("N2 standalone overwrite intents accept only fixed supplied strategies, including intent-only history", async t => {
+  const f = await fixture(t), target = join(f.cwd, "strategy-write"); writeFileSync(target, "before");
+  await f.call("read", { path: target }, "strategy-read");
+  await f.call("write", { path: target, content: "after" }, "strategy-write");
+  const genuine = JSON.parse(JSON.stringify(f.session.getBranch()));
+  assert.equal(collectChanges(genuine, f.cwd)[0].unavailable, undefined);
+  for (const intentOnly of [false, true]) for (const value of ["unknown", null, 7]) {
+    const branch = structuredClone(genuine).filter((entry: any) => !intentOnly || entry.data?.phase !== "result" && entry.message?.role !== "toolResult");
+    const intent = branch.find((entry: any) => entry.data?.phase === "intent"); intent.data.strategy = value;
+    const records = collectChanges(branch, f.cwd); assert.ok(records.length > 0);
+    for (const record of records) assert.ok(record.unavailable, `${intentOnly}:${value}`);
+    assert.throws(() => remainingDraft(records, new Set(records.map((record: any) => record.itemId))));
+  }
+  assert.equal(readFileSync(target, "utf8"), "after");
+});
+
+test("N2 mirrored terminals bind commit outcome, strategy and retained candidate", async t => {
+  const f = await fixture(t), target = join(realpathSync.native(f.cwd), "commit-mirror"); writeFileSync(target, "before");
+  await protectWindowsFixture(target); await f.call("read", { path: target }, "commit-mirror-read");
+  const probe = await open(target, "r"), prototype = Object.getPrototypeOf(probe); await probe.close();
+  const post = Worker.prototype.postMessage; let failed = false;
+  t.mock.method(prototype, "sync", async function() { failed = true; throw new Error("fixture staging sync failure"); });
+  t.mock.method(Worker.prototype, "postMessage", function(this: Worker, input: any) {
+    if (input.operation === "remove") input.expected = { ...input.expected, inode: "0" };
+    return post.call(this, input);
+  });
+  const result = await f.call("file_batch", { operations: [{ operation: "write", mode: "overwrite", path: target, content: "after" }] }, "commit-mirror");
+  t.mock.restoreAll(); assert.equal(failed, true); assert.equal(result.isError, true);
+  const genuine = JSON.parse(JSON.stringify(f.session.getBranch())), record = collectChanges(genuine, f.cwd)[0];
+  assert.equal(record.unavailable, undefined); assert.ok(record.receipt.commit.retainedTemporary);
+  assert.equal(readFileSync(record.receipt.commit.retainedTemporary, "utf8"), "after");
+  await verifyChange(record, async () => {});
+  for (const fault of ["succeeded", "partial", "state_unknown", "failed_no_change", "cancelled", "in-place-retained", "committed-retained", "unsynced-committed"]) {
+    const branch = JSON.parse(JSON.stringify(genuine));
+    const terminal = branch.find((entry: any) => entry.data?.phase === "result").data;
+    const item = branch.find((entry: any) => entry.message?.toolCallId === "commit-mirror" && entry.message?.role === "toolResult").message.details.items[0];
+    const commit = terminal.commit;
+    const status = fault === "in-place-retained" ? "failed_no_change" : fault === "committed-retained" ? "partial" : fault === "unsynced-committed" ? "succeeded" : fault;
+    terminal.status = item.status = status;
+    terminal.stateChanged = item.stateChanged = status === "state_unknown" ? "unknown" : status === "succeeded" || status === "partial";
+    if (fault === "in-place-retained") commit.strategy = "protected_in_place";
+    if (fault === "failed_no_change" || fault === "cancelled" || fault === "committed-retained" || fault === "unsynced-committed") {
+      commit.outcome = "committed"; commit.fileSynced = fault !== "unsynced-committed";
+      if (fault !== "committed-retained") delete commit.retainedTemporary;
+    }
+    item.receipt.commit = structuredClone(commit);
+    const invalid = collectChanges(branch, f.cwd); assert.ok(invalid.length > 0, fault);
+    for (const entry of invalid) { assert.ok(entry.unavailable, fault); await assert.rejects(verifyChange(entry, async () => { assert.fail("inconsistent commit must not observe sibling files"); })); }
+    assert.throws(() => remainingDraft(invalid, new Set(invalid.map((entry: any) => entry.itemId))));
+  }
+  for (const field of ["retainedTemporary", "outcome", "strategy", "cleanupReason", "omit"]) {
+    const branch = JSON.parse(JSON.stringify(genuine));
+    const receipt = branch.find((entry: any) => entry.message?.toolCallId === "commit-mirror" && entry.message?.role === "toolResult").message.details.items[0].receipt;
+    if (field === "omit") delete receipt.commit;
+    else receipt.commit[field] = field === "retainedTemporary" ? join(dirname(target), ".pi-file-commit-123-0123456789abcdef01234567.tmp")
+      : field === "outcome" ? "unknown" : field === "strategy" ? "protected_in_place" : "different cleanup";
+    const invalid = collectChanges(branch, f.cwd); assert.ok(invalid[0].unavailable, field);
+    await assert.rejects(verifyChange(invalid[0], async () => { assert.fail("unbound commit cannot authorize verification"); }));
+    assert.throws(() => remainingDraft(invalid, new Set([invalid[0].itemId])));
+  }
+  assert.equal(readFileSync(target, "utf8"), "before");
+});
+
+for (const operation of ["write", "edit", "snapshot"] as const) for (const batch of [false, true]) test(`N2 committed ${operation} keeps partial state after result persistence fails, batch=${batch}`, async t => {
+  const f = await fixture(t), path = join(f.cwd, "committed-recording"); writeFileSync(path, "before\n");
+  const read = await f.call("read", { path }, "recording-read");
+  let input: any = operation === "write" ? { path, content: "after\n" } : { path, edits: [{ oldText: "before", newText: "after" }] };
+  if (operation === "snapshot") {
+    const body = read.content.filter(block => block.type === "text").map(block => block.text).join("\n");
+    input = { path, snapshot: body.slice(body.indexOf("snapshot=") + 9, body.indexOf("snapshot=") + 36),
+      edits: [{ kind: "replace", start: body.split("\n").find(line => line.startsWith("1#"))!.split("|")[0], newLines: ["after"] }] };
+  }
+  f.onRecord(data => { if (data.phase === "result") throw new Error("fixture durable recording failure"); });
+  const name = operation === "write" ? "write" : "edit";
+  const result = await f.call(batch ? "file_batch" : name, batch ? { operations: [{ operation: name, ...input, ...(name === "write" ? { mode: "overwrite" } : {}) }] } : input, "recording-failure");
+  assert.equal(result.isError, true); const details: any = batch ? result.details.items[0] : result.details;
+  assert.equal(details.status, "partial"); assert.equal(details.stateChanged, true); assert.equal((details.receipt ?? details).commit.outcome, "committed");
+  assert.equal(readFileSync(path, "utf8"), "after\n");
+  const records = collectChanges(f.session.getBranch(), f.cwd); assert.equal(records.length, 1); assert.equal(records[0].unavailable, undefined);
+  assert.equal((await verifyChange(records[0], async () => {})).postimageMatches, true);
+});
+
+test("N2 failed overwrite receipt persistence invalidates live range evidence", async t => {
+  const f = await fixture(t), path = join(f.cwd, "range-evidence"); writeFileSync(path, "same\nbefore\n");
+  await f.call("read", { path }, "range-read");
+  f.onRecord(data => { if (data.phase === "result") throw new Error("fixture receipt persistence"); });
+  const result = await f.call("write", { path, content: "same\nafter\n" }, "range-write");
+  assert.equal(result.isError, true); assert.equal((result.details as any).commit.outcome, "committed");
+  let commits = 0;
+  f.onRecord(data => { if (data.strategy !== undefined) commits++; });
+  const edit = await f.call("edit", { path, edits: [{ oldText: "same", newText: "unread" }] }, "range-edit");
+  assert.equal(edit.isError, true); assert.ok(JSON.stringify(edit).includes("READ_REQUIRED"), JSON.stringify(edit));
+  assert.equal(commits, 0); assert.equal(readFileSync(path, "utf8"), "same\nafter\n");
+});
+
+for (const operation of ["write", "edit", "snapshot"] as const) for (const batch of [false, true]) test(`N2 selected ${operation} requires matching terminal commits, batch=${batch}`, async t => {
+  const f = await fixture(t), path = join(f.cwd, "required-commit"); writeFileSync(path, "before\n");
+  const read = await f.call("read", { path }, "required-read");
+  let input: any = operation === "write" ? { path, content: "after\n" } : { path, edits: [{ oldText: "before", newText: "after" }] };
+  if (operation === "snapshot") {
+    const body = read.content.filter(block => block.type === "text").map(block => block.text).join("\n");
+    input = { path, snapshot: body.slice(body.indexOf("snapshot=") + 9, body.indexOf("snapshot=") + 36),
+      edits: [{ kind: "replace", start: body.split("\n").find(line => line.startsWith("1#"))!.split("|")[0], newLines: ["after"] }] };
+  }
+  const name = operation === "write" ? "write" : "edit";
+  const result = await f.call(batch ? "file_batch" : name, batch ? { operations: [{ operation: name, ...input, ...(name === "write" ? { mode: "overwrite" } : {}) }] } : input, "required-commit");
+  assert.equal(result.isError, false, JSON.stringify(result));
+  const genuine = JSON.parse(JSON.stringify(f.session.getBranch()));
+  assert.equal(collectChanges(genuine, f.cwd)[0].unavailable, undefined);
+  const interrupted = genuine.filter((entry: any) => entry.data?.phase !== "result" && entry.message?.role !== "toolResult");
+  const pending = collectChanges(interrupted, f.cwd); assert.equal(pending.length, 1); assert.equal(pending[0].unavailable, undefined);
+  for (const fault of ["missing", "missing-aggregate-only", "other-strategy", "hash-mismatch", "missing-hash", "invalid-hash", "missing-selection", "missing-durable-hash", "missing-aggregate-hash"]) {
+    const branch = structuredClone(genuine).filter((entry: any) => (fault !== "missing-aggregate-only" || entry.data?.phase !== "result")
+      && (fault !== "missing-selection" || entry.data?.phase !== (batch ? "commit_prepared" : "intent")));
+    for (const entry of branch) {
+      const receipt = entry.data?.phase === "result" ? entry.data : entry.message?.toolCallId === "required-commit" && entry.message?.role === "toolResult"
+        ? batch ? entry.message.details.items[0].receipt : entry.message.details : undefined;
+      if (!receipt) continue;
+      if (fault === "missing" || fault === "missing-aggregate-only") delete receipt.commit;
+      else if (fault === "hash-mismatch") { if (entry.message) receipt.sha256 = "0".repeat(64); }
+      else if (fault === "missing-hash") delete receipt.sha256;
+      else if (fault === "missing-durable-hash" && entry.data || fault === "missing-aggregate-hash" && entry.message) delete receipt.sha256;
+      else if (fault === "invalid-hash") receipt.sha256 = "z".repeat(64);
+      else if (fault === "other-strategy") receipt.commit.strategy = receipt.commit.strategy === "staged_replace" ? "protected_in_place" : "staged_replace";
+    }
+    const records = collectChanges(branch, f.cwd); assert.equal(records.length, 1); assert.ok(records[0].unavailable, fault);
+    await assert.rejects(verifyChange(records[0], async () => { assert.fail("missing or mismatched commit cannot observe files"); }));
+  }
+  assert.equal(readFileSync(path, "utf8"), "after\n");
+});
+
+for (const operation of ["write", "edit", "snapshot"] as const) for (const batch of [false, true]) for (const fault of ["close", "readback", "abort"] as const) test(`N2 ${operation} committed ${fault} failure retains verifiable hash, batch=${batch}`, async t => {
+  const f = await fixture(t), path = join(realpathSync.native(f.cwd), "failed-postimage"); writeFileSync(path, "before\n");
+  const read = await f.call("read", { path }, "postimage-read");
+  let input: any = operation === "write" ? { path, content: "after\n" } : { path, edits: [{ oldText: "before", newText: "after" }] };
+  if (operation === "snapshot") {
+    const body = read.content.filter(block => block.type === "text").map(block => block.text).join("\n");
+    input = { path, snapshot: body.slice(body.indexOf("snapshot=") + 9, body.indexOf("snapshot=") + 36),
+      edits: [{ kind: "replace", start: body.split("\n").find(line => line.startsWith("1#"))!.split("|")[0], newLines: ["after"] }] };
+  }
+  const probe = await open(path, "r"), prototype = Object.getPrototypeOf(probe); await probe.close();
+  const originalStat = prototype.stat; let injected = false;
+  t.mock.method(prototype, "stat", async function(this: any, ...args: any[]) {
+    const info = await originalStat.apply(this, args);
+    if (!injected && readFileSync(path, "utf8") === "after\n") {
+      injected = true;
+      if (fault === "readback") writeFileSync(path, "external");
+      else {
+        const close = this.close.bind(this);
+        this.close = async () => { await close(); if (fault === "abort") f.agent.abort(); throw new Error(`fixture postcommit ${fault}`); };
+      }
+    }
+    return info;
+  });
+  let result: any;
+  try {
+    const name = operation === "write" ? "write" : "edit";
+    result = await f.call(batch ? "file_batch" : name, batch ? { operations: [{ operation: name, ...input, ...(name === "write" ? { mode: "overwrite" } : {}) }] } : input, "failed-postimage");
+  } finally { t.mock.restoreAll(); }
+  assert.equal(injected, true); assert.equal(result.isError, true, JSON.stringify(result));
+  const item = batch ? result.details.items[0] : result.details, receipt = item.receipt ?? item;
+  assert.equal(item.status, "partial"); assert.equal(item.stateChanged, true); assert.equal(receipt.commit.outcome, "committed");
+  assert.equal(receipt.sha256, createHash("sha256").update("after\n").digest("hex"));
+  const record = collectChanges(f.session.getBranch(), f.cwd)[0]; assert.equal(record.unavailable, undefined); assert.equal(record.postimage, receipt.sha256);
+  assert.equal(readFileSync(path, "utf8"), fault === "readback" ? "external" : "after\n");
+  assert.equal((await verifyChange(record, async () => {})).postimageMatches, fault !== "readback");
+  writeFileSync(path, "external"); assert.equal((await verifyChange(record, async () => {})).postimageMatches, false);
 });
 
 test("N1 metadata-only verification rejects replacement during the final permission await", async t => {

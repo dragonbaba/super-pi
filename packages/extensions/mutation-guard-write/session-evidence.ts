@@ -92,7 +92,7 @@ function appendNativeReceipt(items: Map<string, NativeStructuredMutationReceipt>
     || ((status === "failed_no_change" || status === "cancelled" || status === "not_started") && stateChanged !== false)) return false;
   items.set(itemId, { receiptVersion: 2, entryId: entry.id, timestamp: entry.timestamp, toolCallId, itemId,
     operation: data.operation, target: data.target, destination: data.destination, status, stateChanged, historyConflict: previous?.historyConflict,
-    ...(status === "state_unknown" || status === "partial" ? { requiresVerification: true as const } : {}) });
+    ...(status === "state_unknown" || status === "partial" || data.requiresVerification === true || data.commit?.retainedTemporary || data.receipt?.commit?.retainedTemporary ? { requiresVerification: true as const } : {}) });
   if (items.size > MAX_STRUCTURED_MUTATION_RECEIPTS) items.delete(items.keys().next().value!);
   const index = Number(itemId.slice(toolCallId.length + 1));
   return Number.isInteger(index) && index >= 0 && index < 16 && itemId === `${toolCallId}:${index}`;
@@ -201,7 +201,7 @@ export async function recordBatchMutationEvidence(guard: MutationWriteGuard, cwd
     if (item.status === "succeeded" && (item.operation === "edit" || item.operation === "write") && typeof receipt?.sha256 === "string" && SHA256_PATTERN.test(receipt.sha256)) {
       try { await guard.recordMutationSnapshot(cwd, intent.target, receipt.sha256, item.itemId, generation, intent.target); }
       catch { guard.invalidateCanonicalPath(intent.target); }
-    } else if (item.stateChanged !== false) {
+    } else if (item.stateChanged !== false || item.requiresVerification === true || receipt?.requiresVerification === true || receipt?.commit?.retainedTemporary) {
       guard.invalidateCanonicalPath(intent.target);
       if (intent.destination) guard.invalidateCanonicalPath(intent.destination);
     }
@@ -478,7 +478,8 @@ export async function restoreMutationEvidenceFromBranch(
       const data = custom.data;
       const itemId = data?.itemId ?? (typeof data?.toolCallId === "string" && data.toolCallId.length <= 256 ? `${data.toolCallId}:0` : undefined);
       const completion = typeof itemId === "string" && itemId.length <= 280 ? nativeReceipts.get(itemId) : undefined;
-      if (completion?.stateChanged !== false && (data?.phase === "intent" || data?.stateChanged !== false) && safeReceiptPath(data?.target)) {
+      if ((completion?.stateChanged !== false || completion.requiresVerification === true)
+        && (data?.phase === "intent" || data?.stateChanged !== false || completion?.requiresVerification === true) && safeReceiptPath(data?.target)) {
         guard.invalidateCanonicalPath(data.target);
         if (safeReceiptPath(data.destination)) guard.invalidateCanonicalPath(data.destination);
       }
