@@ -351,3 +351,26 @@ not a zero-allocation or leak proof by itself. Existing actual tool preview fixt
 20,000 progress updates/10 cycles, 380,800 sampled bytes, zero repeated render-text
 changes and zero retained derived characters. Focused/source gates: 52 pass, one
 platform skip; check passes. New full gates, both CI jobs and review remain required.
+
+The next review closes three Unicode viewport boundaries. Cold preparation now
+uses the existing uncached single-grapheme width function, normalizes tabs to
+three spaces before indexing and bounds the resulting body to 65,536 code units.
+Signed 32-bit widths distinguish newline (-1) from valid widths of 255/256/300;
+numeric metadata is now bounded by 524,296 bytes. A 60,001-code-unit combining
+cluster plus tabs proves no report key enters Map caches during viewer creation
+or rendering; dispose clears its owned text/indices/viewport. Tests also verify
+wide-cluster resize and both scroll directions preserve following characters.
+This supersedes the earlier metadata-size/profile coordinate; a fresh serial
+profile is required. The normal render/input methods introduce no new closure,
+regex, promise or wrapper allocations; truncateToWidth's empty-ellipsis path
+uses uncached grapheme widths too.
+
+Standalone recovery now checks the complete same-call progress prefix, including
+before the selected intent. Only the producer's ordered origin/intent/result
+sequence with the bound item, target, operation and request hash is accepted.
+Actual failed-delete histories reject extra origin/prepared/unknown/intent both
+before the genuine intent and immediately before the terminal; filesystem bytes
+remain the observed external change. Current check and focused/source tests pass
+(57 pass, one platform skip). The prior Windows CI's responsiveness test failed
+its frame-before-child-exit timing assertion; it is recorded as a failure, with
+no assertion relaxed. Fresh complete local gates and both CI jobs remain due.
