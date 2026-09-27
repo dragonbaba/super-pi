@@ -1267,6 +1267,9 @@ test("bounded temporary CDPATH queries and closed-subshell hash execute through 
       ["actual-set-posix", "set -o posix; cd sub && cat fixture.txt"],
       ["actual-set-physical", "set -o physical; cd sub && cat fixture.txt"],
       ["actual-set-P", "set -P; cd sub && cat fixture.txt"],
+      ["actual-shopt-posix", "shopt -s -o posix; cd sub && cat fixture.txt"],
+      ["actual-shopt-physical", "shopt -so physical; cd sub && cat fixture.txt"],
+      ["actual-shopt-redirected", "shopt >/dev/null -os posix; cd sub && cat fixture.txt"],
       ["same-child-hash", "(hash -p ./0/cat cat; cat)"],
       ["nested-child-hash", "(hash -p ./0/cat cat; (cat))"],
       ["lastpipe-hash", "set +m; shopt -s lastpipe; true | hash -p ./0/cat cat; cat"],
@@ -1290,6 +1293,23 @@ test("bounded temporary CDPATH queries and closed-subshell hash execute through 
     else process.env.CDPATH = originalCdpath;
     rmSync(parent, { recursive: true });
   }
+});
+
+test("shopt set-option mode cannot redirect a subsequent guarded mutation through persistent CDPATH", async () => {
+  const shell = findTestBash(); assert.ok(shell);
+  const root = mkdtempSync(join(tmpdir(), "sp-shopt-posix-")), workspace = join(root, "workspace");
+  mkdirSync(join(workspace, "sub"), { recursive: true }); mkdirSync(join(root, "sub"));
+  const outside = join(root, "sub", "victim"), inside = join(workspace, "sub", "victim"); writeFileSync(outside, "outer"); writeFileSync(inside, "inner");
+  let fixture: Awaited<ReturnType<typeof guardedCwdBoundaryFixture>> | undefined;
+  try {
+    fixture = await guardedCwdBoundaryFixture(workspace, shell);
+    for (const options of ["-s -o", "-so", "-os", "-s >/dev/null -o"]) {
+      const prefix = `shopt ${options} posix; CDPATH=.. :; cd sub && `;
+      assert.equal(execFileSync(shell, ["-c", prefix + "cat victim"], { cwd: workspace, encoding: "utf8", env: { ...process.env, CDPATH: "" } }).trim().split("\n").at(-1), "outer");
+      await assertBoundaryRefusedBeforeSpawn(fixture, workspace, options, prefix + "rm victim", []);
+      assert.equal(readFileSync(outside, "utf8"), "outer"); assert.equal(readFileSync(inside, "utf8"), "inner");
+    }
+  } finally { await fixture?.close(); assert.equal(dirname(root), tmpdir()); rmSync(root, { recursive: true, force: true }); }
 });
 
 test("configured Bash invoked as sh keeps special-builtin CDPATH assignments and is refused before execution", { skip: process.platform === "win32" }, async () => {

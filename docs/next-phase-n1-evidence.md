@@ -438,3 +438,12 @@ materialize 4,422 rows; sampled allocation 138,768 bytes, controlled-GC heap
 41,354,376 to 41,535,288 bytes, references 2 to 0 and scroll bytes to 0.
 Focused tests: 76 passed, one Windows filesystem skip; type check passed.
 Final combined gates, CI and actual review remain required.
+
+Review r26: recovery checks spend their shared 4 MiB argument allowance only
+after a complete bounded call succeeds. They enforce the batch's 1 MiB aggregate
+mutation-text limit and required exact/snapshot fields without recursively walking
+untrusted extra fields. Five real rejected-call variants preserve an older genuine
+512 KiB write's request binding and postimage verification. Preview bodies strip
+all C1 controls through the existing regex constants module; actual dryRun and
+imported-patch tests verify every C1 code point and zero file creation. No closure
+was added to production. Windows Node22 focused/source gates: 78 pass, one skip.

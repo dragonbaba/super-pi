@@ -256,3 +256,14 @@ with successful cleanup and injected unlink denial, checking real bytes and clos
 streams. No new progress-time callback or regex was introduced. Focused tests:
 65 passed, two platform skips; the hot-path source gate passes. Final combined
 checks, both CI platforms and review still apply.
+
+Review r26: shopt -o can change set-option semantics, including posix and physical.
+The bounded analyzer recognizes separate/combined option flags and skips literal
+redirections with its existing parser; later cd authorization then fails closed.
+An isolated actual Bash fixture demonstrates persistent CDPATH resolving outside
+the inner workspace under four POSIX flag spellings. The actual guard refuses the
+following mutation before spawn; both inner and outer victim bytes remain intact.
+No regex or closure was introduced. Windows Node22 compatibility/source tests:
+147 pass, one Linux-only skip. This covers Bash's documented
+[shopt -o behavior](https://www.gnu.org/s/bash/manual/html_node/The-Shopt-Builtin.html),
+without expanding the supported shell evaluator.

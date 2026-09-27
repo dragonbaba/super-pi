@@ -35,6 +35,30 @@ for (const dryRun of [false, true]) for (const kind of ["exact", "snapshot", "ov
     else await fs.chmod(target, 0o755);
   }
 });
+for (const dryRun of [false, true]) for (const kind of ["exact", "snapshot", "overwrite"]) test(`N2 denied Windows append right refuses whole ${kind} batch before first item, dryRun=${dryRun}`, { skip: process.platform !== "win32" }, async t => {
+  const f = await mutationFixture(t), target = join(f.cwd, "denied-append"), first = join(f.cwd, "would-create");
+  writeFileSync(target, "before");
+  const powershell = join(process.env.SystemRoot!, "System32/WindowsPowerShell/v1.0/powershell.exe");
+  const setup = "$ErrorActionPreference='Stop';$a=[IO.File]::GetAccessControl($env:N2_TARGET);$u=[Security.Principal.WindowsIdentity]::GetCurrent().User;$r=New-Object Security.AccessControl.FileSystemAccessRule($u,[Security.AccessControl.FileSystemRights]::AppendData,[Security.AccessControl.AccessControlType]::Deny);";
+  const options = { windowsHide: true, env: { ...process.env, N2_TARGET: target } };
+  execFileSync(powershell, ["-NoProfile", "-NonInteractive", "-Command", setup + "$a.AddAccessRule($r);[IO.File]::SetAccessControl($env:N2_TARGET,$a)"], options);
+  try {
+    const before = await nativeFileRequest("inspect", { path: target }), entries = await fs.readdir(f.cwd);
+    const read = await f.call("read", { path: target }, "append-read"); assert.equal(read.isError, false);
+    const operation = kind === "overwrite" ? { operation: "write", mode: "overwrite", path: target, content: "after" }
+      : kind === "snapshot" ? { operation: "edit", path: target, ...anchors(read) }
+      : { operation: "edit", path: target, edits: [{ oldText: "before", newText: "after" }] };
+    const result = await f.call("file_batch", { dryRun, operations: [{ operation: "write", mode: "create", path: first, content: "first" }, operation] }, "append-batch");
+    assert.equal(result.isError, true); assert.ok(JSON.stringify(result).includes("UNSUPPORTED_COMMIT"), JSON.stringify(result));
+    assert.equal(existsSync(first), false); assert.equal(readFileSync(target, "utf8"), "before");
+    assert.deepEqual(await fs.readdir(f.cwd), entries);
+    const after = await nativeFileRequest("inspect", { path: target });
+    assert.equal(after.securityFingerprint, before.securityFingerprint); assert.equal(after.attributes, before.attributes); assert.equal(after.creationTime, before.creationTime);
+    assert.equal((await nativeFileRequest("stats")).activeHandles, 0);
+  } finally {
+    execFileSync(powershell, ["-NoProfile", "-NonInteractive", "-Command", setup + "$a.RemoveAccessRuleSpecific($r);[IO.File]::SetAccessControl($env:N2_TARGET,$a)"], options);
+  }
+});
 let afterIO: ((kind: string, path: string, flags?: string) => void | Promise<void>) | undefined;
 let writes: string[] | undefined;
 for (const kind of ["realpath", "lstat", "readFile", "mkdir", "writeFile", "link", "unlink", "rename", "open"] as const) {

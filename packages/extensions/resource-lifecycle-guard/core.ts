@@ -1133,10 +1133,13 @@ function changesBashCdSemantics(tokens: ShellSegment, index: number, name: strin
 		}
 		return false;
 	}
-	for (let cursor = index + 1; cursor < tokens.length; cursor++) {
+	let setOptions = false;
+	for (let cursor = skipRedirections(tokens, index + 1); cursor < tokens.length; cursor = skipRedirections(tokens, cursor + 1)) {
 		const word = tokens[cursor]!;
 		if (tokens.expansions?.[cursor]) return true;
+		if (word.length > 1 && word[0] === "-" && word.includes("o")) setOptions = true;
 		if (word === "cdable_vars" || word === "expand_aliases") return true;
+		if (setOptions && (word === "posix" || word === "physical")) return true;
 	}
 	return false;
 }
