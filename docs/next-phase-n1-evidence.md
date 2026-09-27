@@ -457,3 +457,25 @@ recovery unavailable. A two-million-character ID reaches neither index nor paren
 lookup. Metadata escaping includes every Unicode Bidi_Control code point in the
 dedicated regex constants module. No production closure was added. Windows
 Node22.19 focused/source tests: 83 passed, one filesystem skip; check passed.
+
+Review r28: current and imported verification Session IDs must be nonempty strings
+of at most 256 characters before history access or receipt comparisons. Actual
+/changes execution with invalid headers refuses before getLeafId; malformed
+verification records never reach sourceEntryId. The genuine file remains intact.
+Recovery tests: 66 passed, one filesystem skip; Node22.19 check passed.
+
+Allocation correction: earlier profiles lacking includeObjectsCollectedByMajorGC
+and includeObjectsCollectedByMinorGC measured survivors, not total allocation.
+They are superseded for allocation conclusions. Serial Windows Node22.19 sampling
+with both flags and profiler storage released before controlled GC reports:
+
+- Mixed 20,000 progress updates plus 20,000 narrow renders across ten lifecycles:
+  692,857,904 sampled bytes (not a pure per-progress cost). Box.render and the
+  ToolExecution render chain dominate. Stable text changes and new narrow rows
+  are zero; retained characters/rows return to zero. Heap: 48,845,896 to 49,258,256.
+- Viewer: 20,000 stable plus 200 changed viewports, 943,864 sampled bytes, 4,422
+  materialized rows, zero stable new rows; scroll metadata 786,444 to zero bytes,
+  references two to zero. Heap: 41,368,720 to 41,647,064.
+
+These are complete fixture allocation samples, not exact allocations, speedup
+claims or evidence that the existing rendering framework allocates nothing.
