@@ -65,7 +65,7 @@ const lspDiagnosticsTool = defineTool({
 		const { adapters, timeoutMs } = loadRuntime(ctx.cwd, {
 			projectTrusted: ctx.isProjectTrusted(),
 		});
-		const { root, routes, skipped } = selectDiagnosticRoutes(
+		const { root, routes, skipped, uncoveredFiles, skippedScopeLimited, incomplete } = selectDiagnosticRoutes(
 			adapters,
 			{ ...params, root: requestedRoot },
 			DEFAULT_FILE_LIMIT,
@@ -99,20 +99,17 @@ const lspDiagnosticsTool = defineTool({
 			});
 		}
 		const skippedDetails = [];
-		const uncoveredFiles = new Set<string>();
 		if (skipped.length) {
 			let names = "";
 			for (const route of skipped) {
 				if (names) names += ", ";
 				names += route.adapter.name;
 				skippedDetails.push({ server: route.adapter.name, reason: route.reason, files: route.files });
-				for (const file of route.files) uncoveredFiles.add(file);
 			}
 			sections.push(`Skipped unavailable default LSP server(s): ${names}.`);
 		}
-		for (const route of routes) for (const file of route.files) uncoveredFiles.delete(file);
-		const incomplete = uncoveredFiles.size > 0;
-		if (incomplete) sections.push(`Incomplete: ${uncoveredFiles.size} matching file(s) were not submitted because their default server was unavailable. No validation pass for that scope is established.`);
+		if (uncoveredFiles.length) sections.push(`Incomplete: ${uncoveredFiles.length} matching file(s) were not submitted because their default server was unavailable. No validation pass for that scope is established.`);
+		if (skippedScopeLimited) sections.push("Incomplete: a skipped route reached the file limit; additional uncovered matches are unknown. Narrow the requested scope before claiming completeness.");
 		sections.push(submittedFiles === 0
 			? "Not checked: 0 files submitted to an LSP server. No validation pass is established."
 			: `Scope: ${submittedFiles} file(s) submitted, limited to the selected route and file limit. Embedded languages, unmatched files and browser/runtime behavior are not established by this result.`);
@@ -120,7 +117,8 @@ const lspDiagnosticsTool = defineTool({
 			root,
 			status: submittedFiles === 0 ? "not_checked" : incomplete ? "partial" : "diagnostics_received",
 			submittedFiles,
-			uncoveredFiles: [...uncoveredFiles],
+			uncoveredFiles,
+			skippedScopeLimited,
 			fileLimit: params.limit ?? DEFAULT_FILE_LIMIT,
 			skipped: skippedDetails,
 			routes: routeDetails,

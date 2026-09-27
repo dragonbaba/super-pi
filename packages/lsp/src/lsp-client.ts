@@ -496,7 +496,12 @@ export class LspClient {
 			};
 			const onPublish = (publication: { version: number; diagnostics: readonly LspDiagnostic[] }) => {
 				if (publication.version <= afterVersion) return;
-				if (fallback && !fallback.requirePublication && publication.diagnostics.length === 0 && !sawNonEmptyPublication) return;
+				if (fallback && publication.diagnostics.length === 0 && !sawNonEmptyPublication) {
+					// A push response proves availability, but may precede real analysis.
+					// Keep the configured grace window open for a later non-empty report.
+					if (fallback.requirePublication) latestPublication = publication;
+					return;
+				}
 				sawNonEmptyPublication ||= publication.diagnostics.length > 0;
 				latestPublication = publication;
 				if (fallbackTimer) clearTimeout(fallbackTimer);

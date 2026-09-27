@@ -21,7 +21,7 @@ function fixture(mode = "full") {
   writeFileSync(join(root, "page.html"), "<script>const broken = ;</script>");
   writeFileSync(join(root, "example.ts"), "const n = 1;");
   writeFileSync(join(root, ".sp/config/pi-lsp.json"), JSON.stringify({ timeout: 2500, servers: { fixture: {
-    command: [process.execPath, server, mode], extensions: [".ts"], pushDiagnosticsGraceMs: 60, diagnosticsSettleMs: 10,
+    command: [process.execPath, server, mode], extensions: [".ts"], pushDiagnosticsGraceMs: mode === "push-provisional" ? 250 : 60, diagnosticsSettleMs: 10,
   } } }));
   const runtime = loadRuntime(root, { projectTrusted: true });
   return { root, ...runtime, release() { assert.equal(dirname(root), tmpdir()); rmSync(root, { recursive: true, force: true }); } };
@@ -47,15 +47,32 @@ test("configured route is explicit about zero files and unsupported HTML; no cli
   } finally { f.release(); }
 });
 
-for (const mode of ["full", "push-empty", "push-silent", "missing-report", "error"]) {
+test("a capped skipped route remains incomplete after its known files overlap a live route", () => {
+  const f = fixture();
+  try {
+    writeFileSync(join(f.root, "a.ts"), "const a = 1;"); writeFileSync(join(f.root, "z.py"), "x = 1");
+    const broad = { ...f.adapters[0], isDefault: true, name: "missing-broad", extensions: [".ts", ".py"],
+      isSupportedFile(file: string) { return file.endsWith(".ts") || file.endsWith(".py"); },
+      defaultCommand: { command: "sp-nonexistent-lsp-fixture", args: [] } };
+    const limited = selectDiagnosticRoutes([f.adapters[0], broad], { root: f.root, paths: ["a.ts", "z.py"], limit: 1 }, 50);
+    assert.deepEqual(limited.uncoveredFiles, []);
+    assert.equal(limited.skippedScopeLimited, true);
+    assert.equal(limited.incomplete, true, "known overlap is not proof of coverage beyond the cap");
+    const exhausted = selectDiagnosticRoutes([f.adapters[0], broad], { root: f.root, paths: ["a.ts"], limit: 2 }, 50);
+    assert.equal(exhausted.skippedScopeLimited, false);
+    assert.equal(exhausted.incomplete, false, "a fully collected overlapping skipped route does not create missing scope");
+  } finally { f.release(); }
+});
+
+for (const mode of ["full", "push-empty", "push-provisional", "push-silent", "missing-report", "error"]) {
   test(`real protocol process: ${mode} preserves diagnostic status (not a language-capability test)`, async () => {
     const f = fixture(mode), pool = new LspClientPool();
     try {
       const work = runDiagnostics(pool, f.adapters[0], { root: f.root, paths: ["example.ts"] }, 2500, undefined, { ui: { setStatus() {} } }, "lsp");
-      if (mode === "full" || mode === "push-empty") {
+      if (mode === "full" || mode === "push-empty" || mode === "push-provisional") {
         const result = await work;
         assert.equal(result.details.status, "diagnostics_received"); assert.equal(result.details.summary.files, 1);
-        assert.equal(result.details.summary.diagnostics, 0);
+        assert.equal(result.details.summary.diagnostics, mode === "push-provisional" ? 1 : 0);
       } else await assert.rejects(work, /unconfirmed|synthetic diagnostic failure/);
     } finally { await pool.shutdownAll(); f.release(); }
   });

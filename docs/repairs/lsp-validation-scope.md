@@ -17,6 +17,11 @@ server errors cannot turn into an empty successful diagnostic list. Actual empty
 reports remain supported. Existing authoritative project checks retain their role;
 tool guidance does not guarantee every future model tool choice.
 
+Review regressions retain uncertainty when a skipped route reaches its bounded file
+cap, including overlap with a live route. They also keep an initial empty push report
+inside the configured grace window and verify that later diagnostics are returned.
+No extra production scan is introduced to prove exhaustion beyond the cap.
+
 `tests/lsp-validation-scope.test.ts` tests configuration/routing and status handling
 with a private protocol process, including empty reports, silence, malformed reports,
 errors, zero files and unavailable defaults. Those fixtures do not analyze languages.

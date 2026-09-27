@@ -72,7 +72,17 @@ export function selectDiagnosticRoutes(
 		throw new Error(`No supported files found${scope}. ${SUPPORTED_SERVER_DESCRIPTION}`);
 	}
 
-	return { root, routes, skipped };
+	const uncoveredFiles = new Set<string>();
+	let skippedScopeLimited = false;
+	for (const route of skipped) {
+		for (const file of route.files) uncoveredFiles.add(file);
+		// The existing bounded collector cannot prove exhaustion once its cap is
+		// reached. Preserve that uncertainty even if known files overlap a live route.
+		if (route.files.length >= Math.floor(params.limit ?? defaultLimit)) skippedScopeLimited = true;
+	}
+	for (const route of routes) for (const file of route.files) uncoveredFiles.delete(file);
+	return { root, routes, skipped, uncoveredFiles: [...uncoveredFiles], skippedScopeLimited,
+		incomplete: uncoveredFiles.size > 0 || skippedScopeLimited };
 }
 
 export function selectFixRoute(adapters: LspServerAdapter[], params: SingleFileRouteParams) {

@@ -10,8 +10,12 @@ function handle(message) {
   else if (message.method === "textDocument/diagnostic") {
     if (mode === "error") send({ id: message.id, error: { code: -32603, message: "synthetic diagnostic failure" } });
     else send({ id: message.id, result: mode === "missing-report" ? {} : { kind: "full", items: [] } });
-  } else if (message.method === "textDocument/didOpen" && mode === "push-empty") {
+  } else if (message.method === "textDocument/didOpen" && (mode === "push-empty" || mode === "push-provisional")) {
     send({ method: "textDocument/publishDiagnostics", params: { uri: message.params.textDocument.uri, diagnostics: [] } });
+    if (mode === "push-provisional") setTimeout(() => send({ method: "textDocument/publishDiagnostics", params: {
+      uri: message.params.textDocument.uri,
+      diagnostics: [{ message: "synthetic late analysis error", severity: 1, range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } } }],
+    } }), 40);
   } else if (message.method === "shutdown") send({ id: message.id, result: null });
   else if (message.method === "exit") process.exit(0);
 }
