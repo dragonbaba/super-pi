@@ -1,6 +1,14 @@
 # N1: preview and recovery evidence
 
-Status: **实现中**. This record does not claim complete N1 acceptance.
+Status: **必交功能已实现；极端导入冷路径限制已由用户接受，最终候选收尾中**.
+Implementation `f003ba9939fd1b5411b8cd79aad4e554dfb8e73a` passed local check,
+build:offline, test:hot and full tests, plus Node22.19 Windows/Linux CI
+[36295337499](https://github.com/dragonbaba/super-pi/actions/runs/36295337499).
+The latest documentation candidate still needs its final-head gates/review;
+the original Draft [#47](https://github.com/dragonbaba/super-pi/pull/47) remains
+unmerged. Historical checkpoints below describe earlier measurements; the
+accepted import decision and GC-inclusive figures supersede older scope and
+survivor-only allocation statements. No import-policy decision remains pending.
 
 ## Baseline and environment
 
@@ -491,3 +499,39 @@ command enumerates own keys for shape validation; it does not recursively inspec
 unknown field values or claim a constant-cost parse of arbitrary imported JSON.
 Actual producer refusals and recovery/draft refusal preserve the target bytes.
 Focused recovery/source checks: 70 pass, one filesystem skip; Node22.19 check pass.
+
+## Accepted cold-path import limitation (user decision, 2026-09-27)
+
+The user explicitly chose to preserve existing Session import compatibility.
+This wave adds no global import structure limit, rejects no whole old Session,
+truncates no original history and changes no import format. The bounded history
+entry scan, preview/draft limits, permission/identity/receipt pairing and all
+existing AST/source assertions remain. Unreconstructable records stay
+unrecoverable; ignored dangerous fields cannot create execution authority.
+
+`hasOnlyRecoveryFields` must enumerate the own keys of an imported argument
+object to reject fields that its producer does not support. An extreme single
+object with one million fields can allocate an enumeration array before the
+field-count refusal. This explicit recovery/history path is not constant cost;
+it is distinct from provider progress and rendering hot paths. No alternative
+enumeration technique or importer rewrite will be pursued for this accepted
+limitation. Ordinary repeated stalls, retained resources, incorrect receipt
+pairing or authorization defects still require concrete reproduction and fixes.
+
+One Windows Node22.19 controlled-GC diagnostic used a synthetic JSON-decoded flat
+million-field object, constructing it before timing/sampling, then performing
+the unchanged Object.keys operation once. Runtime: 173.4478 ms. GC-inclusive
+Inspector sampling recorded 16,121,064 allocated bytes. Heap at the retained
+key-array boundary was 121,638,728 bytes versus 105,526,384 immediately before
+enumeration (16,112,344-byte increase). This is a sampled boundary maximum,
+not a theoretical instantaneous peak or an actual full-import latency measure.
+
+After dropping the key array while retaining the object and forcing GC, heap
+was 86,786,448 bytes; this also includes collection of fixture/engine temporaries,
+so the decrease is not an enumeration memory-saving claim. After dropping the
+fixture and clearing profiler references, heap was 4,462,632 versus the initial
+4,303,616 (159,016-byte difference); fixture/key-array references were zero.
+RSS did not return to its initial value, which does not imply live JS references.
+Raw method and samples: `D:/RMProjects/Pi-next-phase-artifacts/n1-accepted-cold-enumeration.mjs`
+and `n1-accepted-cold-enumeration.json`. This single lifecycle sample is not a
+zero-allocation claim. There is no remaining user decision on this item.
