@@ -565,6 +565,7 @@ export default function mutationGuardWriteExtension(pi: ExtensionAPI): void {
         pi.appendEntry(MUTATION_PROGRESS_ENTRY, { ...details, target: receiptTarget, mutationReceiptVersion: 2, toolCallId, itemId: `${toolCallId}:0`, phase: "result", status: "succeeded" });
       } catch {
         const committed = details.commit?.outcome === "committed", status = committed ? "partial" : "state_unknown";
+        guard.invalidateCanonicalPath(receiptTarget);
         return { content: [{ type: "text" as const, text: `write: ${status}; ${path}. File changed but receipt recording failed. Verify current state; do not automatically retry.` }],
           details: { ...details, ok: false, mutationReceiptVersion: 2, operation: "write", target: receiptTarget, status, stateChanged: committed ? true : "unknown", requiresVerification: true }, isError: true };
       }

@@ -178,12 +178,12 @@ for (const [message, termination] of [["timeout:1", "timeout"], ["aborted", "can
   assert.match((result.content[0] as any).text, /^\[SHELL_INTERRUPTED\]/);
 });
 
-for (const termination of ["cancelled", "timeout"] as const) test(`N3 real parallel shell ${termination} retains Session cascade distinction`, async () => {
+for (const execution of ["parallel", "sequential"] as const) for (const termination of ["cancelled", "timeout"] as const) test(`N3 real ${execution} shell ${termination} retains Session cascade distinction`, async () => {
   const session = SessionManager.inMemory(process.cwd());
   const calls = ["bash", "powershell"].map(name => ({ type: "toolCall" as const, id: `cascade-${name}`, name, arguments: {
     command: "process.stdout.write('ready\\n');setTimeout(()=>process.exit(0),10000)", timeout: 1 } }));
   let requests = 0;
-  const agent = new Agent({ convertToLlm: () => [], streamFn: () => {
+  const agent = new Agent({ toolExecution: execution, convertToLlm: () => [], streamFn: () => {
     const message = alphaMessage(++requests === 1 ? calls : [{ type: "text", text: "done" }]);
     message.stopReason = requests === 1 ? "toolUse" : "stop"; return finalStream(message);
   } });
@@ -191,13 +191,17 @@ for (const termination of ["cancelled", "timeout"] as const) test(`N3 real paral
   const ready = new Set<string>();
   const unsubscribe = agent.subscribe(event => {
     if (event.type === "tool_execution_update" && event.partialResult.content.some((block: { type: string; text?: string }) => block.type === "text" && block.text?.includes("ready"))) {
-      ready.add(event.toolCallId); if (ready.size === 2 && termination === "cancelled") agent.abort();
+      ready.add(event.toolCallId); if (ready.size === (execution === "parallel" ? 2 : 1) && termination === "cancelled") agent.abort();
     }
   });
   try {
     await agent.prompt("Run the isolated parallel fixture."); await agent.waitForIdle();
-    const results = agent.state.messages.filter(message => message.role === "toolResult"); assert.equal(results.length, 2); assert.equal(ready.size, 2);
-    for (const result of results) { assert.equal(result.isError, true); assert.equal(readShellExecution(result.details)?.termination, termination); }
+    const results = agent.state.messages.filter(message => message.role === "toolResult"); assert.equal(results.length, 2);
+    const unstarted = execution === "sequential" && termination === "cancelled"; assert.equal(ready.size, unstarted ? 1 : 2);
+    for (const [index, result] of results.entries()) {
+      assert.equal(result.isError, true); assert.equal(readShellExecution(result.details)?.termination, unstarted && index === 1 ? "not_started" : termination);
+      if (unstarted && index === 1) assert.equal(readShellExecution(result.details)?.producer, "agent");
+    }
     for (const message of agent.state.messages) session.appendMessage(message as never);
     const observations = collectSessionErrors(session.getBranch());
     assert.equal(observations.length, termination === "cancelled" ? 1 : 2);
@@ -205,6 +209,24 @@ for (const termination of ["cancelled", "timeout"] as const) test(`N3 real paral
     if (termination === "cancelled") { assert.equal(observations[0].cascadeCount, 2); assert.equal(observations[0].tool, "tool_batch"); }
     assert.equal(agent.state.pendingToolCalls.size, 0);
   } finally { unsubscribe(); agent.abort(); }
+});
+
+test("N3 child output cannot impersonate the Agent's unstarted cancellation", async () => {
+  const result = await run("process.stdout.write('Operation aborted before tool execution');process.exitCode=23");
+  assert.equal(classifyToolFailure("bash", "Operation aborted before tool execution", {}, result.details).category, "command_failed");
+});
+
+for (const name of ["bash", "powershell"] as const) for (const field of ["inputError", "observationError"] as const) test(`N3 custom ${name} bounds ${field} without losing execution facts`, async () => {
+  const operations = { async exec() { return { exitCode: 23, termination: "exit" as const, [field]: "诊断".repeat(1_000_000) }; } };
+  const agent = new Agent({ convertToLlm: () => [], streamFn: () => { throw new Error("offline"); } });
+  agent.state.tools = [name === "bash" ? createBashTool(process.cwd(), { operations }) : createPowerShellTool(process.cwd(), { operations })];
+  try {
+    const result = await agent.dispatchHostTool({ type: "toolCall", name, id: "bounded-custom-error", arguments: { command: "fixture" } });
+    assert.equal(result.isError, true); const facts = readShellExecution(result.details); assert.ok(facts);
+    assert.equal(facts[field]?.length, 1000); assert.equal(facts.exitCode, 23); assert.equal(facts.termination, "exit");
+    const text = result.content.filter(block => block.type === "text").map(block => block.text).join("\n"); assert.ok(text.length < 4000);
+    assert.equal(agent.state.pendingToolCalls.size, 0);
+  } finally { agent.abort(); }
 });
 
 for (const explicit of [true, false]) test(`N3 pre-execution verification failure canonicalizes a directory alias, explicit=${explicit}`, async t => {

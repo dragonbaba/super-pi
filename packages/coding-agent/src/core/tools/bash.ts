@@ -1055,7 +1055,7 @@ export function createShellToolDefinition(
 				const observation = processResult?.observation;
 				const local = isLocalShellBackend(ops) && ops.exec === backendExecute;
 				const started = observation?.started ?? "unknown";
-				const errorMessage = executionError instanceof Error ? executionError.message : executionError === undefined ? "" : String(executionError);
+				const errorMessage = (executionError instanceof Error ? executionError.message : executionError === undefined ? "" : String(executionError)).slice(0, 1000);
 				// Legacy custom backends report control-flow failure through their
 				// rejected operation, never through stdout. Keep start/effects unknown.
 				const termination = processResult?.termination ?? (processResult && processResult.exitCode !== null ? "exit"
@@ -1067,8 +1067,8 @@ export function createShellToolDefinition(
 					sideEffects: started === false ? "none" : "unknown", retryGuidance: started === false ? "fresh_request" : "inspect_before_retry",
 					exitCode: processResult?.exitCode ?? null, signal: observation?.signal ?? null,
 					termination,
-					inputError: processResult?.inputError,
-					observationError: processResult?.observationError,
+					inputError: processResult?.inputError?.slice(0, 1000),
+					observationError: processResult?.observationError?.slice(0, 1000),
 					output: { complete: logError ? false : observation?.outputDrained ?? "unknown", tailTruncated: snapshot.truncation.truncated,
 						log: logError ? "failed" : snapshot.fullOutputPath ? snapshot.spillFileCapped ? "capped" : "complete" : "not_needed",
 						cleanup, logError, cleanupError } };

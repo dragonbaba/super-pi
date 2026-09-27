@@ -303,3 +303,13 @@ turn runs the Bash/PowerShell tool adapters through isolated Node child processe
 both cancelled results collapse into one Session event with cascadeCount two.
 Two actual timeouts remain two observations. No output-body inference, callback
 or regex was added. All 46 shell-result contract cases pass on Windows Node22.19.
+
+Review r30: trusted Agent cancellation of an unstarted tool remains part of the
+same aborted cascade. Actual parallel and sequential Agent turns exercise both
+shell adapters; independent timeouts stay distinct, and a child printing the
+Agent cancellation text cannot impersonate the structured producer. Custom
+backend input/observation diagnostics and thrown error text are bounded at the
+shared result producer (1,000 characters). Four two-million-character diagnostic
+cases retain valid failure facts without unbounded model-visible text or pending
+timers. Contract/source tests: 55 pass; check pass on Windows Node22.19. These
+changes add no production regex or callback. Final combined CI and review remain.

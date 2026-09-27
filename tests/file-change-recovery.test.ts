@@ -794,8 +794,8 @@ test("N1 actual partial standalone overwrite binds its ordered origin and reject
   await f.call("read", { path: target }, "partial-overwrite-read");
   const original = MutationWriteGuard.prototype.write;
   t.mock.method(MutationWriteGuard.prototype, "write", async function(this: any, ...args: any[]) {
-    await original.apply(this, args);
-    throw new Error(JSON.stringify({ stateChanged: true, category: "PARTIAL_MUTATION", cause: "injected completion failure after real bytes" }));
+    const result = await original.apply(this, args);
+    throw new Error(JSON.stringify({ ...result, stateChanged: true, category: "PARTIAL_MUTATION", cause: "injected completion failure after real bytes" }));
   });
   const result = await f.call("write", { path: target, content: "desired-overwrite" }, "partial-overwrite");
   assert.equal(result.isError, true); assert.equal(readFileSync(target, "utf8"), "desired-overwrite");
@@ -1235,7 +1235,90 @@ for (const operation of ["write", "edit", "snapshot"] as const) for (const batch
   assert.equal(details.status, "partial"); assert.equal(details.stateChanged, true); assert.equal((details.receipt ?? details).commit.outcome, "committed");
   assert.equal(readFileSync(path, "utf8"), "after\n");
   const records = collectChanges(f.session.getBranch(), f.cwd); assert.equal(records.length, 1); assert.equal(records[0].unavailable, undefined);
-  await verifyChange(records[0], async () => {});
+  assert.equal((await verifyChange(records[0], async () => {})).postimageMatches, true);
+});
+
+test("N2 failed overwrite receipt persistence invalidates live range evidence", async t => {
+  const f = await fixture(t), path = join(f.cwd, "range-evidence"); writeFileSync(path, "same\nbefore\n");
+  await f.call("read", { path }, "range-read");
+  f.onRecord(data => { if (data.phase === "result") throw new Error("fixture receipt persistence"); });
+  const result = await f.call("write", { path, content: "same\nafter\n" }, "range-write");
+  assert.equal(result.isError, true); assert.equal((result.details as any).commit.outcome, "committed");
+  let commits = 0;
+  f.onRecord(data => { if (data.strategy !== undefined) commits++; });
+  const edit = await f.call("edit", { path, edits: [{ oldText: "same", newText: "unread" }] }, "range-edit");
+  assert.equal(edit.isError, true); assert.ok(JSON.stringify(edit).includes("READ_REQUIRED"), JSON.stringify(edit));
+  assert.equal(commits, 0); assert.equal(readFileSync(path, "utf8"), "same\nafter\n");
+});
+
+for (const operation of ["write", "edit", "snapshot"] as const) for (const batch of [false, true]) test(`N2 selected ${operation} requires matching terminal commits, batch=${batch}`, async t => {
+  const f = await fixture(t), path = join(f.cwd, "required-commit"); writeFileSync(path, "before\n");
+  const read = await f.call("read", { path }, "required-read");
+  let input: any = operation === "write" ? { path, content: "after\n" } : { path, edits: [{ oldText: "before", newText: "after" }] };
+  if (operation === "snapshot") {
+    const body = read.content.filter(block => block.type === "text").map(block => block.text).join("\n");
+    input = { path, snapshot: body.slice(body.indexOf("snapshot=") + 9, body.indexOf("snapshot=") + 36),
+      edits: [{ kind: "replace", start: body.split("\n").find(line => line.startsWith("1#"))!.split("|")[0], newLines: ["after"] }] };
+  }
+  const name = operation === "write" ? "write" : "edit";
+  const result = await f.call(batch ? "file_batch" : name, batch ? { operations: [{ operation: name, ...input, ...(name === "write" ? { mode: "overwrite" } : {}) }] } : input, "required-commit");
+  assert.equal(result.isError, false, JSON.stringify(result));
+  const genuine = JSON.parse(JSON.stringify(f.session.getBranch()));
+  assert.equal(collectChanges(genuine, f.cwd)[0].unavailable, undefined);
+  const interrupted = genuine.filter((entry: any) => entry.data?.phase !== "result" && entry.message?.role !== "toolResult");
+  const pending = collectChanges(interrupted, f.cwd); assert.equal(pending.length, 1); assert.equal(pending[0].unavailable, undefined);
+  for (const fault of ["missing", "missing-aggregate-only", "other-strategy", "hash-mismatch"]) {
+    const branch = structuredClone(genuine).filter((entry: any) => fault !== "missing-aggregate-only" || entry.data?.phase !== "result");
+    for (const entry of branch) {
+      const receipt = entry.data?.phase === "result" ? entry.data : entry.message?.toolCallId === "required-commit" && entry.message?.role === "toolResult"
+        ? batch ? entry.message.details.items[0].receipt : entry.message.details : undefined;
+      if (!receipt) continue;
+      if (fault === "missing" || fault === "missing-aggregate-only") delete receipt.commit;
+      else if (fault === "hash-mismatch") { if (entry.message) receipt.sha256 = "0".repeat(64); }
+      else receipt.commit.strategy = receipt.commit.strategy === "staged_replace" ? "protected_in_place" : "staged_replace";
+    }
+    const records = collectChanges(branch, f.cwd); assert.equal(records.length, 1); assert.ok(records[0].unavailable, fault);
+    await assert.rejects(verifyChange(records[0], async () => { assert.fail("missing or mismatched commit cannot observe files"); }));
+  }
+  assert.equal(readFileSync(path, "utf8"), "after\n");
+});
+
+for (const operation of ["write", "edit", "snapshot"] as const) for (const batch of [false, true]) for (const fault of ["close", "readback", "abort"] as const) test(`N2 ${operation} committed ${fault} failure retains verifiable hash, batch=${batch}`, async t => {
+  const f = await fixture(t), path = join(realpathSync.native(f.cwd), "failed-postimage"); writeFileSync(path, "before\n");
+  const read = await f.call("read", { path }, "postimage-read");
+  let input: any = operation === "write" ? { path, content: "after\n" } : { path, edits: [{ oldText: "before", newText: "after" }] };
+  if (operation === "snapshot") {
+    const body = read.content.filter(block => block.type === "text").map(block => block.text).join("\n");
+    input = { path, snapshot: body.slice(body.indexOf("snapshot=") + 9, body.indexOf("snapshot=") + 36),
+      edits: [{ kind: "replace", start: body.split("\n").find(line => line.startsWith("1#"))!.split("|")[0], newLines: ["after"] }] };
+  }
+  const probe = await open(path, "r"), prototype = Object.getPrototypeOf(probe); await probe.close();
+  const originalStat = prototype.stat; let injected = false;
+  t.mock.method(prototype, "stat", async function(this: any, ...args: any[]) {
+    const info = await originalStat.apply(this, args);
+    if (!injected && readFileSync(path, "utf8") === "after\n") {
+      injected = true;
+      if (fault === "readback") writeFileSync(path, "external");
+      else {
+        const close = this.close.bind(this);
+        this.close = async () => { await close(); if (fault === "abort") f.agent.abort(); throw new Error(`fixture postcommit ${fault}`); };
+      }
+    }
+    return info;
+  });
+  let result: any;
+  try {
+    const name = operation === "write" ? "write" : "edit";
+    result = await f.call(batch ? "file_batch" : name, batch ? { operations: [{ operation: name, ...input, ...(name === "write" ? { mode: "overwrite" } : {}) }] } : input, "failed-postimage");
+  } finally { t.mock.restoreAll(); }
+  assert.equal(injected, true); assert.equal(result.isError, true, JSON.stringify(result));
+  const item = batch ? result.details.items[0] : result.details, receipt = item.receipt ?? item;
+  assert.equal(item.status, "partial"); assert.equal(item.stateChanged, true); assert.equal(receipt.commit.outcome, "committed");
+  assert.equal(receipt.sha256, createHash("sha256").update("after\n").digest("hex"));
+  const record = collectChanges(f.session.getBranch(), f.cwd)[0]; assert.equal(record.unavailable, undefined); assert.equal(record.postimage, receipt.sha256);
+  assert.equal(readFileSync(path, "utf8"), fault === "readback" ? "external" : "after\n");
+  assert.equal((await verifyChange(record, async () => {})).postimageMatches, fault !== "readback");
+  writeFileSync(path, "external"); assert.equal((await verifyChange(record, async () => {})).postimageMatches, false);
 });
 
 test("N1 metadata-only verification rejects replacement during the final permission await", async t => {
