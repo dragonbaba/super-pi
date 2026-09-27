@@ -462,6 +462,44 @@ test("N1 recovery never normalizes a malformed v2 item identifier into another i
   await assert.rejects(verifyChange(malformed, async () => { assert.fail("unbound receipt must not observe files"); }), /cannot authorize/);
 });
 
+for (const batch of [false, true]) test(`N1 merge regression: move identity mirrors reject changed or missing identity, batch=${batch}`, async t => {
+  const f = await fixture(t), target = join(f.cwd, "move-source"), destination = join(f.cwd, "move-destination");
+  writeFileSync(target, "unchanged move bytes"); await f.call("read", { path: target }, "move-read");
+  const input = { path: target, destination };
+  const result = await f.call(batch ? "file_batch" : "move", batch ? { operations: [{ operation: "move", ...input }] } : input, "identity-move");
+  assert.equal(result.isError, false);
+  const genuine = JSON.parse(JSON.stringify(SessionManager.open(f.session.getSessionFile()!).getBranch()));
+  const record = collectChanges(genuine, f.cwd)[0]; assert.equal(record.unavailable, undefined);
+  assert.equal((await verifyChange(record, async () => {})).destinationIdentityMatches, true);
+  for (const fault of ["changed", "aggregate-absent", "durable-absent", "both-absent", "durable-only-absent", "oversized", "negative", "malformed", "null"]) {
+    const branch = structuredClone(genuine);
+    const durable = branch.find((entry: any) => entry.data?.toolCallId === "identity-move" && entry.data?.phase === "result").data;
+    const aggregate = branch.find((entry: any) => entry.message?.toolCallId === "identity-move" && entry.message?.role === "toolResult").message.details;
+    const receipt = batch ? aggregate.items[0].receipt : aggregate;
+    if (fault === "aggregate-absent") delete receipt.sourceIdentity;
+    else if (fault === "durable-absent") delete durable.sourceIdentity;
+    else if (fault === "both-absent" || fault === "durable-only-absent") {
+      delete receipt.sourceIdentity; delete durable.sourceIdentity;
+      if (fault === "durable-only-absent") branch.splice(branch.findIndex((entry: any) => entry.message?.toolCallId === "identity-move" && entry.message?.role === "toolResult"), 1);
+    }
+    else receipt.sourceIdentity = fault === "null" ? null : fault === "malformed" ? [] : { device: record.sourceIdentity.device,
+      inode: fault === "oversized" ? "9".repeat(1000000) : fault === "negative" ? "-1" : "0" };
+    const invalid = collectChanges(branch, f.cwd)[0]; assert.ok(invalid.unavailable, fault); assert.equal(invalid.sourceIdentity, undefined);
+    await assert.rejects(verifyChange(invalid, async () => { assert.fail("mismatched identity must not observe disk"); }));
+  }
+  assert.equal(existsSync(target), false); assert.equal(readFileSync(destination, "utf8"), "unchanged move bytes");
+});
+
+test("N1 merge regression: origin-time overwrite drift cannot manufacture a create recovery draft", async t => {
+  const f = await fixture(t), target = join(f.cwd, "origin-drift"); writeFileSync(target, "before");
+  await f.call("read", { path: target }, "origin-drift-read");
+  f.onRecord(data => { if (data.toolCallId === "origin-drift-write" && data.phase === "origin") writeFileSync(target, "external drift"); });
+  assert.equal((await f.call("write", { path: target, content: "desired" }, "origin-drift-write")).isError, true);
+  const records = collectChanges(SessionManager.open(f.session.getSessionFile()!).getBranch(), f.cwd);
+  assert.equal(records.length, 0); assert.throws(() => remainingDraft(records, new Set()));
+  assert.equal(readFileSync(target, "utf8"), "external drift");
+});
+
 test("N1 standalone create failure binds every original request field before drafting", async t => {
   const f = await fixture(t), path = join(f.cwd, "conflict");
   f.onRecord(data => { if (data.toolCallId === "create-bind" && data.phase === "intent") writeFileSync(path, "external"); });
@@ -478,6 +516,34 @@ test("N1 standalone create failure binds every original request field before dra
     assert.throws(() => remainingDraft(invalid, new Set()), /missing|ambiguous/);
   }
   assert.equal(readFileSync(path, "utf8"), "external");
+});
+
+for (const boundary of ["prepared", "staged"]) test(`N1/N2 merge regression: standalone overwrite recovery respects ${boundary} failure`, async t => {
+  const f = await fixture(t), target = join(realpathSync.native(f.cwd), "failed-overwrite"); writeFileSync(target, "before");
+  await protectWindowsFixture(target); await f.call("read", { path: target }, "failed-overwrite-read");
+  if (boundary === "prepared") {
+    f.onRecord(data => { if (data.toolCallId === "failed-overwrite" && data.phase === "intent") writeFileSync(target, "external commit drift"); });
+  } else {
+    const file = await open(target, "r"), prototype = Object.getPrototypeOf(file); await file.close();
+    t.mock.method(prototype, "sync", async function() { throw new Error("fixture staging sync refusal"); });
+  }
+  const result = await f.call("write", { path: target, content: "desired overwrite" }, "failed-overwrite");
+  assert.equal(result.isError, true); assert.equal(readFileSync(target, "utf8"), boundary === "prepared" ? "external commit drift" : "before");
+  const records = collectChanges(SessionManager.open(f.session.getSessionFile()!).getBranch(), f.cwd);
+  assert.equal(records.length, 1); assert.equal(records[0].status, "failed_no_change"); assert.equal(records[0].unavailable, undefined);
+  assert.equal(records[0].receipt.commit.outcome, "not_committed");
+  if (boundary === "staged" && process.platform === "linux") {
+    // Linux deliberately retains a candidate without a verified-object deletion primitive.
+    assert.equal(records[0].requiresVerification, true);
+    assert.equal(readFileSync(records[0].receipt.commit.retainedTemporary, "utf8"), "desired overwrite");
+    assert.throws(() => remainingDraft(records, new Set()), /verify partial\/unknown/);
+    assert.equal((await verifyChange(records[0], async () => {})).temporary.exists, true);
+    assert.throws(() => remainingDraft(records, new Set([records[0].itemId])), /No confirmed/);
+  } else {
+    assert.equal(records[0].requiresVerification, undefined); assert.equal(records[0].receipt.commit.retainedTemporary, undefined);
+    assert.ok(remainingDraft(records, new Set()).includes('"mode": "overwrite"'));
+    assert.equal((await fsPromises.readdir(f.cwd)).some(name => name.startsWith(".pi-file-commit-")), false);
+  }
 });
 
 test("N1 duplicate history entry IDs cannot authenticate progress that precedes its call", async t => {

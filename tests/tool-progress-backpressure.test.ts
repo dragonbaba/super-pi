@@ -321,7 +321,7 @@ async function runCriticalProgressFailure(delayedCompletion: boolean) {
 	assert.ok(endEvent);
 	return {
 		isError: endEvent.isError,
-		text: endEvent.result.content[0]?.text,
+		text: endEvent.result.content.map((part: { type: string; text?: string }) => part.type === "text" ? part.text : "").join("\n"),
 	};
 }
 
@@ -331,7 +331,7 @@ test("raw progress listener failure is identical for immediate and delayed tool 
 
 	assert.deepEqual(immediate, {
 		isError: true,
-		text: "critical progress listener failed",
+		text: "done\n[TOOL_OBSERVATION_FAILED] critical progress listener failed",
 	});
 	assert.deepEqual(delayed, immediate);
 });

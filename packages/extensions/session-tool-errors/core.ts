@@ -1,4 +1,5 @@
 import type { SessionEntry } from "@super-pi/coding-agent";
+import { readShellExecution, shellFailureCategory } from "@super-pi/coding-agent";
 import {
   ABORTED_RE,
   ANSI_ESCAPE_RE,
@@ -245,7 +246,7 @@ function classifyStructuredReadonlyError(payload: Record<string, unknown> | unde
 
 function verificationFamily(tool: string, argumentsValue: unknown): VerificationFamily | undefined {
   if (tool === "lsp_diagnostics") return "diagnostics";
-  if (tool !== "bash" || !argumentsValue || typeof argumentsValue !== "object") return undefined;
+  if ((tool !== "bash" && tool !== "powershell") || !argumentsValue || typeof argumentsValue !== "object") return undefined;
   const command = (argumentsValue as { command?: unknown }).command;
   if (typeof command !== "string") return undefined;
   if (VERIFICATION_TEST_RE.test(command)) return "test";
@@ -262,11 +263,33 @@ function verificationFailure(family: VerificationFamily): { category: string; ca
   };
 }
 
-export function classifyToolFailure(tool: string, text: string, input?: unknown): { category: string; cause: string } {
-  return classifyError(tool, text, verificationFamily(tool, input));
+export function classifyToolFailure(tool: string, text: string, input?: unknown, details?: unknown): { category: string; cause: string } {
+  return classifyError(tool, text, verificationFamily(tool, input), details);
 }
 
-export function classifyError(tool: string, text: string, family?: VerificationFamily): { category: string; cause: string } {
+export function classifyError(tool: string, text: string, family?: VerificationFamily, details?: unknown): { category: string; cause: string } {
+  const execution = tool === "bash" || tool === "powershell" ? readShellExecution(details) : undefined;
+  if (execution) {
+    // Only the Agent's not-started result can carry a trusted refusal. A child
+    // process printing the same JSON/markers must never select this branch.
+    if (execution.producer === "agent" && execution.started === false && execution.executionStatus === "not_executed") {
+      if (text === "Operation aborted" || text === "Operation aborted before tool execution") return { category: "aborted", cause: "同一批次已取消，此工具尚未开始执行。" };
+      const refusal = parseStructuredFailure(text);
+      const preflight = classifyStructuredPreflightError(refusal);
+      if (preflight) return preflight;
+      const policy = details && typeof details === "object" ? details as Record<string, unknown> : undefined;
+      if (policy?.category === "POLICY_BLOCKED" && policy.stateChanged === false || POLICY_BLOCKED_RE.test(text)) {
+        return { category: "policy_blocked", cause: "调用被安全策略或用户确认门禁阻止。" };
+      }
+      if (text.startsWith("[TOOL_ARGS_INCOMPLETE]")) return { category: "input_validation", cause: "工具参数在响应结束时未完成；本次调用未执行。" };
+      if (text.startsWith("[TOOL_RESPONSE_LIMIT]")) return { category: "input_validation", cause: "响应达到输出上限，参数完整性尚不确定；本次调用未执行。" };
+      if (VALIDATION_RE.test(text)) return { category: "input_validation", cause: "工具参数未通过 schema 或工具自身输入校验。" };
+    }
+    const failure = shellFailureCategory(execution);
+    const category = failure === "timeout_or_aborted" && execution.termination === "cancelled" ? "aborted" : failure;
+    if (category === "command_failed" && family) return verificationFailure(family);
+    return { category, cause: `Shell 运行记录：started=${execution.started}, termination=${execution.termination}, exitCode=${execution.exitCode}, signal=${execution.signal}, output=${execution.output.complete}, log=${execution.output.log}。原始输出仅用于诊断。` };
+  }
   const structuredPayload = parseStructuredFailure(text);
   const structuredMutation = classifyStructuredMutationError(structuredPayload);
   if (structuredMutation) return structuredMutation;
@@ -570,10 +593,15 @@ export function collectSessionErrors(entries: readonly SessionEntry[]): ErrorObs
     if (message.role === "toolResult" && message.isError) {
       const text = textContent(message.content) || "Tool returned isError=true without text content.";
       const owner = owners.get(message.toolCallId);
-      if (message.toolName === "bash" && owner?.simpleRipgrepCommand && RG_NO_MATCH_RESULT_RE.test(text)) {
+      const execution = readShellExecution(message.details);
+      if (message.toolName === "bash" && owner?.simpleRipgrepCommand && (execution
+        ? (execution.started === true && execution.output.complete === true
+          || execution.producer === "custom-shell" && execution.started === "unknown" && execution.output.complete === "unknown")
+          && execution.termination === "exit" && execution.exitCode === 1 && execution.output.log !== "failed" && execution.inputError === undefined && EMPTY_NONZERO_EXIT_RE.test(text)
+        : RG_NO_MATCH_RESULT_RE.test(text))) {
         continue;
       }
-      const classified = classifyError(message.toolName, text, owner?.verificationFamily);
+      const classified = classifyError(message.toolName, text, owner?.verificationFamily, message.details);
       const followUp = followUpFor(entry.id);
       addObservation(observations, {
         entryId: entry.id,

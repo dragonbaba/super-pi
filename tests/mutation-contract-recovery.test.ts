@@ -231,7 +231,7 @@ test("snapshot projection allocation counters and source references release on s
   assert.equal(owner.counters.activeDispatchPresentationScopes, 0);
   const scans = owner.counters.fullSourceEstimatorScans;
   const arrays = owner.counters.modelProjectionArraysCreated;
-  assert.ok(arrays <= 16 * 4);
+  assert.ok(arrays <= 16 * 4, JSON.stringify({ arrays, source }));
   owner.clearProjectionRecords(); assert.equal(owner.counters.projectionRecordEntries, 0); assert.equal(owner.counters.retainedProjectionCodeUnits, 0); owner.dispose();
   const tiny = createToolResultPresentationOwner({ enabled: true, budgetTokens: 1 }, f.sessionId); refs.push(new WeakRef(tiny));
   assert.throws(() => tiny.create(source, "too-small"), /budget/i); tiny.dispose();
@@ -734,7 +734,10 @@ test("ordinary stderr marker cannot suppress actual runtime recovery in next mod
  assert.equal(delivered.isError, true); assert.match(text(delivered), /\[Lifecycle recovery\]/);
  assert.match(text(delivered), /SyntaxError/); assert.match(text(delivered), /invalid\.mjs/);
  assert.doesNotMatch(text(delivered), /Not executed/);
- assert.equal(text(delivered).match(/\[Node script recovery\]/g)?.length, 1);
+ assert.equal(text(delivered).split("[Shell execution recovery]").length - 1, 1);
+ assert.equal(text(delivered).includes("[Node script recovery]"), false);
+ assert.equal(delivered.details.shellExecution.started, true);
+ assert.equal(delivered.details.shellExecution.exitCode, 1);
  assert.equal(results.length, 1); assert.equal(f.counts().processes, 1); assert.equal(f.invocations.get("runtime"), 1);
 });
 

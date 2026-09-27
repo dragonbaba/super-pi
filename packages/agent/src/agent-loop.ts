@@ -18,6 +18,7 @@ import {
 } from "@super-pi/ai";
 import { resolve as resolvePath, sep } from "node:path";
 import { getDefaultStreamFn } from "./stream-fn.ts";
+import { toolResultFromError } from "./tool-result-error.ts";
 import type {
 	AgentContext,
 	AgentEvent,
@@ -453,7 +454,7 @@ async function failToolCallsFromTruncatedMessage(
 		const incomplete = hasIncompleteToolArguments(toolCall.arguments);
 		const finalized: FinalizedToolCallOutcome = {
 			toolCall,
-			result: createErrorToolResult(
+			result: createPreExecutionError(toolCall.name,
 				`[${incomplete ? "TOOL_ARGS_INCOMPLETE" : "TOOL_RESPONSE_LIMIT"}] ${toolCall.name} was not executed: the response hit the output token limit; arguments ${incomplete ? "were incomplete" : "may be truncated"}.\nRetry: re-issue this tool call with complete arguments and a smaller payload.`,
 			),
 			isError: true,
@@ -591,7 +592,7 @@ async function finalizeUnexecutedToolCalls(
 		});
 		const finalized: FinalizedToolCallOutcome = {
 			toolCall,
-			result: createErrorToolResult(reason),
+			result: createPreExecutionError(toolCall.name, reason),
 			isError: true,
 		};
 		await emitToolExecutionEnd(finalized, emit);
@@ -814,14 +815,14 @@ async function prepareToolCall(
 	if (!tool) {
 		return {
 			kind: "immediate",
-			result: createErrorToolResult(`Tool ${toolCall.name} not found`),
+			result: createPreExecutionError(toolCall.name, `Tool ${toolCall.name} not found`),
 			isError: true,
 		};
 	}
 	if (hasIncompleteToolArguments(toolCall.arguments)) {
 		return {
 			kind: "immediate",
-			result: createErrorToolResult(
+			result: createPreExecutionError(toolCall.name,
 				`[TOOL_ARGS_INCOMPLETE] ${tool.name} was not executed: arguments were incomplete when the response ended.\nRetry: re-issue only this tool call with complete JSON arguments.`,
 			),
 			isError: true,
@@ -848,22 +849,14 @@ async function prepareToolCall(
 			if (signal?.aborted) {
 				return {
 					kind: "immediate",
-					result: createErrorToolResult("Operation aborted"),
+					result: createPreExecutionError(tool.name, "Operation aborted"),
 					isError: true,
 				};
 			}
 			if (beforeResult?.block) {
 				const refusal = projectStructuredPolicyRefusal(beforeResult.reason);
 				const directReason = nonEmptyReason(beforeResult.reason);
-				const refusalDetails = beforeResult.details ?? refusal?.details;
-				let details = refusalDetails;
-				if (tool.name === "bash" || tool.name === "powershell") {
-					const prototype = refusalDetails && typeof refusalDetails === "object" ? Object.getPrototypeOf(refusalDetails) : undefined;
-					details = prototype === Object.prototype || prototype === null
-						? { ...refusalDetails, executionStatus: "not_executed" }
-						: { executionStatus: "not_executed", originalDetails: refusalDetails };
-				}
-				const result = createErrorToolResult(refusal?.text ?? (directReason ?? "Tool execution was blocked"), details);
+				const result = createPreExecutionError(tool.name, refusal?.text ?? (directReason ?? "Tool execution was blocked"), beforeResult.details ?? refusal?.details);
 				if (beforeResult.terminate === true) {
 					result.terminate = true;
 				}
@@ -877,7 +870,7 @@ async function prepareToolCall(
 		if (signal?.aborted) {
 			return {
 				kind: "immediate",
-				result: createErrorToolResult("Operation aborted"),
+				result: createPreExecutionError(tool.name, "Operation aborted"),
 				isError: true,
 			};
 		}
@@ -896,7 +889,7 @@ async function prepareToolCall(
 	} catch (error) {
 		return {
 			kind: "immediate",
-			result: createErrorToolResult(error instanceof Error ? error.message : String(error)),
+			result: createPreExecutionError(tool.name, error instanceof Error ? error.message : String(error)),
 			isError: true,
 		};
 	} finally { if (!handedOff) finalAuthorization?.release(); }
@@ -911,6 +904,7 @@ async function executePreparedToolCall(
 	const progress = new ToolProgressDelivery(prepared, emit, instrumentation);
 	let acceptingUpdates = true;
 	let checkingAuthorization = false;
+	let completedResult: AgentToolResult<any> | undefined;
 
 	try {
 		const onUpdate = ((partialResult: AgentToolResult<any>) => {
@@ -938,23 +932,26 @@ async function executePreparedToolCall(
 			signal,
 			onUpdate,
 		);
+		completedResult = result;
 		acceptingUpdates = false;
 		await progress.flush();
     return { result, isError: result.isError === true };
 	} catch (error) {
 		acceptingUpdates = false;
 		if (checkingAuthorization) {
-			return { result: createErrorToolResult(error instanceof Error ? error.message : String(error)),
+			return { result: createPreExecutionError(prepared.tool.name, error instanceof Error ? error.message : String(error)),
 				isError: true, authorizationVeto: true };
 		}
+		let failedResult = completedResult ? undefined : toolResultFromError(error);
 		try {
 			await progress.flush();
-		} catch {
-			// Preserve the error that entered this path. A progress drain error is
-			// already that error when flush() detected it after tool completion.
+		} catch (observationError) {
+			// Preserve the primary tool failure and record a separate drain failure.
+			if (failedResult) failedResult = resultWithObservationFailure(failedResult, observationError);
 		}
 		return {
-			result: createErrorToolResult(error instanceof Error ? error.message : String(error)),
+			result: failedResult ?? (completedResult ? resultWithObservationFailure(completedResult, error)
+				: createErrorToolResult(error instanceof Error ? error.message : String(error))),
 			isError: true,
 		};
 	} finally {
@@ -1129,7 +1126,7 @@ async function finalizeExecutedToolCall(
 				isError = afterResult.isError ?? isError;
 			}
 		} catch (error) {
-			result = createErrorToolResult(error instanceof Error ? error.message : String(error));
+			result = resultWithObservationFailure(result, error);
 			isError = true;
 		}
 	}
@@ -1139,6 +1136,22 @@ async function finalizeExecutedToolCall(
 		result,
 		isError,
 	};
+}
+
+/** Once a tool has completed, observer failures cannot erase its execution facts. */
+function resultWithObservationFailure(result: AgentToolResult<any>, error: unknown): AgentToolResult<any> {
+  const message = (error instanceof Error ? error.message : String(error)).slice(0, 1000);
+  const execution = result.details?.shellExecution;
+  // Completion-error boundary only. Clone once so preserved producer objects
+  // stay immutable and consumers need not infer an Agent failure from stdout.
+  const details = execution && typeof execution === "object"
+    ? { ...result.details, shellExecution: { ...execution,
+      observationError: execution.observationError ?? message,
+      secondaryObservationError: execution.observationError !== undefined ? execution.secondaryObservationError ?? message : undefined,
+      observationErrorsOmitted: execution.secondaryObservationError !== undefined || execution.observationErrorsOmitted === true ? true : undefined,
+    } } : result.details;
+  return { ...result, content: [...(result.content ?? []), { type: "text", text: `[TOOL_OBSERVATION_FAILED] ${message}` }],
+    details, isError: true };
 }
 
 function nonEmptyReason(reason: unknown): string | undefined {
@@ -1217,6 +1230,16 @@ function projectStructuredPolicyRefusal(reason: unknown): { text: string; detail
 		text: `[POLICY_BLOCKED:${code}] Not executed:\n${cause}\nNext: ${next}`,
 		details,
 	};
+}
+
+function createPreExecutionError(tool: string, message: string, originalDetails?: unknown): AgentToolResult<any> {
+  if (tool !== "bash" && tool !== "powershell") return createErrorToolResult(message, originalDetails);
+  const prototype = originalDetails && typeof originalDetails === "object" ? Object.getPrototypeOf(originalDetails) : undefined;
+  const details = prototype === Object.prototype || prototype === null ? { ...originalDetails as Record<string, unknown> } : { originalDetails };
+  return createErrorToolResult(message, { ...details, executionStatus: "not_executed",
+    shellExecution: { version: 1, producer: "agent", started: false, cwd: null, exitCode: null, signal: null, termination: "not_started",
+      executionStatus: "not_executed", sideEffects: "none", retryGuidance: "fresh_request",
+      output: { complete: true, tailTruncated: false, log: "not_needed", cleanup: "not_needed" } } });
 }
 
 function createErrorToolResult(message: string, details: unknown = {}): AgentToolResult<any> {

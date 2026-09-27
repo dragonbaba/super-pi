@@ -10,7 +10,7 @@ unmerged.
 | --- | --- | --- | --- |
 | N1: previews and recovery | `feat/file-change-preview-recovery` / main | 已实现待验证 | [N1](next-phase-n1-evidence.md), [Draft #47](https://github.com/dragonbaba/super-pi/pull/47) |
 | N2: staged single-file commit | `feat/staged-file-commit-reliability` / N1 | 实现与复审中；原生依赖已批准 | [N2](next-phase-n2-evidence.md), [Draft #48](https://github.com/dragonbaba/super-pi/pull/48) |
-| N3: shell input and results | `feat/shell-input-result-contract` / N2 | 未开始 | Pending |
+| N3: shell input and results | `feat/shell-input-result-contract` / N2 | 有界输入已实现；结果契约与兼容项进行中 | [N3](next-phase-n3-evidence.md) |
 | N4: measured task cost and bounded work | `perf/task-cost-and-bounded-hotspots` / N3 | 未开始 | Baseline collection only |
 
 Each child must contain its actual current parent HEAD. Successful CI on a child

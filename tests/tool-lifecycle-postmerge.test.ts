@@ -443,7 +443,7 @@ test("postmerge env assignment expansion is data for a fixed executable", async 
 
 test("postmerge bounded launcher and dynamic-wrapper negatives never spawn", async t => {
  const f = await fixture(t);
- for (const command of ["env -- LABEL=sh bash -c 'sleep 10 &'", "sudo LABEL=sh bash -c 'sleep 10 &'", "echo bash; timeout 1 bash -c 'sleep 10 &'", "env -S 'bash -c x'", 'bash -c "$SCRIPT"', "command bash -c 'sleep 10 &'", 'echo "$(coproc echo safe)"', 'echo "$(echo safe', "cat <<'EOF'\nx\nEOF"]) {
+ for (const command of ["env -- LABEL=sh bash -c 'sleep 10 &'", "sudo LABEL=sh bash -c 'sleep 10 &'", "echo bash; timeout 1 bash -c 'sleep 10 &'", "env -S 'bash -c x'", 'bash -c "$SCRIPT"', "command bash -c 'sleep 10 &'", 'echo "$(coproc echo safe)"', 'echo "$(echo safe', "cat -n <<'EOF'\nx\nEOF"]) {
   const result = await f.call(command); assert.equal(result.error, true, command);
  }
  assert.deepEqual(f.counts(), { approvals: 0, spawns: 0 });
@@ -468,7 +468,7 @@ test("postmerge one-layer escapes and line continuations preserve target consume
 });
 
 test("postmerge uncertain refusal has bounded policy recovery", async () => {
- const reason = inspectBashResourceLifecycle({ command: "cat <<'EOF'\nSECRET_PAYLOAD\nEOF" })!;
+ const reason = inspectBashResourceLifecycle({ command: "cat -n <<'EOF'\nSECRET_PAYLOAD\nEOF" })!;
  assert.equal(classifyFailureText(reason, {}, "bash"), "policy_blocked");
  const hint = await failureRecoveryHint("bash", { command: "SECRET_PAYLOAD" }, reason, process.cwd());
  assert.equal(hint, undefined, "producer guidance must not be appended twice");

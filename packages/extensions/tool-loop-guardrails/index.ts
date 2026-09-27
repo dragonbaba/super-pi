@@ -225,9 +225,9 @@ export default function toolLoopGuardrails(pi: ExtensionAPI): void {
     const key = pending?.key ?? callKey(event.toolName, event.input);
     const repeatReminder = observeRepeatedCall(state, event.toolName, event.input, key);
     const failureText = event.isError ? boundedFailureText(event.content) : "";
-    const warning = recordResult(state, event.toolName, event.input, event.isError, failureText, key);
+    const warning = recordResult(state, event.toolName, event.input, event.isError, failureText, key, event.details);
     const recoveryHint = event.isError
-      ? await failureRecoveryHint(event.toolName, event.input, failureText, getShellCwdBinding(event.input)?.canonical ?? ctx.cwd)
+      ? await failureRecoveryHint(event.toolName, event.input, failureText, getShellCwdBinding(event.input)?.canonical ?? ctx.cwd, event.details)
       : undefined;
     const repairNote = pending?.repairNote;
     // One steering note for a snapshot failure at the repetition threshold.
