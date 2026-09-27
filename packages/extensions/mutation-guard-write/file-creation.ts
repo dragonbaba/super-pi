@@ -99,7 +99,8 @@ export async function executeFileCreation(
       assertAuthority?.();
       signal?.throwIfAborted();
       await mkdir(path); // Nonrecursive and exclusive: a competing directory invalidates this plan.
-      const record: CreatedDirectory = { path, status: "retained" };
+      // Keep the preparation-owned spelling even if identity capture fails.
+      const record: CreatedDirectory = { path: resolve(plan.ancestor.canonical, relative(plan.ancestor.path, path)), status: "retained" };
       created.push(record);
       const identity = await capturePathIdentity(path);
       record.identity = identity;

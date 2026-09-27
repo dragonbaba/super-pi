@@ -136,7 +136,12 @@ export async function selectCommitMetadata(target: PathIdentity): Promise<Commit
         if (!["EACCES", "EPERM"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
         return compatibility("Parent directory cannot publish a sibling: preselected in-place write; mode/owner and visible extended attributes are verified.", info, target, original);
       }
-      const parent = await open(dirname(target.canonical), "r");
+      let parent: FileHandle;
+      try { parent = await open(dirname(target.canonical), "r"); }
+      catch (error) {
+        if (!["EACCES", "EPERM"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
+        return compatibility("Parent directory cannot be inspected for inherited metadata: preselected object preservation; target metadata is verified before and after writing.", info, target, original);
+      }
       try {
         const parentMetadata = await inspect(parent, dirname(target.canonical));
         if (!original.mountId || !parentMetadata.mountId) throw new Error("[UNSUPPORTED_COMMIT] Mount identity is unavailable before staging.");

@@ -537,3 +537,20 @@ Session and reject both exact authorization and overwrite with READ_REQUIRED.
 The existing clean no-change completion still preserves a legitimate prior read.
 Current focused Windows regressions: 209 pass, 17 platform skips; check passes.
 Fresh full local gates, Linux execution and exact-head review are required.
+
+Further review corrections validate any supplied standalone write strategy,
+including when the selected record is the intent itself. Legacy creation intents
+without a strategy remain compatible. Actual successful write histories corrupted
+with unknown/null/numeric strategies refuse verification/drafting in both complete
+and intent-only form.
+
+Linux xattr fingerprints now sort bounded raw name bytes using one module-level
+comparator before framed hashing. Enumeration order is not treated as metadata;
+non-UTF8 names and binary values remain intact, and duplicate names refuse. An
+isolated actual native worker fixture reverses kernel enumeration on alternating
+inspections and verifies an in-place commit preserves inode, bytes and all actual
+attributes. A parent open denied with EACCES/EPERM preselects object preservation
+before staging, with target metadata still verified. Other inspection errors fail.
+The real mode-0300 parent fixture requires an unprivileged Linux process; root
+explicitly skips because it bypasses the denial. Both Linux cases await CI.
+Windows focused/source checks: 92 pass, 19 platform skips; type check passes.

@@ -291,6 +291,8 @@ function linuxFileFlags(b, fd) {
     fileFlagsFingerprint: `${inodeFlags}:${xflags}:${extentSize}:${projectId}:${cowExtentSize}` };
 }
 
+function compareAttributeNames(left, right) { return Buffer.compare(left.name, right.name); }
+
 function inspectLinux(b, input) {
   const names = Buffer.alloc(MAX_ATTRIBUTE_NAMES);
   const length = Number(b.list(input.fd, names, names.length));
@@ -298,10 +300,11 @@ function inspectLinux(b, input) {
   if (length > names.length) throw new Error("Extended attribute names exceed bound.");
   // Nonempty visible attributes select compatibility. Read actual values to
   // detect kernel-cleared capabilities/ACL changes after an in-place write.
-  const values = createHash("sha256"), frame = Buffer.alloc(8); let start = 0, total = 0, writeClearsAttributes = false, defaultAcl = false;
+  const attributes = [], values = createHash("sha256"), nameHash = createHash("sha256"), frame = Buffer.alloc(8);
+  let start = 0, total = 0, writeClearsAttributes = false, defaultAcl = false;
   while (start < length) {
     const end = names.indexOf(0, start);
-    if (end < start || end >= length) throw new Error("Invalid extended-attribute name list.");
+    if (end <= start || end >= length) throw new Error("Invalid extended-attribute name list.");
     const name = names.subarray(start, end + 1); // Preserve arbitrary name bytes, including its NUL terminator.
     if (name.equals(CAPABILITY_ATTRIBUTE_NAME)) writeClearsAttributes = true;
     if (name.equals(DEFAULT_ACL_ATTRIBUTE_NAME)) defaultAcl = true;
@@ -311,10 +314,20 @@ function inspectLinux(b, input) {
     if (total > 256 * 1024) throw new Error("Extended-attribute values exceed the 256 KiB inspection bound.");
     const value = Buffer.alloc(size);
     if (Number(b.get(input.fd, name, value, value.length)) !== size) throw new Error(`fgetxattr(value) failed or changed (errno ${koffi.errno()}).`);
-    frame.writeUInt32LE(end - start, 0); frame.writeUInt32LE(size, 4);
-    values.update(frame); values.update(names.subarray(start, end)); values.update(value); start = end + 1;
+    attributes.push({ name, value }); start = end + 1;
   }
-  return { ...linuxFileFlags(b, input.fd), hasAttributes: length !== 0, writeClearsAttributes, defaultAcl, mountId: linuxMountId(input.fd), namesFingerprint: createHash("sha256").update(names.subarray(0, length)).digest("hex"), valuesFingerprint: values.digest("hex") };
+  // flistxattr ordering is unspecified. Keep raw bytes (including non-UTF8
+  // names), sort once in this bounded worker inspection, then hash framed data.
+  attributes.sort(compareAttributeNames);
+  let previous;
+  for (const attribute of attributes) {
+    if (previous && previous.equals(attribute.name)) throw new Error("Duplicate extended-attribute name.");
+    const name = attribute.name.subarray(0, attribute.name.length - 1);
+    frame.writeUInt32LE(name.length, 0); frame.writeUInt32LE(attribute.value.length, 4);
+    nameHash.update(frame.subarray(0, 4)); nameHash.update(name);
+    values.update(frame); values.update(name); values.update(attribute.value); previous = attribute.name;
+  }
+  return { ...linuxFileFlags(b, input.fd), hasAttributes: length !== 0, writeClearsAttributes, defaultAcl, mountId: linuxMountId(input.fd), namesFingerprint: nameHash.digest("hex"), valuesFingerprint: values.digest("hex") };
 }
 
 function linuxMountId(fd) {

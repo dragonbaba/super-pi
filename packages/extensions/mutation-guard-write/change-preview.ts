@@ -2,13 +2,14 @@ import { stripVTControlCharacters } from "node:util";
 import { open } from "node:fs/promises";
 import { generateUnifiedPatch } from "@super-pi/coding-agent";
 import { addedContentSummary } from "./file-creation.ts";
-import { Text } from "@super-pi/tui";
+import { Text, graphemeWidth, truncateToWidth, RELEASE_COMPONENT_RENDER_CACHE } from "@super-pi/tui";
 import { PREVIEW_CONTROL_PATTERN, DISPLAY_METADATA_CONTROL_PATTERN } from "./regex.ts";
 
 export const MAX_PREVIEW_FILE_LINES = 80;
 export const MAX_PREVIEW_LINES = 400;
 export const MAX_PREVIEW_BYTES = 64 * 1024;
 export const MAX_PREVIEW_SOURCE_BYTES = 256 * 1024;
+const LIVE_REPORT_GRAPHEMES = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 
 export interface ChangePreview {
   kind: "Added" | "Modified" | "Deleted" | "Moved";
@@ -126,19 +127,57 @@ export function snapshotPreview(current: Buffer, edits: readonly { start: number
 export class BatchResultText extends Text {
   private source: string | undefined;
   private textChanges = 0;
+  private body = "";
+  private bodyLimited = false;
+  private previewLines?: string[];
+  private previewWidth = -1;
+  private materializedRows = 0;
 
   setBatchText(text: string): void {
     if (text === this.source) return;
     this.source = text;
     this.textChanges++;
-    this.setText(text);
+    const normalized = stripVTControlCharacters(text.substring(0, MAX_PREVIEW_BYTES)).replace(PREVIEW_CONTROL_PATTERN, "").replaceAll("\t", "   ");
+    this.bodyLimited = text.length > MAX_PREVIEW_BYTES || normalized.length > MAX_PREVIEW_BYTES;
+    this.body = normalized.substring(0, MAX_PREVIEW_BYTES);
+    this.previewLines = undefined; this.previewWidth = -1;
+    this.setText("");
   }
 
-  releasePreview(): void { this.source = undefined; this.setText(""); }
+  render(width: number): string[] {
+    width = Number.isFinite(width) ? Math.max(1, Math.floor(width)) : 1;
+    if (this.previewLines && this.previewWidth === width) return this.previewLines;
+    const rows = [];
+    let start = 0, columns = 0, limited = this.bodyLimited;
+    for (const part of LIVE_REPORT_GRAPHEMES.segment(this.body)) {
+      const size = graphemeWidth(part.segment);
+      if (part.segment === "\n") {
+        rows.push(this.body.substring(start, part.index)); start = part.index + 1; columns = 0;
+      } else if (size > width) {
+        if (part.index > start) {
+          rows.push(this.body.substring(start, part.index)); start = part.index;
+          if (rows.length === MAX_PREVIEW_LINES) { limited = true; break; }
+        }
+        rows.push(""); start = part.index + part.segment.length; columns = 0;
+      } else if (columns + size > width) {
+        rows.push(this.body.substring(start, part.index)); start = part.index; columns = size;
+      } else columns += size;
+      if (rows.length === MAX_PREVIEW_LINES) { limited ||= start < this.body.length; break; }
+    }
+    if (rows.length < MAX_PREVIEW_LINES && start < this.body.length) rows.push(this.body.substring(start));
+    if (limited) rows.push(truncateToWidth("… /changes: view the full bounded report", width, ""));
+    this.materializedRows += rows.length; this.previewLines = rows; this.previewWidth = width;
+    return rows;
+  }
+
+  invalidate(): void { this.previewLines = undefined; }
+  [RELEASE_COMPONENT_RENDER_CACHE](): void { this.invalidate(); }
+  releasePreview(): void { this.source = undefined; this.body = ""; this.bodyLimited = false; this.previewLines = undefined; this.previewWidth = -1; this.setText(""); }
 
   /** Explicit test/diagnostic access, never invoked from render. */
-  getPreviewRenderCounts(): { textChanges: number; retainedCharacters: number } {
-    return { textChanges: this.textChanges, retainedCharacters: this.source?.length ?? 0 };
+  getPreviewRenderCounts() {
+    return { textChanges: this.textChanges, retainedCharacters: this.source?.length ?? 0, bodyCodeUnits: this.body.length,
+      cachedRows: this.previewLines?.length ?? 0, materializedRows: this.materializedRows };
   }
 }
 
@@ -158,7 +197,8 @@ function escapeDisplayControl(character: string): string {
 }
 
 export function displayMetadata(value: unknown): string {
-  return JSON.stringify(String(value).slice(0, 4096)).slice(1, -1).replace(DISPLAY_METADATA_CONTROL_PATTERN, escapeDisplayControl);
+  const text = typeof value === "string" ? value : typeof value === "number" || typeof value === "boolean" || value === undefined ? String(value) : "[invalid metadata]";
+  return JSON.stringify(text.slice(0, 4096)).slice(1, -1).replace(DISPLAY_METADATA_CONTROL_PATTERN, escapeDisplayControl);
 }
 
 function displayCreationCount(value: unknown): string {
@@ -212,7 +252,8 @@ export function batchExpandedSummary(summary: string, items: readonly DisplayIte
     const diff = confirmed ? receipt?.patch ?? receipt?.diff ?? (writeFallback ? item.preview?.diff : undefined) : preview?.diff;
     if (typeof diff === "string") {
       if (preview && item.status !== "preview" && item.status !== "succeeded") text += budget.take("\nPrepared change only; completion is not confirmed.", MAX_PREVIEW_LINES).text;
-      const part = budget.take(`\n${diff}`);
+      text += budget.take("\n").text;
+      const part = budget.take(diff, MAX_PREVIEW_FILE_LINES - 1);
       text += part.text;
       if (part.omitted) text += budget.take("\n[display limited] Difference excerpt omitted; later item outcomes follow when space remains.", MAX_PREVIEW_LINES).text;
     }

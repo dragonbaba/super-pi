@@ -403,6 +403,43 @@ test("N2 Linux default parent ACL preselects compatibility for an ACL-free exist
   assert.equal(stdout, acl); assert.deepEqual(await readFile(f.target), f.after);
 });
 
+test("N2 Linux write/search-only parent preselects preservation without directory reads", { skip: process.platform !== "linux" }, async t => {
+  if (process.geteuid!() === 0) { t.skip("Root bypasses directory read denial; exercised by unprivileged Linux CI."); return; }
+  const f = await fixture(t), original = await capturePathIdentity(f.target), entries = await readdir(f.root);
+  await chmod(f.root, 0o300);
+  try {
+    await assert.rejects(open(f.root, "r"), { code: "EACCES" });
+    const plan = await planFor(f.target, f.before);
+    assert.equal(plan.metadata.strategy, "protected_in_place"); assert.match(plan.metadata.reason!, /cannot be inspected/);
+    await commitPreparedFile(plan, f.after, { assertPathAllowed: async () => plan.target.canonical });
+    assert.deepEqual(await readFile(f.target), f.after); assert.equal((await capturePathIdentity(f.target)).inode, original.inode);
+    assert.equal((await nativeFileRequest("stats")).publicationAttempts, 0);
+  } finally { await chmod(f.root, 0o700); }
+  assert.deepEqual(await readdir(f.root), entries);
+});
+
+test("N2 Linux native xattr fingerprints survive reordered raw names across an actual in-place commit", { skip: process.platform !== "linux" }, async t => {
+  const f = await fixture(t), isolated = join(f.root, "ordered-worker"); await mkdir(isolated);
+  for (const name of ["file-commit-metadata.ts", "native-file-client.ts", "native-file-regex.mjs"]) await cp(join(sourceDirectory, name), join(isolated, name));
+  await writeFile(join(isolated, "package.json"), '{"type":"module"}');
+  const source = await readFile(join(sourceDirectory, "native-file-worker.mjs"), "utf8"), point = 'const length = Number(b.list(input.fd, names, names.length));';
+  assert.equal(source.split(point).length, 2);
+  const reorder = `if (length > 0 && ++enumeration % 2) {
+    const ordered = []; let position = 0;
+    while (position < length) { const end = names.indexOf(0, position); ordered.push(Buffer.from(names.subarray(position, end + 1))); position = end + 1; }
+    ordered.reverse(); position = 0; for (const name of ordered) { name.copy(names, position); position += name.length; }
+  }`;
+  await writeFile(join(isolated, "native-file-worker.mjs"), source.replace('from "koffi"', `from ${JSON.stringify(import.meta.resolve("koffi"))}`)
+    .replace("let bindings;", "let bindings; let enumeration = 0;").replace(point, point + reorder));
+  await execute("python3", ["-c", "import os,sys; p=sys.argv[1]; os.setxattr(p,b'user.z',b'last'); os.setxattr(p,b'user.\\xff',b'\\0raw'); os.setxattr(p,b'user.a',b'first')", f.target]);
+  const module = await import(pathToFileURL(join(isolated, "file-commit-metadata.ts")).href), target = await capturePathIdentity(f.target);
+  const plan = { target, parent: await capturePathIdentity(f.root), metadata: await module.selectCommitMetadata(target), previousSha256: createHash("sha256").update(f.before).digest("hex") };
+  assert.equal(plan.metadata.strategy, "protected_in_place");
+  await commitPreparedFile(plan, f.after, { assertPathAllowed: async () => target.canonical });
+  assert.deepEqual(await readFile(f.target), f.after); assert.equal((await capturePathIdentity(f.target)).inode, target.inode);
+  await execute("python3", ["-c", "import os,sys; p=sys.argv[1]; assert os.getxattr(p,b'user.z')==b'last'; assert os.getxattr(p,b'user.\\xff')==b'\\0raw'; assert os.getxattr(p,b'user.a')==b'first'", f.target]);
+});
+
 test("N2 Linux mount identity is observed and a different target mount preselects preservation", { skip: process.platform !== "linux" }, async t => {
   const f = await fixture(t), handle = await open(f.target, "r");
   const observed = await nativeFileRequest("inspect", { fd: handle.fd });
