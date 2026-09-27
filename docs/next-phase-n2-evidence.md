@@ -676,3 +676,11 @@ hash-optional behavior. Recovery/commit regression: 119 pass, two platform skips
 The preceding r30 head 06cc595e9a0f2aa4a8f0b2dc3a80b49d6f9d58c4 passed all local
 gates (2,539 tests, 84 skips) and Windows/Linux CI 36296995953. These results do
 not substitute for the new head's required gates or review.
+
+Review r32: a committed durable terminal cannot omit its hash while borrowing
+the aggregate's hash. Both mirrors must supply the same valid 64-character
+SHA-256. The six real producer histories now reject either one-sided omission
+as well as the prior two-sided and mismatched cases, before observation. This
+does not change older no-commit/create handling. Recovery/commit: 119 pass,
+two platform skips. Prior r31 head passed its full local gates; new exact-head
+CI and review remain required.
