@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createLocalShellOperations } from "../packages/coding-agent/src/core/tools/bash.ts";
-import { observedShellError, shellProcessResultFromError } from "../packages/coding-agent/src/core/tools/shell-execution.ts";
+import { createBashTool, createLocalShellOperations } from "../packages/coding-agent/src/core/tools/bash.ts";
+import { observedShellError, readShellExecution, shellProcessResultFromError } from "../packages/coding-agent/src/core/tools/shell-execution.ts";
 import { executeBashWithOperations } from "../packages/coding-agent/src/core/bash-executor.ts";
 import { Agent } from "../packages/agent/src/agent.ts";
-import { ToolResultError } from "../packages/agent/src/tool-result-error.ts";
+import { ToolResultError, toolResultFromError } from "../packages/agent/src/tool-result-error.ts";
 import { Type } from "typebox";
 import fs, { realpathSync, existsSync, rmSync } from "node:fs";
 import fsPromises from "node:fs/promises";
@@ -125,6 +125,59 @@ for (const kind of ["timeout", "cancelled"]) test(`N3 ${kind} retains observed p
       assert.equal(result.observation?.started, true); assert.equal(result.exitCode, result.observation?.exitCode); return true;
     });
   } finally { clearTimeout(timer); }
+});
+
+for (const reason of ["timeout", "cancelled"]) test(`N3 ${reason} stops active descendant output after the actual parent exits`, { skip: process.platform === "win32" ? "Windows inherited socket closes at parent exit in this fixture" : false, timeout: 10000 }, async () => {
+  const controller = new AbortController(); let text = "";
+  const descendant = "process.stdout.write(JSON.stringify({ownedPid:process.pid})+'\\n');process.send('ready');let n=0;setInterval(()=>process.stdout.write('tail-'+n+++'\\n'),25);setTimeout(()=>process.exit(0),4000)";
+  const parent = `const c=require('child_process').spawn(process.execPath,['-e',${JSON.stringify(descendant)}],{stdio:['ignore',process.stdout,process.stderr,'ipc']});c.on('message',()=>{c.disconnect();c.unref();process.exit(0)})`;
+  const start = performance.now();
+  await assert.rejects(operations.exec(parent, process.cwd(), { signal: controller.signal, timeout: reason === "timeout" ? 1 : undefined,
+    onData(data) { text += data; if (reason === "cancelled" && text.includes("tail-8\n")) controller.abort(); } }), (error: unknown) => {
+    const result = shellProcessResultFromError(error); assert.equal(result?.termination, reason);
+    assert.equal(result?.exitCode, 0, "the parent exited normally before its descendant was stopped");
+    assert.equal(result?.observation?.outputDrained, false); return true;
+  });
+  assert.ok(performance.now() - start < 3000); assert.ok(text.includes("tail-"));
+  const pid = JSON.parse(text.slice(0, text.indexOf("\n"))).ownedPid; assert.ok(Number.isSafeInteger(pid));
+  // A reparented killed process may briefly remain a zombie until init reaps it.
+  let running = true;
+  for (let attempt = 0; attempt < 100 && running; attempt++) {
+    try { running = fs.readFileSync(`/proc/${pid}/stat`, "utf8").split(") ")[1][0] !== "Z"; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") running = false; else throw error; }
+    if (running) await new Promise<void>(resolve => setTimeout(resolve, 10));
+  }
+  assert.equal(running, false, "recorded descendant no longer executes");
+});
+
+test("N3 spill failure stops active inherited output after the parent exited", { skip: process.platform === "win32" ? "Windows inherited socket closes at parent exit in this fixture" : false, timeout: 10000 }, async t => {
+  const create = fs.createWriteStream, streams: fs.WriteStream[] = []; let text = "";
+  t.mock.method(fs, "createWriteStream", function(...args: any[]) {
+    const stream = Reflect.apply(create, fs, args); streams.push(stream);
+    setImmediate(() => stream.destroy(new Error("descendant spill failure"))); return stream;
+  });
+  syncBuiltinESMExports();
+  const descendant = "process.stdout.write(JSON.stringify({ownedPid:process.pid})+'\\n');process.send('ready');let large=false;setInterval(()=>process.stdout.write(large?'x'.repeat(65536):'tail\\n'),25);setTimeout(()=>{large=true},250);setTimeout(()=>process.exit(0),4000)";
+  const parent = `const c=require('child_process').spawn(process.execPath,['-e',${JSON.stringify(descendant)}],{stdio:['ignore',process.stdout,process.stderr,'ipc']});c.on('message',()=>{c.disconnect();c.unref();process.exit(0)})`;
+  const tool = createBashTool(process.cwd(), { operations, exposeSessionEnvironment: false }), start = performance.now();
+  const update = (result: any) => { if (!text) text = result.content[0].text; };
+  const onUpdate = Object.assign(update, { awaited: async (result: any) => { update(result); } });
+  try {
+    await assert.rejects(tool.execute("descendant-spill", { command: parent }, undefined, onUpdate), (error: any) => {
+      const facts = readShellExecution(toolResultFromError(error)?.details); assert.equal(facts?.termination, "output_failure");
+      assert.equal(facts?.exitCode, 0); assert.equal(facts?.output.complete, false); return true;
+    });
+    assert.ok(performance.now() - start < 3000); assert.ok(streams.length > 0);
+    for (const stream of streams) { assert.equal(stream.closed, true); assert.equal(existsSync(stream.path), false); }
+    const pid = JSON.parse(text.slice(0, text.indexOf("\n"))).ownedPid; assert.ok(Number.isSafeInteger(pid));
+    let running = true;
+    for (let attempt = 0; attempt < 100 && running; attempt++) {
+      try { running = fs.readFileSync(`/proc/${pid}/stat`, "utf8").split(") ")[1][0] !== "Z"; }
+      catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") running = false; else throw error; }
+      if (running) await new Promise<void>(resolve => setTimeout(resolve, 10));
+    }
+    assert.equal(running, false);
+  } finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
 });
 
 test("N3 nonexistent executable records no start and preserves OS launch error", async () => {

@@ -1248,8 +1248,13 @@ test("bounded temporary CDPATH queries and closed-subshell hash execute through 
       ["positional-physical", "set physical; cd sub && cat fixture.txt", "inner"],
       ["terminated-posix", "set -- posix; cd sub && cat fixture.txt", "inner"],
       ["terminated-flags", "set -- -P posix; cd sub && cat fixture.txt", "inner"],
+      ["query-shopt-posix", "shopt -q -o posix; cd sub && cat fixture.txt", "inner"],
+      ["print-shopt-physical", "shopt -po physical; cd sub && cat fixture.txt", "inner"],
+      ["query-shopt-cdable", "shopt -q cdable_vars; cd sub && cat fixture.txt", "inner"],
       ["closed-hash", "(hash -p ./0/cat cat); cat fixture.txt", "parent-safe"],
       ["nested-closed-hash", "( (hash -p ./0/cat cat) ); cat fixture.txt", "parent-safe"],
+      ["sibling-closed-hash", "(hash -p ./0/cat cat); (true); cat fixture.txt", "parent-safe"],
+      ["nested-sibling-closed-hash", "( (hash -p ./0/cat cat); (true) ); cat fixture.txt", "parent-safe"],
     ] as const) {
       assert.match(execFileSync(shellPath, ["-c", command], { cwd: workspace, encoding: "utf8", env: { ...process.env, CDPATH: "" } }), new RegExp(expected), id);
       assert.equal(existsSync(target), false, `${id}: direct Bash leaves the protected target untouched`);

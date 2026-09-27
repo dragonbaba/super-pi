@@ -249,7 +249,7 @@ export interface HighRiskMutationScan {
 	diagnostic?: PolicyDiagnosticMetadata;
 }
 
-type ShellSegment = string[] & { dynamic?: boolean; expansions?: number[]; redirections?: number[]; redirectionFds?: (string | undefined)[]; subshellDepth?: number; pipelineMember?: boolean; conditionalMember?: boolean; separatorAfter?: string; firstWordQuoted?: boolean; secondWordQuoted?: boolean; thirdWordQuoted?: boolean; bashTestOpenAt?: number; bashTestClosed?: boolean; bashTestProcessSubstitution?: boolean; bashArithmeticCommandAt?: number };
+type ShellSegment = string[] & { dynamic?: boolean; expansions?: number[]; redirections?: number[]; redirectionFds?: (string | undefined)[]; subshellDepth?: number; subshellClosedAfter?: boolean; pipelineMember?: boolean; conditionalMember?: boolean; separatorAfter?: string; firstWordQuoted?: boolean; secondWordQuoted?: boolean; thirdWordQuoted?: boolean; bashTestOpenAt?: number; bashTestClosed?: boolean; bashTestProcessSubstitution?: boolean; bashArithmeticCommandAt?: number };
 
 function uncertainAssignment(tokens: ShellSegment, index: number, shellAssignment = false): boolean {
  const expansion = tokens.expansions?.[index] ?? 0;
@@ -851,7 +851,7 @@ function hasLaterBashCommandSubstitution(segments: readonly ShellSegment[], star
 
 function hasLaterBashCommandInShell(segments: readonly ShellSegment[], index: number): boolean {
 	const next = segments[index + 1];
-	return next !== undefined && (next.subshellDepth ?? 0) >= (segments[index]!.subshellDepth ?? 0);
+	return next !== undefined && !segments[index]!.subshellClosedAfter && (next.subshellDepth ?? 0) >= (segments[index]!.subshellDepth ?? 0);
 }
 
 function changesBashExecutableLookup(word: string): boolean {
@@ -1133,13 +1133,16 @@ function changesBashCdSemantics(tokens: ShellSegment, index: number, name: strin
 		}
 		return false;
 	}
-	let setOptions = false;
+	let setOptions = false, changing = false;
 	for (let cursor = skipRedirections(tokens, index + 1); cursor < tokens.length; cursor = skipRedirections(tokens, cursor + 1)) {
 		const word = tokens[cursor]!;
 		if (tokens.expansions?.[cursor]) return true;
-		if (word.length > 1 && word[0] === "-" && word.includes("o")) setOptions = true;
-		if (word === "cdable_vars" || word === "expand_aliases") return true;
-		if (setOptions && (word === "posix" || word === "physical")) return true;
+		if (word.length > 1 && word[0] === "-") {
+			if (word.includes("o")) setOptions = true;
+			if (word.includes("s") || word.includes("u")) changing = true;
+		}
+		if (changing && (word === "cdable_vars" || word === "expand_aliases")) return true;
+		if (changing && setOptions && (word === "posix" || word === "physical")) return true;
 	}
 	return false;
 }
@@ -1359,7 +1362,11 @@ function parseShellSegments(command: string): ShellSegment[] {
 			}
 			if (tokens.length > 0) segments.push(tokens);
 			if (code === 40) subshellDepth++;
-			else if (code === 41 && subshellDepth > 0) subshellDepth--;
+			else if (code === 41 && subshellDepth > 0) {
+				const last = segments[segments.length - 1];
+				if (last && (last.subshellDepth ?? 0) >= subshellDepth) last.subshellClosedAfter = true;
+				subshellDepth--;
+			}
 			tokens = [];
 			tokens.subshellDepth = subshellDepth;
 			tokens.pipelineMember = pipeline;

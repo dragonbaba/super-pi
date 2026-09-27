@@ -267,3 +267,17 @@ No regex or closure was introduced. Windows Node22 compatibility/source tests:
 147 pass, one Linux-only skip. This covers Bash's documented
 [shopt -o behavior](https://www.gnu.org/s/bash/manual/html_node/The-Shopt-Builtin.html),
 without expanding the supported shell evaluator.
+
+Review r27: shopt query/print flags no longer taint later cd; changing -s/-u
+options remain conservatively refused. A primitive segment marker distinguishes
+a closed subshell from a sibling at the same depth, including nested siblings.
+Actual guarded Bash positive/negative execution tests cover these distinctions.
+After a real parent exits, abort/timeout/output failure remain active until its
+inherited output settles. They stop the owned process group and close its local
+pipes while retaining the observed parent exit code and incomplete-output facts.
+Three Linux-only real descendant regressions exercise timeout, cancellation and
+asynchronous spill failure, including exact PID/closed stream checks. Windows's
+Node inherited sockets cannot represent this POSIX pipe case and are explicitly
+skipped. Existing stable execution callbacks are reused; no callback or regex was
+added to production. Windows focused/source tests and check pass; Linux behavior
+is subject to the new CI run.
