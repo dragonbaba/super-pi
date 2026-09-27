@@ -1,5 +1,5 @@
 import { registerLocalShellBackend } from "./shell-cwd.ts";
-import { appendShellObservationError, observedShellError, shellProcessResultFromError, type ShellProcessResult } from "./shell-execution.ts";
+import { appendShellObservationError, normalizeShellProcessResult, observedShellError, shellProcessResultFromError, type ShellProcessResult } from "./shell-execution.ts";
 import {
 	getPowerShellCandidateConfig,
 	getPowerShellConfig,
@@ -115,7 +115,9 @@ function notStarted(error: unknown, previous?: ShellProcessResult, observationEr
 
 function isExecutableFailure(error: unknown): boolean {
 	if (!(error instanceof Error)) return false;
-	if (shellProcessResultFromError(error)?.observation?.started) return false;
+	const attached = shellProcessResultFromError(error);
+	// An errno cannot override completion facts or uncertainty about side effects.
+	if (attached && normalizeShellProcessResult(attached).termination !== "not_started") return false;
 	const code = (error as NodeJS.ErrnoException).code;
 	return code === "ENOENT" || code === "EACCES" || code === "EPERM" || code === "ENOEXEC" || code === "EINVAL";
 }
@@ -203,7 +205,9 @@ export function createLocalPowerShellOperations(options: LocalPowerShellOperatio
 			throw notStarted(error, shellProcessResultFromError(initialError), error instanceof Error ? error.message : String(error));
 		}
 		try {
-			return await execute(verified, command, cwd, executionOptions);
+			const result = normalizeShellProcessResult(await execute(verified, command, cwd, executionOptions));
+			if (result.termination === "not_started") return disable(notStarted(new Error("Verified PowerShell did not start"), result));
+			return result;
 		} catch (error) {
 			if (isControlFlowError(error)) throw error;
 			if (!isExecutableFailure(error)) throw error;
@@ -222,12 +226,16 @@ export function createLocalPowerShellOperations(options: LocalPowerShellOperatio
 			}
 			let result: ShellProcessResult;
 			try {
-				result = await execute(config, command, cwd, executionOptions);
+				result = normalizeShellProcessResult(await execute(config, command, cwd, executionOptions));
 			} catch (error) {
 				if (isControlFlowError(error)) throw error;
 				if (!isExecutableFailure(error)) throw error;
 				return recover(command, cwd, executionOptions, error);
 			}
+			if (result.termination === "not_started") {
+				return recover(command, cwd, executionOptions, notStarted(new Error("PowerShell did not start"), result));
+			}
+			if (result.exitCode === null && result.observation?.started !== true) return result;
 			// Reaching an exit code proves that PowerShell started. A non-zero
 			// command result is not an executable failure and must never cause
 			// discovery or replay of a potentially stateful command. Keep status

@@ -18,6 +18,18 @@ import type { ChildProcess } from "node:child_process";
 
 const operations = createLocalShellOperations("fixture", () => ({ shell: process.execPath, args: ["-e"] }));
 
+for (const termination of ["exit", "signal", "not_started"] as const) test(`N3 direct and Session reject ${termination} contradictions without observation`, async () => {
+  const backend = { async exec() { return { exitCode: termination === "exit" ? null : 0, termination }; } };
+  const check = (error: unknown) => { const result = shellProcessResultFromError(error); assert.equal(result?.exitCode, null);
+    assert.equal(result?.termination, "unknown"); assert.ok(result?.observationError); return true; };
+  await assert.rejects(executeBashWithOperations("fixture", process.cwd(), backend), check);
+  const { alphaHeadless, alphaModelRuntime } = await import("./helpers/alpha-session.ts"); const f = await alphaHeadless(alphaModelRuntime());
+  try {
+    await assert.rejects(f.session.executeBash("fixture", undefined, { operations: backend }), check);
+    assert.equal(f.session.isBashRunning, false); assert.equal(f.session.messages.some(message => message.role === "bashExecution"), false);
+  } finally { await f.release(); }
+});
+
 for (const field of ["inputError", "observationError", "outputDrained", "termination"] as const) test(`N3 concurrent abort cannot erase direct or Session ${field}`, async () => {
   const controller = new AbortController(); let abort = () => controller.abort();
   const backend = { async exec() {

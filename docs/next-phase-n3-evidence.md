@@ -362,3 +362,14 @@ five platform skips; check pass. One fixed module helper handles bounded observe
 errors; no production regex or callback was introduced. Full gates are deferred
 until this grouped fix and its parent integration are stable, per the user scope
 freeze, rather than repeated for each small edit.
+
+Review r34 groups three completion/retry defects with the same producer boundary.
+Attached completion or unknown facts override executable-like error codes, so a
+possibly stateful command is not replayed. Resolved not-started facts trigger at
+most one probe/recovery; a second not-started result disables that executable.
+Only a normalized result proving a start (or the actual recovery probe) can
+confirm executable availability. Exit/signal/not-started relationships are
+validated even when optional observation is absent. Fourteen new cases failed
+before the fix; focused PowerShell, actual Session/direct executor, contract and
+source regressions now pass (133 pass, five platform skips). Type check passes.
+No production regex or callback was added. Final combined gates and review remain.
