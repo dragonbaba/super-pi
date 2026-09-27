@@ -15,10 +15,12 @@ import { stripTerminalSequences } from "@super-pi/tui";
 import { Session as InspectorSession } from "node:inspector/promises";
 import { prepareShellCwd } from "../packages/coding-agent/src/core/tools/shell-cwd.ts";
 import { createPowerShellTool } from "../packages/coding-agent/src/core/tools/powershell.ts";
+import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
+import { alphaMessage, finalStream } from "./helpers/alpha-stream.ts";
 
 const jiti = createJiti(import.meta.url);
 const { createFalseSuccessState, observeToolResult } = await jiti.import<any>("../packages/extensions/false-success-guard/core.ts");
-const { classifyToolFailure } = await jiti.import<any>("../packages/extensions/session-tool-errors/core.ts");
+const { classifyToolFailure, collectSessionErrors } = await jiti.import<any>("../packages/extensions/session-tool-errors/core.ts");
 const { failureRecoveryHint, createGuardState, recordResult, inspectBeforeCall } = await jiti.import<any>("../packages/extensions/tool-loop-guardrails/core.ts");
 const local = createLocalShellOperations("Node fixture", () => ({ shell: process.execPath, args: ["-e"] }));
 for (const [args, finish, marker] of [
@@ -172,8 +174,37 @@ for (const [message, termination] of [["timeout:1", "timeout"], ["aborted", "can
   const facts = readShellExecution(result.details)!;
   assert.equal(result.isError, true); assert.equal(facts.started, "unknown"); assert.equal(facts.sideEffects, "unknown");
   assert.equal(facts.termination, termination); assert.equal(facts.executionStatus, "interrupted");
-  assert.equal(classifyToolFailure("bash", (result.content[0] as any).text, {}, result.details).category, "timeout_or_aborted");
+  assert.equal(classifyToolFailure("bash", (result.content[0] as any).text, {}, result.details).category, termination === "cancelled" ? "aborted" : "timeout_or_aborted");
   assert.match((result.content[0] as any).text, /^\[SHELL_INTERRUPTED\]/);
+});
+
+for (const termination of ["cancelled", "timeout"] as const) test(`N3 real parallel shell ${termination} retains Session cascade distinction`, async () => {
+  const session = SessionManager.inMemory(process.cwd());
+  const calls = ["bash", "powershell"].map(name => ({ type: "toolCall" as const, id: `cascade-${name}`, name, arguments: {
+    command: "process.stdout.write('ready\\n');setTimeout(()=>process.exit(0),10000)", timeout: 1 } }));
+  let requests = 0;
+  const agent = new Agent({ convertToLlm: () => [], streamFn: () => {
+    const message = alphaMessage(++requests === 1 ? calls : [{ type: "text", text: "done" }]);
+    message.stopReason = requests === 1 ? "toolUse" : "stop"; return finalStream(message);
+  } });
+  agent.state.tools = [createBashTool(process.cwd(), { operations: local }), createPowerShellTool(process.cwd(), { operations: local })];
+  const ready = new Set<string>();
+  const unsubscribe = agent.subscribe(event => {
+    if (event.type === "tool_execution_update" && event.partialResult.content.some((block: { type: string; text?: string }) => block.type === "text" && block.text?.includes("ready"))) {
+      ready.add(event.toolCallId); if (ready.size === 2 && termination === "cancelled") agent.abort();
+    }
+  });
+  try {
+    await agent.prompt("Run the isolated parallel fixture."); await agent.waitForIdle();
+    const results = agent.state.messages.filter(message => message.role === "toolResult"); assert.equal(results.length, 2); assert.equal(ready.size, 2);
+    for (const result of results) { assert.equal(result.isError, true); assert.equal(readShellExecution(result.details)?.termination, termination); }
+    for (const message of agent.state.messages) session.appendMessage(message as never);
+    const observations = collectSessionErrors(session.getBranch());
+    assert.equal(observations.length, termination === "cancelled" ? 1 : 2);
+    for (const observation of observations) assert.equal(observation.category, termination === "cancelled" ? "aborted" : "timeout_or_aborted");
+    if (termination === "cancelled") { assert.equal(observations[0].cascadeCount, 2); assert.equal(observations[0].tool, "tool_batch"); }
+    assert.equal(agent.state.pendingToolCalls.size, 0);
+  } finally { unsubscribe(); agent.abort(); }
 });
 
 for (const explicit of [true, false]) test(`N3 pre-execution verification failure canonicalizes a directory alias, explicit=${explicit}`, async t => {

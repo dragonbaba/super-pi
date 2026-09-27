@@ -238,11 +238,11 @@ export async function commitPreparedFile(plan: FileCommitPlan, content: Uint8Arr
       }
       await source.truncate(content.byteLength);
       await source.sync(); receipt.fileSynced = true;
+      receipt.outcome = "committed";
+      publishedObject = plan.target;
       // Closing the writing handle may finalize OS attributes. The selected
       // adapter restores supported attributes only after that handle closes.
       if (plan.metadata.finalizeInPlace) { await source.close(); source = undefined; await plan.metadata.finalizeInPlace(); }
-      receipt.outcome = "committed";
-      publishedObject = plan.target;
     }
     await hooks.afterCommit?.();
     // Postcommit cancellation is a committed outcome, never a no-change failure.

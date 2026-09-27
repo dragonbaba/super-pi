@@ -346,7 +346,12 @@ export class BatchInvocation {
               commit: receipt?.commit,
               createdDirectories: receipt?.creation?.createdDirectories ?? receipt?.createdDirectories });
           }
-          catch { if (result.stateChanged !== false) { result.status = "state_unknown"; result.stateChanged = "unknown"; result.reason = "File changed but receipt recording failed; verify, never automatically retry."; } }
+          catch { if (result.stateChanged !== false) {
+            const committed = itemReceipt?.commit?.outcome === "committed";
+            result.status = committed ? "partial" : "state_unknown"; result.stateChanged = committed ? true : "unknown";
+            result.requiresVerification = true;
+            result.reason = "File changed but receipt recording failed; verify, never automatically retry.";
+          } }
           if (result.status !== "succeeded") break;
         }
       });
