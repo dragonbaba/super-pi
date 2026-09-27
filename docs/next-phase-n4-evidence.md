@@ -285,3 +285,10 @@ emits one counted start, refuses without a provider request and releases its bus
 state. The coding-agent README now matches the status screen's MCP admission
 caveat: rejected remote output can leave only an error, without continuation,
 even after execution. These fixes do not change the production budget pipeline.
+
+Inspector startup is also outside the workload clocks: TUI starts sampling and
+resets instrumentation before controlled GC and its wall/CPU boundary; setup
+wall/CPU is reported separately from workload and profile-analysis overhead.
+Both main and legacy-compact I/O start precise coverage before controlled GC and
+workload clocks. Updated complete I/O and TUI functional runs pass. Fair timings
+still require the serial alternating baseline/candidate run on the final tree.

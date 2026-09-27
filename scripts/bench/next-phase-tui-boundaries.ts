@@ -47,9 +47,12 @@ try {
   tui.start();
   for (let index = 0; index < 3; index++) { tui.renderNow(); await tui.flushTerminalFrames(); }
   assert.ok(terminal.writes > 0); assert.ok(metrics.snapshot().rootRenders > 0);
-  global.gc?.(); const heapBefore = process.memoryUsage().heapUsed, cpu = process.cpuUsage(), start = performance.now(), timings: number[] = [];
-  let sampledPeakHeap = heapBefore;
+  const setupStart = performance.now(), setupCpu = process.cpuUsage();
   await profiler.post("HeapProfiler.startSampling", { samplingInterval: 32768 }); metrics.reset();
+  global.gc?.(); const heapBefore = process.memoryUsage().heapUsed, timings: number[] = [];
+  let sampledPeakHeap = heapBefore;
+  const profileSetupMs = performance.now() - setupStart, setupUsed = process.cpuUsage(setupCpu);
+  const cpu = process.cpuUsage(), start = performance.now();
   for (let index = 0; index < 60; index++) {
     const begin = performance.now(); terminal.columns = index % 3 === 0 ? 80 : index % 3 === 1 ? 120 : 160;
     if (index % 2) scroll.scrollToStart(); else scroll.scrollToEnd();
@@ -70,7 +73,7 @@ try {
   const profileOverheadMs = performance.now() - profileStart, profileUsed = process.cpuUsage(profileCpu); timings.sort((a, b) => a - b);
   console.log(JSON.stringify({ benchmark: "N4-tui-boundaries", implementation: process.env.SP_COST_LABEL ?? "candidate", node: process.version,
     historyItems: 5000, markdownCodeUnits: content.length, batchPaths: 16, detailPathsRendered: expanded.includes("file0"), frames: timings.length, elapsedMs, cpuUs: used.user + used.system,
-    profileOverheadMs, profileOverheadCpuUs: profileUsed.user + profileUsed.system,
+    profileSetupMs, profileSetupCpuUs: setupUsed.user + setupUsed.system, profileOverheadMs, profileOverheadCpuUs: profileUsed.user + profileUsed.system,
     p50Ms: timings[29], p95Ms: timings[56], p99Ms: timings[59], sampledBytes, heapBefore, sampledPeakHeap, heapAfterStop, heapSamples: 122,
     writes: terminal.writes, terminalBytes: terminal.bytes, metrics: metrics.snapshot(), busy, flushed, stopped, cancelMs,
     measuredScope: "actual retained Alt/ScrollView/Assistant/Tool components; controlled gated Terminal, not OS drain throughput" }));

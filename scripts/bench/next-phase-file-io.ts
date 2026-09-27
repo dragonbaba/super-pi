@@ -39,9 +39,10 @@ async function run(count: number, size: number, kind: "exact" | "snapshot") {
   for (let index = 0; index < count; index++) fs.writeFileSync(join(f.cwd, `file${index}`), before);
   await f.run([[costCall("discover", "tool_search", { query: "file_batch", limit: 1 })]]);
   counters = { bytesRead: 0, hashBytes: 0, hashUpdates: 0, explicitOpens: 0, explicitCloses: 0, implicitReadFiles: 0, activeHandles: 0, peakHandles: 0 };
+  await profiler.post("Profiler.startPreciseCoverage", { callCount: true, detailed: true });
   global.gc?.(); const heapBefore = process.memoryUsage().heapUsed, cpu = process.cpuUsage(), start = performance.now();
   f.metrics.sampledPeakHeap = heapBefore;
-  await profiler.post("Profiler.startPreciseCoverage", { callCount: true, detailed: true }); active = true;
+  active = true;
   let unavailableSnapshots = 0;
     // At most three 2MiB snapshots coexist under the unchanged 8MiB resident bound.
     // Sixteen-file tasks use explicit read/edit groups; no eviction/safety bypass.
@@ -85,8 +86,9 @@ async function runLegacyCompact(count: number) {
   for (let index = 0; index < count; index++) fs.writeFileSync(join(f.cwd, `legacy${index}.txt`), original);
   scope = fs.realpathSync.native(f.cwd) + sep; scopeAlias = f.cwd + sep;
   counters = { bytesRead: 0, hashBytes: 0, hashUpdates: 0, explicitOpens: 0, explicitCloses: 0, implicitReadFiles: 0, activeHandles: 0, peakHandles: 0 };
+  await profiler.post("Profiler.startPreciseCoverage", { callCount: true, detailed: true });
   global.gc?.(); const heapBefore = process.memoryUsage().heapUsed, cpu = process.cpuUsage(), start = performance.now(); let commits = 0, peakHeap = heapBefore;
-  await profiler.post("Profiler.startPreciseCoverage", { callCount: true, detailed: true }); active = true;
+  active = true;
     for (let index = 0; index < count; index++) {
       const path = join(f.cwd, `legacy${index}.txt`), input = { path, offset: 1, limit: 2 };
       const result = await read.execute(`legacy-read${index}`, input, undefined, undefined, {});
