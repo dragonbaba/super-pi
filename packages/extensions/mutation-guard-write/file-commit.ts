@@ -182,7 +182,8 @@ export async function commitPreparedFile(plan: FileCommitPlan, content: Uint8Arr
       await hooks.beforeCommit?.();
       await assertPrepared(plan, hooks, source);
       // Keep candidate bytes private through writing and all source callbacks.
-      // Apply publish metadata only after those checks, then sync metadata too.
+      // This preparation must retain private permissions. The native replacement
+      // boundary applies publish metadata after all asynchronous gates below.
       await plan.metadata.prepareTemporary(staged, path);
       await staged.sync();
       await staged.close(); staged = undefined;
