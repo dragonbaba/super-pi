@@ -1267,15 +1267,18 @@ for (const operation of ["write", "edit", "snapshot"] as const) for (const batch
   assert.equal(collectChanges(genuine, f.cwd)[0].unavailable, undefined);
   const interrupted = genuine.filter((entry: any) => entry.data?.phase !== "result" && entry.message?.role !== "toolResult");
   const pending = collectChanges(interrupted, f.cwd); assert.equal(pending.length, 1); assert.equal(pending[0].unavailable, undefined);
-  for (const fault of ["missing", "missing-aggregate-only", "other-strategy", "hash-mismatch"]) {
-    const branch = structuredClone(genuine).filter((entry: any) => fault !== "missing-aggregate-only" || entry.data?.phase !== "result");
+  for (const fault of ["missing", "missing-aggregate-only", "other-strategy", "hash-mismatch", "missing-hash", "invalid-hash", "missing-selection"]) {
+    const branch = structuredClone(genuine).filter((entry: any) => (fault !== "missing-aggregate-only" || entry.data?.phase !== "result")
+      && (fault !== "missing-selection" || entry.data?.phase !== (batch ? "commit_prepared" : "intent")));
     for (const entry of branch) {
       const receipt = entry.data?.phase === "result" ? entry.data : entry.message?.toolCallId === "required-commit" && entry.message?.role === "toolResult"
         ? batch ? entry.message.details.items[0].receipt : entry.message.details : undefined;
       if (!receipt) continue;
       if (fault === "missing" || fault === "missing-aggregate-only") delete receipt.commit;
       else if (fault === "hash-mismatch") { if (entry.message) receipt.sha256 = "0".repeat(64); }
-      else receipt.commit.strategy = receipt.commit.strategy === "staged_replace" ? "protected_in_place" : "staged_replace";
+      else if (fault === "missing-hash") delete receipt.sha256;
+      else if (fault === "invalid-hash") receipt.sha256 = "z".repeat(64);
+      else if (fault === "other-strategy") receipt.commit.strategy = receipt.commit.strategy === "staged_replace" ? "protected_in_place" : "staged_replace";
     }
     const records = collectChanges(branch, f.cwd); assert.equal(records.length, 1); assert.ok(records[0].unavailable, fault);
     await assert.rejects(verifyChange(records[0], async () => { assert.fail("missing or mismatched commit cannot observe files"); }));
