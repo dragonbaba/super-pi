@@ -313,3 +313,17 @@ shared result producer (1,000 characters). Four two-million-character diagnostic
 cases retain valid failure facts without unbounded model-visible text or pending
 timers. Contract/source tests: 55 pass; check pass on Windows Node22.19. These
 changes add no production regex or callback. Final combined CI and review remain.
+
+Review r31: both trusted Agent preflight cancellation texts join the same abort
+cascade. Real sequential Agent runs abort immediately and after an awaited
+preflight hook, never execute either backend, and collapse both outcomes once.
+The shared completion normalizer bounds custom diagnostics without mutating the
+backend-owned result and rejects contradictory started/exit/signal observations.
+Both shell adapters return valid conservative failure facts for an unstarted
+zero-exit claim or conflicting observed exit; a consistent unstarted result is
+also an error. Direct executor/actual Session tests verify bounded attached
+diagnostics and no successful bashExecution record on failure. Contract,
+observation and source tests: 91 pass, five platform skips; check pass. No regex
+or callback was added. The prior r30 head 9b74400f5f80f90d569c0ccd158c0b2e8f348c4a
+passed all local gates (2,617 tests, 90 skips) and both-platform CI 36297000090;
+the changed head still requires its own combined validation and review.

@@ -16,7 +16,7 @@ import { stripAnsi } from "../utils/ansi.ts";
 import { sanitizeBinaryOutput } from "../utils/shell.ts";
 import { CARRIAGE_RETURN_PATTERN } from "../utils/shell-regex.ts";
 import type { BashOperations } from "./tools/bash.ts";
-import { observedShellError, shellProcessResultFromError } from "./tools/shell-execution.ts";
+import { normalizeShellProcessResult, observedShellError, shellProcessResultFromError } from "./tools/shell-execution.ts";
 import { DEFAULT_MAX_BYTES, truncateTail } from "./tools/truncate.ts";
 
 // ============================================================================
@@ -112,10 +112,10 @@ export async function executeBashWithOperations(
 	};
 
 	try {
-		const result = await operations.exec(command, cwd, {
+		const result = normalizeShellProcessResult(await operations.exec(command, cwd, {
 			onData,
 			signal: options?.signal,
-		});
+		}));
 		// An observed zero exit alone does not mean the entire submitted command
 		// reached the shell. Propagate producer facts to direct Session/RPC callers
 		// before they can persist a successful BashResult; never retry the command.

@@ -18,6 +18,28 @@ import type { ChildProcess } from "node:child_process";
 
 const operations = createLocalShellOperations("fixture", () => ({ shell: process.execPath, args: ["-e"] }));
 
+for (const field of ["inputError", "observationError"] as const) test(`N3 direct and Session custom ${field} retains bounded diagnostics`, async () => {
+  const original = { exitCode: 0, termination: "exit" as const, [field]: "诊断".repeat(1_000_000) }, backend = { async exec() { return original; } };
+  const check = (error: any) => {
+    assert.ok(error.message.length < 1200); const result = shellProcessResultFromError(error); assert.ok(result);
+    assert.equal(result[field]?.length, 1000); assert.equal(result.exitCode, 0); assert.notEqual(result, original); return true;
+  };
+  await assert.rejects(executeBashWithOperations("fixture", process.cwd(), backend), check);
+  const { alphaHeadless, alphaModelRuntime } = await import("./helpers/alpha-session.ts");
+  const f = await alphaHeadless(alphaModelRuntime());
+  try {
+    await assert.rejects(f.session.executeBash("fixture", undefined, { operations: backend }), check);
+    assert.equal(f.session.isBashRunning, false); assert.equal(f.session.messages.some(message => message.role === "bashExecution"), false);
+    assert.equal(original[field], "诊断".repeat(1_000_000));
+  } finally { await f.release(); }
+});
+
+test("N3 direct custom completion cannot contradict its observed exit", async () => {
+  await assert.rejects(executeBashWithOperations("fixture", process.cwd(), { async exec() {
+    return { exitCode: 0, termination: "exit", observation: { started: true, outputDrained: true, exitCode: 23, signal: null } };
+  } }), (error: any) => { const result = shellProcessResultFromError(error); assert.equal(result?.exitCode, null); assert.equal(result?.termination, "unknown"); return true; });
+});
+
 for (const reason of ["input", "observation", "termination"]) for (const cleanupFailure of [false, true]) test(`N3 direct rejected completion closes its exact spill: ${reason}, cleanupFailure=${cleanupFailure}`, async t => {
   const create = fs.createWriteStream, streams: fs.WriteStream[] = [];
   t.mock.method(fs, "createWriteStream", function(...args: any[]) {
