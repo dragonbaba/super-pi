@@ -35,3 +35,8 @@ The result component retains only current receipt/content identities and summary
 and releases them on unmount. Tests verify narrow output, streaming, terminal
 states, long content, object preservation, release, and real guarded writes after
 session reopen. Existing source/AST gates remain intact.
+
+Hidden third-party call-release hooks are error-isolated: the parent advances its
+lifecycle generation, drops the hidden component reference, runs derived cleanup,
+clears image/discovery references, and only then rethrows the first error. A regression
+injects both a hidden-hook error and a derived-hook error and checks the release state.

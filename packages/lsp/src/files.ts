@@ -14,7 +14,7 @@ interface ScanBudget {
 }
 
 export function resolveRoot(root?: string, cwd = process.cwd()) {
-	const resolvedRoot = path.resolve(cwd, root?.trim() || ".");
+	const resolvedRoot = path.resolve(cwd, root && root.trim() ? root : ".");
 	if (!existsSync(resolvedRoot)) throw new Error(`Workspace root does not exist: ${resolvedRoot}`);
 	if (!statSync(resolvedRoot).isDirectory()) {
 		throw new Error(`Expected workspace root to be a directory: ${resolvedRoot}`);

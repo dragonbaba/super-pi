@@ -48,13 +48,16 @@ Command availability is not proof of service startup or language coverage. Diagn
 default to the session workspace, report the number of submitted files and the file
 limit, and label zero submitted files `not_checked`. A missing route, unavailable
 service, missing pull report, or push server that publishes nothing does not establish
-a validation pass. `pushDiagnosticsGraceMs` bounds the wait for a publication; silence
-now returns an unconfirmed-diagnostics error. An actual empty report is still valid
-diagnostic feedback. Since requests do not send a previous result ID, a pull response
-must contain a full `items` report.
+a validation pass. For `lsp_diagnostics`, `pushDiagnosticsGraceMs` bounds the wait
+for a publication; silence returns an unconfirmed-diagnostics error. An actual empty
+report is still valid diagnostic feedback. Validation requests do not send a previous
+result ID, so their pull responses must contain a full `items` report. Source fixes
+retain the previous bounded empty diagnostic context for code actions on silent-clean
+servers; computing a code action does not establish a validation pass.
 
 Explicit relative roots are resolved from the session workspace; trimmed-empty roots
-use that workspace as well. Mixed requests return `partial` with `isError: true` and
+use that workspace as well. Nonblank roots preserve their original whitespace.
+Mixed requests return `partial` with `isError: true` and
 the matching skipped `uncoveredFiles` when an unavailable default server leaves scope
 uncovered. Missing defaults for unrelated file types do not mark a request partial.
 If a skipped route reaches its collection cap, `skippedScopeLimited` preserves the

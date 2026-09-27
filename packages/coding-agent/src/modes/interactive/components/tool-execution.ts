@@ -1270,19 +1270,28 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	[RELEASE_COMPONENT_RENDER_CACHE](): void {
-		// A collapsed completion retains its call component outside the mounted tree.
-		if (this.toolDefinition?.collapseCallOnResult && this.result && !this.isPartial && !this.expanded) {
-			this.callRendererComponent?.[RELEASE_COMPONENT_RENDER_CACHE]?.();
-		}
 		this.renderLifecycleGeneration++;
 		const lifecycleState = this.rendererState as ToolRenderLifecycleState;
 		lifecycleState[TOOL_RENDER_LIFECYCLE_GENERATION] = this.renderLifecycleGeneration;
 		let releaseError: unknown;
 		let releaseFailed = false;
+		// Hidden call components are outside the mounted tree. A third-party hook
+		// must not prevent the remaining lifecycle cleanup, even when it throws.
+		if (this.toolDefinition?.collapseCallOnResult && this.result && !this.isPartial && !this.expanded) {
+			try {
+				this.callRendererComponent?.[RELEASE_COMPONENT_RENDER_CACHE]?.();
+			} catch (error) {
+				releaseError = error;
+				releaseFailed = true;
+			} finally {
+				this.callRendererComponent = undefined;
+				this.callRendererDirty = true;
+			}
+		}
 		try {
 			lifecycleState[RELEASE_TOOL_RENDER_DERIVED_STATE]?.(lifecycleState);
 		} catch (error) {
-			releaseError = error;
+			if (!releaseFailed) releaseError = error;
 			releaseFailed = true;
 		}
 		for (let index = 0; index < this.imageComponents.length; index++) {

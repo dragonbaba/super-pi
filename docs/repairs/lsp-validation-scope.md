@@ -21,6 +21,9 @@ Review regressions retain uncertainty when a skipped route reaches its bounded f
 cap, including overlap with a live route. They also keep an initial empty push report
 inside the configured grace window and verify that later diagnostics are returned.
 No extra production scan is introduced to prove exhaustion beyond the cap.
+Nonblank roots retain their original whitespace. Strict publication checks apply to
+diagnostic validation; source fixes may still use an empty code-action context after
+the existing bounded grace wait, without claiming the file was validated.
 
 `tests/lsp-validation-scope.test.ts` tests configuration/routing and status handling
 with a private protocol process, including empty reports, silence, malformed reports,

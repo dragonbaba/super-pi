@@ -16,7 +16,10 @@ function handle(message) {
       uri: message.params.textDocument.uri,
       diagnostics: [{ message: "synthetic late analysis error", severity: 1, range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } } }],
     } }), 40);
-  } else if (message.method === "shutdown") send({ id: message.id, result: null });
+  } else if (message.method === "textDocument/codeAction") send({ id: message.id, result: [{ title: "synthetic fix", kind: "source.fixAll", edit: {
+    changes: { [message.params.textDocument.uri]: [{ range: { start: { line: 0, character: 10 }, end: { line: 0, character: 11 } }, newText: "2" }] },
+  } }] });
+  else if (message.method === "shutdown") send({ id: message.id, result: null });
   else if (message.method === "exit") process.exit(0);
 }
 process.stdin.on("data", chunk => {

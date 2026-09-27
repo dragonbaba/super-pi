@@ -194,7 +194,7 @@ export class LspClient {
 		}
 	}
 
-	async diagnostics(uri: string) {
+	async diagnostics(uri: string, requirePublication = false) {
 		// Only pull if the server advertised it; otherwise use push diagnostics.
 		if (!this.#serverCapabilities.diagnosticProvider) {
 			return this.#waitForPublishedDiagnostics(
@@ -204,7 +204,7 @@ export class LspClient {
 							afterVersion: 0,
 							diagnostics: EMPTY_READONLY_ARRAY,
 							waitMs: this.#adapter.pushDiagnosticsGraceMs,
-							requirePublication: true,
+							requirePublication,
 						}
 					: undefined,
 			);
@@ -218,10 +218,10 @@ export class LspClient {
 			textDocument: { uri },
 		});
 		const result = response.result as { items?: LspDiagnostic[] } | undefined;
-		if (!Array.isArray(result?.items)) {
+		if (requirePublication && !Array.isArray(result?.items)) {
 			throw new Error(`${this.#adapter.name} LSP returned no full diagnostic report for ${uri}; validation is unconfirmed.`);
 		}
-		const diagnostics = result.items;
+		const diagnostics = Array.isArray(result?.items) ? result.items : EMPTY_READONLY_ARRAY;
 		if (diagnostics.length > 0 || !this.#adapter.pullDiagnosticsGraceMs) return diagnostics;
 		return this.#waitForPublishedDiagnostics(uri, {
 			afterVersion,

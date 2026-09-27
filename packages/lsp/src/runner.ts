@@ -72,7 +72,7 @@ export async function runDiagnostics(
 				openedFiles.map(async ({ file, uri }) => ({
 					path: path.relative(root, file) || file,
 					uri,
-					diagnostics: await client.diagnostics(uri),
+					diagnostics: await client.diagnostics(uri, true),
 				})),
 			);
 			return textResult(formatDiagnostics(adapter, entries), {

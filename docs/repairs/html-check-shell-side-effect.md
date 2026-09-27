@@ -79,6 +79,10 @@ Only model responses and the user's approval choice are supplied by the fixture.
 It compares before/after file bytes, the displayed approved request, actual Bash
 transport, and Node's received source. Refusals assert zero tool-time spawns.
 Only synthetic test processes record source/argv; production logging is unchanged.
+The historical script and its original `PASS` text are byte-preserving incident
+fixtures, not a recommended validation template. The regression checks consumer
+bytes and filesystem state independently of that text. Regex matches must be counted
+and scoped before any validation conclusion; zero script matches cannot validate JS.
 
 Default CI mode privately prepends the test process's native Node directory to its
 child PATH. That verifies the Linux/Windows transport contract and is **not** an

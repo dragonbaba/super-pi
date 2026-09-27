@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { createJiti } from "jiti";
@@ -10,7 +10,7 @@ import { createRequire } from "node:module";
 const jiti = createJiti(import.meta.url);
 const { loadRuntime } = await jiti.import<any>("../packages/lsp/src/adapters.ts");
 const { selectDiagnosticRoutes } = await jiti.import<any>("../packages/lsp/src/routes.ts");
-const { runDiagnostics } = await jiti.import<any>("../packages/lsp/src/runner.ts");
+const { runDiagnostics, runFix } = await jiti.import<any>("../packages/lsp/src/runner.ts");
 const { LspClientPool } = await jiti.import<any>("../packages/lsp/src/client-pool.ts");
 const { default: extension } = await jiti.import<any>("../packages/lsp/src/pi-lsp.ts");
 const server = resolve("tests/fixtures/lsp-diagnostic-server.mjs");
@@ -82,16 +82,31 @@ test("tool uses session cwd, preserves received count and discloses unverified e
   const f = fixture(), registration = tools();
   const ctx = { cwd: f.root, isProjectTrusted() { return true; }, ui: { setStatus() {} } };
   try {
-    mkdirSync(join(f.root, "subproject")); writeFileSync(join(f.root, "subproject/example.ts"), "const n = 1;");
-    for (const root of [undefined, "   ", "subproject"]) {
+    for (const name of ["subproject", " subproject", ...(process.platform === "win32" ? [] : ["subproject "])]) {
+      mkdirSync(join(f.root, name)); writeFileSync(join(f.root, name, "example.ts"), "const n = 1;");
+    }
+    for (const root of [undefined, "   ", "subproject", " subproject", ...(process.platform === "win32" ? [] : ["subproject "])]) {
       const result = await registration.registered.get("lsp_diagnostics").execute("scope", { root, paths: ["example.ts"] }, undefined, undefined, ctx);
-      assert.equal(result.details.root, root === "subproject" ? join(f.root, "subproject") : f.root);
+      assert.equal(result.details.root, root?.trim() ? join(f.root, root) : f.root);
       assert.equal(result.details.submittedFiles, 1);
       assert.equal(result.details.status, "diagnostics_received");
       assert.match(result.content[0].text, /Embedded languages.*not established/);
       assert.equal(result.isError, false);
     }
   } finally { await registration.events.get("session_shutdown")({}, ctx); f.release(); }
+});
+
+test("strict validation can fail for silence while source fixes retain an empty diagnostic context", async () => {
+  const f = fixture("push-silent"), pool = new LspClientPool();
+  const ctx = { ui: { setStatus() {} } };
+  try {
+    await assert.rejects(runDiagnostics(pool, f.adapters[0], { root: f.root, paths: ["example.ts"] }, 2500, undefined, ctx, "lsp"), /unconfirmed/);
+    const result = await runFix(pool, f.adapters[0], { root: f.root, path: "example.ts", write: false }, 2500, undefined, ctx, "lsp");
+    assert.equal(result.details.changed, true);
+    assert.equal(result.details.editCount, 1);
+    assert.match(result.content[0].text, /const n = 2/);
+    assert.equal(readFileSync(join(f.root, "example.ts"), "utf8"), "const n = 1;", "preview is not a write or a validation pass");
+  } finally { await pool.shutdownAll(); f.release(); }
 });
 
 test("mixed available and unavailable matching default routes retain uncovered files and return partial", () => {

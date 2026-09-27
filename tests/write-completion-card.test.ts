@@ -10,6 +10,7 @@ import { createWriteToolDefinition } from "../packages/coding-agent/src/core/too
 import { ToolExecutionComponent } from "../packages/coding-agent/src/modes/interactive/components/tool-execution.ts";
 import { initTheme } from "../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 import { renderWriteResult } from "../packages/extensions/mutation-guard-write/write-renderer.ts";
+import { RELEASE_TOOL_RENDER_DERIVED_STATE, TOOL_RENDER_LIFECYCLE_GENERATION } from "../packages/coding-agent/src/core/tools/tool-render-lifecycle.ts";
 import { costCall, costSession } from "./helpers/next-phase-session.ts";
 
 const { releaseComponentRenderCaches } = await import(pathToFileURL(resolve("packages/tui/dist/tui.js")).href) as typeof import("../packages/tui/src/tui.ts");
@@ -114,6 +115,29 @@ test("real guarded create, overwrite and empty receipts render identically after
       assert.equal(visible(component), before.get(id));
     }
   } finally { await fixture.release(); }
+});
+
+test("throwing hidden release still clears parent references and runs derived cleanup before rethrow", () => {
+  const component = card(), state = (component as any).rendererState;
+  component.setArgsComplete();
+  component.updateResult({ content: [{ type: "text", text: "Added fixture.ts" }], details: created }, false, false);
+  const failure = new Error("synthetic hidden release failure");
+  (component as any).callRendererComponent[RELEASE_COMPONENT_RENDER_CACHE] = () => { throw failure; };
+  let derivedReleases = 0;
+  state[RELEASE_TOOL_RENDER_DERIVED_STATE] = () => { derivedReleases++; throw new Error("secondary release failure"); };
+  (component as any).imageSourceData = ["synthetic source"];
+  (component as any).pendingImageSourceData = ["synthetic pending"];
+  (component as any).pendingImageTaskGenerations = [1];
+  (component as any).toolResultDiscovery = {};
+  const generation = state[TOOL_RENDER_LIFECYCLE_GENERATION];
+  assert.throws(() => releaseComponentRenderCaches(component), error => error === failure);
+  assert.equal(derivedReleases, 1);
+  assert.equal(state[TOOL_RENDER_LIFECYCLE_GENERATION], generation + 1);
+  assert.equal((component as any).callRendererComponent, undefined);
+  assert.equal((component as any).toolResultDiscovery, undefined);
+  const counts = component.getImageConversionLifecycleCounts();
+  assert.equal(counts.sourceReferences + counts.pendingSourceReferences + counts.pendingGenerationReferences, 0);
+  assert.equal((component as any).resultRendererComponent.receipt, undefined);
 });
 
 test("actual authorization denial leaves the file absent and renders a failed registered write card", async () => {
