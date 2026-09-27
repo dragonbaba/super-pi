@@ -857,6 +857,9 @@ export class InteractiveMode {
 		});
 		let draftSessionId = this.sessionManager.getSessionId();
 		this.runtimeHost.setRebindSession(async () => {
+			// Budget revisions belong to one AgentSession. A replacement starts at
+			// zero; explicit configuration made by its factory stays pending (> 0).
+			this.toolResultBudgetUiGeneration = 0;
 			if (draftSessionId !== this.sessionManager.getSessionId()) { this.clipboardAbort?.abort(); this.imageSubmissionRecovery = undefined; this.imageDraft.clear(); draftSessionId = this.sessionManager.getSessionId(); }
 			const lifecycleGeneration = this.tuiLifecycleGeneration;
 			await this.rebindCurrentSession({ renderBeforeBind: true }, lifecycleGeneration);

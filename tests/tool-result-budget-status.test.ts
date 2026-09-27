@@ -196,7 +196,7 @@ for (const rebuild of [false, true]) for (const transform of ["identity", "filte
   const runtime = alphaModelRuntime((model: any, context: any, options: any) => streamSimple({ ...model, api: "openai-completions" }, context, { ...options, apiKey: "offline", fetch: fetchFixture, maxRetries: 0 }));
   // The extension runner defensively clones context before invoking any handler.
   // The identity control therefore has no context hook at all.
-  const f = await alphaSession({ runtime, budgetTokens: 1024, extensions: transform === "identity" ? undefined : [(pi: any) => pi.on("context", (event: any) => {
+  const f = await alphaSession({ runtime, budgetTokens: 1024, allowReplacements: true, extensions: transform === "identity" ? undefined : [(pi: any) => pi.on("context", (event: any) => {
     if (!transformEnabled) return;
     return { messages: transform === "filter" ? event.messages.filter((message: any) => message.role !== "toolResult")
       : event.messages.map((message: any) => message.role === "toolResult" ? { ...message, content: message.content.map((block: any) => ({ ...block })) } : message) };
@@ -246,6 +246,21 @@ for (const rebuild of [false, true]) for (const transform of ["identity", "filte
     const probes = f.internal.toolResultBudgetRediscoveryComponentProbes;
     for (let n = 0; n < 100; n++) f.internal.rediscoverToolResultsAfterBudgetChange();
     assert.equal(f.internal.toolResultBudgetRediscoveryComponentProbes, probes);
+    }
+    if (transform === "identity" && !profiler) {
+      const messages = f.session.messages;
+      const replaced = await f.runtime.newSession({ setup: async manager => {
+        for (const message of messages) {
+          assert.ok(message.role === "user" || message.role === "assistant" || message.role === "toolResult");
+          manager.appendMessage(message);
+        }
+      } });
+      assert.equal(replaced.cancelled, false);
+      assert.equal(f.internal.toolResultBudgetUiGeneration, f.runtime.session.toolResultBudgetGeneration);
+      await f.runtime.session.prompt("Continue in the replacement Session."); await f.runtime.session.agent.waitForIdle();
+      const attached = f.internal.attachedToolResultDiscoveries?.get("budget-history");
+      assert.ok(attached?.component.getToolResultPresentationDiscovery("budget-history")?.cursor);
+      component = attached.component; assert.equal(executions, 1);
     }
     await f.internal.editor.onSubmit("/tool-budget off"); assert.equal(component.getToolResultPresentationDiscovery("budget-history"), undefined);
     assert.equal(f.internal.getToolResultDiscoveryLifecycleCounts().totalEntries, 0);

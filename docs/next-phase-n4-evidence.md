@@ -324,3 +324,10 @@ and retains inclusive totals. Timer quantization and later GC are not isolated;
 heap samples still include estimator allocation. It remains an offline fixture,
 not provider billing or pure product CPU. All 36 real serializer/filesystem rows
 and 11 measurement guard tests pass; final serial comparison remains pending.
+
+A subsequent actual runtime replacement probe exposed an independent boundary:
+the UI revision belonged to the disposed Session. New/fork/resume rebind now resets
+that primitive to the new owner's initial zero, preserving any explicit factory
+configuration as pending. The existing once-lifecycle callback is reused. Actual
+SDK/TUI replacement after three budget changes verifies continued historical cursor
+binding without executing the tool again; both rebuild variants exercise it.
