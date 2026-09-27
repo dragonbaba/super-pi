@@ -569,6 +569,12 @@ export class MutationWriteGuard {
     return actual;
   }
 
+  /** Observation only: never promotes preview content into read or mutation evidence. */
+  hasFullPreviewEvidence(canonical: string, contentHash: string, turnGeneration: number): boolean {
+    const evidence = this.#evidence.get(canonical);
+    return evidence !== undefined && evidence.turnGeneration < turnGeneration && evidence.sha256 === contentHash;
+  }
+
   reserveSnapshotEdit(
     turnGeneration: number,
     canonicalPath: string,

@@ -171,10 +171,12 @@ function finalizeTruncatedResult(
 
 /**
  * Calculate the terminal width of a single grapheme cluster.
+ * Does not retain segment text in the shared string-width cache. The input is
+ * one plain-text cluster, without ANSI sequences; use visibleWidth for strings.
  * Based on code from the string-width library, but includes a possible-emoji
  * check to avoid running the RGI_Emoji regex unnecessarily.
  */
-function graphemeWidth(segment: string): number {
+export function graphemeWidth(segment: string): number {
 	if (segment === "\t") {
 		return 3;
 	}
