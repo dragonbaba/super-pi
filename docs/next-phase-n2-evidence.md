@@ -1,7 +1,46 @@
 # N2: staged file commit evidence
 
-Status: **实现与复审中**. Parent N1 is `d1bad1788e620810caf60914dd330b78ea26981d`.
-No claim of N2 acceptance or cross-platform metadata preservation is made yet.
+Status: **原定功能及实现提交验证已完成；文档与稳定父分支集成收尾中**.
+Implementation `57d141931cde0dd854577f4fcc15458d3666562f` passed local check,
+build:offline, test:hot and full tests (2,539 pass, 84 platform/conditional skips),
+Node22.19 Windows/Linux CI [36299174684](https://github.com/dragonbaba/super-pi/actions/runs/36299174684),
+and [actual Codex review](https://github.com/dragonbaba/super-pi/pull/48#issuecomment-5853261163).
+The final documentation/integration candidate still needs its own final-head
+gates/review. Parent N1 is `6ca8869953fd7afdbd07a1107fb7d81d4ec39316`; its code is
+unchanged from f003 and its extreme-import cold-path limitation was explicitly
+accepted by the user. Original Draft [#48](https://github.com/dragonbaba/super-pi/pull/48)
+remains unmerged. Historical checkpoints below are not current-head claims.
+
+## Current delivery and resource evidence
+
+Both jobs in CI 36299174684 completed clean network-capable npm ci, offline build,
+the built formal scripts/superpi.mjs entry with default resources and three real
+mutations, delivered private-extension npm pack/runtime tests, and five isolated
+native-cost processes. Archive: 102,692 bytes compressed / 419,777 unpacked on
+both platforms. Installed Koffi main package: 1,715,844 bytes; platform binary
+package: Windows x64 1,050,207 bytes, Linux x64 2,387,558 bytes. This package test
+does not claim a standalone CLI release. npm ci is not offline installation;
+post-install build/runtime are tested without downloads.
+
+Each cost process performs 50 verified 64-KiB commits. Five-process ranges:
+
+| Metric | Windows x64 | Linux x64 |
+| --- | --- | --- |
+| First load, ms | 101.7844–118.9079 | 82.0790–92.9530 |
+| Per-process median commit, ms | 23.6160–24.0720 | 5.5472–6.5495 |
+| Per-process p95 commit, ms | 27.5638–38.7700 | 6.9772–8.2332 |
+| Release, ms | 3.1628–3.9169 | 3.4325–4.0283 |
+| Event-loop p95, ms | 5.4149–5.5951 | 1.4285–1.5114 |
+| Event-loop max, ms | 20.0049–22.6263 | 17.2032–18.5958 |
+| GC-inclusive sampled main-thread bytes | 10,603,424–10,852,904 | 11,114,784–11,421,248 |
+
+All samples report zero active handles/descriptors/pending calls, and no loaded
+worker after release. Costs include readback and safety verification. Allocation
+sampling excludes the Worker heap and native allocator; these are CI host
+observations, not a cross-OS speed comparison, zero-allocation claim or proof
+that introducing native code improves performance. Raw logs and extracted data:
+`D:/RMProjects/Pi-next-phase-artifacts/n2-r32-ci-complete.log` and
+`n2-r32-ci-native-delivery.json`. ARM, musl and macOS remain untested.
 
 ## Observed baseline and capability decision
 
