@@ -17,6 +17,8 @@ export function normalizeShellProcessResult(result: ShellProcessResult): ShellPr
   const observation = result.observation;
   if (result.exitCode !== null && !Number.isSafeInteger(result.exitCode)
     || result.termination !== undefined && !TERMINATIONS.has(result.termination)
+    || result.termination === "exit" && result.exitCode === null
+    || (result.termination === "signal" || result.termination === "not_started") && result.exitCode !== null
     || result.inputError !== undefined && typeof result.inputError !== "string"
     || result.observationError !== undefined && typeof result.observationError !== "string"
     || result.secondaryObservationError !== undefined && (typeof result.secondaryObservationError !== "string" || result.observationError === undefined)
@@ -25,8 +27,8 @@ export function normalizeShellProcessResult(result: ShellProcessResult): ShellPr
     || observation.spawnAttempted !== undefined && typeof observation.spawnAttempted !== "boolean"
     || observation.exitCode !== result.exitCode || observation.started && (observation.spawnAttempted === false || result.termination === "not_started")
     || !observation.started && (result.exitCode !== null || observation.signal !== null || result.termination !== undefined && result.termination !== "not_started" && result.termination !== "cancelled")
-    || result.termination === "exit" && (result.exitCode === null || observation.signal !== null)
-    || result.termination === "signal" && (result.exitCode !== null || typeof observation.signal !== "string")
+    || result.termination === "exit" && observation.signal !== null
+    || result.termination === "signal" && typeof observation.signal !== "string"
     || observation.signal !== null && result.exitCode !== null
     || observation.signal !== null && (typeof observation.signal !== "string" || observation.signal.length > 32))) {
     return { exitCode: null, termination: "unknown", inputError: typeof result.inputError === "string" ? result.inputError.slice(0, 1000) : undefined,
@@ -136,9 +138,9 @@ export function shellExecutionSucceeded(value: ShellExecutionFacts): boolean {
 }
 
 export function shellFailureCategory(value: ShellExecutionFacts): string {
+  if (value.inputError) return "input_transport_failed";
   if (value.started === false && value.termination === "cancelled") return "timeout_or_aborted";
   if (value.started === false) return value.executionStatus === "start_failed" ? "start_failed" : "not_executed";
-  if (value.inputError) return "input_transport_failed";
   if (value.termination === "timeout" || value.termination === "cancelled") return "timeout_or_aborted";
   if (value.termination === "signal") return "signal_terminated";
   if (value.termination === "output_failure") return "output_log_failed";

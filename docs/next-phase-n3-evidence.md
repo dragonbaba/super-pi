@@ -362,3 +362,34 @@ five platform skips; check pass. One fixed module helper handles bounded observe
 errors; no production regex or callback was introduced. Full gates are deferred
 until this grouped fix and its parent integration are stable, per the user scope
 freeze, rather than repeated for each small edit.
+
+Review r34 groups three completion/retry defects with the same producer boundary.
+Attached completion or unknown facts override executable-like error codes, so a
+possibly stateful command is not replayed. Resolved not-started facts trigger at
+most one probe/recovery; a second not-started result disables that executable.
+Only a normalized result proving a start (or the actual recovery probe) can
+confirm executable availability. Exit/signal/not-started relationships are
+validated even when optional observation is absent. Fourteen new cases failed
+before the fix; focused PowerShell, actual Session/direct executor, contract and
+source regressions now pass (133 pass, five platform skips). Type check passes.
+No production regex or callback was added. Final combined gates and review remain.
+
+Review r35: a canonical `termination:not_started` with omitted optional observation
+now yields `started:false`, no side effects and fresh-request guidance in both
+actual Agent shell adapters. The normalized termination already authorizes only
+this unstarted interpretation in PowerShell recovery; result classification now
+agrees. Two real adapter regressions plus contract/source tests pass (80 tests),
+and check passes. No callback or regex was added. The prior r34 code candidate
+46f3e4f8b2e61bef1b02a98604ba06fb1bf4aeb9 passed all four local gates; this final
+classification correction still needs combined final gates and actual review.
+
+Review r36: input transport failure retains category precedence even when the
+canonical termination proves no process started. Both actual Agent adapters now
+cover not_started/cancelled with and without input errors: execution remains
+not_executed with no side effects, while input failures remain actionable in
+Session classification. The extension classifier loads the built public package;
+its build was refreshed before the final focused run. PowerShell, contract,
+actual Session/direct and source regressions: 141 pass, five platform skips;
+check and the strengthened module-helper source gate pass. The classification
+helper adds no callback, regex, wrapper or scan. r35's full local gates passed;
+final full gates will run after this grouped review feedback is settled.

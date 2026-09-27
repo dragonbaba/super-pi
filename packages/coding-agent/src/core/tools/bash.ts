@@ -1056,7 +1056,7 @@ export function createShellToolDefinition(
 				if (processResult) processResult = normalizeShellProcessResult(processResult);
 				const observation = processResult?.observation;
 				const local = isLocalShellBackend(ops) && ops.exec === backendExecute;
-				const started = observation?.started ?? "unknown";
+				const started = observation?.started ?? (processResult?.termination === "not_started" ? false : "unknown");
 				const errorMessage = (executionError instanceof Error ? executionError.message : executionError === undefined ? "" : String(executionError)).slice(0, 1000);
 				// Legacy custom backends report control-flow failure through their
 				// rejected operation, never through stdout. Keep start/effects unknown.
