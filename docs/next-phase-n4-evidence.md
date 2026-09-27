@@ -1,5 +1,189 @@
 # N4 task cost and bounded work
 
+## Delivery evidence (2026-09-27)
+
+All original N4 functions and measurements are implemented. The measured code is
+`32fca50f1caa7eff66d1fed8e5d91a8e811fc903` (tree
+`f9e1d2271e881add01d8820549c8cba69e9885d0`), containing final N3
+`b50844cc8e201b9aeecc4576b81f149380804ffc`. Baseline is the agreed main
+`4f547535b830c15d3a9605574c229a0641f94923`, not an intermediate topic branch.
+The delivery documentation commit changes only the two evidence/index documents;
+its current HEAD, full-gate CI and review are recorded in [Draft PR #50](https://github.com/dragonbaba/super-pi/pull/50).
+The measured source coordinate is preserved rather than relabelled as that later
+documentation HEAD. All four PRs remain unmerged.
+
+On measured code, Node 22.19.0 check, build:offline, test:hot and full local tests
+pass: **2,737 passed, 90 conditional/platform skips, zero failures**. Both x64
+platforms passed [CI 36307505067](https://github.com/dragonbaba/super-pi/actions/runs/36307505067),
+including clean npm ci, offline build, actual source/built/delivery entry probes,
+five-process native costs and full tests. Actual [Codex review](https://github.com/dragonbaba/super-pi/pull/50#issuecomment-5854385789)
+found no major issues. The two earlier presentation-spread and agent-end source
+assertion failures were corrected in production without changing either assertion.
+The relevant focused set passes all 133 tests. Final documentation-candidate
+verification is reported separately on the PR, not inferred from this earlier CI.
+
+Five relevant allocation gates pass: bash rendering, configured/contextual tool
+result budgets, TUI tool leaves and shell compatibility. The complete changed
+production-file AST audit finds **zero regexes outside dedicated regex modules**.
+Lifecycle callbacks remain fixed module helpers or once-owner fields; the new
+projection/status/rediscovery helpers pass their zero-callback gates. No pool,
+new default budget, global import policy or pure speed optimization was added.
+
+### Reproducible measurement record
+
+Local raw evidence is under `D:/RMProjects/Pi-next-phase-artifacts/`:
+
+- `n4-final-comparison-r39/summary.json`: all 85 groups, each with five independent
+  alternating baseline/candidate processes and one discarded whole-process pair.
+  All 60 measured, 12 warmup and four preparation children closed successfully.
+- `n4-final-comparison-r39/coordinates.json` and installed/build manifests bind
+  clean HEAD/tree, lockfile, every installed dependency byte/link/native artifact,
+  and package builds before/after measurement. Baseline/candidate installed hashes
+  are `e3834dfe62fac77889aa56363cb49794dd29db7cbf457b204b68a418a50caaf2` /
+  `f61f2b65f372d9df7da2110df5f6c731fd73f9aec9314f21a451163f151e3b48`;
+  build hashes are `a292d1469341f651beabdd86c42fff8dcb143bc99dd9f9bcd89ed45538879df3` /
+  `b18998497933683f2ed964d4179bec88a4b02e892573df7664cfbe703b022532`.
+- `n4-r39-pty-summary.json`: five alternating process pairs with cold and warm
+  children each; **20 children, ten released roots**, two fixture requests and one
+  real default read per child, zero network attempts. All source coordinates match.
+- `n4-r39-{check,build-offline,test-hot,test}.log`, five
+  `n4-r39-bench-*.log` gates, `n4-r39-budget-profile.log`, and
+  `n4-r39-request-profile-30696.json` preserve validation and release evidence.
+
+The comparison uses explicit **network npm ci**, then offline builds/runs; npm ci
+is not an offline installation. No CPU benchmarks ran concurrently. Five-point
+nearest-rank p95/p99 both equal the maximum, so they are not precise tail estimates.
+Short Windows CPU samples are quantized and sometimes zero. Diagnostic token
+estimation/serialization CPU and wall intervals are subtracted separately, with
+inclusive totals retained; their allocations, later GC and fixture scheduling are
+not isolated. Heap maxima are defined samples, not exact transient peaks or whole
+process allocation. Worker/native/external Buffer memory is excluded from main
+V8-heap samples. All measured I/O bytes are API bytes, not physical disk traffic.
+
+### Task cost, including unsuccessful and recovery paths
+
+The 36 success rows cover create/exact/snapshot/mixed, 1/4/16 addressed paths and
+T1 (separate replies), T2 (multiple single-file tools in one reply) and T3
+(one file_batch). Sixteen additional context/recovery rows cover short/long
+history, reopening, model switch, warm discovery and overlimit/preflight repair.
+Every row checks actual bytes and released calls. The fixture explicitly charges
+discovery, schema, history, reads, continuations/retries and approvals. Billing,
+provider usage and cache hits are **unknown/null**, never inferred from estimates.
+
+For sixteen exact file changes, candidate five-process medians are:
+
+| Strategy | Requests / tools | Discovery | Estimated input / schema / history / output tokens | Workload wall p50 / p95=p99 ms |
+| --- | --- | --- | --- | --- |
+| T1 | 33 / 32 | 0 | 352,587 / 91,707 / 101,752 / 3,200 | 310.96 / 313.30 |
+| T2 | 3 / 32 | 0 | 30,680 / 8,337 / 8,354 / 2,982 | 245.82 / 250.69 |
+| T3 | 4 / 18 | 1 | 38,451 / 14,365 / 9,665 / 2,497 | 302.29 / 409.44 |
+
+These success rows have zero approvals under their chosen authority setup; they
+do not measure an approval reduction. All three include sixteen real prior reads.
+T3 uses fewer calls and provides batch preflight/receipts, but **does not beat T2
+in this row's requests, input estimate or wall time**. No universal batch/token
+saving is claimed. Every raw row retains CPU p50/p95/p99, individual samples,
+input/tool/output estimates, retries, supplemental reads and quality.
+
+The separate actual combined Session regression passes with **25 serialized
+requests, eleven tools, six approvals and zero pending calls**: zero-effect preview,
+mixed snapshot/create/move/delete, drift after a committed item, partial receipt,
+verification/draft without replay, fresh approval and repair, real Bash/PowerShell
+failure facts, 5 MiB log cap, explicit budget recovery, and durable reopen.
+False-success remains blocked through preview/verification/drafting until repair.
+This functional fixture is not a paid-model bill or fair timing comparison.
+
+### Costs retained with the required behavior
+
+| Workload | Baseline p50 / p95=p99 ms | Candidate p50 / p95=p99 ms | Interpretation |
+| --- | --- | --- | --- |
+| 16 x 4 KiB exact I/O | 457.81 / 458.52 | 623.52 / 643.08 | Native metadata/revalidation/publication cost included |
+| 16 x 8 MiB exact I/O | 5,393.94 / 5,424.47 | 6,232.29 / 6,410.94 | Required extra read/hash work; no faster-FFI claim |
+| 16 x 8 MiB legacy compact subsystem | 27,179.00 / 27,726.56 | 27,350.43 / 27,817.14 | Custom-I/O snapshot fixture, not default SDK authorization |
+| First output spill | 101.92 / 103.28 | 102.26 / 105.84 | Actual log contents and closure verified |
+| Output cap | 96.92 / 100.17 | 97.42 / 103.08 | Actual 5 MiB cap and final tail verified |
+| Injected slow output | 107.77 / 118.64 | 111.93 / 116.81 | Controlled 8 ms open/write delay |
+| Output cancellation | 215.37 / 254.53 | 232.33 / 251.22 | Settled streams and zero pending writes |
+| 60 TUI width/history/expand changes | 5,286.14 / 5,334.95 | 8,132.43 / 8,198.88 | Candidate renders new bounded file details absent from baseline |
+| Existing full replay/backpressure | 1,497.87 / 1,516.83 | 1,502.17 / 1,507.23 | Unchanged default fixture, no reduced run size |
+
+The full I/O matrix includes 24 default read/exact/snapshot rows and three labelled
+legacy compact rows. Large default reads that cannot issue snapshots report that
+capability and unchanged bytes; these are not successful snapshot commits. For
+16 x 8 MiB exact, baseline/candidate measured read bytes are 939,852,048 /
+1,745,158,464 and hash bytes 1,209,630,650 / 2,149,235,818. Candidate preparation/diff
+counts remain 32 exact candidates, sixteen patches and sixteen diffs. Native
+identity, content and metadata verification accounts for the additional necessary
+work; no checks were removed and no fallback-on-failure was introduced.
+
+The expanded TUI case is deliberately **different visible work**: baseline has
+`detailPathsRendered=false`, candidate true. CPU p50 is 2,249 / 3,453 ms and
+GC-inclusive sampled allocation 5,194,576,112 / 5,940,991,184 bytes across the whole
+workload. The new bounded preview wraps graphemes on changed widths; the existing
+large Markdown/history also reflows. This is an explicit expansion/resize cost,
+not an equivalent-output speed regression disguised as a win. Stable widths reuse
+bounded rows; completion constructs the bounded report once, not in rendering.
+Queue counters retain active <=1, pending <=1, zero deliberate full-frame copies,
+and zero frame Promises/AbortControllers/wrappers. Flush/abort/stop release all
+frame bytes and render intents. Controlled sink timing is not OS terminal drain.
+
+### Formal PTY and explicit-change allocation
+
+| Actual PTY boundary | Baseline p50 / p95=p99 ms | Candidate p50 / p95=p99 ms |
+| --- | --- | --- |
+| Cold input-ready | 1,828.45 / 1,931.22 | 1,850.61 / 1,891.26 |
+| Warm input-ready | 1,802.07 / 1,809.57 | 1,810.56 / 1,837.35 |
+| Cold editor-submit to real read result | 26.96 / 27.23 | 27.59 / 27.81 |
+| Warm editor-submit to real read result | 25.62 / 27.06 | 26.18 / 26.66 |
+
+Cold means fresh settings/process, not OS-cache eviction; warm is another process
+sharing settings. Tool time starts at recorded editor submission, excluding
+automation waits. Startup CPU p50 is 687/874 ms cold and 702/687 ms warm. Cold
+paired differences range -18.2% to +60.1%; warm -32.2% to +25.0%. The five cold
+samples show a higher median and must not be called zero overhead. Investigation
+finds no consistent cold/warm CPU direction (cold p95 +1.4%, warm p95 -15.3%);
+these samples cannot establish a stable overall >5% CPU regression or a speedup.
+Candidate startup heap p50 is 194,039,008 bytes cold / 193,717,856 warm versus
+189,819,208 / 190,196,552. This is disclosed low-frequency initialization cost;
+the contribution of added source versus runtime variance is not isolated. It is
+not a new optimization target under the user's scope freeze. No ordinary delta/progress/render lane
+loads the native adapter. All individual CPU/heap samples remain in the report.
+
+Explicit-budget profiles perform twenty changes/requests for each rebuild variant:
+21,853,544 / 22,177,776 sampled bytes; controlled heaps
+60,442,136 -> 63,110,184 and 63,167,064 -> 63,772,392 bytes. Both have one tool
+execution, twenty rediscovery passes, zero additional unchanged-generation probes
+and zero retained UI registrations. The ten actual contextual/image-policy/
+headless/SDK-invalidation lifecycles sample 220,430,712 bytes; heap is
+5,144,864 before module loading, 71,442,680 at end, 64,710,880 after GC. This includes
+module/fixture/test-runner costs, not per-request or production-only allocation;
+heap alone is not a no-leak proof. Ownership assertions separately verify final
+view release on success/error/abort/disposal while canonical history remains.
+
+The audited production chain is final SDK conversion -> Session projection bridge
+-> configured/contextual/image policy -> bounded final-view capture -> actual
+dispatch acknowledgement -> retained UI attachment -> response/agent-end/disposal
+release. Ordinary unchanged generations allocate no capture records. Explicit
+changes have two separate allowances: resident projections and temporary captures,
+each <=128 entries /128 Mi accounting units, combined <=256 Mi units. This is not
+a heap-byte cap; shared references may be counted twice and canonical history,
+V8 overhead and temporary construction are excluded. Payload hooks conservatively
+invalidate canonical provenance even when returning the same payload.
+
+N1's million-field import enumeration remains the explicitly accepted cold-path
+limitation documented in its evidence file. No global Session limit, alternative
+enumerator, import-format change, AST relaxation or new N5/N6 implementation was
+introduced. Windows/Linux x64 are exercised; ARM, musl, macOS and other untested
+environments receive no expanded promise. The earlier three rejected exact-root
+cleanup attempts and one unrecorded early fixture root remain disclosed in
+`task-resource-exceptions.txt`; all final comparison/PTY roots closed cleanly.
+
+## Historical implementation and review checkpoints
+
+The following entries are chronological observations, not the current completion
+status. Earlier numbers and pending statements are superseded by the delivery
+record above and the final documentation-candidate checks on PR #50.
+
 Latest integration correction: CI on `721dc68ffd78d3cbc7e9e064cf613e621983960d`
 found the unchanged frame-queue source assertion requiring direct awaited
 `_emitAgentEnd` delivery. Captured-view cleanup now belongs to that method's
