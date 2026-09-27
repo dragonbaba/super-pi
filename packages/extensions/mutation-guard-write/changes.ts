@@ -183,9 +183,10 @@ function sameCommitReceipt(left: any, right: any): boolean {
   return true;
 }
 
-function commitMatchesTerminal(commit: any, status: string, stateChanged: boolean | "unknown"): boolean {
-  if (commit === undefined) return true;
+function commitMatchesTerminal(commit: any, status: string, stateChanged: boolean | "unknown", selectedStrategy?: string): boolean {
+  if (commit === undefined) return selectedStrategy === undefined;
   if (!validCommitReceipt(commit)) return false;
+  if (selectedStrategy !== undefined && commit.strategy !== selectedStrategy) return false;
   if (status === "succeeded" || status === "partial") return stateChanged === true && commit.outcome === "committed";
   if (status === "state_unknown") return stateChanged === "unknown" && commit.outcome === "unknown";
   return (status === "failed_no_change" || status === "cancelled") && stateChanged === false && commit.outcome === "not_committed";
@@ -232,6 +233,7 @@ function conflictingTerminal(entries: readonly any[], selected: any, callId: str
       || terminal.status !== outcome.status || terminal.stateChanged !== outcome.stateChanged
       || terminal.operation !== outcome.operation || terminal.target !== outcome.target || terminal.destination !== outcome.destination
       || !sameCommitReceipt(terminal.commit ?? terminal.receipt?.commit, details?.commit)
+      || terminal.sha256 !== undefined && (typeof terminal.sha256 !== "string" || !SHA256.test(terminal.sha256) || terminal.sha256 !== details?.sha256)
       || !sameCreatedDirectories(terminal.creation?.createdDirectories ?? terminal.createdDirectories, details?.creation?.createdDirectories ?? details?.createdDirectories)) return true;
     previous = true;
   }
@@ -307,7 +309,7 @@ function boundRecoveryItem(entries: readonly any[], call: any, index: number, st
   // Entered items persist intent before revalidation. Cancellation before item
   // entry and remaining not-started items have preparation but no intent.
   if (status !== "succeeded" && laterBatchActivity(entries, call.id, index)) return undefined;
-  return prepared;
+  return { target: prepared.target, destination: prepared.destination, strategy: commit?.data.strategy };
 }
 
 function sameLegacyWriteMirror(selected: any, entry: any): boolean {
@@ -434,10 +436,12 @@ export function collectChanges(branch: readonly any[], cwd: string): ChangeRecor
     const target = historicalTarget ? resolve(receipt.target) : receipt.target;
     const destination = receipt.receiptVersion === 2 && receipt.destination ? resolve(cwd, receipt.destination) : undefined;
     let bound = false;
+    let selectedStrategy: string | undefined;
     const executionEntries = call ? branch.slice(callOrder.get(call.id)! + 1) : [];
     if (exactItemId && historicalTarget && call?.name === "file_batch" && input?.operation === receipt.operation) {
       const intent = boundRecoveryItem(executionEntries, call, index, receipt.receiptVersion === 2 ? receipt.status : "succeeded");
       bound = intent?.target === receipt.target && intent?.destination === destination;
+      selectedStrategy = intent?.strategy;
     } else if (exactItemId && historicalTarget && call?.name === receipt.operation && typeof input?.path === "string") {
       if (receipt.receiptVersion === 2) {
         // The ordered standalone intent records the authorized canonical target.
@@ -446,12 +450,14 @@ export function collectChanges(branch: readonly any[], cwd: string): ChangeRecor
         // Existing-file v1 success producers already persist a request-hashed
         // origin before issuing I/O; it also binds their v2 partial outcome.
         const intent = intentEntry === undefined ? uniqueProgress(executionEntries, call.id, "origin", receipt.itemId) : intentEntry;
+        selectedStrategy = intent?.data.strategy;
         bound = index === 0 && intent?.data.operation === receipt.operation && intent?.data.target === receipt.target
           && intent?.data.requestHash === call.requestHash
           && intent?.data.destination === receipt.destination && (!receipt.destination || isAbsolute(receipt.destination))
           && (intent !== entry || entry?.data?.phase === "intent");
         if (bound && hasEarlierTerminal(executionEntries, executionEntries.indexOf(intent), call.id, receipt.itemId, 0)) bound = false;
       } else {
+        selectedStrategy = uniqueProgress(executionEntries, call.id, "intent", `${call.id}:0`)?.data.strategy;
         const origin = uniqueProgress(executionEntries, call.id, "origin");
         if (origin !== undefined) {
           bound = origin !== null && origin.data.itemId === `${call.id}:0` && origin.data.target === target && origin.data.operation === receipt.operation
@@ -469,7 +475,8 @@ export function collectChanges(branch: readonly any[], cwd: string): ChangeRecor
     }
     if (bound && call.name !== "file_batch" && !validStandalonePrefix(executionEntries, entry, call, receipt.target, receipt.receiptVersion === 2 ? receipt.destination : undefined)) bound = false;
     if (bound && receipt.receiptVersion === 2 && conflictingTerminal(executionEntries, entry, receipt.toolCallId, receipt.itemId, index, receipt, details)) bound = false;
-    if (bound && !commitMatchesTerminal(details?.commit, receipt.receiptVersion === 1 ? "succeeded" : receipt.status, receipt.stateChanged)) bound = false;
+    if (bound && !commitMatchesTerminal(details?.commit, receipt.receiptVersion === 1 ? "succeeded" : receipt.status, receipt.stateChanged,
+      entry?.data?.phase === "intent" ? undefined : selectedStrategy)) bound = false;
     if (bound && entry?.data?.phase === "intent" && receipt.operation === "write") {
       const prepared = call?.name === "file_batch" ? uniqueBatchPreparation(executionEntries, call)?.targets.get(`${call.id}:${index}`)
         : uniqueProgress(executionEntries, call.id, "origin")?.data;

@@ -46,10 +46,12 @@ export interface FileCommitReceipt {
 
 export class FileCommitError extends Error {
   readonly receipt: FileCommitReceipt;
-  constructor(cause: unknown, receipt: FileCommitReceipt) {
+  readonly committedSha256: string | undefined;
+  constructor(cause: unknown, receipt: FileCommitReceipt, candidateSha256: string) {
     super(`${cause instanceof Error ? cause.message : String(cause)}${receipt.retainedTemporary ? `; temporary retained: ${receipt.retainedTemporary} (${receipt.cleanupReason})` : ""}`);
     this.name = "FileCommitError";
     this.receipt = receipt;
+    this.committedSha256 = receipt.outcome === "committed" ? candidateSha256 : undefined;
   }
 }
 
@@ -63,7 +65,7 @@ export function commitFailure(error: FileCommitError) {
   const stateChanged = error.receipt.outcome === "unknown" ? "unknown" as const : error.receipt.outcome === "committed";
   return { ok: false, category: stateChanged === false ? "COMMIT_FAILED" : "PARTIAL_MUTATION", stateChanged,
     status: stateChanged === "unknown" ? "state_unknown" : stateChanged ? "partial" : "failed_no_change",
-    requiresVerification: stateChanged !== false || Boolean(error.receipt.retainedTemporary), commit: error.receipt, cause: error.message };
+    requiresVerification: stateChanged !== false || Boolean(error.receipt.retainedTemporary), commit: error.receipt, sha256: error.committedSha256, cause: error.message };
 }
 
 interface OwnedTemporary { path: string; device: string; inode: string }
@@ -276,6 +278,6 @@ export async function commitPreparedFile(plan: FileCommitPlan, content: Uint8Arr
     } else if (temporary) await cleanupTemporary(temporary, plan, receipt);
     else if (createdPath) { receipt.retainedTemporary = createdPath; receipt.cleanupReason = "Candidate creation may have completed, but identity was not captured; existence/ownership could not be proved."; }
   }
-  if (failed) throw new FileCommitError(failure, receipt);
+  if (failed) throw new FileCommitError(failure, receipt, expectedHash);
   return receipt;
 }

@@ -66,6 +66,7 @@ export interface MutationGuardFailure {
   commit?: FileCommitReceipt;
   expectedSha256?: string;
   actualSha256?: string;
+  sha256?: string;
   cause?: string;
   protectedRoots?: string[];
   policyReason?: "protected_root" | "confirmation_required" | "user_rejected";
@@ -904,6 +905,7 @@ export class MutationWriteGuard {
         requiresVerification: stateChanged !== false || Boolean(commit?.retainedTemporary),
         expectedSha256: previousSha256,
         commit,
+        sha256: error instanceof FileCommitError ? error.committedSha256 : undefined,
         cause: errorMessage(error),
       });
     }
@@ -1034,6 +1036,7 @@ export class MutationWriteGuard {
           requiresVerification: stateChanged !== false || Boolean(commit?.retainedTemporary),
           expectedSha256: actualSha256,
           commit,
+          sha256: error instanceof FileCommitError ? error.committedSha256 : undefined,
           cause: errorMessage(error),
         });
       } finally {

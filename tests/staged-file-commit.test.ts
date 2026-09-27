@@ -142,7 +142,8 @@ test("N2 postcommit cancellation/readback failure remains committed; failed plat
       f.plan.metadata.replace = async () => { throw new Error("platform state uncertain"); };
     } else f.hooks.afterCommit = async () => { if (fault === "abort") abort.abort(); else await writeFile(f.target, "external"); };
     await assert.rejects(commitPreparedFile(f.plan, Buffer.from("new"), f.hooks), (error: unknown) => {
-      assert.ok(error instanceof FileCommitError); assert.equal(error.receipt.outcome, fault === "platform" ? "unknown" : "committed"); return true;
+      assert.ok(error instanceof FileCommitError); assert.equal(error.receipt.outcome, fault === "platform" ? "unknown" : "committed");
+      assert.equal(error.committedSha256, fault === "platform" ? undefined : createHash("sha256").update("new").digest("hex")); return true;
     });
   }
 });
@@ -170,6 +171,7 @@ for (const fault of ["close", "finalize"] as const) test(`N2 synced in-place con
   const candidate = Buffer.from("complete new bytes");
   await assert.rejects(commitPreparedFile(f.plan, candidate, f.hooks), (error: unknown) => {
     assert.ok(error instanceof FileCommitError); assert.equal(error.receipt.outcome, "committed");
+    assert.equal(error.committedSha256, createHash("sha256").update(candidate).digest("hex"));
     assert.equal(error.receipt.fileSynced, true); assert.equal(error.receipt.retainedTemporary, undefined); return true;
   });
   assert.deepEqual(await readFile(f.target), candidate); assert.deepEqual(await readFile(alias), candidate);

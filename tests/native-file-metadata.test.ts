@@ -355,7 +355,9 @@ test("N2 Windows failed attribute finalization cannot report unchanged after a r
     return post.call(this, input);
   });
   await assert.rejects(commitPreparedFile(plan, f.after, { assertPathAllowed: async () => plan.target.canonical }), (error: unknown) => {
-    assert.ok(error instanceof FileCommitError); assert.equal(error.receipt.outcome, "unknown"); assert.match(error.message, /CreateFileW.*Win32 2/); return true;
+    assert.ok(error instanceof FileCommitError); assert.equal(error.receipt.outcome, "committed");
+    assert.equal(error.receipt.fileSynced, true); assert.equal(error.receipt.retainedTemporary, undefined);
+    assert.match(error.message, /CreateFileW.*Win32 2/); return true;
   });
   assert.equal(attempts, 1); assert.deepEqual(await readFile(f.target), f.after); assert.deepEqual(await readFile(alias), f.after);
   const current = await capturePathIdentity(f.target); assert.equal(current.inode, plan.target.inode);

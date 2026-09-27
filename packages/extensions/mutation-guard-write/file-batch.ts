@@ -344,6 +344,7 @@ export class BatchInvocation {
               stateChanged: result.stateChanged, reason: result.reason,
               requiresVerification: result.requiresVerification,
               commit: receipt?.commit,
+              sha256: receipt?.sha256,
               createdDirectories: receipt?.creation?.createdDirectories ?? receipt?.createdDirectories });
           }
           catch { if (result.stateChanged !== false) {
