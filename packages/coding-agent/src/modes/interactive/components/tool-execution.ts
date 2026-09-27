@@ -1261,12 +1261,19 @@ export class ToolExecutionComponent extends Container {
 
 	override invalidate(): void {
 		super.invalidate();
+		if (this.toolDefinition?.collapseCallOnResult && this.result && !this.isPartial && !this.expanded) {
+			this.callRendererComponent?.invalidate();
+		}
 		this.callRendererDirty = true;
 		this.updateDisplay();
 		this.maybeConvertImagesForKitty();
 	}
 
 	[RELEASE_COMPONENT_RENDER_CACHE](): void {
+		// A collapsed completion retains its call component outside the mounted tree.
+		if (this.toolDefinition?.collapseCallOnResult && this.result && !this.isPartial && !this.expanded) {
+			this.callRendererComponent?.[RELEASE_COMPONENT_RENDER_CACHE]?.();
+		}
 		this.renderLifecycleGeneration++;
 		const lifecycleState = this.rendererState as ToolRenderLifecycleState;
 		lifecycleState[TOOL_RENDER_LIFECYCLE_GENERATION] = this.renderLifecycleGeneration;
@@ -1384,7 +1391,8 @@ export class ToolExecutionComponent extends Container {
 			renderContainer.children.length = 0;
 
 			const callRenderer = this.getCallRenderer();
-			if (!this.isCallRendererArgsOnly() || this.callRendererDirty || !this.callRendererComponent) {
+			const hideCall = this.toolDefinition?.collapseCallOnResult && this.result && !this.isPartial && !this.expanded;
+			if (!hideCall && (!this.isCallRendererArgsOnly() || this.callRendererDirty || !this.callRendererComponent)) {
 				if (this.incompleteArguments) {
 					this.callRendererComponent = new Text(theme.fg("error", `${this.toolName}: arguments incomplete / not executed`), 0, 0);
 				} else if (!callRenderer) {
@@ -1403,7 +1411,7 @@ export class ToolExecutionComponent extends Container {
 				}
 				this.callRendererDirty = false;
 			}
-			if (this.callRendererComponent) {
+			if (!hideCall && this.callRendererComponent) {
 				renderContainer.addChild(this.callRendererComponent);
 				hasContent = true;
 			}

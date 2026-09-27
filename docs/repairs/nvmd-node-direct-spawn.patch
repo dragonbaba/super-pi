@@ -2,16 +2,16 @@ diff --git a/src/core/node.rs b/src/core/node.rs
 index e0215f3..00ab730 100644
 --- a/src/core/node.rs
 +++ b/src/core/node.rs
-@@ -1,11 +1,18 @@
+@@ -1,3 +1,3 @@
  use super::{ExitStatus, OsStr, OsString};
 -use crate::{module::Context, signal::pass_control_to_shim, utils::command};
 +use crate::{module::Context, signal::pass_control_to_shim};
  use anyhow::Result;
- 
+@@ -5,2 +5,2 @@
 -pub(super) fn command(exe: &OsStr, args: &[OsString]) -> Result<ExitStatus> {
 +pub(super) fn command(_exe: &OsStr, args: &[OsString]) -> Result<ExitStatus> {
      let path = Context::global()?.env_path()?;
- 
+@@ -8,3 +8,10 @@
 -    let mut command = command::create_command(exe);
 +    // env_path starts with the selected version's native executable directory.
 +    // Node is an executable, not a batch file: cmd /C would reinterpret script
@@ -23,4 +23,3 @@ index e0215f3..00ab730 100644
 +    let mut command = std::process::Command::new(executable);
      command.args(args);
      command.env("PATH", path);
- 
