@@ -1858,7 +1858,7 @@ export class AgentSession {
 
 	/** User-owned idle-session operation; no settings file is written. */
 	configureToolResultBudget(options: ToolResultPresentationOptions | undefined): void {
-		if (this.isStreaming || this.isCompacting || this.agent.state.pendingToolCalls.size !== 0) throw new Error("Wait until the current turn settles before changing the tool-result budget.");
+		if (this.isStreaming || this.agent.state.isStreaming || this.isCompacting || this.agent.state.pendingToolCalls.size !== 0) throw new Error("Wait until the current turn settles before changing the tool-result budget.");
 		const next = createToolResultPresentationOwner(options, this.sessionManager.getSessionId());
 		this._clearEvidenceBranch();
 		this._toolResultPresentation?.dispose();

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -8,6 +8,18 @@ import childProcess, { spawnSync } from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
 import ts from "typescript";
 import { runMeasuredChild } from "../scripts/bench/next-phase-child.mjs";
+import { captureBuiltArtifacts } from "../scripts/bench/next-phase-build.mjs";
+
+test("N4 build manifest detects ignored artifact mutation without a Git change", () => {
+  const root = mkdtempSync(join(tmpdir(), "sp-n4-build-test-")), dist = join(root, "packages", "fixture", "dist");
+  try {
+    mkdirSync(dist, { recursive: true }); writeFileSync(join(root, "package-lock.json"), "{}"); writeFileSync(join(dist, "index.js"), "original");
+    const before = captureBuiltArtifacts(root); assert.equal(before.files.length, 1);
+    assert.deepEqual(captureBuiltArtifacts(root), before);
+    writeFileSync(join(dist, "index.js"), "stale artifact"); assert.notEqual(captureBuiltArtifacts(root).sha256, before.sha256);
+    writeFileSync(join(root, "package-lock.json"), '{"changed":true}'); assert.notEqual(captureBuiltArtifacts(root).lockfileSha256, before.lockfileSha256);
+  } finally { assert.equal(dirname(root), tmpdir()); rmSync(root, { recursive: true, force: true }); }
+});
 
 test("N4 shared measurement model helper imports no production module graph", () => {
   const fixture = "tests/helpers/next-phase-model.ts";
@@ -36,18 +48,18 @@ for (const scenario of ["matrix", "session", "spill", "io"]) test(`N4 ${scenario
   } finally { assert.equal(dirname(root), tmpdir()); rmSync(root, { recursive: true, force: true }); }
 });
 
-for (const scenario of ["success", "stalled", "missing"]) test(`N4 comparison child owns deadline/close path: ${scenario}`, async () => {
+for (const scenario of ["success", "stalled", "inherited-pty-stall", "missing"]) test(`N4 comparison child owns deadline/close path: ${scenario}`, async () => {
   const root = mkdtempSync(join(tmpdir(), "sp-n4-child-test-")), file = join(root, "child.log"), ledger = join(root, "ledger.jsonl");
   try {
     const result = runMeasuredChild({ executable: scenario === "missing" ? process.execPath + ".absent" : process.execPath,
-      args: ["-e", scenario === "stalled" ? "setInterval(()=>{},1000)" : "process.stdout.write('completed')"], project: root, file, ledger,
-      env: process.env, tag: scenario, deadlineMs: scenario === "stalled" ? 150 : 10000 });
+      args: ["-e", scenario === "stalled" || scenario === "inherited-pty-stall" ? "setInterval(()=>{},1000)" : "process.stdout.write('completed')"], project: root, file, ledger,
+      env: process.env, tag: scenario, inheritStdio: scenario === "inherited-pty-stall", deadlineMs: scenario === "stalled" || scenario === "inherited-pty-stall" ? 150 : 10000 });
     if (scenario === "success") await result;
-    else await assert.rejects(result, scenario === "stalled" ? /deadline/ : /ENOENT/);
+    else await assert.rejects(result, scenario === "missing" ? /ENOENT/ : /deadline/);
     const entries = readFileSync(ledger, "utf8").trim().split("\n").map(line => JSON.parse(line));
     const end = entries.at(-1); assert.equal(end.cleanupIncomplete, false); assert.ok(end.closed);
     if (scenario === "success") assert.equal(readFileSync(file, "utf8"), "completed");
-    if (scenario === "stalled") {
+    if (scenario === "stalled" || scenario === "inherited-pty-stall") {
       const pid = entries[0].pid; assert.ok(Number.isInteger(pid));
       assert.ok(entries.some(entry => entry.terminationRequested));
       assert.throws(() => process.kill(pid, 0), (error: any) => error.code === "ESRCH");

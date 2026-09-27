@@ -246,3 +246,35 @@ dry-run, verification and drafting, until an explicit fresh repair. Non-budget
 projection preparation failures now show preparation-failed instead of stale
 applied or budget-too-small state; actual read output and serializer tests pass.
 All final five-round comparisons, PTY pairs and latest-head CI/review remain pending.
+
+The subsequent review closes two remaining measurement scope issues: main I/O
+resets sampledPeakHeap to the controlled-GC start value after discovery; TUI records
+workload wall/CPU endpoints before stopping/traversing the inspector profile and
+reports analysis overhead separately. Baseline and candidate TUI functional runs
+pass with the revised report fields.
+
+Comparison now builds both clean recorded revisions with the installed npm CLI's
+build:offline before warmup, hashes every regular file under package dist trees
+plus the lockfile, and verifies the same artifacts/revisions/clean status after
+all rounds. These build processes are outside measured rounds. A fixture proves
+ignored output changes and lockfile changes change the manifest. No dependency
+installation/download is part of this build step; npm_execpath must point to the
+already installed npm CLI.
+
+The real PTY child now uses the owned deadline runner (120 seconds per cold/warm
+child), SIGINT/SIGTERM abort handling and recorded PID termination. A failed kill
+reports retained-root/cleanupIncomplete instead of deleting a live child's root.
+POSIX inherited PTY termination targets only the recorded foreground child;
+this formal launcher imports its CLI in-process and the fixture runs builtin read.
+Normal non-PTY children retain the separately owned process group behavior.
+Windows real cold/warm functional pair passes: 2 provider requests and 1 actual
+read each, zero network attempts, both child close records clean, removedRoot=true.
+An inherited-stdio stalled-child regression observes termination and timer cleanup.
+These functional timings are not part of final five-round evidence.
+
+Budget configuration also treats the public Agent's streaming state as busy.
+Actual session.agent.prompt()/continue() provider streams held before any tool is
+pending reject replacement atomically (same owner/status/generation); after the
+stream settles, explicit reconfiguration disposes the old owner once. Current
+check, offline build and focused budget/source/measurement guards pass. All final
+whole-project checks, comparisons and exact-head review remain necessary.

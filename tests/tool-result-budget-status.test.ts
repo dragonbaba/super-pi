@@ -14,6 +14,28 @@ import { AgentSession, parseSkillBlock } from "../packages/coding-agent/src/core
 import * as sessionPatterns from "../packages/coding-agent/src/core/agent-session-regex.ts";
 import { alphaMessage } from "./helpers/alpha-stream.ts";
 import { Session as InspectorSession } from "node:inspector/promises";
+import { AssistantMessageEventStream } from "../packages/ai/src/utils/event-stream.ts";
+
+for (const action of ["prompt", "continue"]) test(`N4 budget replacement refuses a direct public Agent ${action} before any tool is pending`, async () => {
+  const stream = new AssistantMessageEventStream(); let entered!: () => void, finished = false, pending: Promise<void> | undefined;
+  const begun = new Promise<void>(resolve => { entered = resolve; });
+  const f = await alphaSession({ runtime: alphaModelRuntime(() => { entered(); return stream; }),
+    messages: action === "continue" ? [{ role: "user", content: [{ type: "text", text: "fixture" }], timestamp: 1 }] : [] });
+  function complete() { if (!finished) { finished = true; stream.push({ type: "done", reason: "stop", message: alphaMessage([{ type: "text", text: "done" }]) }); } }
+  try {
+    f.session.configureToolResultBudget({ enabled: true, budgetTokens: 4096 });
+    const owner = (f.session as any)._toolResultPresentation, generation = f.session.toolResultBudgetGeneration;
+    pending = action === "prompt" ? f.session.agent.prompt("fixture") : f.session.agent.continue();
+    await begun; assert.equal(f.session.isStreaming, false); assert.equal(f.session.agent.state.isStreaming, true);
+    assert.equal(f.session.agent.state.pendingToolCalls.size, 0);
+    const status = f.session.getToolResultBudgetStatus();
+    assert.throws(() => f.session.configureToolResultBudget({ enabled: true, budgetTokens: 2048 }), /current turn settles/);
+    assert.equal((f.session as any)._toolResultPresentation, owner); assert.equal(f.session.toolResultBudgetGeneration, generation);
+    assert.deepEqual(f.session.getToolResultBudgetStatus(), status); assert.equal(owner.counters.ownerDisposeCalls, 0);
+    complete(); await pending; pending = undefined;
+    f.session.configureToolResultBudget({ enabled: true, budgetTokens: 2048 }); assert.equal(owner.counters.ownerDisposeCalls, 1);
+  } finally { complete(); await pending; await f.release(); }
+});
 
 test("N4 Session parsing patterns are reusable module constants with unchanged flags", () => {
   const methods = AgentSession.prototype as any;

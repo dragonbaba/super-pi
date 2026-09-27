@@ -64,11 +64,13 @@ try {
   terminal.gated = true; terminal.columns = 110; tui.renderNow(); const cancelStart = performance.now(); await tui.stop(); const cancelMs = performance.now() - cancelStart;
   const stopped = tui.getTerminalFrameQueueSnapshot(); assert.equal(stopped.activeWrites, 0); assert.equal(stopped.pendingFrames, 0); assert.equal(terminal.activeData, undefined);
   const heapAfterStop = process.memoryUsage().heapUsed; sampledPeakHeap = Math.max(sampledPeakHeap, heapAfterStop);
+  const elapsedMs = performance.now() - start, used = process.cpuUsage(cpu), profileStart = performance.now(), profileCpu = process.cpuUsage();
   const { profile } = await profiler.post("HeapProfiler.stopSampling"); let sampledBytes = 0; const nodes = [profile.head];
   while (nodes.length) { const node = nodes.pop()!; sampledBytes += node.selfSize; for (const child of node.children) nodes.push(child); }
-  const used = process.cpuUsage(cpu); timings.sort((a, b) => a - b);
+  const profileOverheadMs = performance.now() - profileStart, profileUsed = process.cpuUsage(profileCpu); timings.sort((a, b) => a - b);
   console.log(JSON.stringify({ benchmark: "N4-tui-boundaries", implementation: process.env.SP_COST_LABEL ?? "candidate", node: process.version,
-    historyItems: 5000, markdownCodeUnits: content.length, batchPaths: 16, detailPathsRendered: expanded.includes("file0"), frames: timings.length, elapsedMs: performance.now() - start, cpuUs: used.user + used.system,
+    historyItems: 5000, markdownCodeUnits: content.length, batchPaths: 16, detailPathsRendered: expanded.includes("file0"), frames: timings.length, elapsedMs, cpuUs: used.user + used.system,
+    profileOverheadMs, profileOverheadCpuUs: profileUsed.user + profileUsed.system,
     p50Ms: timings[29], p95Ms: timings[56], p99Ms: timings[59], sampledBytes, heapBefore, sampledPeakHeap, heapAfterStop, heapSamples: 122,
     writes: terminal.writes, terminalBytes: terminal.bytes, metrics: metrics.snapshot(), busy, flushed, stopped, cancelMs,
     measuredScope: "actual retained Alt/ScrollView/Assistant/Tool components; controlled gated Terminal, not OS drain throughput" }));

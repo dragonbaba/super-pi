@@ -2,7 +2,7 @@ import { openSync, closeSync, appendFileSync } from "node:fs";
 import { spawn, execFileSync } from "node:child_process";
 
 /** One benchmark-owned child. Deadlines apply to this recorded PID/tree only. */
-export function runMeasuredChild({ executable, args, project, file, ledger, env, tag, deadlineMs, signal }) {
+export function runMeasuredChild({ executable, args, project, file, ledger, env, tag, deadlineMs, signal, inheritStdio = false }) {
   return new Promise((resolve, reject) => {
     const fd = openSync(file, "wx");
     let child, timer, cleanupTimer, failure, recordFailure, settled = false;
@@ -16,7 +16,10 @@ export function runMeasuredChild({ executable, args, project, file, ledger, env,
       try { closeSync(fd); } catch (error) { recordFailure ??= error; }
       record({ code, signal: signalCode, closed: Date.now(), cleanupIncomplete });
       if (!failure && !recordFailure && code === 0 && !cleanupIncomplete) resolve();
-      else reject(failure ?? recordFailure ?? new Error(`${tag} exited ${code}; inspect ${file}`));
+      else {
+        const cause = failure ?? recordFailure, error = new Error(cause?.message ?? `${tag} exited ${code}; inspect ${file}`, { cause });
+        error.childPid = child?.pid; error.cleanupIncomplete = cleanupIncomplete; reject(error);
+      }
     }
     function terminate(reason) {
       if (settled || failure) return;
@@ -24,7 +27,7 @@ export function runMeasuredChild({ executable, args, project, file, ledger, env,
       if (child?.pid && child.exitCode === null && child.signalCode === null) {
         try {
           if (process.platform === "win32") execFileSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], { windowsHide: true, stdio: "pipe", timeout: 5000 });
-          else process.kill(-child.pid, "SIGKILL"); // Our detached child owns this group.
+          else process.kill(inheritStdio ? child.pid : -child.pid, "SIGKILL"); // A PTY child stays in the foreground group; never kill the harness group.
         } catch (error) {
           record({ terminationError: error.message });
           try { child.kill("SIGKILL"); } catch (fallbackError) { record({ terminationFallbackError: fallbackError.message }); }
@@ -36,10 +39,10 @@ export function runMeasuredChild({ executable, args, project, file, ledger, env,
     }
     function aborted() { terminate(new Error(`${tag} comparison aborted`)); }
     try {
-      child = spawn(executable, args, { cwd: project, env, stdio: ["ignore", fd, fd], windowsHide: true, detached: process.platform !== "win32" });
+      child = spawn(executable, args, { cwd: project, env, stdio: inheritStdio ? "inherit" : ["ignore", fd, fd], windowsHide: true, detached: !inheritStdio && process.platform !== "win32" });
       child.once("error", error => { failure = error; });
       child.once("close", finish);
-      record({ started: Date.now(), deadlineMs });
+      record({ started: Date.now(), deadlineMs, inheritStdio });
       timer = setTimeout(() => terminate(new Error(`${tag} exceeded ${deadlineMs}ms deadline`)), deadlineMs);
       signal?.addEventListener("abort", aborted, { once: true }); if (signal?.aborted) aborted();
       if (recordFailure) terminate(recordFailure);
