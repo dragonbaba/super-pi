@@ -281,3 +281,18 @@ Node inherited sockets cannot represent this POSIX pipe case and are explicitly
 skipped. Existing stable execution callbacks are reused; no callback or regex was
 added to production. Windows focused/source tests and check pass; Linux behavior
 is subject to the new CI run.
+
+Review r28 validation correction: Linux CI exposed a test callback reading the
+empty startup-progress content array before process spawn. It now accepts text
+updates only; the production inherited-pipe lifecycle fix is unchanged. Windows
+observation tests: 21 passed, five platform skips. Linux rerun remains required.
+
+Allocation correction: the real result producer plus 20,000 width-changing renders
+now samples objects collected by both major and minor GC. Earlier survivor-only
+figures are superseded. Serial Node22.19 Windows sampling reports 2,988,252,112
+bytes (149,412.6056 per complete render); dominant sites are ANSI wrapping, visible
+width, Box background/repetition and layout. This is not allocation attributed
+solely to N3. Repeated failure analyses are zero, twelve derived references return
+to zero, and pending timers are zero. After releasing profiler storage, controlled
+GC heap is 46,292,312 to 46,739,768 bytes. No whole-chain zero-allocation or speedup
+claim is made; check passes and final comparative timing remains pending.

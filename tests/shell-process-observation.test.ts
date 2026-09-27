@@ -160,11 +160,11 @@ test("N3 spill failure stops active inherited output after the parent exited", {
   const descendant = "process.stdout.write(JSON.stringify({ownedPid:process.pid})+'\\n');process.send('ready');let large=false;setInterval(()=>process.stdout.write(large?'x'.repeat(65536):'tail\\n'),25);setTimeout(()=>{large=true},250);setTimeout(()=>process.exit(0),4000)";
   const parent = `const c=require('child_process').spawn(process.execPath,['-e',${JSON.stringify(descendant)}],{stdio:['ignore',process.stdout,process.stderr,'ipc']});c.on('message',()=>{c.disconnect();c.unref();process.exit(0)})`;
   const tool = createBashTool(process.cwd(), { operations, exposeSessionEnvironment: false }), start = performance.now();
-  const update = (result: any) => { if (!text) text = result.content[0].text; };
+  const update = (result: any) => { if (!text && result.content[0]?.type === "text") text = result.content[0].text; };
   const onUpdate = Object.assign(update, { awaited: async (result: any) => { update(result); } });
   try {
     await assert.rejects(tool.execute("descendant-spill", { command: parent }, undefined, onUpdate), (error: any) => {
-      const facts = readShellExecution(toolResultFromError(error)?.details); assert.equal(facts?.termination, "output_failure");
+      const facts = readShellExecution(toolResultFromError(error)?.details); assert.equal(facts?.termination, "output_failure", error.message);
       assert.equal(facts?.exitCode, 0); assert.equal(facts?.output.complete, false); return true;
     });
     assert.ok(performance.now() - start < 3000); assert.ok(streams.length > 0);
