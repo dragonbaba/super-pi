@@ -220,6 +220,30 @@ test("N2 Windows post-publication native failure reports committed bytes and no 
   assert.equal(nativeFileDiagnostics().pending, 0);
 });
 
+test("N2 Windows parent FILE_ADD_FILE denial preselects object preservation without a candidate", { skip: process.platform !== "win32" }, async t => {
+  const f = await fixture(t), original = await capturePathIdentity(f.target);
+  const powershell = join(process.env.SystemRoot!, "System32/WindowsPowerShell/v1.0/powershell.exe");
+  const options = { windowsHide: true, env: { ...process.env, N2_PARENT: f.root } };
+  const { stdout: saved } = await execute(powershell, ["-NoProfile", "-NonInteractive", "-Command",
+    "$ErrorActionPreference='Stop';$a=[IO.Directory]::GetAccessControl($env:N2_PARENT);$a.GetSecurityDescriptorSddlForm([Security.AccessControl.AccessControlSections]::Access);$sid=[Security.Principal.WindowsIdentity]::GetCurrent().User;$r=New-Object Security.AccessControl.FileSystemAccessRule($sid,[Security.AccessControl.FileSystemRights]::CreateFiles,[Security.AccessControl.AccessControlType]::Deny);$a.AddAccessRule($r);[IO.Directory]::SetAccessControl($env:N2_PARENT,$a)"], options);
+  try {
+    await assert.rejects(writeFile(join(f.root, "creation-probe"), "must refuse", { flag: "wx" }), (error: any) => error.code === "EACCES" || error.code === "EPERM");
+    const observed = await nativeFileRequest("inspect", { path: f.target, expected: original, capability: true });
+    assert.equal(observed.replacementAccess, true); assert.equal(observed.parentCreationAccess, false);
+    const before = await readdir(f.root), plan = await planFor(f.target, f.before);
+    assert.equal(plan.metadata.strategy, "protected_in_place"); assert.match(plan.metadata.reason!, /parent sibling-creation access/);
+    await commitPreparedFile(plan, f.after, { assertPathAllowed: async () => plan.target.canonical });
+    assert.deepEqual(await readFile(f.target), f.after); assert.equal((await capturePathIdentity(f.target)).inode, original.inode);
+    const after = await nativeFileRequest("inspect", { path: f.target, expected: original });
+    assert.equal(after.securityFingerprint, observed.securityFingerprint); assert.equal(after.attributes, observed.attributes);
+    assert.deepEqual(await readdir(f.root), before);
+    const stats = await nativeFileRequest("stats"); assert.equal(stats.activeHandles, 0); assert.equal(stats.publicationAttempts, 0);
+  } finally {
+    await execute(powershell, ["-NoProfile", "-NonInteractive", "-Command", "$ErrorActionPreference='Stop';$a=[IO.Directory]::GetAccessControl($env:N2_PARENT);$a.SetSecurityDescriptorSddlForm($env:N2_SDDL,[Security.AccessControl.AccessControlSections]::Access);[IO.Directory]::SetAccessControl($env:N2_PARENT,$a)"],
+      { ...options, env: { ...options.env, N2_SDDL: saved.trim() } });
+  }
+});
+
 test("N2 Windows custom protected DACL survives actual replacement", { skip: process.platform !== "win32" }, async t => {
   const f = await fixture(t);
   const powershell = join(process.env.SystemRoot!, "System32/WindowsPowerShell/v1.0/powershell.exe");

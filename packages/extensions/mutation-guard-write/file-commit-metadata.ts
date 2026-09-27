@@ -29,7 +29,7 @@ async function createWindowsTemporary(path: string): Promise<{ created: true; de
 interface MetadataObservation {
   attributes?: number; links?: number; creationTime?: string; security?: string; securityFingerprint?: string; filesystem?: string;
   hasAttributes?: boolean; namesFingerprint?: string; valuesFingerprint?: string; writeClearsAttributes?: boolean;
-  defaultAcl?: boolean; ownerAssignable?: boolean; replacementAccess?: boolean; mountId?: string;
+  defaultAcl?: boolean; ownerAssignable?: boolean; replacementAccess?: boolean; parentCreationAccess?: boolean; mountId?: string;
   inodeFlags?: number; xflags?: number; extentSize?: number; projectId?: number; cowExtentSize?: number; fileFlagsFingerprint?: string;
 }
 
@@ -152,6 +152,7 @@ export async function selectCommitMetadata(target: PathIdentity): Promise<Commit
     if (process.platform === "win32") {
       if (original.filesystem !== "NTFS") return compatibility("Only local NTFS has a validated staged capability; retain the original object and verify observed Windows metadata.", info, target, original);
       if (original.replacementAccess !== true) return compatibility("Windows replacement access is denied: retain the writable original object; verify owner/group/DACL, attributes and creation time. Selected before any candidate is created.", info, target, original);
+      if (original.parentCreationAccess !== true) return compatibility("Windows parent sibling-creation access is denied: retain the writable original object and verify its metadata. Selected before any candidate is created.", info, target, original);
       if (original.attributes! & 1) throw new Error("[UNSUPPORTED_COMMIT] Read-only Windows target.");
       if (original.attributes! & ~(0x20 | 0x80)) return compatibility("Special Windows attributes require the original object; observed metadata is verified, advanced metadata is not verified.", info, target, original);
       // ReplaceFileW/SetSecurityInfo can normalize legacy unprotected explicit

@@ -1,7 +1,7 @@
 // Private fixed-operation worker. Never load a library/symbol/type supplied by a tool request.
 import { parentPort } from "node:worker_threads";
 import { existsSync, realpathSync, lstatSync, openSync, fstatSync, readSync, closeSync, renameSync } from "node:fs";
-import { join, toNamespacedPath } from "node:path";
+import { dirname, join, toNamespacedPath } from "node:path";
 import { createHash } from "node:crypto";
 import koffi from "koffi";
 import { LINUX_MOUNT_ID_PATTERN } from "./native-file-regex.mjs";
@@ -128,13 +128,13 @@ function tokenSid(b, token, info, needed, kind) {
   return sid;
 }
 
-function windowsObject(b, handle, expected) {
+function windowsObject(b, handle, expected, directory = false) {
   const bytes = Buffer.alloc(52);
   if (!b.fileInfo(handle, bytes)) winError(b, "GetFileInformationByHandle");
   const device = String(bytes.readUInt32LE(28));
   const inode = String((BigInt(bytes.readUInt32LE(44)) << 32n) | BigInt(bytes.readUInt32LE(48)));
   const attributes = bytes.readUInt32LE(0), links = bytes.readUInt32LE(40);
-  if (expected && (device !== expected.device || inode !== expected.inode) || attributes & (0x10 | 0x400)) throw new Error("[STALE_STATE] Native handle is not the prepared regular file.");
+  if (expected && (device !== expected.device || inode !== expected.inode) || attributes & 0x400 || Boolean(attributes & 0x10) !== directory) throw new Error("[STALE_STATE] Native handle is not the prepared file/directory object.");
   return { device, inode, attributes, links, creationTime: bytes.subarray(4, 12).toString("hex") };
 }
 
@@ -179,12 +179,12 @@ function createPrivateWindows(b, input) {
   return result;
 }
 
-function withWindowsHandle(b, input, access, action) {
-  const handle = b.open(toNamespacedPath(input.path), access, 7, null, 3, 0x00200000, null);
+function withWindowsHandle(b, input, access, action, directory = false) {
+  const handle = b.open(toNamespacedPath(input.path), access, 7, null, 3, directory ? 0x02200000 : 0x00200000, null);
   if (handle === 0xffffffffffffffffn || handle === -1n) winError(b, "CreateFileW(metadata)");
   activeHandles++;
   let value, failure;
-  try { windowsObject(b, handle, input.expected); value = action(b, input, handle); }
+  try { windowsObject(b, handle, input.expected, directory); value = action(b, input, handle); }
   catch (error) { failure = error; }
   const closed = b.close(handle);
   if (closed) activeHandles--;
@@ -219,6 +219,14 @@ function inspectWindows(b, input) {
     // explicit access denial selects compatibility; other failures propagate.
     try { withWindowsHandle(b, input, 0xc0110000, observeWindowsReplacementAccess); observed.replacementAccess = true; }
     catch (error) { if (error.nativeCode !== 5) throw error; observed.replacementAccess = false; }
+    // FILE_ADD_FILE on the already existing canonical parent, without creating
+    // a probe file. Directory handles require BACKUP_SEMANTICS; no token
+    // privilege is enabled or adjusted. Other failures do not select fallback.
+    const path = dirname(input.path), info = lstatSync(path, { bigint: true });
+    if (!info.isDirectory() || info.isSymbolicLink()) throw new Error("[STALE_STATE] Candidate parent is not an ordinary directory.");
+    const parent = { path, expected: { device: String(info.dev), inode: String(info.ino) } };
+    try { withWindowsHandle(b, parent, 2, observeWindowsReplacementAccess, true); observed.parentCreationAccess = true; }
+    catch (error) { if (error.nativeCode !== 5) throw error; observed.parentCreationAccess = false; }
   }
   return observed;
 }

@@ -14,6 +14,7 @@ import { mutationFixture as fixture, MutationWriteGuard } from "./helpers/mutati
 import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
 import { visibleWidth } from "../packages/tui/src/index.ts";
 const { collectChanges, collectVerifiedChanges, remainingDraft, verifyChange } = await createJiti(import.meta.url).import<any>("../packages/extensions/mutation-guard-write/changes.ts");
+const { restoreMutationEvidenceFromBranch } = await createJiti(import.meta.url).import<any>("../packages/extensions/mutation-guard-write/session-evidence.ts");
 
 function commandUI(f: any, item: string, action: string, editor = "") {
   let input = editor, view = "", notices: string[] = [];
@@ -887,6 +888,10 @@ for (const batch of [false, true]) for (const kind of ["exact", "snapshot"]) tes
   t.mock.restoreAll(); assert.equal(first.isError, true);
   const retained = (await fsPromises.readdir(dirname(target))).filter(name => name.startsWith(".pi-file-commit-"));
   assert.equal(retained.length, 1); assert.equal(readFileSync(join(dirname(target), retained[0]!), "utf8"), "after");
+  const restored = new MutationWriteGuard();
+  await restoreMutationEvidenceFromBranch(restored, f.cwd, SessionManager.open(f.session.getSessionFile()!).getBranch());
+  await assert.rejects(restored.write(f.cwd, target, "restored forbidden", 99), /READ_REQUIRED/);
+  await assert.rejects(restored.authorizeEdit(f.cwd, target, args.edits, 99, "before"), /READ_REQUIRED/);
   const retry = await f.call("edit", args, "retained-retry");
   assert.equal(retry.isError, true); assert.ok(JSON.stringify(retry).includes("READ_REQUIRED"), JSON.stringify(retry));
   const overwrite = await f.call("write", { path: target, content: "other" }, "retained-overwrite");
