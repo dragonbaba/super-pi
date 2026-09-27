@@ -176,6 +176,19 @@ test("N1 oversized committed patches disclose omission and retain later outcomes
   assert.equal(readFileSync(join(f.cwd, "large-patch"), "utf8"), after); assert.equal(readFileSync(join(f.cwd, "following"), "utf8"), "later-outcome");
 });
 
+test("N1 actual and imported preview bodies strip every C1 control", async t => {
+  const f = await fixture(t), controls = Array.from({ length: 32 }, (_, index) => String.fromCharCode(0x80 + index)).join("");
+  const content = "before" + controls + "after\n";
+  const result = await f.call("file_batch", { dryRun: true, operations: [{ operation: "write", mode: "create", path: "controls", content }] }, "controls");
+  assert.equal(result.isError, false); assert.equal(existsSync(join(f.cwd, "controls")), false);
+  const actual = (result.details as any).expandedSummary;
+  const imported = batchExpandedSummary("imported", [{ itemId: "imported:0", operation: "edit", target: "target", status: "succeeded", receipt: { patch: content } }]);
+  for (const text of [actual, imported, new PreviewBudget().take(content).text]) {
+    for (const character of text) assert.ok(character.charCodeAt(0) < 0x80 || character.charCodeAt(0) > 0x9f);
+    assert.ok(text.includes("before")); assert.ok(text.includes("after"));
+  }
+});
+
 test("N1 metadata fields cannot introduce new headings or bidi controls into expanded views", () => {
   const unsafe = "path\nfake: succeeded\u202e\u001b[31m";
   const summary = batchExpandedSummary("one result", [{ itemId: unsafe, operation: "move", status: "succeeded", target: unsafe, destination: unsafe,
