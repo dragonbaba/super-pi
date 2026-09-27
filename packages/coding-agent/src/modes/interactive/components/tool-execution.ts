@@ -3,9 +3,9 @@ import {
 	type Component,
 	Container,
 	getCapabilities,
+	GET_COMPONENT_RENDER_CACHE_CHILD,
 	Image,
 	RELEASE_COMPONENT_RENDER_CACHE,
-	releaseComponentRenderCaches,
 	Spacer,
 	Text,
 	type TUI,
@@ -1270,24 +1270,22 @@ export class ToolExecutionComponent extends Container {
 		this.maybeConvertImagesForKitty();
 	}
 
+	[GET_COMPONENT_RENDER_CACHE_CHILD](): Component | undefined {
+		return this.toolDefinition?.collapseCallOnResult && this.result && !this.isPartial && !this.expanded
+			? this.callRendererComponent : undefined;
+	}
+
 	[RELEASE_COMPONENT_RENDER_CACHE](): void {
 		this.renderLifecycleGeneration++;
 		const lifecycleState = this.rendererState as ToolRenderLifecycleState;
 		lifecycleState[TOOL_RENDER_LIFECYCLE_GENERATION] = this.renderLifecycleGeneration;
 		let releaseError: unknown;
 		let releaseFailed = false;
-		// Hidden call components are outside the mounted tree. A third-party hook
-		// must not prevent the remaining lifecycle cleanup, even when it throws.
+		// The shared structural traversal releases hidden and mounted descendants
+		// with one identity set, isolates hook errors, then invokes this parent hook.
 		if (this.toolDefinition?.collapseCallOnResult && this.result && !this.isPartial && !this.expanded) {
-			try {
-				releaseComponentRenderCaches(this.callRendererComponent);
-			} catch (error) {
-				releaseError = error;
-				releaseFailed = true;
-			} finally {
-				this.callRendererComponent = undefined;
-				this.callRendererDirty = true;
-			}
+			this.callRendererComponent = undefined;
+			this.callRendererDirty = true;
 		}
 		try {
 			lifecycleState[RELEASE_TOOL_RENDER_DERIVED_STATE]?.(lifecycleState);

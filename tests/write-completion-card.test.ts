@@ -182,3 +182,22 @@ test("hidden composite call releases every descendant even when a child release 
   releaseComponentRenderCaches(component);
   assert.equal(firstReleases, 1); assert.equal(secondReleases, 1);
 });
+
+test("hidden and mounted render trees release shared component identities once", () => {
+  for (const sharedRoot of [true, false]) {
+    const shared = new Text("shared resource", 0, 0);
+    let releases = 0;
+    shared[RELEASE_COMPONENT_RENDER_CACHE] = () => { assert.equal(++releases, 1, "resource disposed twice"); shared.setText(""); };
+    const callRoot = new Container(), resultRoot = new Container();
+    callRoot.addChild(shared); resultRoot.addChild(shared);
+    const component = card(undefined, { ...definition,
+      renderCall() { return sharedRoot ? shared : callRoot; },
+      renderResult() { return sharedRoot ? shared : resultRoot; },
+    } as ToolDefinition<any, any>);
+    component.setArgsComplete();
+    component.updateResult({ content: [{ type: "text", text: "Added fixture.ts" }], details: created }, false, false);
+    assert.doesNotThrow(() => releaseComponentRenderCaches(component));
+    assert.equal(releases, 1);
+    assert.equal((component as any).callRendererComponent, undefined);
+  }
+});

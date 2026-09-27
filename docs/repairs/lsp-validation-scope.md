@@ -17,10 +17,17 @@ server errors cannot turn into an empty successful diagnostic list. Actual empty
 reports remain supported. Existing authoritative project checks retain their role;
 tool guidance does not guarantee every future model tool choice.
 
-Review regressions retain uncertainty when a skipped route reaches its bounded file
-cap, including overlap with a live route. They also keep an initial empty push report
+Review regressions retain uncertainty when a skipped route stops with unvisited scope,
+including overlap with a live route. An exhaustive scan exactly at its file cap remains
+complete; the collector reports the difference without an additional filesystem probe.
+They also keep an initial empty push report
 inside the configured grace window and verify that later diagnostics are returned.
 No extra production scan is introduced to prove exhaustion beyond the cap.
+Diagnostic routes share a single bounded traversal instead of rescanning for each
+unavailable default service. Each adapter retains its own file cap, exclusions,
+duplicate-file and visited-directory state. A real two-directory fixture with twenty
+distinct missing-service policies performs two directory reads, down from forty-two;
+separate regressions retain exclusion and explicitly requested-file semantics.
 Nonblank roots retain their original whitespace. Strict publication checks apply to
 diagnostic validation; source fixes may still use an empty code-action context after
 the existing bounded grace wait, without claiming the file was validated.

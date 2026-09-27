@@ -13,6 +13,14 @@ interface ScanBudget {
 	visitedDirectories: number;
 }
 
+interface FileCollection {
+	adapter: LspServerAdapter;
+	files: string[];
+	seen: Set<string>;
+	visitedDirectories: Set<string>;
+	scopeLimited: boolean;
+}
+
 export function resolveRoot(root?: string, cwd = process.cwd()) {
 	const resolvedRoot = path.resolve(cwd, root && root.trim() ? root : ".");
 	if (!existsSync(resolvedRoot)) throw new Error(`Workspace root does not exist: ${resolvedRoot}`);
@@ -46,6 +54,16 @@ export function collectSupportedFiles(
 	requestedPaths: readonly string[] | undefined,
 	limit: number,
 ) {
+	return collectSupportedFilesByAdapter([adapter], root, requestedPaths, limit).get(adapter)!.files;
+}
+
+/** Share directory IO while retaining each route's limit and exclusion policy. */
+export function collectSupportedFilesByAdapter(
+	adapters: readonly LspServerAdapter[],
+	root: string,
+	requestedPaths: readonly string[] | undefined,
+	limit: number,
+) {
 	if (!Number.isFinite(limit) || limit < 1 || limit > MAX_COLLECTED_FILES) {
 		throw new Error(`LSP file limit must be between 1 and ${MAX_COLLECTED_FILES}.`);
 	}
@@ -53,32 +71,37 @@ export function collectSupportedFiles(
 		throw new Error(`LSP paths accepts at most ${MAX_REQUESTED_PATHS} entries.`);
 	}
 	const cappedLimit = Math.floor(limit);
-	const files: string[] = [];
-	const seen = new Set<string>();
-	const visitedDirectories = new Set<string>();
+	const collections: FileCollection[] = adapters.map(adapter => ({
+		adapter, files: [], seen: new Set<string>(), visitedDirectories: new Set<string>(), scopeLimited: false,
+	}));
 	const budget: ScanBudget = { scannedPaths: 0, visitedDirectories: 0 };
 	const realRoot = realpathSync(root);
 	const inputs = requestedPaths?.length ? requestedPaths : [root];
 
 	for (const input of inputs) {
+		const knownInput = path.resolve(root, input);
+		for (const collection of collections) {
+			if (collection.files.length >= cappedLimit && !collection.seen.has(knownInput) &&
+				!collection.visitedDirectories.has(knownInput)) collection.scopeLimited = true;
+		}
+		const pending = collections.filter(collection => collection.files.length < cappedLimit);
+		if (pending.length === 0) continue;
 		const targetPath = resolveWorkspacePath(root, input, "Requested path");
 		if (!existsSync(targetPath)) throw new Error(`Requested path does not exist: ${targetPath}`);
 		if (!isInsidePath(realRoot, realpathSync(targetPath))) {
 			throw new Error(`Requested path resolves outside workspace root: ${targetPath}`);
 		}
-		collectPath(adapter, targetPath, files, seen, visitedDirectories, realRoot, cappedLimit, budget);
-		if (files.length >= cappedLimit) break;
+		collectPath(pending, targetPath, realRoot, cappedLimit, budget);
 	}
 
-	return files;
+	return new Map(collections.map(collection => [collection.adapter, {
+		files: collection.files, scopeLimited: collection.scopeLimited,
+	}]));
 }
 
 function collectPath(
-	adapter: LspServerAdapter,
+	collections: readonly FileCollection[],
 	targetPath: string,
-	files: string[],
-	seen: Set<string>,
-	visitedDirectories: Set<string>,
 	realRoot: string,
 	limit: number,
 	budget: ScanBudget,
@@ -87,38 +110,46 @@ function collectPath(
 	if (budget.scannedPaths > MAX_SCANNED_PATHS) {
 		throw new Error(`LSP file scan exceeded ${MAX_SCANNED_PATHS} paths; narrow the requested paths.`);
 	}
-	if (files.length >= limit || !existsSync(targetPath)) return;
+	if (!existsSync(targetPath)) return;
 	if (!isInsidePath(realRoot, realpathSync(targetPath))) return;
 
 	const stats = statSync(targetPath);
 	if (stats.isFile()) {
-		if (adapter.isSupportedFile(targetPath) && !seen.has(targetPath)) {
-			seen.add(targetPath);
-			files.push(targetPath);
+		for (const collection of collections) {
+			if (collection.adapter.isSupportedFile(targetPath) && !collection.seen.has(targetPath)) {
+				collection.seen.add(targetPath);
+				collection.files.push(targetPath);
+			}
 		}
 		return;
 	}
 
 	if (!stats.isDirectory()) return;
 	const directoryKey = realpathSync(targetPath);
-	if (visitedDirectories.has(directoryKey)) return;
+	const pending = collections.filter(collection => !collection.visitedDirectories.has(directoryKey));
+	if (pending.length === 0) return;
 	budget.visitedDirectories += 1;
 	if (budget.visitedDirectories > MAX_VISITED_DIRECTORIES) {
 		throw new Error(`LSP file scan exceeded ${MAX_VISITED_DIRECTORIES} directories; narrow the requested paths.`);
 	}
-	visitedDirectories.add(directoryKey);
+	for (const collection of pending) collection.visitedDirectories.add(directoryKey);
 
 	const entries = readdirSync(targetPath, { withFileTypes: true }).sort(compareDirectoryEntries);
 	for (const entry of entries) {
-		if (files.length >= limit) break;
-		if ((entry.isDirectory() || entry.isSymbolicLink()) && adapter.skipDirectories.has(entry.name))
-			continue;
+		const childPath = path.join(targetPath, entry.name);
+		const childCollections: FileCollection[] = [];
+		for (const collection of pending) {
+			if ((entry.isDirectory() || entry.isSymbolicLink()) && collection.adapter.skipDirectories.has(entry.name)) continue;
+			if (collection.files.length >= limit) {
+				if (!entry.isFile() || (collection.adapter.isSupportedFile(childPath) && !collection.seen.has(childPath))) {
+					collection.scopeLimited = true;
+				}
+			} else childCollections.push(collection);
+		}
+		if (childCollections.length === 0) continue;
 		collectPath(
-			adapter,
-			path.join(targetPath, entry.name),
-			files,
-			seen,
-			visitedDirectories,
+			childCollections,
+			childPath,
 			realRoot,
 			limit,
 			budget,

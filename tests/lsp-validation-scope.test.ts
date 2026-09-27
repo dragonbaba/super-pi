@@ -58,9 +58,55 @@ test("a capped skipped route remains incomplete after its known files overlap a 
     assert.deepEqual(limited.uncoveredFiles, []);
     assert.equal(limited.skippedScopeLimited, true);
     assert.equal(limited.incomplete, true, "known overlap is not proof of coverage beyond the cap");
-    const exhausted = selectDiagnosticRoutes([f.adapters[0], broad], { root: f.root, paths: ["a.ts"], limit: 2 }, 50);
+    const exhausted = selectDiagnosticRoutes([f.adapters[0], broad], { root: f.root, paths: ["a.ts"], limit: 1 }, 50);
     assert.equal(exhausted.skippedScopeLimited, false);
     assert.equal(exhausted.incomplete, false, "a fully collected overlapping skipped route does not create missing scope");
+    mkdirSync(join(f.root, "single")); writeFileSync(join(f.root, "single", "one.ts"), "const one = 1;");
+    const exactDirectory = selectDiagnosticRoutes([f.adapters[0], broad], { root: f.root, paths: ["single"], limit: 1 }, 50);
+    assert.equal(exactDirectory.skippedScopeLimited, false, "the final entry can exactly fill the cap without truncation");
+    const repeated = selectDiagnosticRoutes([f.adapters[0], broad], { root: f.root, paths: ["a.ts", "a.ts"], limit: 1 }, 50);
+    assert.equal(repeated.skippedScopeLimited, false);
+    const remaining = selectDiagnosticRoutes([f.adapters[0], broad], { root: f.root, paths: ["a.ts", "a.ts", "z.py"], limit: 1 }, 50);
+    assert.equal(remaining.skippedScopeLimited, true);
+  } finally { f.release(); }
+});
+
+test("unavailable policies share one real directory traversal without changing per-policy scope", () => {
+  const f = fixture();
+  const scan = join(f.root, "scan");
+  mkdirSync(join(scan, "sub"), { recursive: true });
+  writeFileSync(join(scan, "a.ts"), "const a = 1;");
+  writeFileSync(join(scan, "sub", "b.ts"), "const b = 1;");
+  try {
+    // Instrument before module loading in a private process, including cached Jiti imports.
+    const child = spawnSync(process.execPath, [resolve("tests/fixtures/lsp-shared-scan.mjs"), f.root], {
+      encoding: "utf8", env: { ...process.env, SP_CODING_AGENT_DIR: join(f.root, "isolated-agent") },
+    });
+    assert.equal(child.status, 0, child.stderr);
+    const selected = JSON.parse(child.stdout);
+    assert.equal(selected.routes, 1); assert.equal(selected.skipped, 0);
+    assert.equal(selected.incomplete, false);
+    assert.equal(selected.directoryReads, 2, "directory IO must not multiply by unavailable server count");
+  } finally { f.release(); }
+});
+
+test("shared route traversal preserves each policy's skipped subtrees and explicit paths", () => {
+  const f = fixture();
+  try {
+    mkdirSync(join(f.root, "scan", "skip-live"), { recursive: true });
+    mkdirSync(join(f.root, "scan", "skip-missing"));
+    writeFileSync(join(f.root, "scan", "a.ts"), "const a = 1;");
+    writeFileSync(join(f.root, "scan", "skip-live", "b.ts"), "const b = 1;");
+    writeFileSync(join(f.root, "scan", "skip-live", "c.py"), "x = 1");
+    writeFileSync(join(f.root, "scan", "skip-missing", "d.py"), "x = 2");
+    const live = { ...f.adapters[0], skipDirectories: new Set(["skip-live"]) };
+    const missing = { ...f.adapters[0], name: "missing", isDefault: true, extensions: [".py"], skipDirectories: new Set(["skip-missing"]),
+      isSupportedFile(file: string) { return file.endsWith(".py"); }, defaultCommand: { command: "sp-nonexistent-lsp-fixture", args: [] } };
+    const selected = selectDiagnosticRoutes([live, missing], { root: f.root, paths: ["scan"] }, 50);
+    assert.deepEqual(selected.routes[0].files, [join(f.root, "scan", "a.ts")]);
+    assert.deepEqual(selected.uncoveredFiles, [join(f.root, "scan", "skip-live", "c.py")]);
+    const explicit = selectDiagnosticRoutes([live, missing], { root: f.root, paths: ["scan/skip-missing/d.py"] }, 50);
+    assert.deepEqual(explicit.uncoveredFiles, [join(f.root, "scan", "skip-missing", "d.py")]);
   } finally { f.release(); }
 });
 

@@ -36,12 +36,12 @@ and releases them on unmount. Tests verify narrow output, streaming, terminal
 states, long content, object preservation, release, and real guarded writes after
 session reopen. Existing source/AST gates remain intact.
 
-Hidden third-party call-release hooks are error-isolated: the parent advances its
-lifecycle generation, drops the hidden component reference, runs derived cleanup,
-clears image/discovery references, and only then rethrows the first error. A regression
-injects both a hidden-hook error and a derived-hook error and checks the release state.
-Hidden composite calls use the existing recursive TUI release traversal, so descendant
-hooks run even when another child throws. Its temporary traversal set/order are
-lifecycle-local and cleared on all exits; stable render/progress paths are unchanged.
+Hidden calls participate in the existing TUI traversal through its zero-array structural
+child hook. Hidden and mounted descendants share one identity set, so aliased components
+are released once. Hook errors do not prevent sibling or parent cleanup: the parent
+advances its lifecycle generation, drops the hidden reference, runs derived cleanup and
+clears image/discovery references before the traversal rethrows its first error.
+Regressions cover composite children, shared identities and throwing hooks. Traversal
+scratch remains lifecycle-local; stable render/progress paths are unchanged.
 Cancelled and failed-no-change receipts keep those statuses when a known temporary
 is retained, with an explicit verification warning rather than an unknown-target label.

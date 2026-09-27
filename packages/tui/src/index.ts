@@ -2,7 +2,7 @@
 
 export { Marked, type Token, type Tokens } from "marked";
 /** @internal Cache-only lifecycle protocol for built-in components outside the TUI package. */
-export { RELEASE_COMPONENT_RENDER_CACHE } from "./component-cache.ts";
+export { GET_COMPONENT_RENDER_CACHE_CHILD, RELEASE_COMPONENT_RENDER_CACHE } from "./component-cache.ts";
 // Autocomplete support
 export {
 	type AutocompleteItem,
@@ -152,7 +152,6 @@ export {
 	type Focusable,
 	isFocusable,
 	isViewportTUI,
-	releaseComponentRenderCaches,
 	type OverlayAnchor,
 	type OverlayHandle,
 	type OverlayMargin,

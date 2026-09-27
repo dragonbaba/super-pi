@@ -1,7 +1,6 @@
 import path from "node:path";
-import { compareStrings } from "./collections.js";
 import { commandExists, commandPathValue } from "./command.js";
-import { collectSupportedFiles, resolveRoot } from "./files.js";
+import { collectSupportedFilesByAdapter, resolveRoot } from "./files.js";
 import type { LspServerAdapter } from "./types.js";
 
 export type LspAction = "diagnostics" | "fix" | "navigate";
@@ -10,6 +9,7 @@ export interface DiagnosticRoute {
 	adapter: LspServerAdapter;
 	reason: string;
 	files: readonly string[];
+	scopeLimited: boolean;
 }
 
 export interface SingleFileRoute {
@@ -41,24 +41,19 @@ export function selectDiagnosticRoutes(
 	const root = resolveRoot(params.root);
 	const candidates = filterAdapters(adapters, params.server);
 	const skipped: DiagnosticRoute[] = [];
-	const filesByPolicy = new Map<string, string[]>();
+	const filesByAdapter = collectSupportedFilesByAdapter(candidates, root, params.paths, params.limit ?? defaultLimit);
 	const routes: DiagnosticRoute[] = [];
 	for (const adapter of candidates) {
-		const key = diagnosticFilePolicyKey(adapter);
-		let files = filesByPolicy.get(key);
-		if (!files) {
-			files = collectSupportedFiles(adapter, root, params.paths, params.limit ?? defaultLimit);
-			filesByPolicy.set(key, files);
-		}
+		const { files, scopeLimited } = filesByAdapter.get(adapter)!;
 		if (files.length === 0) continue;
 		if (!params.server && adapter.isDefault) {
 			const command = adapter.defaultCommand;
 			if (!commandExists(command.command, root, commandPathValue(adapter.env))) {
-				skipped.push({ adapter, reason: `${adapter.name} command missing`, files });
+				skipped.push({ adapter, reason: `${adapter.name} command missing`, files, scopeLimited });
 				continue;
 			}
 		}
-		routes.push({ adapter, reason: `${adapter.name} diagnostics`, files });
+		routes.push({ adapter, reason: `${adapter.name} diagnostics`, files, scopeLimited });
 		if (routes.length > 1) {
 			throw new Error(
 				`Multiple LSP diagnostic routes match this request: ${routes[0].adapter.name}, ${routes[1].adapter.name}. ` +
@@ -76,9 +71,8 @@ export function selectDiagnosticRoutes(
 	let skippedScopeLimited = false;
 	for (const route of skipped) {
 		for (const file of route.files) uncoveredFiles.add(file);
-		// The existing bounded collector cannot prove exhaustion once its cap is
-		// reached. Preserve that uncertainty even if known files overlap a live route.
-		if (route.files.length >= Math.floor(params.limit ?? defaultLimit)) skippedScopeLimited = true;
+		// Only actual unvisited scope creates uncertainty; an exact exhaustive cap does not.
+		if (route.scopeLimited) skippedScopeLimited = true;
 	}
 	for (const route of routes) for (const file of route.files) uncoveredFiles.delete(file);
 	return { root, routes, skipped, uncoveredFiles: [...uncoveredFiles], skippedScopeLimited,
@@ -119,13 +113,6 @@ function selectSingleFileRoute(
 			reason: `${adapter.name} ${action}`,
 		},
 	};
-}
-
-function diagnosticFilePolicyKey(adapter: LspServerAdapter) {
-	return JSON.stringify([
-		adapter.extensions,
-		[...adapter.skipDirectories].sort(compareStrings),
-	]);
 }
 
 function filterAdapters(adapters: LspServerAdapter[], selected: unknown) {
