@@ -70,7 +70,7 @@ export async function costSession(options: { historyPairs?: number; budget?: num
     await session.bindExtensions({ mode: "tui", uiContext: { ...session.extensionRunner.getUIContext(), select: async () => { metrics.approvals++; onApproval?.(); return "仅允许本次"; } } });
     session.subscribe((event: any) => {
       if (event.type === "tool_execution_end") { metrics.toolCalls++; if (event.toolName === "tool_search") metrics.discoveryCalls++; if (event.toolName === "read") metrics.reads++; }
-      if (event.type === "auto_compaction_start") metrics.compactions++;
+      if (event.type === "compaction_start") metrics.compactions++;
     });
   }
   await open();

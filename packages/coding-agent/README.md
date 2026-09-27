@@ -69,7 +69,9 @@ estimates. `/tool-budget <positive integer>` and `/tool-budget off` change this
 idle session only; `/settings` offers the same control. They do not save global or
 project configuration, change startup priority, or replay completed tools. After a
 too-small budget blocks a request, explicitly adjust the budget and continue your
-message. The complete Session/UI result remains available. A new or reopened
+message. Built-in result projection keeps the complete Session/UI result. MCP
+input admission may instead retain only an error, without the remote output or a
+continuation, even if the remote tool already executed. A new or reopened
 session uses its startup configuration; the temporary override is not persisted.
 
 ## Prefix manifest diagnostics

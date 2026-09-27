@@ -14,6 +14,16 @@ function resultMetrics(f: Awaited<ReturnType<typeof costSession>>, label: string
     providerUsage: null, cacheHits: null, actualCost: null, pendingCalls: f.session.agent.state.pendingToolCalls.size };
 }
 
+test("N4 cost metrics count the actual Session compaction-start event even when preparation refuses", async () => {
+  const f = await costSession();
+  try {
+    assert.equal(f.metrics.compactions, 0);
+    await assert.rejects(f.session.compact("No remote summary for this empty fixture."), /Nothing to compact/);
+    assert.equal(f.metrics.compactions, 1); assert.equal(f.metrics.requests, 0);
+    assert.equal(f.session.isCompacting, false);
+  } finally { await f.release(); }
+});
+
 test("N4 context matrix: fair T1/T2/T3 short/long/reopen/model-switch/warm activation", { timeout: 180000 }, async t => {
   for (const context of ["short", "long", "reopen", "model-switch", "warm"]) for (const strategy of ["T1", "T2", "T3"]) {
     const f = await costSession({ historyPairs: context === "long" ? 100 : 0 });

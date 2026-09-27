@@ -278,3 +278,10 @@ pending reject replacement atomically (same owner/status/generation); after the
 stream settles, explicit reconfiguration disposes the old owner once. Current
 check, offline build and focused budget/source/measurement guards pass. All final
 whole-project checks, comparisons and exact-head review remain necessary.
+
+The remaining measurement counter review uses the real Session compaction_start
+event, including failed preparation attempts. An actual empty Session compact()
+emits one counted start, refuses without a provider request and releases its busy
+state. The coding-agent README now matches the status screen's MCP admission
+caveat: rejected remote output can leave only an error, without continuation,
+even after execution. These fixes do not change the production budget pipeline.
