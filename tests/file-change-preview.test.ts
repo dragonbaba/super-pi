@@ -217,6 +217,16 @@ test("N1 imported counts and oversized directory arrays stay bounded single-line
   assert.match(view, /verification display truncated/); assert.ok(Buffer.byteLength(view) <= 65536); assert.ok(view.split("\n").length <= 400);
 });
 
+test("N1 every Unicode bidi control is escaped in metadata fields", () => {
+  for (const code of [0x061c, 0x200e, 0x200f, 0x202a, 0x202b, 0x202c, 0x202d, 0x202e, 0x2066, 0x2067, 0x2068, 0x2069]) {
+    const control = String.fromCharCode(code), value = "before" + control + "after", escaped = "\\u" + code.toString(16).padStart(4, "0");
+    assert.ok(displayMetadata(value).includes(escaped));
+    const summary = batchExpandedSummary("result", [{ itemId: value, operation: "write", target: value, destination: value, status: "partial", reason: value,
+      preview: { kind: "Added", risk: value, omitted: value } }]);
+    assert.equal(summary.includes(control), false); assert.ok(summary.includes(escaped));
+  }
+});
+
 test("N1 shared display patterns reset across interleaved preview owners", () => {
   for (let n = 0; n < 20; n++) {
     DISPLAY_METADATA_CONTROL_PATTERN.lastIndex = 999;
