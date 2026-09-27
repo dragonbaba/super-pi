@@ -9,7 +9,7 @@ import { boundBatchIntents, collectStructuredMutationReceipts, recentMutationEnt
 import { batchExpandedSummary, verificationSummary, displayMetadata } from "./change-preview.ts";
 import { mutationRequestHash } from "../resource-lifecycle-guard/permission-contract.ts";
 import { parseSnapshotLineReference } from "./snapshot-line-protocol.ts";
-import { SHA256_PATTERN as SHA256, CHANGE_ID_CONTROL_PATTERN, OBSERVATION_UNSIGNED_INTEGER_PATTERN, OBSERVATION_SIGNED_INTEGER_PATTERN } from "./regex.ts";
+import { SHA256_PATTERN as SHA256, CHANGE_ID_CONTROL_PATTERN, OBSERVATION_UNSIGNED_INTEGER_PATTERN, OBSERVATION_SIGNED_INTEGER_PATTERN, SNAPSHOT_ID_REGEX, SNAPSHOT_LINE_REFERENCE_REGEX } from "./regex.ts";
 
 export const CHANGE_VERIFICATION_ENTRY = "file-change-verification-v1";
 const MAX_CHANGES = 128;
@@ -19,32 +19,49 @@ const OBSERVATION_SCOPE = "Filesystem observation only; not a semantic/test resu
 const MAX_RECOVERY_ARGUMENT_BYTES = 4 * 1024 * 1024;
 
 /** Fixed fields only: no recursive traversal of arbitrary imported objects. */
-function takeRecoveryString(budget: { bytes: number }, value: unknown, limit: number): boolean {
+interface RecoveryArgumentBudget { bytes: number; mutationBytes: number }
+function takeRecoveryString(budget: RecoveryArgumentBudget, value: unknown, limit: number, mutation = false): boolean {
   if (value === undefined) return true;
   if (typeof value !== "string" || value.length > limit || value.length > budget.bytes) return false;
   const bytes = Buffer.byteLength(value);
   if (bytes > limit || bytes > budget.bytes) return false;
+  if (mutation) {
+    if (budget.mutationBytes + bytes > MAX_TURN_MUTATION_BYTES) return false;
+    budget.mutationBytes += bytes;
+  }
   budget.bytes -= bytes;
   return true;
 }
 
-function boundedRecoveryOperation(name: string, input: any, budget: { bytes: number }): boolean {
+function boundedRecoveryOperation(name: string, input: any, budget: RecoveryArgumentBudget): boolean {
   if (!input || typeof input !== "object" || typeof input.path !== "string" || !input.path.length
     || !takeRecoveryString(budget, input.path, 4096) || !takeRecoveryString(budget, input.purpose, 800)) return false;
-  if (name === "delete" || name === "move") return takeRecoveryString(budget, input.destination, 4096);
-  if (name === "write") return typeof input.content === "string" && takeRecoveryString(budget, input.content, MAX_TURN_MUTATION_BYTES);
+  if (name === "delete") return true;
+  if (name === "move") return typeof input.destination === "string" && input.destination.length > 0 && takeRecoveryString(budget, input.destination, 4096);
+  if (name === "write") return typeof input.content === "string" && takeRecoveryString(budget, input.content, MAX_TURN_MUTATION_BYTES, true);
   if (name !== "edit" || !takeRecoveryString(budget, input.snapshot, 128) || !Array.isArray(input.edits)
     || input.edits.length < 1 || input.edits.length > MAX_EDIT_REPLACEMENTS) return false;
+  const snapshot = input.snapshot !== undefined;
+  if (snapshot && !SNAPSHOT_ID_REGEX.test(input.snapshot)) return false;
   const before = budget.bytes;
   for (const edit of input.edits) {
-    if (!edit || typeof edit !== "object" || !takeRecoveryString(budget, edit.oldText, MAX_EDIT_SCOPE_BYTES)
-      || !takeRecoveryString(budget, edit.newText, MAX_EDIT_SCOPE_BYTES) || !takeRecoveryString(budget, edit.kind, 32)
+    if (!edit || typeof edit !== "object" || !takeRecoveryString(budget, edit.oldText, MAX_EDIT_SCOPE_BYTES, true)
+      || !takeRecoveryString(budget, edit.newText, MAX_EDIT_SCOPE_BYTES, true) || !takeRecoveryString(budget, edit.kind, 32)
       || !takeRecoveryString(budget, edit.start, MAX_EDIT_SCOPE_BYTES) || !takeRecoveryString(budget, edit.end, MAX_EDIT_SCOPE_BYTES)
       || edit.expectedLine !== undefined && (!Number.isSafeInteger(edit.expectedLine) || edit.expectedLine <= 0)) return false;
+    if (snapshot) {
+      if (edit.oldText !== undefined || edit.newText !== undefined || edit.expectedLine !== undefined || typeof edit.start !== "string" || !SNAPSHOT_LINE_REFERENCE_REGEX.test(edit.start)
+        || edit.end !== undefined && !SNAPSHOT_LINE_REFERENCE_REGEX.test(edit.end)) return false;
+      if (edit.kind !== "replace" && edit.kind !== "delete" && edit.kind !== "insert_before" && edit.kind !== "insert_after") return false;
+      if (edit.kind === "delete" ? edit.newLines !== undefined : !Array.isArray(edit.newLines) || edit.newLines.length === 0) return false;
+      if ((edit.kind === "insert_before" || edit.kind === "insert_after") && edit.end !== undefined) return false;
+    } else if (edit.kind !== undefined || edit.start !== undefined || edit.end !== undefined || edit.newLines !== undefined
+      || typeof edit.oldText !== "string" || typeof edit.newText !== "string") return false;
     if (edit.newLines !== undefined) {
-      if (!Array.isArray(edit.newLines) || edit.newLines.length > MAX_EDIT_SCOPE_BYTES + 1) return false;
+      if (!Array.isArray(edit.newLines) || edit.newLines.length > 4000) return false;
       for (const line of edit.newLines) {
-        if (--budget.bytes < 0 || typeof line !== "string" || !takeRecoveryString(budget, line, MAX_EDIT_SCOPE_BYTES)) return false;
+        if (--budget.bytes < 0 || typeof line !== "string" || !takeRecoveryString(budget, line, MAX_EDIT_SCOPE_BYTES, true)
+          || line.includes("\r") || line.includes("\n")) return false;
       }
     }
     if (before - budget.bytes > MAX_EDIT_SCOPE_BYTES) return false;
@@ -53,13 +70,22 @@ function boundedRecoveryOperation(name: string, input: any, budget: { bytes: num
 }
 
 function boundedRecoveryArguments(call: any, budget: { bytes: number }): boolean {
+  const local: RecoveryArgumentBudget = { bytes: budget.bytes, mutationBytes: 0 };
+  if (!validateRecoveryArguments(call, local)) return false;
+  budget.bytes = local.bytes;
+  return true;
+}
+
+function validateRecoveryArguments(call: any, budget: RecoveryArgumentBudget): boolean {
   if (call.name !== "file_batch") return boundedRecoveryOperation(call.name, call.arguments, budget);
   const input = call.arguments;
   if (!input || typeof input !== "object" || !takeRecoveryString(budget, input.path, 4096)
     || !takeRecoveryString(budget, input.purpose, 800) || !Array.isArray(input.operations)
-    || input.operations.length < 1 || input.operations.length > 16) return false;
+    || input.operations.length < 1 || input.operations.length > 16
+    || input.dryRun !== undefined && typeof input.dryRun !== "boolean") return false;
   for (const item of input.operations) {
     if (!item || typeof item !== "object" || !takeRecoveryString(budget, item.mode, 32)
+      || item.operation === "write" && item.mode !== "create" && item.mode !== "overwrite"
       || !boundedRecoveryOperation(item.operation, item, budget)) return false;
   }
   return true;
