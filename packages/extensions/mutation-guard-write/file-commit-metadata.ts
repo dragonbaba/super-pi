@@ -14,7 +14,9 @@ function compatibility(reason: string, info: ObjectMetadata, target: PathIdentit
 }
 
 function groupAssignable(group: bigint): boolean {
-  if (process.geteuid!() === 0 || group === BigInt(process.getegid!())) return true;
+  // UID 0 does not imply CAP_CHOWN (for example in restricted containers).
+  // Conservatively require effective/supplementary membership for staging.
+  if (group === BigInt(process.getegid!())) return true;
   for (const current of process.getgroups!()) if (BigInt(current) === group) return true;
   return false;
 }

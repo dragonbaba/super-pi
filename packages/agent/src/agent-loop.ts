@@ -942,7 +942,7 @@ async function executePreparedToolCall(
 			return { result: createPreExecutionError(prepared.tool.name, error instanceof Error ? error.message : String(error)),
 				isError: true, authorizationVeto: true };
 		}
-		let failedResult = toolResultFromError(error);
+		let failedResult = completedResult ? undefined : toolResultFromError(error);
 		try {
 			await progress.flush();
 		} catch (observationError) {
