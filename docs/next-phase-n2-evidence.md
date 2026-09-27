@@ -641,3 +641,27 @@ the content outcome to unknown; all six standalone/batch real-file cases remain
 explicitly verifiable. Unknown content placement remains unknown. Native commit
 and recovery tests: 93 pass, two platform skips; check pass. No binding, regex,
 callback, permission expansion or fallback retry was added.
+
+Review r30: a standalone overwrite whose terminal persistence fails invalidates
+all live evidence for the canonical target. A real same-Session read/write/edit
+regression now refuses the subsequent unread edit with READ_REQUIRED before a
+new commit selection. Recovery requires a valid matching commit whenever its
+bound intent/preparation selected a strategy, including the legacy-format write
+aggregate without a durable result. Intent-only interruption and genuine older
+history without strategy selection retain their existing behavior. Six actual
+exact/snapshot/overwrite standalone/batch histories reject both missing mirrors,
+aggregate-only omission, strategy mismatches and conflicting postimage hashes.
+
+The shared commit error retains its already-computed candidate SHA-256 only for
+known committed outcomes; exact, overwrite and snapshot failure producers carry
+that hash into Session receipts. Batch durable terminals now also retain hashes.
+Eighteen actual-file postcommit close/readback/abort failures verify content
+against the candidate, then reject externally changed bytes. Unknown and
+uncommitted outcomes do not gain a claimed committed hash. The earlier synthetic
+postcommit wrapper now preserves the actual receipt instead of discarding it.
+Focused Windows Node22.19: 119 pass, two platform skips; source invariants four
+pass, check pass. The existing Windows attribute-restoration failure assertion
+now expects committed after completed write/truncate/sync, while still checking
+both hardlinks, object identity, attributes and zero retained native resources.
+No production regex, callback, binding or fallback was added. Final combined
+checks and both-platform CI/review remain required.
