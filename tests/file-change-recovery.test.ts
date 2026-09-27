@@ -13,6 +13,7 @@ import { mutationFixture as fixture, MutationWriteGuard } from "./helpers/mutati
 import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
 import { visibleWidth } from "../packages/tui/src/index.ts";
 const { collectChanges, collectVerifiedChanges, remainingDraft, verifyChange } = await createJiti(import.meta.url).import<any>("../packages/extensions/mutation-guard-write/changes.ts");
+const { recentMutationEntries } = await createJiti(import.meta.url).import<any>("../packages/extensions/mutation-guard-write/session-evidence.ts");
 
 function commandUI(f: any, item: string, action: string, editor = "") {
   let input = editor, view = "", notices: string[] = [];
@@ -44,6 +45,36 @@ test("N1 recovery argument budget preserves newest real near-limit writes", asyn
   assert.equal(records.length, 5); assert.ok(records[0].unavailable);
   for (const record of records.slice(1)) assert.equal(record.unavailable, undefined);
   assert.equal((await verifyChange(records[4], async () => {})).postimageMatches, true);
+});
+
+for (const kind of ["empty", "duplicate", "duplicate-pairs"]) test(`N1 unusable imported call IDs spend no genuine recovery budget: ${kind}`, async t => {
+  const f = await fixture(t); await f.call("write", { path: "genuine-id", content: "g".repeat(512 * 1024) }, "genuine-id");
+  const content = "x".repeat(1024 * 1024 - 1000);
+  for (let index = 0; index < 6; index++) f.session.appendMessage({ role: "assistant", timestamp: index,
+    content: [{ type: "toolCall", id: kind === "empty" ? "" : kind === "duplicate" ? "same" : `pair-${Math.floor(index / 2)}`, name: "write", arguments: { path: "not-created", content } }] } as never);
+  const records = collectChanges(f.session.getBranch(), f.cwd), genuine = records.find((record: any) => record.toolCallId === "genuine-id");
+  assert.ok(genuine); assert.equal(genuine.unavailable, undefined); assert.equal((await verifyChange(genuine, async () => {})).postimageMatches, true);
+  assert.equal(existsSync(join(f.cwd, "not-created")), false);
+});
+
+test("N1 malformed entry IDs refuse before recovery and verification key access", async t => {
+  const f = await fixture(t); await f.call("write", { path: "entry-bound", content: "actual" }, "entry-bound");
+  const genuine = f.session.getBranch(), records = collectChanges(genuine, f.cwd), oversized = "x".repeat(2_000_000);
+  let oversizedKeys = 0, entryLookups = 0;
+  for (const method of ["get", "set", "has"] as const) {
+    const original = Map.prototype[method];
+    t.mock.method(Map.prototype, method, function(this: Map<unknown, unknown>, ...args: any[]) {
+      if (typeof args[0] === "string" && args[0].length > 512) oversizedKeys++;
+      return Reflect.apply(original, this, args);
+    });
+  }
+  for (const id of [oversized, "", 42, undefined]) {
+    const branch = [...genuine, { id, type: "custom", customType: "unrelated", data: {} }];
+    assert.throws(() => collectChanges(branch, f.cwd), (error: Error) => error.message.includes("entry ID exceeds recovery bounds"));
+    assert.equal(collectVerifiedChanges(branch, records, "fixture").size, 0);
+  }
+  assert.throws(() => recentMutationEntries({ getLeafId: () => oversized, getEntry() { entryLookups++; throw new Error("oversized key reached Session index"); } }));
+  assert.equal(oversizedKeys, 0); assert.equal(entryLookups, 0);
 });
 
 test("N1 oversized legacy receipt IDs refuse before map keys or recovery IDs", async t => {

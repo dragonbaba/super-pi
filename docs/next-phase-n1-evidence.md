@@ -447,3 +447,13 @@ untrusted extra fields. Five real rejected-call variants preserve an older genui
 all C1 controls through the existing regex constants module; actual dryRun and
 imported-patch tests verify every C1 code point and zero file creation. No closure
 was added to production. Windows Node22 focused/source gates: 78 pass, one skip.
+
+Review r27: recovery indexes bounded nonempty call IDs before validating any
+arguments, then excludes all duplicate IDs without spending the shared allowance.
+Three actual recorded-write regressions retain the older genuine 512 KiB write
+despite six newer large calls with empty or repeated IDs. Session entry IDs are
+checked before Map/Set access, parent lookup or hashing; malformed history reports
+recovery unavailable. A two-million-character ID reaches neither index nor parent
+lookup. Metadata escaping includes every Unicode Bidi_Control code point in the
+dedicated regex constants module. No production closure was added. Windows
+Node22.19 focused/source tests: 83 passed, one filesystem skip; check passed.

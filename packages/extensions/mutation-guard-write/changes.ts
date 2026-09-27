@@ -5,7 +5,7 @@ import type { ExtensionAPI, ExtensionContext } from "@super-pi/coding-agent";
 import { Key, matchesKey, truncateToWidth, graphemeWidth, type TUI } from "@super-pi/tui";
 import { resolveToolPath, MAX_EDIT_REPLACEMENTS, MAX_EDIT_SCOPE_BYTES, MAX_TURN_MUTATION_BYTES } from "./core.ts";
 import { capturePathIdentity, sameIdentity, type PathIdentity } from "./native-file-core.ts";
-import { boundBatchIntents, collectStructuredMutationReceipts, recentMutationEntries } from "./session-evidence.ts";
+import { boundBatchIntents, collectStructuredMutationReceipts, recentMutationEntries, isBoundedMutationEntryId } from "./session-evidence.ts";
 import { batchExpandedSummary, verificationSummary, displayMetadata } from "./change-preview.ts";
 import { mutationRequestHash } from "../resource-lifecycle-guard/permission-contract.ts";
 import { parseSnapshotLineReference } from "./snapshot-line-protocol.ts";
@@ -298,6 +298,7 @@ function retainNewestChanges(records: ChangeRecord[], order: Map<string, number>
 
 export function collectChanges(branch: readonly any[], cwd: string): ChangeRecord[] {
   branch = branch.slice(-512);
+  for (const entry of branch) if (!isBoundedMutationEntryId(entry?.id)) throw new Error("Session entry ID exceeds recovery bounds; changes are unavailable for this history.");
   const calls = new Map<string, any>();
   const argumentBudget = { bytes: MAX_RECOVERY_ARGUMENT_BYTES };
   const callOrder = new Map<string, number>();
@@ -307,8 +308,8 @@ export function collectChanges(branch: readonly any[], cwd: string): ChangeRecor
   const records: ChangeRecord[] = [];
   const order = new Map<string, number>();
   let scannedBlocks = 0, callsOverflow = false;
-  // Spend bounded recovery work on the newest requests first. Old large calls
-  // cannot make the latest receipt unavailable merely by exhausting the budget.
+  // Identify usable calls before spending their byte allowance: a repeated ID
+  // can be discovered only after its newest occurrence has already been visited.
   for (let position = branch.length - 1; position >= 0; position--) {
     const entry = branch[position];
     if (entries.has(entry.id)) duplicateEntries.add(entry.id);
@@ -322,13 +323,17 @@ export function collectChanges(branch: readonly any[], cwd: string): ChangeRecor
     for (let callIndex = entry.message.content.length - 1; callIndex >= 0; callIndex--) {
       if (calls.size >= 512) { callsOverflow = true; calls.clear(); callOrder.clear(); duplicate.clear(); break; }
       const call = entry.message.content[callIndex];
-      if (call?.type !== "toolCall" || typeof call.id !== "string" || call.id.length > 256) continue;
+      if (call?.type !== "toolCall" || typeof call.id !== "string" || call.id.length < 1 || call.id.length > 256) continue;
       if (calls.has(call.id)) duplicate.add(call.id);
-      const bounded = boundedRecoveryArguments(call, argumentBudget);
-      calls.set(call.id, { id: call.id, name: call.name, arguments: bounded ? call.arguments : undefined,
-        requestHash: bounded ? mutationRequestHash(call.name, call.arguments) : undefined });
-      callOrder.set(call.id, order.get(entry.id)!);
+      calls.set(call.id, { id: call.id, name: call.name, arguments: call.arguments, requestHash: undefined });
+      callOrder.set(call.id, position);
     }
+  }
+  // Map insertion order is newest first. Duplicate calls spend no argument bytes
+  // and release their input references before receipt reconstruction.
+  for (const call of calls.values()) {
+    if (duplicate.has(call.id) || !boundedRecoveryArguments(call, argumentBudget)) call.arguments = undefined;
+    else call.requestHash = mutationRequestHash(call.name, call.arguments);
   }
   for (const receipt of collectStructuredMutationReceipts(branch)) {
     if (typeof receipt.toolCallId !== "string" || receipt.toolCallId.length < 1 || receipt.toolCallId.length > 256) continue;
@@ -615,14 +620,16 @@ function validObservation(value: any, path: string): boolean {
 
 /** Accept only complete, ordered observations of this exact bounded receipt. */
 export function collectVerifiedChanges(branch: readonly any[], records: readonly ChangeRecord[], sessionId: string): Set<string> {
+  branch = branch.slice(-512);
   const verified = new Set<string>(), positions = new Map<string, number>(), duplicates = new Set<string>();
+  for (const entry of branch) if (!isBoundedMutationEntryId(entry?.id)) return verified;
   for (let n = 0; n < branch.length; n++) { if (positions.has(branch[n].id)) duplicates.add(branch[n].id); positions.set(branch[n].id, n); }
   for (let n = 0; n < branch.length; n++) {
     const entry = branch[n], data = entry?.data;
     if (entry.type !== "custom" || entry.customType !== CHANGE_VERIFICATION_ENTRY || data?.version !== 1 || data.sessionId !== sessionId
       || duplicates.has(entry.id) || data.scope !== OBSERVATION_SCOPE || typeof data.observedAt !== "string" || data.observedAt.length > 40 || !Number.isFinite(Date.parse(data.observedAt))) continue;
     for (const record of records) {
-      if (record.unavailable || record.preview || data.itemId !== record.itemId || data.toolCallId !== record.toolCallId || data.sourceEntryId !== record.entryId
+      if (!isBoundedMutationEntryId(record.entryId) || record.unavailable || record.preview || data.itemId !== record.itemId || data.toolCallId !== record.toolCallId || data.sourceEntryId !== record.entryId
         || duplicates.has(record.entryId) || (positions.get(record.entryId) ?? Infinity) >= n || !validObservation(data.source, record.target)
         || (record.destination ? !validObservation(data.destination, record.destination) : data.destination !== undefined)) continue;
       let parents: string[];

@@ -11,6 +11,10 @@ const MAX_PENDING_TOOL_CALLS = 128;
 const RESTORED_TURN_GENERATION = -1;
 export const MAX_STRUCTURED_MUTATION_RECEIPTS = 512;
 
+export function isBoundedMutationEntryId(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= 256;
+}
+
 interface StoredToolCall {
   name: string;
   input: Record<string, unknown>;
@@ -148,6 +152,7 @@ export function recentMutationEntries(session: { getLeafId(): string | null; get
   const entries: unknown[] = [];
   let id = session.getLeafId();
   while (id && entries.length < MAX_RESTORE_ENTRIES) {
+    if (!isBoundedMutationEntryId(id)) throw new Error("Session entry ID exceeds recovery bounds; history cannot be inspected safely.");
     const entry = session.getEntry(id);
     if (!entry) break;
     entries.push(entry); id = entry.parentId;
