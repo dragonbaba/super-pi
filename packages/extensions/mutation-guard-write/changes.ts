@@ -131,17 +131,33 @@ function uniqueProgress(entries: readonly any[], callId: string, phase: string, 
 const DIRECTORY_IDENTITY_FIELDS = ["path", "canonical", "device", "inode", "size", "mtime", "ctime", "mode", "links", "directory"] as const;
 const COMMIT_RECEIPT_FIELDS = ["strategy", "outcome", "compatibilityReason", "fileSynced", "directorySynced", "retainedTemporary", "cleanupReason"] as const;
 
+function validCommitReceipt(value: any): boolean {
+  if (!value || typeof value !== "object") return false;
+  for (const field of COMMIT_RECEIPT_FIELDS) {
+    const item = value[field];
+    if (field === "fileSynced" || field === "directorySynced") { if (typeof item !== "boolean") return false; }
+    else if (item !== undefined && (typeof item !== "string" || item.length > (field === "retainedTemporary" ? 4096 : 1024))) return false;
+  }
+  return (value.strategy === "staged_replace" || value.strategy === "protected_in_place")
+    && (value.outcome === "not_committed" || value.outcome === "committed" || value.outcome === "unknown")
+    && value.directorySynced === false && (value.outcome !== "committed" || value.fileSynced)
+    && (value.retainedTemporary === undefined || value.retainedTemporary.length > 0
+      && value.strategy === "staged_replace" && value.outcome !== "committed");
+}
+
 function sameCommitReceipt(left: any, right: any): boolean {
   if (left === undefined || right === undefined) return left === right;
-  if (!left || !right || typeof left !== "object" || typeof right !== "object") return false;
-  for (const field of COMMIT_RECEIPT_FIELDS) {
-    const value = left[field];
-    if (value !== right[field] || typeof value === "string" && value.length > (field === "retainedTemporary" ? 4096 : 1024)
-      || value !== undefined && typeof value !== "string" && typeof value !== "boolean") return false;
-  }
-  return (left.strategy === "staged_replace" || left.strategy === "protected_in_place")
-    && (left.outcome === "not_committed" || left.outcome === "committed" || left.outcome === "unknown")
-    && typeof left.fileSynced === "boolean" && left.directorySynced === false;
+  if (!validCommitReceipt(left) || !validCommitReceipt(right)) return false;
+  for (const field of COMMIT_RECEIPT_FIELDS) if (left[field] !== right[field]) return false;
+  return true;
+}
+
+function commitMatchesTerminal(commit: any, status: string, stateChanged: boolean | "unknown"): boolean {
+  if (commit === undefined) return true;
+  if (!validCommitReceipt(commit)) return false;
+  if (status === "succeeded" || status === "partial") return stateChanged === true && commit.outcome === "committed";
+  if (status === "state_unknown") return stateChanged === "unknown" && commit.outcome === "unknown";
+  return (status === "failed_no_change" || status === "cancelled") && stateChanged === false && commit.outcome === "not_committed";
 }
 
 function sameCreatedDirectories(left: any, right: any): boolean {
@@ -418,6 +434,7 @@ export function collectChanges(branch: readonly any[], cwd: string): ChangeRecor
     }
     if (bound && call.name !== "file_batch" && !validStandalonePrefix(executionEntries, entry, call, receipt.target, receipt.receiptVersion === 2 ? receipt.destination : undefined)) bound = false;
     if (bound && receipt.receiptVersion === 2 && conflictingTerminal(executionEntries, entry, receipt.toolCallId, receipt.itemId, index, receipt, details)) bound = false;
+    if (bound && !commitMatchesTerminal(details?.commit, receipt.receiptVersion === 1 ? "succeeded" : receipt.status, receipt.stateChanged)) bound = false;
     if (bound && entry?.data?.phase === "intent" && receipt.operation === "write") {
       const prepared = call?.name === "file_batch" ? uniqueBatchPreparation(executionEntries, call)?.targets.get(`${call.id}:${index}`)
         : uniqueProgress(executionEntries, call.id, "origin")?.data;

@@ -1154,6 +1154,24 @@ test("N2 mirrored terminals bind commit outcome, strategy and retained candidate
   assert.equal(record.unavailable, undefined); assert.ok(record.receipt.commit.retainedTemporary);
   assert.equal(readFileSync(record.receipt.commit.retainedTemporary, "utf8"), "after");
   await verifyChange(record, async () => {});
+  for (const fault of ["succeeded", "partial", "state_unknown", "failed_no_change", "cancelled", "in-place-retained", "committed-retained", "unsynced-committed"]) {
+    const branch = JSON.parse(JSON.stringify(genuine));
+    const terminal = branch.find((entry: any) => entry.data?.phase === "result").data;
+    const item = branch.find((entry: any) => entry.message?.toolCallId === "commit-mirror" && entry.message?.role === "toolResult").message.details.items[0];
+    const commit = terminal.commit;
+    const status = fault === "in-place-retained" ? "failed_no_change" : fault === "committed-retained" ? "partial" : fault === "unsynced-committed" ? "succeeded" : fault;
+    terminal.status = item.status = status;
+    terminal.stateChanged = item.stateChanged = status === "state_unknown" ? "unknown" : status === "succeeded" || status === "partial";
+    if (fault === "in-place-retained") commit.strategy = "protected_in_place";
+    if (fault === "failed_no_change" || fault === "cancelled" || fault === "committed-retained" || fault === "unsynced-committed") {
+      commit.outcome = "committed"; commit.fileSynced = fault !== "unsynced-committed";
+      if (fault !== "committed-retained") delete commit.retainedTemporary;
+    }
+    item.receipt.commit = structuredClone(commit);
+    const invalid = collectChanges(branch, f.cwd); assert.ok(invalid.length > 0, fault);
+    for (const entry of invalid) { assert.ok(entry.unavailable, fault); await assert.rejects(verifyChange(entry, async () => { assert.fail("inconsistent commit must not observe sibling files"); })); }
+    assert.throws(() => remainingDraft(invalid, new Set(invalid.map((entry: any) => entry.itemId))));
+  }
   for (const field of ["retainedTemporary", "outcome", "strategy", "cleanupReason", "omit"]) {
     const branch = JSON.parse(JSON.stringify(genuine));
     const receipt = branch.find((entry: any) => entry.message?.toolCallId === "commit-mirror" && entry.message?.role === "toolResult").message.details.items[0].receipt;
@@ -1165,6 +1183,25 @@ test("N2 mirrored terminals bind commit outcome, strategy and retained candidate
     assert.throws(() => remainingDraft(invalid, new Set([invalid[0].itemId])));
   }
   assert.equal(readFileSync(target, "utf8"), "before");
+});
+
+for (const operation of ["write", "edit", "snapshot"] as const) for (const batch of [false, true]) test(`N2 committed ${operation} keeps partial state after result persistence fails, batch=${batch}`, async t => {
+  const f = await fixture(t), path = join(f.cwd, "committed-recording"); writeFileSync(path, "before\n");
+  const read = await f.call("read", { path }, "recording-read");
+  let input: any = operation === "write" ? { path, content: "after\n" } : { path, edits: [{ oldText: "before", newText: "after" }] };
+  if (operation === "snapshot") {
+    const body = read.content.filter(block => block.type === "text").map(block => block.text).join("\n");
+    input = { path, snapshot: body.slice(body.indexOf("snapshot=") + 9, body.indexOf("snapshot=") + 36),
+      edits: [{ kind: "replace", start: body.split("\n").find(line => line.startsWith("1#"))!.split("|")[0], newLines: ["after"] }] };
+  }
+  f.onRecord(data => { if (data.phase === "result") throw new Error("fixture durable recording failure"); });
+  const name = operation === "write" ? "write" : "edit";
+  const result = await f.call(batch ? "file_batch" : name, batch ? { operations: [{ operation: name, ...input, ...(name === "write" ? { mode: "overwrite" } : {}) }] } : input, "recording-failure");
+  assert.equal(result.isError, true); const details: any = batch ? result.details.items[0] : result.details;
+  assert.equal(details.status, "partial"); assert.equal(details.stateChanged, true); assert.equal((details.receipt ?? details).commit.outcome, "committed");
+  assert.equal(readFileSync(path, "utf8"), "after\n");
+  const records = collectChanges(f.session.getBranch(), f.cwd); assert.equal(records.length, 1); assert.equal(records[0].unavailable, undefined);
+  await verifyChange(records[0], async () => {});
 });
 
 test("N1 metadata-only verification rejects replacement during the final permission await", async t => {

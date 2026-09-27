@@ -228,9 +228,10 @@ export default function mutationGuardWriteExtension(pi: ExtensionAPI): void {
         operation: "edit", target, status, stateChanged: receipt.stateChanged, sha256: receipt.sha256, commit: receipt.commit });
     } catch {
       if (receipt.stateChanged !== false) {
-        receipt.status = "state_unknown"; receipt.stateChanged = "unknown"; receipt.ok = false; receipt.requiresVerification = true;
+        const committed = receipt.commit?.outcome === "committed";
+        receipt.status = committed ? "partial" : "state_unknown"; receipt.stateChanged = committed ? true : "unknown"; receipt.ok = false; receipt.requiresVerification = true;
         guard.invalidateCanonicalPath(target);
-        text = "Edit may have committed but receipt recording failed. Verify current state; do not automatically retry.";
+        text = `${committed ? "Edit committed" : "Edit may have committed"} but receipt recording failed. Verify current state; do not automatically retry.`;
       }
     }
     if (receipt.commit) text += `\n${commitSummary(receipt.commit)}`;
@@ -563,8 +564,9 @@ export default function mutationGuardWriteExtension(pi: ExtensionAPI): void {
       if (progress) try {
         pi.appendEntry(MUTATION_PROGRESS_ENTRY, { ...details, target: receiptTarget, mutationReceiptVersion: 2, toolCallId, itemId: `${toolCallId}:0`, phase: "result", status: "succeeded" });
       } catch {
-        return { content: [{ type: "text" as const, text: `write: state_unknown; ${path}. File changed but receipt recording failed. Verify current state; do not automatically retry.` }],
-          details: { ...details, ok: false, mutationReceiptVersion: 2, operation: "write", target: receiptTarget, status: "state_unknown", stateChanged: "unknown", requiresVerification: true }, isError: true };
+        const committed = details.commit?.outcome === "committed", status = committed ? "partial" : "state_unknown";
+        return { content: [{ type: "text" as const, text: `write: ${status}; ${path}. File changed but receipt recording failed. Verify current state; do not automatically retry.` }],
+          details: { ...details, ok: false, mutationReceiptVersion: 2, operation: "write", target: receiptTarget, status, stateChanged: committed ? true : "unknown", requiresVerification: true }, isError: true };
       }
       const creation = details.creation;
       const summary = details.created
