@@ -3,14 +3,14 @@ import test from "node:test";
 import { existsSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
-import { costSession, costCall as call, costText, costModule } from "./helpers/next-phase-session.ts";
+import { costSession, costCall as call, costText, costModule, startCostMeasurement, finishCostMeasurement } from "./helpers/next-phase-session.ts";
 import { FIXTURE_SNAPSHOT_ID_PATTERN, FIXTURE_SECOND_LINE_ANCHOR_PATTERN } from "./helpers/next-phase-fixture-regex.ts";
 
 function turns(strategy: string, calls: any[]): any[][] { return strategy === "T1" ? calls.map(item => [item]) : [calls]; }
-function resultMetrics(f: Awaited<ReturnType<typeof costSession>>, label: string, start: number, cpu: NodeJS.CpuUsage) {
-  const used = process.cpuUsage(cpu), { lastWire: _wire, ...metrics } = f.metrics;
+function resultMetrics(f: Awaited<ReturnType<typeof costSession>>, label: string, start: ReturnType<typeof startCostMeasurement>) {
+  const timing = finishCostMeasurement(f.metrics, start), { lastWire: _wire, ...metrics } = f.metrics;
   return { matrix: "N4-recovery-context", implementation: process.env.SP_COST_LABEL ?? "candidate", label, ...metrics,
-    elapsedMs: performance.now() - start, cpuUs: used.user + used.system, estimator: "super-pi.conservative-v1", actualSerializer: true,
+    ...timing, estimator: "super-pi.conservative-v1", actualSerializer: true,
     providerUsage: null, cacheHits: null, actualCost: null, pendingCalls: f.session.agent.state.pendingToolCalls.size };
 }
 
@@ -24,10 +24,28 @@ test("N4 cost metrics count the actual Session compaction-start event even when 
   } finally { await f.release(); }
 });
 
+test("N4 estimator timing subtracts only requests inside each measured workload", async () => {
+  const f = await costSession();
+  try {
+    await f.run([[call("setup", "tool_search", { query: "file_batch", limit: 1 })]]);
+    assert.equal(f.metrics.estimatorPasses, f.metrics.requests * 2);
+    for (let round = 0; round < 2; round++) {
+      const requests = f.metrics.requests, start = startCostMeasurement(f.metrics);
+      await f.run([]);
+      const timing = finishCostMeasurement(f.metrics, start);
+      assert.equal(timing.estimatorPasses, (f.metrics.requests - requests) * 2);
+      assert.ok(timing.estimatorPasses < f.metrics.estimatorPasses);
+      assert.ok(timing.estimatorElapsedMs > 0);
+      assert.equal(timing.cpuUs + timing.estimatorCpuUs, timing.inclusiveCpuUs);
+      assert.ok(Math.abs(timing.elapsedMs + timing.estimatorElapsedMs - timing.inclusiveElapsedMs) < 0.000001);
+    }
+  } finally { await f.release(); }
+});
+
 test("N4 context matrix: fair T1/T2/T3 short/long/reopen/model-switch/warm activation", { timeout: 180000 }, async t => {
   for (const context of ["short", "long", "reopen", "model-switch", "warm"]) for (const strategy of ["T1", "T2", "T3"]) {
     const f = await costSession({ historyPairs: context === "long" ? 100 : 0 });
-    const cpu = process.cpuUsage(), start = performance.now();
+    const start = startCostMeasurement(f.metrics);
     try {
       for (let index = 0; index < 4; index++) writeFileSync(join(f.cwd, `file${index}`), `FIRST-${index}\r\n中文 SECOND-${index}\r\n`);
       if (context === "reopen") {
@@ -46,14 +64,14 @@ test("N4 context matrix: fair T1/T2/T3 short/long/reopen/model-switch/warm activ
       await f.run(strategy === "T3" ? [[call("batch", "file_batch", { operations })]] : turns(strategy, operations.map(({ operation, ...args }, index) => call(`edit${index}`, operation, args))));
       for (const message of f.session.messages) if (message.role === "toolResult") assert.equal(message.isError, false, JSON.stringify(message));
       for (let index = 0; index < 4; index++) assert.equal(readFileSync(join(f.cwd, `file${index}`), "utf8"), `AFTER-${index}\r\n中文 SECOND-${index}\r\n`);
-      t.diagnostic(JSON.stringify({ ...resultMetrics(f, `${context}:${strategy}`, start, cpu), quality: "four exact updates, CRLF/content preserved", retries: 0, supplementalReads: context === "warm" ? 1 : 0 }));
+      t.diagnostic(JSON.stringify({ ...resultMetrics(f, `${context}:${strategy}`, start), quality: "four exact updates, CRLF/content preserved", retries: 0, supplementalReads: context === "warm" ? 1 : 0 }));
     } finally { await f.release(); }
     global.gc?.(); t.diagnostic(JSON.stringify({ release: `${context}:${strategy}`, heapAfterFixtureRelease: process.memoryUsage().heapUsed, pendingCalls: 0, removedRoot: !existsSync(f.root) }));
   }
 });
 
 test("N4 actual SDK overlimit and whole-batch preflight refusal have zero effects; bounded repair uses a new request", async t => {
-  const f = await costSession(), cpu = process.cpuUsage(), start = performance.now();
+  const f = await costSession(), start = startCostMeasurement(f.metrics);
   try {
     await f.run([[call("discover", "tool_search", { query: "file_batch", limit: 1 })]]);
     await f.run([[call("overlimit", "file_batch", { operations: Array.from({ length: 17 }, (_, index) => ({ operation: "write", mode: "create", path: `over/file${index}`, content: "x" })) })]]);
@@ -63,14 +81,14 @@ test("N4 actual SDK overlimit and whole-batch preflight refusal have zero effect
     await f.run([[call("repaired", "file_batch", { operations: [{ operation: "write", mode: "create", path: "bounded-repair", content: "only requested repair" }] })]]);
     assert.equal(f.result("repaired").isError, false); assert.equal(readFileSync(join(f.cwd, "bounded-repair"), "utf8"), "only requested repair");
     assert.equal(existsSync(join(f.cwd, "over")), false); assert.equal(existsSync(join(f.cwd, "must")), false);
-    t.diagnostic(JSON.stringify({ ...resultMetrics(f, "overlimit-preflight-repair", start, cpu), failedRequests: 2, retries: 1, quality: "no effects from refused batches; one explicit corrected creation" }));
+    t.diagnostic(JSON.stringify({ ...resultMetrics(f, "overlimit-preflight-repair", start), failedRequests: 2, retries: 1, quality: "no effects from refused batches; one explicit corrected creation" }));
   } finally { await f.release(); }
 });
 
 test("N4 combined actual Session: preview, mixed commit, drift/recovery, shell facts, budget continuation and reopen", { timeout: 90000 }, async t => {
   const { readShellExecution } = await costModule("packages/coding-agent/src/core/tools/shell-execution.ts");
   const { collectChanges } = await costModule("packages/extensions/mutation-guard-write/changes.ts");
-  const f = await costSession(), cpu = process.cpuUsage(), start = performance.now();
+  const f = await costSession(), start = startCostMeasurement(f.metrics);
   try {
     for (const path of ["edit", "delete", "move", "stale"]) writeFileSync(join(f.cwd, path), "first\nsecond\n");
     await f.run([[call("discover", "tool_search", { query: "file_batch", limit: 1 })]]);
@@ -131,6 +149,6 @@ test("N4 combined actual Session: preview, mixed commit, drift/recovery, shell f
     await f.reopen(); assert.equal(f.metrics.toolCalls, calls); assert.equal(readFileSync(join(f.cwd, "remaining"), "utf8"), "desired");
     assert.equal(readFileSync(join(f.cwd, "once"), "utf8"), "once"); assert.equal(existsSync(join(f.cwd, "stale")), false);
     assert.equal(readShellExecution(f.result("shell").details)?.exitCode, 23);
-    t.diagnostic(JSON.stringify({ ...resultMetrics(f, "combined", start, cpu), retries: 1, quality: "mixed/partial recovery, factual shells, budget continuation and durable reopen verified" }));
+    t.diagnostic(JSON.stringify({ ...resultMetrics(f, "combined", start), retries: 1, quality: "mixed/partial recovery, factual shells, budget continuation and durable reopen verified" }));
   } finally { await f.release(); }
 });

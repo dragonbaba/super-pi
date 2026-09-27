@@ -331,3 +331,25 @@ that primitive to the new owner's initial zero, preserving any explicit factory
 configuration as pending. The existing once-lifecycle callback is reused. Actual
 SDK/TUI replacement after three budget changes verifies continued historical cursor
 binding without executing the tool again; both rebuild variants exercise it.
+
+Review r27: the shared real-Session measurement helper now records CPU, wall time
+and pass counts for diagnostic estimation and its serialization. Context, file-I/O
+and spill workloads subtract only their own interval's deltas, preserving inclusive
+totals and the stated GC/timer/heap limitations. A real setup-plus-two-workloads
+test verifies setup is not subtracted again. Context/mixed/measurement guards:
+17 passed on Windows Node22.19. TUI allocation sampling includes objects collected
+by both major and minor GC; earlier sampling without those flags is retained-object
+sampling and is superseded for allocation conclusions.
+
+The serial comparison prepares both exact lockfiles with explicit network npm ci,
+retaining repository script policy. It then binds every installed dependency byte,
+native/generated file, internal link, actual package version and lock SRI before
+offline build, after build and after all measurements. npm ci verifies archive SRI;
+the unpacked-tree hash detects later mutations and is not called an SRI check.
+Absent optional or explicitly extraneous lock entries are recorded separately;
+missing required packages and version mismatch fail. Workspace source/dist are
+bound independently; links escaping the project fail. Two installations and two
+builds are preparation, followed by 12 discarded warmup and 60 measured children.
+No install-time download is included in product timing. The current Windows tree
+contains 422 lock records and 22,397 dependency files/links; these counts must be
+refreshed by the final clean-install comparison.

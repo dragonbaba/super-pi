@@ -17,6 +17,22 @@ function tokens(text: string): number { return estimateToolOutputTokens([{ type:
 export function costCall(id: string, name: string, args: any): any { return { type: "toolCall", id, name, arguments: args }; }
 export function costText(result: any): string { return result.content.filter((block: any) => block.type === "text").map((block: any) => block.text).join("\n"); }
 
+interface EstimatorMetrics { estimatorCpuUs: number; estimatorElapsedMs: number; estimatorPasses: number }
+/** Capture deltas so setup/discovery and earlier requests are not subtracted twice. */
+export function startCostMeasurement(metrics: EstimatorMetrics) {
+  return { cpu: process.cpuUsage(), start: performance.now(), estimatorCpuUs: metrics.estimatorCpuUs,
+    estimatorElapsedMs: metrics.estimatorElapsedMs, estimatorPasses: metrics.estimatorPasses };
+}
+export function finishCostMeasurement(metrics: EstimatorMetrics, start: ReturnType<typeof startCostMeasurement>) {
+  const inclusiveElapsedMs = performance.now() - start.start, used = process.cpuUsage(start.cpu);
+  const inclusiveCpuUs = used.user + used.system, estimatorCpuUs = metrics.estimatorCpuUs - start.estimatorCpuUs,
+    estimatorElapsedMs = metrics.estimatorElapsedMs - start.estimatorElapsedMs, estimatorPasses = metrics.estimatorPasses - start.estimatorPasses;
+  assert.ok(estimatorElapsedMs >= 0 && estimatorElapsedMs <= inclusiveElapsedMs);
+  return { elapsedMs: inclusiveElapsedMs - estimatorElapsedMs, cpuUs: inclusiveCpuUs - estimatorCpuUs,
+    inclusiveElapsedMs, inclusiveCpuUs, estimatorCpuUs, estimatorElapsedMs, estimatorPasses,
+    measurementScope: "elapsedMs/cpuUs subtract only diagnostic estimation and its JSON serialization within this workload; inclusive totals remain. CPU quantization, later GC, estimator heap allocations and fixture/provider scheduling are not isolated." };
+}
+
 /** Isolated real default SDK and final serializer; no provider request leaves this process. */
 export async function costSession(options: { historyPairs?: number; budget?: number; extensions?: any[] } = {}) {
   const root = mkdtempSync(join(tmpdir(), "sp-n4-session-")), cwd = join(root, "work"), agentDir = join(root, "agent");
@@ -30,7 +46,7 @@ export async function costSession(options: { historyPairs?: number; budget?: num
   let finalText = "Fixture results recorded; no unrequested retry.";
   let beforeRecord: ((type: string, data: any) => void) | undefined, onApproval: (() => void) | undefined;
   const metrics = { requests: 0, toolCalls: 0, approvals: 0, inputTokens: 0, schemaTokens: 0, historyTokens: 0, toolTokens: 0, outputTokens: 0,
-    wireBytes: 0, discoveryCalls: 0, reads: 0, compactions: 0, sampledPeakHeap: 0, estimatorCpuUs: 0, lastWire: "" };
+    wireBytes: 0, discoveryCalls: 0, reads: 0, compactions: 0, sampledPeakHeap: 0, estimatorCpuUs: 0, estimatorElapsedMs: 0, estimatorPasses: 0, lastWire: "" };
   for (let index = 0; index < (options.historyPairs ?? 0); index++) {
     manager.appendMessage({ role: "user", content: `Historical question ${index} ${"中文 context ".repeat(30)}`, timestamp: index * 2 });
     manager.appendMessage({ role: "assistant", content: [{ type: "text", text: `Historical answer ${index} ${"verified prose ".repeat(30)}` }],
@@ -41,17 +57,19 @@ export async function costSession(options: { historyPairs?: number; budget?: num
     try {
       assert.equal(typeof init?.body, "string"); const wire = init!.body as string, payload = JSON.parse(wire);
       metrics.requests++; metrics.lastWire = wire; metrics.wireBytes += Buffer.byteLength(wire);
-      const cpu = process.cpuUsage(); metrics.inputTokens += tokens(wire); metrics.schemaTokens += tokens(JSON.stringify(payload.tools));
+      const cpu = process.cpuUsage(), inputStart = performance.now(); metrics.inputTokens += tokens(wire); metrics.schemaTokens += tokens(JSON.stringify(payload.tools));
       for (const message of payload.messages) {
         if (message.role === "tool") metrics.toolTokens += tokens(JSON.stringify(message)); else metrics.historyTokens += tokens(JSON.stringify(message));
       }
-      const inputUsed = process.cpuUsage(cpu); metrics.estimatorCpuUs += inputUsed.user + inputUsed.system;
+      metrics.estimatorElapsedMs += performance.now() - inputStart;
+      const inputUsed = process.cpuUsage(cpu); metrics.estimatorCpuUs += inputUsed.user + inputUsed.system; metrics.estimatorPasses++;
       const calls = queue.shift();
       if (calls) for (const call of calls) assert.ok(payload.tools.some((tool: any) => tool.function.name === call.name), `discovery missing ${call.name}`);
       const delta = calls ? { tool_calls: calls.map((call: any, index: number) => ({ index, id: call.id, type: "function", function: { name: call.name, arguments: JSON.stringify(call.arguments) } })) }
         : { content: finalText };
-      const outputCpu = process.cpuUsage(); metrics.outputTokens += tokens(JSON.stringify(delta));
-      const used = process.cpuUsage(outputCpu); metrics.estimatorCpuUs += used.user + used.system;
+      const outputCpu = process.cpuUsage(), outputStart = performance.now(); metrics.outputTokens += tokens(JSON.stringify(delta));
+      metrics.estimatorElapsedMs += performance.now() - outputStart;
+      const used = process.cpuUsage(outputCpu); metrics.estimatorCpuUs += used.user + used.system; metrics.estimatorPasses++;
       metrics.sampledPeakHeap = Math.max(metrics.sampledPeakHeap, process.memoryUsage().heapUsed);
       const event = { id: "offline", object: "chat.completion.chunk", created: 1, model: model.id, choices: [{ index: 0, delta, finish_reason: null }] };
       const end = { ...event, choices: [{ index: 0, delta: {}, finish_reason: calls ? "tool_calls" : "stop" }] };

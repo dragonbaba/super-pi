@@ -5,7 +5,7 @@ import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { syncBuiltinESMExports } from "node:module";
 import { monitorEventLoopDelay } from "node:perf_hooks";
-import { costSession, costCall, costText } from "../../tests/helpers/next-phase-session.ts";
+import { costSession, costCall, costText, startCostMeasurement, finishCostMeasurement } from "../../tests/helpers/next-phase-session.ts";
 
 const originalOpen = fs.openSync, originalCreate = fs.createWriteStream, originalWrite = (fs.WriteStream.prototype as any)._write, originalWritev = (fs.WriteStream.prototype as any)._writev;
 const originalEnvironment = process.env;
@@ -49,9 +49,9 @@ try {
       : `process.stdout.write('x'.repeat(${scenario === "cap" ? 6 * 1024 * 1024 : 256 * 1024})+'\\nFINAL-TAIL')`;
     const command = `node -e "${source}"`;
     delay = monitorEventLoopDelay({ resolution: 1 }); delay.enable(); global.gc?.();
-    const heapBefore = process.memoryUsage().heapUsed, cpu = process.cpuUsage(); start = performance.now();
+    const heapBefore = process.memoryUsage().heapUsed, measurement = startCostMeasurement(f.metrics); start = measurement.start;
       await f.run([[costCall("spill", "bash", { command, cwd: f.cwd })]]);
-      const result = f.result("spill"), end = performance.now(), used = process.cpuUsage(cpu); delay.disable();
+      const result = f.result("spill"), end = performance.now(), timing = finishCostMeasurement(f.metrics, measurement); delay.disable();
       assert.ok(firstOpenMs !== undefined, JSON.stringify(result)); assert.ok(writes > 0); assert.equal(pendingWrites, 0);
       for (const stream of streams) assert.equal(stream.closed, true);
       const path = result.details?.fullOutputPath; let fileBytes: number | undefined;
@@ -60,8 +60,8 @@ try {
       if (scenario !== "cancel") { assert.equal(result.isError, false, JSON.stringify(result)); assert.ok(costText(result).includes("FINAL-TAIL")); }
       else { assert.equal(result.isError, true); assert.ok(cancelledAt !== undefined); }
       console.log(JSON.stringify({ benchmark: "N4-output-spill", implementation: process.env.SP_COST_LABEL ?? "candidate", scenario, node: process.version,
-        injectedOpenAndWriteDelayMs: delayMs, temporaryEntries: 1024, firstOpenMs, elapsedMs: end - start, cancelSettlementMs: cancelledAt === undefined ? null : end - cancelledAt,
-        cpuUs: used.user + used.system, eventLoopP95Ms: delay.percentile(95) / 1e6, eventLoopP99Ms: delay.percentile(99) / 1e6, eventLoopMaxMs: delay.max / 1e6,
+        injectedOpenAndWriteDelayMs: delayMs, temporaryEntries: 1024, firstOpenMs, ...timing, cancelSettlementMs: cancelledAt === undefined ? null : end - cancelledAt,
+        eventLoopP95Ms: delay.percentile(95) / 1e6, eventLoopP99Ms: delay.percentile(99) / 1e6, eventLoopMaxMs: delay.max / 1e6,
         writes, maxQueuedBytes, fileBytes, closedStreams: streams.size, pendingWrites, heapBefore, sampledPeakHeap: f.metrics.sampledPeakHeap,
         shellFacts: result.details?.shellExecution ?? null, quality: "real default SDK process/output/cap/cancellation and settled streams" }));
     } finally {

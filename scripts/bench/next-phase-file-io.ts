@@ -6,7 +6,7 @@ import crypto from "node:crypto";
 import { syncBuiltinESMExports } from "node:module";
 import { join, sep } from "node:path";
 import { Session } from "node:inspector/promises";
-import { costSession, costCall, costText, costModule } from "../../tests/helpers/next-phase-session.ts";
+import { costSession, costCall, costText, costModule, startCostMeasurement, finishCostMeasurement } from "../../tests/helpers/next-phase-session.ts";
 import { FIXTURE_SNAPSHOT_ID_PATTERN, FIXTURE_SECOND_LINE_ANCHOR_PATTERN } from "../../tests/helpers/next-phase-fixture-regex.ts";
 
 const originalOpen = fsp.open, originalReadFile = fsp.readFile, originalReadSync = fs.readFileSync, originalUpdate = crypto.Hash.prototype.update;
@@ -40,7 +40,7 @@ async function run(count: number, size: number, kind: "exact" | "snapshot") {
   await f.run([[costCall("discover", "tool_search", { query: "file_batch", limit: 1 })]]);
   counters = { bytesRead: 0, hashBytes: 0, hashUpdates: 0, explicitOpens: 0, explicitCloses: 0, implicitReadFiles: 0, activeHandles: 0, peakHandles: 0 };
   await profiler.post("Profiler.startPreciseCoverage", { callCount: true, detailed: true });
-  global.gc?.(); const heapBefore = process.memoryUsage().heapUsed, cpu = process.cpuUsage(), start = performance.now();
+  global.gc?.(); const heapBefore = process.memoryUsage().heapUsed, start = startCostMeasurement(f.metrics);
   f.metrics.sampledPeakHeap = heapBefore;
   active = true;
   let unavailableSnapshots = 0;
@@ -60,7 +60,7 @@ async function run(count: number, size: number, kind: "exact" | "snapshot") {
       }
       if (operations.length) { const id = `edit${offset}`; await f.run([[costCall(id, "file_batch", { operations })]]); assert.equal(f.result(id).isError, false, JSON.stringify(f.result(id))); }
     }
-    active = false; const elapsedMs = performance.now() - start, used = process.cpuUsage(cpu);
+    active = false; const timing = finishCostMeasurement(f.metrics, start);
     const coverage = await profiler.post("Profiler.takePreciseCoverage"); await profiler.post("Profiler.stopPreciseCoverage");
     const calls: Record<string, number> = {};
     for (const script of coverage.result) for (const fn of script.functions) if (tracked.has(fn.functionName)) {
@@ -70,7 +70,7 @@ async function run(count: number, size: number, kind: "exact" | "snapshot") {
     for (let index = 0; index < count; index++) assert.equal(fs.readFileSync(join(f.cwd, `file${index}`), "utf8"), unavailableSnapshots ? before : after);
     assert.equal(counters.activeHandles, 0); assert.equal(counters.explicitOpens, counters.explicitCloses);
     console.log(JSON.stringify({ benchmark: "N4-file-io", implementation: process.env.SP_COST_LABEL ?? "candidate", node: process.version, count, size, kind, grouping: 3,
-      ...counters, calls, elapsedMs, cpuUs: used.user + used.system, heapBefore, sampledPeakHeap: f.metrics.sampledPeakHeap,
+      ...counters, calls, ...timing, heapBefore, sampledPeakHeap: f.metrics.sampledPeakHeap,
       unavailableSnapshots, measuredScope: "fixture file bytes/API explicit handles; hash updates include request/proof/commit; readFile implicit opens are separate; precise counts only synchronous named constructors",
       quality: unavailableSnapshots ? "default window read issued no snapshot; no edit/fallback; all bytes unchanged" : "exact final bytes and no active explicit handles" }));
   } finally { active = false; try { await profiler.post("Profiler.stopPreciseCoverage"); } finally { await f.release(); } }
@@ -87,7 +87,7 @@ async function runLegacyCompact(count: number) {
   scope = fs.realpathSync.native(f.cwd) + sep; scopeAlias = f.cwd + sep;
   counters = { bytesRead: 0, hashBytes: 0, hashUpdates: 0, explicitOpens: 0, explicitCloses: 0, implicitReadFiles: 0, activeHandles: 0, peakHandles: 0 };
   await profiler.post("Profiler.startPreciseCoverage", { callCount: true, detailed: true });
-  global.gc?.(); const heapBefore = process.memoryUsage().heapUsed, cpu = process.cpuUsage(), start = performance.now(); let commits = 0, peakHeap = heapBefore;
+  global.gc?.(); const heapBefore = process.memoryUsage().heapUsed, start = startCostMeasurement(f.metrics); let commits = 0, peakHeap = heapBefore;
   active = true;
     for (let index = 0; index < count; index++) {
       const path = join(f.cwd, `legacy${index}.txt`), input = { path, offset: 1, limit: 2 };
@@ -98,13 +98,13 @@ async function runLegacyCompact(count: number) {
         { assertPathAllowed: () => fsp.realpath(path), beforeCommit() { commits++; } });
       peakHeap = Math.max(peakHeap, process.memoryUsage().heapUsed);
     }
-    active = false; const elapsedMs = performance.now() - start, used = process.cpuUsage(cpu), coverage = await profiler.post("Profiler.takePreciseCoverage");
+    active = false; const timing = finishCostMeasurement(f.metrics, start), coverage = await profiler.post("Profiler.takePreciseCoverage");
     const calls: Record<string, number> = {};
     for (const script of coverage.result) for (const fn of script.functions) if (tracked.has(fn.functionName)) calls[fn.functionName] = (calls[fn.functionName] ?? 0) + fn.ranges[0].count;
     for (let index = 0; index < count; index++) assert.equal(fs.readFileSync(join(f.cwd, `legacy${index}.txt`), "utf8"), original.replace("SECOND", "CHANGED"));
     assert.equal(commits, count); assert.equal(counters.activeHandles, 0);
     console.log(JSON.stringify({ benchmark: "N4-file-io-legacy-compact", implementation: process.env.SP_COST_LABEL ?? "candidate", count, size: Buffer.byteLength(original),
-      ...counters, calls, commits, elapsedMs, cpuUs: used.user + used.system, heapBefore, sampledPeakHeap: peakHeap,
+      ...counters, calls, commits, ...timing, heapBefore, sampledPeakHeap: peakHeap,
       measuredScope: "existing custom-I/O read projection and compact snapshot subsystem; explicit fixture path hooks, not default SDK authorization", quality: "real read-issued compact snapshots and exact postimages" }));
   } finally { active = false; try { await profiler.post("Profiler.stopPreciseCoverage"); } finally { resetSnapshotLineStore(); await f.release(); } }
   global.gc?.(); console.log(JSON.stringify({ release: "N4-file-io-legacy-compact", count, heapAfterFixtureRelease: process.memoryUsage().heapUsed, removedRoot: !fs.existsSync(f.root) }));

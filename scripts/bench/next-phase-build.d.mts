@@ -1,1 +1,2 @@
 export function captureBuiltArtifacts(project: string): { lockfileSha256: string; files: { path: string; bytes: number; sha256: string }[]; sha256: string };
+export function captureInstalledDependencies(project: string): { lockfileSha256: string; packages: { path: string; name?: string; version?: string; resolved?: string; integrity?: string; optionalAbsent?: boolean; extraneousAbsent?: boolean }[]; files: { path: string; bytes?: number; sha256?: string; link?: string }[]; sha256: string };

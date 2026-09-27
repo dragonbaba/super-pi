@@ -51,7 +51,7 @@ try {
   const timings: number[] = []; metrics.reset(); global.gc?.();
   const heapBefore = process.memoryUsage().heapUsed;
   let sampledPeakHeap = heapBefore;
-  await profiler.post("HeapProfiler.startSampling", { samplingInterval: 32768 });
+  await profiler.post("HeapProfiler.startSampling", { samplingInterval: 32768, includeObjectsCollectedByMajorGC: true, includeObjectsCollectedByMinorGC: true });
   const profileSetupMs = performance.now() - setupStart, setupUsed = process.cpuUsage(setupCpu);
   const cpu = process.cpuUsage(), start = performance.now();
   for (let index = 0; index < 60; index++) {
