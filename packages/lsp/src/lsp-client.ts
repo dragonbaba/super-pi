@@ -431,12 +431,13 @@ export class LspClient {
 
 		if (message.method === "textDocument/publishDiagnostics") {
 			const params = message.params as { uri?: string; diagnostics?: LspDiagnostic[] } | undefined;
-			if (params?.uri) {
+			// A missing/null payload is not an empty diagnostic report.
+			if (params?.uri && Array.isArray(params.diagnostics)) {
 				const uriKey = documentUriKey(params.uri);
 				const previousVersion = this.#publishedDiagnostics.get(uriKey)?.version ?? 0;
 				const publication = {
 					version: previousVersion + 1,
-					diagnostics: params.diagnostics ?? EMPTY_READONLY_ARRAY,
+					diagnostics: params.diagnostics,
 				};
 				this.#recordPublishedDiagnostics(uriKey, publication);
 				const waiters = this.#diagnosticWaiters.get(uriKey);

@@ -28,6 +28,8 @@ the existing bounded grace wait, without claiming the file was validated.
 `tests/lsp-validation-scope.test.ts` tests configuration/routing and status handling
 with a private protocol process, including empty reports, silence, malformed reports,
 errors, zero files and unavailable defaults. Those fixtures do not analyze languages.
+Missing/null push payloads must not confirm validation; regressions failed before the
+notification boundary required an actual diagnostic array and pass after that fix.
 A separate real-service test uses the repository's already-installed Biome 2.5.7 in
 a synthetic workspace. On the local Windows run, `const broken = ;` produced two
 diagnostics as standalone JS and inside `<script>` in HTML: a syntax error and an

@@ -64,7 +64,7 @@ test("a capped skipped route remains incomplete after its known files overlap a 
   } finally { f.release(); }
 });
 
-for (const mode of ["full", "push-empty", "push-provisional", "push-silent", "missing-report", "error"]) {
+for (const mode of ["full", "push-empty", "push-provisional", "push-silent", "push-missing-report", "push-null-report", "missing-report", "error"]) {
   test(`real protocol process: ${mode} preserves diagnostic status (not a language-capability test)`, async () => {
     const f = fixture(mode), pool = new LspClientPool();
     try {

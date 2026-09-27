@@ -10,6 +10,10 @@ function handle(message) {
   else if (message.method === "textDocument/diagnostic") {
     if (mode === "error") send({ id: message.id, error: { code: -32603, message: "synthetic diagnostic failure" } });
     else send({ id: message.id, result: mode === "missing-report" ? {} : { kind: "full", items: [] } });
+  } else if (message.method === "textDocument/didOpen" && (mode === "push-missing-report" || mode === "push-null-report")) {
+    send({ method: "textDocument/publishDiagnostics", params: {
+      uri: message.params.textDocument.uri, ...(mode === "push-null-report" ? { diagnostics: null } : {}),
+    } });
   } else if (message.method === "textDocument/didOpen" && (mode === "push-empty" || mode === "push-provisional")) {
     send({ method: "textDocument/publishDiagnostics", params: { uri: message.params.textDocument.uri, diagnostics: [] } });
     if (mode === "push-provisional") setTimeout(() => send({ method: "textDocument/publishDiagnostics", params: {
