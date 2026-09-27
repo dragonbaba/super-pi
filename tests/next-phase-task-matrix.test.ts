@@ -57,16 +57,20 @@ async function measure(t: test.TestContext, strategy: Strategy, count: number, k
   if (strategy === "T1") for (const read of reads) queue.push([read]);
   else if (reads.length) queue.push(reads);
   let mutationsPlanned = false, requests = 0, approvals = 0, schemaTokens = 0, inputTokens = 0, toolTokens = 0, historyTokens = 0, outputTokens = 0, wireBytes = 0;
-  let peakHeap = process.memoryUsage().heapUsed;
+  let peakHeap = process.memoryUsage().heapUsed, estimatorCpuUs = 0, estimatorElapsedMs = 0, estimatorPasses = 0;
   const fakeFetch: typeof fetch = async (_url, init) => {
     assert.equal(typeof init?.body, "string");
     const wire = init!.body as string, payload = JSON.parse(wire); requests++;
-    inputTokens += tokens(wire); wireBytes += Buffer.byteLength(wire);
+    wireBytes += Buffer.byteLength(wire);
+    const inputCpu = process.cpuUsage(), inputStart = performance.now();
+    inputTokens += tokens(wire);
     schemaTokens += tokens(JSON.stringify(payload.tools));
     for (const message of payload.messages) {
       const estimate = tokens(JSON.stringify(message));
       if (message.role === "tool") toolTokens += estimate; else historyTokens += estimate;
     }
+    estimatorElapsedMs += performance.now() - inputStart;
+    const inputUsed = process.cpuUsage(inputCpu); estimatorCpuUs += inputUsed.user + inputUsed.system; estimatorPasses++;
     if (!queue.length && !mutationsPlanned) {
       mutationsPlanned = true;
       const operations = files.map((file, index) => {
@@ -90,7 +94,10 @@ async function measure(t: test.TestContext, strategy: Strategy, count: number, k
     const calls = queue.shift();
     if (calls) for (const item of calls) assert.ok(payload.tools.some((tool: any) => tool.function.name === item.function.name), `actual discovery must expose ${item.function.name}`);
     const delta = calls ? { tool_calls: calls.map((item, index) => ({ ...item, index })) } : { content: "Task results recorded." };
+    const outputCpu = process.cpuUsage(), outputStart = performance.now();
     outputTokens += tokens(JSON.stringify(delta));
+    estimatorElapsedMs += performance.now() - outputStart;
+    const outputUsed = process.cpuUsage(outputCpu); estimatorCpuUs += outputUsed.user + outputUsed.system; estimatorPasses++;
     peakHeap = Math.max(peakHeap, process.memoryUsage().heapUsed);
     const event = { id: "offline", object: "chat.completion.chunk", created: 1, model: model.id, choices: [{ index: 0, delta, finish_reason: null }] };
     const end = { ...event, choices: [{ index: 0, delta: {}, finish_reason: calls ? "tool_calls" : "stop" }] };
@@ -104,6 +111,7 @@ async function measure(t: test.TestContext, strategy: Strategy, count: number, k
     const cpu = process.cpuUsage(), start = performance.now();
     await session.prompt("Perform the deterministic fixture task using its recorded operations."); await session.agent.waitForIdle();
     const elapsedMs = performance.now() - start, used = process.cpuUsage(cpu);
+    assert.equal(estimatorPasses, requests * 2); assert.ok(estimatorElapsedMs >= 0 && estimatorElapsedMs < elapsedMs);
     const results = session.messages.filter((message: any) => message.role === "toolResult");
     for (const message of session.messages) if (message.role === "assistant") assert.notEqual(message.stopReason, "error", JSON.stringify({ strategy, count, kind, error: message.errorMessage, discovery: results.filter((item: any) => item.toolName === "tool_search") }));
     for (const result of results) assert.equal(result.isError, false, JSON.stringify({ strategy, count, kind, result }));
@@ -118,7 +126,10 @@ async function measure(t: test.TestContext, strategy: Strategy, count: number, k
       fileOperations: files.length, addressedPaths: files.length + files.filter(file => file.operation === "move").length,
       requests, toolCalls: results.length, approvals, discoveryCalls: discovered.length, priorReads: reads.length, supplementalReads: 0, retries: 0, compactions: 0,
       actualSerializer: true, estimator, inputTokens, schemaTokens, toolTokens, historyTokens, outputTokens, wireBytes,
-      providerUsage: null, cacheHits: null, actualCost: null, quality: "all filesystem assertions passed", elapsedMs, cpuUs: used.user + used.system,
+      providerUsage: null, cacheHits: null, actualCost: null, quality: "all filesystem assertions passed",
+      elapsedMs: elapsedMs - estimatorElapsedMs, cpuUs: used.user + used.system - estimatorCpuUs,
+      inclusiveElapsedMs: elapsedMs, inclusiveCpuUs: used.user + used.system, estimatorElapsedMs, estimatorCpuUs, estimatorPasses,
+      measurementScope: "elapsedMs/cpuUs subtract synchronous diagnostic estimation and its JSON serialization; inclusive totals are retained. CPU timer quantization and later GC are not isolated; heap samples include estimator allocations. Fixture/provider scheduling remains included.",
       heapBefore, sampledPeakHeap: peakHeap, heapAfterDispose: process.memoryUsage().heapUsed, pendingCalls: 0 }));
   } finally { session?.dispose(); session = undefined; await new Promise<void>(resolve => setImmediate(resolve)); assert.equal(dirname(root), tmpdir()); rmSync(root, { recursive: true, force: true }); }
 }

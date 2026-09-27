@@ -183,7 +183,7 @@ for (const activity of ["compact", "branch"] as const) test(`N4 budget changes r
   } finally { release(); await operation?.catch(() => {}); await f.release(); }
 });
 
-for (const transform of ["identity", "filter", "clone"] as const) test(`N4 changed budget uses actual next-request provenance: ${transform}`, async t => {
+for (const rebuild of [false, true]) for (const transform of ["identity", "filter", "clone"] as const) test(`N4 changed budget uses actual next-request provenance: ${transform}, rebuild=${rebuild}`, async t => {
   let requests = 0, executions = 0, wire = "";
   let transformEnabled = false;
   const fetchFixture: typeof fetch = async (_url, init) => {
@@ -209,7 +209,7 @@ for (const transform of ["identity", "filter", "clone"] as const) test(`N4 chang
     assert.equal(await f.mode.init(), true);
     await f.session.prompt("Inspect once."); await f.session.agent.waitForIdle();
     assert.equal(requests, 2); assert.equal(executions, 1);
-    const first = f.internal.attachedToolResultDiscoveries.get("budget-history"), component = first.component;
+    const first = f.internal.attachedToolResultDiscoveries.get("budget-history"); let component = first.component;
     let previous = component.getToolResultPresentationDiscovery("budget-history"); assert.ok(previous?.cursor);
     transformEnabled = true;
     global.gc?.(); heapBefore = process.memoryUsage().heapUsed;
@@ -218,6 +218,17 @@ for (const transform of ["identity", "filter", "clone"] as const) test(`N4 chang
     const oldOwner = (f.session as any)._toolResultPresentation;
     await f.internal.editor.onSubmit(`/tool-budget ${cycle % 2 ? 1024 : 2048}`);
     assert.equal(component.getToolResultPresentationDiscovery("budget-history"), undefined); assert.equal(oldOwner.counters.retainedProjectionCodeUnits, 0);
+    if (rebuild) {
+      const oldComponent = component, pendingGeneration = f.internal.toolResultBudgetUiGeneration;
+      f.internal.toggleThinkingBlockVisibility();
+      assert.equal(f.internal.toolResultBudgetUiGeneration, pendingGeneration);
+      assert.notEqual(pendingGeneration, f.session.toolResultBudgetGeneration);
+      assert.equal(f.internal.getToolResultDiscoveryLifecycleCounts().totalEntries, 0);
+      const canonical = f.session.messages.find((message: any) => message.role === "toolResult" && message.toolCallId === "budget-history");
+      assert.ok(canonical?.role === "toolResult");
+      component = f.internal.chatContainer.children.find((child: any) => child.hasToolResultSourceForUi?.("budget-history", canonical.content));
+      assert.ok(component); assert.notEqual(component, oldComponent);
+    }
     await f.session.prompt("Continue without executing the tool again."); await f.session.agent.waitForIdle();
     assert.equal(requests, cycle + 3); assert.equal(executions, 1); assert.ok(wire.includes("budget-history"));
     const next = f.internal.attachedToolResultDiscoveries?.get("budget-history"), current = component.getToolResultPresentationDiscovery("budget-history");
@@ -251,7 +262,7 @@ for (const transform of ["identity", "filter", "clone"] as const) test(`N4 chang
   }
   assert.equal(f.internal.getToolResultDiscoveryLifecycleCounts().totalEntries, 0);
   global.gc?.();
-  t.diagnostic(JSON.stringify({ benchmark: "explicit-budget-rediscovery", transform, node: process.version, cycles, requests, executions,
+  t.diagnostic(JSON.stringify({ benchmark: "explicit-budget-rediscovery", transform, rebuild, node: process.version, cycles, requests, executions,
     rediscoveryPasses: f.internal.toolResultBudgetRediscoveryPasses, componentProbes: f.internal.toolResultBudgetRediscoveryComponentProbes,
     unchangedGenerationAdditionalProbes: 0, retainedRegistrationsAfterRelease: 0, sampledBytes: profiler ? sampledBytes : null,
     heapBefore, heapAfterRelease: process.memoryUsage().heapUsed, note: "Explicit command/whole request cost; not per-delta cost or a speedup claim." }));

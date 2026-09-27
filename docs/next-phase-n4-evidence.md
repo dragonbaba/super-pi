@@ -311,3 +311,16 @@ Serial Node22.19 sampling over 20 changes: 22 requests, one tool execution,
 20 rediscovery passes/probes, zero extra unchanged-generation probes, zero
 registrations retained after release, 21,819,792 sampled bytes for the complete
 request/command fixture (not per-delta allocation or a speedup claim).
+
+Review r26: transcript rebuilds no longer acknowledge a pending budget generation
+before successful request projection. A rebuild that consumes the new projection
+uses its actual source identity and releases the weak map; otherwise the deferred
+refresh remains pending. Actual InteractiveMode thinking-visibility rebuilds cover
+identity/filter/clone contexts, new component binding, zero unchanged-generation
+probes and zero retained registrations. Fifteen budget tests pass on Windows Node22.
+The success matrix separately records synchronous diagnostic estimation plus its
+JSON serialization CPU/wall cost, subtracts that interval from workload figures,
+and retains inclusive totals. Timer quantization and later GC are not isolated;
+heap samples still include estimator allocation. It remains an offline fixture,
+not provider billing or pure product CPU. All 36 real serializer/filesystem rows
+and 11 measurement guard tests pass; final serial comparison remains pending.

@@ -5283,15 +5283,20 @@ export class InteractiveMode {
 		options: { updateFooter?: boolean; populateHistory?: boolean } = {},
 	): void {
 		this.clearToolResultDiscoveries();
-		this.toolResultBudgetUiGeneration = this.session.toolResultBudgetGeneration;
+		const budgetGeneration = this.session.toolResultBudgetGeneration;
+		const budgetRefreshPending = this.toolResultBudgetUiGeneration !== budgetGeneration;
+		// A settings/history rebuild cannot acknowledge a budget whose next request
+		// has not been projected yet. Consume its provenance only after success.
+		if (!this.session.toolResultPresentationEnabled) this.toolResultBudgetUiGeneration = budgetGeneration;
 		this.finalizeReadToolGroup();
 		this.clearDeferredReadArtifacts();
 		this.pendingTools.clear();
 		const renderedPendingTools = new Map<string, ToolExecutionComponent | ReadToolGroupComponent>();
 		let discoverableMessages: Map<Extract<AgentMessage, { role: "toolResult" }>, ToolResultPresentation> | undefined;
-		if (this.session.toolResultPresentationEnabled) {
+		if (this.session.toolResultPresentationEnabled && (!budgetRefreshPending || this.session.getToolResultBudgetStatus().lastRequest === "applied")) {
 			discoverableMessages = new Map();
-			this.session.collectRecentToolResultPresentationsForUi(discoverableMessages, MAX_TOOL_RESULT_DISCOVERIES);
+			this.session.collectRecentToolResultPresentationsForUi(discoverableMessages, MAX_TOOL_RESULT_DISCOVERIES, budgetRefreshPending);
+			this.toolResultBudgetUiGeneration = budgetGeneration;
 		}
 		let rebuildReadGroup: ReadToolGroupComponent | undefined;
 		const finalizeRebuildReadGroup = () => {
