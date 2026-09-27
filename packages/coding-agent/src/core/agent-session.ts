@@ -823,6 +823,7 @@ export class AgentSession {
 	private _toolResultPresentation: ToolResultPresentationOwner | undefined;
 	private _toolBudgetGeneration = 0;
 	private _toolBudgetLastRequest: ToolResultBudgetStatus["lastRequest"] = "not-observed";
+	private _toolBudgetPayloadPreviewDepth = 0;
 	private _toolBudgetSessionOverride = false;
 	private _toolBudgetProjectionPending = false;
 	private _toolBudgetProjectedSources: WeakMap<object, string | null> | undefined;
@@ -1916,36 +1917,25 @@ export class AgentSession {
 		systemPrompt?: string, tools?: readonly AgentTool<any>[], contextWindow?: number, maxOutputTokens?: number, requestPlanning = false): Message[] {
 		const owner = this._toolResultPresentation;
 		if (!owner) return messages;
+		if (this._toolBudgetPayloadPreviewDepth !== 0) return owner.projectMessagesForModel(messages, imagePolicy, systemPrompt, tools, contextWindow, maxOutputTokens, requestPlanning);
 		this.discardPendingToolResultBudgetSources();
-		const sources = this._toolBudgetProjectionPending ? this._captureBudgetProjectionSources(messages) : undefined;
+		const sources = this._toolBudgetProjectionPending ? this._captureBudgetProjectionSources() : undefined;
 		try {
-			const projected = owner.projectMessagesForModel(messages, imagePolicy, systemPrompt, tools, contextWindow, maxOutputTokens, requestPlanning);
+			const projected = owner.projectMessagesForModel(messages, imagePolicy, systemPrompt, tools, contextWindow, maxOutputTokens, requestPlanning, sources);
 			this._toolBudgetLastRequest = owner.getEvidenceBudgetTokens() === undefined ? "not-observed" : "applied";
-			if (sources) this._toolBudgetProjectedSources = sources;
+			if (sources) this._toolBudgetProjectedSources = new WeakMap(sources);
 			return projected;
 		} catch (error) {
 			this._toolBudgetLastRequest = error instanceof ToolResultContinuationError && error.code === "budget-too-small" ? "blocked" : "preparation-failed";
 			throw error;
-		}
+		} finally { sources?.clear(); }
 	}
 
-	/** One bounded weak identity set after an explicit configuration change. Input
-	 * is the actual post-context-transform request, before projection mutates it.
-	 * Weak keys never retain omitted/cloned extension content after the request. */
-	private _captureBudgetProjectionSources(messages: readonly Message[]): WeakMap<object, string | null> {
-		const sources = new WeakMap<object, string | null>();
+	/** Explicit-change scratch only; the projection owner populates at most 128
+	 * identities during its existing scan of the actual transformed request. */
+	private _captureBudgetProjectionSources(): Map<object, string | null> {
 		this._toolBudgetSourceCapturePasses++;
-		const owner = this._toolResultPresentation;
-		if (!owner) return sources;
-		let count = 0;
-		for (let index = messages.length - 1; index >= 0 && count < MAX_TOOL_RESULT_UI_DISCOVERIES; index--) {
-			const message = messages[index]!;
-			if (message.role !== "toolResult") continue;
-			if (owner.inspectToolResultPresentationForUiCandidate(message.content, message.toolCallId) !== "v2") continue;
-			if (!sources.has(message.content)) count++;
-			sources.set(message.content, sources.has(message.content) ? null : message.toolCallId);
-		}
-		return sources;
+		return new Map<object, string | null>();
 	}
 
 	private _recordToolResultUiCanonicalMessage(message: AgentMessage): void {
@@ -2217,14 +2207,20 @@ export class AgentSession {
 		const messages = this._extensionRunner.hasHandlers("context")
 			? await this._extensionRunner.emitContext(input.messages, true)
 			: input.messages;
-		const payload = builder({
-			model,
-			systemPrompt: input.systemPrompt,
-			messages,
-			tools: this.agent.state.tools,
-			thinkingLevel: this.thinkingLevel,
-			sessionId: this.sessionManager.getSessionId(),
-		});
+		let payload: Record<string, unknown> | undefined;
+		// Only this synchronous builder is a preview conversion. Keep the flag out
+		// of awaited context/payload hooks so another request cannot inherit it.
+		this._toolBudgetPayloadPreviewDepth++;
+		try {
+			payload = builder({
+				model,
+				systemPrompt: input.systemPrompt,
+				messages,
+				tools: this.agent.state.tools,
+				thinkingLevel: this.thinkingLevel,
+				sessionId: this.sessionManager.getSessionId(),
+			});
+		} finally { this._toolBudgetPayloadPreviewDepth--; }
 		if (!payload || !this._extensionRunner.hasHandlers("before_provider_request")) return payload;
 		const finalPayload = await this._extensionRunner.emitBeforeProviderRequest(payload, true);
 		return finalPayload !== null && typeof finalPayload === "object" && !Array.isArray(finalPayload)

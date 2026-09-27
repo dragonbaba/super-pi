@@ -403,3 +403,30 @@ baseline and candidate functional runs pass all four scenarios, release owned
 roots and report zero pending writes. These single functional runs are excluded
 from final fair timing conclusions. The alternating five-pair comparison remains
 outstanding.
+
+Review r31: source provenance is collected during the existing projection scan,
+using its computed estimate rather than a separate walk/estimator pass. An
+explicit-change scratch map retains at most 128 V2 source identities, prefers
+the most recent qualifying identities, and converts to weak storage only after
+successful projection. A finally block clears strong references on either exit.
+Normal unchanged generations pass no map and allocate no capture object.
+The actual 129-tool SDK/TUI case observes zero pre-dispatch candidate inspections
+and an empty scratch map after return. A 2,130-result projector comparison has
+identical production scan/allocation counters with and without capture, 128
+retained identities despite 2,000 trailing small results, and zero owner entries
+and retained code units after disposal. This proves no extra source scan; it is
+not a claim that the cold map itself allocates nothing.
+
+Payload preview uses a primitive depth scoped only around its synchronous
+builder, with finally restoration. Awaited extension hooks never hold that
+mode. Successful and budget-blocked actual SDK Codex payload previews preserve
+request status, pending provenance and generation and dispatch no provider call.
+The existing SDK request-envelope AST gate is unchanged. Budget/presentation/
+contextual source gates and regressions: 33 pass; check pass. Full call chain:
+SDK converter -> Session projection bridge -> configured/contextual owner
+projection -> bounded identity collection -> successful-dispatch UI rediscovery
+-> source release. No production callback or regex was added. Prior r30 head
+99c3324cf45c8e461a57453606c83b83584bc47c passed all local gates (2,656 tests,
+90 skips), five allocation gates, explicit-command profiles, five isolated
+native-cost processes and both-platform CI 36297004716. These profiles must be
+refreshed for the changed capture chain before final conclusions.

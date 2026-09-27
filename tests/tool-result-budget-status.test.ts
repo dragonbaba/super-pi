@@ -17,6 +17,7 @@ import { alphaMessage } from "./helpers/alpha-stream.ts";
 import { Session as InspectorSession } from "node:inspector/promises";
 import { AssistantMessageEventStream } from "../packages/ai/src/utils/event-stream.ts";
 import { ExtensionHookTimeoutError } from "../packages/coding-agent/src/core/extensions/runner.ts";
+import { ToolResultPresentationOwner } from "../packages/coding-agent/src/core/tool-result-presentation.ts";
 
 for (const action of ["prompt", "continue"]) test(`N4 budget replacement refuses a direct public Agent ${action} before any tool is pending`, async () => {
   const stream = new AssistantMessageEventStream(); let entered!: () => void, finished = false, pending: Promise<void> | undefined;
@@ -288,7 +289,7 @@ for (const rebuild of [false, true]) for (const transform of ["identity", "filte
     heapBefore, heapAfterRelease: process.memoryUsage().heapUsed, note: "Explicit command/whole request cost; not per-delta cost or a speedup claim." }));
 });
 
-test("N4 one retained V2 result survives 128 later V1 results through a budget change", async () => {
+test("N4 one retained V2 result survives 128 later V1 results through a budget change", async t => {
   let requests = 0, executions = 0, wire = "";
   const fetchFixture: typeof fetch = async (_url, init) => {
     wire = String(init?.body); requests++;
@@ -311,10 +312,61 @@ test("N4 one retained V2 result survives 128 later V1 results through a budget c
     assert.equal(requests, 4); assert.equal(executions, 129); assert.ok(component.getToolResultPresentationDiscovery("older-v2")?.cursor);
     assert.equal(f.session.messages.filter(message => message.role === "toolResult").length, 129);
     await f.internal.editor.onSubmit("/tool-budget 2048"); assert.equal(component.getToolResultPresentationDiscovery("older-v2"), undefined);
+    const owner = (f.session as any)._toolResultPresentation, inspect = owner.inspectToolResultPresentationForUiCandidate;
+    let preDispatchInspections = 0, capturedScratch: Map<object, string | null> | undefined;
+    t.mock.method(owner, "inspectToolResultPresentationForUiCandidate", function(this: any, ...args: any[]) {
+      if (requests === 4) preDispatchInspections++; return inspect.apply(this, args);
+    });
+    const project = owner.projectMessagesForModel;
+    t.mock.method(owner, "projectMessagesForModel", function(this: any, ...args: any[]) { capturedScratch = args[7]; return project.apply(this, args); });
     await f.session.prompt("Continue without tools."); await f.session.agent.waitForIdle();
     assert.equal(requests, 5); assert.equal(executions, 129); assert.ok(wire.includes("older-v2"));
+    assert.equal(preDispatchInspections, 0); assert.ok(capturedScratch); assert.equal(capturedScratch.size, 0);
     const next = component.getToolResultPresentationDiscovery("older-v2"); assert.ok(next?.cursor); assert.notEqual(next.cursor, previous.cursor);
     assert.equal(f.internal.toolResultBudgetRediscoveryPasses, 1); assert.equal((f.session as any)._toolBudgetProjectedSources, undefined);
+  } finally { await f.release(); }
+});
+
+test("N4 projection capture reuses source scans and retains only 128 V2 identities", () => {
+  const messages = [];
+  for (let index = 0; index < 2130; index++) messages.push({ role: "toolResult" as const, toolName: "fixture", toolCallId: `capture-${index}`,
+    content: [{ type: "text" as const, text: index < 130 ? "evidence ".repeat(2000) : "small" }], isError: false, timestamp: 0 });
+  const control = new ToolResultPresentationOwner({ enabled: true, budgetTokens: 1024 }, "capture-session");
+  const captured = new ToolResultPresentationOwner({ enabled: true, budgetTokens: 1024 }, "capture-session");
+  const sources = new Map<object, string | null>();
+  try {
+    control.projectMessagesForModel(messages.slice());
+    captured.projectMessagesForModel(messages.slice(), undefined, undefined, undefined, undefined, undefined, false, sources);
+    assert.equal(sources.size, 128); assert.equal(sources.has(messages[0].content), false); assert.equal(sources.has(messages[1].content), false);
+    assert.equal(sources.get(messages[2].content), "capture-2"); assert.equal(sources.get(messages[129].content), "capture-129");
+    assert.equal(captured.counters.fullSourceEstimatorScans, 2130); assert.deepEqual(captured.counters, control.counters);
+    captured.projectMessagesForModel([{ ...messages[129], toolCallId: "ambiguous" }], undefined, undefined, undefined, undefined, undefined, false, sources);
+    assert.equal(sources.get(messages[129].content), null); assert.equal(sources.size, 128);
+  } finally { sources.clear(); control.dispose(); captured.dispose(); }
+  assert.equal(sources.size, 0); assert.equal(captured.counters.retainedProjectionCodeUnits, 0); assert.equal(captured.counters.projectionRecordEntries, 0);
+});
+
+for (const budgetTokens of [1, 1024]) test(`N4 actual SDK payload preview leaves request state and provenance unchanged, budget=${budgetTokens}`, async () => {
+  let requests = 0;
+  const f = await alphaSession({ runtime: alphaModelRuntime(() => { requests++; throw new Error("preview must not dispatch"); }), budgetTokens });
+  try {
+    f.session.agent.state.model = { ...ALPHA_MODEL, api: "openai-codex-responses", provider: "openai-codex" };
+    f.session.configureToolResultBudget({ enabled: true, budgetTokens });
+    const content = [{ type: "text" as const, text: "preview evidence\n".repeat(10000) }];
+    const messages = [alphaMessage([{ type: "toolCall", id: "preview-large", name: "inspect", arguments: {} }]),
+      { role: "toolResult" as const, toolCallId: "preview-large", toolName: "inspect", content, isError: false, timestamp: 0 }];
+    const status = f.session.getToolResultBudgetStatus(), generation = f.session.toolResultBudgetGeneration, internal = f.session as any;
+    const capturePasses = internal._toolBudgetSourceCapturePasses;
+    if (budgetTokens === 1) await assert.rejects(f.session.buildProviderRequestPayload({ systemPrompt: "fixture", messages }), /budget|preparation blocked/i);
+    else {
+      const payload = await f.session.buildProviderRequestPayload({ systemPrompt: "fixture", messages }); assert.ok(payload);
+      assert.ok(JSON.stringify(payload).includes("preview-large"));
+    }
+    assert.deepEqual(f.session.getToolResultBudgetStatus(), status); assert.equal(f.session.toolResultBudgetGeneration, generation);
+    assert.equal(f.session.toolResultBudgetRediscoveryState, "waiting"); assert.equal(internal._toolBudgetProjectedSources, undefined);
+    assert.equal(internal._toolBudgetSourceCapturePasses, capturePasses); assert.equal(requests, 0);
+    assert.equal(internal._toolBudgetPayloadPreviewDepth, 0);
+    assert.equal(content[0].text.length, "preview evidence\n".length * 10000);
   } finally { await f.release(); }
 });
 

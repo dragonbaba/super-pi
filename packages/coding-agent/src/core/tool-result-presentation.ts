@@ -2070,11 +2070,13 @@ export class ToolResultPresentationOwner {
 	private projectMessageForConfiguredBudget(
 		message: ToolResultMessage,
 		imagePolicy?: (message: Message) => Message,
+		sources?: Map<object, string | null>,
 	): ToolResultMessage {
 		const resident = this.projectionRecords?.get(message.toolCallId);
 		if (resident?.sourceContent === message.content) this.counters.residentReadHits++;
 		else this.counters.providerReadMisses++;
 		const record = this.getOrCreateProjectionRecord(message.content, message.toolCallId, "provider");
+		this.recordProjectedUiSource(message, record, sources);
 		let projection = record.projection;
 		let projected = projection ? this.createModelMessage(message, projection.content) : record.sourceScan.mcpInput ? this.createModelMessage(message, message.content) : message;
 		if (imagePolicy) {
@@ -2107,6 +2109,7 @@ export class ToolResultPresentationOwner {
 		toolBudgetTokens: number,
 		contextBudgetTokens: number,
 		imagePolicy?: (message: Message) => Message,
+		sources?: Map<object, string | null>,
 	): ToolResultMessage {
 		let candidateBudget = Math.min(toolBudgetTokens, contextBudgetTokens);
 		if (!Number.isSafeInteger(candidateBudget) || candidateBudget <= 0) {
@@ -2120,6 +2123,7 @@ export class ToolResultPresentationOwner {
 		if (resident?.sourceContent === message.content) this.counters.residentReadHits++;
 		else this.counters.providerReadMisses++;
 		const record = this.getOrCreateProjectionRecord(message.content, message.toolCallId, "provider");
+		this.recordProjectedUiSource(message, record, sources);
 		for (let pass = 0; pass <= MAX_PROJECTION_SHRINK_PASSES; pass++) {
 			this.counters.contextualProjectionPasses++;
 			let projection: ProjectionBuild | undefined;
@@ -2193,6 +2197,15 @@ export class ToolResultPresentationOwner {
 		throw error;
 	}
 
+	/** Reuse the required projection scan, with only 128 source identities retained.
+	 * The caller owns and clears this explicit-change scratch map on every exit. */
+	private recordProjectedUiSource(message: ToolResultMessage, record: ProjectionRecord, sources?: Map<object, string | null>): void {
+		if (!sources || record.sourceScan.estimate.estimatedTokens <= this.budgetTokens!) return;
+		if (sources.has(message.content)) { sources.set(message.content, null); return; }
+		if (sources.size >= MAX_PROJECTION_RECORD_ENTRIES) sources.delete(sources.keys().next().value!);
+		sources.set(message.content, message.toolCallId);
+	}
+
 	private projectMessagesWithinContextualBudget(
 		messages: Message[],
 		imagePolicy: ((message: Message) => Message) | undefined,
@@ -2201,6 +2214,7 @@ export class ToolResultPresentationOwner {
 		contextWindow: number,
 		maxOutputTokens: number | undefined,
 		requestPlanning = false,
+		sources?: Map<object, string | null>,
 	): Message[] {
 		let assistantIndex = -1;
 		for (let index = messages.length - 1; index >= 0; index--) {
@@ -2223,7 +2237,7 @@ export class ToolResultPresentationOwner {
 				currentResultContextTokens += estimateMessageTokens(message);
 			}
 		}
-		if (currentResultCount === 0) return this.projectMessagesForModel(messages, imagePolicy);
+		if (currentResultCount === 0) return this.projectMessagesForModel(messages, imagePolicy, undefined, undefined, undefined, undefined, false, sources);
 
 		this.counters.contextualBudgetCalls++;
 		this.counters.contextualContextScans++;
@@ -2237,7 +2251,7 @@ export class ToolResultPresentationOwner {
 			for (let index = 0; index <= assistantIndex; index++) {
 				const message = messages[index]!;
 				if (message.role !== "toolResult") continue;
-				const projected = this.projectMessageForConfiguredBudget(message, imagePolicy);
+				const projected = this.projectMessageForConfiguredBudget(message, imagePolicy, sources);
 				if (projected !== message) messages[index] = projected;
 			}
 			const contextEstimate = estimateContextTokensFromParts(systemPrompt, messages, tools).tokens;
@@ -2270,6 +2284,7 @@ export class ToolResultPresentationOwner {
 						Math.min(this.budgetTokens!, toolBudget),
 						contextBudget,
 						imagePolicy,
+						sources,
 					);
 				} catch (error) {
 					if (!requestPlanning || !(error instanceof ToolResultContinuationError) || error.code !== "budget-too-small") throw error;
@@ -2301,6 +2316,7 @@ export class ToolResultPresentationOwner {
 		contextWindow?: number,
 		maxOutputTokens?: number,
 		requestPlanning = false,
+		sources?: Map<object, string | null>,
 	): Message[] {
 		if (!this.accepting || this.budgetTokens === undefined) return messages;
 		if (contextWindow !== undefined) {
@@ -2312,12 +2328,13 @@ export class ToolResultPresentationOwner {
 				contextWindow,
 				maxOutputTokens,
 				requestPlanning,
+				sources,
 			);
 		}
 		for (let index = 0; index < messages.length; index++) {
 			const message = messages[index]!;
 			if (message.role !== "toolResult") continue;
-			const projected = this.projectMessageForConfiguredBudget(message, imagePolicy);
+			const projected = this.projectMessageForConfiguredBudget(message, imagePolicy, sources);
 			if (projected !== message) messages[index] = projected;
 		}
 		return messages;
