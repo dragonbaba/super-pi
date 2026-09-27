@@ -1,5 +1,15 @@
 # N4 task cost and bounded work
 
+Latest integration correction: CI on `721dc68ffd78d3cbc7e9e064cf613e621983960d`
+found the unchanged frame-queue source assertion requiring direct awaited
+`_emitAgentEnd` delivery. Captured-view cleanup now belongs to that method's
+existing lifecycle `finally`, alongside timer release, instead of wrapping its
+caller. The assertion is unchanged; all 133 frame-queue, actual headless/SDK/TUI
+budget and presentation/source regressions pass on Node 22.19.0. Complete gates
+and final measurements remain pending for this corrected candidate. The completed
+r38 comparison (85 groups, 60 measured + 12 warmup + 4 preparation children, all
+closed successfully) remains bound to its actual `721dc68` source coordinate.
+
 This work remains in progress. The first implementation slice makes the existing
 tool-result budget visible and adjustable. It does not establish a performance win;
 the full task matrix, I/O counters, five-process comparisons, formal PTY startup

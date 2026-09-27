@@ -1285,6 +1285,7 @@ export class AgentSession {
 			}
 		} finally {
 			if (deadlineTimer) clearTimeout(deadlineTimer);
+			this._toolBudgetProjectedSources = undefined;
 		}
 	}
 
@@ -1476,8 +1477,7 @@ export class AgentSession {
 		// cannot overtake critical UI output; high-frequency events stay unchanged.
 		if (event.type === "agent_end" && event.requiresUserInput) this._interactionPaused = true;
 		if (event.type === "agent_end") {
-			try { await this._emitAgentEnd({ ...event, willRetry: this._willRetryAfterAgentEnd(event) }); }
-			finally { this._toolBudgetProjectedSources = undefined; }
+			await this._emitAgentEnd({ ...event, willRetry: this._willRetryAfterAgentEnd(event) });
 			this._evidenceCompletedReads?.clear();
 			this._evidenceCompletedBytes = 0;
 		} else {
