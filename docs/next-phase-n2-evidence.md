@@ -665,3 +665,14 @@ now expects committed after completed write/truncate/sync, while still checking
 both hardlinks, object identity, attributes and zero retained native resources.
 No production regex, callback, binding or fallback was added. Final combined
 checks and both-platform CI/review remain required.
+
+Review r31: strategy binding is now bidirectional. A commit receipt requires its
+recorded matching selection, and a selection requires its terminal receipt.
+Known committed content also requires a valid SHA-256; omitting it consistently
+from both mirrors cannot turn verification into metadata-only observation. The
+six actual producer histories now additionally reject missing selections and
+missing/invalid hashes. Unknown and uncommitted outcomes retain their distinct
+hash-optional behavior. Recovery/commit regression: 119 pass, two platform skips.
+The preceding r30 head 06cc595e9a0f2aa4a8f0b2dc3a80b49d6f9d58c4 passed all local
+gates (2,539 tests, 84 skips) and Windows/Linux CI 36296995953. These results do
+not substitute for the new head's required gates or review.

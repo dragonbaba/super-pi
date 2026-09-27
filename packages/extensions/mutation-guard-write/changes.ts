@@ -183,10 +183,11 @@ function sameCommitReceipt(left: any, right: any): boolean {
   return true;
 }
 
-function commitMatchesTerminal(commit: any, status: string, stateChanged: boolean | "unknown", selectedStrategy?: string): boolean {
+function commitMatchesTerminal(commit: any, status: string, stateChanged: boolean | "unknown", selectedStrategy?: string, postimage?: unknown): boolean {
   if (commit === undefined) return selectedStrategy === undefined;
   if (!validCommitReceipt(commit)) return false;
-  if (selectedStrategy !== undefined && commit.strategy !== selectedStrategy) return false;
+  if (commit.strategy !== selectedStrategy) return false;
+  if (commit.outcome === "committed" && (typeof postimage !== "string" || postimage.length !== 64 || !SHA256.test(postimage))) return false;
   if (status === "succeeded" || status === "partial") return stateChanged === true && commit.outcome === "committed";
   if (status === "state_unknown") return stateChanged === "unknown" && commit.outcome === "unknown";
   return (status === "failed_no_change" || status === "cancelled") && stateChanged === false && commit.outcome === "not_committed";
@@ -476,7 +477,7 @@ export function collectChanges(branch: readonly any[], cwd: string): ChangeRecor
     if (bound && call.name !== "file_batch" && !validStandalonePrefix(executionEntries, entry, call, receipt.target, receipt.receiptVersion === 2 ? receipt.destination : undefined)) bound = false;
     if (bound && receipt.receiptVersion === 2 && conflictingTerminal(executionEntries, entry, receipt.toolCallId, receipt.itemId, index, receipt, details)) bound = false;
     if (bound && !commitMatchesTerminal(details?.commit, receipt.receiptVersion === 1 ? "succeeded" : receipt.status, receipt.stateChanged,
-      entry?.data?.phase === "intent" ? undefined : selectedStrategy)) bound = false;
+      entry?.data?.phase === "intent" ? undefined : selectedStrategy, details?.sha256)) bound = false;
     if (bound && entry?.data?.phase === "intent" && receipt.operation === "write") {
       const prepared = call?.name === "file_batch" ? uniqueBatchPreparation(executionEntries, call)?.targets.get(`${call.id}:${index}`)
         : uniqueProgress(executionEntries, call.id, "origin")?.data;
