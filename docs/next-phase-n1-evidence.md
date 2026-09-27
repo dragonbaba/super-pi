@@ -324,3 +324,30 @@ Later aggregate activity checks also enforce the existing 16-item bound. Actual
 histories and a million-element Proxy array test refusal without accessing its
 elements. These are explicit-command/cold bounded collectors, with module-level
 helpers and no new regex or callback. Current-head full gates/CI/review remain due.
+
+Latest review corrections bound item IDs before slicing/parsing and inspect all
+later call-owned activity, including new origin/preparation entries and unversioned
+aggregates. The existing standalone create producer's single v2 durable result +
+exact v1 success mirror remains compatible; changed/duplicate/unversioned mirrors
+and every later standalone mutation custom entry refuse recovery. Actual histories
+and a 2-million-character ID with a slice interception prove the boundary.
+
+The explicit change viewer now prepares bounded numeric grapheme offsets once
+(maximum 65,536 code units; 327,685 metadata bytes), then materializes only visible
+rows. One viewport-sized cache is reused across unchanged renders and discarded
+on replacement/disposal. Resize starts at the current grapheme offset; backward
+scroll may scan the bounded current physical line, with no whole-document wrapped
+string cache. Full call chain reviewed: explicit changes dialog -> ChangeViewer
+render/input -> bounded nextRow/previousRow -> visible substring/truncateToWidth ->
+custom component/TUI; no per-frame callback, regex, promise or full-text wrapping.
+Constructor segmentation is the explicit-dialog lifetime boundary.
+
+Windows Node22.19 serial allocation profile: 65,536-character input, 22 visible
+content rows at width 1, 20,000 stable renders produce zero new rows, 200 changed
+viewports produce 4,422 total rows (including initial 22), 136,200 sampled bytes.
+Dispose releases body, 327,685-byte scroll metadata, cached rows and both lifecycle
+references. GC heap 41,281,448 -> 41,476,440 bytes is an observed process value,
+not a zero-allocation or leak proof by itself. Existing actual tool preview fixture:
+20,000 progress updates/10 cycles, 380,800 sampled bytes, zero repeated render-text
+changes and zero retained derived characters. Focused/source gates: 52 pass, one
+platform skip; check passes. New full gates, both CI jobs and review remain required.
