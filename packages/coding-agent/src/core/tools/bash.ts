@@ -1081,6 +1081,7 @@ export function createShellToolDefinition(
 					facts.started = "unknown"; facts.executionStatus = "unknown"; facts.sideEffects = "unknown"; facts.retryGuidance = "inspect_before_retry";
 					facts.exitCode = null; facts.signal = null; facts.termination = "unknown"; facts.cwd = null;
 					facts.output.complete = logError ? false : "unknown";
+					facts.inputError = undefined; facts.secondaryObservationError = undefined; facts.observationErrorsOmitted = undefined;
 					facts.observationError = "Backend returned inconsistent process observations; completion and effects are unknown.";
 				}
 				if (facts.started === false) details.executionStatus = "not_executed";

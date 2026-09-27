@@ -1,9 +1,17 @@
 # N3 shell input and result evidence
 
-Status: **实现中，完整候选验证中**. Incorporated parent N2: `cffd2dbd1390b1fe73d16a74430a32f56af06b1c`,
-including N1 `f044d73c27912528a3655bfea8a10b60881f6b56`. Input, structured
-results and bounded CDPATH/hash are implemented locally; complete gates remain.
-No complete N3 acceptance yet.
+Status: **原定功能已实现，事实保留修复已通过相关回归；最终组合候选验收中**.
+Stable parent N2: `96820048a04e03b9e42ccdeb72792e4963d790a4`, including N1
+`6ca8869953fd7afdbd07a1107fb7d81d4ec39316` and its accepted import limitation.
+The bounded input transport, structured Agent/Session/TUI results and CDPATH/hash
+compatibility are implemented. The grouped r33 observation fixes passed 116
+focused/source tests with five platform skips and check. Their final combined
+full gates and actual review are still required; current status is recorded on
+the original Draft [#49](https://github.com/dragonbaba/super-pi/pull/49), which
+remains unmerged. Prior implementation fb79d5b8d5e3376897535a8d1416dce0e84c610c
+passed all local gates (2,639 pass, 90 skips) and both-platform CI 36300190554;
+those results do not substitute for validation of the corrected final head.
+Older checkpoints and profile scopes below remain historical evidence.
 
 ## Input capability decision
 
@@ -341,3 +349,16 @@ and final tool facts carry both diagnostics. Focused contract/observation/
 PowerShell/source tests: 101 pass, five platform skips; check pass on Node22.19.
 No production regex or callback was added. Current combined full gates and
 two-platform CI/review remain required.
+
+Review r33 groups the remaining observed fact-preservation defects. A successful
+PowerShell recovery probe followed by failed confirmation retains the initial
+real failed-spawn observation. Disabled-state persistence failures append bounded
+primary/secondary diagnostics without replacing prior evidence. Completion
+normalization rejects incompatible optional diagnostic shapes, and fallback
+facts clear incompatible fields, so downstream consumers retain structured
+failure authority rather than classifying forged output text. Actual Agent and
+PowerShell regressions, direct/Session observations and source gates: 116 pass,
+five platform skips; check pass. One fixed module helper handles bounded observer
+errors; no production regex or callback was introduced. Full gates are deferred
+until this grouped fix and its parent integration are stable, per the user scope
+freeze, rather than repeated for each small edit.
