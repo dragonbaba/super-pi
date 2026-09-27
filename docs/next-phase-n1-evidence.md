@@ -566,8 +566,17 @@ helpers are module functions and reuse the dedicated numeric regex constant.
 The other #47 comment's origin-time overwrite-drift example was executed against
 both approved N1 and integrated N3 producers. Both return an error with no
 mutation receipt and no recovery draft, retaining the external bytes. A
-regression preserves this behavior. Integrated N2 commit receipts already select
-overwrite for reconstructable overwrite failures, so the reported unconditional
+regression preserves this behavior. A failure after selecting overwrite but
+before candidate creation (actual target drift) retains its commit receipt and
+drafts overwrite. The separate staged-fsync-failure case preserves the platform
+boundary: Linux retains the candidate and requires observation, excluding it
+from automatic drafting; Windows verifies deletion of the owned candidate before
+allowing the overwrite draft. The first added regression incorrectly assumed
+Windows cleanup semantics on Linux; CI `36322895079` exposed that assertion.
+Both failure boundaries now have explicit content/receipt/retained-file checks;
+production cleanup and verification behavior is unchanged.
+Integrated N2 commit receipts already select overwrite for reconstructable
+overwrite failures, so the reported unconditional
 create behavior does not justify another production change. Raw comparison:
 `merge-write-draft-n1.json` and `merge-write-draft-n3.json` in the existing task
 artifacts directory. The missing-receipt record is not fabricated into an

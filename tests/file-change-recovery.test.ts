@@ -518,17 +518,32 @@ test("N1 standalone create failure binds every original request field before dra
   assert.equal(readFileSync(path, "utf8"), "external");
 });
 
-test("N1/N2 merge regression: a reconstructable standalone overwrite failure keeps overwrite mode", async t => {
+for (const boundary of ["prepared", "staged"]) test(`N1/N2 merge regression: standalone overwrite recovery respects ${boundary} failure`, async t => {
   const f = await fixture(t), target = join(realpathSync.native(f.cwd), "failed-overwrite"); writeFileSync(target, "before");
   await protectWindowsFixture(target); await f.call("read", { path: target }, "failed-overwrite-read");
-  const file = await open(target, "r"), prototype = Object.getPrototypeOf(file); await file.close();
-  t.mock.method(prototype, "sync", async function() { throw new Error("fixture staging sync refusal"); });
+  if (boundary === "prepared") {
+    f.onRecord(data => { if (data.toolCallId === "failed-overwrite" && data.phase === "intent") writeFileSync(target, "external commit drift"); });
+  } else {
+    const file = await open(target, "r"), prototype = Object.getPrototypeOf(file); await file.close();
+    t.mock.method(prototype, "sync", async function() { throw new Error("fixture staging sync refusal"); });
+  }
   const result = await f.call("write", { path: target, content: "desired overwrite" }, "failed-overwrite");
-  assert.equal(result.isError, true); assert.equal(readFileSync(target, "utf8"), "before");
+  assert.equal(result.isError, true); assert.equal(readFileSync(target, "utf8"), boundary === "prepared" ? "external commit drift" : "before");
   const records = collectChanges(SessionManager.open(f.session.getSessionFile()!).getBranch(), f.cwd);
   assert.equal(records.length, 1); assert.equal(records[0].status, "failed_no_change"); assert.equal(records[0].unavailable, undefined);
-  assert.equal(records[0].receipt.commit.outcome, "not_committed"); assert.equal(records[0].requiresVerification, undefined);
-  assert.ok(remainingDraft(records, new Set()).includes('"mode": "overwrite"'));
+  assert.equal(records[0].receipt.commit.outcome, "not_committed");
+  if (boundary === "staged" && process.platform === "linux") {
+    // Linux deliberately retains a candidate without a verified-object deletion primitive.
+    assert.equal(records[0].requiresVerification, true);
+    assert.equal(readFileSync(records[0].receipt.commit.retainedTemporary, "utf8"), "desired overwrite");
+    assert.throws(() => remainingDraft(records, new Set()), /verify partial\/unknown/);
+    assert.equal((await verifyChange(records[0], async () => {})).temporary.exists, true);
+    assert.throws(() => remainingDraft(records, new Set([records[0].itemId])), /No confirmed/);
+  } else {
+    assert.equal(records[0].requiresVerification, undefined); assert.equal(records[0].receipt.commit.retainedTemporary, undefined);
+    assert.ok(remainingDraft(records, new Set()).includes('"mode": "overwrite"'));
+    assert.equal((await fsPromises.readdir(f.cwd)).some(name => name.startsWith(".pi-file-commit-")), false);
+  }
 });
 
 test("N1 duplicate history entry IDs cannot authenticate progress that precedes its call", async t => {
