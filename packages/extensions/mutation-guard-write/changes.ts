@@ -222,6 +222,17 @@ function samePlannedDirectories(left: unknown, right: unknown): boolean {
   return true;
 }
 
+function validSourceIdentity(value: any): boolean {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    && typeof value.device === "string" && value.device.length <= 30 && OBSERVATION_UNSIGNED_INTEGER_PATTERN.test(value.device)
+    && typeof value.inode === "string" && value.inode.length <= 30 && OBSERVATION_UNSIGNED_INTEGER_PATTERN.test(value.inode);
+}
+
+function sameSourceIdentity(left: any, right: any): boolean {
+  if (left === undefined || right === undefined) return left === right;
+  return validSourceIdentity(left) && validSourceIdentity(right) && left.device === right.device && left.inode === right.inode;
+}
+
 function conflictingTerminal(entries: readonly any[], selected: any, callId: string, itemId: string, index: number, outcome: any, details: any): boolean {
   let previous = false;
   for (const entry of entries) {
@@ -233,6 +244,7 @@ function conflictingTerminal(entries: readonly any[], selected: any, callId: str
     if (previous || entry.type !== "custom" || selected.type !== "message"
       || terminal.status !== outcome.status || terminal.stateChanged !== outcome.stateChanged
       || terminal.operation !== outcome.operation || terminal.target !== outcome.target || terminal.destination !== outcome.destination
+      || !sameSourceIdentity(terminal.sourceIdentity, details?.sourceIdentity)
       || !sameCommitReceipt(terminal.commit ?? terminal.receipt?.commit, details?.commit)
       || details?.commit?.outcome === "committed" && terminal.sha256 === undefined
       || terminal.sha256 !== undefined && (typeof terminal.sha256 !== "string" || terminal.sha256.length !== 64 || !SHA256.test(terminal.sha256) || terminal.sha256 !== details?.sha256)
@@ -477,6 +489,7 @@ export function collectChanges(branch: readonly any[], cwd: string): ChangeRecor
     }
     if (bound && call.name !== "file_batch" && !validStandalonePrefix(executionEntries, entry, call, receipt.target, receipt.receiptVersion === 2 ? receipt.destination : undefined)) bound = false;
     if (bound && receipt.receiptVersion === 2 && conflictingTerminal(executionEntries, entry, receipt.toolCallId, receipt.itemId, index, receipt, details)) bound = false;
+    if (bound && details?.sourceIdentity !== undefined && !validSourceIdentity(details.sourceIdentity)) bound = false;
     if (bound && !commitMatchesTerminal(details?.commit, receipt.receiptVersion === 1 ? "succeeded" : receipt.status, receipt.stateChanged,
       entry?.data?.phase === "intent" ? undefined : selectedStrategy, details?.sha256)) bound = false;
     if (bound && entry?.data?.phase === "intent" && receipt.operation === "write") {

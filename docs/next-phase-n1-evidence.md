@@ -535,3 +535,38 @@ RSS did not return to its initial value, which does not imply live JS references
 Raw method and samples: `D:/RMProjects/Pi-next-phase-artifacts/n1-accepted-cold-enumeration.mjs`
 and `n1-accepted-cold-enumeration.json`. This single lifecycle sample is not a
 zero-allocation claim. There is no remaining user decision on this item.
+
+## Merge-closeout review correction
+
+The Ready-triggered review of #47 returned after its authorized merge and found
+an actual receipt-pairing omission. This correction is carried by the still-open
+N3 candidate, based on main `501895c7d001563f002727d7c1cce047723df93c`, rather than
+directly pushing main or starting another topic. The approved N1 tree and its
+original validation remain historical coordinates.
+
+Standalone and batch result mirrors now require the same bounded unsigned
+device/inode pair when source identity is present. Batch completion persists
+that existing pair alongside its other bounded durable fields. A missing,
+changed or malformed mirror is unrecoverable; a partial result with no identity
+in either mirror stays verifiable without claiming an identity match. Imported
+old batch records whose aggregate identity has no durable corroboration also
+cannot supply that proof. Session import acceptance and the original history are
+unchanged. No identity is guessed or borrowed from the filesystem.
+
+Actual persisted/reopened move regressions verify destination identity, reject
+one-sided/malformed identity, and check file bytes. An isolated test installs its
+unlink fault before jiti loads native exports, performs real link operations,
+then refuses source unlink: both names and bytes survive for standalone and
+batch partial moves. Adding an aggregate-only identity cannot authorize disk
+verification. Existing AST/source assertions are unchanged; the new recovery
+helpers are module functions and reuse the dedicated numeric regex constant.
+
+The other #47 comment's origin-time overwrite-drift example was executed against
+both approved N1 and integrated N3 producers. Both return an error with no
+mutation receipt and no recovery draft, retaining the external bytes. A
+regression preserves this behavior. Integrated N2 commit receipts already select
+overwrite for reconstructable overwrite failures, so the reported unconditional
+create behavior does not justify another production change. Raw comparison:
+`merge-write-draft-n1.json` and `merge-write-draft-n3.json` in the existing task
+artifacts directory. The missing-receipt record is not fabricated into an
+execution-capable draft.

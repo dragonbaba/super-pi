@@ -1,5 +1,5 @@
 import { COMPLETION_CLAIM_RE, INCOMPLETE_DISCLOSURE_RE, PARTIAL_MUTATION_RE, LEADING_CD_RE, SHELL_OPERATOR_RE, NODE_TEST_RE, TEST_COMMAND_RE, NODE_TSC_RE, TYPECHECK_COMMAND_RE, LINT_COMMAND_RE, BUILD_COMMAND_RE, PACKAGE_PREFIX_RE, POLICY_BLOCKED_RE, TIMEOUT_RE, PATH_NOT_FOUND_RE, COMMAND_FAILED_RE, WINDOWS_ABSOLUTE_RE, TRAILING_SEPARATOR_RE } from "./regex.ts";
-import { extname, isAbsolute, relative, resolve } from "node:path";
+import { dirname, extname, isAbsolute, relative, resolve } from "node:path";
 import { realpathSync } from "node:fs";
 import { getShellCwdBinding, readShellExecution, shellExecutionSucceeded, shellFailureCategory } from "@super-pi/coding-agent";
 import { boundBatchIntents, validMutationOutcome } from "../mutation-guard-write/session-evidence.ts";
@@ -131,8 +131,18 @@ function fallbackShellVerificationCwd(input: Record<string, unknown>, cwd: strin
   const binding = getShellCwdBinding(input);
   if (binding) return binding.canonical;
   const requested = typeof input.cwd === "string" ? resolve(cwd ?? process.cwd(), input.cwd) : cwd ?? process.cwd();
-  try { return realpathSync.native(requested); }
-  catch { return requested; } // Unobserved paths retain an obligation; this grants no execution authority.
+  let ancestor = requested;
+  for (;;) {
+    try { return resolve(realpathSync.native(ancestor), relative(ancestor, requested)); }
+    catch (error) {
+      // Resolve only a missing suffix beneath an existing canonical ancestor.
+      // Other observation failures retain the lexical obligation, not success.
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") return requested;
+      const parent = dirname(ancestor);
+      if (parent === ancestor) return requested;
+      ancestor = parent;
+    }
+  }
 }
 
 export function observeToolResult(state: FalseSuccessState, observation: ToolObservation): string | undefined {

@@ -134,11 +134,11 @@ export function readShellExecution(details: unknown): ShellExecutionFacts | unde
 
 export function shellExecutionSucceeded(value: ShellExecutionFacts): boolean {
   return value.producer === "local-shell" && value.started === true && value.executionStatus === "exited" && typeof value.cwd === "string" && value.cwd.length > 0 && value.termination === "exit"
-    && value.exitCode === 0 && value.signal === null && value.output.complete === true && value.output.log !== "failed" && !value.inputError && value.observationError === undefined;
+    && value.exitCode === 0 && value.signal === null && value.output.complete === true && value.output.log !== "failed" && value.inputError === undefined && value.observationError === undefined;
 }
 
 export function shellFailureCategory(value: ShellExecutionFacts): string {
-  if (value.inputError) return "input_transport_failed";
+  if (value.inputError !== undefined) return "input_transport_failed";
   if (value.started === false && value.termination === "cancelled") return "timeout_or_aborted";
   if (value.started === false) return value.executionStatus === "start_failed" ? "start_failed" : "not_executed";
   if (value.termination === "timeout" || value.termination === "cancelled") return "timeout_or_aborted";

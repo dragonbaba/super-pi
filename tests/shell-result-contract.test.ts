@@ -324,6 +324,45 @@ for (const name of ["bash", "powershell"] as const) for (const field of ["inputE
   } finally { agent.abort(); }
 });
 
+for (const name of ["bash", "powershell"] as const) test(`N3 merge regression: empty input diagnostic fails actual ${name} dispatch`, async () => {
+  const backend = { async exec() { return { exitCode: 0, termination: "exit" as const, inputError: "",
+    observation: { started: true, exitCode: 0, signal: null, outputDrained: true } }; } };
+  const agent = new Agent({ convertToLlm: () => [], streamFn: () => { throw new Error("offline"); } });
+  agent.state.tools = [name === "bash" ? createBashTool(process.cwd(), { operations: backend }) : createPowerShellTool(process.cwd(), { operations: backend })];
+  try {
+    const result = await agent.dispatchHostTool({ type: "toolCall", name, id: "empty-input", arguments: { command: "npm test" } });
+    assert.equal(result.isError, true); const facts = readShellExecution(result.details)!;
+    assert.equal(facts.inputError, ""); assert.equal(facts.exitCode, 0);
+    assert.equal(classifyToolFailure(name, "Command exited with code 0", {}, result.details).category, "input_transport_failed");
+    const localFacts = { ...facts, producer: "local-shell" as const, cwd: process.cwd() };
+    assert.equal(shellExecutionSucceeded(localFacts), false);
+    const state = createFalseSuccessState();
+    observeToolResult(state, { toolName: name, input: { command: "npm test" }, cwd: process.cwd(), isError: false, details: { shellExecution: localFacts } });
+    assert.equal(state.obligations.size, 1); assert.equal(agent.state.pendingToolCalls.size, 0);
+  } finally { agent.abort(); }
+});
+
+test("N3 merge regression: missing cwd beneath a Session alias reconciles after actual success", async t => {
+  const root = fs.mkdtempSync(join(tmpdir(), "sp-n3-missing-alias-")), real = join(root, "real"), alias = join(root, "alias");
+  fs.mkdirSync(real); fs.symlinkSync(real, alias, process.platform === "win32" ? "junction" : "dir");
+  t.after(() => { assert.equal(dirname(root), tmpdir()); fs.rmSync(root, { recursive: true, force: true }); });
+  const input = { command: "npm test", cwd: "new/child" }, state = createFalseSuccessState();
+  observeToolResult(state, { toolName: "bash", input, cwd: alias, isError: true });
+  assert.equal(state.obligations.size, 1);
+  fs.mkdirSync(join(real, "other")); fs.mkdirSync(join(real, "new/child"), { recursive: true });
+  const agent = new Agent({ convertToLlm: () => [], streamFn: () => { throw new Error("offline"); } });
+  agent.state.tools = [createBashTool(alias, { operations: local })];
+  try {
+    for (const cwd of ["other", "new/child"]) {
+      const result = await agent.dispatchHostTool({ type: "toolCall", name: "bash", id: cwd, arguments: { command: "process.exitCode=0", cwd } });
+      assert.equal(result.isError, false);
+      observeToolResult(state, { toolName: "bash", input, cwd: alias, isError: false, details: result.details });
+      assert.equal(state.obligations.size, cwd === "other" ? 1 : 0, "only a matching observed directory clears the failed verification");
+    }
+    assert.equal(agent.state.pendingToolCalls.size, 0);
+  } finally { agent.abort(); }
+});
+
 for (const explicit of [true, false]) test(`N3 pre-execution verification failure canonicalizes a directory alias, explicit=${explicit}`, async t => {
   const root = fs.mkdtempSync(join(tmpdir(), "sp-n3-cwd-alias-")), real = join(root, "real"), alias = join(root, "alias");
   fs.mkdirSync(real); fs.symlinkSync(real, alias, process.platform === "win32" ? "junction" : "dir");
