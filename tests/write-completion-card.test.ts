@@ -4,7 +4,7 @@ import { stripVTControlCharacters } from "node:util";
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { RELEASE_COMPONENT_RENDER_CACHE, type TUI } from "@super-pi/tui";
+import { Container, Text, RELEASE_COMPONENT_RENDER_CACHE, type TUI } from "@super-pi/tui";
 import type { ToolDefinition } from "../packages/coding-agent/src/core/extensions/types.ts";
 import { createWriteToolDefinition } from "../packages/coding-agent/src/core/tools/write.ts";
 import { ToolExecutionComponent } from "../packages/coding-agent/src/modes/interactive/components/tool-execution.ts";
@@ -53,6 +53,8 @@ test("write terminal states never infer success from Added text", () => {
     [{ ...created, ok: false, status: "state_unknown" }, true, "Write state unknown"],
     [{ ...created, ok: false, status: "cancelled" }, true, "Write cancelled"],
     [{ ...created, ok: false, status: "failed_no_change", stateChanged: false }, true, "Write failed — no change"],
+    [{ ...created, ok: false, status: "cancelled", stateChanged: false, requiresVerification: true, commit: { outcome: "not_committed", retainedTemporary: "fixture.tmp" } }, true, "Write cancelled — verify retained temporary"],
+    [{ ...created, ok: false, status: "failed_no_change", stateChanged: false, requiresVerification: true, commit: { outcome: "not_committed", retainedTemporary: "fixture.tmp" } }, true, "Write failed — no change — verify retained temporary"],
     [undefined, true, "Write failed — inspect result"],
     [undefined, false, "Write status unverified"],
   ] as const;
@@ -158,4 +160,25 @@ test("actual authorization denial leaves the file absent and renders a failed re
     component.setExpanded(true);
     assert.match(visible(component), /must not be written/);
   } finally { await fixture.release(); }
+});
+
+test("hidden composite call releases every descendant even when a child release throws", () => {
+  const hidden = new Container(), nested = new Container();
+  const first = new Text("hidden first", 0, 0), second = new Text("hidden second", 0, 0);
+  const failure = new Error("synthetic child release failure");
+  let firstReleases = 0, secondReleases = 0;
+  first[RELEASE_COMPONENT_RENDER_CACHE] = () => { firstReleases++; first.setText(""); throw failure; };
+  second[RELEASE_COMPONENT_RENDER_CACHE] = () => { secondReleases++; second.setText(""); };
+  nested.addChild(first); hidden.addChild(nested); hidden.addChild(second);
+  const component = card(undefined, { ...definition, renderCall() { return hidden; } } as ToolDefinition<any, any>);
+  component.setArgsComplete();
+  component.updateResult({ content: [{ type: "text", text: "Added fixture.ts" }], details: created }, false, false);
+  assert.doesNotMatch(visible(component), /hidden first|hidden second/);
+  assert.throws(() => releaseComponentRenderCaches(component), error => error === failure);
+  assert.equal(firstReleases, 1); assert.equal(secondReleases, 1);
+  assert.doesNotMatch(hidden.render(80).join("\n"), /hidden first|hidden second/);
+  assert.equal((component as any).callRendererComponent, undefined);
+  assert.equal((component as any).resultRendererComponent.receipt, undefined);
+  releaseComponentRenderCaches(component);
+  assert.equal(firstReleases, 1); assert.equal(secondReleases, 1);
 });

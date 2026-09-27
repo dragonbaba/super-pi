@@ -5,6 +5,7 @@ import {
 	getCapabilities,
 	Image,
 	RELEASE_COMPONENT_RENDER_CACHE,
+	releaseComponentRenderCaches,
 	Spacer,
 	Text,
 	type TUI,
@@ -1279,7 +1280,7 @@ export class ToolExecutionComponent extends Container {
 		// must not prevent the remaining lifecycle cleanup, even when it throws.
 		if (this.toolDefinition?.collapseCallOnResult && this.result && !this.isPartial && !this.expanded) {
 			try {
-				this.callRendererComponent?.[RELEASE_COMPONENT_RENDER_CACHE]?.();
+				releaseComponentRenderCaches(this.callRendererComponent);
 			} catch (error) {
 				releaseError = error;
 				releaseFailed = true;

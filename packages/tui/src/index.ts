@@ -152,6 +152,7 @@ export {
 	type Focusable,
 	isFocusable,
 	isViewportTUI,
+	releaseComponentRenderCaches,
 	type OverlayAnchor,
 	type OverlayHandle,
 	type OverlayMargin,

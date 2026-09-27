@@ -40,3 +40,8 @@ Hidden third-party call-release hooks are error-isolated: the parent advances it
 lifecycle generation, drops the hidden component reference, runs derived cleanup,
 clears image/discovery references, and only then rethrows the first error. A regression
 injects both a hidden-hook error and a derived-hook error and checks the release state.
+Hidden composite calls use the existing recursive TUI release traversal, so descendant
+hooks run even when another child throws. Its temporary traversal set/order are
+lifecycle-local and cleared on all exits; stable render/progress paths are unchanged.
+Cancelled and failed-no-change receipts keep those statuses when a known temporary
+is retained, with an explicit verification warning rather than an unknown-target label.

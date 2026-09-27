@@ -5,9 +5,11 @@ import { RELEASE_COMPONENT_RENDER_CACHE, Text } from "@super-pi/tui";
 function writeStatus(receipt: any, isError: boolean): string {
   if (receipt?.operation === "write" && receipt.mutationReceiptVersion) {
     if (receipt.status === "partial") return "Partial write — verify current state";
+    if (receipt.status === "cancelled" || receipt.status === "failed_no_change") {
+      const status = receipt.status === "cancelled" ? "Write cancelled" : "Write failed — no change";
+      return receipt.requiresVerification ? `${status} — verify ${receipt.commit?.retainedTemporary ? "retained temporary" : "current state"}` : status;
+    }
     if (receipt.status === "state_unknown" || receipt.requiresVerification) return "Write state unknown — verify current state";
-    if (receipt.status === "cancelled") return "Write cancelled";
-    if (receipt.status === "failed_no_change") return "Write failed — no change";
     if (!isError && receipt.ok === true && receipt.stateChanged === true && receipt.category === "success") {
       if (receipt.created === true) return "Added";
       if (typeof receipt.previousSha256 === "string" && receipt.commit?.outcome === "committed") return "Modified";
