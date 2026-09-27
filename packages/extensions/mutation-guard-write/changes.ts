@@ -3,7 +3,7 @@ import { lstat, open } from "node:fs/promises";
 import { isAbsolute, resolve, relative, sep, dirname, basename } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@super-pi/coding-agent";
 import { Key, matchesKey, truncateToWidth, graphemeWidth, type TUI } from "@super-pi/tui";
-import { resolveToolPath } from "./core.ts";
+import { resolveToolPath, MAX_EDIT_REPLACEMENTS, MAX_EDIT_SCOPE_BYTES, MAX_TURN_MUTATION_BYTES } from "./core.ts";
 import { capturePathIdentity, sameIdentity, type PathIdentity } from "./native-file-core.ts";
 import { boundBatchIntents, collectStructuredMutationReceipts, recentMutationEntries } from "./session-evidence.ts";
 import { batchExpandedSummary, verificationSummary, displayMetadata } from "./change-preview.ts";
@@ -16,6 +16,54 @@ const MAX_CHANGES = 128;
 const MAX_VERIFY_BYTES = 32 * 1024 * 1024;
 const CHANGE_GRAPHEMES = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 const OBSERVATION_SCOPE = "Filesystem observation only; not a semantic/test result, proof of earlier side effects, or permission to replay.";
+const MAX_RECOVERY_ARGUMENT_BYTES = 4 * 1024 * 1024;
+
+/** Fixed fields only: no recursive traversal of arbitrary imported objects. */
+function takeRecoveryString(budget: { bytes: number }, value: unknown, limit: number): boolean {
+  if (value === undefined) return true;
+  if (typeof value !== "string" || value.length > limit || value.length > budget.bytes) return false;
+  const bytes = Buffer.byteLength(value);
+  if (bytes > limit || bytes > budget.bytes) return false;
+  budget.bytes -= bytes;
+  return true;
+}
+
+function boundedRecoveryOperation(name: string, input: any, budget: { bytes: number }): boolean {
+  if (!input || typeof input !== "object" || typeof input.path !== "string" || !input.path.length
+    || !takeRecoveryString(budget, input.path, 4096) || !takeRecoveryString(budget, input.purpose, 800)) return false;
+  if (name === "delete" || name === "move") return takeRecoveryString(budget, input.destination, 4096);
+  if (name === "write") return typeof input.content === "string" && takeRecoveryString(budget, input.content, MAX_TURN_MUTATION_BYTES);
+  if (name !== "edit" || !takeRecoveryString(budget, input.snapshot, 128) || !Array.isArray(input.edits)
+    || input.edits.length < 1 || input.edits.length > MAX_EDIT_REPLACEMENTS) return false;
+  const before = budget.bytes;
+  for (const edit of input.edits) {
+    if (!edit || typeof edit !== "object" || !takeRecoveryString(budget, edit.oldText, MAX_EDIT_SCOPE_BYTES)
+      || !takeRecoveryString(budget, edit.newText, MAX_EDIT_SCOPE_BYTES) || !takeRecoveryString(budget, edit.kind, 32)
+      || !takeRecoveryString(budget, edit.start, MAX_EDIT_SCOPE_BYTES) || !takeRecoveryString(budget, edit.end, MAX_EDIT_SCOPE_BYTES)
+      || edit.expectedLine !== undefined && (!Number.isSafeInteger(edit.expectedLine) || edit.expectedLine <= 0)) return false;
+    if (edit.newLines !== undefined) {
+      if (!Array.isArray(edit.newLines) || edit.newLines.length > MAX_EDIT_SCOPE_BYTES + 1) return false;
+      for (const line of edit.newLines) {
+        if (--budget.bytes < 0 || typeof line !== "string" || !takeRecoveryString(budget, line, MAX_EDIT_SCOPE_BYTES)) return false;
+      }
+    }
+    if (before - budget.bytes > MAX_EDIT_SCOPE_BYTES) return false;
+  }
+  return true;
+}
+
+function boundedRecoveryArguments(call: any, budget: { bytes: number }): boolean {
+  if (call.name !== "file_batch") return boundedRecoveryOperation(call.name, call.arguments, budget);
+  const input = call.arguments;
+  if (!input || typeof input !== "object" || !takeRecoveryString(budget, input.path, 4096)
+    || !takeRecoveryString(budget, input.purpose, 800) || !Array.isArray(input.operations)
+    || input.operations.length < 1 || input.operations.length > 16) return false;
+  for (const item of input.operations) {
+    if (!item || typeof item !== "object" || !takeRecoveryString(budget, item.mode, 32)
+      || !boundedRecoveryOperation(item.operation, item, budget)) return false;
+  }
+  return true;
+}
 
 export interface ChangeRecord {
   entryId: string; toolCallId: string; itemId: string; operation: string;
@@ -75,11 +123,12 @@ function sameCreatedDirectories(left: any, right: any): boolean {
   if (!Array.isArray(left) || !Array.isArray(right) || left.length > 32 || left.length !== right.length) return false;
   for (let index = 0; index < left.length; index++) {
     const a = left[index], b = right[index];
-    if (!a || !b || typeof a.path !== "string" || a.path.length > 4096 || a.path !== b.path || !a.identity || !b.identity) return false;
+    if (!a || !b || typeof a.path !== "string" || a.path.length > 4096 || a.path !== b.path || a.status !== b.status) return false;
+    if (a.identity === undefined && b.identity === undefined && a.status === "retained") continue;
+    if (!a.identity || !b.identity || typeof a.identity !== "object" || typeof b.identity !== "object") return false;
     for (const field of DIRECTORY_IDENTITY_FIELDS) {
       const value = a.identity[field];
-      if (value !== b.identity[field] || typeof value === "string" && value.length > 4096
-        || value !== undefined && typeof value !== "string" && typeof value !== "boolean") return false;
+      if (value !== b.identity[field] || (field === "directory" ? typeof value !== "boolean" : typeof value !== "string" || value.length === 0 || value.length > 4096)) return false;
     }
   }
   return true;
@@ -134,7 +183,7 @@ function uniqueBatchPreparation(entries: readonly any[], call: any) {
     if (entry.data?.toolCallId === call.id && entry.data?.itemId !== undefined
       || entry.message?.role === "toolResult" && entry.message.toolCallId === call.id) return undefined;
   }
-  const targets = boundBatchIntents([prepared], call.arguments, call.id);
+  const targets = boundBatchIntents([prepared], call.arguments, call.id, call.requestHash);
   if (!Array.isArray(call.arguments?.operations) || targets.size !== call.arguments.operations.length) return undefined;
   return { prepared, position, targets };
 }
@@ -221,7 +270,7 @@ function hasLaterMutationActivity(branch: readonly any[], start: number, callId:
 /** Inspect the complete standalone prefix, including progress before its selected intent. */
 function validStandalonePrefix(entries: readonly any[], selected: any, call: any, target: string, destination?: string): boolean {
   let phase = 0;
-  const requestHash = mutationRequestHash(call.name, call.arguments);
+  const requestHash = call.requestHash;
   for (const entry of entries) {
     if (entry === selected && entry.data?.phase !== "intent") return true;
     if (entry.type !== "custom" || entry.customType !== "file-mutation-progress-v2" || entry.data?.toolCallId !== call.id) continue;
@@ -247,6 +296,7 @@ function validStandalonePrefix(entries: readonly any[], selected: any, call: any
 export function collectChanges(branch: readonly any[], cwd: string): ChangeRecord[] {
   branch = branch.slice(-512);
   const calls = new Map<string, any>();
+  const argumentBudget = { bytes: MAX_RECOVERY_ARGUMENT_BYTES };
   const callOrder = new Map<string, number>();
   const duplicate = new Set<string>();
   const entries = new Map<string, any>();
@@ -268,7 +318,9 @@ export function collectChanges(branch: readonly any[], cwd: string): ChangeRecor
       if (call?.type !== "toolCall" || typeof call.id !== "string" || call.id.length > 256) continue;
       if (calls.size >= 512 && !calls.has(call.id)) { callsOverflow = true; calls.clear(); callOrder.clear(); duplicate.clear(); break; }
       if (calls.has(call.id)) duplicate.add(call.id);
-      calls.set(call.id, call);
+      const bounded = boundedRecoveryArguments(call, argumentBudget);
+      calls.set(call.id, { id: call.id, name: call.name, arguments: bounded ? call.arguments : undefined,
+        requestHash: bounded ? mutationRequestHash(call.name, call.arguments) : undefined });
       callOrder.set(call.id, order.get(entry.id)!);
     }
   }
@@ -299,7 +351,7 @@ export function collectChanges(branch: readonly any[], cwd: string): ChangeRecor
         // origin before issuing I/O; it also binds their v2 partial outcome.
         const intent = intentEntry === undefined ? uniqueProgress(executionEntries, call.id, "origin", receipt.itemId) : intentEntry;
         bound = index === 0 && intent?.data.operation === receipt.operation && intent?.data.target === receipt.target
-          && intent?.data.requestHash === mutationRequestHash(call.name, input)
+          && intent?.data.requestHash === call.requestHash
           && intent?.data.destination === receipt.destination && (!receipt.destination || isAbsolute(receipt.destination))
           && (intent !== entry || entry?.data?.phase === "intent");
         if (bound && hasEarlierTerminal(executionEntries, executionEntries.indexOf(intent), call.id, receipt.itemId, 0)) bound = false;
@@ -307,7 +359,7 @@ export function collectChanges(branch: readonly any[], cwd: string): ChangeRecor
         const origin = uniqueProgress(executionEntries, call.id, "origin");
         if (origin !== undefined) {
           bound = origin !== null && origin.data.itemId === `${call.id}:0` && origin.data.target === target && origin.data.operation === receipt.operation
-            && origin.data.requestHash === mutationRequestHash(call.name, input)
+            && origin.data.requestHash === call.requestHash
             && origin !== entry
             && !hasEarlierTerminal(executionEntries, executionEntries.indexOf(origin), call.id, `${call.id}:0`, 0);
         } else bound = resolveToolPath(cwd, input.path) === target;

@@ -374,3 +374,28 @@ remain the observed external change. Current check and focused/source tests pass
 (57 pass, one platform skip). The prior Windows CI's responsiveness test failed
 its frame-before-child-exit timing assertion; it is recorded as a failure, with
 no assertion relaxed. Fresh complete local gates and both CI jobs remain due.
+
+The next review bounds imported request arguments before hashing: fixed fields,
+16 batch items, 20 edits, bounded nested lines/text and a 4 MiB scan-wide UTF-8
+budget. The collector computes each accepted request hash once and never trusts
+an imported hash. Million-element arrays and oversized strings refuse before
+element traversal or large hash updates. Imported diffs enter PreviewBudget
+without a complete prefixed copy; metadata objects are not coerced to strings.
+
+Live BatchResultText now renders its own bounded plain-text rows instead of
+delegating full-report wrapping to Text. A component owns at most 65,536 body
+code units and 401 rendered rows, caches one width, and clears source/body/rows
+on release. Stable renders create no rows; changed widths scan bounded graphemes
+without global width-cache insertion. Actual ToolExecutionComponent coverage adds
+20,000 narrow stable renders across ten release cycles. This is a display limit;
+the explicit changes viewer remains available for the bounded full report.
+No per-update closure, regex or promise was added. A fresh serial allocation
+profile is still required for this implementation.
+
+Exact mirrored retained-directory receipts can omit identity on both sides after
+a real post-mkdir capture failure. Malformed or one-sided identities still refuse.
+Creation records preparation-owned canonical paths even on capture failure, so
+Windows short-name aliases do not prevent the actual changes command from
+observing the retained parent. Older unproven noncanonical parent paths remain
+explicitly unverifiable. Current Windows focused/source checks: 66 pass, one
+platform skip; type check passes. Full gates, CI and actual review remain due.

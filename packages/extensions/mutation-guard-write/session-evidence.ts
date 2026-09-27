@@ -156,10 +156,10 @@ export function recentMutationEntries(session: { getLeafId(): string | null; get
 }
 
 /** Pair bounded durable intents with this actual call, never with arbitrary result targets. */
-export function boundBatchIntents(branch: readonly unknown[], input: any, toolCallId: string): Map<string, { operation: string; target: string; destination?: string; directories?: unknown }> {
+export function boundBatchIntents(branch: readonly unknown[], input: any, toolCallId: string, preparedRequestHash?: string): Map<string, { operation: string; target: string; destination?: string; directories?: unknown }> {
   const intents = new Map<string, { operation: string; target: string; destination?: string; directories?: unknown }>();
   if (!Array.isArray(input?.operations) || input.operations.length > 16) return intents;
-  const hash = mutationRequestHash("file_batch", input);
+  const hash = preparedRequestHash ?? mutationRequestHash("file_batch", input);
   for (let i = Math.max(0, branch.length - MAX_RESTORE_ENTRIES); i < branch.length; i++) {
     const entry = branch[i] as any, data = entry?.data;
     if (entry?.type !== "custom" || entry.customType !== "file-mutation-progress-v2" || data?.toolCallId !== toolCallId) continue;
