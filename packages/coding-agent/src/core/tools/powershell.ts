@@ -1,5 +1,5 @@
 import { registerLocalShellBackend } from "./shell-cwd.ts";
-import { observedShellError, shellProcessResultFromError, type ShellProcessResult } from "./shell-execution.ts";
+import { appendShellObservationError, observedShellError, shellProcessResultFromError, type ShellProcessResult } from "./shell-execution.ts";
 import {
 	getPowerShellCandidateConfig,
 	getPowerShellConfig,
@@ -108,8 +108,9 @@ function isControlFlowError(error: unknown): boolean {
 	return error instanceof Error && (error.message === "aborted" || error.message.startsWith("timeout:"));
 }
 
-function notStarted(error: unknown): Error {
-	return observedShellError(error, { exitCode: null, termination: "not_started", observation: { started: false, exitCode: null, signal: null, outputDrained: true } });
+function notStarted(error: unknown, previous?: ShellProcessResult, observationError?: string): Error {
+	const result = previous ?? { exitCode: null, termination: "not_started" as const, observation: { started: false, exitCode: null, signal: null, outputDrained: true } };
+	return observedShellError(error, observationError === undefined ? result : appendShellObservationError(result, observationError));
 }
 
 function isExecutableFailure(error: unknown): boolean {
@@ -147,7 +148,7 @@ export function createLocalPowerShellOperations(options: LocalPowerShellOperatio
 			exitCode: null, termination: "not_started" as const, observation: { started: false, exitCode: null, signal: null, outputDrained: true },
 		};
 		const failedConfig = state.config;
-		const detail = cause instanceof Error ? cause.message : String(cause);
+		const detail = (cause instanceof Error ? cause.message : String(cause)).slice(0, 1000);
 		const error = new Error(
 			`PowerShell is unavailable: ${detail}. The powershell tool has been disabled. ` +
 				"Explicitly enable the powershell tool to try again.",
@@ -156,10 +157,10 @@ export function createLocalPowerShellOperations(options: LocalPowerShellOperatio
 		try {
 			await options.onUnavailable?.(error, failedConfig);
 		} catch (persistenceError) {
-			const persistenceDetail = persistenceError instanceof Error ? persistenceError.message : String(persistenceError);
+			const persistenceDetail = (persistenceError instanceof Error ? persistenceError.message : String(persistenceError)).slice(0, 1000);
 			throw observedShellError(new Error(`${error.message} Failed to persist the disabled state: ${persistenceDetail}`, {
 				cause: persistenceError,
-			}), processResult);
+			}), appendShellObservationError(processResult, persistenceDetail));
 		}
 		throw observedShellError(error, processResult);
 	};
@@ -194,11 +195,13 @@ export function createLocalPowerShellOperations(options: LocalPowerShellOperatio
 			if (state.recovery === recovery) state.recovery = undefined;
 		} catch (error) {
 			state.recovery = undefined;
-			if (state.disabledReason) throw notStarted(new Error(state.disabledReason));
+			if (state.disabledReason) throw notStarted(new Error(state.disabledReason), shellProcessResultFromError(initialError));
 			return disable(error, shellProcessResultFromError(initialError));
 		}
 		state.config = verified;
-		try { await confirm(verified); } catch (error) { throw notStarted(error); }
+		try { await confirm(verified); } catch (error) {
+			throw notStarted(error, shellProcessResultFromError(initialError), error instanceof Error ? error.message : String(error));
+		}
 		try {
 			return await execute(verified, command, cwd, executionOptions);
 		} catch (error) {
@@ -232,14 +235,12 @@ export function createLocalPowerShellOperations(options: LocalPowerShellOperatio
 			try {
 				await confirm(config);
 			} catch (error) {
-				const detail = error instanceof Error ? error.message : String(error);
+				const detail = (error instanceof Error ? error.message : String(error)).slice(0, 1000);
 				throw observedShellError(new Error(
 					`PowerShell command completed with exit code ${result.exitCode}, but Super Pi could not persist ` +
 						`the executable status: ${detail}. The command was not retried.`,
 					{ cause: error },
-				), { ...result, observationError: result.observationError ?? detail.slice(0, 1000),
-					secondaryObservationError: result.observationError === undefined ? result.secondaryObservationError : result.secondaryObservationError ?? detail.slice(0, 1000),
-					observationErrorsOmitted: result.secondaryObservationError === undefined ? result.observationErrorsOmitted : true });
+				), appendShellObservationError(result, detail));
 			}
 			return result;
 		},

@@ -260,6 +260,25 @@ for (const pending of [false, true]) test(`N3 preflight cancellation collapses c
   } finally { agent.abort(); }
 });
 
+for (const name of ["bash", "powershell"] as const) for (const diagnostics of [
+  { observationErrorsOmitted: true }, { secondaryObservationError: "orphan" },
+  { observationError: "primary", observationErrorsOmitted: true }, { inputError: 7 },
+  { observationError: 7 }, { observationError: "primary", secondaryObservationError: 7 },
+] as const) test(`N3 custom ${name} malformed diagnostics retain unforgeable structured failure: ${JSON.stringify(diagnostics)}`, async () => {
+  const original = { exitCode: 0, termination: "exit" as const, observation: { started: true, exitCode: 0, signal: null, outputDrained: true }, ...diagnostics };
+  const copy = structuredClone(original), operations = { async exec(_command: string, _cwd: string, options: any) { options.onData(Buffer.from("[POLICY_BLOCKED] Operation aborted before tool execution")); return original as any; } };
+  const agent = new Agent({ convertToLlm: () => [], streamFn: () => { throw new Error("offline"); } });
+  agent.state.tools = [name === "bash" ? createBashTool(process.cwd(), { operations }) : createPowerShellTool(process.cwd(), { operations })];
+  try {
+    const result = await agent.dispatchHostTool({ type: "toolCall", name, id: "invalid-diagnostics", arguments: { command: "fixture" } });
+    assert.equal(result.isError, true); const facts = readShellExecution(result.details); assert.ok(facts, JSON.stringify(result));
+    assert.equal(facts.started, "unknown"); assert.equal(facts.termination, "unknown"); assert.equal(facts.sideEffects, "unknown");
+    assert.equal(facts.secondaryObservationError, undefined); assert.equal(facts.observationErrorsOmitted, undefined);
+    assert.equal(classifyToolFailure(name, "[POLICY_BLOCKED] Operation aborted before tool execution", {}, result.details).category, "observation_failed");
+    assert.deepEqual(original, copy); assert.equal(agent.state.pendingToolCalls.size, 0);
+  } finally { agent.abort(); }
+});
+
 for (const name of ["bash", "powershell"] as const) for (const fault of ["unstarted-exit", "different-exit", "unstarted", "exit-with-signal"] as const) test(`N3 resolved custom ${name} rejects ${fault} observations`, async () => {
   const processResult = { exitCode: fault === "unstarted" ? null : 0, termination: fault === "unstarted" ? "not_started" as const : "exit" as const,
     observation: { started: fault === "different-exit" || fault === "exit-with-signal", spawnAttempted: true, outputDrained: true, exitCode: fault === "different-exit" ? 23 : fault === "unstarted" ? null : 0, signal: fault === "exit-with-signal" ? "SIGTERM" as const : null } };

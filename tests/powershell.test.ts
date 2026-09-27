@@ -10,7 +10,7 @@ import {
 } from "../packages/coding-agent/src/core/tools/powershell.ts";
 import type { SettingsManager } from "../packages/coding-agent/src/core/settings-manager.ts";
 import type { PowerShellConfig } from "../packages/coding-agent/src/utils/shell.ts";
-import { shellProcessResultFromError } from "../packages/coding-agent/src/core/tools/shell-execution.ts";
+import { observedShellError, shellProcessResultFromError } from "../packages/coding-agent/src/core/tools/shell-execution.ts";
 
 const INITIAL_CONFIG: PowerShellConfig = {
 	shell: "C:\\PowerShell\\pwsh.exe",
@@ -31,7 +31,33 @@ for (const persistenceFailure of [false, true]) test(`N3 PowerShell real attempt
     probe() { throw new Error("No recovery executable"); }, onUnavailable() { if (persistenceFailure) throw new Error("persist unavailable failed"); } });
   await assert.rejects(operations.exec("unused", process.cwd(), EXEC_OPTIONS), (error: any) => {
     const result = shellProcessResultFromError(error); assert.ok(result); assert.equal(result.observation?.started, false);
-    assert.equal(result.observation?.spawnAttempted, true); assert.equal(result.termination, "not_started"); return true;
+    assert.equal(result.observation?.spawnAttempted, true); assert.equal(result.termination, "not_started");
+    assert.equal(result.observationError, persistenceFailure ? "persist unavailable failed" : undefined); return true;
+  });
+});
+
+test("N3 successful PowerShell recovery probe with failed confirmation retains the real failed launch", async () => {
+  let probes = 0, confirmations = 0;
+  const operations = createLocalPowerShellOperations({ resolveCandidate: () => INITIAL_CONFIG,
+    probe() { probes++; return RECOVERED_CONFIG; }, onConfirmed() { confirmations++; throw new Error("confirmation denied"); } });
+  await assert.rejects(operations.exec("unused", process.cwd(), EXEC_OPTIONS), (error: any) => {
+    const result = shellProcessResultFromError(error)!; assert.equal(result.observation?.started, false); assert.equal(result.observation?.spawnAttempted, true);
+    assert.equal(result.termination, "not_started"); assert.equal(result.observationError, "confirmation denied"); return true;
+  });
+  assert.equal(probes, 1); assert.equal(confirmations, 1);
+});
+
+for (const prior of [false, true]) test(`N3 disabled-state persistence failure is a bounded structured diagnostic, prior=${prior}`, async () => {
+  const operations = createLocalPowerShellOperations({ resolveCandidate: () => INITIAL_CONFIG, probe() { throw new Error("no recovery"); },
+    async execute() { throw observedShellError(Object.assign(new Error("missing executable"), { code: "ENOENT" }), {
+      exitCode: null, termination: "not_started", observation: { started: false, spawnAttempted: true, exitCode: null, signal: null, outputDrained: true },
+      observationError: prior ? "first diagnostic" : undefined }); },
+    onUnavailable() { throw new Error("persist unavailable " + "x".repeat(2000)); } });
+  await assert.rejects(operations.exec("unused", process.cwd(), EXEC_OPTIONS), (error: any) => {
+    const result = shellProcessResultFromError(error)!; assert.equal(result.observation?.spawnAttempted, true);
+    assert.equal((prior ? result.secondaryObservationError : result.observationError)?.length, 1000);
+    assert.ok((prior ? result.secondaryObservationError : result.observationError)?.startsWith("persist unavailable "));
+    if (prior) assert.equal(result.observationError, "first diagnostic"); return true;
   });
 });
 

@@ -17,20 +17,35 @@ export function normalizeShellProcessResult(result: ShellProcessResult): ShellPr
   const observation = result.observation;
   if (result.exitCode !== null && !Number.isSafeInteger(result.exitCode)
     || result.termination !== undefined && !TERMINATIONS.has(result.termination)
+    || result.inputError !== undefined && typeof result.inputError !== "string"
+    || result.observationError !== undefined && typeof result.observationError !== "string"
+    || result.secondaryObservationError !== undefined && (typeof result.secondaryObservationError !== "string" || result.observationError === undefined)
+    || result.observationErrorsOmitted !== undefined && (result.observationErrorsOmitted !== true || result.secondaryObservationError === undefined)
     || observation && (typeof observation.started !== "boolean" || typeof observation.outputDrained !== "boolean"
+    || observation.spawnAttempted !== undefined && typeof observation.spawnAttempted !== "boolean"
     || observation.exitCode !== result.exitCode || observation.started && (observation.spawnAttempted === false || result.termination === "not_started")
     || !observation.started && (result.exitCode !== null || observation.signal !== null || result.termination !== undefined && result.termination !== "not_started" && result.termination !== "cancelled")
     || result.termination === "exit" && (result.exitCode === null || observation.signal !== null)
     || result.termination === "signal" && (result.exitCode !== null || typeof observation.signal !== "string")
     || observation.signal !== null && result.exitCode !== null
     || observation.signal !== null && (typeof observation.signal !== "string" || observation.signal.length > 32))) {
-    return { exitCode: null, termination: "unknown", inputError: result.inputError?.slice(0, 1000),
+    return { exitCode: null, termination: "unknown", inputError: typeof result.inputError === "string" ? result.inputError.slice(0, 1000) : undefined,
       observationError: "Backend returned inconsistent process observations; completion and effects are unknown." };
   }
   if ((result.inputError?.length ?? 0) <= 1000 && (result.observationError?.length ?? 0) <= 1000 && (result.secondaryObservationError?.length ?? 0) <= 1000) return result;
   return { exitCode: result.exitCode, observation: result.observation, termination: result.termination,
     inputError: result.inputError?.slice(0, 1000), observationError: result.observationError?.slice(0, 1000),
     secondaryObservationError: result.secondaryObservationError?.slice(0, 1000), observationErrorsOmitted: result.observationErrorsOmitted };
+}
+
+/** Append one bounded completion diagnostic without replacing earlier evidence. */
+export function appendShellObservationError(result: ShellProcessResult, message: string): ShellProcessResult {
+  result = normalizeShellProcessResult(result);
+  const detail = message.slice(0, 1000);
+  return { exitCode: result.exitCode, observation: result.observation, termination: result.termination, inputError: result.inputError,
+    observationError: result.observationError ?? detail,
+    secondaryObservationError: result.observationError === undefined ? undefined : result.secondaryObservationError ?? detail,
+    observationErrorsOmitted: result.secondaryObservationError === undefined ? result.observationErrorsOmitted : true };
 }
 
 export function observedShellError(error: unknown, result: ShellProcessResult): Error {
