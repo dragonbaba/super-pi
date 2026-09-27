@@ -12,7 +12,7 @@ import { keyHint } from "../../modes/interactive/components/keybinding-hints.ts"
 import { truncateToVisualLines } from "../../modes/interactive/components/visual-truncate.ts";
 import { theme } from "../../modes/interactive/theme/theme.ts";
 import { waitForChildProcess, type ChildProcessObservation } from "../../utils/child-process.ts";
-import { observedShellError, shellProcessResultFromError, readShellExecution, shellFailureCategory, type ShellExecutionFacts, type ShellProcessResult, type ShellTermination } from "./shell-execution.ts";
+import { normalizeShellProcessResult, observedShellError, shellProcessResultFromError, readShellExecution, shellFailureCategory, type ShellExecutionFacts, type ShellProcessResult, type ShellTermination } from "./shell-execution.ts";
 import { setOwnProperty } from "../../utils/record.ts";
 import {
 	getShellConfig,
@@ -1052,6 +1052,7 @@ export function createShellToolDefinition(
 				const snapshot = await finishOutput();
 				const { text, details } = formatOutput(snapshot, executionError ? "" : "(no output)");
 				let outputText = text, failure: string | undefined;
+				if (processResult) processResult = normalizeShellProcessResult(processResult);
 				const observation = processResult?.observation;
 				const local = isLocalShellBackend(ops) && ops.exec === backendExecute;
 				const started = observation?.started ?? "unknown";
@@ -1073,12 +1074,19 @@ export function createShellToolDefinition(
 						log: logError ? "failed" : snapshot.fullOutputPath ? snapshot.spillFileCapped ? "capped" : "complete" : "not_needed",
 						cleanup, logError, cleanupError } };
 				details.shellExecution = facts;
+				if (!readShellExecution(details)) {
+					facts.started = "unknown"; facts.executionStatus = "unknown"; facts.sideEffects = "unknown"; facts.retryGuidance = "inspect_before_retry";
+					facts.exitCode = null; facts.signal = null; facts.termination = "unknown"; facts.cwd = null;
+					facts.output.complete = logError ? false : "unknown";
+					facts.observationError = "Backend returned inconsistent process observations; completion and effects are unknown.";
+				}
 				if (facts.started === false) details.executionStatus = "not_executed";
 				if (executionError) {
 					if (facts.termination === "timeout") failure = `[SHELL_INTERRUPTED] Command timed out after ${timeout ?? "requested"} seconds`;
 					else if (facts.termination === "cancelled") failure = "[SHELL_INTERRUPTED] Command aborted";
 					else failure = `[${facts.started === false || !observation && SHELL_START_ERROR_CODES.has((executionError as NodeJS.ErrnoException).code ?? "") ? "SHELL_START_FAILED" : "SHELL_EXECUTION_FAILED"}] ${errorMessage}`;
-				} else if (facts.termination === "signal") failure = `[SHELL_INTERRUPTED] Command terminated by ${facts.signal ?? "an unobserved signal"}`;
+				} else if (facts.started === false) failure = "[SHELL_START_FAILED] Backend reports that the process did not start";
+				else if (facts.termination === "signal") failure = `[SHELL_INTERRUPTED] Command terminated by ${facts.signal ?? "an unobserved signal"}`;
 				else if (facts.exitCode === null) failure = "[SHELL_EXECUTION_FAILED] Command termination is unknown (null exit code)";
 				else if (facts.exitCode !== 0) { failure = "[SHELL_RUNTIME_FAILED]"; outputText = appendShellStatus(outputText, `Command exited with code ${facts.exitCode}`); }
 				else if (observation && !observation.outputDrained) failure = "[SHELL_OUTPUT_INCOMPLETE] Process exited but output streams did not finish before the drain boundary";

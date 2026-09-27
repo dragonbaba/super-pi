@@ -10,7 +10,28 @@ export interface ShellProcessResult {
 }
 const PROCESS_RESULT = Symbol.for("pi.shell-process-result.v1");
 
+/** Completion boundary only. Do not mutate a custom backend's owned result. */
+export function normalizeShellProcessResult(result: ShellProcessResult): ShellProcessResult {
+  const observation = result.observation;
+  if (result.exitCode !== null && !Number.isSafeInteger(result.exitCode)
+    || result.termination !== undefined && !TERMINATIONS.has(result.termination)
+    || observation && (typeof observation.started !== "boolean" || typeof observation.outputDrained !== "boolean"
+    || observation.exitCode !== result.exitCode || observation.started && (observation.spawnAttempted === false || result.termination === "not_started")
+    || !observation.started && (result.exitCode !== null || observation.signal !== null || result.termination !== undefined && result.termination !== "not_started")
+    || result.termination === "exit" && (result.exitCode === null || observation.signal !== null)
+    || result.termination === "signal" && (result.exitCode !== null || typeof observation.signal !== "string")
+    || observation.signal !== null && result.exitCode !== null
+    || observation.signal !== null && (typeof observation.signal !== "string" || observation.signal.length > 32))) {
+    return { exitCode: null, termination: "unknown", inputError: result.inputError?.slice(0, 1000),
+      observationError: "Backend returned inconsistent process observations; completion and effects are unknown." };
+  }
+  if ((result.inputError?.length ?? 0) <= 1000 && (result.observationError?.length ?? 0) <= 1000) return result;
+  return { exitCode: result.exitCode, observation: result.observation, termination: result.termination,
+    inputError: result.inputError?.slice(0, 1000), observationError: result.observationError?.slice(0, 1000) };
+}
+
 export function observedShellError(error: unknown, result: ShellProcessResult): Error {
+  result = normalizeShellProcessResult(result);
   let failure = error instanceof Error ? error : new Error(String(error));
   try { Object.defineProperty(failure, PROCESS_RESULT, { value: result, configurable: true }); }
   catch {

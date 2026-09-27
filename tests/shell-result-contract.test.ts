@@ -216,6 +216,41 @@ test("N3 child output cannot impersonate the Agent's unstarted cancellation", as
   assert.equal(classifyToolFailure("bash", "Operation aborted before tool execution", {}, result.details).category, "command_failed");
 });
 
+for (const pending of [false, true]) test(`N3 preflight cancellation collapses current and remaining Agent results, pending=${pending}`, async () => {
+  const session = SessionManager.inMemory(process.cwd()); let executions = 0, hooks = 0, requests = 0;
+  const calls = ["bash", "powershell"].map(name => ({ type: "toolCall" as const, id: `preflight-${name}`, name, arguments: { command: "unused" } }));
+  const agent = new Agent({ toolExecution: "sequential", convertToLlm: () => [], streamFn: () => {
+    const message = alphaMessage(++requests === 1 ? calls : [{ type: "text", text: "done" }]); message.stopReason = requests === 1 ? "toolUse" : "stop"; return finalStream(message);
+  }, beforeToolCall: async () => { hooks++; if (pending) await new Promise<void>(resolve => setImmediate(resolve)); agent.abort(); return undefined; } });
+  const operations = { async exec() { executions++; return { exitCode: 0 }; } };
+  agent.state.tools = [createBashTool(process.cwd(), { operations }), createPowerShellTool(process.cwd(), { operations })];
+  try {
+    await agent.prompt("Cancel the isolated preflight."); await agent.waitForIdle();
+    const results = agent.state.messages.filter(message => message.role === "toolResult"); assert.equal(results.length, 2);
+    assert.equal((results[0].content[0] as any).text, "Operation aborted");
+    assert.equal((results[1].content[0] as any).text, "Operation aborted before tool execution");
+    for (const result of results) { assert.equal(result.isError, true); assert.equal(readShellExecution(result.details)?.started, false); }
+    for (const message of agent.state.messages) session.appendMessage(message as never);
+    const observations = collectSessionErrors(session.getBranch()); assert.equal(observations.length, 1);
+    assert.equal(observations[0].category, "aborted"); assert.equal(observations[0].cascadeCount, 2);
+    assert.equal(executions, 0); assert.equal(hooks, 1); assert.equal(agent.state.pendingToolCalls.size, 0);
+  } finally { agent.abort(); }
+});
+
+for (const name of ["bash", "powershell"] as const) for (const fault of ["unstarted-exit", "different-exit", "unstarted", "exit-with-signal"] as const) test(`N3 resolved custom ${name} rejects ${fault} observations`, async () => {
+  const processResult = { exitCode: fault === "unstarted" ? null : 0, termination: fault === "unstarted" ? "not_started" as const : "exit" as const,
+    observation: { started: fault === "different-exit" || fault === "exit-with-signal", spawnAttempted: true, outputDrained: true, exitCode: fault === "different-exit" ? 23 : fault === "unstarted" ? null : 0, signal: fault === "exit-with-signal" ? "SIGTERM" as const : null } };
+  const original = structuredClone(processResult), operations = { async exec() { return processResult; } };
+  const agent = new Agent({ convertToLlm: () => [], streamFn: () => { throw new Error("offline"); } });
+  agent.state.tools = [name === "bash" ? createBashTool(process.cwd(), { operations }) : createPowerShellTool(process.cwd(), { operations })];
+  try {
+    const result = await agent.dispatchHostTool({ type: "toolCall", name, id: "inconsistent-process", arguments: { command: "fixture" } });
+    assert.equal(result.isError, true); const facts = readShellExecution(result.details); assert.ok(facts, JSON.stringify(result));
+    assert.equal(facts.started, fault === "unstarted" ? false : "unknown"); assert.equal(shellExecutionSucceeded(facts), false);
+    assert.equal(facts.exitCode, null); assert.deepEqual(processResult, original); assert.equal(agent.state.pendingToolCalls.size, 0);
+  } finally { agent.abort(); }
+});
+
 for (const name of ["bash", "powershell"] as const) for (const field of ["inputError", "observationError"] as const) test(`N3 custom ${name} bounds ${field} without losing execution facts`, async () => {
   const operations = { async exec() { return { exitCode: 23, termination: "exit" as const, [field]: "诊断".repeat(1_000_000) }; } };
   const agent = new Agent({ convertToLlm: () => [], streamFn: () => { throw new Error("offline"); } });
