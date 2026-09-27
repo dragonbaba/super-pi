@@ -125,6 +125,29 @@ for (const fault of ["malformed-tail", "aggregate-limit", "invalid-mode", "missi
   assert.equal(existsSync(join(f.cwd, "never-created")), false); assert.equal(existsSync(join(f.cwd, "also-absent")), false);
 });
 
+test("N1 imported delete calls reject operation-incompatible keys without reading their values", async t => {
+  const f = await fixture(t), path = join(f.cwd, "delete-fields"); writeFileSync(path, "before");
+  f.onRecord(data => { if (data.phase === "intent") writeFileSync(path, "external"); });
+  const input = { operations: [{ operation: "delete", path }] };
+  assert.equal((await f.call("file_batch", input, "delete-fields")).isError, true);
+  const genuine = JSON.parse(JSON.stringify(f.session.getBranch()));
+  assert.match(remainingDraft(collectChanges(genuine, f.cwd), new Set()), /delete/);
+  let rejectedValueReads = 0;
+  for (const field of ["content", "edits", "mode", "snapshot", "destination", "purpose", "unexpected"]) {
+    const branch = structuredClone(genuine);
+    const call = branch.find((entry: any) => entry.message?.content?.some((part: any) => part.id === "delete-fields")).message.content.find((part: any) => part.id === "delete-fields");
+    Object.defineProperty(call.arguments.operations[0], field, { enumerable: true, get() { rejectedValueReads++; return "x".repeat(2_000_000); } });
+    const records = collectChanges(branch, f.cwd); assert.ok(records.length > 0, field);
+    for (const record of records) { assert.ok(record.unavailable, field); assert.equal(record.original, undefined); }
+    assert.throws(() => remainingDraft(records, new Set()), /missing|ambiguous/, field);
+    assert.equal((await f.call("file_batch", { operations: [{ ...input.operations[0], [field]: "invalid" }] }, `invalid-delete-${field}`)).isError, true);
+  }
+  const branch = structuredClone(genuine), args = branch.find((entry: any) => entry.message?.content?.some((part: any) => part.id === "delete-fields")).message.content.find((part: any) => part.id === "delete-fields").arguments;
+  Object.defineProperty(args, "path", { enumerable: true, get() { rejectedValueReads++; return "unpermitted-root-path"; } });
+  assert.ok(collectChanges(branch, f.cwd)[0].unavailable);
+  assert.equal(rejectedValueReads, 0); assert.equal(readFileSync(path, "utf8"), "external");
+});
+
 test("N1 older synthesized preparations cannot evict newer completed changes", async t => {
   const f = await fixture(t);
   for (let batch = 0; batch < 9; batch++) {
@@ -1074,6 +1097,17 @@ test("N1 partial batch creation binds created-directory metadata across the resu
   const records = collectChanges(genuine, f.cwd); assert.equal(records[0].status, "partial"); assert.equal(records[0].unavailable, undefined);
   const observation = await verifyChange(records[0], async (path: string) => path);
   assert.equal(observation.parents.length, 2);
+  for (const field of ["path", "canonical", "device", "inode", "size", "mtime", "ctime", "mode", "links"]) {
+    const branch = JSON.parse(JSON.stringify(genuine));
+    const custom = branch.find((entry: any) => entry.data?.phase === "result").data;
+    const aggregate = branch.find((entry: any) => entry.message?.role === "toolResult" && entry.message.toolCallId === "parent-mirror").message.details.items[0].receipt;
+    const left = (custom.creation ?? custom).createdDirectories[0].identity;
+    const right = (aggregate.creation ?? aggregate).createdDirectories[0].identity;
+    left[field] = "x".repeat(2_000_000);
+    Object.defineProperty(right, field, { enumerable: true, get() { return assert.fail(`oversized ${field} reached mirror comparison`); } });
+    const invalid = collectChanges(branch, f.cwd); assert.ok(invalid[0].unavailable, field);
+    assert.throws(() => remainingDraft(invalid, new Set([invalid[0].itemId])), /missing|ambiguous/);
+  }
   for (const fault of ["omit", "path", "identity"]) {
     // Disk/imported JSON has independent mirrored objects, not the live Session's
     // shared directory array references retained by structuredClone.
