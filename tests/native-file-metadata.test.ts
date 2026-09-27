@@ -566,14 +566,32 @@ test("N2 Linux hardlink capability observation is refused before compatibility s
 test("N2 Linux non-assignable group preselects object preservation (injected process groups)", { skip: process.platform !== "linux" }, async t => {
   const f = await fixture(t), info = await lstat(f.target), foreign = info.gid === 12345 ? 12346 : 12345;
   const credentials = process as { geteuid(): number; getegid(): number; getgroups(): number[] };
-  t.mock.method(credentials, "geteuid", () => info.uid === 0 ? foreign : info.uid);
-  // A root-owned fixture first selects foreign-owner preservation; ordinary CI
-  // owners exercise the group gate without changing process credentials.
+  t.mock.method(credentials, "geteuid", () => info.uid);
+  // A root-owned fixture must exercise the same conservative group gate.
+  // Process credentials and capabilities are not changed by this fixture.
   t.mock.method(credentials, "getegid", () => foreign); t.mock.method(credentials, "getgroups", () => [foreign]);
   const plan = await planFor(f.target, f.before); assert.equal(plan.metadata.strategy, "protected_in_place");
-  assert.match(plan.metadata.reason!, info.uid === 0 ? /Foreign owner/ : /Target group cannot be assigned/);
+  assert.match(plan.metadata.reason!, /Target group cannot be assigned/);
   await commitPreparedFile(plan, f.after, { assertPathAllowed: async () => plan.target.canonical });
   assert.equal((await lstat(f.target)).gid, info.gid); assert.equal((await lstat(f.target)).ino, info.ino); assert.deepEqual(await readFile(f.target), f.after);
+});
+
+test("N2 UID zero alone never authorizes a foreign staging group (injected credentials/owner)", { skip: process.platform !== "linux" }, async t => {
+  const f = await fixture(t), info = await lstat(f.target), foreign = info.gid === 12345 ? 12346 : 12345;
+  const handle = await open(f.target, "r"), prototype = Object.getPrototypeOf(handle), originalStat = prototype.stat;
+  await handle.close();
+  t.mock.method(prototype, "stat", async function(this: any, options: any) {
+    const value = await originalStat.call(this, options);
+    if (value.ino === BigInt(info.ino)) value.uid = 0n;
+    return value;
+  });
+  const credentials = process as { geteuid(): number; getegid(): number; getgroups(): number[] };
+  t.mock.method(credentials, "geteuid", () => 0);
+  t.mock.method(credentials, "getegid", () => foreign);
+  t.mock.method(credentials, "getgroups", () => [foreign]);
+  const plan = await planFor(f.target, f.before);
+  assert.equal(plan.metadata.strategy, "protected_in_place"); assert.match(plan.metadata.reason!, /Target group cannot be assigned/);
+  assert.equal(await readFile(f.target, "utf8"), f.before); assert.deepEqual(await readdir(f.root), ["测试.txt"]);
 });
 
 test("N2 Linux POSIX ACL bytes and mode survive preselected in-place commit", { skip: process.platform !== "linux" }, async t => {

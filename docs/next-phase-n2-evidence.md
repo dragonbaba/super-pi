@@ -587,3 +587,14 @@ Tests inject those names at the native enumeration boundary and verify unchanged
 real file bytes/inode and zero publication attempts; they do not claim an actual
 privileged IMA/EVM configuration test. Current Windows focused/source tests:
 51 pass, 21 explicit platform skips. New full gates/CI/review remain required.
+
+### Review follow-up: restricted root credentials
+
+Linux staging conservatively requires the target GID to be the process effective
+or supplementary group. UID 0 alone is not evidence of CAP_CHOWN. A writable
+foreign-group file therefore selects object preservation before any temporary is
+created, even when root lacks that capability. The actual-file injected-group
+regression verifies preserved inode/GID and new bytes; a separate injected
+UID-zero/owner regression verifies selection and unchanged file/directory state.
+These tests do not change process credentials or claim an actual capability-drop
+environment. Linux execution is verified by CI; Windows skips these Linux cases.
