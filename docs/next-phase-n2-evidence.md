@@ -612,3 +612,18 @@ unchanged. No fallback, new binding, regex or callback was added. Focused Window
 Node22: 123 pass, 21 explicit platform skips. Final CI/review still required.
 Linux UID 0 is deliberately not treated as proof of CAP_CHOWN; capabilities are
 independently enabled privileges ([Linux capabilities](https://man7.org/linux/man-pages/man7/capabilities.7.html)).
+
+Review r28: Windows private candidate creation, protection and pre-publication
+verification consistently bind the DACL to TokenUser. TokenOwner can instead be
+Administrators and must not widen access while staged bytes are written. The
+existing bounded process-token SID reader is shared; no FFI binding or privilege
+change was added. The actual local fixture has different TokenOwner and TokenUser,
+checks the ACE SID against WindowsIdentity.User, compares creation/protection DACLs,
+and completes real replacement with bytes and metadata verification. Five private
+ACL tests pass; combined native/recovery tests: 109 passed, 22 platform skips;
+Node22.19 check passed. New CI and actual review remain required.
+
+Native allocation sampling now includes objects collected by major and minor GC
+and drops profiler storage before the release heap sample. Earlier survivor-only
+figures are superseded for allocation conclusions. Main-thread sampling excludes
+worker heap and native allocator; the final cost run must use this TokenUser fix.

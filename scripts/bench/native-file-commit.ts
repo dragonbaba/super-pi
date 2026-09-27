@@ -28,7 +28,7 @@ let content = Buffer.alloc(64 * 1024, 65);
 await writeFile(path, content);
 try {
   await protectWindowsFixture(path);
-  profiler.connect(); await profiler.post("HeapProfiler.startSampling", { samplingInterval: 1024 });
+  profiler.connect(); await profiler.post("HeapProfiler.startSampling", { samplingInterval: 1024, includeObjectsCollectedByMajorGC: true, includeObjectsCollectedByMinorGC: true });
   loop.enable();
   const firstStart = performance.now();
   const first = await selectCommitMetadata(await capturePathIdentity(path));
@@ -46,6 +46,10 @@ try {
   const { profile } = await profiler.post("HeapProfiler.stopSampling");
   let sampledBytes = 0; const nodes = [profile.head];
   while (nodes.length) { const node = nodes.pop()!; sampledBytes += node.selfSize; for (const child of node.children) nodes.push(child); }
+  profile.head.children.length = 0;
+  const profileSamples = (profile as typeof profile & { samples?: unknown[] }).samples;
+  if (profileSamples) profileSamples.length = 0;
+  profiler.disconnect();
   const releaseStart = performance.now(); await disposeNativeFileWorker(); const releaseMilliseconds = performance.now() - releaseStart;
   loop.disable(); global.gc?.();
   samples.sort((a, b) => a - b);

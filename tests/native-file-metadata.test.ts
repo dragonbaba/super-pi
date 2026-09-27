@@ -398,6 +398,16 @@ test("N2 Windows candidate is private at CREATE_NEW, before any later protection
   const observed = await nativeFileRequest("inspect", { path, expected: created });
   const descriptor = Buffer.from(observed.security, "base64"), acl = descriptor.readUInt32LE(16);
   assert.ok(descriptor.readUInt16LE(2) & 0x1000); assert.equal(descriptor.readUInt16LE(acl + 4), 1);
+  const { stdout } = await execute("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command",
+    "$u=[Security.Principal.WindowsIdentity]::GetCurrent().User;$b=New-Object byte[] $u.BinaryLength;$u.GetBinaryForm($b,0);[Convert]::ToBase64String($b)"], { windowsHide: true });
+  const user = Buffer.from(stdout.trim(), "base64"), initialAcl = descriptor.subarray(acl, acl + descriptor.readUInt16LE(acl + 2));
+  assert.deepEqual(initialAcl.subarray(16), user, "creation ACE binds TokenUser, not the default owner");
+  const ownerOffset = descriptor.readUInt32LE(4), owner = descriptor.subarray(ownerOffset, ownerOffset + 8 + descriptor[ownerOffset + 1] * 4);
+  t.diagnostic(`creationTokenOwnerDiffersFromTokenUser=${!owner.equals(user)}`);
+  await nativeFileRequest("protect", { path, expected: created });
+  const protectedMetadata = await nativeFileRequest("inspect", { path, expected: created });
+  const protectedDescriptor = Buffer.from(protectedMetadata.security, "base64"), protectedAcl = protectedDescriptor.readUInt32LE(16);
+  assert.deepEqual(protectedDescriptor.subarray(protectedAcl, protectedAcl + protectedDescriptor.readUInt16LE(protectedAcl + 2)), initialAcl);
   assert.equal((await lstat(path)).size, 0);
   await writeFile(path, "owned candidate");
   await assert.rejects(nativeFileRequest("create_private", { path }), (error: any) => error.nativeCode === 80 || error.nativeCode === 183);
