@@ -327,3 +327,17 @@ observation and source tests: 91 pass, five platform skips; check pass. No regex
 or callback was added. The prior r30 head 9b74400f5f80f90d569c0ccd158c0b2e8f348c4a
 passed all local gates (2,617 tests, 90 skips) and both-platform CI 36297000090;
 the changed head still requires its own combined validation and review.
+
+Review r32: local cwd/realpath preflight cancellation retains `started:false`
+with `termination:cancelled`, and the actual sequential Agent/Session cascade
+collapses once without claiming a process started. Direct executor and real
+Session abort races preserve already observed input, observer, output-drain or
+unknown-completion failures and do not append a successful bashExecution record.
+PowerShell failed recovery retains the real attempted-spawn observation even if
+unavailable-state persistence also fails. Confirmation persistence keeps the
+backend's first bounded observation error, a bounded secondary error, and an
+explicit omission flag for further failures. The shared completion normalizer
+and final tool facts carry both diagnostics. Focused contract/observation/
+PowerShell/source tests: 101 pass, five platform skips; check pass on Node22.19.
+No production regex or callback was added. Current combined full gates and
+two-platform CI/review remain required.

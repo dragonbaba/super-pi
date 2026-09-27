@@ -18,6 +18,26 @@ import type { ChildProcess } from "node:child_process";
 
 const operations = createLocalShellOperations("fixture", () => ({ shell: process.execPath, args: ["-e"] }));
 
+for (const field of ["inputError", "observationError", "outputDrained", "termination"] as const) test(`N3 concurrent abort cannot erase direct or Session ${field}`, async () => {
+  const controller = new AbortController(); let abort = () => controller.abort();
+  const backend = { async exec() {
+    abort(); return { exitCode: 0, termination: field === "termination" ? "unknown" as const : "exit" as const,
+      inputError: field === "inputError" ? "input incomplete" : undefined,
+      observationError: field === "observationError" ? "observation incomplete" : undefined,
+      observation: { started: true, exitCode: 0, signal: null, outputDrained: field !== "outputDrained" } };
+  } };
+  const check = (error: any) => { const result = shellProcessResultFromError(error); assert.ok(result); assert.equal(result.exitCode, 0);
+    if (field === "inputError" || field === "observationError") assert.equal(result[field], field === "inputError" ? "input incomplete" : "observation incomplete");
+    else if (field === "outputDrained") assert.equal(result.observation?.outputDrained, false);
+    else assert.equal(result.termination, "unknown"); return true; };
+  await assert.rejects(executeBashWithOperations("fixture", process.cwd(), backend, { signal: controller.signal }), check);
+  const { alphaHeadless, alphaModelRuntime } = await import("./helpers/alpha-session.ts"); const f = await alphaHeadless(alphaModelRuntime());
+  abort = () => f.session.abortBash();
+  try { await assert.rejects(f.session.executeBash("fixture", undefined, { operations: backend }), check);
+    assert.equal(f.session.isBashRunning, false); assert.equal(f.session.messages.some(message => message.role === "bashExecution"), false);
+  } finally { await f.release(); }
+});
+
 for (const field of ["inputError", "observationError"] as const) test(`N3 direct and Session custom ${field} retains bounded diagnostics`, async () => {
   const original = { exitCode: 0, termination: "exit" as const, [field]: "诊断".repeat(1_000_000) }, backend = { async exec() { return original; } };
   const check = (error: any) => {
@@ -102,7 +122,7 @@ test("N3 frozen/sealed failure reasons preserve the cause and actual process obs
   await assert.rejects(aborted.exec("process.exit(0)", process.cwd(), { onData() {}, signal: controller.signal }), (error: any) => {
     assert.equal(error.cause, reason); assert.equal(error.message, reason.message);
     assert.equal(shellProcessResultFromError(error)?.observation?.spawnAttempted, undefined);
-    assert.equal(shellProcessResultFromError(error)?.termination, "not_started"); return true;
+    assert.equal(shellProcessResultFromError(error)?.termination, "cancelled"); return true;
   });
 });
 

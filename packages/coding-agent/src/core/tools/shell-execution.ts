@@ -7,6 +7,8 @@ export interface ShellProcessResult {
   termination?: ShellTermination;
   inputError?: string;
   observationError?: string;
+  secondaryObservationError?: string;
+  observationErrorsOmitted?: true;
 }
 const PROCESS_RESULT = Symbol.for("pi.shell-process-result.v1");
 
@@ -17,7 +19,7 @@ export function normalizeShellProcessResult(result: ShellProcessResult): ShellPr
     || result.termination !== undefined && !TERMINATIONS.has(result.termination)
     || observation && (typeof observation.started !== "boolean" || typeof observation.outputDrained !== "boolean"
     || observation.exitCode !== result.exitCode || observation.started && (observation.spawnAttempted === false || result.termination === "not_started")
-    || !observation.started && (result.exitCode !== null || observation.signal !== null || result.termination !== undefined && result.termination !== "not_started")
+    || !observation.started && (result.exitCode !== null || observation.signal !== null || result.termination !== undefined && result.termination !== "not_started" && result.termination !== "cancelled")
     || result.termination === "exit" && (result.exitCode === null || observation.signal !== null)
     || result.termination === "signal" && (result.exitCode !== null || typeof observation.signal !== "string")
     || observation.signal !== null && result.exitCode !== null
@@ -25,9 +27,10 @@ export function normalizeShellProcessResult(result: ShellProcessResult): ShellPr
     return { exitCode: null, termination: "unknown", inputError: result.inputError?.slice(0, 1000),
       observationError: "Backend returned inconsistent process observations; completion and effects are unknown." };
   }
-  if ((result.inputError?.length ?? 0) <= 1000 && (result.observationError?.length ?? 0) <= 1000) return result;
+  if ((result.inputError?.length ?? 0) <= 1000 && (result.observationError?.length ?? 0) <= 1000 && (result.secondaryObservationError?.length ?? 0) <= 1000) return result;
   return { exitCode: result.exitCode, observation: result.observation, termination: result.termination,
-    inputError: result.inputError?.slice(0, 1000), observationError: result.observationError?.slice(0, 1000) };
+    inputError: result.inputError?.slice(0, 1000), observationError: result.observationError?.slice(0, 1000),
+    secondaryObservationError: result.secondaryObservationError?.slice(0, 1000), observationErrorsOmitted: result.observationErrorsOmitted };
 }
 
 export function observedShellError(error: unknown, result: ShellProcessResult): Error {
@@ -103,7 +106,7 @@ export function readShellExecution(details: unknown): ShellExecutionFacts | unde
     || !CLEANUP_STATES.has(value.output.cleanup)
     || value.output.logError !== undefined && (typeof value.output.logError !== "string" || value.output.logError.length > 1000)
     || value.output.cleanupError !== undefined && (typeof value.output.cleanupError !== "string" || value.output.cleanupError.length > 1000)) return undefined;
-  if (value.started === false && (value.exitCode !== null || value.signal !== null || value.termination !== "not_started")
+  if (value.started === false && (value.exitCode !== null || value.signal !== null || value.termination !== "not_started" && value.termination !== "cancelled")
     || value.termination === "exit" && (value.exitCode === null || value.signal !== null)
     || value.termination === "signal" && (value.exitCode !== null || value.signal === null)) return undefined;
   if (value.started === false && value.executionStatus !== "not_executed" && value.executionStatus !== "start_failed"
@@ -118,6 +121,7 @@ export function shellExecutionSucceeded(value: ShellExecutionFacts): boolean {
 }
 
 export function shellFailureCategory(value: ShellExecutionFacts): string {
+  if (value.started === false && value.termination === "cancelled") return "timeout_or_aborted";
   if (value.started === false) return value.executionStatus === "start_failed" ? "start_failed" : "not_executed";
   if (value.inputError) return "input_transport_failed";
   if (value.termination === "timeout" || value.termination === "cancelled") return "timeout_or_aborted";

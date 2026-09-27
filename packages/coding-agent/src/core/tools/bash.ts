@@ -150,6 +150,7 @@ export function createLocalShellOperations(shellName: string, resolveShellConfig
 			try {
 			const timeoutMs = resolveTimeoutMs(timeout);
 			if (signal?.aborted) {
+				stopReason = "cancelled";
 				throw new Error("aborted");
 			}
 			const shellConfig = resolveShellConfig();
@@ -162,7 +163,7 @@ export function createLocalShellOperations(shellName: string, resolveShellConfig
 			const commandFromStdin = shellConfig.commandTransport === "stdin";
 			const actualCwd = await fsRealpath(cwd);
 			observation.cwd = actualCwd;
-			signal?.throwIfAborted();
+			if (signal?.aborted) { stopReason = "cancelled"; signal.throwIfAborted(); }
 			beforeSpawn?.(actualCwd);
 			observation.spawnAttempted = true;
 			const child = spawn(shellConfig.shell, commandFromStdin ? shellConfig.args : [...shellConfig.args, command], {
@@ -224,7 +225,7 @@ export function createLocalShellOperations(shellName: string, resolveShellConfig
 				if (shellProcessResultFromError(error)) throw error;
 				if (!observation.started) observation.outputDrained = true;
 				throw observedShellError(error, { exitCode: observation.exitCode, observation,
-					termination: observation.started ? stopReason ?? "unknown" : "not_started", inputError: inputObserver?.error });
+					termination: observation.started ? stopReason ?? "unknown" : stopReason === "cancelled" ? "cancelled" : "not_started", inputError: inputObserver?.error });
 			}
 		},
 	});
@@ -1070,6 +1071,8 @@ export function createShellToolDefinition(
 					termination,
 					inputError: processResult?.inputError?.slice(0, 1000),
 					observationError: processResult?.observationError?.slice(0, 1000),
+					secondaryObservationError: processResult?.secondaryObservationError?.slice(0, 1000),
+					observationErrorsOmitted: processResult?.observationErrorsOmitted,
 					output: { complete: logError ? false : observation?.outputDrained ?? "unknown", tailTruncated: snapshot.truncation.truncated,
 						log: logError ? "failed" : snapshot.fullOutputPath ? snapshot.spillFileCapped ? "capped" : "complete" : "not_needed",
 						cleanup, logError, cleanupError } };

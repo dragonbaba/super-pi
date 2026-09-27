@@ -234,7 +234,8 @@ function conflictingTerminal(entries: readonly any[], selected: any, callId: str
       || terminal.status !== outcome.status || terminal.stateChanged !== outcome.stateChanged
       || terminal.operation !== outcome.operation || terminal.target !== outcome.target || terminal.destination !== outcome.destination
       || !sameCommitReceipt(terminal.commit ?? terminal.receipt?.commit, details?.commit)
-      || terminal.sha256 !== undefined && (typeof terminal.sha256 !== "string" || !SHA256.test(terminal.sha256) || terminal.sha256 !== details?.sha256)
+      || details?.commit?.outcome === "committed" && terminal.sha256 === undefined
+      || terminal.sha256 !== undefined && (typeof terminal.sha256 !== "string" || terminal.sha256.length !== 64 || !SHA256.test(terminal.sha256) || terminal.sha256 !== details?.sha256)
       || !sameCreatedDirectories(terminal.creation?.createdDirectories ?? terminal.createdDirectories, details?.creation?.createdDirectories ?? details?.createdDirectories)) return true;
     previous = true;
   }

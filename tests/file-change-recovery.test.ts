@@ -1267,7 +1267,7 @@ for (const operation of ["write", "edit", "snapshot"] as const) for (const batch
   assert.equal(collectChanges(genuine, f.cwd)[0].unavailable, undefined);
   const interrupted = genuine.filter((entry: any) => entry.data?.phase !== "result" && entry.message?.role !== "toolResult");
   const pending = collectChanges(interrupted, f.cwd); assert.equal(pending.length, 1); assert.equal(pending[0].unavailable, undefined);
-  for (const fault of ["missing", "missing-aggregate-only", "other-strategy", "hash-mismatch", "missing-hash", "invalid-hash", "missing-selection"]) {
+  for (const fault of ["missing", "missing-aggregate-only", "other-strategy", "hash-mismatch", "missing-hash", "invalid-hash", "missing-selection", "missing-durable-hash", "missing-aggregate-hash"]) {
     const branch = structuredClone(genuine).filter((entry: any) => (fault !== "missing-aggregate-only" || entry.data?.phase !== "result")
       && (fault !== "missing-selection" || entry.data?.phase !== (batch ? "commit_prepared" : "intent")));
     for (const entry of branch) {
@@ -1277,6 +1277,7 @@ for (const operation of ["write", "edit", "snapshot"] as const) for (const batch
       if (fault === "missing" || fault === "missing-aggregate-only") delete receipt.commit;
       else if (fault === "hash-mismatch") { if (entry.message) receipt.sha256 = "0".repeat(64); }
       else if (fault === "missing-hash") delete receipt.sha256;
+      else if (fault === "missing-durable-hash" && entry.data || fault === "missing-aggregate-hash" && entry.message) delete receipt.sha256;
       else if (fault === "invalid-hash") receipt.sha256 = "z".repeat(64);
       else if (fault === "other-strategy") receipt.commit.strategy = receipt.commit.strategy === "staged_replace" ? "protected_in_place" : "staged_replace";
     }
