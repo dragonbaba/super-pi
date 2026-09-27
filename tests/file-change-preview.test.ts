@@ -9,8 +9,37 @@ import { initTheme } from "../packages/coding-agent/src/modes/interactive/theme/
 import { RELEASE_COMPONENT_RENDER_CACHE } from "@super-pi/tui";
 import { Session as InspectorSession } from "node:inspector/promises";
 import { syncBuiltinESMExports } from "node:module";
-import { batchExpandedSummary, displayMetadata, PreviewBudget, verificationSummary } from "../packages/extensions/mutation-guard-write/change-preview.ts";
+import { stripVTControlCharacters } from "node:util";
+import { batchExpandedSummary, displayMetadata, PreviewBudget, verificationSummary, BatchResultText } from "../packages/extensions/mutation-guard-write/change-preview.ts";
 import { DISPLAY_METADATA_CONTROL_PATTERN, PREVIEW_CONTROL_PATTERN } from "../packages/extensions/mutation-guard-write/regex.ts";
+
+test("N1 imported diff is passed to the budget without concatenating its full body", t => {
+  const large = "x".repeat(8 * 1024 * 1024), take = PreviewBudget.prototype.take; let observed = 0;
+  t.mock.method(PreviewBudget.prototype, "take", function(this: PreviewBudget, source: string, ...args: any[]) {
+    if (source.length > 65536) { assert.equal(source, large); observed++; }
+    return Reflect.apply(take, this, [source, ...args]);
+  });
+  for (const status of ["preview", "succeeded"]) {
+    const text = batchExpandedSummary("bounded", [{ itemId: "x:0", operation: "edit", target: "fixture", status, preview: { kind: "Modified", diff: large }, receipt: { patch: large } }]);
+    assert.ok(Buffer.byteLength(text) <= 65536); assert.ok(text.includes("display"));
+  }
+  assert.equal(observed, 2);
+  const array = new Proxy([], { get() { assert.fail("metadata arrays must not be coerced/traversed"); } });
+  assert.equal(displayMetadata(array), "[invalid metadata]");
+});
+
+test("N1 live batch result bounds narrow wrapping, caches stable renders and releases rows", () => {
+  const component = new BatchResultText("", 0, 0);
+  component.setBatchText("x".repeat(65536));
+  const first = component.render(1), counters = component.getPreviewRenderCounts();
+  assert.equal(first.length, 401); assert.equal(stripVTControlCharacters(first.at(-1)!), "…");
+  for (let i = 0; i < 20000; i++) assert.equal(component.render(1), first);
+  assert.deepEqual(component.getPreviewRenderCounts(), counters);
+  for (const width of [2, 80, 1, 120]) assert.ok(component.render(width).length <= 401);
+  component[RELEASE_COMPONENT_RENDER_CACHE](); assert.equal(component.getPreviewRenderCounts().cachedRows, 0);
+  component.releasePreview(); const released = component.getPreviewRenderCounts();
+  assert.equal(released.bodyCodeUnits, 0); assert.equal(released.retainedCharacters, 0); assert.equal(released.cachedRows, 0);
+});
 
 test("N1 preview has real mixed changes and no filesystem mutation", async t => {
   const f = await fixture(t);
@@ -192,6 +221,7 @@ test("N1 actual tool component expansion, 20k running updates and ten releases",
   const f = await fixture(t); initTheme("dark");
   const input = { dryRun: true, operations: [{ operation: "write", mode: "create", path: "中文.txt", content: "actual change\n" }] };
   const result = await f.call("file_batch", input);
+  const narrowResult = { ...result, details: { ...result.details as object, expandedSummary: "x".repeat(65536) } };
   const definition = f.runner.getAllRegisteredTools().find(r => r.definition.name === "file_batch")!.definition;
   const partial = { content: [], details: undefined };
   const profiler = process.env.SP_PREVIEW_PROFILE === "1" ? new InspectorSession() : undefined;
@@ -215,9 +245,17 @@ test("N1 actual tool component expansion, 20k running updates and ten releases",
     const before = textComponent.getPreviewRenderCounts();
     for (let n = 0; n < 100; n++) component.render(15);
     assert.equal(textComponent.getPreviewRenderCounts().textChanges, before.textChanges);
+    component.updateResult(narrowResult);
+    component.render(3);
+    const narrowBefore = textComponent.getPreviewRenderCounts();
+    assert.ok(narrowBefore.cachedRows <= 401);
+    for (let n = 0; n < 2000; n++) component.render(3);
+    assert.deepEqual(textComponent.getPreviewRenderCounts(), narrowBefore);
     component[RELEASE_COMPONENT_RENDER_CACHE]();
     assert.equal(state.batchComponent, undefined);
     assert.equal(textComponent.getPreviewRenderCounts().retainedCharacters, 0);
+    assert.equal(textComponent.getPreviewRenderCounts().bodyCodeUnits, 0);
+    assert.equal(textComponent.getPreviewRenderCounts().cachedRows, 0);
     assert.deepEqual(textComponent.render(80), []);
   }
   if (profiler) {
@@ -229,7 +267,7 @@ test("N1 actual tool component expansion, 20k running updates and ten releases",
       global.gc?.();
       t.diagnostic(JSON.stringify({ benchmark: "file-change-preview", node: process.version, updates: 20000, cycles: 10,
         sampledBytes, sampledBytesPerUpdate: sampledBytes / 20000, heapBefore, heapAfterRelease: process.memoryUsage().heapUsed,
-        stableRenderTextChanges: 0, releasedDerivedCharacters: 0 }));
+        stableRenderTextChanges: 0, narrowStableRenders: 20000, narrowStableNewRows: 0, maxCachedRows: 401, releasedDerivedCharacters: 0, releasedCachedRows: 0 }));
     } finally { profiler.disconnect(); }
   }
   t.diagnostic("cycles=10; runningUpdates=20000; stableRenderTextChanges=0; releasedDerivedCharacters=0");

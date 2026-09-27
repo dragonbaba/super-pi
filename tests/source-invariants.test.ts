@@ -63,7 +63,7 @@ test("project source avoids V8-hostile and locale-dependent syntax", () => {
 
 test("file-change renderer and viewport helpers retain bounded primitive hot state", () => {
   const targets = [
-    { path: "packages/extensions/mutation-guard-write/change-preview.ts", owner: "BatchResultText", methods: ["setBatchText", "releasePreview"] },
+    { path: "packages/extensions/mutation-guard-write/change-preview.ts", owner: "BatchResultText", methods: ["setBatchText", "render", "invalidate", "releasePreview"] },
     { path: "packages/extensions/mutation-guard-write/changes.ts", owner: "ChangeViewer", methods: ["render", "nextRow", "previousRow", "handleInput", "invalidate", "dispose"] },
   ];
   for (const target of targets) {
@@ -81,7 +81,7 @@ test("file-change renderer and viewport helpers retain bounded primitive hot sta
         ts.forEachChild(node, inspect);
       }
       inspect(method.body!);
-      assert.equal(arrays, target.owner === "ChangeViewer" && name === "render" ? 1 : 0, "only the caller-owned visible viewport array is allowed");
+      assert.equal(arrays, name === "render" ? 1 : 0, "only the bounded displayed-row array is allowed");
     }
   }
 });

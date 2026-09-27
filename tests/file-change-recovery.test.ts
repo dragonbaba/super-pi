@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { createJiti } from "jiti";
+import { createHash } from "node:crypto";
 import { mutationFixture as fixture, MutationWriteGuard } from "./helpers/mutation-fixture.ts";
 import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
 import { visibleWidth } from "../packages/tui/src/index.ts";
@@ -32,6 +33,58 @@ function commandUI(f: any, item: string, action: string, editor = "") {
   }, "tui");
   return { input: () => input, view: () => view, notices: () => notices };
 }
+
+test("N1 partial directory creation without captured identity stays verifiable across exact mirrors", async t => {
+  const f = await fixture(t), parent = join(f.cwd, "retained-parent"), path = join(parent, "file"), original = fsPromises.lstat;
+  let injected = false;
+  t.mock.method(fsPromises, "lstat", async function(...args: any[]) {
+    if (!injected && resolve(String(args[0])) === resolve(parent) && existsSync(parent)) { injected = true; throw new Error("fixture identity capture failure after mkdir"); }
+    return Reflect.apply(original, fsPromises, args);
+  }); syncBuiltinESMExports();
+  const result = await f.call("write", { path, content: "planned" }, "retained-directory");
+  t.mock.restoreAll(); syncBuiltinESMExports();
+  assert.equal(injected, true); assert.equal(result.isError, true); assert.equal(existsSync(parent), true); assert.equal(existsSync(path), false);
+  const genuine = JSON.parse(JSON.stringify(f.session.getBranch())), records = collectChanges(genuine, f.cwd);
+  assert.equal(records.length, 1); assert.equal(records[0].status, "partial"); assert.equal(records[0].unavailable, undefined);
+  const ui = commandUI(f, "retained-directory:0", "Verify current state");
+  await f.runner.getCommand("changes")!.handler("", f.runner.createContext() as never);
+  assert.ok(f.session.getBranch().some((entry: any) => entry.customType === "file-change-verification-v1"), JSON.stringify({ notices: ui.notices(), record: records[0] }));
+  for (const both of [false, true]) {
+    const branch = structuredClone(genuine);
+    for (const entry of branch) {
+      const directories = entry.data?.createdDirectories ?? entry.message?.details?.createdDirectories;
+      if (directories && (both || entry.type === "custom")) directories[0].identity = {};
+    }
+    assert.ok(collectChanges(branch, f.cwd)[0].unavailable);
+  }
+});
+
+test("N1 imported nested request counts and bytes refuse before hash traversal", async t => {
+  const f = await fixture(t), path = join(f.cwd, "bounded-arguments"); writeFileSync(path, "before");
+  await f.call("read", { path }, "bounded-read");
+  await f.call("edit", { path, edits: [{ oldText: "before", newText: "after" }] }, "bounded-arguments");
+  const genuine = JSON.parse(JSON.stringify(f.session.getBranch())), prototype = Object.getPrototypeOf(createHash("sha256")), update = prototype.update;
+  let largeHashCalls = 0, elementReads = 0;
+  t.mock.method(prototype, "update", function(this: unknown, value: unknown, ...args: unknown[]) {
+    if (typeof value === "string" && value.length > 256 * 1024) largeHashCalls++;
+    return Reflect.apply(update, this, [value, ...args]);
+  });
+  for (const fault of ["edits", "newLines", "oldText", "line", "path", "purpose"]) {
+    const branch = structuredClone(genuine), call = branch.find((entry: any) => entry.message?.content?.some((part: any) => part.id === "bounded-arguments")).message.content.find((part: any) => part.id === "bounded-arguments");
+    const array = new Proxy(new Array(1_000_000), { get(target, key, receiver) {
+      if (typeof key === "string" && Number.isInteger(Number(key))) { elementReads++; assert.fail("oversized nested array must not be traversed"); }
+      return Reflect.get(target, key, receiver);
+    } });
+    if (fault === "edits") call.arguments.edits = array;
+    if (fault === "newLines") call.arguments.edits[0].newLines = array;
+    if (fault === "oldText") call.arguments.edits[0].oldText = "x".repeat(2_000_000);
+    if (fault === "line") call.arguments.edits[0].newLines = ["x".repeat(2_000_000)];
+    if (fault === "path") call.arguments.path = "x".repeat(2_000_000);
+    if (fault === "purpose") call.arguments.purpose = "x".repeat(2_000_000);
+    const records = collectChanges(branch, f.cwd); assert.equal(records.length, 1); assert.ok(records[0].unavailable, fault);
+  }
+  assert.equal(elementReads, 0); assert.equal(largeHashCalls, 0); assert.equal(readFileSync(path, "utf8"), "after");
+});
 
 test("N1 changes verifies a paired postimage without replay/evidence and drafts only remaining items", async t => {
   const f = await fixture(t);
