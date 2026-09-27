@@ -1,6 +1,6 @@
 // Private fixed-operation worker. Never load a library/symbol/type supplied by a tool request.
 import { parentPort } from "node:worker_threads";
-import { existsSync, realpathSync, lstatSync, openSync, fstatSync, readSync, closeSync, renameSync } from "node:fs";
+import { existsSync, realpathSync, lstatSync, openSync, fstatSync, readSync, closeSync, renameSync, fchmodSync, fchownSync, fsyncSync } from "node:fs";
 import { dirname, join, toNamespacedPath } from "node:path";
 import { createHash } from "node:crypto";
 import koffi from "koffi";
@@ -9,9 +9,11 @@ import { LINUX_MOUNT_ID_PATTERN } from "./native-file-regex.mjs";
 const MAX_SECURITY_BYTES = 64 * 1024;
 const MAX_ATTRIBUTE_NAMES = 64 * 1024;
 const CAPABILITY_ATTRIBUTE_NAME = Buffer.from("security.capability\0");
+const IMA_ATTRIBUTE_NAME = Buffer.from("security.ima\0");
+const EVM_ATTRIBUTE_NAME = Buffer.from("security.evm\0");
 const DEFAULT_ACL_ATTRIBUTE_NAME = Buffer.from("system.posix_acl_default\0");
 let bindings;
-let activeHandles = 0, calls = 0, publicationAttempts = 0;
+let activeHandles = 0, activeDescriptors = 0, calls = 0, publicationAttempts = 0;
 
 function loadBindings() {
   if (bindings) return bindings;
@@ -39,6 +41,9 @@ function loadBindings() {
       setFileInfo: kernel.func("int __stdcall SetFileInformationByHandle(void *handle, int informationClass, void *information, uint32_t size)"),
       getSecurity: security.func("int __stdcall GetKernelObjectSecurity(void *handle, uint32_t information, void *descriptor, uint32_t size, void *needed)"),
       setSecurity: security.func("uint32_t __stdcall SetSecurityInfo(void *handle, int objectType, uint32_t information, void *owner, void *group, void *dacl, void *sacl)"),
+      inheritSecurity: security.func("int __stdcall CreatePrivateObjectSecurityEx(void *parent, void *creator, void *result, void *objectType, int container, uint32_t flags, void *token, void *mapping)"),
+      readPrivateSecurity: security.func("int __stdcall GetPrivateObjectSecurity(void *descriptor, uint32_t information, void *result, uint32_t size, void *needed)"),
+      destroyPrivateSecurity: security.func("int __stdcall DestroyPrivateObjectSecurity(void *descriptor)"),
       replace: kernel.func("int __stdcall ReplaceFileW(str16 target, str16 replacement, void *backup, uint32_t flags, void *exclude, void *reserved)"),
       volumePath: kernel.func("int __stdcall GetVolumePathNameW(str16 path, void *volume, uint32_t length)"),
       driveType: kernel.func("uint32_t __stdcall GetDriveTypeW(str16 root)"),
@@ -126,6 +131,38 @@ function tokenSid(b, token, info, needed, kind) {
   const sid = Buffer.alloc(size);
   if (!b.copySid(size, sid, pointer)) winError(b, "CopySid");
   return sid;
+}
+
+function reproduceWindowsInheritance(b, input, handle) {
+  const parent = securityDescriptor(b, handle), creator = Buffer.from(input.security, "base64");
+  const tokenBytes = Buffer.alloc(8), result = Buffer.alloc(8), mapping = Buffer.alloc(16);
+  // FILE_GENERIC_READ, WRITE, EXECUTE and ALL_ACCESS. The API computes
+  // inheritance in memory; no candidate file or privilege override is involved.
+  mapping.writeUInt32LE(0x120089, 0); mapping.writeUInt32LE(0x120116, 4);
+  mapping.writeUInt32LE(0x1200a0, 8); mapping.writeUInt32LE(0x1f01ff, 12);
+  if (!b.openToken(b.currentProcess(), 8, tokenBytes)) winError(b, "OpenProcessToken(inheritance)");
+  const token = tokenBytes.readBigUInt64LE(); activeHandles++;
+  let allocated = false, value, failure;
+  try {
+    // SEF_DACL_AUTO_INHERIT only: retain owner and privilege checks.
+    if (!b.inheritSecurity(parent, creator, result, null, 0, 1, token, mapping)) winError(b, "CreatePrivateObjectSecurityEx");
+    allocated = true; activeDescriptors++;
+    const pointer = result.readBigUInt64LE(), needed = Buffer.alloc(4);
+    if (!b.readPrivateSecurity(pointer, 7, null, 0, needed) && b.lastError() !== 122) winError(b, "GetPrivateObjectSecurity(size)");
+    const length = needed.readUInt32LE();
+    if (length < 20 || length > MAX_SECURITY_BYTES) throw new Error("Inherited security descriptor exceeds bound.");
+    const bytes = Buffer.alloc(length);
+    if (!b.readPrivateSecurity(pointer, 7, bytes, bytes.length, needed)) winError(b, "GetPrivateObjectSecurity");
+    value = securityFingerprint(bytes) === securityFingerprint(creator);
+  } catch (error) { failure = error; }
+  if (allocated) {
+    if (b.destroyPrivateSecurity(result)) activeDescriptors--;
+    else { const code = b.lastError(); failure ??= new Error(`DestroyPrivateObjectSecurity failed (Win32 ${code}).`); }
+  }
+  if (b.close(token)) activeHandles--;
+  else { const code = b.lastError(); failure ??= new Error(`CloseHandle(inheritance token) failed (Win32 ${code}).`); }
+  if (failure) throw failure;
+  return value;
 }
 
 function windowsObject(b, handle, expected, directory = false) {
@@ -227,6 +264,13 @@ function inspectWindows(b, input) {
     const parent = { path, expected: { device: String(info.dev), inode: String(info.ino) } };
     try { withWindowsHandle(b, parent, 2, observeWindowsReplacementAccess, true); observed.parentCreationAccess = true; }
     catch (error) { if (error.nativeCode !== 5) throw error; observed.parentCreationAccess = false; }
+    const control = Buffer.from(observed.security, "base64").readUInt16LE(2);
+    observed.inheritanceReproducible = Boolean(control & 0x1000);
+    if (!(control & 0x1000) && control & 0x400 && observed.ownerAssignable) {
+      parent.security = observed.security;
+      try { observed.inheritanceReproducible = withWindowsHandle(b, parent, 0x20080, reproduceWindowsInheritance, true); }
+      catch (error) { if (error.nativeCode !== 5) throw error; observed.inheritanceReproducible = false; }
+    }
   }
   return observed;
 }
@@ -306,7 +350,7 @@ function inspectLinux(b, input) {
     const end = names.indexOf(0, start);
     if (end <= start || end >= length) throw new Error("Invalid extended-attribute name list.");
     const name = names.subarray(start, end + 1); // Preserve arbitrary name bytes, including its NUL terminator.
-    if (name.equals(CAPABILITY_ATTRIBUTE_NAME)) writeClearsAttributes = true;
+    if (name.equals(CAPABILITY_ATTRIBUTE_NAME) || name.equals(IMA_ATTRIBUTE_NAME) || name.equals(EVM_ATTRIBUTE_NAME)) writeClearsAttributes = true;
     if (name.equals(DEFAULT_ACL_ATTRIBUTE_NAME)) defaultAcl = true;
     const size = Number(b.get(input.fd, name, null, 0));
     if (size < 0) throw new Error(`fgetxattr(size) failed (errno ${koffi.errno()}); metadata absence is not established.`);
@@ -368,14 +412,21 @@ function verifyBytes(b, input, path, expected, size, hash, staged) {
     if (position !== size || digest.digest("hex") !== hash) throw new Error("[STALE_STATE] Publication content changed.");
     if (process.platform === "linux") {
       const current = fstatSync(fd, { bigint: true }), expectedMetadata = input.metadata;
-      if (String(current.mode) !== expectedMetadata.mode || String(current.uid) !== expectedMetadata.uid || String(current.gid) !== expectedMetadata.gid) throw new Error("[STALE_STATE] Publication mode/owner changed.");
+      if (staged ? (current.mode & 0o7777n) !== 0o600n || current.uid !== BigInt(process.geteuid())
+        : String(current.mode) !== expectedMetadata.mode || String(current.uid) !== expectedMetadata.uid || String(current.gid) !== expectedMetadata.gid) throw new Error("[STALE_STATE] Publication mode/owner changed.");
       const attributes = inspectLinux(b, { fd });
       if (attributes.namesFingerprint !== input.original.namesFingerprint || attributes.valuesFingerprint !== input.original.valuesFingerprint
         || attributes.fileFlagsFingerprint !== input.original.fileFlagsFingerprint) throw new Error("[STALE_STATE] Publication extended attributes/file flags changed.");
     } else {
-      const current = inspectWindows(b, { path, expected });
-      if (current.securityFingerprint !== input.original.securityFingerprint || current.links !== 1
-        || current.attributes !== input.original.attributes || (!staged && current.creationTime !== input.original.creationTime)) throw new Error("[STALE_STATE] Publication Windows metadata changed.");
+      const current = inspectWindows(b, { path, expected, capability: !staged });
+      if (staged) {
+        const parts = descriptorParts(Buffer.from(current.security, "base64"));
+        const original = descriptorParts(Buffer.from(input.original.security, "base64"));
+        if (!parts.protected || !parts.owner?.equals(original.owner) || !parts.dacl?.equals(privateWindowsAcl(parts.owner))
+          || current.links !== 1 || current.attributes !== 0x20 && current.attributes !== 0x80) throw new Error("[STALE_STATE] Publication Windows private metadata changed.");
+      } else if (current.securityFingerprint !== input.original.securityFingerprint || current.links !== 1
+        || current.attributes !== input.original.attributes || current.creationTime !== input.original.creationTime
+        || !current.inheritanceReproducible || !current.replacementAccess || !current.parentCreationAccess) throw new Error("[STALE_STATE] Publication Windows metadata changed.");
     }
   } finally { closeSync(fd); }
 }
@@ -394,6 +445,10 @@ function replaceVerified(b, input) {
   } catch (error) { error.commitOutcome = "not_committed"; throw error; }
   publicationAttempts++;
   if (process.platform === "win32") {
+    // No await, cancellation callback or main-thread gate after permissions
+    // become public. Metadata installation and publication share this worker call.
+    try { prepareWindows(b, { path: input.temporary, expected: input.validation.temporary, security: input.original.security, attributes: input.original.attributes }); }
+    catch (error) { error.commitOutcome = "not_committed"; throw error; }
     if (!b.replace(toNamespacedPath(input.target), toNamespacedPath(input.temporary), null, 0, null, null)) winError(b, "ReplaceFileW", true);
     // ReplaceFileW may set ARCHIVE even when the prepared candidate was NORMAL.
     // Restore only on the verified published object. Failure after publication
@@ -402,7 +457,18 @@ function replaceVerified(b, input) {
     try { withWindowsHandle(b, { path: input.target, expected: input.validation.temporary, attributes: input.original.attributes }, 0x180, setWindowsAttributes); }
     catch (error) { error.commitOutcome = "committed"; throw error; }
   } else {
-    try { renameSync(input.temporary, input.target); }
+    try {
+      const fd = openSync(input.temporary, "r+");
+      try {
+        const info = fstatSync(fd, { bigint: true }), expected = input.validation.temporary;
+        if (!info.isFile() || info.nlink !== 1n || String(info.dev) !== expected.device || String(info.ino) !== expected.inode
+          || (info.mode & 0o7777n) !== 0o600n) throw new Error("[STALE_STATE] Private candidate changed before publication metadata.");
+        const uid = Number(input.metadata.uid), gid = Number(input.metadata.gid);
+        if (info.uid !== BigInt(uid) || info.gid !== BigInt(gid)) fchownSync(fd, uid, gid);
+        fchmodSync(fd, Number(input.metadata.mode) & 0o777); fsyncSync(fd);
+      } finally { closeSync(fd); }
+      renameSync(input.temporary, input.target);
+    }
     catch (error) { error.commitOutcome = "not_committed"; throw error; }
   }
   return { committed: true };
@@ -441,7 +507,7 @@ function execute(input) {
   if (process.platform === "win32" && input.operation === "remove") return withWindowsHandle(b, input, 0x00010080, removeWindowsHandle);
   if (input.operation === "replace") return replaceVerified(b, input);
   if (input.operation === "verify_in_place") return verifyInPlace(input);
-  if (input.operation === "stats") return { calls, activeHandles, publicationAttempts, platform: process.platform, arch: process.arch };
+  if (input.operation === "stats") return { calls, activeHandles, activeDescriptors, publicationAttempts, platform: process.platform, arch: process.arch };
   throw new Error("Unsupported private native file operation.");
 }
 

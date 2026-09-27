@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, realpath, writeFile, readFile, chmod, lstat, rm, mkdir, link, cp, readdir, open } from "node:fs/promises";
+import { mkdtemp, realpath, writeFile, readFile, chmod, lstat, rm, mkdir, link, cp, readdir, open, rename } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
@@ -270,6 +270,27 @@ test("N2 Windows legacy explicit DACL preselects object preservation and keeps e
   assert.equal(actual.creationTime, original.creationTime); assert.equal(actual.attributes, original.attributes);
 });
 
+test("N2 Windows moved auto-inherited DACL preselects preservation before staging", { skip: process.platform !== "win32" }, async t => {
+  const f = await fixture(t), source = join(f.root, "source"), destination = join(f.root, "destination");
+  await mkdir(source); await mkdir(destination);
+  const powershell = join(process.env.SystemRoot!, "System32/WindowsPowerShell/v1.0/powershell.exe");
+  const script = "$ErrorActionPreference='Stop';$a=[IO.Directory]::GetAccessControl($env:N2_SOURCE);$a.SetAccessRuleProtection($true,$true);$sid=New-Object Security.Principal.SecurityIdentifier('S-1-1-0');$rule=New-Object Security.AccessControl.FileSystemAccessRule($sid,'ReadAndExecute','ContainerInherit,ObjectInherit','None','Allow');$a.AddAccessRule($rule);[IO.Directory]::SetAccessControl($env:N2_SOURCE,$a)";
+  await execute(powershell, ["-NoProfile", "-NonInteractive", "-Command", script], { windowsHide: true, env: { ...process.env, N2_SOURCE: source } });
+  const originalPath = join(source, "moved"), target = join(destination, "moved"); await writeFile(originalPath, f.before);
+  await execute(powershell, ["-NoProfile", "-NonInteractive", "-Command", "$ErrorActionPreference='Stop';$a=[IO.File]::GetAccessControl($env:N2_FIXTURE);$a.SetAccessRuleProtection($false,$true);[IO.File]::SetAccessControl($env:N2_FIXTURE,$a)"], { windowsHide: true, env: { ...process.env, N2_FIXTURE: originalPath } });
+  const beforeMove = await nativeFileRequest("inspect", { path: originalPath, expected: await capturePathIdentity(originalPath) });
+  assert.ok(Buffer.from(beforeMove.security, "base64").readUInt16LE(2) & 0x400);
+  await rename(originalPath, target);
+  const identity = await capturePathIdentity(target), observed = await nativeFileRequest("inspect", { path: target, expected: identity, capability: true });
+  assert.equal(observed.securityFingerprint, beforeMove.securityFingerprint); assert.equal(observed.inheritanceReproducible, false);
+  const plan = await planFor(target, f.before); assert.equal(plan.metadata.strategy, "protected_in_place"); assert.match(plan.metadata.reason!, /Current parent cannot reproduce/);
+  await commitPreparedFile(plan, f.after, { assertPathAllowed: async () => target });
+  const current = await capturePathIdentity(target), after = await nativeFileRequest("inspect", { path: target, expected: current });
+  assert.equal(current.inode, identity.inode); assert.equal(after.securityFingerprint, observed.securityFingerprint); assert.deepEqual(await readFile(target), f.after);
+  assert.deepEqual(await readdir(destination), ["moved"]);
+  const stats = await nativeFileRequest("stats"); assert.equal(stats.publicationAttempts, 0); assert.equal(stats.activeHandles, 0); assert.equal(stats.activeDescriptors, 0);
+});
+
 test("N2 Windows modern inherited DACL keeps staged replacement and metadata", { skip: process.platform !== "win32" }, async t => {
   const f = await fixture(t);
   await execute(join(process.env.SystemRoot!, "System32/WindowsPowerShell/v1.0/powershell.exe"), ["-NoProfile", "-NonInteractive", "-Command",
@@ -341,6 +362,21 @@ test("N2 Windows failed attribute finalization cannot report unchanged after a r
   const current = await capturePathIdentity(f.target); assert.equal(current.inode, plan.target.inode);
   assert.equal((await nativeFileRequest("inspect", { path: f.target, expected: current })).attributes, 0x20);
   assert.equal((await nativeFileRequest("stats")).activeHandles, 0); assert.equal(nativeFileDiagnostics().pending, 0);
+});
+
+for (const attribute of ["security.ima", "security.evm"]) test(`N2 Linux integrity attribute refuses before write: ${attribute} (injected native enumeration)`, { skip: process.platform !== "linux" }, async t => {
+  const f = await fixture(t), isolated = join(f.root, "integrity-worker"); await mkdir(isolated);
+  for (const name of ["file-commit-metadata.ts", "native-file-client.ts", "native-file-regex.mjs"]) await cp(join(sourceDirectory, name), join(isolated, name));
+  await writeFile(join(isolated, "package.json"), '{"type":"module"}');
+  const source = await readFile(join(sourceDirectory, "native-file-worker.mjs"), "utf8"), point = "\n  return bindings;\n}";
+  assert.equal(source.split(point).length, 2);
+  const injected = `bindings.list = function(fd, buffer) { const bytes = Buffer.from(${JSON.stringify(attribute + "\0")}); bytes.copy(buffer); return bytes.length; }; bindings.get = function() { return 0; };`;
+  await writeFile(join(isolated, "native-file-worker.mjs"), source.replace('from "koffi"', `from ${JSON.stringify(import.meta.resolve("koffi"))}`).replace(point, "\n" + injected + point));
+  const module = await import(pathToFileURL(join(isolated, "file-commit-metadata.ts")).href), identity = await capturePathIdentity(f.target);
+  await assert.rejects(module.selectCommitMetadata(identity), /UNSUPPORTED_COMMIT.*integrity attributes/);
+  assert.equal(await readFile(f.target, "utf8"), f.before); assert.equal((await capturePathIdentity(f.target)).inode, identity.inode);
+  assert.deepEqual((await readdir(f.root)).sort(), ["integrity-worker", "测试.txt"].sort());
+  const stats = await nativeFileRequest("stats"); assert.equal(stats.publicationAttempts, 0); assert.equal(stats.activeHandles, 0);
 });
 
 for (const nonUtf8 of [false, true]) test(`N2 Linux xattrs preserve actual name/value bytes, nonUtf8=${nonUtf8}`, { skip: process.platform !== "linux" }, async t => {
@@ -523,7 +559,7 @@ test("N2 Linux hardlink capability observation is refused before compatibility s
     if (name === "message" && typeof args[0]?.value?.hasAttributes === "boolean") args[0].value.writeClearsAttributes = true;
     return Reflect.apply(emit, this, [name, ...args]);
   });
-  await assert.rejects(planFor(f.target, f.before), /File capabilities may be cleared/);
+  await assert.rejects(planFor(f.target, f.before), /File capabilities or integrity attributes may be invalidated/);
   assert.equal(await readFile(f.target, "utf8"), f.before); assert.deepEqual(await readdir(f.root), ["alias", "测试.txt"]);
 });
 
@@ -567,7 +603,10 @@ test("N2 final worker rejects staged metadata drift before replacement", { skip:
   const original = await lstat(f.target, { bigint: true });
   plan.metadata.replace = async (path, target, validation) => {
     if (process.platform === "linux") await chmod(path, Number(original.mode) ^ 0o020);
-    else await nativeFileRequest("protect", { path, expected: validation.temporary });
+    else {
+      const observed = await nativeFileRequest("inspect", { path: target, expected: validation.target });
+      await nativeFileRequest("prepare", { path, expected: validation.temporary, security: observed.security, attributes: observed.attributes });
+    }
     await publish.call(plan.metadata, path, target, validation);
   };
   await assert.rejects(commitPreparedFile(plan, f.after, { assertPathAllowed: async () => plan.target.canonical }), (error: unknown) => {
@@ -576,6 +615,36 @@ test("N2 final worker rejects staged metadata drift before replacement", { skip:
   });
   assert.equal(await readFile(f.target, "utf8"), f.before); assert.equal((await lstat(f.target, { bigint: true })).mode, original.mode);
   for (const name of await readdir(f.root)) if (name.startsWith(".pi-file-commit-")) assert.equal((await lstat(join(f.root, name))).mode & 0o777, 0o600);
+});
+
+for (const boundary of ["sync", "close", "publish"] as const) test(`N2 candidate stays private through final async ${boundary} boundary`, { skip: !supported }, async t => {
+  const f = await fixture(t);
+  if (process.platform === "linux") await chmod(f.target, 0o644);
+  const plan = await planFor(f.target, f.before), prepare = plan.metadata.prepareTemporary, publish = plan.metadata.replace;
+  const controller = new AbortController(); let observed = 0;
+  async function assertPrivate(path: string) {
+    const info = await lstat(path, { bigint: true });
+    assert.deepEqual(await readFile(path), f.after);
+    if (process.platform === "linux") assert.equal(info.mode & 0o777n, 0o600n);
+    else {
+      const metadata = await nativeFileRequest("inspect", { path, expected: { device: String(info.dev), inode: String(info.ino) } });
+      const descriptor = Buffer.from(metadata.security, "base64"), acl = descriptor.readUInt32LE(16);
+      assert.ok(descriptor.readUInt16LE(2) & 0x1000); assert.equal(descriptor.readUInt16LE(acl + 4), 1);
+    }
+    observed++;
+  }
+  plan.metadata.prepareTemporary = async (handle, path) => {
+    await prepare.call(plan.metadata, handle, path); await assertPrivate(path);
+    if (boundary !== "publish") {
+      const original = handle[boundary].bind(handle); let intercepted = false;
+      handle[boundary] = async () => { if (!intercepted) { intercepted = true; await assertPrivate(path); controller.abort(); } await original(); };
+    }
+  };
+  plan.metadata.replace = async (path, target, validation) => { await assertPrivate(path); await publish.call(plan.metadata, path, target, validation); };
+  const pending = commitPreparedFile(plan, f.after, { assertPathAllowed: async () => plan.target.canonical, signal: controller.signal });
+  if (boundary === "publish") { assert.equal((await pending).outcome, "committed"); assert.deepEqual(await readFile(f.target), f.after); }
+  else { await assert.rejects(pending, (error: unknown) => error instanceof FileCommitError && error.receipt.outcome === "not_committed"); assert.equal(await readFile(f.target, "utf8"), f.before); }
+  assert.equal(observed, 2); const stats = await nativeFileRequest("stats"); assert.equal(stats.publicationAttempts, boundary === "publish" ? 1 : 0); assert.equal(stats.activeHandles, 0); assert.equal(stats.activeDescriptors, 0);
 });
 
 test("N2 candidate is private during writing and remains private after prepublication failure", { skip: !supported }, async t => {

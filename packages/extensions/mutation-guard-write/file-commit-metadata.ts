@@ -29,7 +29,7 @@ async function createWindowsTemporary(path: string): Promise<{ created: true; de
 interface MetadataObservation {
   attributes?: number; links?: number; creationTime?: string; security?: string; securityFingerprint?: string; filesystem?: string;
   hasAttributes?: boolean; namesFingerprint?: string; valuesFingerprint?: string; writeClearsAttributes?: boolean;
-  defaultAcl?: boolean; ownerAssignable?: boolean; replacementAccess?: boolean; parentCreationAccess?: boolean; mountId?: string;
+  defaultAcl?: boolean; ownerAssignable?: boolean; replacementAccess?: boolean; parentCreationAccess?: boolean; inheritanceReproducible?: boolean; mountId?: string;
   inodeFlags?: number; xflags?: number; extentSize?: number; projectId?: number; cowExtentSize?: number; fileFlagsFingerprint?: string;
 }
 
@@ -81,12 +81,9 @@ class NativeCommitMetadata implements CommitMetadata {
   }
   async prepareTemporary(staged: FileHandle, path: string): Promise<void> {
     if (this.strategy === "protected_in_place") return;
-    const info = await staged.stat({ bigint: true });
-    if (process.platform === "win32") {
-      await nativeFileRequest("prepare", { path, security: this.original.security, attributes: this.original.attributes, expected: { device: String(info.dev), inode: String(info.ino) } });
-    } else {
-      if (info.uid !== this.info.uid || info.gid !== this.info.gid) await staged.chown(Number(this.info.uid), Number(this.info.gid));
-      await staged.chmod(Number(this.info.mode) & 0o777);
+    // Publication permissions are applied only inside the synchronous worker
+    // publication boundary. Every main-thread await keeps the candidate private.
+    if (process.platform === "linux") {
       const next = await inspect(staged, path);
       if (next.hasAttributes || next.fileFlagsFingerprint !== this.original.fileFlagsFingerprint) throw new Error("[UNSUPPORTED_COMMIT] Temporary inherited unsupported extended attributes/file flags.");
     }
@@ -115,7 +112,7 @@ export async function selectCommitMetadata(target: PathIdentity): Promise<Commit
       if ((error as { nativeUnavailable?: boolean }).nativeUnavailable) throw new Error(`[UNSUPPORTED_COMMIT] Native metadata capability unavailable: ${(error as Error).message.slice(0, 300)}; target was not modified.`);
       throw error; // Inspection/permission failure never means absent metadata or fallback.
     }
-    if (process.platform === "linux" && original.writeClearsAttributes) throw new Error("[UNSUPPORTED_COMMIT] File capabilities may be cleared by writing; target was not modified.");
+    if (process.platform === "linux" && original.writeClearsAttributes) throw new Error("[UNSUPPORTED_COMMIT] File capabilities or integrity attributes may be invalidated by writing; target was not modified.");
     if (process.platform === "linux" && (original.inodeFlags === undefined || original.xflags === undefined
       || (original.inodeFlags & ~0x80000) !== 0 || (original.xflags & ~0x80000000) !== 0
       || original.extentSize !== 0 || original.projectId !== 0 || original.cowExtentSize !== 0)) {
@@ -164,6 +161,7 @@ export async function selectCommitMetadata(target: PathIdentity): Promise<Commit
       // ACEs into inherited ACEs. Select object preservation BEFORE any effects.
       const control = Buffer.from(original.security!, "base64").readUInt16LE(2);
       if (!(control & (0x1000 | 0x0400))) return compatibility("Legacy unprotected Windows DACL: replacement can change inheritance semantics; retain the original object and verify owner/group/DACL, attributes and creation time.", info, target, original);
+      if (!(control & 0x1000) && original.inheritanceReproducible !== true) return compatibility("Current parent cannot reproduce the target inherited DACL: retain the original object and verify its metadata before and after writing.", info, target, original);
       if (!original.ownerAssignable) return compatibility("Owner/group differ from the process token defaults: retain the existing object; no privilege is enabled to assign foreign ownership.", info, target, original);
       if ((control & 0x010b) || !(control & 0x0004)) return compatibility("Windows descriptor defaulted/request/presence flags require the original object; retain and verify their semantics.", info, target, original);
     }

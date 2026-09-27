@@ -554,3 +554,36 @@ before staging, with target metadata still verified. Other inspection errors fai
 The real mode-0300 parent fixture requires an unprivileged Linux process; root
 explicitly skips because it bypasses the denial. Both Linux cases await CI.
 Windows focused/source checks: 92 pass, 19 platform skips; type check passes.
+
+The following review moves publication permissions into the final synchronous
+worker replacement operation. Main-thread temporary preparation, sync, close,
+content verification and final authority/cancellation gates all retain the private
+candidate. The worker verifies private metadata, then installs target permissions
+and publishes without an intervening asynchronous callback or cancellation gate.
+Linux owner/mode installation and fsync use the owned descriptor. Windows retains
+the fixed SetSecurityInfo/ReplaceFileW operations. An OS failure during this final
+sequence can still leave a candidate whose publication permissions were applied;
+there is no atomic privacy/publication guarantee or reversal of prior disclosure.
+Actual sync/close cancellation fixtures verify private metadata and unchanged
+target; the publication fixture verifies private metadata on worker entry and the
+actual final bytes. Native failure/unknown receipts and verified cleanup remain.
+
+For an unprotected auto-inherited Windows DACL, selection now computes the current
+parent's inheritance in memory with fixed
+[CreatePrivateObjectSecurityEx](https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-createprivateobjectsecurityex)
+and GetPrivateObjectSecurity bindings. It uses the process query token, file-rights
+mapping and SEF_DACL_AUTO_INHERIT; no owner/privilege-check bypass or probe file.
+The bounded descriptor is freed with
+[DestroyPrivateObjectSecurity](https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-destroyprivateobjectsecurity).
+Nonreproducible inheritance selects object preservation before staging; publication
+rechecks the capability. Actual same-volume move between distinct inherited DACLs
+preserves inode/security/content through in-place writing, while the matching
+modern inherited case still uses replacement. Handles/descriptors return to zero.
+
+Linux security.ima and security.evm join security.capability in the pre-mutation
+refusal set: content changes can invalidate kernel integrity metadata. See the
+[kernel IMA implementation](https://github.com/torvalds/linux/blob/master/security/integrity/ima/ima_appraise.c).
+Tests inject those names at the native enumeration boundary and verify unchanged
+real file bytes/inode and zero publication attempts; they do not claim an actual
+privileged IMA/EVM configuration test. Current Windows focused/source tests:
+51 pass, 21 explicit platform skips. New full gates/CI/review remain required.
