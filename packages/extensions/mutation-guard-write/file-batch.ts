@@ -10,6 +10,7 @@ import { Value } from "typebox/value";
 import { consumePermissionPathApproval, mutationRequestHash, type PermissionPathApproval } from "../resource-lifecycle-guard/permission-contract.ts";
 import { MutationWriteGuard, resolveToolPath, sha256, type GuardedEdit, type MutationEditAuthorization, type MutationPathApproval } from "./core.ts";
 import { prepareFileCreation, verifyCreationAncestor, directoryKey, canonicalCreationDirectories, type FileCreationPlan } from "./file-creation.ts";
+import { selectCommitMetadata } from "./file-commit-metadata.ts";
 import { capturePathIdentity, sameIdentity, prepareNativeOperation, revalidateNativePlan, executeNativePlan, type NativePlan, type PathIdentity, type MutationStatus } from "./native-file-core.ts";
 import { prepareSnapshotLineMutation, executePreparedSnapshotMutation, type PreparedSnapshotMutation, type SnapshotLineEdit } from "./snapshot-line-edit.ts";
 import { PublicEditOperationParameters, PublicEditParameters, EditParameters, SnapshotEditParameters, WriteParameters, validatePublicSnapshotAnchors } from "./mutation-parameters.ts";
@@ -233,6 +234,9 @@ export class BatchInvocation {
               this.guard.hasFullPreviewEvidence(item.target, item.previousSha256, this.generation));
           }
         }
+        // Read-only all-item capability check. Execution still selects and
+        // verifies current metadata immediately before the item's mutation.
+        if ((input.operation === "edit" || input.operation === "write") && !item.creation) await selectCommitMetadata(item.identity!);
         if (creation) await verifyCreationAncestor(creation);
         else if (!sameIdentity(initialIdentity!, await capturePathIdentity(path)) || !sameIdentity(initialParent!, await capturePathIdentity(initialParent!.path), false)) throw new Error("[STALE_STATE] Identity changed during preparation.");
         signal?.throwIfAborted();

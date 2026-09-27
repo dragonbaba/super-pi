@@ -509,3 +509,31 @@ item loop. A real four-file batch observes one callback identity and release of
 its progress API/current-item references; invoking it after release is refused.
 Windows targeted/source-relevant cases: 152 pass, 17 explicit skips; check passes.
 New whole-project gates and both-platform CI/review are still required.
+### Complete preflight and reopened evidence boundary
+
+Windows capability selection opens the existing canonical parent for FILE_ADD_FILE
+before choosing replacement. The fixed directory-handle flags and access rights
+follow [CreateFileW](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew)
+and [file access rights](https://learn.microsoft.com/en-us/windows/win32/fileio/file-access-rights-constants).
+The worker enables no privilege, creates no probe file, validates directory identity
+and reparse attributes, and closes its handle before replying. Only actual access
+denial preselects object preservation; other errors fail without fallback. A real
+parent-DACL CreateFiles denial confirms the target still has replacement rights,
+the selected in-place commit changes its bytes, inode/security/attributes stay
+unchanged, no candidate is created and native handles/publication attempts end at
+zero. Node reports this denied creation as EPERM on the local Windows environment.
+
+Every existing-file edit/overwrite is now capability-probed during whole-batch
+read-only preparation, including dryRun. Execution still reselects/revalidates
+current metadata before mutation. Six exact/snapshot/overwrite × real/dryRun cases
+put an unsupported target second and verify first-target absence, unchanged second
+bytes and no new directory entry. Windows uses actual archive-cleared Hidden;
+Linux uses actual special mode bits and must pass the Linux CI job.
+
+Restoration invalidates old evidence when a completion requires verification or
+retains a candidate, including batch aggregates with stateChanged=false. Actual
+retained exact/snapshot/overwrite failures, standalone and batch, reopen the durable
+Session and reject both exact authorization and overwrite with READ_REQUIRED.
+The existing clean no-change completion still preserves a legitimate prior read.
+Current focused Windows regressions: 209 pass, 17 platform skips; check passes.
+Fresh full local gates, Linux execution and exact-head review are required.

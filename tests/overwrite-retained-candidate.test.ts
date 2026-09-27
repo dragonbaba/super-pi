@@ -3,12 +3,13 @@ import test from "node:test";
 import { readFileSync, writeFileSync, mkdirSync, symlinkSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { Worker } from "node:worker_threads";
-import { mutationFixture } from "./helpers/mutation-fixture.ts";
+import { mutationFixture, MutationWriteGuard } from "./helpers/mutation-fixture.ts";
 import { protectWindowsFixture } from "./helpers/native-metadata-fixture.ts";
 import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
 import { disposeNativeFileWorker } from "../packages/extensions/mutation-guard-write/native-file-client.ts";
 import { createJiti } from "jiti";
 const { collectChanges, remainingDraft, verifyChange } = await createJiti(import.meta.url).import<any>("../packages/extensions/mutation-guard-write/changes.ts");
+const { restoreMutationEvidenceFromBranch } = await createJiti(import.meta.url).import<any>("../packages/extensions/mutation-guard-write/session-evidence.ts");
 
 test("N2 actual overwrite through an allowed parent alias retains canonical recovery across Session cwd override", async t => {
   const f = await mutationFixture(t), directory = join(f.cwd, "real"); mkdirSync(directory);
@@ -62,6 +63,10 @@ for (const batch of [false, true]) test(`N2 overwrite persists verification/no-r
   assert.equal(outcome.status, "failed_no_change"); assert.equal(outcome.stateChanged, false);
   assert.equal(outcome.requiresVerification, true); assert.ok(details.commit.retainedTemporary);
   assert.equal(readFileSync(path, "utf8"), "before"); assert.equal(readFileSync(details.commit.retainedTemporary, "utf8"), "candidate");
+  const restored = new MutationWriteGuard();
+  await restoreMutationEvidenceFromBranch(restored, f.cwd, SessionManager.open(f.session.getSessionFile()!).getBranch());
+  await assert.rejects(restored.write(f.cwd, path, "restored forbidden", 99), /READ_REQUIRED/);
+  await assert.rejects(restored.authorizeEdit(f.cwd, path, [{ oldText: "before", newText: "forbidden" }], 99, "before"), /READ_REQUIRED/);
   if (!batch) assert.match(JSON.stringify(result.content), /Verify current state; do not automatically retry/);
   else assert.equal((result.details as any).items[0].requiresVerification, true);
   const reopened = SessionManager.open(f.session.getSessionFile()!);
