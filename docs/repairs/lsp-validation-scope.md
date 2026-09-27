@@ -8,7 +8,10 @@ installed service was changed and no private configuration/environment dump is c
 
 The tool now distinguishes zero submitted files from received diagnostics, reports
 the submitted count and file limit, and states scope limitations. Default roots use
-the session cwd instead of the host process cwd. `/lsp` describes command availability
+the session cwd instead of the host process cwd, including explicit relative and
+trimmed-empty roots. Mixed routed/skipped requests retain matching skipped files
+and return `partial` when those files have no active route. Unrelated missing default
+servers do not make a targeted request incomplete. `/lsp` describes command availability
 without asserting verified server coverage. Push silence, missing pull reports and
 server errors cannot turn into an empty successful diagnostic list. Actual empty
 reports remain supported. Existing authoritative project checks retain their role;

@@ -13,8 +13,8 @@ interface ScanBudget {
 	visitedDirectories: number;
 }
 
-export function resolveRoot(root?: string) {
-	const resolvedRoot = path.resolve(root?.trim() || process.cwd());
+export function resolveRoot(root?: string, cwd = process.cwd()) {
+	const resolvedRoot = path.resolve(cwd, root?.trim() || ".");
 	if (!existsSync(resolvedRoot)) throw new Error(`Workspace root does not exist: ${resolvedRoot}`);
 	if (!statSync(resolvedRoot).isDirectory()) {
 		throw new Error(`Expected workspace root to be a directory: ${resolvedRoot}`);

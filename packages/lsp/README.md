@@ -53,6 +53,11 @@ now returns an unconfirmed-diagnostics error. An actual empty report is still va
 diagnostic feedback. Since requests do not send a previous result ID, a pull response
 must contain a full `items` report.
 
+Explicit relative roots are resolved from the session workspace; trimmed-empty roots
+use that workspace as well. Mixed requests return `partial` with `isError: true` and
+the matching skipped `uncoveredFiles` when an unavailable default server leaves scope
+uncovered. Missing defaults for unrelated file types do not mark a request partial.
+
 Prefer existing project checks and an already known applicable LSP route. Use focused
 checks only to fill specific gaps, such as self-contained assets or reference
 consistency. State actual match/file counts and untested scope; zero script matches

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { stripVTControlCharacters } from "node:util";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { RELEASE_COMPONENT_RENDER_CACHE, type TUI } from "@super-pi/tui";
@@ -16,8 +16,8 @@ const { releaseComponentRenderCaches } = await import(pathToFileURL(resolve("pac
 
 initTheme("dark");
 const definition = { ...createWriteToolDefinition(process.cwd()), collapseCallOnResult: true, renderResult: renderWriteResult };
-function card(args = { path: "fixture.ts", content: "const visibleBody = 1;" }) {
-  return new ToolExecutionComponent("write", "write-card", args, {}, definition as ToolDefinition<any, any>, { requestRender() {} } as TUI, process.cwd());
+function card(args = { path: "fixture.ts", content: "const visibleBody = 1;" }, tool = definition as ToolDefinition<any, any>) {
+  return new ToolExecutionComponent("write", "write-card", args, {}, tool, { requestRender() {} } as TUI, process.cwd());
 }
 function visible(component: ToolExecutionComponent, width = 100) { return stripVTControlCharacters(component.render(width).join("\n")); }
 const created = { operation: "write", mutationReceiptVersion: 1, ok: true, category: "success", stateChanged: true, created: true };
@@ -101,15 +101,37 @@ test("real guarded create, overwrite and empty receipts render identically after
     for (const [id, args, label] of [["create", first, "Added"], ["overwrite", next, "Modified"], ["empty", { path: "empty.txt", content: "" }, "Added"]] as const) {
       const result = fixture.result(id);
       assert.equal(result.isError, false);
-      const component = card(args); component.setArgsComplete(); component.updateResult(result, false, result.isError);
+      const registered = fixture.session.getToolDefinition("write");
+      assert.equal(registered.collapseCallOnResult, true);
+      const component = card(args, registered); component.setArgsComplete(); component.updateResult(result, false, result.isError);
       assert.match(visible(component), new RegExp(label));
       before.set(id, visible(component));
     }
     await fixture.reopen();
     for (const [id, args] of [["create", first], ["overwrite", next], ["empty", { path: "empty.txt", content: "" }]] as const) {
-      const result = fixture.result(id), component = card(args);
+      const result = fixture.result(id), component = card(args, fixture.session.getToolDefinition("write"));
       component.setArgsComplete(); component.updateResult(result, false, result.isError);
       assert.equal(visible(component), before.get(id));
     }
+  } finally { await fixture.release(); }
+});
+
+test("actual authorization denial leaves the file absent and renders a failed registered write card", async () => {
+  const fixture = await costSession();
+  try {
+    let denials = 0;
+    await fixture.session.bindExtensions({ mode: "tui", uiContext: { ...fixture.session.extensionRunner.getUIContext(), select: async () => { denials++; return undefined; } } });
+    const args = { path: join(fixture.root, "denied.txt"), content: "must not be written" };
+    await fixture.run([[costCall("denied", "write", args)]]);
+    const result = fixture.result("denied");
+    assert.equal(result.isError, true);
+    assert.equal(denials, 1);
+    assert.equal(existsSync(args.path), false);
+    const component = card(args, fixture.session.getToolDefinition("write"));
+    component.setArgsComplete(); component.updateResult(result, false, result.isError);
+    assert.match(visible(component), /Write failed/);
+    assert.doesNotMatch(visible(component), /Added|Modified|must not be written/);
+    component.setExpanded(true);
+    assert.match(visible(component), /must not be written/);
   } finally { await fixture.release(); }
 });

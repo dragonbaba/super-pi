@@ -1,5 +1,5 @@
 import path from "node:path";
-import { compareStrings, EMPTY_READONLY_ARRAY } from "./collections.js";
+import { compareStrings } from "./collections.js";
 import { commandExists, commandPathValue } from "./command.js";
 import { collectSupportedFiles, resolveRoot } from "./files.js";
 import type { LspServerAdapter } from "./types.js";
@@ -44,13 +44,6 @@ export function selectDiagnosticRoutes(
 	const filesByPolicy = new Map<string, string[]>();
 	const routes: DiagnosticRoute[] = [];
 	for (const adapter of candidates) {
-		if (!params.server && adapter.isDefault) {
-			const command = adapter.defaultCommand;
-			if (!commandExists(command.command, root, commandPathValue(adapter.env))) {
-				skipped.push({ adapter, reason: `${adapter.name} command missing`, files: EMPTY_READONLY_ARRAY });
-				continue;
-			}
-		}
 		const key = diagnosticFilePolicyKey(adapter);
 		let files = filesByPolicy.get(key);
 		if (!files) {
@@ -58,6 +51,13 @@ export function selectDiagnosticRoutes(
 			filesByPolicy.set(key, files);
 		}
 		if (files.length === 0) continue;
+		if (!params.server && adapter.isDefault) {
+			const command = adapter.defaultCommand;
+			if (!commandExists(command.command, root, commandPathValue(adapter.env))) {
+				skipped.push({ adapter, reason: `${adapter.name} command missing`, files });
+				continue;
+			}
+		}
 		routes.push({ adapter, reason: `${adapter.name} diagnostics`, files });
 		if (routes.length > 1) {
 			throw new Error(

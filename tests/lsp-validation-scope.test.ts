@@ -5,6 +5,7 @@ import { join, resolve, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { createJiti } from "jiti";
 import { spawnSync } from "node:child_process";
+import { createRequire } from "node:module";
 
 const jiti = createJiti(import.meta.url);
 const { loadRuntime } = await jiti.import<any>("../packages/lsp/src/adapters.ts");
@@ -41,6 +42,8 @@ test("configured route is explicit about zero files and unsupported HTML; no cli
     const missing = { ...f.adapters[0], isDefault: true, defaultCommand: { command: "sp-nonexistent-lsp-fixture", args: [] } };
     const routes = selectDiagnosticRoutes([missing], { root: f.root, paths: ["example.ts"] }, 50);
     assert.equal(routes.routes.length, 0); assert.equal(routes.skipped.length, 1);
+    assert.deepEqual(routes.skipped[0].files, [join(f.root, "example.ts")]);
+    assert.throws(() => selectDiagnosticRoutes([missing], { root: f.root, paths: ["page.html"] }, 50), /No supported files/);
   } finally { f.release(); }
 });
 
@@ -62,13 +65,35 @@ test("tool uses session cwd, preserves received count and discloses unverified e
   const f = fixture(), registration = tools();
   const ctx = { cwd: f.root, isProjectTrusted() { return true; }, ui: { setStatus() {} } };
   try {
-    const result = await registration.registered.get("lsp_diagnostics").execute("scope", { paths: ["example.ts"] }, undefined, undefined, ctx);
-    assert.equal(result.details.root, f.root);
-    assert.equal(result.details.submittedFiles, 1);
-    assert.equal(result.details.status, "diagnostics_received");
-    assert.match(result.content[0].text, /Embedded languages.*not established/);
-    assert.equal(result.isError, false);
+    mkdirSync(join(f.root, "subproject")); writeFileSync(join(f.root, "subproject/example.ts"), "const n = 1;");
+    for (const root of [undefined, "   ", "subproject"]) {
+      const result = await registration.registered.get("lsp_diagnostics").execute("scope", { root, paths: ["example.ts"] }, undefined, undefined, ctx);
+      assert.equal(result.details.root, root === "subproject" ? join(f.root, "subproject") : f.root);
+      assert.equal(result.details.submittedFiles, 1);
+      assert.equal(result.details.status, "diagnostics_received");
+      assert.match(result.content[0].text, /Embedded languages.*not established/);
+      assert.equal(result.isError, false);
+    }
   } finally { await registration.events.get("session_shutdown")({}, ctx); f.release(); }
+});
+
+test("mixed available and unavailable matching default routes retain uncovered files and return partial", () => {
+  const f = fixture();
+  try {
+    writeFileSync(join(f.root, "uncovered.py"), "x = 1\n");
+    const binary = createRequire(import.meta.url).resolve(`@biomejs/cli-${process.platform}-${process.arch}/biome${process.platform === "win32" ? ".exe" : ""}`);
+    const privatePath = dirname(binary);
+    const child = spawnSync(process.execPath, [resolve("tests/fixtures/lsp-skipped-tool.mjs"), f.root, "mixed"], {
+      encoding: "utf8", env: { ...process.env, PATH: privatePath, Path: privatePath, SP_CODING_AGENT_DIR: join(f.root, "isolated-agent") },
+    });
+    assert.equal(child.status, 0, child.stderr);
+    const result = JSON.parse(child.stdout);
+    assert.equal(result.isError, true);
+    assert.equal(result.details.status, "partial", JSON.stringify(result));
+    assert.equal(result.details.submittedFiles, 1);
+    assert.deepEqual(result.details.uncoveredFiles, [join(f.root, "uncovered.py")]);
+    assert.deepEqual(result.details.skipped[0].files, [join(f.root, "uncovered.py")]);
+  } finally { f.release(); }
 });
 
 test("all unavailable default commands return not_checked from the actual tool in a private process", () => {

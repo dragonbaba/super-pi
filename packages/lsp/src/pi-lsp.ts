@@ -61,7 +61,7 @@ const lspDiagnosticsTool = defineTool({
 				import("./runner.js"),
 				getClientPool(),
 			]);
-		const requestedRoot = resolveRoot(params.root ?? ctx.cwd);
+		const requestedRoot = resolveRoot(params.root, ctx.cwd);
 		const { adapters, timeoutMs } = loadRuntime(ctx.cwd, {
 			projectTrusted: ctx.isProjectTrusted(),
 		});
@@ -99,26 +99,32 @@ const lspDiagnosticsTool = defineTool({
 			});
 		}
 		const skippedDetails = [];
+		const uncoveredFiles = new Set<string>();
 		if (skipped.length) {
 			let names = "";
 			for (const route of skipped) {
 				if (names) names += ", ";
 				names += route.adapter.name;
 				skippedDetails.push({ server: route.adapter.name, reason: route.reason, files: route.files });
+				for (const file of route.files) uncoveredFiles.add(file);
 			}
 			sections.push(`Skipped unavailable default LSP server(s): ${names}.`);
 		}
+		for (const route of routes) for (const file of route.files) uncoveredFiles.delete(file);
+		const incomplete = uncoveredFiles.size > 0;
+		if (incomplete) sections.push(`Incomplete: ${uncoveredFiles.size} matching file(s) were not submitted because their default server was unavailable. No validation pass for that scope is established.`);
 		sections.push(submittedFiles === 0
 			? "Not checked: 0 files submitted to an LSP server. No validation pass is established."
 			: `Scope: ${submittedFiles} file(s) submitted, limited to the selected route and file limit. Embedded languages, unmatched files and browser/runtime behavior are not established by this result.`);
 		return { ...runner.textResult(sections.join("\n\n---\n\n"), {
 			root,
-			status: submittedFiles === 0 ? "not_checked" : "diagnostics_received",
+			status: submittedFiles === 0 ? "not_checked" : incomplete ? "partial" : "diagnostics_received",
 			submittedFiles,
+			uncoveredFiles: [...uncoveredFiles],
 			fileLimit: params.limit ?? DEFAULT_FILE_LIMIT,
 			skipped: skippedDetails,
 			routes: routeDetails,
-		}), isError: submittedFiles === 0 };
+		}), isError: submittedFiles === 0 || incomplete };
 	},
 });
 
@@ -140,7 +146,7 @@ const lspFixTool = defineTool({
 				import("./runner.js"),
 				getClientPool(),
 			]);
-		const requestedRoot = resolveRoot(params.root ?? ctx.cwd);
+		const requestedRoot = resolveRoot(params.root, ctx.cwd);
 		const { adapters, timeoutMs } = loadRuntime(ctx.cwd, {
 			projectTrusted: ctx.isProjectTrusted(),
 		});
@@ -190,7 +196,7 @@ const lspNavigateTool = defineTool({
 				import("./navigation.js"),
 				getClientPool(),
 			]);
-		const requestedRoot = resolveRoot(params.root ?? ctx.cwd);
+		const requestedRoot = resolveRoot(params.root, ctx.cwd);
 		const { adapters, timeoutMs } = loadRuntime(ctx.cwd, {
 			projectTrusted: ctx.isProjectTrusted(),
 		});
