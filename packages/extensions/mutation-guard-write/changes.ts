@@ -260,6 +260,16 @@ function validStandalonePrefix(entries: readonly any[], selected: any, call: any
 }
 
 /** Reconstruct from bounded Session entries. No disk observation, replay or second history store. */
+function retainNewestChanges(records: ChangeRecord[], order: Map<string, number>): void {
+  if (records.length <= MAX_CHANGES) return;
+  let oldest = 0, position = order.get(records[0].entryId) ?? -1;
+  for (let index = 1; index < records.length; index++) {
+    const next = order.get(records[index].entryId) ?? -1;
+    if (next < position) { oldest = index; position = next; }
+  }
+  records.splice(oldest, 1);
+}
+
 export function collectChanges(branch: readonly any[], cwd: string): ChangeRecord[] {
   branch = branch.slice(-512);
   const calls = new Map<string, any>();
@@ -359,12 +369,13 @@ export function collectChanges(branch: readonly any[], cwd: string): ChangeRecor
       unavailable: bound ? undefined : callsOverflow ? "Assistant content exceeds bounded history inspection limits; unable to reconstruct safely."
         : !historicalTarget ? "Originating cwd is missing for this relative legacy receipt; unable to reconstruct its target safely."
         : "Original request or ordered matching preparation is missing/ambiguous in the bounded history; unable to reconstruct." });
-    if (records.length > MAX_CHANGES) records.shift();
+    retainNewestChanges(records, order);
   }
   // A persisted, request-bound preparation precedes every per-item intent.
   // After interruption, items with no later intent/outcome are safely unstarted.
   for (let n = 0; n < branch.length; n++) {
-    const entry = branch[n], data = entry.data, call = calls.get(data?.toolCallId);
+    const entry = branch[n], data = entry.data;
+    const call = typeof data?.toolCallId === "string" && data.toolCallId.length <= 256 ? calls.get(data.toolCallId) : undefined;
     if (entry.type !== "custom" || entry.customType !== "file-mutation-progress-v2" || data?.phase !== "prepared"
       || !call || duplicateEntries.size || duplicate.has(call.id) || call.name !== "file_batch" || (callOrder.get(call.id) ?? Infinity) >= n) continue;
     const executionEntries = branch.slice(callOrder.get(call.id)! + 1);
@@ -388,7 +399,7 @@ export function collectChanges(branch: readonly any[], cwd: string): ChangeRecor
       if (hasActivity) continue;
       records.push({ entryId: entry.id, toolCallId: call.id, itemId, operation: intent.operation, target: intent.target,
         destination: intent.destination, status: "not_started", preview: false, original: call.arguments.operations[index], batchSize: call.arguments.operations.length });
-      if (records.length > MAX_CHANGES) records.shift();
+      retainNewestChanges(records, order);
     }
   }
   const previews: ChangeRecord[] = [];
@@ -609,6 +620,9 @@ export class ChangeViewer {
   private body: string;
   private positions?: Uint32Array;
   private widths?: Int32Array;
+  private rowStarts?: Uint32Array;
+  private rowCount = 1;
+  private rowWidth = -1;
   private count = 0;
   private offset = 0;
   private cached?: string[];
@@ -621,9 +635,10 @@ export class ChangeViewer {
   private done?: (value: void) => void;
   constructor(body: string, tui: TUI, done: (value: void) => void) {
     this.body = body.slice(0, 65536).replaceAll("\t", "   ").slice(0, 65536); this.tui = tui; this.done = done;
-    // Cold dialog preparation: at most 524,296 bytes of numeric scroll metadata.
+    // Cold dialog preparation: at most 786,444 bytes of numeric scroll metadata.
     // No wrapped lines or grapheme strings survive this loop.
     this.positions = new Uint32Array(this.body.length + 1); this.widths = new Int32Array(this.body.length + 1);
+    this.rowStarts = new Uint32Array(this.body.length + 1);
     for (const part of CHANGE_GRAPHEMES.segment(this.body)) {
       this.positions[this.count] = part.index;
       this.widths[this.count++] = part.segment.includes("\n") || part.segment === "\r" ? -1 : graphemeWidth(part.segment);
@@ -631,22 +646,29 @@ export class ChangeViewer {
     this.positions[this.count] = this.body.length;
   }
   private nextRow(start: number, width: number): number {
+    if (this.rowWidth !== width) { this.rowWidth = width; this.rowCount = 1; }
     let end = start, columns = 0;
     while (end < this.count) {
       const size = this.widths![end]; this.graphemesVisited++;
-      if (size === -1) return end + 1;
+      if (size === -1) { end++; break; }
       if (columns + size > width && end > start) break;
       columns += size; end++;
     }
+    if (end > start && this.rowStarts![this.rowCount - 1] === start) this.rowStarts![this.rowCount++] = end;
     return end;
   }
   private previousRow(start: number, width: number): number {
     if (!start) return 0;
-    let cursor = start - 1;
-    while (cursor > 0 && this.widths![cursor - 1] !== -1) cursor--;
-    let previous = cursor;
-    while (cursor < start) { previous = cursor; cursor = this.nextRow(cursor, width); }
-    return previous;
+    if (this.rowWidth !== width) { this.rowWidth = width; this.rowCount = 1; }
+    // A width change may leave the viewport at an unindexed offset. Extend the
+    // single bounded numeric index once; repeated Up/PageUp never replay a line.
+    while (this.rowStarts![this.rowCount - 1] < start) this.nextRow(this.rowStarts![this.rowCount - 1], width);
+    let low = 0, high = this.rowCount - 1;
+    while (low < high) {
+      const middle = (low + high) >>> 1;
+      if (this.rowStarts![middle] < start) low = middle + 1; else high = middle;
+    }
+    return this.rowStarts![Math.max(0, low - 1)];
   }
   render(width: number): string[] {
     width = Math.max(1, Math.floor(width));
@@ -674,8 +696,8 @@ export class ChangeViewer {
     this.tui?.requestRender();
   }
   invalidate(): void { this.cached = undefined; }
-  dispose(): void { this.body = ""; this.positions = undefined; this.widths = undefined; this.cached = undefined; this.count = 0; this.offset = 0; this.tui = undefined; this.done = undefined; }
-  getDiagnostics() { return { bodyCodeUnits: this.body.length, scrollBytes: (this.positions?.byteLength ?? 0) + (this.widths?.byteLength ?? 0), cachedRows: this.cached?.length ?? 0,
+  dispose(): void { this.body = ""; this.positions = undefined; this.widths = undefined; this.rowStarts = undefined; this.rowCount = 1; this.rowWidth = -1; this.cached = undefined; this.count = 0; this.offset = 0; this.tui = undefined; this.done = undefined; }
+  getDiagnostics() { return { bodyCodeUnits: this.body.length, scrollBytes: (this.positions?.byteLength ?? 0) + (this.widths?.byteLength ?? 0) + (this.rowStarts?.byteLength ?? 0), cachedRows: this.cached?.length ?? 0,
     rowsMaterialized: this.rowsMaterialized, graphemesVisited: this.graphemesVisited, lifecycleReferences: Number(Boolean(this.tui)) + Number(Boolean(this.done)) }; }
 }
 

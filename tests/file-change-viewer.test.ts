@@ -12,7 +12,7 @@ test("N1 full bounded report materializes only visible rows and releases numeric
   try {
     const first = view.render(1), initial = view.getDiagnostics();
     assert.equal(first.length, 23); assert.equal(initial.rowsMaterialized, 22); assert.ok(initial.graphemesVisited <= 44);
-    assert.ok(initial.scrollBytes <= 524296);
+    assert.ok(initial.scrollBytes <= 786444);
     for (let i = 0; i < 20000; i++) assert.equal(view.render(1), first);
     assert.deepEqual(view.getDiagnostics(), initial);
     global.gc?.(); const heapBefore = process.memoryUsage().heapUsed;
@@ -35,6 +35,25 @@ test("N1 full bounded report materializes only visible rows and releases numeric
     global.gc?.(); t.diagnostic(JSON.stringify({ benchmark: "N1-change-viewport", node: process.version, stableRenders: 20000, changedViewports: 200,
       stableNewRows: 0, metrics, released, heapBefore, heapAfterRelease: process.memoryUsage().heapUsed, sampledBytes: profiler ? sampledBytes : null }));
   } finally { view.dispose(); profiler?.disconnect(); }
+});
+
+test("N1 long-line Up and PageUp reuse bounded row checkpoints", () => {
+  const view = new ChangeViewer("x".repeat(65536), { terminal: { rows: 5 }, requestRender() {} }, () => {});
+  try {
+    view.render(1);
+    for (let index = 0; index < 6000; index++) view.handleInput("\u001b[6~");
+    const before = view.getDiagnostics().graphemesVisited;
+    for (let index = 0; index < 5000; index++) view.handleInput("\u001b[A");
+    for (let index = 0; index < 500; index++) view.handleInput("\u001b[5~");
+    assert.equal(view.getDiagnostics().graphemesVisited, before, "reverse navigation never replays an indexed line");
+    assert.deepEqual(view.render(1).slice(0, 3), ["x", "x", "x"]);
+    view.render(3); view.handleInput("\u001b[A");
+    const resized = view.getDiagnostics().graphemesVisited;
+    for (let index = 0; index < 1000; index++) view.handleInput("\u001b[A");
+    assert.equal(view.getDiagnostics().graphemesVisited, resized, "a new width builds one index, then reuses it");
+    assert.ok(view.getDiagnostics().scrollBytes <= 786444);
+  } finally { view.dispose(); }
+  assert.equal(view.getDiagnostics().scrollBytes, 0); assert.equal(view.getDiagnostics().lifecycleReferences, 0);
 });
 
 test("N1 viewer neither caches report graphemes globally nor emits tabs", t => {
