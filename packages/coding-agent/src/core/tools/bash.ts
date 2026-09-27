@@ -1096,7 +1096,7 @@ export function createShellToolDefinition(
 				else if (observation && !observation.outputDrained) failure = "[SHELL_OUTPUT_INCOMPLETE] Process exited but output streams did not finish before the drain boundary";
 				else if (facts.termination !== "exit") failure = `[SHELL_EXECUTION_FAILED] Command completion is ${facts.termination}; inspect state before retrying`;
 				if (facts.observationError !== undefined) failure = appendShellStatus(failure ?? "", `[SHELL_OBSERVATION_FAILED] ${facts.observationError}`);
-				if (facts.inputError) {
+				if (facts.inputError !== undefined) {
 					const inputFailure = `[SHELL_INPUT_FAILED] Command input was not fully delivered: ${facts.inputError}`;
 					failure = failure ? `${inputFailure}\n${failure}` : inputFailure;
 				}

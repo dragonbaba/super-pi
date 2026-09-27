@@ -119,7 +119,7 @@ export async function executeBashWithOperations(
 		// An observed zero exit alone does not mean the entire submitted command
 		// reached the shell. Propagate producer facts to direct Session/RPC callers
 		// before they can persist a successful BashResult; never retry the command.
-		if (result.inputError) throw observedShellError(new Error(`[SHELL_INPUT_FAILED] Command input was not fully delivered: ${result.inputError}`), result);
+		if (result.inputError !== undefined) throw observedShellError(new Error(`[SHELL_INPUT_FAILED] Command input was not fully delivered: ${result.inputError}`), result);
 		if (result.observationError !== undefined) throw observedShellError(new Error(`[SHELL_OBSERVATION_FAILED] ${result.observationError}`), result);
 		if (result.observation?.outputDrained === false || result.observation?.started === false
 			|| result.termination !== undefined && result.termination !== "exit" || result.exitCode === null) {
@@ -146,7 +146,7 @@ export async function executeBashWithOperations(
 	} catch (err) {
 		// Cancellation cannot erase an already observed delivery/completion failure.
 		const observed = shellProcessResultFromError(err);
-		if (options?.signal?.aborted && (!observed || (!observed.inputError && observed.observationError === undefined
+		if (options?.signal?.aborted && (!observed || (observed.inputError === undefined && observed.observationError === undefined
 			&& observed.observation?.outputDrained !== false && observed.termination === "cancelled"))) {
 			const fullOutput = outputChunks.join("");
 			const truncationResult = truncateTail(fullOutput);

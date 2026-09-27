@@ -50,6 +50,19 @@ for (const field of ["inputError", "observationError", "outputDrained", "termina
   } finally { await f.release(); }
 });
 
+for (const cancelled of [false, true]) test(`N3 merge regression: empty input error survives direct and Session execution, cancelled=${cancelled}`, async () => {
+  const controller = new AbortController(); let abort = () => controller.abort();
+  const backend = { async exec() { if (cancelled) abort(); return { exitCode: 0, termination: "exit" as const, inputError: "" }; } };
+  const check = (error: unknown) => { const facts = shellProcessResultFromError(error); assert.equal(facts?.inputError, ""); assert.equal(facts?.exitCode, 0); return true; };
+  await assert.rejects(executeBashWithOperations("fixture", process.cwd(), backend, { signal: controller.signal }), check);
+  const { alphaHeadless, alphaModelRuntime } = await import("./helpers/alpha-session.ts"); const f = await alphaHeadless(alphaModelRuntime());
+  abort = () => f.session.abortBash();
+  try {
+    await assert.rejects(f.session.executeBash("fixture", undefined, { operations: backend }), check);
+    assert.equal(f.session.isBashRunning, false); assert.equal(f.session.messages.some(message => message.role === "bashExecution"), false);
+  } finally { await f.release(); }
+});
+
 for (const field of ["inputError", "observationError"] as const) test(`N3 direct and Session custom ${field} retains bounded diagnostics`, async () => {
   const original = { exitCode: 0, termination: "exit" as const, [field]: "诊断".repeat(1_000_000) }, backend = { async exec() { return original; } };
   const check = (error: any) => {

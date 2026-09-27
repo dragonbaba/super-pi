@@ -393,3 +393,50 @@ actual Session/direct and source regressions: 141 pass, five platform skips;
 check and the strengthened module-helper source gate pass. The classification
 helper adds no callback, regex, wrapper or scan. r35's full local gates passed;
 final full gates will run after this grouped review feedback is settled.
+
+## Authorized merge-closeout feedback
+
+The ordinary ancestry update `9598dd2f34672a1db00ff1c792e0b9968f9ea12f` retained
+the approved N3 tree exactly and passed Linux/Windows CI `36319371599`. Its
+Ready-triggered actual review reported two reproducible correctness issues.
+Together with the late N1 move-identity finding, they pause N3/N4 merging until
+this grouped correction receives current-head checks and actual review. These
+are same-scope defects, not new features or optimization goals.
+
+An empty `inputError` is still an input-delivery failure. Actual Bash/PowerShell
+Agent dispatch, direct/Session execution, cancellation precedence, completion
+classification, false-success and the Session no-match exception now test field
+presence rather than truthiness. Normalization retains the bounded diagnostic
+and observed exit; no command is retried or relabeled as unstarted.
+
+An unobserved verification cwd with a missing suffix now resolves its deepest
+existing ancestor before retaining the obligation. Only ENOENT walks to a parent;
+other observation failures keep the lexical obligation. This performs no
+execution authorization. A real successful shell in the subsequently created
+canonical directory clears the matching failure; another directory cannot.
+The existing binding and observed-cwd priority remain intact.
+
+Seven targeted cases failed before the correction; the origin-drift countercase
+already passed. Focused recovery/Agent/Session/source checks then passed 233
+tests with six platform skips; the added actual standalone/batch partial-move
+test also passed. Type checking and refreshed public-package build passed.
+Final complete gates and review are tracked on #49, not presumed by this record.
+
+The audited chain is normalized backend completion → Agent/tool facts →
+Session classifiers/false-success → cached Bash result analysis → TUI rendering.
+The changed classification predicates add no closure, regex, wrapper, Promise,
+array or retained reference. The cwd filesystem walk is limited to failed or
+unobserved completion processing; recovery scans remain explicit-user cold
+work. Batch durable metadata adds one existing identity reference at completion,
+owned by the existing Session receipt; no per-delta/progress change or pool was
+introduced. Existing source/AST gates remain intact.
+
+A serial Windows Node22.19 actual-result render profile ran 20,000 renders:
+repeated failure analyses zero, all twelve released reference counters zero,
+pending timers zero. GC-inclusive sampled allocation was 2,983,381,680 bytes
+(149,169.084/render), mainly existing text wrapping, width, background and box
+layout. Controlled-GC heap before/after release was 51,749,664/52,159,040 bytes.
+This is the whole fixture, not an allocation or speedup claim for the predicate
+change. Raw report: `merge-shell-facts-profile.log` in the existing task artifacts.
+Original N4's 85-group measurements remain labeled with their measured source
+SHA; they will not be relabeled as measurements of this corrected tree.
