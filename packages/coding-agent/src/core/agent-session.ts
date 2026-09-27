@@ -2114,7 +2114,7 @@ export class AgentSession {
 		for (let index = selectedCandidates.length - 1; index >= 0; index--) {
 			const candidate = selectedCandidates[index]!;
 			this._toolResultUiSourceScans++;
-			const presentation = owner.create(candidate.content, candidate.toolCallId, projectedSources?.get(candidate.content)?.budgetTokens);
+			const presentation = owner.create(candidate.content, candidate.toolCallId, projectedSources?.get(candidate.content) ?? undefined);
 			if (!presentation) continue;
 			try {
 				if (presentation.version === 2) {

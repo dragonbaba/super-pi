@@ -492,3 +492,24 @@ the measured task. Both revisions passed the complete context and spill
 functional cases. Those concurrent-validation timings remain excluded from the
 final serial comparison. Final combined full gates, profiles/comparison/PTY and
 actual current-head review remain required.
+
+Review r34 supersedes the r33 ID/budget-only reconstruction described above.
+Configured and contextual image-policy results now capture the final successful
+projection, including its actual cursor, text boundary, filtered model content
+and token estimate. UI rediscovery reuses that final view; it does not rerun a
+pre-policy projection that could skip unseen text. Four actual SDK/TUI cases cover
+configured/contextual omission and further shrink, compare UI cursors and token
+counts to the actual request, read continuation/artifact content, and verify zero
+pending provenance and UI registrations after release. Focused budget/contextual/
+source tests: 46 pass; check passes. The source gate also audits the fitting helper.
+
+This necessary correctness fix changes the explicit-change retention cost: up to
+128 final-view records reuse existing content arrays/strings, bounded in aggregate
+by the existing 128 Mi code-unit allowance (text/image string references plus
+block slots). This is a reference allowance, not a byte-exact heap limit. Oldest
+views are evicted at either bound; an individual over-limit view is not retained.
+The canonical history is unchanged. Scratch is cleared in finally; pending views
+are dropped on dispatch completion, failure, replacement, payload invalidation
+or disposal. Normal requests without pending explicit budget changes allocate no
+capture records. No production callback or regex was added. Allocation/lifecycle
+profiles and the complete final comparison remain required before completion.

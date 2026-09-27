@@ -25,6 +25,41 @@ import { estimateContextTokensFromParts } from "@super-pi/ai";
 import { CONTEXT_SAFETY_TOKENS } from "@super-pi/ai/api/simple-options";
 const WAV_FIXTURE = "UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=";
 
+for (const contextual of [false, true]) for (const kind of ["omission", "shrink"] as const) test(`N4 actual SDK/TUI keeps final image-policy ${kind}, contextual=${contextual}`, async () => {
+  let requests = 0, finalContent: any[] = [];
+  const runtime = alphaModelRuntime((model: any, context: any, options: any) => {
+    finalContent = context.messages.find((message: any) => message.role === "toolResult")?.content ?? [];
+    return streamSimple({ ...model, api: "openai-completions" }, context, { ...options, apiKey: "offline", maxRetries: 0,
+      fetch: async () => { requests++; return new Response(`data: ${JSON.stringify({ id: "fixture", object: "chat.completion.chunk", created: 1, model: "fixture", choices: [{ index: 0, delta: { content: "done" }, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`, { headers: { "Content-Type": "text/event-stream" } }); } });
+  });
+  const content: any[] = [];
+  for (let index = 0; index < (kind === "omission" ? 100 : 600); index++) {
+    content.push({ type: "text", text: kind === "omission" ? "x" : "abcdefgh " });
+    content.push({ type: "image", data: "AQ==", mimeType: "image/png" });
+  }
+  const assistant = alphaMessage([{ type: "toolCall", name: "fixture", id: "image-policy-result", arguments: {} }]); assistant.stopReason = "toolUse";
+  const result = { role: "toolResult" as const, toolName: "fixture", toolCallId: "image-policy-result", content, isError: false, timestamp: 2 };
+  const messages: any[] = [assistant, result];
+  if (!contextual) messages.push(alphaMessage([{ type: "text", text: "previous answer" }]), { role: "user", content: "continue", timestamp: 3 });
+  assert.equal(estimateToolOutputTokens(content).estimatedTokens < 512, kind === "omission");
+  const f = await alphaSession({ runtime, budgetTokens: 8192, messages, settings: { images: { blockImages: true } } });
+  try {
+    assert.equal(await f.mode.init(), true); await f.internal.editor.onSubmit("/tool-budget 512");
+    await f.session.agent.continue(); await f.session.agent.waitForIdle();
+    assert.equal(requests, 1, JSON.stringify(f.session.messages.at(-1))); assert.ok(finalContent.length > 0);
+    const entry = f.internal.attachedToolResultDiscoveries.get(result.toolCallId);
+    const discovery = entry?.component.getToolResultPresentationDiscovery(result.toolCallId); assert.ok(discovery?.cursor);
+    assert.ok(finalContent.some(block => block.type === "text" && block.text.includes(discovery.cursor)), "UI cursor must occur in the actual provider view");
+    assert.equal(finalContent.some(block => block.type === "image"), false);
+    assert.equal(discovery.modelEstimatedTokens, estimateToolOutputTokens(finalContent).estimatedTokens);
+    const recovered = f.session.readToolResultContinuation(discovery.cursor, 2048); assert.ok(recovered.content.length > 0);
+    assert.equal(f.session.readToolResultArtifact(discovery.artifactId).content, f.session.messages.find(message => message.role === "toolResult")?.content);
+    if (kind === "shrink") assert.ok((f.session as any)._toolResultPresentation.counters.postImagePolicyShrinkPasses > 0);
+    assert.equal((f.session as any)._toolBudgetProjectedSources, undefined);
+  } finally { await f.release(); }
+  assert.equal(f.internal.getToolResultDiscoveryLifecycleCounts().totalEntries, 0);
+});
+
 for (const boundary of ["turn-share", "context"] as const) test(`N4 actual SDK/TUI restores a projection required only by ${boundary}`, async () => {
   let requests = 0, wire = "";
   const runtime = alphaModelRuntime((model: any, context: any, options: any) => streamSimple({ ...model, api: "openai-completions" }, context,
