@@ -620,13 +620,15 @@ function validObservation(value: any, path: string): boolean {
 
 /** Accept only complete, ordered observations of this exact bounded receipt. */
 export function collectVerifiedChanges(branch: readonly any[], records: readonly ChangeRecord[], sessionId: string): Set<string> {
+  assertBoundedChangesSessionId(sessionId);
   branch = branch.slice(-512);
   const verified = new Set<string>(), positions = new Map<string, number>(), duplicates = new Set<string>();
   for (const entry of branch) if (!isBoundedMutationEntryId(entry?.id)) return verified;
   for (let n = 0; n < branch.length; n++) { if (positions.has(branch[n].id)) duplicates.add(branch[n].id); positions.set(branch[n].id, n); }
   for (let n = 0; n < branch.length; n++) {
     const entry = branch[n], data = entry?.data;
-    if (entry.type !== "custom" || entry.customType !== CHANGE_VERIFICATION_ENTRY || data?.version !== 1 || data.sessionId !== sessionId
+    if (entry.type !== "custom" || entry.customType !== CHANGE_VERIFICATION_ENTRY || data?.version !== 1
+      || typeof data.sessionId !== "string" || data.sessionId.length < 1 || data.sessionId.length > 256 || data.sessionId !== sessionId
       || duplicates.has(entry.id) || data.scope !== OBSERVATION_SCOPE || typeof data.observedAt !== "string" || data.observedAt.length > 40 || !Number.isFinite(Date.parse(data.observedAt))) continue;
     for (const record of records) {
       if (!isBoundedMutationEntryId(record.entryId) || record.unavailable || record.preview || data.itemId !== record.itemId || data.toolCallId !== record.toolCallId || data.sourceEntryId !== record.entryId
@@ -736,8 +738,13 @@ export class ChangeViewer {
 
 interface ObservationPermissions { authorizeFileObservation(ctx: ExtensionContext, paths: readonly string[]): Promise<(() => Promise<void>) & { assertCurrent(): void }> }
 
+function assertBoundedChangesSessionId(sessionId: unknown): asserts sessionId is string {
+  if (typeof sessionId !== "string" || sessionId.length < 1 || sessionId.length > 256) throw new Error("Session ID exceeds recovery bounds; changes are unavailable for this history.");
+}
+
 function assertChangesSession(ctx: ExtensionContext, sessionId: string): void {
-  if (sessionId !== ctx.sessionManager.getSessionId() || !ctx.isIdle()) throw new Error("Session changed or became busy; reopen /changes.");
+  const current = ctx.sessionManager.getSessionId(); assertBoundedChangesSessionId(current);
+  if (sessionId !== current || !ctx.isIdle()) throw new Error("Session changed or became busy; reopen /changes.");
 }
 
 /** One factory for an explicit dialog lifetime; no callbacks are created by its render/input methods. */
@@ -750,6 +757,7 @@ export function registerChanges(pi: ExtensionAPI, permissions: ObservationPermis
     if (!ctx.hasUI || !ctx.isIdle()) { ctx.ui.notify("/changes needs an idle Session with dialog UI.", "warning"); return; }
     const sessionId = ctx.sessionManager.getSessionId();
     try {
+      assertBoundedChangesSessionId(sessionId);
       const branch = recentMutationEntries(ctx.sessionManager);
       const records = collectChanges(branch, ctx.cwd);
       if (!records.length) { ctx.ui.notify("No reconstructable changes in the bounded Session history (512 entries). Missing history cannot be recreated.", "info"); return; }

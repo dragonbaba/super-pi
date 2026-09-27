@@ -250,7 +250,7 @@ test("N1 actual tool component expansion, 20k running updates and ten releases",
   const profiler = process.env.SP_PREVIEW_PROFILE === "1" ? new InspectorSession() : undefined;
   global.gc?.();
   const heapBefore = process.memoryUsage().heapUsed;
-  if (profiler) { profiler.connect(); await profiler.post("HeapProfiler.startSampling", { samplingInterval: 1024 }); }
+  if (profiler) { profiler.connect(); await profiler.post("HeapProfiler.startSampling", { samplingInterval: 1024, includeObjectsCollectedByMajorGC: true, includeObjectsCollectedByMinorGC: true }); }
   for (let cycle = 0; cycle < 10; cycle++) {
     const component = new ToolExecutionComponent("file_batch", `preview-${cycle}`, input, {}, definition, { requestRender() {} } as never, f.cwd);
     for (let n = 0; n < 2000; n++) component.updateResult(partial as never, true);
@@ -285,11 +285,23 @@ test("N1 actual tool component expansion, 20k running updates and ten releases",
     try {
       const { profile } = await profiler.post("HeapProfiler.stopSampling");
       let sampledBytes = 0;
+      const allocationSites: { bytes: number; function: string; url: string; line: number }[] = [];
       const stack = [profile.head];
-      while (stack.length) { const node = stack.pop()!; sampledBytes += node.selfSize; for (const child of node.children) stack.push(child); }
+      while (stack.length) {
+        const node = stack.pop()!; sampledBytes += node.selfSize;
+        if (node.selfSize) allocationSites.push({ bytes: node.selfSize, function: node.callFrame.functionName, url: node.callFrame.url, line: node.callFrame.lineNumber + 1 });
+        for (const child of node.children) stack.push(child);
+      }
+      allocationSites.sort((left, right) => right.bytes - left.bytes);
+      // Drop the profiler's own tree/sample storage before the release heap probe.
+      profile.head.children.length = 0;
+      const samples = (profile as typeof profile & { samples?: unknown[] }).samples;
+      if (samples) samples.length = 0;
+      profiler.disconnect();
+      await new Promise<void>(resolve => setImmediate(resolve));
       global.gc?.();
       t.diagnostic(JSON.stringify({ benchmark: "file-change-preview", node: process.version, updates: 20000, cycles: 10,
-        sampledBytes, sampledBytesPerUpdate: sampledBytes / 20000, heapBefore, heapAfterRelease: process.memoryUsage().heapUsed,
+        sampledBytes, sampledBytesPerUpdate: sampledBytes / 20000, allocationSites: allocationSites.slice(0, 8), heapBefore, heapAfterRelease: process.memoryUsage().heapUsed,
         stableRenderTextChanges: 0, narrowStableRenders: 20000, narrowStableNewRows: 0, maxCachedRows: 401, releasedDerivedCharacters: 0, releasedCachedRows: 0 }));
     } finally { profiler.disconnect(); }
   }

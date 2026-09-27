@@ -16,7 +16,7 @@ test("N1 full bounded report materializes only visible rows and releases numeric
     for (let i = 0; i < 20000; i++) assert.equal(view.render(1), first);
     assert.deepEqual(view.getDiagnostics(), initial);
     global.gc?.(); const heapBefore = process.memoryUsage().heapUsed;
-    if (profiler) { profiler.connect(); await profiler.post("HeapProfiler.startSampling", { samplingInterval: 1024 }); }
+    if (profiler) { profiler.connect(); await profiler.post("HeapProfiler.startSampling", { samplingInterval: 1024, includeObjectsCollectedByMajorGC: true, includeObjectsCollectedByMinorGC: true }); }
     for (let i = 0; i < 200; i++) {
       view.handleInput(i % 2 ? "\u001b[A" : "\u001b[B");
       const width = i % 3 === 0 ? 1 : i % 3 === 1 ? 3 : 80;
@@ -31,6 +31,11 @@ test("N1 full bounded report materializes only visible rows and releases numeric
     if (profiler) {
       const { profile } = await profiler.post("HeapProfiler.stopSampling"), pending = [profile.head];
       while (pending.length) { const node = pending.pop()!; sampledBytes += node.selfSize; for (const child of node.children) pending.push(child); }
+      profile.head.children.length = 0;
+      const samples = (profile as typeof profile & { samples?: unknown[] }).samples;
+      if (samples) samples.length = 0;
+      profiler.disconnect();
+      await new Promise<void>(resolve => setImmediate(resolve));
     }
     global.gc?.(); t.diagnostic(JSON.stringify({ benchmark: "N1-change-viewport", node: process.version, stableRenders: 20000, changedViewports: 200,
       stableNewRows: 0, metrics, released, heapBefore, heapAfterRelease: process.memoryUsage().heapUsed, sampledBytes: profiler ? sampledBytes : null }));
