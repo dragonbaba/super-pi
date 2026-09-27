@@ -279,17 +279,21 @@ for (const name of ["bash", "powershell"] as const) for (const diagnostics of [
   } finally { agent.abort(); }
 });
 
-for (const name of ["bash", "powershell"] as const) test(`N3 custom ${name} canonical not-started facts do not require optional observation`, async () => {
-  const processResult = { exitCode: null, termination: "not_started" as const };
+for (const name of ["bash", "powershell"] as const) for (const termination of ["not_started", "cancelled"] as const) for (const inputFailure of [false, true]) test(`N3 custom ${name} preserves unstarted facts and input diagnostics: ${termination}/${inputFailure}`, async () => {
+  const processResult = { exitCode: null, termination, inputError: inputFailure ? "input was not delivered" : undefined,
+    observation: termination === "cancelled" ? { started: false, outputDrained: true, exitCode: null, signal: null } : undefined };
+  const original = structuredClone(processResult);
   const operations = { async exec() { return processResult; } };
   const agent = new Agent({ convertToLlm: () => [], streamFn: () => { throw new Error("offline"); } });
   agent.state.tools = [name === "bash" ? createBashTool(process.cwd(), { operations }) : createPowerShellTool(process.cwd(), { operations })];
   try {
     const result = await agent.dispatchHostTool({ type: "toolCall", name, id: "canonical-not-started", arguments: { command: "fixture" } });
     assert.equal(result.isError, true); const facts = readShellExecution(result.details); assert.ok(facts);
-    assert.equal(facts.started, false); assert.equal(facts.executionStatus, "not_executed"); assert.equal(facts.termination, "not_started");
+    assert.equal(facts.started, false); assert.equal(facts.executionStatus, "not_executed"); assert.equal(facts.termination, termination);
     assert.equal(facts.sideEffects, "none"); assert.equal(facts.retryGuidance, "fresh_request"); assert.equal(shellExecutionSucceeded(facts), false);
-    assert.deepEqual(processResult, { exitCode: null, termination: "not_started" }); assert.equal(agent.state.pendingToolCalls.size, 0);
+    assert.equal(facts.inputError, processResult.inputError);
+    assert.equal(classifyToolFailure(name, "Operation aborted before tool execution", {}, result.details).category, inputFailure ? "input_transport_failed" : termination === "cancelled" ? "aborted" : "not_executed");
+    assert.deepEqual(processResult, original); assert.equal(agent.state.pendingToolCalls.size, 0);
   } finally { agent.abort(); }
 });
 

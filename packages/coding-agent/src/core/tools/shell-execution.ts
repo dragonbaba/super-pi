@@ -138,9 +138,9 @@ export function shellExecutionSucceeded(value: ShellExecutionFacts): boolean {
 }
 
 export function shellFailureCategory(value: ShellExecutionFacts): string {
+  if (value.inputError) return "input_transport_failed";
   if (value.started === false && value.termination === "cancelled") return "timeout_or_aborted";
   if (value.started === false) return value.executionStatus === "start_failed" ? "start_failed" : "not_executed";
-  if (value.inputError) return "input_transport_failed";
   if (value.termination === "timeout" || value.termination === "cancelled") return "timeout_or_aborted";
   if (value.termination === "signal") return "signal_terminated";
   if (value.termination === "output_failure") return "output_log_failed";

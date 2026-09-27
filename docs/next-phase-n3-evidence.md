@@ -382,3 +382,14 @@ agrees. Two real adapter regressions plus contract/source tests pass (80 tests),
 and check passes. No callback or regex was added. The prior r34 code candidate
 46f3e4f8b2e61bef1b02a98604ba06fb1bf4aeb9 passed all four local gates; this final
 classification correction still needs combined final gates and actual review.
+
+Review r36: input transport failure retains category precedence even when the
+canonical termination proves no process started. Both actual Agent adapters now
+cover not_started/cancelled with and without input errors: execution remains
+not_executed with no side effects, while input failures remain actionable in
+Session classification. The extension classifier loads the built public package;
+its build was refreshed before the final focused run. PowerShell, contract,
+actual Session/direct and source regressions: 141 pass, five platform skips;
+check and the strengthened module-helper source gate pass. The classification
+helper adds no callback, regex, wrapper or scan. r35's full local gates passed;
+final full gates will run after this grouped review feedback is settled.
