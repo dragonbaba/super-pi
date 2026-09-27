@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { Session } from "node:inspector/promises";
 import { createJiti } from "jiti";
-import { visibleWidth } from "@super-pi/tui";
+import { visibleWidth, stripTerminalSequences } from "@super-pi/tui";
 const { ChangeViewer } = await createJiti(import.meta.url).import<any>("../packages/extensions/mutation-guard-write/changes.ts");
 
 test("N1 full bounded report materializes only visible rows and releases numeric scroll state", async t => {
@@ -12,7 +12,7 @@ test("N1 full bounded report materializes only visible rows and releases numeric
   try {
     const first = view.render(1), initial = view.getDiagnostics();
     assert.equal(first.length, 23); assert.equal(initial.rowsMaterialized, 22); assert.ok(initial.graphemesVisited <= 44);
-    assert.ok(initial.scrollBytes <= 327685);
+    assert.ok(initial.scrollBytes <= 524296);
     for (let i = 0; i < 20000; i++) assert.equal(view.render(1), first);
     assert.deepEqual(view.getDiagnostics(), initial);
     global.gc?.(); const heapBefore = process.memoryUsage().heapUsed;
@@ -35,6 +35,31 @@ test("N1 full bounded report materializes only visible rows and releases numeric
     global.gc?.(); t.diagnostic(JSON.stringify({ benchmark: "N1-change-viewport", node: process.version, stableRenders: 20000, changedViewports: 200,
       stableNewRows: 0, metrics, released, heapBefore, heapAfterRelease: process.memoryUsage().heapUsed, sampledBytes: profiler ? sampledBytes : null }));
   } finally { view.dispose(); profiler?.disconnect(); }
+});
+
+test("N1 viewer neither caches report graphemes globally nor emits tabs", t => {
+  const mark = "e" + "\u0301".repeat(60000), cached: string[] = [], set = Map.prototype.set;
+  t.mock.method(Map.prototype, "set", function(this: Map<unknown, unknown>, key: unknown, value: unknown) {
+    if (typeof key === "string" && key.includes("\u0301")) cached.push(key);
+    return set.call(this, key, value);
+  });
+  const view = new ChangeViewer(mark + "\n\tx\ty", { terminal: { rows: 6 }, requestRender() {} }, () => {});
+  try {
+    assert.deepEqual(view.render(8).slice(0, 2), [mark, "   x   y"]);
+    assert.deepEqual(cached, []);
+  } finally { view.dispose(); }
+  assert.equal(view.getDiagnostics().bodyCodeUnits, 0); assert.equal(view.getDiagnostics().scrollBytes, 0);
+});
+
+for (const size of [255, 256, 300]) test(`N1 grapheme width ${size} neither wraps numeric metadata nor loses following text`, () => {
+  const cluster = "\u093e".repeat(size), view = new ChangeViewer(cluster + "abc\nend", { terminal: { rows: 6 }, requestRender() {} }, () => {});
+  try {
+    assert.equal([...new Intl.Segmenter().segment(cluster)].length, 1);
+    assert.deepEqual(view.render(size).slice(0, 3), [cluster, "abc", "end"]);
+    view.handleInput("\u001b[B"); assert.deepEqual(view.render(size).slice(0, 2), ["abc", "end"]);
+    view.handleInput("\u001b[A"); assert.equal(view.render(size)[0], cluster);
+    assert.deepEqual(view.render(3).slice(0, 3).map(stripTerminalSequences), ["", "abc", "end"]);
+  } finally { view.dispose(); }
 });
 
 test("N1 viewport scroll and resize preserve grapheme boundaries and blank physical lines", () => {

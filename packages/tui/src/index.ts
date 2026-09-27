@@ -171,6 +171,7 @@ export { TuiMainScreen, type TuiMainScreenRenderState } from "./tui-main-screen.
 export { type TuiRenderMetrics, TuiRenderInstrumentation, utf8ByteLength } from "./render-instrumentation.ts";
 // Utilities
 export {
+	graphemeWidth,
 	getOsc8LinkAtColumn,
 	sliceByColumn,
 	stripTerminalSequences,
