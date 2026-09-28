@@ -160,7 +160,7 @@ test("postmerge preflight adds zero argument-wrapper allocations", () => {
  const consume = authorization.members.find(node => ts.isMethodDeclaration(node) && node.name.getText(source) === "consume") as ts.MethodDeclaration;
  const containers: ts.ObjectLiteralExpression[] = [];
  function findContainer(node: ts.Node) {
-  if (ts.isReturnStatement(node) && node.expression && ts.isObjectLiteralExpression(node.expression)) containers.push(node.expression);
+  if (ts.isObjectLiteralExpression(node)) containers.push(node);
   ts.forEachChild(node, findContainer);
  }
  findContainer(consume);
@@ -168,8 +168,37 @@ test("postmerge preflight adds zero argument-wrapper allocations", () => {
  assert.deepEqual(containers[0].properties.map(property => property.name!.getText(source)), ["command", "timeout", "cwd", "purpose"]);
  assert.doesNotMatch(consume.getText(source), /\bawait\b|new Promise|setTimeout|createHash|JSON\.stringify/);
  const runnerText = readFileSync(new URL("../packages/coding-agent/src/core/extensions/runner.ts", import.meta.url), "utf8");
- assert.equal(runnerText.match(/const approved = authority\.consume/g)?.length, 1);
- assert.ok(runnerText.indexOf("finally { check.release(); }") < runnerText.indexOf("const approved = authority.consume"));
+ const runnerSource = ts.createSourceFile("runner.ts", runnerText, ts.ScriptTarget.Latest, true);
+ const pending = runnerSource.statements.find(node => ts.isClassDeclaration(node) && node.name?.text === "PendingToolAuthorization") as ts.ClassDeclaration;
+ const handoff = pending.members.find(node => ts.isMethodDeclaration(node) && node.name.getText(runnerSource) === "consume") as ts.MethodDeclaration;
+ let shellConsumes = 0, batchConsumes = 0, batchBranches = 0;
+ function countTerminalConsume(node: ts.Node): void {
+  if (ts.isIfStatement(node) && node.expression.getText(runnerSource) === 'name === "file_batch"') batchBranches++;
+  if (ts.isCallExpression(node) && node.expression.getText(runnerSource) === "authority.consume") {
+   let parent: ts.Node | undefined = node.parent, inBatch = false;
+   while (parent && parent !== handoff) {
+    if (ts.isIfStatement(parent) && parent.expression.getText(runnerSource) === 'name === "file_batch"'
+      && node.pos >= parent.thenStatement.pos && node.end <= parent.thenStatement.end) inBatch = true;
+    parent = parent.parent;
+   }
+   if (inBatch) {
+    batchConsumes++;
+    assert.ok(ts.isReturnStatement(node.parent), "batch transfers its private payload directly");
+   } else {
+    shellConsumes++;
+    const assignment = ts.isAsExpression(node.parent) ? node.parent.parent : node.parent;
+    assert.ok(ts.isBinaryExpression(assignment) && assignment.left.getText(runnerSource) === "terminalValues",
+      "shell handoff must retain terminal values for failed-binding release");
+    assert.ok(runnerText.indexOf("finally { check.release(); }", handoff.pos) < node.pos,
+      "auxiliary shell releases precede terminal shell consume");
+   }
+  }
+  ts.forEachChild(node, countTerminalConsume);
+ }
+ countTerminalConsume(handoff);
+ assert.equal(shellConsumes, 1);
+ assert.ok(batchBranches === 0 || batchBranches === 1);
+ assert.equal(batchConsumes, batchBranches, "one terminal consume per independent batch branch");
 });
 
 test("postmerge later extension cannot execute an unapproved replacement", async t => {
@@ -414,7 +443,7 @@ test("postmerge env assignment expansion is data for a fixed executable", async 
 
 test("postmerge bounded launcher and dynamic-wrapper negatives never spawn", async t => {
  const f = await fixture(t);
- for (const command of ["env -- LABEL=sh bash -c 'sleep 10 &'", "sudo LABEL=sh bash -c 'sleep 10 &'", "echo bash; timeout 1 bash -c 'sleep 10 &'", "env -S 'bash -c x'", 'bash -c "$SCRIPT"', "command bash -c 'sleep 10 &'", 'echo "$(coproc echo safe)"', 'echo "$(echo safe', "cat <<'EOF'\nx\nEOF"]) {
+ for (const command of ["env -- LABEL=sh bash -c 'sleep 10 &'", "sudo LABEL=sh bash -c 'sleep 10 &'", "echo bash; timeout 1 bash -c 'sleep 10 &'", "env -S 'bash -c x'", 'bash -c "$SCRIPT"', "command bash -c 'sleep 10 &'", 'echo "$(coproc echo safe)"', 'echo "$(echo safe', "cat -n <<'EOF'\nx\nEOF"]) {
   const result = await f.call(command); assert.equal(result.error, true, command);
  }
  assert.deepEqual(f.counts(), { approvals: 0, spawns: 0 });
@@ -439,7 +468,7 @@ test("postmerge one-layer escapes and line continuations preserve target consume
 });
 
 test("postmerge uncertain refusal has bounded policy recovery", async () => {
- const reason = inspectBashResourceLifecycle({ command: "cat <<'EOF'\nSECRET_PAYLOAD\nEOF" })!;
+ const reason = inspectBashResourceLifecycle({ command: "cat -n <<'EOF'\nSECRET_PAYLOAD\nEOF" })!;
  assert.equal(classifyFailureText(reason, {}, "bash"), "policy_blocked");
  const hint = await failureRecoveryHint("bash", { command: "SECRET_PAYLOAD" }, reason, process.cwd());
  assert.equal(hint, undefined, "producer guidance must not be appended twice");

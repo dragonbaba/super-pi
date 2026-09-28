@@ -74,6 +74,7 @@ function modelsHaveSameIdentity(left: Model<any> | undefined, right: Model<any> 
 
 export interface SettingsConfig {
 	autoCompact: boolean;
+	toolResultBudget?: string;
 	defaultModel: string;
 	currentModel?: Model<any>;
 	availableDefaultModels: readonly Model<any>[];
@@ -114,6 +115,7 @@ export interface SettingsConfig {
 
 export interface SettingsCallbacks {
 	onAutoCompactChange: (enabled: boolean) => void;
+	onToolResultBudgetChange?: (value: string) => string;
 	onShowImagesChange: (enabled: boolean) => void;
 	onImageWidthCellsChange: (width: number) => void;
 	onAutoResizeImagesChange: (enabled: boolean) => void;
@@ -710,6 +712,13 @@ export class SettingsSelectorComponent extends Container {
 				submenu: (currentValue, done) =>
 					new ThemeSubmenu(currentValue, config.terminalTheme, config.availableThemes, callbacks, done),
 			},
+			{
+				id: "tool-result-budget",
+				label: "Tool-result budget (session only)",
+				description: "Explicit text-token budget for this session. No config file is saved. Use /tool-budget status for effective state, or /tool-budget <positive tokens> for another value. Images/billing are not estimated.",
+				currentValue: config.toolResultBudget ?? "off",
+				values: ["off", "1024", "4096", "8192", "16384"],
+			},
 		];
 
 		// Only show image toggle if terminal supports it
@@ -829,6 +838,9 @@ export class SettingsSelectorComponent extends Container {
 			getSettingsListTheme(),
 			(id, newValue) => {
 				switch (id) {
+					case "tool-result-budget":
+						this.settingsList.updateValue(id, callbacks.onToolResultBudgetChange?.(newValue) ?? config.toolResultBudget ?? "off");
+						break;
 					case "autocompact":
 						callbacks.onAutoCompactChange(newValue === "true");
 						break;

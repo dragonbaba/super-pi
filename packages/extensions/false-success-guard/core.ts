@@ -1,4 +1,9 @@
-import { extname, isAbsolute, relative, resolve } from "node:path";
+import { COMPLETION_CLAIM_RE, INCOMPLETE_DISCLOSURE_RE, PARTIAL_MUTATION_RE, LEADING_CD_RE, SHELL_OPERATOR_RE, NODE_TEST_RE, TEST_COMMAND_RE, NODE_TSC_RE, TYPECHECK_COMMAND_RE, LINT_COMMAND_RE, BUILD_COMMAND_RE, PACKAGE_PREFIX_RE, POLICY_BLOCKED_RE, TIMEOUT_RE, PATH_NOT_FOUND_RE, COMMAND_FAILED_RE, WINDOWS_ABSOLUTE_RE, TRAILING_SEPARATOR_RE } from "./regex.ts";
+import { dirname, extname, isAbsolute, relative, resolve } from "node:path";
+import { realpathSync } from "node:fs";
+import { getShellCwdBinding, readShellExecution, shellExecutionSucceeded, shellFailureCategory } from "@super-pi/coding-agent";
+import { boundBatchIntents, validMutationOutcome } from "../mutation-guard-write/session-evidence.ts";
+import { resolveToolPath } from "../mutation-guard-write/core.ts";
 
 const MAX_OBLIGATIONS = 32;
 const MAX_AUDIT_OBLIGATIONS = 16;
@@ -9,25 +14,9 @@ const MAX_DRAFT_CHARS = 1_000_000;
 export const FALSE_SUCCESS_GUARD_VERSION = "0.3.4-pi.84.2";
 export const FALSE_SUCCESS_AUDIT_TYPE = "false-success-intervention-v1";
 
-const COMPLETION_CLAIM_RE = /(?:已完成|完成了|已经完成|已修复|修复完成|已实现|实现完成|验证通过|测试通过|全部通过|成功完成|\bdone\b|\bcompleted\b|\bfixed\b|\bimplemented\b|all (?:tests|checks) pass(?:ed)?)/iu;
-const INCOMPLETE_DISCLOSURE_RE = /(?:未完成|尚未完成|无法完成|仍(?:然)?(?:失败|存在|需要)|尚(?:未|需)|阻塞|被阻止|需要(?:用户|外部)|\bnot complete\b|\bincomplete\b|\bstill (?:failed|failing|blocked|remaining)\b|\bblocked\b|\bremaining\b|\bcould not\b|\bunable to\b)/iu;
-const PARTIAL_MUTATION_RE = /partial[_ -]?mutation|"?statechanged"?\s*:\s*true/iu;
-const LEADING_CD_RE = /^cd\s+((?:"[^"]*"|'[^']*'|\S+))\s*&&\s*/u;
-const SHELL_OPERATOR_RE = /&&|\|\||;/u;
-const NODE_TEST_RE = /^(?:"[^"]*[/\\])?(?:node(?:\.exe)?)"?\s+--test\b/u;
-const TEST_COMMAND_RE = /^(?:npm|pnpm|yarn|bun)(?:\s+(?:--prefix|-c|--dir)\s+(?:"[^"]+"|\S+))*\s+(?:run\s+)?test\b|^(?:pytest|vitest|jest|cargo\s+test|go\s+test|dotnet\s+test|gradle\s+test|mvn\s+(?:test|verify))\b/u;
-const NODE_TSC_RE = /^(?:"[^"]*[/\\])?(?:node(?:\.exe)?)"?\s+"?[^"]*[/\\]typescript[/\\]bin[/\\]tsc"?\b/u;
-const TYPECHECK_COMMAND_RE = /^(?:tsc|typecheck|type-check|mypy|pyright|cargo\s+check|go\s+vet)\b/u;
-const LINT_COMMAND_RE = /^(?:eslint|biome\s+(?:check|lint)|ruff\s+check|golangci-lint|cargo\s+clippy)\b|^(?:npm|pnpm|yarn|bun)(?:\s+(?:--prefix|-c|--dir)\s+(?:"[^"]+"|\S+))*\s+(?:run\s+)?lint\b/u;
-const BUILD_COMMAND_RE = /^(?:npm|pnpm|yarn|bun)(?:\s+(?:--prefix|-c|--dir)\s+(?:"[^"]+"|\S+))*\s+(?:run\s+)?build\b|^(?:cargo|go|dotnet|gradle|mvnw?|cmake)\s+build\b/u;
-const PACKAGE_PREFIX_RE = /^(?:npm|pnpm|yarn|bun)\s+(?:--prefix|-c|--dir)\s+("[^"]+"|'[^']+'|\S+)/u;
-const POLICY_BLOCKED_RE = /policy[_ -]?blocked/iu;
-const TIMEOUT_RE = /timed?\s*out|timeout/iu;
-const PATH_NOT_FOUND_RE = /enoent|no such file|path not found/iu;
-const COMMAND_FAILED_RE = /command exited with code|process exited with code/iu;
-const WINDOWS_ABSOLUTE_RE = /^[a-z]:[/\\]/iu;
 
-const MUTATION_TOOLS = new Set(["edit", "write", "lsp_fix"]);
+
+const MUTATION_TOOLS = new Set(["edit", "write", "lsp_fix", "delete", "move"]);
 const INITIAL_GOAL_MARKER = "pi-goal-prompt:";
 const GOAL_OBJECTIVE_OPEN = "<goal_objective>";
 const GOAL_ID_OPEN = "<goal_id>";
@@ -63,6 +52,8 @@ export interface ToolObservation {
   text?: string;
   details?: unknown;
   cwd?: string;
+  toolCallId?: string;
+  branch?: readonly unknown[];
 }
 
 export interface InterventionAudit {
@@ -136,19 +127,41 @@ export function beginPromptBoundary(
   return true;
 }
 
+function fallbackShellVerificationCwd(input: Record<string, unknown>, cwd: string | undefined): string {
+  const binding = getShellCwdBinding(input);
+  if (binding) return binding.canonical;
+  const requested = typeof input.cwd === "string" ? resolve(cwd ?? process.cwd(), input.cwd) : cwd ?? process.cwd();
+  let ancestor = requested;
+  for (;;) {
+    try { return resolve(realpathSync.native(ancestor), relative(ancestor, requested)); }
+    catch (error) {
+      // Resolve only a missing suffix beneath an existing canonical ancestor.
+      // Other observation failures retain the lexical obligation, not success.
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") return requested;
+      const parent = dirname(ancestor);
+      if (parent === ancestor) return requested;
+      ancestor = parent;
+    }
+  }
+}
+
 export function observeToolResult(state: FalseSuccessState, observation: ToolObservation): string | undefined {
-  const scope = verificationScope(observation.toolName, observation.input, observation.cwd);
+  if (observation.toolName === "file_batch") { observeBatchResult(state, observation); return; }
+  if (observation.toolName === "delete" || observation.toolName === "move") { observeNativeResult(state, observation); return; }
+  const shell = observation.toolName === "bash" || observation.toolName === "powershell";
+  const execution = shell ? readShellExecution(observation.details) : undefined;
+  const scope = verificationScope(observation.toolName, observation.input, execution?.cwd ?? (shell ? fallbackShellVerificationCwd(observation.input, observation.cwd) : observation.cwd));
   const target = mutationTarget(observation.toolName, observation.input, observation.cwd);
   const text = (observation.text ?? "").slice(0, MAX_TOOL_TEXT_CHARS);
 
-  if (observation.isError) {
+  if (observation.isError || shell && (!execution || !execution.cwd || !shellExecutionSucceeded(execution))) {
     if (scope) {
       const key = verificationKey(scope);
       const obligation = makeObligation(
         key,
         "verification",
         observation.toolName,
-        classifyFailure(text),
+        shell ? execution ? shellFailureCategory(execution) : "execution_unknown" : classifyFailure(text),
         `${scope.family} verification failed`,
         scope.kind,
         scope.path,
@@ -188,6 +201,61 @@ export function observeToolResult(state: FalseSuccessState, observation: ToolObs
     // partial mutation still needs authoritative verification covering it.
   }
   return undefined;
+}
+
+function observeMutationOutcome(state: FalseSuccessState, tool: string, target: string, status: string): void {
+  if (status === "succeeded") { state.obligations.delete(`mutation:${target}`); return; }
+  const uncertain = status === "partial" || status === "state_unknown";
+  setBounded(state.obligations, makeObligation(`${uncertain ? "partial" : "mutation"}:${target}`,
+    uncertain ? "partial_mutation" : "mutation", tool, status,
+    uncertain ? `mutation requires verification for ${displayTarget(target)}` : `mutation incomplete for ${displayTarget(target)}`, "target", target, target));
+}
+
+function observeBatchResult(state: FalseSuccessState, observation: ToolObservation): void {
+  const operations = observation.input.operations;
+  if (!Array.isArray(operations) || operations.length === 0 || operations.length > 16) {
+    if (observation.isError) observeMutationOutcome(state, "file_batch", normalizeAbsolute(observation.cwd ?? process.cwd(), observation.cwd ?? process.cwd()), "failed_no_change");
+    return;
+  }
+  const details = observation.details as any;
+  if (observation.input.dryRun === true && details?.preview === true && !observation.isError) return;
+  const intents = boundBatchIntents(observation.branch ?? [], observation.input, observation.toolCallId ?? "");
+  for (let index = 0; index < operations.length; index++) {
+    const operation = operations[index];
+    if (!operation || typeof operation.path !== "string" || !operation.path || operation.path.length > 4096) {
+      observeMutationOutcome(state, "file_batch", normalizeAbsolute(observation.cwd ?? process.cwd(), observation.cwd ?? process.cwd()), "failed_no_change");
+      continue;
+    }
+    const id = `${observation.toolCallId}:${index}`, item = Array.isArray(details?.items) && details.items.length === operations.length ? details.items[index] : undefined;
+    const intent = intents.get(id);
+    const paired = item?.itemId === id && item.operation === operation.operation && validMutationOutcome(item.status, item.stateChanged)
+      && intent && item.target === intent.target && item.destination === intent.destination;
+    // A started item must match its durable intent. Unstarted/preflight failures
+    // still block an unqualified task-completion claim, without claiming effects.
+    const status = paired ? item.status : "failed_no_change";
+    const target = intent?.target ?? mutationTarget(operation.operation, operation, observation.cwd);
+    observeMutationOutcome(state, "file_batch", normalizeAbsolute(target ?? observation.cwd ?? process.cwd(), observation.cwd ?? process.cwd()), status);
+    const destination = intent?.destination ?? (operation.operation === "move" && typeof operation.destination === "string" ? resolve(observation.cwd ?? process.cwd(), operation.destination) : undefined);
+    if (destination) observeMutationOutcome(state, "file_batch", normalizeAbsolute(destination, observation.cwd ?? process.cwd()), status);
+  }
+}
+
+function observeNativeResult(state: FalseSuccessState, observation: ToolObservation): void {
+  const details = observation.details as any;
+  let intent: any;
+  const branch = observation.branch ?? [];
+  for (let i = Math.max(0, branch.length - 512); i < branch.length; i++) {
+    const entry = branch[i] as any, data = entry?.data;
+    if (entry?.type === "custom" && entry.customType === "file-mutation-progress-v2" && data?.phase === "intent"
+      && data.toolCallId === observation.toolCallId && data.itemId === `${observation.toolCallId}:0` && data.operation === observation.toolName
+      && typeof data.target === "string" && data.target.length <= 4096 && isAbsolute(data.target)) intent = data;
+  }
+  const paired = intent && details?.operation === observation.toolName && details.target === intent.target && details.destination === intent.destination && validMutationOutcome(details.status, details.stateChanged);
+  const status = paired ? details.status : "failed_no_change";
+  const target = intent?.target ?? mutationTarget(observation.toolName, observation.input, observation.cwd);
+  observeMutationOutcome(state, observation.toolName, normalizeAbsolute(target ?? observation.cwd ?? process.cwd(), observation.cwd ?? process.cwd()), status);
+  const destination = intent?.destination ?? (observation.toolName === "move" && typeof observation.input.destination === "string" ? resolve(observation.cwd ?? process.cwd(), observation.input.destination) : undefined);
+  if (typeof destination === "string" && destination.length <= 4096) observeMutationOutcome(state, observation.toolName, normalizeAbsolute(destination, observation.cwd ?? process.cwd()), status);
 }
 
 export function completionIntervention(
@@ -345,7 +413,7 @@ function mutationTarget(
 ): string | undefined {
   if (!MUTATION_TOOLS.has(toolName)) return undefined;
   const path = typeof input.path === "string" ? input.path.trim() : "";
-  return path ? normalizeAbsolute(path, cwd) : undefined;
+  return path ? normalizeAbsolute(toolName === "edit" || toolName === "write" ? resolveToolPath(cwd, path) : resolve(cwd, path), cwd) : undefined;
 }
 
 function verificationKey(scope: VerificationScope): string {
@@ -384,7 +452,7 @@ function normalizeAbsolute(value: string, cwd: string): string {
   const absolute = isAbsolute(stripped) || WINDOWS_ABSOLUTE_RE.test(stripped)
     ? resolve(stripped)
     : resolve(cwd, stripped);
-  return absolute.replaceAll("\\", "/").replace(/\/$/u, "").toLowerCase();
+  return absolute.replaceAll("\\", "/").replace(TRAILING_SEPARATOR_RE, "").toLowerCase();
 }
 
 function unquote(value: string): string {

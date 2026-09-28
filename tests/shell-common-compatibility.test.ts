@@ -714,7 +714,7 @@ test("an invalid timeout is classified as a start failure before shell discovery
 
 test("inherited cd-semantic and startup variables do not reach the spawned shell", async () => {
   const fixture = mkdtempSync(join(tmpdir(), "sp-shell-env-"));
-  const keys = ["CDPATH", "BASHOPTS", "SHELLOPTS", "BASH_ENV", "ENV", "BASH_FUNC_cd%%"];
+  const keys = ["CDPATH", "BASHOPTS", "SHELLOPTS", "BASH_ENV", "ENV", "POSIXLY_CORRECT", "BASH_FUNC_cd%%"];
   const original = new Map(keys.map(key => [key, process.env[key]]));
   for (const key of keys) process.env[key] = key === "BASH_FUNC_cd%%" ? "() { :; }" : "inherited";
   const captured: NodeJS.ProcessEnv[] = [];
@@ -1209,7 +1209,7 @@ test("BASH_CMDS assignments cannot hide a workspace executable", async (t) => {
   }
 });
 
-test("temporary CDPATH prefixes and closed-subshell hash stay explicit inspection limits", async (t) => {
+test("bounded temporary CDPATH queries and closed-subshell hash execute through actual guards", async (t) => {
   const shellPath = findTestBash();
   if (!shellPath || !existsSync(shellPath)) {
     if (process.env.CI) assert.fail("Required Bash integration test could not find Git Bash or /bin/bash");
@@ -1237,13 +1237,53 @@ test("temporary CDPATH prefixes and closed-subshell hash stay explicit inspectio
     for (const [id, command, expected] of [
       ["temporary-declare", "CDPATH=.. declare -p CDPATH >/dev/null; cd sub && cat fixture.txt", "inner"],
       ["temporary-typeset", "CDPATH=.. typeset -p CDPATH >/dev/null; cd sub && cat fixture.txt", "inner"],
-      ["temporary-export-n", "CDPATH=.. export -n CDPATH; cd sub && cat fixture.txt", "inner"],
+      ["positional-posix", "set posix; cd sub && cat fixture.txt", "inner"],
+      ["positional-physical", "set physical; cd sub && cat fixture.txt", "inner"],
+      ["terminated-posix", "set -- posix; cd sub && cat fixture.txt", "inner"],
+      ["terminated-flags", "set -- -P posix; cd sub && cat fixture.txt", "inner"],
+      ["query-shopt-posix", "shopt -q -o posix; cd sub && cat fixture.txt", "inner"],
+      ["print-shopt-physical", "shopt -po physical; cd sub && cat fixture.txt", "inner"],
+      ["query-shopt-cdable", "shopt -q cdable_vars; cd sub && cat fixture.txt", "inner"],
       ["closed-hash", "(hash -p ./0/cat cat); cat fixture.txt", "parent-safe"],
+      ["nested-closed-hash", "( (hash -p ./0/cat cat) ); cat fixture.txt", "parent-safe"],
+      ["sibling-closed-hash", "(hash -p ./0/cat cat); (true); cat fixture.txt", "parent-safe"],
+      ["nested-sibling-closed-hash", "( (hash -p ./0/cat cat); (true) ); cat fixture.txt", "parent-safe"],
     ] as const) {
       assert.match(execFileSync(shellPath, ["-c", command], { cwd: workspace, encoding: "utf8", env: { ...process.env, CDPATH: "" } }), new RegExp(expected), id);
       assert.equal(existsSync(target), false, `${id}: direct Bash leaves the protected target untouched`);
-      await assertBoundaryRefusedBeforeSpawn(fixture, workspace, id, command, [target]);
+      assert.equal(inspectBashResourceLifecycle({ command }), undefined, id);
+      assert.notEqual(inspectHighRiskBashMutation({ command }, workspace)?.unverifiableScope, true, id);
+      const executions: number = fixture.executions;
+      const result: Awaited<ReturnType<Agent["dispatchHostTool"]>> = await fixture.agent.dispatchHostTool({ type: "toolCall", id, name: "bash", arguments: { command } });
+      assert.equal(result.isError, false, JSON.stringify(result));
+      assert.ok((result.content[0] as { text: string }).text.includes(expected), id);
+      assert.equal(fixture.executions, executions + 1);
       assert.equal(existsSync(target), false, `${id}: guarded Bash leaves the protected target untouched`);
+    }
+    for (const [id, command] of [
+      ["temporary-export-n", "CDPATH=.. export -n CDPATH; cd sub && cat fixture.txt"],
+      ["actual-set-posix", "set -o posix; cd sub && cat fixture.txt"],
+      ["actual-set-physical", "set -o physical; cd sub && cat fixture.txt"],
+      ["actual-set-P", "set -P; cd sub && cat fixture.txt"],
+      ["actual-shopt-posix", "shopt -s -o posix; cd sub && cat fixture.txt"],
+      ["actual-shopt-physical", "shopt -so physical; cd sub && cat fixture.txt"],
+      ["actual-shopt-redirected", "shopt >/dev/null -os posix; cd sub && cat fixture.txt"],
+      ["same-child-hash", "(hash -p ./0/cat cat; cat)"],
+      ["nested-child-hash", "(hash -p ./0/cat cat; (cat))"],
+      ["lastpipe-hash", "set +m; shopt -s lastpipe; true | hash -p ./0/cat cat; cat"],
+      ["query-extra-operand", "CDPATH=.. declare -p CDPATH PATH; cd sub && cat fixture.txt"],
+      ["query-append", "CDPATH+=.. declare -p CDPATH; cd sub && cat fixture.txt"],
+      ["query-dynamic", "CDPATH=$VALUE declare -p CDPATH; cd sub && cat fixture.txt"],
+      ["persistent-export", "CDPATH=.. export CDPATH; cd sub && cat fixture.txt"],
+      ["posix-query", "set -o posix; CDPATH=.. export -n CDPATH; cd sub && cat fixture.txt"],
+      ["posix-variable", "POSIXLY_CORRECT=1; CDPATH=.. export -n CDPATH; cd sub && cat fixture.txt"],
+      ["sh-query", "sh -c 'CDPATH=.. export -n CDPATH; cd sub && cat fixture.txt'"],
+      ["bash-posix-query", "bash --posix -c 'CDPATH=.. export -n CDPATH; cd sub && cat fixture.txt'"],
+    ] as const) {
+      assert.ok(inspectBashResourceLifecycle({ command }), id);
+      assert.equal(inspectHighRiskBashMutation({ command }, workspace)?.unverifiableScope, true, id);
+      assert.equal(inspectBashPermissionScope({ command }, workspace)?.unverifiableScope, true, id);
+      await assertBoundaryRefusedBeforeSpawn(fixture, workspace, id, command, [target]);
     }
   } finally {
     await fixture?.close();
@@ -1251,6 +1291,38 @@ test("temporary CDPATH prefixes and closed-subshell hash stay explicit inspectio
     else process.env.CDPATH = originalCdpath;
     rmSync(parent, { recursive: true });
   }
+});
+
+test("shopt set-option mode cannot redirect a subsequent guarded mutation through persistent CDPATH", async () => {
+  const shell = findTestBash(); assert.ok(shell);
+  const root = mkdtempSync(join(tmpdir(), "sp-shopt-posix-")), workspace = join(root, "workspace");
+  mkdirSync(join(workspace, "sub"), { recursive: true }); mkdirSync(join(root, "sub"));
+  const outside = join(root, "sub", "victim"), inside = join(workspace, "sub", "victim"); writeFileSync(outside, "outer"); writeFileSync(inside, "inner");
+  let fixture: Awaited<ReturnType<typeof guardedCwdBoundaryFixture>> | undefined;
+  try {
+    fixture = await guardedCwdBoundaryFixture(workspace, shell);
+    for (const options of ["-s -o", "-so", "-os", "-s >/dev/null -o"]) {
+      const prefix = `shopt ${options} posix; CDPATH=.. :; cd sub && `;
+      assert.equal(execFileSync(shell, ["-c", prefix + "cat victim"], { cwd: workspace, encoding: "utf8", env: { ...process.env, CDPATH: "" } }).trim().split("\n").at(-1), "outer");
+      await assertBoundaryRefusedBeforeSpawn(fixture, workspace, options, prefix + "rm victim", []);
+      assert.equal(readFileSync(outside, "utf8"), "outer"); assert.equal(readFileSync(inside, "utf8"), "inner");
+    }
+  } finally { await fixture?.close(); assert.equal(dirname(root), tmpdir()); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("configured Bash invoked as sh keeps special-builtin CDPATH assignments and is refused before execution", { skip: process.platform === "win32" }, async () => {
+  const bash = findTestBash(); assert.ok(bash);
+  const root = mkdtempSync(join(tmpdir(), "sp-bash-as-sh-")), shell = join(root, "sh"), workspace = join(root, "workspace");
+  fs.symlinkSync(bash, shell); mkdirSync(join(workspace, "sub"), { recursive: true }); mkdirSync(join(root, "sub"));
+  const outside = join(root, "sub", "victim"), inside = join(workspace, "sub", "victim"); writeFileSync(outside, "outer"); writeFileSync(inside, "inner");
+  let fixture: Awaited<ReturnType<typeof guardedCwdBoundaryFixture>> | undefined;
+  try {
+    const command = "CDPATH=.. export -n CDPATH; cd sub && cat victim";
+    assert.equal(execFileSync(shell, ["-c", command], { cwd: workspace, encoding: "utf8", env: { ...process.env, CDPATH: "" } }).trim().split("\n").at(-1), "outer");
+    fixture = await guardedCwdBoundaryFixture(workspace, shell); await fixture.setMode("read-only");
+    await assertBoundaryRefusedBeforeSpawn(fixture, workspace, "sh-special-builtin", "CDPATH=.. export -n CDPATH; cd sub && rm victim", []);
+    assert.equal(readFileSync(outside, "utf8"), "outer"); assert.equal(readFileSync(inside, "utf8"), "inner");
+  } finally { await fixture?.close(); assert.equal(dirname(root), tmpdir()); rmSync(root, { recursive: true, force: true }); }
 });
 
 test("persistent lookup assignments are stateful while ordinary assignment text remains data", () => {

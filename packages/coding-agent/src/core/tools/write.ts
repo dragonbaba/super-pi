@@ -72,6 +72,7 @@ type WriteHighlightCache = {
 	rawContent: string;
 	normalizedLines: string[];
 	highlightedLines: string[];
+	complete: boolean;
 };
 
 class WriteCallRenderComponent extends Text {
@@ -81,8 +82,14 @@ class WriteCallRenderComponent extends Text {
 		super("", 0, 0);
 	}
 
+	override invalidate(): void {
+		this.cache = undefined;
+		super.invalidate();
+	}
+
 	override [RELEASE_COMPONENT_RENDER_CACHE](): void {
 		this.cache = undefined;
+		this.setText("");
 		super[RELEASE_COMPONENT_RENDER_CACHE]();
 	}
 }
@@ -116,6 +123,7 @@ function rebuildWriteHighlightCacheFull(rawPath: string | null, fileContent: str
 		rawContent: fileContent,
 		normalizedLines: normalized.split("\n"),
 		highlightedLines: highlightCode(normalized, lang),
+		complete: true,
 	};
 }
 
@@ -135,6 +143,7 @@ function updateWriteHighlightCacheIncremental(
 	const deltaDisplay = normalizeDisplayText(deltaRaw);
 	const deltaNormalized = replaceTabs(deltaDisplay);
 	cache.rawContent = fileContent;
+	cache.complete = false;
 	if (cache.normalizedLines.length === 0) {
 		cache.normalizedLines.push("");
 		cache.highlightedLines.push("");
@@ -268,7 +277,8 @@ export function createWriteToolDefinition(
 				(context.lastComponent as WriteCallRenderComponent | undefined) ?? new WriteCallRenderComponent();
 			if (fileContent !== null) {
 				component.cache = context.argsComplete
-					? rebuildWriteHighlightCacheFull(rawPath, fileContent)
+					? component.cache?.complete && component.cache.rawPath === rawPath && component.cache.rawContent === fileContent
+						? component.cache : rebuildWriteHighlightCacheFull(rawPath, fileContent)
 					: updateWriteHighlightCacheIncremental(component.cache, rawPath, fileContent);
 			} else {
 				component.cache = undefined;

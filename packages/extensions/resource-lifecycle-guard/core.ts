@@ -7,6 +7,7 @@ import {
 	LEADING_ASSIGNMENT_PATTERN,
 	LEADING_REDIRECTION_PATTERN,
 	LOOKUP_ASSIGNMENT_PATTERN,
+	TEMPORARY_CDPATH_QUERY_PATTERN,
 	NODE_RECURSIVE_RM_PATTERN,
 	NODE_UNLINK_PATTERN,
 	NONNEGATIVE_INTEGER_PATTERN,
@@ -27,6 +28,7 @@ import {
 	WINDOWS_WAIT_PATTERN,
 } from "./regex.ts";
 import { extractCommandSubstitutions, inspectHereDocuments, prepareShellAnalysis } from "./shell-substitution.ts";
+import { boundedShellInput } from "@super-pi/coding-agent";
 import { parseTimeoutInvocation } from "./timeout-wrapper.ts";
 import { bashArithmeticForHeader, bashLoopVariableIndex, bashPipelinePrefixEnd, bashScriptOperandIndex, unsafeBashForHeaderReason, hasStatefulBashPrintf, shellExpansionRisk, hasUnsafeBashTestOperand, hasUnsafeBashLoopListOperand, hasUnsafeCommandQueryOperand, isBashArithmeticCommandHead, isBashDoubleBracketCloseBoundary, isBashNetworkRedirectionTarget, isBashDoubleBracketHead, isBashProcessSubstitutionStart, isBashTestWhitespace, isLookupSensitiveBashVariable, isShellDynamicDescriptor, isShellFileDescriptor, isShellOutputFileRedirection, isSimpleBashAnsiCQuote, isStaticDescriptorCopy, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
 import { FD_DUPLICATION_PATTERN } from "./regex.ts";
@@ -113,6 +115,8 @@ export function inspectBashResourceLifecycle(input: unknown, nativePowerShellAva
 
 function inspectLifecycleScript(source: string, depth: number, nativePowerShellAvailable = false): string | undefined {
  if (depth > MAX_WRAPPER_DEPTH) return lifecycleRefusal("SHELL_INSPECTION_LIMIT", "wrapper/substitution nesting exceeds the inspection depth", "reduce nesting");
+ const input = depth === 0 && source.includes("<<") ? boundedShellInput(source) : undefined;
+ if (input) return inspectLifecycleScript(input.analysisCommand, depth + 1, nativePowerShellAvailable);
  const here = source.includes("<<") ? inspectHereDocuments(source) : undefined;
  if (here?.uncertain) return here.heredoc
   ? "[SHELL_HEREDOC] This Bash call was not executed: heredoc is uncertain/uninspectable.\n[Lifecycle recovery] Create/edit the diagnostic script natively with its own read/path permissions, then resubmit foreground execution for authorization."
@@ -245,7 +249,7 @@ export interface HighRiskMutationScan {
 	diagnostic?: PolicyDiagnosticMetadata;
 }
 
-type ShellSegment = string[] & { dynamic?: boolean; expansions?: number[]; redirections?: number[]; redirectionFds?: (string | undefined)[]; subshellDepth?: number; pipelineMember?: boolean; conditionalMember?: boolean; separatorAfter?: string; firstWordQuoted?: boolean; secondWordQuoted?: boolean; thirdWordQuoted?: boolean; bashTestOpenAt?: number; bashTestClosed?: boolean; bashTestProcessSubstitution?: boolean; bashArithmeticCommandAt?: number };
+type ShellSegment = string[] & { dynamic?: boolean; expansions?: number[]; redirections?: number[]; redirectionFds?: (string | undefined)[]; subshellDepth?: number; subshellClosedAfter?: boolean; pipelineMember?: boolean; conditionalMember?: boolean; separatorAfter?: string; firstWordQuoted?: boolean; secondWordQuoted?: boolean; thirdWordQuoted?: boolean; bashTestOpenAt?: number; bashTestClosed?: boolean; bashTestProcessSubstitution?: boolean; bashArithmeticCommandAt?: number };
 
 function uncertainAssignment(tokens: ShellSegment, index: number, shellAssignment = false): boolean {
  const expansion = tokens.expansions?.[index] ?? 0;
@@ -288,7 +292,8 @@ export function inspectHighRiskBashMutation(input: unknown, cwd: string, shellOp
 		workspaceWide: false,
 		segmentsVisited: 0,
 	};
-	inspectShellScript(command, resolve(cwd), 0, builder, shellOperation);
+	const stdin = shellOperation === "bash" && command.includes("<<") ? boundedShellInput(command) : undefined;
+	inspectShellScript(stdin?.analysisCommand ?? command, resolve(cwd), 0, builder, shellOperation);
 	if (builder.primitives.length === 0) return undefined;
 	return {
 		risk: "HIGH",
@@ -846,7 +851,7 @@ function hasLaterBashCommandSubstitution(segments: readonly ShellSegment[], star
 
 function hasLaterBashCommandInShell(segments: readonly ShellSegment[], index: number): boolean {
 	const next = segments[index + 1];
-	return next !== undefined && (next.subshellDepth ?? 0) >= (segments[index]!.subshellDepth ?? 0);
+	return next !== undefined && !segments[index]!.subshellClosedAfter && (next.subshellDepth ?? 0) >= (segments[index]!.subshellDepth ?? 0);
 }
 
 function changesBashExecutableLookup(word: string): boolean {
@@ -906,6 +911,19 @@ function hasUninspectableBashLet(tokens: ShellSegment, index: number): boolean {
 		if (!simple || tokens.expansions?.[operand] || isLookupSensitiveBashVariable(simple[1])) return true;
 	}
 	return false;
+}
+
+/** Only regular-builtin queries have portable temporary assignment semantics.
+ * export is a POSIX special builtin: Bash invoked as sh can persist its prefix. */
+function isTemporaryCdpathQuery(tokens: ShellSegment, index: number): boolean {
+	if (index !== 1 || tokens.firstWordQuoted || tokens.expansions?.[0]
+		|| !TEMPORARY_CDPATH_QUERY_PATTERN.test(tokens[0]!)) return false;
+	const name = tokens[index];
+	const option = skipRedirections(tokens, index + 1);
+	if ((name !== "declare" && name !== "typeset") || tokens[option] !== "-p") return false;
+	const variable = skipRedirections(tokens, option + 1);
+	return tokens[variable] === "CDPATH" && !tokens.expansions?.[variable]
+		&& skipRedirections(tokens, variable + 1) === tokens.length;
 }
 
 /** Reject bounded command lists whose later cwd or executable lookup cannot be established. */
@@ -1008,7 +1026,7 @@ export function hasUninspectableBashState(command: string): boolean {
 				if (name === "unalias" || tokens[operand]!.includes("=") || tokens.expansions?.[operand]) return true;
 			}
 		}
-		if (cdpathAssignment && mayPersist
+		if (cdpathAssignment && mayPersist && !isTemporaryCdpathQuery(tokens, index)
 			&& (name === "export" || name === "readonly" || name === "declare" || name === "typeset")) cdSemanticsChanges[depth] = cdSemanticsChanged = true;
 		// These builtins persist an assignment in their current shell even though the
 		// assignment word follows the command name rather than preceding it.
@@ -1044,7 +1062,7 @@ export function hasUninspectableBashState(command: string): boolean {
 		if (name === "pushd" || name === "popd") return true;
 		// hash with operands can pin or clear a lookup for a later command. A
 		// bare `hash` only lists entries and does not change the table.
-		if (name === "hash" && skipRedirections(tokens, index + 1) < tokens.length && segmentIndex + 1 < segments.length) return true;
+		if (name === "hash" && skipRedirections(tokens, index + 1) < tokens.length && hasLaterBashCommandInShell(segments, segmentIndex)) return true;
 		if (changesBashCdSemantics(tokens, index, name)) { cdSemanticsChanges[depth] = true; continue; }
 		// Trap actions are executable source, including EXIT actions at shutdown.
 		// A pipeline's last member can also persist a trap under `lastpipe`.
@@ -1100,11 +1118,31 @@ function changesBashCdSemantics(tokens: ShellSegment, index: number, name: strin
 	if (name === "enable") return true;
 	if (name === "function") return tokens[index + 1] === "cd";
 	if (name !== "shopt" && name !== "set") return false;
-	for (let cursor = index + 1; cursor < tokens.length; cursor++) {
+	if (name === "set") {
+		for (let cursor = skipRedirections(tokens, index + 1); cursor < tokens.length; cursor = skipRedirections(tokens, cursor + 1)) {
+			const word = tokens[cursor]!;
+			if (tokens.expansions?.[cursor]) return true;
+			// Options stop at -- or the first positional parameter. A literal
+			// positional "posix"/"physical" never changes shell mode.
+			if (word === "--" || word.length < 2 || word[0] !== "-" && word[0] !== "+") return false;
+			if (word.includes("P")) return true;
+			if (word.includes("o")) {
+				cursor = skipRedirections(tokens, cursor + 1);
+				if (tokens.expansions?.[cursor] || tokens[cursor] === "physical" || tokens[cursor] === "posix") return true;
+			}
+		}
+		return false;
+	}
+	let setOptions = false, changing = false;
+	for (let cursor = skipRedirections(tokens, index + 1); cursor < tokens.length; cursor = skipRedirections(tokens, cursor + 1)) {
 		const word = tokens[cursor]!;
 		if (tokens.expansions?.[cursor]) return true;
-		if (name === "shopt" ? word === "cdable_vars" || word === "expand_aliases"
-			: word === "physical" || (word.length > 1 && (word[0] === "-" || word[0] === "+") && word[1] !== "-" && word.includes("P"))) return true;
+		if (word.length > 1 && word[0] === "-") {
+			if (word.includes("o")) setOptions = true;
+			if (word.includes("s") || word.includes("u")) changing = true;
+		}
+		if (changing && (word === "cdable_vars" || word === "expand_aliases")) return true;
+		if (changing && setOptions && (word === "posix" || word === "physical")) return true;
 	}
 	return false;
 }
@@ -1324,7 +1362,11 @@ function parseShellSegments(command: string): ShellSegment[] {
 			}
 			if (tokens.length > 0) segments.push(tokens);
 			if (code === 40) subshellDepth++;
-			else if (code === 41 && subshellDepth > 0) subshellDepth--;
+			else if (code === 41 && subshellDepth > 0) {
+				const last = segments[segments.length - 1];
+				if (last && (last.subshellDepth ?? 0) >= subshellDepth) last.subshellClosedAfter = true;
+				subshellDepth--;
+			}
 			tokens = [];
 			tokens.subshellDepth = subshellDepth;
 			tokens.pipelineMember = pipeline;

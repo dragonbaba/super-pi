@@ -60,9 +60,10 @@ This is a policy analysis boundary, not a complete Bash parser or a sandbox. The
 | Ordinary expansion data; uncertain recursive evaluation; explicit shell-state changes | Ordinary data stays in its normal class. Recursive arithmetic, indirection and dynamic subscripts are a separate uncertainty class, but inherited values can execute a hidden substitution against a protected target; without bounded values and targets, the full tool path refuses them before approval even for a lone `echo`. Definite current-shell assignment or code evaluation, and unprovable cwd or target changes, also refuse. The diagnostic describes missing proof, not a confirmed dangerous operation. |
 | Bare arithmetic command `(( ... ))` | Refused before authorization because it can change later executable lookup or other shell state, which this bounded analyzer does not evaluate. Quoted arithmetic-looking data and ordinary `echo $((1+2))` keep their existing behavior. |
 | Lookup-sensitive assignments such as `PATH=0; cat`, final-pipeline `export PATH=0` under `lastpipe`, `let PATH=0`, `read PATH <file`, `getopts 0 PATH -0`, or `let BASH_CMDS=0; 0` | Refused before authorization when a later or same-segment executable could use changed lookup state. The full tool fixture proves synthetic `0/cat` or `0` writes protected `.git/config` before these checks and has zero approvals/spawns afterward. Bounded literal `let candidate=1`, ordinary `read`/`mapfile` destinations, and `getopts` writing an ordinary variable still run through normal permission checks. `readarray`/`mapfile` lookup destinations, nameref definitions, and uncertain arithmetic remain conservative refusals; the analyzer does not propagate their values. An indexed `BASH_CMDS[cat]=...` assignment already gets a lifecycle dynamic-executable refusal before authorization. |
-| `hash` with operands before a later command, including bounded `builtin`/`command` dispatch | Refused before authorization because it can pin or clear command lookup; the analyzer does not propagate the hash table. A closed-subshell hash override is also currently refused despite its parent-shell isolation. Bare `hash` listing with a later harmless command remains eligible for ordinary checks. |
+| `hash` with operands before a later command, including bounded `builtin`/`command` dispatch | Refused before authorization if a later command remains in the same or a nested shell. A closed subshell's final hash change is discarded before the parent command, so `(hash -p ./candidate cat); cat file` now receives ordinary inspection and authorization. Later child commands and `lastpipe` remain refused; no hash table is propagated. Bare listing remains eligible for ordinary checks. |
 | PowerShell `echo $((1 + $null))` | The PowerShell subexpression follows its opaque-script approval path, without a Bash recursive-expansion reason. Bash scripts launched from PowerShell still receive Bash expansion checks, and recursive `Remove-Item` remains high-risk. This does not imply general cross-shell syntax equivalence. |
-| `pushd`/`popd`, option-bearing/indirect or unresolved `cd`, temporary `CDPATH=... declare/typeset -p` and `export -n` prefixes before `cd`, and currently uninspectable loop structures | Deliberate limits for this round. The temporary assignment forms can be safe in Bash, but the full permission path still displays the prefix as an opaque executable rather than a proven target; they remain refused before approval. These limits are not promises of full Bash support, and changing shell or language is not an authorization bypass. |
+| One literal `CDPATH=value declare -p CDPATH` or `typeset -p CDPATH` | Bounded regular-builtin query exception: exactly one unquoted assignment (up to 1024 ASCII path characters), exact option/name, no extra operands/expansions. Redirections and opaque permission approval retain normal checks. `export -n` before dependent operations remains refused: configured Bash invoked as `sh` can persist special-builtin assignments even after inherited POSIXLY_CORRECT is cleared. |
+| `pushd`/`popd`, option-bearing/indirect or unresolved `cd`, and currently uninspectable loop structures | Deliberate limits remain. No directory stack, general arithmetic evaluator, variable propagation or complete Bash state machine is introduced. |
 
 The real-chain regressions are in `tests/shell-common-compatibility.test.ts`; they use synthetic temporary workspaces and run on Linux Bash and Windows Git Bash in required CI. Native delete/move and explicit per-call Bash/PowerShell cwd are separate future scopes, not features of PR #43.
 
@@ -80,13 +81,13 @@ Launcher-prefixed owned jobs (including env/sudo/nice/timeout and shell/multical
 
 Command substitutions containing `case` syntax are conservatively uncertain because pattern parentheses are outside this recognizer. Shell wrappers support only a direct `-c` script operand; script files, preceding option variants and later positional `-c` tokens are not inferred safe. Bash/sh/zsh/dash/ksh/fish executable names are recognized; this does not claim complete grammar support for those shells.
 
-### Heredoc exemption withdrawn
+### Bounded quoted input (N3)
 
-The experimental heredoc data-masking exemption and its coupled consumer-binding launch machinery have been removed together. The original quoted-heredoc bitwise false positive is **deferred, not solved**. Actual heredocs are conservatively uncertain on all platforms; no consumer name, inherited function or startup environment earns a data-masking exemption.
+The built-in Bash backend accepts one standalone `cat <<'TAG'` UTF-8 data input or `node <<'TAG'` source input. The complete command is bounded to 12 KiB UTF-8, uses LF framing and one ASCII delimiter of 1–32 letters/digits/underscores (first character a letter or underscore). Empty input is allowed. Arguments, surrounding commands, outer redirects, pipelines, nested/multiple heredocs, NUL and CRLF framing remain unsupported. Code is inspected through the existing Node script path; both code and data require opaque-input authorization. The full original command/body is request-bound and executed unchanged.
 
-The existing bounded quote/arithmetic scanner detects heredoc operators without removing source text. Ordinary `printf` quoted text, Bash arithmetic shifts and Node expression strings no longer receive a substring-triggered launch refusal. Node remains an opaque script subject to normal permission policy. Quoted operands of supported shell wrappers are inspected as executable scripts; heredoc-looking eval operands remain uncertain. Ordinary command prefixes, spawn hooks and process ownership retain accepted-base behavior.
+The existing bounded quote/arithmetic scanner handles other forms conservatively. Ordinary quoted text, arithmetic shifts and Node expression strings retain their existing classification. Heredocs inside shell wrappers or eval remain unsupported. This capability does not infer harmlessness from a consumer name, delimiter, inherited function or startup environment, and does not restore the withdrawn automatic data-masking exemption.
 
-There is no new Windows/MSYS heredoc support, non-usrmerge support or universal bare-cat support. The withdrawn environment snapshot, callable registry and installation checks add no remaining launch allocations or I/O. Their historical profile is not evidence for a retained feature, and its automatic profile fixture has been retired. This correction makes no runtime speedup or model-token claim.
+The unchanged local Bash transport, including its existing Windows MSYS paired-backslash bridge, carries these bytes. Custom backends, command prefixes and arbitrary spawn hooks cannot opt into this bounded input path; preparation and execution both verify backend identity. No temporary input file, new environment snapshot or callable registry is added. PowerShell does not advertise this Bash input form. Real default SDK and Agent/permission tests cover literal expansions, Chinese text, paired backslashes, code execution, denied and changed approvals, bounds, EOF and process ownership. Final two-platform acceptance is tracked in `docs/next-phase-n3-evidence.md`; no speedup or model-token claim is made.
 
 Current prefix/case/coprocess protections and bounded validation/recovery guidance remain. Timed/coprocess substitutions and case pattern ambiguity stay uncertain; quoted words remain data. The recognizer is policy evidence, not a shell sandbox or a proof of arbitrary program behavior. A refusal is not permission to switch language or launcher around policy.
 
@@ -101,3 +102,91 @@ Bash lifecycle refusal now occurs in a side-effect-free preflight before permiss
 Recovery guidance for unsupported shell syntax is part of the preflight refusal itself, so immediate Agent results carry it into the next model context without post-execution transforms. For otherwise authorized diagnostics, native file creation/editing and subsequent foreground execution are separate requests with their own evidence, path, permission, and lifecycle rules. Tool/language changes cannot legalize denied behavior. The capability statement is added only when this guard is loaded. Bash timeout uses seconds (`60` is one minute); documentation does not rescale supplied values or change runtime policy.
 
 Preflight errors retain the first actual refusal: `SHELL_DYNAMIC_EXECUTABLE`, `SHELL_HEREDOC`, `SHELL_WRAPPER`, `SHELL_SUBSTITUTION`, `SHELL_INSPECTION_LIMIT`, or `SHELL_UNINSPECTABLE`. In the loop and pipeline Chrome fixtures the first refusal is executable expansion at `$CHROME`; only a bounded simple variable name is echoed. A quoted literal path removes that inspectability problem and still requires normal checks and current authorization. Dynamic data arguments do not become executable-position errors. Only detected heredocs receive script-staging advice; wrapper/eval uncertainty does not imply a heredoc. No variable propagation, command evaluation or automatic retry is added. “Not executed” describes this Bash call, not sibling calls in the response.
+
+### Explicit Shell cwd
+
+Bash and PowerShell accept optional literal `cwd`, relative to the Session cwd.
+The local backend resolves one canonical directory and inode identity before scope
+analysis and permission matching, then rechecks the requested alias and that identity
+synchronously (metadata only) immediately before spawn. No `cd` text is synthesized,
+no shell expansion is performed, and Session/process cwd remains unchanged. Omission
+retains the existing execution path without new directory traversal. Directory identity
+checks do not provide a filesystem sandbox or an OS-level compare-and-swap.
+
+The first implementation supports the built-in local backend. Custom/remote operations,
+commandPrefix and custom spawnHook configurations reject explicit cwd before authorization;
+the existing bounded built-in MSYS stdin bridge retains its verified transport semantics and cwd;
+omitted cwd keeps their existing behavior. There is no local realpath claim for remote
+paths. Native Windows drive paths work; `/c/...` is not translated as MSYS syntax and
+`~/...` is not home expansion (a literal local directory of that spelling is allowed).
+The final PowerShell transport retains its fixed UTF-8 setup prefix. Permission changes,
+request substitution and detected symlink/junction or directory replacement invalidate
+the old approval; they never trigger automatic reauthorization or command replay.
+
+Invocation-owned directory bindings carry one stable final-spawn callback; authority
+references are released when execution finishes. Output/progress callbacks and renderer
+ownership remain unchanged. TUI shows supplied cwd and final details record the canonical
+cwd. The bounded CDPATH query-prefix and closed-subshell hash forms above now pass
+their actual Bash and default SDK guard paths; broader state changes remain limited.
+
+
+Review follow-up: terminal handoff rejects released bindings as well as replaced
+bindings. A transfer-aware finally releases preparation on every permission/lifecycle
+refusal or exception. Standalone tool-loop-guardrails canonicalizes explicit cwd
+before project-trust/settings selection and owns cleanup even without this guard.
+The authorization AST gate counts the single actual terminal consume call and its
+single approved argument container, including the pinned-binding handoff; no new
+per-progress/per-render allocations or caches were introduced.
+
+Standalone repeated calls renew released bindings through the shared preparation
+function; final guarded handoff still rejects a released binding within the same
+authorized invocation. Explicit cwd compares canonical target and canonical trusted
+Session root, preserving project settings when the workspace itself is a symlink.
+Omitted cwd adds no realpath traversal. Both regressions failed before this fix.
+
+Fresh input reuse can switch explicit cwd back to omission: preparation clears only
+a previously released binding without filesystem lookup. Removing cwd from a live
+binding remains an identity violation; default shell execution keeps its existing
+no-binding fast path. Bash, PowerShell, standalone and guarded cases have regression
+coverage, including before-fail evidence.
+
+Explicit-cwd preparation also pins the Session root canonical path and identity
+before permission awaits. The wrapper checks that root before project settings
+selection, uses the pinned root for containment, and rechecks it at final spawn.
+A retargeted Session alias cannot promote an outside project's shell settings.
+The permission controller also compares this root to its established primary grant.
+Omitted-cwd rule scope reuses that grant's canonical string without extra filesystem
+work, while command analysis and execution retain their previous omitted-cwd path.
+Known legacy Session-root rule spellings remain compatible; target/scope checks
+still precede rule matching. Alias regressions cover exact and prefix rule reuse.
+
+Session tree/branch restore revalidates the existing primary grant rather than
+replacing its trusted identity. If restoration fails, the controller invalidates
+current authority and refuses guarded calls until a successful identity-preserving
+restore. A caught session event error cannot silently enable the replacement root.
+Opening a different physical workspace requires a fresh permission/trust owner.
+
+
+Permission restoration becomes usable only after status publication succeeds.
+File-backed SettingsManager ownership pins the trusted project's physical identity
+across extension rebuilds; reload rejects root replacement before loading project
+settings, packages or extensions. Trust toggling on the same owner cannot replace
+that pin. Custom and in-memory settings stores retain their existing behavior.
+Explicit cwd validates both root and target before selecting shell settings, and
+uses an invocation-owned Bash definition so a failed call cannot poison the
+omitted-cwd definition cache. Final spawn still performs the identity check.
+These checks run at invocation/reload boundaries, not on output or render updates.
+
+
+File settings pin the root even while initially untrusted, before any trust UI wait.
+Explicit-cwd consumers request identity revalidation from the persistent Session
+trust owner via `ctx.isProjectTrusted(true)`, including standalone scoped Bash
+without the permission extension. Default boolean queries and omitted cwd retain
+their no-traversal behavior. Definition argument preparation receives the optional
+Session context before permission hooks, so project command prefixes unsupported
+with explicit cwd refuse before an approval or allow-rule change. These are bounded
+invocation/startup operations; no progress/render callback or regex was added.
+
+A memory/custom settings store without an identity assertion retains its ordinary
+trust boolean, but explicit identity-revalidated queries return false. Such a
+store cannot promote newly read on-disk project shell settings as trusted.

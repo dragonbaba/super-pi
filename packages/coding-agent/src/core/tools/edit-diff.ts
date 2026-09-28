@@ -8,6 +8,15 @@ import { access, readFile } from "fs/promises";
 import { splitBom } from "../../utils/text.ts";
 import { resolveToCwd } from "./path-utils.ts";
 
+/** Shared immutable exact-edit assembly; callers own evidence, queue and commit. */
+export function prepareExactEditContent(rawContent: string, edits: Edit[], path: string) {
+  const { bom, text: content } = splitBom(rawContent);
+  const originalEnding = detectLineEnding(content);
+  const normalizedContent = normalizeToLF(content);
+  const { baseContent, newContent } = applyEditsToNormalizedContent(normalizedContent, edits, path);
+  return { baseContent, newContent, finalContent: bom + restoreLineEndings(newContent, originalEnding) };
+}
+
 export function detectLineEnding(content: string): "\r\n" | "\n" {
 	const crlfIdx = content.indexOf("\r\n");
 	const lfIdx = content.indexOf("\n");

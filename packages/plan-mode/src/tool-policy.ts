@@ -107,6 +107,7 @@ export function isBuiltinTool(tool: ToolInfo) {
 }
 
 export function classifyPlanModeTool(tool: ToolInfo): PlanModeToolPolicy {
+  if (tool.name === "delete" || tool.name === "move" || tool.name === "file_batch") return "blocked";
 	if (!isBuiltinTool(tool)) return "user-opt-in";
 	if (BLOCKED_BUILTIN_TOOLS.has(tool.name)) return "blocked";
 	if (tool.name === "bash" || tool.name === "powershell") return "limited";

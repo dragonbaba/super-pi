@@ -374,7 +374,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		// Check setting dynamically so mid-session changes take effect
 		const blockImages = settingsManager.getBlockImages();
 		try {
-		const projected = toolResultPresentationOwner?.projectMessagesForModel(
+		const projected = session.projectToolResultMessagesForModel(
 			converted,
 			blockImages ? replaceBlockedImages : undefined,
 			systemPrompt,
@@ -382,7 +382,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			conversionModel?.contextWindow,
 			requestPlanning && requestedMaxTokens !== undefined ? Math.min(requestedMaxTokens, conversionModel?.maxTokens ?? requestedMaxTokens) : conversionModel?.maxTokens,
 			requestPlanning,
-		) ?? converted;
+		);
 		return blockImages ? replaceBlockedImagesInMessages(projected) : projected;
 		} catch (error) {
 			if (error instanceof ToolResultContinuationError && error.code === "budget-too-small" && !error.message.startsWith("Request preparation blocked:")) {
@@ -444,6 +444,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				// Prefix intent diagnostics are observational and must never block a provider request.
 			}
 			const recordEffectiveDispatch = (observation: Readonly<EffectiveDispatchObservation>, observedModel: Model<any>) => {
+				session.recordToolResultBudgetDispatch();
 				try {
 					prefixManifestRecorder.record(buildPrefixManifest({
 						...manifestInput,
@@ -489,6 +490,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		onPayload: async (payload, _model) => {
 			const runner = extensionRunnerRef.current;
 			session.assertImageRequestAllowed(_model);
+			if (runner?.hasHandlers("before_provider_request")) session.discardPendingToolResultBudgetSources();
 			const result = runner?.hasHandlers("before_provider_request") ? await runner.emitBeforeProviderRequest(payload) : payload;
 			session.assertImageRequestAllowed(_model);
 			return result;

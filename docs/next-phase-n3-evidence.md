@@ -1,0 +1,442 @@
+# N3 shell input and result evidence
+
+Status: **原定功能已实现，事实保留修复已通过相关回归；最终组合候选验收中**.
+Stable parent N2: `96820048a04e03b9e42ccdeb72792e4963d790a4`, including N1
+`6ca8869953fd7afdbd07a1107fb7d81d4ec39316` and its accepted import limitation.
+The bounded input transport, structured Agent/Session/TUI results and CDPATH/hash
+compatibility are implemented. The grouped r33 observation fixes passed 116
+focused/source tests with five platform skips and check. Their final combined
+full gates and actual review are still required; current status is recorded on
+the original Draft [#49](https://github.com/dragonbaba/super-pi/pull/49), which
+remains unmerged. Prior implementation fb79d5b8d5e3376897535a8d1416dce0e84c610c
+passed all local gates (2,639 pass, 90 skips) and both-platform CI 36300190554;
+those results do not substitute for validation of the corrected final head.
+Older checkpoints and profile scopes below remain historical evidence.
+
+## Input capability decision
+
+The current local Bash backend normally passes commands via `-c`; legacy WSL and
+the Windows paired-backslash bridge use the shell's stdin. Independent program
+stdin would therefore require a second transport with different ownership and
+argument/environment behavior. This slice chooses the plan's bounded quoted
+heredoc alternative: exactly one standalone bare `cat` (UTF-8 data) or `node`
+(source), one ASCII single-quoted delimiter and at most 12 KiB for the complete
+UTF-8 command. No command wrapping or temporary files are added, and the original
+bytes are executed unchanged through the existing transport. CRLF command framing,
+arguments, extra redirects, pipelines, nested/multiple heredocs and trailing commands
+are outside this initial capability; PowerShell receives shared result work only.
+
+Node source is converted only for analysis into the existing quoted node -e path;
+both source and cat data retain opaque-input authorization. The original command
+including its body remains in request hashing and final invocation binding. Quoted
+delimiters do not establish permission. Real Linux/Windows bytes, denial, changed
+approved input, process ownership, bounds and paired-backslash cases must pass before
+this capability is considered delivered. No stdin schema, generic shell interpreter,
+directory stack or automatic permission is added.
+
+Windows Node 22.19.0 targeted input tests pass through the actual local backend
+and default SDK assembly. They cover Chinese bytes, literal `$()`/backticks,
+paired backslashes, empty EOF, multiline Node source, exact/over 12 KiB boundaries,
+unsupported extra syntax/backends/hooks, denied approval, post-approval input
+tampering, pending-authority release and Session reopen without execution.
+Linux CI must independently execute these cases. The selected heredoc transport
+has no separately owned program-stdin pipe; no independent stdin tool schema is
+added. The existing internal command-stdin transport now has real slow-reader and
+early-exit/EPIPE stress tests, separately from the public 12 KiB heredoc bound.
+Normal execution and chunk/render callbacks allocate no new input payload when
+the command has no heredoc operator. Full final result call-chain work follows.
+
+## Structured result audit (in progress)
+
+The baseline local shell execution loses observed signals and collapses timeout/cancel
+into Error strings. The tool discards details when it throws; Agent normalization
+then retains only error text. Output finish failure can replace the main execution
+reason; null exit is accepted as success. The inspected call chain is local shell
+operations → waitForChildProcess/output accumulator → shell tool → Agent execute
+catch/finalize → extension tool_result → Session/provider projection/TUI and
+false-success/session-tool-errors. The hot-path allocation contract was read before
+this audit; final-result metadata must not introduce per-chunk/delta allocations.
+
+The result producer now records start/launch status, actual canonical spawn cwd,
+exit code, signal/termination, conservative side effects/retry guidance, output
+drain/tail/log/cap/cleanup state and bounded input/log/cleanup errors. Null custom
+backend termination stays unknown. Agent-issued pre-execution refusals report no
+start. A typed result-bearing error carries captured content and details through
+Agent normalization; a later observer failure preserves original producer facts
+and appends its own short failure. The plain Session/JSON result contains no native
+objects, pointers or Error instance; actual OpenAI serializer/fake-fetch tests
+confirm internal facts do not leak into provider wire requests. No paid model is
+called. Actual saved/reopened Session results retain the same normalized facts.
+
+False-success only clears a verification obligation after a complete observed
+local success in the matching actual cwd. Missing/custom/unknown/capture-failed
+facts cannot clear it. Session-tool-errors and loop guard consume facts before
+legacy text heuristics; TUI status uses producer values and treats stdout/stderr
+as diagnostic data. Legitimate short nonzero/timeout/cancel text remains. Output
+spill failures preserve the bounded memory tail and primary process reason;
+secondary close/unlink failures are separate fields. Owned-file cleanup keeps its
+error listener until stream close and does not delete an unowned marker collision.
+
+The user-requested audit moves the heredoc pattern into `bash-regex.ts`, and the
+touched false-success consumer's eighteen patterns into its dedicated `regex.ts`.
+The AST consumer inventory covers both, including untracked new files. In the
+full data→accumulator→throttled progress→Agent/Session→TUI→release chain, new facts
+are created at completion only. Input observers have per-pipe instance callbacks,
+retained until close; execution deadlines and output callbacks are initialized
+once by their exact execution owner. Callback-body AST gates reject nested
+closures/Promise tails, and child output reuses one idle timer with `refresh()`.
+The deterministic 12-chunk post-exit case reports one timer, twelve refreshes and
+zero wait listeners/timers after completion. No object pool was added. Existing
+bounded snapshot/progress envelopes and renderer output strings still allocate;
+this is not a blanket zero-allocation claim.
+
+Windows Node 22.19 focused validation: check passes; 48 tests, 46 pass and two
+explicit skips (POSIX signal and the real inherited-pipe descendant fixture).
+Both slow input and real early-exit input pass; input close is awaited before facts
+are finalized, preventing a late EPIPE from disappearing. Windows diagnostics with
+both numeric/inherited stdio variants showed EOF at the Node parent exit, so the
+Linux CI executes the real continuing-descendant test. `output.complete` describes
+the observed stream drain, not a guarantee about future descendant output.
+
+The actual failed-tool TUI fixture rendered 20,000 times at varying widths with
+zero repeated failure analyses. Its Node 22.19 sample was 338,800 bytes total
+(16.94/render); controlled heap 45,228,128→45,629,240 bytes. All twelve derived
+reference counters and pending timers were zero after release. This one sample
+does not establish a speedup or flat lifetime heap. Full local checks/build/hot/
+tests and the existing Bash/shell/tool-leaf allocation gates are running; this
+slice's final two-platform CI and actual review have not yet completed.
+
+## Bounded compatibility and result review corrections
+
+The literal temporary `declare -p CDPATH` and `typeset -p CDPATH` queries execute through actual Bash,
+Agent/permission/lifecycle and default SDK/provider/Session paths. A hash change
+as the final command of a closed child no longer taints its parent. Same/nested
+child lookup, lastpipe, persistent assignments, added operands, dynamic/append
+prefixes and POSIX mode remain refused before authorization/spawn. The new pattern
+lives in the dedicated regex module; the recognizer is a module function with no
+callback. No command rewriting, generic evaluation or authority exemption is used.
+GNU Bash documents different assignment persistence for [POSIX special builtins](https://www.gnu.org/s/bash/manual/html_node/Special-Builtins.html)
+and [subshell environments](https://www.gnu.org/s/bash/manual/html_node/Command-Execution-Environment.html).
+The initial outer-shell export-n exception was removed after review demonstrated
+that configured Bash invoked as `sh` enters POSIX mode. Its assignment can persist
+despite environment filtering, so export-n prefixes before dependent operations
+are refused on every backend. Actual Linux sh-symlink regression proves the changed
+cwd directly and no guarded spawn/effects. The two regular-builtin queries remain
+implemented and tested. Ambient POSIXLY_CORRECT is removed alongside the
+already filtered Bash startup variables; explicit changes remain inspected.
+
+Review 3f23591 findings are fixed: pre-execution verification uses an attached
+canonical cwd binding, including an aliased Session root with explicit `cwd: .`;
+legacy SHELL status prefixes remain first and runtime exit text stays visible;
+custom backend rejected timeout/abort conventions populate termination facts
+without pretending the process was unstarted or had no effects. Existing custom
+rg no-match classification is retained for its exact empty-result shape, while
+unknown/custom facts still cannot clear false-success obligations. Log failure
+prefixes remain first when no earlier process failure exists. Structured facts
+continue to take precedence over stdout that imitates control messages.
+
+Windows Node22 targeted result/input/compatibility/callback regression: 158 pass,
+zero skips, including default SDK four compatibility positives. Earlier full
+tests revealed two old unconditional heredoc-refusal assertions; they now test
+the actual supported quoted-data form plus the still-refused operand/redirect/
+multiple/wrapper forms. No existing guard counterexample was removed.
+
+The fourth 3f23591 review finding, observer-failure identity, is also fixed.
+Agent completion failures add a bounded `observationError` to a copy of the
+preserved shell facts, retaining start/exit/cwd/output and the original immutable
+producer object. A secondary progress-drain failure is retained alongside a
+typed primary tool failure. Consumers classify a successful process followed by
+an observer failure as `observation_failed`, and keep a nonzero process outcome
+as the primary category. Such a result cannot satisfy verification. Real Node
+exit-0/23 through Agent plus post-tool observer failure are tested; focused tests
+pass 62 with two platform skips after rebuilding the package consumer. No field
+is created on normal delta/progress/render delivery. Two remaining postmerge
+fixtures now use unsupported `cat -n` heredocs for their negative assertions;
+default SDK supported bare-cat authorization continues to be tested positively.
+
+The 0c9af9 review found the analogous PowerShell executable-status persistence
+boundary. A rejected onConfirmed callback now adds a bounded observationError to
+the preserved process result, and the common shell producer copies it to structured
+facts. Real Windows PowerShell exit-0/23 tests append exactly once to an owned file,
+retain started/cwd/exit/output facts and classify observation_failed/command_failed
+respectively. The command is never rediscovered or replayed. Seventy-six focused
+cases pass after check/build. Full-suite old heredoc fixtures now distinguish the
+supported quoted data form from unsupported arguments, and progress-failure
+assertions require both completed result content and the observation diagnostic.
+
+Both 6f5d1f4bc and its parent-integration f9c4510aa pass all fixed-head local gates,
+including full tests and Bash/shell/tool-leaf allocation checks. The next actual
+review found primary-observer retention, implicit alias cwd and a guidance consumer
+still using only stdout. Agent failure facts now preserve the first bounded
+observationError, record the first bounded secondaryObservationError separately,
+and explicitly flag further omissions. The facts reader validates these fields.
+Real PowerShell exit-0/23 plus persistence and subsequent Agent observer failures
+retain both errors, one actual file effect and the original process outcome.
+
+Before-execution false-success observations without a cwd binding resolve the
+implicit Session directory to the same canonical form as local producer facts.
+Missing/unreadable paths retain their unresolved obligation; this is observation,
+not execution authority. Real symlink/junction tests exercise explicit and implicit
+cwd and prove a canonical retry clears only its matching key. Tool-loop recovery
+now receives the same details as error recording. Structured shell facts prevent
+stdout-driven path/parser/policy guesses; legacy non-structured diagnostics retain
+their existing bounded hints. The actual default SDK/serializer test prints forged
+ENOENT, policy and syntax markers while exiting 23, retains command_failed facts,
+and appends no contradictory advisory. New-head complete checks/CI/review are still
+required, independently of the preceding full passes.
+
+The 2acbc654f review and full suite exposed four additional boundaries. A final
+structured shell preview now retains its first bounded diagnostic when no known
+marker matches, alongside the trusted status; resize does not repeat analysis.
+Missing content from an untyped JavaScript tool is normalized before appending an
+observer error. Agent-produced not-started refusals preserve structured policy,
+duplicate and repeated-call categories; real child output carrying identical JSON
+still classifies by its execution facts. Recovery guidance for started/unknown
+shells preserves the original diagnostic and asks for state inspection using the
+recorded facts, without asserting a parser/path/policy cause. The older runtime
+recovery test now asserts this factual guidance, actual exit 1 and unchanged original
+syntax/location text; the legacy no-facts Node advisory remains tested separately.
+Check, offline build and focused Agent/default-SDK/serializer/TUI/recovery tests pass.
+Latest N2 3bac07bf1 and N1 197f5ff0c are normal ancestors. Full gates, allocation
+profile, current-head CI and actual re-review remain necessary.
+
+The next review identified a configured-sh POSIX variant, producer status text
+hiding an unrecognized compiler diagnostic, and guard refusals poisoning the
+failure chain. The export-n exception is removed as described above; regular-builtin
+queries and closed-child hash remain supported. A final preview skips standalone
+producer markers and exit footers when selecting its first bounded diagnostic.
+Agent-produced duplicate/repeated refusals do not count as execution failures;
+real stdout with the same JSON still counts by recorded exit facts. The actual
+default SDK executes one of three duplicate siblings, records two refusals, then
+successfully executes a fresh identical call on the next turn. New focused and
+parent-integration tests pass. Full checks/profile, Linux sh-symlink execution,
+two-platform CI and current-head review remain required.
+
+The 724045e0 review found that direct Session/RPC Bash execution could treat exit
+zero as successful after failed stdin delivery, and frozen extension errors could
+lose their original observation. The direct completion boundary now throws a
+producer-tagged error for input/observation failure or incomplete completion before
+persisting a successful BashResult; it preserves the real exit code and does not
+retry. Ordinary observed exit 23 remains a recorded exit 23. Immutable errors are
+wrapped with their original cause/message and new process facts. Real child/Session
+tests cover early stdin close with zero exit and clean subsequent execution;
+beforeSpawn tests cover frozen/sealed errors and an immutable existing tag. No
+callback or regex is added to delivery paths. Linux's configured-sh fixture now
+correctly asserts its two pre-existing victims retain their contents, rather than
+asserting those fixtures never existed. Final gates, both CI jobs and review remain
+required on the resulting full commit.
+
+Current corrections preserve stdin delivery failure ahead of nonzero-exit command
+classification while retaining real exit diagnostics and partial output. Actual
+children closing stdin at exits 0 and 23 both report input_transport_failed.
+Bash set parsing stops at -- or the first positional operand: literal posix or
+physical arguments remain usable, while actual -P/-o physical/-o posix changes
+remain conservatively refused by real guarded execution tests. Trusted Agent
+preflight schema/incomplete-argument/output-limit results retain input_validation;
+actual provider SSE -> Agent -> next serialized request tests prove zero tool
+execution and preserved repair markers. The same text from real child stdout
+cannot forge preflight facts. The production changes introduce no inline regex
+or callback. On Windows Node22.19: check, offline build and 180 focused tests pass,
+with one platform skip. New full gates, Linux CI and exact-head review are pending.
+
+Linux CI isolated one fixture assertion that counted Node's own socket end
+listener as a leaked wait listener. The real-child test now captures pre-existing
+listener identities before waitForChildProcess and verifies that no new end
+listener survives, while retaining full tail, one idle timer/refresh and zero
+wait-owned child/data-listener assertions. Windows targeted observations pass;
+Linux's real inherited-pipe case must run in the new CI. Runtime behavior is not
+changed by this correction.
+
+### Review follow-up: resolved failures, typed observers and rejected spills
+
+Public Bash/PowerShell backends resolving exitCode=0 with non-exit termination or
+an observation error now produce a failed tool result while preserving the facts.
+Eight actual Agent dispatch regressions cover both tools and timeout/output
+failure/unknown/observation outcomes. A completed tool result also takes precedence
+over a ToolResultError thrown by an awaited progress observer: its real content
+and execution facts survive, with a separately appended observation failure.
+
+Direct Session/RPC post-execution rejection closes and removes the exact owned
+spill before rethrowing. If unlink fails, the error preserves the original process
+facts/cause and exposes fullOutputPath plus a cleanup message, so the retained log
+is reachable. Six actual stream/file regressions cover three rejection reasons
+with successful cleanup and injected unlink denial, checking real bytes and closed
+streams. No new progress-time callback or regex was introduced. Focused tests:
+65 passed, two platform skips; the hot-path source gate passes. Final combined
+checks, both CI platforms and review still apply.
+
+Review r26: shopt -o can change set-option semantics, including posix and physical.
+The bounded analyzer recognizes separate/combined option flags and skips literal
+redirections with its existing parser; later cd authorization then fails closed.
+An isolated actual Bash fixture demonstrates persistent CDPATH resolving outside
+the inner workspace under four POSIX flag spellings. The actual guard refuses the
+following mutation before spawn; both inner and outer victim bytes remain intact.
+No regex or closure was introduced. Windows Node22 compatibility/source tests:
+147 pass, one Linux-only skip. This covers Bash's documented
+[shopt -o behavior](https://www.gnu.org/s/bash/manual/html_node/The-Shopt-Builtin.html),
+without expanding the supported shell evaluator.
+
+Review r27: shopt query/print flags no longer taint later cd; changing -s/-u
+options remain conservatively refused. A primitive segment marker distinguishes
+a closed subshell from a sibling at the same depth, including nested siblings.
+Actual guarded Bash positive/negative execution tests cover these distinctions.
+After a real parent exits, abort/timeout/output failure remain active until its
+inherited output settles. They stop the owned process group and close its local
+pipes while retaining the observed parent exit code and incomplete-output facts.
+Three Linux-only real descendant regressions exercise timeout, cancellation and
+asynchronous spill failure, including exact PID/closed stream checks. Windows's
+Node inherited sockets cannot represent this POSIX pipe case and are explicitly
+skipped. Existing stable execution callbacks are reused; no callback or regex was
+added to production. Windows focused/source tests and check pass; Linux behavior
+is subject to the new CI run.
+
+Review r28 validation correction: Linux CI exposed a test callback reading the
+empty startup-progress content array before process spawn. It now accepts text
+updates only; the production inherited-pipe lifecycle fix is unchanged. Windows
+observation tests: 21 passed, five platform skips. Linux rerun remains required.
+
+Allocation correction: the real result producer plus 20,000 width-changing renders
+now samples objects collected by both major and minor GC. Earlier survivor-only
+figures are superseded. Serial Node22.19 Windows sampling reports 2,988,252,112
+bytes (149,412.6056 per complete render); dominant sites are ANSI wrapping, visible
+width, Box background/repetition and layout. This is not allocation attributed
+solely to N3. Repeated failure analyses are zero, twelve derived references return
+to zero, and pending timers are zero. After releasing profiler storage, controlled
+GC heap is 46,292,312 to 46,739,768 bytes. No whole-chain zero-allocation or speedup
+claim is made; check passes and final comparative timing remains pending.
+
+Review r29: the Session error classifier preserves structured cancellation as
+aborted, while timeout keeps its distinct classification. A real parallel Agent
+turn runs the Bash/PowerShell tool adapters through isolated Node child processes;
+both cancelled results collapse into one Session event with cascadeCount two.
+Two actual timeouts remain two observations. No output-body inference, callback
+or regex was added. All 46 shell-result contract cases pass on Windows Node22.19.
+
+Review r30: trusted Agent cancellation of an unstarted tool remains part of the
+same aborted cascade. Actual parallel and sequential Agent turns exercise both
+shell adapters; independent timeouts stay distinct, and a child printing the
+Agent cancellation text cannot impersonate the structured producer. Custom
+backend input/observation diagnostics and thrown error text are bounded at the
+shared result producer (1,000 characters). Four two-million-character diagnostic
+cases retain valid failure facts without unbounded model-visible text or pending
+timers. Contract/source tests: 55 pass; check pass on Windows Node22.19. These
+changes add no production regex or callback. Final combined CI and review remain.
+
+Review r31: both trusted Agent preflight cancellation texts join the same abort
+cascade. Real sequential Agent runs abort immediately and after an awaited
+preflight hook, never execute either backend, and collapse both outcomes once.
+The shared completion normalizer bounds custom diagnostics without mutating the
+backend-owned result and rejects contradictory started/exit/signal observations.
+Both shell adapters return valid conservative failure facts for an unstarted
+zero-exit claim or conflicting observed exit; a consistent unstarted result is
+also an error. Direct executor/actual Session tests verify bounded attached
+diagnostics and no successful bashExecution record on failure. Contract,
+observation and source tests: 91 pass, five platform skips; check pass. No regex
+or callback was added. The prior r30 head 9b74400f5f80f90d569c0ccd158c0b2e8f348c4a
+passed all local gates (2,617 tests, 90 skips) and both-platform CI 36297000090;
+the changed head still requires its own combined validation and review.
+
+Review r32: local cwd/realpath preflight cancellation retains `started:false`
+with `termination:cancelled`, and the actual sequential Agent/Session cascade
+collapses once without claiming a process started. Direct executor and real
+Session abort races preserve already observed input, observer, output-drain or
+unknown-completion failures and do not append a successful bashExecution record.
+PowerShell failed recovery retains the real attempted-spawn observation even if
+unavailable-state persistence also fails. Confirmation persistence keeps the
+backend's first bounded observation error, a bounded secondary error, and an
+explicit omission flag for further failures. The shared completion normalizer
+and final tool facts carry both diagnostics. Focused contract/observation/
+PowerShell/source tests: 101 pass, five platform skips; check pass on Node22.19.
+No production regex or callback was added. Current combined full gates and
+two-platform CI/review remain required.
+
+Review r33 groups the remaining observed fact-preservation defects. A successful
+PowerShell recovery probe followed by failed confirmation retains the initial
+real failed-spawn observation. Disabled-state persistence failures append bounded
+primary/secondary diagnostics without replacing prior evidence. Completion
+normalization rejects incompatible optional diagnostic shapes, and fallback
+facts clear incompatible fields, so downstream consumers retain structured
+failure authority rather than classifying forged output text. Actual Agent and
+PowerShell regressions, direct/Session observations and source gates: 116 pass,
+five platform skips; check pass. One fixed module helper handles bounded observer
+errors; no production regex or callback was introduced. Full gates are deferred
+until this grouped fix and its parent integration are stable, per the user scope
+freeze, rather than repeated for each small edit.
+
+Review r34 groups three completion/retry defects with the same producer boundary.
+Attached completion or unknown facts override executable-like error codes, so a
+possibly stateful command is not replayed. Resolved not-started facts trigger at
+most one probe/recovery; a second not-started result disables that executable.
+Only a normalized result proving a start (or the actual recovery probe) can
+confirm executable availability. Exit/signal/not-started relationships are
+validated even when optional observation is absent. Fourteen new cases failed
+before the fix; focused PowerShell, actual Session/direct executor, contract and
+source regressions now pass (133 pass, five platform skips). Type check passes.
+No production regex or callback was added. Final combined gates and review remain.
+
+Review r35: a canonical `termination:not_started` with omitted optional observation
+now yields `started:false`, no side effects and fresh-request guidance in both
+actual Agent shell adapters. The normalized termination already authorizes only
+this unstarted interpretation in PowerShell recovery; result classification now
+agrees. Two real adapter regressions plus contract/source tests pass (80 tests),
+and check passes. No callback or regex was added. The prior r34 code candidate
+46f3e4f8b2e61bef1b02a98604ba06fb1bf4aeb9 passed all four local gates; this final
+classification correction still needs combined final gates and actual review.
+
+Review r36: input transport failure retains category precedence even when the
+canonical termination proves no process started. Both actual Agent adapters now
+cover not_started/cancelled with and without input errors: execution remains
+not_executed with no side effects, while input failures remain actionable in
+Session classification. The extension classifier loads the built public package;
+its build was refreshed before the final focused run. PowerShell, contract,
+actual Session/direct and source regressions: 141 pass, five platform skips;
+check and the strengthened module-helper source gate pass. The classification
+helper adds no callback, regex, wrapper or scan. r35's full local gates passed;
+final full gates will run after this grouped review feedback is settled.
+
+## Authorized merge-closeout feedback
+
+The ordinary ancestry update `9598dd2f34672a1db00ff1c792e0b9968f9ea12f` retained
+the approved N3 tree exactly and passed Linux/Windows CI `36319371599`. Its
+Ready-triggered actual review reported two reproducible correctness issues.
+Together with the late N1 move-identity finding, they pause N3/N4 merging until
+this grouped correction receives current-head checks and actual review. These
+are same-scope defects, not new features or optimization goals.
+
+An empty `inputError` is still an input-delivery failure. Actual Bash/PowerShell
+Agent dispatch, direct/Session execution, cancellation precedence, completion
+classification, false-success and the Session no-match exception now test field
+presence rather than truthiness. Normalization retains the bounded diagnostic
+and observed exit; no command is retried or relabeled as unstarted.
+
+An unobserved verification cwd with a missing suffix now resolves its deepest
+existing ancestor before retaining the obligation. Only ENOENT walks to a parent;
+other observation failures keep the lexical obligation. This performs no
+execution authorization. A real successful shell in the subsequently created
+canonical directory clears the matching failure; another directory cannot.
+The existing binding and observed-cwd priority remain intact.
+
+Seven targeted cases failed before the correction; the origin-drift countercase
+already passed. Focused recovery/Agent/Session/source checks then passed 233
+tests with six platform skips; the added actual standalone/batch partial-move
+test also passed. Type checking and refreshed public-package build passed.
+Final complete gates and review are tracked on #49, not presumed by this record.
+
+The audited chain is normalized backend completion → Agent/tool facts →
+Session classifiers/false-success → cached Bash result analysis → TUI rendering.
+The changed classification predicates add no closure, regex, wrapper, Promise,
+array or retained reference. The cwd filesystem walk is limited to failed or
+unobserved completion processing; recovery scans remain explicit-user cold
+work. Batch durable metadata adds one existing identity reference at completion,
+owned by the existing Session receipt; no per-delta/progress change or pool was
+introduced. Existing source/AST gates remain intact.
+
+A serial Windows Node22.19 actual-result render profile ran 20,000 renders:
+repeated failure analyses zero, all twelve released reference counters zero,
+pending timers zero. GC-inclusive sampled allocation was 2,983,381,680 bytes
+(149,169.084/render), mainly existing text wrapping, width, background and box
+layout. Controlled-GC heap before/after release was 51,749,664/52,159,040 bytes.
+This is the whole fixture, not an allocation or speedup claim for the predicate
+change. Raw report: `merge-shell-facts-profile.log` in the existing task artifacts.
+Original N4's 85-group measurements remain labeled with their measured source
+SHA; they will not be relabeled as measurements of this corrected tree.

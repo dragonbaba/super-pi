@@ -87,7 +87,7 @@ export interface ConfiguredLspServer {
 	skipDirectories?: string[];
 	// Quiet period in ms after the latest push-diagnostics publication.
 	diagnosticsSettleMs?: number;
-	// Maximum wait for a push-only server that publishes nothing for a clean document.
+	// Maximum wait for a push publication. Silence is unconfirmed, not a clean report.
 	pushDiagnosticsGraceMs?: number;
 	// Maximum wait for a newer push publication after an empty pull result.
 	pullDiagnosticsGraceMs?: number;

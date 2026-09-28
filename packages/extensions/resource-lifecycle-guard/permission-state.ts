@@ -213,7 +213,12 @@ export class SessionPermissionState {
   }
 
   async restore(cwd: string, branch: readonly unknown[]): Promise<void> {
-    this.#primary = await workspaceGrant(cwd, cwd);
+    const primary = await workspaceGrant(cwd, cwd);
+    if (this.#primary && (this.#primary.canonicalPath !== primary.canonicalPath
+      || this.#primary.device !== primary.device || this.#primary.inode !== primary.inode)) {
+      throw new Error("[SHELL_CWD_CHANGED] Primary workspace identity changed during restore; reopen the verified workspace and establish trust again.");
+    }
+    if (!this.#primary) this.#primary = primary;
     this.#mode = "workspace-write";
     this.#approvalPolicy = "ask";
     this.#additional = [];

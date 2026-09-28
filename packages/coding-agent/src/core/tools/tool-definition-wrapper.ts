@@ -14,7 +14,9 @@ export function wrapToolDefinition<TDetails = unknown>(
 		description: definition.description,
 		parameters: definition.parameters,
 		constrainedSampling: definition.constrainedSampling,
-		prepareArguments: definition.prepareArguments,
+		prepareArguments: definition.prepareArguments && ctxFactory
+			? (args) => definition.prepareArguments!(args, ctxFactory())
+			: definition.prepareArguments,
 		interactionBoundary: definition.interactionBoundary,
 		executionMode: definition.executionMode,
 		execute: (toolCallId, params, signal, onUpdate, ctx?: ExtensionContext) =>

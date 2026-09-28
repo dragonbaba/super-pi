@@ -29,7 +29,7 @@ test("new error codes retain guard classification and distinguish incomplete arg
 });
 
 for (const [name, command] of [
- ["quoted", "cat <<'EOF'\nconst pixel = value & 255; // nohup wait kill\nEOF"],
+ ["quoted with unsupported arguments", "cat -n <<'EOF'\nconst pixel = value & 255; // nohup wait kill\nEOF"],
  ["double quoted", 'cat <<"EOF"\nconst pixel = value & 255;\nEOF'],
  ["tab stripped", "cat <<-'EOF'\n\tvalue & 255\n\tEOF"],
  ["unquoted data", "cat <<EOF\nvalue & 255\nEOF"],
@@ -77,7 +77,7 @@ test("browser guidance preserves helper Python and states its actual scope", () 
 
 
 test("heredoc literal substitutions, multiple bodies and conservative unsupported folding", () => {
- assert.ok(inspectBashResourceLifecycle({ command: "cat <<'EOF'\n$(nohup sleep 1)\nEOF" }));
+ assert.equal(inspectBashResourceLifecycle({ command: "cat <<'EOF'\n$(nohup sleep 1)\nEOF" }), undefined, "bounded single-quoted data has no executable substitution");
  assert.ok(inspectBashResourceLifecycle({ command: "cat <<'A' <<'B'\nx & 255\nA\nnohup data\nB" }));
  assert.ok(inspectBashResourceLifecycle({ command: "cat <<EOF\nx\\\nEOF\nEOF" }));
  assert.ok(inspectBashResourceLifecycle({ command: "x".repeat(128 * 1024 + 1) }));

@@ -1,5 +1,5 @@
 import { realpath } from "node:fs/promises";
-import { resolve } from "node:path";
+import { resolve, dirname, relative } from "node:path";
 
 const fileMutationQueues = new Map<string, Promise<void>>();
 let registrationQueue = Promise.resolve();
@@ -14,15 +14,20 @@ function isMissingPathError(error: unknown): boolean {
 }
 
 async function getMutationQueueKey(filePath: string): Promise<string> {
-	const resolvedPath = resolve(filePath);
-	try {
-		return await realpath(resolvedPath);
-	} catch (error) {
-		if (isMissingPathError(error)) {
-			return resolvedPath;
-		}
-		throw error;
-	}
+    const resolvedPath = resolve(filePath);
+    let probe = resolvedPath;
+    for (;;) {
+        try {
+            const ancestor = await realpath(probe);
+            const key = resolve(ancestor, relative(probe, resolvedPath));
+            return process.platform === "win32" ? key.toLowerCase() : key;
+        } catch (error) {
+            if (!isMissingPathError(error)) throw error;
+            const parent = dirname(probe);
+            if (parent === probe) throw error;
+            probe = parent;
+        }
+    }
 }
 
 /**

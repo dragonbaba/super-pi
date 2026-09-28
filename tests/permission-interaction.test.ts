@@ -1,6 +1,6 @@
 import { createSessionAllowRule, sessionAllowRuleMatches, simpleCommandPrefix } from "../packages/extensions/resource-lifecycle-guard/permission-rule.ts";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, realpathSync, mkdirSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -14,14 +14,16 @@ import { FakeScheduler } from "./helpers/runtime-instrumentation.ts";
 
 initTheme("dark");
 
-async function permissionFixture(t: test.TestContext) {
- const cwd = mkdtempSync(join(tmpdir(), "pi-permission-wait-"));
-	t.after(() => rmSync(cwd, { recursive: true }));
+async function permissionFixture(t: test.TestContext, aliasedRoot = false) {
+ const root = mkdtempSync(join(tmpdir(), "pi-permission-wait-")); let cwd = root;
+ if (aliasedRoot) { const physical = join(root, "physical"); mkdirSync(physical); cwd = join(root, "alias"); symlinkSync(physical, cwd, process.platform === "win32" ? "junction" : "dir"); }
+	t.after(() => rmSync(root, { recursive: true }));
  const runtime = createExtensionRuntime();
+ const audits: any[] = [];
  let permission!: SessionPermissionController;
  const extension = await loadExtensionFromFactory((pi) => {
   // Persistence is deliberately observed, not sent to the installed session.
-  pi.appendEntry = () => {};
+  pi.appendEntry = (_kind: string, data: any) => { if (data?.policyReason) audits.push(data); };
   permission = new SessionPermissionController(pi);
   permission.registerCommands();
   pi.on("tool_call", (event, ctx) => permission.authorizeToolCall(event, ctx));
@@ -44,7 +46,7 @@ async function permissionFixture(t: test.TestContext) {
 	}, "tui");
  await permission.restore(runner.createContext());
  const call = (toolName = "browser_exec", input: object = { code: "print('controlled fixture')", purpose: "permission regression" }) => runner.emitToolCall({ type: "tool_call", toolName, toolCallId: "approval-1", input } as never);
- return { runner, scheduler, permission, visible, call, abort, cwd, choose: (index: number) => choose(choices[index]),
+ return { runner, scheduler, permission, visible, call, abort, cwd, root, audits, choose: (index: number) => choose(choices[index]),
   dialogOptions: () => dialogOptions, choices: () => choices };
 }
 
@@ -525,7 +527,7 @@ test("real prefix selection persists prefix and its explicit cwd scope", async t
  finally { f.choose(index >= 0 ? index : 0); await pending; }
  const rule = f.permission.state.allowRules[0];
  assert.equal(rule.kind, "prefix"); assert.equal(rule.pattern, "touch");
- assert.equal(rule.backend, "bash"); assert.equal(rule.cwd, f.cwd);
+ assert.equal(rule.backend, "bash"); assert.equal(rule.cwd, realpathSync.native(f.cwd));
  assert.deepEqual(f.permission.state.serialized().allowRules[0], rule);
  assert.equal(f.permission.state.removeAllowRule(rule.id)?.id, rule.id);
  assert.equal(f.permission.state.allowRules.length, 0);
@@ -551,4 +553,38 @@ test("legacy unscoped rules are displayed without a fabricated workspace scope",
  f.runner.setUIContext({ ...f.runner.getUIContext(), notify: message => { text = message; } }, "tui");
  await f.runner.getCommand("permissions")!.handler("rules", f.runner.createContext() as never);
  assert.match(text, /cwd=unscoped \(legacy\)/); assert.doesNotMatch(text, new RegExp(f.cwd.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+});
+
+
+test("omitted and explicit primary cwd share exact and prefix rules through aliases", async t => {
+ for (const kind of ["exact", "prefix"]) for (const firstExplicit of [false, true]) {
+  const f = await permissionFixture(t, true); f.permission.state.setMode("read-only");
+  const command = "touch ./new.txt"; const pending = f.call("bash", { command, ...(firstExplicit ? { cwd: "." } : {}) }); await f.visible;
+  const label = kind === "exact" ? "完整指令" : "指令前缀"; const index = f.choices().findIndex(value => value.includes(label)); assert.ok(index >= 0); f.choose(index); assert.equal(await pending, undefined);
+  assert.equal(f.permission.state.allowRules[0].cwd, realpathSync.native(f.cwd));
+  f.permission.state.setMode("workspace-write");
+  let extraApprovals = 0; f.runner.setUIContext({ ...f.runner.getUIContext(), select: async () => { extraApprovals++; return undefined; } }, "tui");
+  const result = await f.call("bash", { command, ...(!firstExplicit ? { cwd: "." } : {}) }); assert.equal(result, undefined); assert.equal(extraApprovals, 0); assert.equal(f.audits.at(-1)?.policyReason, "session_rule_match");
+ }
+});
+
+
+test("failed tree restore preserves primary identity and blocks until it is verified again", async t => {
+ const f = await permissionFixture(t, true); const original = f.permission.state.primary; const replacement = join(f.root, "replacement"); mkdirSync(replacement);
+ rmSync(f.cwd); symlinkSync(replacement, f.cwd, process.platform === "win32" ? "junction" : "dir");
+ await assert.rejects(f.permission.restore(f.runner.createContext()), error => error instanceof Error && error.message.includes("SHELL_CWD_CHANGED"));
+ assert.equal(f.permission.state.primary, original);
+ const blocked = await f.call("bash", { command: "pwd", cwd: "." }); assert.equal(blocked?.block, true); assert.ok(blocked?.reason?.includes("SHELL_CWD_CHANGED"));
+ rmSync(f.cwd); symlinkSync(original.canonicalPath, f.cwd, process.platform === "win32" ? "junction" : "dir");
+ await f.permission.restore(f.runner.createContext()); assert.equal(f.permission.state.primary, original); assert.equal(await f.call("bash", { command: "pwd", cwd: "." }), undefined);
+});
+
+
+test("failed permission status publication keeps restore unavailable", async t => {
+ const f = await permissionFixture(t); const ui = f.runner.getUIContext();
+ f.runner.setUIContext({ ...ui, setStatus() { throw new Error("controlled status failure"); } }, "tui");
+ await assert.rejects(f.permission.restore(f.runner.createContext()), error => error instanceof Error && error.message.includes("controlled status failure"));
+ const blocked = await f.call("bash", { command: "pwd", cwd: "." }); assert.equal(blocked?.block, true);
+ f.runner.setUIContext(ui, "tui"); await f.permission.restore(f.runner.createContext());
+ assert.equal(await f.call("bash", { command: "pwd", cwd: "." }), undefined);
 });

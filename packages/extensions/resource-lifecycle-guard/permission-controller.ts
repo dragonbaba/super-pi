@@ -1,5 +1,6 @@
+import { prepareShellCwd } from "@super-pi/coding-agent";
 import { createHash } from "node:crypto";
-import { lstat } from "node:fs/promises";
+import { lstat, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@super-pi/coding-agent";
 import { inspectHighRiskBashMutation, type HighRiskMutationScan } from "./core.ts";
@@ -32,6 +33,9 @@ import {
 } from "./permission-state.ts";
 import { protectedRootViolations } from "./mutation-policy.ts";
 import { assessProtectedMutationPath } from "../mutation-guard-write/protected-path-policy.ts";
+import { prepareNativeOperation, type NativePlan } from "../mutation-guard-write/native-file-core.ts";
+import { prepareFileCreation, type FileCreationPlan } from "../mutation-guard-write/file-creation.ts";
+import { getBatchPreparation } from "../mutation-guard-write/file-batch.ts";
 import { classifyStructuredReadonlyArguments, type StructuredReadonlyCommandName } from "./structured-argv.ts";
 import { sanitizePolicyFeedback, type PolicyDiagnosticMetadata } from "./policy-diagnostics.ts";
 
@@ -123,7 +127,12 @@ function subagentTaskRequests(input: unknown, defaultCwd: string): SubagentTaskR
 }
 
 interface OperationRequest {
-  operation: "edit" | "write" | "lsp_fix" | "bash" | "powershell" | "browser_exec";
+  operation: "edit" | "write" | "lsp_fix" | "bash" | "powershell" | "browser_exec" | "delete" | "move" | "file_batch";
+  batch?: true;
+  readOnlyPreview?: boolean;
+  nativePlan?: NativePlan;
+  creationPlan?: FileCreationPlan;
+  requestHash?: string;
   purpose?: string;
   summary: string;
   exactTargets: string[];
@@ -309,6 +318,7 @@ export class SessionPermissionController {
   readonly #rejections = new Map<string, RejectionRecord>();
   #committedState?: PermissionStateCheckpoint;
   #auditSequence = 0;
+  #restored = false;
   #authorityGeneration = 0;
   #pendingApproval: AbortController | undefined;
 
@@ -322,6 +332,33 @@ export class SessionPermissionController {
 
   /** Read-only invalidation identity; does not grant permission or change policy. */
   get authorityGeneration(): number { return this.#authorityGeneration; }
+
+  /** User-command observation reuses current Session scope; it grants no mutation/read evidence. */
+  async authorizeFileObservation(ctx: ExtensionContext, paths: readonly string[]): Promise<(() => Promise<void>) & { assertCurrent(): void }> {
+    if (!this.#restored || paths.length < 1 || paths.length > 34) throw new Error("Current Session permission state is unavailable.");
+    const targets = paths.slice();
+    const generation = this.#authorityGeneration, sequence = this.#state.sequence, sessionId = ctx.sessionManager.getSessionId(), cwd = ctx.cwd;
+    const assertCurrent = () => {
+      ctx.signal?.throwIfAborted();
+      if (!this.#restored || generation !== this.#authorityGeneration || sequence !== this.#state.sequence || sessionId !== ctx.sessionManager.getSessionId() || cwd !== ctx.cwd) throw new Error("Verification permission became obsolete; reopen /changes.");
+    };
+    const assertAllowed = async () => {
+      assertCurrent();
+      for (const path of targets) {
+        if (!isAbsolute(path) || path.length > 4096) throw new Error("Verification requires a recorded canonical target.");
+        const assessment = await this.#state.assessTarget(path, cwd);
+        if (assessment.unverifiableReason || assessment.canonicalTarget !== path || (!assessment.workspace && this.#state.mode !== "full-access")) throw new Error("Verification target is outside the current authorized scope or has changed. Use /add_workspace or /permissions explicitly.");
+        const workspace = assessment.workspace;
+        if (workspace) {
+          const info = await lstat(workspace.canonicalPath);
+          if (!info.isDirectory() || info.isSymbolicLink() || info.dev !== workspace.device || info.ino !== workspace.inode || await realpath(workspace.requestedPath) !== workspace.canonicalPath) throw new Error("Verification workspace identity changed.");
+        }
+      }
+      assertCurrent();
+    };
+    await assertAllowed();
+    return Object.assign(assertAllowed, { assertCurrent });
+  }
 
   registerCommands(): void {
     this.#pi.registerCommand("permissions", {
@@ -339,6 +376,7 @@ export class SessionPermissionController {
   }
 
   async restore(ctx: ExtensionContext): Promise<void> {
+    this.#restored = false;
     this.#authorityGeneration++;
     this.#pendingApproval?.abort(new Error("Permission request is obsolete after session restore"));
     this.#pendingApproval = undefined;
@@ -346,6 +384,7 @@ export class SessionPermissionController {
     this.#committedState = this.#state.checkpoint();
     this.#rejections.clear();
     this.#publish(ctx);
+    this.#restored = true;
   }
 
   systemGuidance(): string {
@@ -355,9 +394,10 @@ export class SessionPermissionController {
   }
 
   async authorizeToolCall(event: ToolCallEventShape, ctx: ExtensionContext): Promise<ToolCallBlock | undefined> {
-    if (event.toolName !== "write" && event.toolName !== "edit" && event.toolName !== "lsp_fix"
+    if (event.toolName !== "write" && event.toolName !== "edit" && event.toolName !== "lsp_fix" && event.toolName !== "delete" && event.toolName !== "move" && event.toolName !== "file_batch"
       && event.toolName !== "bash" && event.toolName !== "powershell" && event.toolName !== "browser_exec"
       && event.toolName !== "subagent" && event.toolName !== "structured_readonly_command") return undefined;
+    if (!this.#restored) return { block: true, reason: "[SHELL_CWD_CHANGED] Permissions are unavailable until the Session workspace identity is restored; the tool was not executed." };
     let signal = ctx.signal;
     const generation = this.#authorityGeneration;
     const permissionSequence = this.#state.sequence;
@@ -383,12 +423,13 @@ export class SessionPermissionController {
       };
     }
 
+    const ruleCwd = request.effectiveCwd === ctx.cwd ? this.#state.primary.canonicalPath : request.effectiveCwd ?? ctx.cwd;
     const scopeAllowed = this.#scopeAllows(request);
     if (request.shellCommand && this.#ruleScopeAllows(request)) {
       for (const rule of this.#state.allowRules) {
-        if (!rule.cwd && request.effectiveCwd !== ctx.cwd) continue;
+        if (!rule.cwd && ruleCwd !== this.#state.primary.canonicalPath) continue;
         if (rule.kind === "prefix" && (request.highRisk || request.opaqueScript)) continue;
-        if (!sessionAllowRuleMatches(rule, request.shellCommand, { backend: request.operation, cwd: request.effectiveCwd ?? ctx.cwd })) continue;
+        if (!sessionAllowRuleMatches(rule, request.shellCommand, { backend: request.operation, cwd: rule.cwd === ctx.cwd && ruleCwd === this.#state.primary.canonicalPath ? ctx.cwd : ruleCwd })) continue;
         this.#appendAudit(request, "approved", "session_rule_match", this.#state.mode, this.#state.mode, false);
         return undefined;
       }
@@ -469,7 +510,7 @@ export class SessionPermissionController {
     // One presentation materialization per actual approval. Never use the bounded
     // summary as the authority or as a substitute for inspectable request values.
     const fullRequest = JSON.stringify(event.input, null, 2);
-    const details = `${header}\n操作尚未执行\n将保存的精确规则: ${request.shellCommand ?? "不适用"}\n将保存的前缀规则: ${commandPrefix ? `${commandPrefix} *（允许参数变化，包括无参数调用）` : "不适用"}\n本 Session 规则范围: ${request.operation}; cwd=${request.effectiveCwd ?? ctx.cwd}\n模型提供的说明 (未经验证): ${request.purpose ?? "未提供"}\n目标范围:\n${request.exactTargets.join("\n") || "未确定"}\n风险依据: ${request.primitives.join(", ")}\n完整请求:\n${fullRequest}`;
+    const details = `${header}\n操作尚未执行\n将保存的精确规则: ${request.shellCommand ?? "不适用"}\n将保存的前缀规则: ${commandPrefix ? `${commandPrefix} *（允许参数变化，包括无参数调用）` : "不适用"}\n本 Session 规则范围: ${request.operation}; cwd=${ruleCwd}\n模型提供的说明 (未经验证): ${request.purpose ?? "未提供"}\n目标范围:\n${request.exactTargets.join("\n") || "未确定"}\n风险依据: ${request.primitives.join(", ")}\n完整请求:\n${fullRequest}`;
     const choice = await ctx.ui.select(header, choices, { signal, details });
     assertCurrent();
     const prefixChoice = commandPrefix ? `${ALLOW_SESSION_PREFIX}：${commandPrefix} *` : undefined;
@@ -482,7 +523,7 @@ export class SessionPermissionController {
         try {
           const kind: SessionAllowRuleKind = choice === ALLOW_SESSION_EXACT ? "exact" : "prefix";
           const value = kind === "exact" ? request.shellCommand : commandPrefix!;
-          if (this.#state.addAllowRule(createSessionAllowRule(kind, value, { backend: request.operation as "bash" | "powershell", cwd: request.effectiveCwd ?? ctx.cwd }))) {
+          if (this.#state.addAllowRule(createSessionAllowRule(kind, value, { backend: request.operation as "bash" | "powershell", cwd: ruleCwd }))) {
             this.#persist(ctx);
             policyReason = "session_rule_added";
           }
@@ -814,22 +855,65 @@ export class SessionPermissionController {
         fingerprintMaterial: `${input.code}\u0000${typeof input.session === "string" ? input.session : ""}\u0000${typeof input.timeoutMs === "number" ? input.timeoutMs : ""}`,
       };
     }
+    if (event.toolName === "file_batch") {
+      const batch = getBatchPreparation(event.input);
+      if (!batch || batch.id !== event.toolCallId) throw new Error("[POLICY_BLOCKED] Missing guarded batch preparation.");
+      const targetAssessments: PermissionTargetAssessment[] = [];
+      const exactTargets: string[] = [];
+      const primitives: string[] = [];
+      let highRisk = false;
+      for (const item of batch.items) {
+        if (item.operation === "delete") { highRisk = true; primitives.push("irreversible_delete_no_backup"); }
+        if (item.operation === "move" && !primitives.includes("exclusive_link_then_unlink_non_atomic")) primitives.push("exclusive_link_then_unlink_non_atomic");
+        const paths = item.native ? item.native.protectedPaths : [item.approval];
+        for (const path of paths) {
+          exactTargets.push(path.canonicalTarget);
+          targetAssessments.push(await this.#state.assessTarget(path.canonicalTarget, ctx.cwd));
+          if (sensitiveProtectedRoots(path.protectedRoots.filter(root => root !== "workspace_root"))) highRisk = true;
+          for (const root of path.protectedRoots) if (!primitives.includes(root)) primitives.push(root);
+        }
+        if (item.creation) for (const directory of item.creation.directories) {
+          if (!exactTargets.includes(directory)) { exactTargets.push(directory); targetAssessments.push(await this.#state.assessTarget(directory, ctx.cwd)); }
+        }
+      }
+      return { operation: "file_batch", batch: true, readOnlyPreview: batch.input.dryRun === true, requestHash: batch.requestHash,
+        purpose, summary: `file_batch ${batch.items.length} independent items`, exactTargets, targetAssessments,
+        classes: ["file:batch"], highRisk: !batch.input.dryRun && highRisk, opaqueScript: false, primitives,
+        fingerprintMaterial: batch.requestHash, pathApproval: { canonicalTarget: batch.items[0].target, protectedRoots: [] } };
+    }
+    if (event.toolName === "delete" || event.toolName === "move") {
+      const requestHash = mutationRequestHash(event.toolName, event.input);
+      const nativePlan = await prepareNativeOperation(ctx.cwd, event.toolName, event.input);
+      const targets = nativePlan.protectedPaths;
+      const targetAssessments: PermissionTargetAssessment[] = [];
+      for (const target of targets) targetAssessments.push(await this.#state.assessTarget(target.canonicalTarget, ctx.cwd));
+      const primitives = [event.toolName === "delete" ? "irreversible_delete_no_backup" : "exclusive_link_then_unlink_non_atomic"];
+      for (const target of targets) for (const root of target.protectedRoots) if (!primitives.includes(root)) primitives.push(root);
+      return { operation: event.toolName, purpose, summary: `${event.toolName} ${nativePlan.source.canonical}`,
+        nativePlan, requestHash, exactTargets: targets.map((target) => target.canonicalTarget), targetAssessments,
+        classes: [`file:${event.toolName}`], highRisk: event.toolName === "delete" || targets.some((target) => sensitiveProtectedRoots(target.protectedRoots.filter((root) => root !== "workspace_root"))),
+        opaqueScript: false, primitives, fingerprintMaterial: requestHash,
+        pathApproval: { canonicalTarget: nativePlan.source.canonical, protectedRoots: [...targets[0].protectedRoots] } };
+    }
     if (event.toolName === "edit" || event.toolName === "write" || event.toolName === "lsp_fix") {
       if (!event.input || typeof event.input !== "object" || !("path" in event.input)) return undefined;
       const rawPath = (event.input as { path?: unknown }).path;
       if (typeof rawPath !== "string") return undefined;
       const path = rawPath.startsWith("@") ? rawPath.slice(1) : rawPath;
+      const requestHash = mutationRequestHash(event.toolName, event.input);
+      const creationPlan = event.toolName === "write" ? await prepareFileCreation(resolve(ctx.cwd, path)) : undefined;
       const assessment = await this.#state.assessTarget(path, ctx.cwd);
       const protectedAssessment = await assessProtectedMutationPath(ctx.cwd, assessment.canonicalTarget ?? path);
       const exactTargets = assessment.canonicalTarget ? [assessment.canonicalTarget] : [];
       return {
         operation: event.toolName,
+        creationPlan, requestHash,
         purpose,
         summary: `${event.toolName} ${path}`,
-        exactTargets,
+        exactTargets: creationPlan ? [...exactTargets, ...creationPlan.directories] : exactTargets,
         targetAssessments: [assessment],
         classes: event.toolName === "edit" ? EDIT_CLASSES : event.toolName === "write" ? WRITE_CLASSES : LSP_FIX_CLASSES,
-        pathApproval: protectedAssessment.canonicalTarget && protectedAssessment.violations.length > 0
+        pathApproval: protectedAssessment.canonicalTarget && (protectedAssessment.violations.length > 0 || event.toolName === "write" || event.toolName === "edit")
           ? { canonicalTarget: protectedAssessment.canonicalTarget, protectedRoots: protectedAssessment.violations }
           : undefined,
         highRisk: sensitiveProtectedRoots(protectedAssessment.violations),
@@ -841,8 +925,10 @@ export class SessionPermissionController {
     if (event.toolName !== "bash" && event.toolName !== "powershell") return undefined;
     const shellOperation = event.toolName;
     const shellInput = event.input as { command: string; cwd?: unknown };
-    const hasExplicitCwd = typeof shellInput.cwd === "string" && shellInput.cwd.length > 0;
-    const effectiveCwd = hasExplicitCwd ? resolve(ctx.cwd, shellInput.cwd as string) : ctx.cwd;
+    const cwdBinding = await prepareShellCwd(shellInput, ctx.cwd);
+    const hasExplicitCwd = cwdBinding !== undefined;
+    if (cwdBinding && !cwdBinding.matchesSessionRoot(this.#state.primary.canonicalPath, this.#state.primary.device, this.#state.primary.inode)) throw new Error("[SHELL_CWD_CHANGED] Session workspace identity changed before authorization.");
+    const effectiveCwd = cwdBinding?.canonical ?? ctx.cwd;
     const high = inspectHighRiskBashMutation(event.input, effectiveCwd, shellOperation);
     const scope = shellOperation === "powershell"
       ? inspectPowerShellPermissionScope(event.input, effectiveCwd)
@@ -933,17 +1019,26 @@ export class SessionPermissionController {
       return;
     }
     if (!request.pathApproval || request.operation === "bash" || request.operation === "powershell") return;
+    const sequence = this.#state.sequence;
+    const generation = this.#authorityGeneration;
     attachPermissionPathApproval(event.input, {
       schemaVersion: 1,
       sequence: this.#state.sequence,
       toolCallId: event.toolCallId,
       operation: request.operation,
-      requestHash: mutationRequestHash(request.operation, event.input),
+      requestHash: request.requestHash ?? mutationRequestHash(request.operation, event.input),
+      nativePlan: request.nativePlan,
+      creationPlan: request.creationPlan,
+      writePreflight: request.operation === "write",
+      assertCurrent: request.nativePlan || request.operation === "write" || request.operation === "edit" || request.batch ? () => {
+        if (sequence !== this.#state.sequence || generation !== this.#authorityGeneration) throw new Error("[POLICY_BLOCKED] Permission authority changed after approval.");
+      } : undefined,
       ...request.pathApproval,
     });
   }
 
   #scopeAllows(request: OperationRequest): boolean {
+    if (request.readOnlyPreview && allTargetsInsideWorkspaces(request.targetAssessments)) return true;
     if ((request.operation === "bash" || request.operation === "powershell") && !request.highRisk && !request.opaqueScript && request.primitives.length === 0) return true;
     if (this.#state.mode === "read-only") return false;
     if (this.#state.mode === "full-access") return true;

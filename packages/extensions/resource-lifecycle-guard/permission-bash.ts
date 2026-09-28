@@ -3,6 +3,7 @@ import { basename, resolve } from "node:path";
 import { hasUninspectableBashState, unsafeBashLoopHeaderReason } from "./core.ts";
 import { extractCommandSubstitutions, prepareShellAnalysis } from "./shell-substitution.ts";
 import { parseTimeoutInvocation } from "./timeout-wrapper.ts";
+import { boundedShellInput } from "@super-pi/coding-agent";
 import { bashPipelinePrefixEnd, bashScriptOperandIndex, hasStatefulBashPrintf, isBashArithmeticCommandHead, isBashNetworkRedirectionTarget, shellExpansionRisk, hasUnsafeBashTestOperand, hasUnsafeCommandQueryOperand, isBashDoubleBracketCloseBoundary, isBashDoubleBracketHead, isBashProcessSubstitutionStart, isBashTestWhitespace, isShellDynamicDescriptor, isShellFileDescriptor, isShellOutputFileRedirection, isSimpleBashAnsiCQuote, isStaticDescriptorCopy, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
 
 const MAX_COMMAND_CHARS = 128 * 1024;
@@ -642,6 +643,12 @@ export function inspectBashPermissionScope(input: unknown, cwd: string): BashPer
     markOpaque(builder, "oversized_command");
     return publicScope(builder);
   }
-  inspectScript(command, resolve(cwd), 0, builder);
+  const stdin = command.includes("<<") ? boundedShellInput(command) : undefined;
+  if (stdin) {
+    inspectScript(stdin.analysisCommand, resolve(cwd), 0, builder);
+    // Never infer harmless input from the delimiter or consumer name. The full
+    // original command/body remains in approval hashing and the final binding.
+    markOpaque(builder, `stdin_${stdin.kind}:${stdin.consumer}`);
+  } else inspectScript(command, resolve(cwd), 0, builder);
   return publicScope(builder);
 }

@@ -361,7 +361,7 @@ export {
 	type SkillFrontmatter,
 } from "./core/skills.ts";
 export { createSyntheticSourceInfo } from "./core/source-info.ts";
-export { type EditDiffResult, generateDiffString, generateUnifiedPatch } from "./core/tools/edit-diff.ts";
+export { type EditDiffResult, generateDiffString, generateUnifiedPatch, prepareExactEditContent } from "./core/tools/edit-diff.ts";
 // Tools
 export {
 	type BashOperations,
@@ -512,3 +512,9 @@ export { findUnsafePowerShellSegment } from "./utils/powershell-policy.ts";
 
 /** Experimental read-only protected-operation ownership inspection. */
 export { inspectOperationWriter } from "./core/operation-journal.ts";
+
+export { prepareShellCwd, getShellCwdBinding, attachShellCwdBinding, type ShellCwdBinding } from "./core/tools/shell-cwd.ts";
+
+export { withMsysStdinBridge, MAX_MSYS_STDIN_COMMAND_BYTES, MAX_WINDOWS_ENVIRONMENT_CHARS, MSYS_STDIN_COMMAND_ENV } from "./core/tools/msys-stdin.ts";
+export { boundedShellInput, MAX_BOUND_SHELL_INPUT_BYTES } from "./core/tools/bounded-shell-input.ts";
+export { readShellExecution, shellExecutionSucceeded, shellFailureCategory, type ShellExecutionFacts } from "./core/tools/shell-execution.ts";

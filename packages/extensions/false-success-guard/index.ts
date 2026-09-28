@@ -1,3 +1,4 @@
+import { recentMutationEntries } from "../mutation-guard-write/session-evidence.ts";
 import type { ExtensionAPI, ToolResultEvent } from "@super-pi/coding-agent";
 import {
   beginPromptBoundary,
@@ -18,10 +19,13 @@ const GOAL_COMPLETE_TOOL = "goal_complete";
 export default function falseSuccessGuard(pi: ExtensionAPI): void {
   const state = createFalseSuccessState();
   const lifecycle = createFalseSuccessLifecycleState();
+  // Invocation-owned references, including authorization vetoes that have no tool_result hook.
+  const pendingMutations = new Map<string, { name: string; input: Record<string, unknown> }>();
 
   const reset = (): void => {
     lifecycle.pendingExplicitBoundary = false;
     resetFalseSuccessState(state);
+    pendingMutations.clear();
   };
   const appendAudit = (audit: InterventionAudit): void => {
     try {
@@ -33,6 +37,7 @@ export default function falseSuccessGuard(pi: ExtensionAPI): void {
 
   pi.on("session_start", reset);
   pi.on("session_tree", reset);
+  pi.on("session_shutdown", reset);
 
   pi.on("input", (event) => {
     observeInputBoundary(lifecycle, event);
@@ -43,6 +48,11 @@ export default function falseSuccessGuard(pi: ExtensionAPI): void {
   });
 
   pi.on("tool_call", (event, ctx) => {
+    if (isNativeOrBatch(event.toolName)) {
+      const pending = pendingMutations.get(event.toolCallId);
+      if (pending) pending.input = event.input;
+      return;
+    }
     if (event.toolName !== GOAL_COMPLETE_TOOL) return undefined;
     const intervention = goalCompletionIntervention(state, modelName(ctx.model));
     if (!intervention) return undefined;
@@ -50,9 +60,31 @@ export default function falseSuccessGuard(pi: ExtensionAPI): void {
     return { block: true, reason: intervention.reason };
   });
 
+  pi.on("tool_execution_start", (event, ctx) => {
+    if (!isNativeOrBatch(event.toolName)) return;
+    if (pendingMutations.size >= 128) {
+      observeToolResult(state, { toolName: "file_batch", input: {}, isError: true, cwd: ctx.cwd });
+      return;
+    }
+    pendingMutations.set(event.toolCallId, { name: event.toolName, input: event.args });
+  });
+  pi.on("tool_execution_end", (event, ctx) => {
+    const pending = pendingMutations.get(event.toolCallId);
+    pendingMutations.delete(event.toolCallId);
+    if (!pending || pending.name !== event.toolName) return;
+    observeToolResult(state, { toolName: pending.name, toolCallId: event.toolCallId, input: pending.input,
+      isError: event.isError, details: event.result.details, cwd: ctx.cwd, branch: recentMutationEntries(ctx.sessionManager) });
+  });
+
   pi.on("tool_result", (event: ToolResultEvent, ctx) => {
+    if (isNativeOrBatch(event.toolName)) {
+      const pending = pendingMutations.get(event.toolCallId);
+      if (pending) pending.input = event.input;
+      return;
+    }
     observeToolResult(state, {
       toolName: event.toolName,
+      toolCallId: event.toolCallId,
       input: event.input,
       isError: event.isError,
       text: event.isError ? collectText(event.content, 8_192) : undefined,
@@ -81,6 +113,8 @@ export default function falseSuccessGuard(pi: ExtensionAPI): void {
     };
   });
 }
+
+function isNativeOrBatch(name: string): boolean { return name === "file_batch" || name === "delete" || name === "move"; }
 
 function collectText(
   content: ReadonlyArray<{ type: string; text?: string }>,

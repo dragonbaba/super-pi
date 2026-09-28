@@ -44,6 +44,37 @@ A server entry contains `command`, `extensions`, and optional `env`, `initializa
 
 `/lsp` reports configured commands and availability. `lsp_diagnostics` accepts only one `server` string and starts at most one server per call. If requested paths match multiple routes, split the request or choose one server explicitly. LSP results are targeted development feedback; repository-native typechecks, builds, and tests remain authoritative.
 
+Command availability is not proof of service startup or language coverage. Diagnostics
+default to the session workspace, report the number of submitted files and the file
+limit, and label zero submitted files `not_checked`. A missing route, unavailable
+service, missing pull report, or push server that publishes nothing does not establish
+a validation pass. For `lsp_diagnostics`, `pushDiagnosticsGraceMs` bounds the wait
+for a publication; silence returns an unconfirmed-diagnostics error. An actual empty
+report is still valid diagnostic feedback. Validation requests do not send a previous
+result ID, so their pull responses must contain a full `items` report. Source fixes
+retain the previous bounded empty diagnostic context for code actions on silent-clean
+servers; computing a code action does not establish a validation pass.
+
+Explicit relative roots are resolved from the session workspace; trimmed-empty roots
+use that workspace as well. Nonblank roots preserve their original whitespace.
+Mixed requests return `partial` with `isError: true` and
+the matching skipped `uncoveredFiles` when an unavailable default server leaves scope
+uncovered. Missing defaults for unrelated file types do not mark a request partial.
+If a skipped route stops with unvisited scope, `skippedScopeLimited` preserves the
+uncertainty even when every collected file overlaps a live route. Available routes
+with unvisited scope set `routedScopeLimited` and also return `partial`; reaching the
+cap exactly after exhausting the requested scope remains complete. These states do
+not invent an overflow count or perform an additional directory scan. An initial
+empty push publication stays provisional during its configured grace window so a
+later non-empty publication can still supply the result.
+
+Prefer existing project checks and an already known applicable LSP route. Use focused
+checks only to fill specific gaps, such as self-contained assets or reference
+consistency. State actual match/file counts and untested scope; zero script matches
+cannot validate JavaScript. A registered HTML route does not prove embedded JavaScript
+coverage, and finite regex checks cannot establish complete HTML/JS or browser behavior.
+No service is automatically installed or started after each write.
+
 ## Verification
 
 ```bash

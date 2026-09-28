@@ -28,6 +28,8 @@ jobs:
       - run: npm run check
       - run: npm run build:offline
       - run: npm run alpha:g2-probe
+      - name: Native commit resource costs (five processes)
+        run: node scripts/bench/native-file-commit-multiprocess.mjs
       - run: npm test
 
   verify-windows:
@@ -49,4 +51,6 @@ jobs:
       - run: npm run check
       - run: npm run build:offline
       - run: npm run alpha:g2-probe
+      - name: Native commit resource costs (five processes)
+        run: node scripts/bench/native-file-commit-multiprocess.mjs
       - run: npm test

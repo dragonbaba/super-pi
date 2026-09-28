@@ -1,0 +1,273 @@
+import assert from "node:assert/strict";
+import test, { after, mock } from "node:test";
+import fs from "node:fs/promises";
+import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, symlinkSync, unlinkSync, writeFileSync, linkSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { syncBuiltinESMExports } from "node:module";
+import { createJiti } from "jiti";
+import { mutationFixture, MutationWriteGuard } from "./helpers/mutation-fixture.ts";
+import { FakeScheduler } from "./helpers/runtime-instrumentation.ts";
+import { protectWindowsFixture } from "./helpers/native-metadata-fixture.ts";
+import { Worker } from "node:worker_threads";
+import { execFileSync } from "node:child_process";
+import { nativeFileRequest } from "../packages/extensions/mutation-guard-write/native-file-client.ts";
+const { BatchInvocation, getBatchPreparation } = await createJiti(import.meta.url).import<any>("../packages/extensions/mutation-guard-write/file-batch.ts");
+
+for (const dryRun of [false, true]) for (const kind of ["exact", "snapshot", "overwrite"]) test(`N2 all-item preflight refuses unsupported ${kind} before first item, dryRun=${dryRun}`, { skip: process.platform !== "win32" && process.platform !== "linux" }, async t => {
+  const f = await mutationFixture(t), target = join(f.cwd, "unsupported"), first = join(f.cwd, "would-create");
+  writeFileSync(target, "before");
+  const powershell = process.platform === "win32" ? join(process.env.SystemRoot!, "System32/WindowsPowerShell/v1.0/powershell.exe") : undefined;
+  const options = { windowsHide: true, env: { ...process.env, N2_TARGET: target } };
+  if (powershell) execFileSync(powershell, ["-NoProfile", "-NonInteractive", "-Command", "$ErrorActionPreference='Stop';[IO.File]::SetAttributes($env:N2_TARGET,[IO.FileAttributes]::Hidden)"], options);
+  else await fs.chmod(target, 0o4755);
+  try {
+    const read = await f.call("read", { path: target }, "capability-read"); assert.equal(read.isError, false);
+    const entries = await fs.readdir(f.cwd);
+    const operation = kind === "overwrite" ? { operation: "write", mode: "overwrite", path: target, content: "after" }
+      : kind === "snapshot" ? { operation: "edit", path: target, ...anchors(read) }
+      : { operation: "edit", path: target, edits: [{ oldText: "before", newText: "after" }] };
+    const result = await f.call("file_batch", { dryRun, operations: [{ operation: "write", mode: "create", path: first, content: "first" }, operation] }, "capability-batch");
+    assert.equal(result.isError, true); assert.match(JSON.stringify(result), /UNSUPPORTED_COMMIT/);
+    assert.equal(existsSync(first), false); assert.equal(readFileSync(target, "utf8"), "before");
+    assert.deepEqual(await fs.readdir(f.cwd), entries);
+  } finally {
+    if (powershell) execFileSync(powershell, ["-NoProfile", "-NonInteractive", "-Command", "$ErrorActionPreference='Stop';[IO.File]::SetAttributes($env:N2_TARGET,[IO.FileAttributes]::Archive)"], options);
+    else await fs.chmod(target, 0o755);
+  }
+});
+for (const dryRun of [false, true]) for (const kind of ["exact", "snapshot", "overwrite"]) test(`N2 denied Windows append right refuses whole ${kind} batch before first item, dryRun=${dryRun}`, { skip: process.platform !== "win32" }, async t => {
+  const f = await mutationFixture(t), target = join(f.cwd, "denied-append"), first = join(f.cwd, "would-create");
+  writeFileSync(target, "before");
+  const powershell = join(process.env.SystemRoot!, "System32/WindowsPowerShell/v1.0/powershell.exe");
+  const setup = "$ErrorActionPreference='Stop';$a=[IO.File]::GetAccessControl($env:N2_TARGET);$u=[Security.Principal.WindowsIdentity]::GetCurrent().User;$r=New-Object Security.AccessControl.FileSystemAccessRule($u,[Security.AccessControl.FileSystemRights]::AppendData,[Security.AccessControl.AccessControlType]::Deny);";
+  const options = { windowsHide: true, env: { ...process.env, N2_TARGET: target } };
+  execFileSync(powershell, ["-NoProfile", "-NonInteractive", "-Command", setup + "$a.AddAccessRule($r);[IO.File]::SetAccessControl($env:N2_TARGET,$a)"], options);
+  try {
+    const before = await nativeFileRequest("inspect", { path: target }), entries = await fs.readdir(f.cwd);
+    const read = await f.call("read", { path: target }, "append-read"); assert.equal(read.isError, false);
+    const operation = kind === "overwrite" ? { operation: "write", mode: "overwrite", path: target, content: "after" }
+      : kind === "snapshot" ? { operation: "edit", path: target, ...anchors(read) }
+      : { operation: "edit", path: target, edits: [{ oldText: "before", newText: "after" }] };
+    const result = await f.call("file_batch", { dryRun, operations: [{ operation: "write", mode: "create", path: first, content: "first" }, operation] }, "append-batch");
+    assert.equal(result.isError, true); assert.ok(JSON.stringify(result).includes("UNSUPPORTED_COMMIT"), JSON.stringify(result));
+    assert.equal(existsSync(first), false); assert.equal(readFileSync(target, "utf8"), "before");
+    assert.deepEqual(await fs.readdir(f.cwd), entries);
+    const after = await nativeFileRequest("inspect", { path: target });
+    assert.equal(after.securityFingerprint, before.securityFingerprint); assert.equal(after.attributes, before.attributes); assert.equal(after.creationTime, before.creationTime);
+    assert.equal((await nativeFileRequest("stats")).activeHandles, 0);
+  } finally {
+    execFileSync(powershell, ["-NoProfile", "-NonInteractive", "-Command", setup + "$a.RemoveAccessRuleSpecific($r);[IO.File]::SetAccessControl($env:N2_TARGET,$a)"], options);
+  }
+});
+let afterIO: ((kind: string, path: string, flags?: string) => void | Promise<void>) | undefined;
+let writes: string[] | undefined;
+for (const kind of ["realpath", "lstat", "readFile", "mkdir", "writeFile", "link", "unlink", "rename", "open"] as const) {
+  const original = fs[kind];
+  mock.method(fs, kind, async function(...args: any[]) {
+    if (["mkdir", "writeFile", "link", "unlink", "rename"].includes(kind) || kind === "open" && args[1] === "wx") writes?.push(`${kind}:${args[0]}`);
+    const result = await Reflect.apply(original, fs, args);
+    // N2 hashes through bounded FileHandle reads. Keep the original I/O fault
+    // matrix at that actual production boundary instead of a removed readFile.
+    if (kind === "open" && (args[1] === "r" || args[1] === "r+")) {
+      const read = result.read.bind(result);
+      result.read = async (...readArgs: any[]) => { const value = await read(...readArgs); await afterIO?.("readFile", String(args[0])); return value; };
+    }
+    if (kind === "open" && args[1] === "r+") {
+      const write = result.write.bind(result);
+      result.write = async (...writeArgs: any[]) => { writes?.push(`handleWrite:${args[0]}`); return write(...writeArgs); };
+    }
+    await afterIO?.(kind, String(args[0]), args[1]); return result;
+  });
+}
+const post = Worker.prototype.postMessage;
+mock.method(Worker.prototype, "postMessage", function(this: Worker, ...args: any[]) {
+  if (args[0]?.operation === "replace") writes?.push(`nativeReplace:${args[0].target}`);
+  return Reflect.apply(post, this, args);
+});
+syncBuiltinESMExports();
+after(() => { afterIO = undefined; writes = undefined; mock.restoreAll(); syncBuiltinESMExports(); });
+function anchors(read: any) {
+  const text = read.content.filter((b: any) => b.type === "text").map((b: any) => b.text).join("\n"); const i = text.indexOf("snapshot=") + 9;
+  return { snapshot: text.slice(i, i + 27), edits: [{ kind: "replace", start: text.split("\n").find((r: string) => r.startsWith("1#"))!.split("|")[0], newLines: ["after"] }] };
+}
+async function aliasFixture(t: test.TestContext) {
+  const f = await mutationFixture(t); const cwd = realpathSync.native(f.cwd), alias = join(cwd, "alias");
+  for (const name of ["one", "two"]) { mkdirSync(join(cwd, name, "inner"), { recursive: true }); writeFileSync(join(cwd, name, "inner/file"), "before\n"); await f.call("read", { path: join(cwd, name, "inner/file") }, `read-${name}`); }
+  symlinkSync(join(cwd, "one"), alias, process.platform === "win32" ? "junction" : "dir");
+  const read = await f.call("read", { path: join(alias, "inner/file") }, "read-alias");
+  const hits: string[] = []; writes = hits;
+  t.after(() => { afterIO = undefined; writes = undefined; });
+  function drift() { unlinkSync(alias); symlinkSync(join(cwd, "two"), alias, process.platform === "win32" ? "junction" : "dir"); }
+  return { ...f, cwd, alias, hits, read, drift };
+}
+
+test("N2 batch commit selection reuses one invocation callback and releases its progress owner", async t => {
+  const f = await mutationFixture(t), execute = BatchInvocation.prototype.execute; let invocation: any;
+  const callbacks: unknown[] = [];
+  t.mock.method(BatchInvocation.prototype, "execute", async function(this: any, ...args: any[]) { invocation = this; return Reflect.apply(execute, this, args); });
+  for (let i = 0; i < 4; i++) { writeFileSync(join(f.cwd, `callback${i}`), "before"); await f.call("read", { path: `callback${i}` }, `callback-read${i}`); }
+  f.onRecord(data => { if (data.phase === "commit_prepared") callbacks.push(invocation.currentItem.approval.commitSelected); });
+  const result = await f.call("file_batch", { operations: Array.from({ length: 4 }, (_, i) => ({ operation: "edit", path: `callback${i}`, edits: [{ oldText: "before", newText: "after" }] })) }, "stable-commit-selection");
+  assert.equal(result.isError, false, JSON.stringify(result)); assert.equal(callbacks.length, 4);
+  assert.equal(new Set(callbacks).size, 1); assert.equal(callbacks[0], invocation.recordCommitSelection);
+  assert.equal(invocation.progressPi, undefined); assert.equal(invocation.currentItem, undefined); assert.equal(invocation.items.length, 0);
+  assert.throws(() => invocation.recordCommitSelection({ strategy: "staged_replace" }), /no longer active/);
+  for (let i = 0; i < 4; i++) assert.equal(readFileSync(join(f.cwd, `callback${i}`), "utf8"), "after");
+});
+for (const kind of ["exact", "overwrite", "snapshot", "create", "delete", "move"]) test(`R1 intent alias drift: ${kind}`, async t => {
+  const f = await aliasFixture(t);
+  f.onRecord(data => { if (data.phase === "intent" && data.itemId === "batch:1") f.drift(); });
+  const path = kind === "create" ? "@alias/inner/new/file" : kind === "delete" || kind === "move" ? "alias/inner/file" : "@alias/inner/file";
+  const item = kind === "create" || kind === "overwrite" ? { operation: "write", mode: kind, path, content: "after\n" }
+    : kind === "delete" || kind === "move" ? { operation: kind, path, ...(kind === "move" ? { destination: "moved" } : {}) }
+    : { operation: "edit", path, ...(kind === "snapshot" ? anchors(f.read) : { edits: [{ oldText: "before", newText: "after" }] }) };
+  const result = await f.call("file_batch", { operations: [{ operation: "write", mode: "create", path: "first", content: "first" }, item, { operation: "write", mode: "create", path: "last", content: "last" }] }, "batch");
+  t.diagnostic(JSON.stringify({ kind, statuses: (result.details as any)?.items?.map((i: any) => i.status), hits: f.hits, one: readFileSync(join(f.cwd, "one/inner/file"), "utf8"), two: readFileSync(join(f.cwd, "two/inner/file"), "utf8") }));
+  assert.equal(result.isError, true); assert.deepEqual((result.details as any).items.map((i: any) => i.status), ["succeeded", "failed_no_change", "not_started"]);
+  for (const root of ["one", "two"]) { assert.equal(readFileSync(join(f.cwd, root, "inner/file"), "utf8"), "before\n"); assert.equal(existsSync(join(f.cwd, root, "inner/new")), false); }
+  assert.equal(readFileSync(join(f.cwd, "first"), "utf8"), "first"); assert.equal(existsSync(join(f.cwd, "last")), false); assert.equal(existsSync(join(f.cwd, "moved")), false);
+});
+for (const operation of ["delete", "move"]) test(`R2 assessment to native plan alias drift: ${operation}`, async t => {
+  const f = await aliasFixture(t); let swapped = false;
+  afterIO = (kind, path) => { if (!swapped && kind === "realpath" && path === join(f.alias, "inner/file")) { swapped = true; f.drift(); } };
+  const result = await f.call("file_batch", { operations: [{ operation, path: join(f.alias, "inner/file"), ...(operation === "move" ? { destination: "moved" } : {}) }] });
+  afterIO = undefined;
+  t.diagnostic(JSON.stringify({ operation, swapped, result, hits: f.hits }));
+  assert.equal(swapped, true); assert.equal(result.isError, true); assert.deepEqual(f.hits, []);
+  for (const root of ["one", "two"]) assert.equal(readFileSync(join(f.cwd, root, "inner/file"), "utf8"), "before\n");
+  assert.equal(existsSync(join(f.cwd, "moved")), false);
+});
+for (const mode of ["timeout", "cancel"]) for (const snapshots of [false, true]) for (const index of [0, 1, 2]) test(`R5 real tool_call ${mode} with pending item ${index}, snapshots=${snapshots}`, { timeout: 10000 }, async t => {
+  const scheduler = new FakeScheduler(); const f = await mutationFixture(t, { scheduler, hookTimeouts: { safety: { timeoutMs: 100 } } });
+  await f.freezeTurn();
+  const path = join(realpathSync.native(f.cwd), `file${index}`), reads: any[] = []; for (let i = 0; i < 3; i++) { writeFileSync(join(f.cwd, `file${i}`), "before\n"); reads.push(await f.call("read", { path: join(f.cwd, `file${i}`) }, `read${i}`)); }
+  // Reads above precede the frozen mutation round.
+  await f.freezeTurn();
+  let entered!: () => void, resume!: () => void, settled!: () => void;
+  const arrival = new Promise<void>(r => { entered = r; }), gate = new Promise<void>(r => { resume = r; }), done = new Promise<void>(r => { settled = r; });
+  let invocation: any, raw: any; const prepare = BatchInvocation.prototype.prepare;
+  const fragments: any[] = []; const dispose = BatchInvocation.prototype.dispose;
+  t.mock.method(BatchInvocation.prototype, "dispose", function(this: any) { for (const item of this.items) if (item.snapshot) fragments.push(item.snapshot.byteEdits); return dispose.call(this); });
+  t.mock.method(BatchInvocation.prototype, "prepare", async function(this: any, ...args: any[]) { invocation = this; raw = this.original; try { return await prepare.apply(this, args); } finally { settled(); } });
+  let held = false;
+  afterIO = async (kind, target) => { if (!held && kind === "readFile" && realpathSync.native(target) === path) { held = true; entered(); await gate; } };
+  t.after(() => { resume(); afterIO = undefined; });
+  const pending = f.call("file_batch", { operations: [0, 1, 2].map(i => ({ operation: "edit", path: `file${i}`, ...(snapshots ? anchors(reads[i]) : { edits: [{ oldText: "before", newText: "after" }] }) })) }, "timed");
+  await Promise.race([arrival, pending.then(result => { assert.fail(JSON.stringify(result)); })]);
+  if (mode === "timeout") scheduler.advanceBy(100); else f.agent.abort();
+  // Timeout rejects before I/O settles; direct cancellation may await cooperative preparation.
+  if (mode === "cancel") resume();
+  const result = await pending; assert.equal(result.isError, true); assert.equal(f.runner.hookDeliveryStats.timeouts, mode === "timeout" ? 1 : 0);
+  resume(); await done; await new Promise<void>(r => setImmediate(r)); afterIO = undefined;
+  t.diagnostic(JSON.stringify({ index, items: invocation.items.length, paths: invocation.paths.length, attached: getBatchPreparation(raw) !== undefined, tasks: scheduler.pendingTasks }));
+  assert.equal(invocation.items.length, 0); assert.equal(invocation.paths.length, 0); assert.equal(getBatchPreparation(raw), undefined); assert.equal(scheduler.pendingTasks, 0);
+  assert.equal(invocation.original, undefined); for (const fragment of fragments) assert.equal(fragment.length, 0);
+  assert.equal(f.agent.state.pendingToolCalls.size, 0); assert.equal((f.runner as any).finalAuthorizations?.size ?? 0, 0);
+  for (let i = 0; i < 3; i++) assert.equal(readFileSync(join(f.cwd, `file${i}`), "utf8"), "before\n");
+  const operations = Array.from({ length: 16 }, (_, i) => ({ operation: "write", mode: "create", path: `probe/${i}`, content: "" }));
+  assert.equal((await f.call("file_batch", { operations, dryRun: true }, "budget")).isError, false);
+});
+
+for (const strategy of ["staged", "inplace"]) for (const kind of ["exact", "overwrite", "snapshot"]) for (const change of ["alias", "file", "parent"]) for (const protectedPath of [false, true]) test(`R1 final async read ${strategy}/${kind}/${change}/protected=${protectedPath}`, async t => {
+  const f = await aliasFixture(t); let path = join(f.alias, "inner/file"), original = join(f.cwd, "one/inner/file");
+  if (protectedPath) {
+    const dir = join(f.cwd, ".git"); mkdirSync(dir); original = join(dir, "file"); writeFileSync(original, "before\n"); path = original;
+    await f.call("read", { path: original }, "protected-read");
+  }
+  if (strategy === "staged") await protectWindowsFixture(original);
+  else linkSync(original, join(f.cwd, "commit-hardlink"));
+  const read = await f.call("read", { path }, "final-read");
+  let inside = false, staged = false, inPlace = false, sourceReads = 0, changed = false;
+  const method = kind === "exact" ? "writeEditContent" : "write";
+  if (kind !== "snapshot") {
+    const originalMethod = MutationWriteGuard.prototype[method];
+    t.mock.method(MutationWriteGuard.prototype, method, async function(this: any, ...args: any[]) { inside = true; try { return await originalMethod.apply(this, args); } finally { inside = false; } });
+  }
+  afterIO = (operation, target, flags) => {
+    if (operation === "open" && target.includes(".pi-file-commit-")) staged = true;
+    if (operation === "open" && target === original && flags === "r+") inPlace = true;
+    if (inPlace && operation === "readFile" && target === original) sourceReads++;
+    if (changed || operation !== "readFile" || target !== original || !(kind === "snapshot" ? staged || inPlace && sourceReads > 2 : inside)) return;
+    changed = true;
+    if (change === "alias" && !protectedPath) f.drift();
+    else if (change === "parent") { const parent = resolve(original, ".."); renameSync(parent, parent + "-old"); mkdirSync(parent); writeFileSync(original, "before\n"); }
+    else { renameSync(original, original + "-old"); writeFileSync(original, "before\n"); }
+  };
+  const item = kind === "overwrite" ? { operation: "write", mode: "overwrite", path, content: "after\n" }
+    : { operation: "edit", path, ...(kind === "snapshot" ? anchors(read) : { edits: [{ oldText: "before", newText: "after" }] }) };
+  const before = (await nativeFileRequest("stats")).publicationAttempts;
+  const result = await f.call("file_batch", { operations: [item] }, "final"); afterIO = undefined;
+  assert.equal(changed, true); assert.equal(result.isError, true, JSON.stringify(result));
+  assert.equal(readFileSync(original, "utf8"), "before\n"); assert.equal(readFileSync(join(f.cwd, "two/inner/file"), "utf8"), "before\n");
+  assert.equal(f.hits.filter(hit => /^(writeFile|rename|handleWrite):/.test(hit)).length, 0, JSON.stringify(f.hits));
+  assert.equal((await nativeFileRequest("stats")).publicationAttempts, before, "worker dispatch is not an OS publication attempt");
+});
+
+for (const strategy of ["staged", "inplace"]) test(`R1 publication counter positive control: ${strategy}`, async t => {
+  const f = await aliasFixture(t), path = join(f.cwd, "one/inner/file");
+  if (strategy === "staged") await protectWindowsFixture(path); else linkSync(path, join(f.cwd, "hardlink"));
+  await f.call("read", { path }, "control-read");
+  const before = (await nativeFileRequest("stats")).publicationAttempts;
+  const result = await f.call("write", { path, content: "after\n" }, "control-write");
+  assert.equal(result.isError, false, JSON.stringify(result)); assert.equal(readFileSync(path, "utf8"), "after\n");
+  assert.ok(f.hits.some(hit => hit === `${strategy === "staged" ? "nativeReplace" : "handleWrite"}:${path}`), JSON.stringify(f.hits));
+  assert.equal((await nativeFileRequest("stats")).publicationAttempts - before, strategy === "staged" ? 1 : 0);
+});
+for (const mode of ["attach-failure", "prepare-error", "handoff"]) test(`R5 ownership ${mode}`, async t => {
+  const f = await mutationFixture(t); await f.freezeTurn(); let invocation: any, raw: any;
+  const prepare = BatchInvocation.prototype.prepare;
+  t.mock.method(BatchInvocation.prototype, "prepare", async function(this: any, ...args: any[]) { invocation = this; raw = this.original; const result = await prepare.apply(this, args); if (mode === "attach-failure") Object.preventExtensions(raw); return result; });
+  const operations: any[] = [{ operation: "write", mode: "create", path: "new/file", content: "x" }];
+  if (mode === "prepare-error") operations.push({ operation: "delete", path: "missing" });
+  const result = await f.call("file_batch", { operations }, "owner");
+  assert.equal(result.isError, mode !== "handoff"); assert.equal(invocation.items.length, 0); assert.equal(invocation.paths.length, 0); assert.equal(invocation.original, undefined); assert.equal(getBatchPreparation(raw), undefined);
+  invocation.release(); assert.equal(invocation.items.length, 0);
+  assert.equal(existsSync(join(f.cwd, "new/file")), mode === "handoff");
+});
+
+test("R5 late cleanup cannot refund a following call's successful charges", { timeout: 10000 }, async t => {
+  const scheduler = new FakeScheduler(), f = await mutationFixture(t, { scheduler, hookTimeouts: { safety: { timeoutMs: 100 } } });
+  const cwd = realpathSync.native(f.cwd);
+  for (let i = 0; i < 3; i++) { writeFileSync(join(cwd, `old${i}`), "before"); await f.call("read", { path: `old${i}` }); }
+  await f.freezeTurn();
+  let enter!: () => void, resume!: () => void, finish!: () => void;
+  const arrival = new Promise<void>(r => { enter = r; }), gate = new Promise<void>(r => { resume = r; }), done = new Promise<void>(r => { finish = r; });
+  let held = false; const prepare = BatchInvocation.prototype.prepare;
+  t.mock.method(BatchInvocation.prototype, "prepare", async function(this: any, ...args: any[]) { try { return await prepare.apply(this, args); } finally { if (this.id === "late") finish(); } });
+  afterIO = async (kind, path) => { if (!held && kind === "readFile" && path === join(cwd, "old2")) { held = true; enter(); await gate; } };
+  t.after(() => { resume(); afterIO = undefined; });
+  const pending = f.call("file_batch", { operations: [0, 1, 2].map(i => ({ operation: "edit", path: join(cwd, `old${i}`), edits: [{ oldText: "before", newText: "after" }] })) }, "late");
+  await arrival; scheduler.advanceBy(100); assert.equal((await pending).isError, true);
+  const operations = Array.from({ length: 14 }, (_, i) => ({ operation: "write", mode: "create", path: `new${i}`, content: "done" }));
+  assert.equal((await f.call("file_batch", { operations }, "following")).isError, false);
+  resume(); await done; afterIO = undefined;
+  assert.equal((await f.call("file_batch", { dryRun: true, operations: [0, 1, 2].map(i => ({ operation: "write", mode: "create", path: `excess${i}`, content: "" })) }, "over-budget")).isError, true);
+  assert.equal((await f.call("file_batch", { dryRun: true, operations: [0, 1].map(i => ({ operation: "write", mode: "create", path: `allowed${i}`, content: "" })) }, "remaining")).isError, false);
+  for (let i = 0; i < 3; i++) assert.equal(readFileSync(join(cwd, `old${i}`), "utf8"), "before");
+  for (let i = 0; i < 14; i++) assert.equal(readFileSync(join(cwd, `new${i}`), "utf8"), "done");
+  assert.equal(scheduler.pendingTasks, 0); assert.equal(f.agent.state.pendingToolCalls.size, 0);
+});
+
+for (const strategy of ["staged", "inplace"]) for (const batch of [false, true]) test(`snapshot content changes during final path gate, strategy=${strategy}, batch=${batch}`, async t => {
+  const f = await mutationFixture(t), target = join(realpathSync.native(f.cwd), "file"); writeFileSync(target, "before\n");
+  if (strategy === "staged") await protectWindowsFixture(target); else linkSync(target, join(f.cwd, "hardlink"));
+  const read = await f.call("read", { path: target }); let staged = false, inPlace = false, sourceReads = 0, changed = false; const effects: string[] = []; writes = effects;
+  afterIO = (kind, path, flags) => {
+    if (kind === "open" && path.includes(".pi-file-commit-")) staged = true;
+    if (kind === "open" && path === target && flags === "r+") inPlace = true;
+    if (inPlace && kind === "readFile" && path === target) sourceReads++;
+    // Shared commit validates this final permission/path gate before its bounded
+    // source hash. Inject here, never in later mutation-evidence observation.
+    if ((staged || inPlace && sourceReads >= 2) && !changed && kind === "realpath" && path === target) { changed = true; writeFileSync(target, "concurrent\n"); }
+  };
+  try {
+    const item = { operation: "edit", path: target, ...anchors(read) };
+    const result = await f.call(batch ? "file_batch" : "edit", batch ? { operations: [
+      { operation: "write", mode: "create", path: "first", content: "first" }, item,
+      { operation: "write", mode: "create", path: "last", content: "last" },
+    ] } : { path: target, ...anchors(read) }, "snapshot-final-path");
+    assert.equal(changed, true); assert.equal(result.isError, true, JSON.stringify(result)); assert.equal(readFileSync(target, "utf8"), "concurrent\n");
+    assert.equal(effects.some(effect => /^(rename|handleWrite|nativeReplace):/.test(effect)), false);
+    if (batch) { assert.deepEqual((result.details as any).items.map((item: any) => item.status), ["succeeded", "failed_no_change", "not_started"]); assert.equal(readFileSync(join(f.cwd,"first"),"utf8"),"first");assert.equal(existsSync(join(f.cwd,"last")),false); }
+  } finally { afterIO = undefined; writes = undefined; }
+});

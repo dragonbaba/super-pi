@@ -8,12 +8,15 @@
 
 import { randomBytes } from "node:crypto";
 import { createWriteStream, type WriteStream } from "node:fs";
+import { unlink } from "node:fs/promises";
+import { finished } from "node:stream/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { stripAnsi } from "../utils/ansi.ts";
 import { sanitizeBinaryOutput } from "../utils/shell.ts";
 import { CARRIAGE_RETURN_PATTERN } from "../utils/shell-regex.ts";
 import type { BashOperations } from "./tools/bash.ts";
+import { normalizeShellProcessResult, observedShellError, shellProcessResultFromError } from "./tools/shell-execution.ts";
 import { DEFAULT_MAX_BYTES, truncateTail } from "./tools/truncate.ts";
 
 // ============================================================================
@@ -109,10 +112,19 @@ export async function executeBashWithOperations(
 	};
 
 	try {
-		const result = await operations.exec(command, cwd, {
+		const result = normalizeShellProcessResult(await operations.exec(command, cwd, {
 			onData,
 			signal: options?.signal,
-		});
+		}));
+		// An observed zero exit alone does not mean the entire submitted command
+		// reached the shell. Propagate producer facts to direct Session/RPC callers
+		// before they can persist a successful BashResult; never retry the command.
+		if (result.inputError !== undefined) throw observedShellError(new Error(`[SHELL_INPUT_FAILED] Command input was not fully delivered: ${result.inputError}`), result);
+		if (result.observationError !== undefined) throw observedShellError(new Error(`[SHELL_OBSERVATION_FAILED] ${result.observationError}`), result);
+		if (result.observation?.outputDrained === false || result.observation?.started === false
+			|| result.termination !== undefined && result.termination !== "exit" || result.exitCode === null) {
+			throw observedShellError(new Error("[SHELL_EXECUTION_FAILED] Command completion was not fully observed; inspect state before retrying."), result);
+		}
 
 		const fullOutput = outputChunks.join("");
 		const truncationResult = truncateTail(fullOutput);
@@ -132,8 +144,10 @@ export async function executeBashWithOperations(
 			fullOutputPath: tempFilePath,
 		};
 	} catch (err) {
-		// Check if it was an abort
-		if (options?.signal?.aborted) {
+		// Cancellation cannot erase an already observed delivery/completion failure.
+		const observed = shellProcessResultFromError(err);
+		if (options?.signal?.aborted && (!observed || (observed.inputError === undefined && observed.observationError === undefined
+			&& observed.observation?.outputDrained !== false && observed.termination === "cancelled"))) {
 			const fullOutput = outputChunks.join("");
 			const truncationResult = truncateTail(fullOutput);
 			if (truncationResult.truncated) {
@@ -153,6 +167,19 @@ export async function executeBashWithOperations(
 
 		if (tempFileStream) {
 			tempFileStream.end();
+			// Rejection has no BashResult through which callers could find this log.
+			// Wait for this owned stream to close before removing its exact path.
+			try { await finished(tempFileStream, { cleanup: true }); } catch { /* Preserve the primary command failure. */ }
+		}
+		if (tempFilePath) {
+			try { await unlink(tempFilePath); }
+			catch (cleanupError) {
+				if ((cleanupError as NodeJS.ErrnoException).code !== "ENOENT") {
+					const failure = Object.assign(new Error(`${err instanceof Error ? err.message : String(err)}\n[SHELL_LOG_CLEANUP_FAILED] Output retained at ${tempFilePath}: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`, { cause: err }), { fullOutputPath: tempFilePath });
+					const result = shellProcessResultFromError(err);
+					throw result ? observedShellError(failure, result) : failure;
+				}
+			}
 		}
 
 		throw err;

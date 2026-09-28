@@ -48,6 +48,8 @@ const lspDiagnosticsTool = defineTool({
 	promptSnippet: "Run configured LSP diagnostics",
 	promptGuidelines: [
 		"Start at most one server per call; narrow ambiguous routes. Report missing servers and run the authoritative CLI typecheck after broad type changes.",
+		"Prefer existing authoritative project checks and available LSP routes covering the target. Tool registration alone does not establish server availability or embedded-language coverage. Reuse known configuration; do not install servers or start them after every write.",
+		"Report submitted file count, received diagnostics and uncovered scope. No route, skipped service, zero matching files/scripts or failed diagnostics is not a pass. Supplement only gaps with targeted checks; regex checks do not validate all HTML/JS or browser behavior.",
 	],
 	parameters: DiagnosticsParameters,
 	async execute(_toolCallId, params, signal, _onUpdate, ctx) {
@@ -59,11 +61,11 @@ const lspDiagnosticsTool = defineTool({
 				import("./runner.js"),
 				getClientPool(),
 			]);
-		const requestedRoot = resolveRoot(params.root);
+		const requestedRoot = resolveRoot(params.root, ctx.cwd);
 		const { adapters, timeoutMs } = loadRuntime(ctx.cwd, {
 			projectTrusted: ctx.isProjectTrusted(),
 		});
-		const { root, routes, skipped } = selectDiagnosticRoutes(
+		const { root, routes, skipped, uncoveredFiles, skippedScopeLimited, routedScopeLimited, incomplete } = selectDiagnosticRoutes(
 			adapters,
 			{ ...params, root: requestedRoot },
 			DEFAULT_FILE_LIMIT,
@@ -84,13 +86,16 @@ const lspDiagnosticsTool = defineTool({
 
 		const sections = [];
 		const routeDetails = [];
+		let submittedFiles = 0;
 		for (const { route, result } of results) {
+			submittedFiles += route.files.length;
 			sections.push(`${route.reason}\n\n${textFromResult(result)}`);
 			routeDetails.push({
 				server: route.adapter.name,
 				backend: route.adapter.name,
 				reason: route.reason,
 				files: route.files,
+				scopeLimited: route.scopeLimited,
 				details: result.details,
 			});
 		}
@@ -100,15 +105,27 @@ const lspDiagnosticsTool = defineTool({
 			for (const route of skipped) {
 				if (names) names += ", ";
 				names += route.adapter.name;
-				skippedDetails.push({ server: route.adapter.name, reason: route.reason, files: route.files });
+				skippedDetails.push({ server: route.adapter.name, reason: route.reason, files: route.files, scopeLimited: route.scopeLimited });
 			}
 			sections.push(`Skipped unavailable default LSP server(s): ${names}.`);
 		}
-		return runner.textResult(sections.join("\n\n---\n\n"), {
+		if (uncoveredFiles.length) sections.push(`Incomplete: ${uncoveredFiles.length} matching file(s) were not submitted because their default server was unavailable. No validation pass for that scope is established.`);
+		if (skippedScopeLimited) sections.push("Incomplete: a skipped route reached the file limit; additional uncovered matches are unknown. Narrow the requested scope before claiming completeness.");
+		if (routedScopeLimited) sections.push("Incomplete: an available route reached the file limit with unvisited requested scope. Narrow the scope or raise the bounded limit before claiming completeness.");
+		sections.push(submittedFiles === 0
+			? "Not checked: 0 files submitted to an LSP server. No validation pass is established."
+			: `Scope: ${submittedFiles} file(s) submitted, limited to the selected route and file limit. Embedded languages, unmatched files and browser/runtime behavior are not established by this result.`);
+		return { ...runner.textResult(sections.join("\n\n---\n\n"), {
 			root,
+			status: submittedFiles === 0 ? "not_checked" : incomplete ? "partial" : "diagnostics_received",
+			submittedFiles,
+			uncoveredFiles,
+			skippedScopeLimited,
+			routedScopeLimited,
+			fileLimit: params.limit ?? DEFAULT_FILE_LIMIT,
 			skipped: skippedDetails,
 			routes: routeDetails,
-		});
+		}), isError: submittedFiles === 0 || incomplete };
 	},
 });
 
@@ -130,7 +147,7 @@ const lspFixTool = defineTool({
 				import("./runner.js"),
 				getClientPool(),
 			]);
-		const requestedRoot = resolveRoot(params.root);
+		const requestedRoot = resolveRoot(params.root, ctx.cwd);
 		const { adapters, timeoutMs } = loadRuntime(ctx.cwd, {
 			projectTrusted: ctx.isProjectTrusted(),
 		});
@@ -180,7 +197,7 @@ const lspNavigateTool = defineTool({
 				import("./navigation.js"),
 				getClientPool(),
 			]);
-		const requestedRoot = resolveRoot(params.root);
+		const requestedRoot = resolveRoot(params.root, ctx.cwd);
 		const { adapters, timeoutMs } = loadRuntime(ctx.cwd, {
 			projectTrusted: ctx.isProjectTrusted(),
 		});
@@ -261,7 +278,7 @@ function buildStatusMessage(adapters: LspServerAdapter[], cwd: string, helpers: 
 				`${adapter.name} LSP command: ${command.command} ${command.args.join(" ")}`.trim(),
 				`${adapter.name} status: ${
 					helpers.commandExists(command.command, cwd, helpers.commandPathValue(adapter.env))
-						? "ready"
+						? "command available (service and language coverage not yet verified)"
 						: "command missing"
 				}`,
 			];

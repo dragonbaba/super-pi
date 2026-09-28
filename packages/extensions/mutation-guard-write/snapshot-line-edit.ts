@@ -1,6 +1,7 @@
+import { MUTATION_READ_SOURCE, readFileGeneration, verifyMutationReadSource } from "../../coding-agent/src/core/tools/read-window.ts";
 import { randomBytes } from "node:crypto";
-import { chmod, lstat, open, readFile, realpath, rename, rm } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { lstat, open, readFile, realpath } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
 import { TextDecoder } from "node:util";
 import {
   DEFAULT_MAX_BYTES,
@@ -22,6 +23,11 @@ import {
   validateSnapshotLineReference,
 } from "./snapshot-line-protocol.ts";
 import { assertNoNewSyntaxDiagnostics } from "./snapshot-syntax-guard.ts";
+import { snapshotPreview, type PreviewBudget, type ChangePreview } from "./change-preview.ts";
+import { capturePathIdentity, type PathIdentity } from "./native-file-core.ts";
+import { commitPreparedFile, FileCommitError, type FileCommitReceipt, type CommitMetadata } from "./file-commit.ts";
+import { selectCommitMetadata } from "./file-commit-metadata.ts";
+import { SNAPSHOT_ID_REGEX as SNAPSHOT_ID_PATTERN } from "./regex.ts";
 import {
   captureCompactSnapshot,
   compactFileLimit,
@@ -33,7 +39,6 @@ const MAX_SNAPSHOT_FILE_BYTES = 2 * 1024 * 1024;
 const MAX_SNAPSHOT_TOTAL_BYTES = 8 * 1024 * 1024;
 const MAX_SNAPSHOT_RECEIPTS = 128;
 const MAX_SNAPSHOT_EDIT_BYTES = 256 * 1024;
-const SNAPSHOT_ID_PATTERN = /^snap_[A-Za-z0-9_-]{22}$/u;
 const strictUtf8Decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
 export type SnapshotLineEditKind = "replace" | "delete" | "insert_before" | "insert_after";
@@ -101,6 +106,7 @@ export interface SnapshotReadResult {
   details?: ReadToolDetails;
 }
 export interface SnapshotLineEditResult {
+  commit: FileCommitReceipt;
   previousSha256: string;
   sha256: string;
   replacements: number;
@@ -115,7 +121,13 @@ export interface SnapshotLineEditHooks {
   assertPathAllowed: () => Promise<string>;
   reserveMutation?: (changedBytes: number) => number;
   beforeCommit?: () => void | Promise<void>;
+  assertCurrent?: () => void;
   afterCommit?: () => void | Promise<void>;
+  previewBudget?: PreviewBudget;
+  previewOnly?: boolean;
+  preparedTarget?: PathIdentity;
+  preparedParent?: PathIdentity;
+  commitSelected?: (metadata: Pick<CommitMetadata, "strategy" | "reason">) => void;
 }
 interface SnapshotStore {
   schemaVersion: 2;
@@ -276,6 +288,19 @@ function nativeReadProjection(bytes: Buffer, input: ReadToolInput): NativeReadPr
   return { text, firstLine, lastLine: firstLine + outputLines - 1, outputLines };
 }
 
+async function matchesReadSource(canonicalPath: string, result: SnapshotReadResult, bytes?: Buffer): Promise<boolean> {
+  const source = (result.content as any)[MUTATION_READ_SOURCE];
+  if (!source) return true;
+  if (canonicalPath !== source.canonicalPath) return false;
+  try {
+    if (bytes) return source.startByte >= 0 && source.endByte <= bytes.length
+      && sha256(bytes.subarray(source.startByte, source.endByte)) === source.sha256
+      && readFileGeneration(await lstat(source.canonicalPath, { bigint: true })) === source.fileGeneration;
+    return await verifyMutationReadSource(source);
+  }
+  catch { return false; } // Optional annotation must not fail a completed read.
+}
+
 export async function issueSnapshotForRead(
   sessionId: string,
   cwd: string,
@@ -292,6 +317,7 @@ export async function issueSnapshotForRead(
     // Files above the full-receipt ceiling may still qualify for a compact receipt.
   }
   if (fullCapture) {
+    if (!await matchesReadSource(fullCapture.canonicalPath, result, fullCapture.bytes)) return undefined;
     const projection = nativeReadProjection(fullCapture.bytes, input);
     if (!projection || projection.text !== displayed) return undefined;
     const lines = parsePhysicalLines(fullCapture.bytes);
@@ -326,6 +352,7 @@ export async function issueSnapshotForRead(
     return undefined;
   }
   if (!compact) return undefined;
+  if (!await matchesReadSource(compact.canonicalPath, result)) return undefined;
   const id = `snap_${randomBytes(16).toString("base64url")}`;
   rememberSnapshot({
     mode: "compact",
@@ -775,7 +802,22 @@ export async function resolveSnapshotCanonicalTarget(
   }
   return receipt.canonicalPath;
 }
-export async function executeSnapshotLineEdit(
+export interface PreparedSnapshotMutation {
+  target: PathIdentity;
+  parent: PathIdentity;
+  snapshotId: string;
+  sessionId: string;
+  receipt: SnapshotReceipt;
+  byteEdits: PreparedByteEdit[];
+  changedBytes: number;
+  replacements: number;
+  deduplicatedEdits: number;
+  diff: string;
+  patch: string;
+  firstChangedLine?: number;
+  preview?: ChangePreview;
+}
+export async function prepareSnapshotLineMutation(
   sessionId: string,
   cwd: string,
   path: string,
@@ -783,7 +825,7 @@ export async function executeSnapshotLineEdit(
   edits: readonly SnapshotLineEdit[],
   signal: AbortSignal | undefined,
   hooks: SnapshotLineEditHooks,
-): Promise<SnapshotLineEditResult> {
+): Promise<PreparedSnapshotMutation> {
   if (!SNAPSHOT_ID_PATTERN.test(snapshotId)) throw new Error("[SNAPSHOT_EDIT_UNKNOWN] Invalid snapshot identifier. No change.\nRead the needed range again; use that read's snapshot and LINE#ID anchors.");
   const receipt = snapshotStore().snapshots.get(snapshotId);
   if (!receipt || receipt.sessionId !== sessionId) throw new Error("[SNAPSHOT_EDIT_UNKNOWN] Snapshot is absent, expired, consumed, or belongs to another Session. No change.\nRead the needed range again; use that read's snapshot and LINE#ID anchors.");
@@ -803,61 +845,60 @@ export async function executeSnapshotLineEdit(
     forgetSnapshot(snapshotId);
     throw new Error("[SNAPSHOT_EDIT_STALE] Target content changed. No change.\nRead the needed range again; use that read's snapshot and LINE#ID anchors.");
   }
+  const target = hooks.preparedTarget ?? await capturePathIdentity(receipt.canonicalPath);
+  const parent = hooks.preparedParent ?? await capturePathIdentity(dirname(receipt.canonicalPath));
+  if (target.device !== String(receipt.identity.dev) || target.inode !== String(receipt.identity.ino)
+    || target.size !== String(receipt.identity.size) || target.mtime !== String(receipt.identity.mtimeNs)
+    || target.ctime !== String(receipt.identity.ctimeNs)) throw new Error("[SNAPSHOT_EDIT_STALE] Prepared identity changed.");
   const prepared = receipt.mode === "full"
     ? prepareEdits(receipt, edits)
     : prepareCompactEdits(receipt, current, edits);
   const beforeText = strictUtf8Decoder.decode(current);
   const afterText = strictUtf8Decoder.decode(prepared.output);
-  const diffResult = generateDiffString(beforeText, afterText);
-  try {
-    await assertNoNewSyntaxDiagnostics(receipt.canonicalPath, beforeText, afterText, edits, prepared.byteEdits);
-  } finally {
-    prepared.byteEdits.length = 0;
-  }
-  const patch = generateUnifiedPatch(receipt.canonicalPath, beforeText, afterText);
+  const preview = hooks.previewBudget ? snapshotPreview(current, prepared.byteEdits, hooks.previewBudget) : undefined;
+  const diffResult = hooks.previewOnly ? { diff: "", firstChangedLine: undefined } : generateDiffString(beforeText, afterText);
+  await assertNoNewSyntaxDiagnostics(receipt.canonicalPath, beforeText, afterText, edits, prepared.byteEdits);
+  const patch = hooks.previewOnly ? "" : generateUnifiedPatch(receipt.canonicalPath, beforeText, afterText);
+  return { target, parent, snapshotId, sessionId, receipt, byteEdits: prepared.byteEdits, changedBytes: prepared.changedBytes,
+    replacements: prepared.replacements, deduplicatedEdits: prepared.deduplicatedEdits,
+    diff: diffResult.diff, patch, firstChangedLine: diffResult.firstChangedLine, preview };
+}
+
+export async function executeSnapshotLineEdit(
+  sessionId: string, cwd: string, path: string, snapshotId: string, edits: readonly SnapshotLineEdit[],
+  signal: AbortSignal | undefined, hooks: SnapshotLineEditHooks,
+): Promise<SnapshotLineEditResult> {
+  const plan = await prepareSnapshotLineMutation(sessionId, cwd, path, snapshotId, edits, signal, hooks);
+  try { return await executePreparedSnapshotMutation(plan, signal, hooks); }
+  finally { plan.byteEdits.length = 0; }
+}
+
+export async function executePreparedSnapshotMutation(
+  plan: PreparedSnapshotMutation, signal: AbortSignal | undefined, hooks: SnapshotLineEditHooks,
+): Promise<SnapshotLineEditResult> {
+  const { receipt, snapshotId, patch } = plan;
+  if (snapshotStore().snapshots.get(snapshotId) !== receipt) throw new Error("[SNAPSHOT_EDIT_STALE] Prepared snapshot is no longer available.");
+  if (await hooks.assertPathAllowed() !== receipt.canonicalPath) throw new Error("[SNAPSHOT_EDIT_PATH] Prepared path changed.");
+  const current = await readFile(receipt.canonicalPath);
+  if (!sameIdentity(await currentIdentity(receipt.canonicalPath), receipt.identity) || sha256(current) !== receipt.sha256) throw new Error("[SNAPSHOT_EDIT_STALE] Prepared source changed.");
+  const chunks: Buffer[] = [];
+  let cursor = 0;
+  for (const edit of plan.byteEdits) { chunks.push(current.subarray(cursor, edit.start), edit.replacement); cursor = edit.end; }
+  chunks.push(current.subarray(cursor));
+  const prepared = { output: Buffer.concat(chunks), changedBytes: plan.changedBytes, replacements: plan.replacements, deduplicatedEdits: plan.deduplicatedEdits };
+  const diffResult = plan;
   const reservationId = hooks.reserveMutation?.(prepared.changedBytes);
   if (signal?.aborted) throw new Error("Operation aborted");
-  const directory = dirname(receipt.canonicalPath);
-  const temporary = join(directory, `.pi-snapshot-edit-${process.pid}-${randomBytes(12).toString("hex")}.tmp`);
-  let committed = false;
   try {
-    const handle = await open(temporary, "wx", 0o600);
-    try {
-      await handle.writeFile(prepared.output);
-      await handle.sync();
-    } finally {
-      await handle.close();
-    }
-    const originalMode = (await lstat(receipt.canonicalPath)).mode & 0o777;
-    await chmod(temporary, originalMode);
-    if (signal?.aborted) throw new Error("Operation aborted");
-    await hooks.beforeCommit?.();
-    if (signal?.aborted) throw new Error("Operation aborted");
-    const finalIdentity = await currentIdentity(receipt.canonicalPath);
-    const finalBytes = await readFile(receipt.canonicalPath);
-    const canonicalDirectory = await realpath(directory);
-    if (canonicalDirectory !== directory || !sameIdentity(finalIdentity, receipt.identity) || sha256(finalBytes) !== receipt.sha256) {
-      forgetSnapshot(snapshotId);
-      throw new Error("[SNAPSHOT_EDIT_STALE] Target changed before commit. No change.\nRead the needed range again; use that read's snapshot and LINE#ID anchors.");
-    }
-    await rename(temporary, receipt.canonicalPath);
-    committed = true;
+    const metadata = await selectCommitMetadata(plan.target);
+    signal?.throwIfAborted(); hooks.assertCurrent?.();
+    hooks.commitSelected?.(metadata);
+    const commit = await commitPreparedFile({ target: plan.target, parent: plan.parent, previousSha256: receipt.sha256, metadata }, prepared.output, { ...hooks, signal });
     forgetSnapshot(snapshotId);
-    let writtenSha256: string;
-    try {
-      await hooks.afterCommit?.();
-      const written = await readFile(receipt.canonicalPath);
-      writtenSha256 = sha256(written);
-      if (writtenSha256 !== sha256(prepared.output)) {
-        throw new Error("readback hash did not match the staged content");
-      }
-    } catch (error) {
-      const cause = error instanceof Error ? error.message : String(error);
-      throw new Error(`[SNAPSHOT_EDIT_PARTIAL] Atomic replacement committed but verification failed: ${cause}. Verify the target manually.`);
-    }
     return {
+      commit,
       previousSha256: receipt.sha256,
-      sha256: writtenSha256,
+      sha256: sha256(prepared.output),
       replacements: prepared.replacements,
       deduplicatedEdits: prepared.deduplicatedEdits,
       changedBytes: prepared.changedBytes,
@@ -866,7 +907,11 @@ export async function executeSnapshotLineEdit(
       firstChangedLine: diffResult.firstChangedLine,
       reservationId,
     };
-  } finally {
-    if (!committed) await rm(temporary, { force: true });
+  } catch (error) {
+    if (error instanceof FileCommitError) {
+      forgetSnapshot(snapshotId);
+      error.message = `${error.receipt.outcome === "not_committed" ? "[SNAPSHOT_EDIT_STALE] Failed before commit:" : "[SNAPSHOT_EDIT_PARTIAL]"} ${error.message}`;
+    }
+    throw error;
   }
 }
