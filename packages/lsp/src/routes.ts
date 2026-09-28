@@ -74,9 +74,13 @@ export function selectDiagnosticRoutes(
 		// Only actual unvisited scope creates uncertainty; an exact exhaustive cap does not.
 		if (route.scopeLimited) skippedScopeLimited = true;
 	}
-	for (const route of routes) for (const file of route.files) uncoveredFiles.delete(file);
-	return { root, routes, skipped, uncoveredFiles: [...uncoveredFiles], skippedScopeLimited,
-		incomplete: uncoveredFiles.size > 0 || skippedScopeLimited };
+	let routedScopeLimited = false;
+	for (const route of routes) {
+		for (const file of route.files) uncoveredFiles.delete(file);
+		routedScopeLimited ||= route.scopeLimited;
+	}
+	return { root, routes, skipped, uncoveredFiles: [...uncoveredFiles], skippedScopeLimited, routedScopeLimited,
+		incomplete: uncoveredFiles.size > 0 || skippedScopeLimited || routedScopeLimited };
 }
 
 export function selectFixRoute(adapters: LspServerAdapter[], params: SingleFileRouteParams) {

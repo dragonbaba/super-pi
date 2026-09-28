@@ -60,9 +60,10 @@ use that workspace as well. Nonblank roots preserve their original whitespace.
 Mixed requests return `partial` with `isError: true` and
 the matching skipped `uncoveredFiles` when an unavailable default server leaves scope
 uncovered. Missing defaults for unrelated file types do not mark a request partial.
-If a skipped route reaches its collection cap, `skippedScopeLimited` preserves the
-uncertainty about additional matches even when every collected file overlaps a live
-route. This conservatively remains partial until the request is narrowed; it does
+If a skipped route stops with unvisited scope, `skippedScopeLimited` preserves the
+uncertainty even when every collected file overlaps a live route. Available routes
+with unvisited scope set `routedScopeLimited` and also return `partial`; reaching the
+cap exactly after exhausting the requested scope remains complete. These states do
 not invent an overflow count or perform an additional directory scan. An initial
 empty push publication stays provisional during its configured grace window so a
 later non-empty publication can still supply the result.

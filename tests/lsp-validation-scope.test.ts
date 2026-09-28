@@ -128,6 +128,7 @@ test("tool uses session cwd, preserves received count and discloses unverified e
   const f = fixture(), registration = tools();
   const ctx = { cwd: f.root, isProjectTrusted() { return true; }, ui: { setStatus() {} } };
   try {
+    await registration.events.get("session_start")({}, ctx);
     for (const name of ["subproject", " subproject", ...(process.platform === "win32" ? [] : ["subproject "])]) {
       mkdirSync(join(f.root, name)); writeFileSync(join(f.root, name, "example.ts"), "const n = 1;");
     }
@@ -153,6 +154,23 @@ test("strict validation can fail for silence while source fixes retain an empty 
     assert.match(result.content[0].text, /const n = 2/);
     assert.equal(readFileSync(join(f.root, "example.ts"), "utf8"), "const n = 1;", "preview is not a write or a validation pass");
   } finally { await pool.shutdownAll(); f.release(); }
+});
+
+test("actual tool reports live-route truncation as partial and exact-cap exhaustion as complete", async () => {
+  const f = fixture(), registration = tools();
+  const ctx = { cwd: f.root, isProjectTrusted() { return true; }, ui: { setStatus() {} } };
+  try {
+    await registration.events.get("session_start")({}, ctx);
+    writeFileSync(join(f.root, "second.ts"), "const second = 2;");
+    const partial = await registration.registered.get("lsp_diagnostics").execute("limited", { paths: ["example.ts", "second.ts"], limit: 1 }, undefined, undefined, ctx);
+    assert.equal(partial.details.submittedFiles, 1);
+    assert.equal(partial.details.routedScopeLimited, true);
+    assert.equal(partial.details.status, "partial"); assert.equal(partial.isError, true);
+    assert.match(partial.content[0].text, /available route.*unvisited/i);
+    const complete = await registration.registered.get("lsp_diagnostics").execute("complete", { paths: ["example.ts"], limit: 1 }, undefined, undefined, ctx);
+    assert.equal(complete.details.routedScopeLimited, false);
+    assert.equal(complete.details.status, "diagnostics_received"); assert.equal(complete.isError, false);
+  } finally { await registration.events.get("session_shutdown")({}, ctx); f.release(); }
 });
 
 test("mixed available and unavailable matching default routes retain uncovered files and return partial", () => {

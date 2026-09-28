@@ -135,25 +135,26 @@ function collectPath(
 	for (const collection of pending) collection.visitedDirectories.add(directoryKey);
 
 	const entries = readdirSync(targetPath, { withFileTypes: true }).sort(compareDirectoryEntries);
-	for (const entry of entries) {
-		const childPath = path.join(targetPath, entry.name);
-		const childCollections: FileCollection[] = [];
-		for (const collection of pending) {
-			if ((entry.isDirectory() || entry.isSymbolicLink()) && collection.adapter.skipDirectories.has(entry.name)) continue;
-			if (collection.files.length >= limit) {
-				if (!entry.isFile() || (collection.adapter.isSupportedFile(childPath) && !collection.seen.has(childPath))) {
-					collection.scopeLimited = true;
-				}
-			} else childCollections.push(collection);
+	// Synchronous recursion: this directory owns one scratch array, bounded by
+	// its pending adapter count. Children finish before it is reused; never pooled.
+	const childCollections: FileCollection[] = [];
+	try {
+		for (const entry of entries) {
+			const childPath = path.join(targetPath, entry.name);
+			childCollections.length = 0;
+			for (const collection of pending) {
+				if ((entry.isDirectory() || entry.isSymbolicLink()) && collection.adapter.skipDirectories.has(entry.name)) continue;
+				if (collection.files.length >= limit) {
+					if (!entry.isFile() || (collection.adapter.isSupportedFile(childPath) && !collection.seen.has(childPath))) {
+						collection.scopeLimited = true;
+					}
+				} else childCollections.push(collection);
+			}
+			if (childCollections.length === 0) continue;
+			collectPath(childCollections, childPath, realRoot, limit, budget);
 		}
-		if (childCollections.length === 0) continue;
-		collectPath(
-			childCollections,
-			childPath,
-			realRoot,
-			limit,
-			budget,
-		);
+	} finally {
+		childCollections.length = 0;
 	}
 }
 
