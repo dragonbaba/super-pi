@@ -20,7 +20,7 @@ import { ToolExecutionComponent } from "../packages/coding-agent/src/modes/inter
 import { createJiti } from "jiti";
 import { inspectBashResourceLifecycle, inspectHighRiskBashMutation } from "../packages/extensions/resource-lifecycle-guard/core.ts";
 import { inspectBashPermissionScope } from "../packages/extensions/resource-lifecycle-guard/permission-bash.ts";
-import { classifyError, collectSessionErrors } from "../packages/extensions/session-tool-errors/core.ts";
+import { classifyError } from "../packages/extensions/tool-loop-guardrails/failure-classification.ts";
 
 const cwd = process.cwd();
 
@@ -769,7 +769,7 @@ test("an inherited CDPATH cannot move a scanned cd in real Bash", async (t) => {
   }
 });
 
-test("a standalone ripgrep no-match stays an expected empty result after the runtime status prefix", async () => {
+test("a standalone ripgrep no-match retains its runtime failure status and empty-exit classification", async () => {
   const fixture = mkdtempSync(join(tmpdir(), "sp-shell-rg-empty-"));
   const agent = new Agent({ streamFn: () => { throw new Error("offline provider must not be called"); } });
   agent.state.tools = [createBashTool(fixture, { operations: { async exec() { return { exitCode: 1 }; } } })];
@@ -780,13 +780,6 @@ test("a standalone ripgrep no-match stays an expected empty result after the run
     const text = (result.content[0] as { text: string }).text;
     assert.match(text, /^\[SHELL_RUNTIME_FAILED\]/);
     assert.equal(classifyError("bash", text).category, "empty_nonzero_exit");
-    const session = SessionManager.inMemory(fixture);
-    session.appendMessage({ role: "assistant", content: [{ type: "toolCall", id: "rg-empty", name: "bash", arguments: { command } }], stopReason: "toolUse", timestamp: Date.now() } as never);
-    session.appendMessage(result);
-    assert.deepEqual(collectSessionErrors(session.getBranch()), []);
-    session.appendMessage({ role: "assistant", content: [{ type: "toolCall", id: "rg-error", name: "bash", arguments: { command } }], stopReason: "toolUse", timestamp: Date.now() } as never);
-    session.appendMessage({ ...result, toolCallId: "rg-error", content: [{ type: "text", text: "[SHELL_RUNTIME_FAILED] synthetic error\n\nCommand exited with code 1" }] });
-    assert.equal(collectSessionErrors(session.getBranch()).length, 1, "a real ripgrep error must not be suppressed as no-match");
   } finally {
     agent.abort();
     rmSync(fixture, { recursive: true });

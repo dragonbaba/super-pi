@@ -21,11 +21,11 @@ import { alphaMessage, finalStream } from "./helpers/alpha-stream.ts";
 
 const jiti = createJiti(import.meta.url);
 const { createFalseSuccessState, observeToolResult } = await jiti.import<any>("../packages/extensions/false-success-guard/core.ts");
-const { classifyToolFailure, collectSessionErrors } = await jiti.import<any>("../packages/extensions/session-tool-errors/core.ts");
+const { classifyToolFailure } = await jiti.import<any>("../packages/extensions/tool-loop-guardrails/failure-classification.ts");
 const { failureRecoveryHint, createGuardState, recordResult, inspectBeforeCall } = await jiti.import<any>("../packages/extensions/tool-loop-guardrails/core.ts");
 const local = createLocalShellOperations("Node fixture", () => ({ shell: process.execPath, args: ["-e"] }));
 
-test("N3 local cwd preflight cancellation preserves unstarted facts and collapses its Agent cascade", async t => {
+test("N3 local cwd preflight cancellation preserves unstarted facts and classifies its Agent cascade", async t => {
   let requests = 0, backendEntered = false, resolutions = 0;
   const calls = ["bash", "powershell"].map(name => ({ type: "toolCall" as const, name, id: `local-preflight-${name}`, arguments: { command: "unused" } }));
   const agent = new Agent({ toolExecution: "sequential", convertToLlm: () => [], streamFn: () => {
@@ -43,7 +43,12 @@ test("N3 local cwd preflight cancellation preserves unstarted facts and collapse
   const facts = readShellExecution(results[0].details)!; assert.ok(facts); assert.equal(facts.producer, "local-shell");
   assert.equal(facts.started, false); assert.equal(facts.termination, "cancelled"); assert.equal(facts.executionStatus, "not_executed"); assert.equal(facts.sideEffects, "none");
   const session = SessionManager.inMemory(process.cwd()); for (const message of agent.state.messages) session.appendMessage(message as never);
-  const errors = collectSessionErrors(session.getBranch()); assert.equal(errors.length, 1); assert.equal(errors[0].category, "aborted"); assert.equal(errors[0].cascadeCount, 2);
+  const saved = session.getBranch().filter(entry => entry.type === "message" && entry.message.role === "toolResult");
+  assert.equal(saved.length, 2);
+  for (const entry of saved) {
+    const result = (entry as any).message;
+    assert.equal(classifyToolFailure(result.toolName, result.content[0].text, {}, result.details).category, "aborted");
+  }
   assert.equal(agent.state.pendingToolCalls.size, 0);
 });
 for (const [args, finish, marker] of [
@@ -226,10 +231,12 @@ for (const execution of ["parallel", "sequential"] as const) for (const terminat
       if (unstarted && index === 1) assert.equal(readShellExecution(result.details)?.producer, "agent");
     }
     for (const message of agent.state.messages) session.appendMessage(message as never);
-    const observations = collectSessionErrors(session.getBranch());
-    assert.equal(observations.length, termination === "cancelled" ? 1 : 2);
-    for (const observation of observations) assert.equal(observation.category, termination === "cancelled" ? "aborted" : "timeout_or_aborted");
-    if (termination === "cancelled") { assert.equal(observations[0].cascadeCount, 2); assert.equal(observations[0].tool, "tool_batch"); }
+    const saved = session.getBranch().filter(entry => entry.type === "message" && entry.message.role === "toolResult");
+    assert.equal(saved.length, 2);
+    for (const entry of saved) {
+      const result = (entry as any).message;
+      assert.equal(classifyToolFailure(result.toolName, result.content[0].text, {}, result.details).category, termination === "cancelled" ? "aborted" : "timeout_or_aborted");
+    }
     assert.equal(agent.state.pendingToolCalls.size, 0);
   } finally { unsubscribe(); agent.abort(); }
 });
@@ -239,7 +246,7 @@ test("N3 child output cannot impersonate the Agent's unstarted cancellation", as
   assert.equal(classifyToolFailure("bash", "Operation aborted before tool execution", {}, result.details).category, "command_failed");
 });
 
-for (const pending of [false, true]) test(`N3 preflight cancellation collapses current and remaining Agent results, pending=${pending}`, async () => {
+for (const pending of [false, true]) test(`N3 preflight cancellation classifies current and remaining Agent results, pending=${pending}`, async () => {
   const session = SessionManager.inMemory(process.cwd()); let executions = 0, hooks = 0, requests = 0;
   const calls = ["bash", "powershell"].map(name => ({ type: "toolCall" as const, id: `preflight-${name}`, name, arguments: { command: "unused" } }));
   const agent = new Agent({ toolExecution: "sequential", convertToLlm: () => [], streamFn: () => {
@@ -254,8 +261,12 @@ for (const pending of [false, true]) test(`N3 preflight cancellation collapses c
     assert.equal((results[1].content[0] as any).text, "Operation aborted before tool execution");
     for (const result of results) { assert.equal(result.isError, true); assert.equal(readShellExecution(result.details)?.started, false); }
     for (const message of agent.state.messages) session.appendMessage(message as never);
-    const observations = collectSessionErrors(session.getBranch()); assert.equal(observations.length, 1);
-    assert.equal(observations[0].category, "aborted"); assert.equal(observations[0].cascadeCount, 2);
+    const saved = session.getBranch().filter(entry => entry.type === "message" && entry.message.role === "toolResult");
+    assert.equal(saved.length, 2);
+    for (const entry of saved) {
+      const result = (entry as any).message;
+      assert.equal(classifyToolFailure(result.toolName, result.content[0].text, {}, result.details).category, "aborted");
+    }
     assert.equal(executions, 0); assert.equal(hooks, 1); assert.equal(agent.state.pendingToolCalls.size, 0);
   } finally { agent.abort(); }
 });

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -59,6 +59,40 @@ test("test runner preserves a failing child exit code and names the exact file",
 		assert.equal(result.status, 1, `stdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
 		assert.match(result.stderr, /failure\.test\.ts/);
 		assert.match(result.stderr, /exit code 1/);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("default runner executes GC integration once with isolated cwd, home and offline data", () => {
+	const root = mkdtempSync(join(tmpdir(), "super-pi-test-isolation-"));
+	const report = join(root, "observed.json");
+	try {
+		writeFileSync(join(root, "alpha-assistant-update.test.ts"), `
+import assert from 'node:assert/strict';
+import { writeFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import test from 'node:test';
+test('isolated GC fixture', () => {
+  assert.equal(typeof global.gc, 'function');
+  assert.equal(process.env.SP_OFFLINE, '1');
+  assert.equal(process.env.SP_TUI_WRITE_LOG, '');
+  for (const key of ['HOME', 'USERPROFILE', 'XDG_CONFIG_HOME']) assert.equal(process.env[key], process.cwd());
+  assert.equal(process.env.SP_CODING_AGENT_DIR, resolve(process.cwd(), 'agent'));
+  assert.equal(process.env.SP_CODING_AGENT_SESSION_DIR, resolve(process.cwd(), 'sessions'));
+  writeFileSync(${JSON.stringify(report)}, JSON.stringify({ cwd: process.cwd() }));
+});
+`);
+		const child = spawnSync(process.execPath, [join(process.cwd(), "scripts", "test.mjs"),
+			"--root", root, "--skip-memory"], {
+			encoding: "utf8", env: { ...process.env, NODE_TEST_CONTEXT: undefined },
+		});
+		assert.equal(child.status, 0, `${child.stdout}\n${child.stderr}`);
+		assert.equal(child.stdout.match(/\[test\] START alpha-assistant-update.test.ts/g)?.length, 1);
+		assert.match(child.stdout, /\[test\] END alpha-assistant-update.test.ts ms=\d+ exit=0 signal=none/);
+		const observed = JSON.parse(readFileSync(report, "utf8"));
+		assert.notEqual(observed.cwd, process.cwd());
+		assert.equal(existsSync(observed.cwd), false, "runner releases only its owned fixture directory");
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}

@@ -3,11 +3,7 @@ import test from "node:test";
 import {
 	BENCHMARK_FIXTURE_VERSION,
 	benchmarkFixtureManifest,
-	createAssistantDeltas,
 	createResourceOrderings,
-	createToolOutput,
-	createToolProgress,
-	createTranscriptItems,
 } from "../scripts/bench/fixtures.ts";
 import { CounterRegistry, FakeClock, FakeProviderStream, FakeScheduler, HighWaterMark } from "./helpers/runtime-instrumentation.ts";
 
@@ -29,20 +25,14 @@ test("benchmark fixture manifest is versioned and deterministic", () => {
 			modelProfiles: "9e6f8ddda601fa4a19236f6d359173225e16f7b1357c17de805fb9d24df9eb52",
 		},
 	);
+	assert.deepEqual(Object.values(first.fixtures).map(fixture => fixture.items),
+		[100_000, 100_000, 5_000, 50_000, 1024 * 1024, 10 * 1024 * 1024, 100, 3]);
 	for (const fixture of Object.values(first.fixtures)) {
 		assert.match(fixture.sha256, /^[a-f0-9]{64}$/);
 		assert.ok(fixture.items > 0);
 	}
 });
 
-test("large fixtures have the phase 0 cardinalities without committed result blobs", () => {
-	assert.equal(createAssistantDeltas(100_000).length, 100_000);
-	assert.equal(createToolProgress(100_000, 4).length, 100_000);
-	assert.equal(createTranscriptItems(5_000).length, 5_000);
-	assert.equal(createTranscriptItems(50_000).length, 50_000);
-	assert.equal(Buffer.byteLength(createToolOutput(1), "utf8"), 1024 * 1024);
-	assert.equal(Buffer.byteLength(createToolOutput(10), "utf8"), 10 * 1024 * 1024);
-});
 
 test("resource ordering fixtures vary enumeration order but preserve logical identity", () => {
 	const orderings = createResourceOrderings(100);

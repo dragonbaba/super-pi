@@ -14,10 +14,8 @@
       "./mutation-guard-write/index.ts",
       "./resource-lifecycle-guard/index.ts",
       "./session-memory-manager/index.ts",
-      "./session-tool-errors/index.ts",
       "./structured-readonly-command/index.ts",
       "./subagent/index.ts",
-      "./tool-input-repair-telemetry/index.ts",
       "./tool-loop-guardrails/index.ts"
     ]
   },

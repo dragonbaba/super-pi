@@ -219,9 +219,10 @@ Common source checks:
 npm.cmd ci
 npm.cmd run check
 npm.cmd run build:offline
-npm.cmd run test:hot
 npm.cmd test
 ```
+
+`npm test` includes the unit, hot-path invariant and provider-contract suites plus the memory workspace once. `test:unit`, `test:hot` and `test:contract` select subsets for focused work; they are not extra gates before the full suite. The runner logs each file's start, exit and wall time, gives each child an isolated offline HOME/agent/session environment, and enables GC for the ownership regressions that require it. See [test execution and optional measurements](docs/testing.md) for the boundary between regression coverage and benchmarks.
 
 For documentation, start with Markdown, links, commands, and fact checks. For production changes, select tests by impact. Read the performance contract before changing a hot path; a single timing or heap number is not lifecycle evidence.
 

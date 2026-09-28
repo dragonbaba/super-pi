@@ -127,11 +127,12 @@ class MutableAssistantFixtureStream implements AsyncIterable<AssistantMessageEve
 	}
 }
 
-test("observer delivery coalesces 100,000 assistant updates and preserves the final boundary", async () => {
+test("observer delivery coalesces repeated assistant updates and preserves the final boundary", async () => {
+	// One pending slot must be overwritten repeatedly; throughput is measured by bench:stream.
 	let snapshots = 0;
 	const order: string[] = [];
 	const agent = new Agent({
-		streamFn: () => new AssistantFixtureStream(100_000) as never,
+		streamFn: () => new AssistantFixtureStream(1025) as never,
 		eventInstrumentation: { onAssistantSnapshot: () => { snapshots++; } },
 	});
 	agent.subscribeObserver((event) => {
@@ -143,7 +144,7 @@ test("observer delivery coalesces 100,000 assistant updates and preserves the fi
 	}, { minIntervalMs: 60_000 });
 
 	await agent.prompt("benchmark");
-	assert.deepEqual(order.slice(-2), ["update:100000", "end"]);
+	assert.deepEqual(order.slice(-2), ["update:1025", "end"]);
 	assert.ok(order.filter((entry) => entry.startsWith("update:")).length <= 2);
 	assert.ok(snapshots <= 2);
 	assert.equal(agent.eventDeliveryStats.maxPendingKeys, 1);

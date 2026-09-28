@@ -2,16 +2,16 @@
 
 This guide supersedes the former PowerShell large-output projection procedure. G2 Alpha manual validation remains blocked; automated results do not certify a user's Windows Terminal session. G3–G10 remain unstarted.
 
-Run commands from the existing candidate worktree, `D:\RMProjects\Pi-g2s-alpha-runtime`. Do not modify, rebuild, reset or clean the fixed manual copy `D:\RMProjects\Pi-g2-final-main-d5516ca`.
+Run current regression commands from your checkout. The historical candidate paths and measurements in the linked evidence are not additional default CI gates.
 
 ## Direct raw ToolResult checks
 
 ```powershell
 npm run build:offline
-npm run alpha:g2-probe
+npm test
 ```
 
-The probe creates isolated temporary HOME, config and session directories, uses an offline fixture model without an API key, and removes only its owned directories. The raw result producer is test-only and is not registered in the normal CLI tool list or exported as stable package API. It returns AgentToolResult content directly, without PowerShell, Bash, read, MCP or a stdout adapter. Output contains scalar counters and test names, not complete large results.
+The test runner creates per-child isolated temporary HOME, config and session directories, uses an offline fixture model without an API key, and removes only its owned directories. The raw result producer is test-only and is not registered in the normal CLI tool list or exported as stable package API. It returns AgentToolResult content directly, without PowerShell, Bash, read, MCP or a stdout adapter. Output contains scalar counters and test names, not complete large results.
 
 Coverage includes 1 KiB, 64 KiB, 256 KiB, 1 MiB, a 10 MiB single line, 10,000 repeated errors, structured JSON, CJK, ANSI and a CRC-checked PNG with marker companion text. Seed, source digest, bytes/code units, unique markers and toolCallId are checked. Direct owner continuation, actual AgentSession/provider projection, canonical UI content, artifact identity and parallel ordering are separate assertions.
 
@@ -49,11 +49,11 @@ L0 generates chunks only; L1 consumes them in AgentSession; L2 adds the actual i
 
 Provider inter-arrival, event/handled latency, render duration and physical-write marker arrival are separate measurements. An injected Writable's write entry is not proof of when pixels appeared in Windows Terminal. Requested update rates are fixture schedules, not measured provider token/s. A provider delivering 10–20 tokens/s is not itself a TUI regression. Correlated smooth provider arrivals and additional visible freezes require investigation.
 
-The 100k stress fixture deliberately dispatches actual session-to-component updates so observer coalescing cannot turn 100,000 generated chunks into a handful of UI calls. Its GC-enabled run warms up and measures five complete owner lifetimes, checking WeakRefs after each. Corpus tests separately cover exact 1/4/16/64 code-unit chunks, growing responses through 256 KiB, thinking/text, final-first delivery, final immediately after delta, abort/error and tool interleaving. Content/queue correctness is not a latency pass.
+The default session-to-component regression dispatches 8,193 actual updates per mode, crossing two 4,096-update render batches and a partial final batch. It verifies queue/counter/content boundaries and collects all owner WeakRefs under required GC. Repeated 100,000-update lifetimes and heap measurements are available only through the existing `alpha-bench.mjs stress` benchmark. Corpus tests separately cover exact 1/4/16/64 code-unit chunks, growing responses through 256 KiB, thinking/text, final-first delivery, final immediately after delta, abort/error and tool interleaving. Content/queue correctness is not a latency pass.
 
-## Gate
+## Optional performance investigation
 
-For a complete sequential, five-process measurement set, use a **new** persistent output directory from a clean candidate:
+For an explicitly requested performance investigation (not routine PR validation), use a **new** persistent output directory from a clean candidate:
 
 ```powershell
 node scripts/alpha-matrix.mjs --output D:/RMProjects/Pi-g2s-evidence/my-new-matrix --runs 5

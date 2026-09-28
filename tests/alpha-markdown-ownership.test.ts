@@ -49,7 +49,8 @@ for (const incremental of [false, true]) for (const kind of ['success', 'throw',
     assert.ok(state.owner);
     assert.ok(state.owner.lexer === undefined, 'the shared tokenizer must not retain the last session lexer');
     t.mock.reset(); // restoreAll alone retains mock call/stack records in the tracker.
-    if (global.gc) {
+    assert.ok(global.gc, 'run through npm test (or node --expose-gc) to verify collection');
+    {
       for (let pass = 0; pass < 5; pass++) { await new Promise<void>(resolve => setImmediate(resolve)); global.gc(); }
       assert.ok(component.deref() === undefined, 'released component must be collectible');
       assert.ok(state.refs.every(reference => reference.deref() === undefined), 'lexer/token arrays must be collectible after render/cache release');

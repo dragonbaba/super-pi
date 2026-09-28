@@ -688,7 +688,7 @@ test("Bash text is not mutation evidence; dedicated range read permits guarded e
 });
 
 test("boundary error classification explains ambiguous intent without mandating deletion", async () => {
- const { classifyToolFailure } = await jiti.import<any>("../packages/extensions/session-tool-errors/core.ts");
+ const { classifyToolFailure } = await jiti.import<any>("../packages/extensions/tool-loop-guardrails/failure-classification.ts");
  const result = classifyToolFailure("edit", "[SNAPSHOT_EDIT_BOUNDARY] edits[0].newLines repeats its surviving anchor");
  assert.equal(result.category, "input_validation"); assert.match(result.cause, /意图不明确/); assert.doesNotMatch(result.cause, /应从 newLines 移除/);
 });

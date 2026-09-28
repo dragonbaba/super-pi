@@ -158,10 +158,11 @@ for (const mode of ['regular', 'fullscreen'] as const) for (const enabled of [fa
   for (const budget of enabled && count === 129 ? [1024, 16384] : [1024]) test(`actual parallel raw results mode=${mode} G2=${enabled} count=${count} budget=${budget}`, async (t) => {
     const { weak, report } = await runParallel(mode, enabled, count, budget);
     const heap: number[] = [];
-    if (global.gc) {
+    assert.ok(global.gc, 'run through npm test (or node --expose-gc) to verify collection');
+    {
       for (let i = 0; i < 5; i++) { await new Promise<void>(resolve => setImmediate(resolve)); global.gc(); heap.push(process.memoryUsage().heapUsed); }
       assert.ok(weak.every(reference => reference.deref() === undefined), 'source arrays released after full owner scope');
     }
-    t.diagnostic(JSON.stringify({ ...report, weakReleased: global.gc ? weak.length : 'requires --expose-gc', controlledGcHeap: heap }));
+    t.diagnostic(JSON.stringify({ ...report, weakReleased: weak.length, controlledGcHeap: heap }));
   });
 }
