@@ -160,7 +160,8 @@ function collectPath(
 						cappedStats ??= statSync(childPath);
 					}
 					const childStats = cappedStats ?? entry;
-					if ((childStats.isDirectory() && (!cappedRealPath || !collection.visitedDirectories.has(cappedRealPath))) ||
+					if (childStats.isDirectory()) cappedRealPath ??= realpathSync(childPath);
+					if ((childStats.isDirectory() && !collection.visitedDirectories.has(cappedRealPath!)) ||
 						(childStats.isFile() && collection.adapter.isSupportedFile(childPath) && !collection.seen.has(childPath))) {
 						collection.scopeLimited = true;
 					}

@@ -208,6 +208,24 @@ test("actual tool classifies capped directory symlinks before declaring omitted 
   } finally { await registration.events.get("session_shutdown")({}, ctx); f.release(); }
 });
 
+test("actual tool recognizes a capped directory already exhausted through an earlier symlink", async () => {
+  const f = fixture(), registration = tools();
+  const ctx = { cwd: f.root, isProjectTrusted() { return true; }, ui: { setStatus() {} } };
+  try {
+    await registration.events.get("session_start")({}, ctx);
+    const scan = join(f.root, "alias-scan"), target = join(scan, "z-real");
+    mkdirSync(target, { recursive: true }); writeFileSync(join(target, "only.ts"), "const only = 1;");
+    symlinkSync(target, join(scan, "a-link"), process.platform === "win32" ? "junction" : "dir");
+    const tool = registration.registered.get("lsp_diagnostics");
+    const complete = await tool.execute("visited-directory", { paths: ["alias-scan"], limit: 1 }, undefined, undefined, ctx);
+    assert.equal(complete.details.status, "diagnostics_received");
+    assert.equal(complete.details.submittedFiles, 1); assert.equal(complete.isError, false);
+    writeFileSync(join(target, "second.ts"), "const second = 2;");
+    const partial = await tool.execute("incomplete-visited-directory", { paths: ["alias-scan"], limit: 1 }, undefined, undefined, ctx);
+    assert.equal(partial.details.status, "partial"); assert.equal(partial.isError, true);
+  } finally { await registration.events.get("session_shutdown")({}, ctx); f.release(); }
+});
+
 test("mixed available and unavailable matching default routes retain uncovered files and return partial", () => {
   const f = fixture();
   try {

@@ -31,6 +31,9 @@ outside-workspace links do not imply omitted matches; supported files and unvisi
 directories retain uncertainty. A real symlink/protocol-process regression failed
 with `partial` before this classification and now reports received diagnostics for
 the exhaustive case, while preserving partial status for omitted supported scope.
+Regular directory identities are also resolved before checking visited state: a
+directory already exhausted through an earlier symlink does not imply omitted scope.
+Any incompleteness recorded during that earlier traversal remains visible.
 They also keep an initial empty push report
 inside the configured grace window and verify that later diagnostics are returned.
 No extra production scan is introduced to prove exhaustion beyond the cap.
