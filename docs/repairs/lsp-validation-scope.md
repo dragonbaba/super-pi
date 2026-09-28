@@ -19,12 +19,18 @@ tool guidance does not guarantee every future model tool choice.
 
 Review regressions retain uncertainty when a skipped route stops with unvisited scope,
 including overlap with a live route. An exhaustive scan exactly at its file cap remains
-complete; the collector reports the difference without an additional filesystem probe.
+complete; the collector reports the difference from the bounded traversal.
 Live-route truncation sets `routedScopeLimited` and returns `partial`, even when no
 default service was skipped. The tool reports the submitted count and omitted scope.
 Remaining explicit inputs are resolved and classified: a known unsupported file does
 not truncate that adapter, while an unvisited directory retains uncertainty regardless
 of its name's extension. These bounded explicit-path checks do not walk the directory.
+After a directory scan reaches its cap, symlink entries use target metadata cached
+for that entry across capped adapters. Unsupported regular files and dangling or
+outside-workspace links do not imply omitted matches; supported files and unvisited
+directories retain uncertainty. A real symlink/protocol-process regression failed
+with `partial` before this classification and now reports received diagnostics for
+the exhaustive case, while preserving partial status for omitted supported scope.
 They also keep an initial empty push report
 inside the configured grace window and verify that later diagnostics are returned.
 No extra production scan is introduced to prove exhaustion beyond the cap.

@@ -147,11 +147,21 @@ function collectPath(
 	try {
 		for (const entry of entries) {
 			const childPath = path.join(targetPath, entry.name);
+			let cappedStats: Stats | undefined;
+			let cappedRealPath: string | undefined;
 			childCollections.length = 0;
 			for (const collection of pending) {
 				if ((entry.isDirectory() || entry.isSymbolicLink()) && collection.adapter.skipDirectories.has(entry.name)) continue;
 				if (collection.files.length >= limit) {
-					if (!entry.isFile() || (collection.adapter.isSupportedFile(childPath) && !collection.seen.has(childPath))) {
+					if (entry.isSymbolicLink()) {
+						if (!existsSync(childPath)) continue;
+						cappedRealPath ??= realpathSync(childPath);
+						if (!isInsidePath(realRoot, cappedRealPath)) continue;
+						cappedStats ??= statSync(childPath);
+					}
+					const childStats = cappedStats ?? entry;
+					if ((childStats.isDirectory() && (!cappedRealPath || !collection.visitedDirectories.has(cappedRealPath))) ||
+						(childStats.isFile() && collection.adapter.isSupportedFile(childPath) && !collection.seen.has(childPath))) {
 						collection.scopeLimited = true;
 					}
 				} else childCollections.push(collection);

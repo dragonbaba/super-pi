@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { createJiti } from "jiti";
@@ -178,6 +178,32 @@ test("actual tool reports live-route truncation as partial and exact-cap exhaust
     mkdirSync(join(f.root, "later.html")); writeFileSync(join(f.root, "later.html", "more.ts"), "const more = 1;");
     const directory = await registration.registered.get("lsp_diagnostics").execute("directory", { paths: ["example.ts", "later.html"], limit: 1 }, undefined, undefined, ctx);
     assert.equal(directory.details.routedScopeLimited, true, "an unsupported-looking directory still has unvisited scope");
+    assert.equal(directory.details.status, "partial"); assert.equal(directory.isError, true);
+  } finally { await registration.events.get("session_shutdown")({}, ctx); f.release(); }
+});
+
+test("actual tool classifies capped directory symlinks before declaring omitted scope", async () => {
+  const f = fixture(), registration = tools();
+  const ctx = { cwd: f.root, isProjectTrusted() { return true; }, ui: { setStatus() {} } };
+  try {
+    await registration.events.get("session_start")({}, ctx);
+    const scan = join(f.root, "scan"); mkdirSync(scan);
+    writeFileSync(join(scan, "a.ts"), "const a = 1;");
+    symlinkSync(join(f.root, "page.html"), join(scan, "z.html"), "file");
+    const tool = registration.registered.get("lsp_diagnostics");
+    const complete = await tool.execute("unsupported-link", { paths: ["scan"], limit: 1 }, undefined, undefined, ctx);
+    assert.equal(complete.details.status, "diagnostics_received");
+    assert.equal(complete.details.routedScopeLimited, false); assert.equal(complete.isError, false);
+    symlinkSync(join(f.root, "absent.html"), join(scan, "z-dangling.html"), "file");
+    const dangling = await tool.execute("dangling-link", { paths: ["scan"], limit: 1 }, undefined, undefined, ctx);
+    assert.equal(dangling.details.status, "diagnostics_received"); assert.equal(dangling.isError, false);
+    symlinkSync(join(f.root, "example.ts"), join(scan, "z.ts"), "file");
+    const supported = await tool.execute("supported-link", { paths: ["scan"], limit: 1 }, undefined, undefined, ctx);
+    assert.equal(supported.details.status, "partial"); assert.equal(supported.isError, true);
+    const directoryScan = join(f.root, "directory-scan"); mkdirSync(directoryScan);
+    writeFileSync(join(directoryScan, "a.ts"), "const a = 1;");
+    symlinkSync(scan, join(directoryScan, "z.html"), process.platform === "win32" ? "junction" : "dir");
+    const directory = await tool.execute("directory-link", { paths: ["directory-scan"], limit: 1 }, undefined, undefined, ctx);
     assert.equal(directory.details.status, "partial"); assert.equal(directory.isError, true);
   } finally { await registration.events.get("session_shutdown")({}, ctx); f.release(); }
 });
