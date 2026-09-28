@@ -1,4 +1,4 @@
-import { type Dirent, existsSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { type Dirent, type Stats, existsSync, readdirSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
@@ -79,18 +79,24 @@ export function collectSupportedFilesByAdapter(
 	const inputs = requestedPaths?.length ? requestedPaths : [root];
 
 	for (const input of inputs) {
-		const knownInput = path.resolve(root, input);
+		const targetPath = resolveWorkspacePath(root, input, "Requested path");
+		if (!existsSync(targetPath)) throw new Error(`Requested path does not exist: ${targetPath}`);
+		const realTarget = realpathSync(targetPath);
+		if (!isInsidePath(realRoot, realTarget)) {
+			throw new Error(`Requested path resolves outside workspace root: ${targetPath}`);
+		}
+		let stats: Stats | undefined;
 		for (const collection of collections) {
-			if (collection.files.length >= cappedLimit && !collection.seen.has(knownInput) &&
-				!collection.visitedDirectories.has(knownInput)) collection.scopeLimited = true;
+			if (collection.files.length >= cappedLimit && !collection.seen.has(targetPath) &&
+				!collection.visitedDirectories.has(realTarget)) {
+				stats ??= statSync(targetPath);
+				if (stats.isDirectory() || (stats.isFile() && collection.adapter.isSupportedFile(targetPath))) {
+					collection.scopeLimited = true;
+				}
+			}
 		}
 		const pending = collections.filter(collection => collection.files.length < cappedLimit);
 		if (pending.length === 0) continue;
-		const targetPath = resolveWorkspacePath(root, input, "Requested path");
-		if (!existsSync(targetPath)) throw new Error(`Requested path does not exist: ${targetPath}`);
-		if (!isInsidePath(realRoot, realpathSync(targetPath))) {
-			throw new Error(`Requested path resolves outside workspace root: ${targetPath}`);
-		}
 		collectPath(pending, targetPath, realRoot, cappedLimit, budget);
 	}
 

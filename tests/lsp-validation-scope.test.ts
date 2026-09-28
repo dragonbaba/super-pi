@@ -68,6 +68,8 @@ test("a capped skipped route remains incomplete after its known files overlap a 
     assert.equal(repeated.skippedScopeLimited, false);
     const remaining = selectDiagnosticRoutes([f.adapters[0], broad], { root: f.root, paths: ["a.ts", "a.ts", "z.py"], limit: 1 }, 50);
     assert.equal(remaining.skippedScopeLimited, true);
+    const unrelated = selectDiagnosticRoutes([f.adapters[0], broad], { root: f.root, paths: ["a.ts", "page.html"], limit: 1 }, 50);
+    assert.equal(unrelated.skippedScopeLimited, false, "a known unsupported explicit file does not truncate a skipped route");
   } finally { f.release(); }
 });
 
@@ -170,6 +172,13 @@ test("actual tool reports live-route truncation as partial and exact-cap exhaust
     const complete = await registration.registered.get("lsp_diagnostics").execute("complete", { paths: ["example.ts"], limit: 1 }, undefined, undefined, ctx);
     assert.equal(complete.details.routedScopeLimited, false);
     assert.equal(complete.details.status, "diagnostics_received"); assert.equal(complete.isError, false);
+    const unrelated = await registration.registered.get("lsp_diagnostics").execute("unrelated", { paths: ["example.ts", "page.html"], limit: 1 }, undefined, undefined, ctx);
+    assert.equal(unrelated.details.routedScopeLimited, false);
+    assert.equal(unrelated.details.status, "diagnostics_received"); assert.equal(unrelated.isError, false);
+    mkdirSync(join(f.root, "later.html")); writeFileSync(join(f.root, "later.html", "more.ts"), "const more = 1;");
+    const directory = await registration.registered.get("lsp_diagnostics").execute("directory", { paths: ["example.ts", "later.html"], limit: 1 }, undefined, undefined, ctx);
+    assert.equal(directory.details.routedScopeLimited, true, "an unsupported-looking directory still has unvisited scope");
+    assert.equal(directory.details.status, "partial"); assert.equal(directory.isError, true);
   } finally { await registration.events.get("session_shutdown")({}, ctx); f.release(); }
 });
 

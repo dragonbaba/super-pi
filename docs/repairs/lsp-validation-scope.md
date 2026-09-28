@@ -22,6 +22,9 @@ including overlap with a live route. An exhaustive scan exactly at its file cap 
 complete; the collector reports the difference without an additional filesystem probe.
 Live-route truncation sets `routedScopeLimited` and returns `partial`, even when no
 default service was skipped. The tool reports the submitted count and omitted scope.
+Remaining explicit inputs are resolved and classified: a known unsupported file does
+not truncate that adapter, while an unvisited directory retains uncertainty regardless
+of its name's extension. These bounded explicit-path checks do not walk the directory.
 They also keep an initial empty push report
 inside the configured grace window and verify that later diagnostics are returned.
 No extra production scan is introduced to prove exhaustion beyond the cap.
