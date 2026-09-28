@@ -7,7 +7,6 @@ import { createJiti } from "jiti";
 import { inspectBashPermissionScope } from "../packages/extensions/resource-lifecycle-guard/permission-bash.ts";
 import { inspectBashResourceLifecycle } from "../packages/extensions/resource-lifecycle-guard/core.ts";
 import { validateToolArguments } from "../packages/ai/src/utils/validation.ts";
-import { isValidationFailure } from "../packages/extensions/tool-input-repair-telemetry/core.ts";
 import mutationExtension from "../packages/extensions/mutation-guard-write/index.ts";
 import browserExtension from "../packages/extensions/browser-use/index.ts";
 import { browserUrlSafetyError } from "../packages/extensions/browser-use/core.ts";
@@ -18,11 +17,10 @@ const pi: any = { on() {}, registerCommand() {}, registerTool(tool: any) { defin
 mutationExtension(pi); browserExtension(pi);
 toolLoopGuardrails(pi);
 
-test("new error codes retain classification and legacy telemetry without treating incomplete JSON as schema failure", async () => {
- const { classifyError } = await createJiti(import.meta.url).import<any>("../packages/extensions/session-tool-errors/core.ts");
- for (const message of ['Validation failed for tool "edit":', '[TOOL_ARGS_INVALID] "edit" was not executed: validation failed.']) assert.equal(isValidationFailure({ content: [{ type: "text", text: message }] }), true);
+test("new error codes retain guard classification and distinguish incomplete arguments", async () => {
+ const { classifyError } = await createJiti(import.meta.url).import<any>("../packages/extensions/tool-loop-guardrails/failure-classification.ts");
+ for (const message of ['Validation failed for tool "edit":', '[TOOL_ARGS_INVALID] "edit" was not executed: validation failed.']) assert.equal(classifyError("edit", message).category, "input_validation");
  const incomplete = "[TOOL_ARGS_INCOMPLETE] edit was not executed: arguments were incomplete when the response ended.";
- assert.equal(isValidationFailure({ content: [{ type: "text", text: incomplete }] }), false);
  assert.match(classifyError("edit", incomplete).cause, /未完成/);
  assert.match(classifyError("edit", '[SNAPSHOT_REQUIRED] Missing top-level "snapshot".').cause, /漏传顶层/);
  const unavailable = classifyError("edit", "[SNAPSHOT_EDIT_SYNTAX] TypeScript parser is unavailable. No change; the candidate was not checked.");

@@ -28,17 +28,9 @@ export const EXACT_MIGRATION_VERSION_RE = /target version must be an exact versi
 export const MSYS_TASKKILL_REWRITE_RE = /D:\/Git\/(?:PID|T|F)\b|TASKKILL\s+\/\?/iu;
 export const MSYS_ARGV_RECOVERY_RE = /\[MSYS argv recovery\]/iu;
 export const EMPTY_NONZERO_EXIT_RE = /^\s*(?:\[SHELL_RUNTIME_FAILED\]\s*)?\(no output\)\s*command exited with code [1-9]\d*\s*$/iu;
-export const RG_NO_MATCH_RESULT_RE = /^\s*(?:\[SHELL_RUNTIME_FAILED\]\s*)?\(no output\)\s*command exited with code 1\s*$/iu;
-export const SIMPLE_RG_PREFIX_RE = /^\s*(?:rg(?:\.exe)?|"(?:[^"\r\n]*[\\/])?rg(?:\.exe)?"|'(?:[^'\r\n]*[\\/])?rg(?:\.exe)?')(?=\s)/iu;
 export const COMMAND_FAILED_RE = /command exited with code [1-9]\d*/iu;
 export const VERIFICATION_TEST_RE = /(?:^|\s)(?:node\s+--test|(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?test\b|(?:vitest|jest|pytest|cargo\s+test|go\s+test)\b)/iu;
 export const VERIFICATION_TYPECHECK_RE = /(?:^|\s)(?:(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:typecheck|type-check)\b|(?:npx\s+)?tsc\b|cargo\s+check\b)/iu;
 export const VERIFICATION_BUILD_RE = /(?:^|\s)(?:(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?build\b|cargo\s+build\b|go\s+build\b)/iu;
 export const VERIFICATION_LINT_RE = /(?:^|\s)(?:(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?lint\b|eslint\b|biome\s+(?:check|lint)\b)/iu;
 export const REQUIRED_CODEGRAPH_ARGUMENT_RE = /^\s*(?:query|symbol|file|files|action) is required\.?\s*$/iu;
-export const SELF_DIAGNOSIS_RE = /(?:根因|原因(?:是|在于)|因为|由于|我(?:的)?(?:写错|用错|误判|漏掉|遗漏|忘了)|我的断言错了|实际(?:上|是)|应改为|mistake|root cause|because|i (?:used|forgot|missed|misread)|was wrong)/iu;
-export const WHITESPACE_RE = /\s+/gu;
-export const ANSI_ESCAPE_RE = /\u001B\[[0-?]*[ -/]*[@-~]/gu;
-export const CONTROL_CHARACTER_RE = /[\u0000-\u0008\u000B\u000C\u000E-\u001A\u001C-\u001F\u007F]/gu;
-export const AUTHORIZATION_RE = /\b(authorization\s*:\s*(?:bearer\s+)?)[^\s,;]+/giu;
-export const SECRET_ASSIGNMENT_RE = /\b(api[_-]?key|access[_-]?token|refresh[_-]?token|token|secret|password)\s*[:=]\s*[^\s,;]+/giu;

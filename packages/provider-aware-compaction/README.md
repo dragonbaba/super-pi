@@ -74,7 +74,7 @@ These pilots establish feasibility and guardrails; they are not broad statistica
 
 ## Bounded fallback telemetry
 
-On cancellation only, the extension best-effort appends `compaction-telemetry-v1` with the active model, policy enum, `cancelled` outcome, bounded reason enum, and producer version. The existing `tool-input-repair-telemetry` aggregate consumes this entry; this package owns no telemetry database. Successful compactions are counted from Pi's persisted compaction entry, so success is not double-counted. Telemetry append failures are swallowed and cannot weaken fail-closed behavior. Prompt/summary text, provider errors, URLs, headers, credentials, cache keys, and raw responses are never included.
+On cancellation only, the extension best-effort appends `compaction-telemetry-v1` with the active model, policy enum, `cancelled` outcome, bounded reason enum, and producer version. These structured events remain in the Session; this package owns no telemetry database. Successful compactions remain recorded in Pi's persisted compaction entries. Telemetry append failures are swallowed and cannot weaken fail-closed behavior. Prompt/summary text, provider errors, URLs, headers, credentials, cache keys, and raw responses are never included.
 
 ## Verification
 

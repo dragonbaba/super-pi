@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { access, opendir, stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { UNCERTAIN_LIFECYCLE } from "../resource-lifecycle-guard/core.ts";
-import { classifyToolFailure } from "../session-tool-errors/core.ts";
+import { classifyToolFailure } from "./failure-classification.ts";
 import { classifyStructuredReadonlyArguments } from "../resource-lifecycle-guard/structured-argv.ts";
 import {
   BACKSLASH_PAIR_RE,
