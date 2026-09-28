@@ -3,6 +3,7 @@ import {
 	type Component,
 	Container,
 	getCapabilities,
+	GET_COMPONENT_RENDER_CACHE_CHILD,
 	Image,
 	RELEASE_COMPONENT_RENDER_CACHE,
 	Spacer,
@@ -1261,9 +1262,17 @@ export class ToolExecutionComponent extends Container {
 
 	override invalidate(): void {
 		super.invalidate();
+		if (this.toolDefinition?.collapseCallOnResult && this.result && !this.isPartial && !this.expanded) {
+			this.callRendererComponent?.invalidate();
+		}
 		this.callRendererDirty = true;
 		this.updateDisplay();
 		this.maybeConvertImagesForKitty();
+	}
+
+	[GET_COMPONENT_RENDER_CACHE_CHILD](): Component | undefined {
+		return this.toolDefinition?.collapseCallOnResult && this.result && !this.isPartial && !this.expanded
+			? this.callRendererComponent : undefined;
 	}
 
 	[RELEASE_COMPONENT_RENDER_CACHE](): void {
@@ -1272,10 +1281,16 @@ export class ToolExecutionComponent extends Container {
 		lifecycleState[TOOL_RENDER_LIFECYCLE_GENERATION] = this.renderLifecycleGeneration;
 		let releaseError: unknown;
 		let releaseFailed = false;
+		// The shared structural traversal releases hidden and mounted descendants
+		// with one identity set, isolates hook errors, then invokes this parent hook.
+		if (this.toolDefinition?.collapseCallOnResult && this.result && !this.isPartial && !this.expanded) {
+			this.callRendererComponent = undefined;
+			this.callRendererDirty = true;
+		}
 		try {
 			lifecycleState[RELEASE_TOOL_RENDER_DERIVED_STATE]?.(lifecycleState);
 		} catch (error) {
-			releaseError = error;
+			if (!releaseFailed) releaseError = error;
 			releaseFailed = true;
 		}
 		for (let index = 0; index < this.imageComponents.length; index++) {
@@ -1384,7 +1399,8 @@ export class ToolExecutionComponent extends Container {
 			renderContainer.children.length = 0;
 
 			const callRenderer = this.getCallRenderer();
-			if (!this.isCallRendererArgsOnly() || this.callRendererDirty || !this.callRendererComponent) {
+			const hideCall = this.toolDefinition?.collapseCallOnResult && this.result && !this.isPartial && !this.expanded;
+			if (!hideCall && (!this.isCallRendererArgsOnly() || this.callRendererDirty || !this.callRendererComponent)) {
 				if (this.incompleteArguments) {
 					this.callRendererComponent = new Text(theme.fg("error", `${this.toolName}: arguments incomplete / not executed`), 0, 0);
 				} else if (!callRenderer) {
@@ -1403,7 +1419,7 @@ export class ToolExecutionComponent extends Container {
 				}
 				this.callRendererDirty = false;
 			}
-			if (this.callRendererComponent) {
+			if (!hideCall && this.callRendererComponent) {
 				renderContainer.addChild(this.callRendererComponent);
 				hasContent = true;
 			}

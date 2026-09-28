@@ -194,7 +194,7 @@ export class LspClient {
 		}
 	}
 
-	async diagnostics(uri: string) {
+	async diagnostics(uri: string, requirePublication = false) {
 		// Only pull if the server advertised it; otherwise use push diagnostics.
 		if (!this.#serverCapabilities.diagnosticProvider) {
 			return this.#waitForPublishedDiagnostics(
@@ -204,6 +204,7 @@ export class LspClient {
 							afterVersion: 0,
 							diagnostics: EMPTY_READONLY_ARRAY,
 							waitMs: this.#adapter.pushDiagnosticsGraceMs,
+							requirePublication,
 						}
 					: undefined,
 			);
@@ -217,7 +218,10 @@ export class LspClient {
 			textDocument: { uri },
 		});
 		const result = response.result as { items?: LspDiagnostic[] } | undefined;
-		const diagnostics = result?.items ?? EMPTY_READONLY_ARRAY;
+		if (requirePublication && !Array.isArray(result?.items)) {
+			throw new Error(`${this.#adapter.name} LSP returned no full diagnostic report for ${uri}; validation is unconfirmed.`);
+		}
+		const diagnostics = Array.isArray(result?.items) ? result.items : EMPTY_READONLY_ARRAY;
 		if (diagnostics.length > 0 || !this.#adapter.pullDiagnosticsGraceMs) return diagnostics;
 		return this.#waitForPublishedDiagnostics(uri, {
 			afterVersion,
@@ -427,12 +431,13 @@ export class LspClient {
 
 		if (message.method === "textDocument/publishDiagnostics") {
 			const params = message.params as { uri?: string; diagnostics?: LspDiagnostic[] } | undefined;
-			if (params?.uri) {
+			// A missing/null payload is not an empty diagnostic report.
+			if (params?.uri && Array.isArray(params.diagnostics)) {
 				const uriKey = documentUriKey(params.uri);
 				const previousVersion = this.#publishedDiagnostics.get(uriKey)?.version ?? 0;
 				const publication = {
 					version: previousVersion + 1,
-					diagnostics: params.diagnostics ?? EMPTY_READONLY_ARRAY,
+					diagnostics: params.diagnostics,
 				};
 				this.#recordPublishedDiagnostics(uriKey, publication);
 				const waiters = this.#diagnosticWaiters.get(uriKey);
@@ -462,7 +467,7 @@ export class LspClient {
 
 	#waitForPublishedDiagnostics(
 		uri: string,
-		fallback?: { afterVersion: number; diagnostics: readonly LspDiagnostic[]; waitMs: number },
+		fallback?: { afterVersion: number; diagnostics: readonly LspDiagnostic[]; waitMs: number; requirePublication?: boolean },
 	) {
 		// See PUBLISHED_DIAGNOSTICS_SETTLE_MS. Bounded by #timeoutMs.
 		return new Promise<readonly LspDiagnostic[]>((resolve, reject) => {
@@ -492,7 +497,12 @@ export class LspClient {
 			};
 			const onPublish = (publication: { version: number; diagnostics: readonly LspDiagnostic[] }) => {
 				if (publication.version <= afterVersion) return;
-				if (fallback && publication.diagnostics.length === 0 && !sawNonEmptyPublication) return;
+				if (fallback && publication.diagnostics.length === 0 && !sawNonEmptyPublication) {
+					// A push response proves availability, but may precede real analysis.
+					// Keep the configured grace window open for a later non-empty report.
+					if (fallback.requirePublication) latestPublication = publication;
+					return;
+				}
 				sawNonEmptyPublication ||= publication.diagnostics.length > 0;
 				latestPublication = publication;
 				if (fallbackTimer) clearTimeout(fallbackTimer);
@@ -511,7 +521,9 @@ export class LspClient {
 			if (fallback) {
 				fallbackTimer = setTimeout(
 					() => {
-						settleWith(latestPublication?.diagnostics ?? fallback.diagnostics);
+						if (fallback.requirePublication && !latestPublication) {
+							fail(new Error(`${this.#adapter.name} LSP did not publish diagnostics for ${uri}; validation is unconfirmed.`));
+						} else settleWith(latestPublication?.diagnostics ?? fallback.diagnostics);
 					},
 					Math.min(fallback.waitMs, this.#timeoutMs),
 				);
@@ -519,7 +531,7 @@ export class LspClient {
 			overallTimer = setTimeout(() => {
 				if (latestPublication) {
 					settleWith(latestPublication.diagnostics);
-				} else if (fallback) {
+				} else if (fallback && !fallback.requirePublication) {
 					settleWith(fallback.diagnostics);
 				} else {
 					fail(

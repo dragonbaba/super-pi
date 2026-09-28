@@ -26,7 +26,8 @@ import { diagnoseFailedEdit } from "./edit-diagnostics.ts";
 import { SHA256_PATTERN } from "./regex.ts";
 import { primaryReadResultText, readEvidenceRange, restoreMutationEvidenceFromBranch, recordBatchMutationEvidence, recentMutationEntries } from "./session-evidence.ts";
 import { consumePermissionPathApproval, mutationRequestHash } from "../resource-lifecycle-guard/permission-contract.ts";
-import { registerNativeTools, MUTATION_PROGRESS_ENTRY, renderFileMutationResult } from "./native-tools.ts";
+import { registerNativeTools, MUTATION_PROGRESS_ENTRY } from "./native-tools.ts";
+import { renderWriteResult } from "./write-renderer.ts";
 import { registerFileBatch } from "./file-batch.ts";
 import { FileCommitError, commitFailure, commitSummary, type FileCommitReceipt } from "./file-commit.ts";
 import { canonicalCreationDirectories } from "./file-creation.ts";
@@ -519,7 +520,8 @@ export default function mutationGuardWriteExtension(pi: ExtensionAPI): void {
       "For an existing whole-file overwrite, dedicated read must return complete content in an earlier tool turn and still match; truncated, partial, same-turn, Bash, grep, LSP, or stale evidence fails. Use range/snapshot edit for local changes. Missing files use exclusive creation without a read. Include purpose for protected targets.",
     ],
     parameters: WriteParameters,
-    renderResult: renderFileMutationResult,
+    collapseCallOnResult: true,
+    renderResult: renderWriteResult,
     executionMode: "sequential",
     async execute(toolCallId, input: GuardedWriteInput, signal, _onUpdate, ctx) {
       const { path, content } = input;

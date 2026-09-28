@@ -33,12 +33,13 @@ export async function runDiagnostics(
 		params.files ??
 		collectSupportedFiles(adapter, root, params.paths, params.limit ?? DEFAULT_FILE_LIMIT);
 	if (files.length === 0) {
-		return textResult(`${adapter.name} LSP found no supported files to check.`, {
+		return { ...textResult(`${adapter.name} LSP found no supported files to check. Not checked; no validation pass is established.`, {
 			root,
+			status: "not_checked",
 			command,
 			files,
 			summary: { files: 0, diagnostics: 0 },
-		});
+		}), isError: true };
 	}
 	for (const file of files) assertBoundedDocument(file);
 
@@ -71,11 +72,12 @@ export async function runDiagnostics(
 				openedFiles.map(async ({ file, uri }) => ({
 					path: path.relative(root, file) || file,
 					uri,
-					diagnostics: await client.diagnostics(uri),
+					diagnostics: await client.diagnostics(uri, true),
 				})),
 			);
 			return textResult(formatDiagnostics(adapter, entries), {
 				root,
+				status: "diagnostics_received",
 				command,
 				files: entries,
 				summary: summarize(entries),
