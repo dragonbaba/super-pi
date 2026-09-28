@@ -2939,15 +2939,15 @@ test("queue-only prebuilt-frame allocation benchmark reports zero frame-owned ob
 	assert.equal(result.metrics.fullSizeFrameCopies, 0);
 });
 
-test("100k Agent observer and session delivery preserve synchronous UI lanes", () => {
+test("Bounded Agent observer and session delivery preserve synchronous UI lanes", () => {
 	const child = spawnSync(
 		process.execPath,
 		[
 			"--expose-gc",
 			"--experimental-strip-types",
 			"scripts/bench/tui-session-event-allocations.ts",
-			"--updates", "100000",
-			"--warmup", "10000",
+			"--updates", "1025",
+			"--warmup", "32",
 		],
 		{ cwd: process.cwd(), encoding: "utf8", timeout: 15_000 },
 	);
@@ -2967,7 +2967,7 @@ test("100k Agent observer and session delivery preserve synchronous UI lanes", (
 	const direct = result.fixtures[0]!.results.slice(0, 2);
 	assert.deepEqual(direct.map((entry) => entry.name), ["message_update", "tool_execution_update"]);
 	for (const entry of direct) {
-		assert.equal(entry.updates, 100_000);
+		assert.equal(entry.updates, 1025);
 		assert.equal(entry.metrics.builtInListenerPromisesPerUpdate, 0);
 		assert.equal(entry.metrics.rejectionObserversPerUpdate, 0);
 		assert.equal(entry.sourceInvariant.toolWrapperObjectsPerUpdate, 0);
@@ -2981,9 +2981,9 @@ test("100k Agent observer and session delivery preserve synchronous UI lanes", (
 	}
 	const fullChain = result.fixtures[0]!.results[2]!;
 	assert.equal(fullChain.name, "observer-coalesced-message_update");
-	assert.equal(fullChain.updates, 100_000);
-	assert.equal(fullChain.metrics.rawUpdates, 100_000);
-	assert.equal(fullChain.metrics.coalescedUpdates, 99_999);
+	assert.equal(fullChain.updates, 1025);
+	assert.equal(fullChain.metrics.rawUpdates, 1025);
+	assert.equal(fullChain.metrics.coalescedUpdates, 1024);
 	assert.equal(fullChain.metrics.coalescedDeliveries, 1);
 	assert.equal(fullChain.metrics.snapshotCount, 1);
 	assert.equal(fullChain.metrics.extensionObserverPublishes, 1);

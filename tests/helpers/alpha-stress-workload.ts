@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import { alphaSession } from './alpha-session.ts';
 import { alphaMessage } from './alpha-stream.ts';
 
-export async function stress(mode: 'regular' | 'fullscreen', fixtureRoot?: string) {
+export async function stress(mode: 'regular' | 'fullscreen', fixtureRoot?: string, updateCount = 100000) {
+  assert.ok(Number.isInteger(updateCount) && updateCount > 8192, 'cross two 4096-update flush boundaries and retain a final partial batch');
   const f = await alphaSession({ mode, sinkDelay: 5, fixtureRoot });
   const message = alphaMessage([{ type: 'text', text: 'start ' }]);
   const text = message.content[0]; assert.ok(text?.type === 'text');
@@ -22,14 +23,14 @@ export async function stress(mode: 'regular' | 'fullscreen', fixtureRoot?: strin
     (f.session as any)._emit({ type: 'message_start', message });
     f.internal.renderer.renderNow(); await f.internal.renderer.flushTerminalFrames();
     f.internal.renderInstrumentation.reset();
-    for (let index = 0; index < 100000; index++) {
+    for (let index = 0; index < updateCount; index++) {
       text.text += 'x';
       (f.session as any)._emit(event);
       if (index % 4096 === 4095) { f.internal.renderer.renderNow(); await f.internal.renderer.flushTerminalFrames(); }
     }
     f.internal.renderer.renderNow(); await f.internal.renderer.flushTerminalFrames();
     const active = f.internal.renderInstrumentation.snapshot();
-    assert.equal(updates, 100000); assert.equal(updatePromises, 0);
+    assert.equal(updates, updateCount); assert.equal(updatePromises, 0);
     assert.equal(active.completedItemRenders, 0);
     assert.equal(active.fullHistoryFallbacks, 0);
     assert.ok(active.pendingRenderRequestHighWaterMark <= 1); assert.ok(active.terminalFrameQueueHighWaterMark <= 2);

@@ -47,11 +47,12 @@ for (const mode of ['regular', 'fullscreen'] as const) for (const signal of [fal
     assert.equal(writesAfter, 0); assert.equal(rendersAfter, 0);
     staleUI.setFooter(() => { footerFactories++; throw new Error('disposed UI must not invoke a footer factory'); });
     assert.equal(footerFactories, 1); assert.equal(footerDisposals, 1);
-    if (global.gc) {
+    assert.ok(global.gc, 'run through npm test (or node --expose-gc) to verify collection');
+    {
       for (let pass = 0; pass < 5; pass++) { await new Promise<void>(resolve => setImmediate(resolve)); global.gc(); }
       assert.equal(footerWeak?.deref(), undefined, 'released custom footer is collectible while the closed mode is still held');
     }
     assert.ok(f.sink.controls.join('').includes('\x1b[?2004l'));
-    t.diagnostic(JSON.stringify({ mode, signal, shutdowns, disposeCalls, footerFactories, footerDisposals, footerReleased: global.gc ? footerWeak?.deref() === undefined : 'requires --expose-gc', writesAfter, rendersAfter, raw: f.input.isRaw, exit: exited }));
+    t.diagnostic(JSON.stringify({ mode, signal, shutdowns, disposeCalls, footerFactories, footerDisposals, footerReleased: footerWeak?.deref() === undefined, writesAfter, rendersAfter, raw: f.input.isRaw, exit: exited }));
   } finally { await f.release(); }
 });

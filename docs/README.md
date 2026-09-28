@@ -51,7 +51,7 @@
 - [Tool-result presentation](performance/phase5b-budgeted-model-view.md)：显式启用的结果展示流程；模型 Token 预算投影还需配置正整数 `budgetTokens`，没有生产默认预算。
 - [Token estimator](performance/phase5a-token-estimator.md)：估算口径与限制。
 - [TUI responsiveness](performance/tool-progress-tui-responsiveness.md)：进度、背压和取消的设计记录。
-- [源码贡献检查](../package.json)：check、build:offline、test:hot 和完整 test 脚本。
+- [源码贡献检查](testing.md)：check、build:offline 和完整 test；test:hot 等子集用于定向验证，不在完整测试前重复执行。
 
 生产代码贡献应先读取适用的 `AGENTS.md` 和性能契约。性能文档中的 benchmark 数字属于特定版本、环境和 fixture 的验证记录，不能直接当作产品承诺。
 

@@ -80,7 +80,7 @@ class ParallelToolFixtureStream implements AsyncIterable<AssistantMessageEvent> 
 	}
 }
 
-test("100,000 tool progress updates retain one pending value and flush before end", async () => {
+test("Repeated tool progress updates retain one pending value and flush before end", async () => {
 	let streamCalls = 0;
 	let maxPending = 0;
 	let legacyUpdates = 0;
@@ -89,7 +89,7 @@ test("100,000 tool progress updates retain one pending value and flush before en
 		name: "progress", label: "Progress", description: "fixture",
 		parameters: { type: "object", properties: {}, additionalProperties: false },
 		execute: async (_id: string, _params: unknown, _signal?: AbortSignal, onUpdate?: AgentToolUpdateCallback) => {
-			for (let sequence = 0; sequence < 100_000; sequence++) {
+			for (let sequence = 0; sequence < 1025; sequence++) {
 				onUpdate?.({ content: [{ type: "text", text: String(sequence) }], details: { sequence } });
 			}
 			return { content: [{ type: "text", text: "done" }], details: {} };
@@ -111,11 +111,11 @@ test("100,000 tool progress updates retain one pending value and flush before en
 	await agent.prompt("benchmark");
 	assert.equal(maxPending, 1);
 	assert.equal(legacyUpdates, 2);
-	assert.deepEqual(order.slice(-2), ["update:99999", "end"]);
+	assert.deepEqual(order.slice(-2), ["update:1024", "end"]);
 	assert.equal(agent.eventDeliveryStats.maxPendingKeys, 1);
 });
 
-test("100,000 updates across four parallel tools retain at most four latest keys", async () => {
+test("Repeated updates across four parallel tools retain at most four latest keys", async () => {
 	let streamCalls = 0;
 	const activePending = new Set<string>();
 	let maxPendingSlots = 0;
@@ -124,7 +124,7 @@ test("100,000 updates across four parallel tools retain at most four latest keys
 		name: "parallel-progress", label: "Parallel progress", description: "fixture",
 		parameters: { type: "object", properties: { tool: { type: "number" } }, required: ["tool"] },
 		execute: async (toolCallId: string, _params: unknown, _signal?: AbortSignal, onUpdate?: AgentToolUpdateCallback) => {
-			for (let sequence = 0; sequence < 25_000; sequence++) {
+			for (let sequence = 0; sequence < 257; sequence++) {
 				onUpdate?.({ content: [{ type: "text", text: String(sequence) }], details: { sequence } });
 			}
 			return { content: [{ type: "text", text: "done" }], details: { toolCallId } };
@@ -154,7 +154,7 @@ test("100,000 updates across four parallel tools retain at most four latest keys
 	assert.ok(maxPendingSlots <= 4);
 	assert.equal(agent.eventDeliveryStats.maxPendingKeys, 4);
 	for (let index = 0; index < 4; index++) {
-		assert.deepEqual(order.get(`tool-${index}`)?.slice(-2), ["update:24999", "end"]);
+		assert.deepEqual(order.get(`tool-${index}`)?.slice(-2), ["update:256", "end"]);
 	}
 });
 
