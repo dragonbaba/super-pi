@@ -874,6 +874,8 @@ export class SessionManager {
 	private flushed: boolean = false;
 	private fileEntries: FileEntry[] = [];
 	private byId: Map<string, SessionEntry> = new Map();
+	private entryCount = 0;
+	private historyGeneration = 0;
 	private labelsById: Map<string, string> = new Map();
 	private labelTimestampsById: Map<string, string> = new Map();
 	private leafId: string | null = null;
@@ -969,6 +971,8 @@ export class SessionManager {
 		this.labelTimestampsById.clear();
 		this.leafId = null;
 		this.flushed = false;
+		this.entryCount = 0;
+		this.historyGeneration++;
 
 		if (this.persist) {
 			const fileTimestamp = timestamp.replace(/[:.]/g, "-");
@@ -978,12 +982,15 @@ export class SessionManager {
 	}
 
 	private _buildIndex(): void {
+		this.entryCount = 0;
+		this.historyGeneration++;
 		this.byId.clear();
 		this.labelsById.clear();
 		this.labelTimestampsById.clear();
 		this.leafId = null;
 		for (const entry of this.fileEntries) {
 			if (entry.type === "session") continue;
+			this.entryCount++;
 			this.byId.set(entry.id, entry);
 			this.leafId = entry.id;
 			if (entry.type === "label") {
@@ -1068,6 +1075,7 @@ export class SessionManager {
 
 	private _appendEntry(entry: SessionEntry): void {
 		this.fileEntries.push(entry);
+		this.entryCount++;
 		this.byId.set(entry.id, entry);
 		this.leafId = entry.id;
 		this._persist(entry);
@@ -1331,7 +1339,12 @@ export class SessionManager {
 
 	/** Number of session entries (excludes header) without copying them. */
 	getEntryCount(): number {
-		return this.byId.size;
+		return this.entryCount;
+	}
+
+	/** Changes only when history is replaced/reloaded, including a same-file reload. */
+	getHistoryGeneration(): number {
+		return this.historyGeneration;
 	}
 
 	/**

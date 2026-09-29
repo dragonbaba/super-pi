@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
 import { FooterComponent } from "../packages/coding-agent/src/modes/interactive/components/footer.ts";
 import { initTheme } from "../packages/coding-agent/src/modes/interactive/theme/theme.ts";
@@ -35,6 +38,12 @@ test("steady-state footer frames reuse one session scan", () => {
 	assert.equal(scans(), 1);
 });
 
+test("subscription cost is explicitly an API-equivalent estimate", () => {
+	const { session, footer } = fixture();
+	session.modelRuntime.isUsingSubscription = () => true;
+	assert.match(text(footer), /\$1\.000 \(API est\., sub\)/);
+});
+
 test("appends, renames and session switches refresh the footer totals", () => {
 	const { sessionManager, footer, scans } = fixture();
 	assert.match(text(footer), /\$1\.000/);
@@ -59,4 +68,46 @@ test("session switch and dispose release the cached scan", () => {
 	text(footer);
 	footer.dispose();
 	assert.equal((footer as any).sessionScan, undefined);
+});
+
+test("branch and compaction invalidate the scan while history and live usage stay separate", () => {
+	const { footer, session, sessionManager, scans } = fixture();
+	const first = sessionManager.getEntries()[0]!.id;
+	text(footer);
+	sessionManager.branch(first);
+	assert.match(text(footer), /\$1\.000/);
+	assert.equal(scans(), 3); // one explicit test read plus the two renders
+	sessionManager.appendCompaction("checkpoint", first, 1000);
+	assert.match(text(footer), /\$1\.000/);
+	const count = scans();
+	session.getContextUsage = () => ({ contextWindow: 1000, percent: 70, source: "provider" });
+	session.state.model = { ...session.state.model, id: "other" };
+	const rendered = text(footer);
+	assert.match(rendered, /other/);
+	assert.equal(scans(), count, "historical totals do not depend on the live model or context usage");
+	assert.equal(sessionManager.getEntryCount(), sessionManager.getEntries().length);
+});
+
+test("same-file reload invalidates totals even when session id, leaf and entry count match", () => {
+	const dir = mkdtempSync(join(tmpdir(), "footer-reload-"));
+	try {
+		const { footer, sessionManager } = fixture();
+		const file = join(dir, "session.jsonl");
+		const entries = sessionManager.getEntries();
+		const save = () => writeFileSync(file, [sessionManager.getHeader(), ...entries].map(entry => JSON.stringify(entry)).join("\n") + "\n");
+		save();
+		sessionManager.setSessionFile(file);
+		assert.match(text(footer), /\$1\.000/);
+		(entries[1] as any).message = assistant(7);
+		save();
+		sessionManager.setSessionFile(file);
+		assert.match(text(footer), /\$7\.000/);
+		assert.equal(sessionManager.getEntryCount(), sessionManager.getEntries().length);
+		// The persisted loader accepts duplicate ids; count must follow getEntries' filtering,
+		// rather than the deduplicating byId index.
+		writeFileSync(file, [sessionManager.getHeader(), ...entries, entries[1], sessionManager.getHeader()].map(entry => JSON.stringify(entry)).join("\n") + "\n");
+		sessionManager.setSessionFile(file);
+		assert.equal(sessionManager.getEntryCount(), 3);
+		assert.equal(sessionManager.getEntryCount(), sessionManager.getEntries().length);
+	} finally { rmSync(dir, { recursive: true, force: true }); }
 });

@@ -57,6 +57,7 @@ interface SessionScan {
 	sessionId: string;
 	leafId: string | null;
 	entryCount: number;
+	historyGeneration: number;
 	usageTotals: UsageTotals;
 	latestCacheHitRate: number | undefined;
 	sessionName: string | undefined;
@@ -106,20 +107,21 @@ export class FooterComponent implements Component {
 
 	/**
 	 * The footer renders every frame, but entries are append-only and every append moves the leaf,
-	 * so the whole-session scan only changes with the session manager, session, leaf or entry count.
+	 * so the whole-session scan changes with the manager, session, leaf, entry count or reload generation.
 	 */
 	private getSessionScan(): SessionScan {
 		const sessionManager = this.session.sessionManager;
 		const sessionId = sessionManager.getSessionId();
 		const leafId = sessionManager.getLeafId();
 		const entryCount = sessionManager.getEntryCount();
+		const historyGeneration = sessionManager.getHistoryGeneration();
 		const cached = this.sessionScan;
 		if (
 			cached !== undefined &&
 			cached.sessionManager === sessionManager &&
 			cached.sessionId === sessionId &&
 			cached.leafId === leafId &&
-			cached.entryCount === entryCount
+			cached.entryCount === entryCount && cached.historyGeneration === historyGeneration
 		) {
 			return cached;
 		}
@@ -149,7 +151,7 @@ export class FooterComponent implements Component {
 				addUsageToTotals(usageTotals, entry.usage);
 			}
 		}
-		this.sessionScan = { sessionManager, sessionId, leafId, entryCount, usageTotals, latestCacheHitRate, sessionName };
+		this.sessionScan = { sessionManager, sessionId, leafId, entryCount, historyGeneration, usageTotals, latestCacheHitRate, sessionName };
 		return this.sessionScan;
 	}
 
@@ -194,7 +196,7 @@ export class FooterComponent implements Component {
 			? state.model.provider === "kimi-coding" || this.session.modelRuntime.isUsingSubscription(state.model.provider)
 			: false;
 		if (usageTotals.cost || usingSubscription) {
-			const costStr = `$${usageTotals.cost.toFixed(3)}${usingSubscription ? " (sub)" : ""}`;
+			const costStr = `$${usageTotals.cost.toFixed(3)}${usingSubscription ? " (API est., sub)" : ""}`;
 			statsParts.push(costStr);
 		}
 
