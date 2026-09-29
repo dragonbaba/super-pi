@@ -53,3 +53,19 @@ test("steady-state dispatch keeps one listener array and allocates no copies", (
 	const handleLine = source.slice(source.indexOf("private handleLine("), source.indexOf("private createProcessExitError("));
 	assert.doesNotMatch(handleLine, /\[\.\.\.|\.slice\(|Array\.from|\.filter\(|\.map\(|for \(const /);
 });
+
+test("dispatch keeps the existing exception behavior and unsubscribing releases listeners", () => {
+	const client = new RpcClient();
+	const seen: string[] = [];
+	const offA = client.onEvent(() => { seen.push("a"); throw new Error("fixture"); });
+	const offB = client.onEvent(() => { seen.push("b"); });
+	dispatch(client, "one");
+	assert.deepEqual(seen, ["a"], "an exception stops this dispatch, as before copy-on-write");
+	offA();
+	dispatch(client, "two");
+	assert.deepEqual(seen, ["a", "b"]);
+	offB(); offB();
+	assert.equal((client as any).eventListeners.length, 0);
+	dispatch(client, "three");
+	assert.deepEqual(seen, ["a", "b"]);
+});

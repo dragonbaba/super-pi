@@ -104,3 +104,39 @@ test("Agent never executes a tool call whose output_item.done did not arrive", a
 	assert.equal(last.stopReason, "error");
 	assert.equal(agent.state.messages.some((message: any) => message.role === "toolResult"), false);
 });
+
+for (const ending of ["toolUse", "length", "error", "abort"] as const) test(`Agent respects the real Codex ${ending} tool boundary`, async () => {
+	let requests = 0, executions = 0;
+	const finished = { ...call("1"), arguments: '{"command":"ls"}' };
+	const first: unknown[] = [
+		{ type: "response.output_item.added", output_index: 0, item: { ...finished, arguments: "" } },
+		{ type: "response.function_call_arguments.delta", output_index: 0, delta: finished.arguments },
+	];
+	if (ending === "toolUse") first.push({ type: "response.output_item.done", output_index: 0, item: finished }, completed);
+	else if (ending === "length") first.push({ type: "response.incomplete", response: { status: "incomplete", incomplete_details: { reason: "max_output_tokens" } } });
+	else if (ending === "error") first.push({ type: "response.failed", response: { status: "failed", error: { message: "offline failure" } } });
+	const fetch: typeof globalThis.fetch = async () => {
+		requests++;
+		if (ending !== "abort" || requests > 1) return sseResponse(byteChunks(sseFrames(requests > 1 ? textEvents() : first), 4096));
+		return new Response(new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode(sseFrames(first))); } }), { headers: { "content-type": "text/event-stream" } });
+	};
+	const agent = new Agent({ streamFn: (_m, context, options) => streamCodex(codexModel, context, { ...options, apiKey: codexToken(), transport: "sse", fetch, maxRetries: 0 }) });
+	agent.state.model = codexModel;
+	agent.state.tools = [{ name: "bash", label: "bash", description: "fixture", parameters: { type: "object", properties: {} } as never,
+		execute: async () => { executions++; return { content: [{ type: "text", text: "ran" }], details: {} }; } }];
+	const off = agent.subscribe(event => { if (ending === "abort" && event.type === "message_update") agent.abort(); });
+	try {
+		await agent.prompt("offline boundary");
+		await agent.waitForIdle();
+		assert.equal(executions, ending === "toolUse" ? 1 : 0);
+		assert.equal(requests, ending === "toolUse" || ending === "length" ? 2 : 1);
+		const results = agent.state.messages.filter((message: any) => message.role === "toolResult") as any[];
+		assert.equal(results.length, ending === "toolUse" || ending === "length" ? 1 : 0);
+		if (ending === "length") {
+			assert.equal((agent.state.messages.find(message => message.role === "assistant") as any).stopReason, "length");
+			assert.equal(results[0].isError, true, "truncated calls receive the existing synthetic error result");
+		}
+		const last: any = agent.state.messages.at(-1);
+		assert.equal(last.stopReason, ending === "toolUse" || ending === "length" ? "stop" : ending === "abort" ? "aborted" : ending);
+	} finally { off(); agent.abort(); }
+});

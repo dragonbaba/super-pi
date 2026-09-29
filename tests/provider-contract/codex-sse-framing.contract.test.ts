@@ -70,4 +70,29 @@ test("Codex SSE framing scans lines in place without per-frame split/filter/map/
 	const source = readFileSync(new URL("../../packages/ai/src/api/openai-codex-responses.ts", import.meta.url), "utf8");
 	const parser = source.slice(source.indexOf("async function* parseSSE("), source.indexOf("// WebSocket Parsing"));
 	assert.doesNotMatch(parser, /\.split\(|\.filter\(|\.map\(|\.join\(|\.replace\(/);
+	assert.match(parser, /finally\s*\{[\s\S]*?buffer = "";[\s\S]*?data = undefined;[\s\S]*?reader\.cancel/);
 });
+
+for (const ending of ["terminal", "protocol-error", "abort-with-pending-data"] as const) {
+	test(`Codex SSE releases its reader and unread/pending data after ${ending}`, async () => {
+		const controller = new AbortController();
+		let cancelled = 0;
+		let body!: ReadableStream<Uint8Array>;
+		const prefix = sseFrames(textEvents().slice(0, 2));
+		const tail = ending === "terminal" ? sseFrames(textEvents().slice(2)) + `data: ${"unread".repeat(100000)}`
+			: ending === "protocol-error" ? "data: {invalid}\n\n" : `data: ${"pending".repeat(100000)}\n`;
+		const fetch: typeof globalThis.fetch = async () => {
+			body = new ReadableStream<Uint8Array>({
+				start(stream) { stream.enqueue(new TextEncoder().encode(prefix + tail)); },
+				cancel() { cancelled++; },
+			});
+			return new Response(body, { headers: { "content-type": "text/event-stream" } });
+		};
+		const stream = streamCodex(codexModel, responsesContext, { apiKey: codexToken(), transport: "sse", fetch, maxRetries: 0, signal: controller.signal });
+		for await (const event of stream) if (ending === "abort-with-pending-data" && event.type === "text_delta") controller.abort();
+		const message = await stream.result();
+		assert.equal(message.stopReason, ending === "terminal" ? "stop" : ending === "protocol-error" ? "error" : "aborted");
+		assert.equal(cancelled, 1);
+		assert.equal(body.locked, false);
+	});
+}

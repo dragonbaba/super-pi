@@ -887,6 +887,9 @@ async function* parseSSE(response: Response, signal?: AbortSignal): AsyncGenerat
         }
     }
     finally {
+        // Release unread residue/current frame before cancellation can await transport cleanup.
+        buffer = "";
+        data = undefined;
         signal?.removeEventListener("abort", onAbort);
         try {
             await reader.cancel();
