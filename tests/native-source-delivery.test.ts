@@ -40,10 +40,28 @@ test("N2 packed runtime extension includes worker and resolves installed platfor
   const npm = process.env.npm_execpath;
   assert.ok(npm, "Run delivery checks through npm so the installed npm entry is explicit.");
   const packed = await execute(process.execPath, [npm, "pack", "--workspace", "@super-pi/mutation-guard-write", "--ignore-scripts", "--json", "--pack-destination", root], { windowsHide: true });
-  const manifest = JSON.parse(packed.stdout)[0];
+  const output = JSON.parse(packed.stdout);
+  const target = JSON.parse(await readFile(resolve("packages/extensions/mutation-guard-write/package.json"), "utf8"));
+  let manifest;
+  if (Array.isArray(output)) {
+    assert.equal(output.length, 1);
+    manifest = output[0];
+  } else {
+    // npm 12 logTar buffers workspace JSON under the package name.
+    const { stdout: version } = await execute(process.execPath, [npm, "--version"], { windowsHide: true });
+    assert.match(version.trim(), /^12\./);
+    assert.deepEqual(Object.keys(output), [target.name]);
+    manifest = output[target.name];
+  }
+  assert.equal(manifest.name, target.name);
+  assert.equal(manifest.version, target.version);
+  assert.equal(manifest.id, `${target.name}@${target.version}`);
+  assert.equal(manifest.filename, `${target.name.replace(/^@/, "").replace("/", "-")}-${target.version}.tgz`);
   for (const name of ["native-file-worker.mjs", "native-file-client.ts", "file-commit.ts", "file-commit-metadata.ts"]) assert.ok(manifest.files.some((file: any) => file.path === name));
   await execute("tar", ["-xzf", join(root, manifest.filename), "-C", root], { windowsHide: true });
   const runtimeManifest = JSON.parse(await readFile(join(root, "package/package.json"), "utf8"));
+  assert.equal(runtimeManifest.name, target.name);
+  assert.equal(runtimeManifest.version, target.version);
   assert.equal(runtimeManifest.dependencies.koffi, "3.3.1");
   // Installed-runtime packaging check, with no installation/download in the smoke.
   // The repository ships source workspaces; this private extension pack is not a standalone CLI release.
