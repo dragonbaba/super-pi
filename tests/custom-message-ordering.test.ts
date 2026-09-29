@@ -15,8 +15,10 @@ function chatResponse(delta: unknown, finish: string): Response {
 	return new Response(chunk(delta, null) + chunk({}, finish) + "data: [DONE]\n\n", { headers: { "content-type": "text/event-stream" } });
 }
 
-// A context-only custom message sent while a tool runs must not split a tool call from its result.
-test("custom message sent during a tool call is appended after the turn's tool results", async () => {
+const roles = (entries: any[]) => entries.map(entry => entry.type === "custom_message" ? "custom" : entry.message?.role).filter(Boolean);
+
+/** Session whose first provider reply calls `note`; the tool runs `execute` with the live session. */
+async function customMessageSession(execute: (session: any, signal: AbortSignal) => Promise<void>) {
 	const root = mkdtempSync(join(tmpdir(), "custom-order-"));
 	const payloads: any[] = [];
 	const fetch: typeof globalThis.fetch = async (_url, init) => {
@@ -32,36 +34,71 @@ test("custom message sent during a tool call is appended after the turn's tool r
 	await resourceLoader.reload();
 	const sessionManager = SessionManager.inMemory(root);
 	let session: any;
-	const events: string[] = [];
 	({ session } = await createAgentSession({
 		cwd: root, agentDir: root, settingsManager: settings, sessionManager, resourceLoader, model: ALPHA_MODEL, modelRuntime: runtime, noTools: "builtin",
 		customTools: [{ name: "note", label: "Note", description: "fixture", parameters: { type: "object", properties: {} },
-			execute: async () => {
-				await session.sendCustomMessage({ customType: "note", content: "noted", display: true }, { triggerTurn: false });
-				events.push(`queued:${session.messages.some((m: any) => m.role === "custom")}`);
+			execute: async (_id: string, _params: unknown, signal: AbortSignal) => {
+				await execute(session, signal);
 				return { content: [{ type: "text", text: "ok" }], details: {} };
 			} }],
 	}));
+	const events: string[] = [];
 	const unsubscribe = session.subscribe((event: any) => {
 		if (event.type === "message_end") events.push(`end:${event.message.role}`);
 	});
-	try {
-		await session.prompt("Take a note.");
-		await session.agent.waitForIdle();
-		const roles = (entries: any[]) => entries.map(entry => entry.type === "custom_message" ? "custom" : entry.message?.role ?? entry.role).filter(Boolean);
-		assert.deepEqual(roles(sessionManager.getEntries()), ["user", "assistant", "toolResult", "custom", "assistant"]);
-		assert.deepEqual(session.messages.map((m: any) => m.role), ["user", "assistant", "toolResult", "custom", "assistant"]);
-		// Nothing is announced before it exists in session history.
-		assert.deepEqual(events, ["end:user", "end:assistant", "queued:false", "end:toolResult", "end:custom", "end:assistant"]);
-		// The next request replays history; the tool result must still follow its call.
-		await session.prompt("Again.");
-		await session.agent.waitForIdle();
-		const wire = payloads[2].messages.map((m: any) => m.role);
-		assert.equal(wire[wire.indexOf("assistant") + 1], "tool", JSON.stringify(wire));
-	} finally {
+	return { session, sessionManager, payloads, events, release() {
 		unsubscribe();
 		session.dispose();
 		rmSync(root, { recursive: true, force: true });
+	} };
+}
+
+const sendNote = (session: any) => session.sendCustomMessage({ customType: "note", content: "noted", display: true }, { triggerTurn: false });
+
+// A context-only custom message sent while a tool runs must not split a tool call from its result.
+test("custom message sent during a tool call is appended after the turn's tool results", async () => {
+	const f = await customMessageSession(async session => {
+		await sendNote(session);
+		f.events.push(`queued:${session.messages.some((m: any) => m.role === "custom")}`);
+	});
+	try {
+		await f.session.prompt("Take a note.");
+		await f.session.agent.waitForIdle();
+		assert.deepEqual(roles(f.sessionManager.getEntries()), ["user", "assistant", "toolResult", "custom", "assistant"]);
+		assert.deepEqual(f.session.messages.map((m: any) => m.role), ["user", "assistant", "toolResult", "custom", "assistant"]);
+		// Nothing is announced before it exists in session history.
+		assert.deepEqual(f.events, ["end:user", "end:assistant", "queued:false", "end:toolResult", "end:custom", "end:assistant"]);
+		// The next request replays history; the tool result must still follow its call.
+		await f.session.prompt("Again.");
+		await f.session.agent.waitForIdle();
+		const wire = f.payloads[2].messages.map((m: any) => m.role);
+		assert.equal(wire[wire.indexOf("assistant") + 1], "tool", JSON.stringify(wire));
+	} finally {
+		f.release();
+	}
+});
+
+test("custom message queued before an abort is released exactly once after the aborted tool result", async () => {
+	let queued!: () => void;
+	const ready = new Promise<void>(resolve => { queued = resolve; });
+	const f = await customMessageSession(async (session, signal) => {
+		await sendNote(session);
+		queued();
+		await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }));
+	});
+	try {
+		const run = f.session.prompt("Take a note.");
+		await ready;
+		await f.session.abort();
+		await run;
+		const history = roles(f.sessionManager.getEntries());
+		assert.equal(history.filter(role => role === "custom").length, 1);
+		assert.ok(history.indexOf("custom") > history.indexOf("toolResult"), JSON.stringify(history));
+		assert.equal(f.events.filter(event => event === "end:custom").length, 1);
+		assert.equal((f.session as any)._pendingCustomMessages.length, 0);
+		assert.equal(f.payloads.length, 1);
+	} finally {
+		f.release();
 	}
 });
 
@@ -73,7 +110,7 @@ test("custom message without a turn is appended immediately when idle", async ()
 	const sessionManager = SessionManager.inMemory(root);
 	const { session } = await createAgentSession({ cwd: root, agentDir: root, settingsManager: settings, sessionManager, resourceLoader, model: ALPHA_MODEL, modelRuntime: alphaModelRuntime(), noTools: "all" });
 	try {
-		await session.sendCustomMessage({ customType: "note", content: "idle", display: true }, { triggerTurn: false });
+		await sendNote(session);
 		assert.deepEqual(session.messages.map((m: any) => m.role), ["custom"]);
 		assert.equal(sessionManager.getEntries().filter((entry: any) => entry.type === "custom_message").length, 1);
 	} finally {

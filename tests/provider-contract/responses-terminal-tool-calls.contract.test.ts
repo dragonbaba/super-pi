@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { Agent } from "../../packages/agent/src/agent.ts";
+import { stream as streamCodex } from "../../packages/ai/src/api/openai-codex-responses.ts";
 import { processResponsesStream } from "../../packages/ai/src/api/openai-responses-shared.ts";
-import { byteChunks, codexModel, responsesOutput, runCodexSse, sseFrames } from "../helpers/responses-sse-fixture.ts";
+import { byteChunks, codexModel, codexToken, responsesOutput, runCodexSse, sseFrames, sseResponse, textEvents } from "../helpers/responses-sse-fixture.ts";
 
 const model: any = { ...codexModel, api: "openai-responses", provider: "fixture" };
 const sink = { push() {} } as never;
@@ -79,4 +81,26 @@ test("Codex SSE surfaces an unfinished tool call as an error result instead of t
 	]), 4096));
 	assert.equal(message.stopReason, "error");
 	assert.match(message.errorMessage ?? "", /unfinished tool call: bash \(call_1\|fc_1\)/);
+});
+
+test("Agent never executes a tool call whose output_item.done did not arrive", async () => {
+	let requests = 0, executions = 0;
+	// Any follow-up request (only reachable if the call ran) ends the run with text.
+	const fetch: typeof globalThis.fetch = async () => sseResponse(byteChunks(sseFrames(++requests > 1 ? textEvents() : [
+		{ type: "response.output_item.added", output_index: 0, item: { ...call("1"), arguments: "" } },
+		{ type: "response.function_call_arguments.delta", output_index: 0, delta: '{"command":"rm -rf /tmp/build' },
+		completed,
+	]), 4096));
+	const agent = new Agent({ streamFn: (_m, context, options) => streamCodex(codexModel, context, { ...options, apiKey: codexToken(), transport: "sse", fetch, maxRetries: 0 }) });
+	agent.state.model = codexModel;
+	agent.state.tools = [{ name: "bash", label: "bash", description: "fixture", parameters: { type: "object", properties: {} } as never,
+		execute: async () => { executions++; return { content: [{ type: "text", text: "ran" }], details: {} }; } }];
+	await agent.prompt("offline");
+	await agent.waitForIdle();
+	assert.equal(requests, 1);
+	assert.equal(executions, 0);
+	const last: any = agent.state.messages.at(-1);
+	assert.equal(last.role, "assistant");
+	assert.equal(last.stopReason, "error");
+	assert.equal(agent.state.messages.some((message: any) => message.role === "toolResult"), false);
 });
