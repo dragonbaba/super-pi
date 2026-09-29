@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { getBuiltinModel } from "../../packages/ai/src/providers/all.ts";
 import { stream as streamCodex } from "../../packages/ai/src/api/openai-codex-responses.ts";
 import { stream as streamResponses } from "../../packages/ai/src/api/openai-responses.ts";
 import { byteChunks, codexModel, codexToken, responsesContext, sseFrames, sseResponse } from "../helpers/responses-sse-fixture.ts";
@@ -26,6 +27,8 @@ for (const api of ["responses", "codex"] as const) {
 		["gpt-6-luna", "priority", "fast", 2],
 		["gpt-6-luna", "fast", "fast", 2],
 		["gpt-5.5", "priority", "fast", 2.5],
+		["gpt-5.6-sol", "priority", "fast", 2],
+		["gpt-5.6-sol", "fast", "default", 1],
 		["gpt-5.4", "priority", "priority", 2],
 		["gpt-5.4", "flex", "flex", 0.5],
 		// The reported tier is what was served; the requested tier applies only when none is reported.
@@ -36,3 +39,11 @@ for (const api of ["responses", "codex"] as const) {
 		assert.equal(await multiplier(api, modelId, requested, reported), expected);
 	});
 }
+
+test("GPT-5.6 Sol catalog uses Standard API rates before tier pricing, including long context", () => {
+	for (const provider of ["openai", "openai-codex"] as const) {
+		const model = getBuiltinModel(provider, "gpt-5.6-sol")!;
+		assert.deepEqual(model.cost, { input: 4, output: 20, cacheRead: 0.4, cacheWrite: 5,
+			tiers: [{ inputTokensAbove: 272000, input: 8, output: 30, cacheRead: 0.8, cacheWrite: 10 }] });
+	}
+});

@@ -673,7 +673,7 @@ function getServiceTierCostMultiplier(model: Pick<Model<"openai-codex-responses"
             return 0.5;
         case "priority":
         case "fast":
-            return model.id.startsWith("gpt-5.5") || model.id.startsWith("gpt-5.6") ? 2.5 : 2;
+            return model.id.startsWith("gpt-5.5") ? 2.5 : 2;
         default:
             return 1;
     }
