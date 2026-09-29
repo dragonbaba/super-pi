@@ -461,7 +461,7 @@ Super Pi（`D:\RMProjects\Pi\packages`）：
 
 ## 9. 实施交接记录（由执行者就地维护）
 
-当前状态：本地实施完成，未推送、未创建 PR，分支留给 Codex 审核。此节保持简短，不另外生成批次目录、源码副本和多份重复审查报告。
+当前状态：Codex 独立审核及同范围修复已完成；按授权交付 Draft PR，完整本地验证受 Windows 测试清理阻塞。远端最终 HEAD、PR、两平台 CI 与 review 状态在 PR 正文及交付回复记录。本节原交接声明保留为历史证据，独立结论见 §9.1。
 
 | 项 | 值 |
 | --- | --- |
@@ -499,7 +499,7 @@ Super Pi（`D:\RMProjects\Pi\packages`）：
 - 因 runner 在上述失败处停止，其余 110 个入口（109 个文件 + `@super-pi/memory` workspace）用临时驱动逐个运行，参数、环境与隔离目录与 `scripts/test.mjs` 的 runChild 相同，只去掉遇错即停：1533 个用例通过，1 个失败。失败的是 `native-source-delivery.test.ts` 的打包用例：本机 npm 的 `pack --workspace --json` 输出以包名为键的对象而非数组，`JSON.parse(stdout)[0]` 为 undefined；基线上结果相同，属既有工具链差异。
 - 未运行：真实账号请求、CI、远端 review。
 
-**未解决 / 待证实**
+**Opus 交接时未解决 / 待证实（独立复核更新见 §9.1）**
 
 - 账号在线有效性未实测（认证、普通请求、远程压缩与续接都只有离线夹具）。
 - C4：上游 #3307 的 Codex `"default"` 档位覆盖行为待证实，未改。
@@ -508,3 +508,34 @@ Super Pi（`D:\RMProjects\Pi\packages`）：
 - B4：若以后要采用，需要先设计只覆盖视口的 token 所有权，不在本轮范围。
 
 交接只需追加：实际文档路径、工作分支/worktree、基线和当前 HEAD、逐项状态、已执行命令/结果、性能证据位置及阻塞。最终远端 SHA、PR/review/CI 链接以 PR 正文和交付回复记录，避免为了回填自身最终 commit SHA 再生成一个未经验证的新 head。
+
+### 9.1 Codex 独立审核与追加修复
+
+接手时 worktree 干净，分支及完整 HEAD 与交接一致；远端无此分支/PR。核实 `09094442a..f094febb6` 仅修改本文件。审核覆盖固定基线至候选的全部生产改动及其调用链，没有重写 Opus commits；主工作区用户文件未处理。以下结论不沿用“已修复/已等价”的交接断言。
+
+| 项 | 独立结果及证据 |
+| --- | --- |
+| A1/A3/C9/C8 | 保留实现。Responses/Codex → shared processor → Agent 的实际执行回归：正常 toolUse 恰好执行一次；缺 done/error/abort 不执行；length 保留原有失败工具结果后继续的语义。SSE 原 LF/CRLF、跨 chunk/UTF-8、EOF、多 data 行、畸形/取消语料保留。CLI 启动预扫描与 @file/消息终止符保留。RPC 外层快照、重入、顺序、原异常语义、取消订阅释放通过，稳态不复制订阅数组。 |
+| A2 | 复现旧实现 state/持久化有自定义消息、Agent 独立 context 的下一次请求却没有。追加同步及 FIFO 重入排空修复；断言下一次真实 payload、工具结果先于 custom、恰好一次；另补请求失败 settle、abort、实际 runtime replacement 的会话归属及两个 pending 容器释放。 |
+| A4 | 新增明确 IPC 同步后的跨进程杀写入者/重开回归；只终止本测试的确切 ChildProcess，不正常关闭来触发额外落盘。验证首条 user 可恢复、尚无 assistant，复用已有空会话/原子首写夹具。此证据不证明断电持久性。 |
+| A5-b | `openai-compaction-lifecycle.contract.test.ts` 38 项生产 Session/SDK/认证/压缩/传输离线回归。修复 API 请求预览缺失与同模型 Responses 文本 item identity 丢失；以请求边界的 provider/API/端点/身份/路由头摘要限定 opaque 复用，Codex 同身份正常 token 轮换兼容；普通请求与压缩实际复用认证 resolver 刷新/锁，非 delta 凭据读取。覆盖成功压缩后下一次真实 payload/次数/磁盘历史，refresh、resume、switch、fork/tree 前后、模型/端点/身份及返回兼容环境；legacy 无 scope 使用可移植本地历史。临时 live continuation 与持久 opaque 分开失效。 |
+| A5 追加真实问题 | Codex WS 缓存未核对 URL；直接 API WS 忽略配置路径/有效路由头；跨模型/身份往返时后续本地回复丢失；一实例 shutdown 清除其他会话的 opaque 状态。均有先失败回归和最小修复。后续本地回复保留为可移植历史，跨身份私有 reasoning/item 签名不复用，重开会话也验证。清理限定于 owner 的会话；不清除持久历史。GPT 远程失败及必需可移植摘要失败断言 failed-closed、无成功 entry、旧历史留存及失败后的下一请求；非 GPT 原本地回退保留。 |
+| C4 | 核实目录 Standard 价格 → calculateCost（含长上下文 tier）→ served service_tier 单次倍率 → footer。公开 API 实际 default 优先于请求 fast/priority，未采用 #3307 的猜测覆盖。官方 Fast 文档证实别名及 GPT-5.6 Sol 当前 Standard 4/20、长上下文 8/30 美元/百万 input/output、Fast 2x；修正此模型两通道目录/生成器及 Codex 旧 2.5x，并补直接 API WS Fast 别名遗漏。订阅显示为 `(API est., sub)`，不表示实际扣款。GPT-5.4/5.5 Standard 价格核对官方模型页；5.5 既有倍率保留，未声称此次外部重新证明其所有档位。 |
+| B3 | 保留收益；修正 count 与 getEntries 对重复 id/多 header 的过滤口径，O(1) 计数；增加仅属 manager 的 reload generation，覆盖同 id/leaf/count 的重载。追加/rename/branch/compaction/session switch/dispose 均验证。历史汇总没有模型依赖；实时 context usage 单独读取，没有 revision bus。 |
+| B1/B2/B4 与暂缓项 | 基线到候选的 `packages/tui` 无变更，撤回干净，不重新优化；C1–C3/C5/C6/D1–D3/其余 P2 保持暂缓。 |
+
+审核调用链：SDK/provider 请求构建及 auth resolver → extension request/header hooks → streamCodex/Responses WS → parseSSE/mapCodexEvents/processResponsesStream → EventStream → Agent/AgentSession → persistence/next-turn context；RPC JSONL → handleLine → listeners；Interactive render → Footer → SessionManager/getSessionScan → usage totals/排版。新增 scope 计算只在请求/压缩边界，缓存归 session/manager/component，稳定回调沿既有 owner 生命周期，无新 delta 闭包、Promise、AbortController、包装数组、全局 scratch、无界 capability cache 或对象池。保留既有异步 read/yield/EventStream 边界及其分配，未宣称整条流或 footer 零分配。
+
+必要证据保存在本 worktree 的忽略目录 `.artifacts/upstream-0991-audit/`，未提交第二套 runner 或新报告：
+
+- `final-contract.log`：根 contract runner 13 文件/172 通过；`final-hot.log`：根 AST/source 7 文件/38 通过；`final-affected.log`：根 `run()` 的 7 个受影响入口及 memory workspace，37 通过。临时选择入口只 import 原文件，复用原 runChild 的 cwd、HOME/USERPROFILE/XDG/SP 隔离、Node/GC 参数及 fail-fast；测试目录与 memory 仍由原 runner 管理。新增文件由 `test-list.log` 的根发现入口列出。`final-check.log`、`final-build.log` 通过。
+- `final-verify.log`：`9c6477c6a` 候选 `verify` **退出 1**，check/build 通过，72 文件退出 0，LSP junction 清理 ENOTEMPTY 后停止；其后的可移植尾部/owner 修复用 check、contract、hot 校验，没有循环重跑已诊断的环境失败。Opus 的 `verify` 退出 1 保持原口径，原临时补跑驱动/原始性能日志未取得，不能独立确认其全部配置声明。
+- `baseline-acl.log`：同 Node v26.4.0/npm 12.0.1、提权 Administrator 的基线独立回归 37 通过/21 平台 skip，两条 ACL 拒绝均通过；不能把“提权导致”当已证明根因。`remainder-configured-bash.log` 中当前候选的 native-file-metadata 与 native-source-delivery 也退出 0。`baseline-pack.log`、`pack-output.json` 及本地 npm 12 pack/logTar 源证明已知按包名索引对象格式；最小测试边界适配限定 npm 12，并严格校验唯一目标、版本/产物/所需文件及离线 installed runtime，单独提交，没有未知格式 fallback。
+- `baseline-lsp.log` 与 `final-verify.log` 独立复现同位置 ENOTEMPTY，精确根因未证明，未改 LSP/权限断言。补跑原先因 Git Bash 不在 PATH 失败；仅为该子进程加已有 `D:\Git\bin` 后推进至另一既有 junction 清理失败（read-evidence-result-boundaries）。`remainder*.log` 是部分补充证据，不是全通过；机器级设置/全局工具链未改。剩余完整验证由当前 HEAD 的适用 CI 检查。
+- `profile.jsonl`：同机 Intel i7-14700KF/Node v26.4.0、5 warmup/30 stream 样本，**生产 streamCodex + 注入 fetch 的离线夹具**。C7 基线为含 A3 的 `53fda4afc`，候选 parser 与 `9c6477c6a` 相同（之后只改计价/压缩扩展，不改 parser）。双方 2000 delta/2004 events/最终 2000 字符且正常结束；LF 1/16 KiB sampled B/delta 3065→2481、2944→2402；CRLF 3245→2482、3120→2426。p50 10.16→7.27、8.50→6.32、9.90→7.10、9.17→6.32 ms。parser 逐帧 split/filter/map/join/CRLF replace 为 0，buffer/data 清理先于 await cancel。 |
+- 同一 profile 的 B3 基线 `0cfc8062d^`，1000/10000 条历史、300 frames，基线每次扫描/复制，候选 warm 后扫描/复制 0；采样每 frame 41.3/245.6 KB→11.2/8.8 KB，仍含 footer 排版分配。`lifecycle.jsonl`：C8 100000 events/1000000 deliveries，baseline/candidate 104.9→64.0 B/event，派发数组复制 1→0、退订后 listener 0；C7 normal/error/abort 5 MiB 未读夹具 cancel 1、reader unlock、受控 GC 后 chunk/body/response WeakRef 全释放。`parser-consumer.json` 对同生产 parseSSE 仅加测试 export，验证消费者 return 后 parser/大 chunk/body/response 释放；外层 EventStream 的提前退出仍需调用方 abort，不能等同于它自动取消上游，通用语义未在本 PR 重写。
+- `frame-profile.json`：现有 production-main 分配基准 2000 frames，frame Promise/AbortController/wrapper/full-size copies 均 0，frame string 1/frame，dispose 后 retained/composition reference 0。B1/B2/B4 原测量结论保留，但未把未取得的原始日志当独立验证。
+
+价格依据（2026-09-30）：[官方 Fast mode](https://developers.openai.com/api/docs/guides/fast-mode)、[价格页](https://developers.openai.com/api/docs/pricing)、[GPT-5.4](https://developers.openai.com/api/docs/models/gpt-5.4)、[GPT-5.5](https://developers.openai.com/api/docs/models/gpt-5.5)。API 等价估价与实际订阅扣款分开；Codex #3307 仍待证实。**在线有效性未实测**，没有用离线夹具替代真实账号结论。
+
+资源清理限制：自动审批检查拒绝对本任务记录的两个 ENOTEMPTY 临时目录和本地 pack 产物执行清理（仅返回 blocked by policy）；保留这些记录，没有绕过。最终远端结果只回填 PR 正文与回复，避免文档 SHA 循环。
