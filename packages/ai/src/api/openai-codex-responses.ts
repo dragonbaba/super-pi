@@ -186,8 +186,6 @@ const TRAILING_SLASHES_PATTERN = /\/+$/;
 const WSS_PROTOCOL_PATTERN = /^wss:/;
 const WS_PROTOCOL_PATTERN = /^ws:/;
 const USAGE_LIMIT_ERROR_CODE_PATTERN = /usage_limit_reached|usage_not_included|rate_limit_exceeded/i;
-// String.replace resets lastIndex, so sharing this global pattern is reentrancy-safe.
-const CRLF_PATTERN = /\r\n/g;
 const JWT_CLAIM_PATH = "https://api.openai.com/auth";
 const DEFAULT_MAX_RETRIES = 0;
 const BASE_DELAY_MS = 1000;
@@ -832,7 +830,9 @@ async function* parseSSE(response: Response, signal?: AbortSignal): AsyncGenerat
         return;
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
+    // Unterminated line residue and the current frame's data lines; both owned by this stream.
     let buffer = "";
+    let data: string | undefined;
     const onAbort = () => {
         void reader.cancel().catch(() => { });
     };
@@ -846,37 +846,42 @@ async function* parseSSE(response: Response, signal?: AbortSignal): AsyncGenerat
             if (signal?.aborted) {
                 throw new Error("Request was aborted");
             }
-            // At EOF, flush the decoder and terminate a residual final frame so it is parsed.
+            // At EOF, flush the decoder and terminate a residual final line and frame so they are parsed.
             buffer += done ? decoder.decode() : decoder.decode(value, { stream: true });
-            // SSE allows CRLF line endings; a CR at the end of a read waits for its LF.
-            if (buffer.includes("\r\n"))
-                buffer = buffer.replace(CRLF_PATTERN, "\n");
-            if (done && buffer.trim())
+            if (done)
                 buffer += "\n\n";
-            let idx = buffer.indexOf("\n\n");
-            while (idx !== -1) {
-                const chunk = buffer.slice(0, idx);
-                buffer = buffer.slice(idx + 2);
-                const dataLines = chunk
-                    .split("\n")
-                    .filter((l) => l.startsWith("data:"))
-                    .map((l) => l.slice(5).trim());
-                if (dataLines.length > 0) {
-                    const data = dataLines.join("\n").trim();
-                    if (data && data !== "[DONE]") {
+            // Scan complete LF/CRLF lines in place; a CR that ends a read waits for its LF.
+            let lineStart = 0;
+            let newline = buffer.indexOf("\n");
+            while (newline !== -1) {
+                const lineEnd = newline > lineStart && buffer.charCodeAt(newline - 1) === 13 ? newline - 1 : newline;
+                if (lineEnd === lineStart) {
+                    const payload = data?.trim();
+                    data = undefined;
+                    if (payload && payload !== "[DONE]") {
                         try {
-                            yield JSON.parse(data) as CodexEvent;
+                            yield JSON.parse(payload) as CodexEvent;
                         }
                         catch (cause) {
                             throw new CodexProtocolError(`Invalid Codex SSE JSON: ${formatThrownValue(cause)}`, {
                                 cause,
-                                payload: data,
+                                payload,
                             });
                         }
                     }
                 }
-                idx = buffer.indexOf("\n\n");
+                else if (buffer.startsWith("data:", lineStart)) {
+                    // Skip the conventional space so trim() usually returns the slice unchanged.
+                    const valueStart = buffer.charCodeAt(lineStart + 5) === 32 ? lineStart + 6 : lineStart + 5;
+                    const line = buffer.slice(valueStart, lineEnd).trim();
+                    data = data === undefined ? line : `${data}\n${line}`;
+                }
+                lineStart = newline + 1;
+                newline = buffer.indexOf("\n", lineStart);
             }
+            // Drop the consumed prefix once per read.
+            if (lineStart > 0)
+                buffer = buffer.slice(lineStart);
             if (done)
                 break;
         }
