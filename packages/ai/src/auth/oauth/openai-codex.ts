@@ -126,14 +126,19 @@ async function fetchWithLoginCancellation(input: string, init: RequestInit): Pro
 // Auth responses can carry tokens, codes or verifiers, and callers fold error messages into
 // user-visible and persisted diagnostics. Report only status, a validated OAuth error code and
 // missing field names; never echo response bodies (JSON.parse errors quote them too).
-const OAUTH_ERROR_CODE_PATTERN = /^[A-Za-z0-9_.-]{1,64}$/;
+const OAUTH_ERROR_CODES = new Set([
+	"invalid_request", "invalid_client", "invalid_grant", "unauthorized_client", "unsupported_grant_type",
+	"invalid_scope", "access_denied", "unsupported_response_type", "server_error", "temporarily_unavailable",
+	"authorization_pending", "slow_down", "expired_token",
+	"deviceauth_authorization_pending", "deviceauth_authorization_declined",
+]);
 
 function oauthErrorCode(body: string): string | undefined {
 	try {
 		const json = JSON.parse(body) as { error?: unknown } | null;
 		const error = json?.error;
 		const code = error && typeof error === "object" ? (error as { code?: unknown }).code : error;
-		return typeof code === "string" && OAUTH_ERROR_CODE_PATTERN.test(code) ? code : undefined;
+		return typeof code === "string" && OAUTH_ERROR_CODES.has(code) ? code : undefined;
 	} catch {
 		return undefined;
 	}

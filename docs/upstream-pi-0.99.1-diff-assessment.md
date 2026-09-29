@@ -528,13 +528,15 @@ Super Pi（`D:\RMProjects\Pi\packages`）：
 
 必要证据保存在本 worktree 的忽略目录 `.artifacts/upstream-0991-audit/`，未提交第二套 runner 或新报告：
 
-- `final-contract.log`：根 contract runner 13 文件/172 通过；`final-hot.log`：根 AST/source 7 文件/38 通过；`final-affected.log`：根 `run()` 的 7 个受影响入口及 memory workspace，37 通过。临时选择入口只 import 原文件，复用原 runChild 的 cwd、HOME/USERPROFILE/XDG/SP 隔离、Node/GC 参数及 fail-fast；测试目录与 memory 仍由原 runner 管理。新增文件由 `test-list.log` 的根发现入口列出。`final-check.log`、`final-build.log` 通过。
+- `final-contract.log`：根 contract runner 13 文件/174 通过；`final-hot.log`：根 AST/source 7 文件/38 通过；`final-affected.log`：根 `run()` 的 7 个受影响入口及 memory workspace，37 通过。临时选择入口只 import 原文件，复用原 runChild 的 cwd、HOME/USERPROFILE/XDG/SP 隔离、Node/GC 参数及 fail-fast；测试目录与 memory 仍由原 runner 管理。新增文件由 `test-list.log` 的根发现入口列出。`final-check.log`、`final-build.log` 通过。
 - `final-verify.log`：`9c6477c6a` 候选 `verify` **退出 1**，check/build 通过，72 文件退出 0，LSP junction 清理 ENOTEMPTY 后停止；其后的可移植尾部/owner 修复用 check、contract、hot 校验，没有循环重跑已诊断的环境失败。Opus 的 `verify` 退出 1 保持原口径，原临时补跑驱动/原始性能日志未取得，不能独立确认其全部配置声明。
 - `baseline-acl.log`：同 Node v26.4.0/npm 12.0.1、提权 Administrator 的基线独立回归 37 通过/21 平台 skip，两条 ACL 拒绝均通过；不能把“提权导致”当已证明根因。`remainder-configured-bash.log` 中当前候选的 native-file-metadata 与 native-source-delivery 也退出 0。`baseline-pack.log`、`pack-output.json` 及本地 npm 12 pack/logTar 源证明已知按包名索引对象格式；最小测试边界适配限定 npm 12，并严格校验唯一目标、版本/产物/所需文件及离线 installed runtime，单独提交，没有未知格式 fallback。
 - `baseline-lsp.log` 与 `final-verify.log` 独立复现同位置 ENOTEMPTY，精确根因未证明，未改 LSP/权限断言。补跑原先因 Git Bash 不在 PATH 失败；仅为该子进程加已有 `D:\Git\bin` 后推进至另一既有 junction 清理失败（read-evidence-result-boundaries）。`remainder*.log` 是部分补充证据，不是全通过；机器级设置/全局工具链未改。剩余完整验证由当前 HEAD 的适用 CI 检查。
 - `profile.jsonl`：同机 Intel i7-14700KF/Node v26.4.0、5 warmup/30 stream 样本，**生产 streamCodex + 注入 fetch 的离线夹具**。C7 基线为含 A3 的 `53fda4afc`，候选 parser 与 `9c6477c6a` 相同（之后只改计价/压缩扩展，不改 parser）。双方 2000 delta/2004 events/最终 2000 字符且正常结束；LF 1/16 KiB sampled B/delta 3065→2481、2944→2402；CRLF 3245→2482、3120→2426。p50 10.16→7.27、8.50→6.32、9.90→7.10、9.17→6.32 ms。parser 逐帧 split/filter/map/join/CRLF replace 为 0，buffer/data 清理先于 await cancel。 |
 - 同一 profile 的 B3 基线 `0cfc8062d^`，1000/10000 条历史、300 frames，基线每次扫描/复制，候选 warm 后扫描/复制 0；采样每 frame 41.3/245.6 KB→11.2/8.8 KB，仍含 footer 排版分配。`lifecycle.jsonl`：C8 100000 events/1000000 deliveries，baseline/candidate 104.9→64.0 B/event，派发数组复制 1→0、退订后 listener 0；C7 normal/error/abort 5 MiB 未读夹具 cancel 1、reader unlock、受控 GC 后 chunk/body/response WeakRef 全释放。`parser-consumer.json` 对同生产 parseSSE 仅加测试 export，验证消费者 return 后 parser/大 chunk/body/response 释放；外层 EventStream 的提前退出仍需调用方 abort，不能等同于它自动取消上游，通用语义未在本 PR 重写。
 - `frame-profile.json`：现有 production-main 分配基准 2000 frames，frame Promise/AbortController/wrapper/full-size copies 均 0，frame string 1/frame，dispose 后 retained/composition reference 0。B1/B2/B4 原测量结论保留，但未把未取得的原始日志当独立验证。
+
+认证诊断追加：`auth-code-before.log` 复现字符形状合法的合成秘密仍能经 error/code 字段泄漏到 message/stack；改为模块级已知 OAuth/设备授权错误码集合，未知码仅保留 HTTP 状态。两条新增边界回归通过，不改变刷新锁、账户选择或 delta 路径。
 
 价格依据（2026-09-30）：[官方 Fast mode](https://developers.openai.com/api/docs/guides/fast-mode)、[价格页](https://developers.openai.com/api/docs/pricing)、[GPT-5.4](https://developers.openai.com/api/docs/models/gpt-5.4)、[GPT-5.5](https://developers.openai.com/api/docs/models/gpt-5.5)。API 等价估价与实际订阅扣款分开；Codex #3307 仍待证实。**在线有效性未实测**，没有用离线夹具替代真实账号结论。
 

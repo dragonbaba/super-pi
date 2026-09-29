@@ -41,6 +41,8 @@ for (const [name, response, expected] of [
 	["success missing expiry", () => json(200, { access_token: `access-${SECRET}`, refresh_token: `refresh-${SECRET}` }), /missing fields: expires_in$/m],
 	["success body that is not JSON", () => json(200, `access_token=${SECRET}`), /refresh response was not valid JSON$/m],
 	["OAuth error body", () => json(400, { error: "invalid_grant", error_description: `refresh token ${SECRET} revoked` }), /refresh failed \(400: invalid_grant\)$/m],
+	["opaque string in the error-code field", () => json(400, { error: SECRET }), /refresh failed \(400\)$/m],
+	["opaque nested error code", () => json(400, { error: { code: SECRET } }), /refresh failed \(400\)$/m],
 	["unstructured error body", () => json(502, `<html>${SECRET}</html>`), /refresh failed \(502\)$/m],
 ] as const) test(`Codex token refresh diagnostics are bounded for ${name}`, async () => {
 	const text = await withFetch([response], () => rejectionText(openaiCodexOAuth.refresh(credential(0), signal())));
