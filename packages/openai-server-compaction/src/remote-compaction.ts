@@ -531,7 +531,7 @@ export function buildEmergencyContinuitySummary(params: {
   return `${summary}\n\n<read-files>\n</read-files>\n\n<modified-files>\n</modified-files>`;
 }
 
-export function messageToResponseItems(message: AgentMessage | Message): ResponseItem[] {
+export function messageToResponseItems(message: AgentMessage | Message, portable = false): ResponseItem[] {
   const items: ResponseItem[] = [];
 
   if (message.role === "custom") {
@@ -555,21 +555,23 @@ export function messageToResponseItems(message: AgentMessage | Message): Respons
 
     for (const block of message.content) {
       if (block.type === "text") {
-        const signature = parseTextSignature(block.textSignature);
+        const signature = portable ? undefined : parseTextSignature(block.textSignature);
         const fallbackId = textBlockIndex === 0 ? "msg_pi_0" : `msg_pi_0_${textBlockIndex}`;
         textBlockIndex += 1;
         const id = signature?.id ?? fallbackId;
-        items.push({
+        const item: ResponseItem = {
           type: "message",
           role: "assistant",
           content: [{ type: "output_text", text: block.text, annotations: [] }],
           status: "completed",
-          id: id.length > 64 ? `msg_${id.slice(-60)}` : id,
           ...(signature?.phase ? { phase: signature.phase } : {}),
-        });
+        };
+        if (!portable) (item as unknown as Record<string, unknown>).id = id.length > 64 ? `msg_${id.slice(-60)}` : id;
+        items.push(item);
         continue;
       }
       if (block.type === "thinking") {
+        if (portable) continue;
         const reasoning = parseThinkingSignature(block.thinkingSignature);
         if (reasoning) items.push(reasoning);
         continue;
@@ -580,7 +582,7 @@ export function messageToResponseItems(message: AgentMessage | Message): Respons
       const itemId = itemIdRaw?.startsWith("fc_") ? itemIdRaw : undefined;
       items.push({
         type: "function_call",
-        ...(itemId ? { id: itemId } : {}),
+        ...(!portable && itemId ? { id: itemId } : {}),
         name: block.name,
         call_id: callId,
         arguments: JSON.stringify(block.arguments ?? {}),
@@ -608,6 +610,11 @@ export function messagesToResponseItems(messages: readonly (AgentMessage | Messa
     for (const item of messageItems) items.push(item);
   }
   return items;
+}
+
+/** Local replies remain authoritative across routing changes; provider-private replay items do not. */
+export function messageToPortableResponseItems(message: AgentMessage | Message): ResponseItem[] {
+  return messageToResponseItems(message, true);
 }
 
 function cloneResponseItem(item: ResponseItem): ResponseItem {
@@ -1599,24 +1606,6 @@ export function extractRemoteCompactionDetails(details: unknown):
   };
 }
 
-function parseModelKeyParts(
-  value: string,
-): { provider: string; api: string; id: string } | undefined {
-  const [provider, api, id] = value.split(":", 3);
-  if (!provider || !api || !id) return undefined;
-  return { provider, api, id };
-}
-
-function assistantMessageMatchesModelKey(
-  message: AgentMessage,
-  targetModelKey: string,
-): boolean {
-  const target = parseModelKeyParts(targetModelKey);
-  if (!target) return false;
-  if (!isRecord(message)) return false;
-  return message.provider === target.provider && message.model === target.id;
-}
-
 type ReplayBranchEntry = {
   type: string;
   id: string;
@@ -1664,13 +1653,11 @@ export function reconstructRemoteCompactionStateFromBranch(params: {
     const message = branchEntryMessage(params.branchEntries[index]);
     if (!message) continue;
 
-    const items = messageToResponseItems(message);
+    const items = messageToPortableResponseItems(message);
     if (items.length === 0) continue;
 
     if (message.role === "assistant") {
-      if (assistantMessageMatchesModelKey(message, latestDetails.modelKey)) {
-        trailingMessages.push(...pendingTurnItems, ...items);
-      }
+      trailingMessages.push(...pendingTurnItems, ...items);
       pendingTurnItems = [];
       continue;
     }

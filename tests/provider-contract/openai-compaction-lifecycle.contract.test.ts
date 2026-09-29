@@ -30,10 +30,14 @@ const response = (events: unknown[]) => new Response(sseFrames(events), { header
 test("direct Responses WebSocket uses the configured endpoint and effective routing headers", async () => {
   const connections: Array<{ url: string; headers: Record<string, string> }> = [];
   const bodies: any[] = [];
+  let reportedTier = "fast";
   class Socket extends EventEmitter {
     readyState = 1;
     send(body: string) { bodies.push(JSON.parse(body)); queueMicrotask(() => {
-      for (const event of textEvents()) this.emit("message", JSON.stringify(event));
+      const events: any[] = structuredClone(textEvents());
+      events.at(-1).response.service_tier = reportedTier;
+      events.at(-1).response.usage = { input_tokens: 1000000, output_tokens: 1000000, total_tokens: 2000000 };
+      for (const event of events) this.emit("message", JSON.stringify(event));
     }); }
     close() { this.readyState = 3; }
     terminate() { this.close(); }
@@ -49,11 +53,16 @@ test("direct Responses WebSocket uses the configured endpoint and effective rout
     const result = await stream(model, context, { sessionId: "audit-direct-ws", apiKey: "offline", transport: "websocket",
       headers: { "OpenAI-Project": null, "OpenAI-Organization": "org-synthetic" } }).result();
     assert.equal(result.stopReason, "stop", result.errorMessage);
+    assert.equal(result.usage.cost.total, 4, "actual Fast response prices the direct API WebSocket once");
     assert.equal(bodies.length, 1);
     assert.equal(connections.length, 1);
     assert.equal(connections[0].url, "wss://api.openai.com/custom/responses");
     assert.equal(new Headers(connections[0].headers).get("openai-project"), null);
     assert.equal(new Headers(connections[0].headers).get("openai-organization"), "org-synthetic");
+    reportedTier = "default";
+    const servedDefault = await stream(model, context, { sessionId: "audit-direct-ws", apiKey: "offline", transport: "websocket",
+      serviceTier: "fast" } as any).result();
+    assert.equal(servedDefault.usage.cost.total, 2, "actual default wins over requested Fast");
   } finally { releaseWsSession("audit-direct-ws"); }
 });
 
@@ -88,6 +97,15 @@ async function fixture(codex = false, fail?: "remote" | "summary", modelId = "gp
     const events: any[] = structuredClone(textEvents());
     events[2].item.status = "completed";
     events[3].response.output[0].status = "completed";
+    if (requests.length > 1) {
+      const text = `REPLY_${requests.length}_héllo✓`;
+      events[1].delta = text;
+      events[2].item.content[0].text = text;
+      const reasoning = { type: "reasoning", id: `reasoning_${requests.length}`, summary: [], encrypted_content: `PRIVATE_REASONING_${requests.length}` };
+      events.splice(3, 0, { type: "response.output_item.added", output_index: 1, item: reasoning },
+        { type: "response.output_item.done", output_index: 1, item: reasoning });
+      events.at(-1).response.output.push(reasoning);
+    }
     return response(events);
   }) as typeof fetch;
   const runtime: any = alphaModelRuntime((active, context, options: any) => lazyStream(active, async () => {
@@ -208,6 +226,25 @@ test("non-GPT native failure retains the existing local compaction fallback", as
   } finally { await f.release(); }
 });
 
+test("disposing one extension owner preserves another session's compatible opaque outgoing history", async () => {
+  const originalFetch = globalThis.fetch;
+  const first = await fixture();
+  let second: Awaited<ReturnType<typeof fixture>> | undefined;
+  try {
+    await first.session.prompt("first owner"); await first.session.compact();
+    second = await fixture();
+    await second.session.prompt("second owner"); await second.session.compact();
+    const secondFetch = globalThis.fetch;
+    await first.release();
+    globalThis.fetch = secondFetch;
+    await second.session.prompt("SURVIVING_OWNER_NEXT");
+    assert.equal(second.requests.length, 3);
+    assert.equal(second.requests[2].payload.input.some((item: any) => item.type === "compaction"), true);
+    assert.match(JSON.stringify(second.requests[2].payload.input), /SURVIVING_OWNER_NEXT/);
+    assert.equal(second.manager.getEntries().filter(entry => entry.type === "compaction").length, 1);
+  } finally { if (second) await second.release(); await first.release(); globalThis.fetch = originalFetch; }
+});
+
 for (const codex of [false, true]) for (const transition of ["refresh", "resume", "switch", "fork-after", "fork-before", "tree-after", "tree-before", "model", "endpoint", "identity"] as const) {
   test(`${codex ? "Codex" : "API"} opaque replay respects ${transition} and preserves persisted local history`, async () => {
     const f = await fixture(codex);
@@ -250,12 +287,19 @@ for (const codex of [false, true]) for (const transition of ["refresh", "resume"
       const reopened = SessionManager.open(file, f.root).getEntries();
       for (const entry of before) assert.deepEqual(reopened.find(candidate => candidate.id === entry.id), entry);
       if (["model", "endpoint", "identity"].includes(transition)) {
+        const portableReply = (f.session.messages.at(-1) as any).content[0].text;
         if (transition === "model") await f.session.setModel(f.model);
         else if (transition === "endpoint") f.changeEndpoint(f.model.baseUrl);
         else f.changeKey(codex ? token() : "sk-offline-one");
         await f.session.prompt("COMPATIBLE_RETURN");
         assert.equal(f.requests.at(-1)!.payload.input.some((item: any) => item.type === "compaction"), true);
         assert.match(JSON.stringify(f.requests.at(-1)!.payload.input), /COMPATIBLE_RETURN/);
+        assert.ok(JSON.stringify(f.requests.at(-1)!.payload.input).includes(portableReply), "returning to the compatible identity retains the intervening local reply");
+        assert.equal(JSON.stringify(f.requests.at(-1)!.payload.input).includes(`PRIVATE_REASONING_${count + 1}`), false);
+        await f.sessionRuntime.switchSession(f.manager.getSessionFile()!);
+        await f.session.prompt("COMPATIBLE_REOPEN");
+        assert.ok(JSON.stringify(f.requests.at(-1)!.payload.input).includes(portableReply), "persisted reconstruction retains the same portable reply");
+        assert.equal(JSON.stringify(f.requests.at(-1)!.payload.input).includes(`PRIVATE_REASONING_${count + 1}`), false);
       }
     } finally { await f.release(); }
   });

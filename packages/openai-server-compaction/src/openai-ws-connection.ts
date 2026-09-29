@@ -15,7 +15,7 @@ export interface ResponseObject {
   model: string;
   output: OutputItem[];
   usage?: UsageInfo;
-  service_tier?: "auto" | "default" | "flex" | "priority";
+  service_tier?: "auto" | "default" | "flex" | "priority" | "fast";
   error?: { code: string; message: string };
   incomplete_details?: { reason?: string };
 }

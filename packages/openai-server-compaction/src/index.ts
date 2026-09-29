@@ -39,7 +39,7 @@ import {
   supportsPreviousResponseId,
   supportsRemoteCompactionModel,
 } from "./openai.ts";
-import { releaseAllWsSessions, releaseWsSession } from "./openai-ws-stream.ts";
+import { releaseWsSession } from "./openai-ws-stream.ts";
 import { SUPPORTED_SP_VERSION_PATTERN } from "./regex.ts";
 import { unknownText } from "./text.ts";
 import {
@@ -51,6 +51,7 @@ import {
   extractRemoteCompactionUsage,
   generateBestEffortLocalSummary,
   messageToResponseItems,
+  messageToPortableResponseItems,
   messagesToResponseItems,
   normalizeResponseItemsForPrompt,
   PORTABLE_SUMMARY_MAX_TOKENS,
@@ -62,13 +63,11 @@ import {
   type ResponseItem,
 } from "./remote-compaction.ts";
 import {
-  clearAllContinuationState,
   clearContinuationState,
   clearRemoteCompactionState,
   clearResponsesRequestShapeState,
   clearSessionDedupState,
   clearSessionConfig,
-  clearTransportContextState,
   claimCompactionContinuation,
   getContinuationState,
   getTransportContextState,
@@ -596,13 +595,11 @@ function extendRemoteHistoryIfCompatible(params: {
 }): void {
   const scope = params.message.role === "assistant" || params.message.role === "toolResult"
     ? getTransportContextState(params.sessionId)?.requestScope : getRemoteCompactionState(params.sessionId)?.requestScope;
-  const remoteState = getMatchingRemoteState(params.sessionId, params.model, scope);
+  const remoteState = getRemoteCompactionState(params.sessionId);
   if (!remoteState || !params.model) return;
-  if (params.message.role === "assistant" && !messageMatchesModel(params.message, params.model)) {
-    return;
-  }
-
-  const items = messageToResponseItems(params.message);
+  const compatible = remoteState.modelKey === modelKey(params.model) && remoteState.requestScope === scope &&
+    (params.message.role !== "assistant" || messageMatchesModel(params.message, params.model));
+  const items = compatible ? messageToResponseItems(params.message) : messageToPortableResponseItems(params.message);
   if (items.length === 0 || !markMessageProcessed(params.sessionId, params.message as object)) return;
 
   setRemoteCompactionState(params.sessionId, {
@@ -726,11 +723,15 @@ export default function openaiServerCompactionExtension(pi: ExtensionAPI) {
     clearResponsesRequestShapeState(sessionId);
   });
 
-  pi.on("session_shutdown", () => {
-    for (const sessionId of capabilitySessionIds) setTransportRemoteCompactionCapability(sessionId, false);
+  pi.on("session_shutdown", (_event, ctx) => {
+    const currentSessionId = getSessionId(ctx);
+    for (const sessionId of capabilitySessionIds) {
+      setTransportRemoteCompactionCapability(sessionId, false);
+      if (sessionId !== currentSessionId) clearSessionRuntimeState(sessionId);
+    }
     capabilitySessionIds.clear();
-    clearAllContinuationState();
-    releaseAllWsSessions();
+    setTransportRemoteCompactionCapability(currentSessionId, false);
+    clearSessionRuntimeState(currentSessionId);
   });
 
   pi.on("session_before_compact", async (event, ctx) => {

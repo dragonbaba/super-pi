@@ -110,7 +110,7 @@ type WsOptions = SimpleStreamOptions & {
   openaiWsWarmup?: unknown;
   topP?: number;
   toolChoice?: unknown;
-  serviceTier?: "auto" | "default" | "flex" | "priority";
+  serviceTier?: "auto" | "default" | "flex" | "priority" | "fast";
   reasoningSummary?: "auto" | "concise" | "detailed" | null;
   text?: Record<string, unknown>;
 };
@@ -118,10 +118,10 @@ type WsOptions = SimpleStreamOptions & {
 function applyServiceTierPricing(
   usage: Usage,
   modelInfo: ModelDescriptor,
-  serviceTier: "auto" | "default" | "flex" | "priority" | undefined,
+  serviceTier: "auto" | "default" | "flex" | "priority" | "fast" | undefined,
 ): void {
   const priorityMultiplier = modelInfo.id === "gpt-5.5" ? 2.5 : 2;
-  const multiplier = serviceTier === "flex" ? 0.5 : serviceTier === "priority" ? priorityMultiplier : 1;
+  const multiplier = serviceTier === "flex" ? 0.5 : serviceTier === "priority" || serviceTier === "fast" ? priorityMultiplier : 1;
   if (multiplier === 1) return;
   usage.cost.input *= multiplier;
   usage.cost.output *= multiplier;
@@ -525,7 +525,7 @@ function convertMessagesToInputItems(messages: Message[], modelOverride?: Replay
 export function buildAssistantMessageFromResponse(
   response: ResponseObject,
   model: Model<any>,
-  serviceTier?: "auto" | "default" | "flex" | "priority",
+  serviceTier?: "auto" | "default" | "flex" | "priority" | "fast",
 ): AssistantMessage {
   const modelInfo = getModelDescriptor(model);
   const content: (TextContent | ToolCall)[] = [];
