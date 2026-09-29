@@ -1038,6 +1038,18 @@ export class SessionManager {
 		return this.sessionFile;
 	}
 
+	/**
+	 * A new session file is created once the session contains a user or assistant message.
+	 * Setup entries alone stay in memory, so opening and closing without chatting leaves no
+	 * file. Starting at the user message keeps the prompt on disk if the first turn never
+	 * completes.
+	 */
+	private _hasConversation(): boolean {
+		return this.fileEntries.some(
+			(e) => e.type === "message" && (e.message.role === "user" || e.message.role === "assistant"),
+		);
+	}
+
 	_persist(entry: SessionEntry): void {
 		if (!this.persist || !this.sessionFile) return;
 		if (this._appendNeedsSeparator) {
@@ -1045,18 +1057,8 @@ export class SessionManager {
 			this._appendNeedsSeparator = false;
 		}
 
-		const hasAssistant = this.fileEntries.some((e) => e.type === "message" && e.message.role === "assistant");
-		if (!hasAssistant) {
-			if (this.flushed) {
-				appendFileSync(this.sessionFile, `${JSON.stringify(entry)}\n`);
-			} else {
-				// Mark as not flushed so when assistant arrives, all entries get written
-				this.flushed = false;
-			}
-			return;
-		}
-
 		if (!this.flushed) {
+			if (!this._hasConversation()) return;
 			writeSessionEntriesAtomically(this.sessionFile, this.fileEntries, false);
 			this.flushed = true;
 		} else {
@@ -1507,13 +1509,9 @@ export class SessionManager {
 			this.sessionFile = newSessionFile;
 			this._buildIndex();
 
-			// Only write the file now if it contains an assistant message.
-			// Otherwise defer to _persist(), which creates the file on the
-			// first assistant response, matching the newSession() contract
-			// and avoiding the duplicate-header bug when _persist()'s
-			// no-assistant guard later resets flushed to false.
-			const hasAssistant = this.fileEntries.some((e) => e.type === "message" && e.message.role === "assistant");
-			if (hasAssistant) {
+			// Use the same rule as _persist(): write now if the branched path already
+			// has a conversation, otherwise let _persist() create the file later.
+			if (this._hasConversation()) {
 				this._rewriteFile();
 				this.flushed = true;
 			} else {
