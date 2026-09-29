@@ -538,6 +538,8 @@ Super Pi（`D:\RMProjects\Pi\packages`）：
 
 认证诊断追加：`auth-code-before.log` 复现字符形状合法的合成秘密仍能经 error/code 字段泄漏到 message/stack；改为模块级已知 OAuth/设备授权错误码集合，未知码仅保留 HTTP 状态。两条新增边界回归通过，不改变刷新锁、账户选择或 delta 路径。
 
+验收收尾追加：定点核对本 PR 的生产消费者发现 `Agent.streamAssistantResponse → processEvents → publishAwaited` 的监听器异常会退出消费，但 `runWithLifecycle` 原异常收尾未取消已启动的 provider；`finishRun` 随后释放 activeRun，失去请求 owner。`consumer-owner-before.log` 的实际 Codex SSE 夹具先失败（signal 未 abort）。最小修复在 run owner 的 catch 中 abort 原 controller，再按 abort 前的状态记录原错误；不改 EventStream、正常 delta 路径或事件异常传播策略。新增根 contract 用例断言 reader cancel 恰好一次、锁释放、producer aborted、Agent 原 error 分类及下一次请求正常完成。请求放弃的既有边界为 `AgentSession.abort → Agent.abort`；会话替换/最终释放为 `AgentSessionRuntime.performSessionTeardown → session.abort/等待 idle → session.dispose`，已有 `custom-message-ordering` runtime replacement 与 `alpha-lifecycle` 回归复用。`consumer-owner-contract.log` 13 文件/175 通过，`consumer-owner-hot.log` 38 通过，`consumer-owner-affected.log` 3 相关根入口加 memory workspace 共 21 通过，`consumer-owner-check.log`/`consumer-owner-build.log` 通过。正常调用链的闭包/正则/缓存归属及分配不变，既有性能与受控 GC 证据继续有效；仅追加异常 owner 取消证据，不重新运行全量性能实验。交接 HEAD 的 Windows CI 已结束且读取日志，新增回归、两项 ACL 拒绝、pack 及 junction 路径实际执行成功；新代码 HEAD 的两平台 CI 单独在 PR 正文记录，不复用旧 HEAD 绿灯。
+
 价格依据（2026-09-30）：[官方 Fast mode](https://developers.openai.com/api/docs/guides/fast-mode)、[价格页](https://developers.openai.com/api/docs/pricing)、[GPT-5.4](https://developers.openai.com/api/docs/models/gpt-5.4)、[GPT-5.5](https://developers.openai.com/api/docs/models/gpt-5.5)。API 等价估价与实际订阅扣款分开；Codex #3307 仍待证实。**在线有效性未实测**，没有用离线夹具替代真实账号结论。
 
 资源清理限制：自动审批检查拒绝对本任务记录的两个 ENOTEMPTY 临时目录和本地 pack 产物执行清理（仅返回 blocked by policy）；保留这些记录，没有绕过。最终远端结果只回填 PR 正文与回复，避免文档 SHA 循环。

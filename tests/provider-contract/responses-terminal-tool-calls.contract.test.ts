@@ -140,3 +140,53 @@ for (const ending of ["toolUse", "length", "error", "abort"] as const) test(`Age
 		assert.equal(last.stopReason, ending === "toolUse" || ending === "length" ? "stop" : ending === "abort" ? "aborted" : ending);
 	} finally { off(); agent.abort(); }
 });
+
+test("Agent aborts its live Codex request when an awaited consumer throws", { timeout: 15_000 }, async () => {
+	let requests = 0, cancels = 0, signal: AbortSignal | undefined;
+	let bodyController!: ReadableStreamDefaultController<Uint8Array>;
+	let finishCancel!: () => void;
+	const cancelled = new Promise<void>(resolve => { finishCancel = resolve; });
+	const body = new ReadableStream<Uint8Array>({
+		start(controller) {
+			bodyController = controller;
+			controller.enqueue(new TextEncoder().encode(sseFrames(textEvents().slice(0, -1))));
+		},
+		cancel() { cancels++; finishCancel(); },
+	});
+	let producer!: ReturnType<typeof streamCodex>;
+	const fetch: typeof globalThis.fetch = async () => {
+		requests++;
+		return requests === 1
+			? new Response(body, { headers: { "content-type": "text/event-stream" } })
+			: sseResponse(byteChunks(sseFrames(textEvents()), 4096));
+	};
+	const agent = new Agent({ streamFn: (_m, context, options) => {
+		signal = options?.signal;
+		producer = streamCodex(codexModel, context, { ...options, apiKey: codexToken(), transport: "sse", fetch, maxRetries: 0 });
+		return producer;
+	} });
+	agent.state.model = codexModel;
+	let failed = false;
+	const off = agent.subscribe(event => {
+		if (event.type === "message_update" && !failed) { failed = true; throw new Error("offline consumer failure"); }
+	});
+	try {
+		await agent.prompt("offline consumer boundary");
+		assert.equal(failed, true);
+		assert.equal(signal?.aborted, true, "run owner must cancel before releasing activeRun");
+		await cancelled;
+		assert.equal((await producer.result()).stopReason, "aborted");
+		assert.equal(cancels, 1);
+		assert.equal(body.locked, false);
+		assert.equal(agent.state.isStreaming, false);
+		assert.equal((agent.state.messages.at(-1) as any).stopReason, "error", "consumer failure retains its original error classification");
+		assert.match((agent.state.messages.at(-1) as any).errorMessage, /offline consumer failure/);
+		await agent.prompt("next request");
+		assert.equal(requests, 2);
+		assert.equal((agent.state.messages.at(-1) as any).stopReason, "stop");
+	} finally {
+		off(); agent.abort();
+		if (cancels === 0) bodyController.close();
+		await producer.result();
+	}
+});
