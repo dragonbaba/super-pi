@@ -186,6 +186,8 @@ const TRAILING_SLASHES_PATTERN = /\/+$/;
 const WSS_PROTOCOL_PATTERN = /^wss:/;
 const WS_PROTOCOL_PATTERN = /^ws:/;
 const USAGE_LIMIT_ERROR_CODE_PATTERN = /usage_limit_reached|usage_not_included|rate_limit_exceeded/i;
+// String.replace resets lastIndex, so sharing this global pattern is reentrancy-safe.
+const CRLF_PATTERN = /\r\n/g;
 const JWT_CLAIM_PATH = "https://api.openai.com/auth";
 const DEFAULT_MAX_RETRIES = 0;
 const BASE_DELAY_MS = 1000;
@@ -846,6 +848,9 @@ async function* parseSSE(response: Response, signal?: AbortSignal): AsyncGenerat
             }
             // At EOF, flush the decoder and terminate a residual final frame so it is parsed.
             buffer += done ? decoder.decode() : decoder.decode(value, { stream: true });
+            // SSE allows CRLF line endings; a CR at the end of a read waits for its LF.
+            if (buffer.includes("\r\n"))
+                buffer = buffer.replace(CRLF_PATTERN, "\n");
             if (done && buffer.trim())
                 buffer += "\n\n";
             let idx = buffer.indexOf("\n\n");
