@@ -3,7 +3,8 @@ import { type Component, truncateToWidth, visibleWidth } from "@super-pi/tui";
 import type { AgentSession } from "../../../core/agent-session.ts";
 import { areExperimentalFeaturesEnabled } from "../../../core/experimental.ts";
 import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.ts";
-import { addUsageToTotals, createUsageTotals } from "../../../core/usage-totals.ts";
+import type { SessionManager } from "../../../core/session-manager.ts";
+import { addUsageToTotals, createUsageTotals, type UsageTotals } from "../../../core/usage-totals.ts";
 import { theme } from "../theme/theme.ts";
 
 /**
@@ -51,6 +52,16 @@ export function formatCwdForFooter(cwd: string, home: string | undefined): strin
 	return relativeToHome === "" ? "~" : `~${sep}${relativeToHome}`;
 }
 
+interface SessionScan {
+	sessionManager: SessionManager;
+	sessionId: string;
+	leafId: string | null;
+	entryCount: number;
+	usageTotals: UsageTotals;
+	latestCacheHitRate: number | undefined;
+	sessionName: string | undefined;
+}
+
 /**
  * Footer component that shows pwd, token stats, and context usage.
  * Computes token/context stats from session, gets git branch and extension statuses from provider.
@@ -59,6 +70,8 @@ export class FooterComponent implements Component {
 	private autoCompactEnabled = true;
 	private session: AgentSession;
 	private footerData: ReadonlyFooterDataProvider;
+	/** Whole-session scan reused across frames; owned by this footer and its current session. */
+	private sessionScan: SessionScan | undefined;
 
 	constructor(session: AgentSession, footerData: ReadonlyFooterDataProvider) {
 		this.session = session;
@@ -67,6 +80,7 @@ export class FooterComponent implements Component {
 
 	setSession(session: AgentSession): void {
 		this.session = session;
+		this.sessionScan = undefined;
 	}
 
 	setAutoCompactEnabled(enabled: boolean): void {
@@ -87,17 +101,35 @@ export class FooterComponent implements Component {
 	 */
 	dispose(): void {
 		// Git watcher cleanup handled by provider
+		this.sessionScan = undefined;
 	}
 
-	render(width: number): string[] {
-		const state = this.session.state;
+	/**
+	 * The footer renders every frame, but entries are append-only and every append moves the leaf,
+	 * so the whole-session scan only changes with the session manager, session, leaf or entry count.
+	 */
+	private getSessionScan(): SessionScan {
+		const sessionManager = this.session.sessionManager;
+		const sessionId = sessionManager.getSessionId();
+		const leafId = sessionManager.getLeafId();
+		const entryCount = sessionManager.getEntryCount();
+		const cached = this.sessionScan;
+		if (
+			cached !== undefined &&
+			cached.sessionManager === sessionManager &&
+			cached.sessionId === sessionId &&
+			cached.leafId === leafId &&
+			cached.entryCount === entryCount
+		) {
+			return cached;
+		}
 
 		// Calculate cumulative usage from ALL session entries (not just post-compaction messages)
 		const usageTotals = createUsageTotals();
 		let latestCacheHitRate: number | undefined;
 		let sessionName: string | undefined;
 
-		const entries = this.session.sessionManager.getEntries();
+		const entries = sessionManager.getEntries();
 		for (let index = 0; index < entries.length; index++) {
 			const entry = entries[index]!;
 			if (entry.type === "session_info") {
@@ -117,6 +149,13 @@ export class FooterComponent implements Component {
 				addUsageToTotals(usageTotals, entry.usage);
 			}
 		}
+		this.sessionScan = { sessionManager, sessionId, leafId, entryCount, usageTotals, latestCacheHitRate, sessionName };
+		return this.sessionScan;
+	}
+
+	render(width: number): string[] {
+		const state = this.session.state;
+		const { usageTotals, latestCacheHitRate, sessionName } = this.getSessionScan();
 
 		// Calculate context usage from the session's authoritative accounting state.
 		// A leading '~' marks a materialized estimate rather than provider usage.

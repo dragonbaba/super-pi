@@ -1329,6 +1329,11 @@ export class SessionManager {
 		return this.fileEntries.filter((e): e is SessionEntry => e.type !== "session");
 	}
 
+	/** Number of session entries (excludes header) without copying them. */
+	getEntryCount(): number {
+		return this.byId.size;
+	}
+
 	/**
 	 * Get the session as a tree structure. Returns a shallow defensive copy of all entries.
 	 * A well-formed session has exactly one root (first entry with parentId === null).
