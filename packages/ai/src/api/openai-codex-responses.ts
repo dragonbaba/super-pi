@@ -942,6 +942,7 @@ interface CachedWebSocketContinuationState {
 }
 
 interface CachedWebSocketConnection {
+    url: string;
     socket: WebSocketLike;
     connectionHeadersKey: string;
     busy: boolean;
@@ -1271,7 +1272,7 @@ async function acquireWebSocket(
             clearTimeout(cached.idleTimer);
             cached.idleTimer = undefined;
         }
-        if (!cached.busy && cached.connectionHeadersKey !== connectionHeadersKey) {
+        if (!cached.busy && (cached.url !== url || cached.connectionHeadersKey !== connectionHeadersKey)) {
             closeWebSocketSilently(cached.socket, 1000, "headers_changed");
             accountEntries?.delete(accountId);
             if (accountEntries?.size === 0)
@@ -1334,6 +1335,7 @@ async function acquireWebSocket(
     }
     const now = Date.now();
     const entry: CachedWebSocketConnection = {
+        url,
         socket,
         connectionHeadersKey,
         busy: true,

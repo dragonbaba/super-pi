@@ -136,6 +136,7 @@ function releaseRemoteCompactionHeaderMap(value: Map<string, string>): void {
 }
 
 export type RemoteCompactionDetails = {
+  requestScope?: string;
   version: 1 | 2;
   provider: "openai-responses-compact" | "openai-responses-compaction";
   implementation?: "responses_compact_v1" | "responses_compaction_v2";
@@ -145,6 +146,7 @@ export type RemoteCompactionDetails = {
 };
 
 export type RemoteCompactionSessionState = {
+  requestScope?: string;
   compactionEntryId: string;
   modelKey: string;
   replacementHistory: ResponseItem[];
@@ -1591,6 +1593,7 @@ export function extractRemoteCompactionDetails(details: unknown):
     provider: isV2 ? "openai-responses-compaction" : "openai-responses-compact",
     implementation: isV2 ? "responses_compaction_v2" : "responses_compact_v1",
     modelKey: typeof remote.modelKey === "string" ? remote.modelKey : "",
+    requestScope: typeof remote.requestScope === "string" ? remote.requestScope : undefined,
     replacementHistory,
     ...(usage ? { usage } : {}),
   };
@@ -1683,6 +1686,7 @@ export function reconstructRemoteCompactionStateFromBranch(params: {
   return {
     compactionEntryId: latestCompactionEntryId,
     modelKey: latestDetails.modelKey,
+    requestScope: latestDetails.requestScope,
     replacementHistory: latestDetails.replacementHistory,
     explicitHistory: [...latestDetails.replacementHistory, ...trailingMessages],
   };

@@ -14,6 +14,7 @@ import type {
 } from "./remote-compaction.ts";
 
 export type ContinuationState = {
+  requestScope?: string;
   responseId: string;
   modelKey: string;
   updatedAt: number;
@@ -28,6 +29,7 @@ export type ResponsesRequestShapeState = {
 };
 
 export type TransportContextState = {
+  requestScope?: string;
   modelKey: string;
   contextLength: number;
 };

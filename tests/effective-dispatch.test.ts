@@ -12,65 +12,7 @@ import type {
 	Model,
 } from "../packages/ai/src/types.ts";
 
-const terminalResponse = {
-	type: "response.completed",
-	response: {
-		id: "response-test",
-		status: "completed",
-		output: [],
-		usage: {
-			input_tokens: 1,
-			output_tokens: 1,
-			total_tokens: 2,
-			input_tokens_details: { cached_tokens: 0 },
-			output_tokens_details: { reasoning_tokens: 0 },
-		},
-	},
-};
-
-class FakeCodexWebSocket {
-	static mode: "success" | "fail" = "success";
-	static sentBodies: Array<Record<string, unknown>> = [];
-	readonly listeners = new Map<string, Set<(event: unknown) => void>>();
-	readyState = 0;
-
-	constructor(_url: string, _options?: unknown) {
-		queueMicrotask(() => {
-			if (FakeCodexWebSocket.mode === "fail") {
-				this.emit("error", new Error("synthetic websocket failure"));
-				return;
-			}
-			this.readyState = 1;
-			this.emit("open", {});
-		});
-	}
-
-	addEventListener(type: string, listener: (event: unknown) => void): void {
-		let listeners = this.listeners.get(type);
-		if (!listeners) {
-			listeners = new Set();
-			this.listeners.set(type, listeners);
-		}
-		listeners.add(listener);
-	}
-
-	removeEventListener(type: string, listener: (event: unknown) => void): void {
-		this.listeners.get(type)?.delete(listener);
-	}
-
-	send(data: string): void {
-		FakeCodexWebSocket.sentBodies.push(JSON.parse(data) as Record<string, unknown>);
-		queueMicrotask(() => this.emit("message", { data: JSON.stringify(terminalResponse) }));
-	}
-
-	close(): void {
-		this.readyState = 3;
-	}
-
-	private emit(type: string, event: unknown): void {
-		for (const listener of this.listeners.get(type) ?? []) listener(event);
-	}
-}
+import { FakeCodexWebSocket, terminalResponse } from "./helpers/codex-websocket-fixture.ts";
 
 function model(): Model<"openai-codex-responses"> {
 	return {

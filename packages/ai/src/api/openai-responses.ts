@@ -146,7 +146,7 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 				compat.supportsOpenAIGrammarTools,
 			);
 			const client = createClient(model, context, apiKey, options?.headers, options?.fetch, cacheSessionId);
-			let params = buildParams(model, context, options, compat, grammarToolInputProperties);
+			let params = buildOpenAIResponsesRequestBody(model, context, options, compat, grammarToolInputProperties);
 			const nextParams = await options?.onPayload?.(params, model);
 			if (nextParams !== undefined) {
 				params = nextParams as ResponseCreateParamsStreaming;
@@ -296,7 +296,7 @@ export function observeOpenAIResponsesEffectiveDispatch(
 	});
 }
 
-function buildParams(
+export function buildOpenAIResponsesRequestBody(
 	model: Model<"openai-responses">,
 	context: Context,
 	options: OpenAIResponsesOptions | undefined,

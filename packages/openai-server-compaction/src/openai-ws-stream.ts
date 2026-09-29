@@ -26,6 +26,7 @@ import {
 import { streamSimpleOpenAIResponses } from "@super-pi/ai/compat";
 import { loadConfig } from "./config.ts";
 import { unknownText } from "./text.ts";
+import { requestScope } from "./request-scope.ts";
 import {
   isDirectOpenAIResponsesModel,
   modelKey,
@@ -60,6 +61,7 @@ import {
 } from "./state.ts";
 
 type WsSession = {
+  requestScope?: string;
   manager: OpenAIWebSocketManager;
   modelKey: string;
   lastContextLength: number;
@@ -808,13 +810,17 @@ async function fallbackToHttp(
   signal?: AbortSignal,
 ): Promise<void> {
   const sessionId = options?.sessionId;
-  const remoteCompactionState = sessionId ? getRemoteCompactionState(sessionId) : undefined;
-  const continuationState = sessionId ? getContinuationState(sessionId) : undefined;
+  const scope = requestScope(model, options?.apiKey, options?.headers);
+  const remote = sessionId ? getRemoteCompactionState(sessionId) : undefined;
+  const continuation = sessionId ? getContinuationState(sessionId) : undefined;
+  const remoteCompactionState = scope !== undefined && remote?.requestScope === scope ? remote : undefined;
+  const continuationState = scope !== undefined && continuation?.requestScope === scope ? continuation : undefined;
   const originalOnPayload = options?.onPayload;
   if (sessionId) {
     setTransportContextState(sessionId, {
       modelKey: modelKey(model),
       contextLength: context.messages.length + 1,
+      requestScope: scope,
     });
   }
   const mergedOptions = {
@@ -872,18 +878,25 @@ export function createOpenAIWebSocketStreamFn(
 
         let session = wsRegistry.get(sessionId);
         const currentModelKey = modelKey(model);
-        if (session && session.modelKey !== currentModelKey) {
+        const scope = requestScope(model, apiKey, options?.headers);
+        if (session && (session.modelKey !== currentModelKey || session.requestScope !== scope)) {
           releaseWsSession(sessionId);
           session = undefined;
         }
         if (!session) {
-          const headers = {
-            ...(managerOptions?.headers ?? {}),
-            ...buildCodexWebSocketHeaders(sessionId),
-          };
+          const effectiveHeaders = new Headers(model.headers);
+          for (const [name, value] of Object.entries(options?.headers ?? {})) {
+            if (value === null) effectiveHeaders.delete(name);
+            else effectiveHeaders.set(name, value);
+          }
+          for (const [name, value] of Object.entries(managerOptions.headers ?? {})) effectiveHeaders.set(name, value);
+          const headers = { ...Object.fromEntries(effectiveHeaders), ...buildCodexWebSocketHeaders(sessionId) };
+          const endpoint = new URL(`${(model.baseUrl || "https://api.openai.com/v1").replace(/\/$/, "")}/responses`);
+          endpoint.protocol = endpoint.protocol === "http:" ? "ws:" : "wss:";
           session = {
-            manager: new OpenAIWebSocketManager({ ...managerOptions, headers }),
+            manager: new OpenAIWebSocketManager({ ...managerOptions, url: managerOptions.url ?? endpoint.href, headers }),
             modelKey: currentModelKey,
+            requestScope: scope,
             lastContextLength: 0,
             lastRequestKey: undefined,
             warmUpAttempted: false,
@@ -935,8 +948,10 @@ export function createOpenAIWebSocketStreamFn(
           }
         }
 
-        const remoteCompactionState = getRemoteCompactionState(sessionId);
-        const continuationState = getContinuationState(sessionId);
+        const remote = getRemoteCompactionState(sessionId);
+        const continuation = getContinuationState(sessionId);
+        const remoteCompactionState = scope !== undefined && remote?.requestScope === scope ? remote : undefined;
+        const continuationState = scope !== undefined && continuation?.requestScope === scope ? continuation : undefined;
         const requestKey = buildWsRequestKey({
           model,
           context,
@@ -1056,6 +1071,7 @@ export function createOpenAIWebSocketStreamFn(
                 responseId: response.id,
                 modelKey: currentModelKey,
                 updatedAt: Date.now(),
+                requestScope: scope,
                 contextLength: completedContextLength,
               });
               const reason: Extract<StopReason, "stop" | "length" | "toolUse"> =
