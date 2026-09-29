@@ -777,6 +777,9 @@ export class AgentSession {
 	private _pendingNextTurnMessages: CustomMessage[] = [];
 	/** Context-only custom messages sent mid-run; appended once the turn's tool results are recorded. */
 	private _pendingCustomMessages: CustomMessage[] = [];
+	/** Delivered messages awaiting synchronization with the agent loop's separate context. */
+	private _pendingCustomContextMessages: CustomMessage[] = [];
+	private _flushingCustomMessages = false;
 
 	// Compaction state
 	private _compactionAbortController: AbortController | undefined = undefined;
@@ -1181,6 +1184,10 @@ export class AgentSession {
 			const previousSnapshot = await previousPrepareNextTurnWithContext?.(turn, signal);
 			const previousContext = previousSnapshot?.context ?? turn.context;
 			let messages = previousContext.messages;
+			for (const message of this._pendingCustomContextMessages) {
+				if (!messages.includes(message)) messages.push(message);
+			}
+			this._pendingCustomContextMessages.length = 0;
 			if (turn.toolResults.length > 0 && !signal?.aborted && !this.isCompacting) {
 				const settings = this.settingsManager.getCompactionSettings();
 				const contextWindow = this.model?.contextWindow ?? 0;
@@ -1323,6 +1330,7 @@ export class AgentSession {
 	private async _emitAgentSettled(): Promise<void> {
 		// Every run exit settles here, so nothing queued mid-run outlives it.
 		this._flushPendingCustomMessages();
+		this._pendingCustomContextMessages.length = 0;
 		this._isAgentRunActive = false;
 		try {
 			await this._extensionRunner.emit({ type: "agent_settled" });
@@ -1754,6 +1762,8 @@ export class AgentSession {
 	 * Call this when completely done with the session.
 	 */
 	dispose(): void {
+		this._pendingCustomMessages.length = 0;
+		this._pendingCustomContextMessages.length = 0;
 		this._pendingLengthRecovery = undefined;
 		this._imageDigests = new WeakMap();
 		this._imageRequest = undefined;
@@ -2962,23 +2972,36 @@ export class AgentSession {
 	}
 
 	private _appendCustomMessage(appMessage: CustomMessage): void {
-		this.agent.state.messages.push(appMessage);
 		this.sessionManager.appendCustomMessageEntry(
 			appMessage.customType,
 			appMessage.content,
 			appMessage.display,
 			appMessage.details,
 		);
+		this.agent.state.messages.push(appMessage);
+		if (this.isStreaming) this._pendingCustomContextMessages.push(appMessage);
 		this._emit({ type: "message_start", message: appMessage });
 		this._emit({ type: "message_end", message: appMessage });
 	}
 
 	/** Append custom messages queued during the run, after the turn's tool results. */
 	private _flushPendingCustomMessages(): void {
-		if (this._pendingCustomMessages.length === 0) return;
+		if (this._pendingCustomMessages.length === 0 || this._flushingCustomMessages || this._operationDisposed) return;
 		const pending = this._pendingCustomMessages;
-		this._pendingCustomMessages = [];
-		for (const appMessage of pending) this._appendCustomMessage(appMessage);
+		this._flushingCustomMessages = true;
+		let consumed = 0;
+		try {
+			// A synchronous message listener may enqueue more messages. They follow the
+			// already queued messages and must reach this turn's next request too.
+			while (consumed < pending.length) {
+				this._appendCustomMessage(pending[consumed]!);
+				consumed++;
+			}
+		} finally {
+			if (consumed === pending.length) pending.length = 0;
+			else pending.splice(0, consumed);
+			this._flushingCustomMessages = false;
+		}
 	}
 
 	/**

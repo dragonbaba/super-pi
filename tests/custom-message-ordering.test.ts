@@ -8,6 +8,7 @@ import { DefaultResourceLoader } from "../packages/coding-agent/src/core/resourc
 import { createAgentSession } from "../packages/coding-agent/src/core/sdk.ts";
 import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
 import { SettingsManager } from "../packages/coding-agent/src/core/settings-manager.ts";
+import { AgentSessionRuntime } from "../packages/coding-agent/src/core/agent-session-runtime.ts";
 import { ALPHA_MODEL, alphaModelRuntime } from "./helpers/alpha-session.ts";
 
 function chatResponse(delta: unknown, finish: string): Response {
@@ -18,11 +19,12 @@ function chatResponse(delta: unknown, finish: string): Response {
 const roles = (entries: any[]) => entries.map(entry => entry.type === "custom_message" ? "custom" : entry.message?.role).filter(Boolean);
 
 /** Session whose first provider reply calls `note`; the tool runs `execute` with the live session. */
-async function customMessageSession(execute: (session: any, signal: AbortSignal) => Promise<void>) {
+async function customMessageSession(execute: (session: any, signal: AbortSignal) => Promise<void>, failFirst = false) {
 	const root = mkdtempSync(join(tmpdir(), "custom-order-"));
 	const payloads: any[] = [];
 	const fetch: typeof globalThis.fetch = async (_url, init) => {
 		payloads.push(JSON.parse(String(init?.body)));
+		if (failFirst && payloads.length === 1) throw new Error("offline first request failure");
 		return payloads.length === 1
 			? chatResponse({ tool_calls: [{ index: 0, id: "call_note", type: "function", function: { name: "note", arguments: "{}" } }] }, "tool_calls")
 			: chatResponse({ content: "done" }, "stop");
@@ -54,6 +56,31 @@ async function customMessageSession(execute: (session: any, signal: AbortSignal)
 }
 
 const sendNote = (session: any) => session.sendCustomMessage({ customType: "note", content: "noted", display: true }, { triggerTurn: false });
+
+test("FIFO custom messages including a reentrant delivery reach the very next provider request exactly once", async () => {
+	const send = (session: any, content: string) => session.sendCustomMessage({ customType: "note", content, display: true }, { triggerTurn: false });
+	const f = await customMessageSession(async session => {
+		await send(session, "FIRST_CUSTOM");
+		await send(session, "SECOND_CUSTOM");
+	});
+	const off = f.session.subscribe((event: any) => {
+		if (event.type === "message_end" && event.message.role === "custom" && event.message.content === "FIRST_CUSTOM") {
+			void send(f.session, "REENTRANT_CUSTOM");
+		}
+	});
+	try {
+		await f.session.prompt("Take a note.");
+		const notes = f.session.messages.filter((message: any) => message.role === "custom").map((message: any) => message.content);
+		assert.deepEqual(notes, ["FIRST_CUSTOM", "SECOND_CUSTOM", "REENTRANT_CUSTOM"]);
+		assert.deepEqual(f.sessionManager.getEntries().filter((entry: any) => entry.type === "custom_message").map((entry: any) => entry.content), notes);
+		const wire = JSON.stringify(f.payloads[1].messages);
+		for (const note of notes) assert.equal(wire.split(note).length - 1, 1, note);
+		assert.ok(wire.indexOf("FIRST_CUSTOM") < wire.indexOf("SECOND_CUSTOM"));
+		assert.ok(wire.indexOf("SECOND_CUSTOM") < wire.indexOf("REENTRANT_CUSTOM"));
+		assert.equal(f.events.filter(event => event === "end:custom").length, 3);
+		assert.deepEqual(roles(f.sessionManager.getEntries()), ["user", "assistant", "toolResult", "custom", "custom", "custom", "assistant"]);
+	} finally { off(); f.release(); }
+});
 
 // A context-only custom message sent while a tool runs must not split a tool call from its result.
 test("custom message sent during a tool call is appended after the turn's tool results", async () => {
@@ -96,10 +123,50 @@ test("custom message queued before an abort is released exactly once after the a
 		assert.ok(history.indexOf("custom") > history.indexOf("toolResult"), JSON.stringify(history));
 		assert.equal(f.events.filter(event => event === "end:custom").length, 1);
 		assert.equal((f.session as any)._pendingCustomMessages.length, 0);
+		assert.equal((f.session as any)._pendingCustomContextMessages.length, 0);
 		assert.equal(f.payloads.length, 1);
 	} finally {
 		f.release();
 	}
+});
+
+test("settle drains custom messages after request failure and the next prompt replays them once", async () => {
+	const f = await customMessageSession(async () => {}, true);
+	const off = f.session.subscribe((event: any) => {
+		if (event.type === "message_end" && event.message.role === "user" && f.payloads.length === 0) void sendNote(f.session);
+	});
+	try {
+		await f.session.prompt("first failure");
+		assert.equal(f.session.messages.filter((message: any) => message.role === "custom").length, 1);
+		assert.equal(f.sessionManager.getEntries().filter((entry: any) => entry.type === "custom_message").length, 1);
+		assert.equal((f.session as any)._pendingCustomMessages.length, 0);
+		assert.equal((f.session as any)._pendingCustomContextMessages.length, 0);
+		await f.session.prompt("next prompt");
+		assert.equal(f.payloads.length, 2);
+		assert.equal(JSON.stringify(f.payloads[1].messages).split("noted").length - 1, 1);
+	} finally { off(); f.release(); }
+});
+
+test("runtime replacement settles pending notes in the outgoing session without crossing sessions", async () => {
+	let queued!: () => void;
+	const ready = new Promise<void>(resolve => { queued = resolve; });
+	const outgoing = await customMessageSession(async (session, signal) => {
+		await sendNote(session); queued();
+		await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }));
+	});
+	const incoming = await customMessageSession(async () => {});
+	const runtime = new AgentSessionRuntime(outgoing.session, { cwd: process.cwd(), agentDir: process.cwd() } as any,
+		async () => ({ session: incoming.session, services: { cwd: process.cwd(), agentDir: process.cwd() }, diagnostics: [] }) as any);
+	try {
+		const run = outgoing.session.prompt("outgoing"); await ready;
+		assert.equal((await runtime.newSession()).cancelled, false); await run;
+		assert.equal(outgoing.sessionManager.getEntries().filter((entry: any) => entry.type === "custom_message").length, 1);
+		assert.equal(outgoing.session._pendingCustomMessages.length, 0);
+		assert.equal(outgoing.session._pendingCustomContextMessages.length, 0);
+		await runtime.session.prompt("incoming");
+		assert.doesNotMatch(JSON.stringify(incoming.payloads), /noted/);
+		assert.equal(incoming.sessionManager.getEntries().filter((entry: any) => entry.type === "custom_message").length, 0);
+	} finally { await runtime.dispose(); outgoing.release(); incoming.release(); }
 });
 
 test("custom message without a turn is appended immediately when idle", async () => {
