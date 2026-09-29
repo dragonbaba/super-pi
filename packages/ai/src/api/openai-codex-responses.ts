@@ -666,11 +666,13 @@ export function buildOpenAICodexRequestBody(
     }
     return body;
 }
-function getServiceTierCostMultiplier(model: Pick<Model<"openai-codex-responses">, "id">, serviceTier: ResponseCreateParamsStreaming["service_tier"] | undefined): number {
+// OpenAI renamed Priority processing to Fast mode (2026-07-30) at the same price; GPT-6 reports "fast".
+function getServiceTierCostMultiplier(model: Pick<Model<"openai-codex-responses">, "id">, serviceTier: ResponseCreateParamsStreaming["service_tier"] | "fast" | undefined): number {
     switch (serviceTier) {
         case "flex":
             return 0.5;
         case "priority":
+        case "fast":
             return model.id.startsWith("gpt-5.5") || model.id.startsWith("gpt-5.6") ? 2.5 : 2;
         default:
             return 1;
